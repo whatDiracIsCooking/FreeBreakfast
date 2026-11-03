@@ -16,11 +16,15 @@
 // gradient step ending the optimization with its message. Last the QD
 // chain: formaldehyde's SC-QD-NEVPT2 state 1 over its DF-SA2-CASSCF(4,3)
 // (data/qd_nevpt2_gradient/h2co_ccpvdz_sa2.json), followed by overlap to a
-// stationary point that a fresh [nevpt2_gradient] confirms.
+// stationary point that a fresh [nevpt2_gradient] confirms, and skew
+// formaldehyde's state 2 over its DF-SA3-CASSCF(4,3)
+// (data/qd_nevpt2_gradient/h2co_skew_ccpvdz_sa3.json), where the followed
+// state's overlap falls below 1 along the path.
 
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -617,18 +621,14 @@ TEST(PipelineOptimize, AHandBuiltNevpt2ChainIsRefusedBeforeItRuns) {
 
 // --- The QD-NEVPT2 state ----------------------------------------------------
 
-// The QD chain's start: data/qd_nevpt2_gradient/h2co_ccpvdz_sa2.json's
-// planar formaldehyde, cc-pVDZ / cc-pVDZ-JKFIT, CAS(4,3) over the frontier
-// orbitals averaged over two roots, and its DF-SA-CASSCF at the generator's
+// A case of data/qd_nevpt2_gradient/: its geometry, basis and aux basis, its
+// CAS and its state average, with its DF-SA-CASSCF at the generator's
 // convergence (that directory's README.md).
-const fb::json &qd_start() {
-  static const fb::json kDoc = [] {
-    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "qd_nevpt2_gradient" /
-                              "h2co_ccpvdz_sa2.json");
-    EXPECT_TRUE(read.has_value()) << read.error().message;
-    return read.has_value() ? std::move(*read) : fb::json{};
-  }();
-  return kDoc;
+fb::json qd_case(std::string_view name) {
+  auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "qd_nevpt2_gradient" /
+                            std::format("{}.json", name));
+  EXPECT_TRUE(read.has_value()) << read.error().message;
+  return read.has_value() ? std::move(*read) : fb::json{};
 }
 
 // kOptimize's rms_force, beside kMaxForce: the optimizer's two force
@@ -637,23 +637,32 @@ constexpr double kRmsForce = 1e-5;
 // As the NEVPT2 chain's.
 constexpr std::size_t kQdMaxSteps = 15;
 
-// QD state K = 1 (the n -> pi* state, not the lowest, so the state is
-// followed by its identity rather than taken by index) of formaldehyde's
-// SC-QD-NEVPT2, optimized at Opt=Tight's thresholds from the case's start.
-// Every evaluation after the first logs its matched overlap, kept in
-// optimize.json, each at or above kQdStateOverlapFloor, and H_eff's smallest
-// gap, printed: no crossing along the path. It converges, its last
-// evaluation's largest force under max_force, and the outer
-// [nevpt2_gradient], a fresh single point from a fresh SCF and pick at the
-// optimum, has its largest component under max_force and its rms under
-// rms_force: the optimizer's own criteria. The point is planar (C2v), so its
-// two roots are of different irreps and every overlap is 1 to rounding; a
-// state turning into another is test/pipeline/optimize_host.cpp's. 10 steps in about 3 s
-// on the 3080, inside the fast tier.
-TEST(PipelineOptimize, FormaldehydeQdStateOneReachesAStationaryPoint) {
-  FBF_REQUIRE_GPU();
-  const fb::json &start = qd_start();
-  const fb::test::ScratchDir dir("pipeline_optimize_qd");
+// What a QD optimization's test reads back: the steps taken, the worst
+// matched overlap and smallest H_eff gap along the path, and the fresh
+// single point's largest component, rms and 2-norm at the optimum.
+struct QdPath {
+  std::size_t steps{0};
+  double worst_overlap{1.0};
+  double smallest_gap{std::numeric_limits<double>::infinity()};
+  double fresh_max{0.0};
+  double fresh_rms{0.0};
+  double fresh_norm{0.0};
+};
+
+// SC-QD-NEVPT2 state @p state of qd_case(@p name), optimized at Opt=Tight's
+// thresholds from the case's start under @p scf, the outer [nevpt2_gradient]
+// a fresh single point from a fresh SCF and pick at the optimum. Holds it to
+// converging in fewer than @p max_steps, its last evaluation's largest force
+// under max_force; every step's matched overlap, kept in optimize.json (null
+// at the start, which has no last state), at or above kQdStateOverlapFloor;
+// and the fresh gradient's largest component under max_force and its rms
+// under rms_force, the optimizer's own criteria. Prints every evaluation's
+// matched overlap and H_eff gap, and the summary.
+QdPath optimize_qd_state(std::string_view name, std::int32_t state, std::string_view scf,
+                         std::size_t max_steps) {
+  QdPath path;
+  const fb::json start = qd_case(name);
+  const fb::test::ScratchDir dir(std::format("pipeline_optimize_qd_{}_{}", name, state));
   std::string xyz = std::format("{}\nstart\n", start.at("atoms").size());
   for (const fb::json &atom : start.at("atoms")) {
     const auto coord = atom.at("coord").get<std::vector<double>>();
@@ -662,86 +671,136 @@ TEST(PipelineOptimize, FormaldehydeQdStateOneReachesAStationaryPoint) {
                        coord[1] * fb::kAngstromPerBohr<double>,
                        coord[2] * fb::kAngstromPerBohr<double>);
   }
-  ASSERT_TRUE(fb::write_file(dir / "start.xyz", xyz).has_value());
-  const std::string toml =
-      std::format("[molecule]\nxyz = \"start.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
-                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n{}"
-                  "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\nconv_tol_grad = 1e-10\n"
-                  "conv_tol = 1e-13\nmax_cycle = 200\n"
-                  "[nevpt2_gradient]\nquasi_degenerate = true\nstate = 1\n{}",
-                  start.at("basis").get<std::string>(), start.at("aux_basis").get<std::string>(),
-                  kScf, start.at("ncas").get<std::int32_t>(),
-                  start.at("nelecas").get<std::int32_t>(), start.at("weights").size(), kOptimize);
-  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  EXPECT_TRUE(fb::write_file(dir / "start.xyz", xyz).has_value());
+  const std::string toml = std::format(
+      "[molecule]\nxyz = \"start.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
+      "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n{}"
+      "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\nconv_tol_grad = 1e-10\n"
+      "conv_tol = 1e-13\nmax_cycle = 200\n"
+      "[nevpt2_gradient]\nquasi_degenerate = true\nstate = {}\n{}",
+      start.at("basis").get<std::string>(), start.at("aux_basis").get<std::string>(), scf,
+      start.at("ncas").get<std::int32_t>(), start.at("nelecas").get<std::int32_t>(),
+      start.at("weights").size(), state, kOptimize);
+  EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
-  ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  ASSERT_TRUE(calc->step<fb::OptimizeStep>()->nevpt2_gradient.has_value());
-  ASSERT_TRUE(calc->step<fb::OptimizeStep>()->nevpt2_gradient->quasi_degenerate);
+  if (!calc.has_value()) {
+    ADD_FAILURE() << calc.error().message;
+    return path;
+  }
+  EXPECT_TRUE(calc->step<fb::OptimizeStep>()->nevpt2_gradient.has_value() &&
+              calc->step<fb::OptimizeStep>()->nevpt2_gradient->quasi_degenerate);
   fb::NodeResources node;
   const auto t0 = std::chrono::steady_clock::now();
   const fb::Status ran = calc->run(node);
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  if (!ran.has_value()) {
+    ADD_FAILURE() << ran.error().message;
+    return path;
+  }
   const auto &out = calc->get<fb::OptimizeOutput>();
-  ASSERT_TRUE(out.has_value());
+  EXPECT_TRUE(out.has_value());
 
-  // Converged, and every step's matched overlap kept: null at the start,
-  // which has no last state, at or above the floor after it.
   const auto history = fb::read_json(dir / "out" / "optimize.json");
-  ASSERT_TRUE(history.has_value()) << history.error().message;
+  if (!history.has_value()) {
+    ADD_FAILURE() << history.error().message;
+    return path;
+  }
   const fb::json &iterations = history->at("iterations");
-  ASSERT_GE(iterations.size(), 2U);
+  EXPECT_GE(iterations.size(), 2U);
+  path.steps = iterations.size() - 1;
   const double max_force = iterations.back().at("max_force").get<double>();
   EXPECT_LE(max_force, kMaxForce);
-  EXPECT_LT(iterations.size() - 1, kQdMaxSteps);
+  EXPECT_LT(path.steps, max_steps);
   EXPECT_TRUE(iterations.front().at("state_overlap").is_null());
-  double worst_overlap = 1.0;
-  double smallest_gap = std::numeric_limits<double>::infinity();
   for (std::size_t i = 0; i < iterations.size(); ++i) {
     const fb::json &it = iterations[i];
-    ASSERT_TRUE(it.contains("state_overlap") && it.contains("heff_gap")) << i;
-    smallest_gap = std::min(smallest_gap, it.at("heff_gap").get<double>());
+    EXPECT_TRUE(it.contains("state_overlap") && it.contains("heff_gap")) << i;
+    path.smallest_gap = std::min(path.smallest_gap, it.at("heff_gap").get<double>());
     if (i > 0) {
       const double overlap = it.at("state_overlap").get<double>();
       EXPECT_GE(overlap, fb::kQdStateOverlapFloor) << i;
-      worst_overlap = std::min(worst_overlap, overlap);
+      path.worst_overlap = std::min(path.worst_overlap, overlap);
     }
-    std::cout << std::format("[ optimize ] h2co QD state 1 evaluation {:>2}: E {:.10f}, max "
-                             "force {:.2e}, matched overlap {}, H_eff gap {:.6f}\n",
-                             i, it.at("energy").get<double>(), it.at("max_force").get<double>(),
-                             i == 0 ? std::string("-")
-                                    : std::format("{:.10f}", it.at("state_overlap").get<double>()),
-                             it.at("heff_gap").get<double>());
+    std::cout << std::format(
+        "[ optimize ] {} QD state {} evaluation {:>2}: E {:.10f}, max "
+        "force {:.2e}, matched overlap {}, H_eff gap {:.6f}\n",
+        name, state, i, it.at("energy").get<double>(), it.at("max_force").get<double>(),
+        i == 0 ? std::string("-") : std::format("{:.10f}", it.at("state_overlap").get<double>()),
+        it.at("heff_gap").get<double>());
   }
 
   // The fresh single point at the optimum: the outer [nevpt2_gradient].
   const auto written = fb::read_json(dir / "out" / "nevpt2_gradient.json");
-  ASSERT_TRUE(written.has_value()) << written.error().message;
+  if (!written.has_value()) {
+    ADD_FAILURE() << written.error().message;
+    return path;
+  }
   EXPECT_TRUE(written->at("quasi_degenerate").get<bool>());
-  EXPECT_EQ(written->at("state").get<std::int32_t>(), 1);
-  double fresh_max = 0.0;
+  EXPECT_EQ(written->at("state").get<std::int32_t>(), state);
   double fresh_sq = 0.0;
   std::size_t components = 0;
   for (const auto &row : written->at("total").get<std::vector<std::vector<double>>>()) {
     for (const double g : row) {
-      fresh_max = std::max(fresh_max, std::abs(g));
+      path.fresh_max = std::max(path.fresh_max, std::abs(g));
       fresh_sq += g * g;
       ++components;
     }
   }
-  ASSERT_EQ(components, 3 * start.at("atoms").size());
-  const double fresh_rms = std::sqrt(fresh_sq / static_cast<double>(components));
-  EXPECT_LE(fresh_max, kMaxForce);
-  EXPECT_LE(fresh_rms, kRmsForce);
+  EXPECT_EQ(components, 3 * start.at("atoms").size());
+  path.fresh_rms = std::sqrt(fresh_sq / static_cast<double>(std::max<std::size_t>(components, 1)));
+  path.fresh_norm = std::sqrt(fresh_sq);
+  EXPECT_LE(path.fresh_max, kMaxForce);
+  EXPECT_LE(path.fresh_rms, kRmsForce);
 
-  std::cout << std::format("[ optimize ] h2co_ccpvdz_sa2 SC-QD-NEVPT2 state 1: {} steps, max "
-                           "force {:.2e}, E {:.12f}, worst matched overlap {:.10f}, smallest "
-                           "H_eff gap {:.6f}; fresh gradient max {:.2e} rms {:.2e} 2-norm {:.2e} "
-                           "(max_force {:.1e}, rms_force {:.1e}), E_K {:.12f}; {:.1f} s\n",
-                           iterations.size() - 1, max_force, out->energy, worst_overlap,
-                           smallest_gap, fresh_max, fresh_rms, std::sqrt(fresh_sq), kMaxForce,
-                           kRmsForce, written->at("energy").get<double>(), seconds);
+  std::cout << std::format(
+      "[ optimize ] {} SC-QD-NEVPT2 state {}: {} steps, max force {:.2e}, E {:.12f}, worst "
+      "matched overlap {:.10f}, smallest H_eff gap {:.6f}; fresh gradient max {:.2e} rms {:.2e} "
+      "2-norm {:.2e} (max_force {:.1e}, rms_force {:.1e}), E_K {:.12f}; {:.1f} s\n",
+      name, state, path.steps, max_force, out.has_value() ? out->energy : 0.0, path.worst_overlap,
+      path.smallest_gap, path.fresh_max, path.fresh_rms, path.fresh_norm, kMaxForce, kRmsForce,
+      written->at("energy").get<double>(), seconds);
+  return path;
+}
+
+// QD state K = 1 (the n -> pi* state, not the lowest, so the state is
+// followed by its identity rather than taken by index) of planar
+// formaldehyde's SC-QD-NEVPT2 over its DF-SA2-CASSCF(4,3), h2co_ccpvdz_sa2,
+// held to optimize_qd_state's bars: no crossing along the path. The point
+// is planar (C2v), so its two roots are of different irreps and every
+// overlap is 1 to rounding; the next case is one where they are not. 10
+// steps in about 3 s on the 3080, inside the fast tier.
+TEST(PipelineOptimize, FormaldehydeQdStateOneReachesAStationaryPoint) {
+  FBF_REQUIRE_GPU();
+  optimize_qd_state("h2co_ccpvdz_sa2", 1, kScf, kQdMaxSteps);
+}
+
+// The skew formaldehyde's start (h2co_skew_ccpvdz_sa3, C1, three roots
+// averaged) takes steps to the stationary point of its SC-QD-NEVPT2 state
+// K = 2, the highest, over which the state is followed (#768): the roots
+// are of no symmetry, H_eff mixes them, and its eigenvector turns between
+// steps. The overlap falls to 0.9932 at step 2 (0.9952, 0.9932, 0.9990 and
+// 0.9991 over steps 1-4) and is back above 0.9999 from step 5 on, never near
+// the floor; H_eff's gap goes 0.149 -> 0.082 at its smallest (step 14) and
+// is 0.086 at the optimum, no crossing. Held to optimize_qd_state's bars,
+// and to below 0.999 at some step, so the following is not trivial; that
+// bar and the floor are fixed, never moved to make a run pass. 24 steps.
+// The optimum's C-O is stretched to 1.67 Angstrom, where the fresh RHF
+// oscillates: it converges in about 100 iterations with a DIIS history of
+// 4, so the SCF is given that and 400 iterations; the bars are kScf's. About
+// 30 s on the gfx1200, so in the slow tier.
+TEST(PipelineOptimize, SkewFormaldehydeQdStateTwoIsFollowedThroughTurningOverlaps) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  constexpr std::string_view kStretchedScf = "[scf]\nenergy_tolerance = 1e-12\n"
+                                             "commutator_tolerance = 1e-10\n"
+                                             "max_iterations = 400\ndiis_history = 4\n";
+  // Below which a step's state has turned: the overlap of a state the
+  // symmetry keeps apart is 1 to 1e-10, as the planar case's.
+  constexpr double kTurnedOverlap = 0.999;
+  constexpr std::size_t kSkewMaxSteps = 30;
+  const QdPath path = optimize_qd_state("h2co_skew_ccpvdz_sa3", 2, kStretchedScf, kSkewMaxSteps);
+  EXPECT_LT(path.worst_overlap, kTurnedOverlap);
 }
 
 } // namespace
