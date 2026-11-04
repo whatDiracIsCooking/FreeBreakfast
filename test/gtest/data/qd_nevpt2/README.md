@@ -27,10 +27,19 @@ n_alpha = n_beta.
 | `h8_ring_sto3g_sa3` | STO-3G | 1 | (6, 4) | 3 | 184 | 3, equal | brute-force and near-degenerate, added for PC (#671): H₈ on a slightly distorted ring (C1), roots 1 and 2 22 mEh apart, roots 0 and 2 coupled by ~0.03 Eh (a quarter of their gap), which moves their SC- and PC-QD energies ~6 mEh off the diagonal's; every root's every PC metric clears the gap rule (by ≥ 2e7); 4 900 determinants over all 8 orbitals |
 | `h2co_skew_ccpvdz_sa3_weighted` | cc-pVDZ | 6 | (4, 3) | 29 | 186 | 3, [0.4, 0.4, 0.2] | for the QD-NEVPT2 gradient oracle (#696, `../qd_nevpt2_gradient/`): the skew case at unequal weights, so equal and unequal pairs meet in one state average; max \|H_IJ\| 2.6e-2, 0.059 of its roots' gap |
 | `h8_ring12_ccpvdz_cas66_sa2` | cc-pVDZ | 1 | (6, 6) | 33 | 184 | 2, [0.5, 0.5] | for the same oracle: the one case over **six active orbitals**, where the index ranges of the 3-RDM and 4-RDM-digest contractions come apart. `h8_ring_sto3g_sa3`'s geometry scaled by 1.2; max \|H_IJ\| 2.6e-3 (0.029 of the gap); PC's smallest gap 7.6e4 (Si). Two of its canonical virtuals are 2.2e-3 apart. Skewed H₂CO at CAS(6,6) and (8,6), two or three roots, was tried first: every variant's Sr or Si metric meets the cut with a gap of 1.3–264, under the rule's 1e3 |
+| `h8_sto3g_sa3_polished` | STO-3G | 2 | (4, 4) | 2 | 184 | 3, equal | `h8_sto3g_sa3` polished (#688), for `../../pipeline_nevpt2_gpu.cpp`'s QD case |
+| `h8_ring_sto3g_sa3_polished` | STO-3G | 1 | (6, 4) | 3 | 184 | 3, equal | `h8_ring_sto3g_sa3` polished (#688), for the same |
 
-The last two start from the RHF's frontier orbitals and are polished as
-the formaldehyde cases are (|g| < 1e-10, the Hessian's least eigenvalue
-gated), with no source file to agree with.
+`h2co_skew_ccpvdz_sa3_weighted` and `h8_ring12_ccpvdz_cas66_sa2` start
+from the RHF's frontier orbitals and are polished as the formaldehyde cases
+are (|g| < 1e-10, the Hessian's least eigenvalue gated), with no source file
+to agree with. So are the two `_polished` H8 cases: the same mc1step as
+their originals, then the polish, for the pipeline's QD test, whose 1e-8 bar
+the originals cannot support (their eigenvalues are up to 3.2e-8 off the
+polished ones). They are copies, and the originals stay unpolished, because
+`../qd_nevpt2_nac/brute_force/` is written on the originals' own state
+(asserting their committed CI vectors exactly) and the NEVPT2 energy,
+gradient and NAC tests' ladders were measured on them.
 
 No existing DF SA-CASSCF case has a near-degeneracy, so `h8_sto3g_sa3` is
 new, and it is also small enough for the brute force. `h8_ring_sto3g_sa3`
@@ -43,7 +52,7 @@ they no longer couple their excitations strongly; the ring at CAS(6,4) has
 both a strong coupling and a wide gap. The formaldehyde
 cases start, polish and gate as `tools/emit/nevpt2_reference.py` does
 (mc1step polished to |g| < 1e-10, each root within 1e-6 and the weighted
-energy within 1e-9 of the source file's); the hydrogen cases are mc1step DF
+energy within 1e-9 of the source file's); the hydrogen cases but the `_polished` two are mc1step DF
 SA-CASSCFs, converged, not polished. Geometries, sources and energies are in
 `qd_nevpt2.json`.
 
