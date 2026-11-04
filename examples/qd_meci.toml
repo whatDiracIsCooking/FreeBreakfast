@@ -1,0 +1,30 @@
+# The minimum-energy conical intersection of the two lowest SC-QD-NEVPT2
+# states of ethylene, over its state-averaged DF-CASSCF(2,2) of all three
+# singlets in cc-pVDZ, from meci.toml's start (twisted 80 degrees and
+# pyramidalized). Writes optimize.xyz, optimize.json and final.xyz, then the
+# CASSCF at the MECI.
+[molecule]
+xyz = "ethylene.xyz"
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"   # required
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+max_iterations = 400       # the RHF only seeds the CASSCF; near the MECI it is slow
+[casscf]
+ncas = 2
+nelecas = 2
+nroots = 3                 # H_eff couples every root; any weights
+conv_tol_grad = 1e-10      # the gap moves by s_o ||g||: see the optimize README
+[nevpt2_gradient]
+quasi_degenerate = true    # the QD-NEVPT2 whose states cross; no state key
+variant = "sc"             # or "pc"
+[optimize]
+meci = [0, 1]              # the two QD states that cross
+max_gap = 1e-7             # hartree; with Opt=Tight's four thresholds below
+max_force = 1.5e-5
+rms_force = 1e-5
+max_displacement = 6e-5
+rms_displacement = 4e-5
+max_steps = 200            # from this start the SC search took 96 (the default cap is 100)

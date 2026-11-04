@@ -4,8 +4,9 @@
 /// NEVPT2's, a state-averaged root followed by match_roots and a QD state by
 /// qd_state_overlap) with its orbitals
 /// carried from one evaluation to the next, or geometry::optimize_meci over
-/// that CASSCF chain's df_intersection (a pair followed by pair_overlap), and
-/// the trajectory, final.xyz and history it writes.
+/// that CASSCF chain's df_intersection, or its QD-NEVPT2's
+/// qd_{sc,pc}_intersection (a pair followed by pair_overlap), and the
+/// trajectory, final.xyz and history it writes.
 
 module free_breakfast.pipeline.optimize;
 
@@ -20,8 +21,9 @@ import free_breakfast.atom; // element_symbol
 import free_breakfast.io.base;
 import free_breakfast.io.json;
 import free_breakfast.io.xyz;
-import free_breakfast.mcscf.intersection; // df_intersection
-import free_breakfast.mcscf.overlap;      // state_overlaps
+import free_breakfast.mcscf.intersection;  // df_intersection
+import free_breakfast.mcscf.overlap;       // state_overlaps
+import free_breakfast.nevpt2.intersection; // qd_sc_intersection, qd_pc_intersection
 import free_breakfast.pipeline.pipeline;
 import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.orthogonalize;
@@ -165,6 +167,16 @@ Result<std::vector<RootMatch>> match_roots(std::span<const double> root_overlaps
   return match;
 }
 
+// The smaller singular value of [[a, b], [c, d]] in closed form: of
+// (p + q) / 2 and |p - q| / 2, the latter. The square root of the invariants'
+// discriminant would turn a rounding error of 1e-16 into 1e-8 where the two
+// are equal, as at a clean swap.
+[[nodiscard]] double smaller_singular_value(double a, double b, double c, double d) {
+  const double p = std::hypot(a + d, b - c);
+  const double q = std::hypot(a - d, b + c);
+  return 0.5 * std::abs(p - q);
+}
+
 Result<double> pair_overlap(std::span<const double> root_overlaps, int32_t i, int32_t j) {
   const std::vector<double> s = FBF_TRY(normalized_overlaps(root_overlaps));
   const auto n = static_cast<int32_t>(std::lround(std::sqrt(static_cast<double>(s.size()))));
@@ -174,16 +186,7 @@ Result<double> pair_overlap(std::span<const double> root_overlaps, int32_t i, in
   const auto at = [&](int32_t r, int32_t c) {
     return s[(static_cast<size_t>(r) * static_cast<size_t>(n)) + static_cast<size_t>(c)];
   };
-  const double a = at(i, i);
-  const double b = at(i, j);
-  const double c = at(j, i);
-  const double d = at(j, j);
-  // A 2 x 2's singular values in closed form, (p + q) / 2 and |p - q| / 2:
-  // the square root of the invariants' discriminant would turn a rounding
-  // error of 1e-16 into 1e-8 where the two are equal, as at a clean swap.
-  const double p = std::hypot(a + d, b - c);
-  const double q = std::hypot(a - d, b + c);
-  const double smaller = 0.5 * std::abs(p - q);
+  const double smaller = smaller_singular_value(at(i, i), at(i, j), at(j, i), at(j, j));
   if (smaller < kStateOverlapFloor) {
     return err_numerical("pair_overlap: the last geometry's CASSCF roots {} and {} keep {:.6f} of "
                          "their space in this one's, below {}: the pair is lost to another root, "
@@ -193,33 +196,86 @@ Result<double> pair_overlap(std::span<const double> root_overlaps, int32_t i, in
   return smaller;
 }
 
+Result<double> pair_overlap(std::span<const double> root_overlaps, std::span<const double> previous,
+                            std::span<const double> current, int32_t p, int32_t q) {
+  const std::vector<double> s = FBF_TRY(normalized_overlaps(root_overlaps));
+  const auto n = static_cast<size_t>(std::lround(std::sqrt(static_cast<double>(s.size()))));
+  if (previous.size() != s.size() || current.size() != s.size()) {
+    return err_config("pair_overlap: {} and {} eigenvector entries over {} root overlaps; it "
+                      "takes n^2, n^2 and n^2",
+                      previous.size(), current.size(), s.size());
+  }
+  const auto in_range = [&](int32_t k) { return k >= 0 && static_cast<size_t>(k) < n; };
+  if (!in_range(p) || !in_range(q) || p == q) {
+    return err_config("pair_overlap: states {} and {} are not two distinct states of {}", p, q, n);
+  }
+  // u_a(last)^T S u_b(this).
+  const auto block = [&](int32_t a, int32_t b) {
+    const std::span<const double> u = previous.subspan(static_cast<size_t>(a) * n, n);
+    const std::span<const double> v = current.subspan(static_cast<size_t>(b) * n, n);
+    double sum = 0.0;
+    for (size_t r = 0; r < n; ++r) {
+      for (size_t c = 0; c < n; ++c) {
+        sum += u[r] * s[(r * n) + c] * v[c];
+      }
+    }
+    return sum;
+  };
+  const double smaller = smaller_singular_value(block(p, p), block(p, q), block(q, p), block(q, q));
+  if (smaller < kStateOverlapFloor) {
+    return err_numerical("pair_overlap: the last geometry's QD states {} and {} keep {:.6f} of "
+                         "their space in this one's, below {}: the pair is lost to another "
+                         "state, and is not followed onto it",
+                         p, q, smaller, kStateOverlapFloor);
+  }
+  return smaller;
+}
+
 Status OptimizeStep::check_meci() const {
   if (!meci) {
     return {};
   }
   const auto [i, j] = *meci;
-  if (casscf_gradient || nevpt2_gradient) {
+  if (casscf_gradient) {
     return err_config("[{}] meci optimizes the crossing of two roots, and [{}] the energy of one: "
                       "keep one of them",
-                      kName,
-                      casscf_gradient ? CasscfGradientStep::kName : Nevpt2GradientStep::kName);
+                      kName, CasscfGradientStep::kName);
   }
+  const bool qd = nevpt2_gradient.has_value();
+  if (qd && !nevpt2_gradient->quasi_degenerate) {
+    return err_config("[{}] meci crosses two QD-NEVPT2 states, and [{}] differentiates one "
+                      "state's NEVPT2, which has none to cross: set [{}] quasi_degenerate = true",
+                      kName, Nevpt2GradientStep::kName, Nevpt2GradientStep::kName);
+  }
+  if (qd && nevpt2_gradient->state != 0) {
+    return err_config("[{}] meci = [{}, {}] names the QD states that cross, and [{}] state names "
+                      "one ({}): leave [{}] state out",
+                      kName, i, j, Nevpt2GradientStep::kName, nevpt2_gradient->state,
+                      Nevpt2GradientStep::kName);
+  }
+  const std::string_view what = qd ? "QD states" : "roots";
   if (casscf.nroots < 2) {
-    return err_config("[{}] meci crosses two roots of a state average, and [{}] nroots is {}: set "
+    return err_config("[{}] meci crosses two {} of a state average, and [{}] nroots is {}: set "
                       "[{}] nroots to 2 or more",
-                      kName, CasscfStep::kName, casscf.nroots, CasscfStep::kName);
+                      kName, what, CasscfStep::kName, casscf.nroots, CasscfStep::kName);
   }
   if (i < 0 || j < 0 || i == j || std::max(i, j) >= casscf.nroots) {
-    return err_config("[{}] meci = [{}, {}] is not two distinct roots of [{}]'s {}", kName, i, j,
+    return err_config("[{}] meci = [{}, {}] is not two distinct {} of [{}]'s {}", kName, i, j, what,
                       CasscfStep::kName, casscf.nroots);
   }
-  if (!casscf.weights.empty() &&
+  if (!qd && !casscf.weights.empty() &&
       casscf.weights[static_cast<size_t>(i)] != casscf.weights[static_cast<size_t>(j)]) {
     return err_unsupported("[{}] meci = [{}, {}] needs the two roots at equal weights, and [{}] "
                            "weights them {} and {}: the rotation between two roots of unequal "
                            "weight divides by their gap, singular at the crossing",
                            kName, i, j, CasscfStep::kName, casscf.weights[static_cast<size_t>(i)],
                            casscf.weights[static_cast<size_t>(j)]);
+  }
+  if (qd && molecule.multiplicity != 1) {
+    return err_unsupported("[{}] meci over [{}] is implemented for a closed-shell singlet only, "
+                           "and [{}] multiplicity is {}",
+                           kName, Nevpt2GradientStep::kName, MoleculeStep::kName,
+                           molecule.multiplicity);
   }
   if (eri.mode != EriMode::DensityFitting) {
     return err_unsupported("[{}] meci runs over density fitting only, and [{}] mode is "
@@ -608,10 +664,13 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
     return energy;
   };
   // Under meci: one df_intersection of roots I and J at the end of the
-  // CASSCF chain, the pair first checked against the last evaluation's by
-  // pair_overlap. g_I goes out through the chain's gradient span, g_J and
-  // h_IJ through their own, and the two energies through the return; the
-  // chain's own energy is their mean.
+  // CASSCF chain, or over QD states one qd_{sc,pc}_intersection of P and Q,
+  // the pair first checked against the last evaluation's by pair_overlap.
+  // g_I goes out through the chain's gradient span, g_J and h_IJ through
+  // their own, and the two energies through the return; the chain's own
+  // energy is their mean. Per evaluation, what the history adds of it.
+  std::vector<json> meci_record;
+  const bool qd_meci = meci && nevpt2_gradient.has_value();
   const auto meci_evaluation = [&](std::span<const double> x, std::span<double> g_i,
                                    std::span<double> g_j,
                                    std::span<double> h_ij) -> Result<std::array<double, 2>> {
@@ -624,32 +683,70 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
       const CasscfOutput &cas = *chain.template get<CasscfOutput>();
       const BasisSet &basis = chain.template get<BasisSetOutput>()->basis;
       auto [solution, s] = FBF_TRY(overlaps_with_last(basis, cas));
-      double overlap = std::numeric_limits<double>::quiet_NaN();
-      if (followed) {
-        overlap = FBF_TRY(pair_overlap(s, i, j));
-      }
       const auto *const fit = std::get_if<DensityFitted>(&chain.template get<EriOutput>()->eri);
       if (fit == nullptr) {
         return err_unsupported("[{}] meci runs over density fitting only, and the chain's ERIs "
                                "are integral-direct",
                                kName);
       }
-      const mcscf::Intersection out = FBF_TRY(
-          mcscf::df_intersection(res, chain.template get<MoleculeOutput>()->molecule, basis,
-                                 chain.template get<PrimitivePairClassesOutput>()->classes,
-                                 fit->aux, chain.template get<CoreHamiltonianOutput>()->h, fit->b,
-                                 fit->l.data(), solution, cas.ncore, cas.ncas, i, j));
-      std::ranges::copy(out.g_i, gradient.begin());
-      std::ranges::copy(out.g_j, g_j.begin());
-      std::ranges::copy(out.h_ij, h_ij.begin());
-      pair = {cas.energies[static_cast<size_t>(i)], cas.energies[static_cast<size_t>(j)]};
-      FBF_LOG_INFO(
-          "optimize: MECI roots {} and {}, pair overlap {}, Z-vector {} products, "
-          "residual {:.2e}",
-          i, j, std::isnan(overlap) ? std::string("- (the start)") : std::format("{:.8f}", overlap),
-          out.iterations, out.residual);
+      const Molecule &molecule = chain.template get<MoleculeOutput>()->molecule;
+      const auto &classes = chain.template get<PrimitivePairClassesOutput>()->classes;
+      const SphericalMatrixAO &h = chain.template get<CoreHamiltonianOutput>()->h;
+      double overlap = std::numeric_limits<double>::quiet_NaN();
+      json record = {{"gradient_norm", cas.gradient_norm},
+                     {"ci_residual_norm", cas.ci_residual_norm}};
+      std::vector<double> vectors;
+      if (qd_meci) {
+        const bool pc = chain_nevpt2_gradient.variant == Nevpt2Variant::Pc;
+        const nevpt2::QdIntersection out = FBF_TRY(
+            pc ? nevpt2::qd_pc_intersection(res, molecule, basis, classes, fit->aux, h, fit->b,
+                                            fit->l.data(), solution, cas.ncore, cas.ncas, i, j, 0)
+               : nevpt2::qd_sc_intersection(res, molecule, basis, classes, fit->aux, h, fit->b,
+                                            fit->l.data(), solution, cas.ncore, cas.ncas, i, j, 0));
+        if (followed) {
+          overlap = FBF_TRY(pair_overlap(s, followed->u, out.eigenvectors, i, j));
+        }
+        std::ranges::copy(out.g_p, gradient.begin());
+        std::ranges::copy(out.g_q, g_j.begin());
+        std::ranges::copy(out.h_pq, h_ij.begin());
+        pair = {out.eigenvalues[static_cast<size_t>(i)], out.eigenvalues[static_cast<size_t>(j)]};
+        // The state above the pair, E_{Q+1} - E_Q, Q the higher of the two.
+        const auto higher = static_cast<size_t>(std::max(i, j));
+        const json margin = higher + 1 < out.eigenvalues.size()
+                                ? json(out.eigenvalues[higher + 1] - out.eigenvalues[higher])
+                                : json(nullptr);
+        record["heff_gap"] = out.heff_gap;
+        record["third_state_margin"] = margin;
+        record["root_gap"] = out.root_gap;
+        FBF_LOG_INFO(
+            "optimize: QD-NEVPT2 MECI states {} and {}, pair overlap {}, H_eff gap "
+            "{:.3e}, third-state margin {}, CASSCF root gap {:.6f}",
+            i, j,
+            std::isnan(overlap) ? std::string("- (the start)") : std::format("{:.8f}", overlap),
+            out.heff_gap, margin.is_null() ? std::string("-") : margin.dump(), out.root_gap);
+        vectors = out.eigenvectors;
+      } else {
+        if (followed) {
+          overlap = FBF_TRY(pair_overlap(s, i, j));
+        }
+        const mcscf::Intersection out =
+            FBF_TRY(mcscf::df_intersection(res, molecule, basis, classes, fit->aux, h, fit->b,
+                                           fit->l.data(), solution, cas.ncore, cas.ncas, i, j));
+        std::ranges::copy(out.g_i, gradient.begin());
+        std::ranges::copy(out.g_j, g_j.begin());
+        std::ranges::copy(out.h_ij, h_ij.begin());
+        pair = {cas.energies[static_cast<size_t>(i)], cas.energies[static_cast<size_t>(j)]};
+        FBF_LOG_INFO("optimize: MECI roots {} and {}, pair overlap {}, Z-vector {} products, "
+                     "residual {:.2e}",
+                     i, j,
+                     std::isnan(overlap) ? std::string("- (the start)")
+                                         : std::format("{:.8f}", overlap),
+                     out.iterations, out.residual);
+      }
       follow_record.push_back({.overlap = overlap, .root = std::nullopt, .heff_gap = std::nullopt});
-      followed = FollowedState{.basis = basis, .solution = std::move(solution)};
+      meci_record.push_back(std::move(record));
+      followed =
+          FollowedState{.basis = basis, .solution = std::move(solution), .u = std::move(vectors)};
       return 0.5 * (pair[0] + pair[1]);
     };
     const double mean = FBF_TRY(casscf_chain(trial, intersection, g_i));
@@ -697,6 +794,11 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
       // The pair's overlap with the last evaluation's, null at the first.
       const bool has_overlap = k < follow_record.size() && !std::isnan(follow_record[k].overlap);
       entry["pair_overlap"] = has_overlap ? json(follow_record[k].overlap) : json(nullptr);
+      // The CASSCF's residuals, and over QD states the pair's gap, the
+      // third-state margin and the CASSCF's smallest root gap.
+      if (k < meci_record.size()) {
+        entry.update(meci_record[k]);
+      }
       iterations.push_back(std::move(entry));
     }
   } else {

@@ -716,9 +716,11 @@ template <class S>
 /// or a `[nevpt2_gradient]` in @p doc the chain ends in `[casscf]` and it,
 /// both copied in too; two of those and `[gradient]` are refused, since the
 /// optimized energy is one of theirs. With `meci` the chain ends in
-/// `[casscf]` alone, and OptimizeStep::check_meci's refusals are made here;
-/// a `[nevpt2_gradient]` beside it is refused, while a `[gradient]` or
-/// `[casscf_gradient]` is only a later step, run at the MECI.
+/// `[casscf]`, and OptimizeStep::check_meci's refusals are made here; a
+/// `[nevpt2_gradient]` beside it (quasi-degenerate, no `state`) is the
+/// chain's too, whose QD states cross, and is taken out of the steps, while
+/// a `[gradient]` or `[casscf_gradient]` is only a later step, run at the
+/// MECI.
 [[nodiscard]] Status plan_optimize(std::vector<Calculation::Step> &steps, const toml::table &doc,
                                    const std::filesystem::path &input_dir,
                                    const std::filesystem::path &output_dir) {
@@ -738,12 +740,19 @@ template <class S>
   FBF_TRY(chain(step.guess));
   FBF_TRY(chain(step.scf));
   if (step.meci) {
-    if (doc.contains(Nevpt2GradientStep::kName)) {
-      return err_config("[{}] meci optimizes the crossing of two CASSCF roots, and [{}] is "
-                        "rerun only to optimize its own energy: keep one of them",
-                        OptimizeStep::kName, Nevpt2GradientStep::kName);
-    }
     FBF_TRY(chain(step.casscf));
+    // A [nevpt2_gradient] beside meci names the QD-NEVPT2 whose states
+    // cross: the chain's, not a later step, which at the crossing would
+    // differentiate one of two degenerate states.
+    if (const toml::table *table = doc[Nevpt2GradientStep::kName].as_table()) {
+      if (table->contains("state")) {
+        return err_config("[{}] meci names the QD states that cross, and [{}] state names one: "
+                          "leave [{}] state out",
+                          OptimizeStep::kName, Nevpt2GradientStep::kName,
+                          Nevpt2GradientStep::kName);
+      }
+      FBF_TRY(chain(step.nevpt2_gradient.emplace()));
+    }
     FBF_TRY(step.check_meci());
   }
   // One energy is optimized: the first two of the gradients the config
@@ -768,6 +777,8 @@ template <class S>
     FBF_TRY(chain(step.casscf));
     FBF_TRY(chain(step.nevpt2_gradient.emplace()));
   }
+  // Read before the steps move, step among them.
+  const bool qd_meci = step.meci && step.nevpt2_gradient;
   Calculation::Step load{Load<MoleculeStep>{step.final_xyz}};
   const auto molecule = std::ranges::find_if(
       steps, [](const Calculation::Step &s) { return std::holds_alternative<MoleculeStep>(s); });
@@ -775,6 +786,11 @@ template <class S>
     *molecule = std::move(load);
   } else {
     steps.push_back(std::move(load));
+  }
+  if (qd_meci) {
+    std::erase_if(steps, [](const Calculation::Step &s) {
+      return std::holds_alternative<Nevpt2GradientStep>(s);
+    });
   }
   return {};
 }

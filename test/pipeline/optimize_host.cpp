@@ -9,7 +9,10 @@
 // crossing) or the roots do not match one to one; and pair_overlap, which
 // keeps an MECI pair through a swap of I and J (and any turn within the
 // pair) and refuses, Numerical, a pair whose 2 x 2 block's smaller singular
-// value falls below the floor. Nothing is run, so nothing touches a device.
+// value falls below the floor; and its QD form over H_eff's eigenvectors,
+// carried through the same overlaps, which keeps a swapped P/Q block and
+// refuses one whose smaller singular value is under the floor. Nothing is
+// run, so nothing touches a device.
 
 #include <gtest/gtest.h>
 
@@ -272,6 +275,82 @@ TEST(PipelineOptimize, PairOverlapSizesAndRootsOutOfRangeAreInvalidConfig) {
                                        std::tuple{std::span<const double>(kSameRoots), -1, 1}}) {
     const auto refused = fb::pair_overlap(overlaps, i, j);
     ASSERT_FALSE(refused.has_value()) << i << " " << j;
+    EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
+  }
+}
+
+// --- A QD-NEVPT2 MECI pair ----------------------------------------------------
+
+// R, n x n, state K's eigenvector at [K n, (K + 1) n): the identity, three
+// roots.
+constexpr std::array<double, 9> kIdentity3 = {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+
+// The QD states P and Q swap, each with either phase, and the CASSCF roots
+// under them stay put: the 2 x 2 block u_a(last)^T S u_b(this) is
+// [[0, +-1], [+-1, 0]], both singular values 1, and the pair is kept, named in
+// either order. So is the same swap seen through roots that swapped too,
+// with the overlaps' common decay, and a pair turned 45 degrees within
+// itself.
+TEST(PipelineOptimize, AQdMeciPairIsKeptThroughASwapOfItsStates) {
+  for (const double first : {1.0, -1.0}) {
+    for (const double second : {1.0, -1.0}) {
+      // This geometry's u_0 = second e_1, u_1 = first e_0, u_2 = e_2.
+      const std::array<double, 9> swapped = {0.0, second, 0.0, first, 0.0, 0.0, 0.0, 0.0, 1.0};
+      for (const auto &[p, q] : {std::pair{0, 1}, std::pair{1, 0}}) {
+        const auto overlap = fb::pair_overlap(kIdentity3, kIdentity3, swapped, p, q);
+        ASSERT_TRUE(overlap.has_value()) << overlap.error().message;
+        EXPECT_NEAR(*overlap, 1.0, 1e-15) << first << " " << second << " " << p;
+      }
+    }
+  }
+  // The roots 0 and 1 swapped (decayed by 0.6), and R swapped back over them:
+  // the states have not moved.
+  constexpr double kDecay = 0.6;
+  const std::array<double, 9> roots = {0.0, kDecay, 0.0, -kDecay, 0.0, 0.0, 0.0, 0.0, kDecay};
+  const std::array<double, 9> back = {0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+  const auto through = fb::pair_overlap(roots, kIdentity3, back, 0, 1);
+  ASSERT_TRUE(through.has_value()) << through.error().message;
+  EXPECT_NEAR(*through, 1.0, 1e-15);
+  const double c = std::cos(std::numbers::pi / 4.0);
+  const std::array<double, 9> mixed = {c, c, 0.0, -c, c, 0.0, 0.0, 0.0, 1.0};
+  const auto within = fb::pair_overlap(kIdentity3, kIdentity3, mixed, 0, 1);
+  ASSERT_TRUE(within.has_value()) << within.error().message;
+  EXPECT_NEAR(*within, 1.0, 1e-15);
+}
+
+// State 1 of the pair (0, 1) turning into state 2, outside it: the block is
+// [[1, 0], [0, cos a]]. At 20 degrees (0.940) the pair is kept at that value;
+// at 30 (0.866, under the floor) it is Numerical, naming the states.
+TEST(PipelineOptimize, AQdMeciPairBelowTheOverlapFloorIsRefusedAsNumerical) {
+  const auto turned_out = [](double degrees) {
+    const double a = degrees * std::numbers::pi / 180.0;
+    return std::array<double, 9>{1.0,         0.0, 0.0,          0.0,        std::cos(a),
+                                 std::sin(a), 0.0, -std::sin(a), std::cos(a)};
+  };
+  const auto kept = fb::pair_overlap(kIdentity3, kIdentity3, turned_out(20.0), 0, 1);
+  ASSERT_TRUE(kept.has_value()) << kept.error().message;
+  EXPECT_NEAR(*kept, std::cos(20.0 * std::numbers::pi / 180.0), 1e-15);
+
+  const auto lost = fb::pair_overlap(kIdentity3, kIdentity3, turned_out(30.0), 0, 1);
+  ASSERT_FALSE(lost.has_value());
+  EXPECT_EQ(lost.error().kind, fb::ErrorKind::Numerical) << lost.error().message;
+  EXPECT_NE(lost.error().message.find("pair_overlap: the last geometry's QD states 0 and 1 keep "
+                                      "0.866025 of their space in this one's, below 0.9"),
+            std::string::npos)
+      << lost.error().message;
+}
+
+// Eigenvectors of the wrong size, and states that are not two distinct ones
+// of the n, are InvalidConfig.
+TEST(PipelineOptimize, QdPairOverlapSizesAndStatesOutOfRangeAreInvalidConfig) {
+  const std::array<double, 4> two = {1.0, 0.0, 0.0, 1.0};
+  const std::span<const double> three(kIdentity3);
+  for (const auto &[previous, current, p, q] :
+       {std::tuple{std::span<const double>(two), three, 0, 1},
+        std::tuple{three, std::span<const double>(two), 0, 1}, std::tuple{three, three, 1, 1},
+        std::tuple{three, three, 0, 3}, std::tuple{three, three, -1, 0}}) {
+    const auto refused = fb::pair_overlap(kIdentity3, previous, current, p, q);
+    ASSERT_FALSE(refused.has_value()) << p << " " << q;
     EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
   }
 }

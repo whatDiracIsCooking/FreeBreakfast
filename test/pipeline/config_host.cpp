@@ -991,10 +991,11 @@ TEST(PipelineConfig, AMalformedMeciOptimizeIsRefused) {
       "[optimize] meci crosses two roots of a state average, and [casscf] nroots is 1");
   expect_config_error(with_sa("meci = [0, 2]\n"),
                       "[optimize] meci = [0, 2] is not two distinct roots of [casscf]'s 2");
-  // Beside a [nevpt2_gradient], whose chain it would replace.
+  // Beside a single-state [nevpt2_gradient], which has no second state.
   expect_config_error(
       with_inputs(std::format("{}[nevpt2_gradient]\n[optimize]\nmeci = [0, 1]\n", kSa)),
-      "[optimize] meci optimizes the crossing of two CASSCF roots, and [nevpt2_gradient]");
+      "[optimize] meci crosses two QD-NEVPT2 states, and [nevpt2_gradient] differentiates one "
+      "state's NEVPT2");
   // Unequal weights on the pair, and an integral-direct [eri], written or
   // filled in: Unsupported.
   const auto expect_unsupported = [](const std::string &toml, std::string_view needle) {
@@ -1010,6 +1011,82 @@ TEST(PipelineConfig, AMalformedMeciOptimizeIsRefused) {
     expect_unsupported(with_inputs(std::format("{}[casscf]\nncas = 2\nnelecas = 2\nnroots = 2\n"
                                                "[optimize]\nmeci = [0, 1]\n",
                                                eri)),
+                       "[optimize] meci runs over density fitting only");
+  }
+}
+
+// With meci and a quasi-degenerate [nevpt2_gradient], [optimize]'s chain is
+// [casscf] and the QD-NEVPT2 whose states P and Q cross, SC or PC, both
+// copied in; the outer [nevpt2_gradient] is the chain's and is not run as a
+// later step, while [casscf] still is (at the MECI). Unequal weights are
+// allowed over QD states.
+TEST(PipelineConfig, TheOptimizeStepCopiesAQdMeciChain) {
+  constexpr std::string_view kSa3 = "[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 2\n"
+                                    "nelecas = 2\nnroots = 3\nconv_tol_grad = 1e-10\n";
+  for (const std::string_view variant : {"sc", "pc"}) {
+    auto calc = fb::parse_config(
+        with_inputs(std::format("{}[nevpt2_gradient]\nquasi_degenerate = true\nvariant = \"{}\"\n"
+                                "[optimize]\nmeci = [1, 0]\nmax_gap = 1e-7\n",
+                                kSa3, variant)),
+        "/in", kOut);
+    ASSERT_TRUE(calc.has_value()) << calc.error().message;
+    const fb::OptimizeStep &optimize = *calc->step<fb::OptimizeStep>();
+    ASSERT_TRUE(optimize.meci.has_value());
+    EXPECT_EQ(*optimize.meci, (std::array<std::int32_t, 2>{1, 0}));
+    ASSERT_TRUE(optimize.nevpt2_gradient.has_value());
+    EXPECT_TRUE(optimize.nevpt2_gradient->quasi_degenerate);
+    EXPECT_EQ(optimize.nevpt2_gradient->variant,
+              variant == "pc" ? fb::Nevpt2Variant::Pc : fb::Nevpt2Variant::Sc);
+    EXPECT_FALSE(optimize.casscf_gradient.has_value());
+    EXPECT_EQ(optimize.casscf.nroots, 3);
+    EXPECT_EQ(optimize.casscf.conv_tol_grad, 1e-10);
+    EXPECT_FALSE(calc->step<fb::Nevpt2GradientStep>().has_value());
+    EXPECT_TRUE(calc->step<fb::CasscfStep>().has_value());
+    EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
+  }
+  auto weighted = fb::parse_config(
+      with_inputs(std::format("{}weights = [0.5, 0.3, 0.2]\n[nevpt2_gradient]\n"
+                              "quasi_degenerate = true\n[optimize]\nmeci = [0, 1]\n",
+                              kSa3)),
+      "", kOut);
+  ASSERT_TRUE(weighted.has_value()) << weighted.error().message;
+}
+
+// Every refusal of a QD meci, each of its kind: a state named beside it; a
+// state-specific [casscf]; P = Q is the table's own; a state outside the
+// average; an open shell; an integral-direct [eri], written or filled in.
+TEST(PipelineConfig, AMalformedQdMeciOptimizeIsRefused) {
+  constexpr std::string_view kQd = "[nevpt2_gradient]\nquasi_degenerate = true\n";
+  const auto with = [&](std::string_view casscf, std::string_view extra, std::string_view meci) {
+    return with_inputs(std::format("[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 2\n"
+                                   "nelecas = 2\n{}{}{}[optimize]\nmeci = {}\n",
+                                   casscf, kQd, extra, meci));
+  };
+  expect_config_error(with("nroots = 3\n", "state = 1\n", "[0, 1]"),
+                      "[optimize] meci names the QD states that cross, and [nevpt2_gradient] "
+                      "state names one");
+  expect_config_error(with("", "", "[0, 1]"), "[optimize] meci crosses two QD states of a state "
+                                              "average, and [casscf] nroots is 1");
+  expect_config_error(with("nroots = 3\n", "", "[1, 1]"),
+                      "[optimize] meci is not two distinct roots [I, J]");
+  expect_config_error(with("nroots = 3\n", "", "[0, 3]"),
+                      "[optimize] meci = [0, 3] is not two distinct QD states of [casscf]'s 3");
+  const auto expect_unsupported = [](const std::string &toml, std::string_view needle) {
+    const auto calc = fb::parse_config(toml, "", kOut);
+    ASSERT_FALSE(calc.has_value()) << toml;
+    EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
+    EXPECT_NE(calc.error().message.find(needle), std::string::npos) << calc.error().message;
+  };
+  expect_unsupported(
+      std::format("[molecule]\nxyz = \"w.xyz\"\nmultiplicity = 3\n[basis_set]\nbasis = "
+                  "\"b.json\"\n[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 2\n"
+                  "nelecas = 2\nnroots = 3\n{}[optimize]\nmeci = [0, 1]\n",
+                  kQd),
+      "[optimize] meci over [nevpt2_gradient] is implemented for a closed-shell singlet only");
+  for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
+    expect_unsupported(with_inputs(std::format("{}[casscf]\nncas = 2\nnelecas = 2\nnroots = 3\n"
+                                               "{}[optimize]\nmeci = [0, 1]\n",
+                                               eri, kQd)),
                        "[optimize] meci runs over density fitting only");
   }
 }
