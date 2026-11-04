@@ -40,9 +40,9 @@ through H̃ tightens it.
    has two active indices.
 2. b_r = H′ c_r, the second sigma applied to the roots.
 3. δ_r = −(H₀ − E_r)⁻¹ (1 − Σ_s c_s c_sᵀ) b_r by conjugate gradients over
-   H₀'s sigma, to 1e-8 of the right-hand side (at most 200 sigmas per root),
-   and the other roots' part exactly, −(c_s · b_r) / (E_s − E_r) c_s (left
-   out for a gap under 1e-8 hartree).
+   H₀'s sigma, to 1e-8 of the right-hand side (at most 200 sigmas per root;
+   none when the roots span b_r, below), and the other roots' part exactly,
+   −(c_s · b_r) / (E_s − E_r) c_s (left out for a gap under 1e-8 hartree).
 4. γ_T and Γ_T: Σ_r w_r 2 `ci::Rdm::trans_rdm12(c_r, δ_r)`, the
    symmetrized transition RDMs root by root (Γ_T's halved, for the ½ of the
    two-body energy).
@@ -114,6 +114,34 @@ b at k blocks, and k nroots² doubles for `apply_coupled`'s rotation
 matrices. Six CI blocks per column, so a block of 3N columns over a
 large active space is that much device memory.
 
+### A right-hand side the roots span
+
+When the projected right-hand side (1 − Σ_s c_s c_sᵀ) b_r is at most 1e-12
+of ‖b_r‖, no conjugate gradients run on it: δ_r off the roots is zero, and
+δ_r is the other roots' part alone. The one-column solve and the block one
+make the same test, per vector.
+
+**Why that is exact.** b_r = H′ c_r lies in the roots' spin, and the
+projection takes off every root's part of it. What is left is b_r's part in
+the roots' spin outside their span, plus the projection's round-off, ~1e-16
+‖b_r‖ in every direction, the other spins' among them. A genuine part of
+1e-12 ‖b_r‖ or less would move δ_r, and so H̃ x, by less than the 1e-8
+relative tolerance the gradients stop at already leaves; below that the
+"part" is the round-off itself. So the skip changes a product only where the
+conjugate gradients would have worked on round-off.
+
+**When it fires: a state average over every root of the spin.** Ethylene's
+SA3-CAS(2,2) averages all three singlets of a CAS(2,2), so the roots span
+the whole singlet space and every projected b_r is round-off: ‖b_r‖ ≈ 0.1
+to 0.9 against 1e-16 to 1.7e-15 after the projection, and that round-off sits
+in the M_s = 0 triplet, the only direction left. The gradients then chase it
+against a tolerance relative to itself, which they never meet: the steps blew
+up, H̃ reported curvatures of −1e1 to −6.6e7 from the first macro iteration,
+and `mcscf::solve` ran 200 macro iterations at ‖g‖ ≈ 0.2 at both of
+`test/gtest/data/casscf_meci/`'s geometries (#820). With the skip each
+converges in 6 macro iterations, every step accepted. An SA2 of the same
+molecule keeps 1e-3 to 6e-2 of b_r off its roots, far above the test.
+
 ### Leaving a pair's mixing out
 
 `create`'s last argument, `mixing` (empty by default: every pair mixes, as
@@ -138,7 +166,7 @@ product".
 ## Tests
 
 None of its own: `test/gtest/mcscf_solve_gpu.cpp` drives every product
-through `mcscf::solve`, `test/gtest/mcscf_zvector_gpu.cpp` `couple`
+through `mcscf::solve` (ethylene's SA3 there, the span above), `test/gtest/mcscf_zvector_gpu.cpp` `couple`
 through `mcscf::zvector`'s CI right-hand side, and
 `test/gtest/mcscf_zvectors_gpu.cpp` the block calls through
 `mcscf::zvectors`, and `test/gtest/mcscf_zvector_rotations_gpu.cpp`

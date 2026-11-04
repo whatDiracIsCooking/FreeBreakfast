@@ -24,9 +24,13 @@ namespace free_breakfast::mcscf {
 
 // The CI response's conjugate gradients stop after this many sigmas per root
 // (or at create's response_tolerance of the right-hand side). Two roots
-// closer than kResponseGapFloor (hartree) leave their mixing out.
+// closer than kResponseGapFloor (hartree) leave their mixing out. A
+// right-hand side whose part off every root is at most kResponseRoundoff of
+// its whole is round-off, its response zero, and no gradient runs on it
+// (README.md "A right-hand side the roots span").
 constexpr int32_t kResponseMaxIterations = 200;
 constexpr double kResponseGapFloor = 1e-8;
+constexpr double kResponseRoundoff = 1e-12;
 
 void response_integrals(const ResponseIntegrals &ints, std::span<const double> kappa,
                         std::span<double> h1, std::span<double> eri1) {
@@ -310,10 +314,14 @@ Status RelaxedHessian::solve_response(DeviceResources &res, std::span<double> ga
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cg_r, ci_root(ci_b_.data(), r), dim * sizeof(double),
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
     FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, dim32, &kNegOne<double>, cg_r, 1)));
+    double whole_norm = 0.0;
+    FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, dim32, cg_r, 1, &whole_norm)));
     FBF_TRY(project(res, cg_r));
     double rhs_norm = 0.0;
     FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, dim32, cg_r, 1, &rhs_norm)));
-    double rr = rhs_norm * rhs_norm;
+    // The roots span b_r: what the projection left is round-off, and the
+    // response off the roots is zero.
+    double rr = rhs_norm <= kResponseRoundoff * whole_norm ? 0.0 : rhs_norm * rhs_norm;
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cg_p, cg_r, dim * sizeof(double),
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
     for (int32_t it = 0; it < kResponseMaxIterations && rr > 0.0; ++it) {
@@ -529,6 +537,8 @@ Status RelaxedHessian::solve_responses(DeviceResources &res, const size_t k) {
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, dim32,
                                                 n, &kNegOne<double>, b, dim32, &kZero<double>, b,
                                                 dim32, r, dim32)));
+  FBF_TRY(column_dots(r, r));
+  const std::vector<double> whole = host;
   FBF_TRY(project_block(res, count, r));
   FBF_TRY(gpu_status(
       wwr::wwrMemcpyAsync(p, r, block * sizeof(double), wwr::wwrMemcpyDeviceToDevice, stream)));
@@ -538,7 +548,9 @@ Status RelaxedHessian::solve_responses(DeviceResources &res, const size_t k) {
   std::vector<bool> active(count);
   for (size_t v = 0; v < count; ++v) {
     rhs_norm[v] = std::sqrt(rr[v]);
-    active[v] = rr[v] > 0.0;
+    // The roots span the vector's b: its response off them is zero, as
+    // solve_response's.
+    active[v] = rr[v] > 0.0 && rhs_norm[v] > kResponseRoundoff * std::sqrt(whole[v]);
   }
   for (int32_t it = 0; it < kResponseMaxIterations && std::ranges::contains(active, true); ++it) {
     FBF_TRY(shifted_sigma(res, k, p, ap));
