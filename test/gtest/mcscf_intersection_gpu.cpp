@@ -30,6 +30,12 @@
 // there divides by the gap (McscfIntersectionNearSeam). Each test's comment
 // has its bars.
 //
+// In ethylene's C3v-ethylidene region at DF-SA3-CASSCF(2,2) (#856), where
+// weights recovered from the roots' 1-RDMs lose their conditioning: at an
+// exactly C3v geometry every root's gradient against a finite difference
+// (McscfC3v), and near the C3v MECI the intersection, which the solution's
+// carried weights let through (each test's comment has its bars).
+//
 // And, in the slow tier only, the timing against the three separate calls on
 // the skewed SA-3's (0, 1): one warm-up of each, then the median of three.
 //
@@ -170,10 +176,12 @@ std::optional<fb::SphericalMatrixAO> carried_orbitals(fb::DeviceResources &res,
 }
 
 // @p entry converged at its own weights, or null after a failure is recorded:
-// from its RHF's frontier orbitals, or with @p carry, from those orbitals of
-// another geometry (carried_orbitals) over @p entry's ncore.
+// from its RHF's frontier orbitals (the RHF converged by @p scf_step), or with
+// @p carry, from those orbitals of another geometry (carried_orbitals) over
+// @p entry's ncore.
 std::unique_ptr<Converged> converge(const fb::json &entry,
-                                    const std::vector<double> *carry = nullptr) {
+                                    const std::vector<double> *carry = nullptr,
+                                    const fb::ScfStep &scf_step = fb::test::kExactScf) {
   const auto weights = entry.at("weights").get<std::vector<double>>();
   const auto nroots = static_cast<std::int32_t>(weights.size());
   auto run = std::make_unique<Converged>();
@@ -226,9 +234,9 @@ std::unique_ptr<Converged> converge(const fb::json &entry,
       ADD_FAILURE() << eri.error().message;
       return nullptr;
     }
-    auto scf = fb::test::kExactScf.run(fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform,
-                                                                  *eri, *overlap, *x, *h, *guess},
-                                       res);
+    auto scf = scf_step.run(fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform, *eri,
+                                                       *overlap, *x, *h, *guess},
+                            res);
     if (!scf.has_value()) {
       ADD_FAILURE() << scf.error().message;
       return nullptr;
@@ -745,6 +753,188 @@ INSTANTIATE_TEST_SUITE_P(Ethylene, McscfIntersectionNearSeam,
                            }
                            return std::string{"Unknown"};
                          });
+
+// #856: ethylene's C3v-ethylidene region at DF-SA3-CASSCF(2,2) / cc-pVDZ /
+// cc-pVDZ-JKFIT, equal weights. There the two active orbitals fall into
+// different irreducible representations, every root's 1-RDM is nearly
+// diag(n, 2 - n), and the three are nearly collinear: weights recovered from
+// them by least squares lose their conditioning (an exact C3v start was
+// refused as "linearly dependent", near-C3v walks as unequal weights on the
+// pair). The solution carries its weights instead; each test prints, and
+// does not hold, what the recovery would have given.
+
+// The case at @p angstrom (symbols C, C, H, H, H, H, flat), as
+// reference_case's entries are shaped.
+fb::json c3v_entry(std::string_view name, std::span<const double> angstrom) {
+  fb::json entry;
+  entry["name"] = name;
+  entry["basis"] = "cc-pvdz";
+  entry["aux_basis"]["name"] = "cc-pvdz-jkfit";
+  entry["charge"] = 0;
+  entry["ncore"] = 7;
+  entry["ncas"] = 2;
+  entry["nelecas"] = 2;
+  entry["weights"] = std::vector<double>(3, 1.0 / 3.0);
+  fb::json atoms = fb::json::array();
+  for (std::size_t a = 0; a < angstrom.size() / 3; ++a) {
+    atoms.push_back(
+        {{"symbol", a < 2 ? "C" : "H"},
+         {"coord", std::vector<double>{angstrom[3 * a] * fb::kBohrPerAngstrom<double>,
+                                       angstrom[(3 * a) + 1] * fb::kBohrPerAngstrom<double>,
+                                       angstrom[(3 * a) + 2] * fb::kBohrPerAngstrom<double>}}});
+  }
+  entry["atoms"] = std::move(atoms);
+  return entry;
+}
+
+// The RHF that starts the CASSCF here. kExactScf's 1e-10 commutator is out
+// of reach at these geometries: its DIIS stalls near |[F,D]| = 1.7e-6 (as the
+// pipeline's own RHF did at the walk's MECI, #856's PR). Only its frontier
+// orbitals are read, as the CASSCF's start, which is then converged to its
+// own 1e-10, so the RHF's residual reaches nothing compared here.
+const fb::ScfStep kC3vScf{.energy_tolerance = 1e-8,
+                          .commutator_tolerance = 1e-5,
+                          .fock_rebuild_interval = 1,
+                          .tau_j = 0.0};
+
+// What sa_gradient_weights recovers from @p sol's RDMs with its carried
+// weights set aside: the spread of the weights, or the refusal.
+std::string recovered_weights(fb::mcscf::Solution &sol) {
+  std::vector<double> kept = std::move(sol.weights);
+  sol.weights.clear();
+  const auto recovered = fb::mcscf::sa_gradient_weights(sol, 2);
+  sol.weights = std::move(kept);
+  if (!recovered.has_value()) {
+    return recovered.error().message;
+  }
+  const auto [low, high] = std::ranges::minmax(*recovered);
+  return std::format("weights {:.17g} to {:.17g}, spread {:.2e} relative", low, high,
+                     (high - low) / high);
+}
+
+// Exactly C3v: CH3-C-H, C-C 1.45 A, C-H 1.09 A at H-C-C 109.5 degrees on the
+// methyl (one H in the xz mirror, the other two its images) and the carbene
+// H on the C-C axis at 1.07 A, #846's hand-built start without its tilt.
+std::vector<double> exact_c3v(const double cc) {
+  constexpr double kCh = 1.09;
+  const double theta = (180.0 - 70.5) * std::numbers::pi / 180.0;
+  const double rho = kCh * std::sin(theta);
+  const double z = kCh * std::cos(theta);
+  const double y = rho * std::numbers::sqrt3 / 2.0;
+  return {0.0,        0.0, 0.0, 0.0,        0.0, cc, rho, 0.0, z,
+          -rho / 2.0, y,   z,   -rho / 2.0, -y,  z,  0.0, 0.0, cc + 1.07};
+}
+
+// At the exact C3v geometry the solution carries its weights exactly, and
+// every root's gradient is taken: before #856 each was refused, the roots'
+// 1-RDMs "linearly dependent" (what the recovery still prints). Roots 0 and
+// 1 are degenerate there, an E pair, and stay so along the stretch below.
+// Checked once each:
+// - sa_gradient_weights returns the carried weights, bitwise;
+// - along the C3v-preserving stretch (C2 and the carbene H moved together
+//   along z by q), dE_r/dq of every root against the Richardson-extrapolated
+//   central difference (4 D(h) - D(2h)) / 3 of re-converged solutions at
+//   h = 1e-3 bohr. Bar 1e-8 Eh/bohr, by analysis: the extrapolation leaves
+//   O(h^4) E^(5) / 30, about 1e-13; each energy is converged to |g| below
+//   1e-10, so off by O(|g|^2), and the CI to its own residual, so the
+//   energies carry about 1e-12 of noise, (4 + 1) / 3 x 1e-12 / (2h) about
+//   1e-9 in the difference; and the gradient's Z-vector is solved to 1e-10.
+TEST(McscfC3v, ExactGradientAgainstFiniteDifference) {
+  FBF_REQUIRE_GPU();
+  constexpr double kCc = 1.45;
+  constexpr double kStep = 1e-3;
+  constexpr double kFdTolerance = 1e-8;
+  const auto run = converge(c3v_entry("ethylene_c3v", exact_c3v(kCc)), nullptr, kC3vScf);
+  ASSERT_NE(run, nullptr);
+  const fb::ScopedDeviceIndex on{run->res().dev_idx()};
+  const Calls calls{*run};
+  fb::mcscf::Solution &sol = *run->sol;
+  const std::vector<double> weights(3, 1.0 / 3.0);
+  EXPECT_EQ(sol.weights, weights);
+  const auto taken = fb::mcscf::sa_gradient_weights(sol, 2);
+  ASSERT_TRUE(taken.has_value()) << taken.error().message;
+  EXPECT_EQ(*taken, weights);
+  std::cout << std::format("[ c3v      ] exact: recovered from the RDMs, {}\n",
+                           recovered_weights(sol));
+
+  // dE_r/dq of each root: C2's and the carbene H's z.
+  std::array<double, 3> analytic{};
+  for (std::int32_t root = 0; root < 3; ++root) {
+    const auto g = calls.gradient(root);
+    ASSERT_TRUE(g.has_value()) << g.error().message;
+    analytic[root] = g->total[(3 * 1) + 2] + g->total[(3 * 5) + 2];
+  }
+
+  // E_r at q = k h (bohr), k in {-2, -1, 1, 2}.
+  std::map<std::int32_t, std::vector<double>> energies;
+  for (const std::int32_t k : {-2, -1, 1, 2}) {
+    std::vector<double> moved = exact_c3v(kCc);
+    const double dz = k * kStep * fb::kAngstromPerBohr<double>;
+    moved[(3 * 1) + 2] += dz;
+    moved[(3 * 5) + 2] += dz;
+    const auto displaced = converge(c3v_entry("ethylene_c3v", moved), nullptr, kC3vScf);
+    ASSERT_NE(displaced, nullptr);
+    energies[k] = displaced->sol->roots.energies;
+  }
+  for (std::size_t root = 0; root < 3; ++root) {
+    const double d1 = (energies[1][root] - energies[-1][root]) / (2.0 * kStep);
+    const double d2 = (energies[2][root] - energies[-2][root]) / (4.0 * kStep);
+    const double fd = ((4.0 * d1) - d2) / 3.0;
+    EXPECT_NEAR(analytic[root], fd, kFdTolerance) << "root " << root;
+    std::cout << std::format("[ c3v      ] exact: root {} E {:.12f} dE/dq {:.12f}, central "
+                             "{:.12f} (h) {:.12f} (2h), extrapolated {:.12f}, off {:.2e}\n",
+                             root, sol.roots.energies[root], analytic[root], d1, d2, fd,
+                             std::abs(analytic[root] - fd));
+  }
+}
+
+// Near the C3v MECI: evaluation 2 of the SA3 walk from Park's SI C3v geometry
+// (acs.jctc.9b00919, SI p. S2, bohr; #846's ethylene_c3v_start.xyz) under
+// its #846 config, where the walk was refused before #856 (gap 1.9e-7 Eh,
+// "roots 0 and 1 are weighted 0.333333 and 0.333333"); the walk now
+// converges there in 12 evaluations. Converged fresh from the point's own
+// RHF, each check once:
+// - the solution carries equal weights, so the pair is taken;
+// - the Z-vector converges, every column's true residual at most 1e-10.
+// g_I and g_J against df_gradient(I) and df_gradient(J) are printed, not
+// held: the separate calls keep the I-J pair's mixing in the CI response, an
+// O(1/gap) term that cancels only to its roundoff at a gap of 1.9e-7 Eh (the
+// intersection README's "What the previous version lost"), and two runs on
+// the gfx1200 measured from 8e-11 absolute to 1.2e-8 of the largest element.
+TEST(McscfC3v, NearMeciIntersection) {
+  FBF_REQUIRE_GPU();
+  const std::vector<double> evaluation_2{
+      -4.018256276418, 1.522677728994,  0.002426277936,  -2.543565336624, 1.420900305347,
+      -0.020668261247, -4.357970135620, 2.431084049405,  -0.504820809701, -4.398234881010,
+      1.553587929845,  1.028638112537,  -4.484472672178, 0.667810471886,  -0.498412700592,
+      -1.490366619750, 1.348638314823,  -0.037187075434};
+  const auto run = converge(c3v_entry("ethylene_c3v_near_meci", evaluation_2), nullptr, kC3vScf);
+  ASSERT_NE(run, nullptr);
+  const fb::ScopedDeviceIndex on{run->res().dev_idx()};
+  const Calls calls{*run};
+  fb::mcscf::Solution &sol = *run->sol;
+  EXPECT_EQ(sol.weights, std::vector<double>(3, 1.0 / 3.0));
+  const std::vector<double> &e = sol.roots.energies;
+  std::cout << std::format("[ c3v      ] near MECI: gap {:.3e}; recovered from the RDMs, {}\n",
+                           e[1] - e[0], recovered_weights(sol));
+
+  auto one = calls.intersection(0, 1);
+  ASSERT_TRUE(one.has_value()) << one.error().message;
+  EXPECT_LE(one->residual, kSeamResidual);
+  auto g_i = calls.gradient(0);
+  ASSERT_TRUE(g_i.has_value()) << g_i.error().message;
+  auto g_j = calls.gradient(1);
+  ASSERT_TRUE(g_j.has_value()) << g_j.error().message;
+  double di = 0.0;
+  double dj = 0.0;
+  for (std::size_t k = 0; k < g_i->total.size(); ++k) {
+    di = std::max(di, std::abs(one->g_i[k] - g_i->total[k]));
+    dj = std::max(dj, std::abs(one->g_j[k] - g_j->total[k]));
+  }
+  std::cout << std::format("[ c3v      ] near MECI: z-vectors {} products to {:.2e}; against the "
+                           "separate gradients, g_I {:.2e}, g_J {:.2e} (absolute, not held)\n",
+                           one->iterations, one->residual, di, dj);
+}
 
 // The wall clock of df_intersection against df_gradient(I) + df_gradient(J) +
 // df_nac(I, J), on each case's (0, 1): one warm-up of each, then the median

@@ -289,6 +289,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
         .gamma2 = cas.rdm2,
         .root_gammas = cas.rdm1,
         .iterations = cas.iterations,
+        .weights = cas.weights,
     };
     {
       const ScopedDeviceIndex on{res.dev_idx()};

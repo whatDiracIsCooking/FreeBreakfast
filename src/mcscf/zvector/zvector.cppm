@@ -21,8 +21,9 @@ export namespace free_breakfast::mcscf {
 
 /// @brief Two weights this close, relative to the larger, are equal: the
 /// rotation between their roots is redundant and stays projected. Weights
-/// recovered by a least-squares solve (mcscf::df_gradient's) are equal only
-/// to about this.
+/// recovered by a least-squares solve (mcscf::sa_gradient_weights', for a
+/// Solution that carries none) are equal only to about this; a solution's
+/// own are exact.
 constexpr double kRotationWeightTolerance = 1e-8;
 
 /// @brief Which of the nroots (nroots - 1) / 2 pairs r < s, in (r, s)

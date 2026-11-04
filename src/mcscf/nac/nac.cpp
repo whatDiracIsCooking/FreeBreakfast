@@ -156,8 +156,8 @@ Result<std::unique_ptr<NacSetup>> nac_setup(DeviceResources &res, const Molecule
   const size_t roots = solution.roots.energies.size();
   const auto mo = static_cast<size_t>(basis.nao_sphe());
   // Equal weights, when the weighted gamma is the roots' plain average, are
-  // taken as exactly 1 / nroots, as they always were; unequal ones are
-  // recovered from the RDMs as df_gradient recovers them.
+  // taken as exactly 1 / nroots, as they always were; unequal ones as
+  // df_gradient takes them (the solution's own, or recovered from the RDMs).
   double spread = 0.0;
   for (size_t i = 0; i < m; ++i) {
     double mean = 0.0;

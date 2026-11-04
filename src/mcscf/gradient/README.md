@@ -52,13 +52,22 @@ so this layer stays below `pipeline`.
 **`root` picks the state.** For one root it is 0 and the terms below are
 taken at the solution's RDMs. For a state average they are taken at root I's
 **Lagrangian**, below: the same terms, at other densities, plus their
-response to the orbitals. The weights are not in a `Solution`, so the call
-recovers them from it, as the least-squares solution of
-Σ_r w_r γ_r = γ with Σ_r w_r = 1 over `root_gammas` and the weighted γ
-(`Unsupported` when the roots' 1-RDMs are linearly dependent, `InvalidConfig`
-when γ is not their average to 1e-10). That recovery is exported as
-`mcscf::sa_gradient_weights`, for `df_nac` at unequal weights. The active electron count, for the CI
-strings, is trace(γ).
+response to the orbitals. The weights are the `Solution`'s own
+(`Solution::weights`, what `mcscf::solve` was given), taken as they are
+when γ is their weighted sum of `root_gammas` to 1e-10; a wrong count is
+`InvalidConfig`. They are not measured: at (2e,2o), any geometry whose two
+active orbitals fall into different irreducible representations (ethylene's
+C3v-ethylidene, #856) leaves every root's γ close to diag(n, 2 − n), the
+roots' γ nearly collinear, and weights recovered from them drift apart past
+`kRotationWeightTolerance` even when they are equal, or cannot be recovered
+at all. Only a `Solution` that carries none (one built by hand), or whose γ
+was mixed at other weights, has them recovered, as the least-squares
+solution of Σ_r w_r γ_r = γ with Σ_r w_r = 1 over `root_gammas` and the
+weighted γ (`Unsupported` when the roots' 1-RDMs are linearly dependent,
+`InvalidConfig` when γ is not their average to 1e-10). Both are
+`mcscf::sa_gradient_weights`, which `df_intersection`, `df_nac` at unequal
+weights and the QD-NEVPT2 gradients take theirs by. The active electron
+count, for the CI strings, is trace(γ).
 
 **The formula is the DF-CASSCF energy's gradient, and only at convergence.**
 W stands in for the orbitals' response (stationarity in the orbitals), and the
@@ -313,8 +322,8 @@ equals PySCF's `gen_g_hop_active` orbital vector element for element
 **Multipliers on top.** Without `multipliers` nothing responds and no
 Z-vector is solved, at any number of roots: the call is the Hellmann–Feynman
 half alone. With them it is `df_gradient`'s Lagrangian at the transition
-density: z_c's transition RDMs (at the solution's weights, which it then
-recovers) are added to (γ, Γ), which carry no core energy either, and the
+density: z_c's transition RDMs (at the solution's weights,
+`sa_gradient_weights`') are added to (γ, Γ), which carry no core energy either, and the
 z_o response is the SA gradient formula's derivative at the solution's
 weighted RDMs, core included, exactly as for a root. `extra` is unchanged.
 So `df_nac` passes its own z = (z_o, z_c) for h_IJ's Lagrange half and gets

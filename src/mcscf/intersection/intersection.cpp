@@ -136,8 +136,9 @@ df_intersection(DeviceResources &res, const Molecule &molecule, const BasisSet &
     return err_config("mcscf::df_intersection: B holds {} doubles, but naux nao^2 is {} x {}^2",
                       b.num_elements(), naux, nao);
   }
-  // The weights, recovered as df_gradient recovers them; I and J must share
-  // theirs, or the rotation between them divides by E_I - E_J.
+  // The weights, as df_gradient takes them (the solution's own, recovered
+  // only when it carries none); I and J must share theirs, or the rotation
+  // between them divides by E_I - E_J.
   const std::vector<double> weights = FBF_TRY(sa_gradient_weights(solution, n));
   const double w_i = weights[static_cast<size_t>(i)];
   const double w_j = weights[static_cast<size_t>(j)];

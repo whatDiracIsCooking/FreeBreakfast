@@ -70,7 +70,8 @@ struct Nac {
 /// roots of unequal weight among them. The weights are exactly 1 / nroots
 /// when the weighted gamma is the roots' plain average to 1e-10 (and then
 /// the call runs the same operations it did before unequal weights were
-/// taken), else recovered by @c sa_gradient_weights. d^CSF =
+/// taken), else @c sa_gradient_weights' (the solution's own, or recovered
+/// from its RDMs when it carries none). d^CSF =
 /// 1/2 G[C_a (gamma^T - gamma) C_a^T], gamma = @c ci::Rdm::trans_rdm1(I, J)
 /// and G @c overlap_half_gradient. README.md has the derivation, the signs
 /// and the energies' order.

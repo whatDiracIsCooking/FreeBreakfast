@@ -89,8 +89,9 @@ struct MoAdjoint {
 /// the solution), then the same terms at gamma_I + gamma_T and Gamma_I +
 /// Gamma_T (gamma_T z_c's transition RDMs) plus their derivative along
 /// C -> C (1 + kappa(z_o)) at the averaged RDMs, all still in one Gam and
-/// one W. The weights are recovered from @c Solution::root_gammas and the
-/// weighted gamma, and the active electrons are trace(gamma).
+/// one W. The weights are @c sa_gradient_weights': the solution's own, or
+/// recovered from its RDMs when it carries none; the active electrons are
+/// trace(gamma).
 ///
 /// @p multipliers, when given, are (z_o, z_c) in place of the Z-vector, for
 /// one root as for a state average: one root with them is taken at the same
@@ -134,8 +135,8 @@ struct MoAdjoint {
 ///
 /// @return The gradient and its terms; Unsupported for memory past the
 ///         device's free bytes, for naux nao^2 past int32_t, or for a state
-///         average whose roots' 1-RDMs are linearly dependent (its weights
-///         cannot be recovered); InvalidConfig if solution.c is not
+///         average whose weights are recovered and whose roots' 1-RDMs are
+///         linearly dependent (they cannot be); InvalidConfig if solution.c is not
 ///         basis.nao_sphe() square or not on @p res's device, if ncore is
 ///         negative, ncas below 1 or ncore + ncas past nao, if @p root is not
 ///         one of the solution's, if its RDMs are not ncas^2 and ncas^4 long,
@@ -226,17 +227,21 @@ df_transition_gradient(DeviceResources &res, const Molecule &molecule, const Bas
                        std::span<const double> gamma, std::span<const double> gamma2,
                        const ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
 
-/// @brief The weights w_r a state-averaged @p solution is over, which a
-/// @c Solution does not carry: the least-squares solution of
-/// Sum_r w_r gamma_r = gamma with Sum_r w_r = 1 over @c Solution::root_gammas
-/// and the weighted gamma (ncas^2 each, @p ncas given), clamped at zero and
-/// renormalized. @ref df_gradient recovers its weights by it, and
-/// @c df_nac at unequal weights.
+/// @brief The weights w_r a state-averaged @p solution is over:
+/// @c Solution::weights as carried, when the weighted gamma is their sum of
+/// @c Solution::root_gammas to 1e-10 (every solution @c solve returns).
+/// Otherwise, a Solution carrying none or its gamma mixed at others, they
+/// are recovered: the least-squares solution of Sum_r w_r gamma_r = gamma
+/// with Sum_r w_r = 1 over the roots' and the weighted gamma (ncas^2 each,
+/// @p ncas given), clamped at zero and renormalized. @ref df_gradient,
+/// @c df_intersection and @c df_nac at unequal weights take theirs by it.
 ///
-/// @return The weights, one per root; Unsupported when the roots' 1-RDMs are
-///         linearly dependent (they do not determine the weights);
-///         InvalidConfig when gamma is not their weighted sum to 1e-10 or a
-///         weight is below -1e-10. The messages name mcscf::df_gradient.
+/// @return The weights, one per root; InvalidConfig when the solution
+///         carries weights but not one per root; for a recovery, Unsupported
+///         when the roots' 1-RDMs are linearly dependent (they do not
+///         determine the weights), InvalidConfig when gamma is not their
+///         weighted sum to 1e-10 or a weight is below -1e-10. The messages
+///         name mcscf::df_gradient.
 [[nodiscard]] Result<std::vector<double>> sa_gradient_weights(const Solution &solution,
                                                               size_t ncas);
 
