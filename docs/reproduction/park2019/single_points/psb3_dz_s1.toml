@@ -1,0 +1,22 @@
+# Issue #860 phase 1: PSB3 S1, SA3-QD-NEVPT2 single point at
+# Park's geometry (J. W. Park, JCTC (2020), acs.jctc.9b00919, Supporting Information, p. S8).
+# His QD-NEVPT2 E(0, 1, 2): -249.0354436267, -248.8993652796, -248.8570191947 Eh.
+# All-electron here (he froze the core); see README.md.
+[molecule]
+xyz = "geometries/psb3_dz_s1.xyz"
+charge = 1
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 6
+nelecas = 6
+active = [19, 20, 21, 22, 23, 27]  # 0-based RHF MOs of pi character (README.md, "Active spaces")
+nroots = 3
+conv_tol_grad = 1e-9  # #867: 1e-10 can stall at PSB3
+[nevpt2]
+quasi_degenerate = true
