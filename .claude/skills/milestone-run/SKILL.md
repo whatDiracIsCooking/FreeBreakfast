@@ -385,6 +385,9 @@ Rules:
   GPU batch. Rerun only the suites a new main commit changes underneath you
   (C++ your code builds against or your tests exercise), with
   `devtools/cpp-tier.sh --preset <preset> -j <J> -- -R '<suites>'`.
+- When you were given a card, push with its preset:
+  `CMAKE_PRESET=<preset> git -C <wt> push …`. The pre-push cpp-smoke
+  otherwise takes `auto`, the least-loaded card, which may be your sibling's.
 - If the issue is ambiguous in a way the code can't answer, reply
   "STUCK: <question>" rather than guessing.
 ```
