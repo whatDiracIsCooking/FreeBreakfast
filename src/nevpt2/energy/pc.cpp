@@ -204,13 +204,27 @@ std::unexpected<Error> state_error(const Error &e, const int64_t j, const int64_
       e.kind, std::format("nevpt2::pc_effective_hamiltonian: state {}: {}", j, what), e.origin});
 }
 
-// Every state's solve, from its own matrices, then every transition's T and
-// t1 over pair (J, I)'s, each pair's matrices freed before the next is built.
+// Every state's solve, from its own matrices, or with the diagonal omitted
+// each ket's U_J from @p cached; then every given transition's T and t1 over
+// pair (J, I)'s, each pair's matrices freed before the next is built.
 Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const ActiveOperands> ops,
-                       const int64_t ns, const int64_t d, const int64_t n1, const PcBuild &build) {
+                       const int64_t ns, const int64_t d, const int64_t n1, const PcBuild &build,
+                       const PcAmplitudes::Class *cached) {
   const auto di = static_cast<int32_t>(d);
   PcKets kets{.ns = ns};
-  for (int64_t j = 0; j < ns; ++j) {
+  for (int64_t p = 0; p < ns * ns; ++p) {
+    kets.given.push_back(pair_given(ops, p));
+  }
+  const bool own = pair_given(ops, 0);
+  if (!own && (cached == nullptr || std::cmp_not_equal(cached->u.size(), ns))) {
+    return err_config("nevpt2::pc_effective_hamiltonian: the diagonal is omitted and {}'s "
+                      "amplitudes are not {} states'",
+                      name, ns);
+  }
+  for (int64_t j = 0; j < ns && !own; ++j) {
+    kets.ms.push_back(static_cast<int64_t>(cached->u[static_cast<size_t>(j)].num_elements()) / d);
+  }
+  for (int64_t j = 0; j < ns && own; ++j) {
     Result<ClassSolve> cs = [&]() -> Result<ClassSolve> {
       const PcMatrices mats = FBF_TRY(build(res, ops[static_cast<size_t>((j * ns) + j)], true));
       return solve_class(res, name, mats.s.data(), mats.k->data(), d,
@@ -219,29 +233,31 @@ Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const A
     if (!cs) {
       return state_error(cs.error(), j, ns);
     }
+    kets.ms.push_back(std::ssize(cs->lambda));
     kets.solves.push_back(std::move(*cs));
   }
   kets.t.resize(static_cast<size_t>(ns * ns));
   kets.t1.resize(static_cast<size_t>(ns * ns));
   for (int64_t i = 0; i < ns; ++i) {
     for (int64_t j = 0; j < ns; ++j) {
-      if (i == j) {
+      if (i == j || !kets.given[static_cast<size_t>((i * ns) + j)]) {
         continue;
       }
       const PcMatrices mats = FBF_TRY(build(res, ops[static_cast<size_t>((j * ns) + i)], false));
-      const ClassSolve &cs = kets.solves[static_cast<size_t>(j)];
+      const double *const u = own ? kets.solves[static_cast<size_t>(j)].u.data()
+                                  : cached->u[static_cast<size_t>(j)].data();
       const int64_t m = kets.m(j);
       // S^{(J,I)} row-major is S^{(J,I)ᵀ} column-major.
       Buffers::device<double> t(static_cast<size_t>(d * m), res.device());
       FBF_TRY(gpu_status(gemm(res.blas(), di, static_cast<int32_t>(m), di, &kOne<double>,
-                              mats.s.data(), cs.u.data(), &kZero<double>, t.data())));
+                              mats.s.data(), u, &kZero<double>, t.data())));
       kets.t[static_cast<size_t>((i * ns) + j)] = std::move(t);
       if (mats.s1) {
         // U column-major d x m reads row-major as the m x d "ki", as in solve_class.
         Buffers::device<double> t1 = FBF_TRY(device_zeros(res, n1 * m));
         FBF_TRY(einsum(res.stream(), "ia,ki->ak",
                        {EinsumOperand{.data = mats.s1->data(), .dims = {d, n1}},
-                        EinsumOperand{.data = cs.u.data(), .dims = {m, d}}},
+                        EinsumOperand{.data = u, .dims = {m, d}}},
                        t1.data(), {n1, m}, 1.0));
         kets.t1[static_cast<size_t>((i * ns) + j)] = std::move(t1);
       }
@@ -250,8 +266,17 @@ Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const A
   return kets;
 }
 
+// The kets of a call whose diagonals are omitted: each state's amplitudes
+// g_tk from a previous call's PcAmplitudes (@p kets), the slab's first tuple
+// at @p at; null when the call's own diagonals give them.
+struct PcCachedKets {
+  const PcAmplitudes::Class *kets = nullptr;
+  int64_t at = 0;
+};
+
 // A class's running couplings, [I ns + J], and each ket's smallest
-// denominator λ_k + Δ_t.
+// denominator λ_k + Δ_t, over its own solves (a cached ket's were checked by
+// the call that solved it).
 struct Finish {
   int64_t ns;
   std::vector<double> energy;
@@ -287,13 +312,45 @@ struct Finish {
     }
   }
 
-  // One slab's packed rows (@p at, PcKets::offsets), tuple t at Δ = @p delta[t].
+  // add with J's amplitudes @p gj, g_k = y_{J,k} / (λ_k + Δ), cached: the
+  // same sum, each term's division done once by the call that cached it.
+  void add_cached(const int64_t i, const int64_t j, const double *yi, const double *gj,
+                  const int64_t m, const double c) {
+    double &e = energy[static_cast<size_t>((i * ns) + j)];
+    for (int64_t k = 0; k < m; ++k) {
+      e -= c * yi[k] * gj[k];
+    }
+  }
+
+  // add_exchange with J's cached amplitudes, @p gjx the exchange partner's,
+  // whose Δ is the tuple's own.
+  void add_exchange_cached(const int64_t i, const int64_t j, const double *yi, const double *gj,
+                           const double *gjx, const int64_t m) {
+    double &e = energy[static_cast<size_t>((i * ns) + j)];
+    for (int64_t k = 0; k < m; ++k) {
+      e -= yi[k] * ((2.0 * gj[k]) - gjx[k]);
+    }
+  }
+
+  // One slab's packed rows (@p at, PcKets::offsets), tuple t at Δ = @p delta[t],
+  // every given pair; J's own rows from the slab, or @p cached's.
   void add_rows(const PcKets &kets, const std::vector<double> &y, const std::vector<int64_t> &at,
-                const std::vector<double> &delta, const double c) {
+                const std::vector<double> &delta, const double c, const PcCachedKets &cached) {
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
+        if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
+          continue;
+        }
         const int64_t m = kets.m(j);
         const double *const yi = y.data() + at[static_cast<size_t>((i * ns) + j)];
+        if (cached.kets != nullptr) {
+          const double *const gj = cached.kets->g[static_cast<size_t>(j)].data() + (cached.at * m);
+          for (size_t t = 0; t < delta.size(); ++t) {
+            const auto row = static_cast<int64_t>(t) * m;
+            add_cached(i, j, yi + row, gj + row, m, c);
+          }
+          continue;
+        }
         const double *const yj = y.data() + at[static_cast<size_t>((j * ns) + j)];
         for (size_t t = 0; t < delta.size(); ++t) {
           const auto row = static_cast<int64_t>(t) * m;
@@ -347,12 +404,21 @@ PcClass pc_empty(const int64_t ns) {
           .dropped = std::vector<int64_t>(static_cast<size_t>(ns), 0)};
 }
 
-Result<PcClass> pc_finished(const Finish &f, const char *name, const PcKets &kets) {
+// Each ket's dropped count is d - m_J, its solve's or the cached call's.
+Result<PcClass> pc_finished(const Finish &f, const char *name, const PcKets &kets,
+                            const int64_t d) {
   PcClass out{.energy = FBF_TRY(f.done(name)), .dropped = {}};
-  for (const ClassSolve &cs : kets.solves) {
-    out.dropped.push_back(cs.dropped);
+  for (int64_t j = 0; j < kets.ns; ++j) {
+    out.dropped.push_back(d - kets.m(j));
   }
   return out;
+}
+
+// A class's cached kets: @p amplitudes when @p ops omits the diagonal, which
+// pc_kets has checked holds ns states'; else none.
+const PcAmplitudes::Class *pc_cached(std::span<const ActiveOperands> ops,
+                                     const PcAmplitudes::Class *amplitudes) {
+  return pair_given(ops, 0) ? nullptr : amplitudes;
 }
 
 // Each ket's own rows of one slab as amplitudes, g_tk = y_{J,tk} / (λ_k + Δ_t),
@@ -540,7 +606,8 @@ Result<PcClass> pc_sr(DeviceResources &res, const MoBlocks &blocks, const Energy
   if (extent == 0) {
     return pc_empty(ns);
   }
-  PcKets kets = FBF_TRY(pc_kets(res, "Sr", ops, ns, d, n, pc_sr_matrices));
+  const PcAmplitudes::Class *const cached = pc_cached(ops, amplitudes);
+  PcKets kets = FBF_TRY(pc_kets(res, "Sr", ops, ns, d, n, pc_sr_matrices, cached));
   const std::vector<double> &e_virt = ops.front().e_virt;
 
   const int32_t step = batch_step(extent, batch);
@@ -557,6 +624,9 @@ Result<PcClass> pc_sr(DeviceResources &res, const MoBlocks &blocks, const Energy
     double *const y_d = FBF_TRY(workspace_out(res, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
+        if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
+          continue;
+        }
         const int64_t m = kets.m(j);
         double *const y = y_d + at[static_cast<size_t>((i * ns) + j)];
         const EinsumOperand t = t_operand(kets.t_of(i, j), n, 3, m, d);
@@ -567,13 +637,13 @@ Result<PcClass> pc_sr(DeviceResources &res, const MoBlocks &blocks, const Energy
     }
     const std::vector<double> y = FBF_TRY(download(res, y_d, at.back()));
     const std::vector<double> delta(e_virt.begin() + b0, e_virt.begin() + b1);
-    f.add_rows(kets, y, at, delta, 1.0);
-    if (amplitudes != nullptr) {
+    f.add_rows(kets, y, at, delta, 1.0, {.kets = cached, .at = b0});
+    if (amplitudes != nullptr && cached == nullptr) {
       append_pc_amplitudes(kets, y, at, delta, *amplitudes);
     }
   }
-  PcClass done = FBF_TRY(pc_finished(f, "Sr", kets));
-  if (amplitudes != nullptr) {
+  PcClass done = FBF_TRY(pc_finished(f, "Sr", kets, d));
+  if (amplitudes != nullptr && cached == nullptr) {
     hand_over_bases(kets, *amplitudes);
   }
   return done;
@@ -591,7 +661,8 @@ Result<PcClass> pc_si(DeviceResources &res, const MoBlocks &blocks, const Energy
   if (extent == 0) {
     return pc_empty(ns);
   }
-  PcKets kets = FBF_TRY(pc_kets(res, "Si", ops, ns, d, n, pc_si_matrices));
+  const PcAmplitudes::Class *const cached = pc_cached(ops, amplitudes);
+  PcKets kets = FBF_TRY(pc_kets(res, "Si", ops, ns, d, n, pc_si_matrices, cached));
   const std::vector<double> &e_core = ops.front().e_core;
 
   const int32_t step = batch_step(extent, batch);
@@ -608,6 +679,9 @@ Result<PcClass> pc_si(DeviceResources &res, const MoBlocks &blocks, const Energy
     double *const y_d = FBF_TRY(workspace_out(res, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
+        if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
+          continue;
+        }
         const int64_t m = kets.m(j);
         double *const y = y_d + at[static_cast<size_t>((i * ns) + j)];
         const EinsumOperand t = t_operand(kets.t_of(i, j), n, 3, m, d);
@@ -621,13 +695,13 @@ Result<PcClass> pc_si(DeviceResources &res, const MoBlocks &blocks, const Energy
     for (int32_t i = b0; i < b1; ++i) {
       delta.push_back(-e_core[static_cast<size_t>(i)]);
     }
-    f.add_rows(kets, y, at, delta, 1.0);
-    if (amplitudes != nullptr) {
+    f.add_rows(kets, y, at, delta, 1.0, {.kets = cached, .at = b0});
+    if (amplitudes != nullptr && cached == nullptr) {
       append_pc_amplitudes(kets, y, at, delta, *amplitudes);
     }
   }
-  PcClass done = FBF_TRY(pc_finished(f, "Si", kets));
-  if (amplitudes != nullptr) {
+  PcClass done = FBF_TRY(pc_finished(f, "Si", kets, d));
+  if (amplitudes != nullptr && cached == nullptr) {
     hand_over_bases(kets, *amplitudes);
   }
   return done;
@@ -636,7 +710,8 @@ Result<PcClass> pc_si(DeviceResources &res, const MoBlocks &blocks, const Energy
 // Sijr: basis p, d = n, S = hdm1, K = a3, Δ = ε_r - ε_j - ε_i. The two spin
 // couplings are SC's "2 direct - exchange", summed over ordered (j, i).
 Result<PcClass> pc_sijr(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
-                        std::span<const ActiveOperands> ops, const int64_t ns) {
+                        std::span<const ActiveOperands> ops, const int64_t ns,
+                        PcAmplitudes::Class *amplitudes) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = blocks.ncas;
   const int64_t nc = blocks.ncore;
@@ -644,7 +719,8 @@ Result<PcClass> pc_sijr(DeviceResources &res, const MoBlocks &blocks, const int3
   if (extent == 0 || nc == 0) {
     return pc_empty(ns);
   }
-  const PcKets kets = FBF_TRY(pc_kets(res, "Sijr", ops, ns, n, 0, pc_sijr_matrices));
+  const PcAmplitudes::Class *const cached = pc_cached(ops, amplitudes);
+  PcKets kets = FBF_TRY(pc_kets(res, "Sijr", ops, ns, n, 0, pc_sijr_matrices, cached));
   const std::vector<double> &e_core = ops.front().e_core;
   const std::vector<double> &e_virt = ops.front().e_virt;
 
@@ -661,6 +737,9 @@ Result<PcClass> pc_sijr(DeviceResources &res, const MoBlocks &blocks, const int3
     double *const y_d = FBF_TRY(workspace_out(res, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
+        if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
+          continue;
+        }
         const int64_t m = kets.m(j);
         double *const y = y_d + at[static_cast<size_t>((i * ns) + j)];
         const EinsumOperand t = t_operand(kets.t_of(i, j), n, 1, m, n);
@@ -668,35 +747,64 @@ Result<PcClass> pc_sijr(DeviceResources &res, const MoBlocks &blocks, const int3
       }
     }
     const std::vector<double> y = FBF_TRY(download(res, y_d, at.back()));
+    // The tuples (r, j, i), as the rows run, and their Δ.
+    std::vector<double> deltas;
+    for (int64_t r = 0; r < nr; ++r) {
+      for (int64_t j = 0; j < nc; ++j) {
+        for (int64_t i = 0; i < nc; ++i) {
+          deltas.push_back(e_virt[static_cast<size_t>(b0 + r)] - e_core[static_cast<size_t>(j)] -
+                           e_core[static_cast<size_t>(i)]);
+        }
+      }
+    }
     for (int64_t bra = 0; bra < ns; ++bra) {
       for (int64_t ket = 0; ket < ns; ++ket) {
+        if (!kets.given[static_cast<size_t>((bra * ns) + ket)]) {
+          continue;
+        }
         const int64_t m = kets.m(ket);
         const double *const yi = y.data() + at[static_cast<size_t>((bra * ns) + ket)];
-        const double *const yj = y.data() + at[static_cast<size_t>((ket * ns) + ket)];
+        // J's own rows: this slab's, or the cached amplitudes' from its first
+        // tuple on.
+        const double *const yj =
+            cached != nullptr ? cached->g[static_cast<size_t>(ket)].data() + (b0 * nc * nc * m)
+                              : y.data() + at[static_cast<size_t>((ket * ns) + ket)];
         const auto row = [&](const int64_t r, const int64_t j, const int64_t i) {
           return (((((r * nc) + j) * nc) + i) * m);
         };
         for (int64_t r = 0; r < nr; ++r) {
           for (int64_t j = 0; j < nc; ++j) {
             for (int64_t i = 0; i < nc; ++i) {
-              const double delta = e_virt[static_cast<size_t>(b0 + r)] -
-                                   e_core[static_cast<size_t>(j)] - e_core[static_cast<size_t>(i)];
+              if (cached != nullptr) {
+                f.add_exchange_cached(bra, ket, yi + row(r, j, i), yj + row(r, j, i),
+                                      yj + row(r, i, j), m);
+                continue;
+              }
               f.add_exchange(bra, ket, yi + row(r, j, i), yj + row(r, j, i), yj + row(r, i, j),
-                             kets.solves[static_cast<size_t>(ket)].lambda, delta);
+                             kets.solves[static_cast<size_t>(ket)].lambda,
+                             deltas[static_cast<size_t>((((r * nc) + j) * nc) + i)]);
             }
           }
         }
       }
     }
+    if (amplitudes != nullptr && cached == nullptr) {
+      append_pc_amplitudes(kets, y, at, deltas, *amplitudes);
+    }
   }
-  return pc_finished(f, "Sijr", kets);
+  PcClass done = FBF_TRY(pc_finished(f, "Sijr", kets, n));
+  if (amplitudes != nullptr && cached == nullptr) {
+    hand_over_bases(kets, *amplitudes);
+  }
+  return done;
 }
 
 // Srsi: basis p, d = n, S = dm1, K = k27, Δ = ε_r + ε_s - ε_i, summed over
 // ordered (r, s) as Sijr: each batch has its exchange partner in the SrsiT
 // slab, so unlike SC no whole (v, v, c) table is held.
 Result<PcClass> pc_srsi(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
-                        std::span<const ActiveOperands> ops, const int64_t ns) {
+                        std::span<const ActiveOperands> ops, const int64_t ns,
+                        PcAmplitudes::Class *amplitudes) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = blocks.ncas;
   const int64_t nc = blocks.ncore;
@@ -705,7 +813,8 @@ Result<PcClass> pc_srsi(DeviceResources &res, const MoBlocks &blocks, const int3
   if (extent == 0 || nc == 0) {
     return pc_empty(ns);
   }
-  const PcKets kets = FBF_TRY(pc_kets(res, "Srsi", ops, ns, n, 0, pc_srsi_matrices));
+  const PcAmplitudes::Class *const cached = pc_cached(ops, amplitudes);
+  PcKets kets = FBF_TRY(pc_kets(res, "Srsi", ops, ns, n, 0, pc_srsi_matrices, cached));
   const std::vector<double> &e_core = ops.front().e_core;
   const std::vector<double> &e_virt = ops.front().e_virt;
 
@@ -725,12 +834,18 @@ Result<PcClass> pc_srsi(DeviceResources &res, const MoBlocks &blocks, const int3
         column_major(slab_b.data(), slab_dims(blocks, ExtBlock::SrsiT, b0, b1));
     // y, then the exchange rows yt, each in PcKets::offsets' packing.
     const std::vector<int64_t> at = kets.offsets(nb * nv * nc);
-    double *const y_d = FBF_TRY(workspace_out(res, 2 * at.back()));
+    // Cached kets carry their own exchange rows, so only a call with its
+    // diagonal given takes yt.
+    const int64_t halves = cached != nullptr ? 1 : 2;
+    double *const y_d = FBF_TRY(workspace_out(res, halves * at.back()));
     double *const yt_d = y_d + at.back();
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
-        const int64_t m = kets.m(j);
         const auto p = static_cast<size_t>((i * ns) + j);
+        if (!kets.given[p]) {
+          continue;
+        }
+        const int64_t m = kets.m(j);
         const EinsumOperand t = t_operand(kets.t_of(i, j), n, 1, m, n);
         FBF_TRY(einsum(s, "rsip,pk->rsik", {h_a, t}, y_d + at[p], {nb, nv, nc, m}, 1.0));
         if (i == j) {
@@ -738,34 +853,64 @@ Result<PcClass> pc_srsi(DeviceResources &res, const MoBlocks &blocks, const int3
         }
       }
     }
-    const std::vector<double> y = FBF_TRY(download(res, y_d, 2 * at.back()));
+    const std::vector<double> y = FBF_TRY(download(res, y_d, halves * at.back()));
     const double *const yt = y.data() + at.back();
+    // The tuples (r, s, i), as the rows run, and their Δ.
+    std::vector<double> deltas;
+    for (int64_t r = 0; r < nb; ++r) {
+      for (int64_t ss = 0; ss < nv; ++ss) {
+        for (int64_t i = 0; i < nc; ++i) {
+          deltas.push_back(e_virt[static_cast<size_t>(b0 + r)] + e_virt[static_cast<size_t>(ss)] -
+                           e_core[static_cast<size_t>(i)]);
+        }
+      }
+    }
     for (int64_t bra = 0; bra < ns; ++bra) {
       for (int64_t ket = 0; ket < ns; ++ket) {
+        if (!kets.given[static_cast<size_t>((bra * ns) + ket)]) {
+          continue;
+        }
         const int64_t m = kets.m(ket);
         const auto own = static_cast<size_t>((ket * ns) + ket);
         const double *const yi = y.data() + at[static_cast<size_t>((bra * ns) + ket)];
         for (int64_t r = 0; r < nb; ++r) {
           for (int64_t ss = 0; ss < nv; ++ss) {
             for (int64_t i = 0; i < nc; ++i) {
-              const double delta = e_virt[static_cast<size_t>(b0 + r)] +
-                                   e_virt[static_cast<size_t>(ss)] - e_core[static_cast<size_t>(i)];
-              const int64_t row = (((r * nv) + ss) * nc + i) * m;
-              f.add_exchange(bra, ket, yi + row, y.data() + at[own] + row, yt + at[own] + row,
-                             kets.solves[static_cast<size_t>(ket)].lambda, delta);
+              const int64_t tuple = ((r * nv) + ss) * nc + i;
+              if (cached != nullptr) {
+                // The whole (r, s, i) table is cached: the exchange partner
+                // (s, r) is in it wherever its batch fell.
+                const double *const g = cached->g[static_cast<size_t>(ket)].data();
+                f.add_exchange_cached(bra, ket, yi + (tuple * m),
+                                      g + (((((b0 + r) * nv) + ss) * nc + i) * m),
+                                      g + ((((ss * nv) + b0 + r) * nc + i) * m), m);
+                continue;
+              }
+              f.add_exchange(bra, ket, yi + (tuple * m), y.data() + at[own] + (tuple * m),
+                             yt + at[own] + (tuple * m),
+                             kets.solves[static_cast<size_t>(ket)].lambda,
+                             deltas[static_cast<size_t>(tuple)]);
             }
           }
         }
       }
     }
+    if (amplitudes != nullptr && cached == nullptr) {
+      append_pc_amplitudes(kets, y, at, deltas, *amplitudes);
+    }
   }
-  return pc_finished(f, "Srsi", kets);
+  PcClass done = FBF_TRY(pc_finished(f, "Srsi", kets, n));
+  if (amplitudes != nullptr && cached == nullptr) {
+    hand_over_bases(kets, *amplitudes);
+  }
+  return done;
 }
 
 // Srs: basis (p, q), d = n², S[pq, ab] = rm2[p,q,b,a], K = a7,
 // Δ = ε_r + ε_s, factor 1/2 on every ordered (r, s), as SC walks it.
 Result<PcClass> pc_srs(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
-                       std::span<const ActiveOperands> ops, const int64_t ns) {
+                       std::span<const ActiveOperands> ops, const int64_t ns,
+                       PcAmplitudes::Class *amplitudes) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = blocks.ncas;
   const int64_t nv = blocks.nvirt;
@@ -774,7 +919,8 @@ Result<PcClass> pc_srs(DeviceResources &res, const MoBlocks &blocks, const int32
   if (extent == 0) {
     return pc_empty(ns);
   }
-  const PcKets kets = FBF_TRY(pc_kets(res, "Srs", ops, ns, d, 0, pc_srs_matrices));
+  const PcAmplitudes::Class *const cached = pc_cached(ops, amplitudes);
+  PcKets kets = FBF_TRY(pc_kets(res, "Srs", ops, ns, d, 0, pc_srs_matrices, cached));
   const std::vector<double> &e_virt = ops.front().e_virt;
 
   const int32_t step = batch_step(extent, batch);
@@ -790,6 +936,9 @@ Result<PcClass> pc_srs(DeviceResources &res, const MoBlocks &blocks, const int32
     double *const y_d = FBF_TRY(workspace_out(res, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
+        if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
+          continue;
+        }
         const int64_t m = kets.m(j);
         double *const y = y_d + at[static_cast<size_t>((i * ns) + j)];
         const EinsumOperand t = t_operand(kets.t_of(i, j), n, 2, m, d);
@@ -803,15 +952,23 @@ Result<PcClass> pc_srs(DeviceResources &res, const MoBlocks &blocks, const int32
         delta.push_back(e_virt[static_cast<size_t>(r)] + e_virt[static_cast<size_t>(ss)]);
       }
     }
-    f.add_rows(kets, y, at, delta, 0.5);
+    f.add_rows(kets, y, at, delta, 0.5, {.kets = cached, .at = b0 * nv});
+    if (amplitudes != nullptr && cached == nullptr) {
+      append_pc_amplitudes(kets, y, at, delta, *amplitudes);
+    }
   }
-  return pc_finished(f, "Srs", kets);
+  PcClass done = FBF_TRY(pc_finished(f, "Srs", kets, d));
+  if (amplitudes != nullptr && cached == nullptr) {
+    hand_over_bases(kets, *amplitudes);
+  }
+  return done;
 }
 
 // Sij: basis (p, q), d = n², S = hdm2, K = a9, Δ = -(ε_i + ε_j), factor 1/2
 // on every ordered (i, j), as Srs.
 Result<PcClass> pc_sij(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
-                       std::span<const ActiveOperands> ops, const int64_t ns) {
+                       std::span<const ActiveOperands> ops, const int64_t ns,
+                       PcAmplitudes::Class *amplitudes) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = blocks.ncas;
   const int64_t nc = blocks.ncore;
@@ -820,7 +977,8 @@ Result<PcClass> pc_sij(DeviceResources &res, const MoBlocks &blocks, const int32
   if (extent == 0) {
     return pc_empty(ns);
   }
-  const PcKets kets = FBF_TRY(pc_kets(res, "Sij", ops, ns, d, 0, pc_sij_matrices));
+  const PcAmplitudes::Class *const cached = pc_cached(ops, amplitudes);
+  PcKets kets = FBF_TRY(pc_kets(res, "Sij", ops, ns, d, 0, pc_sij_matrices, cached));
   const std::vector<double> &e_core = ops.front().e_core;
 
   const int32_t step = batch_step(extent, batch);
@@ -836,6 +994,9 @@ Result<PcClass> pc_sij(DeviceResources &res, const MoBlocks &blocks, const int32
     double *const y_d = FBF_TRY(workspace_out(res, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
+        if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
+          continue;
+        }
         const int64_t m = kets.m(j);
         double *const y = y_d + at[static_cast<size_t>((i * ns) + j)];
         const EinsumOperand t = t_operand(kets.t_of(i, j), n, 2, m, d);
@@ -849,9 +1010,16 @@ Result<PcClass> pc_sij(DeviceResources &res, const MoBlocks &blocks, const int32
         delta.push_back(-(e_core[static_cast<size_t>(i)] + e_core[static_cast<size_t>(j)]));
       }
     }
-    f.add_rows(kets, y, at, delta, 0.5);
+    f.add_rows(kets, y, at, delta, 0.5, {.kets = cached, .at = b0 * nc});
+    if (amplitudes != nullptr && cached == nullptr) {
+      append_pc_amplitudes(kets, y, at, delta, *amplitudes);
+    }
   }
-  return pc_finished(f, "Sij", kets);
+  PcClass done = FBF_TRY(pc_finished(f, "Sij", kets, d));
+  if (amplitudes != nullptr && cached == nullptr) {
+    hand_over_bases(kets, *amplitudes);
+  }
+  return done;
 }
 
 // Sir: basis (p, q) ⊕ (p, q), d = 2 n², the two spin couplings as two blocks,
@@ -872,7 +1040,8 @@ Result<PcClass> pc_sir(DeviceResources &res, const MoBlocks &blocks, const Energ
   if (extent == 0 || nc == 0) {
     return pc_empty(ns);
   }
-  PcKets kets = FBF_TRY(pc_kets(res, "Sir", ops, ns, d, 1, pc_sir_matrices));
+  const PcAmplitudes::Class *const cached = pc_cached(ops, amplitudes);
+  PcKets kets = FBF_TRY(pc_kets(res, "Sir", ops, ns, d, 1, pc_sir_matrices, cached));
   const std::vector<double> &e_core = ops.front().e_core;
   const std::vector<double> &e_virt = ops.front().e_virt;
 
@@ -894,6 +1063,9 @@ Result<PcClass> pc_sir(DeviceResources &res, const MoBlocks &blocks, const Energ
     double *const y_d = FBF_TRY(workspace_out(res, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
+        if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
+          continue;
+        }
         const int64_t m = kets.m(j);
         double *const y = y_d + at[static_cast<size_t>((i * ns) + j)];
         // T's two blocks, rows [0, n²) and [n², 2 n²).
@@ -912,13 +1084,13 @@ Result<PcClass> pc_sir(DeviceResources &res, const MoBlocks &blocks, const Energ
         delta.push_back(e_virt[static_cast<size_t>(r)] - e_core[static_cast<size_t>(i)]);
       }
     }
-    f.add_rows(kets, y, at, delta, 1.0);
-    if (amplitudes != nullptr) {
+    f.add_rows(kets, y, at, delta, 1.0, {.kets = cached, .at = b0 * nc});
+    if (amplitudes != nullptr && cached == nullptr) {
       append_pc_amplitudes(kets, y, at, delta, *amplitudes);
     }
   }
-  PcClass done = FBF_TRY(pc_finished(f, "Sir", kets));
-  if (amplitudes != nullptr) {
+  PcClass done = FBF_TRY(pc_finished(f, "Sir", kets, d));
+  if (amplitudes != nullptr && cached == nullptr) {
     hand_over_bases(kets, *amplitudes);
   }
   return done;
@@ -937,8 +1109,11 @@ Result<std::vector<PcClassEnergies>> pc_couplings(DeviceResources &res, const Mo
   // from the first.
   const EnergyInputs &in = pairs.front();
 
+  // With the diagonal omitted every class reads its kets from @p amplitudes,
+  // which a previous call filled, and Sijrs, diagonal alone, is not walked.
+  const bool own = pairs.front().dm1 != nullptr;
   std::array<PcClass, 8> classes;
-  if (amplitudes != nullptr) {
+  if (amplitudes != nullptr && own) {
     *amplitudes = PcAmplitudes{};
   }
   classes[0] =
@@ -948,14 +1123,18 @@ Result<std::vector<PcClassEnergies>> pc_couplings(DeviceResources &res, const Mo
   // Sijrs has no active index, so its PC energy is SC's: every state's is the
   // one number, and every transition's is ⟨I|J⟩ = 0 times it.
   classes[2] = pc_empty(n);
-  const double sijrs = FBF_TRY(energy_sijrs(res, blocks, in, batch)).second;
-  for (int64_t j = 0; j < n; ++j) {
-    classes[2].energy[static_cast<size_t>((j * n) + j)] = sijrs;
+  if (own) {
+    const double sijrs = FBF_TRY(energy_sijrs(res, blocks, in, batch)).second;
+    for (int64_t j = 0; j < n; ++j) {
+      classes[2].energy[static_cast<size_t>((j * n) + j)] = sijrs;
+    }
   }
-  classes[3] = FBF_TRY(pc_sijr(res, blocks, batch, ops, n));
-  classes[4] = FBF_TRY(pc_srsi(res, blocks, batch, ops, n));
-  classes[5] = FBF_TRY(pc_srs(res, blocks, batch, ops, n));
-  classes[6] = FBF_TRY(pc_sij(res, blocks, batch, ops, n));
+  classes[3] =
+      FBF_TRY(pc_sijr(res, blocks, batch, ops, n, amplitudes ? &amplitudes->sijr : nullptr));
+  classes[4] =
+      FBF_TRY(pc_srsi(res, blocks, batch, ops, n, amplitudes ? &amplitudes->srsi : nullptr));
+  classes[5] = FBF_TRY(pc_srs(res, blocks, batch, ops, n, amplitudes ? &amplitudes->srs : nullptr));
+  classes[6] = FBF_TRY(pc_sij(res, blocks, batch, ops, n, amplitudes ? &amplitudes->sij : nullptr));
   classes[7] =
       FBF_TRY(pc_sir(res, blocks, in, batch, ops, n, amplitudes ? &amplitudes->sir : nullptr));
 

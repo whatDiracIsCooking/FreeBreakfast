@@ -96,51 +96,122 @@ std::pair<double, double> norm_to_energy(const std::vector<double> &t,
   return {norm_total, energy_total};
 }
 
+bool pair_given(std::span<const ActiveOperands> ops, const int64_t p) {
+  return ops[static_cast<size_t>(p)].dm1.data != nullptr;
+}
+
 // The class walk of ns states (class_energies is ns = 1) accumulates each
-// slab into ns² + ns tables of one value per perturber: table I ns + J is the
-// norm einsum of pair (I, J), so at I = J state J's own N^J, and table
-// ns² + J is state J's H^J.
-int64_t pair_table_count(const int64_t ns) {
-  return (ns * ns) + ns;
+// slab into one table of one value per perturber for every given pair, its
+// norm einsum, so at I = J state J's own N^J, and one for every given
+// state's H^J. An omitted entry has none, so a call over the n diagonals
+// alone, or over one pair beside its transpose, holds that many tables and
+// not n² + n.
+struct PairTableSlots {
+  // norm[I ns + J]: pair (I, J)'s table, -1 when the pair is omitted.
+  std::vector<int64_t> norm;
+  // h[J]: state J's H table, -1 when its diagonal is omitted.
+  std::vector<int64_t> h;
+  int64_t count = 0;
+};
+
+PairTableSlots pair_table_slots(std::span<const ActiveOperands> ops, const int64_t ns) {
+  PairTableSlots slots{.norm = std::vector<int64_t>(static_cast<size_t>(ns * ns), -1),
+                       .h = std::vector<int64_t>(static_cast<size_t>(ns), -1)};
+  for (int64_t p = 0; p < ns * ns; ++p) {
+    if (pair_given(ops, p)) {
+      slots.norm[static_cast<size_t>(p)] = slots.count++;
+    }
+  }
+  for (int64_t j = 0; j < ns; ++j) {
+    if (pair_given(ops, (j * ns) + j)) {
+      slots.h[static_cast<size_t>(j)] = slots.count++;
+    }
+  }
+  return slots;
 }
 
 // One slab's tables, read back, @p count values each.
 Result<std::vector<std::vector<double>>> download_pair_tables(DeviceResources &res,
                                                               const double *tables,
-                                                              const int64_t ns,
+                                                              const PairTableSlots &slots,
                                                               const int64_t count) {
-  const std::vector<double> all = FBF_TRY(download(res, tables, pair_table_count(ns) * count));
+  const std::vector<double> all = FBF_TRY(download(res, tables, slots.count * count));
   std::vector<std::vector<double>> out;
-  for (int64_t t = 0; t < pair_table_count(ns); ++t) {
+  for (int64_t t = 0; t < slots.count; ++t) {
     out.emplace_back(all.begin() + (t * count), all.begin() + ((t + 1) * count));
   }
   return out;
 }
 
+// The kets of a call whose diagonals are omitted: per state J, the strongly
+// contracted amplitudes c_t of one slab's perturbers, in its tables' order,
+// read from a previous call's ScAmplitudes at @p at onwards (@p kets[J]).
+// Null when the call's own diagonals give them.
+struct CachedKets {
+  const std::vector<std::vector<double>> *kets = nullptr;
+  size_t at = 0;
+};
+
+// The whole-class amplitudes @p amplitudes of a call over ns states as the
+// cached kets of a call whose diagonals are omitted, InvalidConfig when they
+// are not ns states' (sc_effective_hamiltonian's caller handed in another
+// call's); or none, when @p ops gives the diagonals.
+Result<const std::vector<std::vector<double>> *>
+sc_cached_kets(const char *name, std::span<const ActiveOperands> ops, const int64_t ns,
+               const std::vector<std::vector<double>> *amplitudes) {
+  if (pair_given(ops, 0)) {
+    return nullptr;
+  }
+  if (amplitudes == nullptr || std::cmp_not_equal(amplitudes->size(), ns)) {
+    return err_config("nevpt2::sc_effective_hamiltonian: the diagonal is omitted and {}'s "
+                      "amplitudes are not {} states'",
+                      name, ns);
+  }
+  return amplitudes;
+}
+
 // Adds one slab's share onto @p out[I ns + J] from its tables, each already
-// the perturber list @p diff runs over (Sijr and Srsi pack theirs first):
-// norm_to_energy over J's N^J and H^J with T = N^J at I = J, and otherwise T
-// the mean of the norm einsums of (I, J) and (J, I). PySCF folds two
-// Hermitian-conjugate terms of Sr's, Si's and Sir's norms into one (its
-// `* 2.0`), which holds only at I = J; the mean is the unfolded sum, and
-// leaves the five classes already symmetric in I and J as they are.
-void add_pair_shares(const std::vector<std::vector<double>> &tables, const int64_t ns,
-                     const std::vector<double> &diff, std::vector<std::pair<double, double>> &out) {
+// the perturber list @p diff runs over (Sijr and Srsi pack theirs first), for
+// every given pair: norm_to_energy over J's N^J and H^J with T = N^J at I = J,
+// and otherwise T the mean of the norm einsums of (I, J) and (J, I). PySCF
+// folds two Hermitian-conjugate terms of Sr's, Si's and Sir's norms into one
+// (its `* 2.0`), which holds only at I = J; the mean is the unfolded sum, and
+// leaves the five classes already symmetric in I and J as they are. With J's
+// diagonal omitted, its c_t come from @p cached instead: -T / (Δ + H / N) is
+// T c_t, the same perturbers dropped (c_t = 0).
+void add_pair_shares(const std::vector<std::vector<double>> &tables, const PairTableSlots &slots,
+                     const int64_t ns, const std::vector<double> &diff, const CachedKets &cached,
+                     std::vector<std::pair<double, double>> &out) {
   for (int64_t j = 0; j < ns; ++j) {
-    const std::vector<double> &norm = tables[static_cast<size_t>((j * ns) + j)];
-    const std::vector<double> &h = tables[static_cast<size_t>((ns * ns) + j)];
     for (int64_t i = 0; i < ns; ++i) {
+      const int64_t slot = slots.norm[static_cast<size_t>((i * ns) + j)];
+      if (slot < 0) {
+        continue;
+      }
       std::vector<double> mean;
       if (i != j) {
-        const std::vector<double> &ij = tables[static_cast<size_t>((i * ns) + j)];
-        const std::vector<double> &ji = tables[static_cast<size_t>((j * ns) + i)];
+        const std::vector<double> &ij = tables[static_cast<size_t>(slot)];
+        const std::vector<double> &ji =
+            tables[static_cast<size_t>(slots.norm[static_cast<size_t>((j * ns) + i)])];
         mean.resize(ij.size());
         for (size_t k = 0; k < ij.size(); ++k) {
           mean[k] = 0.5 * (ij[k] + ji[k]);
         }
       }
-      const auto [n_part, e_part] = norm_to_energy(i == j ? norm : mean, norm, h, diff);
       std::pair<double, double> &sums = out[static_cast<size_t>((i * ns) + j)];
+      const int64_t own = slots.h[static_cast<size_t>(j)];
+      if (own < 0) {
+        const std::vector<double> &c = (*cached.kets)[static_cast<size_t>(j)];
+        for (size_t k = 0; k < mean.size(); ++k) {
+          sums.first += mean[k];
+          sums.second += mean[k] * c[cached.at + k];
+        }
+        continue;
+      }
+      const std::vector<double> &norm =
+          tables[static_cast<size_t>(slots.norm[static_cast<size_t>((j * ns) + j)])];
+      const std::vector<double> &h = tables[static_cast<size_t>(own)];
+      const auto [n_part, e_part] = norm_to_energy(i == j ? norm : mean, norm, h, diff);
       sums.first += n_part;
       sums.second += e_part;
     }
@@ -150,13 +221,16 @@ void add_pair_shares(const std::vector<std::vector<double>> &tables, const int64
 // The strongly contracted amplitudes of one slab's perturbers, in its tables'
 // order, appended to @p out[J] for each state J: c_t = -1 / (Δ_t + H^J_t /
 // N^J_t), the coefficient of P_t V|J⟩ in Ψ_J⁽¹⁾, and 0 for a perturber
-// norm_to_energy drops (ScAmplitudes). Reads the tables add_pair_shares does.
-void append_sc_amplitudes(const std::vector<std::vector<double>> &tables, const int64_t ns,
+// norm_to_energy drops (ScAmplitudes). Reads the tables add_pair_shares does;
+// every diagonal is given.
+void append_sc_amplitudes(const std::vector<std::vector<double>> &tables,
+                          const PairTableSlots &slots, const int64_t ns,
                           const std::vector<double> &diff, std::vector<std::vector<double>> &out) {
   out.resize(static_cast<size_t>(ns));
   for (int64_t j = 0; j < ns; ++j) {
-    const std::vector<double> &norm = tables[static_cast<size_t>((j * ns) + j)];
-    const std::vector<double> &h = tables[static_cast<size_t>((ns * ns) + j)];
+    const std::vector<double> &norm =
+        tables[static_cast<size_t>(slots.norm[static_cast<size_t>((j * ns) + j)])];
+    const std::vector<double> &h = tables[static_cast<size_t>(slots.h[static_cast<size_t>(j)])];
     for (size_t k = 0; k < norm.size(); ++k) {
       out[static_cast<size_t>(j)].push_back(
           std::abs(norm[k]) > kNumericalZero ? -1.0 / (diff[k] + (h[k] / norm[k])) : 0.0);
@@ -557,8 +631,9 @@ Result<Buffers::device<double>> make_a25(DeviceResources &res, const EinsumOpera
 // ---------------------------------------------------------------------------
 // The eight classes, over ns states at once. Each walks its batch index
 // (batch_axis), building one slab of its external block per step into a plain
-// device buffer, contracting it against every state's intermediates and every
-// pair's norm intermediates into the slab's pair tables (pair_table_count),
+// device buffer, contracting it against every given state's intermediates
+// and every given pair's norm intermediates into the slab's pair tables
+// (pair_table_slots; an omitted entry, null dm1, has none),
 // and finishing it on the host: the per-perturber finish is elementwise, so
 // splitting it by slab only reassociates the sum. Srsi alone fills its whole
 // (v, v, c) tables first, because its symmetrization pairs (r, s) with (s, r)
@@ -582,7 +657,7 @@ energy_sr(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
   std::vector<Buffers::device<double>> a16;
   std::vector<Buffers::device<double>> a17;
   std::vector<Buffers::device<double>> a19;
-  for (int64_t j = 0; j < ns; ++j) {
+  for (int64_t j = 0; j < ns && pair_given(ops, (j * ns) + j); ++j) {
     const ActiveOperands &o = ops[static_cast<size_t>((j * ns) + j)];
     a16.push_back(FBF_TRY(make_a16(res, o.h1e, o.h2e, o.dm3, o.f3ac, o.f3ca)));
     a17.push_back(FBF_TRY(make_a17(res, o.h1e, o.h2e, o.dm2, o.dm3)));
@@ -594,6 +669,8 @@ energy_sr(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
   const int32_t step = batch_step(extent, batch);
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sr, step);
   std::vector<std::pair<double, double>> out(static_cast<size_t>(ns * ns));
+  const PairTableSlots slots = pair_table_slots(ops, ns);
+  const auto *const cached = FBF_TRY(sc_cached_kets("Sr", ops, ns, amplitudes));
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -602,17 +679,21 @@ energy_sr(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Sr, b0, b1));
     const EinsumOperand h1e_v{.data = in.h1e_v_sr + b0, .dims = {nb, n}, .strides = {1, nv}};
 
-    double *const tables = FBF_TRY(workspace_zeros(res, pair_table_count(ns) * nb));
+    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * nb));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         const ActiveOperands &o = ops[static_cast<size_t>((i * ns) + j)];
-        double *const norm = tables + (((i * ns) + j) * nb);
+        const int64_t slot = slots.norm[static_cast<size_t>((i * ns) + j)];
+        if (slot < 0) {
+          continue;
+        }
+        double *const norm = tables + (slot * nb);
         if (i == j) {
           const EinsumOperand a16_op{.data = a16[static_cast<size_t>(j)].data(),
                                      .dims = std::vector<int64_t>(6, n)};
           const EinsumOperand a17_op{.data = a17[static_cast<size_t>(j)].data(), .dims = d4};
           const EinsumOperand a19_op{.data = a19[static_cast<size_t>(j)].data(), .dims = d2};
-          double *const ener = tables + (((ns * ns) + j) * nb);
+          double *const ener = tables + (slots.h[static_cast<size_t>(j)] * nb);
           FBF_TRY(einsum(s, "ipqr,pqrabc,iabc->i", {h2e_v, a16_op, h2e_v}, ener, {nb}, 1.0));
           FBF_TRY(einsum(s, "ipqr,pqra,ia->i", {h2e_v, a17_op, h1e_v}, ener, {nb}, 2.0));
           FBF_TRY(einsum(s, "ip,pa,ia->i", {h1e_v, a19_op, h1e_v}, ener, {nb}, 1.0));
@@ -625,10 +706,10 @@ energy_sr(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
 
     const std::vector<double> diff(e_virt.begin() + b0, e_virt.begin() + b1);
     const std::vector<std::vector<double>> read =
-        FBF_TRY(download_pair_tables(res, tables, ns, nb));
-    add_pair_shares(read, ns, diff, out);
-    if (amplitudes != nullptr) {
-      append_sc_amplitudes(read, ns, diff, *amplitudes);
+        FBF_TRY(download_pair_tables(res, tables, slots, nb));
+    add_pair_shares(read, slots, ns, diff, {.kets = cached, .at = static_cast<size_t>(b0)}, out);
+    if (amplitudes != nullptr && cached == nullptr) {
+      append_sc_amplitudes(read, slots, ns, diff, *amplitudes);
     }
   }
   return out;
@@ -647,18 +728,25 @@ energy_si(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
   std::vector<Buffers::device<double>> a22;
   std::vector<Buffers::device<double>> a23;
   std::vector<Buffers::device<double>> a25;
-  for (int64_t j = 0; j < ns; ++j) {
+  for (int64_t j = 0; j < ns && pair_given(ops, (j * ns) + j); ++j) {
     const ActiveOperands &o = ops[static_cast<size_t>((j * ns) + j)];
     a22.push_back(FBF_TRY(make_a22(res, o.h1e, o.h2e, o.dm2, o.dm3, o.f3ac, o.f3ca)));
     a23.push_back(FBF_TRY(make_a23(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3)));
     a25.push_back(FBF_TRY(make_a25(res, o.h1e, o.h2e, o.dm1, o.dm2)));
   }
-  // Per pair: dm1_h's 2δ is ⟨I|J⟩'s.
+  // Per given pair: dm1_h's 2δ is ⟨I|J⟩'s. An omitted pair holds an empty
+  // buffer, so the vectors stay indexed by pair.
   std::vector<Buffers::device<double>> dm3_h;
   std::vector<Buffers::device<double>> dm2_h;
   std::vector<Buffers::device<double>> dm1_h;
   for (int64_t p = 0; p < ns * ns; ++p) {
     const ActiveOperands &o = ops[static_cast<size_t>(p)];
+    if (!pair_given(ops, p)) {
+      for (auto *v : {&dm3_h, &dm2_h, &dm1_h}) {
+        v->emplace_back(0, res.device());
+      }
+      continue;
+    }
     const double overlap = p / ns == p % ns ? 1.0 : 0.0;
     dm3_h.push_back(FBF_TRY(make_dm3_h(res, o.dm2, o.dm3, o.delta)));
     dm2_h.push_back(FBF_TRY(make_dm2_h(res, o.dm1, o.dm2, o.delta)));
@@ -670,6 +758,8 @@ energy_si(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
   const int32_t step = batch_step(extent, batch);
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Si, step);
   std::vector<std::pair<double, double>> out(static_cast<size_t>(ns * ns));
+  const PairTableSlots slots = pair_table_slots(ops, ns);
+  const auto *const cached = FBF_TRY(sc_cached_kets("Si", ops, ns, amplitudes));
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -678,16 +768,19 @@ energy_si(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Si, b0, b1));
     const EinsumOperand h1e_v{.data = in.h1e_v_si + (n * b0), .dims = {n, nb}, .strides = {1, n}};
 
-    double *const tables = FBF_TRY(workspace_zeros(res, pair_table_count(ns) * nb));
+    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * nb));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         const auto p = static_cast<size_t>((i * ns) + j);
-        double *const norm = tables + (((i * ns) + j) * nb);
+        if (slots.norm[p] < 0) {
+          continue;
+        }
+        double *const norm = tables + (slots.norm[p] * nb);
         if (i == j) {
           const EinsumOperand a22_op{.data = a22[static_cast<size_t>(j)].data(), .dims = d6};
           const EinsumOperand a23_op{.data = a23[static_cast<size_t>(j)].data(), .dims = d4};
           const EinsumOperand a25_op{.data = a25[static_cast<size_t>(j)].data(), .dims = d2};
-          double *const ener = tables + (((ns * ns) + j) * nb);
+          double *const ener = tables + (slots.h[static_cast<size_t>(j)] * nb);
           FBF_TRY(einsum(s, "qpir,pqrabc,baic->i", {h2e_v, a22_op, h2e_v}, ener, {nb}, 1.0));
           FBF_TRY(einsum(s, "qpir,pqra,ai->i", {h2e_v, a23_op, h1e_v}, ener, {nb}, 2.0));
           FBF_TRY(einsum(s, "pi,pa,ai->i", {h1e_v, a25_op, h1e_v}, ener, {nb}, 1.0));
@@ -706,10 +799,10 @@ energy_si(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
       x = -x;
     }
     const std::vector<std::vector<double>> read =
-        FBF_TRY(download_pair_tables(res, tables, ns, nb));
-    add_pair_shares(read, ns, diff, out);
-    if (amplitudes != nullptr) {
-      append_sc_amplitudes(read, ns, diff, *amplitudes);
+        FBF_TRY(download_pair_tables(res, tables, slots, nb));
+    add_pair_shares(read, slots, ns, diff, {.kets = cached, .at = static_cast<size_t>(b0)}, out);
+    if (amplitudes != nullptr && cached == nullptr) {
+      append_sc_amplitudes(read, slots, ns, diff, *amplitudes);
     }
   }
   return out;
@@ -741,17 +834,23 @@ Result<std::pair<double, double>> energy_sijrs(DeviceResources &res, const MoBlo
 // Delta = eps_r - eps_j - eps_i.
 Result<std::vector<std::pair<double, double>>>
 energy_sijr(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
-            std::span<const ActiveOperands> ops, const int64_t ns) {
+            std::span<const ActiveOperands> ops, const int64_t ns,
+            std::vector<std::vector<double>> *amplitudes) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = blocks.ncas;
   const int64_t nc = blocks.ncore;
   const std::vector<int64_t> d2{n, n};
-  // Per pair hdm1, whose 2δ is ⟨I|J⟩'s; per state a3, from its own.
+  // Per given pair hdm1, whose 2δ is ⟨I|J⟩'s (an omitted one empty); per
+  // state a3, from its own.
   std::vector<Buffers::device<double>> hdm1;
   std::vector<Buffers::device<double>> a3;
   for (int64_t p = 0; p < ns * ns; ++p) {
     const ActiveOperands &o = ops[static_cast<size_t>(p)];
     const bool own = p / ns == p % ns;
+    if (!pair_given(ops, p)) {
+      hdm1.emplace_back(size_t{0}, res.device());
+      continue;
+    }
     hdm1.push_back(FBF_TRY(make_hdm1(res, o.dm1, o.delta, own ? 1.0 : 0.0)));
     if (own) {
       const EinsumOperand hdm1_op{.data = hdm1.back().data(), .dims = d2};
@@ -765,6 +864,9 @@ energy_sijr(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
   const int32_t step = batch_step(extent, batch);
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sijr, step);
   std::vector<std::pair<double, double>> out(static_cast<size_t>(ns * ns));
+  const PairTableSlots slots = pair_table_slots(ops, ns);
+  const auto *const cached = FBF_TRY(sc_cached_kets("Sijr", ops, ns, amplitudes));
+  size_t at_c = 0; // the cached kets' first perturber of this slab
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nr = b1 - b0;
@@ -773,24 +875,29 @@ energy_sijr(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Sijr, b0, b1));
 
     const int64_t count = nr * nc * nc;
-    double *const tables = FBF_TRY(workspace_zeros(res, pair_table_count(ns) * count));
+    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * count));
     const std::vector<int64_t> out_dims{nr, nc, nc};
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
+        const int64_t slot = slots.norm[static_cast<size_t>((i * ns) + j)];
+        if (slot < 0) {
+          continue;
+        }
         const EinsumOperand hdm1_op{.data = hdm1[static_cast<size_t>((i * ns) + j)].data(),
                                     .dims = d2};
-        double *const norm = tables + (((i * ns) + j) * count);
+        double *const norm = tables + (slot * count);
         FBF_TRY(einsum(s, "rpji,raji,pa->rji", {h2e_v, h2e_v, hdm1_op}, norm, out_dims, 2.0));
         FBF_TRY(einsum(s, "rpji,raij,pa->rji", {h2e_v, h2e_v, hdm1_op}, norm, out_dims, -1.0));
         if (i == j) {
           const EinsumOperand a3_op{.data = a3[static_cast<size_t>(j)].data(), .dims = d2};
-          double *const h = tables + (((ns * ns) + j) * count);
+          double *const h = tables + (slots.h[static_cast<size_t>(j)] * count);
           FBF_TRY(einsum(s, "rpji,raji,pa->rji", {h2e_v, h2e_v, a3_op}, h, out_dims, 2.0));
           FBF_TRY(einsum(s, "rpji,raij,pa->rji", {h2e_v, h2e_v, a3_op}, h, out_dims, -1.0));
         }
       }
     }
-    std::vector<std::vector<double>> packed = FBF_TRY(download_pair_tables(res, tables, ns, count));
+    std::vector<std::vector<double>> packed =
+        FBF_TRY(download_pair_tables(res, tables, slots, count));
 
     const auto at = [&](const int64_t r, const int64_t j, const int64_t i) {
       return static_cast<size_t>((((r * nc) + j) * nc) + i);
@@ -816,7 +923,11 @@ energy_sijr(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
         }
       }
     }
-    add_pair_shares(packed, ns, diff, out);
+    add_pair_shares(packed, slots, ns, diff, {.kets = cached, .at = at_c}, out);
+    if (amplitudes != nullptr && cached == nullptr) {
+      append_sc_amplitudes(packed, slots, ns, diff, *amplitudes);
+    }
+    at_c += diff.size();
   }
   return out;
 }
@@ -828,19 +939,22 @@ energy_sijr(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
 // each: the slabs, not the output, are what grow with the active space.
 Result<std::vector<std::pair<double, double>>>
 energy_srsi(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
-            std::span<const ActiveOperands> ops, const int64_t ns) {
+            std::span<const ActiveOperands> ops, const int64_t ns,
+            std::vector<std::vector<double>> *amplitudes) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = blocks.ncas;
   const int64_t nc = blocks.ncore;
   const int64_t nv = blocks.nvirt;
   std::vector<Buffers::device<double>> k27;
-  for (int64_t j = 0; j < ns; ++j) {
+  for (int64_t j = 0; j < ns && pair_given(ops, (j * ns) + j); ++j) {
     const ActiveOperands &o = ops[static_cast<size_t>((j * ns) + j)];
     k27.push_back(FBF_TRY(make_k27(res, o.h1e, o.h2e, o.dm1, o.dm2)));
   }
 
   const int64_t count = nv * nv * nc;
-  Buffers::device<double> tables = FBF_TRY(device_zeros(res, pair_table_count(ns) * count));
+  const PairTableSlots slots = pair_table_slots(ops, ns);
+  const auto *const cached = FBF_TRY(sc_cached_kets("Srsi", ops, ns, amplitudes));
+  Buffers::device<double> tables = FBF_TRY(device_zeros(res, slots.count * count));
   const int32_t extent = walk_extent(blocks, ExtBlock::Srsi);
   const int32_t step = batch_step(extent, batch);
   Buffers::device<double> slab_a = slab_buffer(res, blocks, ExtBlock::Srsi, step);
@@ -860,12 +974,17 @@ energy_srsi(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         const ActiveOperands &o = ops[static_cast<size_t>((i * ns) + j)];
-        double *const norm_rows = tables.data() + (((i * ns) + j) * count) + (b0 * nv * nc);
+        const int64_t slot = slots.norm[static_cast<size_t>((i * ns) + j)];
+        if (slot < 0) {
+          continue;
+        }
+        double *const norm_rows = tables.data() + (slot * count) + (b0 * nv * nc);
         FBF_TRY(einsum(s, "rsip,rsia,pa->rsi", {h_a, h_a, o.dm1}, norm_rows, rows_dims, 2.0));
         FBF_TRY(einsum(s, "rsip,sria,pa->rsi", {h_a, h_b, o.dm1}, norm_rows, rows_dims, -1.0));
         if (i == j) {
           const EinsumOperand k27_op{.data = k27[static_cast<size_t>(j)].data(), .dims = {n, n}};
-          double *const h_rows = tables.data() + (((ns * ns) + j) * count) + (b0 * nv * nc);
+          double *const h_rows =
+              tables.data() + (slots.h[static_cast<size_t>(j)] * count) + (b0 * nv * nc);
           FBF_TRY(einsum(s, "rsip,rsia,pa->rsi", {h_a, h_a, k27_op}, h_rows, rows_dims, 2.0));
           FBF_TRY(einsum(s, "rsip,sria,pa->rsi", {h_a, h_b, k27_op}, h_rows, rows_dims, -1.0));
         }
@@ -874,7 +993,7 @@ energy_srsi(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
   }
 
   std::vector<std::vector<double>> packed =
-      FBF_TRY(download_pair_tables(res, tables.data(), ns, count));
+      FBF_TRY(download_pair_tables(res, tables.data(), slots, count));
   const auto at = [&](const int64_t r, const int64_t ss, const int64_t i) {
     return static_cast<size_t>((((r * nv) + ss) * nc) + i);
   };
@@ -902,7 +1021,10 @@ energy_srsi(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
     }
   }
   std::vector<std::pair<double, double>> out(static_cast<size_t>(ns * ns));
-  add_pair_shares(packed, ns, diff, out);
+  add_pair_shares(packed, slots, ns, diff, {.kets = cached}, out);
+  if (amplitudes != nullptr && cached == nullptr) {
+    append_sc_amplitudes(packed, slots, ns, diff, *amplitudes);
+  }
   return out;
 }
 
@@ -910,7 +1032,8 @@ energy_srsi(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
 // the Dyall block `pqab`.
 Result<std::vector<std::pair<double, double>>>
 energy_srs(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
-           std::span<const ActiveOperands> ops, const int64_t ns) {
+           std::span<const ActiveOperands> ops, const int64_t ns,
+           std::vector<std::vector<double>> *amplitudes) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = blocks.ncas;
   const int64_t nv = blocks.nvirt;
@@ -919,12 +1042,15 @@ energy_srs(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
     return out;
   }
   const std::vector<int64_t> d4(4, n);
-  // Per pair rm2; per state a7, built beside its own rm2.
+  // Per given pair rm2 (an omitted one empty); per state a7, built beside its
+  // own rm2.
   std::vector<Buffers::device<double>> rm2;
   std::vector<Buffers::device<double>> a7;
   for (int64_t p = 0; p < ns * ns; ++p) {
     const ActiveOperands &o = ops[static_cast<size_t>(p)];
-    if (p / ns == p % ns) {
+    if (!pair_given(ops, p)) {
+      rm2.emplace_back(size_t{0}, res.device());
+    } else if (p / ns == p % ns) {
       auto [own_rm2, own_a7] = FBF_TRY(make_a7(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
       rm2.push_back(std::move(own_rm2));
       a7.push_back(std::move(own_a7));
@@ -937,6 +1063,8 @@ energy_srs(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
   const int32_t extent = walk_extent(blocks, ExtBlock::Srs);
   const int32_t step = batch_step(extent, batch);
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Srs, step);
+  const PairTableSlots slots = pair_table_slots(ops, ns);
+  const auto *const cached = FBF_TRY(sc_cached_kets("Srs", ops, ns, amplitudes));
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -945,16 +1073,20 @@ energy_srs(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Srs, b0, b1));
 
     const int64_t count = nb * nv;
-    double *const tables = FBF_TRY(workspace_zeros(res, pair_table_count(ns) * count));
+    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * count));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
+        const int64_t slot = slots.norm[static_cast<size_t>((i * ns) + j)];
+        if (slot < 0) {
+          continue;
+        }
         const EinsumOperand rm2_op{.data = rm2[static_cast<size_t>((i * ns) + j)].data(),
                                    .dims = d4};
-        double *const norm = tables + (((i * ns) + j) * count);
+        double *const norm = tables + (slot * count);
         FBF_TRY(einsum(s, "rsqp,rsba,pqba->rs", {h2e_v, h2e_v, rm2_op}, norm, {nb, nv}, 0.5));
         if (i == j) {
           const EinsumOperand a7_op{.data = a7[static_cast<size_t>(j)].data(), .dims = d4};
-          double *const h = tables + (((ns * ns) + j) * count);
+          double *const h = tables + (slots.h[static_cast<size_t>(j)] * count);
           FBF_TRY(einsum(s, "rsqp,rsba,pqab->rs", {h2e_v, h2e_v, a7_op}, h, {nb, nv}, 0.5));
         }
       }
@@ -966,7 +1098,13 @@ energy_srs(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
         diff.push_back(e_virt[static_cast<size_t>(r)] + e_virt[static_cast<size_t>(ss)]);
       }
     }
-    add_pair_shares(FBF_TRY(download_pair_tables(res, tables, ns, count)), ns, diff, out);
+    const std::vector<std::vector<double>> read =
+        FBF_TRY(download_pair_tables(res, tables, slots, count));
+    add_pair_shares(read, slots, ns, diff, {.kets = cached, .at = static_cast<size_t>(b0 * nv)},
+                    out);
+    if (amplitudes != nullptr && cached == nullptr) {
+      append_sc_amplitudes(read, slots, ns, diff, *amplitudes);
+    }
   }
   return out;
 }
@@ -975,7 +1113,8 @@ energy_srs(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
 // subscripts: hdm2 for the norm, a9 for H.
 Result<std::vector<std::pair<double, double>>>
 energy_sij(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
-           std::span<const ActiveOperands> ops, const int64_t ns) {
+           std::span<const ActiveOperands> ops, const int64_t ns,
+           std::vector<std::vector<double>> *amplitudes) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = blocks.ncas;
   const int64_t nc = blocks.ncore;
@@ -992,6 +1131,10 @@ energy_sij(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
   for (int64_t p = 0; p < ns * ns; ++p) {
     const ActiveOperands &o = ops[static_cast<size_t>(p)];
     const bool own = p / ns == p % ns;
+    if (!pair_given(ops, p)) {
+      hdm2.emplace_back(size_t{0}, res.device());
+      continue;
+    }
     hdm2.push_back(FBF_TRY(make_hdm2(res, o.dm1, o.dm2, o.delta, own ? 1.0 : 0.0)));
     if (own) {
       const EinsumOperand hdm2_op{.data = hdm2.back().data(), .dims = d4};
@@ -1006,6 +1149,8 @@ energy_sij(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
   const int32_t extent = walk_extent(blocks, ExtBlock::Sij);
   const int32_t step = batch_step(extent, batch);
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sij, step);
+  const PairTableSlots slots = pair_table_slots(ops, ns);
+  const auto *const cached = FBF_TRY(sc_cached_kets("Sij", ops, ns, amplitudes));
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -1014,16 +1159,20 @@ energy_sij(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Sij, b0, b1));
 
     const int64_t count = nb * nc;
-    double *const tables = FBF_TRY(workspace_zeros(res, pair_table_count(ns) * count));
+    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * count));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
+        const int64_t slot = slots.norm[static_cast<size_t>((i * ns) + j)];
+        if (slot < 0) {
+          continue;
+        }
         const EinsumOperand hdm2_op{.data = hdm2[static_cast<size_t>((i * ns) + j)].data(),
                                     .dims = d4};
-        double *const norm = tables + (((i * ns) + j) * count);
+        double *const norm = tables + (slot * count);
         FBF_TRY(einsum(s, "qpij,baij,pqab->ij", {h2e_v, h2e_v, hdm2_op}, norm, {nb, nc}, 0.5));
         if (i == j) {
           const EinsumOperand a9_op{.data = a9[static_cast<size_t>(j)].data(), .dims = d4};
-          double *const h = tables + (((ns * ns) + j) * count);
+          double *const h = tables + (slots.h[static_cast<size_t>(j)] * count);
           FBF_TRY(einsum(s, "qpij,baij,pqab->ij", {h2e_v, h2e_v, a9_op}, h, {nb, nc}, 0.5));
         }
       }
@@ -1035,7 +1184,13 @@ energy_sij(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
         diff.push_back(-(e_core[static_cast<size_t>(i)] + e_core[static_cast<size_t>(j)]));
       }
     }
-    add_pair_shares(FBF_TRY(download_pair_tables(res, tables, ns, count)), ns, diff, out);
+    const std::vector<std::vector<double>> read =
+        FBF_TRY(download_pair_tables(res, tables, slots, count));
+    add_pair_shares(read, slots, ns, diff, {.kets = cached, .at = static_cast<size_t>(b0 * nc)},
+                    out);
+    if (amplitudes != nullptr && cached == nullptr) {
+      append_sc_amplitudes(read, slots, ns, diff, *amplitudes);
+    }
   }
   return out;
 }
@@ -1054,7 +1209,7 @@ energy_sir(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
   const std::vector<int64_t> d4(4, n);
   std::vector<Buffers::device<double>> a12;
   std::vector<Buffers::device<double>> a13;
-  for (int64_t j = 0; j < ns; ++j) {
+  for (int64_t j = 0; j < ns && pair_given(ops, (j * ns) + j); ++j) {
     const ActiveOperands &o = ops[static_cast<size_t>((j * ns) + j)];
     a12.push_back(FBF_TRY(make_a12(res, o.h1e, o.h2e, o.dm2, o.dm3)));
     a13.push_back(FBF_TRY(make_a13(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta)));
@@ -1067,6 +1222,8 @@ energy_sir(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
   Buffers::device<double> slab_1 = slab_buffer(res, blocks, ExtBlock::Sir1, step);
   Buffers::device<double> slab_2 = slab_buffer(res, blocks, ExtBlock::Sir2, step);
   std::vector<std::pair<double, double>> out(static_cast<size_t>(ns * ns));
+  const PairTableSlots slots = pair_table_slots(ops, ns);
+  const auto *const cached = FBF_TRY(sc_cached_kets("Sir", ops, ns, amplitudes));
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -1080,11 +1237,15 @@ energy_sir(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
 
     const int64_t count = nc * nb;
     const std::vector<int64_t> out_dims{nc, nb};
-    double *const tables = FBF_TRY(workspace_zeros(res, pair_table_count(ns) * count));
+    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * count));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         const ActiveOperands &o = ops[static_cast<size_t>((i * ns) + j)];
-        double *const norm = tables + (((i * ns) + j) * count);
+        const int64_t slot = slots.norm[static_cast<size_t>((i * ns) + j)];
+        if (slot < 0) {
+          continue;
+        }
+        double *const norm = tables + (slot * count);
         FBF_TRY(einsum(s, "rpiq,raib,qpab->ir", {h2e_v1, h2e_v1, o.dm2}, norm, out_dims, 2.0));
         FBF_TRY(einsum(s, "rpiq,rabi,qpab->ir", {h2e_v1, h2e_v2, o.dm2}, norm, out_dims, -1.0));
         FBF_TRY(einsum(s, "rpqi,raib,qpab->ir", {h2e_v2, h2e_v1, o.dm2}, norm, out_dims, -1.0));
@@ -1097,7 +1258,7 @@ energy_sir(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
           FBF_TRY(einsum(s, "ri,ri->ir", {h1e_v, h1e_v}, norm, out_dims, 2.0));
           const EinsumOperand a12_op{.data = a12[static_cast<size_t>(j)].data(), .dims = d4};
           const EinsumOperand a13_op{.data = a13[static_cast<size_t>(j)].data(), .dims = d4};
-          double *const h = tables + (((ns * ns) + j) * count);
+          double *const h = tables + (slots.h[static_cast<size_t>(j)] * count);
           FBF_TRY(einsum(s, "rpiq,raib,pqab->ir", {h2e_v1, h2e_v1, a12_op}, h, out_dims, 2.0));
           FBF_TRY(einsum(s, "rpiq,rabi,pqab->ir", {h2e_v1, h2e_v2, a12_op}, h, out_dims, -1.0));
           FBF_TRY(einsum(s, "rpqi,raib,pqab->ir", {h2e_v2, h2e_v1, a12_op}, h, out_dims, -1.0));
@@ -1113,12 +1274,24 @@ energy_sir(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
       }
     }
     const std::vector<std::vector<double>> read =
-        FBF_TRY(download_pair_tables(res, tables, ns, count));
-    add_pair_shares(read, ns, diff, out);
-    if (amplitudes != nullptr) {
-      // The tables run (i, r); ScAmplitudes' Sir is [r ncore + i] over every r.
-      std::vector<std::vector<double>> slab_c;
-      append_sc_amplitudes(read, ns, diff, slab_c);
+        FBF_TRY(download_pair_tables(res, tables, slots, count));
+    // The tables run (i, r); ScAmplitudes' Sir is [r ncore + i] over every r,
+    // so cached kets are gathered into the tables' order.
+    std::vector<std::vector<double>> slab_c;
+    if (cached != nullptr) {
+      slab_c.assign(static_cast<size_t>(ns), std::vector<double>(static_cast<size_t>(count)));
+      for (int64_t j = 0; j < ns; ++j) {
+        for (int64_t i = 0; i < nc; ++i) {
+          for (int64_t r = 0; r < nb; ++r) {
+            slab_c[static_cast<size_t>(j)][static_cast<size_t>((i * nb) + r)] =
+                (*cached)[static_cast<size_t>(j)][static_cast<size_t>(((b0 + r) * nc) + i)];
+          }
+        }
+      }
+    }
+    add_pair_shares(read, slots, ns, diff, {.kets = cached != nullptr ? &slab_c : nullptr}, out);
+    if (amplitudes != nullptr && cached == nullptr) {
+      append_sc_amplitudes(read, slots, ns, diff, slab_c);
       amplitudes->resize(static_cast<size_t>(ns),
                          std::vector<double>(static_cast<size_t>(nv * nc), 0.0));
       for (int64_t j = 0; j < ns; ++j) {
@@ -1184,8 +1357,11 @@ Result<std::vector<ClassEnergies>> sc_couplings(DeviceResources &res, const MoBl
   // from the first.
   const EnergyInputs &in = pairs.front();
 
+  // With the diagonal omitted every class reads its kets from @p amplitudes,
+  // which a previous call filled, and Sijrs, diagonal alone, is not walked.
+  const bool own = pairs.front().dm1 != nullptr;
   std::array<std::vector<std::pair<double, double>>, 8> classes;
-  if (amplitudes != nullptr) {
+  if (amplitudes != nullptr && own) {
     *amplitudes = ScAmplitudes{};
   }
   classes[0] =
@@ -1194,18 +1370,32 @@ Result<std::vector<ClassEnergies>> sc_couplings(DeviceResources &res, const MoBl
       FBF_TRY(energy_si(res, blocks, in, batch, ops, n, amplitudes ? &amplitudes->si : nullptr));
   // Sijrs reads no RDM: every state's is the one number, and every
   // transition's is ⟨I|J⟩ = 0 times it.
-  const std::pair<double, double> sijrs = FBF_TRY(energy_sijrs(res, blocks, in, batch));
   classes[2].assign(static_cast<size_t>(n * n), std::pair{0.0, 0.0});
-  for (int64_t j = 0; j < n; ++j) {
-    classes[2][static_cast<size_t>((j * n) + j)] = sijrs;
+  if (own) {
+    const std::pair<double, double> sijrs = FBF_TRY(energy_sijrs(res, blocks, in, batch));
+    for (int64_t j = 0; j < n; ++j) {
+      classes[2][static_cast<size_t>((j * n) + j)] = sijrs;
+    }
   }
-  classes[3] = FBF_TRY(energy_sijr(res, blocks, batch, ops, n));
-  classes[4] = FBF_TRY(energy_srsi(res, blocks, batch, ops, n));
-  classes[5] = FBF_TRY(energy_srs(res, blocks, batch, ops, n));
-  classes[6] = FBF_TRY(energy_sij(res, blocks, batch, ops, n));
+  classes[3] =
+      FBF_TRY(energy_sijr(res, blocks, batch, ops, n, amplitudes ? &amplitudes->sijr : nullptr));
+  classes[4] =
+      FBF_TRY(energy_srsi(res, blocks, batch, ops, n, amplitudes ? &amplitudes->srsi : nullptr));
+  classes[5] =
+      FBF_TRY(energy_srs(res, blocks, batch, ops, n, amplitudes ? &amplitudes->srs : nullptr));
+  classes[6] =
+      FBF_TRY(energy_sij(res, blocks, batch, ops, n, amplitudes ? &amplitudes->sij : nullptr));
   classes[7] =
       FBF_TRY(energy_sir(res, blocks, in, batch, ops, n, amplitudes ? &amplitudes->sir : nullptr));
 
+  if (amplitudes != nullptr && own) {
+    // A class with no perturber (no slab walked) still holds every state's
+    // empty list, so a call reading these kets finds n states'.
+    for (auto *c : {&amplitudes->sr, &amplitudes->si, &amplitudes->sijr, &amplitudes->srsi,
+                    &amplitudes->srs, &amplitudes->sij, &amplitudes->sir}) {
+      c->resize(static_cast<size_t>(n));
+    }
+  }
   std::vector<ClassEnergies> out(static_cast<size_t>(n * n));
   for (size_t p = 0; p < out.size(); ++p) {
     for (size_t k = 0; k < 8; ++k) {

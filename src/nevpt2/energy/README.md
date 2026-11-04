@@ -104,13 +104,28 @@ found, are `test/gtest/data/qd_nevpt2/README.md`'s:
   is PySCF's einsum as written, assuming no symmetry of its RDM.
 
 Each class walks its slabs **once** for every pair. Per slab its einsums
-accumulate into n² + n tables (`pair_table_count`), one value per
-perturber: table I n + J is pair (I, J)'s norm einsum, so state J's own N^J
-on the diagonal, and table n² + J is H^J. The host finish
-(`add_pair_shares`) then forms every coupling from them. The memory is n
-sets of Dyall blocks and n² of norm intermediates, all held across the walk
-(dm3_h is n_act⁶ per pair), and the slab tables grow as n² + n; Srsi's whole
-(v, v, c) tables grow the same way.
+accumulate into one table per given pair and one per given state
+(`pair_table_slots`), one value per perturber: pair (I, J)'s norm einsum, so
+state J's own N^J on the diagonal, and state J's H^J. The host finish
+(`add_pair_shares`) then forms every coupling from them. The memory is a set
+of Dyall blocks per given state and of norm intermediates per given pair,
+all held across the walk (dm3_h is n_act⁶ per pair), and the slab tables
+grow with the given entries; Srsi's whole (v, v, c) tables the same way.
+
+**Omitted entries** (#689). An entry whose dm1 is null is not built, walked
+or read, and its element is zero; `qd.cpp` checks that every diagonal is
+given or none, and each off-diagonal beside its transpose. With the diagonal
+omitted, the kets come from the `ScAmplitudes` a call with those diagonals
+filled ([The amplitude hand-over](#the-amplitude-hand-over)): element (I, J)
+is Σ_t T^t_IJ c^J_t, the coupling above with −1 / (Δ_t + H^J_t / N^J_t)
+divided out once, by that call, and Sijrs (diagonal only) is not walked. So
+n states take one call over the n diagonals, which walks each state's classes
+once, then one per pair over (I, J) and (J, I) alone, which walks only the
+transition norms: the pipeline's QD step, holding two transition sets at a
+time and never n². It agrees with the whole n × n call to round-off: the
+division moves, and the atomics reorder
+(`Nevpt2QdEnergyPairs.DiagonalOnceMatchesPerPairPath`, 1e-10 of the pair's
+largest diagonal class energy; at most 2e-13 on the ten cases).
 
 The matrix is returned unsymmetrized; its symmetrization and
 diagonalization are the caller's.
@@ -256,23 +271,38 @@ denominator checked as `pc_class_energies` does. The memory over one class
 is n solves (λ, T, U, and t1) and n² − n transition T and t1, d × m_J each,
 held across the walk; the slab's y grows as n².
 
+Entries may be omitted as SC's. With the diagonal omitted no state is
+solved: `pc_kets` takes each U_J from the `PcAmplitudes` a call with the
+diagonals filled, builds only the given transitions' T and t1, and the
+finish reads that call's g: (I, J) is −c Σ_k y_{I←J,tk} g_{J,tk}, Sijr's and
+Srsi's y_{I←J} (2 g_t − g_{t′}), the partner t′ anywhere in the cached
+(r, s, i) table. Its dropped counts are d − m_J. Nothing is refused that
+the diagonal call did not refuse.
+
 ## The amplitude hand-over
 
     sc_effective_hamiltonian(res, blocks, pairs, batch, &sc_amplitudes)
     pc_effective_hamiltonian(res, blocks, pairs, batch, &pc_amplitudes)
 
 Both take an optional last argument that receives each state's first-order
-wave function in the three classes with one external orbital, Sr, Si and
-Sir, which is what the QD-NEVPT2 PT2 transition density
-([`../nac/`](../nac/README.md)) contracts. Nothing is re-solved: the walks
-already form these and only keep them. The elements are the same with and
-without it (`Nevpt2Pt2Density.AmplitudeOutputLeavesHeffUnchanged`).
+wave function in the seven classes with an active index. Sr's, Si's and
+Sir's are what the QD-NEVPT2 PT2 transition density
+([`../nac/`](../nac/README.md)) contracts; all seven are the kets a later
+call with its diagonal omitted reads instead of walking them again, when
+the same pointer is passed back ([SC-QD-NEVPT2](#sc-qd-nevpt2)). Nothing is
+re-solved: the walks already form these and only keep them. The elements
+are the same with and without it
+(`Nevpt2Pt2Density.AmplitudeOutputLeavesHeffUnchanged`). On the host they
+are one double per perturber per state for SC, and tuples × m_J per class
+and state for PC: the largest Srsi's v² c n_act and Srs's v² m.
 
 - **`ScAmplitudes`**: per state J and perturber t, c_t = −1 / (Δ_t +
   H^J_t / N^J_t), J's own denominator from its N and H tables, and 0 where
   `_norm_to_energy`'s guard drops the perturber. Ψ_J⁽¹⁾ holds c_t P_t V|J⟩.
-  Sr over r, Si over i, Sir over (r, i) at r ncore + i (its tables run
-  (i, r), and are reordered).
+  Sr over r, Si over i, Sijr over (r, j ≤ i) and Srsi over (r ≤ s, i) as
+  their tables pack them, Srs over (r, s), Sij over (i, j), Sir over (r, i)
+  at r ncore + i (its tables run (i, r), and are reordered). A class with
+  no perturber holds n empty lists.
 - **`PcAmplitudes`**: per class and state J, the solve's U_J (moved out once
   the class is finished and checked) and g_tk = y_{J,tk} / (λ_k + Δ_t) from
   J's own rows of each slab, tuples × m_J on the host. Ψ_J⁽¹⁾ holds
@@ -639,7 +669,15 @@ inputs, and the walk in batches of two against the whole one, at 1e-13.
 transition RDMs from `nevpt2::rdms` over the golden CI vectors (whose signs
 fix the off-diagonals' phases), on the three three-root cases.
 `Nevpt2QdEnergyRefusals`: pair inputs that are not n², or that do not share
-their integrals, are InvalidConfig (SC and PC).
+their integrals, are InvalidConfig (SC and PC), and so are omissions out of
+rule (one diagonal without the other, an off-diagonal without its
+transpose, the diagonal omitted with no kets or another call's) and an
+omitted entry in the SC reverse pass. `Nevpt2QdEnergyPairs`, on every
+case: the step's path, one diagonal call then one per pair with the diagonal
+omitted, against the 2 × 2 call per pair it replaced, SC and PC, each class
+of each element within 1e-10 of the pair's largest diagonal class energy
+(the off-diagonal's perturber terms are bounded by its two states' own),
+with equal dropped counts.
 
 PC-QD, in the same file. `Nevpt2PcQdEnergy`, on all six cases: from the
 golden transition RDMs, every element's per-class coupling

@@ -319,6 +319,137 @@ TEST_P(Nevpt2PcQdEnergy, MatchesGoldenDiagonalAndBatches) {
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcQdEnergy, ::testing::ValuesIn(kCases),
                          [](const auto &info) { return info.param; });
 
+// The step's path (#689) against the per-pair one it replaced, on every case:
+// one call over the n diagonals alone, filling the kets, then one per pair
+// over (I, J) and (J, I) alone with the diagonal omitted, against the 2 x 2
+// call per pair (I's own, (I, J), (J, I), J's own) the step made before, SC
+// and PC. The two differ only in where each perturber's 1 / (Δ + H / N) (SC)
+// or 1 / (λ + Δ) (PC) is divided out and in GPU atomics' order, so each
+// element agrees to round-off of its summands. A coupling's perturber terms
+// are bounded by its two states' own (Cauchy-Schwarz on T^t_IJ), so the bar
+// is 1e-10 of the largest |class energy| on the pair's two diagonals.
+constexpr double kPathTol = 1e-10;
+
+// The pair inputs with every entry omitted (null RDMs) but those @p keep
+// names.
+std::vector<nevpt2::EnergyInputs> only(const Case &c, const std::vector<std::size_t> &keep) {
+  std::vector<nevpt2::EnergyInputs> out = c.pairs;
+  for (std::size_t p = 0; p < out.size(); ++p) {
+    if (std::ranges::find(keep, p) == keep.end()) {
+      out[p].dm1 = out[p].dm2 = out[p].dm3 = out[p].f3ca = out[p].f3ac = nullptr;
+    }
+  }
+  return out;
+}
+
+// The worst |new - old| / scale over every element and class, scale the
+// largest |class energy| of the element's two states' own elements in @p old;
+// each class EXPECTed within kPathTol of it.
+template <typename Element>
+double expect_path(const std::vector<Element> &got, const std::vector<Element> &old,
+                   const std::size_t n, const std::string &what) {
+  double worst = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      double scale = 0.0;
+      for (const std::size_t own : {(i * n) + i, (j * n) + j}) {
+        for (const double e : old[own].energies) {
+          scale = std::max(scale, std::abs(e));
+        }
+      }
+      const std::size_t p = (i * n) + j;
+      for (std::size_t k = 0; k < 8; ++k) {
+        const double diff = std::abs(got[p].energies[k] - old[p].energies[k]);
+        EXPECT_LE(diff, kPathTol * scale)
+            << what << " (" << i << ", " << j << ") " << kClassNames[k];
+        worst = std::max(worst, diff / scale);
+      }
+    }
+  }
+  return worst;
+}
+
+class Nevpt2QdEnergyPairs : public ::testing::TestWithParam<std::string> {};
+
+TEST_P(Nevpt2QdEnergyPairs, DiagonalOnceMatchesPerPairPath) {
+  FBF_REQUIRE_GPU();
+  const std::string name = GetParam();
+  // Every case walks whole (batch 0): the six-orbital one is 0.7 s on an RTX
+  // 3080, so all stay in the fast tier.
+  const std::filesystem::path dir = kDataDir / name;
+  fb::DeviceResources res(0);
+  Case c = load_case(res, dir);
+  ASSERT_TRUE(c.blocks.has_value());
+  golden_rdms(res, dir, c);
+  const std::size_t n = c.nroots;
+
+  // The old path: per pair its 2 x 2 block.
+  std::vector<nevpt2::ClassEnergies> old_sc(n * n);
+  std::vector<nevpt2::PcClassEnergies> old_pc(n * n);
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = i + 1; j < n; ++j) {
+      const std::array<nevpt2::EnergyInputs, 4> block{c.pairs[(i * n) + i], c.pairs[(i * n) + j],
+                                                      c.pairs[(j * n) + i], c.pairs[(j * n) + j]};
+      const auto sc = nevpt2::sc_effective_hamiltonian(res, *c.blocks, block, 0);
+      ASSERT_TRUE(sc) << sc.error().message;
+      const auto pc = nevpt2::pc_effective_hamiltonian(res, *c.blocks, block, 0);
+      ASSERT_TRUE(pc) << pc.error().message;
+      for (const auto &[at, from] : {std::pair{(i * n) + i, 0}, std::pair{(i * n) + j, 1},
+                                     std::pair{(j * n) + i, 2}, std::pair{(j * n) + j, 3}}) {
+        old_sc[at] = (*sc)[static_cast<std::size_t>(from)];
+        old_pc[at] = (*pc)[static_cast<std::size_t>(from)];
+      }
+    }
+  }
+
+  // The new: the diagonal once, then each pair's two entries alone.
+  std::vector<std::size_t> diagonal;
+  for (std::size_t j = 0; j < n; ++j) {
+    diagonal.push_back((j * n) + j);
+  }
+  const std::vector<nevpt2::EnergyInputs> own = only(c, diagonal);
+  nevpt2::ScAmplitudes sc_kets;
+  nevpt2::PcAmplitudes pc_kets;
+  auto got_sc = nevpt2::sc_effective_hamiltonian(res, *c.blocks, own, 0, &sc_kets);
+  ASSERT_TRUE(got_sc) << got_sc.error().message;
+  auto got_pc = nevpt2::pc_effective_hamiltonian(res, *c.blocks, own, 0, &pc_kets);
+  ASSERT_TRUE(got_pc) << got_pc.error().message;
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      if (i != j) {
+        // An omitted entry's element is zero.
+        EXPECT_EQ((*got_sc)[(i * n) + j].total, 0.0);
+        EXPECT_EQ((*got_pc)[(i * n) + j].total, 0.0);
+      }
+    }
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = i + 1; j < n; ++j) {
+      const std::vector<nevpt2::EnergyInputs> pair = only(c, {(i * n) + j, (j * n) + i});
+      const auto sc = nevpt2::sc_effective_hamiltonian(res, *c.blocks, pair, 0, &sc_kets);
+      ASSERT_TRUE(sc) << sc.error().message;
+      const auto pc = nevpt2::pc_effective_hamiltonian(res, *c.blocks, pair, 0, &pc_kets);
+      ASSERT_TRUE(pc) << pc.error().message;
+      for (const std::size_t p : {(i * n) + j, (j * n) + i}) {
+        (*got_sc)[p] = (*sc)[p];
+        (*got_pc)[p] = (*pc)[p];
+        for (std::size_t k = 0; k < 8; ++k) {
+          // The ket's cut count comes from its cached U_J.
+          EXPECT_EQ((*pc)[p].dropped[k], old_pc[p].dropped[k]) << name << " " << kClassNames[k];
+        }
+      }
+    }
+  }
+  const double sc_worst = expect_path(*got_sc, old_sc, n, name + " SC");
+  const double pc_worst = expect_path(*got_pc, old_pc, n, name + " PC");
+  std::cout << std::format("[ path     ] {}: SC worst {:.2e}, PC worst {:.2e} of the diagonal "
+                           "scale, bar {:.0e}\n",
+                           name, sc_worst, pc_worst, kPathTol);
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdEnergyPairs, ::testing::ValuesIn(kCases),
+                         [](const auto &info) { return info.param; });
+
 // What pc_class_energies refuses for one state is refused here, the error
 // naming the class and the state: h8_sto3g_sa3 with state 1's own RDMs zero,
 // so its Sr metric has no positive eigenvalue; states 0 and 2 pass alone.
@@ -462,6 +593,36 @@ TEST(Nevpt2QdEnergyRefusals, MalformedPairsAreInvalidConfig) {
   const auto pc_unshared = nevpt2::pc_effective_hamiltonian(res, *c.blocks, mixed, 0);
   ASSERT_FALSE(pc_unshared);
   EXPECT_EQ(pc_unshared.error().kind, fb::ErrorKind::InvalidConfig);
+
+  // Omitted entries (null dm1): one diagonal without the other, an
+  // off-diagonal without its transpose, or the diagonal omitted with no kets.
+  nevpt2::ScAmplitudes sc_kets;
+  nevpt2::PcAmplitudes pc_kets;
+  const std::vector<nevpt2::EnergyInputs> half_diagonal = only(c, {0, 1, 2});
+  const std::vector<nevpt2::EnergyInputs> lone = only(c, {0, 1, 3});
+  const std::vector<nevpt2::EnergyInputs> no_diagonal = only(c, {1, 2});
+  for (const auto *bad : {&half_diagonal, &lone, &no_diagonal}) {
+    const auto sc = nevpt2::sc_effective_hamiltonian(res, *c.blocks, *bad, 0);
+    ASSERT_FALSE(sc);
+    EXPECT_EQ(sc.error().kind, fb::ErrorKind::InvalidConfig) << sc.error().message;
+    const auto pc = nevpt2::pc_effective_hamiltonian(res, *c.blocks, *bad, 0);
+    ASSERT_FALSE(pc);
+    EXPECT_EQ(pc.error().kind, fb::ErrorKind::InvalidConfig) << pc.error().message;
+  }
+  // Kets of no call: empty amplitudes, not two states'.
+  const auto sc_empty = nevpt2::sc_effective_hamiltonian(res, *c.blocks, no_diagonal, 0, &sc_kets);
+  ASSERT_FALSE(sc_empty);
+  EXPECT_EQ(sc_empty.error().kind, fb::ErrorKind::InvalidConfig);
+  const auto pc_empty = nevpt2::pc_effective_hamiltonian(res, *c.blocks, no_diagonal, 0, &pc_kets);
+  ASSERT_FALSE(pc_empty);
+  EXPECT_EQ(pc_empty.error().kind, fb::ErrorKind::InvalidConfig);
+  // The reverse pass walks every pair.
+  const std::vector<double> hbar(4, 1.0);
+  std::vector<nevpt2::EnergyBars> bars(2);
+  const auto adjoint =
+      nevpt2::sc_effective_hamiltonian_adjoint(res, *c.blocks, no_diagonal, hbar, 0, bars, {});
+  ASSERT_FALSE(adjoint);
+  EXPECT_EQ(adjoint.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
 } // namespace

@@ -79,33 +79,45 @@ struct ClassEnergies {
 [[nodiscard]] Result<ClassEnergies> class_energies(DeviceResources &res, const MoBlocks &blocks,
                                                    const EnergyInputs &in, int32_t batch);
 
-/// @brief Each state's SC first-order wave function in the classes with one
-/// external orbital and the rest active, Sr, Si and Sir: per perturber t,
-/// Ψ_J⁽¹⁾ holds c_t P_t V|J⟩ with
+/// @brief Each state's SC first-order wave function in the seven classes
+/// with an active index: per perturber t, Ψ_J⁽¹⁾ holds c_t P_t V|J⟩ with
 ///
 ///     c_t = -1 / (Δ_t + H^J_t / N^J_t),
 ///
 /// state J's own denominator, and c_t = 0 where its norm N^J_t vanishes
 /// (|N^J_t| <= 1e-14, the energy's guard). sc_effective_hamiltonian hands it
-/// over, for the PT2 transition density ⟨Ψ_J⁽¹⁾|E_xy|K⟩.
+/// over: for the PT2 transition density ⟨Ψ_J⁽¹⁾|E_xy|K⟩ (Sr, Si and Sir),
+/// and as the kets a later call over the same orbitals reads with its
+/// diagonal omitted. A class with no perturber holds n empty lists.
 struct ScAmplitudes {
   /// @brief [J]: Sr's c over the virtual r, nvirt.
   std::vector<std::vector<double>> sr;
   /// @brief [J]: Si's c over the core i, ncore.
   std::vector<std::vector<double>> si;
+  /// @brief [J]: Sijr's c over (r, j <= i), r outermost, then j, then i.
+  std::vector<std::vector<double>> sijr;
+  /// @brief [J]: Srsi's c over (r <= s, i), r outermost, then s, then i.
+  std::vector<std::vector<double>> srsi;
+  /// @brief [J]: Srs's c over (r, s), nvirt x nvirt row-major.
+  std::vector<std::vector<double>> srs;
+  /// @brief [J]: Sij's c over (i, j), ncore x ncore row-major.
+  std::vector<std::vector<double>> sij;
   /// @brief [J]: Sir's c over (r, i), nvirt x ncore row-major, [r ncore + i].
   std::vector<std::vector<double>> sir;
 };
 
-/// @brief Each state's PC first-order wave function in Sr, Si and Sir, in its
-/// own solve's eigenbasis: per tuple t, Ψ_J⁽¹⁾ holds -Σ_k g_tk Σ_μ U_J[μ, k]
+/// @brief Each state's PC first-order wave function in the seven classes with
+/// an active index, in its own solve's eigenbasis: per tuple t, Ψ_J⁽¹⁾ holds -Σ_k g_tk Σ_μ U_J[μ, k]
 /// |φ^J_μ⟩, φ^J_μ the class's internal functions on |J⟩ (the basis S_J is
 /// the metric of), with
 ///
 ///     g_tk = y_{J,tk} / (λ_{J,k} + Δ_t),   y_{J,t} = U_Jᵀ b_{J,t},
 ///
 /// the amplitudes pc_effective_hamiltonian's energy is -Σ_k y_tk g_tk of.
-/// S_J's cut modes are not in U_J, as the solve cut them.
+/// S_J's cut modes are not in U_J, as the solve cut them. Besides the PT2
+/// transition density (Sr, Si and Sir), they are the kets a later
+/// pc_effective_hamiltonian over the same orbitals reads with its diagonal
+/// omitted: its couplings need only U_J and g.
 struct PcAmplitudes {
   /// @brief One class's amplitudes, one entry per state J; empty when the
   /// class has no tuple (no core orbital, say).
@@ -120,6 +132,14 @@ struct PcAmplitudes {
   Class sr;
   /// @brief d = n³, basis (p, q, r) row-major.
   Class si;
+  /// @brief d = n, basis p; tuples (r, j, i) row-major, every ordered (j, i).
+  Class sijr;
+  /// @brief d = n, basis p; tuples (r, s, i) row-major, every ordered (r, s).
+  Class srsi;
+  /// @brief d = n², basis (p, q) row-major; tuples (r, s) row-major.
+  Class srs;
+  /// @brief d = n², basis (p, q) row-major; tuples (i, j) row-major.
+  Class sij;
   /// @brief d = 2 n², basis (x, p, q) row-major, x the spin coupling.
   Class sir;
 };
@@ -155,12 +175,24 @@ struct PcAmplitudes {
 /// once, and its per-slab tables grow as n² + n.
 ///
 /// When @p amplitudes is not null it is filled with each state's first-order
-/// wave function in the three classes with one external orbital and the rest
-/// active (ScAmplitudes); the elements are the same either way.
+/// wave function (ScAmplitudes); the elements are the same either way.
+///
+/// **An entry may be omitted**, its dm1 null: nothing of it is built or
+/// walked, and its element is zero. Either every diagonal entry is given or
+/// none is, and an off-diagonal (I, J) only beside (J, I), whose mean it
+/// reads. With the diagonal omitted, ket J's c_t are read from
+/// @p amplitudes, which must then hold what a call over the same blocks and
+/// shared inputs with those diagonals filled: element (I, J) is
+/// Σ_t T^t_IJ c^J_t, the same sum, and Sijrs, diagonal alone, is not walked.
+/// So n states' couplings take one call over the n diagonals (off-diagonals
+/// omitted), then one per pair over (I, J) and (J, I) alone, each state's
+/// class walk run once and only two transition sets held at a time.
 ///
 /// @return The n² elements; InvalidConfig when @p pairs is empty or not n²
-///         long, or when a pair's shared field is not the first pair's; or
-///         class_energies' errors.
+///         long, when a pair's shared field is not the first pair's, when the
+///         omitted entries are not as above, or when the diagonal is omitted
+///         and @p amplitudes is null or not n states'; or class_energies'
+///         errors.
 [[nodiscard]] Result<std::vector<ClassEnergies>>
 sc_effective_hamiltonian(DeviceResources &res, const MoBlocks &blocks,
                          std::span<const EnergyInputs> pairs, int32_t batch,
@@ -254,7 +286,8 @@ struct ScEffectiveHamiltonianAdjoint {
 /// L = Σ_IJ H̄_IJ H_IJ, H_IJ element (I, J)'s total, on every input of every
 /// pair. class_energies_adjoint is n = 1 with H̄ = 1, einsum for einsum.
 ///
-/// @p pairs is sc_effective_hamiltonian's. @p hbar is H̄, n x n row-major,
+/// @p pairs is sc_effective_hamiltonian's, every entry given (none
+/// omitted). @p hbar is H̄, n x n row-major,
 /// [I n + J] on the unsymmetrized element (I, J). @p bars holds n
 /// EnergyBars, one per state, each added onto as class_energies_adjoint's:
 /// bars[J]'s dm1, dm2, dm3, f3ca and f3ac take state J's own RDMs' bars; the
@@ -359,12 +392,16 @@ struct PcClassEnergies {
 /// (d x m each) across the walk.
 ///
 /// When @p amplitudes is not null it is filled with each state's first-order
-/// wave function in Sr, Si and Sir, in its own solve's eigenbasis
-/// (PcAmplitudes); the elements are the same either way, and a refusal
-/// leaves it unspecified.
+/// wave function, in its own solve's eigenbasis (PcAmplitudes); the elements
+/// are the same either way, and a refusal leaves it unspecified.
+///
+/// Entries may be omitted as sc_effective_hamiltonian's: with the diagonal
+/// omitted, ket J's U_J and g are read from @p amplitudes, which a call with
+/// those diagonals filled, and element (I, J) is -c Σ_k y_{I←J,tk} g_{J,tk}
+/// (Sijr's and Srsi's y (2 g - g′)); no state is solved, so none is refused.
 ///
 /// @return The n² elements; sc_effective_hamiltonian's InvalidConfig for
-///         malformed @p pairs; or pc_class_energies' errors, a refused class
+///         malformed @p pairs or omissions; or pc_class_energies' errors, a refused class
 ///         (no gap at S_J's cut, or a denominator λ + Δ not positive) naming
 ///         the class and the state J.
 [[nodiscard]] Result<std::vector<PcClassEnergies>>
