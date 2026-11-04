@@ -16,35 +16,56 @@ aux-set, density-fitting and convergence differences:
   (dead band 0.03 eV). A tier's claim stands on measured ground only if the
   spread is at most ⅓ of its bar.
 
-## Verdict: the floor is comparable to both bars at triple zeta
+## The floor against the tier bars
 
-| molecule, basis | spread of Δ (meV), states 0 / 1 / 2 | bar it underpins | ⅓ of the bar | verdict |
+The floor rows are Δ = PC − his PC at PC points only. Ethylene's S0 is
+left out of them, because PC-QD was refused there (#874) and its Δ would
+be SC − his PC. The rows marked "not a floor measurement" add that S0
+point back in, so the SC − PC difference is mixed into them. They are
+shown only to make that visible.
+
+| molecule, basis | points | spread of Δ (meV), states 0 / 1 / 2 | bar it underpins | ⅓ of the bar |
 |---|---|---|---|---|
-| ethylene, aug-cc-pVDZ | 3.7 / 5.0 / 3.7 (3 of 5 geometries) | tier 1, 20 meV | 6.7 meV | below ⅓, on a partial set |
-| ethylene, aug-cc-pVTZ | 19.4 / 21.5 / 18.8 (4 of 5) | tier 1, 20 meV | 6.7 meV | **comparable to the bar** |
-| PSB3, cc-pVDZ | 8.0 / 8.1 / 7.9 (4 of 4) | tier 3, 30 meV | 10 meV | below ⅓ |
-| PSB3, cc-pVTZ | 39.8 / 46.1 / 42.7 (4 of 4) | tier 3, 30 meV | 10 meV | **larger than the bar** |
+| ethylene, aug-cc-pVDZ, **floor** | Py, Et, Hm (PC) | 3.7 / 5.0 / 3.7 | tier 1, 20 meV | 6.7 meV |
+| ethylene, aug-cc-pVTZ, **floor** | Py, Et, C3v, Hm (PC) | 19.4 / 21.5 / 18.8 | tier 1, 20 meV | 6.7 meV |
+| ethylene, aug-cc-pVDZ, all points (includes SC at S0; not a floor measurement) | + S0 (SC) | 4.7 / 63.9 / 9.5 | – | – |
+| ethylene, aug-cc-pVTZ, all points (includes SC at S0; not a floor measurement) | + S0 (SC) | 19.4 / 66.8 / 18.8 | – | – |
+| PSB3, cc-pVDZ, **floor** | all 4 (PC) | 8.0 / 8.1 / 7.9 | tier 3, 30 meV | 10 meV |
+| PSB3, cc-pVTZ, **floor** | all 4 (PC) | 39.8 / 46.1 / 42.7 | tier 3, 30 meV | 10 meV |
 
-- **Tier 1 is not discriminating without frozen core.** Its shift is a
-  difference between the two bases, so the aug-cc-pVTZ floor enters it
-  whole. That floor is about the bar itself (19–22 meV). Measured directly
-  on the tier's own quantity (below), the all-electron shift sits +15.5 meV
-  from his at Py and +10.7 meV at Et. That is half to three quarters of the
-  bar, with no optimization involved. Two points are also missing: S0 at
-  both bases (PC-QD refused; see "PC-QD refused at ethylene's S0 minimum")
-  and C3v at aug-cc-pVDZ (#865). So the aug-cc-pVDZ spread is a lower
-  bound.
-- **Tier 3 is not discriminating at cc-pVTZ without frozen core.** The
-  cc-pVTZ spread (40–46 meV) is larger than the 30 meV dead band. On the
-  tier's own quantity, E(13–14 CI) − E(11–12 CI) at his geometries, ours
-  is +0.105 eV and his +0.074 eV: a +31 meV difference from core
-  correlation alone. The sign agrees, but the gap to his value is itself
-  larger than the dead band. At cc-pVDZ the floor is below ⅓ (8 meV), and the
-  same quantity differs from his by +4.9 meV, so the cc-pVDZ half of the
-  sign stands.
-- That makes #859 (frozen core) a blocker for tier 1 and for tier 3's
-  cc-pVTZ half, with this table as the evidence. The bars are left
-  unchanged, as #860 asks. This goes to the milestone owner.
+The bars are unchanged, and the verdicts belong to the milestone owner.
+What the numbers say:
+
+- **Tier 1 (ethylene).** Over the PC MECIs, the aug-cc-pVDZ floor is
+  3.7–5.0 meV, below ⅓ of the bar. That is over 3 of 5 points: C3v is
+  #865, and S0 is #874. The aug-cc-pVTZ floor is 18.8–21.5 meV, which is
+  comparable to the bar itself. Tier 1's shift is referenced to the S0
+  minimum, so **it is not measurable as PC until #874 lands**. A shift
+  between MECIs needs no S0. One such shift is E(MECI) − E(Py MECI), taken
+  from aug-cc-pVDZ to aug-cc-pVTZ, at his geometries:
+
+  | MECI − Py MECI, shift aug-cc-pVDZ → aug-cc-pVTZ | ours | his | ours − his |
+  |---|---|---|---|
+  | Et − Py | −0.0487 eV | −0.0440 eV | −4.7 meV |
+  | Hm − Py | −0.0776 eV | −0.0614 eV | −16.2 meV |
+  | C3v − Py | – (#865) | – | – |
+
+  At aug-cc-pVTZ alone, E(MECI) − E(Py MECI) differs from his by −5.3
+  (Et), −8.5 (C3v) and −20.5 meV (Hm). At aug-cc-pVDZ it differs by −0.5
+  (Et) and −4.2 meV (Hm). Each is the floor acting on a MECI−MECI energy,
+  with no optimization involved.
+- **Tier 3 (PSB3): the gate is a sign.** At his geometries:
+  - cc-pVDZ: E(13–14 CI) − E(11–12 CI) is −0.195 eV for us and −0.200 eV
+    for him.
+  - cc-pVTZ: the same quantity is +0.105 eV for us and +0.074 eV for him.
+
+  **The signs agree in both bases.** At cc-pVTZ the core floor contributes
+  +31 meV to that value (+4.9 meV at cc-pVDZ). That moves the magnitude,
+  not the sign: +0.105 eV is well outside the 0.03 eV dead band. The
+  cc-pVTZ floor's spread (40–46 meV) does not make the sign gate
+  non-discriminating. A "reproduced" claim for tier 3 must carry the
+  +31 meV core-floor contribution to the cc-pVTZ value. The cc-pVDZ floor
+  (8 meV) is below ⅓ of the dead band.
 
 The spread grows by about 4–6× from double to triple zeta, in both molecules.
 The mean Δ grows by about 6× (ethylene −5.4 → −35.1 mEh, PSB3 −14.9 →
@@ -111,7 +132,7 @@ and π* (below). SC-QD's state 2 also lands 5.2 mEh (aug-cc-pVDZ) and
 is a refusal by this tree's rule, not a wrong active space. SC-QD's Δ at S0
 is shown in parentheses and italics below and left out of every mean and
 spread. Tier 1's energies are referenced to the S0 minimum, so this point
-blocks tier 1 as well. It needs its own issue.
+blocks tier 1 as well. It is #874.
 
 ## Active spaces, and how they were checked
 
@@ -225,8 +246,10 @@ decimals. E_his is from the SI, at 10 decimals.
 
 E₁ − E₀ is the MECI gap at a MECI, and S1 − S0 at a minimum. The last two
 columns are state 0 relative to state 0 at the S0 minimum, as in his
-Tables 1 and 2. For ethylene, S0's values come from SC-QD (in italics)
-because PC-QD was refused there.
+Tables 1 and 2. For ethylene, S0's values come from SC-QD, because PC-QD
+was refused there (#874). Every value that depends on that SC-QD point is
+in italics. Those values mix SC − PC into the comparison, so they are not
+PC measurements.
 
 ### Ethylene, aug-cc-pVDZ
 
@@ -280,15 +303,13 @@ is the mean of states 0 and 1.
 |---|---|---|---|
 | tier 3, E(13–14 CI) − E(11–12 CI), cc-pVDZ | −0.1952 eV | −0.2002 eV | +4.9 meV |
 | tier 3, E(13–14 CI) − E(11–12 CI), cc-pVTZ | +0.1054 eV | +0.0739 eV | **+31.4 meV** |
-| tier 1, Py shift aug-cc-pVDZ → aug-cc-pVTZ | *+0.0973 eV* | +0.0819 eV | +15.5 meV |
-| tier 1, Et shift | *+0.0487 eV* | +0.0379 eV | +10.7 meV |
-| tier 1, Hm shift | *+0.0197 eV* | +0.0205 eV | −0.8 meV |
-| tier 1, C3v shift | – (#865) | +0.0162 eV | – |
+| tier 1, S0-referenced shift aug-cc-pVDZ → aug-cc-pVTZ (Py, Et, C3v, Hm) | not measurable as PC until #874 | +0.0819, +0.0379, +0.0162, +0.0205 eV | – |
 
 His shifts are computed from the SI's 10-decimal energies, which is why
-they differ in the last digit from Table 1's rounding. Our tier-1 shifts
-(in italics) use SC-QD for the S0 reference, because PC-QD was refused
-there.
+they differ in the last digit from Table 1's rounding. Tier 1's shift is
+referenced to the S0 minimum, where PC-QD was refused (#874). An SC-QD
+stand-in for S0 would mix the SC − PC difference into the shift, so none
+is given. The MECI−MECI shifts above need no S0.
 
 ## What was run
 
