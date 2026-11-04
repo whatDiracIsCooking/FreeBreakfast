@@ -204,6 +204,12 @@ gfx1200 was not measured.
 | octatetraene (C₈H₁₀, 18 atoms, nmo 162, naux 790), 1 root | 54 | 41.66 s | 40.20 s (1.04×) | 44.15 s (0.94×, slower) |
 | octatetraene, SA-2 | 54 | 46.71 s | 41.45 s (1.13×) | 52.14 s (0.90×, slower) |
 
+These predate #655, which builds a block's DF J/K in one batched call
+instead of one per column. That cut octatetraene's Schur to 28.18 s (1
+root) and 31.33 s (SA-2) on the 3080, and Coupled to 30.42 s and 41.19 s,
+so Schur stays the default; `PerColumn` was not re-measured. Its PR has
+both cards' numbers.
+
 Schur takes exactly PerColumn's products (1588 and 1587 over octatetraene's
 54 columns) and agrees with it to 6e-13 (one root) and 6e-10 in z_c of
 order 100 (SA-2). Coupled takes 10 to 28% more products (1756, 2027), each
