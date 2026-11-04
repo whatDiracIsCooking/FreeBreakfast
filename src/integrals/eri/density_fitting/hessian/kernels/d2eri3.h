@@ -2775,6 +2775,9 @@ __global__ void d2eri3<3, 3, 6>(
     const double* M,
     double* H);
 
+// the block every unit's fixed shared memory was sized for: launch with it.
+inline constexpr uint32_t d2eri3_block_dim[2] = {1, FJ_WAVEFRONT};
+
 // indexed by the class's args; nullptr where no class was emitted.
 inline constexpr decltype(&d2eri3<0, 0, 0>) d2eri3_kernels[4][4][7] = {
     {
