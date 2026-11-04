@@ -17,9 +17,11 @@ specializations of two templates rather than as free kernels:
   aux shell pair, staged as the metric's energy kernel is. Every `lP <= lQ`
   with both at most AUX_MAX_L (i), 28 classes, the top one (i|i).
 - `d2eri3<la, lb, lP>`, `Target.ERI3` at order 2
-  (`hessian/kernel_d2eri3.py`): SUM_mnP Gam_mnP d2(mn|P)/dR dR, one thread
-  per (AO shell pair, aux shell), staged as the three-center energy kernel
-  is. Every `la <= lb` with both at most MAX_L (f), against every `lP` at most
+  (`hessian/kernel_d2eri3.py`): SUM_mnP Gam_mnP d2(mn|P)/dR dR, one warp
+  per (AO shell pair, aux shell) cell (#632), staged as the three-center
+  energy kernel is; emitted with `block_dim=(1, WAVEFRONT)`, so its header's
+  `d2eri3_block_dim` is the block to launch it with, {1, FJ_WAVEFRONT}.
+  Every `la <= lb` with both at most MAX_L (f), against every `lP` at most
   AUX_MAX_L (i), 70 classes, the top one (ff|i).
 
 Each kernel's parameter block is its first-derivative twin's
@@ -71,7 +73,7 @@ from felizjueves.emit.__main__ import (  # noqa: E402
     hess_eri3_classes,
     hess_metric_classes,
 )
-from felizjueves.emit.gpu import Specialization  # noqa: E402
+from felizjueves.emit.gpu import WAVEFRONT, Specialization  # noqa: E402
 from felizjueves.hessian.kernel_d2eri3 import build_d2eri3_kernel  # noqa: E402
 from felizjueves.hessian.kernel_d2metric import (  # noqa: E402
     build_d2metric_kernel,
@@ -94,16 +96,23 @@ def main() -> int:
     check_limits()
     arch = by_name(ARCH)
     OUT.mkdir(parents=True, exist_ok=True)
-    for family, classes, build in (
-        ("d2metric", hess_metric_classes(AUX_MAX_L), d2metric),
-        ("d2eri3", hess_eri3_classes(MAX_L, AUX_MAX_L), d2eri3),
+    for family, classes, build, options in (
+        ("d2metric", hess_metric_classes(AUX_MAX_L), d2metric, {}),
+        (
+            "d2eri3",
+            hess_eri3_classes(MAX_L, AUX_MAX_L),
+            d2eri3,
+            {"block_dim": (1, WAVEFRONT), "any_wavefront": True},
+        ),
     ):
         for cls in classes:
             kernel = build(cls)
             spec = Specialization(family, cls)
-            write(OUT / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec))
+            write(OUT / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec, **options))
         # Any class's kernel spells the primary: one family, one parameter block.
-        write(OUT / spec.header, gpu.emit_template(kernel, arch, spec, classes))
+        write(
+            OUT / spec.header, gpu.emit_template(kernel, arch, spec, classes, **options)
+        )
     return 0
 
 

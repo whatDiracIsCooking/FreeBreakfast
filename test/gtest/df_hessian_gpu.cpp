@@ -10,7 +10,6 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
-#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -262,8 +261,9 @@ TEST(DfHessian, TzJkfitMatchesPyscf) {
 }
 
 // The aux i shells reach (ff|i) and (i|i), the ladders' top classes.
+// About 3.5 s on either card since #632 (40.6 s on the RTX 3080 before), so
+// no longer a slow-tier case.
 TEST(DfHessian, TzAcCdThroughFfIMatchesPyscf) {
-  FBF_SKIP_IF_FAST_TESTS(); // about 44 s on the RTX 3080; DzJkfit is the family's cheapest
   check_hessian("h2o_ccpvtz_accd66", 3, 6);
 }
 
@@ -275,9 +275,10 @@ TEST(DfHessian, TzAcCdThroughFfIMatchesPyscf) {
 // on the second and an lP aux shell on the third, the recipe kept only where
 // m and n are on different shells, so (la, lb, lP) is the one class that
 // reaches it; for d2metric<lP, lQ> aux shells lP and lQ on the second and
-// third, W kept only across them. One primitive a shell: a cell is one
-// thread, and with two a shell the whole sweep took 42 s on the RTX 3080
-// (5.7 s with one); contraction is the PySCF cases' to check.
+// third, W kept only across them. One primitive a shell: before #632 a
+// cell was one thread, and with two a shell the whole sweep took 42 s on the
+// RTX 3080 (5.7 s with one; 0.6 s since); contraction is the PySCF cases' to
+// check.
 TEST(DfHessian, EveryClassKeepsTheSumRule) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};

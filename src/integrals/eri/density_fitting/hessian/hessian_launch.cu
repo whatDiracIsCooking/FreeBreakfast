@@ -42,6 +42,13 @@ static_assert(std::extent_v<decltype(d2eri3_kernels), 0> ==
               "kernels/'s d2eri3 [la][lb][lP] table and the three-center limits disagree: "
               "rerun tools/emit/df_hessian_kernels.py");
 
+// d2eri3 is one warp per cell (#632): blockDim = (1, warp width), its lanes
+// strided over the cell's items and reduced by shuffles. FJ_WAVEFRONT comes
+// from WWR_WARP_SIZE (deps/CMakeLists.txt), so this holds unless the two have
+// been split.
+static_assert(d2eri3_block_dim[0] == 1 && d2eri3_block_dim[1] == free_breakfast::kWarpSize,
+              "d2eri3's block is not (1, kWarpSize): FJ_WAVEFRONT and WWR_WARP_SIZE disagree");
+
 namespace free_breakfast::device {
 
 wwr::wwrError_t metric_hessian_class(const wwr::wwrStream_t stream, const int32_t lp,
@@ -89,12 +96,13 @@ three_center_hessian_class(const wwr::wwrStream_t stream, const int32_t la, cons
     return cells + (static_cast<size_t>(field) * static_cast<size_t>(n_cell));
   };
   const auto kernel = d2eri3_kernels[la][lb][lp];
-  // One thread per cell, kFourWarps to a block.
-  const uint32_t blocks = math::idivup(static_cast<uint32_t>(n_cell), kFourWarps);
-  kernel<<<blocks, kFourWarps, 0, stream>>>(
-      n_cell, n_bra_rec, n_aux_rec, n_ao, n_aux, n_atom, b(0), b(1), b(2), b(3), b(4), b(5), b(6),
-      b(7), b(8), b(9), b(10), b(11), b(12), a(0), a(1), a(2), a(3), a(4), c(0), c(1), c(2), c(3),
-      c(4), c(5), c(6), c(7), c(8), c(9), gamma, hessian);
+  // One warp per cell, one cell to a block.
+  const dim3 grid(static_cast<uint32_t>(n_cell));
+  const dim3 lanes(d2eri3_block_dim[0], d2eri3_block_dim[1]);
+  kernel<<<grid, lanes, 0, stream>>>(n_cell, n_bra_rec, n_aux_rec, n_ao, n_aux, n_atom, b(0), b(1),
+                                     b(2), b(3), b(4), b(5), b(6), b(7), b(8), b(9), b(10), b(11),
+                                     b(12), a(0), a(1), a(2), a(3), a(4), c(0), c(1), c(2), c(3),
+                                     c(4), c(5), c(6), c(7), c(8), c(9), gamma, hessian);
   return wwr::wwrGetLastError();
 }
 

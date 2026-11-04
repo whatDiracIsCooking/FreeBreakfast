@@ -32,10 +32,26 @@ Wᴷ.
 The gradient's (`gradient/README.md`), one derivative order up: the matrices
 made Cartesian, the same staging with each pair's or cell's atoms and each
 bra record's exponents, and one launch per class that has a pair or a cell,
-one thread each, `kFourWarps` to a block, every one atomically adding into
-one zeroed device H[n_atom][3][n_atom][3], which is downloaded. The kernels
-read the gradient kernels' parameter block, with H in place of G, so both
-stage through the same code, [`staging/`](../staging/README.md).
+every one atomically adding into one zeroed device H[n_atom][3][n_atom][3],
+which is downloaded. The kernels read the gradient kernels' parameter
+block, with H in place of G, so both stage through the same code,
+[`staging/`](../staging/README.md).
+
+The metric is one thread per aux shell pair, `kFourWarps` to a block.
+`d2eri3` is **one warp per cell** (#632), one cell to a block of
+`d2eri3_block_dim` = (1, warp width), which the generated header carries
+and `hessian_launch.cu` checks against `kWarpSize`. Its lanes stride over
+the cell's work: in the low-stack form the (bra record, aux record, aux row,
+bra row) items, each forming its own bra tables, tower and aux contraction,
+in the unrolled form the bra records. Each lane keeps the 45 sums, the warp
+adds them by shuffles, and lane 0 makes the cell's 81 atomics. One thread
+per cell, as before #632, left the heavy classes a handful of cells doing
+millions of serial flops each:
+
+| skew water, cc-pVTZ / cc-pVTZ-acCD-6-6 (`TzAcCdThroughFfIMatchesPyscf`, the whole test) | before | after |
+|---|---|---|
+| RTX 3080 | 40.6 s (40.4 s of it `d2eri3`) | 3.2 s |
+| RX 9060 XT | 37.9 s | 3.5 s |
 
 **The aux centre is differentiated by the Hermite shift.** Aux shells reach
 i, and the Cartesian rule twice on the aux centre would raise its E table to
@@ -74,5 +90,5 @@ class's max|H|; and the refusals. The one exception is the acCD-6-6
 metric, held to 1e-9, as the gradient's is: there libcint's `int2c2e_ipip1`
 / `ip1ip2` are themselves off by up to 4e-11 on the set's tight O s and p
 contractions, while this tree's matches a 40-digit reference of the same
-contraction to about 3e-13 (#593's PR has the numbers). The acCD case takes
-about 42 s on the RTX 3080, so it is a slow-tier case.
+contraction to about 3e-13 (#593's PR has the numbers). Every case is in the fast
+tier; the acCD one, the slowest, takes about 3.5 s on either card.
