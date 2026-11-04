@@ -584,7 +584,11 @@ class ResponseHessian : public ::testing::TestWithParam<Case> {};
 
 TEST_P(ResponseHessian, MatchesPyscfAtTheCasciOrbitals) {
   FBF_REQUIRE_GPU();
-  if (GetParam().slow) {
+  // Under slow_test.h: every case. H2O cc-pVDZ, 8.5 s on the gfx1200 and
+  // 6.5 s on the RTX 3080 (#793), builds the same integral-direct H as
+  // DensityFittedMatchesItsHostReferenceAndTheDirectOne's H2O below, which
+  // stays in the fast set; only the PySCF comparison moves.
+  if (GetParam().slow || GetParam().name == "h2o_ccpvdz") {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const fb::json &entry = reference_case(GetParam().name);

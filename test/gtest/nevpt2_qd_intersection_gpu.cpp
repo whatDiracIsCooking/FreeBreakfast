@@ -25,6 +25,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -487,8 +488,13 @@ class Nevpt2QdIntersectionWForms : public ::testing::TestWithParam<WFormCase> {}
 
 TEST_P(Nevpt2QdIntersectionWForms, MatchesWForms) {
   FBF_REQUIRE_GPU();
-  // About 4 s each on the RTX 3080, so every case stays in the fast tier.
+  // Under slow_test.h: 6.3 to 6.5 s each on the RTX 3080 but 20.9 to 24.3 s
+  // on the gfx1200 (#793), so every case but the weighted PC one, the
+  // cheapest.
   const WFormCase &c = GetParam();
+  if (c.name != "h2co_skew_ccpvdz_sa3_weighted" || !c.pc) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   QdRun run = qd_run(c.name);
   ASSERT_TRUE(run.solution.has_value());
   const std::size_t n = run.solution->roots.energies.size();

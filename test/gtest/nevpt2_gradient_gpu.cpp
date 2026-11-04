@@ -38,6 +38,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -3513,6 +3514,13 @@ class Nevpt2QdGradient : public ::testing::TestWithParam<std::string_view> {};
 
 TEST_P(Nevpt2QdGradient, MatchesNumerical) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h: the CAS(6,6) H8 ring in cc-pVDZ, 32.3 s on the gfx1200
+  // and 3.6 s on the RTX 3080 (#793). And the weighted skew H2CO, 3.5 s
+  // there: its equal-weight twin stays in the fast set, and
+  // Nevpt2QdLagrangian.IsStationary/unequal keeps unequal weights there.
+  if (GetParam() == "h8_ring12_ccpvdz_cas66_sa2" || GetParam() == "h2co_skew_ccpvdz_sa3_weighted") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   expect_qd_gradient(std::string{GetParam()}, false);
 }
 
@@ -4074,6 +4082,13 @@ class Nevpt2QdCoupling : public ::testing::TestWithParam<std::string_view> {};
 
 TEST_P(Nevpt2QdCoupling, MatchesNumerical) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h: the weighted skew H2CO, 5.9 s on the gfx1200 and 1.8 s
+  // on the RTX 3080 (#793). Its equal-weight
+  // twin stays in the fast set, and Nevpt2QdLagrangian.IsStationary/unequal
+  // keeps unequal weights there.
+  if (GetParam() == "h2co_skew_ccpvdz_sa3_weighted") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   expect_qd_coupling(std::string{GetParam()});
 }
 
@@ -4125,6 +4140,13 @@ class Nevpt2QdPcGradient : public ::testing::TestWithParam<std::string_view> {};
 
 TEST_P(Nevpt2QdPcGradient, MatchesNumerical) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h: the CAS(6,6) H8 ring in cc-pVDZ, 34.4 s on the gfx1200
+  // and 4.1 s on the RTX 3080 (#793). And the weighted skew H2CO, 5.2 s
+  // there: its equal-weight twin stays in the fast set, and
+  // Nevpt2QdLagrangian.IsStationary/unequal keeps unequal weights there.
+  if (GetParam() == "h8_ring12_ccpvdz_cas66_sa2" || GetParam() == "h2co_skew_ccpvdz_sa3_weighted") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   expect_qd_gradient(std::string{GetParam()}, true);
 }
 
@@ -4283,6 +4305,13 @@ class Nevpt2QdPcCoupling : public ::testing::TestWithParam<std::string_view> {};
 
 TEST_P(Nevpt2QdPcCoupling, MatchesNumerical) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h: the weighted skew H2CO, 5.3 s on the gfx1200 and 1.9 s
+  // on the RTX 3080 (#793). Its equal-weight
+  // twin stays in the fast set, and Nevpt2QdLagrangian.IsStationary/unequal
+  // keeps unequal weights there.
+  if (GetParam() == "h2co_skew_ccpvdz_sa3_weighted") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   expect_qd_coupling(std::string{GetParam()}, true);
 }
 
