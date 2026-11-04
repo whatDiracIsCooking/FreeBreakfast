@@ -21,8 +21,8 @@ At each geometry, for a single-state closed-shell DF-CASSCF:
   must take PySCF's DF branch, and refuses two canonical core or virtual
   energies within DEGENERATE.
 - **PC-NEVPT2.** block2's `WickICNEVPT2` on that same state over PySCF's own
-  fitted integrals, through nevpt2_reference.py's `block2`, with its gap gate
-  (PC_MIN_GAP at PC_TAU) at every point.
+  fitted integrals, through nevpt2_reference.py's `block2` (no gap gate since
+  #853: the C++ cut needs no gap, src/nevpt2/energy/README.md "PC-NEVPT2").
 
 At the reference geometry alone, every one of nevpt2_reference.py's checks
 runs as well: the SC active-rotation invariance (cas_natorb=True against
@@ -113,7 +113,7 @@ from nevpt2_reference import (  # noqa: E402
     CLASSES,
     DEGENERATE,
     INVARIANCE,
-    PC_MIN_GAP,
+    PC_NOISE,
     PC_TAU,
     SAME_STATE,
     block2,
@@ -283,9 +283,8 @@ def polished(name, mf, mo, ncas, nelecas, auxbasis):
 
 class KeptModes:
     """Counts the modes PC's per-tuple solves keep (relative singular value
-    above PC_TAU), over all of a run's solves. nevpt2_reference.block2 wraps
-    icnevpt2_full._linear_solve as it finds it, so this wrapper runs inside
-    its gap gate."""
+    above PC_TAU), over all of a run's solves: nevpt2_reference.block2 calls
+    icnevpt2_full._linear_solve as it finds it, so this wrapper sees each."""
 
     def __init__(self):
         self.kept = 0
@@ -637,7 +636,7 @@ def main() -> None:
             "ci_tol": CI_TOL,
             "degenerate": DEGENERATE,
             "pc_tau": PC_TAU,
-            "pc_min_gap": PC_MIN_GAP,
+            "pc_noise": PC_NOISE,
         },
         "tolerances": {
             "richardson": RICHARDSON_TOL,

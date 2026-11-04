@@ -30,8 +30,8 @@ struct Nevpt2Output {
   /// @brief Root r's eight PC-NEVPT2 class energies and their sum, over the
   /// same RDMs and slabs as roots[r]: root r's PC total energy is
   /// CasscfOutput::energies[r] + pc_roots[r]->total. Empty for a root whose
-  /// PC was refused as Numerical (a class's metric with no clean gap above
-  /// its null space); its SC energies stand.
+  /// PC was refused as Numerical (a class's metric with no positive
+  /// eigenvalue, or a non-positive denominator); its SC energies stand.
   std::vector<std::optional<nevpt2::PcClassEnergies>> pc_roots;
   /// @brief Why root r's PC was refused, `nevpt2::pc_class_energies`'
   /// message naming the class; empty where pc_roots[r] holds a value.

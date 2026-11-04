@@ -328,8 +328,8 @@ naming both.
 - **A refusal stops it.** Every refusal of the step -- a state average, an
   open shell, and the numerical ones `nevpt2::sc_gradient` or
   `nevpt2::pc_gradient` makes at run, a degenerate inactive pair whose
-  multipliers are not determined and a class PC refuses (no gap at the cut,
-  a non-positive λ + Δ) among them -- is the evaluation's error.
+  multipliers are not determined and a class PC refuses (a metric with no
+  positive eigenvalue, a non-positive λ + Δ) among them -- is the evaluation's error.
   `geometry::optimize` returns its callback's first error, so the
   optimization ends there with the step's message as it is, at whichever
   geometry it is met; it is never stepped through or retried at a shorter

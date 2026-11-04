@@ -348,13 +348,13 @@ struct PcClassEnergies {
 /// no active index, is SC's. The walk, @p batch and the synchronization are
 /// class_energies'.
 ///
-/// S is singular by construction. Its modes at or below 1e-13 of its largest
-/// eigenvalue are cut as null, and a class whose smallest kept eigenvalue is
-/// not 1e3 times its largest cut one (or, nothing cut, the cut itself) is
-/// refused, since its energy would depend on where the cut fell.
+/// S is singular by construction. Its modes at or below max(1e-13, 100 ε √d)
+/// of its largest eigenvalue are cut as null: at least 13 times above every
+/// mode round-off decides, measured (README "PC-NEVPT2"). There is no gap
+/// test: the real modes may run through the cut, and carry no energy there.
 ///
 /// @return The energies; a Numerical error naming the class when its metric
-///         has no positive eigenvalue or no gap at the cut, or a denominator
+///         has no positive eigenvalue, or a denominator
 ///         λ + Δ is not positive; or class_energies' errors, and the
 ///         eigensolver's.
 [[nodiscard]] Result<PcClassEnergies> pc_class_energies(DeviceResources &res,
@@ -402,7 +402,7 @@ struct PcClassEnergies {
 ///
 /// @return The n² elements; sc_effective_hamiltonian's InvalidConfig for
 ///         malformed @p pairs or omissions; or pc_class_energies' errors, a refused class
-///         (no gap at S_J's cut, or a denominator λ + Δ not positive) naming
+///         (S_J with no positive eigenvalue, or a denominator λ + Δ not positive) naming
 ///         the class and the state J.
 [[nodiscard]] Result<std::vector<PcClassEnergies>>
 pc_effective_hamiltonian(DeviceResources &res, const MoBlocks &blocks,
@@ -440,9 +440,11 @@ struct PcClassEnergiesAdjoint {
 /// them onto h1e, h2e and the RDMs, skipped when none of those seven bars is
 /// wanted. Sijrs is SC's.
 ///
-/// The derivative is exact where the energy is defined: S's kept rank locally
-/// constant (the gap at the cut) and, for the bars on the RDMs, K annihilating
-/// S's dropped modes, which holds at an eigenstate. A class the energy refuses
+/// The derivative is exact where S's kept rank is locally constant and, for
+/// the bars on the RDMs, K annihilates S's dropped modes, which holds at an
+/// eigenstate for its null modes. With real modes dropped at the cut it is
+/// validated at PSB3 to the numerical-gradient bar, and keeping them does not
+/// move it (README "PC-NEVPT2"). A class the energy refuses
 /// is refused here with the energy's error, never given a zero.
 ///
 /// @return The energies and the homogeneity sums; or pc_class_energies'
@@ -491,8 +493,8 @@ struct PcEffectiveHamiltonianAdjoint {
 /// row-major pair order. Sijrs is SC's, weight Σ_J H̄_JJ.
 ///
 /// @return The elements and the homogeneity sums; InvalidConfig as
-///         sc_effective_hamiltonian_adjoint's; or a refused class (no gap at
-///         S_J's cut, a denominator not positive), refused with
+///         sc_effective_hamiltonian_adjoint's; or a refused class (S_J with no
+///         positive eigenvalue, a denominator not positive), refused with
 ///         pc_effective_hamiltonian's error naming the class and the state,
 ///         never given a zero; or the slab adjoint's errors, and
 ///         @p transition's. On an error the bars are unspecified.

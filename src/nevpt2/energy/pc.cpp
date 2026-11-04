@@ -36,16 +36,16 @@ namespace free_breakfast::nevpt2 {
 // its column-major self, so the solve runs column-major in BLAS and the
 // solver, and only T and U, read back by einsum, need their layout spelled.
 
-// S's cut, relative to its largest eigenvalue: two decades above the
-// structural null modes' noise (<= 1.2e-15 on every golden), two below the
-// first real mode on cc-pVTZ (~2e-11). The demo's PC_TAU.
+// S's cut, relative to its largest eigenvalue: the larger of kPcTau and
+// kPcNoise ε √d (d the class's basis size). Measured, every mode that
+// round-off or the RDMs decide sits at or below 7.4 ε √d (h8_ring_sto3g_sa3's
+// Sij; 0.53 ε √d at PSB3 CAS(6,6)), so the cut is at least 13 times above
+// it; the modes above it are real, and where they run through the cut with no
+// gap (PSB3, HF with its F 1s active) the energy moves by under 3e-9 Eh
+// between 1e-15 and 1e-12 (README "PC-NEVPT2", #853). Park's BAGEL has no gap
+// test either. The demo's PC_TAU.
 constexpr double kPcTau = 1e-13;
-
-// The smallest acceptable smallest-kept / largest-dropped ratio: below it the
-// rank, and so the energy, depends on where the cut falls. The demo's
-// PC_MIN_GAP. When nothing is dropped, the smallest kept mode is measured
-// against S's round-off, ε √d of its largest, instead (README "PC-NEVPT2").
-constexpr double kPcMinGap = 1e3;
+constexpr double kPcNoise = 100.0;
 
 // A device copy of @p host. Synchronizes, since @p host is pageable.
 Result<Buffers::device<double>> upload(DeviceResources &res, const std::vector<double> &host) {
@@ -69,8 +69,8 @@ Result<Buffers::device<double>> symmetrized(DeviceResources &res, const double *
 }
 
 // Symmetrize S and K (K is symmetric only to the CI vector's convergence),
-// diagonalize S, cut it at kPcTau s_max and refuse a gap below kPcMinGap;
-// then K' = Xᵀ K X over X = V_kept s_kept^-1/2, K' = W λ Wᵀ, U = X W.
+// diagonalize S and cut it at max(kPcTau, kPcNoise ε √d) s_max; then
+// K' = Xᵀ K X over X = V_kept s_kept^-1/2, K' = W λ Wᵀ, U = X W.
 // @p s1, n1 columns row-major d x n1, is optional.
 Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const double *s_rm,
                                const double *k_rm, const int64_t d, const double *s1,
@@ -94,23 +94,12 @@ Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const dou
   if (!(s_max > 0.0)) {
     return err_numerical("nevpt2::pc_class_energies: {}'s metric has no positive eigenvalue", name);
   }
+  const double cut = std::max(kPcTau, kPcNoise * std::numeric_limits<double>::epsilon() *
+                                          std::sqrt(static_cast<double>(d))) *
+                     s_max;
   int64_t nd = 0;
-  double largest_dropped = 0.0;
-  while (nd < d && sigma[static_cast<size_t>(nd)] <= kPcTau * s_max) {
-    largest_dropped = std::max(largest_dropped, std::abs(sigma[static_cast<size_t>(nd)]) / s_max);
+  while (nd < d && sigma[static_cast<size_t>(nd)] <= cut) {
     ++nd;
-  }
-  const double smallest_kept = sigma[static_cast<size_t>(nd)] / s_max;
-  // The noise the smallest kept mode must clear: the largest dropped mode's,
-  // or with none dropped S's round-off, ε √d.
-  const double floor =
-      nd > 0 ? largest_dropped
-             : std::numeric_limits<double>::epsilon() * std::sqrt(static_cast<double>(d));
-  const double gap = floor > 0.0 ? smallest_kept / floor : std::numeric_limits<double>::infinity();
-  if (gap < kPcMinGap) {
-    return err_numerical("nevpt2::pc_class_energies: {}'s metric has no gap at its cut: smallest "
-                         "kept / {} = {:.1e} < {:.0e} ({} of {} modes dropped)",
-                         name, nd > 0 ? "largest dropped" : "round-off", gap, kPcMinGap, nd, d);
   }
   const int64_t m = d - nd;
   const auto mi = static_cast<int32_t>(m);

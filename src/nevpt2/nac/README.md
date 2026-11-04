@@ -235,7 +235,8 @@ There is no χ part, so with W^M = S₁(ρ^M)ᵀ U_M
 per class: two einsums per state and class, no slab.
 
 **Refusals.** PC refuses whatever `pc_effective_hamiltonian` refuses, any
-class of any state (no gap at a metric's cut, a denominator not positive),
+class of any state (a metric with no positive eigenvalue, a denominator not
+positive),
 with its error: the density of a refused PC is not defined. A T that is not
 n x n or not antisymmetric is InvalidConfig.
 

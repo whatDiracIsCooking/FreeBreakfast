@@ -156,8 +156,8 @@ layer's `nevpt2::sc_effective_hamiltonian` and `pc_effective_hamiltonian`
    `diagonalize` on the device; n is small.
 
 **A PC refusal does not fail the step**, as per root: a `Numerical` error
-from `pc_effective_hamiltonian` (a state's metric with no gap at the cut, or
-a denominator not positive, naming the class and the state) is logged, PC is
+from `pc_effective_hamiltonian` (a state's metric with no positive
+eigenvalue, or a denominator not positive, naming the class and the state) is logged, PC is
 not attempted for the pairs, and `pc_qd_refusal` holds the message, whose
 "state J" is root J (the diagonal call's states are the roots);
 `pc_qd_couplings`, `pc_qd_heff`, `pc_qd_energies` and
@@ -228,9 +228,10 @@ effective Hamiltonians' and `diagonalize`'s); GpuRuntime for a
 failed copy or gemm. Each fails the step.
 
 **A PC refusal does not.** `nevpt2::pc_class_energies` refuses a class as
-`Numerical` when its metric has no clean gap above its null space (no
-positive eigenvalue, a smallest kept eigenvalue under 1e3 times the largest
-cut one, or a non-positive λ + Δ: `nevpt2/energy` "The cut, and refusals").
+`Numerical` when its metric has no positive eigenvalue or a denominator
+λ + Δ is not positive (`nevpt2/energy` "The cut, and refusals"; since #853
+there is no gap test, and a metric whose real modes run through the cut is
+solved).
 That says PC is not defined to the precision asked of it on this state; SC,
 which solves no such system, is. So the step logs a warning naming the root
 and the layer's message (which names the class), leaves that root's
@@ -278,13 +279,21 @@ none above SC's (PC minimizes the same Hylleraas functional over a span
 holding SC's function), Sijrs equal to SC's (it has no active index), and
 the total the sum, to 1e-12.
 
-`PipelineNevpt2.PcRefusalKeepsSc`: HF in cc-pVDZ, CAS(10,7) over every
-electron, from its own config. The F 1s is active and all but doubly
-occupied, and Sr's metric has eigenvalues running through the cut with no
-gap (smallest kept / largest dropped 1.7, far under 1e3), so PC is refused.
-The step succeeds, SC's eight classes are there and sum to the total, and
-`pc_roots[0]` is empty with a `pc_refusals[0]` naming Sr. 441 determinants,
-3 s, in the fast tier.
+`PipelineNevpt2.PcAcceptedThroughAContinuum`: HF in cc-pVDZ, CAS(10,7)
+over every electron, from its own config. The F 1s is active and all but
+doubly occupied, and Sr's metric (d = 343) has real eigenvalues running
+continuously through the cut, with no gap, from 5.8e-14 of its largest up.
+Until #853 PC was refused (smallest kept / largest dropped 1.7, under the
+gap rule's 1e3); those modes carry no energy (E_corr moves 2.6e-9 with the
+cut anywhere in 1e-15 … 1e-12, `nevpt2/energy` "PC-NEVPT2"), and PC is
+accepted: every class at or below SC's, the total their sum, and E_corr
+within 1e-8 of that band's middle, −0.1415607176. 441 determinants, 3 s, in
+the fast tier.
+
+`PipelineNevpt2.PcRefusalKeepsSc`: water in STO-3G with CAS(2,1), its one
+active orbital doubly occupied, so Si's metric is zero and has no positive
+eigenvalue. The step succeeds, SC's eight classes are there and sum to the
+total, and `pc_roots[0]` is empty with a `pc_refusals[0]` naming Si.
 
 `PipelineQdNevpt2.MatchesGoldens`, from configs with `quasi_degenerate =
 true` written from `data/qd_nevpt2/qd_nevpt2.json` (molecule, basis,
@@ -310,14 +319,24 @@ cases).
 `PipelineNevpt2.MatchesPyscf` asserts the QD product empty without the
 option.
 
-`PipelineQdNevpt2.PcRefusalKeepsScQd`: `PcRefusalKeepsSc`'s HF CAS(10,7)
-averaged over three roots (the ground state and both components of the
-lowest ¹Π: over two, the average splits the pair, and its CASSCF converged
-erratically, #716; see `../../mcscf/solve/README.md`) with
-`quasi_degenerate`, in at most 20 macro iterations. The run succeeds, SC-QD is
-there (H_eff symmetric, its diagonal each root's CASSCF energy plus its own
-coupling, its eigenvalues summing to its trace), and PC-QD is empty with a
-refusal naming a metric with no gap. QD over a single-root CASSCF, the step
+`PipelineQdNevpt2.PcQdAcceptedThroughAContinuum`:
+`PcAcceptedThroughAContinuum`'s HF CAS(10,7) averaged over three roots (the
+ground state and both components of the lowest ¹Π: over two, the average
+splits the pair, and its CASSCF converged erratically, #716; see
+`../../mcscf/solve/README.md`) with `quasi_degenerate`, in at most 20 macro
+iterations. The run succeeds, and SC-QD and PC-QD are each there and held
+alike (H_eff symmetric, its diagonal each root's CASSCF energy plus its own
+coupling, its eigenvalues ascending and summing to its trace), each PC
+diagonal coupling at or below SC's; until #853 PC-QD was refused here.
+**PC-QD's refusal path (PC-QD empty, SC-QD kept) has no pipeline test**: no
+plain config reaches it since #853. Its refusals are a metric with no
+positive eigenvalue or a non-positive denominator, and the configs that give
+the first (an active space fully occupied or empty) have one orbital and so
+one singlet, where QD needs two roots. It is covered at the layer:
+`Nevpt2PcQdEnergyAdjoint.RefusesWhatTheEnergyRefuses` (`nevpt2_energy_gpu.cpp`)
+and `Nevpt2Pt2DensityRefusals.PcRefusalRefuses` (`nevpt2_pt2_density_gpu.cpp`)
+refuse a state with zero RDMs, and the step's handling of a refusal is the
+single-state `PcRefusalKeepsSc`'s. QD over a single-root CASSCF, the step
 driven by hand, is refused `InvalidConfig` in
 `PipelineNevpt2.AnOpenShellOrANonSingletIsUnsupported`; through the config,
 in `test/pipeline/config_host.cpp`, with the option's parsing.
