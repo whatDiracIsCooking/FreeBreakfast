@@ -36,8 +36,6 @@ namespace free_breakfast::mcscf {
 
 // trace(gamma) is the active electron count to this, as df_gradient's.
 constexpr double kIntersectionElectronCount = 1e-6;
-// The CI response's tolerance inside H~, RelaxedHessian::create's default.
-constexpr double kIntersectionResponseTolerance = 1e-8;
 // The Z-vector's columns: the 2 x 2 Hamiltonian's mean, half difference and
 // coupling.
 constexpr size_t kIntersectionColumns = 3;
@@ -188,10 +186,13 @@ df_intersection(DeviceResources &res, const Molecule &molecule, const BasisSet &
       FBF_TRY(intersection_download(res, ints.papa.data(), mo * mo * m))};
   // The SA Lagrangian's response only: a pair of equal weights, I and J
   // among them, leaves its mixing out of the CI response (README.md "The
-  // derivation").
+  // derivation"). The response is converged to response_tolerance_for the
+  // Z-vector's own tolerance, relative: at RelaxedHessian's default 1e-8 the
+  // products' error is a floor under the true residual that crosses 1e-10 at
+  // PSB3 (README.md "The floor under the true residual").
   RelaxedHessian relaxed = FBF_TRY(RelaxedHessian::create(
       res, hessian, sigma, rdm, alpha, beta, solution.roots, weights, std::move(response_ints),
-      kIntersectionResponseTolerance, rotating_pairs(weights)));
+      response_tolerance_for(options.tolerance), rotating_pairs(weights)));
 
   // The pair's RDMs: each root's, and the symmetrized transition RDMs.
   Buffers::device<double> rdms(m + (m * m), res.device());

@@ -25,8 +25,10 @@ Result<mcscf::Intersection> mcscf::df_intersection(
 Every argument through `ncas` is `df_gradient`'s and `df_nac`'s
 ([`../gradient/`](../gradient/README.md), [`../nac/`](../nac/README.md)).
 `options.tolerance` is each Z-vector column's, 1e-10 by default, the one
-`df_gradient`'s own solve takes; `options.max_iterations` caps the block
-solve's products, 200 by default, `zvectors`' own.
+`df_gradient`'s own solve takes, and it sets the CI response's tolerance
+inside every H̃ product too, relative: `response_tolerance_for` it, 1e-2 of
+it and at least 1e-10 ("The floor under the true residual"). `options.max_iterations` caps the
+block solve's products, 200 by default, `zvectors`' own.
 
 ## What it is
 
@@ -139,6 +141,88 @@ tolerance; a column above it is `Numerical`, naming the column and the
 residual. A solve that runs out of products is `zvectors`' own
 `MaxIterationsExceeded`. Multipliers short of the tolerance never reach the
 derivative calls.
+
+## The floor under the true residual
+
+Each H̃ product solves the CI response, (H₀ − E_r) δ_r = −P H′(x) c_r, by
+conjugate gradients to a tolerance relative to its right-hand side, so the
+product is exact only to that. The Z-vector's own conjugate gradients take
+those products, and their errors go into z: the true residual from one
+more product is then bounded below by the products' error, whatever the
+recurrence reports. Until #858 and #864 the response stopped at
+`RelaxedHessian::create`'s default 1e-8. Measured on the RTX 3080 (CUDA),
+with each column's true residual taken from a product at the response's
+1e-8 and also from one at 1e-13, effectively exact ("exact" below):
+
+| Case | Products | ‖g‖ | ‖z‖ | Recurrence | True (1e-8) | Exact |
+|---|---|---|---|---|---|---|
+| ethylene C3v, cc-pVDZ, PC-QD state 0 | 13 | 0.13 | 0.057 | 2.07e-11 | 2.07e-11 | 2.07e-11 |
+| PSB3 13–14 start, CASSCF MECI, eval 1, column 1 | 34 | 0.48 | 0.16 | 6.3e-11 | 7.4e-11 | 7.1e-11 |
+| PSB3 twisted 90°, cc-pVDZ, SC-QD MECI, column 0 | 31 | 0.39 | 0.79 | 9.8e-11 | **2.55e-10** | 2.19e-10 |
+| PSB3 twisted 90°, cc-pVTZ, SC-QD state 0 (one column) | 32 | 0.51 | 0.84 | 8.1e-11 | **3.84e-10** | 2.42e-10 |
+
+- **It is the response's tolerance, not a cap.** The response's own silent
+  cap of 200 sigmas was never reached in these runs. The block solve's cap
+  of 200 products was not either: #858's failing column stopped at 30
+  because its recurrence had met 1e-10, as every column here did. The
+  failure was the floor, the same as #864's.
+- **The multipliers really are off.** "Exact" is close to "True (1e-8)", so
+  the error is in z itself and not only in the check.
+- **How it scales.** (true − recurrence) / (1e-8 ‖z‖) is 0.02 to 0.04 at
+  cc-pVDZ and cc-pVTZ. The products' error is about **0.04 ‖z‖** times the
+  response tolerance. ‖z‖ grows with the system (0.06 at ethylene, 0.8 at
+  PSB3), and so did the floor, until it crossed 1e-10 (#864). Near a seam
+  the mean column's ‖z‖ is steady but the solve takes more products. #858's
+  trail rose from 6.4e-11 to 1.19e-10 over evaluations 0 to 7 as the gap
+  closed from 3.2e-2 to about 5e-4 Eh.
+- **Converged further, it is gone.** At a response tolerance of 1e-10, every
+  true and exact residual above equals its recurrence to under 0.2%, in the
+  same products: 9.83e-11, 5.98e-11, 4.16e-11 for the cc-pVDZ MECI's columns,
+  and 8.09e-11 at cc-pVTZ. At 1e-12 they are the same again. The cost is
+  small: the response's conjugate gradients converge geometrically. The
+  cc-pVTZ state gradient's whole run took 37 s at 1e-8 and 38 s at 1e-10, and
+  the cc-pVDZ MECI's 46 s at 1e-10 and 48 s at 1e-12.
+
+So the response is converged to `response_tolerance_for` the Z-vector's
+tolerance t (`mcscf.zvector`): 1e-2 t, relative, but never below 1e-10. At
+the default t = 1e-10 that is 1e-10, the setting measured above: the true
+residual is within 0.2% of the recurrence, so a recurrence just under the
+bar leaves the true residual under it too. A looser t takes a cheaper
+response at 1e-2 t, well under the bar's own error. `nevpt2`'s Lagrangian
+(`lagrangian_zvector`) takes the same rule for its own tolerance.
+
+**Why not tighter.** The response cannot be pushed below round-off, and
+where the roots nearly span the space, round-off arrives early. Ethylene's
+SA2-CASSCF(2,2) has 4 determinants and 3 singlet roots, so a right-hand side
+projected off the roots is mostly round-off. Its conjugate gradients then
+chase noise: p·Ap is round-off and the steps are garbage. At a response of
+1e-12, `PipelineOptimize.EthyleneMeciReachesTheReferenceMeci` failed at
+evaluation 12: column 2's true residual was 3.7e-3 after 100 products. At
+1e-14, H₂CO's broke a product (p·H̃p = −3.5e2, a `Divergence`). At 1e-10
+both pass, and so does every MECI, NAC and QD case in the tiers.
+
+**The walks it stopped** (RTX 3080, CUDA, a `--preset default` build):
+
+- #848's PSB3 13–14 CASSCF MECI (SA3-CASSCF(6,6)/cc-pVDZ, `max_gap` 1e-6),
+  refused at evaluation 7 before, converges in 53 evaluations to a gap of
+  6.3e-9 Eh. Every column's true residual was 4.6e-11 to 9.9e-11, in 31 to
+  35 products. That run used `[casscf] conv_tol_grad = 1e-9`. At 1e-10,
+  `mcscf::solve` itself stalled near ‖g‖ = 3.9e-10 in one run, which is #867
+  and not this solve. At 1e-9, s_o ‖g‖ is about 2e-10 Eh.
+- PSB3 twisted 90° SC-QD-NEVPT2 MECI (`nevpt2`'s Lagrangian, the same
+  floor), refused at evaluation 0 before, runs its 4 allowed steps at
+  cc-pVDZ (gap 1.9e-2 to 8.4e-5) and its 1 allowed step at cc-pVTZ.
+
+**Why the bar stays 1e-10, absolute.** What the multipliers feed is the
+gradient (and, for the QD intersection, s_o and s_c in the gap bound).
+With z off by δz = H̃⁻¹ r, the gradient is off by δz · ∂g/∂R, at most
+‖r‖ ‖H̃⁻¹‖ ‖∂g/∂R‖. With ‖r‖ = 1e-10, that is about 1e-9 Eh/bohr, three orders
+under any geometry criterion here. s_o and s_c are norms of the multipliers,
+so they move by about ‖δz‖ / ‖z‖, about 1e-9 relative. A bar relative to ‖g‖
+was considered and not taken: ‖g‖ is 0.07 to 0.5 in every case measured,
+and with the floor gone nothing is left that grows with the system. Once the
+products are exact enough, 1e-10 is reached in 31 to 36 products at PSB3,
+against a cap of 200.
 
 ## What the three share
 
@@ -263,19 +347,30 @@ Measured on the RTX 3080 (CUDA):
 
 | Check | Bar | Measured |
 |---|---|---|
-| True residual, every evaluation (15 products) | 1e-10 | 2.5e-11 to 7.7e-11 |
-| MECI: −P ḡ against the reference's projected force | 1e-6 Eh/bohr | 2.0e-12 |
+| True residual, every evaluation (15 products) | 1e-10 | 2.2e-11 to 7.7e-11 |
+| MECI: −P ḡ against the reference's projected force | 1e-6 Eh/bohr | 8.8e-13 |
 | MECI: in-plane slopes 0.2290407634, 0.1412706023 against the reference's | 7.98e-9 | 1.2e-11, 1.4e-11 |
-| `Meci` (gap 1.2e-11): carried vs fresh ḡ, plane | 1e-9, 1e-6 rad | 2.6e-10, 6.8e-11 rad |
-| `AlongX` (gap 1.97e-8): carried vs fresh ḡ, plane | 1e-9, 1e-6 rad | 5.5e-10, 1.5e-10 rad |
-| `AlongH` (gap 2.17e-8): carried vs fresh ḡ, plane | 1e-9, 1e-6 rad | 3.0e-10, 7.3e-11 rad |
+| `Meci` (gap 1.2e-11): carried vs fresh ḡ, plane | 1e-9, 1e-6 rad | 2.7e-10, 7.0e-11 rad |
+| `AlongX` (gap 1.97e-8): carried vs fresh ḡ, plane | 1e-9, 1e-6 rad | 3.4e-10, 1.1e-10 rad |
+| `AlongH` (gap 2.17e-8): carried vs fresh ḡ, plane | 1e-9, 1e-6 rad | 4.4e-10, 1.2e-10 rad |
 | Away: g_I, g_J, h_IJ against the separate calls (worst, skewed SA-3 (0, 1)) | 1e-9 | 1.8e-10, 1.0e-10, 2.2e-10 |
 
-(the slow tier's run; the fast tier's agreed to the same digits).
+(the slow tier's run with the response at 1e-10, #858; the slopes are the
+previous run's).
 
 With the mixing kept for every pair (#773's H̃, everything else as here),
 `AlongX` stops at `Numerical`: column 1's true residual is 1.6e-5 after 16
 products, the recurrence having met 1e-10.
+
+**The tolerance reaches the response** (`McscfIntersectionTight`, skewed
+H₂CO SA-3, (0, 1)): asked for 1e-12, the call's true residual meets it,
+and g_I, g_J and h_IJ agree with the default call's to 1e-9 relative (the
+default solve's, as above). H₂CO's z is small enough that its floor under
+the old 1e-8 response was itself below 1e-12. So this checks the option's
+plumbing. The floor's regression is PSB3's
+(`Nevpt2QdIntersection.Psb3TrueResidual`, slow tier,
+[`../../nevpt2/intersection/`](../../nevpt2/intersection/README.md)), which
+was refused at 2.55e-10 before the change.
 
 ## Files
 

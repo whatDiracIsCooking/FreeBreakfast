@@ -26,6 +26,18 @@ export namespace free_breakfast::mcscf {
 /// own are exact.
 constexpr double kRotationWeightTolerance = 1e-8;
 
+/// @brief The CI response's tolerance inside H~ (RelaxedHessian::create's
+/// response_tolerance, relative to its right-hand side) for a Z-vector whose
+/// true residual is held to @p tolerance: 1e-2 of it, but never below 1e-10.
+/// At RelaxedHessian's default 1e-8 the products' error, about 0.04 ||z||
+/// times it, was a floor that crossed the default 1e-10 bar at PSB3; at
+/// 1e-10 the true residual is within 0.2% of the recurrence there
+/// (../intersection/README.md "The floor under the true residual"). Tighter
+/// is not safer: where the roots nearly span the CI space the projected
+/// right-hand side is round-off, and at 1e-12 ethylene's CAS(2,2) MECI walk
+/// broke a product (a true residual of 3.7e-3).
+[[nodiscard]] double response_tolerance_for(double tolerance);
+
 /// @brief Which of the nroots (nroots - 1) / 2 pairs r < s, in (r, s)
 /// lexicographic order (ZVector::theta's), rotate: those whose @p weights
 /// differ by more than @ref kRotationWeightTolerance of the larger.

@@ -26,10 +26,19 @@ pointers to the first four of those (and the roots), which must outlive it
 and not change under it, and allocates its own second sigma (for H′(x)) and
 the CI-sized scratch. A product synchronizes the stream: κ(x) and the
 transition RDMs are read back, and H′ and its adjoint are host work.
-Its last argument, `response_tolerance` (1e-8 by default), is where the CI
-response's conjugate gradients stop, relative to their right-hand side: every
-product is good to about that. A test that compares an exact solve with one
-through H̃ tightens it.
+`response_tolerance` (1e-8 by default) is where the CI response's conjugate
+gradients stop, relative to their right-hand side. Every product is good to
+about that: measured at PSB3, a product's error is about 0.04 ‖x‖ times it.
+A Z-vector solved through H̃ to a tolerance t cannot have a true residual
+below the products' error, so the callers that hold a true residual to t
+pass `mcscf::response_tolerance_for(t)`, 1e-2 t but at least 1e-10 (1e-10
+at the default 1e-10): `mcscf::df_intersection` and `nevpt2`'s Lagrangian. At 1e-8 the
+floor crossed 1e-10 at PSB3 (#858, #864;
+[`../intersection/`](../intersection/README.md) "The floor under the true
+residual" has the measurements and the argument). The conjugate gradients
+converge geometrically, so the tighter tolerance cost about 3% of the
+cc-pVTZ state gradient's run. A test that compares an exact solve with one
+through H̃ tightens it too.
 
 ## What a product is
 
@@ -40,7 +49,8 @@ through H̃ tightens it.
    has two active indices.
 2. b_r = H′ c_r, the second sigma applied to the roots.
 3. δ_r = −(H₀ − E_r)⁻¹ (1 − Σ_s c_s c_sᵀ) b_r by conjugate gradients over
-   H₀'s sigma, to 1e-8 of the right-hand side (at most 200 sigmas per root;
+   H₀'s sigma, to `response_tolerance` of the right-hand side (at most 200
+   sigmas per root;
    none when the roots span b_r, below), and the other roots' part exactly,
    −(c_s · b_r) / (E_s − E_r) c_s (left out for a gap under 1e-8 hartree).
 4. γ_T and Γ_T: Σ_r w_r 2 `ci::Rdm::trans_rdm12(c_r, δ_r)`, the

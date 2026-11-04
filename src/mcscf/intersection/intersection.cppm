@@ -24,7 +24,10 @@ export namespace free_breakfast::mcscf {
 struct IntersectionOptions {
   /// @brief Each Z-vector column's tolerance on ||H~ z_o + g||, the one
   /// @c df_gradient's own solve takes. A column whose true residual, from
-  /// one more product, is above it is an error.
+  /// one more product, is above it is an error. The CI response inside each
+  /// H~ product is converged to @c response_tolerance_for of it, relative to
+  /// its right-hand side, so that the products' error stays under it
+  /// (README.md "The floor under the true residual").
   double tolerance = 1e-10;
   /// @brief The H~ products the block solve may take, @c zvectors' default.
   int32_t max_iterations = 200;
