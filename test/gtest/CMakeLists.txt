@@ -356,11 +356,25 @@ gtest_discover_tests(
 # three CIS solves in cc-pVDZ), has the card to itself, so the wall time its
 # log reports is its own.
 set(_fb_serial_cases "NevptRdm.Cas1212*:E2eCis.*")
+#
+# The QD-NEVPT2 MECI cases (slow tier only) are a 31-step optimization and a
+# 72-point numerical oracle: about 37 s on the RTX 3080 but 136 s on the
+# gfx1200, where the NEVPT2 path runs 5-19x slower (#824). They get their own
+# backstop, five times the shared one, so the HIP slow tier does not time them
+# out mid-oracle. Lower it again once #824 lands.
+set(_fb_long_cases "PipelineOptimize.Ethylene*QdMeci*")
+math(EXPR _fb_long_timeout "5 * ${_fb_test_timeout}")
 gtest_discover_tests(
   free_breakfast_tests_gpu
   DISCOVERY_MODE PRE_TEST
-  TEST_FILTER "-${_fb_serial_cases}"
+  TEST_FILTER "-${_fb_serial_cases}:${_fb_long_cases}"
   PROPERTIES TIMEOUT ${_fb_test_timeout} LABELS gpu
+)
+gtest_discover_tests(
+  free_breakfast_tests_gpu
+  DISCOVERY_MODE PRE_TEST
+  TEST_FILTER "${_fb_long_cases}"
+  PROPERTIES TIMEOUT ${_fb_long_timeout} LABELS gpu
 )
 gtest_discover_tests(
   free_breakfast_tests_gpu
