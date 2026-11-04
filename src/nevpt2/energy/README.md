@@ -220,6 +220,11 @@ generators' gates (`tools/emit/nevpt2_reference.py`'s `pc_gap`,
 `qd_nevpt2_reference.py`'s `pc_solve` and brute-force spans) follow the
 same rule.
 
+At (2e,2o) the rule does not bite along a whole PC-QD MECI walk: ethylene's
+SA3-CASSCF(2,2)/cc-pVDZ, PC-QD states 0 and 1, converged in 83 evaluations
+from a twisted, pyramidalized start with no class refused at any of them
+(`docs/reproduction/park2019/README.md`, "Tier 0", #843).
+
 **Memory.** The solve's d × d matrices (S, K, their symmetrized copies, V,
 and the d × m X, U, T and gemmwich's work) are buffers of their own, freed
 when the class returns; at n = 12, d = n³ is 24 MB per matrix, below the n⁶

@@ -1,0 +1,33 @@
+# Tier 0 (#843): examples/qd_meci.toml with variant = "pc". The MECI of the
+# two lowest PC-QD-NEVPT2 states of ethylene, over its DF-SA3-CASSCF(2,2) of
+# all three singlets in cc-pVDZ, from the twisted (80 degrees) and
+# pyramidalized start of examples/ethylene.xyz. A PC refusal at any geometry
+# stops the walk, so a converged walk is the statement that PC was refused at
+# none (README.md, "Tier 0"). Run from the root of the tree:
+#   build/src/free-breakfast -i docs/reproduction/park2019 -o <out> \
+#     docs/reproduction/park2019/tier0_ethylene_pc.toml
+[molecule]
+xyz = "../../../examples/ethylene.xyz"
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 2
+nelecas = 2
+nroots = 3
+conv_tol_grad = 1e-10
+[nevpt2_gradient]
+quasi_degenerate = true
+variant = "pc"             # Park's SA-QD-PC-NEVPT2; the only change from qd_meci.toml
+[optimize]
+meci = [0, 1]
+max_gap = 1e-7
+max_force = 1.5e-5
+rms_force = 1e-5
+max_displacement = 6e-5
+rms_displacement = 4e-5
+max_steps = 200
