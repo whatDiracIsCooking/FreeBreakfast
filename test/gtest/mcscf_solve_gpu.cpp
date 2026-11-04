@@ -3,7 +3,8 @@
 // (tools/emit/casscf_reference.py): each root's energy and the weighted one;
 // the state-averaged natural occupations; ||g|| recomputed from scratch at the
 // solution, with its own cold CI; C^T S C = 1; no accepted step that raises
-// the energy; at most 20 macro iterations; and the refusals. Each case runs
+// the energy; at most 20 macro iterations; and the refusals (a CI guess of
+// the wrong size among them). Each case runs
 // twice: integral-direct, and with the Hessian density-fitted
 // (DensityFitting::ApproxHessian, over kAuxBasis), which must reach the same
 // exact references in at most one macro iteration more. And each case runs
@@ -882,6 +883,12 @@ TEST(McscfSolveRefusals, AreInvalidConfig) {
     refused(setup->solve(c, 1, {}, bad), "needs B");
     refused(setup->solve(c, 1, {}, bad, &short_b, 1), "naux nmo^2");
   }
+  // A CI guess that is not nroots dim doubles.
+  const auto short_guess = fb::mcscf::solve(
+      setup->res(), *setup->basis, *setup->molecule, setup->h->h, setup->transform->u,
+      setup->j_classes, setup->k_classes, c, setup->start->ncore, setup->start->ncas,
+      setup->start->nelecas, 1, {}, defaults, nullptr, 0, {short_b.data(), short_b.num_elements()});
+  refused(short_guess, "ci_guess");
   const auto wrong_space =
       fb::mcscf::solve(setup->res(), *setup->basis, *setup->molecule, setup->h->h,
                        setup->transform->u, setup->j_classes, setup->k_classes, c, 6, 2, 4, 1);

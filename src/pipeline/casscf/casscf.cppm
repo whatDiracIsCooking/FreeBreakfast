@@ -115,9 +115,16 @@ struct CasscfStep : ActiveSpaceSelection {
   /// canonical virtuals at 0, each with its energy in the state-averaged
   /// Fock.
   std::filesystem::path molden{};
+  /// @brief The CI the solve starts from, `mcscf::solve`'s ci_guess on the
+  /// host: empty for none, or @ref nroots unit vectors over the selected
+  /// active space, root r at [r dim, (r + 1) dim), as @ref CasscfOutput::vectors
+  /// holds them. Not a TOML key: `[hessian]` sets it to the reference's for
+  /// each displaced solve.
+  std::vector<double> ci_guess{};
 
   /// @brief The optimized orbitals and roots. The start is the orbitals
-  /// @ref ActiveSpaceSelection::select gives; `mcscf::solve` optimizes them
+  /// @ref ActiveSpaceSelection::select gives, and the CI @ref ci_guess;
+  /// `mcscf::solve` optimizes them
   /// at @ref conv_tol, @ref conv_tol_grad and @ref max_cycle, its other
   /// options at their defaults, over the @ref EriOutput: its J and K classes,
   /// or its B in mcscf::DensityFitting::Full, the DF-CASSCF. The
@@ -130,7 +137,8 @@ struct CasscfStep : ActiveSpaceSelection {
   ///         open-shell ScfOutput's among them);
   ///         under a fitted EriOutput, Unsupported when the fitted
   ///         integrals' scratch, L and J_AO, is past what B leaves free; `mcscf::solve`'s (InvalidConfig for @ref nroots above the
-  ///         determinant count or bad @ref weights, MaxIterationsExceeded);
+  ///         determinant count, bad @ref weights or a @ref ci_guess of
+  ///         another size, MaxIterationsExceeded);
   ///         or the error of the first module call that failed:
   ///         `casscf_integrals`', `response::fock`'s, `diagonalize`'s or
   ///         `write_molden`'s, and GpuRuntime for a failed copy or BLAS call.

@@ -184,9 +184,18 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, E
   }
   const Buffers::device<double> *const b = fit ? &fit->b : nullptr;
   const int32_t naux = fit ? fit->naux : 0;
-  mcscf::Solution sol =
-      FBF_TRY(mcscf::solve(res, basis, molecule, h, u, j_classes, k_classes, space.c, space.ncore,
-                           space.ncas, space.nelecas, nroots, weights, options, b, naux));
+  // The CI guess on the device, for mcscf::solve, which checks its size.
+  std::optional<Buffers::device<double>> guess;
+  if (!ci_guess.empty()) {
+    guess.emplace(ci_guess.size(), res.device());
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(guess->data(), ci_guess.data(),
+                                           ci_guess.size() * sizeof(double),
+                                           wwr::wwrMemcpyHostToDevice, stream)));
+  }
+  mcscf::Solution sol = FBF_TRY(mcscf::solve(
+      res, basis, molecule, h, u, j_classes, k_classes, space.c, space.ncore, space.ncas,
+      space.nelecas, nroots, weights, options, b, naux,
+      guess ? std::span<const double>{guess->data(), ci_guess.size()} : std::span<const double>{}));
   for (size_t i = 0; i < sol.iterations.size(); ++i) {
     const mcscf::Iteration &it = sol.iterations[i];
     log::info(std::format("CASSCF macro {:2}: E {:.12f} |g| {:.3e}{}", i + 1, it.energy,

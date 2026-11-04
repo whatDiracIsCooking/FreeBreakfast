@@ -219,13 +219,18 @@ error. So:
   orbitals (`../optimize/README.md`), from one fixed reference. Its
   ScfOutput is not an SCF's: the energy is NaN and `d` zero, and only the
   CasscfStep reads it.
-- **The CI is checked against the reference's, not started from it.**
-  `mcscf::solve` solves each macro iteration's CI for the lowest `nroots`
-  roots of its Hamiltonian, the first from its own guesses, and takes no
-  starting vectors; those roots are the eigenvectors whatever the start, so
-  a reference start would change the Davidson's iteration count and not
-  which roots it finds. What can change is which roots those are, and that
-  is checked.
+- **The CI starts from the reference's, and is checked against it.** The
+  displaced CasscfStep's `ci_guess` is the reference's CI vectors
+  (`mcscf::solve`'s `ci_guess`, #657), over the same active orbitals moved,
+  so the first macro iteration's Davidson starts at the reference's roots
+  rather than from its own guesses. Each macro iteration still solves for
+  the lowest `nroots` roots of its Hamiltonian, so the start moves the
+  iteration counts and not which roots are found; what can change is which
+  roots those are, and that is checked. With and without the guess, every
+  displaced solve of the four GPU cases below converges to the same roots
+  (by their CI overlap) and energies (to 1e-9 of |E_r|, two independently
+  converged solves);
+  `PipelineCasscfHessianCiGuess` prints the macro-iteration counts.
 - **`check_displaced_casscf` refuses a solve that left the reference's
   solution**, as Numerical, naming the geometry: each converged active
   orbital must lie more in the start's active space than out of it (its
@@ -361,7 +366,25 @@ optimization and the Hessian 2.0 s together.
   `h2o_631g_sa2` (0.5, 0.5), `h2o_631g_sa2_unequal` (0.7, 0.3) and
   `h2o_ccpvdz` are slow-gated. Beside them, `[casscf]` cut to two macro
   iterations: MaxIterationsExceeded, `[hessian] at the reference geometry:
-  ...`.
+  ...`. And `PipelineCasscfHessianCiGuess`, per case (`h2o_631g` fast, the
+  others slow-gated): every one of the 6N displaced solves from the
+  reference's orbitals run with the reference's CI as `ci_guess` and
+  without, held to the same roots (CI overlap squared above 1/2) and
+  energies (1e-9 of |E_r|: two independently converged solves, not one by
+  two paths), the counts printed and not gated. Measured on the gfx1200
+  (HIP), one run:
+
+| Case | macro iterations, with / without | Davidson iterations, with / without | max \|ΔE_r\| / \|E_r\| |
+|---|---|---|---|
+| `h2o_631g` | 66 / 66 | 668 / 840 | 3.4e-15 |
+| `h2o_631g_sa2` | 66 / 66 | 647 / 754 | 1.3e-14 |
+| `h2o_631g_sa2_unequal` | 62 / 60 (1 fewer, 3 more) | 606 / 659 | 3.4e-13 |
+| `h2o_ccpvdz` | 72 / 72 | 705 / 888 | 3.2e-15 |
+
+  The guess buys Davidson iterations (7-21%), not macro iterations: those
+  stop on ||g||, which the first CI's start does not move, and a
+  displacement's count shifts by one between runs at the threshold (an
+  earlier run had `h2o_631g_sa2_unequal` at 66 / 66).
 
 Measured on the gfx1200 (HIP), against `relaxed_fd`:
 

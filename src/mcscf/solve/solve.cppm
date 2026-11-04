@@ -128,10 +128,15 @@ struct Solution {
 /// (@c DensityFitted::b, naux nmo^2), for the builds
 /// options.density_fitting fits; null for none, which only
 /// DensityFitting::Direct accepts. Its storage must outlive the call.
+/// @p ci_guess is empty, or nroots dim device doubles on res's device, root r
+/// at [r dim, (r + 1) dim), as @ref Solution::roots holds them: the first
+/// macro iteration's CI starts from it rather than from ci::solve's own
+/// guesses (a reference solution's CI, for a solve from its orbitals moved).
+/// Empty, the solve is the one without it, to the bit.
 ///
 /// Each macro iteration: @c casscf_integrals over the current C; @c ci::solve
 /// over the GPU sigma, warm-started from the last iteration's roots (the first
-/// from its own guesses), its residual
+/// from @p ci_guess, or from its own guesses), its residual
 /// tolerance min(1e-8, 1e-4 ||g||^2) of the last iteration, held at or above
 /// options.ci's; @c ci::Rdm::rdm12 at @p weights and @c fock. Converged
 /// when |Delta E| < conv_tol and ||g|| < conv_tol_grad; converged on a CI
@@ -168,7 +173,8 @@ struct Solution {
 ///         the weights do not sum to 1 within 1e-12 or their count is not
 ///         nroots, an option is out of range, @p c is not of @p basis's
 ///         spherical order, options.density_fitting needs B and @p b is
-///         null, or @p b is given but not naux nmo^2 doubles over naux >= 1;
+///         null, @p b is given but not naux nmo^2 doubles over naux >= 1, or
+///         @p ci_guess is neither empty nor nroots dim doubles;
 ///         MaxIterationsExceeded once max_cycle runs out; or
 ///         the first error of an integral, CI, RDM, Fock, Hessian or rotation
 ///         call.
@@ -178,6 +184,7 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
       std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
       const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nelecas, int32_t nroots,
       std::span<const double> weights = {}, const Options &options = {},
-      const Buffers::device<double> *b = nullptr, int32_t naux = 0);
+      const Buffers::device<double> *b = nullptr, int32_t naux = 0,
+      std::span<const double> ci_guess = {});
 
 } // namespace free_breakfast::mcscf

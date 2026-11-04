@@ -53,6 +53,7 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
   double conv_tol_grad = 1e-6;
   int32_t max_cycle = 50;
   std::filesystem::path molden{};      // the state-averaged natural orbitals, if set
+  std::vector<double> ci_guess{};      // the CI start, CasscfOutput::vectors' layout; not TOML
 
   Result<CasscfOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
                                 EriOutput, CoreHamiltonianOutput, ScfOutput> in,
@@ -66,8 +67,10 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
 2. **The two-electron integrals' input**: the `EriOutput`'s
    (`pipeline/eri`), J and K classes under `IntegralDirect`, or B under
    `DensityFitted` (below) and no classes.
-3. **The optimization**: `mcscf::solve` from it, at the step's `nroots`,
-   `weights`, `conv_tol`, `conv_tol_grad` and `max_cycle`, and in
+3. **The optimization**: `mcscf::solve` from it, and from `ci_guess`'s CI
+   when it is set (uploaded, its size `mcscf::solve`'s to check), at the
+   step's `nroots`, `weights`, `conv_tol`, `conv_tol_grad` and `max_cycle`,
+   and in
    `mcscf::DensityFitting::Full` over a fitted `EriOutput`'s B, every other
    option at `mcscf::Options`' default. Each macro iteration's weighted energy and
    ‖g‖ is logged at info once it returns.

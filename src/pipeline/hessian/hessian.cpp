@@ -4,7 +4,7 @@
 /// df_sacasscf over one to CasscfStep; or the 6N displaced gradients, each
 /// a nested Pipeline run of the chain to GradientStep, and their central
 /// differences -- the RHF's, or over the CASSCF chain, each displaced solve
-/// started from the reference's orbitals and checked against it; then the
+/// started from the reference's orbitals and CI and checked against it; then the
 /// symmetrized Hessian, its two checks, the harmonic vibrations, the analytic
 /// RHF's dipole derivative and IR intensities, and hessian.json.
 
@@ -388,17 +388,19 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
           .n_beta = rhf.n_beta,
       });
       reference_ci = cas.vectors;
-      // By index, as they come: core, active, virtual.
+      // By index, as they come: core, active, virtual; and the CI from the
+      // reference's roots, over those active orbitals moved.
       displaced_casscf.active.clear();
       displaced_casscf.avas.clear();
       displaced_casscf.ncas = cas.ncas;
       displaced_casscf.nelecas = cas.nelecas;
+      displaced_casscf.ci_guess = cas.vectors;
       FBF_LOG_INFO("hessian: reference DF-CASSCF({}, {}) over {} root(s), E = {:.10f}", cas.nelecas,
                    cas.ncas, cas.energies.size(), cas.energy);
     }
     // ... and the CASSCF root's, its solve started from the reference's
-    // orbitals, refused unless it converged and kept the reference's active
-    // space and root order.
+    // orbitals and CI, refused unless it converged and kept the reference's
+    // active space and root order.
     const auto casscf_gradient_at = [&](size_t x, double shift) -> Result<std::vector<double>> {
       auto chain =
           FBF_TRY((Pipeline<DisplacedMoleculeStep, BasisSetStep, SphericalTransformStep,
@@ -418,6 +420,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       const std::string where = std::format("coordinate {} displaced by {:+g} bohr", x, shift);
       FBF_TRY(at_geometry(chain.run(node), where));
       const CasscfOutput &cas = *chain.get<CasscfOutput>();
+      FBF_LOG_DEBUG("hessian: {}: CASSCF in {} macro iterations", where, cas.iterations.size());
       const size_t nao = cas.c.n();
       const size_t first = static_cast<size_t>(cas.ncore) * nao;
       const size_t count = static_cast<size_t>(cas.ncas) * nao;

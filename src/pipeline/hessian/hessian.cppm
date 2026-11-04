@@ -8,7 +8,7 @@
 /// `[casscf]`; or by central differences of the analytic gradient of the
 /// chain to `[gradient]` or `[casscf_gradient]`, rerun at each of the 6N
 /// displaced geometries, each displaced CASSCF started from the reference's
-/// orbitals and checked against it.
+/// orbitals and CI and checked against it.
 ///
 /// Node-shaped, because each method runs Pipelines of its own, as
 /// `[optimize]`'s evaluations do. It reads the MoleculeOutput, so beside an
@@ -95,7 +95,8 @@ struct HessianStep {
   /// @brief The CASSCF the chain runs after the SCF, read only when
   /// @ref casscf_gradient is set. Its active space is picked once, at the
   /// reference geometry; every displaced solve starts from the reference's
-  /// orbitals, Loewdin-orthonormalized in the displaced overlap.
+  /// orbitals, Loewdin-orthonormalized in the displaced overlap, and from its
+  /// CI (CasscfStep::ci_guess).
   CasscfStep casscf{};
   /// @brief Set: the Hessian is this root's of @ref casscf, over density
   /// fitting only -- HessianMethod::Analytic's @c hessian::df_casscf (one
@@ -123,7 +124,8 @@ struct HessianStep {
   /// @ref casscf_gradient, numerically, one chain to @ref casscf at the geometry, the
   /// reference, then the chain ending in it at each displaced geometry,
   /// started from the reference's orbitals orthonormalized in the displaced
-  /// overlap, C (Cᵀ S C)^-1/2, and held to it by @ref check_displaced_casscf.
+  /// overlap, C (Cᵀ S C)^-1/2, and from its CI vectors, and held to it by
+  /// @ref check_displaced_casscf.
   /// Then symmetrized, checked, and its harmonic vibrations; under the
   /// analytic RHF, the dipole derivative from the same CPHF and the IR
   /// intensities, unless a shell is above d (logged as a warning).
