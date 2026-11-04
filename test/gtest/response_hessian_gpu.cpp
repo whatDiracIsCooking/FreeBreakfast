@@ -6,7 +6,8 @@
 // On H2O STO-3G, H e_i for every unit vector against the diagonal, at a
 // two-root CAS(2,2) and at ncas = 0; and the refusals. The density-fitted H
 // against a host contraction of the same B, and, over aug-cc-pVDZ-acCD-6-6,
-// against the integral-direct H.
+// against the integral-direct H; and its block apply against one column at a
+// time.
 //
 // The orbitals are the setup's own, as in response_fock_gpu.cpp: the SCF (run
 // with J unscreened), the active space picked by pipeline.active_space as the
@@ -71,6 +72,12 @@ constexpr double kDfHostTolerance = 1e-12;
 // ppaa and papa, so the comparison is over the acCD set.
 constexpr double kDfProductTolerance = 3e-4;
 constexpr double kDfDiagonalTolerance = 1.5e-3;
+// The density-fitted block apply, whose columns' J and K are built together,
+// against the same columns one at a time: path agreement, so the standing
+// 1e-10 of the largest summand (#655).
+constexpr double kBlockTolerance = 1e-10;
+// Random columns beside the gradient in that block.
+constexpr std::int32_t kBlockDirections = 4;
 // The fitting set of the STO-3G tests, which compare against the host only.
 constexpr std::string_view kAuxBasis = "cc-pvdz-jkfit";
 // The fitting set of the comparison with the integral-direct H.
@@ -1185,6 +1192,73 @@ void expect_whole_fitted_hessian(Setup &setup, const fb::SphericalMatrixAO &c) {
   std::cout << std::format("whole DF H: max |d H e_i| against host / max |H| = {:.2e}\n",
                            host_error / top);
   EXPECT_LT(host_error, kDfHostTolerance * top);
+}
+
+// The density-fitted block apply, which builds its columns' J and K together
+// (one df_coulomb and two df_exchange_symmetrized over the block), against
+// the same columns applied one at a time, each with one column's J and K:
+// the gradient and kBlockDirections random x. Path agreement, so to
+// kBlockTolerance of each column's largest summand, max_ij |H_ij x_j|, with H
+// from one-column products of every unit vector.
+void expect_block_is_per_column(Setup &setup, const fb::SphericalMatrixAO &c) {
+  fb::DeviceResources &res = setup.res();
+  auto fitted = fitted_hessian(setup, c);
+  ASSERT_TRUE(fitted.has_value());
+  const auto n = static_cast<std::size_t>(fitted->hessian.size());
+  ASSERT_GT(n, 0U);
+  std::vector<std::vector<double>> h;
+  for (std::size_t i = 0; i < n; ++i) {
+    std::vector<double> unit(n, 0.0);
+    unit[i] = 1.0;
+    h.push_back(apply_block(res, fitted->hessian, {unit}).front());
+  }
+  std::vector<std::vector<double>> x{download(res, fitted->fock.gradient.data(), n)};
+  for (auto &d : directions(kBlockDirections, n)) {
+    x.push_back(std::move(d));
+  }
+  const auto block = apply_block(res, fitted->hessian, x);
+  double worst = 0.0;
+  for (std::size_t a = 0; a < x.size(); ++a) {
+    const std::vector<double> column = apply_block(res, fitted->hessian, {x[a]}).front();
+    double summand = 0.0;
+    for (std::size_t j = 0; j < n; ++j) {
+      for (const double value : h[j]) {
+        summand = std::max(summand, std::abs(value * x[a][j]));
+      }
+    }
+    const double difference = max_abs_difference(block[a], column);
+    worst = std::max(worst, difference / summand);
+    EXPECT_LE(difference, kBlockTolerance * summand) << "column " << a;
+  }
+  std::cout << std::format("block against per column: max |d H x| / max |H_ij x_j| = {:.2e} "
+                           "over {} columns of {} pairs\n",
+                           worst, x.size(), n);
+}
+
+// H2O cc-pVDZ at its CASCI orbitals, CAS(4,4) over three core orbitals: every
+// kind of pair, and D' of rank nocc beside D3 of rank ncore.
+TEST(ResponseHessianBlock, DensityFittedBlockIsPerColumn) {
+  FBF_REQUIRE_GPU();
+  auto setup = make_setup(reference_case("h2o_ccpvdz"), true);
+  ASSERT_NE(setup, nullptr);
+  const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+  expect_block_is_per_column(*setup, setup->casci->c);
+}
+
+// ncas = 0 off the SCF, H2O STO-3G: D' is 2 D3, and the block has no H_act.
+TEST(ResponseHessianRhfLimit, DensityFittedBlockIsPerColumn) {
+  FBF_REQUIRE_GPU();
+  fb::json entry = reference_case("h2o_ccpvdz");
+  entry["basis"] = "sto-3g";
+  auto setup = make_setup(entry, false);
+  ASSERT_NE(setup, nullptr);
+  const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+  setup->ncore = setup->molecule->electron_count() / 2;
+  setup->ncas = 0;
+  const auto n = packed_pairs(setup->nmo, static_cast<std::size_t>(setup->ncore), 0).size();
+  auto off = rotate(*setup, setup->scf->c, directions(1, n).front(), 0.05);
+  ASSERT_TRUE(off.has_value());
+  expect_block_is_per_column(*setup, *off);
 }
 
 // H2O STO-3G, the density-fitted twin of DiagonalIsHOnEveryUnitVector: every

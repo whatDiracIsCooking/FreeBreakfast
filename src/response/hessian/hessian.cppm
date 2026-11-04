@@ -126,7 +126,13 @@ public:
   /// res.device_workspace()'s. Density-fitted, each is one @c df_coulomb of
   /// the density and one two-factor @c df_exchange of its factors, with no
   /// prune cap and no synchronize; those take the workspace, so the scratch
-  /// is allocated per call. Queued on res.stream() with res.blas(), whose
+  /// is allocated per call. Density-fitted with @p k > 1 and ncore > 0, the
+  /// columns' J and K are built together instead, as many columns at a time
+  /// as half the free memory holds (read by wwrMemGetInfo): one block
+  /// @c df_coulomb of every column's two densities, and for each of the two
+  /// one @c df_exchange_symmetrized of every column's right factor against
+  /// the left one they share. The two give the same Y to rounding. Queued on
+  /// res.stream() with res.blas(), whose
   /// pointer mode must be host (its default, and what davidson_solve holds).
   /// The device res.dev_idx() names is made current for the call and the
   /// previous one restored.

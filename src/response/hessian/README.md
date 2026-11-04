@@ -150,9 +150,9 @@ the defaults (H₂O cc-pVDZ 15, N₂ 12), with the lowest eigenvalue the same to
 2e-15 and the step x / x₀ to 2.7e-12 relative: the asymmetry (3e-13 and 4e-13
 absolute there) is far below the 1e-10 residual it converges to.
 
-Scratch per product (κ, X₂, the gemms' intermediates, two n_cart² densities,
-an n_cart × nmo product, and the n_cart × nocc factor R that only the
-density-fitted K reads) is carved from `res.device_workspace()`, which
+Scratch per product (κ, X₂, the gemms' intermediates, an n_cart² product and
+the two densities D₃ and D′, an n_cart × nmo product, and the n_cart × ncore
+and n_cart × nocc factors R₃ and R that only the density-fitted K reads) is carved from `res.device_workspace()`, which
 neither `coulomb` nor `exchange` takes. The members are what lives across
 products: U C, h, F + Fᵀ, V^c, V^c + V^a, D's occupied block, γ, H_act, the
 diagonal, and the three Cartesian matrices J and K read and write.
@@ -175,6 +175,41 @@ first nocc columns as they lie, and R = [2 R₃, R₄]. Each K is then **one**
 call, K[L Rᵀ], and K = K[L Rᵀ] + K[L Rᵀ]ᵀ by a `geam`: rank ncore for D₃ and
 nocc for D′, not two calls for D′'s two terms. R₃ and R₄ are two small gemms
 over κ the product already holds.
+
+**A block's J and K are built together** (#655). For k > 1 columns (and
+ncore > 0), the density-fitted `apply` forms every column's D₃, D′ and right
+factors first, then builds their J and K in three calls: one block
+`df_coulomb` of all 2k densities (two gemms over B where k columns took 4k
+gemvs), and one `df_exchange_symmetrized` for D₃ and one for D′, each of
+every column's R against the L the columns share (C_core, or C's first nocc
+columns), so X = B L is built once per call, not once per column. That form
+gives K of the symmetrized L Rᵀ, K[D] / 2, so 2 J − K[D] = 2 (J − K_sym), one
+`geam` over the whole block. Then each column's gemms go on as before. As many
+columns go together as half the free memory holds: per column its κ, X₂,
+densities, factors, J and K, and the K scratch Y (naux · nocc · nmo at D′'s
+rank), past X; `cphf`'s `batched` sizes its batches the same way. One column,
+and the integral-direct path, build their J and K one density at a time as
+before. The two paths agree to 1e-10 of each column's largest summand
+max |H_ij x_j| (`test/gtest/response_hessian_gpu.cpp`).
+
+What it buys, `bench/mcscf_zvectors.cpp`'s CP solves (3 n_atom columns,
+DF-CASSCF(4,4)/cc-pVDZ/cc-pVDZ-JKFIT), seconds before → after; water the best
+of 5, octatetraene (54 columns, nmo 162, naux 790) one solve after a warm-up:
+
+| Case | Solver | gfx1200 | RTX 3080 |
+|---|---|---|---|
+| water SS | Schur | 0.393 → 0.372 | 0.332 → 0.315 |
+| water SS | Coupled | 0.308 → 0.280 | 0.261 → 0.240 |
+| water SA-2 | Schur | 0.527 → 0.487 | 0.486 → 0.468 |
+| water SA-2 | Coupled | 0.359 → 0.329 | 0.348 → 0.329 |
+| octatetraene SS | Schur | 40.93 → 25.78 | 41.08 → 28.18 |
+| octatetraene SS | Coupled | 44.95 → 28.04 | 44.93 → 30.42 |
+| octatetraene SA-2 | Schur | 45.74 → 28.77 | 42.42 → 31.33 |
+| octatetraene SA-2 | Coupled | 58.09 → 36.08 | 52.59 → 41.19 |
+
+PerColumn, whose products are one column each and so unchanged, moved by
+−0.5 to +5% between the same runs (octatetraene 46.67 → 46.43 and
+42.82 → 44.95 s SS): that is the runs' spread. So it is on by default.
 
 **The diagonal**'s (pp\|ii) and (pi\|pi) over every p and core i, with no J
 or K per core orbital: L_Q,ip = (Q\|ip), B transformed over C_core and C,
@@ -211,9 +246,10 @@ papa, reads virtual-orbital pairs.
 ## Not done
 
 - **Frozen orbitals**: every core orbital rotates, as in `fock`.
-- **Batched J and K**: a block's 2k J and 2k K are built one at a time.
-  Batching the integral-direct builds is an open kernel question (#200 was
-  repurposed to the fitted CIS sigma, whose block costs one pass).
+- **Batched integral-direct J and K**: the integral-direct block's 2k J and
+  2k K are built one at a time. Batching them is an open kernel question
+  (#200 was repurposed to the fitted CIS sigma, whose block costs one pass);
+  the density-fitted block's are batched (above).
 
 ## Tests
 
@@ -256,4 +292,9 @@ by AVAS.
   the diagonal, and symmetric, at the CAS(2,2) above (ncore 4 of 7 orbitals,
   so the diagonal's last block of C is narrower than ncore) and at ncas = 0,
   at and off the SCF;
+- the density-fitted block apply against the same columns one at a time
+  (the gradient and four random x), at H₂O cc-pVDZ's CASCI orbitals and at
+  ncas = 0 off the SCF over STO-3G, to 1e-10 of each column's largest summand
+  max |H_ij x_j|, H from one-column products of every unit vector: path
+  agreement (seen: 1.9e-15 and 2.1e-16 on the gfx1200);
 - the density-fitted overload's refusals.
