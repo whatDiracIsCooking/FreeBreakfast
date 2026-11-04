@@ -1,0 +1,20 @@
+# Issue #860 phase 1: ethylene S0, SA3-QD-NEVPT2 single point at
+# Park's geometry (J. W. Park, JCTC (2020), acs.jctc.9b00919, Supporting Information, p. S2).
+# His QD-NEVPT2 E(0, 1, 2): -78.3344531014, -78.0580676463, -77.8516417892 Eh.
+# All-electron here (he froze the core); see README.md.
+[molecule]
+xyz = "geometries/ethylene_adz_s0.xyz"
+[basis_set]
+basis = "aug-cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "aug-cc-pvdz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 2
+nelecas = 2
+nroots = 3
+conv_tol_grad = 1e-10
+[nevpt2]
+quasi_degenerate = true
