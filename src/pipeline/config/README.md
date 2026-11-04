@@ -342,7 +342,7 @@ or a pair naming a state at or past it (H_eff has one per root), is
 `InvalidConfig`; an integral-direct `[eri]`, written or filled in, and a
 `[molecule]` `multiplicity` other than 1 are `Unsupported`. The step refuses
 each again when it runs, for a pipeline built by hand; a PC refusal (a
-class's metric with no gap at its cut, a non-positive denominator) can only
+class's metric with no positive eigenvalue, a non-positive denominator) can only
 be seen there, once H_eff is built, and is the effective Hamiltonian's
 `Numerical` error. No `[nevpt2]` is planned for it.
 

@@ -79,8 +79,8 @@ struct Nevpt2NacStep {
   ///         than two roots, a pair whose states are equal or not both
   ///         H_eff's, or a CasscfOutput whose 1-RDMs are not one ncas^2
   ///         block per weight; otherwise the effective Hamiltonian's error
-  ///         (PC's refusal, no gap at a metric's cut or a non-positive
-  ///         denominator, a Numerical error naming the class, among them),
+  ///         (PC's refusal, a metric with no positive eigenvalue or a
+  ///         non-positive denominator, a Numerical error naming the class, among them),
   ///         the coupling's (QD states or coupled CASSCF roots within
   ///         mcscf::kRootGapFloor), or @c write_json's for a @ref json_path
   ///         that cannot be written.

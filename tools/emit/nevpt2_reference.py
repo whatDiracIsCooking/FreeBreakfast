@@ -44,9 +44,10 @@ exact 4-index ERIs, and `kernel(eris=...)` raises in 0.5.4: its `teris`
 timer is bound only on the build path). Three gates before it is written:
 block2's SC on the same state must equal PySCF's per class to BLOCK2_SC, so
 block2 sees the state the SC classes were recorded on; PC Sijrs, which has no
-active index, must equal SC Sijrs to BLOCK2_SC; and every external tuple's
-solve's matrix must have a gap of at least PC_MIN_GAP at the C++ step's
-cut, its own refusal rule, or the PC energy would depend on where the cut fell.
+active index, must equal SC Sijrs to BLOCK2_SC. There is no gap gate: the
+C++ step cuts its metric at pc_cut(d) and needs no gap there, since the real
+modes that may run through the cut carry no energy (src/nevpt2/energy/README.md,
+"PC-NEVPT2", #853); block2's own solves are its lstsq.
 PC is invariant to the active rotation as SC is (each class's metric and
 Dyall matrix move by one congruence), and the tool checks that too: block2's
 PC again on the root's natural orbitals, to INVARIANCE.
@@ -133,22 +134,18 @@ INVARIANCE = 1e-10
 # (hartree) on the same state and integrals. block2 builds Sr and Si from the
 # dense 4-RDM where PySCF contracts it into f3ca and f3ac first.
 BLOCK2_SC = 1e-10
-# Every PC solve's matrix must have a gap of at least PC_MIN_GAP at PC_TAU:
-# its singular values at or below PC_TAU of its largest are null, and the
-# smallest kept over the largest cut (over pc_null(d), the matrix's round-off,
-# where none is) must reach PC_MIN_GAP. That is nevpt2::pc_class_energies'
-# refusal rule. lstsq(rcond=None) cuts lower, at eps * d, and the structural
-# null modes' noise can straddle that cut on natural orbitals; a mode in that
-# noise carries no energy, so only the gap above it matters.
+# nevpt2::pc_class_energies' cut on a class's d x d metric S: its modes at or
+# below pc_cut(d) of its largest are null, the larger of PC_TAU and PC_NOISE
+# eps sqrt(d). Every mode round-off or the RDMs decide has measured at or
+# below 7.4 eps sqrt(d), so the cut sits at least 13 times above it; there is
+# no gap rule (src/nevpt2/energy/README.md, "PC-NEVPT2", #853).
 PC_TAU = 1e-13
-PC_MIN_GAP = 1e3
+PC_NOISE = 100.0
 
 
-def pc_null(d: int) -> float:
-    """The gap's floor when nothing is cut: a d x d metric's round-off,
-    eps sqrt(d) of its largest eigenvalue, in place of the largest cut mode
-    (src/nevpt2/energy/README.md, "PC-NEVPT2")."""
-    return float(numpy.finfo(float).eps * numpy.sqrt(d))
+def pc_cut(d: int) -> float:
+    """The cut on a d x d metric, relative to its largest eigenvalue."""
+    return max(PC_TAU, PC_NOISE * float(numpy.finfo(float).eps) * float(numpy.sqrt(d)))
 
 
 # block2's sub-space keys, as PySCF names the classes.
@@ -278,30 +275,10 @@ def canonical(casci, ci, natorb: bool):
     return casci.canonicalize(casci.mo_coeff, ci=ci, cas_natorb=natorb, verbose=0)
 
 
-def pc_gap(a: numpy.ndarray) -> float:
-    """The smallest gap at PC_TAU over one block of per-tuple matrices:
-    smallest kept / largest cut relative singular value, or / pc_null(d)
-    where a tuple cuts nothing. All-zero tuples have nothing to solve and are
-    skipped."""
-    if len(a) == 0:
-        return numpy.inf
-    sv = numpy.linalg.svd(a, compute_uv=False)
-    live = sv[:, 0] > 0
-    rel = sv[live] / sv[live, :1]
-    if not len(rel):
-        return numpy.inf
-    kept = rel > PC_TAU
-    smallest_kept = numpy.where(kept, rel, numpy.inf).min(axis=1)
-    largest_cut = numpy.where(kept, 0.0, rel).max(axis=1)
-    floor = numpy.where((~kept).any(axis=1), largest_cut, pc_null(a.shape[-1]))
-    return float((smallest_kept / numpy.maximum(floor, numpy.finfo(float).tiny)).min())
-
-
 def block2(casci, state, kernel: str) -> dict[str, float]:
     """block2's SC (`kernel="sc"`) or PC (`"pc"`) per class on one root's
     `state` (canonical's), `canonicalized` so block2 takes the orbitals and
-    energies it is handed, over PySCF's DF integrals for those orbitals. PC
-    checks every solve's gap against PC_MIN_GAP."""
+    energies it is handed, over PySCF's DF integrals for those orbitals."""
     mo, ci, mo_energy = state
     mc = copy.copy(casci)
     mc.mo_coeff, mc.ci, mc.mo_energy = mo, ci, mo_energy
@@ -318,16 +295,8 @@ def block2(casci, state, kernel: str) -> dict[str, float]:
     eris.pacv = numpy.asarray(e["pacv"]).reshape(nmo, ncas, ncore, nvir)
     eris.cvcv = numpy.asarray(e["cvcv"]).reshape(ncore, nvir, ncore, nvir)
 
-    gaps = []
-    solve = icnevpt2_full._linear_solve
-
-    def gapped_solve(a, b):
-        gaps.append(pc_gap(a))
-        return solve(a, b)
-
     init_eris = eri_helper.init_eris
     eri_helper.init_eris = lambda *args, **kwargs: eris
-    icnevpt2_full._linear_solve = gapped_solve
     try:
         cls = {"sc": scnevpt2.WickSCNEVPT2, "pc": icnevpt2_full.WickICNEVPT2}[kernel]
         ic = cls(mc)
@@ -336,12 +305,6 @@ def block2(casci, state, kernel: str) -> dict[str, float]:
         ic.kernel()
     finally:
         eri_helper.init_eris = init_eris
-        icnevpt2_full._linear_solve = solve
-    if kernel == "pc":
-        assert gaps and min(gaps) >= PC_MIN_GAP, (
-            f"a PC solve's gap at {PC_TAU:.0e} is {min(gaps):.1e} < {PC_MIN_GAP:.0e}: "
-            "the PC energy would depend on where the cut fell"
-        )
     return {B2_TO_CLASS[k]: float(v) for k, v in ic.sub_eners.items()}
 
 
@@ -545,7 +508,7 @@ def main() -> None:
         "block2": {
             "sc_tolerance": BLOCK2_SC,
             "pc_tau": PC_TAU,
-            "pc_min_gap": PC_MIN_GAP,
+            "pc_noise": PC_NOISE,
         },
         "cases": cases,
     }

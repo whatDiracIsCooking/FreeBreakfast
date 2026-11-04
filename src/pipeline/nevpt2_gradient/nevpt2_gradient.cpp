@@ -208,8 +208,8 @@ Nevpt2GradientStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClasse
 
   // Batch 0: each class's whole extent in one slab, as nevpt2_gradient_gpu.cpp
   // runs it (src/pipeline/nevpt2_gradient/README.md, "Memory"). A PC
-  // refusal (no gap at the cut, a non-positive denominator) is the energy's
-  // error, returned as it is.
+  // refusal (no positive metric eigenvalue, a non-positive denominator) is the
+  // energy's error, returned as it is.
   const bool pc = variant == Nevpt2Variant::Pc;
   using Gradient = decltype(Nevpt2GradientOutput::gradient);
   auto gradient = [&]() -> Result<Gradient> {

@@ -361,9 +361,17 @@ which holds when S_N's dropped modes annihilate |N⟩, so at eigenstates.
 #703's ladders move the RDMs along random tangents that carry no
 eigenstate structure, so they cannot test it; the ladders here along each
 c_r, real states moved along a real direction, are its check.
+Since #853 the cut also drops real modes of S_N where they run through it
+with no gap, which carry b_{M←N} components of their own small size: at
+PSB3 CAS(6,6) (up to 22 modes per class dropped, about half real)
+`qd_pc_gradient` matches re-converged central differences to
+max(2 × the Richardson bar, 3 σ_E / h_min) on every Cartesian component at
+FC and at 90°, and keeping the real modes does not move it beyond that
+(`nevpt2.energy`'s README, "The derivative across a continuum"; one 6e-9
+residual is #862's). `Nevpt2Psb3.PcQdGradientMatchesNumerical` holds FC's.
 
 **Refusals.** A class `pc_effective_hamiltonian` refuses (no positive
-eigenvalue of S_N, no gap at the cut, λ + Δ not positive) is refused by
+eigenvalue of S_N, λ + Δ not positive) is refused by
 `qd_pc_adjoint` with that error, kind and message naming the class and
 the state, before any bar is read: never a matrix with the class summed
 in as zero. PC's A is the one-root kind: its inactive blocks are not zero
@@ -465,8 +473,8 @@ is that its A vanishes on a degenerate pair, where SC's does not: so a
 pair that the degenerate-pair rule refuses for SC takes z = 0 for PC
 (`Nevpt2PcZc` below).
 
-**Refusals.** A class PC refuses (no positive eigenvalue of the metric, no
-gap at the cut, a non-positive λ + Δ) is refused by `pc_class_energies_adjoint`
+**Refusals.** A class PC refuses (no positive eigenvalue of the metric, a
+non-positive λ + Δ) is refused by `pc_class_energies_adjoint`
 with the energy's error, and `pc_gradient` returns it unchanged: never a
 gradient with that class summed in as zero.
 

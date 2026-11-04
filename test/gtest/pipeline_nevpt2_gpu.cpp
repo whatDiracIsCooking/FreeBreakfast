@@ -8,15 +8,18 @@
 // N2 is not among the cases: SC-NEVPT2 depends on the arbitrary split of its
 // degenerate pi* virtual pairs by up to 5e-6 (data/README.md
 // "nevpt2/nevpt2_df.json"), so the reference leaves it out.
-// Then a state PC refuses, which keeps its SC, and the refusal of an
-// open-shell ScfOutput. The refusal of an integral-direct [eri], made when the
-// config is read, is test/pipeline/config_host.cpp's.
+// Then a state whose PC metric has no gap at its cut, which PC accepts
+// (#853), a state PC refuses, which keeps its SC, and the refusal of an
+// open-shell ScfOutput. The refusal of an
+// integral-direct [eri], made when the config is read, is
+// test/pipeline/config_host.cpp's.
 //
 // Then [nevpt2] quasi_degenerate = true (PipelineQdNevpt2): the H2CO cases of
 // data/qd_nevpt2/ (tools/emit/qd_nevpt2_reference.py) and its two polished
 // near-degenerate H8 cases through our own DF-SA-CASSCF from the same start,
-// the SC- and PC-QD-NEVPT2 eigenvalues and vectors against theirs; PC-QD refused with SC-QD kept; and QD over one root
-// refused by the step itself.
+// the SC- and PC-QD-NEVPT2 eigenvalues and vectors against theirs; PC-QD
+// accepted through a gapless metric; and QD over one root refused by the
+// step itself.
 
 #include <gtest/gtest.h>
 
@@ -262,14 +265,23 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineNevpt2,
                                            Case{.name = "h2o_ccpvdz_avas", .slow = true}),
                          [](const auto &info) { return std::string(info.param.name); });
 
-// A state whose PC is refused keeps its SC. HF in cc-pVDZ, CAS(10,7) over
-// every electron: the F 1s is active and all but doubly occupied (2 - n
-// ~1e-5), and Sr's metric has eigenvalues of its products with the other
-// small occupations that run through the cut at 1e-13 with no gap (smallest
-// kept / largest dropped 1.7 on an RTX 3080, against the 1e3 the layer asks;
-// PySCF's own DF-CASSCF lands at 2.9). The demo's N2 CAS(12,12) fails the
-// same way, with the N 1s; this is 441 determinants against its 854k.
-TEST(PipelineNevpt2, PcRefusalKeepsSc) {
+// PC through a metric spectrum with no gap at its cut (#853). HF in cc-pVDZ,
+// CAS(10,7) over every electron: the F 1s is active and all but doubly
+// occupied (2 - n ~1e-5), so Sr's metric (d = 343) has eigenvalues of its
+// products with the other small occupations that run continuously from
+// 5.8e-14 of its largest up, under 14 null modes at <= 4.6e-17. Until #853
+// that was refused (smallest kept / largest dropped 1.7 against 1e3); those
+// modes are real and carry no energy, and PC E_corr moves by 2.6e-9 Eh with
+// the cut anywhere from 1e-15 to 1e-12 of the largest, from -0.1415607189 to
+// -0.1415607163 (RTX 3080, ../../src/nevpt2/energy/README.md "PC-NEVPT2").
+// So it is accepted, and E_corr must sit in that band: within kHfPcBand of its
+// middle. The bar is the band's half-width with room for the CASSCF's
+// convergence (first order in the orbitals, under 1e-9 at kConvTolGrad); a
+// cut that moved up into 1e-11 .. 1e-10 would move E_corr by 3e-8 .. 1.7e-7.
+// The small-molecule twin of PSB3's CAS(6,6).
+constexpr double kHfPcCorr = -0.1415607176;
+constexpr double kHfPcBand = 1e-8;
+TEST(PipelineNevpt2, PcAcceptedThroughAContinuum) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_nevpt2");
   ASSERT_TRUE(
@@ -298,13 +310,65 @@ TEST(PipelineNevpt2, PcRefusalKeepsSc) {
   EXPECT_NEAR(sc.total, std::ranges::fold_left(sc.energies, 0.0, std::plus{}), kPcSlack);
   EXPECT_LT(sc.total, -0.05);
 
+  // PC stands: accepted, every class at or below SC's, E_corr in the band.
+  ASSERT_EQ(nevpt2->pc_roots.size(), 1U);
+  ASSERT_EQ(nevpt2->pc_refusals.size(), 1U);
+  ASSERT_TRUE(nevpt2->pc_roots[0].has_value()) << nevpt2->pc_refusals[0];
+  EXPECT_TRUE(nevpt2->pc_refusals[0].empty()) << nevpt2->pc_refusals[0];
+  const fb::nevpt2::PcClassEnergies &pc = *nevpt2->pc_roots[0];
+  for (std::size_t k = 0; k < 8; ++k) {
+    EXPECT_TRUE(std::isfinite(pc.energies[k])) << k;
+    EXPECT_LE(pc.energies[k], sc.energies[k] + kPcSlack) << k;
+  }
+  EXPECT_NEAR(pc.total, std::ranges::fold_left(pc.energies, 0.0, std::plus{}), kPcSlack);
+  EXPECT_NEAR(pc.total, kHfPcCorr, kHfPcBand);
+  std::cout << std::format("[ nevpt2   ] HF CAS(10,7): SC E_corr {:.12f}; PC E_corr {:.12f} "
+                           "(band {:.10f} +- {:.0e}), dropped {}\n",
+                           sc.total, pc.total, kHfPcCorr, kHfPcBand, pc.dropped);
+}
+
+// A state whose PC is refused keeps its SC: water in STO-3G with CAS(2,1),
+// its one active orbital doubly occupied, so Si's metric is zero and has no
+// positive eigenvalue, the one refusal besides a non-positive denominator
+// that the PC solve has (#853).
+TEST(PipelineNevpt2, PcRefusalKeepsSc) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_nevpt2");
+  ASSERT_TRUE(fb::write_file(dir / "water.xyz", "3\nwater\nO 0 0 0.1173\nH 0 0.7572 -0.4692\n"
+                                                "H 0 -0.7572 -0.4692\n")
+                  .has_value());
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n"
+                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
+                  "[casscf]\nncas = 1\nnelecas = 2\nconv_tol_grad = {:g}\n[nevpt2]\n",
+                  kDfAuxBasis, kConvTolGrad);
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
+  ASSERT_TRUE(nevpt2.has_value());
+
+  // SC stands: every class computed, the correlation energy their sum.
+  ASSERT_EQ(nevpt2->roots.size(), 1U);
+  const fb::nevpt2::ClassEnergies &sc = nevpt2->roots[0];
+  for (std::size_t k = 0; k < 8; ++k) {
+    EXPECT_TRUE(std::isfinite(sc.energies[k])) << k;
+    EXPECT_LE(sc.energies[k], 0.0) << k;
+  }
+  EXPECT_NEAR(sc.total, std::ranges::fold_left(sc.energies, 0.0, std::plus{}), kPcSlack);
+  EXPECT_LT(sc.total, -0.01);
+
   // PC is empty, and says which class refused.
   ASSERT_EQ(nevpt2->pc_roots.size(), 1U);
   ASSERT_EQ(nevpt2->pc_refusals.size(), 1U);
   EXPECT_FALSE(nevpt2->pc_roots[0].has_value());
-  EXPECT_NE(nevpt2->pc_refusals[0].find("Sr's metric has no gap"), std::string::npos)
+  EXPECT_NE(nevpt2->pc_refusals[0].find("Si's metric has no positive eigenvalue"),
+            std::string::npos)
       << nevpt2->pc_refusals[0];
-  std::cout << std::format("[ nevpt2   ] HF CAS(10,7): SC E_corr {:.12f}; PC {}\n", sc.total,
+  std::cout << std::format("[ nevpt2   ] water CAS(2,1): SC E_corr {:.12f}; PC {}\n", sc.total,
                            nevpt2->pc_refusals[0]);
 }
 
@@ -555,15 +619,16 @@ TEST_P(PipelineQdNevpt2, MatchesGoldens) {
 // roots of different symmetry, every off-diagonal zero. The two H8 cases
 // (#688) are where QD visibly matters: data/qd_nevpt2/'s h8_sto3g_sa3 and
 // h8_ring_sto3g_sa3, polished copies, whose couplings move the QD energies
-// 1.7 and 6 mEh off the diagonal. Both pass PC's gap rule (#687).
+// 1.7 and 6 mEh off the diagonal. PC solves both (#687).
 INSTANTIATE_TEST_SUITE_P(Goldens, PipelineQdNevpt2,
                          ::testing::Values("h2co_skew_ccpvdz_sa3", "h2co_ccpvdz_sa2",
                                            "h2co_ccpvdz_sa2_weighted", "h8_sto3g_sa3_polished",
                                            "h8_ring_sto3g_sa3_polished"),
                          [](const auto &info) { return info.param; });
 
-// PC-QD refused, SC-QD kept, the run not failed: PcRefusalKeepsSc's HF
-// CAS(10,7) averaged over three roots, its F 1s active in each. Three, not
+// PC-QD through a metric spectrum with no gap at its cut (#853):
+// PcAcceptedThroughAContinuum's HF CAS(10,7) averaged over three roots, its
+// F 1s active in each, accepted where it was refused until #853. Three, not
 // two: HF's lowest excited singlet is a 1Pi, so a second root is one
 // component of a degenerate pair, and an average over it alone is not
 // smooth where the pair meets (see ../../src/mcscf/solve/README.md, "A
@@ -571,8 +636,9 @@ INSTANTIATE_TEST_SUITE_P(Goldens, PipelineQdNevpt2,
 // iterations, and sometimes not 50 (#716). Over both components it is
 // invariant under the rotation about the bond, and takes 6. Which basis the
 // pair's CI vectors take is arbitrary, and QD-NEVPT2's eigenvalues depend on
-// it (each state's own H_0), so nothing here compares them.
-TEST(PipelineQdNevpt2, PcRefusalKeepsScQd) {
+// it (each state's own H_0), so nothing here compares them to a number: SC-QD
+// and PC-QD are each held to what any basis gives.
+TEST(PipelineQdNevpt2, PcQdAcceptedThroughAContinuum) {
   FBF_REQUIRE_GPU();
   constexpr std::size_t n = 3;
   const fb::test::ScratchDir dir("pipeline_qd_nevpt2");
@@ -616,16 +682,31 @@ TEST(PipelineQdNevpt2, PcRefusalKeepsScQd) {
   EXPECT_NEAR(std::accumulate(nevpt2->qd_energies.begin(), nevpt2->qd_energies.end(), 0.0), trace,
               kPcSlack);
 
-  // PC-QD is absent, and says which class refused.
-  EXPECT_TRUE(nevpt2->pc_qd_couplings.empty());
-  EXPECT_TRUE(nevpt2->pc_qd_heff.empty() && nevpt2->pc_qd_energies.empty() &&
-              nevpt2->pc_qd_vectors.empty());
-  EXPECT_NE(nevpt2->pc_qd_refusal.find("metric has no gap"), std::string::npos)
-      << nevpt2->pc_qd_refusal;
+  // PC-QD stands, held as SC-QD is: H_eff symmetric, its diagonal each
+  // root's CASSCF energy plus its own coupling, its eigenvalues ascending and
+  // summing to its trace; each diagonal coupling at or below SC's.
+  EXPECT_TRUE(nevpt2->pc_qd_refusal.empty()) << nevpt2->pc_qd_refusal;
+  ASSERT_EQ(nevpt2->pc_qd_couplings.size(), n * n);
+  ASSERT_EQ(nevpt2->pc_qd_heff.size(), n * n);
+  ASSERT_EQ(nevpt2->pc_qd_energies.size(), n);
+  ASSERT_EQ(nevpt2->pc_qd_vectors.size(), n * n);
+  double pc_trace = 0.0;
+  for (std::size_t r = 0; r < n; ++r) {
+    for (std::size_t s = 0; s < r; ++s) {
+      EXPECT_EQ(nevpt2->pc_qd_heff[r + (s * n)], nevpt2->pc_qd_heff[s + (r * n)]) << r << ", " << s;
+    }
+    const double coupling = nevpt2->pc_qd_couplings[(r * n) + r].total;
+    EXPECT_NEAR(nevpt2->pc_qd_heff[(r * n) + r], casscf->energies[r] + coupling, kPcSlack);
+    EXPECT_LE(coupling, nevpt2->qd_couplings[(r * n) + r].total + kPcSlack) << r;
+    pc_trace += nevpt2->pc_qd_heff[(r * n) + r];
+  }
+  EXPECT_TRUE(std::ranges::is_sorted(nevpt2->pc_qd_energies));
+  EXPECT_NEAR(std::accumulate(nevpt2->pc_qd_energies.begin(), nevpt2->pc_qd_energies.end(), 0.0),
+              pc_trace, kPcSlack);
   std::cout << std::format("[ qd       ] HF CAS(10,7) SA-3: {} macro iterations, |g| {:.2e}, SC-QD "
-                           "{::.10f}; PC-QD {}\n",
+                           "{::.10f}; PC-QD {::.10f}\n",
                            casscf->iterations.size(), casscf->gradient_norm, nevpt2->qd_energies,
-                           nevpt2->pc_qd_refusal);
+                           nevpt2->pc_qd_energies);
 }
 
 } // namespace

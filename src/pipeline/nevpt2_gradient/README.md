@@ -72,7 +72,8 @@ struct Nevpt2GradientStep {
    basis and its primitive-pair classes, the core Hamiltonian, and the
    `DensityFitted` product's aux basis, B and L. Its terms, its multipliers
    and its gate are `../../nevpt2/gradient/README.md`'s. A class PC refuses
-   (no gap at the cut, a non-positive λ + Δ) is the energy's error, returned
+   (a metric with no positive eigenvalue, a non-positive λ + Δ) is the
+   energy's error, returned
    unchanged, so `[optimize]` stops on it.
 4. **`nevpt2_gradient.json`**, when `json_path` is set:
 
@@ -129,7 +130,7 @@ state-averaged Fock, which is what both QD gradients take
   `quasi_degenerate`. An `[optimize]` over it follows the state from
   geometry to geometry (`../optimize/README.md`, "The QD-NEVPT2 state").
 - **A PC refusal** is the one the `[nevpt2]` step reports for PC-QD: a class
-  whose metric has no gap at the cut, or a non-positive λ + Δ,
+  whose metric has no positive eigenvalue, or a non-positive λ + Δ,
   `qd_pc_energy`'s `Numerical` error, which `qd_pc_gradient` returns
   unchanged and the step returns as it is. The energy step keeps SC-QD and
   records the refusal in `pc_qd_refusal`; the gradient has no SC to keep,
@@ -242,11 +243,18 @@ conv_tol_grad = 1e-9
   H_eff's eigenvalues and the state wired through shows. Its
   `nevpt2_gradient.json` total, the product's, along each of #696's three
   stored directions within 2× that number's committed error bar.
-- `QdPcRefusalIsTheEnergyStepsRefusal`: `[nevpt2] quasi_degenerate` and
-  `[nevpt2_gradient] quasi_degenerate, variant = "pc"` on
-  `../nevpt2/`'s HF CAS(10,7) SA-3 PC refusal case: the run fails
-  `Numerical` naming the same class as the energy step's `pc_qd_refusal`,
-  the energy step's SC-QD kept, no `nevpt2_gradient.json`.
+- `QdPcThroughAContinuumRefusesOnlyTheDegeneratePair`: `[nevpt2]
+  quasi_degenerate` and `[nevpt2_gradient] quasi_degenerate, variant = "pc"`
+  on `../nevpt2/`'s HF CAS(10,7) SA-3, whose PC metrics run through their
+  cut with no gap (refused by both steps on PC until #853): the energy step
+  accepts PC-QD, and the gradient gets past PC to the state average's own
+  refusal, `mcscf::root_pair_multipliers` on roots 1 and 2 (the exactly
+  degenerate ¹Π pair), `Numerical`, no `nevpt2_gradient.json`.
+- `PcRefusalIsTheEnergyStepsRefusal`: `[nevpt2]` and `[nevpt2_gradient]
+  variant = "pc"` on water STO-3G CAS(2,1), Si's metric with no positive
+  eigenvalue: the run fails `Numerical` naming Si, as the energy step's
+  `pc_refusals[0]` does, SC kept, no `nevpt2_gradient.json`. No plain config
+  reaches PC-QD's refusal since #853 (`../nevpt2/README.md`).
 - The new keys and their refusals at config read in
   `test/pipeline/config_host.cpp`; the product's variant and the two fields
   in `test/pipeline/steps_host.cpp`.

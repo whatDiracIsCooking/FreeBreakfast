@@ -400,8 +400,7 @@ eigenbasis.
 \begin{algorithmic}[1]
 \Require $S$, $K$, $S_1$ ($d\times d$, $d\times n_1$) of one state; the class's slabs
 \State $S \gets \sym S$, $K \gets \sym K$ \Comment{$K$ is symmetric only to the CI's convergence}
-\State $S = V\sigma V^\T$; keep $\sigma_k > 10^{-13}\sigma_{\max}$
-\State \textbf{gap rule:} $\sigma_{\min,\mathrm{kept}} \ge 10^3\,\nu$, $\nu$ the largest dropped $\sigma$, or $\varepsilon_{\mathrm{mach}}\sqrt d\,\sigma_{\max}$ if none is dropped; else refuse
+\State $S = V\sigma V^\T$; refuse if $\sigma_{\max} \le 0$; keep $\sigma_k > \max(10^{-13}, 100\,\varepsilon_{\mathrm{mach}}\sqrt d)\,\sigma_{\max}$ \Comment{no gap test (\#853)}
 \State $X \gets V_{\mathrm{kept}}\sigma_{\mathrm{kept}}^{-1/2}$;\ $K' = X^\T K X = W\lambda W^\T$;\ $U \gets XW$
 \State $\Tc \gets SU$;\ $t_1 \gets S_1^\T U$
 \For{each slab, each tuple $t$}
@@ -413,8 +412,13 @@ eigenbasis.
 \end{algorithm}
 
 $S$ is singular by construction (Sr and Si drop 44 of 64 modes at CAS(4,4)).
-The gap rule refuses a cut so near the threshold that round-off decides the
-rank, and so the energy. A refused class fails the call (naming the class,
+The cut sits at least 13 times above every mode round-off or the RDMs
+decide, measured; above it the real modes may run through the cut with no
+gap, and carry no energy there (PSB3, HF with its F~1s active: the energy
+moves by under $3\times10^{-9}\,E_h$ with the cut anywhere in
+$10^{-15}\ldots10^{-12}$; \code{src/nevpt2/energy/README.md}, \#853), so
+there is no gap test. A refused class (no positive $\sigma$, or a
+non-positive denominator) fails the call (naming the class,
 and for QD the state); it is never summed in as zero.
 
 \subsection{The QD walks and the amplitude hand-over}
@@ -507,8 +511,11 @@ With $A_t = K + \Delta_t S$ and $x = A_t^{+}b_t$ the solve the energy ran,
   \label{eq:pcdot}
 \end{equation}
 so no eigenvalue or eigenvector derivative appears. This holds where $S$'s
-kept rank is locally constant (the gap rule) and $K$ annihilates $S$'s
-dropped modes, which holds at an eigenstate. In the eigenbasis, with
+kept rank is locally constant and $K$ annihilates $S$'s dropped modes, which
+holds at an eigenstate for its null modes. With real modes dropped at the
+cut (\#853) it is validated at PSB3 against re-converged central differences
+to $\max(2\times$ the Richardson bar$,\ 3\sigma_E/h_{\min})$, and keeping
+those modes does not move it (\code{src/nevpt2/energy/README.md}). In the eigenbasis, with
 $g_t = y_t/(\lambda + \Delta_t)$, each tuple gives $\bar y_t = -2c\,g_t$, a
 weight $w_t = c\,g_t$ and $\partial E/\partial\Delta_t = c\,g_t\cdot g_t$;
 accumulating $M = \sum_t g_t w_t^\T$ and $M_\Delta = \sum_t\Delta_t g_t w_t^\T$
@@ -1036,9 +1043,10 @@ invariant to turning $u_P$, $u_Q$ within their pair.
   that round-off moves, and $c_t = -1/(\Delta + H/N)$ amplifies it by
   $\sim 1/N$. The energy cannot see it ($cN$ is small); the bars and the PT2
   density can. PC divides by no norm and is unaffected.
-\item \textbf{PC's metric cut.} The gap rule refuses an ambiguous rank; a
-  non-positive $\lambda + \Delta$ is refused. Near either, the energy is not
-  smooth, and the derivatives inherit the solve's conditioning.
+\item \textbf{PC's metric cut.} A real mode crossing the cut changes the
+  rank, and the energy by a step of that mode's size (under
+  $10^{-9}\,E_h$ where measured); a non-positive $\lambda + \Delta$ is
+  refused. Near either, the energy is not smooth, and the derivatives inherit the solve's conditioning.
 \item \textbf{Gaps.} QD states closer than $10^{-8}\,E_h$ are refused by the
   state form, the coupling and the NAC (not by the W forms or the
   intersection); CASSCF roots closer than that which $\zeta$, $t$ or

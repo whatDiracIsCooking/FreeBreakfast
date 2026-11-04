@@ -177,53 +177,140 @@ unit stride, k at stride d.
 
 **The cut, and refusals.** S is singular by construction (Sr and Si drop 44
 of 64 modes at CAS(4,4), 10 of 1000 at CAS(10,10); Sir 1 or 2). Its modes at
-or below 1e-13 of its largest eigenvalue are dropped: two decades above the
-structural null modes' noise, two below the first real mode on cc-pVTZ. A
-class is a **Numerical error, naming it**, when S has no positive
-eigenvalue, when it has no gap at the cut (below), or when a denominator
-λ_k + Δ_t is not positive. The demo reported a refused class and carried on;
-here the call fails, since a total without that class is not PC-NEVPT2
-(the pipeline step then drops that root's PC and keeps its SC).
+or below **max(1e-13, 100 ε √d)** of its largest eigenvalue are dropped
+(ε = 2.2e-16, d the class's basis size): 1e-13 up to d = 20, then 3.3e-13 at
+d = 216, 7.0e-13 at d = 1000 and 9.2e-13 at d = 1728, still more than a
+decade below the first real mode on cc-pVTZ (2.1e-11). A class is a
+**Numerical error, naming it**, when S has no positive eigenvalue or when a
+denominator λ_k + Δ_t is not positive. There is no gap test (#853, below).
+The demo reported a refused class and carried on; here the call fails,
+since a total without that class is not PC-NEVPT2 (the pipeline step then
+drops that root's PC and keeps its SC).
 
-**The gap rule.** The smallest kept eigenvalue must be at least 1e3 times
-the noise below it, or the rank, and so the energy, would depend on where
-the cut fell: the demo's N₂ CAS(12,12) is such a state. When modes are
-dropped, the noise is measured: it is the largest dropped eigenvalue. When
-**nothing** is dropped there is nothing to measure, and the floor is S's
-round-off instead, **ε √d** of its largest eigenvalue (ε = 2.2e-16, d the
-class's basis size); the ratio is still against 1e3, so in both cases a
-kept mode must sit three decades above noise.
+**The floor: clear of the noise.** What the cut must not keep is a mode
+that round-off or the RDMs' error decides: its σ is noise, so its λ in
+K′ = Xᵀ K X is noise over noise, and its denominator anything. Measured, the
+largest such mode is 7.4 ε √d (6.6e-15, `h8_ring_sto3g_sa3`'s Sij, 15 of 16
+dropped, on the QD goldens; 1.2e-15 on the single-state ones). On PSB3
+(below) the null cluster tops out at 0.21 ε √d, and the modes where this
+layer's spectrum and an exact fp64 one (PySCF's dense RDMs, the same
+orbitals) disagree, so round-off decides them, reach 0.53 ε √d (1.75e-15
+exact against 2.0e-16 here). 100 ε √d sits at least 13 times above every
+one of them, at every d; 1e-13 alone was 30 ε √d at d = 216 and would be
+under 10 ε √d past d = 2000. Below the noise the hazard is real: cut at
+1e-16 instead, PSB3 FC root 1 keeps a null mode of Si and its denominator
+comes out λ + Δ = −4.4, refused.
 
-Why not the cut itself, the demo's choice for this case (smallest kept /
-1e-13): the rule exists to refuse an ambiguous cut, a mode so near the
-threshold that round-off decides whether it is dropped, and with nothing
-dropped that is the only question. A mode passing over ε √d is at least
-1e3 ε √d − 1e-13 > 500 ε √d above the cut (as ε √d ≥ ε), so no
-perturbation of S's size drops it; one within a decade of the cut is always
-refused (the threshold, 1e3 ε √d of the largest, is 2.2e-13 at d = 1 and
-8.9e-13 at d = 16). Against the cut,
-`test/gtest/data/qd_nevpt2/`'s `h8_sto3g_sa3` root 0 was refused: its Srs
-and Sij (d = 16) drop nothing and keep real modes at 2.3e-12 of their
-largest (the brute force's explicit spans carry them; their null modes sit
-near 1e-33), a "gap" of 23, though the ungated energy matched the brute
-force to 5.4e-14. Over ε √d its gap is 2.6e3, and it is accepted (#687).
-ε d, the worst-case bound, would put it at 654 and still refuse it.
+**No gap test (#853).** Until #853 a class was also refused when its
+smallest kept eigenvalue was under 1e3 times its largest dropped one (or
+ε √d of the largest, nothing dropped), on the argument that the rank, and
+so the energy, would depend on where the cut fell. That refused every PSB3
+geometry at SA3-CASSCF(6,6)/cc-pVDZ (cc-pVDZ-JKFIT; the ground-state
+minimum and C13=C14 twisted to 90°), every root, on Sr or Si at ratios 1.4
+to 630, and HF/cc-pVDZ CAS(10,7) with its F 1s active at 1.7. The premise
+does not hold there: the modes at the cut are **real** (this layer's
+spectrum and the exact one agree mode for mode from 1e-14 up), they run
+continuously through it with no gap anywhere, and they carry **no energy**.
 
-The estimate is S's own round-off, not the RDMs' error, which a dropped
-mode also carries: over the QD goldens' 61 solves that drop modes, the
-largest dropped is up to 7.4 ε √d (6.6e-15, `h8_ring_sto3g_sa3`'s Sij, 15
-of 16 dropped), and 1.2e-15 on the single-state goldens. A metric that cuts
-nothing has no such measurement, and the rule takes the round-off it
-cannot be below. Every state accepted before is accepted with the same
-numbers (the old floor, 1e-13, is above ε √d for any d under 2e5), and the
-generators' gates (`tools/emit/nevpt2_reference.py`'s `pc_gap`,
-`qd_nevpt2_reference.py`'s `pc_solve` and brute-force spans) follow the
-same rule.
+Each class's metric, relative eigenvalues (RTX 3080, `--preset default`;
+PSB3 FC from the CASSCF minimum, 90° the same geometry with C13=C14 twisted
+rigidly at its FC length):
 
-At (2e,2o) the rule does not bite along a whole PC-QD MECI walk: ethylene's
-SA3-CASSCF(2,2)/cc-pVDZ, PC-QD states 0 and 1, converged in 83 evaluations
-from a twisted, pyramidalized start with no class refused at any of them
-(`docs/reproduction/park2019/README.md`, "Tier 0", #843).
+| state, class (d) | modes under 1e-15 (largest) | the next | modes in 1e-15 … 1e-9 | dropped at 1e-13 / at the cut |
+|---|---|---|---|---|
+| PSB3 FC root 0, Sr (216) | 6 (2.7e-17) | 6.5e-15 | 19 | 9 / 10 |
+| root 0, Si | 7 (2.0e-16) | 1.1e-14 | 18 | 10 / 11 |
+| root 1, Sr | 7 (3.9e-17) | 2.1e-13 | 14 | 7 / 8 |
+| root 1, Si | 7 (4.4e-16) | 2.1e-14 | 15 | 8 / 9 |
+| root 2, Sr | 7 (4.4e-17) | 1.4e-13 | 14 | 7 / 8 |
+| root 2, Si | 7 (1.2e-16) | 3.1e-14 | 14 | 8 / 9 |
+| PSB3 90° root 1, Sr (216) | 11 (5.2e-16) | 2.6e-15 | 45 | 18 / 22 |
+| root 1, Si | 12 (6.8e-16) | 2.3e-15 | 42 | 19 / 22 |
+| HF CAS(10,7), Sr (343) | 14 (4.6e-17) | 5.8e-14 | 67 | 16 / 21 |
+
+The energy against the cut, everything else this layer's (E_corr, and the
+PC-QD state 0 energy, Eh; a probe build that took the cut from the
+environment and skipped the gap test):
+
+| cut | FC root 0 | FC root 1 | FC root 2 | FC QD state 0 | 90° QD state 0 | HF E_corr |
+|---|---|---|---|---|---|---|
+| 1e-15 | −0.7833187827 | −0.8103104954 | −0.7862713113 | −249.0621766021 | −248.9730127974 | −0.1415607189 |
+| 1e-14 | −0.7833187827 | −0.8103104954 | −0.7862713113 | −249.0621766021 | | −0.1415607189 |
+| 1e-13 | −0.7833187827 | −0.8103104954 | −0.7862713113 | −249.0621766021 | −248.9730127972 | −0.1415607187 |
+| 1e-12 | −0.7833187827 | −0.8103104952 | −0.7862713113 | −249.0621766021 | | −0.1415607163 |
+| 1e-11 | −0.7833187826 | −0.8103104949 | −0.7862713112 | −249.0621766021 | −248.9730127962 | −0.1415606856 |
+| 1e-10 | −0.7833187821 | −0.8103104929 | −0.7862713108 | −249.0621766021 | | −0.1415605477 |
+| 1e-9 | −0.7833187811 | −0.8103104912 | −0.7862713086 | −249.0621766008 | −248.9730127825 | −0.1415594819 |
+
+From 1e-15 to 1e-12, 3 to 7 more modes of each Sr and Si dropped, PSB3
+moves by at most 3e-10 Eh and HF by 2.6e-9; FC's PC-QD state 0, the
+energy #848 needs, by none in ten decimals from 1e-15 to 1e-10. A real mode
+of small σ carries energy of its own order: b = S x + S₁ h1 has a component
+along it of that order, so dropping it or keeping it is a σ-sized change,
+which is why the cut may fall anywhere in the continuum. The exact fp64
+solve in Python on PSB3 FC's Sr says the same: root 0's E(Sr) moves 2e-8 Eh
+across 1e-15 … 1e-8, while 28 modes leave. Park's own PC (BAGEL's SMITH,
+"CAS/A ... equivalent to partially contracted NEVPT2"; `src/smith/denom.cc`
+orthonormalizes each metric by `Matrix::inverse_half(thresh_overlap)`)
+keeps eigenvalues above an **absolute** 1e-9 (`smith_info.cc`'s default),
+about 4e-11 of the largest here, and has no gap test: the rule his PSB3
+QD-NEVPT2 numbers (JCTC 2020, acs.jctc.9b00919, SI S8–S11) came through.
+
+`h8_sto3g_sa3` root 0's Srs and Sij (d = 16) keep real modes at 2.3e-12 of
+their largest, and nothing below; the cut, 1e-13 there, leaves them all
+(#687 had accepted it against the gap rule's ε √d floor). Every golden
+test passes unchanged under the new cut, at its own bar (#853's tier and
+slow-tier runs). The
+generators cut the same way (`tools/emit/nevpt2_reference.py`'s `pc_cut`,
+`qd_nevpt2_reference.py`'s `pc_solve` and brute-force spans) and gate on no
+gap; `qd_nevpt2.json`'s `min_gap` is that ratio, recorded, not a gate.
+
+At (2e,2o) nothing comes near the cut along a whole PC-QD MECI walk:
+ethylene's SA3-CASSCF(2,2)/cc-pVDZ, PC-QD states 0 and 1, converged in 83
+evaluations from a twisted, pyramidalized start with no class refused at
+any of them (`docs/reproduction/park2019/README.md`, "Tier 0", #843).
+
+**The derivative across a continuum.** The reverse pass (below)
+differentiates the solve over S's kept span as if it were fixed, which is
+exact when the dropped modes carry nothing; past #853 real modes are dropped.
+Measured at PSB3, they do not move the derivative: the analytic PC-QD state 0
+gradient (`[nevpt2_gradient] quasi_degenerate, variant = "pc"`) against
+central differences of the same energy, every displaced point re-converged
+(`conv_tol_grad` 1e-10), steps 2e-3, 1e-3 and 5e-4 bohr, one Richardson
+step over the two finest and its error bar (its distance from the step over
+the two coarser); RTX 3080, `--preset default`, card held.
+
+- **The bar** is max(2 × the Richardson bar, 3 σ_E / h_min). σ_E, the
+  energies' own noise, is measured: 8 repeats of the 90° reference give an
+  sd of 1.3e-12 Eh at `conv_tol_grad` 2e-10 and at 1e-8 alike (atomics, not
+  convergence), and 18 displaced points rerun moved by 2.6e-12 rms, so
+  σ_E ≈ 1.8e-12. The Richardson value carries 0.95 σ_E / h_min of it (its
+  weights at 1e-3 and 5e-4), and 3 σ_E / h_min = 1.1e-8 Eh/bohr is three of
+  those. The 2× rule alone assumes the bar measures truncation; where the
+  derivative is small or zero by symmetry the bar is noise, and was 1.7e-10
+  on FC's atom 6 z, whose 5.3e-10 miss is that noise.
+- **FC**, 42 of 42 components pass (largest gradient component 2.4e-2;
+  largest miss 8.7e-9, worst in-plane miss / bar 1.9). The data is
+  `test/gtest/data/nevpt2_psb3/psb3_fc.json`, held by
+  `Nevpt2Psb3.PcQdGradientMatchesNumerical` (slow tier).
+- **90°** (22 modes each of root 1's Sr and Si dropped, 11 and 10 of them real), 42 of
+  42 pass; under the plain 2× rule 9 did not. Along the gradient direction
+  and two random unit directions (`default_rng(853)`), at `conv_tol_grad`
+  2e-10 and 1e-8, all six directional checks pass, the gradient direction's
+  miss at most 4.7e-10 of a slope of 0.198. Rerunning the worst Cartesian
+  components' points moved atom 8 x's Richardson value by 7.2e-9 (its miss
+  fell from 8.0e-9 to 7.9e-10) and atom 3 z's by 2.7e-9: noise.
+- **One residual, cut-independent:** atom 4 x at 90° (gradient 0.0313)
+  reproduces its Richardson value to 1e-9 on a rerun, yet misses by 5.7e-9
+  and 6.8e-9 (mean 6.3e-9, 2e-7 relative), and by 6.9e-9 with the cut at
+  1e-15, every real mode kept: not the cut's. It passes the bar; whether it
+  is the CASSCF's stopping bias at the displaced points (|g| ~1e-10) or
+  analytic is #862. The CASSCF cannot be held tighter there to test it:
+  `conv_tol_grad` 1e-12 stalls at |g| 2.4e-10 (#862 too).
+
+Keeping the real modes instead (the cut at 1e-15) moves the analytic gradient
+by up to 1.3e-8 per component and fixes none of the misses, which is what a
+derivative that does not depend on the cut predicts.
 
 **Memory.** The solve's d × d matrices (S, K, their symmetrized copies, V,
 and the d × m X, U, T and gemmwich's work) are buffers of their own, freed
@@ -241,9 +328,9 @@ intermediates. The slab's y is a workspace region, taken after the slab.
 `qd.cpp` checks the inputs as for SC; the walk is `pc_class_energies`' own
 (`pc_couplings`, `pc.cpp`), which runs it at n = 1. Per class and ket J,
 S_J, K_J and S₁_J are J's own and are cut and solved once (`solve_class`,
-its gap rule and refusals unchanged), n solves per class; a refusal names
+its cut and refusals unchanged), n solves per class; a refusal names
 the class **and the state**
-(`nevpt2::pc_effective_hamiltonian: state 0: Srs's metric has no gap …`).
+(`nevpt2::pc_effective_hamiltonian: state 1: Sr's metric has no positive eigenvalue`).
 Then, the conventions being `test/gtest/data/qd_nevpt2/README.md`'s,
 
     ⟨I|V|Ψ_J⁽¹⁾⟩_t = −c b_{I←J,t}ᵀ (K_J + Δ_t S_J)⁺ b_{J,t}
@@ -564,8 +651,11 @@ blocks equals its energy: an exact identity from the bars, as Eq. 40 is
 SC's. Sijrs carries SC's ½ <ḡ, g>.
 
 **Where it is exact, and refusals.** The two-term derivative needs S's kept
-rank locally constant, which the energy's gap check enforces, and, for the
-bars on S, K annihilating S's dropped modes, which holds at an eigenstate. A
+rank locally constant and, for the bars on S, K annihilating S's dropped
+modes, which holds at an eigenstate for the null modes. Real modes dropped at
+the cut (#853) break both a little, by their own size: measured at PSB3, the
+derivative holds to the numerical-gradient bar with them dropped, and
+keeping them does not move it ("The derivative across a continuum"). A
 class the energy refuses is refused here with the energy's error (the same
 `solve_class`, and one `pc_denominators_positive` for both), never given a
 zero; on an error the bars are unspecified.
@@ -623,8 +713,8 @@ metric blocks through the class's builder (the table above, S and S₁
 columns), and so onto its transition RDMs. **No (I, J) / (J, I) mean**,
 unlike SC: the bar on S^{(J,I)} is pair (I, J)'s alone. Each ket's own M,
 M_Δ and T̄ collect every bra's share and go onto its own blocks as at
-n = 1. A ket the energy refuses (no gap at S_J's cut, or a denominator not
-positive) is refused with `pc_effective_hamiltonian`'s error, naming the
+n = 1. A ket the energy refuses (S_J with no positive eigenvalue, or a
+denominator not positive) is refused with `pc_effective_hamiltonian`'s error, naming the
 class and the state (`state_error`, the forward's), never given a zero.
 Sijrs is SC's, weight Σ_J H̄_JJ.
 

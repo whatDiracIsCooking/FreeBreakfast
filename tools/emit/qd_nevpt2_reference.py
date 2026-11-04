@@ -52,9 +52,8 @@ pipeline's QD test. The cases and why each is there are at CASES.
 **PC-QD-NEVPT2** (#671), over the same states, orbitals and transition
 RDMs: per class k and ket J, S_J, K_J and S1_J (metric, Dyall matrix,
 one-body metric) from J's own RDMs exactly as `nevpt2::pc_class_energies`
-lays them out, solved as its `solve_class` (symmetrized, S cut at PC_TAU of
-its largest, the gap rule PC_MIN_GAP, over pc_null(d) when nothing is cut),
-and
+lays them out, solved as its `solve_class` (symmetrized, S cut at
+pc_cut(d) of its largest, no gap rule), and
 
     <I|V|Psi_J^(1)>_k = -sum_t b_{I<-J,t}^T (K_J + Delta_t S_J)^+ b_{J,t}
 
@@ -62,10 +61,11 @@ with b_{J,t} = S_J x_t + S1_J h1_t and b_{I<-J,t} = <J|O_t^dag V|I> = the
 same formulas over the RDMs of the pair (J, I), bra J (the brute force
 settled it: S may come from either orientation, S1 only from (J, I)).
 Sijr's and Srsi's 2 direct - exchange is its bilinear form; nothing is
-averaged; Sijrs is SC's. A case where any root's class fails the gap rule
-(the C++ refuses that state) is refused whole: no pc_ arrays, its
-refusals and an ungated diagnostic (not a test target) in the json. Then
-PC's H_eff, symmetrized, and its spectrum.
+averaged; Sijrs is SC's. A case where any root's class has a metric with no
+positive eigenvalue or a denominator lambda + Delta not positive (the C++
+refuses that state) is refused whole: no pc_ arrays, its refusals and an
+ungated diagnostic (not a test target) in the json. Then PC's H_eff,
+symmetrized, and its spectrum.
 
 **Validation**, in this script, every case:
 
@@ -153,11 +153,9 @@ from casscf_reference import (  # noqa: E402
 from nevpt2_reference import (  # noqa: E402
     CLASSES,
     DEGENERATE,
-    PC_MIN_GAP,
-    PC_TAU,
     Recorder,
     block2,
-    pc_null,
+    pc_cut,
     polished,
 )
 from scf_reference import pyscf_basis  # noqa: E402
@@ -321,8 +319,9 @@ CASES = [
     # OCTAHYDROGEN_RING scaled by 1.2 in cc-pVDZ, CAS(6,6) over the RHF's
     # frontier orbitals, two roots. Skewed formaldehyde at CAS(6,6) and
     # (8,6), two or three roots, has PC refused in every variant (Sr's and
-    # Si's metrics meet the cut with gaps 1.3-264, under PC_MIN_GAP); the
-    # stretched ring's smallest PC gap is 8e4.
+    # Si's metrics meet the cut with gaps 1.3-264, under the gap rule
+    # src/nevpt2/energy/README.md had before #853); the stretched ring's
+    # smallest PC gap is 8e4.
     {
         "from": None,
         "case": {
@@ -1142,26 +1141,26 @@ def pc_tuples(blk: dict) -> dict:
     return out
 
 
-def pc_solve(s: numpy.ndarray, k: numpy.ndarray) -> dict:
-    """`solve_class`: S and K symmetrized, S's modes at or below PC_TAU of its
-    largest dropped, K' = X^T K X over X = V_kept s_kept^-1/2,
+def pc_solve(s: numpy.ndarray, k: numpy.ndarray) -> dict | None:
+    """`solve_class`: S and K symmetrized, S's modes at or below pc_cut(d) of
+    its largest dropped, K' = X^T K X over X = V_kept s_kept^-1/2,
     K' = W lambda W^T, U = X W. Returns lambda, U, the symmetrized S, the
-    dropped count, and the cut's numbers: the smallest kept and largest
-    dropped eigenvalue over the largest, and the gap, smallest kept over the
-    largest dropped (over pc_null(d) where none is). The C++ refuses the class
-    below PC_MIN_GAP; the caller records that (`pc_qd`)."""
+    dropped count, and the cut's numbers, recorded but not gated: the
+    smallest kept and largest dropped eigenvalue over the largest, and their
+    ratio. None when S has no positive eigenvalue, which the C++ refuses; the
+    caller records that (`pc_qd`)."""
     s = 0.5 * (s + s.T)
     k = 0.5 * (k + k.T)
     sigma, v = numpy.linalg.eigh(s)
     s_max = sigma[-1]
-    assert s_max > 0.0, "the metric has no positive eigenvalue"
+    if not s_max > 0.0:
+        return None
     nd = 0
-    while nd < len(sigma) and sigma[nd] <= PC_TAU * s_max:
+    while nd < len(sigma) and sigma[nd] <= pc_cut(len(sigma)) * s_max:
         nd += 1
     largest_dropped = numpy.abs(sigma[:nd]).max(initial=0.0) / s_max
     smallest_kept = sigma[nd] / s_max
-    floor = largest_dropped if nd > 0 else pc_null(len(sigma))
-    gap = smallest_kept / floor if floor > 0.0 else numpy.inf
+    gap = smallest_kept / largest_dropped if largest_dropped > 0.0 else numpy.inf
     x = v[:, nd:] / numpy.sqrt(sigma[nd:])
     lam, w = numpy.linalg.eigh(x.T @ k @ x)
     return {
@@ -1200,11 +1199,11 @@ def pc_qd(state: State, rdms: dict, sc: dict) -> tuple[dict, dict]:
     from J's own RDMs, solved once (`pc_solve`); per bra I the transition
     b_{I<-J,t} from the RDMs of the pair (J, I), so
     <I|V|Psi_J^(1)>_k = -sum_t b_{I<-J,t}^T (K_J + Delta_t S_J)^+ b_{J,t}.
-    Sijrs is SC's. Every class is solved whatever its gap; a class whose
-    metric's gap at PC_TAU is under PC_MIN_GAP (the C++ refuses it, naming
-    class and root) is listed in `refusals`, and a case with any is refused
-    whole (`main`). Returns the arrays, the per-class smallest gaps and the
-    refusals."""
+    Sijrs is SC's. A class the C++ refuses, naming class and root (a metric
+    with no positive eigenvalue, left zero here, or a denominator not
+    positive), is listed in `refusals`, and a case with any is refused whole
+    (`main`). Returns the arrays, the per-class smallest smallest-kept over
+    largest-dropped ratios (recorded, not gated) and the refusals."""
     n = len(state.ci)
     tuples = pc_tuples(state.blocks)
     couplings = numpy.zeros((n, n, NCLASS))
@@ -1225,28 +1224,23 @@ def pc_qd(state: State, rdms: dict, sc: dict) -> tuple[dict, dict]:
             x, h1, gap, pairing = tuples[key]
             s, s1 = own[key]
             solve = pc_solve(s, dyall[key])
+            if solve is None:
+                refusals.append(
+                    {"root": j, "class": key, "reason": "no positive eigenvalue"}
+                )
+                continue
             dropped[j, k] = solve["dropped"]
             gaps[k] = min(gaps[k], solve["gap"])
-            if solve["gap"] < PC_MIN_GAP:
-                refusals.append(
-                    {
-                        "root": j,
-                        "class": key,
-                        "dropped": solve["dropped"],
-                        "d": int(s.shape[0]),
-                        "smallest_kept_over_largest": solve["smallest_kept"],
-                        "largest_dropped_over_largest": solve["largest_dropped"],
-                        "gap": solve["gap"],
-                        "min_gap": PC_MIN_GAP,
-                    }
-                )
             lam, u = solve["lambda"], solve["u"]
             y_ket = pc_y(x, h1, solve["s"], s1, u)
             for i in range(n):
                 sb, s1b = metrics[j, i][key]
                 y_bra = pc_y(x, h1, sb, s1b, u)
                 value, den = pc_pair(y_bra, y_ket, lam, gap, pairing)
-                assert den > 0.0, f"{state.name} {key} ({i}, {j}): denominator {den}"
+                if i == j and not den > 0.0:
+                    refusals.append(
+                        {"root": j, "class": key, "reason": f"denominator {den:.3e}"}
+                    )
                 couplings[i, j, k] = value
     heff2 = couplings.sum(axis=2)
     heff = numpy.diag(state.energies) + heff2
@@ -1267,24 +1261,16 @@ def pc_qd(state: State, rdms: dict, sc: dict) -> tuple[dict, dict]:
     }, {"gaps": gaps, "refusals": refusals}
 
 
-def block2_diagonal(state: State, gated: bool) -> numpy.ndarray:
+def block2_diagonal(state: State) -> numpy.ndarray:
     """block2's WickICNEVPT2 per root and class on the SA-canonical orbitals
     and the root's CI vector, over PySCF's fitted integrals for them
-    (nevpt2_reference.py's `block2`, which refuses a solve without a gap at
-    PC_TAU; on a refused case, `gated=False`, that refusal is lifted so the
-    ungated diagnostic is still checked): (n, 8)."""
+    (nevpt2_reference.py's `block2`): (n, 8)."""
     n = len(state.ci)
     out = numpy.zeros((n, NCLASS))
-    saved = nevpt2_reference.PC_MIN_GAP
-    if not gated:
-        nevpt2_reference.PC_MIN_GAP = 0.0
-    try:
-        for root in range(n):
-            mo = (state.mo, state.ci[root], state.mo_energy)
-            pc = block2(state.casci, mo, "pc")
-            out[root] = [pc[key] for key in CLASSES]
-    finally:
-        nevpt2_reference.PC_MIN_GAP = saved
+    for root in range(n):
+        mo = (state.mo, state.ci[root], state.mo_energy)
+        pc = block2(state.casci, mo, "pc")
+        out[root] = [pc[key] for key in CLASSES]
     state.casci.ci = list(state.ci)
     return out
 
@@ -1483,14 +1469,13 @@ def pc_brute_couplings(
     H_eff, from the explicit PC first-order spaces in the full determinant
     space. Per ket J, class and tuple t, the span of the class's spin-free
     excitations E_pq E_rs (`pc_operators`) on |J>, orthonormalized (singular
-    values squared at or below PC_TAU of the largest dropped, refused below
-    PC_MIN_GAP, over pc_null(d) when nothing is), with the Dyall Hamiltonian
-    applied explicitly:
+    values squared at or below pc_cut(d) of the largest dropped, d the
+    operator count), with the Dyall Hamiltonian applied explicitly:
     <I|V|Psi_J^(1)>_t = -(Q^T V|I>)^T (Q^T (H_D - <J|H_D|J>) Q)^-1 Q^T V|J>,
     V|I> being H|I> on t's pattern. On the generic tuples the span's null
-    dimension must equal `dropped` (the reference's per root and class). On
-    a refused case (`gated=False`) the span's gap is not enforced, so the
-    ungated diagnostic is still checked. Returns every coupling, (n, n, 8),
+    dimension must equal `dropped` (the reference's per root and class), but
+    on a refused case (`gated=False`), whose refused class has no reference
+    count. Returns every coupling, (n, n, 8),
     and the number of tuples solved. Given psi1, zeros (n, 8, na, nb), adds
     each ket J's first-order function in class k, the sum over its tuples of
     -Q (Q^T (H_D - <J|H_D|J>) Q)^-1 Q^T V|J>, into psi1[J, k]
@@ -1524,14 +1509,8 @@ def pc_brute_couplings(
                 if sigma[0] == 0.0:
                     continue
                 rel = (sigma / sigma[0]) ** 2
-                kept = rel > PC_TAU
-                cut = rel[~kept].max(initial=0.0)
-                floor = cut if (~kept).any() else pc_null(len(rel))
-                gap = rel[kept].min() / floor if floor > 0.0 else numpy.inf
-                assert gap >= PC_MIN_GAP or not gated, (
-                    f"{state.name} root {j} {key}: brute-force span gap {gap:.1e}"
-                )
-                if generic and dropped is not None:
+                kept = rel > pc_cut(len(rel))
+                if generic and dropped is not None and gated:
                     null = len(ops) - int(kept.sum())
                     assert null == dropped[j, k], (
                         f"{state.name} root {j} {key}: brute-force null "
@@ -1640,7 +1619,7 @@ def pc_record(state, pc, info, b2, diag, brute, tuples) -> dict:
     if rec["refused"]:
         rec["refusals"] = info["refusals"]
         rec["ungated_diagnostic"] = answers | {
-            "note": "every class solved past the gap rule; NOT a test target: "
+            "note": "every class solved past its refusal; NOT a test target: "
             "pc_class_energies refuses this case's state(s) named in refusals"
         }
     else:
@@ -1672,7 +1651,7 @@ def main() -> None:
 
         pc, pc_info = pc_qd(state, rdms, sc)
         refused = bool(pc_info["refusals"])
-        b2 = block2_diagonal(state, gated=not refused)
+        b2 = block2_diagonal(state)
         pc_diag = float(numpy.abs(b2 - pc["pc_class_energies"]).max())
         assert pc_diag < PC_DIAGONAL, (
             f"{state.name}: PC diagonal off block2 by {pc_diag}"
@@ -1771,14 +1750,15 @@ def main() -> None:
             "description": "PC-QD-NEVPT2 on the same cases, orbitals and "
             "transition RDMs: per class <I|V|Psi_J^(1)> = -sum_t "
             "b_{I<-J,t}^T (K_J + Delta_t S_J)^+ b_{J,t}, nevpt2::"
-            "pc_class_energies' S, K, S1, cut and gap rule; the arrays are "
+            "pc_class_energies' S, K, S1 and cut; the arrays are "
             "<case>/pc_*.npy, qd_nevpt2/README.md has the conventions. A "
-            "refused case (a class of a root under the gap rule) has no pc_ "
-            "arrays and no PC H_eff; its ungated_diagnostic is NOT a test target",
-            "pc_tau": PC_TAU,
-            "pc_min_gap": PC_MIN_GAP,
-            "pc_null": "eps sqrt(d) of S's largest eigenvalue: the gap's floor "
-            "when nothing is cut",
+            "refused case (a class of a root with no positive metric eigenvalue "
+            "or a non-positive denominator) has no pc_ arrays and no PC H_eff; "
+            "its ungated_diagnostic is NOT a test target. min_gap is the "
+            "smallest kept over the largest dropped eigenvalue, recorded, not gated",
+            "pc_tau": nevpt2_reference.PC_TAU,
+            "pc_noise": nevpt2_reference.PC_NOISE,
+            "pc_cut": "max(pc_tau, pc_noise eps sqrt(d)) of S's largest eigenvalue",
             "validation": {
                 "diagonal": "each root's per-class PC energy against block2's "
                 "WickICNEVPT2 on the SA-canonical orbitals over PySCF's fitted "

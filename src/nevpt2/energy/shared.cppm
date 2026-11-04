@@ -215,9 +215,9 @@ Result<Buffers::device<double>> symmetrized(DeviceResources &res, const double *
 
 /// @brief The solve of the class @p name over its row-major d x d metric
 /// @p s_rm and Dyall Hamiltonian @p k_rm, and its optional S₁ (@p s1, d x n1
-/// row-major): both symmetrized, S cut at 1e-13 of its largest eigenvalue, the
-/// pencil diagonalized. A Numerical error naming the class when S has no
-/// positive eigenvalue or no gap at the cut.
+/// row-major): both symmetrized, S cut at max(1e-13, 100 ε √d) of its largest
+/// eigenvalue, the pencil diagonalized. A Numerical error naming the class
+/// when S has no positive eigenvalue.
 Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const double *s_rm,
                                const double *k_rm, int64_t d, const double *s1 = nullptr,
                                int64_t n1 = 0);

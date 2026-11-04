@@ -12,7 +12,9 @@
 // With quasi_degenerate: data/qd_nevpt2_gradient/'s h6_631g_sa2 (6-31G /
 // cc-pVDZ-JKFIT, CAS(2,3) averaged over two roots) at QD state 1, SC and PC,
 // against #696's numerical g . u of that state within twice each number's
-// error bar; and a PC-QD refusal reported as the [nevpt2] step reports it.
+// error bar; PC-QD through a metric with no gap at its cut, accepted, the
+// gradient stopping only at the state average's degenerate pair (#853); and a
+// PC refusal reported as the [nevpt2] step reports it.
 
 #include <gtest/gtest.h>
 
@@ -478,16 +480,18 @@ std::string refused_class(const std::string &message) {
                         at - (from == std::string::npos ? 0 : from + 1));
 }
 
-// A PC-QD refusal is reported as the [nevpt2] step reports it: the
-// pipeline_nevpt2_gpu.cpp PcRefusalKeepsScQd case (HF CAS(10,7) averaged over
-// three roots, the F 1s active), with [nevpt2] quasi_degenerate beside
-// [nevpt2_gradient] quasi_degenerate, variant = "pc". The energy step keeps
-// SC and records PC's refusal; the gradient, which has no SC to keep, fails
-// with the energy's Numerical error naming the same class, and writes
-// nothing.
-TEST(PipelineNevpt2Gradient, QdPcRefusalIsTheEnergyStepsRefusal) {
+// PC-QD through a metric with no gap at its cut (#853): the
+// pipeline_nevpt2_gpu.cpp PcQdAcceptedThroughAContinuum case (HF CAS(10,7)
+// averaged over three roots, the F 1s active), with [nevpt2] quasi_degenerate
+// beside [nevpt2_gradient] quasi_degenerate, variant = "pc". Until #853 both
+// steps refused it on PC (the gap rule). Now the energy step accepts PC-QD,
+// and the gradient gets past PC to the state average's own refusal: roots 1
+// and 2 are the two components of the lowest 1Pi, exactly degenerate, and
+// mcscf::root_pair_multipliers divides by their gap. So the gradient fails
+// Numerical naming that pair, not a PC class, and writes nothing.
+TEST(PipelineNevpt2Gradient, QdPcThroughAContinuumRefusesOnlyTheDegeneratePair) {
   FBF_REQUIRE_GPU();
-  const fb::test::ScratchDir dir("pipeline_nevpt2_gradient_qd_refused");
+  const fb::test::ScratchDir dir("pipeline_nevpt2_gradient_qd_continuum");
   ASSERT_TRUE(
       fb::write_file(dir / "hf.xyz", "2\nhydrogen fluoride\nH 0 0 0\nF 0 0 0.917\n").has_value());
   const std::string toml =
@@ -504,23 +508,64 @@ TEST(PipelineNevpt2Gradient, QdPcRefusalIsTheEnergyStepsRefusal) {
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::Numerical) << ran.error().message;
+  EXPECT_NE(ran.error().message.find("root_pair_multipliers: roots 1 and 2"), std::string::npos)
+      << ran.error().message;
+  EXPECT_EQ(ran.error().message.find("'s metric"), std::string::npos) << ran.error().message;
   EXPECT_FALSE(std::filesystem::exists(dir / "out" / "nevpt2_gradient.json"));
 
-  // The energy step ran beside it: SC-QD kept, PC-QD refused.
+  // The energy step ran beside it: PC-QD accepted.
   const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
   ASSERT_TRUE(nevpt2.has_value());
-  EXPECT_EQ(nevpt2->qd_energies.size(), 3U);
-  ASSERT_FALSE(nevpt2->pc_qd_refusal.empty());
-  EXPECT_NE(nevpt2->pc_qd_refusal.find("metric has no gap"), std::string::npos)
-      << nevpt2->pc_qd_refusal;
-  EXPECT_NE(ran.error().message.find("metric has no gap"), std::string::npos)
-      << ran.error().message;
-  const std::string energy_class = refused_class(nevpt2->pc_qd_refusal);
-  EXPECT_FALSE(energy_class.empty()) << nevpt2->pc_qd_refusal;
+  EXPECT_TRUE(nevpt2->pc_qd_refusal.empty()) << nevpt2->pc_qd_refusal;
+  EXPECT_EQ(nevpt2->pc_qd_energies.size(), 3U);
+  std::cout << std::format("[ nevpt2_gradient ] HF CAS(10,7) SA-3 PC-QD: [nevpt2] {::.10f}; "
+                           "gradient '{}'\n",
+                           nevpt2->pc_qd_energies, ran.error().message);
+}
+
+// A PC refusal is reported as the [nevpt2] step reports it: water in STO-3G
+// with CAS(2,1), its one active orbital doubly occupied, so Si's metric (the
+// hole metric 2 - dm1 and its kin) is zero and has no positive eigenvalue,
+// the one refusal besides a non-positive denominator that the PC solve has
+// (#853). The energy step keeps SC and records PC's refusal; the gradient,
+// which has no SC to keep, fails with the energy's Numerical error naming the
+// same class, and writes nothing. No plain config reaches PC-QD's refusal:
+// one active orbital has one singlet, and QD needs two roots
+// (../../src/pipeline/nevpt2/README.md).
+TEST(PipelineNevpt2Gradient, PcRefusalIsTheEnergyStepsRefusal) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_nevpt2_gradient_refused");
+  ASSERT_TRUE(fb::write_file(dir / "water.xyz", "3\nwater\nO 0 0 0.1173\nH 0 0.7572 -0.4692\n"
+                                                "H 0 -0.7572 -0.4692\n")
+                  .has_value());
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n"
+                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pVDZ-JKFIT\"\n"
+                  "[casscf]\nncas = 1\nnelecas = 2\nconv_tol_grad = {:g}\n"
+                  "[nevpt2]\n[nevpt2_gradient]\nvariant = \"pc\"\n",
+                  kConvTolGrad);
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_FALSE(ran.has_value());
+  EXPECT_EQ(ran.error().kind, fb::ErrorKind::Numerical) << ran.error().message;
+  EXPECT_FALSE(std::filesystem::exists(dir / "out" / "nevpt2_gradient.json"));
+
+  // The energy step ran beside it: SC kept, PC refused.
+  const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
+  ASSERT_TRUE(nevpt2.has_value());
+  ASSERT_EQ(nevpt2->pc_refusals.size(), 1U);
+  EXPECT_FALSE(nevpt2->pc_roots[0].has_value());
+  EXPECT_NE(nevpt2->pc_refusals[0].find("Si's metric has no positive eigenvalue"),
+            std::string::npos)
+      << nevpt2->pc_refusals[0];
+  const std::string energy_class = refused_class(nevpt2->pc_refusals[0]);
+  EXPECT_EQ(energy_class, "Si") << nevpt2->pc_refusals[0];
   EXPECT_EQ(refused_class(ran.error().message), energy_class) << ran.error().message;
-  std::cout << std::format("[ nevpt2_gradient ] HF CAS(10,7) SA-3 PC-QD: gradient '{}'; [nevpt2] "
-                           "'{}'\n",
-                           ran.error().message, nevpt2->pc_qd_refusal);
+  std::cout << std::format("[ nevpt2_gradient ] water CAS(2,1) PC: gradient '{}'; [nevpt2] '{}'\n",
+                           ran.error().message, nevpt2->pc_refusals[0]);
 }
 
 } // namespace
