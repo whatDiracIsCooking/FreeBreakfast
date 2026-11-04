@@ -5,10 +5,12 @@ checkout of THIS repository.
 The failure mode this defends against: a session told to work in a
 `.claude/worktrees/<name>` worktree strays back into the shared main checkout
 and edits it directly. It denies file-mutating tools whose target resolves
-under the primary worktree, with two carve-outs:
+under the primary worktree, with three carve-outs:
 
   * the nested `<main>/.claude/worktrees/` subtree is ALLOWED (that IS where
-    the lightweight worktrees live), and
+    the lightweight worktrees live),
+  * the gitignored `<main>/.temp/` scratch tree is ALLOWED (it is per-checkout
+    scratch, never committed, and has no worktree copy to edit instead), and
   * anything outside the primary worktree is ALLOWED -- other repos, the
     sibling `...-root/<name>` container worktrees, /tmp, etc.
 
@@ -90,10 +92,13 @@ def main() -> None:
     except Exception:
         _allow()  # not a git repo / git unavailable -> don't interfere
 
-    worktrees = os.path.join(main_root, ".claude", "worktrees") + os.sep
+    allowed = (
+        os.path.join(main_root, ".claude", "worktrees") + os.sep,
+        os.path.join(main_root, ".temp") + os.sep,
+    )
     if path == main_root or path.startswith(main_root + os.sep):
-        if path.startswith(worktrees):
-            _allow()  # inside a nested worktree -> fine
+        if path.startswith(allowed):
+            _allow()  # a nested worktree or the .temp/ scratch tree -> fine
         _deny(
             f"Blocked: {path} is in the protected primary checkout "
             f"({main_root}). Do this work inside a .claude/worktrees/<name> "
