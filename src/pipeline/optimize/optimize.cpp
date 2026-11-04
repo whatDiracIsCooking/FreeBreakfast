@@ -671,6 +671,10 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
   // energy is their mean. Per evaluation, what the history adds of it.
   std::vector<json> meci_record;
   const bool qd_meci = meci && nevpt2_gradient.has_value();
+  // Over QD states, the last evaluation's g_P, g_Q and h_PQ, each n_atom rows
+  // of three, and the state average's size: the head's, since optimize_meci's
+  // last evaluation is its crossing.
+  json qd_branching;
   const auto meci_evaluation = [&](std::span<const double> x, std::span<double> g_i,
                                    std::span<double> g_j,
                                    std::span<double> h_ij) -> Result<std::array<double, 2>> {
@@ -718,6 +722,19 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
         record["heff_gap"] = out.heff_gap;
         record["third_state_margin"] = margin;
         record["root_gap"] = out.root_gap;
+        record["gap_sensitivity_orbital"] = out.gap_sensitivity_orbital;
+        record["gap_sensitivity_ci"] = out.gap_sensitivity_ci;
+        const auto rows = [](const std::vector<double> &v) {
+          json r = json::array();
+          for (size_t a = 0; a + 2 < v.size(); a += 3) {
+            r.push_back(json::array({v[a], v[a + 1], v[a + 2]}));
+          }
+          return r;
+        };
+        qd_branching = {{"g_p", rows(out.g_p)},
+                        {"g_q", rows(out.g_q)},
+                        {"h_pq", rows(out.h_pq)},
+                        {"nroots", cas.energies.size()}};
         FBF_LOG_INFO(
             "optimize: QD-NEVPT2 MECI states {} and {}, pair overlap {}, H_eff gap "
             "{:.3e}, third-state margin {}, CASSCF root gap {:.6f}",
@@ -775,6 +792,9 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
             {"lower", solution.lower},
             {"upper", solution.upper},
             {"gap", solution.upper - solution.lower}};
+    if (qd_meci) {
+      head.update(qd_branching);
+    }
     for (size_t k = 0; k < solution.iterations.size(); ++k) {
       const geometry::MECISolution::Iteration &it = solution.iterations[k];
       const double mean = 0.5 * (it.lower + it.upper);
@@ -795,7 +815,8 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
       const bool has_overlap = k < follow_record.size() && !std::isnan(follow_record[k].overlap);
       entry["pair_overlap"] = has_overlap ? json(follow_record[k].overlap) : json(nullptr);
       // The CASSCF's residuals, and over QD states the pair's gap, the
-      // third-state margin and the CASSCF's smallest root gap.
+      // third-state margin, the CASSCF's smallest root gap and the gap
+      // sensitivities.
       if (k < meci_record.size()) {
         entry.update(meci_record[k]);
       }

@@ -278,12 +278,31 @@ degenerate states, which it refuses.
 holds the CASSCF's reported `gradient_norm` and `ci_residual_norm` (its
 largest Davidson residual, `CasscfOutput::ci_residual_norm`), `heff_gap`
 (|E_Q − E_P|), `third_state_margin` (E_{Q+1} − E_Q, Q the higher of the
-pair; null when there is none) and `root_gap` (the CASSCF's smallest). The
-last entry's `gradient_norm` and `ci_residual_norm` are what bound the
-reported gap's distance from the exact surface's, s_o ‖g‖ + s_c √n ρ
-(`../../nevpt2/intersection/README.md`), so a config that wants the gap to
-1e-7 sets `[casscf] conv_tol_grad` well under it: `examples/qd_meci.toml`
-uses 1e-10.
+pair; null when there is none), `root_gap` (the CASSCF's smallest), and the
+intersection's two gap sensitivities `gap_sensitivity_orbital` (s_o) and
+`gap_sensitivity_ci` (s_c). The head, beside `energy`, `lower`, `upper` and
+`gap`, holds the branching space at the final geometry, the last
+evaluation's (`optimize_meci`'s crossing is its last evaluation): `g_p`,
+`g_q` and `h_pq`, each n_atom rows of three (hartree / bohr), the
+intersection's own g_P, g_Q and h_PQ unchanged (P and Q as `meci` names
+them, h_PQ neither normalized nor re-signed), and `nroots`, the state
+average's size. They are head-only: every evaluation's would triple the
+file for vectors no reader needs before the crossing. At the crossing u_P
+and u_Q are any orthonormal pair of the two-state space, so g_P, g_Q and
+h_PQ are one choice of it; the plane span{g_Q − g_P, h_PQ} and
+(g_P + g_Q)/2 are not (`../../nevpt2/intersection/README.md`).
+
+**The gap's error bound is computable from the file alone.** The reported
+gap's distance from the exact surface's is at most
+
+    s_o ‖g‖ + s_c √n ρ
+      = iterations[-1].gap_sensitivity_orbital × iterations[-1].gradient_norm
+      + iterations[-1].gap_sensitivity_ci × √nroots × iterations[-1].ci_residual_norm
+
+(`../../nevpt2/intersection/README.md`, "The gap sensitivities"), and any
+entry's own five give the bound at its geometry. So a config that wants the
+gap to 1e-7 sets `[casscf] conv_tol_grad` well under it:
+`examples/qd_meci.toml` uses 1e-10.
 
 ## The NEVPT2 chain
 
@@ -584,6 +603,20 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
   the oracle 72 points in 12.4 s, max |P ḡ| 3.9e-6 against 1.51e-5 (its
   own term 1.2e-7); PC 24 steps in 18.6 s. s_c is ~1e-17 here: the three
   roots span the CAS's singlets, so the CI multipliers vanish.
+- `test/gtest/pipeline_optimize_gpu.cpp`, the QD MECI's file (#844): skew
+  formaldehyde's SC-QD-NEVPT2 states 0 and 1 over its DF-SA3-CASSCF(4,3)
+  (`h2co_skew_ccpvdz_sa3`), every threshold loose so the one evaluation is
+  the final geometry, the start written at `final.xyz`'s twelve decimals.
+  Every entry has `gap_sensitivity_orbital` and `gap_sensitivity_ci`, the
+  head `nroots` and `g_p`, `g_q`, `h_pq` as n_atom rows of three; one
+  `qd_sc_intersection` over the outer `[casscf]` at that geometry is the
+  product, and the three vectors are held to it at 1e-9 of their largest
+  magnitude, the two sensitivities at 1e-9 of s_o + s_c: separately
+  converged Z-vectors' reproducibility (`../../nevpt2/intersection/README.md`).
+  The pair is apart there, so the vectors are fixed but for h_PQ's sign: the
+  pair's relative phase follows the CASSCF's CI vector signs, which a
+  separate run need not repeat, so h_PQ is held up to that one sign. The
+  bound s_o ‖g‖ + s_c √n ρ is formed from the file and printed. Fast tier.
 
 ## Files
 

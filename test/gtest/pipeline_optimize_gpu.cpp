@@ -1746,4 +1746,124 @@ TEST(PipelineOptimize, EthylenePcQdMeciIsAnMeciAndSeamStationary) {
   expect_qd_meci(true);
 }
 
+// The QD MECI's optimize.json carries the branching space and the gap
+// sensitivities (#844): skew formaldehyde's SC-QD-NEVPT2 states 0 and 1
+// over its DF-SA3-CASSCF(4,3) (h2co_skew_ccpvdz_sa3), every threshold loose
+// so the start is the crossing and the one evaluation the final geometry.
+// Every entry holds gap_sensitivity_orbital and gap_sensitivity_ci; the head
+// holds g_p, g_q and h_pq, each n_atom rows of three, and nroots. The start
+// is written at final.xyz's twelve decimals, so the outer [casscf] runs at
+// the evaluation's own geometry from the same RHF, and one
+// qd_sc_intersection over it is the product the file wrote: the three
+// vectors and the two sensitivities are held to it at kQdProductBar of the
+// vectors' largest magnitude and of s_o + s_c, the reproducibility of
+// separately converged Z-vectors (../../src/nevpt2/intersection/README.md,
+// Tests: 1e-9 of the largest summand, of the largest norm summed), not a
+// convergence allowance. The pair is apart here (the H_eff gap is printed),
+// so u_P and u_Q, and the vectors with them, are fixed but for h_PQ's sign,
+// the pair's relative phase. s_o ||g|| + s_c sqrt(nroots) rho is formed from the
+// file alone and printed.
+TEST(PipelineOptimize, SkewFormaldehydeQdMeciWritesItsBranchingSpace) {
+  FBF_REQUIRE_GPU();
+  constexpr double kQdProductBar = 1e-9;
+  const fb::json start = qd_case("h2co_skew_ccpvdz_sa3");
+  const fb::test::ScratchDir dir("pipeline_optimize_qd_meci_branching");
+  std::string xyz = std::format("{}\nstart\n", start.at("atoms").size());
+  for (const fb::json &atom : start.at("atoms")) {
+    const auto coord = atom.at("coord").get<std::vector<double>>();
+    xyz += std::format("{} {:.12f} {:.12f} {:.12f}\n", atom.at("symbol").get<std::string>(),
+                       coord[0] * fb::kAngstromPerBohr<double>,
+                       coord[1] * fb::kAngstromPerBohr<double>,
+                       coord[2] * fb::kAngstromPerBohr<double>);
+  }
+  ASSERT_TRUE(fb::write_file(dir / "start.xyz", xyz).has_value());
+  const std::size_t nroots = start.at("weights").size();
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"start.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
+                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n{}"
+                  "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\n{}"
+                  "[nevpt2_gradient]\nquasi_degenerate = true\nvariant = \"sc\"\n"
+                  "[optimize]\nmeci = [0, 1]\nmax_gap = 1.0\nmax_force = 1.0\nrms_force = 1.0\n"
+                  "max_displacement = 1.0\nrms_displacement = 1.0\n",
+                  start.at("basis").get<std::string>(), start.at("aux_basis").get<std::string>(),
+                  kScf, start.at("ncas").get<std::int32_t>(),
+                  start.at("nelecas").get<std::int32_t>(), nroots, kQdMeciCasscf);
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+
+  const auto history = fb::read_json(dir / "out" / "optimize.json");
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  const fb::json &iterations = history->at("iterations");
+  ASSERT_EQ(iterations.size(), 1U);
+  for (const fb::json &it : iterations) {
+    EXPECT_TRUE(it.at("gap_sensitivity_orbital").is_number());
+    EXPECT_TRUE(it.at("gap_sensitivity_ci").is_number());
+  }
+  const fb::json &last = iterations.back();
+  EXPECT_EQ(history->at("nroots").get<std::size_t>(), nroots);
+  const std::size_t natom = start.at("atoms").size();
+  for (const std::string key : {"g_p", "g_q", "h_pq"}) {
+    const fb::json &rows = history->at(key);
+    ASSERT_TRUE(rows.is_array()) << key;
+    ASSERT_EQ(rows.size(), natom) << key;
+    for (const fb::json &row : rows) {
+      ASSERT_TRUE(row.is_array() && row.size() == 3) << key;
+    }
+  }
+
+  const QdPoint product = fresh_qd_intersection(*calc, node.device(0), false);
+  ASSERT_EQ(product.energies.size(), nroots);
+  // Each against the product at kQdProductBar of a common scale: the three
+  // vectors' largest magnitude (a lower bound on the derivative passes'
+  // largest summand), and the two sensitivities summed.
+  const auto largest = [](const std::vector<double> &v) {
+    return std::ranges::max(v, {}, [](double e) { return std::abs(e); });
+  };
+  const double vector_scale = std::max(
+      {std::abs(largest(product.g0)), std::abs(largest(product.g1)), std::abs(largest(product.h))});
+  const double sensitivity_scale = product.s_o + product.s_c;
+  const auto expect_near = [&](std::string_view key, const std::vector<double> &got,
+                               const std::vector<double> &want, double scale) {
+    ASSERT_EQ(got.size(), want.size()) << key;
+    double worst = 0.0;
+    for (std::size_t k = 0; k < got.size(); ++k) {
+      worst = std::max(worst, std::abs(got[k] - want[k]));
+    }
+    EXPECT_LE(worst, kQdProductBar * scale) << key;
+    std::cout << std::format("[ optimize ] QD MECI {}: max |file - product| {:.3e} (bar {:.3e})\n",
+                             key, worst, kQdProductBar * scale);
+  };
+  expect_near("g_p", flat_rows(history->at("g_p")), product.g0, vector_scale);
+  expect_near("g_q", flat_rows(history->at("g_q")), product.g1, vector_scale);
+  // h_PQ's sign is the pair's relative phase, which the CASSCF's CI vectors'
+  // own signs set and a separate run need not repeat (optimize_meci reads
+  // only its direction): held to the product up to that one sign.
+  const std::vector<double> h_file = flat_rows(history->at("h_pq"));
+  std::vector<double> h_product = product.h;
+  if (std::inner_product(h_file.begin(), h_file.end(), h_product.begin(), 0.0) < 0.0) {
+    std::ranges::transform(h_product, h_product.begin(), std::negate<>{});
+  }
+  expect_near("h_pq", h_file, h_product, vector_scale);
+  expect_near("gap_sensitivity_orbital", {last.at("gap_sensitivity_orbital").get<double>()},
+              {product.s_o}, sensitivity_scale);
+  expect_near("gap_sensitivity_ci", {last.at("gap_sensitivity_ci").get<double>()}, {product.s_c},
+              sensitivity_scale);
+
+  const double bound =
+      (last.at("gap_sensitivity_orbital").get<double>() * last.at("gradient_norm").get<double>()) +
+      (last.at("gap_sensitivity_ci").get<double>() *
+       std::sqrt(history->at("nroots").get<double>()) * last.at("ci_residual_norm").get<double>());
+  EXPECT_TRUE(std::isfinite(bound));
+  std::cout << std::format(
+      "[ optimize ] QD MECI from the file: H_eff gap {:.6f}, s_o {:.4e} s_c "
+      "{:.4e}, |g| {:.2e} rho {:.2e}, s_o|g| + s_c sqrt(n) rho {:.3e}\n",
+      last.at("heff_gap").get<double>(), last.at("gap_sensitivity_orbital").get<double>(),
+      last.at("gap_sensitivity_ci").get<double>(), last.at("gradient_norm").get<double>(),
+      last.at("ci_residual_norm").get<double>(), bound);
+}
+
 } // namespace
