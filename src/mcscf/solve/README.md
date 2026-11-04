@@ -17,7 +17,8 @@ Result<mcscf::Solution> mcscf::solve(
     std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
     const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nelecas,
     int32_t nroots, std::span<const double> weights = {}, const mcscf::Options &options = {},
-    const Buffers::device<double> *b = nullptr, int32_t naux = 0);
+    const Buffers::device<double> *b = nullptr, int32_t naux = 0,
+    std::span<const double> ci_guess = {});
 ```
 
 The arguments through `k_classes` are `response::fock`'s; `c` is the start, its
@@ -29,6 +30,13 @@ parity, or N_α above `ncas`) is `InvalidConfig`. `weights` are refused (`Invali
 negative, if they do not sum to 1 within 1e-12 or if their count is not
 `nroots`; empty means equal. `b` and `naux` are B for the builds
 `options.density_fitting` fits (see "Density fitting" below); null means none.
+`ci_guess` is the first macro iteration's CI start: empty, or `nroots` · dim
+doubles on `res`'s device, root r at [r dim, (r + 1) dim), as
+`Solution::roots.vectors` holds them (any other size is `InvalidConfig`). A
+reference solution's CI is the natural one, for a solve from its orbitals
+moved: the numerical CASSCF `[hessian]`'s displaced solves
+(`../../pipeline/hessian/`). Empty, the solve is the one without it, to the
+bit (`ci::solve`'s own guarantee for its `start`).
 
 `mcscf::Solution` holds C, the `ci::Roots` at C (each root's energy and ⟨S²⟩,
 and the CI vectors on the device), the weighted energy, ‖g‖, the weighted γ and
@@ -45,7 +53,8 @@ Each macro iteration, at the current C:
    ppaa, papa.
 2. **The CI**: `ci::solve` over the GPU sigma (`ci::Sigma`, created once, its
    integrals set per iteration), **warm-started** from the last iteration's
-   roots (`ci::solve`'s `start`; the first iteration is from its own guesses).
+   roots (`ci::solve`'s `start`; the first iteration is from `ci_guess`, or
+   with none from `ci::solve`'s own guesses).
    The last roots are those of the last orbitals, accepted or rejected: the
    nearest H either way. The root order and count do not change, and the RDMs
    do not depend on a vector's sign. Late in the loop, where C barely moves,

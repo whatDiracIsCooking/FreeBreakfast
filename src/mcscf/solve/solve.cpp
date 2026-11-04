@@ -111,13 +111,15 @@ double casscf_dot(std::span<const double> a, std::span<const double> b) {
   return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
 }
 
-Result<Solution>
-solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
-      const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
-      const std::span<CoulombPairClass> j_classes, const std::span<OrderedPairClass> k_classes,
-      const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas, const int32_t nelecas,
-      const int32_t nroots, const std::span<const double> weights, const Options &options,
-      const Buffers::device<double> *const b, const int32_t naux) {
+Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
+                       const SphericalMatrixAO &h,
+                       const std::shared_ptr<const Buffers::device<double>> &u,
+                       const std::span<CoulombPairClass> j_classes,
+                       const std::span<OrderedPairClass> k_classes, const SphericalMatrixAO &c,
+                       const int32_t ncore, const int32_t ncas, const int32_t nelecas,
+                       const int32_t nroots, const std::span<const double> weights,
+                       const Options &options, const Buffers::device<double> *const b,
+                       const int32_t naux, const std::span<const double> ci_guess) {
   const auto nmo = static_cast<int32_t>(c.n());
   if (c.n() != basis.nao_sphe() || c.dev_idx() != res.dev_idx()) {
     return err_config("mcscf::solve: c must be {0} x {0}, basis's spherical order, on device {1} "
@@ -191,6 +193,10 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
   const auto dim = static_cast<size_t>(sigma.size());
   if (roots_count > dim) {
     return err_config("mcscf::solve: nroots ({}) exceeds the {} determinants", nroots, dim);
+  }
+  if (!ci_guess.empty() && ci_guess.size() != dim * roots_count) {
+    return err_config("mcscf::solve: ci_guess must be empty or nroots dim = {} doubles (got {})",
+                      dim * roots_count, ci_guess.size());
   }
 
   const auto mo = static_cast<size_t>(nmo);
@@ -288,8 +294,8 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
 
     // The CI to a residual tolerance and, over its roots, 3. the weighted
     // RDMs, the energy and the gradient. Warm from the last roots, rejected
-    // or not: the nearest H's (see the README). The first is cold, from
-    // ci::solve's own guesses.
+    // or not: the nearest H's (see the README). The first is from ci_guess,
+    // or cold, from ci::solve's own guesses.
     std::vector<double> gamma;
     std::vector<double> gamma2;
     std::optional<response::Fock> fock;
@@ -300,8 +306,7 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
       ci::SolverOptions ci = options.ci;
       ci.davidson.residual_tolerance = tolerance;
       const std::span<const double> start =
-          roots ? std::span<const double>{roots->vectors.data(), ci_block}
-                : std::span<const double>{};
+          roots ? std::span<const double>{roots->vectors.data(), ci_block} : ci_guess;
       ci::Roots solved =
           FBF_TRY(ci::solve(res, sigma, alpha, beta, diagonal.data(), nroots, ci, start));
       roots = std::move(solved);

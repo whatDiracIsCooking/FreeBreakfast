@@ -176,6 +176,12 @@ TEST(PipelineHessian, BesideACasscfGradientItCopiesTheCasscfChain) {
   EXPECT_EQ(hessian.casscf.nroots, 2);
   EXPECT_EQ(hessian.casscf.weights, (std::vector<double>{0.7, 0.3}));
   EXPECT_EQ(hessian.casscf.conv_tol_grad, 1e-9);
+  // No CI guess from the config: the step sets the reference's per displaced
+  // solve, and ci_guess is no TOML key.
+  EXPECT_TRUE(hessian.casscf.ci_guess.empty());
+  expect_config_error(with_inputs("[eri]\nmode = \"density_fitting\"\n"
+                                  "[casscf]\nncas = 4\nnelecas = 4\nci_guess = [1.0]\n"),
+                      "[casscf] has no option 'ci_guess'");
   // The outer [casscf] and [casscf_gradient] still run, as tables are requests.
   EXPECT_TRUE(calc->step<fb::CasscfStep>().has_value());
   EXPECT_TRUE(calc->step<fb::CasscfGradientStep>().has_value());

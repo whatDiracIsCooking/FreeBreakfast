@@ -22,6 +22,11 @@
 // then the analytic [hessian] at the optimum, its frequencies reported, and
 // the numerical one beside it.
 //
+// The CI guess the numerical step's displaced solves start from: each case's
+// 6N displaced solves with the reference's CI and without, to the same roots
+// and energies, their macro-iteration counts printed (h2o_631g fast, the
+// other three slow-gated, as above).
+//
 // Beside them, an unconverged CASSCF refused, naming the geometry. The guard
 // on a displaced solve that swapped an orbital or a root is forced in
 // test/pipeline/hessian_host.cpp, over check_displaced_casscf itself.
@@ -40,6 +45,7 @@ import free_breakfast.io.npy;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
+import free_breakfast.recipes; // gemmwich, orthogonalize, gemm
 
 #include "scratch_dir.h"
 
@@ -106,7 +112,8 @@ std::string xyz_text(const fb::json &atoms, std::string_view name) {
 
 // The case's molecule.xyz in @p dir and run.toml over its basis and fit, the
 // CASSCF(4,4) over the RHF orbitals @p active at its weights, then the
-// gradient of @p root and the [hessian] by @p method.
+// gradient of @p root and the [hessian] by @p method; with @p method empty,
+// the chain ends at the CASSCF.
 std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::json &entry,
                                    std::string_view active, std::string_view method = "numerical",
                                    std::int32_t root = 0) {
@@ -118,14 +125,16 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
   for (const double w : weights) {
     weight_list += std::format("{}{:.17g}", weight_list.empty() ? "" : ", ", w);
   }
-  const std::string toml =
+  std::string toml =
       std::format("[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
                   "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n{}"
                   "[casscf]\nncas = 4\nnelecas = 4\nactive = [{}]\nnroots = {}\nweights = [{}]\n"
-                  "conv_tol = 1e-12\nconv_tol_grad = 1e-9\n"
-                  "[casscf_gradient]\nroot = {}\n[hessian]\nmethod = \"{}\"\n",
+                  "conv_tol = 1e-12\nconv_tol_grad = 1e-9\n",
                   entry.at("basis").get<std::string>(), entry.at("aux_basis").get<std::string>(),
-                  kScf, active, weights.size(), weight_list, root, method);
+                  kScf, active, weights.size(), weight_list);
+  if (!method.empty()) {
+    toml += std::format("[casscf_gradient]\nroot = {}\n[hessian]\nmethod = \"{}\"\n", root, method);
+  }
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   return dir / "run.toml";
 }
@@ -398,6 +407,208 @@ TEST(PipelineCasscfHessian, OptimizedWaterAnalyticFrequenciesMatchNumerical) {
                            "{:.2e} cm^-1; optimize + analytic {:.1f} s, numerical {:.1f} s\n",
                            analytic->vibrations.frequencies, worst, frequencies, seconds,
                            numerical_seconds);
+}
+
+// The CI guess (#657). The numerical [hessian] starts each displaced CASSCF
+// from the reference's orbitals, Loewdin-orthonormalized in the displaced
+// overlap, and from the reference's CI vectors (CasscfStep::ci_guess). Here
+// every one of a case's 6N displaced solves is run twice from those orbitals,
+// as the step's chain builds them, with the reference's CI as the guess and
+// without one, and the two held to the same solution: each root the same
+// root, by the CI overlap (check_displaced_casscf's floor: 1 - O(round-off)
+// for the same root, about 0 for another), and the same energy. Two
+// independently converged iterative solves agree only to their convergence,
+// conv_tol 1e-12 and ||g|| < 1e-9 (an energy error of order ||g||^2), so
+// the bar is 1e-9 of |E_r|, not a path's 1e-10. The macro-iteration and
+// Davidson counts are printed, not gated: nothing makes the guessed solve's
+// fewer by construction (the first macro iteration's CI is converged either
+// way, and later ones are warm from the last), so they are a measurement.
+constexpr double kSameRootFloor = 0.5;
+constexpr double kGuessEnergyTolerance = 1e-9;
+
+// The molecule from atoms in memory, standing where MoleculeStep reads a file.
+struct AtomsStep {
+  static constexpr std::string_view kName = "molecule";
+
+  std::vector<fb::Atom> atoms;
+  std::int32_t charge{0};
+  std::int32_t multiplicity{1};
+
+  [[nodiscard]] fb::Result<fb::MoleculeOutput> run(fb::View<> /*in*/,
+                                                   fb::DeviceResources &res) const {
+    return fb::MoleculeOutput{fb::Molecule(res, atoms, charge, multiplicity)};
+  }
+};
+
+// The case @p name, its CASSCF picked from the RHF orbitals @p active: each
+// displaced solve with the reference's CI and without, to the same roots and
+// energies; the macro-iteration counts printed.
+void expect_ci_guess_matches(std::string_view name, std::string_view active) {
+  const fb::json &entry = reference_case(name);
+  ASSERT_FALSE(entry.is_null());
+  const fb::test::ScratchDir dir(std::format("pipeline_casscf_hessian_ci_guess_{}", name));
+  auto read = fb::read_config(write_config(dir, entry, active, ""), dir.path(), dir / "out");
+  ASSERT_TRUE(read.has_value()) << read.error().message;
+  fb::NodeResources node;
+  fb::DeviceResources &res = node.device(0);
+  fb::Calculation calc = std::move(*read);
+  const fb::Status status = calc.run(node);
+  ASSERT_TRUE(status.has_value()) << status.error().message;
+  const auto &molecule = calc.get<fb::MoleculeOutput>();
+  const auto &scf = calc.get<fb::ScfOutput>();
+  const auto &reference = calc.get<fb::CasscfOutput>();
+  ASSERT_TRUE(molecule.has_value() && scf.has_value() && reference.has_value());
+  EXPECT_NEAR(reference->energy, entry.at("e_sa").get<double>(), kEnergyTolerance);
+
+  // The displaced CasscfStep as [hessian] runs it: by index, as the orbitals
+  // come, the configured tolerances and roots, writing nothing.
+  fb::CasscfStep step = *calc.step<fb::CasscfStep>();
+  step.molden.clear();
+  step.active.clear();
+  step.avas.clear();
+  step.ncas = reference->ncas;
+  step.nelecas = reference->nelecas;
+  fb::CasscfStep guessed = step;
+  guessed.ci_guess = reference->vectors;
+  const fb::BasisSetStep basis_set = *calc.step<fb::BasisSetStep>();
+  const fb::EriStep eri = *calc.step<fb::EriStep>();
+  const double h = fb::HessianStep{}.displacement;
+  const std::vector<fb::Atom> &atoms = molecule->molecule.atoms();
+  const std::size_t nroots = reference->energies.size();
+
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  std::size_t total_with = 0;
+  std::size_t total_without = 0;
+  std::size_t fewer = 0;
+  std::size_t more = 0;
+  // The CI's Davidson iterations, both stages, summed over every macro
+  // iteration: where a CI start acts.
+  std::int64_t davidson_with = 0;
+  std::int64_t davidson_without = 0;
+  const auto davidson = [](const fb::CasscfOutput &cas) {
+    std::int64_t sum = 0;
+    for (const fb::mcscf::Iteration &it : cas.iterations) {
+      sum += it.ci_iterations + it.ci_fp32_iterations;
+    }
+    return sum;
+  };
+  double worst_energy = 0.0;
+  double worst_overlap = 1.0;
+  std::string counts;
+  for (std::size_t x = 0; x < 3 * atoms.size(); ++x) {
+    for (const double shift : {h, -h}) {
+      AtomsStep moved{atoms, molecule->molecule.charge(), molecule->molecule.multiplicity()};
+      fb::Vec<double, 3> &position = moved.atoms[x / 3].position;
+      (x % 3 == 0 ? position.x : x % 3 == 1 ? position.y : position.z) += shift;
+      auto chain = fb::Pipeline<AtomsStep, fb::BasisSetStep, fb::SphericalTransformStep,
+                                fb::PrimitivePairClassesStep, fb::EriStep, fb::OverlapStep,
+                                fb::CoreHamiltonianStep>::create({
+          std::move(moved),
+          basis_set,
+          fb::SphericalTransformStep{},
+          fb::PrimitivePairClassesStep{},
+          eri,
+          fb::OverlapStep{},
+          fb::CoreHamiltonianStep{},
+      });
+      ASSERT_TRUE(chain.has_value()) << chain.error().message;
+      const fb::Status ran = chain->run(node);
+      ASSERT_TRUE(ran.has_value()) << ran.error().message;
+      const fb::BasisSet &basis = chain->get<fb::BasisSetOutput>()->basis;
+      const auto nao = static_cast<std::int32_t>(basis.nao_sphe());
+      const auto square = static_cast<std::size_t>(nao) * static_cast<std::size_t>(nao);
+
+      // The reference's orbitals, C (C^T S C)^-1/2 in this overlap.
+      fb::Buffers::device<double> work(square, res.device());
+      fb::Buffers::device<double> metric(square, res.device());
+      fb::Buffers::device<double> root(square, res.device());
+      ASSERT_TRUE(fb::gpu_status(fb::gemmwich(res.blas(), nao, reference->c.data(),
+                                              chain->get<fb::OverlapOutput>()->s.data(),
+                                              work.data(), metric.data()))
+                      .has_value());
+      const fb::Status orth = fb::orthogonalize(res, nao, metric.data(), root.data());
+      ASSERT_TRUE(orth.has_value()) << orth.error().message;
+      fb::ScfOutput start{
+          .energy = std::numeric_limits<double>::quiet_NaN(),
+          .iterations = 0,
+          .n_alpha = scf->n_alpha,
+          .n_beta = scf->n_beta,
+          .mo_energies = reference->mo_energies,
+          .c = fb::SphericalMatrixAO(res, basis),
+          .d = fb::SphericalMatrixAO(res, basis),
+      };
+      ASSERT_TRUE(fb::gpu_status(fb::gemm(res.blas(), nao, &fb::kOne<double>, reference->c.data(),
+                                          root.data(), &fb::kZero<double>, start.c.data()))
+                      .has_value());
+      ASSERT_TRUE(res.sync().has_value());
+
+      const fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+                     fb::EriOutput, fb::CoreHamiltonianOutput, fb::ScfOutput>
+          in{*chain->get<fb::MoleculeOutput>(),           *chain->get<fb::BasisSetOutput>(),
+             *chain->get<fb::SphericalTransformOutput>(), *chain->get<fb::EriOutput>(),
+             *chain->get<fb::CoreHamiltonianOutput>(),    start};
+      const std::string where = std::format("coordinate {} {:+g}", x, shift);
+      const auto with = guessed.run(in, res);
+      ASSERT_TRUE(with.has_value()) << where << ": " << with.error().message;
+      const auto without = step.run(in, res);
+      ASSERT_TRUE(without.has_value()) << where << ": " << without.error().message;
+
+      ASSERT_EQ(with->vectors.size(), without->vectors.size()) << where;
+      const std::size_t dim = with->vectors.size() / nroots;
+      for (std::size_t r = 0; r < nroots; ++r) {
+        const double overlap = std::transform_reduce(
+            with->vectors.begin() + static_cast<std::ptrdiff_t>(r * dim),
+            with->vectors.begin() + static_cast<std::ptrdiff_t>((r + 1) * dim),
+            without->vectors.begin() + static_cast<std::ptrdiff_t>(r * dim), 0.0);
+        EXPECT_GT(overlap * overlap, kSameRootFloor) << where << " root " << r;
+        worst_overlap = std::min(worst_overlap, overlap * overlap);
+        const double e = without->energies[r];
+        EXPECT_LE(std::abs(with->energies[r] - e), kGuessEnergyTolerance * std::abs(e))
+            << where << " root " << r;
+        worst_energy = std::max(worst_energy, std::abs(with->energies[r] - e) / std::abs(e));
+      }
+      const std::size_t n_with = with->iterations.size();
+      const std::size_t n_without = without->iterations.size();
+      total_with += n_with;
+      total_without += n_without;
+      davidson_with += davidson(*with);
+      davidson_without += davidson(*without);
+      fewer += n_with < n_without ? 1 : 0;
+      more += n_with > n_without ? 1 : 0;
+      counts += std::format(" {}/{}", n_with, n_without);
+    }
+  }
+  std::cout << std::format("[ ci guess ] {}: macro iterations with/without the reference CI per "
+                           "displacement (x+, x- per coordinate):{}\n",
+                           name, counts);
+  std::cout << std::format("[ ci guess ] {}: total {} with, {} without; fewer at {}, more at {}; "
+                           "Davidson iterations {} with, {} without; max |dE_r| / |E_r| {:.2e}, "
+                           "min overlap^2 {:.15f}\n",
+                           name, total_with, total_without, fewer, more, davidson_with,
+                           davidson_without, worst_energy, worst_overlap);
+}
+
+TEST(PipelineCasscfHessianCiGuess, StateSpecific631gMatchesWithout) {
+  FBF_REQUIRE_GPU();
+  expect_ci_guess_matches("h2o_631g", kSigmaPairs);
+}
+
+TEST(PipelineCasscfHessianCiGuess, StateAveragedEqualWeightsMatchesWithout) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_ci_guess_matches("h2o_631g_sa2", kSigmaPairs);
+}
+
+TEST(PipelineCasscfHessianCiGuess, StateAveragedUnequalWeightsMatchesWithout) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_ci_guess_matches("h2o_631g_sa2_unequal", "3, 4, 5, 6");
+}
+
+TEST(PipelineCasscfHessianCiGuess, StateSpecificCcpvdzMatchesWithout) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_ci_guess_matches("h2o_ccpvdz", kSigmaPairs);
 }
 
 // A CASSCF that does not converge is the run's error, never differenced,
