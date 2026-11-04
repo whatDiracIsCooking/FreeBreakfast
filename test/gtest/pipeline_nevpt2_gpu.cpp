@@ -13,9 +13,9 @@
 // config is read, is test/pipeline/config_host.cpp's.
 //
 // Then [nevpt2] quasi_degenerate = true (PipelineQdNevpt2): the H2CO cases of
-// data/qd_nevpt2/ (tools/emit/qd_nevpt2_reference.py) through our own
-// DF-SA-CASSCF from the same start, the SC- and PC-QD-NEVPT2 eigenvalues
-// against theirs; PC-QD refused with SC-QD kept; and QD over one root
+// data/qd_nevpt2/ (tools/emit/qd_nevpt2_reference.py) and its two polished
+// near-degenerate H8 cases through our own DF-SA-CASSCF from the same start,
+// the SC- and PC-QD-NEVPT2 eigenvalues and vectors against theirs; PC-QD refused with SC-QD kept; and QD over one root
 // refused by the step itself.
 
 #include <gtest/gtest.h>
@@ -386,16 +386,22 @@ TEST(PipelineNevpt2, AnOpenShellOrANonSingletIsUnsupported) {
 
 // QD-NEVPT2's bar on every SC and PC eigenvalue, the issue's ~1e-8, derived
 // as kTolerance is. Each H_eff element is E_I δ_IJ + ½ (C_IJ + C_JI): E_I is
-// our CASSCF root energy, asserted to kCasscfEnergyTolerance and measured
-// within 1e-12 of the reference's, and each coupling is first order in the
-// orbitals and the CI vectors as a class energy is, so within kTolerance
-// (the goldens' orbitals are polished to |g| < 1e-10, ours converged to
-// kConvTolGrad). An eigenvalue of a symmetric n x n matrix moves by at most
-// ||δH||_2 <= n max |δH_IJ|, 3e-9 at n = 3; 1e-8 leaves a factor three.
+// our CASSCF root energy (a root's energy is not stationary in a state
+// average) and each coupling is first order in the orbitals and the CI
+// vectors as a class energy is. Per unit ||g||, measured between each H8
+// case's unpolished golden (mc1step, ||g|| 1.7e-7 and 4.5e-7) and its
+// polished copy: root energies 0.34, class energies 0.28, H_eff elements
+// 0.20 (h8_sto3g_sa3; the ring 2e-3); H2CO's 0.07 is kTolerance's. Take 0.4:
+// ours converged to kConvTolGrad and the goldens' polished to |g| < 1e-10,
+// so an element is within 0.4 (1e-9 + 1e-10) ~ 4.4e-10, and ~1e-10 more from
+// the CI vectors' residuals. An eigenvalue of a symmetric n x n matrix moves
+// by at most ||δH||_2 <= n max |δH_IJ|, 1.6e-9 at n = 3; 1e-8 leaves a factor
+// six. The unpolished goldens could not hold it: their own eigenvalues are
+// 3.2e-8 (SC) and 2.9e-8 (PC) off the polished ones on h8_sto3g_sa3.
 constexpr double kQdTolerance = 1e-8;
-// The eigenvectors' bar: a component moves by about ||δH|| / gap, and the
-// roots of these cases are >= 0.1 Eh apart, so ~3e-8; 1e-6 is loose on
-// purpose, since the vectors only check that the right states mix.
+// The eigenvectors' bar: a component moves by about ||δH|| / gap, the
+// smallest gap here H8's 19 mEh, so ~1e-7; 1e-6 is loose on purpose, since
+// the vectors only check that the right states mix.
 constexpr double kQdVectorTolerance = 1e-6;
 
 // data/qd_nevpt2/qd_nevpt2.json's entry for @p name.
@@ -546,10 +552,14 @@ TEST_P(PipelineQdNevpt2, MatchesGoldens) {
 }
 
 // The skew case is C1, so no coupling vanishes; the two C2v ones couple
-// roots of different symmetry, every off-diagonal zero.
+// roots of different symmetry, every off-diagonal zero. The two H8 cases
+// (#688) are where QD visibly matters: data/qd_nevpt2/'s h8_sto3g_sa3 and
+// h8_ring_sto3g_sa3, polished copies, whose couplings move the QD energies
+// 1.7 and 6 mEh off the diagonal. Both pass PC's gap rule (#687).
 INSTANTIATE_TEST_SUITE_P(Goldens, PipelineQdNevpt2,
                          ::testing::Values("h2co_skew_ccpvdz_sa3", "h2co_ccpvdz_sa2",
-                                           "h2co_ccpvdz_sa2_weighted"),
+                                           "h2co_ccpvdz_sa2_weighted", "h8_sto3g_sa3_polished",
+                                           "h8_ring_sto3g_sa3_polished"),
                          [](const auto &info) { return info.param; });
 
 // PC-QD refused, SC-QD kept, the run not failed: PcRefusalKeepsSc's HF

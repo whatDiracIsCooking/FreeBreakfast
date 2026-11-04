@@ -15,9 +15,10 @@ case's weights; what `CasscfOutput::mo_energies` holds) and shared by every
 state; the active orbitals are not rotated, so the CI vectors stand. The
 existing cases start, polish and gate exactly as nevpt2_reference.py does
 (mc1step, Newton steps to |g| < 1e-10, the energies checked against the
-file the case comes from); the two tiny brute-force cases are mc1step DF
+file the case comes from); the three tiny brute-force cases are mc1step DF
 SA-CASSCFs, converged but not polished, since nothing they check needs a
-stationary point. The cases and why each is there are at CASES.
+stationary point, and two of them are written again polished, for the
+pipeline's QD test. The cases and why each is there are at CASES.
 
 **What is computed.** For every ordered pair (I, J) of a case's roots:
 
@@ -342,6 +343,39 @@ CASES = [
             "cas": (6, 6),
             "weights": [0.5, 0.5],
         },
+        "polish": True,
+    },
+    # The two near-degenerate brute-force cases again, polished to |g| <
+    # 1e-10 as the formaldehyde cases are (#688), for the pipeline's QD test
+    # (test/gtest/pipeline_nevpt2_gpu.cpp), whose bar the unpolished
+    # originals (mc1step's |g| < 1e-7, H_eff first order in it) cannot
+    # support. Copies, not the originals polished in place: those feed
+    # qd_nevpt2_nac_reference.py's brute-force densities, which assert the
+    # committed CI vectors exactly, and the ladders measured in the NEVPT2
+    # energy, gradient and NAC tests. mc1step from the RHF as the originals,
+    # then the Newton polish, so each is the same stationary point.
+    {
+        "from": None,
+        "case": {
+            "name": "h8_sto3g_sa3_polished",
+            "atoms": OCTAHYDROGEN,
+            "basis": "sto-3g",
+            "cas": (4, 4),
+            "weights": [1 / 3, 1 / 3, 1 / 3],
+        },
+        "brute_force": True,
+        "polish": True,
+    },
+    {
+        "from": None,
+        "case": {
+            "name": "h8_ring_sto3g_sa3_polished",
+            "atoms": OCTAHYDROGEN_RING,
+            "basis": "sto-3g",
+            "cas": (6, 4),
+            "weights": [1 / 3, 1 / 3, 1 / 3],
+        },
+        "brute_force": True,
         "polish": True,
     },
 ]
