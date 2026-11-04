@@ -36,7 +36,10 @@ std::pair<size_t, size_t> atom_function_range(const BasisSet &basis, const uint3
 
 // One atom block: for x = 3 A + k, A = @p atom, r = L^-1 R^x over the occupied
 // pairs into @p r (slab k, naux x nocc^2 at P + naux (j + nocc i), 3 naux
-// nocc^2 doubles, symmetric in i and j). @p c_occ is C's first @p nocc
+// nocc^2 doubles, symmetric in i and j); or @p count of them, for atoms
+// @p atom to @p atom + count - 1, one after another in @p r (atom a's at
+// (a - atom) 3 naux nocc^2), from the same walk: every block reads each aux
+// atom's X and X C_o, so they are made once for all of them. @p c_occ is C's first @p nocc
 // columns (nao x nocc), @p fitted the fitted pairs c = L^-T B_ij in the same
 // layout as a slab, @p m1 @c metric_derivative's M1 and @p l the metric's L;
 // @p x holds one aux atom's @c three_center_derivative block (3 nao^2 nblk,
@@ -53,7 +56,7 @@ Status occupied_atom_block(DeviceResources &res, const BasisSet &basis,
                            const double *const c_occ, const int32_t nocc,
                            const double *const fitted, const double *const m1,
                            const double *const l, const uint32_t atom, double *const x,
-                           double *const r) {
+                           double *const r, const uint32_t count = 1) {
   const size_t nao = basis.nao_sphe();
   const size_t naux = aux.nao_sphe();
   const auto occ = static_cast<size_t>(nocc);
@@ -63,8 +66,7 @@ Status occupied_atom_block(DeviceResources &res, const BasisSet &basis,
   const auto q = static_cast<int32_t>(naux);
   const auto n_oo = static_cast<int32_t>(oo);
   const wwr::wwrblasHandle_t blas = res.blas().get();
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(r, 0, sizeof(double) * block, res.stream())));
-  const auto [a0, a1] = atom_function_range(basis, atom);
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(r, 0, sizeof(double) * block * count, res.stream())));
   for (uint32_t aux_atom = 0; aux_atom < aux.natoms(); ++aux_atom) {
     const auto [p0, p1] = atom_function_range(aux, aux_atom);
     const size_t nblk = p1 - p0;
@@ -80,38 +82,44 @@ Status occupied_atom_block(DeviceResources &res, const BasisSet &basis,
         blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, blk, nocc, n, &kOne<double>, x, blk,
         static_cast<int64_t>(nblk * nao), c_occ, n, 0, &kZero<double>, w, blk,
         static_cast<int64_t>(nblk * occ), 3 * n)));
-    for (size_t k = 0; k < 3; ++k) {
-      const double *const w_k = w + (k * nao * nblk * occ);
-      double *const r_k = r + (k * naux * oo) + p0;
-      // alpha Sum_{m in [m0, m0 + count)} C_m. W[k][m][P][.], into rows P of
-      // R^x as both (i, j) and (j, i): one gemm per j, then one per i.
-      const auto add = [&](const size_t m0, const size_t count, const double *alpha) -> Status {
-        const double *const w_m = w_k + (nblk * occ * m0);
-        const auto nm = static_cast<int32_t>(count);
-        const auto ld_w = static_cast<int32_t>(nblk * occ);
-        FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
-            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, blk, nocc, nm, alpha, w_m, ld_w,
-            static_cast<int64_t>(nblk), c_occ + m0, n, 0, &kOne<double>, r_k,
-            static_cast<int32_t>(naux * occ), static_cast<int64_t>(naux), nocc)));
-        return gpu_status(wwr::gemmStridedBatched<double, int32_t>(
-            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, blk, nocc, nm, alpha, w_m, ld_w,
-            static_cast<int64_t>(nblk), c_occ + m0, n, 0, &kOne<double>, r_k, q,
-            static_cast<int64_t>(naux * occ), nocc));
-      };
-      if (a1 > a0) {
-        FBF_TRY(add(a0, a1 - a0, &kNegOne<double>));
-      }
-      if (aux_atom == atom) {
-        FBF_TRY(add(0, nao, &kOne<double>));
+    for (uint32_t a = atom; a < atom + count; ++a) {
+      const auto [a0, a1] = atom_function_range(basis, a);
+      for (size_t k = 0; k < 3; ++k) {
+        const double *const w_k = w + (k * nao * nblk * occ);
+        double *const r_k = r + ((a - atom) * block) + (k * naux * oo) + p0;
+        // alpha Sum_{m in [m0, m0 + nm)} C_m. W[k][m][P][.], into rows P of
+        // R^x as both (i, j) and (j, i): one gemm per j, then one per i.
+        const auto add = [&](const size_t m0, const size_t m_count, const double *alpha) -> Status {
+          const double *const w_m = w_k + (nblk * occ * m0);
+          const auto nm = static_cast<int32_t>(m_count);
+          const auto ld_w = static_cast<int32_t>(nblk * occ);
+          FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+              blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, blk, nocc, nm, alpha, w_m, ld_w,
+              static_cast<int64_t>(nblk), c_occ + m0, n, 0, &kOne<double>, r_k,
+              static_cast<int32_t>(naux * occ), static_cast<int64_t>(naux), nocc)));
+          return gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+              blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, blk, nocc, nm, alpha, w_m, ld_w,
+              static_cast<int64_t>(nblk), c_occ + m0, n, 0, &kOne<double>, r_k, q,
+              static_cast<int64_t>(naux * occ), nocc));
+        };
+        if (a1 > a0) {
+          FBF_TRY(add(a0, a1 - a0, &kNegOne<double>));
+        }
+        if (aux_atom == a) {
+          FBF_TRY(add(0, nao, &kOne<double>));
+        }
       }
     }
   }
-  const auto [q0, q1] = atom_function_range(aux, atom);
-  const auto nq = static_cast<int32_t>(q1 - q0);
-  for (size_t k = 0; k < 3; ++k) {
-    const double *const m1_k = m1 + (k * naux * naux);
-    double *const r_k = r + (k * naux * oo);
-    if (nq > 0) {
+  for (uint32_t a = atom; a < atom + count; ++a) {
+    const auto [q0, q1] = atom_function_range(aux, a);
+    const auto nq = static_cast<int32_t>(q1 - q0);
+    if (nq == 0) {
+      continue;
+    }
+    for (size_t k = 0; k < 3; ++k) {
+      const double *const m1_k = m1 + (k * naux * naux);
+      double *const r_k = r + ((a - atom) * block) + (k * naux * oo);
       // M1[k] is column-major with M1[k][P][Q] at (Q, P): its columns on A,
       // transposed, against c for the rows on A, and the same columns as
       // they stand against c's rows on A for every row.
@@ -125,7 +133,8 @@ Status occupied_atom_block(DeviceResources &res, const BasisSet &basis,
   }
   return gpu_status(wwr::trsm<double, int32_t>(
       blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
-      wwr::WWRBLAS_DIAG_NON_UNIT, q, 3 * n_oo, &kOne<double>, l, q, r, q));
+      wwr::WWRBLAS_DIAG_NON_UNIT, q, static_cast<int32_t>(3 * size_t{count} * oo), &kOne<double>, l,
+      q, r, q));
 }
 
 } // namespace free_breakfast::hessian

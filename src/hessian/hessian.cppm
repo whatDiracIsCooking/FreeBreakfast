@@ -126,12 +126,15 @@ struct RhfTwoElectron {
 /// the cross terms as Gram matrices of L^-1 R^x. These are PySCF's
 /// @c df.hessian.rhf partial_hess_elec's ej and -ek.
 ///
-/// **The exchange cross term is never held whole** (3 n_atom nocc^2 naux
-/// doubles): R^x for the three coordinates of one atom, one atom block, is
-/// built by one walk over the aux atoms (@c three_center_derivative's blocks
-/// against @c metric_derivative's M1), and the Hessian is contracted one pair
-/// of atom blocks at a time, so n_atom (n_atom + 1) / 2 blocks are built. The
-/// Coulomb vectors L^-1 g^x come from the same blocks.
+/// **The exchange cross term is held whole only when the memory holds it**
+/// (3 n_atom nocc^2 naux doubles): R^x for the three coordinates of one
+/// atom is one atom block, and one walk over the aux atoms
+/// (@c three_center_derivative's blocks against @c metric_derivative's M1)
+/// builds a batch of them, every atom's when they fit the budget (one walk),
+/// else two batches of half as many as fit, contracted one pair of batches
+/// at a time: n_b (n_b + 1) / 2 walks for n_b batches, n_atom (n_atom + 1) / 2
+/// at one atom a batch. The Coulomb vectors L^-1 g^x come from the same
+/// blocks.
 ///
 /// @p basis and @p aux are made by @c place over one molecule, and @p classes
 /// are @c primitive_pair_classes of @p basis. @p b is B as @c density_fit
@@ -140,11 +143,15 @@ struct RhfTwoElectron {
 /// column-major, of which only the first @p nocc are read.
 ///
 /// The call holds the fitted pairs c (naux nocc^2), M1 (3 naux^2), one aux
-/// atom's derivative block (3 nao^2 nblk) and two atom blocks
-/// (3 naux nocc^2 each); before that, the fitted densities of the explicit
-/// part (naux nao^2, like @c gradient::df_rhf's). Past the device's free
-/// memory that is Unsupported, naming the bytes, before anything is
-/// allocated.
+/// atom's derivative block (3 nao^2 nblk), two 3 n_atom x 3 n_atom products
+/// and at least two atom blocks with their Coulomb vectors (3 naux
+/// (nocc^2 + 1) each); before that, the fitted densities of the explicit
+/// part (naux nao^2, like @c gradient::df_rhf's). The budget is the device's
+/// free memory, or @p max_bytes when that is less (0: no cap); past it, at
+/// two atom blocks, the call is Unsupported, naming the bytes, before
+/// anything is allocated. The batch takes what the budget leaves after the
+/// explicit part, less room for the derivative calls' scratch and 512 MiB of
+/// headroom; batching changes the result only by rounding.
 ///
 /// Queued on res.stream() and synchronized; the call returns with everything
 /// done. None of @p b, @p l and @p c may point into res.device_workspace().
@@ -155,13 +162,13 @@ struct RhfTwoElectron {
 ///         share their atoms, if @p nocc is not in [1, nao], or if @p c is
 ///         shorter than nao nocc or @p b not naux nao^2 long, or for any
 ///         input the integral calls refuse; Unsupported for memory past the
-///         device's free bytes or an index past int32_t; or the GpuRuntime
-///         error of the first copy, BLAS call or launch that failed.
+///         budget or an index past int32_t; or the GpuRuntime error of the
+///         first copy, BLAS call or launch that failed.
 [[nodiscard]] Result<RhfTwoElectron>
 df_rhf_two_electron(DeviceResources &res, const BasisSet &basis,
                     std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                     const Buffers::device<double> &b, const double *l,
-                    const Buffers::device<double> &c, int32_t nocc);
+                    const Buffers::device<double> &c, int32_t nocc, size_t max_bytes = 0);
 
 /// @brief The two-electron explicit part of a DF-CASSCF nuclear Hessian
 /// (casscf_hessian.tex eq. df2) and its pieces, each 3 n_atom x 3 n_atom,

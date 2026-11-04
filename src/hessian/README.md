@@ -275,39 +275,55 @@ with E_J = ½ uᵀ M⁻¹ u and E_x = −Σ_ij T_ijᵀ M⁻¹ T_ij, PySCF's
    `metric_hessian` at −½ d dᵀ for E_J; the same at Γᴷ_mnP = −2 Σ_ij C_mi
    C_nj c_P,ij and Wᴷ = Σ_ij c_ij c_ijᵀ for E_x.
 3. **The cross terms** are Gram matrices of r^x = L⁻¹ R^x (each n_occ² naux)
-   and of L⁻¹ g^x = 2 Σ_i r^x_ii. R^x is never held whole: one **atom block**,
-   R^x for the three coordinates x of atom A (3 naux n_occ² doubles), is
-   built by one walk over the aux atoms. With X = `three_center_derivative`'s
+   and of L⁻¹ g^x = 2 Σ_i r^x_ii. One **atom block** is R^x for the three
+   coordinates x of atom A (3 naux n_occ² doubles), and one walk over the
+   aux atoms builds a **batch** of them, atoms A₀ … A₀ + s − 1. With X = `three_center_derivative`'s
    block of aux atom B (the derivative on m's centre), d(mn|P)/dA_k =
    −[m on A] X_mn − [n on A] X_nm + [P on A] (X_mn + X_nm), so with
    Y_ij = Σ_{m on A, n} C_mi C_nj X_mn,P and Z the same over every m,
    T^x_ij = −(Y_ij + Y_ji) + [P on A] (Z_ij + Z_ji) for the rows P on B:
-   one strided-batched gemm X C_o over every (k, m), then per k two more
-   (batched over j and over i, so both orders land without a transpose)
-   accumulating straight into the block's rows. After the walk,
+   one strided-batched gemm X C_o over every (k, m), made once per aux atom
+   for the whole batch, then per atom of the batch and k two more (batched
+   over j and over i, so both orders land without a transpose) accumulating
+   straight into that block's rows. After the walk,
    (M^x c)_P = [P on A] Σ_Q M1[k][P][Q] c_Q + Σ_{Q on A} M1[k][Q][P] c_Q
-   (`metric_derivative`'s M1, two gemms per k), one trsm by L over the whole
-   block, and three gemvs for the Coulomb vectors.
-4. **The contraction**, one pair of atom blocks (A, B ≤ A) at a time: the
-   3 × 3 blocks −2 r_Aᵀ r_B (exchange) and t_Aᵀ t_B (Coulomb) by two gemms,
-   downloaded and written to H_AB and H_BA. Block A is held across the inner
-   loop and block B rebuilt for each pair, so n_atom (n_atom + 1) / 2 blocks
-   are built, each one walk of `three_center_derivative` over every aux atom.
-   That walk is where the time goes for a large molecule: the API gives every
-   m for one aux atom, of which a block uses the rows m on A (and P on A).
+   (`metric_derivative`'s M1, two gemms per atom and k), one trsm by L over
+   the whole batch, and three gemvs per atom for the Coulomb vectors.
+4. **The contraction**, one pair of batches (a, b ≤ a) at a time: the
+   3s × 3s blocks −2 r_aᵀ r_b (exchange) and t_aᵀ t_b (Coulomb) by two
+   gemms, downloaded and written to H_AB and H_BA for every A in a and B in
+   b. The walk is where the time goes: `three_center_derivative` gives every
+   m for one aux atom, of which a block uses only the rows m on A (and P on
+   A), so the walk's cost is shared by every block it builds. When every
+   atom's block fits the budget (below) the batch is the whole molecule and
+   there is **one walk**. Otherwise two batches of s = ⌊slots / 2⌋ atoms are
+   held, batch a across its inner loop and batch b rebuilt for each pair, so
+   n_b (n_b + 1) / 2 walks for n_b = ⌈n_atom / s⌉ batches; at s = 1 that is
+   the n_atom (n_atom + 1) / 2 walks every call took before #631.
 
 ### Memory
 
 Held for the call: c (naux n_occ²). Then, in turn, the explicit part's Γ
 (naux nao², the size of B), Y (naux n_occ nao), one naux² weight, d and D;
 and the cross terms' M1 (3 naux²), one aux atom's X (3 nao² nblk, nblk the
-largest atom's aux count) and two atom blocks (3 naux n_occ² each) with
-their Coulomb vectors. The integral calls' scratch (the Cartesian Γ, X's
-Cartesian block) is the workspace's. The call refuses (Unsupported, naming
-the bytes) when c plus the larger of the two phases would not fit the
-device's free memory; naux nao², 3 naux n_occ² and naux n_occ nao must fit
-`int32_t`. At 500 AOs, 1500 fitting functions and 60 occupied orbitals the
-atom blocks are 130 MB each and Γ is 3 GB.
+largest atom's aux count), the two (3 n_atom)² products and the batches'
+**slots**, each an atom block and its Coulomb vectors (3 naux (n_occ² + 1)).
+The integral calls' scratch (the Cartesian Γ, X's Cartesian block) is the
+workspace's. The budget is the device's free memory, or the call's
+`max_bytes` when that is less. The call refuses (Unsupported, naming the
+bytes) when c plus the larger of the two phases at two slots would not fit
+it; naux nao², 3 naux n_occ² and naux n_occ nao must fit `int32_t`.
+
+The slots are sized after the explicit part, from the budget less c, M1, X
+and the products, less room for `three_center_derivative`'s own scratch past
+what the workspace already holds (its Cartesian block, half-transforms and
+staging) and 512 MiB of headroom for the BLAS libraries and the pool: every
+atom's when they fit, else as many as fit, two at the least. So the call
+takes **more memory than before when it has it**: all n_atom blocks,
+3 n_atom naux n_occ² doubles, the whole exchange cross term, against two.
+At 500 AOs, 1500 fitting functions and 60 occupied orbitals an atom block
+is 130 MB and Γ is 3 GB; for 50 atoms the whole batch would be 6.5 GB, so
+on a 10 GB card it is split.
 
 ### Tests
 
@@ -317,14 +333,36 @@ atom blocks are 130 MB each and Γ is 3 GB.
 `_partial_hess_ejk` ej and −ek, checked there against `partial_hess_elec`
 and the sum rule), for the skew water and the skew formaldehyde in cc-pVDZ /
 cc-pVDZ-JKFIT: each term to 1e-9 absolute, its asymmetry to 1e-12 and the
-translational sum rule Σ_A H[A k][y] to 1e-9; and the refusals.
+translational sum rule Σ_A H[A k][y] to 1e-9; the refusals; and
+`BatchesAgreeAndMemoryRefusal`: a budget (`max_bytes`) below two slots is
+Unsupported naming the bytes, that many bytes (one atom a batch) is accepted
+on the water, and a water dimer at its need plus two slots (two atoms a
+batch, three batches), each against the unbudgeted call (one walk) to 1e-10
+of the term's max |H|, a path agreement.
 
 Measured on the RTX 3080 (CUDA): |H − PySCF| 6.2e-11 (Coulomb) and 1.8e-11
 (exchange) on the water, 9.1e-11 and 2.2e-11 on the formaldehyde, of max |H|
 8.0 / 1.0 and 17.6 / 1.7; asymmetry ≤ 1.8e-15, sum rule ≤ 2.2e-12; 1.2 s and
 2.6 s a call. The same pieces with the cross terms built in NumPy from
 PySCF's integrals (Cholesky solves) reach ej and −ek to 5e-11 and 2e-10, so
-the JKFIT sets sit well inside the 1e-9 bar.
+the JKFIT sets sit well inside the 1e-9 bar. The batches agree with one walk
+to 6.6e-13 / 2.8e-13 (water, one atom a batch) and 1.0e-12 / 1.4e-12 (the
+dimer, two a batch).
+
+`bench/hessian_df_rhf_two_electron.cpp` times the call over an alkane's
+DF-RHF in cc-pVDZ / cc-pVDZ-JKFIT. One walk (#631) against the
+n_atom (n_atom + 1) / 2 walks before it, best of the calls after a warm-up,
+with the call's own buffers at their peak (the formula above). The
+device's free memory polled during a first call moved by 358 MiB before and
+after on the 3080 for propane (584 for pentane), and by 385 → 399 MiB on the
+gfx1200: the workspace's and the pool's growth, which the extra blocks
+barely show in.
+
+| molecule | card | before | after | speed-up | own buffers before → after |
+|---|---|---|---|---|---|
+| propane, 11 atoms (nao 82, naux 394, n_occ 13) | RTX 3080 | 31.40 s | 1.39 s | 22.6× | 25.2 → 31.7 MiB |
+| pentane, 17 atoms (nao 130, naux 626, n_occ 21) | RTX 3080 | 151.25 s | 2.39 s | 63× | 99.0 → 145.9 MiB |
+| propane | gfx1200 (HIP) | 33.48 s | 1.31 s | 25.6× | 25.2 → 31.7 MiB |
 
 ## The CASSCF two-electron explicit part
 
@@ -370,8 +408,11 @@ writes them: one root's own for its explicit part (the fixture's per-root
      block (one geam per coordinate), Z = act_B Γ (a strided-batched gemm),
      and act_Aᵀ Z, one gemm.
 
-   The blocks are contracted one pair (A, B ≤ A) at a time, as in
-   `df_rhf_two_electron`: n_atom (n_atom + 1) / 2 blocks built.
+   The blocks are contracted one pair (A, B ≤ A) at a time, as
+   `df_rhf_two_electron` did before it batched them (#631): n_atom
+   (n_atom + 1) / 2 blocks built, each one walk. `occupied_atom_block`
+   builds a batch of atoms from one walk (its `count`) for the RHF part; this
+   call still asks for one atom at a time.
 
 With n_core = n_occ (no active space) and γ = 0 the J and K pieces are
 `df_rhf_two_electron`'s Coulomb and exchange cross terms.
@@ -948,7 +989,7 @@ the issue also asks for waits on that step (#610).
 | `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
-| `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build |
+| `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build, or a batch of them from one walk |
 | `df_rhf_two_electron.cpp` | The fitted densities' second-derivative contractions and the cross terms' atom blocks |
 | `df_casscf_two_electron.cpp` | The CASSCF Γ̃ and Ŵ contractions and the J, K and active cross terms; with a rotation their product-rule derivative, the atom blocks over [C_o \| C K_o] |
 | `df_casscf_exy.cpp` | E_xy: the one-electron and nuclear-repulsion explicit terms, F, and the connection's three terms over the MO-basis B and the τ^x stack; with a rotation the z_o part, F_L and E^(2)'s commutator terms |
