@@ -3,7 +3,9 @@
 // pyscf.df.hessian.rhf's _partial_hess_ejk ej and -ek over the same fitting
 // set (data/rhf_hessian/, tools/emit/rhf_hessian_reference.py), for the skew
 // water and a skew formaldehyde in cc-pVDZ / cc-pVDZ-JKFIT; their symmetry and
-// the translational sum rule; and the refusals.
+// the translational sum rule; the refusals, the memory one included; and the
+// cross terms' batches of atom blocks under a smaller budget against one
+// batch, over the water and a water dimer.
 
 #include <gtest/gtest.h>
 
@@ -35,6 +37,9 @@ constexpr double kHessianTol = 1e-9;
 // df_hessian_gpu.cpp).
 constexpr double kSymmetryTol = 1e-12;
 constexpr double kSumRuleTol = 1e-9;
+// Two batchings of the same cross terms, relative to the term's largest
+// |H|: the same sums in another order (a path agreement).
+constexpr double kPathTol = 1e-10;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "rhf_hessian";
 
@@ -197,9 +202,10 @@ protected:
 
   fb::Result<fb::hessian::RhfTwoElectron> run(const fb::BasisSet &aux, const std::int32_t nocc,
                                               const fb::Buffers::device<double> &b,
-                                              const fb::Buffers::device<double> &c) {
+                                              const fb::Buffers::device<double> &c,
+                                              const std::size_t max_bytes = 0) {
     return fb::hessian::df_rhf_two_electron(*res_, *basis_, classes_, aux, b,
-                                            metric_->spherical().data(), c, nocc);
+                                            metric_->spherical().data(), c, nocc, max_bytes);
   }
 
   void check(const std::string &name) {
@@ -284,6 +290,129 @@ TEST_F(HessianDfRhfTwoElectron, Refusals) {
   const auto aux_two = fb::place(aux_stamp->primitive_normalized(), two);
   ASSERT_TRUE(aux_two);
   expect_refused(run(*aux_two, nocc_, *b_, *c_), "aux on other atoms");
+}
+
+// The bytes a refusal for memory says the call needs: a budget below two
+// atom blocks is Unsupported, naming them.
+std::size_t refused_need(const fb::Result<fb::hessian::RhfTwoElectron> &r) {
+  EXPECT_FALSE(r);
+  if (r) {
+    return 0;
+  }
+  EXPECT_EQ(r.error().kind, fb::ErrorKind::Unsupported);
+  const std::string &message = r.error().message;
+  EXPECT_TRUE(message.starts_with("hessian::df_rhf_two_electron")) << message;
+  const std::size_t at = message.find(" need ");
+  EXPECT_NE(at, std::string::npos) << message;
+  if (at == std::string::npos) {
+    return 0;
+  }
+  const std::size_t need = std::stoull(message.substr(at + 6));
+  EXPECT_TRUE(message.contains(std::format("need {} bytes", need))) << message;
+  return need;
+}
+
+// Two batchings of the same cross terms against each other, to kPathTol of
+// each term's largest |H|.
+void expect_agree(const fb::hessian::RhfTwoElectron &got, const fb::hessian::RhfTwoElectron &ref,
+                  const std::string &what, const double seconds) {
+  std::string report;
+  for (const auto &[term, mine, theirs] : {std::tuple{"coulomb", &got.coulomb, &ref.coulomb},
+                                           std::tuple{"exchange", &got.exchange, &ref.exchange}}) {
+    const double scale = max_abs(*theirs);
+    const double worst = max_diff(*mine, *theirs);
+    EXPECT_LE(worst, kPathTol * scale) << what << ", " << term << ": of max |H| " << scale;
+    report += std::format("; {} |diff| {:.1e} of {:.4f}", term, worst, scale);
+  }
+  std::cout << std::format("[ batches  ] {}: {:.2f} s{}\n", what, seconds, report);
+}
+
+double seconds_since(const std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+}
+
+// The memory refusal, and the cross terms' batches under a budget against the
+// unbudgeted call (every atom in one walk): on the water, a budget below two
+// atom blocks refused naming the bytes it needs, and that many bytes (one
+// atom a batch, n_atom (n_atom + 1) / 2 walks) accepted; on a water dimer in
+// cc-pVDZ / cc-pVDZ-JKFIT at each water's own orbitals, its own need plus two
+// slots (four blocks: two atoms a batch, three batches, six walks).
+TEST_F(HessianDfRhfTwoElectron, BatchesAgreeAndMemoryRefusal) {
+  FBF_REQUIRE_GPU();
+  load("h2o_ccpvdz");
+  ASSERT_FALSE(HasFatalFailure());
+  {
+    const std::size_t need = refused_need(run(*aux_, nocc_, *b_, *c_, 1));
+    ASSERT_GT(need, 0U);
+    const auto whole = run(*aux_, nocc_, *b_, *c_);
+    ASSERT_TRUE(whole) << whole.error().message;
+    const auto start = std::chrono::steady_clock::now();
+    const auto least = run(*aux_, nocc_, *b_, *c_, need);
+    ASSERT_TRUE(least) << least.error().message;
+    expect_agree(*least, *whole, std::format("water, two blocks ({} bytes)", need),
+                 seconds_since(start));
+  }
+
+  // The second water 6 bohr along x (and a little off) from the first.
+  std::vector<fb::Atom> atoms{molecule_->atoms().begin(), molecule_->atoms().end()};
+  for (const fb::Atom &atom : molecule_->atoms()) {
+    const auto &r = atom.position;
+    atoms.push_back(fb::Atom{fb::Vec<double, 3>{r.x + 6.0, r.y + 1.0, r.z - 0.5}, atom.element});
+  }
+  const fb::Molecule dimer(*res_, std::move(atoms));
+  const auto stamp = fb::resolve_basis("cc-pvdz");
+  ASSERT_TRUE(stamp);
+  auto basis = fb::place(stamp->primitive_normalized(), dimer);
+  ASSERT_TRUE(basis) << basis.error().message;
+  const auto aux_stamp = fb::resolve_aux_basis(aux_stamp_);
+  ASSERT_TRUE(aux_stamp);
+  auto aux = fb::place(aux_stamp->primitive_normalized(), dimer);
+  ASSERT_TRUE(aux) << aux.error().message;
+  const std::size_t nao = basis->nao_sphe();
+  const std::size_t naux = aux->nao_sphe();
+  ASSERT_EQ(nao, 2 * nao_);
+  auto classes = fb::primitive_pair_classes(*res_, *basis);
+  ASSERT_TRUE(classes) << classes.error().message;
+  auto u = fb::upload_spherical_transform_matrix(*res_, *aux);
+  ASSERT_TRUE(u) << u.error().message;
+  fb::MatrixAOPair metric(*res_, *aux, std::move(*u));
+  fb::Buffers::device<double> b(naux * nao * nao, res_->device());
+  ASSERT_TRUE(fb::metric(*res_, *aux, metric));
+  ASSERT_TRUE(fb::three_center(*res_, *basis, *classes, *aux, b.data()));
+  ASSERT_TRUE(fb::density_fit(*res_, static_cast<std::int32_t>(nao),
+                              static_cast<std::int32_t>(naux), metric.spherical().data(),
+                              b.data()));
+  // Each water's occupied orbitals on its own functions, ours (rows over N).
+  const std::vector<double> n_ao = norms(*basis_);
+  const std::vector<double> c_water = read_array("h2o_ccpvdz_c.npy", {nao_, nao_});
+  const auto nocc_water = static_cast<std::size_t>(nocc_);
+  std::vector<double> c_host(nao * 2 * nocc_water, 0.0);
+  for (std::size_t half = 0; half < 2; ++half) {
+    for (std::size_t j = 0; j < nocc_water; ++j) {
+      for (std::size_t m = 0; m < nao_; ++m) {
+        c_host[(half * nao_) + m + (nao * ((half * nocc_water) + j))] =
+            c_water[m + (nao_ * j)] / n_ao[m];
+      }
+    }
+  }
+  const fb::Buffers::device<double> c = upload(*res_, c_host);
+  const auto nocc = static_cast<std::int32_t>(2 * nocc_water);
+  const auto call = [&](const std::size_t max_bytes) {
+    return fb::hessian::df_rhf_two_electron(*res_, *basis, *classes, *aux, b,
+                                            metric.spherical().data(), c, nocc, max_bytes);
+  };
+  const std::size_t need = refused_need(call(1));
+  ASSERT_GT(need, 0U);
+  const auto whole = call(0);
+  ASSERT_TRUE(whole) << whole.error().message;
+  // One slot is an atom block and its Coulomb vectors, 3 naux (nocc^2 + 1).
+  const std::size_t slot =
+      sizeof(double) * 3 * naux * ((static_cast<std::size_t>(nocc) * nocc) + 1);
+  const auto start = std::chrono::steady_clock::now();
+  const auto four = call(need + (2 * slot));
+  ASSERT_TRUE(four) << four.error().message;
+  expect_agree(*four, *whole, std::format("water dimer, four blocks ({} bytes)", need + (2 * slot)),
+               seconds_since(start));
 }
 
 } // namespace

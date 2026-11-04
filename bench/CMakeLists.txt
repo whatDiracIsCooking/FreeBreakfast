@@ -114,3 +114,23 @@ target_link_libraries(
   PRIVATE free_breakfast::core free_breakfast::core::resources
           free_breakfast::integrals::eri::density_fitting::jk
 )
+
+# hessian::df_rhf_two_electron's wall clock and peak device memory over an
+# all-trans alkane's DF-RHF (propane by default), at the SCF's orbitals.
+add_executable(
+  free_breakfast_hessian_df_rhf_two_electron hessian_df_rhf_two_electron.cpp
+)
+set_target_properties(
+  free_breakfast_hessian_df_rhf_two_electron
+  PROPERTIES CXX_MODULE_STD 1 CXX_SCAN_FOR_MODULES ON
+)
+target_link_libraries(
+  free_breakfast_hessian_df_rhf_two_electron
+  PRIVATE free_breakfast::core
+          free_breakfast::core::resources
+          free_breakfast::hessian
+          free_breakfast::pipeline::step
+          free_breakfast::pipeline::eri
+          free_breakfast::pipeline::scf
+          free_breakfast::pipeline::config
+)
