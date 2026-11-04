@@ -468,7 +468,8 @@ hook: a full ladder is minutes of compiler time, the slow tier's budget.
 hook on `Write|Edit|NotebookEdit`: it **blocks edits to the primary checkout**,
 so work belongs in a `.claude/worktrees/<name>` worktree (the `worktree` skill)
 or a container-backed sibling worktree (`devtools/worktree.sh`). The nested
-`.claude/worktrees/` subtree is itself allowed. Escape hatch, for deliberate
+`.claude/worktrees/` subtree is itself allowed, and so is the gitignored
+`.temp/` scratch tree. Escape hatch, for deliberate
 work on main: `CLAUDE_ALLOW_MAIN_EDITS=1`. The guard fails **open** on any
 error — a guard bug must never brick editing.
 
