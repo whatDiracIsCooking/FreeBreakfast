@@ -27,6 +27,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -571,6 +572,11 @@ class Nevpt2QdNacZeroth : public ::testing::TestWithParam<std::string_view> {};
 
 TEST_P(Nevpt2QdNacZeroth, MatchesNumerical) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h: the skew H2CO cases, 20.2 and 20.4 s on the gfx1200
+  // and 7.9 s on the RTX 3080 (#793).
+  if (GetParam() != "h8_ring_sto3g_sa3") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   expect_zeroth(std::string{GetParam()});
 }
 
@@ -772,6 +778,11 @@ class Nevpt2QdNacFold : public ::testing::TestWithParam<std::string_view> {};
 
 TEST_P(Nevpt2QdNacFold, MatchesThreeSolves) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h: the skew H2CO cases, 17.5 and 17.6 s on the gfx1200
+  // and 6.0 and 6.2 s on the RTX 3080 (#793).
+  if (GetParam().starts_with("h2co_skew_ccpvdz_sa3")) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   expect_fold(std::string{GetParam()});
 }
 

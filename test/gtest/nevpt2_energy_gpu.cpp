@@ -900,8 +900,9 @@ TEST_P(Nevpt2EnergyAdjointLadder, BarsMatchRichardsonLadder) {
   // only the orbital energies moved, ~0.7 s with B, ~5.7 s with everything
   // (presumably einsum's atomic per term, cheap while N₂'s symmetry-sparse
   // arrays make most terms exact zeros). Each group alone stands for it in
-  // the fast tier.
-  if (group == "all") {
+  // the fast tier. And B, 16.1 s on the gfx1200 against 1.9 s on the RTX 3080
+  // (#793).
+  if (group == "all" || group == "B") {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const std::filesystem::path dir = kDataDir / kAdjointCase;

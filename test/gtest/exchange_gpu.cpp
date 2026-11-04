@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -203,6 +204,11 @@ TEST_P(ExchangeGolden, MatchesLibcint) {
 // block. And K[A] is antisymmetric to rounding.
 TEST_P(ExchangeGolden, ANonSymmetricDensityIsTwoSweeps) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h: CO cc-pVTZ, 10.8 s on the gfx1200 and 4.8 s on the
+  // RTX 3080 (#793).
+  if (std::string_view{GetParam()} == "co_ccpvtz") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const Golden g = read_golden(GetParam());
   ASSERT_FALSE(g.vk.empty());
   const std::size_t n = g.basis.nao_cart();
