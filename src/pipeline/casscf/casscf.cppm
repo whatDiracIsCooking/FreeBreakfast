@@ -52,6 +52,10 @@ struct CasscfOutput {
   double energy;
   /// @brief ||g|| at @ref c.
   double gradient_norm;
+  /// @brief The CI's largest Davidson residual norm at @ref c (hartree),
+  /// @c ci::Roots::davidson.max_residual_norm: how far the roots are from
+  /// eigenvectors, as ||g|| says how far @ref c is from stationary.
+  double ci_residual_norm;
   /// @brief The unit CI vectors, root r at [r dim, (r + 1) dim), in
   /// @ref CasciOutput::vectors' layout.
   std::vector<double> vectors;

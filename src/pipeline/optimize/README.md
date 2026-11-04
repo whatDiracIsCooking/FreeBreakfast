@@ -230,9 +230,9 @@ pipeline/config once `[casscf]` is copied in: a gradient member set beside
 (`InvalidConfig`); unequal weights on I and J (`Unsupported`: the rotation
 between two roots of unequal weight divides by their gap, singular at the
 crossing, `df_intersection`'s own refusal); an integral-direct `[eri]`
-(`Unsupported`). pipeline/config also refuses a `[nevpt2_gradient]` beside
-`meci`; a `[gradient]` or `[casscf_gradient]` beside it is a later step, run
-at the MECI.
+(`Unsupported`). A `[gradient]` or `[casscf_gradient]` beside it is a later
+step, run at the MECI; a `[nevpt2_gradient]` beside it makes the MECI the
+QD-NEVPT2's (below).
 
 **Outputs.** `OptimizeOutput::energy` is the pair's mean at the MECI.
 `optimize.json` has the mean as `energy`, with `lower`, `upper` and `gap`,
@@ -245,6 +245,45 @@ step). Each `optimize.xyz` comment holds the mean and the gap, and
 The CASCI's roots outside the average are not followed: a third root
 crossing into S1 on the way is caught by `pair_overlap`, not avoided. The
 test's case keeps it 0.30 Eh clear (the fixture's `s2_margin`).
+
+## The QD-NEVPT2 MECI
+
+With `meci = [P, Q]` beside a quasi-degenerate `[nevpt2_gradient]`, P and Q
+are SC- or PC-QD-NEVPT2 states (H_eff's eigenvalues, ascending; the table's
+`variant`), and the step finds their MECI the same way, over the same
+CASSCF chain. At every geometry one `nevpt2::qd_sc_intersection` (or
+`qd_pc_intersection`, `../../nevpt2/intersection/`) gives g_P, g_Q and h_PQ
+at one set of H_eff eigenvectors, with no refusal of a degenerate pair, and
+the QD energies; they go to `optimize_meci` as `df_intersection`'s do. The
+weights may be unequal (the intersection's only division by a gap is by the
+CASSCF roots', never by E_Q − E_P).
+
+**The pair is followed by its two-state space**, through the CASSCF roots:
+`pair_overlap(root_overlaps, previous, current, P, Q)` takes the 2 × 2 block
+M_ab = u_a(last)ᵀ S u_b(this), a and b each P or Q, S the row-normalized
+`state_overlaps` and u H_eff's eigenvectors, and its smaller singular value
+must stay at or above `kStateOverlapFloor` (`Numerical` below, naming the
+states). P and Q, and the CASSCF roots under them, may swap and mix freely:
+no root is matched.
+
+**Refusals** (`check_meci`, in `run` and in pipeline/config): a
+`[nevpt2_gradient]` that is not quasi-degenerate (one state, none to cross)
+or names a `state` (`InvalidConfig`); a `[casscf]` of one root, P = Q, or a
+state past `nroots` (`InvalidConfig`); an open shell or an integral-direct
+`[eri]` (`Unsupported`). The `[nevpt2_gradient]` is the chain's, and is not
+run as a later step: at the MECI it would differentiate one of two
+degenerate states, which it refuses.
+
+**Outputs** are the CASSCF MECI's, and each `optimize.json` entry also
+holds the CASSCF's reported `gradient_norm` and `ci_residual_norm` (its
+largest Davidson residual, `CasscfOutput::ci_residual_norm`), `heff_gap`
+(|E_Q − E_P|), `third_state_margin` (E_{Q+1} − E_Q, Q the higher of the
+pair; null when there is none) and `root_gap` (the CASSCF's smallest). The
+last entry's `gradient_norm` and `ci_residual_norm` are what bound the
+reported gap's distance from the exact surface's, s_o ‖g‖ + s_c √n ρ
+(`../../nevpt2/intersection/README.md`), so a config that wants the gap to
+1e-7 sets `[casscf] conv_tol_grad` well under it: `examples/qd_meci.toml`
+uses 1e-10.
 
 ## The NEVPT2 chain
 
@@ -508,6 +547,43 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
   to sign) against the fixture's, and the step count, are printed, not held.
   42 steps in about 15 s on the 3080, the family's cheapest, so in the fast
   tier.
+- `test/pipeline/optimize_host.cpp`, the QD pair: `pair_overlap` over
+  H_eff's eigenvectors keeps a swapped P/Q block ([[0, ±1], [±1, 0]]) at
+  every phase, the same swap seen through swapped CASSCF roots, and a pair
+  turned 45° within itself; keeps one turned 20° into a third state, at cos
+  20°, and refuses one turned 30°, `Numerical`; and refuses eigenvectors of
+  the wrong size or states not two distinct ones of n, `InvalidConfig`.
+  `config_host.cpp`: the QD chain copied in, SC and PC, the outer
+  `[nevpt2_gradient]` taken out, unequal weights allowed; and every refusal
+  (a `state`, a single-state `[nevpt2_gradient]`, one root, P = Q, a state
+  past `nroots`, an open shell, an integral-direct `[eri]` written or
+  filled in).
+- `test/gtest/pipeline_optimize_gpu.cpp`, the QD-NEVPT2 MECI (#785):
+  ethylene's states 0 and 1 over its DF-SA3-CASSCF(2,2) (every singlet of
+  the CAS, equal weights), cc-pVDZ / cc-pVDZ-JKFIT, from
+  `test/gtest/data/casscf_meci/`'s `meci.atoms` (the SA2 CASSCF MECI,
+  twisted off Cs), at Opt=Tight's four thresholds, `max_gap` 1e-7 and
+  `[casscf] conv_tol_grad` 1e-10. Each claim runs once against its derived
+  bar. **C1**: at a fresh single point at `final.xyz` (the outer `[casscf]`
+  from a fresh RHF, then one `qd_*_intersection`), QD states 0 and 1 are
+  within Δ + Σ_{opt, fresh} (s_o‖g‖ + s_c√3·ρ), ‖g‖ and ρ the reported
+  `gradient_norm` and `ci_residual_norm` (the optimizer's last entry's and
+  the fresh CASSCF's), s_o and s_c the fresh point's, with that convergence
+  term at or below Δ/10. **C2**: at the same point, `nevpt2::numerical_heff`
+  (#783) along an orthonormal basis of the 12 internal directions (steps 1e-3,
+  5e-4, 2.5e-4 bohr, Richardson; 72 single points) gives ḡ, x and h, and
+  max |P ḡ| in Cartesians (#771's projector) is within
+  F + 2e(1 + 2|ḡ| / min(|x|, 2|h|)), e the oracle's largest error bar, with
+  the oracle's term at or below F. **C3**: E₂ − E₁ ≥ 1e-2 there. SC and PC
+  each run C1–C3 in the slow tier: at 31 steps and about 25 s the SC
+  optimization is past slow_test.h's ten seconds and dearer than the
+  CASSCF MECI, so the MECI family's fast-tier member stays that one. Every entry's pair
+  overlap and third-state margin, the step count, the mean energy, the RMS
+  displacement from the start and the wall times are printed, not held. On
+  the 3080: SC 31 steps in 24.5 s, its fresh gap 3.6e-9 against a convergence term of 1.6e-12;
+  the oracle 72 points in 12.4 s, max |P ḡ| 3.9e-6 against 1.51e-5 (its
+  own term 1.2e-7); PC 24 steps in 18.6 s. s_c is ~1e-17 here: the three
+  roots span the CAS's singlets, so the CI multipliers vanish.
 
 ## Files
 

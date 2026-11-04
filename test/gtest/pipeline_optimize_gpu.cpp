@@ -27,7 +27,11 @@
 // S0/S1 crossing over its DF-SA2-CASSCF(2,2) from the twisted,
 // pyramidalized start of data/casscf_meci/, a fresh single point at the
 // result holding it to the thresholds, and the geometry and mean energy held
-// to the fixture's within bars derived from it.
+// to the fixture's within bars derived from it. Last the QD-NEVPT2 MECI: the
+// same ethylene's SC- and PC-QD-NEVPT2 states 0 and 1 over its
+// DF-SA3-CASSCF(2,2), from that fixture's SA2 MECI, held to #785's C1 (the
+// fresh point's gap), C2 (seam stationarity by the numerical dH_eff of
+// tools/qd_nevpt2_gradient) and C3 (the third state's margin).
 
 #include <gtest/gtest.h>
 
@@ -43,6 +47,8 @@ import free_breakfast.mcscf;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
+import free_breakfast.nevpt2;
+import free_breakfast.tools.qd_nevpt2_gradient;
 
 #include "scratch_dir.h"
 
@@ -1319,6 +1325,425 @@ TEST(PipelineOptimize, EthyleneMeciReachesTheReferenceMeci) {
       std::abs(iterations.front().at("upper").get<double>() - ref_start_energies.at(1)), start_g0,
       start_g1, start_h_err,
       std::abs(std::ranges::max(start_h, {}, [](double v) { return std::abs(v); })));
+}
+
+// --- The QD-NEVPT2 MECI ------------------------------------------------------
+
+// The case's state average: every singlet of the CAS(2,2), equal weights, so
+// the third state is there for the margin and the oracle's plane.
+constexpr std::int32_t kQdMeciRoots = 3;
+// The issue's thresholds: the gap, and kOptimize's Opt=Tight four.
+constexpr double kQdMeciGap = 1e-7;
+// The chain's [casscf]: conv_tol_grad 1e-10, so s_o ||g|| sits far under the
+// gap (the default 1e-6 would put it near s_o 1e-6, above Delta).
+constexpr std::string_view kQdMeciCasscf = "conv_tol_grad = 1e-10\nconv_tol = 1e-13\n"
+                                           "max_cycle = 200\n";
+// C1: the convergence term's allowance, a tenth of the gap.
+constexpr double kQdConvergenceShare = 0.1;
+// C3: data/casscf_meci's S2_MARGIN (meci_reference.py), hartree.
+constexpr double kQdThirdStateMargin = 1e-2;
+// C2's oracle: the energy path of the chain (#783) at the fresh point,
+// central differences at three halving steps and Richardson, with the
+// cc-pVDZ cases' per-point noise (qd_nevpt2_gradient/README.md).
+constexpr std::array<double, 3> kOracleSteps = {1e-3, 5e-4, 2.5e-4};
+constexpr double kOracleNoise = 1e-11;
+
+// One QD-NEVPT2 single point's quantities at a CASSCF: the QD energies, the
+// branching vectors and the gap sensitivities, and the CASSCF's residuals.
+struct QdPoint {
+  std::vector<double> energies;
+  std::vector<double> g0;
+  std::vector<double> g1;
+  std::vector<double> h;
+  double s_o{0.0};
+  double s_c{0.0};
+  double gradient_norm{0.0};
+  double ci_residual{0.0};
+};
+
+// One qd_{sc,pc}_intersection of states 0 and 1 over @p calc's own products
+// after it ran: its outer [casscf], from its own RHF orbitals and pick, never
+// an optimization's carried ones (fresh_intersection's Solution).
+QdPoint fresh_qd_intersection(const fb::Calculation &calc, fb::DeviceResources &res, bool pc) {
+  QdPoint point;
+  const auto &cas = *calc.get<fb::CasscfOutput>();
+  const fb::BasisSet &basis = calc.get<fb::BasisSetOutput>()->basis;
+  const auto n2 = static_cast<std::size_t>(cas.ncas) * static_cast<std::size_t>(cas.ncas);
+  std::vector<double> gamma(n2, 0.0);
+  for (std::size_t r = 0; r < cas.weights.size(); ++r) {
+    for (std::size_t e = 0; e < n2; ++e) {
+      gamma[e] += cas.weights[r] * cas.rdm1[(r * n2) + e];
+    }
+  }
+  fb::mcscf::Solution solution{
+      .c = fb::SphericalMatrixAO(res, basis),
+      .roots = {.energies = cas.energies,
+                .spin_squares = cas.spin_squares,
+                .vectors = fb::Buffers::device<double>(cas.vectors.size(), res.device()),
+                .davidson = {},
+                .fp32_iterations = 0},
+      .energy = cas.energy,
+      .gradient_norm = cas.gradient_norm,
+      .gamma = std::move(gamma),
+      .gamma2 = cas.rdm2,
+      .root_gammas = cas.rdm1,
+      .iterations = cas.iterations};
+  EXPECT_EQ(wwr::wwrMemcpyAsync(solution.roots.vectors.data(), cas.vectors.data(),
+                                cas.vectors.size() * sizeof(double), wwr::wwrMemcpyHostToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(solution.c.data(), cas.c.data(),
+                                cas.c.num_elements() * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+  const auto *const fit = std::get_if<fb::DensityFitted>(&calc.get<fb::EriOutput>()->eri);
+  if (fit == nullptr) {
+    ADD_FAILURE() << "the ERIs are not density-fitted";
+    return point;
+  }
+  const fb::Molecule &molecule = calc.get<fb::MoleculeOutput>()->molecule;
+  const auto &classes = calc.get<fb::PrimitivePairClassesOutput>()->classes;
+  const fb::SphericalMatrixAO &h = calc.get<fb::CoreHamiltonianOutput>()->h;
+  auto out =
+      pc ? fb::nevpt2::qd_pc_intersection(res, molecule, basis, classes, fit->aux, h, fit->b,
+                                          fit->l.data(), solution, cas.ncore, cas.ncas, 0, 1, 0)
+         : fb::nevpt2::qd_sc_intersection(res, molecule, basis, classes, fit->aux, h, fit->b,
+                                          fit->l.data(), solution, cas.ncore, cas.ncas, 0, 1, 0);
+  if (!out.has_value()) {
+    ADD_FAILURE() << out.error().message;
+    return point;
+  }
+  point.energies = out->eigenvalues;
+  point.g0 = std::move(out->g_p);
+  point.g1 = std::move(out->g_q);
+  point.h = std::move(out->h_pq);
+  point.s_o = out->gap_sensitivity_orbital;
+  point.s_c = out->gap_sensitivity_ci;
+  point.gradient_norm = cas.gradient_norm;
+  point.ci_residual = cas.ci_residual_norm;
+  return point;
+}
+
+// An orthonormal basis of the 3N - 6 internal directions at @p atoms (bohr):
+// the Cartesian unit vectors orthogonalized, twice, against the translations
+// and the rotations about the centroid (max_projected_force's) and each
+// other, the ones with anything left kept.
+std::vector<std::vector<double>> internal_directions(const Points &atoms) {
+  const std::size_t n = 3 * atoms.size();
+  std::array<double, 3> centroid{};
+  for (const auto &r : atoms) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      centroid[k] += r[k] / static_cast<double>(atoms.size());
+    }
+  }
+  std::vector<std::vector<double>> candidates;
+  for (std::size_t k = 0; k < 3; ++k) {
+    std::vector<double> t(n, 0.0);
+    for (std::size_t a = 0; a < atoms.size(); ++a) {
+      t[(3 * a) + k] = 1.0;
+    }
+    candidates.push_back(std::move(t));
+  }
+  for (std::size_t k = 0; k < 3; ++k) {
+    std::vector<double> rot(n, 0.0);
+    for (std::size_t a = 0; a < atoms.size(); ++a) {
+      const std::size_t k1 = (k + 1) % 3;
+      const std::size_t k2 = (k + 2) % 3;
+      rot[(3 * a) + k2] = atoms[a][k1] - centroid[k1];
+      rot[(3 * a) + k1] = -(atoms[a][k2] - centroid[k2]);
+    }
+    candidates.push_back(std::move(rot));
+  }
+  for (std::size_t c = 0; c < n; ++c) {
+    std::vector<double> e(n, 0.0);
+    e[c] = 1.0;
+    candidates.push_back(std::move(e));
+  }
+  std::vector<std::vector<double>> basis;
+  std::size_t rigid = 0;
+  for (std::size_t i = 0; i < candidates.size(); ++i) {
+    std::vector<double> v = candidates[i];
+    for (int32_t pass = 0; pass < 2; ++pass) {
+      for (const auto &u : basis) {
+        const double dot = std::inner_product(u.begin(), u.end(), v.begin(), 0.0);
+        for (std::size_t c = 0; c < n; ++c) {
+          v[c] -= dot * u[c];
+        }
+      }
+    }
+    const double norm = std::sqrt(std::inner_product(v.begin(), v.end(), v.begin(), 0.0));
+    if (norm > 1e-6) {
+      for (double &value : v) {
+        value /= norm;
+      }
+      basis.push_back(std::move(v));
+      rigid += i < 6 ? 1 : 0;
+    }
+  }
+  return {basis.begin() + static_cast<std::ptrdiff_t>(rigid), basis.end()};
+}
+
+// Sum_i c_i u_i: a vector of components along @p directions, in Cartesians.
+std::vector<double> cartesian(std::span<const double> c,
+                              const std::vector<std::vector<double>> &directions) {
+  std::vector<double> out(directions.front().size(), 0.0);
+  for (std::size_t i = 0; i < directions.size(); ++i) {
+    for (std::size_t k = 0; k < out.size(); ++k) {
+      out[k] += c[i] * directions[i][k];
+    }
+  }
+  return out;
+}
+
+double norm2(std::span<const double> v) {
+  return std::sqrt(std::inner_product(v.begin(), v.end(), v.begin(), 0.0));
+}
+
+double largest_bar(const fb::nevpt2::Differenced &d) {
+  return std::ranges::max(d.error_bar);
+}
+
+// The issue's C2 at @p atoms: the oracle's ḡ, x and h along the internal
+// directions, P ḡ back in Cartesians (max_projected_force's projector), and
+// the bar F + 2 e (1 + 2 |ḡ| / min(|x|, 2 |h|)). Returns whether it passed.
+struct OracleCheck {
+  double force{0.0};
+  double bar{0.0};
+  double oracle_term{0.0};
+  double e{0.0};
+  double gbar_norm{0.0};
+  double plane_norm{0.0};
+  std::size_t points{0};
+  double seconds{0.0};
+  std::vector<double> gbar;
+  std::vector<double> x;
+  std::vector<double> h;
+  std::vector<std::vector<double>> directions;
+};
+
+std::optional<OracleCheck> oracle_at(fb::NodeResources &node, const Points &at,
+                                     const std::vector<fb::Atom> &atoms, bool pc) {
+  OracleCheck check;
+  check.directions = internal_directions(at);
+  EXPECT_EQ(check.directions.size(), (3 * at.size()) - 6);
+  fb::nevpt2::NumericalChain chain{
+      .atoms = atoms,
+      .basis = meci_reference().at("basis").get<std::string>(),
+      .aux_basis = meci_reference().at("aux_basis").at("name").get<std::string>(),
+      .ncas = meci_reference().at("ncas").get<std::int32_t>(),
+      .nelecas = meci_reference().at("nelecas").get<std::int32_t>(),
+      .active = {},
+      .weights = std::vector<double>(kQdMeciRoots, 1.0 / kQdMeciRoots),
+      .pc = pc};
+  const auto t0 = std::chrono::steady_clock::now();
+  auto heff = fb::nevpt2::numerical_heff(node, chain, check.directions, kOracleSteps, kOracleNoise);
+  check.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  if (!heff.has_value()) {
+    ADD_FAILURE() << "the oracle: " << heff.error().message;
+    return std::nullopt;
+  }
+  check.points = heff->points;
+  const fb::nevpt2::HeffDerivative &d = pc ? *heff->pc : heff->sc;
+  const fb::nevpt2::HeffPair pair = fb::nevpt2::heff_pair(d, d.vectors, 0, 1);
+  check.e = std::max({largest_bar(pair.mean), largest_bar(pair.x), largest_bar(pair.h)});
+  check.gbar = cartesian(pair.mean.value, check.directions);
+  check.x = cartesian(pair.x.value, check.directions);
+  check.h = cartesian(pair.h.value, check.directions);
+  check.gbar_norm = norm2(check.gbar);
+  check.plane_norm = std::min(norm2(check.x), 2.0 * norm2(check.h));
+  check.oracle_term = 2.0 * check.e * (1.0 + (2.0 * check.gbar_norm / check.plane_norm));
+  check.bar = kMaxForce + check.oracle_term;
+  PairPoint plane;
+  plane.g0.resize(check.gbar.size());
+  plane.g1.resize(check.gbar.size());
+  for (std::size_t k = 0; k < check.gbar.size(); ++k) {
+    plane.g0[k] = check.gbar[k] - (0.5 * check.x[k]);
+    plane.g1[k] = check.gbar[k] + (0.5 * check.x[k]);
+  }
+  plane.h = check.h;
+  check.force = max_projected_force(at, plane);
+  return check;
+}
+
+// Ethylene's SC- (or PC-) QD-NEVPT2 MECI of states 0 and 1 over its
+// DF-SA3-CASSCF(2,2), cc-pVDZ / cc-pVDZ-JKFIT, equal weights, from
+// data/casscf_meci's `meci.atoms` (the SA2 CASSCF MECI, twisted off Cs), at
+// Opt=Tight's four thresholds and a gap of 1e-7. The issue's claims, each
+// run once against its derived bar:
+// - C1, the gap: a fresh single point at final.xyz (the outer [casscf] from
+//   a fresh RHF and pick, then one qd_*_intersection) has QD states 0 and 1
+//   within Delta + sum over the optimizer's last point and the fresh one of
+//   s_o ||g|| + s_c sqrt(3) rho, ||g|| and rho the CASSCFs' reported
+//   gradient_norm and ci_residual_norm, s_o and s_c the fresh point's; that
+//   convergence term at or below Delta / 10;
+// - C2, seam stationarity: the oracle's P ḡ at the fresh
+//   point (oracle_at) within F + 2 e (1 + 2 |ḡ| / min(|x|, 2 |h|)), the
+//   oracle's term at or below F; on a failure, the start's analytic ḡ, x and
+//   h against the oracle there, logged to localize it;
+// - C3: E_2 - E_1 at the fresh point at least kQdThirdStateMargin.
+// Logged, not gating: every optimize.json entry's pair overlap, third-state
+// margin and CASSCF residuals, the step count, the final mean energy, the
+// RMS displacement from the start, and the wall times.
+void expect_qd_meci(bool pc) {
+  const std::string_view scheme = pc ? "PC" : "SC";
+  const fb::json &reference = meci_reference();
+  const fb::test::ScratchDir dir(std::format("pipeline_optimize_qd_meci_{}", pc ? "pc" : "sc"));
+  write_xyz(dir / "start.xyz", reference.at("meci").at("atoms"));
+  const std::string toml = std::format(
+      "[molecule]\nxyz = \"start.xyz\"\n[basis_set]\nbasis = \"{}\"\n[eri]\nmode = "
+      "\"density_fitting\"\naux_basis = \"{}\"\n[scf]\nmax_iterations = 400\n"
+      "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\n{}"
+      "[nevpt2_gradient]\nquasi_degenerate = true\nvariant = \"{}\"\n{}meci = [0, 1]\n"
+      "max_gap = {}\n",
+      reference.at("basis").get<std::string>(),
+      reference.at("aux_basis").at("name").get<std::string>(),
+      reference.at("ncas").get<std::int32_t>(), reference.at("nelecas").get<std::int32_t>(),
+      kQdMeciRoots, kQdMeciCasscf, pc ? "pc" : "sc", kOptimize, kQdMeciGap);
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_TRUE(calc->step<fb::OptimizeStep>()->meci.has_value());
+  ASSERT_TRUE(calc->step<fb::OptimizeStep>()->nevpt2_gradient.has_value());
+  fb::NodeResources node;
+  const auto t0 = std::chrono::steady_clock::now();
+  const fb::Status ran = calc->run(node);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &out = calc->get<fb::OptimizeOutput>();
+  ASSERT_TRUE(out.has_value());
+
+  // The path.
+  const auto history = fb::read_json(dir / "out" / "optimize.json");
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  const fb::json &iterations = history->at("iterations");
+  ASSERT_GE(iterations.size(), 1U);
+  EXPECT_TRUE(iterations.front().at("pair_overlap").is_null());
+  double worst_overlap = 1.0;
+  double least_margin = std::numeric_limits<double>::infinity();
+  for (std::size_t i = 0; i < iterations.size(); ++i) {
+    const fb::json &it = iterations[i];
+    if (i > 0) {
+      worst_overlap = std::min(worst_overlap, it.at("pair_overlap").get<double>());
+    }
+    least_margin = std::min(least_margin, it.at("third_state_margin").get<double>());
+    std::cout << std::format(
+        "[ optimize ] {}-QD MECI evaluation {:>2}: E {:.10f} {:.10f} gap {:.3e} (H_eff {:.3e}), "
+        "max force {:.2e}, pair overlap {}, third-state margin {:.6f}, CASSCF root gap {:.6f}, "
+        "|g| {:.2e}, rho {:.2e}\n",
+        scheme, i, it.at("lower").get<double>(), it.at("upper").get<double>(),
+        it.at("gap").get<double>(), it.at("heff_gap").get<double>(),
+        it.at("max_force").get<double>(),
+        i == 0 ? std::string("-") : std::format("{:.10f}", it.at("pair_overlap").get<double>()),
+        it.at("third_state_margin").get<double>(), it.at("root_gap").get<double>(),
+        it.at("gradient_norm").get<double>(), it.at("ci_residual_norm").get<double>());
+  }
+  const fb::json &last = iterations.back();
+  const double opt_g = last.at("gradient_norm").get<double>();
+  const double opt_rho = last.at("ci_residual_norm").get<double>();
+
+  // C1 and C3 at the fresh single point.
+  const Points got = points(out->molecule);
+  const QdPoint fresh = fresh_qd_intersection(*calc, node.device(0), pc);
+  ASSERT_EQ(fresh.energies.size(), static_cast<std::size_t>(kQdMeciRoots));
+  const double fresh_gap = fresh.energies[1] - fresh.energies[0];
+  const double root_n = std::sqrt(static_cast<double>(kQdMeciRoots));
+  const double opt_term = (fresh.s_o * opt_g) + (fresh.s_c * root_n * opt_rho);
+  const double fresh_term =
+      (fresh.s_o * fresh.gradient_norm) + (fresh.s_c * root_n * fresh.ci_residual);
+  const double convergence = opt_term + fresh_term;
+  const double gap_bar = kQdMeciGap + convergence;
+  EXPECT_LE(convergence, kQdConvergenceShare * kQdMeciGap)
+      << "the convergence term is over Delta / 10: tighten [casscf] conv_tol_grad, never the bar";
+  EXPECT_LE(fresh_gap, gap_bar);
+  const double margin = fresh.energies[2] - fresh.energies[1];
+  EXPECT_GE(margin, kQdThirdStateMargin);
+
+  double rms = 0.0;
+  const Points from = points(reference.at("meci").at("atoms"));
+  for (std::size_t a = 0; a < got.size(); ++a) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      rms += (got[a][k] - from[a][k]) * (got[a][k] - from[a][k]);
+    }
+  }
+  rms = std::sqrt(rms / static_cast<double>(3 * got.size()));
+  std::cout << std::format(
+      "[ optimize ] ethylene {}-QD-NEVPT2 SA3-CASSCF(2,2) MECI: {} steps, {:.1f} s, mean E "
+      "{:.10f}, RMS displacement from the start {:.4f} bohr; worst pair overlap {:.10f}, least "
+      "third-state margin {:.6f}\n"
+      "[ optimize ]   C1: fresh gap {:.3e} <= {:.3e} = Delta {:.1e} + convergence {:.3e} (opt "
+      "s_o|g| + s_c sqrt3 rho {:.2e}, fresh {:.2e}; Delta/10 {:.1e}); s_o {:.4e} s_c {:.4e}, "
+      "opt |g| {:.2e} rho {:.2e}, fresh |g| {:.2e} rho {:.2e}\n"
+      "[ optimize ]   C3: E_2 - E_1 {:.6f} >= {:.0e}\n",
+      scheme, iterations.size() - 1, seconds, out->energy, rms, worst_overlap, least_margin,
+      fresh_gap, gap_bar, kQdMeciGap, convergence, opt_term, fresh_term,
+      kQdConvergenceShare * kQdMeciGap, fresh.s_o, fresh.s_c, opt_g, opt_rho, fresh.gradient_norm,
+      fresh.ci_residual, margin, kQdThirdStateMargin);
+  // C2, by the oracle at the fresh point.
+  const std::vector<fb::Atom> atoms = out->molecule.atoms();
+  const auto check = oracle_at(node, got, atoms, pc);
+  ASSERT_TRUE(check.has_value());
+  EXPECT_LE(check->oracle_term, kMaxForce)
+      << "the oracle's term is over F: smaller steps or more rungs, never the looser bar";
+  EXPECT_LE(check->force, check->bar);
+  std::cout << std::format(
+      "[ optimize ]   C2: max |P gbar| {:.3e} <= {:.3e} = F {:.1e} + oracle {:.3e} (e {:.2e}, "
+      "|gbar| {:.3e}, min(|x|, 2|h|) {:.3e}); {} points, {:.1f} s\n",
+      check->force, check->bar, kMaxForce, check->oracle_term, check->e, check->gbar_norm,
+      check->plane_norm, check->points, check->seconds);
+  if (check->force <= check->bar) {
+    return;
+  }
+  // Only on a failure: the start's analytic g and h against the oracle there.
+  const fb::test::ScratchDir start_dir(
+      std::format("pipeline_optimize_qd_meci_start_{}", pc ? "pc" : "sc"));
+  write_xyz(start_dir / "start.xyz", reference.at("meci").at("atoms"));
+  const std::string single = toml.substr(0, toml.find("[nevpt2_gradient]"));
+  ASSERT_TRUE(fb::write_file(start_dir / "run.toml", single).has_value());
+  auto start_calc = fb::read_config(start_dir / "run.toml", start_dir.path(), start_dir / "out");
+  ASSERT_TRUE(start_calc.has_value()) << start_calc.error().message;
+  ASSERT_TRUE(start_calc->run(node).has_value());
+  const QdPoint analytic = fresh_qd_intersection(*start_calc, node.device(0), pc);
+  const auto start_check =
+      oracle_at(node, from, start_calc->get<fb::MoleculeOutput>()->molecule.atoms(), pc);
+  ASSERT_TRUE(start_check.has_value());
+  double dg = 0.0;
+  double dx = 0.0;
+  double dh_plus = 0.0;
+  double dh_minus = 0.0;
+  for (const auto &u : start_check->directions) {
+    const auto along = [&](std::span<const double> v) {
+      return std::inner_product(u.begin(), u.end(), v.begin(), 0.0);
+    };
+    const double g = 0.5 * (along(analytic.g0) + along(analytic.g1));
+    const double x = along(analytic.g1) - along(analytic.g0);
+    const double h = along(analytic.h);
+    dg = std::max(dg, std::abs(g - along(start_check->gbar)));
+    dx = std::max(dx, std::abs(x - along(start_check->x)));
+    dh_plus = std::max(dh_plus, std::abs(h - along(start_check->h)));
+    dh_minus = std::max(dh_minus, std::abs(h + along(start_check->h)));
+  }
+  std::cout << std::format("[ optimize ]   C2 failed; at the start, analytic against the oracle "
+                           "(e {:.2e}): max |d gbar| {:.3e}, max |d x| {:.3e}, max |d h| {:.3e} "
+                           "(up to sign)\n",
+                           start_check->e, dg, dx, std::min(dh_plus, dh_minus));
+}
+
+// SC: C1, C2 (the oracle's 72 single points) and C3. The optimization alone
+// is 31 steps in about 25 s on the 3080, past slow_test.h's ten seconds and
+// dearer than the CASSCF MECI above, so the slow tier.
+TEST(PipelineOptimize, EthyleneScQdMeciIsAnMeciAndSeamStationary) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_qd_meci(false);
+}
+
+// PC, the same case: C1, C2 and C3, in the slow tier.
+TEST(PipelineOptimize, EthylenePcQdMeciIsAnMeciAndSeamStationary) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_qd_meci(true);
 }
 
 } // namespace

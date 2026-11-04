@@ -255,6 +255,7 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, E
       .weights = std::move(averaged),
       .energy = sol.energy,
       .gradient_norm = sol.gradient_norm,
+      .ci_residual_norm = sol.roots.davidson.max_residual_norm,
       .vectors = std::move(vectors),
       .rdm1 = std::move(sol.root_gammas),
       .rdm2 = std::move(sol.gamma2),

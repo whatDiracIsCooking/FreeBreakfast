@@ -7,7 +7,10 @@
 /// PC-QD-NEVPT2 state's, followed from geometry to geometry), rerun as a
 /// nested Pipeline at every geometry; or, with `meci`, the minimum-energy
 /// conical intersection of two roots of a DF-SA-CASSCF, @c
-/// geometry::optimize_meci over one @c mcscf::df_intersection per geometry.
+/// geometry::optimize_meci over one @c mcscf::df_intersection per geometry,
+/// or with a quasi-degenerate `[nevpt2_gradient]` beside it of two SC- or
+/// PC-QD-NEVPT2 states, over one @c nevpt2::qd_sc_intersection (or
+/// qd_pc_intersection) per geometry.
 ///
 /// Node-shaped, because each evaluation runs a Pipeline of its own. Its
 /// product, `OptimizeOutput`, is declared in pipeline.molecule, whose
@@ -69,6 +72,8 @@ struct OptimizeStep {
   /// E_cas + E_corr; with its quasi_degenerate, the energy E_K of its QD
   /// state K, followed from each geometry to the next by @ref
   /// qd_state_overlap. At most one of it and @ref casscf_gradient is set.
+  /// Beside @ref meci, quasi-degenerate, it names the QD-NEVPT2 whose states
+  /// cross (its variant; its state is unread, and must be 0).
   std::optional<Nevpt2GradientStep> nevpt2_gradient{};
   /// @brief Set, {I, J}: the step finds the minimum-energy conical
   /// intersection of roots I and J of @ref casscf, a state average in which
@@ -76,7 +81,12 @@ struct OptimizeStep {
   /// @c geometry::optimize_meci (whose `max_gap` @ref options holds) over
   /// @c mcscf::df_intersection's g_I, g_J and h_IJ at every geometry; the
   /// energy reported is their mean. The pair is followed by
-  /// @ref pair_overlap. Neither gradient member may be set beside it.
+  /// @ref pair_overlap. With @ref nevpt2_gradient set, quasi-degenerate,
+  /// {P, Q} are instead QD-NEVPT2 states (H_eff's eigenvalues ascending),
+  /// SC or PC as its variant, at any weights, their g_P, g_Q and h_PQ
+  /// @c nevpt2::qd_sc_intersection's (or qd_pc_intersection's), and the
+  /// pair followed by @ref pair_overlap over H_eff's eigenvectors.
+  /// @ref casscf_gradient may not be set beside it.
   std::optional<std::array<int32_t, 2>> meci{};
 
   /// @brief Where every evaluated geometry is written, in order, as a
@@ -92,8 +102,11 @@ struct OptimizeStep {
   /// followed and its matched overlap; over a QD state, its matched overlap
   /// and H_eff's smallest gap. Under @ref meci the energy is the pair's mean,
   /// beside it the lower and upper energies and the gap (at the end too),
-  /// and per evaluation the branching plane's dimension and the
-  /// @ref pair_overlap in place of whether it was accepted.
+  /// and per evaluation the branching plane's dimension, the
+  /// @ref pair_overlap in place of whether it was accepted, and the CASSCF's
+  /// ||g|| and largest CI residual; over QD states also H_eff's gap of the
+  /// pair, the third-state margin E_{Q+1} - E_Q (Q the higher of the pair;
+  /// null when there is none) and the CASSCF's smallest root gap.
   std::filesystem::path history{};
 
   /// @brief @c geometry::optimize from @ref molecule's geometry, each
@@ -131,7 +144,8 @@ struct OptimizeStep {
   ///         with an integral-direct @ref eri, Unsupported, before anything
   ///         runs, as are @ref check_meci's refusals; under @ref meci,
   ///         @ref pair_overlap's Numerical error at the evaluation where the
-  ///         pair is lost, or @c mcscf::df_intersection's; over a
+  ///         pair is lost, or @c mcscf::df_intersection's (over QD states,
+  ///         @c nevpt2::qd_sc_intersection's or qd_pc_intersection's); over a
   ///         state-averaged root, @ref match_roots'
   ///         Numerical error at the evaluation where the root is lost; over
   ///         a QD state, @ref qd_state_overlap's; or
@@ -143,12 +157,15 @@ struct OptimizeStep {
   [[nodiscard]] Result<OptimizeOutput> run(View<> in, NodeResources &node) const;
 
   /// @brief Under @ref meci, what @ref run refuses before anything runs, and
-  /// pipeline/config before it plans: a gradient member set beside it
-  /// (InvalidConfig); @ref casscf of one root, I = J, or a root outside its
-  /// average (InvalidConfig); unequal weights on I and J (Unsupported:
-  /// @c mcscf::df_intersection's rotation between them would divide by
-  /// E_I - E_J); an integral-direct @ref eri (Unsupported). Without
-  /// @ref meci, nothing.
+  /// pipeline/config before it plans: @ref casscf_gradient set beside it, or
+  /// a @ref nevpt2_gradient that is not quasi-degenerate (one state, none
+  /// to cross) or names a state other than 0 (InvalidConfig); @ref casscf of
+  /// one root, I = J, or a root (or QD state) outside its average
+  /// (InvalidConfig); over CASSCF roots, unequal weights on I and J
+  /// (Unsupported: @c mcscf::df_intersection's rotation between them would
+  /// divide by E_I - E_J); over QD states, a molecule of multiplicity other
+  /// than 1 (Unsupported); an integral-direct @ref eri (Unsupported).
+  /// Without @ref meci, nothing.
   [[nodiscard]] Status check_meci() const;
 };
 
@@ -218,6 +235,26 @@ normalized_overlaps(std::span<const double> root_overlaps);
 ///         pair is lost to another root), naming it.
 [[nodiscard]] Result<double> pair_overlap(std::span<const double> root_overlaps, int32_t i,
                                           int32_t j);
+
+/// @brief The QD pair an @ref OptimizeStep's `meci` follows over
+/// quasi-degenerate states, matched across one step: the smaller singular
+/// value of the 2 x 2 block M_ab = u_a(last)^T S u_b(this), a and b each
+/// @p p or @p q, S @ref normalized_overlaps(@p root_overlaps) and u_K
+/// H_eff's eigenvector K, @p previous's from the last geometry and
+/// @p current's from this one (n x n each, state K's at [K n, (K + 1) n)).
+/// As the CASSCF pair's, P and Q may swap order, flip phase or mix freely,
+/// and so may the CASSCF roots under them: only the two states' space is
+/// followed, through the roots' overlaps, never a matching of roots.
+///
+/// @return The overlap; InvalidConfig if @p root_overlaps is not n^2 for an
+///         n at least 1, @p previous or @p current is not n^2, or @p p and
+///         @p q are not two distinct states of the n;
+///         @ref normalized_overlaps' Numerical for a row of zeros; Numerical
+///         if the overlap is below @ref kStateOverlapFloor (the pair is lost
+///         to another state), naming it.
+[[nodiscard]] Result<double> pair_overlap(std::span<const double> root_overlaps,
+                                          std::span<const double> previous,
+                                          std::span<const double> current, int32_t p, int32_t q);
 
 /// @brief The QD state an @ref OptimizeStep follows, matched across one
 /// step: |sum_I u_I s_I u'_pi(I)|, @p previous's u (one entry per root of

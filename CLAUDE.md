@@ -28,7 +28,7 @@ DF-CASSCF, state-specific or one root of a state average, or semi-numerical,
 with harmonic frequencies, and IR intensities when analytic RHF), and the
 planner that runs them from a TOML config). `src/README.md` has the one-line summary of each.
 `examples/` holds one small TOML config per step family (RHF, CASSCF, NEVPT2
-and QD-NEVPT2, `[nac]`, `[nevpt2_nac]`, `[hessian]`, and `[optimize]`'s MECI mode) for the `free-breakfast` binary, and the
+and QD-NEVPT2, `[nac]`, `[nevpt2_nac]`, `[hessian]`, and `[optimize]`'s MECI mode, over CASSCF roots or QD-NEVPT2 states) for the `free-breakfast` binary, and the
 step READMEs link to them rather than carry their own; `test/examples/` runs
 two through the binary, the only tests that go through `main.cpp`.
 The build system, containers, tooling and CI around them are real and exercised.

@@ -37,6 +37,7 @@ struct CasscfOutput {
   std::vector<double> weights;             // nroots, summing to 1
   double energy;                           // sum_r w_r E_r
   double gradient_norm;                    // ||g|| at c
+  double ci_residual_norm;                 // the CI's largest Davidson residual (hartree)
   std::vector<double> vectors;             // root r at [r dim, (r + 1) dim)
   std::vector<double> rdm1;                // root r at [r ncas^2, (r + 1) ncas^2)
   std::vector<double> rdm2;                // sum_r w_r Gamma_r, ncas^4 (t, u, v, w)
