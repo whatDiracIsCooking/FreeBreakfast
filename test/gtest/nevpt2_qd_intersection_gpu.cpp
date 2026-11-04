@@ -148,7 +148,7 @@ struct QdRun {
 
 // The run of a case entry in qd_nevpt2.json's form: name, atoms
 // ([symbol, [x, y, z]] in bohr), basis, aux_basis.name, ncas, nelecas and
-// weights.
+// weights, and an optional charge (0 when absent).
 QdRun qd_run_of(const fb::json &entry) {
   QdRun run{.node = std::make_unique<fb::NodeResources>()};
   EXPECT_EQ(entry.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
@@ -168,13 +168,13 @@ QdRun qd_run_of(const fb::json &entry) {
     weights += std::format("{}{:.17g}", weights.empty() ? "" : ", ", w);
   }
   const std::string toml = std::format(
-      "[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
+      "[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n[basis_set]\nbasis = \"{}\"\n"
       "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
       "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\nweights = [{}]\nconv_tol_grad = {:g}\n"
       "conv_tol = {:g}\nmax_cycle = {}\n",
-      entry.at("basis").get<std::string>(), kDfAuxBasis, entry.at("ncas").get<std::int32_t>(),
-      entry.at("nelecas").get<std::int32_t>(), entry.at("weights").size(), weights, kConvTolGrad,
-      kConvTol, kMaxCycle);
+      entry.value("charge", 0), entry.at("basis").get<std::string>(), kDfAuxBasis,
+      entry.at("ncas").get<std::int32_t>(), entry.at("nelecas").get<std::int32_t>(),
+      entry.at("weights").size(), weights, kConvTolGrad, kConvTol, kMaxCycle);
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   EXPECT_TRUE(calc.has_value()) << calc.error().message;
@@ -1088,6 +1088,137 @@ TEST(Nevpt2QdIntersection, Refuses) {
 // gradient component) or planar ethylene (200, |g| 6.3e-2); SA2 at the MECI
 // is degenerate in its CASSCF roots, which root_pair_multipliers refuses.
 // The size, which sets the cost, is the same; the third root is not.
+// QdIntersectionOptions::zvector_tolerance (#858, #864), the one parameter
+// of the Z-vector's solve and its true-residual check, on h2co_ccpvdz_sa2's
+// pair (0, 1), SC:
+// - at 1e-12, 100x under the default, the intersection succeeds (every W's
+//   true residual at most 1e-12) and g_P, g_Q and h_PQ agree with the
+//   default call's to kSolveTolerance of the W form's largest summand (two
+//   independently converged solves);
+// - the W form at u_P u_P^T with the same tolerance reports a true residual
+//   of at most 1e-12 and the same gradient;
+// - a tolerance not positive is InvalidConfig, naming the intersection.
+constexpr double kTightZvector = 1e-12;
+
+TEST(Nevpt2QdIntersection, ZvectorTolerance) {
+  FBF_REQUIRE_GPU();
+  QdRun run = qd_run("h2co_ccpvdz_sa2");
+  ASSERT_TRUE(run.solution.has_value());
+  auto loose = intersection_of(run, *run.solution, 0, 1, false);
+  ASSERT_TRUE(loose.has_value()) << loose.error().message;
+  auto tight =
+      intersection_of(run, *run.solution, 0, 1, false, {.zvector_tolerance = kTightZvector});
+  ASSERT_TRUE(tight.has_value()) << tight.error().message;
+
+  const Inputs in = inputs(run);
+  const std::size_t n = run.solution->roots.energies.size();
+  const std::span<const double> u_p{tight->eigenvectors.data(), n};
+  std::vector<double> w(n * n);
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      w[(i * n) + j] = u_p[i] * u_p[j];
+    }
+  }
+  auto one =
+      nevpt2::qd_sc_gradient(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
+                             in.h, in.df.b, in.df.l.data(), *run.solution, run.ncore, run.ncas,
+                             std::span<const double>{w}, 0, kTightZvector);
+  ASSERT_TRUE(one.has_value()) << one.error().message;
+  EXPECT_LE(one->lagrangian.multipliers.residual, kTightZvector);
+  // The bar's scale: the W form's largest summand, as the other checks here.
+  const double scale = w_form_fields(run.node->device(0), *one).summand;
+  EXPECT_LE(max_diff(one->total, tight->g_p), kSolveTolerance * scale);
+  for (const auto &[ours, want, what] :
+       {std::tuple{&tight->g_p, &loose->g_p, "g_P"}, std::tuple{&tight->g_q, &loose->g_q, "g_Q"},
+        std::tuple{&tight->h_pq, &loose->h_pq, "h_PQ"}}) {
+    EXPECT_LE(max_diff(*ours, *want), kSolveTolerance * scale) << what;
+  }
+
+  for (const double bad : {0.0, -1e-10}) {
+    const auto refused =
+        intersection_of(run, *run.solution, 0, 1, false, {.zvector_tolerance = bad});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
+    EXPECT_NE(refused.error().message.find("nevpt2::qd_sc_intersection"), std::string::npos)
+        << refused.error().message;
+  }
+  std::cout << std::format("[ qd intersection] zvector_tolerance {:g}: W form {} products to "
+                           "{:.2e}; g_P, g_Q, h_PQ against the default's within {:.1e}\n",
+                           kTightZvector, one->lagrangian.multipliers.iterations,
+                           one->lagrangian.multipliers.residual, kSolveTolerance * scale);
+}
+
+// PSB3 (#864): DF-SA3-CASSCF(6,6)/cc-pVDZ of the cation with C13=C14
+// twisted 90 degrees, the CASSCF root gap 2.9e-2 Eh, so no seam. Before the
+// CI response inside H~ was converged to mcscf::response_tolerance_for the
+// Z-vector's tolerance (it was a fixed 1e-8 of its right-hand side, now
+// 1e-10), the products' error put a floor under
+// the true residual: qd_sc_intersection here was refused, "column 0 of 3 has
+// true residual 2.546e-10 after 31 products" (the recurrence 9.8e-11), and
+// the state gradient's one-column solve returned 2.6e-10 to 3.7e-10
+// unchecked. Now (CUDA, 3080) the three columns end at 9.8e-11, 6.0e-11 and
+// 4.2e-11 after 31 products, their recurrence's values. Held:
+// - the SC intersection of QD states 0 and 1 succeeds, so each column's true
+//   residual is at most 1e-10;
+// - the SC state gradient of state 0 succeeds, its one column's true
+//   residual at most 1e-10 too, which the one-column path now checks.
+// Slow tier: the PSB3 CASSCF alone is over the fast tiers' ten seconds.
+constexpr std::string_view kPsb3Twisted = R"(N -0.0454402492  0.0522740911 -0.0000000000
+C  1.1276796768  0.5920624626  0.0000000000
+C  2.3467584180 -0.1268535537  0.0000000000
+C  3.5352478218  0.5543991513  0.0000000000
+C  4.2381819494  0.9573272501 -1.1898886726
+C  5.4137881019  1.6311951607 -1.1318525401
+H  1.1448444823  1.6750816790 -0.0000000000
+H  2.3229137518 -1.2094227332 -0.0000000000
+H  3.9874420661  0.8136009171  0.9516444335
+H  3.7996110498  0.7059345067 -2.1474371187
+H -0.1682915976 -0.9466686957 -0.0000000000
+H -0.8778598767  0.6155991196 -0.0000000000
+H  5.8725712624  1.8941737519 -0.1873080265
+H  5.9322594717  1.9283875648 -2.0319280688)";
+constexpr double kPsb3ZvectorTolerance = 1e-10;
+
+TEST(Nevpt2QdIntersection, Psb3TrueResidual) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  fb::json entry = {{"name", "psb3_tw90"},
+                    {"atoms", fb::json::array()},
+                    {"basis", "cc-pVDZ"},
+                    {"aux_basis", {{"name", kDfAuxBasis}}},
+                    {"ncas", 6},
+                    {"nelecas", 6},
+                    {"weights", {1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0}},
+                    {"charge", 1}};
+  std::istringstream lines{std::string{kPsb3Twisted}};
+  std::string symbol;
+  double x = 0.0;
+  double y = 0.0;
+  double z = 0.0;
+  while (lines >> symbol >> x >> y >> z) {
+    entry["atoms"].push_back({symbol,
+                              {x / fb::kAngstromPerBohr<double>, y / fb::kAngstromPerBohr<double>,
+                               z / fb::kAngstromPerBohr<double>}});
+  }
+  ASSERT_EQ(entry["atoms"].size(), 14U);
+  QdRun run = qd_run_of(entry);
+  ASSERT_TRUE(run.solution.has_value());
+  const fb::ScopedDeviceIndex on{run.node->device(0).dev_idx()};
+
+  auto both = intersection_of(run, *run.solution, 0, 1, false);
+  ASSERT_TRUE(both.has_value()) << both.error().message;
+  const Inputs in = inputs(run);
+  auto state = nevpt2::qd_sc_gradient(run.node->device(0), in.molecule, in.basis, in.classes,
+                                      in.df.aux, in.h, in.df.b, in.df.l.data(), *run.solution,
+                                      run.ncore, run.ncas, 0, 0);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  const auto &zs = state->lagrangian.multipliers;
+  EXPECT_LE(zs.residual, kPsb3ZvectorTolerance);
+  std::cout << std::format("[ qd intersection] PSB3 tw90: root gap {:.3e}, H_eff gap {:.3e}; "
+                           "state 0's Z-vector {} products to {:.2e}\n",
+                           both->root_gap, both->heff_gap, zs.iterations, zs.residual);
+}
+
 TEST(Nevpt2QdIntersection, Timing) {
   FBF_REQUIRE_GPU();
   if (std::getenv("FBF_QD_INTERSECTION_TIMING") == nullptr) {

@@ -39,8 +39,11 @@ bar.
    calls, each its own Lagrangian and Z-vector solve (#784's path).
 3. Each solve's true residual (`ZVector::residual`, one more product at the
    solution, not the conjugate gradients' recurrence) must be at or below the
-   solve's own 1e-10, or the call returns `Numerical` naming the W (the
-   several-W call checks each column too). Near a degeneracy the recurrence
+   solve's own tolerance, `options.zvector_tolerance` (1e-10 by default, the
+   one parameter the W-form calls solve to), or the call returns `Numerical`
+   naming the W (the gradient layer checks every column too). The CI
+   response inside H̃ is converged to `mcscf::response_tolerance_for` it
+   (`../gradient/README.md` "The Z-vector's floor"). Near a degeneracy the recurrence
    can report convergence while the true residual has not (#786).
 4. s_o and s_c from the three solves' multipliers, below.
 
@@ -174,6 +177,22 @@ DF-SA-CASSCF of `test/gtest/data/qd_nevpt2/`'s cases at #696's bars:
   stopped at `conv_tol_grad` = 1e-5 and canonicalized; every pair's gap
   moves by at most s_o ‖g‖ + s_c √n_roots ρ, the stopped solve's own ‖g‖
   and ρ, s_o and s_c the converged point's.
+- `Nevpt2QdIntersection.ZvectorTolerance`: `h2co_ccpvdz_sa2`'s pair
+  (0, 1), SC, at `options.zvector_tolerance` 1e-12. The intersection
+  succeeds and g_P, g_Q and h_PQ agree with the default call's to 1e-9 of
+  the W form's largest summand. The W form at u_P u_Pᵀ with the same
+  trailing tolerance reports a true residual of at most 1e-12. A tolerance
+  of 0 or below is `InvalidConfig`.
+- `Nevpt2QdIntersection.Psb3TrueResidual` (slow tier): PSB3's
+  DF-SA3-CASSCF(6,6)/cc-pVDZ with C13=C14 twisted 90° (root gap 2.9e-2 Eh).
+  The SC intersection of QD states 0 and 1, and the SC state gradient of
+  state 0 (one column, whose true residual is now checked too), both
+  succeed: every true residual is at most 1e-10. Before the CI response
+  inside H̃ was converged to `mcscf::response_tolerance_for` the Z-vector
+  tolerance, the intersection was refused at 2.55e-10 after 31 products
+  (`../../mcscf/intersection/` "The floor under the true residual"). Now
+  the three columns end at their recurrence's 9.8e-11, 6.0e-11 and
+  4.2e-11.
 - `Nevpt2QdIntersection.Refuses`: P = Q, a state outside the average, and a
   class PC refuses (PC's error, as `qd_pc_coupling`'s).
 - `Nevpt2QdIntersection.Timing`: the table above; a measurement, skipped

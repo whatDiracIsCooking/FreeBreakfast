@@ -397,6 +397,37 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, McscfIntersection,
                                            std::string_view{"h2co_skew_ccpvdz_sa3"}),
                          [](const auto &info) { return std::string(info.param); });
 
+// IntersectionOptions::tolerance below the default (#858): asked for 1e-12,
+// 100x under it, the Z-vector is solved to it and every column's true
+// residual (one more product) meets it, the CI response inside H~ at its
+// 1e-10 floor (response_tolerance_for), and the three vectors agree with
+// the default solve's to that solve's 1e-10: kSolverTolerance, relative.
+// H2CO's z is small, so its floor under the old fixed 1e-8 response was
+// itself below 1e-12: this is the option's plumbing, not the floor's
+// regression. That is PSB3's, in nevpt2_qd_intersection_gpu.cpp
+// (Psb3TrueResidual, slow tier), the same mechanism one layer up.
+constexpr double kTightZvector = 1e-12;
+
+TEST(McscfIntersectionTight, TrueResidualFollowsTolerance) {
+  FBF_REQUIRE_GPU();
+  const auto run = converge(reference_case("h2co_skew_ccpvdz_sa3"));
+  ASSERT_NE(run, nullptr);
+  const fb::ScopedDeviceIndex on{run->res().dev_idx()};
+  const Calls calls{*run};
+  auto loose = calls.intersection(0, 1);
+  ASSERT_TRUE(loose.has_value()) << loose.error().message;
+  auto tight = calls.intersection(0, 1, {.tolerance = kTightZvector});
+  ASSERT_TRUE(tight.has_value()) << tight.error().message;
+  EXPECT_LE(tight->residual, kTightZvector);
+  const double e_i = compare(tight->g_i, loose->g_i, kSolverTolerance, "g_I");
+  const double e_j = compare(tight->g_j, loose->g_j, kSolverTolerance, "g_J");
+  const double e_h = compare(tight->h_ij, loose->h_ij, kSolverTolerance, "h_IJ");
+  std::cout << std::format("[ intersection] tight: {} products to {:.2e} (default {} to {:.2e}); "
+                           "g_I {:.2e}, g_J {:.2e}, h_IJ {:.2e} relative\n",
+                           tight->iterations, tight->residual, loose->iterations, loose->residual,
+                           e_i, e_j, e_h);
+}
+
 // data/casscf_meci/'s document: ethylene's DF-SA2-CASSCF(2,2) MECI.
 const fb::json &meci_reference() {
   static const fb::json kDoc = [] {

@@ -26,13 +26,6 @@ import free_breakfast.nevpt2.gradient; // qd_inputs, the W forms
 
 namespace free_breakfast::nevpt2 {
 
-// Each W form's Z-vector is solved to this (the gradient layer's
-// lagrangian_zvector), and its true residual, from one more product at the
-// solution, is held to it too: the conjugate gradients stop on their
-// recurrence, which can report convergence while the true residual has not
-// (#786).
-constexpr double kIntersectionResidual = 1e-10;
-
 // What the intersection reads off one W-form call, SC's or PC's: the
 // gradient, the multipliers on the host, the SA weights, and the CASSCF
 // roots' smallest gap.
@@ -95,16 +88,21 @@ std::vector<double> pair_w(const std::span<const double> a, const std::span<cons
 }
 
 // @p g's gradient and multipliers on the host, its Z-vector's true residual
-// checked against kIntersectionResidual (Numerical naming @p who and
-// @p which W). @p pairs is the packed orbital pairs' count.
+// checked against @p tolerance (Numerical naming @p who and @p which W): the
+// tolerance the W-form call solved to, and checked against already, so this
+// guards the one parameter's path rather than a second bar (the conjugate
+// gradients stop on their recurrence, which can report convergence while
+// the true residual has not, #786). @p pairs is the packed orbital pairs'
+// count.
 template <typename G>
 Result<WFormPart> w_form_part(DeviceResources &res, const std::string_view who,
-                              const std::string_view which, G g, const size_t pairs) {
+                              const std::string_view which, G g, const size_t pairs,
+                              const double tolerance) {
   const auto &z = g.lagrangian.multipliers;
-  if (!(z.residual <= kIntersectionResidual)) {
+  if (!(z.residual <= tolerance)) {
     return err_numerical("{}: the Z-vector of G({}) has true residual {:.3e} after {} products, "
                          "above {:g}",
-                         who, which, z.residual, z.iterations, kIntersectionResidual);
+                         who, which, z.residual, z.iterations, tolerance);
   }
   WFormPart part{.total = std::move(g.total),
                  .orbital = std::vector<double>(pairs),
@@ -155,6 +153,10 @@ Result<QdIntersection> qd_intersection(
   if (p == q) {
     return err_config("{}: states {} and {}: an intersection is between two states", who, p, q);
   }
+  const double tolerance = options.zvector_tolerance;
+  if (!(tolerance > 0.0)) {
+    return err_config("{}: a Z-vector tolerance of {:g}", who, tolerance);
+  }
 
   // H_eff's correlation elements; a refused PC class is the walk's error.
   std::vector<double> totals;
@@ -187,13 +189,13 @@ Result<QdIntersection> qd_intersection(
     if (pc) {
       return w_form_part(res, who, which,
                          FBF_TRY(qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l,
-                                                solution, ncore, ncas, w, batch)),
-                         pairs);
+                                                solution, ncore, ncas, w, batch, tolerance)),
+                         pairs, tolerance);
     }
     return w_form_part(res, who, which,
                        FBF_TRY(qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
-                                              ncore, ncas, w, batch)),
-                       pairs);
+                                              ncore, ncas, w, batch, tolerance)),
+                       pairs, tolerance);
   };
   constexpr std::array<std::string_view, 3> kWhich{"u_P u_P^T", "u_Q u_Q^T", "W^PQ"};
   const std::array<std::vector<double>, 3> ws{pair_w(u_p, u_p), pair_w(u_q, u_q), pair_w(u_p, u_q)};
@@ -202,16 +204,17 @@ Result<QdIntersection> qd_intersection(
     // One several-W call: its Z-vector's columns are checked there too.
     const auto take = [&](auto gs) -> Status {
       for (size_t k = 0; k < gs.size(); ++k) {
-        parts.push_back(FBF_TRY(w_form_part(res, who, kWhich[k], std::move(gs[k]), pairs)));
+        parts.push_back(
+            FBF_TRY(w_form_part(res, who, kWhich[k], std::move(gs[k]), pairs, tolerance)));
       }
       return {};
     };
     if (pc) {
       FBF_TRY(take(FBF_TRY(qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
-                                          ncore, ncas, ws, batch))));
+                                          ncore, ncas, ws, batch, tolerance))));
     } else {
       FBF_TRY(take(FBF_TRY(qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
-                                          ncore, ncas, ws, batch))));
+                                          ncore, ncas, ws, batch, tolerance))));
     }
   } else {
     for (size_t k = 0; k < ws.size(); ++k) {

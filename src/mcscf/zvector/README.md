@@ -110,6 +110,7 @@ it, and the SA gradient links it PRIVATE. Everything is in
 | `ZVectors` | `zvectors`' result: `orbital` (size() × ncol), `ci` (ncol blocks of dim × nroots), `theta` (ncol of `ZVector::theta`), and per column `iterations` and `residuals` |
 | `zvectors` | The same equations on ncol right-hand sides at once: g (size() × ncol), an optional y (ncol blocks) and an optional t (ncol of them), by a `CpSolver` |
 | `kRotationWeightTolerance` | 1e-8: two weights this close, relative to the larger, are equal, and their pair stays projected |
+| `response_tolerance_for` | The CI response's tolerance inside H̃ (`RelaxedHessian::create`'s, relative) for a Z-vector tolerance t whose true residual is held: 1e-2 t, at least 1e-10 (step 2 below) |
 | `rotating_pairs` | Which pairs r < s (`ZVector::theta`'s order) rotate: those whose weights differ past `kRotationWeightTolerance`. `mcscf::root_pair_multipliers` splits a τ by it (`../gradient/README.md` "Holding the roots apart") |
 
 ## The solve
@@ -123,7 +124,15 @@ it, and the SA gradient links it PRIVATE. Everything is in
    a direction it is not positive along is a Divergence error.
 2. One more product at z_o, for the true residual: the recurrence's r drifts
    from it, H̃'s products being exact only to the CI response's conjugate
-   gradients (1e-8 of their right-hand side).
+   gradients (`RelaxedHessian`'s `response_tolerance` of their right-hand
+   side). Each product's error is about 0.04 ‖z‖ times that, and it goes
+   into z as well as into the check. So a caller that holds the true
+   residual to `tolerance` creates H̃ with
+   `response_tolerance_for(tolerance)`: 1e-2 of it, at least 1e-10. At
+   the default 1e-8 the true residual reached 2.5e-10 to 3.8e-10 at PSB3
+   with the recurrence under 1e-10 (#858, #864;
+   [`../intersection/`](../intersection/README.md) "The floor under the
+   true residual").
 3. That product's `respond` leaves δ(z_o) in `RelaxedHessian::delta()`, and
    z_c is δ + w with every root projected out. The other roots' part
    `respond` adds is the state average's rotations among its roots: at

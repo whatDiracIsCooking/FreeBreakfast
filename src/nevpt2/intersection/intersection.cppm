@@ -37,6 +37,12 @@ struct QdIntersectionOptions {
   /// calls" has the measurement that sets the default: shared was faster on
   /// every case measured.
   bool shared = true;
+  /// @brief Each W's Z-vector tolerance: qd_*_gradient's
+  /// @c zvector_tolerance, to which each solve's true residual is held (one
+  /// parameter for the solve and its check). The CI response inside H~ is
+  /// converged to mcscf::response_tolerance_for it
+  /// (../gradient/README.md "The Z-vector's floor").
+  double zvector_tolerance = 1e-10;
 };
 
 /// @brief qd_sc_intersection's (or qd_pc_intersection's) result: the three
@@ -82,7 +88,7 @@ struct QdIntersection {
 /// at u_P u_P^T, u_Q u_Q^T and W^PQ, one several-W call or (with
 /// @p options.shared false) three W-form calls, each Z-vector's true
 /// residual (ZVector::residual, one more product at the solution) held to
-/// the solve's own 1e-10, and s_o and s_c from their multipliers. Unlike
+/// @p options.zvector_tolerance, and s_o and s_c from their multipliers. Unlike
 /// qd_sc_coupling there is no refusal of a degenerate QD pair: nothing here
 /// divides by E_Q - E_P. Unequal SA weights are
 /// allowed; the only division by a gap is root_pair_multipliers' by the
@@ -90,9 +96,10 @@ struct QdIntersection {
 ///
 /// The arguments are qd_sc_coupling's, without its fold, and @p options.
 ///
-/// @return The branching space and sensitivities; InvalidConfig for p = q
-///         or a state not one of the roots'; Numerical, naming the W, when a
-///         Z-vector's true residual is above 1e-10; or the first error of
+/// @return The branching space and sensitivities; InvalidConfig for p = q,
+///         a state not one of the roots' or a tolerance not positive;
+///         Numerical, naming the W, when a Z-vector's true residual is above
+///         the tolerance; or the first error of
 ///         qd_inputs, sc_effective_hamiltonian, the diagonalization or a
 ///         W-form call (a root of zero weight, the gate, the Z-vector, a
 ///         derivative pass).

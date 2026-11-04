@@ -47,6 +47,14 @@ Status inverse_orbital_diagonal(DeviceResources &res, const response::Hessian &h
   return res.sync();
 }
 
+// response_tolerance_for's fraction of the Z-vector tolerance and its floor.
+constexpr double kResponsePerTolerance = 1e-2;
+constexpr double kResponseFloor = 1e-10;
+
+double response_tolerance_for(const double tolerance) {
+  return std::max(kResponsePerTolerance * tolerance, kResponseFloor);
+}
+
 // Two roots closer than this (hartree) are not rotated by a right-hand side,
 // as RelaxedHessian leaves their mixing out of the CI response.
 constexpr double kRotationGapFloor = 1e-8;

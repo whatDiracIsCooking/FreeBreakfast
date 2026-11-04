@@ -440,6 +440,66 @@ and root, then it.
    and z's terms are the ones it builds at the multipliers, corr's and
    z^c's the extra adjoint. One derivative-integral pass.
 
+### The Z-vector's floor
+
+Every Lagrangian here, single-state, QD state, W form, several W or
+coupling, goes through one solve (`lagrangian_zvector`). It runs to a
+tolerance, 1e-10 on ‖H̃ z + g‖, in at most 200 products. Its **true**
+residual, from one more product, is held to that same tolerance: for one
+column as for several, `Numerical` naming the column. Before #864 only the
+several-column path checked, and a state gradient accepted 3.8e-10 at PSB3
+cc-pVTZ unseen.
+
+**What set the floor (#864).** The PSB3 QD MECI was refused at evaluation 0,
+far from any seam, with "column 0 of 3 has true residual 2.546e-10 after 31
+products": the recurrence met 1e-10 and the true residual did not follow.
+The 200-product cap was not reached, and neither was the CI response's own
+200-sigma cap. The cause is the CI response inside each H̃ product. It was
+solved to `RelaxedHessian`'s default 1e-8 of its right-hand side, so each
+product was off by about 0.04 ‖z‖ × 1e-8, and z with it. Measured on the
+RTX 3080 (CUDA), one more product at a response of 1e-13 standing in for
+the exact one:
+
+| System | Basis | ‖z‖ | Products | Recurrence | True (1e-8) | Exact |
+|---|---|---|---|---|---|---|
+| ethylene, Park's SI C3v, PC-QD state 0 | cc-pVDZ | 0.057 | 13 | 2.07e-11 | 2.07e-11 | 2.07e-11 |
+| PSB3 twisted 90°, SC-QD MECI, column 0 | cc-pVDZ | 0.79 | 31 | 9.8e-11 | 2.55e-10 | 2.19e-10 |
+| PSB3 twisted 90°, SC-QD state 0 | cc-pVTZ (292 bf) | 0.84 | 32 | 8.1e-11 | 3.84e-10 | 2.42e-10 |
+
+The floor grew with ‖z‖ (ethylene 0.06, PSB3 0.8) and so with the system.
+At a response tolerance of 1e-10, every true residual equals its recurrence
+to under 0.2%, in the same products (cc-pVDZ 9.83e-11, cc-pVTZ 8.09e-11).
+At 1e-12 nothing changes again (on PSB3; it is not safe everywhere,
+below). The cc-pVTZ run took 37 s at 1e-8 and 38 s
+at 1e-10.
+
+**The rule.** `RelaxedHessian` is created with the response at
+`mcscf::response_tolerance_for` the Z-vector tolerance, 1e-2 of it and at
+least 1e-10 (1e-10 at the default, where the true residual measured within
+0.2% of the recurrence at PSB3; tighter breaks on round-off where the roots
+nearly span the CI space, `mcscf/intersection/README.md`). The bar itself
+stays 1e-10, absolute. The multipliers feed the gradient, off by
+at most ‖r‖ ‖H̃⁻¹‖ ‖∂g/∂R‖ ≈ 1e-9 Eh/bohr, and in MECI mode s_o and s_c,
+norms of the multipliers, off by about 1e-9 relative. With the floor gone,
+nothing measured grows with the system: 31 and 32 products from cc-pVDZ to
+cc-pVTZ, and ‖g‖ is 0.07 to 0.5 in every case. So a bar relative to ‖g‖
+would buy nothing. `mcscf/intersection/README.md` "The floor under the true
+residual" has the CASSCF intersection's side (#858), the same mechanism.
+
+**One parameter.** The W-form and several-W `qd_sc_gradient` /
+`qd_pc_gradient` take it as their trailing `zvector_tolerance` (1e-10 by
+default), the solve's tolerance and its check's together.
+`nevpt2::QdIntersectionOptions::zvector_tolerance` passes it through, and
+the intersection holds each W's true residual to the same value. The state
+forms, the couplings and the single-state gradient use 1e-10. It is a
+runtime parameter only, not a TOML key.
+
+**Measured at PSB3 with it** (`--preset default`, RTX 3080, the card held,
+`conv_tol_grad` 1e-10): the SC-QD MECI (cc-pVDZ, from the twisted
+start) runs its four allowed steps, gap 1.9e-2 to 8.4e-5. One cc-pVTZ step
+passes evaluations 0 and 1. The PC-QD MECI (cc-pVDZ, `conv_tol_grad` 1e-9 per
+#867) runs its three allowed steps, gap 2.0e-2 to 7.9e-4.
+
 `ScGradient` carries max |z^c| and the smallest inactive gap (SC's
 near-degeneracy hazard), the PCG iterations and residual (the CASSCF
 Hessian's conditioning), and the gate's six residues, to report with every
@@ -705,10 +765,12 @@ everything that does not depend on W:
 - one `mcscf::zvectors` (Schur) over the k columns of right-hand sides
   (orbital g^ρ + ζ · g + A, CI ȳ_r / 2 w_r, and t), in place of k
   `mcscf::zvector` solves. Each column's true residual, from one more
-  product (`ZVectors::residuals`), must be at or below the solve's 1e-10,
-  or the call is `Numerical` naming the column: the block conjugate
-  gradients stop on their recurrence (#786, and `mcscf::df_intersection`'s
-  check, #791).
+  product (`ZVectors::residuals`), must be at or below the solve's
+  tolerance (`zvector_tolerance`, 1e-10 by default), or the call is
+  `Numerical` naming the column: the block conjugate gradients stop on
+  their recurrence (#786, and `mcscf::df_intersection`'s check, #791). The
+  one-column path holds its true residual to the same bar ("The Z-vector's
+  floor").
 
 Per W, as the one-W form: z^c and Φ^SA, τ split into ζ and t, ζ's terms,
 the gate on the W's own column, and the derivative passes. One W in the list
