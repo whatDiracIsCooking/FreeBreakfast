@@ -219,17 +219,27 @@ gh pr checks <M> --required --watch          # lint, test (3.11), test (3.13)
 mergeability is not enough: a symbol another PR moved or renamed does not show
 up as a conflict, and with the `cpp` CI job off GitHub will merge a PR that no
 longer builds. So if `origin/main` has moved past the PR's base (it
-will have, after any earlier merge in this run):
+will have, after any earlier merge in this run), rebase and push:
 
 ```bash
 git -C <wt> fetch origin main && git -C <wt> rebase origin/main
-devtools/cpp-tier.sh --preset <the preset its run used> -j <J>   # inside <wt>; that build dir is warm
 git -C <wt> push --force-with-lease
 ```
 
-The push runs the pre-push hook, so a C++ PR's force-push also runs
-`cpp-smoke.sh` (about ten minutes): budget for it. A Python- or docs-only PR
-skips the rebuild; the required checks cover it.
+**The push smoke is the check.** A C++ PR's push runs the pre-push hook's
+`cpp-smoke.sh` (about ten minutes on the 3080, more on the gfx1200): it
+rebuilds the whole tree on the rebased branch and runs the GPU batch, so a
+second full `cpp-tier.sh` after a rebase repeats it — on the gfx1200 that
+wasted about twenty minutes a PR. Never rerun the full tier solely because of
+a rebase. The one exception: when the commits the rebase brought in change C++
+the PR builds against or its tests exercise (`git log <old base>..origin/main
+--stat`), rerun **just the affected suites** before pushing:
+
+```bash
+devtools/cpp-tier.sh --preset <the preset its run used> -j <J> -- -R '<suites>'   # inside <wt>
+```
+
+A Python- or docs-only PR skips the rebuild; the required checks cover it.
 
 **The other card, for cross-call or bitwise assertions.** A PR run on one
 backend only that adds an assertion of repeatability (bitwise, or across two
@@ -262,12 +272,13 @@ despite the partition. Two cases:
 - **A pure list or registry conflict** (both sides appended an entry — a
   `CMakeLists.txt` source list, a README table) → resolve it yourself in the
   PR's worktree during the rebase above, keeping both sides, then
-  `devtools/format.sh --check` and the rebuild.
+  `devtools/format.sh --check` and the push.
 - **Anything else** — module code, a test, or any **generated kernel** under
   `src/integrals/` → send it back to the agent that wrote the PR
   (`SendMessage` resumes it with its context): rebase, resolve, **regenerate**
   kernels with the FelizJueves emitters rather than hand-merging emitted text,
-  re-run its tier, push, re-report.
+  rerun the suites the resolution touched, push (the smoke covers the rest),
+  re-report.
 
 **After each merge:**
 
@@ -369,6 +380,11 @@ Rules:
   that adds the data. If asked to rebase, REGENERATE emitted kernels (the
   FelizJueves tools/emit/*_kernels.py scripts) rather than hand-merging their
   text.
+- Rebase onto origin/main right before you push, and do NOT rerun the full
+  tier after that rebase: the push's cpp-smoke rebuilds the tree and runs the
+  GPU batch. Rerun only the suites a new main commit changes underneath you
+  (C++ your code builds against or your tests exercise), with
+  `devtools/cpp-tier.sh --preset <preset> -j <J> -- -R '<suites>'`.
 - If the issue is ambiguous in a way the code can't answer, reply
   "STUCK: <question>" rather than guessing.
 ```
