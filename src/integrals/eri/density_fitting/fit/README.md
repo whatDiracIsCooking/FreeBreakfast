@@ -55,8 +55,23 @@ taken before anything else is queued. A negative or NaN `lindep` is
 `InvalidConfig`. Its cost is a syevd of M, an `naux²` pool copy of M, and an
 `naux` x `nao` product in the workspace for the slab gemms.
 
-No basis the tree carries needs it: cond(M) is about 2e6 for
-cc-pVDZ/TZ-JKFIT and 3e7 for cc-pVTZ-acCD-6-6, well inside Cholesky's reach.
+No basis the tree carries is known to need it, though the diffuse fitting sets
+are much worse conditioned than the plain ones. cond(M) over ethylene at
+Park's S0 and C3v MECI (#845), from libcint's `int2c2e` over the carried
+files:
+
+| Fitting set | cond(M) |
+| --- | --- |
+| cc-pVDZ/TZ-JKFIT | about 4e6 |
+| aug-cc-pVDZ-JKFIT | 3.7e7 to 6.1e7 |
+| aug-cc-pVTZ-JKFIT | 1.5e8 to 1.6e8 |
+| aug-cc-pVDZ-acCD-6-6 | 4.2e9 to 4.6e9 |
+| aug-cc-pVTZ-acCD-6-6 | 9.3e10 to 1.3e11 |
+
+Over each of the four aug sets, the Cholesky path's DF-RHF energy at S0 still
+matches PySCF's over the same set to 1e-10 Eh (CUDA, 2026-11-04;
+`data/aux_basis/README.md` has the runs). That bounds energies only: no DF
+gradient, which solves against L, has been compared over the aug sets yet.
 It is not a pipeline option: the Eri step always takes the default, so every
 product the pipeline hands on carries a Cholesky L.
 
