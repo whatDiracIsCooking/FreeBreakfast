@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Write data/aux_basis/cc-pV{D,T}Z-JKFIT.json and def2-universal-JKFIT.json:
-Weigend's JK fitting sets, from PySCF.
+"""Write data/aux_basis/{,aug-}cc-pV{D,T}Z-JKFIT.json and
+def2-universal-JKFIT.json: Weigend's JK fitting sets, from PySCF.
 
 These are the auxiliary (density-fitting) sets for Coulomb and exchange that
 pair with cc-pVDZ and cc-pVTZ: F. Weigend, Phys. Chem. Chem. Phys. 4, 4285
@@ -18,6 +18,13 @@ Every element PySCF's cc files define is written: H, B-F, Ne, Al-Cl, Ar,
 Ga-Br, Kr. Ne, Ar and Kr are Molpro's extrapolations, not published
 coefficients.
 
+aug-cc-pV{D,T}Z-JKFIT are Molpro's `weigend_jkfit_aug.libmol` (16 February
+2010), as PySCF's `aug-cc-pv{d,t}z-jkfit.dat` carry it: the cc set above plus
+one even-tempered diffuse function per angular momentum, e1**2/e2 from the
+two most diffuse exponents present (e1/2.5 where there is only one). They are
+not optimized for the augmented orbital sets. Same 19 elements;
+data/aux_basis/README.md has what was checked against what.
+
 def2-universal-JKFIT (F. Weigend, J. Comput. Chem. 29, 167 (2008)) is the one
 JK fitting set for every def2 orbital set; PySCF maps def2-svp-jkfit and
 def2-tzvp-jkfit onto the same file, which is BSE's copy of Turbomole's. It is
@@ -32,7 +39,7 @@ tools/minao_from_pyscf.py writes them.
     UV_PROJECT_ENVIRONMENT=$PWD/.venv \\
         uv run --group tools tools/jkfit_from_pyscf.py
 
-writes all three. Re-run it after a PySCF bump; they are never hand-edited.
+writes all five. Re-run it after a PySCF bump; they are never hand-edited.
 """
 
 from __future__ import annotations
@@ -52,6 +59,12 @@ CC_REFERENCE = (
     "Weigend JK fitting set (F. Weigend, Phys. Chem. Chem. Phys. 4, "
     "4285 (2002), doi:10.1039/b204199p), from Molpro's "
     "weigend_jkfit.libmol as pyscf/gto/basis/{source} carries it"
+)
+AUG_REFERENCE = (
+    "Weigend JK fitting set (F. Weigend, Phys. Chem. Chem. Phys. 4, "
+    "4285 (2002), doi:10.1039/b204199p) with one even-tempered diffuse "
+    "function per angular momentum, from Molpro's weigend_jkfit_aug.libmol "
+    "as pyscf/gto/basis/{source} carries it"
 )
 DEF2_REFERENCE = (
     "Weigend universal JK fitting set (F. Weigend, J. Comput. Chem. 29, "
@@ -75,6 +88,20 @@ SETS = {
         CC_REFERENCE,
         "dunning",
         "cc-pVTZ",
+    ),
+    "aug-cc-pVDZ-JKFIT": (
+        "aug-cc-pvdz-jkfit.dat",
+        CC_ELEMENTS,
+        AUG_REFERENCE,
+        "dunning",
+        "aug-cc-pVDZ",
+    ),
+    "aug-cc-pVTZ-JKFIT": (
+        "aug-cc-pvtz-jkfit.dat",
+        CC_ELEMENTS,
+        AUG_REFERENCE,
+        "dunning",
+        "aug-cc-pVTZ",
     ),
     "def2-universal-JKFIT": (
         "def2-universal-jkfit.dat",
