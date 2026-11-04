@@ -13,6 +13,8 @@
 // CASSCF of that spin from the RHF orbitals: the SCF runs as the singlet (the
 // Scf step refuses another multiplicity) and mcscf::solve is handed the
 // molecule at the reference's multiplicity, which sets N_alpha - N_beta.
+// And a state average over every singlet of its CAS (ethylene's SA3-CAS(2,2)
+// at data/casscf_meci/'s two geometries) converges with no rejected step.
 //
 // The setup is response_fock_gpu.cpp's: the SCF (run with J unscreened), and the
 // start picked by pipeline.active_space (by index, or by AVAS). So this
@@ -753,6 +755,78 @@ TEST(McscfSolveFinalCi, LooseSolveEndsOnTheTightCi) {
   expect_final_ci(*setup, *early, loose, *df, kLooseConvTolGrad);
   ASSERT_GT(g_before_last, kCiFloorGradient)
       << "the case no longer ends on a loose CI, so it checks nothing of the final one";
+}
+
+// A state average over every root of the spin (#820): ethylene's
+// SA3-CAS(2,2), cc-pVDZ / cc-pVDZ-JKFIT, equal weights, wholly
+// density-fitted, from the RHF's frontier orbitals at data/casscf_meci/'s
+// two geometries (its `start`, twisted and pyramidalized, and its SA2 MECI).
+// The three roots are every singlet of a CAS(2,2), so each H'(x) c_r
+// projected off them is round-off, which the CI response must leave alone:
+// on it the conjugate gradients diverged and the solve ran out of macro
+// iterations at ||g|| ~0.2 (README.md of relaxed_hessian, "A right-hand side
+// the roots span"). Held to converging to conv_tol_grad 1e-10 within
+// kMaxMacroIterations, with no rejected step, and to three singlets.
+constexpr double kSpanConvTolGrad = 1e-10;
+constexpr double kSpanConvTol = 1e-13;
+// <S^2> of a singlet root, to the CI's convergence.
+constexpr double kSingletTolerance = 1e-8;
+
+TEST(McscfSolveSpan, EthyleneSa3OverEverySingletConverges) {
+  FBF_REQUIRE_GPU();
+  auto read =
+      fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_meci" / "casscf_meci.json");
+  ASSERT_TRUE(read.has_value()) << read.error().message;
+  const fb::json &doc = *read;
+  constexpr std::int32_t kRoots = 3;
+  const std::vector<double> weights(kRoots, 1.0 / kRoots);
+  for (const std::string_view geometry : {"start", "meci"}) {
+    fb::json entry = {{"name", std::format("c2h4_ccpvdz_sa3_{}", geometry)},
+                      {"atoms", doc.at(geometry).at("atoms")},
+                      {"charge", doc.at("charge")},
+                      {"basis", doc.at("basis")},
+                      {"avas", nullptr},
+                      {"active", nullptr},
+                      {"ncore", doc.at("ncore")},
+                      {"ncas", doc.at("ncas")},
+                      {"nelecas", doc.at("nelecas")},
+                      {"weights", weights}};
+    auto setup = make_setup(entry, true);
+    ASSERT_NE(setup, nullptr) << geometry;
+    const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+    const auto df = setup->fit(kDfAuxBasis);
+    ASSERT_TRUE(df.has_value()) << geometry;
+    ASSERT_EQ(df->naux, doc.at("aux_basis").at("naux").get<std::int32_t>());
+
+    fb::mcscf::Options options;
+    options.conv_tol = kSpanConvTol;
+    options.conv_tol_grad = kSpanConvTolGrad;
+    options.density_fitting = fb::mcscf::DensityFitting::Full;
+    const auto start = std::chrono::steady_clock::now();
+    const auto sol = setup->solve(setup->start->c, kRoots, weights, options, &df->b, df->naux);
+    const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
+    ASSERT_TRUE(sol.has_value()) << geometry << ": " << sol.error().message;
+    std::size_t rejected = 0;
+    for (std::size_t i = 0; i < sol->iterations.size(); ++i) {
+      const fb::mcscf::Iteration &it = sol->iterations[i];
+      rejected += it.accepted ? 0 : 1;
+      std::cout << std::format("[ span ] {} {:2} E {:.12f} dE {:+.3e} |g| {:.3e} Hx {:2}{}\n",
+                               geometry, i + 1, it.energy, it.energy_change, it.gradient_norm,
+                               it.hessian_products, it.accepted ? "" : " rejected");
+    }
+    std::cout << std::format(
+        "[ span ] {}: {} macro iterations, |g| {:.3e}, E {:.10f} {:.10f} "
+        "{:.10f}, <S^2> {:.1e} {:.1e} {:.1e}; {:.2f} s\n",
+        geometry, sol->iterations.size(), sol->gradient_norm, sol->roots.energies.at(0),
+        sol->roots.energies.at(1), sol->roots.energies.at(2), sol->roots.spin_squares.at(0),
+        sol->roots.spin_squares.at(1), sol->roots.spin_squares.at(2), seconds.count());
+    EXPECT_LT(sol->gradient_norm, kSpanConvTolGrad) << geometry;
+    EXPECT_LE(sol->iterations.size(), static_cast<std::size_t>(kMaxMacroIterations)) << geometry;
+    EXPECT_EQ(rejected, 0U) << geometry;
+    for (const double s2 : sol->roots.spin_squares) {
+      EXPECT_LE(std::abs(s2), kSingletTolerance) << geometry;
+    }
+  }
 }
 
 // max_cycle running out is MaxIterationsExceeded.
