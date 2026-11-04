@@ -445,4 +445,67 @@ TEST(IoBasisAux, TheTripleZetaSetIsTheDoubleZetaSetPlusItsTopMomentum) {
   }
 }
 
+TEST(IoBasisAux, EachAugJkfitSetIsItsCcSetPlusDiffuseFunctions) {
+  // Molpro's weigend_jkfit_aug.libmol, which PySCF carries: at each angular
+  // momentum the cc set's primitives plus one even-tempered diffuse one,
+  // e1^2/e2 from the two most diffuse exponents already there, or e1/2.5
+  // where there is one (data/aux_basis/README.md). Checked on H and C, the
+  // elements Park's ethylene runs need; Ga-Br carry extra f and g that follow
+  // no such rule.
+  struct Pair {
+    std::string_view aug;
+    std::string_view cc;
+  };
+  // An element's uncontracted exponents at angular momentum @p l.
+  const auto exponents = [](const std::vector<fb::ShellStamp> &shells, std::int32_t l) {
+    std::vector<double> out;
+    for (const fb::ShellStamp &shell : shells) {
+      if (shell.angular_momentum() == l) {
+        EXPECT_EQ(shell.nprimitives(), 1U);
+        out.push_back(shell.primitives()[0].exponent);
+      }
+    }
+    std::ranges::sort(out);
+    return out;
+  };
+  for (const auto &[aug_name, cc_name] : std::array<Pair, 2>{
+           {{"aug-cc-pVDZ-JKFIT", "cc-pVDZ-JKFIT"}, {"aug-cc-pVTZ-JKFIT", "cc-pVTZ-JKFIT"}}}) {
+    SCOPED_TRACE(aug_name);
+    EXPECT_TRUE(fb::is_builtin_aux_basis(aug_name));
+    EXPECT_FALSE(fb::is_builtin_basis(aug_name));
+    auto aug = fb::resolve_aux_basis(aug_name);
+    auto cc = fb::resolve_aux_basis(cc_name);
+    ASSERT_TRUE(aug.has_value()) << aug.error().message;
+    ASSERT_TRUE(cc.has_value()) << cc.error().message;
+    EXPECT_EQ(aug->name(), aug_name);
+    EXPECT_EQ(aug->element_shells().size(), 19U);
+    EXPECT_EQ(aug->shells_for(2), nullptr);
+    EXPECT_NE(aug->shells_for(36), nullptr);
+    for (const std::int32_t z : {1, 6}) {
+      const std::vector<fb::ShellStamp> *a = aug->shells_for(z);
+      const std::vector<fb::ShellStamp> *c = cc->shells_for(z);
+      ASSERT_NE(a, nullptr);
+      ASSERT_NE(c, nullptr);
+      std::int32_t top = 0;
+      for (const fb::ShellStamp &shell : *c) {
+        top = std::max(top, shell.angular_momentum());
+      }
+      EXPECT_EQ(a->size(), c->size() + static_cast<std::size_t>(top) + 1);
+      for (std::int32_t l = 0; l <= top; ++l) {
+        SCOPED_TRACE(std::format("Z={} l={}", z, l));
+        const std::vector<double> have = exponents(*c, l);
+        std::vector<double> with = exponents(*a, l);
+        ASSERT_FALSE(have.empty());
+        ASSERT_EQ(with.size(), have.size() + 1);
+        const double added = with.front();
+        with.erase(with.begin());
+        EXPECT_EQ(with, have);
+        const double tempered = have.size() >= 2 ? have[0] * have[0] / have[1] : have[0] / 2.5;
+        // Molpro prints eight decimals, so the rule holds to their rounding.
+        EXPECT_NEAR(added, tempered, 1e-7 * tempered);
+      }
+    }
+  }
+}
+
 } // namespace
