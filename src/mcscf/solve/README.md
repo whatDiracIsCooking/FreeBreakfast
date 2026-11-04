@@ -43,7 +43,9 @@ and the CI vectors on the device), the weighted energy, ‖g‖, the weighted γ
 Γ and each root's γ on the host, and one `mcscf::Iteration` per macro iteration
 (the energy, ΔE, ‖g‖, the trust radius, the CI's Davidson iterations in each
 of its two stages, the micro iterations and the Hessian products of the step, and whether the
-iteration was accepted).
+iteration was accepted), and the weights it was solved at (equal ones as
+1 / nroots, exactly), which the gradient, the couplings and the intersection
+take from it (#856).
 
 ## The loop
 

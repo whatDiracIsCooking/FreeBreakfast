@@ -151,7 +151,8 @@ in the one-column product and the block one alike. At equal weights that
 part adds (w_r − w_s)(c_s · H′ c_r)/(E_s − E_r) times the pair's transition
 RDMs to H̃ x, which is zero, so nothing H̃ means changes; what it removes is
 an O(1/gap) term cancelling through the transition RDMs, against weights
-recovered only to about 1e-8 relative. Near a degeneracy that term is
+recovered from RDMs only to about 1e-8 relative (a solution's own are exact,
+but one built by hand still has them recovered). Near a degeneracy that term is
 the product's error: `mcscf::df_intersection`, which passes
 `rotating_pairs(weights)` (only the pairs of unequal weight mix), measured
 true residuals of 1.6e-5 at a gap of 2e-8 Eh with every pair mixing

@@ -118,8 +118,9 @@ diverged in the CI-relaxed Hessian's product: the CI response δ_r =
 −(H₀ − E_r)⁻¹ (1 − c_r c_rᵀ) H′ c_r carries every other root's part exactly,
 −(c_s · H′ c_r)/(E_s − E_r) c_s, and the I–J pair's adds (w_I − w_J) times
 that, over the transition RDMs, to H̃ x. That is zero at equal weights, but
-the weights are recovered from the solution's averaged RDMs by least
-squares (`sa_gradient_weights`), equal only to about 1e-8 relative, and the
+weights recovered from the solution's averaged RDMs by least squares
+(`sa_gradient_weights`, then the only route) are equal only to about 1e-8
+relative, and the
 term is an O(1/gap) number cancelling through the transition RDMs (at #774
 the difference of two RDMs of c ± δ, since #691 `ci::Rdm::trans_rdm12`
 summed over the roots). Measured in #774 near ethylene's seam, the true
@@ -146,7 +147,8 @@ the solution three times, and solve three Z-vectors one after another. Here:
 
 1. The CI strings, sigma, RDMs, the fitted integrals, the averaged Fock, the
    orbital Hessian and H̃ are built once, with the weights `df_gradient`
-   recovers (`sa_gradient_weights`), the equal-weight pairs' mixing left out.
+   takes (`sa_gradient_weights`: the solution's own, recovered from its RDMs
+   only when it carries none), the equal-weight pairs' mixing left out.
 2. The three right-hand sides of "The derivation" are solved together, one
    `zvectors` over that H̃, the Schur solver (its default), and each
    column's true residual is checked.
@@ -177,7 +179,11 @@ so it is not taken.
   weights differing by more than `kRotationWeightTolerance` of the larger.
   The rotation between I and J is then a parameter of the Lagrangian, and its
   multiplier divides by E_I − E_J, which is singular at an intersection.
-  Other roots may carry other weights.
+  Other roots may carry other weights. The weights are the solution's own,
+  so equal ones are equal exactly: before #856 they were recovered from the
+  RDMs, and at ethylene's C3v-ethylidene MECI, where the roots' 1-RDMs are
+  nearly collinear, equal weights came back unequal past the tolerance and
+  every walk there was refused.
 - `InvalidConfig`: fewer than two roots, I = J, an index outside the average,
   a tolerance not positive or `max_iterations` below 1, and `df_nac`'s checks
   of the solution, the orbitals and the fit.
@@ -224,8 +230,9 @@ converged Z-vector solves, so each is solver-limited, and 1e-9 is the bar the
 ruling on #767 sets for such a check; none is a round-off-only path
 agreement, so none is held at 1e-10. Then the refusals: I = J and a root past
 the average (`InvalidConfig`), unequal weights (`Unsupported`, the weighted γ
-re-mixed so the recovered weights differ), and the block solve capped at one
-product (`MaxIterationsExceeded`).
+re-mixed so that it is no longer the carried weights' sum and the recovered
+weights differ), and the block solve capped at one product
+(`MaxIterationsExceeded`).
 
 **At the seam**, on `test/gtest/data/casscf_meci/`'s ethylene
 SA2-CASSCF(2,2), cc-pVDZ / cc-pVDZ-JKFIT:

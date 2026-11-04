@@ -113,6 +113,10 @@ struct Solution {
   std::vector<double> root_gammas;
   /// @brief One entry per macro iteration run.
   std::vector<Iteration> iterations;
+  /// @brief The weights w_r the average was solved at, one per root (equal
+  /// ones as 1 / nroots, exactly). Empty in a Solution built without them,
+  /// whose weights @c sa_gradient_weights then recovers from its RDMs.
+  std::vector<double> weights;
 };
 
 /// @brief The state-averaged CASSCF of the @p nroots lowest roots of spin

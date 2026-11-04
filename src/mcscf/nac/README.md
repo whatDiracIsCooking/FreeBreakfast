@@ -88,10 +88,10 @@ energy-like functional is.
 
 ### Unequal weights
 
-The weights are not in a `Solution`. When the weighted γ is the roots'
-plain average (to 1e-10) they are taken as exactly 1 / nroots, as they
-always were; otherwise they are recovered from the RDMs by
-`sa_gradient_weights`, as `df_gradient` recovers them
+When the weighted γ is the roots' plain average (to 1e-10) the weights are
+taken as exactly 1 / nroots, as they always were; otherwise they are
+`sa_gradient_weights`', as `df_gradient` takes them: the solution's own, or
+recovered from the RDMs when it carries none
 ([`../gradient/README.md`](../gradient/README.md)).
 
 **Why the right-hand side has no rotation part.** The CI half of d_IJ comes

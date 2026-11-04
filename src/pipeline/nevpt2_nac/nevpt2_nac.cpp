@@ -180,6 +180,7 @@ Nevpt2NacStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutp
       .gamma2 = cas.rdm2,
       .root_gammas = cas.rdm1,
       .iterations = cas.iterations,
+      .weights = cas.weights,
   };
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(solution.roots.vectors.data(), cas.vectors.data(),
                                          cas.vectors.size() * sizeof(double),

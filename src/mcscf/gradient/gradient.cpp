@@ -45,8 +45,8 @@ import free_breakfast.mcscf.root_rotation; // kRootGapFloor
 
 namespace free_breakfast::mcscf {
 
-// The weights are recovered from the solution's RDMs (sa_gradient_weights):
-// a pivot of their least-squares system below this, relative to its largest
+// Weights a solution does not carry are recovered from its RDMs
+// (sa_gradient_weights): a pivot of their least-squares system below this, relative to its largest
 // element, means the roots' 1-RDMs do not determine them; and the weighted
 // gamma must be their weighted sum to this, absolute.
 constexpr double kWeightsPivotFloor = 1e-10;
@@ -67,10 +67,14 @@ Result<std::vector<double>> gradient_download(DeviceResources &res, const double
   return to;
 }
 
-// w_r of the average @p solution is over. A Solution carries the weighted
-// gamma and each root's gamma but not the weights, so they are the
-// least-squares solution of sum_r w_r gamma_r = gamma with sum_r w_r = 1: its
-// (nroots + 1)^2 KKT system, by Gaussian elimination with partial pivoting.
+// w_r of the average @p solution is over: the ones it carries, when its
+// gamma is their weighted sum to kWeightsResidual, as it is from
+// mcscf::solve, taken as they are (#856: at (2e,2o) across two irreducible
+// representations the roots' 1-RDMs are nearly collinear and a recovery
+// drifts past kRotationWeightTolerance). A Solution carrying none, or whose
+// gamma was mixed at others, has them recovered: the least-squares solution
+// of sum_r w_r gamma_r = gamma with sum_r w_r = 1, its (nroots + 1)^2 KKT
+// system, by Gaussian elimination with partial pivoting.
 Result<std::vector<double>> sa_gradient_weights(const Solution &solution, const size_t n_act) {
   const size_t nroots = solution.roots.energies.size();
   const size_t m = n_act * n_act;
@@ -78,6 +82,27 @@ Result<std::vector<double>> sa_gradient_weights(const Solution &solution, const 
   const auto root_gamma = [&](const size_t r, const size_t i) {
     return solution.root_gammas[(r * m) + i];
   };
+  // max_i |sum_r w_r gamma_r,i - gamma_i|.
+  const auto residual_of = [&](const std::vector<double> &w) {
+    double residual = 0.0;
+    for (size_t i = 0; i < m; ++i) {
+      double sum = 0.0;
+      for (size_t r = 0; r < nroots; ++r) {
+        sum += w[r] * root_gamma(r, i);
+      }
+      residual = std::max(residual, std::abs(sum - solution.gamma[i]));
+    }
+    return residual;
+  };
+  if (!solution.weights.empty()) {
+    if (solution.weights.size() != nroots) {
+      return err_config("mcscf::df_gradient: the solution carries {} weights for {} roots",
+                        solution.weights.size(), nroots);
+    }
+    if (residual_of(solution.weights) <= kWeightsResidual) {
+      return solution.weights;
+    }
+  }
   // Row-major [A | rhs], A = [[G^T G, 1], [1^T, 0]].
   std::vector<double> a(k * (k + 1), 0.0);
   const auto at = [&](const size_t i, const size_t j) -> double & { return a[(i * (k + 1)) + j]; };
@@ -131,14 +156,7 @@ Result<std::vector<double>> sa_gradient_weights(const Solution &solution, const 
     x[i] = sum / at(i, i);
   }
   std::vector<double> w(x.begin(), x.begin() + static_cast<std::ptrdiff_t>(nroots));
-  double residual = 0.0;
-  for (size_t i = 0; i < m; ++i) {
-    double sum = 0.0;
-    for (size_t r = 0; r < nroots; ++r) {
-      sum += w[r] * root_gamma(r, i);
-    }
-    residual = std::max(residual, std::abs(sum - solution.gamma[i]));
-  }
+  const double residual = residual_of(w);
   if (residual > kWeightsResidual ||
       std::ranges::any_of(w, [](const double v) { return v < -kWeightsResidual; })) {
     return err_config("mcscf::df_gradient: the weighted gamma is not a weighted average of the "
@@ -573,7 +591,7 @@ df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet
                       "{} in {} orbitals",
                       trace, molecule.multiplicity(), ncas);
   }
-  // A state average's weights, recovered from its RDMs.
+  // A state average's weights: the solution's, or recovered from its RDMs.
   std::vector<double> weights{1.0};
   if (averaged && responds) {
     weights = FBF_TRY(sa_gradient_weights(solution, n_act));

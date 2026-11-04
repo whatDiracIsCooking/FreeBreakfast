@@ -451,9 +451,10 @@ constexpr double kWeightSymmetryTolerance = 1e-12;
 constexpr double kTraceTolerance = 1e-12;
 
 // What both QD forms check and build before anything else: the solution's
-// weights, recovered by mcscf::sa_gradient_weights (every one positive: a
-// root of zero weight has no SA CI row, and its multiplier's right-hand
-// side divides by 2 w_r), and the active strings.
+// weights, by mcscf::sa_gradient_weights (its own, recovered from its RDMs
+// only when it carries none; every one positive: a root of zero weight has
+// no SA CI row, and its multiplier's right-hand side divides by 2 w_r), and
+// the active strings.
 struct QdSetup {
   std::vector<double> weights;
   ci::DeviceStringSet alpha;

@@ -390,8 +390,8 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
         std::ranges::copy(one, root_gammas.begin() + static_cast<std::ptrdiff_t>(r * n * n));
       }
       return Solution{
-          std::move(c_now),  std::move(*roots),      energy,        g_norm, std::move(gamma),
-          std::move(gamma2), std::move(root_gammas), std::move(log)};
+          std::move(c_now),  std::move(*roots),      energy,         g_norm,      std::move(gamma),
+          std::move(gamma2), std::move(root_gammas), std::move(log), std::move(w)};
     }
     FBF_TRY(
         gpu_status(wwr::wwrMemcpyAsync(c_accepted.data(), c_now.data(), mo * mo * sizeof(double),
