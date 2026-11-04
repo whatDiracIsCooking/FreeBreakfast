@@ -136,14 +136,19 @@ layer's `nevpt2::sc_effective_hamiltonian` and `pc_effective_hamiltonian`
 2. **Each root's own RDMs are kept** from the per-root pass (dm1, dm2, dm3,
    f3ca, f3ac do not depend on the core and virtual rotation, which leaves
    the active orbitals and (tu|vw) alone), for the diagonal.
-3. **Per unordered pair I < J**, the transition dm1, dm2 and dm3 of (I, J)
-   and of (J, I) by `nevpt2::rdms` with a bra and a ket, and null f3ca and
-   f3ac (read on the diagonal only), then both effective
-   Hamiltonians over the pair's 2 × 2 block: root I's own inputs, (I, J),
-   (J, I), root J's own. A coupling ⟨I|V|Ψ_J⁽¹⁾⟩ reads only the pair's
-   transition RDMs and ket J's own (its N, H, or its PC solve), so the 2 × 2
-   block's off-diagonal elements are the n × n call's. Each root's diagonal
-   is taken once, root 0's from (0, 1) and root J's from (0, J).
+3. **The diagonal, once**: both effective Hamiltonians over n × n inputs
+   with every root's own entry and every off-diagonal omitted (null RDMs),
+   which walks each root's classes and solves its PC metrics once and hands
+   back each root's first-order wave function (`ScAmplitudes`,
+   `PcAmplitudes`): the kets. Then **per unordered pair I < J**, the
+   transition dm1, dm2 and dm3 of (I, J) and of (J, I) by `nevpt2::rdms`
+   with a bra and a ket, and null f3ca and f3ac (read on the diagonal
+   only), and both effective Hamiltonians over those two entries alone, the
+   diagonal omitted and the kets passed back: a coupling ⟨I|V|Ψ_J⁽¹⁾⟩ reads
+   only the pair's transition RDMs and ket J's own wave function, so each
+   pair walks its transition norms and nothing of a root's own
+   (`nevpt2/energy/README.md` "SC-QD-NEVPT2", #689). The step logs both
+   parts' wall times.
 4. **H_IJ = E_I δ_IJ + ½ (C_IJ + C_JI)**, E_I the CASSCF root energy and C
    the couplings' totals, and its eigenvalues (ascending: the QD total
    energies) and eigenvectors over the roots, each signed so that its
@@ -153,9 +158,9 @@ layer's `nevpt2::sc_effective_hamiltonian` and `pc_effective_hamiltonian`
 **A PC refusal does not fail the step**, as per root: a `Numerical` error
 from `pc_effective_hamiltonian` (a state's metric with no gap at the cut, or
 a denominator not positive, naming the class and the state) is logged, PC is
-not attempted for the remaining pairs, and `pc_qd_refusal` holds the
-message, prefixed with the two roots the 2 × 2 block was over (its "state 0"
-and "state 1"); `pc_qd_couplings`, `pc_qd_heff`, `pc_qd_energies` and
+not attempted for the pairs, and `pc_qd_refusal` holds the message, whose
+"state J" is root J (the diagonal call's states are the roots);
+`pc_qd_couplings`, `pc_qd_heff`, `pc_qd_energies` and
 `pc_qd_vectors` are empty. SC-QD stands. Any other error fails the step.
 
 Fewer than two roots is refused `InvalidConfig` when the config is read
@@ -168,11 +173,12 @@ roots, SC's then PC's, or `PC-QD-NEVPT2: refused (<message>)`.
 
 **The cost** over the per-root pass: one Fock and one set of MO blocks, n(n
 − 1) transition builds of `nevpt2::rdms` (each dm3 and the dm1 and dm2
-gemvs alone, about a third of a per-root build's gemm work), and n(n − 1)/2 calls of each
-effective Hamiltonian over four pairs, so every root's diagonal class walk
-and PC solves are repeated n − 1 times. That buys memory independent of n
-(below); at the sizes QD is for (a few roots) the repeat is small beside the
-RDMs.
+gemvs alone, about a third of a per-root build's gemm work), one call of
+each effective Hamiltonian over the n diagonals, and n(n − 1)/2 over two
+transition entries each: every root's class walk and PC solves run once.
+On the RTX 3080 the QD part of the step takes 31 ms on the skew H2CO SA3
+case and 40 ms on the polished H8 ring SA3, against 47 and 67 when each
+pair's 2 × 2 call walked both roots' diagonals again.
 
 ## Memory
 
@@ -203,10 +209,13 @@ that use it. The largest are dm3, f3ca and f3ac, n_act⁶ doubles each.
 **QD** keeps every root's dm3, f3ca and f3ac (3n of them), and per pair two
 transition dm3 (the transition builds skip f3, which the effective
 Hamiltonians read only on the diagonal): 3n + 2 n_act⁶ tensors, not the 3n²
-of every pair's transition set at once. Each pair's are
-consumed by its 2 × 2 block before the next pair is built, and the layer's
-own per-pair intermediates (dm3_h, ...; the PC transition rows) are four
-pairs' rather than n²'s. The slab batch is sized as per root.
+of every pair's transition set at once. Each pair's are consumed by its
+call before the next pair is built, and the layer's own per-pair
+intermediates (dm3_h, ...; the PC transition rows) are two pairs' rather
+than n²'s. The kets held across the pairs are the PC U_J on the device (d ×
+m_J per class and root, at most n_act⁶ for Sr and Si, as a dm3) and the
+amplitudes on the host (`nevpt2/energy/README.md` "The amplitude
+hand-over"). The slab batch is sized as per root.
 
 ## Errors
 
@@ -232,11 +241,6 @@ active space is the usual cause: the demo's N₂ CAS(12,12), with a 1s
 combination active, and the test's HF CAS(10,7), with the F 1s.
 
 ## Not done
-
-- **QD's repeated diagonals** (QD-NEVPT2 "The cost"): an n × n call would
-  walk each root's diagonal once but hold n² transition sets; a layer entry
-  taking one pair beside the two states' cached Dyall blocks and PC solves
-  would do both.
 
 - **Integral-direct ERIs** (step 1).
 - **One `casscf_integrals` too many.** The Casscf step builds the same

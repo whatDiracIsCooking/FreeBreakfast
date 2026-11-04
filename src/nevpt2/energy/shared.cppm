@@ -34,6 +34,11 @@ struct ActiveOperands {
   std::vector<double> e_core, e_virt;
 };
 
+/// @brief Whether entry @p p of a walk's @p ops is given: an entry
+/// sc_effective_hamiltonian's caller omits has a null dm1, and a walk builds,
+/// contracts and reads nothing of it.
+bool pair_given(std::span<const ActiveOperands> ops, int64_t p);
+
 /// @brief The operands of @p in over @p blocks' sizes. Synchronizes once,
 /// reading the orbital energies back.
 Result<ActiveOperands> active_operands(DeviceResources &res, const MoBlocks &blocks,
@@ -239,17 +244,19 @@ Result<PcMatrices> pc_sij_matrices(DeviceResources &res, const ActiveOperands &o
 Result<PcMatrices> pc_sir_matrices(DeviceResources &res, const ActiveOperands &o, bool own);
 
 /// @brief One class's solves and transition rows over ns states: per ket J
-/// its solve, and per ordered pair (I, J), I != J, T_{I←J} = S^{(J,I)ᵀ} U_J
-/// and t1_{I←J} = S₁^{(J,I)ᵀ} U_J, d x m_J column-major and n1 x m_J
-/// row-major as the solve's own T and t1.
+/// its solve (none when the diagonal is omitted and the kets are a previous
+/// call's), its m_J, and per given ordered pair (I, J), I != J,
+/// T_{I←J} = S^{(J,I)ᵀ} U_J and t1_{I←J} = S₁^{(J,I)ᵀ} U_J, d x m_J
+/// column-major and n1 x m_J row-major as the solve's own T and t1.
 struct PcKets {
   int64_t ns = 1;
   std::vector<ClassSolve> solves;
+  std::vector<int64_t> ms;
+  /// @brief [I ns + J]: whether the pair is given (pair_given).
+  std::vector<bool> given;
   std::vector<std::optional<Buffers::device<double>>> t, t1;
 
-  [[nodiscard]] int64_t m(const int64_t j) const {
-    return std::ssize(solves[static_cast<size_t>(j)].lambda);
-  }
+  [[nodiscard]] int64_t m(const int64_t j) const { return ms[static_cast<size_t>(j)]; }
   [[nodiscard]] const double *t_of(const int64_t i, const int64_t j) const {
     return i == j ? solves[static_cast<size_t>(j)].t.data()
                   : t[static_cast<size_t>((i * ns) + j)]->data();
@@ -259,21 +266,25 @@ struct PcKets {
                   : t1[static_cast<size_t>((i * ns) + j)]->data();
   }
   /// @brief Where pair (I, J)'s block of @p rows tuples starts in one slab's
-  /// packed rows, at [I ns + J], and the total at [ns²].
+  /// packed rows, at [I ns + J], and the total at [ns²]; an omitted pair's
+  /// block is empty.
   [[nodiscard]] std::vector<int64_t> offsets(const int64_t rows) const {
     std::vector<int64_t> at{0};
     for (int64_t p = 0; p < ns * ns; ++p) {
-      at.push_back(at.back() + (rows * m(p % ns)));
+      at.push_back(at.back() + (given[static_cast<size_t>(p)] ? rows * m(p % ns) : 0));
     }
     return at;
   }
 };
 
 /// @brief Every state's solve over @p ops (ns x ns, [I ns + J]), from its own
-/// matrices, then every transition's T and t1 over pair (J, I)'s, each pair's
+/// matrices, or with the diagonal omitted each ket's U_J from @p cached (a
+/// previous call's amplitudes; InvalidConfig when they are not ns states');
+/// then every given transition's T and t1 over pair (J, I)'s, each pair's
 /// matrices freed before the next is built. A refusal is state_error's.
 Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const ActiveOperands> ops,
-                       int64_t ns, int64_t d, int64_t n1, const PcBuild &build);
+                       int64_t ns, int64_t d, int64_t n1, const PcBuild &build,
+                       const PcAmplitudes::Class *cached = nullptr);
 
 /// @brief A failure of state @p j's class: at @p ns > 1 named by its state,
 /// pc_class_energies' prefix replaced by pc_effective_hamiltonian's; at ns = 1

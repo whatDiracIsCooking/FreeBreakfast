@@ -44,12 +44,41 @@ Result<int64_t> qd_states(const char *who, std::span<const EnergyInputs> pairs) 
   return n;
 }
 
+// InvalidConfig, naming @p who, unless @p pairs' (n x n) omitted entries,
+// those with a null dm1, are as the effective Hamiltonians take them: every
+// diagonal entry given or none, each off-diagonal given only beside its
+// transpose, and with the diagonal omitted @p amplitudes given, the kets.
+Status qd_omissions(const char *who, std::span<const EnergyInputs> pairs, const int64_t n,
+                    const bool amplitudes) {
+  const auto given = [&](const int64_t i, const int64_t j) {
+    return pairs[static_cast<size_t>((i * n) + j)].dm1 != nullptr;
+  };
+  for (int64_t i = 0; i < n; ++i) {
+    if (given(i, i) != given(0, 0)) {
+      return err_config("{}: state {}'s own entry is {} and state 0's is not: give every "
+                        "diagonal entry or none",
+                        who, i, given(i, i) ? "given" : "omitted");
+    }
+    for (int64_t j = 0; j < i; ++j) {
+      if (given(i, j) != given(j, i)) {
+        return err_config("{}: pair ({}, {}) is given without its transpose", who,
+                          given(i, j) ? i : j, given(i, j) ? j : i);
+      }
+    }
+  }
+  if (!given(0, 0) && !amplitudes) {
+    return err_config("{}: the diagonal is omitted and no amplitudes give its kets", who);
+  }
+  return {};
+}
+
 Result<std::vector<ClassEnergies>> sc_effective_hamiltonian(DeviceResources &res,
                                                             const MoBlocks &blocks,
                                                             std::span<const EnergyInputs> pairs,
                                                             const int32_t batch,
                                                             ScAmplitudes *amplitudes) {
   const int64_t n = FBF_TRY(qd_states("sc_effective_hamiltonian", pairs));
+  FBF_TRY(qd_omissions("sc_effective_hamiltonian", pairs, n, amplitudes != nullptr));
   return sc_couplings(res, blocks, pairs, n, batch, amplitudes);
 }
 
@@ -59,6 +88,10 @@ Result<std::vector<ClassEnergies>> sc_effective_hamiltonian(DeviceResources &res
 Result<int64_t> qd_adjoint_states(const char *who, std::span<const EnergyInputs> pairs,
                                   std::span<const double> hbar, std::span<const EnergyBars> bars) {
   const int64_t n = FBF_TRY(qd_states(who, pairs));
+  // The reverse walks every pair: nothing may be omitted.
+  if (std::ranges::any_of(pairs, [](const EnergyInputs &in) { return in.dm1 == nullptr; })) {
+    return err_config("{}: every pair's entry must be given, and one has a null dm1", who);
+  }
   if (std::cmp_not_equal(hbar.size(), n * n) || std::cmp_not_equal(bars.size(), n)) {
     return err_config("{}: {} states take {} H-bar elements and {} EnergyBars, not {} and {}", who,
                       n, n * n, n, hbar.size(), bars.size());
@@ -93,6 +126,7 @@ Result<std::vector<PcClassEnergies>> pc_effective_hamiltonian(DeviceResources &r
                                                               const int32_t batch,
                                                               PcAmplitudes *amplitudes) {
   const int64_t n = FBF_TRY(qd_states("pc_effective_hamiltonian", pairs));
+  FBF_TRY(qd_omissions("pc_effective_hamiltonian", pairs, n, amplitudes != nullptr));
   return pc_couplings(res, blocks, pairs, n, batch, amplitudes);
 }
 

@@ -387,7 +387,7 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
                                      nvirt * sizeof(double), wwr::wwrMemcpyHostToDevice, stream)));
 
   // Per unordered pair I < J, the transition RDMs of (I, J) at slot 0 and of
-  // (J, I) at slot 1, consumed by the pair's 2 x 2 block before the next pair
+  // (J, I) at slot 1, consumed by the pair's couplings before the next pair
   // is built: never the n² sets at once. f3ca and f3ac are read only on the
   // diagonal, so the transition builds skip them (null).
   Buffers::device<double> tdm1(2 * n2, res.device());
@@ -395,6 +395,8 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
   Buffers::device<double> tdm3(2 * n6, res.device());
   FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
   const int32_t batch = nevpt2_batch(blocks, free_bytes / 8);
+  // Every entry starts omitted (null RDMs): the layer builds and walks
+  // nothing of it.
   const nevpt2::EnergyInputs shared{.h1e = h1e.data(),
                                     .h2e = h2e.data(),
                                     .e_core = e_core.data(),
@@ -402,24 +404,49 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
                                     .h1e_v_sr = h1e_v_sr.data(),
                                     .h1e_v_si = h1e_v_si.data(),
                                     .h1e_v_sir = h1e_v_sir.data()};
-  const auto own = [&](size_t root) {
-    nevpt2::EnergyInputs in = shared;
+  std::vector<nevpt2::EnergyInputs> pairs(nroots * nroots, shared);
+  out.qd_couplings.resize(nroots * nroots);
+  out.pc_qd_couplings.resize(nroots * nroots);
+
+  // The diagonal, once: every root's own entry and no other, which walks
+  // each root's classes (and solves its PC metrics) once and hands back its
+  // first-order wave function, the kets every pair's couplings read.
+  const auto started = std::chrono::steady_clock::now();
+  for (size_t root = 0; root < nroots; ++root) {
+    nevpt2::EnergyInputs &in = pairs[(root * nroots) + root];
     in.dm1 = dm1.data() + (root * n2);
     in.dm2 = dm2.data() + (root * n4);
     in.dm3 = dm3.data() + (root * n6);
     in.f3ca = f3ca.data() + (root * n6);
     in.f3ac = f3ac.data() + (root * n6);
-    return in;
-  };
-  const auto transition = [&](size_t slot) {
-    nevpt2::EnergyInputs in = shared;
-    in.dm1 = tdm1.data() + (slot * n2);
-    in.dm2 = tdm2.data() + (slot * n4);
-    in.dm3 = tdm3.data() + (slot * n6);
-    return in;
-  };
-  out.qd_couplings.resize(nroots * nroots);
-  out.pc_qd_couplings.resize(nroots * nroots);
+  }
+  nevpt2::ScAmplitudes sc_kets;
+  const std::vector<nevpt2::ClassEnergies> sc_diagonal =
+      FBF_TRY(nevpt2::sc_effective_hamiltonian(res, blocks, pairs, batch, &sc_kets));
+  // A PC state refused as Numerical costs QD its PC, not its SC.
+  nevpt2::PcAmplitudes pc_kets;
+  Result<std::vector<nevpt2::PcClassEnergies>> pc_diagonal =
+      nevpt2::pc_effective_hamiltonian(res, blocks, pairs, batch, &pc_kets);
+  if (!pc_diagonal && pc_diagonal.error().kind != ErrorKind::Numerical) {
+    return std::unexpected(std::move(pc_diagonal).error());
+  }
+  if (!pc_diagonal) {
+    // The diagonal call's states are the roots, so its "state J" is root J.
+    out.pc_qd_refusal = std::move(pc_diagonal.error().message);
+    out.pc_qd_couplings.clear();
+    log::warn(std::format("QD-NEVPT2: PC refused, SC kept: {}", out.pc_qd_refusal));
+  }
+  for (size_t root = 0; root < nroots; ++root) {
+    const size_t p = (root * nroots) + root;
+    out.qd_couplings[p] = sc_diagonal[p];
+    if (pc_diagonal) {
+      out.pc_qd_couplings[p] = (*pc_diagonal)[p];
+    }
+    pairs[p] = shared;
+  }
+  const auto diagonal_done = std::chrono::steady_clock::now();
+
+  // Then per pair its two off-diagonal entries alone, over the cached kets.
   for (size_t i = 0; i < nroots; ++i) {
     for (size_t j = i + 1; j < nroots; ++j) {
       for (const auto &[slot, bra, ket] :
@@ -428,47 +455,37 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
                              vectors.data() + (ket * dim), ints.hamiltonian.eri.data(),
                              tdm1.data() + (slot * n2), tdm2.data() + (slot * n4),
                              tdm3.data() + (slot * n6), nullptr, nullptr, rdm_budget));
+        nevpt2::EnergyInputs &in = pairs[(bra * nroots) + ket];
+        in.dm1 = tdm1.data() + (slot * n2);
+        in.dm2 = tdm2.data() + (slot * n4);
+        in.dm3 = tdm3.data() + (slot * n6);
       }
-      const std::array<nevpt2::EnergyInputs, 4> pairs{own(i), transition(0), transition(1), own(j)};
-      // The block's [0] is root i's diagonal, [1] (i, j), [2] (j, i), [3]
-      // root j's: each diagonal is taken once, root 0's from (0, 1) and root
-      // j's from (0, j).
+      const size_t ij = (i * nroots) + j;
+      const size_t ji = (j * nroots) + i;
       const std::vector<nevpt2::ClassEnergies> sc =
-          FBF_TRY(nevpt2::sc_effective_hamiltonian(res, blocks, pairs, batch));
-      out.qd_couplings[(i * nroots) + j] = sc[1];
-      out.qd_couplings[(j * nroots) + i] = sc[2];
-      if (i == 0) {
-        out.qd_couplings[(j * nroots) + j] = sc[3];
-        if (j == 1) {
-          out.qd_couplings[0] = sc[0];
-        }
+          FBF_TRY(nevpt2::sc_effective_hamiltonian(res, blocks, pairs, batch, &sc_kets));
+      out.qd_couplings[ij] = sc[ij];
+      out.qd_couplings[ji] = sc[ji];
+      if (out.pc_qd_refusal.empty()) {
+        // No state is solved here, so nothing is refused that the diagonal
+        // did not refuse.
+        const std::vector<nevpt2::PcClassEnergies> pc =
+            FBF_TRY(nevpt2::pc_effective_hamiltonian(res, blocks, pairs, batch, &pc_kets));
+        out.pc_qd_couplings[ij] = pc[ij];
+        out.pc_qd_couplings[ji] = pc[ji];
       }
-      if (!out.pc_qd_refusal.empty()) {
-        continue;
-      }
-      // A PC state refused as Numerical costs QD its PC, not its SC.
-      Result<std::vector<nevpt2::PcClassEnergies>> pc =
-          nevpt2::pc_effective_hamiltonian(res, blocks, pairs, batch);
-      if (!pc && pc.error().kind != ErrorKind::Numerical) {
-        return std::unexpected(std::move(pc).error());
-      }
-      if (!pc) {
-        out.pc_qd_refusal = std::format("roots {} and {} as states 0 and 1: {}", i, j,
-                                        std::move(pc.error().message));
-        out.pc_qd_couplings.clear();
-        log::warn(std::format("QD-NEVPT2: PC refused, SC kept: {}", out.pc_qd_refusal));
-        continue;
-      }
-      out.pc_qd_couplings[(i * nroots) + j] = (*pc)[1];
-      out.pc_qd_couplings[(j * nroots) + i] = (*pc)[2];
-      if (i == 0) {
-        out.pc_qd_couplings[(j * nroots) + j] = (*pc)[3];
-        if (j == 1) {
-          out.pc_qd_couplings[0] = (*pc)[0];
-        }
-      }
+      pairs[ij] = shared;
+      pairs[ji] = shared;
     }
   }
+  const auto pairs_done = std::chrono::steady_clock::now();
+  const auto ms = [](const auto from, const auto to) {
+    return std::chrono::duration<double, std::milli>(to - from).count();
+  };
+  log::info(std::format("QD-NEVPT2: one diagonal walk over {} roots {:.1f} ms, {} pair walks "
+                        "{:.1f} ms",
+                        nroots, ms(started, diagonal_done), nroots * (nroots - 1) / 2,
+                        ms(diagonal_done, pairs_done)));
 
   std::vector<double> totals(nroots * nroots);
   std::ranges::transform(out.qd_couplings, totals.begin(),
