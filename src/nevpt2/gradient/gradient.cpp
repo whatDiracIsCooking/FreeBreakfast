@@ -332,10 +332,7 @@ Result<ScArrays> shared_arrays(DeviceResources &res, const std::string_view who,
   return x;
 }
 
-// Every input of class_energies (and pc_class_energies), built from (h, B, c)
-// and the vector: shared_arrays, then nevpt2::rdms, dm2 and dm1 as its
-// traces, and the builders that read dm1. @p who names the caller in its
-// errors.
+// sc_arrays (declared in :builders): @p who names the caller in its errors.
 Result<ScArrays> sc_arrays(DeviceResources &res, const std::string_view who,
                            const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
                            const int32_t naux, const int32_t nao, const int32_t nmo,

@@ -179,6 +179,16 @@ Result<ScArrays> shared_arrays(DeviceResources &res, std::string_view who,
                                const double *c, const double *h, int32_t ncore, int32_t ncas,
                                int32_t nfrozen);
 
+/// @brief Every input of class_energies (and pc_class_energies), built from
+/// (h, B, c) and the root @p vector: shared_arrays, then nevpt2::rdms, dm2
+/// and dm1 as its traces, and the builders that read dm1. gradient.cpp's,
+/// for tangent.cpp's forward point.
+Result<ScArrays> sc_arrays(DeviceResources &res, std::string_view who,
+                           const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+                           int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c,
+                           const double *h, int32_t ncore, int32_t ncas, const double *vector,
+                           int32_t nfrozen);
+
 /// @brief The QD functionals' inputs, built as qd_sc_energy builds them from
 /// (h, B, c), the roots @p vectors and their @p weights, handed to @p use:
 /// the class walk's MO blocks (the correlated core's, with @p nfrozen) and
