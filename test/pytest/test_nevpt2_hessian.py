@@ -6,8 +6,9 @@ are checked with the standard library alone, so they run on the push gate:
 the stencil's order and its ratio of 16, the ladder's verdicts, the symmetry
 and bilinearity checks; then every fixture's ladder recomputed from its
 recorded gradients, its bars and ratios against the rule, the skew and
-near-degenerate cases symmetric to their bar and bilinear on every pair, and
-the symmetric case's failing pairs. Re-running the reference point through
+near-degenerate cases (and HCN, whose PC metric has null modes by symmetry)
+symmetric to their bar and bilinear on every pair, and the symmetric case's
+failing pairs. Re-running the reference point through
 the generator needs PySCF and block2, in the opt-in ``tools`` dependency
 group, so that test is slow and skips (with a reason) wherever the group is
 not installed::
@@ -34,6 +35,7 @@ CASES = {
     "h2co_skew_sto3g": "skew",
     "nh3_cs_sto3g": "symmetric",
     "h2co_neardeg_sto3g": "near_degenerate",
+    "hcn_sto3g": "symmetric_nulls",
 }
 
 
@@ -188,6 +190,12 @@ def test_the_issue_cases_are_there():
     # The symmetric case has empty perturbers.
     symmetric = fixture("nh3_cs_sto3g")
     assert sum(c["sc_empty_perturbers"] for c in symmetric["classes"]) > 0
+    # HCN's PC drops Sir's two null modes by symmetry (#815), and nothing
+    # is expected to fail there.
+    nulls = fixture("hcn_sto3g")
+    sir = next(c for c in nulls["classes"] if c["name"] == "Sir")
+    assert sir["pc_dropped_modes"] == 2
+    assert nulls["may_fail"] == []
 
 
 def gated(record: dict, q: str, i: int, j: int) -> bool:

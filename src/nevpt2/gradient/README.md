@@ -116,9 +116,12 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
                        batch, directions, partners = {}, parts = false)
         -> ScHessianProduct  the tangent of sc_adjoint + zc_adjoint at fixed z along
                              each MO direction, the CI one on the unit sphere; below
+    pc_hessian_product(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, z,
+                       batch, directions, parts = false, pc_floor = 0, span = true)
+        -> PcHessianProduct  the same of pc_adjoint + zc_adjoint; below
 
 Every call above but `zc_*`, `lagrangian_gradient`, the couplings, `builders_tangent` and
-`sc_hessian_product` takes
+the two Hessian products takes
 a trailing `nfrozen`, 0 by default: the frozen core ("The frozen core").
 
 `qd_inputs` is the QD energies' inputs, built on the solution as
@@ -383,6 +386,130 @@ ScArrays of tangent bars and a Λ (naux nmo²), four `rdms_adjoint` calls
 (three with bars fixed), two σ products for Φ, and Φ's Λ tangent (two
 naux nmo² scratch einsums). Directions are held together through the class
 walk; a caller with many chunks them.
+
+## The PC Hessian-vector product in (h, B, c)
+
+    pc_hessian_product(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, z,
+                       batch, directions, parts = false, pc_floor = 0, span = true)
+        -> PcHessianProduct
+        energies    pc_energy's class energies
+        products    AdjointTangent per direction, as sc_hessian_product's
+        lifts       per direction, each class's Schur lift ℓ per |u|² (below)
+        lift_steps  per direction, each class's t*, in the direction's own units (below)
+        parts       with parts: per direction, the product's five parts, as SC's
+
+`sc_hessian_product` with `pc_class_energies_adjoint` and
+`pc_class_energies_hvp` (`nevpt2.energy`'s README, "The PC Hessian-vector
+product") in place of the SC class walk, and nothing else (#815), as
+`pc_adjoint` is `sc_adjoint`'s: the builders' tangent, `bars_tangent`, Φ's
+closed form, X and A, and the Rayleigh normalization are one function
+(`hessian_product` in `hessian_product.cpp`) that both class walks feed.
+`pc_floor` is `pc_adjoint`'s; the class walk refuses a class whose kept
+metric spectrum reaches below 1e-10 (#917), and a pole, as the energy does.
+`span` false leaves the kept span's rotation out, for the tests alone.
+
+**No partners.** PC has no empty perturbers: a tuple whose norm vanishes by
+symmetry has b = S x = 0, and moves as a smooth quadratic in the inputs.
+What it has instead is the Schur lift, which needs no partner (below).
+
+### The Schur lift
+
+**A null mode can rise at second order.** S is the Gram matrix of the
+class's perturbers {O_p |Ψ⟩}, positive semi-definite along every path of
+states. Along the CI vector's path on the sphere, c(t) = (c + t u) /
+|c + t u| (u ⊥ c), S(t) = S + t S' + ½ t² S'' with S' and S'' the metric
+builder at the RDMs' derivatives, γ(c, u) + γ(u, c) and
+2 γ(u, u) − 2 |u|² γ(c, c). For a null mode v (S v = 0), vᵀ S' v = 0
+(S(t) ⪰ 0), and the null block's eigenvalues rise as ½ t² eig(L), with
+the Schur complement
+
+    L = P (S'' − 2 S' S⁺ S') P,   S⁺ = U Uᵀ,   P the null modes' projector,
+
+itself positive semi-definite. The null modes are of three kinds.
+
+- **Structural**, operator identities null for every state: v annihilates
+  Σ v_p O_p on any vector, so P S' = 0 and P S'' P = 0, and L = 0.
+- **Spin**: null for every singlet (Sr's and Si's quartet modes), so a
+  singlet path keeps them; a quintet admixture lifts them. The directions
+  the Hessian takes (#813's CP-CASSCF responses) are singlets.
+- **Spatial symmetry**: at a symmetric geometry the root's configurations
+  lie in one irrep, so {O_p |Ψ⟩} can span less than a generic state's does,
+  and a singlet that breaks the symmetry lifts them, L > 0.
+
+**It matters under the current cut.** A lifted mode crosses the cut, at
+max(1e-13, 100 ε √d, `pc_floor`) of σ_max, at t* = √(2 cut σ_max / ℓ),
+ℓ = eig(L), and is kept beyond, where the energy carries its share:
+½ ℓ t² (vᵀ x̃)² / (λ + Δ) for b = S x̃, a quadratic of the Hessian's own
+size. At the point the product is the Hessian of the energy with the mode
+dropped, which is the energy within |t| < t*; at the default cut t* is
+about 1e-5 (3e-4 at a floor of 1e-10). #853's cut, with no gap test, does
+not keep the null modes inside the dropped set: it is what lets them out.
+
+**Reported, not refused.** Whether t* is small is a question of the step,
+and a step "per unit |u|" means nothing for a CI direction: only the
+assembly (#817) knows the physical response c^B a nuclear step moves c by.
+So the product stays the exact derivative of the dropped branch and reports,
+per direction and class, ℓ (`lifts`: L's largest eigenvalue over σ_max, per
+|u|², u the CI part off c) and t* = √(2 cut / (ℓ |u|²)) (`lift_steps`, in
+the direction's own units, cut the class's relative cut; infinite where ℓ
+is not positive). #817 refuses where any nuclear coordinate's t*_B is below
+1e-3 bohr: the surface switches branch within a vibrational or
+finite-difference step.
+
+**Real dropped modes are not lifts.** A real mode's σ_n(t) is smooth and
+the product differentiates it (the span bar's Daleckii–Krein term); it
+crosses the cut at first order, carrying energy of the cut's own size,
+which is the conditioning floor's business (#917). The check reads the null
+modes alone, σ_n at most 10 ε √d of σ_max (every mode round-off or the
+RDMs decide has measured at most 7.4 ε √d), whose own σ the rise outruns.
+
+**The pair.** L is positive semi-definite for every physical direction, so
+L_uu = 0 makes L_uv = 0 for every v: a pair lifts only through a direction
+that lifts on its own, and each direction's own report is the whole
+story. No partners.
+
+**Measured** (per |u|², over σ_max, RTX 3080, `--preset default`):
+
+| case | direction | largest lift |
+|---|---|---|
+| case | direction | largest ℓ | t* | ladder |
+|---|---|---|---|---|
+| `h2co_skew_sto3g` (C1), `pc_floor` 1e-6 | two random singlets | 2.3e-15 | | 1.4e-9 |
+| PSB3 twist, `pc_floor` 1e-8 | two random singlets | 1.2e-4 (Sr, its round-off nulls) | 2.5e-2 | 5.3e-8, steps ≤ 1e-3 |
+| `hcn_sto3g` (C∞v) | h's active block on c (keeps the symmetry), orbital-only | 8.8e-16 | | 5.6e-11 |
+| `hcn_sto3g`, default cut | a random singlet (bends) | 2.0e-2 (Sir) | 7e-6 | clean ratios, 1e-2 to 1.5e-1 off |
+| `hcn_sto3g`, `pc_floor` 1e-6 | the same | 2.0e-2 | 2.0e-2 | 4.7e-11 |
+
+Along the bend at the default cut, the ladder of PC's adjoint converges
+cleanly (ratios 4.000) to the energy with Sir's mode kept, 1e-2 to 1.5e-1
+off the product in every field, and its rungs below about t* fall back to
+the dropped branch. At `pc_floor` 1e-6, t* is 2.0e-2, and a ladder whose
+widest rung (2e-3) is inside it matches the product. A direct probe agrees
+with the report: at t = 1e-4 and the default cut, Sir's smallest kept σ is
+2.4474e-11 against ½ ℓ |u|² t² = 2.4473e-11, and at the floor Sir drops
+both modes at t*/2 and one at 2 t*. A threshold on ℓ alone would have
+refused PSB3's twist, whose ladder passes: its t* is past the ladder. The
+table is the RTX 3080's; on the gfx1200 (`--preset hip`) the bend's ℓ is
+1.7e-1 and t* at the floor 6.9e-3 (the random singlet lands on a
+different direction under the CASSCF's run-dependent signs), the probe
+agreeing to 1e-5 again, and the twist's ladder misses by 4.1e-8.
+
+**Singlet directions.** Random CI directions shaped as SC's tests make them
+(ċ_I = (r_I + 0.3) c_I) mix in quintets, along which the spin-null modes of
+Sr and Si rise: every PC test moves c along a
+singlet, H_κ c with a random spin-free H_κ.
+
+**The search** (#803's note: `nh3_cs_sto3g` has no PC lifted null mode).
+CAS(2,2) cannot lift: its perturbers' N ± k electron spaces are one or two
+states, and every symmetric root reaches all of them. A PySCF probe over
+symmetric CASSCF(4,4) roots, along a random singlet: H2O and H2CO lift
+Sir's (28 → 31 kept), HCN lifts one (30 → 31), NH3 (Cs, every active orbital
+A′) and ethylene none. In this tree's DF-CASSCF, H2CO's C2v STO-3G root
+converges to a lower solution that breaks the symmetry (−112.4249 against
+the symmetric −112.4124), so its metrics carry no null by symmetry; HCN's is
+the symmetric root. Hence `test/gtest/data/nevpt2_hessian/hcn_sto3g.json`,
+from `tools/nevpt2_hessian/` (its README has what PC's semi-numerical
+Hessian does there).
 
 ## The inactive multipliers z^c
 
@@ -1702,17 +1829,48 @@ strings), covariant with the CI vector's signs, so no gauge is fixed.
 - `Refuses`: InvalidConfig for one partner for two directions, a null
   partner array, a null z, and a vector of norm 1.5.
 
+`Nevpt2PcHessianProduct`, the same file, over `pc_adjoint` + `zc_adjoint`
+at PC's own z^c. Its CI directions are singlets, ċ = H_κ c + 0.3 c with
+H_κ a random spin-free Hamiltonian over the active orbitals (one- and
+two-body) and the part off c 0.5 long: SC's covariant ċ mixes in quintets,
+which lift the metrics' spin-null modes (above). PC's ladder starts at
+t = 2e-3 (thirteen rungs): at 1e-2 the moved states meet intruders, which
+PC refuses.
+
+- `MatchesLadder/h2co_skew_sto3g` (`pc_floor` 1e-6, which drops a real
+  mode of Srs and of Sij beside the structural ones; every kept spectrum
+  gapped, the smallest 1.7e-6): every field of two directions' products
+  against the ladder at 1e-7, the null-space rotation terms (the product
+  less its `span`-false twin) above ten bars in some field of each, the
+  parts summing to the product at 1e-9. Measured: worst 1.1e-9 to 1.5e-9;
+  the rotation at least 8.8e4 bars (y); lifts ≤ 2.4e-14.
+- `MatchesLadder/psb3_twist_sto3g` (slow tier): the PSB3 twist,
+  DF-SA3-CASSCF(6,6)/STO-3G (state 0), at `pc_floor` 1e-8: Sr and Si drop
+  43 and 42 modes, about 30 of them real, and keep 1.2e-8. h and B move a
+  tenth as far, and the ladder runs from 1e-3 over twelve rungs: intruders
+  sit within 2.5e-4 along the full-length h. Measured: worst 2.3e-8 to
+  5.3e-8 over three runs; the rotation 2.3e5 to 2.8e5 bars. At `pc_floor` 1e-9 the worst was 6.7e-8 in one run
+  and 1.2e-7 in another, the products repeating to 3e-9 (8e-10 at 1e-8).
+- `SymmetricLiftReported` (`hcn_sto3g`): above, "The Schur lift": the
+  report against the probe (1e-2), the bend's product against a ladder
+  inside t*, the symmetric and orbital-only directions lifting nothing and
+  passing the ladder.
+- `DegenerateInactivePair` (`h2co_skew_sto3g`, the default cut): its two
+  virtuals and its closest core pair brought to 1e-9 Eh apart through h
+  alone (`Nevpt2PcZc`'s construction); z^c is zero on both pairs, and the
+  product passes the ladder.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `qd_sc_coupling`, `QdScGradient`; `qd_pc_gradient`, `qd_pc_coupling`, `QdPcGradient`, `QdFold`; `qd_inputs`; `builders_tangent`, `BuildersTangent`, `BuilderOutputs`; `sc_hessian_product`, `ScHessianProduct`, `AdjointTangent`, `MoDirections`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `qd_sc_coupling`, `QdScGradient`; `qd_pc_gradient`, `qd_pc_coupling`, `QdPcGradient`, `QdFold`; `qd_inputs`; `builders_tangent`, `BuildersTangent`, `BuilderOutputs`; `sc_hessian_product`, `ScHessianProduct`, `pc_hessian_product`, `PcHessianProduct`, `AdjointTangent`, `MoDirections`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
 | `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies, and the count and weight checks the units share |
 | `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays`, `sc_arrays`, `builders_adjoint`, `adjoint_slot`, `fold_bars` and `root_rdms_adjoint`, declared for `gradient.cpp` (which defines them), `qd.cpp`, `tangent.cpp` and `hessian_product.cpp`; `direction_arrays` and `b_block`, `tangent.cpp`'s, for `hessian_product.cpp`; and `with_qd_inputs`, `qd.cpp`'s, for `lagrangian.cpp` |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
 | `qd.cpp` | `qd_sc_energy`, `qd_pc_energy`, `qd_sc_adjoint` and `qd_pc_adjoint`: every pair's RDMs over the shared builders, γ_SA, and the reverse pass through `sc_effective_hamiltonian_adjoint` or `pc_effective_hamiltonian_adjoint`, the transition and one-vector `rdms_adjoint` and `builders_adjoint`; `with_qd_inputs`, the same inputs handed to a callback |
 | `tangent.cpp` | `builders_tangent` and `direction_arrays`: the builders' terms by the product rule over the tangent arrays, the RDMs' through the bra/ket `nevpt2::rdms`, and f's core–core and virtual–virtual blocks |
-| `hessian_product.cpp` | `sc_hessian_product`: the class walk's tangent bars and the one-slot-dotted terms back through the reverse pass (`bars_tangent`), Φ's closed-form tangent, X and A in the MO basis, and the Rayleigh normalization |
+| `hessian_product.cpp` | `sc_hessian_product` and `pc_hessian_product` over one body (`hessian_product`): the class walk's tangent bars and the one-slot-dotted terms back through the reverse pass (`bars_tangent`), Φ's closed-form tangent, X and A in the MO basis, and the Rayleigh normalization; PC's Schur lift per direction |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
 | `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights, at any symmetric W (the state form a wrapper at u_K u_Kᵀ), and `qd_sc_gradient`'s two passes over it; `qd_sc_coupling`, the same at an interstate pair's W^PQ; `qd_pc_gradient` (state and W forms) and `qd_pc_coupling`, the same Lagrangian and passes over `qd_pc_energy` and `qd_pc_adjoint`; `qd_inputs`, `with_qd_inputs` on the solution's weights and strings |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |

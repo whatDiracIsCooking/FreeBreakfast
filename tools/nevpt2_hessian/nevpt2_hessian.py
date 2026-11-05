@@ -184,6 +184,20 @@ NH3_CS_COORDINATES = [
     ("H2z - H3z", "A''", {8: 1.0, 11: -1.0}),
 ]
 
+# Linear HCN along z: z displacements are totally symmetric (A1) and x and y
+# span the pi pair, labelled by C2v's B1 and B2.
+HCN_COORDINATES = [
+    ("H z", "A1", {2: 1.0}),
+    ("C z", "A1", {5: 1.0}),
+    ("N z", "A1", {8: 1.0}),
+    ("H x", "B1", {0: 1.0}),
+    ("C x", "B1", {3: 1.0}),
+    ("N x", "B1", {6: 1.0}),
+    ("H y", "B2", {1: 1.0}),
+    ("C y", "B2", {4: 1.0}),
+    ("N y", "B2", {7: 1.0}),
+]
+
 CASES = [
     {
         "name": "h2co_skew_sto3g",
@@ -224,6 +238,29 @@ CASES = [
         "irreps": ("A'", "A''"),
         "coordinates": NH3_CS_COORDINATES,
         "may_fail": ("sc",),
+        "h": 0.03,
+        "delta": 5e-3,
+    },
+    {
+        # PC's Sir metric has two null modes by symmetry, which a singlet
+        # that breaks the axial symmetry lifts at second order
+        # (src/nevpt2/gradient/README.md, "The Schur lift"). No nuclear
+        # displacement does: three atoms always keep their plane, which
+        # protects them, and every point drops the reference's modes.
+        # Symmetric, but nothing is expected to fail.
+        "name": "hcn_sto3g",
+        "kind": "symmetric_nulls",
+        "atoms": [
+            ("H", (0.0, 0.0, -2.0144)),
+            ("C", (0.0, 0.0, 0.0)),
+            ("N", (0.0, 0.0, 2.1845)),
+        ],
+        "basis": "sto-3g",
+        "cas": (4, 4),
+        "active": [5, 6, 7, 8],
+        "quantities": ("casscf", "sc", "pc"),
+        "irreps": ("A1", "B1", "B2"),
+        "coordinates": HCN_COORDINATES,
         "h": 0.03,
         "delta": 5e-3,
     },

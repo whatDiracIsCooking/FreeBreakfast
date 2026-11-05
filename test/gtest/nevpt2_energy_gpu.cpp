@@ -3448,4 +3448,266 @@ TEST(Nevpt2EnergyHvpEmpty, Psb3ProportionalPairAcceptedNonProportionalRefused) {
   std::cout << std::format("[ nevpt2   ] hvp PSB3 FC refused: {}\n", refused.error().message);
 }
 
+// ---------------------------------------------------------------------------
+// The PC Hessian-vector product
+// ---------------------------------------------------------------------------
+
+// The conditioning floor's case (ConditioningFloorReadByEveryPass):
+// n2_ccpvdz_cas44_df with its cut raised to kPcHvpFloor, which drops real
+// modes the default keeps and leaves every kept spectrum gapped, so the
+// kept span's rotation carries real modes at second order and the solve is
+// well conditioned (#917).
+const std::string kPcHvpCase = "n2_ccpvdz_cas44_df";
+constexpr double kPcHvpFloor = 1e-3;
+
+// pc_class_energies_adjoint's bars over @p h at the floor @p floor.
+std::optional<HostBars> pc_bars_at(fb::DeviceResources &res, const HostCase &h,
+                                   const double floor) {
+  DeviceCase g = upload_case(res, h);
+  g.in.pc_floor = floor;
+  const DeviceBars b = zero_bars(res, h);
+  const auto got = nevpt2::pc_class_energies_adjoint(res, *g.blocks, g.in, 0, b.bars);
+  EXPECT_TRUE(got) << got.error().message;
+  if (!got) {
+    return std::nullopt;
+  }
+  return download_bars(res, b);
+}
+
+// pc_class_energies_hvp over @p h at @p floor along @p dx, every bar wanted.
+fb::Result<std::pair<nevpt2::PcClassEnergiesHvp, std::vector<HostBars>>>
+run_pc_hvp(fb::DeviceResources &res, const HostCase &h, const std::vector<HostCase> &dx,
+           const double floor, const bool span = true) {
+  DeviceCase g = upload_case(res, h);
+  g.in.pc_floor = floor;
+  std::vector<DeviceCase> gd;
+  gd.reserve(dx.size());
+  std::vector<nevpt2::EnergyDirection> directions;
+  std::vector<DeviceBars> b;
+  std::vector<nevpt2::EnergyBars> bars;
+  for (const HostCase &d : dx) {
+    gd.push_back(upload_case(res, d));
+    directions.push_back(direction_of(gd.back(), d));
+    b.push_back(zero_bars(res, h));
+    bars.push_back(b.back().bars);
+  }
+  auto got = nevpt2::pc_class_energies_hvp(res, *g.blocks, g.in, 0, directions, bars, span);
+  if (!got) {
+    return std::unexpected(got.error());
+  }
+  std::vector<HostBars> host;
+  for (const DeviceBars &x : b) {
+    host.push_back(download_bars(res, x));
+  }
+  return std::pair{std::move(*got), std::move(host)};
+}
+
+// The ladder of pc_class_energies_adjoint's bars along @p dx at @p floor:
+// central differences at t = kT0 / 2^k, k < kRungs, their Richardson
+// extrapolants, and the one that agrees best with the next (Nevpt2EnergyHvp's
+// rule), per field, flattened as bar_fields orders them.
+struct PcBarsLadder {
+  std::vector<std::vector<double>> best;
+  double change = 0.0;
+  std::size_t rung = 0;
+};
+
+std::optional<PcBarsLadder> pc_bars_ladder(fb::DeviceResources &res, const HostCase &h,
+                                           const HostCase &dx, const double floor,
+                                           const std::vector<double> &scale) {
+  constexpr std::int32_t kRungs = 8;
+  constexpr double kT0 = 1e-3;
+  std::vector<std::vector<std::vector<double>>> d; // [k][field]
+  for (std::int32_t k = 0; k < kRungs; ++k) {
+    const double t = std::ldexp(kT0, -k);
+    const auto plus = pc_bars_at(res, displaced(h, dx, t), floor);
+    const auto minus = pc_bars_at(res, displaced(h, dx, -t), floor);
+    if (!plus || !minus) {
+      return std::nullopt;
+    }
+    const auto fp = bar_fields(*plus);
+    const auto fm = bar_fields(*minus);
+    std::vector<std::vector<double>> rung;
+    for (std::size_t f = 0; f < fp.size(); ++f) {
+      std::vector<double> x(fp[f].second->size());
+      for (std::size_t e = 0; e < x.size(); ++e) {
+        x[e] = ((*fp[f].second)[e] - (*fm[f].second)[e]) / (2.0 * t);
+      }
+      rung.push_back(std::move(x));
+    }
+    d.push_back(std::move(rung));
+  }
+  const auto richardson = [&](const std::size_t k, const std::size_t f, const std::size_t e) {
+    return ((4.0 * d[k + 1][f][e]) - d[k][f][e]) / 3.0;
+  };
+  PcBarsLadder out{.best = {}, .change = std::numeric_limits<double>::infinity(), .rung = 0};
+  for (std::size_t k = 0; k + 2 < static_cast<std::size_t>(kRungs); ++k) {
+    double change = 0.0;
+    for (std::size_t f = 0; f < scale.size(); ++f) {
+      for (std::size_t e = 0; e < d[k][f].size(); ++e) {
+        if (scale[f] > 0.0) {
+          change =
+              std::max(change, std::abs(richardson(k + 1, f, e) - richardson(k, f, e)) / scale[f]);
+        }
+      }
+    }
+    if (change < out.change) {
+      out.change = change;
+      out.rung = k;
+    }
+  }
+  for (std::size_t f = 0; f < scale.size(); ++f) {
+    std::vector<double> x(d[out.rung][f].size());
+    for (std::size_t e = 0; e < x.size(); ++e) {
+      x[e] = richardson(out.rung, f, e);
+    }
+    out.best.push_back(std::move(x));
+  }
+  return out;
+}
+
+// Each field's largest magnitude in @p b.
+std::vector<double> field_scales(const HostBars &b) {
+  std::vector<double> out;
+  for (const auto &[name, v] : bar_fields(b)) {
+    double m = 0.0;
+    for (const double x : *v) {
+      m = std::max(m, std::abs(x));
+    }
+    out.push_back(m);
+  }
+  return out;
+}
+
+// Each field's miss against the ladder, relative to the product's own
+// largest element, and the worst.
+std::pair<std::vector<double>, double> ladder_misses(const HostBars &product,
+                                                     const PcBarsLadder &ladder,
+                                                     const std::vector<double> &scale) {
+  const auto fields = bar_fields(product);
+  std::vector<double> miss(fields.size(), 0.0);
+  double worst = 0.0;
+  for (std::size_t f = 0; f < fields.size(); ++f) {
+    for (std::size_t e = 0; e < fields[f].second->size(); ++e) {
+      miss[f] = std::max(miss[f], std::abs((*fields[f].second)[e] - ladder.best[f][e]));
+    }
+    miss[f] = scale[f] > 0.0 ? miss[f] / scale[f] : 0.0;
+    worst = std::max(worst, miss[f]);
+  }
+  return {miss, worst};
+}
+
+// The PC Hessian-vector product against a ladder of
+// pc_class_energies_adjoint's bars, every field to 1e-7 of its largest
+// element (Nevpt2EnergyHvp's rule), along seeded random directions of every
+// input group at once and of each alone, at kPcHvpFloor; and the kept span's
+// rotation visible, the product without it (span false, both orders)
+// missing the same ladder by more than ten bars in some field.
+class Nevpt2PcEnergyHvp : public ::testing::TestWithParam<std::string> {};
+
+constexpr double kPcHvpTolerance = 1e-7;
+
+TEST_P(Nevpt2PcEnergyHvp, BarsMatchRichardsonLadder) {
+  FBF_REQUIRE_GPU();
+  const std::string group = GetParam();
+  // Every input at once stands for the groups in the fast tier.
+  if (group != "all") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  fb::DeviceResources res(0);
+  const HostCase h = load_host_case(kDataDir / kPcHvpCase);
+  const HostCase dx = random_direction(h, group, 815);
+  const auto got = run_pc_hvp(res, h, {dx}, kPcHvpFloor);
+  ASSERT_TRUE(got) << got.error().message;
+  const auto without = run_pc_hvp(res, h, {dx}, kPcHvpFloor, false);
+  ASSERT_TRUE(without) << without.error().message;
+  const HostBars &hvp = got->second.front();
+  const std::vector<double> scale = field_scales(hvp);
+  const auto ladder = pc_bars_ladder(res, h, dx, kPcHvpFloor, scale);
+  ASSERT_TRUE(ladder.has_value());
+  const auto [miss, worst] = ladder_misses(hvp, *ladder, scale);
+  const auto [miss_off, worst_off] = ladder_misses(without->second.front(), *ladder, scale);
+  const auto fields = bar_fields(hvp);
+  std::string report;
+  for (std::size_t f = 0; f < fields.size(); ++f) {
+    EXPECT_LE(miss[f], kPcHvpTolerance) << group << " " << fields[f].first;
+    report += std::format(" {} {:.1e} ({:.1e})", fields[f].first, miss[f], miss_off[f]);
+  }
+  std::int64_t dropped = 0;
+  for (std::size_t k = 0; k < 8; ++k) {
+    dropped += got->first.energies.dropped[k];
+  }
+  EXPECT_GT(dropped, 0);
+  if (group != "e") {
+    // The orbital energies move neither S nor its span.
+    EXPECT_GT(worst_off, 10.0 * kPcHvpTolerance) << group << ": the span's rotation is not visible";
+  }
+  std::cout << std::format("[ nevpt2   ] PC hvp ladder {} (floor {:.0e}): rung {} (R change "
+                           "{:.1e}), worst {:.2e}, span off {:.2e} ({:.0f} bars); per field (span "
+                           "off):{}\n",
+                           group, kPcHvpFloor, ladder->rung, ladder->change, worst, worst_off,
+                           worst_off / kPcHvpTolerance, report);
+}
+
+INSTANTIATE_TEST_SUITE_P(Groups, Nevpt2PcEnergyHvp,
+                         ::testing::Values(std::string{"all"}, std::string{"B"},
+                                           std::string{"h1e_v"}, std::string{"e"}, std::string{"h"},
+                                           std::string{"rdm"}),
+                         [](const auto &info) { return info.param; });
+
+// Two directions walked at once are each the product of one alone.
+TEST(Nevpt2PcEnergyHvp, BatchedDirectionsMatchSingle) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  const HostCase h = load_host_case(kDataDir / kPcHvpCase);
+  const std::vector<HostCase> dx{random_direction(h, "all", 8151),
+                                 random_direction(h, "rdm", 8152)};
+  const auto both = run_pc_hvp(res, h, dx, kPcHvpFloor);
+  ASSERT_TRUE(both) << both.error().message;
+  for (std::size_t u = 0; u < dx.size(); ++u) {
+    const auto one = run_pc_hvp(res, h, {dx[u]}, kPcHvpFloor);
+    ASSERT_TRUE(one) << one.error().message;
+    const auto a = bar_fields(both->second[u]);
+    const auto b = bar_fields(one->second.front());
+    const std::vector<double> scale = field_scales(one->second.front());
+    for (std::size_t f = 0; f < a.size(); ++f) {
+      double off = 0.0;
+      for (std::size_t e = 0; e < a[f].second->size(); ++e) {
+        off = std::max(off, std::abs((*a[f].second)[e] - (*b[f].second)[e]));
+      }
+      EXPECT_LE(off, 1e-10 * scale[f]) << "direction " << u << " " << a[f].first;
+    }
+  }
+}
+
+// A class whose solve keeps a mode below 1e-10 of its largest is refused
+// (Numerical, naming it and the floor, #917): PSB3's twist keeps Sr's and
+// Si's at about 4e-13 at the default cut. With pc_floor 1e-10 its cut
+// passes them and the product runs.
+TEST(Nevpt2PcEnergyHvp, RefusesAnIllConditionedSolve) {
+  FBF_REQUIRE_GPU();
+  // A CASSCF and a product, beside BarsMatchRichardsonLadder, the family's
+  // fast case.
+  FBF_SKIP_IF_FAST_TESTS();
+  const HostCase &h = psb3_twist();
+  ASSERT_GT(h.na, 0U);
+  fb::DeviceResources res(0);
+  const HostCase dx = random_direction(h, "all", 8153);
+  const auto refused = run_pc_hvp(res, h, {dx}, 0.0);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_NE(refused.error().message.find("pc_floor"), std::string::npos) << refused.error().message;
+  EXPECT_TRUE(refused.error().message.find("Sr keeps") != std::string::npos ||
+              refused.error().message.find("Si keeps") != std::string::npos)
+      << refused.error().message;
+  const auto floored = run_pc_hvp(res, h, {dx}, 1e-10);
+  ASSERT_TRUE(floored) << floored.error().message;
+  for (std::size_t k = 0; k < 8; ++k) {
+    if (k != 2) {
+      EXPECT_GE(floored->first.energies.kept[k], 1e-10) << kClassNames[k];
+    }
+  }
+  std::cout << std::format("[ nevpt2   ] PC hvp refused: {}\n", refused.error().message);
+}
+
 } // namespace

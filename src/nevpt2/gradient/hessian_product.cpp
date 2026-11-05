@@ -267,15 +267,35 @@ double host_dot(std::span<const double> a, std::span<const double> b) {
   return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
 }
 
-Result<ScHessianProduct> sc_hessian_product(DeviceResources &res, const ci::DeviceStringSet &alpha,
-                                            const ci::DeviceStringSet &beta, const int32_t naux,
-                                            const int32_t nao, const int32_t nmo, const double *b,
-                                            const double *c, const double *h, const int32_t ncore,
-                                            const int32_t ncas, const double *vector,
-                                            const double *z, const int32_t batch,
-                                            const MoDirections &directions,
-                                            const MoDirections &partners, const bool parts) {
-  constexpr std::string_view kWho = "nevpt2::sc_hessian_product";
+// A product's class walk: its reverse pass at the point onto the bars, and
+// its Hessian-vector product along directions onto bars of their own, one
+// per direction (@p both: the call whose diagnostics the product reports).
+// @p check, when set, reads every direction's builders' tangent (and its CI
+// part u, on the sphere's tangent) before the class walk does.
+struct ProductWalk {
+  std::function<Status(const MoBlocks &, const EnergyInputs &, const EnergyBars &)> adjoint;
+  std::function<Status(const MoBlocks &, const EnergyInputs &, std::span<const EnergyDirection>,
+                       std::span<const EnergyBars>, std::span<const EnergyDirection>, bool both)>
+      hvp;
+  std::function<Status(ScArrays &x, std::span<ScArrays> dots, const double *u)> check;
+};
+
+// The products and their parts, of either class walk.
+struct Products {
+  std::vector<AdjointTangent> products;
+  std::vector<std::array<AdjointTangent, 5>> parts;
+};
+
+// sc_hessian_product's and pc_hessian_product's one body: everything but
+// the class walk (README "The SC Hessian-vector product in (h, B, c)").
+Result<Products> hessian_product(DeviceResources &res, const std::string_view kWho,
+                                 const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+                                 const int32_t naux, const int32_t nao, const int32_t nmo,
+                                 const double *b, const double *c, const double *h,
+                                 const int32_t ncore, const int32_t ncas, const double *vector,
+                                 const double *z, const MoDirections &directions,
+                                 const MoDirections &partners, const bool parts,
+                                 const ProductWalk &walk_of) {
   const auto complete = [](const MoDirections &d) {
     return d.count >= 0 && (d.count == 0 || (d.h != nullptr && d.b != nullptr && d.c != nullptr));
   };
@@ -309,8 +329,7 @@ Result<ScHessianProduct> sc_hessian_product(DeviceResources &res, const ci::Devi
   // sc_adjoint's reverse pass, its bars kept in bar for the one-slot terms.
   ScArrays bar = FBF_TRY(zeroed_arrays(res, naux, ncore, ncas, nvirt));
   LambdaBars lambda = FBF_TRY(lambda_bars(res, x, nmo));
-  const ClassEnergiesAdjoint walked = FBF_TRY(
-      class_energies_adjoint(res, x.walk_blocks(), x.inputs(), batch, energy_bars(bar, lambda)));
+  FBF_TRY(walk_of.adjoint(x.walk_blocks(), x.inputs(), energy_bars(bar, lambda)));
   const ScAdjoint corr = FBF_TRY(
       builders_adjoint(res, naux, nao, nmo, b, c, ncore, ncas, x, bar, std::move(lambda),
                        [&] { return root_rdms_adjoint(res, alpha, beta, vector, x, bar); }));
@@ -384,6 +403,9 @@ Result<ScHessianProduct> sc_hessian_product(DeviceResources &res, const ci::Devi
   };
   std::vector<ScArrays> dots = FBF_TRY(tangents(directions, u_all));
   std::vector<ScArrays> partner_dots = FBF_TRY(tangents(partners, u_partners));
+  if (walk_of.check) {
+    FBF_TRY(walk_of.check(x, dots, u_all.data()));
+  }
 
   // class_energies_hvp along @p chosen of each direction, onto fresh bars.
   struct WalkBars {
@@ -391,7 +413,6 @@ Result<ScHessianProduct> sc_hessian_product(DeviceResources &res, const ci::Devi
     std::vector<LambdaBars> lambdas;
   };
   enum class Along { Both, Slabs, Builders };
-  ClassEnergiesHvp hvp;
   const auto walk = [&](const Along chosen) -> Result<WalkBars> {
     WalkBars out;
     std::vector<EnergyDirection> along_dirs;
@@ -411,18 +432,13 @@ Result<ScHessianProduct> sc_hessian_product(DeviceResources &res, const ci::Devi
         partner_dirs.push_back({.in = dot.inputs(), .blocks = &dot.blocks});
       }
     }
-    ClassEnergiesHvp got = FBF_TRY(class_energies_hvp(res, x.walk_blocks(), x.inputs(), batch,
-                                                      along_dirs, bars, partner_dirs));
-    if (chosen == Along::Both) {
-      hvp = std::move(got);
-    }
+    FBF_TRY(walk_of.hvp(x.walk_blocks(), x.inputs(), along_dirs, bars, partner_dirs,
+                        chosen == Along::Both));
     return out;
   };
 
-  ScHessianProduct out{.energies = walked.energies};
+  Products out;
   WalkBars both = FBF_TRY(walk(Along::Both));
-  out.populated = hvp.populated;
-  out.defect = hvp.defect;
   std::optional<WalkBars> slabs;
   std::optional<WalkBars> builders;
   if (parts) {
@@ -543,6 +559,124 @@ Result<ScHessianProduct> sc_hessian_product(DeviceResources &res, const ci::Devi
                          std::move(phi_part), std::move(normalization_part)});
   }
   FBF_TRY(res.sync());
+  return out;
+}
+
+Result<ScHessianProduct> sc_hessian_product(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                            const ci::DeviceStringSet &beta, const int32_t naux,
+                                            const int32_t nao, const int32_t nmo, const double *b,
+                                            const double *c, const double *h, const int32_t ncore,
+                                            const int32_t ncas, const double *vector,
+                                            const double *z, const int32_t batch,
+                                            const MoDirections &directions,
+                                            const MoDirections &partners, const bool parts) {
+  ScHessianProduct out;
+  const ProductWalk walk{
+      .adjoint = [&](const MoBlocks &blocks, const EnergyInputs &in,
+                     const EnergyBars &bars) -> Status {
+        out.energies = FBF_TRY(class_energies_adjoint(res, blocks, in, batch, bars)).energies;
+        return {};
+      },
+      .hvp = [&](const MoBlocks &blocks, const EnergyInputs &in,
+                 std::span<const EnergyDirection> dirs, std::span<const EnergyBars> bars,
+                 std::span<const EnergyDirection> partner_dirs, const bool both) -> Status {
+        ClassEnergiesHvp got =
+            FBF_TRY(class_energies_hvp(res, blocks, in, batch, dirs, bars, partner_dirs));
+        if (both) {
+          out.populated = std::move(got.populated);
+          out.defect = std::move(got.defect);
+        }
+        return {};
+      },
+      .check = {}};
+  Products p =
+      FBF_TRY(hessian_product(res, "nevpt2::sc_hessian_product", alpha, beta, naux, nao, nmo, b, c,
+                              h, ncore, ncas, vector, z, directions, partners, parts, walk));
+  out.products = std::move(p.products);
+  out.parts = std::move(p.parts);
+  return out;
+}
+
+Result<PcHessianProduct> pc_hessian_product(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                            const ci::DeviceStringSet &beta, const int32_t naux,
+                                            const int32_t nao, const int32_t nmo, const double *b,
+                                            const double *c, const double *h, const int32_t ncore,
+                                            const int32_t ncas, const double *vector,
+                                            const double *z, const int32_t batch,
+                                            const MoDirections &directions, const bool parts,
+                                            const double pc_floor, const bool span) {
+  constexpr std::string_view kWho = "nevpt2::pc_hessian_product";
+  PcHessianProduct out;
+  const auto floored = [&](const EnergyInputs &in) {
+    EnergyInputs x = in;
+    x.pc_floor = pc_floor;
+    return x;
+  };
+  const ProductWalk walk{
+      .adjoint = [&](const MoBlocks &blocks, const EnergyInputs &in,
+                     const EnergyBars &bars) -> Status {
+        out.energies =
+            FBF_TRY(pc_class_energies_adjoint(res, blocks, floored(in), batch, bars)).energies;
+        return {};
+      },
+      .hvp = [&](const MoBlocks &blocks, const EnergyInputs &in,
+                 std::span<const EnergyDirection> dirs, std::span<const EnergyBars> bars,
+                 std::span<const EnergyDirection>, const bool) -> Status {
+        FBF_TRY(pc_class_energies_hvp(res, blocks, floored(in), batch, dirs, bars, span));
+        return {};
+      },
+      // The Schur lift along each direction: the RDMs' second derivative on
+      // the sphere, 2 γ(u, u) - 2 |u|² γ(c, c) (u ⊥ c), dm3's from
+      // nevpt2::rdms of u and dm2 and dm1 its traces.
+      .check = [&](ScArrays &x, std::span<ScArrays> dots, const double *u) -> Status {
+        const int64_t n = ncas;
+        const int64_t n6 = n * n * n * n * n * n;
+        const auto ndet = static_cast<int64_t>(alpha.size()) * static_cast<int64_t>(beta.size());
+        for (size_t k = 0; k < dots.size(); ++k) {
+          const double *const uk = u + (static_cast<int64_t>(k) * ndet);
+          const std::vector<double> uh = FBF_TRY(to_host(res, uk, static_cast<size_t>(ndet)));
+          const double uu = host_dot(uh, uh);
+          PcMetricLifts lifts{};
+          if (uu > 0.0) {
+            Buffers::device<double> dm3 = FBF_TRY(zeroed(res, n6));
+            FBF_TRY(rdms(res, alpha, beta, uk, x.eri.data(), dm3.data(), nullptr, nullptr,
+                         FBF_TRY(rdm_budget())));
+            Buffers::device<double> second3 = FBF_TRY(zeroed(res, n6));
+            FBF_TRY(contract(res, "a->a", {column_operand(dm3.data(), {n6})}, second3.data(), {n6},
+                             2.0));
+            FBF_TRY(contract(res, "a->a", {column_operand(x.dm3.data(), {n6})}, second3.data(),
+                             {n6}, -2.0 * uu));
+            Buffers::device<double> second2 = FBF_TRY(zeroed(res, n * n * n * n));
+            Buffers::device<double> second1 = FBF_TRY(zeroed(res, n * n));
+            FBF_TRY(run_builds(res, trace_builds(x, second1.data(), second2.data(), second3.data(),
+                                                 nullptr, nullptr, nullptr)));
+            const EnergyInputs second{
+                .dm1 = second1.data(), .dm2 = second2.data(), .dm3 = second3.data()};
+            lifts = FBF_TRY(pc_metric_lifts(res, x.walk_blocks(), floored(x.inputs()),
+                                            dots[k].inputs(), second));
+            for (double &l : lifts.lift) {
+              l /= uu;
+            }
+            // The launches above read this branch's buffers.
+            FBF_TRY(res.sync());
+          }
+          // t* in the direction's own units: the null mode's ½ ℓ |u|² t² reaches
+          // the cut there.
+          std::array<double, 8> steps{};
+          for (size_t cls = 0; cls < steps.size(); ++cls) {
+            steps[cls] = lifts.lift[cls] > 0.0
+                             ? std::sqrt(2.0 * lifts.cut[cls] / (lifts.lift[cls] * uu))
+                             : std::numeric_limits<double>::infinity();
+          }
+          out.lifts.push_back(lifts.lift);
+          out.lift_steps.push_back(steps);
+        }
+        return {};
+      }};
+  Products p = FBF_TRY(hessian_product(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas,
+                                       vector, z, directions, {}, parts, walk));
+  out.products = std::move(p.products);
+  out.parts = std::move(p.parts);
   return out;
 }
 
