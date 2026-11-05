@@ -390,6 +390,11 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                             : std::to_string(nevpt2_gradient->frozen_core));
     }
   }
+  if (!(pc_floor >= 0.0) || !std::isfinite(pc_floor)) {
+    return err_config("[{}] pc_floor is {}: PC's conditioning floor is a finite fraction of each "
+                      "metric's largest eigenvalue, 0 or more",
+                      kName, pc_floor);
+  }
   if (method == HessianMethod::Analytic && eri.mode != EriMode::DensityFitting) {
     return err_unsupported("[{}] method 'analytic' is density-fitted only, and [{}] mode is "
                            "'integral_direct': set [{}] mode = 'density_fitting', or [{}] method "
@@ -487,6 +492,9 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   chain_casscf_gradient.json_path.clear();
   Nevpt2GradientStep chain_nevpt2_gradient = nevpt2_gradient.value_or(Nevpt2GradientStep{});
   chain_nevpt2_gradient.json_path.clear();
+  // The whole PC chain is differentiated at one floor (#923): every
+  // displaced gradient at the analytic Hessian's.
+  chain_nevpt2_gradient.pc_floor = pc_floor;
   // The molecule at @p atoms moved by @p shift, n Cartesian components
   // (3 A + k); empty, not moved.
   const auto displaced = [&](std::span<const double> shift) {
@@ -614,8 +622,8 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                  residuals.empty() ? 0.0 : std::ranges::max(residuals));
   } else if (method == HessianMethod::Analytic && nevpt2_gradient) {
     // One chain to [casscf] at R, and the variant's analytic Hessian at its
-    // single-state solution, the gradient step's own call (batch 0, PC's
-    // floor 0) in the config's coordinates. A refusal -- the pairs SC's
+    // single-state solution, the gradient step's own call (batch 0, PC at
+    // @ref pc_floor) in the config's coordinates. A refusal -- the pairs SC's
     // empty perturbers make no bilinear form on, PC's kept classes, lifts
     // and degenerate pairs -- is returned as it is, naming them.
     auto chain = FBF_TRY(chain_at({}, chain_casscf));
@@ -631,9 +639,9 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     double e_corr = 0.0;
     double residual = 0.0;
     if (pc) {
-      hessian::PcNevpt2Terms terms = FBF_TRY(
-          hessian::df_pc_nevpt2(res, chain_molecule, basis, classes, fit.aux, h, fit.b,
-                                fit.l.data(), solution, cas.ncore, cas.ncas, 0, coordinates));
+      hessian::PcNevpt2Terms terms = FBF_TRY(hessian::df_pc_nevpt2(
+          res, chain_molecule, basis, classes, fit.aux, h, fit.b, fit.l.data(), solution, cas.ncore,
+          cas.ncas, 0, coordinates, pc_floor));
       raw = std::move(terms.hessian);
       asymmetry = terms.asymmetry;
       e_corr = terms.e_corr;
@@ -1232,6 +1240,9 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     }
     if (nevpt2_gradient) {
       doc["variant"] = nevpt2_gradient->variant == Nevpt2Variant::Pc ? "pc" : "sc";
+      if (nevpt2_gradient->variant == Nevpt2Variant::Pc) {
+        doc["pc_floor"] = pc_floor;
+      }
     }
     if (!out.dipole_derivative.empty()) {
       doc["dipole_derivative"] = hessian_rows(out.dipole_derivative, 3);

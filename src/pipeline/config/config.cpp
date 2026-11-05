@@ -654,7 +654,8 @@ template <class S>
   } else if constexpr (std::same_as<S, HessianStep>) {
     // As [optimize]'s, the chain it runs is copied in by parse_config, and
     // whether its [eri] is one the method takes is plan_hessian's to say.
-    FBF_TRY(check_keys(table, kStep, {"method", "displacement", "ladder", "pairs", "coordinates"}));
+    FBF_TRY(check_keys(table, kStep,
+                       {"method", "displacement", "ladder", "pairs", "coordinates", "pc_floor"}));
     std::string method = "analytic";
     FBF_TRY(read_key(table, kStep, "method", base_dir, method));
     if (method != "analytic" && method != "numerical") {
@@ -700,6 +701,13 @@ template <class S>
     }
     if (table.contains("coordinates") && coordinates.empty()) {
       return err_config("[{}] coordinates is empty: leave it out for the Cartesian ones", kStep);
+    }
+    // Whether the chain is a PC one that reads it is plan_hessian's to say.
+    FBF_TRY(read_key(table, kStep, "pc_floor", base_dir, step.pc_floor));
+    if (!std::isfinite(step.pc_floor) || !(step.pc_floor >= 0.0)) {
+      return err_config("[{}] pc_floor must be finite and 0 or more: a fraction of each PC "
+                        "metric's largest eigenvalue, 0 the round-off cut",
+                        kStep);
     }
     step.json_path = output_dir / std::format("{}.json", kStep);
   } else {
@@ -855,6 +863,24 @@ template <class S>
     if (step.ladder && (table == nullptr || !table->contains("pairs"))) {
       step.pairs.reset();
     }
+    // A PC chain runs at the Hessian's floor (HessianStep::kPcFloor unless
+    // the config says otherwise, #923), and so does the run's own
+    // [nevpt2_gradient], so that the gradient reported beside the Hessian is
+    // the same energy's. A [nevpt2_gradient] with no [hessian] stays at 0.
+    if (nevpt2.variant == Nevpt2Variant::Pc) {
+      for (Calculation::Step &s : steps) {
+        if (auto *const own = std::get_if<Nevpt2GradientStep>(&s)) {
+          own->pc_floor = step.pc_floor;
+        }
+      }
+    }
+  }
+  const toml::table *const hessian_table = doc[kStep].as_table();
+  if (hessian_table != nullptr && hessian_table->contains("pc_floor") &&
+      !(step.nevpt2_gradient && step.nevpt2_gradient->variant == Nevpt2Variant::Pc)) {
+    return err_config("[{}] pc_floor is PC-NEVPT2's conditioning floor, read only beside a [{}] "
+                      "of variant 'pc'",
+                      kStep, Nevpt2GradientStep::kName);
   }
   if (step.method == HessianMethod::Analytic && !step.nevpt2_gradient &&
       !step.coordinates.empty()) {

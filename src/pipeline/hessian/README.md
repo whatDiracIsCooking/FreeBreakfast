@@ -167,8 +167,9 @@ refusal of an open shell -- is returned as it is.
   layout); when made, the dipole derivative (e) as 3N rows of x, y, z and the
   IR intensities (km/mol), one per frequency. The numerical method adds its
   `"displacement"`, the CASSCF chain the `"root"` differentiated, the
-  NEVPT2 chain its `"variant"` (`"sc"` or `"pc"`), and either method, when
-  given, its `"coordinates"`.
+  NEVPT2 chain its `"variant"` (`"sc"` or `"pc"`) and, for PC, the
+  `"pc_floor"` its chain ran at ([The PC floor](#the-pc-floor)), and either
+  method, when given, its `"coordinates"`.
 
 ## The CASSCF chain
 
@@ -303,7 +304,8 @@ analytic method runs it, its `CasscfOutput` back into the same
 (`../../hessian/README.md`, "The SC-NEVPT2 Hessian" and "The PC-NEVPT2
 Hessian"): `hessian::df_sc_nevpt2` for `variant = "sc"`,
 `hessian::df_pc_nevpt2` for `"pc"`, the same calls `[nevpt2_gradient]`
-makes for the gradient's (batch 0, PC's floor 0). Its `hessian` is the
+makes for the gradient's (batch 0, PC at `pc_floor`, [The PC
+floor](#the-pc-floor)). Its `hessian` is the
 step's raw Hessian (already symmetrized) and its `asymmetry` the step's;
 the NEVPT2 energy and the Z-vector's residual are logged. Then the step's
 symmetrizing, its translational sum, `geometry::harmonic_analysis` and
@@ -379,6 +381,39 @@ QD-NEVPT2 has no Hessian here), a `frozen_core` other than 0
 beside it (InvalidConfig: one energy). The outer `[casscf]` and
 `[nevpt2_gradient]` run too, once, at the molecule, as the CASSCF chain's
 do.
+
+### The PC floor
+
+Under `variant = "pc"`, the whole chain the Hessian differentiates runs at
+one PC conditioning floor, `HessianStep::pc_floor` (`EnergyInputs::pc_floor`,
+`../../nevpt2/energy/README.md` "The conditioning floor"): the analytic
+method's `hessian::df_pc_nevpt2` and the energy it reports, or the
+numerical method's every displaced `nevpt2::pc_gradient`
+(`Nevpt2GradientStep::pc_floor`, set on the chain's copy). The run's own
+outer `[nevpt2_gradient]` takes it too, so the gradient written beside the
+Hessian is the same energy's. **The default is 1e-10 of each metric's
+largest eigenvalue**, `HessianStep::kPcFloor`, not the library's 0:
+
+- **Why** (#917): at PSB3, DF-CASSCF(6,6)/cc-pVDZ, kept metric modes sit at
+  about 5e-13 of σ_max, just above the round-off cut, and PC's second
+  derivative is not smooth there: a central-difference ladder of the PC
+  adjoint never converges, its rungs disagreeing by 1e2 to 1e6 times their
+  noise. At 1e-10 it is clean throughout, at FC and at the 90° twist; 1e-11
+  is clean only at the twist. `df_pc_nevpt2` refuses a class kept below
+  1e-10 at floor 0, so without the floor a PC Hessian at a PSB3-like system
+  is refused, not wrong.
+- **What it costs** (#923's table): PC E_corr moves by 1.2e-10 Eh at PSB3 FC,
+  5.8e-9 Eh at the twist, and about 1.7e-7 Eh at HF CAS(10,7). BAGEL's
+  absolute 1e-9 is about 3.5e-11 relative there, between the 1e-11 and
+  1e-10 rows.
+- **Why only here**: a library-wide 1e-10 moves the PC-QD goldens and
+  #744's PC-QD NACs past their bars (the energy README has the numbers), so
+  a `[nevpt2_gradient]` with no `[hessian]`, `[nevpt2]`, QD and the NACs
+  stay at 0.
+
+`pc_floor = 0` restores the round-off cut, max(1e-13, 100 ε √d), bitwise;
+then the class refusal above is what guards the Hessian. The floor used is
+`hessian.json`'s `"pc_floor"`.
 
 ## The ladder and the bilinearity check
 
@@ -567,9 +602,12 @@ variant = "sc"         # or "pc"
 [hessian]
 method = "analytic"    # the default
 coordinates = [[1, 0, 0, ...], ...]  # optional: n orthonormal rows of n
+pc_floor = 1e-10       # PC only, the default: 0 or more, 0 the round-off cut
 ```
 
-By either method `quasi_degenerate` (Unsupported), a `frozen_core` other
+`pc_floor` ([The PC floor](#the-pc-floor)) is read under either method,
+and only beside a `[nevpt2_gradient]` of variant `"pc"` (InvalidConfig
+otherwise, and for a negative or non-finite one). By either method `quasi_degenerate` (Unsupported), a `frozen_core` other
 than 0 (InvalidConfig), a state average (`[nevpt2_gradient]`'s own
 refusal, Unsupported) and an integral-direct `[eri]` (Unsupported) are
 refused. Numerically:
@@ -624,7 +662,11 @@ integral-direct `[eri]` -- the default one -- is refused there too
   method beside a `[casscf_gradient]` (by default and by name, and beside an
   `[optimize]` holding the same CASSCF chain); the analytic method beside a
   `[nevpt2_gradient]`, SC and PC (by default and by name, no ladder, its
-  `coordinates` read, the numerical keys refused) and its refusals before
+  `coordinates` read, the numerical keys refused), `pc_floor` (1e-10 by
+  default under either method, 0 accepted, carried by the outer PC
+  `[nevpt2_gradient]`, which stays at 0 under SC or with no `[hessian]`;
+  a negative or non-finite floor refused, and the key beside anything but
+  a PC `[nevpt2_gradient]`) and its refusals before
   running (a state average, an integral-direct `[eri]` written or by
   default, `frozen_core` 1 and `"auto"`, `quasi_degenerate`);
   `examples/nevpt2_hessian.toml` read as the binary reads it; and
@@ -766,7 +808,9 @@ OpenMolcas comparison (the issue's optional one) was made.
   (slow-gated): `h2co_skew_sto3g` run by `Calculation`, `hessian.json`
   and the product against the variant's call made directly on the
   Calculation's outer products (the same chain the step reruns) to 1e-10
-  of the largest element, every frequency published;
+  of the largest element, every frequency published; PC's direct call at
+  `HessianStep::kPcFloor`, and `hessian.json`'s `"pc_floor"`, the step's and
+  the outer `[nevpt2_gradient]`'s all 1e-10 (#923);
   `ScSymmetricRefusalNamesTheAPrimePrimeBlock` (fast): `nh3_cs_sto3g` in
   the fixture's coordinates, the step's error Numerical naming exactly the
   ten pairs of the A″ × A″ off-diagonal block, and no `hessian.json`.

@@ -119,6 +119,17 @@ struct HessianStep {
   /// @brief The most coordinates @ref pairs' std::nullopt checks every pair
   /// of: four atoms, 66 pairs, 528 gradients beside the ladder's 96.
   static constexpr size_t kMaxEveryPairCoordinates = 12;
+  /// @brief @ref pc_floor's default: PSB3's second-order ladder is clean at
+  /// a relative cut of 1e-10 and not at the round-off cut (#917), at a cost
+  /// of under 6e-9 Eh in PC E_corr there (#923). README.md, "The PC floor".
+  static constexpr double kPcFloor = 1e-10;
+  /// @brief Under a PC @ref nevpt2_gradient, PC's conditioning floor
+  /// (EnergyInputs::pc_floor) for the whole chain the Hessian differentiates:
+  /// @c hessian::df_pc_nevpt2's, or each displaced gradient's
+  /// (Nevpt2GradientStep::pc_floor). Non-negative; 0 is the library's
+  /// round-off cut. Unread otherwise; a `[nevpt2_gradient]` with no
+  /// `[hessian]` stays at 0.
+  double pc_floor{kPcFloor};
 
   /// @brief The chain each method runs, configured as the config's own
   /// tables configure it (pipeline/config copies them in). The steps with no

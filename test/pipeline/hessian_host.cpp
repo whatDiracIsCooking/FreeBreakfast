@@ -387,6 +387,53 @@ TEST(PipelineHessian, BesideANevpt2GradientTheAnalyticMethodIsTheVariantsHessian
   }
 }
 
+// pc_floor (#923): PC's conditioning floor for the chain a [hessian] over a
+// PC [nevpt2_gradient] differentiates, HessianStep::kPcFloor = 1e-10 by
+// default, and the run's own [nevpt2_gradient] carries it; 0 is accepted
+// (the round-off cut). SC's gradient and a [nevpt2_gradient] with no
+// [hessian] stay at 0. Refused: a negative or non-finite floor, and the key
+// beside anything but a PC [nevpt2_gradient].
+TEST(PipelineHessian, PcFloorIsReadDefaultsTo1em10AndIsValidated) {
+  constexpr std::string_view kCas = "[eri]\nmode = \"density_fitting\"\n"
+                                    "[casscf]\nncas = 2\nnelecas = 2\n";
+  static_assert(fb::HessianStep::kPcFloor == 1e-10);
+  for (const std::string_view method : {"", "method = \"numerical\"\n"}) {
+    for (const auto &[key, want] : std::array<std::pair<std::string_view, double>, 3>{
+             {{"", 1e-10}, {"pc_floor = 0.0\n", 0.0}, {"pc_floor = 1e-8\n", 1e-8}}}) {
+      auto calc = fb::parse_config(
+          with_inputs(std::format("{}[nevpt2_gradient]\nvariant = \"pc\"\n[hessian]\n{}{}", kCas,
+                                  method, key)),
+          "", kOut);
+      ASSERT_TRUE(calc.has_value()) << calc.error().message;
+      EXPECT_EQ(calc->step<fb::HessianStep>()->pc_floor, want) << key;
+      ASSERT_TRUE(calc->step<fb::Nevpt2GradientStep>().has_value());
+      EXPECT_EQ(calc->step<fb::Nevpt2GradientStep>()->pc_floor, want) << key;
+    }
+  }
+  auto sc = fb::parse_config(
+      with_inputs(std::format("{}[nevpt2_gradient]\nvariant = \"sc\"\n[hessian]\n", kCas)), "",
+      kOut);
+  ASSERT_TRUE(sc.has_value()) << sc.error().message;
+  EXPECT_EQ(sc->step<fb::Nevpt2GradientStep>()->pc_floor, 0.0);
+  auto alone = fb::parse_config(
+      with_inputs(std::format("{}[nevpt2_gradient]\nvariant = \"pc\"\n", kCas)), "", kOut);
+  ASSERT_TRUE(alone.has_value()) << alone.error().message;
+  EXPECT_EQ(alone->step<fb::Nevpt2GradientStep>()->pc_floor, 0.0);
+
+  for (const std::string_view bad : {"-1e-10", "nan", "inf"}) {
+    expect_config_error(
+        with_inputs(std::format("{}[nevpt2_gradient]\nvariant = \"pc\"\n[hessian]\npc_floor = {}\n",
+                                kCas, bad)),
+        "[hessian] pc_floor must be finite and 0 or more");
+  }
+  for (const std::string_view chain :
+       {"", "[nevpt2_gradient]\nvariant = \"sc\"\n", "[casscf_gradient]\n"}) {
+    expect_config_error(with_inputs(std::format("{}{}[hessian]\npc_floor = 1e-10\n", kCas, chain)),
+                        "[hessian] pc_floor is PC-NEVPT2's conditioning floor, read only beside a "
+                        "[nevpt2_gradient] of variant 'pc'");
+  }
+}
+
 // What hessian::df_sc_nevpt2 and df_pc_nevpt2 cannot take, refused when the
 // config is read, before anything runs: a state-averaged reference and an
 // integral-direct [eri] (Unsupported), a frozen core (InvalidConfig) and a

@@ -7,7 +7,10 @@
 //   Calculation, its hessian.json and product against a direct call of the
 //   variant's Hessian on the same inputs, the Calculation's outer chain's
 //   products (the same chain the step reruns), to 1e-10 of the largest
-//   element; the frequencies published.
+//   element; the frequencies published. PC's chain runs at the step's
+//   default floor, HessianStep::kPcFloor = 1e-10 (#923): the direct call is
+//   made at it, hessian.json records it, and the run's own [nevpt2_gradient]
+//   carries it.
 // - The symmetric case, nh3_cs_sto3g, SC, in the fixture's
 //   symmetry-adapted coordinates: df_sc_nevpt2 refuses the whole A'' x A''
 //   off-diagonal block (#816's amended acceptance), and the step returns that
@@ -87,8 +90,8 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
 }
 
 // The variant's Hessian called directly on @p calc's outer products, the
-// single-state CASSCF's Solution built as the step builds it; k x k
-// column-major, as returned.
+// single-state CASSCF's Solution built as the step builds it, PC's at the
+// step's default floor; k x k column-major, as returned.
 fb::Result<std::vector<double>> direct_hessian(const fb::Calculation &calc, fb::NodeResources &node,
                                                std::string_view variant) {
   fb::DeviceResources &res = node.device(0);
@@ -122,8 +125,9 @@ fb::Result<std::vector<double>> direct_hessian(const fb::Calculation &calc, fb::
   const auto &classes = calc.get<fb::PrimitivePairClassesOutput>()->classes;
   const fb::SphericalMatrixAO &h = calc.get<fb::CoreHamiltonianOutput>()->h;
   if (variant == "pc") {
-    auto terms = fb::hessian::df_pc_nevpt2(res, molecule, basis, classes, fit.aux, h, fit.b,
-                                           fit.l.data(), solution, cas.ncore, cas.ncas);
+    auto terms =
+        fb::hessian::df_pc_nevpt2(res, molecule, basis, classes, fit.aux, h, fit.b, fit.l.data(),
+                                  solution, cas.ncore, cas.ncas, 0, {}, fb::HessianStep::kPcFloor);
     if (!terms.has_value()) {
       return std::unexpected(std::move(terms.error()));
     }
@@ -166,6 +170,14 @@ void expect_skew(std::string_view variant) {
   const fb::json &out = *written;
   EXPECT_EQ(out.at("method").get<std::string>(), "analytic");
   EXPECT_EQ(out.at("variant").get<std::string>(), variant);
+  if (variant == "pc") {
+    ASSERT_TRUE(out.contains("pc_floor"));
+    EXPECT_EQ(out.at("pc_floor").get<double>(), 1e-10);
+    EXPECT_EQ(calc.step<fb::HessianStep>()->pc_floor, 1e-10);
+    EXPECT_EQ(calc.step<fb::Nevpt2GradientStep>()->pc_floor, 1e-10);
+  } else {
+    EXPECT_FALSE(out.contains("pc_floor"));
+  }
   EXPECT_FALSE(out.contains("ladder"));
   EXPECT_FALSE(out.contains("displacement"));
   const auto got = out.at("hessian").get<std::vector<std::vector<double>>>();
