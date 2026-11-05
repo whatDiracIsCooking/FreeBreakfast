@@ -1091,14 +1091,21 @@ TEST(Nevpt2QdIntersection, Refuses) {
 // QdIntersectionOptions::zvector_tolerance (#858, #864), the one parameter
 // of the Z-vector's solve and its true-residual check, on h2co_ccpvdz_sa2's
 // pair (0, 1), SC:
-// - at 1e-12, 100x under the default, the intersection succeeds (every W's
-//   true residual at most 1e-12) and g_P, g_Q and h_PQ agree with the
+// - at 1e-11, 10x under the default, the intersection succeeds (every W's
+//   true residual at most 1e-11) and g_P, g_Q and h_PQ agree with the
 //   default call's to kSolveTolerance of the W form's largest summand (two
 //   independently converged solves);
 // - the W form at u_P u_P^T with the same tolerance reports a true residual
-//   of at most 1e-12 and the same gradient;
+//   of at most 1e-11 and the same gradient;
 // - a tolerance not positive is InvalidConfig, naming the intersection.
-constexpr double kTightZvector = 1e-12;
+// Not 1e-12 (#885). The conjugate gradients stop on their recurrence under
+// the tolerance and the true residual is held to the same number, so it
+// passes only if the products' error keeps it under too. With the CI
+// response inside H~ at mcscf::response_tolerance_for's floor, 1e-10, that
+// error is of order 1e-13 here (mcscf/intersection/README.md "The floor under
+// the true residual"): 6.5% of a 1e-12 bar, which column 2 crossed from run
+// to run (1.017e-12, 1.065e-12), and about 1% of this one.
+constexpr double kTightZvector = 1e-11;
 
 TEST(Nevpt2QdIntersection, ZvectorTolerance) {
   FBF_REQUIRE_GPU();
