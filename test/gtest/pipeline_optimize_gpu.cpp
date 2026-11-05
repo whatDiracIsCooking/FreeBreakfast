@@ -726,9 +726,11 @@ TEST(PipelineOptimize, WaterNevpt2ReachesAStationaryPointAtPyscfsEnergy) {
 // refusal, not a step through it: the chain's CASSCF a state average, which
 // [nevpt2_gradient] refuses once the first SCF and CASSCF have run (the
 // config refuses it before; the step is copied out and edited by hand to
-// reach the step's own refusal). Nothing is written. A degenerate SC pair or
-// a PC rank change, met at any geometry, ends it the same way:
-// geometry::optimize returns its callback's first error.
+// reach the step's own refusal). The refusal is met at the walk's first
+// evaluation, so the history is its message as "error" over no entries, and
+// there is no final.xyz. A degenerate SC pair or a PC rank change, met at
+// any geometry, ends it the same way: geometry::optimize returns its
+// callback's first error.
 TEST(PipelineOptimize, ARefusedNevpt2GradientEndsTheOptimizationWithItsMessage) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_optimize_nevpt2_refused");
@@ -744,7 +746,11 @@ TEST(PipelineOptimize, ARefusedNevpt2GradientEndsTheOptimizationWithItsMessage) 
   EXPECT_EQ(out.error().message, "[nevpt2_gradient] differentiates a single-state CASSCF, and "
                                  "[casscf] has 2 roots: set [casscf] nroots = 1");
   EXPECT_FALSE(std::filesystem::exists(dir / "out" / "final.xyz"));
-  EXPECT_FALSE(std::filesystem::exists(dir / "out" / "optimize.json"));
+  const auto history = fb::read_json(dir / "out" / "optimize.json");
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  EXPECT_EQ(history->at("error").get<std::string>(), out.error().message);
+  EXPECT_FALSE(history->contains("energy"));
+  EXPECT_TRUE(history->at("iterations").empty());
 }
 
 // Both CASSCF gradients set by hand is refused before anything runs, as

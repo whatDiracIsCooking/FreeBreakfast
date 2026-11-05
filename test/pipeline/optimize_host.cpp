@@ -380,8 +380,9 @@ double bond(std::span<const double> x, std::span<double> dr) {
   return r;
 }
 
-// The three files of an optimization in @p dir.
-fb::OptimizeFiles files_in(const fb::test::ScratchDir &dir) {
+// An optimization whose three files are in @p dir, under the default
+// options.
+fb::OptimizeStep step_in(const fb::test::ScratchDir &dir) {
   return {.trajectory = dir / "optimize.xyz",
           .final_xyz = dir / "final.xyz",
           .history = dir / "optimize.json"};
@@ -405,9 +406,9 @@ constexpr std::string_view kLost = "stub: the state is lost";
 // kFailingEvaluation (0-based) as a lost state would.
 TEST(PipelineOptimize, AWalkFailedPartwayLeavesItsEntriesFramesAndErrorButNoFinalXyz) {
   const fb::test::ScratchDir dir("pipeline-optimize");
-  const fb::OptimizeFiles files = files_in(dir);
+  const fb::OptimizeStep step = step_in(dir);
   // An earlier run's: a failed walk must not leave it to read as converged.
-  ASSERT_TRUE(fb::write_file(files.final_xyz, "stale\n").has_value());
+  ASSERT_TRUE(fb::write_file(step.final_xyz, "stale\n").has_value());
   size_t calls = 0;
   const auto harmonic = [&](std::span<const double> x, std::span<double> g) -> fb::Result<double> {
     if (calls++ == kFailingEvaluation) {
@@ -420,13 +421,12 @@ TEST(PipelineOptimize, AWalkFailedPartwayLeavesItsEntriesFramesAndErrorButNoFina
     return 0.5 * (r - 1.4) * (r - 1.4);
   };
   const auto annotate = [](size_t k, fb::json &entry) { entry["k"] = k; };
-  const auto walk =
-      fb::recorded_optimize(stretched_h2(4.0), harmonic, fb::geometry::Options{}, files, annotate);
+  const auto walk = fb::recorded_optimize(step, stretched_h2(4.0), harmonic, annotate);
   ASSERT_FALSE(walk.has_value());
   EXPECT_EQ(walk.error().kind, fb::ErrorKind::Numerical);
   EXPECT_EQ(walk.error().message, kLost);
 
-  const auto history = fb::read_json(files.history);
+  const auto history = fb::read_json(step.history);
   ASSERT_TRUE(history.has_value()) << history.error().message;
   EXPECT_EQ((*history)["error"], kLost);
   EXPECT_FALSE(history->contains("energy"));
@@ -436,15 +436,15 @@ TEST(PipelineOptimize, AWalkFailedPartwayLeavesItsEntriesFramesAndErrorButNoFina
     EXPECT_EQ(entries[k]["k"], k);
     EXPECT_TRUE(entries[k].contains("accepted"));
   }
-  EXPECT_EQ(frame_count(files.trajectory), kFailingEvaluation);
-  EXPECT_FALSE(std::filesystem::exists(files.final_xyz));
+  EXPECT_EQ(frame_count(step.trajectory), kFailingEvaluation);
+  EXPECT_FALSE(std::filesystem::exists(step.final_xyz));
 }
 
 // The same bond, converged: the history's head carries the final energy and
 // no "error", one entry and one frame per evaluation, and final.xyz is there.
 TEST(PipelineOptimize, AConvergedWalkWritesItsHistoryTrajectoryAndFinalXyz) {
   const fb::test::ScratchDir dir("pipeline-optimize");
-  const fb::OptimizeFiles files = files_in(dir);
+  const fb::OptimizeStep step = step_in(dir);
   const auto harmonic = [](std::span<const double> x, std::span<double> g) -> fb::Result<double> {
     const double r = bond(x, g);
     for (double &v : g) {
@@ -452,17 +452,16 @@ TEST(PipelineOptimize, AConvergedWalkWritesItsHistoryTrajectoryAndFinalXyz) {
     }
     return 0.5 * (r - 1.4) * (r - 1.4);
   };
-  const auto walk =
-      fb::recorded_optimize(stretched_h2(2.0), harmonic, fb::geometry::Options{}, files);
+  const auto walk = fb::recorded_optimize(step, stretched_h2(2.0), harmonic);
   ASSERT_TRUE(walk.has_value()) << walk.error().message;
 
-  const auto history = fb::read_json(files.history);
+  const auto history = fb::read_json(step.history);
   ASSERT_TRUE(history.has_value()) << history.error().message;
   EXPECT_FALSE(history->contains("error"));
   EXPECT_EQ((*history)["energy"], walk->energy);
   EXPECT_EQ((*history)["iterations"].size(), walk->iterations.size());
-  EXPECT_EQ(frame_count(files.trajectory), walk->iterations.size());
-  EXPECT_TRUE(std::filesystem::exists(files.final_xyz));
+  EXPECT_EQ(frame_count(step.trajectory), walk->iterations.size());
+  EXPECT_TRUE(std::filesystem::exists(step.final_xyz));
 }
 
 // Two states whose gap is r - 2 across a bond started at 4: the MECI walk is
@@ -470,7 +469,7 @@ TEST(PipelineOptimize, AConvergedWalkWritesItsHistoryTrajectoryAndFinalXyz) {
 // kFailingEvaluation as a lost pair would.
 TEST(PipelineOptimize, AnMeciWalkFailedPartwayLeavesItsEntriesFramesAndErrorButNoFinalXyz) {
   const fb::test::ScratchDir dir("pipeline-optimize");
-  const fb::OptimizeFiles files = files_in(dir);
+  const fb::OptimizeStep step = step_in(dir);
   size_t calls = 0;
   const auto crossing = [&](std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
                             std::span<double> h_ij) -> fb::Result<std::array<double, 2>> {
@@ -489,12 +488,11 @@ TEST(PipelineOptimize, AnMeciWalkFailedPartwayLeavesItsEntriesFramesAndErrorButN
     const double lower = 0.5 * (r - 1.0) * (r - 1.0);
     return std::array{lower, lower + (r - 2.0)};
   };
-  const auto walk =
-      fb::recorded_optimize_meci(stretched_h2(4.0), crossing, fb::geometry::Options{}, files);
+  const auto walk = fb::recorded_optimize_meci(step, stretched_h2(4.0), crossing);
   ASSERT_FALSE(walk.has_value());
   EXPECT_EQ(walk.error().message, kLost);
 
-  const auto history = fb::read_json(files.history);
+  const auto history = fb::read_json(step.history);
   ASSERT_TRUE(history.has_value()) << history.error().message;
   EXPECT_EQ((*history)["error"], kLost);
   EXPECT_FALSE(history->contains("energy"));
@@ -504,8 +502,8 @@ TEST(PipelineOptimize, AnMeciWalkFailedPartwayLeavesItsEntriesFramesAndErrorButN
     EXPECT_TRUE(entry.contains("gap"));
     EXPECT_TRUE(entry.contains("branching_dimension"));
   }
-  EXPECT_EQ(frame_count(files.trajectory), kFailingEvaluation);
-  EXPECT_FALSE(std::filesystem::exists(files.final_xyz));
+  EXPECT_EQ(frame_count(step.trajectory), kFailingEvaluation);
+  EXPECT_FALSE(std::filesystem::exists(step.final_xyz));
 }
 
 } // namespace
