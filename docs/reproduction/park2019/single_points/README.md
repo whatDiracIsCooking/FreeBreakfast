@@ -2,6 +2,18 @@
 
 Phase 2, the same points with the C and N 1s frozen (#859), is [frozen_core.md](frozen_core.md).
 
+**Status since this phase.** This page is phase 1 as it was run, at
+4f84cfc. Two of its blockers have since been resolved:
+- **#874 (PR #883).** PC-QD now refuses only poles, and ethylene's S0
+  minimum is PC in both bases. Its all-electron Δ is in
+  `src/nevpt2/energy/README.md`, "Poles, not signs", and its frozen-core Δ
+  in [frozen_core.md](frozen_core.md).
+- **#865.** The C3v aug-cc-pVDZ point has run.
+
+Tier 1's S0-referenced shift, called "not measurable as PC" below, was
+then measured with the core frozen ([../tier1.md](../tier1.md)). The
+summary of the whole reproduction is [../REPRODUCTION.md](../REPRODUCTION.md).
+
 Phase 1 of #860. Each point is an SA3-QD-PC-NEVPT2 single point
 (`[nevpt2] quasi_degenerate = true` over a three-root `[casscf]`) at one of
 Park's own optimized geometries, compared with the absolute energies he
@@ -42,7 +54,8 @@ What the numbers say:
   3.7–5.0 meV, below ⅓ of the bar. That is over 3 of 5 points: C3v is
   #865, and S0 is #874. The aug-cc-pVTZ floor is 18.8–21.5 meV, which is
   comparable to the bar itself. Tier 1's shift is referenced to the S0
-  minimum, so **it is not measurable as PC until #874 lands**. A shift
+  minimum, so **it is not measurable as PC until #874 lands** (it has since:
+  [../tier1.md](../tier1.md) measures it frozen-core). A shift
   between MECIs needs no S0. One such shift is E(MECI) − E(Py MECI), taken
   from aug-cc-pVDZ to aug-cc-pVTZ, at his geometries:
 
@@ -134,7 +147,8 @@ and π* (below). SC-QD's state 2 also lands 5.2 mEh (aug-cc-pVDZ) and
 is a refusal by this tree's rule, not a wrong active space. SC-QD's Δ at S0
 is shown in parentheses and italics below and left out of every mean and
 spread. Tier 1's energies are referenced to the S0 minimum, so this point
-blocks tier 1 as well. It is #874.
+blocks tier 1 as well. It is #874, since merged (PR #883): PC-QD is no
+longer refused here.
 
 ## Active spaces, and how they were checked
 
@@ -306,7 +320,7 @@ is the mean of states 0 and 1.
 |---|---|---|---|
 | tier 3, E(13–14 CI) − E(11–12 CI), cc-pVDZ | −0.1952 eV | −0.2002 eV | +4.9 meV |
 | tier 3, E(13–14 CI) − E(11–12 CI), cc-pVTZ | +0.1054 eV | +0.0739 eV | **+31.4 meV** |
-| tier 1, S0-referenced shift aug-cc-pVDZ → aug-cc-pVTZ (Py, Et, C3v, Hm) | not measurable as PC until #874 | +0.0819, +0.0379, +0.0162, +0.0205 eV | – |
+| tier 1, S0-referenced shift aug-cc-pVDZ → aug-cc-pVTZ (Py, Et, C3v, Hm) | not measurable as PC until #874 (since measured frozen-core: [../tier1.md](../tier1.md)) | +0.0819, +0.0379, +0.0162, +0.0205 eV | – |
 
 His shifts are computed from the SI's 10-decimal energies, which is why
 they differ in the last digit from Table 1's rounding. Tier 1's shift is

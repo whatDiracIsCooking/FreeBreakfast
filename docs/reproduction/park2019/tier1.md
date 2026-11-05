@@ -57,7 +57,11 @@ quasi_degenerate = true`. The other is frozen-core, which adds
 `frozen_core = "auto"`; each frozen-core log reports
 `NEVPT2: 2 frozen core orbitals, 5 correlated`. Each single point is the
 optimization config with `[nevpt2_gradient]` and `[optimize]` replaced by
-that `[nevpt2]`, and `xyz` pointed at the converged geometry. All 12 ended
+that `[nevpt2]`, and `xyz` pointed at the converged geometry. They are
+checked in as
+[`tier1_ethylene_{s0,py,et}_aug{dz,tz}_sp.toml`](.) (all-electron) and
+`…_sp_fc.toml` (frozen core), written from that recipe after the runs
+(#851) and not rerun. All 12 ended
 `completed: 0 errors, 0 warnings`, with no PC-QD refusal. The all-electron
 energies equal the walks' final energies to the 12 decimals printed.
 

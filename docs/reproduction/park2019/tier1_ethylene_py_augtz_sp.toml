@@ -1,0 +1,23 @@
+# Tier 1 (#847): an SA3-QD-PC-NEVPT2 single point, all-electron, at the
+# converged structure of tier1_ethylene_py_augtz.toml, geometries/ethylene_py_augtz.xyz.
+# It is tier1_ethylene_py_augtz.toml with [nevpt2_gradient] and [optimize]
+# replaced by this [nevpt2], and xyz pointed at that structure
+# (tier1.md, "The runs"). Run from the root of the tree:
+#   build/src/free-breakfast -i docs/reproduction/park2019 -o <out> \
+#     docs/reproduction/park2019/tier1_ethylene_py_augtz_sp.toml
+[molecule]
+xyz = "geometries/ethylene_py_augtz.xyz"
+[basis_set]
+basis = "aug-cc-pvtz"
+[eri]
+mode = "density_fitting"
+aux_basis = "aug-cc-pvtz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 2
+nelecas = 2
+nroots = 3
+conv_tol_grad = 1e-10
+[nevpt2]
+quasi_degenerate = true

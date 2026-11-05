@@ -33,18 +33,27 @@ variant = "pc"` beside `[optimize] meci = [P, Q]`
 
 ## What cannot match, and so what is compared
 
-- **Frozen core.** He freezes the core everywhere (p. 18); this tree has no
-  such option, and correlates every inactive orbital. That leaves a floor of
-  about 0.02–0.05 eV under any absolute MECI energy, so each tier's bar is a
-  trend, a sign or a bound that cancels a constant offset, never an absolute
-  energy.
+- **Frozen core, in the walks.** He freezes the core everywhere (p. 18).
+  This tree has had `[nevpt2] frozen_core` since #859, for energies only:
+  with the C and N 1s frozen, single points at his SI geometries give his
+  absolute energies to ≤ 0.52 µEh
+  ([single_points/frozen_core.md](single_points/frozen_core.md)). The
+  frozen-core *gradient* is #875, so every optimization here is
+  all-electron, and its absolute energies sit below his by the correlated
+  core: about 5 mEh (ethylene aug-cc-pVDZ) to 93 mEh (PSB3 cc-pVTZ)
+  ([single_points/README.md](single_points/README.md)). So each tier's bar
+  is a trend, a sign or a bound, never an absolute energy, and tier 1's
+  gated shift is taken from frozen-core single points at the all-electron
+  structures ([tier1.md](tier1.md)).
 - **The f ceiling.** The orbital basis stops at f (`kMaxAngularMomentum = 3`,
   `src/basis/angular_momentum.h`), and `data/basis/` carries nothing past
   cc-pVTZ: Table 2's cc-pVQZ and cc-pV5Z columns, and his cc-pV5Z PSB3
   result, are out of reach.
-- **No reference geometries.** The paper has no Supporting Information, so
-  every MECI here is our own optimization, compared through the energies of
-  his Tables 1–2 and the amplitude of his Figure 5.
+- **His geometries are a reference, not a target.** His Supporting
+  Information (J. W. Park, JCTC (2020), acs.jctc.9b00919, SI pp. S2–S38)
+  lists every optimized geometry, in bohr, with all three states' absolute
+  energies. Each walk here starts from his structure, reports its RMSD to
+  his, and is otherwise our own optimization.
 
 ## How the runs are made
 
@@ -111,14 +120,18 @@ branching space was two-dimensional at every evaluation. The gap fell to
 The last evaluation's `gradient_norm` and `ci_residual_norm` are recorded so
 the reported gap's distance from the exact surface's, `s_o ‖g‖ + s_c √n ρ`
 ([`src/nevpt2/intersection/README.md`](../../../src/nevpt2/intersection/README.md)),
-can be stated once the sensitivities s_o and s_c reach the output (#844).
+could be stated once the sensitivities s_o and s_c reached the output
+(#844). This walk predates #844 and was not rerun, so its bound is not
+stated ([REPRODUCTION.md](REPRODUCTION.md), "What had to be rerun").
 
 Beside it, the same walk over SC (`examples/qd_meci.toml` unchanged, same
 card and build) converged in 97 evaluations to a mean of −78.1572756343 Eh,
 gap 7.80e-8: the PC MECI lies 2.89e-5 Eh (0.79 meV) below the SC one, and
 the two start 6.4e-5 Eh apart, which also shows the `variant` took effect.
 
-Converged geometry (Å, `final.xyz`, mean E −78.157304547696 Eh, gap
+Converged geometry, checked in as
+[`geometries/ethylene_tier0_pc_meci.xyz`](geometries/ethylene_tier0_pc_meci.xyz)
+(Å, `final.xyz`, mean E −78.157304547696 Eh, gap
 8.073e-8):
 
 ```

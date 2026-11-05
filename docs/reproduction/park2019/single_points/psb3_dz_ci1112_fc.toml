@@ -1,0 +1,24 @@
+# Issue #860 phase 2 (frozen core, #859): PSB3 11-12 CI, SA3-QD-NEVPT2 single point at
+# Park's geometry (J. W. Park, JCTC (2020), acs.jctc.9b00919, Supporting Information, p. S9).
+# His QD-NEVPT2 E(0, 1, 2): -248.9329874544, -248.9329848732, -248.8246366903 Eh.
+# Frozen core, as his: the C and N 1s (frozen_core = "auto"). This is
+# psb3_dz_ci1112.toml with that one line appended; results in frozen_core.md.
+[molecule]
+xyz = "geometries/psb3_dz_ci1112.xyz"
+charge = 1
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 6
+nelecas = 6
+active = [19, 20, 21, 22, 23, 29]  # 0-based RHF MOs of pi character (README.md, "Active spaces")
+nroots = 3
+conv_tol_grad = 1e-9  # #867: 1e-10 can stall at PSB3
+[nevpt2]
+quasi_degenerate = true
+frozen_core = "auto"

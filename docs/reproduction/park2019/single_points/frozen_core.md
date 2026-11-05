@@ -116,20 +116,21 @@ owner, as before.
 
 ## What was run
 
-- **Configs.** Each `<stem>.toml` of this directory but
-  `ethylene_adz_c3v`, copied with `frozen_core = "auto"` appended to its
-  `[nevpt2]` table, nothing else changed. The committed configs stay
-  all-electron, phase 1's. The run log of each point reports
+- **Configs.** Each point's config is checked in as `<stem>_fc.toml`,
+  beside its all-electron twin `<stem>.toml`: the twin with
+  `frozen_core = "auto"` appended to its `[nevpt2]` table and the header
+  comment updated, nothing else changed. The runs were made from that
+  recipe before the files were checked in (#851). The files reproduce
+  them, and were not rerun. `ethylene_adz_c3v_fc.toml` is the 18th point,
+  which #847 ran once #865 had landed. The run log of each point reports
   `NEVPT2: 2 frozen core orbitals, 5 correlated` (ethylene) or
   `6 frozen core orbitals, 13 correlated` (PSB3). Run from the root of
   the tree:
 
   ```sh
-  for f in docs/reproduction/park2019/single_points/*.toml; do
-    { cat "$f"; echo 'frozen_core = "auto"'; } > "<dir>/$(basename "$f")"
-  done
   bash -c '. devtools/lib.sh; with_gpu_card cuda build/src/free-breakfast \
-    -i docs/reproduction/park2019/single_points -o <out> <dir>/<stem>.toml'
+    -i docs/reproduction/park2019/single_points -o <out> \
+    docs/reproduction/park2019/single_points/<stem>_fc.toml'
   ```
 
 - **Card and build.** RTX 3080 (CUDA, 10 GiB), `devtools/cpp-tier.sh

@@ -115,18 +115,24 @@ functions.
 [Below](#what-had-to-be-rerun-and-what-was-not) says why the older builds'
 results still stand.
 
-- **Traceability.** Each number below can be traced to a checked-in config
-  and geometry under this directory, with three exceptions:
-  - **The frozen-core single points** are made from a checked-in config by
-    a recipe that is written down, not checked in. Phase 2 appends
-    `frozen_core = "auto"` to each `single_points/*.toml`
+- **Traceability.** Each number below can be traced to a checked-in
+  config and geometry under this directory. Three sets of files were
+  checked in by #851, after their runs, from the recipes the tier
+  documents wrote down. They reproduce the recorded runs and were not
+  rerun:
+  - **#860 phase 2's 18 frozen-core single points:**
+    [`single_points/<stem>_fc.toml`](single_points/), each its
+    all-electron twin `<stem>.toml` with `frozen_core = "auto"` appended
     ([frozen_core.md](single_points/frozen_core.md), "What was run").
-  - **Tier 1's 12 single points** take the optimization config, replace
-    `[nevpt2_gradient]` and `[optimize]` with `[nevpt2] quasi_degenerate =
-    true` (with `frozen_core = "auto"` for half of them), and point `xyz`
-    at the converged geometry ([tier1.md](tier1.md), "The runs").
-  - **Tier 0's MECI** is checked in as a code block in
-    [README.md](README.md), not as a file under `geometries/`.
+  - **Tier 1's 12 single points:**
+    [`tier1_ethylene_{s0,py,et}_aug{dz,tz}_sp.toml`](.) (all-electron) and
+    `…_sp_fc.toml` (frozen core). Each is the optimization config with
+    `[nevpt2_gradient]` and `[optimize]` replaced by `[nevpt2]
+    quasi_degenerate = true`, and `xyz` pointed at the converged structure
+    ([tier1.md](tier1.md), "The runs").
+  - **Tier 0's MECI:**
+    [`geometries/ethylene_tier0_pc_meci.xyz`](geometries/ethylene_tier0_pc_meci.xyz),
+    the `final.xyz` that [README.md](README.md) quotes.
 
   Run outputs (logs, `optimize.json`, Molden files) are not in git. The
   tier documents quote them.
@@ -350,8 +356,10 @@ Not rerun, and why the results stand:
 - **Tiers 2a and 3** ran before #874 (01146ab and 728da1a). #874 changes
   only which modes PC refuses, not the energy of a mode it keeps. The
   energy README measured the largest amplitude |t| at Park's four cc-pVDZ
-  PSB3 SI geometries as 0.04–0.08, against the new refusal threshold of 1
-  (no cc-pVTZ margin is recorded). Tier 2b's rerun around the 13–14CI
+  PSB3 SI geometries as 0.04–0.08, against the new refusal threshold of 1.
+  #874's PR (#883) reports the same list: its largest |t| over Park's
+  geometries, 0.274, is ethylene's aug-cc-pVDZ S0. Neither covers PSB3 at
+  cc-pVTZ, so no margin is recorded for tier 3's cc-pVTZ walks. Tier 2b's rerun around the 13–14CI
   moved no gap by more than 5.2e-11 Eh. This is an argument, not a rerun:
   the tier 2a and tier 3 walks themselves were not repeated on a post-#874
   build.
@@ -565,19 +573,21 @@ Still open:
 None of these changes a verdict above. Each is stated rather than smoothed
 over.
 
-- **Stale text in [README.md](README.md).** Its "What cannot match" section
-  still says this tree has no frozen-core option, and that the paper has no
-  Supporting Information. #859 and the SI (the milestone's update of
-  2026-11-04) superseded both. Its tier-0 text waits on s_o and s_c from
-  #844, which tier 0 never received.
-- **Stale text in [single_points/README.md](single_points/README.md).**
-  Phase 1 says tier 1's shift is "not measurable as PC until #874 lands",
-  and shows ethylene S0 as refused. Both were true at 4f84cfc. #874 then
-  landed, and tier 1 was measured.
-- **[ethylene_starts.md](ethylene_starts.md) on the gated shift.** It says
-  "the gated per-MECI basis shift covers Py, Et and C3v". That was the Hm
-  ruling's wording. The C3v ruling that followed on #847 removed C3v, and
-  [tier1.md](tier1.md) gates Py and Et only.
+- **Stale text, now corrected (#851).** Three places in this directory
+  had fallen behind, and were corrected with this page:
+  - [README.md](README.md)'s "What cannot match" said this tree has no
+    frozen-core option and that the paper has no Supporting Information.
+    #859 and the SI (the milestone's update of 2026-11-04) superseded both.
+    Its tier-0 text waited on s_o and s_c from #844, which tier 0 never
+    received. That is now stated there.
+  - [single_points/README.md](single_points/README.md) (phase 1) said
+    tier 1's shift is "not measurable as PC until #874 lands", and showed
+    ethylene S0 as refused. Both were true at 4f84cfc. The page now notes
+    that #874 landed and that tier 1 measured the shift.
+  - [ethylene_starts.md](ethylene_starts.md) said "the gated per-MECI
+    basis shift covers Py, Et and C3v", which was the Hm ruling's wording.
+    The C3v ruling on #847 that followed removed C3v. The page now cites
+    that ruling, and [tier1.md](tier1.md) gates Py and Et only.
 - **The milestone's tier 1 premise.** It assumed the core correlation
   "cancels to second order" in the shift. #860 showed it does not: the
   all-electron shifts are 15.7 (Py) and 11.1 meV (Et) larger than the
