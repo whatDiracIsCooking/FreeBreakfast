@@ -228,10 +228,11 @@ void run_case(std::string_view name, bool coupling_file) {
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
   ASSERT_TRUE(heff) << heff.error().message;
-  std::println("{}: {} points, {:.1f} s, reference |g| {:.1e}, guard subspace {:.1e} CI {:.1e} "
-               "prediction {:.3f}",
-               name, heff->points, seconds, heff->gradient_norm, heff->subspace, heff->ci,
-               heff->prediction);
+  // The displaced |g| is what an h_PQ miss is read against first (#869).
+  std::println("{}: {} points, {:.1f} s, reference |g| {:.1e}, displaced |g| at most {:.1e}, "
+               "guard subspace {:.1e} CI {:.1e} prediction {:.3f}",
+               name, heff->points, seconds, heff->gradient_norm, heff->displaced_gradient_norm,
+               heff->subspace, heff->ci, heff->prediction);
   ::testing::Test::RecordProperty("wall_seconds", std::format("{:.1f}", seconds));
   ASSERT_EQ(heff->pc.has_value(), grad->chain.pc);
 
@@ -297,6 +298,12 @@ TEST(Nevpt2NumericalHeff, H6Sa2MatchesCommittedGradients) {
 // The 3x3 H_eff and root matching: skew H2CO, three roots, against both the
 // gradient file's g_K and the coupling file's h_PQ. 13.6 s on the RX 9060 XT,
 // past the fast tier's ~10 s, and not its family's cheapest (H6 is, 4.1 s).
+//
+// #869: before #867's CI floor, a point's polish could run out at |g| ~1e-11
+// (component 0, finest step, + side): PC's H_eff(1, 2) there moved by
+// 2.5e-11, x 4 / (3 x 2 x 2.5e-4) is 6.6e-8 in PC h pair 2, over its 4.1e-8.
+// Under the floor every point polishes under kPolishTarget (3e-12) and a
+// point's PC H_eff varies by at most 2.5e-12 run to run (A100, 30 runs).
 TEST(Nevpt2NumericalHeff, H2coSkewSa3MatchesCommittedGradientsAndCouplings) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();

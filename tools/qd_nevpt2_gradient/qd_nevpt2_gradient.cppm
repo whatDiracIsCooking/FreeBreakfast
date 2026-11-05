@@ -244,6 +244,10 @@ struct NumericalHeff {
   double ci = 0.0;
   /// @brief As @ref subspace, for the energy's prediction.
   double prediction = 0.0;
+  /// @brief The largest displaced CASSCF ||g|| after the polish: under
+  /// @ref kPolishTarget unless a point's polish ran out of passes, which
+  /// moves PC's H_eff off the diagonal linearly in ||g|| (#869).
+  double displaced_gradient_norm = 0.0;
   /// @brief The displaced points run.
   size_t points = 0;
 };
