@@ -1,0 +1,28 @@
+# Tier 2a (#848), basin-finding: PSB3's ground-state minimum at
+# DF-SA3-CASSCF(6,6)/cc-pVDZ, root 0, from the idealized planar all-trans
+# geometry (a cross-check; the FC used is tier2a_psb3_fc_qdpc.toml's). The six
+# pi orbitals are named by index (tier2a.md, "The active
+# space"). Its final.xyz is psb3_fc_casscf.xyz. Run from the root of
+# the tree:
+#   build/src/free-breakfast -i docs/reproduction/park2019 -o <out> \
+#     docs/reproduction/park2019/tier2a_psb3_fc_casscf.toml
+[molecule]
+xyz = "geometries/psb3_fc_idealized.xyz"
+charge = 1
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 6
+nelecas = 6
+active = [17, 20, 21, 22, 24, 27]   # the RHF's six pi orbitals, 0-based
+nroots = 3
+conv_tol_grad = 1e-9
+[casscf_gradient]
+root = 0
+[optimize]
+max_steps = 100

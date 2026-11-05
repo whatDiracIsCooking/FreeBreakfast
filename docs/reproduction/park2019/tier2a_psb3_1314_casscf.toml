@@ -1,0 +1,28 @@
+# Tier 2a (#848), basin-finding cross-check: the 13-14 MECI of roots 0 and 1
+# of PSB3's DF-SA3-CASSCF(6,6)/cc-pVDZ, from the hand-built
+# psb3_1314_handbuilt_start.xyz (the CASSCF minimum psb3_fc_casscf.xyz with
+# C13=C14 twisted 90 degrees and stretched to 1.45 A). At that start the
+# RHF's six frontier orbitals, 19-24, are the pi set (tier2a.md, "The active
+# space"), so none is named. Its final.xyz is psb3_1314_casscf_meci.xyz.
+# Run from the root of the tree:
+#   build/src/free-breakfast -i docs/reproduction/park2019 -o <out> \
+#     docs/reproduction/park2019/tier2a_psb3_1314_casscf.toml
+[molecule]
+xyz = "geometries/psb3_1314_handbuilt_start.xyz"
+charge = 1
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 6
+nelecas = 6
+nroots = 3
+conv_tol_grad = 1e-9       # 1e-10 stalls mcscf::solve at |g| ~ 3e-10 (#867)
+[optimize]
+meci = [0, 1]
+max_gap = 1e-6
+max_steps = 200
