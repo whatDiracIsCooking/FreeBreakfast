@@ -121,6 +121,31 @@ optimization and is returned as it is.
   also has `state_overlap` (null at the first) and `root`, the root
   differentiated there; over a QD state, `state_overlap` and `heff_gap`
   (below).
+- **What a failed run leaves.** Every mode writes `optimize.xyz` and
+  `optimize.json` as the walk goes, rewriting both after each evaluation
+  `geometry::optimize` (or `optimize_meci`) records, and once more on its
+  exit. A walk that fails partway -- a state or pair lost below
+  `kStateOverlapFloor`, a chain step's refusal, an SCF or CASSCF that did not
+  converge, `MaxIterationsExceeded` -- at evaluation k (0-based) leaves
+  `optimize.xyz` with the k evaluated frames before it, and `optimize.json`
+  with their k entries, as on success, and the failure's message:
+
+  ```json
+  {"error": "qd_state_overlap: the QD state's overlap with the last geometry's is 0.743456, ...",
+   "iterations": [{...}, ...]}
+  ```
+
+  with no head `energy` (nor, under `meci`, `lower`, `upper`, `gap` or the
+  QD branching vectors). **No `final.xyz` is written**, and one an earlier
+  run left at that path is removed when the walk starts, so its absence is
+  how a reader tells a failure from a convergence. A run killed mid-walk
+  leaves the same two files with neither `energy` nor `error`. A refusal
+  made before the walk starts (`check_meci`'s, both gradient tables set, an
+  integral-direct `[eri]` under a CASSCF gradient, an unreadable start)
+  writes nothing. The one write path is `recorded_optimize` and
+  `recorded_optimize_meci` (`geometry::optimize`'s `on_iteration` observer
+  appends each entry; their exit writes the head or the error), which the
+  step drives with its chain and the host tests with a stub evaluation.
 
 ## The CASSCF chain
 
@@ -451,6 +476,12 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
 - `test/pipeline/config_host.cpp` also: the CASSCF chain copied in, and its
   refusals (no `[casscf]` space, `[gradient]` beside it, an integral-direct
   `[eri]`).
+- `test/pipeline/optimize_host.cpp`: the following functions, and the files a
+  walk keeps, over a stub evaluation through `recorded_optimize` and
+  `recorded_optimize_meci`: a walk failed at evaluation 3 leaves
+  `optimize.json` with 3 entries and the `error`, `optimize.xyz` with 3
+  frames, and no `final.xyz` (a stale one removed); a converged one, all
+  three. Host-only.
 - `test/gtest/pipeline_optimize_gpu.cpp`: DF-RHF / cc-pVDZ / cc-pVDZ-JKFIT
   from PySCF's starts (`test/gtest/data/gradient/gradient.json`'s
   `optimized`), the SCF converged tight and `[optimize]` at Gaussian's
@@ -627,6 +658,6 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
 
 | File | Role |
 |------|------|
-| `optimize.cppm` | Module interface: `OptimizeStep`, `kStateOverlapFloor` and the four following functions |
-| `optimize.cpp` | `run`: the chain per evaluation, its private root and carried-orbitals steps, the MECI's `df_intersection` and `pair_overlap`, `check_meci`, and the three files |
+| `optimize.cppm` | Module interface: `OptimizeStep`, `OptimizeFiles` and the two recorded walks, `kStateOverlapFloor` and the four following functions |
+| `optimize.cpp` | `run`: the chain per evaluation, its private root and carried-orbitals steps, the MECI's `df_intersection` and `pair_overlap`, `check_meci`; and `recorded_optimize(_meci)`, the three files written as the walk goes and on its exit |
 | `CMakeLists.txt` | The module library |

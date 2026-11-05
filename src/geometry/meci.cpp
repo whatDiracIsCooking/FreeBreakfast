@@ -102,7 +102,8 @@ optimize_meci(std::span<const double> x0,
               const std::function<Result<std::array<double, 2>>(
                   std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
                   std::span<double> h_ij)> &energies_and_gradients,
-              const Options &options) {
+              const Options &options,
+              const std::function<Status(const MECISolution::Iteration &)> &on_iteration) {
   const size_t n = x0.size();
   if (n == 0 || !std::ranges::all_of(x0, [](double value) { return std::isfinite(value); })) {
     return err_config("geometry::optimize_meci: x0 must be non-empty and finite, got {} "
@@ -130,8 +131,9 @@ optimize_meci(std::span<const double> x0,
 
   MECISolution solution{std::vector<double>(x0.begin(), x0.end()), 0.0, 0.0, {}};
   double trust_radius = options.trust_radius;
-  // Logs the evaluation and says whether it has converged.
-  const auto record = [&](const MeciPoint &point, std::span<const double> s) {
+  // Logs the evaluation, hands it to on_iteration, and says whether it has
+  // converged.
+  const auto record = [&](const MeciPoint &point, std::span<const double> s) -> Result<bool> {
     const auto [g_max, g_rms] = max_and_rms(point.projected);
     const auto [s_max, s_rms] = max_and_rms(s);
     const double gap = point.upper - point.lower;
@@ -140,13 +142,16 @@ optimize_meci(std::span<const double> x0,
     solution.iterations.push_back(MECISolution::Iteration{point.lower, point.upper, gap, g_max,
                                                           g_rms, s_max, s_rms, trust_radius,
                                                           point.coupled ? 2 : 1});
+    if (on_iteration) {
+      FBF_TRY(on_iteration(solution.iterations.back()));
+    }
     return gap <= options.max_gap && g_max <= options.max_force && g_rms <= options.rms_force &&
            s_max <= options.max_displacement && s_rms <= options.rms_displacement;
   };
 
   std::vector<double> &x = solution.x;
   MeciPoint point = FBF_TRY(evaluate_meci(energies_and_gradients, x, options.project_rigid_body));
-  if (record(point, std::vector<double>(n, 0.0))) {
+  if (FBF_TRY(record(point, std::vector<double>(n, 0.0)))) {
     return solution;
   }
 
@@ -270,7 +275,7 @@ optimize_meci(std::span<const double> x0,
 
     std::swap(x, x_trial);
     point = std::move(trial);
-    if (record(point, p)) {
+    if (FBF_TRY(record(point, p))) {
       return solution;
     }
   }

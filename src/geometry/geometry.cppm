@@ -110,12 +110,18 @@ struct Solution {
 ///         is not above 0 or above max_trust_radius, or max_steps is
 ///         negative; Numerical if an energy or gradient is not finite;
 ///         MaxIterationsExceeded once max_steps runs out; or the first error
-///         of @p energy_and_gradient.
+///         of @p energy_and_gradient, or of @p on_iteration.
+///
+/// @p on_iteration, if set, is called with each evaluation's Iteration as it
+/// is recorded, the first at @p x0, so a caller keeps the walk's log on an
+/// error that loses the Solution; an error it returns ends the optimization
+/// with that error.
 [[nodiscard]] Result<Solution>
 optimize(std::span<const double> x0,
          const std::function<Result<double>(std::span<const double> x, std::span<double> gradient)>
              &energy_and_gradient,
-         const Options &options = {});
+         const Options &options = {},
+         const std::function<Status(const Iteration &)> &on_iteration = {});
 
 /// @brief A converged minimum-energy crossing of two states.
 struct MECISolution {
@@ -183,13 +189,17 @@ struct MECISolution {
 ///         Numerical if an energy or vector is not finite, or the gradient
 ///         difference vanishes after the projection; MaxIterationsExceeded
 ///         once max_steps runs out; or the first error of
-///         @p energies_and_gradients.
+///         @p energies_and_gradients, or of @p on_iteration.
+///
+/// @p on_iteration, if set, is called with each evaluation's Iteration as it
+/// is recorded, as optimize's is.
 [[nodiscard]] Result<MECISolution>
 optimize_meci(std::span<const double> x0,
               const std::function<Result<std::array<double, 2>>(
                   std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
                   std::span<double> h_ij)> &energies_and_gradients,
-              const Options &options = {});
+              const Options &options = {},
+              const std::function<Status(const MECISolution::Iteration &)> &on_iteration = {});
 
 /// @brief The harmonic vibrations of a molecule: the internal modes alone,
 /// the rigid-body translations and rotations removed.

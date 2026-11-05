@@ -5,7 +5,7 @@
 # contract and the planner over made-up steps, the contract of every real
 # step, the TOML front end, the Guess step's load, the Hessian, Nac and
 # Nevpt2Nac steps' contracts and configs, and the Optimize step's QD state
-# following.
+# following and the files its walk keeps over a stub evaluation.
 # None constructs a DeviceResources, so a green run here is meaningful on a
 # device-less box.
 #

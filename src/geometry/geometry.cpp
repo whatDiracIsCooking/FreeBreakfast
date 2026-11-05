@@ -38,7 +38,7 @@ Result<Solution>
 optimize(std::span<const double> x0,
          const std::function<Result<double>(std::span<const double> x, std::span<double> gradient)>
              &energy_and_gradient,
-         const Options &options) {
+         const Options &options, const std::function<Status(const Iteration &)> &on_iteration) {
   const size_t n = x0.size();
   if (n == 0 || !std::ranges::all_of(x0, [](double value) { return std::isfinite(value); })) {
     return err_config("geometry::optimize: x0 must be non-empty and finite, got {} coordinates", n);
@@ -69,12 +69,17 @@ optimize(std::span<const double> x0,
            s_max <= options.max_displacement && s_rms <= options.rms_displacement;
   };
   Solution solution{std::vector<double>(x0.begin(), x0.end()), 0.0, {}};
-  const auto record = [&solution](double energy, std::span<const double> g,
-                                  std::span<const double> s, double trust_radius, bool accepted) {
+  const auto record = [&solution, &on_iteration](double energy, std::span<const double> g,
+                                                 std::span<const double> s, double trust_radius,
+                                                 bool accepted) -> Status {
     const auto [g_max, g_rms] = max_and_rms(g);
     const auto [s_max, s_rms] = max_and_rms(s);
     solution.iterations.push_back(
         Iteration{energy, g_max, g_rms, s_max, s_rms, trust_radius, accepted});
+    if (on_iteration) {
+      FBF_TRY(on_iteration(solution.iterations.back()));
+    }
+    return {};
   };
 
   std::vector<double> &x = solution.x;
@@ -83,7 +88,7 @@ optimize(std::span<const double> x0,
   solution.energy = FBF_TRY(evaluate(energy_and_gradient, x, options.project_rigid_body, basis, g));
   double trust_radius = options.trust_radius;
   const std::vector<double> no_step(n, 0.0);
-  record(solution.energy, g, no_step, trust_radius, true);
+  FBF_TRY(record(solution.energy, g, no_step, trust_radius, true));
   if (converged(g, no_step)) {
     return solution;
   }
@@ -126,7 +131,7 @@ optimize(std::span<const double> x0,
 
     if (energy > solution.energy) {
       trust_radius = 0.25 * s_norm;
-      record(energy, g_trial, p, trust_radius, false);
+      FBF_TRY(record(energy, g_trial, p, trust_radius, false));
       continue;
     }
 
@@ -158,7 +163,7 @@ optimize(std::span<const double> x0,
     std::swap(g, g_trial);
     std::swap(basis, basis_trial);
     solution.energy = energy;
-    record(energy, g, p, trust_radius, true);
+    FBF_TRY(record(energy, g, p, trust_radius, true));
     if (converged(g, p)) {
       return solution;
     }

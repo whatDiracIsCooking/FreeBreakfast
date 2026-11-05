@@ -394,8 +394,9 @@ struct FollowRecord {
   std::optional<double> heff_gap;
 };
 
-// @p atoms with their positions replaced by @p x (bohr, 3 per atom).
-[[nodiscard]] std::vector<Atom> placed(std::vector<Atom> atoms, std::span<const double> x) {
+// @p start with its positions replaced by @p x (bohr, 3 per atom).
+[[nodiscard]] std::vector<Atom> placed(std::span<const Atom> start, std::span<const double> x) {
+  std::vector<Atom> atoms(start.begin(), start.end());
   for (size_t a = 0; a < atoms.size(); ++a) {
     atoms[a].position = {x[(3 * a) + 0], x[(3 * a) + 1], x[(3 * a) + 2]};
   }
@@ -412,6 +413,180 @@ struct FollowRecord {
                        atom.position.z * kAngstromPerBohr<double>);
   }
   return out;
+}
+
+// What a recorded walk has kept so far, and the one place its files are
+// written: after every recorded evaluation, and at the walk's exit.
+struct WalkRecord {
+  const OptimizeFiles &files;
+  std::span<const Atom> start;
+  // Every geometry handed to the evaluation, in order: one more than the
+  // entries while an evaluation runs, or after one fails.
+  std::vector<std::vector<Atom>> frames;
+  // One trajectory comment and one history entry per recorded evaluation.
+  std::vector<std::string> comments;
+  json entries = json::array();
+
+  // The trajectory, of the recorded frames, and the history, @p head with
+  // the entries as "iterations".
+  [[nodiscard]] Status write(json head) const {
+    if (!files.trajectory.empty()) {
+      std::string text;
+      for (size_t k = 0; k < frames.size() && k < comments.size(); ++k) {
+        text += xyz_frame(frames[k], comments[k]);
+      }
+      FBF_TRY(write_file(files.trajectory, text));
+    }
+    if (!files.history.empty()) {
+      head["iterations"] = entries;
+      FBF_TRY(write_json(files.history, head));
+    }
+    return {};
+  }
+
+  // One recorded evaluation, and the files rewritten with it.
+  [[nodiscard]] Status add(std::string comment, json entry) {
+    comments.push_back(std::move(comment));
+    entries.push_back(std::move(entry));
+    return write(json::object());
+  }
+
+  // The walk's exit, every return of it: on @p walk's error, the files with
+  // it as "error" and no final_xyz; converged, @p head's, and final_xyz, the
+  // walk's optimum with @p final_comment.
+  template <class S>
+  [[nodiscard]] Result<S> finish(Result<S> walk, json head, std::string_view final_comment) const {
+    if (!walk) {
+      const Status written = write({{"error", walk.error().message}});
+      if (!written) {
+        FBF_LOG_ERROR("optimize: the failed walk's files are not written: {}",
+                      written.error().message);
+      }
+      return walk;
+    }
+    FBF_TRY(write(std::move(head)));
+    if (!files.final_xyz.empty()) {
+      FBF_TRY(write_file(files.final_xyz, xyz_frame(placed(start, walk->x), final_comment)));
+    }
+    return walk;
+  }
+};
+
+// Removes a final_xyz an earlier run left, so that only a converged walk's
+// is ever there.
+[[nodiscard]] Status remove_stale_final(const OptimizeFiles &files) {
+  if (files.final_xyz.empty()) {
+    return {};
+  }
+  std::error_code ec;
+  std::filesystem::remove(files.final_xyz, ec);
+  if (ec) {
+    return err_io("[{}] cannot remove the earlier run's {}: {}", OptimizeStep::kName,
+                  files.final_xyz.string(), ec.message());
+  }
+  return {};
+}
+
+Result<geometry::Solution> recorded_optimize(
+    std::span<const Atom> start,
+    const std::function<Result<double>(std::span<const double> x, std::span<double> gradient)>
+        &energy_and_gradient,
+    const geometry::Options &options, const OptimizeFiles &files,
+    const std::function<void(size_t k, json &entry)> &annotate) {
+  FBF_TRY(remove_stale_final(files));
+  WalkRecord record{.files = files, .start = start};
+  std::vector<double> x0;
+  for (const Atom &atom : start) {
+    x0.insert(x0.end(), {atom.position.x, atom.position.y, atom.position.z});
+  }
+  const auto evaluate = [&](std::span<const double> x, std::span<double> g) -> Result<double> {
+    record.frames.push_back(placed(start, x));
+    return energy_and_gradient(x, g);
+  };
+  const auto on_iteration = [&](const geometry::Iteration &it) -> Status {
+    const size_t k = record.comments.size();
+    json entry = {
+        {"energy", it.energy},
+        {"max_force", it.max_force},
+        {"rms_force", it.rms_force},
+        {"max_displacement", it.max_displacement},
+        {"rms_displacement", it.rms_displacement},
+        {"trust_radius", it.trust_radius},
+        {"accepted", it.accepted},
+    };
+    if (annotate) {
+      annotate(k, entry);
+    }
+    return record.add(
+        std::format("evaluation {} E = {:.12f}{}", k, it.energy, it.accepted ? "" : " (rejected)"),
+        std::move(entry));
+  };
+  Result<geometry::Solution> walk = geometry::optimize(x0, evaluate, options, on_iteration);
+  json head;
+  std::string final_comment;
+  if (walk) {
+    head = {{"energy", walk->energy}};
+    final_comment = std::format("optimized E = {:.12f}", walk->energy);
+  }
+  return record.finish(std::move(walk), std::move(head), final_comment);
+}
+
+Result<geometry::MECISolution>
+recorded_optimize_meci(std::span<const Atom> start,
+                       const std::function<Result<std::array<double, 2>>(
+                           std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
+                           std::span<double> h_ij)> &energies_and_gradients,
+                       const geometry::Options &options, const OptimizeFiles &files,
+                       const std::function<void(size_t k, json &entry)> &annotate,
+                       const std::function<void(json &head)> &annotate_head) {
+  FBF_TRY(remove_stale_final(files));
+  WalkRecord record{.files = files, .start = start};
+  std::vector<double> x0;
+  for (const Atom &atom : start) {
+    x0.insert(x0.end(), {atom.position.x, atom.position.y, atom.position.z});
+  }
+  const auto evaluate = [&](std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
+                            std::span<double> h_ij) -> Result<std::array<double, 2>> {
+    record.frames.push_back(placed(start, x));
+    return energies_and_gradients(x, g_i, g_j, h_ij);
+  };
+  const auto on_iteration = [&](const geometry::MECISolution::Iteration &it) -> Status {
+    const size_t k = record.comments.size();
+    const double mean = 0.5 * (it.lower + it.upper);
+    json entry = {
+        {"energy", mean},
+        {"lower", it.lower},
+        {"upper", it.upper},
+        {"gap", it.gap},
+        {"max_force", it.max_force},
+        {"rms_force", it.rms_force},
+        {"max_displacement", it.max_displacement},
+        {"rms_displacement", it.rms_displacement},
+        {"trust_radius", it.trust_radius},
+        {"branching_dimension", it.branching_dimension},
+    };
+    if (annotate) {
+      annotate(k, entry);
+    }
+    return record.add(std::format("evaluation {} E = {:.12f} gap = {:.3e}", k, mean, it.gap),
+                      std::move(entry));
+  };
+  Result<geometry::MECISolution> walk =
+      geometry::optimize_meci(x0, evaluate, options, on_iteration);
+  json head;
+  std::string final_comment;
+  if (walk) {
+    const double mean = 0.5 * (walk->lower + walk->upper);
+    head = {{"energy", mean},
+            {"lower", walk->lower},
+            {"upper", walk->upper},
+            {"gap", walk->upper - walk->lower}};
+    if (annotate_head) {
+      annotate_head(head);
+    }
+    final_comment = std::format("MECI E = {:.12f} gap = {:.3e}", mean, walk->upper - walk->lower);
+  }
+  return record.finish(std::move(walk), std::move(head), final_comment);
 }
 
 Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) const {
@@ -436,10 +611,6 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
   DeviceResources &res = node.device(0);
   const Molecule start =
       FBF_TRY(read_xyz(res, molecule.xyz, molecule.charge, molecule.multiplicity));
-  std::vector<double> x0;
-  for (const Atom &atom : start.atoms()) {
-    x0.insert(x0.end(), {atom.position.x, atom.position.y, atom.position.z});
-  }
 
   // The chain writes nothing: its steps' outputs are the outer pipeline's.
   ScfStep chain_scf = scf;
@@ -629,12 +800,12 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
     FBF_TRY(carry(*chain.template get<CasscfOutput>(), carried->n_alpha, carried->n_beta));
     return finish(chain, gradient);
   };
-  // Every evaluated geometry, in order, for the trajectory.
-  std::vector<std::vector<Atom>> frames;
+  // The evaluations begun, for the log.
+  size_t evaluations = 0;
   const auto energy_and_gradient = [&](std::span<const double> x,
                                        std::span<double> gradient) -> Result<double> {
-    frames.push_back(placed(start.atoms(), x));
-    const TrialGeometryStep trial{frames.back(), start.charge(), start.multiplicity()};
+    const size_t evaluation = evaluations++;
+    const TrialGeometryStep trial{placed(start.atoms(), x), start.charge(), start.multiplicity()};
     double energy = 0.0;
     if (casscf_gradient) {
       energy = FBF_TRY(casscf_chain(trial, root_result, gradient));
@@ -661,7 +832,7 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
       std::ranges::copy(chain.get<GradientOutput>()->gradient.total, gradient.begin());
       energy = chain.get<ScfOutput>()->energy;
     }
-    FBF_LOG_INFO("optimize: evaluation {:>3} E {:.10f} max |g| {:.3e}", frames.size() - 1, energy,
+    FBF_LOG_INFO("optimize: evaluation {:>3} E {:.10f} max |g| {:.3e}", evaluation, energy,
                  std::ranges::max(gradient, {}, [](double v) { return std::abs(v); }));
     return energy;
   };
@@ -680,8 +851,8 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
   const auto meci_evaluation = [&](std::span<const double> x, std::span<double> g_i,
                                    std::span<double> g_j,
                                    std::span<double> h_ij) -> Result<std::array<double, 2>> {
-    frames.push_back(placed(start.atoms(), x));
-    const TrialGeometryStep trial{frames.back(), start.charge(), start.multiplicity()};
+    const size_t evaluation = evaluations++;
+    const TrialGeometryStep trial{placed(start.atoms(), x), start.charge(), start.multiplicity()};
     const int32_t i = (*meci)[0];
     const int32_t j = (*meci)[1];
     std::array<double, 2> pair{};
@@ -777,82 +948,39 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
     };
     const double mean = FBF_TRY(casscf_chain(trial, intersection, g_i));
     FBF_LOG_INFO("optimize: evaluation {:>3} E_{} {:.10f} E_{} {:.10f} mean {:.10f} gap {:.3e}",
-                 frames.size() - 1, i, pair[0], j, pair[1], mean, std::abs(pair[1] - pair[0]));
+                 evaluation, i, pair[0], j, pair[1], mean, std::abs(pair[1] - pair[0]));
     return pair;
   };
 
-  // What either optimizer leaves for the three files: the optimum and its
-  // energy, one trajectory comment and one history entry per evaluation, and
-  // the history's head.
+  // Both walks write the three files through recorded_optimize(_meci): as
+  // they go, and on every exit.
+  const OptimizeFiles files{.trajectory = trajectory, .final_xyz = final_xyz, .history = history};
   std::vector<double> optimum_x;
   double optimum_energy = 0.0;
-  std::string final_comment;
-  std::vector<std::string> comments;
-  json iterations = json::array();
-  json head;
   if (meci) {
-    const geometry::MECISolution solution =
-        FBF_TRY(geometry::optimize_meci(x0, meci_evaluation, options));
-    optimum_x = solution.x;
-    optimum_energy = 0.5 * (solution.lower + solution.upper);
-    final_comment = std::format("MECI E = {:.12f} gap = {:.3e}", optimum_energy,
-                                solution.upper - solution.lower);
-    head = {{"energy", optimum_energy},
-            {"lower", solution.lower},
-            {"upper", solution.upper},
-            {"gap", solution.upper - solution.lower}};
-    if (qd_meci) {
-      head.update(qd_branching);
-    }
-    for (size_t k = 0; k < solution.iterations.size(); ++k) {
-      const geometry::MECISolution::Iteration &it = solution.iterations[k];
-      const double mean = 0.5 * (it.lower + it.upper);
-      comments.push_back(std::format("evaluation {} E = {:.12f} gap = {:.3e}", k, mean, it.gap));
-      json entry = {
-          {"energy", mean},
-          {"lower", it.lower},
-          {"upper", it.upper},
-          {"gap", it.gap},
-          {"max_force", it.max_force},
-          {"rms_force", it.rms_force},
-          {"max_displacement", it.max_displacement},
-          {"rms_displacement", it.rms_displacement},
-          {"trust_radius", it.trust_radius},
-          {"branching_dimension", it.branching_dimension},
-      };
-      // The pair's overlap with the last evaluation's, null at the first.
+    // The pair's overlap with the last evaluation's, null at the first; the
+    // CASSCF's residuals, and over QD states the pair's gap, the third-state
+    // margin, the CASSCF's smallest root gap and the gap sensitivities.
+    const auto annotate = [&](size_t k, json &entry) {
       const bool has_overlap = k < follow_record.size() && !std::isnan(follow_record[k].overlap);
       entry["pair_overlap"] = has_overlap ? json(follow_record[k].overlap) : json(nullptr);
-      // The CASSCF's residuals, and over QD states the pair's gap, the
-      // third-state margin, the CASSCF's smallest root gap and the gap
-      // sensitivities.
       if (k < meci_record.size()) {
         entry.update(meci_record[k]);
       }
-      iterations.push_back(std::move(entry));
-    }
-  } else {
-    const geometry::Solution solution =
-        FBF_TRY(geometry::optimize(x0, energy_and_gradient, options));
+    };
+    const auto annotate_head = [&](json &head) {
+      if (qd_meci) {
+        head.update(qd_branching);
+      }
+    };
+    const geometry::MECISolution solution = FBF_TRY(recorded_optimize_meci(
+        start.atoms(), meci_evaluation, options, files, annotate, annotate_head));
     optimum_x = solution.x;
-    optimum_energy = solution.energy;
-    final_comment = std::format("optimized E = {:.12f}", solution.energy);
-    head = {{"energy", solution.energy}};
-    for (size_t k = 0; k < solution.iterations.size(); ++k) {
-      const geometry::Iteration &it = solution.iterations[k];
-      comments.push_back(std::format("evaluation {} E = {:.12f}{}", k, it.energy,
-                                     it.accepted ? "" : " (rejected)"));
-      json entry = {
-          {"energy", it.energy},
-          {"max_force", it.max_force},
-          {"rms_force", it.rms_force},
-          {"max_displacement", it.max_displacement},
-          {"rms_displacement", it.rms_displacement},
-          {"trust_radius", it.trust_radius},
-          {"accepted", it.accepted},
-      };
-      // Over a followed state: its matched overlap, null at the first
-      // evaluation, and the root followed or H_eff's smallest gap.
+    optimum_energy = 0.5 * (solution.lower + solution.upper);
+  } else {
+    // Over a followed state: its matched overlap, null at the first
+    // evaluation, and the root followed or H_eff's smallest gap.
+    const auto annotate = [&](size_t k, json &entry) {
       if (k < follow_record.size()) {
         const FollowRecord &f = follow_record[k];
         entry["state_overlap"] = std::isnan(f.overlap) ? json(nullptr) : json(f.overlap);
@@ -863,26 +991,14 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
           entry["heff_gap"] = *f.heff_gap;
         }
       }
-      iterations.push_back(std::move(entry));
-    }
+    };
+    const geometry::Solution solution =
+        FBF_TRY(recorded_optimize(start.atoms(), energy_and_gradient, options, files, annotate));
+    optimum_x = solution.x;
+    optimum_energy = solution.energy;
   }
-
-  const std::vector<Atom> optimum = placed(start.atoms(), optimum_x);
-  if (!trajectory.empty()) {
-    std::string text;
-    for (size_t k = 0; k < frames.size() && k < comments.size(); ++k) {
-      text += xyz_frame(frames[k], comments[k]);
-    }
-    FBF_TRY(write_file(trajectory, text));
-  }
-  if (!final_xyz.empty()) {
-    FBF_TRY(write_file(final_xyz, xyz_frame(optimum, final_comment)));
-  }
-  if (!history.empty()) {
-    head["iterations"] = std::move(iterations);
-    FBF_TRY(write_json(history, head));
-  }
-  return OptimizeOutput{.molecule = Molecule(res, optimum, start.charge(), start.multiplicity()),
+  return OptimizeOutput{.molecule = Molecule(res, placed(start.atoms(), optimum_x), start.charge(),
+                                             start.multiplicity()),
                         .energy = optimum_energy};
 }
 
