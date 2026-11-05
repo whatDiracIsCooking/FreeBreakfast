@@ -15,7 +15,8 @@
 // of random directions on every case, each with empty perturbers; and its
 // Hessian-vector product (class_energies_hvp) against a ladder of those
 // bars, with CAS(8,8)'s empty perturbers' K6 against a mixed second
-// difference of the energy, and their ρ_τ refusal. And PC's
+// difference of the energy, and their weighted ρ_τ refusal, also at PSB3
+// and through the guard (#914). And PC's
 // (pc_class_energies_adjoint): the same, homogeneity in (S, S₁, K) in place
 // of Eq. 40 and the ladder kept inside the energy's domain, its invariance to
 // inactive rotations at degenerate orbital energies, and its refusals. And
@@ -43,6 +44,11 @@ import free_breakfast.io.base;
 import free_breakfast.io.npy;
 import free_breakfast.ci;
 import free_breakfast.nevpt2;
+import free_breakfast.molecule;
+import free_breakfast.basis;
+import free_breakfast.recipes.matrix_ao;
+import free_breakfast.mcscf;
+import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
@@ -2977,6 +2983,35 @@ H      5.8725712624     1.8941737519    -0.1873080265
 H      5.9322594717     1.9283875648    -2.0319280688
 )";
 
+// builders_tangent's value (or one of its tangents), on the host.
+HostCase host_case(fb::DeviceResources &res, const nevpt2::BuilderOutputs &v) {
+  HostCase h;
+  h.naux = static_cast<std::size_t>(v.blocks.naux);
+  h.nc = static_cast<std::size_t>(v.blocks.ncore);
+  h.na = static_cast<std::size_t>(v.blocks.ncas);
+  h.nv = static_cast<std::size_t>(v.blocks.nvirt);
+  const auto all = [&](const fb::Buffers::device<double> &d) {
+    return download_host(res, d.data(), d.num_elements());
+  };
+  h.aa = all(v.blocks.aa);
+  h.ca = all(v.blocks.ca);
+  h.va = all(v.blocks.va);
+  h.cv = all(v.blocks.cv);
+  h.h1e = all(v.h1e);
+  h.h2e = all(v.h2e);
+  h.e_core = all(v.e_core);
+  h.e_virt = all(v.e_virt);
+  h.h1e_v_sr = all(v.h1e_v_sr);
+  h.h1e_v_si = all(v.h1e_v_si);
+  h.h1e_v_sir = all(v.h1e_v_sir);
+  h.dm1 = all(v.dm1);
+  h.dm2 = all(v.dm2);
+  h.dm3 = all(v.dm3);
+  h.f3ca = all(v.f3ca);
+  h.f3ac = all(v.f3ac);
+  return h;
+}
+
 // The twist's state-0 inputs, on the host, once per process.
 const HostCase &psb3_twist() {
   static const HostCase kCase = [] {
@@ -3026,32 +3061,7 @@ const HostCase &psb3_twist() {
     if (!built.has_value()) {
       return HostCase{};
     }
-    const nevpt2::BuilderOutputs &v = built->value;
-    HostCase h;
-    h.naux = static_cast<std::size_t>(v.blocks.naux);
-    h.nc = static_cast<std::size_t>(v.blocks.ncore);
-    h.na = static_cast<std::size_t>(v.blocks.ncas);
-    h.nv = static_cast<std::size_t>(v.blocks.nvirt);
-    const auto all = [&](const fb::Buffers::device<double> &d) {
-      return download_host(res, d.data(), d.num_elements());
-    };
-    h.aa = all(v.blocks.aa);
-    h.ca = all(v.blocks.ca);
-    h.va = all(v.blocks.va);
-    h.cv = all(v.blocks.cv);
-    h.h1e = all(v.h1e);
-    h.h2e = all(v.h2e);
-    h.e_core = all(v.e_core);
-    h.e_virt = all(v.e_virt);
-    h.h1e_v_sr = all(v.h1e_v_sr);
-    h.h1e_v_si = all(v.h1e_v_si);
-    h.h1e_v_sir = all(v.h1e_v_sir);
-    h.dm1 = all(v.dm1);
-    h.dm2 = all(v.dm2);
-    h.dm3 = all(v.dm3);
-    h.f3ca = all(v.f3ca);
-    h.f3ac = all(v.f3ac);
-    return h;
+    return host_case(res, built->value);
   }();
   return kCase;
 }
@@ -3198,6 +3208,244 @@ TEST(Nevpt2PcEnergyTangent, RefusesWhatTheEnergyRefuses) {
         << what << ": " << got.error().message;
     std::cout << std::format("[ nevpt2   ] PC tangent refused {}: {}\n", what, got.error().message);
   }
+}
+
+// ---------------------------------------------------------------------------
+// The SC Hessian-vector product's thresholds (#914)
+// ---------------------------------------------------------------------------
+
+// A small real perturber against an empty one: CAS(8,8) moved by ε along u,
+// which breaks N₂'s symmetry, so its 144 empty perturbers carry N ≈ ε²
+// N^{uu} / 2. At ε = 1e-7 every one is still under the guard (|N| up to
+// 1e-15) and takes K6; at 1e-5 all but one are past it and take the finish.
+// The product along v must move with ε as smoothly through the guard as on
+// either side: f(ε) = <v, HVP v> is linear in ε to 1e-9 here (measured,
+// #914: f(1e-7) - f(0) = -1.164e-4 against (f(1e-5) - f(0)) / 100 =
+// -1.164e-4, 4e-9 of |f|), so the K6 point and the regular one agree to
+// 1e-7 of |f|. And past the guard the product is symmetric, <v, HVP u> =
+// <u, HVP v> to 1e-10 (1.8e-12 measured; K6 on this non-proportional pair,
+// no partner given, leaves 3.2e-6).
+TEST(Nevpt2EnergyHvpEmpty, SmallRealPerturberIsContinuousThroughTheGuard) {
+  FBF_REQUIRE_GPU();
+  // ~9 s on the RTX 3080 (three products): K6MatchesMixedLadder... is the
+  // family's fast case.
+  FBF_SKIP_IF_FAST_TESTS();
+  const std::filesystem::path dir = kDataDir / kHvpCase;
+  fb::DeviceResources res(0);
+  const HostCase h0 = load_host_case(dir);
+  const HostCase u = random_direction(h0, "all", 894);
+  const HostCase v = random_direction(h0, "B", 896);
+  struct Point {
+    double vhv = 0.0, vhu = 0.0, uhv = 0.0;
+    std::int64_t populated = 0;
+  };
+  const auto at = [&](const double eps) -> std::optional<Point> {
+    const HostCase h = displaced(h0, u, eps);
+    const auto got = run_hvp(res, h, {u, v}, {});
+    EXPECT_TRUE(got) << eps << ": " << got.error().message;
+    if (!got) {
+      return std::nullopt;
+    }
+    Point p{.vhv = bars_dot(got->second[1], h, v),
+            .vhu = bars_dot(got->second[0], h, v),
+            .uhv = bars_dot(got->second[1], h, u)};
+    for (const std::int64_t n : got->first.populated[1]) {
+      p.populated += n;
+    }
+    return p;
+  };
+  const auto p0 = at(0.0);
+  const auto p1 = at(1e-7);
+  const auto p2 = at(1e-5);
+  ASSERT_TRUE(p0 && p1 && p2);
+  EXPECT_EQ(p0->populated, 144);
+  EXPECT_EQ(p1->populated, 144);
+  EXPECT_LE(p2->populated, 1);
+  const double kink = std::abs((p1->vhv - p0->vhv) - ((p2->vhv - p0->vhv) / 100.0));
+  EXPECT_LE(kink, 1e-7 * std::abs(p0->vhv));
+  const double asym = std::abs(p2->vhu - p2->uhv);
+  EXPECT_LE(asym, 1e-10 * std::abs(p2->vhu));
+  std::cout << std::format("[ nevpt2   ] hvp guard: <v, HVP v> {:+.12e} at 0, slope {:.4e} under "
+                           "the guard and {:.4e} past it, kink {:.2e} of |f|; populated {} {} {}; "
+                           "asymmetry past the guard {:.2e}\n",
+                           p0->vhv, (p1->vhv - p0->vhv) / 1e-7, (p2->vhv - p0->vhv) / 1e-5,
+                           kink / std::abs(p0->vhv), p0->populated, p1->populated, p2->populated,
+                           asym / std::abs(p2->vhu));
+}
+
+// PSB3 at its planar FC geometry (#917's DF-CASSCF(6,6)/cc-pVDZ over
+// cc-pVDZ-JKFIT, state-specific), whose 76,240 guarded perturbers are empty
+// by the mirror: the case the old per-perturber cut failed (#914). Its
+// out-of-plane physical directions t_iz (#813's t_x, through
+// builders_tangent) populate them with N^{uu} down to 1e-15 of their scale,
+// and on a proportional pair (v = u / 2 + t_0x, t_0x in the plane) ρ_τ's
+// round-off, which grows as 1 / population, reached 2e-5: twelve of the
+// fourteen t_iz were refused. Weighted by each perturber's share of the
+// pair's Hessian the same pairs read at most 3.9e-11, and they are accepted;
+// two out-of-plane directions together are not proportional, and refused
+// (1.8e-4 to 1.8e-2 over the fourteen neighbouring pairs).
+const fb::Result<std::pair<HostCase, std::vector<HostCase>>> &
+psb3_fc_tangents(const std::vector<std::int32_t> &coords) {
+  static const auto kCase = [&]() -> fb::Result<std::pair<HostCase, std::vector<HostCase>>> {
+    constexpr std::string_view kXyz = R"(14
+PSB3 FC
+N -0.045440249206 0.052274091067 -0.0
+C 1.127679676817 0.592062462627 0.0
+C 2.346758418014 -0.126853553706 0.0
+C 3.535247589414 0.554399018073 0.0
+C 4.829916760156 -0.074992936265 0.0
+C 5.97666137773 0.64922578857 -0.0
+H 1.144844482306 1.675081678953 -0.0
+H 2.322913751777 -1.20942273316 -0.0
+H 3.514186332692 1.639225613039 0.0
+H 4.867537443811 -1.157132694366 0.0
+H -0.168291597615 -0.946668695678 -0.0
+H -0.877859876735 0.61559911963 -0.0
+H 5.965719847786 1.731669481735 -0.0
+H 6.942742884553 0.165533359482 -0.0
+)";
+    const fb::test::ScratchDir dir("nevpt2_hvp_psb3_fc");
+    if (auto w = fb::write_file(dir / "psb3.xyz", std::string{kXyz}); !w) {
+      return std::unexpected(w.error());
+    }
+    if (auto w = fb::write_file(
+            dir / "run.toml",
+            std::string{"[molecule]\nxyz = \"psb3.xyz\"\ncharge = 1\n[basis_set]\nbasis = "
+                        "\"cc-pvdz\"\n[eri]\nmode = \"density_fitting\"\naux_basis = "
+                        "\"cc-pvdz-jkfit\"\n[scf]\nmax_iterations = 400\n[casscf]\nncas = 6\n"
+                        "nelecas = 6\nactive = [17, 20, 21, 22, 24, 27]\nconv_tol_grad = 1e-10\n"});
+        !w) {
+      return std::unexpected(w.error());
+    }
+    auto read = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+    if (!read) {
+      return std::unexpected(read.error());
+    }
+    fb::Calculation &calc = *read;
+    fb::NodeResources node;
+    if (auto ran = calc.run(node); !ran) {
+      return std::unexpected(ran.error());
+    }
+    fb::DeviceResources &res = node.device(0);
+    const auto &cas = calc.get<fb::CasscfOutput>();
+    const auto &core = calc.get<fb::CoreHamiltonianOutput>();
+    const auto &df = std::get<fb::DensityFitted>(calc.get<fb::EriOutput>()->eri);
+    const fb::Molecule &molecule = calc.get<fb::MoleculeOutput>()->molecule;
+    const fb::BasisSet &basis = calc.get<fb::BasisSetOutput>()->basis;
+    const auto &classes = calc.get<fb::PrimitivePairClassesOutput>()->classes;
+    fb::mcscf::Solution solution{.c = fb::SphericalMatrixAO(res, basis),
+                                 .roots = {.energies = cas->energies,
+                                           .spin_squares = cas->spin_squares,
+                                           .vectors = upload(res, cas->vectors),
+                                           .davidson = {},
+                                           .fp32_iterations = 0},
+                                 .energy = cas->energy,
+                                 .gradient_norm = cas->gradient_norm,
+                                 .gamma = cas->rdm1,
+                                 .gamma2 = cas->rdm2,
+                                 .root_gammas = cas->rdm1,
+                                 .iterations = cas->iterations,
+                                 .weights = cas->weights};
+    EXPECT_EQ(wwr::wwrMemcpyAsync(solution.c.data(), cas->c.data(),
+                                  cas->c.num_elements() * sizeof(double),
+                                  wwr::wwrMemcpyDeviceToDevice, res.stream()),
+              wwr::wwrSuccess);
+    if (auto synced = res.sync(); !synced) {
+      return std::unexpected(synced.error());
+    }
+    const auto cp = fb::hessian::df_casscf_cp(res, molecule, basis, classes, df.aux, core->h, df.b,
+                                              df.l.data(), solution, cas->ncore, cas->ncas);
+    if (!cp) {
+      return std::unexpected(cp.error());
+    }
+    const auto strings = fb::ci::DeviceStringSet::create(res, cas->ncas, cas->nelecas / 2);
+    if (!strings) {
+      return std::unexpected(strings.error());
+    }
+    const auto nao = static_cast<std::int32_t>(cas->c.n());
+    std::pair<HostCase, std::vector<HostCase>> out;
+    out.second.resize(coords.size());
+    bool have_point = false;
+    const auto consume = [&](const std::int32_t x0, const std::int32_t count, const double *h_dot,
+                             const double *b_dot, const double *c_dot,
+                             const double *) -> fb::Status {
+      const auto built = nevpt2::builders_tangent(
+          res, *strings, *strings, df.naux, nao, nao, df.b.data(), cas->c.data(), core->h.data(),
+          cas->ncore, cas->ncas, solution.roots.vectors.data(), count, h_dot, b_dot, c_dot);
+      if (!built) {
+        return std::unexpected(built.error());
+      }
+      if (!have_point) {
+        out.first = host_case(res, built->value);
+        have_point = true;
+      }
+      for (std::int32_t k = 0; k < count; ++k) {
+        const auto at = std::ranges::find(coords, x0 + k);
+        if (at != coords.end()) {
+          out.second[static_cast<std::size_t>(at - coords.begin())] =
+              host_case(res, built->tangents[static_cast<std::size_t>(k)]);
+        }
+      }
+      return {};
+    };
+    const auto pairs = fb::hessian::df_nevpt2_tangents(
+        res, molecule, basis, classes, df.aux, core->h, df.b, df.l.data(), solution, cas->ncore,
+        cas->ncas, *cp, false, consume, 2ULL << 30);
+    if (!pairs) {
+      return std::unexpected(pairs.error());
+    }
+    return out;
+  }();
+  return kCase;
+}
+
+TEST(Nevpt2EnergyHvpEmpty, Psb3ProportionalPairAcceptedNonProportionalRefused) {
+  FBF_REQUIRE_GPU();
+  // About two minutes on the RTX 3080: a cc-pVDZ CASSCF, its 42 t_x, and
+  // the products' second tables over 125,021 perturbers.
+  FBF_SKIP_IF_FAST_TESTS();
+  // t_0x, then t_0z, t_5z and t_11z, the three the old cut refused most
+  // (16, 23 and 41 perturbers), then t_1z.
+  const auto &got = psb3_fc_tangents({0, 2, 17, 35, 5});
+  ASSERT_TRUE(got.has_value()) << got.error().message;
+  const auto &[h, tx] = *got;
+  fb::DeviceResources res(0);
+  DeviceCase g = upload_case(res, h);
+  std::vector<DeviceCase> held;
+  held.reserve(8);
+  const auto direction = [&](const HostCase &d) {
+    held.push_back(upload_case(res, d));
+    return direction_of(held.back(), d);
+  };
+  std::vector<nevpt2::EnergyDirection> directions;
+  std::vector<nevpt2::EnergyDirection> partners;
+  for (std::size_t k = 1; k < 4; ++k) {
+    directions.push_back(direction(tx[k]));
+    partners.push_back(direction(displaced(tx[0], tx[k], 0.5)));
+  }
+  const std::vector<nevpt2::EnergyBars> bars(directions.size());
+  const auto accepted =
+      nevpt2::class_energies_hvp(res, *g.blocks, g.in, 0, directions, bars, partners);
+  ASSERT_TRUE(accepted) << accepted.error().message;
+  std::string report;
+  for (std::size_t u = 0; u < directions.size(); ++u) {
+    std::int64_t populated = 0;
+    for (const std::int64_t n : accepted->populated[u]) {
+      populated += n;
+    }
+    EXPECT_GT(populated, 70000) << u;
+    EXPECT_LE(accepted->defect[u], 1e-6) << u;
+    report += std::format(" {} populated, defect {:.2e};", populated, accepted->defect[u]);
+  }
+  std::cout << std::format("[ nevpt2   ] hvp PSB3 FC proportional:{}\n", report);
+
+  const std::vector<nevpt2::EnergyDirection> one{directions[0]};
+  const std::vector<nevpt2::EnergyDirection> other{direction(tx[4])};
+  const std::vector<nevpt2::EnergyBars> one_bar(1);
+  const auto refused = nevpt2::class_energies_hvp(res, *g.blocks, g.in, 0, one, one_bar, other);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Numerical) << refused.error().message;
+  std::cout << std::format("[ nevpt2   ] hvp PSB3 FC refused: {}\n", refused.error().message);
 }
 
 } // namespace

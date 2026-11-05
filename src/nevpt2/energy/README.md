@@ -826,7 +826,7 @@ and the block twice; a caller with many directions chunks them.
         -> ClassEnergiesHvp
         energies         class_energies' norms, energies and total
         populated [u][k] class k's empty perturbers direction u populates (K6's)
-        defect [u]       the largest ρ_τ scored on direction u and its partner
+        defect [u]       the empties' weighted ρ_τ on (u, its partner), over S
     bars[u] (EnergyBars, added onto): the tangent of class_energies_adjoint's
         bars along directions[u], every field they name, Λ included
     partners: none, or one EnergyDirection per direction, the pair checked
@@ -885,25 +885,33 @@ largest |N| over (8s)². Then:
   Q̄ = T̄², T̄ = −1/(Δ + η), η = H^{uu}/N^{uu}, in the fixed-multiplier
   difference above. Against v, P̄ N^{uv} + Q̄ H^{uv} = −N^{uv}/(Δ + η) when
   H ∝ N on the pair: the demo's K6.
-- **With a partner v**, a perturber both populate is scored by the
-  scale-free defect, at unit populations
+- **With a partner v**, a perturber both populate takes K6 at the mean η,
+  and is scored by the scale-free defect, at unit populations
   c = N^{uv}/√(N^{uu}N^{vv}), κ = H^{uv}/√(N^{uu}N^{vv}),
   η_w = H^{ww}/N^{ww} and η their mean,
 
       ρ_τ = max(|η_u − η_v|, 2 |κ − c η|) / |Δ + η|,
 
-  zero exactly when H is proportional to N on the pair. Past 1e-6 the call
-  is refused, Numerical, naming the class and the perturber: the energy is
-  not a quadratic form on that pair, so no Hessian element exists there.
-  Below it the perturber takes K6 at the mean η.
+  zero exactly when H is proportional to N on the pair. A perturber's ρ_τ
+  is weighed by its share of the pair's Hessian, w = √(N^{uu}N^{vv}) /
+  |Δ + η|, against S, the largest such share over **every** perturber
+  (a regular one's η its own H/N, read from the same second tables):
 
-Both thresholds sit in measured gaps, on CAS(8,8) (`Nevpt2EnergyHvpEmpty`,
-RTX 3080, four runs): ρ_τ 2.2e-15 to 5.2e-15 on the proportional pair
-against 2.3e-3 on the refused one, and N^{uu} on the empty perturbers either a real
-population or round-off by many decades. A *small* perturber, real but under
-the guard, is not told apart from an empty one: its K6 is as small as its
-integrals. One empty by the state rather than by the integrals is not
-derived (`nuclear_hessian.tex` §5), and is not detected.
+      defect = max_t ρ_τ,t w_t / S,
+
+  and past 1e-6 the call is refused, Numerical, naming the class and the
+  perturber that scored it: the energy is not a quadratic form on that pair
+  to that bound.
+
+**What `defect` means** (#914). Until #914 it was the largest raw ρ_τ, and
+its refusal said "no Hessian on the pair". It is now the empties'
+ambiguity relative to the pair's Hessian scale: below 1e-6 the pair is
+accepted with K6 at the mean η, and the element it gives is the Hessian's
+to that relative bound, an error bound and not a missing term. A pair that
+is not proportional but whose empty perturbers carry a negligible share
+(the twist's tiny real perturbers, below) is accepted. 0 with no partner,
+or no empty perturber both populate. `sc_hessian_product` hands it on as
+it stands.
 
 **The bars' ladder sees K6.** Off the base point an empty perturber's norm,
 t² N^{uu}/2, clears the guard, so the bars there are the ray's limit, which
@@ -915,6 +923,73 @@ directions.
 Cost per direction: seven reverse passes over the whole inputs and, when any
 perturber is guarded, six `class_energies_tangent` calls (twelve with a
 partner).
+
+### The thresholds, measured (#914)
+
+Measured on the RTX 3080 (`--preset default`, card held), over every
+`class_energies_hvp` input, along #813's physical t_x (through
+`builders_tangent`) and random directions. A proportional partner is
+v = u/2 + w with w keeping the symmetry (PSB3's in-plane t_0x; on N₂ B and
+h1e_v scaled per orbital pair). The non-proportional partners are a second
+breaking direction. The cases: N₂ cc-pVDZ CAS(8,8) and CAS(4,4) (the
+goldens); PSB3 DF-CASSCF(6,6)/cc-pVDZ, state-specific, planar FC (Cs) and
+twisted 90° (C1); #803's three STO-3G fixtures. h2co_skew and h2co_neardeg
+have no guarded perturber. nh3_cs does: this tree's CASSCF converges to
+another state than the fixture's (−55.432707 against −55.437459). There
+Sr and Si are empty by stationarity, and no physical t_x populates them.
+
+**The guard, |N| ≤ 1e-14.** Base norms: guarded ≤ 1.2e-32 (CAS(8,8)),
+0 (CAS(4,4)), 8.4e-22 (PSB3 FC, 76,240 of 125,021) against real ones
+≥ 5.3e-8, 6.0e-8 and 4.3e-14. At the twist there is no gap: 5 real
+perturbers sit under the guard (|N| up to 9.8e-15), the smallest above it
+at 1.25e-14.
+
+**The population floor, N^{uu} > 1e-10 of u's scale.** Round-off along
+directions that keep the symmetry is ≤ 7e-33 (N₂), 0 (CAS(4,4)) and
+1.8e-18 (PSB3 FC, every in-plane t_x). Real populations are ≥ 8.5e-6 and
+2.3e-6 on N₂, but at PSB3 FC they run continuously from 1 down to 1e-15,
+about 900 of them below the floor on each t_iz. At the twist the five tiny
+perturbers' N^{uu} sits at 4e-12 to 1.3e-10, across the floor, and flips
+between runs. The floor is kept: what it drops is at most 1e-10 of S,
+and under the weighted defect a perturber on either side of it changes
+the defect by as little.
+
+**ρ_τ has no gap; ρ_τ w / S has six decades.**
+
+| pairs | raw ρ_τ | defect (ρ_τ w / S) |
+|---|---|---|
+| N₂ CAS(8,8), proportional | ≤ 3.5e-15 | ≤ 1.7e-18 |
+| N₂ CAS(4,4), proportional | ≤ 8.6e-15 | ≤ 4.5e-16 |
+| PSB3 FC, 14 t_iz, proportional | up to 2.0e-5 (12 of 14 refused) | 5.3e-13 to 3.9e-11 |
+| PSB3 FC, random, proportional | ≤ 3.6e-8 | ≤ 1.5e-11 |
+| PSB3 twist, every t_x | refused up to 1.9e-4, run to run | ≤ 6.5e-15 |
+| N₂ CAS(8,8), random all vs B | 5.8e-5 to 6.8e-2 | 4.7e-5, 7.3e-5 (two runs) |
+| N₂ CAS(4,4), random all vs B | 4.0e-5 to 0.22 | 0.10 |
+| PSB3 FC, t_iz vs t_(i+1)z, all 14 | 5e-9 to 0.29 | 1.9e-4 to 1.8e-2 |
+| PSB3 FC, random vs random or t_0z | 5.5e-6 to 0.58 | 5.1e-2, 0.17 |
+
+ρ_τ's round-off grows as one over the population: max ρ_τ · N^{uu}/scale
+is ≤ 8e-12 on the PSB3 proportional pairs, and over the perturbers
+populated past 1e-4 of the scale ρ_τ is ≤ 3e-8. Real defects fall to
+5e-9 on weakly populated perturbers, so no cut on ρ_τ alone separates the
+two at PSB3. Weighted, proportional pairs reach 3.9e-11 and
+non-proportional ones start at 4.7e-5. The 1e-6 sits 2.5e4 above the
+first and 47 below the second, on N₂'s CAS(8,8). At the twist a random
+non-proportional pair reads 1.3e-7 and is accepted: its five empty
+perturbers are tiny real ones whose share of the pair is negligible.
+
+**A small real perturber against an empty one.** CAS(8,8) moved by ε along
+a breaking direction u puts N ≈ ε² N^{uu}/2 on its 144 empty perturbers:
+at ε = 1e-7 all are under the guard (|N| ≤ 1.1e-15) and take K6. At 1e-6,
+32 still are, and at 1e-5 one is. Through the crossing, ⟨v, HVP v⟩ for a
+second breaking direction v moves linearly in ε, slope −1.1636e3 under the
+guard and −1.1635e3 past it (no step above 8e-11 of the element). It
+agrees with a ladder of the bars at t ≈ 1e-5 to 2e-7 on either side. Past
+the guard the product is symmetric, ⟨v, HVP u⟩ = ⟨u, HVP v⟩ to 1.8e-12.
+Under it, with no partner given, K6 on this non-proportional pair leaves
+3.2e-6 between the two. So a small real perturber under the guard gets the
+ray's limit, which any ladder whose steps are far larger than its ε also
+sees, and the step to the finish past the guard is below the ladder's bar.
 
 ## The SC-QD reverse pass
 
@@ -1395,7 +1470,17 @@ independent random B directions: refused, Numerical, naming the class and
 the perturber. Measured on the RTX 3080 (`--preset default`): bars' ladder
 worst 3.7e-9 (every input), 1.8e-8 (B), 8.2e-10 (RDMs); K6 1.2e-8 to
 2.1e-8 over four runs, 9.4e-4 without K6; refused on Sijr's perturber 42 at
-ρ_τ 2.3e-3. Not run on the gfx1200.
+ρ_τ 2.3e-3 before #914, and since on Srsi's at a weighted defect of 4.7e-5
+to 7.3e-5. Not run on the gfx1200.
+
+#914's, in the same file. `Nevpt2EnergyHvpEmpty.SmallRealPerturberIsContinuousThroughTheGuard`
+(slow tier, ~9 s): CAS(8,8) moved by ε = 1e-7 (every empty perturber under
+the guard) and 1e-5 (one), ⟨v, HVP v⟩'s change linear in ε to 1e-7 of
+the element (8e-11 measured), and the product symmetric past the guard to
+1e-10. `Psb3ProportionalPairAcceptedNonProportionalRefused` (slow tier,
+~50 s): PSB3 FC's t_0z, t_5z and t_11z, each with u/2 + t_0x, accepted
+with over 70,000 empty perturbers populated and a defect at most 1e-6
+(1.7e-14 to 3.9e-11 measured); t_0z with t_1z refused (2.3e-3).
 
 The SC-QD reverse pass, in the same file, over `test/gtest/data/qd_nevpt2/`
 with a seeded random, unsymmetric H̄:
