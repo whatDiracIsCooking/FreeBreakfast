@@ -10,7 +10,7 @@ module free_breakfast.nevpt2.energy;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants; // kOne, kZero
+import free_breakfast.core.constants; // kOne, kZero, kNegTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
@@ -1256,6 +1256,107 @@ Result<PcClassEnergies> pc_class_energies(DeviceResources &res, const MoBlocks &
                                           const EnergyInputs &in, const int32_t batch) {
   std::vector<PcClassEnergies> out = FBF_TRY(pc_couplings(res, blocks, {&in, 1}, 1, batch));
   return out.front();
+}
+
+// ---------------------------------------------------------------------------
+// The Schur lift: how S's dropped modes rise at second order along a path
+// ---------------------------------------------------------------------------
+
+// A dropped mode at or below this multiple of σ's round-off (ε √d of S's
+// largest, DroppedModes::floor) is a null mode of S, where a rise at second
+// order is a lift: every mode round-off or the RDMs decide has measured at
+// or below 7.4 ε √d (kPcNoise's note above).
+constexpr double kPcNullModes = 10.0;
+
+Result<PcMetricLifts> pc_metric_lifts(DeviceResources &res, const MoBlocks &blocks,
+                                      const EnergyInputs &in, const EnergyInputs &first,
+                                      const EnergyInputs &second) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const int64_t n = blocks.ncas;
+  const int64_t nc = blocks.ncore;
+  const ActiveOperands o = FBF_TRY(active_operands(res, blocks, in));
+  // The paths' RDMs over @p in's other fields; the transitions' builders
+  // (own false) read the RDMs alone, linearly.
+  const auto along = [&](const EnergyInputs &d) -> Result<ActiveOperands> {
+    EnergyInputs x = in;
+    x.dm1 = d.dm1;
+    x.dm2 = d.dm2;
+    x.dm3 = d.dm3;
+    return active_operands(res, blocks, x);
+  };
+  const ActiveOperands o1 = FBF_TRY(along(first));
+  const ActiveOperands o2 = FBF_TRY(along(second));
+  struct Class {
+    size_t k;
+    const char *name;
+    PcBuild build;
+    int64_t d, n1;
+    bool walked;
+  };
+  const std::array<Class, 7> classes{
+      {{0, "Sr", pc_sr_matrices, n * n * n, n, walk_extent(blocks, ExtBlock::Sr) > 0},
+       {1, "Si", pc_si_matrices, n * n * n, n, walk_extent(blocks, ExtBlock::Si) > 0},
+       {3, "Sijr", pc_sijr_matrices, n, 0, walk_extent(blocks, ExtBlock::Sijr) > 0 && nc > 0},
+       {4, "Srsi", pc_srsi_matrices, n, 0, walk_extent(blocks, ExtBlock::Srsi) > 0 && nc > 0},
+       {5, "Srs", pc_srs_matrices, n * n, 0, walk_extent(blocks, ExtBlock::Srs) > 0},
+       {6, "Sij", pc_sij_matrices, n * n, 0, walk_extent(blocks, ExtBlock::Sij) > 0},
+       {7, "Sir", pc_sir_matrices, 2 * n * n, 1,
+        walk_extent(blocks, ExtBlock::Sir1) > 0 && nc > 0}}};
+  PcMetricLifts out;
+  for (const Class &cl : classes) {
+    if (!cl.walked) {
+      continue;
+    }
+    const int64_t d = cl.d;
+    const auto di = static_cast<int32_t>(d);
+    ClassSolve cs = FBF_TRY([&]() -> Result<ClassSolve> {
+      const PcMatrices mats = FBF_TRY(cl.build(res, o, true));
+      return solve_class(res, cl.name, mats.s.data(), mats.k->data(), d,
+                         mats.s1 ? mats.s1->data() : nullptr, cl.n1, true, in.pc_floor);
+    }());
+    out.cut[cl.k] = std::max(std::max(kPcTau, kPcNoise * std::numeric_limits<double>::epsilon() *
+                                                  std::sqrt(static_cast<double>(d))),
+                             in.pc_floor);
+    if (!cs.modes) {
+      continue;
+    }
+    const DroppedModes &dm = *cs.modes;
+    const double largest = dm.sigma.back();
+    const int64_t m = std::ssize(cs.lambda);
+    // The null modes: the dropped ones at σ's round-off, a prefix of V.
+    int64_t nd = 0;
+    while (nd < d - m && dm.sigma[static_cast<size_t>(nd)] <= kPcNullModes * dm.floor) {
+      ++nd;
+    }
+    if (nd == 0) {
+      continue;
+    }
+    const auto mi = static_cast<int32_t>(m);
+    const auto ndi = static_cast<int32_t>(nd);
+    const PcMatrices m1 = FBF_TRY(cl.build(res, o1, false));
+    const PcMatrices m2 = FBF_TRY(cl.build(res, o2, false));
+    const Buffers::device<double> s1 = FBF_TRY(symmetrized(res, m1.s.data(), d));
+    const Buffers::device<double> s2 = FBF_TRY(symmetrized(res, m2.s.data(), d));
+    // W = V_nᵀ S' U, then L = V_nᵀ S'' V_n - 2 W Wᵀ (S⁺ = U Uᵀ).
+    Buffers::device<double> sv(static_cast<size_t>(d * nd), res.device());
+    FBF_TRY(gpu_status(gemm(res.blas(), di, ndi, di, &kOne<double>, s1.data(), dm.v.data(),
+                            &kZero<double>, sv.data())));
+    Buffers::device<double> w(static_cast<size_t>(nd * m), res.device());
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), ndi, mi, di, &kOne<double>, sv.data(),
+                                               cs.u.data(), &kZero<double>, w.data())));
+    FBF_TRY(gpu_status(gemm(res.blas(), di, ndi, di, &kOne<double>, s2.data(), dm.v.data(),
+                            &kZero<double>, sv.data())));
+    Buffers::device<double> l(static_cast<size_t>(nd * nd), res.device());
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), ndi, ndi, di, &kOne<double>, dm.v.data(),
+                                               sv.data(), &kZero<double>, l.data())));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        res.blas(), ndi, ndi, mi, &kNegTwo<double>, w.data(), w.data(), &kOne<double>, l.data())));
+    Buffers::device<double> eig(static_cast<size_t>(nd), res.device());
+    FBF_TRY(diagonalize(res, ndi, l.data(), eig.data()));
+    const std::vector<double> lifts = FBF_TRY(download(res, eig.data(), nd));
+    out.lift[cl.k] = lifts.back() / largest;
+  }
+  return out;
 }
 
 } // namespace free_breakfast::nevpt2

@@ -365,6 +365,53 @@ struct ScHessianProduct {
     int32_t ncore, int32_t ncas, const double *vector, const double *z, int32_t batch,
     const MoDirections &directions, const MoDirections &partners = {}, bool parts = false);
 
+/// @brief pc_hessian_product's result.
+struct PcHessianProduct {
+  /// @brief The class energies, as pc_energy computes them.
+  PcClassEnergies energies;
+  /// @brief Per direction, the product: the tangent of the summed adjoint
+  /// of E_corr + Phi.
+  std::vector<AdjointTangent> products;
+  /// @brief Per direction, each class's Schur lift ℓ along it: the largest
+  /// second derivative of its metric's null modes (PcMetricLifts::lift),
+  /// over S's largest eigenvalue, per |u|² (u the CI part off c); 0 where
+  /// nothing rises, and along a direction with no CI part.
+  std::vector<std::array<double, 8>> lifts;
+  /// @brief Per direction, each class's t* = √(2 cut / (ℓ |u|²)) in the
+  /// direction's own units: within t* of the point the cut keeps the null
+  /// modes dropped, and the product is that energy's exact derivative;
+  /// past it they are kept. Infinite where ℓ is not positive. The assembly
+  /// (#817) refuses on it.
+  std::vector<std::array<double, 8>> lift_steps;
+  /// @brief Empty unless asked for: per direction, the product's parts, as
+  /// ScHessianProduct::parts.
+  std::vector<std::array<AdjointTangent, 5>> parts;
+};
+
+/// @brief The Hessian-vector product of E_corr + Phi in (h, B, c), PC:
+/// sc_hessian_product with pc_class_energies_adjoint and
+/// pc_class_energies_hvp in place of the SC class walk, and nothing else
+/// (README "The PC Hessian-vector product in (h, B, c)"), as pc_adjoint is
+/// sc_adjoint's. @p pc_floor is EnergyInputs::pc_floor, pc_adjoint's; @p span
+/// false leaves the kept span's rotation out (pc_class_energies_hvp's), for
+/// the tests alone.
+///
+/// Before the class walk, each direction's Schur lift (pc_metric_lifts along
+/// the RDMs' path on the unit sphere) and the step t* within which the cut
+/// keeps it dropped, reported, never refused: the product is the exact
+/// derivative of the energy with the null modes dropped. PC has no empty
+/// perturbers and no partners: the lift of a pair (u, v) vanishes when u's
+/// own does (README "The Schur lift").
+///
+/// @return The products; sc_hessian_product's InvalidConfig;
+///         pc_class_energies_hvp's refusals (a pole, an ill-conditioned
+///         solve); or the error of a call it makes.
+[[nodiscard]] Result<PcHessianProduct> pc_hessian_product(
+    DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+    int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c, const double *h,
+    int32_t ncore, int32_t ncas, const double *vector, const double *z, int32_t batch,
+    const MoDirections &directions, bool parts = false, double pc_floor = 0.0, bool span = true);
+
 /// @brief The SC-QD-NEVPT2 effective Hamiltonian's correlation elements of
 /// the roots @p vectors over the shared orbitals @p c, every input built
 /// from (h, B, c) and the roots: element [M n + N] is

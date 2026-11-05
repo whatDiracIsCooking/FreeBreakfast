@@ -21,4 +21,4 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
 ```
 
 `--jobs` is worker processes of one thread each, 8 by default and at most:
-the box's per-agent budget. About 12 minutes for all three cases.
+the box's per-agent budget. About 15 minutes for all four cases.

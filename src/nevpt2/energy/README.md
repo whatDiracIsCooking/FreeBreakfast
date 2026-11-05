@@ -1322,6 +1322,106 @@ tangents per direction once solved (S, K and S₁ built twice per direction,
 then Ṫ, ṫ1, K̇' and Ṡ' held through the walk, d × m and two m × m each), and
 per slab, per direction, the slab's tangent and ẏ (and ẋ), read back.
 
+## The PC Hessian-vector product
+
+    pc_class_energies_hvp(res, blocks, in, batch, directions, bars, span = true)
+        -> PcClassEnergiesHvp
+        energies         pc_class_energies' energies, dropped counts, cut and kept
+    bars[u] (EnergyBars, added onto): the tangent of pc_class_energies_adjoint's
+        bars along directions[u], every field they name, Λ included
+    span: false leaves the kept span's rotation out at both orders, for the tests alone
+
+`reverse.cpp`, forward over the PC reverse pass, for the nuclear Hessian
+(milestone 24, #815; `nuclear_hessian.tex` §2.3). SC's is one tangent of
+the finish's multipliers and the bars at fixed multipliers differenced
+([The SC Hessian-vector product](#the-sc-hessian-vector-product)); PC's is
+the same split over the solve.
+
+**The bars at fixed multipliers.** Per class, the reverse pass reads the
+solve through U, the slab rows' bars ȳ (and the exchange rows' x̄),
+M = Σ g wᵀ and M_Δ = Σ Δ g wᵀ, and for the kept span's rotation S's
+eigenvectors V and eigenvalues σ; given those, every bar is a polynomial in
+the inputs: T = S U and t1 = S₁ᵀ U rebuilt over the inputs' own matrices,
+the slab einsums' adjoints against ȳ, U T̄ᵀ + U M_Δ Uᵀ and U M Uᵀ onto S and
+K, and the span bar over V_nᵀ S, V_nᵀ S₁ and V_nᵀ K U formed anew. A *fixed
+walk* is that reverse pass with no solve: the class walks of
+`pc_class_energies_adjoint` with the multipliers handed in. The tangent is
+then three terms, every one a fixed walk:
+
+- **The multipliers' tangent**, one fixed walk at them. With g = y / (λ + Δ)
+  (g_x the exchange row's), the solve differentiated through its own
+  factorization:
+
+      ġ = (ẏ − Ḋ g) / (λ + Δ),   Ḋ = K̇' + Δ Ṡ' + Δ̇ 1,
+
+  ẏ and Ḋ `pc_class_energies_tangent`'s, the span's first-order rotation in
+  them (U̇ = V_n Θ' in Ṫ, ṫ1 and K̇'). The reverse pass's multipliers are
+  linear in g at a single coupling (ȳ = −2s g, w = s g) and in (g, g_x) at a
+  pair (ȳ = −(4g − g_x), x̄ = g, w = 2g − g_x), so their tangents are the
+  same in (ġ, ġ_x); M moves by Σ (ġ wᵀ + g ẇᵀ), M_Δ by
+  Σ Δ̇ g wᵀ + Δ (ġ wᵀ + g ẇᵀ), and R = gᵀ (Uᵀ S U) w onto the orbital
+  energies by ġ·w + g·ẇ + gᵀ Ṡ' w (UᵀSU = 1 holds at the point only).
+  This is exact for any U that moves with g so that U g is the amplitude
+  vector A⁺ b; U̇ = V_n Θ' is one such.
+- **U's tangent**, U̇ = V_n Θ', Θ' = Θ V_kᵀ U: the bars are quadratic in U
+  at fixed inputs, so one symmetric difference, U ± s U̇ with s the power of
+  two nearest ‖U‖ / ‖U̇‖, is exact (two fixed walks). It carries S U̇ into
+  the slab bars, U̇ into the matrix bars, and K U̇ into the span bar.
+- **The inputs' tangent at fixed multipliers**: S, S₁ and the slabs linear,
+  K one integral times one RDM, so the bars are of degree at most five
+  along a line, and SC's ±s, ±2s, ±3s difference is exact (six fixed walks;
+  the orbital energies, read by the multipliers alone, are not moved).
+
+Sijrs's share is SC's (`class_energies_hvp`'s kernel).
+
+**The span bar's derivative in V and σ.** The span bar is
+Y = V_n Ψ V_kᵀ, Ψ = (V_nᵀ R V_k) ⊘ Γ, Γ_nl = σ_l − σ_n, R = Ū Uᵀ: a
+two-sided divided difference of S's spectral decomposition, so its
+derivative at fixed R is Daleckii–Krein's. With E = Vᵀ Ṡ V and
+Θ = E_nk ⊘ Γ, and R's blocks off V_kᵀ R V_k zero (U ⊥ V_n),
+
+    Ẏ = V_n [(E_nn Ψ − Ψ E_kk − Θ R_kk) ⊘ Γ] V_kᵀ + V_n Ψ Θᵀ V_nᵀ − V_k Θᵀ Ψ V_kᵀ.
+
+Every divided difference of 1/(σ_l − σ_n) is a product of two first-order
+ones, so no pair within one side of the cut is divided by: degenerate
+dropped or kept modes need no care. A pair within σ's round-off rotates
+nothing, at second order as at first (Ψ and Θ zero there). Added to the
+multipliers' fixed walk, symmetrized as the span bar is. These, U's
+tangent, and the span's parts of ẏ and Ḋ are **the null-space rotation
+terms**: the rotation of S⁺ = U Uᵀ's span into the dropped modes, and of
+P = 1 − T Uᵀ = V_n V_nᵀ with it. For exact null modes at an eigenstate
+they vanish with V_nᵀ Ṡ V_k and V_nᵀ K U; for real ones (#853's cut, or a
+raised floor) they are of the order of the first-order term.
+
+**No on-shell assumption.** The solve's restricted inverse
+G = V_k (V_kᵀ A V_k)⁻¹ V_kᵀ is differentiated as it stands, the dropped
+modes' K (V_nᵀ K U, through the span bar) included, so nothing assumes
+P A = 0: off the eigenstate, where P A is of the CI residual's order and
+S⁺ amplifies it by 1/σ_kept, the terms carry it. The ladders below move
+the RDMs off any eigenstate.
+
+**Refusals.** The energy's (`pc_intruder_check`, the tangent's walk), and a
+class whose smallest kept metric eigenvalue is below 1e-10 of its largest,
+Numerical, naming the class and `pc_floor`: there the second derivative is
+not attainable ([The conditioning floor](#the-conditioning-floor), #917).
+Raising `EnergyInputs::pc_floor` to 1e-10 or more passes it. The Schur lift
+is the gradient's (`pc_hessian_product`; `../gradient/README.md`, "The
+Schur lift"): along the class inputs S is linear, so nothing lifts here.
+
+**Measured** (RTX 3080, `--preset default`). `n2_ccpvdz_cas44_df` at
+`pc_floor` 1e-3, which drops real modes the default keeps (Srs, Sij and
+Sir) and leaves every kept spectrum gapped: the product against a ladder of
+the bars, every field, along every input group and all at once, worst
+1.9e-9 of the field's largest element (the issue's bar is 1e-7); without
+the rotation (`span` false) it misses by 1.9e-3 (the orbital energies) to
+2.8e-1 (h), 1.9e4 to 2.8e6 bars. Each group runs in under half a second.
+
+**Cost.** One tangent walk for every direction at once, then per
+direction nine fixed walks (each one reverse pass) and Sijrs's kernel.
+The base walk keeps, per class, U, V, M and M_Δ, and per slab ȳ and x̄
+(the slab rows' size, on the host), each with its tangent per direction,
+and per direction the span bar's derivative (d × d) and U̇ (d × m).
+
 ## Not ported
 
 PC's Hessian-vector product (#815; what it can rely on at PSB3 is in [The
@@ -1574,6 +1674,23 @@ an all-zero field null), each direction's Ė against Σ ⟨bar, ẋ⟩ from
   test places it) and a denominator at round-off (every virtual shifted to
   put Sr's nearest mode at λ + Δ = 0): the tangent fails with
   `pc_class_energies`' kind and message.
+
+The PC Hessian-vector product, in the same file, on `n2_ccpvdz_cas44_df`
+at `pc_floor` 1e-3 (real modes dropped, every kept spectrum gapped):
+
+- `Nevpt2PcEnergyHvp.BarsMatchRichardsonLadder`, per input group (B, h1e_v,
+  e, h, rdm, and all at once, the fast tier's): the product against central
+  differences of `pc_class_energies_adjoint`'s bars at t = 1e-3 / 2^k,
+  k < 8, the steadiest Richardson extrapolant, every field to 1e-7 of its
+  largest element; and the product without the kept span's rotation
+  missing the same ladder by more than ten bars (but along e, which moves
+  no S). Measured: worst 1.9e-9; the rotation 1.9e4 to 2.8e6 bars.
+- `Nevpt2PcEnergyHvp.BatchedDirectionsMatchSingle`: two directions walked
+  at once against each alone, every field to 1e-10.
+- `Nevpt2PcEnergyHvp.RefusesAnIllConditionedSolve` (slow tier): PSB3's
+  twist (`SpanTermVisibleAtPsb3Twist`'s state) keeps Sr at 3.9e-13 of its
+  largest at the default cut, refused, Numerical, naming the class and
+  `pc_floor`; at `pc_floor` 1e-10 the product runs.
 
 The PC-QD reverse pass, in the same file, over `test/gtest/data/qd_nevpt2/`
 with a seeded random, unsymmetric H̄:

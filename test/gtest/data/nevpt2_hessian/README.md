@@ -24,6 +24,7 @@ All STO-3G / cc-pVDZ-JKFIT, single state, all-electron (`frozen_core` 0).
 | `h2co_skew_sto3g` | skew (C1) | (4,4), 6–9 | 0.03, 5e-3 | 0.140, 0.341 | CASSCF, SC, PC | 2.0e-7, 1.8e-7, 1.8e-7 | 8, 10, 10 | 0.78 |
 | `nh3_cs_sto3g` | symmetric (Cs) | (2,2), 3 and 5 | 0.03, 5e-3 | 0.285, 0.289 | CASSCF, SC (A′ block), PC | 5.5e-8, 5.7e-6 (A″ failed), 5.5e-8 | 8, 3, 9 | 1.31 |
 | `h2co_neardeg_sto3g` | near-degenerate virtual pair | (4,4), 6–9 | 0.04, 5e-3 | 0.185, **0.0060** | CASSCF, PC | 1.2e-7, 1.9e-7 | 19, 24 | 1.25 |
+| `hcn_sto3g` | symmetric (C∞v), PC nulls by symmetry | (4,4), 5–8 | 0.03, 5e-3 | 0.253, 0.758 | CASSCF, SC, PC | 2.1e-7, 2.1e-7, 2.1e-7 | 4, 4, 4 | 0.22 |
 
 Every judged ratio of every element (and of every pair's directional
 ladder) lies in (12.8, 19.2); the rest are below their noise floor (2.6e-8
@@ -72,6 +73,17 @@ symmetric case.
   from `active` reaches the case's state. Of the other starts tried on the
   tree, [0, 4], [0, 5] and [4, 5] reach the broken minimum. [1, 4], [1, 5],
   [1, 6], [3, 4], [3, 6] and [4, 6] reach the symmetric one.
+- **`hcn_sto3g`** (#815): linear, along z; z displacements are A1 and x
+  and y span the π pair (labelled B1 and B2). PC's Sir metric has two null
+  modes by symmetry, which a CI direction that breaks the axial symmetry
+  lifts at second order (`src/nevpt2/gradient/README.md`, "The Schur
+  lift"); no nuclear displacement does, since three atoms always keep
+  their plane, which protects them: every displaced point drops the
+  reference's modes (the guard), and SC, PC and CASSCF are held to every
+  check everywhere. SC has empty perturbers here too (Sijr 30, Srsi 15,
+  Si 5, Sr 2), and passes every check. Its
+  elements' finer differences are mostly under the noise floor (5.5e-8),
+  so four ratios per quantity are judged.
 - **`h2co_neardeg_sto3g`**: the two virtuals 6.0e-3 apart at R0, and 5.6e-5
   at the closest displaced point, for #817's κ_oo. PC only (and CASSCF):
   SC is not invariant to rotations within the pair and does not ladder
@@ -114,8 +126,8 @@ Hessian is Qᵀ H Q with Q's rows `coordinates.vectors`):
     UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
         tools/nevpt2_hessian/nevpt2_hessian.py
 
-6 768 energies a case (48 for the gradient at R0, 12 columns × 8 points ×
-48, 66 pairs × 8 × 4) plus 40 for the noise; with the default (and cap) of
-8 one-thread workers, about 4.5 min for each formaldehyde and 2 min for
-ammonia, 12 min in all. A miss prints `STUCK` with the numbers and writes
+6 768 energies a four-atom case (48 for the gradient at R0, 12 columns × 8
+points × 48, 66 pairs × 8 × 4) and 3 780 for HCN, plus 40 for the noise;
+with the default (and cap) of 8 one-thread workers, about 4.5 min for each
+formaldehyde, 2 min for ammonia and 2.5 min for HCN, 15 min in all. A miss prints `STUCK` with the numbers and writes
 nothing for that case.

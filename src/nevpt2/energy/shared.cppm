@@ -248,6 +248,18 @@ Result<Buffers::device<double>> symmetrized(DeviceResources &res, const double *
 Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const double *s_rm,
                                const double *k_rm, int64_t d, const double *s1, int64_t n1,
                                bool keep_modes, double floor);
+/// @brief V_nᵀ A, nd x c column-major, for the first nd columns of @p v (d x d
+/// column-major) and the row-major d x c @p a_rm.
+Result<Buffers::device<double>> leak_of(DeviceResources &res, const double *v, const double *a_rm,
+                                        int64_t d, int64_t nd, int64_t c);
+/// @brief A solve's DroppedModes from S's eigenvectors @p v and eigenvalues
+/// @p sigma (the first d - m dropped), the pair floor @p floor, the
+/// symmetrized @p k_sym and @p s_sym, @p u (d x m) and the optional S₁
+/// (@p s1, d x n1 row-major): V_nᵀ K U, V_nᵀ S and V_nᵀ S₁ formed here.
+Result<DroppedModes> dropped_modes(DeviceResources &res, Buffers::device<double> v,
+                                   const std::vector<double> &sigma, double floor,
+                                   const double *k_sym, const double *s_sym, const double *u,
+                                   int64_t d, int64_t m, const double *s1, int64_t n1);
 
 /// @brief One pair's class matrices, row-major: S, K for a state's own RDMs
 /// alone, and S₁ where the class has one.

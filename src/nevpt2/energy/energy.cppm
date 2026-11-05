@@ -661,6 +661,86 @@ pc_class_energies_tangent(DeviceResources &res, const MoBlocks &blocks, const En
                           int32_t batch, std::span<const EnergyDirection> directions,
                           bool span = true);
 
+/// @brief pc_class_energies_hvp's result: the energies it walked.
+struct PcClassEnergiesHvp {
+  /// @brief The energies, dropped counts and conditioning (cut, kept), as
+  /// pc_class_energies computes them.
+  PcClassEnergies energies;
+};
+
+/// @brief The PC energy's Hessian-vector product in its inputs, forward over
+/// the reverse pass: @p bars[u] += the tangent of pc_class_energies_adjoint's
+/// bars along @p directions[u], every field the bars name (Λ included).
+///
+/// Per class the bars are a polynomial in the inputs at fixed multipliers:
+/// the amplitudes' bars ȳ (and the exchange rows'), M = Σ g wᵀ and
+/// M_Δ = Σ Δ g wᵀ, the solve's U, and S's eigenvectors V and eigenvalues σ
+/// for the kept span's rotation (#862). So the tangent is three terms.
+/// - **The multipliers' tangent**, through one reverse pass at them: per
+///   tuple ġ = (ẏ - Ḋ g) / (λ + Δ), the solve differentiated through its own
+///   factorization, with ẏ and Ḋ pc_class_energies_tangent's (the span's
+///   rotation in them); and the span bar's derivative in V and σ at fixed
+///   matrices, closed form (README "The PC Hessian-vector product").
+/// - **U's tangent**, U̇ = V_n Θ V_kᵀ U: the bars are quadratic in U, so one
+///   symmetric difference in U is exact, two reverse passes.
+/// - **The inputs' tangent at fixed multipliers**: a polynomial of degree at
+///   most six along the direction, so class_energies_hvp's ±s, ±2s, ±3s
+///   difference is exact, six reverse passes at shifted inputs.
+/// Sijrs's share is SC's (class_energies_hvp's kernel).
+///
+/// The kept span's rotation is taken at second order for every dropped mode,
+/// null or real: Θ and the span bar's pairs within σ's round-off rotate
+/// nothing, as at first order. @p span false leaves the rotation out at both
+/// orders, the fixed-span product: not a derivative where real modes are
+/// dropped, there for the tests that show the rotation's share.
+///
+/// Cost per direction: nine reverse passes over the whole inputs, after one
+/// tangent walk for every direction at once.
+///
+/// @return The energies; InvalidConfig when @p bars is not one per
+///         direction or a direction's blocks are not shaped as @p blocks;
+///         Numerical, naming the class, when a class keeps a metric mode
+///         below 1e-10 of its largest, where the second derivative is not
+///         attainable (#917; EnergyInputs::pc_floor raises the cut past it);
+///         or pc_class_energies_tangent's errors, its
+///         refusals among them.
+[[nodiscard]] Result<PcClassEnergiesHvp>
+pc_class_energies_hvp(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
+                      int32_t batch, std::span<const EnergyDirection> directions,
+                      std::span<const EnergyBars> bars, bool span = true);
+
+/// @brief pc_metric_lifts' result: per class, how S's dropped modes rise at
+/// second order along one direction of the RDMs.
+struct PcMetricLifts {
+  /// @brief [k]: the largest eigenvalue of the Schur lift L (below), over
+  /// S's largest eigenvalue; 0 where the cut drops nothing, and for Sijrs.
+  std::array<double, 8> lift{};
+  /// @brief [k]: the class's cut over S's largest eigenvalue,
+  /// max(1e-13, 100 ε √d, pc_floor); 0 for Sijrs and a class with no tuple.
+  std::array<double, 8> cut{};
+};
+
+/// @brief Each PC class's Schur lift along a path of the RDMs (README "The
+/// Schur lift"): with S = V diag(σ) Vᵀ cut as pc_class_energies cuts it
+/// (@p in, its pc_floor among them), V_n the dropped modes and S⁺ = U Uᵀ
+/// over the kept ones, and S' and S'' the metric's first and second
+/// derivatives along the path,
+///
+///     L = V_nᵀ (S'' - 2 S' S⁺ S') V_n,
+///
+/// whose eigenvalues are the second derivatives of the dropped modes' own:
+/// a null mode of S rises along the path as ½ t² L. @p first and @p second
+/// hold the RDMs' first and second derivatives along the path (their dm1,
+/// dm2 and dm3; no other field is read): S' and S'' are each class's metric
+/// builder over them, linear in the RDMs.
+///
+/// @return The lifts; pc_class_energies' refusal of a class with no positive
+///         metric eigenvalue; or a builder's or the solver's error.
+[[nodiscard]] Result<PcMetricLifts> pc_metric_lifts(DeviceResources &res, const MoBlocks &blocks,
+                                                    const EnergyInputs &in,
+                                                    const EnergyInputs &first,
+                                                    const EnergyInputs &second);
+
 /// @brief pc_effective_hamiltonian_adjoint's result: the matrix it walked, and
 /// each class's homogeneity sum assembled from its bars.
 struct PcEffectiveHamiltonianAdjoint {
