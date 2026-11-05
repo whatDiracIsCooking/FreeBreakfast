@@ -105,8 +105,12 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
         -> QdPcGradient  PC's h_PQ = R_Pᵀ (∇H_eff) R_Q, G(W^PQ); heff_gap |E_Q − E_P|
     qd_inputs(res, molecule, basis, aux, h, b, solution, ncore, ncas, use)
         -> Status        hands use(blocks, pairs) qd_sc_energy's inputs on the solution
+    builders_tangent(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector,
+                     count, h_dot, b_dot, c_dot)
+        -> BuildersTangent  the builders at the point and their forward tangent along
+                            each MO direction (h_dot, B_dot, c_dot); below
 
-Every call above but `zc_*`, `lagrangian_gradient` and the couplings takes
+Every call above but `zc_*`, `lagrangian_gradient`, the couplings and `builders_tangent` takes
 a trailing `nfrozen`, 0 by default: the frozen core ("The frozen core").
 
 `qd_inputs` is the QD energies' inputs, built on the solution as
@@ -204,6 +208,63 @@ symmetrized one, and Λ̃, naux nao nmo). `nevpt2::rdms` and `rdms_adjoint`
 each get half the device's free memory at their call, as the Nevpt2 step
 gives `rdms`, so that the energy's own buffers find room after the workspace
 has grown (it never shrinks).
+
+## The forward tangent of the builders
+
+    builders_tangent(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector,
+                     count, h_dot, b_dot, c_dot) -> BuildersTangent
+        value      BuilderOutputs at the point
+        tangents   BuilderOutputs per direction: their tangent along (ḣ, Ḃ, ċ)_k
+    BuilderOutputs
+        blocks     the five MO blocks (MoBlocks)
+        eri        (tu|vw)
+        h1e … f3ac every EnergyInputs field, packed as the forward holds it; inputs()
+        f_core     f_ij over the whole core, ncore², column-major
+        f_virt     f_ab over the virtuals, nvirt², column-major
+
+The first piece of the NEVPT2 nuclear Hessian's E_corr + Φ part
+(milestone 24, #806): what the class walk's tangent (#805) and the κ_oo
+response (#813) read. The arguments are `sc_energy`'s; direction k is ḣ
+(nmo², symmetric) at `h_dot + k nmo²`, Ḃ (naux nmo², `lambda`'s layout,
+symmetric in (p, q)) at `b_dot + k naux nmo²` and ċ (ndet, any vector, c
+raw as for y) at `c_dot + k ndet`, **all in the MO basis of `c`**: the
+tangent of a quantity in the MO frame, so that a caller's t_B (#813, the
+derivative integrals plus the one-index transform by κ plus c^B) goes in as
+it stands.
+
+**Every builder term by its product rule.** `fock_builds`' terms, the ones
+the forward and the reverse pass already run, are run once per operand
+that varies, that operand swapped for its tangent (the same builds over the
+tangent arrays, so every view and stride is the forward's) and the sum onto
+the output's tangent; the δ operands are the only constants. So ε's tangent
+carries γ̇ (**ε moves with γ** here too) and ḋ, ġ, and nothing is written
+twice by hand. h2e's tangent is (tu|vw)'s permuted, h2e[t, u, v, w] =
+(tv|uw); the MO blocks', B_cc's and B_vv diagonal's are slices of Ḃ.
+
+**The RDMs.** dm3, f3ca and f3ac are quadratic in c and f3 linear in
+(tu|vw), so their tangent is exact in three `nevpt2::rdms` calls: the
+bra/ket build at (ċ, c) and at (c, ċ) (`../rdm/README.md`, "Bra and ket":
+each is multilinear in the two vectors, and their sum is the symmetrized
+one), and the one-vector build at c over (tu|vw)'s tangent, of which only
+f3 is kept. dm2 and dm1 are their traces, linear, as in the forward. No
+`rdm/` entry point was missing.
+
+**f's inactive blocks** are `zc_adjoint`'s f at one root,
+
+    f_pq = h_pq + Σ_L B_L,pq (2 d_L + g_L) − Σ_j (pj|jq) − ½ Σ_tu γ_tu (pt|uq)
+
+over the core–core and virtual–virtual blocks, whose diagonals are e_core
+and e_virt term for term; the virtual block reads B_vv whole (one `b_mo`),
+which nothing else here does. f's off-diagonal tangent is what #813's κ_oo^B
+= −f^(B)_pq / (ε_p − ε_q) divides. The value's own f is pinned against
+`zc_adjoint`'s Φ (Tests).
+
+**All-electron.** It takes no `nfrozen`: the Hessian it feeds refuses a
+frozen core (milestone 24's update), and the frozen path's builders are
+untouched. One `BuilderOutputs` per direction holds three n⁶ arrays; the
+three RDM builds share one more triple (the second and third builds'
+outputs, added onto the first's), held across the `rdms` calls and so its
+own buffers.
 
 ## The inactive multipliers z^c
 
@@ -1464,15 +1525,45 @@ once per process.
     ladder runs the all-electron ratios; #894). Worst relative miss 2.2e-8
     (SC, B).
 
+`test/gtest/nevpt2_builders_tangent_gpu.cpp`, `Nevpt2BuildersTangent`, on
+a synthetic point: the builders are polynomials in (h, B, c), with no
+denominator and no stationarity, so a random one (naux 24, two core, CAS(4,4)
+over random CI coefficients, five virtuals; AO h and B over a random
+non-orthogonal C = 1 + 0.1 R) tests them as well as a converged CASSCF and
+runs in under a second.
+
+- `MatchesLadder`: one block call along two random directions (ḣ symmetric,
+  Ḃ symmetric in its pair at a tenth the length, ċ = 0.3 c plus a unit
+  vector across c), each against a ladder of the builders' value, run in the
+  MO basis itself (C = 1, Cᵀ h C and Cᵀ B C moved along the direction), so
+  the directions are checked to be read in the MO basis of C. Every field:
+  the five blocks, (tu|vw), each `EnergyInputs` field, f_core and f_virt.
+  Central differences at t = 1e-2 / 2^k, ten rungs, ratios of successive
+  changes (max norms) in (3.2, 4.8) over at least three halvings, the
+  steadiest extrapolant of that run, within 1e-7 of the tangent relative to
+  its largest element. **A field quadratic along the direction** (the blocks'
+  copies, (tu|vw), h2e, the F^I blocks, the RDMs) has exact central
+  differences: its changes sit at rounding, below 1e-9 of the field, its
+  ratios are noise, and its steadiest pair over every rung meets the same
+  bar. Measured on the gfx1200 (`--preset hip`): worst 3.3e-12 (e_core),
+  every flat field under 1.8e-12, f3ca and f3ac 2.3e-13. Freezing γ in ε's
+  tangent fails it.
+- `FockBlocksAreZcAdjointsFock`: the value's f against `zc_adjoint`'s,
+  which the ladder cannot see (it checks the tangent of whatever f the
+  builders form): Σ z_pq f_pq over a random symmetric z on the two blocks
+  against Φ at 1e-12 of the summands' sum (6.3e-17), and f's diagonals
+  against e_core and e_virt.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `qd_sc_coupling`, `QdScGradient`; `qd_pc_gradient`, `qd_pc_coupling`, `QdPcGradient`, `QdFold`; `qd_inputs`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `qd_sc_coupling`, `QdScGradient`; `qd_pc_gradient`, `qd_pc_coupling`, `QdPcGradient`, `QdFold`; `qd_inputs`; `builders_tangent`, `BuildersTangent`, `BuilderOutputs`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
 | `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies, and the count and weight checks the units share |
-| `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays` and `builders_adjoint`, declared for `gradient.cpp` (which defines them) and `qd.cpp`; and `with_qd_inputs`, `qd.cpp`'s, for `lagrangian.cpp` |
+| `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays`, `sc_arrays` and `builders_adjoint`, declared for `gradient.cpp` (which defines them), `qd.cpp` and `tangent.cpp`; and `with_qd_inputs`, `qd.cpp`'s, for `lagrangian.cpp` |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
 | `qd.cpp` | `qd_sc_energy`, `qd_pc_energy`, `qd_sc_adjoint` and `qd_pc_adjoint`: every pair's RDMs over the shared builders, γ_SA, and the reverse pass through `sc_effective_hamiltonian_adjoint` or `pc_effective_hamiltonian_adjoint`, the transition and one-vector `rdms_adjoint` and `builders_adjoint`; `with_qd_inputs`, the same inputs handed to a callback |
+| `tangent.cpp` | `builders_tangent`: the builders' terms by the product rule over the tangent arrays, the RDMs' through the bra/ket `nevpt2::rdms`, and f's core–core and virtual–virtual blocks |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
 | `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights, at any symmetric W (the state form a wrapper at u_K u_Kᵀ), and `qd_sc_gradient`'s two passes over it; `qd_sc_coupling`, the same at an interstate pair's W^PQ; `qd_pc_gradient` (state and W forms) and `qd_pc_coupling`, the same Lagrangian and passes over `qd_pc_energy` and `qd_pc_adjoint`; `qd_inputs`, `with_qd_inputs` on the solution's weights and strings |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |

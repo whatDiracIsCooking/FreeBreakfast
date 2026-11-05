@@ -199,6 +199,7 @@ add_executable(
   nevpt2_pt2_density_gpu.cpp
   nevpt2_nac_gpu.cpp
   nevpt2_gradient_gpu.cpp
+  nevpt2_builders_tangent_gpu.cpp
   nevpt2_qd_intersection_gpu.cpp
   nevpt2_numerical_heff_gpu.cpp
   nevpt2_psb3_gpu.cpp

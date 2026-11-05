@@ -173,6 +173,101 @@ struct PcAdjoint {
                                            int32_t ncas, const double *vector, int32_t batch,
                                            int32_t nfrozen = 0);
 
+/// @brief What the per-root builders make of (h, B, c) at one point, or their
+/// forward tangent along one direction: every EnergyInputs field, the MO
+/// blocks and (tu|vw) beside them, and the generalized Fock's core-core and
+/// virtual-virtual blocks. All on res's device, each packed as sc_energy's
+/// forward holds it: the integrals column-major, the RDMs row-major.
+/// All-electron: the core is the whole one.
+struct BuilderOutputs {
+  /// @brief B_aa, B_ca, B_va, B_cv and B_vc, as nevpt2::mo_blocks leaves them.
+  MoBlocks blocks;
+  /// @brief (tu|vw) at t + n (u + n (v + n w)), nevpt2::rdms' eri.
+  Buffers::device<double> eri;
+  /// @brief EnergyInputs::h1e's, ncas^2.
+  Buffers::device<double> h1e;
+  /// @brief EnergyInputs::h2e's, ncas^4.
+  Buffers::device<double> h2e;
+  /// @brief EnergyInputs::e_core's, ncore: f's core diagonal, moving with gamma.
+  Buffers::device<double> e_core;
+  /// @brief EnergyInputs::e_virt's, nvirt: f's virtual diagonal, moving with
+  /// gamma.
+  Buffers::device<double> e_virt;
+  /// @brief EnergyInputs::h1e_v_sr's, nvirt x ncas.
+  Buffers::device<double> h1e_v_sr;
+  /// @brief EnergyInputs::h1e_v_si's, ncas x ncore.
+  Buffers::device<double> h1e_v_si;
+  /// @brief EnergyInputs::h1e_v_sir's, nvirt x ncore.
+  Buffers::device<double> h1e_v_sir;
+  /// @brief EnergyInputs::dm1's, ncas^2.
+  Buffers::device<double> dm1;
+  /// @brief EnergyInputs::dm2's, ncas^4.
+  Buffers::device<double> dm2;
+  /// @brief EnergyInputs::dm3's, ncas^6.
+  Buffers::device<double> dm3;
+  /// @brief EnergyInputs::f3ca's, ncas^6.
+  Buffers::device<double> f3ca;
+  /// @brief EnergyInputs::f3ac's, ncas^6.
+  Buffers::device<double> f3ac;
+  /// @brief f_ij over the whole core, ncore x ncore column-major: zc_adjoint's
+  /// f, its diagonal e_core.
+  Buffers::device<double> f_core;
+  /// @brief f_ab over the virtuals, nvirt x nvirt column-major, its diagonal
+  /// e_virt.
+  Buffers::device<double> f_virt;
+
+  /// @brief The EnergyInputs fields, pointing into this.
+  [[nodiscard]] EnergyInputs inputs() const {
+    return {.h1e = h1e.data(),
+            .h2e = h2e.data(),
+            .e_core = e_core.data(),
+            .e_virt = e_virt.data(),
+            .h1e_v_sr = h1e_v_sr.data(),
+            .h1e_v_si = h1e_v_si.data(),
+            .h1e_v_sir = h1e_v_sir.data(),
+            .dm1 = dm1.data(),
+            .dm2 = dm2.data(),
+            .dm3 = dm3.data(),
+            .f3ca = f3ca.data(),
+            .f3ac = f3ac.data()};
+  }
+};
+
+/// @brief builders_tangent's result.
+struct BuildersTangent {
+  /// @brief The builders at the point itself.
+  BuilderOutputs value;
+  /// @brief Their forward tangent along each direction, in order.
+  std::vector<BuilderOutputs> tangents;
+};
+
+/// @brief The per-root builders at (@p h, @p b, @p c, @p vector), as
+/// sc_energy builds them (the arguments are its, all-electron), and their
+/// forward tangent along each of @p count directions (h_dot, B_dot, c_dot),
+/// all in the MO basis of @p c: direction k's h_dot nmo x nmo at
+/// @p h_dot + k nmo^2, symmetric; B_dot naux x nmo^2 at
+/// @p b_dot + k naux nmo^2, (L, p, q) at L + naux (p + nmo q) as
+/// ScAdjoint::lambda, symmetric in (p, q); c_dot one per determinant at
+/// @p c_dot + k ndet, any vector (no normalization: the builders' c is raw,
+/// as ScAdjoint::y's).
+///
+/// Each builder term's product rule, one contraction per operand that
+/// varies, over the same einsum terms the forward runs; epsilon moves with
+/// gamma. dm3, f3ca and f3ac are quadratic in c and f3 linear in (tu|vw), so
+/// their tangent is the bra/ket nevpt2::rdms at (c_dot, c) plus at
+/// (c, c_dot), plus the one-vector rdms at (tu|vw)'s tangent; dm2 and dm1
+/// are their traces.
+///
+/// @return The point and the tangents; InvalidConfig for a negative @p count
+///         or a null direction array when @p count > 0; or sc_energy's
+///         forward errors, or those of nevpt2::rdms, b_mo and an einsum.
+[[nodiscard]] Result<BuildersTangent>
+builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                 const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
+                 const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
+                 const double *vector, int32_t count, const double *h_dot, const double *b_dot,
+                 const double *c_dot);
+
 /// @brief The SC-QD-NEVPT2 effective Hamiltonian's correlation elements of
 /// the roots @p vectors over the shared orbitals @p c, every input built
 /// from (h, B, c) and the roots: element [M n + N] is
