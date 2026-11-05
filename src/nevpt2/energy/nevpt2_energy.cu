@@ -206,6 +206,53 @@ __global__ void sijrs_adjoint_kernel(const double *__restrict__ g, const int64_t
   }
 }
 
+// The forward tangent of sijrs_adjoint_kernel's bars along (ġ, ε̇), one
+// thread per slab element, decoded as it is: ġ_bar += 2 θ̇ / D - 2 θ Ḋ / D²,
+// and the orbital energies' share w = g θ / D² moves by
+// ẇ = (ġ θ + g θ̇) / D² - 2 g θ Ḋ / D³. A null orbital-energy tangent is zero.
+__global__ void sijrs_adjoint_tangent_kernel(
+    const double *__restrict__ g, const double *__restrict__ g_dot, const int64_t ni,
+    const int64_t i0, const int64_t ncore, const int64_t nvirt, const double *__restrict__ e_core,
+    const double *__restrict__ e_virt, const double *__restrict__ e_core_dot,
+    const double *__restrict__ e_virt_dot, double *__restrict__ g_bar_dot,
+    double *__restrict__ e_core_bar_dot, double *__restrict__ e_virt_bar_dot, const int64_t count) {
+  const int64_t t = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (t >= count) {
+    return;
+  }
+  int64_t rest = t;
+  const int64_t il = rest % ni;
+  rest /= ni;
+  const int64_t a = rest % nvirt;
+  rest /= nvirt;
+  const int64_t j = rest % ncore;
+  const int64_t b = rest / ncore;
+  const int64_t partner = il + (ni * (b + (nvirt * (j + (ncore * a)))));
+  const double g_iajb = g[t];
+  const double theta = (2.0 * g_iajb) - g[partner];
+  const double theta_dot = (2.0 * g_dot[t]) - g_dot[partner];
+  const double denominator = (e_core[j] - e_virt[a]) + (e_core[i0 + il] - e_virt[b]);
+  double denominator_dot = 0.0;
+  if (e_core_dot != nullptr) {
+    denominator_dot += e_core_dot[j] + e_core_dot[i0 + il];
+  }
+  if (e_virt_dot != nullptr) {
+    denominator_dot -= e_virt_dot[a] + e_virt_dot[b];
+  }
+  const double d2 = denominator * denominator;
+  g_bar_dot[t] += (2.0 * theta_dot / denominator) - (2.0 * theta * denominator_dot / d2);
+  const double w_dot = (((g_dot[t] * theta) + (g_iajb * theta_dot)) / d2) -
+                       (2.0 * g_iajb * theta * denominator_dot / (d2 * denominator));
+  if (e_core_bar_dot != nullptr) {
+    atomicAdd(&e_core_bar_dot[i0 + il], -w_dot);
+    atomicAdd(&e_core_bar_dot[j], -w_dot);
+  }
+  if (e_virt_bar_dot != nullptr) {
+    atomicAdd(&e_virt_bar_dot[a], w_dot);
+    atomicAdd(&e_virt_bar_dot[b], w_dot);
+  }
+}
+
 int64_t diag_count(const int64_t n) {
   return n * n * n * n * n;
 }
@@ -288,6 +335,24 @@ wwr::wwrError_t sijrs_tangent(const wwr::wwrStream_t stream, const double *const
       std::min(math::idivup(count, int64_t{kFourWarps}), int64_t{kSijrsMaxBlocks}));
   sijrs_tangent_kernel<<<blocks, kFourWarps, 0, stream>>>(g, g_dot, ni, i0, ncore, nvirt, e_core,
                                                           e_virt, e_core_dot, e_virt_dot, acc);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t sijrs_adjoint_tangent(const wwr::wwrStream_t stream, const double *const g,
+                                      const double *const g_dot, const int32_t ni, const int32_t i0,
+                                      const int32_t ncore, const int32_t nvirt,
+                                      const double *const e_core, const double *const e_virt,
+                                      const double *const e_core_dot,
+                                      const double *const e_virt_dot, double *const g_bar_dot,
+                                      double *const e_core_bar_dot, double *const e_virt_bar_dot) {
+  const int64_t count = int64_t{ni} * nvirt * ncore * nvirt;
+  if (count == 0) {
+    return wwr::wwrSuccess;
+  }
+  sijrs_adjoint_tangent_kernel<<<static_cast<uint32_t>(math::idivup(count, int64_t{kFourWarps})),
+                                 kFourWarps, 0, stream>>>(g, g_dot, ni, i0, ncore, nvirt, e_core,
+                                                          e_virt, e_core_dot, e_virt_dot, g_bar_dot,
+                                                          e_core_bar_dot, e_virt_bar_dot, count);
   return wwr::wwrGetLastError();
 }
 

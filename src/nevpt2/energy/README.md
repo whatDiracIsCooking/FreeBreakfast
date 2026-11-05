@@ -7,7 +7,9 @@ the SC-QD-NEVPT2 effective Hamiltonian of several
 and their QD effective Hamiltonian ([PC-NEVPT2](#pc-nevpt2),
 [PC-QD-NEVPT2](#pc-qd-nevpt2)) and its reverse pass
 ([The PC reverse pass](#the-pc-reverse-pass)), and SC's forward tangent
-([The SC forward tangent](#the-sc-forward-tangent)), each class walking its
+([The SC forward tangent](#the-sc-forward-tangent)) and Hessian-vector
+product ([The SC Hessian-vector product](#the-sc-hessian-vector-product)),
+each class walking its
 external index in batches over the density-fitted slabs; the two effective
 Hamiltonians also hand over their amplitudes
 ([The amplitude hand-over](#the-amplitude-hand-over)). Link `free_breakfast::nevpt2::energy`.
@@ -722,6 +724,102 @@ m by the class's block tangents, at most two n⁶ per direction (Si's a22 and
 dm3_h), and while one is built, one shifted copy of the inputs (three n⁶)
 and the block twice; a caller with many directions chunks them.
 
+## The SC Hessian-vector product
+
+    class_energies_hvp(res, blocks, in, batch, directions, bars, partners = {})
+        -> ClassEnergiesHvp
+        energies         class_energies' norms, energies and total
+        populated [u][k] class k's empty perturbers direction u populates (K6's)
+        defect [u]       the largest ρ_τ scored on direction u and its partner
+    bars[u] (EnergyBars, added onto): the tangent of class_energies_adjoint's
+        bars along directions[u], every field they name, Λ included
+    partners: none, or one EnergyDirection per direction, the pair checked
+
+`reverse.cpp`, forward over the reverse pass, for the nuclear Hessian
+(milestone 24, #811; `nuclear_hessian.tex` Eq. finish and §3). The bars are
+Σ_t P_t ∂N_t + Q_t ∂H_t + R_t ∂Δ_t, (P, Q, R) the finish's derivatives, so
+their tangent along ẋ is two terms, and Sijrs's.
+
+**The multipliers' tangent: the finish's 3 x 3.** In the (N, d) form,
+d = NΔ + H and E = −N²/d (no removable 1/N),
+
+    E_NN = −2/d + 4NΔ/d² − 2N²Δ²/d³    E_NH = 2N/d² − 2N²Δ/d³    E_NΔ = 3N²/d² − 2N³Δ/d³
+    E_HH = −2N²/d³                     E_HΔ = −2N³/d³            E_ΔΔ = −2N⁴/d³
+
+times `class_energies_tangent`'s (Ṅ, Ḣ, Δ̇) gives (Ṗ, Q̇, Ṙ) per perturber,
+and one reverse pass at those multipliers (`fixed_adjoint`: the walks, the
+sweep and R's host sums of `class_energies_adjoint`'s own walk, the finish
+replaced by a table) takes them onto every bar. Zero on a guarded perturber,
+whose N, Ṅ and Ḣ vanish.
+
+**The bars at fixed multipliers, differenced.** Every N and H table is a
+polynomial in (B, h1e, h2e, h1e_v, RDMs) of degree at most six (two slabs,
+each quadratic in B, around a block of degree at most two), so the bars at
+fixed (P, Q) are of degree at most five along a line, and
+
+    Σ_k w_k (A(x + k s ẋ) − A(x − k s ẋ)) / 2ks,   k = 1, 2, 3,   w = (3/2, −3/5, 1/10)
+
+is their derivative exactly: the weights cancel the s² and s⁴ terms. That is
+the "existing contractions at dotted arguments" of every einsum, the sweep's
+builders and the slabs' pull-back onto Λ, taken together without one
+derivative written by hand. s is the power of two nearest an eighth of the
+smallest ‖x‖/‖ẋ‖ over the groups the direction moves (B; h1e, h2e and
+h1e_v; the RDMs), so the widest rung moves no group past its own size. The
+orbital energies are read by R alone, a constant ∂Δ/∂ε, so they need no
+difference. Six reverse passes at shifted inputs, each a copy of every
+moved field and of B.
+
+**Sijrs** has no tables: `device::sijrs_adjoint_tangent` differentiates
+`sijrs_adjoint`'s bars along (ġ, ε̇), ġ the slab's bilinear tangent, and the
+pull-back onto Λ takes that through B and the bar itself through Ḃ (Λ is
+linear in B at a fixed slab bar).
+
+**Empty perturbers: K6, and the ρ_τ refusal.** A perturber the guard skips
+(|N| ≤ 1e-14), empty by symmetry, has N, H and their gradients zero; a
+direction that breaks the symmetry populates it at second order, where its
+energy is homogeneous of degree two (demo `hessian-theory.md` §5.6). Its
+second-order tables, N^{uv} and H^{uv}, are the same kind of difference of
+`class_energies_tangent`'s (Ṅ, Ḣ) along u at shifted inputs, six tangent
+calls per line, exact. A guarded perturber is populated by u when its N^{uu}
+is above 1e-10 of u's scale, the larger of its largest |N^{uu}| and the
+largest |N| over (8s)². Then:
+
+- **Along u alone** the energy is a quadratic form, and the perturber takes
+  K6, the finish's multipliers at their limit along the ray: P̄ = 2T̄ + ΔT̄²,
+  Q̄ = T̄², T̄ = −1/(Δ + η), η = H^{uu}/N^{uu}, in the fixed-multiplier
+  difference above. Against v, P̄ N^{uv} + Q̄ H^{uv} = −N^{uv}/(Δ + η) when
+  H ∝ N on the pair: the demo's K6.
+- **With a partner v**, a perturber both populate is scored by the
+  scale-free defect, at unit populations
+  c = N^{uv}/√(N^{uu}N^{vv}), κ = H^{uv}/√(N^{uu}N^{vv}),
+  η_w = H^{ww}/N^{ww} and η their mean,
+
+      ρ_τ = max(|η_u − η_v|, 2 |κ − c η|) / |Δ + η|,
+
+  zero exactly when H is proportional to N on the pair. Past 1e-6 the call
+  is refused, Numerical, naming the class and the perturber: the energy is
+  not a quadratic form on that pair, so no Hessian element exists there.
+  Below it the perturber takes K6 at the mean η.
+
+Both thresholds sit in measured gaps, on CAS(8,8) (`Nevpt2EnergyHvpEmpty`,
+RTX 3080, four runs): ρ_τ 2.2e-15 to 5.2e-15 on the proportional pair
+against 2.3e-3 on the refused one, and N^{uu} on the empty perturbers either a real
+population or round-off by many decades. A *small* perturber, real but under
+the guard, is not told apart from an empty one: its K6 is as small as its
+integrals. One empty by the state rather than by the integrals is not
+derived (`nuclear_hessian.tex` §5), and is not detected.
+
+**The bars' ladder sees K6.** Off the base point an empty perturber's norm,
+t² N^{uu}/2, clears the guard, so the bars there are the ray's limit, which
+is K6 at η_u: a ladder of the bars along u converges to the product with K6
+and misses without it (Λ by 5e-3 along B on CAS(8,8)). The mixed second
+difference of the energy along a pair is what checks η across two
+directions.
+
+Cost per direction: seven reverse passes over the whole inputs and, when any
+perturber is guarded, six `class_energies_tangent` calls (twelve with a
+partner).
+
 ## The SC-QD reverse pass
 
     sc_effective_hamiltonian_adjoint(res, blocks, pairs, hbar, batch, bars, transition)
@@ -982,8 +1080,8 @@ within 1e-3 to 1e-5 of the base point on `h2co_skew_ccpvdz_sa3`,
 
 ## Not ported
 
-PC's forward tangent (#810), the reverse pass's tangent and the Hessians,
-SC's and PC's, and the QD effective Hamiltonians' tangents. The demo's
+PC's forward tangent (#810) and Hessian-vector product, the nuclear
+Hessians, and the QD effective Hamiltonians' tangents. The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
 ## Tests
@@ -1107,6 +1205,27 @@ perturbers, zero by N₂'s symmetry: at CAS(4,4) all of Si's and over half of
 Sr's, Sijr's, Srsi's and Srs's, at CAS(8,8) 24 of Sijr's 102 and 120 of
 Srsi's 459. Their bars are zero, so a nonzero tangent there would fail.
 Measured on the gfx1200: worst 1.3e-12 relative.
+
+The SC Hessian-vector product, in the same file, on CAS(8,8) (CAS(4,4)'s
+real perturbers with norms down to 6e-8 put a pole of the energy within
+~1e-5 of the base point along a random direction of every input, so no
+ladder reaches 1e-7 there). `Nevpt2EnergyHvp.BarsMatchRichardsonLadder`:
+along a seeded random direction of every input (B alone and the RDMs alone
+in the slow tier), central differences of `class_energies_adjoint`'s bars at
+t = 1e-3 / 2^k, k < 8, Richardson-extrapolated, the extrapolant that moves
+least to the next taken; every bar field of the product to 1e-7 of its
+largest element. `Nevpt2EnergyHvpEmpty`: u random over every input, its
+partner v = u/2 + w with w keeping N₂'s symmetry (B and h1e_v scaled entry
+by entry, B by one factor per orbital pair; h1e, h2e, the RDMs and ε
+random), so H ∝ N on every empty perturber both populate (Sijr's 24 and
+Srsi's 120); ⟨v, HVP u⟩ against the energy's mixed second difference along
+(u, v) at t = 2.5e-3 / 2^k, k < 8, twice Richardson-extrapolated (once
+leaves a t⁴ term of 1.6e-6 where σ_E/t² takes over), to 1e-7. Then two
+independent random B directions: refused, Numerical, naming the class and
+the perturber. Measured on the RTX 3080 (`--preset default`): bars' ladder
+worst 3.7e-9 (every input), 1.8e-8 (B), 8.2e-10 (RDMs); K6 1.2e-8 to
+2.1e-8 over four runs, 9.4e-4 without K6; refused on Sijr's perturber 42 at
+ρ_τ 2.3e-3. Not run on the gfx1200.
 
 The SC-QD reverse pass, in the same file, over `test/gtest/data/qd_nevpt2/`
 with a seeded random, unsymmetric H̄:

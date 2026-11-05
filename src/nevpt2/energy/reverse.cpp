@@ -1862,6 +1862,21 @@ struct KetTables {
   std::vector<double> norm, h, a;
 };
 
+// R's host sums @p core and @p virt onto @p bars' orbital energies', when
+// wanted.
+Status add_orbital_energy_bars(DeviceResources &res, const std::vector<double> &core,
+                               const std::vector<double> &virt, const EnergyBars &bars) {
+  for (const auto &[host, bar] : {std::pair{&core, bars.e_core}, std::pair{&virt, bars.e_virt}}) {
+    if (bar != nullptr && !host->empty()) {
+      const Buffers::device<double> d = FBF_TRY(upload(res, *host));
+      FBF_TRY(einsum(res.stream(), "i->i", {{.data = d.data(), .dims = {std::ssize(*host)}}}, bar,
+                     {std::ssize(*host)}, 1.0));
+      FBF_TRY(res.sync());
+    }
+  }
+  return {};
+}
+
 // Every SC class's walk but Sijrs's, in PySCF's order, with its class index.
 const std::array<std::pair<size_t, Result<double> (*)(ReverseContext &, const ScWalk &)>, 7>
     kScWalks{{{0, reverse_sr},
@@ -2047,15 +2062,7 @@ Result<ScEffectiveHamiltonianAdjoint> sc_couplings_adjoint(
   out.eq40[2] = sijrs.eq40;
 
   // R's host sums onto the orbital energies' bars (Sijrs's are already there).
-  for (const auto &[host, bar] :
-       {std::pair{&e_core_bar, c.bars.e_core}, std::pair{&e_virt_bar, c.bars.e_virt}}) {
-    if (bar != nullptr && !host->empty()) {
-      const Buffers::device<double> d = FBF_TRY(upload(res, *host));
-      FBF_TRY(einsum(res.stream(), "i->i", {{.data = d.data(), .dims = {std::ssize(*host)}}}, bar,
-                     {std::ssize(*host)}, 1.0));
-      FBF_TRY(res.sync());
-    }
-  }
+  FBF_TRY(add_orbital_energy_bars(res, e_core_bar, e_virt_bar, c.bars));
   for (ClassEnergies &element : out.elements) {
     element.total = std::ranges::fold_left(element.energies, 0.0, std::plus{});
   }
@@ -2074,6 +2081,15 @@ Result<ClassEnergiesAdjoint> class_energies_adjoint(DeviceResources &res, const 
 // ---------------------------------------------------------------------------
 // The SC forward tangent: each own walk with a tangent, and Sijrs's kernel
 // ---------------------------------------------------------------------------
+
+// Perturber @p x of a class-@p k slab whose first is @p first, in
+// ClassEnergiesTangent's order: Sir's at r ncore + i (its tables run (i, r)
+// per slab), every other class's in walk order, whatever the batch.
+size_t perturber_index(const size_t k, const int64_t first, const size_t x, const Perturber &p,
+                       const int64_t ncore) {
+  return k == 7 ? static_cast<size_t>((int64_t{p.v1} * ncore) + p.c1)
+                : static_cast<size_t>(first) + x;
+}
 
 // Σ x² over @p count elements at @p x, added to the device scalar @p acc;
 // nothing for a null @p x.
@@ -2283,8 +2299,7 @@ Result<ClassEnergiesTangent> class_energies_tangent(DeviceResources &res, const 
                       const std::vector<std::vector<double>> &b_dots) {
       for (size_t x = 0; x < perturbers.size(); ++x) {
         const Perturber &p = perturbers[x];
-        const auto g = k == 7 ? static_cast<size_t>((int64_t{p.v1} * nc) + p.c1)
-                              : static_cast<size_t>(first) + x;
+        const size_t g = perturber_index(k, first, x, p, nc);
         if (out.norm[k].size() <= g) {
           for (std::vector<double> *table : {&out.norm[k], &out.h[k], &out.delta[k]}) {
             table->resize(g + 1, 0.0);
@@ -2340,6 +2355,533 @@ Result<ClassEnergiesTangent> class_energies_tangent(DeviceResources &res, const 
   out.energies.total = std::ranges::fold_left(out.energies.energies, 0.0, std::plus{});
   for (size_t u = 0; u < m; ++u) {
     out.total_dot[u] = std::ranges::fold_left(out.energy_dot[u], 0.0, std::plus{});
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// The SC Hessian-vector product: forward over the reverse pass
+// ---------------------------------------------------------------------------
+
+// Fixed multipliers per class and perturber (perturber_index's order): P on
+// N, Q on H and R on Δ. An empty r puts nothing on the orbital energies.
+struct ScMultipliers {
+  std::array<std::vector<double>, 8> p, q, r;
+};
+
+// The SC reverse pass at @p mult in place of the finish's own multipliers:
+// @p bars += Σ_t (P_t ∂N_t + Q_t ∂H_t + R_t ∂Δ_t) over every class but
+// Sijrs, through the same walks, sweep and host sums as
+// class_energies_adjoint's own walk.
+Status fixed_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
+                     const int32_t batch, const EnergyBars &bars, const ScMultipliers &mult) {
+  const ActiveOperands o = FBF_TRY(active_operands(res, blocks, in));
+  std::vector<double> e_core_bar(o.e_core.size(), 0.0);
+  std::vector<double> e_virt_bar(o.e_virt.size(), 0.0);
+  ReverseContext c{
+      .res = res,
+      .blocks = blocks,
+      .in = in,
+      .bars = bars,
+      .batch = batch,
+      .ops = o,
+      .e = {.core = o.e_core, .virt = o.e_virt, .core_bar = e_core_bar, .virt_bar = e_virt_bar}};
+  BlockBars m = FBF_TRY(block_bars(res, blocks.ncas, true, true));
+  const int64_t nc = blocks.ncore;
+  for (const auto &[k, walk] : kScWalks) {
+    const ScWalk w{.a = &o,
+                   .m_a = &m,
+                   .finish = [&, k](const int64_t first, const std::vector<Perturber> &perturbers,
+                                    const std::vector<double> &, const std::vector<double> &,
+                                    std::vector<double> &a_bar, std::vector<double> &b_bar) {
+                     for (size_t x = 0; x < perturbers.size(); ++x) {
+                       const Perturber &p = perturbers[x];
+                       const size_t g = perturber_index(k, first, x, p, nc);
+                       spread(p, mult.p[k][g], a_bar);
+                       spread(p, mult.q[k][g], b_bar);
+                       if (!mult.r[k].empty()) {
+                         add_delta_bar(p, mult.r[k][g], c.e);
+                       }
+                     }
+                   }};
+    FBF_TRY(walk(c, w));
+  }
+  const std::array wanted{bars.h1e, bars.h2e, bars.dm1, bars.dm2, bars.dm3, bars.f3ca, bars.f3ac};
+  if (std::ranges::any_of(wanted, [](const double *b) { return b != nullptr; })) {
+    FBF_TRY(sweep_blocks(res, o, m, bars));
+  }
+  return add_orbital_energy_bars(res, e_core_bar, e_virt_bar, bars);
+}
+
+// Every EnergyInputs field with its element count over @p b's sizes.
+std::array<std::pair<const double * EnergyInputs::*, int64_t>, 12> input_fields(const MoBlocks &b) {
+  const int64_t n = b.ncas;
+  const int64_t n2 = n * n;
+  const int64_t n4 = n2 * n2;
+  const int64_t n6 = n4 * n2;
+  return {{{&EnergyInputs::h1e, n2},
+           {&EnergyInputs::h2e, n4},
+           {&EnergyInputs::e_core, b.ncore},
+           {&EnergyInputs::e_virt, b.nvirt},
+           {&EnergyInputs::h1e_v_sr, int64_t{b.nvirt} * n},
+           {&EnergyInputs::h1e_v_si, n * b.ncore},
+           {&EnergyInputs::h1e_v_sir, int64_t{b.nvirt} * b.ncore},
+           {&EnergyInputs::dm1, n2},
+           {&EnergyInputs::dm2, n4},
+           {&EnergyInputs::dm3, n6},
+           {&EnergyInputs::f3ca, n6},
+           {&EnergyInputs::f3ac, n6}}};
+}
+
+// Every EnergyBars field with its element count over @p b's sizes, Λ's
+// naux x nmo².
+std::array<std::pair<double * EnergyBars::*, int64_t>, 13> bar_fields(const MoBlocks &b) {
+  const int64_t nmo = int64_t{b.ncore} + b.ncas + b.nvirt;
+  const auto in = input_fields(b);
+  return {{{&EnergyBars::h1e, in[0].second},
+           {&EnergyBars::h2e, in[1].second},
+           {&EnergyBars::e_core, in[2].second},
+           {&EnergyBars::e_virt, in[3].second},
+           {&EnergyBars::h1e_v_sr, in[4].second},
+           {&EnergyBars::h1e_v_si, in[5].second},
+           {&EnergyBars::h1e_v_sir, in[6].second},
+           {&EnergyBars::dm1, in[7].second},
+           {&EnergyBars::dm2, in[8].second},
+           {&EnergyBars::dm3, in[9].second},
+           {&EnergyBars::f3ca, in[10].second},
+           {&EnergyBars::f3ac, in[11].second},
+           {&EnergyBars::lambda, int64_t{b.naux} * nmo * nmo}}};
+}
+
+// @p in and @p blocks moved by @p step along @p d, in buffers of their own;
+// a field whose tangent is null stays @p in's, and the blocks stay
+// @p blocks when @p d moves no B.
+struct ShiftedInputs {
+  std::vector<Buffers::device<double>> arrays;
+  std::optional<MoBlocks> own;
+  const MoBlocks *base = nullptr;
+  EnergyInputs in;
+  [[nodiscard]] const MoBlocks &blocks() const { return own ? *own : *base; }
+};
+
+Result<ShiftedInputs> shifted_inputs(DeviceResources &res, const MoBlocks &blocks,
+                                     const EnergyInputs &in, const EnergyDirection &d,
+                                     const double step) {
+  ShiftedInputs out{.base = &blocks, .in = in};
+  for (const auto &[field, count] : input_fields(blocks)) {
+    if (in.*field == nullptr || d.in.*field == nullptr) {
+      continue;
+    }
+    Buffers::device<double> moved = FBF_TRY(device_zeros(res, count));
+    FBF_TRY(add_scaled(res, in.*field, count, moved.data(), 1.0));
+    FBF_TRY(add_scaled(res, d.in.*field, count, moved.data(), step));
+    out.in.*field = moved.data();
+    out.arrays.push_back(std::move(moved));
+  }
+  if (d.blocks != nullptr) {
+    out.own.emplace(
+        MoBlocks{.naux = blocks.naux,
+                 .ncore = blocks.ncore,
+                 .ncas = blocks.ncas,
+                 .nvirt = blocks.nvirt,
+                 .aa = Buffers::device<double>(blocks.aa.num_elements(), res.device()),
+                 .ca = Buffers::device<double>(blocks.ca.num_elements(), res.device()),
+                 .va = Buffers::device<double>(blocks.va.num_elements(), res.device()),
+                 .cv = Buffers::device<double>(blocks.cv.num_elements(), res.device()),
+                 .vc = Buffers::device<double>(blocks.vc.num_elements(), res.device())});
+    FBF_TRY(shift_blocks(res, blocks, *d.blocks, step, *out.own));
+  }
+  return out;
+}
+
+// The step a line along @p d is differenced at: the power of two nearest an
+// eighth of the smallest ‖x‖ / ‖ẋ‖ over the groups @p d moves (B; h1e, h2e
+// and h1e_v's rows; the RDMs), so no group moves past its own size on the
+// widest rung; 0 when it moves none of them, since the orbital energies
+// alone move neither the tables nor the bars at fixed multipliers.
+Result<double> line_step(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
+                         const EnergyDirection &d) {
+  // [3 v + g]: group g's Σ x², v = 0 the inputs and v = 1 the direction.
+  Buffers::device<double> acc = FBF_TRY(device_zeros(res, 6));
+  const auto squares = [&](const EnergyInputs &x, const MoBlocks *b, double *const at) -> Status {
+    const auto fields = input_fields(blocks);
+    for (const size_t f : {7U, 8U, 9U, 10U, 11U}) {
+      FBF_TRY(add_squares(res, x.*fields[f].first, fields[f].second, at));
+    }
+    for (const size_t f : {0U, 1U, 4U, 5U, 6U}) {
+      FBF_TRY(add_squares(res, x.*fields[f].first, fields[f].second, at + 1));
+    }
+    if (b != nullptr) {
+      for (const Buffers::device<double> *g : {&b->aa, &b->ca, &b->va, &b->cv}) {
+        FBF_TRY(add_squares(res, g->data(), static_cast<int64_t>(g->num_elements()), at + 2));
+      }
+    }
+    return {};
+  };
+  FBF_TRY(squares(in, &blocks, acc.data()));
+  FBF_TRY(squares(d.in, d.blocks, acc.data() + 3));
+  const std::vector<double> sq = FBF_TRY(download(res, acc.data(), 6));
+  double step = 0.0;
+  for (size_t g = 0; g < 3; ++g) {
+    const double s = polarization_step(std::sqrt(sq[g]), 8.0 * std::sqrt(sq[3 + g]));
+    if (s != 0.0) {
+      step = step == 0.0 ? s : std::min(step, s);
+    }
+  }
+  return step;
+}
+
+// The derivative along a line from symmetric differences at k s, k = 1, 2,
+// 3: Σ_k w_k (f(k s) - f(-k s)) / 2ks is exact for f a polynomial of degree
+// at most six, the weights cancelling the s² and s⁴ terms.
+constexpr std::array<double, 3> kLineWeights{1.5, -0.6, 0.1};
+
+// Σ_k w_k (A(x + k s ẋ) - A(x - k s ẋ)) / 2ks of fixed_adjoint at @p mult,
+// R left out, onto @p bars: the derivative of the bars at fixed multipliers
+// along @p d. Every table is a polynomial in (B, h1e, h2e, h1e_v, RDMs) of
+// degree at most six (two slabs, each quadratic in B, around one block of
+// degree at most two), so the bars are of degree at most five along a line
+// and kLineWeights' difference is exact. The orbital energies are read by
+// R alone, which is left out.
+Status fixed_adjoint_tangent(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
+                             const int32_t batch, const EnergyDirection &d, const double step,
+                             const ScMultipliers &mult, const EnergyBars &bars) {
+  // Scratch bars for the wanted fields but the orbital energies'.
+  std::vector<Buffers::device<double>> held;
+  EnergyBars scratch{};
+  std::vector<std::tuple<double *, double *, int64_t>> pairs;
+  for (const auto &[field, count] : bar_fields(blocks)) {
+    if (bars.*field == nullptr || field == &EnergyBars::e_core || field == &EnergyBars::e_virt) {
+      continue;
+    }
+    held.push_back(FBF_TRY(device_zeros(res, count)));
+    scratch.*field = held.back().data();
+    pairs.emplace_back(held.back().data(), bars.*field, count);
+  }
+  const ScMultipliers no_r{.p = mult.p, .q = mult.q, .r = {}};
+  for (size_t level = 0; level < kLineWeights.size(); ++level) {
+    const auto k = static_cast<double>(level + 1);
+    for (const double sign : {1.0, -1.0}) {
+      for (const auto &[from, to, count] : pairs) {
+        FBF_TRY(zero(res, from, count));
+      }
+      const ShiftedInputs x = FBF_TRY(shifted_inputs(res, blocks, in, d, sign * k * step));
+      FBF_TRY(fixed_adjoint(res, x.blocks(), x.in, batch, scratch, no_r));
+      for (const auto &[from, to, count] : pairs) {
+        FBF_TRY(add_scaled(res, from, count, to, sign * kLineWeights[level] / (2.0 * k * step)));
+      }
+    }
+  }
+  return {};
+}
+
+// Every perturber's N and H second derivatives along (@p line, along[j]),
+// [k][t m + j] over m = along.size(): kLineWeights' difference of
+// class_energies_tangent's (Ṅ, Ḣ) along each of @p along, at the inputs
+// moved along @p line by ±k @p step. N and H are polynomials of degree at
+// most six, so this is exact.
+struct SecondTables {
+  std::array<std::vector<double>, 8> norm, h;
+};
+
+Result<SecondTables> second_tables(DeviceResources &res, const MoBlocks &blocks,
+                                   const EnergyInputs &in, const int32_t batch,
+                                   const EnergyDirection &line,
+                                   std::span<const EnergyDirection> along, const double step) {
+  SecondTables out;
+  for (size_t level = 0; level < kLineWeights.size(); ++level) {
+    const auto k = static_cast<double>(level + 1);
+    for (const double sign : {1.0, -1.0}) {
+      const ShiftedInputs x = FBF_TRY(shifted_inputs(res, blocks, in, line, sign * k * step));
+      const ClassEnergiesTangent t =
+          FBF_TRY(class_energies_tangent(res, x.blocks(), x.in, batch, along));
+      const double weight = sign * kLineWeights[level] / (2.0 * k * step);
+      for (size_t c = 0; c < 8; ++c) {
+        for (const auto &[to, from] :
+             {std::pair{&out.norm[c], &t.norm_dot[c]}, std::pair{&out.h[c], &t.h_dot[c]}}) {
+          to->resize(from->size(), 0.0);
+          for (size_t e = 0; e < from->size(); ++e) {
+            (*to)[e] += weight * (*from)[e];
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// Sijrs's share of the Hessian-vector product along @p d, slab by slab: its
+// slab's tangent ġ (bilinear in B, (slab(B + s Ḃ) - slab(B) - s² slab(Ḃ)) / s
+// as slab_tangent's), the tangent of sijrs_adjoint's bars along (ġ, ε̇) by
+// device::sijrs_adjoint_tangent (ε̇'s onto @p bars' orbital energies), pulled
+// back onto Λ through B, and the bar itself through Ḃ: Λ is linear in B at a
+// fixed slab bar.
+Status sijrs_hvp(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
+                 const int32_t batch, const EnergyDirection &d, const EnergyBars &bars) {
+  if (blocks.ncore == 0 || blocks.nvirt == 0) {
+    return {};
+  }
+  const int32_t extent = walk_extent(blocks, ExtBlock::Sijrs);
+  const int32_t step = batch_step(extent, batch);
+  Buffers::device<double> g = slab_buffer(res, blocks, ExtBlock::Sijrs, step);
+  Buffers::device<double> g_dot = slab_buffer(res, blocks, ExtBlock::Sijrs, step);
+  Buffers::device<double> scratch = slab_buffer(res, blocks, ExtBlock::Sijrs, step);
+  Buffers::device<double> g_bar = slab_buffer(res, blocks, ExtBlock::Sijrs, step);
+  Buffers::device<double> g_bar_dot = slab_buffer(res, blocks, ExtBlock::Sijrs, step);
+  // B + s Ḃ, s sizing s Ḃ to B, when B moves.
+  double s = 0.0;
+  std::optional<ShiftedInputs> shifted;
+  if (d.blocks != nullptr) {
+    const EnergyDirection b_only{.blocks = d.blocks};
+    Buffers::device<double> acc = FBF_TRY(device_zeros(res, 2));
+    for (const auto &[x, at] :
+         {std::pair{&blocks, acc.data()}, std::pair{d.blocks, acc.data() + 1}}) {
+      for (const Buffers::device<double> *b : {&x->aa, &x->ca, &x->va, &x->cv}) {
+        FBF_TRY(add_squares(res, b->data(), static_cast<int64_t>(b->num_elements()), at));
+      }
+    }
+    const std::vector<double> sq = FBF_TRY(download(res, acc.data(), 2));
+    s = polarization_step(std::sqrt(sq[0]), std::sqrt(sq[1]));
+    if (s != 0.0) {
+      shifted = FBF_TRY(shifted_inputs(res, blocks, in, b_only, s));
+    }
+  }
+  for (int32_t b0 = 0; b0 < extent; b0 += step) {
+    const int32_t b1 = std::min(extent, b0 + step);
+    const int64_t count = slab_count(blocks, ExtBlock::Sijrs, b0, b1);
+    FBF_TRY(slab(res, blocks, ExtBlock::Sijrs, b0, b1, g.data()));
+    FBF_TRY(zero(res, g_dot.data(), count));
+    if (shifted) {
+      FBF_TRY(slab(res, shifted->blocks(), ExtBlock::Sijrs, b0, b1, scratch.data()));
+      FBF_TRY(add_scaled(res, scratch.data(), count, g_dot.data(), 1.0 / s));
+      FBF_TRY(add_scaled(res, g.data(), count, g_dot.data(), -1.0 / s));
+      FBF_TRY(slab(res, *d.blocks, ExtBlock::Sijrs, b0, b1, scratch.data()));
+      FBF_TRY(add_scaled(res, scratch.data(), count, g_dot.data(), -s));
+    }
+    FBF_TRY(zero(res, g_bar_dot.data(), count));
+    FBF_TRY(gpu_status(device::sijrs_adjoint_tangent(
+        res.stream(), g.data(), g_dot.data(), b1 - b0, b0, blocks.ncore, blocks.nvirt, in.e_core,
+        in.e_virt, d.in.e_core, d.in.e_virt, g_bar_dot.data(), bars.e_core, bars.e_virt)));
+    if (bars.lambda == nullptr) {
+      continue;
+    }
+    FBF_TRY(slab_adjoint(res, blocks, ExtBlock::Sijrs, b0, b1, g_bar_dot.data(), bars.lambda));
+    if (d.blocks != nullptr) {
+      FBF_TRY(zero(res, g_bar.data(), count));
+      FBF_TRY(gpu_status(device::sijrs_adjoint(res.stream(), g.data(), b1 - b0, b0, blocks.ncore,
+                                               blocks.nvirt, in.e_core, in.e_virt, g_bar.data(),
+                                               nullptr, nullptr, 1.0)));
+      FBF_TRY(slab_adjoint(res, *d.blocks, ExtBlock::Sijrs, b0, b1, g_bar.data(), bars.lambda));
+    }
+  }
+  return res.sync();
+}
+
+// An empty perturber is populated by a direction w when its N^{ww} is above
+// this fraction of w's largest |N^{ww}| over every perturber: between the
+// round-off a direction that keeps the symmetry leaves on it and the
+// smallest real population (README, "The SC Hessian-vector product").
+constexpr double kEmptyPopulationFloor = 1e-10;
+
+// The largest ρ_τ an empty perturber two directions both populate may carry
+// before the pair is refused: between the proportional pairs' round-off and
+// the smallest real defect (README).
+constexpr double kEmptyDefectTolerance = 1e-6;
+
+constexpr std::array<std::string_view, 8> kScClassNames{"Sr",   "Si",  "Sijrs", "Sijr",
+                                                        "Srsi", "Srs", "Sij",   "Sir"};
+
+// One guarded perturber's second-order tables along a pair of directions:
+// N^{ww} and H^{ww} for w = u, v, and the cross N^{uv} and H^{uv}.
+struct EmptyPair {
+  double nuu, huu, nvv, hvv, nuv, huv;
+};
+
+// The ρ_τ defect of an empty perturber both directions populate (the demo's
+// hessian-theory §5.6): with unit populations, c = N^{uv} / √(N^{uu} N^{vv}),
+// κ = H^{uv} / √(N^{uu} N^{vv}), η_w = H^{ww} / N^{ww} and η their mean,
+//
+//     ρ = max(|η_u - η_v|, 2 |κ - c η|) / |Δ + η|,
+//
+// zero exactly when H is proportional to N on the pair, and invariant under
+// rescaling either direction.
+double empty_defect(const EmptyPair &e, const double delta) {
+  const double root = std::sqrt(e.nuu * e.nvv);
+  const double eta_u = e.huu / e.nuu;
+  const double eta_v = e.hvv / e.nvv;
+  const double eta = 0.5 * (eta_u + eta_v);
+  return std::max(std::abs(eta_u - eta_v), 2.0 * std::abs((e.huv / root) - (e.nuv / root * eta))) /
+         std::abs(delta + eta);
+}
+
+Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks &blocks,
+                                            const EnergyInputs &in, const int32_t batch,
+                                            std::span<const EnergyDirection> directions,
+                                            std::span<const EnergyBars> bars,
+                                            std::span<const EnergyDirection> partners) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  if (bars.size() != directions.size()) {
+    return err_config("nevpt2::class_energies_hvp: {} bars for {} directions", bars.size(),
+                      directions.size());
+  }
+  if (!partners.empty() && partners.size() != directions.size()) {
+    return err_config("nevpt2::class_energies_hvp: {} partners for {} directions (none, or one "
+                      "per direction)",
+                      partners.size(), directions.size());
+  }
+  FBF_TRY(check_directions(blocks, partners));
+  const ClassEnergiesTangent t =
+      FBF_TRY(class_energies_tangent(res, blocks, in, batch, directions));
+  const size_t m = directions.size();
+
+  // The finish's multipliers at the base point, P = E_N, Q = E_H and
+  // R = E_Δ in the (N, d) form, d = N Δ + H: zero on a guarded perturber.
+  ScMultipliers base;
+  bool any_guarded = false;
+  for (size_t k = 0; k < 8; ++k) {
+    const size_t count = t.norm[k].size();
+    for (std::vector<double> *v : {&base.p[k], &base.q[k], &base.r[k]}) {
+      v->assign(count, 0.0);
+    }
+    for (size_t g = 0; g < count; ++g) {
+      const double norm = t.norm[k][g];
+      if (std::abs(norm) <= kNumericalZero) {
+        any_guarded = true;
+        continue;
+      }
+      const double d = (norm * t.delta[k][g]) + t.h[k][g];
+      base.p[k][g] = (-2.0 * norm / d) + (norm * norm * t.delta[k][g] / (d * d));
+      base.q[k][g] = norm * norm / (d * d);
+      base.r[k][g] = norm * norm * norm / (d * d);
+    }
+  }
+
+  ClassEnergiesHvp out{.energies = t.energies,
+                       .populated = std::vector<std::array<int64_t, 8>>(m),
+                       .defect = std::vector<double>(m, 0.0)};
+  for (size_t u = 0; u < m; ++u) {
+    const EnergyDirection &du = directions[u];
+    const EnergyDirection *const dv = partners.empty() ? nullptr : &partners[u];
+    const double step = FBF_TRY(line_step(res, blocks, in, du));
+
+    // The multipliers the fixed-multiplier bars are differenced at: the
+    // finish's, and on each empty perturber u populates, K6's limit along the
+    // ray, P̄ = 2T̄ + Δ T̄² and Q̄ = T̄², T̄ = -1 / (Δ + η).
+    ScMultipliers fixed{.p = base.p, .q = base.q, .r = {}};
+    if (any_guarded && step != 0.0) {
+      std::vector<EnergyDirection> along{du};
+      if (dv != nullptr) {
+        along.push_back(*dv);
+      }
+      const SecondTables su = FBF_TRY(second_tables(res, blocks, in, batch, du, along, step));
+      std::optional<SecondTables> sv;
+      double step_v = 0.0;
+      if (dv != nullptr) {
+        step_v = FBF_TRY(line_step(res, blocks, in, *dv));
+        if (step_v != 0.0) {
+          sv = FBF_TRY(second_tables(res, blocks, in, batch, *dv, {dv, 1}, step_v));
+        }
+      }
+      const size_t mu = along.size();
+      // A population is read against its direction's scale: the larger of
+      // its largest |N^{ww}| over every perturber and the largest |N| over
+      // (8 s)², s ≈ ‖x‖ / 8 ‖ẋ‖, the size N^{ww} takes when the direction
+      // moves N at all (a direction of the RDMs alone moves it linearly, so
+      // every N^{ww} is round-off).
+      double largest = 0.0;
+      for (size_t k = 0; k < 8; ++k) {
+        for (const double x : t.norm[k]) {
+          largest = std::max(largest, std::abs(x));
+        }
+      }
+      double scale_u = largest / (64.0 * step * step);
+      double scale_v = 0.0;
+      if (sv) {
+        scale_v = largest / (64.0 * step_v * step_v);
+      }
+      for (size_t k = 0; k < 8; ++k) {
+        for (size_t g = 0; g < t.norm[k].size(); ++g) {
+          scale_u = std::max(scale_u, std::abs(su.norm[k][g * mu]));
+          if (sv) {
+            scale_v = std::max(scale_v, std::abs(sv->norm[k][g]));
+          }
+        }
+      }
+      for (size_t k = 0; k < 8; ++k) {
+        for (size_t g = 0; g < t.norm[k].size(); ++g) {
+          if (std::abs(t.norm[k][g]) > kNumericalZero) {
+            continue;
+          }
+          const EmptyPair e{.nuu = su.norm[k][g * mu],
+                            .huu = su.h[k][g * mu],
+                            .nvv = sv ? sv->norm[k][g] : 0.0,
+                            .hvv = sv ? sv->h[k][g] : 0.0,
+                            .nuv = mu > 1 ? su.norm[k][(g * mu) + 1] : 0.0,
+                            .huv = mu > 1 ? su.h[k][(g * mu) + 1] : 0.0};
+          if (e.nuu <= kEmptyPopulationFloor * scale_u) {
+            continue;
+          }
+          const double delta = t.delta[k][g];
+          double eta = e.huu / e.nuu;
+          if (sv && e.nvv > kEmptyPopulationFloor * scale_v) {
+            const double rho = empty_defect(e, delta);
+            out.defect[u] = std::max(out.defect[u], rho);
+            if (rho > kEmptyDefectTolerance) {
+              return err_numerical(
+                  "nevpt2::class_energies_hvp: class {} perturber {} is empty (|N| <= 1e-14) "
+                  "and populated by direction {} and its partner, but its H is not "
+                  "proportional to its N on the pair: rho_tau {:.3e} past {:.0e}. The energy "
+                  "has no Hessian on that pair",
+                  kScClassNames[k], g, u, rho, kEmptyDefectTolerance);
+            }
+            eta = 0.5 * (eta + (e.hvv / e.nvv));
+          }
+          const double tbar = -1.0 / (delta + eta);
+          fixed.p[k][g] = (2.0 * tbar) + (delta * tbar * tbar);
+          fixed.q[k][g] = tbar * tbar;
+          ++out.populated[u][k];
+        }
+      }
+    }
+
+    // The multipliers' tangent: the finish's 3 x 3 in (N, H, Δ) times
+    // (Ṅ, Ḣ, Δ̇), zero on a guarded perturber, whose (Ṅ, Ḣ) vanish with N.
+    ScMultipliers dot;
+    for (size_t k = 0; k < 8; ++k) {
+      const size_t count = t.norm[k].size();
+      for (std::vector<double> *v : {&dot.p[k], &dot.q[k], &dot.r[k]}) {
+        v->assign(count, 0.0);
+      }
+      for (size_t g = 0; g < count; ++g) {
+        const double n = t.norm[k][g];
+        if (std::abs(n) <= kNumericalZero) {
+          continue;
+        }
+        const double delta = t.delta[k][g];
+        const double d = (n * delta) + t.h[k][g];
+        const double d2 = d * d;
+        const double d3 = d2 * d;
+        const double e_nn =
+            (-2.0 / d) + (4.0 * n * delta / d2) - (2.0 * n * n * delta * delta / d3);
+        const double e_nh = (2.0 * n / d2) - (2.0 * n * n * delta / d3);
+        const double e_nd = (3.0 * n * n / d2) - (2.0 * n * n * n * delta / d3);
+        const double e_hh = -2.0 * n * n / d3;
+        const double e_hd = -2.0 * n * n * n / d3;
+        const double e_dd = -2.0 * n * n * n * n / d3;
+        const double n_dot = t.norm_dot[k][(g * m) + u];
+        const double h_dot = t.h_dot[k][(g * m) + u];
+        const double d_dot = t.delta_dot[k][(g * m) + u];
+        dot.p[k][g] = (e_nn * n_dot) + (e_nh * h_dot) + (e_nd * d_dot);
+        dot.q[k][g] = (e_nh * n_dot) + (e_hh * h_dot) + (e_hd * d_dot);
+        dot.r[k][g] = (e_nd * n_dot) + (e_hd * h_dot) + (e_dd * d_dot);
+      }
+    }
+
+    FBF_TRY(fixed_adjoint(res, blocks, in, batch, bars[u], dot));
+    if (step != 0.0) {
+      FBF_TRY(fixed_adjoint_tangent(res, blocks, in, batch, du, step, fixed, bars[u]));
+    }
+    FBF_TRY(sijrs_hvp(res, blocks, in, batch, du, bars[u]));
   }
   return out;
 }
