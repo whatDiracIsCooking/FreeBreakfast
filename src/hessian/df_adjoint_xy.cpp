@@ -59,10 +59,10 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
   const size_t factor = naux * nn;
   const size_t sq = naux * naux;
   constexpr auto kInt32Max = static_cast<size_t>(std::numeric_limits<int32_t>::max());
-  if (factor > kInt32Max || n_x * sq > kInt32Max || n_x * nn > kInt32Max) {
-    return err_unsupported("{}: naux nmo^2 = {}, 3 n_atom naux^2 = {} or 3 n_atom nmo^2 = {} "
-                           "exceeds int32_t",
-                           kWho, factor, n_x * sq, n_x * nn);
+  if (factor > kInt32Max || sq > kInt32Max || n_x * nn > kInt32Max) {
+    return err_unsupported("{}: naux nmo^2 = {}, naux^2 = {} or 3 n_atom nmo^2 = {} exceeds "
+                           "int32_t",
+                           kWho, factor, sq, n_x * nn);
   }
   size_t max_blk = 0;
   for (uint32_t a = 0; a < n_atom; ++a) {
@@ -74,15 +74,15 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
   // df_integral_derivatives and the second-derivative integrals, which all
   // take the workspace, so the call's own (docs/style.md "Scratch memory"):
   // B over every MO pair (Q fastest), Lambda~ (Q slowest; Gam at the end), one
-  // naux nmo^2 scratch (Y, Y', Gam's half transform), the mu^x stack, the
-  // tau^x stack, one more nmo^2 stack (N^y, then V^y, then sym(X) tau^x),
-  // M1, G, a naux^2 scratch, h_MO, sym(X), the gemmwich work, -1/2 sym(X)
-  // and the five Gram matrices.
+  // naux nmo^2 scratch (Y, Y', Gam's half transform), the tau^x stack, one
+  // more nmo^2 stack (N^y, then V^y, then sym(X) tau^x), M1, G, two naux^2
+  // scratches, h_MO, sym(X), the gemmwich work, -1/2 sym(X) and the five
+  // Gram matrices. No per-coordinate naux^2 stack: mu^x meets the products
+  // only through M^x's atom block of M1 (against_mu below).
   // df_integral_derivatives' own buffers beside its first chunk (its
   // integral_derivative.cpp's count) are checked here too, so that nothing
   // is allocated before a refusal.
-  const size_t own =
-      (3 * factor) + (n_x * sq) + (2 * n_x * nn) + (5 * sq) + (4 * nn) + (5 * n_x * n_x);
+  const size_t own = (3 * factor) + (2 * n_x * nn) + (6 * sq) + (4 * nn) + (5 * n_x * n_x);
   const size_t derivative_one = (2 * factor) + nn + (4 * n_x * nn) + (3 * sq) + (3 * nn * max_blk);
   const ScopedDeviceIndex on{res.dev_idx()};
   size_t budget = 0;
@@ -97,8 +97,8 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
   if (need > budget) {
     return err_unsupported("{}: {} orbitals, {} fitting functions and {} coordinates (B and Lambda "
                            "over every MO pair, naux nmo^2 = {} doubles, every coordinate's "
-                           "mu^x and tau^x, and one coordinate's W^x) need {} bytes of device "
-                           "memory, and device {} has {} to give",
+                           "tau^x, and one coordinate's W^x) need {} bytes of device memory, and "
+                           "device {} has {} to give",
                            kWho, nmo, naux, n_x, factor, need, res.dev_idx(), budget);
   }
 
@@ -106,13 +106,13 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
   double *const b_q = held.data();
   double *const lam_t = b_q + factor;
   double *const y_buf = lam_t + factor;
-  double *const mu = y_buf + factor;
-  double *const tau_s = mu + (n_x * sq);
+  double *const tau_s = y_buf + factor;
   double *const stack = tau_s + (n_x * nn);
   double *const m1 = stack + (n_x * nn);
   double *const g = m1 + (3 * sq);
   double *const sq_a = g + sq;
-  double *const h_mo = sq_a + sq;
+  double *const sq_b = sq_a + sq;
+  double *const h_mo = sq_b + sq;
   double *const x_sym = h_mo + nn;
   double *const work = x_sym + nn;
   double *const ao_mat = work + nn;
@@ -156,46 +156,75 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
                                                 &kHalf<double>, sq_a, q, &kHalf<double>, sq_a, q, g,
                                                 q)));
 
-  // mu^x = -1/2 L^-1 M^x L^-T for every x = 3 A + k. M1's slab k holds
-  // d(P|Q)/dA_k (A P's centre) at row Q, column P, so with S^ that slab's
-  // columns P on A (zero elsewhere), M^x = S^ + S^^T; then two trsms.
+  // <mu^x, H> for every x at once, for any naux x naux @p h, by M^x's atom
+  // block rather than mu^x: with mu^x = -1/2 L^-1 M^x L^-T and Z = -1/2
+  // L^-T H L^-1 (made in @p h), <mu^x, H> = <M^x, Z>, and M^x = S^ + S^^T,
+  // S^ M1's slab k at its columns P on A (x = 3 A + k; M1 below), so
+  // <mu^x, H> = <S^, Z + Z^T>: a dot over the columns on A, contiguous in
+  // both, the three k of an atom one gemv (lda naux^2). Z + Z^T goes in
+  // sq_b; the column @p column, 3 n_atom long, gets every x but those of an
+  // atom without fitting functions, whose mu^x is zero and whose rows keep
+  // the zero the products start at.
+  const auto against_mu = [&](double *const h_in, double *const column) -> Status {
+    FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
+        blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+        wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kNegHalf<double>, l, q, h_in, q)));
+    FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
+        blas, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
+        wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kOne<double>, l, q, h_in, q)));
+    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, q, q,
+                                                  &kOne<double>, h_in, q, &kOne<double>, h_in, q,
+                                                  sq_b, q)));
+    for (uint32_t a = 0; a < n_atom; ++a) {
+      const auto [p0, p1_end] = atom_function_range(aux, a);
+      if (p1_end == p0) {
+        continue;
+      }
+      FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_T, static_cast<int32_t>(naux * (p1_end - p0)), 3, &kOne<double>,
+          m1 + (naux * p0), n_sq, sq_b + (naux * p0), 1, &kZero<double>,
+          column + (3 * static_cast<size_t>(a)), 1)));
+    }
+    return {};
+  };
+
+  // <sym(G) mu^x, mu^y>, column x by against_mu at sym(G) mu^x, mu^x made
+  // in sq_b one coordinate at a time. M1's slab k holds d(P|Q)/dA_k (A P's
+  // centre) at row Q, column P, so with S^ that slab's columns P on A (zero
+  // elsewhere), M^x = S^ + S^^T, and mu^x = -1/2 L^-1 M^x L^-T two trsms.
   FBF_TRY(metric_derivative(res, aux, m1));
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(products, 0, sizeof(double) * 5 * n_x * n_x, stream)));
   for (uint32_t a = 0; a < n_atom; ++a) {
     const auto [p0, p1_end] = atom_function_range(aux, a);
     const size_t nblk = p1_end - p0;
+    if (nblk == 0) {
+      continue;
+    }
     for (size_t k = 0; k < 3; ++k) {
-      double *const mu_x = mu + (((3 * static_cast<size_t>(a)) + k) * sq);
-      if (nblk == 0) {
-        FBF_TRY(gpu_status(wwr::wwrMemsetAsync(mu_x, 0, sizeof(double) * sq, stream)));
-        continue;
-      }
+      const size_t x = (3 * static_cast<size_t>(a)) + k;
       FBF_TRY(gpu_status(wwr::wwrMemsetAsync(sq_a, 0, sizeof(double) * sq, stream)));
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(sq_a + (naux * p0), m1 + (k * sq) + (naux * p0),
                                              sizeof(double) * naux * nblk,
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
       FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, q,
                                                     q, &kOne<double>, sq_a, q, &kOne<double>, sq_a,
-                                                    q, mu_x, q)));
+                                                    q, sq_b, q)));
       FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
           blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
-          wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kNegHalf<double>, l, q, mu_x, q)));
+          wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kNegHalf<double>, l, q, sq_b, q)));
       FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
           blas, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-          wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kOne<double>, l, q, mu_x, q)));
+          wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kOne<double>, l, q, sq_b, q)));
+      FBF_TRY(gpu_status(gemm(blas, q, &kOne<double>, g, sq_b, &kZero<double>, sq_a)));
+      FBF_TRY(against_mu(sq_a, p6 + (x * n_x)));
     }
-  }
-  // <sym(G) mu^x, mu^y>, column x one gemm and one gemv.
-  for (size_t x = 0; x < n_x; ++x) {
-    FBF_TRY(gpu_status(gemm(blas, q, &kOne<double>, g, mu + (x * sq), &kZero<double>, sq_a)));
-    FBF_TRY(
-        gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, n_sq, nx, &kOne<double>, mu,
-                                              n_sq, sq_a, 1, &kZero<double>, p6 + (x * n_x), 1)));
   }
 
   // Per coordinate y of each chunk of (h1^y, tau^y, W^y): tau^y kept; N^y =
   // Sum_Q Lambda_Q W^y_Q + h_bar h1^y (Lambda~ and W^y side by side as
   // nmo x (nmo naux), each slab symmetric); and column y of
-  // <mu^x, H^y - 2 Lambda (B tau^y)^T>, H^y = Lambda W^y over the pairs.
+  // <mu^x, H^y - 2 Lambda (B tau^y)^T>, H^y = Lambda W^y over the pairs,
+  // by against_mu.
   const auto consume = [&](const int32_t x0, const int32_t count, const double *const h1,
                            const double *const tau, const double *const w1) -> Status {
     for (size_t j = 0; j < static_cast<size_t>(count); ++j) {
@@ -213,9 +242,7 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
           gpu_status(gemm(blas, q * n, n, n, &kOne<double>, b_q, tau_y, &kZero<double>, y_buf)));
       FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
           blas, q, q, n_nn, &kNegTwo<double>, lambda, y_buf, &kOne<double>, sq_a)));
-      FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, n_sq, nx,
-                                                    &kOne<double>, mu, n_sq, sq_a, 1,
-                                                    &kZero<double>, p2 + (y * n_x), 1)));
+      FBF_TRY(against_mu(sq_a, p2 + (y * n_x)));
     }
     return {};
   };

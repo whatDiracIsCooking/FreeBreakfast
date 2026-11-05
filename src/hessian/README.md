@@ -978,11 +978,26 @@ X = 2 h_MO h̄ + 2 Σ_Q B_Q Λ_Q (ScAdjoint's X) and G as above:
 this call's: per coordinate y, N^y is one gemm of Λ and W^y side by side as
 nmo × (nmo naux) (Λ transposed once to W's layout, each slab symmetric), H^y
 two gemms over the pairs and the B τ^y between them, and its column of
-⟨μ^x, H^y⟩ one gemv against the μ stack, so W^x is never held past its
-chunk. μ^x comes from `metric_derivative`'s slab k: M^x = Ŝ + Ŝᵀ, Ŝ its
-columns on atom A, then two trsms. V^y is one strided-batched gemm
-(τ^y B_Q over the naux × nmo slab at each q) and one gemm, after the
-chunks. Every Gram matrix is one gemm over its stacks.
+⟨μ^x, H^y⟩ is taken by atom blocks (below), so W^x is never held past its
+chunk. V^y is one strided-batched gemm (τ^y B_Q over the naux × nmo slab at
+each q) and one gemm, after the chunks. The τ Gram matrices are one gemm
+over their stacks.
+
+**The products by atom blocks.** T^x M^y and M^x M^y meet the adjoint as
+⟨μ^x, H⟩, at H = H^y and at H = sym(G) μ^y, and μ^x = −½ L⁻¹ M^x L⁻ᵀ is
+dense in both indices however local M^x is. So the trsms go on H's side
+instead:
+
+    ⟨μ^x, H⟩ = ⟨M^x, Z⟩ = ⟨Ŝ_x, Z + Zᵀ⟩,   Z = −½ L⁻ᵀ H L⁻¹,   M^x = Ŝ_x + Ŝ_xᵀ,
+
+Ŝ_x being `metric_derivative`'s slab k at its columns on atom A (x = 3A + k,
+zero elsewhere). Those columns are contiguous in M¹ and in Z + Zᵀ, so one
+H's column over every x is two trsms, a geam and one gemv per atom (its
+three k at once, over naux · n_A rows). H^y's column comes so as each
+chunk's W^y arrives; for M^x M^y, μ^x is made one coordinate at a time
+(M¹'s atom block, two trsms), multiplied by sym(G), and taken the same way.
+Nothing per coordinate is naux², so no stack of 3 n_atom naux² is held:
+the price is two more trsms per coordinate on each of the two products.
 
 **No more kernels.** Every integral class B^xy holds (T^xy, M^xy, T^x M^y,
 M^x M^y, the connection's S^xy, S^x S^y and S^x against T^y and h^y) is a
@@ -1003,18 +1018,30 @@ the Jacobian's symmetric part, and the test compares against that.
 
 Held for the call (its own: b_mo, `metric_derivative`, the derivative calls
 and the second-derivative integrals all take the workspace): B over every MO
-pair, Λ in W's layout and one more naux nmo² scratch (3 naux nmo²), the μ^x
-stack (3 n_atom naux²), the τ^x stack and one more (2 · 3 n_atom nmo²), M¹
-(3 naux²), G and a naux² scratch, four nmo² matrices and the AO matrix, and
-the five Gram matrices. W^x is `df_integral_derivatives`' chunks, as many
-coordinates as the rest of the budget (the device's free memory at the call,
-or `max_bytes` when that is less) holds. When this call's buffers and
-`df_integral_derivatives`' own beside one coordinate's W^x (its count, in
-`integral_derivative.cpp`) pass the budget, the call is Unsupported, naming
-the bytes, before anything is allocated. The μ stack is 3 n_atom naux², so
-the fitting set's size, not the orbitals', is what it scales with: 1500
-fitting functions over 30 atoms is 1.6 GB. Atom blocks (M^x is nonzero only
-on A's rows and columns before the trsms) would cut that; not done.
+pair, Λ in W's layout and one more naux nmo² scratch (3 naux nmo²), the τ^x
+stack and one more (2 · 3 n_atom nmo²), M¹ (3 naux²), G and two naux²
+scratches, four nmo² matrices and the AO matrix, and the five Gram matrices.
+W^x is `df_integral_derivatives`' chunks, as many coordinates as the rest of
+the budget (the device's free memory at the call, or `max_bytes` when that
+is less) holds. When this call's buffers and `df_integral_derivatives`' own
+beside one coordinate's W^x (its count, in `integral_derivative.cpp`) pass
+the budget, the call is Unsupported, naming the bytes, before anything is
+allocated.
+
+The fitting set enters as naux² only through M¹ and the scratches, six
+naux² in all at any n_atom: the products' atom blocks (above) replaced a
+μ^x stack of 3 n_atom naux² (#922; 1500 fitting functions over 30 atoms was
+1.6 GB of it). What scales with the system now is the naux nmo² factors:
+three here, and `df_integral_derivatives`' factor and one W^x beside them.
+
+Measured on the A100 (`--preset default`) for pHBI (21 atoms,
+`phbi_tz1211_s0.xyz`) in cc-pVTZ over cc-pVTZ-JKFIT, 518 orbitals and 1316
+fitting functions, at random (h̄, Λ), each run at the smallest budget it
+takes (one coordinate a chunk): the refusal threshold went from 16.44 GB to
+15.58 GB (the 62 naux² dropped, 0.86 GB), and the card's peak over the run
+from 33 741 MiB to 32 941 MiB; the stack's version refuses at the blocked
+one's budget. The two agree to 3.5e-11 of max |Φ| (9.3e5), and both took
+17 min, the derivative walk's 63 chunks, not the products.
 
 ### Tests
 
@@ -1668,7 +1695,7 @@ the issue also asks for waits on that step (#610).
 | `state_specific.cppm` | Internal partition: `state_specific_electrons`, a one-root solution's inputs checked and its active electrons by spin, which `df_casscf` and `df_nevpt2_tangents` share |
 | `df_casscf.cpp` | The state-specific CASSCF Hessian: E_λx, E_xy, λ^x by `zvectors`, the unreduced residual check, Λᵀ E_λ· and the symmetrized sum; the CP step alone (`df_casscf_cp`) |
 | `df_nevpt2_tangents.cpp` | The NEVPT2 parameter response and t_x: per chunk of derivative integrals, W^x to B's layout, the one-index transforms by κ_nr, f^(x) by `builders_tangent`, κ_oo under the degenerate-pair rule and its transform |
-| `df_adjoint_xy.cpp` | Σ h̄ h^xy + Σ Λ B^xy at a general MO adjoint: X, G and the μ^x stack, the per-chunk N^y and ⟨μ^x, H^y⟩ over `df_integral_derivatives`' W^x, V^y, the Gram matrices and the second-derivative integrals at the adjoint's AO forms |
+| `df_adjoint_xy.cpp` | Σ h̄ h^xy + Σ Λ B^xy at a general MO adjoint: X, G, ⟨sym(G) μ^x, μ^y⟩ and the per-chunk N^y and ⟨μ^x, H^y⟩ over `df_integral_derivatives`' W^x, both by M^x's atom blocks, V^y, the Gram matrices and the second-derivative integrals at the adjoint's AO forms |
 | `df_sc_nevpt2.cpp` | The SC-NEVPT2 Hessian: E_cas, t in the coordinates, E_corr + Φ's adjoint and the gradient's multipliers, the HVP and its partnered pairs, the Z terms, the skeleton, the rotation cross terms and κ_oo rows as Gram matrices of nmo² stacks, the symmetrized sum |
 | `df_pc_nevpt2.cpp` | The PC-NEVPT2 Hessian: `df_sc_nevpt2.cpp`'s assembly over PC's adjoint and product, with its three refusals: a class kept below 1e-10, a coordinate's Schur-lift step below 1e-3 bohr, a degenerate inactive pair |
 | `df_sacasscf.cpp` | A state-averaged root's Hessian: z and λ^x by the Z-vectors, the residual check, root I's parameter Hessian by the one-hot unreduced product, the third-derivative action, the z terms, E_I,xy, eq. rot at equal weights and the symmetrized sum |
