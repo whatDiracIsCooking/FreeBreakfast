@@ -345,10 +345,13 @@ TEST(PipelineConfig, TheOutputDirectoryIsNotTheInputDirectory) {
 
 TEST(PipelineConfig, NoInputFileIsInTheOutputDirectory) {
   // Each input key, reaching the output directory past a different input one.
-  const std::array<std::string, 3> tables{
+  const std::array<std::string, 6> tables{
       "[molecule]\nxyz = \"/out/w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n[scf]\n",
       "[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"../out/b.json\"\n[scf]\n",
       with_inputs("[guess]\nfrom = \"/out/scf_density.npy\"\n[scf]\n"),
+      with_inputs("[casscf]\nncas = 2\nnelecas = 2\norbitals = \"/out/casscf_orbitals.npy\"\n"),
+      with_inputs("[casscf]\nncas = 2\nnelecas = 2\nci = \"../out/casscf_ci.npy\"\n"),
+      with_inputs("[casci]\nncas = 2\nnelecas = 2\norbitals = \"/out/casscf_orbitals.npy\"\n"),
   };
   for (const std::string &table : tables) {
     auto calc = fb::parse_config(table, "/run", "/out/");
@@ -640,6 +643,29 @@ TEST(PipelineConfig, EveryCasscfOptionIsReadAndTheScfIsFilledIn) {
   EXPECT_EQ(defaults.conv_tol_grad, options.conv_tol_grad);
   EXPECT_EQ(defaults.max_cycle, options.max_cycle);
 
+  // The start from .npy files, each path anchored to the input directory, and
+  // the files a later run starts from written only when asked for.
+  EXPECT_TRUE(defaults.orbitals.empty());
+  EXPECT_TRUE(defaults.ci.empty());
+  EXPECT_TRUE(defaults.orbitals_npy.empty());
+  EXPECT_TRUE(defaults.ci_npy.empty());
+  auto carried = fb::parse_config(
+      with_inputs("[casscf]\nncas = 2\nnelecas = 2\norbitals = \"s0/casscf_orbitals.npy\"\n"
+                  "ci = \"/abs/casscf_ci.npy\"\nwrite_npy = true\n"),
+      "/run", kOut);
+  ASSERT_TRUE(carried.has_value()) << carried.error().message;
+  const fb::CasscfStep &start = *carried->step<fb::CasscfStep>();
+  EXPECT_EQ(start.orbitals, std::filesystem::path("/run/s0/casscf_orbitals.npy"));
+  EXPECT_EQ(start.ci, std::filesystem::path("/abs/casscf_ci.npy"));
+  EXPECT_EQ(start.orbitals_npy, kOut / "casscf_orbitals.npy");
+  EXPECT_EQ(start.ci_npy, kOut / "casscf_ci.npy");
+  auto casci = fb::parse_config(
+      with_inputs("[casci]\nncas = 2\nnelecas = 2\norbitals = \"s0/casscf_orbitals.npy\"\n"),
+      "/run", kOut);
+  ASSERT_TRUE(casci.has_value()) << casci.error().message;
+  EXPECT_EQ(casci->step<fb::CasciStep>()->orbitals,
+            std::filesystem::path("/run/s0/casscf_orbitals.npy"));
+
   // An integer weight reads as a number, as every float option does.
   auto whole =
       fb::parse_config(with_inputs("[casscf]\nncas = 2\nnelecas = 2\nweights = [1]\n"), "", kOut);
@@ -660,6 +686,16 @@ TEST(PipelineConfig, AMalformedCasscfTableIsInvalidConfig) {
                       "[casscf] active is not an array of 32-bit integers");
   expect_config_error(with_inputs("[casscf]\nncas = 4\nnelecas = 4\nnroot = 2\n"),
                       "[casscf] has no option 'nroot'");
+  expect_config_error(with_inputs("[casscf]\navas = [\"O 2p\"]\norbitals = \"c.npy\"\n"),
+                      "[casscf] avas selects from the SCF's orbitals, so takes no 'orbitals'");
+  expect_config_error(with_inputs("[casscf]\nncas = 2\nnelecas = 2\norbitals = 3\n"),
+                      "[casscf] orbitals is not a string");
+  expect_config_error(with_inputs("[casscf]\nncas = 2\nnelecas = 2\nwrite_npy = 1\n"),
+                      "[casscf] write_npy is not a boolean");
+  expect_config_error(with_inputs("[casci]\nncas = 2\nnelecas = 2\nci = \"c.npy\"\n"),
+                      "[casci] has no option 'ci'");
+  expect_config_error(with_inputs("[casci]\nncas = 2\nnelecas = 2\nwrite_npy = true\n"),
+                      "[casci] has no option 'write_npy'");
 
   // Its own.
   const auto cas = [](std::string_view keys) {

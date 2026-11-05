@@ -617,6 +617,8 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
   chain_scf.molden.clear();
   CasscfStep chain_casscf = casscf;
   chain_casscf.molden.clear();
+  chain_casscf.orbitals_npy.clear();
+  chain_casscf.ci_npy.clear();
   CasscfGradientStep chain_casscf_gradient = casscf_gradient.value_or(CasscfGradientStep{});
   chain_casscf_gradient.json_path.clear();
   Nevpt2GradientStep chain_nevpt2_gradient = nevpt2_gradient.value_or(Nevpt2GradientStep{});
@@ -644,6 +646,8 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
     carried = std::move(next);
     carried_casscf.active.clear();
     carried_casscf.avas.clear();
+    carried_casscf.orbitals.clear(); // a start from files is the first geometry's only
+    carried_casscf.ci.clear();
     carried_casscf.ncas = cas.ncas;
     carried_casscf.nelecas = cas.nelecas;
     return {};

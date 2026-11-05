@@ -203,9 +203,10 @@ template <class T>
 
 /// @brief The active-space selection's keys of the `[step]` table, the same
 /// in every step that takes one: `ncas` and `nelecas` required, with `active`;
-/// or `avas` with `avas_threshold` in their place. The ranges need the
-/// molecule and the basis, so ActiveSpaceSelection::orbital_order checks them
-/// when the step runs.
+/// or `avas` with `avas_threshold` in their place; and `orbitals`, a .npy to
+/// start from, not beside `avas`. The ranges need the molecule and the basis,
+/// so ActiveSpaceSelection::orbital_order checks them when the step runs, as
+/// select checks the file's shape.
 [[nodiscard]] Status read_active_space(const toml::table &table, std::string_view step,
                                        const std::filesystem::path &base_dir,
                                        ActiveSpaceSelection &out) {
@@ -221,11 +222,15 @@ template <class T>
       return err_config("[{}] avas names no AO label", step);
     }
     FBF_TRY(read_key(table, step, "avas_threshold", base_dir, out.avas_threshold));
+    if (table.contains("orbitals")) {
+      return err_config("[{}] avas selects from the SCF's orbitals, so takes no 'orbitals'", step);
+    }
   } else if (table.contains("avas_threshold")) {
     return err_config("[{}] avas_threshold needs 'avas'", step);
   } else {
     FBF_TRY(read_required_key(table, step, "ncas", base_dir, out.ncas));
     FBF_TRY(read_required_key(table, step, "nelecas", base_dir, out.nelecas));
+    FBF_TRY(read_key(table, step, "orbitals", base_dir, out.orbitals));
   }
   return read_key(table, step, "active", base_dir, out.active);
 }
@@ -338,22 +343,30 @@ template <class S>
       step.livvo_molden = output_dir / std::format("{}_livvo.molden", kStep);
     }
   } else if constexpr (std::same_as<S, CasciStep>) {
-    FBF_TRY(check_keys(table, kStep,
-                       {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold"}));
+    FBF_TRY(
+        check_keys(table, kStep,
+                   {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold", "orbitals"}));
     FBF_TRY(read_active_space(table, kStep, base_dir, step));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
     step.molden = output_dir / std::format("{}.molden", kStep);
   } else if constexpr (std::same_as<S, CasscfStep>) {
     FBF_TRY(check_keys(table, kStep,
                        {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold", "weights",
-                        "conv_tol", "conv_tol_grad", "max_cycle"}));
+                        "conv_tol", "conv_tol_grad", "max_cycle", "orbitals", "ci", "write_npy"}));
     FBF_TRY(read_active_space(table, kStep, base_dir, step));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
     FBF_TRY(read_key(table, kStep, "weights", base_dir, step.weights));
     FBF_TRY(read_key(table, kStep, "conv_tol", base_dir, step.conv_tol));
     FBF_TRY(read_key(table, kStep, "conv_tol_grad", base_dir, step.conv_tol_grad));
     FBF_TRY(read_key(table, kStep, "max_cycle", base_dir, step.max_cycle));
+    FBF_TRY(read_key(table, kStep, "ci", base_dir, step.ci));
     step.molden = output_dir / std::format("{}.molden", kStep);
+    bool write_npy = false;
+    FBF_TRY(read_key(table, kStep, "write_npy", base_dir, write_npy));
+    if (write_npy) {
+      step.orbitals_npy = output_dir / std::format("{}_orbitals.npy", kStep);
+      step.ci_npy = output_dir / std::format("{}_ci.npy", kStep);
+    }
     // Unlike the active space's ranges these need nothing of the molecule, so
     // they are refused here rather than when mcscf::solve runs.
     if (!step.weights.empty()) {
@@ -1145,7 +1158,8 @@ template <class S>
 [[nodiscard]] Status check_inputs_apart(const Calculation &calc,
                                         const std::filesystem::path &output_dir) {
   // Every path an input key names: the molecule's, a basis or [eri]'s aux
-  // basis read from disk, and each product loaded 'from' a file.
+  // basis read from disk, a CAS start's .npy files, and each product loaded
+  // 'from' a file.
   std::vector<std::filesystem::path> inputs;
   if (const auto &molecule = calc.step<MoleculeStep>()) {
     inputs.push_back(molecule->xyz);
@@ -1156,6 +1170,17 @@ template <class S>
   if (const auto &eri = calc.step<EriStep>();
       eri && !eri->aux_basis.empty() && !is_builtin_aux_basis(eri->aux_basis)) {
     inputs.emplace_back(eri->aux_basis);
+  }
+  // A start read from .npy files.
+  if (const auto &casci = calc.step<CasciStep>(); casci && !casci->orbitals.empty()) {
+    inputs.push_back(casci->orbitals);
+  }
+  if (const auto &casscf = calc.step<CasscfStep>()) {
+    for (const std::filesystem::path &path : {casscf->orbitals, casscf->ci}) {
+      if (!path.empty()) {
+        inputs.push_back(path);
+      }
+    }
   }
   // A loaded molecule is [optimize]'s final.xyz, an output of this run, read
   // after it is written; the start it optimizes from is an input.

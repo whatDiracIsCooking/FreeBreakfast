@@ -1,7 +1,7 @@
 /// @file
 /// @brief CasscfStep::run's path from the selected active space through
-/// mcscf::solve to the canonical core and virtual orbitals and the
-/// natural-orbital Molden file.
+/// mcscf::solve to the canonical core and virtual orbitals, the
+/// natural-orbital Molden file and the orbitals' and CI's .npy files.
 
 module free_breakfast.pipeline.casscf;
 
@@ -13,6 +13,7 @@ import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.io.molden;
+import free_breakfast.io.npy;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.integrals.active_space;
@@ -184,18 +185,30 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, E
   }
   const Buffers::device<double> *const b = fit ? &fit->b : nullptr;
   const int32_t naux = fit ? fit->naux : 0;
-  // The CI guess on the device, for mcscf::solve, which checks its size.
+  // The CI guess, ci_guess or the ci file's (dim x nroots, root r the column
+  // r: the layout of ci_guess), on the device for mcscf::solve, which checks
+  // its size against the determinant count.
+  std::vector<double> start = ci_guess;
+  if (start.empty() && !ci.empty()) {
+    NpyArray file = FBF_TRY(read_npy(ci));
+    const bool vector = file.shape.size() == 1 && nroots == 1;
+    if (!vector && (file.shape.size() != 2 || std::cmp_not_equal(file.shape[1], nroots))) {
+      return err_config("casscf: ci '{}' has shape {}, not (dim, nroots) with nroots {}",
+                        ci.string(), file.shape, nroots);
+    }
+    start = std::move(file.data);
+  }
   std::optional<Buffers::device<double>> guess;
-  if (!ci_guess.empty()) {
-    guess.emplace(ci_guess.size(), res.device());
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(guess->data(), ci_guess.data(),
-                                           ci_guess.size() * sizeof(double),
-                                           wwr::wwrMemcpyHostToDevice, stream)));
+  if (!start.empty()) {
+    guess.emplace(start.size(), res.device());
+    FBF_TRY(
+        gpu_status(wwr::wwrMemcpyAsync(guess->data(), start.data(), start.size() * sizeof(double),
+                                       wwr::wwrMemcpyHostToDevice, stream)));
   }
   mcscf::Solution sol = FBF_TRY(mcscf::solve(
       res, basis, molecule, h, u, j_classes, k_classes, space.c, space.ncore, space.ncas,
       space.nelecas, nroots, weights, options, b, naux,
-      guess ? std::span<const double>{guess->data(), ci_guess.size()} : std::span<const double>{}));
+      guess ? std::span<const double>{guess->data(), start.size()} : std::span<const double>{}));
   for (size_t i = 0; i < sol.iterations.size(); ++i) {
     const mcscf::Iteration &it = sol.iterations[i];
     log::info(std::format("CASSCF macro {:2}: E {:.12f} |g| {:.3e}{}", i + 1, it.energy,
@@ -248,6 +261,20 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, E
   if (!molden.empty()) {
     FBF_TRY(write_casscf_molden(res, molden, molecule, basis, c, ncore,
                                 static_cast<size_t>(space.ncas), f, mo_energies, sol.gamma));
+  }
+  // The start a later run reads back: the orbitals as CasscfOutput::c holds
+  // them, and the CI over their active columns.
+  if (!orbitals_npy.empty()) {
+    NpyArray host{.shape = {c.n(), nmo}, .data = std::vector<double>(c.num_elements())};
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(host.data.data(), c.data(),
+                                           host.data.size() * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToHost, stream)));
+    FBF_TRY(res.sync());
+    FBF_TRY(write_npy(orbitals_npy, host));
+  }
+  if (!ci_npy.empty()) {
+    const auto count = static_cast<size_t>(nroots);
+    FBF_TRY(write_npy(ci_npy, NpyArray{.shape = {vectors.size() / count, count}, .data = vectors}));
   }
   std::vector<double> averaged = weights;
   if (averaged.empty()) {

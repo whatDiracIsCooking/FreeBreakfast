@@ -7,7 +7,7 @@
 /// Device-shaped. The selection is `pipeline.active_space`'s, which
 /// `CasscfStep` derives from, as `CasciStep` does. `mcscf.solve`'s
 /// `mcscf::solve` does the optimization; the canonicalization, the Fock it
-/// reads and the Molden writer are private to `run`. See README.md.
+/// reads and the Molden and .npy writers are private to `run`. See README.md.
 
 export module free_breakfast.pipeline.casscf;
 
@@ -115,15 +115,28 @@ struct CasscfStep : ActiveSpaceSelection {
   /// canonical virtuals at 0, each with its energy in the state-averaged
   /// Fock.
   std::filesystem::path molden{};
+  /// @brief Where the optimized orbitals @ref CasscfOutput::c are written as
+  /// a float64 .npy, nao x nmo (AO by MO) in Fortran order, if not empty:
+  /// what @ref ActiveSpaceSelection::orbitals reads back.
+  std::filesystem::path orbitals_npy{};
+  /// @brief Where the CI vectors @ref CasscfOutput::vectors are written as a
+  /// float64 .npy, dim x nroots (root r the column r), if not empty: what
+  /// @ref ci reads back.
+  std::filesystem::path ci_npy{};
+  /// @brief A float64 .npy of the CI to start from, if not empty and
+  /// @ref ci_guess is: dim x nroots, root r the column r (or a vector of dim
+  /// for one root), as @ref ci_npy writes it, over the start's active space.
+  std::filesystem::path ci{};
   /// @brief The CI the solve starts from, `mcscf::solve`'s ci_guess on the
-  /// host: empty for none, or @ref nroots unit vectors over the selected
-  /// active space, root r at [r dim, (r + 1) dim), as @ref CasscfOutput::vectors
-  /// holds them. Not a TOML key: `[hessian]` sets it to the reference's for
-  /// each displaced solve.
+  /// host: empty for none (or @ref ci's), or @ref nroots unit vectors over
+  /// the selected active space, root r at [r dim, (r + 1) dim), as
+  /// @ref CasscfOutput::vectors holds them. Not a TOML key: `[hessian]` sets
+  /// it to the reference's for each displaced solve.
   std::vector<double> ci_guess{};
 
   /// @brief The optimized orbitals and roots. The start is the orbitals
-  /// @ref ActiveSpaceSelection::select gives, and the CI @ref ci_guess;
+  /// @ref ActiveSpaceSelection::select gives, and the CI @ref ci_guess, or
+  /// @ref ci's;
   /// `mcscf::solve` optimizes them
   /// at @ref conv_tol, @ref conv_tol_grad and @ref max_cycle, its other
   /// options at their defaults, over the @ref EriOutput: its J and K classes,
@@ -134,14 +147,17 @@ struct CasscfStep : ActiveSpaceSelection {
   /// res.stream() many times.
   ///
   /// @return The CASSCF; @ref ActiveSpaceSelection::select's error (an
-  ///         open-shell ScfOutput's among them);
+  ///         open-shell ScfOutput's among them); `read_npy`'s for @ref ci,
+  ///         and InvalidConfig for one whose columns are not @ref nroots
+  ///         (naming its shape);
   ///         under a fitted EriOutput, Unsupported when the fitted
   ///         integrals' scratch, L and J_AO, is past what B leaves free; `mcscf::solve`'s (InvalidConfig for @ref nroots above the
   ///         determinant count, bad @ref weights or a @ref ci_guess of
   ///         another size, MaxIterationsExceeded);
   ///         or the error of the first module call that failed:
-  ///         `casscf_integrals`', `response::fock`'s, `diagonalize`'s or
-  ///         `write_molden`'s, and GpuRuntime for a failed copy or BLAS call.
+  ///         `casscf_integrals`', `response::fock`'s, `diagonalize`'s,
+  ///         `write_molden`'s or `write_npy`'s, and GpuRuntime for a failed
+  ///         copy or BLAS call.
   [[nodiscard]] Result<CasscfOutput>
   run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriOutput,
            CoreHamiltonianOutput, ScfOutput> in,

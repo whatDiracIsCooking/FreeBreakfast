@@ -481,6 +481,8 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   chain_scf.molden.clear();
   CasscfStep chain_casscf = casscf;
   chain_casscf.molden.clear();
+  chain_casscf.orbitals_npy.clear();
+  chain_casscf.ci_npy.clear();
   CasscfGradientStep chain_casscf_gradient = casscf_gradient.value_or(CasscfGradientStep{});
   chain_casscf_gradient.json_path.clear();
   Nevpt2GradientStep chain_nevpt2_gradient = nevpt2_gradient.value_or(Nevpt2GradientStep{});
@@ -737,6 +739,8 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       // reference's roots, over those active orbitals moved.
       displaced_casscf.active.clear();
       displaced_casscf.avas.clear();
+      displaced_casscf.orbitals.clear(); // a start from files is the reference's only
+      displaced_casscf.ci.clear();
       displaced_casscf.ncas = cas.ncas;
       displaced_casscf.nelecas = cas.nelecas;
       displaced_casscf.ci_guess = cas.vectors;

@@ -65,6 +65,15 @@ struct ActiveSpaceSelection {
   /// @brief The projection weight an orbital needs to be active under
   /// @ref avas, in (0, 1): PySCF's default.
   double avas_threshold = 0.2;
+  /// @brief A float64 .npy of orbitals to start from in place of the
+  /// ScfOutput's, if not empty: nao x nmo (AO by MO, this tree's spherical AO
+  /// order), as a Casscf step's `orbitals_npy` writes them, of this basis at
+  /// this or another geometry. Orthonormalized in this geometry's overlap
+  /// S, the core and active ones A by Löwdin, A (A^T S A)^-1/2, then the
+  /// rest projected off them and Löwdin'd, they stand in for the ScfOutput's:
+  /// @ref active and the core index them, so the frontier default is a
+  /// converged CASSCF's own core and active columns. Not with @ref avas.
+  std::filesystem::path orbitals{};
 
   /// @brief The ScfOutput's orbital at each column of @ref ActiveSpace::c for a
   /// molecule of @p n_electrons over @p nmo orbitals: the core, the
@@ -77,13 +86,17 @@ struct ActiveSpaceSelection {
   ///         [0, nmo).
   [[nodiscard]] Result<std::vector<int32_t>> orbital_order(int32_t n_electrons, int32_t nmo) const;
 
-  /// @brief The active space over @p scf's orbitals, on @p res's device: by
+  /// @brief The active space over @p scf's orbitals, or over @ref orbitals'
+  /// when set, on @p res's device: by
   /// @ref orbital_order's permutation over its n_alpha + n_beta electrons, or,
   /// under @ref avas, AVAS's rotation with its first n_alpha orbitals occupied.
   /// For an open shell (ROHF, n_alpha > n_beta) by index, the core is of the
   /// first n_beta orbitals, the doubly occupied ones, and the singly occupied
-  /// ones, [n_beta, n_alpha), are all active. Synchronizes res.stream(): under
-  /// @ref avas, once for the overlaps and once per eigenproblem.
+  /// ones, [n_beta, n_alpha), are all active. Under @ref orbitals the rotation
+  /// @ref ActiveSpace::r is of @p scf's orbitals still, C_scf^T S C', and the
+  /// largest |A^T S A - I| element the file's core and active orbitals have
+  /// here is logged at info. Synchronizes res.stream(): under @ref avas, once for the overlaps
+  /// and once per eigenproblem; under @ref orbitals, a few times.
   ///
   /// @return The space; @ref orbital_order's InvalidConfig; for an open shell
   ///         by index, InvalidConfig for a core orbital not doubly occupied
@@ -93,7 +106,10 @@ struct ActiveSpaceSelection {
   ///         @ref nelecas or @ref active set beside it, or no orbital
   ///         selected, Numerical for a labelled MINAO overlap not positive
   ///         definite, or `overlap_mixed_spherical`'s or `diagonalize`'s
-  ///         error; and GpuRuntime for a failed copy or BLAS call.
+  ///         error; under @ref orbitals, InvalidConfig beside @ref avas or
+  ///         for a file not nao x nmo (naming both shapes), `read_npy`'s IO
+  ///         error, or `overlap_mixed_spherical`'s or `orthogonalize`'s; and
+  ///         GpuRuntime for a failed copy or BLAS call.
   [[nodiscard]] Result<ActiveSpace> select(DeviceResources &res, const Molecule &molecule,
                                            const BasisSet &basis, const ScfOutput &scf) const;
 };
