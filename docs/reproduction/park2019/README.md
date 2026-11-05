@@ -137,3 +137,5 @@ Card and build: RTX 3080 (CUDA, 9.6 GiB), `--preset default`, at 79b2bc7.
 [`tier2b.md`](tier2b.md) (#849) runs Figure 5's 0.002 Å g–h loop around the 13–14CI: maximum gap 0.0123 eV, oscillation 0.0015 eV (half peak-to-peak), no PC refusal, bound 2.6e-9 Eh.
 
 The four MECI starts for ethylene (Py, Et, C3v, Hm), and their CASSCF basins: [ethylene_starts.md](ethylene_starts.md).
+
+[`tier1.md`](tier1.md) (#847) reproduces Table 1's aug-cc-pVDZ → aug-cc-pVTZ shifts at frozen core: Py +0.082 eV, Et +0.038 eV, his +0.08 and +0.04; C3v and Hm are reported at his geometries.

@@ -1,0 +1,35 @@
+# Tier 1 (#847): ethylene's C3v MECI, all-electron: the MECI of QD states
+# 0 and 1 of Park's SA-QD-PC-NEVPT2 over DF-SA3-CASSCF(2,2)/aug-cc-pvdz
+# (aug-cc-pvdz-jkfit). It starts from his own geometry at this basis,
+# single_points/geometries/ethylene_adz_c3v.xyz (J. W. Park, JCTC (2020),
+# acs.jctc.9b00919, Supporting Information, p. S3). Kept as the evidence
+# of the stop: it ends at the gradient of evaluation 10, when the CASSCF's
+# 1E pair degenerates (tier1.md, "C3v and Hm"; #892), and has no final.xyz.
+# Run from the root of the tree:
+#   build/src/free-breakfast -i docs/reproduction/park2019 -o <out> \
+#     docs/reproduction/park2019/tier1_ethylene_c3v_augdz.toml
+[molecule]
+xyz = "single_points/geometries/ethylene_adz_c3v.xyz"
+[basis_set]
+basis = "aug-cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "aug-cc-pvdz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 2
+nelecas = 2
+nroots = 3
+conv_tol_grad = 1e-10
+[nevpt2_gradient]
+quasi_degenerate = true
+variant = "pc"
+[optimize]
+meci = [0, 1]
+max_gap = 1e-7
+max_force = 1.5e-5                  # Opt=Tight
+rms_force = 1e-5
+max_displacement = 6e-5
+rms_displacement = 4e-5
+max_steps = 200
