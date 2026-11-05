@@ -2,14 +2,16 @@
 // a scalar, a strided view, transpose (a rank-6 permutation accumulated and
 // scaled, and rank-2 and rank-3 ones exactly), a three-operand contraction,
 // SC-NEVPT2's small-output / large-sum shape and one of its
-// diagonal-plus-eight-label shapes, and the accumulate / scale semantics,
-// each against a host loop.
+// diagonal-plus-eight-label shapes, the accumulate / scale semantics, and a
+// row sum at run lengths around the warp's, each against a host loop.
 //
-// The kernel adds every term with an atomicAdd, so the sum's order varies and
-// a contraction is not compared bit for bit: every such check is at kTol,
-// absolute, on entries in [-1, 1] whose sums stay within a few hundred. The
-// exception is a transpose into a zeroed output at alpha = 1, which adds one
-// term per element and does no other arithmetic, and is checked bitwise.
+// The kernel folds each warp's run of one element's terms and adds the fold
+// with an atomicAdd, so the sum's order varies and a contraction is not
+// compared bit for bit: every such check is at kTol, absolute, on entries in
+// [-1, 1] whose sums stay within a few hundred. The exception is a call with
+// nothing summed into a zeroed output at alpha = 1 (a transpose, or a row sum
+// over a length-1 axis), which adds one term per element and does no other
+// arithmetic, and is checked bitwise.
 
 #include <gtest/gtest.h>
 
@@ -415,6 +417,37 @@ TEST(Einsum, AccumulatesAndScales) {
     want[i] = out_init[i] + (2.0 * kAlpha * product[i]);
   }
   expect_near_all(download(res, out.data(), m * m), want);
+}
+
+// "ij->i" with row lengths below, at and past the warp's (32 on CUDA and on
+// the gfx1200; 64 on a wave64 card): runs that start and end mid-warp, fill
+// one, straddle two, and leave the grid's last warp part empty, over an odd
+// row count. A length-1 row has nothing summed and is checked bit for bit.
+TEST(Einsum, RowSumAtEveryRunLength) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  constexpr std::size_t rows = 11;
+  for (const std::size_t len : {1U, 2U, 3U, 5U, 31U, 32U, 33U, 37U, 63U, 64U, 65U, 129U}) {
+    SCOPED_TRACE(std::format("row length {}", len));
+    const auto x = random_values(rows * len, static_cast<std::uint32_t>(21 + len));
+    std::vector<double> want(rows, 0.0);
+    for (std::size_t i = 0; i < rows; ++i) {
+      for (std::size_t j = 0; j < len; ++j) {
+        want[i] += x[(i * len) + j];
+      }
+    }
+    const auto got = run_einsum(
+        res, "ij->i", {{x, {static_cast<std::int64_t>(rows), static_cast<std::int64_t>(len)}}},
+        {static_cast<std::int64_t>(rows)});
+    if (len == 1) {
+      for (std::size_t i = 0; i < rows; ++i) {
+        EXPECT_EQ(std::bit_cast<std::uint64_t>(got[i]), std::bit_cast<std::uint64_t>(want[i]))
+            << "at " << i;
+      }
+    } else {
+      expect_near_all(got, want);
+    }
+  }
 }
 
 } // namespace

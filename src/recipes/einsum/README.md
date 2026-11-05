@@ -45,6 +45,18 @@ SC-NEVPT2's small-output, large-sum calls (Sr's `"ipqr,pqrabc,iabc->i"` has an
 output of nvirt and six summed active labels); spreading the sum over threads
 keeps it busy whichever side dominates.
 
+The summed tuple runs fastest, so one element's terms are consecutive threads,
+and each warp folds its run of equal elements before adding anything. That is a
+segmented suffix sum over `tile.shfl_down`, and then the run's first lane does
+the one `atomicAdd`. So there is one atomic per (element, warp), not one per
+term. This is what lets the kernel run on gfx12, which has no global fp64
+atomic add. There `atomicAdd(double *, double)` is a compare-and-swap loop, and
+a warp whose 32 lanes all target one address succeeds one lane at a time.
+Sr's 4.5M terms onto 17 addresses made #811's K6 HVP test run for more than ten
+minutes on the gfx1200 without finishing, which is #916 (`docs/style.md`,
+"Atomics"). A call with nothing summed, such as a transpose or `"a->a"`, has
+one term per element, so it skips the fold and stays exact.
+
 The atomics reassociate the sum, and the order varies from run to run, so two
 runs agree to rounding, not bit for bit, and every test compares at a stated
 tolerance.
