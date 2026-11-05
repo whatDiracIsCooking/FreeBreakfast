@@ -239,8 +239,15 @@ that cannot be checked directly.
 - Tier 1's Hm row is reported, not gated, and no Hm optimization is run.
 - The row is given as frozen-core single points at Park's aug-cc-pV{D,T}Z Hm
   geometries (`single_points/`, #860).
-- The gated per-MECI basis shift covers Py, Et and C3v.
+- The gated per-MECI basis shift covered Py, Et and C3v under that ruling.
+  The C3v ruling on #847 that followed removed C3v as well: the
+  all-electron QD-PC/aug-cc-pVDZ C3v walk stops when the CASSCF's ¹E pair
+  becomes degenerate (#892). So **the gated shift covers Py and Et**, and
+  C3v, like Hm, is reported from frozen-core single points at his
+  geometries ([tier1.md](tier1.md), "C3v and Hm: not optimized, and why").
 
 The two walks' absolute energies sit 5.4 mEh below his (−78.1771297
 against −78.1717633 for Py, state 0). That offset is the correlated core
-([README.md](README.md), "What cannot match").
+([README.md](README.md), "What cannot match"); with the core frozen,
+his energies at his own geometries are reproduced to ≤ 0.52 µEh
+([single_points/frozen_core.md](single_points/frozen_core.md)).
