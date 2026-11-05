@@ -38,8 +38,10 @@ include, had Δ = −5.515, −5.505, −5.497 mEh (aug-cc-pVDZ) and −35.548,
 −35.446, −35.374 mEh (aug-cc-pVTZ). With the core frozen it is
 −0.00, +0.09, +0.21 µEh and +0.00, −0.04, −0.11 µEh.
 
-Ethylene aug-cc-pVDZ C3v is not run: its RHF is blocked by #865, as in
-phase 1. The other 17 of the 18 points are here.
+Ethylene aug-cc-pVDZ C3v was blocked by #865 here, as in phase 1; #847
+ran it once #865 landed (its row below, and the C3v shift in the last
+table), at Δ −0.00 / +0.00 / −0.00 µEh. It is not in the means and spreads
+above, which are the 17 points of this phase.
 
 ## The points
 
@@ -54,7 +56,7 @@ decimals. E₀ his is from the SI at 10 decimals, as in each config's header.
 | S0 min | −78.3344531016 | −78.3344531014 | −0.00 | +0.09 | +0.21 |
 | Py MECI | −78.1717633544 | −78.1717632797 | −0.07 | +0.02 | −0.13 |
 | Et MECI | −78.1616020793 | −78.1616020687 | −0.01 | −0.02 | +0.01 |
-| C3v MECI | blocked by #865 | – | – | – | – |
+| C3v MECI (#847) | −78.1566073950 | −78.1566073945 | −0.00 | +0.00 | −0.00 |
 | Hm MECI | −78.1468050794 | −78.1468050753 | −0.00 | −0.01 | −0.00 |
 
 ### Ethylene, aug-cc-pVTZ
@@ -101,7 +103,7 @@ states 0 and 1.
 | tier 1, S0-referenced shift aug-cc-pVDZ → aug-cc-pVTZ, Py | +0.08187 eV | +0.08187 eV | +0.001 meV |
 | the same, Et | +0.03791 eV | +0.03790 eV | +0.001 meV |
 | the same, Hm | +0.02048 eV | +0.02048 eV | +0.000 meV |
-| the same, C3v | – (#865 at aug-cc-pVDZ) | +0.0162 eV | – |
+| the same, C3v (aug-cc-pVDZ point from #847) | +0.01620 eV | +0.01620 eV | −0.000 meV |
 | MECI − Py MECI shift, Et | −0.04397 eV | −0.04397 eV | 0.00 meV |
 | MECI − Py MECI shift, Hm | −0.06139 eV | −0.06139 eV | 0.00 meV |
 

@@ -1,0 +1,33 @@
+# Tier 1 (#847): ethylene's S0 minimum, all-electron, the minimum of QD state 0
+# of Park's SA-QD-PC-NEVPT2 over DF-SA3-CASSCF(2,2)/aug-cc-pvtz
+# (aug-cc-pvtz-jkfit). It starts from his own geometry at this basis,
+# single_points/geometries/ethylene_atz_s0.xyz (J. W. Park, JCTC (2020),
+# acs.jctc.9b00919, Supporting Information, p. S5). Its final.xyz
+# is geometries/ethylene_s0_augtz.xyz (tier1.md). Run from the root of the
+# tree:
+#   build/src/free-breakfast -i docs/reproduction/park2019 -o <out> \
+#     docs/reproduction/park2019/tier1_ethylene_s0_augtz.toml
+[molecule]
+xyz = "single_points/geometries/ethylene_atz_s0.xyz"
+[basis_set]
+basis = "aug-cc-pvtz"
+[eri]
+mode = "density_fitting"
+aux_basis = "aug-cc-pvtz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 2
+nelecas = 2
+nroots = 3
+conv_tol_grad = 1e-10
+[nevpt2_gradient]
+quasi_degenerate = true
+variant = "pc"
+state = 0
+[optimize]
+max_force = 1.5e-5                  # Opt=Tight
+rms_force = 1e-5
+max_displacement = 6e-5
+rms_displacement = 4e-5
+max_steps = 200

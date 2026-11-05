@@ -50,7 +50,7 @@ What the numbers say:
   |---|---|---|---|
   | Et − Py | −0.0487 eV | −0.0440 eV | −4.7 meV |
   | Hm − Py | −0.0776 eV | −0.0614 eV | −16.2 meV |
-  | C3v − Py | – (#865) | – | – |
+  | C3v − Py | −0.0730 eV | −0.0657 eV | −7.3 meV (C3v aug-cc-pVDZ run by #847, after #865) |
 
   At aug-cc-pVTZ alone, E(MECI) − E(Py MECI) differs from his by −5.3
   (Et), −8.5 (C3v) and −20.5 meV (Hm). At aug-cc-pVDZ it differs by −0.5
@@ -112,7 +112,7 @@ PC-refusal warning. Every one ended with `completed: 0 errors, 0 warnings`.
 
 | point | status |
 |---|---|
-| ethylene aug-cc-pVDZ C3v | **not run: blocked by #865** (RHF at the C3v geometries) |
+| ethylene aug-cc-pVDZ C3v | complete, PC-QD not refused, `completed: 0 errors, 0 warnings`; run by #847 once #865 landed, so not among the 15 above |
 | ethylene aug-cc-pVDZ S0, aug-cc-pVTZ S0 | RHF, CASSCF and SC-QD complete; **PC-QD refused** (below) |
 | the other 15 | complete; PC-QD not refused |
 
@@ -197,7 +197,7 @@ decimals. E_his is from the SI, at 10 decimals.
 | S0 min | PC-QD refused | *(−5.3336)* | *(−3.1568)* | *(−5.2004)* |
 | Py MECI | −78.1771391607 | −5.3759 | −5.3242 | −5.4150 |
 | Et MECI | −78.1669729351 | −5.3709 | −5.3690 | −5.4296 |
-| C3v MECI | blocked by #865 | – | – | – |
+| C3v MECI (#847; not in the mean or spread) | −78.1620016655 | −5.3943 | −5.3943 | −5.4439 |
 | Hm MECI | −78.1523106473 | −5.5056 | −5.5067 | −5.5503 |
 | **mean** (mEh) | | −5.4174 | −5.4000 | −5.4650 |
 | **mean** (eV) | | −0.1474 | −0.1469 | −0.1487 |
@@ -260,6 +260,7 @@ PC measurements.
 | S0 min | *7.5801 eV* | 7.5208 eV | 0 | 0 |
 | Py MECI | 1.589 meV | 0.182 meV | *4.4259* | 4.4270 |
 | Et MECI | 0.104 meV | 0.054 meV | *4.7025* | 4.7035 |
+| C3v MECI (#847) | 0.019 meV | 0.020 meV | *4.8378* | 4.8394 |
 | Hm MECI | 0.936 meV | 0.967 meV | *5.1015* | 5.1062 |
 
 ### Ethylene, aug-cc-pVTZ
