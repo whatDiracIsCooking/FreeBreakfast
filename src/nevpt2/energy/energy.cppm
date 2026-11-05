@@ -273,8 +273,9 @@ struct ClassEnergiesAdjoint {
 class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                        int32_t batch, const EnergyBars &bars);
 
-/// @brief One direction class_energies_tangent differentiates along: a
-/// tangent of every EnergyInputs field and of B. A null field is zero.
+/// @brief One direction class_energies_tangent (and pc_class_energies_tangent)
+/// differentiates along: a tangent of every EnergyInputs field and of B. A
+/// null field is zero.
 struct EnergyDirection {
   /// @brief The fields' tangents, each in its EnergyInputs field's layout.
   EnergyInputs in;
@@ -589,6 +590,58 @@ struct PcClassEnergiesAdjoint {
 [[nodiscard]] Result<PcClassEnergiesAdjoint>
 pc_class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                           int32_t batch, const EnergyBars &bars);
+
+/// @brief pc_class_energies_tangent's result: the energies it walked, and Ė
+/// per class along each direction.
+struct PcClassEnergiesTangent {
+  /// @brief The energies and dropped counts, as pc_class_energies computes
+  /// them.
+  PcClassEnergies energies;
+  /// @brief Per class, the largest eigenvalue of its metric S the cut dropped,
+  /// relative to S's largest: at round-off (a few ε √d) for exact null modes,
+  /// above it for real ones; 0 when nothing was dropped, and for Sijrs.
+  std::array<double, 8> cut{};
+  /// @brief Per class, the smallest eigenvalue the cut kept, relative to S's
+  /// largest, what the solve's conditioning follows; 0 when nothing was
+  /// dropped, and for Sijrs.
+  std::array<double, 8> kept{};
+  /// @brief [u][k]: Ė per class along direction u.
+  std::vector<std::array<double, 8>> energy_dot;
+  /// @brief [u]: Σ_k energy_dot[u][k].
+  std::vector<double> total_dot;
+};
+
+/// @brief The PC forward tangent of pc_class_energies along each of
+/// @p directions (EnergyDirection, as class_energies_tangent's): Ė per class.
+///
+/// Per class, the energy's own solve is reused, with no eigenvalue or
+/// eigenvector derivative: per tuple -c (2 ẏᵀ g - gᵀ Ḋ g), g = y / (λ + Δ),
+/// ẏ = Ṫᵀ x + Tᵀ ẋ + ṫ1ᵀ h1 + t1ᵀ ḣ1 the slab einsums at their operands'
+/// tangents, and Ḋ the projected pencil's tangent Uᵀ (K̇ + Δ Ṡ) U + Δ̇ 1
+/// (Sijr's and Srsi's 2 direct - exchange bilinearly). Ṡ, K̇ and Ṡ₁ are their
+/// builders' polarizations, exact as class_energies_tangent's blocks are.
+/// Where the cut drops real modes, U also rotates into them at first order,
+/// U̇ = V_n Θ V_kᵀ U with Θ_nl = (V_nᵀ Ṡ V_k)_nl / (σ_l - σ_n): the forward
+/// side of the reverse pass's kept-span term (#862), so the two are dual;
+/// U̇ enters Ṫ and ṫ1 as S U̇ and S₁ᵀ U̇, and Ḋ as U̇ᵀ K U + Uᵀ K U̇. Sijrs is
+/// SC's kernel. @p span false leaves U̇ out, the fixed-span tangent alone:
+/// not a derivative where real modes are dropped, there for the tests that
+/// show U̇'s share.
+///
+/// Each class is walked once for all the directions, in batches of at most
+/// @p batch: its matrices' tangents and Ṫ, ṫ1 and Ḋ per direction once
+/// solved (memory grows as the directions, by d x m and two m x m each, and
+/// while one is built, the class's S, K and S₁ three times), and per slab
+/// the slab built once, then per direction its tangent and ẏ, read back.
+///
+/// @return The energies and tangents; InvalidConfig when a direction's
+///         blocks are not shaped as @p blocks; or pc_class_energies' errors,
+///         its refusals among them (no positive metric eigenvalue, a pole),
+///         never a class summed as zero.
+[[nodiscard]] Result<PcClassEnergiesTangent>
+pc_class_energies_tangent(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
+                          int32_t batch, std::span<const EnergyDirection> directions,
+                          bool span = true);
 
 /// @brief pc_effective_hamiltonian_adjoint's result: the matrix it walked, and
 /// each class's homogeneity sum assembled from its bars.
