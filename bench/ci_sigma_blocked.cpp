@@ -1,5 +1,5 @@
-// CiSigma's apply and apply_fp32 unbounded against blocked under a workspace
-// limit, per column, with the workspace each grows to; or ci_solve's singlets
+// ci::Sigma's apply and apply_fp32 unbounded against blocked under a workspace
+// limit, per column, with the workspace each grows to; or ci::solve's singlets
 // in the symmetric layout under that limit, the solve that past ~CAS(13,13)
 // does not fit a 10 GB card unblocked. Over the active spaces of a
 // direct_spin1-schema JSON file (tools/emit/ci_bench_integrals.py's schema).
@@ -8,7 +8,7 @@
 //   free_breakfast_ci_sigma_blocked CASES.json solve   LIMIT_MIB [n_roots = 3]
 //                                   [device = 0]
 //
-// LIMIT_MIB 0 leaves CiSigma unbounded: the solve is then the unblocked one,
+// LIMIT_MIB 0 leaves ci::Sigma unbounded: the solve is then the unblocked one,
 // as before set_workspace_limit existed. `columns` times every layout and
 // precision unbounded too, so it is for spaces whose unblocked G fits.
 
@@ -31,16 +31,17 @@ double seconds_since(const Clock::time_point start) {
 constexpr double kMiB = 1024.0 * 1024.0;
 
 // Milliseconds per column of apply (apply_fp32 with fp32) of x into y on a
-// fresh DeviceResources and CiSigma under bound (0: unbounded), over reps
+// fresh DeviceResources and ci::Sigma under bound (0: unbounded), over reps
 // after two to warm up (the first grows the workspace), and the MiB of
 // workspace it grew to.
 std::pair<double, double> time_column(std::int32_t device, std::int32_t reps,
-                                      const fb::StringSet &alpha, const fb::StringSet &beta,
-                                      double e_core, const std::vector<double> &h1,
-                                      const std::vector<double> &eri, std::size_t bound,
-                                      fb::CiLayout layout, bool fp32, const double *x, double *y) {
+                                      const fb::ci::DeviceStringSet &alpha,
+                                      const fb::ci::DeviceStringSet &beta, double e_core,
+                                      const std::vector<double> &h1, const std::vector<double> &eri,
+                                      std::size_t bound, fb::ci::Layout layout, bool fp32,
+                                      const double *x, double *y) {
   fb::DeviceResources res{device};
-  auto sigma = fb::CiSigma::create(res, alpha, beta);
+  auto sigma = fb::ci::Sigma::create(res, alpha, beta);
   if (!sigma || !sigma->set_integrals(res, e_core, h1, eri)) {
     std::println(std::cerr, "CiSigma setup failed");
     std::exit(1);
@@ -87,16 +88,17 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   }
 
   for (const auto &entry : (*doc)["cases"]) {
+    fb::DeviceResources res{device};
     const auto n = entry["n_orbitals"].get<std::int32_t>();
-    const auto alpha = fb::StringSet::create(n, entry["n_alpha"].get<std::int32_t>());
-    const auto beta = fb::StringSet::create(n, entry["n_beta"].get<std::int32_t>());
+    const auto alpha =
+        fb::ci::DeviceStringSet::create(res, n, entry["n_alpha"].get<std::int32_t>());
+    const auto beta = fb::ci::DeviceStringSet::create(res, n, entry["n_beta"].get<std::int32_t>());
     const auto h1 = entry["h1"]["values"].get<std::vector<double>>();
     const auto eri = entry["eri"]["values"].get<std::vector<double>>();
     const auto e_core = entry["e_core"].get<double>();
     const auto name = entry["name"].get<std::string>();
 
-    fb::DeviceResources res{device};
-    auto sigma = fb::CiSigma::create(res, *alpha, *beta);
+    auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
     if (!sigma || !sigma->set_integrals(res, e_core, h1, eri)) {
       std::println(std::cerr, "{}: CiSigma setup failed", name);
       return 1;
@@ -105,7 +107,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
     fb::Buffers::device<double> diagonal(dim, res.device());
     (void)sigma->diagonal(res, diagonal.data());
     std::println("{}  dim {}, symmetric {}, limit {:.0f} MiB", name, dim,
-                 sigma->size(fb::CiLayout::symmetric), static_cast<double>(limit) / kMiB);
+                 sigma->size(fb::ci::Layout::symmetric), static_cast<double>(limit) / kMiB);
 
     if (!solve) {
       // Any column will do: the cost does not depend on c. In the symmetric
@@ -113,7 +115,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
       // packed vector.
       fb::Buffers::device<double> y(dim, res.device());
       const std::int32_t reps = dim > 200'000 ? 5 : 20;
-      for (const fb::CiLayout layout : {fb::CiLayout::full, fb::CiLayout::symmetric}) {
+      for (const fb::ci::Layout layout : {fb::ci::Layout::full, fb::ci::Layout::symmetric}) {
         for (const bool fp32 : {false, true}) {
           const auto cost = [&](std::size_t bound) {
             return time_column(device, reps, *alpha, *beta, e_core, h1, eri, bound, layout, fp32,
@@ -123,8 +125,8 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
           const auto [cap_ms, cap_mib] = cost(limit);
           std::println("  {:9} {}: unbounded {:7.2f} ms, {:7.1f} MiB; blocked {:7.2f} ms, "
                        "{:7.1f} MiB",
-                       layout == fb::CiLayout::full ? "full" : "symmetric", fp32 ? "FP32" : "FP64",
-                       free_ms, free_mib, cap_ms, cap_mib);
+                       layout == fb::ci::Layout::full ? "full" : "symmetric",
+                       fp32 ? "FP32" : "FP64", free_ms, free_mib, cap_ms, cap_mib);
         }
       }
       continue;
@@ -134,7 +136,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
       sigma->set_workspace_limit(limit);
     }
     const auto start = Clock::now();
-    const auto roots = fb::ci_solve(res, *sigma, *alpha, *beta, diagonal.data(), n_roots);
+    const auto roots = fb::ci::solve(res, *sigma, *alpha, *beta, diagonal.data(), n_roots);
     const double wall = seconds_since(start);
     if (!roots) {
       std::println("  ci_solve: {}", roots.error().message);
