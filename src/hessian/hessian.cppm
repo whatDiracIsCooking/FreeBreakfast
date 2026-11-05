@@ -554,6 +554,61 @@ struct DegeneratePair {
                                const double *c_dot, const double *kappa)> &consume,
     size_t max_bytes = 0);
 
+/// @brief Sum_pq h_bar_pq h^xy_pq + Sum_L,pq Lambda_L,pq B^xy_L,pq for every
+/// pair of nuclear coordinates x = 3 A + k, y: the second derivative of the
+/// functional <h_bar, h_MO> + <Lambda, B_MO> of the density-fitted MO
+/// integrals at a fixed symmetric adjoint (h_bar, Lambda), the E_corr + Phi
+/// share of an NEVPT2 Hessian's skeleton L_AB without its integral curvature
+/// (nuclear_hessian.tex eq. LAB, first term).
+///
+/// Along the path (README.md "The DF second derivative at an MO adjoint")
+///
+///     C(R) = C (C^T S(R) C)^-1/2,   B_MO(R) = (L^-1 M(R) L^-T)^-1/2 L^-1 (P|pq)(R)
+///
+/// over the orbitals C(R) and h_MO(R) = C(R)^T h(R) C(R): the Lowdin
+/// connection to second order (tau^xy = -1/2 S^xy + 3/8 (S^x S^y + S^y S^x),
+/// as @ref df_casscf_exy) and the fitted index's symmetric gauge to second
+/// order, whose first order is mcscf::df_integral_derivatives' W^x. The
+/// second-derivative integrals are contracted once each at the adjoint's AO
+/// forms (C h_bar C^T, L^-T C Lambda C^T, -1/2 L^-T sym(G) L^-1, the
+/// overlap's -1/2 C sym(X) C^T), the rest is Gram matrices of
+/// per-coordinate stacks over df_integral_derivatives' (h1^x, tau^x, W^x).
+///
+/// The inputs are @ref df_casscf_exy's (the molecule both bases were placed
+/// on, @p classes of @p basis, the AO core Hamiltonian @p h, @p b and @p l as
+/// @c density_fit leaves them) with @p c any orthonormal orbitals over
+/// @p basis, nmo = nao. @p h_bar is nmo x nmo column-major and @p lambda
+/// naux x nmo^2, (L, p, q) at L + naux (p + nmo q) (nevpt2::ScAdjoint's
+/// layouts), both on the device and symmetric in (p, q); neither is checked
+/// for it.
+///
+/// Held for the call: B and Lambda over every MO pair and one more such
+/// scratch (3 naux nmo^2), mu^x = -1/2 L^-1 M^x L^-T for every x (3 n_atom
+/// naux^2), two 3 n_atom nmo^2 stacks and a few naux^2 and nmo^2 matrices;
+/// W^x is df_integral_derivatives' chunks, as many coordinates at once as
+/// the rest of the budget holds (the device's free memory at the call, or
+/// @p max_bytes when that is less). Past the budget with one coordinate's
+/// W^x and df_integral_derivatives' own buffers the call is Unsupported,
+/// naming the bytes, before anything is allocated. Queued on res.stream()
+/// with res.blas(); the derivative calls synchronize it. None of @p b,
+/// @p l, @p h_bar and @p lambda may point into res.device_workspace().
+/// The device res.dev_idx() names is made current for the call and the
+/// previous one restored.
+///
+/// @return The 3 n_atom x 3 n_atom matrix, element x + 3 n_atom y (symmetric
+///         to rounding); InvalidConfig if the molecule and bases are not one
+///         placement, @p c or @p h is not nao x nao, @p b not naux nao^2,
+///         or @p l, @p h_bar or @p lambda is null; Unsupported for memory
+///         past the budget or naux nmo^2, 3 n_atom naux^2 or 3 n_atom nmo^2
+///         past int32_t; or the first error of a derivative call, copy or
+///         BLAS call.
+[[nodiscard]] Result<std::vector<double>>
+df_adjoint_xy(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+              std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+              const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+              const SphericalMatrixAO &c, const double *h_bar, const double *lambda,
+              size_t max_bytes = 0);
+
 /// @brief The z terms of a state-averaged DF-CASSCF Hessian at one root I's
 /// multipliers z (casscf_hessian.tex eq. sa, bullets 3 and 4).
 struct SaCasscfZTerms {
