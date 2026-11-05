@@ -63,7 +63,8 @@ constexpr std::array<double, 4> kStencilWeights{1.0, -8.0, 8.0, -1.0};
 // The stencil's step: max |e kappa| this, so C (1 + 2 e kappa) stays within
 // a factor of order one of C and the round-off of the quotient is ~1e-15.
 constexpr double kStencilReach = 0.1;
-// Every Lagrangian's Z-vector is solved to this, in at most this many H~
+// The QD Lagrangians' Z-vector is solved to this (the single-state one's to
+// its zvector_tolerance, by default the same 1e-10), in at most this many H~
 // products, and its true residual (one more product) is held to it, one
 // column or several. The CI response inside each product is converged to
 // mcscf::response_tolerance_for it, relative to its right-hand side: at
@@ -361,12 +362,14 @@ Status check_asymmetry(const std::string_view who, const std::array<double, 6> &
   return {};
 }
 
-Result<ScGradient>
-lagrangian_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-                    const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-                    const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-                    const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-                    ScAdjoint corr, ZcMultipliers zc, const ZcAdjoint &phi) {
+Result<ScGradient> lagrangian_gradient(DeviceResources &res, const Molecule &molecule,
+                                       const BasisSet &basis,
+                                       const std::span<const PrimitivePairClass> classes,
+                                       const BasisSet &aux, const SphericalMatrixAO &h,
+                                       const Buffers::device<double> &b, const double *l,
+                                       const mcscf::Solution &solution, const int32_t ncore,
+                                       const int32_t ncas, ScAdjoint corr, ZcMultipliers zc,
+                                       const ZcAdjoint &phi, const double zvector_tolerance) {
   const size_t nroots = solution.roots.energies.size();
   if (nroots != 1) {
     return err_unsupported("nevpt2::lagrangian_gradient: the solution averages {} roots, and the "
@@ -439,7 +442,7 @@ lagrangian_gradient(DeviceResources &res, const Molecule &molecule, const BasisS
   mcscf::ZVector multipliers = std::move(
       FBF_TRY(lagrangian_zvector(res, "nevpt2::lagrangian_gradient", h, b, naux32, solution, ncore,
                                  ncas, alpha, beta, rdm, ints, fock, weights, 1, orbital_rhs.data(),
-                                 ci_rhs.data(), {}, kZvectorTolerance))
+                                 ci_rhs.data(), {}, zvector_tolerance))
           .front());
 
   // The gate: X^L symmetric in every block.
@@ -1275,13 +1278,12 @@ root_strings(DeviceResources &res, const std::string_view who, const std::string
   return std::pair{std::move(alpha), std::move(beta)};
 }
 
-Result<ScGradient> sc_gradient(DeviceResources &res, const Molecule &molecule,
-                               const BasisSet &basis,
-                               const std::span<const PrimitivePairClass> classes,
-                               const BasisSet &aux, const SphericalMatrixAO &h,
-                               const Buffers::device<double> &b, const double *l,
-                               const mcscf::Solution &solution, const int32_t ncore,
-                               const int32_t ncas, const int32_t batch, const int32_t nfrozen) {
+Result<ScGradient>
+sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+            const int32_t batch, const int32_t nfrozen, const double zvector_tolerance) {
   const auto [alpha, beta] =
       FBF_TRY(root_strings(res, "nevpt2::sc_gradient", "SC", molecule, solution, ncas));
   const ScopedDeviceIndex on{res.dev_idx()};
@@ -1296,15 +1298,17 @@ Result<ScGradient> sc_gradient(DeviceResources &res, const Molecule &molecule,
   const ZcAdjoint phi = FBF_TRY(zc_adjoint(res, alpha, beta, naux, nmo, nmo, b.data(), c, h.data(),
                                            ncore, ncas, std::array{1.0}, vector, zc.z.data()));
   return lagrangian_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
-                             std::move(corr), std::move(zc), phi);
+                             std::move(corr), std::move(zc), phi, zvector_tolerance);
 }
 
-Result<PcGradient>
-pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-            const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-            const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-            const int32_t batch, const int32_t nfrozen, const double pc_floor) {
+Result<PcGradient> pc_gradient(DeviceResources &res, const Molecule &molecule,
+                               const BasisSet &basis,
+                               const std::span<const PrimitivePairClass> classes,
+                               const BasisSet &aux, const SphericalMatrixAO &h,
+                               const Buffers::device<double> &b, const double *l,
+                               const mcscf::Solution &solution, const int32_t ncore,
+                               const int32_t ncas, const int32_t batch, const int32_t nfrozen,
+                               const double pc_floor, const double zvector_tolerance) {
   const auto [alpha, beta] =
       FBF_TRY(root_strings(res, "nevpt2::pc_gradient", "PC", molecule, solution, ncas));
   const ScopedDeviceIndex on{res.dev_idx()};
@@ -1330,7 +1334,7 @@ pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
                                                        .x = std::move(corr.x),
                                                        .a = std::move(corr.a),
                                                        .epsilon = std::move(corr.epsilon)},
-                                             std::move(zc), phi));
+                                             std::move(zc), phi, zvector_tolerance));
   return PcGradient{.terms = std::move(g.terms),
                     .energies = corr.energies,
                     .zc = std::move(g.zc),

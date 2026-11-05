@@ -1,19 +1,23 @@
-// The numerical [hessian] over the [nevpt2_gradient] chain (#804): central
-// differences of nevpt2::sc_gradient / pc_gradient over the 6N displaced
-// DF-CASSCF solves, against #803's semi-numerical reference,
-// data/nevpt2_hessian/h2co_skew_sto3g.json (skew H2CO, STO-3G /
-// cc-pVDZ-JKFIT, CAS(4,4), every block defined; its README has the setup).
+// The numerical [hessian] over the [nevpt2_gradient] chain (#804), and its
+// ladder and bilinearity check (#812), against #803's semi-numerical
+// references, data/nevpt2_hessian/ (STO-3G / cc-pVDZ-JKFIT; its README has
+// the cases):
 //
-// - The ladder (slow-gated, SC and PC): the config's Calculation at h, then
-//   the planned step again at h/2 and h/4. Per element the ratio of
-//   successive differences, (D(h) - D(h/2)) / (D(h/2) - D(h/4)), settles
-//   near 4 (the central difference's h²) wherever the finer difference is
-//   above the noise floor (below: printed, never judged); the Richardson
-//   extrapolant of the two finer steps, R = (4 D(h/4) - D(h/2)) / 3, within
-//   2 x (the fixture's bar + R's own estimate |R - R(h, h/2)|) of the
-//   fixture's Hessian. Each Calculation's outer CASSCF and NEVPT2 energies
-//   are first held to the fixture's, so the differences are taken around its
-//   solution.
+// - The skew case (slow-gated, SC and PC), h2co_skew_sto3g, every block
+//   defined: the config's ladder at the fixture's h over every pair. No pair
+//   fails, the frequencies are published, some ratios of the Hessian's ladder
+//   are judged and every one lies in the window about 16, and the finest
+//   rung's Hessian is
+//   within 2 x (the fixture's bar + its own) of the fixture's. Each
+//   Calculation's outer CASSCF and NEVPT2 energies are first held to the
+//   fixture's, so the differences are taken around its solution.
+// - The symmetric case (slow-gated, SC and PC), nh3_cs_sto3g, in the
+//   fixture's symmetry-adapted coordinates, given in the config: SC fails the
+//   fixture's three pairs, and only pairs inside its A'' x A'' block (the
+//   amended acceptance, #812: the analytic gradient finds more of that
+//   block than the fixture's energy stencil could); PC fails none. SC's step
+//   then returns Numerical naming them, and hessian.json carries the ladders
+//   and no frequencies.
 // - The refusals (fast): the config's (the analytic method, quasi_degenerate,
 //   a frozen core, a state average, integral-direct ERIs, a [casscf_gradient]
 //   beside it) and the step's own, run directly, each returned before any
@@ -39,50 +43,43 @@ namespace {
 
 namespace fb = free_breakfast;
 
-const std::filesystem::path kFixture =
-    std::filesystem::path{FBF_TEST_DATA_DIR} / "nevpt2_hessian" / "h2co_skew_sto3g.json";
+constexpr std::string_view kSkew = "h2co_skew_sto3g";
+constexpr std::string_view kSymmetric = "nh3_cs_sto3g";
 
-// The ladder's coarsest step (bohr): the fixture's h. The fixture differences
-// to 2h with a fourth-order stencil and its README found SC smooth there;
-// the central difference here reaches h, h/2 and h/4 only. Its h² error is
-// ~1e-4 at h and its h⁴ remainder after Richardson ~1e-9, under the bars.
-constexpr double kStep = 0.03;
 // The outer CASSCF and NEVPT2 energies against the fixture's: the same
 // solution (PySCF's, polished to 1e-12, against a CASSCF to 1e-10).
 constexpr double kEnergyTolerance = 1e-8;
-// The ratio window: 4 +- 20%, the fixture's own (16 +- 20%) for the
-// second-order stencil.
-constexpr double kRatioLow = 3.2;
-constexpr double kRatioHigh = 4.8;
-// A finer difference is judged only above this many times its noise, so the
-// noise moves the ratio by under 4 / kFloorFactor = 0.2 (the window's half
-// width is 0.8): the fixture's floor_factor.
-constexpr double kFloorFactor = 20.0;
-// The issue's bar: within 2 x (the fixture's bar + the estimate).
+// The ratio window: 16 +- 20%, the fixture's and the step's.
+constexpr double kRatioLow = 12.8;
+constexpr double kRatioHigh = 19.2;
+// The finest rung's Hessian against the fixture's: within this many times
+// the sum of the two bars, each its ladder's own error estimate.
 constexpr double kBarFactor = 2.0;
 
-// The SCF and CASSCF converged tight: each gradient's noise is divided by 2h.
+// The SCF and CASSCF converged tight: each gradient's noise is divided by h.
 constexpr std::string_view kScf = "[scf]\nenergy_tolerance = 1e-12\ncommutator_tolerance = 1e-10\n";
-constexpr std::string_view kLooseScf = "[scf]\nenergy_tolerance = 1e-6\n";
 
-const fb::json &fixture() {
-  static const fb::json kDoc = [] {
-    auto read = fb::read_json(kFixture);
-    EXPECT_TRUE(read.has_value()) << read.error().message;
-    return read.has_value() ? std::move(*read) : fb::json{};
-  }();
-  return kDoc;
+const fb::json &fixture(std::string_view name = kSkew) {
+  static std::map<std::string, fb::json, std::less<>> docs;
+  if (const auto found = docs.find(name); found != docs.end()) {
+    return found->second;
+  }
+  auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "nevpt2_hessian" /
+                            std::format("{}.json", name));
+  EXPECT_TRUE(read.has_value()) << read.error().message;
+  return docs.emplace(std::string{name}, read.has_value() ? std::move(*read) : fb::json{})
+      .first->second;
 }
 
-// The fixture's molecule.xyz in @p dir (bohr there, Angstrom here), and
-// run.toml over its basis, fit and active space: the SCF @p scf, the
-// CASSCF(4,4), [nevpt2_gradient] of @p variant with @p extra keys and,
-// unless @p hessian is empty, a [hessian] table of that body.
+// The fixture @p name's molecule.xyz in @p dir (bohr there, Angstrom here),
+// and run.toml over its basis, fit and active space: the SCF @p scf, the
+// CASSCF, [nevpt2_gradient] of @p variant with @p extra keys and, unless
+// @p hessian is empty, a [hessian] table of that body.
 std::filesystem::path write_config(const fb::test::ScratchDir &dir, std::string_view variant,
                                    std::string_view hessian, std::string_view scf = kScf,
-                                   std::string_view extra = "") {
-  const fb::json &doc = fixture();
-  std::string xyz = std::format("{}\n{}\n", doc.at("atoms").size(), "h2co_skew_sto3g");
+                                   std::string_view extra = "", std::string_view name = kSkew) {
+  const fb::json &doc = fixture(name);
+  std::string xyz = std::format("{}\n{}\n", doc.at("atoms").size(), name);
   for (const fb::json &atom : doc.at("atoms")) {
     const auto coord = atom.at("coord").get<std::vector<double>>();
     xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
@@ -110,196 +107,235 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, std::string_
   return dir / "run.toml";
 }
 
-// @p calc's NEVPT2 total energy and gradient at its molecule.
-std::pair<double, std::vector<double>> nevpt2_at(const fb::Calculation &calc) {
+// @p calc's NEVPT2 total energy at its molecule.
+double nevpt2_energy(const fb::Calculation &calc) {
   const auto &cas = calc.get<fb::CasscfOutput>();
   const auto &out = calc.get<fb::Nevpt2GradientOutput>();
   EXPECT_TRUE(cas.has_value() && out.has_value());
   if (!cas.has_value() || !out.has_value()) {
-    return {};
+    return 0.0;
   }
   return std::visit(
-      [&]<class G>(const G &g) -> std::pair<double, std::vector<double>> {
+      [&]<class G>(const G &g) -> double {
         if constexpr (std::same_as<G, fb::nevpt2::ScGradient> ||
                       std::same_as<G, fb::nevpt2::PcGradient>) {
-          return {cas->energies[0] + g.energies.total, g.terms.total};
+          return cas->energies[0] + g.energies.total;
         } else {
           ADD_FAILURE() << "a QD gradient";
-          return {};
+          return 0.0;
         }
       },
       out->gradient);
 }
 
-// The fixture's Hessian of @p scheme, its bar, in Cartesians: Qᵀ M Q, Q's
-// rows the fixture's coordinates (the identity for this C1 case).
-std::vector<double> cartesian(const fb::json &matrix, const fb::json &vectors) {
-  const auto m = matrix.get<std::vector<std::vector<double>>>();
-  const auto q = vectors.get<std::vector<std::vector<double>>>();
-  const std::size_t n = m.size();
-  std::vector<double> out(n * n, 0.0);
-  for (std::size_t x = 0; x < n; ++x) {
-    for (std::size_t y = 0; y < n; ++y) {
-      for (std::size_t i = 0; i < n; ++i) {
-        for (std::size_t j = 0; j < n; ++j) {
-          out[(x * n) + y] += q[i][x] * m[i][j] * q[j][y];
-        }
-      }
+// The [hessian] table of the ladder at the fixture @p doc's h, over every
+// pair by default, in its coordinates (when they are not the identity).
+std::string ladder_table(const fb::json &doc) {
+  std::string table = std::format("method = \"numerical\"\ndisplacement = {}\n",
+                                  doc.at("steps").at("h").get<double>());
+  const auto vectors = doc.at("coordinates").at("vectors").get<std::vector<std::vector<double>>>();
+  bool identity = true;
+  for (std::size_t i = 0; i < vectors.size(); ++i) {
+    for (std::size_t j = 0; j < vectors.size(); ++j) {
+      identity = identity && vectors[i][j] == (i == j ? 1.0 : 0.0);
     }
   }
-  return out;
+  if (!identity) {
+    table += "coordinates = [\n";
+    for (const auto &row : vectors) {
+      table += "  [";
+      for (std::size_t x = 0; x < row.size(); ++x) {
+        table += std::format("{}{:.17g}", x == 0 ? "" : ", ", row[x]);
+      }
+      table += "],\n";
+    }
+    table += "]\n";
+  }
+  return table;
 }
 
-// The step's Hessian of @p variant ("sc", "pc") at h, h/2 and h/4 on the
-// fixture, against its Hessian of that scheme (the issue's acceptance).
-void expect_ladder(std::string_view variant) {
-  const fb::json &doc = fixture();
-  ASSERT_FALSE(doc.is_null());
-  const std::size_t n = 3 * doc.at("atoms").size();
-  const fb::json &scheme = doc.at(variant);
-  const std::vector<double> want =
-      cartesian(scheme.at("hessian"), doc.at("coordinates").at("vectors"));
-  // A bar is not a matrix to rotate: per element, it is the identity's here.
-  ASSERT_EQ(doc.at("coordinates").at("labels").size(), n);
-  for (const auto &row : doc.at("coordinates").at("irreps")) {
-    ASSERT_EQ(row.get<std::string>(), "A") << "the bar is per Cartesian element only in C1";
+// The run of the fixture @p name's @p variant through the binary's path, its
+// outer energies held to the fixture's; @return the run's status and its
+// hessian.json.
+std::pair<fb::Status, fb::json> run_ladder(std::string_view name, std::string_view variant) {
+  const fb::json &doc = fixture(name);
+  const fb::test::ScratchDir dir(std::format("pipeline_nevpt2_hessian_{}_{}", name, variant));
+  auto read = fb::read_config(write_config(dir, variant, ladder_table(doc), kScf, "", name),
+                              dir.path(), dir / "out");
+  EXPECT_TRUE(read.has_value()) << read.error().message;
+  if (!read.has_value()) {
+    return {fb::Status{}, fb::json{}};
   }
-  std::vector<double> bar(n * n);
-  const auto bar_rows = scheme.at("bar").get<std::vector<std::vector<double>>>();
-  for (std::size_t x = 0; x < n; ++x) {
-    for (std::size_t y = 0; y < n; ++y) {
-      bar[(x * n) + y] = bar_rows[x][y];
-    }
-  }
-
-  const fb::test::ScratchDir dir(std::format("pipeline_nevpt2_hessian_{}", variant));
-  auto read = fb::read_config(
-      write_config(dir, variant, std::format("method = \"numerical\"\ndisplacement = {}\n", kStep)),
-      dir.path(), dir / "out");
-  ASSERT_TRUE(read.has_value()) << read.error().message;
   fb::Calculation calc = std::move(*read);
   fb::NodeResources node;
-  auto t0 = std::chrono::steady_clock::now();
-  const fb::Status ran = calc.run(node);
-  std::vector<double> seconds{
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()};
-  ASSERT_TRUE(ran.has_value()) << ran.error().message;
-
-  // At the fixture's solution.
+  const auto t0 = std::chrono::steady_clock::now();
+  fb::Status ran = calc.run(node);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   const auto &cas = calc.get<fb::CasscfOutput>();
-  ASSERT_TRUE(cas.has_value()) << cas.error().message;
-  EXPECT_NEAR(cas->energy, doc.at("energies").at("casscf").get<double>(), kEnergyTolerance);
-  const auto [energy, gradient] = nevpt2_at(calc);
-  EXPECT_NEAR(energy, doc.at("energies").at(variant).get<double>(), kEnergyTolerance);
-
-  // The gradient's noise sigma_g, measured: the same chain from the SCF
-  // converged to 1e-6, a CASSCF started elsewhere and converged to the same
-  // conv_tol_grad; max |g - g'| over the components.
-  double sigma = 0.0;
-  {
-    const fb::test::ScratchDir loose(std::format("pipeline_nevpt2_hessian_{}_noise", variant));
-    auto other =
-        fb::read_config(write_config(loose, variant, "", kLooseScf), loose.path(), loose / "out");
-    ASSERT_TRUE(other.has_value()) << other.error().message;
-    const fb::Status other_ran = other->run(node);
-    ASSERT_TRUE(other_ran.has_value()) << other_ran.error().message;
-    const auto [e_other, g_other] = nevpt2_at(*other);
-    ASSERT_EQ(g_other.size(), gradient.size());
-    for (std::size_t i = 0; i < gradient.size(); ++i) {
-      sigma = std::max(sigma, std::abs(gradient[i] - g_other[i]));
-    }
+  EXPECT_TRUE(cas.has_value());
+  if (cas.has_value()) {
+    EXPECT_NEAR(cas->energy, doc.at("energies").at("casscf").get<double>(), kEnergyTolerance);
+    EXPECT_NEAR(nevpt2_energy(calc), doc.at("energies").at(variant).get<double>(),
+                kEnergyTolerance);
   }
-
-  // D(h) from the Calculation, D(h/2) and D(h/4) from the planned step
-  // again at its molecule, writing nothing.
-  std::vector<std::vector<double>> ladder;
-  std::vector<double> asymmetry;
-  const auto &first = calc.get<fb::HessianOutput>();
-  ASSERT_TRUE(first.has_value()) << first.error().message;
-  ASSERT_EQ(first->hessian.size(), n * n);
-  ladder.push_back(first->hessian);
-  asymmetry.push_back(first->asymmetry);
   auto written = fb::read_json(dir / "out" / "hessian.json");
-  ASSERT_TRUE(written.has_value()) << written.error().message;
-  EXPECT_EQ(written->at("method").get<std::string>(), "numerical");
-  EXPECT_EQ(written->at("variant").get<std::string>(), variant);
-  EXPECT_EQ(written->at("displacement").get<double>(), kStep);
-  const auto &molecule = calc.get<fb::MoleculeOutput>();
-  ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
-  for (const double h : {kStep / 2.0, kStep / 4.0}) {
-    fb::HessianStep step = *calc.step<fb::HessianStep>();
-    step.displacement = h;
-    step.json_path.clear();
-    t0 = std::chrono::steady_clock::now();
-    const auto out = step.run(fb::View<fb::MoleculeOutput>{*molecule}, node);
-    seconds.push_back(std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
-    ASSERT_TRUE(out.has_value()) << out.error().message;
-    ladder.push_back(out->hessian);
-    asymmetry.push_back(out->asymmetry);
+  EXPECT_TRUE(written.has_value()) << written.error().message;
+  fb::json out = written.has_value() ? std::move(*written) : fb::json{};
+  if (!out.is_null()) {
+    // The measured solve noise lies under its first-order bound.
+    EXPECT_LE(out.at("ladder").at("noise").at("sigma_solves").get<double>(),
+              out.at("ladder").at("noise").at("solve_bound").get<double>());
+    // Each checked pair's numbers, the worst first.
+    std::vector<fb::json> pairs(out.at("bilinearity").begin(), out.at("bilinearity").end());
+    std::ranges::sort(pairs, std::greater<>{}, [](const fb::json &p) {
+      return std::abs(p.at("residual").get<double>()) / p.at("allowed").get<double>();
+    });
+    std::string worst;
+    for (std::size_t k = 0; k < std::min<std::size_t>(pairs.size(), 8); ++k) {
+      const fb::json &p = pairs[k];
+      const auto ladder = p.at("ladder").get<std::vector<double>>();
+      worst += std::format(
+          "\n  {} residual {:+.2e} allowed {:.2e} (x{:.2f}) ratio {} upper {:+.2e} "
+          "lower {:+.2e}",
+          p.at("pair").dump(), p.at("residual").get<double>(), p.at("allowed").get<double>(),
+          std::abs(p.at("residual").get<double>()) / p.at("allowed").get<double>(),
+          p.at("ratio").dump(), ladder[0] - ladder[1], ladder[1] - ladder[2]);
+    }
+    const fb::json &noise = out.at("ladder").at("noise");
+    std::cout << std::format(
+        "[ nevpt2 hessian ] {} {}: {:.0f} s, sigma_g {:.2e} from the {} "
+        "(restarts {:.2e}, solves {:.2e}, bound {:.2e} = residual {:.2e} x "
+        "response {:.2e}), floor {:.2e}, failing {}, unsettled {}; worst "
+        "pairs:{}\n",
+        name, variant, seconds, noise.at("sigma_g").get<double>(),
+        noise.at("from").get<std::string>(), noise.at("sigma_restarts").get<double>(),
+        noise.at("sigma_solves").get<double>(), noise.at("solve_bound").get<double>(),
+        noise.at("solve_residual").get<double>(), noise.at("response").get<double>(),
+        noise.at("floor").get<double>(), out.at("failing_pairs").dump(),
+        out.at("ladder").at("unsettled").dump(), worst);
   }
+  return {std::move(ran), std::move(out)};
+}
 
-  // Per element: the ratio where the finer difference is above its noise,
-  // sqrt(10) sigma_g / h (D(t)'s noise is sigma_g / (sqrt(2) t), at t = h/2
-  // and h/4); the extrapolant and its estimate against the fixture.
-  const double floor = kFloorFactor * std::sqrt(10.0) * sigma / kStep;
+// The skew case: no pair fails, the frequencies are published, the judged
+// ratios settle, and the Hessian is the fixture's to the bars.
+void expect_skew(std::string_view variant) {
+  const fb::json &doc = fixture(kSkew);
+  ASSERT_FALSE(doc.is_null());
+  const auto [ran, out] = run_ladder(kSkew, variant);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  ASSERT_FALSE(out.is_null());
+  const std::size_t n = 3 * doc.at("atoms").size();
+  EXPECT_EQ(out.at("variant").get<std::string>(), variant);
+  EXPECT_TRUE(out.at("failing_pairs").empty()) << out.at("failing_pairs").dump();
+  EXPECT_EQ(out.at("bilinearity").size(), n * (n - 1) / 2);
+  EXPECT_EQ(out.at("frequencies").size(), n - 6);
+  // C1, Cartesian: the fixture's matrices are per Cartesian element.
+  for (const auto &irrep : doc.at("coordinates").at("irreps")) {
+    ASSERT_EQ(irrep.get<std::string>(), "A");
+  }
+  const fb::json &ladder = out.at("ladder");
+  const auto ratios = ladder.at("ratios");
+  const auto bar = ladder.at("bar").get<std::vector<std::vector<double>>>();
+  const auto got = out.at("hessian").get<std::vector<std::vector<double>>>();
+  const auto want = doc.at(variant).at("hessian").get<std::vector<std::vector<double>>>();
+  const auto want_bar = doc.at(variant).at("bar").get<std::vector<std::vector<double>>>();
   std::size_t judged = 0;
-  double ratio_low = std::numeric_limits<double>::infinity();
-  double ratio_high = -std::numeric_limits<double>::infinity();
-  std::string unsettled;
-  double worst = 0.0; // |R - fixture| / (bar + estimate), the largest: under 2
-  std::size_t worst_at = 0;
-  double worst_estimate = 0.0;
-  for (std::size_t x = 0; x < n; ++x) {
-    for (std::size_t y = 0; y < n; ++y) {
-      const std::size_t xy = (x * n) + y;
-      const double coarse = ladder[0][xy] - ladder[1][xy];
-      const double fine = ladder[1][xy] - ladder[2][xy];
-      if (std::abs(fine) > floor) {
-        const double ratio = coarse / fine;
+  double worst = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      if (!ratios[i][j].is_null()) {
         ++judged;
-        ratio_low = std::min(ratio_low, ratio);
-        ratio_high = std::max(ratio_high, ratio);
-        EXPECT_GT(ratio, kRatioLow) << variant << " (" << x << ", " << y << ")";
-        EXPECT_LT(ratio, kRatioHigh) << variant << " (" << x << ", " << y << ")";
-      } else if (x <= y) {
-        unsettled += std::format(" ({}, {}) {:.1e}/{:.1e}", x, y, coarse, fine);
+        EXPECT_GT(ratios[i][j].get<double>(), kRatioLow)
+            << variant << " (" << i << ", " << j << ")";
+        EXPECT_LT(ratios[i][j].get<double>(), kRatioHigh)
+            << variant << " (" << i << ", " << j << ")";
       }
-      const double extrapolant = ((4.0 * ladder[2][xy]) - ladder[1][xy]) / 3.0;
-      const double estimate =
-          std::abs(extrapolant - (((4.0 * ladder[1][xy]) - ladder[0][xy]) / 3.0));
-      const double allowed = kBarFactor * (bar[xy] + estimate);
-      EXPECT_NEAR(extrapolant, want[xy], allowed) << variant << " (" << x << ", " << y << ")";
-      worst_estimate = std::max(worst_estimate, estimate);
-      if (const double ratio = std::abs(extrapolant - want[xy]) / (bar[xy] + estimate);
-          ratio > worst) {
-        worst = ratio;
-        worst_at = xy;
-      }
+      const double allowed = kBarFactor * (want_bar[i][j] + std::max(bar[i][j], bar[j][i]));
+      EXPECT_NEAR(got[i][j], want[i][j], allowed) << variant << " (" << i << ", " << j << ")";
+      worst = std::max(worst, std::abs(got[i][j] - want[i][j]) / allowed);
     }
   }
-  std::cout << std::format(
-      "[ nevpt2 hessian ] {}: ladder h = {}, {}, {} in {::.1f} s; sigma_g {:.1e}, floor "
-      "{:.1e}; {} of {} ratios judged, in [{:.3f}, {:.3f}]; worst |R - fixture| / (bar + "
-      "estimate) {:.3f} (bar 2) at ({}, {}); largest estimate {:.1e}; asymmetry {::.1e}\n",
-      variant, kStep, kStep / 2, kStep / 4, seconds, sigma, floor, judged, n * n, ratio_low,
-      ratio_high, worst, worst_at / n, worst_at % n, worst_estimate, asymmetry);
-  if (!unsettled.empty()) {
-    std::cout << std::format("[ nevpt2 hessian ] {}: below the floor, not judged (D(h) - D(h/2) "
-                             "/ D(h/2) - D(h/4)):{}\n",
-                             variant, unsettled);
+  EXPECT_TRUE(ladder.at("unsettled").empty()) << ladder.at("unsettled").dump();
+  // A ladder that judges nothing checks nothing.
+  EXPECT_GT(judged, 0U);
+  std::cout << std::format("[ nevpt2 hessian ] {} {}: {} ratios judged; worst |H - fixture| / "
+                           "allowed {:.3f}\n",
+                           kSkew, variant, judged, worst);
+}
+
+// The symmetric case: the fixture's failing pairs fail, and only pairs in
+// its failed blocks; a failure withholds the frequencies, as Numerical
+// naming the pairs.
+void expect_symmetric(std::string_view variant) {
+  const fb::json &doc = fixture(kSymmetric);
+  ASSERT_FALSE(doc.is_null());
+  const auto [ran, out] = run_ladder(kSymmetric, variant);
+  ASSERT_FALSE(out.is_null());
+  const auto want =
+      doc.at(variant).at("failing_pairs").get<std::vector<std::array<std::size_t, 2>>>();
+  const auto got = out.at("failing_pairs").get<std::vector<std::array<std::size_t, 2>>>();
+  // The fixture's failing pairs fail here too...
+  for (const auto &pair : want) {
+    EXPECT_TRUE(std::ranges::contains(got, pair))
+        << variant << " (" << pair[0] << ", " << pair[1] << ") passed; failing "
+        << out.at("failing_pairs").dump();
   }
+  // ... and every pair that fails lies in a block the fixture recorded as
+  // failed (SC's A'' x A''): every other pair passes. The analytic gradient's
+  // bars are far below the fixture's there, so more of that block's pairs
+  // fail than the fixture's three (README.md, "The ladder and the
+  // bilinearity check").
+  const auto irreps = doc.at("coordinates").at("irreps").get<std::vector<std::string>>();
+  const auto blocks =
+      doc.at(variant).at("failed_blocks").get<std::vector<std::vector<std::string>>>();
+  for (const auto &[a, b] : got) {
+    std::vector<std::string> block{irreps[a], irreps[b]};
+    std::ranges::sort(block);
+    EXPECT_TRUE(std::ranges::contains(blocks, block))
+        << variant << " (" << a << ", " << b << ") fails outside the fixture's failed blocks";
+  }
+  EXPECT_EQ(out.at("coordinates"), doc.at("coordinates").at("vectors"));
+  if (want.empty()) {
+    EXPECT_TRUE(got.empty()) << out.at("failing_pairs").dump();
+    ASSERT_TRUE(ran.has_value()) << ran.error().message;
+    EXPECT_TRUE(out.contains("frequencies"));
+    return;
+  }
+  ASSERT_FALSE(ran.has_value());
+  EXPECT_EQ(ran.error().kind, fb::ErrorKind::Numerical) << ran.error().message;
+  for (const auto &[a, b] : got) {
+    EXPECT_NE(ran.error().message.find(std::format("[{}, {}]", a, b)), std::string::npos)
+        << ran.error().message;
+  }
+  EXPECT_FALSE(out.contains("frequencies"));
+  EXPECT_FALSE(out.contains("modes"));
+  EXPECT_TRUE(out.contains("hessian"));
 }
 
-TEST(PipelineNevpt2Hessian, ScLadderMatchesFixture) {
+TEST(PipelineNevpt2Hessian, ScSkewLadderIsBilinearAndMatchesFixture) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  expect_ladder("sc");
+  expect_skew("sc");
 }
 
-TEST(PipelineNevpt2Hessian, PcLadderMatchesFixture) {
+TEST(PipelineNevpt2Hessian, PcSkewLadderIsBilinearAndMatchesFixture) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  expect_ladder("pc");
+  expect_skew("pc");
+}
+
+TEST(PipelineNevpt2Hessian, ScSymmetricFailsOnlyItsAPrimePrimeBlock) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_symmetric("sc");
+}
+
+TEST(PipelineNevpt2Hessian, PcSymmetricIsBilinear) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_symmetric("pc");
 }
 
 // The config's refusals, planned and not run: each before anything touches a

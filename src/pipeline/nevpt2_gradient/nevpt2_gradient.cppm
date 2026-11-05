@@ -79,6 +79,12 @@ struct Nevpt2GradientStep {
   /// README.md "The frozen core"). 0, the default, correlates every core
   /// orbital.
   int32_t frozen_core = 0;
+  /// @brief The single-state gradient's Z-vector tolerance, @c
+  /// nevpt2::sc_gradient's and @c pc_gradient's @c zvector_tolerance (their
+  /// default): its true residual is held to it. No TOML key: `[hessian]`'s
+  /// ladder tightens it to measure what it leaves in the gradient. Unread
+  /// with @ref quasi_degenerate.
+  double zvector_tolerance = 1e-10;
   /// @brief Where the gradient is written as JSON, if not empty: the root,
   /// the energies, the total and each term as n_atom rows of three, and the
   /// diagnostics. Arrives resolved (pipeline/config sets it to

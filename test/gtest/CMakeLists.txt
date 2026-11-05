@@ -353,7 +353,15 @@ set(_fb_serial_cases "NevptRdm.Cas1212*:E2eCis.*")
 # gfx1200, where the NEVPT2 path runs 5-19x slower (#824). They get their own
 # backstop, five times the shared one, so the HIP slow tier does not time them
 # out mid-oracle. Lower it again once #824 lands.
+#
+# The numerical NEVPT2 Hessian's ladder cases (#812), slow tier only: each
+# reads 644 NEVPT2 gradients (the h, h/2, h/4 ladder of 12 coordinates, the
+# noise's restarts and tightened re-solves, and 66 bilinearity pairs). The
+# skew cases take 133-150 s on the RTX 3080 and 164-172 s on the gfx1200,
+# the symmetric ones 57-62 s and 78-82 s.
 set(_fb_long_cases "PipelineOptimize.Ethylene*QdMeci*")
+string(APPEND _fb_long_cases ":PipelineNevpt2Hessian.*Skew*")
+string(APPEND _fb_long_cases ":PipelineNevpt2Hessian.*Symmetric*")
 math(EXPR _fb_long_timeout "5 * ${_fb_test_timeout}")
 gtest_discover_tests(
   free_breakfast_tests_gpu

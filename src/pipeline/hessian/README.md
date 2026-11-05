@@ -49,6 +49,11 @@ struct HessianStep {
 
   HessianMethod method{HessianMethod::Analytic};
   double displacement{1e-3};      // h, bohr: the numerical method's
+  std::vector<double> coordinates{};  // n rows of n, orthonormal; empty: Cartesian
+  bool ladder{false};                 // the h, h/2, h/4 ladder (CASSCF chains)
+  std::optional<std::vector<std::array<int32_t, 2>>> pairs{std::in_place};
+                                      // bilinearity; nullopt: every pair
+  static constexpr size_t kMaxEveryPairCoordinates = 12;
 
   // The chain, copied in from the config's own tables by pipeline/config.
   BasisSetStep basis_set{};
@@ -97,9 +102,13 @@ the molecule a private step standing where `MoleculeStep` stood.
   anything runs, and an ROHF SCF after it, as `[gradient]` refuses it.
   Beside a `[casscf_gradient]`, the chain runs to `[casscf]` instead and
   the Hessian is the root's (below, "The CASSCF chain").
-- **Numerical.** For each coordinate x = 3 A + k, one pipeline to
-  `[gradient]` at R + h e_x and one at R - h e_x. Row x of the raw Hessian
-  is (g(R + h e_x) - g(R - h e_x)) / 2h, and its asymmetry is recorded.
+- **Numerical.** For each coordinate q_j -- e_x, x = 3 A + k, unless the
+  config gives `coordinates` -- one pipeline to `[gradient]` at R + h q_j
+  and one at R - h q_j. Column j of the raw Hessian is
+  (g(R + h q_j) - g(R - h q_j)) / 2h in the coordinates, Q g, and its
+  asymmetry is recorded; the Hessian is reported in Cartesians, Qᵀ H Q.
+  Under `ladder`, eight per coordinate instead, and the bilinearity check
+  (below, "The ladder and the bilinearity check").
 
 The Hessian kept is (H + Hᵀ) / 2, and its translational sum, which a Hessian
 of an energy invariant under translation has zero, is recorded beside it.
@@ -313,15 +322,150 @@ displaced: molecule -> ... -> eri -> overlap -> core_hamiltonian
   Hessian here), a `frozen_core` other than 0 (InvalidConfig: the Hessian
   is all-electron, and is not validated with a frozen core), and a
   `casscf_gradient` beside it (InvalidConfig: one energy).
-- **The step h.** The default 1e-3 bohr is the CASSCF chain's. The
-  gradient is the NEVPT2 energy's only as far as the CASSCF converged (its
-  Lagrangian assumes stationarity), so converge `[casscf]` tightly; the GPU
-  cases below set `conv_tol_grad = 1e-10`, difference at h = 0.03, 0.015
-  and 0.0075 bohr, and Richardson-extrapolate the two finer steps. SC's
-  energy kinks wherever a perturber's norm
+- **The step h.** The default 1e-3 bohr is the CASSCF chain's; under the
+  ladder (the default here) it is the coarsest step, and the fixture's
+  0.03 makes the finest 0.0075. The gradient is the NEVPT2 energy's only as
+  far as the CASSCF converged (its Lagrangian assumes stationarity), so
+  converge `[casscf]` tightly; the GPU cases below set
+  `conv_tol_grad = 1e-10`. SC's energy kinks wherever a perturber's norm
   passes near zero or two canonical inactive orbitals nearly cross
-  (#894), so a step must stay inside the smooth region: the fixture
-  below was chosen where it is, at 0.06 bohr.
+  (#894), so a step must stay inside the smooth region: the skew fixture
+  was chosen where it is, at 0.06 bohr.
+
+## The ladder and the bilinearity check
+
+`nuclear_hessian.tex` §3's diagnostic (#812): at a symmetric geometry an
+NEVPT2 energy can have a second derivative along every line and still no
+Hessian, because along a pair of directions that leave the symmetry it is
+not a quadratic form (SC's empty perturbers, #894). A difference Hessian
+does not see that; this does. It follows #803's fixture,
+`tools/nevpt2_hessian/` (`stencil.py`), over the analytic gradient:
+
+- **The ladder**, `ladder = true` (the default under `[nevpt2_gradient]`,
+  off otherwise). Column j at s = h, h/2 and h/4, h the `displacement`, is
+  the fourth-order central stencil (g(−2s) − 8 g(−s) + 8 g(s) − g(2s)) / 12s
+  along q_j: eight gradients per coordinate (h/2's 2s is h's s), not two.
+  Per element, the ratio (D(h) − D(h/2)) / (D(h/2) − D(h/4)) is 16 where
+  truncation dominates. It is judged, in (12.8, 19.2), only where the finer
+  difference is past 10 floors (the tree's visibility rule; nearer the
+  floor the ratio is the noise's) -- below that it is "below the floor",
+  null in `"ratios"`, never unsettled. The element's bar is |D(h/2) −
+  D(h/4)|, or the floor where that is below it. A judged ratio outside the
+  window is *unsettled*: logged at warn and listed, not refused. The
+  Hessian is the finest rung's, symmetrized. (The fixture judges past one
+  floor and flags a coarse difference far above a sub-floor fine one; at
+  this floor, with the gradient's own noise far below the fixture's, ratios
+  between one and ten floors read 0.3 to −46 on the skew case: noise.)
+- **The noise floor: the difference noise, measured.** σ_g, the
+  gradient's noise, is the larger of two measured terms, both in
+  `hessian.json`'s `"ladder"."noise"` with the one that won (`"from"`):
+  - *restarts*: at +h along the first four coordinates, the gradient from
+    the reference's start and from four restarts, each the reference's
+    orbitals rotated by up to 1e-3 rad in every non-redundant pair (a fixed
+    seed), reconverged; the root mean square of the per-component sample
+    standard deviations (the fixture's measurement, on the gradient). It
+    sees the spread of where a solve lands, about 1e-13 here, and not what
+    every solve leaves unconverged.
+  - *solves*: what the production tolerances leave in every gradient,
+    measured. At the same four points, the production solve is re-solved
+    with every tolerance 100 times tighter -- `[casscf]`'s conv_tol and
+    conv_tol_grad (its CI's floor follows conv_tol_grad,
+    `mcscf::ci_tolerance_for`) and the NEVPT2 Z-vector's
+    (`Nevpt2GradientStep::zvector_tolerance`, 1e-10 to 1e-12) -- started
+    from the production solve's orbitals and CI. σ_solves is the root mean
+    square over the points and components of g_production − g_tight: the
+    root mean square, as the restarts term, because the floor's model is an
+    independent error of size σ in each gradient a stencil reads.
+  - *the bound, rejected as the floor*: the gradient is ∂L/∂R of a
+    Lagrangian stationary in the parameters x and multipliers z, so a
+    residual r moves it by r · dx/dR to first order, at most ‖r‖ ‖dx/dR‖
+    (‖r‖ the largest CASSCF ‖g‖ + CI residual + Z-vector residual of the
+    production solves, ‖dx/dR‖ the largest angle a solve from the
+    reference's start turned its active orbitals and root by, per bohr,
+    from `check_displaced_casscf`'s measures). It is kept in `hessian.json`
+    (`"solve_bound"`) as a check: the measurement must lie under it. As the
+    floor it was 70 to 360 times the measurement (Cauchy–Schwarz is loose),
+    judged no ratio on any case and hid nh3 SC's (8,11).
+
+  Measured (CUDA, RTX 3080, one run each):
+
+  | case | σ restarts | σ solves (measured) | bound | floor | judged | ratios |
+  |---|---|---|---|---|---|---|
+  | `h2co_skew_sto3g` SC | 4.1e-14 | 1.45e-12 | 1.04e-10 | 5.5e-9 | 8 of 144 | [16.006, 16.070] |
+  | `h2co_skew_sto3g` PC | 3.8e-14 | 1.52e-12 | 1.04e-10 | 5.8e-9 | 8 of 144 | [15.998, 16.063] |
+  | `nh3_cs_sto3g` SC | 1.0e-13 | 2.92e-13 | 8.0e-11 | 1.1e-9 | 17 of 144 | [15.053, 16.578] |
+  | `nh3_cs_sto3g` PC | 7.8e-14 | 2.90e-13 | 7.2e-11 | 1.1e-9 | 16 of 144 | [15.915, 16.034] |
+
+  The measurement won every time. With the restarts' term alone (1e-13 at
+  most) ratios one to ten floors up read 0.3 to −46 on the skew case: the
+  noise the restarts do not see.
+
+  One stencil at s multiplies independent noise by √(Σ w²) / s, so the
+  finer difference carries at most σ_g (gain(h/2) + gain(h/4)); the floor
+  is 20 σ_g (gain(h/2) + gain(h/4)), so a one-sigma noise moves a ratio by
+  5% (the fixture's factor). The RHF chain has no orbitals to restart
+  from, so the ladder is the CASSCF chains' only (Unsupported over the
+  RHF's).
+- **Eq. (bilinear)** on each pair (a, b) of `pairs`: the same ladder of the
+  directional derivative u · g along u = (q_a + q_b) / √2, its finest rung
+  against (H_aa + H_bb + H_ab + H_ba) / 2 of the finest rung's own
+  (unsymmetrized) elements. The pair fails when the residual is above u's
+  bar plus half the four elements' bars: the difference noise and the
+  truncation both. `pairs` defaults to every pair under
+  `[nevpt2_gradient]`, up to 12 coordinates (66 pairs, 528 gradients;
+  above, none, logged at warn), and to none otherwise; a list names its own,
+  and `pairs = []` none. Eight gradients each.
+- **A failing pair withholds the frequencies.** The Hessian has no normal
+  modes where it is not a bilinear form: `geometry::harmonic_analysis` is
+  not run, `hessian.json` is written without `"frequencies"` and `"modes"`
+  (with the Hessian and every ladder, for the diagnosis), and the step
+  returns Numerical naming the pairs, so the run fails rather than publish a
+  frequency. An error rather than a flag, so nothing downstream reads a
+  Hessian that is not one.
+- **No point group is detected.** A failure on Cartesian pairs names only
+  the pair. The config's `coordinates` (n orthonormal rows, each a
+  Cartesian displacement) put the check in symmetry-adapted ones, which name
+  the failing block: the fixture's, for ammonia.
+- **What it finds on the fixture's symmetric case, and why that is more
+  than the fixture's three pairs.** On `nh3_cs_sto3g` SC (CUDA, one run,
+  644 gradients in 57 s), σ_g = 2.9e-13 and the floor 1.1e-9. Every A′ and
+  cross-irrep pair passes, and all ten A″ × A″ pairs fail:
+
+  | pair | residual | allowed | ×allowed | its ladder's ratio | fixture's residual / allowed |
+  |---|---|---|---|---|---|
+  | (7,8) | +4.36e-6 | 4.82e-8 | 90 | below floor | −3.5e-7 / 3.3e-7, fails |
+  | (7,9) | +2.08e-7 | 7.09e-8 | 2.9 | below floor | 1.1e-7 / 2.9e-7 |
+  | (7,10) | −1.01e-6 | 9.00e-8 | 11 | 15.36 | 1.1e-7 / 2.4e-7 |
+  | (7,11) | −8.33e-8 | 6.26e-8 | 1.33 | below floor | −4.7e-8 / 1.1e-7 |
+  | (8,9) | −3.66e-6 | 8.57e-9 | 427 | below floor | −3.1e-7 / 2.9e-6 |
+  | (8,10) | −1.72e-6 | 4.72e-9 | 365 | below floor | −2.3e-6 / 1.8e-6, fails |
+  | (8,11) | +3.77e-7 | 4.65e-9 | 81 | below floor | −5.0e-7 / 2.8e-7, fails |
+  | (9,10) | +5.98e-7 | 1.43e-8 | 42 | below floor | 1.6e-8 / 1.0e-6 |
+  | (9,11) | −9.04e-8 | 1.29e-8 | 7.0 | below floor | 1.9e-8 / 2.4e-7 |
+  | (10,11) | −9.64e-8 | 4.72e-9 | 20 | below floor | −5.6e-7 / 6.2e-7 |
+
+  The fixture records three of them, (7,8), (8,10) and (8,11). Its
+  gradient is a δ = 5e-3 central stencil of energies, and off the mirror
+  that stencil straddles #894's kink (SC's empty perturbers, whose energy
+  is t² Q(direction)): its points leave the line at a distance comparable
+  to the ladder's finest step, 0.0075, so its A″ gradients carry errors
+  that make its bars there 1e-7 to 3e-6, wide enough to hide seven of the
+  ten. The analytic gradient has no stencil of its own, so its bars sit at
+  the truncation and the noise and the whole A″ × A″ block shows, as the
+  analytic route found (#816's refusal of the whole block). The test holds
+  the fixture's three as failing and every failure inside A″ × A″ (#812's
+  amended acceptance), not "exactly ten": (7,11) at 1.33 times its
+  allowance is too close to call either way. Its pairs' own ladders are
+  mostly below the judging line: their finer differences are 1e-10 to
+  3e-8.
+- **`hessian.json`** under the ladder adds `"ladder"`: `"steps"` (h, h/2,
+  h/4), `"rungs"` (the three D, each n rows, element [i][j] q_i · D along
+  q_j, unsymmetrized, in the coordinates), `"ratios"` (null below the
+  floor), `"bar"`, `"unsettled"` ([i, j]) and `"noise"` (`"sigma_g"`,
+  `"floor"`, the points, starts and kick); `"bilinearity"`, per pair its
+  `"pair"`, `"ladder"`, `"ratio"`, `"settled"`, `"directional"`,
+  `"predicted"`, `"residual"`, `"allowed"` and `"fails"`; and
+  `"failing_pairs"`. With `coordinates`, `"coordinates"` too.
 
 ## Config
 
@@ -372,8 +516,18 @@ conv_tol_grad = 1e-10
 variant = "pc"         # or "sc"
 [hessian]
 method = "numerical"
-displacement = 0.0075  # bohr
+displacement = 0.03    # bohr: the ladder's h, so its finest step is 0.0075
+ladder = true          # the default here; false for 2 gradients per coordinate
+pairs = [[7, 8]]       # the default here: every pair, up to 12 coordinates
+coordinates = [[1, 0, 0, ...], ...]  # optional: n orthonormal rows of n
 ```
+
+`ladder`, `pairs` and `coordinates` are the numerical method's (refused
+beside the analytic one, InvalidConfig); `pairs` needs the ladder
+(InvalidConfig without it), and the ladder a CASSCF chain (Unsupported over
+the RHF's). `coordinates` must be n square rows (InvalidConfig); that n is
+the molecule's 3 n_atom and the rows orthonormal (to 1e-10) is checked by
+the step before anything runs, as are pairs inside n and none named twice.
 
 Two of `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]` beside a
 `[hessian]` are refused (InvalidConfig).
@@ -388,7 +542,10 @@ integral-direct `[eri]` -- the default one -- is refused there too
 
 - The step's contract and its config: `test/pipeline/hessian_host.cpp`
   (`static_assert`s on the run shape, the View and the product; `method`
-  read, analytic by default, and refused; `displacement` read and refused,
+  read, analytic by default, and refused; `displacement` read and refused;
+  `ladder`, `pairs` and `coordinates` read, the ladder over every pair by
+  default beside a `[nevpt2_gradient]` and off otherwise, and their
+  refusals;
   beside the analytic method among the refusals; the analytic method over
   integral-direct ERIs refused; the chain copied from the tables; `from`
   refused on a chain table; and beside `[optimize]`, the molecule it reads
@@ -500,34 +657,31 @@ Analytic against numerical: `h2o_631g_sa2` root 1, 2.4e-7, frequencies
 Hessian 4.8 s, the numerical one 4.2 s. The CUDA card was not run. No
 OpenMolcas comparison (the issue's optional one) was made.
 
-- `test/gtest/pipeline_nevpt2_hessian_gpu.cpp`, the NEVPT2 chain, against
-  #803's `test/gtest/data/nevpt2_hessian/h2co_skew_sto3g.json` (skew H₂CO,
-  STO-3G / cc-pVDZ-JKFIT, CAS(4,4), `conv_tol_grad = 1e-10`). The issue's
-  acceptance, slow-gated, SC and PC (`ScLadderMatchesFixture`,
-  `PcLadderMatchesFixture`): the config's `Calculation` at h = 0.03, its
-  outer CASSCF and NEVPT2 energies held to the fixture's to 1e-8, then the
-  planned step again at h/2 and h/4. Per element the ratio (D(h) − D(h/2)) /
-  (D(h/2) − D(h/4)) in (3.2, 4.8) wherever the finer difference is above
-  20 × its noise √10 σ_g / h, σ_g measured as the largest gradient
-  component's change when the same chain starts from an SCF converged to
-  1e-6 instead (below the floor: printed, never judged); and the
-  extrapolant R = (4 D(h/4) − D(h/2)) / 3 within 2 × (the fixture's `bar` +
-  |R − R(h, h/2)|) of its `hessian`. Fast: the config's refusals (the
-  analytic method, by default and by name; `quasi_degenerate`;
-  `frozen_core` 1 and `"auto"`; a state average; integral-direct ERIs; a
-  `[casscf_gradient]` beside it) and the step's own, run directly on a
-  planned step changed after planning, each returned at once naming no
-  geometry. Measured on the gfx1200 (HIP), one run:
-
-| Scheme | ratios judged, range | worst \|R − fixture\| / (bar + estimate) | largest estimate | σ_g | asymmetry at h, h/2, h/4 | time per step |
-|---|---|---|---|---|---|---|
-| SC | 144 of 144, [3.973, 4.020] | 0.053 (bar 2) | 1.8e-7 | 2.8e-14 | 9.0e-4, 2.3e-4, 5.6e-5 | 6-7.5 s |
-| PC | 144 of 144, [3.972, 4.020] | 0.054 (bar 2) | 1.8e-7 | 3.6e-14 | 9.0e-4, 2.3e-4, 5.6e-5 | 7 s |
-
-  Over each step's 24 displaced gradients max |z^c| ≤ 4.5e-3, the smallest
-  inactive gap ≥ 0.133 and the Z-vector residual ≤ 4.1e-11. The asymmetry
-  is the central difference's h² (it quarters with h), not noise. The CUDA
-  card was not run.
+- `test/gtest/pipeline_nevpt2_hessian_gpu.cpp`, the NEVPT2 chain and its
+  ladder (#804, #812), against #803's `test/gtest/data/nevpt2_hessian/`
+  (STO-3G / cc-pVDZ-JKFIT, `conv_tol_grad = 1e-10`), each run's outer
+  CASSCF and NEVPT2 energies first held to the fixture's to 1e-8. Slow:
+  `ScSkewLadderIsBilinearAndMatchesFixture` and
+  `PcSkewLadderIsBilinearAndMatchesFixture` (`h2co_skew_sto3g`, every
+  block defined: the config's ladder at h = 0.03 over all 66 pairs; no pair
+  fails, the frequencies are published, every judged ratio in (12.8, 19.2),
+  no unsettled element, and the finest rung's Hessian within 2 × (the
+  fixture's `bar` + its own) of the fixture's `hessian`);
+  `ScSymmetricFailsOnlyItsAPrimePrimeBlock` (`nh3_cs_sto3g` in the
+  fixture's coordinates: the fixture's three pairs fail, every failing pair
+  is in A″ × A″, the step returns Numerical naming them and `hessian.json`
+  has no frequencies) and `PcSymmetricIsBilinear` (no pair fails). Fast:
+  the config's refusals (the analytic method, by default and by name;
+  `quasi_degenerate`; `frozen_core` 1 and `"auto"`; a state average;
+  integral-direct ERIs; a `[casscf_gradient]` beside it) and the step's
+  own, run directly on a planned step changed after planning, each
+  returned at once naming no geometry. Measured on the RTX 3080 (CUDA), one run each: the skew SC 133 s and PC
+  150 s (644 gradients each), no pair failing (the worst, (0,2), at 0.07 of
+  its allowance), every judged ratio in [15.998, 16.070],
+  the Hessian within 0.025 of its allowance of the fixture's; nh3 SC 57 s,
+  the ten A″ × A″ pairs failing and nothing else, (8,11) at 81 times its
+  allowance; nh3 PC 62 s, none (worst 0.07). The noise table above has
+  each σ term.
 
 - `test/gtest/infrared_gpu.cpp`'s `PipelineInfrared`: the analytic
   `[hessian]` at PySCF's DF-RHF minimum of water
@@ -541,5 +695,5 @@ OpenMolcas comparison (the issue's optional one) was made.
 | File | Role |
 |------|------|
 | `hessian.cppm` | Module interface: `HessianMethod`, `HessianOutput`, `HessianStep` |
-| `hessian.cpp` | `check_displaced_casscf`; the private reference-orbitals step; `HessianStep::run`: its refusals, the analytic Hessian and dipole derivative over one nested pipeline, or the 6N nested pipelines (RHF, CASSCF or NEVPT2 gradients) and their central differences; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
+| `hessian.cpp` | `check_displaced_casscf`; the private reference-orbitals step; the ladder's stencil, verdict and restarts; `HessianStep::run`: its refusals, the analytic Hessian and dipole derivative over one nested pipeline, or the nested pipelines along each coordinate (RHF, CASSCF or NEVPT2 gradients) and their central differences, or the ladder, its noise and the bilinearity check; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
 | `CMakeLists.txt` | The module library |

@@ -91,6 +91,28 @@ template <class T>
       values.push_back(*value);
     }
     out = std::move(values);
+  } else if constexpr (std::same_as<T, std::vector<std::vector<double>>>) {
+    const toml::array *array = node.as_array();
+    if (array == nullptr) {
+      return err_config("[{}] {} is not an array of arrays of numbers", step, key);
+    }
+    std::vector<std::vector<double>> rows;
+    for (const toml::node &element : *array) {
+      const toml::array *inner = element.as_array();
+      if (inner == nullptr) {
+        return err_config("[{}] {} is not an array of arrays of numbers", step, key);
+      }
+      std::vector<double> row;
+      for (const toml::node &entry : *inner) {
+        const auto value = entry.value<double>();
+        if (!value) {
+          return err_config("[{}] {} is not an array of arrays of numbers", step, key);
+        }
+        row.push_back(*value);
+      }
+      rows.push_back(std::move(row));
+    }
+    out = std::move(rows);
   } else if constexpr (std::same_as<T, std::vector<std::array<int32_t, 2>>>) {
     const toml::array *array = node.as_array();
     if (array == nullptr) {
@@ -619,20 +641,50 @@ template <class S>
   } else if constexpr (std::same_as<S, HessianStep>) {
     // As [optimize]'s, the chain it runs is copied in by parse_config, and
     // whether its [eri] is one the method takes is plan_hessian's to say.
-    FBF_TRY(check_keys(table, kStep, {"method", "displacement"}));
+    FBF_TRY(check_keys(table, kStep, {"method", "displacement", "ladder", "pairs", "coordinates"}));
     std::string method = "analytic";
     FBF_TRY(read_key(table, kStep, "method", base_dir, method));
     if (method != "analytic" && method != "numerical") {
       return err_config("[{}] has no method '{}' (known: 'analytic', 'numerical')", kStep, method);
     }
     step.method = method == "numerical" ? HessianMethod::Numerical : HessianMethod::Analytic;
-    if (step.method == HessianMethod::Analytic && table.contains("displacement")) {
-      return err_config("[{}] displacement is the numerical method's, and method is 'analytic'",
-                        kStep);
+    for (const std::string_view key : {"displacement", "ladder", "pairs", "coordinates"}) {
+      if (step.method == HessianMethod::Analytic && table.contains(key)) {
+        return err_config("[{}] {} is the numerical method's, and method is 'analytic'", kStep,
+                          key);
+      }
     }
     FBF_TRY(read_key(table, kStep, "displacement", base_dir, step.displacement));
     if (!std::isfinite(step.displacement) || !(step.displacement > 0.0)) {
       return err_config("[{}] displacement must be finite and positive", kStep);
+    }
+    // Whether the ladder and the pairs default on is plan_hessian's to say,
+    // once it knows the chain.
+    FBF_TRY(read_key(table, kStep, "ladder", base_dir, step.ladder));
+    if (table.contains("pairs")) {
+      std::vector<std::array<int32_t, 2>> pairs;
+      FBF_TRY(read_key(table, kStep, "pairs", base_dir, pairs));
+      for (const auto &[a, b] : pairs) {
+        if (a < 0 || b < 0 || a == b) {
+          return err_config("[{}] pair [{}, {}] is not two distinct coordinates", kStep, a, b);
+        }
+      }
+      step.pairs = std::move(pairs);
+    }
+    // Rows of the molecule's 3 n_atom; their count and orthonormality are
+    // HessianStep::run's to check, which knows the molecule.
+    std::vector<std::vector<double>> coordinates;
+    FBF_TRY(read_key(table, kStep, "coordinates", base_dir, coordinates));
+    for (const std::vector<double> &row : coordinates) {
+      if (row.size() != coordinates.size()) {
+        return err_config("[{}] coordinates are {} rows, and one has {} numbers: write one row "
+                          "per coordinate, each a Cartesian displacement of 3 n_atom",
+                          kStep, coordinates.size(), row.size());
+      }
+      step.coordinates.insert(step.coordinates.end(), row.begin(), row.end());
+    }
+    if (table.contains("coordinates") && coordinates.empty()) {
+      return err_config("[{}] coordinates is empty: leave it out for the Cartesian ones", kStep);
     }
     step.json_path = output_dir / std::format("{}.json", kStep);
   } else {
@@ -777,6 +829,29 @@ template <class S>
                         "is not 0: set it to 0",
                         kStep, kNevpt2);
     }
+    // nuclear_hessian.tex §3's diagnostic ships with the NEVPT2 Hessian: the
+    // ladder, and every pair (up to HessianStep::kMaxEveryPairCoordinates),
+    // unless the config says otherwise.
+    const toml::table *table = doc[kStep].as_table();
+    if (table == nullptr || !table->contains("ladder")) {
+      step.ladder = true;
+    }
+    if (step.ladder && (table == nullptr || !table->contains("pairs"))) {
+      step.pairs.reset();
+    }
+  }
+  // The ladder measures the noise by restarting the CASSCF, and the pairs are
+  // judged against its bars: HessianStep::run refuses each again.
+  if (step.ladder && step.method == HessianMethod::Numerical && !step.casscf_gradient &&
+      !step.nevpt2_gradient) {
+    return err_unsupported("[{}] ladder measures the gradient's noise by restarting the CASSCF "
+                           "from rotated orbitals, and the RHF chain has no such start: the "
+                           "ladder needs [{}] or [{}]",
+                           kStep, CasscfGradientStep::kName, Nevpt2GradientStep::kName);
+  }
+  if ((!step.pairs || !step.pairs->empty()) && !step.ladder) {
+    return err_config("[{}] pairs are judged against the ladder's error bars: set ladder = true",
+                      kStep);
   }
   if (step.method == HessianMethod::Analytic && step.eri.mode != EriMode::DensityFitting) {
     return err_unsupported("[{}] method 'analytic' is density-fitted only, and [{}] mode is "

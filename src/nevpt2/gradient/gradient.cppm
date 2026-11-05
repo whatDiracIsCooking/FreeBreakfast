@@ -695,12 +695,17 @@ struct ScGradient {
 ///         length; Numerical, naming the block and its residue, when the
 ///         gate fails; or the first error of casscf_integrals, the Fock, the
 ///         CI objects, the Hessian, mcscf::zvector or mcscf::df_gradient.
+///
+/// @p zvector_tolerance: the Z-vector is solved to it and its true residual
+/// held to it, as qd_sc_gradient's (README.md "The Z-vector's floor"). The
+/// default is every caller's; a tighter one measures what it leaves in the
+/// gradient (pipeline/hessian's ladder).
 [[nodiscard]] Result<ScGradient>
 lagrangian_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                     std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                     const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                     const mcscf::Solution &solution, int32_t ncore, int32_t ncas, ScAdjoint corr,
-                    ZcMultipliers zc, const ZcAdjoint &phi);
+                    ZcMultipliers zc, const ZcAdjoint &phi, double zvector_tolerance = 1e-10);
 
 /// @brief The SC-NEVPT2 nuclear gradient of the single-state DF-CASSCF
 /// @p solution: sc_adjoint at its orbitals and root, zc_multipliers and
@@ -710,17 +715,16 @@ lagrangian_gradient(DeviceResources &res, const Molecule &molecule, const BasisS
 /// read. With a frozen core, z^c is the same division over the whole core:
 /// its frozen–correlated pairs take the energy's derivative along their
 /// rotation, which the frozen core no longer leaves at zero (README "The
-/// frozen core").
+/// frozen core"). @p zvector_tolerance is lagrangian_gradient's.
 ///
 /// @return The gradient; Unsupported for a state average; or the first
 ///         error of the calls it makes.
-[[nodiscard]] Result<ScGradient> sc_gradient(DeviceResources &res, const Molecule &molecule,
-                                             const BasisSet &basis,
-                                             std::span<const PrimitivePairClass> classes,
-                                             const BasisSet &aux, const SphericalMatrixAO &h,
-                                             const Buffers::device<double> &b, const double *l,
-                                             const mcscf::Solution &solution, int32_t ncore,
-                                             int32_t ncas, int32_t batch, int32_t nfrozen = 0);
+[[nodiscard]] Result<ScGradient>
+sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch,
+            int32_t nfrozen = 0, double zvector_tolerance = 1e-10);
 
 /// @brief pc_gradient's result: ScGradient's fields, with PC's class
 /// energies.
@@ -741,7 +745,8 @@ struct PcGradient {
 /// @p solution: sc_gradient with pc_adjoint in place of sc_adjoint.
 /// zc_multipliers and zc_adjoint over PC's A and epsilon, under the same
 /// degenerate-pair rule, then lagrangian_gradient. The arguments are
-/// sc_gradient's, and @p pc_floor pc_adjoint's.
+/// sc_gradient's (@p zvector_tolerance among them), and @p pc_floor
+/// pc_adjoint's.
 ///
 /// @return The gradient; Unsupported for a state average; the energy's
 ///         Numerical error when PC refuses a class (a metric with no
@@ -753,7 +758,7 @@ pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch,
-            int32_t nfrozen = 0, double pc_floor = 0.0);
+            int32_t nfrozen = 0, double pc_floor = 0.0, double zvector_tolerance = 1e-10);
 
 /// @brief qd_sc_lagrangian's result: what the SC-QD-NEVPT2 gradient's
 /// derivative passes take, and what it reports. Every device array is on
