@@ -45,12 +45,23 @@ namespace free_breakfast::mcscf {
 // is ~1e-12, and a rejection there would only shrink the radius for nothing.
 constexpr double kEnergyRiseTolerance = 1e-11;
 // The CI's residual tolerance follows ||g|| of the last iteration as
-// min(kCiLoosest, kCiPerGradient ||g||^2), held at or above options.ci's: the
-// steps converge quadratically, so the CI must keep ahead of the next ||g||,
-// not the last. A solve that converges on a looser CI than options.ci's takes
-// a final one to it (the README's "The final CI").
+// min(kCiLoosest, kCiPerGradient ||g||^2), held at or above the CI's floor,
+// ci_tolerance_for: the steps converge quadratically, so the CI must keep
+// ahead of the next ||g||, not the last. A solve that converges on a looser
+// CI than the floor takes a final one to it (the README's "The final CI").
 constexpr double kCiLoosest = 1e-8;
 constexpr double kCiPerGradient = 1e-4;
+// ci_tolerance_for: the CI's absolute residual is held to kCiPerGradientBar
+// of conv_tol_grad, and its relative tolerance never below kCiRoundoff, where
+// Davidson still converges at PSB3 (at 1e-15 it stalls near 2.4e-15). The
+// README's "The CI's floor under ||g||" has the measurement.
+constexpr double kCiPerGradientBar = 1e-2;
+constexpr double kCiRoundoff = 1e-14;
+
+double ci_tolerance_for(const double conv_tol_grad, const double energy, const double tolerance) {
+  const double scale = std::max(1.0, std::abs(energy));
+  return std::min(tolerance, std::max(kCiRoundoff, kCiPerGradientBar * conv_tol_grad / scale));
+}
 // The augmented Hessian's subspace solve: an absolute residual of
 // kAhPerGradient ||g_model||, so the step is good to ~1% at any ||g||. Q
 // holds at most kAhMaxSubspace columns, then restarts on the current step's
@@ -252,6 +263,9 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
   double e_accepted = 0.0;
   double radius = options.trust_radius;
   double last_gradient = std::numeric_limits<double>::infinity();
+  // The weighted energy of the last iteration, the CI floor's scale: 0 before
+  // the first, whose schedule (from ||g|| = inf) is kCiLoosest anyway.
+  double last_energy = 0.0;
   // The step from the accepted orbitals, t x: E changes by
   // t g.x + t^2 x.Hx / 2 in the model; t is 1, halved on each rejection.
   bool have_step = false;
@@ -325,12 +339,18 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
       g = FBF_TRY(casscf_download(res, fock->gradient.data(), pairs));
       return {};
     };
-    const double ci_floor = options.ci.davidson.residual_tolerance;
     const double ci_tolerance =
-        std::max(ci_floor, std::min(kCiLoosest, kCiPerGradient * last_gradient * last_gradient));
+        std::max(ci_tolerance_for(options.conv_tol_grad, last_energy,
+                                  options.ci.davidson.residual_tolerance),
+                 std::min(kCiLoosest, kCiPerGradient * last_gradient * last_gradient));
     FBF_TRY(evaluate(ci_tolerance));
     double g_norm = std::sqrt(casscf_dot(g, g));
     double energy = fock->energy;
+    // The floor the final CI goes to: the schedule's own, but on the first
+    // iteration, which had no energy to scale it, at this one's.
+    const double ci_floor =
+        ci_tolerance_for(options.conv_tol_grad, cycle == 1 ? energy : last_energy,
+                         options.ci.davidson.residual_tolerance);
     double change = have_accepted ? energy - e_accepted : 0.0;
 
     // 4. Convergence, then the rejection of a rise.
@@ -340,8 +360,8 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
     };
     bool converged = is_converged();
     // The final CI: converged on a CI the schedule left looser than
-    // options.ci's (the last ||g|| above ~1e-4), the CI again at
-    // these orbitals to options.ci's tolerance, warm from these roots, and
+    // the floor (the last ||g|| above ~1e-4), the CI again at
+    // these orbitals to the floor, warm from these roots, and
     // the RDMs, energy and gradient over it, so the solution describes one
     // (C, c). Converged still, it is returned; if not, the loop goes on from
     // here, the schedule at its floor.
@@ -355,6 +375,7 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
                     cycle, ci_tolerance, ci_floor, energy, g_norm);
     }
     last_gradient = g_norm;
+    last_energy = energy;
     Iteration record{energy, change, g_norm, radius, ci_iterations, ci_fp32_iterations, 0, 0, true};
     if (!converged && have_accepted && change > kEnergyRiseTolerance) {
       step_t *= 0.5;

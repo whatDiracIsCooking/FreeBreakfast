@@ -610,9 +610,10 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, McscfSolve,
 // by the first ||g|| (above 1e-4, so looser than options.ci's: the case the
 // final CI exists for, asserted so the check cannot go vacuous). On each:
 //
-// - roots.davidson.max_residual_norm within the Davidson criterion,
-//   residual_tolerance max(|theta|, ||H||_2), with max_r |E_r| for the scale:
-//   at most ||H||_2, so the bar is at most the criterion's;
+// - roots.davidson.max_residual_norm within the Davidson criterion at the
+//   floor mcscf::ci_tolerance_for sets from conv_tol_grad (#867),
+//   tolerance max(|theta|, ||H||_2), with max_r |E_r| for the scale: at most
+//   ||H||_2, so the bar is at most the criterion's;
 // - gradient_norm is ||g|| rebuilt by response::fock from the returned C,
 //   gamma and gamma2 (over the same B), to 1e-10 of the largest |g_i|: one
 //   path against another (the issue's "How results are compared").
@@ -662,7 +663,9 @@ void expect_final_ci(Setup &setup, const fb::mcscf::Solution &sol,
   for (const double e : sol.roots.energies) {
     theta = std::max(theta, std::abs(e));
   }
-  const double bar = options.ci.davidson.residual_tolerance * theta;
+  const double bar = fb::mcscf::ci_tolerance_for(options.conv_tol_grad, sol.energy,
+                                                 options.ci.davidson.residual_tolerance) *
+                     theta;
   std::cout << std::format("[ final ci ] {} macro iterations; max residual {:.3e} (bar {:.3e}), "
                            "{:.3e} relative; |g| {:.3e}\n",
                            sol.iterations.size(), sol.roots.davidson.max_residual_norm, bar,
@@ -828,6 +831,84 @@ TEST(McscfSolveSpan, EthyleneSa3OverEverySingletConverges) {
       EXPECT_LE(std::abs(s2), kSingletTolerance) << geometry;
     }
   }
+}
+
+// The CI's floor under ||g|| (#867, README.md "The CI's floor under ||g||"):
+// PSB3's 13-14 MECI, DF-SA3-CASSCF(6,6)/cc-pVDZ (cc-pVDZ-JKFIT), equal
+// weights, from the RHF's frontier orbitals. With the CI converged only to
+// options.ci's 1e-12 relative, an absolute residual of ~2.5e-10 at |E| ~ 248,
+// ||g|| reached 7.9e-11 at best and then drifted back up to 3.6e-10 to
+// 4.3e-10 (three repeats, 40 macro iterations each): 1e-11 was out of reach.
+// With the floor tied to conv_tol_grad (1e-14 relative here, its round-off
+// floor) it settles at 1.6e-12 to 2.5e-12. Held to converging to
+// conv_tol_grad 1e-11 within the default max_cycle, with the final CI's
+// checks (the residual within ci_tolerance_for's bar, and gradient_norm
+// against ||g|| rebuilt from the returned C, gamma and Gamma). Slow tier: the
+// PSB3 CASSCF is over the fast tiers' ten seconds.
+constexpr double kPsb3ConvTolGrad = 1e-11;
+constexpr std::int32_t kPsb3Ncore = 19;
+constexpr std::string_view kPsb3Meci = R"(N -0.102323907937  0.053471011611 -0.168989200227
+C  1.150114835230  0.599080348615 -0.062131256897
+C  2.314755436644 -0.042700696548 -0.030622708729
+C  3.598211355378  0.592928952842 -0.067708483388
+C  4.315807115669  0.900539470649 -1.232471701939
+C  5.446195358461  1.650058357561 -1.074538337974
+H  1.140588201111  1.682766603325 -0.082718037911
+H  2.400874565921 -1.127935731562 -0.000378837330
+H  4.115340221214  0.854898826263  0.858786313354
+H  3.915140963718  0.644161904605 -2.201456041132
+H -0.174581758280 -0.916686637881  0.063707406932
+H -0.820076304176  0.586483418354  0.277410602541
+H  5.827195501523  1.893690298413 -0.090926742372
+H  5.988945537024  2.045189666753 -1.924732968127)";
+
+TEST(McscfSolveCiFloor, Psb3MeciReachesTheGradientBar) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  constexpr std::int32_t kRoots = 3;
+  const std::vector<double> weights(kRoots, 1.0 / kRoots);
+  fb::json entry = {{"name", "psb3_1314_meci_ccpvdz_sa3"},
+                    {"atoms", fb::json::array()},
+                    {"charge", 1},
+                    {"basis", "cc-pVDZ"},
+                    {"avas", nullptr},
+                    {"active", nullptr},
+                    {"ncore", kPsb3Ncore},
+                    {"ncas", 6},
+                    {"nelecas", 6},
+                    {"weights", weights}};
+  std::istringstream lines{std::string{kPsb3Meci}};
+  std::string symbol;
+  double x = 0.0;
+  double y = 0.0;
+  double z = 0.0;
+  while (lines >> symbol >> x >> y >> z) {
+    entry["atoms"].push_back({{"symbol", symbol},
+                              {"coord",
+                               {x / fb::kAngstromPerBohr<double>, y / fb::kAngstromPerBohr<double>,
+                                z / fb::kAngstromPerBohr<double>}}});
+  }
+  ASSERT_EQ(entry["atoms"].size(), 14U);
+  auto setup = make_setup(entry, true);
+  ASSERT_NE(setup, nullptr);
+  const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+  const auto df = setup->fit(kDfAuxBasis);
+  ASSERT_TRUE(df.has_value());
+
+  fb::mcscf::Options options;
+  options.conv_tol_grad = kPsb3ConvTolGrad;
+  options.density_fitting = fb::mcscf::DensityFitting::Full;
+  const auto start = std::chrono::steady_clock::now();
+  const auto sol = setup->solve(setup->start->c, kRoots, weights, options, &df->b, df->naux);
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
+  ASSERT_TRUE(sol.has_value()) << sol.error().message;
+  std::cout << std::format("[ ci floor ] PSB3 13-14 MECI: {} macro iterations, |g| {:.3e}, "
+                           "CI floor {:.1e}; {:.2f} s\n",
+                           sol->iterations.size(), sol->gradient_norm,
+                           fb::mcscf::ci_tolerance_for(options.conv_tol_grad, sol->energy,
+                                                       options.ci.davidson.residual_tolerance),
+                           seconds.count());
+  expect_final_ci(*setup, *sol, options, *df, kPsb3ConvTolGrad);
 }
 
 // max_cycle running out is MaxIterationsExceeded.

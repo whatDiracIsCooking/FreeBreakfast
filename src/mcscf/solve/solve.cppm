@@ -52,7 +52,8 @@ struct Options {
   /// one left. At least 1.
   int32_t max_micro = 4;
   /// @brief The CI's: its spin penalty, and in davidson.residual_tolerance the
-  /// tightest residual tolerance the schedule reaches near convergence.
+  /// loosest floor the schedule reaches near convergence: the floor is
+  /// @ref ci_tolerance_for, which tightens it when conv_tol_grad asks.
   ci::SolverOptions ci;
   /// @brief The screening of every integral-direct J and K build (none in
   /// DensityFitting::Full).
@@ -61,6 +62,15 @@ struct Options {
   /// @brief Which builds take B rather than J and K integral-direct.
   DensityFitting density_fitting = DensityFitting::Direct;
 };
+
+/// @brief The floor of the CI's relative residual tolerance near
+/// convergence: @p tolerance (options.ci's), tightened so the absolute
+/// residual, about that times max(1, |@p energy|), is at most 1e-2 of
+/// @p conv_tol_grad, but never below 1e-14. A CI converged only to its
+/// absolute residual r leaves ||g|| free to drift up to ~3.5 r: at 1e-12
+/// relative, PSB3's r is 2.5e-10 (|E| ~ 248), and ||g|| stalled at 2e-10 to
+/// 8e-10 (#867, README.md "The CI's floor under ||g||").
+[[nodiscard]] double ci_tolerance_for(double conv_tol_grad, double energy, double tolerance);
 
 /// @brief What one macro iteration did, for the log.
 struct Iteration {
@@ -96,7 +106,8 @@ struct Iteration {
 struct Solution {
   /// @brief The optimized orbitals, AO by MO: core, active, virtual, as given.
   SphericalMatrixAO c;
-  /// @brief The CI at @ref c, to options.ci's residual tolerance: each
+  /// @brief The CI at @ref c, to @ref ci_tolerance_for's residual tolerance
+  /// (options.ci's, or tighter when conv_tol_grad asks): each
   /// root's energy (hartree) and <S^2>, and the unit CI vectors on the
   /// device, root r at [r dim, (r + 1) dim).
   ci::Roots roots;

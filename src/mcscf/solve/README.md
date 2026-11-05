@@ -19,6 +19,8 @@ Result<mcscf::Solution> mcscf::solve(
     int32_t nroots, std::span<const double> weights = {}, const mcscf::Options &options = {},
     const Buffers::device<double> *b = nullptr, int32_t naux = 0,
     std::span<const double> ci_guess = {});
+
+double mcscf::ci_tolerance_for(double conv_tol_grad, double energy, double tolerance);
 ```
 
 The arguments through `k_classes` are `response::fock`'s; `c` is the start, its
@@ -68,9 +70,11 @@ Each macro iteration, at the current C:
    cold guesses span nearly the whole space at once (see
    `../../ci/solver/`); each is at most two sigma columns of six. Its
    relative residual tolerance is
-   min(1e-8, 1e-4 ‖g‖²) of the last iteration, held at or above
-   `options.ci`'s (1e-12 by default), so the early iterations do not
-   over-solve and the last ones are as tight as a lone `ci::solve`. ‖g‖²,
+   min(1e-8, 1e-4 ‖g‖²) of the last iteration, held at or above the CI's
+   floor, so the early iterations do not over-solve. The floor is
+   `mcscf::ci_tolerance_for`: `options.ci`'s (1e-12 by default), tightened
+   when `conv_tol_grad` asks for more than its absolute residual allows
+   (see "The CI's floor under ‖g‖" below). ‖g‖²,
    not ‖g‖: the steps converge quadratically, so the CI has to keep ahead of
    the next ‖g‖. At 1e-4 ‖g‖ (what the learned response's linear steps took)
    the CI's error in g, up to ~60 times its residual, held the last steps
@@ -81,7 +85,7 @@ Each macro iteration, at the current C:
    and `response::fock`: the weighted energy and the gradient g.
 4. **Convergence**: |ΔE| < `conv_tol` over the last accepted iteration and
    ‖g‖ < `conv_tol_grad`. The first iteration has no ΔE, so the loop takes at
-   least two. Converged on a CI looser than `options.ci`'s, the iteration
+   least two. Converged on a CI looser than the floor, the iteration
    takes **the final CI** (below) before it returns.
 5. **Rejection**: a rise past 1e-11 hartree over the last accepted iteration
    drops these orbitals, halves the step from the accepted ones and sets the
@@ -248,8 +252,8 @@ bar is 8.
 ## The final CI
 
 The schedule sets an iteration's CI tolerance from the *previous* ‖g‖, so the
-CI an iteration converges on is looser than `options.ci`'s whenever that ‖g‖
-was above ~1e-4 (1e-4 ‖g‖² over the 1e-12 floor): a solve that falls under
+CI an iteration converges on is looser than the floor whenever that ‖g‖
+was above ~1e-4 (1e-4 ‖g‖² over a 1e-12 floor): a solve that falls under
 `conv_tol_grad` from there in one step, or a CASCI (no orbital pairs, so
 converged on the first iteration, whose ‖g‖ before is ∞). Its energies are
 fine, Rayleigh quotients second order in the residual; but the CI vectors,
@@ -260,7 +264,7 @@ leaves this to the user, who tightens `fcisolver.conv_tol` by hand for
 gradients.
 
 So a converged iteration whose CI was looser re-solves it at the same
-orbitals to `options.ci`'s tolerance, warm from its own roots, and rebuilds
+orbitals to the floor, warm from its own roots, and rebuilds
 the RDMs, the energy and the gradient over it: `gradient_norm`, `gamma`,
 `gamma2`, `root_gammas`, `energy` and `roots` then describe one (C, c), and
 the iteration's log entry carries both CIs' Davidson iterations. If ‖g‖ is
@@ -269,6 +273,107 @@ loop goes on from these orbitals, the schedule now at its floor. A solve
 whose last CI was already at the floor — most of two or more iterations —
 takes none, and is bitwise what it was. The cost is one warm Davidson and
 one Fock build, on the solves that skipped them.
+
+## The CI's floor under ‖g‖
+
+The CI's tolerance is relative: Davidson stops at a residual of
+`residual_tolerance` · max(|θ|, ‖H‖₂), and θ is the total energy. At
+`options.ci`'s 1e-12 that is an absolute residual of ~2.5e-10 at PSB3
+(|E| ≈ 248 Eh), against ~8e-11 at ethylene. A warm start already under it
+takes no Davidson step, so late in the loop the CI stops moving and only
+the orbitals do: the orbital step is over H̃, whose CI response assumes
+a CI that follows, and the pair can wander along their coupled mode as far
+as the CI's residual lets it. ‖g‖ is then free up to a few times that
+residual, and the bar `conv_tol_grad` 1e-10 is met only if a run happens to
+cross it first (#867).
+
+**Measured** (A100 40GB, CUDA, `--preset default`; DF-SA3-CASSCF(6,6),
+cc-pVDZ with cc-pVDZ-JKFIT and cc-pVTZ with cc-pVTZ-JKFIT, the
+`docs/reproduction/park2019` geometries and active spaces: FC is
+`psb3_fc_start.xyz` (`psb3_tz_s0.xyz` at cc-pVTZ), 90° twist is
+`psb3_1314_handbuilt_start.xyz`, the MECI is `psb3_1314_casscf_meci.xyz`
+(`psb3_1314_meci_ccpvtz.xyz` at cc-pVTZ)). Each run is 40 macro
+iterations at `conv_tol_grad` 1e-12 and `conv_tol` 1e-14, which no run
+meets, so the trail shows where ‖g‖ settles. The CI floor was set by hand
+(1e-12 is the old one); the energy-rise tolerance and the CI response's
+tolerance inside H̃ likewise:
+
+| Case | Setting | Repeats | Lowest ‖g‖ | ‖g‖ at macro 40 | CI residual at the end |
+|---|---|---|---|---|---|
+| FC, cc-pVDZ | CI 1e-12 | 3 | 2.3e-12 to 7.9e-12 | 2.3e-12 to 7.9e-12 | 1.7e-10 to 2.5e-10 |
+| FC, cc-pVDZ | CI 1e-13 | 1 | 2.9e-12 | 2.9e-12 | 1.8e-11 |
+| FC, cc-pVDZ | CI 1e-14 | 3 | 2.8e-12 to 3.4e-12 | 2.8e-12 to 3.4e-12 | 1.8e-12 to 2.2e-12 |
+| twist, cc-pVDZ | CI 1e-12 | 3 | 2.1e-11 to 2.3e-11 | **1.8e-10 to 2.6e-10** | 2.2e-10 to 2.4e-10 |
+| twist, cc-pVDZ | CI 1e-13 | 1 | 3.3e-12 | 3.3e-12 | 2.2e-11 |
+| twist, cc-pVDZ | CI 1e-14 | 3 | 1.9e-12 to 2.3e-12 | 2.3e-12 | 1.7e-12 to 2.0e-12 |
+| twist, cc-pVDZ | CI 1e-12, rise 1e-9 | 1 | 3.2e-11 | 2.0e-10 | 2.5e-10 |
+| twist, cc-pVDZ | CI 1e-12, no rise check | 1 | 2.3e-11 | 1.8e-10 | 2.2e-10 |
+| twist, cc-pVDZ | CI 1e-12, H̃'s response 1e-10 | 1 | 2.2e-11 | 2.3e-10 | 2.4e-10 |
+| MECI, cc-pVDZ | CI 1e-12 | 3 | 7.9e-11 to 1.03e-10 | **3.6e-10 to 4.3e-10** (peak 5.6e-10) | 1.5e-10 to 2.4e-10 |
+| MECI, cc-pVDZ | CI 1e-12, rise 1e-9 | 1 | 5.7e-11 | 3.9e-10 | 2.4e-10 |
+| MECI, cc-pVDZ | CI 1e-13 | 1 | 4.7e-12 | 5.2e-11 | 2.5e-11 |
+| MECI, cc-pVDZ | CI 1e-14 | 3 | 1.6e-12 to 2.5e-12 | 1.6e-12 to 2.5e-12 | 1.9e-12 to 2.2e-12 |
+| FC, cc-pVTZ | CI 1e-12 | 1 | 6.8e-11 | **8.0e-10** | 2.3e-10 |
+| MECI, cc-pVTZ | CI 1e-12 | 1 | 2.4e-11 | 2.6e-10 (peak 2.9e-10) | 2.3e-10 |
+| MECI, cc-pVTZ | CI 1e-14 | 1 | 6.2e-12 | 6.2e-12 | 2.3e-12 |
+
+- **It is the CI's tolerance.** At 1e-12 ‖g‖ falls to 2e-11 to 8e-11 and
+  then, at the twist, the MECI and cc-pVTZ's FC, climbs back by macro 40 to
+  1 to 3.5 times the CI's absolute residual, while that residual sits just
+  under its 2.5e-10 bar (cc-pVDZ's FC happened not to climb). One
+  MECI repeat never got under 1e-10 at all: #858's failure. At 1e-13 the
+  climb is ten times smaller (5.2e-11 at the MECI, twice its residual); at
+  1e-14 nothing climbs, and ‖g‖ settles at 1.6e-12 to 3.4e-12 at
+  cc-pVDZ and 6e-12 to 9e-12 at cc-pVTZ.
+- **Not the energy-rise check.** The only rejection in any run is the
+  MECI's macro iteration 2 (ΔE +8e-2, a real rise): past macro 10 |ΔE| is
+  at most 7e-13, far under 1e-11, and
+  at 1e-9 or with the check off the trail is the same within the repeats'
+  spread.
+- **Not H̃'s CI response.** At 1e-10 instead of 1e-8 the trail is the same:
+  it shapes the step, and a step good to 1e-8 is still a step, not a
+  floor.
+- **Not the gradient's own noise.** `response::fock` rebuilt from the same
+  C, γ and Γ gives the same g to the bit, and the 1e-14 repeats agree
+  with each other to the floor above. Run to run the energies differ by
+  ~1e-12 (the atomics in the builds), which moves where the old trail
+  wanders, and so whether a run crossed 1e-10 before it climbed; that is
+  the run-to-run variation #858 and #853 saw, and it is not a floor of its
+  own.
+- **The floor that is left** is 2e-12 to 3e-12 at cc-pVDZ and 6e-12 to
+  9e-12 at cc-pVTZ, with the CI at 1e-14: `conv_tol_grad` 1e-11 is
+  reachable at both, 1e-12 at neither.
+
+So **the CI's floor is `mcscf::ci_tolerance_for(conv_tol_grad, E,
+options.ci's)`**: the absolute residual it allows, about tolerance ·
+max(1, |E|) with E the last iteration's weighted energy, is held to 1e-2 of
+`conv_tol_grad`, and never below 1e-14 relative. With ‖g‖ free to drift to
+~3.5 times the residual, 1e-2 leaves it a few percent of the bar. 1e-14 is
+where Davidson still converges at PSB3: at 1e-15 it stalls near 2.4e-15
+relative and runs out of iterations. At `conv_tol_grad` 1e-10 and PSB3 the
+rule asks 4e-15 and gets 1e-14; at 1e-9, 4e-14. Where 1e-2 `conv_tol_grad`
+/ |E| is above `options.ci`'s tolerance (the default `conv_tol_grad` 1e-6
+anywhere, or 1e-9 at |E| under 10 Eh) the floor is `options.ci`'s and the
+solve is bitwise what it was.
+
+**After**, at `conv_tol_grad` 1e-10 and the default `conv_tol`, five
+repeats of each cc-pVDZ case, against the same five with the old floor:
+
+| Case | Old: macro iterations, final ‖g‖, CASSCF wall | New |
+|---|---|---|
+| FC | 6–7, 4.5e-11 to 9.6e-11, 1.00–1.10 s | 6, 6.7e-12 to 9.1e-12, 1.03–1.04 s |
+| twist | 7–8, 5.2e-11 to 9.6e-11, 1.66–1.82 s | 7, 2.7e-12 to 3.6e-12, 1.66–1.70 s |
+| MECI | 11, 7.1e-11 to 8.0e-11, 2.27–2.30 s | 10, 4.7e-12 to 5.7e-12, 2.16–2.19 s |
+
+All fifteen old runs converged too on this card, at a ‖g‖ just under the bar:
+they crossed it before the climb. The new ones end an order of magnitude
+under it, a macro iteration sooner on the twist and the MECI, and at no
+extra cost (0.97 to 1.03 times the old wall). At `conv_tol_grad` 1e-9 the
+new wall is 0.99 to 1.03 times the old (two repeats each). At 1e-11 every
+case converges (two repeats each, ‖g‖ 2.9e-12 to 8.2e-12). cc-pVTZ, one run
+each: FC converges at 1e-9, 1e-10 and 1e-11 in 6, 6 and 7 macro iterations
+(1.68 s, 1.68 s, 1.87 s; the old 1.68 s, 1.67 s at 1e-9, 1e-10), the MECI in
+8 at all three (2.86 s; the old 2.82 s, 2.85 s).
 
 ## The level shift
 
@@ -340,7 +445,7 @@ detects the split: `ci::solve` finds only `nroots` roots.
 | `max_cycle` | 50 | macro iterations, rejected ones included, before `MaxIterationsExceeded` |
 | `trust_radius` | 0.5 | the initial and largest ‖x‖ of a step |
 | `max_micro` | 4 | augmented-Hessian solves per macro iteration on its frozen integrals |
-| `ci` | `ci::SolverOptions{}` | the CI's spin penalty and its tightest residual tolerance |
+| `ci` | `ci::SolverOptions{}` | the CI's spin penalty, and the loosest its residual tolerance's floor gets (`ci_tolerance_for` tightens it for a tight `conv_tol_grad`) |
 | `tau_j`, `tau_k` | 1e-14 | the screening of every integral-direct J and K build |
 | `density_fitting` | `Direct` | which builds take B (below) |
 
@@ -510,9 +615,13 @@ singlet, `molecule` at multiplicity 3; ⟨S²⟩ = 2), at `conv_tol_grad` 1e-9:
 - the final CI, on `data/casscf_nac`'s skewed H₂CO SA-3 in `Full` over
   cc-pVDZ-JKFIT: converged to ‖g‖ < 1e-10 and re-solved from its own
   orbitals, and from the start to ‖g‖ < 1e-3 (which ends on a loose CI,
-  asserted): the returned roots' Davidson residual within `options.ci`'s
-  criterion, and `gradient_norm` against ‖g‖ rebuilt by `response::fock`
+  asserted): the returned roots' Davidson residual within the floor's
+  criterion (`ci_tolerance_for`), and `gradient_norm` against ‖g‖ rebuilt by `response::fock`
   from the returned C, γ and Γ, to 1e-10 of the largest |gᵢ|;
+- the CI's floor (slow tier): PSB3's 13–14 MECI, SA3-CASSCF(6,6)/cc-pVDZ in
+  `Full` over cc-pVDZ-JKFIT, converges to ‖g‖ < 1e-11 within the default
+  `max_cycle`, with the final CI's two checks above. With the old floor it
+  ran out of macro iterations at ‖g‖ 4.3e-10;
 - `MaxIterationsExceeded`, and the refusals (a density-fitted mode without B,
   and a B of the wrong size among them).
 
