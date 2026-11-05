@@ -68,13 +68,54 @@ Result<Buffers::device<double>> symmetrized(DeviceResources &res, const double *
   return out;
 }
 
+// V_nᵀ A, nd x c column-major, for the first nd columns of @p v (d x d
+// column-major) and A the row-major d x c @p a_rm, which read column-major is
+// Aᵀ: one gemm.
+Result<Buffers::device<double>> leak_of(DeviceResources &res, const double *v, const double *a_rm,
+                                        const int64_t d, const int64_t nd, const int64_t c) {
+  Buffers::device<double> out(static_cast<size_t>(nd * c), res.device());
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_T>(
+      res.blas(), static_cast<int32_t>(nd), static_cast<int32_t>(c), static_cast<int32_t>(d),
+      &kOne<double>, v, a_rm, &kZero<double>, out.data())));
+  return out;
+}
+
+// A solve's dropped modes (DroppedModes): V and σ kept, V_nᵀ K U, and the own
+// leak V_nᵀ S (S symmetric, so read either way) and V_nᵀ S₁.
+Result<DroppedModes> dropped_modes(DeviceResources &res, Buffers::device<double> v,
+                                   const std::vector<double> &sigma, const double floor,
+                                   const double *k_sym, const double *s_sym, const double *u,
+                                   const int64_t d, const int64_t m, const double *s1,
+                                   const int64_t n1) {
+  const auto nd = static_cast<int64_t>(sigma.size()) - m;
+  const auto di = static_cast<int32_t>(d);
+  const auto ndi = static_cast<int32_t>(nd);
+  // K V_n, d x nd, then (K V_n)ᵀ U = V_nᵀ K U.
+  Buffers::device<double> kv(static_cast<size_t>(d * nd), res.device());
+  FBF_TRY(gpu_status(
+      gemm(res.blas(), di, ndi, di, &kOne<double>, k_sym, v.data(), &kZero<double>, kv.data())));
+  Buffers::device<double> kvu(static_cast<size_t>(nd * m), res.device());
+  FBF_TRY(
+      gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), ndi, static_cast<int32_t>(m), di,
+                                         &kOne<double>, kv.data(), u, &kZero<double>, kvu.data())));
+  Buffers::device<double> leak = FBF_TRY(leak_of(res, v.data(), s_sym, d, nd, d));
+  Buffers::device<double> leak1 = s1 == nullptr ? FBF_TRY(device_zeros(res, 0))
+                                                : FBF_TRY(leak_of(res, v.data(), s1, d, nd, n1));
+  return DroppedModes{.v = std::move(v),
+                      .sigma = sigma,
+                      .floor = floor,
+                      .kvu = std::move(kvu),
+                      .leak = std::move(leak),
+                      .leak1 = std::move(leak1)};
+}
+
 // Symmetrize S and K (K is symmetric only to the CI vector's convergence),
 // diagonalize S and cut it at max(kPcTau, kPcNoise ε √d) s_max; then
 // K' = Xᵀ K X over X = V_kept s_kept^-1/2, K' = W λ Wᵀ, U = X W.
 // @p s1, n1 columns row-major d x n1, is optional.
 Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const double *s_rm,
                                const double *k_rm, const int64_t d, const double *s1,
-                               const int64_t n1) {
+                               const int64_t n1, const bool keep_modes) {
   const wwr::wwrStream_t s = res.stream();
   const auto di = static_cast<int32_t>(d);
   const Buffers::device<double> s_sym = FBF_TRY(symmetrized(res, s_rm, d));
@@ -94,9 +135,10 @@ Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const dou
   if (!(s_max > 0.0)) {
     return err_numerical("nevpt2::pc_class_energies: {}'s metric has no positive eigenvalue", name);
   }
-  const double cut = std::max(kPcTau, kPcNoise * std::numeric_limits<double>::epsilon() *
-                                          std::sqrt(static_cast<double>(d))) *
-                     s_max;
+  // ε √d: σ's round-off, relative to s_max.
+  const double round_off =
+      std::numeric_limits<double>::epsilon() * std::sqrt(static_cast<double>(d));
+  const double cut = std::max(kPcTau, kPcNoise * round_off) * s_max;
   int64_t nd = 0;
   while (nd < d && sigma[static_cast<size_t>(nd)] <= cut) {
     ++nd;
@@ -140,12 +182,18 @@ Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const dou
                     EinsumOperand{.data = u.data(), .dims = {m, d}}},
                    t1->data(), {n1, m}, 1.0));
   }
+  std::optional<DroppedModes> modes;
+  if (keep_modes && nd > 0) {
+    modes = FBF_TRY(dropped_modes(res, std::move(v), sigma, round_off * s_max, k_sym.data(),
+                                  s_sym.data(), u.data(), d, m, s1, n1));
+  }
   std::vector<double> lambda = FBF_TRY(download(res, lambda_d.data(), m));
   return ClassSolve{.lambda = std::move(lambda),
                     .t = std::move(t),
                     .t1 = std::move(t1),
                     .dropped = nd,
-                    .u = std::move(u)};
+                    .u = std::move(u),
+                    .modes = std::move(modes)};
 }
 
 // T as an einsum operand over @p rank active indices, each n, and k: the
@@ -198,7 +246,7 @@ std::unexpected<Error> state_error(const Error &e, const int64_t j, const int64_
 // pair (J, I)'s, each pair's matrices freed before the next is built.
 Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const ActiveOperands> ops,
                        const int64_t ns, const int64_t d, const int64_t n1, const PcBuild &build,
-                       const PcAmplitudes::Class *cached) {
+                       const PcAmplitudes::Class *cached, const bool keep_modes) {
   const auto di = static_cast<int32_t>(d);
   PcKets kets{.ns = ns};
   for (int64_t p = 0; p < ns * ns; ++p) {
@@ -217,7 +265,7 @@ Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const A
     Result<ClassSolve> cs = [&]() -> Result<ClassSolve> {
       const PcMatrices mats = FBF_TRY(build(res, ops[static_cast<size_t>((j * ns) + j)], true));
       return solve_class(res, name, mats.s.data(), mats.k->data(), d,
-                         mats.s1 ? mats.s1->data() : nullptr, n1);
+                         mats.s1 ? mats.s1->data() : nullptr, n1, keep_modes);
     }();
     if (!cs) {
       return state_error(cs.error(), j, ns);
@@ -227,6 +275,8 @@ Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const A
   }
   kets.t.resize(static_cast<size_t>(ns * ns));
   kets.t1.resize(static_cast<size_t>(ns * ns));
+  kets.leak.resize(static_cast<size_t>(ns * ns));
+  kets.leak1.resize(static_cast<size_t>(ns * ns));
   for (int64_t i = 0; i < ns; ++i) {
     for (int64_t j = 0; j < ns; ++j) {
       if (i == j || !kets.given[static_cast<size_t>((i * ns) + j)]) {
@@ -249,6 +299,18 @@ Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const A
                         EinsumOperand{.data = u, .dims = {m, d}}},
                        t1.data(), {n1, m}, 1.0));
         kets.t1[static_cast<size_t>((i * ns) + j)] = std::move(t1);
+      }
+      const DroppedModes *const modes = own && kets.solves[static_cast<size_t>(j)].modes
+                                            ? &*kets.solves[static_cast<size_t>(j)].modes
+                                            : nullptr;
+      if (modes != nullptr) {
+        const int64_t nd = d - m;
+        kets.leak[static_cast<size_t>((i * ns) + j)] =
+            FBF_TRY(leak_of(res, modes->v.data(), mats.s.data(), d, nd, d));
+        if (mats.s1) {
+          kets.leak1[static_cast<size_t>((i * ns) + j)] =
+              FBF_TRY(leak_of(res, modes->v.data(), mats.s1->data(), d, nd, n1));
+        }
       }
     }
   }

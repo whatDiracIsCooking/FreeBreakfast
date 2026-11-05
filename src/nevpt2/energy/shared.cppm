@@ -194,6 +194,24 @@ Result<std::vector<PcClassEnergies>> pc_couplings(DeviceResources &res, const Mo
 Result<std::pair<double, double>> energy_sijrs(DeviceResources &res, const MoBlocks &blocks,
                                                const EnergyInputs &in, int32_t batch);
 
+/// @brief A solve's dropped modes, for the reverse pass's rotation of the kept
+/// span into them (README "The PC reverse pass", #862): S = V diag(σ) Vᵀ, the
+/// first nd columns of V dropped, the other m kept.
+struct DroppedModes {
+  /// @brief V, d x d column-major, σ ascending.
+  Buffers::device<double> v;
+  /// @brief σ, ascending, d.
+  std::vector<double> sigma;
+  /// @brief A pair σ_k - σ_n at or below this, ε √d of S's largest
+  /// eigenvalue (σ's own round-off), is undetermined, and rotates nothing.
+  double floor = 0.0;
+  /// @brief V_nᵀ K U, nd x m column-major (K symmetrized).
+  Buffers::device<double> kvu;
+  /// @brief The own pair's leak V_nᵀ S and V_nᵀ S₁ (S symmetrized), nd x d
+  /// and nd x n1 column-major, as PcKets::leak's.
+  Buffers::device<double> leak, leak1;
+};
+
 /// @brief One PC class's solve, pc.cpp's solve_class: K U = S U diag(λ),
 /// Uᵀ S U = 1 over S's kept range.
 struct ClassSolve {
@@ -208,6 +226,8 @@ struct ClassSolve {
   /// @brief U, d x m column-major, as T: what the reverse pass maps the
   /// eigenbasis bars back through.
   Buffers::device<double> u;
+  /// @brief The dropped modes, when asked for and at least one was dropped.
+  std::optional<DroppedModes> modes;
 };
 
 /// @brief (A + Aᵀ) / 2 of the row-major d x d @p a, into a buffer of its own.
@@ -217,10 +237,11 @@ Result<Buffers::device<double>> symmetrized(DeviceResources &res, const double *
 /// @p s_rm and Dyall Hamiltonian @p k_rm, and its optional S₁ (@p s1, d x n1
 /// row-major): both symmetrized, S cut at max(1e-13, 100 ε √d) of its largest
 /// eigenvalue, the pencil diagonalized. A Numerical error naming the class
-/// when S has no positive eigenvalue.
+/// when S has no positive eigenvalue. @p keep_modes keeps the dropped modes
+/// (ClassSolve::modes) for the reverse pass.
 Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const double *s_rm,
                                const double *k_rm, int64_t d, const double *s1 = nullptr,
-                               int64_t n1 = 0);
+                               int64_t n1 = 0, bool keep_modes = false);
 
 /// @brief One pair's class matrices, row-major: S, K for a state's own RDMs
 /// alone, and S₁ where the class has one.
@@ -255,6 +276,11 @@ struct PcKets {
   /// @brief [I ns + J]: whether the pair is given (pair_given).
   std::vector<bool> given;
   std::vector<std::optional<Buffers::device<double>>> t, t1;
+  /// @brief [I ns + J], I != J, when the kets keep their dropped modes: the
+  /// transition rows' leak into ket J's dropped modes, V_nᵀ S^{(J,I)} and
+  /// V_nᵀ S₁^{(J,I)} (nd x d and nd x n1 column-major; S₁'s empty without
+  /// one). README "The PC reverse pass".
+  std::vector<std::optional<Buffers::device<double>>> leak, leak1;
 
   [[nodiscard]] int64_t m(const int64_t j) const { return ms[static_cast<size_t>(j)]; }
   [[nodiscard]] const double *t_of(const int64_t i, const int64_t j) const {
@@ -281,10 +307,11 @@ struct PcKets {
 /// matrices, or with the diagonal omitted each ket's U_J from @p cached (a
 /// previous call's amplitudes; InvalidConfig when they are not ns states');
 /// then every given transition's T and t1 over pair (J, I)'s, each pair's
-/// matrices freed before the next is built. A refusal is state_error's.
+/// matrices freed before the next is built (with @p keep_modes, its leak too,
+/// and every solve's modes). A refusal is state_error's.
 Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const ActiveOperands> ops,
                        int64_t ns, int64_t d, int64_t n1, const PcBuild &build,
-                       const PcAmplitudes::Class *cached = nullptr);
+                       const PcAmplitudes::Class *cached = nullptr, bool keep_modes = false);
 
 /// @brief A failure of state @p j's class: at @p ns > 1 named by its state,
 /// pc_class_energies' prefix replaced by pc_effective_hamiltonian's; at ns = 1

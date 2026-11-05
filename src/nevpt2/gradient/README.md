@@ -458,8 +458,108 @@ PSB3 CAS(6,6) (up to 22 modes per class dropped, about half real)
 `qd_pc_gradient` matches re-converged central differences to
 max(2 × the Richardson bar, 3 σ_E / h_min) on every Cartesian component at
 FC and at 90°, and keeping the real modes does not move it beyond that
-(`nevpt2.energy`'s README, "The derivative across a continuum"; one 6e-9
-residual is #862's). `Nevpt2Psb3.PcQdGradientMatchesNumerical` holds FC's.
+(`nevpt2.energy`'s README, "The derivative across a continuum"). One
+component at 90° did not, until #862 (below).
+`Nevpt2Psb3.PcQdGradientMatchesNumerical` holds FC's.
+
+### The kept span's rotation (#862)
+
+**The symptom.** At PSB3 twisted 90° (DF-SA3-CASSCF(6,6)/cc-pVDZ), atom 4
+x of the PC-QD gradient missed its re-converged central difference by
+9.6e-9, −1.37e-8 and −1.4e-9 Eh/bohr (states 0, 1, 2), cut-independent and
+unmoved by the CASSCF's stopping point (`nevpt2.energy`'s README, "The
+derivative across a continuum"). SA-CASSCF, SC-QD and single-state SC and
+PC passed. The gate's active–active residue tracked it: 3.9e-10, 9.6e-11
+and 4.5e-11 for PC-QD against 2.6e-12 to 3.7e-12 for every SC run, and
+5.0e-11 for single-state PC.
+
+**Why the active–active block.** PC-NEVPT2 is invariant under an
+active–active rotation with the CI vectors counter-rotated, the cut
+included: every class's S, K and S₁ transform covariantly in its active
+basis (S → R S Rᵀ, R the rotation's representation there), so S's spectrum
+and the cut do not move, and the kept span turns with the basis. The
+PC-QD elements E_IJ are bilinear in two such rows and invariant the same
+way. So the gate's active–active residue is not a missing condition or
+multiplier: it is how far the reverse pass is from the derivative of an
+invariant function, and the PC Lagrangian can be stationary there
+exactly. SC is the check: its residue is the CI response's floor.
+
+**The term.** The PC reverse pass differentiates each ket's solve
+E = −c b_Iᵀ A⁺ b_J (A = K + Δ S over S's kept span) holding U, and so the
+kept span, still. Under the joint rotation the span turns by
+Θ = V_nᵀ G V_k (G the rotation's generator in the class basis), order one,
+into the dropped modes V_n. That moves E only through the rows' parts along
+V_n, n = V_nᵀ b and a = V_nᵀ A x, and both vanish for an exact null mode:
+O_n|J⟩ = 0 makes ⟨J| O_n† S^{(J,I)} = 0 (no part of b_{I←J}), and at an
+eigenstate K maps the kept span into itself. Since #853 the cut drops real
+modes too, where ‖O_n|J⟩‖ = √σ_n, small but not zero. Then
+
+- the own row's part, V_nᵀ S_J x = σ_n V_nᵀ x, is of order σ_n: negligible;
+- K's part, V_nᵀ K U, is of order √σ_n: in single-state PC as well, which
+  is its 5.0e-11;
+- **the transition row's part, V_nᵀ S^{(J,I)} x = ⟨O_n J | O_x I⟩, is of
+  order √σ_n**, and only the QD off-diagonals read a transition row.
+
+A Python probe over the tree's own 90° orbitals (`casscf.molden`, a PySCF
+DF-CASCI over them) found the transition rows' parts along the dropped
+modes of Sr and Si at 2e-11 to 8e-9 (the norm over tuples) against the own
+rows' 3e-15 to 7e-13;
+every other class drops no real mode. Along a nuclear direction Θ divides
+by σ_l − σ_n, which across a continuum with no gap at the cut is of the
+modes' own size, so the term does not shrink with them: hence a miss that
+moving the cut did not move.
+
+**The fix** is that term, the eigenvectors' derivative restricted to the
+kept span's rotation into the dropped modes (`nevpt2.energy`'s README,
+"PC-QD", "The kept span's rotation"): one more bar on each ket's S,
+V_n [(V_nᵀ Ū Uᵀ V_k) ⊘ (σ_l − σ_n)] V_kᵀ, Ū the walk bars' derivative with
+respect to U. It is zero where nothing real is dropped, so every golden
+case, whose dropped modes are null to round-off, moves by round-off. A pair
+σ_l − σ_n within σ's round-off, ε √d of S's largest eigenvalue, is
+skipped. A floor at the cut's own noise multiple (100 ε √d, 3.3e-13 at
+d = 216) is too high: it skips every pair that straddles the cut, and left
+state 0's residue at 4.1e-11 and its miss at 8.6e-9.
+
+**Measured** (`--preset default`, RTX 3080, the card held; `conv_tol_grad`
+1e-10). The gate's active–active residue and atom 4 x's miss against #900's
+central differences (the forward is unchanged, so its energies stand; the
+reference energies repeat to ≤ 1.1e-12), after the second Richardson level:
+
+| 90° PSB3, cc-pVDZ | residue before | after | miss before | after | bar |
+|---|---|---|---|---|---|
+| PC-QD state 0 | 9.6e-11 | 8.1e-12 | 9.58e-9 | 8.98e-10 | 2.4e-9 |
+| PC-QD state 1 | 3.9e-10 | 7.8e-12 | −1.37e-8 | 4.13e-10 | 2.2e-9 |
+| PC-QD state 2 | 4.9e-11 | 3.9e-12 | −1.36e-9 | 7.45e-10 | 1.1e-8 |
+| single-state PC | 5.0e-11 | 7.4e-12 | 5.84e-10 | 9.43e-10 | 1.1e-8 |
+
+The bar is max(2 × the Richardson bar, 3 σ_E / h_min), σ_E from 5 reference
+repeats with the fix (3.9e-13 and 3.7e-13 for states 0 and 1; #853's 1.8e-12
+for the others, which no repeat here measured). State 0's miss before, 9.6e-9,
+was under #853's bar of 1.1e-8 but four times this one. Directional checks at 90°
+with the fix (`../energy/README.md`'s method; the gradient direction and
+two random unit directions, `default_rng(862)`, steps 2e-3, 1e-3 and
+5e-4 bohr, every point re-converged), miss / bar:
+
+| 90° PSB3, cc-pVDZ | σ_E | gradient direction (slope) | random0 | random1 |
+|---|---|---|---|---|
+| PC-QD state 0 | 3.9e-13 | 0.1985; 2.0e-10 / 2.6e-9 | 7.3e-10 / 2.4e-9 | 4.8e-10 / 2.4e-9 |
+| PC-QD state 1 | 3.7e-13 | 0.1310; −4.1e-10 / 2.2e-9 | −1.4e-10 / 2.2e-9 | −7.0e-10 / 2.2e-9 |
+
+Re-checked with the fix by #875's driver and directions
+(`default_rng(875)`), against the same bar, every check passes (miss / bar):
+
+| case | quantity | σ_E (Eh) | gradient direction | random0 | random1 |
+|---|---|---|---|---|---|
+| ethylene, Park's Py, aug-cc-pVDZ, SA3, n_f 2 | PC-QD E_0 + E_1 | 1.4e-13 | 2.4e-10 / 8.5e-10 | −8.3e-11 / 8.5e-10 | 3.4e-10 / 1.1e-9 |
+| | PC-QD E_2 | 6.8e-14 | 1.2e-10 / 4.1e-10 | 7.4e-12 / 4.1e-10 | −7.1e-11 / 4.1e-10 |
+| skew H2CO SA3, cc-pVDZ, n_f 2 | PC-QD E_1 | 2.7e-13 | 5.5e-10 / 1.6e-9 | −7.4e-10 / 2.3e-9 | −1.6e-10 / 1.6e-9 |
+| skew H2CO, one root, n_f 2 | PC E_0 | 6.9e-14 | 4.4e-10 / 1.1e-9 | −3.2e-10 / 8.2e-10 | −4.6e-10 / 1.3e-9 |
+
+`Nevpt2Psb3.PcQdActiveActiveGateAtTheTwist` is the regression test: the
+same twist in STO-3G (3 s on the RTX 3080, 14 s on the gfx1200; the
+cheapest of its family, `slow_test.h`), PC-QD state 0's residue 3.5e-10 before
+(three runs) and 3.3e-12 to 7.3e-12 after (four runs), against a bar of
+3e-11; SC-QD there is 8.5e-13.
 
 **Refusals.** A class `pc_effective_hamiltonian` refuses (no positive
 eigenvalue of S_N, or a pole: λ + Δ at round-off or an intruder,
