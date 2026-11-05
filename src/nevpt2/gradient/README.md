@@ -667,15 +667,112 @@ checks miss by 3.8e-9, 1.9e-8, 1.5e-8 and −2.5e-8, −1.9e-8, −1.5e-8. The
 differences are clean (ratios 4.0, the two Richardson values within
 1.4e-10), and the frozen core moves no miss by more than 1.4e-9: it is
 the all-electron SC-QD gradient's at that geometry, not the frozen core's.
-#894 has it; SC's non-smoothness where a perturber's norm is near zero
-(the ladders' "Not every ladder is smooth" below) is the candidate. PC
-passes there, and SC passes on skew H2CO.
+PC passes there, and SC passes on skew H2CO. The cause is a dropped
+perturber whose norm is zero by accident, not by symmetry (below, #894).
 
 The quantity at ethylene's MECI is E_0 + E_1, not either state: 7 µEh
 apart, the two are a cone there, and a step of 5e-4 bohr opens the gap
 twenty-fold. Their sum is smooth (tr H_eff less E_2), and its gradient is
 the sum of the two states' (the intersection's g_P + g_Q). E_2 is checked
 alone beside it.
+
+### What the SC-QD miss at Py is (#894)
+
+**A perturber the energy's guard drops, at a zero that is accidental.**
+It is the mechanism of "Not every ladder is smooth" below: a dropped
+perturber whose couplings grow as t. It is not that paragraph's symmetry,
+and the energy has no kink. Remeasured all-electron:
+
+- **The run:** an A100 (CUDA), `--preset default`, card held, at 68c3635.
+- **The geometry:** Park's SI Py as printed (bohr).
+- **Every point:** its DF-SA3-CASSCF(2,2) converged from scratch
+  (`conv_tol_grad` 1e-10, `conv_tol` 1e-13). |g| ended at 1.8e-12 to
+  3.5e-12 over all 282 runs.
+- **The directions:** three random unit directions (`default_rng(894)`,
+  translations and rotations projected out).
+- **The steps:** 4e-3 down to 1.25e-4 bohr for the energies, and down to
+  1e-7 bohr for the analytic gradient.
+
+**What it is not.**
+
+- **Not symmetry.** Py has no point group. The best map of its atoms onto
+  themselves (any permutation of like atoms, any orthogonal transform)
+  misses by 0.54 bohr. Our frozen-core PC-QD MECI is 1.7e-4 Å from Park's
+  Py (above), far too little to restore a symmetry.
+- **Not a kink.** Let F and B be the forward and backward one-sided
+  differences. (F − B)/h is then E″ along the direction, and it holds steady from h = 4e-3
+  to 1.25e-4: 0.3909 for E_2 along direction 0 at every step. A kink
+  would leave F − B finite as h → 0.
+- **Not a smooth error in the gradient.** The central differences reach
+  ratio 4.0, and every ladder from 4e-3 down extrapolates to the same
+  value. At ±h, the step's own analytic gradient averages to the central
+  difference to O(h²) (−6.8e-9 at 1.25e-4). It is the gradient *at Py*
+  that is off.
+  - Out to 3e-6 bohr on either side, the gradient follows the linear
+    continuation of its value at Py, to 6e-12.
+  - Somewhere between 3e-6 and 3e-5, one side at a time, it jumps by the
+    miss: −3.2e-8, −5.2e-8 and +2.9e-8 at 1e-5 along directions 0, 1
+    and 2.
+
+**What it is.**
+
+- **The perturber.** State 2's Srs perturber over virtuals (15, 24) has
+  N = 3.5e-15 at Py, under the guard's 1e-14 (`kNumericalZero`,
+  `../energy/`), so the walk drops it.
+- **Why its norm can vanish by accident.** With two active electrons, a
+  pair's Srs space is one function: removing both electrons leaves the
+  active vacuum. Its norm is therefore one signed amplitude squared,
+  A_rs = Σ_tu (rt|su) C_tu, and A_rs vanishes on a codimension-one surface
+  through geometry space. Sij at two active holes is the same.
+- **Measured along direction 0.**
+  - √N is linear through zero: 5.9e-8 at Py, 5.1e-8 at +1e-6, 1.4e-7 at
+    −1e-5, and 1.8e-7 and 2.9e-7 at ±3e-5. It crosses zero 7.5e-6 bohr
+    along the direction from Py.
+  - H/N is 0.7959 at every one of those points, unchanged by the
+    amplitude.
+  - It is kept once N passes 1e-14: at −1e-5 (N = 1.9e-14), where the
+    gradient has jumped, but not at +1e-5 (√N ≈ −1.9e-8 by the line,
+    dropped), where it has not.
+- **How the term is lost.** The couplings T_02 and T_12 are 6.3e-11 and
+  −3.1e-10 at Py, products of the two states' amplitudes. They vanish
+  linearly with A, so H_eff's off-diagonal moves at first order, and the
+  derivative at a dropped point has no such term. A diagonal N c is
+  O(A²), so tr H_eff loses nothing.
+- **Signs of an off-diagonal error.** E_2's miss and E_0 + E_1's are
+  equal and opposite to 2e-9. PC, whose cut is a different rule, passes
+  at the same points.
+- **Other near zeros.** Five other Srs pairs sit at N = 1.1e-13 to
+  9.7e-13 at Py, and are kept. At +1e-3 along direction 0, state 1's pair
+  (6, 60) is at 4.1e-16 and is dropped.
+
+**The check: a probe build with the guard at 1e-20** (not committed). At
+Py every SC miss falls inside its bar, the energies move by at most
+4.3e-13, and PC's gradients do not move.
+
+Each cell holds:
+
+- the Richardson slope over 1e-3 and 5e-4, Eh/bohr;
+- the miss with the guard at 1e-14;
+- the miss with the probe at 1e-20;
+- the bar, max(2 × the Richardson bar, 3 σ_E / h_min).
+
+σ_E is the sd of six reference runs.
+
+| quantity | σ_E (Eh) | direction 0 | direction 1 | direction 2 |
+|---|---|---|---|---|
+| SC-QD E_0 + E_1 | 1.6e-13 | +0.0169; −3.4e-8 / +2.8e-10 / 9.6e-10 | −0.0008; −5.7e-8 / +3.0e-10 / 4.6e-9 | −0.0062; +3.2e-8 / +5.3e-10 / 1.9e-9 |
+| SC-QD E_2 | 7.8e-14 | +0.0425; +3.3e-8 / −3.9e-10 / 7.0e-10 | −0.0412; +5.6e-8 / +5.2e-10 / 1.1e-9 | +0.0038; −3.0e-8 / +2.5e-10 / 7.7e-10 |
+| PC-QD E_0 + E_1 | 2.9e-13 | +0.0169; +3.9e-10 / +3.8e-10 / 1.7e-9 | −0.0007; +1.0e-9 / +1.0e-9 / 2.2e-9 | −0.0061; +5.1e-10 / +5.1e-10 / 1.7e-9 |
+| PC-QD E_2 | 1.3e-13 | +0.0425; +1.9e-10 / +1.9e-10 / 7.5e-10 | −0.0412; +4.6e-10 / +4.6e-10 / 9.6e-10 | +0.0038; +2.5e-10 / +2.5e-10 / 7.5e-10 |
+
+**What it costs.** The SC gradient is wrong only within about 1e-5 bohr
+of such a surface: here by 3e-8 to 6e-8, over two orders under
+`[optimize]`'s force thresholds (`max_force` 1.5e-5 in `qd_meci.toml`). The guard stays as it is. Lowering it would keep the
+zero norms that symmetry makes (the C₂ᵥ cases below), which are round-off
+with a meaningless H/N. #949 has the fix to evaluate: for a perturber
+space of one function, c_t does not depend on the amplitude, so it need
+not be dropped. A test at Py waits on it. The FD driver was a scratch
+script over the `free-breakfast` binary, as #875's was.
 
 ## SC-QD-NEVPT2: the functional E[W] and its adjoint
 
@@ -1579,8 +1676,13 @@ once per process.
     |N| ≤ 1e-14) vanish at the point; along h, B or C, which break C₂ᵥ, such
     a perturber's N and H grow as t² with their ratio finite, so its
     coupling T/(Δ + H/N) grows as t, a first-order change no derivative at
-    the point sees. The random W reads those couplings (its ladders along h
-    and B find a ratio run, then break, and miss by 2.6e-4 and 8.0e-4); the
+    the point sees. The zero need not be symmetry's. At ethylene's Py (no
+    point group) a CAS(2,2) Srs pair's norm is one amplitude squared, and
+    it vanishes on a surface within 7.5e-6 bohr of Py. Its coupling grows as t
+    the same way, and costs the SC-QD gradient 3e-8 to 6e-8 there ("What
+    the SC-QD miss at Py is", #894). The random W reads those couplings
+    (its ladders along h and B find a ratio run, then break, and miss by
+    2.6e-4 and 8.0e-4); the
     eigenvector seed, diagonal there, does not. Elsewhere it is #724's
     small own norm moved toward the pole Δ + H/N = 0 (`h6_631g_sa2` along h:
     ratios … 0.000 −1.000 −13037, a step); a random diagonal W was not
