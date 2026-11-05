@@ -4,10 +4,10 @@
 /// root's of a DF-CASSCF (state-specific or state-averaged), or with a
 /// `[nevpt2_gradient]` the SC- or PC-NEVPT2 energy's on a single-state
 /// DF-CASSCF -- and its harmonic frequencies and normal modes. By default
-/// analytic (not for NEVPT2),
-/// @c hessian::df_rhf, @c hessian::df_casscf or @c hessian::df_sacasscf over
-/// one nested Pipeline run of the chain from the molecule to `[scf]` or
-/// `[casscf]`; or by central differences of the analytic gradient of the
+/// analytic, @c hessian::df_rhf, @c hessian::df_casscf,
+/// @c hessian::df_sacasscf, @c hessian::df_sc_nevpt2 or
+/// @c hessian::df_pc_nevpt2 over one nested Pipeline run of the chain from
+/// the molecule to `[scf]` or `[casscf]`; or by central differences of the analytic gradient of the
 /// chain to `[gradient]`, `[casscf_gradient]` or `[nevpt2_gradient]`, rerun
 /// at each of the 6N
 /// displaced geometries, each displaced CASSCF started from the reference's
@@ -36,7 +36,9 @@ export namespace free_breakfast {
 /// @brief How `[hessian]` computes the Hessian.
 enum class HessianMethod : uint8_t {
   /// @c hessian::df_rhf at the SCF of one chain run, or the CASSCF root's
-  /// (@c hessian::df_casscf, @c hessian::df_sacasscf): density fitting only.
+  /// (@c hessian::df_casscf, @c hessian::df_sacasscf), or its SC- or
+  /// PC-NEVPT2 energy's (@c hessian::df_sc_nevpt2, @c hessian::df_pc_nevpt2):
+  /// density fitting only.
   Analytic,
   /// Central differences of the analytic gradient, the RHF's, a DF-CASSCF
   /// root's or the SC- or PC-NEVPT2's: 6N chain reruns.
@@ -88,12 +90,15 @@ struct HessianStep {
   /// step. Under @ref ladder, the ladder's coarsest step instead. Not read by
   /// the analytic method.
   double displacement{1e-3};
-  /// @brief HessianMethod::Numerical's displacement coordinates: n rows of n
-  /// (n = 3 n_atom), row-major, row j coordinate j as a Cartesian
-  /// displacement, orthonormal; the Hessian is differenced along each and
-  /// reported in Cartesians, Qᵀ H Q. Empty: the Cartesian ones. The
-  /// config's, never detected: symmetry-adapted ones name a failing
-  /// block's irreps (README.md, "The ladder and the bilinearity check").
+  /// @brief HessianMethod::Numerical's displacement coordinates, or the
+  /// analytic NEVPT2 Hessian's: n rows of n (n = 3 n_atom), row-major, row j
+  /// coordinate j as a Cartesian displacement, orthonormal; the Hessian is
+  /// differenced along each, or taken in them by @c hessian::df_sc_nevpt2 or
+  /// @c df_pc_nevpt2, and reported in Cartesians, Qᵀ H Q. Empty: the
+  /// Cartesian ones. The config's, never detected: symmetry-adapted ones
+  /// name a failing block's irreps (README.md, "The ladder and the
+  /// bilinearity check"), and keep SC's symmetric block apart from its
+  /// broken one (README.md, "The NEVPT2 chain").
   std::vector<double> coordinates{};
   /// @brief HessianMethod::Numerical over the CASSCF chain: per coordinate,
   /// the fourth-order central stencil, (g(-2s) - 8 g(-s) + 8 g(s) - g(2s)) /
@@ -137,10 +142,13 @@ struct HessianStep {
   /// HessianMethod::Numerical's differences of this gradient. Empty: the
   /// RHF's.
   std::optional<CasscfGradientStep> casscf_gradient{};
-  /// @brief Set: the Hessian is HessianMethod::Numerical's differences of
-  /// this SC- or PC-NEVPT2 gradient of the single-state @ref casscf's root,
-  /// all-electron, over density fitting only: the CASSCF chain's displaced
-  /// solves, each followed by this step. Exclusive with @ref casscf_gradient.
+  /// @brief Set: the Hessian is this SC- or PC-NEVPT2 energy's of the
+  /// single-state @ref casscf's root, all-electron, over density fitting
+  /// only -- HessianMethod::Analytic's @c hessian::df_sc_nevpt2 or
+  /// @c hessian::df_pc_nevpt2 by @ref Nevpt2GradientStep::variant, or
+  /// HessianMethod::Numerical's differences of this gradient over the
+  /// CASSCF chain's displaced solves, each followed by this step. Exclusive
+  /// with @ref casscf_gradient.
   std::optional<Nevpt2GradientStep> nevpt2_gradient{};
 
   /// @brief Where the Hessian is written as JSON, if not empty: the method,
@@ -158,7 +166,9 @@ struct HessianStep {
   /// HessianMethod::Analytic one Pipeline run of the chain ending in ScfStep
   /// and @c hessian::df_rhf over its products (with @ref casscf_gradient,
   /// the chain ending in @ref casscf and @c hessian::df_casscf or
-  /// @c hessian::df_sacasscf at its solution); under
+  /// @c hessian::df_sacasscf at its solution; with @ref nevpt2_gradient,
+  /// @c hessian::df_sc_nevpt2 or @c hessian::df_pc_nevpt2 there, in
+  /// @ref coordinates); under
   /// HessianMethod::Numerical the 6N gradients at the geometry displaced by
   /// ±@ref displacement along each coordinate, each one Pipeline run of the
   /// chain ending in GradientStep, and their central differences; under
@@ -193,13 +203,17 @@ struct HessianStep {
   ///         not the reference's. Under @ref nevpt2_gradient, before
   ///         anything runs: InvalidConfig beside @ref casscf_gradient or for
   ///         a @ref Nevpt2GradientStep::frozen_core other than 0;
-  ///         Unsupported for an integral-direct @ref eri, the analytic
-  ///         method, a state-averaged @ref casscf (nroots above 1) or
+  ///         Unsupported for an integral-direct @ref eri, a state-averaged
+  ///         @ref casscf (nroots above 1) or
   ///         @ref Nevpt2GradientStep::quasi_degenerate, each naming the
-  ///         reason; then the numerical CASSCF chain's errors, and the
-  ///         NEVPT2 gradient's (PC's refusals among them), naming the
-  ///         geometry. Before anything runs: InvalidConfig for @ref ladder,
-  ///         @ref pairs or @ref coordinates under the analytic method, pairs
+  ///         reason; analytic, then the CASSCF's error and the NEVPT2
+  ///         Hessian's as it is (Numerical naming SC's refused coordinate
+  ///         pairs, or PC's refused classes, lifts and degenerate pairs);
+  ///         numerical, the CASSCF chain's errors, and the NEVPT2
+  ///         gradient's (PC's refusals among them), naming the geometry.
+  ///         Before anything runs: InvalidConfig for @ref ladder or
+  ///         @ref pairs under the analytic method, @ref coordinates under
+  ///         it without @ref nevpt2_gradient, pairs
   ///         without the ladder, coordinates not n orthonormal rows of n, or
   ///         a pair outside n or named twice; Unsupported for the ladder
   ///         over the RHF chain. Last, Numerical naming every pair that is

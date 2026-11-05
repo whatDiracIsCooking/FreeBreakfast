@@ -648,7 +648,9 @@ template <class S>
       return err_config("[{}] has no method '{}' (known: 'analytic', 'numerical')", kStep, method);
     }
     step.method = method == "numerical" ? HessianMethod::Numerical : HessianMethod::Analytic;
-    for (const std::string_view key : {"displacement", "ladder", "pairs", "coordinates"}) {
+    // coordinates are the analytic NEVPT2 Hessian's too: whether the chain
+    // is that one is plan_hessian's to say.
+    for (const std::string_view key : {"displacement", "ladder", "pairs"}) {
       if (step.method == HessianMethod::Analytic && table.contains(key)) {
         return err_config("[{}] {} is the numerical method's, and method is 'analytic'", kStep,
                           key);
@@ -769,8 +771,10 @@ template <class S>
 /// `[casscf_gradient]` in @p doc the chain ends in `[casscf]` and it, both
 /// copied in too, and the Hessian is that root's, analytic or numerical;
 /// with a `[nevpt2_gradient]` the same, the Hessian that NEVPT2 energy's,
-/// numerical only, state-specific and all-electron (the analytic method,
-/// `quasi_degenerate` and a `frozen_core` other than 0 refused). Two of
+/// analytic or numerical, state-specific and all-electron
+/// (`quasi_degenerate` and a `frozen_core` other than 0 refused, a state
+/// average by check_nevpt2_gradient), the only chain whose analytic method
+/// takes `coordinates`. Two of
 /// `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]` are refused,
 /// since the Hessian is one energy's. The molecule is not among them: the
 /// step reads the pipeline's own.
@@ -811,34 +815,39 @@ template <class S>
     FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.casscf));
     const Nevpt2GradientStep &nevpt2 = step.nevpt2_gradient.emplace();
     FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.nevpt2_gradient.value()));
-    // What milestone 24's Hessian covers: HessianStep::run refuses each
-    // again. A state average is check_nevpt2_gradient's, as for any
-    // [nevpt2_gradient] that is not quasi-degenerate.
+    // What milestone 24's Hessian covers, and hessian::df_sc_nevpt2 and
+    // df_pc_nevpt2 take: HessianStep::run refuses each again. A state
+    // average is check_nevpt2_gradient's, as for any [nevpt2_gradient] that
+    // is not quasi-degenerate.
     constexpr std::string_view kNevpt2 = Nevpt2GradientStep::kName;
-    if (step.method == HessianMethod::Analytic) {
-      return err_unsupported("[{}] over [{}] is numerical only: set [{}] method = 'numerical'",
-                             kStep, kNevpt2, kStep);
-    }
     if (nevpt2.quasi_degenerate) {
-      return err_unsupported("[{}] differences a state-specific NEVPT2 gradient, and [{}] is "
+      return err_unsupported("[{}] is a state-specific NEVPT2 energy's, and [{}] is "
                              "quasi_degenerate: QD-NEVPT2 has no Hessian here",
                              kStep, kNevpt2);
     }
     if (nevpt2.frozen_core != 0) {
-      return err_config("[{}] differences the all-electron NEVPT2 gradient, and [{}] frozen_core "
-                        "is not 0: set it to 0",
+      return err_config("[{}] is the all-electron NEVPT2 energy's, and [{}] frozen_core is not 0: "
+                        "set it to 0",
                         kStep, kNevpt2);
     }
-    // nuclear_hessian.tex §3's diagnostic ships with the NEVPT2 Hessian: the
-    // ladder, and every pair (up to HessianStep::kMaxEveryPairCoordinates),
-    // unless the config says otherwise.
+    // nuclear_hessian.tex §3's diagnostic ships with the numerical NEVPT2
+    // Hessian: the ladder, and every pair (up to
+    // HessianStep::kMaxEveryPairCoordinates), unless the config says
+    // otherwise.
     const toml::table *table = doc[kStep].as_table();
-    if (table == nullptr || !table->contains("ladder")) {
+    if (step.method == HessianMethod::Numerical &&
+        (table == nullptr || !table->contains("ladder"))) {
       step.ladder = true;
     }
     if (step.ladder && (table == nullptr || !table->contains("pairs"))) {
       step.pairs.reset();
     }
+  }
+  if (step.method == HessianMethod::Analytic && !step.nevpt2_gradient &&
+      !step.coordinates.empty()) {
+    return err_config("[{}] coordinates is the numerical method's, and method is 'analytic': the "
+                      "analytic Hessian takes them only beside a [{}]",
+                      kStep, Nevpt2GradientStep::kName);
   }
   // The ladder measures the noise by restarting the CASSCF, and the pairs are
   // judged against its bars: HessianStep::run refuses each again.

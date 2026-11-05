@@ -7,9 +7,12 @@
 // after it; the CASSCF chain copied in beside a [casscf_gradient], the
 // analytic method there the root's (beside an [optimize] too), and its
 // refusals; the ladder, its pairs and coordinates (#812), on by default
-// beside a [nevpt2_gradient], and their refusals; and the guard on a
-// displaced CASSCF, check_displaced_casscf, fed an active orbital swapped
-// out and roots swapped. Nothing is run, so nothing touches a device.
+// beside a numerical [nevpt2_gradient], and their refusals; the analytic
+// method beside a [nevpt2_gradient] (#818), its coordinates, what it
+// refuses before running, and examples/nevpt2_hessian.toml parsed; and the
+// guard on a displaced CASSCF, check_displaced_casscf, fed an active orbital
+// swapped out and roots swapped. Nothing is run, so nothing touches a
+// device.
 
 #include <gtest/gtest.h>
 
@@ -17,6 +20,9 @@ import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
+import free_breakfast.core.nontransferrable; // ScratchDir
+
+#include "scratch_dir.h"
 
 namespace {
 
@@ -338,6 +344,104 @@ TEST(PipelineHessian, AMalformedLadderIsRefused) {
   EXPECT_EQ(rhf.error().kind, fb::ErrorKind::Unsupported);
   EXPECT_NE(rhf.error().message.find("the RHF chain has no such start"), std::string::npos)
       << rhf.error().message;
+}
+
+// Beside a [nevpt2_gradient] the analytic method -- the default -- is that
+// variant's analytic Hessian over the same chain: no ladder and no pairs,
+// and coordinates read, the one analytic Hessian that takes them.
+TEST(PipelineHessian, BesideANevpt2GradientTheAnalyticMethodIsTheVariantsHessian) {
+  constexpr std::string_view kCas = "[eri]\nmode = \"density_fitting\"\n"
+                                    "[casscf]\nncas = 2\nnelecas = 2\n";
+  for (const std::string_view variant : {"sc", "pc"}) {
+    for (const std::string_view method : {"", "method = \"analytic\"\n"}) {
+      auto calc = fb::parse_config(
+          with_inputs(std::format("{}[nevpt2_gradient]\nvariant = \"{}\"\n[hessian]\n{}", kCas,
+                                  variant, method)),
+          "", kOut);
+      ASSERT_TRUE(calc.has_value()) << calc.error().message;
+      const fb::HessianStep &hessian = *calc->step<fb::HessianStep>();
+      EXPECT_EQ(hessian.method, fb::HessianMethod::Analytic);
+      ASSERT_TRUE(hessian.nevpt2_gradient.has_value());
+      EXPECT_EQ(hessian.nevpt2_gradient->variant,
+                variant == "pc" ? fb::Nevpt2Variant::Pc : fb::Nevpt2Variant::Sc);
+      EXPECT_FALSE(hessian.casscf_gradient.has_value());
+      EXPECT_EQ(hessian.casscf.ncas, 2);
+      EXPECT_FALSE(hessian.ladder);
+      ASSERT_TRUE(hessian.pairs.has_value());
+      EXPECT_TRUE(hessian.pairs->empty());
+      EXPECT_TRUE(hessian.coordinates.empty());
+    }
+  }
+  auto turned = fb::parse_config(
+      with_inputs(std::format("{}[nevpt2_gradient]\n[hessian]\ncoordinates = [[0.6, 0.8, 0], "
+                              "[-0.8, 0.6, 0], [0, 0, 1]]\n",
+                              kCas)),
+      "", kOut);
+  ASSERT_TRUE(turned.has_value()) << turned.error().message;
+  EXPECT_EQ(turned->step<fb::HessianStep>()->coordinates,
+            (std::vector<double>{0.6, 0.8, 0, -0.8, 0.6, 0, 0, 0, 1}));
+  // The numerical method's keys stay its own.
+  for (const std::string_view key : {"ladder = true", "pairs = [[0, 1]]", "displacement = 0.03"}) {
+    expect_config_error(with_inputs(std::format("{}[nevpt2_gradient]\n[hessian]\n{}\n", kCas, key)),
+                        "is the numerical method's, and method is 'analytic'");
+  }
+}
+
+// What hessian::df_sc_nevpt2 and df_pc_nevpt2 cannot take, refused when the
+// config is read, before anything runs: a state-averaged reference and an
+// integral-direct [eri] (Unsupported), a frozen core (InvalidConfig) and a
+// quasi-degenerate gradient (Unsupported).
+TEST(PipelineHessian, TheAnalyticNevpt2HessianRefusesWhatItCannotTake) {
+  const auto refused = [](std::string_view tables, fb::ErrorKind kind, std::string_view says) {
+    auto calc = fb::parse_config(with_inputs(tables), "", kOut);
+    ASSERT_FALSE(calc.has_value()) << says;
+    EXPECT_EQ(calc.error().kind, kind) << calc.error().message;
+    EXPECT_NE(calc.error().message.find(says), std::string::npos) << calc.error().message;
+  };
+  constexpr std::string_view kFitted = "[eri]\nmode = \"density_fitting\"\n";
+  constexpr std::string_view kOne = "[casscf]\nncas = 2\nnelecas = 2\n";
+  for (const std::string_view variant : {"sc", "pc"}) {
+    const std::string gradient = std::format("[nevpt2_gradient]\nvariant = \"{}\"\n", variant);
+    refused(std::format("{}[casscf]\nncas = 2\nnelecas = 2\nnroots = 2\n{}[hessian]\n", kFitted,
+                        gradient),
+            fb::ErrorKind::Unsupported,
+            "[nevpt2_gradient] differentiates a single-state CASSCF, and [casscf] nroots is 2");
+    for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
+      refused(std::format("{}{}{}[hessian]\n", eri, kOne, gradient), fb::ErrorKind::Unsupported,
+              "'integral_direct'");
+    }
+    for (const std::string_view frozen : {"1", "\"auto\""}) {
+      refused(std::format("{}{}{}frozen_core = {}\n[hessian]\n", kFitted, kOne, gradient, frozen),
+              fb::ErrorKind::InvalidConfig,
+              "[hessian] is the all-electron NEVPT2 energy's, and [nevpt2_gradient] frozen_core is "
+              "not 0");
+    }
+    refused(std::format("{}[casscf]\nncas = 2\nnelecas = 2\nnroots = 2\n{}"
+                        "quasi_degenerate = true\n[hessian]\n",
+                        kFitted, gradient),
+            fb::ErrorKind::Unsupported,
+            "[hessian] is a state-specific NEVPT2 energy's, and [nevpt2_gradient] is "
+            "quasi_degenerate");
+  }
+}
+
+// examples/nevpt2_hessian.toml, as the binary reads it: the analytic SC
+// Hessian over its single-state, density-fitted, all-electron CASSCF.
+TEST(PipelineHessian, TheNevpt2HessianExampleParses) {
+  const std::filesystem::path examples{FBF_EXAMPLES_DIR};
+  // read_config makes the output directory.
+  const fb::test::ScratchDir out("pipeline-hessian-example");
+  auto calc = fb::read_config(examples / "nevpt2_hessian.toml", examples, out.path());
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::HessianStep &hessian = *calc->step<fb::HessianStep>();
+  EXPECT_EQ(hessian.method, fb::HessianMethod::Analytic);
+  ASSERT_TRUE(hessian.nevpt2_gradient.has_value());
+  EXPECT_EQ(hessian.nevpt2_gradient->variant, fb::Nevpt2Variant::Sc);
+  EXPECT_EQ(hessian.casscf.nroots, 1);
+  EXPECT_EQ(hessian.casscf.active, (std::vector<std::int32_t>{6, 7, 8, 9}));
+  EXPECT_EQ(hessian.eri.mode, fb::EriMode::DensityFitting);
+  EXPECT_EQ(hessian.json_path, out / "hessian.json");
+  EXPECT_EQ(calc->step<fb::MoleculeStep>()->xyz, examples / "h2co_skew.xyz");
 }
 
 // check_displaced_casscf over a non-orthonormal AO basis, S = diag(1, 4, 1,

@@ -1,7 +1,8 @@
 /// @file
 /// @brief HessianStep: the analytic Hessian, hessian::df_rhf over one nested
-/// Pipeline run of the chain to ScfStep, or hessian::df_casscf or
-/// df_sacasscf over one to CasscfStep; or the 6N displaced gradients, each
+/// Pipeline run of the chain to ScfStep, or hessian::df_casscf,
+/// df_sacasscf, df_sc_nevpt2 or df_pc_nevpt2 over one to CasscfStep; or the
+/// 6N displaced gradients, each
 /// a nested Pipeline run of the chain to GradientStep, and their central
 /// differences -- the RHF's, or over the CASSCF chain (to CasscfGradientStep
 /// or Nevpt2GradientStep), each displaced solve started from the reference's
@@ -363,28 +364,25 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                            casscf_gradient ? CasscfGradientStep::kName : Nevpt2GradientStep::kName,
                            EriStep::kName, EriStep::kName);
   }
-  // The NEVPT2 Hessian is numerical, of one root's state-specific energy,
-  // all-electron: what milestone 24 covers and the fixture validates.
+  // The NEVPT2 Hessian, by either method, is of one root's state-specific
+  // energy, all-electron: what milestone 24 covers, the fixture validates,
+  // and hessian::df_sc_nevpt2 and df_pc_nevpt2 take.
   if (nevpt2_gradient) {
     constexpr std::string_view kNevpt2 = Nevpt2GradientStep::kName;
-    if (method == HessianMethod::Analytic) {
-      return err_unsupported("[{}] over [{}] is numerical only: set [{}] method = 'numerical'",
-                             kName, kNevpt2, kName);
-    }
     if (nevpt2_gradient->quasi_degenerate) {
-      return err_unsupported("[{}] differences a state-specific NEVPT2 gradient, and [{}] is "
+      return err_unsupported("[{}] is a state-specific NEVPT2 energy's, and [{}] is "
                              "quasi_degenerate: QD-NEVPT2 has no Hessian here",
                              kName, kNevpt2);
     }
     if (casscf.nroots != 1) {
-      return err_unsupported("[{}] differences the NEVPT2 gradient of a single-state CASSCF, and "
-                             "[{}] nroots is {}: a state-averaged reference has no NEVPT2 Hessian "
+      return err_unsupported("[{}] is the NEVPT2 energy's of a single-state CASSCF, and [{}] "
+                             "nroots is {}: a state-averaged reference has no NEVPT2 Hessian "
                              "here",
                              kName, CasscfStep::kName, casscf.nroots);
     }
     if (nevpt2_gradient->frozen_core != 0) {
-      return err_config("[{}] differences the all-electron NEVPT2 gradient, and [{}] frozen_core "
-                        "is {}: set it to 0",
+      return err_config("[{}] is the all-electron NEVPT2 energy's, and [{}] frozen_core is {}: "
+                        "set it to 0",
                         kName, kNevpt2,
                         // Below 0 is only "auto", as the config reads it.
                         nevpt2_gradient->frozen_core < 0
@@ -399,9 +397,14 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                            kName, EriStep::kName, EriStep::kName, kName);
   }
   const bool any_pairs = !pairs || !pairs->empty();
-  if (method == HessianMethod::Analytic && (ladder || any_pairs || !coordinates.empty())) {
-    return err_config("[{}] ladder, pairs and coordinates are the numerical method's, and method "
-                      "is 'analytic'",
+  // The analytic NEVPT2 Hessian is taken in the coordinates, as
+  // hessian::df_sc_nevpt2 needs at a symmetric geometry; no other analytic
+  // one takes them.
+  if (method == HessianMethod::Analytic &&
+      (ladder || any_pairs || (!coordinates.empty() && !nevpt2_gradient))) {
+    return err_config("[{}] ladder and pairs are the numerical method's, and coordinates the "
+                      "numerical method's or the analytic NEVPT2 Hessian's, and method is "
+                      "'analytic'",
                       kName);
   }
   if (ladder && !casscf_gradient && !nevpt2_gradient) {
@@ -523,28 +526,17 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   json ladder_doc;
   json bilinearity;
   std::vector<std::array<size_t, 2>> failing;
-  if (method == HessianMethod::Analytic && casscf_gradient) {
-    // One chain to [casscf] at R, and the root's analytic Hessian at its
-    // solution: hessian::df_casscf for a single root, hessian::df_sacasscf
-    // for one root of a state average.
-    auto chain = FBF_TRY(chain_at({}, chain_casscf));
-    FBF_TRY(chain.run(node));
-    const CasscfOutput &cas = *chain.get<CasscfOutput>();
-    const int32_t root = casscf_gradient->root;
-    if (root < 0 || std::cmp_greater_equal(root, cas.energies.size())) {
-      return err_config("[{}] root is {}, and the CASSCF has {} root(s)", CasscfGradientStep::kName,
-                        root, cas.energies.size());
-    }
+  // The CasscfOutput @p cas back into the mcscf::Solution the analytic
+  // Hessians take, as [casscf_gradient] and [nevpt2_gradient] build it for
+  // their gradients: the orbitals and the CI vectors on the device, gamma
+  // the weighted average of the roots' 1-RDMs.
+  const auto solution_of = [&](const CasscfOutput &cas,
+                               const BasisSet &basis) -> Result<mcscf::Solution> {
     const auto n2 = static_cast<size_t>(cas.ncas) * static_cast<size_t>(cas.ncas);
     if (cas.rdm1.size() != cas.weights.size() * n2) {
       return err_config("[{}] the CASSCF holds {} 1-RDM elements, not {} roots of {}", kName,
                         cas.rdm1.size(), cas.weights.size(), n2);
     }
-    const BasisSet &basis = chain.get<BasisSetOutput>()->basis;
-    const DensityFitted &fit = std::get<DensityFitted>(chain.get<EriOutput>()->eri);
-    // The product back into the mcscf::Solution the Hessians take, as
-    // [casscf_gradient] builds it for df_gradient: the orbitals and the CI
-    // vectors on the device, gamma the weighted average of the roots'.
     std::vector<double> gamma(n2, 0.0);
     for (size_t r = 0; r < cas.weights.size(); ++r) {
       for (size_t i = 0; i < n2; ++i) {
@@ -569,16 +561,31 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
         .iterations = cas.iterations,
         .weights = cas.weights,
     };
-    {
-      const ScopedDeviceIndex on{res.dev_idx()};
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(solution.roots.vectors.data(), cas.vectors.data(),
-                                             cas.vectors.size() * sizeof(double),
-                                             wwr::wwrMemcpyHostToDevice, res.stream())));
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(solution.c.data(), cas.c.data(),
-                                             cas.c.num_elements() * sizeof(double),
-                                             wwr::wwrMemcpyDeviceToDevice, res.stream())));
-      FBF_TRY(res.sync());
+    const ScopedDeviceIndex on{res.dev_idx()};
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(solution.roots.vectors.data(), cas.vectors.data(),
+                                           cas.vectors.size() * sizeof(double),
+                                           wwr::wwrMemcpyHostToDevice, res.stream())));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(solution.c.data(), cas.c.data(),
+                                           cas.c.num_elements() * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToDevice, res.stream())));
+    FBF_TRY(res.sync());
+    return solution;
+  };
+  if (method == HessianMethod::Analytic && casscf_gradient) {
+    // One chain to [casscf] at R, and the root's analytic Hessian at its
+    // solution: hessian::df_casscf for a single root, hessian::df_sacasscf
+    // for one root of a state average.
+    auto chain = FBF_TRY(chain_at({}, chain_casscf));
+    FBF_TRY(chain.run(node));
+    const CasscfOutput &cas = *chain.get<CasscfOutput>();
+    const int32_t root = casscf_gradient->root;
+    if (root < 0 || std::cmp_greater_equal(root, cas.energies.size())) {
+      return err_config("[{}] root is {}, and the CASSCF has {} root(s)", CasscfGradientStep::kName,
+                        root, cas.energies.size());
     }
+    const BasisSet &basis = chain.get<BasisSetOutput>()->basis;
+    const DensityFitted &fit = std::get<DensityFitted>(chain.get<EriOutput>()->eri);
+    const mcscf::Solution solution = FBF_TRY(solution_of(cas, basis));
     const Molecule &chain_molecule = chain.get<MoleculeOutput>()->molecule;
     const auto &classes = chain.get<PrimitivePairClassesOutput>()->classes;
     const SphericalMatrixAO &h = chain.get<CoreHamiltonianOutput>()->h;
@@ -603,6 +610,44 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                  cas.nelecas, cas.ncas, root, cas.energies.size(),
                  cas.energies[static_cast<size_t>(root)],
                  residuals.empty() ? 0.0 : std::ranges::max(residuals));
+  } else if (method == HessianMethod::Analytic && nevpt2_gradient) {
+    // One chain to [casscf] at R, and the variant's analytic Hessian at its
+    // single-state solution, the gradient step's own call (batch 0, PC's
+    // floor 0) in the config's coordinates. A refusal -- the pairs SC's
+    // empty perturbers make no bilinear form on, PC's kept classes, lifts
+    // and degenerate pairs -- is returned as it is, naming them.
+    auto chain = FBF_TRY(chain_at({}, chain_casscf));
+    FBF_TRY(chain.run(node));
+    const CasscfOutput &cas = *chain.get<CasscfOutput>();
+    const BasisSet &basis = chain.get<BasisSetOutput>()->basis;
+    const DensityFitted &fit = std::get<DensityFitted>(chain.get<EriOutput>()->eri);
+    const mcscf::Solution solution = FBF_TRY(solution_of(cas, basis));
+    const Molecule &chain_molecule = chain.get<MoleculeOutput>()->molecule;
+    const auto &classes = chain.get<PrimitivePairClassesOutput>()->classes;
+    const SphericalMatrixAO &h = chain.get<CoreHamiltonianOutput>()->h;
+    const bool pc = nevpt2_gradient->variant == Nevpt2Variant::Pc;
+    double e_corr = 0.0;
+    double residual = 0.0;
+    if (pc) {
+      hessian::PcNevpt2Terms terms = FBF_TRY(
+          hessian::df_pc_nevpt2(res, chain_molecule, basis, classes, fit.aux, h, fit.b,
+                                fit.l.data(), solution, cas.ncore, cas.ncas, 0, coordinates));
+      raw = std::move(terms.hessian);
+      asymmetry = terms.asymmetry;
+      e_corr = terms.e_corr;
+      residual = terms.zvector_residual;
+    } else {
+      hessian::ScNevpt2Terms terms = FBF_TRY(
+          hessian::df_sc_nevpt2(res, chain_molecule, basis, classes, fit.aux, h, fit.b,
+                                fit.l.data(), solution, cas.ncore, cas.ncas, 0, coordinates));
+      raw = std::move(terms.hessian);
+      asymmetry = terms.asymmetry;
+      e_corr = terms.e_corr;
+      residual = terms.zvector_residual;
+    }
+    FBF_LOG_INFO("hessian: analytic {}-NEVPT2 over DF-CASSCF({}, {}), E = {:.10f}, Z-vector "
+                 "residual {:.3e}",
+                 pc ? "PC" : "SC", cas.nelecas, cas.ncas, cas.energies[0] + e_corr, residual);
   } else if (method == HessianMethod::Analytic) {
     auto chain = FBF_TRY(chain_at({}));
     FBF_TRY(chain.run(node));
@@ -1085,29 +1130,31 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
         asymmetry = std::max(asymmetry, std::abs(raw[(x * n) + y] - raw[(y * n) + x]));
       }
     }
-    // Back to Cartesians, Q^T H Q.
-    if (!coordinates.empty()) {
-      std::vector<double> hq(n * n, 0.0);
-      for (size_t a = 0; a < n; ++a) {
-        for (size_t b = 0; b < n; ++b) {
-          for (size_t y = 0; y < n; ++y) {
-            hq[(a * n) + y] += raw[(a * n) + b] * q[(b * n) + y];
-          }
-        }
-      }
-      std::ranges::fill(raw, 0.0);
-      for (size_t a = 0; a < n; ++a) {
-        for (size_t x = 0; x < n; ++x) {
-          for (size_t y = 0; y < n; ++y) {
-            raw[(x * n) + y] += q[(a * n) + x] * hq[(a * n) + y];
-          }
-        }
-      }
-    }
     if (nevpt2_gradient) {
       FBF_LOG_INFO("hessian: over the {} displaced NEVPT2 gradients, max |z^c| {:.3e}, smallest "
                    "inactive gap {:.3e}, largest Z-vector residual {:.3e}",
                    gradients, worst_zc, worst_gap, worst_residual);
+    }
+  }
+
+  // Back to Cartesians, Q^T H Q: the numerical method's rows and the analytic
+  // NEVPT2's, both in the coordinates.
+  if (!coordinates.empty()) {
+    std::vector<double> hq(n * n, 0.0);
+    for (size_t a = 0; a < n; ++a) {
+      for (size_t b = 0; b < n; ++b) {
+        for (size_t y = 0; y < n; ++y) {
+          hq[(a * n) + y] += raw[(a * n) + b] * q[(b * n) + y];
+        }
+      }
+    }
+    std::ranges::fill(raw, 0.0);
+    for (size_t a = 0; a < n; ++a) {
+      for (size_t x = 0; x < n; ++x) {
+        for (size_t y = 0; y < n; ++y) {
+          raw[(x * n) + y] += q[(a * n) + x] * hq[(a * n) + y];
+        }
+      }
     }
   }
 
