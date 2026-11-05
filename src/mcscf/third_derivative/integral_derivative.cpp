@@ -1,8 +1,9 @@
 /// @file
 /// @brief I^x z: the state-averaged Hessian along z differentiated along the
 /// integrals (ThirdDerivative::apply_integrals), and the MO derivative
-/// integrals I^x it is applied at (df_integral_derivatives): the core
-/// Hamiltonian's and the MO factor's directions, the connection included.
+/// integrals I^x (df_integral_derivatives): the core Hamiltonian's and the MO
+/// factor's directions, the connection included, handed to a consumer chunk
+/// by chunk, apply_integrals being one.
 
 module free_breakfast.mcscf.third_derivative;
 
@@ -36,13 +37,14 @@ std::pair<size_t, size_t> integral_atom_functions(const BasisSet &basis, const u
   return {start_of(first), start_of(first + basis.atom_shell_count(atom))};
 }
 
-Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
-                               const BasisSet &basis,
-                               const std::span<const PrimitivePairClass> classes,
-                               const BasisSet &aux, const SphericalMatrixAO &h,
-                               const Buffers::device<double> &b, const double *const l,
-                               const SphericalMatrixAO &c, ThirdDerivative &op, double *const y,
-                               const size_t max_bytes) {
+Status df_integral_derivatives(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+    const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *const l,
+    const SphericalMatrixAO &c,
+    const std::function<Status(int32_t, int32_t, const double *, const double *, const double *)>
+        &consume,
+    const size_t max_bytes) {
   const size_t nao = basis.nao_sphe();
   const size_t naux = aux.nao_sphe();
   const size_t n_atom = basis.natoms();
@@ -62,8 +64,8 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
         "mcscf::df_integral_derivatives: B holds {} doubles, but naux nao^2 is {} x {}^2",
         b.num_elements(), naux, nao);
   }
-  if (l == nullptr || y == nullptr) {
-    return err_config("mcscf::df_integral_derivatives: l and y must be given");
+  if (l == nullptr || !consume) {
+    return err_config("mcscf::df_integral_derivatives: l and a consumer must be given");
   }
   const size_t nn = nao * nao;
   const size_t stack = n_x * nn;
@@ -171,10 +173,10 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
   Buffers::device<double> m1(3 * naux * naux, res.device());
   FBF_TRY(metric_derivative(res, aux, m1.data()));
 
-  // W^x for the coordinates [x0, x0 + count), then their columns of Y. Each
-  // slab is built by the same operations in the same order whatever the
-  // chunk, so chunking changes Y only by rounding; what a chunk repeats is
-  // the three-center walk over the aux atoms.
+  // W^x for the coordinates [x0, x0 + count), then the consumer. Each slab is
+  // built by the same operations in the same order whatever the chunk, so
+  // chunking changes it only by rounding; what a chunk repeats is the
+  // three-center walk over the aux atoms.
   Buffers::device<double> w1(chunk * factor, res.device());
   Buffers::device<double> block(3 * nn * max_blk, res.device());
   for (size_t x0 = 0; x0 < n_x; x0 += chunk) {
@@ -293,10 +295,30 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
           blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, l_mo.data(), n, s_nn,
           t, n, 0, &kOne<double>, slab(x), n, s_nn, q)));
     }
-    FBF_TRY(op.apply_integrals(res, static_cast<int32_t>(count), h1.data() + (x0 * nn), w1.data(),
-                               y + (x0 * static_cast<size_t>(op.size()))));
+    FBF_TRY(consume(static_cast<int32_t>(x0), static_cast<int32_t>(count), h1.data() + (x0 * nn),
+                    tau.data() + (x0 * nn), w1.data()));
   }
   return res.sync();
+}
+
+Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
+                               const BasisSet &basis,
+                               const std::span<const PrimitivePairClass> classes,
+                               const BasisSet &aux, const SphericalMatrixAO &h,
+                               const Buffers::device<double> &b, const double *const l,
+                               const SphericalMatrixAO &c, ThirdDerivative &op, double *const y,
+                               const size_t max_bytes) {
+  if (y == nullptr) {
+    return err_config("mcscf::df_integral_derivatives: y must be given");
+  }
+  const auto size = static_cast<size_t>(op.size());
+  return df_integral_derivatives(
+      res, molecule, basis, classes, aux, h, b, l, c,
+      [&](const int32_t x0, const int32_t count, const double *const h1, const double *,
+          const double *const w1) {
+        return op.apply_integrals(res, count, h1, w1, y + (static_cast<size_t>(x0) * size));
+      },
+      max_bytes);
 }
 
 Status ThirdDerivative::apply_integrals(DeviceResources &res, const int32_t k,
