@@ -1,0 +1,24 @@
+# Issue #904: pHBI S0 minimum, (12e,12o)/cc-pVTZ, SA2-QD-NEVPT2 single point at Park's geometry
+# (J. W. Park, JCTC (2020), acs.jctc.9b00919, Supporting Information, pp. S32–S33).
+# His QD-NEVPT2 E(0, 1): -644.0650722075, -643.9524974918 Eh.
+# Frozen core, as his: the C, N and O 1s (frozen_core = "auto"). The anion
+# (phenoxide), so charge = -1: 98 electrons. Results in ../phbi.md.
+[molecule]
+xyz = "geometries/phbi_tz1212_s0.xyz"
+charge = -1
+[basis_set]
+basis = "cc-pvtz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvtz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 12
+nelecas = 12
+active = [39, 42, 43, 46, 47, 48, 49, 53, 55, 57, 62, 65]  # 0-based RHF MOs of pi character (../phbi.md, "Active spaces")
+nroots = 2
+conv_tol_grad = 1e-9
+[nevpt2]
+quasi_degenerate = true
+frozen_core = "auto"
