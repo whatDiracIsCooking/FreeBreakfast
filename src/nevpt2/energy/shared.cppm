@@ -34,6 +34,9 @@ struct ActiveOperands {
   std::vector<double> e_core, e_virt;
   /// @brief EnergyInputs::pc_floor, which a ket's solve reads.
   double pc_floor = 0.0;
+  /// @brief The active electrons, tr dm1 rounded: a state's own count, 0 for
+  /// a transition's and for an omitted entry. single_function_class reads it.
+  int64_t nelecas = 0;
 };
 
 /// @brief Whether entry @p p of a walk's @p ops is given: an entry
@@ -48,8 +51,33 @@ Result<ActiveOperands> active_operands(DeviceResources &res, const MoBlocks &blo
 
 // Norms at or below this are an empty perturber space and contribute no
 // energy: pyscf.mrpt.nevpt2's NUMERICAL_ZERO. The reverse pass gives such a
-// perturber no multipliers, for the same reason.
+// perturber no multipliers, for the same reason. A one-function class
+// (single_function_class) has no guard.
 constexpr double kNumericalZero = 1e-14;
+
+// Whether SC class @p k (PySCF's order) of the state whose own operands are
+// @p own spans one function per perturber: Srs at two active electrons (both
+// removed leave the active vacuum) and Sij at two active holes (both filled
+// leave the closed shell). Each perturber's norm is then one amplitude
+// squared, N_t = A_t², and its H is η N_t, η the one function's own Dyall
+// energy, the same for every perturber of the state's class. So c_t =
+// -1 / (Δ_t + η) does not depend on A_t: such a class keeps every perturber,
+// at η from its blocks (single_function_ratio), and has no guard (README
+// "One-function classes", #949).
+bool single_function_class(const ActiveOperands &own, size_t k);
+
+// One-function class @p k's blocks over the state operands @p o, on the
+// host, in the pairing its norm and H contract them with the external
+// amplitude W_pq W_ab: [0] X, the Dyall block (a7, a9), and [1] Y, the
+// metric (rm2 read `pqba`, hdm2), each n⁴ row-major over (p, q, a, b). On a
+// state's own RDMs X = η Y to round-off.
+Result<std::array<std::vector<double>, 2>>
+single_function_blocks(DeviceResources &res, const ActiveOperands &o, size_t k);
+
+// η = <X, Y> / <Y, Y> over single_function_blocks' @p xy: the one function's
+// Dyall energy, read without any amplitude, so defined where every A_t
+// vanishes. None when Y is zero.
+std::optional<double> single_function_ratio(const std::array<std::vector<double>, 2> &xy);
 
 EinsumOperand column_major(const double *data, std::vector<int64_t> dims);
 Result<Buffers::device<double>> device_zeros(DeviceResources &res, int64_t count);

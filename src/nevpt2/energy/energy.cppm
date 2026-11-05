@@ -66,7 +66,11 @@ struct EnergyInputs {
 struct ClassEnergies {
   /// @brief Σ_k N_k per class.
   std::array<double, 8> norms{};
-  /// @brief -Σ_k N_k / (Δ_k + H_k / N_k) per class, in hartree.
+  /// @brief -Σ_k N_k / (Δ_k + H_k / N_k) per class, in hartree; a class
+  /// whose perturbers span one function each (Srs at two active electrons,
+  /// Sij at two active holes) keeps every k at H_k / N_k = η, its one
+  /// function's Dyall energy read from its blocks (README "One-function
+  /// classes", #949).
   std::array<double, 8> energies{};
   /// @brief The SC-NEVPT2 correlation energy, Σ of @ref energies.
   double total = 0.0;
@@ -94,9 +98,10 @@ struct ClassEnergies {
 ///     c_t = -1 / (Δ_t + H^J_t / N^J_t),
 ///
 /// state J's own denominator, and c_t = 0 where its norm N^J_t vanishes
-/// (|N^J_t| <= 1e-14, the energy's guard). sc_effective_hamiltonian hands it
-/// over: for the PT2 transition density ⟨Ψ_J⁽¹⁾|E_xy|K⟩ (Sr, Si and Sir),
-/// and as the kets a later call over the same orbitals reads with its
+/// (|N^J_t| <= 1e-14, the energy's guard); in a one-function class
+/// (ClassEnergies::energies) -1 / (Δ_t + η^J) for every t.
+/// sc_effective_hamiltonian hands it over: for the PT2 transition density
+/// ⟨Ψ_J⁽¹⁾|E_xy|K⟩ (Sr, Si and Sir), and as the kets a later call over the same orbitals reads with its
 /// diagonal omitted. A class with no perturber holds n empty lists.
 struct ScAmplitudes {
   /// @brief [J]: Sr's c over the virtual r, nvirt.
@@ -167,7 +172,8 @@ struct PcAmplitudes {
 ///
 /// Per class and perturber t, with N^J_t, H^J_t and Δ_t state J's own, as
 /// class_energies forms them, the coupling is
-/// -Σ_t T^t_IJ / (Δ_t + H^J_t / N^J_t) over the t with |N^J_t| > 1e-14, and
+/// -Σ_t T^t_IJ / (Δ_t + H^J_t / N^J_t) over the t with |N^J_t| > 1e-14 (every
+/// t, at η^J, in a one-function class: ClassEnergies::energies), and
 /// T^t_IJ = ⟨I|V P_t V|J⟩ is the class's norm einsum over the transition
 /// RDMs with two changes at I != J: its terms with no RDM, which carry
 /// ⟨I|J⟩ = 0, are dropped (hdm1's and dm1_h's 2δ, hdm2's δδ, Sir's
@@ -322,9 +328,10 @@ struct ClassEnergiesTangent {
 ///     Ė = (-2N/d + N²Δ/d²) Ṅ + (N²/d²) Ḣ + (N³/d²) Δ̇,
 ///
 /// over the perturbers whose norm the energy keeps (|N| > 1e-14); a guarded,
-/// empty one gives zero. Ṅ and Ḣ are every norm and H einsum differentiated
-/// operand by operand, each at its operand's tangent: the slabs' (bilinear in
-/// B), h1e_v's rows, the RDMs a class reads directly, and every class block's
+/// empty one gives zero. A one-function class's is c Ṅ + N c² (Δ̇ + η̇),
+/// c = -1 / (Δ + η), η̇ from its blocks' tangents. Ṅ and Ḣ are every norm
+/// and H einsum differentiated operand by operand, each at its operand's
+/// tangent: the slabs' (bilinear in B), h1e_v's rows, the RDMs a class reads directly, and every class block's
 /// (a16, ...). A block is of degree at most two in (h1e, h2e, RDMs), one
 /// integral times one RDM, so its tangent is its own builder's central
 /// polarization, (G(x + s ẋ) - G(x - s ẋ)) / 2s, exact; a slab's is
@@ -375,7 +382,9 @@ struct ClassEnergiesHvp {
 /// symmetric difference at ±s, ±2s, ±3s, Richardson-weighted, is exact, six
 /// reverse passes at shifted inputs. Sijrs's share is one kernel's.
 ///
-/// **Empty perturbers.** One the energy's guard skips (|N| <= 1e-14), empty
+/// **Empty perturbers.** One the energy's guard skips (|N| <= 1e-14; a
+/// one-function class has none, and its η's bars on its blocks are fixed
+/// multipliers like P and Q), empty
 /// at a symmetric geometry, has N, H and their first derivatives zero; a
 /// direction that breaks the symmetry populates it at second order, where
 /// its energy is homogeneous of degree two. Along u alone that is a

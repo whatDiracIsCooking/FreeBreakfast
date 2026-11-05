@@ -38,7 +38,10 @@ come with it:
   an atomicAdd per block;
 - PySCF's `_norm_to_energy`, verbatim, on the host, its vanishing-norm guard
   (`NUMERICAL_ZERO`, 1e-14) included: −Σ_k N_k / (Δ_k + H_k / N_k) over the
-  perturbers whose norm does not vanish. Sijrs has no guard, as in PySCF.
+  perturbers whose norm does not vanish. Sijrs has no guard, as in PySCF;
+  nor, since #949, has a class whose perturbers span one function each
+  ([One-function classes](#one-function-classes-949)), which keeps every
+  perturber at −N_k / (Δ_k + η).
 
 Each class builds its RDM-only intermediates (`make_a16`, …) once, then for
 each batch has nevpt2::slab write its external block into a plain device
@@ -101,6 +104,69 @@ largest are the n_act⁶ ones (a16, a22, dm3_h, hdm3, rm3): at most two at once.
 `fdm2` and each slab's norm and H vectors are workspace regions, taken after
 the slab is built and dead before the next one is.
 
+## One-function classes (#949)
+
+**Two classes can span one function per perturber.** Srs at two active
+electrons: E_rp E_sq |Ψ⟩ removes both, which leaves the active vacuum, so
+pair (r, s)'s perturber is one amplitude A_rs = Σ_pq W_pq ⟨vac|a_q a_p|Ψ⟩
+(W the external integrals) times a fixed function. Sij at two active holes
+is the same: filling both leaves the closed shell. So N_t ∝ A_t², H_t =
+η N_t with η that one function's Dyall energy, one number per state and
+class, and c_t = −1 / (Δ_t + η) does not depend on A_t. Every CAS(2,2) has
+both.
+
+**PySCF's guard drops a perturber the energy needs.** A_t is a smooth signed
+function of geometry, so it vanishes on a surface, and near it N_t falls
+under 1e-14 and `_norm_to_energy` drops the perturber. Its couplings
+T^t_IJ ∝ A^I_t A^J_t are linear in A_t, so H_eff's off-diagonal moved at
+first order through a perturber the derivative at a dropped point did not
+see: 3e-8 to 6e-8 Eh/bohr of SC-QD gradient at ethylene's Py, within 1e-5
+bohr of such a surface (`../gradient/README.md`, "What the SC-QD miss at Py
+was", #894). Lowering the guard is not the fix: where symmetry zeroes A_t,
+N_t and H_t are round-off, and H_t / N_t is noise next to a pole.
+
+**So a one-function class keeps every perturber, at η from its blocks.**
+`single_function_class` tells one by tr dm1 (the active electrons, rounded,
+`ActiveOperands::nelecas`): Srs at 2, Sij at 2 n_act − 2.
+`single_function_blocks` reads the class's Dyall block X (a7, a9) and metric
+Y (rm2 read `pqba`, hdm2) in the pairing the H and norm einsums contract
+with W_pq W_ab, and η = ⟨X, Y⟩ / ⟨Y, Y⟩ (`single_function_ratio`). On a
+state's own RDMs X = η Y to round-off (‖X − ηY‖/‖X‖ 1e-15 to 6e-15 on
+h6_631g_sa2's Srs and h2co_ccpvdz_sa2's Sij), so η is every perturber's
+H_t / N_t, read with no amplitude and no division by a small N. The
+per-perturber quotient is not: at h2co_ccpvdz_sa2's 1A2 root moved 1e-6 off
+C₂ᵥ, its Sij perturbers' H_t / N_t (N_t ~ 1e-12) ran from 0.620 to 0.703
+against η 0.70291. A class every one of whose amplitudes symmetry zeroes
+(that root's whole Sij at C₂ᵥ) is no longer special either: η is defined
+there, and its couplings grow linearly off it. A zero Y (no such state)
+falls back to the guard.
+
+Every pass reads that η:
+
+- **The energy, the QD walk and `ScAmplitudes`**: c_t = −1 / (Δ_t + η^J)
+  for every perturber, N and H of the class read by nothing but T.
+- **The reverse pass** (`sc_couplings_adjoint`): H̄_JJ c_t on N_t, nothing
+  on H_t, D̄_t = H̄_JJ N_t c_t² + A^J_t on Δ_t, and η̄ = Σ_t D̄_t onto the
+  blocks after the walk: η̄ Y / S on X and η̄ (X − 2ηY) / S on Y, S = ⟨Y, Y⟩
+  (`single_function_eta_bars`), which the sweep takes to the RDMs and
+  integrals. Their Eq. 40 share is η̄ (η + η − 2η) = 0.
+- **The forward tangent**: Ė = Σ_t c_t Ṅ_t + N_t c_t² (Δ̇_t + η̇), η̇ =
+  (⟨Ẋ, Y⟩ + ⟨X, Ẏ⟩ − 2η ⟨Y, Ẏ⟩) / S from the blocks' central polarization,
+  exact as `block_tangent`'s.
+- **The Hessian-vector product**: P = c_t, Q = 0 and R = N_t c_t², the block
+  bars as fixed multipliers of `fixed_adjoint` and their tangent through η̄̇
+  and (Ẋ, Ẏ). Such a class is never empty, so never takes K6.
+
+Off the RDMs' rank-one structure (the tests' raw directions) X is not η Y,
+and η is their least-squares ratio: one smooth function, which every pass
+differentiates exactly. PC is unchanged: its solve has no guard of this
+kind.
+
+**Measured** (A100, `--preset default`, card held): at ethylene's Py, every
+SC-QD check that missed now passes, and the energies move by at most
+6.5e-13 (`../gradient/README.md` has the table). The tests:
+`Nevpt2EnergyOneFunction` (below).
+
 ## SC-QD-NEVPT2
 
     sc_effective_hamiltonian(res, blocks, pairs, batch) -> vector<ClassEnergies>
@@ -117,7 +183,8 @@ are read on the diagonal only. The conventions, and what the brute force
 found, are `test/gtest/data/qd_nevpt2/README.md`'s:
 
 - **The coupling** of class k is −Σ_t T^t_IJ / (Δ_t + H^J_t / N^J_t), over
-  the perturbers with |N^J_t| > 1e-14: the denominator is the ket's, as
+  the perturbers with |N^J_t| > 1e-14 (every perturber, at H/N = η^J, in a
+  [one-function class](#one-function-classes-949)): the denominator is the ket's, as
   `class_energies` forms it, and the norm the transition one. At I = J it is
   `_norm_to_energy` itself, so the diagonal is `class_energies`' arithmetic,
   einsum for einsum.
@@ -633,7 +700,8 @@ and state for PC: the largest Srsi's v² c n_act and Srs's v² m.
 
 - **`ScAmplitudes`**: per state J and perturber t, c_t = −1 / (Δ_t +
   H^J_t / N^J_t), J's own denominator from its N and H tables, and 0 where
-  `_norm_to_energy`'s guard drops the perturber. Ψ_J⁽¹⁾ holds c_t P_t V|J⟩.
+  `_norm_to_energy`'s guard drops the perturber; −1 / (Δ_t + η^J) for every
+  perturber of a one-function class. Ψ_J⁽¹⁾ holds c_t P_t V|J⟩.
   Sr over r, Si over i, Sijr over (r, j ≤ i) and Srsi over (r ≤ s, i) as
   their tables pack them, Srs over (r, s), Sij over (i, j), Sir over (r, i)
   at r ncore + i (its tables run (i, r), and are reordered). A class with
@@ -782,6 +850,8 @@ E = −N²/d, and
 
 Park's P, Q and R (`nuclear_hessian.tex` Eq. finish's first order) with no
 1/N: the (H, T) form's removable 1/N factors are fatal near the guard. A
+one-function class's Ė reads η instead
+([One-function classes](#one-function-classes-949)). A
 perturber whose norm the energy guards (|N| ≤ 1e-14) adds nothing to Ė;
 its N, H, Δ and their tangents are still reported as the walk forms them,
 for #811's second-order term there. Sijrs has no guard and no tables: its
@@ -871,7 +941,8 @@ pull-back onto Λ takes that through B and the bar itself through Ḃ (Λ is
 linear in B at a fixed slab bar).
 
 **Empty perturbers: K6, and the ρ_τ refusal.** A perturber the guard skips
-(|N| ≤ 1e-14), empty by symmetry, has N, H and their gradients zero; a
+(|N| ≤ 1e-14; never one of a one-function class's, which has no guard),
+empty by symmetry, has N, H and their gradients zero; a
 direction that breaks the symmetry populates it at second order, where its
 energy is homogeneous of degree two (demo `hessian-theory.md` §5.6). Its
 second-order tables, N^{uv} and H^{uv}, are the same kind of difference of
@@ -1599,6 +1670,21 @@ with a seeded random, unsymmetric H̄:
   and 1e-7, along every group (B, h1e_v, e, h, rdm over every pair's RDMs,
   all) on `h8_sto3g_sa3`, and along e on the other five (see Conditioning
   above). Measured on the RTX 3080: 3e-12 to 1.5e-10 relative.
+
+The one-function classes (#949), `Nevpt2EnergyOneFunction`, in the same
+file, each under half a second; both fail with the guard back in place:
+
+- `CouplingIsLinearThroughAZeroAmplitude` (`h2co_ccpvdz_sa2`, C₂ᵥ, whose
+  1A2 root's Sij amplitudes are all zero): along a random B direction, Sij's
+  H_01 and H_10 at ε = 1e-8, over ε, against their central difference over
+  ±1e-6, to 1e-4. Measured on the A100: 6.5e-6 and 6.7e-6. With the guard,
+  H_01 is 0 at 1e-8.
+- `TangentAndHessianProductMatchTheBars` (`h6_631g_sa2`'s root 0, Srs, and
+  `h2co_ccpvdz_sa2`'s 1A2 root, Sij), along seeded raw directions of every
+  input and of the RDMs: Ė against Σ ⟨bar, dx⟩ to 1e-10 of the largest
+  summand (≤ 5.3e-14 measured), which take η's derivative by two separate
+  rules, and ⟨v, HVP u⟩ = ⟨u, HVP v⟩ to 1e-8 (≤ 2.7e-14; 9.2e-3 on the
+  1A2 root with the guard, whose empty Sij took K6).
 
 The PC reverse pass, `Nevpt2PcEnergyAdjoint` and `Nevpt2PcEnergyAdjointLadder`:
 
