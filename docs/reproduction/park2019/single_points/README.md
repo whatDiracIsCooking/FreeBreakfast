@@ -1,5 +1,7 @@
 # Single points at Park's SI geometries: the all-electron core floor
 
+Phase 2, the same points with the C and N 1s frozen (#859), is [frozen_core.md](frozen_core.md).
+
 Phase 1 of #860. Each point is an SA3-QD-PC-NEVPT2 single point
 (`[nevpt2] quasi_degenerate = true` over a three-root `[casscf]`) at one of
 Park's own optimized geometries, compared with the absolute energies he

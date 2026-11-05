@@ -149,6 +149,36 @@ template <class T>
   return read_key(table, step, key, base_dir, out);
 }
 
+/// @brief `frozen_core` of the `[step]` table, shared by `[nevpt2]` and
+/// `[nevpt2_gradient]`: a count of at least 0, or "auto"
+/// (Nevpt2Step::kFrozenCoreAuto); 0 when absent. Whether the count fits the
+/// CASSCF's core needs the molecule and the active space, so Nevpt2Step::run
+/// checks that.
+[[nodiscard]] Status read_frozen_core(const toml::table &table, std::string_view step,
+                                      int32_t &out) {
+  const auto node = table["frozen_core"];
+  if (!node) {
+    out = 0;
+    return {};
+  }
+  if (const auto name = node.value_exact<std::string>()) {
+    if (*name != "auto") {
+      return err_config("[{}] has no frozen_core '{}' (a count, or \"auto\")", step, *name);
+    }
+    out = Nevpt2Step::kFrozenCoreAuto;
+    return {};
+  }
+  const auto count = node.value_exact<int64_t>();
+  if (!count || !std::in_range<int32_t>(*count)) {
+    return err_config("[{}] frozen_core is not a 32-bit count or \"auto\"", step);
+  }
+  if (*count < 0) {
+    return err_config("[{}] frozen_core is {}, below 0", step, *count);
+  }
+  out = static_cast<int32_t>(*count);
+  return {};
+}
+
 /// @brief The active-space selection's keys of the `[step]` table, the same
 /// in every step that takes one: `ncas` and `nelecas` required, with `active`;
 /// or `avas` with `avas_threshold` in their place. The ranges need the
@@ -456,14 +486,29 @@ template <class S>
   } else if constexpr (std::same_as<S, Nevpt2Step>) {
     // The CASSCF's root count QD needs is another table's, refused once they
     // are planned, by check_nevpt2; Nevpt2Step::run refuses it again.
-    FBF_TRY(check_keys(table, kStep, {"quasi_degenerate"}));
+    // So does whether frozen_core fits the CASSCF's core.
+    FBF_TRY(check_keys(table, kStep, {"quasi_degenerate", "frozen_core"}));
     FBF_TRY(read_key(table, kStep, "quasi_degenerate", base_dir, step.quasi_degenerate));
+    FBF_TRY(read_frozen_core(table, kStep, step.frozen_core));
   } else if constexpr (std::same_as<S, Nevpt2GradientStep>) {
     // The CASSCF's root count, the molecule's spin and the ERI mode are other
     // tables', refused once they are planned, by check_nevpt2_gradient and
     // check_density_fitted_only; Nevpt2GradientStep::run refuses them again.
     // So is whether a QD state is one of H_eff's, by check_nevpt2_gradient.
-    FBF_TRY(check_keys(table, kStep, {"root", "variant", "quasi_degenerate", "state"}));
+    FBF_TRY(
+        check_keys(table, kStep, {"root", "variant", "quasi_degenerate", "state", "frozen_core"}));
+    // [nevpt2]'s key, read the same way; the frozen-core gradient is #875's,
+    // so only 0 is taken until it lands.
+    int32_t frozen_core = 0;
+    FBF_TRY(read_frozen_core(table, kStep, frozen_core));
+    if (frozen_core != 0) {
+      return err_config("[{}] frozen_core is {}: the frozen-core NEVPT2 gradient is not "
+                        "implemented yet (#875), so only 0 is taken; [nevpt2] takes it for the "
+                        "energies",
+                        kStep,
+                        frozen_core == Nevpt2Step::kFrozenCoreAuto ? std::string{"\"auto\""}
+                                                                   : std::to_string(frozen_core));
+    }
     FBF_TRY(read_key(table, kStep, "root", base_dir, step.root));
     if (step.root < 0) {
       return err_config("[{}] root is {}, below 0", kStep, step.root);

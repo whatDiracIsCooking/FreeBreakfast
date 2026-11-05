@@ -99,8 +99,8 @@ struct Nevpt2GradientStep {
   ///         past the roots, or a @ref state without @ref quasi_degenerate,
   ///         or a CasscfOutput whose 1-RDMs are not one ncas^2 block per
   ///         root; otherwise the gradient's error (PC's refusals, a metric
-  ///         with no positive eigenvalue or a non-positive denominator,
-  ///         among them, the
+  ///         with no positive eigenvalue or a pole -- an intruder, |t| > 1,
+  ///         or a denominator at round-off -- among them, the
   ///         energy's Numerical error unchanged), or @c write_json's for a
   ///         @ref json_path that cannot be written.
   [[nodiscard]] Result<Nevpt2GradientOutput>

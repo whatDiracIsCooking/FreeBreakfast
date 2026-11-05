@@ -1,0 +1,542 @@
+{
+ "description": "Frozen-core SC- and PC-NEVPT2 per root on the cases of nevpt2_df.json named here, the same polished DF (SA-)CASSCF orbitals and multi-root DFCASCI: per frozen_core value (as the [nevpt2] key spells it) and its count n_frozen, each root's eight SC classes' norms and energies (PySCF's class functions with the lowest n_frozen canonical core orbitals sliced out of dfnevpt2's integrals; h1eff over the whole core), their sum e_corr and the total, and block2's PC with frozen=n_frozen per class and its total, on the root's canonical state with the active orbitals unrotated. Hartree",
+ "provenance": {
+  "pyscf": "2.14.0",
+  "block2": "0.5.4",
+  "numpy": "2.5.4",
+  "threads": 1,
+  "command": "uv run --group tools tools/emit/nevpt2_reference.py --frozen-core",
+  "casscf": "test/gtest/data/casscf/casscf_df.json"
+ },
+ "checks": {
+  "zero": "the frozen class functions at n_frozen = 0 against PySCF's NEVPT.kernel (cas_natorb=False), per class norm and energy",
+  "no_core_class": "frozen Sr and Srs, which have no core index, against the all-electron ones, norm and energy",
+  "tolerance": 1e-12,
+  "block2_sc": "block2's SC with frozen=n_frozen against the frozen PySCF classes, per class energy",
+  "block2_sc_tolerance": 1e-10,
+  "pc_natorb": "block2's frozen PC on the root's natural orbitals against the recorded unrotated one, per class",
+  "pc_natorb_tolerance": 1e-10,
+  "max_difference": {
+   "zero": 0.0,
+   "no_core_class": 0.0,
+   "block2_sc": 8.586881206085195e-16,
+   "pc_natorb": 8.933825901280557e-17
+  }
+ },
+ "block2": {
+  "pc_tau": 1e-13,
+  "pc_noise": 100.0
+ },
+ "cases": [
+  {
+   "name": "h2o_ccpvdz",
+   "ncas": 4,
+   "nelecas": 4,
+   "ncore": 3,
+   "weights": [
+    1.0
+   ],
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 116
+   },
+   "casscf_energies": [
+    -76.07783581719617
+   ],
+   "variants": [
+    {
+     "frozen_core": "auto",
+     "n_frozen": 1,
+     "roots": [
+      {
+       "casci_energy": -76.07783581719619,
+       "classes": [
+        {
+         "name": "Sr",
+         "excitation": "(-1)'",
+         "norm": 0.01882285859669003,
+         "energy": -0.0053227094608439595
+        },
+        {
+         "name": "Si",
+         "excitation": "(+1)'",
+         "norm": 0.0002054563610510568,
+         "energy": -7.111778304885672e-05
+        },
+        {
+         "name": "Sijrs",
+         "excitation": "(0)",
+         "norm": 0.20783385336290655,
+         "energy": -0.03914805829557222
+        },
+        {
+         "name": "Sijr",
+         "excitation": "(+1)",
+         "norm": 0.026970617620626438,
+         "energy": -0.004974252405753733
+        },
+        {
+         "name": "Srsi",
+         "excitation": "(-1)",
+         "norm": 0.18790725019116156,
+         "energy": -0.03163278837223663
+        },
+        {
+         "name": "Srs",
+         "excitation": "(-2)",
+         "norm": 0.13222485476644782,
+         "energy": -0.020504861565306065
+        },
+        {
+         "name": "Sij",
+         "excitation": "(+2)",
+         "norm": 0.00409908309257275,
+         "energy": -0.0009476353541758906
+        },
+        {
+         "name": "Sir",
+         "excitation": "(0)'",
+         "norm": 0.16069721686021354,
+         "energy": -0.04445510554874507
+        }
+       ],
+       "e_corr": -0.14705652878568243,
+       "energy": -76.22489234598187,
+       "pc_class_energies": [
+        {
+         "name": "Sr",
+         "energy": -0.0053967007920655225
+        },
+        {
+         "name": "Si",
+         "energy": -7.170298450833457e-05
+        },
+        {
+         "name": "Sijrs",
+         "energy": -0.03914805829557221
+        },
+        {
+         "name": "Sijr",
+         "energy": -0.004991348461505958
+        },
+        {
+         "name": "Srsi",
+         "energy": -0.03169282611900215
+        },
+        {
+         "name": "Srs",
+         "energy": -0.020580923518419357
+        },
+        {
+         "name": "Sij",
+         "energy": -0.0009590846517617
+        },
+        {
+         "name": "Sir",
+         "energy": -0.044536427887173186
+        }
+       ],
+       "e_pc_total": -0.1473770727100084
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "h2co_ccpvdz_sa2",
+   "ncas": 3,
+   "nelecas": 4,
+   "ncore": 6,
+   "weights": [
+    0.5,
+    0.5
+   ],
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 186
+   },
+   "casscf_energies": [
+    -113.9049288584831,
+    -113.75507875380869
+   ],
+   "variants": [
+    {
+     "frozen_core": "auto",
+     "n_frozen": 2,
+     "roots": [
+      {
+       "casci_energy": -113.90492885848315,
+       "classes": [
+        {
+         "name": "Sr",
+         "excitation": "(-1)'",
+         "norm": 0.030933867044595036,
+         "energy": -0.015350810780078045
+        },
+        {
+         "name": "Si",
+         "excitation": "(+1)'",
+         "norm": 2.2680982656355313e-05,
+         "energy": -2.219876782303438e-05
+        },
+        {
+         "name": "Sijrs",
+         "excitation": "(0)",
+         "norm": 0.4223184321588321,
+         "energy": -0.09765989530887165
+        },
+        {
+         "name": "Sijr",
+         "excitation": "(+1)",
+         "norm": 0.029472745227079024,
+         "energy": -0.007728348272764956
+        },
+        {
+         "name": "Srsi",
+         "excitation": "(-1)",
+         "norm": 0.4037576130394317,
+         "energy": -0.09090259266268266
+        },
+        {
+         "name": "Srs",
+         "excitation": "(-2)",
+         "norm": 0.17348256154971176,
+         "energy": -0.031457958383952614
+        },
+        {
+         "name": "Sij",
+         "excitation": "(+2)",
+         "norm": 0.0037980928959484763,
+         "energy": -0.0014272123917443995
+        },
+        {
+         "name": "Sir",
+         "excitation": "(0)'",
+         "norm": 0.10675814327880806,
+         "energy": -0.038972141410812795
+        }
+       ],
+       "e_corr": -0.2835211579787302,
+       "energy": -114.18845001646187,
+       "pc_class_energies": [
+        {
+         "name": "Sr",
+         "energy": -0.015924006033037036
+        },
+        {
+         "name": "Si",
+         "energy": -2.219876782324771e-05
+        },
+        {
+         "name": "Sijrs",
+         "energy": -0.09765989530887165
+        },
+        {
+         "name": "Sijr",
+         "energy": -0.007730040461471724
+        },
+        {
+         "name": "Srsi",
+         "energy": -0.09093074391111383
+        },
+        {
+         "name": "Srs",
+         "energy": -0.031562822899476664
+        },
+        {
+         "name": "Sij",
+         "energy": -0.001427212391744411
+        },
+        {
+         "name": "Sir",
+         "energy": -0.03909035023402041
+        }
+       ],
+       "e_pc_total": -0.284347270007559
+      },
+      {
+       "casci_energy": -113.75507875380873,
+       "classes": [
+        {
+         "name": "Sr",
+         "excitation": "(-1)'",
+         "norm": 0.015058310039758223,
+         "energy": -0.006569078047770382
+        },
+        {
+         "name": "Si",
+         "excitation": "(+1)'",
+         "norm": 0.0018656487532947436,
+         "energy": -0.001985192404362374
+        },
+        {
+         "name": "Sijrs",
+         "excitation": "(0)",
+         "norm": 0.42231814685480984,
+         "energy": -0.0977454788174241
+        },
+        {
+         "name": "Sijr",
+         "excitation": "(+1)",
+         "norm": 0.04804593551083932,
+         "energy": -0.014473918276986651
+        },
+        {
+         "name": "Srsi",
+         "excitation": "(-1)",
+         "norm": 0.3956649175227143,
+         "energy": -0.09043364676276106
+        },
+        {
+         "name": "Srs",
+         "excitation": "(-2)",
+         "norm": 0.1513699575298718,
+         "energy": -0.02696144366875783
+        },
+        {
+         "name": "Sij",
+         "excitation": "(+2)",
+         "norm": -5.9562460749824376e-18,
+         "energy": -0.0
+        },
+        {
+         "name": "Sir",
+         "excitation": "(0)'",
+         "norm": 0.09888993702420529,
+         "energy": -0.03792946911011857
+        }
+       ],
+       "e_corr": -0.27609822708818094,
+       "energy": -114.03117698089692,
+       "pc_class_energies": [
+        {
+         "name": "Sr",
+         "energy": -0.006775642201962652
+        },
+        {
+         "name": "Si",
+         "energy": -0.0020245287369153393
+        },
+        {
+         "name": "Sijrs",
+         "energy": -0.09774547881742404
+        },
+        {
+         "name": "Sijr",
+         "energy": -0.014473918276986655
+        },
+        {
+         "name": "Srsi",
+         "energy": -0.09056118430207852
+        },
+        {
+         "name": "Srs",
+         "energy": -0.027016953743661073
+        },
+        {
+         "name": "Sij",
+         "energy": -9.679595393685235e-20
+        },
+        {
+         "name": "Sir",
+         "energy": -0.038221122064472424
+        }
+       ],
+       "e_pc_total": -0.27681882814350073
+      }
+     ]
+    },
+    {
+     "frozen_core": 1,
+     "n_frozen": 1,
+     "roots": [
+      {
+       "casci_energy": -113.90492885848315,
+       "classes": [
+        {
+         "name": "Sr",
+         "excitation": "(-1)'",
+         "norm": 0.030933867044595036,
+         "energy": -0.015350810780078045
+        },
+        {
+         "name": "Si",
+         "excitation": "(+1)'",
+         "norm": 2.2680982656355313e-05,
+         "energy": -2.219876782303438e-05
+        },
+        {
+         "name": "Sijrs",
+         "excitation": "(0)",
+         "norm": 0.45828419357091676,
+         "energy": -0.09955868220473958
+        },
+        {
+         "name": "Sijr",
+         "excitation": "(+1)",
+         "norm": 0.03174728855445742,
+         "energy": -0.007871008865283635
+        },
+        {
+         "name": "Srsi",
+         "excitation": "(-1)",
+         "norm": 0.4082966363518494,
+         "energy": -0.0912155102405139
+        },
+        {
+         "name": "Srs",
+         "excitation": "(-2)",
+         "norm": 0.17348256154971176,
+         "energy": -0.031457958383952614
+        },
+        {
+         "name": "Sij",
+         "excitation": "(+2)",
+         "norm": 0.0040959058949932535,
+         "energy": -0.0014460126658159466
+        },
+        {
+         "name": "Sir",
+         "excitation": "(0)'",
+         "norm": 0.1079145317529453,
+         "energy": -0.03906165212306282
+        }
+       ],
+       "e_corr": -0.2859838340312696,
+       "energy": -114.19091269251442,
+       "pc_class_energies": [
+        {
+         "name": "Sr",
+         "energy": -0.015924006033037036
+        },
+        {
+         "name": "Si",
+         "energy": -2.219876782324771e-05
+        },
+        {
+         "name": "Sijrs",
+         "energy": -0.09955868220473961
+        },
+        {
+         "name": "Sijr",
+         "energy": -0.00787270218322173
+        },
+        {
+         "name": "Srsi",
+         "energy": -0.09124366294227339
+        },
+        {
+         "name": "Srs",
+         "energy": -0.031562822899476664
+        },
+        {
+         "name": "Sij",
+         "energy": -0.0014460126658159577
+        },
+        {
+         "name": "Sir",
+         "energy": -0.039179870286174395
+        }
+       ],
+       "e_pc_total": -0.28680995798256204
+      },
+      {
+       "casci_energy": -113.75507875380873,
+       "classes": [
+        {
+         "name": "Sr",
+         "excitation": "(-1)'",
+         "norm": 0.015058310039758223,
+         "energy": -0.006569078047770382
+        },
+        {
+         "name": "Si",
+         "excitation": "(+1)'",
+         "norm": 0.0018656487532947436,
+         "energy": -0.001985192404362374
+        },
+        {
+         "name": "Sijrs",
+         "excitation": "(0)",
+         "norm": 0.45828699517340116,
+         "energy": -0.0996507620126374
+        },
+        {
+         "name": "Sijr",
+         "excitation": "(+1)",
+         "norm": 0.050170256284209146,
+         "energy": -0.014611610775093972
+        },
+        {
+         "name": "Srsi",
+         "excitation": "(-1)",
+         "norm": 0.4013743215032915,
+         "energy": -0.0908319953841025
+        },
+        {
+         "name": "Srs",
+         "excitation": "(-2)",
+         "norm": 0.1513699575298718,
+         "energy": -0.02696144366875783
+        },
+        {
+         "name": "Sij",
+         "excitation": "(+2)",
+         "norm": -6.023947104668677e-18,
+         "energy": -0.0
+        },
+        {
+         "name": "Sir",
+         "excitation": "(0)'",
+         "norm": 0.09992541877331959,
+         "energy": -0.038012031079414914
+        }
+       ],
+       "e_corr": -0.2786221133721394,
+       "energy": -114.03370086718087,
+       "pc_class_energies": [
+        {
+         "name": "Sr",
+         "energy": -0.006775642201962652
+        },
+        {
+         "name": "Si",
+         "energy": -0.0020245287369153393
+        },
+        {
+         "name": "Sijrs",
+         "energy": -0.09965076201263734
+        },
+        {
+         "name": "Sijr",
+         "energy": -0.01461161077509398
+        },
+        {
+         "name": "Srsi",
+         "energy": -0.09095958474764625
+        },
+        {
+         "name": "Srs",
+         "energy": -0.027016953743661073
+        },
+        {
+         "name": "Sij",
+         "energy": -8.078703123377465e-20
+        },
+        {
+         "name": "Sir",
+         "energy": -0.038303702294676056
+        }
+       ],
+       "e_pc_total": -0.2793427845125927
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

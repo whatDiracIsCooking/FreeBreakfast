@@ -72,7 +72,8 @@ struct Nevpt2GradientStep {
    basis and its primitive-pair classes, the core Hamiltonian, and the
    `DensityFitted` product's aux basis, B and L. Its terms, its multipliers
    and its gate are `../../nevpt2/gradient/README.md`'s. A class PC refuses
-   (a metric with no positive eigenvalue, a non-positive λ + Δ) is the
+   (a metric with no positive eigenvalue, or a pole: an intruder, |t| > 1, or
+   a λ + Δ at round-off) is the
    energy's error, returned
    unchanged, so `[optimize]` stops on it.
 4. **`nevpt2_gradient.json`**, when `json_path` is set:
@@ -130,7 +131,8 @@ state-averaged Fock, which is what both QD gradients take
   `quasi_degenerate`. An `[optimize]` over it follows the state from
   geometry to geometry (`../optimize/README.md`, "The QD-NEVPT2 state").
 - **A PC refusal** is the one the `[nevpt2]` step reports for PC-QD: a class
-  whose metric has no positive eigenvalue, or a non-positive λ + Δ,
+  whose metric has no positive eigenvalue, or a pole (an intruder,
+  |t| > 1, or a λ + Δ at round-off),
   `qd_pc_energy`'s `Numerical` error, which `qd_pc_gradient` returns
   unchanged and the step returns as it is. The energy step keeps SC-QD and
   records the refusal in `pc_qd_refusal`; the gradient has no SC to keep,
@@ -213,6 +215,12 @@ nelecas = 4
 conv_tol_grad = 1e-9
 [nevpt2_gradient]   # root = 0, variant = "sc" by default ("pc" the other)
 ```
+
+**No frozen core yet.** `frozen_core` is `[nevpt2]`'s key (#859), and this
+table reads it the same way, but takes only 0, the all-electron default:
+a count above 0, or `"auto"`, is `InvalidConfig` when the config is read,
+naming #875. The frozen-core gradient needs the frozen–correlated core
+rotations' Z-vector term, which #875 adds.
 
 ## Tests
 

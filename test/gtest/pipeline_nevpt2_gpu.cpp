@@ -168,6 +168,68 @@ std::string casscf_table(const fb::json &entry) {
   return table + "]\n";
 }
 
+// Each root of @p nevpt2 against the reference's @p roots: every class's SC
+// norm and energy and their sum, and every PC class energy and their sum
+// against block2's, to kTolerance; PC beside SC to kPcSlack. The CASSCF's
+// root energies against @p casscf_energies.
+void expect_roots(std::string_view label, const fb::json &roots,
+                  const std::vector<double> &casscf_energies, const fb::CasscfOutput &casscf,
+                  const fb::Nevpt2Output &nevpt2) {
+  ASSERT_EQ(nevpt2.roots.size(), roots.size());
+  ASSERT_EQ(casscf.energies.size(), roots.size());
+  for (std::size_t r = 0; r < roots.size(); ++r) {
+    const fb::json &root = roots[r];
+    const fb::json &classes = root.at("classes");
+    ASSERT_EQ(classes.size(), 8U);
+    EXPECT_NEAR(casscf.energies[r], casscf_energies[r], kCasscfEnergyTolerance) << "root " << r;
+    const fb::nevpt2::ClassEnergies &got = nevpt2.roots[r];
+    double worst = 0.0;
+    for (std::size_t k = 0; k < 8; ++k) {
+      const std::string name = classes[k].at("name").get<std::string>();
+      const double norm = classes[k].at("norm").get<double>();
+      const double energy = classes[k].at("energy").get<double>();
+      EXPECT_NEAR(got.norms[k], norm, kTolerance) << "root " << r << " " << name << " norm";
+      EXPECT_NEAR(got.energies[k], energy, kTolerance) << "root " << r << " " << name;
+      worst = std::max({worst, std::abs(got.norms[k] - norm), std::abs(got.energies[k] - energy)});
+    }
+    const double e_corr = root.at("e_corr").get<double>();
+    EXPECT_NEAR(got.total, e_corr, kTolerance) << "root " << r << " E_corr";
+
+    // PC against block2's, and beside SC: none above SC's, Sijrs SC's own.
+    ASSERT_EQ(nevpt2.pc_roots.size(), roots.size());
+    ASSERT_TRUE(nevpt2.pc_roots[r].has_value()) << "root " << r << ": " << nevpt2.pc_refusals[r];
+    const fb::nevpt2::PcClassEnergies &pc = *nevpt2.pc_roots[r];
+    const fb::json &pc_classes = root.at("pc_class_energies");
+    ASSERT_EQ(pc_classes.size(), 8U);
+    double pc_sum = 0.0;
+    double pc_worst = 0.0;
+    for (std::size_t k = 0; k < 8; ++k) {
+      const std::string name = classes[k].at("name").get<std::string>();
+      ASSERT_EQ(pc_classes[k].at("name").get<std::string>(), name);
+      const double energy = pc_classes[k].at("energy").get<double>();
+      EXPECT_NEAR(pc.energies[k], energy, kTolerance) << "root " << r << " PC " << name;
+      EXPECT_LE(pc.energies[k], got.energies[k] + kPcSlack) << "root " << r << " PC " << name;
+      pc_sum += pc.energies[k];
+      pc_worst = std::max(pc_worst, std::abs(pc.energies[k] - energy));
+    }
+    const double e_pc = root.at("e_pc_total").get<double>();
+    EXPECT_NEAR(pc.total, e_pc, kTolerance) << "root " << r << " PC E_corr";
+    EXPECT_NEAR(pc.energies[2], got.energies[2], kPcSlack) << "root " << r << " PC Sijrs";
+    EXPECT_EQ(pc.dropped[2], 0) << "root " << r << " PC Sijrs";
+    EXPECT_NEAR(pc.total, pc_sum, kPcSlack) << "root " << r << " PC E_corr";
+    // What kTolerance's derivation rests on, printed for the record.
+    std::cout << std::format("[ nevpt2   ] {} root {}: |g| {:.2e}, CASSCF dE {:+.2e}, "
+                             "E_corr {:.12f} dE_corr {:+.2e}, worst class {:.2e} (tol {:.0e})\n",
+                             label, r, casscf.gradient_norm,
+                             casscf.energies[r] - casscf_energies[r], got.total, got.total - e_corr,
+                             worst, kTolerance);
+    std::cout << std::format("[ nevpt2   ] {} root {}: PC E_corr {:.12f} dE_corr {:+.2e}, "
+                             "worst class {:.2e} (PC - SC {:+.2e}), dropped {}\n",
+                             label, r, pc.total, pc.total - e_pc, pc_worst, pc.total - got.total,
+                             pc.dropped);
+  }
+}
+
 class PipelineNevpt2 : public ::testing::TestWithParam<Case> {};
 
 TEST_P(PipelineNevpt2, MatchesPyscf) {
@@ -201,61 +263,8 @@ TEST_P(PipelineNevpt2, MatchesPyscf) {
   EXPECT_TRUE(nevpt2->qd_couplings.empty() && nevpt2->qd_energies.empty() &&
               nevpt2->pc_qd_energies.empty() && nevpt2->pc_qd_refusal.empty());
 
-  const fb::json &roots = want.at("roots");
-  const auto casscf_energies = want.at("casscf_energies").get<std::vector<double>>();
-  ASSERT_EQ(nevpt2->roots.size(), roots.size());
-  ASSERT_EQ(casscf->energies.size(), roots.size());
-  for (std::size_t r = 0; r < roots.size(); ++r) {
-    const fb::json &root = roots[r];
-    const fb::json &classes = root.at("classes");
-    ASSERT_EQ(classes.size(), 8U);
-    EXPECT_NEAR(casscf->energies[r], casscf_energies[r], kCasscfEnergyTolerance) << "root " << r;
-    const fb::nevpt2::ClassEnergies &got = nevpt2->roots[r];
-    double worst = 0.0;
-    for (std::size_t k = 0; k < 8; ++k) {
-      const std::string name = classes[k].at("name").get<std::string>();
-      const double norm = classes[k].at("norm").get<double>();
-      const double energy = classes[k].at("energy").get<double>();
-      EXPECT_NEAR(got.norms[k], norm, kTolerance) << "root " << r << " " << name << " norm";
-      EXPECT_NEAR(got.energies[k], energy, kTolerance) << "root " << r << " " << name;
-      worst = std::max({worst, std::abs(got.norms[k] - norm), std::abs(got.energies[k] - energy)});
-    }
-    const double e_corr = root.at("e_corr").get<double>();
-    EXPECT_NEAR(got.total, e_corr, kTolerance) << "root " << r << " E_corr";
-
-    // PC against block2's, and beside SC: none above SC's, Sijrs SC's own.
-    ASSERT_EQ(nevpt2->pc_roots.size(), roots.size());
-    ASSERT_TRUE(nevpt2->pc_roots[r].has_value()) << "root " << r << ": " << nevpt2->pc_refusals[r];
-    const fb::nevpt2::PcClassEnergies &pc = *nevpt2->pc_roots[r];
-    const fb::json &pc_classes = root.at("pc_class_energies");
-    ASSERT_EQ(pc_classes.size(), 8U);
-    double pc_sum = 0.0;
-    double pc_worst = 0.0;
-    for (std::size_t k = 0; k < 8; ++k) {
-      const std::string name = classes[k].at("name").get<std::string>();
-      ASSERT_EQ(pc_classes[k].at("name").get<std::string>(), name);
-      const double energy = pc_classes[k].at("energy").get<double>();
-      EXPECT_NEAR(pc.energies[k], energy, kTolerance) << "root " << r << " PC " << name;
-      EXPECT_LE(pc.energies[k], got.energies[k] + kPcSlack) << "root " << r << " PC " << name;
-      pc_sum += pc.energies[k];
-      pc_worst = std::max(pc_worst, std::abs(pc.energies[k] - energy));
-    }
-    const double e_pc = root.at("e_pc_total").get<double>();
-    EXPECT_NEAR(pc.total, e_pc, kTolerance) << "root " << r << " PC E_corr";
-    EXPECT_NEAR(pc.energies[2], got.energies[2], kPcSlack) << "root " << r << " PC Sijrs";
-    EXPECT_EQ(pc.dropped[2], 0) << "root " << r << " PC Sijrs";
-    EXPECT_NEAR(pc.total, pc_sum, kPcSlack) << "root " << r << " PC E_corr";
-    // What kTolerance's derivation rests on, printed for the record.
-    std::cout << std::format("[ nevpt2   ] {} root {}: |g| {:.2e}, CASSCF dE {:+.2e}, "
-                             "E_corr {:.12f} dE_corr {:+.2e}, worst class {:.2e} (tol {:.0e})\n",
-                             c.name, r, casscf->gradient_norm,
-                             casscf->energies[r] - casscf_energies[r], got.total,
-                             got.total - e_corr, worst, kTolerance);
-    std::cout << std::format("[ nevpt2   ] {} root {}: PC E_corr {:.12f} dE_corr {:+.2e}, "
-                             "worst class {:.2e} (PC - SC {:+.2e}), dropped {}\n",
-                             c.name, r, pc.total, pc.total - e_pc, pc_worst, pc.total - got.total,
-                             pc.dropped);
-  }
+  expect_roots(c.name, want.at("roots"), want.at("casscf_energies").get<std::vector<double>>(),
+               *casscf, *nevpt2);
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineNevpt2,
@@ -264,6 +273,78 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineNevpt2,
                                            Case{.name = "h2co_ccpvdz_sa2_weighted", .slow = true},
                                            Case{.name = "h2o_ccpvdz_avas", .slow = true}),
                          [](const auto &info) { return std::string(info.param.name); });
+
+// Frozen core (#859): [nevpt2] frozen_core against data/nevpt2/
+// nevpt2_df_frozen_core.json (tools/emit/nevpt2_reference.py --frozen-core:
+// PySCF's class functions with the frozen orbitals sliced out of its fitted
+// integrals, h1eff over the whole core, and block2's PC with frozen=n), through
+// the same chain and at the same bars as MatchesPyscf: the frozen orbitals are
+// a slice of what that test already holds, so its derivation carries over.
+// One case per frozen_core value as the key spells it: H2O's "auto" (its O
+// 1s), and H2CO's "auto" (C and O 1s) and 1 (the lowest, its O 1s).
+struct FrozenCase {
+  std::string_view name;
+  std::string_view frozen_core;
+  bool slow;
+};
+
+void PrintTo(const FrozenCase &c, std::ostream *os) {
+  // ctest names a case by this: "auto" unquoted, so `ctest -R` can select it.
+  *os << c.name << "_" << (c.frozen_core.starts_with('"') ? "auto" : c.frozen_core);
+}
+
+class PipelineNevpt2FrozenCore : public ::testing::TestWithParam<FrozenCase> {};
+
+TEST_P(PipelineNevpt2FrozenCore, MatchesReference) {
+  FBF_REQUIRE_GPU();
+  const FrozenCase &c = GetParam();
+  if (c.slow) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  const fb::json &start = reference_case("casscf", "casscf_df.json", c.name);
+  const fb::json &want = reference_case("nevpt2", "nevpt2_df_frozen_core.json", c.name);
+  ASSERT_EQ(want.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
+  const fb::json *variant = nullptr;
+  for (const fb::json &v : want.at("variants")) {
+    const fb::json &key = v.at("frozen_core");
+    if ((key.is_string() ? std::format("\"{}\"", key.get<std::string>())
+                         : std::to_string(key.get<std::int32_t>())) == c.frozen_core) {
+      variant = &v;
+    }
+  }
+  ASSERT_NE(variant, nullptr) << c.frozen_core;
+
+  const fb::test::ScratchDir dir("pipeline_nevpt2_frozen_core");
+  auto calc = fb::read_config(
+      write_config(dir, start,
+                   casscf_table(start) +
+                       std::format("[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
+                                   "[nevpt2]\nfrozen_core = {}\n",
+                                   kDfAuxBasis, c.frozen_core)),
+      dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &casscf = calc->get<fb::CasscfOutput>();
+  const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
+  ASSERT_TRUE(casscf.has_value() && nevpt2.has_value());
+  EXPECT_LT(casscf->gradient_norm, kConvTolGrad);
+  EXPECT_EQ(nevpt2->frozen_core, variant->at("n_frozen").get<std::int32_t>());
+  expect_roots(std::format("{} frozen_core {}", c.name, c.frozen_core), variant->at("roots"),
+               want.at("casscf_energies").get<std::vector<double>>(), *casscf, *nevpt2);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Reference, PipelineNevpt2FrozenCore,
+    ::testing::Values(FrozenCase{.name = "h2o_ccpvdz", .frozen_core = "\"auto\"", .slow = false},
+                      FrozenCase{
+                          .name = "h2co_ccpvdz_sa2", .frozen_core = "\"auto\"", .slow = true},
+                      FrozenCase{.name = "h2co_ccpvdz_sa2", .frozen_core = "1", .slow = true}),
+    [](const auto &info) {
+      return std::format("{}_{}", info.param.name,
+                         info.param.frozen_core.starts_with('"') ? "auto" : info.param.frozen_core);
+    });
 
 // PC through a metric spectrum with no gap at its cut (#853). HF in cc-pVDZ,
 // CAS(10,7) over every electron: the F 1s is active and all but doubly
@@ -432,6 +513,29 @@ TEST(PipelineNevpt2, AnOpenShellOrANonSingletIsUnsupported) {
             std::string::npos)
       << not_singlet.error().message;
 
+  // A frozen core past the CASSCF's (water's 3, CAS(4,4)), refused before
+  // anything is queued; "auto" resolves to its O 1s and runs.
+  const auto too_many = fb::Nevpt2Step{.frozen_core = 4}.run(
+      fb::StepInput<fb::Nevpt2Step>{*calc->get<fb::MoleculeOutput>(),
+                                    *calc->get<fb::BasisSetOutput>(), *calc->get<fb::EriOutput>(),
+                                    *calc->get<fb::CoreHamiltonianOutput>(),
+                                    *calc->get<fb::ScfOutput>(), *calc->get<fb::CasscfOutput>()},
+      res);
+  ASSERT_FALSE(too_many.has_value());
+  EXPECT_EQ(too_many.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(too_many.error().message.find("[nevpt2] frozen_core is 4, and the CASSCF has 3 core "
+                                          "orbitals"),
+            std::string::npos)
+      << too_many.error().message;
+  const auto automatic = fb::Nevpt2Step{.frozen_core = fb::Nevpt2Step::kFrozenCoreAuto}.run(
+      fb::StepInput<fb::Nevpt2Step>{*calc->get<fb::MoleculeOutput>(),
+                                    *calc->get<fb::BasisSetOutput>(), *calc->get<fb::EriOutput>(),
+                                    *calc->get<fb::CoreHamiltonianOutput>(),
+                                    *calc->get<fb::ScfOutput>(), *calc->get<fb::CasscfOutput>()},
+      res);
+  ASSERT_TRUE(automatic.has_value()) << automatic.error().message;
+  EXPECT_EQ(automatic->frozen_core, 1);
+
   // QD over this single-root CASSCF, the step driven without the config that
   // would have refused it.
   const auto one_root = fb::Nevpt2Step{.quasi_degenerate = true}.run(
@@ -515,12 +619,12 @@ std::filesystem::path write_qd_config(const fb::test::ScratchDir &dir, const fb:
 // One QD variant against the goldens: each eigenvalue to kQdTolerance; the
 // symmetrized H_eff's diagonal to it too, and its off-diagonal in magnitude
 // (its sign is the two roots' CI phases'); each eigenvector's components in
-// magnitude, for the same reason.
-double expect_qd(std::string_view name, std::string_view prefix, std::span<const double> heff,
-                 std::span<const double> energies, std::span<const double> vectors) {
-  const std::vector<double> want_heff = qd_array(name, std::format("{}heff_sym", prefix));
-  const std::vector<double> want_energies = qd_array(name, std::format("{}eigenvalues", prefix));
-  const std::vector<double> want_vectors = qd_array(name, std::format("{}eigenvectors", prefix));
+// magnitude, for the same reason. The wanted H_eff is symmetric and the
+// vectors column-major, state k's at [k n, (k + 1) n).
+double expect_qd(std::string_view prefix, std::span<const double> heff,
+                 std::span<const double> energies, std::span<const double> vectors,
+                 std::span<const double> want_heff, std::span<const double> want_energies,
+                 std::span<const double> want_vectors) {
   const std::size_t n = want_energies.size();
   EXPECT_EQ(energies.size(), n) << prefix;
   EXPECT_EQ(heff.size(), n * n) << prefix;
@@ -590,12 +694,15 @@ TEST_P(PipelineQdNevpt2, MatchesGoldens) {
           << "root " << r << " class " << k;
     }
   }
-  const double sc_worst =
-      expect_qd(name, "", nevpt2->qd_heff, nevpt2->qd_energies, nevpt2->qd_vectors);
+  const double sc_worst = expect_qd("", nevpt2->qd_heff, nevpt2->qd_energies, nevpt2->qd_vectors,
+                                    qd_array(name, "heff_sym"), qd_array(name, "eigenvalues"),
+                                    qd_array(name, "eigenvectors"));
   EXPECT_TRUE(nevpt2->pc_qd_refusal.empty()) << nevpt2->pc_qd_refusal;
   ASSERT_EQ(nevpt2->pc_qd_couplings.size(), n * n);
   const double pc_worst =
-      expect_qd(name, "pc_", nevpt2->pc_qd_heff, nevpt2->pc_qd_energies, nevpt2->pc_qd_vectors);
+      expect_qd("pc_", nevpt2->pc_qd_heff, nevpt2->pc_qd_energies, nevpt2->pc_qd_vectors,
+                qd_array(name, "pc_heff_sym"), qd_array(name, "pc_eigenvalues"),
+                qd_array(name, "pc_eigenvectors"));
 
   // The state-specific results are what they are without the option: where
   // nevpt2_df.json has the case, each root's SC E_corr against PySCF's.
@@ -625,6 +732,113 @@ INSTANTIATE_TEST_SUITE_P(Goldens, PipelineQdNevpt2,
                                            "h2co_ccpvdz_sa2_weighted", "h8_sto3g_sa3_polished",
                                            "h8_ring_sto3g_sa3_polished"),
                          [](const auto &info) { return info.param; });
+
+// Frozen-core QD (#859): [nevpt2] quasi_degenerate with frozen_core against
+// data/qd_nevpt2/qd_nevpt2_frozen_core.json (qd_nevpt2_reference.py
+// --frozen-core: the same states as qd_nevpt2.json's, the frozen orbitals
+// sliced out of the fitted integrals, h1eff over the whole core), at
+// MatchesGoldens' bars: the diagonal per class, SC's and PC's symmetrized
+// H_eff, eigenvalues and eigenvectors. The skew H2CO is C1, every coupling
+// live: "auto" (C and O 1s) and 1 (O 1s); the C2v one "auto".
+struct QdFrozenCase {
+  std::string name;
+  std::string frozen_core;
+};
+
+void PrintTo(const QdFrozenCase &c, std::ostream *os) {
+  // ctest names a case by this: "auto" unquoted, so `ctest -R` can select it.
+  *os << c.name << "_" << (c.frozen_core.starts_with('"') ? "auto" : c.frozen_core);
+}
+
+class PipelineQdNevpt2FrozenCore : public ::testing::TestWithParam<QdFrozenCase> {};
+
+TEST_P(PipelineQdNevpt2FrozenCore, MatchesReference) {
+  FBF_REQUIRE_GPU();
+  const QdFrozenCase &c = GetParam();
+  const fb::json &entry = reference_case("qd_nevpt2", "qd_nevpt2_frozen_core.json", c.name);
+  const fb::json *variant = nullptr;
+  for (const fb::json &v : entry.at("variants")) {
+    const fb::json &key = v.at("frozen_core");
+    if ((key.is_string() ? std::format("\"{}\"", key.get<std::string>())
+                         : std::to_string(key.get<std::int32_t>())) == c.frozen_core) {
+      variant = &v;
+    }
+  }
+  ASSERT_NE(variant, nullptr) << c.frozen_core;
+  const fb::test::ScratchDir dir("pipeline_qd_nevpt2_frozen_core");
+  auto calc = fb::read_config(
+      write_qd_config(
+          dir, entry,
+          std::format("[nevpt2]\nquasi_degenerate = true\nfrozen_core = {}\n", c.frozen_core)),
+      dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &casscf = calc->get<fb::CasscfOutput>();
+  const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
+  ASSERT_TRUE(casscf.has_value() && nevpt2.has_value());
+  EXPECT_LT(casscf->gradient_norm, kConvTolGrad);
+  EXPECT_EQ(nevpt2->frozen_core, variant->at("n_frozen").get<std::int32_t>());
+  const auto want_casscf = entry.at("casscf_energies").get<std::vector<double>>();
+  const std::size_t n = want_casscf.size();
+  ASSERT_EQ(casscf->energies.size(), n);
+  for (std::size_t r = 0; r < n; ++r) {
+    EXPECT_NEAR(casscf->energies[r], want_casscf[r], kCasscfEnergyTolerance) << "root " << r;
+  }
+
+  // The answers, flattened as expect_qd reads them: H_eff (symmetric) row
+  // by row, the vectors state by state.
+  const auto flat = [](const fb::json &rows) {
+    std::vector<double> out;
+    for (const fb::json &row : rows) {
+      const auto values = row.get<std::vector<double>>();
+      out.insert(out.end(), values.begin(), values.end());
+    }
+    return out;
+  };
+  const auto expect_variant = [&](std::string_view prefix, const fb::json &want,
+                                  std::span<const fb::nevpt2::ClassEnergies> sc_couplings,
+                                  std::span<const fb::nevpt2::PcClassEnergies> pc_couplings,
+                                  std::span<const double> heff, std::span<const double> energies,
+                                  std::span<const double> vectors) {
+    const fb::json &classes = want.at("class_energies");
+    for (std::size_t r = 0; r < n; ++r) {
+      for (std::size_t k = 0; k < 8; ++k) {
+        const double got = sc_couplings.empty() ? pc_couplings[(r * n) + r].energies[k]
+                                                : sc_couplings[(r * n) + r].energies[k];
+        EXPECT_NEAR(got, classes[r][k].get<double>(), kTolerance)
+            << prefix << "root " << r << " class " << k;
+      }
+    }
+    return expect_qd(prefix, heff, energies, vectors, flat(want.at("heff_sym")),
+                     want.at("eigenvalues").get<std::vector<double>>(),
+                     flat(want.at("eigenvectors")));
+  };
+  ASSERT_EQ(nevpt2->qd_couplings.size(), n * n);
+  const double sc_worst = expect_variant("", variant->at("sc"), nevpt2->qd_couplings, {},
+                                         nevpt2->qd_heff, nevpt2->qd_energies, nevpt2->qd_vectors);
+  ASSERT_TRUE(variant->contains("pc")) << "the reference refused PC";
+  EXPECT_TRUE(nevpt2->pc_qd_refusal.empty()) << nevpt2->pc_qd_refusal;
+  ASSERT_EQ(nevpt2->pc_qd_couplings.size(), n * n);
+  const double pc_worst =
+      expect_variant("pc_", variant->at("pc"), {}, nevpt2->pc_qd_couplings, nevpt2->pc_qd_heff,
+                     nevpt2->pc_qd_energies, nevpt2->pc_qd_vectors);
+  std::cout << std::format("[ qd       ] {} frozen_core {}: |g| {:.2e}, SC-QD {::.10f} (worst "
+                           "{:.2e}), PC-QD {::.10f} (worst {:.2e}), tol {:.0e}\n",
+                           c.name, c.frozen_core, casscf->gradient_norm, nevpt2->qd_energies,
+                           sc_worst, nevpt2->pc_qd_energies, pc_worst, kQdTolerance);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Reference, PipelineQdNevpt2FrozenCore,
+    ::testing::Values(QdFrozenCase{.name = "h2co_skew_ccpvdz_sa3", .frozen_core = "\"auto\""},
+                      QdFrozenCase{.name = "h2co_skew_ccpvdz_sa3", .frozen_core = "1"},
+                      QdFrozenCase{.name = "h2co_ccpvdz_sa2", .frozen_core = "\"auto\""}),
+    [](const auto &info) {
+      return std::format("{}_{}", info.param.name,
+                         info.param.frozen_core.starts_with('"') ? "auto" : info.param.frozen_core);
+    });
 
 // PC-QD through a metric spectrum with no gap at its cut (#853):
 // PcAcceptedThroughAContinuum's HF CAS(10,7) averaged over three roots, its

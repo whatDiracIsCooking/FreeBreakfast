@@ -1287,7 +1287,7 @@ TEST(PipelineConfig, TheCasscfGradientOverAnIntegralDirectEriIsUnsupported) {
 }
 
 // [nevpt2] reads quasi_degenerate, false unless written, a boolean only; and
-// the step has no other option.
+// a misspelt option is refused (frozen_core is the step's other one, below).
 TEST(PipelineConfig, TheNevpt2StepReadsQuasiDegenerate) {
   const std::string casscf =
       "[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 4\nnelecas = 4\nnroots = 2\n";
@@ -1307,6 +1307,48 @@ TEST(PipelineConfig, TheNevpt2StepReadsQuasiDegenerate) {
   expect_config_error(with_inputs(casscf + "[nevpt2]\nquasi_degenerate = \"true\"\n"),
                       "[nevpt2] quasi_degenerate is not a boolean");
   expect_config_error(with_inputs(casscf + "[nevpt2]\nqd = true\n"), "[nevpt2] has no option 'qd'");
+}
+
+// [nevpt2] reads frozen_core, 0 unless written: a count of at least 0, or
+// "auto" (Nevpt2Step::kFrozenCoreAuto). Whether it fits the CASSCF's core is
+// Nevpt2Step::run's to say. [nevpt2_gradient] reads the same key and takes
+// only 0 until the frozen-core gradient (#875) lands, "auto" included.
+TEST(PipelineConfig, TheNevpt2StepsReadFrozenCore) {
+  const std::string casscf =
+      "[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 4\nnelecas = 4\nnroots = 2\n";
+  auto plain = fb::parse_config(with_inputs(casscf + "[nevpt2]\n"), "", kOut);
+  ASSERT_TRUE(plain.has_value()) << plain.error().message;
+  EXPECT_EQ(plain->step<fb::Nevpt2Step>()->frozen_core, 0);
+  for (const auto &[value, want] : {std::pair{"0", 0}, std::pair{"2", 2},
+                                    std::pair{"\"auto\"", fb::Nevpt2Step::kFrozenCoreAuto}}) {
+    auto calc = fb::parse_config(
+        with_inputs(casscf +
+                    std::format("[nevpt2]\nquasi_degenerate = true\nfrozen_core = {}\n", value)),
+        "", kOut);
+    ASSERT_TRUE(calc.has_value()) << value << ": " << calc.error().message;
+    EXPECT_EQ(calc->step<fb::Nevpt2Step>()->frozen_core, want) << value;
+  }
+  expect_config_error(with_inputs(casscf + "[nevpt2]\nfrozen_core = -1\n"),
+                      "[nevpt2] frozen_core is -1, below 0");
+  expect_config_error(with_inputs(casscf + "[nevpt2]\nfrozen_core = \"all\"\n"),
+                      "[nevpt2] has no frozen_core 'all' (a count, or \"auto\")");
+  expect_config_error(with_inputs(casscf + "[nevpt2]\nfrozen_core = 1.5\n"),
+                      "[nevpt2] frozen_core is not a 32-bit count or \"auto\"");
+  expect_config_error(with_inputs(casscf + "[nevpt2]\nfrozen_core = true\n"),
+                      "[nevpt2] frozen_core is not a 32-bit count or \"auto\"");
+
+  const std::string single = "[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 4\nnelecas = 4\n";
+  auto zero =
+      fb::parse_config(with_inputs(single + "[nevpt2_gradient]\nfrozen_core = 0\n"), "", kOut);
+  ASSERT_TRUE(zero.has_value()) << zero.error().message;
+  expect_config_error(with_inputs(single + "[nevpt2_gradient]\nfrozen_core = 2\n"),
+                      "[nevpt2_gradient] frozen_core is 2: the frozen-core NEVPT2 gradient is "
+                      "not implemented yet (#875), so only 0 is taken");
+  expect_config_error(with_inputs(single + "[nevpt2_gradient]\nfrozen_core = \"auto\"\n"),
+                      "[nevpt2_gradient] frozen_core is \"auto\": the frozen-core NEVPT2 "
+                      "gradient is not implemented yet (#875)");
+  expect_config_error(with_inputs(single + "[nevpt2_gradient]\nfrozen_core = -1\n"),
+                      "[nevpt2_gradient] frozen_core is -1, below 0");
 }
 
 // quasi_degenerate = true over a single-root [casscf], nroots written or

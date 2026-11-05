@@ -69,7 +69,8 @@ struct Nevpt2NacStep {
    column signed with its largest-magnitude component positive: the
    interstate coupling's own formation of them, so the pairs' indices name
    the states the coupling takes. **A PC refusal** (a class's metric with no
-   positive eigenvalue, a non-positive λ + Δ) is that effective Hamiltonian's
+   positive eigenvalue, or a pole: an intruder, |t| > 1, or a λ + Δ at
+   round-off) is that effective Hamiltonian's
    `Numerical` error, naming the class and the state, returned unchanged
    before any Z-vector is solved; there is no SC to keep, and no
    `nevpt2_nac.json` is written.

@@ -31,11 +31,16 @@ struct Nevpt2Output {
   /// same RDMs and slabs as roots[r]: root r's PC total energy is
   /// CasscfOutput::energies[r] + pc_roots[r]->total. Empty for a root whose
   /// PC was refused as Numerical (a class's metric with no positive
-  /// eigenvalue, or a non-positive denominator); its SC energies stand.
+  /// eigenvalue, or a pole: an intruder, |t| > 1, or a denominator at
+  /// round-off); its SC energies stand.
   std::vector<std::optional<nevpt2::PcClassEnergies>> pc_roots;
   /// @brief Why root r's PC was refused, `nevpt2::pc_class_energies`'
   /// message naming the class; empty where pc_roots[r] holds a value.
   std::vector<std::string> pc_refusals;
+  /// @brief The core orbitals left uncorrelated, @ref Nevpt2Step::frozen_core
+  /// resolved: the lowest of each root's canonical core (and of the
+  /// state-averaged one, for QD). 0 correlates every core orbital.
+  int32_t frozen_core = 0;
 
   // QD-NEVPT2, @ref Nevpt2Step::quasi_degenerate's: every field below is
   // empty without it. n is the root count; the core and the virtuals are the
@@ -85,6 +90,19 @@ struct Nevpt2Step {
   /// more.
   bool quasi_degenerate = false;
 
+  /// @brief @ref frozen_core's value for "auto": each element's chemical
+  /// core, PySCF's `chemcore` (none for H to Be, 1s for B to Mg, ...).
+  static constexpr int32_t kFrozenCoreAuto = -1;
+
+  /// @brief How many of the lowest canonical core orbitals NEVPT2 leaves
+  /// uncorrelated, or @ref kFrozenCoreAuto. They are excluded from every
+  /// perturber class with a core index (Si, Sijrs, Sijr, Srsi, Sij, Sir) and
+  /// stay in the core density, so in the inactive Fock that Dyall's
+  /// Hamiltonian and the one-electron blocks are built over. The core is
+  /// canonicalized whole, then the lowest are frozen (README "Frozen
+  /// core"). 0, the default, correlates every core orbital.
+  int32_t frozen_core = 0;
+
   /// @brief Each root's SC-NEVPT2, PySCF's `mrpt.NEVPT(mc, root=r)` over
   /// density fitting, and its PC-NEVPT2. Per root, on res.stream():
   ///
@@ -101,6 +119,12 @@ struct Nevpt2Step {
   /// The (pq|uv) and (pu|qv) the Fock reads are one `casscf_integrals` over
   /// the CASSCF's orbitals, fitted, shared by every root.
   ///
+  /// With @ref frozen_core, the lowest n_f canonical core orbitals are left
+  /// out of what the layer walks: the MO blocks are over the orbitals from
+  /// n_f on, and e_core, `h1e_v_si` and `h1e_v_sir` over the correlated core
+  /// alone. F^I, so h1e and every `h1e_v_*` value, is still over the whole
+  /// core.
+  ///
   /// With @ref quasi_degenerate, then: the inputs above once over the
   /// CASSCF's own orbitals (core and virtuals canonical over the
   /// state-averaged Fock, `CasscfOutput::mo_energies`); per unordered pair
@@ -111,7 +135,9 @@ struct Nevpt2Step {
   /// res.stream() many times.
   ///
   /// @return The class energies per root; InvalidConfig, before anything is
-  ///         queued, for @ref quasi_degenerate over fewer than two roots;
+  ///         queued, for @ref quasi_degenerate over fewer than two roots, or
+  ///         a @ref frozen_core (resolved) past the CASSCF's core or below
+  ///         kFrozenCoreAuto;
   ///         Unsupported, before anything is
   ///         queued, for an open-shell ScfOutput (n_alpha != n_beta), for a
   ///         molecule of multiplicity other than 1, and under an

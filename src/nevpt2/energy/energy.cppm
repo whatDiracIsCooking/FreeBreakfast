@@ -20,7 +20,9 @@ export namespace free_breakfast::nevpt2 {
 
 /// @brief What the eight classes read besides the external integrals, all on
 /// the device. c core, a active, v virtual orbitals, as in the MoBlocks the
-/// slabs come from.
+/// slabs come from. Under a frozen core c is the correlated core alone, and
+/// h1e and every h1e_v_* value stay the inactive Fock's over the whole core
+/// (README "Frozen core").
 ///
 /// The integrals are column-major, first index fastest, as
 /// nevpt2.density_fitting writes them. The RDMs are **row-major**, PySCF's
