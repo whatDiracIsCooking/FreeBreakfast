@@ -22,7 +22,8 @@ multipliers, `df_sacasscf_z` (L_xy's z part and L_xλ, eq. sa), and for the
 NEVPT2 Hessian (milestone 24) the **parameter response and total tangent**
 t_x of (h_MO, B_MO, c), `df_nevpt2_tangents`, and the **DF second
 derivative at an MO adjoint**, Σ h̄ h^xy + Σ Λ B^xy, `df_adjoint_xy`, and
-the **SC-NEVPT2 Hessian** they assemble into, `df_sc_nevpt2`, all below.
+the **SC- and PC-NEVPT2 Hessians** they assemble into, `df_sc_nevpt2` and
+`df_pc_nevpt2`, all below.
 
 ```cpp
 import free_breakfast.hessian;
@@ -1408,6 +1409,139 @@ two largely cancel), τκ 4.5e5, κκ 3.7e6; CP residual 1.4e-9, Z-vector
 inactive gap 0.140; 3.4 s a call (CUDA), 4.3 s (HIP). On the symmetric
 fixture the outside of the A″ × A″ block sits within 0.096 bars.
 
+## The PC-NEVPT2 Hessian
+
+`df_pc_nevpt2` is the same eq. (hess) for PC-NEVPT2 (#817), and the same
+assembly as `df_sc_nevpt2` above, part for part, in the same
+parametrization and coordinates:
+
+```cpp
+auto h = hessian::df_pc_nevpt2(res, molecule, basis, classes, aux, h_core, b, l, solution, ncore,
+                               ncas, batch, coordinates, pc_floor);
+// h->hessian and its parts as df_sc_nevpt2's; h->kept (per class), h->lift_steps
+// (per coordinate and class, t* in bohr); h->e_corr, h->max_zc, h->min_gap,
+// h->zvector_residual
+```
+
+What changes is PC's own code at three steps, and nothing else:
+
+- **Step 3**: `pc_adjoint` in place of `sc_adjoint`, then `zc_multipliers`,
+  `zc_adjoint` and `lagrangian_gradient`, which is `pc_gradient`'s chain
+  with the adjoint kept.
+- **Step 4**: `pc_hessian_product` along each coordinate's t, paired with
+  every t_A. PC has no empty perturbers (a tuple that vanishes by symmetry
+  has b = S x = 0 and moves as a smooth quadratic), so it takes no partners
+  and no pair is taken again.
+- `pc_floor`, `EnergyInputs::pc_floor`, goes to the adjoint and the product
+  alike, so every part differentiates the same energy.
+
+### The refusals
+
+The call refuses, Numerical, where one analytic Hessian does not represent
+the PC surface:
+
+- **A class kept below 1e-10** of its metric's largest eigenvalue (#917):
+  the second derivative is not attainable there. The check reads the
+  adjoint's `PcClassEnergies::kept` before the Lagrangian is solved, names
+  each such class, and says that a `pc_floor` of 1e-10 cuts it.
+  `pc_class_energies_hvp` would refuse the same class.
+- **A Schur lift within 1e-3 bohr.** `pc_hessian_product` reports, per
+  direction and class, the step t* at which a lifted null mode reaches the
+  cut (`../nevpt2/gradient/README.md`, "The Schur lift"). Here the
+  direction is the coordinate's own t, its CI part the CP response c^B, so
+  t* is in bohr. Any coordinate and class with t* < 1e-3 bohr is refused,
+  every one named with its t*. This is a stated convention: closer than
+  that, the PC surface switches branch inside a vibrational or
+  finite-difference step.
+- **A degenerate inactive pair** that a coordinate splits:
+  `df_nevpt2_tangents`' `DegeneratePair` records (gap below 1e-6 Eh,
+  |f^(x)_pq| above 1e-8), each named. κ_oo^x_pq is not a division the state
+  determines there. PC is invariant to the rotation only at exact
+  degeneracy, and the displacement lifts that. So the canonical orbitals PC
+  reads are not differentiable along the coordinate. The check is
+  conservative: it refuses on any Cartesian record, even when the caller's
+  coordinates combine them so that f vanishes.
+
+Its other refusals are `df_sc_nevpt2`'s, plus the energy's own refusals of
+a class (no positive metric eigenvalue, or a pole), passed on.
+
+**Neither the kept nor the lift refusal is reached by a fixture.** On the
+four fixtures the smallest kept is 2.3e-6 and the smallest t* is 6.5 bohr
+(below). t* is a lift of round-off null modes, so it varies by run and by
+card, but it stays three or more orders above the bar. As #803's and #815's notes record, no fixture shows a physical
+lift. `hcn_sto3g` lifts Sir's null modes only along a CI direction that
+breaks the axial symmetry, and its nuclear CP responses keep that symmetry.
+Both checks are one comparison each and are not tested by an input that
+trips them.
+
+### κ_oo at a near-degenerate pair
+
+`nuclear_hessian.tex` §2.2 left one question open: do PC's second-order κ_oo
+terms cancel κ_oo^x's 1/(ε_p − ε_q)? `h2co_neardeg_sto3g` measures it. Its
+virtual pair is 6.0e-3 Eh apart at R0, and the fixture's ladder runs
+through points where the gap is 5.6e-5. There:
+
+| | `h2co_skew_sto3g` | `h2co_neardeg_sto3g` |
+|---|---|---|
+| max \|κ_oo^x\| virtual–virtual | — | 21.8 (core–core 0.72) |
+| κκ part, largest element | 3.8e6 bars | 1.5e9 bars |
+| ⟨t, HVP t⟩, largest element | 1.1e9 bars | 1.8e9 bars |
+| the κ_oo rows | 6.6e5 bars | 2.2e6 bars |
+| total, worst miss | 0.100 bars | 0.085 bars |
+
+The κ_oo terms that grow as 1/gap² are the κκ rotation term and the
+HVP's κ_oo–κ_oo block. Each is about 1e9 bars, and they cancel in the sum
+to the fixture's bar, which was measured independently by re-converged
+energies through a 5.6e-5 Eh gap. So at this gap the 1/gap terms cancel
+to the energy's own scale, and **the near-degenerate pair is not
+refused**. The cancellation costs digits: about nine of the parts' sixteen
+go into it. A pair much closer than this one would lose the rest before it
+reaches the 1e-6 Eh rule. That is untested, because no fixture has such a
+pair. The test asserts every element within 2× the bar. A pair below
+1e-6 Eh is the degenerate case above, and is refused.
+
+### Tests
+
+`test/gtest/df_pc_nevpt2_hessian_gpu.cpp` (suite `HessianDfPcNevpt2`),
+`df_sc_nevpt2`'s harness, against each fixture's PC Hessian:
+
+- `MatchesTheSkewFixture`: `h2co_skew_sto3g`, Cartesian. Every element is
+  within 2× the bar, every part's largest element is above 10 bars (the
+  visibility rule), and nothing is refused. The CP residual must be
+  ≤ 1e-8, the asymmetry ≤ 1e-9, the sum rule ≤ 1e-8 and every t* ≥ 1e-3
+  bohr.
+- `MatchesTheSymmetricFixture`: `nh3_cs_sto3g` in its symmetry-adapted
+  coordinates. Every element is within 2× the bar and nothing is refused.
+  PC has no lifted null mode there (its dropped modes are the CAS(2,2)
+  structural ones), so the "Schur-lift pairs refused" item of the issue
+  has no case. The diagnostics are as above.
+- `MatchesTheNearDegenerateFixture`: `h2co_neardeg_sto3g`. It prints
+  κ_oo^x's size from `df_nevpt2_tangents` (no record below the
+  degenerate-pair rule) and the parts in bars. Every element is within 2×
+  the bar and nothing is refused (the κ_oo measurement above).
+- `MatchesTheLinearFixture`: `hcn_sto3g`. Every element is within 2× the
+  bar, and no coordinate's lift is refused.
+- `DegenerateInactivePairIsRefused`: the C3v ammonia of the SC suite is
+  Numerical, naming `hessian::df_pc_nevpt2` and each pair with its
+  coordinate.
+- `Refusals`: `df_sc_nevpt2`'s input refusals.
+
+Measured on the gfx1200 (`--preset hip`) and the RTX 3080 (`--preset
+default`). The two cards agree to the digits printed except where a cell
+gives two values, gfx1200 / RTX 3080:
+
+| fixture | worst | asymmetry | sum rule | CP residual | smallest kept | smallest t* (bohr) | test (CASSCF included) |
+|---|---|---|---|---|---|---|---|
+| `h2co_skew_sto3g` | 0.100 bars | 5.7e-14 / 2.8e-14 | 1.9e-10 | 1.4e-9 | 2.9e-7 | 25 / 16 | 5.9 / 4.7 s |
+| `nh3_cs_sto3g` | 0.113 | 1.4e-14 / 7.2e-15 | 3.8e-12 / 2.6e-12 | 4.9e-11 | 1.4e-2 | 61 / 52 | 4.2 / 2.9 s |
+| `h2co_neardeg_sto3g` | 0.085 | 2.8e-14 / 1.4e-14 | 1.4e-10 | 3.0e-9 | 2.3e-6 | 6.5 / 24 | 6.9 / 5.3 s |
+| `hcn_sto3g` | 0.118 | 1.4e-14 / 5.7e-14 | 1.3e-12 / 9.3e-13 | 3.5e-11 | 3.0e-5 | 30 / 13 | 4.1 / 3.1 s |
+
+On the skew fixture the parts' largest elements are E_cas 1.5e7 bars,
+Z · ∂²g/∂R∂R 1.0e6, Z's L_Ax pair 8.6e5, Z's third derivative 4.4e5 (the
+smallest), the κ_oo rows 6.6e5, the skeleton 1.12e9, the HVP 1.12e9, τκ
+4.5e5 and κκ 3.8e6. Z-vector residual 3.4e-11, max |z^c| 4.3e-3.
+
 ## The state-averaged CASSCF Hessian
 
 `df_sacasscf` is `casscf_hessian.tex` eq. (sa) for root I of a converged
@@ -1524,7 +1658,7 @@ the issue also asks for waits on that step (#610).
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::df_adjoint_xy`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::CasscfZTerms`, `hessian::df_casscf_z`, `hessian::ScNevpt2Terms`, `hessian::df_sc_nevpt2`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::df_adjoint_xy`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::CasscfZTerms`, `hessian::df_casscf_z`, `hessian::ScNevpt2Terms`, `hessian::df_sc_nevpt2`, `hessian::PcNevpt2Terms`, `hessian::df_pc_nevpt2`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build, or a batch of them from one walk |
@@ -1536,6 +1670,7 @@ the issue also asks for waits on that step (#610).
 | `df_nevpt2_tangents.cpp` | The NEVPT2 parameter response and t_x: per chunk of derivative integrals, W^x to B's layout, the one-index transforms by κ_nr, f^(x) by `builders_tangent`, κ_oo under the degenerate-pair rule and its transform |
 | `df_adjoint_xy.cpp` | Σ h̄ h^xy + Σ Λ B^xy at a general MO adjoint: X, G and the μ^x stack, the per-chunk N^y and ⟨μ^x, H^y⟩ over `df_integral_derivatives`' W^x, V^y, the Gram matrices and the second-derivative integrals at the adjoint's AO forms |
 | `df_sc_nevpt2.cpp` | The SC-NEVPT2 Hessian: E_cas, t in the coordinates, E_corr + Φ's adjoint and the gradient's multipliers, the HVP and its partnered pairs, the Z terms, the skeleton, the rotation cross terms and κ_oo rows as Gram matrices of nmo² stacks, the symmetrized sum |
+| `df_pc_nevpt2.cpp` | The PC-NEVPT2 Hessian: `df_sc_nevpt2.cpp`'s assembly over PC's adjoint and product, with its three refusals: a class kept below 1e-10, a coordinate's Schur-lift step below 1e-3 bohr, a degenerate inactive pair |
 | `df_sacasscf.cpp` | A state-averaged root's Hessian: z and λ^x by the Z-vectors, the residual check, root I's parameter Hessian by the one-hot unreduced product, the third-derivative action, the z terms, E_I,xy, eq. rot at equal weights and the symmetrized sum |
 | `df_sacasscf_z.cpp` | A state average's z terms at root I's z: L_xy's z part (E_xy along K(z_o), and at z_c's transition RDMs by the ± polarization) and L_xλ (root I's right-hand side + I^x z); `df_casscf_z`, the same at one root and given Z without the right-hand side, plus Λᵀ T(·, ·, Z) Λ |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |

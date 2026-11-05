@@ -22,6 +22,7 @@ free_breakfast_add_cxx_module_library(
   df_casscf.cpp
   df_nevpt2_tangents.cpp
   df_sc_nevpt2.cpp
+  df_pc_nevpt2.cpp
   df_adjoint_xy.cpp
   df_casscf_exy.cpp
   df_casscf_two_electron.cpp

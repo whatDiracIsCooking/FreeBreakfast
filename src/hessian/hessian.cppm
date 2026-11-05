@@ -835,6 +835,89 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
              const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch = 0,
              std::span<const double> coordinates = {});
 
+/// @brief The PC-NEVPT2 analytic nuclear Hessian and its parts, each k x k
+/// in the call's k coordinates (hartree / bohr^2), column-major: @ref
+/// ScNevpt2Terms' parts over PC's adjoint and product.
+struct PcNevpt2Terms {
+  /// @brief d^2E/dq_i dq_j of E_cas + E_corr^PC, the parts below summed and
+  /// symmetrized, (H + H^T) / 2: exactly symmetric.
+  std::vector<double> hessian;
+  /// @brief max |H - H^T| of the sum before it was symmetrized.
+  double asymmetry{0.0};
+  /// @brief The translational sum rule, as ScNevpt2Terms::translation.
+  double translation{0.0};
+  /// @brief E_cas's Hessian, @ref df_casscf's, in the coordinates.
+  std::vector<double> e_cas;
+  /// @brief Z . d2g/dR dR at PC's multipliers, as ScNevpt2Terms::z_lxy.
+  std::vector<double> z_lxy;
+  /// @brief The L_Ax pair of Z . g, as ScNevpt2Terms::z_lx.
+  std::vector<double> z_lx;
+  /// @brief x_A (Z . d2g/dx dx) x_B, as ScNevpt2Terms::z_third.
+  std::vector<double> z_third;
+  /// @brief The Z terms' kappa_oo rows, as ScNevpt2Terms::z_koo.
+  std::vector<double> z_koo;
+  /// @brief The skeleton at E_corr^PC + Phi's adjoint, @ref df_adjoint_xy's.
+  std::vector<double> skeleton;
+  /// @brief <t_A, HVP t_B>, nevpt2::pc_hessian_product's product along t_B
+  /// paired with t_A; not symmetrized.
+  std::vector<double> hvp;
+  /// @brief The rotation's cross term with the integrals' first derivative,
+  /// as ScNevpt2Terms::rotation_tau.
+  std::vector<double> rotation_tau;
+  /// @brief The rotation's second order, as ScNevpt2Terms::rotation_kappa.
+  std::vector<double> rotation_kappa;
+  /// @brief @ref df_casscf's terms, Cartesian: E_cas, lambda^x and its CP
+  /// residuals.
+  CasscfTerms casscf;
+  /// @brief The PC-NEVPT2 correlation energy (hartree).
+  double e_corr{0.0};
+  /// @brief Per class (PySCF's order), the smallest metric eigenvalue the cut
+  /// kept over the largest (nevpt2::PcClassEnergies::kept); 0 for Sijrs and
+  /// a class with no tuple.
+  std::array<double, 8> kept{};
+  /// @brief The gradient's max |z^c|.
+  double max_zc{0.0};
+  /// @brief The smallest core-core or virtual-virtual orbital-energy gap
+  /// (hartree).
+  double min_gap{0.0};
+  /// @brief The gradient's Z-vector's true residual.
+  double zvector_residual{0.0};
+  /// @brief [i][k]: class k's Schur-lift step t* along coordinate i (bohr),
+  /// nevpt2::PcHessianProduct::lift_steps along t_i, its CI part the CP
+  /// response c^i; infinite where nothing rises.
+  std::vector<std::array<double, 8>> lift_steps;
+};
+
+/// @brief The PC-NEVPT2 analytic nuclear Hessian of the single-state
+/// DF-CASSCF @p solution: @ref df_sc_nevpt2's assembly, every part the same,
+/// over PC's adjoint (nevpt2::pc_adjoint), the gradient's multipliers at it
+/// (nevpt2::pc_gradient's) and nevpt2::pc_hessian_product along each
+/// coordinate's t (README "The PC-NEVPT2 Hessian"). @p coordinates are
+/// @ref df_sc_nevpt2's; @p pc_floor is EnergyInputs::pc_floor, the energy's
+/// and every part's.
+///
+/// PC has no empty perturbers, so no pair is taken again. Refused, Numerical,
+/// where one analytic Hessian does not represent the PC surface:
+/// - a class whose smallest kept metric eigenvalue is below 1e-10 of its
+///   largest (#917), named with it: @p pc_floor 1e-10 or more cuts it;
+/// - a coordinate along which a class's Schur lift reaches the cut within
+///   t* < 1e-3 bohr (the surface switches branch inside a vibrational or
+///   finite-difference step), every such coordinate named with its class and
+///   t*;
+/// - a degenerate core or virtual pair (below 1e-6 hartree) a coordinate
+///   splits, @ref df_nevpt2_tangents' records, named: the canonical orbitals
+///   PC reads are not differentiable there.
+///
+/// The inputs, memory and other refusals are @ref df_sc_nevpt2's, the
+/// energy's own refusals of a class (no positive metric eigenvalue, a pole)
+/// among them.
+[[nodiscard]] Result<PcNevpt2Terms>
+df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+             const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch = 0,
+             std::span<const double> coordinates = {}, double pc_floor = 0.0);
+
 /// @brief A state-averaged DF-CASSCF root's analytic nuclear Hessian and its
 /// terms (casscf_hessian.tex eq. sa), each 3 n_atom x 3 n_atom, x = 3 A + k
 /// the coordinate R_{A,k} (hartree / bohr^2), column-major.
