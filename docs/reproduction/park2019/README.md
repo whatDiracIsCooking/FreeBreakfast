@@ -1,5 +1,9 @@
 # Reproducing Park's QD-NEVPT2 MECIs
 
+**Summary: [REPRODUCTION.md](REPRODUCTION.md)** (#851): every gated tier
+passed, and frozen-core single points match his SI energies to ≤ 0.52 µEh;
+what could not be reproduced, and why, is there too.
+
 The reproducible part of J. W. Park, *Analytical Gradient Theory for
 Quasidegenerate N-Electron Valence State Perturbation Theory (QD-NEVPT2)*,
 *J. Chem. Theory Comput.*,
