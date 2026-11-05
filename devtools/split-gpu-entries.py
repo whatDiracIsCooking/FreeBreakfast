@@ -6,8 +6,9 @@ the runtime's context creation, about 0.45s on the RTX 3080, before its case
 starts: most of the tier's wall clock once the cases are cheap. So it runs the
 batchable GPU entries of each GPU binary as one process of that binary instead,
 as cpp-smoke.sh does, and ctest runs the rest. There are several GPU binaries
-(test/core's and test/gtest's), so one batch per binary; cpp-tier.sh runs them
-one after another, so only one process is ever on the card.
+(test/core's, test/recipes' and test/gtest's), so one batch per binary;
+cpp-tier.sh runs them one after another, so only one process is ever on the
+card.
 
 An entry is batchable when its command is exactly one of the GPU binaries with
 one `--gtest_filter=<case>` (and gtest's own flags): a TEST_LAUNCHER such as

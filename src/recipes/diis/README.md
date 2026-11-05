@@ -74,7 +74,7 @@ for (/* each SCF iteration */;;) {
 
 ## Tests
 
-`test/gtest/diis_gpu.cpp` covers the capacity clamp, the untouched output on the first push, agreement with a host solve of the age-ordered system through eleven pushes into a ring of four, the singular fallback, `reset()`, an aliased output, and a linear fixed point `x = A x + b`. On a linear map DIIS is GMRES, so it must converge within `len + 1` steps.
+`test/recipes/diis_gpu.cpp` covers the capacity clamp, the untouched output on the first push, agreement with a host solve of the age-ordered system through eleven pushes into a ring of four, the singular fallback, `reset()`, an aliased output, and a linear fixed point `x = A x + b`. On a linear map DIIS is GMRES, so it must converge within `len + 1` steps.
 
 ## Files
 

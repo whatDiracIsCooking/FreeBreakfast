@@ -44,7 +44,7 @@ std::string transpose_refusal(const fb::EinsumOperand &x, const std::vector<std:
   return status.error().message;
 }
 
-TEST(RecipesEinsumRefusals, MalformedSubscripts) {
+TEST(EinsumRefusals, MalformedSubscripts) {
   const auto m = shaped({2, 3});
   const auto n = shaped({3, 4});
   EXPECT_NE(einsum_refusal("ij,jk", {m, n}, {2, 4}).find("no '->'"), std::string::npos);
@@ -58,7 +58,7 @@ TEST(RecipesEinsumRefusals, MalformedSubscripts) {
   EXPECT_NE(einsum_refusal("ij->k", {m}, {2}).find("'k' is on no operand"), std::string::npos);
 }
 
-TEST(RecipesEinsumRefusals, SubscriptsThatDoNotFitTheOperands) {
+TEST(EinsumRefusals, SubscriptsThatDoNotFitTheOperands) {
   const auto m = shaped({2, 3});
   const auto n = shaped({3, 4});
   EXPECT_NE(einsum_refusal("ijk,jk->i", {m, n}, {2}).find("operand 0 3 labels"), std::string::npos);
@@ -74,13 +74,13 @@ TEST(RecipesEinsumRefusals, SubscriptsThatDoNotFitTheOperands) {
   EXPECT_NE(einsum_refusal("ij,ij->", {m, m}, {1}).find("rank-0 output"), std::string::npos);
 }
 
-TEST(RecipesEinsumRefusals, OperandCount) {
+TEST(EinsumRefusals, OperandCount) {
   const auto v = shaped({2});
   EXPECT_NE(einsum_refusal("->", {}, {}).find("0 operands"), std::string::npos);
   EXPECT_NE(einsum_refusal("i,i,i,i->i", {v, v, v, v}, {2}).find("4 operands"), std::string::npos);
 }
 
-TEST(RecipesEinsumRefusals, PastEachLimit) {
+TEST(EinsumRefusals, PastEachLimit) {
   // Rank 7, on an operand and on the output alone.
   EXPECT_NE(einsum_refusal("abcdefg->a", {shaped({1, 1, 1, 1, 1, 1, 1})}, {1})
                 .find("operand 0 has rank 7"),
@@ -100,7 +100,7 @@ TEST(RecipesEinsumRefusals, PastEachLimit) {
       std::string::npos);
 }
 
-TEST(RecipesEinsumRefusals, TransposeAxesThatAreNotAPermutation) {
+TEST(EinsumRefusals, TransposeAxesThatAreNotAPermutation) {
   const auto x = shaped({2, 3, 4});
   EXPECT_NE(transpose_refusal(x, {1, 0}).find("2 axes for an x of rank 3"), std::string::npos);
   EXPECT_NE(transpose_refusal(x, {0, 0, 1}).find("not a permutation"), std::string::npos);

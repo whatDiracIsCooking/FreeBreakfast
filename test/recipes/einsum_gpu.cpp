@@ -98,7 +98,7 @@ void expect_near_all(const std::vector<double> &got, const std::vector<double> &
   }
 }
 
-TEST(RecipesEinsum, Matmul) {
+TEST(Einsum, Matmul) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   constexpr std::size_t m = 7;
@@ -117,7 +117,7 @@ TEST(RecipesEinsum, Matmul) {
   expect_near_all(run_einsum(res, "ik,kj->ij", {{a, {m, k}}, {b, {k, n}}}, {m, n}), want);
 }
 
-TEST(RecipesEinsum, DiagonalAndTrace) {
+TEST(Einsum, DiagonalAndTrace) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   constexpr std::size_t n = 9;
@@ -132,7 +132,7 @@ TEST(RecipesEinsum, DiagonalAndTrace) {
   expect_near_all(run_einsum(res, "ii->", {{a, {n, n}}}, {}), {trace});
 }
 
-TEST(RecipesEinsum, FullReductionToAScalar) {
+TEST(Einsum, FullReductionToAScalar) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   constexpr std::size_t m = 40;
@@ -146,7 +146,7 @@ TEST(RecipesEinsum, FullReductionToAScalar) {
   expect_near_all(run_einsum(res, "ij,ij->", {{a, {m, n}}, {b, {m, n}}}, {}), {dot});
 }
 
-TEST(RecipesEinsum, ReadsAStridedViewInPlace) {
+TEST(Einsum, ReadsAStridedViewInPlace) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   // Columns [c0, c0 + k) of an m x wide row-major matrix, times a k-vector.
@@ -172,7 +172,7 @@ TEST(RecipesEinsum, ReadsAStridedViewInPlace) {
   expect_near_all(download(res, out.data(), m), want);
 }
 
-TEST(RecipesEinsum, TransposeIsNumpysAxesConvention) {
+TEST(Einsum, TransposeIsNumpysAxesConvention) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   // The rank-6 permutation SC-NEVPT2's a16 is built with, on unequal extents
@@ -214,7 +214,7 @@ TEST(RecipesEinsum, TransposeIsNumpysAxesConvention) {
   expect_near_all(download(res, out.data(), total), want);
 }
 
-TEST(RecipesEinsum, ThreeOperandContraction) {
+TEST(Einsum, ThreeOperandContraction) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   // SC-NEVPT2's "ap,lbkl,qk->pqab": a diagonal on the middle operand too.
@@ -247,7 +247,7 @@ TEST(RecipesEinsum, ThreeOperandContraction) {
                   want);
 }
 
-TEST(RecipesEinsum, SmallOutputLargeSum) {
+TEST(Einsum, SmallOutputLargeSum) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   // Sr's "ipqr,pqrabc,iabc->i": an output of ni summed over six labels.
@@ -275,7 +275,7 @@ TEST(RecipesEinsum, SmallOutputLargeSum) {
       want);
 }
 
-TEST(RecipesEinsum, DiagonalWithEightDistinctLabels) {
+TEST(Einsum, DiagonalWithEightDistinctLabels) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   // energy.cpp's "jbij,rpqiac->pqrabc": every limit but the operand count at
@@ -314,7 +314,7 @@ TEST(RecipesEinsum, DiagonalWithEightDistinctLabels) {
       run_einsum(res, "jbij,rpqiac->pqrabc", {{jbij, {n, n, n, n}}, {rpqiac, six}}, six), want);
 }
 
-TEST(RecipesEinsum, AccumulatesAndScales) {
+TEST(Einsum, AccumulatesAndScales) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   constexpr std::size_t m = 6;

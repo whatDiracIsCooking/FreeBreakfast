@@ -42,7 +42,7 @@ fb::Status status = fb::diagonalize<double>(res, n, a.data(), w.data());  // a n
 
 ## Tests
 
-`test/gtest/diagonalize_gpu.cpp` covers an empty operand, the workspace growing from empty, a diagonal A (w its sorted diagonal, U the unit vectors up to sign), and a dense symmetric A in `double` and `float` (w ascending, Uᵀ U == I, U diag(w) Uᵀ == A).
+`test/recipes/diagonalize_gpu.cpp` covers an empty operand, the workspace growing from empty, a diagonal A (w its sorted diagonal, U the unit vectors up to sign), and a dense symmetric A in `double` and `float` (w ascending, Uᵀ U == I, U diag(w) Uᵀ == A).
 
 ## Files
 

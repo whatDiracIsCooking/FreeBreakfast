@@ -200,7 +200,7 @@ pool buffer. Scratch that is dead before the next callback may still come from
 the workspace. `davidson_solve` (`src/recipes/davidson/`) is the example: its
 subspace and residual blocks are its own buffers, while syevd's work, taken by
 `diagonalize` between two operator applies, is the workspace's.
-`test/gtest/davidson_gpu.cpp` pins this with an operator that grows and
+`test/recipes/davidson_gpu.cpp` pins this with an operator that grows and
 overwrites the workspace on every apply.
 
 **`info` is on the work stream.** The solver handle writes `info()` on

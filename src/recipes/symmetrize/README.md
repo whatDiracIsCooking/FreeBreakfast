@@ -23,7 +23,7 @@ Both take the column-major `n` × `n` block at `a` with leading dimension `lda` 
 
 ## Tests
 
-`test/gtest/symmetrize_gpu.cpp`, at orders around the tile's edges (1, 2, 31–33, 63–65, 100, 129) in a padded block: the average against the host's own sum and halving bit for bit, a symmetric input unchanged, both mirrors as exact copies over a NaN-filled destination, the padding untouched throughout, and the argument checks.
+`test/recipes/symmetrize_gpu.cpp`, at orders around the tile's edges (1, 2, 31–33, 63–65, 100, 129) in a padded block: the average against the host's own sum and halving bit for bit, a symmetric input unchanged, both mirrors as exact copies over a NaN-filled destination, the padding untouched throughout, and the argument checks.
 
 ## Files
 

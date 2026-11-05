@@ -220,8 +220,8 @@ FBF_TRY(fb::gpu_status(fb::gmmwich<wwr::WWRBLAS_OP_T>(res.blas(), n, u, inv_sqrt
 
 ## Tests
 
-GPU, in `test/gtest/{gemm,gemmwich,gmmwich}_gpu.cpp`, linked into
-`free_breakfast_tests_gpu`.
+GPU, in `test/recipes/{gemm,gemmwich,gmmwich}_gpu.cpp`, linked into
+`free_breakfast_recipes_tests_gpu`.
 
 ## Files
 

@@ -87,9 +87,9 @@ fb::Status status = fb::orthogonalize<double>(res, n, s.data(), x.data());
 
 ## Tests
 
-`test/gtest/orthogonalize_gpu.cpp` covers an empty operand, one `res` growing its workspace across a small `float` and a larger `double` operand, a diagonal S (X is the elementwise inverse root), a dense well-conditioned S in `double` and `float` (X symmetric, `Xᵀ S X == I`, S unchanged), and a singular S (X finite, and `Xᵀ S X` an idempotent of trace 2).
+`test/recipes/orthogonalize_gpu.cpp` covers an empty operand, one `res` growing its workspace across a small `float` and a larger `double` operand, a diagonal S (X is the elementwise inverse root), a dense well-conditioned S in `double` and `float` (X symmetric, `Xᵀ S X == I`, S unchanged), and a singular S (X finite, and `Xᵀ S X` an idempotent of trace 2).
 
-`test/gtest/orthonormalize_gpu.cpp` covers, in `double` and `float`: a random tall block (Qᵀ Q = I and span(Q) = span(V), to 1e-13 in `double`); a block with an exact duplicate, a near duplicate above the floor, one below it and a column below it, which keeps exactly the four directions above the floor; a column 10¹² shorter than its neighbour, kept with its direction; one column, kept normalized or dropped below the floor; no columns; and a negative count rejected.
+`test/recipes/orthonormalize_gpu.cpp` covers, in `double` and `float`: a random tall block (Qᵀ Q = I and span(Q) = span(V), to 1e-13 in `double`); a block with an exact duplicate, a near duplicate above the floor, one below it and a column below it, which keeps exactly the four directions above the floor; a column 10¹² shorter than its neighbour, kept with its direction; one column, kept normalized or dropped below the floor; no columns; and a negative count rejected.
 
 ## Files
 

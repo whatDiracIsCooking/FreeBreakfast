@@ -35,7 +35,10 @@
 # free_breakfast_pipeline_tests_host. The ones that run a real step need a
 # GPU, and are here. Nor are the src/sad tests: test/sad builds them as
 # free_breakfast_sad_tests_host. sad_gpu.cpp, which places its basis on a
-# device-resident Molecule, stays here.
+# device-resident Molecule, stays here. Nor are the src/recipes tests:
+# test/recipes builds them as free_breakfast_recipes_tests_gpu. Many
+# method-layer TUs here still import free_breakfast.recipes, so the GPU
+# binary links it.
 include(GoogleTest)
 
 # ---------------------------------------------------------------------------
@@ -49,7 +52,6 @@ add_executable(
   ci_sigma_host.cpp
   cis_ris_basis_host.cpp
   geometry_host.cpp
-  recipes_einsum_host.cpp
 )
 
 # Both executables consume `import std` and this project's C++23 modules, so
@@ -73,7 +75,6 @@ target_link_libraries(
           free_breakfast::geometry
           free_breakfast::io
           free_breakfast::core::resources
-          free_breakfast::recipes::einsum
           free_breakfast::test::support
           GTest::gtest
           GTest::gtest_main
@@ -85,16 +86,6 @@ target_link_libraries(
 # Add new device-dependent TUs to this list.
 add_executable(
   free_breakfast_tests_gpu
-  diagonalize_gpu.cpp
-  cholesky_gpu.cpp
-  lu_gpu.cpp
-  recipes_einsum_gpu.cpp
-  orthogonalize_gpu.cpp
-  orthonormalize_gpu.cpp
-  diis_gpu.cpp
-  expm_gpu.cpp
-  cg_unitary_gpu.cpp
-  davidson_gpu.cpp
   ci_sigma_gpu.cpp
   ci_solver_gpu.cpp
   ci_rdm_gpu.cpp
@@ -104,15 +95,6 @@ add_executable(
   cis_sigma_gpu.cpp
   cis_step_gpu.cpp
   e2e_cis_gpu.cpp
-  matrix_ao_gpu.cpp
-  gemm_gpu.cpp
-  gemmwich_gpu.cpp
-  gmmwich_gpu.cpp
-  complex_cast_gpu.cpp
-  symmetrize_gpu.cpp
-  norm_gpu.cpp
-  polynomial_roots_gpu.cpp
-  sort_gpu.cpp
   mmd_gpu.cpp
   molecule_gpu.cpp
   basis_gpu.cpp
@@ -325,8 +307,8 @@ endforeach()
 # The trade is that ctest shells out once per binary before the run to
 # enumerate. That is milliseconds, and it buys per-case reporting and -R.
 # Each entry's TIMEOUT is _fb_test_timeout, set in test/CMakeLists.txt so this
-# tree, test/core, test/atom, test/io, test/sad and test/pipeline share one
-# value.
+# tree, test/core, test/atom, test/io, test/sad, test/pipeline and
+# test/recipes share one value.
 
 gtest_discover_tests(
   free_breakfast_tests_host

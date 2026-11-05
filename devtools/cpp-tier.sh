@@ -161,9 +161,11 @@ has_test_preset() {
   ctest --preset "$test_preset" --show-only >/dev/null 2>&1
 }
 
-# The GPU binaries, one batch each: test/core's, then test/gtest's.
+# The GPU binaries, one batch each: test/core's, test/recipes', then
+# test/gtest's.
 gpu_bins=(
   "$build_dir/test/core/free_breakfast_core_tests_gpu"
+  "$build_dir/test/recipes/free_breakfast_recipes_tests_gpu"
   "$build_dir/test/gtest/free_breakfast_tests_gpu"
 )
 

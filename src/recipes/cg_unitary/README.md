@@ -178,7 +178,7 @@ interval, and the rounding floor on step 13.
 
 ## Tests
 
-`test/gtest/cg_unitary_gpu.cpp`, all four element types, on the Brockett
+`test/recipes/cg_unitary_gpu.cpp`, all four element types, on the Brockett
 criterion with `R = Q diag(λ) Q^H` built from a dense unitary `Q`. The optimum
 is known in closed form, `W^H R W = diag(λ)` sorted ascending for a maximum
 and descending for a minimum, so no reference eigensolver is needed. Both

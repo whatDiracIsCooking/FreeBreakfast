@@ -28,7 +28,7 @@ Routines take a `DeviceResources` (`free_breakfast.core.resources`) for their st
 
 ## Tests
 
-GPU, in `test/gtest/<name>_gpu.cpp`, linked into `free_breakfast_tests_gpu`. `einsum`'s refusals need no device, so they are in `test/gtest/recipes_einsum_host.cpp`, in `free_breakfast_tests_host`.
+In `test/recipes/`, built as their own binary, `free_breakfast_recipes_tests_gpu`, which links only `free_breakfast::recipes`, `free_breakfast::core::resources` and `free_breakfast::basis` (for `matrix_ao`), so a change here builds and runs it without waiting on the method layers. Each GPU case is in `test/recipes/<name>_gpu.cpp`. `einsum`'s refusals need no device; they are in `test/recipes/einsum_host.cpp`, in the same binary, and still run on a device-less box.
 
 ## Files
 

@@ -38,7 +38,7 @@ An `info < 0` (a rejected argument, so a bug here) is `GpuRuntime`.
 
 ## Tests
 
-`test/gtest/lu_gpu.cpp`: against a host pivoted elimination on random
+`test/recipes/lu_gpu.cpp`: against a host pivoted elimination on random
 symmetric indefinite and general matrices at orders 1 to 130 with three
 right-hand sides, to 1e-12 relative; bitwise repeatable over 20 repeats; a
 zero column flagged at its pivot with B untouched; the empty and negative

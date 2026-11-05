@@ -55,7 +55,7 @@ It was developed in `experimental/sort/merge`. That directory's README has the
 algorithm and its timings against `radix_sort` and CUB's merge and radix sorts.
 Its tests (`test/experimental/merge_sort_gpu.cpp`, the `experimental` preset)
 hold it bit for bit to `std::strong_order` and `std::stable_sort`, and to
-`radix_sort` and the vendor sort. `test/gtest/sort_gpu.cpp` checks the module
+`radix_sort` and the vendor sort. `test/recipes/sort_gpu.cpp` checks the module
 in the default build: `merge_sort`'s permutation against `std::stable_sort`
 past one tile, and `gather_columns` against a host gather. Through its users
 it is also covered by `test/gtest/sort_bounds_gpu.cpp` and

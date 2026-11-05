@@ -60,7 +60,7 @@ calls, so `u` and `w` must live in the caller's own buffers.
 
 ## Tests
 
-`test/gtest/expm_gpu.cpp`, against a closed-form ground truth rather than a
+`test/recipes/expm_gpu.cpp`, against a closed-form ground truth rather than a
 reference implementation: `H = Q B Q^H`, with `Q` a dense unitary (two
 Householder reflectors) and `B` a canonical form whose exponential is cos and
 sin alone. For a real `T`, `B` is 2×2 rotation generators; for a complex one,
