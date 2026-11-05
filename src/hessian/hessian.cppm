@@ -450,6 +450,110 @@ df_casscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
           const mcscf::Solution &solution, int32_t ncore, int32_t ncas, double tolerance = 1e-10,
           int32_t max_iterations = 200);
 
+/// @brief lambda^x alone: @ref df_casscf's CP-CASSCF step, E_lambda lambda
+/// lambda^x = -E_lambda x for every coordinate, the same solve and the same
+/// check on the unreduced equations, without E_xy or the response term.
+/// What @ref df_nevpt2_tangents reads; @ref df_casscf's CasscfTerms::cp is
+/// the same solution.
+///
+/// The inputs, the refusals and the memory are @ref df_casscf's, its
+/// messages naming hessian::df_casscf_cp.
+///
+/// @return lambda^x in @c mcscf::zvectors' coordinates (z_o over the packed
+///         pairs, z_c, the CI response itself, off the root), with the
+///         solver's own iterations and residuals; or @ref df_casscf's errors.
+[[nodiscard]] Result<mcscf::ZVectors>
+df_casscf_cp(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+             const mcscf::Solution &solution, int32_t ncore, int32_t ncas, double tolerance = 1e-10,
+             int32_t max_iterations = 200);
+
+/// @brief A core or virtual pair below the NEVPT2 gradient's degenerate-pair
+/// rule along one coordinate, which @ref df_nevpt2_tangents gave kappa_oo 0.
+struct DegeneratePair {
+  /// @brief The coordinate x = 3 A + k.
+  int32_t coordinate{0};
+  /// @brief The pair's orbitals, p > q, both core or both virtual (C's
+  /// columns).
+  int32_t p{0};
+  int32_t q{0};
+  /// @brief eps_p - eps_q (hartree), below 1e-6 in magnitude.
+  double gap{0.0};
+  /// @brief f^(x)_pq, the change of f the rest of t_x makes, above 1e-8 in
+  /// magnitude.
+  double f{0.0};
+};
+
+/// @brief t_x, the first-order change of every input of a single-state
+/// NEVPT2 energy along each nuclear coordinate x = 3 A + k at a converged
+/// DF-CASSCF reference (nuclear_hessian.tex section 2.2), handed to
+/// @p consume a chunk of coordinates at a time:
+///
+///     h_dot^x = h1^x + kappa^xT h_MO + h_MO kappa^x
+///     B_dot^x = W^x + kappa^xT B_Q + B_Q kappa^x     (each fitted index Q)
+///     c_dot^x = c^x
+///     kappa^x = kappa_nr^x + kappa_oo^x,  kappa_oo^x_pq = -f^(x)_pq / (eps_p - eps_q),
+///
+/// (h1^x, W^x) the derivative integrals with the connection
+/// (@c mcscf::df_integral_derivatives), (kappa_nr^x, c^x) the CP-CASSCF
+/// response lambda^x of @p cp, and kappa_oo^x the core-core and
+/// virtual-virtual rotations that keep the core and virtuals canonical
+/// (eq. koo): f^(x) the change of f's two inactive blocks along everything
+/// above but kappa_oo (@c nevpt2::builders_tangent), eps f's diagonal. So t_x
+/// is (h_MO, B_MO, c) of the re-solved, re-canonicalized CASSCF
+/// differentiated along x, its active orbitals turned by no active-active
+/// rotation. C -> C (1 + kappa), kappa antisymmetric.
+///
+/// **A degenerate pair.** Below the gradient's degenerate-pair rule (z^c's:
+/// |eps_p - eps_q| < 1e-6) kappa_oo^x_pq is 0 when |f^(x)_pq| <= 1e-8, the
+/// pair split across irreps; past that it is not a division the state
+/// determines. For SC (@p pc false) that is Numerical, naming the pair and
+/// the coordinate; for PC it is recorded, kappa_oo^x_pq left 0, and the
+/// call goes on.
+///
+/// @p consume(x0, count, h_dot, b_dot, c_dot, kappa) sees the coordinates
+/// [x0, x0 + count), in order, each once, on the device and valid until it
+/// returns, all in the MO basis of the solution's C, in the layout
+/// @c nevpt2::builders_tangent reads: @p h_dot count nmo x nmo symmetric
+/// (slab j at j nmo^2), @p b_dot count naux x nmo^2 ((Q, p, q) at
+/// Q + naux (p + nmo q), as @c b_mo leaves B, slab j at j naux nmo^2),
+/// @p c_dot count n_det, and @p kappa count nmo x nmo antisymmetric, the
+/// total rotation. Work it queues on res.stream() is ordered before the
+/// next chunk; its error is returned as it stands and ends the call.
+///
+/// The inputs are @ref df_casscf's, @p solution's core and virtuals
+/// canonical in f (as the Casscf step leaves them), and @p cp lambda^x at
+/// the same solution (@ref df_casscf_cp, or @ref df_casscf's
+/// CasscfTerms::cp). All-electron: the core NEVPT2 correlates is the
+/// whole one.
+///
+/// W^x is built for as many coordinates at once as a third of the budget
+/// (the device's free memory at the call, or @p max_bytes when that is
+/// less) holds, @c mcscf::df_integral_derivatives' own refusal past it; the
+/// other two thirds are this call's: B_dot (as large as W^x), and
+/// @c nevpt2::builders_tangent's arrays per coordinate. Held throughout:
+/// h_MO and B_MO (naux nmo^2). Queued on res.stream() with res.blas() (host
+/// pointer mode); it synchronizes many times. None of @p b and @p l may
+/// point into res.device_workspace(). The device res.dev_idx() names is
+/// made current for the call and the previous one restored.
+///
+/// @return The pairs PC recorded, in coordinate order (empty for SC);
+///         InvalidConfig for @ref df_casscf's input refusals, a null
+///         @p consume, @p cp not of 3 n_atom columns over the packed pairs
+///         and the determinants, or core or virtuals not canonical (an
+///         off-diagonal |f_pq| above 1e-8); Numerical for SC at a degenerate
+///         pair; Unsupported for naux nmo past int32_t or memory past the
+///         budget; or the first error of a part or of @p consume.
+[[nodiscard]] Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
+    int32_t ncore, int32_t ncas, const mcscf::ZVectors &cp, bool pc,
+    const std::function<Status(int32_t x0, int32_t count, const double *h_dot, const double *b_dot,
+                               const double *c_dot, const double *kappa)> &consume,
+    size_t max_bytes = 0);
+
 /// @brief The z terms of a state-averaged DF-CASSCF Hessian at one root I's
 /// multipliers z (casscf_hessian.tex eq. sa, bullets 3 and 4).
 struct SaCasscfZTerms {
