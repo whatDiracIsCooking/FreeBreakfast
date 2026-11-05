@@ -8,7 +8,10 @@
 // tree's. Checked: lambda^xT (z . d2 g_SA) lambda^y against the fixture's
 // `third` (a mixed fourth-order difference of the exact gradient), the
 // two random vectors' `third_random`, its symmetry in (x, y), and the
-// refusals.
+// refusals. Beside them, mcscf::df_integral_derivatives' chunks handed to a
+// test consumer under a budget of two coordinates per chunk, against a
+// Richardson ladder of (h_MO, L) along every coordinate, the connection
+// included.
 
 #include <gtest/gtest.h>
 
@@ -42,6 +45,12 @@ constexpr double kThirdTol = 1e-7;
 constexpr double kRandomTol = 1e-7;
 // max |T - T^T| over max |T|: rounding only.
 constexpr double kSymmetryRelTol = 1e-12;
+// The chunks' (h1^x, W^x) against the ladder, relative to the largest element
+// of the ladder's h_MO or L derivative along that coordinate: the issue's
+// bar.
+constexpr double kLadderTol = 1e-7;
+// The ladder's displacement, bohr, and half of it beside it (Richardson).
+constexpr double kLadderStep = 2e-3;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_hessian";
 
@@ -171,6 +180,86 @@ std::vector<double> pack_vectors(const std::vector<double> &orb, const std::vect
     }
   }
   return out;
+}
+
+// C (m x n) = op(A) B, column-major; op(A) is A (m x k), or A^T for A k x m.
+std::vector<double> host_gemm(std::size_t m, std::size_t k, std::size_t n,
+                              const std::vector<double> &a, bool transpose_a,
+                              const std::vector<double> &b) {
+  std::vector<double> c(m * n, 0.0);
+  for (std::size_t j = 0; j < n; ++j) {
+    for (std::size_t l = 0; l < k; ++l) {
+      const double blj = b[l + (k * j)];
+      for (std::size_t i = 0; i < m; ++i) {
+        c[i + (m * j)] += (transpose_a ? a[l + (k * i)] : a[i + (m * l)]) * blj;
+      }
+    }
+  }
+  return c;
+}
+
+// A^-1/2 of a symmetric A near the identity (||1 - A|| < 1), by the coupled
+// Newton-Schulz iteration: Y -> A^1/2, Z -> A^-1/2.
+std::vector<double> inverse_sqrt(const std::vector<double> &a, std::size_t n) {
+  std::vector<double> y = a;
+  std::vector<double> z(n * n, 0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    z[i * (n + 1)] = 1.0;
+  }
+  for (std::int32_t it = 0; it < 20; ++it) {
+    // T = (3 - Z Y) / 2; done when Z Y is the identity to rounding.
+    std::vector<double> t = host_gemm(n, n, n, z, false, y);
+    double off = 0.0;
+    for (std::size_t i = 0; i < n * n; ++i) {
+      off = std::max(off, std::abs(t[i] - (i % (n + 1) == 0 ? 1.0 : 0.0)));
+      t[i] = -0.5 * t[i];
+    }
+    if (off < 1e-14) {
+      break;
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      t[i * (n + 1)] += 1.5;
+    }
+    y = host_gemm(n, n, n, y, false, t);
+    z = host_gemm(n, n, n, t, false, z);
+  }
+  return z;
+}
+
+// X = L^-1 B (or L^-T B) for the lower triangle of the n x n @p l and the
+// n x cols @p b, by substitution.
+std::vector<double> lower_solve(const std::vector<double> &l, std::size_t n, std::vector<double> b,
+                                std::size_t cols, bool transpose) {
+  for (std::size_t j = 0; j < cols; ++j) {
+    double *x = b.data() + (n * j);
+    if (!transpose) {
+      for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t k = 0; k < i; ++k) {
+          x[i] -= l[i + (n * k)] * x[k];
+        }
+        x[i] /= l[i * (n + 1)];
+      }
+    } else {
+      for (std::size_t i = n; i-- > 0;) {
+        for (std::size_t k = i + 1; k < n; ++k) {
+          x[i] -= l[k + (n * i)] * x[k];
+        }
+        x[i] /= l[i * (n + 1)];
+      }
+    }
+  }
+  return b;
+}
+
+// A^T over a square n.
+std::vector<double> transpose(const std::vector<double> &a, std::size_t n) {
+  std::vector<double> t(n * n);
+  for (std::size_t j = 0; j < n; ++j) {
+    for (std::size_t i = 0; i < n; ++i) {
+      t[j + (n * i)] = a[i + (n * j)];
+    }
+  }
+  return t;
 }
 
 class McscfThirdDerivative : public ::testing::TestWithParam<std::string_view> {};
@@ -384,6 +473,245 @@ TEST_P(McscfThirdDerivative, MatchesTheFixture) {
                              worst, asym, random, random_want,
                              std::abs(random - random_want) / std::abs(random_want));
   }
+}
+
+// mcscf::df_integral_derivatives' chunks, handed to a test consumer under a
+// budget of exactly two coordinates per chunk, against a ladder of what they
+// are the derivatives of, along every coordinate x of the stretched water:
+// h_MO(R) = C(R)^T h(R) C(R) and L(R) = C(R)^T T(R) C(R) Z(R), with
+// C(R) = C (C^T S(R) C)^-1/2 (the connection: d/dR is C tau^x) and
+// Z(R) = L_M^-T (L_M^-1 M(R) L_M^-T)^-1/2 at the reference's factor L_M (the
+// gauge W^x is in: Z(R) Z(R)^T = M(R)^-1, so L(R) L(R)^T is the fitted
+// (pq|rs) at R). Central differences at kLadderStep and half of it,
+// Richardson-extrapolated.
+TEST(McscfThirdDerivativeChunks, MatchALadder) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_631g_sa2");
+  ASSERT_FALSE(entry.is_null());
+  const auto nmo = entry.at("nmo").get<std::size_t>();
+  const auto naux = entry.at("naux").get<std::size_t>();
+  const std::size_t nn = nmo * nmo;
+  const std::size_t factor = nn * naux;
+
+  fb::DeviceResources res(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  std::vector<fb::Atom> atoms;
+  for (const fb::json &atom : entry.at("atoms")) {
+    const auto xyz = atom.at("coord").get<std::vector<double>>();
+    atoms.push_back(fb::Atom{fb::Vec<double, 3>{xyz[0], xyz[1], xyz[2]},
+                             static_cast<fb::Element>(atom.at("charge").get<std::int32_t>())});
+  }
+  const auto stamp = fb::resolve_basis(entry.at("basis").get<std::string>());
+  ASSERT_TRUE(stamp) << stamp.error().message;
+  const auto aux_stamp = fb::resolve_aux_basis(entry.at("aux_basis").get<std::string>());
+  ASSERT_TRUE(aux_stamp) << aux_stamp.error().message;
+
+  // Everything at one geometry: the placed bases, S, h, the metric M and the
+  // three-center T (unfitted), and the molecule they were placed on.
+  struct Geometry {
+    std::optional<fb::Molecule> molecule;
+    std::optional<fb::BasisSet> basis;
+    std::optional<fb::BasisSet> aux;
+    std::vector<double> s, h, m, t;
+  };
+  const auto at = [&](const std::vector<fb::Atom> &where) {
+    Geometry g;
+    g.molecule.emplace(res, where);
+    auto basis = fb::place(stamp->primitive_normalized(), *g.molecule);
+    EXPECT_TRUE(basis) << basis.error().message;
+    auto aux = fb::place(aux_stamp->primitive_normalized(), *g.molecule);
+    EXPECT_TRUE(aux) << aux.error().message;
+    if (!basis || !aux) {
+      return g;
+    }
+    EXPECT_EQ(basis->nao_sphe(), nmo);
+    EXPECT_EQ(aux->nao_sphe(), naux);
+    auto classes = fb::primitive_pair_classes(res, *basis);
+    EXPECT_TRUE(classes) << classes.error().message;
+    auto basis_u = fb::upload_spherical_transform_matrix(res, *basis);
+    EXPECT_TRUE(basis_u) << basis_u.error().message;
+    auto aux_u = fb::upload_spherical_transform_matrix(res, *aux);
+    EXPECT_TRUE(aux_u) << aux_u.error().message;
+    if (!classes || !basis_u || !aux_u) {
+      return g;
+    }
+    fb::MatrixAOPair s_pair(res, *basis, *basis_u);
+    EXPECT_TRUE(fb::overlap(res, *classes, s_pair.cartesian()));
+    EXPECT_TRUE(s_pair.cartesian_to_spherical(res));
+    fb::MatrixAOPair h_pair(res, *basis, *basis_u);
+    EXPECT_TRUE(fb::core_hamiltonian(res, *classes, *g.molecule, h_pair.cartesian()));
+    EXPECT_TRUE(h_pair.cartesian_to_spherical(res));
+    fb::MatrixAOPair metric(res, *aux, std::move(*aux_u));
+    EXPECT_TRUE(fb::metric(res, *aux, metric));
+    fb::Buffers::device<double> t(factor, res.device());
+    EXPECT_TRUE(fb::three_center(res, *basis, *classes, *aux, t.data()));
+    g.s = download(res, s_pair.spherical().data(), nn);
+    g.h = download(res, h_pair.spherical().data(), nn);
+    g.m = download(res, metric.spherical().data(), naux * naux);
+    g.t = download(res, t.data(), factor);
+    g.basis.emplace(std::move(*basis));
+    g.aux.emplace(std::move(*aux));
+    return g;
+  };
+  const Geometry ref = at(atoms);
+  ASSERT_TRUE(ref.basis && ref.aux);
+  const std::size_t n = 3 * atoms.size();
+
+  // The fit at the reference (L_M = chol(M), B = L_M^-1 T) on the device, as
+  // the call takes it.
+  fb::Buffers::device<double> b(factor, res.device());
+  fb::Buffers::device<double> l(naux * naux, res.device());
+  upload(res, ref.t, b.data());
+  upload(res, ref.m, l.data());
+  ASSERT_TRUE(fb::density_fit(res, static_cast<std::int32_t>(nmo), static_cast<std::int32_t>(naux),
+                              l.data(), b.data()));
+  const std::vector<double> l_m = download(res, l.data(), naux * naux);
+
+  // The fixture's orbitals, rows into this basis's order and normalisation,
+  // made orthonormal over this S: C (C^T S C)^-1/2.
+  const auto [row, norm] = pyscf_rows(*ref.basis);
+  const std::vector<double> c_pyscf =
+      read_array(entry.at("arrays").at("c").get<std::string>(), {nmo, nmo});
+  std::vector<double> c_raw(nn);
+  for (std::size_t j = 0; j < nmo; ++j) {
+    for (std::size_t m = 0; m < nmo; ++m) {
+      c_raw[m + (nmo * j)] = c_pyscf[row[m] + (nmo * j)] / norm[m];
+    }
+  }
+  const auto orthonormal = [&](const std::vector<double> &s) {
+    const std::vector<double> sc = host_gemm(nmo, nmo, nmo, s, false, c_raw);
+    return host_gemm(nmo, nmo, nmo, c_raw, false,
+                     inverse_sqrt(host_gemm(nmo, nmo, nmo, c_raw, true, sc), nmo));
+  };
+  const std::vector<double> c_host = orthonormal(ref.s);
+  fb::SphericalMatrixAO c(res, *ref.basis);
+  upload(res, c_host, c.data());
+  fb::SphericalMatrixAO h_ref(res, *ref.basis);
+  upload(res, ref.h, h_ref.data());
+
+  // The chunks, as the consumer sees them.
+  std::vector<double> h1(n * nn);
+  std::vector<double> tau(n * nn);
+  std::vector<double> w1(n * factor);
+  std::vector<std::pair<std::int32_t, std::int32_t>> chunks;
+  const auto consume = [&](const std::int32_t x0, const std::int32_t count,
+                           const double *const h1_dev, const double *const tau_dev,
+                           const double *const w1_dev) -> fb::Status {
+    chunks.emplace_back(x0, count);
+    const auto k = static_cast<std::size_t>(count);
+    const auto from = static_cast<std::size_t>(x0);
+    const std::vector<double> hk = download(res, h1_dev, k * nn);
+    const std::vector<double> tk = download(res, tau_dev, k * nn);
+    const std::vector<double> wk = download(res, w1_dev, k * factor);
+    std::ranges::copy(hk, h1.begin() + static_cast<std::ptrdiff_t>(from * nn));
+    std::ranges::copy(tk, tau.begin() + static_cast<std::ptrdiff_t>(from * nn));
+    std::ranges::copy(wk, w1.begin() + static_cast<std::ptrdiff_t>(from * factor));
+    return {};
+  };
+  const auto classes = fb::primitive_pair_classes(res, *ref.basis);
+  ASSERT_TRUE(classes) << classes.error().message;
+  const auto call = [&](const std::size_t max_bytes) {
+    return fb::mcscf::df_integral_derivatives(res, *ref.molecule, *ref.basis, *classes, *ref.aux,
+                                              h_ref, b, l.data(), c, consume, max_bytes);
+  };
+  // No consumer is refused; so is a budget below one coordinate, naming the
+  // bytes one needs, and that plus one more coordinate's W^x is a budget of
+  // exactly two.
+  {
+    const fb::Status none = fb::mcscf::df_integral_derivatives(
+        res, *ref.molecule, *ref.basis, *classes, *ref.aux, h_ref, b, l.data(), c,
+        std::function<fb::Status(std::int32_t, std::int32_t, const double *, const double *,
+                                 const double *)>{});
+    ASSERT_FALSE(none.has_value());
+    EXPECT_EQ(none.error().kind, fb::ErrorKind::InvalidConfig);
+  }
+  const fb::Status tiny = call(1);
+  ASSERT_FALSE(tiny.has_value());
+  EXPECT_EQ(tiny.error().kind, fb::ErrorKind::Unsupported);
+  EXPECT_TRUE(chunks.empty());
+  const std::string &message = tiny.error().message;
+  const std::size_t needs = message.find(" needs ");
+  ASSERT_NE(needs, std::string::npos) << message;
+  const std::size_t need = std::stoull(message.substr(needs + 7));
+  const fb::Status made = call(need + (sizeof(double) * factor));
+  ASSERT_TRUE(made) << made.error().message;
+  std::vector<std::pair<std::int32_t, std::int32_t>> want_chunks;
+  for (std::size_t x0 = 0; x0 < n; x0 += 2) {
+    want_chunks.emplace_back(static_cast<std::int32_t>(x0),
+                             static_cast<std::int32_t>(std::min<std::size_t>(2, n - x0)));
+  }
+  EXPECT_EQ(chunks, want_chunks);
+
+  // (h_MO, L) at a displaced geometry, in the reference's gauge.
+  const auto integrals = [&](const Geometry &g) {
+    const std::vector<double> sc = host_gemm(nmo, nmo, nmo, g.s, false, c_host);
+    const std::vector<double> x =
+        host_gemm(nmo, nmo, nmo, c_host, false,
+                  inverse_sqrt(host_gemm(nmo, nmo, nmo, c_host, true, sc), nmo));
+    const auto to_mo = [&](const std::vector<double> &ao) {
+      const std::vector<double> ax = host_gemm(nmo, nmo, nmo, ao, false, x);
+      return host_gemm(nmo, nmo, nmo, x, true, ax);
+    };
+    std::vector<double> h_mo = to_mo(g.h);
+    // K[p, q, P] = (X^T T_P X)[p, q], T_P[m, n] at P + naux (m + nao n).
+    std::vector<double> k(factor);
+    std::vector<double> tp(nn);
+    for (std::size_t p = 0; p < naux; ++p) {
+      for (std::size_t mn = 0; mn < nn; ++mn) {
+        tp[mn] = g.t[p + (naux * mn)];
+      }
+      std::ranges::copy(to_mo(tp), k.begin() + static_cast<std::ptrdiff_t>(p * nn));
+    }
+    // G = L_M^-1 M L_M^-T (symmetric), Z = L_M^-T G^-1/2.
+    const std::vector<double> half = lower_solve(l_m, naux, g.m, naux, false);
+    const std::vector<double> gm = lower_solve(l_m, naux, transpose(half, naux), naux, false);
+    const std::vector<double> z = lower_solve(l_m, naux, inverse_sqrt(gm, naux), naux, true);
+    return std::pair{std::move(h_mo), host_gemm(nn, naux, naux, k, false, z)};
+  };
+
+  double worst = 0.0;
+  for (std::size_t x = 0; x < n; ++x) {
+    SCOPED_TRACE(std::format("coordinate {}", x));
+    std::array<std::pair<std::vector<double>, std::vector<double>>, 4> f;
+    const std::array<double, 4> steps{kLadderStep, -kLadderStep, kLadderStep / 2, -kLadderStep / 2};
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+      std::vector<fb::Atom> moved = atoms;
+      fb::Vec<double, 3> &r = moved[x / 3].position;
+      (x % 3 == 0 ? r.x : x % 3 == 1 ? r.y : r.z) += steps[i];
+      const Geometry g = at(moved);
+      ASSERT_TRUE(g.basis && g.aux);
+      f[i] = integrals(g);
+    }
+    // Richardson: (4 D(step / 2) - D(step)) / 3 per element, then the worst
+    // miss of each quantity relative to its largest element.
+    const auto miss = [&](const auto &part, const double *analytic, const std::size_t len) {
+      double diff = 0.0;
+      double scale = 0.0;
+      for (std::size_t i = 0; i < len; ++i) {
+        const double d1 = (part(f[0])[i] - part(f[1])[i]) / (2 * kLadderStep);
+        const double d2 = (part(f[2])[i] - part(f[3])[i]) / kLadderStep;
+        const double ladder = ((4 * d2) - d1) / 3;
+        diff = std::max(diff, std::abs(analytic[i] - ladder));
+        scale = std::max(scale, std::abs(ladder));
+      }
+      return std::pair{diff / scale, scale};
+    };
+    const auto [h_miss, h_scale] =
+        miss([](const auto &v) -> const std::vector<double> & { return v.first; },
+             h1.data() + (x * nn), nn);
+    const auto [w_miss, w_scale] =
+        miss([](const auto &v) -> const std::vector<double> & { return v.second; },
+             w1.data() + (x * factor), factor);
+    EXPECT_LT(h_miss, kLadderTol) << "h1^x, of max " << h_scale;
+    EXPECT_LT(w_miss, kLadderTol) << "W^x, of max " << w_scale;
+    worst = std::max({worst, h_miss, w_miss});
+    std::cout << std::format("[ ladder   ] x {}: h1^x {:.1e} of max {:.2e}, W^x {:.1e} of max "
+                             "{:.2e} (relative)\n",
+                             x, h_miss, h_scale, w_miss, w_scale);
+  }
+  std::cout << std::format("[ ladder   ] {} chunks of <= 2 coordinates; worst relative miss "
+                           "{:.1e}\n",
+                           chunks.size(), worst);
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, McscfThirdDerivative,

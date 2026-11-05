@@ -31,8 +31,13 @@ Status mcscf::df_integral_derivatives(
     DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
     std::span<const PrimitivePairClass> classes, const BasisSet &aux,
     const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-    const SphericalMatrixAO &c, ThirdDerivative &op, double *y,
-    std::size_t max_bytes = 0); // Y = I^x z, every coordinate, W^x in chunks
+    const SphericalMatrixAO &c,
+    const std::function<Status(int32_t x0, int32_t count, const double *h1,
+                               const double *tau, const double *w1)> &consume,
+    std::size_t max_bytes = 0); // (h1^x, tau^x, W^x), every coordinate, in chunks
+Status mcscf::df_integral_derivatives(
+    ..., const SphericalMatrixAO &c, ThirdDerivative &op, double *y,
+    std::size_t max_bytes = 0); // Y = I^x z: the consumer that applies op
 ```
 
 `h` is the AO core Hamiltonian and `b` the fitted factor, naux × nao² as
@@ -177,7 +182,12 @@ Cholesky factor, N = M⁻¹). The connection τ^x = −½ S^x_MO moves L as
 
     h1^x = Cᵀ h^x C + τ^x h_MO + h_MO τ^x,     W^x = U^x + τ^x L + L τ^x,
 
-the fixture's I^x exactly. T^x is walked one aux atom at a time
+the fixture's I^x exactly. **The gauge.** W^x is the derivative of
+L = Cᵀ B C with the fitted index turned by −½ L_M⁻¹ M^x L_M⁻ᵀ, symmetric;
+the Cholesky factor `density_fit` takes at a moved geometry turns it by
+another matrix with the same symmetric part, so the two differ by
+L A with A antisymmetric over the fitted index, which (pq|rs) and anything
+else built from Σ_Q L_Q,pq L_Q,rs never sees. T^x is walked one aux atom at a time
 (`three_center_derivative`; with E_A = Σ_{m on A, n} C_mp X_mn,P C_nq the MO
 derivative is S + Sᵀ over the pair, S^(A,k) = −E_A + [P on A] Σ_A′ E_A′),
 symmetrized by one batched gemm against the identity, then W = (S + Sᵀ) L_M⁻ᵀ
@@ -186,9 +196,34 @@ W^x is nmo² naux doubles per coordinate: about 0.15 MB for the water in
 6-31G, but 3 GB at 500 functions over 1500 fitting functions. So
 `df_integral_derivatives` holds W^x for a chunk of coordinates, as many as
 its budget takes (the device's free memory beside its own buffers, or
-`max_bytes`), applies `op.apply_integrals` to the chunk and moves on, and
-returns Y = I^x z, not I^x. h1^x and τ^x (nmo² each) are built for every
-coordinate once. A slab is built by the same operations in the same order
+`max_bytes`), hands the chunk to its consumer and moves on: I^x itself is
+never whole. h1^x and τ^x (nmo² each) are built for every coordinate once
+and handed over beside each chunk's W^x.
+
+**The consumer** is `consume(x0, count, h1, tau, w1)`, called once per chunk
+for the coordinates [x0, x0 + count), x0 rising: `count` slabs each of
+h1^x and τ^x (nmo², symmetric) and of W^x (nmo² naux, (p, q, Q) at
+p + nmo (q + nmo Q)), on the device, valid until it returns. Work it queues
+on `res.stream()` is ordered before the next chunk overwrites them; its
+memory is its own, outside the budget; its error ends the call.
+`ThirdDerivative::apply_integrals` is one consumer, and the
+`(op, y)` overload is it, writing column x of Y = I^x z. Another (the
+NEVPT2 Hessian's integral directions) takes the same chunks with no second
+derivative walk.
+
+**NEVPT2's B.** NEVPT2 reads the AO B as `density_fit` leaves it,
+B = L_M⁻¹ (P|mn), naux × nao², the metric folded in, taken to the MO
+basis whole as B_Q,pq = (Cᵀ B_Q C)_pq at (Q, p, q) = Q + naux (p + nmo q)
+(`../../nevpt2/density_fitting/README.md`). That is this module's L,
+L_Q,pq = B_Q,pq, laid out Q slowest instead of fastest: W^x at
+p + nmo (q + nmo Q) is the direction of NEVPT2's MO B^Q_pq at
+Q + naux (p + nmo q), connection and metric included, and h1^x of its h. An
+adjoint Λ = ∂E/∂B pairs with a chunk as Σ Λ[Q + naux (p + nmo q)]
+W^x[p + nmo (q + nmo Q)]. The gauge above is invisible there too: NEVPT2's
+energy depends on B only through Σ_Q B_Q B_Q, so ⟨Λ, B A⟩ = 0 for an
+antisymmetric A and either gauge's derivative gives the same pairing.
+
+A slab is built by the same operations in the same order
 whatever the chunk, so the chunks change Y only by rounding (at most 5e-16
 against max |Y| of 4e-2 to 6e-2 for the water, one coordinate per chunk
 against one chunk, on the A10: the slabs sit at other offsets, and the BLAS
@@ -262,11 +297,21 @@ one-hot weights) + I^x z, contracted with λ^y, against `lxl_lambda`, both to
 |lxl_lambda| 0.26 to 0.8); the translational sum rule over the atoms to 1e-9
 (1.8e-15 seen); and the refusals.
 
+`McscfThirdDerivativeChunks.MatchALadder`, in the third derivative's file:
+the chunks a test consumer is handed under a budget of exactly two
+coordinates (five chunks over the water's nine), against a Richardson ladder
+(steps 2e-3 and 1e-3 bohr) of what they differentiate, h_MO(R) =
+C(R)ᵀ h(R) C(R) and L(R) = C(R)ᵀ T(R) C(R) Z(R) with C(R) = C (Cᵀ S(R) C)^−½
+(the connection) and Z(R) = L_M⁻ᵀ (L_M⁻¹ M(R) L_M⁻ᵀ)^−½ at the reference's
+L_M (the gauge above), on the host from this tree's S, h, (mn|P) and metric
+at each displaced geometry: to 1e-7 relative to the largest element of each
+(3.9e-9 seen at worst, W^x; h1^x 1.1e-10, on the gfx1200); the chunk sequence, and the refusal of an empty consumer.
+
 ## Files
 
 | File | Role |
 |------|------|
 | `third_derivative.cppm` | Module interface: `ThirdDerivative` |
 | `third_derivative.cpp` | The precomputation along z, the per-column covectors and their pullbacks, the occupied RDMs and the sigmas' integrals |
-| `integral_derivative.cpp` | `apply_integrals` (I^x z) and `df_integral_derivatives` (h1^x and W^x, the connection included, chunked over the coordinates, applied) |
+| `integral_derivative.cpp` | `apply_integrals` (I^x z) and `df_integral_derivatives` (h1^x, τ^x and W^x, the connection included, chunked over the coordinates and handed to a consumer; `apply_integrals` as one) |
 | `CMakeLists.txt` | The module `free_breakfast.mcscf.third_derivative` |

@@ -199,11 +199,11 @@ private:
   Buffers::device<double> act_;   // transition gamma and Gamma: summed, one root's
 };
 
-/// @brief I^x z for every nuclear coordinate x = 3 A + k: @p op's
-/// @c ThirdDerivative::apply_integrals along I^x, the derivative of the MO
-/// integrals a DF-CASSCF energy sees at fixed parameters, as the core
-/// Hamiltonian's h1^x and the MO factor's W^x, the connection
-/// tau^x = -1/2 C^T S^x C included (C -> C (1 + tau^x)).
+/// @brief The derivative of the MO integrals a DF-CASSCF energy sees at fixed
+/// parameters, for every nuclear coordinate x = 3 A + k, handed to
+/// @p consume a chunk of coordinates at a time: the core Hamiltonian's h1^x
+/// and the MO factor's W^x, with the connection tau^x = -1/2 C^T S^x C
+/// included (C -> C (1 + tau^x)).
 ///
 ///     h1^x = C^T h^x C + tau^x h_MO + h_MO tau^x
 ///     W^x  = U^x + tau^x L + L tau^x,   U^x = (C^T T^x C) L_M^-T - 1/2 L L_M^-1 M^x L_M^-T
@@ -213,32 +213,60 @@ private:
 /// integrals' derivative (mn|P)^x, M^x the metric's, L_M the metric's
 /// Cholesky factor and L the MO factor, so that the fitted (pq|rs)^x =
 /// U^x L^T + L U^x^T exactly, the metric through its factor (trsms, never an
-/// inverse). T^x is built one aux atom at a time (@c three_center_derivative)
-/// and M^x from @c metric_derivative.
+/// inverse). W^x is the derivative of L in the gauge where the factor's
+/// fitted index turns by L_M^-1 M^x L_M^-T symmetrically, not of the
+/// Cholesky factor density_fit takes at each geometry: the two differ by an
+/// antisymmetric turn of the fitted index, which no function of
+/// sum_Q L_Q L_Q^T sees. T^x is built one aux atom at a time
+/// (@c three_center_derivative) and M^x from @c metric_derivative.
 ///
 /// @p molecule is the molecule both bases were placed on; @p classes
 /// @c primitive_pair_classes of @p basis; @p h the AO core Hamiltonian;
 /// @p b and @p l the fit as @c density_fit leaves it (B naux x nao^2, L the
-/// naux x naux lower triangle); @p c the orbitals, nmo = nao, and @p op's
-/// MO basis. @p y receives op.size() x 3 n_atom on the device, column x
-/// I^x z.
+/// naux x naux lower triangle); @p c the orbitals, nmo = nao, orthonormal.
+///
+/// @p consume(x0, count, h1, tau, w1) sees the coordinates [x0, x0 + count),
+/// in order, x0 rising, each once: @p h1 and @p tau count nmo x nmo
+/// symmetric matrices (slab j at j nmo^2), @p w1 count MO factors (slab j at
+/// j nmo^2 naux, element (p, q, Q) at p + nmo (q + nmo Q)), on the device,
+/// queued on res.stream() and valid until it returns; work it queues there
+/// is ordered before the next chunk overwrites them. Its error is returned
+/// as it stands, and no further chunk is built.
 ///
 /// W^x is nmo^2 naux doubles per coordinate, so it is built for a chunk of
 /// coordinates at a time, as many as the budget holds (the device's free
-/// memory, or @p max_bytes when that is less), and applied before the next;
-/// chunking changes @p y only by rounding, and a chunk repeats the
-/// three-center walk. The call's own memory beside the chunk is the MO factor
-/// (nmo^2 naux), one aux atom's derivative block (3 nao^2 nblk), the metric
-/// derivative (3 naux^2) and four 3 n_atom nao^2 stacks; when that and one
-/// coordinate's W^x pass the budget it is Unsupported, naming the bytes,
-/// before anything is allocated. Queued on res.stream() with res.blas(); the
-/// derivative calls synchronize it.
+/// memory, or @p max_bytes when that is less); the consumer's own memory is
+/// its own, outside the budget. A slab is built by the same operations in
+/// the same order whatever the chunk, so the chunks change it only by
+/// rounding, and a chunk repeats the three-center walk. The call's own memory
+/// beside the chunk is the MO factor (nmo^2 naux), one aux atom's derivative
+/// block (3 nao^2 nblk), the metric derivative (3 naux^2) and four
+/// 3 n_atom nao^2 stacks; when that and one coordinate's W^x pass the budget
+/// it is Unsupported, naming the bytes, before anything is allocated. Queued
+/// on res.stream() with res.blas(); the derivative calls synchronize it.
 ///
 /// @return Success; InvalidConfig if the molecule and the bases are not one
-///         placement, @p c or @p h is not nao x nao, @p b not naux nao^2, or a
-///         pointer is null; Unsupported for one coordinate's memory past the
-///         budget or an index past int32_t; or the first error of a
-///         derivative call, copy, BLAS call or @p op.
+///         placement, @p c or @p h is not nao x nao, @p b not naux nao^2, or
+///         @p l or @p consume is null; Unsupported for one coordinate's
+///         memory past the budget or an index past int32_t; or the first
+///         error of a derivative call, copy, BLAS call or @p consume.
+[[nodiscard]] Status
+df_integral_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                        std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                        const SphericalMatrixAO &h, const Buffers::device<double> &b,
+                        const double *l, const SphericalMatrixAO &c,
+                        const std::function<Status(int32_t x0, int32_t count, const double *h1,
+                                                   const double *tau, const double *w1)> &consume,
+                        std::size_t max_bytes = 0);
+
+/// @brief I^x z for every nuclear coordinate: the consumer above that applies
+/// @p op's @c ThirdDerivative::apply_integrals to each chunk's (h1^x, W^x),
+/// writing @p y, op.size() x 3 n_atom on the device, column x I^x z, the
+/// state-averaged Hessian at the derivative integrals applied to z. @p c is
+/// @p op's MO basis. Chunking changes @p y only by rounding.
+///
+/// @return As the call above, InvalidConfig for a null @p y too, or the first
+///         error of @p op.
 [[nodiscard]] Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
                                              const BasisSet &basis,
                                              std::span<const PrimitivePairClass> classes,
