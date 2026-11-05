@@ -229,13 +229,13 @@ Nevpt2GradientStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClasse
                                                      cas.ncas, state, 0, nfrozen))};
     }
     if (pc) {
-      return Gradient{
-          FBF_TRY(nevpt2::pc_gradient(res, molecule, basis, classes, fit->aux, h, fit->b,
-                                      fit->l.data(), solution, cas.ncore, cas.ncas, 0, nfrozen))};
+      return Gradient{FBF_TRY(nevpt2::pc_gradient(res, molecule, basis, classes, fit->aux, h,
+                                                  fit->b, fit->l.data(), solution, cas.ncore,
+                                                  cas.ncas, 0, nfrozen, 0.0, zvector_tolerance))};
     }
-    return Gradient{
-        FBF_TRY(nevpt2::sc_gradient(res, molecule, basis, classes, fit->aux, h, fit->b,
-                                    fit->l.data(), solution, cas.ncore, cas.ncas, 0, nfrozen))};
+    return Gradient{FBF_TRY(nevpt2::sc_gradient(res, molecule, basis, classes, fit->aux, h, fit->b,
+                                                fit->l.data(), solution, cas.ncore, cas.ncas, 0,
+                                                nfrozen, zvector_tolerance))};
   }();
   Nevpt2GradientOutput out{.gradient = FBF_TRY(std::move(gradient)), .frozen_core = nfrozen};
   if (!json_path.empty()) {

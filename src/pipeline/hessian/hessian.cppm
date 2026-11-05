@@ -81,11 +81,39 @@ struct HessianStep {
 
   /// @brief How the Hessian is computed.
   HessianMethod method{HessianMethod::Analytic};
-  /// @brief HessianMethod::Numerical's step h (bohr): row x is
-  /// (g(R + h e_x) - g(R - h e_x)) / 2h. Its error is O(h²) in the gradient's
-  /// third derivative plus the SCF's noise over 2h, so the SCF in @ref scf
-  /// must be converged well past the step. Not read by the analytic method.
+  /// @brief HessianMethod::Numerical's step h (bohr): column j is
+  /// (g(R + h q_j) - g(R - h q_j)) / 2h, q_j coordinate j (@ref coordinates).
+  /// Its error is O(h²) in the gradient's third derivative plus the SCF's
+  /// noise over 2h, so the SCF in @ref scf must be converged well past the
+  /// step. Under @ref ladder, the ladder's coarsest step instead. Not read by
+  /// the analytic method.
   double displacement{1e-3};
+  /// @brief HessianMethod::Numerical's displacement coordinates: n rows of n
+  /// (n = 3 n_atom), row-major, row j coordinate j as a Cartesian
+  /// displacement, orthonormal; the Hessian is differenced along each and
+  /// reported in Cartesians, Qᵀ H Q. Empty: the Cartesian ones. The
+  /// config's, never detected: symmetry-adapted ones name a failing
+  /// block's irreps (README.md, "The ladder and the bilinearity check").
+  std::vector<double> coordinates{};
+  /// @brief HessianMethod::Numerical over the CASSCF chain: per coordinate,
+  /// the fourth-order central stencil, (g(-2s) - 8 g(-s) + 8 g(s) - g(2s)) /
+  /// 12s, at s = h, h/2 and h/4 (h @ref displacement; eight gradients, not
+  /// two), each element's ratio of successive differences judged against
+  /// 16, the gradient's noise measured by restarts, and the Hessian the
+  /// finest step's. Needed by @ref pairs. pipeline/config sets it under
+  /// @ref nevpt2_gradient unless the config says otherwise.
+  bool ladder{false};
+  /// @brief The coordinate pairs (i, j) the bilinearity check, Eq.
+  /// (bilinear) of nuclear_hessian.tex §3, is run on under @ref ladder: the
+  /// ladder along (q_i + q_j) / sqrt 2 against (H_ii + H_jj + H_ij + H_ji) /
+  /// 2. A pair failing it above the ladders' bars withholds the frequencies.
+  /// Empty: none. std::nullopt: every pair, up to
+  /// @ref kMaxEveryPairCoordinates coordinates, and none (logged) above;
+  /// pipeline/config's default under @ref nevpt2_gradient.
+  std::optional<std::vector<std::array<int32_t, 2>>> pairs{std::in_place};
+  /// @brief The most coordinates @ref pairs' std::nullopt checks every pair
+  /// of: four atoms, 66 pairs, 528 gradients beside the ladder's 96.
+  static constexpr size_t kMaxEveryPairCoordinates = 12;
 
   /// @brief The chain each method runs, configured as the config's own
   /// tables configure it (pipeline/config copies them in). The steps with no
@@ -118,7 +146,10 @@ struct HessianStep {
   /// @brief Where the Hessian is written as JSON, if not empty: the method,
   /// the Hessian as 3 n_atom rows of 3 n_atom, the asymmetry, the
   /// translational sum, the frequencies and the normal modes, and when the
-  /// product has them the dipole derivative and the IR intensities. Arrives
+  /// product has them the dipole derivative and the IR intensities; under
+  /// @ref ladder its rungs, ratios, bars and noise, and each checked pair's
+  /// verdict (README.md has the keys). Written before a failing pair's
+  /// error, without the frequencies and modes. Arrives
   /// resolved (pipeline/config sets it to hessian.json in the run's output
   /// directory).
   std::filesystem::path json_path{};
@@ -138,9 +169,11 @@ struct HessianStep {
   /// @ref check_displaced_casscf; under @ref nevpt2_gradient the same, its
   /// gradient the NEVPT2's, each displacement's max |z^c|, smallest
   /// inactive gap and Z-vector residual logged.
-  /// Then symmetrized, checked, and its harmonic vibrations; under the
-  /// analytic RHF, the dipole derivative from the same CPHF and the IR
-  /// intensities, unless a shell is above d (logged as a warning).
+  /// Under @ref ladder, eight displaced gradients per coordinate, four
+  /// restarts and one re-solve 100 times tighter at each of four of them for
+  /// the noise, and eight per pair of @ref pairs. Then symmetrized, checked, and its harmonic vibrations;
+  /// under the analytic RHF, the dipole derivative from the same CPHF and the
+  /// IR intensities, unless a shell is above d (logged as a warning).
   ///
   /// @return The Hessian; with no device, ErrorKind::GpuRuntime; under the
   ///         analytic method, Unsupported, before anything runs, for an
@@ -165,7 +198,12 @@ struct HessianStep {
   ///         @ref Nevpt2GradientStep::quasi_degenerate, each naming the
   ///         reason; then the numerical CASSCF chain's errors, and the
   ///         NEVPT2 gradient's (PC's refusals among them), naming the
-  ///         geometry.
+  ///         geometry. Before anything runs: InvalidConfig for @ref ladder,
+  ///         @ref pairs or @ref coordinates under the analytic method, pairs
+  ///         without the ladder, coordinates not n orthonormal rows of n, or
+  ///         a pair outside n or named twice; Unsupported for the ladder
+  ///         over the RHF chain. Last, Numerical naming every pair that is
+  ///         not bilinear, the frequencies withheld.
   [[nodiscard]] Result<HessianOutput> run(View<MoleculeOutput> in, NodeResources &node) const;
 };
 

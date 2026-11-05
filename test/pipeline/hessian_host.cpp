@@ -6,9 +6,10 @@
 // molecule it reads loaded from the final.xyz that step writes, so it runs
 // after it; the CASSCF chain copied in beside a [casscf_gradient], the
 // analytic method there the root's (beside an [optimize] too), and its
-// refusals; and the guard on a displaced CASSCF, check_displaced_casscf, fed
-// an active orbital swapped out and roots swapped. Nothing is run, so
-// nothing touches a device.
+// refusals; the ladder, its pairs and coordinates (#812), on by default
+// beside a [nevpt2_gradient], and their refusals; and the guard on a
+// displaced CASSCF, check_displaced_casscf, fed an active orbital swapped
+// out and roots swapped. Nothing is run, so nothing touches a device.
 
 #include <gtest/gtest.h>
 
@@ -247,6 +248,96 @@ TEST(PipelineHessian, TheCasscfChainRefusesIntegralDirectErisAndASecondGradient)
   expect_config_error(with_inputs("[eri]\nmode = \"density_fitting\"\n[casscf_gradient]\n"
                                   "[hessian]\n"),
                       "[casscf] needs 'ncas'");
+}
+
+// The ladder and the bilinearity check (#812): off for the RHF and CASSCF
+// chains unless asked, on beside a [nevpt2_gradient] with every pair (the
+// step caps it by the molecule's size); the keys read as written, the
+// coordinates flattened row by row.
+TEST(PipelineHessian, TheLadderAndItsPairsAreReadAndDefaultOnForNevpt2) {
+  constexpr std::string_view kCas = "[eri]\nmode = \"density_fitting\"\n"
+                                    "[casscf]\nncas = 2\nnelecas = 2\n";
+  const auto hessian_of = [&](std::string_view tables) {
+    auto calc = fb::parse_config(with_inputs(tables), "", kOut);
+    EXPECT_TRUE(calc.has_value()) << calc.error().message;
+    return calc.has_value() ? *calc->step<fb::HessianStep>() : fb::HessianStep{};
+  };
+  // The RHF and CASSCF chains: no ladder, no pairs, the Cartesians.
+  for (const std::string_view chain :
+       {std::string_view{""}, std::string_view{"[casscf_gradient]\n"}}) {
+    const fb::HessianStep plain =
+        hessian_of(std::format("{}{}[hessian]\nmethod = \"numerical\"\n", kCas, chain));
+    EXPECT_FALSE(plain.ladder);
+    ASSERT_TRUE(plain.pairs.has_value());
+    EXPECT_TRUE(plain.pairs->empty());
+    EXPECT_TRUE(plain.coordinates.empty());
+  }
+  // The CASSCF chain, asked.
+  const fb::HessianStep asked = hessian_of(
+      std::format("{}[casscf_gradient]\n[hessian]\nmethod = \"numerical\"\nladder = true\n"
+                  "pairs = [[0, 1], [4, 2]]\n",
+                  kCas));
+  EXPECT_TRUE(asked.ladder);
+  ASSERT_TRUE(asked.pairs.has_value());
+  EXPECT_EQ(*asked.pairs, (std::vector<std::array<std::int32_t, 2>>{{0, 1}, {4, 2}}));
+  // The NEVPT2 chain: the ladder over every pair by default; a list of
+  // pairs, or none, as written; no ladder, no pairs.
+  constexpr std::string_view kNevpt2 = "[nevpt2_gradient]\n[hessian]\nmethod = \"numerical\"\n";
+  const fb::HessianStep nevpt2 = hessian_of(std::format("{}{}", kCas, kNevpt2));
+  EXPECT_TRUE(nevpt2.ladder);
+  EXPECT_FALSE(nevpt2.pairs.has_value());
+  const fb::HessianStep listed = hessian_of(std::format("{}{}pairs = [[7, 8]]\n", kCas, kNevpt2));
+  EXPECT_TRUE(listed.ladder);
+  EXPECT_EQ(listed.pairs, (std::vector<std::array<std::int32_t, 2>>{{7, 8}}));
+  const fb::HessianStep none = hessian_of(std::format("{}{}pairs = []\n", kCas, kNevpt2));
+  ASSERT_TRUE(none.pairs.has_value());
+  EXPECT_TRUE(none.pairs->empty());
+  const fb::HessianStep off = hessian_of(std::format("{}{}ladder = false\n", kCas, kNevpt2));
+  EXPECT_FALSE(off.ladder);
+  ASSERT_TRUE(off.pairs.has_value());
+  EXPECT_TRUE(off.pairs->empty());
+  // Coordinates, row-major.
+  const fb::HessianStep turned = hessian_of(
+      std::format("{}{}coordinates = [[0.6, 0.8, 0], [-0.8, 0.6, 0], [0, 0, 1]]\n", kCas, kNevpt2));
+  EXPECT_EQ(turned.coordinates, (std::vector<double>{0.6, 0.8, 0, -0.8, 0.6, 0, 0, 0, 1}));
+}
+
+TEST(PipelineHessian, AMalformedLadderIsRefused) {
+  constexpr std::string_view kCas = "[eri]\nmode = \"density_fitting\"\n"
+                                    "[casscf]\nncas = 2\nnelecas = 2\n";
+  // The numerical method's keys, under the analytic one.
+  for (const std::string_view key : {"ladder = true", "pairs = [[0, 1]]", "coordinates = [[1]]"}) {
+    expect_config_error(with_inputs(std::format("{}[casscf_gradient]\n[hessian]\n{}\n", kCas, key)),
+                        "is the numerical method's, and method is 'analytic'");
+  }
+  constexpr std::string_view kNevpt2 = "[nevpt2_gradient]\n[hessian]\nmethod = \"numerical\"\n";
+  for (const std::string_view pair : {"[1, 1]", "[-1, 2]"}) {
+    expect_config_error(with_inputs(std::format("{}{}pairs = [{}]\n", kCas, kNevpt2, pair)),
+                        "is not two distinct coordinates");
+  }
+  expect_config_error(with_inputs(std::format("{}{}pairs = [[1, 2, 3]]\n", kCas, kNevpt2)),
+                      "[hessian] pairs is not an array of integer pairs");
+  expect_config_error(with_inputs(std::format("{}{}coordinates = [[1, 0], [0]]\n", kCas, kNevpt2)),
+                      "[hessian] coordinates are 2 rows, and one has 1 numbers");
+  expect_config_error(with_inputs(std::format("{}{}coordinates = [1, 0]\n", kCas, kNevpt2)),
+                      "[hessian] coordinates is not an array of arrays of numbers");
+  expect_config_error(with_inputs(std::format("{}{}coordinates = []\n", kCas, kNevpt2)),
+                      "[hessian] coordinates is empty");
+  // Pairs are judged against the ladder's bars.
+  expect_config_error(
+      with_inputs(std::format("{}{}ladder = false\npairs = [[0, 1]]\n", kCas, kNevpt2)),
+      "[hessian] pairs are judged against the ladder's error bars: set ladder = true");
+  expect_config_error(with_inputs(std::format("{}[casscf_gradient]\n[hessian]\nmethod = "
+                                              "\"numerical\"\npairs = [[0, 1]]\n",
+                                              kCas)),
+                      "[hessian] pairs are judged against the ladder's error bars");
+  // The RHF chain has no restart to measure the noise by.
+  auto rhf =
+      fb::parse_config(with_inputs("[hessian]\nmethod = \"numerical\"\nladder = true\n"), "", kOut);
+  ASSERT_FALSE(rhf.has_value());
+  EXPECT_EQ(rhf.error().kind, fb::ErrorKind::Unsupported);
+  EXPECT_NE(rhf.error().message.find("the RHF chain has no such start"), std::string::npos)
+      << rhf.error().message;
 }
 
 // check_displaced_casscf over a non-orthonormal AO basis, S = diag(1, 4, 1,

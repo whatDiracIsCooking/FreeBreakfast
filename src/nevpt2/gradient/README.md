@@ -943,7 +943,10 @@ and root, then it.
 
 Every Lagrangian here, single-state, QD state, W form, several W or
 coupling, goes through one solve (`lagrangian_zvector`). It runs to a
-tolerance, 1e-10 on ‖H̃ z + g‖, in at most 200 products. Its **true**
+tolerance, 1e-10 on ‖H̃ z + g‖ (the single-state `lagrangian_gradient`,
+`sc_gradient` and `pc_gradient` take it as `zvector_tolerance`, 1e-10 by
+default, as the W-form QD ones do; `[hessian]`'s ladder tightens it to
+measure what it leaves, #812), in at most 200 products. Its **true**
 residual, from one more product, is held to that same tolerance: for one
 column as for several, `Numerical` naming the column. Before #864 only the
 several-column path checked, and a state gradient accepted 3.8e-10 at PSB3
