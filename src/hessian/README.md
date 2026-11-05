@@ -20,7 +20,9 @@ C → C (1 + ε K) (a state average's **L_xy z_o part**), the
 its own, `df_casscf_cp`, a state average's **z terms** at one root's
 multipliers, `df_sacasscf_z` (L_xy's z part and L_xλ, eq. sa), and for the
 NEVPT2 Hessian (milestone 24) the **parameter response and total tangent**
-t_x of (h_MO, B_MO, c), `df_nevpt2_tangents`, all below.
+t_x of (h_MO, B_MO, c), `df_nevpt2_tangents`, and the **DF second
+derivative at an MO adjoint**, Σ h̄ h^xy + Σ Λ B^xy, `df_adjoint_xy`, all
+below.
 
 ```cpp
 import free_breakfast.hessian;
@@ -904,6 +906,146 @@ the full ladder 15 s (72 solves); the ammonia's SC refusal at
 coordinate 0, PC's 22 records (both pairs at every coordinate but the
 nitrogen's z, which keeps the C3 axis).
 
+## The DF second derivative at an MO adjoint
+
+`df_adjoint_xy` is the first term of the NEVPT2 skeleton L_AB
+(`nuclear_hessian.tex` eq. LAB, #809): a fixed symmetric MO adjoint
+(h̄, Λ), nevpt2::ScAdjoint's shapes, against the second derivatives of the
+integrals it is the adjoint of,
+
+    Φ_xy = Σ_pq h̄_pq h^xy_pq + Σ_L,pq Λ_L,pq B^xy_L,pq,
+
+the E_corr + Φ share of L_AB without its integral curvature (the HVP's
+⟨t_A, HVP t_B⟩ term is that).
+
+```cpp
+auto phi = hessian::df_adjoint_xy(res, molecule, basis, classes, aux, h_core, b, l, c,
+                                  adjoint.h_bar.data(), adjoint.lambda.data());
+// *phi: 3 n_atom x 3 n_atom, element x + 3 n_atom y, symmetric to rounding
+```
+
+**The path.** h_MO and B_MO are differentiated along
+
+    C(R)    = C (Cᵀ S(R) C)^−½,                         τ^x = −½ S^x,  τ^xy = −½ S^xy + ⅜ {S^x, S^y}
+    B_MO(R) = (L⁻¹ M(R) L⁻ᵀ)^−½ L⁻¹ (P|pq)(R)[C(R)],  μ^x = −½ m^x,  μ^xy = −½ m^xy + ⅜ {m^x, m^y}
+
+(S^x in the MO basis, m^x = L⁻¹ M^x L⁻ᵀ, L the metric's Cholesky factor at
+the reference, {a, b} = ab + ba): the Löwdin connection to second order, as
+`df_casscf_exy`'s τ^xy, and the fitted index carried the same way.
+
+**The gauge at second order.** B's fitted index is only defined up to an
+orthogonal turn O(R) (any L(R) with L Lᵀ = M(R) fits), and a general Λ sees
+it. The path above is the factor L(R) = L (1 + m(R))^½: its first order turns
+the fitted index by μ^x = −½ m^x, symmetric, which is exactly
+`mcscf::df_integral_derivatives`' W^x
+(`../mcscf/third_derivative/README.md`, "The gauge"), and its second order is
+the symmetric square root's, μ^xy above. So B^x and B^xy are the first two
+derivatives of one curve, which a Hessian's two halves must share: L_AB's
+HVP term pairs W^x (#807's gauge) and this term pairs B^xy, and their sum is
+the derivative of one function only because the curve is one. Another gauge
+with the same first order, O(R) = 1 + ½ A^xy δx δy + …, A^xy antisymmetric,
+adds ⟨G, A^xy⟩, G_QP = Σ_pq Λ_Q,pq B_P,pq, which E_corr never sees: it
+depends on B only through (pq|rs) = Σ_Q B_Q,pq B_Q,rs, so its Λ = 2 B V
+(V = ∂E/∂(pq|rs)) makes G symmetric, and the exact turn O(R) leaves E_corr
+unchanged at every order. The same holds for E_cas and every term bilinear
+in B. #816 proves the pairing end to end.
+
+**The pieces.** B = U_Q U_p U_q t, three connections (μ on Q, τ on the left
+and on the right) acting on t = L⁻¹ (P|mn)[C], each U = 1 + u^x δx +
+½ u^xy δx δy. With f^x = B^x the full first derivative, the second is
+
+    f^xy = t^xy + Σ_k [u_k^x f^y + u_k^y f^x + (u_k^xy − {u_k^x, u_k^y}) B]
+                − Σ_k<l (u_k^x u_l^y + u_k^y u_l^x) B,
+    u^xy − {u^x, u^y} = −½ s^xy + ⅛ {s^x, s^y}   (s = S or m),
+
+and h_MO the same over its two connections. Contracted with (h̄, Λ), with
+X = 2 h_MO h̄ + 2 Σ_Q B_Q Λ_Q (ScAdjoint's X) and G as above:
+
+| Term | How |
+|---|---|
+| ⟨C h̄ Cᵀ, h^xy⟩ | `kinetic_hessian` + `potential_hessian` |
+| ⟨Λ, t^xy⟩ | `three_center_hessian` at Γ = L⁻ᵀ C Λ Cᵀ (`mcscf::df_gradient`'s extra Γ) |
+| −½ ⟨sym G, m^xy⟩ | `metric_hessian` at −½ L⁻ᵀ sym(G) L⁻¹ |
+| −½ ⟨sym X, S^xy⟩ | `overlap_hessian` at −½ C sym(X) Cᵀ |
+| ⅛ ⟨sym G, {m^x, m^y}⟩ + ⅛ ⟨sym X, {S^x, S^y}⟩ | ⟨sym(G) μ^x, μ^y⟩ + ⟨sym(X) τ^x, τ^y⟩, Gram matrices |
+| ⟨Λ, μ^x B^y⟩ − ⟨Λ, μ^x (τ^y B + B τ^y)⟩, + (x ↔ y) | ⟨μ^x, H^y⟩, H^y = Λ W^yᵀ − 2 Λ (B τ^y)ᵀ over the pairs (naux²) |
+| ⟨Λ, τ^x B^y + B^y τ^x⟩ + ⟨h̄, τ^x h^y + h^y τ^x⟩, + (x ↔ y) | 2 ⟨τ^x, N^y⟩, N^y = Σ_Q Λ_Q W^y_Q + h̄ h1^y |
+| −⟨Λ, τ^x B τ^y + τ^y B τ^x⟩ − ⟨h̄, τ^x h τ^y + τ^y h τ^x⟩ | −2 ⟨τ^x, V^y⟩, V^y = Σ_Q Λ_Q τ^y B_Q + h̄ τ^y h_MO |
+
+(B^y, h^y the full first derivatives W^y and h1^y.) The first derivatives
+(h1^x, τ^x, W^x) are `mcscf::df_integral_derivatives`' chunks, its consumer
+this call's: per coordinate y, N^y is one gemm of Λ and W^y side by side as
+nmo × (nmo naux) (Λ transposed once to W's layout, each slab symmetric), H^y
+two gemms over the pairs and the B τ^y between them, and its column of
+⟨μ^x, H^y⟩ one gemv against the μ stack, so W^x is never held past its
+chunk. μ^x comes from `metric_derivative`'s slab k: M^x = Ŝ + Ŝᵀ, Ŝ its
+columns on atom A, then two trsms. V^y is one strided-batched gemm
+(τ^y B_Q over the naux × nmo slab at each q) and one gemm, after the
+chunks. Every Gram matrix is one gemm over its stacks.
+
+**No more kernels.** Every integral class B^xy holds (T^xy, M^xy, T^x M^y,
+M^x M^y, the connection's S^xy, S^x S^y and S^x against T^y and h^y) is a
+contraction above over integrals the tree already has: the products of first
+derivatives are Gram matrices of first-derivative stacks, not new kernels.
+
+**The ladder sees the connection's curvature.** The FD oracle below
+differentiates `mcscf::df_gradient`'s extra-adjoint pass at displaced
+geometries. There the pass differentiates along the connection and the
+gauge re-centred at the displaced point, whose tangent differs from the
+path's by ⅛ [S^x, S^y] δy (and ⅛ [m^x, m^y] δy on the fitted index) at first
+order: the ladder's Jacobian is Φ_xy plus an antisymmetric K_xy, seen
+through X's and G's antisymmetric parts, which a general adjoint has (a
+stationary Lagrangian's total X is symmetric, and E_corr's G is). So Φ_xy is
+the Jacobian's symmetric part, and the test compares against that.
+
+### Memory
+
+Held for the call (its own: b_mo, `metric_derivative`, the derivative calls
+and the second-derivative integrals all take the workspace): B over every MO
+pair, Λ in W's layout and one more naux nmo² scratch (3 naux nmo²), the μ^x
+stack (3 n_atom naux²), the τ^x stack and one more (2 · 3 n_atom nmo²), M¹
+(3 naux²), G and a naux² scratch, four nmo² matrices and the AO matrix, and
+the five Gram matrices. W^x is `df_integral_derivatives`' chunks, as many
+coordinates as the rest of the budget (the device's free memory at the call,
+or `max_bytes` when that is less) holds. When this call's buffers and
+`df_integral_derivatives`' own beside one coordinate's W^x (its count, in
+`integral_derivative.cpp`) pass the budget, the call is Unsupported, naming
+the bytes, before anything is allocated. The μ stack is 3 n_atom naux², so
+the fitting set's size, not the orbitals', is what it scales with: 1500
+fitting functions over 30 atoms is 1.6 GB. Atom blocks (M^x is nonzero only
+on A's rows and columns before the trsms) would cut that; not done.
+
+### Tests
+
+`test/gtest/df_adjoint_xy_gpu.cpp` (suite `HessianDfAdjointXy`), a skew
+water in cc-pVDZ (d on O) over cc-pVDZ-JKFIT, at random orthonormal orbitals
+C₀ = S^−½ U and a random symmetric (h̄, Λ), elements uniform in [−1, 1]:
+
+- `MatchesTheLadder`: every coordinate pair within 1e-7 of the ladder's
+  largest element, against the symmetric part of a fourth-order central
+  difference (±h, ±2h, h = 2.5e-4 bohr; the 5e-4 rung beside it for the
+  report) of `mcscf::df_transition_gradient`'s extra-adjoint pass at zero
+  RDMs over one active orbital and no core (so the pass alone), with the
+  adjoint held: at each displaced geometry the orbitals carried along the
+  connection, C₀ (C₀ᵀ S C₀)^−½, Λ turned into the Cholesky frame
+  `density_fit` takes there (Λ' = Oᵀ Λ, O = (L₀⁻¹ M L₀⁻ᵀ)^−½ L₀⁻¹ L, so
+  that O B_chol is B in the reference's symmetric gauge), and X rebuilt
+  there. The analytic run is first refused below one coordinate's budget
+  (Unsupported, naming the bytes), then run at the smallest budget that
+  takes two coordinates a chunk, and reported against an unchunked run.
+- `Refusals`: no h̄, no Λ, the fitting set on two of the three atoms, C
+  over another basis.
+
+Not gated, implied by the ladder: the match to `df_casscf_exy` at E_cas's
+adjoint, x ↔ y symmetry, the translational sum rule.
+
+Measured on the 3080 (`--preset default`): 24 orbitals, 116 fitting
+functions, max |Φ_xy| 842; worst miss 3.1e-6 (3.7e-9 of it) at h = 2.5e-4,
+4.6e-5 at 5e-4, falling 15× a halving, so the stencil's truncation, not the
+analytic value; the Jacobian's antisymmetric part 796 (the curvature above,
+as large as Φ itself at a random adjoint); the chunked run against the whole
+4.6e-12; the call 0.9 s, the ladder 6.3 s (72 passes).
+
 ## The state-averaged z terms
 
 A state average's root I has the Hessian of its Lagrangian (`casscf_hessian.tex`
@@ -1101,7 +1243,7 @@ the issue also asks for waits on that step (#610).
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::df_adjoint_xy`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build, or a batch of them from one walk |
@@ -1111,6 +1253,7 @@ the issue also asks for waits on that step (#610).
 | `state_specific.cppm` | Internal partition: `state_specific_electrons`, a one-root solution's inputs checked and its active electrons by spin, which `df_casscf` and `df_nevpt2_tangents` share |
 | `df_casscf.cpp` | The state-specific CASSCF Hessian: E_λx, E_xy, λ^x by `zvectors`, the unreduced residual check, Λᵀ E_λ· and the symmetrized sum; the CP step alone (`df_casscf_cp`) |
 | `df_nevpt2_tangents.cpp` | The NEVPT2 parameter response and t_x: per chunk of derivative integrals, W^x to B's layout, the one-index transforms by κ_nr, f^(x) by `builders_tangent`, κ_oo under the degenerate-pair rule and its transform |
+| `df_adjoint_xy.cpp` | Σ h̄ h^xy + Σ Λ B^xy at a general MO adjoint: X, G and the μ^x stack, the per-chunk N^y and ⟨μ^x, H^y⟩ over `df_integral_derivatives`' W^x, V^y, the Gram matrices and the second-derivative integrals at the adjoint's AO forms |
 | `df_sacasscf.cpp` | A state-averaged root's Hessian: z and λ^x by the Z-vectors, the residual check, root I's parameter Hessian by the one-hot unreduced product, the third-derivative action, the z terms, E_I,xy, eq. rot at equal weights and the symmetrized sum |
 | `df_sacasscf_z.cpp` | A state average's z terms at root I's z: L_xy's z part (E_xy along K(z_o), and at z_c's transition RDMs by the ± polarization) and L_xλ (root I's right-hand side + I^x z) |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |

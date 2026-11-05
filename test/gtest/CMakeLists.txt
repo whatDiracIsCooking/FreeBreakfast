@@ -155,6 +155,7 @@ add_executable(
   df_sacasscf_hessian_z_gpu.cpp
   df_sacasscf_hessian_gpu.cpp
   df_nevpt2_tangents_gpu.cpp
+  df_adjoint_xy_gpu.cpp
   infrared_gpu.cpp
   pipeline_gradient_gpu.cpp
   pipeline_casscf_gradient_gpu.cpp
