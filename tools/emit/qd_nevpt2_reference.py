@@ -106,6 +106,24 @@ writes test/gtest/data/qd_nevpt2/. Never hand-edited.
 
 The case setup (`State`), the transition RDMs and the integral blocks are
 method-independent: the PC part reads them as the SC part does.
+
+**Frozen core** (#859), with `--frozen-core`: the cases of FROZEN_CASES
+built as above (the same polish, SA-canonical orbitals, roots and
+transition RDMs), then per frozen_core value (a count, or "auto", PySCF's
+`chemcore`) the lowest n_f SA-canonical core orbitals sliced out of
+dfnevpt2's integrals and the orbital energies (h1eff still over the whole
+core, `frozen_state`), and SC- and PC-QD-NEVPT2 over that state exactly as
+above. Validated: each diagonal element, per class, against
+nevpt2_reference.py's `frozen_classes` (PySCF's class functions over the
+same slices) to DIAGONAL, and the PC diagonal against block2's
+WickICNEVPT2 with frozen=n_f to PC_DIAGONAL. No brute force: its cases
+have no core worth freezing. Only the answers the pipeline test reads are
+written (the classes' diagonal, both H_eff and their spectra), to
+qd_nevpt2/qd_nevpt2_frozen_core.json; qd_nevpt2.json and the arrays are
+left alone:
+
+    UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
+        tools/emit/qd_nevpt2_reference.py --frozen-core
 """
 
 from __future__ import annotations
@@ -124,6 +142,8 @@ import itertools  # noqa: E402
 import json  # noqa: E402
 import pathlib  # noqa: E402
 import shutil  # noqa: E402
+import sys  # noqa: E402
+import types  # noqa: E402
 
 import numpy  # noqa: E402
 import pyscf  # noqa: E402
@@ -157,6 +177,8 @@ from nevpt2_reference import (  # noqa: E402
     DEGENERATE,
     Recorder,
     block2,
+    frozen_classes,
+    frozen_count,
     pc_cut,
     polished,
 )
@@ -380,6 +402,12 @@ CASES = [
         "polish": True,
     },
 ]
+
+# The frozen-core cases (--frozen-core): CASES' name -> the frozen_core
+# values, as the [nevpt2] key spells them. The skew case is C1, so every
+# coupling is live; "auto" freezes its C and O 1s, 1 only the O 1s.
+FROZEN_CASES = {"h2co_skew_ccpvdz_sa3": ["auto", 1], "h2co_ccpvdz_sa2": ["auto"]}
+OUT_FROZEN = OUT / "qd_nevpt2_frozen_core.json"
 
 NCLASS = len(CLASSES)
 CLASSES_LIST = list(CLASSES)
@@ -1583,6 +1611,160 @@ def pc_brute_force(
 # ------------------------------------------------------------------ output
 
 
+# ------------------------------------------------------------- frozen core
+
+
+def frozen_state(state: State, nfrozen: int) -> State:
+    """The case's state with its lowest `nfrozen` SA-canonical core orbitals
+    frozen: sliced out of dfnevpt2's integrals (h1eff, over the whole core,
+    included) and of the orbital energies, and the blocks rebuilt over the
+    rest. The roots, their CI vectors and the CASCI are unchanged."""
+    f = nfrozen
+    casci = state.casci
+    ncore, ncas = casci.ncore, casci.ncas
+    nmo = state.mo.shape[1]
+    nvir = nmo - ncore - ncas
+    e = state.eris
+    eris = {
+        "h1eff": numpy.asarray(e["h1eff"])[f:, f:],
+        "ppaa": numpy.asarray(e["ppaa"]).reshape(nmo, nmo, ncas, ncas)[f:, f:],
+        "papa": numpy.asarray(e["papa"]).reshape(nmo, ncas, nmo, ncas)[f:, :, f:],
+        "pacv": numpy.asarray(e["pacv"]).reshape(nmo, ncas, ncore, nvir)[f:, :, f:],
+        "cvcv": numpy.asarray(e["cvcv"]).reshape(ncore, nvir, ncore, nvir)[f:, :, f:],
+    }
+    mo = state.mo[:, f:]
+    sliced = types.SimpleNamespace(
+        ncore=ncore - f,
+        ncas=ncas,
+        with_df=casci.with_df,
+        mo_energy=state.mo_energy[f:],
+    )
+    blocks = integral_blocks(state.name, sliced, mo, eris)
+    return dataclasses.replace(
+        state, mo=mo, mo_energy=state.mo_energy[f:], eris=eris, blocks=blocks
+    )
+
+
+def frozen_answers(sc: dict, pc: dict, info: dict) -> dict:
+    """One variant's written answers: SC's diagonal per class, both
+    symmetrized H_eff and their spectra (eigenvectors as columns, [k][i]),
+    PC's only where it is not refused."""
+
+    def spectrum(prefix: str, out: dict) -> dict:
+        return {
+            "class_energies": out[f"{prefix}class_energies"].tolist(),
+            "heff_sym": out[f"{prefix}heff_sym"].tolist(),
+            "eigenvalues": out[f"{prefix}eigenvalues"].tolist(),
+            "eigenvectors": out[f"{prefix}eigenvectors"].T.tolist(),
+        }
+
+    answers = {"sc": spectrum("", sc)}
+    if info["refusals"]:
+        answers["pc_refusals"] = info["refusals"]
+    else:
+        answers["pc"] = spectrum("pc_", pc) | {
+            "dropped": pc["pc_dropped"].astype(int).tolist()
+        }
+    return answers
+
+
+def main_frozen() -> None:
+    """--frozen-core: qd_nevpt2_frozen_core.json."""
+    lib.num_threads(1)
+    assert lib.num_threads() == 1
+    records = []
+    worst = {"diagonal": 0.0, "pc_diagonal": 0.0}
+    for entry in CASES:
+        name = entry["case"] if entry["from"] else entry["case"]["name"]
+        if name not in FROZEN_CASES:
+            continue
+        state = build_state(entry)
+        rdms, _, _ = transition_rdms(state)
+        mol = state.casci.mol
+        variants = []
+        for key in FROZEN_CASES[name]:
+            nfrozen = frozen_count(mol, key)
+            assert 0 < nfrozen <= state.casci.ncore, f"{name}: frozen_core {key}"
+            frozen = frozen_state(state, nfrozen)
+            sc, _ = sc_qd(frozen, rdms)
+            pc, info = pc_qd(frozen, rdms, sc)
+            diag, pc_diag = 0.0, 0.0
+            for root, ci in enumerate(state.ci):
+                full = (state.mo, ci, state.mo_energy)
+                classes = frozen_classes(state.casci, full, nfrozen)
+                for k, cls in enumerate(CLASSES):
+                    diag = max(
+                        diag,
+                        abs(classes[cls][0] - sc["class_norms"][root, k]),
+                        abs(classes[cls][1] - sc["class_energies"][root, k]),
+                    )
+                b2 = block2(state.casci, full, "pc", nfrozen)
+                pc_diag = max(
+                    pc_diag,
+                    max(
+                        abs(b2[cls] - pc["pc_class_energies"][root, k])
+                        for k, cls in enumerate(CLASSES)
+                    ),
+                )
+            state.casci.ci = list(state.ci)
+            assert diag < DIAGONAL, f"{name} frozen {key}: diagonal off PySCF by {diag}"
+            assert pc_diag < PC_DIAGONAL, (
+                f"{name} frozen {key}: PC off block2 by {pc_diag}"
+            )
+            worst["diagonal"] = max(worst["diagonal"], diag)
+            worst["pc_diagonal"] = max(worst["pc_diagonal"], pc_diag)
+            print(
+                f"{name} frozen_core {key} ({nfrozen}): diagonal vs PySCF {diag:.1e}, "
+                f"PC vs block2 {pc_diag:.1e}, SC-QD {sc['eigenvalues']}, "
+                + (
+                    f"PC-QD {pc['pc_eigenvalues']}"
+                    if not info["refusals"]
+                    else f"PC REFUSED {info['refusals']}"
+                )
+            )
+            variants.append(
+                {"frozen_core": key, "n_frozen": nfrozen}
+                | frozen_answers(sc, pc, info)
+                | {
+                    "checks": {
+                        "diagonal_vs_pyscf": diag,
+                        "pc_diagonal_vs_block2": pc_diag,
+                    }
+                }
+            )
+        records.append(state.record | {"variants": variants})
+    doc = {
+        "description": "Frozen-core SC- and PC-QD-NEVPT2 on qd_nevpt2.json's "
+        "cases named here, the same states: per frozen_core value (as the "
+        "[nevpt2] key spells it) and its count n_frozen, the lowest "
+        "n_frozen SA-canonical core orbitals sliced out of dfnevpt2's "
+        "integrals and orbital energies (h1eff over the whole core), then "
+        "each class's diagonal coupling [root][class], the symmetrized "
+        "H_eff, its eigenvalues and eigenvectors ([state][root]), SC's and "
+        "PC's. Hartree",
+        "provenance": {
+            "pyscf": pyscf.__version__,
+            "numpy": numpy.__version__,
+            "threads": 1,
+            "command": COMMAND + " --frozen-core",
+        },
+        "classes": list(CLASSES),
+        "validation": {
+            "diagonal": "each root's per-class norm and energy against "
+            "nevpt2_reference.py's frozen_classes (PySCF's class functions "
+            "over the same slices) on the SA-canonical orbitals",
+            "diagonal_tolerance": DIAGONAL,
+            "pc_diagonal": "each root's per-class PC energy against block2's "
+            "WickICNEVPT2 with frozen=n_frozen",
+            "pc_diagonal_tolerance": PC_DIAGONAL,
+            "max_difference": worst,
+        },
+        "cases": records,
+    }
+    OUT_FROZEN.write_text(json.dumps(doc, indent=1) + "\n")
+    print(f"wrote {OUT_FROZEN}: {worst}")
+
+
 def save(path: pathlib.Path, array) -> int:
     """One '<f8' Fortran-order .npy; its size in bytes."""
     numpy.save(path, numpy.asfortranarray(array, dtype="<f8"), allow_pickle=False)
@@ -1814,4 +1996,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--frozen-core"]:
+        main_frozen()
+    else:
+        assert not sys.argv[1:], f"unknown arguments {sys.argv[1:]}"
+        main()

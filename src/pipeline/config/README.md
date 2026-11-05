@@ -148,6 +148,7 @@ nelecas = 6
 nroots = 3                # quasi_degenerate needs 2 or more
 [nevpt2]
 quasi_degenerate = true   # default false: SC and PC per root only
+frozen_core = "auto"      # default 0: every core orbital correlated
 ```
 
 `[nevpt2]` runs SC- and PC-NEVPT2 on every root of the `[casscf]` it reads
@@ -167,6 +168,14 @@ default, it is `InvalidConfig` when the config is read, pointing at plain
 `[nevpt2]`: with one root the state-averaged Fock is the root's own, and QD
 would only repeat the state-specific result. The step refuses it again, for
 a pipeline built by hand.
+
+`frozen_core` (default 0) leaves that many of the lowest canonical core
+orbitals uncorrelated, per root and in QD (#859; `nevpt2/README.md` "Frozen
+core"): a count of at least 0, or `"auto"`, each element's chemical core
+(PySCF's `chemcore`: the 1s for B to Mg). A negative count, another string
+or another type is `InvalidConfig` when the file is read; a count past the
+CASSCF's core needs the molecule and the active space, so the step refuses
+it, `InvalidConfig`, when it runs.
 
 ```toml
 [fci]
@@ -274,6 +283,10 @@ written or filled in; a `[casscf]` with `nroots` above 1 (a state average);
 and a `[molecule]` `multiplicity` other than 1 (an open shell, the RHF under
 the CASSCF being closed-shell exactly then), under `[optimize]` its start's.
 The step refuses each again when it runs, for a pipeline built by hand.
+`frozen_core` is `[nevpt2]`'s key, read the same way, and **only 0 is taken
+until the frozen-core gradient lands (#875)**: any other count, and
+`"auto"`, is `InvalidConfig` when the file is read, so a frozen-core
+energy is never optimized with an all-electron gradient.
 
 **`quasi_degenerate = true`** differentiates one SC- or PC-QD-NEVPT2 state
 of the state-averaged `[casscf]` instead, `state` (default 0) indexing
@@ -342,7 +355,8 @@ or a pair naming a state at or past it (H_eff has one per root), is
 `InvalidConfig`; an integral-direct `[eri]`, written or filled in, and a
 `[molecule]` `multiplicity` other than 1 are `Unsupported`. The step refuses
 each again when it runs, for a pipeline built by hand; a PC refusal (a
-class's metric with no positive eigenvalue, a non-positive denominator) can only
+class's metric with no positive eigenvalue, or a pole: an intruder or a
+denominator at round-off) can only
 be seen there, once H_eff is built, and is the effective Hamiltonian's
 `Numerical` error. No `[nevpt2]` is planned for it.
 
@@ -549,7 +563,9 @@ than after the SCF has converged. `parse_config` touches no disk.
   negative states, or one over a `[casscf]` of fewer than two roots or
   naming a state past them;
 - a `[nevpt2]` `quasi_degenerate = true` over a `[casscf]` of fewer than
-  two roots;
+  two roots; a `[nevpt2]` or `[nevpt2_gradient]` `frozen_core` below 0 or a
+  string other than `"auto"`, or one other than 0 under
+  `[nevpt2_gradient]` (#875);
 - a `[nevpt2_gradient]` `quasi_degenerate = true` over a `[casscf]` of
   fewer than two roots; a `state` below 0, not
   below `nroots`, or without `quasi_degenerate`; or a `root` beside it;

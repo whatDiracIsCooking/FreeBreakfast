@@ -61,6 +61,33 @@ interface"), and the per-state arrays are `EnergyInputs`.
   row-major. That is the demo's layout, so its subscripts, the diagonal
   slices' index arithmetic and its host finish all carry over as written.
 
+## Frozen core
+
+The layer has no frozen-core switch: a frozen core is what the caller hands
+it (#859, `pipeline/nevpt2` "Frozen core"). With the lowest n_f canonical
+core orbitals frozen, they leave every class that carries a core index, six
+of the eight:
+
+| class | core indices | frozen orbitals leave |
+|---|---|---|
+| Si, S(+1)′ | i | its i |
+| Sijrs, S(0) | i, j | its i and j |
+| Sijr, S(+1) | i, j | its i and j |
+| Srsi, S(−1) | i | its i |
+| Sij, S(+2) | i, j | its i and j |
+| Sir, S(0)′ | i | its i |
+| Sr, S(−1)′; Srs, S(−2) | none | nothing: unchanged |
+
+So the caller builds `MoBlocks` over the orbitals from n_f on (`mo_blocks`
+over C's columns n_f…, its `ncore` the correlated core alone), and gives
+`e_core`, `h1e_v_si` and `h1e_v_sir` over the correlated core. **The frozen
+orbitals stay in the core density**: h1e, every `h1e_v_*` value and so
+Dyall's Hamiltonian are the inactive Fock's over the whole core, unchanged.
+Sr and Srs then come out exactly as without freezing, which the reference
+checks (`tools/emit/nevpt2_reference.py --frozen-core`). Everything indexed
+by "core" below (`ScAmplitudes::si`, a slab's batch over i, …) is the
+correlated core.
+
 ## Memory
 
 The intermediates live across `nevpt2::slab`, which takes

@@ -63,29 +63,48 @@ namespace free_breakfast {
   return static_cast<int32_t>(std::clamp<size_t>(batch, 1, std::numeric_limits<int32_t>::max()));
 }
 
+// Each element's chemical core, PySCF's `pyscf.data.elements.chemcore_atm`
+// (2.14), by the first Z of each count: none to Be, then 1 (B), 5 (Al),
+// 9 (Ga), 14 (Y), 18 (In), 23 (Lu), 34 (Tl), 50 (Rf) and 55 (Nh). Not a
+// noble-gas core: Na and Mg keep their 2s2p, K to Zn their 3s3p.
+[[nodiscard]] int32_t nevpt2_chemical_core(int32_t z) {
+  constexpr std::array<std::pair<int32_t, int32_t>, 9> kFirst{
+      {{113, 55}, {104, 50}, {81, 34}, {71, 23}, {49, 18}, {39, 14}, {31, 9}, {13, 5}, {5, 1}}};
+  for (const auto &[first, count] : kFirst) {
+    if (z >= first) {
+      return count;
+    }
+  }
+  return 0;
+}
+
 // What the energy layer reads of a set of orbitals but the RDMs and the
 // orbital energies, over the orbitals @p c (AO x MO, device) and F^I in them,
 // @p fi (nmo x nmo column-major, device): h1e, F^I's active block; the
-// h1e_v_* blocks against the core and the virtuals, Sr's less Σ_b (vb|ba);
-// the MO blocks of B, returned; and h2e from them.
+// h1e_v_* blocks against the correlated core (the core past its lowest
+// @p nfrozen) and the virtuals, Sr's less Σ_b (vb|ba); the MO blocks of B
+// over the orbitals from @p nfrozen on, returned; and h2e from them.
 [[nodiscard]] Result<nevpt2::MoBlocks>
 nevpt2_orbital_inputs(DeviceResources &res, const DensityFitted &fit, const CasscfOutput &cas,
-                      const double *c, const double *fi, double *h1e, double *h1e_v_sr,
-                      double *h1e_v_si, double *h1e_v_sir, double *h2e) {
+                      size_t nfrozen, const double *c, const double *fi, double *h1e,
+                      double *h1e_v_sr, double *h1e_v_si, double *h1e_v_sir, double *h2e) {
   const auto nmo = static_cast<size_t>(cas.c.n());
   const auto ncore = static_cast<size_t>(cas.ncore);
   const auto n = static_cast<size_t>(cas.ncas);
   const size_t nocc = ncore + n;
   const size_t nvirt = nmo - nocc;
+  const size_t ncorr = ncore - nfrozen;
   const auto order = static_cast<int32_t>(nmo);
   FBF_TRY(nevpt2_copy_block(res, fi, nmo, ncore, ncore, n, n, h1e));
   FBF_TRY(nevpt2_copy_block(res, fi, nmo, nocc, ncore, nvirt, n, h1e_v_sr));
-  FBF_TRY(nevpt2_copy_block(res, fi, nmo, ncore, 0, n, ncore, h1e_v_si));
-  FBF_TRY(nevpt2_copy_block(res, fi, nmo, nocc, 0, nvirt, ncore, h1e_v_sir));
+  FBF_TRY(nevpt2_copy_block(res, fi, nmo, ncore, nfrozen, n, ncorr, h1e_v_si));
+  FBF_TRY(nevpt2_copy_block(res, fi, nmo, nocc, nfrozen, nvirt, ncorr, h1e_v_sir));
 
-  // B over the orbitals, and h2e from it.
-  nevpt2::MoBlocks blocks =
-      FBF_TRY(nevpt2::mo_blocks(res, fit.naux, order, order, fit.b.data(), c, cas.ncore, cas.ncas));
+  // B over the orbitals the classes walk, and h2e from it: C's columns from
+  // nfrozen on, packed, so the blocks' core is the correlated one.
+  nevpt2::MoBlocks blocks = FBF_TRY(
+      nevpt2::mo_blocks(res, fit.naux, order, static_cast<int32_t>(nmo - nfrozen), fit.b.data(),
+                        c + (nmo * nfrozen), static_cast<int32_t>(ncorr), cas.ncas));
   FBF_TRY(nevpt2::h2e(res, blocks, h2e));
 
   // Sr's one-electron part, h1eff[v, a] - Σ_b (vb|ba): per active b, one
@@ -191,6 +210,22 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
   const size_t nroots = cas.energies.size();
   const auto order = static_cast<int32_t>(nmo);
 
+  // The frozen core, resolved: a count, or each atom's chemical core.
+  int32_t frozen = frozen_core;
+  if (frozen == kFrozenCoreAuto) {
+    frozen = 0;
+    for (const Atom &atom : molecule.atoms()) {
+      frozen += nevpt2_chemical_core(nuclear_charge(atom));
+    }
+  }
+  if (frozen < 0 || std::cmp_greater(frozen, ncore)) {
+    return err_config("[{}] frozen_core is {}{}, and the CASSCF has {} core orbitals: it must be "
+                      "0 to {}, or \"auto\"",
+                      kName, frozen, frozen_core == kFrozenCoreAuto ? " (auto)" : "", ncore, ncore);
+  }
+  const auto nfrozen = static_cast<size_t>(frozen);
+  const size_t ncorr = ncore - nfrozen;
+
   // (pq|uv), (pu|qv) and (tu|vw) over the CASSCF's orbitals, fitted. The
   // per-root rotations leave the active columns alone, so (tu|vw), what
   // nevpt2::rdms contracts, is every root's.
@@ -238,9 +273,9 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
   Buffers::device<double> h2e(n4, res.device());
   Buffers::device<double> h1e(n2, res.device());
   Buffers::device<double> h1e_v_sr(nvirt * n, res.device());
-  Buffers::device<double> h1e_v_si(n * ncore, res.device());
-  Buffers::device<double> h1e_v_sir(nvirt * ncore, res.device());
-  Buffers::device<double> e_core(ncore, res.device());
+  Buffers::device<double> h1e_v_si(n * ncorr, res.device());
+  Buffers::device<double> h1e_v_sir(nvirt * ncorr, res.device());
+  Buffers::device<double> e_core(ncorr, res.device());
   Buffers::device<double> e_virt(nvirt, res.device());
   Buffers::device<double> r_device(nmo * nmo, res.device());
   Buffers::device<double> fi_r(nmo * nmo, res.device());
@@ -256,6 +291,11 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
   std::vector<double> energies;
 
   Nevpt2Output out;
+  out.frozen_core = frozen;
+  if (nfrozen > 0) {
+    log::info(std::format("NEVPT2: {} frozen core orbital{}, {} correlated", nfrozen,
+                          nfrozen == 1 ? "" : "s", ncorr));
+  }
   out.roots.reserve(nroots);
   out.pc_roots.reserve(nroots);
   out.pc_refusals.reserve(nroots);
@@ -293,8 +333,9 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
     FBF_TRY(canonicalize_core_virtual(res, nmo, ncore, nocc, fock_active, r, energies));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(r_device.data(), r.data(), r.size() * sizeof(double),
                                            wwr::wwrMemcpyHostToDevice, stream)));
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(e_core.data(), energies.data(), ncore * sizeof(double),
-                                           wwr::wwrMemcpyHostToDevice, stream)));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(e_core.data(), energies.data() + nfrozen,
+                                           ncorr * sizeof(double), wwr::wwrMemcpyHostToDevice,
+                                           stream)));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(e_virt.data(), energies.data() + nocc,
                                            nvirt * sizeof(double), wwr::wwrMemcpyHostToDevice,
                                            stream)));
@@ -308,8 +349,8 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), order, &kOne<double>, r_device.data(),
                                                product.data(), &kZero<double>, fi_r.data())));
     const nevpt2::MoBlocks blocks = FBF_TRY(
-        nevpt2_orbital_inputs(res, *fit, cas, c_r.data(), fi_r.data(), h1e.data(), h1e_v_sr.data(),
-                              h1e_v_si.data(), h1e_v_sir.data(), h2e.data()));
+        nevpt2_orbital_inputs(res, *fit, cas, nfrozen, c_r.data(), fi_r.data(), h1e.data(),
+                              h1e_v_sr.data(), h1e_v_si.data(), h1e_v_sir.data(), h2e.data()));
 
     // dm2 in make_dm123's convention, ⟨E_pq E_rs⟩ = Γ_pqrs + δ_qr γ_ps,
     // row-major as Γ is.
@@ -376,12 +417,12 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
   const response::Fock fock_sa =
       FBF_TRY(response::fock(res, molecule, h, fit->b, fit->naux, cas.c, cas.ncore, cas.ncas,
                              ints.ppaa, ints.papa, gamma_sa, cas.rdm2));
-  const nevpt2::MoBlocks blocks = FBF_TRY(
-      nevpt2_orbital_inputs(res, *fit, cas, cas.c.data(), fock_sa.fock_inactive.data(), h1e.data(),
-                            h1e_v_sr.data(), h1e_v_si.data(), h1e_v_sir.data(), h2e.data()));
+  const nevpt2::MoBlocks blocks = FBF_TRY(nevpt2_orbital_inputs(
+      res, *fit, cas, nfrozen, cas.c.data(), fock_sa.fock_inactive.data(), h1e.data(),
+      h1e_v_sr.data(), h1e_v_si.data(), h1e_v_sir.data(), h2e.data()));
   FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(e_core.data(), cas.mo_energies.data(), ncore * sizeof(double),
-                                     wwr::wwrMemcpyHostToDevice, stream)));
+      gpu_status(wwr::wwrMemcpyAsync(e_core.data(), cas.mo_energies.data() + nfrozen,
+                                     ncorr * sizeof(double), wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(
       gpu_status(wwr::wwrMemcpyAsync(e_virt.data(), cas.mo_energies.data() + nocc,
                                      nvirt * sizeof(double), wwr::wwrMemcpyHostToDevice, stream)));

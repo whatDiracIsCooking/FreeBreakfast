@@ -27,6 +27,7 @@ struct Nevpt2Output {
   // PC per root: energies[8], dropped[8], total; empty where PC was refused
   std::vector<std::optional<nevpt2::PcClassEnergies>> pc_roots;
   std::vector<std::string> pc_refusals; // why, where pc_roots[r] is empty
+  int32_t frozen_core = 0;              // the core orbitals frozen, resolved
 
   // QD-NEVPT2, empty without quasi_degenerate; n roots, [I n + J] bra I
   std::vector<nevpt2::ClassEnergies> qd_couplings;      // SC <I|V|Psi_J^(1)> per class
@@ -39,6 +40,8 @@ struct Nevpt2Output {
 struct Nevpt2Step {
   static constexpr std::string_view kName = "nevpt2";
   bool quasi_degenerate = false;
+  static constexpr int32_t kFrozenCoreAuto = -1;
+  int32_t frozen_core = 0; // a count, or kFrozenCoreAuto ("auto")
 
   Result<Nevpt2Output> run(View<MoleculeOutput, BasisSetOutput, EriOutput,
                                 CoreHamiltonianOutput, ScfOutput, CasscfOutput> in,
@@ -46,8 +49,9 @@ struct Nevpt2Step {
 };
 ```
 
-One option, `quasi_degenerate` (QD-NEVPT2, below); without it `[nevpt2]`
-is the request, and it gets both variants per root. The
+Two options, `quasi_degenerate` (QD-NEVPT2, below) and `frozen_core`
+([Frozen core](#frozen-core), below); without them `[nevpt2]` is the
+request, all-electron, and it gets both variants per root. The
 `ScfOutput` is read for its spin occupations alone: an open shell,
 `n_alpha != n_beta`, is refused `Unsupported` before anything is queued:
 the Casscf step takes an open shell, but this step's strings are
@@ -157,7 +161,8 @@ layer's `nevpt2::sc_effective_hamiltonian` and `pc_effective_hamiltonian`
 
 **A PC refusal does not fail the step**, as per root: a `Numerical` error
 from `pc_effective_hamiltonian` (a state's metric with no positive
-eigenvalue, or a denominator not positive, naming the class and the state) is logged, PC is
+eigenvalue, or a pole: an intruder, |t| > 1, or a denominator at
+round-off, naming the class and the state) is logged, PC is
 not attempted for the pairs, and `pc_qd_refusal` holds the message, whose
 "state J" is root J (the diagonal call's states are the roots);
 `pc_qd_couplings`, `pc_qd_heff`, `pc_qd_energies` and
@@ -179,6 +184,60 @@ transition entries each: every root's class walk and PC solves run once.
 On the RTX 3080 the QD part of the step takes 31 ms on the skew H2CO SA3
 case and 40 ms on the polished H8 ring SA3, against 47 and 67 when each
 pair's 2 × 2 call walked both roots' diagonals again.
+
+## Frozen core
+
+`frozen_core = <count>` or `"auto"` (#859) leaves the lowest n_f canonical
+core orbitals uncorrelated, per root and in QD alike: they are excluded from
+the six perturber classes with a core index (Si, Sijrs, Sijr, Srsi, Sij,
+Sir; `nevpt2/energy` "Frozen core"), and Sr and Srs are unchanged. 0, the
+default, correlates every core orbital, and builds exactly what it did
+before (every golden unchanged).
+
+- **What stays.** The frozen orbitals stay in the core density, so F^I,
+  and with it Dyall's Hamiltonian, h1e and every `h1e_v_*` value, is the
+  whole core's, as before. Only the slices change: `nevpt2_orbital_inputs`
+  builds the MO blocks over C's columns from n_f on (`nevpt2::mo_blocks`
+  with the correlated core as its core), and takes e_core, `h1e_v_si` and
+  `h1e_v_sir` over the correlated core alone.
+- **Canonicalized together, then the lowest frozen.** The core is
+  canonicalized whole, over the root's Fock (the state average's for QD),
+  as without a frozen core, and its n_f lowest-energy orbitals are frozen.
+  Separate canonicalizations would need the frozen space chosen first by
+  some other rule; together, the frozen and correlated blocks of F are
+  already decoupled (F is diagonal over the whole core), so the frozen
+  orbitals are F's lowest eigenvectors and the correlated core stays
+  canonical. It is what Park's Lagrangian presupposes: its pseudocanonical
+  condition is f_ij = 0 for every i ≠ j of the whole inactive space
+  (acs.jctc.9b00919, Eq. 24, multipliers z^c_ij, Eq. 25), and under a
+  frozen core it is the frozen–correlated pairs of that condition that are
+  no longer invariant, which is what makes the frozen-core gradient's
+  Z-vector term (#875). BAGEL does the same: its CASSCF diagonalizes the
+  whole closed block of the Fock (`src/multi/casscf/casscf.cc`,
+  `semi_canonical_orb`), and SMITH then freezes its first `ncore`
+  (`src/smith/smith_info.cc`). block2's `frozen` and the references here
+  freeze the same way.
+- **"auto"** is each element's chemical core, PySCF's
+  `pyscf.data.elements.chemcore` (2.14): none for H to Be, 1 for B to Mg,
+  5 for Al to Zn, 9 for Ga to Sr, 14 for Y to Cd, 18 for In to Yb, 23 for
+  Lu to Hg, 34 for Tl to Lr, 50 for Rf to Cn, 55 from Nh. For C, N and O, 1,
+  as in BAGEL's default (`Molecule::num_count_ncore_only`: 1 orbital from He
+  on, 5 from Ne, …, so unlike PySCF's it freezes He to Be's 1s and Ne to
+  Mg's 2s2p too). Park's molecules, ethylene and PSB3, freeze 2 and 6 either
+  way. The step logs the count it froze, and
+  `Nevpt2Output::frozen_core` holds it.
+- **Refused** `InvalidConfig` when the step runs, before anything is
+  queued: a count past the CASSCF's core (also "auto" resolving past it,
+  as when a 1s is active). The config refuses a negative count or another
+  string when it is read (`config/README.md`).
+- **Not under `[nevpt2_gradient]`**, yet: the frozen-core gradient needs
+  the frozen–correlated rotations' Z-vector term (#875). The same key there
+  takes only 0, and anything else is refused `InvalidConfig` when the config
+  is read.
+
+Measured at Park's own geometries, ethylene and PSB3 at his bases, PC-QD with
+the C and N 1s frozen reproduces his absolute energies to 0.5 µEh
+(`docs/reproduction/park2019/single_points/frozen_core.md`).
 
 ## Memory
 
@@ -219,7 +278,8 @@ hand-over"). The slab batch is sized as per root.
 
 ## Errors
 
-`InvalidConfig` for `quasi_degenerate` over fewer than two roots;
+`InvalidConfig` for `quasi_degenerate` over fewer than two roots, and for
+a `frozen_core` past the CASSCF's core;
 `Unsupported` under an integral-direct `EriOutput`; the module calls' own
 (`casscf_integrals`', `ci::DeviceStringSet::create`'s and `ci::Rdm`'s,
 `response::fock`'s, the canonicalization's, `nevpt2::mo_blocks`', `h2e`'s,
@@ -228,8 +288,9 @@ effective Hamiltonians' and `diagonalize`'s); GpuRuntime for a
 failed copy or gemm. Each fails the step.
 
 **A PC refusal does not.** `nevpt2::pc_class_energies` refuses a class as
-`Numerical` when its metric has no positive eigenvalue or a denominator
-λ + Δ is not positive (`nevpt2/energy` "The cut, and refusals"; since #853
+`Numerical` when its metric has no positive eigenvalue or a ket meets a
+pole, an intruder (|t| > 1) or a denominator λ + Δ at round-off
+(`nevpt2/energy` "The cut, and refusals", #874; since #853
 there is no gap test, and a metric whose real modes run through the cut is
 solved).
 That says PC is not defined to the precision asked of it on this state; SC,
@@ -319,6 +380,22 @@ cases).
 `PipelineNevpt2.MatchesPyscf` asserts the QD product empty without the
 option.
 
+`PipelineNevpt2FrozenCore.MatchesReference` and
+`PipelineQdNevpt2FrozenCore.MatchesReference`: `frozen_core` against
+`data/nevpt2/nevpt2_df_frozen_core.json` and
+`data/qd_nevpt2/qd_nevpt2_frozen_core.json`
+(`tools/emit/nevpt2_reference.py` and `qd_nevpt2_reference.py`
+`--frozen-core`: PySCF's class functions over its fitted integrals with the
+frozen orbitals sliced out, h1eff over the whole core, and block2's own
+`frozen` for PC; PySCF's `NEVPT` has no frozen core), at the bars of
+`MatchesPyscf` and `MatchesGoldens`, the same chains with a slice taken. H₂O
+`"auto"` (its O 1s) in the fast tier, H₂CO SA2 `"auto"` (C and O 1s) and
+`1` (the O 1s alone) in the slow; QD on the skew H₂CO SA3 at `"auto"` and
+`1` and the C2v H₂CO SA2 at `"auto"`, all fast. Each also asserts
+`Nevpt2Output::frozen_core`, the count resolved. A count past the core is
+refused, and "auto" resolves to water's 1, in
+`PipelineNevpt2.AnOpenShellOrANonSingletIsUnsupported`.
+
 `PipelineQdNevpt2.PcQdAcceptedThroughAContinuum`:
 `PcAcceptedThroughAContinuum`'s HF CAS(10,7) averaged over three roots (the
 ground state and both components of the lowest ¹Π: over two, the average
@@ -330,7 +407,7 @@ coupling, its eigenvalues ascending and summing to its trace), each PC
 diagonal coupling at or below SC's; until #853 PC-QD was refused here.
 **PC-QD's refusal path (PC-QD empty, SC-QD kept) has no pipeline test**: no
 plain config reaches it since #853. Its refusals are a metric with no
-positive eigenvalue or a non-positive denominator, and the configs that give
+positive eigenvalue or a pole (#874), and the configs that give
 the first (an active space fully occupied or empty) have one orbital and so
 one singlet, where QD needs two roots. It is covered at the layer:
 `Nevpt2PcQdEnergyAdjoint.RefusesWhatTheEnergyRefuses` (`nevpt2_energy_gpu.cpp`)

@@ -262,6 +262,24 @@ PC, every case, or nothing is written:
    tuples with distinct external indices each span's null dimension must
    equal `pc_dropped`.
 
+## Frozen core
+
+`qd_nevpt2_frozen_core.json` (#859), written by
+`tools/emit/qd_nevpt2_reference.py --frozen-core` alone: the skew H2CO SA3
+at `frozen_core = "auto"` (C and O 1s) and `1` (O 1s), and
+`h2co_ccpvdz_sa2` at `"auto"`, the same states, SA-canonical orbitals and
+transition RDMs as the cases above, with the lowest `n_frozen` SA-canonical
+core orbitals sliced out of dfnevpt2's integrals and orbital energies
+(h1eff over the whole core), then SC- and PC-QD exactly as above. Per case
+its `qd_nevpt2.json` record and `variants`, each with `frozen_core`,
+`n_frozen`, `sc` and `pc`: `class_energies` [root][class] (the diagonal
+couplings), `heff_sym`, `eigenvalues` and `eigenvectors` [state][root]
+(signed as above), and PC's `dropped`; and `checks`. Checked: each root's
+SC diagonal per class (norm and energy) against PySCF's class functions over
+the same slices (`nevpt2_reference.py`'s `frozen_classes`, 1e-10;
+measured 5.8e-16), and its PC diagonal against block2's `WickICNEVPT2`
+with `frozen = n_frozen` (1e-10; 3.2e-12). No brute force and no arrays.
+
 ## Regenerating
 
 ```sh
@@ -271,3 +289,4 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
 
 BLAS and OpenMP are pinned to one thread and nothing run-dependent is
 written, so a rerun is byte-identical. It takes about 4 minutes.
+`--frozen-core` writes `qd_nevpt2_frozen_core.json` alone (about a minute).

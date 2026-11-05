@@ -64,6 +64,30 @@ byte-identical:
         tools/emit/nevpt2_reference.py
 
 writes test/gtest/data/nevpt2/nevpt2_df.json. Never hand-edited.
+
+**Frozen core** (#859), with `--frozen-core`: the cases of FROZEN_CASES
+polished and gated exactly as above, then each root's SC- and PC-NEVPT2
+with its lowest n_f canonical core orbitals frozen, n_f each variant's
+count or "auto" (PySCF's `chemcore`, 1s for B to Ne). Neither PySCF's
+NEVPT (`NEVPT.kernel` raises NotImplementedError for a frozen `_mc`) nor
+anything else here has it, so it is PySCF's own eight class functions on
+the root's canonical state (core and virtuals over its Fock, the whole
+core canonicalized together, active unrotated) with the frozen orbitals
+sliced out of `dfnevpt2._ERIS`'s integrals and orbital energies: h1eff
+is still over the whole core's density, which is what freezing means
+here (BAGEL's SMITH and block2's `frozen` do the same). Gates before it
+is written: the same function at n_f = 0 equals PySCF's own kernel per
+class to FROZEN_ZERO; Sr and Srs, which have no core index, equal the
+all-electron ones to FROZEN_ZERO; block2's SC with its own `frozen=n_f`
+equals it per class to BLOCK2_SC; and block2's PC, `frozen=n_f`, is
+recorded, its Sijrs gated against SC's and its active-rotation
+invariance to INVARIANCE as above:
+
+    UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
+        tools/emit/nevpt2_reference.py --frozen-core
+
+writes test/gtest/data/nevpt2/nevpt2_df_frozen_core.json, and leaves
+nevpt2_df.json alone.
 """
 
 from __future__ import annotations
@@ -78,12 +102,15 @@ for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 import copy  # noqa: E402
 import json  # noqa: E402
 import pathlib  # noqa: E402
+import sys  # noqa: E402
+import types  # noqa: E402
 from importlib.metadata import version  # noqa: E402
 
 import numpy  # noqa: E402
 import pyscf  # noqa: E402
 from pyblock2.icmr import eri_helper, icnevpt2_full, scnevpt2  # noqa: E402
-from pyscf import lib, mcscf, mrpt, scf  # noqa: E402
+from pyscf import fci, lib, mcscf, mrpt, scf  # noqa: E402
+from pyscf.data import elements  # noqa: E402
 from pyscf.mcscf import avas, mc1step  # noqa: E402
 from pyscf.mcscf.df import _DFCAS  # noqa: E402
 from pyscf.mrpt import dfnevpt2, nevpt2  # noqa: E402
@@ -111,6 +138,16 @@ from scf_reference import pyscf_basis  # noqa: E402
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "nevpt2" / "nevpt2_df.json"
 COMMAND = "uv run --group tools tools/emit/nevpt2_reference.py"
+OUT_FROZEN = ROOT / "test" / "gtest" / "data" / "nevpt2" / "nevpt2_df_frozen_core.json"
+
+# The frozen-core cases (--frozen-core): case name -> the frozen_core values
+# recorded, each as the [nevpt2] key spells it. H2O freezes its O 1s by
+# "auto"; H2CO its C and O 1s, and by count 1 only the O 1s, the lowest.
+FROZEN_CASES = {"h2o_ccpvdz": ["auto"], "h2co_ccpvdz_sa2": ["auto", 1]}
+# The frozen function at n_f = 0 against PySCF's kernel, and the frozen Sr
+# and Srs against the all-electron ones, per class (hartree): the same
+# einsums over the same arrays, sliced.
+FROZEN_ZERO = 1e-12
 
 # The polished CASSCF must reproduce casscf_df.json's energies to this
 # (hartree): that file's stated run-to-run tolerance.
@@ -268,6 +305,82 @@ def nevpt(casci, ci, root: int, natorb: bool) -> tuple[float, dict]:
     return total, recorder.classes
 
 
+def frozen_count(mol, key) -> int:
+    """The orbitals a frozen_core value freezes: a count, or "auto", PySCF's
+    chemical core of the molecule."""
+    return int(elements.chemcore(mol)) if key == "auto" else int(key)
+
+
+def frozen_classes(casci, state, nfrozen: int) -> dict[str, tuple[float, float]]:
+    """PySCF's eight SC class functions on one root's canonical `state`
+    with its lowest `nfrozen` core orbitals frozen: `dfnevpt2._ERIS` over
+    every orbital (so h1eff is over the whole core), then those orbitals'
+    rows and columns sliced out of every integral and of the orbital
+    energies, as NEVPT.kernel feeds the class functions. {class: (norm,
+    energy)}."""
+    mo, ci, mo_energy = state
+    # _contract4pdm hands the CI vector's buffer to C as it lies, and
+    # canonicalize's can come back Fortran-ordered.
+    ci = numpy.ascontiguousarray(ci)
+    ncore, ncas, nelecas = casci.ncore, casci.ncas, casci.nelecas
+    nocc = ncore + ncas
+    mc = copy.copy(casci)
+    mc.mo_coeff, mc.mo_energy = mo, mo_energy
+    eris = dfnevpt2._ERIS(mc, mo, casci.with_df)
+    f = nfrozen
+    nmo = mo.shape[1]
+    nvir = nmo - nocc
+    ppaa = numpy.asarray(eris["ppaa"]).reshape(nmo, nmo, ncas, ncas)
+    papa = numpy.asarray(eris["papa"]).reshape(nmo, ncas, nmo, ncas)
+    pacv = numpy.asarray(eris["pacv"]).reshape(nmo, ncas, ncore, nvir)
+    cvcv = numpy.asarray(eris["cvcv"]).reshape(ncore, nvir, ncore, nvir)
+    sliced = {
+        "ppaa": numpy.ascontiguousarray(ppaa[f:, f:]),
+        "papa": numpy.ascontiguousarray(papa[f:, :, f:]),
+        "pacv": numpy.ascontiguousarray(pacv[f:, :, f:]),
+        "cvcv": numpy.ascontiguousarray(cvcv[f:, :, f:]).reshape(
+            (ncore - f) * nvir, (ncore - f) * nvir
+        ),
+        "h1eff": numpy.asarray(eris["h1eff"])[f:, f:],
+    }
+    pt = types.SimpleNamespace(
+        ncore=ncore - f,
+        ncas=ncas,
+        nelecas=nelecas,
+        mo_coeff=mo[:, f:],
+        mo_energy=mo_energy[f:],
+        fcisolver=casci.fcisolver,
+        mol=casci.mol,
+        verbose=0,
+    )
+    dm1, dm2, dm3 = fci.rdm.make_dm123("FCI3pdm_kern_sf", ci, ci, ncas, nelecas)
+    link = tuple(fci.cistring.gen_linkstr_index(range(ncas), n) for n in nelecas)
+    aaaa = ppaa[ncore:nocc, ncore:nocc].copy()
+    dms = {
+        "1": dm1,
+        "2": dm2,
+        "3": dm3,
+        "4": None,
+        "f3ca": nevpt2._contract4pdm(
+            "NEVPTkern_cedf_aedf", aaaa, ci, ncas, nelecas, link
+        ),
+        "f3ac": nevpt2._contract4pdm(
+            "NEVPTkern_aedf_ecdf", aaaa, ci, ncas, nelecas, link
+        ),
+    }
+    out = {
+        "Sr": nevpt2.Sr(pt, ci, dms, sliced),
+        "Si": nevpt2.Si(pt, ci, dms, sliced),
+        "Sijrs": nevpt2.Sijrs(pt, sliced),
+        "Sijr": nevpt2.Sijr(pt, dms, sliced),
+        "Srsi": nevpt2.Srsi(pt, dms, sliced),
+        "Srs": nevpt2.Srs(pt, dms, sliced),
+        "Sij": nevpt2.Sij(pt, dms, sliced),
+        "Sir": nevpt2.Sir(pt, dms, sliced),
+    }
+    return {key: (float(norm), float(energy)) for key, (norm, energy) in out.items()}
+
+
 def canonical(casci, ci, natorb: bool):
     """One root's orbitals, CI vector and orbital energies: core and
     virtuals canonicalized over the root's own Fock, the active space
@@ -275,10 +388,14 @@ def canonical(casci, ci, natorb: bool):
     return casci.canonicalize(casci.mo_coeff, ci=ci, cas_natorb=natorb, verbose=0)
 
 
-def block2(casci, state, kernel: str) -> dict[str, float]:
+def block2(casci, state, kernel: str, frozen: int = 0) -> dict[str, float]:
     """block2's SC (`kernel="sc"`) or PC (`"pc"`) per class on one root's
     `state` (canonical's), `canonicalized` so block2 takes the orbitals and
-    energies it is handed, over PySCF's DF integrals for those orbitals."""
+    energies it is handed, over PySCF's DF integrals for those orbitals.
+    With `frozen`, block2's own frozen core: its lowest `frozen` orbitals
+    sliced out of the integrals as its `init_eris(frozen=)` slices them
+    (h1eff over the whole core), and `frozen` handed to the solver, which
+    slices its orbital energies."""
     mo, ci, mo_energy = state
     mc = copy.copy(casci)
     mc.mo_coeff, mc.ci, mc.mo_energy = mo, ci, mo_energy
@@ -286,20 +403,21 @@ def block2(casci, state, kernel: str) -> dict[str, float]:
     ncore, ncas = mc.ncore, mc.ncas
     nmo = mo.shape[1]
     nvir = nmo - ncore - ncas
+    f = frozen
     eris = eri_helper._ChemistsERIs()
-    eris.ncore, eris.ncas, eris.nocc = ncore, ncas, ncore + ncas
-    eris.h1eff = numpy.asarray(e["h1eff"])
+    eris.ncore, eris.ncas, eris.nocc = ncore - f, ncas, ncore - f + ncas
+    eris.h1eff = numpy.asarray(e["h1eff"])[f:, f:]
     eris.known = ["ppaa", "papa", "pacv", "cvcv"]
-    eris.ppaa = numpy.asarray(e["ppaa"]).reshape(nmo, nmo, ncas, ncas)
-    eris.papa = numpy.asarray(e["papa"]).reshape(nmo, ncas, nmo, ncas)
-    eris.pacv = numpy.asarray(e["pacv"]).reshape(nmo, ncas, ncore, nvir)
-    eris.cvcv = numpy.asarray(e["cvcv"]).reshape(ncore, nvir, ncore, nvir)
+    eris.ppaa = numpy.asarray(e["ppaa"]).reshape(nmo, nmo, ncas, ncas)[f:, f:]
+    eris.papa = numpy.asarray(e["papa"]).reshape(nmo, ncas, nmo, ncas)[f:, :, f:]
+    eris.pacv = numpy.asarray(e["pacv"]).reshape(nmo, ncas, ncore, nvir)[f:, :, f:]
+    eris.cvcv = numpy.asarray(e["cvcv"]).reshape(ncore, nvir, ncore, nvir)[f:, :, f:]
 
     init_eris = eri_helper.init_eris
     eri_helper.init_eris = lambda *args, **kwargs: eris
     try:
         cls = {"sc": scnevpt2.WickSCNEVPT2, "pc": icnevpt2_full.WickICNEVPT2}[kernel]
-        ic = cls(mc)
+        ic = cls(mc, frozen=f)
         ic.verbose = 0
         ic.canonicalized = True
         ic.kernel()
@@ -328,8 +446,11 @@ def polished(name, mf, mo, ncas, nelecas, weights, auxbasis):
     return orbitals, energies
 
 
-def case_reference(case: dict, recorded: dict) -> tuple[dict, float, float]:
-    """One case's record, its largest cas_natorb disagreement, SC's and PC's."""
+def prepared(case: dict, recorded: dict):
+    """One case's polished CASSCF, checked against casscf_df.json, and the
+    multi-root DFCASCI over it with the dense singlets as its roots:
+    (mol, casci, ci, casci_energies, casscf_energies, weights, ncas,
+    nelecas, aux_provenance), ci a list over the roots or the one vector."""
     name = case["name"]
     mol = molecule(case)
     auxbasis, aux_provenance = aux_basis(case, mol)
@@ -390,6 +511,33 @@ def case_reference(case: dict, recorded: dict) -> tuple[dict, float, float]:
     error = numpy.abs(numpy.subtract(casci_energies, casscf_energies)).max()
     assert error < CASCI_AGREEMENT, f"{name}: CASCI off the polish by {error}"
     ci = vectors if len(weights) > 1 else vectors[0]
+    return (
+        mol,
+        casci,
+        ci,
+        casci_energies,
+        casscf_energies,
+        weights,
+        ncas,
+        nelecas,
+        aux_provenance,
+    )
+
+
+def case_reference(case: dict, recorded: dict) -> tuple[dict, float, float]:
+    """One case's record, its largest cas_natorb disagreement, SC's and PC's."""
+    name = case["name"]
+    (
+        mol,
+        casci,
+        ci,
+        casci_energies,
+        casscf_energies,
+        weights,
+        ncas,
+        nelecas,
+        aux_provenance,
+    ) = prepared(case, recorded)
 
     roots, worst, pc_worst = [], 0.0, 0.0
     for root in range(len(weights)):
@@ -467,6 +615,170 @@ def case_reference(case: dict, recorded: dict) -> tuple[dict, float, float]:
     )
 
 
+def frozen_reference(case: dict, recorded: dict, keys: list) -> tuple[dict, dict]:
+    """One case's frozen-core record, one variant per frozen_core value in
+    `keys`, and its largest gate misses."""
+    name = case["name"]
+    (
+        mol,
+        casci,
+        ci,
+        casci_energies,
+        casscf_energies,
+        weights,
+        ncas,
+        nelecas,
+        aux_provenance,
+    ) = prepared(case, recorded)
+    ncore = int((mol.nelectron - nelecas) // 2)
+    misses = {"zero": 0.0, "no_core_class": 0.0, "block2_sc": 0.0, "pc_natorb": 0.0}
+    states, everything = [], []
+    for root in range(len(weights)):
+        root_ci = ci[root] if len(weights) > 1 else ci
+        state = canonical(casci, root_ci, natorb=False)
+        states.append(state)
+        # The frozen function at n_f = 0 is PySCF's own kernel on this state.
+        _, own = nevpt(casci, ci, root, natorb=False)
+        zero = frozen_classes(casci, state, 0)
+        miss = max(abs(zero[k][i] - own[k][i]) for k in CLASSES for i in range(2))
+        misses["zero"] = max(misses["zero"], miss)
+        assert miss < FROZEN_ZERO, f"{name} root {root}: n_f = 0 off PySCF by {miss}"
+        everything.append(zero)
+    variants = []
+    for key in keys:
+        nfrozen = frozen_count(mol, key)
+        assert 0 < nfrozen <= ncore, (
+            f"{name}: frozen_core {key} is {nfrozen} of {ncore}"
+        )
+        roots = []
+        for root, state in enumerate(states):
+            classes = frozen_classes(casci, state, nfrozen)
+            total = sum(energy for _, energy in classes.values())
+            # No core index: unchanged by freezing.
+            for k in ("Sr", "Srs"):
+                miss = max(
+                    abs(classes[k][i] - everything[root][k][i]) for i in range(2)
+                )
+                misses["no_core_class"] = max(misses["no_core_class"], miss)
+                assert miss < FROZEN_ZERO, (
+                    f"{name} root {root}: frozen {k} moved by {miss}"
+                )
+            b2_sc = block2(casci, state, "sc", nfrozen)
+            b2_miss = max(abs(b2_sc[k] - classes[k][1]) for k in CLASSES)
+            misses["block2_sc"] = max(misses["block2_sc"], b2_miss)
+            assert b2_miss < BLOCK2_SC, (
+                f"{name} root {root}: block2 frozen SC off by {b2_miss}"
+            )
+            pc = block2(casci, state, "pc", nfrozen)
+            assert abs(pc["Sijrs"] - b2_sc["Sijrs"]) < BLOCK2_SC, (
+                f"{name} root {root}: Sijrs"
+            )
+            root_ci = ci[root] if len(weights) > 1 else ci
+            natural = block2(
+                casci, canonical(casci, root_ci, natorb=True), "pc", nfrozen
+            )
+            pc_miss = max(abs(natural[k] - pc[k]) for k in CLASSES)
+            misses["pc_natorb"] = max(misses["pc_natorb"], pc_miss)
+            assert pc_miss < INVARIANCE, (
+                f"{name} root {root}: frozen PC natorb {pc_miss}"
+            )
+            all_electron = sum(energy for _, energy in everything[root].values())
+            print(
+                f"{name} frozen_core {key} ({nfrozen}) root {root}: "
+                f"E_corr {total:.10f} (all-electron {all_electron:.10f}), "
+                f"block2 SC {b2_miss:.1e}, PC natorb {pc_miss:.1e}"
+            )
+            roots.append(
+                {
+                    "casci_energy": casci_energies[root],
+                    "classes": [
+                        {
+                            "name": k,
+                            "excitation": CLASSES[k],
+                            "norm": classes[k][0],
+                            "energy": classes[k][1],
+                        }
+                        for k in CLASSES
+                    ],
+                    "e_corr": total,
+                    "energy": casci_energies[root] + total,
+                    "pc_class_energies": [
+                        {"name": k, "energy": pc[k]} for k in CLASSES
+                    ],
+                    "e_pc_total": sum(pc[k] for k in CLASSES),
+                }
+            )
+        variants.append({"frozen_core": key, "n_frozen": nfrozen, "roots": roots})
+    return (
+        {
+            "name": name,
+            "ncas": ncas,
+            "nelecas": nelecas,
+            "ncore": ncore,
+            "weights": weights,
+            "aux_basis": aux_provenance,
+            "casscf_energies": [float(e) for e in casscf_energies],
+            "variants": variants,
+        },
+        misses,
+    )
+
+
+def main_frozen() -> None:
+    """--frozen-core: nevpt2_df_frozen_core.json."""
+    lib.num_threads(1)
+    assert lib.num_threads() == 1
+    recorded = {c["name"]: c for c in json.loads(OUT_DF.read_text())["cases"]}
+    cases = []
+    worst = {"zero": 0.0, "no_core_class": 0.0, "block2_sc": 0.0, "pc_natorb": 0.0}
+    for case in CASES:
+        if case["name"] not in FROZEN_CASES:
+            continue
+        record, misses = frozen_reference(
+            case, recorded[case["name"]], FROZEN_CASES[case["name"]]
+        )
+        cases.append(record)
+        worst = {k: max(worst[k], misses[k]) for k in worst}
+    doc = {
+        "description": "Frozen-core SC- and PC-NEVPT2 per root on the cases "
+        "of nevpt2_df.json named here, the same polished DF (SA-)CASSCF "
+        "orbitals and multi-root DFCASCI: per frozen_core value (as the "
+        "[nevpt2] key spells it) and its count n_frozen, each root's eight "
+        "SC classes' norms and energies (PySCF's class functions with the "
+        "lowest n_frozen canonical core orbitals sliced out of dfnevpt2's "
+        "integrals; h1eff over the whole core), their sum e_corr and the "
+        "total, and block2's PC with frozen=n_frozen per class and its "
+        "total, on the root's canonical state with the active orbitals "
+        "unrotated. Hartree",
+        "provenance": {
+            "pyscf": pyscf.__version__,
+            "block2": version("block2"),
+            "numpy": numpy.__version__,
+            "threads": 1,
+            "command": COMMAND + " --frozen-core",
+            "casscf": str(OUT_DF.relative_to(ROOT)),
+        },
+        "checks": {
+            "zero": "the frozen class functions at n_frozen = 0 against "
+            "PySCF's NEVPT.kernel (cas_natorb=False), per class norm and energy",
+            "no_core_class": "frozen Sr and Srs, which have no core index, "
+            "against the all-electron ones, norm and energy",
+            "tolerance": FROZEN_ZERO,
+            "block2_sc": "block2's SC with frozen=n_frozen against the frozen "
+            "PySCF classes, per class energy",
+            "block2_sc_tolerance": BLOCK2_SC,
+            "pc_natorb": "block2's frozen PC on the root's natural orbitals "
+            "against the recorded unrotated one, per class",
+            "pc_natorb_tolerance": INVARIANCE,
+            "max_difference": worst,
+        },
+        "block2": {"pc_tau": PC_TAU, "pc_noise": PC_NOISE},
+        "cases": cases,
+    }
+    OUT_FROZEN.write_text(json.dumps(doc, indent=1) + "\n")
+    print(f"wrote {OUT_FROZEN}: {worst}")
+
+
 def main() -> None:
     lib.num_threads(1)
     assert lib.num_threads() == 1
@@ -518,4 +830,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--frozen-core"]:
+        main_frozen()
+    else:
+        assert not sys.argv[1:], f"unknown arguments {sys.argv[1:]}"
+        main()
