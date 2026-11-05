@@ -25,7 +25,7 @@ ncas = 6
 nelecas = 6
 active = [19, 20, 21, 22, 23, 27]   # the RHF's six pi orbitals, 0-based
 nroots = 3
-conv_tol_grad = 1e-9                # 1e-10 stalls mcscf::solve at PSB3 (#867)
+conv_tol_grad = 1e-9  # as recorded; 1e-10 stalled before #867 (fixed in PR #896)
 [nevpt2_gradient]
 quasi_degenerate = true
 variant = "pc"                      # Park's SA-QD-PC-NEVPT2
