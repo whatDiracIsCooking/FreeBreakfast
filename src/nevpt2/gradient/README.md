@@ -707,6 +707,85 @@ between CASSCF roots (ζ and t divide by it) and H_eff's gap at K (u_K's
 derivative divides by it). `qd_sc_lagrangian`'s refusals come back
 unchanged.
 
+### At a degenerate CASSCF pair (#892)
+
+Step 3 refuses when two CASSCF roots are within `mcscf::kRootGapFloor`
+(`../../mcscf/gradient/README.md`, "Holding the roots apart"). It is the
+stop that ended #847's all-electron QD-PC/aug-cc-pVDZ walk to ethylene's
+C3v MECI. At evaluation 10 the CASSCF ¹E pair was 7.9e-9 Eh apart, while
+H_eff's pair was 6.6e-10 apart. The refusal stays. **The state gradient
+dE_K/dR does not exist at a degenerate reference pair.** For SC it diverges.
+For PC it is bounded but depends on the direction of approach. The
+measurements:
+
+**How.** A PySCF reference over `tools/emit/qd_nevpt2_reference.py`'s
+`sc_qd` and `pc_qd` (PySCF has no QD-NEVPT2). It uses the same DF-SA3-CASSCF(2,2)/
+aug-cc-pVDZ (aug-cc-pVDZ-JKFIT), its active pair the CH carbon's two
+2p⊥ (AVAS), and SA-canonical inactive orbitals. The CASSCF pair is rotated
+by θ (c₀′ = cos θ c₀ + sin θ c₁, c₁′ = −sin θ c₀ + cos θ c₁), and H_eff is
+rebuilt over the rotated roots: their RDMs, their Dyall denominators, and
+the zeroth order Uᵀ diag(E) U. With equal weights the SA-CASSCF, its
+orbitals and the SA Fock do not move under θ, so only the state-specific
+parts do. τ_K = ∂E_K/∂θ at θ = 0, the CASSCF roots, is
+`root_pair_multipliers`' right-hand side for state K, and ζ_K = −τ_K / (E₁ −
+E₀). At Park's geometry the reference gives a CASSCF gap of 2.112e-6 and a
+PC H_eff gap of 7.154e-7. The tree's evaluation 0 gave 2e-6 and 7.154e-7.
+
+**1. Does the energy depend on the rotation?**
+
+| geometry | CASSCF gap | PC: E₀, E₁ over θ | PC: E₀ + E₁ over θ | SC: E₀, E₁ over θ |
+|---|---|---|---|---|
+| Park's (SI p. S3) | 2.1e-6 | 4.0e-8 each | 8e-13 | 1.1e-6, 4.4e-6 |
+| its exact C3v symmetrization | 1.2e-10 | **3e-15** (gap ≤ 5.1e-11 at every θ) | — | gap 4.1e-7 to 1.2e-5 |
+
+PC is invariant to the rotation at the symmetric pair. A degenerate
+reference pair is no defect of PC at a point of symmetry: its two
+QD states stay degenerate whatever pair the CASSCF hands it. SC is not
+invariant, and it splits the ¹E pair. The exact-C3v SC row is also SC's
+non-invariance to the degenerate e core pair (`kZcGapFloor`, above), which
+PC does not have. But SC's split survives off the symmetric point: at
+1e-4 Å from it, SC's H_eff gap is 6.5e-7 against a CASSCF gap of 4.9e-8.
+
+**2. Does τ vanish with the gap?** Approaching the exact-C3v point along
+d₁ (towards Park's geometry) and along d₂ (a fixed random direction, seed
+892), with τ by a five-point difference in θ (h = 0.01):
+
+| | CASSCF gap | PC ζ₀ | PC τ₀ + τ₁ | SC ζ₀ |
+|---|---|---|---|---|
+| d₁, 1e-3 Å | 4.86e-7 | 0.0106 | −3.9e-12 | 5.5 |
+| d₁, 1e-4 Å | 4.93e-8 | 0.0113 | 2.7e-12 | 57 |
+| d₂, 1e-3 Å | 4.41e-6 | −3.3e-4 | −3.7e-12 | −1.5 |
+| d₂, 1e-4 Å | 4.41e-7 | 3.7e-4 | −4.5e-12 | 7.4 |
+
+On a line to a CASSCF gap of 2.2e-9, SC's ζ reaches 1.1e3 and 1.5e3. SC's
+τ stays between 1e-6 and 7e-6, so its ζ grows as 1/gap, with no limit.
+PC's τ falls with the gap (5.2e-9 down to 1.6e-10), so its ζ is finite.
+But its limit is
+0.011 along d₁ and under 4e-4 along d₂. ζ_K multiplies the pair's
+transition gradient, which at a CASSCF intersection is its interstate
+coupling: that difference is a different dE_K/dR. Only PC's τ₀ + τ₁ vanishes
+from both directions, to the five-point difference's noise. So the pair's
+mean gradient ḡ = ½ (g_P + g_Q) has a limit, and each g_K alone does not.
+
+**3. Park.** His C3v geometry is not exactly C3v. Its three C–H bonds
+spread 5.3e-4 Å, its H–C–C angles 0.31°, and the lone H sits 7.5e-4 Å off
+the C–C axis (aug-cc-pVTZ: 5.1e-4 Å, 0.04°, 4.5e-4 Å). There the CASSCF
+gap is 2.1e-6 Eh and PC's H_eff gap is 7.15e-7, his reported 7e-7. So his
+search stopped about 200× above this floor in CASSCF gap, and it never met
+the degenerate pair. BAGEL's own treatment of the pair was not inspected.
+
+**What to do instead.** At a geometry where a symmetry makes the CASSCF
+roots of the QD pair degenerate (an E pair; the QD intersection is then
+pinned to it), take energies there, not gradients: QD single points at a
+fixed structure (Park's, or the CASSCF MECI). This is what
+`docs/reproduction/park2019/tier1.md` reports for C3v. A walk stopped by
+this refusal has reached a QD-degenerate point (#847's: H_eff gap 6.6e-10)
+whose forces are not converged. It is not an MECI. Use SC there with
+care, if at all: its pair is split by about 1e-6 Eh near the symmetric point.
+A PC-only MECI treatment built on ḡ alone (point 2) is not done. It would
+need `../intersection/` and `geometry::optimize_meci` to work without
+g_Q − g_P and h_PQ, whose own ζ parts depend on the direction of approach.
+
 ### At any symmetric W
 
 `qd_sc_lagrangian(…, w, batch)` and `qd_sc_gradient(…, w, batch)` (#745),
