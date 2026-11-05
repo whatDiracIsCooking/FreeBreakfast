@@ -378,9 +378,13 @@ with_gpu_card() {
 # processes on one card time-slice it, and a latency-bound case beside a
 # long-kernel one ran 70x slower (config.sh says more, by CTEST_JOBS). A
 # GTEST_FILTER in the environment narrows what runs. The output is appended to
-# BUILD_LOG and its summary lines printed, tagged `<tag>:   [gpu]`. For a
-# crash, where gtest prints no FAILED line, the case that was running (a
-# [ RUN ] with no verdict) is named.
+# BUILD_LOG and its summary lines printed, tagged `<tag>:   [gpu]`. A failed
+# case's whole output, from its [ RUN ] to its verdict, is printed too, on
+# stderr and tagged `<tag>:   [gpu] |`: the summary names the case but holds
+# none of its `Expected: ...` lines, and a run read from its console output
+# alone could not be diagnosed after the fact (#870). For a crash, where gtest
+# prints no FAILED line, the case that was running (a [ RUN ] with no verdict)
+# is named, and its output so far printed the same way.
 #
 # A batch that HANGS is killed, not waited on forever: gpu_batch_watchdog
 # below. On gfx1200 a card can wedge with every process on it spinning in a
@@ -405,6 +409,7 @@ run_gpu_batch() {
   echo "--- gpu batch: $bin ---" >>"$BUILD_LOG"
   cat "$dir/log" >>"$BUILD_LOG"
   grep -E 'ran\.|PASSED|SKIPPED|FAILED' "$dir/log" | sed "s|^|$tag:   [gpu] |"
+  gtest_failed_output "$dir/log" | sed "s/^/$tag:   [gpu] | /" >&2
   if [ -e "$dir/killed" ]; then
     rc=1
     echo "$tag:   [gpu] KILLED by the watchdog: $(<"$dir/killed")" >&2
@@ -429,6 +434,17 @@ run_gpu_batch() {
 gtest_running_case() {
   awk '/^\[ RUN      \]/ { t = $NF } /^\[ *(OK|FAILED|SKIPPED) *\]/ { t = "" }
        END { print (t != "" ? t : "<unknown>") }' "$1"
+}
+
+# The output of every case in a gtest log that failed, from its [ RUN ] line
+# to its [  FAILED  ] one, and of the case it was in the middle of when it
+# stopped (a crash or a kill), if any: what the summary lines leave out.
+gtest_failed_output() {
+  awk '/^\[ RUN      \]/ { buf = "" }
+       /^\[ RUN      \]/, /^\[ *(OK|FAILED|SKIPPED) *\]/ { buf = buf $0 "\n" }
+       /^\[ *(OK|SKIPPED) *\]/ { buf = "" }
+       /^\[  FAILED  \] .*\)$/ && buf != "" { printf "%s", buf; buf = "" }
+       END { printf "%s", buf }' "$1"
 }
 
 # Wait for the batch `pid` (its log is <dir>/log), killing it if it prints

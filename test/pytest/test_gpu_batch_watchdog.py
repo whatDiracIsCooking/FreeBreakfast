@@ -57,6 +57,31 @@ def test_passing_batch_passes(tmp_path: Path) -> None:
     assert "fake:   [gpu] [  PASSED  ] 1 test." in proc.stdout
 
 
+def test_failed_case_keeps_its_assertion_text(tmp_path: Path) -> None:
+    # The summary names a failed case but not why; its own lines must reach
+    # the console too, and a passing neighbour's must not (#870).
+    proc, _ = run_batch(
+        tmp_path,
+        'echo "[ RUN      ] Suite.Fine"\necho "fine chatter"\n'
+        'echo "[       OK ] Suite.Fine (1 ms)"\n'
+        'echo "[ RUN      ] Suite.Bad/h2co"\necho "bad.cpp:7: Failure"\n'
+        'echo "Expected: (error) < (bar), actual: 2e-08 vs 1e-08"\n'
+        'echo "[  FAILED  ] Suite.Bad/h2co (5 ms)"\n'
+        'echo "[  FAILED  ] 1 test, listed below:"\n'
+        'echo "[  FAILED  ] Suite.Bad/h2co"\nexit 1\n',
+    )
+    assert proc.returncode == 1
+    assert (
+        "fake:   [gpu] | Expected: (error) < (bar), actual: 2e-08 vs 1e-08"
+        in proc.stderr
+    )
+    assert "fake:   [gpu] | [ RUN      ] Suite.Bad/h2co" in proc.stderr
+    assert "fake:   [gpu] | [  FAILED  ] Suite.Bad/h2co (5 ms)" in proc.stderr
+    assert "fine chatter" not in proc.stderr
+    assert "listed below" not in proc.stderr
+    assert "Expected: (error)" in (tmp_path / "build.log").read_text()
+
+
 def test_silent_batch_is_killed_and_its_case_named(tmp_path: Path) -> None:
     # One case finishes; the next starts and goes silent, as a wedge does.
     # `exec` so the pid the launcher holds is the hanging process itself.
@@ -136,4 +161,5 @@ def test_crash_is_still_a_crash(tmp_path: Path, stall: int) -> None:
     assert proc.returncode == 1
     assert "exited 139" in proc.stderr
     assert "died in Boom.Segv" in proc.stderr
+    assert "fake:   [gpu] | [ RUN      ] Boom.Segv" in proc.stderr
     assert "watchdog" not in proc.stderr

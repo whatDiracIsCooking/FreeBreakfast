@@ -56,10 +56,16 @@ namespace fb = free_breakfast;
 // The issue's bar on the Hellmann-Feynman terms.
 constexpr double kTermTolerance = 1e-9;
 // The transition orbital gradient and RDMs, elements of order 0.01 to 1: they
-// move with the orbitals and the CI at first order, by ~||g|| / (the orbital
-// Hessian's least eigenvalue) at the solve's convergence. The RDMs, a sanity
-// check on the states, measured 1.4e-7 at worst on the 3080 (the skewed
-// three roots, 2e-12 for two); the gradient 7e-9 (1e-11 for two).
+// move with the orbitals and the CI at first order, so with how well the
+// solve's CI was converged where it stopped. The skewed three roots, at
+// mcscf::ci_tolerance_for's floor (1e-14 relative at kConvTolGrad, #867), on
+// the A100, 15 repeats: the RDMs 1.68e-8 to 1.70e-8 at worst, the gradient
+// 8.56e-10 to 8.62e-10, wherever ||g|| landed under kConvTolGrad (2.1e-12 to
+// 2.9e-12, and 7.1e-11 when the last step was forced short); for two roots
+// 2e-12 and 4e-12. Under the floor before #867 (options.ci's 1e-12, an
+// absolute residual of ~1e-10 here) the run's atomics chose where the last CI
+// stopped: in 12 of 15 repeats the gradient was 6.4e-9 to 8.6e-9 and the RDMs
+// 1.3e-7 to 1.7e-7, a margin another card's run could cross (#870).
 constexpr double kOrbitalGradientTolerance = 1e-8;
 constexpr double kRdmTolerance = 1e-6;
 // The multipliers' path against itself: the same formula, to round-off.
