@@ -114,7 +114,10 @@ basis.
 - **`Device`-shaped**, because B and the classes live on the device.
 - **The transients are freed stream-ordered.** The metric pair is released at
   return, after the copy into `l` that reads it was queued on the same
-  stream. `three_center` and `density_fit` each synchronize the stream
+  stream, and `three_center`'s scratch (about three B's) at its own return,
+  so after the step the device holds B, L and the stack reservation, and not
+  the 29 GB of scratch the grow-only workspace once kept at aug-cc-pVTZ pHBI
+  (#905). `three_center` and `density_fit` each synchronize the stream
   internally (their READMEs), so this step is not the device contract's
   no-wait ideal any more than they are.
 

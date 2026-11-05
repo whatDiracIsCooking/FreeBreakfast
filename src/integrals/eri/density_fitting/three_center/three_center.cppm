@@ -37,19 +37,21 @@ export namespace free_breakfast {
 /// round (m, n) and (n, m) differently. Every Cartesian element belongs to one
 /// cell, so nothing is zeroed and a run is bit-reproducible.
 ///
-/// **Refused up front, not split.** The Cartesian tensor and its transform's
-/// intermediate are scratch from res.device_workspace(); if they and the
-/// staging need more bytes than @p max_bytes, or than the device has free
-/// (beyond what the workspace already holds), the call is Unsupported, naming
-/// the bytes, before anything is allocated. Splitting the tensor over m would
-/// need FelizJueves's mirrored store changed. @p max_bytes is the cap a test
-/// forces; leave it at its default to be limited by the device alone.
+/// **Refused up front, not split.** The Cartesian tensor, its transform's
+/// intermediate and the staging are the call's own buffers, freed at return
+/// (stream-ordered), not res.device_workspace(): they are about three B's, and
+/// the grow-only workspace would keep them for the rest of the process. If
+/// they need more bytes than @p max_bytes, or than the device has free, the
+/// call is Unsupported, naming the bytes, before anything is allocated.
+/// Splitting the tensor over m would need FelizJueves's mirrored store
+/// changed. @p max_bytes is the cap a test forces; leave it at its default to
+/// be limited by the device alone.
 ///
 /// Queued on res.stream(). The call synchronizes it twice: once after the
 /// records' download, once after the staging's upload, so the host copies can
-/// go; it does not wait for the launches or the transform. @p b must not point
-/// into res.device_workspace(). The device res.dev_idx() names is made current
-/// for the call and the previous one restored.
+/// go; it does not wait for the launches or the transform. The device
+/// res.dev_idx() names is made current for the call and the previous one
+/// restored.
 ///
 /// @return Success (and nothing written if either basis is empty);
 ///         Unsupported if an orbital shell is above f or an aux shell above g

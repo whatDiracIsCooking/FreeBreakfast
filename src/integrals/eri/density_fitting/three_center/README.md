@@ -58,9 +58,20 @@ m and n.
    its mirror (`three_center_symmetrize`, out of place), which is exactly
    symmetric: the halving is exact and addition commutes.
 
-The staging, the Cartesian tensor and the transform's intermediate come from
-`res.device_workspace()`; the call synchronizes twice (after the records'
-download and after the upload) and not after the launches.
+The staging, the Cartesian tensor and the transform's intermediate are the
+call's own buffers, freed at return (stream-ordered after the work that reads
+them); the call synchronizes twice (after the records' download and after the
+upload) and not after the launches.
+
+**Not the workspace, on purpose.** The scratch is about three B's
+(`nao_cart² · (naux_cart + naux)` doubles and the staging, 29.1 GB at pHBI
+in aug-cc-pVTZ / aug-cc-pVTZ-JKFIT), used once. `res.device_workspace()` only grows, so carved
+from it the scratch stayed held for the rest of the process: B plus it filled
+a 40 GB card after the Eri step, and the CASSCF step's free-memory check,
+which counts only free memory, refused a loop that fits beside B alone
+(#905). As its own buffers it goes back to the pool at return, and the pool
+hands what is past its release threshold (1 GiB) back to the driver at the
+next synchronization.
 
 **The normalisation** is the metric's: no factor beyond the bases' own
 `primitive_normalized()` coefficients, because the spherical transforms
@@ -81,9 +92,9 @@ three-center bra `s` is `mmd`'s, the same one J and K read.
 - **The whole tensor must fit, and is refused up front if not.** The staging,
   the Cartesian tensor and the intermediate (`naux · nao_cart²`) are counted
   before anything is allocated; past `max_bytes` (a test's forced limit, the
-  default unlimited) or the device's free memory beyond what the workspace
-  already holds, the call is `Unsupported`, naming the bytes. Splitting over
-  m would need FelizJueves's mirrored store changed.
+  default unlimited) or the device's free memory, the call is
+  `Unsupported`, naming the bytes. Splitting over m would need FelizJueves's
+  mirrored store changed.
 - `nao_cart² naux_cart` within `INT32_MAX`, the kernels' 32-bit index, else
   `Unsupported`.
 - **The stack.** These kernels spill to stack, and the CUDA runtime grows the
