@@ -489,6 +489,9 @@ The reasons are memory and allocation count. The workspace only grows, so every
 routine on one device shares a single block sized for the largest of them, and
 once it has grown a later request allocates nothing. A buffer per routine holds
 the sum of their needs instead, and allocates again each time its owner runs.
+The one exception is a one-off whose scratch dwarfs every later routine's: the
+DF `Eri` step gives `three_center`'s back with `release_device_workspace()`
+rather than hold it for the process (`src/core/resources/README.md`).
 
 The rules for using it are in
 [`src/core/resources/README.md`](../src/core/resources/README.md) "Solver

@@ -74,6 +74,13 @@ density_fitted(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput> 
                                      wwr::wwrMemcpyDeviceToDevice, res.stream())));
   FBF_TRY(
       density_fit(res, static_cast<int32_t>(nao), static_cast<int32_t>(naux), l.data(), b.data()));
+  // three_center grew the workspace to its Cartesian tensor and transform
+  // intermediate, (naux_cart + naux) nao_cart^2 doubles: 28.6 GB beside B's
+  // 9.2 at aug-cc-pVTZ pHBI (#905), and nothing later wants a tenth of it.
+  // Given back here, and the sync lets the pool return it to the driver, so
+  // the next step's free-memory check sees it free.
+  res.release_device_workspace();
+  FBF_TRY(res.sync());
   return DensityFitted{.b = std::move(b),
                        .naux = static_cast<int32_t>(naux),
                        .aux = std::move(aux),

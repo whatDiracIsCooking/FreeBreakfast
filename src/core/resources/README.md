@@ -147,6 +147,17 @@ alignment. `kWorkspaceAlignmentIn<T>` is the same step in elements of `T`, for
 a routine carving the workspace into typed regions; it is constrained to a `T`
 whose size divides 256, so the step can neither truncate nor be 0.
 
+**`release_device_workspace()` is the one way down.** It hands the block back
+to the pool, stream-ordered, and leaves the workspace empty; the next request
+grows it from zero. It is for a routine whose scratch dwarfs everything after
+it, so that grow-only would hold it for the process: the density-fitted `Eri`
+step calls it after `three_center`, whose Cartesian tensor and transform
+intermediate are about 3x B (28.6 GB at aug-cc-pVTZ pHBI, #905). The pool keeps
+at most its release threshold cached and returns the rest to the driver at the
+next synchronization, so call `sync()` after it when a later
+`wwrMemGetInfo` should see the memory free. No region of the workspace may be
+live across it.
+
 **Carve it with `device_regions<Ts...>(counts...)`.** One `T` per count, or one
 `T` for all of them; each region is rounded up to 256 B, the total is asked for
 in one `device_workspace` request, and the regions' starts come back as a

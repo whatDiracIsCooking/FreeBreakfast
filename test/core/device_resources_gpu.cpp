@@ -181,6 +181,21 @@ TEST(DeviceResources, WorkspacesGrowAlignedAndNeverShrink) {
   EXPECT_EQ(res.host_workspace(1).data(), host);
 }
 
+// release_device_workspace is the one way down: it empties the device
+// workspace, and the next request grows it afresh from zero.
+TEST(DeviceResources, ReleaseEmptiesTheDeviceWorkspace) {
+  FBF_REQUIRE_GPU();
+
+  constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
+  fb::DeviceResources res{0};
+
+  EXPECT_EQ(res.device_workspace(4 * kAlign).num_elements(), 4 * kAlign);
+  res.release_device_workspace();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
+  EXPECT_EQ(res.device_workspace(1).num_elements(), kAlign);
+  ASSERT_TRUE(res.sync());
+}
+
 // The rounding is what lets one byte workspace serve every solver element type:
 // a request that is no multiple of 16 still views whole as complex<double>.
 TEST(DeviceResources, WorkspaceViewsAsAnyElementType) {

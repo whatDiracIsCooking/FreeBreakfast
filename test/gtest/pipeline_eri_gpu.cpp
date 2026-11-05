@@ -178,6 +178,8 @@ void check_b(const std::string &name) {
   ASSERT_TRUE(eri) << eri.error().message;
   const auto *fit = std::get_if<fb::DensityFitted>(&eri->eri);
   ASSERT_NE(fit, nullptr);
+  // three_center's scratch is given back, not held for the process (#905).
+  EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
 
   const auto nao = (*c)["nao"].get<std::size_t>();
   const auto naux = (*c)["naux"].get<std::size_t>();

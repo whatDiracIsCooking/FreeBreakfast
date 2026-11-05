@@ -111,6 +111,18 @@ public:
     return device_workspace_;
   }
 
+  /// @brief Give the device workspace's block back to device()'s pool,
+  /// stream-ordered after the work already queued against it, leaving it
+  /// empty: the next request grows it afresh.
+  ///
+  /// The exception to grow-only, for a routine whose scratch dwarfs every
+  /// later one's and would otherwise be held for the process: the DF
+  /// three-center build's Cartesian tensor and transform intermediate. The
+  /// pool returns what it holds past its release threshold to the driver at
+  /// the next synchronization, so wwrMemGetInfo counts it free from then on.
+  /// No region of the workspace may be live across the call.
+  void release_device_workspace() { device_workspace_ = Buffers::device<std::byte>(0, device_); }
+
   /// @brief The device workspace carved into one region per count: a region
   /// of count elements of its T, each rounded up to kWorkspaceAlignment so
   /// every one starts aligned for its type, from a single device_workspace

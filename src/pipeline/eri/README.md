@@ -117,6 +117,14 @@ basis.
   stream. `three_center` and `density_fit` each synchronize the stream
   internally (their READMEs), so this step is not the device contract's
   no-wait ideal any more than they are.
+- **The workspace is given back at the end.** `three_center` grows the
+  device workspace to its Cartesian tensor and transform intermediate,
+  `(naux_cart + naux) nao_cart²` doubles: about 3x B, 28.6 GB beside B's
+  9.2 GB at aug-cc-pVTZ / aug-cc-pVTZ-JKFIT pHBI. Grow-only would hold that
+  for the process, and every later step's free-memory check (CASSCF's among
+  them) would count it as used, so the step calls
+  `release_device_workspace()` and synchronizes, and the pool returns it to
+  the driver (#905).
 
 ## The stack
 
