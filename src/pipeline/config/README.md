@@ -458,7 +458,12 @@ a state average by `[nevpt2_gradient]`'s own refusal, Unsupported),
 all-electron (a `frozen_core` other than 0, `"auto"` included, refused as
 InvalidConfig) and density-fitted (an integral-direct `[eri]` refused as
 Unsupported), each before anything runs, since the analytic calls take none
-of them. Two of `[gradient]`, `[casscf_gradient]` and
+of them. Under PC, `pc_floor` (default 1e-10, `HessianStep::kPcFloor`; 0
+or more, 0 the round-off cut) is the PC conditioning floor of the whole
+chain the Hessian differentiates, and of the outer `[nevpt2_gradient]`
+beside it (`hessian/README.md` "The PC floor", #923); every other PC path,
+a `[nevpt2_gradient]` with no `[hessian]` among them, stays at 0. Two of
+`[gradient]`, `[casscf_gradient]` and
 `[nevpt2_gradient]` beside a `[hessian]` are refused as InvalidConfig,
 since one energy's gradient is differenced.
 
@@ -520,7 +525,7 @@ step, so no two collide:
 | `[nac]` | `nac.json`: the options, the CASSCF's root energies, and per pair the roots, the gap, h_IJ and d^CSF (unscaled) and `total`, each one row of three per atom, and the Z-vector's products and residual |
 | `[nevpt2_nac]` | `nevpt2_nac.json`: the variant and the options, the CASSCF's root energies, H_eff's eigenvalues and R, and per pair the QD states, E_Q − E_P, h_PQ, d^CAS, d^PT2 and the CSF part (unscaled) and `total`, each one row of three per atom, and the diagnostics |
 | `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted (under `meci`: the mean energy, the lower and upper energies and the gap, and per evaluation those, the branching plane's dimension, the pair overlap and the CASSCF's `gradient_norm` and `ci_residual_norm`; over QD states also `heff_gap`, `third_state_margin` and `root_gap`) |
-| `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the CASSCF chain's root, the NEVPT2 chain's variant, the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
+| `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the CASSCF chain's root, the NEVPT2 chain's variant (and PC's `pc_floor`), the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
 
 There is no `molden` key, nor a `livvo_molden`, `npy` or `json_path` one: a config names
 no output, so a later config can rely on what an earlier run wrote
@@ -573,7 +578,9 @@ than after the SCF has converged. `parse_config` touches no disk.
   method, or `coordinates` beside it without a `[nevpt2_gradient]`; a
   `[hessian]` beside two of `[gradient]`,
   `[casscf_gradient]` and `[nevpt2_gradient]`; or beside a
-  `[nevpt2_gradient]` with a `frozen_core` other than 0;
+  `[nevpt2_gradient]` with a `frozen_core` other than 0; a `[hessian]`
+  `pc_floor` that is negative or not finite, or one beside anything but a
+  `[nevpt2_gradient]` of variant `"pc"`;
 - an option of the other ERI mode (above): `[eri] aux_basis` under
   `"integral_direct"`, or `[scf] fock_rebuild_interval` under
   `"density_fitting"`; or an empty `aux_basis`;

@@ -85,6 +85,12 @@ struct Nevpt2GradientStep {
   /// ladder tightens it to measure what it leaves in the gradient. Unread
   /// with @ref quasi_degenerate.
   double zvector_tolerance = 1e-10;
+  /// @brief PC's conditioning floor, @c nevpt2::pc_gradient's @c pc_floor
+  /// (EnergyInputs::pc_floor): 0, the round-off cut. No TOML key: a PC
+  /// `[hessian]` sets it on the chain it differentiates
+  /// (HessianStep::pc_floor, #923). Unread by SC and with
+  /// @ref quasi_degenerate.
+  double pc_floor = 0.0;
   /// @brief Where the gradient is written as JSON, if not empty: the root,
   /// the energies, the total and each term as n_atom rows of three, and the
   /// diagnostics. Arrives resolved (pipeline/config sets it to

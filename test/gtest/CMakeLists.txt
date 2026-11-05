@@ -360,9 +360,16 @@ set(_fb_serial_cases "NevptRdm.Cas1212*:E2eCis.*")
 # noise's restarts and tightened re-solves, and 66 bilinearity pairs). The
 # skew cases take 133-150 s on the RTX 3080 and 164-172 s on the gfx1200,
 # the symmetric ones 57-62 s and 78-82 s.
+#
+# PSB3's proportional-pair HVP case (#914, slow tier only): 165 s alone on
+# the gfx1200, past the shared backstop (#934).
 set(_fb_long_cases "PipelineOptimize.Ethylene*QdMeci*")
 string(APPEND _fb_long_cases ":PipelineNevpt2Hessian.*Skew*")
 string(APPEND _fb_long_cases ":PipelineNevpt2Hessian.*Symmetric*")
+string(
+  APPEND _fb_long_cases
+  ":Nevpt2EnergyHvpEmpty.Psb3ProportionalPairAcceptedNonProportionalRefused"
+)
 math(EXPR _fb_long_timeout "5 * ${_fb_test_timeout}")
 gtest_discover_tests(
   free_breakfast_tests_gpu

@@ -538,13 +538,28 @@ derivative that does not depend on the cut predicts.
     PcClassEnergies::cut[k]    the largest σ the cut dropped, over σ_max (0: none)
     PcClassEnergies::kept[k]   the smallest σ it kept, over σ_max
 
-The default cut is #923's decision; until then the floor defaults to 0,
-and every energy, gradient and golden is bitwise what it was. The floor is
+**The library default stays 0 (#923)**, the round-off cut alone, and every
+energy, gradient and golden is bitwise what it was before the floor
+existed. A global 1e-10 was tried and measured on the gfx1200: beyond
+PSB3's 1.2e-10 / 5.8e-9 Eh and HF CAS(10,7)'s 1.7e-7 (the table below),
+it changes the dropped counts of the QD goldens and moves validated
+results. The PC-QD H_eff elements of `h8_sto3g_sa3` and
+`h8_ring12_ccpvdz_cas66_sa2` moved by up to 2.5e-8 Eh (Sir's dropped count
+1 → 4, Sr's 6 → 8), and the PC-QD NACs of `h8_sto3g_sa3` moved by up to
+1600 bars from #744's numerical references (8e-7 on a coupling of 9.3).
+Those are real modes the round-off cut keeps, and the goldens were made at
+it. So the 1e-10 floor is applied where it is needed: to the PC Hessian's
+chain in the pipeline, `[hessian] pc_floor`, 1e-10 by default
+(`../../pipeline/hessian/README.md`, "The PC floor"), the smallest
+relative cut at which PSB3's second-order ladder is clean throughout
+(the ladder table below), above BAGEL's absolute 1e-9 (about 3.5e-11 of
+PSB3's σ_max). The floor is
 one field of the inputs, so `pc_class_energies`, its reverse pass and its
 tangent read the same value through the one `solve_class`, and each is the
 derivative of the energy the others report. The gradient's entry points
 (`pc_energy`, `pc_adjoint`, `pc_gradient`) take it as a trailing
-`pc_floor = 0`. No TOML key yet: #818, the pipeline Hessian, decides that.
+`pc_floor = 0`. Its one TOML key is `[hessian] pc_floor` (#923), which a
+PC `[nevpt2_gradient]` beside a `[hessian]` also takes.
 The QD paths (`pc_effective_hamiltonian` and its reverse pass) read it from
 each state's own inputs, which their callers leave at 0. `cut` and `kept`
 are reported per class, and per ket in an effective Hamiltonian; both are 0
