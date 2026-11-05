@@ -1067,8 +1067,10 @@ auto t = hessian::df_sacasscf_z(res, molecule, basis, classes, aux, h, b, l, c, 
 
 `z` is one column in `mcscf::ThirdDerivative`'s layout and **the energy's
 convention** (the packed pairs, d_r per root, Θ_sr for r < s at unequal
-weights): the fixture's z, not `mcscf::zvector`'s unscaled CI rows, which a
-caller converts first (`../mcscf/root_rotation/README.md`). In order:
+weights), which is `mcscf::zvector`'s (z_o, z_c, Θ) as it comes: zvector
+scales its equations' CI rows, not its unknowns (`df_sacasscf`'s step 2).
+The d_r are taken off every root first, as `ThirdDerivative` takes them. In
+order:
 
 1. **L_xλ's right-hand side**: `mcscf::df_derivatives` at one-hot weights on
    root I (projected off every root, Θ rows at unequal weights), packed:
@@ -1126,6 +1128,75 @@ Measured on the RTX 3080 (CUDA), worst over the ten roots: L_xy's z part
 ≤ 3.1e-13 orbital (of 1.9), ≤ 1.3e-11 CI (of 0.19), ≤ 7.4e-14 Θ (of 0.20);
 L_xλ λ^y ≤ 1.2e-13 from `lxl_lambda` (of 0.26–0.80); sum rules ≤ 6.6e-13;
 1.2–1.4 s a call (the water in 6-31G, 9 coordinates).
+
+## The single-state Z terms
+
+A single-state reference's Lagrangian (`nuclear_hessian.tex`, eq. hess; a
+NEVPT2 gradient's E_cas + Z·g + …) has three places its multipliers
+(Z, z) = Z meet the CASSCF gradient g = ∂E/∂λ: Z·∂²g/∂R∂R in L_AB,
+Z·∂²g/∂R∂x in L_Ax and Z·∂²g/∂x∂x in L_xx. `df_casscf_z` returns the three
+at caller-supplied Z, and solves nothing (λ^x is the caller's):
+
+```cpp
+auto t = hessian::df_casscf_z(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
+                              ncas, z, k, lambda);
+// t->lxy:      Z·∂²g/∂R∂R, CasscfExy's pieces (nuclear_repulsion zero), t->lxy.exy the sum
+// t->lxlambda: Z·∂²g/∂R∂x, size × 3 n_atom on the device, column x the covector I^x Z
+// t->third:    Λᵀ (Z·∂²g/∂x∂x) Λ, k × k on the host, over lambda's k columns
+```
+
+It is `df_sacasscf_z` at one root of weight 1 (the two share one body), with
+two differences: no step 1 (∂_x ∂_λ E is the energy's own term,
+`df_casscf`'s E_λx, not Z's), and the operator step 4 builds is applied once
+more, to Λ, for the third term (`ThirdDerivative::apply`, then Λᵀ Y). The
+inputs are `df_casscf`'s (a one-root `Solution`, its checks and refusals) plus
+z, pairs + n_det doubles in `mcscf::zvector`'s coordinates, its CI part
+taken off the root. Nothing restricted the parts to a state average but
+`df_sacasscf_z`'s own two-root check: `ThirdDerivative`, `df_derivatives` and
+`rdm12` take one weight of 1 as they are, and the operator has no rotations
+among one root.
+
+### Memory
+
+`df_sacasscf_z`'s, less its one-hot `df_derivatives` call, plus Y
+(size × k) while Λᵀ Y is formed.
+
+### Tests
+
+`test/gtest/df_casscf_hessian_z_gpu.cpp` (suite `HessianDfCasscfZ`), the
+stretched water's CAS(4,4)/6-31G over cc-pVDZ-JKFIT at the fixture's
+`h2o_631g` geometry and orbitals (made orthonormal over this tree's S, the
+root re-solved by CASCI at them), with a random Z and a random Λ of three
+columns (elements up to 0.1, CI parts off the root). Each term against a
+Richardson ladder of **Z·g itself**, never of a Hessian-vector product: Z·g
+is evaluated on the host at this tree's integrals at each displaced geometry,
+along the symmetric connection C(R) = C (Cᵀ S(R) C)^−½ and the exponential
+parametrization C(R) e^K, e^A c, the exponentials' derivatives by their
+series (exact), the orbital part by ∂E/∂U_o and the CI part by the ±
+polarization (the two vectors' densities differenced before they are
+contracted: the energies themselves are ~80 hartree), only the RDMs from
+`ci::Rdm`. The fitted factor at each geometry is M's own Cholesky factor
+there, not the derivative's gauge: E sees it only as Σ_Q L_Q L_Q.
+
+- Z·∂²g/∂R∂R against the mixed central difference of Z·g(R, 0) in
+  (R_x, R_y), steps 4e-3 and 2e-3 bohr, every (x, y);
+- Z·∂²g/∂R∂x (column x against λ_j) against the mixed difference of
+  Z·g(R, t λ_j) in (R_x, t), steps (4e-3, 4e-3) and half of both;
+- Λᵀ (Z·∂²g/∂x∂x) Λ against the mixed difference of
+  Z·g(R₀, s λ_i + t λ_j), steps 4e-3 and 2e-3;
+
+each to 1e-7 absolute. The host energy at the reference is checked against
+the CASCI root's to 1e-10 first. `Refusals`: z one short, a negative k, no
+Λ for k = 1, and ncas 0.
+
+Measured on the RTX 3080 (CUDA): Z·∂²g/∂R∂R ≤ 3.6e-10 from its ladder (of
+max 0.13), Z·∂²g/∂R∂x ≤ 1.2e-10 (of 0.030), Λᵀ (Z·∂²g/∂x∂x) Λ ≤ 4.1e-9 (of
+0.19); 1.2 s for the call (the water in 6-31G, 9 coordinates), 2.3 s for the
+ladders. The ladders are rounding-limited, not truncation-limited: the
+third term's miss rises from 4.1e-9 at a 4e-3 step to 3.1e-8 at 2e-3 and
+6.9e-8 at 1e-3, so the steps are the largest of those. `HessianDfSaCasscfZ` and `HessianDfSaCasscf` are unchanged (the
+d_r's projection is a no-op on zvector's z, which is off the roots
+already).
 
 ## The state-averaged CASSCF Hessian
 
@@ -1243,7 +1314,7 @@ the issue also asks for waits on that step (#610).
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::df_adjoint_xy`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::df_adjoint_xy`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::CasscfZTerms`, `hessian::df_casscf_z`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build, or a batch of them from one walk |
@@ -1255,6 +1326,6 @@ the issue also asks for waits on that step (#610).
 | `df_nevpt2_tangents.cpp` | The NEVPT2 parameter response and t_x: per chunk of derivative integrals, W^x to B's layout, the one-index transforms by κ_nr, f^(x) by `builders_tangent`, κ_oo under the degenerate-pair rule and its transform |
 | `df_adjoint_xy.cpp` | Σ h̄ h^xy + Σ Λ B^xy at a general MO adjoint: X, G and the μ^x stack, the per-chunk N^y and ⟨μ^x, H^y⟩ over `df_integral_derivatives`' W^x, V^y, the Gram matrices and the second-derivative integrals at the adjoint's AO forms |
 | `df_sacasscf.cpp` | A state-averaged root's Hessian: z and λ^x by the Z-vectors, the residual check, root I's parameter Hessian by the one-hot unreduced product, the third-derivative action, the z terms, E_I,xy, eq. rot at equal weights and the symmetrized sum |
-| `df_sacasscf_z.cpp` | A state average's z terms at root I's z: L_xy's z part (E_xy along K(z_o), and at z_c's transition RDMs by the ± polarization) and L_xλ (root I's right-hand side + I^x z) |
+| `df_sacasscf_z.cpp` | A state average's z terms at root I's z: L_xy's z part (E_xy along K(z_o), and at z_c's transition RDMs by the ± polarization) and L_xλ (root I's right-hand side + I^x z); `df_casscf_z`, the same at one root and given Z without the right-hand side, plus Λᵀ T(·, ·, Z) Λ |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |
 | `CMakeLists.txt` | Build configuration |

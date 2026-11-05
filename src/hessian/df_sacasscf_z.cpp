@@ -4,12 +4,15 @@
 /// transition RDMs of z_c by the +/- polarization) and L_xlambda (root I's
 /// right-hand side from mcscf::df_derivatives plus I^x z from
 /// mcscf::ThirdDerivative::apply_integrals), assembled from the merged parts.
+/// Beside it df_casscf_z, the same at one root of weight 1 and given (Z, z),
+/// without the root's right-hand side, and the third derivative's action
+/// over a block of response vectors.
 
 module free_breakfast.hessian;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants; // kOne, kNegOne
+import free_breakfast.core.constants; // kZero, kOne, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // axpy, wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
@@ -21,8 +24,10 @@ import free_breakfast.recipes.matrix_ao;
 import free_breakfast.ci.strings;
 import free_breakfast.ci.rdm;
 import free_breakfast.response.orbital_pairs;
+import free_breakfast.mcscf.solve;
 import free_breakfast.mcscf.derivative;
 import free_breakfast.mcscf.third_derivative;
+import :state_specific; // state_specific_electrons
 
 #include "diagnostics.h"
 
@@ -32,29 +37,23 @@ namespace free_breakfast::hessian {
 // rule): the rotations among the roots are then not parameters.
 constexpr double kSaWeightTolerance = 1e-12;
 
-Result<SaCasscfZTerms>
-df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-              const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-              const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-              const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas,
-              const int32_t nalpha, const int32_t nbeta, const Buffers::device<double> &roots,
-              const std::span<const double> weights, const int32_t root,
-              const Buffers::device<double> &z) {
+// The z terms at the roots' multipliers z, every argument but the lengths
+// checked by the caller: L_xy's z part, L_xlambda (with root I's right-hand
+// side when @p root >= 0, without it when < 0) and, for k > 0, the third
+// derivative's action Lambda^T T(., ., z) Lambda over @p lambda's k columns.
+// @p who names the entry in the length refusals.
+Result<CasscfZTerms>
+casscf_z_terms(const std::string_view who, DeviceResources &res, const Molecule &molecule,
+               const BasisSet &basis, const std::span<const PrimitivePairClass> classes,
+               const BasisSet &aux, const SphericalMatrixAO &h, const Buffers::device<double> &b,
+               const double *l, const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas,
+               const int32_t nalpha, const int32_t nbeta, const Buffers::device<double> &roots,
+               const std::span<const double> weights, const int32_t root,
+               const Buffers::device<double> &z, const int32_t k, const double *const lambda) {
   const size_t nao = basis.nao_sphe();
   const size_t naux = aux.nao_sphe();
   const uint32_t n_atom = basis.natoms();
   const size_t nroots = weights.size();
-  if (c.dev_idx() != res.dev_idx() || c.n() != nao || molecule.natoms() != n_atom ||
-      aux.natoms() != n_atom || ncore < 0 || ncas < 1 ||
-      int64_t{ncore} + int64_t{ncas} > static_cast<int64_t>(nao) || nroots < 2 || root < 0 ||
-      std::cmp_greater_equal(root, nroots)) {
-    return err_config("hessian::df_sacasscf_z: needs C nao square on device {}, a molecule and "
-                      "two bases on the same atoms, ncore >= 0, ncas >= 1, ncore + ncas <= nao, "
-                      "two roots or more and a root among them (C {} square on device {}, {}, {} "
-                      "and {} atoms, ncore {}, ncas {}, nao {}, {} weights, root {})",
-                      res.dev_idx(), c.n(), c.dev_idx(), molecule.natoms(), n_atom, aux.natoms(),
-                      ncore, ncas, nao, nroots, root);
-  }
   size_t equal_pairs = 0;
   size_t all_pairs = 0;
   for (size_t r = 0; r < nroots; ++r) {
@@ -62,11 +61,6 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
       ++all_pairs;
       equal_pairs += std::abs(weights[r] - weights[s]) < kSaWeightTolerance ? 1 : 0;
     }
-  }
-  if (equal_pairs != 0 && equal_pairs != all_pairs) {
-    return err_config("hessian::df_sacasscf_z: weights equal for {} of {} pairs of roots: the "
-                      "rotations among the roots are either all parameters or none",
-                      equal_pairs, all_pairs);
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const ci::DeviceStringSet alpha = FBF_TRY(ci::DeviceStringSet::create(res, ncas, nalpha));
@@ -80,9 +74,9 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   const size_t n_ci = dim * nroots;
   const size_t size = pairs + n_ci + n_theta;
   if (roots.num_elements() != n_ci || z.num_elements() != size) {
-    return err_config("hessian::df_sacasscf_z: {} roots of {} determinants and z of {} "
-                      "parameters (pairs, CI{}), got {} and {} doubles",
-                      nroots, dim, size, n_theta == 0 ? "" : ", the roots' rotations",
+    return err_config("{}: {} roots of {} determinants and z of {} parameters (pairs, CI{}), got "
+                      "{} and {} doubles",
+                      who, nroots, dim, size, n_theta == 0 ? "" : ", the roots' rotations",
                       roots.num_elements(), z.num_elements());
   }
   const auto n_x = static_cast<size_t>(3) * n_atom;
@@ -127,9 +121,10 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
 
   // L_xlambda's first part, root I's own CP right-hand side (one-hot
   // weights), in ThirdDerivative's packed layout: the orbital pairs, the CI
-  // rows as they are (the energy's convention), Theta_sr for r < s.
+  // rows as they are (the energy's convention), Theta_sr for r < s. None
+  // without a root: step 4 then writes the columns whole.
   Buffers::device<double> lxlambda(size * n_x, res.device());
-  {
+  if (root >= 0) {
     std::vector<double> one_hot(nroots, 0.0);
     one_hot[static_cast<size_t>(root)] = 1.0;
     const mcscf::Derivatives own = FBF_TRY(derivatives(roots.data(), one_hot, nullptr));
@@ -175,6 +170,18 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
     Buffers::device<double> minus(n_ci, res.device());
     Buffers::device<double> dc(n_ci, res.device());
     FBF_TRY(copy(dc.data(), z.data() + pairs, n_ci, wwr::wwrMemcpyDeviceToDevice));
+    {
+      // d off every root, as ThirdDerivative takes it: d -= C (C^T d).
+      const auto dim32 = static_cast<int32_t>(dim);
+      const auto nroots32 = static_cast<int32_t>(nroots);
+      Buffers::device<double> overlap(nroots * nroots, res.device());
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, nroots32, nroots32, dim32, &kOne<double>,
+                                                 roots.data(), dc.data(), &kZero<double>,
+                                                 overlap.data())));
+      FBF_TRY(gpu_status(gemm(blas, dim32, nroots32, nroots32, &kNegOne<double>, roots.data(),
+                              overlap.data(), &kOne<double>, dc.data())));
+      FBF_TRY(res.sync());
+    }
     if (n_theta != 0) {
       // Theta as a full antisymmetric nroots x nroots, (s, r) at s + nroots r.
       const std::vector<double> packed = FBF_TRY(download(z.data() + pairs + n_ci, n_theta));
@@ -241,18 +248,97 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
 
   // L_xlambda's second part, I^x z: the SA Hessian at the derivative
   // integrals and connection, applied to z, added to the right-hand side.
+  // Then the same operator's action over Lambda.
+  std::vector<double> third;
   {
     mcscf::ThirdDerivative op =
         FBF_TRY(mcscf::ThirdDerivative::create(res, h, b, static_cast<int32_t>(naux), c, ncore,
                                                ncas, alpha, beta, roots.data(), weights, z.data()));
-    Buffers::device<double> y(size * n_x, res.device());
-    FBF_TRY(mcscf::df_integral_derivatives(res, molecule, basis, classes, aux, h, b, l, c, op,
-                                           y.data()));
-    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(size) * n_x32,
-                                                  &kOne<double>, y.data(), 1, lxlambda.data(), 1)));
+    if (root >= 0) {
+      Buffers::device<double> y(size * n_x, res.device());
+      FBF_TRY(mcscf::df_integral_derivatives(res, molecule, basis, classes, aux, h, b, l, c, op,
+                                             y.data()));
+      FBF_TRY(
+          gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(size) * n_x32,
+                                                &kOne<double>, y.data(), 1, lxlambda.data(), 1)));
+    } else {
+      FBF_TRY(mcscf::df_integral_derivatives(res, molecule, basis, classes, aux, h, b, l, c, op,
+                                             lxlambda.data()));
+    }
     FBF_TRY(res.sync());
+    if (k > 0) {
+      const auto ks = static_cast<size_t>(k);
+      Buffers::device<double> y(size * ks, res.device());
+      FBF_TRY(op.apply(res, k, lambda, y.data()));
+      Buffers::device<double> product(ks * ks, res.device());
+      FBF_TRY(
+          gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, k, k, static_cast<int32_t>(size), &kOne<double>,
+                                             lambda, y.data(), &kZero<double>, product.data())));
+      third = FBF_TRY(download(product.data(), ks * ks));
+    }
   }
-  return SaCasscfZTerms{.lxy = std::move(lxy), .lxlambda = std::move(lxlambda)};
+  return CasscfZTerms{
+      .lxy = std::move(lxy), .lxlambda = std::move(lxlambda), .third = std::move(third)};
+}
+
+Result<SaCasscfZTerms>
+df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+              const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+              const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+              const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas,
+              const int32_t nalpha, const int32_t nbeta, const Buffers::device<double> &roots,
+              const std::span<const double> weights, const int32_t root,
+              const Buffers::device<double> &z) {
+  const size_t nao = basis.nao_sphe();
+  const uint32_t n_atom = basis.natoms();
+  const size_t nroots = weights.size();
+  if (c.dev_idx() != res.dev_idx() || c.n() != nao || molecule.natoms() != n_atom ||
+      aux.natoms() != n_atom || ncore < 0 || ncas < 1 ||
+      int64_t{ncore} + int64_t{ncas} > static_cast<int64_t>(nao) || nroots < 2 || root < 0 ||
+      std::cmp_greater_equal(root, nroots)) {
+    return err_config("hessian::df_sacasscf_z: needs C nao square on device {}, a molecule and "
+                      "two bases on the same atoms, ncore >= 0, ncas >= 1, ncore + ncas <= nao, "
+                      "two roots or more and a root among them (C {} square on device {}, {}, {} "
+                      "and {} atoms, ncore {}, ncas {}, nao {}, {} weights, root {})",
+                      res.dev_idx(), c.n(), c.dev_idx(), molecule.natoms(), n_atom, aux.natoms(),
+                      ncore, ncas, nao, nroots, root);
+  }
+  size_t equal_pairs = 0;
+  size_t all_pairs = 0;
+  for (size_t r = 0; r < nroots; ++r) {
+    for (size_t s = r + 1; s < nroots; ++s) {
+      ++all_pairs;
+      equal_pairs += std::abs(weights[r] - weights[s]) < kSaWeightTolerance ? 1 : 0;
+    }
+  }
+  if (equal_pairs != 0 && equal_pairs != all_pairs) {
+    return err_config("hessian::df_sacasscf_z: weights equal for {} of {} pairs of roots: the "
+                      "rotations among the roots are either all parameters or none",
+                      equal_pairs, all_pairs);
+  }
+  return casscf_z_terms("hessian::df_sacasscf_z", res, molecule, basis, classes, aux, h, b, l, c,
+                        ncore, ncas, nalpha, nbeta, roots, weights, root, z, 0, nullptr)
+      .transform([](CasscfZTerms &&t) {
+        return SaCasscfZTerms{.lxy = std::move(t.lxy), .lxlambda = std::move(t.lxlambda)};
+      });
+}
+
+Result<CasscfZTerms>
+df_casscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+            const Buffers::device<double> &z, const int32_t k, const double *const lambda) {
+  constexpr std::string_view kWho = "hessian::df_casscf_z";
+  const auto [nalpha, nbeta] =
+      FBF_TRY(state_specific_electrons(kWho, res, molecule, basis, aux, b, solution, ncore, ncas));
+  if (k < 0 || (k > 0 && lambda == nullptr)) {
+    return err_config("{}: k must not be negative, and Lambda must be given for k > 0 (k {})", kWho,
+                      k);
+  }
+  const std::array<double, 1> one{1.0};
+  return casscf_z_terms(kWho, res, molecule, basis, classes, aux, h, b, l, solution.c, ncore, ncas,
+                        nalpha, nbeta, solution.roots.vectors, one, -1, z, k, lambda);
 }
 
 } // namespace free_breakfast::hessian
