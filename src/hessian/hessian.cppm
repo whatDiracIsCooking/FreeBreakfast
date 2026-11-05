@@ -647,9 +647,10 @@ struct SaCasscfZTerms {
 /// ncas orbitals (root r at r n_det), eigenvectors of the active-space H, at
 /// @p weights, all equal or all pairwise different. @p z is root I's
 /// multipliers in @c mcscf::ThirdDerivative's layout and the energy's
-/// convention (the fixture's z; not @c mcscf::zvector's unscaled CI rows):
-/// pairs + n_det nroots doubles, plus nroots (nroots - 1) / 2 at unequal
-/// weights.
+/// convention, which is @c mcscf::zvector's (z_o, z_c, Theta) as it comes
+/// (zvector scales its equations' CI rows, not its unknowns): pairs + n_det
+/// nroots doubles, plus nroots (nroots - 1) / 2 at unequal weights. Its CI
+/// part is taken off every root here.
 ///
 /// The parts run one after another, each freeing what it held: four
 /// @c df_derivatives calls, three @c df_casscf_exy calls, then the derivative
@@ -676,6 +677,68 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nalpha,
               int32_t nbeta, const Buffers::device<double> &roots, std::span<const double> weights,
               int32_t root, const Buffers::device<double> &z);
+
+/// @brief The multiplier terms of a single-state Lagrangian's Hessian at
+/// given multipliers (Z, z) (nuclear_hessian.tex eq. hess): the three places
+/// Z . g, g the CASSCF energy's gradient in its parameters, enters
+/// L_AB, L_Ax and L_xx.
+struct CasscfZTerms {
+  /// @brief Z . d2 g / dR dR: E_xy at Z's densities (the Z-rotated root's
+  /// densities and the transition RDMs of z), piece by piece as
+  /// @ref df_casscf_exy returns them, 3 n_atom x 3 n_atom column-major,
+  /// symmetric to rounding; nuclear_repulsion is zero.
+  CasscfExy lxy;
+  /// @brief Z . d2 g / dR dx, I^x Z alone (no d_x d_lambda E: that is
+  /// @ref df_casscf's), a covector per coordinate: size x 3 n_atom
+  /// column-major on the device, column x in @c mcscf::ThirdDerivative's
+  /// packed layout (the orbital pairs, then the root's CI). Its dot product
+  /// with x^y in the same layout is element (x, y) of L_Ax x^y's Z part.
+  Buffers::device<double> lxlambda;
+  /// @brief Lambda^T (Z . d2 g / dx dx) Lambda over the call's k columns
+  /// Lambda: k x k column-major on the host, (i, j) =
+  /// T(lambda_i, lambda_j, Z); empty for k = 0.
+  std::vector<double> third;
+};
+
+/// @brief The Z terms of a single-state DF-CASSCF reference's Lagrangian
+/// Hessian at caller-supplied multipliers @p z (a NEVPT2 gradient's (Z, z),
+/// say): @ref df_sacasscf_z's two terms at one root of weight 1, without
+/// the root's own right-hand side, and the third derivative's action over a
+/// block of response vectors (README.md, "The single-state Z terms"):
+///
+///     lxy       = df_casscf_exy along K(Z) + at the transition RDMs of z
+///     lxlambda  = I^x Z (mcscf::df_integral_derivatives through
+///                 ThirdDerivative::apply_integrals)
+///     third     = Lambda^T ThirdDerivative(Z).apply(Lambda)
+///
+/// Computes no response: Lambda is the caller's (@ref df_casscf_cp's
+/// lambda^x, say).
+///
+/// The inputs are @ref df_casscf's: @p solution a one-root DF-CASSCF over
+/// the same fit, its root an eigenvector of the active-space H at its C.
+/// @p z is pairs + n_det doubles on the device in @c mcscf::zvector's
+/// coordinates (z_o over the packed pairs, then z, c -> c + z), its CI part
+/// taken off the root here. @p lambda is @p k such columns (size x k,
+/// column-major, device), null when @p k is 0.
+///
+/// The parts run one after another as @ref df_sacasscf_z's do, less its
+/// one-hot @c df_derivatives call; Y (size x k) is held for the action.
+/// Queued on res.stream() with res.blas() (host pointer mode); it
+/// synchronizes many times. None of @p b and @p l may point into
+/// res.device_workspace(). The device res.dev_idx() names is made current
+/// for the call and the previous one restored.
+///
+/// @return The three terms; InvalidConfig for @ref df_casscf's input
+///         refusals, @p z not of its length, a negative @p k, or a null
+///         @p lambda with k > 0, or for any input a part refuses; or the
+///         first error of a part (Unsupported for memory, a GpuRuntime
+///         error).
+[[nodiscard]] Result<CasscfZTerms>
+df_casscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
+            const Buffers::device<double> &z, int32_t k = 0, const double *lambda = nullptr);
 
 /// @brief A state-averaged DF-CASSCF root's analytic nuclear Hessian and its
 /// terms (casscf_hessian.tex eq. sa), each 3 n_atom x 3 n_atom, x = 3 A + k
