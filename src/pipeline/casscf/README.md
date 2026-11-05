@@ -6,7 +6,9 @@ picks its own; `mcscf.solve`'s `mcscf::solve` optimizes the orbitals and the
 CI of the lowest roots of the molecule's spin at fixed weights,
 integral-direct or fully density-fitted; the core
 and the virtuals are then canonicalized, and the state-averaged natural
-orbitals optionally written as Molden.
+orbitals optionally written as Molden. Or the start is another run's
+orbitals and CI, read from `.npy` files that a converged run here writes:
+how an active space is carried to another geometry.
 
 ## Module
 
@@ -17,7 +19,7 @@ It re-exports `free_breakfast.pipeline.scf` (which re-exports every product in
 and `free_breakfast.mcscf.solve` (`mcscf::Iteration`, in the product, and
 `mcscf::Options`, whose defaults the step's are). `run` is defined in the
 implementation unit, so `integrals.active_space`, `response.fock`,
-`diagonalize` and `io.molden` are PRIVATE links.
+`diagonalize`, `io.molden` and `io.npy` are PRIVATE links.
 
 The selection -- `ncas`, `nelecas`, `active`, `avas`, `avas_threshold` -- is
 `pipeline/active_space`'s ([`active_space/README.md`](../active_space/README.md)).
@@ -44,7 +46,7 @@ struct CasscfOutput {
   std::vector<mcscf::Iteration> iterations; // one per macro iteration
 };
 
-struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_threshold
+struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_threshold, orbitals
   static constexpr std::string_view kName = "casscf";
 
   int32_t nroots = 1;
@@ -53,6 +55,9 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
   double conv_tol_grad = 1e-6;
   int32_t max_cycle = 50;
   std::filesystem::path molden{};      // the state-averaged natural orbitals, if set
+  std::filesystem::path orbitals_npy{}; // CasscfOutput::c as .npy, nao x nmo, if set
+  std::filesystem::path ci_npy{};      // CasscfOutput::vectors as .npy, dim x nroots, if set
+  std::filesystem::path ci{};          // a .npy CI start, as ci_npy writes it
   std::vector<double> ci_guess{};      // the CI start, CasscfOutput::vectors' layout; not TOML
 
   Result<CasscfOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
@@ -63,12 +68,14 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
 
 `run`, all on `res.stream()`:
 
-1. **The start**: `ActiveSpaceSelection::select`'s C R, as the Casci step's.
+1. **The start**: `ActiveSpaceSelection::select`'s C R, as the Casci step's:
+   the ScfOutput's orbitals, or `orbitals`' (below).
 2. **The two-electron integrals' input**: the `EriOutput`'s
    (`pipeline/eri`), J and K classes under `IntegralDirect`, or B under
    `DensityFitted` (below) and no classes.
 3. **The optimization**: `mcscf::solve` from it, and from `ci_guess`'s CI
-   when it is set (uploaded, its size `mcscf::solve`'s to check), at the
+   when it is set, or else `ci`'s (uploaded, its size `mcscf::solve`'s to
+   check), at the
    step's `nroots`, `weights`, `conv_tol`, `conv_tol_grad` and `max_cycle`,
    and in
    `mcscf::DensityFitting::Full` over a fitted `EriOutput`'s B, every other
@@ -92,6 +99,46 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
    the core at occupation 2, the virtuals at 0. Each energy is the orbital's
    expectation in F: the canonical eigenvalue for the core and the
    virtuals.
+7. **The `.npy` files**, if `orbitals_npy` and `ci_npy` are set: C as the
+   product holds it, nao × nmo, and the CI vectors, dim × nroots (root r
+   the column r), each float64 in Fortran order (`io/npy`), so `np.load`
+   gives `mo_coeff`-shaped orbitals and `ci[:, r]` per root.
+
+## Starting from another run's orbitals
+
+```toml
+[casscf]
+ncas = 11
+nelecas = 12
+nroots = 2
+orbitals = "s0/casscf_orbitals.npy"  # nao x nmo; relative to the input directory
+ci = "s0/casscf_ci.npy"              # optional: dim x nroots, or dim for one root
+write_npy = true                     # this run's own casscf_orbitals.npy, casscf_ci.npy
+```
+
+`write_npy = true` writes `casscf_orbitals.npy` and `casscf_ci.npy` into the
+run's output directory. A later run names them, at the same basis and this
+or another geometry of the molecule (same atom order): `orbitals` replaces
+the ScfOutput's orbitals in the selection, Löwdin-orthonormalized in the new
+geometry's overlap (`active_space/README.md`, "A start from another run's
+orbitals", has the choice and why), and `active` and the core index the
+file's columns. Left out, `active` is the frontier, which over a CASSCF's own
+file is its core and active columns as they were, so the CI carries over
+too: same determinant space, same orbital order. It is only a guess, as
+`ci_guess` is. `orbitals` is not taken with `avas`.
+
+The SCF still runs: the selection reads its electron counts, and the
+Casci step's Molden energies its orbital energies. Both paths are input
+files like any other, refused in the output directory. Under `[optimize]`
+and `[hessian]` the files start the first geometry's (the reference's) solve
+only, every later one starting from the last, as without them; neither
+chain writes `.npy` files.
+
+A file that does not fit is refused when the step runs: orbitals not nao ×
+nmo (`InvalidConfig`, both shapes), a CI whose columns are not `nroots`
+(`InvalidConfig`, its shape) or whose length is not the determinant count
+(`mcscf::solve`'s `InvalidConfig`), a file not float64 or not there
+(`read_npy`'s `IO`).
 
 ## Density fitting
 
@@ -168,7 +215,8 @@ Errors: `ActiveSpaceSelection::select`'s; under a fitted `EriOutput`,
 `mcscf::solve`'s (InvalidConfig for
 `nroots` past the determinant count, MaxIterationsExceeded); the module
 calls' own (`casscf_integrals`', `response::fock`'s, `diagonalize`'s,
-`write_molden`'s); GpuRuntime for a failed copy or gemm.
+`write_molden`'s, `read_npy`'s and `write_npy`'s); InvalidConfig for a `ci`
+file of another root count; GpuRuntime for a failed copy or gemm.
 
 ## Tests
 
@@ -200,7 +248,18 @@ triplet CAS(6,6), cc-pVDZ, frontier, the chain at the molecule's
 multiplicity so its Scf step is the DF-ROHF the reference starts from; to the
 same bars, ⟨S²⟩ = S(S + 1).
 
-Also `max_cycle` running out failing the step. The `[casscf]` parsing and its
+Also `max_cycle` running out failing the step.
+
+The start from files (`PipelineCasscfStart`), H₂O cc-pVDZ CAS(4,4), two
+roots, density-fitted: a run's own `write_npy` files read back at the same
+geometry reproduce its energies to 1e-8 in two macro iterations, the fewest
+the loop stops in (from the RHF: 11); carried to a geometry with one O–H
+0.1 bohr longer and the other 0.05 shorter (max |AᵀSA − I| 0.04) and back,
+they return to the first run's energies to 1e-8, so the displaced solution
+is the one continuously connected to it (a start from the displaced RHF by
+the same indices reaches another, 52 mEh lower); a `[casci]` over a direct
+CASSCF's file is that CASSCF's energy, to 1e-8; and the refusals above,
+each naming its shapes. The `[casscf]` parsing and its
 refusals are in `test/pipeline/config_host.cpp`, and an end-to-end run with
 `[casci]` beside it, against the step called by hand, in
 `pipeline_calculation_gpu.cpp`, which also runs an `[scf]` and a `[casscf]`
@@ -211,5 +270,5 @@ over one `EriOutput` in each mode.
 | File | Role |
 |------|------|
 | `casscf.cppm` | Module interface: `CasscfOutput`, `CasscfStep`, `canonicalize_core_virtual` |
-| `casscf.cpp` | `run`: the selection, the fitted scratch's memory check, `mcscf::solve`, the Fock at the solution, the canonicalization, the Molden file |
+| `casscf.cpp` | `run`: the selection, the CI start file, the fitted scratch's memory check, `mcscf::solve`, the Fock at the solution, the canonicalization, the Molden and `.npy` files |
 | `CMakeLists.txt` | The module library |

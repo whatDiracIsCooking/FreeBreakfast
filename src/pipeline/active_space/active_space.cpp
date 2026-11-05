@@ -6,14 +6,17 @@ module free_breakfast.pipeline.active_space;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants; // kOne, kZero
+import free_breakfast.core.constants; // kOne, kZero, kNegOne
 import free_breakfast.core.error_handling;
+import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.atom;
 import free_breakfast.io.basis;
-import free_breakfast.recipes.blas; // gemm
+import free_breakfast.io.npy;
+import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.diagonalize;
+import free_breakfast.recipes.orthogonalize;
 import free_breakfast.integrals.one_electron.overlap_mixed;
 
 #include "diagnostics.h"
@@ -300,8 +303,95 @@ struct AvasRotation {
   return out;
 }
 
-// The lowest root's natural orbitals to @p path as Molden: columns core,
-// natural, rest of C R', R' = R with its active block rotated to gamma's
+// The orbitals of the .npy at @p path, columns in @p order, into @p c,
+// orthonormalized in this geometry's overlap S block by block: the core and
+// active columns [0, nocc) by Löwdin, A' = A (A^T S A)^-1/2; then the rest
+// with A' projected out of them, B - A' (A'^T S B), by Löwdin too. Returns
+// their rotation of @p scf's orbitals, R = C_scf^T S C' (nmo square,
+// column-major), so C_scf R = C' to rounding: C_scf is a complete orthonormal
+// set (nmo = nao). The largest |A^T S A - I| element is logged: 0 to rounding
+// at the geometry the orbitals were converged at, and how far the carried
+// space moved otherwise.
+[[nodiscard]] Result<std::vector<double>>
+carried_orbitals(DeviceResources &res, const BasisSet &basis, const ScfOutput &scf,
+                 const std::filesystem::path &path, std::span<const int32_t> order, size_t nocc,
+                 SphericalMatrixAO &c) {
+  const NpyArray file = FBF_TRY(read_npy(path));
+  const size_t nao = basis.nao_sphe();
+  const size_t nmo = scf.mo_energies.size();
+  if (file.shape.size() != 2 || file.shape[0] != nao || file.shape[1] != nmo) {
+    return err_config("active space: orbitals '{}' have shape {}, not the basis's {} AOs by {} "
+                      "orbitals",
+                      path.string(), file.shape, nao, nmo);
+  }
+  // The file's columns in the selection's order, so A is [0, nocc).
+  std::vector<double> host(nao * nmo);
+  for (size_t col = 0; col < nmo; ++col) {
+    std::copy_n(file.data.begin() + static_cast<std::ptrdiff_t>(nao * order[col]), nao,
+                host.begin() + static_cast<std::ptrdiff_t>(nao * col));
+  }
+  const auto ao = static_cast<int32_t>(nao);
+  const auto n_a = static_cast<int32_t>(nocc);
+  const auto n_b = static_cast<int32_t>(nmo - nocc);
+  const wwr::wwrStream_t stream = res.stream();
+  // S, and scratch held across orthogonalize, which takes the workspace.
+  Buffers::device<double> s(nao * nao, res.device());
+  Buffers::device<double> work(nao * nmo, res.device());
+  Buffers::device<double> m(nmo * nmo, res.device());
+  Buffers::device<double> x(nmo * nmo, res.device());
+  double *const a = c.data();
+  double *const b = c.data() + (nao * nocc);
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(a, host.data(), host.size() * sizeof(double),
+                                         wwr::wwrMemcpyHostToDevice, stream)));
+  FBF_TRY(overlap_mixed_spherical(res, basis, basis, s));
+
+  // A' = A (A^T S A)^-1/2.
+  FBF_TRY(gpu_status(gemmwich(res.blas(), n_a, ao, a, s.data(), work.data(), m.data())));
+  std::vector<double> m_a(nocc * nocc);
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(m_a.data(), m.data(), m_a.size() * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, stream)));
+  FBF_TRY(res.sync());
+  double deviation = 0.0;
+  for (size_t j = 0; j < nocc; ++j) {
+    for (size_t i = 0; i < nocc; ++i) {
+      deviation = std::max(deviation, std::abs(m_a[i + (nocc * j)] - (i == j ? 1.0 : 0.0)));
+    }
+  }
+  log::info(std::format("active space: orbitals '{}', max |C^T S C - I| {:.3e} over the {} core "
+                        "and active ones here",
+                        path.string(), deviation, nocc));
+  FBF_TRY(orthogonalize(res, n_a, m.data(), x.data()));
+  FBF_TRY(gpu_status(
+      gemm(res.blas(), ao, n_a, n_a, &kOne<double>, a, x.data(), &kZero<double>, work.data())));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(a, work.data(), nao * nocc * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+  if (n_b > 0) {
+    // B <- B - A' (A'^T S B), then B (B^T S B)^-1/2.
+    FBF_TRY(gpu_status(
+        gemm(res.blas(), ao, n_b, ao, &kOne<double>, s.data(), b, &kZero<double>, work.data())));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), n_a, n_b, ao, &kOne<double>, a,
+                                               work.data(), &kZero<double>, m.data())));
+    FBF_TRY(gpu_status(
+        gemm(res.blas(), ao, n_b, n_a, &kNegOne<double>, a, m.data(), &kOne<double>, b)));
+    FBF_TRY(gpu_status(gemmwich(res.blas(), n_b, ao, b, s.data(), work.data(), m.data())));
+    FBF_TRY(orthogonalize(res, n_b, m.data(), x.data()));
+    FBF_TRY(gpu_status(
+        gemm(res.blas(), ao, n_b, n_b, &kOne<double>, b, x.data(), &kZero<double>, work.data())));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(b, work.data(), nao * (nmo - nocc) * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToDevice, stream)));
+  }
+  // R = C_scf^T (S C').
+  const auto n = static_cast<int32_t>(nmo);
+  FBF_TRY(gpu_status(
+      gemm(res.blas(), n, &kOne<double>, s.data(), c.data(), &kZero<double>, work.data())));
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), n, &kOne<double>, scf.c.data(),
+                                             work.data(), &kZero<double>, m.data())));
+  std::vector<double> r(nmo * nmo);
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(r.data(), m.data(), r.size() * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, stream)));
+  FBF_TRY(res.sync());
+  return r;
+}
 
 [[nodiscard]] Result<ActiveSpace> ActiveSpaceSelection::select(DeviceResources &res,
                                                                const Molecule &molecule,
@@ -314,6 +404,10 @@ struct AvasRotation {
   const auto mo_count = static_cast<size_t>(nmo);
 
   AvasRotation space{.r = std::vector<double>(mo_count * mo_count, 0.0), .ncore = 0, .ncas = ncas};
+  if (!orbitals.empty() && !avas.empty()) {
+    return err_config("active space: avas selects from the ScfOutput's orbitals, so takes no "
+                      "orbitals file");
+  }
   if (avas.empty()) {
     // orbital_order's permutation as R: C R's columns are C's, exactly.
     const std::vector<int32_t> order = FBF_TRY(orbital_order(n_electrons, nmo));
@@ -337,6 +431,20 @@ struct AvasRotation {
                             mo, scf.n_alpha, scf.n_beta);
         }
       }
+    }
+    if (!orbitals.empty()) {
+      // The file's orbitals in this order, orthonormalized here: they are
+      // C R and R the rotation, with no gemm of the ScfOutput's C after.
+      SphericalMatrixAO c(res, basis);
+      space.r = FBF_TRY(carried_orbitals(res, basis, scf, orbitals, order,
+                                         static_cast<size_t>(space.ncore + ncas), c));
+      return ActiveSpace{
+          .ncore = space.ncore,
+          .ncas = space.ncas,
+          .nelecas = n_electrons - (2 * space.ncore),
+          .r = std::move(space.r),
+          .c = std::move(c),
+      };
     }
     for (size_t col = 0; col < order.size(); ++col) {
       space.r[static_cast<size_t>(order[col]) + (mo_count * col)] = 1.0;

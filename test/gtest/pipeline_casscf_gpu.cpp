@@ -9,8 +9,9 @@
 // io_molden_host reads one. Each case runs again with [eri] density-fitted,
 // against the DF-CASSCF of data/casscf/casscf_df.json; so do that file's
 // "rohf" cases, a doublet and a triplet from the Scf step's DF-ROHF at their
-// multiplicity, which have no exact counterpart. Runs the device chain, so
-// needs a GPU.
+// multiplicity, which have no exact counterpart. And the start from another
+// run's .npy files (orbitals, CI): at the same geometry, at a displaced one,
+// and the files it refuses. Runs the device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -22,6 +23,7 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.io.base;
 import free_breakfast.io.json;
+import free_breakfast.io.npy;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
@@ -376,6 +378,179 @@ TEST(PipelineCasscf, OutOfMacroIterationsIsMaxIterationsExceeded) {
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::MaxIterationsExceeded) << ran.error().message;
   ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
   EXPECT_FALSE(calc->get<fb::CasscfOutput>().has_value());
+}
+
+// The start from another run's .npy files. H2O cc-pVDZ, density-fitted over
+// cc-pVDZ-JKFIT, CAS(4,4) [2, 3, 5, 6] over two equally weighted roots, so
+// the CI file holds more than one column.
+constexpr std::string_view kTwoRootTables =
+    "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pVDZ-JKFIT\"\n"
+    "[casscf]\nncas = 4\nnelecas = 4\nnroots = 2\nconv_tol_grad = 1e-9\n";
+
+// The config of entry's molecule and tables run, its output into dir/out.
+fb::Result<fb::Calculation> run_in(const fb::test::ScratchDir &dir, const fb::json &entry,
+                                   std::string_view tables, std::string_view out) {
+  auto calc = fb::read_config(write_config(dir, entry, tables), dir.path(), dir / out);
+  if (!calc.has_value()) {
+    return calc;
+  }
+  fb::NodeResources node;
+  if (const fb::Status ran = calc->run(node); !ran.has_value()) {
+    return std::unexpected(ran.error());
+  }
+  return calc;
+}
+
+// The start a converged run writes, read back at the same geometry: the
+// Löwdin step is the identity to rounding there, the orbitals and the CI are
+// the solution's, so the energies are the first run's and the loop is done in
+// two macro iterations, the fewest it can stop in (it stops on an accepted
+// step's energy change, so after a second evaluation).
+TEST(PipelineCasscfStart, ItsOwnNpyFilesReproduceARun) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz", "casscf_df.json");
+  const fb::test::ScratchDir dir("pipeline_casscf_start");
+  auto first = run_in(
+      dir, entry, std::string(kTwoRootTables) + "active = [2, 3, 5, 6]\nwrite_npy = true\n", "s0");
+  ASSERT_TRUE(first.has_value()) << first.error().message;
+  const fb::CasscfOutput &want = *first->get<fb::CasscfOutput>();
+  const fb::NpyArray orbitals = *fb::read_npy(dir / "s0/casscf_orbitals.npy");
+  const fb::NpyArray ci = *fb::read_npy(dir / "s0/casscf_ci.npy");
+  const std::size_t nao = want.c.n();
+  EXPECT_EQ(orbitals.shape, (std::vector<std::size_t>{nao, nao}));
+  EXPECT_EQ(ci.shape, (std::vector<std::size_t>{want.vectors.size() / 2, 2}));
+  EXPECT_EQ(ci.data, want.vectors);
+
+  auto again = run_in(dir, entry,
+                      std::string(kTwoRootTables) +
+                          "orbitals = \"s0/casscf_orbitals.npy\"\nci = \"s0/casscf_ci.npy\"\n",
+                      "again");
+  ASSERT_TRUE(again.has_value()) << again.error().message;
+  const fb::CasscfOutput &got = *again->get<fb::CasscfOutput>();
+  std::cout << std::format("[ casscf   ] round trip: {} macro iterations (from RHF {})\n",
+                           got.iterations.size(), want.iterations.size());
+  EXPECT_LE(got.iterations.size(), 2U);
+  ASSERT_EQ(got.energies.size(), want.energies.size());
+  for (std::size_t r = 0; r < got.energies.size(); ++r) {
+    EXPECT_NEAR(got.energies[r], want.energies[r], kEnergyTolerance) << "root " << r;
+  }
+  EXPECT_NEAR(got.energy, want.energy, kEnergyTolerance);
+}
+
+// Carried to a displaced geometry, one O-H bond 0.1 bohr longer and the
+// other 0.05 shorter, and carried back: the start is followed, not replaced.
+// Back at the first geometry the solution is the first run's, to the
+// energies' bar, so the displaced one is the state continuously connected to
+// it. (A start from the displaced geometry's RHF by the same indices is not
+// a check of that: its canonical order there is its own, and from it this
+// SA-CASSCF reaches another solution, -75.9010 Eh against -75.8487.)
+TEST(PipelineCasscfStart, CarriedToADisplacedGeometryAndBackIsTheSameState) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz", "casscf_df.json");
+  const fb::test::ScratchDir dir("pipeline_casscf_start");
+  auto first = run_in(
+      dir, entry, std::string(kTwoRootTables) + "active = [2, 3, 5, 6]\nwrite_npy = true\n", "s0");
+  ASSERT_TRUE(first.has_value()) << first.error().message;
+
+  fb::json displaced = entry;
+  fb::json &atoms = displaced.at("atoms");
+  const auto o = atoms[0].at("coord").get<std::vector<double>>();
+  for (std::size_t a = 1; a < 3; ++a) {
+    // Each H along its O-H bond.
+    auto h = atoms[a].at("coord").get<std::vector<double>>();
+    const double length = std::hypot(h[0] - o[0], h[1] - o[1], h[2] - o[2]);
+    const double stretch = a == 1 ? 0.1 : -0.05;
+    for (std::size_t k = 0; k < 3; ++k) {
+      h[k] += stretch * (h[k] - o[k]) / length;
+    }
+    atoms[a]["coord"] = h;
+  }
+  const std::string carry =
+      "orbitals = \"{0}/casscf_orbitals.npy\"\nci = \"{0}/casscf_ci.npy\"\nwrite_npy = true\n";
+  auto there = run_in(
+      dir, displaced,
+      std::string(kTwoRootTables) + std::vformat(carry, std::make_format_args("s0")), "there");
+  ASSERT_TRUE(there.has_value()) << there.error().message;
+  auto back = run_in(
+      dir, entry, std::string(kTwoRootTables) + std::vformat(carry, std::make_format_args("there")),
+      "back");
+  ASSERT_TRUE(back.has_value()) << back.error().message;
+  const fb::CasscfOutput &want = *first->get<fb::CasscfOutput>();
+  const fb::CasscfOutput &moved = *there->get<fb::CasscfOutput>();
+  const fb::CasscfOutput &got = *back->get<fb::CasscfOutput>();
+  std::cout << std::format("[ casscf   ] displaced: {} macro iterations there, {} back; E {:.10f} "
+                           "there, {:.10f} at the start\n",
+                           moved.iterations.size(), got.iterations.size(), moved.energy,
+                           want.energy);
+  ASSERT_EQ(got.energies.size(), want.energies.size());
+  for (std::size_t r = 0; r < got.energies.size(); ++r) {
+    EXPECT_NEAR(got.energies[r], want.energies[r], kEnergyTolerance) << "root " << r;
+  }
+  // The displaced solution is not the first geometry's: the files did move.
+  EXPECT_GT(std::abs(moved.energy - want.energy), 1e-4);
+}
+
+// The selection is shared, so [casci] takes the same file: CASCI over a
+// converged CASSCF's own orbitals is that CASSCF's energy. Integral-direct,
+// as the Casci step is, one root.
+TEST(PipelineCasscfStart, ACasciOverACasscfsOrbitalsIsItsEnergy) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz");
+  const fb::test::ScratchDir dir("pipeline_casscf_start");
+  auto first =
+      run_in(dir, entry,
+             "[casscf]\nncas = 4\nnelecas = 4\nactive = [2, 3, 5, 6]\nconv_tol_grad = 1e-9\n"
+             "write_npy = true\n",
+             "s0");
+  ASSERT_TRUE(first.has_value()) << first.error().message;
+  auto casci =
+      run_in(dir, entry, "[casci]\nncas = 4\nnelecas = 4\norbitals = \"s0/casscf_orbitals.npy\"\n",
+             "casci");
+  ASSERT_TRUE(casci.has_value()) << casci.error().message;
+  ASSERT_EQ(casci->get<fb::CasciOutput>()->energies.size(), 1U);
+  EXPECT_NEAR(casci->get<fb::CasciOutput>()->energies[0], first->get<fb::CasscfOutput>()->energy,
+              kEnergyTolerance);
+}
+
+// The files the start refuses, once the SCF has run: orbitals of another
+// shape, and a CI of another root count or length, each InvalidConfig naming
+// the shapes; a missing file is read_npy's IO error.
+TEST(PipelineCasscfStart, AMismatchedFileIsRefused) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz", "casscf_df.json");
+  const fb::test::ScratchDir dir("pipeline_casscf_start");
+  auto first = run_in(
+      dir, entry, std::string(kTwoRootTables) + "active = [2, 3, 5, 6]\nwrite_npy = true\n", "s0");
+  ASSERT_TRUE(first.has_value()) << first.error().message;
+  const fb::CasscfOutput &cas = *first->get<fb::CasscfOutput>();
+  const std::size_t nao = cas.c.n();
+  const std::size_t dim = cas.vectors.size() / 2;
+  std::filesystem::create_directories(dir / "bad");
+  const auto write = [&](std::string_view name, std::vector<std::size_t> shape) {
+    fb::NpyArray array{.shape = std::move(shape), .data = {}};
+    array.data.assign(*fb::element_count(array.shape), 0.0);
+    EXPECT_TRUE(fb::write_npy(dir / "bad" / name, array).has_value());
+  };
+  write("narrow.npy", {nao, nao - 1});
+  write("one_root.npy", {dim, 1});
+  write("short.npy", {dim - 1, 2});
+
+  const auto expect_refused = [&](std::string_view keys, fb::ErrorKind kind,
+                                  std::string_view needle) {
+    auto calc = run_in(dir, entry, std::string(kTwoRootTables) + std::string(keys), "out");
+    ASSERT_FALSE(calc.has_value()) << keys;
+    EXPECT_EQ(calc.error().kind, kind) << calc.error().message;
+    EXPECT_NE(calc.error().message.find(needle), std::string::npos) << calc.error().message;
+  };
+  expect_refused("orbitals = \"bad/narrow.npy\"\n", fb::ErrorKind::InvalidConfig,
+                 std::format("have shape [{}, {}], not the basis's {} AOs by {} orbitals", nao,
+                             nao - 1, nao, nao));
+  expect_refused("orbitals = \"s0/casscf_orbitals.npy\"\nci = \"bad/one_root.npy\"\n",
+                 fb::ErrorKind::InvalidConfig,
+                 std::format("has shape [{}, 1], not (dim, nroots) with nroots 2", dim));
+  expect_refused("orbitals = \"s0/casscf_orbitals.npy\"\nci = \"bad/short.npy\"\n",
+                 fb::ErrorKind::InvalidConfig, "ci_guess must be empty or nroots dim");
+  expect_refused("orbitals = \"bad/absent.npy\"\n", fb::ErrorKind::IO, "absent.npy");
 }
 
 } // namespace

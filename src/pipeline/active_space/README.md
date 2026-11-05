@@ -28,6 +28,7 @@ struct ActiveSpaceSelection {
   std::vector<int32_t> active;       // 0-based MO indices; empty: the frontier orbitals
   std::vector<std::string> avas;     // MINAO AO labels; not empty: AVAS picks the above
   double avas_threshold = 0.2;
+  std::filesystem::path orbitals{};  // a .npy start in place of the ScfOutput's; not with avas
 
   Result<std::vector<int32_t>> orbital_order(int32_t n_electrons, int32_t nmo) const;
   Result<ActiveSpace> select(DeviceResources &res, const Molecule &molecule,
@@ -65,6 +66,66 @@ singly occupied orbital). A closed
 shell's order is `orbital_order`'s alone, as before: `sort_mo` does not ask
 whether a core it fills reaches past the occupied orbitals, and neither does
 this.
+
+## A start from another run's orbitals
+
+`orbitals` names a float64 `.npy` of nao × nmo coefficients (AO by MO, this
+tree's spherical AO order, either memory layout), as the Casscf step's
+`write_npy` writes `casscf_orbitals.npy`: core, active, virtual. It is how a
+converged active space is carried to another geometry of the same molecule
+and basis (#939). `select` reads it in place of the ScfOutput's orbitals;
+everything else is the index path above, over the file's columns: `active`
+names them, the core is the lowest ncore not active, and the frontier
+default is a CASSCF output's own core and active columns. The open-shell
+checks read the ScfOutput's `n_alpha` and `n_beta` against those columns.
+Not with `avas`, which selects from the ScfOutput's orbitals and their
+energies (`InvalidConfig`).
+
+**The new geometry's orthonormality is Löwdin's, core and active first.**
+With the file's columns in `orbital_order`'s order, A the core and active
+ones and B the rest, S this geometry's spherical overlap
+(`overlap_mixed_spherical` of the basis with itself):
+
+1. A′ = A (Aᵀ S A)^−1/2;
+2. B ← B − A′ (A′ᵀ S B), the carried space projected out of the rest;
+3. B′ = B (Bᵀ S B)^−1/2.
+
+Each inverse square root is `orthogonalize`'s, the products `gemmwich`'s and
+`gemm`'s, as `pipeline/optimize` carries a CASSCF's orbitals from one
+geometry to the next. Each AO moves with its atom, so the file's
+coefficients still describe the same atom-centred combinations; only their
+overlaps have changed, and Aᵀ S A − I is first order in the displacement. Of
+every orthonormal set spanning A, A′ is the one nearest A in the S metric
+(Löwdin's symmetric orthonormalization), so no active orbital is favoured,
+each column stays the one it was (the order, and so `active` and the CI's
+determinant space, carry over), and at the geometry the file was converged
+at A′ = A and B′ = B to rounding.
+
+Why in two blocks: one Löwdin over all nmo columns mixes every column
+with every other, and a large basis's high virtuals do not carry. Their
+coefficients are large and cancel, so their overlaps move far more than the
+geometry: carried from pHBI's S0 minimum to its P-twisted MECI in cc-pVTZ,
+the largest |Cᵀ S C − I| element over all 518 orbitals was 9.0e2. A
+symmetric Löwdin over that would rotate the active orbitals into the
+virtual space's noise. Taken first, the core and active space is what was
+carried; the rest is only the complement, which the CASSCF optimizes
+anyway. A projection through the cross-geometry overlap S(new, old) was not
+used: it needs the old geometry beside the file, and between two placements
+of one basis it differs from this at second order in the displacement.
+
+A p shell's three functions are fixed in the lab frame, not in the
+molecule, so a large torsion turns a π combination into an in-plane one:
+walk such a change in steps, each started from the last (as
+`docs/reproduction/park2019/single_points/phbi.md` does). The largest
+|Aᵀ S A − I| element is logged at info, how far the carried space moved.
+
+`ActiveSpace::r` stays a rotation of the ScfOutput's orbitals,
+R = C_scfᵀ S C′ (C_scf is a complete orthonormal set, nmo = nao, so
+C_scf R = C′ to rounding), so the Casci step's Molden energies, Σ_k R_kj²
+ε_k, still mean what they do. `ActiveSpace::c` is C′ itself.
+
+A file that is not nao × nmo is `InvalidConfig` naming both shapes; one
+that cannot be read or is not float64 is `read_npy`'s `IO`.
 
 ## AVAS
 
@@ -130,9 +191,11 @@ What it settled:
   ScfOutput's orbitals rather than picking them, and an RDM needs the orbitals it
   is over.
 - **Host synchronizations:** none by index; under `avas`, one for the
-  overlaps and C and one per eigenproblem.
+  overlaps and C and one per eigenproblem; under `orbitals`, one for Aᵀ S A
+  (to log its deviation), `orthogonalize`'s per block, and one for R.
 
-Errors, each message prefixed `active space:`: under `avas`, InvalidConfig
+Errors, each message prefixed `active space:`: under `orbitals`, the file's
+(above), and InvalidConfig beside `avas`; under `avas`, InvalidConfig
 for a label not of the form, a label naming no MINAO AO of the molecule, a
 threshold outside (0, 1), `ncas`, `nelecas` or `active` set beside it, or no
 orbital selected; Numerical for an S2 not positive definite. Otherwise
@@ -152,12 +215,14 @@ ncas and nelecas against PySCF's `mcscf.avas` (`casci/README.md` has the
 cases), over ROHF orbitals too, a doublet and a triplet, whose active
 orbitals are compared up to sign as well; and the open shell's two refusals
 by index, over a hand-built ScfOutput. `test/pipeline/config_host.cpp` has the `[casci]` selection keys and every
-`orbital_order` refusal.
+`orbital_order` refusal. The `orbitals` start is tested through the Casscf
+step (`casscf/README.md`, "Tests"), and through the Casci step over a
+CASSCF's file there.
 
 ## Files
 
 | File | Role |
 |------|------|
 | `active_space.cppm` | Module interface: `ActiveSpace`, `ActiveSpaceSelection` |
-| `active_space.cpp` | `orbital_order`, the AVAS selection, and `select`: R and C R |
+| `active_space.cpp` | `orbital_order`, the AVAS selection, the carried orbitals, and `select`: R and C R |
 | `CMakeLists.txt` | The module library |

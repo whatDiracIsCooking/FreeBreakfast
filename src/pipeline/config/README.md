@@ -67,10 +67,14 @@ ncas = 4                  # required
 nelecas = 4               # required
 nroots = 3                # default 1
 active = [2, 4, 5, 7]     # 0-based MO indices; default the frontier orbitals
+orbitals = "s0/casscf_orbitals.npy"  # optional: start from these, not the SCF's
 ```
 
-Or, in place of `ncas`, `nelecas` and `active`, AVAS picks the active space
-from MINAO AO labels, and refuses any of the three beside it:
+`orbitals` is a path, relative to the input directory, to a `.npy` of
+another run's orbitals, nao × nmo; `active` then indexes its columns
+(`active_space/README.md`, "A start from another run's orbitals"). Or, in
+place of `ncas`, `nelecas` and `active`, AVAS picks the active space from
+MINAO AO labels, and refuses any of the three, and `orbitals`, beside it:
 
 ```toml
 [casci]
@@ -128,13 +132,20 @@ weights = [0.5, 0.5]      # default equal; nroots of them, >= 0, summing to 1
 conv_tol = 1e-10          # default 1e-10: |dE| at convergence
 conv_tol_grad = 1e-6      # default 1e-6: ||g|| at convergence
 max_cycle = 50            # default 50 macro iterations
+ci = "s0/casscf_ci.npy"   # optional: the CI start, dim x nroots, beside orbitals
+write_npy = true          # default false: casscf_orbitals.npy and casscf_ci.npy
 ```
 
 `[casscf]` reads the selection as `[casci]` does, and its own keys are checked
 when the file is read: `weights` of the wrong count, with a negative entry or
 not summing to 1 within 1e-12 (`mcscf::solve`'s own bar), a tolerance not
 positive, or `max_cycle` below 1 is InvalidConfig. Unlike the active space's
-ranges, none of these needs the molecule.
+ranges, none of these needs the molecule. `ci` is a path as `orbitals` is;
+whether either file fits the molecule, the basis and `nroots` is checked
+when the step runs (`casscf/README.md`, "Starting from another run's
+orbitals"). `write_npy` writes the files a later run starts from into the
+output directory, as `[overlap]`'s does. `orbitals` and `ci` are input
+files, so neither may be in the output directory.
 
 `[casscf]` runs the DF-CASSCF under a density-fitted `[eri]`
 (`casscf/README.md`).
@@ -502,6 +513,7 @@ step, so no two collide:
 | `[localization]` with `livvo = true` | `localization_livvo.molden`: the LIVVOs, at 0 |
 | `[casci]` | `casci.molden`: the lowest root's natural orbitals |
 | `[casscf]` | `casscf.molden`: the state-averaged natural orbitals |
+| `[casscf]` with `write_npy = true` | `casscf_orbitals.npy`: the orbitals, nao × nmo; `casscf_ci.npy`: the CI vectors, dim × nroots; both float64, what `orbitals` and `ci` read back |
 | `[gradient]` | `gradient.json`: the SCF energy, the gradient `total` and each of its `terms` (hartree / bohr, one row of three per atom) |
 | `[casscf_gradient]` | `casscf_gradient.json`: the root, its energy, the gradient `total` and each of its `terms`, as `gradient.json` |
 | `[nevpt2_gradient]` | `nevpt2_gradient.json`: the root, the variant, the NEVPT2, CASSCF and correlation energies, the gradient `total` and each of its `terms`, max \|z^c\|, the smallest inactive gap, the PCG iterations and residual, and X^L's residue per block; for PC, the modes each class cut; with `quasi_degenerate`, the state, the variant, E_K and H_eff's eigenvalues, the CASSCF energies, ρ, the gradient `total`, the `df_gradient` pass's `terms`, the `transition` pass's total, the diagnostics and the gaps |
@@ -516,7 +528,7 @@ no output, so a later config can rely on what an earlier run wrote
 `write_npy` is a switch, off by default, not a path. A file already there is
 overwritten; a directory per run is what `-o` is for. The steps keep their
 `molden` member (and `LocalizationStep` its `livvo_molden`, `OverlapStep` its
-`npy`, `GradientStep`, `CasscfGradientStep`, `Nevpt2GradientStep`, `NacStep` and `Nevpt2NacStep` their `json_path`), empty meaning not written, for a pipeline built by hand.
+`npy`, `CasscfStep` its `orbitals_npy` and `ci_npy`, `GradientStep`, `CasscfGradientStep`, `Nevpt2GradientStep`, `NacStep` and `Nevpt2NacStep` their `json_path`), empty meaning not written, for a pipeline built by hand.
 
 **The outputs are kept apart from the inputs.** Both are `InvalidConfig`,
 comparing the directories named rather than their spelling (`.`, `''` and the
@@ -529,7 +541,8 @@ nothing):
   overwrite. An absolute path, or one through `..`, reaches there however the
   two directories differ. A file in a directory *below* the output directory
   is apart, and so is an output directory below the input one, as the
-  defaults are. `[optimize]`'s start and its chain's basis files are inputs;
+  defaults are. A `[casci]` or `[casscf]` `orbitals` and a `[casscf]` `ci`
+  are inputs too. `[optimize]`'s start and its chain's basis files are inputs;
   the `final.xyz` the molecule is then loaded from is this run's own output,
   read after it is written, and is not.
 

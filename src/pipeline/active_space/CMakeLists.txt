@@ -3,7 +3,8 @@
 # pipeline::scf is PUBLIC and re-exported: select reads the ScfOutput and
 # returns a SphericalMatrixAO. core::resources is in select's signature.
 # Everything select uses -- AVAS's MINAO basis, mixed overlaps and eigensolver,
-# and the gemm for C R -- is PRIVATE: it is defined in the implementation unit.
+# the gemm for C R, and a carried orbitals file's .npy reader and Lowdin
+# orthogonalizer -- is PRIVATE: it is defined in the implementation unit.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.active_space
@@ -19,11 +20,14 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::scf
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::log
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::atom
   free_breakfast::io::basis
+  free_breakfast::io::npy
   free_breakfast::recipes::blas
   free_breakfast::recipes::diagonalize
+  free_breakfast::recipes::orthogonalize
   free_breakfast::integrals::one_electron::overlap_mixed
 )

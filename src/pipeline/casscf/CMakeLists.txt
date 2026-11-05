@@ -4,8 +4,9 @@
 # re-exports (the EriOutput among them), and CasscfStep derives from
 # ActiveSpaceSelection. core::resources and pipeline::step are in run's
 # signature. Everything else run uses -- the integrals and Fock at the
-# solution, the eigensolver for the canonical and natural orbitals and the
-# Molden writer -- is PRIVATE: run is defined in the implementation unit.
+# solution, the eigensolver for the canonical and natural orbitals, the
+# Molden writer and the .npy reader and writer -- is PRIVATE: run is defined
+# in the implementation unit.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.casscf
@@ -30,6 +31,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::active_space
   free_breakfast::response::fock
   free_breakfast::io::molden
+  free_breakfast::io::npy
   free_breakfast::recipes::blas
   free_breakfast::recipes::diagonalize
 )

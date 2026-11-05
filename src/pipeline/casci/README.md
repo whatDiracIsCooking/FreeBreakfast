@@ -17,9 +17,12 @@ the product). `run` is defined in the implementation unit, so
 `diagonalize` and `io.molden` are PRIVATE links.
 
 **The active-space selection** -- `ncas`, `nelecas`, `active`, `avas`,
-`avas_threshold`, `orbital_order`, AVAS over MINAO, and the rotation C R -- is
-`pipeline/active_space`'s, shared with the steps that take one; see
-[`active_space/README.md`](../active_space/README.md). This step adds the CI.
+`avas_threshold`, `orbitals`, `orbital_order`, AVAS over MINAO, and the
+rotation C R -- is `pipeline/active_space`'s, shared with the steps that take
+one; see [`active_space/README.md`](../active_space/README.md). So `[casci]`
+takes `orbitals`, another run's `.npy` orbitals (a Casscf step's
+`write_npy`), as `[casscf]` does; it has no CI start to take, its CI being
+solved outright, and writes no `.npy` of its own. This step adds the CI.
 
 ## The step
 
