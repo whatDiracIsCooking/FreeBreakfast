@@ -418,7 +418,9 @@ struct FollowRecord {
 // What a recorded walk has kept so far, and the one place its files are
 // written: after every recorded evaluation, and at the walk's exit.
 struct WalkRecord {
-  const OptimizeFiles &files;
+  // The step whose trajectory, final_xyz and history these are, each
+  // skipped when empty.
+  const OptimizeStep &step;
   std::span<const Atom> start;
   // Every geometry handed to the evaluation, in order: one more than the
   // entries while an evaluation runs, or after one fails.
@@ -430,16 +432,16 @@ struct WalkRecord {
   // The trajectory, of the recorded frames, and the history, @p head with
   // the entries as "iterations".
   [[nodiscard]] Status write(json head) const {
-    if (!files.trajectory.empty()) {
+    if (!step.trajectory.empty()) {
       std::string text;
       for (size_t k = 0; k < frames.size() && k < comments.size(); ++k) {
         text += xyz_frame(frames[k], comments[k]);
       }
-      FBF_TRY(write_file(files.trajectory, text));
+      FBF_TRY(write_file(step.trajectory, text));
     }
-    if (!files.history.empty()) {
+    if (!step.history.empty()) {
       head["iterations"] = entries;
-      FBF_TRY(write_json(files.history, head));
+      FBF_TRY(write_json(step.history, head));
     }
     return {};
   }
@@ -465,8 +467,8 @@ struct WalkRecord {
       return walk;
     }
     FBF_TRY(write(std::move(head)));
-    if (!files.final_xyz.empty()) {
-      FBF_TRY(write_file(files.final_xyz, xyz_frame(placed(start, walk->x), final_comment)));
+    if (!step.final_xyz.empty()) {
+      FBF_TRY(write_file(step.final_xyz, xyz_frame(placed(start, walk->x), final_comment)));
     }
     return walk;
   }
@@ -474,27 +476,26 @@ struct WalkRecord {
 
 // Removes a final_xyz an earlier run left, so that only a converged walk's
 // is ever there.
-[[nodiscard]] Status remove_stale_final(const OptimizeFiles &files) {
-  if (files.final_xyz.empty()) {
+[[nodiscard]] Status remove_stale_final(const OptimizeStep &step) {
+  if (step.final_xyz.empty()) {
     return {};
   }
   std::error_code ec;
-  std::filesystem::remove(files.final_xyz, ec);
+  std::filesystem::remove(step.final_xyz, ec);
   if (ec) {
     return err_io("[{}] cannot remove the earlier run's {}: {}", OptimizeStep::kName,
-                  files.final_xyz.string(), ec.message());
+                  step.final_xyz.string(), ec.message());
   }
   return {};
 }
 
 Result<geometry::Solution> recorded_optimize(
-    std::span<const Atom> start,
+    const OptimizeStep &step, std::span<const Atom> start,
     const std::function<Result<double>(std::span<const double> x, std::span<double> gradient)>
         &energy_and_gradient,
-    const geometry::Options &options, const OptimizeFiles &files,
     const std::function<void(size_t k, json &entry)> &annotate) {
-  FBF_TRY(remove_stale_final(files));
-  WalkRecord record{.files = files, .start = start};
+  FBF_TRY(remove_stale_final(step));
+  WalkRecord record{.step = step, .start = start};
   std::vector<double> x0;
   for (const Atom &atom : start) {
     x0.insert(x0.end(), {atom.position.x, atom.position.y, atom.position.z});
@@ -521,7 +522,7 @@ Result<geometry::Solution> recorded_optimize(
         std::format("evaluation {} E = {:.12f}{}", k, it.energy, it.accepted ? "" : " (rejected)"),
         std::move(entry));
   };
-  Result<geometry::Solution> walk = geometry::optimize(x0, evaluate, options, on_iteration);
+  Result<geometry::Solution> walk = geometry::optimize(x0, evaluate, step.options, on_iteration);
   json head;
   std::string final_comment;
   if (walk) {
@@ -532,15 +533,14 @@ Result<geometry::Solution> recorded_optimize(
 }
 
 Result<geometry::MECISolution>
-recorded_optimize_meci(std::span<const Atom> start,
+recorded_optimize_meci(const OptimizeStep &step, std::span<const Atom> start,
                        const std::function<Result<std::array<double, 2>>(
                            std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
                            std::span<double> h_ij)> &energies_and_gradients,
-                       const geometry::Options &options, const OptimizeFiles &files,
                        const std::function<void(size_t k, json &entry)> &annotate,
                        const std::function<void(json &head)> &annotate_head) {
-  FBF_TRY(remove_stale_final(files));
-  WalkRecord record{.files = files, .start = start};
+  FBF_TRY(remove_stale_final(step));
+  WalkRecord record{.step = step, .start = start};
   std::vector<double> x0;
   for (const Atom &atom : start) {
     x0.insert(x0.end(), {atom.position.x, atom.position.y, atom.position.z});
@@ -572,7 +572,7 @@ recorded_optimize_meci(std::span<const Atom> start,
                       std::move(entry));
   };
   Result<geometry::MECISolution> walk =
-      geometry::optimize_meci(x0, evaluate, options, on_iteration);
+      geometry::optimize_meci(x0, evaluate, step.options, on_iteration);
   json head;
   std::string final_comment;
   if (walk) {
@@ -954,7 +954,6 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
 
   // Both walks write the three files through recorded_optimize(_meci): as
   // they go, and on every exit.
-  const OptimizeFiles files{.trajectory = trajectory, .final_xyz = final_xyz, .history = history};
   std::vector<double> optimum_x;
   double optimum_energy = 0.0;
   if (meci) {
@@ -973,8 +972,8 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
         head.update(qd_branching);
       }
     };
-    const geometry::MECISolution solution = FBF_TRY(recorded_optimize_meci(
-        start.atoms(), meci_evaluation, options, files, annotate, annotate_head));
+    const geometry::MECISolution solution = FBF_TRY(
+        recorded_optimize_meci(*this, start.atoms(), meci_evaluation, annotate, annotate_head));
     optimum_x = solution.x;
     optimum_energy = 0.5 * (solution.lower + solution.upper);
   } else {
@@ -993,7 +992,7 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
       }
     };
     const geometry::Solution solution =
-        FBF_TRY(recorded_optimize(start.atoms(), energy_and_gradient, options, files, annotate));
+        FBF_TRY(recorded_optimize(*this, start.atoms(), energy_and_gradient, annotate));
     optimum_x = solution.x;
     optimum_energy = solution.energy;
   }

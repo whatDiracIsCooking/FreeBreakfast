@@ -527,8 +527,8 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
   `[nevpt2_gradient]`, from a fresh SCF and pick at the optimum, the
   optimized energy. 13 steps in about 4 s, inside the fast tier. Beside it: a
   hand-edited state-averaged chain, which the step refuses after the first
-  SCF and CASSCF, ending the run with that exact message and no file
-  written; and both gradients set, or an integral-direct `eri`, refused
+  SCF and CASSCF, ending the run with that exact message, `optimize.json`
+  carrying it as `"error"` over no entries, and no `final.xyz`; and both gradients set, or an integral-direct `eri`, refused
   before anything runs.
 - `test/pipeline/optimize_host.cpp`: `qd_state_overlap` follows a state
   turned a little, through a sign flip and through a swap of the CASSCF
@@ -658,6 +658,6 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
 
 | File | Role |
 |------|------|
-| `optimize.cppm` | Module interface: `OptimizeStep`, `OptimizeFiles` and the two recorded walks, `kStateOverlapFloor` and the four following functions |
+| `optimize.cppm` | Module interface: `OptimizeStep` and the two recorded walks over its files, `kStateOverlapFloor` and the four following functions |
 | `optimize.cpp` | `run`: the chain per evaluation, its private root and carried-orbitals steps, the MECI's `df_intersection` and `pair_overlap`, `check_meci`; and `recorded_optimize(_meci)`, the three files written as the walk goes and on its exit |
 | `CMakeLists.txt` | The module library |

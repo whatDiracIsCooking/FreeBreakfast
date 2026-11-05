@@ -176,17 +176,10 @@ struct OptimizeStep {
   [[nodiscard]] Status check_meci() const;
 };
 
-/// @brief The three files an optimization writes, each skipped when empty:
-/// @ref OptimizeStep's trajectory, final_xyz and history.
-struct OptimizeFiles {
-  std::filesystem::path trajectory{};
-  std::filesystem::path final_xyz{};
-  std::filesystem::path history{};
-};
-
 /// @brief @c geometry::optimize of @p start's atoms (their positions, bohr,
-/// are x0) over @p energy_and_gradient, keeping @p files as the walk goes:
-/// the one write path @ref OptimizeStep's every walk shares.
+/// are x0) over @p energy_and_gradient under @p step's options, keeping its
+/// trajectory, final_xyz and history (each skipped when empty) as the walk
+/// goes: the one write path @ref OptimizeStep::run's every walk shares.
 ///
 /// Before the walk, a final_xyz left by an earlier run is removed. After
 /// every evaluation geometry::optimize records, the trajectory is rewritten
@@ -201,10 +194,9 @@ struct OptimizeFiles {
 /// @return The solution; geometry::optimize's error, after the files carry
 ///         it, or the error writing one of them.
 [[nodiscard]] Result<geometry::Solution> recorded_optimize(
-    std::span<const Atom> start,
+    const OptimizeStep &step, std::span<const Atom> start,
     const std::function<Result<double>(std::span<const double> x, std::span<double> gradient)>
         &energy_and_gradient,
-    const geometry::Options &options, const OptimizeFiles &files,
     const std::function<void(size_t k, json &entry)> &annotate = {});
 
 /// @brief @ref recorded_optimize's walk by @c geometry::optimize_meci: each
@@ -213,11 +205,10 @@ struct OptimizeFiles {
 /// dimension, and @p annotate's; converged, the head's "energy" is the mean,
 /// beside "lower", "upper" and "gap", and what @p annotate_head adds.
 [[nodiscard]] Result<geometry::MECISolution>
-recorded_optimize_meci(std::span<const Atom> start,
+recorded_optimize_meci(const OptimizeStep &step, std::span<const Atom> start,
                        const std::function<Result<std::array<double, 2>>(
                            std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
                            std::span<double> h_ij)> &energies_and_gradients,
-                       const geometry::Options &options, const OptimizeFiles &files,
                        const std::function<void(size_t k, json &entry)> &annotate = {},
                        const std::function<void(json &head)> &annotate_head = {});
 
