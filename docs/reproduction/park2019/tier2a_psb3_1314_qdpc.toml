@@ -21,7 +21,7 @@ max_iterations = 400
 ncas = 6
 nelecas = 6
 nroots = 3
-conv_tol_grad = 1e-9       # 1e-10 stalls mcscf::solve at |g| ~ 3e-10 here (#867)
+conv_tol_grad = 1e-9  # as recorded; 1e-10 stalled before #867 (fixed in PR #896)
 [nevpt2_gradient]
 quasi_degenerate = true
 variant = "pc"             # Park's SA-QD-PC-NEVPT2

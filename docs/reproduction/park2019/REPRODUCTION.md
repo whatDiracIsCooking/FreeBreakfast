@@ -286,9 +286,15 @@ These are the values at the end of each walk, read from the logs and
 **What the configs ask for.** Every walk asks for Opt=Tight's four criteria:
 max/rms force 1.5e-5/1e-5 Eh/bohr and max/rms displacement 6e-5/4e-5 bohr.
 Every MECI walk adds `max_gap` = 1e-7 Eh. The CASSCF's `conv_tol_grad` is
-1e-10 for ethylene and **1e-9 for PSB3**. At 1e-10, `mcscf::solve` stalls
-at |g| ≈ 3e-10 on PSB3 and the walk fails (#867, open; the ruling on #848
-and #850).
+1e-10 for ethylene and **1e-9 for PSB3**. When these runs were made, 1e-10
+stalled `mcscf::solve` at |g| ≈ 3e-10 on PSB3 and failed the walk (the
+ruling on #848 and #850). #867 has since fixed that (PR #896: the CI
+solver's tolerance was relative to |E| ≈ 248 Eh, and it now tracks
+`conv_tol_grad`), and PSB3 cc-pVDZ now converges at 1e-10. The recorded PSB3
+runs were **not** rerun at 1e-10. Their gap bounds below are stated at 1e-9.
+The one gated bound, tier 2b's, is 2.56e-9 Eh against a 1.11e-5 Eh bar.
+The MECI bounds elsewhere (up to 1.44e-8 Eh at tier 3's cc-pVTZ) are
+reported, not gated.
 
 | walk | evaluations | final gap (Eh) | max force (Eh/bohr) | CASSCF ‖g‖ / ρ | gap bound (Eh) | refusal status |
 |---|---|---|---|---|---|---|
@@ -552,14 +558,13 @@ Defects found and fixed:
 
 Features the milestone added on the way: #844 (the branching space, and s_o
 and s_c in `optimize.json`), #845 (aug-cc-pV{D,T}Z-JKFIT, PR #871) and #859
-(frozen-core energies, PR #888).
+(frozen-core energies, PR #888); #867, the CASSCF gradient floor at PSB3 (PR #896, after these runs: see "What the configs ask for").
 
 Still open:
 
 | issue | what |
 |---|---|
 | #862 | A 6e-9 FD residual in the PC-QD gradient at twisted PSB3 (atom 4 x): CASSCF stopping bias, or analytic? |
-| #867 | `mcscf::solve`'s orbital gradient stalls at about 3e-10 on PSB3, so `conv_tol_grad` 1e-10 fails mid-walk (PSB3 runs use 1e-9). |
 | #875 | Frozen-core NEVPT2 and QD-NEVPT2 gradients. |
 | #892 | The QD-NEVPT2 gradient at a degenerate CASSCF reference pair (ethylene C3v). |
 | #866 | Expose mcscf's convergence knobs as options-struct parameters. Not in the milestone. |
