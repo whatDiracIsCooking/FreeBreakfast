@@ -21,13 +21,24 @@
 # times, since a rolled low-stack kernel can be a third the text of an
 # unrolled one and take longer, its loops being where the optimiser works.
 #
-# WHAT IT DOES. For each matching object: delete it, then run ninja on that
-# object alone under `timeout --kill-after`, and time it. Deleting first is
-# what makes the number real -- an up-to-date object compiles in no time and
-# would report a pass having compiled nothing. Nothing else is built: the
-# configure before the loop regenerates build.ninja, so each measured
-# invocation is one compiler process.
+# WHAT IT DOES. For each matching object: delete it, then run that object's
+# compile command from compile_commands.json under `timeout --kill-after`, and
+# time it. Deleting first is what makes the number real -- an up-to-date
+# object compiles in no time and would report a pass having compiled nothing.
 #
+# The command is run DIRECTLY, not through ninja, because ninja would go
+# through the compiler launchers -- sccache, and devtools/gpu-object-cache.sh
+# in front of it for a `.cu` -- and with either one warm a deleted object comes
+# back as a ~0.3s cache hit, which is the opposite of a measurement (#838).
+# compile_commands.json carries the bare compiler line, no launcher, so no
+# cache is read, none is written, and the shared ones are left exactly as they
+# were. (SCCACHE_RECACHE plus an empty BUILD_OBJECT_CACHE_DIR would also miss,
+# but it depends on the sccache daemon honouring a client variable, still
+# times the object cache's include scan, and rewrites the shared sccache
+# entry.) Each object's prerequisites -- ninja's implicit and order-only
+# inputs -- are built once through ninja before the loop, untimed. The object
+# is then newer than ninja's record of it, so the next build redoes it once,
+# through the caches.
 # WHAT IT DOES NOT DO. It does not link, run, or check a result -- a kernel
 # that compiles here can still be wrong on the card, which is test/gtest/'s
 # job. And it measures ONE backend, the preset's: nvcc and clang `-x hip`
@@ -45,8 +56,12 @@
 #                   over a long ladder, but the times are then inflated by
 #                   contention and only the timeout still means anything --
 #                   so -j is for sweeping, -j 1 for a number worth quoting.
-#   --keep          leave each object in place instead of deleting it first,
-#                   which makes the run a no-op where it is up to date.
+#   --keep          leave each object in place and build it through ninja,
+#                   launchers and caches included: a no-op where it is up to
+#                   date, a cache hit where a cache holds it. Not a timing.
+#   --summarize F   print the summary of an existing results file F
+#                   ("<seconds> <status> <object>" per line) and exit with
+#                   its status, compiling nothing. What the tests drive.
 #   REGEX ...       extended regexes against the object path; an object
 #                   matching any of them is measured. With none, every object
 #                   under a `kernels/` directory is.
@@ -80,19 +95,60 @@ preset=$CMAKE_PRESET
 limit=${KERNEL_COMPILE_LIMIT:-300}
 jobs=1
 keep=0
+summarize=
 patterns=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --preset)  preset=$2; shift 2;;
-    --limit)   limit=$2; shift 2;;
-    -j|--jobs) jobs=$2; shift 2;;
-    --keep)    keep=1; shift;;
-    -h|--help) usage; exit 0;;
-    -*)        echo "kernel-compile-watchdog: unknown flag: $1" >&2; exit 2;;
-    *)         patterns+=("$1"); shift;;
+    --preset)    preset=$2; shift 2;;
+    --limit)     limit=$2; shift 2;;
+    -j|--jobs)   jobs=$2; shift 2;;
+    --keep)      keep=1; shift;;
+    --summarize) summarize=$2; shift 2;;
+    -h|--help)   usage; exit 0;;
+    -*)          echo "kernel-compile-watchdog: unknown flag: $1" >&2; exit 2;;
+    *)           patterns+=("$1"); shift;;
   esac
 done
+
+# The table and the verdict, from a results file of "<seconds> <status>
+# <object>" lines. Sorted ONCE into a file and read back with awk, never
+# `sort | head`: under pipefail, head closing the pipe early kills sort with
+# SIGPIPE once the list outgrows a pipe buffer, and the script then exited
+# 141 with no summary at all (#838).
+summarize() {
+  local results=$1 sorted n over total worst
+  sorted=$(mktemp)
+  sort -gr "$results" >"$sorted"
+  n=$(wc -l <"$sorted")
+  over=$(awk '$2 != "ok"' "$sorted" | wc -l)
+  total=$(awk '{ s += $1 } END { printf "%.0f", s }' "$sorted")
+  worst=$(awk 'NR == 1' "$sorted")
+
+  echo "--- slowest 10 ---"
+  awk 'NR <= 10 { printf "  %7ss  %-8s %s\n", $1, $2, $3 }' "$sorted"
+  rm -f "$sorted"
+
+  if [ "$over" -gt 0 ]; then
+    echo "kernel-compile-watchdog: FAIL -- $over of $n over ${limit}s" \
+      "or broken (preset=$preset, ${total}s total)"
+    awk '$2 != "ok" { printf "  %s %s %ss\n", $2, $3, $1 }' "$results"
+    return 1
+  fi
+  echo "kernel-compile-watchdog: PASS -- $n kernels, all under" \
+    "${limit}s (preset=$preset, ${total}s total, worst ${worst%% *}s," \
+    "${worst##* })"
+}
+
+if [ -n "$summarize" ]; then
+  [ -s "$summarize" ] || {
+    echo "kernel-compile-watchdog: no results in $summarize" >&2
+    exit 2
+  }
+  rc=0
+  summarize "$summarize" || rc=$?
+  exit "$rc"
+fi
 
 [ "${#patterns[@]}" -eq 0 ] && patterns=('/kernels/')
 [ "$preset" = auto ] && preset=$(gpu_auto_preset)
@@ -124,18 +180,86 @@ echo "kernel-compile-watchdog: ${#objects[@]} kernels"
 
 results=$(mktemp)
 trap 'rm -f "$results" "$results".*' EXIT
+commands=$results.commands
+
+if [ "$keep" -eq 1 ]; then
+  echo "kernel-compile-watchdog: --keep: built through ninja and its" \
+    "launchers; a cache hit is timed as one"
+else
+  # "<object>\t<directory>\t<command>" for every matched object, the bare
+  # compiler line CMake records -- the launchers are not in it. A compile
+  # line holds no tab or newline, so the fields need no escaping.
+  printf '%s\n' "${objects[@]}" |
+    python3 -I -c '
+import json, os, sys
+build, wanted = sys.argv[1], set(sys.stdin.read().split())
+for e in json.load(open(os.path.join(build, "compile_commands.json"))):
+    out = os.path.relpath(os.path.join(e["directory"], e.get("output", "")), build)
+    if out in wanted:
+        print(out, e["directory"], e["command"], sep="\t")
+' "$build_dir" >"$commands" || {
+    echo "kernel-compile-watchdog: cannot read" \
+      "$build_dir/compile_commands.json" >&2
+    exit 2
+  }
+  # A launcher in the recorded line would put the caches back in the loop.
+  if awk -F'\t' '$3 ~ /(^|\/)(sccache|ccache|gpu-object-cache\.sh)[ ]/' \
+    "$commands" | grep -q .; then
+    echo "kernel-compile-watchdog: compile_commands.json names a compiler" \
+      "launcher; refusing to time through a cache" >&2
+    exit 2
+  fi
+  echo "kernel-compile-watchdog: cold: each command run from" \
+    "compile_commands.json, bypassing sccache and the object cache" \
+    "(${BUILD_OBJECT_CACHE_DIR:-${PRIMARY_ROOT:-$REPO_ROOT}/.build-object-cache})"
+
+  # What ninja would build first for each object: its implicit (`|`) and
+  # order-only (`||`) inputs. Built once, untimed, through ninja as usual.
+  mapfile -t prereqs < <(
+    for obj in "${objects[@]}"; do
+      ninja -C "$build_dir" -t query "$obj"
+    done | awk '/^  input:/ { f = 1; next } /^  [a-z]/ { f = 0 }
+                f && ($1 == "|" || $1 == "||") { print $2 }' | sort -u
+  )
+  if [ "${#prereqs[@]}" -gt 0 ]; then
+    echo "kernel-compile-watchdog: building ${#prereqs[@]} prerequisites" \
+      "(untimed)"
+    ninja -C "$build_dir" "${prereqs[@]}" >"$results.prereqs.log" 2>&1 || {
+      cat "$results.prereqs.log"
+      echo "kernel-compile-watchdog: prerequisites failed to build" >&2
+      exit 2
+    }
+  fi
+fi
 
 # One object: delete it (so the compile is real), compile it under the
 # timeout, and append "<seconds> <status> <object>" to the results file.
 # SIGKILL follows 10s after SIGTERM, because a back end wedged in an
 # optimiser pass does not always take the first one.
 compile_one() {
-  local obj=$1 start end secs status=ok rc=0
-  [ "$keep" -eq 1 ] || rm -f "$build_dir/$obj"
-  start=${EPOCHREALTIME/,/.}
-  timeout --kill-after=10 "$limit" ninja -C "$build_dir" "$obj" \
-    >"$results.$$.log" 2>&1 || rc=$?
-  end=${EPOCHREALTIME/,/.}
+  local obj=$1 start end secs status=ok rc=0 dir cmd
+  if [ "$keep" -eq 1 ]; then
+    start=${EPOCHREALTIME/,/.}
+    timeout --kill-after=10 "$limit" ninja -C "$build_dir" "$obj" \
+      >"$results.$$.log" 2>&1 || rc=$?
+    end=${EPOCHREALTIME/,/.}
+  else
+    rm -f "$build_dir/$obj"
+    IFS=$'\t' read -r _ dir cmd < <(
+      awk -F'\t' -v o="$obj" '$1 == o' "$commands"
+    ) || true
+    start=${EPOCHREALTIME/,/.}
+    if [ -z "${cmd:-}" ]; then
+      echo "no entry in compile_commands.json" >"$results.$$.log"
+      rc=1
+    else
+      (cd "$dir" && exec timeout --kill-after=10 "$limit" bash -c "$cmd") \
+        >"$results.$$.log" 2>&1 || rc=$?
+    fi
+    end=${EPOCHREALTIME/,/.}
+    # Its -MD depfile is ninja's to read after ninja's own compile, not ours.
+    rm -f "$build_dir/$obj.d"
+  fi
   secs=$(awk -v a="$start" -v b="$end" 'BEGIN { printf "%.1f", b - a }')
   case "$rc" in
     0)       ;;
@@ -149,31 +273,15 @@ compile_one() {
 }
 
 if [ "$jobs" -gt 1 ]; then
-  export build_dir limit keep results
+  export build_dir limit keep results commands
   export -f compile_one
+  # shellcheck disable=SC2016 # "$1" is the inner shell's argument
   printf '%s\n' "${objects[@]}" |
     xargs -P "$jobs" -I{} bash -c 'compile_one "$1"' _ {}
 else
   for obj in "${objects[@]}"; do compile_one "$obj"; done
 fi
 
-over=$(awk '$2 != "ok"' "$results" | wc -l)
-total=$(awk '{ s += $1 } END { printf "%.0f", s }' "$results")
-worst=$(sort -gr "$results" | head -1)
-
-echo "--- slowest 10 ---"
-sort -gr "$results" | head -10 |
-  while read -r secs status obj; do
-    printf '  %7ss  %-8s %s\n' "$secs" "$status" "$obj"
-  done
-
-if [ "$over" -gt 0 ]; then
-  echo "kernel-compile-watchdog: FAIL -- $over of ${#objects[@]} over ${limit}s" \
-    "or broken (preset=$preset, ${total}s total)"
-  awk '$2 != "ok" { printf "  %s %s %ss\n", $2, $3, $1 }' "$results"
-  exit 1
-fi
-
-echo "kernel-compile-watchdog: PASS -- ${#objects[@]} kernels, all under" \
-  "${limit}s (preset=$preset, ${total}s total, worst ${worst%% *}s," \
-  "${worst##* })"
+rc=0
+summarize "$results" || rc=$?
+exit "$rc"

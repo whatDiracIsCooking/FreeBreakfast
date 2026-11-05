@@ -393,9 +393,11 @@ not 0, when it cannot run, so a skip is never mistaken for a pass.
 an hour in the back end looks like a build that hung — no file named, and no
 way to know whether it will ever land. The cost is not linear in the class
 either, and the source size does not order it. `devtools/kernel-compile-watchdog.sh`
-compiles each matching kernel **on its own**, deleting the object first so the
-number is real, under a per-file `timeout` (`--limit`, 300s by default), and
-prints every time with the slowest ten. Run it after `tools/emit/*.py` or a
+compiles each matching kernel **on its own**, deleting the object first and
+running its bare command from `compile_commands.json` — no launcher, so neither
+sccache nor the object cache can answer with a ~0.3s hit, and neither is
+written — so the number is real, under a per-file `timeout` (`--limit`, 300s by
+default), and prints every time with the slowest ten. Run it after `tools/emit/*.py` or a
 `deps/FelizJueves` bump, narrowed to what you touched:
 
 ```bash
