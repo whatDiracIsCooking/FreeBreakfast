@@ -383,9 +383,10 @@ and 4.9e-10 at slopes 0.474, 0.061 and 0.026; state 0 by 4.6e-10, 3.6e-10
 and 5.0e-10 at 2.2e-3, 5.2e-4 and −1.1e-4, every bar 1.5e-9 to 2.5e-9.
 
 **The derivative across a continuum.** The reverse pass (below)
-differentiates the solve over S's kept span as if it were fixed, which is
-exact when the dropped modes carry nothing; past #853 real modes are dropped.
-Measured at PSB3, they do not move the derivative: the analytic PC-QD state 0
+differentiates the solve over S's kept span, and since #862 it also takes
+that span's rotation into the dropped modes, which past #853 are real.
+Measured at PSB3 before #862, holding the span still did not move the
+derivative past this bar but for one component: the analytic PC-QD state 0
 gradient (`[nevpt2_gradient] quasi_degenerate, variant = "pc"`) against
 central differences of the same energy, every displaced point re-converged
 (`conv_tol_grad` 1e-10), steps 2e-3, 1e-3 and 5e-4 bohr, one Richardson
@@ -443,7 +444,13 @@ the two coarser); RTX 3080, `--preset default`, card held.
   Lagrangian is the one not stationary in active-active rotations, by
   about 100× more than SC's. The per-term split (`terms`) cannot localize
   it: between the stopping points the terms move by up to 3.6e-5 and
-  cancel in the total. A fix is not yet sequenced.
+  cancel in the total.
+- **Fixed (#862): the kept span's rotation.** Holding the span still drops
+  the transition rows' share of the real dropped modes, which is of order
+  √σ, not σ ([PC-QD](#pc-qd) below; `../gradient/README.md`, "The kept
+  span's rotation", has the argument and the numbers). With it taken, the
+  four gate residues above fall to 3.9e-12 to 8.1e-12 and atom 4 x's misses
+  to 9.0e-10, 4.1e-10, 7.4e-10 (states 0, 1, 2) and 9.4e-10 (single-state).
 
 Keeping the real modes instead (the cut at 1e-15) moves the analytic gradient
 by up to 1.3e-8 per component and fixes none of the misses, which is what a
@@ -788,11 +795,11 @@ blocks equals its energy: an exact identity from the bars, as Eq. 40 is
 SC's. Sijrs carries SC's ½ <ḡ, g>.
 
 **Where it is exact, and refusals.** The two-term derivative needs S's kept
-rank locally constant and, for the bars on S, K annihilating S's dropped
-modes, which holds at an eigenstate for the null modes. Real modes dropped at
-the cut (#853) break both a little, by their own size: measured at PSB3, the
-derivative holds to the numerical-gradient bar with them dropped, and
-keeping them does not move it ("The derivative across a continuum"). A
+rank locally constant, and at a fixed kept span it needs K to annihilate S's
+dropped modes, which holds at an eigenstate for the null modes. Real modes
+dropped at the cut (#853) break the second, K's part along them being of
+order √σ_n; the kept span's rotation ([PC-QD](#pc-qd), #862) is the term
+that restores it, at n = 1 as at n > 1. A
 class the energy refuses is refused here with the energy's error (the same
 `solve_class`, and one `pc_intruder_check` for both), never given a
 zero; on an error the bars are unspecified.
@@ -836,9 +843,11 @@ the two rows, so with g_I = y_{I←J} / (λ_J + Δ) and g = y_J / (λ_J + Δ):
 
 At I = J these are the n = 1 multipliers times H̄_JJ, and the own pair is
 taken first in the n = 1 arithmetic (its two ȳ terms as one), so at n = 1
-every multiplier is the one-state pass's to the bit. Still no eigenvalue or
-eigenvector derivative: b_{I←J} lies in S_J's kept range, since a mode
-that annihilates |J⟩ annihilates ⟨J| S^{(J,I)}. ȳ_{I←J} goes through the
+every multiplier is the one-state pass's to the bit. No eigenvalue
+derivative, and the eigenvectors' only in the kept span's rotation below:
+a mode that annihilates |J⟩ annihilates ⟨J| S^{(J,I)}, so b_{I←J} has no
+part along a null mode, but a real dropped mode, ‖O_n|J⟩‖ = √σ_n, takes a
+part of order √σ_n of it. ȳ_{I←J} goes through the
 slab einsums onto the slabs (and Λ), h1e_v's rows and T̄_{I←J}, t̄1_{I←J};
 then, U_J held,
 
@@ -855,6 +864,29 @@ pole, [Poles, not signs](#poles-not-signs)) is refused with `pc_effective_hamilt
 class and the state (`state_error`, the forward's), never given a zero.
 Sijrs is SC's, weight Σ_J H̄_JJ.
 
+**The kept span's rotation (#862).** Everything above holds U_J's span
+still. Moving S_J rotates it into the dropped modes, δV_k = V_n Θ with
+Θ_nl = (V_nᵀ δS V_k)_nl / (σ_l − σ_n), and the couplings see that through
+every row's part along V_n: the own row's, σ_n V_nᵀ x, is negligible, but
+K's, V_nᵀ K U, and each transition row's, V_nᵀ S^{(J,I)} x, are of order
+√σ_n. So with Ū = dL/dU at fixed matrices,
+
+    Ū = Σ_I (S^{(J,I)} T̄_{I←J} + S₁^{(J,I)} t̄1_{I←J}) + K U (M + Mᵀ)
+
+(S U (M_Δ + M_Δᵀ) has no part along V_n), and U = V_k σ^−½ W gives one more
+bar on S_J, symmetrized as the others:
+
+    dL/dS_J += V_n [(V_nᵀ Ū Uᵀ V_k) ⊘ (σ_l − σ_n)] V_kᵀ
+
+`pc_kets` keeps each solve's V, σ, V_nᵀ K U and V_nᵀ S, V_nᵀ S₁ for the
+reverse pass alone (`DroppedModes`), and each transition's V_nᵀ S^{(J,I)}
+and V_nᵀ S₁^{(J,I)} beside its T; `pc_span_bar` forms the bar from the walk
+bars before `pc_matrix_bars` spends the own T̄. A pair with σ_l − σ_n at or
+below ε √d of S's largest eigenvalue, σ's round-off, is skipped. Nothing
+is added where nothing was dropped, so a class with no cut is unchanged.
+`../gradient/README.md`, "The kept span's rotation", has why it matters,
+and the measurements.
+
 **Homogeneity.** E_IJ is homogeneous of degree one in ket J's (S_J, K_J,
 S₁_J) and pair (J, I)'s (S, S₁) together, so `homogeneity[k]`, Σ_G <M_G, G>
 over every state's own blocks and every transition's metric blocks, is
@@ -868,7 +900,9 @@ walked; then each state's own bars are swept onto bars[J] (and the shared
 h1e, h2e), and each transition's onto its dm1–dm3 (`sweep_metrics`),
 handed to `transition` in row-major pair order and freed.
 
-**Memory.** Besides the caller's n own-RDM bar sets: n² − n metric
+**Memory.** Besides the caller's n own-RDM bar sets: per ket with modes
+dropped, V (d × d) and V_nᵀ S (nd × d) beside its U, and nd × d per
+transition beside its T; n² − n metric
 `BlockBars` (Sr's dm3 and Si's dm3_h, n_act⁶ each, the largest), the same
 order as the forward's n² − n transition T (d × m_J, n_act⁶ for Sr and
 Si) held across a class; per class the walk bars T̄ beside them; and one

@@ -1704,7 +1704,8 @@ Result<ClassEnergiesAdjoint> class_energies_adjoint(DeviceResources &res, const 
 // Tᵀ x + t1ᵀ h1. With g = y / (λ + Δ), the solve the energy ran, dA⁺ =
 // -A⁺ dA A⁺ gives dE = <ybar, dy> + <M, Uᵀ dA U> at fixed U, no eigenvector
 // or eigenvalue derivative (exact where S's kept rank is locally constant
-// and K annihilates S's dropped modes). So, summed over the tuples:
+// and K annihilates S's dropped modes; pc_span_bar adds the rest, the kept
+// span's rotation, where real modes are dropped). So, summed over the tuples:
 //   dE/dT = Σ x ybarᵀ, dE/dt1 = Σ h1 ybarᵀ  (the slab einsums' adjoints),
 //   dE/dK = U M Uᵀ, dE/dS = U (dE/dT)ᵀ + U M_Δ Uᵀ, dE/dS₁ = U (dE/dt1)ᵀ,
 // each symmetrized where the solve symmetrized its matrix, and dE/dΔ onto the
@@ -1715,8 +1716,10 @@ Result<ClassEnergiesAdjoint> class_energies_adjoint(DeviceResources &res, const 
 // (I, J) is -c b_{I←J}ᵀ A_J⁺ b_J, bilinear in the two rows, with
 // b_{I←J} = S^{(J,I)} x + S₁^{(J,I)} h1 and y_{I←J} = U_Jᵀ b_{I←J}. It puts
 // -c H̄_IJ g_J on y_{I←J}, -c H̄_IJ g_{I←J} on y_J and c H̄_IJ g_{I←J} g_Jᵀ on
-// U_Jᵀ dA_J U_J: the same rule, still no eigen-derivative, b_{I←J} lying in
-// S_J's kept range (a mode that annihilates |J⟩ annihilates ⟨J| S^{(J,I)}).
+// U_Jᵀ dA_J U_J: the same rule, still no eigenvalue derivative. b_{I←J} has
+// no part along a null mode of S_J (a mode that annihilates |J⟩ annihilates
+// ⟨J| S^{(J,I)}), but one of order √σ along a real dropped mode, which is
+// pc_span_bar's.
 // T_{I←J} = S^{(J,I)ᵀ} U_J, so its bar goes onto S^{(J,I)} unsymmetrized,
 // U_J held, and so onto pair (J, I)'s metric blocks.
 
@@ -1762,7 +1765,7 @@ Result<PcReverse> pc_reverse_kets(ReverseContext &c, const PcStates &q, const ch
                                   const int64_t d, const int64_t n1, const PcBuild build) {
   const int64_t ns = q.ns;
   PcReverse r{.name = name,
-              .kets = FBF_TRY(pc_kets(c.res, name, q.ops, ns, d, n1, build)),
+              .kets = FBF_TRY(pc_kets(c.res, name, q.ops, ns, d, n1, build, nullptr, true)),
               .w = {},
               .energy = std::vector<double>(static_cast<size_t>(ns * ns), 0.0),
               .modes = std::vector<PcDenominators>(static_cast<size_t>(ns))};
@@ -1969,6 +1972,84 @@ Status add_onto(DeviceResources &res, const Buffers::device<double> &kbar, doubl
                 1.0);
 }
 
+// The bar on ket J's S from its kept span's rotation into its dropped modes,
+// d x d column-major, before symmetrization; none when nothing was dropped.
+// The fixed-U pass above holds S's kept span still, which is exact only when
+// every row the solve reads lies in it. A transition row does not: its leak
+// V_nᵀ b_{I←J} = V_nᵀ S^{(J,I)} x is of order √σ_n against the own row's σ_n,
+// since ⟨J| O_nᵀ is only √σ_n small (README "The PC reverse pass", #862). So
+// with δV_k = V_n Θ, Θ_nl = (V_nᵀ δS V_k)_nl / (σ_l - σ_n), and Ū = dL/dU at
+// fixed S, K and S₁,
+//   Ū = Σ_I (S^{(J,I)} T̄_{I←J} + S₁^{(J,I)} t̄1_{I←J}) + K U (M + Mᵀ)
+// (the own pair's S symmetrized; S U (M_Δ + M_Δᵀ) has no dropped part), and
+// U = V_k σ^-½ W gives dL/dS = V_n [(V_nᵀ Ū Uᵀ V_k) ⊘ (σ_l - σ_n)] V_kᵀ. A
+// pair within σ's round-off of each other (DroppedModes::floor) is skipped:
+// at the cut's own noise multiple instead, the pairs that straddle the cut
+// were all skipped, and PSB3's state 0 missed by 8.6e-9 still (#862).
+Result<std::optional<Buffers::device<double>>> pc_span_bar(DeviceResources &res, const PcStates &q,
+                                                           PcReverse &r, const int64_t j,
+                                                           const int64_t d, const int64_t n1) {
+  const int64_t ns = q.ns;
+  const ClassSolve &cs = r.kets.solves[static_cast<size_t>(j)];
+  if (!cs.modes) {
+    return std::nullopt;
+  }
+  const DroppedModes &dm = *cs.modes;
+  const int64_t m = std::ssize(cs.lambda);
+  const int64_t nd = d - m;
+  const auto di = static_cast<int32_t>(d);
+  const auto mi = static_cast<int32_t>(m);
+  const auto ndi = static_cast<int32_t>(nd);
+  // Q = V_nᵀ Ū, nd x m.
+  Buffers::device<double> qbar = FBF_TRY(device_zeros(res, nd * m));
+  for (int64_t i = 0; i < ns; ++i) {
+    const auto p = static_cast<size_t>((i * ns) + j);
+    if (!r.kets.given[p]) {
+      continue;
+    }
+    const double *const leak = i == j ? dm.leak.data() : r.kets.leak[p]->data();
+    FBF_TRY(gpu_status(gemm(res.blas(), ndi, mi, di, &kOne<double>, leak, r.w[p].t.data(),
+                            &kOne<double>, qbar.data())));
+    if (n1 > 0) {
+      // t̄1 row-major n1 x m reads column-major as its transpose.
+      const double *const leak1 = i == j ? dm.leak1.data() : r.kets.leak1[p]->data();
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+          res.blas(), ndi, mi, static_cast<int32_t>(n1), &kOne<double>, leak1, r.w[p].t1.data(),
+          &kOne<double>, qbar.data())));
+    }
+  }
+  const double *const mgg = r.w[static_cast<size_t>((j * ns) + j)].mgg.data();
+  FBF_TRY(gpu_status(gemm(res.blas(), ndi, mi, mi, &kOne<double>, dm.kvu.data(), mgg, &kOne<double>,
+                          qbar.data())));
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+      res.blas(), ndi, mi, mi, &kOne<double>, dm.kvu.data(), mgg, &kOne<double>, qbar.data())));
+  // G = Q Uᵀ V_k, then divided pair by pair on the host (nd x m).
+  const double *const vk = dm.v.data() + (nd * d);
+  Buffers::device<double> uv(static_cast<size_t>(m * m), res.device());
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), mi, mi, di, &kOne<double>, cs.u.data(), vk,
+                                             &kZero<double>, uv.data())));
+  Buffers::device<double> g(static_cast<size_t>(nd * m), res.device());
+  FBF_TRY(gpu_status(gemm(res.blas(), ndi, mi, mi, &kOne<double>, qbar.data(), uv.data(),
+                          &kZero<double>, g.data())));
+  std::vector<double> gh = FBF_TRY(download(res, g.data(), nd * m));
+  for (int64_t l = 0; l < m; ++l) {
+    for (int64_t n = 0; n < nd; ++n) {
+      const double gap = dm.sigma[static_cast<size_t>(nd + l)] - dm.sigma[static_cast<size_t>(n)];
+      double &e = gh[static_cast<size_t>(n + (nd * l))];
+      e = gap > dm.floor ? e / gap : 0.0;
+    }
+  }
+  const Buffers::device<double> gq = FBF_TRY(upload(res, gh));
+  // V_n G' V_kᵀ.
+  Buffers::device<double> y(static_cast<size_t>(d * m), res.device());
+  FBF_TRY(gpu_status(gemm(res.blas(), di, mi, ndi, &kOne<double>, dm.v.data(), gq.data(),
+                          &kZero<double>, y.data())));
+  Buffers::device<double> x(static_cast<size_t>(d * d), res.device());
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+      res.blas(), di, di, mi, &kOne<double>, y.data(), vk, &kZero<double>, x.data())));
+  return std::optional<Buffers::device<double>>{std::move(x)};
+}
+
 // One class's bars on one pair's raw matrices @p b back onto the blocks they
 // were built from over @p o (@p own: a state's own S, K and S₁; else a
 // transition's S and S₁), and Σ_G <M_G, G> over those blocks added to the
@@ -2006,13 +2087,24 @@ Result<PcClassSums> pc_reverse_finish(ReverseContext &c, const PcStates &q, PcRe
       return state_error(ok.error(), j, ns);
     }
   }
+  // Before pc_matrix_bars, which spends the own T̄.
+  std::vector<std::optional<Buffers::device<double>>> span;
+  for (int64_t j = 0; j < ns; ++j) {
+    span.push_back(FBF_TRY(pc_span_bar(res, q, r, j, d, n1)));
+  }
   Buffers::device<double> acc = FBF_TRY(device_zeros(res, 1));
   for (int64_t i = 0; i < ns; ++i) {
     for (int64_t j = 0; j < ns; ++j) {
       const auto built = static_cast<size_t>((j * ns) + i);
-      const PcMatrixBars b =
+      PcMatrixBars b =
           FBF_TRY(pc_matrix_bars(res, r.kets.solves[static_cast<size_t>(j)],
                                  r.w[static_cast<size_t>((i * ns) + j)], d, n1, i == j));
+      if (const auto &x = span[static_cast<size_t>(j)]; i == j && x) {
+        // Onto the raw S, symmetrized as the solve symmetrized it.
+        const EinsumOperand op{.data = x->data(), .dims = {d, d}};
+        FBF_TRY(einsum(res.stream(), "ij->ij", {op}, b.s.data(), {d, d}, 0.5));
+        FBF_TRY(transpose(res.stream(), op, {1, 0}, b.s.data(), 0.5));
+      }
       FBF_TRY(back(res, q.ops[built], i == j, b, q.m[built], acc.data()));
     }
   }
