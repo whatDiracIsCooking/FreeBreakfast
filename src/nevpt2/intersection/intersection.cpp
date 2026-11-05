@@ -160,20 +160,21 @@ Result<QdIntersection> qd_intersection(
 
   // H_eff's correlation elements; a refused PC class is the walk's error.
   std::vector<double> totals;
-  FBF_TRY(
-      qd_inputs(res, molecule, basis, aux, h, b, solution, ncore, ncas,
-                [&](const MoBlocks &blocks, const std::span<const EnergyInputs> pairs) -> Status {
-                  if (pc) {
-                    const std::vector<PcClassEnergies> e =
-                        FBF_TRY(pc_effective_hamiltonian(res, blocks, pairs, batch));
-                    std::ranges::transform(e, std::back_inserter(totals), &PcClassEnergies::total);
-                  } else {
-                    const std::vector<ClassEnergies> e =
-                        FBF_TRY(sc_effective_hamiltonian(res, blocks, pairs, batch));
-                    std::ranges::transform(e, std::back_inserter(totals), &ClassEnergies::total);
-                  }
-                  return {};
-                }));
+  FBF_TRY(qd_inputs(
+      res, molecule, basis, aux, h, b, solution, ncore, ncas,
+      [&](const MoBlocks &blocks, const std::span<const EnergyInputs> pairs) -> Status {
+        if (pc) {
+          const std::vector<PcClassEnergies> e =
+              FBF_TRY(pc_effective_hamiltonian(res, blocks, pairs, batch));
+          std::ranges::transform(e, std::back_inserter(totals), &PcClassEnergies::total);
+        } else {
+          const std::vector<ClassEnergies> e =
+              FBF_TRY(sc_effective_hamiltonian(res, blocks, pairs, batch));
+          std::ranges::transform(e, std::back_inserter(totals), &ClassEnergies::total);
+        }
+        return {};
+      },
+      options.nfrozen));
   auto [eigenvalues, r] = FBF_TRY(heff_eigen(res, solution.roots.energies, totals));
   const auto kp = static_cast<size_t>(p);
   const auto kq = static_cast<size_t>(q);
@@ -187,14 +188,15 @@ Result<QdIntersection> qd_intersection(
   const auto part = [&](const std::string_view which,
                         const std::vector<double> &w) -> Result<WFormPart> {
     if (pc) {
-      return w_form_part(res, who, which,
-                         FBF_TRY(qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l,
-                                                solution, ncore, ncas, w, batch, tolerance)),
-                         pairs, tolerance);
+      return w_form_part(
+          res, who, which,
+          FBF_TRY(qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
+                                 w, batch, tolerance, options.nfrozen)),
+          pairs, tolerance);
     }
     return w_form_part(res, who, which,
                        FBF_TRY(qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
-                                              ncore, ncas, w, batch, tolerance)),
+                                              ncore, ncas, w, batch, tolerance, options.nfrozen)),
                        pairs, tolerance);
   };
   constexpr std::array<std::string_view, 3> kWhich{"u_P u_P^T", "u_Q u_Q^T", "W^PQ"};
@@ -211,10 +213,10 @@ Result<QdIntersection> qd_intersection(
     };
     if (pc) {
       FBF_TRY(take(FBF_TRY(qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
-                                          ncore, ncas, ws, batch, tolerance))));
+                                          ncore, ncas, ws, batch, tolerance, options.nfrozen))));
     } else {
       FBF_TRY(take(FBF_TRY(qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
-                                          ncore, ncas, ws, batch, tolerance))));
+                                          ncore, ncas, ws, batch, tolerance, options.nfrozen))));
     }
   } else {
     for (size_t k = 0; k < ws.size(); ++k) {

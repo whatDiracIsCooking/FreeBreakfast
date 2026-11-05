@@ -46,6 +46,9 @@ struct Nevpt2GradientOutput {
   /// Nevpt2GradientStep::quasi_degenerate.
   std::variant<nevpt2::ScGradient, nevpt2::PcGradient, nevpt2::QdScGradient, nevpt2::QdPcGradient>
       gradient;
+  /// @brief The core orbitals left uncorrelated, @ref
+  /// Nevpt2GradientStep::frozen_core resolved ("auto" counted out).
+  int32_t frozen_core = 0;
 };
 
 /// @brief The SC- or PC-NEVPT2 nuclear gradient, state-specific or of one
@@ -69,6 +72,13 @@ struct Nevpt2GradientStep {
   /// @brief With @ref quasi_degenerate, the QD state K: an index into the
   /// effective Hamiltonian's eigenvalues, ascending. 0 otherwise.
   int32_t state = 0;
+  /// @brief `[nevpt2]`'s @c frozen_core, read the same way: a count, or
+  /// Nevpt2Step::kFrozenCoreAuto. The lowest canonical core orbitals that
+  /// leave every class with a core index and stay in F^I; their rotations
+  /// against the correlated core enter through z^c (src/nevpt2/gradient/
+  /// README.md "The frozen core"). 0, the default, correlates every core
+  /// orbital.
+  int32_t frozen_core = 0;
   /// @brief Where the gradient is written as JSON, if not empty: the root,
   /// the energies, the total and each term as n_atom rows of three, and the
   /// diagnostics. Arrives resolved (pipeline/config sets it to
@@ -87,7 +97,7 @@ struct Nevpt2GradientStep {
   /// @c nevpt2::qd_pc_gradient of @ref state over the same products, γ the
   /// weighted average of the roots' 1-RDMs. H_eff and u_K are the
   /// gradient's own, from the same CASSCF: the step does not read a
-  /// `[nevpt2]` step's.
+  /// `[nevpt2]` step's. With @ref frozen_core, each call's @c nfrozen.
   ///
   /// @return The gradient; Unsupported, before anything runs, for an
   ///         open-shell ScfOutput (n_alpha != n_beta), a molecule of
@@ -98,7 +108,8 @@ struct Nevpt2GradientStep {
   ///         @ref quasi_degenerate over fewer than two roots, a @ref state
   ///         past the roots, or a @ref state without @ref quasi_degenerate,
   ///         or a CasscfOutput whose 1-RDMs are not one ncas^2 block per
-  ///         root; otherwise the gradient's error (PC's refusals, a metric
+  ///         root, or a @ref frozen_core (resolved) past the CASSCF's core
+  ///         (Nevpt2Step::resolve_frozen_core); otherwise the gradient's error (PC's refusals, a metric
   ///         with no positive eigenvalue or a pole -- an intruder, |t| > 1,
   ///         or a denominator at round-off -- among them, the
   ///         energy's Numerical error unchanged), or @c write_json's for a

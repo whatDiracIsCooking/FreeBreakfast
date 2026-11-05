@@ -14,7 +14,10 @@
 // against #696's numerical g . u of that state within twice each number's
 // error bar; PC-QD through a metric with no gap at its cut, accepted, the
 // gradient stopping only at the state average's degenerate pair (#853); and a
-// PC refusal reported as the [nevpt2] step reports it.
+// PC refusal reported as the [nevpt2] step reports it. And with
+// frozen_core = "auto" (#875): qd_nevpt2_frozen_core.json's skew H2CO at QD
+// state 1, SC and PC, against central differences of the step's own energies
+// along its gradient, its QD energies against #859's and the [nevpt2] step's.
 
 #include <gtest/gtest.h>
 
@@ -566,6 +569,170 @@ TEST(PipelineNevpt2Gradient, PcRefusalIsTheEnergyStepsRefusal) {
   EXPECT_EQ(refused_class(ran.error().message), energy_class) << ran.error().message;
   std::cout << std::format("[ nevpt2_gradient ] water CAS(2,1) PC: gradient '{}'; [nevpt2] '{}'\n",
                            ran.error().message, nevpt2->pc_refusals[0]);
+}
+
+// --- Frozen core (#875) -----------------------------------------------------
+
+// The frozen-core QD gradient through the step, on qd_nevpt2_frozen_core.json's
+// skew H2CO (cc-pVDZ / cc-pVDZ-JKFIT, CAS(4,3) averaged over three roots,
+// frozen_core = "auto", the C and O 1s), at QD state 1, against central
+// differences of the same step's energies along its own gradient direction:
+// every displaced point re-converged at kQdConvTolGrad, steps 2e-3, 1e-3 and
+// 5e-4 bohr, one Richardson step over the two finest, held to
+// max(2 x the Richardson bar, 3 sigma_E / h_min) (src/nevpt2/energy/
+// README.md's rule). sigma_E is kFrozenEnergyNoise, measured: five reference
+// repeats gave sd 6.7e-13 (SC) and 1.7e-12 (PC) Eh on the RTX 3080. The
+// [nevpt2] step beside the reference run gives the same frozen-core QD
+// energies, which match #859's references.
+constexpr double kFrozenEnergyNoise = 2e-12;
+constexpr std::array<double, 3> kFrozenSteps{2e-3, 1e-3, 5e-4};
+// The two code paths to one functional (the [nevpt2] step's blocks and the
+// gradient layer's builders): round-off apart.
+constexpr double kFrozenSameEnergy = 1e-9;
+
+// The case's run.toml in @p dir at the bohr coordinates @p x: SA3-CASSCF,
+// [nevpt2_gradient] at QD state 1 of @p variant with frozen_core "auto", and
+// with @p energy_step a frozen-core QD [nevpt2] beside it.
+std::filesystem::path write_frozen_config(const fb::test::ScratchDir &dir, const fb::json &entry,
+                                          std::span<const double> x, std::string_view variant,
+                                          const bool energy_step) {
+  std::string xyz = std::format("{}\n{}\n", entry.at("atoms").size(), "frozen core");
+  for (std::size_t a = 0; a < entry.at("atoms").size(); ++a) {
+    xyz += std::format(
+        "{} {:.17g} {:.17g} {:.17g}\n", entry.at("atoms").at(a).at(0).get<std::string>(),
+        x[3 * a] * fb::kAngstromPerBohr<double>, x[(3 * a) + 1] * fb::kAngstromPerBohr<double>,
+        x[(3 * a) + 2] * fb::kAngstromPerBohr<double>);
+  }
+  EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
+  const std::string toml = std::format(
+      "[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
+      "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
+      "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\nconv_tol_grad = {:g}\nconv_tol = {:g}\n"
+      "max_cycle = {}\n{}"
+      "[nevpt2_gradient]\nquasi_degenerate = true\nstate = 1\nvariant = \"{}\"\n"
+      "frozen_core = \"auto\"\n",
+      entry.at("basis").get<std::string>(), entry.at("aux_basis").at("name").get<std::string>(),
+      entry.at("ncas").get<std::int32_t>(), entry.at("nelecas").get<std::int32_t>(),
+      entry.at("nroots").get<std::int32_t>(), kQdConvTolGrad, kQdConvTol, kQdMaxCycle,
+      energy_step ? "[nevpt2]\nquasi_degenerate = true\nfrozen_core = \"auto\"\n" : "", variant);
+  EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  return dir / "run.toml";
+}
+
+void expect_frozen_qd_state(std::string_view variant) {
+  const auto start = std::chrono::steady_clock::now();
+  constexpr std::string_view kName = "h2co_skew_ccpvdz_sa3";
+  const fb::json *entry = nullptr;
+  {
+    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "qd_nevpt2" /
+                              "qd_nevpt2_frozen_core.json");
+    ASSERT_TRUE(read.has_value()) << read.error().message;
+    static const fb::json kDoc = std::move(*read);
+    for (const fb::json &e : kDoc.at("cases")) {
+      if (e.at("name").get<std::string>() == kName) {
+        entry = &e;
+      }
+    }
+  }
+  ASSERT_NE(entry, nullptr);
+  const fb::json *variant_ref = nullptr;
+  for (const fb::json &v : entry->at("variants")) {
+    if (v.at("frozen_core").is_string()) {
+      variant_ref = &v;
+    }
+  }
+  ASSERT_NE(variant_ref, nullptr);
+  std::vector<double> x0;
+  for (const fb::json &atom : entry->at("atoms")) {
+    for (const double c : atom.at(1).get<std::vector<double>>()) {
+      x0.push_back(c);
+    }
+  }
+  fb::NodeResources node;
+  // E_1 (and the file) at @p x; the [nevpt2] step's QD energies too with
+  // @p energy_step.
+  const auto run = [&](std::span<const double> x, const bool energy_step,
+                       std::vector<double> *gradient) -> double {
+    const fb::test::ScratchDir dir(std::format("pipeline_nevpt2_gradient_frozen_{}", variant));
+    auto calc = fb::read_config(write_frozen_config(dir, *entry, x, variant, energy_step),
+                                dir.path(), dir / "out");
+    EXPECT_TRUE(calc.has_value()) << calc.error().message;
+    if (!calc.has_value()) {
+      return std::nan("");
+    }
+    const fb::Status ran = calc->run(node);
+    EXPECT_TRUE(ran.has_value()) << ran.error().message;
+    if (!ran.has_value()) {
+      return std::nan("");
+    }
+    const auto written = fb::read_json(dir / "out" / "nevpt2_gradient.json");
+    EXPECT_TRUE(written.has_value()) << written.error().message;
+    EXPECT_EQ(written->at("frozen_core").get<std::int32_t>(),
+              variant_ref->at("n_frozen").get<std::int32_t>());
+    const auto qd = written->at("qd_energies").get<std::vector<double>>();
+    if (gradient != nullptr) {
+      for (const auto &row : written->at("total").get<std::vector<std::vector<double>>>()) {
+        gradient->insert(gradient->end(), row.begin(), row.end());
+      }
+      // Against #859's eigenvalues, and the energy step's.
+      const auto want = variant_ref->at(variant).at("eigenvalues").get<std::vector<double>>();
+      const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
+      EXPECT_TRUE(nevpt2.has_value());
+      const std::vector<double> &step =
+          variant == "pc" ? nevpt2->pc_qd_energies : nevpt2->qd_energies;
+      EXPECT_EQ(nevpt2->frozen_core, written->at("frozen_core").get<std::int32_t>());
+      EXPECT_EQ(step.size(), qd.size());
+      EXPECT_EQ(want.size(), qd.size());
+      for (std::size_t k = 0; k < qd.size() && k < want.size() && k < step.size(); ++k) {
+        EXPECT_NEAR(qd[k], want[k], 1e-8) << variant << " state " << k;
+        EXPECT_NEAR(qd[k], step[k], kFrozenSameEnergy) << variant << " state " << k;
+      }
+      std::cout << std::format("[ nevpt2_gradient ] {} frozen-core QD {}: {::.10f}, #859's "
+                               "{::.10f}, [nevpt2]'s {::.10f}\n",
+                               kName, variant, qd, want, step);
+    }
+    return qd.at(1);
+  };
+
+  std::vector<double> g;
+  run(x0, true, &g);
+  ASSERT_EQ(g.size(), x0.size());
+  double norm = 0.0;
+  for (const double v : g) {
+    norm += v * v;
+  }
+  norm = std::sqrt(norm);
+  ASSERT_GT(norm, 0.0);
+  std::vector<double> d;
+  for (const double h : kFrozenSteps) {
+    std::array<double, 2> e{};
+    for (const double sign : {1.0, -1.0}) {
+      std::vector<double> x = x0;
+      for (std::size_t i = 0; i < x.size(); ++i) {
+        x[i] += sign * h * g[i] / norm;
+      }
+      e[sign > 0.0 ? 0 : 1] = run(x, false, nullptr);
+    }
+    d.push_back((e[0] - e[1]) / (2.0 * h));
+  }
+  const double coarse = ((4.0 * d[1]) - d[0]) / 3.0;
+  const double fine = ((4.0 * d[2]) - d[1]) / 3.0;
+  const double bar = std::max(2.0 * std::abs(fine - coarse), 3.0 * kFrozenEnergyNoise / 5e-4);
+  EXPECT_NEAR(norm, fine, bar) << variant;
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
+  std::cout << std::format("[ nevpt2_gradient ] {} frozen-core QD {} state 1 along g: analytic "
+                           "{:+.10f} numerical {:+.10f} diff {:+.2e} (bar {:.2e}), {:.2f} s\n",
+                           kName, variant, norm, fine, norm - fine, bar, seconds.count());
+}
+
+TEST(PipelineNevpt2Gradient, FrozenCoreQdScMatchesItsOwnDifferences) {
+  FBF_REQUIRE_GPU();
+  expect_frozen_qd_state("sc");
+}
+
+TEST(PipelineNevpt2Gradient, FrozenCoreQdPcMatchesItsOwnDifferences) {
+  FBF_REQUIRE_GPU();
+  expect_frozen_qd_state("pc");
 }
 
 } // namespace

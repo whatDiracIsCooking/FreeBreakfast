@@ -5,8 +5,8 @@
 # primitive_pair_classes is named too, as run's View takes its classes.
 # core::resources and pipeline::step are in run's signature. run is defined
 # in the implementation unit, so core::wwr (the copies back to the device),
-# io::json (nevpt2_gradient.json) and diagnostics_macros (FBF_TRY) are
-# PRIVATE.
+# io::json (nevpt2_gradient.json), pipeline::nevpt2 (frozen_core's
+# resolution) and diagnostics_macros (FBF_TRY) are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.nevpt2_gradient
@@ -27,4 +27,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::io::json
+  free_breakfast::pipeline::nevpt2
 )

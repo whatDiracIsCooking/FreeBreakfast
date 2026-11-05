@@ -103,6 +103,19 @@ struct Nevpt2Step {
   /// core"). 0, the default, correlates every core orbital.
   int32_t frozen_core = 0;
 
+  /// @brief A `frozen_core` value (a count, or @ref kFrozenCoreAuto)
+  /// resolved over @p molecule, each atom's chemical core for "auto", and
+  /// checked against the CASSCF's @p ncore core orbitals. One rule for every
+  /// step that reads the key (`[nevpt2]`, `[nevpt2_gradient]`, and the QD
+  /// MECI of `[optimize]` through the latter).
+  ///
+  /// @return The count frozen, 0 to @p ncore; InvalidConfig, naming
+  ///         @p step, for one past @p ncore ("auto" resolving past it
+  ///         included) or below kFrozenCoreAuto.
+  [[nodiscard]] static Result<int32_t> resolve_frozen_core(std::string_view step,
+                                                           int32_t frozen_core,
+                                                           const Molecule &molecule, int32_t ncore);
+
   /// @brief Each root's SC-NEVPT2, PySCF's `mrpt.NEVPT(mc, root=r)` over
   /// density fitting, and its PC-NEVPT2. Per root, on res.stream():
   ///

@@ -39,7 +39,14 @@ Result<size_t> rdm_budget();
 /// dm1 is gamma_SA, which the shared builders read, and dm2 ... f3ac are not
 /// used (each pair's RDMs are qd.cpp's own).
 struct ScArrays {
+  // Over the whole core: what F^I, the orbital energies and the builders
+  // read.
   MoBlocks blocks;
+  // The core orbitals NEVPT2 leaves uncorrelated, the lowest nfrozen; and,
+  // when there are any, the MO blocks over the orbitals from nfrozen on, the
+  // correlated core's, which the class walk reads (walk_blocks). None at 0.
+  int32_t nfrozen = 0;
+  std::optional<MoBlocks> correlated;
   // C^T h C, nmo x nmo.
   Buffers::device<double> h_mo;
   // B_cc, naux x ncore x ncore, as b_mo leaves it; and B_Q,aa over the
@@ -71,14 +78,22 @@ struct ScArrays {
   // The active electrons, N: dm2 = Σ_t dm3[.., t, t] / N.
   double electrons = 0.0;
 
+  // The blocks the class walk reads: the correlated core's, or the whole
+  // core's without a frozen one.
+  [[nodiscard]] const MoBlocks &walk_blocks() const { return correlated ? *correlated : blocks; }
+
+  // The class walk's inputs: the core-indexed ones (e_core, h1e_v_si,
+  // h1e_v_sir, each with the core as its slow index) past the frozen core,
+  // so over the correlated one; F^I itself is the whole core's.
   [[nodiscard]] EnergyInputs inputs() const {
+    const int64_t nf = nfrozen;
     return {.h1e = h1e.data(),
             .h2e = h2e.data(),
-            .e_core = e_core.data(),
+            .e_core = e_core.data() + nf,
             .e_virt = e_virt.data(),
             .h1e_v_sr = h1e_v_sr.data(),
-            .h1e_v_si = h1e_v_si.data(),
-            .h1e_v_sir = h1e_v_sir.data(),
+            .h1e_v_si = h1e_v_si.data() + (blocks.ncas * nf),
+            .h1e_v_sir = h1e_v_sir.data() + (blocks.nvirt * nf),
             .dm1 = dm1.data(),
             .dm2 = dm2.data(),
             .dm3 = dm3.data(),
@@ -130,6 +145,23 @@ Status run_builds(DeviceResources &res, std::span<const FockBuild> builds);
 /// swapping roles.
 Status run_builds_adjoint(DeviceResources &res, std::span<const FockBuild> builds);
 
+/// @brief Λ's bars: @ref whole over every orbital, which the builders'
+/// adjoints and X read; and with a frozen core @ref correlated, over the
+/// orbitals from x.nfrozen on (naux x (nmo - nfrozen)^2, the class walk's
+/// MO frame), which builders_adjoint adds onto whole's corner. Empty without
+/// one, when the walk adds onto whole itself.
+struct LambdaBars {
+  Buffers::device<double> whole;
+  Buffers::device<double> correlated;
+  int32_t nfrozen = 0;
+
+  // Where the class walk adds its Λ.
+  [[nodiscard]] double *walk() { return nfrozen > 0 ? correlated.data() : whole.data(); }
+};
+
+/// @brief LambdaBars for @p x, zeroed, over @p nmo orbitals.
+Result<LambdaBars> lambda_bars(DeviceResources &res, const ScArrays &x, int32_t nmo);
+
 /// @brief Every ScArrays buffer, zeroed, at the sizes of an ncore, ncas,
 /// nvirt split over naux fitting functions: what the builders accumulate
 /// into, and the bars.
@@ -137,23 +169,26 @@ Result<ScArrays> zeroed_arrays(DeviceResources &res, int32_t naux, int32_t ncore
                                int32_t nvirt);
 
 /// @brief The inputs that no RDM reaches, built from (h, B, c): the counts
-/// checked (InvalidConfig naming @p who), the MO blocks, B_cc and B_vv's
-/// diagonal, C^T h C, h2e and (tu|vw); the RDMs, gamma and what reads it are
-/// the caller's.
+/// checked (InvalidConfig naming @p who, @p nfrozen past the core among
+/// them), the MO blocks (and the correlated core's, with @p nfrozen), B_cc
+/// and B_vv's diagonal, C^T h C, h2e and (tu|vw); the RDMs, gamma and what
+/// reads it are the caller's.
 Result<ScArrays> shared_arrays(DeviceResources &res, std::string_view who,
                                const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
                                int32_t naux, int32_t nao, int32_t nmo, const double *b,
-                               const double *c, const double *h, int32_t ncore, int32_t ncas);
+                               const double *c, const double *h, int32_t ncore, int32_t ncas,
+                               int32_t nfrozen);
 
 /// @brief The QD functionals' inputs, built as qd_sc_energy builds them from
 /// (h, B, c), the roots @p vectors and their @p weights, handed to @p use:
-/// the MO blocks and the n x n pairs [M n + N]. qd.cpp's (the exception to
-/// the rule above: QdArrays is its own), for qd_inputs in lagrangian.cpp.
+/// the class walk's MO blocks (the correlated core's, with @p nfrozen) and
+/// the n x n pairs [M n + N]. qd.cpp's (the exception to the rule above:
+/// QdArrays is its own), for qd_inputs in lagrangian.cpp.
 Status
 with_qd_inputs(DeviceResources &res, std::string_view who, const ci::DeviceStringSet &alpha,
                const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
                const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
-               std::span<const double> weights, const double *vectors,
+               std::span<const double> weights, const double *vectors, int32_t nfrozen,
                const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>)> &use);
 
 /// @brief qd_sc_adjoint (@p pc null) or qd_pc_adjoint at each of the k
@@ -166,15 +201,16 @@ qd_adjoints(DeviceResources &res, std::string_view who, const ci::DeviceStringSe
             const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
             const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
             std::span<const double> weights, const double *vectors, std::span<const double> ws,
-            int32_t batch, std::vector<PcClassEnergies> *pc);
+            int32_t batch, std::vector<PcClassEnergies> *pc, int32_t nfrozen);
 
-/// @brief Where a class walk adds its bars: @p bar's fields, and Λ at
-/// @p lambda.
-EnergyBars energy_bars(ScArrays &bar, double *lambda);
+/// @brief Where a class walk adds its bars: @p bar's fields, the
+/// core-indexed ones past the frozen core as ScArrays::inputs reads them, and
+/// Λ at @p lambda.walk().
+EnergyBars energy_bars(ScArrays &bar, LambdaBars &lambda);
 
 /// @brief The reverse pass after a class walk (SC's, PC's or a QD
-/// matrix's) has added its bars onto @p bar and @p lambda_raw: the shared
-/// builders backwards onto the MO blocks, B_cc, B_vv's diagonal and bar.dm1;
+/// matrix's) has added its bars onto @p bar and @p lambda: the correlated
+/// frame's Λ onto the whole one's corner, then the shared builders backwards onto the MO blocks, B_cc, B_vv's diagonal and bar.dm1;
 /// then @p rdm_adjoint, which takes the RDMs' bars (bar.dm1's among them)
 /// onto the CI vectors, returned as y, and onto bar.eri; then (tu|vw)'s
 /// builder backwards, and h_bar, Λ, X, A and ε. The energies are left to the
@@ -182,7 +218,7 @@ EnergyBars energy_bars(ScArrays &bar, double *lambda);
 Result<ScAdjoint>
 builders_adjoint(DeviceResources &res, int32_t naux, int32_t nao, int32_t nmo, const double *b,
                  const double *c, int32_t ncore, int32_t ncas, ScArrays &x, ScArrays &bar,
-                 Buffers::device<double> lambda_raw,
+                 LambdaBars lambda,
                  const std::function<Result<Buffers::device<double>>()> &rdm_adjoint);
 
 } // namespace free_breakfast::nevpt2

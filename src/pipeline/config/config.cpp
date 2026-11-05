@@ -497,18 +497,9 @@ template <class S>
     // So is whether a QD state is one of H_eff's, by check_nevpt2_gradient.
     FBF_TRY(
         check_keys(table, kStep, {"root", "variant", "quasi_degenerate", "state", "frozen_core"}));
-    // [nevpt2]'s key, read the same way; the frozen-core gradient is #875's,
-    // so only 0 is taken until it lands.
-    int32_t frozen_core = 0;
-    FBF_TRY(read_frozen_core(table, kStep, frozen_core));
-    if (frozen_core != 0) {
-      return err_config("[{}] frozen_core is {}: the frozen-core NEVPT2 gradient is not "
-                        "implemented yet (#875), so only 0 is taken; [nevpt2] takes it for the "
-                        "energies",
-                        kStep,
-                        frozen_core == Nevpt2Step::kFrozenCoreAuto ? std::string{"\"auto\""}
-                                                                   : std::to_string(frozen_core));
-    }
+    // [nevpt2]'s key, read the same way; whether it fits the CASSCF's core
+    // is Nevpt2GradientStep::run's to say.
+    FBF_TRY(read_frozen_core(table, kStep, step.frozen_core));
     FBF_TRY(read_key(table, kStep, "root", base_dir, step.root));
     if (step.root < 0) {
       return err_config("[{}] root is {}, below 0", kStep, step.root);
@@ -556,7 +547,15 @@ template <class S>
     // pairs' states (one per CASSCF root), the molecule's spin and the ERI
     // mode are other tables', refused once they are planned, by
     // check_nevpt2_nac and check_density_fitted_only; Nevpt2NacStep::run
-    // refuses them again.
+    // refuses them again. The frozen-core coupling is not implemented (the
+    // PT2 transition density and h_PQ are all-electron), so frozen_core is
+    // refused by name rather than as an unknown key.
+    if (table.contains("frozen_core")) {
+      return err_config("[{}] frozen_core: the frozen-core QD-NEVPT2 coupling is not "
+                        "implemented, and the coupling correlates the whole core; [nevpt2] and "
+                        "[nevpt2_gradient] take it",
+                        kStep);
+    }
     FBF_TRY(check_keys(table, kStep, {"pairs", "variant", "mult_ediff", "use_etfs"}));
     FBF_TRY(read_key(table, kStep, "pairs", base_dir, step.pairs));
     if (table.contains("pairs") && step.pairs.empty()) {

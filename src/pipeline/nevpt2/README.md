@@ -211,8 +211,9 @@ before (every golden unchanged).
   condition is f_ij = 0 for every i ≠ j of the whole inactive space
   (acs.jctc.9b00919, Eq. 24, multipliers z^c_ij, Eq. 25), and under a
   frozen core it is the frozen–correlated pairs of that condition that are
-  no longer invariant, which is what makes the frozen-core gradient's
-  Z-vector term (#875). BAGEL does the same: its CASSCF diagonalizes the
+  no longer invariant, and z^c's division takes them as it takes every
+  other core pair (#875, `../../nevpt2/gradient/README.md` "The frozen
+  core"). BAGEL does the same: its CASSCF diagonalizes the
   whole closed block of the Fock (`src/multi/casscf/casscf.cc`,
   `semi_canonical_orb`), and SMITH then freezes its first `ncore`
   (`src/smith/smith_info.cc`). block2's `frozen` and the references here
@@ -230,10 +231,9 @@ before (every golden unchanged).
   queued: a count past the CASSCF's core (also "auto" resolving past it,
   as when a 1s is active). The config refuses a negative count or another
   string when it is read (`config/README.md`).
-- **Not under `[nevpt2_gradient]`**, yet: the frozen-core gradient needs
-  the frozen–correlated rotations' Z-vector term (#875). The same key there
-  takes only 0, and anything else is refused `InvalidConfig` when the config
-  is read.
+- **`[nevpt2_gradient]` reads the same key** (#875), resolved by the same
+  rule (`Nevpt2Step::resolve_frozen_core`), and so does `[optimize]`'s QD
+  MECI through it; `[nevpt2_nac]` refuses it.
 
 Measured at Park's own geometries, ethylene and PSB3 at his bases, PC-QD with
 the C and N 1s frozen reproduces his absolute energies to 0.5 µEh

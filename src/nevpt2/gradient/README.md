@@ -106,6 +106,9 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
     qd_inputs(res, molecule, basis, aux, h, b, solution, ncore, ncas, use)
         -> Status        hands use(blocks, pairs) qd_sc_energy's inputs on the solution
 
+Every call above but `zc_*`, `lagrangian_gradient` and the couplings takes
+a trailing `nfrozen`, 0 by default: the frozen core ("The frozen core").
+
 `qd_inputs` is the QD energies' inputs, built on the solution as
 `qd_sc_energy` builds them (the weights `mcscf::sa_gradient_weights`
 recovers, the active strings, the shared arrays and every ordered pair's
@@ -279,6 +282,94 @@ one-root call sits at the same spread (at most 6.9e-18; over 50 repeats,
 1.39e-17 on A, one ulp of its largest element). h̄ = z alone is bitwise. `lagrangian_gradient` and
 `sc_gradient`, which hold the CASSCF's roots, still refuse a state average
 (`Unsupported`), and call `zc_adjoint` at one root, weight 1.
+
+## The frozen core
+
+Every energy and adjoint above, the single-state and QD gradients (every
+form but the couplings) and `qd_inputs` take a trailing `nfrozen`, 0 by
+default: the lowest `nfrozen` core columns of C are left uncorrelated
+(#875; the Nevpt2 step's `frozen_core`, `pipeline/nevpt2/README.md`
+"Frozen core"). Past the core is `InvalidConfig`.
+
+**The functional.** The frozen orbitals leave every class with a core
+index and stay in the core density, so the split is by reader:
+
+- the builders (F^I's blocks, d, g, the orbital energies) run over the
+  **whole** core, unchanged, so h1e, every `h1e_v_*` value and ε are the
+  all-electron ones;
+- the class walk reads the **correlated** frame: MO blocks over C's columns
+  from `nfrozen` on (a second `mo_blocks`, `ScArrays::walk_blocks`), and
+  e_core, `h1e_v_si` and `h1e_v_sir` from their correlated columns
+  (`ScArrays::inputs`, pointer offsets: the core is each one's slow index).
+  That is the Nevpt2 step's construction, so `qd_sc_energy` and
+  `qd_pc_energy` give `qd_nevpt2_frozen_core.json`'s eigenvalues.
+
+**The reverse pass is the same split backwards.** The walk adds its bars
+onto the same offsets of the builders' bars (`energy_bars`), so the frozen
+columns of ē_core, h̄1e_v_si and h̄1e_v_sir stay 0, and its Λ onto a buffer
+in its own frame, naux (nmo − n_f)², which `builders_adjoint` first adds
+onto the whole Λ's corner at (n_f, n_f) by one geam (`LambdaBars`). From
+there h̄, Λ, X, A and ε are the whole frame's, as before.
+
+**z^c is unchanged, and covers the new pairs (Park's "the pseudocanonical
+condition also accounts for the frozen core approximation", acs.jctc.9b00919
+after Eq. 25).** The core is canonicalized whole and then frozen, so f is
+diagonal over the whole core and the pseudocanonical conditions f_ij = 0
+are the Lagrangian's for every core pair. What the frozen core changes is A:
+
+- **frozen–correlated** pairs: rotating one into the other moves an orbital
+  into or out of the classes, so the energy is no longer invariant and
+  A_ij ≠ 0. `zc_multipliers`' division, z_ij = −A_ij / (2 (ε_i − ε_j)), is
+  their multiplier with no change: it already runs over every core pair,
+  with ε the whole core's (its frozen entries the all-electron ones). The
+  stationarity argument above holds as it is: f depends on the orbitals
+  through the core and active densities alone, and a core rotation,
+  frozen or not, leaves both.
+- **frozen–frozen** pairs: the frozen orbitals enter only through the core
+  density, which their rotation leaves alone, so A_ij = 0 and z = 0 (to
+  round-off: 1.4e-19 and 6.5e-19 against 8.5e-3 on the frozen–correlated
+  pairs, SC and PC, skew H2CO, below).
+- **correlated–correlated** pairs: as without a frozen core.
+
+So nothing new is written for z^c, Φ, the Z-vector, the gate or the passes:
+the frozen core reaches them only through A, h̄, Λ, X and y. The gate's
+core–core residue is the check on the division (2.0e-14 at skew H2CO,
+1.3e-14 at ethylene Py, below).
+
+**Measured** (`--preset default`, RTX 3080, the card held): directional
+central differences of the step's own frozen-core energies, every point's
+DF-SA-CASSCF re-converged (`conv_tol_grad` 1e-10, `conv_tol` 1e-13), steps
+2e-3, 1e-3 and 5e-4 bohr, one Richardson step over the two finest, along
+the analytic gradient and two random unit directions (`default_rng(875)`),
+against the bar max(2 × the Richardson bar, 3 σ_E / h_min), σ_E the sd of
+5 reference repeats (`../energy/README.md`, "The derivative across a
+continuum"). Every check passes:
+
+| case | quantity | σ_E (Eh) | gradient direction (slope; miss / bar) | random0 | random1 |
+|---|---|---|---|---|---|
+| skew H2CO SA3, cc-pVDZ, n_f 2 | SC-QD E_1 | 6.7e-13 | 0.2341; 1.1e-9 / 4.0e-9 | 7.1e-11 / 4.0e-9 | −9.2e-10 / 4.0e-9 |
+| | PC-QD E_1 | 1.7e-12 | 0.2339; −7.1e-11 / 1.0e-8 | −2.1e-9 / 1.0e-8 | 9.6e-10 / 1.0e-8 |
+| skew H2CO, one root, n_f 2 | SC E_0 | 2.1e-13 | 0.0281; 6.0e-9 / 2.8e-7 | −1.2e-10 / 7.5e-9 | 3.2e-8 / 2.6e-7 |
+| | PC E_0 | 2.4e-13 | 0.0277; −1.3e-10 / 1.4e-9 | 1.5e-10 / 1.4e-9 | −3.8e-10 / 1.4e-9 |
+| ethylene, Park's Py, aug-cc-pVDZ / aug-cc-pVDZ-JKFIT, SA3, n_f 2 | PC-QD E_0 + E_1 | 2.8e-13 | 0.0890; −1.1e-10 / 1.7e-9 | −9.7e-10 / 2.5e-9 | −1.7e-10 / 1.7e-9 |
+| | PC-QD E_2 | 8.5e-14 | 0.2423; 4.6e-10 / 7.6e-10 | 4.8e-11 / 6.6e-10 | −3.0e-10 / 7.7e-10 |
+
+**SC-QD at ethylene Py misses, frozen or not (#894).** E_0 + E_1 misses by
+2.4e-9, 1.8e-8 and 1.5e-8 (bars 2.2e-9, 2.0e-9, 3.9e-9) and E_2 by
+−2.3e-8, −1.7e-8 and −1.4e-8 (bars 1.2e-9); with `nfrozen` 0, the same
+checks miss by 3.8e-9, 1.9e-8, 1.5e-8 and −2.5e-8, −1.9e-8, −1.5e-8. The
+differences are clean (ratios 4.0, the two Richardson values within
+1.4e-10), and the frozen core moves no miss by more than 1.4e-9: it is
+the all-electron SC-QD gradient's at that geometry, not the frozen core's.
+#894 has it; SC's non-smoothness where a perturber's norm is near zero
+(the ladders' "Not every ladder is smooth" below) is the candidate. PC
+passes there, and SC passes on skew H2CO.
+
+The quantity at ethylene's MECI is E_0 + E_1, not either state: 7 µEh
+apart, the two are a cone there, and a step of 5e-4 bohr opens the gap
+twenty-fold. Their sum is smooth (tr H_eff less E_2), and its gradient is
+the sum of the two states' (the intersection's g_P + g_Q). E_2 is checked
+alone beside it.
 
 ## SC-QD-NEVPT2: the functional E[W] and its adjoint
 
@@ -794,6 +885,10 @@ multi-density FelizJueves kernel is out of scope here.
 - Λ lives at naux nmo² whole; a virtual–virtual block that only its diagonal
   reaches is still stored whole, as `mcscf::df_gradient`'s extra adjoint
   takes it.
+- The frozen core in the interstate couplings (`qd_sc_coupling`,
+  `qd_pc_coupling`) and so in the derivative coupling (`../nac/`): they
+  take no `nfrozen`, and `[nevpt2_nac]` refuses `frozen_core`
+  (`../nac/README.md`).
 - A state average's root of the single-state NEVPT2 (`lagrangian_gradient`,
   `sc_gradient`, `pc_gradient`) is refused; the SA reference is
   `qd_sc_gradient`'s and `qd_pc_gradient`'s.
@@ -1173,6 +1268,22 @@ once per process.
     refuse the pair (0, 1) and (1, 0) with `qd_pc_energy`'s error, kind and
     message unchanged; P = Q and a state out of range are `InvalidConfig`,
     named `nevpt2::qd_pc_coupling`.
+- **The frozen core** (#875):
+  - `Nevpt2QdFrozenCore.EnergyMatchesReference`: `qd_sc_energy`'s and
+    `qd_pc_energy`'s H_eff eigenvalues at every count
+    `data/qd_nevpt2/qd_nevpt2_frozen_core.json` has (`h2co_ccpvdz_sa2` at
+    2, `h2co_skew_ccpvdz_sa3` at 2 and 1) against #859's references to
+    1e-8; worst 9.5e-12 on the RTX 3080.
+  - `Nevpt2QdFrozenCoreAdjoint.AdjointsMatchLadders`
+    (`h2co_skew_ccpvdz_sa3`, n_f 2, the eigenvector seed): the ladders
+    above at the frozen count along h, B, C exp(t κ) with κ on the
+    frozen–correlated pairs alone, and each root; and A's frozen–frozen
+    block within 1e-10 of the frozen–correlated one's largest (measured
+    1.4e-19 and 6.5e-19 against 8.5e-3). PC runs every path. SC runs B, C
+    and c_0: h, c_1 and c_2 are not smooth at the ladder's scale on this
+    case all-electron either ("Not every ladder is smooth" above; the h
+    ladder runs the all-electron ratios; #894). Worst relative miss 2.2e-8
+    (SC, B).
 
 ## Files
 

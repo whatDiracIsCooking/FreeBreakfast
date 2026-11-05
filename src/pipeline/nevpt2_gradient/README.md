@@ -216,11 +216,24 @@ conv_tol_grad = 1e-9
 [nevpt2_gradient]   # root = 0, variant = "sc" by default ("pc" the other)
 ```
 
-**No frozen core yet.** `frozen_core` is `[nevpt2]`'s key (#859), and this
-table reads it the same way, but takes only 0, the all-electron default:
-a count above 0, or `"auto"`, is `InvalidConfig` when the config is read,
-naming #875. The frozen-core gradient needs the frozen–correlated core
-rotations' Z-vector term, which #875 adds.
+**Frozen core** (#875). `frozen_core` is `[nevpt2]`'s key (#859), read the
+same way: a count, or `"auto"` (each atom's chemical core). `run` resolves
+it at the molecule and the CASSCF's core (`Nevpt2Step::resolve_frozen_core`,
+one rule for both steps: past the core is `InvalidConfig`) and passes the
+count to every gradient call as its `nfrozen`, state-specific and QD
+alike; the resolved count is `Nevpt2GradientOutput::frozen_core` and the
+JSON's `"frozen_core"`. The frozen–correlated core rotations enter through
+z^c's existing division (`../../nevpt2/gradient/README.md`, "The frozen
+core", with the directional checks that validate it). Under `[optimize]`
+the same key sets the QD MECI's frozen core (`../optimize/README.md`).
+
+```toml
+[nevpt2_gradient]
+quasi_degenerate = true
+variant = "pc"
+state = 0
+frozen_core = "auto"   # the C 1s of ethylene; 0, the default, correlates every core orbital
+```
 
 ## Tests
 
@@ -263,8 +276,20 @@ rotations' Z-vector term, which #875 adds.
   eigenvalue: the run fails `Numerical` naming Si, as the energy step's
   `pc_refusals[0]` does, SC kept, no `nevpt2_gradient.json`. No plain config
   reaches PC-QD's refusal since #853 (`../nevpt2/README.md`).
+- `FrozenCoreQdScMatchesItsOwnDifferences` and
+  `FrozenCoreQdPcMatchesItsOwnDifferences` (#875):
+  `data/qd_nevpt2/qd_nevpt2_frozen_core.json`'s skew H₂CO, SA3, at QD
+  state 1 with `frozen_core = "auto"` (2), its `[casscf]` at the bars above.
+  The reference run, with a frozen-core `[nevpt2] quasi_degenerate` beside
+  it, holds `"frozen_core"`, the QD energies against #859's (1e-8) and the
+  energy step's (1e-9), and then six re-converged runs give central
+  differences of E_1 along the analytic gradient at 2e-3, 1e-3 and 5e-4
+  bohr; one Richardson step against max(2 × its bar, 3 σ_E / 5e-4), σ_E
+  2e-12 (measured 6.7e-13 SC, 1.7e-12 PC over five repeats). On the RTX
+  3080: SC misses by −4.1e-10, PC by −4.9e-9, bar 1.2e-8; about 4 s each.
 - The new keys and their refusals at config read in
-  `test/pipeline/config_host.cpp`; the product's variant and the two fields
+  `test/pipeline/config_host.cpp` (`frozen_core` read as `[nevpt2]` reads
+  it); the product's variant and the two fields
   in `test/pipeline/steps_host.cpp`.
 
 ## Files

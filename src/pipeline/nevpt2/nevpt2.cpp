@@ -78,6 +78,25 @@ namespace free_breakfast {
   return 0;
 }
 
+Result<int32_t> Nevpt2Step::resolve_frozen_core(const std::string_view step,
+                                                const int32_t frozen_core, const Molecule &molecule,
+                                                const int32_t ncore) {
+  // A count, or each atom's chemical core.
+  int32_t frozen = frozen_core;
+  if (frozen == kFrozenCoreAuto) {
+    frozen = 0;
+    for (const Atom &atom : molecule.atoms()) {
+      frozen += nevpt2_chemical_core(nuclear_charge(atom));
+    }
+  }
+  if (frozen < 0 || frozen > ncore) {
+    return err_config("[{}] frozen_core is {}{}, and the CASSCF has {} core orbitals: it must be "
+                      "0 to {}, or \"auto\"",
+                      step, frozen, frozen_core == kFrozenCoreAuto ? " (auto)" : "", ncore, ncore);
+  }
+  return frozen;
+}
+
 // What the energy layer reads of a set of orbitals but the RDMs and the
 // orbital energies, over the orbitals @p c (AO x MO, device) and F^I in them,
 // @p fi (nmo x nmo column-major, device): h1e, F^I's active block; the
@@ -210,19 +229,7 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
   const size_t nroots = cas.energies.size();
   const auto order = static_cast<int32_t>(nmo);
 
-  // The frozen core, resolved: a count, or each atom's chemical core.
-  int32_t frozen = frozen_core;
-  if (frozen == kFrozenCoreAuto) {
-    frozen = 0;
-    for (const Atom &atom : molecule.atoms()) {
-      frozen += nevpt2_chemical_core(nuclear_charge(atom));
-    }
-  }
-  if (frozen < 0 || std::cmp_greater(frozen, ncore)) {
-    return err_config("[{}] frozen_core is {}{}, and the CASSCF has {} core orbitals: it must be "
-                      "0 to {}, or \"auto\"",
-                      kName, frozen, frozen_core == kFrozenCoreAuto ? " (auto)" : "", ncore, ncore);
-  }
+  const int32_t frozen = FBF_TRY(resolve_frozen_core(kName, frozen_core, molecule, cas.ncore));
   const auto nfrozen = static_cast<size_t>(frozen);
   const size_t ncorr = ncore - nfrozen;
 
