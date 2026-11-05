@@ -1,0 +1,35 @@
+# Tier 3 (#850): PSB3's Franck-Condon geometry, the minimum of QD state 0 of
+# Park's SA-QD-PC-NEVPT2 over DF-SA3-CASSCF(6,6)/cc-pVTZ (cc-pVTZ-JKFIT), from
+# his own S0 (single_points/geometries/psb3_tz_s0.xyz, his SI converted to
+# Angstrom). The six RHF pi orbitals at that start are named by index, as #860
+# chose them (single_points/README.md, "Active spaces"). Its final.xyz is
+# geometries/psb3_fc_ccpvtz.xyz.
+# Run from the root of the tree:
+#   build/src/free-breakfast -i docs/reproduction/park2019 -o <out> \
+#     docs/reproduction/park2019/tier3_psb3_fc_ccpvtz_qdpc.toml
+[molecule]
+xyz = "single_points/geometries/psb3_tz_s0.xyz"
+charge = 1
+[basis_set]
+basis = "cc-pvtz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvtz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 6
+nelecas = 6
+active = [18, 20, 21, 22, 25, 29]   # the RHF's six pi orbitals, 0-based
+nroots = 3
+conv_tol_grad = 1e-9                # 1e-10 stalls mcscf::solve at PSB3 (#867)
+[nevpt2_gradient]
+quasi_degenerate = true
+variant = "pc"                      # Park's SA-QD-PC-NEVPT2
+state = 0
+[optimize]
+max_force = 1.5e-5                  # Opt=Tight, as tier 2a's
+rms_force = 1e-5
+max_displacement = 6e-5
+rms_displacement = 4e-5
+max_steps = 200

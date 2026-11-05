@@ -1,0 +1,38 @@
+# Tier 3 (#850): PSB3's S1 minimum, the minimum of QD state 1 of Park's
+# SA-QD-PC-NEVPT2 over DF-SA3-CASSCF(6,6)/cc-pVDZ (cc-pVDZ-JKFIT), from his
+# own S1 minimum (single_points/geometries/psb3_dz_s1.xyz, his SI converted to
+# Angstrom). The six RHF pi orbitals at that start are named by index, as #860
+# chose them (single_points/README.md, "Active spaces"). This walk does NOT
+# converge, and it is kept as the evidence: at our level his planar S1 is not
+# a minimum, and the walk leaves it and is stopped by the QD state-overlap
+# guard at evaluation 32 (tier3.md, "The S1 minimum"). Table 2's S1 row is
+# #860's single point at his geometry instead.
+# Run from the root of the tree:
+#   build/src/free-breakfast -i docs/reproduction/park2019 -o <out> \
+#     docs/reproduction/park2019/tier3_psb3_s1_ccpvdz_qdpc.toml
+[molecule]
+xyz = "single_points/geometries/psb3_dz_s1.xyz"
+charge = 1
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 6
+nelecas = 6
+active = [19, 20, 21, 22, 23, 27]   # the RHF's six pi orbitals, 0-based
+nroots = 3
+conv_tol_grad = 1e-9                # 1e-10 stalls mcscf::solve at PSB3 (#867)
+[nevpt2_gradient]
+quasi_degenerate = true
+variant = "pc"                      # Park's SA-QD-PC-NEVPT2
+state = 1
+[optimize]
+max_force = 1.5e-5                  # Opt=Tight, as tier 2a's
+rms_force = 1e-5
+max_displacement = 6e-5
+rms_displacement = 4e-5
+max_steps = 200
