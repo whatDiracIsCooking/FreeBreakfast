@@ -49,6 +49,14 @@ def load_stencil():
 stencil = load_stencil()
 
 
+def close(a: float, b: float) -> bool:
+    # Recomputed from fixture inputs, not read back: the stencil's sum()
+    # reorders (3.12 compensates float sums), so it may move the last ulp of
+    # each gradient, which the 1/s of a step leaves near 1e-16 / s absolute
+    # (1e-12 is far below any bar, 2.6e-8 at least).
+    return math.isclose(a, b, rel_tol=1e-13, abs_tol=1e-12)
+
+
 @functools.cache
 def fixture(name: str) -> dict:
     return json.loads((DATA / f"{name}.json").read_text())
@@ -231,7 +239,7 @@ def test_the_ladders_are_the_recorded_gradients():
                 ladder = stencil.column_ladder(points, h)
                 for k in range(3):
                     for i in range(n):
-                        assert ladder[k][i] == part["ladder"][k][i][j], (
+                        assert close(ladder[k][i], part["ladder"][k][i][j]), (
                             name,
                             q,
                             k,
@@ -317,7 +325,9 @@ def test_the_symmetric_case_records_its_failing_block():
                 record["steps"]["displacements"], p["derivatives"], strict=True
             )
         }
-        assert [v[0] for v in stencil.column_ladder(derivatives, h)] == p["ladder"]
+        recomputed = [v[0] for v in stencil.column_ladder(derivatives, h)]
+        assert len(recomputed) == len(p["ladder"])
+        assert all(map(close, recomputed, p["ladder"])), p["pair"]
 
 
 def test_the_guard_and_the_checks():
