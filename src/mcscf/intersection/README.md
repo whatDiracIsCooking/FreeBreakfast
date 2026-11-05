@@ -207,8 +207,10 @@ both pass, and so does every MECI, NAC and QD case in the tiers.
   refused at evaluation 7 before, converges in 53 evaluations to a gap of
   6.3e-9 Eh. Every column's true residual was 4.6e-11 to 9.9e-11, in 31 to
   35 products. That run used `[casscf] conv_tol_grad = 1e-9`. At 1e-10,
-  `mcscf::solve` itself stalled near ‖g‖ = 3.9e-10 in one run, which is #867
-  and not this solve. At 1e-9, s_o ‖g‖ is about 2e-10 Eh.
+  `mcscf::solve` itself stalled near ‖g‖ = 3.9e-10 in one run, which was #867
+  and not this solve (the CI's floor, since tied to `conv_tol_grad`:
+  `../solve/README.md` "The CI's floor under ‖g‖"). At 1e-9, s_o ‖g‖ is
+  about 2e-10 Eh.
 - PSB3 twisted 90° SC-QD-NEVPT2 MECI (`nevpt2`'s Lagrangian, the same
   floor), refused at evaluation 0 before, runs its 4 allowed steps at
   cc-pVDZ (gap 1.9e-2 to 8.4e-5) and its 1 allowed step at cc-pVTZ.
