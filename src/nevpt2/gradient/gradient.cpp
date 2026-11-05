@@ -35,14 +35,15 @@ Result<size_t> rdm_budget() {
   return free_bytes / 2;
 }
 
-// The adjoint of one term: each operand that takes a bar gets the forward
-// contraction with it and the output swapping roles.
-Status contract_adjoint(DeviceResources &res, const FockTerm &term, const double *out_bar,
-                        const std::vector<int64_t> &out_dims) {
-  const size_t arrow = term.subscripts.find("->");
-  const std::string_view rhs = term.subscripts.substr(arrow + 2);
+// adjoint_slot (declared in :builders).
+Status adjoint_slot(DeviceResources &res, const std::string_view subscripts,
+                    const std::vector<EinsumOperand> &operands, const size_t k,
+                    const double *out_bar, const std::vector<int64_t> &out_dims, double *target,
+                    const double alpha) {
+  const size_t arrow = subscripts.find("->");
+  const std::string_view rhs = subscripts.substr(arrow + 2);
   std::vector<std::string_view> groups;
-  for (std::string_view lhs = term.subscripts.substr(0, arrow);;) {
+  for (std::string_view lhs = subscripts.substr(0, arrow);;) {
     const size_t comma = lhs.find(',');
     groups.push_back(lhs.substr(0, comma));
     if (comma == std::string_view::npos) {
@@ -50,22 +51,29 @@ Status contract_adjoint(DeviceResources &res, const FockTerm &term, const double
     }
     lhs.remove_prefix(comma + 1);
   }
+  std::string swapped{rhs};
+  std::vector<EinsumOperand> others{column_operand(out_bar, out_dims)};
+  for (size_t j = 0; j < operands.size(); ++j) {
+    if (j != k) {
+      swapped += ',';
+      swapped += groups[j];
+      others.push_back(operands[j]);
+    }
+  }
+  swapped += "->";
+  swapped += groups[k];
+  return contract(res, swapped, others, target, operands[k].dims, alpha);
+}
+
+// The adjoint of one term: each operand that takes a bar gets the forward
+// contraction with it and the output swapping roles.
+Status contract_adjoint(DeviceResources &res, const FockTerm &term, const double *out_bar,
+                        const std::vector<int64_t> &out_dims) {
   for (size_t k = 0; k < term.operands.size(); ++k) {
-    if (term.bars[k] == nullptr) {
-      continue;
+    if (term.bars[k] != nullptr) {
+      FBF_TRY(adjoint_slot(res, term.subscripts, term.operands, k, out_bar, out_dims, term.bars[k],
+                           term.alpha));
     }
-    std::string subscripts{rhs};
-    std::vector<EinsumOperand> operands{column_operand(out_bar, out_dims)};
-    for (size_t j = 0; j < term.operands.size(); ++j) {
-      if (j != k) {
-        subscripts += ',';
-        subscripts += groups[j];
-        operands.push_back(term.operands[j]);
-      }
-    }
-    subscripts += "->";
-    subscripts += groups[k];
-    FBF_TRY(contract(res, subscripts, operands, term.bars[k], term.operands[k].dims, term.alpha));
   }
   return {};
 }
@@ -397,6 +405,43 @@ EnergyBars energy_bars(ScArrays &bar, LambdaBars &lambda) {
           .lambda = lambda.walk()};
 }
 
+// fold_bars (declared in :builders).
+Result<FoldedBars> fold_bars(DeviceResources &res, const int32_t nmo, const MoBlocks &blocks,
+                             ScArrays &bar, Buffers::device<double> &lambda_raw) {
+  const int64_t naux = blocks.naux;
+  const int64_t nc = blocks.ncore;
+  const int64_t n = blocks.ncas;
+  const int64_t nocc = nc + n;
+  const int64_t nv = blocks.nvirt;
+  const int64_t nmo2 = int64_t{nmo} * nmo;
+  const int64_t ld_lambda = naux * int64_t{nmo};
+
+  // Onto Λ: h2e's bar, the MO blocks' and B_vv's diagonal's, and B_cc's at
+  // its corner, every element of it (off the diagonal for (ij|ji)).
+  FBF_TRY(h2e_adjoint(res, blocks, bar.h2e.data(), lambda_raw.data()));
+  FBF_TRY(mo_blocks_adjoint(res, bar.blocks, nullptr, bar.vvd.data(), lambda_raw.data()));
+  FBF_TRY(add_onto(res, naux * nc, nc, bar.cc.data(), lambda_raw.data(), ld_lambda));
+
+  // h_bar: each F^I block's bar at its corner of C^T h C, and the orbital
+  // energies' on its diagonal.
+  Buffers::device<double> h_bar = FBF_TRY(zeroed(res, nmo2));
+  double *const hb = h_bar.data();
+  FBF_TRY(add_onto(res, n, n, bar.h1e.data(), hb + nc + (nmo * nc), nmo));
+  FBF_TRY(add_onto(res, nv, n, bar.h1e_v_sr.data(), hb + nocc + (nmo * nc), nmo));
+  FBF_TRY(add_onto(res, n, nc, bar.h1e_v_si.data(), hb + nc, nmo));
+  FBF_TRY(add_onto(res, nv, nc, bar.h1e_v_sir.data(), hb + nocc, nmo));
+  FBF_TRY(add_onto(res, 1, nc, bar.e_core.data(), hb, nmo + 1));
+  FBF_TRY(add_onto(res, 1, nv, bar.e_virt.data(), hb + (nocc * (nmo + 1)), nmo + 1));
+  FBF_TRY(symmetrize(res, nmo, hb, nmo));
+
+  // Λ = (Λ_raw + Λ_rawᵀ) / 2 per L.
+  Buffers::device<double> lambda = FBF_TRY(zeroed(res, naux * nmo2));
+  const EinsumOperand raw = column_operand(lambda_raw.data(), {naux, nmo, nmo});
+  FBF_TRY(contract(res, "Lpq->Lpq", {raw}, lambda.data(), {naux, nmo, nmo}, 0.5));
+  FBF_TRY(contract(res, "Lqp->Lpq", {raw}, lambda.data(), {naux, nmo, nmo}, 0.5));
+  return FoldedBars{.h_bar = std::move(h_bar), .lambda = std::move(lambda)};
+}
+
 Result<ScAdjoint>
 builders_adjoint(DeviceResources &res, const int32_t naux, const int32_t nao, const int32_t nmo,
                  const double *b, const double *c, const int32_t ncore, const int32_t ncas,
@@ -428,30 +473,9 @@ builders_adjoint(DeviceResources &res, const int32_t naux, const int32_t nao, co
   Buffers::device<double> y = FBF_TRY(rdm_adjoint());
   FBF_TRY(run_builds_adjoint(res, std::span(builds).first(1)));
 
-  // Onto Λ: h2e's bar, the MO blocks' and B_vv's diagonal's, and B_cc's at
-  // its corner, every element of it (off the diagonal for (ij|ji)).
-  FBF_TRY(h2e_adjoint(res, x.blocks, bar.h2e.data(), lambda_raw.data()));
-  FBF_TRY(mo_blocks_adjoint(res, bar.blocks, nullptr, bar.vvd.data(), lambda_raw.data()));
-  FBF_TRY(add_onto(res, naux * nc, nc, bar.cc.data(), lambda_raw.data(), ld_lambda));
-
-  // h_bar: each F^I block's bar at its corner of C^T h C, and the orbital
-  // energies' on its diagonal.
-  Buffers::device<double> h_bar = FBF_TRY(zeroed(res, nmo2));
-  double *const hb = h_bar.data();
-  FBF_TRY(add_onto(res, n, n, bar.h1e.data(), hb + nc + (nmo * nc), nmo));
-  FBF_TRY(add_onto(res, nv, n, bar.h1e_v_sr.data(), hb + nocc + (nmo * nc), nmo));
-  FBF_TRY(add_onto(res, n, nc, bar.h1e_v_si.data(), hb + nc, nmo));
-  FBF_TRY(add_onto(res, nv, nc, bar.h1e_v_sir.data(), hb + nocc, nmo));
-  FBF_TRY(add_onto(res, 1, nc, bar.e_core.data(), hb, nmo + 1));
-  FBF_TRY(add_onto(res, 1, nv, bar.e_virt.data(), hb + (nocc * (nmo + 1)), nmo + 1));
-  FBF_TRY(symmetrize(res, nmo, hb, nmo));
-
-  // Λ = (Λ_raw + Λ_rawᵀ) / 2 per L.
-  Buffers::device<double> lambda = FBF_TRY(zeroed(res, naux * nmo2));
-  const EinsumOperand raw = column_operand(lambda_raw.data(), {naux, nmo, nmo});
-  FBF_TRY(contract(res, "Lpq->Lpq", {raw}, lambda.data(), {naux, nmo, nmo}, 0.5));
-  FBF_TRY(contract(res, "Lqp->Lpq", {raw}, lambda.data(), {naux, nmo, nmo}, 0.5));
+  auto [h_bar, lambda] = FBF_TRY(fold_bars(res, nmo, x.blocks, bar, lambda_raw));
   lambda_raw = Buffers::device<double>(0, res.device());
+  double *const hb = h_bar.data();
 
   // X = 2 h h_bar + 2 Σ_L C^T B_AO^L (C Λ^L): per q, Λ̃_q = Λ_q C^T
   // (naux x nao, one strided-batched gemm over q); then D = B_AOᵀ Λ̃ with B
@@ -490,8 +514,7 @@ builders_adjoint(DeviceResources &res, const int32_t naux, const int32_t nao, co
                    .epsilon = std::move(epsilon)};
 }
 
-// The one-root RDM step of the reverse pass: γ̄ and dm2̄ folded into dm3̄
-// by the traces' adjoint, then nevpt2::rdms_adjoint onto y and (tu|vw)'s bar.
+// root_rdms_adjoint (declared in :builders).
 Result<Buffers::device<double>> root_rdms_adjoint(DeviceResources &res,
                                                   const ci::DeviceStringSet &alpha,
                                                   const ci::DeviceStringSet &beta,

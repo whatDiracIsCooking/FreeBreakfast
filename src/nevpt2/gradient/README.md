@@ -109,8 +109,13 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
                      count, h_dot, b_dot, c_dot)
         -> BuildersTangent  the builders at the point and their forward tangent along
                             each MO direction (h_dot, B_dot, c_dot); below
+    sc_hessian_product(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, z,
+                       batch, directions, partners = {}, parts = false)
+        -> ScHessianProduct  the tangent of sc_adjoint + zc_adjoint at fixed z along
+                             each MO direction, the CI one on the unit sphere; below
 
-Every call above but `zc_*`, `lagrangian_gradient`, the couplings and `builders_tangent` takes
+Every call above but `zc_*`, `lagrangian_gradient`, the couplings, `builders_tangent` and
+`sc_hessian_product` takes
 a trailing `nfrozen`, 0 by default: the frozen core ("The frozen core").
 
 `qd_inputs` is the QD energies' inputs, built on the solution as
@@ -265,6 +270,116 @@ untouched. One `BuilderOutputs` per direction holds three n⁶ arrays; the
 three RDM builds share one more triple (the second and third builds'
 outputs, added onto the first's), held across the `rdms` calls and so its
 own buffers.
+
+## The SC Hessian-vector product in (h, B, c)
+
+    sc_hessian_product(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, z,
+                       batch, directions, partners = {}, parts = false) -> ScHessianProduct
+        energies    sc_energy's class energies
+        products    AdjointTangent per direction: the tangents of h_bar, lambda, y, x, a
+        populated   class_energies_hvp's, per direction: the empty perturbers it populates
+        defect      class_energies_hvp's ρ_τ with the partner, per direction
+        parts       with parts: per direction, the product's five parts (below)
+    MoDirections  {count, h, b, c}: builders_tangent's direction layout, MO basis
+
+The E_corr + Φ part of milestone 24's Lagrangian Hessian (#814,
+`nuclear_hessian.tex` Eq. Lxx's level 1 and z^c term, and L_Ax's NEVPT2
+part): the tangent of `sc_adjoint` + `zc_adjoint` at fixed z^c along each
+direction (ḣ, Ḃ, ċ), in the MO basis of `c` as `builders_tangent` takes
+them, so #813's t_B goes in as it stands. ⟨t_A, product(t_B)⟩ over the
+parameter and integral directions together is then this part's share of
+#816's Σ_AB. All-electron: it takes no `nfrozen`. `z` is z^c as
+`zc_multipliers` forms it (one root, weight 1).
+
+**Forward over reverse.** The adjoint is (h̄, Λ, y) = Jᵀ Ē, Ē the class
+walk's bars at the builders' outputs I(h, B, c) and J the builders'
+Jacobian, then X and A from (h̄, Λ). Its tangent has two kinds of term:
+
+- **Jᵀ Ė**: `class_energies_hvp` (#811) takes the class walk's bars to their
+  tangent Ė along `builders_tangent`'s outputs (#806) and Ḃ, and Ė runs back
+  through the same reverse pass the gradient runs (`fock_builds`' adjoints,
+  the traces', the one-vector `rdms_adjoint`, (tu|vw)'s and the folds).
+- **J̇ᵀ Ē, the one-slot-dotted terms**: every builder term's adjoint at the
+  fixed bars Ē (the gradient's own, kept from `sc_adjoint`'s pass) with one
+  other operand at its tangent, the same einsum (`adjoint_slot`) with the
+  operand swapped, so no derivative is written by hand; and the reverse
+  steps that are not einsums: `rdms_adjoint` is bilinear in its bars and c
+  and linear in (tu|vw) through f3, so its share is the bra/ket adjoint at
+  (c, u) (the bra's bar) and at (u, c) (the ket's), their (tu|vw) bars
+  added, and the one-vector adjoint at (tu|vw)'s tangent with dm3's bar
+  zero (y's share; that call's own (tu|vw) bar does not move and is
+  dropped); `h2e_adjoint` is linear in B, so it runs once more at Ḃ's
+  blocks at the fixed bar. Every one-slot contribution onto an
+  intermediate's bar (d, g, γ, the RDMs, (tu|vw), B_aa) runs back through
+  the rest of the pass with Ė's. No `rdm/` entry point was missing.
+
+Both are one sweep, `bars_tangent`, the builds the last first as
+`builders_adjoint` runs them.
+
+**Φ's share is closed form.** Φ = ⟨z, f⟩ is linear in h, bilinear in B and
+quadratic in c, so at fixed z: Λ^c = z g_L + D w_L − ½ (z B_L D + D B_L z)
+(g_L = ⟨B_L, D⟩, w_L = ⟨B_L, z⟩) is bilinear in (B, D) and its tangent is
+Λ^c(Ḃ, D) + Λ^c(B, Ḋ), Ḋ the active block's γ̇ (`builders_tangent`'s dm1);
+y^c = σ(W + Wᵀ) c with W = Σ_L w_L B_L − ½ Σ_L B_L z B_L on the active
+block, quadratic in B, so ẏ^c = σ(W + Wᵀ) u + σ(Ẇ + Ẇᵀ) c,
+Ẇ = W(Ḃ, B) + W(B, Ḃ); h̄^c = z does not move.
+
+**X and A** are formed in the MO basis, X = 2 h h̄ + 2 Σ_L B_L Λ_L with B
+whole (one `b_mo`), which is the AO half-transform's X exactly (Cᵀ B_AO C Λ
+= B_MO Λ); its tangent is 2 h ḣ̄ + 2 B Λ̇ + 2 ḣ h̄ + 2 Ḃ Λ, h̄ and Λ the
+summed adjoint's (E_corr's and Φ's), and A = X − Xᵀ.
+
+**The CI direction is on the unit sphere: the Rayleigh-normalized
+functional.** `nuclear_hessian.tex` ("Which functional of c",
+"Normalization") leaves two conventions; this is the second. The product
+is the Hessian of F(h, B, c) = (E_corr + Φ)(h, B, c/|c|), degree 0 in c, at
+the unit `vector`: h̄, Λ, X and A are the raw ones' tangents along
+(ḣ, Ḃ, u), u = ċ − (c·ċ) c, and the c-gradient F's is P y/|c| (P = 1 − c cᵀ,
+y = y^corr + y^c), whose tangent is
+
+    P ẏ(ḣ, Ḃ, u) − u (c·y) − c (u·y) − (c·ċ) P y.
+
+The first extra term is the sphere's −(u·v)(∂L/∂c)·c on CI–CI pairs, which
+the tangent builders on a linear unnormalized c miss; the others vanish
+against directions ⊥ c, and along c itself the product's y is −P y, Euler's
+identity for a functional of degree 0. A caller dotting a CI response ⊥ c (#813's
+c^B) gets the sphere's element; one along c gets zero, as it should. The
+gradient's y is unchanged by the choice: its Z-vector projects y off the root,
+P y, which is F's c-gradient. `vector` must be a unit vector (1e-10 on
+|c|², else InvalidConfig).
+
+**The off-shell extension is the gradient's**, the rank-reduced one: the
+class tables use Ĥ_D|Ψ₀⟩ = E₀|Ψ₀⟩ off the CASCI root too, as
+`class_energies` and its adjoint do ("The functional"), and the product is
+that functional's second derivative, with no Kollmar residual. A
+residual-including CI–CI block against this gradient's z, or the reverse,
+would be wrong without a symptom (`nuclear_hessian.tex` "Which functional of
+c"); the Hessian built on this product and `sc_gradient`'s multipliers is
+consistent because both differentiate the same functional.
+
+**Empty perturbers.** They are `class_energies_hvp`'s: K6 along each
+direction, and with `partners` (one per direction, the same layout,
+projected the same way) its ρ_τ check on the pair, a pair past 1e-6
+refused (Numerical, naming class and perturber). Thresholds are #811's,
+untouched here (#914 validates them).
+
+**Parts.** With `parts`, the product is also returned split into what each
+separately coded piece contributes, for the visibility rule: (0) Jᵀ Ė of
+`class_energies_hvp` along Ḃ alone, the slabs' own B; (1) Jᵀ Ė along the
+builders' tangent alone; (2) the one-slot-dotted terms, the X terms
+2 ḣ h̄^corr + 2 Ḃ Λ^corr among them; (3) Φ's; (4) the normalization's,
+y alone (−c (c·ẏ) − u (c·y) − c (u·y) − (c·ċ) P y). They sum to the product
+when no empty perturber is populated (K6's η depends on the direction, so
+the class walk's split is not linear there). Two more `class_energies_hvp`
+calls and three more sweeps per call: a test's option, not production's.
+
+**Cost and memory.** The base pass is `sc_adjoint`'s plus `zc_adjoint`'s;
+per direction, `builders_tangent`'s three `rdms` and one ScArrays (three
+n⁶), its share of `class_energies_hvp` (seven reverse passes), one
+ScArrays of tangent bars and a Λ (naux nmo²), four `rdms_adjoint` calls
+(three with bars fixed), two σ products for Φ, and Φ's Λ tangent (two
+naux nmo² scratch einsums). Directions are held together through the class
+walk; a caller with many chunks them.
 
 ## The inactive multipliers z^c
 
@@ -1554,16 +1669,47 @@ runs in under a second.
   against Φ at 1e-12 of the summands' sum (6.3e-17), and f's diagonals
   against e_core and e_virt.
 
+`test/gtest/nevpt2_hessian_product_gpu.cpp`, `Nevpt2HessianProduct`, on
+this tree's DF-CASSCF of `data/nevpt2_hessian/`'s `h2co_skew_sto3g` (C1,
+CAS(4,4), no SC perturber empty: #803's geometry for SC's smoothness), z^c
+its own `zc_multipliers`. The directions are AO perturbations of h (uniform,
+symmetric) and B (a tenth that, symmetric in the AO pair), taken to the MO
+basis of C in the test, and ċ_I = (r_I + 0.3) c_I (r symmetric in the two
+strings), covariant with the CI vector's signs, so no gauge is fixed.
+
+- `MatchesLadder`: one call along two such directions, every field of the
+  product (h̄, Λ, y, X, A) against a ladder of `sc_adjoint` + `zc_adjoint`
+  at fixed z, at h + t ḣ, B + t Ḃ and c(t) = (c + t ċ)/|c + t ċ|, y as
+  P(c(t)) (y + y^c)/|c + t ċ|: the Rayleigh-normalized functional's
+  gradient, so the normalization's terms are inside what the ladder sees.
+  `nevpt2_builders_tangent_gpu.cpp`'s ladder, at fifteen rungs (t = 1e-2 to
+  6.1e-7): X's and A's ladders along the second direction break their run
+  near t = 2e-4 (a max-norm change passing between elements; X_ao = X_mo
+  to 3e-15 at every rung, so X's ladder is h̄'s and Λ's) and settle only past
+  the tenth rung. Then `parts`: each part above 10 bars (1e-7 of the field's
+  largest element) in some field, and their sum against the product.
+  Measured on the gfx1200 (`--preset hip`) and the RTX 3080 (`default`):
+  worst relative miss 2.9e-10 and 3.1e-10 (A); the smallest part, Φ's,
+  3.2e4 bars (in A, second direction); per direction at least: the slabs'
+  1.2e6 (A), the builders' 1.0e7 (X), the one-slot terms' 2.1e5 and the
+  normalization's 3.1e5 (y); the parts' sum off by 1.4e-13 and 6.0e-14
+  (bar 1e-9). About 1 s on the 3080, 10 s on the gfx1200.
+- `PartnersChangeNothingWithoutEmptyPerturbers`: each direction partnered
+  with the other; with nothing empty, the products as without, to 1e-12.
+- `Refuses`: InvalidConfig for one partner for two directions, a null
+  partner array, a null z, and a vector of norm 1.5.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `qd_sc_coupling`, `QdScGradient`; `qd_pc_gradient`, `qd_pc_coupling`, `QdPcGradient`, `QdFold`; `qd_inputs`; `builders_tangent`, `BuildersTangent`, `BuilderOutputs`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `qd_sc_coupling`, `QdScGradient`; `qd_pc_gradient`, `qd_pc_coupling`, `QdPcGradient`, `QdFold`; `qd_inputs`; `builders_tangent`, `BuildersTangent`, `BuilderOutputs`; `sc_hessian_product`, `ScHessianProduct`, `AdjointTangent`, `MoDirections`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
 | `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies, and the count and weight checks the units share |
-| `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays`, `sc_arrays` and `builders_adjoint`, declared for `gradient.cpp` (which defines them), `qd.cpp` and `tangent.cpp`; and `with_qd_inputs`, `qd.cpp`'s, for `lagrangian.cpp` |
+| `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays`, `sc_arrays`, `builders_adjoint`, `adjoint_slot`, `fold_bars` and `root_rdms_adjoint`, declared for `gradient.cpp` (which defines them), `qd.cpp`, `tangent.cpp` and `hessian_product.cpp`; `direction_arrays` and `b_block`, `tangent.cpp`'s, for `hessian_product.cpp`; and `with_qd_inputs`, `qd.cpp`'s, for `lagrangian.cpp` |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
 | `qd.cpp` | `qd_sc_energy`, `qd_pc_energy`, `qd_sc_adjoint` and `qd_pc_adjoint`: every pair's RDMs over the shared builders, γ_SA, and the reverse pass through `sc_effective_hamiltonian_adjoint` or `pc_effective_hamiltonian_adjoint`, the transition and one-vector `rdms_adjoint` and `builders_adjoint`; `with_qd_inputs`, the same inputs handed to a callback |
-| `tangent.cpp` | `builders_tangent`: the builders' terms by the product rule over the tangent arrays, the RDMs' through the bra/ket `nevpt2::rdms`, and f's core–core and virtual–virtual blocks |
+| `tangent.cpp` | `builders_tangent` and `direction_arrays`: the builders' terms by the product rule over the tangent arrays, the RDMs' through the bra/ket `nevpt2::rdms`, and f's core–core and virtual–virtual blocks |
+| `hessian_product.cpp` | `sc_hessian_product`: the class walk's tangent bars and the one-slot-dotted terms back through the reverse pass (`bars_tangent`), Φ's closed-form tangent, X and A in the MO basis, and the Rayleigh normalization |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
 | `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights, at any symmetric W (the state form a wrapper at u_K u_Kᵀ), and `qd_sc_gradient`'s two passes over it; `qd_sc_coupling`, the same at an interstate pair's W^PQ; `qd_pc_gradient` (state and W forms) and `qd_pc_coupling`, the same Lagrangian and passes over `qd_pc_energy` and `qd_pc_adjoint`; `qd_inputs`, `with_qd_inputs` on the solution's weights and strings |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |

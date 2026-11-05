@@ -101,8 +101,7 @@ Status run_builds_tangent(DeviceResources &res, const ScArrays &x,
   return {};
 }
 
-// The rows [p0, p0 + rows) x columns [q0, q0 + cols) block of an MO B
-// (naux x nmo^2, (L, p, q) at L + naux (p + nmo q)), as a strided operand.
+// b_block (declared in :builders).
 EinsumOperand b_block(const double *b, const int64_t naux, const int64_t nmo, const int64_t p0,
                       const int64_t rows, const int64_t q0, const int64_t cols) {
   return {.data = b + (naux * (p0 + (nmo * q0))),
@@ -131,6 +130,85 @@ BuilderOutputs builder_outputs(ScArrays &x, Buffers::device<double> f_core,
           .f_virt = std::move(f_virt)};
 }
 
+Result<ScArrays> direction_arrays(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                  const ci::DeviceStringSet &beta, ScArrays &x,
+                                  const double *vector, const double *h_dot, const double *b_dot,
+                                  const double *c_dot, Buffers::device<double> *vv_dot) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const int64_t naux = x.blocks.naux;
+  const int64_t nc = x.blocks.ncore;
+  const int64_t n = x.blocks.ncas;
+  const int64_t nv = x.blocks.nvirt;
+  const int64_t nocc = nc + n;
+  const int64_t nmo = nocc + nv;
+  const int64_t nmo2 = nmo * nmo;
+  const int64_t n6 = n * n * n * n * n * n;
+  ScArrays dot =
+      FBF_TRY(zeroed_arrays(res, x.blocks.naux, x.blocks.ncore, x.blocks.ncas, x.blocks.nvirt));
+  dot.electrons = x.electrons;
+
+  // The direction's own: h, and every block of B the builders read.
+  if (nmo2 > 0) {
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(dot.h_mo.data(), h_dot,
+                                           sizeof(double) * static_cast<size_t>(nmo2),
+                                           wwr::wwrMemcpyDeviceToDevice, res.stream())));
+  }
+  const auto slice = [&](const int64_t p0, const int64_t rows, const int64_t q0, const int64_t cols,
+                         double *to) {
+    return contract(res, "Lpq->Lpq", {b_block(b_dot, naux, nmo, p0, rows, q0, cols)}, to,
+                    {naux, rows, cols}, 1.0);
+  };
+  FBF_TRY(slice(nc, n, nc, n, dot.blocks.aa.data()));
+  FBF_TRY(slice(0, nc, nc, n, dot.blocks.ca.data()));
+  FBF_TRY(slice(nocc, nv, nc, n, dot.blocks.va.data()));
+  FBF_TRY(slice(0, nc, nocc, nv, dot.blocks.cv.data()));
+  FBF_TRY(slice(nocc, nv, 0, nc, dot.blocks.vc.data()));
+  FBF_TRY(slice(0, nc, 0, nc, dot.cc.data()));
+  if (vv_dot != nullptr) {
+    *vv_dot = FBF_TRY(zeroed(res, naux * nv * nv));
+    FBF_TRY(slice(nocc, nv, nocc, nv, vv_dot->data()));
+  }
+  FBF_TRY(contract(res, "Laa->La", {b_block(b_dot, naux, nmo, nocc, nv, nocc, nv)}, dot.vvd.data(),
+                   {naux, nv}, 1.0));
+
+  // (tu|vw), then h2e[t, u, v, w] = (tv|uw), its permute.
+  const std::vector<FockBuild> at = fock_builds(x, nullptr);
+  const std::vector<FockBuild> along = fock_builds(dot, nullptr);
+  FBF_TRY(run_builds_tangent(res, x, std::span(at).first(1), std::span(along).first(1)));
+  FBF_TRY(contract(res, "tvuw->tuvw", {column_operand(dot.eri.data(), {n, n, n, n})},
+                   dot.h2e.data(), {n, n, n, n}, 1.0));
+
+  // dm3, f3ca and f3ac: ⟨ċ|…|c⟩ + ⟨c|…|ċ⟩ at (tu|vw), and f3 of c at its
+  // tangent; then dm2 and dm1, linear traces of dm3. The second and third
+  // builds' outputs, added onto the first's, are buffers of their own, since
+  // nevpt2::rdms overwrites its outputs and takes the workspace.
+  Buffers::device<double> dm3_more(static_cast<size_t>(n6), res.device());
+  Buffers::device<double> f3ca_more(static_cast<size_t>(n6), res.device());
+  Buffers::device<double> f3ac_more(static_cast<size_t>(n6), res.device());
+  const auto add_n6 = [&](const Buffers::device<double> &from, Buffers::device<double> &to) {
+    return add_onto(res, n6, 1, from.data(), to.data(), n6);
+  };
+  FBF_TRY(rdms(res, alpha, beta, c_dot, vector, x.eri.data(), nullptr, nullptr, dot.dm3.data(),
+               dot.f3ca.data(), dot.f3ac.data(), FBF_TRY(rdm_budget())));
+  FBF_TRY(rdms(res, alpha, beta, vector, c_dot, x.eri.data(), nullptr, nullptr, dm3_more.data(),
+               f3ca_more.data(), f3ac_more.data(), FBF_TRY(rdm_budget())));
+  FBF_TRY(add_n6(dm3_more, dot.dm3));
+  FBF_TRY(add_n6(f3ca_more, dot.f3ca));
+  FBF_TRY(add_n6(f3ac_more, dot.f3ac));
+  FBF_TRY(rdms(res, alpha, beta, vector, dot.eri.data(), dm3_more.data(), f3ca_more.data(),
+               f3ac_more.data(), FBF_TRY(rdm_budget())));
+  FBF_TRY(add_n6(f3ca_more, dot.f3ca));
+  FBF_TRY(add_n6(f3ac_more, dot.f3ac));
+  FBF_TRY(run_builds(res, trace_builds(x, dot.dm1.data(), dot.dm2.data(), dot.dm3.data(), nullptr,
+                                       nullptr, nullptr)));
+
+  // The builders that read γ, d and g.
+  FBF_TRY(run_builds_tangent(res, x, std::span(at).subspan(1), std::span(along).subspan(1)));
+  // The launches above read the RDM buffers, which go with this frame.
+  FBF_TRY(res.sync());
+  return dot;
+}
+
 Result<BuildersTangent> builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                          const ci::DeviceStringSet &beta, const int32_t naux,
                                          const int32_t nao, const int32_t nmo, const double *b,
@@ -148,11 +226,9 @@ Result<BuildersTangent> builders_tangent(DeviceResources &res, const ci::DeviceS
       FBF_TRY(sc_arrays(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, 0));
   const ScopedDeviceIndex on{res.dev_idx()};
   const int64_t nc = ncore;
-  const int64_t n = ncas;
-  const int64_t nocc = nc + n;
+  const int64_t nocc = nc + ncas;
   const int64_t nv = nmo - nocc;
   const int64_t nmo2 = int64_t{nmo} * nmo;
-  const int64_t n6 = n * n * n * n * n * n;
   const auto ndet = static_cast<int64_t>(alpha.size()) * static_cast<int64_t>(beta.size());
   const auto nvirt = static_cast<int32_t>(nv);
 
@@ -165,82 +241,26 @@ Result<BuildersTangent> builders_tangent(DeviceResources &res, const ci::DeviceS
   }
   Buffers::device<double> f_core = FBF_TRY(zeroed(res, nc * nc));
   Buffers::device<double> f_virt = FBF_TRY(zeroed(res, nv * nv));
-  const std::vector<FockBuild> at = fock_builds(x, nullptr);
   const std::vector<FockBuild> f_at = f_oo_builds(x, vv.data(), f_core.data(), f_virt.data());
   FBF_TRY(run_builds(res, f_at));
-
-  // The second and third RDM builds' outputs, added onto the first's: their
-  // own buffers, since nevpt2::rdms overwrites its outputs and takes the
-  // workspace.
-  Buffers::device<double> dm3_more(static_cast<size_t>(n6), res.device());
-  Buffers::device<double> f3ca_more(static_cast<size_t>(n6), res.device());
-  Buffers::device<double> f3ac_more(static_cast<size_t>(n6), res.device());
-  const auto add_n6 = [&](const Buffers::device<double> &from, Buffers::device<double> &to) {
-    return add_onto(res, n6, 1, from.data(), to.data(), n6);
-  };
 
   std::vector<BuilderOutputs> tangents;
   tangents.reserve(static_cast<size_t>(count));
   for (int64_t k = 0; k < count; ++k) {
-    const double *const hk = h_dot + (k * nmo2);
-    const double *const bk = b_dot + (k * naux * nmo2);
-    const double *const ck = c_dot + (k * ndet);
-    ScArrays dot = FBF_TRY(zeroed_arrays(res, naux, ncore, ncas, nvirt));
-    dot.electrons = x.electrons;
-
-    // The direction's own: h, and every block of B the builders read.
-    if (nmo2 > 0) {
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(dot.h_mo.data(), hk,
-                                             sizeof(double) * static_cast<size_t>(nmo2),
-                                             wwr::wwrMemcpyDeviceToDevice, res.stream())));
-    }
-    const auto slice = [&](const int64_t p0, const int64_t rows, const int64_t q0,
-                           const int64_t cols, double *to) {
-      return contract(res, "Lpq->Lpq", {b_block(bk, naux, nmo, p0, rows, q0, cols)}, to,
-                      {naux, rows, cols}, 1.0);
-    };
-    FBF_TRY(slice(nc, n, nc, n, dot.blocks.aa.data()));
-    FBF_TRY(slice(0, nc, nc, n, dot.blocks.ca.data()));
-    FBF_TRY(slice(nocc, nv, nc, n, dot.blocks.va.data()));
-    FBF_TRY(slice(0, nc, nocc, nv, dot.blocks.cv.data()));
-    FBF_TRY(slice(nocc, nv, 0, nc, dot.blocks.vc.data()));
-    FBF_TRY(slice(0, nc, 0, nc, dot.cc.data()));
-    Buffers::device<double> vv_dot = FBF_TRY(zeroed(res, naux * nv * nv));
-    FBF_TRY(slice(nocc, nv, nocc, nv, vv_dot.data()));
-    FBF_TRY(contract(res, "Laa->La", {b_block(bk, naux, nmo, nocc, nv, nocc, nv)}, dot.vvd.data(),
-                     {naux, nv}, 1.0));
-
-    // (tu|vw), then h2e[t, u, v, w] = (tv|uw), its permute.
-    const std::vector<FockBuild> along = fock_builds(dot, nullptr);
-    FBF_TRY(run_builds_tangent(res, x, std::span(at).first(1), std::span(along).first(1)));
-    FBF_TRY(contract(res, "tvuw->tuvw", {column_operand(dot.eri.data(), {n, n, n, n})},
-                     dot.h2e.data(), {n, n, n, n}, 1.0));
-
-    // dm3, f3ca and f3ac: ⟨ċ|…|c⟩ + ⟨c|…|ċ⟩ at (tu|vw), and f3 of c at its
-    // tangent; then dm2 and dm1, linear traces of dm3.
-    FBF_TRY(rdms(res, alpha, beta, ck, vector, x.eri.data(), nullptr, nullptr, dot.dm3.data(),
-                 dot.f3ca.data(), dot.f3ac.data(), FBF_TRY(rdm_budget())));
-    FBF_TRY(rdms(res, alpha, beta, vector, ck, x.eri.data(), nullptr, nullptr, dm3_more.data(),
-                 f3ca_more.data(), f3ac_more.data(), FBF_TRY(rdm_budget())));
-    FBF_TRY(add_n6(dm3_more, dot.dm3));
-    FBF_TRY(add_n6(f3ca_more, dot.f3ca));
-    FBF_TRY(add_n6(f3ac_more, dot.f3ac));
-    FBF_TRY(rdms(res, alpha, beta, vector, dot.eri.data(), dm3_more.data(), f3ca_more.data(),
-                 f3ac_more.data(), FBF_TRY(rdm_budget())));
-    FBF_TRY(add_n6(f3ca_more, dot.f3ca));
-    FBF_TRY(add_n6(f3ac_more, dot.f3ac));
-    FBF_TRY(run_builds(res, trace_builds(x, dot.dm1.data(), dot.dm2.data(), dot.dm3.data(), nullptr,
-                                         nullptr, nullptr)));
-
-    // The builders that read γ, d and g, and f's two blocks.
-    FBF_TRY(run_builds_tangent(res, x, std::span(at).subspan(1), std::span(along).subspan(1)));
+    Buffers::device<double> vv_dot(0, res.device());
+    ScArrays dot =
+        FBF_TRY(direction_arrays(res, alpha, beta, x, vector, h_dot + (k * nmo2),
+                                 b_dot + (k * naux * nmo2), c_dot + (k * ndet), &vv_dot));
+    // f's two blocks.
     Buffers::device<double> f_core_dot = FBF_TRY(zeroed(res, nc * nc));
     Buffers::device<double> f_virt_dot = FBF_TRY(zeroed(res, nv * nv));
     FBF_TRY(run_builds_tangent(
         res, x, f_at, f_oo_builds(dot, vv_dot.data(), f_core_dot.data(), f_virt_dot.data())));
+    // The launches above read vv_dot, which goes with this iteration.
+    FBF_TRY(res.sync());
     tangents.push_back(builder_outputs(dot, std::move(f_core_dot), std::move(f_virt_dot)));
   }
-  // The launches above read vv and the RDM buffers, which go with this frame.
+  // The launches above read vv, which goes with this frame.
   FBF_TRY(res.sync());
   return BuildersTangent{.value = builder_outputs(x, std::move(f_core), std::move(f_virt)),
                          .tangents = std::move(tangents)};

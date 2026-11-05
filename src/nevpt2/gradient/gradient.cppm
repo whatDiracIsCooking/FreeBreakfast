@@ -22,7 +22,9 @@
 /// W = u_K u_K^T or at any symmetric W; the SC-QD
 /// nuclear gradient over it (qd_sc_gradient), two derivative passes, and its
 /// interstate coupling h_PQ (qd_sc_coupling); and the PC-QD ones
-/// (qd_pc_gradient, qd_pc_coupling), the same over qd_pc_adjoint.
+/// (qd_pc_gradient, qd_pc_coupling), the same over qd_pc_adjoint. And for
+/// the nuclear Hessian, the builders' forward tangent (builders_tangent) and
+/// the SC Hessian-vector product of E_corr + Phi (sc_hessian_product).
 /// The README has the layouts and every term.
 
 export module free_breakfast.nevpt2.gradient;
@@ -267,6 +269,96 @@ builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
                  const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
                  const double *vector, int32_t count, const double *h_dot, const double *b_dot,
                  const double *c_dot);
+
+/// @brief A block of directions (h_dot, B_dot, c_dot) in the MO basis of the
+/// orbitals, laid out as builders_tangent reads them: direction k's h_dot
+/// nmo x nmo at @ref h + k nmo^2, symmetric; B_dot naux x nmo^2 at
+/// @ref b + k naux nmo^2, ScAdjoint::lambda's layout, symmetric in (p, q);
+/// c_dot one per determinant at @ref c + k ndet. All on the device.
+struct MoDirections {
+  /// @brief The number of directions; the arrays may be null at 0.
+  int32_t count = 0;
+  /// @brief The h_dots.
+  const double *h = nullptr;
+  /// @brief The B_dots.
+  const double *b = nullptr;
+  /// @brief The c_dots.
+  const double *c = nullptr;
+};
+
+/// @brief One direction's tangent of an adjoint, every array on res's device
+/// in ScAdjoint's layout: h_bar's, Lambda's, y's, X's and A's.
+struct AdjointTangent {
+  /// @brief The tangent of h_bar, nmo x nmo, symmetric.
+  Buffers::device<double> h_bar;
+  /// @brief The tangent of Lambda, naux x nmo^2, symmetric in (p, q).
+  Buffers::device<double> lambda;
+  /// @brief The tangent of y, one per determinant.
+  Buffers::device<double> y;
+  /// @brief The tangent of X, nmo x nmo.
+  Buffers::device<double> x;
+  /// @brief The tangent of A = X - X^T.
+  Buffers::device<double> a;
+};
+
+/// @brief sc_hessian_product's result.
+struct ScHessianProduct {
+  /// @brief The class energies, as sc_energy computes them.
+  ClassEnergies energies;
+  /// @brief Per direction, the product: the tangent of the summed adjoint
+  /// of E_corr + Phi.
+  std::vector<AdjointTangent> products;
+  /// @brief Per direction, class_energies_hvp's: [u][k] class k's empty
+  /// perturbers the direction populates.
+  std::vector<std::array<int64_t, 8>> populated;
+  /// @brief Per direction, class_energies_hvp's largest rho_tau with its
+  /// partner; 0 without partners.
+  std::vector<double> defect;
+  /// @brief Empty unless asked for: per direction, the product split into
+  /// its separately coded parts, in order the class walk's tangent along
+  /// B_dot alone (the slabs), the class walk's tangent along the builders'
+  /// tangent, the one-slot-dotted terms at fixed bars, Phi's, and the
+  /// normalization's (y alone). They sum to products[u] when no empty
+  /// perturber is populated (K6 is not linear in the direction).
+  std::vector<std::array<AdjointTangent, 5>> parts;
+};
+
+/// @brief The Hessian-vector product of E_corr + Phi in (h, B, c), SC: the
+/// tangent of sc_adjoint + zc_adjoint (at fixed @p z, one root of weight 1)
+/// along each of @p directions, forward over the reverse pass.
+///
+/// The arguments but these are sc_energy's, all-electron. @p z is z^c,
+/// nmo x nmo column-major on the device, symmetric (zc_multipliers'). The
+/// functional of c is the Rayleigh-normalized one, E(h, B, c / |c|) and
+/// the same of Phi, at the unit @p vector, so the CI direction moves on the
+/// unit sphere: products' h_bar, Lambda, X and A are the tangents of
+/// sc_adjoint's + zc_adjoint's along (h_dot, B_dot, u), u = c_dot -
+/// (c . c_dot) c, and y is the tangent of P (y + y^c) / |c|, P = 1 - c c^T,
+/// which adds to the raw tangent's projection the normalization's
+/// -u (c . y) - c (u . y) - (c . c_dot) P y (README "The SC Hessian-vector
+/// product in (h, B, c)").
+///
+/// In order: sc_adjoint's reverse pass, its bars kept; the builders'
+/// forward tangent (builders_tangent's) along each direction;
+/// class_energies_hvp along their outputs and B_dot, with @p partners' as
+/// its partners when given; then per direction the reverse pass's tangent,
+/// every builder's adjoint at the tangent bars plus its one-slot-dotted
+/// terms at the fixed bars, the RDM step's at the bra/ket rdms_adjoint, and
+/// Phi's in closed form (linear in h, bilinear in B, quadratic in c). With
+/// @p parts, the product's parts too (ScHessianProduct::parts), at two more
+/// class_energies_hvp calls and three more reverse-pass tangents.
+///
+/// @return The products; InvalidConfig for counts that do not fit, a null
+///         direction array or z, partners neither none nor one per
+///         direction, or @p vector not a unit vector (within 1e-10);
+///         class_energies_hvp's Numerical refusal of a pair whose empty
+///         perturber's H is not proportional to its N; or the error of a
+///         call it makes.
+[[nodiscard]] Result<ScHessianProduct> sc_hessian_product(
+    DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+    int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c, const double *h,
+    int32_t ncore, int32_t ncas, const double *vector, const double *z, int32_t batch,
+    const MoDirections &directions, const MoDirections &partners = {}, bool parts = false);
 
 /// @brief The SC-QD-NEVPT2 effective Hamiltonian's correlation elements of
 /// the roots @p vectors over the shared orbitals @p c, every input built
