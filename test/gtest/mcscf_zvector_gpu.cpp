@@ -732,4 +732,131 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, McscfZvectorCiRhs,
                          ::testing::Values("h2o_ccpvdz", "h2co_ccpvdz_sa2"),
                          [](const auto &info) { return std::string(info.param); });
 
+// The two knobs below the solve take effect (#866), on H2O cc-pVDZ's
+// converged DF-CASSCF and H~ over its own roots:
+// - RelaxedHessian::create's response_max_iterations: at 1 the CI response's
+//   conjugate gradients stop after one sigma per root, silently, and a
+//   product moves off the default's; 0 is InvalidConfig.
+// - zvectors' ci_diagonal_floor (Coupled's CI preconditioner): a floor of 100
+//   blunts it, so the column takes more products, but not the solution,
+//   which still reaches the tolerance; 0 is InvalidConfig.
+// The products' difference from the cap, relative to the default's largest
+// |y_i|: the response's one step is far from converged.
+constexpr double kCappedProductDifference = 1e-6;
+// The Coupled solutions at the two floors, relative to the largest |z_o|:
+// both are held to kResidualTolerance.
+constexpr double kFloorAgreement = 1e-7;
+
+TEST(McscfZvectorTuning, ResponseCapAndCoupledFloorTakeEffect) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz");
+  const auto weights = entry.at("weights").get<std::vector<double>>();
+  fb::NodeResources node;
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  std::optional<Solved> solved;
+  solve_case(entry, node, solved);
+  ASSERT_TRUE(solved.has_value());
+  const auto &molecule = solved->calc.get<fb::MoleculeOutput>();
+  const auto &h = solved->calc.get<fb::CoreHamiltonianOutput>();
+  const fb::DensityFitted &df = solved->df;
+  const fb::SphericalMatrixAO &c = solved->sol.c;
+  const fb::BasisSet &basis = solved->calc.get<fb::BasisSetOutput>()->basis;
+  const fb::ci::Roots &roots = solved->sol.roots;
+  const std::int32_t ncore = solved->ncore;
+  const std::int32_t ncas = solved->ncas;
+  const std::int32_t nelecas = solved->nelecas;
+  const auto mo = static_cast<std::size_t>(basis.nao_sphe());
+  const auto n = static_cast<std::size_t>(ncas);
+
+  auto ints =
+      fb::casscf_integrals(res, basis, molecule->molecule, h->h, df.b, df.naux, c, ncore, ncas);
+  ASSERT_TRUE(ints.has_value()) << ints.error().message;
+  const std::int32_t n_beta = (nelecas - (molecule->molecule.multiplicity() - 1)) / 2;
+  auto alpha = fb::ci::DeviceStringSet::create(res, ncas, nelecas - n_beta);
+  auto beta = fb::ci::DeviceStringSet::create(res, ncas, n_beta);
+  ASSERT_TRUE(alpha.has_value() && beta.has_value());
+  auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
+  auto rdm = fb::ci::Rdm::create(res, *alpha, *beta);
+  ASSERT_TRUE(sigma.has_value() && rdm.has_value());
+  set_sigma_integrals(res, *ints, n, *sigma);
+  auto sa_fock = fb::response::fock(res, molecule->molecule, h->h, df.b, df.naux, c, ncore, ncas,
+                                    ints->ppaa, ints->papa, solved->sol.gamma, solved->sol.gamma2);
+  ASSERT_TRUE(sa_fock.has_value()) << sa_fock.error().message;
+  auto hessian = fb::response::Hessian::create(res, h->h, df.b, df.naux, c, ncore, ncas, ints->ppaa,
+                                               ints->papa, *sa_fock);
+  ASSERT_TRUE(hessian.has_value()) << hessian.error().message;
+  const fb::mcscf::ResponseIntegrals response_ints{
+      mo,
+      static_cast<std::size_t>(ncore),
+      n,
+      download(res, sa_fock->fock_inactive.data(), mo * mo),
+      download(res, ints->ppaa.data(), mo * mo * n * n),
+      download(res, ints->papa.data(), mo * mo * n * n)};
+  const auto relaxed_with = [&](std::int32_t cap) {
+    return fb::mcscf::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta, roots,
+                                             weights, response_ints, 1e-8, {}, cap);
+  };
+  auto relaxed = relaxed_with(200);
+  auto capped = relaxed_with(1);
+  ASSERT_TRUE(relaxed.has_value()) << relaxed.error().message;
+  ASSERT_TRUE(capped.has_value()) << capped.error().message;
+  const auto refused = relaxed_with(0);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
+
+  // One random column through both.
+  const auto pairs = static_cast<std::size_t>(relaxed->size());
+  std::mt19937_64 engine(866);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  std::vector<double> x(pairs);
+  for (double &value : x) {
+    value = uniform(engine);
+  }
+  fb::Buffers::device<double> x_device(pairs, res.device());
+  fb::Buffers::device<double> y_device(pairs, res.device());
+  upload(res, x, x_device.data());
+  ASSERT_TRUE(relaxed->apply(res, x_device.data(), y_device.data()).has_value());
+  const std::vector<double> y = download(res, y_device.data(), pairs);
+  ASSERT_TRUE(capped->apply(res, x_device.data(), y_device.data()).has_value());
+  const std::vector<double> y_capped = download(res, y_device.data(), pairs);
+  double largest = 0.0;
+  double difference = 0.0;
+  for (std::size_t i = 0; i < pairs; ++i) {
+    largest = std::max(largest, std::abs(y[i]));
+    difference = std::max(difference, std::abs(y[i] - y_capped[i]));
+  }
+  EXPECT_GT(difference, kCappedProductDifference * largest);
+
+  // The same column as a right-hand side, Coupled at the two floors.
+  const auto coupled = [&](double floor) {
+    return fb::mcscf::zvectors(res, *relaxed, *hessian, roots, 1, x_device.data(), nullptr,
+                               fb::mcscf::CpSolver::Coupled, kResidualTolerance, 200, {}, floor);
+  };
+  const auto at_default = coupled(1e-2);
+  const auto at_hundred = coupled(100.0);
+  ASSERT_TRUE(at_default.has_value()) << at_default.error().message;
+  ASSERT_TRUE(at_hundred.has_value()) << at_hundred.error().message;
+  EXPECT_LE(at_default->residuals[0], kResidualTolerance);
+  EXPECT_LE(at_hundred->residuals[0], kResidualTolerance);
+  EXPECT_GT(at_hundred->iterations[0], at_default->iterations[0]);
+  const std::vector<double> z = download(res, at_default->orbital.data(), pairs);
+  const std::vector<double> z_hundred = download(res, at_hundred->orbital.data(), pairs);
+  double z_largest = 0.0;
+  double z_difference = 0.0;
+  for (std::size_t i = 0; i < pairs; ++i) {
+    z_largest = std::max(z_largest, std::abs(z[i]));
+    z_difference = std::max(z_difference, std::abs(z[i] - z_hundred[i]));
+  }
+  EXPECT_LE(z_difference, kFloorAgreement * z_largest);
+  const auto floor_refused = coupled(0.0);
+  ASSERT_FALSE(floor_refused.has_value());
+  EXPECT_EQ(floor_refused.error().kind, fb::ErrorKind::InvalidConfig)
+      << floor_refused.error().message;
+  std::cout << std::format("[ tuning   ] response cap 1: max |dy| {:.3e} of max |y| {:.3e}; "
+                           "Coupled floor 1e-2: {} products, 100: {} products, max |dz_o| {:.3e}\n",
+                           difference, largest, at_default->iterations[0],
+                           at_hundred->iterations[0], z_difference);
+}
+
 } // namespace

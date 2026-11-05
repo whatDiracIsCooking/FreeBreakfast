@@ -349,6 +349,27 @@ TEST_P(McscfNac, MatchesPyscf) {
       compare(d->csf, base.csf, 1.0, kSelfTolerance, what);
     }
 
+    // solve_tolerance takes effect (#866): one above the right-hand side's
+    // norm stops the Z-vector before its first product, z = 0, and h_IJ
+    // loses the multipliers' part; one not positive is InvalidConfig.
+    {
+      auto loose = nac(bra, ket, fb::mcscf::NacOptions{.solve_tolerance = 1e6});
+      ASSERT_TRUE(loose.has_value()) << loose.error().message;
+      EXPECT_EQ(loose->iterations, 0);
+      EXPECT_GT(base.iterations, 0);
+      double moved = 0.0;
+      for (std::size_t i = 0; i < base.numerator.size(); ++i) {
+        moved = std::max(moved, std::abs(loose->numerator[i] - base.numerator[i]));
+      }
+      EXPECT_GT(moved, kNacTolerance);
+      const auto refused = nac(bra, ket, fb::mcscf::NacOptions{.solve_tolerance = 0.0});
+      ASSERT_FALSE(refused.has_value());
+      EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
+      EXPECT_NE(refused.error().message.find("solve_tolerance"), std::string::npos);
+      std::cout << std::format("[ nac] {}: solve_tolerance 1e6: no products, h moved {:.2e}\n",
+                               name, moved);
+    }
+
     // Repeatability: everything before the derivative integrals is bitwise
     // (the Z-vector to its last product), and only their atomics' order is
     // left to vary.

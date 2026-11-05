@@ -40,17 +40,19 @@ import free_breakfast.mcscf.relaxed_hessian;
 
 namespace free_breakfast::mcscf {
 
-// A rise of the weighted energy past this rejects a step. Not 0: near
-// convergence the energy's own noise (the screened J and K, the CI residual)
-// is ~1e-12, and a rejection there would only shrink the radius for nothing.
-constexpr double kEnergyRiseTolerance = 1e-11;
+// The loop's tuning is Options' (solve.cppm), each default argued here.
+//
+// options.energy_rise_tolerance (1e-11): a rise of the weighted energy past
+// it rejects a step. Not 0: near convergence the energy's own noise (the
+// screened J and K, the CI residual) is ~1e-12, and a rejection there would
+// only shrink the radius for nothing.
+//
 // The CI's residual tolerance follows ||g|| of the last iteration as
-// min(kCiLoosest, kCiPerGradient ||g||^2), held at or above the CI's floor,
-// ci_tolerance_for: the steps converge quadratically, so the CI must keep
-// ahead of the next ||g||, not the last. A solve that converges on a looser
-// CI than the floor takes a final one to it (the README's "The final CI").
-constexpr double kCiLoosest = 1e-8;
-constexpr double kCiPerGradient = 1e-4;
+// min(options.ci_loosest, options.ci_per_gradient ||g||^2) (1e-8, 1e-4), held
+// at or above the CI's floor, ci_tolerance_for: the steps converge
+// quadratically, so the CI must keep ahead of the next ||g||, not the last. A
+// solve that converges on a looser CI than the floor takes a final one to it
+// (the README's "The final CI").
 // ci_tolerance_for: the CI's absolute residual is held to kCiPerGradientBar
 // of conv_tol_grad, and its relative tolerance never below kCiRoundoff, where
 // Davidson still converges at PSB3 (at 1e-15 it stalls near 2.4e-15). The
@@ -63,40 +65,34 @@ double ci_tolerance_for(const double conv_tol_grad, const double energy, const d
   return std::min(tolerance, std::max(kCiRoundoff, kCiPerGradientBar * conv_tol_grad / scale));
 }
 // The augmented Hessian's subspace solve: an absolute residual of
-// kAhPerGradient ||g_model||, so the step is good to ~1% at any ||g||. Q
-// holds at most kAhMaxSubspace columns, then restarts on the current step's
-// direction; a micro iteration adds at most kAhMaxIterations.
-constexpr double kAhPerGradient = 1e-2;
-constexpr int32_t kAhMaxSubspace = 40;
-constexpr int32_t kAhMaxIterations = 50;
+// options.ah_per_gradient (1e-2) ||g_model||, so the step is good to ~1% at
+// any ||g||. Q holds at most options.ah_max_subspace (40) columns, then
+// restarts on the current step's direction; a micro iteration adds at most
+// options.ah_max_iterations (50).
 // The preconditioner's denominator mu - diag(H) is held off zero here.
 constexpr double kAhDenominatorFloor = 1e-8;
-// The model's Hessian is H~ + kAhLevelShift (PySCF's ah_level_shift), so no
-// step divides by a curvature below it. H~'s products are good to ~1e-10 (its
+// The model's Hessian is H~ + options.ah_level_shift (1e-8, PySCF's
+// ah_level_shift), so no step divides by a curvature below it. H~'s products are good to ~1e-10 (its
 // CI response's conjugate gradients, the CI's residual), and a mode flatter
 // than that is noise: rotating a near-empty active natural orbital into the
 // virtuals (HF CAS(10,7)'s, occupation ~1e-5, a Ritz value of 5e-12), where
 // a step of g / 5e-12 at ||g|| ~ 1e-9 left the quadratic region (#463).
-constexpr double kAhLevelShift = 1e-8;
 // A correction re-orthogonalized against Q to this norm or below has nothing
 // new in it, and the solve stops on the solution it has: davidson_solve's
 // default floor, which the subspace solve replaced.
 constexpr double kAhLinearDependenceFloor = 1e-12;
-// Micro iterations stop once the model gradient is this fraction of ||g||.
-constexpr double kMicroGradientFraction = 0.1;
-// The trust radius doubles when an accepted step's energy change is within
-// this fraction of the model's prediction.
-constexpr double kTrustAgreement = 0.25;
+// Micro iterations stop once the model gradient is
+// options.micro_gradient_fraction (0.1) of ||g||. The trust radius doubles
+// when an accepted step's energy change is within options.trust_agreement
+// (0.25) of the model's prediction.
 // A step along negative curvature, x.H~x < 0, has no minimum in the model, so
 // the radius alone sets its length, and the model says nothing of where the
 // surface turns up. It takes the whole radius only when the model has earned
-// it: the last accepted step agreed with its prediction (kTrustAgreement, or
+// it: the last accepted step agreed with its prediction (trust_agreement, or
 // there is none yet) and the gradient drives this one, |g.x| at least
-// 1 / kCurvatureDominance of |x.H~x| / 2. Otherwise it is cut to
-// kNegativeCurvatureFraction of the radius, the length two rejections would
-// have halved it to, without the two macro iterations.
-constexpr double kNegativeCurvatureFraction = 0.25;
-constexpr double kCurvatureDominance = 10.0;
+// 1 / options.curvature_dominance (10) of |x.H~x| / 2. Otherwise it is cut to
+// options.negative_curvature_fraction (0.25) of the radius, the length two
+// rejections would have halved it to, without the two macro iterations.
 
 // @p count doubles from the device into a host vector, waited for.
 Result<std::vector<double>> casscf_download(DeviceResources &res, const double *const from,
@@ -155,6 +151,23 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
                       "max_cycle and max_micro at least 1 ({}, {}, {}, {}, {})",
                       options.conv_tol, options.conv_tol_grad, options.trust_radius,
                       options.max_cycle, options.max_micro);
+  }
+  if (!(options.energy_rise_tolerance >= 0.0) || !(options.ci_loosest > 0.0) ||
+      !(options.ci_per_gradient > 0.0) || !(options.ah_per_gradient > 0.0) ||
+      options.ah_max_subspace < 1 || options.ah_max_iterations < 1 ||
+      !(options.ah_level_shift >= 0.0) || !(options.micro_gradient_fraction >= 0.0) ||
+      !(options.trust_agreement > 0.0) || !(options.negative_curvature_fraction > 0.0) ||
+      !(options.negative_curvature_fraction <= 1.0) || !(options.curvature_dominance > 0.0)) {
+    return err_config(
+        "mcscf::solve: the tuning is out of range: needs energy_rise_tolerance, ah_level_shift "
+        "and micro_gradient_fraction >= 0, ci_loosest, ci_per_gradient, ah_per_gradient, "
+        "trust_agreement and curvature_dominance > 0, negative_curvature_fraction in (0, 1], "
+        "and ah_max_subspace and ah_max_iterations >= 1 ({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, "
+        "{})",
+        options.energy_rise_tolerance, options.ci_loosest, options.ci_per_gradient,
+        options.ah_per_gradient, options.ah_max_subspace, options.ah_max_iterations,
+        options.ah_level_shift, options.micro_gradient_fraction, options.trust_agreement,
+        options.negative_curvature_fraction, options.curvature_dominance);
   }
   if (options.density_fitting != DensityFitting::Direct && b == nullptr) {
     return err_config("mcscf::solve: density_fitting {} needs B, and none was given",
@@ -235,7 +248,7 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
   // for the preconditioner; a residual and its correction; the step dx and
   // H~ dx, read back in one copy; and the projected problem, (q + 1)^2, its
   // eigenvalues, and the small vectors in and out of the gemvs.
-  const int32_t q_max = std::max(1, std::min(n_pairs, kAhMaxSubspace));
+  const int32_t q_max = std::max(1, std::min(n_pairs, options.ah_max_subspace));
   const auto q_width = static_cast<size_t>(q_max);
   const size_t ah_length = std::max<size_t>(pairs, 1);
   Buffers::device<double> ah_basis(ah_length * q_width, res.device());
@@ -264,7 +277,7 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
   double radius = options.trust_radius;
   double last_gradient = std::numeric_limits<double>::infinity();
   // The weighted energy of the last iteration, the CI floor's scale: 0 before
-  // the first, whose schedule (from ||g|| = inf) is kCiLoosest anyway.
+  // the first, whose schedule (from ||g|| = inf) is ci_loosest anyway.
   double last_energy = 0.0;
   // The step from the accepted orbitals, t x: E changes by
   // t g.x + t^2 x.Hx / 2 in the model; t is 1, halved on each rejection.
@@ -339,10 +352,10 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
       g = FBF_TRY(casscf_download(res, fock->gradient.data(), pairs));
       return {};
     };
-    const double ci_tolerance =
-        std::max(ci_tolerance_for(options.conv_tol_grad, last_energy,
-                                  options.ci.davidson.residual_tolerance),
-                 std::min(kCiLoosest, kCiPerGradient * last_gradient * last_gradient));
+    const double ci_tolerance = std::max(
+        ci_tolerance_for(options.conv_tol_grad, last_energy,
+                         options.ci.davidson.residual_tolerance),
+        std::min(options.ci_loosest, options.ci_per_gradient * last_gradient * last_gradient));
     FBF_TRY(evaluate(ci_tolerance));
     double g_norm = std::sqrt(casscf_dot(g, g));
     double energy = fock->energy;
@@ -377,7 +390,7 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
     last_gradient = g_norm;
     last_energy = energy;
     Iteration record{energy, change, g_norm, radius, ci_iterations, ci_fp32_iterations, 0, 0, true};
-    if (!converged && have_accepted && change > kEnergyRiseTolerance) {
+    if (!converged && have_accepted && change > options.energy_rise_tolerance) {
       step_t *= 0.5;
       model_agreed = false;
       radius = step_t * step_norm;
@@ -391,7 +404,8 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
     }
     if (have_step) {
       const double predicted = (step_t * step_gx) + (0.5 * step_t * step_t * step_xhx);
-      model_agreed = predicted < 0.0 && std::abs((change / predicted) - 1.0) < kTrustAgreement;
+      model_agreed =
+          predicted < 0.0 && std::abs((change / predicted) - 1.0) < options.trust_agreement;
       if (model_agreed) {
         radius = std::min(options.trust_radius, 2.0 * radius);
         record.trust_radius = radius;
@@ -500,11 +514,12 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
         std::ranges::copy(b, b_host.begin());
       }
       const double g_model_norm = std::sqrt(casscf_dot(g_model, g_model));
-      const double tolerance = std::clamp(kAhPerGradient * g_model_norm / h_scale, 1e-14, 1e-4);
+      const double tolerance =
+          std::clamp(options.ah_per_gradient * g_model_norm / h_scale, 1e-14, 1e-4);
 
-      // The lowest root mu, (u_0, u), of [[0, b^T], [b, A + kAhLevelShift]],
+      // The lowest root mu, (u_0, u), of [[0, b^T], [b, A + ah_level_shift]],
       // and Q grown by its preconditioned residual until that is below the
-      // tolerance, the correction has nothing new, or kAhMaxIterations
+      // tolerance, the correction has nothing new, or ah_max_iterations
       // columns are added.
       double mu = 0.0;
       std::vector<double> root;
@@ -517,7 +532,7 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
           for (size_t i = j; i + 1 < kz; ++i) {
             projected[(i + 1) + ((j + 1) * kz)] = a_host[i + (j * q_width)];
           }
-          projected[(j + 1) + ((j + 1) * kz)] += kAhLevelShift;
+          projected[(j + 1) + ((j + 1) * kz)] += options.ah_level_shift;
         }
         FBF_TRY(casscf_upload(res, projected, ah_projected.data()));
         FBF_TRY(diagonalize<double>(res, k, ah_projected.data(), ah_ritz.data()));
@@ -526,7 +541,7 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
         mu = ritz.front();
         // mu less the shift, against H~ itself in the residual and the
         // preconditioner.
-        const double unshifted = mu - kAhLevelShift;
+        const double unshifted = mu - options.ah_level_shift;
         const double spectrum = std::max(std::abs(ritz.front()), std::abs(ritz.back()));
 
         // r = u_0 g_model + (H~ + shift) Q u - mu Q u: its first row,
@@ -545,7 +560,7 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
         FBF_TRY(gpu_status(
             wwr::nrm2<double, int32_t>(blas, n_pairs, ah_residual.data(), 1, &residual_norm)));
         if (residual_norm <= tolerance * std::max(std::abs(mu), spectrum) ||
-            added == kAhMaxIterations) {
+            added == options.ah_max_iterations) {
           break;
         }
         FBF_TRY(gpu_status(device::ah_precondition(stream, n_pairs, unshifted, kAhDenominatorFloor,
@@ -657,18 +672,19 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
         g_model[i] += s * hdx[i];
       }
       record.micro_iterations = micro;
-      if (s < 1.0 || std::sqrt(casscf_dot(g_model, g_model)) <= kMicroGradientFraction * g_norm) {
+      if (s < 1.0 ||
+          std::sqrt(casscf_dot(g_model, g_model)) <= options.micro_gradient_fraction * g_norm) {
         break;
       }
     }
     // A step along negative curvature the model has not earned is cut short
-    // (kNegativeCurvatureFraction, above).
+    // (negative_curvature_fraction, above).
     const double curvature = casscf_dot(x_total, hx_total);
     const double length = std::sqrt(casscf_dot(x_total, x_total));
-    const double short_length = kNegativeCurvatureFraction * radius;
+    const double short_length = options.negative_curvature_fraction * radius;
     if (curvature < 0.0 && length > short_length &&
         (!model_agreed ||
-         -0.5 * curvature > kCurvatureDominance * std::abs(casscf_dot(g, x_total)))) {
+         -0.5 * curvature > options.curvature_dominance * std::abs(casscf_dot(g, x_total)))) {
       const double scale = short_length / length;
       for (size_t i = 0; i < pairs; ++i) {
         x_total[i] *= scale;

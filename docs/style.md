@@ -303,7 +303,7 @@ is there:
   said nothing that `kHalf<double>` and `kOne<double>` don't, for the same
   reason as `kCiBlock` above. A constant whose *meaning* is its own keeps its
   own name, even when its value is 0.5: a tolerance, a trust-region fraction,
-  `kTrustAgreement = 0.25`.
+  `kStencilReach = 0.1`.
 - **Add one when a second file would define it, not before.** There is no
   `kTwoPi` or `kSqrtPi` because nothing reads them; a name with no reader is
   one more for every reader to skip. Add it in `constants.h`, export it from

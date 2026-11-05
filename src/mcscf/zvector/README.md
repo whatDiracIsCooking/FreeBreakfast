@@ -113,6 +113,15 @@ it, and the SA gradient links it PRIVATE. Everything is in
 | `response_tolerance_for` | The CI response's tolerance inside H̃ (`RelaxedHessian::create`'s, relative) for a Z-vector tolerance t whose true residual is held: 1e-2 t, at least 1e-10 (step 2 below) |
 | `rotating_pairs` | Which pairs r < s (`ZVector::theta`'s order) rotate: those whose weights differ past `kRotationWeightTolerance`. `mcscf::root_pair_multipliers` splits a τ by it (`../gradient/README.md` "Holding the roots apart") |
 
+Their options are trailing arguments; there is no options struct.
+
+| Argument | Default | Settles |
+|---|---|---|
+| `tolerance` | 1e-10 | each column's ‖r‖ at the end ("The solve") |
+| `max_iterations` | 200 | products before `MaxIterationsExceeded` |
+| `solver` (`zvectors`) | `Schur` | the method ("Many right-hand sides") |
+| `ci_diagonal_floor` (`zvectors`) | 1e-2 | `Coupled`'s CI preconditioner floor; the speed, not the solution |
+
 ## The solve
 
 0. With a CI right-hand side, `RelaxedHessian::couple`: w into `delta()`
@@ -174,8 +183,12 @@ cancels), and solves each to ‖r‖ ≤ `tolerance` by one of three methods:
 
   Preconditioned conjugate gradients on both blocks at once, the
   preconditioner block-diagonal: diag(H)⁻¹ as `zvector`'s, and
-  1 / (D_r max(|diag(H₀)_i − E_r|, 10⁻²)) on the CI rows, projected off the
-  roots. A product is `RelaxedHessian::apply_coupled` over the active
+  1 / (D_r max(|diag(H₀)_i − E_r|, f)) on the CI rows, projected off the
+  roots, f `zvectors`' `ci_diagonal_floor` (10⁻² by default, the last
+  argument, above 0; the other methods ignore it): root r's own leading
+  determinants sit near E_r, and a pole there would amplify the directions
+  the projection removes. It changes the products a column takes, not the
+  solution. A product is `RelaxedHessian::apply_coupled` over the active
   columns. Its residual is the norm of both blocks of the unscaled
   equations. It needs every weight positive, and H₀ − E_r positive along
   every direction the diagonal preconditioner reaches: in the full

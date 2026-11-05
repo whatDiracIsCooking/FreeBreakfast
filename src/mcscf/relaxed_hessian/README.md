@@ -26,8 +26,17 @@ pointers to the first four of those (and the roots), which must outlive it
 and not change under it, and allocates its own second sigma (for H′(x)) and
 the CI-sized scratch. A product synchronizes the stream: κ(x) and the
 transition RDMs are read back, and H′ and its adjoint are host work.
+| `create` argument | Default | Settles |
+|---|---|---|
+| `response_tolerance` | 1e-8 | the CI response's conjugate gradients' stop, relative to their right-hand side |
+| `mixing` | empty (every pair) | which pairs of roots carry their other-roots part ("Leaving a pair's mixing out") |
+| `response_max_iterations` | 200 | their sigmas per root, a silent stop |
+
 `response_tolerance` (1e-8 by default) is where the CI response's conjugate
-gradients stop, relative to their right-hand side. Every product is good to
+gradients stop, relative to their right-hand side, and
+`response_max_iterations` (200 by default, the last argument, at least 1)
+caps their sigmas per root: at the cap they stop **silently**, the product
+then good only to where they got (#861). Every product is good to
 about that: measured at PSB3, a product's error is about 0.04 ‖x‖ times it.
 A Z-vector solved through H̃ to a tolerance t cannot have a true residual
 below the products' error, so the callers that hold a true residual to t
@@ -49,8 +58,8 @@ through H̃ tightens it too.
    has two active indices.
 2. b_r = H′ c_r, the second sigma applied to the roots.
 3. δ_r = −(H₀ − E_r)⁻¹ (1 − Σ_s c_s c_sᵀ) b_r by conjugate gradients over
-   H₀'s sigma, to `response_tolerance` of the right-hand side (at most 200
-   sigmas per root;
+   H₀'s sigma, to `response_tolerance` of the right-hand side (at most
+   `response_max_iterations`, 200, sigmas per root;
    none when the roots span b_r, below), and the other roots' part exactly,
    −(c_s · b_r) / (E_s − E_r) c_s (left out for a gap under 1e-8 hartree).
 4. γ_T and Γ_T: Σ_r w_r 2 `ci::Rdm::trans_rdm12(c_r, δ_r)`, the

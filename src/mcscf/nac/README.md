@@ -26,6 +26,12 @@ Result<mcscf::Nac> mcscf::df_nac(
 Every argument through `ncas` is `df_gradient`'s ([`../gradient/`](../gradient/README.md)),
 so a caller (a MECI search) takes g_I, g_J and h_IJ from one SA solve.
 
+| `NacOptions` | Default | Settles |
+|---|---|---|
+| `mult_ediff` | false | `total` is h_IJ + (E_J − E_I) d^CSF, finite at a degeneracy, rather than h_IJ / (E_J − E_I) + d^CSF |
+| `use_etfs` | false | the CSF term left out of `total` |
+| `solve_tolerance` | 1e-10 | the Z-vector's tolerance before the pair's gap scaling ("The Z-vector's tolerance"); above 0. The combination overload takes no options and solves to the default |
+
 ## Conventions
 
 **Which state is the bra.** `bra` is I and `ket` is J, and the result is
@@ -137,7 +143,7 @@ to 2.7e-14, within the run-to-run spread, with the same Z-vector products.
 `zvector` stops at ||H̃ z_o + g|| ≤ its tolerance, an absolute one, and the
 pair divides h_IJ by E_J − E_I after the solve, so a solve to 1e-10 leaves
 d_IJ an error up to 1e-10 / |E_J − E_I| in the solve's units. The pair's
-solve is therefore held to 1e-10 × |E_J − E_I|, the gap taken in
+solve is therefore held to `solve_tolerance` (1e-10) × |E_J − E_I|, the gap taken in
 [1e-2, 1] hartree (1e-12 at the floor, still reachable in doubles), and the
 combination's, whose right-hand side is already over its gaps, to 1e-10.
 Both then carry d to the same precision: at the skewed SA-3's (0, 1), a gap

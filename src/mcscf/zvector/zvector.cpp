@@ -23,11 +23,6 @@ namespace free_breakfast::mcscf {
 // A pair whose diag(H) is below this is left unscaled by the preconditioner.
 // At a minimum diag(H) >= diag(H~) > 0, so it guards only roundoff.
 constexpr double kZvectorDiagonalFloor = 1e-8;
-// The coupled solver's CI preconditioner is 1 / (2 w_r |diag(H_0) - E_r|),
-// the difference raised to this where it is smaller: root r's own leading
-// determinants sit near E_r, and a pole there would amplify the directions
-// the projection removes.
-constexpr double kCoupledCiDiagonalFloor = 1e-2;
 
 // diag(H)^-1 into the size() device doubles @p inverse, floored, built on
 // the host.
@@ -526,7 +521,8 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
                                   const size_t ncol, const double *const gradients,
                                   const double *const ci_rhs, const double tolerance,
                                   const int32_t max_iterations,
-                                  const std::span<const double> theta_rhs, ZVectors &out) {
+                                  const std::span<const double> theta_rhs,
+                                  const double ci_diagonal_floor, ZVectors &out) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const wwr::wwrStream_t stream = res.stream();
   const int32_t n_pairs = relaxed.size();
@@ -567,7 +563,9 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
   double *const scales = inverse_c + ci_block;
 
   // D per vector (vector x nroots + r at 2 w_r), and the CI preconditioner
-  // 1 / (D_r max(|diag(H_0) - E_r|, floor)), built on the host.
+  // 1 / (D_r max(|diag(H_0) - E_r|, ci_diagonal_floor)), built on the host:
+  // root r's own leading determinants sit near E_r, and a pole there would
+  // amplify the directions the projection removes.
   const std::span<const double> weights = relaxed.weights();
   {
     std::vector<double> d(count);
@@ -583,8 +581,7 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
     for (size_t root = 0; root < roots_count; ++root) {
       for (size_t i = 0; i < dim; ++i) {
         inverse[(root * dim) + i] =
-            1.0 /
-            (d[root] * std::max(std::abs(h0[i] - roots.energies[root]), kCoupledCiDiagonalFloor));
+            1.0 / (d[root] * std::max(std::abs(h0[i] - roots.energies[root]), ci_diagonal_floor));
       }
     }
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(inverse_c, inverse.data(), ci_block * sizeof(double),
@@ -821,19 +818,22 @@ Result<ZVectors> zvectors(DeviceResources &res, RelaxedHessian &relaxed,
                           const response::Hessian &hessian, const ci::Roots &roots,
                           const int32_t ncol, const double *const gradients,
                           const double *const ci_rhs, const CpSolver solver, const double tolerance,
-                          const int32_t max_iterations, const std::span<const double> theta_rhs) {
+                          const int32_t max_iterations, const std::span<const double> theta_rhs,
+                          const double ci_diagonal_floor) {
   const int32_t n_pairs = relaxed.size();
   const size_t roots_count = roots.energies.size();
   const size_t n_theta = roots_count * (roots_count - 1) / 2;
   if (hessian.size() != n_pairs || roots_count == 0 ||
       roots.vectors.num_elements() % roots_count != 0 || !(tolerance > 0.0) || max_iterations < 1 ||
-      ncol < 1 || (!theta_rhs.empty() && theta_rhs.size() != n_theta * static_cast<size_t>(ncol))) {
+      ncol < 1 || (!theta_rhs.empty() && theta_rhs.size() != n_theta * static_cast<size_t>(ncol)) ||
+      !(ci_diagonal_floor > 0.0)) {
     return err_config("mcscf::zvectors: needs H of H~'s {} pairs, at least one root as a whole "
-                      "number of vectors, tolerance > 0, max_iterations >= 1, ncol >= 1 and no "
-                      "rotation right-hand side or one per pair of roots a column (H {}, {} roots "
-                      "in {} doubles, tolerance {:g}, max_iterations {}, ncol {}, {} rotations)",
+                      "number of vectors, tolerance > 0, max_iterations >= 1, ncol >= 1, no "
+                      "rotation right-hand side or one per pair of roots a column, and "
+                      "ci_diagonal_floor > 0 (H {}, {} roots in {} doubles, tolerance {:g}, "
+                      "max_iterations {}, ncol {}, {} rotations, ci_diagonal_floor {:g})",
                       n_pairs, hessian.size(), roots_count, roots.vectors.num_elements(), tolerance,
-                      max_iterations, ncol, theta_rhs.size());
+                      max_iterations, ncol, theta_rhs.size(), ci_diagonal_floor);
   }
   if (solver == CpSolver::Coupled &&
       std::ranges::any_of(relaxed.weights(), [](double w) { return !(w > 0.0); })) {
@@ -856,7 +856,7 @@ Result<ZVectors> zvectors(DeviceResources &res, RelaxedHessian &relaxed,
                           max_iterations, theta_rhs, out);
   case CpSolver::Coupled:
     return zvectors_coupled(res, relaxed, hessian, roots, columns, gradients, ci_rhs, tolerance,
-                            max_iterations, theta_rhs, out);
+                            max_iterations, theta_rhs, ci_diagonal_floor, out);
   }
   return err_config("mcscf::zvectors: unknown solver {}", static_cast<int32_t>(solver));
 }

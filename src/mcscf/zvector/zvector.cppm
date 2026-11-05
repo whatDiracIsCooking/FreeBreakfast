@@ -173,19 +173,24 @@ struct ZVectors {
 /// weights (their rows are scaled by 2 (w_r - w_s)): the weights falling as
 /// the energies rise.
 ///
+/// @p ci_diagonal_floor is Coupled's alone: its CI preconditioner is
+/// 1 / (2 w_r max(|diag(H_0) - E_r|, ci_diagonal_floor)), so a determinant
+/// near E_r is not a pole. It changes the products a column takes, not the
+/// solution.
+///
 /// @return The multipliers; InvalidConfig as @ref zvector's, for @p ncol
-///         below 1, or for Coupled with a weight not positive or a pair
+///         below 1, a @p ci_diagonal_floor not positive, or for Coupled
+///         with a weight not positive or a pair
 ///         whose weights rise with its energies;
 ///         MaxIterationsExceeded when a column is still above @p tolerance
 ///         after @p max_iterations products; Divergence as zvector's, for the
 ///         operator a method iterates on; or the first error of a product,
 ///         BLAS call or copy.
-[[nodiscard]] Result<ZVectors> zvectors(DeviceResources &res, RelaxedHessian &relaxed,
-                                        const response::Hessian &hessian, const ci::Roots &roots,
-                                        int32_t ncol, const double *gradients,
-                                        const double *ci_rhs = nullptr,
-                                        CpSolver solver = CpSolver::Schur, double tolerance = 1e-10,
-                                        int32_t max_iterations = 200,
-                                        std::span<const double> theta_rhs = {});
+[[nodiscard]] Result<ZVectors>
+zvectors(DeviceResources &res, RelaxedHessian &relaxed, const response::Hessian &hessian,
+         const ci::Roots &roots, int32_t ncol, const double *gradients,
+         const double *ci_rhs = nullptr, CpSolver solver = CpSolver::Schur,
+         double tolerance = 1e-10, int32_t max_iterations = 200,
+         std::span<const double> theta_rhs = {}, double ci_diagonal_floor = 1e-2);
 
 } // namespace free_breakfast::mcscf

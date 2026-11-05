@@ -30,6 +30,15 @@ inside every H̃ product too, relative: `response_tolerance_for` it, 1e-2 of
 it and at least 1e-10 ("The floor under the true residual"). `options.max_iterations` caps the
 block solve's products, 200 by default, `zvectors`' own.
 
+| `IntersectionOptions` | Default | Settles |
+|---|---|---|
+| `tolerance` | 1e-10 | each Z-vector column's true residual, and through `response_tolerance_for` the CI response's inside H̃ |
+| `max_iterations` | 200 | the block solve's H̃ products |
+
+There is no separate option for the CI response's tolerance: #861 listed one
+(`kIntersectionResponseTolerance`), but #858 replaced that constant with
+`response_tolerance_for(tolerance)`, so it already follows `tolerance`.
+
 ## What it is
 
 The derivative of the pair's 2 × 2 Hamiltonian, turned to its eigenvectors:
