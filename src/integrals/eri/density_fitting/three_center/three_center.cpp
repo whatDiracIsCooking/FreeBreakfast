@@ -105,6 +105,7 @@ Status three_center(DeviceResources &res, const BasisSet &basis,
   // The aux index's transform out of the Cartesian tensor; the AO indices'
   // two steps write back over the Cartesian tensor and then over this.
   const size_t n_work = n_aux_sph * n * n;
+  // Four buffers, each rounded up to the pool's 256-byte allocation step.
   const auto region = [](const size_t bytes) {
     return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
   };
@@ -113,14 +114,13 @@ Status three_center(DeviceResources &res, const BasisSet &basis,
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  // Past the device's memory the workspace's growth would abort
-  // (CreatePolicy), not return. A growth allocates the new block before it
-  // frees the old, so it needs the free memory alone.
+  // Past the device's memory an allocation would abort (CreatePolicy), not
+  // return. The scratch is the call's own, not the workspace: about three B's,
+  // which the grow-only workspace would hold until the process ends (#905).
   size_t free_bytes = 0;
   size_t total_bytes = 0;
   FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  const size_t held = res.device_workspace(0).num_elements();
-  const size_t available = std::min(max_bytes, std::max(held, free_bytes));
+  const size_t available = std::min(max_bytes, free_bytes);
   if (need > available) {
     return err_unsupported("three_center: (mn|P) over {} Cartesian orbital and {} Cartesian "
                            "fitting functions needs {} bytes of device scratch (the Cartesian "
@@ -263,8 +263,17 @@ Status three_center(DeviceResources &res, const BasisSet &basis,
     }
   }
 
-  const auto [d_staging, d_cells, cart, work] =
-      res.device_regions<double, int32_t, double, double>(n_staging, n_cell_fields, n_cart, n_work);
+  // Freed at return, stream-ordered after the launches and gemms that read
+  // them; the pool hands what passes its release threshold back at the next
+  // synchronization.
+  Buffers::device<double> staging_buffer(n_staging, res.device());
+  Buffers::device<int32_t> cells_buffer(n_cell_fields, res.device());
+  Buffers::device<double> cart_buffer(n_cart, res.device());
+  Buffers::device<double> work_buffer(n_work, res.device());
+  double *const d_staging = staging_buffer.data();
+  int32_t *const d_cells = cells_buffer.data();
+  double *const cart = cart_buffer.data();
+  double *const work = work_buffer.data();
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_staging, staging.data(), sizeof(double) * n_staging,
                                          wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_cells, cells.data(), sizeof(int32_t) * n_cell_fields,
