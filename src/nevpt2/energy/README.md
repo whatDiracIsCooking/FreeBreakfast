@@ -9,6 +9,7 @@ and their QD effective Hamiltonian ([PC-NEVPT2](#pc-nevpt2),
 ([The PC reverse pass](#the-pc-reverse-pass)), and SC's forward tangent
 ([The SC forward tangent](#the-sc-forward-tangent)) and Hessian-vector
 product ([The SC Hessian-vector product](#the-sc-hessian-vector-product)),
+and PC's forward tangent ([The PC forward tangent](#the-pc-forward-tangent)),
 each class walking its
 external index in batches over the density-fitted slabs; the two effective
 Hamiltonians also hand over their amplitudes
@@ -1078,9 +1079,81 @@ within 1e-3 to 1e-5 of the base point on `h2co_skew_ccpvdz_sa3`,
 `h8_sto3g_sa3` and `h8_ring_sto3g_sa3` (state 1's Sr denominator λ + Δ is
 −33 at t = 1e-3 along the RDMs there).
 
+## The PC forward tangent
+
+    pc_class_energies_tangent(res, blocks, in, batch, directions, span = true)
+        -> PcClassEnergiesTangent
+        energies                     pc_class_energies' energies, dropped counts and total
+        cut[k], kept[k]              the largest σ class k's cut dropped, and its
+                                     smallest kept one, over S's largest
+        energy_dot [u][k], total_dot [u]
+    directions: EnergyDirection, as class_energies_tangent's
+    span: false leaves the kept span's rotation out, for the tests alone
+
+`reverse.cpp`, for the nuclear Hessian (milestone 24, #810): forward mode
+over the PC reverse pass's own one-state walks, as SC's is over SC's. Each
+class's solve is the energy's, reused, with no eigenvalue or eigenvector
+derivative. Per tuple, with g = y / (λ + Δ) and ȳ, x̄, R the reverse pass's
+multipliers,
+
+    Ė_t = ȳ·ẏ + x̄·ẋ + R Δ̇ + gᵀ Ḋ w,   Ḋ = K̇' + Δ Ṡ'
+
+(w the weight, c g or 2g − g_x), summed over the tuples as
+<M, K̇'> + <M_Δ, Ṡ'> once the walk has accumulated M and M_Δ. So Ė is the
+reverse pass's own expression read the other way, which is what makes the
+two dual.
+
+**ẏ and ẋ** are each slab einsum at its operands' tangents
+(`tangent_terms`, SC's): the slab's (rebuilt along Ḃ), h1e_v's rows, and T's
+and t1's, registered once the class is solved. **The matrices' tangents**
+Ṡ, K̇ and Ṡ₁ are their builder's (`pc_*_matrices`) central polarization, exact
+as SC's blocks' are (S, S₁ linear and K one integral times one RDM), S and K
+symmetrized as the solve symmetrized them. Then, at fixed U,
+
+    Ṫ = Ṡ U,   ṫ1 = Ṡ₁ᵀ U,   K̇' = Uᵀ K̇ U,   Ṡ' = Uᵀ Ṡ U
+
+**The kept span's rotation (#862).** Where the cut drops modes, U also
+moves into them at first order, the forward side of the reverse pass's
+`pc_span_bar` ([PC-QD](#pc-qd)): S = V diag(σ) Vᵀ moves V_k by V_n Θ,
+Θ_nl = (V_nᵀ Ṡ V_k)_nl / (σ_l − σ_n), the pairs within σ's round-off
+skipped as there, and U = V_k σ^−½ W by U̇ = V_n Θ V_kᵀ U (U̇'s part within
+the kept span changes no energy). Through `DroppedModes`' V_nᵀ S, V_nᵀ S₁
+and V_nᵀ K U:
+
+    Ṫ += (V_nᵀ S)ᵀ Θ',   ṫ1 += (V_nᵀ S₁)ᵀ Θ',   K̇' += X + Xᵀ, X = (V_nᵀ K U)ᵀ Θ'
+
+with Θ' = Θ V_kᵀ U; Uᵀ S U̇ = σ_n Uᵀ V_n Θ' = 0, so Ṡ' has no such term,
+as Ū has no S U M_Δ one. For exact null modes the term is round-off (V_nᵀ S
+and V_nᵀ K U vanish at an eigenstate); for real ones (#853's cut) it is of
+order √σ_n, and without it Ė misses the corrected bars.
+
+**Refusals** are the energy's: the same solve, and the walk's denominators
+through the same `pc_intruder_check` before Ė is finished, so no positive
+metric eigenvalue, a pole (|t| > 1) and a denominator at round-off each come
+back with `pc_class_energies`' kind and message, never as a class summed as
+zero. **Sijrs** is SC's kernel (`sijrs_tangent_walk`). **`cut`** reports how
+far above round-off each class's cut reaches: a few ε √d for exact null
+modes, more for real ones; **`kept`** what the solve's conditioning
+follows.
+
+**Where duality is checkable.** Ė and the reverse pass's Σ ⟨bar, ẋ⟩ are one
+bilinear form evaluated two ways, so they agree to round-off times the
+solve's conditioning. With the kept spectrum gapped that is ~1e-11 or
+better ([Tests](#tests)). At PSB3 twisted to 90° (STO-3G, state 0) it is
+not: real modes run through the cut there, Sr and Si keep modes at about
+3e-13 of σ_max, and the solve amplifies the einsums' atomic round-off in S
+and K by about 1e12, so the bars along any direction that moves K repeat
+run to run only to ~2e-5 relative, and the tangent with them (#917, which
+gates #815). There the span term is checked for visibility only.
+
+**Batched.** Each class walks once for all m directions: its matrices'
+tangents per direction once solved (S, K and S₁ built twice per direction,
+then Ṫ, ṫ1, K̇' and Ṡ' held through the walk, d × m and two m × m each), and
+per slab, per direction, the slab's tangent and ẏ (and ẋ), read back.
+
 ## Not ported
 
-PC's forward tangent (#810) and Hessian-vector product, the nuclear
+PC's Hessian-vector product, the nuclear
 Hessians, and the QD effective Hamiltonians' tangents. The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
@@ -1277,6 +1350,40 @@ The PC reverse pass, `Nevpt2PcEnergyAdjoint` and `Nevpt2PcEnergyAdjointLadder`:
   Sr's strongest mode, `PcClassEnergies::strongest`, at a quarter of its
   coupling, |t| = 4): the adjoint fails with `pc_class_energies`' kind and
   message.
+
+The PC forward tangent, in the same file, every check one block call
+along six seeded random directions (B, h1e_v, e, h, rdm alone, then all;
+an all-zero field null), each direction's Ė against Σ ⟨bar, ẋ⟩ from
+`pc_class_energies_adjoint`:
+
+- `Nevpt2PcEnergyTangentNullModes.DualToTheBars` (`n2_ccpvdz_cas44_df`,
+  whose Sr, Si and Sir cuts drop exact null modes alone, at most 8e-17 of
+  σ_max), walked whole and in threes: within 1e-10 of each sum's largest
+  summand. Measured: 9.9e-14 and 1.5e-14.
+- `Nevpt2PcEnergyTangent.DualToTheBarsWithRealModesDropped`, the gate: the
+  same at 1e-10 on a cut that drops real modes with a gapped kept spectrum.
+  The point is `h2co_skew_ccpvdz_sa3`'s (`data/qd_nevpt2/`) superposition
+  |0⟩ + 3e-7 |1⟩, its RDMs from the golden own and transition RDMs (f3's
+  cross term, not given, left out) times 1 − 1.25 δ²: the trace deficit
+  lifts Sij's 8 fully occupied null modes to real eigenvalues up to 7.0e-14
+  of σ_max (105 ε √d), below the cut, and ψ, not an eigenstate, makes K's
+  part along the dropped modes of order δ. Every class keeps its smallest
+  mode at 1.6e-4 or above. The test's comment has why neither a pure state
+  nor an ensemble serves. Without the kept span's rotation (`span = false`)
+  Ė misses by more than ten bars along some direction. Measured: 8.8e-12
+  with it, 5.0e-5 without.
+- `Nevpt2PcEnergyTangent.SpanTermVisibleAtPsb3Twist` (slow tier, #917): at
+  PSB3 twisted to 90°, `PcQdActiveActiveGateAtTheTwist`'s CASSCF, state 0's
+  inputs from `builders_tangent`. σ, the sample deviation of Σ ⟨bar, ẋ⟩ over
+  five reverse passes along h, rdm and all (1.4e-5 to 2.4e-5 relative):
+  the tangent with the rotation within 3σ of their mean (measured ≤ 2.1σ),
+  and without it beyond 100σ along rdm and all (15827σ and 2845σ; h moves
+  no S, so U̇ is zero there).
+- `Nevpt2PcEnergyTangent.RefusesWhatTheEnergyRefuses` (CAS(8,8)): zero
+  RDMs (no positive eigenvalue), an intruder (|t| = 4, as the adjoint's
+  test places it) and a denominator at round-off (every virtual shifted to
+  put Sr's nearest mode at λ + Δ = 0): the tangent fails with
+  `pc_class_energies`' kind and message.
 
 The PC-QD reverse pass, in the same file, over `test/gtest/data/qd_nevpt2/`
 with a seeded random, unsymmetric H̄:

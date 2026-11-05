@@ -26,7 +26,10 @@
 // And PC-QD's (pc_effective_hamiltonian_adjoint), the same way: homogeneity
 // and Euler on all six cases, one state as pc_class_energies_adjoint, the
 // batch, its ladders (every group on three cases, the slabs and orbital
-// energies on the other three), and its refusals.
+// energies on the other three), and its refusals. And PC's forward tangent
+// (pc_class_energies_tangent), dual to pc_class_energies_adjoint's bars on a
+// golden whose cuts drop exact null modes alone and on PSB3 twisted to 90°,
+// whose Sr and Si cuts drop real ones, and its refusals.
 
 #include <gtest/gtest.h>
 
@@ -36,9 +39,14 @@
 import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
+import free_breakfast.io.base;
 import free_breakfast.io.npy;
 import free_breakfast.ci;
 import free_breakfast.nevpt2;
+import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.config;
+
+#include "scratch_dir.h"
 
 namespace {
 
@@ -1835,6 +1843,17 @@ TEST(Nevpt2PcEnergy, NegativeAndUncoupledNearPoleAccepted) {
   EXPECT_TRUE(std::isfinite(at_pole->total));
 }
 
+// @p count doubles at @p d, read back.
+std::vector<double> download_host(fb::DeviceResources &res, const double *const d,
+                                  const std::size_t count) {
+  std::vector<double> host(count);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), d, sizeof(double) * count, wwr::wwrMemcpyDeviceToHost,
+                                res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+  return host;
+}
+
 // ---------------------------------------------------------------------------
 // The SC-QD reverse pass
 // ---------------------------------------------------------------------------
@@ -1962,17 +1981,6 @@ double qd_objective(fb::DeviceResources &res, const QdHostCase &q,
     sum += hbar[p] * (*h)[p].total;
   }
   return sum;
-}
-
-// @p count doubles at @p d, read back.
-std::vector<double> download_host(fb::DeviceResources &res, const double *const d,
-                                  const std::size_t count) {
-  std::vector<double> host(count);
-  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), d, sizeof(double) * count, wwr::wwrMemcpyDeviceToHost,
-                                res.stream()),
-            wwr::wwrSuccess);
-  EXPECT_TRUE(res.sync().has_value());
-  return host;
 }
 
 // A QD reverse pass's transition callback.
@@ -2661,6 +2669,439 @@ TEST(Nevpt2PcQdEnergyAdjoint, MalformedInputsAreInvalidConfig) {
   std::vector<nevpt2::EnergyBars> unshared = two;
   unshared[1].lambda = nullptr;
   EXPECT_TRUE(refused(pairs, hbar, unshared));
+}
+
+// ---------------------------------------------------------------------------
+// The PC forward tangent
+// ---------------------------------------------------------------------------
+
+// The cut's round-off scale for a basis of size @p d, ε √d: S's null modes sit
+// below 7.4 times it (pc.cpp's kPcNoise note), real dropped modes above.
+double round_off(const std::size_t d) {
+  return std::numeric_limits<double>::epsilon() * std::sqrt(static_cast<double>(d));
+}
+
+// The metric basis sizes, in PySCF's class order: Sr, Si n³, Sijr and Srsi n,
+// Srs and Sij n², Sir 2 n²; Sijrs has no metric.
+std::array<std::size_t, 8> metric_sizes(const std::size_t n) {
+  return {n * n * n, n * n * n, 0, n, n, n * n, n * n, 2 * n * n};
+}
+
+// The duality directions: each input group alone, then all of them
+// (random_direction's, seeds 810 on, an all-zero field passed as null).
+const std::array<std::string, 6> kPcTangentGroups{"B", "h1e_v", "e", "h", "rdm", "all"};
+
+// pc_class_energies_tangent over @p h along @p groups' directions, walked in
+// batches of @p batch, with the kept span's rotation when @p span, against
+// the bars @p bars: per direction Ė, Σ <bar, dx> and the miss relative to
+// that sum's largest summand. The energies are checked against @p energies.
+struct PcDuality {
+  nevpt2::PcClassEnergiesTangent tangent;
+  std::vector<double> dot, predicted, miss;
+};
+
+std::optional<PcDuality> pc_duality(fb::DeviceResources &res, const HostCase &h,
+                                    const HostBars &bars, const nevpt2::PcClassEnergies &energies,
+                                    const std::int32_t batch, const bool span,
+                                    const std::vector<std::string> &groups,
+                                    const std::string &what) {
+  std::vector<HostCase> dx;
+  for (const std::string &group : groups) {
+    const auto at = std::ranges::find(kPcTangentGroups, group) - kPcTangentGroups.begin();
+    dx.push_back(random_direction(h, group, 810 + static_cast<std::uint64_t>(at)));
+  }
+  DeviceCase g = upload_case(res, h);
+  std::vector<DeviceCase> gd;
+  gd.reserve(dx.size());
+  std::vector<nevpt2::EnergyDirection> directions;
+  for (const HostCase &d : dx) {
+    gd.push_back(upload_case(res, d));
+    directions.push_back(direction_of(gd.back(), d));
+  }
+  auto got = nevpt2::pc_class_energies_tangent(res, *g.blocks, g.in, batch, directions, span);
+  EXPECT_TRUE(got) << what << ": " << got.error().message;
+  if (!got) {
+    return std::nullopt;
+  }
+  EXPECT_EQ(got->total_dot.size(), groups.size()) << what;
+  for (std::size_t k = 0; k < 8; ++k) {
+    EXPECT_NEAR(got->energies.energies[k], energies.energies[k], 1e-10)
+        << what << " " << kClassNames[k];
+    EXPECT_EQ(got->energies.dropped[k], energies.dropped[k]) << what << " " << kClassNames[k];
+  }
+  PcDuality out{.tangent = std::move(*got), .dot = {}, .predicted = {}, .miss = {}};
+  for (std::size_t u = 0; u < groups.size() && u < out.tangent.total_dot.size(); ++u) {
+    const std::vector<double> summands = bars_summands(bars, h, dx[u]);
+    const double predicted = std::accumulate(summands.begin(), summands.end(), 0.0);
+    double scale = 0.0;
+    for (const double x : summands) {
+      scale = std::max(scale, std::abs(x));
+    }
+    const double dot = out.tangent.total_dot[u];
+    out.dot.push_back(dot);
+    out.predicted.push_back(predicted);
+    out.miss.push_back(std::abs(dot - predicted) / scale);
+    std::cout << std::format("[ nevpt2   ] PC tangent {} batch {}{} {}: Ė {:+.12e}, Σ<bar, dx> "
+                             "{:+.12e}, miss / largest summand {:.2e}\n",
+                             what, batch, span ? "" : " (span off)", groups[u], dot, predicted,
+                             out.miss.back());
+  }
+  return out;
+}
+
+// Each class's dropped count, its largest cut σ and its smallest kept σ, over
+// S's largest, for the log.
+std::string pc_cuts(const nevpt2::PcClassEnergiesTangent &t) {
+  std::string out;
+  for (std::size_t k = 0; k < 8; ++k) {
+    if (t.energies.dropped[k] > 0) {
+      out += std::format(" {} {} cut {:.2e} kept {:.2e}", kClassNames[k], t.energies.dropped[k],
+                         t.cut[k], t.kept[k]);
+    }
+  }
+  return out;
+}
+
+// The issue's duality bar: Ė against Σ <bar, dx> to 1e-10 of that sum's
+// largest summand.
+constexpr double kPcDuality = 1e-10;
+
+// The ε √d multiple below which a dropped mode is round-off's: twice the
+// largest null mode measured (7.4, pc.cpp's kPcNoise note), far below the
+// cut's own 100.
+constexpr double kNullModes = 15.0;
+
+// On the PC goldens every class's cut drops exact null modes alone, which K
+// annihilates at an eigenstate: the fixed-span terms carry Ė. Walked whole,
+// and in threes (a partial last slab).
+class Nevpt2PcEnergyTangentNullModes : public ::testing::TestWithParam<std::int32_t> {};
+
+TEST_P(Nevpt2PcEnergyTangentNullModes, DualToTheBars) {
+  FBF_REQUIRE_GPU();
+  const std::int32_t batch = GetParam();
+  const std::string name = "n2_ccpvdz_cas44_df";
+  fb::DeviceResources res(0);
+  const HostCase h = load_host_case(kDataDir / name);
+  const auto adj = run_pc_adjoint(res, h, 0);
+  ASSERT_TRUE(adj.has_value());
+  const std::vector<std::string> groups(kPcTangentGroups.begin(), kPcTangentGroups.end());
+  const auto got = pc_duality(res, h, adj->second, adj->first.energies, batch, true, groups, name);
+  ASSERT_TRUE(got.has_value());
+  for (std::size_t u = 0; u < got->miss.size(); ++u) {
+    EXPECT_LE(got->miss[u], kPcDuality) << groups[u];
+  }
+  const std::array<std::size_t, 8> sizes = metric_sizes(h.na);
+  std::int64_t dropped = 0;
+  for (std::size_t k = 0; k < 8; ++k) {
+    dropped += got->tangent.energies.dropped[k];
+    if (got->tangent.energies.dropped[k] > 0) {
+      EXPECT_LT(got->tangent.cut[k], kNullModes * round_off(sizes[k])) << kClassNames[k];
+    }
+  }
+  EXPECT_GT(dropped, 0);
+  std::cout << std::format("[ nevpt2   ] PC tangent {} batch {}: worst {:.2e};{}\n", name, batch,
+                           std::ranges::max(got->miss), pc_cuts(got->tangent));
+}
+
+INSTANTIATE_TEST_SUITE_P(Batches, Nevpt2PcEnergyTangentNullModes, ::testing::Values(0, 3),
+                         [](const auto &info) { return "batch" + std::to_string(info.param); });
+
+// A cut that drops real modes, with a gapped kept spectrum, from
+// data/qd_nevpt2/'s h2co_skew_ccpvdz_sa3: the RDMs of the superposition
+// |0⟩ + δ |1⟩ from its golden own and transition RDMs, dm_00 + δ (dm_01 +
+// dm_10) + δ² dm_11 (dm1-dm3; f3ca and f3ac, given on the diagonal alone, as
+// f3_00 + δ² f3_11), times 1 - kDeficit δ², δ = kSuperposition. Two things
+// follow.
+// - The trace deficit, (kDeficit - 1) δ² against ⟨ψ|ψ⟩ = 1 + δ², lifts the
+//   hole metric's (Sij's hdm2) fully occupied null modes, whose δδ term no
+//   longer cancels the RDMs': real eigenvalues of order 1e-14 to 1e-13 of
+//   σ_max, below the cut. (Normalized, they stay at round-off; at a deficit
+//   of 2 δ² some rise past the cut and sit there as kept modes at 2.7e-13,
+//   PSB3's conditioning.)
+// - ψ is not an eigenstate, so K no longer annihilates the dropped modes:
+//   its part along them is of order δ, and the kept span's rotation
+//   carries Ė at about 1e-5 of it, far above the bar. A pure state's own
+//   null modes do not rise (they are the operators' identities: O|ψ⟩ spans
+//   what O|0⟩ does), and an ensemble's lifted modes would carry K's part at
+//   order σ_n, the rotation then below the bar.
+// Every other class keeps its spectrum gapped (smallest kept σ 1.6e-4, Sir).
+// PSB3's real modes instead run through the cut, its kept ones at 3e-13
+// (SpanTermVisibleAtPsb3Twist).
+constexpr double kSuperposition = 3e-7;
+constexpr double kDeficit = 1.25;
+
+HostCase superposition_case() {
+  const QdHostCase q = load_qd_case(kQdDataDir / "h2co_skew_ccpvdz_sa3");
+  HostCase h = merged(q, 0);
+  const double d = kSuperposition;
+  const std::array<std::pair<const HostCase *, double>, 3> terms{
+      std::pair{&q.rdms[1], d}, std::pair{&q.rdms[q.n], d}, std::pair{&q.rdms[q.n + 1], d * d}};
+  for (const auto &[x, w] : terms) {
+    for (auto [y, a] :
+         {std::pair{&h.dm1, &x->dm1}, std::pair{&h.dm2, &x->dm2}, std::pair{&h.dm3, &x->dm3},
+          std::pair{&h.f3ca, &x->f3ca}, std::pair{&h.f3ac, &x->f3ac}}) {
+      for (std::size_t k = 0; k < a->size(); ++k) {
+        (*y)[k] += w * (*a)[k];
+      }
+    }
+  }
+  for (std::vector<double> *y : {&h.dm1, &h.dm2, &h.dm3, &h.f3ca, &h.f3ac}) {
+    for (double &v : *y) {
+      v *= 1.0 - (kDeficit * d * d);
+    }
+  }
+  return h;
+}
+
+// The gate: duality at the issue's bar on the superposition, every direction; and
+// the kept span's rotation visible, the tangent without it missing by more
+// than ten bars along some direction. The fixture's point is checked too:
+// some class cuts a mode above round-off, and every cutting class keeps its
+// smallest mode far from the cut.
+TEST(Nevpt2PcEnergyTangent, DualToTheBarsWithRealModesDropped) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  const HostCase h = superposition_case();
+  const auto adj = run_pc_adjoint(res, h, 0);
+  ASSERT_TRUE(adj.has_value());
+  const std::vector<std::string> groups(kPcTangentGroups.begin(), kPcTangentGroups.end());
+  const std::string what = "h2co_skew_ccpvdz_sa3 superposition";
+  const auto with = pc_duality(res, h, adj->second, adj->first.energies, 0, true, groups, what);
+  const auto without = pc_duality(res, h, adj->second, adj->first.energies, 0, false, groups, what);
+  ASSERT_TRUE(with.has_value());
+  ASSERT_TRUE(without.has_value());
+  for (std::size_t u = 0; u < with->miss.size(); ++u) {
+    EXPECT_LE(with->miss[u], kPcDuality) << groups[u];
+  }
+  EXPECT_GT(std::ranges::max(without->miss), 10.0 * kPcDuality)
+      << "the kept span's rotation is not visible";
+  const std::array<std::size_t, 8> sizes = metric_sizes(h.na);
+  double real = 0.0;
+  double kept = 1.0;
+  for (std::size_t k = 0; k < 8; ++k) {
+    if (with->tangent.energies.dropped[k] > 0) {
+      real = std::max(real, with->tangent.cut[k] / round_off(sizes[k]));
+      kept = std::min(kept, with->tangent.kept[k]);
+    }
+  }
+  EXPECT_GT(real, kNullModes) << "no class's cut drops a real mode";
+  EXPECT_GT(kept, 1e-6) << "a kept mode sits near the cut";
+  std::cout << std::format("[ nevpt2   ] PC tangent {}: worst {:.2e}, span off {:.2e}; largest "
+                           "cut {:.1f} ε √d, smallest kept {:.2e};{}\n",
+                           what, std::ranges::max(with->miss), std::ranges::max(without->miss),
+                           real, kept, pc_cuts(with->tangent));
+}
+
+// PSB3 twisted 90° about C13=C14 (nevpt2_psb3_gpu.cpp's kPsb3Twisted,
+// PcQdActiveActiveGateAtTheTwist's DF-SA3-CASSCF(6,6)/STO-3G over
+// cc-pVDZ-JKFIT), state 0's single-state class inputs at those orbitals,
+// built by nevpt2::builders_tangent's value. Sr's and Si's cuts drop real
+// modes there (#862).
+constexpr std::string_view kPsb3Twisted = R"(14
+PSB3, C13=C14 twisted 90 degrees
+N     -0.0454402492     0.0522740911    -0.0000000000
+C      1.1276796768     0.5920624626     0.0000000000
+C      2.3467584180    -0.1268535537     0.0000000000
+C      3.5352478218     0.5543991513     0.0000000000
+C      4.2381819494     0.9573272501    -1.1898886726
+C      5.4137881019     1.6311951607    -1.1318525401
+H      1.1448444823     1.6750816790    -0.0000000000
+H      2.3229137518    -1.2094227332    -0.0000000000
+H      3.9874420661     0.8136009171     0.9516444335
+H      3.7996110498     0.7059345067    -2.1474371187
+H     -0.1682915976    -0.9466686957    -0.0000000000
+H     -0.8778598767     0.6155991196    -0.0000000000
+H      5.8725712624     1.8941737519    -0.1873080265
+H      5.9322594717     1.9283875648    -2.0319280688
+)";
+
+// The twist's state-0 inputs, on the host, once per process.
+const HostCase &psb3_twist() {
+  static const HostCase kCase = [] {
+    const fb::test::ScratchDir dir("nevpt2_pc_tangent_psb3");
+    EXPECT_TRUE(fb::write_file(dir / "psb3.xyz", std::string{kPsb3Twisted}).has_value());
+    const std::string toml =
+        "[molecule]\nxyz = \"psb3.xyz\"\ncharge = 1\n[basis_set]\nbasis = \"sto-3g\"\n"
+        "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n"
+        "[scf]\nmax_iterations = 400\n"
+        "[casscf]\nncas = 6\nnelecas = 6\nnroots = 3\nconv_tol_grad = 1e-10\n";
+    EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+    auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+    EXPECT_TRUE(calc.has_value()) << calc.error().message;
+    if (!calc.has_value()) {
+      return HostCase{};
+    }
+    fb::NodeResources node;
+    const fb::Status ran = calc->run(node);
+    EXPECT_TRUE(ran.has_value()) << ran.error().message;
+    if (!ran.has_value()) {
+      return HostCase{};
+    }
+    fb::DeviceResources &res = node.device(0);
+    const auto &casscf = calc->get<fb::CasscfOutput>();
+    const auto &eri = calc->get<fb::EriOutput>();
+    const auto &core = calc->get<fb::CoreHamiltonianOutput>();
+    if (!casscf.has_value() || !eri.has_value() || !core.has_value()) {
+      ADD_FAILURE() << "the run left no CASSCF, ERI or core Hamiltonian";
+      return HostCase{};
+    }
+    const auto &df = std::get<fb::DensityFitted>(eri->eri);
+    const auto nao = static_cast<std::int32_t>(casscf->c.n());
+    auto strings = fb::ci::DeviceStringSet::create(res, casscf->ncas, casscf->nelecas / 2);
+    EXPECT_TRUE(strings.has_value()) << strings.error().message;
+    if (!strings.has_value()) {
+      return HostCase{};
+    }
+    // State 0's CI vector, the first of the three.
+    const std::size_t ndet = casscf->vectors.size() / casscf->energies.size();
+    const fb::Buffers::device<double> vector = upload(
+        res, std::vector<double>(casscf->vectors.begin(),
+                                 casscf->vectors.begin() + static_cast<std::ptrdiff_t>(ndet)));
+    const auto built = nevpt2::builders_tangent(
+        res, *strings, *strings, df.naux, nao, nao, df.b.data(), casscf->c.data(), core->h.data(),
+        casscf->ncore, casscf->ncas, vector.data(), 0, nullptr, nullptr, nullptr);
+    EXPECT_TRUE(built.has_value()) << built.error().message;
+    if (!built.has_value()) {
+      return HostCase{};
+    }
+    const nevpt2::BuilderOutputs &v = built->value;
+    HostCase h;
+    h.naux = static_cast<std::size_t>(v.blocks.naux);
+    h.nc = static_cast<std::size_t>(v.blocks.ncore);
+    h.na = static_cast<std::size_t>(v.blocks.ncas);
+    h.nv = static_cast<std::size_t>(v.blocks.nvirt);
+    const auto all = [&](const fb::Buffers::device<double> &d) {
+      return download_host(res, d.data(), d.num_elements());
+    };
+    h.aa = all(v.blocks.aa);
+    h.ca = all(v.blocks.ca);
+    h.va = all(v.blocks.va);
+    h.cv = all(v.blocks.cv);
+    h.h1e = all(v.h1e);
+    h.h2e = all(v.h2e);
+    h.e_core = all(v.e_core);
+    h.e_virt = all(v.e_virt);
+    h.h1e_v_sr = all(v.h1e_v_sr);
+    h.h1e_v_si = all(v.h1e_v_si);
+    h.h1e_v_sir = all(v.h1e_v_sir);
+    h.dm1 = all(v.dm1);
+    h.dm2 = all(v.dm2);
+    h.dm3 = all(v.dm3);
+    h.f3ca = all(v.f3ca);
+    h.f3ac = all(v.f3ac);
+    return h;
+  }();
+  return kCase;
+}
+
+// PSB3's twist cannot carry the duality gate: its Sr and Si keep modes at
+// about 3e-13 of σ_max, just above the cut, so the solve amplifies the
+// einsums' atomic round-off in S and K by about 1e12, and PC's bars along any
+// direction that moves K repeat run to run only to ~4e-5 relative (#917).
+// Measured (RTX 3080), five reverse passes: σ 1.4e-5, 2.4e-5 and 2.3e-5 of
+// Σ <bar, dx> along h, rdm and all. So it checks visibility alone: over five
+// reverse passes, σ the sample deviation of Σ <bar, dx> along each direction
+// that moves K, the tangent with the kept span's rotation must sit within 3σ
+// of their mean, and without it, further than 100σ along the directions that
+// move S (h moves K alone, so U̇ is zero there). Measured: within 2.1σ
+// with it, 15827σ (rdm, 38% of Ė) and 2845σ (all) without.
+TEST(Nevpt2PcEnergyTangent, SpanTermVisibleAtPsb3Twist) {
+  FBF_REQUIRE_GPU();
+  // A check, not the gate (DualToTheBarsWithRealModesDropped is, and the
+  // family's fast case): a CASSCF, five reverse passes and two tangents,
+  // about 2 s on the RTX 3080, its CASSCF 14 s on the gfx1200
+  // (nevpt2_psb3_gpu.cpp).
+  FBF_SKIP_IF_FAST_TESTS();
+  const HostCase &h = psb3_twist();
+  ASSERT_GT(h.na, 0U);
+  fb::DeviceResources res(0);
+  const std::vector<std::string> groups{"h", "rdm", "all"};
+  constexpr std::int32_t kRepeats = 5;
+  std::vector<std::vector<double>> sums(groups.size());
+  std::optional<std::pair<nevpt2::PcClassEnergiesAdjoint, HostBars>> adj;
+  for (std::int32_t rep = 0; rep < kRepeats; ++rep) {
+    adj = run_pc_adjoint(res, h, 0);
+    ASSERT_TRUE(adj.has_value());
+    for (std::size_t u = 0; u < groups.size(); ++u) {
+      const auto at = std::ranges::find(kPcTangentGroups, groups[u]) - kPcTangentGroups.begin();
+      const HostCase dx = random_direction(h, groups[u], 810 + static_cast<std::uint64_t>(at));
+      const std::vector<double> summands = bars_summands(adj->second, h, dx);
+      sums[u].push_back(std::accumulate(summands.begin(), summands.end(), 0.0));
+    }
+  }
+  const std::string what = "psb3_twist_sto3g";
+  const auto with = pc_duality(res, h, adj->second, adj->first.energies, 0, true, groups, what);
+  const auto without = pc_duality(res, h, adj->second, adj->first.energies, 0, false, groups, what);
+  ASSERT_TRUE(with.has_value());
+  ASSERT_TRUE(without.has_value());
+  for (std::size_t u = 0; u < groups.size(); ++u) {
+    const double mean = std::accumulate(sums[u].begin(), sums[u].end(), 0.0) / kRepeats;
+    double var = 0.0;
+    for (const double x : sums[u]) {
+      var += (x - mean) * (x - mean);
+    }
+    const double sigma = std::sqrt(var / (kRepeats - 1));
+    const double on = std::abs(with->dot[u] - mean);
+    const double off = std::abs(without->dot[u] - mean);
+    EXPECT_LE(on, 3.0 * sigma) << groups[u] << ": Ė " << with->dot[u] << ", mean " << mean;
+    if (groups[u] != "h") {
+      EXPECT_GT(off, 100.0 * sigma) << groups[u] << ": span off Ė " << without->dot[u];
+    }
+    std::cout << std::format("[ nevpt2   ] PC tangent {} {}: Σ<bar, dx> mean {:+.10e} σ {:.2e} "
+                             "({:.1e} relative); with the span term {:.2f}σ off, without "
+                             "{:.1f}σ\n",
+                             what, groups[u], mean, sigma, sigma / std::abs(mean), on / sigma,
+                             off / sigma);
+  }
+  std::cout << std::format("[ nevpt2   ] PC tangent {}:{}\n", what, pc_cuts(with->tangent));
+}
+
+// A class the energy refuses, the tangent refuses with the energy's error,
+// never summing it as zero: each of the energy's refusals (README "The cut,
+// and refusals"). Zero RDMs, whose Sr metric has no positive eigenvalue; an
+// intruder, Sr's strongest mode at |t| = 4 (RefusesWhatTheEnergyRefuses'
+// shift); and a denominator at round-off, every virtual shifted to put Sr's
+// nearest mode at λ + Δ = 0.
+TEST(Nevpt2PcEnergyTangent, RefusesWhatTheEnergyRefuses) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  const HostCase golden = load_host_case(kDataDir / kAdjointCase);
+  HostCase zero_rdms = golden;
+  for (std::vector<double> *rdm :
+       {&zero_rdms.dm1, &zero_rdms.dm2, &zero_rdms.dm3, &zero_rdms.f3ca, &zero_rdms.f3ac}) {
+    std::ranges::fill(*rdm, 0.0);
+  }
+  const auto base = pc_energies(res, golden);
+  ASSERT_TRUE(base.has_value());
+  HostCase intruder = golden;
+  for (double &e : intruder.e_virt) {
+    e += intruder_shift(base->strongest[0]);
+  }
+  HostCase pole = golden;
+  for (double &e : pole.e_virt) {
+    e -= base->nearest[0].denominator;
+  }
+  for (const auto &[what, h, needle] :
+       {std::tuple{"zero RDMs", &zero_rdms, "no positive eigenvalue"},
+        std::tuple{"an intruder in Sr", &intruder, "has an intruder"},
+        std::tuple{"a pole in Sr", &pole, "at round-off"}}) {
+    const auto energy = pc_energies(res, *h);
+    ASSERT_FALSE(energy) << what;
+    DeviceCase g = upload_case(res, *h);
+    const HostCase dx = random_direction(*h, "all", 8100);
+    DeviceCase gd = upload_case(res, dx);
+    const std::array directions{direction_of(gd, dx)};
+    const auto got = nevpt2::pc_class_energies_tangent(res, *g.blocks, g.in, 0, directions);
+    ASSERT_FALSE(got) << what;
+    EXPECT_EQ(got.error().kind, fb::ErrorKind::Numerical) << what;
+    EXPECT_EQ(got.error().kind, energy.error().kind) << what;
+    EXPECT_EQ(stable_part(got.error().message), stable_part(energy.error().message)) << what;
+    EXPECT_NE(got.error().message.find("Sr"), std::string::npos)
+        << what << ": " << got.error().message;
+    EXPECT_NE(got.error().message.find(needle), std::string::npos)
+        << what << ": " << got.error().message;
+    std::cout << std::format("[ nevpt2   ] PC tangent refused {}: {}\n", what, got.error().message);
+  }
 }
 
 } // namespace
