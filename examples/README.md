@@ -24,8 +24,10 @@ step's own options its README under [`src/pipeline/`](../src/pipeline/README.md)
 | [`meci.toml`](meci.toml) | `[optimize] meci = [0, 1]`: the S0/S1 minimum-energy conical intersection of ethylene's DF-SA2-CASSCF(2,2), `src/pipeline/optimize/README.md`'s | `optimize.xyz`, `optimize.json`, `final.xyz`, `scf.molden`, `casscf.molden` |
 | [`qd_meci.toml`](qd_meci.toml) | `[optimize] meci = [0, 1]` beside `[nevpt2_gradient] quasi_degenerate = true`: the MECI of the two lowest SC-QD-NEVPT2 states over ethylene's DF-SA3-CASSCF(2,2), `src/pipeline/optimize/README.md`'s | `optimize.xyz`, `optimize.json`, `final.xyz`, `scf.molden`, `casscf.molden` |
 | [`hessian.toml`](hessian.toml) | `[hessian]`: the analytic DF-RHF Hessian of water, its harmonic frequencies and IR intensities (logged) | `hessian.json` alone: its SCF is a nested run's |
+| [`nevpt2_hessian.toml`](nevpt2_hessian.toml) | `[hessian]` beside `[nevpt2_gradient]`: the analytic SC-NEVPT2 Hessian of a skew (C1) formaldehyde, #803's `h2co_skew_sto3g` fixture's, over its single-state DF-CASSCF(4,4) in STO-3G, its harmonic frequencies (logged) | `scf.molden`, `casscf.molden`, `nevpt2_gradient.json`, `hessian.json` |
 | [`water.xyz`](water.xyz) | The water every water config reads (Angstrom) | |
 | [`ethylene.xyz`](ethylene.xyz) | `meci.toml`'s and `qd_meci.toml`'s ethylene, twisted 80° and pyramidalized (Angstrom) | |
+| [`h2co_skew.xyz`](h2co_skew.xyz) | `nevpt2_hessian.toml`'s skew formaldehyde (Angstrom) | |
 | [`h2co.xyz`](h2co.xyz) | `nac.toml`'s and `qd_nevpt2_nac.toml`'s formaldehyde (Angstrom) | |
 
 ## Tested
@@ -36,5 +38,7 @@ fast tier: each checks the exit status, the closing `completed: 0 errors`
 line, the files in the table above, and `hessian.json`'s keys. A config
 that stops parsing fails its entry on any machine, since `main` plans the
 config before it looks for a device; with no device the entry skips. The
-other seven are run by hand. A config added here goes in the table above,
-and in `test/examples/CMakeLists.txt` only if it is as cheap as those two.
+other eight are run by hand; `nevpt2_hessian.toml` is also parsed by
+`test/pipeline/hessian_host.cpp`. A config added here goes in the table
+above, and in `test/examples/CMakeLists.txt` only if it is as cheap as
+those two.

@@ -1,0 +1,30 @@
+# The analytic SC-NEVPT2 Hessian of a skew formaldehyde over its
+# single-state CASSCF(4,4): hessian::df_sc_nevpt2 at one CASSCF,
+# symmetrized, and its harmonic frequencies (logged). The geometry is #803's
+# h2co_skew_sto3g fixture's, which the step is tested on: C1, where SC's
+# energy is smooth. At a symmetric geometry SC's empty perturbers kink
+# (src/pipeline/hessian/README.md, "The NEVPT2 chain"): the water of
+# nevpt2.toml gives an SC B2 block far from PC's. The skew geometry is not a
+# minimum, so its frequencies show the method, not formaldehyde's spectrum.
+# Writes hessian.json beside the outer steps' files; the CASSCF the
+# Hessian is taken at is a nested run's.
+[molecule]
+xyz = "h2co_skew.xyz"
+[basis_set]
+basis = "sto-3g"
+[eri]
+mode = "density_fitting"      # the analytic NEVPT2 Hessian needs it
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+energy_tolerance = 1e-12
+commutator_tolerance = 1e-10
+[casscf]                      # one root: no state average
+ncas = 4
+nelecas = 4
+active = [6, 7, 8, 9]
+conv_tol = 1e-12
+conv_tol_grad = 1e-10         # the Hessian assumes a stationary CASSCF
+[nevpt2_gradient]             # all-electron, not quasi_degenerate
+variant = "sc"                # or "pc"
+[hessian]
+method = "analytic"           # the default; or "numerical"

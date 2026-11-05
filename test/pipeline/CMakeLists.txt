@@ -56,6 +56,13 @@ target_link_libraries(
           GTest::gtest_main
 )
 
+# The examples/ configs a case parses, by absolute path, so it finds them
+# whatever directory ctest runs it from.
+target_compile_definitions(
+  free_breakfast_pipeline_tests_host
+  PRIVATE FBF_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/examples"
+)
+
 gtest_discover_tests(
   free_breakfast_pipeline_tests_host
   DISCOVERY_MODE PRE_TEST

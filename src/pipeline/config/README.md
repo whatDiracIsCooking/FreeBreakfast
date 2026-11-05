@@ -437,14 +437,17 @@ pipeline's `MoleculeOutput`, so beside an `[optimize]` it runs at the
 optimum. **With a `[casscf_gradient]` in the config the Hessian is that
 root's DF-CASSCF Hessian instead**, by either method (`hessian/README.md`
 "The CASSCF chain"), and `[casscf]` and `[casscf_gradient]` are copied in
-too. **With a `[nevpt2_gradient]` the numerical method differences that
-SC- or PC-NEVPT2 gradient** (`hessian/README.md` "The NEVPT2 chain"),
-`[casscf]` and `[nevpt2_gradient]` copied in: numerical only (the analytic
-method, the default, is refused as Unsupported, naming `method =
-"numerical"`), state-specific (`quasi_degenerate = true` refused as
-Unsupported, and a state average by `[nevpt2_gradient]`'s own refusal) and
+too. **With a `[nevpt2_gradient]` the Hessian is that SC- or PC-NEVPT2
+energy's** (`hessian/README.md` "The NEVPT2 chain"), `[casscf]` and
+`[nevpt2_gradient]` copied in: analytic by default (`hessian::df_sc_nevpt2`
+or `df_pc_nevpt2`, the variant's, and the one analytic method that takes
+`coordinates`), or numerical, differencing the gradient. By either method
+it is state-specific (`quasi_degenerate = true` refused as Unsupported, and
+a state average by `[nevpt2_gradient]`'s own refusal, Unsupported),
 all-electron (a `frozen_core` other than 0, `"auto"` included, refused as
-InvalidConfig). Two of `[gradient]`, `[casscf_gradient]` and
+InvalidConfig) and density-fitted (an integral-direct `[eri]` refused as
+Unsupported), each before anything runs, since the analytic calls take none
+of them. Two of `[gradient]`, `[casscf_gradient]` and
 `[nevpt2_gradient]` beside a `[hessian]` are refused as InvalidConfig,
 since one energy's gradient is differenced.
 
@@ -553,7 +556,9 @@ than after the SCF has converged. `parse_config` touches no disk.
   quasi-degenerate or names a `state`, over a `[casscf]` of one root, or
   naming a root past its `nroots`;
 - a `[hessian]` `displacement` that is not finite and positive, or one
-  beside the analytic method; a `[hessian]` beside two of `[gradient]`,
+  beside the analytic method; `ladder` or `pairs` beside the analytic
+  method, or `coordinates` beside it without a `[nevpt2_gradient]`; a
+  `[hessian]` beside two of `[gradient]`,
   `[casscf_gradient]` and `[nevpt2_gradient]`; or beside a
   `[nevpt2_gradient]` with a `frozen_core` other than 0;
 - an option of the other ERI mode (above): `[eri] aux_basis` under
@@ -583,8 +588,8 @@ than after the SCF has converged. `parse_config` touches no disk.
 Some refusals are not `InvalidConfig` but `Unsupported`, since the request
 is well formed and the method is what is missing: `[nevpt2]`,
 `[casscf_gradient]`, `[nevpt2_gradient]`, `[nac]`, `[nevpt2_nac]` or the analytic `[hessian]` under
-an integral-direct `[eri]`, the analytic `[hessian]` beside a
-`[nevpt2_gradient]`, or one that is `quasi_degenerate`, `[cis]` under a
+an integral-direct `[eri]`, a `[hessian]` beside a `[nevpt2_gradient]`
+that is `quasi_degenerate`, `[cis]` under a
 density-fitted one, `[nevpt2_gradient]`'s state
 average (without `quasi_degenerate`) and multiplicity other than 1, and
 `[nevpt2_nac]`'s multiplicity other than 1.

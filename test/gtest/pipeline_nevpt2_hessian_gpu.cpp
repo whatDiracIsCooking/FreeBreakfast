@@ -18,10 +18,11 @@
 //   block than the fixture's energy stencil could); PC fails none. SC's step
 //   then returns Numerical naming them, and hessian.json carries the ladders
 //   and no frequencies.
-// - The refusals (fast): the config's (the analytic method, quasi_degenerate,
-//   a frozen core, a state average, integral-direct ERIs, a [casscf_gradient]
-//   beside it) and the step's own, run directly, each returned before any
-//   displaced solve.
+// - The refusals (fast): the config's (quasi_degenerate, a frozen core, a
+//   state average, integral-direct ERIs, a [casscf_gradient] beside it) and
+//   the step's own (the ladder under the analytic method among them), run
+//   directly, each returned before any displaced solve. The analytic method
+//   itself is pipeline_nevpt2_analytic_hessian_gpu.cpp's (#818).
 
 #include <gtest/gtest.h>
 
@@ -384,9 +385,6 @@ TEST(PipelineNevpt2Hessian, ConfigRefusesWhatTheHessianDoesNotCover) {
     EXPECT_EQ(calc.error().kind, kind) << calc.error().message;
     EXPECT_NE(calc.error().message.find(says), std::string::npos) << calc.error().message;
   };
-  // The analytic method, by default (an empty table) and by name.
-  refused(planned("\n"), fb::ErrorKind::Unsupported, "numerical only");
-  refused(planned("method = \"analytic\"\n"), fb::ErrorKind::Unsupported, "numerical only");
   refused(planned(kNumerical, "quasi_degenerate = true\n", "density_fitting", 2),
           fb::ErrorKind::Unsupported, "quasi_degenerate");
   refused(planned(kNumerical, "frozen_core = 1\n"), fb::ErrorKind::InvalidConfig, "frozen_core");
@@ -451,8 +449,9 @@ TEST(PipelineNevpt2Hessian, StepRefusesBeforeAnyDisplacedSolve) {
   }
   {
     fb::HessianStep step = planned;
+    // The planned numerical step's ladder, under the analytic method.
     step.method = fb::HessianMethod::Analytic;
-    refused(step, fb::ErrorKind::Unsupported, "numerical only");
+    refused(step, fb::ErrorKind::InvalidConfig, "ladder and pairs are the numerical method's");
   }
   {
     fb::HessianStep step = planned;
