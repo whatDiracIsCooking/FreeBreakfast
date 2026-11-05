@@ -12,6 +12,7 @@
 //   the same way, each pair up to the sign s_P s_Q of the eigenvectors, read
 //   off the data (as the tool's brute-force cross-check does); over three
 //   pairs the signs' product must be +1;
+// - every displaced point's polished CASSCF ||g|| at or under kPolishTarget;
 // - every error bar the helper reports at or under kCouplingErrorBarTol;
 // - and, as algebra on the helper's own dH_eff (no new points), ḡ and the
 //   projector onto span{x, h} of every pair unchanged when u_P and u_Q are
@@ -234,6 +235,10 @@ void run_case(std::string_view name, bool coupling_file) {
                name, heff->points, seconds, heff->gradient_norm, heff->displaced_gradient_norm,
                heff->subspace, heff->ci, heff->prediction);
   ::testing::Test::RecordProperty("wall_seconds", std::format("{:.1f}", seconds));
+  // Every displaced point polished (#948): over kPolishTarget is a point
+  // that ran out of passes, a solver miss; under it with h_PQ over its bar
+  // is a real discrepancy.
+  EXPECT_LE(heff->displaced_gradient_norm, nevpt2::kPolishTarget) << name;
   ASSERT_EQ(heff->pc.has_value(), grad->chain.pc);
 
   std::optional<Case> coupling;
@@ -304,6 +309,7 @@ TEST(Nevpt2NumericalHeff, H6Sa2MatchesCommittedGradients) {
 // 2.5e-11, x 4 / (3 x 2 x 2.5e-4) is 6.6e-8 in PC h pair 2, over its 4.1e-8.
 // Under the floor every point polishes under kPolishTarget (3e-12) and a
 // point's PC H_eff varies by at most 2.5e-12 run to run (A100, 30 runs).
+// run_case asserts that polish: displaced |g| at most kPolishTarget (#948).
 TEST(Nevpt2NumericalHeff, H2coSkewSa3MatchesCommittedGradientsAndCouplings) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
