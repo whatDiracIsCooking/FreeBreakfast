@@ -137,6 +137,16 @@ std::vector<FockBuild> fock_builds(ScArrays &x, ScArrays *bar);
 std::vector<FockBuild> trace_builds(const ScArrays &x, double *dm1, double *dm2, const double *dm3,
                                     double *dm1_bar, double *dm2_bar, double *dm3_bar);
 
+/// @brief The adjoint of one einsum term in one operand: @p target (packed
+/// column-major in operand @p k's extents) += alpha times the contraction of
+/// @p out_bar (the output's bar, over @p out_dims) with every operand but
+/// the k-th, onto the k-th's labels. contract_adjoint's per operand; the
+/// Hessian product's one-slot terms call it with another operand at its
+/// tangent.
+Status adjoint_slot(DeviceResources &res, std::string_view subscripts,
+                    const std::vector<EinsumOperand> &operands, size_t k, const double *out_bar,
+                    const std::vector<int64_t> &out_dims, double *target, double alpha);
+
 /// @brief Each build of @p builds forward, in order.
 Status run_builds(DeviceResources &res, std::span<const FockBuild> builds);
 
@@ -212,6 +222,47 @@ qd_adjoints(DeviceResources &res, std::string_view who, const ci::DeviceStringSe
             const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
             std::span<const double> weights, const double *vectors, std::span<const double> ws,
             int32_t batch, std::vector<PcClassEnergies> *pc, int32_t nfrozen);
+
+/// @brief fold_bars' result: h_bar and Λ, symmetrized.
+struct FoldedBars {
+  Buffers::device<double> h_bar;
+  Buffers::device<double> lambda;
+};
+
+/// @brief The last steps of the reverse pass, once the builders have run
+/// backwards onto @p bar: h2e's bar onto @p lambda_raw (at @p blocks' B),
+/// the MO blocks', B_vv diagonal's and B_cc's bars onto it, the F^I blocks'
+/// and orbital energies' bars placed into h_bar; then h_bar and Λ
+/// symmetrized. @p lambda_raw (naux x nmo^2, every orbital's frame) is added
+/// onto and read, and is the caller's to free.
+Result<FoldedBars> fold_bars(DeviceResources &res, int32_t nmo, const MoBlocks &blocks,
+                             ScArrays &bar, Buffers::device<double> &lambda_raw);
+
+/// @brief The one-root RDM step of the reverse pass: @p bar's dm1 and dm2
+/// bars folded into dm3's by the traces' adjoint, then nevpt2::rdms_adjoint
+/// at @p vector onto the returned y and (tu|vw)'s bar, bar.eri.
+/// gradient.cpp's.
+Result<Buffers::device<double>> root_rdms_adjoint(DeviceResources &res,
+                                                  const ci::DeviceStringSet &alpha,
+                                                  const ci::DeviceStringSet &beta,
+                                                  const double *vector, ScArrays &x, ScArrays &bar);
+
+/// @brief The rows [p0, p0 + rows) x columns [q0, q0 + cols) block of an MO
+/// B (naux x nmo^2, (L, p, q) at L + naux (p + nmo q)), as a strided
+/// operand. tangent.cpp's.
+EinsumOperand b_block(const double *b, int64_t naux, int64_t nmo, int64_t p0, int64_t rows,
+                      int64_t q0, int64_t cols);
+
+/// @brief The builders' forward tangent along one direction (@p h_dot,
+/// @p b_dot, @p c_dot), MO basis, laid out as builders_tangent reads one,
+/// at the point @p x (sc_arrays', all-electron) and its root @p vector:
+/// every ScArrays field's tangent, the δ operands the identities. With
+/// @p vv_dot, B_vv's tangent (naux x nvirt^2) is allocated into it, for f's
+/// virtual block. tangent.cpp's.
+Result<ScArrays> direction_arrays(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                  const ci::DeviceStringSet &beta, ScArrays &x,
+                                  const double *vector, const double *h_dot, const double *b_dot,
+                                  const double *c_dot, Buffers::device<double> *vv_dot);
 
 /// @brief Where a class walk adds its bars: @p bar's fields, the
 /// core-indexed ones past the frozen core as ScArrays::inputs reads them, and

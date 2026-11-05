@@ -1,8 +1,9 @@
 # The module: nevpt2::sc_energy and nevpt2::sc_adjoint, the SC-QD
 # qd_sc_energy and qd_sc_adjoint, z^c's zc_multipliers and zc_adjoint, and
 # the nuclear gradient's lagrangian_gradient and sc_gradient, and the
-# SC-QD-NEVPT2 Lagrangian's qd_sc_lagrangian, and the builders' forward
-# tangent builders_tangent; the internal
+# SC-QD-NEVPT2 Lagrangian's qd_sc_lagrangian, the builders' forward
+# tangent builders_tangent, and E_corr + Phi's Hessian-vector product
+# sc_hessian_product; the internal
 # partitions :operands and :builders hold the array plumbing and the
 # builders the implementation units share. ci::strings,
 # nevpt2::energy (ClassEnergies), core::wwr (Buffers), and the molecule,
@@ -30,6 +31,7 @@ free_breakfast_add_cxx_module_library(
   zc.cpp
   lagrangian.cpp
   tangent.cpp
+  hessian_product.cpp
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::types
