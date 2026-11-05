@@ -82,8 +82,9 @@ public:
   /// @p ints at the same orbitals. @p rdm and a second sigma (for H'(x),
   /// created here) are over @p alpha and @p beta, the roots' strings. A failed
   /// allocation aborts (CreatePolicy). The CI response's conjugate gradients
-  /// stop at @p response_tolerance of their right-hand side's norm (or after
-  /// 200 sigmas per root): every product is good to about that, relative.
+  /// stop at @p response_tolerance of their right-hand side's norm, or
+  /// silently after @p response_max_iterations sigmas per root: every product
+  /// is good to about that tolerance, relative, while the cap is not reached.
   ///
   ///
   /// @p mixing, when not empty, says per pair of roots r < s, in (r, s)
@@ -100,13 +101,14 @@ public:
   ///         and ncas, @p hessian is not over their pairs, the weights'
   ///         count is not the roots', the roots are not that many vectors of
   ///         the sigma's length, @p response_tolerance is not positive, or
-  ///         @p mixing is neither empty nor nroots (nroots - 1) / 2 long; or
+  ///         @p mixing is neither empty nor nroots (nroots - 1) / 2 long, or
+  ///         @p response_max_iterations is below 1; or
   ///         the error of the sigma's create.
   [[nodiscard]] static Result<RelaxedHessian>
   create(DeviceResources &res, response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
          const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const ci::Roots &roots,
          std::span<const double> weights, ResponseIntegrals ints, double response_tolerance = 1e-8,
-         std::vector<bool> mixing = {});
+         std::vector<bool> mixing = {}, int32_t response_max_iterations = 200);
 
   RelaxedHessian(RelaxedHessian &&) noexcept = default;
   RelaxedHessian &operator=(RelaxedHessian &&) noexcept = default;
@@ -227,8 +229,8 @@ public:
 private:
   RelaxedHessian(response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm, const ci::Roots &roots,
                  std::vector<double> weights, ResponseIntegrals ints, ci::Sigma response_sigma,
-                 size_t dim, double response_tolerance, int32_t swap_parity,
-                 std::vector<bool> mixing, DeviceResources &res);
+                 size_t dim, double response_tolerance, int32_t response_max_iterations,
+                 int32_t swap_parity, std::vector<bool> mixing, DeviceResources &res);
 
   // Whether delta carries the other-roots part of the pair of roots @p r and
   // @p s (in either order): create's mixing, or every pair when it is empty.
@@ -272,6 +274,7 @@ private:
   int32_t n_pairs_;
   size_t dim_;
   double response_tolerance_;
+  int32_t response_max_iterations_;
   // The roots' parity under the swap of the alpha and beta strings (one set
   // for both spins): +1 even S, -1 odd, 0 for two sets or no definite one.
   int32_t swap_parity_;

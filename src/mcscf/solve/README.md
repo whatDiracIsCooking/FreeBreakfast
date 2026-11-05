@@ -114,7 +114,7 @@ Each macro iteration, at the current C:
    Q grow, by r / (μ − σ − diag(H)) (the denominator held off zero at 1e-8),
    orthogonalized against Q twice and normalized, and one product. Then
    dx = Q u / u₀ and H̃ dx = H̃ Q u / u₀, a gemv of products
-   already taken. Q holds at most 40 columns (`kAhMaxSubspace`); past that
+   already taken. Q holds at most 40 columns (`ah_max_subspace`); past that
    it restarts on the current direction Q u / ‖u‖, whose image is a gemv of
    the old one's, so no product is lost. A solve adds at most 50 columns,
    and a correction re-orthogonalized to 1e-12 or less ends it; either way
@@ -217,7 +217,7 @@ iterations.
 Why both tests. On H₂O AVAS, at the macro-iteration-2 orbitals, H̃ has an
 eigenvalue near −1.3e-2 along a mode nearly orthogonal to g. Whether the
 subspace solve reaches it depends on where it stops, and that is chaotic in
-the last digits: the CI's ceiling (`kCiLoosest`) moved by a factor of 3 moves
+the last digits: the CI's ceiling (`ci_loosest`) moved by a factor of 3 moves
 the CI energies by ~1e-9 and is enough to flip it. When it is found, the
 full-radius step along it (g·x ≈ −1e-7, the model's −1.7e-3 all curvature)
 raised the energy by 2.2e-3, the half step by 4.2e-5, and the case took 10 macro
@@ -377,7 +377,7 @@ each: FC converges at 1e-9, 1e-10 and 1e-11 in 6, 6 and 7 macro iterations
 
 ## The level shift
 
-The augmented Hessian's model is H̃ + σ, σ = 1e-8 (`kAhLevelShift`, PySCF's
+The augmented Hessian's model is H̃ + σ, σ = 1e-8 (`ah_level_shift`, PySCF's
 `ah_level_shift`), so no step divides by a curvature below σ. The gradient,
 gₘ's updates and the energy test still take H̃ itself: the shift moves the
 step, not what the step is judged by.
@@ -448,6 +448,21 @@ detects the split: `ci::solve` finds only `nroots` roots.
 | `ci` | `ci::SolverOptions{}` | the CI's spin penalty, and the loosest its residual tolerance's floor gets (`ci_tolerance_for` tightens it for a tight `conv_tol_grad`) |
 | `tau_j`, `tau_k` | 1e-14 | the screening of every integral-direct J and K build |
 | `density_fitting` | `Direct` | which builds take B (below) |
+| `energy_rise_tolerance` | 1e-11 | a rise of the weighted energy past it (hartree) rejects the step: the energy's own noise near convergence is ~1e-12 |
+| `ci_loosest`, `ci_per_gradient` | 1e-8, 1e-4 | the CI's schedule, min(`ci_loosest`, `ci_per_gradient` ‖g‖²) of the last ‖g‖, held at or above `ci_tolerance_for`'s floor ("The CI's floor under ‖g‖") |
+| `ah_per_gradient` | 1e-2 | the augmented Hessian's subspace residual, relative to ‖gₘ‖ (below) |
+| `ah_max_subspace` | 40 | Q's columns before it restarts on the current step's direction |
+| `ah_max_iterations` | 50 | columns one micro iteration may add |
+| `ah_level_shift` | 1e-8 | the shift of H̃ in the model ("The level shift") |
+| `micro_gradient_fraction` | 0.1 | micro iterations stop once ‖gₘ‖ is this fraction of ‖g‖ |
+| `trust_agreement` | 0.25 | the radius doubles when an accepted step's ΔE is within this fraction of the model's |
+| `negative_curvature_fraction`, `curvature_dominance` | 0.25, 10 | a step along negative curvature the model has not earned is cut to this fraction of the radius; the gradient earns it when \|g·x\| ≥ \|x·H̃x\| / 2 / `curvature_dominance` ("The trust region") |
+
+The options from `energy_rise_tolerance` on are the loop's tuning, exposed
+for tests and experiments (#866) and not TOML keys: `[casscf]` carries only
+`conv_tol`, `conv_tol_grad` and `max_cycle`. Each default is the value the
+measurements in this README were taken at, and an out-of-range one is
+`InvalidConfig`.
 
 **The cost is the Hessian products.** Each H·κ is two J and two K builds when
 there is a core (`response/hessian/`), plus the CI's response to it (sigmas and RDMs,
@@ -461,7 +476,7 @@ once per macro iteration.
 **The subspace allocates nothing per iteration.** Q, H̃ Q beside gₘ,
 diag(H), the residual, the correction, the step pair (dx, H̃ dx), and the
 projected problem are buffers of the solve's, sized once for
-`kAhMaxSubspace` columns, and so are the response's CI blocks (b, δ),
+`ah_max_subspace` columns, and so are the response's CI blocks (b, δ),
 its three CG vectors and its RDMs. diag(H) is copied once per macro
 iteration (the response's diagonal is not built: diag(H) preconditions
 well enough), and the preconditioner is a kernel of this
@@ -623,7 +638,10 @@ singlet, `molecule` at multiplicity 3; ⟨S²⟩ = 2), at `conv_tol_grad` 1e-9:
   `max_cycle`, with the final CI's two checks above. With the old floor it
   ran out of macro iterations at ‖g‖ 4.3e-10;
 - `MaxIterationsExceeded`, and the refusals (a density-fitted mode without B,
-  and a B of the wrong size among them).
+  a B of the wrong size and each tuning option out of range among them);
+- one tuning option taking effect: H₂O STO-3G with `ah_max_iterations` 1
+  converges with no micro iteration adding more than one column, where the
+  default adds more.
 
 Each case runs twice, `Direct` and then `ApproxHessian` over
 aug-cc-pVDZ-acCD-6-6 (built once per case, outside the timed solve): the

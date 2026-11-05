@@ -44,11 +44,11 @@ namespace free_breakfast::mcscf {
 constexpr double kNacEqualWeights = 1e-10;
 // Below this gap (hartree) the coupling is not divided by it: mult_ediff.
 constexpr double kNacDegenerateGap = 1e-10;
-// The Z-vector's tolerance, on ||H~ z_o + g||: zvector's default. The pair
-// divides h_IJ by its gap after the solve, so its solve is held to this times
-// the gap (README.md "The Z-vector's tolerance"), the gap taken no smaller
-// than kNacSolveGapFloor so the tolerance stays reachable in doubles.
-constexpr double kNacSolveTolerance = 1e-10;
+// The Z-vector's tolerance, on ||H~ z_o + g||, is NacOptions::solve_tolerance
+// (zvector's default). The pair divides h_IJ by its gap after the solve, so
+// its solve is held to that times the gap (README.md "The Z-vector's
+// tolerance"), the gap taken no smaller than kNacSolveGapFloor so the
+// tolerance stays reachable in doubles.
 constexpr double kNacSolveGapFloor = 1e-2;
 // trace(gamma) is the active electron count to this, as df_gradient's.
 constexpr double kNacElectronCount = 1e-6;
@@ -240,6 +240,10 @@ Result<Nac> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSe
     return err_config("mcscf::df_nac: roots ({}, {}) of a solution with {} roots", bra, ket,
                       nroots);
   }
+  if (!(options.solve_tolerance > 0.0)) {
+    return err_config("mcscf::df_nac: solve_tolerance must be positive (got {:g})",
+                      options.solve_tolerance);
+  }
   const int32_t nelecas =
       FBF_TRY(nac_check(res, molecule, basis, aux, b, solution, ncore, ncas, kWho));
   const double gap = solution.roots.energies[static_cast<size_t>(ket)] -
@@ -278,7 +282,7 @@ Result<Nac> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSe
   const Buffers::device<double> transition = FBF_TRY(transition_orbital_gradient(
       res, molecule, h, b, q, c, ncore, ncas, s->ints->ppaa, s->ints->papa, gamma, gamma2));
   const double tolerance =
-      kNacSolveTolerance * std::min(1.0, std::max(std::abs(gap), kNacSolveGapFloor));
+      options.solve_tolerance * std::min(1.0, std::max(std::abs(gap), kNacSolveGapFloor));
   const ZVector z = FBF_TRY(zvector(res, *s->relaxed, *s->hessian, solution.roots,
                                     transition.data(), nullptr, tolerance));
 
@@ -493,7 +497,7 @@ Result<NacCombination> df_nac(DeviceResources &res, const Molecule &molecule, co
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rhs_device.data(), rhs.data(), rhs.size() * sizeof(double),
                                          wwr::wwrMemcpyHostToDevice, res.stream())));
   const ZVector z = FBF_TRY(zvector(res, *s->relaxed, *s->hessian, solution.roots,
-                                    rhs_device.data(), nullptr, kNacSolveTolerance));
+                                    rhs_device.data(), nullptr, NacOptions{}.solve_tolerance));
 
   // The CI part and both responses: the Hellmann-Feynman terms at the
   // combined RDMs and the multipliers' on top, in one call.

@@ -35,6 +35,12 @@ struct NacOptions {
   /// @brief Leave the CSF term out of @ref Nac::total (electron-translation
   /// factors), so it is h_IJ / (E_J - E_I), or h_IJ under @ref mult_ediff.
   bool use_etfs = false;
+  /// @brief The Z-vector's tolerance on ||H~ z_o + g|| before the pair's
+  /// scaling: the solve is held to this times min(1, max(|E_J - E_I|,
+  /// 1e-2)), since h_IJ is divided by the gap after it (README.md "The
+  /// Z-vector's tolerance"). Above 0. The combination overload takes no
+  /// options and solves to the default.
+  double solve_tolerance = 1e-10;
 };
 
 /// @brief A coupling between two roots and its pieces, each flat and
@@ -84,7 +90,8 @@ struct Nac {
 /// @return The coupling; Unsupported for roots whose energies differ by less
 ///         than 1e-10 without @c mult_ediff, or as @c df_transition_gradient's;
 ///         InvalidConfig if the solution has fewer than two roots, @p bra or
-///         @p ket is not one of them or they are equal, solution.c is not
+///         @p ket is not one of them or they are equal,
+///         options.solve_tolerance is not positive, solution.c is not
 ///         basis.nao_sphe() square or not on @p res's device, ncore or ncas is
 ///         out of range, the RDMs are not ncas^2, ncas^4 and nroots ncas^2
 ///         long, the CI vectors are not the roots', or trace(gamma) is no

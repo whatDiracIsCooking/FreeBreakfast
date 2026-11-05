@@ -51,6 +51,37 @@ struct Options {
   /// integrals (the quadratic model), each from the model gradient the last
   /// one left. At least 1.
   int32_t max_micro = 4;
+  /// @brief The loop's tuning, for tests and experiments, none a TOML key:
+  /// each default is the value the loop was measured at (README.md
+  /// "Defaults, and what each settles"). A rise of the weighted energy past
+  /// energy_rise_tolerance (hartree) rejects a step. At least 0.
+  double energy_rise_tolerance = 1e-11;
+  /// @brief The CI's residual tolerance schedule, min(ci_loosest,
+  /// ci_per_gradient ||g||^2) of the last iteration's ||g||, held at or above
+  /// @ref ci_tolerance_for's floor. Both above 0.
+  double ci_loosest = 1e-8;
+  double ci_per_gradient = 1e-4;
+  /// @brief The augmented Hessian's subspace solve: an absolute residual of
+  /// ah_per_gradient ||g_model|| (above 0); at most ah_max_subspace columns
+  /// before a restart, and ah_max_iterations added per micro iteration (both
+  /// at least 1); and H~ shifted by ah_level_shift (PySCF's
+  /// ah_level_shift, at least 0).
+  double ah_per_gradient = 1e-2;
+  int32_t ah_max_subspace = 40;
+  int32_t ah_max_iterations = 50;
+  double ah_level_shift = 1e-8;
+  /// @brief Micro iterations stop once the model gradient is this fraction
+  /// of ||g||. At least 0.
+  double micro_gradient_fraction = 0.1;
+  /// @brief The trust radius doubles when an accepted step's energy change is
+  /// within this fraction of the model's. Above 0.
+  double trust_agreement = 0.25;
+  /// @brief A step along negative curvature the model has not earned is cut
+  /// to negative_curvature_fraction of the radius (in (0, 1]); the gradient
+  /// earns it when |g.x| is at least 1 / curvature_dominance of
+  /// |x.H~x| / 2 (above 0).
+  double negative_curvature_fraction = 0.25;
+  double curvature_dominance = 10.0;
   /// @brief The CI's: its spin penalty, and in davidson.residual_tolerance the
   /// loosest floor the schedule reaches near convergence: the floor is
   /// @ref ci_tolerance_for, which tightens it when conv_tol_grad asks.
@@ -149,7 +180,8 @@ struct Solution {
 /// guesses (a reference solution's CI, for a solve from its orbitals moved).
 /// Empty, the solve is the one without it, to the bit.
 ///
-/// Each macro iteration: @c casscf_integrals over the current C; @c ci::solve
+/// Each macro iteration (the numbers are Options' defaults):
+/// @c casscf_integrals over the current C; @c ci::solve
 /// over the GPU sigma, warm-started from the last iteration's roots (the first
 /// from @p ci_guess, or from its own guesses), its residual
 /// tolerance min(1e-8, 1e-4 ||g||^2) of the last iteration, held at or above

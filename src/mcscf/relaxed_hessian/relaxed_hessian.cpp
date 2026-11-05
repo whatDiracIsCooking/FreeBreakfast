@@ -22,13 +22,13 @@ import free_breakfast.recipes.blas; // gemm
 
 namespace free_breakfast::mcscf {
 
-// The CI response's conjugate gradients stop after this many sigmas per root
-// (or at create's response_tolerance of the right-hand side). Two roots
+// The CI response's conjugate gradients stop after create's
+// response_max_iterations sigmas per root (200 by default), or at its
+// response_tolerance of the right-hand side. Two roots
 // closer than kResponseGapFloor (hartree) leave their mixing out. A
 // right-hand side whose part off every root is at most kResponseRoundoff of
 // its whole is round-off, its response zero, and no gradient runs on it
 // (README.md "A right-hand side the roots span").
-constexpr int32_t kResponseMaxIterations = 200;
 constexpr double kResponseGapFloor = 1e-8;
 constexpr double kResponseRoundoff = 1e-12;
 
@@ -129,12 +129,11 @@ void response_gradient(const ResponseIntegrals &ints, std::span<const double> ga
   }
 }
 
-Result<RelaxedHessian>
-RelaxedHessian::create(DeviceResources &res, response::Hessian &hessian, ci::Sigma &sigma,
-                       ci::Rdm &rdm, const ci::DeviceStringSet &alpha,
-                       const ci::DeviceStringSet &beta, const ci::Roots &roots,
-                       std::span<const double> weights, ResponseIntegrals ints,
-                       const double response_tolerance, std::vector<bool> mixing) {
+Result<RelaxedHessian> RelaxedHessian::create(
+    DeviceResources &res, response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
+    const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const ci::Roots &roots,
+    std::span<const double> weights, ResponseIntegrals ints, const double response_tolerance,
+    std::vector<bool> mixing, const int32_t response_max_iterations) {
   const size_t mo = ints.nmo;
   const size_t core = ints.ncore;
   const size_t n = ints.ncas;
@@ -157,9 +156,10 @@ RelaxedHessian::create(DeviceResources &res, response::Hessian &hessian, ci::Sig
                       "vectors of {} (roots {}, weights {}, {} doubles)",
                       dim, roots_count, weights.size(), roots.vectors.num_elements());
   }
-  if (!(response_tolerance > 0.0)) {
-    return err_config("mcscf::RelaxedHessian: response_tolerance must be positive (got {:g})",
-                      response_tolerance);
+  if (!(response_tolerance > 0.0) || response_max_iterations < 1) {
+    return err_config("mcscf::RelaxedHessian: needs response_tolerance > 0 and "
+                      "response_max_iterations >= 1 (got {:g}, {})",
+                      response_tolerance, response_max_iterations);
   }
   if (!mixing.empty() && mixing.size() != roots_count * (roots_count - 1) / 2) {
     return err_config("mcscf::RelaxedHessian: {} mixing flags for {} roots, which have {} pairs",
@@ -190,6 +190,7 @@ RelaxedHessian::create(DeviceResources &res, response::Hessian &hessian, ci::Sig
                         std::move(response_sigma),
                         dim,
                         response_tolerance,
+                        response_max_iterations,
                         swap_parity,
                         std::move(mixing),
                         res};
@@ -198,14 +199,16 @@ RelaxedHessian::create(DeviceResources &res, response::Hessian &hessian, ci::Sig
 RelaxedHessian::RelaxedHessian(response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
                                const ci::Roots &roots, std::vector<double> weights,
                                ResponseIntegrals ints, ci::Sigma response_sigma, const size_t dim,
-                               const double response_tolerance, const int32_t swap_parity,
+                               const double response_tolerance,
+                               const int32_t response_max_iterations, const int32_t swap_parity,
                                std::vector<bool> mixing, DeviceResources &res)
     : hessian_(&hessian), sigma_(&sigma), rdm_(&rdm), roots_(&roots), weights_(std::move(weights)),
       ints_(std::move(ints)), n_pairs_(hessian.size()), dim_(dim),
-      response_tolerance_(response_tolerance), swap_parity_(swap_parity),
-      mixing_(std::move(mixing)), response_sigma_(std::move(response_sigma)),
-      ci_b_(dim * weights_.size(), res.device()), ci_delta_(dim * weights_.size(), res.device()),
-      cg_vectors_(3 * dim, res.device()), ci_overlaps_(weights_.size(), res.device()),
+      response_tolerance_(response_tolerance), response_max_iterations_(response_max_iterations),
+      swap_parity_(swap_parity), mixing_(std::move(mixing)),
+      response_sigma_(std::move(response_sigma)), ci_b_(dim * weights_.size(), res.device()),
+      ci_delta_(dim * weights_.size(), res.device()), cg_vectors_(3 * dim, res.device()),
+      ci_overlaps_(weights_.size(), res.device()),
       response_matrix_(ints_.nmo * ints_.nmo, res.device()),
       response_packed_(std::max<size_t>(static_cast<size_t>(n_pairs_), 1), res.device()),
       response_gamma_(2 * ints_.ncas * ints_.ncas, res.device()),
@@ -324,7 +327,7 @@ Status RelaxedHessian::solve_response(DeviceResources &res, std::span<double> ga
     double rr = rhs_norm <= kResponseRoundoff * whole_norm ? 0.0 : rhs_norm * rhs_norm;
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cg_p, cg_r, dim * sizeof(double),
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
-    for (int32_t it = 0; it < kResponseMaxIterations && rr > 0.0; ++it) {
+    for (int32_t it = 0; it < response_max_iterations_ && rr > 0.0; ++it) {
       FBF_TRY(sigma_->apply(res, 1, cg_p, cg_ap));
       const double neg_e = -e_r;
       FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &neg_e, cg_p, 1, cg_ap, 1)));
@@ -552,7 +555,7 @@ Status RelaxedHessian::solve_responses(DeviceResources &res, const size_t k) {
     // solve_response's.
     active[v] = rr[v] > 0.0 && rhs_norm[v] > kResponseRoundoff * std::sqrt(whole[v]);
   }
-  for (int32_t it = 0; it < kResponseMaxIterations && std::ranges::contains(active, true); ++it) {
+  for (int32_t it = 0; it < response_max_iterations_ && std::ranges::contains(active, true); ++it) {
     FBF_TRY(shifted_sigma(res, k, p, ap));
     FBF_TRY(project_block(res, count, ap));
     FBF_TRY(column_dots(p, ap));

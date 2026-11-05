@@ -53,7 +53,7 @@ constexpr double kOccupationTolerance = 1e-6;
 constexpr double kOrthonormalTolerance = 1e-10;
 constexpr std::int32_t kMaxMacroIterations = 20;
 // mcscf::solve's own: a rise below it is noise, not a rejected step.
-constexpr double kEnergyRiseTolerance = 1e-11;
+const double kEnergyRiseTolerance = fb::mcscf::Options{}.energy_rise_tolerance;
 // The test's convergence. Each root's energy is not stationary in the
 // orbitals, and the natural occupations neither, so both are first order in
 // the orbitals' error, ~||g|| / (H's least eigenvalue): at the default
@@ -626,7 +626,7 @@ constexpr double kSelfConsistencyTolerance = 1e-10;
 constexpr double kLooseConvTol = 1.0;
 constexpr double kLooseConvTolGrad = 1e-3;
 constexpr double kCiFloorGradient = 1e-4;
-constexpr double kCiPerGradient = 1e-4;
+const double kCiPerGradient = fb::mcscf::Options{}.ci_per_gradient;
 
 const fb::json &nac_case(std::string_view name) {
   static const fb::json kDoc = [] {
@@ -925,6 +925,46 @@ TEST(McscfSolveLimits, OutOfMacroIterationsIsMaxIterationsExceeded) {
   EXPECT_EQ(got.error().kind, fb::ErrorKind::MaxIterationsExceeded) << got.error().message;
 }
 
+// A tuning option takes effect (#866): with ah_max_iterations 1 no micro
+// iteration adds more than one column to the augmented Hessian's subspace,
+// so no macro iteration takes more Hessian products than micro iterations,
+// where the default takes more; and the solve still converges to the same
+// energy.
+constexpr double kTuningEnergyTolerance = 1e-8;
+
+TEST(McscfSolveTuning, AhMaxIterationsCapsEachMicroIteration) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz");
+  auto setup = make_setup(entry, true, "sto-3g");
+  ASSERT_NE(setup, nullptr);
+  const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+  const fb::mcscf::Options defaults;
+  fb::mcscf::Options capped;
+  capped.ah_max_iterations = 1;
+  const auto uncapped = setup->solve(setup->start->c, 1, {}, defaults);
+  ASSERT_TRUE(uncapped.has_value()) << uncapped.error().message;
+  const auto held = setup->solve(setup->start->c, 1, {}, capped);
+  ASSERT_TRUE(held.has_value()) << held.error().message;
+  const auto over = [](const fb::mcscf::Iteration &it) {
+    return it.hessian_products > it.micro_iterations;
+  };
+  EXPECT_TRUE(std::ranges::any_of(uncapped->iterations, over))
+      << "the default never adds two columns in one micro iteration, so the cap checks nothing";
+  EXPECT_FALSE(std::ranges::any_of(held->iterations, over));
+  EXPECT_NEAR(held->energy, uncapped->energy, kTuningEnergyTolerance);
+  const auto products = [](const fb::mcscf::Solution &sol) {
+    std::int32_t sum = 0;
+    for (const fb::mcscf::Iteration &it : sol.iterations) {
+      sum += it.hessian_products;
+    }
+    return sum;
+  };
+  std::cout << std::format("[ tuning ] ah_max_iterations 50: {} macro, {} products; 1: {} macro, "
+                           "{} products\n",
+                           uncapped->iterations.size(), products(*uncapped),
+                           held->iterations.size(), products(*held));
+}
+
 // The weights and the other refusals, before the loop runs.
 TEST(McscfSolveRefusals, AreInvalidConfig) {
   FBF_REQUIRE_GPU();
@@ -955,6 +995,24 @@ TEST(McscfSolveRefusals, AreInvalidConfig) {
   bad = defaults;
   bad.trust_radius = -1.0;
   refused(setup->solve(c, 1, {}, bad), "trust_radius");
+  // Each tuning option out of range.
+  for (const auto &spoil : std::initializer_list<std::function<void(fb::mcscf::Options &)>>{
+           [](fb::mcscf::Options &o) { o.energy_rise_tolerance = -1.0; },
+           [](fb::mcscf::Options &o) { o.ci_loosest = 0.0; },
+           [](fb::mcscf::Options &o) { o.ci_per_gradient = 0.0; },
+           [](fb::mcscf::Options &o) { o.ah_per_gradient = 0.0; },
+           [](fb::mcscf::Options &o) { o.ah_max_subspace = 0; },
+           [](fb::mcscf::Options &o) { o.ah_max_iterations = 0; },
+           [](fb::mcscf::Options &o) { o.ah_level_shift = -1.0; },
+           [](fb::mcscf::Options &o) { o.micro_gradient_fraction = -1.0; },
+           [](fb::mcscf::Options &o) { o.trust_agreement = 0.0; },
+           [](fb::mcscf::Options &o) { o.negative_curvature_fraction = 0.0; },
+           [](fb::mcscf::Options &o) { o.negative_curvature_fraction = 1.5; },
+           [](fb::mcscf::Options &o) { o.curvature_dominance = 0.0; }}) {
+    bad = defaults;
+    spoil(bad);
+    refused(setup->solve(c, 1, {}, bad), "tuning");
+  }
   // A density-fitted mode without B, and a B of the wrong size.
   const fb::Buffers::device<double> short_b(3, setup->res().device());
   for (const auto mode :
