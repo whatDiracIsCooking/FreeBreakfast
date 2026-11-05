@@ -392,6 +392,31 @@ on its weights, which `root_pair_multipliers` splits by `zvector`'s own test
 naming the pair, whatever its weights: ζ divides by the gap, and `zvector`
 divides t by it (and drops a pair below the same floor without a word).
 
+### A degenerate pair has no limit to take (#892)
+
+The floor is not only round-off. Whether ζ_sr = −τ_sr / (E_s − E_r) has a
+limit as the pair degenerates is a property of the caller's L, and for
+QD-NEVPT2, the one caller with equal pairs, it has none that is unique.
+`../../nevpt2/gradient/README.md`, "At a degenerate CASSCF pair", has the
+measurements (ethylene's C3v ¹E pair, where #847's MECI walk stopped). In
+short:
+
+- **SC-QD-NEVPT2.** τ stays finite as the gap closes (1e-6 to 7e-6 Eh per
+  radian at every gap measured, 4.4e-6 down to 2.2e-9), so ζ grows as
+  1/gap: 5.5 at 4.9e-7, 57 at 4.9e-8, 1.1e3 to 1.5e3 at 2.2e-9. The energy itself depends on how the
+  degenerate pair is rotated, so dE_K/dR diverges there. No floor is safe.
+- **PC-QD-NEVPT2.** At the exactly degenerate pair its energies are
+  invariant to the rotation (to 3e-15 Eh), and τ falls with the gap. ζ
+  stays finite, but its limit depends on the **direction** the pair is
+  approached from: 0.0113 along one line, under 4e-4 along another. So
+  each g_K is bounded but not unique at the pair's seam. Only the pair's
+  sum, τ_P + τ_Q (≤ 5e-12 at every point measured, against τ_K up to 5e-9),
+  vanishes from every direction.
+
+So the refusal stays, for both. Whatever the floor, a ζ below it is a 0/0
+whose value depends on the path. Lowering the floor would trade a refusal
+for a gradient that is not one. The QD README says what to do instead.
+
 `zeta_terms` turns a ζ into its two consumers, each pair's transition RDMs
 from `ci::Rdm::trans_rdm12(c_s, c_r)`:
 
