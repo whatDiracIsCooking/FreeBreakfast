@@ -1068,19 +1068,25 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
 /// of qd_sc_adjoint. G is linear in W; the state form, dE_K/dR, is
 /// G(u_K u_K^T), u_K PC's H_eff's eigenvector, one code path.
 ///
-/// The arguments are qd_pc_gradient's with @p w for @p state.
+/// The arguments are qd_pc_gradient's with @p w for @p state, and
+/// @p limit_pair, mcscf::root_pair_multipliers': a pair of CASSCF roots
+/// whose zeta is taken at its limit 0, not refused under kRootGapFloor but
+/// gated on its tau (nevpt2::qd_pc_intersection's mean gradient inside a
+/// degenerate CASSCF pair, ../intersection/README.md).
 ///
 /// @return The gradient, heff_gap infinite, elements qd_pc_adjoint's; a
 ///         refused class's Numerical error, never a gradient with the class
 ///         zeroed; qd_sc_gradient's W form's other errors, named for
-///         nevpt2::qd_pc_gradient.
+///         nevpt2::qd_pc_gradient (root_pair_multipliers' refusal of
+///         @p limit_pair among them).
 [[nodiscard]] Result<QdPcGradient>
 qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
                std::span<const double> w, int32_t batch, double zvector_tolerance = 1e-10,
-               int32_t nfrozen = 0);
+               int32_t nfrozen = 0,
+               std::optional<std::array<int32_t, 2>> limit_pair = std::nullopt);
 
 /// @brief qd_sc_gradient's several-W form over qd_pc_adjoint: G(W) at each
 /// of @p w, sharing the same work. The arguments are its.

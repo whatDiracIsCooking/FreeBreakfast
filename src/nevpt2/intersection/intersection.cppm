@@ -53,12 +53,18 @@ struct QdIntersectionOptions {
 /// vectors of a QD pair's branching space at one R, and its gap's
 /// sensitivities to the SA-CASSCF's residuals.
 struct QdIntersection {
-  /// @brief dE_P/dR = G(u_P u_P^T), n_atom x 3 row-major (hartree / bohr).
+  /// @brief dE_P/dR = G(u_P u_P^T), n_atom x 3 row-major (hartree / bohr);
+  /// empty inside a degenerate CASSCF pair (@ref reference_pair_tau set).
   std::vector<double> g_p;
-  /// @brief dE_Q/dR = G(u_Q u_Q^T), n_atom x 3 row-major.
+  /// @brief dE_Q/dR = G(u_Q u_Q^T), n_atom x 3 row-major; empty as g_p.
   std::vector<double> g_q;
-  /// @brief h_PQ = u_P^T (dH_eff/dR) u_Q = G(W^PQ), n_atom x 3 row-major.
+  /// @brief h_PQ = u_P^T (dH_eff/dR) u_Q = G(W^PQ), n_atom x 3 row-major;
+  /// empty as g_p.
   std::vector<double> h_pq;
+  /// @brief The mean gradient (g_P + g_Q) / 2, n_atom x 3 row-major: their
+  /// sum's half, or inside a degenerate CASSCF pair its own W form,
+  /// G((u_P u_P^T + u_Q u_Q^T) / 2).
+  std::vector<double> g_mean;
   /// @brief H_eff's eigenvalues, ascending (hartree): the QD energies.
   std::vector<double> eigenvalues;
   /// @brief H_eff's eigenvectors R, n x n, state K's column at
@@ -81,6 +87,13 @@ struct QdIntersection {
   /// s_c sqrt(n_roots) rho for Davidson residuals of norm at most rho
   /// (ci::Roots::davidson.max_residual_norm).
   double gap_sensitivity_ci = 0.0;
+  /// @brief Set inside a degenerate CASSCF pair (README.md "A MECI inside a
+  /// degenerate CASSCF pair"): PC, the closest two roots under
+  /// mcscf::kRootGapFloor and carrying most of u_P and of u_Q. Then g_mean
+  /// alone is computed, with that pair's zeta at its limit 0, and this is
+  /// its tau, held to mcscf::kLimitTauGate; g_p, g_q and h_pq are empty and
+  /// both sensitivities NaN.
+  std::optional<double> reference_pair_tau;
 };
 
 /// @brief The SC-QD-NEVPT2 branching space of QD states @p p and @p q
@@ -118,9 +131,16 @@ qd_sc_intersection(DeviceResources &res, const Molecule &molecule, const BasisSe
 /// qd_sc_intersection over pc_effective_hamiltonian and qd_pc_gradient's W
 /// form. The arguments are qd_sc_intersection's.
 ///
+/// Inside a degenerate CASSCF pair (QdIntersection::reference_pair_tau) it
+/// computes the mean gradient alone, one W form at
+/// (u_P u_P^T + u_Q u_Q^T) / 2 with the pair's zeta at its limit 0, and
+/// returns no g_P, g_Q or h_PQ, which have no limit there (README.md).
+///
 /// @return As qd_sc_intersection; a refused PC class's Numerical error,
 ///         pc_effective_hamiltonian's unchanged (qd_pc_coupling's), never a
-///         result with the class zeroed.
+///         result with the class zeroed; inside a degenerate CASSCF pair,
+///         mcscf::root_pair_multipliers' Numerical error for a tau above
+///         mcscf::kLimitTauGate.
 [[nodiscard]] Result<QdIntersection>
 qd_pc_intersection(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                    std::span<const PrimitivePairClass> classes, const BasisSet &aux,

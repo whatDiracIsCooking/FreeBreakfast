@@ -34,8 +34,8 @@ settings:
 The converged structures are checked in as
 [`geometries/ethylene_{s0,py,et}_aug{dz,tz}.xyz`](geometries/), each a
 `final.xyz`. A seventh walk,
-[`tier1_ethylene_c3v_augdz.toml`](tier1_ethylene_c3v_augdz.toml), is kept
-as the evidence of the C3v stop below.
+[`tier1_ethylene_c3v_augdz.toml`](tier1_ethylene_c3v_augdz.toml), was kept
+as the evidence of the C3v stop below; since #902 it converges (below).
 
 | walk | evaluations | wall | final energy (Eh) | final gap (Eh) | max / rms force (Eh/bohr) | max / rms displacement (bohr) |
 |---|---|---|---|---|---|---|
@@ -221,6 +221,20 @@ table above. Referenced to his S0 geometry instead, they are his to
   degenerate reference pair is a theory question, filed as #892. The walk
   wrote no `optimize.json` (#877), and the aug-cc-pVTZ C3v walk was not
   run.
+
+  **Since #902 the same walk converges**, unchanged config, at the
+  evaluation where it stopped. Inside the degenerate CASSCF pair PC's
+  intersection returns the mean gradient ḡ alone (the pair's ζ at its
+  limit 0, its τ gated), and the walk carries the last branching plane
+  (`src/nevpt2/intersection/README.md`, "A MECI inside a degenerate
+  CASSCF pair"). On the RTX 3080 (`--preset default`): 11 evaluations,
+  11.7 s; evaluation 10 is the one carried (CASSCF gap 7.87e-9, τ 5.6e-18)
+  and meets Opt=Tight: gap 4.8e-11 Eh, max / rms force 5.4e-6 / 1.9e-6
+  Eh/bohr, max / rms step 5.7e-5 / 2.7e-5 bohr; mean energy
+  −78.162005017770 Eh. Its distance from exact C3v fell from 4.9e-3 Å
+  (his geometry) to 3.1e-5 Å. This does not change the C3v ruling: C3v is
+  still reported from frozen-core single points at his geometries, and no
+  aug-cc-pVTZ C3v walk was run.
 
 ## The MECIs' gap bounds and overlap trails
 

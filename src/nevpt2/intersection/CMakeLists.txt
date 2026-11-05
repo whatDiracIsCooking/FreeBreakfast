@@ -4,9 +4,9 @@
 # SphericalMatrixAO and Solution are in its signatures, so core::resources,
 # core::wwr, core::error_handling, molecule, basis, mmd, recipes::matrix_ao
 # and mcscf::solve are PUBLIC. nevpt2::gradient (qd_inputs and the W forms),
-# nevpt2::energy (the effective Hamiltonians), H_eff's diagonalize and the
-# FBF_TRY header are the implementation unit's alone. No device code of its
-# own.
+# nevpt2::energy (the effective Hamiltonians), H_eff's diagonalize,
+# mcscf::root_rotation (kRootGapFloor) and the FBF_TRY header are the
+# implementation unit's alone. No device code of its own.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.nevpt2.intersection
@@ -28,6 +28,7 @@ free_breakfast_add_cxx_module_library(
   LINK_PRIVATE
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::diagonalize
+  free_breakfast::mcscf::root_rotation
   free_breakfast::nevpt2::density_fitting
   free_breakfast::nevpt2::energy
   free_breakfast::nevpt2::gradient

@@ -417,6 +417,22 @@ So the refusal stays, for both. Whatever the floor, a ζ below it is a 0/0
 whose value depends on the path. Lowering the floor would trade a refusal
 for a gradient that is not one. The QD README says what to do instead.
 
+### A pair at its limit (#902)
+
+A caller that knows a pair's ζ has the limit 0 names it as
+`root_pair_multipliers`' `limit_pair`. That pair is not refused under the
+floor, its ζ is 0, and its τ is still reported. The pair must be two
+distinct roots of equal weight (`InvalidConfig` otherwise: an unequal pair
+is `zvector`'s row, with no ζ). It is refused as `Numerical` when
+|τ| > `kLimitTauGate`, 1e-11 Eh. The gate is far above τ's round-off
+(8.9e-16, "What is bitwise" below) and below #892's PC τ_K. It cannot
+prove the limit is 0: τ/gap is 0/0 at any gate. It catches a W, a method or
+a pair the caller's argument does not cover. The one caller is
+`nevpt2::qd_pc_intersection`'s mean gradient ḡ, whose W is the QD pair's
+spectral projector over the degenerate CASSCF pair
+(`../../nevpt2/intersection/README.md`, "A MECI inside a degenerate CASSCF
+pair"). Every other pair under the floor is still refused.
+
 `zeta_terms` turns a ζ into its two consumers, each pair's transition RDMs
 from `ci::Rdm::trans_rdm12(c_s, c_r)`:
 
@@ -534,7 +550,12 @@ against the host's dot products at the round-off bar above, and the same
 at every weight; ζ and t bitwise their quotients, each zero where the other is set;
 and the refusals, a pair under `kRootGapFloor` (Numerical, naming it) and
 weights of the wrong length, as a ζ of the wrong length is from
-`zeta_terms`. About 2.2 s and 3.1 s a case, the solve included.
+`zeta_terms`. Then a limit pair (#902): roots 0 and 1 under the floor at a
+ȳ with their τ removed, named in either order, is not refused, its ζ is 0
+and its τ round-off (≤ 1e-13), the other ζ bitwise their quotients; its τ
+above the gate is refused (Numerical, naming it), so is another pair under
+the floor beside it, and a limit pair of unequal weights or one root twice
+is `InvalidConfig`. About 2.2 s and 3.1 s a case, the solve included.
 
 `test/gtest/mcscf_gradient_weights_gpu.cpp` holds the weights, over
 `test/gtest/data/casscf_hessian/`'s stretched water (CAS(4,4) / 6-31G /

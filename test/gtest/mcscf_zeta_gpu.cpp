@@ -33,7 +33,12 @@
 //   unequal pair's t bitwise tau / (2 (w_r - w_s)) and zeta zero;
 // - refusals: two roots under kRootGapFloor apart as Numerical naming both,
 //   weights of the wrong length, and a zeta_terms zeta of the wrong length,
-//   as InvalidConfig.
+//   as InvalidConfig;
+// - a limit pair (#902), roots 0 and 1 under the floor at a y_bar with
+//   their tau removed: not refused, its zeta 0 and its tau round-off, the
+//   other zeta the quotients, the same named in either order; refused above
+//   kLimitTauGate (Numerical, naming it), beside another pair under the
+//   floor, and for unequal weights or one root twice (InvalidConfig).
 //
 // Runs the device chain, so needs a GPU.
 
@@ -543,6 +548,73 @@ TEST(McscfRootPairMultipliers, SplitsTauByWeight) {
   ASSERT_FALSE(short_weights.has_value());
   EXPECT_EQ(short_weights.error().kind, fb::ErrorKind::InvalidConfig)
       << short_weights.error().message;
+
+  // A limit pair (#902): roots 0 and 1 under the floor again, now with the
+  // real CI, and a y_bar whose tau_10 is removed (y_0 loses tau_10 c_1, c_1
+  // of unit norm), so it is round-off. Named, the pair is not refused, its
+  // zeta is 0 and its tau reported, and the other pairs' zeta are the
+  // quotients; named in either order the same, bitwise.
+  fb::Buffers::device<double> vectors(dim * nroots, res.device());
+  ASSERT_EQ(wwr::wwrMemcpyAsync(vectors.data(), roots.vectors.data(), dim * nroots * sizeof(double),
+                                wwr::wwrMemcpyDeviceToDevice, res.stream()),
+            wwr::wwrSuccess);
+  const fb::ci::Roots close{.energies = near_energies,
+                            .spin_squares = roots.spin_squares,
+                            .vectors = std::move(vectors),
+                            .davidson = roots.davidson};
+  std::vector<double> y_limit = y;
+  const double tau_10 = dot(1, 0) - dot(0, 1);
+  for (std::size_t i = 0; i < dim; ++i) {
+    y_limit[i] -= tau_10 * c[dim + i];
+  }
+  fb::Buffers::device<double> y_limit_device(y_limit.size(), res.device());
+  ASSERT_EQ(wwr::wwrMemcpyAsync(y_limit_device.data(), y_limit.data(),
+                                y_limit.size() * sizeof(double), wwr::wwrMemcpyHostToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(res.sync().has_value());
+  const auto at_limit = fb::mcscf::root_pair_multipliers(res, close, equal_weights,
+                                                         y_limit_device.data(), std::array{0, 1});
+  ASSERT_TRUE(at_limit.has_value()) << at_limit.error().message;
+  EXPECT_EQ(at_limit->zeta[0], 0.0);
+  EXPECT_LE(std::abs(at_limit->tau[0]), 1e-13);
+  for (const std::size_t pair : {std::size_t{1}, std::size_t{2}}) {
+    const std::size_t s = 2;
+    const std::size_t r = pair - 1;
+    EXPECT_EQ(bits(at_limit->zeta[pair]),
+              bits(-at_limit->tau[pair] / (near_energies[s] - near_energies[r])))
+        << "pair " << pair;
+  }
+  const auto swapped = fb::mcscf::root_pair_multipliers(res, close, equal_weights,
+                                                        y_limit_device.data(), std::array{1, 0});
+  ASSERT_TRUE(swapped.has_value()) << swapped.error().message;
+  EXPECT_EQ(differing(swapped->tau, at_limit->tau), 0U);
+  EXPECT_EQ(differing(swapped->zeta, at_limit->zeta), 0U);
+  std::cout << std::format("[ zeta] limit pair (0, 1): tau {:.3e}, gate {:.0e}\n", at_limit->tau[0],
+                           fb::mcscf::kLimitTauGate);
+
+  // Its tau above the gate (the random y_bar's, O(1)) is refused, naming
+  // it; another pair under the floor is still refused; and a limit pair of
+  // unequal weights, or one root twice, is InvalidConfig.
+  const auto above_gate = fb::mcscf::root_pair_multipliers(res, close, equal_weights,
+                                                           y_device.data(), std::array{0, 1});
+  ASSERT_FALSE(above_gate.has_value());
+  EXPECT_EQ(above_gate.error().kind, fb::ErrorKind::Numerical) << above_gate.error().message;
+  EXPECT_NE(above_gate.error().message.find("limit pair (0, 1)"), std::string::npos)
+      << above_gate.error().message;
+  const auto other_pair = fb::mcscf::root_pair_multipliers(res, close, equal_weights,
+                                                           y_limit_device.data(), std::array{1, 2});
+  ASSERT_FALSE(other_pair.has_value());
+  EXPECT_NE(other_pair.error().message.find("roots 0 and 1"), std::string::npos)
+      << other_pair.error().message;
+  const std::vector<double> unequal{0.5, 0.3, 0.2};
+  for (const auto &[weights, pair] :
+       {std::pair{unequal, std::array{0, 1}}, std::pair{equal_weights, std::array{1, 1}}}) {
+    const auto refused =
+        fb::mcscf::root_pair_multipliers(res, roots, weights, y_limit_device.data(), pair);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
+  }
 }
 
 } // namespace

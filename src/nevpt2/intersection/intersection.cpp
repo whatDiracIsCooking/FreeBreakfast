@@ -20,6 +20,7 @@ import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.mcscf.solve;
+import free_breakfast.mcscf.root_rotation;    // kRootGapFloor
 import free_breakfast.nevpt2.density_fitting; // MoBlocks
 import free_breakfast.nevpt2.energy;
 import free_breakfast.nevpt2.gradient; // qd_inputs, the W forms
@@ -185,6 +186,52 @@ Result<QdIntersection> qd_intersection(
   const auto core = static_cast<size_t>(ncore);
   const size_t nocc = core + static_cast<size_t>(ncas);
   const size_t pairs = (core * (nmo - core)) + (static_cast<size_t>(ncas) * (nmo - nocc));
+  const double heff_gap = std::abs(eigenvalues[kq] - eigenvalues[kp]);
+
+  // Inside a degenerate CASSCF pair (README.md "A MECI inside a degenerate
+  // CASSCF pair"): PC, the closest pair of roots (a, b) under the floor, and
+  // that pair carrying most of u_P and of u_Q. Then only the mean gradient,
+  // one W form at the QD pair's spectral projector over 2, with (a, b)'s
+  // zeta at its limit 0 and its tau gated. Anything else under the floor
+  // (SC, a pair that is not the QD pair's) takes the path below and is
+  // refused there, by root_pair_multipliers.
+  const std::vector<double> &energies = solution.roots.energies;
+  std::array<size_t, 2> closest{0, 1};
+  double root_gap = std::numeric_limits<double>::infinity();
+  for (size_t r = 0; r < nroots; ++r) {
+    for (size_t s = r + 1; s < nroots; ++s) {
+      if (std::abs(energies[s] - energies[r]) < root_gap) {
+        root_gap = std::abs(energies[s] - energies[r]);
+        closest = {r, s};
+      }
+    }
+  }
+  const auto carries = [&](const std::span<const double> u) {
+    return (u[closest[0]] * u[closest[0]]) + (u[closest[1]] * u[closest[1]]) > 0.5;
+  };
+  if (pc && root_gap < mcscf::kRootGapFloor && carries(u_p) && carries(u_q)) {
+    std::vector<double> w = pair_w(u_p, u_p);
+    const std::vector<double> w_q = pair_w(u_q, u_q);
+    for (size_t i = 0; i < w.size(); ++i) {
+      w[i] = 0.5 * (w[i] + w_q[i]);
+    }
+    const auto [lo, hi] = closest;
+    QdPcGradient g = FBF_TRY(qd_pc_gradient(
+        res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, w, batch, tolerance,
+        options.nfrozen, std::array{static_cast<int32_t>(lo), static_cast<int32_t>(hi)}));
+    // (lo, hi)'s place among the pairs r < s in lexicographic order.
+    const double tau = g.lagrangian.pairs.tau[(lo * nroots) - (lo * (lo + 1) / 2) + (hi - lo - 1)];
+    const WFormPart mean = FBF_TRY(w_form_part(res, who, "W^mean", std::move(g), pairs, tolerance));
+    constexpr double kNone = std::numeric_limits<double>::quiet_NaN();
+    return QdIntersection{.g_mean = mean.total,
+                          .eigenvalues = std::move(eigenvalues),
+                          .eigenvectors = std::move(r),
+                          .heff_gap = heff_gap,
+                          .root_gap = root_gap,
+                          .gap_sensitivity_orbital = kNone,
+                          .gap_sensitivity_ci = kNone,
+                          .reference_pair_tau = tau};
+  }
   const auto part = [&](const std::string_view which,
                         const std::vector<double> &w) -> Result<WFormPart> {
     if (pc) {
@@ -236,10 +283,14 @@ Result<QdIntersection> qd_intersection(
   const double s_c = gap_sensitivity(gp.ci, gq.ci, hpq.ci, [&](const size_t i) {
     return 2.0 * weights[std::min(i / dim, nroots - 1)];
   });
-  const double heff_gap = std::abs(eigenvalues[kq] - eigenvalues[kp]);
+  std::vector<double> g_mean(gp.total.size());
+  for (size_t i = 0; i < g_mean.size(); ++i) {
+    g_mean[i] = 0.5 * (gp.total[i] + gq.total[i]);
+  }
   return QdIntersection{.g_p = std::move(gp.total),
                         .g_q = std::move(gq.total),
                         .h_pq = std::move(hpq.total),
+                        .g_mean = std::move(g_mean),
                         .eigenvalues = std::move(eigenvalues),
                         .eigenvectors = std::move(r),
                         .heff_gap = heff_gap,

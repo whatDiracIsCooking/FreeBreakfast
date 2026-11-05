@@ -4,7 +4,8 @@
 // uphill step, and the refusals. And for geometry::optimize_meci: two-state
 // model surfaces over four points' distances, a peaked and a tilted cone and
 // an uncoupled crossing, each with a known minimum-energy crossing, the trust
-// radius's shrink, and the refusals.
+// radius's shrink, the refusals, and a plane carried under a floor where the
+// callback gives the mean gradient alone (#902).
 
 #include <gtest/gtest.h>
 
@@ -755,6 +756,61 @@ TEST(GeometryOptimizeMeci, EnergiesInEitherOrder) {
   ASSERT_TRUE(result.has_value()) << result.error().message;
   EXPECT_LE(aligned_error(result->x, kMeciPoints), kMeciBar);
   EXPECT_LE(result->lower, result->upper);
+}
+
+// A callback with no plane near the seam (#902's QD-PC walk inside a
+// degenerate CASSCF pair): under a gap of kFloor it writes the mean gradient
+// into both g_I and g_J and zeros into h, and the plane is carried. As in
+// #902, the floor sits under max_gap, so a carried point already meets the
+// gap criterion, and the walk's remaining work is P g. The peaked cone has
+// no tilt, so the mean gradient vanishes at the crossing and a carried
+// plane misplaces P g by second order only: the walk still reaches the
+// crossing, within force / curvature + max_gap / (the plane's least slope),
+// 1e-10 / 0.37 + 1e-8 / 0.138 = 7.3e-8 bohr, under kCarriedBar; the plane
+// carried from the first evaluation under the floor on, and never at the
+// start.
+TEST(GeometryOptimizeMeci, CarriesThePlaneUnderAFloor) {
+  constexpr double kFloor = 1e-9;
+  constexpr double kCarriedBar = 1e-7;
+  geo::Options options = meci_options();
+  options.max_gap = 1e-8;
+  const auto mean_only = [](std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
+                            std::span<double> h) -> fb::Result<std::array<double, 2>> {
+    const auto e = model_pair(kPeaked, x, g_i, g_j, h);
+    if (e && (*e)[1] - (*e)[0] < kFloor) {
+      for (std::size_t k = 0; k < g_i.size(); ++k) {
+        g_i[k] = 0.5 * (g_i[k] + g_j[k]);
+      }
+      std::ranges::copy(g_i, g_j.begin());
+      std::ranges::fill(h, 0.0);
+    }
+    return e;
+  };
+  const auto result = geo::optimize_meci(off_seam_start(), mean_only, options);
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  const double error = aligned_error(result->x, kMeciPoints);
+  ::testing::Test::RecordProperty("carried_position_error", std::format("{:.3e}", error));
+  ::testing::Test::RecordProperty("carried_evaluations", std::to_string(result->iterations.size()));
+  EXPECT_LE(error, kCarriedBar);
+  std::size_t carried = 0;
+  for (std::size_t k = 0; k < result->iterations.size(); ++k) {
+    const geo::MECISolution::Iteration &it = result->iterations[k];
+    EXPECT_EQ(it.plane_carried, it.gap < kFloor) << "evaluation " << k;
+    EXPECT_EQ(it.branching_dimension, 2) << "evaluation " << k;
+    carried += it.plane_carried ? 1U : 0U;
+  }
+  EXPECT_FALSE(result->iterations.front().plane_carried);
+  EXPECT_GE(carried, 1U);
+  EXPECT_TRUE(result->iterations.back().plane_carried);
+  std::cout << std::format("[ meci ] carried: {} evaluations, {} carried, position error {:.3e}\n",
+                           result->iterations.size(), carried, error);
+
+  // On the seam from the start: no plane to carry, refused.
+  const auto start = geo::optimize_meci(on_seam_start(), mean_only, options);
+  ASSERT_FALSE(start.has_value());
+  EXPECT_EQ(start.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_NE(start.error().message.find("no earlier branching plane"), std::string::npos)
+      << start.error().message;
 }
 
 } // namespace
