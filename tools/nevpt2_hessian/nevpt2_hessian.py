@@ -213,7 +213,13 @@ CASES = [
         ],
         "basis": "sto-3g",
         "cas": (2, 2),
-        "active": [4, 5],
+        # HOMO-1 and LUMO, both A': the symmetric minimum, the lower of the
+        # two CAS(2,2) minima here (-55.437459 against a mirror-broken
+        # -55.432707). From the frontier pair [4, 5] PySCF reaches it, but
+        # this tree's solver leaves the mirror along the start's A''
+        # negative curvature and lands in the broken one (#927); from
+        # [3, 5] both reach the symmetric minimum.
+        "active": [3, 5],
         "quantities": ("casscf", "sc", "pc"),
         "irreps": ("A'", "A''"),
         "coordinates": NH3_CS_COORDINATES,

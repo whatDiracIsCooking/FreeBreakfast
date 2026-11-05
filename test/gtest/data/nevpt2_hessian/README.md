@@ -22,7 +22,7 @@ All STO-3G / cc-pVDZ-JKFIT, single state, all-electron (`frozen_core` 0).
 | case | kind | CAS, active | h, δ (bohr) | inactive gaps (core, virtual) | schemes | bar, max (Eh/bohr²) | judged ratios | worst \|ratio − 16\| |
 |---|---|---|---|---|---|---|---|---:|
 | `h2co_skew_sto3g` | skew (C1) | (4,4), 6–9 | 0.03, 5e-3 | 0.140, 0.341 | CASSCF, SC, PC | 2.0e-7, 1.8e-7, 1.8e-7 | 8, 10, 10 | 0.78 |
-| `nh3_cs_sto3g` | symmetric (Cs) | (2,2), 4–5 | 0.03, 5e-3 | 0.285, 0.289 | CASSCF, SC (A′ block), PC | 5.5e-8, 5.7e-6 (A″ failed), 5.5e-8 | 8, 4, 10 | 0.96 |
+| `nh3_cs_sto3g` | symmetric (Cs) | (2,2), 3 and 5 | 0.03, 5e-3 | 0.285, 0.289 | CASSCF, SC (A′ block), PC | 5.5e-8, 5.7e-6 (A″ failed), 5.5e-8 | 8, 3, 9 | 1.31 |
 | `h2co_neardeg_sto3g` | near-degenerate virtual pair | (4,4), 6–9 | 0.04, 5e-3 | 0.185, **0.0060** | CASSCF, PC | 1.2e-7, 1.9e-7 | 19, 24 | 1.25 |
 
 Every judged ratio of every element (and of every pair's directional
@@ -51,6 +51,27 @@ symmetric case.
   block, and PC and CASSCF everywhere, are held to every check. PC has no
   lifted null mode here: its dropped modes are the CAS(2,2) structural ones
   at every displaced point.
+
+  **Its state, and its `active` (#927).** CAS(2,2) has two minima here,
+  and the case is the lower, symmetric one:
+
+  | minimum | E (Eh) | active occupations | mirror | \|g\| PySCF / tree | H's least eigenvalue |
+  |---|---|---|---|---|---|
+  | **symmetric (this case)** | −55.437459240 | 1.971711, 0.028289 | both active A′, every orbital A′ or A″ | 3e-13 / 1e-11 | 4.2e-2 |
+  | mirror-broken | −55.432706858 | 1.980654, 0.019346 | active natural orbitals mix A′ and A″ | 5e-13 / 7e-11 | 2.7e-2 |
+
+  Both are minima of the orbital Hessian, and the broken one is 4.75 mEh
+  higher. The RHF frontier pair, `active` [4, 5] (the old start), starts on a point whose
+  gradient is A′ but whose orbital Hessian's least eigenvalue
+  (−9.8e-3) is an A″ rotation. PySCF stays in A′ and reaches the
+  symmetric minimum. This tree's solver leaves the mirror along that mode
+  and lands in the broken one, on CUDA and HIP alike. So the case starts
+  from HOMO−1 and LUMO, [3, 5] (both A′), where the least eigenvalue is
+  A′. From there PySCF and this tree, on either backend, reach the
+  symmetric minimum to 1e-10 Eh. A test that configures this tree's CASSCF
+  from `active` reaches the case's state. Of the other starts tried on the
+  tree, [0, 4], [0, 5] and [4, 5] reach the broken minimum. [1, 4], [1, 5],
+  [1, 6], [3, 4], [3, 6] and [4, 6] reach the symmetric one.
 - **`h2co_neardeg_sto3g`**: the two virtuals 6.0e-3 apart at R0, and 5.6e-5
   at the closest displaced point, for #817's κ_oo. PC only (and CASSCF):
   SC is not invariant to rotations within the pair and does not ladder
