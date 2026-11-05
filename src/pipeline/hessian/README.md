@@ -2,8 +2,10 @@
 
 The closed-shell RHF Cartesian Hessian at the pipeline's molecule -- or a
 DF-CASSCF root's, state-specific or one root of a state average (below,
-"The CASSCF chain") -- its harmonic frequencies and normal modes, and
-(analytic RHF) the IR intensities. Two methods:
+"The CASSCF chain"), or the SC- or PC-NEVPT2 energy's on a single-state
+DF-CASSCF, numerically (below, "The NEVPT2 chain") -- its harmonic
+frequencies and normal modes, and (analytic RHF) the IR intensities. Two
+methods:
 
 - **analytic**, the default: `hessian::df_rhf` (`../../hessian/`) at the SCF
   of one run of the chain from the molecule to `[scf]`, a nested `Pipeline`;
@@ -23,9 +25,10 @@ Either way the Hessian is symmetrized, checked, and handed to
 
 `free_breakfast.pipeline.hessian`, target `free_breakfast::pipeline::hessian`.
 It re-exports `free_breakfast.geometry`, whose `Vibrations` the product
-holds, and `free_breakfast.pipeline.gradient` and
-`free_breakfast.pipeline.casscf_gradient`, which re-export every step the two
-chains rerun, each a member, and the `MoleculeOutput` `run` reads.
+holds, and `free_breakfast.pipeline.gradient`,
+`free_breakfast.pipeline.casscf_gradient` and
+`free_breakfast.pipeline.nevpt2_gradient`, which re-export every step the
+three chains rerun, each a member, and the `MoleculeOutput` `run` reads.
 
 ## The step
 
@@ -55,6 +58,7 @@ struct HessianStep {
   ScfStep scf{};
   CasscfStep casscf{};                                  // read only under the next
   std::optional<CasscfGradientStep> casscf_gradient{};  // set: the CASSCF chain
+  std::optional<Nevpt2GradientStep> nevpt2_gradient{};  // set: the NEVPT2 chain
 
   std::filesystem::path json_path{};  // hessian.json
 
@@ -149,7 +153,8 @@ refusal of an open shell -- is returned as it is.
   the normal modes, one row of 3N per frequency (`geometry::Vibrations`'s
   layout); when made, the dipole derivative (e) as 3N rows of x, y, z and the
   IR intensities (km/mol), one per frequency. The numerical method adds its
-  `"displacement"`, and the CASSCF chain the `"root"` differenced.
+  `"displacement"`, the CASSCF chain the `"root"` differenced, and the
+  NEVPT2 chain its `"variant"` (`"sc"` or `"pc"`).
 
 ## The CASSCF chain
 
@@ -270,6 +275,54 @@ error. So:
   orbitals do not reach it. The GPU case below checks the pick at the
   optimum finds the optimized root.
 
+## The NEVPT2 chain
+
+With `nevpt2_gradient` set (pipeline/config sets it when the config has a
+`[nevpt2_gradient]`), the Hessian is the numerical one of that SC- or
+PC-NEVPT2 total energy, E_cas + E_corr, on the single-state DF-CASSCF:
+central differences of `nevpt2::sc_gradient` / `pc_gradient` over the 6N
+displaced geometries (`nuclear_hessian.tex` section 4, Algorithm 1 in
+Cartesian form). It is the CASSCF chain's numerical method with
+`[nevpt2_gradient]` where `[casscf_gradient]` stood:
+
+```
+reference: molecule -> ... -> guess -> scf -> casscf
+displaced: molecule -> ... -> eri -> overlap -> core_hamiltonian
+             -> reference orbitals -> casscf -> nevpt2_gradient
+```
+
+- **The CASSCF chain's guards, as they are.** One reference picked at R;
+  each displaced solve from the reference's orbitals orthonormalized in the
+  displaced metric and its CI; `check_displaced_casscf` on each; an
+  unconverged solve, or any error of a chain (PC's refusals among them: no
+  positive metric eigenvalue, a pole), the run's error, naming the geometry.
+  The displaced CasscfStep canonicalizes its core and virtuals, as the
+  gradient needs.
+- **The gradient's hazards are logged per displacement**, at info: the
+  NEVPT2 energy, max |z^c|, the smallest inactive gap (what z^c divides by)
+  and the Z-vector's residual and iterations; and once, after the 6N, the
+  worst of each. A z^c that grows across the displacements is a near
+  degeneracy of the canonical inactive orbitals, where the energy itself is
+  not smooth (`test/gtest/data/nevpt2_hessian/README.md`): the differences
+  there are not a Hessian.
+- **What it covers, refused before anything runs** (here and by
+  pipeline/config): the analytic method (Unsupported: no analytic NEVPT2
+  Hessian yet; `method = "numerical"` must be named), an integral-direct
+  `eri` (Unsupported), a state-averaged `casscf` (`nroots` above 1,
+  Unsupported), a `quasi_degenerate` gradient (Unsupported: QD-NEVPT2 has no
+  Hessian here), a `frozen_core` other than 0 (InvalidConfig: the Hessian
+  is all-electron, and is not validated with a frozen core), and a
+  `casscf_gradient` beside it (InvalidConfig: one energy).
+- **The step h.** The default 1e-3 bohr is the CASSCF chain's. The
+  gradient is the NEVPT2 energy's only as far as the CASSCF converged (its
+  Lagrangian assumes stationarity), so converge `[casscf]` tightly; the GPU
+  cases below set `conv_tol_grad = 1e-10`, difference at h = 0.03, 0.015
+  and 0.0075 bohr, and Richardson-extrapolate the two finer steps. SC's
+  energy kinks wherever a perturber's norm
+  passes near zero or two canonical inactive orbitals nearly cross
+  (#894), so a step must stay inside the smooth region: the fixture
+  below was chosen where it is, at 0.06 bohr.
+
 ## Config
 
 [`examples/hessian.toml`](../../../examples/hessian.toml) is a whole config:
@@ -302,6 +355,28 @@ root = 0
 [hessian]
 method = "analytic"    # or "numerical"
 ```
+
+With a `[nevpt2_gradient]` in the config instead, `[casscf]` and it are
+copied in, and the Hessian is that NEVPT2 energy's, numerical only: the
+analytic method (the default) is refused (Unsupported), as are
+`quasi_degenerate` (Unsupported), a `frozen_core` other than 0
+(InvalidConfig) and a state average (`[nevpt2_gradient]`'s own refusal):
+
+```toml
+[casscf]
+ncas = 4
+nelecas = 4
+conv_tol = 1e-12
+conv_tol_grad = 1e-10
+[nevpt2_gradient]
+variant = "pc"         # or "sc"
+[hessian]
+method = "numerical"
+displacement = 0.0075  # bohr
+```
+
+Two of `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]` beside a
+`[hessian]` are refused (InvalidConfig).
 
 The chain is the config's own `[basis_set]`, `[eri]`, `[orthogonalizer]`,
 `[guess]` and `[scf]`, copied in by `pipeline/config` as `[optimize]`'s is;
@@ -425,6 +500,35 @@ Analytic against numerical: `h2o_631g_sa2` root 1, 2.4e-7, frequencies
 Hessian 4.8 s, the numerical one 4.2 s. The CUDA card was not run. No
 OpenMolcas comparison (the issue's optional one) was made.
 
+- `test/gtest/pipeline_nevpt2_hessian_gpu.cpp`, the NEVPT2 chain, against
+  #803's `test/gtest/data/nevpt2_hessian/h2co_skew_sto3g.json` (skew H₂CO,
+  STO-3G / cc-pVDZ-JKFIT, CAS(4,4), `conv_tol_grad = 1e-10`). The issue's
+  acceptance, slow-gated, SC and PC (`ScLadderMatchesFixture`,
+  `PcLadderMatchesFixture`): the config's `Calculation` at h = 0.03, its
+  outer CASSCF and NEVPT2 energies held to the fixture's to 1e-8, then the
+  planned step again at h/2 and h/4. Per element the ratio (D(h) − D(h/2)) /
+  (D(h/2) − D(h/4)) in (3.2, 4.8) wherever the finer difference is above
+  20 × its noise √10 σ_g / h, σ_g measured as the largest gradient
+  component's change when the same chain starts from an SCF converged to
+  1e-6 instead (below the floor: printed, never judged); and the
+  extrapolant R = (4 D(h/4) − D(h/2)) / 3 within 2 × (the fixture's `bar` +
+  |R − R(h, h/2)|) of its `hessian`. Fast: the config's refusals (the
+  analytic method, by default and by name; `quasi_degenerate`;
+  `frozen_core` 1 and `"auto"`; a state average; integral-direct ERIs; a
+  `[casscf_gradient]` beside it) and the step's own, run directly on a
+  planned step changed after planning, each returned at once naming no
+  geometry. Measured on the gfx1200 (HIP), one run:
+
+| Scheme | ratios judged, range | worst \|R − fixture\| / (bar + estimate) | largest estimate | σ_g | asymmetry at h, h/2, h/4 | time per step |
+|---|---|---|---|---|---|---|
+| SC | 144 of 144, [3.973, 4.020] | 0.053 (bar 2) | 1.8e-7 | 2.8e-14 | 9.0e-4, 2.3e-4, 5.6e-5 | 6-7.5 s |
+| PC | 144 of 144, [3.972, 4.020] | 0.054 (bar 2) | 1.8e-7 | 3.6e-14 | 9.0e-4, 2.3e-4, 5.6e-5 | 7 s |
+
+  Over each step's 24 displaced gradients max |z^c| ≤ 4.5e-3, the smallest
+  inactive gap ≥ 0.133 and the Z-vector residual ≤ 4.1e-11. The asymmetry
+  is the central difference's h² (it quarters with h), not noise. The CUDA
+  card was not run.
+
 - `test/gtest/infrared_gpu.cpp`'s `PipelineInfrared`: the analytic
   `[hessian]` at PySCF's DF-RHF minimum of water
   (`data/dipole_derivative/dipole_derivative.json`'s `h2o_ccpvdz_opt`), its
@@ -437,5 +541,5 @@ OpenMolcas comparison (the issue's optional one) was made.
 | File | Role |
 |------|------|
 | `hessian.cppm` | Module interface: `HessianMethod`, `HessianOutput`, `HessianStep` |
-| `hessian.cpp` | `check_displaced_casscf`; the private reference-orbitals step; `HessianStep::run`: the analytic Hessian and dipole derivative over one nested pipeline, or the 6N nested pipelines and their central differences; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
+| `hessian.cpp` | `check_displaced_casscf`; the private reference-orbitals step; `HessianStep::run`: its refusals, the analytic Hessian and dipole derivative over one nested pipeline, or the 6N nested pipelines (RHF, CASSCF or NEVPT2 gradients) and their central differences; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
 | `CMakeLists.txt` | The module library |

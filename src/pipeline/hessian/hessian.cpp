@@ -3,8 +3,9 @@
 /// Pipeline run of the chain to ScfStep, or hessian::df_casscf or
 /// df_sacasscf over one to CasscfStep; or the 6N displaced gradients, each
 /// a nested Pipeline run of the chain to GradientStep, and their central
-/// differences -- the RHF's, or over the CASSCF chain, each displaced solve
-/// started from the reference's orbitals and CI and checked against it; then the
+/// differences -- the RHF's, or over the CASSCF chain (to CasscfGradientStep
+/// or Nevpt2GradientStep), each displaced solve started from the reference's
+/// orbitals and CI and checked against it; then the
 /// symmetrized Hessian, its two checks, the harmonic vibrations, the analytic
 /// RHF's dipole derivative and IR intensities, and hessian.json.
 
@@ -189,10 +190,46 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   if (node.device_count() == 0) {
     return err_gpu("[{}] needs a GPU device, and none is visible", kName);
   }
-  if (casscf_gradient && eri.mode != EriMode::DensityFitting) {
+  if (casscf_gradient && nevpt2_gradient) {
+    return err_config("[{}] is the Hessian of one energy, and is given both [{}] and [{}]: keep "
+                      "the one wanted",
+                      kName, CasscfGradientStep::kName, Nevpt2GradientStep::kName);
+  }
+  if ((casscf_gradient || nevpt2_gradient) && eri.mode != EriMode::DensityFitting) {
     return err_unsupported("[{}] reruns [{}], which runs over density fitting only, and [{}] mode "
                            "is 'integral_direct': set [{}] mode = 'density_fitting'",
-                           kName, CasscfGradientStep::kName, EriStep::kName, EriStep::kName);
+                           kName,
+                           casscf_gradient ? CasscfGradientStep::kName : Nevpt2GradientStep::kName,
+                           EriStep::kName, EriStep::kName);
+  }
+  // The NEVPT2 Hessian is numerical, of one root's state-specific energy,
+  // all-electron: what milestone 24 covers and the fixture validates.
+  if (nevpt2_gradient) {
+    constexpr std::string_view kNevpt2 = Nevpt2GradientStep::kName;
+    if (method == HessianMethod::Analytic) {
+      return err_unsupported("[{}] over [{}] is numerical only: set [{}] method = 'numerical'",
+                             kName, kNevpt2, kName);
+    }
+    if (nevpt2_gradient->quasi_degenerate) {
+      return err_unsupported("[{}] differences a state-specific NEVPT2 gradient, and [{}] is "
+                             "quasi_degenerate: QD-NEVPT2 has no Hessian here",
+                             kName, kNevpt2);
+    }
+    if (casscf.nroots != 1) {
+      return err_unsupported("[{}] differences the NEVPT2 gradient of a single-state CASSCF, and "
+                             "[{}] nroots is {}: a state-averaged reference has no NEVPT2 Hessian "
+                             "here",
+                             kName, CasscfStep::kName, casscf.nroots);
+    }
+    if (nevpt2_gradient->frozen_core != 0) {
+      return err_config("[{}] differences the all-electron NEVPT2 gradient, and [{}] frozen_core "
+                        "is {}: set it to 0",
+                        kName, kNevpt2,
+                        // Below 0 is only "auto", as the config reads it.
+                        nevpt2_gradient->frozen_core < 0
+                            ? std::string{"'auto'"}
+                            : std::to_string(nevpt2_gradient->frozen_core));
+    }
   }
   if (method == HessianMethod::Analytic && eri.mode != EriMode::DensityFitting) {
     return err_unsupported("[{}] method 'analytic' is density-fitted only, and [{}] mode is "
@@ -212,6 +249,8 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   chain_casscf.molden.clear();
   CasscfGradientStep chain_casscf_gradient = casscf_gradient.value_or(CasscfGradientStep{});
   chain_casscf_gradient.json_path.clear();
+  Nevpt2GradientStep chain_nevpt2_gradient = nevpt2_gradient.value_or(Nevpt2GradientStep{});
+  chain_nevpt2_gradient.json_path.clear();
   // The molecule at @p atoms moved by @p shift along coordinate x (3 A + k).
   const auto displaced = [&](size_t x, double shift) {
     DisplacedMoleculeStep out{atoms, molecule.charge(), molecule.multiplicity()};
@@ -377,7 +416,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     std::optional<ReferenceOrbitalsStep> reference;
     std::vector<double> reference_ci;
     CasscfStep displaced_casscf = chain_casscf;
-    if (casscf_gradient) {
+    if (casscf_gradient || nevpt2_gradient) {
       auto chain = FBF_TRY(chain_at(0, 0.0, chain_casscf));
       FBF_TRY(at_geometry(chain.run(node), "the reference geometry"));
       const ScfOutput &rhf = *chain.get<ScfOutput>();
@@ -399,14 +438,21 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       FBF_LOG_INFO("hessian: reference DF-CASSCF({}, {}) over {} root(s), E = {:.10f}", cas.nelecas,
                    cas.ncas, cas.energies.size(), cas.energy);
     }
-    // ... and the CASSCF root's, its solve started from the reference's
-    // orbitals and CI, refused unless it converged and kept the reference's
-    // active space and root order.
-    const auto casscf_gradient_at = [&](size_t x, double shift) -> Result<std::vector<double>> {
+    // The NEVPT2 gradient's hazards, worst over the displacements: the
+    // largest |z^c| and Z-vector residual, the smallest inactive gap.
+    double worst_zc = 0.0;
+    double worst_gap = std::numeric_limits<double>::infinity();
+    double worst_residual = 0.0;
+    // ... and the gradient of the CASSCF chain ending in @p last
+    // (CasscfGradientStep or Nevpt2GradientStep), its solve started from the
+    // reference's orbitals and CI, refused unless it converged and kept the
+    // reference's active space and root order.
+    const auto casscf_chain_gradient_at =
+        [&]<class Last>(size_t x, double shift, const Last &last) -> Result<std::vector<double>> {
       auto chain =
           FBF_TRY((Pipeline<DisplacedMoleculeStep, BasisSetStep, SphericalTransformStep,
                             PrimitivePairClassesStep, EriStep, OverlapStep, CoreHamiltonianStep,
-                            ReferenceOrbitalsStep, CasscfStep, CasscfGradientStep>::create({
+                            ReferenceOrbitalsStep, CasscfStep, Last>::create({
               displaced(x, shift),
               basis_set,
               SphericalTransformStep{},
@@ -416,27 +462,57 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
               CoreHamiltonianStep{},
               *reference,
               displaced_casscf,
-              chain_casscf_gradient,
+              last,
           })));
       const std::string where = std::format("coordinate {} displaced by {:+g} bohr", x, shift);
       FBF_TRY(at_geometry(chain.run(node), where));
-      const CasscfOutput &cas = *chain.get<CasscfOutput>();
+      const CasscfOutput &cas = *chain.template get<CasscfOutput>();
       FBF_LOG_DEBUG("hessian: {}: CASSCF in {} macro iterations", where, cas.iterations.size());
       const size_t nao = cas.c.n();
       const size_t first = static_cast<size_t>(cas.ncore) * nao;
       const size_t count = static_cast<size_t>(cas.ncas) * nao;
       const std::vector<double> s =
-          FBF_TRY(download(res, chain.get<OverlapOutput>()->s.data(), nao * nao));
+          FBF_TRY(download(res, chain.template get<OverlapOutput>()->s.data(), nao * nao));
       const std::vector<double> start =
-          FBF_TRY(download(res, chain.get<ScfOutput>()->c.data() + first, count));
+          FBF_TRY(download(res, chain.template get<ScfOutput>()->c.data() + first, count));
       const std::vector<double> active = FBF_TRY(download(res, cas.c.data() + first, count));
       FBF_TRY(at_geometry(check_displaced_casscf(nao, s, start, active, reference_ci, cas.vectors,
                                                  cas.energies.size()),
                           where));
-      return chain.get<CasscfGradientOutput>()->gradient.total;
+      if constexpr (std::same_as<Last, CasscfGradientStep>) {
+        return chain.template get<CasscfGradientOutput>()->gradient.total;
+      } else {
+        // run refused QD before anything ran: SC or PC.
+        return std::visit(
+            [&]<class G>(const G &g) -> Result<std::vector<double>> {
+              if constexpr (std::same_as<G, nevpt2::ScGradient> ||
+                            std::same_as<G, nevpt2::PcGradient>) {
+                worst_zc = std::max(worst_zc, g.zc.max_z);
+                worst_gap = std::min(worst_gap, g.zc.min_gap);
+                worst_residual = std::max(worst_residual, g.multipliers.residual);
+                FBF_LOG_INFO("hessian: {}: {}-NEVPT2 E = {:.10f}, max |z^c| {:.3e}, smallest "
+                             "inactive gap {:.3e}, Z-vector residual {:.3e} in {} iterations",
+                             where, std::same_as<G, nevpt2::PcGradient> ? "PC" : "SC",
+                             cas.energies[0] + g.energies.total, g.zc.max_z, g.zc.min_gap,
+                             g.multipliers.residual, g.multipliers.iterations);
+                return g.terms.total;
+              } else {
+                return err_unsupported("[{}] differences a state-specific NEVPT2 gradient, and "
+                                       "got a QD-NEVPT2 one",
+                                       kName);
+              }
+            },
+            chain.template get<Nevpt2GradientOutput>()->gradient);
+      }
     };
     const auto gradient_at = [&](size_t x, double shift) {
-      return casscf_gradient ? casscf_gradient_at(x, shift) : rhf_gradient_at(x, shift);
+      if (casscf_gradient) {
+        return casscf_chain_gradient_at(x, shift, chain_casscf_gradient);
+      }
+      if (nevpt2_gradient) {
+        return casscf_chain_gradient_at(x, shift, chain_nevpt2_gradient);
+      }
+      return rhf_gradient_at(x, shift);
     };
     // Row x the central difference along x.
     for (size_t x = 0; x < n; ++x) {
@@ -451,6 +527,11 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       for (size_t y = 0; y < n; ++y) {
         asymmetry = std::max(asymmetry, std::abs(raw[(x * n) + y] - raw[(y * n) + x]));
       }
+    }
+    if (nevpt2_gradient) {
+      FBF_LOG_INFO("hessian: over the {} displaced NEVPT2 gradients, max |z^c| {:.3e}, smallest "
+                   "inactive gap {:.3e}, largest Z-vector residual {:.3e}",
+                   2 * n, worst_zc, worst_gap, worst_residual);
     }
   }
 
@@ -505,6 +586,9 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     }
     if (casscf_gradient) {
       doc["root"] = casscf_gradient->root;
+    }
+    if (nevpt2_gradient) {
+      doc["variant"] = nevpt2_gradient->variant == Nevpt2Variant::Pc ? "pc" : "sc";
     }
     if (!out.dipole_derivative.empty()) {
       doc["dipole_derivative"] = hessian_rows(out.dipole_derivative, 3);

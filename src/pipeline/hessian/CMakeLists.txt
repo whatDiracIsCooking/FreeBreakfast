@@ -1,7 +1,8 @@
-# The Hessian step. geometry, pipeline::gradient and pipeline::casscf_gradient
-# are PUBLIC and re-exported: the product holds geometry::Vibrations, and the
-# two gradient steps' modules re-export every step the two chains rerun, each
-# a member, and MoleculeOutput, which run reads. core::resources and
+# The Hessian step. geometry, pipeline::gradient, pipeline::casscf_gradient and
+# pipeline::nevpt2_gradient are PUBLIC and re-exported: the product holds
+# geometry::Vibrations, and the three gradient steps' modules re-export every
+# step the three chains rerun, each a member, and MoleculeOutput, which run
+# reads. core::resources and
 # pipeline::step are in run's signature.
 # run is defined in the implementation unit, so the analytic Hessian
 # and the dipole derivative (hessian), the dipole integrals' limit
@@ -27,6 +28,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::step
   free_breakfast::pipeline::gradient
   free_breakfast::pipeline::casscf_gradient
+  free_breakfast::pipeline::nevpt2_gradient
   LINK_PRIVATE
   free_breakfast::core::constants
   free_breakfast::core::log
