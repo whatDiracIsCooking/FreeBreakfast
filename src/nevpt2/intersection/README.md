@@ -21,6 +21,9 @@ it.
         root_gap       the smallest CASSCF |E_r − E_s|
         gap_sensitivity_orbital   s_o
         gap_sensitivity_ci        s_c
+        g_mean         ḡ = (g_P + g_Q) / 2, or inside a degenerate CASSCF pair its own W form
+        reference_pair_tau  set inside a degenerate CASSCF pair (PC): the pair's τ; then
+                       g_p, g_q and h_pq are empty and s_o, s_c NaN (#902, below)
 
 The arguments are `qd_sc_coupling`'s (`../gradient/`), without its fold.
 `options.nfrozen` is the frozen core (#875): `qd_inputs` and the W forms
@@ -29,7 +32,8 @@ functional's (`../gradient/README.md`, "The frozen core"); s_o and s_c read
 the multipliers that come back, and need nothing of their own. The
 consumer is the QD MECI mode of the optimize step (#785), which hands g_P,
 g_Q and h_PQ to `geometry::optimize_meci` and reads s_o and s_c for its gap
-bar.
+bar; inside a degenerate CASSCF pair it hands ḡ alone, and the walk
+carries its branching plane ("A MECI inside a degenerate CASSCF pair").
 
 ## How it is computed
 
@@ -146,7 +150,8 @@ and each norm is Euclidean.
 
 ## A MECI inside a degenerate CASSCF pair (#902)
 
-**Theory only; nothing below is implemented.** #847's all-electron
+**Implemented for PC (#902): "What was built" and the measurements below
+it.** #847's all-electron
 QD-PC/aug-cc-pVDZ walk to ethylene's C3v MECI
 (`docs/reproduction/park2019/tier1_ethylene_c3v_augdz.toml`) stops at
 evaluation 10. The QD pair there is healthy (H_eff gap 6.6e-10), but the
@@ -451,7 +456,169 @@ itself, so SC's ḡ, like its g_K, has no limit.
 
 The toy is not kept under `tools/`. It is a θ scan over #901's helpers,
 which are not in the tree either, and its one conclusion is recorded
-here. The script is in #902's PR.
+here. The script is not in the tree.
+
+### What was built
+
+As "A PC-only algorithm" proposes, with one change to the walk's trust
+radius (item 3 below):
+
+1. **ḡ below the floor.** `qd_pc_intersection` finds the closest CASSCF
+   pair (a, b). When its gap is under `mcscf::kRootGapFloor` and it carries
+   more than half of u_P's and of u_Q's weight, it makes one W-form call,
+   `qd_pc_gradient` at W = ½ (u_P u_Pᵀ + u_Q u_Qᵀ), with `limit_pair`
+   (a, b). `mcscf::root_pair_multipliers` then sets that pair's ζ to 0, does
+   not refuse it, reports its τ and refuses |τ| > `kLimitTauGate`, 1e-11
+   (`../../mcscf/gradient/README.md`, "A pair at its limit"). The result
+   carries `g_mean` and `reference_pair_tau`; g_p, g_q and h_pq are empty
+   and s_o, s_c NaN. SC, and a degenerate pair that is not the QD pair's,
+   take the old path and keep its refusal. Above the floor `g_mean` is
+   ½ (g_P + g_Q) of the usual three columns.
+2. **The plane is carried** (`../../geometry/README.md`). The callback
+   writes ḡ into g_I and g_J and zeros into h_IJ, and `optimize_meci`
+   carries x̂, ŷ and ‖x‖ from the last evaluation, re-orthonormalized
+   against this geometry's rigid motions. A first evaluation of that kind
+   is refused; so is `[optimize]`'s start inside the pair, by name
+   ("start off the symmetric point", `../../pipeline/optimize/README.md`).
+3. **The trust ratio drops the gap** at a carried evaluation (either end of
+   the step): around a cone x̂ turns with the direction to the seam, so the
+   carried x · p does not model the gap's change, and with it in the ratio
+   a toy cone's trust radius collapsed to 1e-17. Below the floor the QD gap
+   is already under any `max_gap` (the walk's 4.8e-11), so the ratio is the
+   mean energy's alone.
+4. **`optimize.json`** gains `plane_carried` and `reference_pair_tau` per
+   evaluation, and `g_mean` at the head, where g_p, g_q and h_pq are null
+   after a carried last evaluation.
+
+The measured τ inside the pair is 1e-20 to 3e-17, at both the exact point
+and 5e-6 Å from it, against the gate's 1e-11.
+
+### The walk
+
+`tier1_ethylene_c3v_augdz.toml`, unchanged, `--preset default`, RTX 3080:
+**converged at evaluation 10**, 11.7 s, the evaluation where #847 stopped.
+Evaluations 0 to 9 are as before (the CASSCF gap 2.1e-6 down to 1.6e-8);
+evaluation 10 is the first under the floor (CASSCF gap 7.87e-9), carried,
+τ 5.6e-18, and meets Opt=Tight: QD gap 4.8e-11, max / rms force 5.4e-6 /
+1.9e-6, max / rms step 5.7e-5 / 2.7e-5 bohr. Mean energy
+−78.162005017770 Eh. The geometry's distance from its own exact-C3v
+symmetrization falls from 4.9e-3 Å (Park's) to 3.1e-5 Å; its C–H spread
+from 5.3e-4 to 4.4e-6 Å, its H–C–C spread from 0.31° to 0.0017°.
+
+The same walk with forces and steps ten times tighter (1.5e-6, 1e-6, 6e-6,
+4e-6) converges at evaluation 12 with 3 carried evaluations (CASSCF gaps
+7.9e-9, 4.5e-9, 3.9e-9; τ ≤ 1e-17): max force 6.9e-7, final gap 2.4e-10,
+C3v distance 1.7e-5 Å. The trust radius there falls to 1.9e-6 bohr, as the
+mean energy's changes reach its own noise.
+
+### ḡ against differences at the exact point
+
+`Nevpt2QdReferencePair.MeanGradientMatchesDifferences`: directional
+differences of Ē = (E_0 + E_1) / 2 at the exact-C3v point, steps 2e-3,
+1e-3 and 5e-4 bohr, one Richardson step; every displaced point re-converged
+from the base's CASSCF orbitals, Löwdin-orthonormalized (#696's points; the
+RHF from SAD oscillated past 1000 iterations at one of them, its HOMO and
+LUMO being the e pair); the CASSCF at conv_tol_grad 1e-10, conv_tol 1e-13
+(#875's); σ_E the sd of 5 independent SAD-start runs of the base. Bar
+max(2 × the Richardson bar, 3 σ_E / h_min). One run (RTX 3080), miss / bar
+in Eh/bohr:
+
+| direction | ḡ · d | central | forward | backward |
+|---|---|---|---|---|
+| ḡ | +1.133381e-3 | −1.07e-10 / 1.92e-9 | | |
+| random0 | +1.632097e-4 | +2.07e-10 / 1.92e-9 | | |
+| random1 | +1.743430e-5 | −1.76e-10 / 1.92e-9 | | |
+| e(d₁) | −2.8e-12 | −1.06e-10 / 1.92e-9 | −5.40e-11 / 4.37e-9 | +6.00e-10 / 4.37e-9 |
+| e(random2) | −3.3e-12 | −2.95e-10 / 1.92e-9 | +2.22e-9 / 1.85e-8 | +2.82e-9 / 1.85e-8 |
+
+(σ_E 3.2e-13 in that run; over five runs it was 8.3e-14 to 3.2e-13, and
+every central check passed in each.) The forward and backward one-sided
+slopes along e show no cone term: their split changes sign from run to run
+and stays under 1.2e-9 Eh/bohr, against a per-state cone slope of about
+2.6e-4 Eh/bohr. ḡ's non-a₁ part at the exact point is 4e-13 to 8e-12
+(`MeanGradientAtTheExactC3vPoint`, bar 1e-9).
+
+**The one-sided bar's noise term, derived.** The Richardson slopes are
+fixed stencils of the energies, and independent noise σ_E per energy
+reaches a stencil as √(Σ w²) σ_E. The central one at the two finest steps,
+(4 D(h) − D(2h)) / 3 = (2/3h)(E(h) − E(−h)) − (1/12h)(E(2h) − E(−2h)), has
+√(2 (2/3)² + 2 (1/12)²) / h = 0.950 / h, so #853's 3 σ_E / h_min is 3.16 of
+its standard deviations. The one-sided 2 F(h) − F(2h), F(h) = (E(h) −
+E(0)) / h, is (2/h) E(h) − (1/2h) E(2h) − (3/2h) E(0); with E(0) the mean
+of the 5 base runs, √(4 + 1/4 + (9/4)/5) / h = 2.168 / h. Its bar's noise
+term is 3 σ_E / h_min times 2.168 / 0.950 = 2.28 (`kOneSidedNoise`): the
+same 3.16 standard deviations. At 3 σ_E / h_min unscaled, a one-sided slope
+was failing about one run in two on noise alone (e(d₁) backward 9.97e-10 /
+4.97e-10 at the exact point in one of five runs).
+
+### Off the exact point: why differences do not test ḡ there
+
+Every point under the floor is within one difference step of the exact
+point (5e-6 Å is 9.4e-6 bohr, h_min 5e-4), so the stencil straddles it. The
+same differences at 5e-6 Å along d₁ (CASSCF gap 2.2e-9) are a diagnostic
+only: g, random0, e(d₁) and e(random2) passed in every run, but random1's
+central slope missed by +6.3e-10 to +1.0e-9 in every run, three times over
+its bar (+7.05e-10 / 3.10e-10, +1.00e-9 / 7.63e-10, +6.76e-10 / 5.10e-10).
+It is not ḡ's path: moving the base along d₁, random1's central miss (two
+runs each, Eh/bohr) is
+
+| base along d₁ | CASSCF gap | path | random1 miss / bar |
+|---|---|---|---|
+| 0 (exact) | ~1e-14 | ḡ | ±3e-10, scattered about 0 / 5e-10 to 1.9e-9 |
+| 5e-6 Å | 2.2e-9 | ḡ | +6.4e-10 / 6.9e-10, +4.4e-10 / 1.7e-9 |
+| 2e-5 Å | 8.8e-9 | ḡ | −3.1e-10 / 1.1e-9, −8.2e-10 / 1.2e-9 |
+| 5e-5 Å | 2.2e-8 | **(g_P + g_Q)/2, above the floor** | **−1.26e-9 / 1.17e-9, −1.84e-9 / 8.5e-10** |
+| 1e-3 Å | 4.3e-7 | (g_P + g_Q)/2 | −1.2e-10 / 1.2e-9, −3.3e-10 / 1.4e-9 |
+| Park's | 2.1e-6 | (g_P + g_Q)/2 | −1.7e-10 / 4.4e-10, +2.0e-10 / 1.3e-9 |
+
+The existing path misses the same bar at 5e-5 Å, and both recover once the
+base is many steps off the exact point. So off it ḡ is tested by
+continuity instead.
+
+### The mean gradient across the floor
+
+`Nevpt2QdReferencePair.MeanGradientIsContinuousAcrossTheFloor`: ḡ · u at
+points along d₁, ḡ's own path under the floor and (g_P + g_Q)/2 over it,
+for u ḡ's direction at the exact point (asserted) and random1 (reported).
+d₁ is pure e to 1.4e-4, so ḡ's a₁ part is even in ρ and its e part odd:
+ḡ · u = a + b ρ + c ρ², one quadratic fitted through both paths' points
+(along ḡ's own direction, a₁, b = 0 and the whole change is ρ², which no
+line fits). Each point is the mean of 3 SAD-start runs, and the bar is
+3 σ_g, σ_g #812's (`../../pipeline/hessian/README.md`, "The noise floor"):
+the larger of the restarts' pooled sd and the solves' RMS of production
+less a re-solve with the Z-vector at 1e-12 and the CASSCF at conv_tol_grad
+1e-11 (1e-12 is under its own floor, about 3e-12, here). Not divided by √3:
+the solves' error is common to a point's runs. Residuals, Eh/bohr (ḡ: under
+the floor):
+
+| run | points (Å) | ḡ direction: σ restarts, solves; bar; worst residual | random1: σ; bar; residuals |
+|---|---|---|---|
+| A | 5e-6ḡ, 1e-5ḡ, 2e-5ḡ, 5e-5, 1e-4 | 1.7e-13, 5.5e-11; 1.65e-10; 1.2e-11 | 4.6e-11, 9.6e-11; 2.9e-10; +3.3e-10, −6.8e-10, +4.4e-10, −9.7e-11, +1.3e-11 |
+| B (the test's) | 2e-6ḡ, 5e-6ḡ, 1e-4, 1.5e-4, 2e-4 | 1.2e-13, 4.8e-11; 1.43e-10; 3.0e-12 | 7.6e-11, 8.4e-11; 2.5e-10; +2.7e-10, −2.4e-10, −2.6e-10, +3.6e-10, −1.4e-10 |
+| control | 1e-4, 1.5e-4, 2e-4, 2.5e-4, 3e-4, all above | 2.2e-13, 2.6e-11; 7.8e-11; 6.2e-13 | 8.8e-11, 7.8e-11; 2.6e-10; worst +1.9e-10 |
+
+**Along ḡ, the a₁ direction the carried-plane walk reads, both paths lie
+on one quadratic** to 1.2e-11 and 3.0e-12 against bars of 1.65e-10 and
+1.43e-10.
+
+**Along random1 they do not, at that bar, and the cause is not this path.**
+Run A's zig-zag repeats between runs, and a quadratic through the exact
+point and 2e-5, 5e-5 and 1e-4 Å leaves the 5e-6 and 1e-5 Å points off by
+−7.2e-10 and −1.5e-9. C3v's e core and virtual pairs split linearly in ρ
+too, at 1.7e-2 to 1.6e-1 Eh/Å, and cross `kZcGapFloor` (1e-6 Eh,
+`../gradient/`'s `zc_multipliers`) one by one between about 6e-6 and 6e-5
+Å, each pair's z^c switching from dropped to divided. At 5e-6 Å the dropped
+pairs' z^c would be at most 1.7e-8 (the core pair 5, 6 at a gap of
+2.9e-7). With the floor lowered to 1e-8 as a probe (not kept), ḡ · random1
+moved by 2e-9 to 8e-9 under the reference floor and by 1.2e-9 at 5e-5 Å,
+while ḡ's own direction moved by under 1e-12. Run B's points keep clear of
+that range, and the existing path alone (the control) still scatters by
+2e-10 to 4e-10 point to point, near its 3 σ_g: a deterministic per-point
+error σ_g does not see. That is filed as #974. **Unresolved**: the
+control's quadratic, extrapolated from 1e-4 to 3e-4 Å back to 0, lands
+2.9e-9 under the exact point's ḡ · random1. That extrapolation is too
+long to call it a discontinuity, and nothing here shows continuity along e
+directions to better than that.
 
 ## Tests
 
@@ -512,10 +679,27 @@ DF-SA-CASSCF of `test/gtest/data/qd_nevpt2/`'s cases at #696's bars:
 - `Nevpt2QdIntersection.Timing`: the table above; a measurement, skipped
   unless `FBF_QD_INTERSECTION_TIMING` is set.
 
+`test/gtest/nevpt2_qd_reference_pair_gpu.cpp`, #902's: ethylene's C3v
+pair, DF-SA3-CASSCF(2,2)/aug-cc-pVDZ, QD-PC, at the exact C3v
+symmetrization of Park's geometry (a group average over C3v's six
+operations in a frame on the methyl C → lone H axis):
+
+- `Nevpt2QdReferencePair.MeanGradientAtTheExactC3vPoint` (fast, 1.6 s):
+  the mean-gradient path taken, τ under the gate, nothing else returned,
+  ḡ's non-a₁ part under 1e-9; SC refused (there by its degenerate e core
+  pair, `zc_multipliers`).
+- `Nevpt2QdReferencePair.MeanGradientMatchesDifferences` (slow, 10 s): the
+  differences above, at the exact point.
+- `Nevpt2QdReferencePair.MeanGradientIsContinuousAcrossTheFloor` (slow,
+  28 s): the continuity above, run B's points.
+- `PipelineOptimizeReferencePair.RefusesAStartInsideThePair` (fast) and
+  `C3vWalkCarriesThePlaneThroughTheFloor` (slow, 11 s): the step's side,
+  `../../pipeline/optimize/README.md`.
+
 ## Files
 
 | File | Role |
 |------|------|
 | `intersection.cppm` | Module interface: `QdIntersectionOptions`, `QdIntersection`, `qd_sc_intersection`, `qd_pc_intersection` |
-| `intersection.cpp` | H_eff and R, the shared or three W-form calls, the residual check, s_o and s_c |
+| `intersection.cpp` | H_eff and R, the shared or three W-form calls, the residual check, s_o and s_c; inside a degenerate CASSCF pair, the one mean-gradient W form |
 | `CMakeLists.txt` | Build configuration |

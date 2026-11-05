@@ -32,9 +32,17 @@ struct MeciPoint {
   // (g_I + g_J) / 2, and P applied to it.
   std::vector<double> mean_gradient;
   std::vector<double> projected;
+  // The callback gave the mean gradient alone, and the plane is @p plane's,
+  // the last evaluation that had one.
+  bool carried = false;
 };
 
-Result<MeciPoint> evaluate_meci(const MeciCallback &f, std::span<const double> x, bool project) {
+// The callback at @p x. One that writes g_I = g_J and h = 0 has no branching
+// plane there (a mean gradient alone): x^, y^ and |x| are then @p plane's,
+// x^ and y^ re-orthonormalized against this geometry's rigid motions, and
+// without a @p plane (the first evaluation) it is refused.
+Result<MeciPoint> evaluate_meci(const MeciCallback &f, std::span<const double> x, bool project,
+                                const MeciPoint *const plane) {
   const size_t n = x.size();
   std::vector<double> g_i(n);
   std::vector<double> g_j(n);
@@ -62,10 +70,40 @@ Result<MeciPoint> evaluate_meci(const MeciCallback &f, std::span<const double> x
     point.gap_gradient[i] = g_j[i] - g_i[i];
     point.mean_gradient[i] = 0.5 * (g_i[i] + g_j[i]);
   }
-  project_out(point.basis, point.gap_gradient);
   const auto length = [](std::span<const double> v) {
     return std::sqrt(std::inner_product(v.begin(), v.end(), v.begin(), 0.0));
   };
+  point.carried = std::ranges::equal(g_i, g_j) &&
+                  std::ranges::all_of(h, [](double value) { return value == 0.0; });
+  if (point.carried) {
+    if (plane == nullptr) {
+      return err_numerical("geometry::optimize_meci: the first evaluation gave a mean gradient "
+                           "alone (g_I = g_J, h = 0), and there is no earlier branching plane to "
+                           "carry");
+    }
+    // x^ then y^, after the plane's rigid motions: each loses this
+    // geometry's, and y^ x^ again, then is renormalized.
+    const size_t rigid = plane->basis.size() - (plane->coupled ? 2 : 1);
+    const size_t x_at = point.basis.size();
+    point.coupled = plane->coupled;
+    point.gap_gradient_norm = plane->gap_gradient_norm;
+    for (size_t k = rigid; k < plane->basis.size(); ++k) {
+      std::vector<double> v = plane->basis[k];
+      project_out(point.basis, v);
+      const double norm = length(v);
+      for (double &value : v) {
+        value /= norm;
+      }
+      point.basis.push_back(std::move(v));
+    }
+    for (size_t i = 0; i < n; ++i) {
+      point.gap_gradient[i] = point.gap_gradient_norm * point.basis[x_at][i];
+    }
+    point.projected = point.mean_gradient;
+    project_out(point.basis, point.projected);
+    return point;
+  }
+  project_out(point.basis, point.gap_gradient);
   point.gap_gradient_norm = length(point.gap_gradient);
   if (!(point.gap_gradient_norm > 0.0)) {
     return err_numerical("geometry::optimize_meci: the gradient difference g_J - g_I vanishes "
@@ -141,7 +179,7 @@ optimize_meci(std::span<const double> x0,
     solution.upper = point.upper;
     solution.iterations.push_back(MECISolution::Iteration{point.lower, point.upper, gap, g_max,
                                                           g_rms, s_max, s_rms, trust_radius,
-                                                          point.coupled ? 2 : 1});
+                                                          point.coupled ? 2 : 1, point.carried});
     if (on_iteration) {
       FBF_TRY(on_iteration(solution.iterations.back()));
     }
@@ -150,7 +188,8 @@ optimize_meci(std::span<const double> x0,
   };
 
   std::vector<double> &x = solution.x;
-  MeciPoint point = FBF_TRY(evaluate_meci(energies_and_gradients, x, options.project_rigid_body));
+  MeciPoint point =
+      FBF_TRY(evaluate_meci(energies_and_gradients, x, options.project_rigid_body, nullptr));
   if (FBF_TRY(record(point, std::vector<double>(n, 0.0)))) {
     return solution;
   }
@@ -229,19 +268,24 @@ optimize_meci(std::span<const double> x0,
       hs[i] = dot(p_in, std::span<const double>(hessian).subspan(i * n, n));
     }
     const double php = dot(p_in, hs);
-    const double predicted = dot(point.mean_gradient, p) + 0.5 * php + dot(point.gap_gradient, p);
+    const double mean_model = dot(point.mean_gradient, p) + 0.5 * php;
 
     for (size_t i = 0; i < n; ++i) {
       x_trial[i] = x[i] + p[i];
     }
     MeciPoint trial =
-        FBF_TRY(evaluate_meci(energies_and_gradients, x_trial, options.project_rigid_body));
+        FBF_TRY(evaluate_meci(energies_and_gradients, x_trial, options.project_rigid_body, &point));
 
     // The agreement test of Nocedal and Wright's Algorithm 4.1, made two-sided
     // since the modelled change may be a rise (a gap step up a tilted cone),
     // and skipped when the modelled change is under the energies' rounding.
+    // A carried plane at either end leaves the gap unmodelled (its x^ is a
+    // nearby point's, and around a cone x^ turns with the direction to the
+    // seam), so the test is then the mean energy's alone.
+    const bool gap_modelled = !point.carried && !trial.carried;
+    const double predicted = mean_model + (gap_modelled ? dot(point.gap_gradient, p) : 0.0);
     const double actual = 0.5 * (trial.lower + trial.upper) - 0.5 * (point.lower + point.upper) +
-                          (trial.upper - trial.lower) - gap;
+                          (gap_modelled ? (trial.upper - trial.lower) - gap : 0.0);
     const double noise = 1e3 * std::numeric_limits<double>::epsilon() *
                          std::max({std::abs(point.lower), std::abs(point.upper),
                                    std::abs(trial.lower), std::abs(trial.upper)});

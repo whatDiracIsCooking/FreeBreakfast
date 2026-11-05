@@ -2,9 +2,10 @@
 # 0 and 1 of Park's SA-QD-PC-NEVPT2 over DF-SA3-CASSCF(2,2)/aug-cc-pvdz
 # (aug-cc-pvdz-jkfit). It starts from his own geometry at this basis,
 # single_points/geometries/ethylene_adz_c3v.xyz (J. W. Park, JCTC (2020),
-# acs.jctc.9b00919, Supporting Information, p. S3). Kept as the evidence
-# of the stop: it ends at the gradient of evaluation 10, when the CASSCF's
-# 1E pair degenerates (tier1.md, "C3v and Hm"; #892), and has no final.xyz.
+# acs.jctc.9b00919, Supporting Information, p. S3). Until #902 it stopped
+# at the gradient of evaluation 10, when the CASSCF's 1E pair degenerates
+# (#892); since #902 it converges there, the plane carried on the mean
+# gradient (tier1.md, "C3v and Hm").
 # Run from the root of the tree:
 #   build/src/free-breakfast -i docs/reproduction/park2019 -o <out> \
 #     docs/reproduction/park2019/tier1_ethylene_c3v_augdz.toml

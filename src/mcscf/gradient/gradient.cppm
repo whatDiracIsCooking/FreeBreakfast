@@ -274,16 +274,31 @@ struct RootPairMultipliers {
 /// (host pointer mode), and waited for. One root has no pairs: three empty
 /// vectors.
 ///
+/// @p limit_pair, if set, names one equal-weight pair whose zeta is taken
+/// at its limit, 0, whatever its gap (README.md "A pair at its limit"): it
+/// is never refused under the floor, and its tau is still reported, but it
+/// is refused when |tau| is above @c kLimitTauGate. The caller is what knows
+/// the limit is 0 (nevpt2::qd_pc_intersection's mean gradient, #902).
+///
 /// @return The multipliers; InvalidConfig if @p roots holds no root or not
-///         a whole number of vectors, @p weights is not one per root, or
-///         @p y_bar is null; Numerical, naming the pair and its gap, when two
-///         roots are closer than @c kRootGapFloor hartree (zeta divides by
-///         the gap, and zvector divides t by it); or the GpuRuntime error of
-///         the gemm or the copy.
-[[nodiscard]] Result<RootPairMultipliers> root_pair_multipliers(DeviceResources &res,
-                                                                const ci::Roots &roots,
-                                                                std::span<const double> weights,
-                                                                const double *y_bar);
+///         a whole number of vectors, @p weights is not one per root,
+///         @p y_bar is null, or @p limit_pair is not two distinct roots of
+///         equal weight; Numerical, naming the pair and its gap, when two
+///         roots other than @p limit_pair are closer than @c kRootGapFloor
+///         hartree (zeta divides by the gap, and zvector divides t by it), or
+///         naming @p limit_pair and its tau above @c kLimitTauGate; or the
+///         GpuRuntime error of the gemm or the copy.
+[[nodiscard]] Result<RootPairMultipliers>
+root_pair_multipliers(DeviceResources &res, const ci::Roots &roots, std::span<const double> weights,
+                      const double *y_bar,
+                      std::optional<std::array<int32_t, 2>> limit_pair = std::nullopt);
+
+/// @brief root_pair_multipliers' gate on the tau of a pair whose zeta is
+/// taken at its limit 0 (hartree): far above tau's round-off (8.9e-16,
+/// README.md "What is bitwise") and below #892's PC tau_K. It cannot prove
+/// the limit is 0, since tau / gap is 0 / 0 whatever the gate, but it
+/// catches a W, a method or a pair the caller's argument does not cover.
+constexpr double kLimitTauGate = 1e-11;
 
 /// @brief A zeta's two consumers, over its pairs' transition RDMs.
 struct ZetaTerms {

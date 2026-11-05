@@ -1097,9 +1097,10 @@ df_transition_gradient(DeviceResources &res, const Molecule &molecule, const Bas
                            multipliers, extra, true, gamma, gamma2);
 }
 
-Result<RootPairMultipliers> root_pair_multipliers(DeviceResources &res, const ci::Roots &roots,
-                                                  const std::span<const double> weights,
-                                                  const double *const y_bar) {
+Result<RootPairMultipliers>
+root_pair_multipliers(DeviceResources &res, const ci::Roots &roots,
+                      const std::span<const double> weights, const double *const y_bar,
+                      const std::optional<std::array<int32_t, 2>> limit_pair) {
   const size_t nroots = roots.energies.size();
   if (nroots == 0 || roots.vectors.num_elements() % nroots != 0) {
     return err_config("mcscf::root_pair_multipliers: {} CI doubles for {} roots",
@@ -1112,10 +1113,31 @@ Result<RootPairMultipliers> root_pair_multipliers(DeviceResources &res, const ci
   if (y_bar == nullptr) {
     return err_config("mcscf::root_pair_multipliers: the CI adjoint is null");
   }
+  const std::vector<bool> rotating = rotating_pairs(weights);
+  // The limit pair as (r, s), r < s, and its index in the pairs' order.
+  std::optional<std::array<size_t, 2>> limit;
+  size_t limit_index = 0;
+  if (limit_pair) {
+    const auto [a, b] = *limit_pair;
+    if (a < 0 || b < 0 || a == b || static_cast<size_t>(std::max(a, b)) >= nroots) {
+      return err_config("mcscf::root_pair_multipliers: the limit pair ({}, {}) is not two distinct "
+                        "roots of {}",
+                        a, b, nroots);
+    }
+    const auto r = static_cast<size_t>(std::min(a, b));
+    const auto s = static_cast<size_t>(std::max(a, b));
+    limit = std::array{r, s};
+    limit_index = (r * nroots) - (r * (r + 1) / 2) + (s - r - 1);
+    if (rotating[limit_index]) {
+      return err_config("mcscf::root_pair_multipliers: the limit pair ({}, {}) has unequal weights "
+                        "{} and {}: its rotation is zvector's row, with no zeta to take",
+                        r, s, weights[r], weights[s]);
+    }
+  }
   for (size_t r = 0; r < nroots; ++r) {
     for (size_t s = r + 1; s < nroots; ++s) {
       const double gap = roots.energies[s] - roots.energies[r];
-      if (std::abs(gap) < kRootGapFloor) {
+      if (std::abs(gap) < kRootGapFloor && limit != std::array{r, s}) {
         return err_numerical("mcscf::root_pair_multipliers: roots {} and {} are {:.3e} hartree "
                              "apart, under {:.0e}: the pair's multiplier divides by the gap",
                              r, s, std::abs(gap), kRootGapFloor);
@@ -1138,7 +1160,6 @@ Result<RootPairMultipliers> root_pair_multipliers(DeviceResources &res, const ci
       static_cast<int32_t>(dim), &kOne<double>, roots.vectors.data(), y_bar, &kZero<double>,
       overlaps.data())));
   const std::vector<double> o = FBF_TRY(gradient_download(res, overlaps.data(), nroots * nroots));
-  const std::vector<bool> rotating = rotating_pairs(weights);
   size_t pair = 0;
   for (size_t r = 0; r < nroots; ++r) {
     for (size_t s = r + 1; s < nroots; ++s, ++pair) {
@@ -1146,10 +1167,17 @@ Result<RootPairMultipliers> root_pair_multipliers(DeviceResources &res, const ci
       out.tau[pair] = tau;
       if (rotating[pair]) {
         out.theta_rhs[pair] = tau / (2.0 * (weights[r] - weights[s]));
-      } else {
+      } else if (!limit || pair != limit_index) {
         out.zeta[pair] = -tau / (roots.energies[s] - roots.energies[r]);
       }
     }
+  }
+  if (limit && !(std::abs(out.tau[limit_index]) <= kLimitTauGate)) {
+    return err_numerical("mcscf::root_pair_multipliers: the limit pair ({}, {}), {:.3e} hartree "
+                         "apart, has tau {:.3e}, above {:.0e}: its zeta's limit is not 0",
+                         (*limit)[0], (*limit)[1],
+                         std::abs(roots.energies[(*limit)[1]] - roots.energies[(*limit)[0]]),
+                         out.tau[limit_index], kLimitTauGate);
   }
   return out;
 }

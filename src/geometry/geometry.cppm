@@ -145,6 +145,9 @@ struct MECISolution {
     /// @brief 2 when the branching plane at this geometry is {x, y}; 1 when y,
     /// the coupling, had nothing left after x and was dropped.
     int32_t branching_dimension;
+    /// @brief true when the callback gave the mean gradient alone here, and
+    /// the plane (with |x|) is carried from the last evaluation that had one.
+    bool plane_carried;
   };
   /// @brief The coordinates of the crossing, in the order @p x0 gave them.
   std::vector<double> x;
@@ -164,7 +167,12 @@ struct MECISolution {
 /// coupling vector into @p h_ij, x.size() values each; an error it returns
 /// ends the optimization with that error. The energies may come in either
 /// order: the lower one, with its gradient, is taken as I. Only the direction
-/// of h_ij is read, so its scale and sign are free.
+/// of h_ij is read, so its scale and sign are free. A callback with no
+/// branching plane at @p x (nevpt2::qd_pc_intersection inside a degenerate
+/// CASSCF pair, README.md) writes the mean gradient into both @p g_i and
+/// @p g_j and zeros into @p h_ij: the plane, x^, y^ and |x|, is then carried
+/// from the last evaluation, x^ and y^ re-orthonormalized against this
+/// geometry's rigid motions, and only P g is new.
 ///
 /// Each step: the rigid-body motions (when options.project_rigid_body) are
 /// projected off x = g_J - g_I and y = h_IJ, which are orthonormalized into
@@ -186,8 +194,10 @@ struct MECISolution {
 /// forces alone.
 ///
 /// @return The solution; InvalidConfig as optimize, or max_gap not above 0;
-///         Numerical if an energy or vector is not finite, or the gradient
-///         difference vanishes after the projection; MaxIterationsExceeded
+///         Numerical if an energy or vector is not finite, the gradient
+///         difference vanishes after the projection (but for a mean gradient
+///         alone), or the first evaluation is a mean gradient alone, with no
+///         plane to carry; MaxIterationsExceeded
 ///         once max_steps runs out; or the first error of
 ///         @p energies_and_gradients, or of @p on_iteration.
 ///

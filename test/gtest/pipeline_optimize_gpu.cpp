@@ -1756,8 +1756,9 @@ TEST(PipelineOptimize, EthylenePcQdMeciIsAnMeciAndSeamStationary) {
 // sensitivities (#844): skew formaldehyde's SC-QD-NEVPT2 states 0 and 1
 // over its DF-SA3-CASSCF(4,3) (h2co_skew_ccpvdz_sa3), every threshold loose
 // so the start is the crossing and the one evaluation the final geometry.
-// Every entry holds gap_sensitivity_orbital and gap_sensitivity_ci; the head
-// holds g_p, g_q and h_pq, each n_atom rows of three, and nroots. The start
+// Every entry holds gap_sensitivity_orbital and gap_sensitivity_ci, and no
+// plane carried and no reference_pair_tau (#902); the head holds g_p, g_q,
+// h_pq and g_mean = (g_p + g_q) / 2, each n_atom rows of three, and nroots. The start
 // is written at final.xyz's twelve decimals, so the outer [casscf] runs at
 // the evaluation's own geometry from the same RHF, and one
 // qd_sc_intersection over it is the product the file wrote: the three
@@ -1808,6 +1809,9 @@ TEST(PipelineOptimize, SkewFormaldehydeQdMeciWritesItsBranchingSpace) {
   for (const fb::json &it : iterations) {
     EXPECT_TRUE(it.at("gap_sensitivity_orbital").is_number());
     EXPECT_TRUE(it.at("gap_sensitivity_ci").is_number());
+    // Apart from any degenerate CASSCF pair (#902): no plane carried.
+    EXPECT_FALSE(it.at("plane_carried").get<bool>());
+    EXPECT_TRUE(it.at("reference_pair_tau").is_null());
   }
   const fb::json &last = iterations.back();
   EXPECT_EQ(history->at("nroots").get<std::size_t>(), nroots);
@@ -1843,6 +1847,16 @@ TEST(PipelineOptimize, SkewFormaldehydeQdMeciWritesItsBranchingSpace) {
     std::cout << std::format("[ optimize ] QD MECI {}: max |file - product| {:.3e} (bar {:.3e})\n",
                              key, worst, kQdProductBar * scale);
   };
+  // g_mean is (g_p + g_q) / 2 of the file's own rows, bitwise (the same sum).
+  {
+    const std::vector<double> g_p = flat_rows(history->at("g_p"));
+    const std::vector<double> g_q = flat_rows(history->at("g_q"));
+    const std::vector<double> g_mean = flat_rows(history->at("g_mean"));
+    ASSERT_EQ(g_mean.size(), g_p.size());
+    for (std::size_t k = 0; k < g_mean.size(); ++k) {
+      EXPECT_EQ(g_mean[k], 0.5 * (g_p[k] + g_q[k])) << k;
+    }
+  }
   expect_near("g_p", flat_rows(history->at("g_p")), product.g0, vector_scale);
   expect_near("g_q", flat_rows(history->at("g_q")), product.g1, vector_scale);
   // h_PQ's sign is the pair's relative phase, which the CASSCF's CI vectors'

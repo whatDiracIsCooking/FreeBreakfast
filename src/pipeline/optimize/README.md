@@ -263,7 +263,8 @@ QD-NEVPT2's (below).
 `optimize.json` has the mean as `energy`, with `lower`, `upper` and `gap`,
 at the head and per evaluation, where each entry also has the four norms,
 the trust radius, `branching_dimension` (2, or 1 where h_IJ had nothing left
-after x) and `pair_overlap`, and no `accepted` (`optimize_meci` rejects no
+after x), `plane_carried` (always false over CASSCF roots; see the QD MECI)
+and `pair_overlap`, and no `accepted` (`optimize_meci` rejects no
 step). Each `optimize.xyz` comment holds the mean and the gap, and
 `final.xyz`'s too. `examples/meci.toml` is ethylene's.
 
@@ -296,6 +297,19 @@ must stay at or above `kStateOverlapFloor` (`Numerical` below, naming the
 states). P and Q, and the CASSCF roots under them, may swap and mix freely:
 no root is matched.
 
+**Inside a degenerate CASSCF pair** (#902, PC only). Where the CASSCF pair
+under the QD pair is closer than `mcscf::kRootGapFloor` (ethylene's C3v ¹E
+pair, degenerate by symmetry), g_P, g_Q and h_PQ have no limit, and
+`qd_pc_intersection` returns the mean gradient ḡ alone
+(`../../nevpt2/intersection/README.md`, "A MECI inside a degenerate CASSCF
+pair"). The step hands it to `optimize_meci` as g_I = g_J = ḡ and h = 0,
+which carries the last evaluation's branching plane
+(`../../geometry/README.md`). **A start already inside the pair is
+refused** (`Numerical`, "start off the symmetric point"): there is no plane
+to carry. SC inside the pair keeps its refusal. Tier 1's C3v walk
+(`docs/reproduction/park2019/tier1_ethylene_c3v_augdz.toml`), which #847
+stopped at evaluation 10, now converges there.
+
 **Refusals** (`check_meci`, in `run` and in pipeline/config): a
 `[nevpt2_gradient]` that is not quasi-degenerate (one state, none to cross)
 or names a `state` (`InvalidConfig`); a `[casscf]` of one root, P = Q, or a
@@ -310,13 +324,18 @@ largest Davidson residual, `CasscfOutput::ci_residual_norm`), `heff_gap`
 (|E_Q − E_P|), `third_state_margin` (E_{Q+1} − E_Q, Q the higher of the
 pair; null when there is none), `root_gap` (the CASSCF's smallest), and the
 intersection's two gap sensitivities `gap_sensitivity_orbital` (s_o) and
-`gap_sensitivity_ci` (s_c). The head, beside `energy`, `lower`, `upper` and
+`gap_sensitivity_ci` (s_c), null inside a degenerate CASSCF pair, and
+`reference_pair_tau`, the pair's τ there (null elsewhere), beside the
+evaluation's `plane_carried`. The head, beside `energy`, `lower`, `upper` and
 `gap`, holds the branching space at the final geometry, the last
 evaluation's (`optimize_meci`'s crossing is its last evaluation): `g_p`,
 `g_q` and `h_pq`, each n_atom rows of three (hartree / bohr), the
 intersection's own g_P, g_Q and h_PQ unchanged (P and Q as `meci` names
-them, h_PQ neither normalized nor re-signed), and `nroots`, the state
-average's size. They are head-only: every evaluation's would triple the
+them, h_PQ neither normalized nor re-signed), `g_mean`, ḡ, and `nroots`,
+the state average's size. After a carried last evaluation `g_p`, `g_q` and
+`h_pq` are null and `g_mean` is the one gradient: a reader of the
+branching space takes the plane as the last one carried, or recomputes it
+at a displaced point. They are head-only: every evaluation's would triple the
 file for vectors no reader needs before the crossing. At the crossing u_P
 and u_Q are any orthonormal pair of the two-state space, so g_P, g_Q and
 h_PQ are one choice of it; the plane span{g_Q − g_P, h_PQ} and
@@ -652,12 +671,29 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
   The pair is apart there, so the vectors are fixed but for h_PQ's sign: the
   pair's relative phase follows the CASSCF's CI vector signs, which a
   separate run need not repeat, so h_PQ is held up to that one sign. The
-  bound s_o ‖g‖ + s_c √n ρ is formed from the file and printed. Fast tier.
+  bound s_o ‖g‖ + s_c √n ρ is formed from the file and printed. Fast tier. The same case's entries have `plane_carried` false and
+  `reference_pair_tau` null, and the head's `g_mean` is (g_p + g_q)/2 of
+  its own rows, bitwise.
+- `test/gtest/nevpt2_qd_reference_pair_gpu.cpp`, inside a degenerate
+  CASSCF pair (#902), tier 1's chain (DF-SA3-CASSCF(2,2)/aug-cc-pVDZ,
+  QD-PC):
+  - `PipelineOptimizeReferencePair.RefusesAStartInsideThePair` (fast,
+    0.8 s): from the exact-C3v symmetrization of Park's geometry, refused
+    at evaluation 0 (`Numerical`, "start off the symmetric point"), the
+    history its error and no iteration, no `final.xyz`.
+  - `PipelineOptimizeReferencePair.C3vWalkCarriesThePlaneThroughTheFloor`
+    (slow, 11 s): tier 1's walk from Park's geometry, converged; every
+    evaluation under the floor, and only those, `plane_carried`, with its
+    τ under `mcscf::kLimitTauGate`; the head's `g_p`, `g_q` and `h_pq` null
+    after a carried last evaluation and `g_mean` six rows; the final
+    geometry 10 times or more closer to C3v than the start. Measured:
+    11 evaluations, the last carried (CASSCF gap 7.87e-9), gap 4.8e-11, C3v
+    distance 7.0e-3 → 5.9e-5 bohr.
 
 ## Files
 
 | File | Role |
 |------|------|
 | `optimize.cppm` | Module interface: `OptimizeStep` and the two recorded walks over its files, `kStateOverlapFloor` and the four following functions |
-| `optimize.cpp` | `run`: the chain per evaluation, its private root and carried-orbitals steps, the MECI's `df_intersection` and `pair_overlap`, `check_meci`; and `recorded_optimize(_meci)`, the three files written as the walk goes and on its exit |
+| `optimize.cpp` | `run`: the chain per evaluation, its private root and carried-orbitals steps, the MECI's `df_intersection` and `pair_overlap` (and the mean gradient alone inside a degenerate CASSCF pair), `check_meci`; and `recorded_optimize(_meci)`, the three files written as the walk goes and on its exit |
 | `CMakeLists.txt` | The module library |

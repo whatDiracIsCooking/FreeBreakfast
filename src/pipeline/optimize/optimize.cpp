@@ -564,6 +564,7 @@ recorded_optimize_meci(const OptimizeStep &step, std::span<const Atom> start,
         {"rms_displacement", it.rms_displacement},
         {"trust_radius", it.trust_radius},
         {"branching_dimension", it.branching_dimension},
+        {"plane_carried", it.plane_carried},
     };
     if (annotate) {
       annotate(k, entry);
@@ -894,9 +895,25 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
         if (followed) {
           overlap = FBF_TRY(pair_overlap(s, followed->u, out.eigenvectors, i, j));
         }
-        std::ranges::copy(out.g_p, gradient.begin());
-        std::ranges::copy(out.g_q, g_j.begin());
-        std::ranges::copy(out.h_pq, h_ij.begin());
+        if (out.reference_pair_tau) {
+          // Inside a degenerate CASSCF pair: the mean gradient alone, which
+          // optimize_meci reads as g_I = g_J and h = 0, carrying the last
+          // evaluation's plane. The start has none to carry.
+          if (evaluation == 0) {
+            return err_numerical("[{}] meci: the start's CASSCF roots are {:.3e} hartree apart, "
+                                 "under mcscf::kRootGapFloor, the pair under QD states {} and {}: "
+                                 "the branching plane has no limit there, and there is none to "
+                                 "carry; start off the symmetric point",
+                                 kName, out.root_gap, i, j);
+          }
+          std::ranges::copy(out.g_mean, gradient.begin());
+          std::ranges::copy(out.g_mean, g_j.begin());
+          std::ranges::fill(h_ij, 0.0);
+        } else {
+          std::ranges::copy(out.g_p, gradient.begin());
+          std::ranges::copy(out.g_q, g_j.begin());
+          std::ranges::copy(out.h_pq, h_ij.begin());
+        }
         pair = {out.eigenvalues[static_cast<size_t>(i)], out.eigenvalues[static_cast<size_t>(j)]};
         // The state above the pair, E_{Q+1} - E_Q, Q the higher of the two.
         const auto higher = static_cast<size_t>(std::max(i, j));
@@ -908,7 +925,13 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
         record["root_gap"] = out.root_gap;
         record["gap_sensitivity_orbital"] = out.gap_sensitivity_orbital;
         record["gap_sensitivity_ci"] = out.gap_sensitivity_ci;
+        record["reference_pair_tau"] =
+            out.reference_pair_tau ? json(*out.reference_pair_tau) : json(nullptr);
+        // Rows of three, or null for a vector inside a degenerate CASSCF pair.
         const auto rows = [](const std::vector<double> &v) {
+          if (v.empty()) {
+            return json(nullptr);
+          }
           json r = json::array();
           for (size_t a = 0; a + 2 < v.size(); a += 3) {
             r.push_back(json::array({v[a], v[a + 1], v[a + 2]}));
@@ -918,13 +941,18 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
         qd_branching = {{"g_p", rows(out.g_p)},
                         {"g_q", rows(out.g_q)},
                         {"h_pq", rows(out.h_pq)},
+                        {"g_mean", rows(out.g_mean)},
                         {"nroots", cas.energies.size()}};
         FBF_LOG_INFO(
             "optimize: QD-NEVPT2 MECI states {} and {}, pair overlap {}, H_eff gap "
-            "{:.3e}, third-state margin {}, CASSCF root gap {:.6f}",
+            "{:.3e}, third-state margin {}, CASSCF root gap {:.3e}{}",
             i, j,
             std::isnan(overlap) ? std::string("- (the start)") : std::format("{:.8f}", overlap),
-            out.heff_gap, margin.is_null() ? std::string("-") : margin.dump(), out.root_gap);
+            out.heff_gap, margin.is_null() ? std::string("-") : margin.dump(), out.root_gap,
+            out.reference_pair_tau
+                ? std::format(", mean gradient alone (tau {:.2e}), plane carried",
+                              *out.reference_pair_tau)
+                : std::string());
         vectors = out.eigenvectors;
       } else {
         if (followed) {
