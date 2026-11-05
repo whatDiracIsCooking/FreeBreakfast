@@ -1191,6 +1191,9 @@ care, if at all: its pair is split by about 1e-6 Eh near the symmetric point.
 A PC-only MECI treatment built on ḡ alone (point 2) is not done. It would
 need `../intersection/` and `geometry::optimize_meci` to work without
 g_Q − g_P and h_PQ, whose own ζ parts depend on the direction of approach.
+`../intersection/README.md`, "A MECI inside a degenerate CASSCF pair"
+(#902), has the analysis: ḡ's limit, why the plane has none and the walk
+does not need one at C3v, and the algorithm and checks it would take.
 
 ### At any symmetric W
 

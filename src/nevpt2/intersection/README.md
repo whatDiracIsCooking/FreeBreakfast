@@ -144,6 +144,315 @@ Both sensitivities are invariant to turning u_P and u_Q within their pair:
 (z^Q − z^P)/2 and z^PQ turn as the pair (x/2, h) does, by twice the angle,
 and each norm is Euclidean.
 
+## A MECI inside a degenerate CASSCF pair (#902)
+
+**Theory only; nothing below is implemented.** #847's all-electron
+QD-PC/aug-cc-pVDZ walk to ethylene's C3v MECI
+(`docs/reproduction/park2019/tier1_ethylene_c3v_augdz.toml`) stops at
+evaluation 10. The QD pair there is healthy (H_eff gap 6.6e-10), but the
+CASSCF ¹E pair under it is 7.9e-9 Eh apart, and
+`mcscf::root_pair_multipliers` refuses it (`kRootGapFloor`). #892 showed
+that the refusal is right for state gradients
+(`../gradient/README.md`, "At a degenerate CASSCF pair"):
+
+- SC's g_K diverge as 1/gap;
+- PC's g_K are bounded, but their limit depends on the direction of
+  approach;
+- only PC's τ_P + τ_Q vanishes from both directions measured (≤ 5e-12), so
+  only ḡ has a limit.
+
+This section asks what a MECI walk needs there, and whether that much
+exists. In short: **a PC MECI at a symmetry-pinned reference degeneracy is
+well posed, and a walk needs only ḡ there.** ḡ has a limit, by an identity
+and a measurement below. The branching plane has no limit, but at
+the MECI the walk does not need it. SC has no MECI there to find.
+
+### What the walk consumes
+
+`geometry::optimize_meci` (`../../geometry/README.md`, "Minimum-energy
+crossings") reads, at each evaluation:
+
+1. the two energies, so the gap;
+2. x = g_Q − g_P: its direction x̂, which spans the branching plane, and its
+   length, which scales the gap's Newton step −gap/‖x‖ x̂;
+3. h_PQ's direction ŷ, the plane's second vector, after x̂;
+4. ḡ = (g_P + g_Q)/2, through P ḡ, P the projector off the rigid motions
+   and the plane. P ḡ drives the BFGS step, the BFGS update and the force
+   criteria.
+
+The trust-radius model also reads ḡ · p and x · p. Nothing reads g_P or
+g_Q alone. Items 2 and 3 enter only through P and the gap step, and item 4
+is the only gradient the convergence test reads.
+
+### Which of them exist
+
+Write each QD energy as a function of the geometry and of the references'
+rotation within the CASSCF pair, E_K(R) = Ẽ_K(R, θ(R)). Ẽ_K is smooth in
+both arguments. θ(R) is the angle the CASSCF eigenvectors take, smooth away
+from the reference seam but, at the seam, a function of the direction in
+the reference branching plane alone: θ turns by half the polar angle φ in
+that plane (the reference pair's geometric phase). So
+dE_K/dR = ∂_R Ẽ_K + τ_K ∂_R θ, and ∂_R θ goes as 1/ρ, ρ the distance to
+the reference seam. That is the ζ_K t term, t the pair's transition
+gradient. g_K has a limit only if τ_K = ∂Ẽ_K/∂θ is O(ρ), and a unique one
+only if τ_K/ρ is independent of φ as well.
+
+**Rotating the references by π/2 relabels them**, (c₀, c₁) → (c₁, −c₀).
+H_eff is built per reference, so it comes back permuted and its spectrum
+is unchanged: each Ẽ_K has period π/2 in θ. One reference's own diagonal
+element is a function of that reference alone,
+f(θ) = H_eff[0, 0](θ) − E^(0)(θ), its state-specific (SC or PC) NEVPT2
+correction. c and −c are the same state, so f has period π and harmonics
+cos 2nθ, sin 2nθ. With three references,
+
+    E_P + E_Q = tr H_eff − E_2
+              = Σ_r E_r + f(θ) + f(θ + π/2) + C_22 − E_2(θ)
+
+(the zeroth order's trace is fixed). **f(θ) + f(θ + π/2) cancels every odd
+n**, and E_2 moves with θ only through the pair's coupling to the third
+state, second order over the third-state margin (0.043 Eh here). So ḡ's
+τ carries only f's even harmonics. Each E_K has period π/2 as well, so
+only even harmonics, but it gets them by mixing f's n = 1 with the
+off-diagonal elements, not from f's own n = 2. That is why one E_K moves
+with θ while the pair's sum does not.
+
+What C3v allows at first order in a displacement: C3 turns the E pair by
+2π/3, so (cos 2nθ, sin 2nθ) transforms as E for n = 1 and 2, and as A for
+n = 3. An e displacement can drive both n = 1 and n = 2 at first order.
+**Symmetry does not forbid τ_P + τ_Q = O(ρ).** ḡ's limit rests on f's
+n = 2 harmonic being negligible, and that is a measurement, not an
+identity. The toy below measures it. **For PC, f's n = 2 is second order
+in the displacement**: 2.5e-13 at 1e-3 Å and 2.4e-15 at 1e-4 Å along d₂,
+against an n = 1 of 7.9e-8 and 7.9e-9. So τ_P + τ_Q = O(ρ²), the pair's
+ζ = O(ρ) vanishes, and **ḡ has one limit from every direction**. The
+first-order symmetry allowance is unused. For SC, f's n = 2 is O(1),
+1e-6 at every distance, and survives in the trace, so SC's ḡ diverges
+as 1/gap, like its g_K.
+
+**The covariant part.** Write H_eff's pair block as a covariant part, one
+that turns with the references as a matrix, plus the rest. The covariant
+part gives τ(W) = tr([W, H_eff] J) for any W, J the rotation's generator,
+which is zero for W = u_P u_Pᵀ + u_Q u_Qᵀ: that is H_eff's own spectral
+projector, so it commutes with H_eff. ḡ's ζ therefore comes only from the
+non-covariance, which is the harmonic argument above. For W^PQ the
+covariant part gives τ = ±(E_Q − E_P), so
+
+    ζ(W^PQ) = ∓ (E_Q − E_P) / (E₁ − E₀),
+
+a ratio of two cone gaps. It is bounded, but it depends on the direction,
+and it multiplies t, which near the reference seam is the reference pair's
+own coupling vector. Its size is that of h_PQ itself. This is the
+references' frame turning, and it is no artifact: dropping it would give an
+O(1)-wrong h_PQ. The same holds for x. **So the plane cannot be had below
+the floor by dropping ζ.** Away from the floor the plane is
+span{x, h_PQ}, and both carry this term in full.
+
+**Neither x nor h_PQ has a limit; the plane has none either.** In a smooth
+(diabatic) reference frame, the covariant part of the QD pair's traceless
+block is linear in the displacement δ. The non-covariant part adds
+M(θ(δ̂)) δ, homogeneous of degree 1 but not linear, because θ depends on
+δ's direction in the reference plane. #892's PC ζ_K, 0.011 along d₁ and
+under 4e-4 along d₂, measures M directly. A covariant H_eff has τ_K = 0
+identically, since eigenvalues do not move under a change of basis. So
+the QD gap near the reference seam is |L(δ)|, with L homogeneous of degree
+1 but not linear. Its zero set is a cone, not a plane, and the
+"branching plane" depends on the direction of approach. The toy's E_P
+moves with θ by 2.4% of the QD gap along d₁, and by 0.9% along d₂: the
+cone's slope depends on the direction, by a few percent here.
+
+| quantity the walk reads | limit at a PC reference-and-QD degeneracy |
+|---|---|
+| E_P, E_Q, the gap | yes (energies only; PC's pair stays degenerate at the symmetric point to 5e-11) |
+| ḡ, hence P ḡ given a plane | yes: its ζ is O(ρ), since f's n = 2 is O(δ²) (the toy) |
+| x̂, ŷ (the plane) | no: the cone's slope depends on the direction, by a few percent here |
+| ‖x‖ (the gap step's scale) | no, as at any cone, and also through M |
+| g_P, g_Q, h_PQ alone | no |
+
+### Is it an isolated MECI?
+
+The count is per point group, since a QD degeneracy only coincides with a
+reference degeneracy by symmetry. Without symmetry, the QD seam and the
+reference seam are each of codimension 2, so they meet in codimension 4:
+8 of 3N − 6 = 12 dimensions for ethylene. The QD seam's Ē has no reason
+to be minimal on that 8-dimensional set. A walk can pass the floor on the
+way there, but its MECI is not inside it.
+
+**At C3v both pairs are E pairs.** H₃C–CH with the lone H on the axis has
+4 a₁ + 4 e vibrations, as CH₃CN does. The C3v manifold M (fixed symmetry
+elements, a linear subspace in Cartesians) is 4-dimensional, and on all of
+it both the CASSCF pair and PC's QD pair are degenerate by symmetry. Off
+M, each pair is split linearly by the e displacements. In Jahn–Teller
+form, each splitting is |Σ_k κ_k (Q_kx, Q_ky)| over the four e modes, with
+its own κ: κ^ref for the CASSCF pair, κ^QD for the QD one. Each seam is of
+codimension 2 (10-dimensional) and contains M. The two seams' branching
+planes, span{Σ κ_k e_kx, Σ κ_k e_ky}, are different planes in the same
+8-dimensional e space, so the seams meet in 8 dimensions, a set that
+contains M. The QD seam's branching plane lies in the e space, so its
+6 remaining e directions lie along the seam.
+
+The MECI conditions on the QD seam are 2 (the gap) + 10 (P ḡ = 0). On M:
+
+- the gap's 2 hold identically;
+- ḡ is a₁ (Ē is invariant), so its components along the 6 seam e
+  directions vanish identically;
+- what remains is the 4 a₁ components of ḡ, against the 4 coordinates
+  of M.
+
+**4 equations in 4 unknowns: the C3v MECI is isolated**, a stationary
+point of Ē on M, and a stationary point of Ē on the whole QD seam by
+symmetry. It is a minimum if Ē's e-e curvature is positive on the seam's
+6 e directions, which no measurement here addresses. Park's search
+reports one. The reference degeneracy adds no condition. It is a property
+of every point of M, not of the MECI, so a walk that reaches M stays below
+the floor for the rest of its steps along M's a₁ directions. That is
+#847's walk: it met the gap criterion (6.6e-10 < `max_gap` 1e-7) by
+evaluation 10, and its remaining work was all in the a₁ forces.
+
+The seam near M is a cone, not a plane (above), so "the QD branching
+plane at the MECI" has no meaning, but the seam itself, the zero set of
+|L|, is still a closed set through M. The minimum of the smooth Ē over it
+is still well posed.
+
+**SC has none of this.** Its energies depend on θ at the symmetric point
+itself (E₀, E₁ over θ by 1.1e-6 and 4.4e-6 at Park's geometry; at the
+exact-C3v point its QD gap runs 4.1e-7 to 1.2e-5 with θ), so its QD pair
+is not degenerate on M. Its "seam" is not a function of geometry there.
+There is no SC MECI at a reference E pair, and the refusal stays for SC
+whatever the walk.
+
+### A PC-only algorithm
+
+The observation that makes it work: **on M, P ḡ does not depend on the
+plane, as long as the plane lies in the e space.** ḡ is a₁ there, and the
+e space is orthogonal to the a₁ space (the symmetry operations are
+orthogonal). Removing any two e vectors from ḡ removes nothing, so P ḡ = ḡ
+minus its rigid motions (T_z is a₁) for every such plane. M is a linear
+subspace in Cartesians with fixed symmetry elements, and a₁ steps keep the
+elements fixed. So the e space is the same at every point of M, and a
+plane taken anywhere near M stays in it. Off M by δ, the error a wrong
+plane makes in P ḡ is about the plane's tilt times ḡ's e part, which is
+itself O(δ). That is second order, and zero at the MECI. So below the
+floor the walk needs a fresh ḡ, and only a plane from nearby.
+
+1. **ḡ below the floor.** In `qd_pc_intersection`, when the smallest
+   CASSCF gap is under `kRootGapFloor` and that pair lies under the QD pair
+   (the two references carry most of u_P and u_Q), compute one W-form
+   column, W = u_P u_Pᵀ + u_Q u_Qᵀ, with the pair's ζ set to its limit, 0.
+   This needs a mode in `mcscf::root_pair_multipliers` that, for a named
+   equal-weight pair, returns ζ = 0 instead of refusing. It should still
+   report τ(W), and refuse when |τ(W)| is above a gate, say 1e-11, well
+   above the tree's τ round-off (8.9e-16, "What is bitwise" in
+   `../../mcscf/gradient/README.md`) and below #892's τ_K. The gate cannot
+   prove that ζ's limit is 0, since τ/gap is 0/0 whatever the gate. But it
+   catches the cases the argument does not cover: SC, a W outside the
+   pair, or a pair that is not the QD pair's. One column instead of three,
+   so cheaper than today's call. g_P, g_Q and h_PQ are not returned. The
+   result carries ḡ and a `degenerate_reference` flag.
+2. **The plane is carried.** `geometry::optimize_meci`'s callback gains a
+   way to return ḡ alone. Then the evaluation reuses the last evaluation's
+   x̂, ŷ and ‖x‖, the last one taken above the floor, and recomputes only
+   the rigid-motion basis at the new geometry. P is then the same before
+   and after a carried step, so the BFGS update learns Ē's curvature only,
+   not the plane's turn. Near M the plane does not turn in the sense that
+   matters (any e plane gives the same P ḡ on M). A walk whose first
+   evaluation is already below the floor has no plane to carry, and is
+   refused (`Numerical`, "start off the symmetric point"). Park's start
+   is 2.1e-6 Eh above it.
+3. **The gap step is kept, on the carried x.** Below the reference floor,
+   the QD gap is of the same order (the walk's 6.6e-10 against 7.9e-9), so
+   −gap/‖x‖ x̂ moves the geometry by about 1e-8 bohr. A wrong x̂ within the
+   e space costs a slower contraction toward M, never the fixed point.
+4. **What the step reports.** `optimize.json` gains, per evaluation,
+   `plane_carried` and the gate's τ. At the head, `g_p`, `g_q` and `h_pq`
+   become null when the last evaluation was carried, and a `g_mean` row
+   is added. Readers of the head's branching space must take the plane as
+   the last carried one, or recompute it at a displaced point.
+
+Everything else is unchanged: above the floor, every evaluation is today's.
+Every existing MECI golden runs above the floor, so none can move. The
+refusal stays for state gradients (`[nevpt2_gradient]` with a `state`), for
+SC, and for a degenerate CASSCF pair that is not the QD pair's.
+
+### What would validate it
+
+**Directional FD of ḡ at a near-C3v geometry, at #853's bar.** Take the
+exact-C3v symmetrization of Park's aug-cc-pVDZ geometry (#892's), displaced
+5e-6 Å along d₁ (CASSCF gap about 2.5e-9, under the floor; #892's line has
+gap ≈ 4.9e-4 Eh/Å × |δ|), and the exact point itself (gap 1.2e-10).
+Compare ḡ · d from item 1 against differences of Ē = (E_P + E_Q)/2 from
+QD-PC single points (energies only, which refuse nothing). Every point is
+re-converged, with steps 2e-3, 1e-3 and 5e-4 bohr, Richardson-extrapolated.
+The bar is max(2 × the Richardson bar, 3 σ_E / h_min), σ_E from 5 repeats
+(`../gradient/README.md`, #853's method). Directions:
+
+- ḡ's own (an a₁ direction, the one the walk uses);
+- two random unit directions, `default_rng(902)`;
+- two pure e directions: d₁'s e part and a random one's, a₁ part
+  projected out by the C3v symmetrizer.
+
+Central differences cannot see the cone term. Ẽ's period π/2 in θ is
+period π in φ, so a ρ c(φ) term in Ē is even under δ → −δ, and the central
+difference cancels it. So along each e direction, also compare the
+**forward and backward one-sided** Richardson slopes with ḡ · d and with
+each other. A surviving n = 2 harmonic shows as a forward/backward split
+of 2 c(φ). The pass is every miss under the bar, one-sided included. The
+gate's τ(W), reported by item 1, must be under the gate at both points.
+
+**Then the walk.** `tier1_ethylene_c3v_augdz.toml` converging at its own
+criteria (gap 1e-7, Opt=Tight), with `plane_carried` from the evaluation
+where the CASSCF gap crosses the floor. Its final geometry's C3v
+deviations (C–H spread, H–C–C spread, the lone H off the axis) should fall
+toward the displacement criteria, a check that the walk found M's
+stationary point rather than a point merely near M. Every existing MECI
+golden must be unchanged.
+
+### The toy
+
+`tools/emit/qd_nevpt2_reference.py`'s `sc_qd` and `pc_qd`, over #892's
+rotation (PR #901's `issue892_rotation.py`: DF-SA3-CASSCF(2,2)/aug-cc-pVDZ,
+aug-cc-pVDZ-JKFIT, SA-canonical inactive orbitals). It is QD-PC's own H_eff,
+not a CASSCF stand-in, and it reproduced the tree's evaluation 0 in #892,
+so its numbers map onto the walk directly. Energies only: τ is
+d/dθ of what it prints. At the exact-C3v symmetrization of Park's
+geometry plus |δ| along d₁ (Park's offset) or d₂ (`default_rng(892)`,
+#892's), the references are rotated by θ at 12 points in [0, π). Each
+column is the amplitude of cos 2nθ (n = 1, 2) in
+
+- f, reference 0's own diagonal correction;
+- E_P + E_Q;
+- E_P alone.
+
+Peak-to-peak over θ is in parentheses.
+
+| point | CASSCF gap | QD gap | f: n = 1 | f: n = 2 | E_P + E_Q: n = 2 (ptp) | E_P: n = 2 |
+|---|---|---|---|---|---|---|
+| PC, d₁, 1e-3 Å | 4.86e-7 | 1.95e-7 | 1.5e-7 | 1.9e-14 | 3.2e-14 (1.4e-13) | 4.7e-9 |
+| PC, d₁, 1e-4 Å | 4.93e-8 | 2.06e-8 | 1.5e-8 | 8e-25 | 1.3e-14 (1.1e-13) | 4.7e-10 |
+| PC, d₂, 1e-3 Å | 4.41e-6 | 4.56e-6 | 7.9e-8 | 2.5e-13 | 5.1e-13 (1.1e-12) | 4.2e-8 |
+| PC, d₂, 1e-4 Å | 4.41e-7 | 4.56e-7 | 7.9e-9 | 2.4e-15 | 2.2e-14 (1.1e-13) | 4.2e-9 |
+| SC, d₁, 1e-3 Å | 4.86e-7 | 7.17e-7 | 2.2e-8 | 1.1e-6 | 2.1e-6 (4.2e-6) | 4.8e-7 |
+| SC, d₁, 1e-4 Å | 4.93e-8 | 6.46e-7 | 1.6e-7 | 1.1e-6 | 2.2e-6 (4.2e-6) | 4.7e-7 |
+| SC, d₂, 1e-3 Å | 4.41e-6 | 9.17e-6 | 2.4e-7 | 3.2e-7 | 6.3e-7 (1.3e-6) | 1.6e-6 |
+| SC, d₂, 1e-4 Å | 4.41e-7 | 7.93e-6 | 2.1e-7 | 3.3e-7 | 6.5e-7 (1.3e-6) | 1.6e-6 |
+
+Every n = 1 of E_P + E_Q and of f + f(θ + π/2) is ≤ 5e-14, as the identity
+requires. E_2 moves by ≤ 9e-14 for PC. In the PC rows:
+
+- f's n = 1 is linear in |δ|. That is the reference pair's first-order
+  non-covariance, the term the symmetry argument allows.
+- E_P's n = 2 is linear in |δ| as well. That is #892's τ_K = O(ρ), and
+  each g_K is bounded but direction-dependent.
+- f's n = 2 is quadratic, or at round-off, and E_P + E_Q is flat to
+  1e-12 or better.
+
+In the SC rows, nothing shrinks with |δ|: its n = 2 is O(1), in f and in
+the trace alike. That is SC's non-invariance at the symmetric point
+itself, so SC's ḡ, like its g_K, has no limit.
+
+The toy is not kept under `tools/`. It is a θ scan over #901's helpers,
+which are not in the tree either, and its one conclusion is recorded
+here. The script is in #902's PR.
+
 ## Tests
 
 `test/gtest/nevpt2_qd_intersection_gpu.cpp`, SC and PC, on this tree's own
