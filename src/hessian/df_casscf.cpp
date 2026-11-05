@@ -3,7 +3,9 @@
 /// (df_casscf_exy over mcscf::df_derivatives' F^[x]) plus the response term,
 /// lambda^x by mcscf::zvectors on df_derivatives' right-hand sides, assembled
 /// as Lambda^T E_lambda. by two gemms; the solution checked by one product of
-/// the unreduced operator; the sum symmetrized.
+/// the unreduced operator; the sum symmetrized. The CP step on its own,
+/// df_casscf_cp, and state_specific_electrons, the inputs' check
+/// df_nevpt2_tangents shares.
 
 module free_breakfast.hessian;
 
@@ -29,6 +31,7 @@ import free_breakfast.mcscf.solve;
 import free_breakfast.mcscf.derivative;
 import free_breakfast.mcscf.relaxed_hessian;
 import free_breakfast.mcscf.zvector;
+import :state_specific; // state_specific_electrons
 
 #include "diagnostics.h"
 
@@ -42,37 +45,36 @@ constexpr double kCasscfElectronCountTolerance = 1e-6;
 // there. A converged solve sits near 1e-9 (the inner solves' 1e-8, relative).
 constexpr double kCasscfCpResidualCeiling = 1e-6;
 
-Result<CasscfTerms> df_casscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-                              const std::span<const PrimitivePairClass> classes,
-                              const BasisSet &aux, const SphericalMatrixAO &h,
-                              const Buffers::device<double> &b, const double *l,
-                              const mcscf::Solution &solution, const int32_t ncore,
-                              const int32_t ncas, const double tolerance,
-                              const int32_t max_iterations) {
+Result<std::pair<int32_t, int32_t>>
+state_specific_electrons(const std::string_view who, const DeviceResources &res,
+                         const Molecule &molecule, const BasisSet &basis, const BasisSet &aux,
+                         const Buffers::device<double> &b, const mcscf::Solution &solution,
+                         const int32_t ncore, const int32_t ncas) {
   const SphericalMatrixAO &c = solution.c;
   const size_t nao = basis.nao_sphe();
   const size_t naux = aux.nao_sphe();
   const uint32_t n_atom = basis.natoms();
   if (solution.roots.energies.size() != 1) {
-    return err_config("hessian::df_casscf: a state-specific solution has one root, this one {}",
+    return err_config("{}: a state-specific solution has one root, this one {}", who,
                       solution.roots.energies.size());
   }
   if (c.dev_idx() != res.dev_idx() || c.n() != nao || molecule.natoms() != n_atom ||
       aux.natoms() != n_atom || ncore < 0 || ncas < 1 ||
       int64_t{ncore} + int64_t{ncas} > static_cast<int64_t>(nao) ||
       b.num_elements() != naux * nao * nao) {
-    return err_config("hessian::df_casscf: needs C nao square on device {}, a molecule and two "
-                      "bases on the same atoms, ncore >= 0, ncas >= 1, ncore + ncas <= nao and B "
-                      "naux nao^2 long (C {} square on device {}, {}, {} and {} atoms, ncore {}, "
-                      "ncas {}, nao {}, naux {}, B {} doubles)",
-                      res.dev_idx(), c.n(), c.dev_idx(), molecule.natoms(), n_atom, aux.natoms(),
-                      ncore, ncas, nao, naux, b.num_elements());
+    return err_config(
+        "{}: needs C nao square on device {}, a molecule and two bases on the same "
+        "atoms, ncore >= 0, ncas >= 1, ncore + ncas <= nao and B naux nao^2 long (C "
+        "{} square on device {}, {}, {} and {} atoms, ncore {}, ncas {}, nao {}, naux "
+        "{}, B {} doubles)",
+        who, res.dev_idx(), c.n(), c.dev_idx(), molecule.natoms(), n_atom, aux.natoms(), ncore,
+        ncas, nao, naux, b.num_elements());
   }
   const auto n_act = static_cast<size_t>(ncas);
   if (solution.gamma.size() != n_act * n_act ||
       solution.gamma2.size() != n_act * n_act * n_act * n_act) {
-    return err_config("hessian::df_casscf: RDMs of {} and {} elements for ncas {}",
-                      solution.gamma.size(), solution.gamma2.size(), ncas);
+    return err_config("{}: RDMs of {} and {} elements for ncas {}", who, solution.gamma.size(),
+                      solution.gamma2.size(), ncas);
   }
   // The active electrons, for the CI strings: trace(gamma).
   double trace = 0.0;
@@ -83,12 +85,40 @@ Result<CasscfTerms> df_casscf(DeviceResources &res, const Molecule &molecule, co
   const int32_t two_s = molecule.multiplicity() - 1;
   if (std::abs(trace - nelecas) > kCasscfElectronCountTolerance || nelecas < two_s ||
       (nelecas - two_s) % 2 != 0 || nelecas - ((nelecas - two_s) / 2) > ncas) {
-    return err_config("hessian::df_casscf: trace(gamma) {} is no electron count of multiplicity "
-                      "{} in {} orbitals",
-                      trace, molecule.multiplicity(), ncas);
+    return err_config("{}: trace(gamma) {} is no electron count of multiplicity {} in {} orbitals",
+                      who, trace, molecule.multiplicity(), ncas);
   }
   const int32_t nbeta = (nelecas - two_s) / 2;
-  const int32_t nalpha = nelecas - nbeta;
+  return std::pair{nelecas - nbeta, nbeta};
+}
+
+// The CP-CASSCF step of a state-specific DF-CASSCF Hessian, and what the
+// Hessian reads beside lambda^x: F^[x] and the right-hand sides, the orbital
+// ones packed, and each column's residual on the unreduced equations.
+struct CasscfCp {
+  mcscf::Derivatives derivatives;
+  Buffers::device<double> gradients;
+  mcscf::ZVectors cp;
+  std::vector<double> residuals;
+};
+
+// lambda^x by mcscf::zvectors on df_derivatives' right-hand sides, checked by
+// one product of the unreduced operator (df_casscf's steps 1, 3 and 4,
+// README.md); @p who names the caller in every refusal.
+Result<CasscfCp> casscf_cp(DeviceResources &res, const std::string_view who,
+                           const Molecule &molecule, const BasisSet &basis,
+                           const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                           const SphericalMatrixAO &h, const Buffers::device<double> &b,
+                           const double *l, const mcscf::Solution &solution, const int32_t ncore,
+                           const int32_t ncas, const double tolerance,
+                           const int32_t max_iterations) {
+  const auto [nalpha, nbeta] =
+      FBF_TRY(state_specific_electrons(who, res, molecule, basis, aux, b, solution, ncore, ncas));
+  const SphericalMatrixAO &c = solution.c;
+  const size_t nao = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  const uint32_t n_atom = basis.natoms();
+  const auto n_act = static_cast<size_t>(ncas);
   const ScopedDeviceIndex on{res.dev_idx()};
 
   const ci::DeviceStringSet alpha = FBF_TRY(ci::DeviceStringSet::create(res, ncas, nalpha));
@@ -96,7 +126,7 @@ Result<CasscfTerms> df_casscf(DeviceResources &res, const Molecule &molecule, co
   ci::Rdm rdm = FBF_TRY(ci::Rdm::create(res, alpha, beta));
   const auto dim = static_cast<size_t>(rdm.size());
   if (solution.roots.vectors.num_elements() != dim) {
-    return err_config("hessian::df_casscf: a root of {} doubles over {} determinants",
+    return err_config("{}: a root of {} doubles over {} determinants", who,
                       solution.roots.vectors.num_elements(), dim);
   }
   const auto n_x = static_cast<size_t>(3) * n_atom;
@@ -115,19 +145,10 @@ Result<CasscfTerms> df_casscf(DeviceResources &res, const Molecule &molecule, co
     return to;
   };
 
-  // F^[x] and the right-hand sides E_lambda x, then E_xy at the root's RDMs.
+  // F^[x] and the right-hand sides E_lambda x.
   mcscf::Derivatives derivatives =
       FBF_TRY(mcscf::df_derivatives(res, molecule, basis, classes, aux, h, b, l, c, ncore, ncas,
                                     nalpha, nbeta, solution.roots.vectors.data(), weight));
-  CasscfExy exy;
-  {
-    Buffers::device<double> c_columns(mm, res.device());
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(c_columns.data(), c.data(), mm * sizeof(double),
-                                           wwr::wwrMemcpyDeviceToDevice, res.stream())));
-    exy = FBF_TRY(df_casscf_exy(res, molecule, basis, classes, aux, h, b, l, c_columns, ncore, ncas,
-                                solution.gamma, solution.gamma2, derivatives.fock));
-  }
-
   // H~ at the solution, as mcscf::df_gradient builds it for a Z-vector: the
   // sigma over H_0 (row-major host arrays need no reorder: h_eff is
   // symmetric, and (tu|vw) column-major is (wv|ut) row-major), the orbital
@@ -199,13 +220,68 @@ Result<CasscfTerms> df_casscf(DeviceResources &res, const Molecule &molecule, co
     }
     const auto worst = std::ranges::max_element(residuals);
     if (*worst > kCasscfCpResidualCeiling) {
-      return err_divergence("hessian::df_casscf: the CP-CASSCF solve left a residual of {:.3e} in "
-                            "coordinate {} (above {:.0e}): the parameters' Hessian is not "
-                            "positive there, as at a state-specific excited root (a saddle)",
-                            *worst, std::distance(residuals.begin(), worst),
+      return err_divergence("{}: the CP-CASSCF solve left a residual of {:.3e} in coordinate {} "
+                            "(above {:.0e}): the parameters' Hessian is not positive there, as "
+                            "at a state-specific excited root (a saddle)",
+                            who, *worst, std::distance(residuals.begin(), worst),
                             kCasscfCpResidualCeiling);
     }
   }
+
+  return CasscfCp{.derivatives = std::move(derivatives),
+                  .gradients = std::move(gradients),
+                  .cp = std::move(cp),
+                  .residuals = std::move(residuals)};
+}
+
+Result<mcscf::ZVectors>
+df_casscf_cp(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+             const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+             const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+             const double tolerance, const int32_t max_iterations) {
+  CasscfCp step = FBF_TRY(casscf_cp(res, "hessian::df_casscf_cp", molecule, basis, classes, aux, h,
+                                    b, l, solution, ncore, ncas, tolerance, max_iterations));
+  return std::move(step.cp);
+}
+
+Result<CasscfTerms> df_casscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                              const std::span<const PrimitivePairClass> classes,
+                              const BasisSet &aux, const SphericalMatrixAO &h,
+                              const Buffers::device<double> &b, const double *l,
+                              const mcscf::Solution &solution, const int32_t ncore,
+                              const int32_t ncas, const double tolerance,
+                              const int32_t max_iterations) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  // E_lambda x and lambda^x, then E_xy at the root's RDMs and F^[x].
+  CasscfCp step = FBF_TRY(casscf_cp(res, "hessian::df_casscf", molecule, basis, classes, aux, h, b,
+                                    l, solution, ncore, ncas, tolerance, max_iterations));
+  const size_t nao = basis.nao_sphe();
+  const size_t mm = nao * nao;
+  const auto n_x = static_cast<size_t>(3) * basis.natoms();
+  const auto n_x32 = static_cast<int32_t>(n_x);
+  const auto pairs32 = static_cast<int32_t>(step.gradients.num_elements() / n_x);
+  const auto dim32 = static_cast<int32_t>(solution.roots.vectors.num_elements());
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  const auto download = [&res](const double *const from,
+                               const size_t count) -> Result<std::vector<double>> {
+    std::vector<double> to(count);
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(to.data(), from, count * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToHost, res.stream())));
+    FBF_TRY(res.sync());
+    return to;
+  };
+  CasscfExy exy;
+  {
+    Buffers::device<double> c_columns(mm, res.device());
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(c_columns.data(), solution.c.data(), mm * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToDevice, res.stream())));
+    exy = FBF_TRY(df_casscf_exy(res, molecule, basis, classes, aux, h, b, l, c_columns, ncore, ncas,
+                                solution.gamma, solution.gamma2, step.derivatives.fock));
+  }
+  const mcscf::Derivatives &derivatives = step.derivatives;
+  const Buffers::device<double> &gradients = step.gradients;
+  const mcscf::ZVectors &cp = step.cp;
 
   // Lambda^T E_lambda.: element (x, y) is g^x . z_o^y + rhs_ci^x . z_c^y, the
   // CI rows the energy's own (2 Q H~^x c) against z_c, the response itself.
@@ -237,8 +313,8 @@ Result<CasscfTerms> df_casscf(DeviceResources &res, const Molecule &molecule, co
                      .asymmetry = asymmetry,
                      .exy = std::move(exy),
                      .response = std::move(response),
-                     .cp = std::move(cp),
-                     .residuals = std::move(residuals)};
+                     .cp = std::move(step.cp),
+                     .residuals = std::move(step.residuals)};
 }
 
 } // namespace free_breakfast::hessian

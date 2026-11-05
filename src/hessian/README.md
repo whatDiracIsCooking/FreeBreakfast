@@ -16,9 +16,11 @@ explicit part**, `df_casscf_two_electron` (`casscf_hessian.tex` eq. df2),
 the **fixed-parameter second derivative** E_xy built on it,
 `df_casscf_exy` (eq. exy) and, with a rotation, its derivative along
 C → C (1 + ε K) (a state average's **L_xy z_o part**), the
-**state-specific Hessian**, `df_casscf` (eq. ss), and a state average's
-**z terms** at one root's multipliers, `df_sacasscf_z` (L_xy's z part and
-L_xλ, eq. sa), all below.
+**state-specific Hessian**, `df_casscf` (eq. ss), its CP-CASSCF step λ^x on
+its own, `df_casscf_cp`, a state average's **z terms** at one root's
+multipliers, `df_sacasscf_z` (L_xy's z part and L_xλ, eq. sa), and for the
+NEVPT2 Hessian (milestone 24) the **parameter response and total tangent**
+t_x of (h_MO, B_MO, c), `df_nevpt2_tangents`, all below.
 
 ```cpp
 import free_breakfast.hessian;
@@ -707,6 +709,8 @@ auto h = hessian::df_casscf(res, molecule, basis, classes, aux, h_core, b, l, so
 // h->exy: df_casscf_exy's E_xy and its pieces; h->response: E_xλ λ^y, element (x, y);
 // h->cp: λ^x (zvectors' z_o and z_c) and the solver's own residuals;
 // h->residuals: each column's residual on the unreduced equations
+auto cp = hessian::df_casscf_cp(res, molecule, basis, classes, aux, h_core, b, l, solution, ncore, ncas);
+// *cp: steps 1, 3 and 4 below alone, the same λ^x as h->cp
 ```
 
 The inputs are `mcscf::df_gradient`'s, a one-root `mcscf::Solution`
@@ -788,6 +792,117 @@ and 25 Schur iterations; asymmetry ≤ 1.9e-10, sum rule ≤ 9.7e-11; 0.69 s
 (6-31G) and 1.38 s (cc-pVDZ) a call. The excited root (−75.5923 over the
 ground state's −75.9025) is refused by `zvectors` itself: p·H̃p = −0.23 at
 its first product.
+
+## The NEVPT2 parameter response and total tangent
+
+`df_nevpt2_tangents` is the parameter response x^x of the single-state
+NEVPT2 nuclear Hessian (`nuclear_hessian.tex` §2.2, #813) and the total
+first-order change t_x of the NEVPT2 functional's inputs, per coordinate:
+
+    h_dot^x = h1^x + κ^xᵀ h_MO + h_MO κ^x
+    B_dot^x = W^x  + κ^xᵀ B_Q  + B_Q κ^x          (each fitted index Q)
+    c_dot^x = c^x
+    κ^x     = κ_nr^x + κ_oo^x,   κ_oo^x_pq = −f^(x)_pq / (ε_p − ε_q)   (eq. koo)
+
+```cpp
+auto cp = hessian::df_casscf_cp(res, molecule, basis, classes, aux, h_core, b, l, solution, ncore, ncas);
+auto pairs = hessian::df_nevpt2_tangents(
+    res, molecule, basis, classes, aux, h_core, b, l, solution, ncore, ncas, *cp, /*pc=*/false,
+    [&](int32_t x0, int32_t count, const double *h_dot, const double *b_dot,
+        const double *c_dot, const double *kappa) -> Status { ...; return {}; });
+// *pairs: PC's degenerate pairs (empty for SC, which refuses them)
+```
+
+- **(h1^x, W^x)**, the derivative integrals with the connection τ^x =
+  −½ S^x_MO, are `mcscf::df_integral_derivatives`' chunks (#807), its
+  consumer this call's: W^x (p, q, Q at p + nmo (q + nmo Q)) is transposed to
+  NEVPT2's MO B layout (Q + naux (p + nmo q), as `b_mo` leaves it) by one
+  geam per coordinate. W^x's metric gauge is not the Cholesky factor's at a
+  moved geometry, which NEVPT2 never sees (`../mcscf/third_derivative/README.md`,
+  "NEVPT2's B").
+- **(κ_nr^x, c^x)** is λ^x, the CP-CASSCF solution: `cp` as
+  `df_casscf_cp` or `df_casscf` (`CasscfTerms::cp`) returns it, the caller's,
+  so a Hessian that has already solved it does not solve it twice. z_o is
+  unpacked to the antisymmetric κ_nr (`unpack_orbital_pairs`, C → C exp κ);
+  z_c is the CI response itself (zvector's CI rows are E_λλ's halved, its
+  solution unscaled), handed over in place.
+- **The one-index transform** by κ, C → C (1 + κ): h_MO κ + κᵀ h_MO as two
+  gemms; on B, B_Q κ for every Q is one gemm over B as the (naux nmo) × nmo
+  matrix of rows (Q, p), and κᵀ B_Q one strided-batched gemm over the
+  naux × nmo slabs at each q (B_Q symmetric, so (κᵀ B_Q)_pq = Σ_r B_Q,rq κ_rp).
+- **κ_oo^x**: f^(x) is `nevpt2::builders_tangent` (#806) along everything
+  above but κ_oo, its f_core and f_virt; ε the diagonals of its value's f,
+  the solution's core and virtuals canonical (an off-diagonal |f_pq| above
+  1e-8 is refused: the division is f_pq = 0's stationarity only where f is
+  diagonal). Then κ_oo's own one-index transform onto h_dot and B_dot, and
+  `kappa`, the consumer's, is the total. Along κ_oo, f_pq moves by
+  κ_pq (ε_p − ε_q) and nothing else f reads moves (a core-core or
+  virtual-virtual rotation leaves D and γ), so that is the whole condition.
+
+**The degenerate-pair rule** is the gradient's z^c rule
+(`../nevpt2/gradient/zc.cpp`): below |ε_p − ε_q| = 1e-6, κ_oo^x_pq is 0
+while |f^(x)_pq| ≤ 1e-8 (an abelian subgroup's split pair, or a
+displacement that does not split it). Past that the division is not one the
+state determines: **SC refuses**, Numerical, naming the pair, the gap,
+f^(x)_pq and the coordinate (SC is not invariant to the rotation, and κ_oo
+enters the Hessian quadratically, `nuclear_hessian.tex` §2.2); **PC records**
+it as a `DegeneratePair` (coordinate, p > q, gap, f), κ_oo^x_pq left 0, for
+#817 to measure, and goes on.
+
+**All-electron.** The call takes no frozen core: the NEVPT2 it feeds
+correlates the whole core (milestone 24's update refuses `frozen_core ≠ 0`
+in the Hessian paths), and `builders_tangent` builds the all-electron
+inputs.
+
+### Memory
+
+Held throughout: h_MO and B_MO (naux nmo²). W^x's chunk takes a third of
+the budget (the device's free memory at the call, or `max_bytes` when that
+is less): `df_integral_derivatives` refuses one coordinate past it,
+Unsupported, naming the bytes. Per chunk of k coordinates this call holds
+B_dot (k naux nmo², as large as the chunk's W^x), h_dot and κ (k nmo² each),
+and `builders_tangent`'s arrays, one set of `BuilderOutputs` per coordinate
+(the MO blocks, three n_act⁶ RDM tangents) beside its own point: what the
+other two thirds are for. naux nmo past `int32_t` is Unsupported.
+
+### Tests
+
+`test/gtest/df_nevpt2_tangents_gpu.cpp` (suite `HessianNevpt2Tangents`), on
+this tree's DF-CASSCF through the registry (the Casscf step's canonical core
+and virtuals, ‖g‖ < 1e-10):
+
+- `MatchesTheLadder` (slow tier) and `MatchesTheLadderOnOneAtom` (the
+  carbon's three coordinates, the fast set's): t_x on `nevpt2_hessian/`'s
+  skew formaldehyde (#803, STO-3G / cc-pVDZ-JKFIT, CAS(4,4)) against a
+  Richardson ladder of (h_MO, B_MO, c) of the CASSCF **re-solved** at each
+  displaced geometry (`mcscf::solve` from the reference moved by the
+  connection, C₀ (C₀ᵀ S C₀)^−½, its CI the guess, ‖g‖ < 1e-12) and
+  **re-canonicalized** (f's core and virtual blocks diagonalized, each
+  orbital's sign along its reference one), in the gauge t_x is in: the
+  active orbitals turned by U = (MᵀM)^−½ Mᵀ, M the active block of
+  C_refᵀ S C, so that no active-active rotation enters (the CI vector carried
+  along by its strings' minors, c' = Dᵀ c D over the alpha-by-beta matrix c,
+  D_JI the minor of U over strings J and I, its sign along the reference's), and B's fitted index in the symmetric metric gauge
+  Z = L_M⁻ᵀ (L_M⁻¹ M L_M⁻ᵀ)^−½ at the reference's L_M (#807's ladder). h_MO
+  and c at steps 1e-3 and 5e-4 bohr; B_MO at 5e-4 and 2.5e-4, its tight
+  JKFIT functions on C and O giving it a Richardson remainder that falls
+  16× a halving (7.2e-8 relative at 1e-3). Every coordinate within 1e-7 of
+  the ladder's largest element of each, the chunks two coordinates each.
+- `DegeneratePairRule`: a C3v ammonia in 6-31G, its full valence CAS(8,7),
+  whose virtual e pairs (orbitals 9, 10 and 11, 12) sit 8e-14 apart: SC is
+  Numerical, naming a pair and a coordinate; PC returns the records, each a
+  pair below the floor with |f^(x)| above 1e-8, in coordinate order. (The
+  `h2co_neardeg_sto3g` fixture's virtual pair is 6.0e-3 Eh apart, far above
+  the rule's 1e-6, so it is not this case; a CAS(2,2) over ammonia's two a1
+  orbitals breaks the symmetry in the CASSCF itself.)
+- `Refusals`: no consumer, λ^x of one coordinate fewer, and two core
+  orbitals turned into each other (not canonical).
+
+Measured on the gfx1200 (`--preset hip`): worst 5.9e-8 (c along the
+oxygen's y), h_MO ≤ 2.8e-8, B_MO ≤ 4.5e-9; the call 1.7 s over six chunks,
+the full ladder 15 s (72 solves); the ammonia's SC refusal at
+coordinate 0, PC's 22 records (both pairs at every coordinate but the
+nitrogen's z, which keeps the C3 axis).
 
 ## The state-averaged z terms
 
@@ -986,14 +1101,16 @@ the issue also asks for waits on that step (#610).
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build, or a batch of them from one walk |
 | `df_rhf_two_electron.cpp` | The fitted densities' second-derivative contractions and the cross terms' atom blocks |
 | `df_casscf_two_electron.cpp` | The CASSCF Γ̃ and Ŵ contractions and the J, K and active cross terms; with a rotation their product-rule derivative, the atom blocks over [C_o \| C K_o] |
 | `df_casscf_exy.cpp` | E_xy: the one-electron and nuclear-repulsion explicit terms, F, and the connection's three terms over the MO-basis B and the τ^x stack; with a rotation the z_o part, F_L and E^(2)'s commutator terms |
-| `df_casscf.cpp` | The state-specific CASSCF Hessian: E_λx, E_xy, λ^x by `zvectors`, the unreduced residual check, Λᵀ E_λ· and the symmetrized sum |
+| `state_specific.cppm` | Internal partition: `state_specific_electrons`, a one-root solution's inputs checked and its active electrons by spin, which `df_casscf` and `df_nevpt2_tangents` share |
+| `df_casscf.cpp` | The state-specific CASSCF Hessian: E_λx, E_xy, λ^x by `zvectors`, the unreduced residual check, Λᵀ E_λ· and the symmetrized sum; the CP step alone (`df_casscf_cp`) |
+| `df_nevpt2_tangents.cpp` | The NEVPT2 parameter response and t_x: per chunk of derivative integrals, W^x to B's layout, the one-index transforms by κ_nr, f^(x) by `builders_tangent`, κ_oo under the degenerate-pair rule and its transform |
 | `df_sacasscf.cpp` | A state-averaged root's Hessian: z and λ^x by the Z-vectors, the residual check, root I's parameter Hessian by the one-hot unreduced product, the third-derivative action, the z terms, E_I,xy, eq. rot at equal weights and the symmetrized sum |
 | `df_sacasscf_z.cpp` | A state average's z terms at root I's z: L_xy's z part (E_xy along K(z_o), and at z_c's transition RDMs by the ± polarization) and L_xλ (root I's right-hand side + I^x z) |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |
