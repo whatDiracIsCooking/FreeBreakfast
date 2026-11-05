@@ -23,7 +23,12 @@ minimum in aug-cc-pVTZ, 805 basis functions, in 136 s on the 40 GB A100
   mEh**: +3.35 and +3.68 mEh for state 0. The start is the RHF orbitals
   that best carry a π-projected space. It converges to other CASSCF
   solutions than his: his two states are degenerate there and ours are
-  not. A start carried from a converged run is #939.
+  not. **Carrying the S0 minimum's converged space there (#939) does not
+  reach his either**: walked in eight steps, it lands at the P-twisted MECI
+  on the same solution as the π-projected start (+3.68 mEh), and at the
+  I-twisted one on a third (+3.48 mEh), its states 2.8 mEh apart where his
+  are 20 µEh. So his twisted (12e,11o) solutions are not the ones
+  continuously connected to the S0 π space along this path.
 - **(14e,12o)/aug-cc-pVTZ** was **not run**. It needs the cc-pVTZ
   (14e,12o) space settled first, and that is not settled.
 
@@ -36,8 +41,8 @@ minimum in aug-cc-pVTZ, 805 basis functions, in 136 s on the 40 GB A100
 | (12e,12o)/cc-pVTZ S0 min | +0.02 | +0.02 | reproduced |
 | (12e,11o)/aug-cc-pVTZ S0 min | +0.02 | +0.01 | reproduced; 805 basis functions |
 | (14e,12o)/cc-pVTZ S0 min | +526.00 | +1775.32 | ran; not his active space |
-| (12e,11o)/cc-pVTZ I-twisted MECI | +3353.40 | +11218.40 | ran; not his CASSCF solution (#939) |
-| (12e,11o)/cc-pVTZ P-twisted MECI | +3683.21 | +5065.05 | ran; not his CASSCF solution (#939) |
+| (12e,11o)/cc-pVTZ I-twisted MECI | +3353.40 | +11218.40 | ran; not his CASSCF solution; carried from S0 (#939): +3478.76, +6278.65, not his either |
+| (12e,11o)/cc-pVTZ P-twisted MECI | +3683.21 | +5065.05 | ran; not his CASSCF solution; carried from S0 (#939): the same solution |
 | (14e,12o)/aug-cc-pVTZ S0 min | – | – | not run: the (14e,12o) space is unsettled |
 
 ## The points
@@ -94,6 +99,8 @@ below, `main` printed both `PC-QD-NEVPT2 state` lines, with no
 | (14e,12o) S0 min, all-π (not his) | −644.063112439751 | −644.0636384427 | +526.00 | −643.954903747327 | −643.9566790714 | +1775.32 |
 | (12e,11o) I-twisted (not his) | −643.977522723378 | −643.9808761194 | +3353.40 | −643.969637336607 | −643.9808557371 | +11218.40 |
 | (12e,11o) P-twisted (not his) | −643.948980156666 | −643.9526633687 | +3683.21 | −643.947586918569 | −643.9526519725 | +5065.05 |
+| (12e,11o) I-twisted, carried from S0 (not his) | −643.977397355278 | −643.9808761194 | +3478.76 | −643.974577090650 | −643.9808557371 | +6278.65 |
+| (12e,11o) P-twisted, carried from S0 (not his) | −643.948980156658 | −643.9526633687 | +3683.21 | −643.947586918567 | −643.9526519725 | +5065.05 |
 
 The vertical gaps, E₁ − E₀ at the S0 minimum, as the paper quotes them
 (acs.jctc.9b00919 §4, pHBI): (4e,3o) 2.8110 eV ours, 2.8110 his ("2.81");
@@ -259,14 +266,87 @@ first P-twisted try, the virtuals' σ* content (57 and 62 have π character
 
 The start that would test this is one carried from a converged planar
 solution, as his MECI search presumably carried its orbitals along the
-walk. The tree's CASSCF starts only from the same run's RHF orbitals, so
-that is #939. One alternative was considered and not used: projecting the
+walk. One alternative was considered and not used: projecting the
 S0 minimum's natural orbitals through the AO overlap between the two
 geometries. At a twisted ring that overlap measures the ring's rotation,
 not its orbitals' character. The π projection above uses each atom's own
 normal instead. The I-twisted config and the P-twisted second try are
 checked in as the record of what was run. Their headers say they are not
 his solutions.
+
+#### Carried from the S0 minimum (#939)
+
+#939 added that start: `[casscf] write_npy = true` writes a converged run's
+orbitals and CI as `.npy`, and `orbitals` and `ci` start a later run from
+them, orthonormalized in the new geometry's overlap
+([`src/pipeline/casscf/README.md`](../../../../src/pipeline/casscf/README.md),
+"Starting from another run's orbitals"). The S0 minimum's run is
+`phbi_tz1211_s0.toml` with `write_npy = true`: its CASSCF converges as
+before (8 macro), and its QD-NEVPT2 is the µEh-confirmed one above to
+1e-11 Eh.
+
+A p function points along the lab frame, not the ring, so a start carried
+straight to a ring twisted by ~100° offers its π combinations partly
+in-plane. So the twist was **walked**: eight geometries from the S0
+minimum to each MECI (`phbi/geometries/walk/`), each CASSCF started from the
+one before. They interpolate a Z-matrix built over the S0 bonds (bond
+lengths and angles linearly, dihedrals along the shorter arc) rather than
+the Cartesians: a Cartesian line through a 100° ring rotation shortens the
+ring's distances to the axis by up to a third midway, where the Z-matrix
+keeps every bond length between its two end values. The MECI is first
+moved rigidly onto the S0 minimum (Kabsch, all atoms), and each step placed
+by Kabsch onto the Cartesian blend, so the frame turns no more than the
+molecule does. Step 8 is his geometry so moved; the energies do not depend
+on the frame (the P-twisted point below reproduces the checked-in config's,
+at his own frame, to 1e-11 Eh).
+
+| walk | per step | max \|AᵀSA − I\| per step | SA-CASSCF at the MECI | Δ₀, Δ₁ (mEh) | E₁ − E₀, ours / his |
+|---|---|---|---|---|---|
+| P-twisted, 8 steps | 6 macro each, 61–126 s | 0.037–0.048 | −641.600091835673 | +3.68, +5.07 | 1.39 mEh / 11 µEh |
+| P-twisted, one jump | 37 macro, 660 s | 0.37 | −641.600091835674 | +3.68, +5.07 | 1.39 mEh / 11 µEh |
+| I-twisted, 8 steps | 6 macro each, 56–120 s | 0.043–0.049 | −641.633744174915 | +3.48, +6.28 | 2.82 mEh / 20 µEh |
+| I-twisted, one jump | 33 macro, 848 s | 0.51 | −641.633744174911 | +3.48, +6.28 | 2.82 mEh / 20 µEh |
+
+(A is the carried core and active orbitals; the step logs the largest
+element of Aᵀ S A − I, how far they moved.) **Neither matches his.** Every
+step of both walks converged in 6 macro iterations, its SA-CASSCF energy
+moving smoothly (P: −641.6725 at S0, then −641.6708, −641.6655, … ,
+−641.6162, −641.6001), so each walk followed one solution the whole way.
+At the P-twisted MECI it is the π-projected second try's above, to 1e-11
+Eh in both QD-NEVPT2 states: three different starts, one solution. At the
+I-twisted MECI it is a third solution, 0.13 mEh above the π-projected
+start's in state 0 and 4.9 mEh below it in state 1. The one jump straight
+from S0 lands where the walk does, in five to six times the macro
+iterations. So his two degenerate pairs are not the solutions continuously
+connected to the S0 minimum's π space along this path; his MECI search
+reached them by a route this does not reproduce (a walk at (12e,11o) from
+another start, or a state average that differed along the way). Neither
+twisted config is changed: the carried start does not reach his solution,
+so they stay the record of #904's runs.
+
+To regenerate, from the root of the tree, with `<out>` a fresh directory
+(the `.npy` files, 2.1 MB of orbitals and 3.4 MB of CI each, stay out of
+git):
+
+```sh
+P=docs/reproduction/park2019/single_points/phbi
+sed 's/conv_tol_grad = 1e-9/&\nwrite_npy = true/' $P/phbi_tz1211_s0.toml > <out>/s0.toml
+cp $P/geometries/phbi_tz1211_s0.xyz $P/geometries/walk/*.xyz <out>/
+sed -i 's|geometries/||' <out>/s0.toml
+bash -c ". devtools/lib.sh; with_gpu_card cuda build/src/free-breakfast -i <out> -o <out>/s0 <out>/s0.toml"
+prev=s0
+for k in 01 02 03 04 05 06 07 08; do  # ptw, then the same with itw
+  sed -e "s|phbi_tz1211_s0.xyz|phbi_tz1211_ptw_walk$k.xyz|" \
+      -e '/^active = /d' \
+      -e "s|^write_npy = true|&\norbitals = \"$prev/casscf_orbitals.npy\"\nci = \"$prev/casscf_ci.npy\"|" \
+      <out>/s0.toml > <out>/ptw$k.toml
+  bash -c ". devtools/lib.sh; with_gpu_card cuda build/src/free-breakfast -i <out> -o <out>/ptw$k <out>/ptw$k.toml"
+  prev=ptw$k
+done
+```
+
+The steps before 08 need no `[nevpt2]` (delete that table to save a
+minute each); the runs above had none.
 
 ## The scale test: (12e,11o) and up, on the A100
 
@@ -328,5 +408,10 @@ NEVPT2 times are not comparable with the others.
   They read them with PySCF's `tools.molden.load`, and the projections
   used `gto.intor_cross` against PySCF's MINAO. None is checked in, as in
   [README.md](README.md).
-- Run outputs (logs, Molden files, VRAM traces) stay out of git. The
-  numbers above are quoted from them.
+- **The carried starts (#939)** ran on the same card at the tree of
+  #939's PR (`cpp-tier.sh --preset default`), one at a time under
+  `with_gpu_card cuda`: the S0 minimum with `write_npy` (67 s), the two
+  walks and the two one-step jumps, each final step with `[nevpt2]`. Each
+  log ended `completed: 0 errors, 0 warnings`, with no PC refusal.
+- Run outputs (logs, Molden files, `.npy` files, VRAM traces) stay out of
+  git. The numbers above are quoted from them.
