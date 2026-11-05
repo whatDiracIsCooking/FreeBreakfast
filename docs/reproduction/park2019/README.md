@@ -131,3 +131,5 @@ Card and build: RTX 3080 (CUDA, 9.6 GiB), `--preset default`, at 79b2bc7.
 [`single_points/`](single_points/README.md) (#860) measures the all-electron core floor under tiers 1 and 3 with single points at his SI geometries.
 
 [`tier2a.md`](tier2a.md) (#848) converges PSB3's FC geometry, 13–14CI and 11–12CI at QD-PC-NEVPT2/cc-pVDZ.
+
+[`tier3.md`](tier3.md) (#850) reproduces Table 2 in cc-pVDZ and cc-pVTZ: E(13–14CI) − E(11–12CI) flips sign, −0.195 eV to +0.108 eV.
