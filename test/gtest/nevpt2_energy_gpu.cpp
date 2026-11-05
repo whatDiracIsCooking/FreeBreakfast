@@ -1346,8 +1346,8 @@ HostCase symmetric_direction(const HostCase &x, const std::uint64_t seed) {
 // and the call is refused as Numerical, naming the class and the perturber.
 TEST(Nevpt2EnergyHvpEmpty, K6MatchesMixedLadderAndNonProportionalIsRefused) {
   FBF_REQUIRE_GPU();
-  // ~12 s on the RTX 3080, its family's one case: 32 energies and two
-  // products.
+  // ~5 s on the RTX 3080 and ~12 s on the gfx1200, its family's one case:
+  // 32 energies and two products.
   const std::filesystem::path dir = kDataDir / kHvpCase;
   fb::DeviceResources res(0);
   const HostCase h = load_host_case(dir);

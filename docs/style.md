@@ -575,6 +575,29 @@ compile.
 `devtools/check-shared-mem.py` enforces this. It ignores comments and string
 literals, and skips FelizJueves-generated kernels.
 
+## Atomics
+
+**Don't point many lanes' fp64 `atomicAdd` at one address.** Fold the
+lanes that share an address first, in registers (a warp shuffle) or in shared
+memory, and let one lane per address add the fold. On CUDA (sm_80 and up) a
+contended fp64 `atomicAdd` is a native atomic resolved in L2, and is cheap.
+On gfx12 (this tree's gfx1200) there is no global fp64 atomic add, so
+`atomicAdd(double *, double)` compiles to a `global_atomic_cmpswap_b64` retry
+loop, and lanes contending for one address each retry until they succeed, one
+success at a time. `einsum_contract_kernel` (`src/recipes/einsum/einsum.cu`)
+added one term per thread into SC-NEVPT2's 17-element Sr output, 262,144 terms
+per address. #811's K6 Hessian-vector test ran there for over ten minutes
+without finishing, and took 11 s on CUDA (#916). The same kernel with a warp
+fold first takes 12 s on the gfx1200, and halves the test's time on CUDA too.
+
+No tier sees this from the CUDA side. `devtools/cross-backend-check.sh` only
+compiles, and the CAS loop compiles cleanly. A CUDA run is fast. Only a HIP run
+of a contended call shows it, and it looks like a hang: the card is 100% busy,
+there is no memory activity and nothing prints. Under rocgdb, every resident
+wave is parked just after the `cmpswap`. Atomics into a large output with few
+terms per address, like the diagonal scatters in
+`src/nevpt2/energy/nevpt2_energy.cu`, are fine as they are.
+
 ## Errors
 
 A failure is handled in one of three ways. Pick the tier by what a caller can

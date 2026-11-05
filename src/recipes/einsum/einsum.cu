@@ -10,27 +10,35 @@
 
 #include "einsum_bridge.h"
 
+// The vendor cooperative-groups header, resolved per backend by WarpWraps.
+#include <cooperative_groups.h>
+
 namespace free_breakfast::device {
 
 namespace {
+
+namespace cg = cooperative_groups;
 
 // One thread per (output element, summed tuple) rather than one per output
 // element with a loop over the sum: SC-NEVPT2 has calls with a tiny output
 // summed over a huge tuple (Sr's "ipqr,pqrabc,iabc->i" has an output of nvirt
 // and six summed active labels), where one thread per output element would
 // leave all but a handful of the card idle. Spreading the sum over threads
-// keeps it busy whichever side dominates, at an atomicAdd per term; the sum is
-// reassociated, so results agree with a host loop to a tolerance, not bit for
-// bit.
-__global__ void einsum_contract_kernel(const EinsumPlan plan, const double *__restrict__ a,
-                                       const double *__restrict__ b, const double *__restrict__ c,
-                                       double *__restrict__ out, const double alpha) {
-  const int64_t t = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
-  if (t >= plan.out_size * plan.contracted_size) {
-    return;
-  }
-  const int64_t element = t / plan.contracted_size;
+// keeps it busy whichever side dominates; the sum is reassociated, so results
+// agree with a host loop to a tolerance, not bit for bit.
+//
+// The summed tuple runs fastest in t, so one element's terms are consecutive
+// lanes, and a warp folds each run of equal elements before the run's first
+// lane adds it: one atomicAdd per (element, warp) rather than per term. Without
+// that, gfx12 crawls: it has no global fp64 atomic add, so atomicAdd there is a
+// compare-and-swap loop, and a warp's lanes all on one address retry it one
+// success at a time (README, "Kernel"). A call with nothing summed has one
+// term per element, so it skips the fold and stays exact.
 
+// Thread t's term: alpha times its operands' elements at its slots.
+__device__ double contraction_term(const EinsumPlan &plan, const double *const a,
+                                   const double *const b, const double *const c, const int64_t t,
+                                   const int64_t element, const double alpha) {
   int64_t slot[kEinsumMaxLabels];
   int64_t rest = element;
   for (int32_t i = plan.out_rank - 1; i >= 0; --i) {
@@ -52,7 +60,41 @@ __global__ void einsum_contract_kernel(const EinsumPlan plan, const double *__re
     }
     term *= operands[o][at];
   }
-  atomicAdd(&out[element], term);
+  return term;
+}
+
+__global__ void einsum_contract_kernel(const EinsumPlan plan, const double *__restrict__ a,
+                                       const double *__restrict__ b, const double *__restrict__ c,
+                                       double *__restrict__ out, const double alpha) {
+  const int64_t t = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  const bool active = t < plan.out_size * plan.contracted_size;
+  if (plan.contracted_size == 1) {
+    if (active) {
+      atomicAdd(&out[t], contraction_term(plan, a, b, c, t, t, alpha));
+    }
+    return;
+  }
+  // Past the end a lane holds element -1 and a zero term, and stays for the
+  // shuffles, which are warp-wide collectives.
+  const int64_t element = active ? t / plan.contracted_size : -1;
+  double term = active ? contraction_term(plan, a, b, c, t, element, alpha) : 0.0;
+  // A segmented suffix sum: before each step a lane holds its run's terms
+  // over [lane, lane + offset), and appends its neighbour's when that lane is
+  // in the warp and the same run (runs are contiguous, so equal elements at
+  // both ends means one run between). The run's first lane ends with its sum.
+  auto warp = cg::tiled_partition<kWarpSize>(cg::this_thread_block());
+  const uint32_t lane = warp.thread_rank();
+  for (uint32_t offset = 1; offset < kWarpSize; offset <<= 1) {
+    const double next = warp.shfl_down(term, offset);
+    const int64_t next_element = warp.shfl_down(element, offset);
+    if (lane + offset < kWarpSize && next_element == element) {
+      term += next;
+    }
+  }
+  const int64_t previous = warp.shfl_up(element, 1);
+  if (active && (lane == 0 || previous != element)) {
+    atomicAdd(&out[element], term);
+  }
 }
 
 } // namespace
