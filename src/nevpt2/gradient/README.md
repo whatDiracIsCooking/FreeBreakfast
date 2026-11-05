@@ -281,7 +281,7 @@ own buffers.
         energies    sc_energy's class energies
         products    AdjointTangent per direction: the tangents of h_bar, lambda, y, x, a
         populated   class_energies_hvp's, per direction: the empty perturbers it populates
-        defect      class_energies_hvp's ρ_τ with the partner, per direction
+        defect      class_energies_hvp's weighted ρ_τ with the partner, per direction
         parts       with parts: per direction, the product's five parts (below)
     MoDirections  {count, h, b, c}: builders_tangent's direction layout, MO basis
 

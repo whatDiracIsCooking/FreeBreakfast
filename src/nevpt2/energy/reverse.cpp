@@ -2705,9 +2705,12 @@ Status sijrs_hvp(DeviceResources &res, const MoBlocks &blocks, const EnergyInput
 // smallest real population (README, "The SC Hessian-vector product").
 constexpr double kEmptyPopulationFloor = 1e-10;
 
-// The largest ρ_τ an empty perturber two directions both populate may carry
-// before the pair is refused: between the proportional pairs' round-off and
-// the smallest real defect (README).
+// The largest weighted defect a pair may carry before it is refused: over
+// the empty perturbers both directions populate, max ρ_τ w, w = √(N^{uu}
+// N^{vv}) / |Δ + η| (the perturber's share of the pair's Hessian), against
+// this fraction of S, the largest such w over every perturber. ρ_τ alone has
+// no gap: on PSB3 its round-off grows as 1/population and reaches 2e-5 on a
+// proportional pair, past real defects of 5e-9 (README, #914).
 constexpr double kEmptyDefectTolerance = 1e-6;
 
 constexpr std::array<std::string_view, 8> kScClassNames{"Sr",   "Si",  "Sijrs", "Sijr",
@@ -2829,6 +2832,34 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
           }
         }
       }
+      // S, the pair's Hessian scale: the largest √|N^{uu} N^{vv}| / |Δ + η|
+      // over every perturber, η its own H / N, or an empty one's mean of
+      // η_u and η_v. An empty perturber's defect is weighed against it.
+      double pair_scale = 0.0;
+      if (sv) {
+        for (size_t k = 0; k < 8; ++k) {
+          for (size_t g = 0; g < t.norm[k].size(); ++g) {
+            const double n = t.norm[k][g];
+            const double nuu = su.norm[k][g * mu];
+            const double nvv = sv->norm[k][g];
+            double eta = 0.0;
+            if (std::abs(n) > kNumericalZero) {
+              eta = t.h[k][g] / n;
+            } else if (nuu > kEmptyPopulationFloor * scale_u &&
+                       nvv > kEmptyPopulationFloor * scale_v) {
+              eta = 0.5 * ((su.h[k][g * mu] / nuu) + (sv->h[k][g] / nvv));
+            } else {
+              continue;
+            }
+            pair_scale = std::max(pair_scale,
+                                  std::sqrt(std::abs(nuu * nvv)) / std::abs(t.delta[k][g] + eta));
+          }
+        }
+      }
+      double worst = 0.0;
+      size_t worst_k = 0;
+      size_t worst_g = 0;
+      double worst_rho = 0.0;
       for (size_t k = 0; k < 8; ++k) {
         for (size_t g = 0; g < t.norm[k].size(); ++g) {
           if (std::abs(t.norm[k][g]) > kNumericalZero) {
@@ -2846,23 +2877,31 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
           const double delta = t.delta[k][g];
           double eta = e.huu / e.nuu;
           if (sv && e.nvv > kEmptyPopulationFloor * scale_v) {
-            const double rho = empty_defect(e, delta);
-            out.defect[u] = std::max(out.defect[u], rho);
-            if (rho > kEmptyDefectTolerance) {
-              return err_numerical(
-                  "nevpt2::class_energies_hvp: class {} perturber {} is empty (|N| <= 1e-14) "
-                  "and populated by direction {} and its partner, but its H is not "
-                  "proportional to its N on the pair: rho_tau {:.3e} past {:.0e}. The energy "
-                  "has no Hessian on that pair",
-                  kScClassNames[k], g, u, rho, kEmptyDefectTolerance);
-            }
             eta = 0.5 * (eta + (e.hvv / e.nvv));
+            const double rho = empty_defect(e, delta);
+            const double weighted =
+                rho * std::sqrt(e.nuu * e.nvv) / std::abs(delta + eta) / pair_scale;
+            if (weighted > worst) {
+              worst = weighted;
+              worst_k = k;
+              worst_g = g;
+              worst_rho = rho;
+            }
           }
           const double tbar = -1.0 / (delta + eta);
           fixed.p[k][g] = (2.0 * tbar) + (delta * tbar * tbar);
           fixed.q[k][g] = tbar * tbar;
           ++out.populated[u][k];
         }
+      }
+      out.defect[u] = worst;
+      if (worst > kEmptyDefectTolerance) {
+        return err_numerical(
+            "nevpt2::class_energies_hvp: class {} perturber {} is empty (|N| <= 1e-14) and "
+            "populated by direction {} and its partner, but its H is not proportional to its "
+            "N on the pair: rho_tau {:.3e}, weighted by its share of the pair's Hessian scale "
+            "{:.3e}, past {:.0e}. The energy has no Hessian on that pair",
+            kScClassNames[worst_k], worst_g, u, worst_rho, worst, kEmptyDefectTolerance);
       }
     }
 

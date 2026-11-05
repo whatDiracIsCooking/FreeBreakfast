@@ -352,8 +352,12 @@ struct ClassEnergiesHvp {
   /// @brief [u][k]: class k's empty perturbers (|N| <= 1e-14) direction u
   /// populates, each given K6's multipliers.
   std::vector<std::array<int64_t, 8>> populated;
-  /// @brief [u]: the largest ρ_τ over the empty perturbers direction u and
-  /// its partner both populate; 0 with no partner, or none both populate.
+  /// @brief [u]: the empty perturbers' ambiguity on the pair (u, its
+  /// partner) relative to the pair's Hessian scale: max_t ρ_τ w_t / S over
+  /// the empty perturbers both populate, w_t = √(N^{uu} N^{vv}) / |Δ + η|
+  /// and S the largest such w over every perturber. 0 with no partner, or
+  /// none both populate. Not "no Hessian on the pair": a bound on the
+  /// relative error K6 at the mean η leaves there.
   std::vector<double> defect;
 };
 
@@ -380,9 +384,11 @@ struct ClassEnergiesHvp {
 /// η = H^{uu} / N^{uu} from N's and H's second derivatives along u. With
 /// @p partners, one per direction, the pair (u, v) is checked: on a
 /// perturber both populate, the energy is a quadratic form on the pair only
-/// when H is proportional to N there, and a scale-free defect ρ_τ (zero
-/// exactly then) past 1e-6 refuses the call; otherwise η is the mean of
-/// η_u and η_v. ⟨v, HVP u⟩ is then the Hessian element.
+/// when H is proportional to N there. Each takes η the mean of η_u and η_v,
+/// and its scale-free defect ρ_τ (zero exactly then), weighted by its share
+/// of the pair's Hessian, √(N^{uu} N^{vv}) / |Δ + η|, against the largest
+/// such share over every perturber, refuses the call past 1e-6.
+/// ⟨v, HVP u⟩ is then the Hessian element to that relative bound.
 ///
 /// Memory and cost: per direction, seven reverse passes over the whole
 /// inputs, and with any empty perturber six class_energies_tangent calls
@@ -392,8 +398,8 @@ struct ClassEnergiesHvp {
 ///         InvalidConfig when @p bars is not one per direction, @p partners
 ///         is neither empty nor one per direction, or a direction's blocks
 ///         are not shaped as @p blocks; Numerical, naming the class and the
-///         perturber, when an empty perturber's H is not proportional to its
-///         N on a pair; or the tangent's and reverse pass's errors.
+///         perturber, when an empty perturber's weighted defect on a pair
+///         is past 1e-6; or the tangent's and reverse pass's errors.
 [[nodiscard]] Result<ClassEnergiesHvp>
 class_energies_hvp(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                    int32_t batch, std::span<const EnergyDirection> directions,
