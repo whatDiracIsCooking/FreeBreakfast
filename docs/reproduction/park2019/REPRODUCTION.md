@@ -22,8 +22,12 @@ and geometries.
   optimizations: three of his stationary points. His PSB3 S1 "minimum",
   his ethylene Hm and his ethylene C3v are each a finding here, not a
   failure.
-- **What the work fixed.** It found and fixed six defects in the tree
-  (#853, #856, #858, #864, #865 and #874). Nine issues are still open.
+- **What the work fixed.** It found and fixed eight defects in the tree
+  (#853, #856, #858, #864, #865, #867, #874 and #862). It also added
+  frozen-core energies and gradients (#859, #875), and, with them, a
+  like-for-like MECI: a frozen-core walk from his Py lands 1.7e-4 Å and
+  1.7 µEh from his structure. Every milestone issue is closed. The
+  follow-ups still open are listed [below](#what-the-reproduction-hardened).
 
 ## Contents
 
@@ -379,8 +383,8 @@ Not rerun, and why the results stand:
 | Table 5's timings | His are 18 Xeon cores with MPI, and ours are one GPU, so they are not comparable. A per-stage breakdown of our own would be the meaningful version; it was not made. | the same |
 | pHBI (Tier 4) | 518 basis functions, (12e,11o) = 213,444 determinants, at three geometries. Reachable on paper, multi-day on a 10 GB card; it wants a single-point timing first, and none was made. [Below](#where-the-tree-is-ahead) is why it is a question of time, not of a storage wall. Since done for single points (#904, [single_points/phbi.md](single_points/phbi.md)): (4e,3o), (12e,11o) and (12e,12o)/cc-pVTZ match his to ≤ 0.14 µEh, the (12e,11o) one in 141 s on an A100; (14e,12o) is not his space, and aug-cc-pVTZ is #905. | the same; SI pp. S24–S38 have his geometries |
 | **PSB3's S1 minimum**, as an optimization | **At our level his planar S1 structure is not a minimum.** The cc-pVDZ walk from it sits there for 20 evaluations, then descends: E₁ falls 27 mEh (0.74 eV) below his S1 energy, and the QD state-overlap guard stops it at evaluation 32 (overlap 0.743). The likely reading is a planar saddle along a torsion: his optimizer stayed on it, and ours, with no symmetry constraint, slides off. Table 2's S1 row comes from #860's single points at his S1 geometries instead. S1 is not part of the gated sign. | [tier3.md](tier3.md), "The S1 minimum"; #877 for the trail that was lost |
-| **Ethylene's Hm MECI**, as an optimization | **His Hm is a seam point, not a seam minimum, at our level.** At his aug-cc-pVDZ Hm geometry we reproduce his gap (3.44e-5 Eh against his 3.55e-5) and its height above Py (0.676 eV against his 0.68). But a tight QD-PC-NEVPT2/aug-cc-pVDZ walk from it descends to Py, ending 0.0001 Å and 2.5e-9 Eh from our Py. It does the same at cc-pVDZ and at SA3-CASSCF. His Hm is converged loosely: gap 3.55e-5 / 2.19e-5 Eh, against ≤ 7e-6 at Py, Et and C3v. That fits a stop on the seam's slope. Not ruled out: a frozen-core seam minimum, since frozen-core gradients (#875) do not exist yet. | [ethylene_starts.md](ethylene_starts.md); the Hm ruling on #847 |
-| **Ethylene's C3v MECI** at QD-PC-NEVPT2, as an optimization | **The degenerate CASSCF reference stops the gradient.** The aug-cc-pVDZ walk from his C3v was healthy: the H_eff gap fell from 7.15e-7 to 6.6e-10 Eh. Then the CASSCF's own ¹E pair became degenerate (7.873e-9 Eh), and `mcscf::root_pair_multipliers` divides by that gap. Whether the QD-NEVPT2 gradient has a finite limit inside a degenerate reference pair is a theory question (#892). The SA3-CASSCF C3v walk does converge, after #856 and #865. | [tier1.md](tier1.md), "C3v and Hm"; [ethylene_starts.md](ethylene_starts.md) |
+| **Ethylene's Hm MECI**, as an optimization | **His Hm is a seam point, not a seam minimum, at our level.** At his aug-cc-pVDZ Hm geometry we reproduce his gap (3.44e-5 Eh against his 3.55e-5) and its height above Py (0.676 eV against his 0.68). But a tight QD-PC-NEVPT2/aug-cc-pVDZ walk from it descends to Py, ending 0.0001 Å and 2.5e-9 Eh from our Py. It does the same at cc-pVDZ and at SA3-CASSCF. His Hm is converged loosely: gap 3.55e-5 / 2.19e-5 Eh, against ≤ 7e-6 at Py, Et and C3v. That fits a stop on the seam's slope. Not ruled out: a frozen-core seam minimum. Frozen-core gradients (#875) landed after these runs, and no frozen-core Hm walk was made. | [ethylene_starts.md](ethylene_starts.md); the Hm ruling on #847 |
+| **Ethylene's C3v MECI** at QD-PC-NEVPT2, as an optimization | **The degenerate CASSCF reference stops the gradient.** The aug-cc-pVDZ walk from his C3v was healthy: the H_eff gap fell from 7.15e-7 to 6.6e-10 Eh. Then the CASSCF's own ¹E pair became degenerate (7.873e-9 Eh), and `mcscf::root_pair_multipliers` divides by that gap. #892 (PR #901) answered the theory question: inside a degenerate CASSCF pair the state gradients have **no unique limit**. SC's diverge as 1/gap; PC's stay bounded but depend on the direction of approach; only the mean ḡ has a limit. So the refusal is correct. His C3v geometry is not exactly C3v (CASSCF gap 2.1e-6 there), so his search never reached the degenerate pair. A ḡ-based MECI walk is #902. The SA3-CASSCF C3v walk does converge, after #856 and #865. | [tier1.md](tier1.md), "C3v and Hm"; [ethylene_starts.md](ethylene_starts.md) |
 
 ### Frozen core is no longer out of scope
 
@@ -404,8 +408,11 @@ bound to cancel an asserted 0.02–0.05 eV floor. Two things changed that:
   - **The result.** #860 phase 2 then gave
     [the headline](#the-single-point-headline).
 
-**Frozen-core gradients are #875 (open).** `[nevpt2_gradient]` refuses
-`frozen_core` until #875 lands. So every walk here is all-electron:
+**Frozen-core gradients landed after these runs (#875, PR #898).** A
+frozen-core QD-PC-NEVPT2 MECI walk from his aug-cc-pVDZ Py converges in 5
+steps, to 1.7e-4 Å RMSD and 1.7 µEh from his Py: a like-for-like
+optimization, frozen core on both sides. The recorded tiers were not
+re-optimized frozen-core, so every walk below is all-electron:
 
 - Tier 1's gated shift is a frozen-core energy at an all-electron
   structure, with the second-order argument above, measured.
@@ -543,8 +550,11 @@ measured noise floor. FC passes 42 of 42 components, the largest miss
 8.7e-9. The 90° twist passes 42 of 42 too
 ([`src/nevpt2/energy/README.md`](../../../src/nevpt2/energy/README.md),
 "The derivative across a continuum"). One component, atom 4 x at the
-twist, misses by 6.3e-9 on average, inside its bar; whether that is
-CASSCF stopping bias or analytic is #862 (open).
+twist, misses by 6.3e-9 on average, inside its bar; #862 found it analytic, not
+stopping bias. Since #853 the cut drops small real modes, and the reverse
+pass held each kept span fixed, missing its rotation into them. PR #907
+fixed that: atom 4 x now misses by 9.0e-10, and the PC gate's
+active–active residue fell from 3.9e-10 to ≤ 8e-12, SC's level.
 
 ## What the reproduction hardened
 
@@ -557,23 +567,25 @@ Defects found and fixed:
 | #858, #864 | #872 | The fixed 1e-10 Z-vector bars (CASSCF intersection, and the QD-NEVPT2 Lagrangian) were crossed by a floor from the inexact CI response inside each H̃ product. Now H̃'s response is solved to max(1e-2 t, 1e-10), and the one-column path checks its true residual too. |
 | #865 | #890 | RHF stalled at ethylene's C3v geometries, because every DIIS extrapolation read as singular under an absolute pivot test. Now a singular subspace restarts with scaled residuals. |
 | #874 | #883 | PC refused negative denominators, which refused ethylene S0's state 2, a state Park reports. Now it refuses only poles: an amplitude above 1, or a denominator at round-off. |
+| #867 | #896 | `mcscf::solve` stalled at a gradient of about 3e-10 on PSB3: the CI tolerance was relative to \|E\| ≈ 248 Eh. Now it tracks `conv_tol_grad`. Merged after these runs, which stay at 1e-9 (see "What the configs ask for"). |
+| #862 | #907 | The PC reverse pass held each kept span fixed, which since #853 misses its rotation into real dropped modes. That was a ~1e-8 Eh/bohr PC-QD gradient error at twisted PSB3, now fixed. |
 
 Features the milestone added on the way: #844 (the branching space, and s_o
 and s_c in `optimize.json`), #845 (aug-cc-pV{D,T}Z-JKFIT, PR #871) and #859
-(frozen-core energies, PR #888); #867, the CASSCF gradient floor at PSB3 (PR #896, after these runs: see "What the configs ask for").
+(frozen-core energies, PR #888) and #875 (frozen-core gradients and the QD MECI, PR #898). #892 (PR #901) documented why the gradient refuses at a degenerate CASSCF pair.
 
-Still open:
+Still open (none in this milestone):
 
 | issue | what |
 |---|---|
-| #862 | A 6e-9 FD residual in the PC-QD gradient at twisted PSB3 (atom 4 x): CASSCF stopping bias, or analytic? |
-| #875 | Frozen-core NEVPT2 and QD-NEVPT2 gradients. |
-| #892 | The QD-NEVPT2 gradient at a degenerate CASSCF reference pair (ethylene C3v). |
-| #866 | Expose mcscf's convergence knobs as options-struct parameters. Not in the milestone. |
-| #869 | Flaky: `Nevpt2NumericalHeff.H2coSkewSa3`'s PC finite differences are intermittently noisy. Not in the milestone. |
-| #870 | Flaky in the HIP GPU batch: `McscfTransitionGradient` h2co_skew_ccpvdz_sa3, and the batch log drops the assertion. Not in the milestone. |
-| #877 | `[optimize]` writes no `optimize.json` or `optimize.xyz` when a walk fails partway. Not in the milestone. |
-| #878 | `Nevpt2QdIntersection.Psb3TrueResidual` times out (120 s) in the HIP slow tier. Not in the milestone. |
+| #869 | Flaky: `Nevpt2NumericalHeff.H2coSkewSa3`'s PC finite differences are intermittently noisy. Possibly #870's cause, which #867 fixed, but that is not shown. |
+| #877 | `[optimize]` writes no `optimize.json` or `optimize.xyz` when a walk fails partway. |
+| #878 | `Nevpt2QdIntersection.Psb3TrueResidual` times out (120 s) in the HIP slow tier. |
+| #894 | The SC-QD gradient misses directional FD by about 2e-8 at ethylene Py: likely SC's zero-norm-by-symmetry kink. |
+| #902 | A MECI walk through a degenerate CASSCF reference pair, using ḡ (follow-up to #892). |
+| #905 | DF-CASSCF runs out of memory at 805 basis functions on a 40 GB card (pHBI aug-cc-pVTZ). |
+
+Closed since the first write-up: #866 (convergence knobs as options, PR #899) and #870 (the McscfTransitionGradient flake, fixed by #867; the batch log keeps assertion text, PR #903).
 
 ## Where the record disagrees with itself
 
