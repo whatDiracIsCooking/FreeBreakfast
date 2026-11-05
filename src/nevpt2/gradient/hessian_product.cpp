@@ -584,6 +584,8 @@ Result<ScHessianProduct> sc_hessian_product(DeviceResources &res, const ci::Devi
             FBF_TRY(class_energies_hvp(res, blocks, in, batch, dirs, bars, partner_dirs));
         if (both) {
           out.populated = std::move(got.populated);
+          out.population = std::move(got.population);
+          out.scale = std::move(got.scale);
           out.defect = std::move(got.defect);
         }
         return {};

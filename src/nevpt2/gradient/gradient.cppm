@@ -315,6 +315,9 @@ struct ScHessianProduct {
   /// @brief Per direction, class_energies_hvp's: [u][k] class k's empty
   /// perturbers the direction populates.
   std::vector<std::array<int64_t, 8>> populated;
+  /// @brief Per direction, class_energies_hvp's population and scale.
+  std::vector<double> population;
+  std::vector<double> scale;
   /// @brief Per direction, class_energies_hvp's defect with its partner:
   /// the empty perturbers' weighted rho_tau relative to the pair's Hessian
   /// scale; 0 without partners.

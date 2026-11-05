@@ -68,5 +68,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::mcscf::relaxed_hessian
   free_breakfast::mcscf::root_rotation
   free_breakfast::mcscf::third_derivative
+  free_breakfast::nevpt2::energy
   free_breakfast::nevpt2::gradient
 )

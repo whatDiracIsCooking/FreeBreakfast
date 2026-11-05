@@ -793,6 +793,9 @@ struct ScNevpt2Terms {
   /// @brief The largest weighted rho_tau of an accepted pair (0 when no
   /// pair of coordinates populates an empty perturber).
   double defect{0.0};
+  /// @brief The smallest t_mix = 1 / 2 |kappa_oo_pq| over the coordinates
+  /// and the canonical inactive pairs (bohr; infinite when none mixes).
+  double mix_step{std::numeric_limits<double>::infinity()};
 };
 
 /// @brief The SC-NEVPT2 analytic nuclear Hessian of the single-state
@@ -812,7 +815,15 @@ struct ScNevpt2Terms {
 /// a direction populates makes it non-linear in the direction (K6). A pair
 /// of coordinates that both populate one is taken again with each as the
 /// other's partner, and refused when its energy is not a quadratic form on
-/// the pair (nevpt2::class_energies_hvp's weighted rho_tau past 1e-6).
+/// the pair (nevpt2::class_energies_hvp's weighted rho_tau past 1e-6). A
+/// coordinate breaks the symmetry when it populates an empty perturber
+/// against the largest population scale over the coordinates (a rigid
+/// translation's own is round-off). SC is not invariant to rotations within
+/// the core or the virtuals, so a coordinate that mixes a canonical inactive
+/// pair within 1e-3 bohr (t_mix = 1 / 2 |kappa_oo_pq|, the avoided
+/// crossing's half-width; #817's branch-switch convention) is refused: its
+/// element would be the curvature of a region narrower than a vibration
+/// (README "Mixing inactive pairs").
 ///
 /// The inputs are @ref df_casscf's (a converged one-root DF-CASSCF, its core
 /// and virtuals canonical) and @p batch nevpt2::sc_energy's. All-electron:
@@ -825,7 +836,9 @@ struct ScNevpt2Terms {
 /// @return The Hessian and its parts; InvalidConfig for @ref df_casscf's
 ///         input refusals (a state average among them) or coordinates that
 ///         are not orthonormal rows of 3 n_atom; Numerical naming every
-///         refused pair of coordinates, or df_nevpt2_tangents' degenerate
+///         refused pair of coordinates, or every coordinate that mixes an
+///         inactive pair within 1e-3 bohr (its pair, gap and t_mix; "use
+///         PC-NEVPT2"), or df_nevpt2_tangents' degenerate
 ///         inactive pair, or the gradient's z^c or gate; Divergence for the CP
 ///         solve's saddle; Unsupported for naux nmo^2 past int32_t or memory;
 ///         or the first error of a part.

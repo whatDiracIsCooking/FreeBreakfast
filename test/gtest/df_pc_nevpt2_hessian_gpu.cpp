@@ -11,6 +11,10 @@
 //   measurement, every element within 2x the bar, nothing refused;
 // - hcn_sto3g (C-infinity-v, PC's Sir nulls by symmetry): every element
 //   within 2x the bar, no coordinate's Schur lift refused;
+// - examples/nevpt2.toml's water (C2v, cc-pVDZ), symmetry-adapted (#952):
+//   not refused, though its virtuals 17 and 18 are 1.4e-3 Eh apart and the
+//   B2 vibration mixes them within 5.6e-4 bohr (SC is refused there); the B2
+//   element against this tree's numerical ladder;
 // - a C3v ammonia whose virtual e pairs are degenerate: refused, naming the
 //   pairs;
 // - the input refusals.
@@ -39,6 +43,7 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
 #include "scratch_dir.h"
+#include "symmetric_water.h"
 
 namespace {
 
@@ -408,6 +413,32 @@ TEST(HessianDfPcNevpt2, MatchesTheLinearFixture) {
   const double worst = expect_within_bars(*h, doc.at("pc"), keep, "hcn");
   std::cout << std::format("[ hcn      ] worst element {:.3f} bars (allowed {:g})\n", worst, kBars);
   print_diagnostics(*h, doc, "hcn");
+}
+
+// The B2 element of the symmetric water, from the numerical [hessian]'s
+// ladder of PC's analytic gradient along the B2 vibration (#952; RTX 3080,
+// --preset default): 1.2850090393, ...0426, ...0413 at h = 0.004, 0.002,
+// 0.001 bohr, and 1.2850090384, ...0392, ...0198 at h = 0.0005 down to
+// 1.25e-4. Flat to its floor, 2.1e-7 at h = 0.004: PC does not see the
+// inactive pair's mixing that makes SC's element 15.7 there.
+constexpr double kWaterB2Ladder = 1.2850090413;
+constexpr double kWaterB2Floor = 2.1e-7;
+
+TEST(HessianDfPcNevpt2, SymmetricWaterIsNotRefused) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const Reference ref = reference(fb::test::symmetric_water());
+  ASSERT_TRUE(ref.solution.has_value());
+  ASSERT_EQ(fb::test::symmetric_water_coordinates().labels[5], "B2 vibration");
+  const auto keep = iota(9);
+  auto h = ref.hessian(fb::test::symmetric_water_rows(keep));
+  ASSERT_TRUE(h.has_value()) << h.error().message;
+  const double b2 = h->hessian[5 + (9 * 5)];
+  std::cout << std::format("[ water    ] PC's B2 element {:.10f} (ladder {:.10f}), asymmetry "
+                           "{:.1e}\n",
+                           b2, kWaterB2Ladder, h->asymmetry);
+  EXPECT_LE(std::abs(b2 - kWaterB2Ladder), kBars * kWaterB2Floor);
+  EXPECT_LE(h->asymmetry, kAsymmetry);
 }
 
 // A C3v ammonia in 6-31G, its full valence CAS(8,7) (df_nevpt2_tangents_gpu.cpp's):
