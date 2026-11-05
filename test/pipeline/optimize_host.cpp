@@ -11,14 +11,23 @@
 // pair) and refuses, Numerical, a pair whose 2 x 2 block's smaller singular
 // value falls below the floor; and its QD form over H_eff's eigenvectors,
 // carried through the same overlaps, which keeps a swapped P/Q block and
-// refuses one whose smaller singular value is under the floor. Nothing is
-// run, so nothing touches a device.
+// refuses one whose smaller singular value is under the floor. And the files
+// a walk keeps, recorded_optimize's and recorded_optimize_meci's over a stub
+// evaluation: a walk failed at evaluation k leaves optimize.json with its k
+// entries and "error", optimize.xyz with its k frames, and no final.xyz (a
+// stale one removed); a converged walk, all three. Nothing is run, so
+// nothing touches a device.
 
 #include <gtest/gtest.h>
 
 import std;
 import free_breakfast.core.error_handling;
+import free_breakfast.core.nontransferrable;
+import free_breakfast.io.base;
+import free_breakfast.io.json;
 import free_breakfast.pipeline.config;
+
+#include "scratch_dir.h"
 
 namespace {
 
@@ -353,6 +362,150 @@ TEST(PipelineOptimize, QdPairOverlapSizesAndStatesOutOfRangeAreInvalidConfig) {
     ASSERT_FALSE(refused.has_value()) << p << " " << q;
     EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
   }
+}
+
+// Two hydrogens on the z axis, @p r bohr apart.
+std::vector<fb::Atom> stretched_h2(double r) {
+  return {fb::Atom{{0.0, 0.0, 0.0}, fb::Element::H}, fb::Atom{{0.0, 0.0, r}, fb::Element::H}};
+}
+
+// The bond length of x, two atoms, and its gradient d r / d x.
+double bond(std::span<const double> x, std::span<double> dr) {
+  const std::array<double, 3> d = {x[3] - x[0], x[4] - x[1], x[5] - x[2]};
+  const double r = std::hypot(d[0], d[1], d[2]);
+  for (size_t c = 0; c < 3; ++c) {
+    dr[c] = -d[c] / r;
+    dr[3 + c] = d[c] / r;
+  }
+  return r;
+}
+
+// The three files of an optimization in @p dir.
+fb::OptimizeFiles files_in(const fb::test::ScratchDir &dir) {
+  return {.trajectory = dir / "optimize.xyz",
+          .final_xyz = dir / "final.xyz",
+          .history = dir / "optimize.json"};
+}
+
+// The frames of a trajectory: each comment line opens with "evaluation".
+size_t frame_count(const std::filesystem::path &xyz) {
+  std::ifstream in(xyz);
+  size_t frames = 0;
+  for (std::string line; std::getline(in, line);) {
+    frames += line.starts_with("evaluation ") ? 1 : 0;
+  }
+  return frames;
+}
+
+constexpr size_t kFailingEvaluation = 3;
+constexpr std::string_view kLost = "stub: the state is lost";
+
+// A harmonic bond, 1.4 bohr at its minimum, started at 4: the walk is many
+// trust-radius steps from converging, and the stub refuses at evaluation
+// kFailingEvaluation (0-based) as a lost state would.
+TEST(PipelineOptimize, AWalkFailedPartwayLeavesItsEntriesFramesAndErrorButNoFinalXyz) {
+  const fb::test::ScratchDir dir("pipeline-optimize");
+  const fb::OptimizeFiles files = files_in(dir);
+  // An earlier run's: a failed walk must not leave it to read as converged.
+  ASSERT_TRUE(fb::write_file(files.final_xyz, "stale\n").has_value());
+  size_t calls = 0;
+  const auto harmonic = [&](std::span<const double> x, std::span<double> g) -> fb::Result<double> {
+    if (calls++ == kFailingEvaluation) {
+      return fb::err_numerical("{}", kLost);
+    }
+    const double r = bond(x, g);
+    for (double &v : g) {
+      v *= r - 1.4;
+    }
+    return 0.5 * (r - 1.4) * (r - 1.4);
+  };
+  const auto annotate = [](size_t k, fb::json &entry) { entry["k"] = k; };
+  const auto walk =
+      fb::recorded_optimize(stretched_h2(4.0), harmonic, fb::geometry::Options{}, files, annotate);
+  ASSERT_FALSE(walk.has_value());
+  EXPECT_EQ(walk.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_EQ(walk.error().message, kLost);
+
+  const auto history = fb::read_json(files.history);
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  EXPECT_EQ((*history)["error"], kLost);
+  EXPECT_FALSE(history->contains("energy"));
+  const fb::json &entries = (*history)["iterations"];
+  ASSERT_EQ(entries.size(), kFailingEvaluation);
+  for (size_t k = 0; k < kFailingEvaluation; ++k) {
+    EXPECT_EQ(entries[k]["k"], k);
+    EXPECT_TRUE(entries[k].contains("accepted"));
+  }
+  EXPECT_EQ(frame_count(files.trajectory), kFailingEvaluation);
+  EXPECT_FALSE(std::filesystem::exists(files.final_xyz));
+}
+
+// The same bond, converged: the history's head carries the final energy and
+// no "error", one entry and one frame per evaluation, and final.xyz is there.
+TEST(PipelineOptimize, AConvergedWalkWritesItsHistoryTrajectoryAndFinalXyz) {
+  const fb::test::ScratchDir dir("pipeline-optimize");
+  const fb::OptimizeFiles files = files_in(dir);
+  const auto harmonic = [](std::span<const double> x, std::span<double> g) -> fb::Result<double> {
+    const double r = bond(x, g);
+    for (double &v : g) {
+      v *= r - 1.4;
+    }
+    return 0.5 * (r - 1.4) * (r - 1.4);
+  };
+  const auto walk =
+      fb::recorded_optimize(stretched_h2(2.0), harmonic, fb::geometry::Options{}, files);
+  ASSERT_TRUE(walk.has_value()) << walk.error().message;
+
+  const auto history = fb::read_json(files.history);
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  EXPECT_FALSE(history->contains("error"));
+  EXPECT_EQ((*history)["energy"], walk->energy);
+  EXPECT_EQ((*history)["iterations"].size(), walk->iterations.size());
+  EXPECT_EQ(frame_count(files.trajectory), walk->iterations.size());
+  EXPECT_TRUE(std::filesystem::exists(files.final_xyz));
+}
+
+// Two states whose gap is r - 2 across a bond started at 4: the MECI walk is
+// many steps from the seam, and the stub refuses at evaluation
+// kFailingEvaluation as a lost pair would.
+TEST(PipelineOptimize, AnMeciWalkFailedPartwayLeavesItsEntriesFramesAndErrorButNoFinalXyz) {
+  const fb::test::ScratchDir dir("pipeline-optimize");
+  const fb::OptimizeFiles files = files_in(dir);
+  size_t calls = 0;
+  const auto crossing = [&](std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
+                            std::span<double> h_ij) -> fb::Result<std::array<double, 2>> {
+    if (calls++ == kFailingEvaluation) {
+      return fb::err_numerical("{}", kLost);
+    }
+    std::array<double, 6> dr{};
+    const double r = bond(x, dr);
+    // E_I = (r - 1)^2 / 2, E_J = E_I + (r - 2); h along the bond too, so
+    // the plane is x alone.
+    for (size_t c = 0; c < 6; ++c) {
+      g_i[c] = (r - 1.0) * dr[c];
+      g_j[c] = r * dr[c];
+      h_ij[c] = dr[c];
+    }
+    const double lower = 0.5 * (r - 1.0) * (r - 1.0);
+    return std::array{lower, lower + (r - 2.0)};
+  };
+  const auto walk =
+      fb::recorded_optimize_meci(stretched_h2(4.0), crossing, fb::geometry::Options{}, files);
+  ASSERT_FALSE(walk.has_value());
+  EXPECT_EQ(walk.error().message, kLost);
+
+  const auto history = fb::read_json(files.history);
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  EXPECT_EQ((*history)["error"], kLost);
+  EXPECT_FALSE(history->contains("energy"));
+  const fb::json &entries = (*history)["iterations"];
+  ASSERT_EQ(entries.size(), kFailingEvaluation);
+  for (const fb::json &entry : entries) {
+    EXPECT_TRUE(entry.contains("gap"));
+    EXPECT_TRUE(entry.contains("branching_dimension"));
+  }
+  EXPECT_EQ(frame_count(files.trajectory), kFailingEvaluation);
+  EXPECT_FALSE(std::filesystem::exists(files.final_xyz));
 }
 
 } // namespace

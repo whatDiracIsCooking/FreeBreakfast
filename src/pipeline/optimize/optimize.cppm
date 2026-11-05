@@ -25,6 +25,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.io.json;         // json, recorded_optimize's entries
 export import free_breakfast.geometry; // geometry::Options, an option
 // Every step the three chains rerun, MoleculeOutput and OptimizeOutput among
 // the products they re-export.
@@ -107,6 +108,11 @@ struct OptimizeStep {
   /// ||g|| and largest CI residual; over QD states also H_eff's gap of the
   /// pair, the third-state margin E_{Q+1} - E_Q (Q the higher of the pair;
   /// null when there is none) and the CASSCF's smallest root gap.
+  ///
+  /// The trajectory and the history are written as the walk goes, by
+  /// @ref recorded_optimize: a walk that fails leaves the evaluations before
+  /// the failure in both, the history with the failure's message as "error"
+  /// and no final energy, and no final_xyz.
   std::filesystem::path history{};
 
   /// @brief @c geometry::optimize from @ref molecule's geometry, each
@@ -153,7 +159,8 @@ struct OptimizeStep {
   ///         otherwise the first error of an
   ///         evaluation's Pipeline, @c geometry::optimize's own
   ///         (MaxIterationsExceeded past @c options.max_steps), or the error
-  ///         writing an output file.
+  ///         writing an output file. Every error after the walk starts
+  ///         leaves the trajectory and history @ref recorded_optimize keeps.
   [[nodiscard]] Result<OptimizeOutput> run(View<> in, NodeResources &node) const;
 
   /// @brief Under @ref meci, what @ref run refuses before anything runs, and
@@ -168,6 +175,51 @@ struct OptimizeStep {
   /// Without @ref meci, nothing.
   [[nodiscard]] Status check_meci() const;
 };
+
+/// @brief The three files an optimization writes, each skipped when empty:
+/// @ref OptimizeStep's trajectory, final_xyz and history.
+struct OptimizeFiles {
+  std::filesystem::path trajectory{};
+  std::filesystem::path final_xyz{};
+  std::filesystem::path history{};
+};
+
+/// @brief @c geometry::optimize of @p start's atoms (their positions, bohr,
+/// are x0) over @p energy_and_gradient, keeping @p files as the walk goes:
+/// the one write path @ref OptimizeStep's every walk shares.
+///
+/// Before the walk, a final_xyz left by an earlier run is removed. After
+/// every evaluation geometry::optimize records, the trajectory is rewritten
+/// with every recorded frame, and the history with every recorded entry
+/// under "iterations" and nothing else, so a walk killed partway leaves its
+/// trail. On the walk's exit: converged, the history's head gets "energy" and
+/// final_xyz is written; failed, at whichever evaluation, the history gets
+/// "error", the failure's message, and final_xyz is not written. Each entry
+/// is the Iteration's energy, four norms, trust radius and accepted, and
+/// what @p annotate(k, entry) adds to the k-th.
+///
+/// @return The solution; geometry::optimize's error, after the files carry
+///         it, or the error writing one of them.
+[[nodiscard]] Result<geometry::Solution> recorded_optimize(
+    std::span<const Atom> start,
+    const std::function<Result<double>(std::span<const double> x, std::span<double> gradient)>
+        &energy_and_gradient,
+    const geometry::Options &options, const OptimizeFiles &files,
+    const std::function<void(size_t k, json &entry)> &annotate = {});
+
+/// @brief @ref recorded_optimize's walk by @c geometry::optimize_meci: each
+/// entry the MECISolution::Iteration's energies (the mean as "energy",
+/// "lower", "upper" and "gap"), four norms, trust radius and branching
+/// dimension, and @p annotate's; converged, the head's "energy" is the mean,
+/// beside "lower", "upper" and "gap", and what @p annotate_head adds.
+[[nodiscard]] Result<geometry::MECISolution>
+recorded_optimize_meci(std::span<const Atom> start,
+                       const std::function<Result<std::array<double, 2>>(
+                           std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
+                           std::span<double> h_ij)> &energies_and_gradients,
+                       const geometry::Options &options, const OptimizeFiles &files,
+                       const std::function<void(size_t k, json &entry)> &annotate = {},
+                       const std::function<void(json &head)> &annotate_head = {});
 
 /// @brief The overlap below which @ref match_roots and @ref qd_state_overlap
 /// refuse: a followed root, or QD state, whose state has turned by more than
