@@ -740,6 +740,101 @@ df_casscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
             const Buffers::device<double> &z, int32_t k = 0, const double *lambda = nullptr);
 
+/// @brief The SC-NEVPT2 analytic nuclear Hessian and its parts, each k x k
+/// in the call's k coordinates (hartree / bohr^2), column-major.
+struct ScNevpt2Terms {
+  /// @brief d^2E/dq_i dq_j of E_cas + E_corr, the parts below summed and
+  /// symmetrized, (H + H^T) / 2: exactly symmetric.
+  std::vector<double> hessian;
+  /// @brief max |H - H^T| of the sum before it was symmetrized.
+  double asymmetry{0.0};
+  /// @brief The translational sum rule, max |Q^T H Q T| over the three
+  /// rigid translations T, on a full set of coordinates (k = 3 n_atom);
+  /// NaN on fewer.
+  double translation{0.0};
+  /// @brief E_cas's Hessian, @ref df_casscf's, in the coordinates.
+  std::vector<double> e_cas;
+  /// @brief Z . d2g/dR dR, @ref df_casscf_z's lxy summed.
+  std::vector<double> z_lxy;
+  /// @brief L_Ax x_B + x_A L_xB of Z . g over x = (kappa_nr, c): I^x Z
+  /// against lambda^y, both orders, symmetric.
+  std::vector<double> z_lx;
+  /// @brief x_A (Z . d2g/dx dx) x_B over x = (kappa_nr, c).
+  std::vector<double> z_third;
+  /// @brief The Z terms' kappa_oo rows,
+  /// 1/2 <kappa_oo^B, [X_N, kappa_nr^A]> + (A <-> B) (README "The kappa_oo
+  /// rows"). E_cas's are zero.
+  std::vector<double> z_koo;
+  /// @brief Sum h_bar h^AB + Sum Lambda B^AB at E_corr + Phi's adjoint,
+  /// @ref df_adjoint_xy's.
+  std::vector<double> skeleton;
+  /// @brief <t_A, HVP t_B>, nevpt2::sc_hessian_product's products along
+  /// t_B paired with t_A (a pair that both populate an empty perturber with
+  /// each as the other's partner); not symmetrized.
+  std::vector<double> hvp;
+  /// @brief The rotation's cross term with the integrals' first derivative,
+  /// <N_I, O(I^A, kappa^B) + O(I^B, kappa^A)>.
+  std::vector<double> rotation_tau;
+  /// @brief The rotation's second order, <N_I, 1/2 O(O(I, kappa^A),
+  /// kappa^B)> + (A <-> B).
+  std::vector<double> rotation_kappa;
+  /// @brief @ref df_casscf's terms, Cartesian: E_cas, lambda^x and its CP
+  /// residuals.
+  CasscfTerms casscf;
+  /// @brief The SC-NEVPT2 correlation energy (hartree).
+  double e_corr{0.0};
+  /// @brief The gradient's hazards: max |z^c| and the smallest core-core or
+  /// virtual-virtual orbital-energy gap (hartree).
+  double max_zc{0.0};
+  double min_gap{0.0};
+  /// @brief The gradient's Z-vector's true residual.
+  double zvector_residual{0.0};
+  /// @brief The largest weighted rho_tau of an accepted pair (0 when no
+  /// pair of coordinates populates an empty perturber).
+  double defect{0.0};
+};
+
+/// @brief The SC-NEVPT2 analytic nuclear Hessian of the single-state
+/// DF-CASSCF @p solution (nuclear_hessian.tex eq. hess), every part from a
+/// merged one, no integrals of its own (README.md "The SC-NEVPT2 Hessian"):
+///
+///     H = E_cas                           (df_casscf)
+///       + Z . d2g/dRdR + L_Ax x_B + x_A L_xB + x_A L_xx x_B   (df_casscf_z at (Z, z))
+///       + the Z terms' kappa_oo rows      (closed form)
+///       + Sum h_bar h^AB + Lambda B^AB    (df_adjoint_xy at E_corr + Phi's adjoint)
+///       + <t_A, HVP t_B>                  (nevpt2::sc_hessian_product over df_nevpt2_tangents' t)
+///       + the rotation cross terms        (O(I^A, kappa^B), O(O(I, kappa^A), kappa^B))
+///
+/// in k coordinates q_i = Sum_x Q_ix R_x, @p coordinates Q's rows (k x
+/// 3 n_atom row-major, orthonormal), the Cartesian ones when empty. The HVP
+/// is taken along each coordinate's t, not transformed: an empty perturber
+/// a direction populates makes it non-linear in the direction (K6). A pair
+/// of coordinates that both populate one is taken again with each as the
+/// other's partner, and refused when its energy is not a quadratic form on
+/// the pair (nevpt2::class_energies_hvp's weighted rho_tau past 1e-6).
+///
+/// The inputs are @ref df_casscf's (a converged one-root DF-CASSCF, its core
+/// and virtuals canonical) and @p batch nevpt2::sc_energy's. All-electron:
+/// it takes no frozen core. Stationarity is assumed, not checked.
+///
+/// The parts run one after another, each freeing what it held. Held
+/// throughout: t_i's (h, B, c) and kappa (k (naux nmo^2 + 2 nmo^2 + n_det)),
+/// kappa_nr, and E_corr + Phi's adjoint (naux nmo^2).
+///
+/// @return The Hessian and its parts; InvalidConfig for @ref df_casscf's
+///         input refusals (a state average among them) or coordinates that
+///         are not orthonormal rows of 3 n_atom; Numerical naming every
+///         refused pair of coordinates, or df_nevpt2_tangents' degenerate
+///         inactive pair, or the gradient's z^c or gate; Divergence for the CP
+///         solve's saddle; Unsupported for naux nmo^2 past int32_t or memory;
+///         or the first error of a part.
+[[nodiscard]] Result<ScNevpt2Terms>
+df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+             const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch = 0,
+             std::span<const double> coordinates = {});
+
 /// @brief A state-averaged DF-CASSCF root's analytic nuclear Hessian and its
 /// terms (casscf_hessian.tex eq. sa), each 3 n_atom x 3 n_atom, x = 3 A + k
 /// the coordinate R_{A,k} (hartree / bohr^2), column-major.
