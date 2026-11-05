@@ -581,11 +581,11 @@ Still open (none in this milestone):
 | #869 | Flaky: `Nevpt2NumericalHeff.H2coSkewSa3`'s PC finite differences are intermittently noisy. Possibly #870's cause, which #867 fixed, but that is not shown. |
 | #877 | `[optimize]` writes no `optimize.json` or `optimize.xyz` when a walk fails partway. |
 | #878 | `Nevpt2QdIntersection.Psb3TrueResidual` times out (120 s) in the HIP slow tier. |
-| #894 | The SC-QD gradient misses directional FD by about 2e-8 at ethylene Py: likely SC's zero-norm-by-symmetry kink. |
+| #949 | The SC-QD gradient misses directional FD by 3e-8 to 6e-8 at ethylene Py. #894 found the cause: the empty-perturber guard drops a CAS(2,2) Srs pair whose norm is zero by accident, not by symmetry. |
 | #902 | A MECI walk through a degenerate CASSCF reference pair, using ḡ (follow-up to #892). |
 | #939 | CASSCF can start only from the same run's RHF orbitals, so pHBI's twisted (12e,11o) points cannot be started from a converged planar solution. |
 
-Closed since the first write-up: #866 (convergence knobs as options, PR #899), #870 (the McscfTransitionGradient flake, fixed by #867; the batch log keeps assertion text, PR #903) and #905 (DF-CASSCF out of device memory at pHBI aug-cc-pVTZ's 805 basis functions; the three-center build's scratch is freed, PR #935).
+Closed since the first write-up: #866 (convergence knobs as options, PR #899), #870 (the McscfTransitionGradient flake, fixed by #867; the batch log keeps assertion text, PR #903), #905 (DF-CASSCF out of device memory at pHBI aug-cc-pVTZ's 805 basis functions; the three-center build's scratch is freed, PR #935) and #894 (the SC-QD miss at ethylene Py, localized and measured in `src/nevpt2/gradient/README.md`; the fix is #949).
 
 ## Where the record disagrees with itself
 
