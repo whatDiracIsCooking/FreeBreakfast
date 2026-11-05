@@ -12,7 +12,10 @@
 // from its bars, its bars on every input against a Richardson ladder of
 // class_energies itself, and the same bars whatever the batch; and its
 // forward tangent (class_energies_tangent), dual to those bars along a block
-// of random directions on every case, each with empty perturbers. And PC's
+// of random directions on every case, each with empty perturbers; and its
+// Hessian-vector product (class_energies_hvp) against a ladder of those
+// bars, with CAS(8,8)'s empty perturbers' K6 against a mixed second
+// difference of the energy, and their ρ_τ refusal. And PC's
 // (pc_class_energies_adjoint): the same, homogeneity in (S, S₁, K) in place
 // of Eq. 40 and the ladder kept inside the energy's domain, its invariance to
 // inactive rotations at degenerate orbital energies, and its refusals. And
@@ -1124,6 +1127,285 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2EnergyTangent,
                            return std::get<0>(info.param) + "_batch" +
                                   std::to_string(std::get<1>(info.param));
                          });
+
+// ---------------------------------------------------------------------------
+// The SC Hessian-vector product
+// ---------------------------------------------------------------------------
+
+// CAS(8,8): its empty perturbers, zero by N₂'s symmetry, are in two H
+// classes (24 of Sijr's 102, all 120 of Srsi's guarded), which K6 and the
+// ρ_τ refusal are about. CAS(4,4) has more (all of Si's, over half of Sr's,
+// Sijr's, Srsi's and Srs's) but also real perturbers with norms down to
+// 6e-8, whose Rayleigh quotients put a pole of the energy within ~1e-5 of
+// the base point along a random direction of every input: no ladder
+// reaches 1e-7 there.
+const std::string kHvpCase = "n2_ccpvdz_cas88_df";
+
+// Every bar field of @p b, named, in HostBars' order of the fields.
+std::vector<std::pair<std::string, const std::vector<double> *>> bar_fields(const HostBars &b) {
+  return {{"lambda", &b.lambda},     {"h1e_v_sr", &b.h1e_v_sr},
+          {"h1e_v_si", &b.h1e_v_si}, {"h1e_v_sir", &b.h1e_v_sir},
+          {"e_core", &b.e_core},     {"e_virt", &b.e_virt},
+          {"h1e", &b.h1e},           {"h2e", &b.h2e},
+          {"dm1", &b.dm1},           {"dm2", &b.dm2},
+          {"dm3", &b.dm3},           {"f3ca", &b.f3ca},
+          {"f3ac", &b.f3ac}};
+}
+
+// class_energies_hvp over @p h along each of @p dx (with @p partner, one per
+// direction, when not empty), every bar wanted.
+fb::Result<std::pair<nevpt2::ClassEnergiesHvp, std::vector<HostBars>>>
+run_hvp(fb::DeviceResources &res, const HostCase &h, const std::vector<HostCase> &dx,
+        const std::vector<HostCase> &partner) {
+  DeviceCase g = upload_case(res, h);
+  std::vector<DeviceCase> gd;
+  std::vector<DeviceCase> gp;
+  gd.reserve(dx.size());
+  gp.reserve(partner.size());
+  std::vector<nevpt2::EnergyDirection> directions;
+  std::vector<nevpt2::EnergyDirection> partners;
+  std::vector<DeviceBars> b;
+  std::vector<nevpt2::EnergyBars> bars;
+  for (const HostCase &d : dx) {
+    gd.push_back(upload_case(res, d));
+    directions.push_back(direction_of(gd.back(), d));
+    b.push_back(zero_bars(res, h));
+    bars.push_back(b.back().bars);
+  }
+  for (const HostCase &d : partner) {
+    gp.push_back(upload_case(res, d));
+    partners.push_back(direction_of(gp.back(), d));
+  }
+  auto got = nevpt2::class_energies_hvp(res, *g.blocks, g.in, 0, directions, bars, partners);
+  if (!got) {
+    return std::unexpected(got.error());
+  }
+  std::vector<HostBars> host;
+  for (const DeviceBars &x : b) {
+    host.push_back(download_bars(res, x));
+  }
+  return std::pair{std::move(*got), std::move(host)};
+}
+
+// The Hessian-vector product against a ladder of class_energies_adjoint's
+// bars, field by field, along seeded random directions: every input at
+// once, and B alone and the RDMs alone. Central differences D(t) of the bars
+// at t = 1e-3 / 2^k, k < 8, their Richardson extrapolants R_k =
+// (4 D_{k+1} - D_k) / 3, and the R_k that agrees best with R_{k+1} (the
+// largest field-wise change, relative to the field's largest element,
+// smallest): every field of the product must be that R_k's to 1e-7 of the
+// field's largest element. Every direction but the RDMs' breaks N₂'s
+// symmetry and populates the empty perturbers, and the ladder sees their
+// K6: off the base point their norms clear the guard, so the bars there
+// are the ray's limit, K6's. Without K6, Λ's misses 5e-3 (B) and 2e-3
+// (every input).
+class Nevpt2EnergyHvp : public ::testing::TestWithParam<std::string> {};
+
+TEST_P(Nevpt2EnergyHvp, BarsMatchRichardsonLadder) {
+  FBF_REQUIRE_GPU();
+  const std::string group = GetParam();
+  // ~9 s a group on the RTX 3080 (one product, sixteen reverse passes):
+  // every input at once stands for the groups in the fast tier.
+  if (group != "all") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  const std::filesystem::path dir = kDataDir / kHvpCase;
+  fb::DeviceResources res(0);
+  const HostCase h = load_host_case(dir);
+  const HostCase dx = random_direction(h, group, 811);
+  const auto got = run_hvp(res, h, {dx}, {});
+  ASSERT_TRUE(got) << got.error().message;
+  const HostBars &hvp = got->second.front();
+
+  constexpr std::int32_t kRungs = 8;
+  constexpr double kT0 = 1e-3;
+  std::vector<std::vector<std::vector<double>>> d; // [k][field]
+  for (std::int32_t k = 0; k < kRungs; ++k) {
+    const double t = std::ldexp(kT0, -k);
+    const auto plus = run_adjoint(res, displaced(h, dx, t), 0);
+    const auto minus = run_adjoint(res, displaced(h, dx, -t), 0);
+    ASSERT_TRUE(plus.has_value() && minus.has_value());
+    const auto fp = bar_fields(plus->second);
+    const auto fm = bar_fields(minus->second);
+    std::vector<std::vector<double>> rung;
+    for (std::size_t f = 0; f < fp.size(); ++f) {
+      std::vector<double> x(fp[f].second->size());
+      for (std::size_t e = 0; e < x.size(); ++e) {
+        x[e] = ((*fp[f].second)[e] - (*fm[f].second)[e]) / (2.0 * t);
+      }
+      rung.push_back(std::move(x));
+    }
+    d.push_back(std::move(rung));
+  }
+  const auto fields = bar_fields(hvp);
+  std::vector<double> scale(fields.size(), 0.0);
+  for (std::size_t f = 0; f < fields.size(); ++f) {
+    for (const double x : *fields[f].second) {
+      scale[f] = std::max(scale[f], std::abs(x));
+    }
+  }
+  // R_k per field, and the k whose R_k moves least to R_{k+1}.
+  const auto richardson = [&](const std::size_t k, const std::size_t f, const std::size_t e) {
+    return ((4.0 * d[k + 1][f][e]) - d[k][f][e]) / 3.0;
+  };
+  std::size_t best = 0;
+  double best_change = std::numeric_limits<double>::infinity();
+  for (std::size_t k = 0; k + 2 < static_cast<std::size_t>(kRungs); ++k) {
+    double change = 0.0;
+    for (std::size_t f = 0; f < fields.size(); ++f) {
+      for (std::size_t e = 0; e < fields[f].second->size(); ++e) {
+        if (scale[f] > 0.0) {
+          change =
+              std::max(change, std::abs(richardson(k + 1, f, e) - richardson(k, f, e)) / scale[f]);
+        }
+      }
+    }
+    if (change < best_change) {
+      best_change = change;
+      best = k;
+    }
+  }
+  double worst = 0.0;
+  std::string report;
+  for (std::size_t f = 0; f < fields.size(); ++f) {
+    double miss = 0.0;
+    for (std::size_t e = 0; e < fields[f].second->size(); ++e) {
+      miss = std::max(miss, std::abs((*fields[f].second)[e] - richardson(best, f, e)));
+    }
+    EXPECT_GT(scale[f], 0.0) << group << " " << fields[f].first;
+    EXPECT_LE(miss, 1e-7 * scale[f]) << group << " " << fields[f].first;
+    const double relative = scale[f] > 0.0 ? miss / scale[f] : 0.0;
+    worst = std::max(worst, relative);
+    report += std::format(" {} {:.1e}", fields[f].first, relative);
+  }
+  std::int64_t populated = 0;
+  for (const std::int64_t n : got->first.populated.front()) {
+    populated += n;
+  }
+  std::cout << std::format("[ nevpt2   ] hvp ladder {}: rung {} (R change {:.1e}), worst {:.2e}, "
+                           "{} empty perturbers populated;{}\n",
+                           group, best, best_change, worst, populated, report);
+}
+
+INSTANTIATE_TEST_SUITE_P(Groups, Nevpt2EnergyHvp,
+                         ::testing::Values(std::string{"all"}, std::string{"B"},
+                                           std::string{"rdm"}),
+                         [](const auto &info) { return info.param; });
+
+// A direction that keeps N₂'s symmetry, so populates no empty perturber: B
+// and h1e_v's rows scaled entry by entry by seeded normal factors (B's one
+// factor per orbital pair, the same for every auxiliary index, so every slab
+// entry is scaled too and a symmetry zero stays zero), and h1e, h2e, the
+// RDMs and the orbital energies random (the perturbers' integrals do not
+// read them).
+HostCase symmetric_direction(const HostCase &x, const std::uint64_t seed) {
+  std::mt19937_64 engine(seed);
+  std::normal_distribution<double> normal;
+  HostCase d = random_direction(x, "h", seed + 1);
+  for (const std::string group : {"rdm", "e"}) {
+    const HostCase r = random_direction(x, group, seed + 2);
+    d = displaced(d, r, 1.0);
+  }
+  for (auto [y, from, pairs] :
+       {std::tuple{&d.aa, &x.aa, x.na * x.na}, std::tuple{&d.ca, &x.ca, x.nc * x.na},
+        std::tuple{&d.va, &x.va, x.nv * x.na}, std::tuple{&d.cv, &x.cv, x.nc * x.nv}}) {
+    for (std::size_t pq = 0; pq < pairs; ++pq) {
+      const double f = normal(engine);
+      for (std::size_t q = 0; q < x.naux; ++q) {
+        (*y)[q + (x.naux * pq)] = f * (*from)[q + (x.naux * pq)];
+      }
+    }
+  }
+  for (auto [y, from] : {std::pair{&d.h1e_v_sr, &x.h1e_v_sr}, std::pair{&d.h1e_v_si, &x.h1e_v_si},
+                         std::pair{&d.h1e_v_sir, &x.h1e_v_sir}}) {
+    for (std::size_t e = 0; e < y->size(); ++e) {
+      (*y)[e] = normal(engine) * (*from)[e];
+    }
+  }
+  return d;
+}
+
+// The empty perturbers' two branches, on a pair of directions. K6: u breaks
+// the symmetry (every input random) and v = u / 2 + w with w keeping it, so
+// every empty perturber v populates it populates along u's own perturber,
+// and H is proportional to N on the pair; ⟨v, HVP u⟩ must then be a ladder
+// of the energy's mixed second difference along (u, v),
+// (E(t, t) - E(t, -t) - E(-t, t) + E(-t, -t)) / 4t², to 1e-7; without K6
+// it misses by 9e-4. The bars' ladder sees K6 along one direction; this
+// sees it across a pair, at the pair's η. And
+// the refusal: two independent random B directions populate the same empty
+// perturbers with different functions, so H is not proportional to N there,
+// and the call is refused as Numerical, naming the class and the perturber.
+TEST(Nevpt2EnergyHvpEmpty, K6MatchesMixedLadderAndNonProportionalIsRefused) {
+  FBF_REQUIRE_GPU();
+  // ~12 s on the RTX 3080, its family's one case: 32 energies and two
+  // products.
+  const std::filesystem::path dir = kDataDir / kHvpCase;
+  fb::DeviceResources res(0);
+  const HostCase h = load_host_case(dir);
+  const HostCase u = random_direction(h, "all", 894);
+  const HostCase v = displaced(symmetric_direction(h, 895), u, 0.5);
+
+  const auto got = run_hvp(res, h, {u}, {v});
+  ASSERT_TRUE(got) << got.error().message;
+  const double predicted = bars_dot(got->second.front(), h, v);
+  std::int64_t populated = 0;
+  std::string per_class;
+  for (std::size_t k = 0; k < 8; ++k) {
+    populated += got->first.populated.front()[k];
+    per_class += std::format(" {} {}", kClassNames[k], got->first.populated.front()[k]);
+  }
+  EXPECT_GT(populated, 0) << per_class;
+
+  const auto energy = [&](const double a, const double b) {
+    DeviceCase g = upload_case(res, displaced(displaced(h, u, a), v, b));
+    const auto e = nevpt2::class_energies(res, *g.blocks, g.in, 0);
+    EXPECT_TRUE(e) << e.error().message;
+    return e ? e->total : std::nan("");
+  };
+  // D(t) at t = 2.5e-3 / 2^k, k < 8, and its two-level Richardson
+  // extrapolants R_k (the t² and t⁴ terms cancelled); the R_k that moves
+  // least to R_{k+1} is the ladder's value. Single-level Richardson cannot
+  // reach 1e-7 here: its t⁴ term is still 1.6e-6 where the energy's
+  // round-off, σ_E / t², takes over (t ≈ 2e-5).
+  constexpr std::int32_t kRungs = 8;
+  std::vector<double> d;
+  for (std::int32_t k = 0; k < kRungs; ++k) {
+    const double t = std::ldexp(2.5e-3, -k);
+    d.push_back((energy(t, t) - energy(t, -t) - energy(-t, t) + energy(-t, -t)) / (4.0 * t * t));
+  }
+  const auto r2 = [&](const std::size_t k) {
+    const double r = ((4.0 * d[k + 1]) - d[k]) / 3.0;
+    const double r_next = ((4.0 * d[k + 2]) - d[k + 1]) / 3.0;
+    return ((16.0 * r_next) - r) / 15.0;
+  };
+  std::size_t best = 0;
+  double best_change = std::numeric_limits<double>::infinity();
+  for (std::size_t k = 0; k + 3 < d.size(); ++k) {
+    const double change = std::abs(r2(k + 1) - r2(k));
+    if (change < best_change) {
+      best_change = change;
+      best = k;
+    }
+  }
+  const double ladder = r2(best);
+  const double miss = std::abs(ladder - predicted);
+  EXPECT_LE(miss, 1e-7 * std::abs(predicted));
+  std::cout << std::format("[ nevpt2   ] hvp K6: <v, HVP u> {:+.12e}, mixed ladder {:+.12e} (rung "
+                           "{}, change {:.1e}), relative {:.2e}, worst rho {:.2e}, populated{}\n",
+                           predicted, ladder, best, best_change / std::abs(predicted),
+                           miss / std::abs(predicted), got->first.defect.front(), per_class);
+
+  const HostCase b1 = random_direction(h, "B", 896);
+  const HostCase b2 = random_direction(h, "B", 897);
+  const auto refused = run_hvp(res, h, {b1}, {b2});
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Numerical) << refused.error().message;
+  EXPECT_NE(refused.error().message.find("class "), std::string::npos) << refused.error().message;
+  EXPECT_NE(refused.error().message.find("perturber "), std::string::npos)
+      << refused.error().message;
+  std::cout << std::format("[ nevpt2   ] hvp refused: {}\n", refused.error().message);
+}
 
 // ---------------------------------------------------------------------------
 // The PC reverse pass

@@ -1,6 +1,7 @@
 /// @file
-/// @brief The class energies' six launchers -- the three diagonal-slice
-/// accumulations, the Sijrs reduction, its adjoint and its tangent -- declared once for the module that
+/// @brief The class energies' seven launchers -- the three diagonal-slice
+/// accumulations, the Sijrs reduction, its adjoint, its tangent and its
+/// adjoint's tangent -- declared once for the module that
 /// calls them and the device TU that defines them.
 ///
 /// Included by energy.cpp and reverse.cpp in their GLOBAL MODULE FRAGMENTs, and by
@@ -80,5 +81,19 @@ namespace free_breakfast::nevpt2::device {
                                             int32_t ncore, int32_t nvirt, const double *e_core,
                                             const double *e_virt, const double *e_core_dot,
                                             const double *e_virt_dot, double *acc);
+
+/// @brief The forward tangent of @ref sijrs_adjoint's bars (weight 1) over
+/// the same slab, by hand, along the slab's tangent @p g_dot and the orbital
+/// energies' @p e_core_dot and @p e_virt_dot (either may be null, and is then
+/// zero): g_bar_dot += 2 θ̇ / D - 2 θ Ḋ / D², and the orbital energies' share
+/// w = g θ / D² moves by ẇ = (ġ θ + g θ̇) / D² - 2 g θ Ḋ / D³, taken off
+/// e_core_bar_dot[i] and [j] and added to e_virt_bar_dot[a] and [b] (either
+/// may be null, and is then not formed). The SC Hessian-vector product's
+/// Sijrs share. Launch status only; it does not synchronize.
+[[nodiscard]] wwr::wwrError_t
+sijrs_adjoint_tangent(wwr::wwrStream_t stream, const double *g, const double *g_dot, int32_t ni,
+                      int32_t i0, int32_t ncore, int32_t nvirt, const double *e_core,
+                      const double *e_virt, const double *e_core_dot, const double *e_virt_dot,
+                      double *g_bar_dot, double *e_core_bar_dot, double *e_virt_bar_dot);
 
 } // namespace free_breakfast::nevpt2::device

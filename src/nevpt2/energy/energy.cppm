@@ -336,6 +336,62 @@ struct ClassEnergiesTangent {
 class_energies_tangent(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                        int32_t batch, std::span<const EnergyDirection> directions);
 
+/// @brief class_energies_hvp's result: the energies it walked, and per
+/// direction what its empty perturbers took.
+struct ClassEnergiesHvp {
+  /// @brief The norms and energies, as class_energies computes them.
+  ClassEnergies energies;
+  /// @brief [u][k]: class k's empty perturbers (|N| <= 1e-14) direction u
+  /// populates, each given K6's multipliers.
+  std::vector<std::array<int64_t, 8>> populated;
+  /// @brief [u]: the largest ρ_τ over the empty perturbers direction u and
+  /// its partner both populate; 0 with no partner, or none both populate.
+  std::vector<double> defect;
+};
+
+/// @brief The SC energy's Hessian-vector product in its inputs, forward over
+/// the reverse pass: @p bars[u] += the tangent of class_energies_adjoint's
+/// bars along @p directions[u], every field the bars name (Λ included).
+///
+/// Per perturber, with (P, Q, R) the finish's derivatives in (N, H, Δ), the
+/// bars are Σ_t P_t ∂N_t + Q_t ∂H_t + R_t ∂Δ_t, so their tangent is two
+/// terms. The multipliers' tangent: the finish's 3 x 3 Hessian in (N, H, Δ),
+/// in the (N, d) form (d = NΔ + H, no 1/N), times class_energies_tangent's
+/// (Ṅ, Ḣ, Δ̇), through one more reverse pass at those multipliers. And the
+/// bars at fixed multipliers differenced along the direction: every table is
+/// a polynomial of degree at most six in (B, h1e, h2e, h1e_v, RDMs), so a
+/// symmetric difference at ±s, ±2s, ±3s, Richardson-weighted, is exact, six
+/// reverse passes at shifted inputs. Sijrs's share is one kernel's.
+///
+/// **Empty perturbers.** One the energy's guard skips (|N| <= 1e-14), empty
+/// at a symmetric geometry, has N, H and their first derivatives zero; a
+/// direction that breaks the symmetry populates it at second order, where
+/// its energy is homogeneous of degree two. Along u alone that is a
+/// quadratic form, and the perturber takes K6: the finish's multipliers at
+/// their limit along the ray, P̄ = 2T̄ + ΔT̄² and Q̄ = T̄², T̄ = -1 / (Δ + η),
+/// η = H^{uu} / N^{uu} from N's and H's second derivatives along u. With
+/// @p partners, one per direction, the pair (u, v) is checked: on a
+/// perturber both populate, the energy is a quadratic form on the pair only
+/// when H is proportional to N there, and a scale-free defect ρ_τ (zero
+/// exactly then) past 1e-6 refuses the call; otherwise η is the mean of
+/// η_u and η_v. ⟨v, HVP u⟩ is then the Hessian element.
+///
+/// Memory and cost: per direction, seven reverse passes over the whole
+/// inputs, and with any empty perturber six class_energies_tangent calls
+/// (twelve with a partner).
+///
+/// @return The energies and, per direction, the populated empty perturbers;
+///         InvalidConfig when @p bars is not one per direction, @p partners
+///         is neither empty nor one per direction, or a direction's blocks
+///         are not shaped as @p blocks; Numerical, naming the class and the
+///         perturber, when an empty perturber's H is not proportional to its
+///         N on a pair; or the tangent's and reverse pass's errors.
+[[nodiscard]] Result<ClassEnergiesHvp>
+class_energies_hvp(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
+                   int32_t batch, std::span<const EnergyDirection> directions,
+                   std::span<const EnergyBars> bars,
+                   std::span<const EnergyDirection> partners = {});
+
 /// @brief sc_effective_hamiltonian_adjoint's result: the matrix it walked,
 /// and each class's Eq. 40 assembled from its bars.
 struct ScEffectiveHamiltonianAdjoint {
