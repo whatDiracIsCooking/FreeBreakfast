@@ -165,7 +165,59 @@ reached from `examples/ethylene.xyz`) to 0.0000 Å RMSD and 1.7e-8 Eh. It is
 |---|---|---|---|---|---|
 | all-atom RMSD of the Hm QD-PC MECI (Å) | 0.310 | 0.020 | 0.119 | 0.606 | 0.0000 |
 
-What this shows is that from Park's own geometry, in cc-pVDZ, our Hm falls
-into Py at the PT2 level as well as at CASSCF. What it does not settle is
-whether a distinct Hm basin needs the diffuse functions of his aug-cc-pVDZ,
-or the frozen core he uses and this tree did not here. Neither was varied.
+So from Park's own geometry, in cc-pVDZ, our Hm falls into Py at the PT2
+level as well as at CASSCF.
+
+### And with diffuse functions
+
+Two more walks test whether the diffuse functions are what make Hm a seam
+minimum: all-electron QD-PC-NEVPT2/aug-cc-pVDZ (aug-cc-pVDZ-JKFIT, #845), on
+tier 0's criteria. Frozen core is not an option here, since its gradient
+does not exist yet (#875) and `[nevpt2_gradient]` refuses `frozen_core`.
+
+- [`ethylene_hm_qdpc_augdz_meci.toml`](ethylene_hm_qdpc_augdz_meci.toml)
+  starts from Park's aug-cc-pVDZ Hm.
+- [`ethylene_hm_qdpc_augdz_py_reference.toml`](ethylene_hm_qdpc_augdz_py_reference.toml)
+  starts from his aug-cc-pVDZ Py, and gives the reference energy.
+
+| | from Park's Hm | from Park's Py |
+|---|---|---|
+| evaluations | 47 | 8 |
+| mean E at the start (Eh) | −78.1522934435 | −78.1771099719 |
+| `heff_gap` at the start (Eh) | 3.44e-5 | 5.84e-5 |
+| mean E at the MECI (Eh) | −78.1771297191 | −78.1771297166 |
+| `heff_gap` (Eh) | 8.3e-10 | 1.4e-9 |
+| `gradient_norm` (last; max) | 2.60e-12; 9.35e-11 | 2.94e-12; 2.74e-11 |
+| `ci_residual_norm` (last; max) | 3.45e-14; 1.14e-13 | 1.82e-14; 6.79e-14 |
+| min `pair_overlap` (evaluation) | 0.99896 (23) | 0.99999991 (1) |
+| min third-state margin; min CASSCF root gap (Eh) | 0.1165; 0.0210 | 0.1648; 0.0278 |
+| max / rms force (Eh/bohr) | 5.82e-7 / 1.87e-7 | 5.41e-6 / 3.08e-6 |
+
+All-atom RMSD of the converged MECI from Park's Hm, reflection allowed:
+
+| | our aug-cc-pVDZ Py | Park's Py | Park's Hm | tier 0's PC MECI (cc-pVDZ) |
+|---|---|---|---|---|
+| RMSD (Å) | 0.0001 | 0.0012 | 0.2996 | 0.019 |
+
+**Verdict: at all-electron QD-PC/aug-cc-pVDZ, Hm slides to Py too.** The
+walk from Park's Hm ends 0.0001 Å and 2.5e-9 Eh from the Py MECI, and our
+Py is 0.0012 Å from his. At his Hm geometry the pair is already nearly
+degenerate in our calculation: a gap of 3.44e-5 Eh against his 3.55e-5.
+That point lies 0.676 eV above our Py MECI, against his 0.68 eV
+(−78.1468050753 against −78.1717632797 Eh, state 0). So his Hm *is* on
+the seam at this level. It is just not a minimum of the seam here: the walk
+descends from it to Py.
+
+Park's Hm is converged more loosely than his other three. Its state 0–1
+gap is 3.55e-5 Eh at aug-cc-pVDZ and 2.19e-5 at aug-cc-pVTZ, against at
+most 7e-6 for Py, Et and C3v (SI pp. S2–S7). That fits a point his
+optimizer stopped at on a slope of the seam rather than at a minimum.
+
+One difference is not ruled out. His frozen core moves every energy here
+by a nearly constant amount, so it is not expected to create a seam
+minimum. But the frozen-core MECI gradient does not exist yet (#875), so
+that cannot be checked directly.
+
+The two walks' absolute energies sit 5.4 mEh below his (−78.1771297
+against −78.1717633 for Py, state 0). That offset is the correlated core
+([README.md](README.md), "What cannot match").
