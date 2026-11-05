@@ -81,19 +81,88 @@ Result<std::vector<double>> download(DeviceResources &res, const double *d, cons
 // own: -Σ_k T_k / (Δ_k + H_k / N_k) over the perturbers whose norm N_k does
 // not vanish, and the plain Σ_k T_k. T = N is PySCF's verbatim, a state's own
 // energy; a transition norm T_IJ over the ket's N and H is a QD coupling.
+// With @p eta, a one-function class's (single_function_ratio), every
+// perturber is kept at -T_k / (Δ_k + η), and N and H are not read.
 std::pair<double, double> norm_to_energy(const std::vector<double> &t,
                                          const std::vector<double> &norm,
                                          const std::vector<double> &h,
-                                         const std::vector<double> &diff) {
+                                         const std::vector<double> &diff,
+                                         const std::optional<double> eta) {
   double norm_total = 0.0;
   double energy_total = 0.0;
   for (size_t k = 0; k < norm.size(); ++k) {
     norm_total += t[k];
-    if (std::abs(norm[k]) > kNumericalZero) {
+    if (eta) {
+      energy_total -= t[k] / (diff[k] + *eta);
+    } else if (std::abs(norm[k]) > kNumericalZero) {
       energy_total -= t[k] / (diff[k] + (h[k] / norm[k]));
     }
   }
   return {norm_total, energy_total};
+}
+
+bool single_function_class(const ActiveOperands &own, const size_t k) {
+  const int64_t n = own.dm1.dims.empty() ? 0 : own.dm1.dims[0];
+  return (k == 5 && own.nelecas == 2) || (k == 6 && (2 * n) - own.nelecas == 2);
+}
+
+Result<std::array<std::vector<double>, 2>>
+single_function_blocks(DeviceResources &res, const ActiveOperands &o, const size_t k) {
+  const int64_t n = o.dm1.dims[0];
+  const int64_t n4 = n * n * n * n;
+  std::vector<double> x;
+  std::vector<double> y;
+  if (k == 5) {
+    const auto [rm2, a7] = FBF_TRY(make_a7(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
+    x = FBF_TRY(download(res, a7.data(), n4));
+    const std::vector<double> m = FBF_TRY(download(res, rm2.data(), n4));
+    // Srs's norm reads rm2 `pqba` against H's a7 `pqab`.
+    y.resize(m.size());
+    for (int64_t pq = 0; pq < n * n; ++pq) {
+      for (int64_t a = 0; a < n; ++a) {
+        for (int64_t b = 0; b < n; ++b) {
+          y[static_cast<size_t>((((pq * n) + a) * n) + b)] =
+              m[static_cast<size_t>((((pq * n) + b) * n) + a)];
+        }
+      }
+    }
+  } else {
+    const std::vector<int64_t> d4(4, n);
+    const Buffers::device<double> hdm2 = FBF_TRY(make_hdm2(res, o.dm1, o.dm2, o.delta));
+    const EinsumOperand hdm2_op{.data = hdm2.data(), .dims = d4};
+    const Buffers::device<double> hdm3 =
+        FBF_TRY(make_hdm3(res, o.dm1, o.dm2, o.dm3, hdm2_op, o.delta));
+    const EinsumOperand hdm3_op{.data = hdm3.data(), .dims = std::vector<int64_t>(6, n)};
+    const Buffers::device<double> a9 = FBF_TRY(make_a9(res, o.h1e, o.h2e, hdm2_op, hdm3_op));
+    x = FBF_TRY(download(res, a9.data(), n4));
+    y = FBF_TRY(download(res, hdm2.data(), n4));
+  }
+  return std::array{std::move(x), std::move(y)};
+}
+
+std::optional<double> single_function_ratio(const std::array<std::vector<double>, 2> &xy) {
+  const double yy = std::inner_product(xy[1].begin(), xy[1].end(), xy[1].begin(), 0.0);
+  if (yy <= kNumericalZero) {
+    return std::nullopt;
+  }
+  return std::inner_product(xy[0].begin(), xy[0].end(), xy[1].begin(), 0.0) / yy;
+}
+
+// Each state's one-function η of class @p k over @p ops' diagonals, or none
+// when the class is not one-function or the diagonals are omitted (the kets
+// are then cached amplitudes).
+Result<std::vector<std::optional<double>>> single_function_etas(DeviceResources &res,
+                                                                std::span<const ActiveOperands> ops,
+                                                                const int64_t ns, const size_t k) {
+  std::vector<std::optional<double>> eta;
+  if (!pair_given(ops, 0) || !single_function_class(ops.front(), k)) {
+    return eta;
+  }
+  for (int64_t j = 0; j < ns; ++j) {
+    eta.push_back(single_function_ratio(
+        FBF_TRY(single_function_blocks(res, ops[static_cast<size_t>((j * ns) + j)], k))));
+  }
+  return eta;
 }
 
 bool pair_given(std::span<const ActiveOperands> ops, const int64_t p) {
@@ -178,10 +247,12 @@ sc_cached_kets(const char *name, std::span<const ActiveOperands> ops, const int6
 // (its `* 2.0`), which holds only at I = J; the mean is the unfolded sum, and
 // leaves the five classes already symmetric in I and J as they are. With J's
 // diagonal omitted, its c_t come from @p cached instead: -T / (Δ + H / N) is
-// T c_t, the same perturbers dropped (c_t = 0).
+// T c_t, the same perturbers dropped (c_t = 0). @p eta, when not empty, is
+// each ket's one-function η (norm_to_energy).
 void add_pair_shares(const std::vector<std::vector<double>> &tables, const PairTableSlots &slots,
                      const int64_t ns, const std::vector<double> &diff, const CachedKets &cached,
-                     std::vector<std::pair<double, double>> &out) {
+                     std::vector<std::pair<double, double>> &out,
+                     const std::vector<std::optional<double>> &eta = {}) {
   for (int64_t j = 0; j < ns; ++j) {
     for (int64_t i = 0; i < ns; ++i) {
       const int64_t slot = slots.norm[static_cast<size_t>((i * ns) + j)];
@@ -211,7 +282,9 @@ void add_pair_shares(const std::vector<std::vector<double>> &tables, const PairT
       const std::vector<double> &norm =
           tables[static_cast<size_t>(slots.norm[static_cast<size_t>((j * ns) + j)])];
       const std::vector<double> &h = tables[static_cast<size_t>(own)];
-      const auto [n_part, e_part] = norm_to_energy(i == j ? norm : mean, norm, h, diff);
+      const auto [n_part, e_part] =
+          norm_to_energy(i == j ? norm : mean, norm, h, diff,
+                         eta.empty() ? std::nullopt : eta[static_cast<size_t>(j)]);
       sums.first += n_part;
       sums.second += e_part;
     }
@@ -221,19 +294,26 @@ void add_pair_shares(const std::vector<std::vector<double>> &tables, const PairT
 // The strongly contracted amplitudes of one slab's perturbers, in its tables'
 // order, appended to @p out[J] for each state J: c_t = -1 / (Δ_t + H^J_t /
 // N^J_t), the coefficient of P_t V|J⟩ in Ψ_J⁽¹⁾, and 0 for a perturber
-// norm_to_energy drops (ScAmplitudes). Reads the tables add_pair_shares does;
-// every diagonal is given.
+// norm_to_energy drops (ScAmplitudes); with @p eta, -1 / (Δ_t + η^J) for
+// every one. Reads the tables add_pair_shares does; every diagonal is given.
 void append_sc_amplitudes(const std::vector<std::vector<double>> &tables,
                           const PairTableSlots &slots, const int64_t ns,
-                          const std::vector<double> &diff, std::vector<std::vector<double>> &out) {
+                          const std::vector<double> &diff, std::vector<std::vector<double>> &out,
+                          const std::vector<std::optional<double>> &eta = {}) {
   out.resize(static_cast<size_t>(ns));
   for (int64_t j = 0; j < ns; ++j) {
     const std::vector<double> &norm =
         tables[static_cast<size_t>(slots.norm[static_cast<size_t>((j * ns) + j)])];
     const std::vector<double> &h = tables[static_cast<size_t>(slots.h[static_cast<size_t>(j)])];
+    const std::optional<double> ratio = eta.empty() ? std::nullopt : eta[static_cast<size_t>(j)];
     for (size_t k = 0; k < norm.size(); ++k) {
-      out[static_cast<size_t>(j)].push_back(
-          std::abs(norm[k]) > kNumericalZero ? -1.0 / (diff[k] + (h[k] / norm[k])) : 0.0);
+      double c = 0.0;
+      if (ratio) {
+        c = -1.0 / (diff[k] + *ratio);
+      } else if (std::abs(norm[k]) > kNumericalZero) {
+        c = -1.0 / (diff[k] + (h[k] / norm[k]));
+      }
+      out[static_cast<size_t>(j)].push_back(c);
     }
   }
 }
@@ -1065,6 +1145,7 @@ energy_srs(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Srs, step);
   const PairTableSlots slots = pair_table_slots(ops, ns);
   const auto *const cached = FBF_TRY(sc_cached_kets("Srs", ops, ns, amplitudes));
+  const std::vector<std::optional<double>> eta = FBF_TRY(single_function_etas(res, ops, ns, 5));
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -1101,9 +1182,9 @@ energy_srs(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
     const std::vector<std::vector<double>> read =
         FBF_TRY(download_pair_tables(res, tables, slots, count));
     add_pair_shares(read, slots, ns, diff, {.kets = cached, .at = static_cast<size_t>(b0 * nv)},
-                    out);
+                    out, eta);
     if (amplitudes != nullptr && cached == nullptr) {
-      append_sc_amplitudes(read, slots, ns, diff, *amplitudes);
+      append_sc_amplitudes(read, slots, ns, diff, *amplitudes, eta);
     }
   }
   return out;
@@ -1151,6 +1232,7 @@ energy_sij(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sij, step);
   const PairTableSlots slots = pair_table_slots(ops, ns);
   const auto *const cached = FBF_TRY(sc_cached_kets("Sij", ops, ns, amplitudes));
+  const std::vector<std::optional<double>> eta = FBF_TRY(single_function_etas(res, ops, ns, 6));
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -1187,9 +1269,9 @@ energy_sij(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
     const std::vector<std::vector<double>> read =
         FBF_TRY(download_pair_tables(res, tables, slots, count));
     add_pair_shares(read, slots, ns, diff, {.kets = cached, .at = static_cast<size_t>(b0 * nc)},
-                    out);
+                    out, eta);
     if (amplitudes != nullptr && cached == nullptr) {
-      append_sc_amplitudes(read, slots, ns, diff, *amplitudes);
+      append_sc_amplitudes(read, slots, ns, diff, *amplitudes, eta);
     }
   }
   return out;
@@ -1331,6 +1413,15 @@ Result<ActiveOperands> active_operands(DeviceResources &res, const MoBlocks &blo
   // the pageable identity upload above has been read before it goes away.
   std::vector<double> e_core = FBF_TRY(download(res, in.e_core, blocks.ncore));
   std::vector<double> e_virt = FBF_TRY(download(res, in.e_virt, blocks.nvirt));
+  int64_t nelecas = 0;
+  if (in.dm1 != nullptr) {
+    const std::vector<double> dm1 = FBF_TRY(download(res, in.dm1, n * n));
+    double trace = 0.0;
+    for (int64_t p = 0; p < n; ++p) {
+      trace += dm1[static_cast<size_t>((p * n) + p)];
+    }
+    nelecas = static_cast<int64_t>(std::llround(trace));
+  }
   return ActiveOperands{.h1e = column_major(in.h1e, d2),
                         .h2e = column_major(in.h2e, d4),
                         .dm1 = {.data = in.dm1, .dims = d2},
@@ -1342,7 +1433,8 @@ Result<ActiveOperands> active_operands(DeviceResources &res, const MoBlocks &blo
                         .delta_buf = std::move(delta_buf),
                         .e_core = std::move(e_core),
                         .e_virt = std::move(e_virt),
-                        .pc_floor = in.pc_floor};
+                        .pc_floor = in.pc_floor,
+                        .nelecas = nelecas};
 }
 
 Result<std::vector<ClassEnergies>> sc_couplings(DeviceResources &res, const MoBlocks &blocks,

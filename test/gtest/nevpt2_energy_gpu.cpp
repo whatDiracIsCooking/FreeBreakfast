@@ -2319,6 +2319,104 @@ TEST(Nevpt2QdEnergyAdjoint, MalformedInputsAreInvalidConfig) {
 }
 
 // ---------------------------------------------------------------------------
+// One-function classes (#949)
+// ---------------------------------------------------------------------------
+
+// A one-function class (Srs at two active electrons, Sij at two active
+// holes) keeps every perturber at its class's η, so a coupling through a
+// perturber whose amplitude A^J_t crosses zero is linear through it, T c
+// with T ∝ A^J_t. h2co_ccpvdz_sa2 is C2v, its roots 1A1 and 1A2, CAS(4,3):
+// Sij is one-function, and every one of the A2 root's Sij amplitudes is zero
+// by symmetry. Along a random B direction, which breaks C2v, the couplings
+// grow as ε. At ε = 1e-8 the A2 root's Sij norms are ~1e-16, under the
+// energy's old guard (1e-14), which dropped them all: H_01, whose ket is the
+// A2 root, came out zero there and nonzero at 1e-6. Sij's element over ε
+// must be the same at 1e-8 as its central difference over ±1e-6, to 1e-4
+// (the forward's round-off at 1e-8 is ~2e-17 absolute, 1e-5 of it).
+TEST(Nevpt2EnergyOneFunction, CouplingIsLinearThroughAZeroAmplitude) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  const QdHostCase q = load_qd_case(kQdDataDir / "h2co_ccpvdz_sa2");
+  ASSERT_EQ(q.n, 2U);
+  const QdHostCase dx = random_direction(q, "B", 949);
+  const auto sij = [&](const double eps) {
+    QdDeviceCase g = upload_qd(res, displaced(q, dx, eps));
+    const auto h = nevpt2::sc_effective_hamiltonian(res, *g.shared.blocks, g.pairs, 0);
+    EXPECT_TRUE(h) << h.error().message;
+    return h ? std::array{(*h)[1].energies[6], (*h)[2].energies[6]}
+             : std::array{std::nan(""), std::nan("")};
+  };
+  const auto at0 = sij(0.0);
+  const auto tiny = sij(1e-8);
+  const auto small = sij(1e-6);
+  const auto minus = sij(-1e-6);
+  for (std::size_t e = 0; e < 2; ++e) {
+    const double slope = (small[e] - minus[e]) / 2e-6;
+    std::cout << std::format("[ nevpt2   ] one-function Sij H_{}: {:+.3e} at 0, slope {:+.12e} at "
+                             "1e-8 and {:+.12e} over +-1e-6\n",
+                             e == 0 ? "01" : "10", at0[e], tiny[e] / 1e-8, slope);
+    EXPECT_LE(std::abs(at0[e]), 1e-15) << e;
+    EXPECT_GT(std::abs(slope), 1e-6) << e;
+    EXPECT_NEAR(tiny[e] / 1e-8, slope, 1e-4 * std::abs(slope)) << e;
+  }
+}
+
+// A one-function class's E, Ė, bars and Hessian-vector product read η = Σ H
+// / Σ N, which a raw direction (off the RDMs' rank-one structure) moves. So
+// on one state of each one-function case, h6_631g_sa2's root 0 (Srs,
+// CAS(2,3)) and h2co_ccpvdz_sa2's 1A2 root (Sij, CAS(4,3)), along seeded
+// random directions of every input: Ė against Σ <bar, dx>, which take η's
+// derivative by two separate rules (the tangent's Σ Ḣ - η Σ Ṅ, the reverse
+// pass's η̄ spread over every N and H), to 1e-10 of the largest summand; and
+// the Hessian-vector product symmetric, <v, HVP u> = <u, HVP v>.
+TEST(Nevpt2EnergyOneFunction, TangentAndHessianProductMatchTheBars) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  for (const auto &[name, state] : {std::pair{std::string{"h6_631g_sa2"}, std::size_t{0}},
+                                    std::pair{std::string{"h2co_ccpvdz_sa2"}, std::size_t{1}}}) {
+    const QdHostCase q = load_qd_case(kQdDataDir / name);
+    const HostCase h = merged(q, (state * q.n) + state);
+    const auto adj = run_adjoint(res, h, 0);
+    ASSERT_TRUE(adj.has_value()) << name;
+    const std::vector<HostCase> dx{random_direction(h, "all", 9490),
+                                   random_direction(h, "rdm", 9491)};
+    DeviceCase g = upload_case(res, h);
+    std::vector<DeviceCase> gd;
+    gd.reserve(dx.size());
+    std::vector<nevpt2::EnergyDirection> directions;
+    for (const HostCase &d : dx) {
+      gd.push_back(upload_case(res, d));
+      directions.push_back(direction_of(gd.back(), d));
+    }
+    const auto got = nevpt2::class_energies_tangent(res, *g.blocks, g.in, 0, directions);
+    ASSERT_TRUE(got) << got.error().message;
+    EXPECT_NEAR(got->energies.total, adj->first.energies.total, 1e-12) << name;
+    for (std::size_t u = 0; u < dx.size(); ++u) {
+      const std::vector<double> summands = bars_summands(adj->second, h, dx[u]);
+      const double predicted = std::accumulate(summands.begin(), summands.end(), 0.0);
+      double scale = 0.0;
+      for (const double x : summands) {
+        scale = std::max(scale, std::abs(x));
+      }
+      const double miss = std::abs(got->total_dot[u] - predicted);
+      EXPECT_LE(miss, 1e-10 * scale) << name << " direction " << u;
+      std::cout << std::format("[ nevpt2   ] one-function tangent {} root {} direction {}: Ė "
+                               "{:+.12e}, Σ<bar, dx> {:+.12e}, miss / largest summand {:.2e}\n",
+                               name, state, u, got->total_dot[u], predicted, miss / scale);
+    }
+    const auto hvp = run_hvp(res, h, dx, {});
+    ASSERT_TRUE(hvp) << name << ": " << hvp.error().message;
+    const double vhu = bars_dot(hvp->second[0], h, dx[1]);
+    const double uhv = bars_dot(hvp->second[1], h, dx[0]);
+    const double asym = std::abs(vhu - uhv) / std::abs(vhu);
+    EXPECT_LE(asym, 1e-8) << name;
+    std::cout << std::format("[ nevpt2   ] one-function hvp {} root {}: <v, HVP u> {:+.12e}, "
+                             "<u, HVP v> {:+.12e}, asymmetry {:.2e}\n",
+                             name, state, vhu, uhv, asym);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The PC-QD reverse pass
 // ---------------------------------------------------------------------------
 

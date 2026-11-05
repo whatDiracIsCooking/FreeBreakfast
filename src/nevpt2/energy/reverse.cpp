@@ -553,6 +553,43 @@ Status add_scaled(DeviceResources &res, const double *const x, const int64_t cou
   return einsum(res.stream(), "a->a", {{.data = x, .dims = {count}}}, out, {count}, alpha);
 }
 
+// The bars a one-function class's η = <X, Y> / <Y, Y> (single_function_ratio)
+// puts on its blocks @p xy for a bar @p eta_bar on η: [0] on X, η̄ Y / S,
+// and [1] on Y, η̄ (X - 2η Y) / S, S = <Y, Y>; in single_function_blocks'
+// pairing. Their Eq. 40 share, <M_X, X> + <M_Y, Y> = η̄ (η + η - 2η), is zero.
+std::array<std::vector<double>, 2>
+single_function_eta_bars(const std::array<std::vector<double>, 2> &xy, const double eta,
+                         const double eta_bar) {
+  const auto &[x, y] = xy;
+  const double s = std::inner_product(y.begin(), y.end(), y.begin(), 0.0);
+  std::array<std::vector<double>, 2> out{std::vector<double>(x.size()),
+                                         std::vector<double>(y.size())};
+  for (size_t e = 0; e < x.size(); ++e) {
+    out[0][e] = eta_bar * y[e] / s;
+    out[1][e] = eta_bar * (x[e] - (2.0 * eta * y[e])) / s;
+  }
+  return out;
+}
+
+// Adds host bars @p mxy on one-function class @p k's X and Y
+// (single_function_blocks' pairing) onto @p m's: a7 and rm2 (Y read back
+// `pqba`) for Srs, a9 and hdm2 for Sij.
+Status add_single_function_bars(DeviceResources &res, const size_t k, const int64_t n,
+                                const std::array<std::vector<double>, 2> &mxy, BlockBars &m) {
+  const std::vector<int64_t> d4(4, n);
+  const int64_t n4 = n * n * n * n;
+  const Buffers::device<double> mx = FBF_TRY(upload(res, mxy[0]));
+  const Buffers::device<double> my = FBF_TRY(upload(res, mxy[1]));
+  FBF_TRY(add_scaled(res, mx.data(), n4, k == 5 ? m.a7.data() : m.a9.data(), 1.0));
+  if (k == 5) {
+    FBF_TRY(einsum(res.stream(), "pqab->pqba", {{.data = my.data(), .dims = d4}}, m.rm2.data(), d4,
+                   1.0));
+  } else {
+    FBF_TRY(add_scaled(res, my.data(), n4, m.hdm2.data(), 1.0));
+  }
+  return res.sync();
+}
+
 // @p o with every array a block builder reads (h1e, h2e and the RDMs) moved
 // by @p step times @p dot's, in buffers of its own; an array whose tangent is
 // null stays @p o's. delta is @p o's, and the orbital energies are not read.
@@ -587,6 +624,49 @@ Result<ShiftedOperands> shifted_operands(DeviceResources &res, const ActiveOpera
     out.arrays.push_back(std::move(moved));
   }
   return out;
+}
+
+// single_function_blocks' tangents along each of @p directions: the blocks'
+// central polarization at each direction's block step (@p steps), exact as
+// block_tangent's (a block is of degree at most two); zero where the step is.
+Result<std::vector<std::array<std::vector<double>, 2>>>
+single_function_block_dots(DeviceResources &res, const ActiveOperands &o, const size_t k,
+                           std::span<const EnergyDirection> directions,
+                           const std::vector<TangentSteps> &steps) {
+  const int64_t n = o.dm1.dims[0];
+  const auto n4 = static_cast<size_t>(n * n * n * n);
+  std::vector<std::array<std::vector<double>, 2>> out;
+  for (size_t u = 0; u < directions.size(); ++u) {
+    const double s = steps[u].blocks;
+    std::array<std::vector<double>, 2> dot{std::vector<double>(n4, 0.0),
+                                           std::vector<double>(n4, 0.0)};
+    if (s != 0.0) {
+      for (const double sign : {1.0, -1.0}) {
+        const ShiftedOperands x = FBF_TRY(shifted_operands(res, o, directions[u].in, sign * s));
+        const std::array<std::vector<double>, 2> xy =
+            FBF_TRY(single_function_blocks(res, x.ops, k));
+        for (size_t b = 0; b < 2; ++b) {
+          for (size_t e = 0; e < n4; ++e) {
+            dot[b][e] += sign * xy[b][e] / (2.0 * s);
+          }
+        }
+      }
+    }
+    out.push_back(std::move(dot));
+  }
+  return out;
+}
+
+// η̇ of a one-function class at its blocks @p xy and η along their tangents
+// @p dot: (<Ẋ, Y> + <X, Ẏ> - 2η <Y, Ẏ>) / <Y, Y>.
+double single_function_ratio_dot(const std::array<std::vector<double>, 2> &xy, const double eta,
+                                 const std::array<std::vector<double>, 2> &dot) {
+  const auto &[x, y] = xy;
+  const double s = std::inner_product(y.begin(), y.end(), y.begin(), 0.0);
+  const double xdy = std::inner_product(dot[0].begin(), dot[0].end(), y.begin(), 0.0);
+  const double ydx = std::inner_product(x.begin(), x.end(), dot[1].begin(), 0.0);
+  const double ydy = std::inner_product(y.begin(), y.end(), dot[1].begin(), 0.0);
+  return (xdy + ydx - (2.0 * eta * ydy)) / s;
 }
 
 // A block built from a walk's own operands by its make_*.
@@ -1570,7 +1650,8 @@ Status sweep_dyall(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
   const std::vector<int64_t> d2{n, n};
   const std::vector<int64_t> d4(4, n);
   const std::vector<int64_t> d6(6, n);
-  const auto &[h1e, h2e, dm1, dm2, dm3, f3ca, f3ac, delta, delta_buf, e_core, e_virt, pc_floor] = o;
+  const auto &[h1e, h2e, dm1, dm2, dm3, f3ca, f3ac, delta, delta_buf, e_core, e_virt, pc_floor,
+               nelecas] = o;
   double *const bh1 = bars.h1e;
   double *const bh2 = bars.h2e;
   double *const b1 = bars.dm1;
@@ -1858,9 +1939,12 @@ Status sweep_blocks(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
 // One state's own tables over one class's walk, perturber by perturber in
 // walk order: its norm N^J and H^J, and A^J = Σ_{I != J} H̄_IJ T_IJ / D_J²,
 // the bar on its denominator D_J = Δ + H^J / N^J that the pairs with ket J
-// put there.
+// put there. A one-function class (single_function_class) has @p eta, its
+// η^J from its blocks @p xy, and D_J = Δ + η^J for every perturber instead.
 struct KetTables {
   std::vector<double> norm, h, a;
+  std::array<std::vector<double>, 2> xy;
+  std::optional<double> eta;
 };
 
 // R's host sums @p core and @p virt onto @p bars' orbital energies', when
@@ -1921,6 +2005,16 @@ Result<ScEffectiveHamiltonianAdjoint> sc_couplings_adjoint(
   for (std::vector<KetTables> &k : kets) {
     k.resize(static_cast<size_t>(ns));
   }
+  // A one-function class's η, per state, from its own blocks.
+  for (int64_t j = 0; j < ns; ++j) {
+    for (const auto &[k, walk] : walks) {
+      if (single_function_class(ops[at(j, j)], k)) {
+        KetTables &kt = kets[k][static_cast<size_t>(j)];
+        kt.xy = FBF_TRY(single_function_blocks(res, ops[at(j, j)], k));
+        kt.eta = single_function_ratio(kt.xy);
+      }
+    }
+  }
 
   // 1. Each state's own N and H, perturber by perturber: the denominators
   //    every pair with that ket reads. One state has no pair, so none.
@@ -1972,10 +2066,11 @@ Result<ScEffectiveHamiltonianAdjoint> sc_couplings_adjoint(
                              ClassEnergies &element = out.elements[at(bra, ket)];
                              element.norms[k] += t;
                              KetTables &kt = kets[k][static_cast<size_t>(ket)];
-                             if (std::abs(kt.norm[g]) <= kNumericalZero) {
+                             if (!kt.eta && std::abs(kt.norm[g]) <= kNumericalZero) {
                                continue;
                              }
-                             const double d = perturber_delta(p, c.e) + (kt.h[g] / kt.norm[g]);
+                             const double d = perturber_delta(p, c.e) +
+                                              (kt.eta ? *kt.eta : (kt.h[g] / kt.norm[g]));
                              element.energies[k] -= t / d;
                              const double weight = hbar[at(bra, ket)];
                              kt.a[g] += weight * t / (d * d);
@@ -2010,6 +2105,11 @@ Result<ScEffectiveHamiltonianAdjoint> sc_couplings_adjoint(
     ClassEnergies &element = out.elements[at(j, j)];
     for (const auto &[k, walk] : walks) {
       const KetTables &kt = kets[k][static_cast<size_t>(j)];
+      // A one-function class: E_J = Σ_t N_t c_t, c_t = -1 / (Δ_t + η). The
+      // bar on each D_t = Δ_t + η is H̄_JJ N_t c_t² + A_t, onto Δ_t and,
+      // summed into η̄, onto η, which goes to the class's blocks after the
+      // walk; beside it H̄_JJ c_t on N_t, and nothing on H_t.
+      double eta_bar = 0.0;
       // PySCF's _norm_to_energy over the walk's own tables, and its
       // derivatives, Park Eqs. 36-38 for H̄_JJ E_J: T = -1 / (Δ + H/N),
       // P = dE/dN = 2T + Δ T², Q = dE/dH = T² and R = dE/dΔ = N T², each put
@@ -2027,6 +2127,16 @@ Result<ScEffectiveHamiltonianAdjoint> sc_couplings_adjoint(
               const double norm = combined(p, a);
               const double h = combined(p, b);
               element.norms[k] += norm;
+              if (kt.eta) {
+                const double cg = -1.0 / (perturber_delta(p, c.e) + *kt.eta);
+                const double ap = kt.a.empty() ? 0.0 : kt.a[static_cast<size_t>(first) + x];
+                const double d_bar = (weight * norm * cg * cg) + ap;
+                element.energies[k] += norm * cg;
+                spread(p, weight * cg, a_bar);
+                add_delta_bar(p, d_bar, c.e);
+                eta_bar += d_bar;
+                continue;
+              }
               if (std::abs(norm) <= kNumericalZero) {
                 continue;
               }
@@ -2041,6 +2151,10 @@ Result<ScEffectiveHamiltonianAdjoint> sc_couplings_adjoint(
             }
           }};
       out.eq40[k] += FBF_TRY(walk(c, w));
+      if (kt.eta) {
+        FBF_TRY(add_single_function_bars(res, k, blocks.ncas,
+                                         single_function_eta_bars(kt.xy, *kt.eta, eta_bar), m));
+      }
     }
     const EnergyBars &own = bars[static_cast<size_t>(j)];
     const std::array wanted{own.h1e, own.h2e, own.dm1, own.dm2, own.dm3, own.f3ca, own.f3ac};
@@ -2311,6 +2425,20 @@ Result<ClassEnergiesTangent> class_energies_tangent(DeviceResources &res, const 
       .e = {.core = o.e_core, .virt = o.e_virt, .core_bar = unused_core, .virt_bar = unused_virt}};
   BlockBars none = FBF_TRY(block_bars(res, n, false, false));
   for (const auto &[k, walk] : kScWalks) {
+    // A one-function class: E = Σ_t N_t c_t, c_t = -1 / (Δ_t + η), so
+    // Ė = Σ_t c_t Ṅ_t + N_t c_t² (Δ̇_t + η̇), η̇ from its blocks' tangents.
+    std::optional<double> eta;
+    std::vector<double> eta_dot;
+    if (single_function_class(o, k)) {
+      const std::array<std::vector<double>, 2> xy = FBF_TRY(single_function_blocks(res, o, k));
+      eta = single_function_ratio(xy);
+      if (eta) {
+        for (const auto &dot :
+             FBF_TRY(single_function_block_dots(res, o, k, directions, t.steps))) {
+          eta_dot.push_back(single_function_ratio_dot(xy, *eta, dot));
+        }
+      }
+    }
     // Each perturber's N, H and Δ, their tangents, and the finish's in the
     // (N, d) form, d = N Δ + H, E = -N² / d: no 1/N, which the guard's
     // neighbourhood would make fatal. Sir's tables run (i, r) per slab;
@@ -2337,9 +2465,13 @@ Result<ClassEnergiesTangent> class_energies_tangent(DeviceResources &res, const 
         out.h[k][g] = h;
         out.delta[k][g] = diff;
         out.energies.norms[k] += norm;
-        const bool kept = std::abs(norm) > kNumericalZero;
+        const bool kept = !eta && std::abs(norm) > kNumericalZero;
         if (kept) {
           out.energies.energies[k] -= norm / (diff + (h / norm));
+        }
+        const double cg = eta ? -1.0 / (diff + *eta) : 0.0;
+        if (eta) {
+          out.energies.energies[k] += norm * cg;
         }
         const double d = (norm * diff) + h;
         for (size_t u = 0; u < m; ++u) {
@@ -2352,6 +2484,9 @@ Result<ClassEnergiesTangent> class_energies_tangent(DeviceResources &res, const 
           out.norm_dot[k][(g * m) + u] = norm_dot;
           out.h_dot[k][(g * m) + u] = h_dot;
           out.delta_dot[k][(g * m) + u] = diff_dot;
+          if (eta) {
+            out.energy_dot[u][k] += (cg * norm_dot) + (norm * cg * cg * (diff_dot + eta_dot[u]));
+          }
           if (kept) {
             const double e_n = (-2.0 * norm / d) + (norm * norm * diff / (d * d));
             const double e_h = norm * norm / (d * d);
@@ -2387,8 +2522,11 @@ Result<ClassEnergiesTangent> class_energies_tangent(DeviceResources &res, const 
 
 // Fixed multipliers per class and perturber (perturber_index's order): P on
 // N, Q on H and R on Δ. An empty r puts nothing on the orbital energies.
+// A one-function class's bars on its blocks through η are @p blocks[k]
+// (single_function_eta_bars' layout), empty for any other class.
 struct ScMultipliers {
   std::array<std::vector<double>, 8> p, q, r;
+  std::array<std::array<std::vector<double>, 2>, 8> blocks;
 };
 
 // The SC reverse pass at @p mult in place of the finish's own multipliers:
@@ -2427,6 +2565,9 @@ Status fixed_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyI
                      }
                    }};
     FBF_TRY(walk(c, w));
+    if (!mult.blocks[k][0].empty()) {
+      FBF_TRY(add_single_function_bars(res, k, blocks.ncas, mult.blocks[k], m));
+    }
   }
   const std::array wanted{bars.h1e, bars.h2e, bars.dm1, bars.dm2, bars.dm3, bars.f3ca, bars.f3ac};
   if (std::ranges::any_of(wanted, [](const double *b) { return b != nullptr; })) {
@@ -2605,7 +2746,7 @@ Status line_derivative(DeviceResources &res, const MoBlocks &blocks, const Energ
 Status fixed_adjoint_tangent(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                              const int32_t batch, const EnergyDirection &d, const double step,
                              const ScMultipliers &mult, const EnergyBars &bars) {
-  const ScMultipliers no_r{.p = mult.p, .q = mult.q, .r = {}};
+  const ScMultipliers no_r{.p = mult.p, .q = mult.q, .r = {}, .blocks = mult.blocks};
   return line_derivative(res, blocks, bars, step, kLineWeights.size(),
                          [&](const double t, const EnergyBars &scratch) -> Status {
                            const ShiftedInputs x = FBF_TRY(shifted_inputs(res, blocks, in, d, t));
@@ -2775,14 +2916,42 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
       FBF_TRY(class_energies_tangent(res, blocks, in, batch, directions));
   const size_t m = directions.size();
 
+  // A one-function class (single_function_class): its blocks, η, and their
+  // tangents along each direction. It has no guarded perturber.
+  const ActiveOperands o = FBF_TRY(active_operands(res, blocks, in));
+  const std::vector<TangentSteps> steps = FBF_TRY(tangent_steps(res, blocks, in, directions));
+  std::array<std::optional<double>, 8> eta_of;
+  std::array<std::array<std::vector<double>, 2>, 8> xy;
+  std::array<std::vector<std::array<std::vector<double>, 2>>, 8> xy_dot;
+  for (size_t k = 0; k < 8; ++k) {
+    if (single_function_class(o, k)) {
+      xy[k] = FBF_TRY(single_function_blocks(res, o, k));
+      eta_of[k] = single_function_ratio(xy[k]);
+      xy_dot[k] = FBF_TRY(single_function_block_dots(res, o, k, directions, steps));
+    }
+  }
+
   // The finish's multipliers at the base point, P = E_N, Q = E_H and
   // R = E_Δ in the (N, d) form, d = N Δ + H: zero on a guarded perturber.
+  // A one-function class's, E = Σ_t N_t c_t with c_t = -1 / (Δ_t + η):
+  // P_t = c_t, Q_t = 0 and R_t = N_t c_t², and η̄ = Σ_t R_t on its blocks.
   ScMultipliers base;
+  std::array<double, 8> eta_bar{};
   bool any_guarded = false;
   for (size_t k = 0; k < 8; ++k) {
     const size_t count = t.norm[k].size();
     for (std::vector<double> *v : {&base.p[k], &base.q[k], &base.r[k]}) {
       v->assign(count, 0.0);
+    }
+    if (eta_of[k]) {
+      for (size_t g = 0; g < count; ++g) {
+        const double cg = -1.0 / (t.delta[k][g] + *eta_of[k]);
+        base.p[k][g] = cg;
+        base.r[k][g] = t.norm[k][g] * cg * cg;
+        eta_bar[k] += base.r[k][g];
+      }
+      base.blocks[k] = single_function_eta_bars(xy[k], *eta_of[k], eta_bar[k]);
+      continue;
     }
     for (size_t g = 0; g < count; ++g) {
       const double norm = t.norm[k][g];
@@ -2808,7 +2977,7 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
     // The multipliers the fixed-multiplier bars are differenced at: the
     // finish's, and on each empty perturber u populates, K6's limit along the
     // ray, P̄ = 2T̄ + Δ T̄² and Q̄ = T̄², T̄ = -1 / (Δ + η).
-    ScMultipliers fixed{.p = base.p, .q = base.q, .r = {}};
+    ScMultipliers fixed{.p = base.p, .q = base.q, .r = {}, .blocks = base.blocks};
     if (any_guarded && step != 0.0) {
       std::vector<EnergyDirection> along{du};
       if (dv != nullptr) {
@@ -2859,7 +3028,9 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
             const double nuu = su.norm[k][g * mu];
             const double nvv = sv->norm[k][g];
             double eta = 0.0;
-            if (std::abs(n) > kNumericalZero) {
+            if (eta_of[k]) {
+              eta = *eta_of[k];
+            } else if (std::abs(n) > kNumericalZero) {
               eta = t.h[k][g] / n;
             } else if (nuu > kEmptyPopulationFloor * scale_u &&
                        nvv > kEmptyPopulationFloor * scale_v) {
@@ -2878,7 +3049,7 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
       double worst_rho = 0.0;
       for (size_t k = 0; k < 8; ++k) {
         for (size_t g = 0; g < t.norm[k].size(); ++g) {
-          if (std::abs(t.norm[k][g]) > kNumericalZero) {
+          if (eta_of[k] || std::abs(t.norm[k][g]) > kNumericalZero) {
             continue;
           }
           const EmptyPair e{.nuu = su.norm[k][g * mu],
@@ -2923,11 +3094,43 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
 
     // The multipliers' tangent: the finish's 3 x 3 in (N, H, Δ) times
     // (Ṅ, Ḣ, Δ̇), zero on a guarded perturber, whose (Ṅ, Ḣ) vanish with N.
+    // A one-function class's through η too: ċ_t = c_t² (Δ̇_t + η̇),
+    // Ṗ_t = ċ_t, Ṙ_t = Ṅ_t c_t² + 2 N_t c_t ċ_t, and its block bars'
+    // tangent at η̄̇ = Σ Ṙ and the blocks' (Ẋ, Ẏ).
     ScMultipliers dot;
     for (size_t k = 0; k < 8; ++k) {
       const size_t count = t.norm[k].size();
       for (std::vector<double> *v : {&dot.p[k], &dot.q[k], &dot.r[k]}) {
         v->assign(count, 0.0);
+      }
+      if (eta_of[k]) {
+        const double e = *eta_of[k];
+        const auto &[x, y] = xy[k];
+        const auto &[x_dot, y_dot] = xy_dot[k][u];
+        const double e_dot = single_function_ratio_dot(xy[k], e, xy_dot[k][u]);
+        double eta_bar_dot = 0.0;
+        for (size_t g = 0; g < count; ++g) {
+          const double cg = -1.0 / (t.delta[k][g] + e);
+          const double c_dot = cg * cg * (t.delta_dot[k][(g * m) + u] + e_dot);
+          dot.p[k][g] = c_dot;
+          dot.r[k][g] = (t.norm_dot[k][(g * m) + u] * cg * cg) + (2.0 * t.norm[k][g] * cg * c_dot);
+          eta_bar_dot += dot.r[k][g];
+        }
+        // single_function_eta_bars' M_X = η̄ Y / S and M_Y = η̄ (X - 2η Y) / S
+        // differentiated, Ṡ = 2 <Y, Ẏ>.
+        const double sy = std::inner_product(y.begin(), y.end(), y.begin(), 0.0);
+        const double sy_dot = 2.0 * std::inner_product(y.begin(), y.end(), y_dot.begin(), 0.0);
+        const double eb = eta_bar[k];
+        dot.blocks[k] = {std::vector<double>(x.size()), std::vector<double>(y.size())};
+        for (size_t i = 0; i < x.size(); ++i) {
+          const double r = x[i] - (2.0 * e * y[i]);
+          const double r_dot = x_dot[i] - (2.0 * e_dot * y[i]) - (2.0 * e * y_dot[i]);
+          dot.blocks[k][0][i] =
+              ((eta_bar_dot * y[i]) + (eb * y_dot[i])) / sy - (eb * y[i] * sy_dot / (sy * sy));
+          dot.blocks[k][1][i] =
+              ((eta_bar_dot * r) + (eb * r_dot)) / sy - (eb * r * sy_dot / (sy * sy));
+        }
+        continue;
       }
       for (size_t g = 0; g < count; ++g) {
         const double n = t.norm[k][g];

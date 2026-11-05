@@ -581,11 +581,10 @@ Still open (none in this milestone):
 | #869 | Flaky: `Nevpt2NumericalHeff.H2coSkewSa3`'s PC finite differences are intermittently noisy. Possibly #870's cause, which #867 fixed, but that is not shown. |
 | #877 | `[optimize]` writes no `optimize.json` or `optimize.xyz` when a walk fails partway. |
 | #878 | `Nevpt2QdIntersection.Psb3TrueResidual` times out (120 s) in the HIP slow tier. |
-| #949 | The SC-QD gradient misses directional FD by 3e-8 to 6e-8 at ethylene Py. #894 found the cause: the empty-perturber guard drops a CAS(2,2) Srs pair whose norm is zero by accident, not by symmetry. |
 | #902 | A MECI walk through a degenerate CASSCF reference pair, using ḡ (follow-up to #892). |
 | #939 | CASSCF can start only from the same run's RHF orbitals, so pHBI's twisted (12e,11o) points cannot be started from a converged planar solution. |
 
-Closed since the first write-up: #866 (convergence knobs as options, PR #899), #870 (the McscfTransitionGradient flake, fixed by #867; the batch log keeps assertion text, PR #903), #905 (DF-CASSCF out of device memory at pHBI aug-cc-pVTZ's 805 basis functions; the three-center build's scratch is freed, PR #935) and #894 (the SC-QD miss at ethylene Py, localized and measured in `src/nevpt2/gradient/README.md`; the fix is #949).
+Closed since the first write-up: #866 (convergence knobs as options, PR #899), #870 (the McscfTransitionGradient flake, fixed by #867; the batch log keeps assertion text, PR #903), #905 (DF-CASSCF out of device memory at pHBI aug-cc-pVTZ's 805 basis functions; the three-center build's scratch is freed, PR #935), #894 (the SC-QD miss at ethylene Py, localized and measured in `src/nevpt2/gradient/README.md`) and #949, its fix: a class whose perturbers span one function each (CAS(2,2)'s Srs and Sij) keeps every perturber at that function's Dyall energy read from its blocks, so no perturber is dropped near an accidental zero, and every SC-QD check at Py passes (`src/nevpt2/energy/README.md`, "One-function classes").
 
 ## Where the record disagrees with itself
 
