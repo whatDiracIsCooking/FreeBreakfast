@@ -1,0 +1,32 @@
+# #846: does Hm exist as its own seam minimum at all-electron
+# SA3-QD-PC-NEVPT2/aug-cc-pVDZ (aug-cc-pVDZ-JKFIT)? The MECI of QD states
+# 0 and 1 from Park's aug-cc-pVDZ Hm on tier 0's criteria
+# (tier0_ethylene_pc.toml; ethylene_starts.md, "And with diffuse functions").
+# Run from the root of the tree:
+#   build/src/free-breakfast -i docs/reproduction/park2019 -o <out> \
+#     docs/reproduction/park2019/ethylene_hm_qdpc_augdz_meci.toml
+[molecule]
+xyz = "geometries/ethylene_hm_start.xyz"
+[basis_set]
+basis = "aug-cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "aug-cc-pvdz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 2
+nelecas = 2
+nroots = 3
+conv_tol_grad = 1e-10
+[nevpt2_gradient]
+quasi_degenerate = true
+variant = "pc"
+[optimize]
+meci = [0, 1]
+max_gap = 1e-7
+max_force = 1.5e-5
+rms_force = 1e-5
+max_displacement = 6e-5
+rms_displacement = 4e-5
+max_steps = 200
