@@ -358,11 +358,13 @@ HostAdjoint adjoint(fb::DeviceResources &res, const State &s) {
 }
 
 // pc_adjoint at @p s, on the host, as adjoint() takes sc_adjoint's; or its
-// error.
-fb::Result<HostAdjoint> pc_adjoint_of(fb::DeviceResources &res, const State &s) {
+// error. @p pc_floor is PC's conditioning floor.
+fb::Result<HostAdjoint> pc_adjoint_of(fb::DeviceResources &res, const State &s,
+                                      const double pc_floor = 0.0) {
   const DeviceState d = upload_state(res, s);
-  const auto got = nevpt2::pc_adjoint(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
-                                      d.c.data(), d.h.data(), s.ncore, s.ncas, d.vector.data(), 0);
+  const auto got =
+      nevpt2::pc_adjoint(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(), d.c.data(),
+                         d.h.data(), s.ncore, s.ncas, d.vector.data(), 0, 0, pc_floor);
   if (!got.has_value()) {
     return std::unexpected(got.error());
   }
@@ -377,11 +379,13 @@ fb::Result<HostAdjoint> pc_adjoint_of(fb::DeviceResources &res, const State &s) 
       .epsilon = download(res, got->epsilon.data(), nmo)};
 }
 
-// pc_energy at @p s.
-fb::Result<nevpt2::PcClassEnergies> pc_energy_of(fb::DeviceResources &res, const State &s) {
+// pc_energy at @p s, under the conditioning floor @p pc_floor.
+fb::Result<nevpt2::PcClassEnergies> pc_energy_of(fb::DeviceResources &res, const State &s,
+                                                 const double pc_floor = 0.0) {
   const DeviceState d = upload_state(res, s);
   return nevpt2::pc_energy(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
-                           d.c.data(), d.h.data(), s.ncore, s.ncas, d.vector.data(), 0);
+                           d.c.data(), d.h.data(), s.ncore, s.ncas, d.vector.data(), 0, 0,
+                           pc_floor);
 }
 
 // C = A B, column-major: A m x k, B k x n.
@@ -1603,11 +1607,12 @@ fb::Result<nevpt2::ScGradient> sc_gradient_of(NuclearRun &run) {
                              run.state.ncas, 0);
 }
 
-fb::Result<nevpt2::PcGradient> pc_gradient_of(NuclearRun &run, const fb::SphericalMatrixAO &h) {
+fb::Result<nevpt2::PcGradient> pc_gradient_of(NuclearRun &run, const fb::SphericalMatrixAO &h,
+                                              const double pc_floor = 0.0) {
   const GradientInputs in = gradient_inputs(run);
   return nevpt2::pc_gradient(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux, h,
                              in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
-                             run.state.ncas, 0);
+                             run.state.ncas, 0, 0, pc_floor);
 }
 
 double largest_abs(std::span<const double> v) {
@@ -1863,6 +1868,45 @@ fb::Result<nevpt2::PcMode> qd_sr_strongest(fb::DeviceResources &res, const State
     return std::unexpected(e.error());
   }
   return e->front().strongest[0];
+}
+
+// PC's conditioning floor (EnergyInputs::pc_floor, #917) reaches the
+// energy, its adjoint and the gradient alike: at 1e-3 of each metric's
+// largest eigenvalue it cuts real modes the default keeps and moves the
+// energy, and the adjoint's and the gradient's energies are that energy,
+// class by class with the same dropped counts. Duality of the floored
+// reverse pass is nevpt2_energy_gpu.cpp's ConditioningFloorReadByEveryPass.
+TEST(Nevpt2PcGradient, FloorReachesEnergyAdjointAndGradient) {
+  FBF_REQUIRE_GPU();
+  constexpr double kFloor = 1e-3;
+  NuclearRun run = nuclear_run(gradient_case("h2o_skew_ccpvdz"));
+  ASSERT_TRUE(run.solution.has_value());
+  fb::DeviceResources &res = run.node->device(0);
+  const GradientInputs in = gradient_inputs(run);
+  const State &s = run.state;
+  const auto base = pc_energy_of(res, s);
+  const auto floored = pc_energy_of(res, s, kFloor);
+  const auto adj = pc_adjoint_of(res, s, kFloor);
+  const auto g = pc_gradient_of(run, in.h, kFloor);
+  ASSERT_TRUE(base.has_value()) << base.error().message;
+  ASSERT_TRUE(floored.has_value()) << floored.error().message;
+  ASSERT_TRUE(adj.has_value()) << adj.error().message;
+  ASSERT_TRUE(g.has_value()) << g.error().message;
+  std::int64_t more = 0;
+  for (std::size_t k = 0; k < 8; ++k) {
+    more += floored->dropped[k] - base->dropped[k];
+    EXPECT_EQ(g->energies.dropped[k], floored->dropped[k]) << k;
+    EXPECT_NEAR(g->energies.energies[k], floored->energies[k], 1e-12) << k;
+    if (k != 2) {
+      EXPECT_GT(floored->kept[k], kFloor) << k;
+    }
+  }
+  EXPECT_GT(more, 0) << "the floor cut nothing the default keeps";
+  EXPECT_GT(std::abs(floored->total - base->total), 1e-9) << "the floor moved no energy";
+  EXPECT_NEAR(adj->total, floored->total, 1e-12);
+  std::cout << std::format("[ nevpt2   ] PC floor {:.0e} h2o_skew_ccpvdz: {} more modes cut, "
+                           "E_corr {:+.12f} (default {:+.12f})\n",
+                           kFloor, more, floored->total, base->total);
 }
 
 // A state PC refuses is refused by pc_gradient with pc_energy's error, kind

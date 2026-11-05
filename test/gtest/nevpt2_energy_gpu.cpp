@@ -2756,7 +2756,7 @@ std::string pc_cuts(const nevpt2::PcClassEnergiesTangent &t) {
   for (std::size_t k = 0; k < 8; ++k) {
     if (t.energies.dropped[k] > 0) {
       out += std::format(" {} {} cut {:.2e} kept {:.2e}", kClassNames[k], t.energies.dropped[k],
-                         t.cut[k], t.kept[k]);
+                         t.energies.cut[k], t.energies.kept[k]);
     }
   }
   return out;
@@ -2795,7 +2795,7 @@ TEST_P(Nevpt2PcEnergyTangentNullModes, DualToTheBars) {
   for (std::size_t k = 0; k < 8; ++k) {
     dropped += got->tangent.energies.dropped[k];
     if (got->tangent.energies.dropped[k] > 0) {
-      EXPECT_LT(got->tangent.cut[k], kNullModes * round_off(sizes[k])) << kClassNames[k];
+      EXPECT_LT(got->tangent.energies.cut[k], kNullModes * round_off(sizes[k])) << kClassNames[k];
     }
   }
   EXPECT_GT(dropped, 0);
@@ -2880,8 +2880,8 @@ TEST(Nevpt2PcEnergyTangent, DualToTheBarsWithRealModesDropped) {
   double kept = 1.0;
   for (std::size_t k = 0; k < 8; ++k) {
     if (with->tangent.energies.dropped[k] > 0) {
-      real = std::max(real, with->tangent.cut[k] / round_off(sizes[k]));
-      kept = std::min(kept, with->tangent.kept[k]);
+      real = std::max(real, with->tangent.energies.cut[k] / round_off(sizes[k]));
+      kept = std::min(kept, with->tangent.energies.kept[k]);
     }
   }
   EXPECT_GT(real, kNullModes) << "no class's cut drops a real mode";
@@ -2890,6 +2890,68 @@ TEST(Nevpt2PcEnergyTangent, DualToTheBarsWithRealModesDropped) {
                            "cut {:.1f} ε √d, smallest kept {:.2e};{}\n",
                            what, std::ranges::max(with->miss), std::ranges::max(without->miss),
                            real, kept, pc_cuts(with->tangent));
+}
+
+// The conditioning floor (EnergyInputs::pc_floor, #917) on a golden whose
+// metrics are gapped: at kFloor it cuts real modes the default keeps, and the
+// energy, its reverse pass and its tangent all read it, the same dropped
+// counts and energies, each class's kept mode above the floor and its cut
+// below, and the tangent dual to the bars at the issue's bar, the kept span's
+// rotation (#862) carrying the real dropped modes as it does at the default.
+constexpr double kFloor = 1e-3;
+
+TEST(Nevpt2PcEnergyTangent, ConditioningFloorReadByEveryPass) {
+  FBF_REQUIRE_GPU();
+  const std::string name = "n2_ccpvdz_cas44_df";
+  fb::DeviceResources res(0);
+  const HostCase h = load_host_case(kDataDir / name);
+  const auto base = pc_energies(res, h);
+  ASSERT_TRUE(base) << base.error().message;
+  DeviceCase g = upload_case(res, h);
+  g.in.pc_floor = kFloor;
+  const auto floored = nevpt2::pc_class_energies(res, *g.blocks, g.in, 0);
+  ASSERT_TRUE(floored) << floored.error().message;
+  const DeviceBars b = zero_bars(res, h);
+  const auto adj = nevpt2::pc_class_energies_adjoint(res, *g.blocks, g.in, 0, b.bars);
+  ASSERT_TRUE(adj) << adj.error().message;
+  const HostBars bars = download_bars(res, b);
+  const HostCase dx = random_direction(h, "all", 917);
+  const DeviceCase gd = upload_case(res, dx);
+  const std::array<nevpt2::EnergyDirection, 1> directions{direction_of(gd, dx)};
+  const auto tangent = nevpt2::pc_class_energies_tangent(res, *g.blocks, g.in, 0, directions);
+  ASSERT_TRUE(tangent) << tangent.error().message;
+
+  std::int64_t more = 0;
+  for (std::size_t k = 0; k < 8; ++k) {
+    const std::string cls = kClassNames[k];
+    EXPECT_GE(floored->dropped[k], base->dropped[k]) << cls;
+    more += floored->dropped[k] - base->dropped[k];
+    for (const nevpt2::PcClassEnergies *e : {&adj->energies, &tangent->energies}) {
+      EXPECT_EQ(e->dropped[k], floored->dropped[k]) << cls;
+      EXPECT_NEAR(e->energies[k], floored->energies[k], 1e-10) << cls;
+      EXPECT_EQ(e->kept[k], floored->kept[k]) << cls;
+    }
+    if (k != 2) {
+      // Every class but Sijrs solves a metric: its kept modes clear the floor.
+      EXPECT_GT(floored->kept[k], kFloor) << cls;
+      EXPECT_LE(floored->cut[k], kFloor) << cls;
+      EXPECT_LE(base->kept[k], floored->kept[k]) << cls;
+    }
+  }
+  EXPECT_GT(more, 0) << "the floor cut nothing the default keeps";
+  EXPECT_GT(std::abs(floored->total - base->total), 1e-9) << "the floor moved no energy";
+  const std::vector<double> summands = bars_summands(bars, h, dx);
+  const double predicted = std::accumulate(summands.begin(), summands.end(), 0.0);
+  double scale = 0.0;
+  for (const double x : summands) {
+    scale = std::max(scale, std::abs(x));
+  }
+  const double miss = std::abs(tangent->total_dot.front() - predicted) / scale;
+  EXPECT_LE(miss, kPcDuality);
+  std::cout << std::format("[ nevpt2   ] PC floor {:.0e} {}: {} more modes cut, E {:+.12f} "
+                           "(default {:+.12f}); Ė against Σ<bar, dx> {:.2e};{}\n",
+                           kFloor, name, more, floored->total, base->total, miss,
+                           pc_cuts(*tangent));
 }
 
 // PSB3 twisted 90° about C13=C14 (nevpt2_psb3_gpu.cpp's kPsb3Twisted,
@@ -2995,65 +3057,99 @@ const HostCase &psb3_twist() {
 }
 
 // PSB3's twist cannot carry the duality gate: its Sr and Si keep modes at
-// about 3e-13 of σ_max, just above the cut, so the solve amplifies the
-// einsums' atomic round-off in S and K by about 1e12, and PC's bars along any
-// direction that moves K repeat run to run only to ~4e-5 relative (#917).
-// Measured (RTX 3080), five reverse passes: σ 1.4e-5, 2.4e-5 and 2.3e-5 of
-// Σ <bar, dx> along h, rdm and all. So it checks visibility alone: over five
-// reverse passes, σ the sample deviation of Σ <bar, dx> along each direction
-// that moves K, the tangent with the kept span's rotation must sit within 3σ
-// of their mean, and without it, further than 100σ along the directions that
-// move S (h moves K alone, so U̇ is zero there). Measured: within 2.1σ
-// with it, 15827σ (rdm, 38% of Ė) and 2845σ (all) without.
+// about 4e-13 of σ_max, just above the cut, so the solve amplifies the
+// einsums' atomic round-off in S and K by about 1e12, and along any direction
+// that moves K both PC's bars and its tangent repeat run to run only to a few
+// 1e-6 relative (#917; RTX 3080, since #916's warp pre-reduction, 2e-6 to
+// 7e-6, against 1.4e-5 to 2.4e-5 before). So it checks visibility alone,
+// statistically: over kSpanRepeats reverse passes and as many tangents, each
+// with its sample deviation σ_a and σ_t along each direction, the two means
+// must agree within kSpanSigmas √(σ_t² + σ_a²), and the tangent without the
+// kept span's rotation must miss the bars' mean by more than 100 times that
+// along the directions that move S (h moves K alone, so U̇ is zero there).
+// The bound is each sample's own spread, not the means' (√kSpanRepeats
+// tighter): the two are one bilinear form evaluated two ways, dual only to
+// the solve's conditioning, so a residue of that order is not a failure.
+// Five of a nine-degree-of-freedom deviation is far in the tail (Student's
+// t, two-sided, about 7e-4 for the means alone); the earlier 3σ over five
+// passes, with the tangent a single sample, failed 2 runs in 3 once #916 had
+// shrunk σ_a and not σ_t.
+constexpr std::int32_t kSpanRepeats = 10;
+constexpr double kSpanSigmas = 5.0;
+
 TEST(Nevpt2PcEnergyTangent, SpanTermVisibleAtPsb3Twist) {
   FBF_REQUIRE_GPU();
   // A check, not the gate (DualToTheBarsWithRealModesDropped is, and the
-  // family's fast case): a CASSCF, five reverse passes and two tangents,
-  // about 2 s on the RTX 3080, its CASSCF 14 s on the gfx1200
+  // family's fast case): a CASSCF, ten reverse passes and eleven tangents,
+  // about 7 s on the RTX 3080, its CASSCF 14 s on the gfx1200
   // (nevpt2_psb3_gpu.cpp).
   FBF_SKIP_IF_FAST_TESTS();
   const HostCase &h = psb3_twist();
   ASSERT_GT(h.na, 0U);
   fb::DeviceResources res(0);
   const std::vector<std::string> groups{"h", "rdm", "all"};
-  constexpr std::int32_t kRepeats = 5;
-  std::vector<std::vector<double>> sums(groups.size());
-  std::optional<std::pair<nevpt2::PcClassEnergiesAdjoint, HostBars>> adj;
-  for (std::int32_t rep = 0; rep < kRepeats; ++rep) {
-    adj = run_pc_adjoint(res, h, 0);
-    ASSERT_TRUE(adj.has_value());
-    for (std::size_t u = 0; u < groups.size(); ++u) {
-      const auto at = std::ranges::find(kPcTangentGroups, groups[u]) - kPcTangentGroups.begin();
-      const HostCase dx = random_direction(h, groups[u], 810 + static_cast<std::uint64_t>(at));
-      const std::vector<double> summands = bars_summands(adj->second, h, dx);
-      sums[u].push_back(std::accumulate(summands.begin(), summands.end(), 0.0));
-    }
+  std::vector<HostCase> dx;
+  for (const std::string &group : groups) {
+    const auto at = std::ranges::find(kPcTangentGroups, group) - kPcTangentGroups.begin();
+    dx.push_back(random_direction(h, group, 810 + static_cast<std::uint64_t>(at)));
   }
-  const std::string what = "psb3_twist_sto3g";
-  const auto with = pc_duality(res, h, adj->second, adj->first.energies, 0, true, groups, what);
-  const auto without = pc_duality(res, h, adj->second, adj->first.energies, 0, false, groups, what);
-  ASSERT_TRUE(with.has_value());
-  ASSERT_TRUE(without.has_value());
-  for (std::size_t u = 0; u < groups.size(); ++u) {
-    const double mean = std::accumulate(sums[u].begin(), sums[u].end(), 0.0) / kRepeats;
+  DeviceCase g = upload_case(res, h);
+  std::vector<DeviceCase> gd;
+  gd.reserve(dx.size());
+  std::vector<nevpt2::EnergyDirection> directions;
+  for (const HostCase &d : dx) {
+    gd.push_back(upload_case(res, d));
+    directions.push_back(direction_of(gd.back(), d));
+  }
+  // Each sample's mean and deviation.
+  const auto stats = [](const std::vector<double> &x) {
+    const double n = static_cast<double>(x.size());
+    const double mean = std::accumulate(x.begin(), x.end(), 0.0) / n;
     double var = 0.0;
-    for (const double x : sums[u]) {
-      var += (x - mean) * (x - mean);
+    for (const double v : x) {
+      var += (v - mean) * (v - mean);
     }
-    const double sigma = std::sqrt(var / (kRepeats - 1));
-    const double on = std::abs(with->dot[u] - mean);
-    const double off = std::abs(without->dot[u] - mean);
-    EXPECT_LE(on, 3.0 * sigma) << groups[u] << ": Ė " << with->dot[u] << ", mean " << mean;
-    if (groups[u] != "h") {
-      EXPECT_GT(off, 100.0 * sigma) << groups[u] << ": span off Ė " << without->dot[u];
+    return std::pair{mean, std::sqrt(var / (n - 1.0))};
+  };
+  std::vector<std::vector<double>> sums(groups.size());
+  std::vector<std::vector<double>> dots(groups.size());
+  std::optional<nevpt2::PcClassEnergiesTangent> last;
+  for (std::int32_t rep = 0; rep < kSpanRepeats; ++rep) {
+    const auto adj = run_pc_adjoint(res, h, 0);
+    ASSERT_TRUE(adj.has_value());
+    auto t = nevpt2::pc_class_energies_tangent(res, *g.blocks, g.in, 0, directions, true);
+    ASSERT_TRUE(t) << t.error().message;
+    ASSERT_EQ(t->total_dot.size(), groups.size());
+    for (std::size_t u = 0; u < groups.size(); ++u) {
+      const std::vector<double> summands = bars_summands(adj->second, h, dx[u]);
+      sums[u].push_back(std::accumulate(summands.begin(), summands.end(), 0.0));
+      dots[u].push_back(t->total_dot[u]);
     }
-    std::cout << std::format("[ nevpt2   ] PC tangent {} {}: Σ<bar, dx> mean {:+.10e} σ {:.2e} "
-                             "({:.1e} relative); with the span term {:.2f}σ off, without "
-                             "{:.1f}σ\n",
-                             what, groups[u], mean, sigma, sigma / std::abs(mean), on / sigma,
-                             off / sigma);
+    last = std::move(*t);
   }
-  std::cout << std::format("[ nevpt2   ] PC tangent {}:{}\n", what, pc_cuts(with->tangent));
+  const auto without =
+      nevpt2::pc_class_energies_tangent(res, *g.blocks, g.in, 0, directions, false);
+  ASSERT_TRUE(without) << without.error().message;
+  const std::string what = "psb3_twist_sto3g";
+  for (std::size_t u = 0; u < groups.size(); ++u) {
+    const auto [mean_a, sigma_a] = stats(sums[u]);
+    const auto [mean_t, sigma_t] = stats(dots[u]);
+    const double spread = std::hypot(sigma_a, sigma_t);
+    const double on = std::abs(mean_t - mean_a);
+    const double off = std::abs(without->total_dot[u] - mean_a);
+    EXPECT_LE(on, kSpanSigmas * spread)
+        << groups[u] << ": Ė mean " << mean_t << ", Σ<bar, dx> mean " << mean_a;
+    if (groups[u] != "h") {
+      EXPECT_GT(off, 100.0 * kSpanSigmas * spread)
+          << groups[u] << ": span off Ė " << without->total_dot[u];
+    }
+    std::cout << std::format("[ nevpt2   ] PC tangent {} {}: Σ<bar, dx> mean {:+.10e} σ_a {:.2e} "
+                             "({:.1e} relative), Ė σ_t {:.2e}; with the span term {:.2f} "
+                             "spreads off, without {:.1f}\n",
+                             what, groups[u], mean_a, sigma_a, sigma_a / std::abs(mean_a), sigma_t,
+                             on / spread, off / spread);
+  }
+  std::cout << std::format("[ nevpt2   ] PC tangent {}:{}\n", what, pc_cuts(*last));
 }
 
 // A class the energy refuses, the tangent refuses with the energy's error,

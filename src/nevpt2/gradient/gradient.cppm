@@ -127,6 +127,8 @@ struct ScAdjoint {
 /// @brief The PC-NEVPT2 class energies of the root @p vector over the
 /// orbitals @p c: sc_energy's inputs, built the same way from the same
 /// arguments, through pc_class_energies instead of class_energies.
+/// @p pc_floor is EnergyInputs::pc_floor, PC's conditioning floor (0, the
+/// default, leaves the cut as it is).
 ///
 /// @return The class energies; sc_energy's InvalidConfig for counts that do
 ///         not fit; pc_class_energies' Numerical error naming a refused
@@ -134,7 +136,8 @@ struct ScAdjoint {
 [[nodiscard]] Result<PcClassEnergies>
 pc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
           int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c, const double *h,
-          int32_t ncore, int32_t ncas, const double *vector, int32_t batch, int32_t nfrozen = 0);
+          int32_t ncore, int32_t ncas, const double *vector, int32_t batch, int32_t nfrozen = 0,
+          double pc_floor = 0.0);
 
 /// @brief pc_adjoint's result: ScAdjoint's arrays, in its conventions, of
 /// the PC correlation energy.
@@ -160,7 +163,8 @@ struct PcAdjoint {
 };
 
 /// @brief The adjoint of pc_energy at (@p h, @p b, @p c, @p vector): the
-/// arguments are pc_energy's. sc_adjoint's reverse pass with
+/// arguments are pc_energy's, @p pc_floor among them, so the adjoint is the
+/// derivative of the energy pc_energy reports. sc_adjoint's reverse pass with
 /// pc_class_energies_adjoint in place of class_energies_adjoint: the
 /// builders, rdms_adjoint, the density-fitted adjoints, the symmetrization
 /// and the source term are the same code.
@@ -173,7 +177,7 @@ struct PcAdjoint {
                                            int32_t nao, int32_t nmo, const double *b,
                                            const double *c, const double *h, int32_t ncore,
                                            int32_t ncas, const double *vector, int32_t batch,
-                                           int32_t nfrozen = 0);
+                                           int32_t nfrozen = 0, double pc_floor = 0.0);
 
 /// @brief What the per-root builders make of (h, B, c) at one point, or their
 /// forward tangent along one direction: every EnergyInputs field, the MO
@@ -689,20 +693,19 @@ struct PcGradient {
 /// @p solution: sc_gradient with pc_adjoint in place of sc_adjoint.
 /// zc_multipliers and zc_adjoint over PC's A and epsilon, under the same
 /// degenerate-pair rule, then lagrangian_gradient. The arguments are
-/// sc_gradient's.
+/// sc_gradient's, and @p pc_floor pc_adjoint's.
 ///
 /// @return The gradient; Unsupported for a state average; the energy's
 ///         Numerical error when PC refuses a class (a metric with no
 ///         positive eigenvalue, a pole: λ + Δ at round-off or an intruder,
 ///         |y / (λ + Δ)| > 1); or the first
 ///         error of the calls it makes.
-[[nodiscard]] Result<PcGradient> pc_gradient(DeviceResources &res, const Molecule &molecule,
-                                             const BasisSet &basis,
-                                             std::span<const PrimitivePairClass> classes,
-                                             const BasisSet &aux, const SphericalMatrixAO &h,
-                                             const Buffers::device<double> &b, const double *l,
-                                             const mcscf::Solution &solution, int32_t ncore,
-                                             int32_t ncas, int32_t batch, int32_t nfrozen = 0);
+[[nodiscard]] Result<PcGradient>
+pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch,
+            int32_t nfrozen = 0, double pc_floor = 0.0);
 
 /// @brief qd_sc_lagrangian's result: what the SC-QD-NEVPT2 gradient's
 /// derivative passes take, and what it reports. Every device array is on

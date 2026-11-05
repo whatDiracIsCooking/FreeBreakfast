@@ -1570,7 +1570,7 @@ Status sweep_dyall(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
   const std::vector<int64_t> d2{n, n};
   const std::vector<int64_t> d4(4, n);
   const std::vector<int64_t> d6(6, n);
-  const auto &[h1e, h2e, dm1, dm2, dm3, f3ca, f3ac, delta, delta_buf, e_core, e_virt] = o;
+  const auto &[h1e, h2e, dm1, dm2, dm3, f3ca, f3ac, delta, delta_buf, e_core, e_virt, pc_floor] = o;
   double *const bh1 = bars.h1e;
   double *const bh2 = bars.h2e;
   double *const b1 = bars.dm1;
@@ -3455,12 +3455,11 @@ struct PcClassSums {
   std::vector<int64_t> dropped;
   double homogeneity = 0.0;
   std::vector<PcDenominators> modes;
-  /// @brief A tangent walk's Ė per direction, and its ket's largest dropped
-  /// σ and smallest kept one relative to its largest
-  /// (PcClassEnergiesTangent::cut, kept).
+  /// @brief A tangent walk's Ė per direction.
   std::vector<double> dot;
-  double cut = 0.0;
-  double kept = 0.0;
+  /// @brief Each ket's largest dropped σ and smallest kept one, relative to
+  /// its largest (PcClassEnergies::cut, kept); empty reads as 0.
+  std::vector<double> cut, kept;
 };
 
 // A class with no tuple: nothing coupled, nothing dropped.
@@ -3495,20 +3494,13 @@ Result<PcClassSums> pc_reverse_finish(ReverseContext &c, const PcStates &q, PcRe
     }
     const std::vector<double> host = FBF_TRY(download(res, acc.data(), dirs));
     const ClassSolve &cs = r.kets.solves.front();
-    double cut = 0.0;
-    double kept = 0.0;
-    if (cs.modes) {
-      const std::vector<double> &sigma = cs.modes->sigma;
-      cut = *std::ranges::max_element(sigma.begin(), sigma.begin() + cs.dropped) / sigma.back();
-      kept = sigma[static_cast<size_t>(cs.dropped)] / sigma.back();
-    }
     PcClassSums out{.energy = std::move(r.energy),
                     .dropped = {cs.dropped},
                     .homogeneity = 0.0,
                     .modes = std::move(r.modes),
                     .dot = std::move(r.dot),
-                    .cut = cut,
-                    .kept = kept};
+                    .cut = {cs.cut},
+                    .kept = {cs.kept}};
     for (size_t u = 0; u < out.dot.size(); ++u) {
       out.dot[u] += host[u];
     }
@@ -3541,6 +3533,8 @@ Result<PcClassSums> pc_reverse_finish(ReverseContext &c, const PcStates &q, PcRe
                   .modes = std::move(r.modes)};
   for (const ClassSolve &cs : r.kets.solves) {
     out.dropped.push_back(cs.dropped);
+    out.cut.push_back(cs.cut);
+    out.kept.push_back(cs.kept);
   }
   return out;
 }
@@ -4105,8 +4099,11 @@ Result<PcEffectiveHamiltonianAdjoint> pc_couplings_adjoint(
   const auto put = [&](const size_t k, const PcClassSums &x) {
     for (size_t p = 0; p < out.elements.size(); ++p) {
       out.elements[p].energies[k] = x.energy[p];
-      out.elements[p].dropped[k] = x.dropped[p % static_cast<size_t>(ns)];
-      pc_report_modes(x.modes, p % static_cast<size_t>(ns), k, out.elements[p]);
+      const size_t j = p % static_cast<size_t>(ns);
+      out.elements[p].dropped[k] = x.dropped[j];
+      out.elements[p].cut[k] = j < x.cut.size() ? x.cut[j] : 0.0;
+      out.elements[p].kept[k] = j < x.kept.size() ? x.kept[j] : 0.0;
+      pc_report_modes(x.modes, j, k, out.elements[p]);
     }
     out.homogeneity[k] = x.homogeneity;
   };
@@ -4224,8 +4221,8 @@ pc_class_energies_tangent(DeviceResources &res, const MoBlocks &blocks, const En
     out.energies.energies[k] = x.energy.front();
     out.energies.dropped[k] = x.dropped.front();
     pc_report_modes(x.modes, 0, k, out.energies);
-    out.cut[k] = x.cut;
-    out.kept[k] = x.kept;
+    out.energies.cut[k] = x.cut.empty() ? 0.0 : x.cut.front();
+    out.energies.kept[k] = x.kept.empty() ? 0.0 : x.kept.front();
     for (size_t u = 0; u < dirs && !x.dot.empty(); ++u) {
       out.energy_dot[u][k] = x.dot[u];
     }
