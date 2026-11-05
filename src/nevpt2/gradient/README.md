@@ -371,7 +371,9 @@ FC and at 90°, and keeping the real modes does not move it beyond that
 residual is #862's). `Nevpt2Psb3.PcQdGradientMatchesNumerical` holds FC's.
 
 **Refusals.** A class `pc_effective_hamiltonian` refuses (no positive
-eigenvalue of S_N, λ + Δ not positive) is refused by
+eigenvalue of S_N, or a pole: λ + Δ at round-off or an intruder,
+|y / (λ + Δ)| > 1; no sign test, `../energy/README.md` "Poles, not signs")
+is refused by
 `qd_pc_adjoint` with that error, kind and message naming the class and
 the state, before any bar is read: never a matrix with the class summed
 in as zero. PC's A is the one-root kind: its inactive blocks are not zero
@@ -534,7 +536,8 @@ pair that the degenerate-pair rule refuses for SC takes z = 0 for PC
 (`Nevpt2PcZc` below).
 
 **Refusals.** A class PC refuses (no positive eigenvalue of the metric, a
-non-positive λ + Δ) is refused by `pc_class_energies_adjoint`
+pole: λ + Δ at round-off or an intruder, |y / (λ + Δ)| > 1) is refused by
+`pc_class_energies_adjoint`
 with the energy's error, and `pc_gradient` returns it unchanged: never a
 gradient with that class summed in as zero.
 
@@ -944,9 +947,9 @@ once per process.
     The port of `nevpt2_energy_gpu.cpp`'s degenerate-ε check to the
     gradient's inputs.
   - `Nevpt2PcGradient.RefusesWhatTheEnergyRefuses` (skew H₂O): a zero CI
-    vector (Sr's metric zero, "no positive eigenvalue") and every virtual
-    lowered 1000 Eh through h (Sr's λ + ε_r negative, "not positive"):
-    `pc_gradient` fails with `pc_energy`'s error, kind and message.
+    vector (Sr's metric zero, "no positive eigenvalue") and an intruder,
+    every virtual shifted through h to put Sr's strongest mode at a quarter
+    of its coupling, |t| = 4 ("has an intruder"): `pc_gradient` fails with `pc_energy`'s error, kind and message.
   - Measured on the gfx1200: every component within 3.5e-9 (skew H₂O) and
     5.9e-9 (H₂CO) of the numerical gradient, each about its error bar;
     translation 1.4e-14 and 5.0e-13; E_corr −3.2e-12 and −1.1e-12 from
@@ -1023,8 +1026,12 @@ once per process.
     relative fails in 15, 1 and 3 runs of 24. The same c_r at the random
     seed is asserted on every root of every case. State 1's PC is refused
     at the coarse rungs on `h2co_skew_ccpvdz_sa3` (h, B, C, c_1) and
-    `h8_ring_sto3g_sa3` (c_1), λ + Δ not positive out to t = 1.25e-3, as
-    #729 found; those rungs are NaN and the run is read below them.
+    `h8_ring_sto3g_sa3` (c_1), out to t = 1.25e-3, as #729 found; those
+    rungs are NaN and the run is read below them. The ladder moves a
+    denominator onto a pole there, and the intruder rule (#874, no sign
+    test) still refuses there: on `h2co_skew_ccpvdz_sa3`, 13 points, Sijr
+    and Srs, |t| from 1.07 to 130 at |λ + Δ| from 4.0e-5 to 1.3e-2 (RTX
+    3080). Every ladder passes with its bars and rungs unchanged.
     `h8_ring_sto3g_sa3` eigen c_1 is not asserted either (#736): near that
     pole its ratios are still settling at the finest pair, whose
     extrapolant reads the forwards' rounding at a slope of only 6.1e-3 (it
@@ -1042,8 +1049,8 @@ once per process.
     2.4 times that floor.
   - `Nevpt2QdPc.RefusesWhatTheEnergyRefuses` (`h8_ring_sto3g_sa3`): root 1's
     vector zero ("state 1: Sr's metric has no positive eigenvalue") and the
-    virtuals lowered 1000 Eh through h ("state 0: Sr has a denominator …
-    not positive"): `qd_pc_adjoint` returns `qd_pc_energy`'s error, kind and
+    virtuals shifted through h to make state 0's strongest Sr mode an
+    intruder ("state 0: Sr has an intruder"): `qd_pc_adjoint` returns `qd_pc_energy`'s error, kind and
     message.
 - The SC-QD-NEVPT2 Lagrangian (`qd_sc_lagrangian`), on `h8_sto3g_sa3`'s
   geometry (its E[W] smooth along every path), its DF-SA-CASSCF at three
@@ -1132,7 +1139,8 @@ once per process.
     (`qd_sc_adjoint` at PC's u_K u_Kᵀ), through `df_transition_gradient`
     at zero RDMs. Each term is held above 10 bars on one case.
   - `Nevpt2QdPcGradient.RefusesWhatTheEnergyRefuses` (`h8_ring_sto3g_sa3`):
-    every virtual lowered by 1000 Eh, and root 1's vector zero; each is
+    state 0's Sr intruder (the virtuals shifted through h), and root 1's
+    vector zero; each is
     `qd_pc_energy`'s error, kind and message unchanged.
   - `Nevpt2QdPcGradient.RefusesWhatTheLagrangianRefuses`
     (`h2co_ccpvdz_sa2`): a root of weight 0 and a degenerate pair of PC's

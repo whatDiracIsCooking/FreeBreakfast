@@ -301,9 +301,30 @@ pc_couplings_adjoint(DeviceResources &res, const MoBlocks &blocks,
                      int32_t batch, std::span<const EnergyBars> bars,
                      const std::function<Status(int64_t, int64_t, const EnergyBars &)> &transition);
 
-/// @brief A class's refusal when its smallest denominator λ_k + Δ_t is not
-/// positive, a Numerical error naming it; success otherwise. The energy's and
-/// the reverse pass's one check, so both refuse with the same error.
-Status pc_denominators_positive(const char *name, double min_denominator);
+/// @brief One ket's perturber functions of a class, as the walk meets them:
+/// the mode nearest a pole, the mode of largest amplitude, and the largest
+/// |λ + Δ|, what pc_intruder_check reads.
+struct PcDenominators {
+  PcMode nearest{.denominator = std::numeric_limits<double>::infinity(), .amplitude = 0.0};
+  PcMode strongest;
+  double largest = 0.0;
+
+  /// @brief Mode @p denominator λ_k + Δ_t, its ket's own row @p y.
+  void add(double denominator, double y);
+};
+
+/// @brief A class's refusal for one ket (README "The cut, and refusals"): a
+/// denominator at round-off, |λ + Δ| at most 100 ε √d of the class's largest
+/// (@p d its basis size), or an intruder, a mode whose amplitude
+/// |y / (λ + Δ)| exceeds 1. A Numerical error naming the class, the mode's
+/// denominator and amplitude; success otherwise. The energy's and the
+/// reverse pass's one check, so both refuse with the same error. No sign is
+/// checked: a perturber below its reference is a negative denominator.
+Status pc_intruder_check(const char *name, const PcDenominators &modes, int64_t d);
+
+/// @brief Ket @p j's modes of class @p k into @p out's strongest and nearest,
+/// when @p modes holds the ket's (a solved one); left zero otherwise.
+void pc_report_modes(std::span<const PcDenominators> modes, size_t j, size_t k,
+                     PcClassEnergies &out);
 
 } // namespace free_breakfast::nevpt2

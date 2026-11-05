@@ -263,27 +263,27 @@ struct PcCachedKets {
   int64_t at = 0;
 };
 
-// A class's running couplings, [I ns + J], and each ket's smallest
-// denominator λ_k + Δ_t, over its own solves (a cached ket's were checked by
-// the call that solved it).
+// A class's running couplings, [I ns + J], and each ket's denominators
+// λ_k + Δ_t and amplitudes, over its own solves (a cached ket's were checked
+// by the call that solved it).
 struct Finish {
   int64_t ns;
   std::vector<double> energy;
-  std::vector<double> min_denominator;
+  std::vector<PcDenominators> modes;
 
   explicit Finish(const int64_t states)
       : ns(states), energy(static_cast<size_t>(states * states), 0.0),
-        min_denominator(static_cast<size_t>(states), std::numeric_limits<double>::infinity()) {}
+        modes(static_cast<size_t>(states)) {}
 
   // E_IJ -= c y_I·y_J / (λ_k + Δ) over one tuple's rows: @p yi pair (I, J)'s,
   // @p yj J's own.
   void add(const int64_t i, const int64_t j, const double *yi, const double *yj,
            const std::vector<double> &lambda, const double delta, const double c) {
     double &e = energy[static_cast<size_t>((i * ns) + j)];
-    double &floor = min_denominator[static_cast<size_t>(j)];
+    PcDenominators &own = modes[static_cast<size_t>(j)];
     for (size_t k = 0; k < lambda.size(); ++k) {
       const double den = lambda[k] + delta;
-      floor = std::min(floor, den);
+      own.add(den, yj[k]);
       e -= c * yi[k] * yj[k] / den;
     }
   }
@@ -293,10 +293,10 @@ struct Finish {
   void add_exchange(const int64_t i, const int64_t j, const double *yi, const double *yj,
                     const double *yjx, const std::vector<double> &lambda, const double delta) {
     double &e = energy[static_cast<size_t>((i * ns) + j)];
-    double &floor = min_denominator[static_cast<size_t>(j)];
+    PcDenominators &own = modes[static_cast<size_t>(j)];
     for (size_t k = 0; k < lambda.size(); ++k) {
       const double den = lambda[k] + delta;
-      floor = std::min(floor, den);
+      own.add(den, yj[k]);
       e -= ((2.0 * yi[k] * yj[k]) - (yi[k] * yjx[k])) / den;
     }
   }
@@ -349,10 +349,11 @@ struct Finish {
     }
   }
 
-  // The class's couplings, refused when a ket's denominator is not positive.
-  Result<std::vector<double>> done(const char *name) const {
+  // The class's couplings, refused when a ket meets a pole (pc_intruder_check)
+  // over the class's basis of size @p d.
+  Result<std::vector<double>> done(const char *name, const int64_t d) const {
     for (int64_t j = 0; j < ns; ++j) {
-      const Status ok = pc_denominators_positive(name, min_denominator[static_cast<size_t>(j)]);
+      const Status ok = pc_intruder_check(name, modes[static_cast<size_t>(j)], d);
       if (!ok) {
         return state_error(ok.error(), j, ns);
       }
@@ -361,13 +362,43 @@ struct Finish {
   }
 };
 
-// K + Δ S must be positive on the kept range, and a sign change would divide
-// through a pole.
-Status pc_denominators_positive(const char *name, const double min_denominator) {
-  if (!(min_denominator > 0.0)) {
-    return err_numerical("nevpt2::pc_class_energies: {} has a denominator λ + Δ = {:.3e} that "
-                         "is not positive",
-                         name, min_denominator);
+void PcDenominators::add(const double denominator, const double y) {
+  const double t = y / denominator;
+  if (std::abs(denominator) < std::abs(nearest.denominator)) {
+    nearest = {.denominator = denominator, .amplitude = t};
+  }
+  if (std::abs(t) > std::abs(strongest.amplitude)) {
+    strongest = {.denominator = denominator, .amplitude = t};
+  }
+  largest = std::max(largest, std::abs(denominator));
+}
+
+void pc_report_modes(std::span<const PcDenominators> modes, const size_t j, const size_t k,
+                     PcClassEnergies &out) {
+  if (j < modes.size() && std::isfinite(modes[j].nearest.denominator)) {
+    out.strongest[k] = modes[j].strongest;
+    out.nearest[k] = modes[j].nearest;
+  }
+}
+
+// No sign test: K + Δ S is indefinite on the kept range wherever a perturber
+// lies below its reference (an excited state's), and the term is well defined
+// there. What is refused is a pole: a denominator round-off decides, below
+// kPcNoise ε √d of the class's largest, the eigensolver's own scale and the
+// cut's noise multiple; or a mode the reference does not outweigh, |t| > 1,
+// where perturbation theory itself fails (README "The cut, and refusals").
+Status pc_intruder_check(const char *name, const PcDenominators &modes, const int64_t d) {
+  const double floor = kPcNoise * std::numeric_limits<double>::epsilon() *
+                       std::sqrt(static_cast<double>(d)) * modes.largest;
+  if (!(std::abs(modes.nearest.denominator) > floor)) {
+    return err_numerical("nevpt2::pc_class_energies: {} has a denominator λ + Δ = {:.3e} at "
+                         "round-off (at most {:.3e}, 100 ε √d of its largest), amplitude {:.3e}",
+                         name, modes.nearest.denominator, floor, modes.nearest.amplitude);
+  }
+  if (!(std::abs(modes.strongest.amplitude) <= 1.0)) {
+    return err_numerical("nevpt2::pc_class_energies: {} has an intruder: amplitude "
+                         "y / (λ + Δ) = {:.3e} at λ + Δ = {:.3e}, beyond 1",
+                         name, modes.strongest.amplitude, modes.strongest.denominator);
   }
   return {};
 }
@@ -385,6 +416,8 @@ Result<double *> workspace_out(DeviceResources &res, const int64_t count) {
 struct PcClass {
   std::vector<double> energy;
   std::vector<int64_t> dropped;
+  /// @brief Each ket's, empty for a cached call's or a class with no solve.
+  std::vector<PcDenominators> modes;
 };
 
 // A class with no perturber: every coupling zero, nothing dropped.
@@ -396,7 +429,7 @@ PcClass pc_empty(const int64_t ns) {
 // Each ket's dropped count is d - m_J, its solve's or the cached call's.
 Result<PcClass> pc_finished(const Finish &f, const char *name, const PcKets &kets,
                             const int64_t d) {
-  PcClass out{.energy = FBF_TRY(f.done(name)), .dropped = {}};
+  PcClass out{.energy = FBF_TRY(f.done(name, d)), .dropped = {}, .modes = f.modes};
   for (int64_t j = 0; j < kets.ns; ++j) {
     out.dropped.push_back(d - kets.m(j));
   }
@@ -1132,6 +1165,7 @@ Result<std::vector<PcClassEnergies>> pc_couplings(DeviceResources &res, const Mo
     for (size_t k = 0; k < 8; ++k) {
       out[p].energies[k] = classes[k].energy[p];
       out[p].dropped[k] = classes[k].dropped[p % static_cast<size_t>(n)];
+      pc_report_modes(classes[k].modes, p % static_cast<size_t>(n), k, out[p]);
     }
     out[p].total = std::ranges::fold_left(out[p].energies, 0.0, std::plus{});
   }

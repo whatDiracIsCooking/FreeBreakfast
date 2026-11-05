@@ -1749,13 +1749,13 @@ struct PcStates {
 
 // One class's reverse walk under way: its solves and transition rows, the
 // walk bars of every pair (I, J) at [I ns + J], the couplings there, and each
-// ket's smallest denominator.
+// ket's denominators and amplitudes (PcDenominators).
 struct PcReverse {
   const char *name;
   PcKets kets;
   std::vector<PcWalkBars> w;
   std::vector<double> energy;
-  std::vector<double> min_denominator;
+  std::vector<PcDenominators> modes;
 };
 
 Result<PcReverse> pc_reverse_kets(ReverseContext &c, const PcStates &q, const char *name,
@@ -1765,8 +1765,7 @@ Result<PcReverse> pc_reverse_kets(ReverseContext &c, const PcStates &q, const ch
               .kets = FBF_TRY(pc_kets(c.res, name, q.ops, ns, d, n1, build)),
               .w = {},
               .energy = std::vector<double>(static_cast<size_t>(ns * ns), 0.0),
-              .min_denominator = std::vector<double>(static_cast<size_t>(ns),
-                                                     std::numeric_limits<double>::infinity())};
+              .modes = std::vector<PcDenominators>(static_cast<size_t>(ns))};
   for (int64_t p = 0; p < ns * ns; ++p) {
     r.w.push_back(FBF_TRY(pc_walk_bars(c.res, r.kets.m(p % ns), d, n1, p / ns == p % ns)));
   }
@@ -1833,7 +1832,7 @@ Status pc_slab_reverse(ReverseContext &c, const PcStates &q, PcReverse &r,
     const std::vector<double> &lambda = r.kets.solves[static_cast<size_t>(j)].lambda;
     const size_t m = lambda.size();
     const double hj = q.hbar[jj];
-    double &floor = r.min_denominator[static_cast<size_t>(j)];
+    PcDenominators &own = r.modes[static_cast<size_t>(j)];
     for (size_t t = 0; t < rows.size(); ++t) {
       const Perturber &p = rows[t];
       const double diff = perturber_delta(p, c.e);
@@ -1844,7 +1843,7 @@ Status pc_slab_reverse(ReverseContext &c, const PcStates &q, PcReverse &r,
       double rbar = 0.0;
       for (size_t k = 0; k < m; ++k) {
         const double den = lambda[k] + diff;
-        floor = std::min(floor, den);
+        own.add(den, y[row + k]);
         const double g = y[row + k] / den;
         const double gx = p.t2 < 0 ? 0.0 : x[xrow + k] / den;
         gsum[row + k] = hj * g;
@@ -1978,11 +1977,12 @@ using PcBack = Status (*)(DeviceResources &, const ActiveOperands &o, bool own,
                           const PcMatrixBars &b, BlockBars &m, double *acc);
 
 // One PC class over the n states: its couplings [I ns + J], each ket's
-// dropped count, and its homogeneity sum.
+// dropped count and modes, and its homogeneity sum.
 struct PcClassSums {
   std::vector<double> energy;
   std::vector<int64_t> dropped;
   double homogeneity = 0.0;
+  std::vector<PcDenominators> modes;
 };
 
 // A class with no tuple: nothing coupled, nothing dropped.
@@ -2001,7 +2001,7 @@ Result<PcClassSums> pc_reverse_finish(ReverseContext &c, const PcStates &q, PcRe
   DeviceResources &res = c.res;
   const int64_t ns = q.ns;
   for (int64_t j = 0; j < ns; ++j) {
-    const Status ok = pc_denominators_positive(r.name, r.min_denominator[static_cast<size_t>(j)]);
+    const Status ok = pc_intruder_check(r.name, r.modes[static_cast<size_t>(j)], d);
     if (!ok) {
       return state_error(ok.error(), j, ns);
     }
@@ -2016,8 +2016,10 @@ Result<PcClassSums> pc_reverse_finish(ReverseContext &c, const PcStates &q, PcRe
       FBF_TRY(back(res, q.ops[built], i == j, b, q.m[built], acc.data()));
     }
   }
-  PcClassSums out{
-      .energy = std::move(r.energy), .dropped = {}, .homogeneity = FBF_TRY(scalar(res, acc))};
+  PcClassSums out{.energy = std::move(r.energy),
+                  .dropped = {},
+                  .homogeneity = FBF_TRY(scalar(res, acc)),
+                  .modes = std::move(r.modes)};
   for (const ClassSolve &cs : r.kets.solves) {
     out.dropped.push_back(cs.dropped);
   }
@@ -2578,6 +2580,7 @@ Result<PcEffectiveHamiltonianAdjoint> pc_couplings_adjoint(
     for (size_t p = 0; p < out.elements.size(); ++p) {
       out.elements[p].energies[k] = x.energy[p];
       out.elements[p].dropped[k] = x.dropped[p % static_cast<size_t>(ns)];
+      pc_report_modes(x.modes, p % static_cast<size_t>(ns), k, out.elements[p]);
     }
     out.homogeneity[k] = x.homogeneity;
   };

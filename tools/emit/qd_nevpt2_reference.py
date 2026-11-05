@@ -62,10 +62,12 @@ same formulas over the RDMs of the pair (J, I), bra J (the brute force
 settled it: S may come from either orientation, S1 only from (J, I)).
 Sijr's and Srsi's 2 direct - exchange is its bilinear form; nothing is
 averaged; Sijrs is SC's. A case where any root's class has a metric with no
-positive eigenvalue or a denominator lambda + Delta not positive (the C++
-refuses that state) is refused whole: no pc_ arrays, its refusals and an
-ungated diagnostic (not a test target) in the json. Then PC's H_eff,
-symmetrized, and its spectrum.
+positive eigenvalue, or meets a pole (`pc_intruder`: a denominator
+lambda + Delta at round-off, or an intruder, a mode whose amplitude
+|y / (lambda + Delta)| exceeds 1; no sign test, #874), which the C++ refuses
+that state for, is refused whole: no pc_ arrays, its refusals and an ungated
+diagnostic (not a test target) in the json. Then PC's H_eff, symmetrized,
+and its spectrum.
 
 **Validation**, in this script, every case:
 
@@ -1182,16 +1184,41 @@ def pc_y(x, h1, s, s1, u) -> numpy.ndarray:
     return y
 
 
-def pc_pair(y_bra, y_ket, lam, gap, pairing) -> tuple[float, float]:
+def pc_pair(y_bra, y_ket, lam, gap, pairing) -> float:
     """-sum_t y_bra,t^T diag(1 / (lambda + Delta_t)) y_ket,t, Sijr and Srsi's
-    exchange (2 direct - exchange) as a bilinear form; and the smallest
-    denominator."""
+    exchange (2 direct - exchange) as a bilinear form."""
     den = lam[None, :] + gap[:, None]
     if isinstance(pairing, float):
         value = pairing * (y_bra * y_ket / den).sum()
     else:
         value = ((2.0 * y_bra * y_ket - y_bra * y_ket[pairing]) / den).sum()
-    return float(-value), float(den.min(initial=numpy.inf))
+    return float(-value)
+
+
+def pc_intruder(y_ket, lam, gap, d: int) -> str | None:
+    """nevpt2::pc_intruder_check over one ket's modes: why it is refused, or
+    None. A denominator lambda_k + Delta_t at or below PC_NOISE eps sqrt(d)
+    of the class's largest |lambda + Delta| is round-off; a mode whose
+    first-order amplitude |y_tk / (lambda_k + Delta_t)| exceeds 1 is an
+    intruder. No sign is checked: an excited root's perturber may lie below
+    it (src/nevpt2/energy/README.md, "The cut, and refusals", #874)."""
+    den = lam[None, :] + gap[:, None]
+    if den.size == 0:
+        return None
+    floor = (
+        nevpt2_reference.PC_NOISE
+        * float(numpy.finfo(float).eps)
+        * float(numpy.sqrt(d))
+        * float(numpy.abs(den).max())
+    )
+    nearest = float(numpy.abs(den).min())
+    if not nearest > floor:
+        return f"denominator {nearest:.3e} at round-off"
+    with numpy.errstate(divide="ignore", invalid="ignore"):
+        t = numpy.abs(y_ket / den)
+    if not float(t.max()) <= 1.0:
+        return f"intruder, amplitude {float(t.max()):.3e}"
+    return None
 
 
 def pc_qd(state: State, rdms: dict, sc: dict) -> tuple[dict, dict]:
@@ -1200,8 +1227,8 @@ def pc_qd(state: State, rdms: dict, sc: dict) -> tuple[dict, dict]:
     b_{I<-J,t} from the RDMs of the pair (J, I), so
     <I|V|Psi_J^(1)>_k = -sum_t b_{I<-J,t}^T (K_J + Delta_t S_J)^+ b_{J,t}.
     Sijrs is SC's. A class the C++ refuses, naming class and root (a metric
-    with no positive eigenvalue, left zero here, or a denominator not
-    positive), is listed in `refusals`, and a case with any is refused whole
+    with no positive eigenvalue, left zero here, or a pole, `pc_intruder`),
+    is listed in `refusals`, and a case with any is refused whole
     (`main`). Returns the arrays, the per-class smallest smallest-kept over
     largest-dropped ratios (recorded, not gated) and the refusals."""
     n = len(state.ci)
@@ -1233,15 +1260,13 @@ def pc_qd(state: State, rdms: dict, sc: dict) -> tuple[dict, dict]:
             gaps[k] = min(gaps[k], solve["gap"])
             lam, u = solve["lambda"], solve["u"]
             y_ket = pc_y(x, h1, solve["s"], s1, u)
+            reason = pc_intruder(y_ket, lam, gap, s.shape[0])
+            if reason is not None:
+                refusals.append({"root": j, "class": key, "reason": reason})
             for i in range(n):
                 sb, s1b = metrics[j, i][key]
                 y_bra = pc_y(x, h1, sb, s1b, u)
-                value, den = pc_pair(y_bra, y_ket, lam, gap, pairing)
-                if i == j and not den > 0.0:
-                    refusals.append(
-                        {"root": j, "class": key, "reason": f"denominator {den:.3e}"}
-                    )
-                couplings[i, j, k] = value
+                couplings[i, j, k] = pc_pair(y_bra, y_ket, lam, gap, pairing)
     heff2 = couplings.sum(axis=2)
     heff = numpy.diag(state.energies) + heff2
     heff_sym = 0.5 * (heff + heff.T)
