@@ -7,7 +7,10 @@
 # active natural orbitals are pi (0.94-1.00), but it is another CASSCF
 # solution: his two states are 20 µEh apart, ours 7.9 mEh.
 # Kept as the record of what was run (../phbi.md, "(12e,11o) at the twisted
-# MECIs"); a start carried from a converged run is #939.
+# MECIs").
+# #939's start carried from the S0 minimum's converged space, walked in eight
+# steps, lands on a third solution (+3.48 / +6.28 mEh, 2.8 mEh apart), not his
+# either (../phbi.md, "Carried from the S0 minimum (#939)").
 [molecule]
 xyz = "geometries/phbi_tz1211_itw.xyz"
 charge = -1
