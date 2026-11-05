@@ -415,10 +415,35 @@ the two coarser); RTX 3080, `--preset default`, card held.
 - **One residual, cut-independent:** atom 4 x at 90° (gradient 0.0313)
   reproduces its Richardson value to 1e-9 on a rerun, yet misses by 5.7e-9
   and 6.8e-9 (mean 6.3e-9, 2e-7 relative), and by 6.9e-9 with the cut at
-  1e-15, every real mode kept: not the cut's. It passes the bar; whether it
-  is the CASSCF's stopping bias at the displaced points (|g| ~1e-10) or
-  analytic is #862. The CASSCF cannot be held tighter there to test it:
-  `conv_tol_grad` 1e-12 stalls at |g| 2.4e-10 (#862 too).
+  1e-15, every real mode kept: not the cut's. It passes the bar.
+- **It is analytic, not the CASSCF's stopping (#862).** Those points were
+  converged against a CI held to 2.5e-10 absolute, which also stalled
+  `conv_tol_grad` 1e-12 at |g| 2.4e-10 (#867). Since #867, atom 4 x's
+  seven points were rerun at five settings (RTX 3080, `--preset default`,
+  card held). The settings were `conv_tol_grad` 1e-8, 1e-10 and 1e-11, and
+  1e-10 and 1e-11 again from a perturbed start: the SCF stopped at 8
+  iterations (`commutator_tolerance` 3e-3), not 20. The `[casscf]` table
+  has no perturbed-start key. The points stopped at |g| 2.3e-11 to
+  3.4e-11, 1.3e-11 to 1.6e-11 and 2.2e-12 to 3.5e-12. The miss held at
+  8.5e-9, 9.5e-9, 9.1e-9, 8.8e-9 and 7.9e-9. A stopping bias would scale
+  with |g|, and |g| fell 15×. The three steps are clean h²: the ladder is
+  3.98 to 4.03, and a second Richardson level (h⁴ removed) moves each miss
+  by under 1e-10.
+- **It is PC-QD's alone, at the same 90° geometry** (`conv_tol_grad` 1e-10,
+  atom 4 x, miss after the second Richardson level). SA-CASSCF root 0's own
+  gradient misses by 8.5e-10. SC-QD's states 0, 1 and 2 miss by −1.2e-9,
+  −5.2e-10 and 1.6e-9. Single-state SC and PC over a state-specific CASSCF
+  miss by −3e-11 and 5.8e-10. PC-QD's states 0, 1 and 2 miss by 9.6e-9,
+  −1.37e-8 and −1.4e-9. States 0 and 1 are roots 1 and 0, ρ 0.9999, so the
+  miss is opposite in sign across the pair that mixes. It tracks the gate's
+  active-active residue (`asymmetry.active_active` in
+  `nevpt2_gradient.json`). PC-QD's is 3.9e-10, 9.6e-11 and 4.5e-11 at
+  states 1, 0 and 2, and single-state PC's is 5.0e-11. Every SC run's is
+  2.6e-12 to 3.7e-12. Their other blocks agree to within 3×. The PC
+  Lagrangian is the one not stationary in active-active rotations, by
+  about 100× more than SC's. The per-term split (`terms`) cannot localize
+  it: between the stopping points the terms move by up to 3.6e-5 and
+  cancel in the total. A fix is not yet sequenced.
 
 Keeping the real modes instead (the cut at 1e-15) moves the analytic gradient
 by up to 1.3e-8 per component and fixes none of the misses, which is what a
