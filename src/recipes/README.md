@@ -28,7 +28,7 @@ Routines take a `DeviceResources` (`free_breakfast.core.resources`) for their st
 
 ## Tests
 
-In `test/recipes/`, built as their own binary, `free_breakfast_recipes_tests_gpu`, which links only `free_breakfast::recipes`, `free_breakfast::core::resources` and `free_breakfast::basis` (for `matrix_ao`), so a change here builds and runs it without waiting on the method layers. Each GPU case is in `test/recipes/<name>_gpu.cpp`. `einsum`'s refusals need no device; they are in `test/recipes/einsum_host.cpp`, in the same binary, and still run on a device-less box.
+In `test/recipes/`, built as their own binary, `free_breakfast_recipes_tests_gpu`, which links only `free_breakfast::recipes`, `free_breakfast::core::resources` and `free_breakfast::basis` (for `matrix_ao`), so a change here builds and runs it without waiting on the method layers. Each GPU case is in `test/recipes/<name>_gpu.cpp`. Three TUs need no device and are in the same binary, where their cases still run on a device-less box: `einsum`'s refusals (`einsum_host.cpp`), `matrix_ao`'s `ao_count` against hand counts (`matrix_ao_host.cpp`), and `concepts.cpp`, the build-time checks of the exported concepts. That TU `static_assert`s `LinearOperator`, `DavidsonPreconditioner` and `UnitaryCostFunction` against a model that satisfies each and models that miss it one way each (the wrong scalar, a non-const call, a missing or misnamed member, an argument short, a return no `Status` converts from, an integer T, not `usual_fp`). It declares no case, so it fails the build rather than a run. `blas/`'s `BlasOp` and `SandwichOp` are private to its `:shared` partition, so they are checked through the exported functions they constrain, in `gemm_gpu.cpp`, `gemmwich_gpu.cpp` and `gmmwich_gpu.cpp`.
 
 ## Files
 
