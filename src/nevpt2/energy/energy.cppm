@@ -326,6 +326,14 @@ struct ScEffectiveHamiltonianAdjoint {
     const std::function<Status(int64_t bra, int64_t ket, const EnergyBars &transition)>
         &transition);
 
+/// @brief One perturber function of a PC class, mode k of tuple t in its
+/// ket's eigenbasis: its denominator λ_k + Δ_t and its first-order amplitude
+/// t = y_tk / (λ_k + Δ_t), the weight of the normalized perturber in Ψ⁽¹⁾.
+struct PcMode {
+  double denominator = 0.0;
+  double amplitude = 0.0;
+};
+
 /// @brief Each class's PC-NEVPT2 energy in PySCF's order -- Sr, Si, Sijrs,
 /// Sijr, Srsi, Srs, Sij, Sir -- and the correlation energy, their sum.
 struct PcClassEnergies {
@@ -334,6 +342,13 @@ struct PcClassEnergies {
   /// @brief The modes of each class's metric S cut as null; 0 for Sijrs,
   /// which has none.
   std::array<int64_t, 8> dropped{};
+  /// @brief Each class's mode of largest |amplitude|, what the refusal
+  /// bounds (|t| <= 1), and its mode nearest a pole, smallest
+  /// |denominator|; zero for Sijrs, a class with no tuple, and a ket read
+  /// from cached amplitudes. In an effective Hamiltonian, ket J's at every
+  /// [I n + J], as @ref dropped.
+  std::array<PcMode, 8> strongest{};
+  std::array<PcMode, 8> nearest{};
   /// @brief The PC-NEVPT2 correlation energy, Σ of @ref energies.
   double total = 0.0;
 };
@@ -354,9 +369,10 @@ struct PcClassEnergies {
 /// test: the real modes may run through the cut, and carry no energy there.
 ///
 /// @return The energies; a Numerical error naming the class when its metric
-///         has no positive eigenvalue, or a denominator
-///         λ + Δ is not positive; or class_energies' errors, and the
-///         eigensolver's.
+///         has no positive eigenvalue, or a ket meets a pole (a denominator
+///         λ + Δ at round-off, or an intruder, |y / (λ + Δ)| > 1; no sign
+///         test, README "Poles, not signs"); or class_energies' errors, and
+///         the eigensolver's.
 [[nodiscard]] Result<PcClassEnergies> pc_class_energies(DeviceResources &res,
                                                         const MoBlocks &blocks,
                                                         const EnergyInputs &in, int32_t batch);
@@ -402,8 +418,8 @@ struct PcClassEnergies {
 ///
 /// @return The n² elements; sc_effective_hamiltonian's InvalidConfig for
 ///         malformed @p pairs or omissions; or pc_class_energies' errors, a refused class
-///         (S_J with no positive eigenvalue, or a denominator λ + Δ not positive) naming
-///         the class and the state J.
+///         (S_J with no positive eigenvalue, or a pole: λ + Δ at round-off, or an
+///         intruder) naming the class and the state J.
 [[nodiscard]] Result<std::vector<PcClassEnergies>>
 pc_effective_hamiltonian(DeviceResources &res, const MoBlocks &blocks,
                          std::span<const EnergyInputs> pairs, int32_t batch,
@@ -494,7 +510,7 @@ struct PcEffectiveHamiltonianAdjoint {
 ///
 /// @return The elements and the homogeneity sums; InvalidConfig as
 ///         sc_effective_hamiltonian_adjoint's; or a refused class (S_J with no
-///         positive eigenvalue, a denominator not positive), refused with
+///         positive eigenvalue, a pole), refused with
 ///         pc_effective_hamiltonian's error naming the class and the state,
 ///         never given a zero; or the slab adjoint's errors, and
 ///         @p transition's. On an error the bars are unspecified.

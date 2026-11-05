@@ -181,11 +181,13 @@ or below **max(1e-13, 100 ε √d)** of its largest eigenvalue are dropped
 (ε = 2.2e-16, d the class's basis size): 1e-13 up to d = 20, then 3.3e-13 at
 d = 216, 7.0e-13 at d = 1000 and 9.2e-13 at d = 1728, still more than a
 decade below the first real mode on cc-pVTZ (2.1e-11). A class is a
-**Numerical error, naming it**, when S has no positive eigenvalue or when a
-denominator λ_k + Δ_t is not positive. There is no gap test (#853, below).
-The demo reported a refused class and carried on; here the call fails,
-since a total without that class is not PC-NEVPT2 (the pipeline step then
-drops that root's PC and keeps its SC).
+**Numerical error, naming it**, when S has no positive eigenvalue, or when a
+ket meets a pole ([Poles, not signs](#poles-not-signs), #874): a
+denominator λ_k + Δ_t at round-off, or an intruder, a mode whose
+first-order amplitude |y_tk / (λ_k + Δ_t)| exceeds 1. There is no sign
+test and no gap test (#853, below). The demo reported a refused class and
+carried on; here the call fails, since a total without that class is not
+PC-NEVPT2 (the pipeline step then drops that root's PC and keeps its SC).
 
 **The floor: clear of the noise.** What the cut must not keep is a mode
 that round-off or the RDMs' error decides: its σ is noise, so its λ in
@@ -269,6 +271,89 @@ At (2e,2o) nothing comes near the cut along a whole PC-QD MECI walk:
 ethylene's SA3-CASSCF(2,2)/cc-pVDZ, PC-QD states 0 and 1, converged in 83
 evaluations from a twisted, pyramidalized start with no class refused at
 any of them (`docs/reproduction/park2019/README.md`, "Tier 0", #843).
+
+### Poles, not signs
+
+Until #874 a class was also refused when any denominator λ_k + Δ_t was not
+positive. That refused ethylene's S0 minimum at Park's SI geometry
+(SA3-CASSCF(2,2), aug-cc-pV{D,T}Z / aug JKFIT), root 2, the π*² (Z) state,
+whose PC-QD energies Park reports (acs.jctc.9b00919 SI p. S2). For a ground
+state Dyall's denominators are positive; for an excited reference a
+perturber may lie below it, and λ + Δ is then negative. Here they are
+Sr's π¹ r¹ configurations, r a diffuse virtual, below the Z state, as the
+π → Rydberg states lie below it. The term −y² / (λ + Δ) is as well defined
+there as above zero; it fails only at a pole.
+
+- **BAGEL** (qsimulate-open/bagel, ad8c7c8), whose SMITH CAS/A is Park's
+  PC, refuses nothing. `src/smith/denom.cc:515-517`: each metric is
+  `inverse_half(thresh_)` then `diagonalize(denom_)`, no sign read.
+  `src/smith/spinfreebase_update.cpp:132` (and 200, 264, 324, 394, 452,
+  517, 582): `interm[iall] /= min(-0.1, e0_ - (denom + eig...))`, which is
+  `update_amplitude`, CAS/A's **preconditioner** only
+  (`src/smith/casa/CASA.cc:182, 229`); the amplitudes come from `LinearRM`
+  (`CASA.cc:185-215`), unclamped. Park's Eq. 12 divides with no condition;
+  his gradient is an in-house program (CAS/A has none, `CASA.cc:256`).
+- **SC already takes them.** `norm_to_energy` (PySCF's `_norm_to_energy`)
+  guards only |N| > 1e-14. At ethylene S0, SC's state 2 Sr has one
+  perturber below zero, carrying exactly PC's negative-denominator energy.
+- **Park's numbers include them.** Measured, RTX 3080, `--preset default`
+  (PC with the sign test removed, then this rule; the energies are the same):
+
+| ethylene S0 | PC-QD state 2's Sr: below zero, the lowest | smallest \|λ + Δ\| (its \|t\|) | their energy | SC state 2's Sr below zero |
+|---|---|---|---|---|
+| aug-cc-pVDZ | 7, −0.1223 | 9.6e-3 (5e-13) | +3.227654e-3 | 1, −0.0431, +3.227654e-3 |
+| aug-cc-pVTZ | 10, −0.1388 | 1.9e-3 (7e-7) | +8.342916e-4 | 1, −0.0754, +8.342916e-4 |
+
+  PC-QD then gives, against Park's (his frozen core, so Δ = E − E_Park is
+  the core offset `docs/reproduction/park2019/single_points/README.md`
+  measured at the MECIs, #860):
+
+| | E₀, E₁, E₂ (Eh) | Δ₀, Δ₁, Δ₂ (mEh) | the MECIs' mean Δ (spread) |
+|---|---|---|---|
+| aug-cc-pVDZ | −78.339968077678, −78.063572639838, −77.857138939295 | −5.515, −5.505, −5.497 | −5.417, −5.400, −5.465 (≤ 0.18) |
+| aug-cc-pVTZ | −78.446937242316, −78.165961397939, −77.954122569329 | −35.548, −35.446, −35.374 | −35.117, −35.105, −35.169 (≤ 0.71) |
+
+  Without the negative terms Δ₂ at aug-cc-pVDZ would be −8.7 mEh, 3.2 mEh
+  off the band its three neighbours sit in to 0.1.
+
+**The rule** (`pc_intruder_check`, one check for the energy, the effective
+Hamiltonian and the reverse pass, per class and ket):
+
+- **an intruder**: a mode whose amplitude t = y_tk / (λ_k + Δ_t), the
+  weight of the normalized perturber in Ψ⁽¹⁾, has |t| > 1. A perturber that
+  outweighs its reference is where perturbation theory fails, and it is
+  what a pole does: a denominator near zero refuses only through a mode it
+  couples. One it does not couple is harmless: ethylene S0's nearest
+  denominators (−1.6e-3 at aug-cc-pVDZ root 2 alone, −1.7e-3 at
+  aug-cc-pVTZ) carry |t| of 3e-12 and 7e-7.
+- **a denominator at round-off**: |λ + Δ| at most 100 ε √d of the class's
+  largest |λ + Δ| (the cut's noise multiple, d its basis size). λ is an
+  eigenvalue of K′, known to about ε ‖K′‖; below that its sign is noise,
+  and a mode y = 0 there would pass |t| as 0 / 0.
+
+The margin, the largest |t| of any class over Park's SI geometries
+(`[nevpt2] quasi_degenerate`, every root and the QD kets): ethylene
+aug-cc-pVDZ S0 0.274 (Sr, λ + Δ = −0.043), aug-cc-pVTZ S0 0.197, the Py,
+Et and Hm MECIs 0.05–0.08; PSB3 cc-pVDZ S0, S1, CI(11–12) and CI(13–14)
+0.04–0.08. Every golden passes unchanged. The message names the class, the
+state, and the mode's amplitude and denominator
+(`state 0: Sr has an intruder: amplitude y / (λ + Δ) = 4.000e+00 at
+λ + Δ = …, beyond 1`). Each element's `PcClassEnergies::strongest` and
+`nearest` report the two modes the check reads.
+
+**The reverse pass** needs nothing for the sign: Ė = −c (2 xᵀ ḃ − xᵀ Ȧ x)
+with x = A⁺ b holds for any invertible A on the kept span, and its
+multipliers g = y / (λ + Δ) read no sign. Measured at ethylene S0
+aug-cc-pVDZ, by "The derivative across a continuum"'s method (below:
+directional central differences of `[nevpt2_gradient] quasi_degenerate,
+variant = "pc"`'s energies at 2e-3, 1e-3 and 5e-4 bohr, one Richardson
+step, the bar max(2 × its bar, 3 σ_E / h_min)), RTX 3080, `--preset
+default`, card held: σ_E = 2.5e-13 Eh over 5 reference repeats, so
+3 σ_E / h_min = 1.5e-9. Along each state's gradient and two random unit
+directions (`default_rng(874)`), state 2 (its own ket's Sr negative) and
+state 0 (through H_eff), all six pass: state 2 misses by 4.4e-10, 2.0e-10
+and 4.9e-10 at slopes 0.474, 0.061 and 0.026; state 0 by 4.6e-10, 3.6e-10
+and 5.0e-10 at 2.2e-3, 5.2e-4 and −1.1e-4, every bar 1.5e-9 to 2.5e-9.
 
 **The derivative across a continuum.** The reverse pass (below)
 differentiates the solve over S's kept span as if it were fixed, which is
@@ -657,7 +742,7 @@ the cut (#853) break both a little, by their own size: measured at PSB3, the
 derivative holds to the numerical-gradient bar with them dropped, and
 keeping them does not move it ("The derivative across a continuum"). A
 class the energy refuses is refused here with the energy's error (the same
-`solve_class`, and one `pc_denominators_positive` for both), never given a
+`solve_class`, and one `pc_intruder_check` for both), never given a
 zero; on an error the bars are unspecified.
 
 **Conditioning.** The bars through U carry the solve's conditioning:
@@ -714,7 +799,7 @@ columns), and so onto its transition RDMs. **No (I, J) / (J, I) mean**,
 unlike SC: the bar on S^{(J,I)} is pair (I, J)'s alone. Each ket's own M,
 M_Δ and T̄ collect every bra's share and go onto its own blocks as at
 n = 1. A ket the energy refuses (S_J with no positive eigenvalue, or a
-denominator not positive) is refused with `pc_effective_hamiltonian`'s error, naming the
+pole, [Poles, not signs](#poles-not-signs)) is refused with `pc_effective_hamiltonian`'s error, naming the
 class and the state (`state_error`, the forward's), never given a zero.
 Sijrs is SC's, weight Σ_J H̄_JJ.
 
@@ -799,7 +884,12 @@ golden's block2 `pc_class_energies` and `e_pc_total` at 1e-7, and each
 class's dropped count against the demo's measured table, from PySCF's RDMs
 and from `nevpt2::rdms`', walked whole and in threes. And
 `Nevpt2PcEnergy.ZeroMetricIsRefused`: zero RDMs are a Numerical error
-naming Sr.
+naming Sr. `Nevpt2PcEnergy.NegativeAndUncoupledNearPoleAccepted`
+(`n2_ccpvdz_cas44_df`, whose nearest Sr mode has y = 0): what #874 stopped
+refusing ([Poles, not signs](#poles-not-signs)). Every virtual at −1000 Eh,
+every Sr denominator negative, is accepted with Sr's energy positive; and
+the virtuals shifted to put that mode at λ + Δ = −1e-6 are accepted, its
+|t| zero.
 
 `Nevpt2PcInvariance`: PC's invariance to the active orbitals, which the
 pipeline step relies on (it does not rotate to each root's natural
@@ -887,7 +977,7 @@ The PC reverse pass, `Nevpt2PcEnergyAdjoint` and `Nevpt2PcEnergyAdjointLadder`:
   (which keeps every metric's spectrum; a raw direction lifts S's dropped
   modes at first order, and the energy has no derivative along it) and
   f3ca/f3ac along SC's raw direction. The ladder starts at 1e-3: at
-  CAS(4,4), 1e-2 and 5e-3 make a denominator negative. h1e_v has no ratios
+  CAS(4,4), 1e-2 and 5e-3 carry a denominator through zero, across a pole. h1e_v has no ratios
   (the energy is quadratic in it), so each difference is held to the bars.
   Measured on the gfx1200: B 1.1e-9, h1e_v 1.4e-11, e 2.9e-10 (CAS(8,8)); h
   5.8e-10, rdm 4.7e-9, all 3.2e-10 (CAS(4,4)), relative.
@@ -902,8 +992,10 @@ The PC reverse pass, `Nevpt2PcEnergyAdjoint` and `Nevpt2PcEnergyAdjointLadder`:
   sums at 1e-12; the sweep's bars only through those sums, for the
   conditioning above.
 - `RefusesWhatTheEnergyRefuses`: zero RDMs (Sr's metric has no positive
-  eigenvalue) and the virtual orbital energies at −1000 Eh (Sr's
-  denominator): the adjoint fails with `pc_class_energies`' kind and message.
+  eigenvalue) and an intruder (every virtual orbital energy shifted to put
+  Sr's strongest mode, `PcClassEnergies::strongest`, at a quarter of its
+  coupling, |t| = 4): the adjoint fails with `pc_class_energies`' kind and
+  message.
 
 The PC-QD reverse pass, in the same file, over `test/gtest/data/qd_nevpt2/`
 with a seeded random, unsymmetric H̄:
@@ -932,6 +1024,6 @@ with a seeded random, unsymmetric H̄:
   `h8_sto3g_sa3`); the test's comment has each measurement. Measured on the
   RTX 3080, six runs: 1e-13 to 1.6e-8 relative.
 - `Nevpt2PcQdEnergyAdjoint.RefusesWhatTheEnergyRefuses` (`h8_sto3g_sa3`):
-  state 1's own RDMs zeroed, and the virtual orbital energies at −1000 Eh:
+  state 1's own RDMs zeroed, and state 0's Sr intruder placed the same way:
   the adjoint fails with `pc_effective_hamiltonian`'s kind and message,
   naming Sr and the state. `MalformedInputsAreInvalidConfig`: SC's checks.

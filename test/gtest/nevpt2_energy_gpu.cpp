@@ -1328,11 +1328,28 @@ TEST(Nevpt2PcEnergyAdjoint, BatchedBarsMatchWhole) {
   }
 }
 
+// The shift of every virtual orbital energy that puts @p mode's denominator
+// at a quarter of its own coupling |y| = |t (λ + Δ)|: amplitude ±4, an
+// intruder. Sr's Δ is ε_r, so its denominators move by exactly the shift.
+double intruder_shift(const nevpt2::PcMode &mode) {
+  return (std::abs(mode.amplitude * mode.denominator) / 4.0) - mode.denominator;
+}
+
+// @p message with its computed numbers blanked. An intruder's message
+// carries the mode's amplitude y / (λ + Δ), and y is the slab walk's: the
+// energy and its adjoint reassociate its einsums, and at CAS(8,8), whose Sr
+// keeps modes at 1e-10 of its largest (README "Conditioning"), a noise-led
+// mode's y differs between them in the third digit.
+std::string stable_part(const std::string &message) {
+  static const std::regex computed(R"(-?\d\.\d+e[+-]\d+)");
+  return std::regex_replace(message, computed, "#");
+}
+
 // A class the energy refuses is refused by the adjoint, with the energy's
 // error: never a derivative with that class summed in as zero. Two states:
-// zero RDMs, whose Sr metric has no positive eigenvalue; and the golden's
-// with every virtual orbital energy at -1000 Eh, so that Sr's first
-// denominator λ + ε_r is negative.
+// zero RDMs, whose Sr metric has no positive eigenvalue; and an intruder, the
+// golden's with every virtual orbital energy shifted to put Sr's strongest
+// mode (largest |y / (λ + Δ)|) at a quarter of its coupling, |t| = 4.
 TEST(Nevpt2PcEnergyAdjoint, RefusesWhatTheEnergyRefuses) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / kAdjointCase;
@@ -1343,11 +1360,16 @@ TEST(Nevpt2PcEnergyAdjoint, RefusesWhatTheEnergyRefuses) {
        {&zero_rdms.dm1, &zero_rdms.dm2, &zero_rdms.dm3, &zero_rdms.f3ca, &zero_rdms.f3ac}) {
     std::ranges::fill(*rdm, 0.0);
   }
-  HostCase low_virtuals = golden;
-  std::ranges::fill(low_virtuals.e_virt, -1000.0);
+  const auto base = pc_energies(res, golden);
+  ASSERT_TRUE(base.has_value());
+  const double shift = intruder_shift(base->strongest[0]);
+  HostCase intruder = golden;
+  for (double &e : intruder.e_virt) {
+    e += shift;
+  }
   for (const auto &[what, h, needle] :
        {std::tuple{"zero RDMs", &zero_rdms, "no positive eigenvalue"},
-        std::tuple{"virtuals at -1000 Eh", &low_virtuals, "not positive"}}) {
+        std::tuple{"an intruder in Sr", &intruder, "has an intruder"}}) {
     const auto energy = pc_energies(res, *h);
     ASSERT_FALSE(energy) << what;
     DeviceCase g = upload_case(res, *h);
@@ -1356,12 +1378,52 @@ TEST(Nevpt2PcEnergyAdjoint, RefusesWhatTheEnergyRefuses) {
     ASSERT_FALSE(adj) << what;
     EXPECT_EQ(adj.error().kind, fb::ErrorKind::Numerical) << what;
     EXPECT_EQ(adj.error().kind, energy.error().kind) << what;
-    EXPECT_EQ(adj.error().message, energy.error().message) << what;
+    EXPECT_EQ(stable_part(adj.error().message), stable_part(energy.error().message)) << what;
     EXPECT_NE(adj.error().message.find("Sr"), std::string::npos)
         << what << ": " << adj.error().message;
     EXPECT_NE(adj.error().message.find(needle), std::string::npos)
         << what << ": " << adj.error().message;
   }
+}
+
+// What is not refused (#874): no sign test, and no pole without a coupling.
+// A perturber below its reference is a negative denominator, which an
+// excited state meets (ethylene S0's π*² root, Sr at -0.12 Eh, README "The
+// cut, and refusals"); and a denominator near zero whose mode the reference
+// does not couple to is harmless, |t| stays small. On n2_ccpvdz_cas44_df,
+// whose nearest Sr mode has y = 0 exactly: every virtual at -1000 Eh, every
+// Sr denominator negative and Sr's energy then positive; and the virtuals
+// shifted to put that mode at λ + Δ = -1e-6.
+TEST(Nevpt2PcEnergy, NegativeAndUncoupledNearPoleAccepted) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  const HostCase golden = load_host_case(kDataDir / "n2_ccpvdz_cas44_df");
+  const auto base = pc_energies(res, golden);
+  ASSERT_TRUE(base.has_value());
+  const nevpt2::PcMode nearest = base->nearest[0];
+  ASSERT_GT(nearest.denominator, 0.0);
+  ASSERT_LT(std::abs(nearest.amplitude * nearest.denominator), 1e-12)
+      << "the nearest Sr mode must be uncoupled for this case to test it";
+
+  HostCase low = golden;
+  std::ranges::fill(low.e_virt, -1000.0);
+  const auto below = pc_energies(res, low);
+  ASSERT_TRUE(below.has_value()) << below.error().message;
+  EXPECT_LT(below->nearest[0].denominator, 0.0);
+  EXPECT_LT(below->strongest[0].denominator, 0.0);
+  EXPECT_GT(below->energies[0], 0.0);
+  EXPECT_TRUE(std::isfinite(below->total));
+
+  constexpr double kTarget = -1e-6;
+  HostCase near = golden;
+  for (double &e : near.e_virt) {
+    e += kTarget - nearest.denominator;
+  }
+  const auto at_pole = pc_energies(res, near);
+  ASSERT_TRUE(at_pole.has_value()) << at_pole.error().message;
+  EXPECT_NEAR(at_pole->nearest[0].denominator, kTarget, 1e-12);
+  EXPECT_LE(std::abs(at_pole->strongest[0].amplitude), 1.0);
+  EXPECT_TRUE(std::isfinite(at_pole->total));
 }
 
 // ---------------------------------------------------------------------------
@@ -2125,8 +2187,8 @@ INSTANTIATE_TEST_SUITE_P(
 // A class the energy refuses is refused by the adjoint with the energy's
 // error, naming the class and the state, never summed in as zero. On
 // h8_sto3g_sa3: state 1's own RDMs zeroed (Sr's metric has no positive
-// eigenvalue, state 1), and every virtual orbital energy at -1000 Eh (Sr's
-// denominator, state 0).
+// eigenvalue, state 1), and every virtual orbital energy shifted to make
+// state 0's strongest Sr mode an intruder (|y / (λ + Δ)| = 4).
 TEST(Nevpt2PcQdEnergyAdjoint, RefusesWhatTheEnergyRefuses) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res(0);
@@ -2137,12 +2199,19 @@ TEST(Nevpt2PcQdEnergyAdjoint, RefusesWhatTheEnergyRefuses) {
   for (std::vector<double> *rdm : {&own1.dm1, &own1.dm2, &own1.dm3, &own1.f3ca, &own1.f3ac}) {
     std::ranges::fill(*rdm, 0.0);
   }
-  QdHostCase low_virtuals = golden;
-  std::ranges::fill(low_virtuals.shared.e_virt, -1000.0);
+  // State 0's Sr intruder, as RefusesWhatTheEnergyRefuses places it; state 0
+  // is checked first, so its refusal is the one reported.
+  const auto base = pc_qd_energies(res, golden);
+  ASSERT_TRUE(base.has_value());
+  const double shift = intruder_shift(base->front().strongest[0]);
+  QdHostCase intruder = golden;
+  for (double &e : intruder.shared.e_virt) {
+    e += shift;
+  }
   const std::vector<double> hbar = random_hbar(golden.n, 703);
   for (const auto &[what, q, needle] :
        {std::tuple{"state 1's RDMs zero", &zero_own, "state 1: Sr's metric has no positive"},
-        std::tuple{"virtuals at -1000 Eh", &low_virtuals, "state 0: Sr has a denominator"}}) {
+        std::tuple{"state 0's intruder in Sr", &intruder, "state 0: Sr has an intruder"}}) {
     const auto energy = pc_qd_energies(res, *q);
     ASSERT_FALSE(energy) << what;
     QdDeviceCase g = upload_qd(res, *q);

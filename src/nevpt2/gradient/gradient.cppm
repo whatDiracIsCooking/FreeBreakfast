@@ -490,7 +490,8 @@ struct PcGradient {
 ///
 /// @return The gradient; Unsupported for a state average; the energy's
 ///         Numerical error when PC refuses a class (a metric with no
-///         positive eigenvalue, a non-positive denominator); or the first
+///         positive eigenvalue, a pole: λ + Δ at round-off or an intruder,
+///         |y / (λ + Δ)| > 1); or the first
 ///         error of the calls it makes.
 [[nodiscard]] Result<PcGradient>
 pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,

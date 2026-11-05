@@ -1832,12 +1832,45 @@ std::string stable_part(const std::string &message) {
   return std::regex_replace(message, computed, "#");
 }
 
+// The shift of every virtual orbital energy that puts @p mode's denominator
+// at a quarter of its own coupling |y| = |t (λ + Δ)|: amplitude ±4, an
+// intruder, nevpt2_energy_gpu.cpp's. Through shifted_h every ε_r moves by
+// exactly the shift, and so every Sr denominator.
+double intruder_shift(const nevpt2::PcMode &mode) {
+  return (std::abs(mode.amplitude * mode.denominator) / 4.0) - mode.denominator;
+}
+
+// @p s with every virtual orbital energy moved by @p delta through h.
+State virtuals_shifted(const State &s, const double delta) {
+  std::vector<std::size_t> virtuals;
+  for (auto p = static_cast<std::size_t>(s.ncore + s.ncas); p < static_cast<std::size_t>(s.nao);
+       ++p) {
+    virtuals.push_back(p);
+  }
+  State out = s;
+  out.h = shifted_h(s, virtuals, delta);
+  return out;
+}
+
+// State 0's strongest Sr mode of @p s's PC-QD energy over @p weights.
+fb::Result<nevpt2::PcMode> qd_sr_strongest(fb::DeviceResources &res, const State &s,
+                                           std::span<const double> weights) {
+  const DeviceState d = upload_state(res, s);
+  const auto e =
+      nevpt2::qd_pc_energy(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
+                           d.c.data(), d.h.data(), s.ncore, s.ncas, weights, d.vector.data(), 0);
+  if (!e) {
+    return std::unexpected(e.error());
+  }
+  return e->front().strongest[0];
+}
+
 // A state PC refuses is refused by pc_gradient with pc_energy's error, kind
 // and message, never a gradient with the class summed in as zero. Two
 // states, after nevpt2_energy_gpu.cpp's: a zero CI vector, whose RDMs and so
-// Sr's metric are zero ("no positive eigenvalue"); and every virtual orbital
-// energy lowered by 1000 Eh through h (shifted_h), so that Sr's denominator
-// λ + ε_r is negative ("not positive").
+// Sr's metric are zero ("no positive eigenvalue"); and an intruder, every
+// virtual orbital energy shifted through h (shifted_h) to put Sr's strongest
+// mode at a quarter of its coupling, |y / (λ + Δ)| = 4 ("has an intruder").
 TEST(Nevpt2PcGradient, RefusesWhatTheEnergyRefuses) {
   FBF_REQUIRE_GPU();
   NuclearRun run = nuclear_run(gradient_case("h2o_skew_ccpvdz"));
@@ -1847,12 +1880,9 @@ TEST(Nevpt2PcGradient, RefusesWhatTheEnergyRefuses) {
   const State &s = run.state;
   const auto nmo = static_cast<std::size_t>(s.nao);
 
-  std::vector<std::size_t> virtuals;
-  for (auto p = static_cast<std::size_t>(s.ncore + s.ncas); p < nmo; ++p) {
-    virtuals.push_back(p);
-  }
-  State low = s;
-  low.h = shifted_h(s, virtuals, -1000.0);
+  const auto base = pc_energy_of(res, s);
+  ASSERT_TRUE(base.has_value());
+  const State low = virtuals_shifted(s, intruder_shift(base->strongest[0]));
   fb::SphericalMatrixAO h_low(res, in.basis);
   ASSERT_EQ(wwr::wwrMemcpyAsync(h_low.data(), low.h.data(), low.h.size() * sizeof(double),
                                 wwr::wwrMemcpyHostToDevice, res.stream()),
@@ -1860,14 +1890,14 @@ TEST(Nevpt2PcGradient, RefusesWhatTheEnergyRefuses) {
   ASSERT_TRUE(res.sync().has_value());
   {
     const auto energy = pc_energy_of(res, low);
-    ASSERT_FALSE(energy.has_value()) << "virtuals at -1000 Eh";
+    ASSERT_FALSE(energy.has_value()) << "an intruder in Sr";
     const auto g = pc_gradient_of(run, h_low);
-    ASSERT_FALSE(g.has_value()) << "virtuals at -1000 Eh";
+    ASSERT_FALSE(g.has_value()) << "an intruder in Sr";
     EXPECT_EQ(g.error().kind, fb::ErrorKind::Numerical);
     EXPECT_EQ(g.error().kind, energy.error().kind);
     EXPECT_EQ(stable_part(g.error().message), stable_part(energy.error().message));
     EXPECT_NE(g.error().message.find("Sr"), std::string::npos) << g.error().message;
-    EXPECT_NE(g.error().message.find("not positive"), std::string::npos) << g.error().message;
+    EXPECT_NE(g.error().message.find("has an intruder"), std::string::npos) << g.error().message;
   }
 
   State zero = s;
@@ -2602,9 +2632,9 @@ TEST(Nevpt2Qd, RefusesBadInputs) {
 // 1.2e-7) and are not run; the same c_r at the random seed is, every root
 // on every case. State 1's PC is refused at the coarse rungs along h, B, C
 // and c_1 on h2co_skew_ccpvdz_sa3 and along c_1 on h8_ring_sto3g_sa3
-// (Sijr's, Sr's or Srs's λ + Δ not positive, out to t = 1.25e-3), as #729
-// found within the ladders' reach; those rungs are NaN (qd_totals) and the
-// ratio run is read below them.
+// (Sijr's, Sr's or Srs's denominator moved onto a pole, out to t = 1.25e-3,
+// an intruder since #874), as #729 found within the ladders' reach; those
+// rungs are NaN (qd_totals) and the ratio run is read below them.
 //
 // h8_ring's eigen c_1 is not run either (#736): that pole leaves it
 // truncation-bound at one pair and rounding-bound at the next. Its ratios
@@ -2701,9 +2731,9 @@ TEST(Nevpt2QdPc, OneRootIsPcAdjoint) {
 // kind and message, never a matrix with the class summed in as zero. On
 // h8_ring_sto3g_sa3, two states, after Nevpt2PcGradient's: root 1's vector
 // zero, whose RDMs and so Sr's metric are zero ("state 1: ... no positive
-// eigenvalue"); and every virtual orbital energy lowered by 1000 Eh through
-// h (shifted_h), so that Sr's denominator λ + ε_r is negative ("not
-// positive").
+// eigenvalue"); and every virtual orbital energy shifted through h
+// (shifted_h) to make state 0's strongest Sr mode an intruder,
+// |y / (λ + Δ)| = 4 ("state 0: Sr has an intruder").
 TEST(Nevpt2QdPc, RefusesWhatTheEnergyRefuses) {
   FBF_REQUIRE_GPU();
   const QdState &q = qd_state("h8_ring_sto3g_sa3");
@@ -2729,14 +2759,10 @@ TEST(Nevpt2QdPc, RefusesWhatTheEnergyRefuses) {
     std::cout << std::format("[ nevpt2   ] qd pc refuses {}: {}\n", what, adj.error().message);
   };
 
-  std::vector<std::size_t> virtuals;
-  for (auto p = static_cast<std::size_t>(s.ncore + s.ncas); p < static_cast<std::size_t>(s.nao);
-       ++p) {
-    virtuals.push_back(p);
-  }
-  State low = s;
-  low.h = shifted_h(s, virtuals, -1000.0);
-  refused(low, "virtuals at -1000 Eh", "not positive");
+  const auto strongest = qd_sr_strongest(res, s, q.weights);
+  ASSERT_TRUE(strongest.has_value());
+  refused(virtuals_shifted(s, intruder_shift(*strongest)), "state 0's intruder in Sr",
+          "state 0: Sr has an intruder");
 
   State zero = s;
   const std::size_t ndet = s.vector.size() / n;
@@ -4163,8 +4189,8 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdPcGradient,
 // A class PC refuses is refused by qd_pc_gradient with qd_pc_energy's error,
 // kind and message, never a gradient with the class summed in as zero:
 // Nevpt2QdPc.RefusesWhatTheEnergyRefuses' two states on h8_ring_sto3g_sa3
-// (every virtual lowered by 1000 Eh through h, "not positive"; root 1's
-// vector zero, "no positive eigenvalue").
+// (state 0's Sr intruder, every virtual shifted through h, "has an
+// intruder"; root 1's vector zero, "no positive eigenvalue").
 TEST(Nevpt2QdPcGradient, RefusesWhatTheEnergyRefuses) {
   FBF_REQUIRE_GPU();
   NuclearRun run = qd_run("h8_ring_sto3g_sa3");
@@ -4193,19 +4219,15 @@ TEST(Nevpt2QdPcGradient, RefusesWhatTheEnergyRefuses) {
                              got.error().message);
   };
 
-  std::vector<std::size_t> virtuals;
-  for (auto p = static_cast<std::size_t>(s.ncore + s.ncas); p < static_cast<std::size_t>(s.nao);
-       ++p) {
-    virtuals.push_back(p);
-  }
-  State low = s;
-  low.h = shifted_h(s, virtuals, -1000.0);
+  const auto strongest = qd_sr_strongest(res, s, weights);
+  ASSERT_TRUE(strongest.has_value());
+  const State low = virtuals_shifted(s, intruder_shift(*strongest));
   fb::SphericalMatrixAO h_low(res, in.basis);
   ASSERT_EQ(wwr::wwrMemcpyAsync(h_low.data(), low.h.data(), low.h.size() * sizeof(double),
                                 wwr::wwrMemcpyHostToDevice, res.stream()),
             wwr::wwrSuccess);
   ASSERT_TRUE(res.sync().has_value());
-  same(low, h_low, "virtuals at -1000 Eh", "not positive");
+  same(low, h_low, "state 0's intruder in Sr", "state 0: Sr has an intruder");
 
   State zero = s;
   const std::size_t ndet = s.vector.size() / weights.size();
@@ -4324,8 +4346,8 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdPcCoupling,
 // A class PC refuses refuses the coupling, with qd_pc_energy's error, kind
 // and message, as it refuses the gradient
 // (Nevpt2QdPcGradient.RefusesWhatTheEnergyRefuses' two states on
-// h8_ring_sto3g_sa3: every virtual lowered by 1000 Eh, "not positive"; root
-// 1's vector zero, "no positive eigenvalue"), for the pair (0, 1) and its
+// h8_ring_sto3g_sa3: state 0's Sr intruder, "has an intruder"; root 1's
+// vector zero, "no positive eigenvalue"), for the pair (0, 1) and its
 // swap; and a pair that is one state, or a state not one of the roots', is
 // InvalidConfig, named nevpt2::qd_pc_coupling.
 TEST(Nevpt2QdPcCoupling, RefusesWhatTheEnergyRefuses) {
@@ -4371,19 +4393,15 @@ TEST(Nevpt2QdPcCoupling, RefusesWhatTheEnergyRefuses) {
     }
   };
 
-  std::vector<std::size_t> virtuals;
-  for (auto v = static_cast<std::size_t>(s.ncore + s.ncas); v < static_cast<std::size_t>(s.nao);
-       ++v) {
-    virtuals.push_back(v);
-  }
-  State low = s;
-  low.h = shifted_h(s, virtuals, -1000.0);
+  const auto strongest = qd_sr_strongest(res, s, weights);
+  ASSERT_TRUE(strongest.has_value());
+  const State low = virtuals_shifted(s, intruder_shift(*strongest));
   fb::SphericalMatrixAO h_low(res, in.basis);
   ASSERT_EQ(wwr::wwrMemcpyAsync(h_low.data(), low.h.data(), low.h.size() * sizeof(double),
                                 wwr::wwrMemcpyHostToDevice, res.stream()),
             wwr::wwrSuccess);
   ASSERT_TRUE(res.sync().has_value());
-  same(low, h_low, "virtuals at -1000 Eh", "not positive");
+  same(low, h_low, "state 0's intruder in Sr", "state 0: Sr has an intruder");
 
   State zero = s;
   const std::size_t ndet = s.vector.size() / weights.size();
