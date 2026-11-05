@@ -1,0 +1,26 @@
+# Issue #904: pHBI S0 minimum, (12e,11o)/aug-cc-pVTZ, SA2-QD-NEVPT2 single point at Park's geometry
+# (J. W. Park, JCTC (2020), acs.jctc.9b00919, Supporting Information, pp. S36–S37).
+# His QD-NEVPT2 E(0, 1): -644.1215261274, -644.0168382832 Eh.
+# Frozen core, as his: the C, N and O 1s (frozen_core = "auto"). The anion
+# (phenoxide), so charge = -1: 98 electrons. Results in ../phbi.md.
+# Not run to completion: CASSCF is refused for device memory on a 40 GB A100
+# (#905). The active list is untested for that reason.
+[molecule]
+xyz = "geometries/phbi_atz1211_s0.xyz"
+charge = -1
+[basis_set]
+basis = "aug-cc-pvtz"
+[eri]
+mode = "density_fitting"
+aux_basis = "aug-cc-pvtz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 11
+nelecas = 12
+active = [39, 42, 43, 46, 47, 48, 59, 87, 89, 93, 108]  # 0-based RHF MOs: pi, and the aug virtuals that best carry the cc-pVTZ pi* (../phbi.md, "Active spaces")
+nroots = 2
+conv_tol_grad = 1e-9
+[nevpt2]
+quasi_degenerate = true
+frozen_core = "auto"

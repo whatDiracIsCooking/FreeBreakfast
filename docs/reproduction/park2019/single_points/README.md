@@ -1,6 +1,7 @@
 # Single points at Park's SI geometries: the all-electron core floor
 
 Phase 2, the same points with the C and N 1s frozen (#859), is [frozen_core.md](frozen_core.md).
+pHBI, the system milestone 26 left out, is [phbi.md](phbi.md) (#904).
 
 **Status since this phase.** This page is phase 1 as it was run, at
 4f84cfc. Two of its blockers have since been resolved:
