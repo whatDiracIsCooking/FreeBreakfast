@@ -125,7 +125,7 @@ above n_ov (an unrestarted GMRES spans the whole space by then), z solves
 inner iterations reproduces RIS-J to 1e-12; and θ on a Δε still gives a
 finite z that solves the clamped system. `test/gtest/cis_step_gpu.cpp` runs
 `CisStep` with `ris = true`, and with `ris_exchange = true` beside it, to the
-reference's roots, and `test/gtest/lu_gpu.cpp` the LU.
+reference's roots, and `test/recipes/lu_gpu.cpp` the LU.
 
 ## Files
 

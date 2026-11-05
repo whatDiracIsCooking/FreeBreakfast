@@ -4,7 +4,7 @@
 # hook in .pre-commit-config.yaml, not anything in here.
 #
 # What it does, and why it is shaped this way:
-#   * INCREMENTAL configure + build of the whole tree (all eight test binaries),
+#   * INCREMENTAL configure + build of the whole tree (all ten test binaries),
 #     reusing devtools/build.sh's cpp_build -- the one copy of the cmake phases.
 #     Warm (you have been building), this is seconds; cold (a fresh worktree),
 #     ~1 min. It never passes --fresh.
@@ -13,9 +13,9 @@
 #     free_breakfast_basis_tests_host (test/basis), free_breakfast_io_tests_host
 #     (test/io), free_breakfast_sad_tests_host (test/sad),
 #     free_breakfast_pipeline_tests_host (test/pipeline) and
-#     free_breakfast_tests_host (test/gtest), then the two GPU ones,
-#     free_breakfast_core_tests_gpu and free_breakfast_tests_gpu, one after
-#     the other, all with FREE_BREAKFAST_FAST_TESTS=1,
+#     free_breakfast_tests_host (test/gtest), then the three GPU ones,
+#     free_breakfast_core_tests_gpu, free_breakfast_recipes_tests_gpu and
+#     free_breakfast_tests_gpu, one after the other, all with FREE_BREAKFAST_FAST_TESTS=1,
 #     which makes every reference-grade case GTEST_SKIP (see
 #     test/support/slow_test.h) -- not just end-to-end capstones, but any case
 #     that checks a result against an external oracle to tight tolerance, or
@@ -35,7 +35,7 @@
 # Each GPU suite runs under with_gpu_card (lib.sh), holding its whole card so
 # concurrent cpp-tier.sh runs in other worktrees cannot overload it -- one run
 # per card (config.sh says why). Inside it the suite runs as one gtest process
-# (config.sh, by CTEST_JOBS, says why not shards), and the two suites run in
+# (config.sh, by CTEST_JOBS, says why not shards), and the GPU suites run in
 # turn, never at once. The host suites do not touch the GPU and run unlocked.
 # A batch that hangs is killed and its case named (GPU_BATCH_STALL_SECONDS and
 # GPU_BATCH_BUDGET_SECONDS in config.sh; issue #477), so a wedged card fails
@@ -147,6 +147,7 @@ fi
 
 core_host_bin="$build_dir/test/core/free_breakfast_core_tests_host"
 core_gpu_bin="$build_dir/test/core/free_breakfast_core_tests_gpu"
+recipes_gpu_bin="$build_dir/test/recipes/free_breakfast_recipes_tests_gpu"
 atom_host_bin="$build_dir/test/atom/free_breakfast_atom_tests_host"
 basis_host_bin="$build_dir/test/basis/free_breakfast_basis_tests_host"
 io_host_bin="$build_dir/test/io/free_breakfast_io_tests_host"
@@ -198,7 +199,7 @@ echo "cpp-smoke: GPU smoke (heavy reference cases skipped via FREE_BREAKFAST_FAS
 # lines.
 run_gpu_batches() {
   local bin brc=0
-  for bin in "$core_gpu_bin" "$gpu_bin"; do
+  for bin in "$core_gpu_bin" "$recipes_gpu_bin" "$gpu_bin"; do
     echo "cpp-smoke:   --- $(basename "$bin") ---"
     run_gpu_batch cpp-smoke "$bin" || brc=1
   done

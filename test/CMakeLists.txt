@@ -1,10 +1,11 @@
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-# The C++ suite: seven trees of gtest binaries, and examples/. core/ and
+# The C++ suite: eight trees of gtest binaries, and examples/. core/ and
 # gtest/ are each built into a pair of binaries split by device requirement
 # -- a host one (runs anywhere) and a GPU one (skips its device cases without
-# a GPU); atom/, basis/, io/, sad/ and pipeline/ are each a host binary alone:
+# a GPU); atom/, basis/, io/, sad/ and pipeline/ are each a host binary alone,
+# and recipes/ a GPU binary alone:
 #
 #   * core/  -- the src/core tests: free_breakfast_core_tests_{host,gpu}.
 #   * atom/  -- the src/atom tests, which have no device code to test:
@@ -20,12 +21,15 @@
 #   * pipeline/ -- the src/pipeline tests that need no device:
 #               free_breakfast_pipeline_tests_host. Running a real step needs
 #               a GPU, so those cases stay in gtest/'s GPU binary.
+#   * recipes/ -- the src/recipes tests: free_breakfast_recipes_tests_gpu.
+#               einsum's host-only refusal cases are in it too, and still run
+#               without a device.
 #   * gtest/ -- everything else: free_breakfast_tests_{host,gpu}.
 #   * examples/ -- no binary of its own: the free-breakfast executable run
 #               on two of the root's examples/ configs, by
 #               run_example.cmake, as the `gpu`-labelled example_* entries.
 #
-# All nine binaries, and examples/'s entries, are registered with ctest and
+# All ten binaries, and examples/'s entries, are registered with ctest and
 # run by `ctest --preset <name>`, or by devtools/cpp-tier.sh, which is
 # configure + build + ctest in one command.
 #
@@ -75,5 +79,6 @@ add_subdirectory(basis)
 add_subdirectory(io)
 add_subdirectory(sad)
 add_subdirectory(pipeline)
+add_subdirectory(recipes)
 add_subdirectory(gtest)
 add_subdirectory(examples)

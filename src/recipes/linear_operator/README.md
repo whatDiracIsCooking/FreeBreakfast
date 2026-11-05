@@ -47,7 +47,7 @@ static_assert(fb::LinearOperator<Dense, double>);
 
 ## Tests
 
-`test/gtest/davidson_gpu.cpp` checks the concept against models that satisfy it and ones that do not, and drives `davidson_solve` through a dense model.
+`test/recipes/davidson_gpu.cpp` checks the concept against models that satisfy it and ones that do not, and drives `davidson_solve` through a dense model.
 
 ## Files
 

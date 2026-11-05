@@ -25,7 +25,7 @@ Ported from calaman's `complex_cast`, keeping only its strided pair: the four fl
 
 ## Tests
 
-`test/gtest/complex_cast_gpu.cpp`, in both precisions: split against the host components with the planes' padding untouched, merge with the matrix's padding untouched, an exact split-merge round trip, and an empty block that launches nothing.
+`test/recipes/complex_cast_gpu.cpp`, in both precisions: split against the host components with the planes' padding untouched, merge with the matrix's padding untouched, an exact split-merge round trip, and an empty block that launches nothing.
 
 ## Files
 

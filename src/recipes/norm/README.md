@@ -41,7 +41,7 @@ fb::Status status = fb::norm<fb::Norm::inf>(res, n, d_x.data(), 1, &top);
 
 ## Tests
 
-`test/gtest/norm_gpu.cpp`: every `Norm` in both precisions and both pointer modes, contiguous and strided (with a larger element off the stride), against a host reference. ℓ∞ is checked exactly, ℓ₁ and ℓ₂ to a tolerance. Also an empty vector writing 0 in each mode, and the handle's mode left as it was.
+`test/recipes/norm_gpu.cpp`: every `Norm` in both precisions and both pointer modes, contiguous and strided (with a larger element off the stride), against a host reference. ℓ∞ is checked exactly, ℓ₁ and ℓ₂ to a tolerance. Also an empty vector writing 0 in each mode, and the handle's mode left as it was.
 
 ## Files
 

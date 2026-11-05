@@ -88,7 +88,7 @@ const auto info = fb::davidson_solve<double>(res, op, precondition, n, n_roots, 
 
 ## Tests
 
-`test/gtest/davidson_gpu.cpp`, against `diagonalize`'s full spectrum of a dense diagonally dominant A held as a one-gemm operator. It covers:
+`test/recipes/davidson_gpu.cpp`, against `diagonalize`'s full spectrum of a dense diagonally dominant A held as a one-gemm operator. It covers:
 
 - the lowest pairs in `double` and `float`: the values, unit-norm vectors, and host-recomputed residuals;
 - convergence at the smallest subspace, `2 · n_roots`, which collapses every iteration onto X alone;

@@ -41,6 +41,6 @@ does. The routine takes no scratch, so `a` may sit in `res.device_workspace()`.
 
 ## Tests
 
-`test/gtest/cholesky_gpu.cpp`: against a host Cholesky at orders around the
+`test/recipes/cholesky_gpu.cpp`: against a host Cholesky at orders around the
 block edges, bitwise repeatable over repeated runs, and the flag for a matrix
 that is not positive definite.

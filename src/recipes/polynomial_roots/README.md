@@ -26,7 +26,7 @@ Ported from calaman's `polynomial_roots` (`aberth`). Its `aberth_warp` was a pub
 
 ## Tests
 
-`test/gtest/polynomial_roots_gpu.cpp`, over all four coefficient types. Random Gaussian batches at degrees up to the full warp are certified without a reference solver: each root's backward error |p(z)| / Σ|a_k||z|^k is held to O(n·ε), and the Weierstrass inclusion disks |z − z_i| ≤ n·|p(z_i) / (a_n ∏_{j≠i}(z_i − z_j))| must be pairwise disjoint. Disjoint disks each hold exactly one root, so this proves that every root was found exactly once, and the radius bounds each one's forward error. Exact cases (roots of unity, a zero root) pin the forward error directly. Further cases cover non-convergence, an empty call and argument validation.
+`test/recipes/polynomial_roots_gpu.cpp`, over all four coefficient types. Random Gaussian batches at degrees up to the full warp are certified without a reference solver: each root's backward error |p(z)| / Σ|a_k||z|^k is held to O(n·ε), and the Weierstrass inclusion disks |z − z_i| ≤ n·|p(z_i) / (a_n ∏_{j≠i}(z_i − z_j))| must be pairwise disjoint. Disjoint disks each hold exactly one root, so this proves that every root was found exactly once, and the radius bounds each one's forward error. Exact cases (roots of unity, a zero root) pin the forward error directly. Further cases cover non-convergence, an empty call and argument validation.
 
 ## Files
 
