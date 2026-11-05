@@ -48,6 +48,9 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
         -> PcAdjoint     energies (PcClassEnergies), then ScAdjoint's arrays
     pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, batch)
         -> PcGradient    ScGradient's fields, energies PcClassEnergies
+    each takes a trailing nfrozen = 0 and pc_floor = 0: PC's conditioning floor
+    (EnergyInputs::pc_floor, ../energy/README.md "The conditioning floor", #917),
+    read by the energy and its adjoint alike
     qd_sc_energy(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, batch)
         -> std::vector<ClassEnergies>   the SC-QD H_eff's n² correlation elements, [M n + N]
     qd_sc_adjoint(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, w,

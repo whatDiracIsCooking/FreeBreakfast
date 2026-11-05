@@ -52,6 +52,13 @@ struct EnergyInputs {
   const double *f3ca = nullptr;
   /// @brief PySCF's f3ac, a⁶, row-major.
   const double *f3ac = nullptr;
+  /// @brief PC's conditioning floor, relative to each metric's largest
+  /// eigenvalue: S's modes at or below max(the default cut, @ref pc_floor)
+  /// of it are cut (README "The conditioning floor", #917). 0, the default,
+  /// leaves the cut as it is, bitwise; the default cut itself is #923's
+  /// decision. Read by PC alone, by its energy, reverse pass and tangent
+  /// alike; unread by SC and in an EnergyDirection.
+  double pc_floor = 0.0;
 };
 
 /// @brief Each class's norm and energy in PySCF's order -- Sr, Si, Sijrs,
@@ -471,6 +478,17 @@ struct PcClassEnergies {
   /// [I n + J], as @ref dropped.
   std::array<PcMode, 8> strongest{};
   std::array<PcMode, 8> nearest{};
+  /// @brief Each class's conditioning, relative to its metric's largest
+  /// eigenvalue: @ref cut the largest eigenvalue the cut dropped (a few
+  /// ε √d for exact null modes, more for real ones; 0 when nothing was
+  /// dropped), @ref kept the smallest it kept, what the solve's conditioning
+  /// follows. Both 0 for Sijrs, a class with no tuple, and a ket read from
+  /// cached amplitudes; per ket as @ref dropped. README "The conditioning
+  /// floor": a PC Hessian's ladder needs @ref kept well above the default
+  /// cut, and the ratio kept / cut does not tell (it is near 1 wherever real
+  /// modes run through the cut, at any floor).
+  std::array<double, 8> cut{};
+  std::array<double, 8> kept{};
   /// @brief The PC-NEVPT2 correlation energy, Σ of @ref energies.
   double total = 0.0;
 };
@@ -485,10 +503,12 @@ struct PcClassEnergies {
 /// no active index, is SC's. The walk, @p batch and the synchronization are
 /// class_energies'.
 ///
-/// S is singular by construction. Its modes at or below max(1e-13, 100 ε √d)
-/// of its largest eigenvalue are cut as null: at least 13 times above every
-/// mode round-off decides, measured (README "PC-NEVPT2"). There is no gap
-/// test: the real modes may run through the cut, and carry no energy there.
+/// S is singular by construction. Its modes at or below max(1e-13, 100 ε √d,
+/// in.pc_floor) of its largest eigenvalue are cut as null: at least 13 times
+/// above every mode round-off decides, measured (README "PC-NEVPT2"). There
+/// is no gap test: the real modes may run through the cut, and carry no
+/// energy there. Each class's conditioning is reported (PcClassEnergies::cut,
+/// kept).
 ///
 /// @return The energies; a Numerical error naming the class when its metric
 ///         has no positive eigenvalue, or a ket meets a pole (a denominator
@@ -594,17 +614,9 @@ pc_class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const En
 /// @brief pc_class_energies_tangent's result: the energies it walked, and Ė
 /// per class along each direction.
 struct PcClassEnergiesTangent {
-  /// @brief The energies and dropped counts, as pc_class_energies computes
-  /// them.
+  /// @brief The energies, dropped counts and conditioning (cut, kept), as
+  /// pc_class_energies computes them.
   PcClassEnergies energies;
-  /// @brief Per class, the largest eigenvalue of its metric S the cut dropped,
-  /// relative to S's largest: at round-off (a few ε √d) for exact null modes,
-  /// above it for real ones; 0 when nothing was dropped, and for Sijrs.
-  std::array<double, 8> cut{};
-  /// @brief Per class, the smallest eigenvalue the cut kept, relative to S's
-  /// largest, what the solve's conditioning follows; 0 when nothing was
-  /// dropped, and for Sijrs.
-  std::array<double, 8> kept{};
   /// @brief [u][k]: Ė per class along direction u.
   std::vector<std::array<double, 8>> energy_dot;
   /// @brief [u]: Σ_k energy_dot[u][k].

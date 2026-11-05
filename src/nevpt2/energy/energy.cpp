@@ -1341,7 +1341,8 @@ Result<ActiveOperands> active_operands(DeviceResources &res, const MoBlocks &blo
                         .delta = {.data = delta, .dims = d2},
                         .delta_buf = std::move(delta_buf),
                         .e_core = std::move(e_core),
-                        .e_virt = std::move(e_virt)};
+                        .e_virt = std::move(e_virt),
+                        .pc_floor = in.pc_floor};
 }
 
 Result<std::vector<ClassEnergies>> sc_couplings(DeviceResources &res, const MoBlocks &blocks,

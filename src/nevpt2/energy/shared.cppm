@@ -32,6 +32,8 @@ struct ActiveOperands {
   EinsumOperand h1e, h2e, dm1, dm2, dm3, f3ca, f3ac, delta;
   Buffers::device<double> delta_buf;
   std::vector<double> e_core, e_virt;
+  /// @brief EnergyInputs::pc_floor, which a ket's solve reads.
+  double pc_floor = 0.0;
 };
 
 /// @brief Whether entry @p p of a walk's @p ops is given: an entry
@@ -228,6 +230,10 @@ struct ClassSolve {
   Buffers::device<double> u;
   /// @brief The dropped modes, when asked for and at least one was dropped.
   std::optional<DroppedModes> modes;
+  /// @brief The largest dropped σ and the smallest kept one, over S's
+  /// largest (PcClassEnergies::cut, kept).
+  double cut = 0.0;
+  double kept = 0.0;
 };
 
 /// @brief (A + Aᵀ) / 2 of the row-major d x d @p a, into a buffer of its own.
@@ -235,13 +241,13 @@ Result<Buffers::device<double>> symmetrized(DeviceResources &res, const double *
 
 /// @brief The solve of the class @p name over its row-major d x d metric
 /// @p s_rm and Dyall Hamiltonian @p k_rm, and its optional S₁ (@p s1, d x n1
-/// row-major): both symmetrized, S cut at max(1e-13, 100 ε √d) of its largest
-/// eigenvalue, the pencil diagonalized. A Numerical error naming the class
-/// when S has no positive eigenvalue. @p keep_modes keeps the dropped modes
-/// (ClassSolve::modes) for the reverse pass.
+/// row-major): both symmetrized, S cut at max(1e-13, 100 ε √d, @p floor) of
+/// its largest eigenvalue, the pencil diagonalized. A Numerical error naming
+/// the class when S has no positive eigenvalue. @p keep_modes keeps the
+/// dropped modes (ClassSolve::modes) for the reverse pass.
 Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const double *s_rm,
-                               const double *k_rm, int64_t d, const double *s1 = nullptr,
-                               int64_t n1 = 0, bool keep_modes = false);
+                               const double *k_rm, int64_t d, const double *s1, int64_t n1,
+                               bool keep_modes, double floor);
 
 /// @brief One pair's class matrices, row-major: S, K for a state's own RDMs
 /// alone, and S₁ where the class has one.
@@ -273,6 +279,8 @@ struct PcKets {
   int64_t ns = 1;
   std::vector<ClassSolve> solves;
   std::vector<int64_t> ms;
+  /// @brief Each ket's ClassSolve::cut and kept; 0 for cached kets.
+  std::vector<double> cut, kept;
   /// @brief [I ns + J]: whether the pair is given (pair_given).
   std::vector<bool> given;
   std::vector<std::optional<Buffers::device<double>>> t, t1;

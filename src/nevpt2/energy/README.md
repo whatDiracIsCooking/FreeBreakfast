@@ -165,7 +165,10 @@ diagonalization are the caller's.
 
     pc_class_energies(res, blocks, in, batch) -> PcClassEnergies
         energies[8], dropped[8]   the same eight classes, and each metric's cut
+        cut[8], kept[8]           the largest dropped σ and the smallest kept one,
+                                  over S's largest (#917)
         total                     Σ energies
+    in.pc_floor: a relative floor on the cut, 0 by default (#917)
 
 `pc.cpp`, a transcription of the demo's `energy_pc_solve.cppm`,
 `energy_pc_classes.cppm` and `energy_pc.cpp` (commit `7c5a674`, unchanged
@@ -209,7 +212,9 @@ unit stride, k at stride d.
 **The cut, and refusals.** S is singular by construction (Sr and Si drop 44
 of 64 modes at CAS(4,4), 10 of 1000 at CAS(10,10); Sir 1 or 2). Its modes at
 or below **max(1e-13, 100 ε √d)** of its largest eigenvalue are dropped
-(ε = 2.2e-16, d the class's basis size): 1e-13 up to d = 20, then 3.3e-13 at
+(ε = 2.2e-16, d the class's basis size), or at `EnergyInputs::pc_floor` when
+that is higher ([The conditioning floor](#the-conditioning-floor)): 1e-13 up
+to d = 20, then 3.3e-13 at
 d = 216, 7.0e-13 at d = 1000 and 9.2e-13 at d = 1728, still more than a
 decade below the first real mode on cc-pVTZ (2.1e-11). A class is a
 **Numerical error, naming it**, when S has no positive eigenvalue, or when a
@@ -459,6 +464,96 @@ the two coarser); RTX 3080, `--preset default`, card held.
 Keeping the real modes instead (the cut at 1e-15) moves the analytic gradient
 by up to 1.3e-8 per component and fixes none of the misses, which is what a
 derivative that does not depend on the cut predicts.
+
+### The conditioning floor
+
+    EnergyInputs::pc_floor     S cut at max(1e-13, 100 ε √d, pc_floor) of σ_max; 0 by default
+    PcClassEnergies::cut[k]    the largest σ the cut dropped, over σ_max (0: none)
+    PcClassEnergies::kept[k]   the smallest σ it kept, over σ_max
+
+The default cut is #923's decision; until then the floor defaults to 0,
+and every energy, gradient and golden is bitwise what it was. The floor is
+one field of the inputs, so `pc_class_energies`, its reverse pass and its
+tangent read the same value through the one `solve_class`, and each is the
+derivative of the energy the others report. The gradient's entry points
+(`pc_energy`, `pc_adjoint`, `pc_gradient`) take it as a trailing
+`pc_floor = 0`. No TOML key yet: #818, the pipeline Hessian, decides that.
+The QD paths (`pc_effective_hamiltonian` and its reverse pass) read it from
+each state's own inputs, which their callers leave at 0. `cut` and `kept`
+are reported per class, and per ket in an effective Hamiltonian; both are 0
+for Sijrs.
+
+Why it exists (#917, measured on the RTX 3080, `--preset default`, card
+held): at PSB3 the solve's conditioning is harmless to first order but not
+to second. The points are state-specific DF-CASSCF(6,6)/cc-pVDZ
+(cc-pVDZ-JKFIT) at the FC geometry and twisted to 90°. Along each of the 42
+physical directions t_x of `hessian::df_nevpt2_tangents` (#813), PC's inputs
+move as the nuclear Hessian moves them.
+
+- **First order is harmless.** Over five reverse passes, Σ ⟨bar, t_x⟩
+  repeats to 4.9e-15 Eh/bohr at FC and to 1.5e-12 at the twist, where the
+  largest component is 3.4e-2 and 2.5e-2: under 1e-10 of it, and under
+  2e-13 of the largest summand. Along random directions the same bars
+  repeat only to 5e-7 to 1e-5 relative, from Sr's and Si's kept modes at about
+  5e-13 of σ_max. The physical directions do not reach those modes; random
+  ones do. Raising the cut leaves t_x's spread as it is (the twist's
+  worst σ / |Σ| moves from 3.9e-9 to 2.3e-9 at a cut of 1e-11), so what
+  remains is not the cut's.
+- **The atomics (#916).** The warp pre-reduction in `recipes::einsum` cut
+  the random directions' spread about 4×. In the SA3/STO-3G twist fixture
+  of `SpanTermVisibleAtPsb3Twist` it fell from 1.4e-5 to 2.4e-5 relative
+  before to 2e-6 to 7e-6. The sums are still not deterministic.
+  Deterministic reductions would not help what follows: the ladder below
+  fails with each rung reproducible to 1e-10 to 1e-5 of its largest
+  element, while its rungs disagree by factors of 1e2 to 1e6.
+- **Second order is not.** The ladder #815 would gate on: central
+  differences of `pc_adjoint`'s first derivatives along t_A, at
+  (h, B, c) + t t_B (c renormalized, C the identity in the MO basis), at
+  t = 4e-4 / 2^k over five rungs. SC's `sc_adjoint` on the same path is
+  clean (ratios 3.89 to 4.00, H_BB about 5e2 to 1e3). PC's, along t_0x
+  and t_1y (the ratios of the two finest rung pairs; H_BB's limit):
+
+| relative floor | FC t_0x | FC t_1y | 90° t_0x | 90° t_1y |
+|---|---|---|---|---|
+| 0 (the default cut, about 3e-13) | 0.55, 7.65: none | 141.8, 4.81: none | 0.13, 1223: none | 12.3, 4.16: none |
+| 1e-11 | 7.47, 4.15 | 4.20, 4.02 (−1036) | 5.10, 4.04 | 4.93, 4.03 |
+| 1e-10 | 4.16, 4.01 (−569) | 4.02, 4.00 (−1036) | 4.09, 4.01 | 4.13, 4.01 |
+| 1e-9 | 4.03, 4.00 (−569) | 4.01, 4.00 (−1036) | 4.02, 4.00 | 4.04, 4.00 |
+
+  At the default floor and at 1e-11, the path at t = 4e-3 meets intruders
+  (|t| from 1.1 to 6.9, in Sr, Si, Sij, Srs and Sir). At 1e-10 the twist's
+  coarsest rung (4e-4) still breaks. Out of the FC plane (t_4z,
+  symmetry-breaking), H_BB settles neither at the default nor at 1e-11. The near-cut kept modes are what moves: K stops
+  annihilating them off the eigenstate, and their λ swings as 1/σ through
+  −Δ.
+- **What the floor costs** (E_corr, Eh; the state-specific references
+  above):
+
+| relative floor | FC E_corr | its shift | 90° E_corr | its shift |
+|---|---|---|---|---|
+| 0 | −0.7622369939151 | | −0.7723305932308 | |
+| 1e-12 | −0.7622369939122 | 2.9e-12 | −0.7723305928627 | 3.7e-10 |
+| 1e-11 | −0.7622369938649 | 5.0e-11 | −0.7723305916378 | 1.6e-9 |
+| 1e-10 | −0.7622369937948 | 1.2e-10 | −0.7723305874084 | 5.8e-9 |
+| 1e-9 | −0.7622369923425 | 1.6e-9 | −0.7723305725053 | 2.1e-8 |
+
+  Elsewhere ([the cut table above](#pc-nevpt2)): HF CAS(10,7) moves 1.7e-7
+  at 1e-10 and 1.2e-6 at 1e-9; PSB3 FC's PC-QD state 0, which
+  `Nevpt2Psb3.PcQdGradientMatchesNumerical` holds to 1e-9, does not move at
+  1e-10 and moves 1.3e-9 at 1e-9. BAGEL's absolute 1e-9 is about 3.5e-11 of
+  PSB3's σ_max, between the 1e-11 and 1e-10 rows.
+
+**What a PC Hessian should refuse on.** `kept`, not `kept / cut`. Where real
+modes run through the cut (PSB3), the ratio is near 1 at any floor: 1.2 to
+3.5 at the default (`kept` 3.4e-13 to 7.6e-13), and 1.1 at 1e-10
+(`kept` 1.08e-10), where the ladder is clean. A gapped golden's ratio is
+1e11 or more at the default (`n2_ccpvdz_cas44_df`: `kept` 1.6e-5 over a cut
+at 8e-17). The ladder's behaviour follows `kept` alone: it fails at 5e-13,
+is partial at 1e-11, and converges at 1e-10 for steps to 2e-4 and at 1e-9
+for steps to 4e-4. So #815 and #817 should refuse when a class's `kept` is
+below about 1e-10, a factor of 300 to 1000 above the default cut. Their
+ladders should gate either on fixtures whose kept spectra are gapped, or on
+PSB3 with the floor raised to 1e-10 or more.
 
 **Memory.** The solve's d × d matrices (S, K, their symmetrized copies, V,
 and the d × m X, U, T and gemmwich's work) are buffers of their own, freed
@@ -1083,9 +1178,8 @@ within 1e-3 to 1e-5 of the base point on `h2co_skew_ccpvdz_sa3`,
 
     pc_class_energies_tangent(res, blocks, in, batch, directions, span = true)
         -> PcClassEnergiesTangent
-        energies                     pc_class_energies' energies, dropped counts and total
-        cut[k], kept[k]              the largest σ class k's cut dropped, and its
-                                     smallest kept one, over S's largest
+        energies                     pc_class_energies' energies, dropped counts,
+                                     cut, kept and total
         energy_dot [u][k], total_dot [u]
     directions: EnergyDirection, as class_energies_tangent's
     span: false leaves the kept span's rotation out, for the tests alone
@@ -1131,10 +1225,10 @@ order √σ_n, and without it Ė misses the corrected bars.
 through the same `pc_intruder_check` before Ė is finished, so no positive
 metric eigenvalue, a pole (|t| > 1) and a denominator at round-off each come
 back with `pc_class_energies`' kind and message, never as a class summed as
-zero. **Sijrs** is SC's kernel (`sijrs_tangent_walk`). **`cut`** reports how
-far above round-off each class's cut reaches: a few ε √d for exact null
-modes, more for real ones; **`kept`** what the solve's conditioning
-follows.
+zero. **Sijrs** is SC's kernel (`sijrs_tangent_walk`). **`energies.cut`**
+reports how far above round-off each class's cut reaches: a few ε √d for
+exact null modes, more for real ones; **`energies.kept`** what the solve's
+conditioning follows ([The conditioning floor](#the-conditioning-floor)).
 
 **Where duality is checkable.** Ė and the reverse pass's Σ ⟨bar, ẋ⟩ are one
 bilinear form evaluated two ways, so they agree to round-off times the
@@ -1143,8 +1237,10 @@ better ([Tests](#tests)). At PSB3 twisted to 90° (STO-3G, state 0) it is
 not: real modes run through the cut there, Sr and Si keep modes at about
 3e-13 of σ_max, and the solve amplifies the einsums' atomic round-off in S
 and K by about 1e12, so the bars along any direction that moves K repeat
-run to run only to ~2e-5 relative, and the tangent with them (#917, which
-gates #815). There the span term is checked for visibility only.
+run to run only to a few 1e-6 relative (2e-5 before #916), and the tangent
+with them. There the span term is checked for visibility only; the physical
+directions do not see that noise ([The conditioning
+floor](#the-conditioning-floor), #917).
 
 **Batched.** Each class walks once for all m directions: its matrices'
 tangents per direction once solved (S, K and S₁ built twice per direction,
@@ -1153,8 +1249,9 @@ per slab, per direction, the slab's tangent and ẏ (and ẋ), read back.
 
 ## Not ported
 
-PC's Hessian-vector product, the nuclear
-Hessians, and the QD effective Hamiltonians' tangents. The demo's
+PC's Hessian-vector product (#815; what it can rely on at PSB3 is in [The
+conditioning floor](#the-conditioning-floor)), the nuclear Hessians, and
+the QD effective Hamiltonians' tangents. The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
 ## Tests
@@ -1372,13 +1469,21 @@ an all-zero field null), each direction's Ė against Σ ⟨bar, ẋ⟩ from
   nor an ensemble serves. Without the kept span's rotation (`span = false`)
   Ė misses by more than ten bars along some direction. Measured: 8.8e-12
   with it, 5.0e-5 without.
+- `Nevpt2PcEnergyTangent.ConditioningFloorReadByEveryPass`
+  (`n2_ccpvdz_cas44_df`, floor 1e-3): the floor cuts real modes the
+  default keeps (26 more), the energy, reverse pass and tangent agree on
+  every class's dropped count, energy and `kept`, every `kept` clears the
+  floor and every `cut` sits below it, and Ė is dual to the bars at 1e-10
+  (measured 7.8e-16).
 - `Nevpt2PcEnergyTangent.SpanTermVisibleAtPsb3Twist` (slow tier, #917): at
   PSB3 twisted to 90°, `PcQdActiveActiveGateAtTheTwist`'s CASSCF, state 0's
-  inputs from `builders_tangent`. σ, the sample deviation of Σ ⟨bar, ẋ⟩ over
-  five reverse passes along h, rdm and all (1.4e-5 to 2.4e-5 relative):
-  the tangent with the rotation within 3σ of their mean (measured ≤ 2.1σ),
-  and without it beyond 100σ along rdm and all (15827σ and 2845σ; h moves
-  no S, so U̇ is zero there).
+  inputs from `builders_tangent`. Over ten reverse passes and ten tangents
+  along h, rdm and all, σ_a and σ_t are each sample's deviation (2e-6 to
+  7e-6 relative). The two means must agree within 5 √(σ_a² + σ_t²); five
+  runs measured at most 1.02. Without the rotation, Ė misses the bars' mean
+  by more than 100 times that bound along rdm and all (≥ 11279 spreads;
+  h moves no S, so U̇ is zero there). The earlier rule, 3σ over five
+  passes with the tangent a single sample, failed 2 runs in 3 after #916.
 - `Nevpt2PcEnergyTangent.RefusesWhatTheEnergyRefuses` (CAS(8,8)): zero
   RDMs (no positive eigenvalue), an intruder (|t| = 4, as the adjoint's
   test places it) and a denominator at round-off (every virtual shifted to

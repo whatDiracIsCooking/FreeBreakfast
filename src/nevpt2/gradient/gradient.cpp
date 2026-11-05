@@ -374,10 +374,12 @@ Result<PcClassEnergies> pc_energy(DeviceResources &res, const ci::DeviceStringSe
                                   const int32_t nao, const int32_t nmo, const double *b,
                                   const double *c, const double *h, const int32_t ncore,
                                   const int32_t ncas, const double *vector, const int32_t batch,
-                                  const int32_t nfrozen) {
+                                  const int32_t nfrozen, const double pc_floor) {
   const ScArrays x = FBF_TRY(sc_arrays(res, "nevpt2::pc_energy", alpha, beta, naux, nao, nmo, b, c,
                                        h, ncore, ncas, vector, nfrozen));
-  return pc_class_energies(res, x.walk_blocks(), x.inputs(), batch);
+  EnergyInputs in = x.inputs();
+  in.pc_floor = pc_floor;
+  return pc_class_energies(res, x.walk_blocks(), in, batch);
 }
 
 Result<LambdaBars> lambda_bars(DeviceResources &res, const ScArrays &x, const int32_t nmo) {
@@ -554,16 +556,18 @@ Result<PcAdjoint> pc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
                              const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
                              const int32_t nmo, const double *b, const double *c, const double *h,
                              const int32_t ncore, const int32_t ncas, const double *vector,
-                             const int32_t batch, const int32_t nfrozen) {
+                             const int32_t batch, const int32_t nfrozen, const double pc_floor) {
   ScArrays x = FBF_TRY(sc_arrays(res, "nevpt2::pc_energy", alpha, beta, naux, nao, nmo, b, c, h,
                                  ncore, ncas, vector, nfrozen));
+  EnergyInputs in = x.inputs();
+  in.pc_floor = pc_floor;
   const ScopedDeviceIndex on{res.dev_idx()};
   const int32_t nvirt = nmo - ncore - ncas;
   ScArrays bar = FBF_TRY(zeroed_arrays(res, naux, ncore, ncas, nvirt));
   LambdaBars lambda = FBF_TRY(lambda_bars(res, x, nmo));
   // A refused class is the energy's error, returned before any bar is read.
-  const PcClassEnergiesAdjoint walked = FBF_TRY(
-      pc_class_energies_adjoint(res, x.walk_blocks(), x.inputs(), batch, energy_bars(bar, lambda)));
+  const PcClassEnergiesAdjoint walked =
+      FBF_TRY(pc_class_energies_adjoint(res, x.walk_blocks(), in, batch, energy_bars(bar, lambda)));
   ScAdjoint out = FBF_TRY(
       builders_adjoint(res, naux, nao, nmo, b, c, ncore, ncas, x, bar, std::move(lambda),
                        [&] { return root_rdms_adjoint(res, alpha, beta, vector, x, bar); }));

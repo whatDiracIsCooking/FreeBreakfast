@@ -110,12 +110,12 @@ Result<DroppedModes> dropped_modes(DeviceResources &res, Buffers::device<double>
 }
 
 // Symmetrize S and K (K is symmetric only to the CI vector's convergence),
-// diagonalize S and cut it at max(kPcTau, kPcNoise ε √d) s_max; then
+// diagonalize S and cut it at max(kPcTau, kPcNoise ε √d, @p floor) s_max; then
 // K' = Xᵀ K X over X = V_kept s_kept^-1/2, K' = W λ Wᵀ, U = X W.
 // @p s1, n1 columns row-major d x n1, is optional.
 Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const double *s_rm,
                                const double *k_rm, const int64_t d, const double *s1,
-                               const int64_t n1, const bool keep_modes) {
+                               const int64_t n1, const bool keep_modes, const double floor) {
   const wwr::wwrStream_t s = res.stream();
   const auto di = static_cast<int32_t>(d);
   const Buffers::device<double> s_sym = FBF_TRY(symmetrized(res, s_rm, d));
@@ -138,13 +138,17 @@ Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const dou
   // ε √d: σ's round-off, relative to s_max.
   const double round_off =
       std::numeric_limits<double>::epsilon() * std::sqrt(static_cast<double>(d));
-  const double cut = std::max(kPcTau, kPcNoise * round_off) * s_max;
+  // The conditioning floor (EnergyInputs::pc_floor) raises it; at 0 it is
+  // the same number, so every energy is bitwise unchanged.
+  const double cut = std::max(std::max(kPcTau, kPcNoise * round_off), floor) * s_max;
   int64_t nd = 0;
   while (nd < d && sigma[static_cast<size_t>(nd)] <= cut) {
     ++nd;
   }
   const int64_t m = d - nd;
   const auto mi = static_cast<int32_t>(m);
+  const double cut_rel = nd > 0 ? sigma[static_cast<size_t>(nd - 1)] / s_max : 0.0;
+  const double kept_rel = nd < d ? sigma[static_cast<size_t>(nd)] / s_max : 0.0;
 
   // X = V_kept diag(σ_kept^-1/2), d x m column-major: V_kept is V's last m
   // columns, which read row-major are the m x d rows "ki".
@@ -193,7 +197,9 @@ Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const dou
                     .t1 = std::move(t1),
                     .dropped = nd,
                     .u = std::move(u),
-                    .modes = std::move(modes)};
+                    .modes = std::move(modes),
+                    .cut = cut_rel,
+                    .kept = kept_rel};
 }
 
 // T as an einsum operand over @p rank active indices, each n, and k: the
@@ -265,12 +271,15 @@ Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const A
     Result<ClassSolve> cs = [&]() -> Result<ClassSolve> {
       const PcMatrices mats = FBF_TRY(build(res, ops[static_cast<size_t>((j * ns) + j)], true));
       return solve_class(res, name, mats.s.data(), mats.k->data(), d,
-                         mats.s1 ? mats.s1->data() : nullptr, n1, keep_modes);
+                         mats.s1 ? mats.s1->data() : nullptr, n1, keep_modes,
+                         ops[static_cast<size_t>((j * ns) + j)].pc_floor);
     }();
     if (!cs) {
       return state_error(cs.error(), j, ns);
     }
     kets.ms.push_back(std::ssize(cs->lambda));
+    kets.cut.push_back(cs->cut);
+    kets.kept.push_back(cs->kept);
     kets.solves.push_back(std::move(*cs));
   }
   kets.t.resize(static_cast<size_t>(ns * ns));
@@ -478,6 +487,8 @@ Result<double *> workspace_out(DeviceResources &res, const int64_t count) {
 struct PcClass {
   std::vector<double> energy;
   std::vector<int64_t> dropped;
+  /// @brief Each ket's PcClassEnergies::cut and kept; empty reads as 0.
+  std::vector<double> cut, kept;
   /// @brief Each ket's, empty for a cached call's or a class with no solve.
   std::vector<PcDenominators> modes;
 };
@@ -491,7 +502,11 @@ PcClass pc_empty(const int64_t ns) {
 // Each ket's dropped count is d - m_J, its solve's or the cached call's.
 Result<PcClass> pc_finished(const Finish &f, const char *name, const PcKets &kets,
                             const int64_t d) {
-  PcClass out{.energy = FBF_TRY(f.done(name, d)), .dropped = {}, .modes = f.modes};
+  PcClass out{.energy = FBF_TRY(f.done(name, d)),
+              .dropped = {},
+              .cut = kets.cut,
+              .kept = kets.kept,
+              .modes = f.modes};
   for (int64_t j = 0; j < kets.ns; ++j) {
     out.dropped.push_back(d - kets.m(j));
   }
@@ -1226,8 +1241,11 @@ Result<std::vector<PcClassEnergies>> pc_couplings(DeviceResources &res, const Mo
   for (size_t p = 0; p < out.size(); ++p) {
     for (size_t k = 0; k < 8; ++k) {
       out[p].energies[k] = classes[k].energy[p];
-      out[p].dropped[k] = classes[k].dropped[p % static_cast<size_t>(n)];
-      pc_report_modes(classes[k].modes, p % static_cast<size_t>(n), k, out[p]);
+      const size_t j = p % static_cast<size_t>(n);
+      out[p].dropped[k] = classes[k].dropped[j];
+      out[p].cut[k] = j < classes[k].cut.size() ? classes[k].cut[j] : 0.0;
+      out[p].kept[k] = j < classes[k].kept.size() ? classes[k].kept[j] : 0.0;
+      pc_report_modes(classes[k].modes, j, k, out[p]);
     }
     out[p].total = std::ranges::fold_left(out[p].energies, 0.0, std::plus{});
   }

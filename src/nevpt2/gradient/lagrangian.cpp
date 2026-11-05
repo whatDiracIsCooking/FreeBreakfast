@@ -1299,13 +1299,12 @@ Result<ScGradient> sc_gradient(DeviceResources &res, const Molecule &molecule,
                              std::move(corr), std::move(zc), phi);
 }
 
-Result<PcGradient> pc_gradient(DeviceResources &res, const Molecule &molecule,
-                               const BasisSet &basis,
-                               const std::span<const PrimitivePairClass> classes,
-                               const BasisSet &aux, const SphericalMatrixAO &h,
-                               const Buffers::device<double> &b, const double *l,
-                               const mcscf::Solution &solution, const int32_t ncore,
-                               const int32_t ncas, const int32_t batch, const int32_t nfrozen) {
+Result<PcGradient>
+pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+            const int32_t batch, const int32_t nfrozen, const double pc_floor) {
   const auto [alpha, beta] =
       FBF_TRY(root_strings(res, "nevpt2::pc_gradient", "PC", molecule, solution, ncas));
   const ScopedDeviceIndex on{res.dev_idx()};
@@ -1315,7 +1314,7 @@ Result<PcGradient> pc_gradient(DeviceResources &res, const Molecule &molecule,
   const double *const vector = solution.roots.vectors.data();
   // A refused class is the energy's error, here and so the gradient's.
   PcAdjoint corr = FBF_TRY(pc_adjoint(res, alpha, beta, naux, nmo, nmo, b.data(), c, h.data(),
-                                      ncore, ncas, vector, batch, nfrozen));
+                                      ncore, ncas, vector, batch, nfrozen, pc_floor));
   // PC is invariant to an inactive rotation only between degenerate orbital
   // energies, so its z^c is the same division as SC's, over its own A.
   ZcMultipliers zc =
