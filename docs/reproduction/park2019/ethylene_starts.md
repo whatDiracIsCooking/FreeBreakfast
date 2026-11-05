@@ -41,39 +41,43 @@ conv_tol_grad = 1e-10`, `max_gap = 1e-7` Eh, Opt=Tight's four criteria, and
 
 ## Results
 
-CUDA, RTX 3080 (10 GB), `--preset default` (`build/`) at a0e7b9c, each run
-holding the card (`with_gpu_card cuda`). Every walk below converged with
+CUDA, RTX 3080 (10 GB), `--preset default` (`build/`), each run holding
+the card (`with_gpu_card cuda`). Py, Et and C3v come from the build over
+main at e1868b8 (#865); the Hm walks below come from the build at a0e7b9c.
+Py and Et were also run at a0e7b9c, with identical evaluation counts,
+energies, gaps and overlaps. Every walk below converged with
 `completed: 0 errors, 0 warnings`, with a two-dimensional branching space
 at every evaluation.
 
 | | Py | Et | C3v |
 |---|---|---|---|
-| evaluations | 21 | 18 | *pending #865* |
-| mean E (Eh) | −77.8413115329 | −77.8946737354 | |
-| `gap` (Eh) | 1.36e-8 | 1.74e-9 | |
-| `gradient_norm` (last; max) | 2.09e-12; 8.97e-11 | 4.35e-12; 5.13e-11 | |
-| `ci_residual_norm` (last; max) | 3.90e-14; 9.49e-14 | 6.19e-14; 9.34e-14 | |
-| min `pair_overlap` (evaluation) | 0.99842 (6) | 0.99950 (1) | |
-| max / rms force (Eh/bohr) | 1.11e-5 / 5.05e-6 | 2.29e-6 / 7.87e-7 | |
-| max / rms displacement (bohr) | 5.74e-5 / 2.96e-5 | 2.71e-5 / 1.11e-5 | |
-| CASSCF root 2 at the MECI (Eh) | −77.6342434 | −77.8408142 | |
-| all-atom RMSD to Park's (Å) | 0.137 | 0.035 | |
+| evaluations | 21 | 18 | 12 |
+| mean E (Eh) | −77.8413115329 | −77.8946737354 | −77.8916036866 |
+| `gap` (Eh) | 1.36e-8 | 1.74e-9 | 5.70e-12 |
+| `gradient_norm` (last; max) | 2.14e-12; 8.96e-11 | 4.34e-12; 5.12e-11 | 9.39e-11; 9.39e-11 |
+| `ci_residual_norm` (last; max) | 2.62e-14; 9.99e-14 | 6.62e-14; 1.06e-13 | 5.27e-14; 9.64e-14 |
+| min `pair_overlap` (evaluation) | 0.99842 (6) | 0.99950 (1) | 0.99999985 (8) |
+| max / rms force (Eh/bohr) | 1.11e-5 / 5.05e-6 | 2.29e-6 / 7.87e-7 | 1.01e-5 / 3.19e-6 |
+| max / rms displacement (bohr) | 5.74e-5 / 2.96e-5 | 2.71e-5 / 1.11e-5 | 3.17e-5 / 1.42e-5 |
+| CASSCF root 2 at the MECI (Eh) | −77.6342434 | −77.8408142 | −77.8418402 |
+| all-atom RMSD to Park's (Å) | 0.137 | 0.035 | 0.008 |
 
 The `pair_overlap` floor is `kStateOverlapFloor` = 0.9. No walk came near
-it: the lowest value on any trail is 0.99842, and so no walk slid through to
+it: the lowest value on any of the three trails is 0.99842, and so no walk slid through to
 the third root.
 
 Pairwise RMSD of the converged CASSCF MECIs (Å, all-atom / heavy-atom):
 
 | | Py | Et | C3v |
 |---|---|---|---|
-| Py | 0 | 0.511 / 0.039 | |
-| Et | 0.511 / 0.039 | 0 | |
-| C3v | | | 0 |
+| Py | 0 | 0.511 / 0.039 | 0.562 / 0.041 |
+| Et | 0.511 / 0.039 | 0 | 0.125 / 0.0016 |
+| C3v | 0.562 / 0.041 | 0.125 / 0.0016 | 0 |
 
 Converged geometries:
-[`geometries/ethylene_py_casscf_meci.xyz`](geometries/ethylene_py_casscf_meci.xyz)
-and [`geometries/ethylene_et_casscf_meci.xyz`](geometries/ethylene_et_casscf_meci.xyz).
+[`geometries/ethylene_py_casscf_meci.xyz`](geometries/ethylene_py_casscf_meci.xyz),
+[`geometries/ethylene_et_casscf_meci.xyz`](geometries/ethylene_et_casscf_meci.xyz)
+and [`geometries/ethylene_c3v_casscf_meci.xyz`](geometries/ethylene_c3v_casscf_meci.xyz).
 
 ### Py: twisted-pyramidalized
 
@@ -90,20 +94,29 @@ The walk gives CH3–CH: three H on one carbon (1.095–1.101 Å) and one on the
 other. The carbene H is bent to C–C–H 157.3°, and the C–C bond is 1.461 Å.
 It is 0.035 Å from Park's Et (C–C–H 152.6°). The methyl is not C3v: one of
 its H sits at C–C–H 107.6° against 113.2° for the other two, and that
-asymmetry is what separates Et from C3v. Root 2 lies only 0.054 Eh above the
-pair here, the closest the third root comes at any of the MECIs.
+asymmetry is what separates Et from C3v. Root 2 lies 0.054 Eh above the pair here.
 
 ### C3v: C3v-ethylidene
 
-*Pending #865.* The walk from Park's C3v met all five criteria at
-evaluation 12, at a mean E of −77.8916036866 Eh with a gap of 5.7e-12 and a
-min `pair_overlap` of 0.99999985. The run then exited 6 because the final
-fresh RHF at the MECI did not converge in 400 iterations (#865). That
-provisional geometry is exactly C3v: C–C–H 180.0°, the three methyl H
-equal at 1.096 Å and 111.6°, and C–C 1.464 Å. It is 0.008 Å from Park's
-C3v and 0.125 Å from our Et.
+The walk again gives CH3–CH, now exactly C3v: the carbene H lies on the
+C–C axis (C–C–H 180.0°), and the three methyl H are equal at 1.096 Å and
+111.6°. The C–C bond is 1.464 Å. The pair here is the linear carbene's E
+pair, degenerate by symmetry, and the walk settles onto the C3v line:
+from Park's start it took 12 evaluations. The structure is 0.008 Å from
+Park's C3v.
 
-## Hm has no basin of its own at SA3-CASSCF(2,2)
+Against Et, the difference is the carbene H: 157.3° there, 180° here.
+That makes C3v 0.125 Å and 3.07 mEh (0.084 eV) above Et. Root 2 is
+0.050 Eh above the pair.
+
+Two fixes made this walk possible:
+- #856: SA weights are carried, not recovered from the roots' 1-RDMs,
+  which coincide near C3v. Before it, `df_intersection` refused the walk
+  near the axis.
+- #865: the final fresh RHF at the MECI now converges. Before it, the run
+  exited 6 there.
+
+## Hm has no basin of its own at SA3-CASSCF(2,2), or at QD-PC-NEVPT2
 
 **Finding: no walk found an Hm MECI distinct from Py and Et.** Three walks
 were run on the same card and build, aimed at an Hm basin:
@@ -199,7 +212,9 @@ All-atom RMSD of the converged MECI from Park's Hm, reflection allowed:
 |---|---|---|---|---|
 | RMSD (Å) | 0.0001 | 0.0012 | 0.2996 | 0.019 |
 
-**Verdict: at all-electron QD-PC/aug-cc-pVDZ, Hm slides to Py too.** The
+**Verdict: Park's Hm is a seam point, not a seam minimum, at our level.**
+At all-electron QD-PC/aug-cc-pVDZ, Hm slides to Py, as it does at cc-pVDZ
+and at SA3-CASSCF. The
 walk from Park's Hm ends 0.0001 Å and 2.5e-9 Eh from the Py MECI, and our
 Py is 0.0012 Å from his. At his Hm geometry the pair is already nearly
 degenerate in our calculation: a gap of 3.44e-5 Eh against his 3.55e-5.
@@ -217,6 +232,14 @@ One difference is not ruled out. His frozen core moves every energy here
 by a nearly constant amount, so it is not expected to create a seam
 minimum. But the frozen-core MECI gradient does not exist yet (#875), so
 that cannot be checked directly.
+
+**Consequence for tier 1**, per the ruling on
+[#847](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/847)
+(milestone orchestrator, under the owner's delegation):
+- Tier 1's Hm row is reported, not gated, and no Hm optimization is run.
+- The row is given as frozen-core single points at Park's aug-cc-pV{D,T}Z Hm
+  geometries (`single_points/`, #860).
+- The gated per-MECI basis shift covers Py, Et and C3v.
 
 The two walks' absolute energies sit 5.4 mEh below his (−78.1771297
 against −78.1717633 for Py, state 0). That offset is the correlated core
