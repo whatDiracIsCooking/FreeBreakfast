@@ -382,6 +382,15 @@ scf_loop(DeviceResources &res, FockBuilder &builder, const Molecule &molecule,
 
   const double nuclear = nuclear_repulsion_energy(molecule);
   double previous = 0.0;
+  // What DIIS's residuals are scaled by: 1 until its subspace is first found
+  // singular, then 1/|[F,D]| at that iteration, fixed until the next. DIIS's
+  // coefficients do not depend on a common scale, but its singular pivot is
+  // absolute (1e-14 on the Gram's elimination), so at |[F,D]| ~ 1e-6 a
+  // history of nearly parallel residuals, whose differences are 1e-4 of their
+  // norm, reads as singular and every step is the plain Roothaan one
+  // (issue #865). See the README, "A singular DIIS subspace".
+  double residual_scale = 1.0;
+  const auto residual_len = static_cast<int32_t>(st.tmp.num_elements());
   for (int32_t iteration = 1; iteration <= max_iterations; ++iteration) {
     const bool full = FBF_TRY(builder.build(res, st.d, iteration == 1 ? nullptr : &st.c, h,
                                             open != nullptr ? open->fa : st.f, open));
@@ -403,7 +412,25 @@ scf_loop(DeviceResources &res, FockBuilder &builder, const Molecule &molecule,
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(st.f_diis.data(), st.f.data(),
                                              st.f.num_elements() * sizeof(double),
                                              wwr::wwrMemcpyDeviceToDevice, res.stream())));
+      if (residual_scale != 1.0) {
+        FBF_TRY(gpu_status(wwr::scal<double, int32_t>(res.blas().get(), residual_len,
+                                                      &residual_scale, st.tmp.data(), 1)));
+      }
       FBF_TRY(diis.push_and_extrapolate(res, st.f.data(), st.tmp.data(), st.f_diis.data()));
+      if (diis.last_extrapolation_singular() && norm > 0.0) {
+        // f_diis is F as built, the plain step. The history is restarted from
+        // this pair, its residual scaled to unit norm (st.tmp holds it as
+        // pushed), and the next push extrapolates over two pairs again.
+        const double rescale = 1.0 / (residual_scale * norm);
+        residual_scale = 1.0 / norm;
+        FBF_LOG_INFO("scf: DIIS subspace singular at |[F,D]| = {:.3e}; restarted with its "
+                     "residuals scaled by {:.3e}",
+                     norm, residual_scale);
+        diis.reset();
+        FBF_TRY(gpu_status(wwr::scal<double, int32_t>(res.blas().get(), residual_len, &rescale,
+                                                      st.tmp.data(), 1)));
+        FBF_TRY(diis.push_and_extrapolate(res, st.f.data(), st.tmp.data(), st.f_diis.data()));
+      }
       if (reset) {
         diis.reset();
       }

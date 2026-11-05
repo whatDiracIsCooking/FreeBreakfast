@@ -64,7 +64,9 @@ Each iteration, all on `res.stream()`:
    Once the norm is under `commutator_tolerance`, every build is full.
 5. Otherwise **DIIS** extrapolates F from the (F, e) history into a copy; the
    as-built F stays the incremental builds' accumulator. On the incremental
-   build that switches to full ones, the history is then dropped.
+   build that switches to full ones, the history is then dropped. A
+   singular extrapolation restarts the history with its residuals scaled
+   ("A singular DIIS subspace", below).
 6. **Diagonalize** F' = X^T F X (`recipes.diagonalize`), C = X C', and D = 2 C_occ C_occ^T.
 
 An open shell (ROHF, n_alpha > n_beta) changes steps 1, 2 and 6 only:
@@ -247,6 +249,64 @@ What it settled:
   the direct one, −1110.137794144 Eh: that is the fit's error at gly5 in
   cc-pVDZ-JKFIT, not the SCF's.
 
+- **A singular DIIS subspace restarts it, its residuals scaled to unit
+  norm** (issue #865). DIIS's coefficients do not depend on a common scale
+  of its residuals, but its singular test does: a Gauss-Jordan pivot under
+  an absolute 1e-14 (`recipes/diis`), on a Gram whose entries are
+  |[F,D]|², and after the border's elimination its pivots are about
+  |e|·|e_i − e_j|. When it trips, DIIS hands back F as built, the plain
+  Roothaan step. So at |[F,D]| ~ 1e-6 a history whose residuals differ by
+  1e-4 of their norm reads as singular, and below ~1e-7 nearly any history
+  does. On ethylene's C3v-type geometries that left the loop on the plain
+  step for good. Their RHF orbital Hessian has one eigenvalue near zero
+  (PySCF: 6.4e-6 Eh at #856's CASSCF MECI in cc-pVDZ, 2.1e-4 at Park's SI
+  C3v geometry in aug-cc-pVDZ), where the Roothaan step's estimate of it,
+  2(ε_a − ε_i), is above 0.6 Eh. The HOMO-LUMO gap is 0.32 to 0.37 Eh, so
+  the cause is not a near-degenerate occupation: the plain step barely
+  moves along that one mode. From iteration 15 every extrapolation at the
+  MECI was singular, and |[F,D]| sat at 1.26e-6 for 400 iterations, with
+  the energy falling 1.9e-12 Eh a step.
+
+  So when an extrapolation comes back singular, and the loop is not yet
+  converged, the history is dropped and restarted from this iteration's
+  pair. From then on every residual is pushed scaled by 1/|[F,D]| at the
+  restart, a common factor fixed until the next restart, which makes the
+  pivot test relative to the residuals' size. That iteration's step is
+  still the plain one DIIS already returned, and the next push extrapolates
+  over two pairs again. The cost is one `scal` per pushed residual, only
+  after a restart, and no host synchronization: the loop already reads the
+  singular flag.
+
+  **Why it is on by default, with no option.** It does nothing until DIIS
+  has already given up, and on every iteration where it acts the old loop
+  took the plain step. Over the whole `free_breakfast_tests_gpu` binary
+  (`FREE_BREAKFAST_FAST_TESTS`, CUDA, RTX 3080, `--preset default`), the
+  old loop had 2378 singular extrapolations over 417 SCFs, nearly all with
+  |[F,D]| between 1e-11 and 1e-7 under a tightened `commutator_tolerance`.
+  With the restart (257 of them) no test took more SCF iterations: 63
+  took fewer, 234 the same, 7655 → 6142 in all, and the binary ran in
+  481 s against 508 s. Every SCF golden (`PipelineScf`, `PipelineScfRohf`,
+  `PipelineDfScf`, `PipelineDfRohf`) took the same iterations, its time
+  within run-to-run noise. The CASSCF Hessian cases, whose SCFs run at a
+  tightened tolerance, went from 96 to 20 each. At the C3v geometries
+  (density-fitted, the same card):
+
+  | | before | after |
+  |---|---|---|
+  | #856's MECI, cc-pVDZ / cc-pVDZ-JKFIT | not converged in 400 (1.26e-6) | 56 iterations, −77.867545824336 Eh (PySCF `.newton()`: −77.867545824337) |
+  | Park's C3v, cc-pVDZ / cc-pVDZ-JKFIT | converged | 32 iterations, −77.867374663869 Eh |
+  | Park's C3v, aug-cc-pVDZ / aug-cc-pVDZ-JKFIT | not converged in 400 (2.9e-6) | 27 iterations, −77.873183536226 Eh (PySCF `.newton()`: −77.873183536228) |
+  | Park's C3v, aug-cc-pVTZ / aug-cc-pVTZ-JKFIT | 41 iterations | 45 iterations, −77.893891867504 Eh |
+
+  At the MECI the restarted DIIS leaves the plateau through a detour
+  (|[F,D]| up to 4e-3) to a minimum 1.5e-7 Eh below it. In aug-cc-pVTZ both
+  loops took that kind of detour from a 1.6e-5 plateau, and which took
+  fewer steps out of it is chance: 41 and 45. The flat mode is the
+  geometry's, so its orbitals are loosely determined at any tolerance:
+  a commutator of 1e-7 along a curvature of 6e-6 Eh is a rotation of about
+  1e-2 along that mode. What is not done: the pivot made relative inside
+  `recipes/diis` itself, which would serve every caller. The loop is its
+  only one today.
 - **J's screen is an option, `tau_j`, K's is not.** At the default, 1e-10,
   J's screening error is in the converged energy and orbitals: 2.6e-10 Eh on
   N₂/cc-pVDZ, which `test/gtest/active_space_gpu.cpp`'s 1e-10 comparisons
@@ -361,6 +421,13 @@ orbital and fitting sets (`test/gtest/data/density_fitting/`,
   1.5 GB now and shares the card like any other case.
 - A config whose `[eri]` selects density fitting plans the whole chain and
   runs it to PySCF's energy and orbital energies.
+- Ethylene at #856's C3v MECI in cc-pVDZ / cc-pVDZ-JKFIT and at Park's SI
+  C3v geometry in aug-cc-pVDZ / aug-cc-pVDZ-JKFIT
+  (`PipelineDfScfSoftMode`): the step at its defaults converges, to
+  PySCF's `.newton()` energy within 1e-8 Eh. Both stalled before the
+  restart above, 1.5e-7 and 1.9e-8 Eh above that energy. The references
+  are inline, not emitted: PySCF's own DIIS converges at neither in 400
+  cycles.
 
 Against PySCF's DF-ROHF (`test/gtest/data/density_fitting/df_rohf.json`), the
 orbital energies being its Roothaan effective Fock matrix's eigenvalues:

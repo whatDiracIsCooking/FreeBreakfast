@@ -4,8 +4,9 @@
 // tools/emit/df_reference.py): the energy and orbital energies, and the
 // invariants of the wavefunction, over the setup steps and the guess run by
 // hand; then through the real registry from configs whose [eri] selects
-// density fitting, one of them at multiplicity 2. Runs the device chain, so
-// needs a GPU.
+// density fitting, one of them at multiplicity 2; and two ethylene geometries
+// on which DIIS once stalled (issue #865). Runs the device chain, so needs a
+// GPU.
 
 #include <gtest/gtest.h>
 
@@ -320,6 +321,72 @@ INSTANTIATE_TEST_SUITE_P(DfRohf, PipelineDfRohf,
                          ::testing::Values("oh_ccpvdz", "nh2_ccpvdz", "ch2_ccpvdz",
                                            "h2o_cation_ccpvdz", "ch2_ccpvtz"),
                          [](const auto &info) { return std::string(info.param); });
+
+// Ethylene at C3v-type (ethylidene-like) geometries, issue #865: the RHF
+// orbital Hessian has one eigenvalue near zero (6e-6 Eh at #856's MECI,
+// 2e-4 at Park's geometry) where the Roothaan step's estimate of it is
+// above 0.6, so the plain step barely moves along that mode, and with
+// |[F,D]| ~ 1e-6 DIIS's residuals differ by too little for its absolute
+// singular pivot. Before the restart with scaled residuals (the README, "A
+// singular DIIS subspace") both stalled for 400 iterations, |[F,D]| at
+// 1.3e-6 and 2.9e-6 and the energy 1.5e-7 and 1.9e-8 Eh above the minimum.
+// The energies are PySCF 2.14's second-order solver (`.newton()`) over this
+// tree's basis files, which agrees with its own DIIS on Park's geometry: the
+// shared tolerance below is under both stall gaps.
+struct SoftModeCase {
+  std::string_view name;
+  std::string_view basis;
+  std::string_view aux_basis;
+  std::array<fb::Atom, 6> atoms; // bohr
+  double energy;
+};
+
+class PipelineDfScfSoftMode : public ::testing::TestWithParam<SoftModeCase> {};
+
+TEST_P(PipelineDfScfSoftMode, ConvergesAtTheDefaultsToTheMinimum) {
+  FBF_REQUIRE_GPU();
+  const SoftModeCase &param = GetParam();
+  fb::DeviceResources res{0};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  auto inputs =
+      make_inputs(res, {param.atoms.begin(), param.atoms.end()}, param.basis, param.aux_basis, 0);
+  ASSERT_TRUE(inputs.has_value());
+  auto scf = fb::ScfStep{}.run(inputs->view(), res);
+  ASSERT_TRUE(scf.has_value()) << scf.error().message;
+  EXPECT_NEAR(scf->energy, param.energy, kEnergyTolerance);
+  std::cout << std::format("{}: {} iterations, |dE| = {:.2e} Eh\n", param.name, scf->iterations,
+                           std::abs(scf->energy - param.energy));
+}
+
+constexpr fb::Element kC = fb::Element::C;
+constexpr fb::Element kH = fb::Element::H;
+
+// #856's DF-SA3-CASSCF(2,2) S1/S0 MECI (cc-pVDZ), the flattest mode; and
+// Park's SI C3v geometry (acs.jctc.9b00919, aug-cc-pVDZ) in aug-cc-pVDZ.
+INSTANTIATE_TEST_SUITE_P(
+    C3vEthylene, PipelineDfScfSoftMode,
+    ::testing::Values(
+        SoftModeCase{.name = "meci856_ccpvdz",
+                     .basis = "cc-pvdz",
+                     .aux_basis = "cc-pvdz-jkfit",
+                     .atoms = {fb::Atom{{-7.5804743842, 2.8780355302, 0.0040993949}, kC},
+                               fb::Atom{{-4.8200422730, 2.6858323157, -0.0386552974}, kC},
+                               fb::Atom{{-8.2401813114, 4.5921868087, -0.9530338823}, kH},
+                               fb::Atom{{-8.3107133837, 2.9359702342, 1.9413896875}, kH},
+                               fb::Atom{{-8.4717057114, 1.2648106932, -0.9408058390}, kH},
+                               fb::Atom{{-2.8145679351, 2.5461954174, -0.0697320635}, kH}},
+                     .energy = -77.867545824337},
+        SoftModeCase{.name = "park_c3v_augccpvdz",
+                     .basis = "aug-cc-pvdz",
+                     .aux_basis = "aug-cc-pvdz-jkfit",
+                     .atoms = {fb::Atom{{-7.5664950, 2.8752550, 0.0038810}, kC},
+                               fb::Atom{{-4.8308600, 2.6866690, -0.0385090}, kC},
+                               fb::Atom{{-8.2395940, 4.6066890, -0.9608550}, kH},
+                               fb::Atom{{-8.3171590, 2.9362630, 1.9580120}, kH},
+                               fb::Atom{{-8.4815210, 1.2501340, -0.9485760}, kH},
+                               fb::Atom{{-2.8020560, 2.5480210, -0.0706910}, kH}},
+                     .energy = -77.873183536228}),
+    [](const auto &info) { return std::string(info.param.name); });
 
 // The XYZ of @p expected's geometry. The reference geometry is in bohr; XYZ is
 // in Angstrom, read back through the same constant, so the molecule is the
