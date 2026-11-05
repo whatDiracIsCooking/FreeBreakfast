@@ -63,7 +63,7 @@ After `MaxIterationsExceeded` or `Divergence`, `eigenvalues` and `eigenvectors` 
 | `previous_eigenvectors` | The optional last argument, null by default: out, n × n_roots, X_prev on every return that writes `eigenvectors` |
 | `DavidsonOptions` | `residual_tolerance` (1e-8), `max_iterations` (100), `linear_dependence_floor` (1e-12), `canonical_orthonormalization` (false) |
 | `DavidsonInfo` | `iterations`, `max_residual_norm` |
-| `DavidsonPreconditioner<F, T>` | `f(res, theta, residual, correction)` returns something convertible to `Status`; `theta` is a host `std::span<const T>` of the current Ritz values, one per column |
+| `DavidsonPreconditioner<F, T>` | `f(res, theta, ritz_vectors, residual, correction)`, callable on a const `F`, returns something convertible to `Status`; `theta` is a host `std::span<const T>` of the current Ritz values, one per column |
 
 ## Usage
 

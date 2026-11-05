@@ -72,7 +72,7 @@ s = density.spherical_to_cartesian(res);
 
 ## Tests
 
-`test/recipes/matrix_ao_gpu.cpp` covers the layout orders and zero initialisation, U's column-major upload and its absence below d, `cartesian_to_spherical` and `spherical_to_cartesian` against host sandwiches built from `spherical_transform_matrix` on an s+p+d basis, the trace pairing between two pairs sharing one U, the copy path below d, an empty basis, and the constructor's abort on a U that does not fit.
+`test/recipes/matrix_ao_host.cpp` checks `ao_count<L>` in both layouts against hand counts, exactly: an empty basis, an s + p + p basis (the layouts agree through p), one shell of each l from s to f, and a mixed basis through f. `test/recipes/matrix_ao_gpu.cpp` covers the layout orders and zero initialisation, U's column-major upload and its absence below d, `cartesian_to_spherical` and `spherical_to_cartesian` against host sandwiches built from `spherical_transform_matrix` on an s+p+d basis, the trace pairing between two pairs sharing one U, the copy path below d, an empty basis, and the constructor's abort on a U that does not fit.
 
 ## Files
 

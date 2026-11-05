@@ -1,11 +1,15 @@
 // GPU cases for recipes.einsum: matmul, diagonal, trace, a full reduction to
-// a scalar, a strided view, transpose, a three-operand contraction, SC-NEVPT2's
-// small-output / large-sum shape and one of its diagonal-plus-eight-label
-// shapes, and the accumulate / scale semantics, each against a host loop.
+// a scalar, a strided view, transpose (a rank-6 permutation accumulated and
+// scaled, and rank-2 and rank-3 ones exactly), a three-operand contraction,
+// SC-NEVPT2's small-output / large-sum shape and one of its
+// diagonal-plus-eight-label shapes, and the accumulate / scale semantics,
+// each against a host loop.
 //
 // The kernel adds every term with an atomicAdd, so the sum's order varies and
-// nothing here is compared bit for bit: every check is at kTol, absolute, on
-// entries in [-1, 1] whose sums stay within a few hundred.
+// a contraction is not compared bit for bit: every such check is at kTol,
+// absolute, on entries in [-1, 1] whose sums stay within a few hundred. The
+// exception is a transpose into a zeroed output at alpha = 1, which adds one
+// term per element and does no other arithmetic, and is checked bitwise.
 
 #include <gtest/gtest.h>
 
@@ -212,6 +216,71 @@ TEST(Einsum, TransposeIsNumpysAxesConvention) {
       fb::transpose(res.stream(), {d_x.data(), dims, {}}, axes, out.data(), kAlpha);
   ASSERT_TRUE(status.has_value()) << status.error().message;
   expect_near_all(download(res, out.data(), total), want);
+}
+
+// x.transpose(axes) on the host, row-major as einsum's operands are: out's
+// index d runs over x's axis axes[d].
+std::vector<double> host_transpose(const std::vector<double> &x,
+                                   const std::vector<std::int64_t> &dims,
+                                   const std::vector<std::int32_t> &axes) {
+  const std::size_t rank = dims.size();
+  std::vector<std::size_t> out_dims(rank);
+  for (std::size_t d = 0; d < rank; ++d) {
+    out_dims[d] = static_cast<std::size_t>(dims[static_cast<std::size_t>(axes[d])]);
+  }
+  std::vector<double> out(x.size());
+  std::vector<std::size_t> idx(rank);
+  std::vector<std::size_t> src(rank);
+  for (std::size_t flat = 0; flat < x.size(); ++flat) {
+    std::size_t rest = flat;
+    for (std::size_t d = rank; d-- > 0;) {
+      idx[d] = rest % out_dims[d];
+      rest /= out_dims[d];
+    }
+    for (std::size_t d = 0; d < rank; ++d) {
+      src[static_cast<std::size_t>(axes[d])] = idx[d];
+    }
+    std::size_t at = 0;
+    for (std::size_t d = 0; d < rank; ++d) {
+      at = (at * static_cast<std::size_t>(dims[d])) + src[d];
+    }
+    out[flat] = x[at];
+  }
+  return out;
+}
+
+// transpose into a zeroed output at alpha = 1: each output element gets one
+// term, 0 + 1 * x exactly, so the device result is the host permutation bit
+// for bit whatever order the atomics land in.
+void expect_transpose_bitwise(const std::vector<std::int64_t> &dims,
+                              const std::vector<std::int32_t> &axes, const std::uint32_t seed) {
+  fb::DeviceResources res{0};
+  const auto x = random_values(element_count(dims), seed);
+  const auto want = host_transpose(x, dims, axes);
+  Uploaded d_x{res, x};
+  Uploaded out{res, std::vector<double>(x.size(), 0.0)};
+  const fb::Status status = fb::transpose(res.stream(), {d_x.data(), dims, {}}, axes, out.data());
+  ASSERT_TRUE(status.has_value()) << status.error().message;
+  const auto got = download(res, out.data(), x.size());
+  ASSERT_EQ(got.size(), want.size());
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(got[i]), std::bit_cast<std::uint64_t>(want[i]))
+        << "at " << i << ": " << got[i] << " against " << want[i];
+  }
+}
+
+TEST(Einsum, TransposeRankTwoIsExact) {
+  FBF_REQUIRE_GPU();
+  // A non-square 5 x 7, so a swapped extent cannot pass.
+  expect_transpose_bitwise({5, 7}, {1, 0}, 10);
+}
+
+TEST(Einsum, TransposeRankThreeIsExact) {
+  FBF_REQUIRE_GPU();
+  // A cyclic permutation over three unequal extents, and the swap of the
+  // last two.
+  expect_transpose_bitwise({3, 4, 5}, {2, 0, 1}, 11);
+  expect_transpose_bitwise({3, 4, 5}, {0, 2, 1}, 12);
 }
 
 TEST(Einsum, ThreeOperandContraction) {

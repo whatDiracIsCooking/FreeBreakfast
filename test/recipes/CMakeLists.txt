@@ -9,11 +9,12 @@
 #   * free_breakfast_recipes_tests_gpu -- the *_gpu.cpp TUs; each guards
 #     itself with FBF_REQUIRE_GPU() and SKIPS without a device.
 #
-# einsum_host.cpp is here too, though it needs no device: einsum's refusals
-# return before any launch, so its cases run on a device-less box. A host
-# binary of one TU was not worth its own target; the cost is that those cases
-# carry this binary's `gpu` label, which the ci-cuda and ci-hip test presets
-# exclude.
+# Three TUs need no device and are here too: einsum_host.cpp (einsum's
+# refusals return before any launch), matrix_ao_host.cpp (ao_count reads only
+# the host BasisSet) and concepts.cpp (static_asserts on the exported
+# concepts, checked at build time; it declares no case). A host binary for
+# them was not worth its own target; the cost is that their cases carry this
+# binary's `gpu` label, which the ci-cuda and ci-hip test presets exclude.
 #
 # The module setup and the ctest registration are the same as test/gtest's,
 # which says why for each. None of these cases is RUN_SERIAL, and none of
@@ -33,6 +34,7 @@ add_executable(
   cg_unitary_gpu.cpp
   cholesky_gpu.cpp
   complex_cast_gpu.cpp
+  concepts.cpp
   davidson_gpu.cpp
   diagonalize_gpu.cpp
   diis_gpu.cpp
@@ -41,6 +43,7 @@ add_executable(
   expm_gpu.cpp
   lu_gpu.cpp
   matrix_ao_gpu.cpp
+  matrix_ao_host.cpp
   norm_gpu.cpp
   orthogonalize_gpu.cpp
   orthonormalize_gpu.cpp

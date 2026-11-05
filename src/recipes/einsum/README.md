@@ -62,7 +62,9 @@ home-brewed until that changes.
 - `test/recipes/einsum_gpu.cpp`: matmul, diagonal, trace, a full
   reduction to a scalar, a strided view, transpose, a three-operand
   contraction, the small-output / large-sum shape `"ipqr,pqrabc,iabc->i"`, and
-  the accumulate / scale semantics, each against a host loop at a tolerance.
+  the accumulate / scale semantics, each against a host loop at a tolerance;
+  and `transpose` at rank 2 and rank 3 into a zeroed output at alpha = 1,
+  where each element gets one term, against the host permutation bit for bit.
 - `test/recipes/einsum_host.cpp`: the refusals -- malformed subscripts,
   subscripts that do not fit their operands or `out_dims`, a transpose that is
   not a permutation, and a call past each limit.
