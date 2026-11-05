@@ -10,7 +10,9 @@
 // relies on: it does not rotate to each root's natural orbitals. Last, SC's
 // reverse pass (class_energies_adjoint): Park Eq. 40 and Euler's identity
 // from its bars, its bars on every input against a Richardson ladder of
-// class_energies itself, and the same bars whatever the batch. And PC's
+// class_energies itself, and the same bars whatever the batch; and its
+// forward tangent (class_energies_tangent), dual to those bars along a block
+// of random directions on every case, each with empty perturbers. And PC's
 // (pc_class_energies_adjoint): the same, homogeneity in (S, S₁, K) in place
 // of Eq. 40 and the ladder kept inside the energy's domain, its invariance to
 // inactive rotations at degenerate orbital energies, and its refusals. And
@@ -997,6 +999,131 @@ TEST(Nevpt2EnergyAdjoint, BatchedBarsMatchWhole) {
     EXPECT_NEAR(batched->first.eq40[k], whole->first.eq40[k], 1e-12) << kClassNames[k];
   }
 }
+
+// ---------------------------------------------------------------------------
+// The SC forward tangent
+// ---------------------------------------------------------------------------
+
+// @p dx on the device as a direction: an array that is all zero is null (the
+// tangent's zero), and so are the blocks when B does not move. @p g is @p dx
+// uploaded, and must outlive the direction.
+nevpt2::EnergyDirection direction_of(const DeviceCase &g, const HostCase &dx) {
+  const auto moves = [](const std::vector<double> &a) {
+    return std::ranges::any_of(a, [](const double v) { return v != 0.0; });
+  };
+  const auto given = [&](const std::vector<double> &a, const double *const p) {
+    return moves(a) ? p : nullptr;
+  };
+  const bool moves_b = moves(dx.aa) || moves(dx.ca) || moves(dx.va) || moves(dx.cv);
+  return {.in = {.h1e = given(dx.h1e, g.in.h1e),
+                 .h2e = given(dx.h2e, g.in.h2e),
+                 .e_core = given(dx.e_core, g.in.e_core),
+                 .e_virt = given(dx.e_virt, g.in.e_virt),
+                 .h1e_v_sr = given(dx.h1e_v_sr, g.in.h1e_v_sr),
+                 .h1e_v_si = given(dx.h1e_v_si, g.in.h1e_v_si),
+                 .h1e_v_sir = given(dx.h1e_v_sir, g.in.h1e_v_sir),
+                 .dm1 = given(dx.dm1, g.in.dm1),
+                 .dm2 = given(dx.dm2, g.in.dm2),
+                 .dm3 = given(dx.dm3, g.in.dm3),
+                 .f3ca = given(dx.f3ca, g.in.f3ca),
+                 .f3ac = given(dx.f3ac, g.in.f3ac)},
+          .blocks = moves_b ? &*g.blocks : nullptr};
+}
+
+// Σ <bar, dx>'s summands, one per input: B through Λ, then every
+// EnergyInputs array.
+std::vector<double> bars_summands(const HostBars &bars, const HostCase &h, const HostCase &dx) {
+  return {lambda_dot(bars.lambda, h, dx),  dot(bars.h1e_v_sr, dx.h1e_v_sr),
+          dot(bars.h1e_v_si, dx.h1e_v_si), dot(bars.h1e_v_sir, dx.h1e_v_sir),
+          dot(bars.e_core, dx.e_core),     dot(bars.e_virt, dx.e_virt),
+          dot(bars.h1e, dx.h1e),           dot(bars.h2e, dx.h2e),
+          dot(bars.dm1, dx.dm1),           dot(bars.dm2, dx.dm2),
+          dot(bars.dm3, dx.dm3),           dot(bars.f3ca, dx.f3ca),
+          dot(bars.f3ac, dx.f3ac)};
+}
+
+// The forward tangent (class_energies_tangent) against the reverse pass's
+// bars, which Nevpt2EnergyAdjointLadder validates: on one block call along
+// seeded random directions (each input group alone, then all of them), every
+// direction's Ė must be Σ <bar, dx> to 1e-10 of that sum's largest summand.
+// A ladder of class_energies would add nothing the bars' ladder does not
+// hold. Every case has norm-guarded, empty perturbers, zero by N₂'s symmetry
+// (at CAS(4,4) all of Si's, whose (σπ|ππ) and h1e_v_Si vanish, and over half
+// of Sr's, Sijr's, Srsi's and Srs's; at CAS(8,8) a fifth of Sijr's and a
+// quarter of Srsi's): their bars are zero, so a nonzero tangent there fails
+// duality. Walked whole, and in threes (a partial last slab).
+class Nevpt2EnergyTangent : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {
+};
+
+TEST_P(Nevpt2EnergyTangent, DualToTheBars) {
+  FBF_REQUIRE_GPU();
+  const auto [name, batch] = GetParam();
+  // CAS(8,8) is ~7 s a case on the gfx1200 (CAS(4,4) 0.2-0.8 s); batched,
+  // the CAS(4,4) cases stand for it in the fast tier.
+  if (name == "n2_ccpvdz_cas88_df" && batch != 0) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  const std::filesystem::path dir = kDataDir / name;
+  fb::DeviceResources res(0);
+  const HostCase h = load_host_case(dir);
+  const auto adj = run_adjoint(res, h, 0);
+  ASSERT_TRUE(adj.has_value());
+
+  const std::array<std::string, 6> groups{"B", "h1e_v", "e", "h", "rdm", "all"};
+  std::vector<HostCase> dx;
+  for (std::size_t u = 0; u < groups.size(); ++u) {
+    dx.push_back(random_direction(h, groups[u], 805 + u));
+  }
+  DeviceCase g = upload_case(res, h);
+  std::vector<DeviceCase> gd;
+  gd.reserve(dx.size());
+  for (const HostCase &d : dx) {
+    gd.push_back(upload_case(res, d));
+  }
+  std::vector<nevpt2::EnergyDirection> directions;
+  for (std::size_t u = 0; u < dx.size(); ++u) {
+    directions.push_back(direction_of(gd[u], dx[u]));
+  }
+  const auto got = nevpt2::class_energies_tangent(res, *g.blocks, g.in, batch, directions);
+  ASSERT_TRUE(got) << got.error().message;
+  ASSERT_EQ(got->total_dot.size(), groups.size());
+
+  double worst = 0.0;
+  for (std::size_t u = 0; u < groups.size(); ++u) {
+    const std::vector<double> summands = bars_summands(adj->second, h, dx[u]);
+    const double predicted = std::accumulate(summands.begin(), summands.end(), 0.0);
+    double scale = 0.0;
+    for (const double x : summands) {
+      scale = std::max(scale, std::abs(x));
+    }
+    const double miss = std::abs(got->total_dot[u] - predicted);
+    EXPECT_LE(miss, 1e-10 * scale)
+        << groups[u] << ": Ė " << got->total_dot[u] << ", Σ<bar, dx> " << predicted;
+    worst = std::max(worst, miss / scale);
+    std::cout << std::format("[ nevpt2   ] tangent {} batch {} {}: Ė {:+.12e}, Σ<bar, dx> "
+                             "{:+.12e}, miss / largest summand {:.2e}\n",
+                             name, batch, groups[u], got->total_dot[u], predicted, miss / scale);
+  }
+  std::size_t empty = 0;
+  std::string per_class;
+  for (std::size_t k = 0; k < 8; ++k) {
+    const auto guarded =
+        std::ranges::count_if(got->norm[k], [](const double x) { return std::abs(x) <= 1e-14; });
+    empty += static_cast<std::size_t>(guarded);
+    per_class += std::format(" {} {}/{}", kClassNames[k], guarded, got->norm[k].size());
+  }
+  EXPECT_GT(empty, 0U) << "no norm-guarded perturber:" << per_class;
+  std::cout << std::format("[ nevpt2   ] tangent {} batch {}: worst {:.2e}; guarded{}\n", name,
+                           batch, worst, per_class);
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2EnergyTangent,
+                         ::testing::Combine(::testing::ValuesIn(kRdmCases),
+                                            ::testing::Values(0, 3)),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param));
+                         });
 
 // ---------------------------------------------------------------------------
 // The PC reverse pass

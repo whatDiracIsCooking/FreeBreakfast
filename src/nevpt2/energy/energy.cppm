@@ -273,6 +273,69 @@ struct ClassEnergiesAdjoint {
 class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                        int32_t batch, const EnergyBars &bars);
 
+/// @brief One direction class_energies_tangent differentiates along: a
+/// tangent of every EnergyInputs field and of B. A null field is zero.
+struct EnergyDirection {
+  /// @brief The fields' tangents, each in its EnergyInputs field's layout.
+  EnergyInputs in;
+  /// @brief B's tangent over the MO blocks, shaped as the call's blocks and
+  /// laid out as mo_blocks lays B out (vc B_cv's pair swapped); null is zero.
+  const MoBlocks *blocks = nullptr;
+};
+
+/// @brief class_energies_tangent's result: the energies it walked, and per
+/// class each perturber's norm N, H and Δ with their tangents, and Ė.
+///
+/// A class's perturbers are ScAmplitudes' order (Sir's at r ncore + i), the
+/// same whatever the batch. Sijrs has no N, H or Δ tables (no guard, a
+/// kernel of its own): its tables are empty and its Ė alone is given.
+struct ClassEnergiesTangent {
+  /// @brief The norms and energies, as class_energies computes them.
+  ClassEnergies energies;
+  /// @brief [k][t]: perturber t's N, H and Δ in class k, as the finish reads
+  /// them (Sijr's and Srsi's symmetrized pairs combined).
+  std::array<std::vector<double>, 8> norm, h, delta;
+  /// @brief [k][t m + u], m directions: their tangents along direction u, as
+  /// the walk forms them, also where N is guarded.
+  std::array<std::vector<double>, 8> norm_dot, h_dot, delta_dot;
+  /// @brief [u][k]: Ė per class along direction u, the guarded perturbers
+  /// contributing nothing.
+  std::vector<std::array<double, 8>> energy_dot;
+  /// @brief [u]: Σ_k energy_dot[u][k].
+  std::vector<double> total_dot;
+};
+
+/// @brief The SC forward tangent of class_energies along each of
+/// @p directions: per perturber (Ṅ, Ḣ, Δ̇), and Ė per class.
+///
+/// Ė is the finish differentiated in the (N, d) form, d = NΔ + H and
+/// E = -N² / d per perturber, so no 1/N appears:
+///
+///     Ė = (-2N/d + N²Δ/d²) Ṅ + (N²/d²) Ḣ + (N³/d²) Δ̇,
+///
+/// over the perturbers whose norm the energy keeps (|N| > 1e-14); a guarded,
+/// empty one gives zero. Ṅ and Ḣ are every norm and H einsum differentiated
+/// operand by operand, each at its operand's tangent: the slabs' (bilinear in
+/// B), h1e_v's rows, the RDMs a class reads directly, and every class block's
+/// (a16, ...). A block is of degree at most two in (h1e, h2e, RDMs), one
+/// integral times one RDM, so its tangent is its own builder's central
+/// polarization, (G(x + s ẋ) - G(x - s ẋ)) / 2s, exact; a slab's is
+/// (slab(B + s Ḃ) - slab(B) - s² slab(Ḃ)) / s, exact. Each s is a power of
+/// two that sizes s ẋ to x, so the differences cancel nothing past
+/// round-off. Sijrs's Ė is one kernel's.
+///
+/// Each class is walked once for all the directions, in batches of at most
+/// @p batch as class_energies: its blocks built once, and per direction
+/// their tangents, held through the walk (memory grows as the directions;
+/// a caller with many chunks them); per slab, the slab built once, then per
+/// direction its tangent and the tangent tables, read back.
+///
+/// @return The energies and tangents; InvalidConfig when a direction's
+///         blocks are not shaped as @p blocks; or class_energies' errors.
+[[nodiscard]] Result<ClassEnergiesTangent>
+class_energies_tangent(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
+                       int32_t batch, std::span<const EnergyDirection> directions);
+
 /// @brief sc_effective_hamiltonian_adjoint's result: the matrix it walked,
 /// and each class's Eq. 40 assembled from its bars.
 struct ScEffectiveHamiltonianAdjoint {
