@@ -1,0 +1,32 @@
+# Tier 2b (#849): the g-h loop point theta = 270 degrees, written by
+# gh_loop.py. The MECI's [casscf] (tier2a_psb3_1314_qdpc.toml); [nevpt2] is
+# the observable. [optimize] stops at its first evaluation (every bar 1), only
+# so optimize.json records this point's CASSCF |g| and rho (tier2b.md).
+[molecule]
+xyz = "tier2b/theta_270.xyz"
+charge = 1
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 6
+nelecas = 6
+nroots = 3
+conv_tol_grad = 1e-9
+[nevpt2]
+quasi_degenerate = true
+[nevpt2_gradient]
+quasi_degenerate = true
+variant = "pc"
+[optimize]
+meci = [0, 1]
+max_gap = 1.0
+max_force = 1.0
+rms_force = 1.0
+max_displacement = 1.0
+rms_displacement = 1.0
+max_steps = 0
