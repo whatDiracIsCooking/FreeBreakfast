@@ -3,8 +3,9 @@
 # His QD-NEVPT2 E(0, 1): -644.1215261274, -644.0168382832 Eh.
 # Frozen core, as his: the C, N and O 1s (frozen_core = "auto"). The anion
 # (phenoxide), so charge = -1: 98 electrons. Results in ../phbi.md.
-# Not run to completion: CASSCF is refused for device memory on a 40 GB A100
-# (#905). The active list is untested for that reason.
+# Reproduced: +0.02 / +0.01 µEh, 136 s and a 39,713 MiB peak on a 40 GB A100
+# (it needs #905's fix, PR #935). The active list is projected from a cc-pVTZ
+# CASSCF (../phbi.md, "aug-cc-pVTZ").
 [molecule]
 xyz = "geometries/phbi_atz1211_s0.xyz"
 charge = -1
@@ -18,7 +19,7 @@ max_iterations = 400
 [casscf]
 ncas = 11
 nelecas = 12
-active = [39, 42, 43, 46, 47, 48, 59, 87, 89, 93, 108]  # 0-based RHF MOs: pi, and the aug virtuals that best carry the cc-pVTZ pi* (../phbi.md, "Active spaces")
+active = [39, 42, 43, 46, 47, 48, 59, 87, 89, 93, 108]  # 0-based RHF MOs: pi, and the aug virtuals that best carry the cc-pVTZ pi* (../phbi.md, "aug-cc-pVTZ")
 nroots = 2
 conv_tol_grad = 1e-9
 [nevpt2]

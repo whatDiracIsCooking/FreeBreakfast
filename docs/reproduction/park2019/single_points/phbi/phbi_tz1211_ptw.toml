@@ -1,0 +1,29 @@
+# Issue #904: pHBI P-twisted MECI, (12e,11o)/cc-pVTZ, SA2-QD-NEVPT2 single point at Park's geometry
+# (J. W. Park, JCTC (2020), acs.jctc.9b00919, Supporting Information, pp. S30–S31).
+# His QD-NEVPT2 E(0, 1): -643.9526633687, -643.9526519725 Eh.
+# Frozen core, as his: the C, N and O 1s (frozen_core = "auto"). The anion
+# (phenoxide), so charge = -1: 98 electrons. Results in ../phbi.md.
+# NOT his solution: this start misses him by +3.68 / +5.07 mEh. All eleven
+# active natural orbitals are pi (0.92-1.00), but it is another CASSCF
+# solution: his two states are 11 µEh apart, ours 1.4 mEh.
+# Kept as the record of what was run (../phbi.md, "(12e,11o) at the twisted
+# MECIs"); a start carried from a converged run is #939.
+[molecule]
+xyz = "geometries/phbi_tz1211_ptw.xyz"
+charge = -1
+[basis_set]
+basis = "cc-pvtz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvtz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 11
+nelecas = 12
+active = [36, 39, 44, 45, 47, 48, 49, 52, 54, 57, 62]  # 0-based RHF MOs carrying the S0-like 6 occupied pi and 5 lowest pi* of a pi-projected space; not his solution
+nroots = 2
+conv_tol_grad = 1e-9
+[nevpt2]
+quasi_degenerate = true
+frozen_core = "auto"
