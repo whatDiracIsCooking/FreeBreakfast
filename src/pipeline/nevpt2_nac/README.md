@@ -152,7 +152,13 @@ use_etfs = false           # the default
 ```
 
 `pairs`, `mult_ediff` and `use_etfs` are `[nac]`'s; `variant` is
-`[nevpt2_gradient]`'s key, with its two values.
+`[nevpt2_gradient]`'s key, with its two values. **`frozen_core` is
+refused**, `InvalidConfig` naming it when the config is read: the coupling
+is all-electron (h_PQ and the PT2 transition density take no frozen core,
+`../../nevpt2/nac/README.md`), so a frozen-core coupling would be the wrong
+one rather than an approximation of the right one. `[nevpt2]` and
+`[nevpt2_gradient]` take the key (#875); a `[nevpt2]` with a frozen core
+beside this step still leaves the coupling all-electron.
 `free-breakfast -i examples -o <out> examples/qd_nevpt2_nac.toml` runs it,
 and writes `<out>/nevpt2_nac.json` beside `casscf.molden` and `scf.molden`;
 `main` prints each QD state's energy and R, and each pair's gap,

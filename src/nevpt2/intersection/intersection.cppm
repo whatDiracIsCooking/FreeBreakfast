@@ -43,6 +43,10 @@ struct QdIntersectionOptions {
   /// converged to mcscf::response_tolerance_for it
   /// (../gradient/README.md "The Z-vector's floor").
   double zvector_tolerance = 1e-10;
+  /// @brief The frozen core: the lowest canonical core orbitals NEVPT2
+  /// leaves uncorrelated, 0 to ncore, in H_eff and in every W's gradient
+  /// (qd_inputs' and qd_*_gradient's @c nfrozen; README.md).
+  int32_t nfrozen = 0;
 };
 
 /// @brief qd_sc_intersection's (or qd_pc_intersection's) result: the three

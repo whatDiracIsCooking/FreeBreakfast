@@ -11,6 +11,7 @@ it.
     qd_sc_intersection(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
                        p, q, batch, options = {}) -> QdIntersection
         options.shared  one several-W gradient call (default) or three W-form calls
+        options.nfrozen the frozen core, 0 by default: H_eff and every G(W) over it
     qd_pc_intersection(...the same...) -> QdIntersection
         g_p, g_q       dE_P/dR = G(u_P u_Pᵀ), dE_Q/dR = G(u_Q u_Qᵀ), n_atom × 3 (hartree / bohr)
         h_pq           h_PQ = u_Pᵀ (∇H_eff) u_Q = G(W^PQ), W^PQ = ½ (u_P u_Qᵀ + u_Q u_Pᵀ)
@@ -21,7 +22,11 @@ it.
         gap_sensitivity_orbital   s_o
         gap_sensitivity_ci        s_c
 
-The arguments are `qd_sc_coupling`'s (`../gradient/`), without its fold. The
+The arguments are `qd_sc_coupling`'s (`../gradient/`), without its fold.
+`options.nfrozen` is the frozen core (#875): `qd_inputs` and the W forms
+take it, so H_eff, R and the three G(W) are all the frozen-core
+functional's (`../gradient/README.md`, "The frozen core"); s_o and s_c read
+the multipliers that come back, and need nothing of their own. The
 consumer is the QD MECI mode of the optimize step (#785), which hands g_P,
 g_Q and h_PQ to `geometry::optimize_meci` and reads s_o and s_c for its gap
 bar.

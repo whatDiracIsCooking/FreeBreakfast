@@ -256,7 +256,12 @@ CASSCF chain. At every geometry one `nevpt2::qd_sc_intersection` (or
 at one set of H_eff eigenvectors, with no refusal of a degenerate pair, and
 the QD energies; they go to `optimize_meci` as `df_intersection`'s do. The
 weights may be unequal (the intersection's only division by a gap is by the
-CASSCF roots', never by E_Q − E_P).
+CASSCF roots', never by E_Q − E_P). `[nevpt2_gradient]`'s `frozen_core`
+is the intersection's too: resolved at each geometry's CASSCF
+(`Nevpt2Step::resolve_frozen_core`) and passed as
+`QdIntersectionOptions::nfrozen`, so the MECI is the frozen-core
+functional's, H_eff, g_P, g_Q and h_PQ alike (#875). A QD state optimized
+without `meci` takes it through the step itself.
 
 **The pair is followed by its two-state space**, through the CASSCF roots:
 `pair_overlap(root_overlaps, previous, current, P, Q)` takes the 2 × 2 block

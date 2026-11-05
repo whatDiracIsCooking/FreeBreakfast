@@ -24,6 +24,7 @@ import free_breakfast.io.xyz;
 import free_breakfast.mcscf.intersection;  // df_intersection
 import free_breakfast.mcscf.overlap;       // state_overlaps
 import free_breakfast.nevpt2.intersection; // qd_sc_intersection, qd_pc_intersection
+import free_breakfast.pipeline.nevpt2;     // Nevpt2Step::resolve_frozen_core
 import free_breakfast.pipeline.pipeline;
 import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.orthogonalize;
@@ -703,11 +704,18 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
       std::vector<double> vectors;
       if (qd_meci) {
         const bool pc = chain_nevpt2_gradient.variant == Nevpt2Variant::Pc;
-        const nevpt2::QdIntersection out = FBF_TRY(
-            pc ? nevpt2::qd_pc_intersection(res, molecule, basis, classes, fit->aux, h, fit->b,
-                                            fit->l.data(), solution, cas.ncore, cas.ncas, i, j, 0)
-               : nevpt2::qd_sc_intersection(res, molecule, basis, classes, fit->aux, h, fit->b,
-                                            fit->l.data(), solution, cas.ncore, cas.ncas, i, j, 0));
+        // [nevpt2_gradient]'s frozen core, resolved at this geometry's CASSCF.
+        const nevpt2::QdIntersectionOptions options{
+            .nfrozen = FBF_TRY(Nevpt2Step::resolve_frozen_core(Nevpt2GradientStep::kName,
+                                                               chain_nevpt2_gradient.frozen_core,
+                                                               molecule, cas.ncore))};
+        const nevpt2::QdIntersection out =
+            FBF_TRY(pc ? nevpt2::qd_pc_intersection(res, molecule, basis, classes, fit->aux, h,
+                                                    fit->b, fit->l.data(), solution, cas.ncore,
+                                                    cas.ncas, i, j, 0, options)
+                       : nevpt2::qd_sc_intersection(res, molecule, basis, classes, fit->aux, h,
+                                                    fit->b, fit->l.data(), solution, cas.ncore,
+                                                    cas.ncas, i, j, 0, options));
         if (followed) {
           overlap = FBF_TRY(pair_overlap(s, followed->u, out.eigenvectors, i, j));
         }

@@ -12,6 +12,7 @@ import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.io.json;
 import free_breakfast.nevpt2.gradient;
+import free_breakfast.pipeline.nevpt2; // Nevpt2Step::resolve_frozen_core
 
 #include "diagnostics.h"
 
@@ -52,7 +53,7 @@ template <class Terms>
 // QD state @p state.
 template <class G>
 [[nodiscard]] json nevpt2_gradient_json(const G &g, const CasscfOutput &cas, int32_t root,
-                                        int32_t state) {
+                                        int32_t state, int32_t frozen_core) {
   constexpr bool kQd =
       std::same_as<G, nevpt2::QdScGradient> || std::same_as<G, nevpt2::QdPcGradient>;
   constexpr bool kPc = std::same_as<G, nevpt2::PcGradient> || std::same_as<G, nevpt2::QdPcGradient>;
@@ -62,6 +63,7 @@ template <class G>
         {"quasi_degenerate", true},
         {"state", state},
         {"variant", kPc ? "pc" : "sc"},
+        {"frozen_core", frozen_core},
         {"energy", l.eigenvalues[static_cast<size_t>(state)]},
         {"qd_energies", l.eigenvalues},
         {"e_casscf", cas.energies},
@@ -84,6 +86,7 @@ template <class G>
     json doc{
         {"root", root},
         {"variant", kPc ? "pc" : "sc"},
+        {"frozen_core", frozen_core},
         {"energy", e_cas + g.energies.total},
         {"e_casscf", e_cas},
         {"e_corr", g.energies.total},
@@ -168,6 +171,8 @@ Nevpt2GradientStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClasse
   const BasisSet &basis = in.get<BasisSetOutput>().basis;
   const auto &classes = in.get<PrimitivePairClassesOutput>().classes;
   const SphericalMatrixAO &h = in.get<CoreHamiltonianOutput>().h;
+  const int32_t nfrozen =
+      FBF_TRY(Nevpt2Step::resolve_frozen_core(kName, frozen_core, molecule, cas.ncore));
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
 
@@ -214,29 +219,31 @@ Nevpt2GradientStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClasse
   using Gradient = decltype(Nevpt2GradientOutput::gradient);
   auto gradient = [&]() -> Result<Gradient> {
     if (quasi_degenerate && pc) {
-      return Gradient{
-          FBF_TRY(nevpt2::qd_pc_gradient(res, molecule, basis, classes, fit->aux, h, fit->b,
-                                         fit->l.data(), solution, cas.ncore, cas.ncas, state, 0))};
+      return Gradient{FBF_TRY(nevpt2::qd_pc_gradient(res, molecule, basis, classes, fit->aux, h,
+                                                     fit->b, fit->l.data(), solution, cas.ncore,
+                                                     cas.ncas, state, 0, nfrozen))};
     }
     if (quasi_degenerate) {
-      return Gradient{
-          FBF_TRY(nevpt2::qd_sc_gradient(res, molecule, basis, classes, fit->aux, h, fit->b,
-                                         fit->l.data(), solution, cas.ncore, cas.ncas, state, 0))};
+      return Gradient{FBF_TRY(nevpt2::qd_sc_gradient(res, molecule, basis, classes, fit->aux, h,
+                                                     fit->b, fit->l.data(), solution, cas.ncore,
+                                                     cas.ncas, state, 0, nfrozen))};
     }
     if (pc) {
       return Gradient{
           FBF_TRY(nevpt2::pc_gradient(res, molecule, basis, classes, fit->aux, h, fit->b,
-                                      fit->l.data(), solution, cas.ncore, cas.ncas, 0))};
+                                      fit->l.data(), solution, cas.ncore, cas.ncas, 0, nfrozen))};
     }
-    return Gradient{FBF_TRY(nevpt2::sc_gradient(res, molecule, basis, classes, fit->aux, h, fit->b,
-                                                fit->l.data(), solution, cas.ncore, cas.ncas, 0))};
+    return Gradient{
+        FBF_TRY(nevpt2::sc_gradient(res, molecule, basis, classes, fit->aux, h, fit->b,
+                                    fit->l.data(), solution, cas.ncore, cas.ncas, 0, nfrozen))};
   }();
-  Nevpt2GradientOutput out{.gradient = FBF_TRY(std::move(gradient))};
+  Nevpt2GradientOutput out{.gradient = FBF_TRY(std::move(gradient)), .frozen_core = nfrozen};
   if (!json_path.empty()) {
-    FBF_TRY(write_json(
-        json_path,
-        std::visit([&]<class G>(const G &g) { return nevpt2_gradient_json(g, cas, root, state); },
-                   out.gradient)));
+    FBF_TRY(write_json(json_path, std::visit(
+                                      [&]<class G>(const G &g) {
+                                        return nevpt2_gradient_json(g, cas, root, state, nfrozen);
+                                      },
+                                      out.gradient)));
   }
   return out;
 }

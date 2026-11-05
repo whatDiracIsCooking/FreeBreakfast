@@ -2159,9 +2159,11 @@ const QdState &qd_state(const std::string &name) {
 // roots s.vector at @p weights: n², [M n + N]. A point PC refuses (a
 // Numerical error: a moved state outside PC's domain, as #729 found within
 // the ladders' reach) gives none, printed, so that its rungs' differences
-// are NaN and no ratio run reads them; any other error fails.
+// are NaN and no ratio run reads them; any other error fails. @p nfrozen is
+// the frozen core.
 std::vector<double> qd_totals(fb::DeviceResources &res, const State &s,
-                              std::span<const double> weights, const bool pc = false) {
+                              std::span<const double> weights, const bool pc = false,
+                              const std::int32_t nfrozen = 0) {
   const DeviceState d = upload_state(res, s);
   std::vector<double> totals;
   const auto take = [&](const auto &got) {
@@ -2179,12 +2181,12 @@ std::vector<double> qd_totals(fb::DeviceResources &res, const State &s,
   };
   if (pc) {
     take(nevpt2::qd_pc_energy(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
-                              d.c.data(), d.h.data(), s.ncore, s.ncas, weights, d.vector.data(),
-                              0));
+                              d.c.data(), d.h.data(), s.ncore, s.ncas, weights, d.vector.data(), 0,
+                              nfrozen));
   } else {
     take(nevpt2::qd_sc_energy(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
-                              d.c.data(), d.h.data(), s.ncore, s.ncas, weights, d.vector.data(),
-                              0));
+                              d.c.data(), d.h.data(), s.ncore, s.ncas, weights, d.vector.data(), 0,
+                              nfrozen));
   }
   return totals;
 }
@@ -2195,10 +2197,11 @@ double weighted(std::span<const double> w, std::span<const double> totals) {
 }
 
 // qd_sc_adjoint (qd_pc_adjoint, with @p pc) at @p s along @p w, on the
-// host: HostAdjoint's arrays (y every root's), its total E[W].
+// host: HostAdjoint's arrays (y every root's), its total E[W]; @p nfrozen
+// the frozen core.
 fb::Result<HostAdjoint> qd_adjoint_of(fb::DeviceResources &res, const State &s,
                                       std::span<const double> weights, std::span<const double> w,
-                                      const bool pc = false) {
+                                      const bool pc = false, const std::int32_t nfrozen = 0) {
   const DeviceState d = upload_state(res, s);
   const auto host = [&](const auto &got) -> fb::Result<HostAdjoint> {
     if (!got.has_value()) {
@@ -2221,16 +2224,17 @@ fb::Result<HostAdjoint> qd_adjoint_of(fb::DeviceResources &res, const State &s,
   if (pc) {
     return host(nevpt2::qd_pc_adjoint(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
                                       d.c.data(), d.h.data(), s.ncore, s.ncas, weights,
-                                      d.vector.data(), w, 0));
+                                      d.vector.data(), w, 0, nfrozen));
   }
   return host(nevpt2::qd_sc_adjoint(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
                                     d.c.data(), d.h.data(), s.ncore, s.ncas, weights,
-                                    d.vector.data(), w, 0));
+                                    d.vector.data(), w, 0, nfrozen));
 }
 
 HostAdjoint qd_adjoint(fb::DeviceResources &res, const State &s, std::span<const double> weights,
-                       std::span<const double> w, const bool pc = false) {
-  auto got = qd_adjoint_of(res, s, weights, w, pc);
+                       std::span<const double> w, const bool pc = false,
+                       const std::int32_t nfrozen = 0) {
+  auto got = qd_adjoint_of(res, s, weights, w, pc, nfrozen);
   EXPECT_TRUE(got.has_value()) << got.error().message;
   return got.has_value() ? std::move(*got) : HostAdjoint{};
 }
@@ -4413,5 +4417,203 @@ TEST(Nevpt2QdPcCoupling, RefusesWhatTheEnergyRefuses) {
   ASSERT_TRUE(res.sync().has_value());
   same(zero, in.h, "root 1 zero", "no positive eigenvalue");
 }
+
+// --- Frozen core (#875) -----------------------------------------------------
+
+// qd_nevpt2_frozen_core.json's eigenvalues (#859's references: PySCF's SC
+// classes with the frozen orbitals sliced out, block2's PC with frozen=n)
+// against qd_sc_energy's and qd_pc_energy's H_eff at the same count, on each
+// case's own DF-SA-CASSCF: the gradient layer's frozen-core functional is
+// the [nevpt2] step's. pipeline_nevpt2_gpu.cpp's bar per QD eigenvalue.
+constexpr double kFrozenEigenvalueTolerance = 1e-8;
+
+TEST(Nevpt2QdFrozenCore, EnergyMatchesReference) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  for (const fb::json &entry : reference("qd_nevpt2", "qd_nevpt2_frozen_core.json").at("cases")) {
+    const std::string name = entry.at("name").get<std::string>();
+    const QdState &q = qd_state(name);
+    ASSERT_FALSE(q.s.b.empty()) << name;
+    ASSERT_EQ(q.s.ncore, entry.at("ncore").get<std::int32_t>()) << name;
+    const std::size_t n = q.weights.size();
+    for (const fb::json &variant : entry.at("variants")) {
+      const auto nfrozen = variant.at("n_frozen").get<std::int32_t>();
+      for (const bool pc : {false, true}) {
+        const std::vector<double> totals = qd_totals(res, q.s, q.weights, pc, nfrozen);
+        ASSERT_EQ(totals.size(), n * n) << name;
+        std::vector<double> heff(n * n);
+        for (std::size_t i = 0; i < n; ++i) {
+          for (std::size_t j = 0; j < n; ++j) {
+            heff[i + (n * j)] = (0.5 * (totals[(i * n) + j] + totals[(j * n) + i])) +
+                                (i == j ? q.energies[i] : 0.0);
+          }
+        }
+        const auto values = symmetric_eigen(heff, n).first;
+        const auto want = variant.at(pc ? "pc" : "sc").at("eigenvalues").get<std::vector<double>>();
+        ASSERT_EQ(want.size(), n);
+        double worst = 0.0;
+        for (std::size_t k = 0; k < n; ++k) {
+          EXPECT_NEAR(values[k], want[k], kFrozenEigenvalueTolerance)
+              << name << " " << (pc ? "pc" : "sc") << " n_frozen " << nfrozen << " state " << k;
+          worst = std::max(worst, std::abs(values[k] - want[k]));
+        }
+        std::cout << std::format("[ nevpt2   ] qd {} frozen core {} n_frozen {}: eigenvalues "
+                                 "{::.10f}, worst {:.2e} against #859's\n",
+                                 pc ? "pc" : "sc", name, nfrozen, values, worst);
+      }
+    }
+  }
+}
+
+// A random antisymmetric κ between the orbitals [r0, r1) and [c0, c1)
+// (disjoint, or the same range for the pairs inside it), seeded by @p seed.
+std::vector<double> range_kappa(const State &s, const std::size_t r0, const std::size_t r1,
+                                const std::size_t c0, const std::size_t c1,
+                                const std::uint64_t seed) {
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  std::mt19937_64 engine(seed);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  std::vector<double> kappa(nmo * nmo, 0.0);
+  for (std::size_t p = r0; p < r1; ++p) {
+    for (std::size_t q = c0; q < c1; ++q) {
+      if (r0 == c0 && p <= q) {
+        continue;
+      }
+      const double k = uniform(engine);
+      kappa[p + (nmo * q)] = k;
+      kappa[q + (nmo * p)] = -k;
+    }
+  }
+  return kappa;
+}
+
+// With a frozen core, qd_sc_adjoint's and qd_pc_adjoint's arrays against
+// ladders of their own E[W] at the same count, at the eigenvector seed of
+// H_eff's highest state: along h and B (the correlated frame's Λ added onto
+// the whole one's corner, and F^I over the whole core), along C exp(t κ)
+// with κ on the frozen–correlated core pairs alone (the rotation the frozen
+// core makes the energy move along, z^c's new source) and along each root.
+// And the frozen–frozen pairs' A is zero to round-off: the frozen orbitals
+// enter only through the core density, which their rotation leaves alone.
+// Each path the case lists. SC-QD's skew H2CO is not smooth along h, c_1
+// and c_2 at the ladder's scale, frozen or not: the same paths are left out
+// of kQdSmooth all-electron (README.md, "Not every ladder is smooth": #724's
+// small own norms near the pole; #894 is SC's derivative there), and its h
+// ladder runs the all-electron one's ratios (4.298 4.904 3.189 4.807
+// -2.114 ...; RTX 3080). So SC is laddered along B, C and c_0. PC-QD's is
+// smooth along every path.
+struct FrozenLadderCase {
+  std::string_view name;
+  bool pc;
+  std::int32_t nfrozen;
+  std::string_view paths;
+};
+
+void PrintTo(const FrozenLadderCase &c, std::ostream *os) {
+  *os << c.name << (c.pc ? "_pc" : "_sc") << "_frozen" << c.nfrozen;
+}
+
+// What frozen-core A on the frozen–frozen pairs is held to, relative to the
+// largest |A| over the frozen–correlated ones: the energy is invariant there.
+constexpr double kFrozenInvariance = 1e-10;
+
+void expect_frozen_ladders(const FrozenLadderCase &c) {
+  const QdState &q = qd_state(std::string{c.name});
+  const State &s = q.s;
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const std::size_t n = q.weights.size();
+  const std::size_t ndet = s.vector.size() / n;
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  const auto nf = static_cast<std::size_t>(c.nfrozen);
+  const auto nc = static_cast<std::size_t>(s.ncore);
+  const std::string kind = std::format("qd {} frozen {}", c.pc ? "pc" : "sc", c.nfrozen);
+  const std::vector<double> totals = qd_totals(res, s, q.weights, c.pc, c.nfrozen);
+  ASSERT_EQ(totals.size(), n * n);
+  const auto [w, values] = eigen_seed(q, totals);
+  const HostAdjoint adj = qd_adjoint(res, s, q.weights, w, c.pc, c.nfrozen);
+  ASSERT_EQ(adj.y.size(), s.vector.size());
+  EXPECT_NEAR(adj.total, weighted(w, totals), kSameEnergyTolerance);
+
+  // The frozen–frozen block of A against the frozen–correlated one.
+  double ff = 0.0;
+  double fc = 0.0;
+  for (std::size_t q0 = 0; q0 < nf; ++q0) {
+    for (std::size_t p = q0 + 1; p < nc; ++p) {
+      (p < nf ? ff : fc) = std::max(p < nf ? ff : fc, std::abs(adj.a[p + (nmo * q0)]));
+    }
+  }
+  EXPECT_GT(fc, 0.0) << kind;
+  EXPECT_LE(ff, kFrozenInvariance * fc) << kind;
+  std::cout << std::format("[ nevpt2   ] {} {}: max |A| frozen-frozen {:.2e}, frozen-correlated "
+                           "{:.2e}\n",
+                           kind, c.name, ff, fc);
+
+  const auto ladder = [&](const std::string &path, const std::function<void(double, State &)> &move,
+                          const double predicted) {
+    if (std::format(" {} ", c.paths).find(std::format(" {} ", path)) == std::string::npos) {
+      std::cout << std::format("[ nevpt2   ] {} {} {}: not laddered\n", kind, c.name, path);
+      return;
+    }
+    State moved = s;
+    expect_ladder(
+        std::format("{} {} {}", kind, c.name, path),
+        [&](const double t) {
+          move(t, moved);
+          return weighted(w, qd_totals(res, moved, q.weights, c.pc, c.nfrozen));
+        },
+        predicted, std::nullopt, c.pc);
+  };
+  for (const std::string which : {"h", "B"}) {
+    const IntegralDirection dir = integral_direction(s, which);
+    ladder(
+        which, [&](const double t, State &moved) { perturb(s, dir, t, moved); },
+        integral_dot(s, dir, adj.h_bar, adj.lambda));
+  }
+  const std::vector<double> kappa = range_kappa(s, nf, nc, 0, nf, 875);
+  ladder(
+      "C", [&](const double t, State &moved) { rotate(s, kappa, t, moved); },
+      source_dot(kappa, adj.a, nmo));
+  for (std::size_t r = 0; r < n; ++r) {
+    const std::span<const double> root = std::span<const double>(s.vector).subspan(r * ndet, ndet);
+    State alone = s;
+    alone.vector.assign(root.begin(), root.end());
+    const std::vector<double> d = ci_direction(res, alone);
+    ladder(
+        std::format("c_{}", r),
+        [&](const double t, State &moved) {
+          const auto out = std::span<double>(moved.vector).subspan(r * ndet, ndet);
+          for (std::size_t i = 0; i < ndet; ++i) {
+            out[i] = root[i] + (t * d[i]);
+          }
+          const double length = std::sqrt(dot(out, out));
+          for (double &v : out) {
+            v /= length;
+          }
+        },
+        dot(d, std::span<const double>(adj.y).subspan(r * ndet, ndet)));
+  }
+}
+
+class Nevpt2QdFrozenCoreAdjoint : public ::testing::TestWithParam<FrozenLadderCase> {};
+
+TEST_P(Nevpt2QdFrozenCoreAdjoint, AdjointsMatchLadders) {
+  FBF_REQUIRE_GPU();
+  expect_frozen_ladders(GetParam());
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdFrozenCoreAdjoint,
+                         ::testing::Values(FrozenLadderCase{.name = "h2co_skew_ccpvdz_sa3",
+                                                            .pc = false,
+                                                            .nfrozen = 2,
+                                                            .paths = "B C c_0"},
+                                           FrozenLadderCase{.name = "h2co_skew_ccpvdz_sa3",
+                                                            .pc = true,
+                                                            .nfrozen = 2,
+                                                            .paths = "h B C c_0 c_1 c_2"}),
+                         [](const auto &info) {
+                           return std::format("{}_{}_frozen{}", info.param.name,
+                                              info.param.pc ? "pc" : "sc", info.param.nfrozen);
+                         });
 
 } // namespace

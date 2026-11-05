@@ -33,6 +33,17 @@ The coupling's arguments are `qd_sc_coupling`'s (`../gradient/`), with
 `options` `mcscf::df_nac`'s (`../../mcscf/nac/`); its result is modelled on
 `mcscf::Nac`.
 
+**All-electron only.** The frozen core (#875) reaches the gradients and the
+intersection (`../gradient/README.md`, "The frozen core";
+`../intersection/`), not the coupling: `qd_sc_coupling` and
+`qd_pc_coupling` take no frozen count, and D^PT2 is built over the whole
+core. `[nevpt2_nac]` refuses `frozen_core` (`InvalidConfig`,
+`../../pipeline/nevpt2_nac/README.md`). Supporting it would mean h_PQ at
+the frozen count and D^PT2 from `qd_inputs`' correlated frame placed at the
+core's offset n_f (its frozen rows and columns zero: Ψ⁽¹⁾ has no frozen
+hole), validated against differences of the coupling, which nothing yet
+asks for.
+
 ## The derivative coupling
 
 With Ψ̃_P = Σ_M (|M⟩ + |Ψ⁽¹⁾_M⟩) R_MP, R H_eff's eigenvectors over the

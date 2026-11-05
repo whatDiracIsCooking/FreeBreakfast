@@ -283,10 +283,11 @@ written or filled in; a `[casscf]` with `nroots` above 1 (a state average);
 and a `[molecule]` `multiplicity` other than 1 (an open shell, the RHF under
 the CASSCF being closed-shell exactly then), under `[optimize]` its start's.
 The step refuses each again when it runs, for a pipeline built by hand.
-`frozen_core` is `[nevpt2]`'s key, read the same way, and **only 0 is taken
-until the frozen-core gradient lands (#875)**: any other count, and
-`"auto"`, is `InvalidConfig` when the file is read, so a frozen-core
-energy is never optimized with an all-electron gradient.
+`frozen_core` is `[nevpt2]`'s key, read the same way (#875): a count, or
+`"auto"`; whether it fits the CASSCF's core is the step's to say when it
+runs. Under `[optimize]` it is the optimized energy's frozen core, the QD
+MECI's included. `[nevpt2_nac]` refuses it (`InvalidConfig`, naming the
+key): the coupling is all-electron.
 
 **`quasi_degenerate = true`** differentiates one SC- or PC-QD-NEVPT2 state
 of the state-averaged `[casscf]` instead, `state` (default 0) indexing
@@ -564,8 +565,7 @@ than after the SCF has converged. `parse_config` touches no disk.
   naming a state past them;
 - a `[nevpt2]` `quasi_degenerate = true` over a `[casscf]` of fewer than
   two roots; a `[nevpt2]` or `[nevpt2_gradient]` `frozen_core` below 0 or a
-  string other than `"auto"`, or one other than 0 under
-  `[nevpt2_gradient]` (#875);
+  string other than `"auto"`; any `frozen_core` under `[nevpt2_nac]`;
 - a `[nevpt2_gradient]` `quasi_degenerate = true` over a `[casscf]` of
   fewer than two roots; a `state` below 0, not
   below `nroots`, or without `quasi_degenerate`; or a `root` beside it;

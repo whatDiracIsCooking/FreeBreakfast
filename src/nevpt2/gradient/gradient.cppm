@@ -59,13 +59,19 @@ export namespace free_breakfast::nevpt2 {
 /// Each class walks its slabs in batches of at most @p batch, as in
 /// class_energies. nevpt2::rdms gets half the device's free memory at entry.
 ///
+/// @p nfrozen is the frozen core, the lowest core columns of @p c: they
+/// leave every class with a core index and stay in the core density, so in
+/// F^I and the orbital energies (the Nevpt2 step's `frozen_core`; README
+/// "The frozen core"). 0 correlates the whole core.
+///
 /// @return The class energies; InvalidConfig for counts that do not fit
-///         (ncas not the strings' orbitals, ncore + ncas past nmo); or the
-///         error of a builder, nevpt2::rdms or class_energies.
+///         (ncas not the strings' orbitals, ncore + ncas past nmo, nfrozen
+///         negative or past ncore); or the error of a builder, nevpt2::rdms
+///         or class_energies.
 [[nodiscard]] Result<ClassEnergies>
 sc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
           int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c, const double *h,
-          int32_t ncore, int32_t ncas, const double *vector, int32_t batch);
+          int32_t ncore, int32_t ncas, const double *vector, int32_t batch, int32_t nfrozen = 0);
 
 /// @brief sc_adjoint's result, every array on res's device.
 struct ScAdjoint {
@@ -113,7 +119,8 @@ struct ScAdjoint {
                                            const ci::DeviceStringSet &beta, int32_t naux,
                                            int32_t nao, int32_t nmo, const double *b,
                                            const double *c, const double *h, int32_t ncore,
-                                           int32_t ncas, const double *vector, int32_t batch);
+                                           int32_t ncas, const double *vector, int32_t batch,
+                                           int32_t nfrozen = 0);
 
 /// @brief The PC-NEVPT2 class energies of the root @p vector over the
 /// orbitals @p c: sc_energy's inputs, built the same way from the same
@@ -125,7 +132,7 @@ struct ScAdjoint {
 [[nodiscard]] Result<PcClassEnergies>
 pc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
           int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c, const double *h,
-          int32_t ncore, int32_t ncas, const double *vector, int32_t batch);
+          int32_t ncore, int32_t ncas, const double *vector, int32_t batch, int32_t nfrozen = 0);
 
 /// @brief pc_adjoint's result: ScAdjoint's arrays, in its conventions, of
 /// the PC correlation energy.
@@ -163,7 +170,8 @@ struct PcAdjoint {
                                            const ci::DeviceStringSet &beta, int32_t naux,
                                            int32_t nao, int32_t nmo, const double *b,
                                            const double *c, const double *h, int32_t ncore,
-                                           int32_t ncas, const double *vector, int32_t batch);
+                                           int32_t ncas, const double *vector, int32_t batch,
+                                           int32_t nfrozen = 0);
 
 /// @brief The SC-QD-NEVPT2 effective Hamiltonian's correlation elements of
 /// the roots @p vectors over the shared orbitals @p c, every input built
@@ -189,7 +197,8 @@ struct PcAdjoint {
 qd_sc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
              const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
              const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
-             std::span<const double> weights, const double *vectors, int32_t batch);
+             std::span<const double> weights, const double *vectors, int32_t batch,
+             int32_t nfrozen = 0);
 
 /// @brief qd_sc_adjoint's result, every array on res's device, each in
 /// ScAdjoint's convention.
@@ -244,7 +253,7 @@ qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
               const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
               const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
               std::span<const double> weights, const double *vectors, std::span<const double> w,
-              int32_t batch);
+              int32_t batch, int32_t nfrozen = 0);
 
 /// @brief The PC-QD-NEVPT2 effective Hamiltonian's correlation elements of
 /// the roots @p vectors over the shared orbitals @p c: qd_sc_energy's inputs,
@@ -261,7 +270,8 @@ qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
 qd_pc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
              const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
              const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
-             std::span<const double> weights, const double *vectors, int32_t batch);
+             std::span<const double> weights, const double *vectors, int32_t batch,
+             int32_t nfrozen = 0);
 
 /// @brief qd_pc_adjoint's result: QdScAdjoint's arrays, in its conventions,
 /// of the PC-QD functional.
@@ -306,7 +316,7 @@ qd_pc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
               const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
               const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
               std::span<const double> weights, const double *vectors, std::span<const double> w,
-              int32_t batch);
+              int32_t batch, int32_t nfrozen = 0);
 
 /// @brief zc_multipliers' result.
 struct ZcMultipliers {
@@ -456,16 +466,22 @@ lagrangian_gradient(DeviceResources &res, const Molecule &molecule, const BasisS
 /// @brief The SC-NEVPT2 nuclear gradient of the single-state DF-CASSCF
 /// @p solution: sc_adjoint at its orbitals and root, zc_multipliers and
 /// zc_adjoint over its A and epsilon, then lagrangian_gradient. The
-/// arguments are mcscf::df_gradient's and @p batch sc_energy's; @p b and
-/// @p h are the AO B and core Hamiltonian both calls read.
+/// arguments are mcscf::df_gradient's and @p batch and @p nfrozen
+/// sc_energy's; @p b and @p h are the AO B and core Hamiltonian both calls
+/// read. With a frozen core, z^c is the same division over the whole core:
+/// its frozen–correlated pairs take the energy's derivative along their
+/// rotation, which the frozen core no longer leaves at zero (README "The
+/// frozen core").
 ///
 /// @return The gradient; Unsupported for a state average; or the first
 ///         error of the calls it makes.
-[[nodiscard]] Result<ScGradient>
-sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-            std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-            const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch);
+[[nodiscard]] Result<ScGradient> sc_gradient(DeviceResources &res, const Molecule &molecule,
+                                             const BasisSet &basis,
+                                             std::span<const PrimitivePairClass> classes,
+                                             const BasisSet &aux, const SphericalMatrixAO &h,
+                                             const Buffers::device<double> &b, const double *l,
+                                             const mcscf::Solution &solution, int32_t ncore,
+                                             int32_t ncas, int32_t batch, int32_t nfrozen = 0);
 
 /// @brief pc_gradient's result: ScGradient's fields, with PC's class
 /// energies.
@@ -493,11 +509,13 @@ struct PcGradient {
 ///         positive eigenvalue, a pole: λ + Δ at round-off or an intruder,
 ///         |y / (λ + Δ)| > 1); or the first
 ///         error of the calls it makes.
-[[nodiscard]] Result<PcGradient>
-pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-            std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-            const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch);
+[[nodiscard]] Result<PcGradient> pc_gradient(DeviceResources &res, const Molecule &molecule,
+                                             const BasisSet &basis,
+                                             std::span<const PrimitivePairClass> classes,
+                                             const BasisSet &aux, const SphericalMatrixAO &h,
+                                             const Buffers::device<double> &b, const double *l,
+                                             const mcscf::Solution &solution, int32_t ncore,
+                                             int32_t ncas, int32_t batch, int32_t nfrozen = 0);
 
 /// @brief qd_sc_lagrangian's result: what the SC-QD-NEVPT2 gradient's
 /// derivative passes take, and what it reports. Every device array is on
@@ -581,7 +599,7 @@ struct QdScLagrangian {
 qd_sc_lagrangian(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                  const BasisSet &aux, const SphericalMatrixAO &h, const Buffers::device<double> &b,
                  const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t state,
-                 int32_t batch);
+                 int32_t batch, int32_t nfrozen = 0);
 
 /// @brief The SC-QD-NEVPT2 Lagrangian of E[W] at any symmetric weight
 /// matrix @p w (n x n row-major, n the solution's roots), and its
@@ -603,7 +621,7 @@ qd_sc_lagrangian(DeviceResources &res, const Molecule &molecule, const BasisSet 
 qd_sc_lagrangian(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                  const BasisSet &aux, const SphericalMatrixAO &h, const Buffers::device<double> &b,
                  const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
-                 std::span<const double> w, int32_t batch);
+                 std::span<const double> w, int32_t batch, int32_t nfrozen = 0);
 
 /// @brief qd_sc_gradient's result: the gradient, its two derivative passes,
 /// the Lagrangian they were taken at, and the gaps it divides by.
@@ -643,13 +661,12 @@ struct QdScGradient {
 /// @return The gradient; qd_sc_lagrangian's errors unchanged (a root of zero
 ///         weight, a degenerate H_eff pair, the gate), or the first error of
 ///         a derivative pass.
-[[nodiscard]] Result<QdScGradient> qd_sc_gradient(DeviceResources &res, const Molecule &molecule,
-                                                  const BasisSet &basis,
-                                                  std::span<const PrimitivePairClass> classes,
-                                                  const BasisSet &aux, const SphericalMatrixAO &h,
-                                                  const Buffers::device<double> &b, const double *l,
-                                                  const mcscf::Solution &solution, int32_t ncore,
-                                                  int32_t ncas, int32_t state, int32_t batch);
+[[nodiscard]] Result<QdScGradient>
+qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t state,
+               int32_t batch, int32_t nfrozen = 0);
 
 /// @brief The nuclear gradient G(W) of E[W] at any symmetric weight matrix
 /// @p w: the W form of qd_sc_lagrangian, then the state form's two
@@ -675,7 +692,8 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
-               std::span<const double> w, int32_t batch, double zvector_tolerance = 1e-10);
+               std::span<const double> w, int32_t batch, double zvector_tolerance = 1e-10,
+               int32_t nfrozen = 0);
 
 /// @brief G(W) at each of several symmetric weight matrices @p w at once:
 /// the W form above at every W, sharing what does not depend on W. One
@@ -699,7 +717,7 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
                std::span<const std::vector<double>> w, int32_t batch,
-               double zvector_tolerance = 1e-10);
+               double zvector_tolerance = 1e-10, int32_t nfrozen = 0);
 
 /// @brief Terms folded into an interstate coupling's Lagrangian (Park 2020
 /// Eqs. 51-52): what lets qd_sc_coupling / qd_pc_coupling solve one Z-vector
@@ -792,13 +810,12 @@ struct QdPcGradient {
 ///         qd_sc_gradient's other errors (a root of zero weight, a
 ///         degenerate pair of PC's H_eff, the gate), named for
 ///         nevpt2::qd_pc_gradient; or the first error of the calls it makes.
-[[nodiscard]] Result<QdPcGradient> qd_pc_gradient(DeviceResources &res, const Molecule &molecule,
-                                                  const BasisSet &basis,
-                                                  std::span<const PrimitivePairClass> classes,
-                                                  const BasisSet &aux, const SphericalMatrixAO &h,
-                                                  const Buffers::device<double> &b, const double *l,
-                                                  const mcscf::Solution &solution, int32_t ncore,
-                                                  int32_t ncas, int32_t state, int32_t batch);
+[[nodiscard]] Result<QdPcGradient>
+qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t state,
+               int32_t batch, int32_t nfrozen = 0);
 
 /// @brief The PC-QD-NEVPT2 nuclear gradient G(W) of E[W] at any symmetric
 /// weight matrix @p w: qd_sc_gradient's W form with qd_pc_adjoint in place
@@ -816,7 +833,8 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
-               std::span<const double> w, int32_t batch, double zvector_tolerance = 1e-10);
+               std::span<const double> w, int32_t batch, double zvector_tolerance = 1e-10,
+               int32_t nfrozen = 0);
 
 /// @brief qd_sc_gradient's several-W form over qd_pc_adjoint: G(W) at each
 /// of @p w, sharing the same work. The arguments are its.
@@ -830,7 +848,7 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
                std::span<const std::vector<double>> w, int32_t batch,
-               double zvector_tolerance = 1e-10);
+               double zvector_tolerance = 1e-10, int32_t nfrozen = 0);
 
 /// @brief The PC-QD-NEVPT2 interstate coupling between QD states @p p and
 /// @p q (PC's H_eff eigenvalues ascending), h_PQ = R_P^T (dH_eff/dR) R_Q:
@@ -859,7 +877,10 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
 /// RDMs (f3ca and f3ac on the diagonal alone), exactly what
 /// sc_effective_hamiltonian and pc_effective_hamiltonian take there, and so
 /// what the PT2 transition density (free_breakfast.nevpt2.nac) takes. The
-/// buffers live for the call alone; every launch is on res.stream().
+/// buffers live for the call alone; every launch is on res.stream(). With
+/// @p nfrozen, the blocks are over the orbitals from nfrozen on and the
+/// core-indexed inputs over the correlated core, the class walk's frame
+/// (qd_sc_energy's).
 ///
 /// The arguments but @p use are qd_sc_lagrangian's, without @p batch.
 ///
@@ -870,6 +891,7 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
 qd_inputs(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
           const BasisSet &aux, const SphericalMatrixAO &h, const Buffers::device<double> &b,
           const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
-          const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>)> &use);
+          const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>)> &use,
+          int32_t nfrozen = 0);
 
 } // namespace free_breakfast::nevpt2

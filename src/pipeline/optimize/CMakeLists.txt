@@ -9,7 +9,8 @@
 # the carried orbitals' orthonormalization (recipes::blas,
 # recipes::orthogonalize, core::wwr), a QD state's root matching
 # (mcscf::overlap), the MECI's g_I, g_J and h_IJ (mcscf::intersection) and
-# a QD MECI's g_P, g_Q and h_PQ (nevpt2::intersection), core::constants,
+# a QD MECI's g_P, g_Q and h_PQ (nevpt2::intersection) over its frozen core
+# (pipeline::nevpt2's resolution), core::constants,
 # core::log and diagnostics_macros (FBF_TRY, FBF_LOG_INFO) are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
@@ -40,6 +41,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::mcscf::intersection
   free_breakfast::mcscf::overlap
   free_breakfast::nevpt2::intersection
+  free_breakfast::pipeline::nevpt2
   free_breakfast::pipeline::pipeline
   free_breakfast::recipes::blas
   free_breakfast::recipes::orthogonalize

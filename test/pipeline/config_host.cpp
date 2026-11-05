@@ -1311,8 +1311,8 @@ TEST(PipelineConfig, TheNevpt2StepReadsQuasiDegenerate) {
 
 // [nevpt2] reads frozen_core, 0 unless written: a count of at least 0, or
 // "auto" (Nevpt2Step::kFrozenCoreAuto). Whether it fits the CASSCF's core is
-// Nevpt2Step::run's to say. [nevpt2_gradient] reads the same key and takes
-// only 0 until the frozen-core gradient (#875) lands, "auto" included.
+// Nevpt2Step::run's to say. [nevpt2_gradient] reads the same key the same
+// way (#875); [nevpt2_nac] refuses it by name.
 TEST(PipelineConfig, TheNevpt2StepsReadFrozenCore) {
   const std::string casscf =
       "[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 4\nnelecas = 4\nnroots = 2\n";
@@ -1338,15 +1338,20 @@ TEST(PipelineConfig, TheNevpt2StepsReadFrozenCore) {
                       "[nevpt2] frozen_core is not a 32-bit count or \"auto\"");
 
   const std::string single = "[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 4\nnelecas = 4\n";
-  auto zero =
-      fb::parse_config(with_inputs(single + "[nevpt2_gradient]\nfrozen_core = 0\n"), "", kOut);
-  ASSERT_TRUE(zero.has_value()) << zero.error().message;
-  expect_config_error(with_inputs(single + "[nevpt2_gradient]\nfrozen_core = 2\n"),
-                      "[nevpt2_gradient] frozen_core is 2: the frozen-core NEVPT2 gradient is "
-                      "not implemented yet (#875), so only 0 is taken");
-  expect_config_error(with_inputs(single + "[nevpt2_gradient]\nfrozen_core = \"auto\"\n"),
-                      "[nevpt2_gradient] frozen_core is \"auto\": the frozen-core NEVPT2 "
-                      "gradient is not implemented yet (#875)");
+  auto unwritten = fb::parse_config(with_inputs(single + "[nevpt2_gradient]\n"), "", kOut);
+  ASSERT_TRUE(unwritten.has_value()) << unwritten.error().message;
+  EXPECT_EQ(unwritten->step<fb::Nevpt2GradientStep>()->frozen_core, 0);
+  for (const auto &[value, want] : {std::pair{"0", 0}, std::pair{"2", 2},
+                                    std::pair{"\"auto\"", fb::Nevpt2Step::kFrozenCoreAuto}}) {
+    auto calc = fb::parse_config(
+        with_inputs(single + std::format("[nevpt2_gradient]\nfrozen_core = {}\n", value)), "",
+        kOut);
+    ASSERT_TRUE(calc.has_value()) << value << ": " << calc.error().message;
+    EXPECT_EQ(calc->step<fb::Nevpt2GradientStep>()->frozen_core, want) << value;
+  }
+  expect_config_error(with_inputs(casscf + "[nevpt2_nac]\nfrozen_core = 2\n"),
+                      "[nevpt2_nac] frozen_core: the frozen-core QD-NEVPT2 coupling is not "
+                      "implemented");
   expect_config_error(with_inputs(single + "[nevpt2_gradient]\nfrozen_core = -1\n"),
                       "[nevpt2_gradient] frozen_core is -1, below 0");
 }
