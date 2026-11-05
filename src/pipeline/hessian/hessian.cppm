@@ -1,12 +1,15 @@
 /// @file
 /// @brief The `Hessian` step: the Cartesian Hessian at the pipeline's
 /// molecule -- the closed-shell RHF's, or with a `[casscf_gradient]` that
-/// root's of a DF-CASSCF (state-specific or state-averaged) -- and its
-/// harmonic frequencies and normal modes. By default analytic,
+/// root's of a DF-CASSCF (state-specific or state-averaged), or with a
+/// `[nevpt2_gradient]` the SC- or PC-NEVPT2 energy's on a single-state
+/// DF-CASSCF -- and its harmonic frequencies and normal modes. By default
+/// analytic (not for NEVPT2),
 /// @c hessian::df_rhf, @c hessian::df_casscf or @c hessian::df_sacasscf over
 /// one nested Pipeline run of the chain from the molecule to `[scf]` or
 /// `[casscf]`; or by central differences of the analytic gradient of the
-/// chain to `[gradient]` or `[casscf_gradient]`, rerun at each of the 6N
+/// chain to `[gradient]`, `[casscf_gradient]` or `[nevpt2_gradient]`, rerun
+/// at each of the 6N
 /// displaced geometries, each displaced CASSCF started from the reference's
 /// orbitals and CI and checked against it.
 ///
@@ -22,10 +25,11 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
 export import free_breakfast.geometry; // geometry::Vibrations, in the product
-// Every step the two chains rerun, and MoleculeOutput among the products
+// Every step the three chains rerun, and MoleculeOutput among the products
 // they re-export.
 export import free_breakfast.pipeline.gradient;
 export import free_breakfast.pipeline.casscf_gradient;
+export import free_breakfast.pipeline.nevpt2_gradient;
 
 export namespace free_breakfast {
 
@@ -34,13 +38,13 @@ enum class HessianMethod : uint8_t {
   /// @c hessian::df_rhf at the SCF of one chain run, or the CASSCF root's
   /// (@c hessian::df_casscf, @c hessian::df_sacasscf): density fitting only.
   Analytic,
-  /// Central differences of the analytic gradient, the RHF's or a
-  /// DF-CASSCF root's: 6N chain reruns.
+  /// Central differences of the analytic gradient, the RHF's, a DF-CASSCF
+  /// root's or the SC- or PC-NEVPT2's: 6N chain reruns.
   Numerical,
 };
 
-/// @brief The Cartesian Hessian of the SCF energy, or of a CASSCF root's, at
-/// the MoleculeOutput's
+/// @brief The Cartesian Hessian of the SCF energy, or of a CASSCF root's or
+/// its NEVPT2 energy's, at the MoleculeOutput's
 /// geometry, how far it is from the two identities it should keep, and the
 /// harmonic vibrations it gives.
 struct HessianOutput {
@@ -68,8 +72,9 @@ struct HessianOutput {
   std::vector<double> intensities;
 };
 
-/// @brief The RHF's or a DF-CASSCF root's Hessian at the MoleculeOutput's
-/// geometry and its harmonic vibrations, on @p node's device 0.
+/// @brief The RHF's, a DF-CASSCF root's or its NEVPT2 energy's Hessian at
+/// the MoleculeOutput's geometry and its harmonic vibrations, on @p node's
+/// device 0.
 struct HessianStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "hessian";
@@ -93,7 +98,7 @@ struct HessianStep {
   GuessStep guess{};
   ScfStep scf{};
   /// @brief The CASSCF the chain runs after the SCF, read only when
-  /// @ref casscf_gradient is set. Its active space is picked once, at the
+  /// @ref casscf_gradient or @ref nevpt2_gradient is set. Its active space is picked once, at the
   /// reference geometry; every displaced solve starts from the reference's
   /// orbitals, Loewdin-orthonormalized in the displaced overlap, and from its
   /// CI (CasscfStep::ci_guess).
@@ -104,6 +109,11 @@ struct HessianStep {
   /// HessianMethod::Numerical's differences of this gradient. Empty: the
   /// RHF's.
   std::optional<CasscfGradientStep> casscf_gradient{};
+  /// @brief Set: the Hessian is HessianMethod::Numerical's differences of
+  /// this SC- or PC-NEVPT2 gradient of the single-state @ref casscf's root,
+  /// all-electron, over density fitting only: the CASSCF chain's displaced
+  /// solves, each followed by this step. Exclusive with @ref casscf_gradient.
+  std::optional<Nevpt2GradientStep> nevpt2_gradient{};
 
   /// @brief Where the Hessian is written as JSON, if not empty: the method,
   /// the Hessian as 3 n_atom rows of 3 n_atom, the asymmetry, the
@@ -125,7 +135,9 @@ struct HessianStep {
   /// reference, then the chain ending in it at each displaced geometry,
   /// started from the reference's orbitals orthonormalized in the displaced
   /// overlap, C (Cᵀ S C)^-1/2, and from its CI vectors, and held to it by
-  /// @ref check_displaced_casscf.
+  /// @ref check_displaced_casscf; under @ref nevpt2_gradient the same, its
+  /// gradient the NEVPT2's, each displacement's max |z^c|, smallest
+  /// inactive gap and Z-vector residual logged.
   /// Then symmetrized, checked, and its harmonic vibrations; under the
   /// analytic RHF, the dipole derivative from the same CPHF and the IR
   /// intensities, unless a shell is above d (logged as a warning).
@@ -145,7 +157,15 @@ struct HessianStep {
   ///         gradient's error (MaxIterationsExceeded for one that does not
   ///         converge), naming the geometry, and @ref check_displaced_casscf's
   ///         Numerical for a displaced solve whose active space or roots are
-  ///         not the reference's.
+  ///         not the reference's. Under @ref nevpt2_gradient, before
+  ///         anything runs: InvalidConfig beside @ref casscf_gradient or for
+  ///         a @ref Nevpt2GradientStep::frozen_core other than 0;
+  ///         Unsupported for an integral-direct @ref eri, the analytic
+  ///         method, a state-averaged @ref casscf (nroots above 1) or
+  ///         @ref Nevpt2GradientStep::quasi_degenerate, each naming the
+  ///         reason; then the numerical CASSCF chain's errors, and the
+  ///         NEVPT2 gradient's (PC's refusals among them), naming the
+  ///         geometry.
   [[nodiscard]] Result<HessianOutput> run(View<MoleculeOutput> in, NodeResources &node) const;
 };
 

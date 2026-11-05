@@ -716,8 +716,12 @@ template <class S>
 /// integral-direct `[eri]`, which it does not take. With a
 /// `[casscf_gradient]` in @p doc the chain ends in `[casscf]` and it, both
 /// copied in too, and the Hessian is that root's, analytic or numerical;
-/// `[gradient]` beside it is refused, since the Hessian is one energy's. The molecule is not among
-/// them: the step reads the pipeline's own.
+/// with a `[nevpt2_gradient]` the same, the Hessian that NEVPT2 energy's,
+/// numerical only, state-specific and all-electron (the analytic method,
+/// `quasi_degenerate` and a `frozen_core` other than 0 refused). Two of
+/// `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]` are refused,
+/// since the Hessian is one energy's. The molecule is not among them: the
+/// step reads the pipeline's own.
 [[nodiscard]] Status plan_hessian(std::vector<Calculation::Step> &steps, const toml::table &doc,
                                   const std::filesystem::path &input_dir,
                                   const std::filesystem::path &output_dir) {
@@ -733,16 +737,46 @@ template <class S>
   FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.orthogonalizer));
   FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.guess));
   FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.scf));
-  // With a [casscf_gradient], the Hessian is that root's instead, by either
-  // method: one energy's, so [gradient] beside it is refused.
-  if (doc.contains(CasscfGradientStep::kName)) {
-    if (doc.contains(GradientStep::kName)) {
-      return err_config("[{}] is the Hessian of the energy of [{}] or of [{}], and the config "
-                        "names both: keep the one wanted",
-                        kStep, GradientStep::kName, CasscfGradientStep::kName);
+  // With a [casscf_gradient] or a [nevpt2_gradient], the Hessian is that
+  // root's or its NEVPT2's instead: one energy's, so two gradients are
+  // refused, the first two the config names reported.
+  std::vector<std::string_view> named;
+  for (const std::string_view name :
+       {GradientStep::kName, CasscfGradientStep::kName, Nevpt2GradientStep::kName}) {
+    if (doc.contains(name)) {
+      named.push_back(name);
     }
+  }
+  if (named.size() > 1) {
+    return err_config("[{}] is the Hessian of the energy of [{}] or of [{}], and the config "
+                      "names both: keep the one wanted",
+                      kStep, named[0], named[1]);
+  }
+  if (doc.contains(CasscfGradientStep::kName)) {
     FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.casscf));
     FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.casscf_gradient.emplace()));
+  } else if (doc.contains(Nevpt2GradientStep::kName)) {
+    FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.casscf));
+    const Nevpt2GradientStep &nevpt2 = step.nevpt2_gradient.emplace();
+    FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.nevpt2_gradient.value()));
+    // What milestone 24's Hessian covers: HessianStep::run refuses each
+    // again. A state average is check_nevpt2_gradient's, as for any
+    // [nevpt2_gradient] that is not quasi-degenerate.
+    constexpr std::string_view kNevpt2 = Nevpt2GradientStep::kName;
+    if (step.method == HessianMethod::Analytic) {
+      return err_unsupported("[{}] over [{}] is numerical only: set [{}] method = 'numerical'",
+                             kStep, kNevpt2, kStep);
+    }
+    if (nevpt2.quasi_degenerate) {
+      return err_unsupported("[{}] differences a state-specific NEVPT2 gradient, and [{}] is "
+                             "quasi_degenerate: QD-NEVPT2 has no Hessian here",
+                             kStep, kNevpt2);
+    }
+    if (nevpt2.frozen_core != 0) {
+      return err_config("[{}] differences the all-electron NEVPT2 gradient, and [{}] frozen_core "
+                        "is not 0: set it to 0",
+                        kStep, kNevpt2);
+    }
   }
   if (step.method == HessianMethod::Analytic && step.eri.mode != EriMode::DensityFitting) {
     return err_unsupported("[{}] method 'analytic' is density-fitted only, and [{}] mode is "
