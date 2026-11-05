@@ -371,11 +371,29 @@ string(
   ":Nevpt2EnergyHvpEmpty.Psb3ProportionalPairAcceptedNonProportionalRefused"
 )
 math(EXPR _fb_long_timeout "5 * ${_fb_test_timeout}")
+#
+# Nevpt2QdIntersection.Psb3TrueResidual (slow tier) is PSB3's DF-SA3-
+# CASSCF(6,6)/cc-pVDZ, an SC-QD intersection and an SC-QD state gradient:
+# 748 s alone on the gfx1200 (Z-vector 31 products to 9.83e-11), past
+# _fb_long_timeout's 600 s, so the HIP slow tier timed it out at 120 s
+# (#878). Each Z-vector product is a CI-response conjugate gradient with a
+# host sync at every step, so the case is latency-bound (#824) and slows by
+# the most beside other processes on the card: it runs RUN_SERIAL, with
+# twelve times the shared backstop, about twice its time alone. Lower it
+# again once #824 lands.
+set(_fb_longest_cases "Nevpt2QdIntersection.Psb3TrueResidual")
+math(EXPR _fb_longest_timeout "12 * ${_fb_test_timeout}")
 gtest_discover_tests(
   free_breakfast_tests_gpu
   DISCOVERY_MODE PRE_TEST
-  TEST_FILTER "-${_fb_serial_cases}:${_fb_long_cases}"
+  TEST_FILTER "-${_fb_serial_cases}:${_fb_long_cases}:${_fb_longest_cases}"
   PROPERTIES TIMEOUT ${_fb_test_timeout} LABELS gpu
+)
+gtest_discover_tests(
+  free_breakfast_tests_gpu
+  DISCOVERY_MODE PRE_TEST
+  TEST_FILTER "${_fb_longest_cases}"
+  PROPERTIES TIMEOUT ${_fb_longest_timeout} LABELS gpu RUN_SERIAL TRUE
 )
 gtest_discover_tests(
   free_breakfast_tests_gpu
