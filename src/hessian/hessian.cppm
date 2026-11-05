@@ -572,7 +572,8 @@ struct DegeneratePair {
 /// second-derivative integrals are contracted once each at the adjoint's AO
 /// forms (C h_bar C^T, L^-T C Lambda C^T, -1/2 L^-T sym(G) L^-1, the
 /// overlap's -1/2 C sym(X) C^T), the rest is Gram matrices of
-/// per-coordinate stacks over df_integral_derivatives' (h1^x, tau^x, W^x).
+/// per-coordinate stacks over df_integral_derivatives' (h1^x, tau^x, W^x),
+/// the products against mu^x taken by M^x's atom blocks.
 ///
 /// The inputs are @ref df_casscf_exy's (the molecule both bases were placed
 /// on, @p classes of @p basis, the AO core Hamiltonian @p h, @p b and @p l as
@@ -583,8 +584,8 @@ struct DegeneratePair {
 /// for it.
 ///
 /// Held for the call: B and Lambda over every MO pair and one more such
-/// scratch (3 naux nmo^2), mu^x = -1/2 L^-1 M^x L^-T for every x (3 n_atom
-/// naux^2), two 3 n_atom nmo^2 stacks and a few naux^2 and nmo^2 matrices;
+/// scratch (3 naux nmo^2), two 3 n_atom nmo^2 stacks and a few naux^2 and
+/// nmo^2 matrices (none per coordinate);
 /// W^x is df_integral_derivatives' chunks, as many coordinates at once as
 /// the rest of the budget holds (the device's free memory at the call, or
 /// @p max_bytes when that is less). Past the budget with one coordinate's
@@ -599,7 +600,7 @@ struct DegeneratePair {
 ///         to rounding); InvalidConfig if the molecule and bases are not one
 ///         placement, @p c or @p h is not nao x nao, @p b not naux nao^2,
 ///         or @p l, @p h_bar or @p lambda is null; Unsupported for memory
-///         past the budget or naux nmo^2, 3 n_atom naux^2 or 3 n_atom nmo^2
+///         past the budget or naux nmo^2, naux^2 or 3 n_atom nmo^2
 ///         past int32_t; or the first error of a derivative call, copy or
 ///         BLAS call.
 [[nodiscard]] Result<std::vector<double>>
