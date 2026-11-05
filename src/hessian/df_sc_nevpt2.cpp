@@ -27,6 +27,7 @@ import free_breakfast.ci.strings;
 import free_breakfast.response.orbital_pairs; // unpack_orbital_pairs
 import free_breakfast.mcscf.solve;
 import free_breakfast.mcscf.zvector;
+import free_breakfast.nevpt2.energy;   // kEmptyPopulationFloor
 import free_breakfast.nevpt2.gradient; // sc_adjoint, zc_multipliers, zc_adjoint,
                                        // lagrangian_gradient, sc_hessian_product
 import :state_specific;                // state_specific_electrons
@@ -38,6 +39,12 @@ namespace free_breakfast::hessian {
 // The coordinates' rows are orthonormal to this (Q Q^T = 1), so that
 // Q H Q^T is the Hessian in them.
 constexpr double kScNevpt2OrthonormalTolerance = 1e-10;
+// The displacement, in bohr along a coordinate, within which a canonical
+// inactive pair may not mix (t_mix = 1 / 2 |kappa_oo|): #817's convention,
+// df_pc_nevpt2's kPcNevpt2LiftStep. Closer, the SC surface switches branch
+// inside a vibrational or finite-difference step, and one analytic Hessian
+// does not represent it.
+constexpr double kScNevpt2MixStep = 1e-3;
 
 Result<ScNevpt2Terms>
 df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
@@ -197,9 +204,63 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
   Buffers::device<double> h_bar(nn, res.device());
   Buffers::device<double> lambda(naux * nn, res.device());
   std::optional<nevpt2::ScGradient> lagrangian;
+  double mix_step = std::numeric_limits<double>::infinity();
   {
     nevpt2::ScAdjoint corr = FBF_TRY(nevpt2::sc_adjoint(
         res, alpha, beta, naux32, nmo32, nmo32, b.data(), c, h.data(), ncore, ncas, vector, batch));
+    // The inactive pairs' mixing: kappa_oo = kappa - kappa_nr along each
+    // coordinate is F^i_pq / gap on a core-core or virtual-virtual pair. The
+    // pair's 2 x 2 block [[e_p, F t], [F t, e_q]] has gap sqrt(g^2 + 4 F^2
+    // t^2) and mixing angle tan 2 theta = 2 F t / g, so t_mix = g / 2 |F| =
+    // 1 / 2 |kappa_oo_pq| is its avoided crossing's half-width: 2 theta at 45
+    // degrees, the gap sqrt(2) g. SC is not invariant to that rotation, so
+    // below kScNevpt2MixStep its second derivative is the curvature of a
+    // narrower region than a vibration (README, "Mixing inactive pairs").
+    {
+      const std::vector<double> epsilon = FBF_TRY(download(corr.epsilon.data(), nmo));
+      const std::vector<double> kappa = FBF_TRY(download(t_kappa.data(), nn * k));
+      const std::vector<double> kappa_nr = FBF_TRY(download(t_nr.data(), nn * k));
+      // 0 core, 1 active, 2 virtual.
+      const auto space = [&](const size_t p) -> int32_t {
+        return p < nc ? 0 : (p < nc + n_act ? 1 : 2);
+      };
+      std::string named;
+      std::string why;
+      for (size_t i = 0; i < k; ++i) {
+        double worst = 0.0;
+        size_t wp = 0;
+        size_t wq = 0;
+        for (size_t q = 0; q < nmo; ++q) {
+          for (size_t p = 0; p < q; ++p) {
+            if (space(p) != space(q) || space(p) == 1) {
+              continue;
+            }
+            const size_t at = (i * nn) + p + (nmo * q);
+            const double oo = std::abs(kappa[at] - kappa_nr[at]);
+            if (oo > worst) {
+              worst = oo;
+              wp = p;
+              wq = q;
+            }
+          }
+        }
+        const double t_mix = 0.5 / worst;
+        mix_step = std::min(mix_step, t_mix);
+        if (t_mix < kScNevpt2MixStep) {
+          named += std::format("{}{}", named.empty() ? "" : ", ", i);
+          why += std::format("; coordinate {}: orbitals ({}, {}), gap {:.3e} Eh, t_mix {:.3e} bohr",
+                             i, wp, wq, std::abs(epsilon[wp] - epsilon[wq]), t_mix);
+        }
+      }
+      if (!named.empty()) {
+        return err_numerical(
+            "{}: SC-NEVPT2 has no Hessian along coordinates {}: each mixes a canonical inactive "
+            "pair within {:g} bohr (t_mix = gap / 2 |F^i_pq|), and SC is not invariant to that "
+            "rotation, so its surface switches branch inside a vibrational or finite-difference "
+            "step and one analytic Hessian does not represent it; use PC-NEVPT2{}",
+            kWho, named, kScNevpt2MixStep, why);
+      }
+    }
     nevpt2::ZcMultipliers zc = FBF_TRY(
         nevpt2::zc_multipliers(res, nmo32, ncore, ncas, corr.a.data(), corr.epsilon.data()));
     const nevpt2::ZcAdjoint phi =
@@ -254,7 +315,8 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
     const size_t per_direction =
         sizeof(double) * ((16 * naux * nn) + (8 * act6) + (8 * ndet) + (16 * nn));
     const size_t chunk = std::clamp<size_t>(free_bytes / 2 / per_direction, 1, k);
-    std::vector<bool> breaking(k, false);
+    std::vector<double> population(k, 0.0);
+    double scale = 0.0;
     for (size_t j0 = 0; j0 < k; j0 += chunk) {
       const size_t count = std::min(chunk, k - j0);
       const nevpt2::ScHessianProduct p =
@@ -262,11 +324,19 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
                           t_b.data() + (j0 * naux * nn), t_c.data() + (j0 * ndet), {}));
       for (size_t u = 0; u < count; ++u) {
         FBF_TRY(pair_with(p.products[u], paired.data() + ((j0 + u) * k)));
-        breaking[j0 + u] = std::ranges::any_of(p.populated[u], [](int64_t n) { return n > 0; });
+        population[j0 + u] = p.population[u];
+        scale = std::max(scale, p.scale[u]);
       }
       FBF_TRY(res.sync());
     }
     hvp = FBF_TRY(download(paired.data(), k * k));
+    // A coordinate breaks the symmetry when it populates an empty perturber
+    // against the largest population scale over the coordinates (one size,
+    // orthonormal rows): a rigid translation's own scale is round-off.
+    std::vector<bool> breaking(k, false);
+    for (size_t i = 0; i < k; ++i) {
+      breaking[i] = population[i] > nevpt2::kEmptyPopulationFloor * scale;
+    }
 
     // The pairs: directions (t_j, t_i), partners (t_i, t_j).
     Buffers::device<double> two_h(2 * nn, res.device());
@@ -502,7 +572,8 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
                        .max_zc = gradient.zc.max_z,
                        .min_gap = gradient.zc.min_gap,
                        .zvector_residual = gradient.multipliers.residual,
-                       .defect = defect};
+                       .defect = defect,
+                       .mix_step = mix_step};
 }
 
 } // namespace free_breakfast::hessian

@@ -554,10 +554,11 @@ copied in, and the Hessian is that NEVPT2 energy's. Analytic, the default,
 a whole config: the SC-NEVPT2 Hessian of the skew formaldehyde of #803's
 `h2co_skew_sto3g` fixture, CASSCF(4,4) in STO-3G, its frequencies and
 `hessian.json` (about 6 s on one card). The geometry is C1 on purpose: at
-`nevpt2.toml`'s symmetric water (cc-pVDZ) no pair is refused in
-Cartesians, yet SC's B2 frequency comes out at 14063 cm⁻¹ against PC's
-4028 (A1 within 0.6 cm⁻¹ of PC's), SC's kink (#894), which the fixture's
-README records for water in cc-pVDZ. It takes `coordinates` and nothing else
+`nevpt2.toml`'s symmetric water (cc-pVDZ) SC is refused, Numerical (#952):
+a B2 displacement mixes two virtuals 1.4e-3 Eh apart within 1e-3 bohr, and
+SC's B2 element there (14063 cm⁻¹ against PC's 4028) describes a narrower
+region than a vibration (`../../hessian/README.md`, "Mixing inactive
+pairs"). PC is not refused there. It takes `coordinates` and nothing else
 of the numerical method's:
 
 ```toml

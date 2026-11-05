@@ -2856,12 +2856,6 @@ Status sijrs_hvp(DeviceResources &res, const MoBlocks &blocks, const EnergyInput
   return res.sync();
 }
 
-// An empty perturber is populated by a direction w when its N^{ww} is above
-// this fraction of w's largest |N^{ww}| over every perturber: between the
-// round-off a direction that keeps the symmetry leaves on it and the
-// smallest real population (README, "The SC Hessian-vector product").
-constexpr double kEmptyPopulationFloor = 1e-10;
-
 // The largest weighted defect a pair may carry before it is refused: over
 // the empty perturbers both directions populate, max ρ_τ w, w = √(N^{uu}
 // N^{vv}) / |Δ + η| (the perturber's share of the pair's Hessian), against
@@ -2968,6 +2962,8 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
 
   ClassEnergiesHvp out{.energies = t.energies,
                        .populated = std::vector<std::array<int64_t, 8>>(m),
+                       .population = std::vector<double>(m, 0.0),
+                       .scale = std::vector<double>(m, 0.0),
                        .defect = std::vector<double>(m, 0.0)};
   for (size_t u = 0; u < m; ++u) {
     const EnergyDirection &du = directions[u];
@@ -3017,6 +3013,7 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
           }
         }
       }
+      out.scale[u] = scale_u;
       // S, the pair's Hessian scale: the largest √|N^{uu} N^{vv}| / |Δ + η|
       // over every perturber, η its own H / N, or an empty one's mean of
       // η_u and η_v. An empty perturber's defect is weighed against it.
@@ -3079,6 +3076,7 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
           fixed.p[k][g] = (2.0 * tbar) + (delta * tbar * tbar);
           fixed.q[k][g] = tbar * tbar;
           ++out.populated[u][k];
+          out.population[u] = std::max(out.population[u], e.nuu);
         }
       }
       out.defect[u] = worst;

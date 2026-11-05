@@ -896,6 +896,8 @@ and the block twice; a caller with many directions chunks them.
         -> ClassEnergiesHvp
         energies         class_energies' norms, energies and total
         populated [u][k] class k's empty perturbers direction u populates (K6's)
+        population [u]   the largest N^{uu} over those (0: none)
+        scale [u]        u's population scale, kEmptyPopulationFloor's base
         defect [u]       the empties' weighted ρ_τ on (u, its partner), over S
     bars[u] (EnergyBars, added onto): the tangent of class_energies_adjoint's
         bars along directions[u], every field they name, Λ included
@@ -973,6 +975,14 @@ largest |N| over (8s)². Then:
   and past 1e-6 the call is refused, Numerical, naming the class and the
   perturber that scored it: the energy is not a quadratic form on that pair
   to that bound.
+
+**A direction that moves nothing.** The floor is a fraction of the
+direction's own scale, so a direction whose tangent is round-off (a rigid
+translation's, in a caller's coordinates) populates everything against its
+own round-off. `population` and `scale` are returned so that a caller with
+several directions of one size (`hessian::df_sc_nevpt2`'s orthonormal
+coordinates) reads each population against the largest scale instead
+(#952; `kEmptyPopulationFloor` is exported for that).
 
 **What `defect` means** (#914). Until #914 it was the largest raw ρ_τ, and
 its refusal said "no Hessian on the pair". It is now the empties'

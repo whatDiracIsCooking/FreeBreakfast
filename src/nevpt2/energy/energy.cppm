@@ -351,6 +351,12 @@ struct ClassEnergiesTangent {
 class_energies_tangent(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                        int32_t batch, std::span<const EnergyDirection> directions);
 
+/// @brief An empty perturber (|N| <= 1e-14) is populated by a direction w
+/// when its N^{ww} is above this fraction of w's population scale: between
+/// the round-off a direction that keeps the symmetry leaves on it and the
+/// smallest real population (README, "The SC Hessian-vector product").
+constexpr double kEmptyPopulationFloor = 1e-10;
+
 /// @brief class_energies_hvp's result: the energies it walked, and per
 /// direction what its empty perturbers took.
 struct ClassEnergiesHvp {
@@ -359,6 +365,15 @@ struct ClassEnergiesHvp {
   /// @brief [u][k]: class k's empty perturbers (|N| <= 1e-14) direction u
   /// populates, each given K6's multipliers.
   std::vector<std::array<int64_t, 8>> populated;
+  /// @brief [u]: the largest N^{uu} over the empty perturbers u populates
+  /// (0 when none), and u's population scale, the larger of its largest
+  /// |N^{uu}| over every perturber and the largest |N| over (8 s)^2, which
+  /// @ref kEmptyPopulationFloor is a fraction of (0 when nothing is empty).
+  /// A direction that moves nothing has a round-off scale of its own, so a
+  /// caller with several directions of one size compares population
+  /// against the largest scale.
+  std::vector<double> population;
+  std::vector<double> scale;
   /// @brief [u]: the empty perturbers' ambiguity on the pair (u, its
   /// partner) relative to the pair's Hessian scale: max_t ρ_τ w_t / S over
   /// the empty perturbers both populate, w_t = √(N^{uu} N^{vv}) / |Δ + η|

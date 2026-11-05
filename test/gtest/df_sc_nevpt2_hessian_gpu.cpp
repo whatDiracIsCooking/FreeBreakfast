@@ -10,6 +10,12 @@
 //   pairs and lie inside the A'' x A'' off-diagonal block, #894's kink; every
 //   element not refused within 2x the bar, from runs over the A' block with
 //   one A'' coordinate (or a pair not refused) added;
+// - examples/nevpt2.toml's water (C2v, cc-pVDZ) (#952): refused, Numerical,
+//   naming the coordinate whose canonical inactive pair mixes within 1e-3
+//   bohr (O y in Cartesians, the B2 vibration in symmetry-adapted ones) and
+//   pointing to PC; without the B2 vibration, its symmetry-adapted
+//   coordinates are not refused (the rigid translations, round-off
+//   directions, populate no empty perturber);
 // - a C3v ammonia whose virtual e pairs are degenerate: df_nevpt2_tangents'
 //   refusal, passed on;
 // - the input refusals.
@@ -38,6 +44,7 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
 #include "scratch_dir.h"
+#include "symmetric_water.h"
 
 namespace {
 
@@ -278,10 +285,10 @@ TEST(HessianDfScNevpt2, MatchesTheSkewFixture) {
   }
   std::cout << std::format("[ skew     ] E_corr {:.10f} (fixture {:.10f}), CP residual {:.1e}, "
                            "Z-vector {:.1e}, asymmetry {:.1e}, sum rule {:.1e}, max |z^c| "
-                           "{:.3e}, min gap {:.3e}, defect {:.1e}\n",
+                           "{:.3e}, min gap {:.3e}, defect {:.1e}, t_mix {:.3e} bohr\n",
                            h->e_corr, doc.at("e_corr").at("sc").get<double>(), cp,
                            h->zvector_residual, h->asymmetry, h->translation, h->max_zc, h->min_gap,
-                           h->defect);
+                           h->defect, h->mix_step);
   EXPECT_LE(cp, kCpResidual);
   EXPECT_LE(h->asymmetry, kAsymmetry);
   EXPECT_LE(h->translation, kSumRule);
@@ -349,15 +356,94 @@ TEST(HessianDfScNevpt2, RefusesTheSymmetricFixturesKinkBlock) {
     }
   }
   double worst = 0.0;
+  double mix_step = std::numeric_limits<double>::infinity();
   for (const auto &keep : runs) {
     auto h = ref.hessian(coordinate_rows(doc, keep));
     ASSERT_TRUE(h.has_value()) << h.error().message;
     worst = std::max(worst, expect_within_bars(*h, sc, keep, "nh3"));
     EXPECT_LE(h->asymmetry, kAsymmetry);
+    mix_step = std::min(mix_step, h->mix_step);
   }
   std::cout << std::format("[ nh3      ] {} runs: worst element not refused {:.3f} bars (allowed "
-                           "{:g})\n",
-                           runs.size(), worst, kBars);
+                           "{:g}); t_mix {:.3e} bohr\n",
+                           runs.size(), worst, kBars, mix_step);
+}
+
+// The coordinates a df_sc_nevpt2 mixing refusal names: "along coordinates
+// i, j, ...:".
+std::set<std::size_t> mixing_coordinates(const std::string &message) {
+  const std::string lead = "along coordinates ";
+  const std::size_t from = message.find(lead);
+  EXPECT_NE(from, std::string::npos) << message;
+  std::set<std::size_t> named;
+  if (from == std::string::npos) {
+    return named;
+  }
+  const std::string list =
+      message.substr(from + lead.size(), message.find(':', from) - from - lead.size());
+  const std::regex index_re(R"(\d+)");
+  for (auto it = std::sregex_iterator(list.begin(), list.end(), index_re);
+       it != std::sregex_iterator(); ++it) {
+    named.insert(std::stoul(it->str()));
+  }
+  return named;
+}
+
+// examples/nevpt2.toml's water, Cartesian: its a1 and b2 virtuals 17 and 18
+// are 1.4e-3 Eh apart, and O y mixes them within 7.5e-4 bohr. The B2 element
+// was SC's t -> 0 limit, 15.7 Eh/bohr^2 against PC's 1.29 (#952).
+TEST(HessianDfScNevpt2, RefusesTheSymmetricWater) {
+  FBF_REQUIRE_GPU();
+  const Reference ref = reference(fb::test::symmetric_water());
+  ASSERT_TRUE(ref.solution.has_value());
+  auto refused = ref.hessian();
+  ASSERT_FALSE(refused.has_value()) << "SC's B2 element published";
+  ASSERT_EQ(refused.error().kind, fb::ErrorKind::Numerical) << refused.error().message;
+  const std::string &message = refused.error().message;
+  std::cout << std::format("[ water    ] {}\n", message);
+  EXPECT_NE(message.find("use PC-NEVPT2"), std::string::npos) << message;
+  EXPECT_NE(message.find("orbitals (17, 18)"), std::string::npos) << message;
+  // Atom-major (x, y, z), the molecule in the yz plane: O y (1) is B2, O z
+  // (2) totally symmetric.
+  const std::set<std::size_t> named = mixing_coordinates(message);
+  EXPECT_TRUE(named.contains(1)) << "O y not named";
+  EXPECT_FALSE(named.contains(2)) << "O z, totally symmetric, named";
+}
+
+// The same water in symmetry-adapted coordinates: refused on the B2
+// vibration alone. Without it, the rest (A1, and the rigid motions) is a
+// Hessian: the translations' tangents are round-off, whose populations of
+// the empty perturbers are read against the largest scale over the
+// coordinates, not their own (#952: before, the pair (Tz, Tx) was refused).
+TEST(HessianDfScNevpt2, SymmetricWaterRefusesOnlyItsB2Vibration) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const Reference ref = reference(fb::test::symmetric_water());
+  ASSERT_TRUE(ref.solution.has_value());
+  const fb::test::WaterCoordinates c = fb::test::symmetric_water_coordinates();
+  ASSERT_EQ(c.rows.size(), 9U);
+  ASSERT_EQ(c.labels[5], "B2 vibration");
+  auto refused = ref.hessian(fb::test::symmetric_water_rows(iota(9)));
+  ASSERT_FALSE(refused.has_value()) << "SC's B2 element published";
+  ASSERT_EQ(refused.error().kind, fb::ErrorKind::Numerical) << refused.error().message;
+  std::cout << std::format("[ water    ] {}\n", refused.error().message);
+  EXPECT_EQ(mixing_coordinates(refused.error().message), std::set<std::size_t>{5});
+
+  const std::vector<std::size_t> keep{0, 1, 2, 3, 4, 6, 7, 8};
+  auto h = ref.hessian(fb::test::symmetric_water_rows(keep));
+  ASSERT_TRUE(h.has_value()) << h.error().message;
+  // The translations' rows (0 Tz, 3 Ty, 6 Tx at 0, 3, 5 here) vanish.
+  double rigid = 0.0;
+  for (const std::size_t i : {std::size_t{0}, std::size_t{3}, std::size_t{5}}) {
+    for (std::size_t j = 0; j < keep.size(); ++j) {
+      rigid = std::max(rigid, std::abs(h->hessian[i + (keep.size() * j)]));
+    }
+  }
+  std::cout << std::format("[ water    ] without the B2 vibration: translations' rows {:.1e}, "
+                           "asymmetry {:.1e}, defect {:.1e}, t_mix {:.3e} bohr\n",
+                           rigid, h->asymmetry, h->defect, h->mix_step);
+  EXPECT_LE(rigid, kSumRule);
+  EXPECT_LE(h->asymmetry, kAsymmetry);
 }
 
 // A C3v ammonia in 6-31G, its full valence CAS(8,7) (df_nevpt2_tangents_gpu.cpp's):

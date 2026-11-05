@@ -1242,7 +1242,7 @@ auto h = hessian::df_sc_nevpt2(res, molecule, basis, classes, aux, h_core, b, l,
 // the parts, each k x k: h->e_cas, h->z_lxy, h->z_lx, h->z_third, h->z_koo,
 // h->skeleton, h->hvp, h->rotation_tau, h->rotation_kappa;
 // h->casscf (df_casscf's terms: lambda^x, its residuals); h->e_corr, h->max_zc,
-// h->min_gap, h->zvector_residual, h->defect
+// h->min_gap, h->zvector_residual, h->defect, h->mix_step
 ```
 
 **One parametrization for every part**: the orbitals C(R) exp(K) along the
@@ -1345,14 +1345,87 @@ linear in the direction there, and a symmetry-breaking Cartesian t mixes
 the symmetric block into the broken one. The test's symmetric case passes
 the fixture's symmetry-adapted coordinates.
 
-Every coordinate whose product populates an empty perturber is taken again
-against each other such coordinate, the pair as each other's
+A coordinate breaks the symmetry when its product populates an empty
+perturber (N^{ii} past `nevpt2::kEmptyPopulationFloor`) against the
+**largest** population scale over the coordinates, not its own. The rows
+are orthonormal, so every coordinate has the same size, and one that moves
+nothing (a rigid translation, whose tangent is round-off) has a round-off
+scale of its own, against which round-off populates everything: on
+`nevpt2.toml`'s water in symmetry-adapted coordinates the translations
+Tz and Tx read N^{ii} 1e-29 to 2e-22 against the vibrations' scale of 2e4,
+and before #952 the pair (Tz, Tx) was refused on that. Every breaking
+coordinate is taken again against each other such coordinate, the pair as each other's
 `sc_hessian_product` partners (K6 at the mean η, element (i, j) from the
 product along t_j partnered by t_i). A pair `class_energies_hvp` refuses
 (its weighted ρ_τ past 1e-6: the energy is not a quadratic form on the
 pair) is collected, and when any is, the call is Numerical naming every
 refused pair with its message: refused, never reported. `defect` is the
 largest accepted pair's ρ_τ.
+
+### Mixing inactive pairs
+
+SC-NEVPT2 is not invariant to rotations among the core or among the
+virtual orbitals, and its energy is not smooth at symmetric geometries
+(#894; Park 2019 notes the same caveats). That is known and is not this
+call's to fix. Its job is to **not publish that non-smoothness silently**,
+so SC is refused at such points by design, and PC is the method to use.
+
+The case that showed it (#952) is `examples/nevpt2.toml`'s water (C2v,
+cc-pVDZ / cc-pVDZ-JKFIT, CASSCF(4,4)). There the call refused no pair, yet
+its B2 frequency was 14063 cm⁻¹ against PC's 4028 (the A1 ones within
+0.6 cm⁻¹). No empty perturber is involved: the B2 vibration populates
+none. Its virtuals 17 (a1) and 18 (b2) are 1.435e-3 Eh apart, and a B2
+displacement couples them. The pair's 2 × 2 block [[ε_p, F t], [F t, ε_q]]
+has gap √(g² + 4F²t²) and mixing angle tan 2θ = 2Ft/g, and κ_oo = F/g is
+the tangent's own. The smallest inactive gap along the B2 vibration (from
+the numerical `[hessian]`'s displaced gradients) follows that curve, with
+κ_oo = 890 /bohr:
+
+| t (bohr) | 0 | 1.25e-4 | 2.5e-4 | 5e-4 | 1e-3 | 4e-3 | 3e-2 |
+|---|---|---|---|---|---|---|---|
+| gap (Eh) | 1.435e-3 | 1.470e-3 | 1.571e-3 | 1.922e-3 | 2.932e-3 | 9.885e-3 | 1.716e-2 |
+| √(1 + (2κt)²) g | | 1.470e-3 | 1.571e-3 | 1.921e-3 | 2.931e-3 | 1.03e-2 | |
+
+The B2 element, from a ladder (rungs h, h/2, h/4) of the analytic
+gradient, against the analytic 15.729 Eh/bohr² (PC: 1.2850):
+
+| h (bohr) | D(h) | D(h/2) | D(h/4) |
+|---|---|---|---|
+| 0.03 | 1.303 | 1.333 | 1.405 |
+| 0.004 | 1.461 | 1.557 | 2.425 |
+| 0.0005 | 6.72 | 12.90 | 15.32 |
+
+So the analytic element is the correct t → 0 limit: the ladder reaches it
+only below 1e-4 bohr. Past the avoided crossing's half-width the pair has
+rotated, and the curvature is PC's. A frequency from it describes a region
+narrower than the mode's own zero-point amplitude.
+
+The rule is #817's branch-switch convention, as PC's Schur lift uses it
+(below, "The refusals"). Per coordinate i and core–core or virtual–virtual
+pair (p, q), t_mix = g / 2|F^i_pq| = 1 / 2|κ_oo^i_pq| is the half-width
+of the pair's avoided crossing: there 2θ is 45° and the gap √2 g. Any
+coordinate with t_mix below 1e-3 bohr is refused, Numerical, naming the
+coordinate, its pair, the gap and t_mix, and saying "use PC-NEVPT2". The
+same reason applies: closer than that, the surface switches branch inside a
+vibrational or finite-difference step, and one analytic Hessian does not
+represent it. `mix_step` returns the smallest t_mix of an accepted call.
+The check reads κ_oo from the tangents and ε from the adjoint, before the
+product, so a refusal costs E_cas and the tangents.
+
+| case | coordinates | smallest t_mix (bohr) | refused |
+|---|---|---|---|
+| water (`nevpt2.toml`) | Cartesian | 7.53e-4 (O y; H y, z: 1.5e-3 and 3.9e-3) | O y |
+| water | symmetry-adapted | 5.62e-4 (the B2 vibration) | the B2 vibration |
+| `h2co_skew_sto3g`, `nevpt2_hessian.toml` | Cartesian | 0.554 | no |
+| `nh3_cs_sto3g` | the fixture's | 0.240 | no (its A″ pairs are, as above) |
+| `h2co_neardeg_sto3g` | Cartesian | 0.0229 (κ_oo^x 21.8, gap 6.0e-3) | no |
+| water without the B2 vibration | symmetry-adapted | 0.180 | no |
+
+PC is not refused on the same pair. Its ladder of the B2 element is flat,
+1.2850090393, 1.2850090426, 1.2850090413 at h = 0.004, 0.002, 0.001 and
+1.2850090384, 1.2850090392, 1.2850090198 at 5e-4 down to 1.25e-4 (floors
+2.1e-7 and 1.7e-6), on the analytic 1.2850090388. PC is invariant enough
+to the pair's rotation there, and its 4028 cm⁻¹ stands.
 
 **All-electron, single state.** The call takes no frozen core, and
 `state_specific_electrons` refuses a state average (QD's reference),
@@ -1416,6 +1489,13 @@ registry (‖g‖ < 1e-10), against their semi-numerical SC Hessians:
   misses the fixture by 12.1 bars at (7, 8), 5.0 at (7, 10) and 2.2 at
   (8, 11), and by under 1 bar elsewhere: the elements do not single out the
   fixture's three either.
+- `RefusesTheSymmetricWater` (#952): `nevpt2.toml`'s water
+  (`symmetric_water.h`), Cartesian: Numerical, naming O y and the pair
+  (17, 18), not O z, and saying "use PC-NEVPT2".
+- `SymmetricWaterRefusesOnlyItsB2Vibration` (#952, slow tier): the same in
+  symmetry-adapted coordinates refuses exactly the B2 vibration; without
+  it, the rest is a Hessian (the translations' rows ≤ 1e-8), so a rigid
+  translation breaks no symmetry.
 - `DegenerateInactivePairIsRefused`: `df_nevpt2_tangents_gpu.cpp`'s C3v
   ammonia (6-31G, CAS(8,7), virtual e pairs 1e-13 Eh apart): the tangents'
   Numerical refusal, naming the pair and the coordinate, passed on.
@@ -1548,6 +1628,10 @@ pair. The test asserts every element within 2× the bar. A pair below
   the bar and nothing is refused (the κ_oo measurement above).
 - `MatchesTheLinearFixture`: `hcn_sto3g`. Every element is within 2× the
   bar, and no coordinate's lift is refused.
+- `SymmetricWaterIsNotRefused` (#952, slow tier): `nevpt2.toml`'s water in
+  symmetry-adapted coordinates, where SC is refused: PC is not, and its B2
+  element is within 2× the floor (2.1e-7) of the numerical ladder's
+  1.2850090413.
 - `DegenerateInactivePairIsRefused`: the C3v ammonia of the SC suite is
   Numerical, naming `hessian::df_pc_nevpt2` and each pair with its
   coordinate.
