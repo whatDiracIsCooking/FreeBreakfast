@@ -263,7 +263,9 @@ struct ChainSampler::State {
   // The chain at @p atoms from @p start, polished when asked: rerun from its
   // own converged orbitals until ||g|| falls under kPolishTarget, at most
   // kPolishPasses times, the lowest ||g|| kept. At ||g|| ~3e-11, PC's H_eff
-  // off the diagonal moves by ~4e-10 hartree on skew H2CO.
+  // off the diagonal moves by ~4e-10 hartree on skew H2CO; a point whose
+  // polish ran out at ~9e-12 moved it by 2.5e-11, enough to fail
+  // nevpt2_numerical_heff_gpu.cpp's PC h_PQ (#869, before #867's CI floor).
   Status converge(const std::vector<Atom> &atoms, const ChainOrbitalsStep &start,
                   std::optional<DisplacedChain> &out) {
     const auto once = [&](const ChainOrbitalsStep &from,
@@ -696,6 +698,8 @@ Result<NumericalHeff> numerical_heff(NodeResources &node, const NumericalChain &
         sides[side] = FBF_TRY(sampler.at(dr));
         out.subspace = std::max(out.subspace, sides[side].subspace);
         out.ci = std::max(out.ci, sides[side].ci);
+        out.displaced_gradient_norm =
+            std::max(out.displaced_gradient_norm, sides[side].gradient_norm);
         ++out.points;
       }
       // The continuity guard's prediction, from energies alone: the even
