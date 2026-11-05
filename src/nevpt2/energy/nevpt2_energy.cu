@@ -124,6 +124,51 @@ __global__ void __launch_bounds__(kFourWarps)
   }
 }
 
+// The forward tangent of sijrs_kernel's energy along (ġ, ε̇), one slab,
+// decoded and reduced as sijrs_kernel is: with θ = 2 g_iajb - g_ibja and
+// D = e_i + e_j - e_a - e_b, Ė += (ġ θ + g θ̇) / D - g θ Ḋ / D². A null
+// orbital-energy tangent is zero.
+__global__ void __launch_bounds__(kFourWarps)
+    sijrs_tangent_kernel(const double *__restrict__ g, const double *__restrict__ g_dot,
+                         const int64_t ni, const int64_t i0, const int64_t ncore,
+                         const int64_t nvirt, const double *__restrict__ e_core,
+                         const double *__restrict__ e_virt, const double *__restrict__ e_core_dot,
+                         const double *__restrict__ e_virt_dot, double *__restrict__ acc) {
+  __shared__ double partials[kSijrsWarps];
+  const int64_t count = ni * nvirt * ncore * nvirt;
+  const int64_t stride = static_cast<int64_t>(gridDim.x) * blockDim.x;
+  double energy_dot = 0.0;
+  for (int64_t t = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x; t < count;
+       t += stride) {
+    int64_t rest = t;
+    const int64_t il = rest % ni;
+    rest /= ni;
+    const int64_t a = rest % nvirt;
+    rest /= nvirt;
+    const int64_t j = rest % ncore;
+    const int64_t b = rest / ncore;
+    const int64_t partner = il + (ni * (b + (nvirt * (j + (ncore * a)))));
+    const double g_iajb = g[t];
+    const double theta = (2.0 * g_iajb) - g[partner];
+    const double theta_dot = (2.0 * g_dot[t]) - g_dot[partner];
+    const double denominator = (e_core[j] - e_virt[a]) + (e_core[i0 + il] - e_virt[b]);
+    double denominator_dot = 0.0;
+    if (e_core_dot != nullptr) {
+      denominator_dot += e_core_dot[j] + e_core_dot[i0 + il];
+    }
+    if (e_virt_dot != nullptr) {
+      denominator_dot -= e_virt_dot[a] + e_virt_dot[b];
+    }
+    energy_dot += (((g_dot[t] * theta) + (g_iajb * theta_dot)) / denominator) -
+                  (g_iajb * theta * denominator_dot / (denominator * denominator));
+  }
+  const cg::thread_block block = cg::this_thread_block();
+  energy_dot = block_reduce<kSijrsWarps>(block, partials, energy_dot, SijrsAdd{});
+  if (threadIdx.x == 0) {
+    atomicAdd(acc, energy_dot);
+  }
+}
+
 // n⁵, the tuples each slice covers.
 // One thread per slab element, decoded as sijrs_kernel does; each writes its
 // own g_bar element and adds its share to the four orbital energies.
@@ -227,6 +272,22 @@ wwr::wwrError_t sijrs_adjoint(const wwr::wwrStream_t stream, const double *const
   sijrs_adjoint_kernel<<<static_cast<uint32_t>(math::idivup(count, int64_t{kFourWarps})),
                          kFourWarps, 0, stream>>>(g, ni, i0, ncore, nvirt, e_core, e_virt, g_bar,
                                                   e_core_bar, e_virt_bar, weight, count);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t sijrs_tangent(const wwr::wwrStream_t stream, const double *const g,
+                              const double *const g_dot, const int32_t ni, const int32_t i0,
+                              const int32_t ncore, const int32_t nvirt, const double *const e_core,
+                              const double *const e_virt, const double *const e_core_dot,
+                              const double *const e_virt_dot, double *const acc) {
+  const int64_t count = int64_t{ni} * nvirt * ncore * nvirt;
+  if (count == 0) {
+    return wwr::wwrSuccess;
+  }
+  const auto blocks = static_cast<uint32_t>(
+      std::min(math::idivup(count, int64_t{kFourWarps}), int64_t{kSijrsMaxBlocks}));
+  sijrs_tangent_kernel<<<blocks, kFourWarps, 0, stream>>>(g, g_dot, ni, i0, ncore, nvirt, e_core,
+                                                          e_virt, e_core_dot, e_virt_dot, acc);
   return wwr::wwrGetLastError();
 }
 

@@ -1,6 +1,6 @@
 /// @file
-/// @brief The class energies' five launchers -- the three diagonal-slice
-/// accumulations, the Sijrs reduction and its adjoint -- declared once for the module that
+/// @brief The class energies' six launchers -- the three diagonal-slice
+/// accumulations, the Sijrs reduction, its adjoint and its tangent -- declared once for the module that
 /// calls them and the device TU that defines them.
 ///
 /// Included by energy.cpp and reverse.cpp in their GLOBAL MODULE FRAGMENTs, and by
@@ -68,5 +68,17 @@ namespace free_breakfast::nevpt2::device {
                                             const double *e_core, const double *e_virt,
                                             double *g_bar, double *e_core_bar, double *e_virt_bar,
                                             double weight);
+
+/// @brief The forward tangent of @ref sijrs's energy over the same slab, by
+/// hand: *acc += Σ (ġ θ + g θ̇) / D - g θ Ḋ / D² along the slab's tangent
+/// @p g_dot (the slab's layout) and the orbital energies' @p e_core_dot and
+/// @p e_virt_dot (whole vectors; either may be null, and is then zero), with
+/// θ = 2 g_iajb - g_ibja and D = e_i + e_j - e_a - e_b. Reassociated as
+/// @ref sijrs is. Launch status only; it does not synchronize.
+[[nodiscard]] wwr::wwrError_t sijrs_tangent(wwr::wwrStream_t stream, const double *g,
+                                            const double *g_dot, int32_t ni, int32_t i0,
+                                            int32_t ncore, int32_t nvirt, const double *e_core,
+                                            const double *e_virt, const double *e_core_dot,
+                                            const double *e_virt_dot, double *acc);
 
 } // namespace free_breakfast::nevpt2::device

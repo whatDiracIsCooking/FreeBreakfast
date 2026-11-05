@@ -6,7 +6,8 @@ the SC-QD-NEVPT2 effective Hamiltonian of several
 ([The SC-QD reverse pass](#the-sc-qd-reverse-pass)), and the eight partially contracted ones
 and their QD effective Hamiltonian ([PC-NEVPT2](#pc-nevpt2),
 [PC-QD-NEVPT2](#pc-qd-nevpt2)) and its reverse pass
-([The PC reverse pass](#the-pc-reverse-pass)), each class walking its
+([The PC reverse pass](#the-pc-reverse-pass)), and SC's forward tangent
+([The SC forward tangent](#the-sc-forward-tangent)), each class walking its
 external index in batches over the density-fitted slabs; the two effective
 Hamiltonians also hand over their amplitudes
 ([The amplitude hand-over](#the-amplitude-hand-over)). Link `free_breakfast::nevpt2::energy`.
@@ -660,6 +661,67 @@ workspace. The sweep adds at most two n⁶ at once (hdm3 and its bar, or rm3
 and its bar) and a few n⁴; every intermediate bar is a buffer of its own for
 the same reason.
 
+## The SC forward tangent
+
+    class_energies_tangent(res, blocks, in, batch, directions) -> ClassEnergiesTangent
+        energies                     class_energies' norms, energies and total
+        norm, h, delta [k][t]        each perturber's N, H and Δ
+        norm_dot, h_dot, delta_dot   [k][t m + u]: their tangents along direction u
+        energy_dot [u][k], total_dot [u]
+    directions (EnergyDirection, a null field zero):
+        in       a tangent of every EnergyInputs field, in its layout
+        blocks   Ḃ over the MO blocks, laid out as mo_blocks lays B out
+
+`reverse.cpp`, forward mode over the SC reverse pass's own walks, for the
+nuclear Hessian (milestone 24, #805): per perturber (Ṅ, Ḣ, Δ̇), and Ė per
+class, along each of a block of m directions. A class's perturbers are
+`ScAmplitudes`' order, Sir's at r ncore + i, whatever the batch.
+
+**The finish, in (N, d).** With d = NΔ + H, a perturber's energy is
+E = −N²/d, and
+
+    Ė = (−2N/d + N²Δ/d²) Ṅ + (N²/d²) Ḣ + (N³/d²) Δ̇,
+
+Park's P, Q and R (`nuclear_hessian.tex` Eq. finish's first order) with no
+1/N: the (H, T) form's removable 1/N factors are fatal near the guard. A
+perturber whose norm the energy guards (|N| ≤ 1e-14) adds nothing to Ė;
+its N, H, Δ and their tangents are still reported as the walk forms them,
+for #811's second-order term there. Sijrs has no guard and no tables: its
+Ė is one kernel's (`device::sijrs_tangent`, Σ (ġθ + gθ̇)/D − gθḊ/D²), and
+its N, H and Δ tables are empty.
+
+**Ṅ and Ḣ.** An own walk carries a tangent (`ScTangent`) beside its bars,
+and each slab's norm and H terms, the same `ClassTerm` list the energy and
+the reverse pass evaluate, are evaluated once more per operand with that
+operand at its tangent (`tangent_terms`): a slab read twice is taken twice.
+Each operand finds its tangent by its address in a region list: the inputs
+the terms read directly (h1e_v's rows at their offsets, Sr's, Srsi's and
+Sir's RDMs) for the whole call, the class's blocks and slabs for its walk.
+So no class term is written twice.
+
+**A block's tangent is its builder's polarization.** Every block (a16, …,
+dm3_h, hdm1, rm2, hdm2) is one integral times one RDM, plus terms linear in
+one or the other, so of degree at most two in (h1e, h2e, RDMs), and
+
+    Ġ = (G(x + s ẋ) − G(x − s ẋ)) / 2s
+
+is exact: the forward's own `make_*` at two shifted inputs, nothing
+differentiated by hand. **A slab's** is bilinear in B, so
+(slab(B + s Ḃ) − slab(B) − s² slab(Ḃ)) / s is exact, with no new
+`density_fitting` entry point. Each s is a power of two that sizes s ẋ to
+x: the RDMs' ‖r‖/‖ṙ‖ (the integrals' when the RDMs do not move), and
+‖B‖/‖Ḃ‖. At s = ‖r‖/‖ṙ‖ the difference's round-off,
+ε (‖h‖ + s‖ḣ‖)(‖r‖ + s‖ṙ‖)/s, is 2ε (‖h‖‖ṙ‖ + ‖ḣ‖‖r‖), twice the
+tangent's own scale, so the difference cancels nothing past round-off.
+
+**Batched.** Each class walks once for all m directions: its blocks once,
+their tangents per direction, held through the walk; per slab, the slab once,
+then per direction its tangent (one B + s Ḃ buffer of the MO blocks,
+refilled per direction) and the tangent tables, read back. Memory grows with
+m by the class's block tangents, at most two n⁶ per direction (Si's a22 and
+dm3_h), and while one is built, one shifted copy of the inputs (three n⁶)
+and the block twice; a caller with many directions chunks them.
+
 ## The SC-QD reverse pass
 
     sc_effective_hamiltonian_adjoint(res, blocks, pairs, hbar, batch, bars, transition)
@@ -920,7 +982,8 @@ within 1e-3 to 1e-5 of the base point on `h2co_skew_ccpvdz_sa3`,
 
 ## Not ported
 
-The forward tangents and the Hessians, SC's and PC's. The demo's
+PC's forward tangent (#810), the reverse pass's tangent and the Hessians,
+SC's and PC's, and the QD effective Hamiltonians' tangents. The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
 ## Tests
@@ -1031,6 +1094,19 @@ CAS(8,8) from PySCF's RDMs. At CAS(4,4), Si vanishes by N₂'s symmetry
   as much (dm2's bar up to 6.6e-13 on the gfx1200 and 8.9e-13 on the 3080,
   batched vs whole up to 1.06e-12), so the earlier 1e-12 failed one run in
   20-50 on each card (#640); raised by the user's decision.
+
+The SC forward tangent, `Nevpt2EnergyTangent.DualToTheBars`, on the three
+cases that carry dm3 and f3, walked whole and in threes (CAS(8,8) in threes
+a slow-tier case, ~7 s on the gfx1200): one block call along six seeded
+random directions (B, h1e_v, e, h, rdm alone, then all; `random_direction`'s,
+an all-zero field passed as null), and each direction's Ė against
+Σ ⟨bar, dx⟩ of `class_energies_adjoint`'s bars at 1e-10 of that sum's largest
+summand. The bars are ladder-validated (`Nevpt2EnergyAdjointLadder`), so a
+ladder of the energy adds nothing. Every case has norm-guarded, empty
+perturbers, zero by N₂'s symmetry: at CAS(4,4) all of Si's and over half of
+Sr's, Sijr's, Srsi's and Srs's, at CAS(8,8) 24 of Sijr's 102 and 120 of
+Srsi's 459. Their bars are zero, so a nonzero tangent there would fail.
+Measured on the gfx1200: worst 1.3e-12 relative.
 
 The SC-QD reverse pass, in the same file, over `test/gtest/data/qd_nevpt2/`
 with a seeded random, unsymmetric H̄:
