@@ -1,0 +1,171 @@
+# Ethylene's four S1/S0 MECI starts (#846)
+
+Park optimizes four S1/S0 conical intersections of ethylene (his p. 18):
+twisted-pyramid (**Py**), ethylidene (**Et**), C3v-ethylidene (**C3v**) and
+hydrogen-migration (**Hm**). Before any NEVPT2 is spent on them (#847), each
+start is walked to its MECI over a bare DF-SA3-CASSCF(2,2)/cc-pVDZ
+(cc-pVDZ-JKFIT), `[optimize] meci = [0, 1]`. The CASSCF is cheap, its
+basins are the ones a QD-NEVPT2 walk starts in, and a start that fails here
+would otherwise waste a full QD-PC-NEVPT2 walk.
+
+## The starts are Park's geometries
+
+Each `geometries/ethylene_{py,et,c3v,hm}_start.xyz` is Park's converged
+QD-PC-NEVPT2/aug-cc-pVDZ MECI for that basin, from J. W. Park, *J. Chem.
+Theory Comput.* (2020), acs.jctc.9b00919, Supporting Information,
+pp. S2–S4 ("Ethylene, (2e,2o), SA3, aug-cc-pVDZ"). The SI prints them in
+bohr, and they were converted to Å at 1 bohr = 0.529177210903 Å, with the
+atom order kept (C, C, then the four H). His aug-cc-pVTZ geometries
+(pp. S5–S7) are not used here.
+
+The four configs, `ethylene_{py,et,c3v,hm}_casscf_meci.toml`, differ only in
+`xyz`: SA3 over all three singlets at equal weights, `[casscf]
+conv_tol_grad = 1e-10`, `max_gap = 1e-7` Eh, Opt=Tight's four criteria, and
+`max_steps = 200`. They run like every config in this directory
+([README.md](README.md), "How the runs are made").
+
+## How a structure is identified
+
+- **RMSD** is all-atom, after Kabsch alignment, minimized over the
+  permutations of the two C and of the four H, *and over a reflection*: a
+  MECI and its mirror image have the same energy, and the Hm walk below lands
+  on Py's mirror image.
+- **The heavy-atom RMSD carries almost no information here.** It is reported
+  because the issue asks for it, but ethylene has two heavy atoms, so after
+  alignment it is half the difference of the two C–C lengths: Park's Et and
+  C3v are 0.0016 Å apart on it, and 0.159 Å apart all-atom.
+- Each structure is named by its connectivity (how many H each carbon holds
+  within 1.3 Å) and the angle that defines it: the angle sum at a CH2 carbon
+  (360° is planar) for the pyramidalization, and the C–C–H angle of the
+  carbene H for the two ethylidenes.
+
+## Results
+
+CUDA, RTX 3080 (10 GB), `--preset default` (`build/`) at a0e7b9c, each run
+holding the card (`with_gpu_card cuda`). Every walk below converged with
+`completed: 0 errors, 0 warnings`, with a two-dimensional branching space
+at every evaluation.
+
+| | Py | Et | C3v |
+|---|---|---|---|
+| evaluations | 21 | 18 | *pending #865* |
+| mean E (Eh) | −77.8413115329 | −77.8946737354 | |
+| `gap` (Eh) | 1.36e-8 | 1.74e-9 | |
+| `gradient_norm` (last; max) | 2.09e-12; 8.97e-11 | 4.35e-12; 5.13e-11 | |
+| `ci_residual_norm` (last; max) | 3.90e-14; 9.49e-14 | 6.19e-14; 9.34e-14 | |
+| min `pair_overlap` (evaluation) | 0.99842 (6) | 0.99950 (1) | |
+| max / rms force (Eh/bohr) | 1.11e-5 / 5.05e-6 | 2.29e-6 / 7.87e-7 | |
+| max / rms displacement (bohr) | 5.74e-5 / 2.96e-5 | 2.71e-5 / 1.11e-5 | |
+| CASSCF root 2 at the MECI (Eh) | −77.6342434 | −77.8408142 | |
+| all-atom RMSD to Park's (Å) | 0.137 | 0.035 | |
+
+The `pair_overlap` floor is `kStateOverlapFloor` = 0.9. No walk came near
+it: the lowest value on any trail is 0.99842, and so no walk slid through to
+the third root.
+
+Pairwise RMSD of the converged CASSCF MECIs (Å, all-atom / heavy-atom):
+
+| | Py | Et | C3v |
+|---|---|---|---|
+| Py | 0 | 0.511 / 0.039 | |
+| Et | 0.511 / 0.039 | 0 | |
+| C3v | | | 0 |
+
+Converged geometries:
+[`geometries/ethylene_py_casscf_meci.xyz`](geometries/ethylene_py_casscf_meci.xyz)
+and [`geometries/ethylene_et_casscf_meci.xyz`](geometries/ethylene_et_casscf_meci.xyz).
+
+### Py: twisted-pyramidalized
+
+The walk keeps two H on each carbon. One CH2 stays planar (angle sum 359.2°).
+The other is strongly pyramidalized (301.2°), with one of its H bent down to
+C–C–H 78.2°, 1.167 Å from its own carbon and 1.618 Å from the other. The C–C
+bond is 1.383 Å. Park's QD-NEVPT2 Py has the same shape, more pyramidalized
+(295.8°, bent H at 92.3°, 1.881 Å from the far carbon). The PT2 lengthening
+of that H's reach is most of the 0.137 Å RMSD.
+
+### Et: ethylidene
+
+The walk gives CH3–CH: three H on one carbon (1.095–1.101 Å) and one on the
+other. The carbene H is bent to C–C–H 157.3°, and the C–C bond is 1.461 Å.
+It is 0.035 Å from Park's Et (C–C–H 152.6°). The methyl is not C3v: one of
+its H sits at C–C–H 107.6° against 113.2° for the other two, and that
+asymmetry is what separates Et from C3v. Root 2 lies only 0.054 Eh above the
+pair here, the closest the third root comes at any of the MECIs.
+
+### C3v: C3v-ethylidene
+
+*Pending #865.* The walk from Park's C3v met all five criteria at
+evaluation 12, at a mean E of −77.8916036866 Eh with a gap of 5.7e-12 and a
+min `pair_overlap` of 0.99999985. The run then exited 6 because the final
+fresh RHF at the MECI did not converge in 400 iterations (#865). That
+provisional geometry is exactly C3v: C–C–H 180.0°, the three methyl H
+equal at 1.096 Å and 111.6°, and C–C 1.464 Å. It is 0.008 Å from Park's
+C3v and 0.125 Å from our Et.
+
+## Hm has no basin of its own at SA3-CASSCF(2,2)
+
+**Finding: no walk found an Hm MECI distinct from Py and Et.** Three walks
+were run on the same card and build, aimed at an Hm basin:
+
+| start | evaluations | lands on | RMSD to it (Å) |
+|---|---|---|---|
+| Park's Hm (`ethylene_hm_casscf_meci.toml`) | 61 | Py's mirror image | 0.0000 |
+| Park's Hm with the migrating H moved over the C–C midpoint, 1.0 Å off the axis | 54 | Py | 0.0000 |
+| hand-built: CH2 on one carbon, CH on the other, the fourth H bridging at 1.15 / 1.31 Å | 26 | Et | 0.0000 |
+
+All three converged cleanly:
+- from Park's Hm: mean E −77.8413115312, min `pair_overlap` 0.99975;
+- from the bridged variant: −77.8413115321, min `pair_overlap` 0.99713;
+- from the hand-built start: −77.8946737373, min `pair_overlap` 0.93356 at
+  evaluation 3, the closest any walk came to the 0.9 floor.
+
+Each matches Py's or Et's energy to 2e-9 Eh.
+
+Park's Hm is a CH2–CH2 structure with both CH2 groups planar and twisted
+90°, and one H swung to C–C–H 75.5° (1.188 / 1.582 Å from the two carbons).
+At the CASSCF level that H relaxes back onto its own carbon, and the walk
+ends at Py: Park's Hm is 0.257 Å from the Py MECI.
+
+The hand-built and bridged starts were scratch inputs and are not checked in.
+The hand-built one, in Å:
+
+```
+C   0.0000000000   0.0000000000   0.0000000000
+C   0.0000000000   0.0000000000   1.4200000000
+H  -0.8870394727  -0.3228559647  -0.5450000000
+H   0.8870394727  -0.3228559647  -0.5450000000
+H  -0.0000000000  -0.9353074361   1.9600000000
+H   0.1000000000   1.0000000000   0.5700000000
+```
+
+### And at QD-PC-NEVPT2
+
+So that #847 does not commit to an Hm start blind, one QD-PC-NEVPT2 walk was
+run from Park's Hm geometry. The config is
+[`tier0_ethylene_pc.toml`](tier0_ethylene_pc.toml) with `xyz =
+"geometries/ethylene_hm_start.xyz"`: SA3-CASSCF(2,2)/cc-pVDZ
+(cc-pVDZ-JKFIT), `[nevpt2_gradient] quasi_degenerate = true, variant =
+"pc"`, and `meci = [0, 1]` on the same criteria.
+
+**It lands on Py too.** The walk converged in 130 evaluations to a mean of
+−78.1573045308 Eh, with:
+- `heff_gap` 7.0e-10;
+- `gradient_norm` 1.06e-11 at the end (max 6.9e-11) and `ci_residual_norm`
+  2.43e-14 (max 1.45e-13);
+- min `pair_overlap` 0.99812 (evaluation 108);
+- the third QD state at least 0.125 Eh above the pair, and the CASSCF roots
+  at least 0.020 Eh apart.
+
+Its geometry is tier 0's PC-QD MECI ([README.md](README.md), "Tier 0",
+reached from `examples/ethylene.xyz`) to 0.0000 Å RMSD and 1.7e-8 Eh. It is
+0.020 Å from Park's QD-NEVPT2/aug-cc-pVDZ Py and 0.310 Å from his Hm.
+
+| | Park's Hm | Park's Py | CASSCF Py | CASSCF Et | tier 0 PC MECI |
+|---|---|---|---|---|---|
+| all-atom RMSD of the Hm QD-PC MECI (Å) | 0.310 | 0.020 | 0.119 | 0.606 | 0.0000 |
+
+What this shows is that from Park's own geometry, in cc-pVDZ, our Hm falls
+into Py at the PT2 level as well as at CASSCF. What it does not settle is
+whether a distinct Hm basin needs the diffuse functions of his aug-cc-pVDZ,
+or the frozen core he uses and this tree did not here. Neither was varied.

@@ -1,0 +1,28 @@
+# #846: ethylene's ethylidene (Et) S1/S0 MECI at DF-SA3-CASSCF(2,2)/cc-pVDZ
+# (cc-pVDZ-JKFIT), the CASSCF MECI of roots 0 and 1 over all three singlets,
+# from geometries/ethylene_et_start.xyz. ethylene_starts.md has how the start
+# came from Park's SI and what the walk converged to. Run from the root of the tree:
+#   build/src/free-breakfast -i docs/reproduction/park2019 -o <out> \
+#     docs/reproduction/park2019/ethylene_et_casscf_meci.toml
+[molecule]
+xyz = "geometries/ethylene_et_start.xyz"
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+max_iterations = 400
+[casscf]
+ncas = 2
+nelecas = 2
+nroots = 3
+conv_tol_grad = 1e-10
+[optimize]
+meci = [0, 1]
+max_gap = 1e-7
+max_force = 1.5e-5
+rms_force = 1e-5
+max_displacement = 6e-5
+rms_displacement = 4e-5
+max_steps = 200
