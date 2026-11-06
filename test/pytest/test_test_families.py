@@ -388,3 +388,20 @@ def test_the_trees_markers_parse():
     assert markers, "no FBF_FAMILY_REPRESENTATIVE in test/"
     for m in markers:
         assert len(m.args) <= (2 if m.macro == tf.MARKER else 1), m
+
+
+def test_the_default_host_is_the_one_metrics_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The records' host is metrics.host_name, not the hostname (#985): a
+    # container's hostname is its id, so a gethostname() default filtered out
+    # every record this box wrote.
+    monkeypatch.setenv("METRICS_HOST", "the-box")
+    assert tf.this_host() == "the-box"
+    monkeypatch.delenv("METRICS_HOST")
+    metrics_spec = importlib.util.spec_from_file_location(
+        "devtools_metrics_for_families", _TOOL.parent / "metrics.py"
+    )
+    metrics = importlib.util.module_from_spec(metrics_spec)
+    metrics_spec.loader.exec_module(metrics)
+    assert tf.this_host() == metrics.host_name()

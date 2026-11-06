@@ -47,9 +47,9 @@ Standard library only: it must run under a bare `python3`.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
-import socket
 import statistics
 import subprocess
 import sys
@@ -80,6 +80,30 @@ TIMED_KINDS = ("nightly", "weekly", "manual")
 GTEST_OK = re.compile(r"\[ +OK +\] (\S+) \((\d+) ms\)")
 CTEST_PASSED = re.compile(r"Test +#\d+: (\S+) \.*\s+Passed\s+([0-9.]+) sec")
 _ROOT = Path(__file__).resolve().parents[1]
+
+
+def this_host() -> str:
+    """This machine as its metrics records name it: metrics.host_name with
+    devtools/config.sh's METRICS_HOST (an environment variable still wins),
+    so the default filter matches what test.py nightly and pr --record wrote."""
+    spec = importlib.util.spec_from_file_location(
+        "fbf_metrics", _ROOT / "devtools" / "metrics.py"
+    )
+    metrics = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(metrics)
+    override = subprocess.run(
+        [
+            "bash",
+            "-c",
+            '. "$1" && printf %s "$METRICS_HOST"',
+            "_",
+            str(_ROOT / "devtools" / "config.sh"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout
+    return metrics.host_name(override)
 
 
 @dataclass
@@ -485,8 +509,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--host",
-        default=socket.gethostname(),
-        help="the host whose metrics records count (default: this one)",
+        default=None,
+        help="the host whose metrics records count (default: this one, as"
+        " devtools/metrics.py names it)",
     )
     ap.add_argument("--json", action="store_true", help="print the families as JSON")
     ap.add_argument(
@@ -519,6 +544,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    if args.host is None:
+        args.host = this_host()
     times: dict[str, list[float]] = defaultdict(list)
     sources = []
     texts = [p.read_text() for p in args.metrics]
