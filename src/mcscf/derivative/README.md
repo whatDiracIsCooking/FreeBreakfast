@@ -71,7 +71,7 @@ antisymmetric with C → C e^K and K_pq = κ_pq for p > q; Θ with dc_r gaining
 
 **The CI rows are the energy's derivative, not the Z-vector's convention.**
 `rhs_ci` is 2 w_r Q H̃^x c_r, with the weight and the 2 in it.
-[`../zvector/`](../zvector/README.md)'s CI rows are unweighted and unscaled
+[`../../response/zvector/`](../../response/zvector/README.md)'s CI rows are unweighted and unscaled
 (PySCF's `gen_g_hop`), and its orbital vectors are over the packed pairs
 (`response::pack_orbital_pairs` of `rhs_orbital`, which holds G_pq at p > q,
 the order `response::Fock::gradient` packs): a caller feeding these to that

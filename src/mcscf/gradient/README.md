@@ -17,13 +17,13 @@ Result<mcscf::GradientTerms> mcscf::df_gradient(
     std::span<const PrimitivePairClass> classes, const BasisSet &aux,
     const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
     const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t root,
-    const mcscf::ZVector *multipliers = nullptr, const mcscf::MoAdjoint *extra = nullptr);
+    const response::ZVector *multipliers = nullptr, const mcscf::MoAdjoint *extra = nullptr);
 Result<mcscf::GradientTerms> mcscf::df_gradient(
     /* df_gradient's arguments through ncas */, std::span<const double> mix,
-    const mcscf::ZVector *multipliers = nullptr, const mcscf::MoAdjoint *extra = nullptr);
+    const response::ZVector *multipliers = nullptr, const mcscf::MoAdjoint *extra = nullptr);
 Result<mcscf::GradientTerms> mcscf::df_transition_gradient(
     /* df_gradient's arguments through ncas */, std::span<const double> gamma,
-    std::span<const double> gamma2, const mcscf::ZVector *multipliers = nullptr,
+    std::span<const double> gamma2, const response::ZVector *multipliers = nullptr,
     const mcscf::MoAdjoint *extra = nullptr);
 // g->kinetic, g->potential, g->overlap, g->two_electron,
 // g->nuclear_repulsion, g->total: each n_atom x 3, row-major, element 3 A + k
@@ -79,7 +79,7 @@ which mode made it, so the call cannot refuse one.
 
 At unequal weights the rotations among the averaged roots are parameters of
 the SA energy and carry multipliers of their own, Θ (`zvector`'s
-`ZVector::theta`, [`../zvector/README.md`](../zvector/README.md) "The
+`ZVector::theta`, [`../../response/zvector/README.md`](../../response/zvector/README.md) "The
 rotations among the roots"); pairs of equal weight stay projected. The call
 folds Θ into z_c as its part along the roots (below), so any number of roots
 at any weights, partly equal included, is one formula. Projected out, as
@@ -148,7 +148,7 @@ gradient is that of the Lagrangian
 
 g_o the SA orbital gradient over the packed pairs and g_c,r = 2 w_r (H₀ − E_r)
 c_r the CI's, with z = (z_o, z_c) the Z-vector of
-[`../zvector/`](../zvector/README.md): A z = −(g_I, 0), A the SA Hessian. Its
+[`../../response/zvector/`](../../response/zvector/README.md): A z = −(g_I, 0), A the SA Hessian. Its
 derivative at fixed orbitals (up to the connection below) and CI is the
 gradient. The call builds what that needs at the solution's orbitals and
 roots: the CI strings, sigma (H₀) and `ci::Rdm`, `response::Hessian` over the
@@ -238,7 +238,7 @@ default ‖r‖ ≤ 1e-10, and the two sides agree to 4.8e-11 (equal weights) an
 3.7e-11 (unequal) on the stretched water.
 
 **`multipliers`** are (z_o, z_c, Θ) in place of the Z-vector the call would
-solve (Θ may be empty, for none), as a `ZVector` (`mcscf::zvector`'s result, or one the caller built).
+solve (Θ may be empty, for none), as a `ZVector` (`response::zvector`'s result, or one the caller built).
 With them one root is taken at the same Lagrangian as a state average's root,
 at weight 1, so a single root with nonzero multipliers gets the transition
 RDMs and the orbital response too. **They are in `zvector`'s coordinates**:
@@ -525,7 +525,7 @@ neither 0 nor 1 and a weight not finite are refused as `InvalidConfig`.
 density, over `test/gtest/data/casscf_nac/` (H₂CO SA-2 and the skewed H₂CO
 SA-3, CAS(4,3), cc-pVDZ / cc-pVDZ-JKFIT): this tree's DF-SA-CASSCF put in the
 reference's canonical orbitals with its CI re-solved (as
-`mcscf_zvector_gpu.cpp` does), then for every ordered pair, at
+`response_zvector_gpu.cpp` does), then for every ordered pair, at
 `trans_rdm12`'s RDMs, the electronic terms' sum against PySCF's
 `grad_elec_active` to 1e-9 up to the sign s_I s_J of the two CI phases, and
 the orbital gradient (`fock` at the RDMs less at zero) against

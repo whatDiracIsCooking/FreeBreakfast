@@ -25,8 +25,8 @@ import free_breakfast.ci.rdm;
 import free_breakfast.response.fock;
 import free_breakfast.response.hessian;
 import free_breakfast.mcscf.solve;
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.relaxed_hessian;
+import free_breakfast.response.zvector;
 import free_breakfast.mcscf.gradient;
 import free_breakfast.mcscf.transition;
 
@@ -52,18 +52,19 @@ Result<std::vector<double>> intersection_download(DeviceResources &res, const do
 
 // Column @p col of @p z as one ZVector, the form df_gradient takes: its
 // orbital and CI blocks copied out, its rotations, products and residual.
-Result<ZVector> intersection_column(DeviceResources &res, const ZVectors &z, const size_t col) {
+Result<response::ZVector> intersection_column(DeviceResources &res, const response::ZVectors &z,
+                                              const size_t col) {
   const size_t ncol = z.iterations.size();
   const size_t orbital = z.orbital.num_elements() / ncol;
   const size_t ci = z.ci.num_elements() / ncol;
   const size_t theta = z.theta.size() / ncol;
-  ZVector out{.orbital = Buffers::device<double>(orbital, res.device()),
-              .ci = Buffers::device<double>(ci, res.device()),
-              .theta = std::vector<double>(
-                  z.theta.begin() + static_cast<std::ptrdiff_t>(col * theta),
-                  z.theta.begin() + static_cast<std::ptrdiff_t>((col + 1) * theta)),
-              .iterations = z.iterations[col],
-              .residual = z.residuals[col]};
+  response::ZVector out{.orbital = Buffers::device<double>(orbital, res.device()),
+                        .ci = Buffers::device<double>(ci, res.device()),
+                        .theta = std::vector<double>(
+                            z.theta.begin() + static_cast<std::ptrdiff_t>(col * theta),
+                            z.theta.begin() + static_cast<std::ptrdiff_t>((col + 1) * theta)),
+                        .iterations = z.iterations[col],
+                        .residual = z.residuals[col]};
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.orbital.data(), z.orbital.data() + (col * orbital),
                                          orbital * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
                                          res.stream())));
@@ -140,7 +141,7 @@ df_intersection(DeviceResources &res, const Molecule &molecule, const BasisSet &
   const std::vector<double> weights = FBF_TRY(sa_gradient_weights(solution, n));
   const double w_i = weights[static_cast<size_t>(i)];
   const double w_j = weights[static_cast<size_t>(j)];
-  if (std::abs(w_i - w_j) > kRotationWeightTolerance * std::max(w_i, w_j)) {
+  if (std::abs(w_i - w_j) > response::kRotationWeightTolerance * std::max(w_i, w_j)) {
     return err_unsupported("mcscf::df_intersection: roots {} and {} are weighted {:g} and {:g}; "
                            "at unequal weights the rotation between them divides by E_I - E_J, "
                            "which is singular at an intersection",
@@ -177,7 +178,7 @@ df_intersection(DeviceResources &res, const Molecule &molecule, const BasisSet &
                           FBF_TRY(intersection_download(res, ints.hamiltonian.eri.data(), m * m))));
   response::Hessian hessian = FBF_TRY(
       response::Hessian::create(res, h, b, q, c, ncore, ncas, ints.ppaa, ints.papa, averaged));
-  ResponseIntegrals response_ints{
+  response::ResponseIntegrals response_ints{
       mo,
       static_cast<size_t>(ncore),
       n,
@@ -190,9 +191,9 @@ df_intersection(DeviceResources &res, const Molecule &molecule, const BasisSet &
   // Z-vector's own tolerance, relative: at RelaxedHessian's default 1e-8 the
   // products' error is a floor under the true residual that crosses 1e-10 at
   // PSB3 (README.md "The floor under the true residual").
-  RelaxedHessian relaxed = FBF_TRY(RelaxedHessian::create(
+  response::RelaxedHessian relaxed = FBF_TRY(response::RelaxedHessian::create(
       res, hessian, sigma, rdm, alpha, beta, solution.roots, weights, std::move(response_ints),
-      response_tolerance_for(options.tolerance), rotating_pairs(weights)));
+      response::response_tolerance_for(options.tolerance), response::rotating_pairs(weights)));
 
   // The pair's RDMs: each root's, and the symmetrized transition RDMs.
   Buffers::device<double> rdms(m + (m * m), res.device());
@@ -259,9 +260,9 @@ df_intersection(DeviceResources &res, const Molecule &molecule, const BasisSet &
   // One block solve over the one Hessian, each column held to its tolerance:
   // the conjugate gradients stop on their recurrence, so the true residual,
   // from one more product, is checked here.
-  const ZVectors z =
-      FBF_TRY(zvectors(res, relaxed, hessian, solution.roots, kIntersectionColumns, rhs.data(),
-                       nullptr, CpSolver::Schur, options.tolerance, options.max_iterations));
+  const response::ZVectors z = FBF_TRY(response::zvectors(
+      res, relaxed, hessian, solution.roots, kIntersectionColumns, rhs.data(), nullptr,
+      response::CpSolver::Schur, options.tolerance, options.max_iterations));
   for (size_t col = 0; col < kIntersectionColumns; ++col) {
     if (!(z.residuals[col] <= options.tolerance)) {
       return err_numerical("mcscf::df_intersection: Z-vector column {} of roots ({}, {}) ends at "
@@ -269,9 +270,9 @@ df_intersection(DeviceResources &res, const Molecule &molecule, const BasisSet &
                            col, i, j, z.residuals[col], z.iterations[col], options.tolerance);
     }
   }
-  const ZVector z_mean = FBF_TRY(intersection_column(res, z, 0));
-  const ZVector z_x = FBF_TRY(intersection_column(res, z, 1));
-  const ZVector z_h = FBF_TRY(intersection_column(res, z, 2));
+  const response::ZVector z_mean = FBF_TRY(intersection_column(res, z, 0));
+  const response::ZVector z_x = FBF_TRY(intersection_column(res, z, 1));
+  const response::ZVector z_h = FBF_TRY(intersection_column(res, z, 2));
 
   // Each set of multipliers to its own derivative call: the derivatives of
   // the 2 x 2 Hamiltonian's mean, half difference and coupling.

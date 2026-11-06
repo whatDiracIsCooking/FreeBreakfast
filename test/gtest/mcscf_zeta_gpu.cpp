@@ -56,7 +56,6 @@ import free_breakfast.integrals;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
-import free_breakfast.mcscf.zvector; // rotating_pairs: internal, not re-exported
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
@@ -499,7 +498,7 @@ TEST(McscfRootPairMultipliers, SplitsTauByWeight) {
     ASSERT_EQ(split->tau.size(), 3U);
     ASSERT_EQ(split->zeta.size(), 3U);
     ASSERT_EQ(split->theta_rhs.size(), 3U);
-    const std::vector<bool> rotating = fb::mcscf::rotating_pairs(weights);
+    const std::vector<bool> rotating = fb::response::rotating_pairs(weights);
     std::size_t pair = 0;
     std::size_t equal = 0;
     double tau_error = 0.0;

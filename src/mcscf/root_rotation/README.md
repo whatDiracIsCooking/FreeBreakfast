@@ -43,7 +43,7 @@ orbital part, the response of the SA parameters:
 
 | Input | Where | Shape, element |
 |---|---|---|
-| `kappa` | device | (n_pairs, n): (k, x) at k + n_pairs x, k over `response::pack_orbital_pairs`' packed pairs. x_pq = K_pq at p > q, C → C e^K: [`../zvector/`](../zvector/README.md)'s `zvectors` orbital block as it comes, on the SA right-hand sides of `df_derivatives` (`rhs_orbital` packed; `rhs_ci` column r over 2 w_r, zvector's CI convention) |
+| `kappa` | device | (n_pairs, n): (k, x) at k + n_pairs x, k over `response::pack_orbital_pairs`' packed pairs. x_pq = K_pq at p > q, C → C e^K: [`../../response/zvector/`](../../response/zvector/README.md)'s `zvectors` orbital block as it comes, on the SA right-hand sides of `df_derivatives` (`rhs_orbital` packed; `rhs_ci` column r over 2 w_r, zvector's CI convention) |
 
 λ^x's CI part is not taken: it is off every root, and ⟨δc_r|H|c_s⟩ =
 E_s ⟨δc_r|c_s⟩ = 0, so it does not enter ℋ.
@@ -74,7 +74,7 @@ symmetrized transition RDMs ½(⟨c_r|E|c_s⟩ + ⟨c_s|E|c_r⟩), which give it
 exactly since H′ is real symmetric. They come by polarization, a quarter of
 the difference of `ci::Rdm::rdm12` at c_r + c_s and at c_r − c_s (two calls
 per pair). Its gradient in κ is
-[`../relaxed_hessian/`](../relaxed_hessian/README.md)'s `response_gradient`,
+[`../../response/relaxed_hessian/`](../../response/relaxed_hessian/README.md)'s `response_gradient`,
 the same adjoint `RelaxedHessian`'s H_oc uses, over F^I (from `response::fock`
 at the averaged RDMs; any RDMs give the same F^I) and ppaa, papa
 (`casscf_integrals`); packed, one gemv against every column of `kappa` gives

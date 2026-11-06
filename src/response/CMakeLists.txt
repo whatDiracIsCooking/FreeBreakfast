@@ -7,6 +7,10 @@ add_subdirectory(orbital_pairs)
 add_subdirectory(fock)
 add_subdirectory(hessian)
 add_subdirectory(cphf)
+# CASSCF's orbital response, over ci: the CI-relaxed orbital Hessian, and the
+# Z-vector solve over it.
+add_subdirectory(relaxed_hessian)
+add_subdirectory(zvector)
 
 # The aggregate: one import for the response layer.
 free_breakfast_add_cxx_module_library(
@@ -20,4 +24,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::response::fock
   free_breakfast::response::hessian
   free_breakfast::response::cphf
+  free_breakfast::response::relaxed_hessian
+  free_breakfast::response::zvector
 )

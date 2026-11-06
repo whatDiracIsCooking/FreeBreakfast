@@ -97,10 +97,9 @@ this runs and each method is as it was, to the bit.
 
 ## Module
 
-`free_breakfast.mcscf.zvector`, target `free_breakfast::mcscf::zvector`.
-**Internal to the MCSCF layer**: `free_breakfast.mcscf` does not re-export
-it, and the SA gradient links it PRIVATE. Everything is in
-`namespace free_breakfast::mcscf`.
+`free_breakfast.response.zvector`, target `free_breakfast::response::zvector`.
+`free_breakfast.response` re-exports it; the SA gradient links it PRIVATE.
+Everything is in `namespace free_breakfast::response`.
 
 | Name | What it is |
 |------|------------|
@@ -111,7 +110,7 @@ it, and the SA gradient links it PRIVATE. Everything is in
 | `zvectors` | The same equations on ncol right-hand sides at once: g (size() × ncol), an optional y (ncol blocks) and an optional t (ncol of them), by a `CpSolver` |
 | `kRotationWeightTolerance` | 1e-8: two weights this close, relative to the larger, are equal, and their pair stays projected |
 | `response_tolerance_for` | The CI response's tolerance inside H̃ (`RelaxedHessian::create`'s, relative) for a Z-vector tolerance t whose true residual is held: 1e-2 t, at least 1e-10 (step 2 below) |
-| `rotating_pairs` | Which pairs r < s (`ZVector::theta`'s order) rotate: those whose weights differ past `kRotationWeightTolerance`. `mcscf::root_pair_multipliers` splits a τ by it (`../gradient/README.md` "Holding the roots apart") |
+| `rotating_pairs` | Which pairs r < s (`ZVector::theta`'s order) rotate: those whose weights differ past `kRotationWeightTolerance`. `mcscf::root_pair_multipliers` splits a τ by it (`../../mcscf/gradient/README.md` "Holding the roots apart") |
 
 Their options are trailing arguments; there is no options struct.
 
@@ -140,7 +139,7 @@ Their options are trailing arguments; there is no options struct.
    `response_tolerance_for(tolerance)`: 1e-2 of it, at least 1e-10. At
    the default 1e-8 the true residual reached 2.5e-10 to 3.8e-10 at PSB3
    with the recurrence under 1e-10 (#858, #864;
-   [`../intersection/`](../intersection/README.md) "The floor under the
+   [`../../mcscf/intersection/`](../../mcscf/intersection/README.md) "The floor under the
    true residual").
 3. That product's `respond` leaves δ(z_o) in `RelaxedHessian::delta()`, and
    z_c is δ + w with every root projected out. The other roots' part
@@ -212,7 +211,7 @@ their own block, so they agree there too (1e-9 on the case below).
 **`Schur`**, because it was the fastest of the three against `PerColumn`
 everywhere it was measured; Coupled is slower on the larger molecule, so it
 is not the default. The wall clock of 3N right-hand sides
-(`bench/mcscf_zvectors.cpp`, `free_breakfast_mcscf_zvectors`), each an
+(`bench/response_zvectors.cpp`, `free_breakfast_response_zvectors`), each an
 orbital column uniform in [−0.1, 0.1) and a CI one P H_y c for a random
 spin-free H_y, over one DF-CASSCF(4,4) (cc-pVDZ / cc-pVDZ-JKFIT, frontier
 active space, equal weights) and one H̃ for all three; the best of two
@@ -249,7 +248,7 @@ Schur and Coupled alike, Coupled more (its products are mostly that).
 
 ## Tests
 
-`test/gtest/mcscf_zvector_gpu.cpp`, on every state-averaged case of
+`test/gtest/response_zvector_gpu.cpp`, on every state-averaged case of
 `test/gtest/data/casscf_gradient/` (PySCF's `df.grad.sacasscf`): the
 DF-CASSCF by `mcscf::solve`, put in the reference's canonical orbitals with
 the CI re-solved there, then per root the residual, z_o by (p, q) and z_c
@@ -263,7 +262,7 @@ transition RDMs; H₀'s sigma and H′(z_o)'s), to 1e-7 for a y of order 1 (the
 CI response's products are good to 1e-8 of their right-hand side, which
 bounds the solve's true residual too), and z_c off every root.
 
-`test/gtest/mcscf_zvectors_gpu.cpp`, on `h2o_ccpvdz` (state specific) and
+`test/gtest/response_zvectors_gpu.cpp`, on `h2o_ccpvdz` (state specific) and
 `h2co_ccpvdz_sa2` (DF-CASSCF from the Casci start, the CI re-solved at its
 orbitals): three columns, root 0's gradient then random orbital right-hand
 sides, each with a random CI one y_r = P H_y c_r. Schur against `zvector` on
@@ -271,7 +270,7 @@ each column alone over the same H̃, Coupled against `zvector` over an H̃ whose
 CI responses are solved to 1e-12, each to 1e-10 of the column's largest
 |z_o| and |z_c|, and z_c off every root; and no columns refused.
 
-`test/gtest/mcscf_zvector_rotations_gpu.cpp`, on
+`test/gtest/response_zvector_rotations_gpu.cpp`, on
 `test/gtest/data/casscf_hessian/`'s stretched water (CAS(4,4) / 6-31G /
 cc-pVDZ-JKFIT), the orbitals and roots loaded from the fixture and H̃'s CI
 response solved to 1e-12: at three roots (0.5, 0.3, 0.2) each root's z (z_o,
@@ -289,4 +288,4 @@ energies.
 |------|------|
 | `zvector.cppm` | Module interface: `ZVector`, `zvector`, `CpSolver`, `ZVectors`, `zvectors` |
 | `zvector.cpp` | The preconditioned conjugate gradients and z_c's projection; `zvectors`' three methods |
-| `CMakeLists.txt` | The module `free_breakfast.mcscf.zvector` |
+| `CMakeLists.txt` | The module `free_breakfast.response.zvector` |

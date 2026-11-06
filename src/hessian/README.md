@@ -724,7 +724,7 @@ included (a state average is refused: its Lagrangian is #621's). In order:
 2. **E_xy**: `df_casscf_exy` at the solution's γ, Γ and that F^[x].
 3. **λ^x**: H̃ built at the solution as `mcscf::df_gradient` builds it for a
    Z-vector (`casscf_integrals`, `response::fock`, the sigma over H₀,
-   `response::Hessian`, `RelaxedHessian`), then `mcscf::zvectors` (Schur, its
+   `response::Hessian`, `RelaxedHessian`), then `response::zvectors` (Schur, its
    default) on all 3 n_atom columns: the orbital right-hand sides packed
    (`pack_orbital_pairs`; `rhs_orbital` holds G_pq at p > q, the order it
    reads), the CI ones **halved**, 2 Q H̃^x c → Q H̃^x c, into the Z-vector's
@@ -1176,7 +1176,7 @@ auto t = hessian::df_sacasscf_z(res, molecule, basis, classes, aux, h, b, l, c, 
 
 `z` is one column in `mcscf::ThirdDerivative`'s layout and **the energy's
 convention** (the packed pairs, d_r per root, Θ_sr for r < s at unequal
-weights), which is `mcscf::zvector`'s (z_o, z_c, Θ) as it comes: zvector
+weights), which is `response::zvector`'s (z_o, z_c, Θ) as it comes: zvector
 scales its equations' CI rows, not its unknowns (`df_sacasscf`'s step 2).
 The d_r are taken off every root first, as `ThirdDerivative` takes them. In
 order:
@@ -1227,7 +1227,7 @@ by part against `root_rhs_*` + `lxl_z_*` (the CI rows' singlet part), and
 L_xλ λ^y against `lxl_lambda`, all to 1e-10 absolute; each L_xy piece's
 asymmetry to 1e-11 and both terms' translational sum rule to 1e-9. Every
 case's z, λ^x and Θ come from the fixture, the three roots at unequal weights
-included (`mcscf::zvector` carries Θ there since #613). `RefusesBadInputs`:
+included (`response::zvector` carries Θ there since #613). `RefusesBadInputs`:
 weights equal for some pairs only, a root out of range, one root, and z of
 the wrong length (at unequal weights it carries the roots' rotations).
 
@@ -1259,7 +1259,7 @@ two differences: no step 1 (∂_x ∂_λ E is the energy's own term,
 `df_casscf`'s E_λx, not Z's), and the operator step 4 builds is applied once
 more, to Λ, for the third term (`ThirdDerivative::apply`, then Λᵀ Y). The
 inputs are `df_casscf`'s (a one-root `Solution`, its checks and refusals) plus
-z, pairs + n_det doubles in `mcscf::zvector`'s coordinates, its CI part
+z, pairs + n_det doubles in `response::zvector`'s coordinates, its CI part
 taken off the root. Nothing restricted the parts to a state average but
 `df_sacasscf_z`'s own two-root check: `ThirdDerivative`, `df_derivatives` and
 `rdm12` take one weight of 1 as they are, and the operator has no rotations
@@ -1787,17 +1787,17 @@ the `weights` (a Solution does not carry them; the averaged γ at them must
 be the solution's to 1e-8, or it is InvalidConfig) and the `root`. In order:
 
 1. **A**: H̃ at the averaged RDMs and weights, built as `df_casscf` builds it.
-2. **z**: `mcscf::zvector` on g_I, root I's orbital gradient (`response::fock`
+2. **z**: `response::zvector` on g_I, root I's orbital gradient (`response::fock`
    at its own RDMs). Only the equations' CI and Θ rows are scaled in
    zvector's convention, not the unknowns, so its (z_o, z_c, Θ) **is** the
    energy's z, `ThirdDerivative`'s and `df_sacasscf_z`'s as it comes
-   (`mcscf_zvector_rotations_gpu.cpp` compares it to the fixture's directly).
+   (`response_zvector_rotations_gpu.cpp` compares it to the fixture's directly).
    Θ is packed only where `ThirdDerivative::size()` has it: whether the
    rotations are parameters is that operator's rule, not a second one here.
-3. **λ^x**: `mcscf::zvectors` (Schur) on `df_derivatives`' SA right-hand
+3. **λ^x**: `response::zvectors` (Schur) on `df_derivatives`' SA right-hand
    sides, the orbital rows packed, the CI rows over 2 w_r and, at unequal
    weights, the rotation rows t_sr = H̃^x_sr (`hamiltonian`'s off-diagonal),
-   as `../mcscf/zvector/README.md` has it. The same row scaling leaves λ^x
+   as `../response/zvector/README.md` has it. The same row scaling leaves λ^x
    the energy's; it is packed (pairs, d_r per root, Θ) into
    `ThirdDerivative`'s layout, Λ. The solve carries `df_casscf`'s probe
    column, so a singular A is refused ("A singular H̃" above).

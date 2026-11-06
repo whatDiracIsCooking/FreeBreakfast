@@ -34,7 +34,7 @@ import free_breakfast.ci.solver;
 import free_breakfast.response.fock;
 import free_breakfast.response.hessian;
 import free_breakfast.response.orbital_pairs;
-import free_breakfast.mcscf.relaxed_hessian;
+import free_breakfast.response.relaxed_hessian;
 
 #include "diagnostics.h"
 
@@ -461,14 +461,14 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
     // H~ = H + R, R the CI's response (../relaxed_hessian/README.md), over
     // these roots and the integrals it contracts, read back once per macro
     // iteration.
-    ResponseIntegrals response_ints{
+    response::ResponseIntegrals response_ints{
         mo,
         static_cast<size_t>(ncore),
         n,
         FBF_TRY(casscf_download(res, fock->fock_inactive.data(), mo * mo)),
         FBF_TRY(casscf_download(res, ints.ppaa.data(), mo * mo * n * n)),
         FBF_TRY(casscf_download(res, ints.papa.data(), mo * mo * n * n))};
-    RelaxedHessian relaxed = FBF_TRY(RelaxedHessian::create(
+    response::RelaxedHessian relaxed = FBF_TRY(response::RelaxedHessian::create(
         res, hessian, sigma, ci_rdm, alpha, beta, *roots, w, std::move(response_ints)));
 
     // Q's column j at ah_basis + j n, H~ q_j at ah_image + (j + 1) n, and the

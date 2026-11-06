@@ -908,7 +908,7 @@ lie in the singlet space; the solves were over it, so a test working in the
 full determinant space gets the same vectors (the triplet and quintet blocks
 decouple). Signs: λ^x solves A λ^x = −∂_x g_SA (for one root A = E_λλ), z
 solves A z = −∂E_I/∂λ; the CI rows are **not** the Z-vector's
-unweighted, unscaled convention (`src/mcscf/zvector/README.md`) but the
+unweighted, unscaled convention (`src/response/zvector/README.md`) but the
 derivatives of the energy as written.
 
 **Per case** (`cases[i]`): `name`, `basis`, `aux_basis`, `atoms` (`symbol`,

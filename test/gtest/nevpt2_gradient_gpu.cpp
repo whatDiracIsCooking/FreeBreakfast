@@ -49,7 +49,6 @@ import free_breakfast.integrals;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
-import free_breakfast.mcscf.zvector; // ZVector, named by the visibility check
 import free_breakfast.nevpt2;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
@@ -3354,7 +3353,7 @@ fb::Result<nevpt2::QdScGradient> qd_gradient_of(NuclearRun &run, const std::int3
 
 // df_transition_gradient at zero RDMs with @p multipliers and @p extra
 // alone: the nuclear term of that one piece of the Lagrangian.
-std::vector<double> isolated(NuclearRun &run, const fb::mcscf::ZVector *multipliers,
+std::vector<double> isolated(NuclearRun &run, const fb::response::ZVector *multipliers,
                              const fb::mcscf::MoAdjoint *extra) {
   const GradientInputs in = gradient_inputs(run);
   const auto n = static_cast<std::size_t>(run.state.ncas);
@@ -3534,12 +3533,12 @@ void expect_qd_gradient(const std::string &name, const bool pc) {
     // Visibility: each term's own nuclear contribution.
     see(visible[static_cast<std::size_t>(QdTerm::Zeta)], data, scheme, g->transition.total, k);
     if (largest_abs(l.multipliers.theta) > 0.0) {
-      const fb::mcscf::ZVector theta_only{.orbital =
-                                              zeros(res, l.multipliers.orbital.num_elements()),
-                                          .ci = zeros(res, l.multipliers.ci.num_elements()),
-                                          .theta = l.multipliers.theta,
-                                          .iterations = 0,
-                                          .residual = 0.0};
+      const fb::response::ZVector theta_only{.orbital =
+                                                 zeros(res, l.multipliers.orbital.num_elements()),
+                                             .ci = zeros(res, l.multipliers.ci.num_elements()),
+                                             .theta = l.multipliers.theta,
+                                             .iterations = 0,
+                                             .residual = 0.0};
       see(visible[static_cast<std::size_t>(QdTerm::Theta)], data, scheme,
           isolated(run, &theta_only, nullptr), k);
     }

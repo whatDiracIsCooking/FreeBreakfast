@@ -34,8 +34,8 @@ import free_breakfast.response.fock;
 import free_breakfast.response.hessian;
 import free_breakfast.response.orbital_pairs;
 import free_breakfast.mcscf.solve;
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.relaxed_hessian;
+import free_breakfast.response.zvector;
 import free_breakfast.mcscf.root_rotation; // kRootGapFloor
 import free_breakfast.mcscf.gradient;
 import :operands; // to_host, to_device
@@ -67,7 +67,7 @@ constexpr double kStencilReach = 0.1;
 // its zvector_tolerance, by default the same 1e-10), in at most this many H~
 // products, and its true residual (one more product) is held to it, one
 // column or several. The CI response inside each product is converged to
-// mcscf::response_tolerance_for it, relative to its right-hand side: at
+// response::response_tolerance_for it, relative to its right-hand side: at
 // RelaxedHessian's default 1e-8 the products' error, about 0.04 ||z|| 1e-8,
 // was a floor under the true residual that crossed 1e-10 at PSB3 (2.5e-10 at
 // cc-pVDZ, 3.8e-10 at cc-pVTZ, #864; mcscf/intersection/README.md "The floor
@@ -122,8 +122,8 @@ lagrangian_asymmetry(DeviceResources &res, const Molecule &molecule, const Basis
                      const SphericalMatrixAO &h, const Buffers::device<double> &b,
                      const int32_t naux, const mcscf::Solution &solution, const int32_t ncore,
                      const int32_t ncas, ci::Rdm &rdm, const std::span<const double> weights,
-                     std::vector<double> gamma, std::vector<double> gamma2, const mcscf::ZVector &z,
-                     const double *a, const double core_shift) {
+                     std::vector<double> gamma, std::vector<double> gamma2,
+                     const response::ZVector &z, const double *a, const double core_shift) {
   const SphericalMatrixAO &c = solution.c;
   const auto nmo = static_cast<size_t>(c.n());
   const auto n = static_cast<size_t>(ncas);
@@ -261,7 +261,7 @@ active_strings(DeviceResources &res, const std::string_view who, const Molecule 
 }
 
 // The Z-vector of a Lagrangian on @p solution at its @p weights:
-// mcscf::zvector over the CI-relaxed Hessian at the solution, as
+// response::zvector over the CI-relaxed Hessian at the solution, as
 // mcscf::df_gradient builds it for its own (H_0's sigma, row-major with no
 // reorder: h_eff is symmetric, and (tu|vw) column-major is (wv|ut)
 // row-major; the orbital Hessian over @p averaged, the Fock at the
@@ -269,12 +269,12 @@ active_strings(DeviceResources &res, const std::string_view who, const Molecule 
 // sides @p orbital_rhs (the packed pairs), @p ci_rhs (dim x nroots) and
 // @p theta_rhs (zvector's), @p ncol columns of each stacked, solved to
 // @p tolerance with the CI response inside H~ converged to
-// mcscf::response_tolerance_for(@p tolerance). One column is mcscf::zvector's
-// solve; more are one mcscf::zvectors (Schur) over the one Hessian, split
+// response::response_tolerance_for(@p tolerance). One column is response::zvector's
+// solve; more are one response::zvectors (Schur) over the one Hessian, split
 // into a ZVector per column. Either way each column's true residual (one
 // more product) is held to @p tolerance (Numerical naming @p who and the
 // column): the conjugate gradients stop on their recurrence (#786).
-Result<std::vector<mcscf::ZVector>>
+Result<std::vector<response::ZVector>>
 lagrangian_zvector(DeviceResources &res, const std::string_view who, const SphericalMatrixAO &h,
                    const Buffers::device<double> &b, const int32_t naux,
                    const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
@@ -293,15 +293,16 @@ lagrangian_zvector(DeviceResources &res, const std::string_view who, const Spher
                               FBF_TRY(to_host(res, ints.hamiltonian.eri.data(), n * n * n * n))));
   response::Hessian hessian = FBF_TRY(
       response::Hessian::create(res, h, b, naux, c, ncore, ncas, ints.ppaa, ints.papa, averaged));
-  mcscf::ResponseIntegrals response_ints{nmo,
-                                         static_cast<size_t>(ncore),
-                                         n,
-                                         FBF_TRY(to_host(res, averaged.fock_inactive.data(), mo2)),
-                                         FBF_TRY(to_host(res, ints.ppaa.data(), mo2 * n * n)),
-                                         FBF_TRY(to_host(res, ints.papa.data(), mo2 * n * n))};
-  mcscf::RelaxedHessian relaxed = FBF_TRY(mcscf::RelaxedHessian::create(
+  response::ResponseIntegrals response_ints{
+      nmo,
+      static_cast<size_t>(ncore),
+      n,
+      FBF_TRY(to_host(res, averaged.fock_inactive.data(), mo2)),
+      FBF_TRY(to_host(res, ints.ppaa.data(), mo2 * n * n)),
+      FBF_TRY(to_host(res, ints.papa.data(), mo2 * n * n))};
+  response::RelaxedHessian relaxed = FBF_TRY(response::RelaxedHessian::create(
       res, hessian, sigma, rdm, alpha, beta, solution.roots, weights, std::move(response_ints),
-      mcscf::response_tolerance_for(tolerance)));
+      response::response_tolerance_for(tolerance)));
   const auto check = [&](const size_t col, const size_t cols, const double residual,
                          const int32_t products) -> Status {
     if (!(residual <= tolerance)) {
@@ -311,29 +312,29 @@ lagrangian_zvector(DeviceResources &res, const std::string_view who, const Spher
     }
     return {};
   };
-  std::vector<mcscf::ZVector> out;
+  std::vector<response::ZVector> out;
   if (ncol == 1) {
-    out.push_back(FBF_TRY(mcscf::zvector(res, relaxed, hessian, solution.roots, orbital_rhs, ci_rhs,
-                                         tolerance, kZvectorProducts, theta_rhs)));
+    out.push_back(FBF_TRY(response::zvector(res, relaxed, hessian, solution.roots, orbital_rhs,
+                                            ci_rhs, tolerance, kZvectorProducts, theta_rhs)));
     FBF_TRY(check(0, 1, out.front().residual, out.front().iterations));
     return out;
   }
-  const mcscf::ZVectors z =
-      FBF_TRY(mcscf::zvectors(res, relaxed, hessian, solution.roots, ncol, orbital_rhs, ci_rhs,
-                              mcscf::CpSolver::Schur, tolerance, kZvectorProducts, theta_rhs));
+  const response::ZVectors z = FBF_TRY(
+      response::zvectors(res, relaxed, hessian, solution.roots, ncol, orbital_rhs, ci_rhs,
+                         response::CpSolver::Schur, tolerance, kZvectorProducts, theta_rhs));
   const auto cols = static_cast<size_t>(ncol);
   const size_t orbital = z.orbital.num_elements() / cols;
   const size_t ci = z.ci.num_elements() / cols;
   const size_t theta = z.theta.size() / cols;
   for (size_t col = 0; col < cols; ++col) {
     FBF_TRY(check(col, cols, z.residuals[col], z.iterations[col]));
-    mcscf::ZVector one{.orbital = Buffers::device<double>(orbital, res.device()),
-                       .ci = Buffers::device<double>(ci, res.device()),
-                       .theta = std::vector<double>(
-                           z.theta.begin() + static_cast<std::ptrdiff_t>(col * theta),
-                           z.theta.begin() + static_cast<std::ptrdiff_t>((col + 1) * theta)),
-                       .iterations = z.iterations[col],
-                       .residual = z.residuals[col]};
+    response::ZVector one{.orbital = Buffers::device<double>(orbital, res.device()),
+                          .ci = Buffers::device<double>(ci, res.device()),
+                          .theta = std::vector<double>(
+                              z.theta.begin() + static_cast<std::ptrdiff_t>(col * theta),
+                              z.theta.begin() + static_cast<std::ptrdiff_t>((col + 1) * theta)),
+                          .iterations = z.iterations[col],
+                          .residual = z.residuals[col]};
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(one.orbital.data(), z.orbital.data() + (col * orbital),
                                            orbital * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
                                            res.stream())));
@@ -349,7 +350,7 @@ lagrangian_zvector(DeviceResources &res, const std::string_view who, const Spher
 
 // Refuse an asymmetric block of the gate, naming @p who.
 Status check_asymmetry(const std::string_view who, const std::array<double, 6> &asymmetry,
-                       const mcscf::ZVector &z) {
+                       const response::ZVector &z) {
   for (size_t k = 0; k < asymmetry.size(); ++k) {
     if (!(asymmetry[k] <= kAsymmetryTolerance)) {
       return err_numerical("{}: the Lagrangian's orbital source term is not symmetric on its {} "
@@ -439,7 +440,7 @@ Result<ScGradient> lagrangian_gradient(DeviceResources &res, const Molecule &mol
   FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, static_cast<int32_t>(dim), &kHalf<double>,
                                                 ci_rhs.data(), 1)));
   const std::array<double, 1> weights{1.0};
-  mcscf::ZVector multipliers = std::move(
+  response::ZVector multipliers = std::move(
       FBF_TRY(lagrangian_zvector(res, "nevpt2::lagrangian_gradient", h, b, naux32, solution, ncore,
                                  ncas, alpha, beta, rdm, ints, fock, weights, 1, orbital_rhs.data(),
                                  ci_rhs.data(), {}, zvector_tolerance))
@@ -508,7 +509,7 @@ Result<QdSetup> qd_setup(DeviceResources &res, const std::string_view who, const
   }
   std::vector<double> weights = FBF_TRY(mcscf::sa_gradient_weights(solution, n));
   for (size_t r = 0; r < nroots; ++r) {
-    if (!(weights[r] >= mcscf::kRotationWeightTolerance)) {
+    if (!(weights[r] >= response::kRotationWeightTolerance)) {
       return err_config("{}: root {} has weight {:.3e}, and a root of zero weight has no "
                         "state-averaged CI condition to differentiate",
                         who, r, weights[r]);
@@ -757,7 +758,7 @@ qd_lagrangians(DeviceResources &res, const std::string_view who, const QdSetup &
                                .gamma2_rho = std::move(gamma2_rho)});
   }
 
-  std::vector<mcscf::ZVector> multipliers = FBF_TRY(lagrangian_zvector(
+  std::vector<response::ZVector> multipliers = FBF_TRY(lagrangian_zvector(
       res, who, h, b, naux, solution, ncore, ncas, alpha, beta, rdm, ints, averaged, weights,
       static_cast<int32_t>(k), orbital_rhs.data(), ci_rhs.data(), theta_rhs, tolerance));
 
@@ -1017,7 +1018,7 @@ Result<QdScGradient> qd_passes(DeviceResources &res, const Molecule &molecule,
     for (size_t r = 0; r < rho.size(); ++r) {
       d[r] = rho[r] - (trace * p[r]);
     }
-    const mcscf::ZVector none{
+    const response::ZVector none{
         .orbital = FBF_TRY(
             zeroed(res, static_cast<int64_t>(lagrangian.multipliers.orbital.num_elements()))),
         .ci = FBF_TRY(zeroed(res, static_cast<int64_t>(lagrangian.multipliers.ci.num_elements()))),

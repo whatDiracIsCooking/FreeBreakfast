@@ -7,10 +7,11 @@ Z-vector of a CASSCF gradient drives the same product.
 
 ## Module
 
-`free_breakfast.mcscf.relaxed_hessian`, target
-`free_breakfast::mcscf::relaxed_hessian`. **Internal to the MCSCF layer**:
-`free_breakfast.mcscf` does not re-export it, and `solve` links it PRIVATE.
-Everything is in `namespace free_breakfast::mcscf`.
+`free_breakfast.response.relaxed_hessian`, target
+`free_breakfast::response::relaxed_hessian`, over `ci` (strings, sigma, RDMs,
+roots) and `response.hessian`. `free_breakfast.response` re-exports it;
+`mcscf/solve` links it PRIVATE. Everything is in
+`namespace free_breakfast::response`.
 
 | Name | What it is |
 |------|------------|
@@ -40,10 +41,10 @@ then good only to where they got (#861). Every product is good to
 about that: measured at PSB3, a product's error is about 0.04 ‖x‖ times it.
 A Z-vector solved through H̃ to a tolerance t cannot have a true residual
 below the products' error, so the callers that hold a true residual to t
-pass `mcscf::response_tolerance_for(t)`, 1e-2 t but at least 1e-10 (1e-10
+pass `response::response_tolerance_for(t)`, 1e-2 t but at least 1e-10 (1e-10
 at the default 1e-10): `mcscf::df_intersection` and `nevpt2`'s Lagrangian. At 1e-8 the
 floor crossed 1e-10 at PSB3 (#858, #864;
-[`../intersection/`](../intersection/README.md) "The floor under the true
+[`../../mcscf/intersection/`](../../mcscf/intersection/README.md) "The floor under the true
 residual" has the measurements and the argument). The conjugate gradients
 converge geometrically, so the tighter tolerance cost about 3% of the
 cc-pVTZ state gradient's run. A test that compares an exact solve with one
@@ -77,7 +78,7 @@ right-hand side.
 ## Block calls
 
 `apply`, `couple` and `apply_coupled` over a block of k columns are what
-`mcscf::zvectors` (`../zvector/README.md`, "Many right-hand sides") iterates
+`response::zvectors` (`../zvector/README.md`, "Many right-hand sides") iterates
 on. They share the per-column work above: H's product over the block in one
 call (`response::Hessian::apply`, which still builds each column's J and K
 on its own), then H′(x_j) c and H_oc δ_j per column (host work, a readback
@@ -175,21 +176,21 @@ but one built by hand still has them recovered). Near a degeneracy that term is
 the product's error: `mcscf::df_intersection`, which passes
 `rotating_pairs(weights)` (only the pairs of unequal weight mix), measured
 true residuals of 1.6e-5 at a gap of 2e-8 Eh with every pair mixing
-([`../intersection/README.md`](../intersection/README.md), "The
+([`../../mcscf/intersection/README.md`](../../mcscf/intersection/README.md), "The
 derivation"). `delta()` then has no part along the flagged pairs' roots,
 which a Z-vector projects off in any case.
 
 The derivation, the costs and what H̃ bought the loop are in
-[`../solve/README.md`](../solve/README.md), "The CI response is computed, per
+[`../../mcscf/solve/README.md`](../../mcscf/solve/README.md), "The CI response is computed, per
 product".
 
 ## Tests
 
 None of its own: `test/gtest/mcscf_solve_gpu.cpp` drives every product
-through `mcscf::solve` (ethylene's SA3 there, the span above), `test/gtest/mcscf_zvector_gpu.cpp` `couple`
-through `mcscf::zvector`'s CI right-hand side, and
-`test/gtest/mcscf_zvectors_gpu.cpp` the block calls through
-`mcscf::zvectors`, and `test/gtest/mcscf_zvector_rotations_gpu.cpp`
+through `mcscf::solve` (ethylene's SA3 there, the span above), `test/gtest/response_zvector_gpu.cpp` `couple`
+through `response::zvector`'s CI right-hand side, and
+`test/gtest/response_zvectors_gpu.cpp` the block calls through
+`response::zvectors`, and `test/gtest/response_zvector_rotations_gpu.cpp`
 `coupling` and `apply_coupled`'s rotations through its rotations at unequal
 weights.
 
@@ -199,4 +200,4 @@ weights.
 |------|------|
 | `relaxed_hessian.cppm` | Module interface: `ResponseIntegrals`, `response_integrals`, `response_gradient`, `RelaxedHessian` |
 | `relaxed_hessian.cpp` | H′(x) and its adjoint, the CI response's conjugate gradients (one column, and a block's in lockstep) and transition RDMs, and the products |
-| `CMakeLists.txt` | The module `free_breakfast.mcscf.relaxed_hessian` |
+| `CMakeLists.txt` | The module `free_breakfast.response.relaxed_hessian` |

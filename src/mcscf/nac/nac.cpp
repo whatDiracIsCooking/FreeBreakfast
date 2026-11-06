@@ -28,8 +28,8 @@ import free_breakfast.ci.rdm;
 import free_breakfast.response.fock;
 import free_breakfast.response.hessian;
 import free_breakfast.mcscf.solve;
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.relaxed_hessian;
+import free_breakfast.response.zvector;
 import free_breakfast.mcscf.gradient;
 import free_breakfast.mcscf.transition;
 import free_breakfast.mcscf.root_rotation; // kRootGapFloor
@@ -121,7 +121,7 @@ struct NacSetup {
   std::optional<response::Fock> averaged;
   std::optional<ci::Sigma> sigma;
   std::optional<response::Hessian> hessian;
-  std::optional<RelaxedHessian> relaxed;
+  std::optional<response::RelaxedHessian> relaxed;
 };
 
 // The CI strings and RDMs over the roots' determinants (@ref NacSetup's
@@ -187,16 +187,16 @@ Result<std::unique_ptr<NacSetup>> nac_setup(DeviceResources &res, const Molecule
                                   FBF_TRY(nac_download(res, ints.hamiltonian.eri.data(), m * m))));
   s->hessian.emplace(FBF_TRY(
       response::Hessian::create(res, h, b, q, c, ncore, ncas, ints.ppaa, ints.papa, *s->averaged)));
-  ResponseIntegrals response_ints{
+  response::ResponseIntegrals response_ints{
       mo,
       static_cast<size_t>(ncore),
       n,
       FBF_TRY(nac_download(res, s->averaged->fock_inactive.data(), mo * mo)),
       FBF_TRY(nac_download(res, ints.ppaa.data(), mo * mo * m)),
       FBF_TRY(nac_download(res, ints.papa.data(), mo * mo * m))};
-  s->relaxed.emplace(
-      FBF_TRY(RelaxedHessian::create(res, *s->hessian, *s->sigma, *s->rdm, *s->alpha, *s->beta,
-                                     solution.roots, weights, std::move(response_ints))));
+  s->relaxed.emplace(FBF_TRY(response::RelaxedHessian::create(res, *s->hessian, *s->sigma, *s->rdm,
+                                                              *s->alpha, *s->beta, solution.roots,
+                                                              weights, std::move(response_ints))));
   return s;
 }
 
@@ -283,8 +283,8 @@ Result<Nac> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSe
       res, molecule, h, b, q, c, ncore, ncas, s->ints->ppaa, s->ints->papa, gamma, gamma2));
   const double tolerance =
       options.solve_tolerance * std::min(1.0, std::max(std::abs(gap), kNacSolveGapFloor));
-  const ZVector z = FBF_TRY(zvector(res, *s->relaxed, *s->hessian, solution.roots,
-                                    transition.data(), nullptr, tolerance));
+  const response::ZVector z = FBF_TRY(response::zvector(
+      res, *s->relaxed, *s->hessian, solution.roots, transition.data(), nullptr, tolerance));
 
   // h_IJ: the Hellmann-Feynman terms at the transition RDMs and the
   // multipliers' on top, in one call.
@@ -496,8 +496,9 @@ Result<NacCombination> df_nac(DeviceResources &res, const Molecule &molecule, co
   Buffers::device<double> rhs_device(rhs.size(), res.device());
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rhs_device.data(), rhs.data(), rhs.size() * sizeof(double),
                                          wwr::wwrMemcpyHostToDevice, res.stream())));
-  const ZVector z = FBF_TRY(zvector(res, *s->relaxed, *s->hessian, solution.roots,
-                                    rhs_device.data(), nullptr, NacOptions{}.solve_tolerance));
+  const response::ZVector z =
+      FBF_TRY(response::zvector(res, *s->relaxed, *s->hessian, solution.roots, rhs_device.data(),
+                                nullptr, NacOptions{}.solve_tolerance));
 
   // The CI part and both responses: the Hellmann-Feynman terms at the
   // combined RDMs and the multipliers' on top, in one call.

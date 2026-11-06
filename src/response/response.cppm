@@ -10,3 +10,5 @@ export import free_breakfast.response.orbital_pairs;
 export import free_breakfast.response.fock;
 export import free_breakfast.response.hessian;
 export import free_breakfast.response.cphf;
+export import free_breakfast.response.relaxed_hessian;
+export import free_breakfast.response.zvector;

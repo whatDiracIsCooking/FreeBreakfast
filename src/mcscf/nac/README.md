@@ -79,7 +79,7 @@ Lagrangian") with E_I replaced by the transition functional:
    g = 2 (F − Fᵀ), equal to PySCF's `gen_g_hop_active` vector. **Its CI part y and its part t along the
    rotations among the roots are zero**, at any weights ("Unequal
    weights" below).
-3. **The Z-vector**, `mcscf::zvector` (internal, linked PRIVATE) over the
+3. **The Z-vector**, `response::zvector` (linked PRIVATE) over the
    CI-relaxed Hessian at the solution's orbitals, roots and weights, built
    as `df_gradient` builds it, with no CI or rotation right-hand side:
    (z_o, z_c, Θ), Θ zero at equal weights.
@@ -113,7 +113,7 @@ derivative through the SA orbitals' response. So h_IJ is E_act(γ^IJ, Γ^IJ)
 differentiated with the orbitals relaxed and the pair's CI vectors fixed: it
 depends on none of the SA CI parameters, neither z_c's directions off the
 roots nor the rotations Θ among them, and its gradient along them is zero,
-y = 0 and t = 0 (`../zvector/README.md` "The rotations among the roots").
+y = 0 and t = 0 (`../../response/zvector/README.md` "The rotations among the roots").
 Holding ⟨I|H|J⟩ a function of the responding roots instead, with
 ∂/∂Θ_JI = E_J − E_I, would differentiate a quantity that is zero at every
 geometry, and give zero: the pair's own rotation A_IJ is the coupling being

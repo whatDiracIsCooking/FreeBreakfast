@@ -22,8 +22,8 @@ import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.response.hessian;
 import free_breakfast.mcscf.solve; // mcscf::Solution, ci::Roots
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.relaxed_hessian;
+import free_breakfast.response.zvector;
 
 namespace free_breakfast::hessian {
 
@@ -43,7 +43,7 @@ state_specific_electrons(std::string_view who, const DeviceResources &res, const
 // (RelaxedHessian::create's default, named for probed_zvectors' bar).
 constexpr double kCasscfCpResponseTolerance = 1e-8;
 
-/// @brief mcscf::zvectors' Schur solve of the @p n_x columns @p gradients,
+/// @brief response::zvectors' Schur solve of the @p n_x columns @p gradients,
 /// @p ci_rhs and @p theta_rhs (each as zvectors takes them) over @p relaxed,
 /// built with kCasscfCpResponseTolerance, with one more column beside them,
 /// the probe: H~ u = -s for a fixed pseudo-random unit s, no CI or rotation
@@ -56,8 +56,8 @@ constexpr double kCasscfCpResponseTolerance = 1e-8;
 ///         quotient rho = -u.s / u.u is not above kCasscfCpResponseTolerance
 ///         max diag(H), or when zvectors meets a direction H~ is not positive
 ///         along or runs out of products; or zvectors' other errors.
-Result<mcscf::ZVectors>
-probed_zvectors(DeviceResources &res, std::string_view who, mcscf::RelaxedHessian &relaxed,
+Result<response::ZVectors>
+probed_zvectors(DeviceResources &res, std::string_view who, response::RelaxedHessian &relaxed,
                 const response::Hessian &hessian, const ci::Roots &roots, size_t n_x,
                 const Buffers::device<double> &gradients, const Buffers::device<double> &ci_rhs,
                 std::span<const double> theta_rhs, double tolerance, int32_t max_iterations);

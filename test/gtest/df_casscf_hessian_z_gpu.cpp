@@ -6,7 +6,7 @@
 // (test/gtest/data/casscf_hessian/'s h2o_631g geometry and orbitals, the
 // orbitals made orthonormal over this tree's S and the root re-solved at
 // them), random (Z, z) and a random block Lambda of three vectors, all in
-// mcscf::zvector's coordinates. Z . g is evaluated here, on the host, from
+// response::zvector's coordinates. Z . g is evaluated here, on the host, from
 // this tree's integrals at each displaced geometry along the symmetric
 // connection C(R) = C (C^T S(R) C)^-1/2 and the exponential parametrization
 // C(R) e^K, e^A c (A = d c^T - c d^T), every derivative of the exponentials

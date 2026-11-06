@@ -1107,7 +1107,7 @@ TEST(Nevpt2QdIntersection, Refuses) {
 // Not 1e-12 (#885). The conjugate gradients stop on their recurrence under
 // the tolerance and the true residual is held to the same number, so it
 // passes only if the products' error keeps it under too. With the CI
-// response inside H~ at mcscf::response_tolerance_for's floor, 1e-10, that
+// response inside H~ at response::response_tolerance_for's floor, 1e-10, that
 // error is of order 1e-13 here (mcscf/intersection/README.md "The floor under
 // the true residual"): 6.5% of a 1e-12 bar, which column 2 crossed from run
 // to run (1.017e-12, 1.065e-12), and about 1% of this one.
@@ -1163,7 +1163,7 @@ TEST(Nevpt2QdIntersection, ZvectorTolerance) {
 
 // PSB3 (#864): DF-SA3-CASSCF(6,6)/cc-pVDZ of the cation with C13=C14
 // twisted 90 degrees, the CASSCF root gap 2.9e-2 Eh, so no seam. Before the
-// CI response inside H~ was converged to mcscf::response_tolerance_for the
+// CI response inside H~ was converged to response::response_tolerance_for the
 // Z-vector's tolerance (it was a fixed 1e-8 of its right-hand side, now
 // 1e-10), the products' error put a floor under
 // the true residual: qd_sc_intersection here was refused, "column 0 of 3 has

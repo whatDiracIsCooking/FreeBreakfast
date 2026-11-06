@@ -39,7 +39,7 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
         terms        dE/dR of E_cas + E_corr, mcscf::GradientTerms (n_atom × 3)
         energies     E_corr's class energies
         zc           z^c, max |z^c|, the smallest inactive gap
-        multipliers  (Z, z), mcscf::ZVector: zvector's coordinates, its
+        multipliers  (Z, z), response::ZVector: zvector's coordinates, its
                      iterations and residual
         asymmetry    max |X^L − X^Lᵀ| per block
     pc_energy(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, batch)
@@ -75,7 +75,7 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
         zc           z^c
         pairs        τ, ζ and t (mcscf::RootPairMultipliers)
         zeta         ζ · g and (γ^ζ, Γ^ζ) (mcscf::ZetaTerms)
-        multipliers  (Z, z, Θ), mcscf::ZVector
+        multipliers  (Z, z, Θ), response::ZVector
         asymmetry    the gate's residues per block
     qd_sc_lagrangian(res, molecule, basis, aux, h, b, solution, ncore, ncas, w, batch)
         -> QdScLagrangian   the W form: any symmetric W (n², row-major), ρ = diag W,
@@ -646,7 +646,7 @@ c_r's spin and symmetry sector.
 
 **y^c is raw, as y is**: the derivative of Φ as a function of an
 unnormalized c, not projected (⟨c, y^c⟩ = 2⟨W, γ⟩). `lagrangian_gradient`
-passes ½ (y + y^c) to `mcscf::zvector`, which projects it off c; the ½ puts
+passes ½ (y + y^c) to `response::zvector`, which projects it off c; the ½ puts
 it in that solver's convention (below). The (h̄, Λ, X, A) of Φ add to
 `sc_adjoint`'s field by field.
 
@@ -1121,12 +1121,12 @@ and root, then it.
    `mcscf::df_gradient` builds it for its own Z-vector: `casscf_integrals`,
    H₀'s sigma, `response::fock` at the root's RDMs, `response::Hessian` over
    it, `ResponseIntegrals` and `RelaxedHessian` at weight 1. Then
-   `mcscf::zvector` with the orbital right-hand side g + pack(A) (g the
+   `response::zvector` with the orbital right-hand side g + pack(A) (g the
    Fock's own gradient, below the CASSCF's convergence) and the CI one
    **½ (y + y^c)**. zvector's CI row is (H₀ − E) z + P H′(Z) c = −P y_r, the
    coordinates of PySCF's `gen_g_hop`; the tex's J_cc = 2 P (H − E) P and
    its J_cκ are each twice that row, so for the same (Z, z) its right-hand
-   side P(y + y^c) is halved (`src/mcscf/zvector/README.md`, "The CI
+   side P(y + y^c) is halved (`src/response/zvector/README.md`, "The CI
    right-hand side"). zvector projects it off c. (Z, z) come out in
    zvector's coordinates, which is what `df_gradient` takes, so nothing is
    mapped back.
@@ -1194,7 +1194,7 @@ below). The cc-pVTZ run took 37 s at 1e-8 and 38 s
 at 1e-10.
 
 **The rule.** `RelaxedHessian` is created with the response at
-`mcscf::response_tolerance_for` the Z-vector tolerance, 1e-2 of it and at
+`response::response_tolerance_for` the Z-vector tolerance, 1e-2 of it and at
 least 1e-10 (1e-10 at the default, where the true residual measured within
 0.2% of the recurrence at PSB3; tighter breaks on round-off where the roots
 nearly span the CI space, `mcscf/intersection/README.md`). The bar itself
@@ -1273,7 +1273,7 @@ read. With W = u_K u_Kᵀ and ρ_r = W_rr = u_rK², the Lagrangian is
         + Σ_{r<s} (2 (w_r − w_s) Θ_sr + ζ_sr) ⟨c_s|H|c_r⟩ + ⟨z^c, f^SA⟩,
     E[W] = Σ_r ρ_r E_r + Σ_MN W_MN C_MN,
 
-(Z, z, Θ) in `mcscf::zvector`'s coordinates: its CI rows are the SA
+(Z, z, Θ) in `response::zvector`'s coordinates: its CI rows are the SA
 Hessian's over 2 w_r, its rotation rows over 2 (w_r − w_s), so the
 condition ⟨c_s|H|c_r⟩ = 0 of an unequal pair carries 2 (w_r − w_s) Θ_sr,
 and an equal pair, which E_SA is blind to, carries ζ_sr of its own.
@@ -1304,7 +1304,7 @@ and an equal pair, which E_SA is blind to, carries ζ_sr of its own.
 
 The weights are the solution's, `mcscf::sa_gradient_weights`', everywhere:
 ε and Φ (step 2), τ's split, the Z-vector and the gate. A root of weight
-below `mcscf::kRotationWeightTolerance` is refused, `InvalidConfig`: it has
+below `response::kRotationWeightTolerance` is refused, `InvalidConfig`: it has
 no SA CI row, and step 4 divides by w_r.
 
 **The 1/(2 w_r)** was read off zvector's README (its CI rows are the SA
@@ -1564,10 +1564,10 @@ everything that does not depend on W:
   per W over them. The forward arrays are only read, so each W's adjoint is
   the one-W call's;
 - `casscf_integrals`, the state-averaged Fock, and the CI-relaxed Hessian
-  (H₀'s sigma, `response::Hessian`, `mcscf::RelaxedHessian`), once;
-- one `mcscf::zvectors` (Schur) over the k columns of right-hand sides
+  (H₀'s sigma, `response::Hessian`, `response::RelaxedHessian`), once;
+- one `response::zvectors` (Schur) over the k columns of right-hand sides
   (orbital g^ρ + ζ · g + A, CI ȳ_r / 2 w_r, and t), in place of k
-  `mcscf::zvector` solves. Each column's true residual, from one more
+  `response::zvector` solves. Each column's true residual, from one more
   product (`ZVectors::residuals`), must be at or below the solve's
   tolerance (`zvector_tolerance`, 1e-10 by default), or the call is
   `Numerical` naming the column: the block conjugate gradients stop on
@@ -1577,7 +1577,7 @@ everything that does not depend on W:
 
 Per W, as the one-W form: z^c and Φ^SA, τ split into ζ and t, ζ's terms,
 the gate on the W's own column, and the derivative passes. One W in the list
-is the one-W form's path exactly (`mcscf::zvector`, not `zvectors`), which
+is the one-W form's path exactly (`response::zvector`, not `zvectors`), which
 is what the one-W form calls. The first W with an error returns it.
 
 **The derivative passes stay one per W.** Stacking them, so the three-center

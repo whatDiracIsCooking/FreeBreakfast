@@ -11,7 +11,7 @@
 // one root, E_cas's own MO adjoint (h_bar = D, Lambda^L = Sum Gamma B^L, X its
 // X, built on the host) fed as the extra adjoint doubles the electronic
 // gradient to 1e-10, so the extra term alone is the state-specific one; for a
-// state average, each root's multipliers from mcscf::zvector passed in
+// state average, each root's multipliers from response::zvector passed in
 // reproduce the internal path to 1e-10. And the refusals: a root the
 // solution does not have, multipliers of the wrong length, and a solution
 // whose roots and RDMs disagree. Last, a mix of the roots summing to 0 (the
@@ -36,8 +36,6 @@ import free_breakfast.integrals;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
@@ -438,15 +436,15 @@ TEST_P(McscfGradient, DfCasscfMatchesPyscf) {
     auto hessian = fb::response::Hessian::create(res, h->h, df.b, df.naux, c, space->ncore,
                                                  space->ncas, ints->ppaa, ints->papa, *sa_fock);
     ASSERT_TRUE(hessian.has_value()) << hessian.error().message;
-    fb::mcscf::ResponseIntegrals response_ints{
+    fb::response::ResponseIntegrals response_ints{
         mo,
         ncore,
         ncas,
         download(res, sa_fock->fock_inactive.data(), mo * mo),
         download(res, ints->ppaa.data(), mo * mo * ncas * ncas),
         download(res, ints->papa.data(), mo * mo * ncas * ncas)};
-    auto relaxed = fb::mcscf::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta,
-                                                     sol->roots, weights, std::move(response_ints));
+    auto relaxed = fb::response::RelaxedHessian::create(
+        res, *hessian, *sigma, *rdm, *alpha, *beta, sol->roots, weights, std::move(response_ints));
     ASSERT_TRUE(relaxed.has_value()) << relaxed.error().message;
     fb::Buffers::device<double> gamma_device(ncas * ncas, res.device());
     fb::Buffers::device<double> gamma2_device(ncas * ncas * ncas * ncas, res.device());
@@ -461,7 +459,8 @@ TEST_P(McscfGradient, DfCasscfMatchesPyscf) {
           ints->papa, download(res, gamma_device.data(), ncas * ncas),
           download(res, gamma2_device.data(), ncas * ncas * ncas * ncas));
       ASSERT_TRUE(root_fock.has_value()) << root_fock.error().message;
-      auto z = fb::mcscf::zvector(res, *relaxed, *hessian, sol->roots, root_fock->gradient.data());
+      auto z =
+          fb::response::zvector(res, *relaxed, *hessian, sol->roots, root_fock->gradient.data());
       ASSERT_TRUE(z.has_value()) << z.error().message;
       const auto internal =
           fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux,
@@ -476,11 +475,11 @@ TEST_P(McscfGradient, DfCasscfMatchesPyscf) {
     }
   }
   // Multipliers of the wrong length are InvalidConfig.
-  const fb::mcscf::ZVector short_z{fb::Buffers::device<double>(1, res.device()),
-                                   fb::Buffers::device<double>(1, res.device()),
-                                   {},
-                                   0,
-                                   0.0};
+  const fb::response::ZVector short_z{fb::Buffers::device<double>(1, res.device()),
+                                      fb::Buffers::device<double>(1, res.device()),
+                                      {},
+                                      0,
+                                      0.0};
   const auto wrong =
       fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux, h->h,
                              df.b, df.l.data(), *sol, space->ncore, space->ncas, 0, &short_z);

@@ -1,4 +1,4 @@
-// mcscf::zvectors' wall clock on 3 n_atom right-hand sides, the count the
+// response::zvectors' wall clock on 3 n_atom right-hand sides, the count the
 // DF-CASSCF Hessian solves, by each CpSolver over the same H~: water, or
 // all-trans octatetraene (C8H10, 18 atoms, built here), in a DF-CASSCF over
 // the given basis and cc-pVDZ-JKFIT, CAS(4,4) at the frontier, one root or a
@@ -7,7 +7,7 @@
 // random spin-free H_y. Every solver runs on the same equations, so their
 // solutions are compared with PerColumn's.
 //
-//   free_breakfast_mcscf_zvectors [molecule = octatetraene] [nroots = 1]
+//   free_breakfast_response_zvectors [molecule = octatetraene] [nroots = 1]
 //                                 [reps = 2] [basis = cc-pvdz] [solvers = psc]
 //
 // solvers is a string of p (PerColumn), s (Schur) and c (Coupled). On device
@@ -24,8 +24,6 @@ import free_breakfast.integrals;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
@@ -163,7 +161,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   const std::int32_t reps = argc > 3 ? std::stoi(argv[3]) : 2;
   const std::string basis_name = argc > 4 ? argv[4] : "cc-pvdz";
   const std::string solvers = argc > 5 ? argv[5] : "psc";
-  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "fb_mcscf_zvectors";
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "fb_response_zvectors";
   std::filesystem::create_directories(dir / "out");
   if (molecule_name == "water") {
     write_water(dir / "molecule.xyz");
@@ -227,9 +225,9 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   auto hessian = must("hessian", fb::response::Hessian::create(res, h, df.b, df.naux, c, ncore,
                                                                ncas, ints.ppaa, ints.papa, fock));
   auto relaxed =
-      must("relaxed", fb::mcscf::RelaxedHessian::create(
+      must("relaxed", fb::response::RelaxedHessian::create(
                           res, hessian, sigma, rdm, alpha, beta, sol.roots, weights,
-                          fb::mcscf::ResponseIntegrals{
+                          fb::response::ResponseIntegrals{
                               mo, core, n, download(res, fock.fock_inactive.data(), mo * mo),
                               download(res, ints.ppaa.data(), mo * mo * n * n),
                               download(res, ints.papa.data(), mo * mo * n * n)}));
@@ -279,16 +277,16 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   std::optional<std::pair<std::vector<double>, std::vector<double>>> reference;
   for (const char letter : solvers) {
     const auto [solver, name] =
-        letter == 'p'   ? std::pair{fb::mcscf::CpSolver::PerColumn, "PerColumn"}
-        : letter == 's' ? std::pair{fb::mcscf::CpSolver::Schur, "Schur"}
-                        : std::pair{fb::mcscf::CpSolver::Coupled, "Coupled"};
+        letter == 'p'   ? std::pair{fb::response::CpSolver::PerColumn, "PerColumn"}
+        : letter == 's' ? std::pair{fb::response::CpSolver::Schur, "Schur"}
+                        : std::pair{fb::response::CpSolver::Coupled, "Coupled"};
     double best = std::numeric_limits<double>::infinity();
-    std::optional<fb::mcscf::ZVectors> solved;
+    std::optional<fb::response::ZVectors> solved;
     for (std::int32_t rep = 0; rep <= reps; ++rep) {
       const auto begin = Clock::now();
-      auto out = must(name, fb::mcscf::zvectors(res, relaxed, hessian, sol.roots,
-                                                static_cast<std::int32_t>(ncol),
-                                                gradients_device.data(), y_device.data(), solver));
+      auto out = must(name, fb::response::zvectors(
+                                res, relaxed, hessian, sol.roots, static_cast<std::int32_t>(ncol),
+                                gradients_device.data(), y_device.data(), solver));
       const double seconds = std::chrono::duration<double>(Clock::now() - begin).count();
       if (rep > 0) {
         best = std::min(best, seconds);

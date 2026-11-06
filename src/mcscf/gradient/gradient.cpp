@@ -36,8 +36,8 @@ import free_breakfast.response.hessian;
 import free_breakfast.response.orbital_pairs;
 import free_breakfast.gradient;
 import free_breakfast.mcscf.solve;
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector; // zvector, rotating_pairs
+import free_breakfast.response.relaxed_hessian;
+import free_breakfast.response.zvector; // zvector, rotating_pairs
 import free_breakfast.mcscf.transition;
 import free_breakfast.mcscf.root_rotation; // kRootGapFloor
 
@@ -191,7 +191,7 @@ sa_gradient_lagrangian(DeviceResources &res, const Molecule &molecule, const Sph
                        const Solution &solution, const int32_t ncore, const int32_t ncas,
                        const int32_t nelecas, const CasscfIntegrals &ints,
                        const response::Fock &averaged, const std::span<const double> mix,
-                       const std::span<const double> weights, const ZVector *const given,
+                       const std::span<const double> weights, const response::ZVector *const given,
                        const std::span<const double> start, const std::span<const double> start2,
                        const bool core_off, double *const kappa) {
   const SphericalMatrixAO &c = solution.c;
@@ -265,7 +265,7 @@ sa_gradient_lagrangian(DeviceResources &res, const Molecule &molecule, const Sph
   // transition orbital gradient, the zero-RDM part off). The sigma takes host arrays
   // row-major, which needs no reorder, as mcscf::solve sets them: h_eff is
   // symmetric, and (tu|vw) column-major is (wv|ut) row-major.
-  std::optional<ZVector> solved;
+  std::optional<response::ZVector> solved;
   if (given == nullptr) {
     ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
     FBF_TRY(sigma.set_integrals(
@@ -274,26 +274,27 @@ sa_gradient_lagrangian(DeviceResources &res, const Molecule &molecule, const Sph
         FBF_TRY(gradient_download(res, ints.hamiltonian.eri.data(), n * n * n * n))));
     response::Hessian hessian = FBF_TRY(
         response::Hessian::create(res, h, b, naux, c, ncore, ncas, ints.ppaa, ints.papa, averaged));
-    ResponseIntegrals response_ints{
+    response::ResponseIntegrals response_ints{
         mo,
         n_core,
         n,
         FBF_TRY(gradient_download(res, averaged.fock_inactive.data(), mo * mo)),
         FBF_TRY(gradient_download(res, ints.ppaa.data(), mo * mo * n * n)),
         FBF_TRY(gradient_download(res, ints.papa.data(), mo * mo * n * n))};
-    RelaxedHessian relaxed = FBF_TRY(RelaxedHessian::create(
+    response::RelaxedHessian relaxed = FBF_TRY(response::RelaxedHessian::create(
         res, hessian, sigma, rdm, alpha, beta, solution.roots, weights, std::move(response_ints)));
     if (core_off) {
       const Buffers::device<double> own = FBF_TRY(transition_orbital_gradient(
           res, molecule, h, b, naux, c, ncore, ncas, ints.ppaa, ints.papa, gamma, gamma2));
-      solved.emplace(FBF_TRY(zvector(res, relaxed, hessian, solution.roots, own.data())));
+      solved.emplace(FBF_TRY(response::zvector(res, relaxed, hessian, solution.roots, own.data())));
     } else {
       const response::Fock own = FBF_TRY(response::fock(res, molecule, h, b, naux, c, ncore, ncas,
                                                         ints.ppaa, ints.papa, gamma, gamma2));
-      solved.emplace(FBF_TRY(zvector(res, relaxed, hessian, solution.roots, own.gradient.data())));
+      solved.emplace(
+          FBF_TRY(response::zvector(res, relaxed, hessian, solution.roots, own.gradient.data())));
     }
   }
-  const ZVector &z = given != nullptr ? *given : *solved;
+  const response::ZVector &z = given != nullptr ? *given : *solved;
 
   // z_c's transition RDMs, sum_r w_r (<z_c,r|.|c_r> + <c_r|.|z_c,r>): half
   // the difference of the RDMs of c + z_c and c - z_c at the weights, the
@@ -505,7 +506,7 @@ df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet
                   const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                   const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                   const Solution &solution, const int32_t ncore, const int32_t ncas,
-                  const std::span<const double> mix, const ZVector *const multipliers,
+                  const std::span<const double> mix, const response::ZVector *const multipliers,
                   const MoAdjoint *const extra, const bool transition,
                   const std::span<const double> gamma_t, const std::span<const double> gamma2_t) {
   const SphericalMatrixAO &c = solution.c;
@@ -1058,7 +1059,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const Solution &solution, const int32_t ncore, const int32_t ncas, const int32_t root,
-            const ZVector *const multipliers, const MoAdjoint *const extra) {
+            const response::ZVector *const multipliers, const MoAdjoint *const extra) {
   const auto nroots = static_cast<int32_t>(solution.roots.energies.size());
   if (root < 0 || root >= nroots) {
     return err_config("mcscf::df_gradient: root {} of a solution with {} roots", root, nroots);
@@ -1069,14 +1070,13 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
                            one_hot, multipliers, extra, false, {}, {});
 }
 
-Result<GradientTerms> df_gradient(DeviceResources &res, const Molecule &molecule,
-                                  const BasisSet &basis,
-                                  const std::span<const PrimitivePairClass> classes,
-                                  const BasisSet &aux, const SphericalMatrixAO &h,
-                                  const Buffers::device<double> &b, const double *l,
-                                  const Solution &solution, const int32_t ncore, const int32_t ncas,
-                                  const std::span<const double> mix,
-                                  const ZVector *const multipliers, const MoAdjoint *const extra) {
+Result<GradientTerms>
+df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const Solution &solution, const int32_t ncore, const int32_t ncas,
+            const std::span<const double> mix, const response::ZVector *const multipliers,
+            const MoAdjoint *const extra) {
   // A mix summing to 0 has no core energy (README "Weights that sum to 0"):
   // the transition terms at its RDMs.
   const double sum = std::accumulate(mix.begin(), mix.end(), 0.0);
@@ -1091,8 +1091,8 @@ df_transition_gradient(DeviceResources &res, const Molecule &molecule, const Bas
                        const SphericalMatrixAO &h, const Buffers::device<double> &b,
                        const double *l, const Solution &solution, const int32_t ncore,
                        const int32_t ncas, const std::span<const double> gamma,
-                       const std::span<const double> gamma2, const ZVector *const multipliers,
-                       const MoAdjoint *const extra) {
+                       const std::span<const double> gamma2,
+                       const response::ZVector *const multipliers, const MoAdjoint *const extra) {
   return df_gradient_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, {},
                            multipliers, extra, true, gamma, gamma2);
 }
@@ -1113,7 +1113,7 @@ root_pair_multipliers(DeviceResources &res, const ci::Roots &roots,
   if (y_bar == nullptr) {
     return err_config("mcscf::root_pair_multipliers: the CI adjoint is null");
   }
-  const std::vector<bool> rotating = rotating_pairs(weights);
+  const std::vector<bool> rotating = response::rotating_pairs(weights);
   // The limit pair as (r, s), r < s, and its index in the pairs' order.
   std::optional<std::array<size_t, 2>> limit;
   size_t limit_index = 0;

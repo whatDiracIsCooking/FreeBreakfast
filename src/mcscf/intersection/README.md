@@ -76,9 +76,9 @@ is stationary in (κ, P) when A z_KL = −∂H_KL/∂(κ, P), A the SA Hessian, 
 dH_KL/dR = ∂L_KL/∂R. The CI part of the right-hand side is zero: every root
 is an eigenvector of the same active-space H₀, so P Ĥ c_L = 0 for K = L and
 K ≠ L alike. Eliminating the CI leaves the CI-relaxed orbital Hessian H̃
-([`../relaxed_hessian/`](../relaxed_hessian/README.md)) and its Z-vector
+([`../../response/relaxed_hessian/`](../../response/relaxed_hessian/README.md)) and its Z-vector
 H̃ z_o = −g_KL, g_KL the orbital gradient of H_KL at the solution
-([`../zvector/`](../zvector/README.md)). This is the SA-CASSCF coupling
+([`../../response/zvector/`](../../response/zvector/README.md)). This is the SA-CASSCF coupling
 numerator of Galván et al. (I. F. Galván, M. G. Delcey, T. B. Pedersen, F.
 Aquilante and R. Lindh, JCTC 12, 3636 (2016)) for K ≠ L, and the SA-CASSCF
 gradient's Lagrangian for K = L, at the same multiplier equations.
@@ -193,7 +193,7 @@ with each column's true residual taken from a product at the response's
   the cc-pVDZ MECI's 46 s at 1e-10 and 48 s at 1e-12.
 
 So the response is converged to `response_tolerance_for` the Z-vector's
-tolerance t (`mcscf.zvector`): 1e-2 t, relative, but never below 1e-10. At
+tolerance t (`response.zvector`): 1e-2 t, relative, but never below 1e-10. At
 the default t = 1e-10 that is 1e-10, the setting measured above: the true
 residual is within 0.2% of the recurrence, so a recurrence just under the
 bar leaves the true residual under it too. A looser t takes a cheaper

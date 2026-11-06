@@ -32,7 +32,6 @@ import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
-import free_breakfast.mcscf.zvector;
 import free_breakfast.hessian;
 
 namespace {

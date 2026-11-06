@@ -26,7 +26,7 @@ import free_breakfast.recipes.matrix_ao;
 import free_breakfast.ci.strings;
 import free_breakfast.response.orbital_pairs; // unpack_orbital_pairs
 import free_breakfast.mcscf.solve;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.zvector;
 import free_breakfast.nevpt2.energy;   // kEmptyPopulationFloor
 import free_breakfast.nevpt2.gradient; // sc_adjoint, zc_multipliers, zc_adjoint,
                                        // lagrangian_gradient, sc_hessian_product

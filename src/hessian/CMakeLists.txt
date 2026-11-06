@@ -2,9 +2,9 @@
 # the density-fitted J and K, the CPHF and wwr's BLAS, with no kernels of its
 # own. DeviceResources,
 # Buffers, Molecule, BasisSet, PrimitivePairClass, SphericalMatrixAO, Result,
-# response::Cphf, mcscf::Solution and mcscf::ZVectors are in its signatures,
+# response::Cphf, mcscf::Solution and response::ZVectors are in its signatures,
 # so core::resources, core::wwr, molecule, basis, mmd, recipes::matrix_ao,
-# core::error_handling, response::cphf, mcscf::solve and mcscf::zvector are
+# core::error_handling, response::cphf, mcscf::solve and response::zvector are
 # PUBLIC. The derivative calls, the J and K builds, the second-derivative
 # integrals, the MO-basis fit, the dipole integrals and their derivative, the
 # CASSCF's integrals, CI, Fock, orbital and relaxed Hessians, derivatives,
@@ -44,7 +44,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::matrix_ao
   free_breakfast::response::cphf
   free_breakfast::mcscf::solve
-  free_breakfast::mcscf::zvector
+  free_breakfast::response::zvector
   LINK_PRIVATE
   free_breakfast::core::constants
   free_breakfast::core::diagnostics_macros
@@ -65,7 +65,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::response::hessian
   free_breakfast::response::orbital_pairs
   free_breakfast::mcscf::derivative
-  free_breakfast::mcscf::relaxed_hessian
+  free_breakfast::response::relaxed_hessian
   free_breakfast::mcscf::root_rotation
   free_breakfast::mcscf::third_derivative
   free_breakfast::nevpt2::energy
