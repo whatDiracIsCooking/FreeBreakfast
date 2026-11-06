@@ -2,8 +2,8 @@
 name: test
 description: >-
   Run this repo's two suites the right way and interpret the result honestly —
-  the PR gate (devtools/test.py pr: configure + build + ctest, then the fast
-  pytest set) and the Python tier (pytest, fast/slow split) — pick the tier, use the right worker count for
+  the PR gate (devtools/test.py pr: configure + build + each C++ family's
+  representative, then the fast pytest set) and the Python tier (pytest, fast/slow split) — pick the tier, use the right worker count for
   host vs container, and ALWAYS audit what skipped before calling a run green.
   Use when the user asks to run tests, check a change, or verify an edit.
 ---
@@ -37,6 +37,15 @@ exercised the old binary still imports. Say which suite you ran.
 (`docs/testing.md` "Gates"): `push` is what `git push` runs, `pr` is the gate
 before a PR. `pr` is the C++ tier followed by the fast pytest set.
 
+**`pr` runs each C++ family's representative and nothing else**
+(`docs/testing.md` "Test selection"): the set `devtools/test_families.py`
+lists, an exempt family left out and a flagged one run whole. The nightly
+runs the rest. So `-- -R Foo` runs only `Foo`'s representatives; add `--all`
+for its whole fast set, which is what a targeted rerun wants. Read the
+`pr: representatives only: N of M ctest entries selected, against the
+lister's K representatives` line, and the `skipped representative:` lines:
+a family whose representative skipped ran nothing.
+
 ```bash
 devtools/test.py pr                        # configure + build + ctest + pytest, `auto` preset
 devtools/test.py pr --preset default       # pin the CUDA card
@@ -49,8 +58,9 @@ devtools/test.py pr --no-test              # configure + build only
 devtools/test.py pr --clean                # rebuild every object, keep the cache
 devtools/test.py pr --tidy                 # + clang-tidy over src/*.cpp, ADVISORY
 devtools/test.py pr -j 8                   # parallel compile jobs (BUILD_JOBS)
+devtools/test.py pr --all                  # the whole fast set, not only representatives
 devtools/test.py pr -- -R Constants        # everything after -- goes to ctest
-devtools/test.py pr -- -R MemoryBuffer     # ctest -R matches gtest suite names
+devtools/test.py pr --all -- -R MemoryBuffer  # a suite's whole fast set
 devtools/test.py push --dry-run            # which halves a push would run
 ```
 
