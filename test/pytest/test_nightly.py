@@ -69,9 +69,10 @@ def test_nightly_defaults() -> None:
     assert not args.in_checkout and rest == []
 
 
-def test_nightly_refuses_passthrough() -> None:
-    with pytest.raises(SystemExit):
-        gates.parse(["nightly", "--", "-R", "X"])
+def test_nightly_passes_ctest_args_through() -> None:
+    # A reduced run (#986's acceptance): they go to ctest.
+    args, rest = gates.parse(["nightly", "--", "-R", "X"])
+    assert args.gate == "nightly" and rest == ["-R", "X"]
 
 
 @pytest.mark.parametrize(
