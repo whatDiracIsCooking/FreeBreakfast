@@ -338,7 +338,11 @@ variant. It does not check the container `name` field.
   its ctest summary counts only the rest. Read the `--- gpu batch` and `[gpu]`
   lines below it too.
 - **Both gates have a budget: under five minutes on a busy card.**
-  `test/support/slow_test.h` has the rule that keeps them inside it.
+  `test/support/slow_test.h` has the rule that keeps them inside it: a case
+  past about 1.5 s on an idle RTX 3080 goes under `FBF_SKIP_IF_FAST_TESTS()`
+  unless it is its family's representative. The nightly flags every case that
+  breaks it, and every step in a case's time (`docs/testing.md` "The
+  slow-test rule, enforced").
 
 ### The one portability hole no tier sees
 
