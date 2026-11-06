@@ -912,6 +912,31 @@ TEST(McscfSolveCiFloor, Psb3MeciReachesTheGradientBar) {
   expect_final_ci(*setup, *sol, options, *df, kPsb3ConvTolGrad);
 }
 
+// The same bar on the family's fast case (#1008): water's DF-CAS(4,4)/6-31G
+// over cc-pVDZ-JKFIT (casscf_df.json's h2o_631g), one root, converged to
+// conv_tol_grad 1e-11 within the default max_cycle, and the same final CI's
+// checks. Not the PSB3 regression itself, whose |E| ~ 248 is what put the old
+// floor in reach; this holds the floor's rule on every fast run.
+TEST(McscfSolveCiFloor, H2oReachesTheGradientBar) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  const fb::json &entry = reference_case("h2o_631g", "casscf_df.json");
+  auto setup = make_setup(entry, true);
+  ASSERT_NE(setup, nullptr);
+  const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+  const auto weights = entry.at("weights").get<std::vector<double>>();
+  const auto nroots = static_cast<std::int32_t>(weights.size());
+  const auto df = setup->fit(kDfAuxBasis);
+  ASSERT_TRUE(df.has_value());
+
+  fb::mcscf::Options options;
+  options.conv_tol_grad = kPsb3ConvTolGrad;
+  options.density_fitting = fb::mcscf::DensityFitting::Full;
+  const auto sol = setup->solve(setup->start->c, nroots, weights, options, &df->b, df->naux);
+  ASSERT_TRUE(sol.has_value()) << sol.error().message;
+  expect_final_ci(*setup, *sol, options, *df, kPsb3ConvTolGrad);
+}
+
 // max_cycle running out is MaxIterationsExceeded.
 TEST(McscfSolveLimits, OutOfMacroIterationsIsMaxIterationsExceeded) {
   FBF_REQUIRE_GPU();

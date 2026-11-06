@@ -360,22 +360,36 @@ TYPED_TEST(CgUnitary, OrderOneIsConvergedAtTheStart) {
 
 // reset_period = 1 discards the conjugate direction every step: Riemannian
 // steepest descent, which turns 90 degrees each step and so takes longer.
-TEST(CgUnitaryConjugacy, BeatsSteepestDescent) {
-  FBF_REQUIRE_GPU();
-  FBF_SKIP_IF_FAST_TESTS();
-
+template <typename T>
+void expect_conjugacy_beats_steepest_descent(std::int32_t n) {
   fb::DeviceResources res{0};
-  BrockettProblem<wwr::wwrDoubleComplex> cg{res, kN};
+  BrockettProblem<T> cg{res, n};
   const auto conjugate = cg.solve(fb::CgDirection::Maximize, {});
   ASSERT_TRUE(conjugate) << conjugate.error().message;
 
-  BrockettProblem<wwr::wwrDoubleComplex> sd{res, kN};
-  fb::CgOptions<double> options;
+  BrockettProblem<T> sd{res, n};
+  fb::CgOptions<Real<T>> options;
   options.reset_period = 1;
   options.max_iterations = 5000;
   const auto steepest = sd.solve(fb::CgDirection::Maximize, options);
   ASSERT_TRUE(steepest) << steepest.error().message;
+  std::cout << std::format("[ conjugacy ] n {}: conjugate {} iterations, steepest {}\n", n,
+                           conjugate->iterations, steepest->iterations);
   EXPECT_LT(conjugate->iterations, steepest->iterations);
+}
+
+TEST(CgUnitaryConjugacy, BeatsSteepestDescent) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_conjugacy_beats_steepest_descent<wwr::wwrDoubleComplex>(kN);
+}
+
+// The same race at n = 3, the family's fast case (#1008): about a tenth of
+// steepest descent's iterations, as at n = 6.
+TEST(CgUnitaryConjugacy, BeatsSteepestDescentAtOrderThree) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  expect_conjugacy_beats_steepest_descent<wwr::wwrDoubleComplex>(3);
 }
 
 // The iterate and the samples live in the call's own buffers: a cost that

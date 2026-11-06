@@ -688,10 +688,8 @@ double density_overlap(const fb::json &entry, const Converged &reference, std::s
   return f;
 }
 
-TEST(McscfOverlapDensity, LadderMatchesNac) {
-  FBF_REQUIRE_GPU();
-  FBF_SKIP_IF_FAST_TESTS();
-  const fb::json &entry = reference_case("h2co_ccpvdz_sa2");
+// The ladder over @p coordinates of @p entry, each against df_nac's d[D^X].
+void expect_density_ladder(const fb::json &entry, std::span<const std::size_t> coordinates) {
   const auto weights = entry.at("weights").get<std::vector<double>>();
   const auto start_time = std::chrono::steady_clock::now();
 
@@ -745,7 +743,7 @@ TEST(McscfOverlapDensity, LadderMatchesNac) {
   double worst = 0.0;
   double diagonal = std::numeric_limits<double>::infinity();
   std::int32_t unsettled = 0;
-  for (std::size_t x = 0; x < coords.size(); ++x) {
+  for (const std::size_t x : coordinates) {
     SCOPED_TRACE(std::format("coordinate {}", x));
     std::vector<double> ladder;
     for (std::int32_t k = 0; k < kDensityRungs; ++k) {
@@ -770,7 +768,7 @@ TEST(McscfOverlapDensity, LadderMatchesNac) {
                              x, want, d->basis_motion[x], d->response[x], l.richardson,
                              std::abs(l.richardson - want) / scale, l.ratios);
   }
-  EXPECT_LT(unsettled, static_cast<std::int32_t>(coords.size()));
+  EXPECT_LT(unsettled, static_cast<std::int32_t>(coordinates.size()));
 
   const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start_time;
   std::cout << std::format(
@@ -780,6 +778,28 @@ TEST(McscfOverlapDensity, LadderMatchesNac) {
       "{:.2f} s in all\n",
       scale, bar, worst, worst / scale, unsettled, motion / bar, response / bar, diagonal,
       d->iterations, d->residual, seconds.count());
+}
+
+TEST(McscfOverlapDensity, LadderMatchesNac) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const fb::json &entry = reference_case("h2co_ccpvdz_sa2");
+  std::vector<std::size_t> every(3 * entry.at("atoms").size());
+  std::iota(every.begin(), every.end(), std::size_t{0});
+  expect_density_ladder(entry, every);
+}
+
+// The family's fast case (#1008): the same SA-2 in STO-3G (the same
+// cc-pVDZ-JKFIT fit), and the ladder along one coordinate, C's x, where
+// every coordinate is fourteen re-converged solutions. The visibility of the
+// basis motion and the response is still over every coordinate of d.
+TEST(McscfOverlapDensity, LadderMatchesNacAlongOneSto3gCoordinate) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  fb::json entry = reference_case("h2co_ccpvdz_sa2");
+  entry["basis"] = "sto-3g";
+  const std::array<std::size_t, 1> one{0};
+  expect_density_ladder(entry, one);
 }
 
 } // namespace

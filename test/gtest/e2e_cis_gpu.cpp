@@ -153,6 +153,9 @@ void expect_matches(const fb::CisOutput &out, const fb::json &entry, std::string
 // printed on one line.
 TEST(E2eCis, BenzeneCcpvdzDensityFitted) {
   FBF_REQUIRE_GPU();
+  // The family is this one production-scale case by design (the header says
+  // why); CisStep and CisStepReference keep the step in the fast set.
+  FBF_FAMILY_EXEMPT("the CIS milestone's production-scale run, benzene at n_ov = 1953");
   FBF_SKIP_IF_FAST_TESTS();
   constexpr std::string_view kName = "benzene_ccpvdz_df";
   const fb::json &entry = reference_case(kName);

@@ -1,6 +1,6 @@
 /// @file
 /// @brief Skip-in-fast-mode helper for the heavy end-to-end validation tests,
-/// and the marker that names a family's representative.
+/// and the markers that name a family's representative or exempt it.
 ///
 /// Lives in test/support/ (target free_breakfast::test::support), the one home
 /// of the helpers every gtest tree shares; consumers include it by bare name.
@@ -49,6 +49,16 @@
 /// An instance is named by its param, or `Prefix/param` where two
 /// instantiations share one; `re` is a Python regex, searched for.
 ///
+/// A family with no case that could stay fast, such as a measurement that is
+/// not a check, or a production-scale end-to-end run, is declared exempt
+/// instead, with the reason, in any one of its cases (#1008). The lister
+/// reports it as exempt rather than flagged:
+///
+///   FBF_FAMILY_EXEMPT("why");                the family of this case
+///
+/// Exempt only where no smaller input keeps the family's check: a family takes
+/// a representative or an exemption, never both.
+///
 /// std::getenv comes from the including TU's `import std;` -- the macro is
 /// expanded at the point of use, like gpu_requirement.h, not resolved here.
 
@@ -66,3 +76,4 @@
   } while (0)
 
 #define FBF_FAMILY_REPRESENTATIVE(...) static_assert(true)
+#define FBF_FAMILY_EXEMPT(reason) static_assert(true)

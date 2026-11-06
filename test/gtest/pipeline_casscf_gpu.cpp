@@ -204,7 +204,8 @@ std::pair<std::vector<double>, std::size_t> molden_occupations(const std::filesy
 
 struct Case {
   std::string_view name;
-  // Under slow_test.h: every case but H2O cc-pVDZ, the cheapest.
+  // Under slow_test.h: every case but H2O cc-pVDZ, the cheapest. H2O 6-31G is
+  // the PySCF comparison's fast case (#1008), and slow everywhere else.
   bool slow;
 };
 
@@ -305,9 +306,13 @@ class PipelineCasscf : public ::testing::TestWithParam<Case> {};
 
 TEST_P(PipelineCasscf, MatchesPyscf) {
   FBF_REQUIRE_GPU();
-  // Under slow_test.h: every case. H2O cc-pVDZ is McscfSolve's fast case over
-  // the same reference, and MatchesPyscfDensityFitted's keeps this step's.
-  FBF_SKIP_IF_FAST_TESTS();
+  // Under slow_test.h: every case but H2O 6-31G, the family's representative
+  // (#1008). H2O cc-pVDZ integral-direct costs seconds here, as McscfSolve's
+  // fast case does over the same reference.
+  FBF_FAMILY_REPRESENTATIVE("h2o_631g");
+  if (GetParam().name != "h2o_631g") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const fb::json &entry = reference_case(GetParam().name);
   expect_matches(entry, casscf_table(entry));
 }
@@ -337,7 +342,8 @@ TEST_P(PipelineCasscf, MatchesPyscfDensityFitted) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineCasscf,
-                         ::testing::Values(Case{.name = "h2o_ccpvdz", .slow = false},
+                         ::testing::Values(Case{.name = "h2o_631g", .slow = true},
+                                           Case{.name = "h2o_ccpvdz", .slow = false},
                                            Case{.name = "n2_ccpvdz", .slow = true},
                                            Case{.name = "h2co_ccpvdz_sa2", .slow = true},
                                            Case{.name = "h2co_ccpvdz_sa2_weighted", .slow = true},

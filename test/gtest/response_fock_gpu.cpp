@@ -434,7 +434,8 @@ std::optional<double> slope(Setup &setup, const fb::SphericalMatrixAO &c, std::i
 
 struct Case {
   std::string_view name;
-  // Under slow_test.h: every case but H2O cc-pVDZ, the cheapest.
+  // Under slow_test.h: every case but H2O cc-pVDZ, the cheapest. H2O 6-31G is
+  // the PySCF comparison's fast case (#1008), and slow everywhere else.
   bool slow;
 };
 
@@ -447,11 +448,12 @@ class ResponseFock : public ::testing::TestWithParam<Case> {};
 
 TEST_P(ResponseFock, MatchesPyscfAtTheCasciOrbitals) {
   FBF_REQUIRE_GPU();
-  // Under slow_test.h: every case. H2O cc-pVDZ, 2.9 s on the gfx1200 (#793),
-  // builds the same integral-direct fock as
-  // DensityFittedMatchesItsHostReferenceAndTheDirectOne's H2O below, which
-  // stays in the fast set; only the PySCF comparison moves.
-  if (GetParam().slow || GetParam().name == "h2o_ccpvdz") {
+  // Under slow_test.h: every case but H2O 6-31G, the family's representative
+  // (#1008). H2O cc-pVDZ, 2.9 s on the gfx1200 (#793), builds the same
+  // integral-direct fock as DensityFittedMatchesItsHostReferenceAndTheDirectOne's
+  // H2O below, which stays in the fast set.
+  FBF_FAMILY_REPRESENTATIVE("h2o_631g");
+  if (GetParam().name != "h2o_631g") {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const fb::json &entry = reference_case(GetParam().name);
@@ -523,7 +525,8 @@ TEST_P(ResponseFock, MatchesPyscfAtTheCasciOrbitals) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, ResponseFock,
-                         ::testing::Values(Case{.name = "h2o_ccpvdz", .slow = false},
+                         ::testing::Values(Case{.name = "h2o_631g", .slow = true},
+                                           Case{.name = "h2o_ccpvdz", .slow = false},
                                            Case{.name = "n2_ccpvdz", .slow = true},
                                            Case{.name = "h2co_ccpvdz_sa2", .slow = true},
                                            Case{.name = "h2co_ccpvdz_sa2_weighted", .slow = true},

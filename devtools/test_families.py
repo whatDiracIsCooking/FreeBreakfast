@@ -23,14 +23,23 @@ reads it from the source, and places it in the test whose definition line
 An instance is named by its param, or `Prefix/param` where two
 instantiations share a param name. A split family is called `Foo.Bar[re]`.
 
+A family with no case fit for the fast set is declared exempt instead (#1008),
+by its form of the marker in any one of its cases, with the reason:
+
+    FBF_FAMILY_EXEMPT("why");                the family of this case
+
+An exempt family is reported as exempt, with its reason, not flagged, and
+must not also have a marked representative.
+
 Times come from the metrics branch's records (docs/testing.md "Metrics"):
 `--metrics FILE`, or else the `metrics` branch of the source checkout when it
 has one, filtered to this host and to the `nightly`, `weekly` and `manual`
 kinds. `--log FILE` adds a gate's log: gtest's `[       OK ] Case (N ms)` and
 ctest's `Passed  N sec` lines. A member's time is the median of its passes.
 
-Exit status: 0 when every family has a representative or is flagged, 1 when a
-marker cannot be placed or contradicts another, 2 when nothing could be read.
+Exit status: 0 when every family has a representative, is exempt or is
+flagged, 1 when a marker cannot be placed or contradicts another, 2 when
+nothing could be read.
 
 Standard library only: it must run under a bare `python3`.
 """
@@ -50,14 +59,22 @@ from pathlib import Path
 
 SCHEMA = 1
 MARKER = "FBF_FAMILY_REPRESENTATIVE"
+EXEMPT = "FBF_FAMILY_EXEMPT"
 _STRING = r'"(?:[^"\\]|\\.)*"'
-# The macro and its arguments, string literals only, so a regex argument may
-# hold a parenthesis.
+_MACROS = "(" + MARKER + "|" + EXEMPT + ")"
+# Either macro and its arguments, string literals only, so a regex argument
+# may hold a parenthesis.
 MARKER_RE = re.compile(
-    r"\b" + MARKER + r"\s*\(\s*((?:" + _STRING + r"\s*(?:,\s*" + _STRING + r"\s*)*)?)\)"
+    r"\b"
+    + _MACROS
+    + r"\s*\(\s*((?:"
+    + _STRING
+    + r"\s*(?:,\s*"
+    + _STRING
+    + r"\s*)*)?)\)"
 )
 STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
-ANY_MARKER_RE = re.compile(r"\b" + MARKER + r"\b")
+ANY_MARKER_RE = re.compile(r"\b" + _MACROS + r"\b")
 FILTER_FLAG = "--gtest_filter="
 TIMED_KINDS = ("nightly", "weekly", "manual")
 GTEST_OK = re.compile(r"\[ +OK +\] (\S+) \((\d+) ms\)")
@@ -84,6 +101,7 @@ class Marker:
     file: str
     line: int
     args: list[str] | None  # None: an argument that is not a string literal
+    macro: str = MARKER  # or EXEMPT
 
 
 @dataclass
@@ -91,8 +109,9 @@ class Family:
     name: str
     members: list[str] = field(default_factory=list)
     representative: str | None = None
-    by: str | None = None  # "marked" | "cheapest"
+    by: str | None = None  # "marked" | "cheapest" | "exempt"
     seconds: float | None = None
+    reason: str | None = None  # an exempt family's
 
 
 # --- reading ---------------------------------------------------------------
@@ -192,11 +211,11 @@ def markers_in(source: Path, files: set[str]) -> list[Marker]:
             found = list(MARKER_RE.finditer(code))
             for m in found:
                 args = [
-                    re.sub(r"\\(.)", r"\1", a) for a in STRING_RE.findall(m.group(1))
+                    re.sub(r"\\(.)", r"\1", a) for a in STRING_RE.findall(m.group(2))
                 ]
-                out.append(Marker(f, n, args))
-            if len(found) != len(ANY_MARKER_RE.findall(code)):
-                out.append(Marker(f, n, None))  # not string literals: an error
+                out.append(Marker(f, n, args, m.group(1)))
+            for macro in ANY_MARKER_RE.findall(code)[len(found) :]:
+                out.append(Marker(f, n, None, macro))  # not string literals: an error
     return out
 
 
@@ -269,23 +288,37 @@ def families(
         by_file[c.file].append(c)
 
     marked: dict[str, tuple[Marker, str]] = {}  # family -> (marker, case)
+    exempt: dict[str, tuple[Marker, str]] = {}  # family -> (marker, reason)
     splits: dict[str, list[tuple[str, re.Pattern]]] = defaultdict(list)
     for mk in markers:
         where = f"{mk.file}:{mk.line}"
         if mk.args is None:
-            errors.append(f"{where}: {MARKER}'s arguments are string literals only")
+            errors.append(f"{where}: {mk.macro}'s arguments are string literals only")
             continue
         above = [c for c in by_file.get(mk.file, []) if c.line <= mk.line]
         if not above:
-            errors.append(f"{where}: {MARKER} is not inside any listed test")
+            errors.append(f"{where}: {mk.macro} is not inside any listed test")
             continue
         line = max(c.line for c in above)
         owners = [c for c in above if c.line == line]
         tests = {c.test for c in owners}
         if len(tests) != 1:
-            errors.append(f"{where}: {MARKER} is ambiguous among {sorted(tests)}")
+            errors.append(f"{where}: {mk.macro} is ambiguous among {sorted(tests)}")
             continue
         test = tests.pop()
+        if mk.macro == EXEMPT:
+            if len(mk.args) != 1 or not mk.args[0].strip():
+                errors.append(f"{where}: {EXEMPT} takes one string literal, the reason")
+                continue
+            family = owners[0].default_family
+            if family in exempt:
+                first = exempt[family][0]
+                errors.append(
+                    f"{where}: {family} is already exempt at {first.file}:{first.line}"
+                )
+                continue
+            exempt[family] = (mk, mk.args[0])
+            continue
         if owners[0].param is None:
             if mk.args:
                 errors.append(f"{where}: {MARKER} in a TEST takes no arguments")
@@ -339,6 +372,15 @@ def families(
 
     times = times or {}
     for fam in out.values():
+        if fam.name in exempt:
+            mk, fam.reason = exempt[fam.name]
+            fam.by = "exempt"
+            if fam.name in marked:
+                errors.append(
+                    f"{mk.file}:{mk.line}: {fam.name} is exempt and also has a "
+                    "marked representative"
+                )
+            continue
         if fam.name in marked:
             fam.representative, fam.by = marked[fam.name][1], "marked"
             if fam.representative not in fam.members:
@@ -376,6 +418,8 @@ def report(fams: dict[str, Family], out, *, flagged_only: bool = False) -> None:
             how = "marked" + (f" ({f.seconds:.3f} s)" if f.seconds is not None else "")
         elif f.by == "cheapest":
             how = f"cheapest ({f.seconds:.3f} s)"
+        elif f.by == "exempt":
+            how = f"exempt: {f.reason}"
         else:
             how = "FLAGGED: not marked, and no recorded time"
         if flagged_only and f.by is not None:
@@ -393,7 +437,7 @@ def summary(fams: dict[str, Family], times_from: str) -> str:
     return (
         f"test_families: {len(fams)} families over {members} cases: "
         f"{count['marked']} marked, {count['cheapest']} cheapest by time, "
-        f"{count[None]} flagged; times: {times_from}"
+        f"{count['exempt']} exempt, {count[None]} flagged; times: {times_from}"
     )
 
 
@@ -507,10 +551,12 @@ def main(argv: list[str] | None = None) -> int:
                     "representative": f.representative,
                     "by": f.by,
                     "seconds": f.seconds,
+                    "reason": f.reason,
                 }
                 for f in sorted(fams.values(), key=lambda f: f.name)
             },
             "flagged": sorted(f.name for f in fams.values() if f.by is None),
+            "exempt": sorted(f.name for f in fams.values() if f.by == "exempt"),
             "not_gtest": sorted(other),
             "errors": errors,
             "notes": notes,
