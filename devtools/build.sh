@@ -39,7 +39,7 @@
 # Two lives. Run directly, this is the build-only tier: configure + build,
 # logged, with its own PASS/FAIL summary line (tagged `build`, so it is distinct
 # from `test.py pr`'s line in the same summary.log). SOURCED -- which is how
-# devtools/test.py (through bash) and cpp-slow-tier.sh use it -- it defines
+# devtools/test.py uses it, through bash -- it defines
 # run_phase, cpp_build_dir, cpp_require_build_tools and cpp_build and does
 # nothing else, so a gate's configure, build and ctest all tee into ONE log
 # (BUILD_LOG) and the gate writes the single summary line. Nothing here
@@ -59,8 +59,8 @@ fi
 : "${BUILD_LOG:=/dev/null}"
 
 # Echo one phase's header and streamed output into BUILD_LOG, and return the
-# command's status (not tee's -- PIPESTATUS[0]). Shared with cpp-slow-tier.sh's
-# ctest phase, which is why it lives here; devtools/test.py has its own port.
+# command's status (not tee's -- PIPESTATUS[0]). devtools/test.py has its own
+# port, for the phases it runs itself (ctest, pytest).
 run_phase() {
   local name=$1; shift
   echo "--- $name: $* ---" | tee -a "$BUILD_LOG"
@@ -96,9 +96,12 @@ cpp_require_build_tools() {
 # Configure then build one preset, teeing both phases into BUILD_LOG. Returns
 # the first failing phase's status; runs with the caller's errexit setting, so
 # wrap the call in `set +e; cpp_build ... || rc=$?` as both entry points do.
-#   cpp_build <preset> <fresh 0|1> <clean 0|1> <jobs-or-empty>
+# Anything after the jobs goes to the configure: the weekly nightly's
+# -DFREE_BREAKFAST_SCCACHE=OFF, and the warm nightly's -U of it.
+#   cpp_build <preset> <fresh 0|1> <clean 0|1> <jobs-or-empty> [cmake args...]
 cpp_build() {
   local preset=$1 fresh=$2 clean=$3 jobs=$4
+  shift 4
 
   # pre-commit's pre-push stage runs this (via test.py push) with GIT_DIR /
   # GIT_WORK_TREE / GIT_INDEX_FILE set for its own hook dispatch. Those leak
@@ -118,7 +121,7 @@ cpp_build() {
   init_submodules "$REPO_ROOT" 2>&1 | tee -a "$BUILD_LOG" ||
     echo "build: WARNING -- submodule init failed; configuring anyway" >&2
 
-  local configure=(cmake --preset "$preset")
+  local configure=(cmake --preset "$preset" "$@")
   [ "$fresh" -eq 1 ] && configure+=(--fresh)
   run_phase configure "${configure[@]}" || return $?
 

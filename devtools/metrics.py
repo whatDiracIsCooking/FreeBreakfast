@@ -332,12 +332,49 @@ def toolchain(build_dir: Path, backend: str) -> dict:
     return out
 
 
+# CMake's false constants, as if() reads them: what the root CMakeLists.txt's
+# `if(FREE_BREAKFAST_SCCACHE)` sees. The weekly nightly configures with
+# -DFREE_BREAKFAST_SCCACHE=OFF, which find_program then leaves alone.
+_CMAKE_FALSE = ("", "0", "OFF", "NO", "FALSE", "N", "IGNORE", "NOTFOUND")
+
+
 def launcher_on(build_dir: Path) -> bool:
     """Whether the build compiled through sccache: the root CMakeLists.txt's
     find_program(FREE_BREAKFAST_SCCACHE), which is what installs the
-    launchers."""
+    launchers. A false constant or a *-NOTFOUND is off."""
     value = _cache(build_dir).get("FREE_BREAKFAST_SCCACHE", "")
-    return bool(value) and not value.endswith("NOTFOUND")
+    return value.upper() not in _CMAKE_FALSE and not value.endswith("-NOTFOUND")
+
+
+DMI = Path("/sys/class/dmi/id")
+
+
+def host_name(override: str | None = None, dmi: Path = DMI) -> str:
+    """The record's `host`: the machine, named the same way on the host and
+    in every container on it, and across a devcontainer rebuild.
+
+    METRICS_HOST (devtools/config.sh, or the environment) wins when set.
+    Otherwise the board's vendor and name from DMI (else the system's), which
+    a container reads as the host does: /sys/class/dmi/id is world-readable
+    there, where the hostname is the container's id and /etc/machine-id the
+    image's. Only where DMI says nothing (no /sys, a non-x86 board) is it the
+    hostname."""
+    if override and override.strip():
+        return override.strip()
+
+    def field(name: str) -> str:
+        try:
+            return (dmi / name).read_text(errors="replace").strip()
+        except OSError:
+            return ""
+
+    for vendor, name in (
+        ("board_vendor", "board_name"),
+        ("sys_vendor", "product_name"),
+    ):
+        if field(name):
+            return " ".join(p for p in (field(vendor), field(name)) if p)
+    return socket.gethostname()
 
 
 def probe(build_dir: Path, backend: str) -> tuple[dict, dict]:
@@ -389,7 +426,7 @@ def make_record(
 ) -> dict:
     """One record, schema 1, with docs/testing.md's fields in its order.
     `build` is None for a run that built nothing; `selection` belongs to
-    shadow records only."""
+    shadow records only; `host` defaults to host_name()."""
     if kind not in KINDS:
         raise MetricsError(f"kind {kind!r} is not one of {', '.join(KINDS)}")
     if result not in ("pass", "fail"):
@@ -406,7 +443,7 @@ def make_record(
         "kind": kind,
         "started": started,
         "finished": finished,
-        "host": host or socket.gethostname(),
+        "host": host or host_name(),
         "commit": commit,
         "backend": backend,
         "preset": preset,

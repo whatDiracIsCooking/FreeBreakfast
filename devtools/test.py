@@ -5,6 +5,8 @@
   devtools/test.py pr   [--preset NAME] [--fresh] [--clean] [--no-test]
                         [--tidy] [--only cpp|python] [-j N] [--report DIR]
                         [--record] [-- <ctest args>]
+  devtools/test.py nightly [--mode auto|nightly|weekly] [--rev REF]
+                        [--preset NAME] [-j N] [--report DIR]
 
 push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   pushed range (PRE_COMMIT_FROM_REF...PRE_COMMIT_TO_REF, which pre-commit
@@ -33,8 +35,18 @@ pr: the gate before opening a PR (milestone-run requires it). Configure,
                    record (devtools/metrics.py; a clean tree only)
     -- <args>      passed to ctest verbatim; they select the GPU batches too
 
-Both gates run with FREE_BREAKFAST_FAST_TESTS=1, so every case under
-FBF_SKIP_IF_FAST_TESTS() skips; cpp-slow-tier.sh is the unskipped run. Each
+nightly: what the timer runs (docs/testing.md "The nightly"). Fetch origin,
+  check REF (default origin/main) out clean in NIGHTLY_WORKTREE, and run that
+  checkout's own test.py there: a build (warm; on NIGHTLY_WEEKLY_DAY, or with
+  --mode weekly, clean with the compiler launcher off), then under the card
+  lock every C++ case unskipped and the whole pytest suite, then
+  cross-backend-check.sh, and a `nightly` or `weekly` record appended to
+  `metrics`. Build and GPU run never overlap. CUDA (--preset default) by
+  design. Logged to <report>/<mode>-<stamp>-<rev>-<preset>.log under the
+  primary checkout.
+
+push and pr run with FREE_BREAKFAST_FAST_TESTS=1, so every case under
+FBF_SKIP_IF_FAST_TESTS() skips; nightly is the unskipped run. Each
 GPU batch is watched: a batch silent for GPU_BATCH_STALL_SECONDS, or running
 past GPU_BATCH_BUDGET_SECONDS, is killed, its case named on a
 `[gpu] hung in <case>` line, and its state written to <log>.gpu-wedge.txt
@@ -85,6 +97,10 @@ CONFIG_VARS = (
     "PREPUSH_PATHS",
     "SLOW_TIER_REPORTS",
     "METRICS_WORKTREE",
+    "METRICS_HOST",
+    "NIGHTLY_WORKTREE",
+    "NIGHTLY_WEEKLY_DAY",
+    "NIGHTLY_GPU_BATCH_BUDGET_SECONDS",
     "VENV_PATHS",
     "JOBS",
     "PRIMARY_ROOT",
@@ -645,17 +661,25 @@ def run_phase(
 
 
 def cpp_build(
-    preset: str, fresh: bool, clean: bool, jobs: str, log: Path, quiet: bool
+    preset: str,
+    fresh: bool,
+    clean: bool,
+    jobs: str,
+    log: Path,
+    quiet: bool,
+    configure_args: tuple[str, ...] = (),
 ) -> int:
-    """build.sh's cpp_build, the one copy of the configure and build phases."""
+    """build.sh's cpp_build, the one copy of the configure and build phases.
+    `configure_args` go to the configure."""
     out = subprocess.DEVNULL if quiet else None
     return lib(
-        'BUILD_LOG=$1; cpp_build "$2" "$3" "$4" "$5"',
+        'BUILD_LOG=$1; shift; cpp_build "$@"',
         str(log),
         preset,
         "1" if fresh else "0",
         "1" if clean else "0",
         jobs,
+        *configure_args,
         capture=False,
         build=True,
         stdout=out,
@@ -668,12 +692,25 @@ def fast_env() -> dict[str, str]:
     return dict(os.environ, FREE_BREAKFAST_FAST_TESTS="1")
 
 
+def full_env() -> dict[str, str]:
+    """The nightly's: nothing skips, whatever the caller's shell exported."""
+    env = dict(os.environ)
+    env.pop("FREE_BREAKFAST_FAST_TESTS", None)
+    return env
+
+
 def python_half(
-    tag: str, cfg: dict[str, str], log: Path | None, junit: Path | None = None
+    tag: str,
+    cfg: dict[str, str],
+    log: Path | None,
+    junit: Path | None = None,
+    select: list[str] | None = None,
 ) -> int:
     """The fast pytest set: FAST_TEST_ARGS over PREPUSH_PATHS, JOBS workers,
     -rs so the skips are listed, and no .pytest_cache written. With `junit`,
-    a JUnit report there too (xunit1, which names each case's file)."""
+    a JUnit report there too (xunit1, which names each case's file). With
+    `select`, those arguments choose the cases instead ([] is the whole
+    suite, the nightly's)."""
     pytest = find_pytest(cfg)
     if pytest is None:
         say(f"{tag}: no pytest found in {cfg['VENV_PATHS']} or on PATH", err=True)
@@ -689,7 +726,9 @@ def python_half(
     cmd += ["-q", "-rs", "-p", "no:cacheprovider"]
     if junit is not None:
         cmd += [f"--junitxml={junit}", "-o", "junit_family=xunit1"]
-    cmd += shlex.split(cfg["FAST_TEST_ARGS"]) + shlex.split(cfg["PREPUSH_PATHS"])
+    if select is None:
+        select = shlex.split(cfg["FAST_TEST_ARGS"]) + shlex.split(cfg["PREPUSH_PATHS"])
+    cmd += select
     if log is None:
         say(f"--- pytest: {' '.join(cmd)} ---")
         return subprocess.run(cmd, cwd=REPO_ROOT, check=False).returncode
@@ -929,6 +968,9 @@ def tier_tests(
     passthrough: list[str],
     log: Path,
     results: Path | None = None,
+    *,
+    tag: str = "pr",
+    env: dict[str, str] | None = None,
 ) -> int:
     """The C++ test phase, inside the held card. ctest runs the host entries,
     the RUN_SERIAL ones and anything a launcher wraps, CTEST_JOBS at once;
@@ -939,9 +981,8 @@ def tier_tests(
 
     With `results`, the run's per-case reports go there for the metrics
     record (run_cases): the listing, ctest's JUnit, and each batch's gtest
-    JSON."""
-    tag = "pr"
-    env = fast_env()
+    JSON. `env` is the tests' (default: fast_env, the gate's)."""
+    env = fast_env() if env is None else env
     gpu_bins = [build_dir / rel for rel in GPU_BINS]
     listing = subprocess.run(
         ["ctest", "--preset", test_preset, "--show-only=json-v1", *passthrough],
@@ -1164,6 +1205,7 @@ def cmd_pr(
             gpu, tools = metrics.probe(build_dir, backend)
             record = metrics.make_record(
                 kind="manual",
+                host=metrics.host_name(cfg["METRICS_HOST"]),
                 started=started,
                 finished=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 commit=subprocess.run(
@@ -1200,6 +1242,257 @@ def cmd_pr(
     return rc
 
 
+# --- nightly ---------------------------------------------------------------
+
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+# The configure of each mode. The weekly's OFF is a false constant that
+# find_program leaves alone (a *-NOTFOUND it would search again), so the root
+# CMakeLists.txt installs no launcher; the next warm night's -U drops it, and
+# find_program finds sccache again.
+LAUNCHER_OFF = ("-DFREE_BREAKFAST_SCCACHE=OFF",)
+LAUNCHER_ON = ("-UFREE_BREAKFAST_SCCACHE",)
+
+
+class NightlyError(Exception):
+    """The nightly checkout cannot be made or reset as asked."""
+
+
+def nightly_mode(requested: str, weekly_day: str, today: int) -> str:
+    """`nightly` (a warm build) or `weekly` (a clean one, launcher off).
+    `auto` is weekly on NIGHTLY_WEEKLY_DAY (Mon..Sun); `today` is
+    date.weekday()'s number, Monday 0."""
+    if requested != "auto":
+        return requested
+    day = weekly_day.strip()[:3].title()
+    if day not in WEEKDAYS:
+        raise NightlyError(
+            f"NIGHTLY_WEEKLY_DAY={weekly_day!r} is not a weekday (Mon..Sun)"
+        )
+    return "weekly" if WEEKDAYS.index(day) == today else "nightly"
+
+
+def _git_env() -> dict[str, str]:
+    return {
+        k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "PRE_COMMIT"))
+    }
+
+
+def _git(cwd: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        env=_git_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        why = (proc.stderr.strip() or proc.stdout.strip()).splitlines()[-1:]
+        raise NightlyError(f"git {' '.join(args)}: {why[0] if why else 'failed'}")
+    return proc.stdout.strip()
+
+
+def nightly_checkout(primary: Path, worktree: Path, rev: str) -> str:
+    """`rev` checked out clean, detached, in `worktree`, made on first use
+    from `primary`. Tracked changes and untracked files go, in the submodules
+    too; ignored ones stay, so the build directory is still warm. Returns the
+    full SHA."""
+    sha = _git(primary, "rev-parse", "--verify", f"{rev}^{{commit}}")
+    if not (worktree / ".git").exists():
+        if worktree.exists() and any(worktree.iterdir()):
+            raise NightlyError(f"{worktree} exists and is not a worktree")
+        # A worktree directory deleted by hand is still registered; forget it.
+        _git(primary, "worktree", "prune")
+        worktree.parent.mkdir(parents=True, exist_ok=True)
+        _git(primary, "worktree", "add", "--detach", str(worktree), sha)
+    else:
+        mine = Path(
+            _git(primary, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        )
+        theirs = Path(
+            _git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        )
+        if mine.resolve() != theirs.resolve():
+            raise NightlyError(f"{worktree} is a worktree of another repository")
+        _git(worktree, "checkout", "--quiet", "--force", "--detach", sha)
+        _git(worktree, "reset", "--quiet", "--hard", sha)
+        _git(worktree, "clean", "-ffdq")
+    _git(worktree, "submodule", "sync", "--quiet", "--recursive")
+    _git(worktree, "submodule", "update", "--quiet", "--init", "--recursive", "--force")
+    _git(worktree, "submodule", "foreach", "--quiet", "--recursive", "git clean -ffdq")
+    return sha
+
+
+def cmd_nightly(args: argparse.Namespace, cfg: dict[str, str]) -> int:
+    """The outer half: fetch, the clean checkout, then that checkout's own
+    test.py with --in-checkout. What runs is the code under test, not
+    whatever the primary checkout has."""
+    tag = "nightly"
+    primary = Path(cfg["PRIMARY_ROOT"] or REPO_ROOT)
+    worktree = primary / cfg["NIGHTLY_WORKTREE"]
+    report = report_dir_of(args.report or str(primary / cfg["SLOW_TIER_REPORTS"]))
+    try:
+        mode = nightly_mode(
+            args.mode, cfg["NIGHTLY_WEEKLY_DAY"], time.localtime().tm_wday
+        )
+        say(f"{tag}: fetching origin in {primary} ...")
+        _git(primary, "fetch", "--quiet", "origin")
+        sha = nightly_checkout(primary, worktree, args.rev)
+    except NightlyError as e:
+        say(f"{tag}: {e}", err=True)
+        line = f"test.py nightly FAIL(rc=1)  rev={args.rev}  ({e})"
+        say(line, err=True)
+        with (report / "summary.log").open("a") as f:
+            f.write(line + "\n")
+        return 1
+    say(f"{tag}: {args.rev} = {sha[:12]} checked out clean in {worktree} ({mode})")
+    cmd = [
+        sys.executable,
+        str(worktree / "devtools" / "test.py"),
+        "nightly",
+        "--in-checkout",
+        "--mode",
+        mode,
+        "--report",
+        str(report),
+    ]
+    if args.preset:
+        cmd += ["--preset", args.preset]
+    if args.jobs:
+        cmd += ["--jobs", args.jobs]
+    return subprocess.run(cmd, cwd=worktree, check=False).returncode
+
+
+def nightly_run(args: argparse.Namespace, cfg: dict[str, str]) -> int:
+    """The inner half, in the nightly checkout: build, then the tests under
+    the card, then the cross-backend check, then the record. Strictly in that
+    order: many GPU cases are bound by launch latency, and a compile beside
+    them would put noise in the series."""
+    mode = args.mode if args.mode != "auto" else "nightly"
+    tag = mode
+    preset = args.preset or "default"
+    backend = backend_of_preset(preset, cfg)
+    jobs = args.jobs or cfg["BUILD_JOBS"]
+    if lib("cpp_require_build_tools", build=True, capture=False).returncode != 0:
+        return 1
+    report = report_dir_of(args.report or cfg["SLOW_TIER_REPORTS"])
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    rev, diff_hash = tree_rev()
+    if diff_hash:
+        say(
+            f"{tag}: {REPO_ROOT} has tracked changes at {rev} -- not a clean checkout",
+            err=True,
+        )
+        return 2
+    log = report / f"{mode}-{stamp}-{rev}-{preset}.log"
+    results = log.with_suffix(".results")
+    say(f"{tag}: {REPO_ROOT} @ {rev}  preset={preset} -> {log}")
+    metrics = load_metrics()
+    started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    build_dir = build_dir_of(preset)
+    clean = mode == "weekly"
+
+    # 1. The build, alone.
+    since = metrics.ninja_offset(build_dir / ".ninja_log")
+    build_start = time.monotonic()
+    say(
+        f"{tag}: building ({'clean, launcher off' if clean else 'warm'},"
+        f" preset={preset}, -j {jobs or 'auto'}) ...",
+        log=log,
+    )
+    rc = cpp_build(
+        preset,
+        False,
+        clean,
+        jobs,
+        log,
+        quiet=False,
+        configure_args=LAUNCHER_OFF if clean else LAUNCHER_ON,
+    )
+    build = {
+        "mode": "clean" if clean else "warm",
+        "launcher": metrics.launcher_on(build_dir),
+        "jobs": int(jobs) if jobs else os.cpu_count() or 0,
+        "seconds": time.monotonic() - build_start,
+    }
+    if clean and (build_dir / ".ninja_log").is_file():
+        build["files"] = metrics.ninja_files(build_dir / ".ninja_log", since)
+    if rc != 0:
+        say(f"{tag}: BUILD FAILED (rc={rc}) -- no tests run", err=True, log=log)
+
+    # 2. Everything, unskipped, under the card: a held card is waited for.
+    if rc == 0:
+        say(f"{tag}: every case, unskipped (no FREE_BREAKFAST_FAST_TESTS)", log=log)
+        run_cfg = dict(
+            cfg, GPU_BATCH_BUDGET_SECONDS=cfg["NIGHTLY_GPU_BATCH_BUDGET_SECONDS"]
+        )
+        env = full_env()
+        os.environ.pop("FREE_BREAKFAST_FAST_TESTS", None)
+        with Card(backend, cfg):
+            crc = tier_tests(
+                run_cfg, preset, build_dir, [], log, results, tag=tag, env=env
+            )
+            results.mkdir(parents=True, exist_ok=True)
+            prc = python_half(tag, cfg, log, results / "pytest.xml", select=[])
+        rc = crc or prc
+
+        # 3. The HIP cover: a compile of every .cu through clang -x hip.
+        xrc = run_phase(
+            "cross-backend-check",
+            [str(REPO_ROOT / "devtools" / "cross-backend-check.sh")]
+            + (["-j", jobs] if jobs else []),
+            log,
+        )
+        if xrc == 2:
+            say(
+                f"{tag}: cross-backend-check could not run (exit 2) -- not a pass",
+                err=True,
+                log=log,
+            )
+        elif xrc != 0:
+            say(f"{tag}: cross-backend-check FAILED (rc={xrc})", err=True, log=log)
+        rc = rc or xrc
+
+    # 4. The record, pass or fail.
+    verdict = "PASS" if rc == 0 else f"FAIL(rc={rc})"
+    summary = (
+        f"test.py nightly {verdict}  rev={rev}  preset={preset}  mode={mode}"
+        f"  stamp={stamp}"
+    )
+    try:
+        gpu, tools = metrics.probe(build_dir, backend)
+        record = metrics.make_record(
+            kind=mode,
+            host=metrics.host_name(cfg["METRICS_HOST"]),
+            started=started,
+            finished=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            commit=_git(REPO_ROOT, "rev-parse", "HEAD"),
+            backend=backend,
+            preset=preset,
+            gpu=gpu,
+            toolchain=tools,
+            build=metrics.build_info(**build),
+            cases=run_cases(metrics, results),
+            result="pass" if rc == 0 else "fail",
+        )
+        root = Path(cfg["PRIMARY_ROOT"] or REPO_ROOT)
+        sha, where = metrics.append(record, REPO_ROOT, root / cfg["METRICS_WORKTREE"])
+        say(
+            f"{tag}: metrics: {len(record['cases'])} case(s), host"
+            f" {record['host']!r} -> {where} @ {sha[:12]}",
+            log=log,
+        )
+        summary += f"  metrics={sha[:12]}"
+    except (metrics.MetricsError, NightlyError, OSError, ValueError, SyntaxError) as e:
+        say(f"{tag}: metrics: FAILED to record the run: {e}", err=True, log=log)
+        summary += "  metrics=FAILED"
+        rc = rc or 1
+    say(summary, log=log)
+    with (report / "summary.log").open("a") as f:
+        f.write(summary + "\n")
+    return rc
+
+
 # --- arguments -------------------------------------------------------------
 
 
@@ -1216,13 +1509,20 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="More in devtools/test.py's docstring and docs/testing.md.",
     )
-    gates = parser.add_subparsers(dest="gate", required=True, metavar="{push,pr}")
+    gates = parser.add_subparsers(
+        dest="gate", required=True, metavar="{push,pr,nightly}"
+    )
     push = gates.add_parser("push", help="what the pre-push hook runs")
     pr = gates.add_parser("pr", help="the gate before opening a PR")
+    nightly = gates.add_parser("nightly", help="what the timer runs")
     for p in (push, pr):
         p.add_argument(
             "--preset", help="configure/build preset (default: CMAKE_PRESET)"
         )
+    nightly.add_argument(
+        "--preset", help="configure/build preset (default: default, the CUDA card)"
+    )
+    for p in (push, pr, nightly):
         p.add_argument("-j", "--jobs", help="compile jobs (default: BUILD_JOBS)")
     push.add_argument(
         "--dry-run",
@@ -1244,6 +1544,22 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help="append the run to the metrics branch (a clean tree only)",
     )
+    nightly.add_argument(
+        "--mode",
+        choices=("auto", "nightly", "weekly"),
+        default="auto",
+        help="weekly: a clean build, launcher off (default: weekly on"
+        " NIGHTLY_WEEKLY_DAY, else nightly, a warm build)",
+    )
+    nightly.add_argument(
+        "--rev", default="origin/main", help="what to test (default: origin/main)"
+    )
+    nightly.add_argument(
+        "--report", help="log directory (default: SLOW_TIER_REPORTS, primary checkout)"
+    )
+    # Internal: the outer half re-runs the nightly checkout's own test.py
+    # with it, once the checkout is made.
+    nightly.add_argument("--in-checkout", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if passthrough and args.gate != "pr":
         parser.error("only `pr` takes arguments after `--` (they go to ctest)")
@@ -1257,6 +1573,8 @@ def main(argv: list[str]) -> int:
     cfg = read_config()
     if args.gate == "push":
         return cmd_push(args, cfg)
+    if args.gate == "nightly":
+        return nightly_run(args, cfg) if args.in_checkout else cmd_nightly(args, cfg)
     return cmd_pr(args, cfg, passthrough)
 
 
