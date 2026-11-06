@@ -1,0 +1,14 @@
+# Fires free-breakfast-nightly@<the same instance>.service once a night. The
+# service file has the install commands.
+
+[Unit]
+Description=free-breakfast nightly timer for %I
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+# A night missed while the box was off is not caught up at boot, in the
+# middle of a working day: the next night runs as usual.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

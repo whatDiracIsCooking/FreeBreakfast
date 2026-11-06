@@ -5,7 +5,7 @@
 # and how its tests run.
 #
 # Sourced (never executed) by devcontainer.sh, worktree.sh, doctor.sh and
-# slow-tier.sh, and evaluated in bash by devtools/test.py, which reads its
+# the other shell tools, and evaluated in bash by devtools/test.py, which reads its
 # values back rather than keeping copies. Every value uses ${VAR:-default} so an
 # environment variable still wins for a one-off:
 #
@@ -237,7 +237,7 @@ video"}
 # How the test suite is invoked, as an array so arguments with spaces survive.
 # Anything goes here -- pytest, go test, cargo test, make check -- as long as
 # it takes extra arguments on the end and exits non-zero on failure. Scripts
-# that need a pytest specifically (prepush, slow-tier) resolve it through
+# that need a pytest specifically (devtools/test.py) resolve it through
 # VENV_PATHS below instead, so change both if you leave Python behind.
 TEST_CMD=${TEST_CMD:-pytest}
 
@@ -405,15 +405,14 @@ GPU_WEDGE_TOOL_SECONDS=${GPU_WEDGE_TOOL_SECONDS:-120}
 # only ranks the cards for `auto`.
 GPU_LOAD_SAMPLES=${GPU_LOAD_SAMPLES:-4}
 
-# The marker expression separating the fast iteration loop from the expensive
-# tier. Empty disables the split -- everything is "fast", and slow-tier.sh then
-# has nothing of its own to run.
+# The marker expression selecting the fast iteration loop, which the push and
+# pr gates run. The nightly (devtools/test.py nightly) runs the whole suite,
+# with no marker. Empty disables the split -- everything is "fast".
 # NB the single quotes around the defaults: inside ${VAR:-default} bash strips
 # one level of quoting, so an unquoted `-m "not slow"` would reach pytest as
 # the three words `-m`, `not`, `slow` -- a marker expression of `not` and a
 # path called `slow`, which collects nothing and says only "no tests ran".
 FAST_TEST_ARGS=${FAST_TEST_ARGS:-'-m "not slow"'}
-SLOW_TEST_ARGS=${SLOW_TEST_ARGS:-'-m slow'}
 
 # What the pre-push gate runs. Deliberately a curated list rather than the
 # whole suite: the gate should cost seconds, so anything driving a compiler, a
@@ -423,14 +422,9 @@ SLOW_TEST_ARGS=${SLOW_TEST_ARGS:-'-m slow'}
 # starting point for a small project.
 PREPUSH_PATHS=${PREPUSH_PATHS:-}
 
-# Node ids for `slow-tier.sh --skip-huge` to deselect: the cases with a hard
-# memory floor or an outsized runtime that a smaller box cannot survive. One
-# per line, exact node ids -- a -k filter cannot express a param containing
-# pytest's own operators. Blank when the project has none.
-SLOW_HUGE_CASES=${SLOW_HUGE_CASES:-}
-
-# Where slow-tier.sh and devtools/test.py write their run logs. Relative paths
-# are resolved against the repo root. Gitignored by default.
+# Where devtools/test.py writes its run logs. Relative paths are resolved
+# against the repo root (the nightly's, against the primary checkout's).
+# Gitignored by default.
 #
 # NB docker/compose.yaml writes its own logs to .log/ instead -- it tees
 # configure/build/test output there, and is not driven by this file at all.
@@ -441,6 +435,26 @@ SLOW_TIER_REPORTS=${SLOW_TIER_REPORTS:-.slow-tier-reports}
 # "Metrics"). Resolved under the MAIN checkout, like GPU_LOCK_DIR, so every
 # worktree records through the one copy. Made on first use.
 METRICS_WORKTREE=${METRICS_WORKTREE:-.claude/worktrees/metrics}
+
+# The record's `host`, the key a timing series is filtered on. Empty: the
+# board's vendor and name from /sys/class/dmi/id (host_name in
+# devtools/metrics.py), which reads the same on the host, in every container
+# on it and across a devcontainer rebuild -- where the hostname inside one is
+# the container's id. Set it to name a machine whose DMI says nothing useful
+# (a cloud VM's "QEMU Standard PC" is every VM of that type).
+METRICS_HOST=${METRICS_HOST:-}
+
+# The nightly (devtools/test.py nightly; docs/testing.md "The nightly").
+# NIGHTLY_WORKTREE is its clean checkout of origin/main, under the MAIN
+# checkout like METRICS_WORKTREE, and never the primary checkout itself.
+# NIGHTLY_WEEKLY_DAY (Mon..Sun) is the night its build is clean, with the
+# compiler launcher off, so the record's build times are real.
+# NIGHTLY_GPU_BATCH_BUDGET_SECONDS replaces GPU_BATCH_BUDGET_SECONDS for its
+# GPU batches, which run every case unskipped; the stall watchdog is the
+# same, since no single case prints nothing for ten minutes.
+NIGHTLY_WORKTREE=${NIGHTLY_WORKTREE:-.claude/worktrees/nightly}
+NIGHTLY_WEEKLY_DAY=${NIGHTLY_WEEKLY_DAY:-Sun}
+NIGHTLY_GPU_BATCH_BUDGET_SECONDS=${NIGHTLY_GPU_BATCH_BUDGET_SECONDS:-14400}
 
 # --- environment ----------------------------------------------------------
 
