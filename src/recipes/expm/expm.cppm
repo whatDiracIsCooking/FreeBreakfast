@@ -35,6 +35,13 @@ export namespace free_breakfast {
 /// An @p h that is exactly 0 gets the exact answer, U = I and w = 0, without
 /// heevd.
 ///
+/// The decomposition is heevd under CUDA and, under HIP, heevdx over the whole
+/// range: rocSOLVER's heevd returns NaN eigenvectors with info 0 above order
+/// 65 when iH's tridiagonal form splits (#999). Under HIP iH is also scaled by
+/// a power of two, its largest element into [512, 1024), and w scaled back,
+/// since rocSOLVER's accuracy is absolute rather than relative to ||H||. "heevd" below means
+/// whichever the backend calls.
+///
 /// heevd's work is res.device_workspace(), grown to heevd's size for n if it
 /// is smaller: the one allocation this can make. res.info() takes heevd's
 /// flag. None of @p h, @p u or @p w may point into res.device_workspace().
@@ -52,7 +59,8 @@ export namespace free_breakfast {
 /// @param h    The skew-Hermitian operand (n x n); not modified.
 /// @param u    Out: the eigenvectors of iH (n x n).
 /// @param w    Out: the n ascending eigenvalues of iH.
-/// @return Success; a Numerical error if heevd did not converge; or a
+/// @return Success; a Numerical error if heevd did not converge (or heevdx
+///         found fewer than n eigenpairs); or a
 ///         GpuRuntime error: the first runtime, BLAS or solver call that
 ///         failed, or an argument heevd rejected.
 template <wwr::usual_fp T>

@@ -6,6 +6,8 @@ module;
 // The phase_scale launcher, defined in expm.cu: declared in the GMF so it keeps
 // external linkage (see the header).
 #include "expm_bridge.h"
+// WWR_SELECTED_HIP, for skew_eig's choice of eigensolver. Macros only.
+#include "selected_backend.h"
 
 module free_breakfast.recipes.expm;
 
@@ -25,6 +27,13 @@ namespace free_breakfast {
 // call so the two cannot disagree.
 constexpr auto kSkewEigMode = wwr::WWRSOLVER_EIG_MODE_VECTOR;
 constexpr auto kSkewFillMode = wwr::WWRBLAS_FILL_MODE_LOWER;
+#if defined(WWR_SELECTED_HIP)
+// heevdx's range: every eigenpair, so no vl/vu or il/iu.
+constexpr auto kSkewRange = wwr::WWRSOLVER_EIG_RANGE_ALL;
+// The frexp exponent iH's largest element is scaled to before heevdx: see
+// skew_eig.
+constexpr int32_t kSkewTopExponent = 10;
+#endif
 
 // Every scalar these calls pass is a host constant.
 using HostScalars =
@@ -68,7 +77,8 @@ Status skew_eig(DeviceResources &res, const int32_t n, const T *h,
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(&top, u + (top_at - 1), sizeof(Z),
                                          wwr::wwrMemcpyDeviceToHost, res.stream())));
   FBF_TRY(res.sync());
-  if (const auto [re, im] = std::bit_cast<std::array<R, 2>>(top); re == R{0} && im == R{0}) {
+  const auto [re, im] = std::bit_cast<std::array<R, 2>>(top);
+  if (re == R{0} && im == R{0}) {
     // u is iH, so already 0: the ones go onto its diagonal, stride n + 1.
     const std::vector<Z> ones(static_cast<size_t>(n), kOne<Z>);
     FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(
@@ -79,24 +89,67 @@ Status skew_eig(DeviceResources &res, const int32_t n, const T *h,
     return res.sync();
   }
 
-  // heevd's workspace size for n, queried per call: it is a host computation.
+  // The solver's workspace size for n, queried per call: it is a host
+  // computation.
+  const wwr::wwrsolverDnHandle_t solver = res.solver().get();
   int32_t lwork = 0;
-  FBF_TRY(gpu_status(wwr::heevd_bufferSize<Z>(res.solver().get(), kSkewEigMode, kSkewFillMode, n, u,
-                                              n, w, &lwork)));
+#if defined(WWR_SELECTED_HIP)
+  // heevdx over the whole range, not heevd: rocSOLVER's heevd (ROCm 7.2.4)
+  // returns info 0 and NaN eigenvectors above order 65 whenever iH's
+  // tridiagonal form splits -- a diagonal or block-diagonal H, one nonzero
+  // pair, a zero half, entries near 1e-200 (#999). heevdx gives every one a
+  // finite U. cuSOLVER's heevd is correct, so CUDA keeps it, unscaled.
+  //
+  // rocSOLVER's solvers are accurate to a fixed absolute size, not to
+  // eps ||H||: below it the residual iH U - U diag(w) stops shrinking with H
+  // (2e-8 relative at ||H|| = 1e-8 in double), and below about 1e-160 both
+  // return U = I, w = 0. heevdx in complex float loses 50x its n eps bar on
+  // #999's zero-half input once iH's largest element drops under 1. So iH
+  // goes in scaled by a power of two that puts that element's frexp exponent
+  // at kSkewTopExponent, and w comes out scaled back: exact both ways (short
+  // of the subnormal range), U untouched. The target is measured, not derived:
+  // on #999's inputs heevdx sits at its floor from exponent +1 (float) and -4
+  // (double) up, and +10 is nine binades clear, far from overflow. The
+  // exponent is clamped so neither factor overflows.
+  int32_t exponent = 0;
+  std::frexp(std::max(std::abs(re), std::abs(im)), &exponent);
+  constexpr int32_t kMaxExponent = std::numeric_limits<R>::max_exponent - 1;
+  const int32_t shift = std::clamp(kSkewTopExponent - exponent, -kMaxExponent, kMaxExponent);
+  const R scale = std::ldexp(R{1}, shift);
+  const R unscale = std::ldexp(R{1}, -shift);
+  FBF_TRY(gpu_status(wwr::scal<R, int64_t>(blas, 2 * nn, &scale, reinterpret_cast<R *>(u), 1)));
+  int32_t found = 0;
+  FBF_TRY(gpu_status(wwr::heevdx_bufferSize<Z>(solver, kSkewEigMode, kSkewRange, kSkewFillMode, n,
+                                               u, n, R{0}, R{0}, 0, 0, &found, w, &lwork)));
   auto work = wwr::extension::reinterpret_buffer_view<Z>(
       res.device_workspace(static_cast<size_t>(lwork) * sizeof(Z)));
-  FBF_TRY(gpu_status(wwr::heevd<Z>(res.solver().get(), kSkewEigMode, kSkewFillMode, n, u, n, w,
-                                   work.data(), lwork, res.info().data())));
+  FBF_TRY(gpu_status(wwr::heevdx<Z>(solver, kSkewEigMode, kSkewRange, kSkewFillMode, n, u, n, R{0},
+                                    R{0}, 0, 0, &found, w, work.data(), lwork, res.info().data())));
+#else
+  FBF_TRY(gpu_status(
+      wwr::heevd_bufferSize<Z>(solver, kSkewEigMode, kSkewFillMode, n, u, n, w, &lwork)));
+  auto work = wwr::extension::reinterpret_buffer_view<Z>(
+      res.device_workspace(static_cast<size_t>(lwork) * sizeof(Z)));
+  FBF_TRY(gpu_status(wwr::heevd<Z>(solver, kSkewEigMode, kSkewFillMode, n, u, n, w, work.data(),
+                                   lwork, res.info().data())));
+#endif
 
   const int32_t info = FBF_TRY(res.fetch_info());
   // info < 0 names a bad argument (a bug in the caller, not in H); info > 0 is
   // non-convergence, which is H's doing.
   if (info < 0) {
-    return err_gpu("skew_eig: heevd rejected argument {}", -info);
+    return err_gpu("skew_eig: the eigensolver rejected argument {}", -info);
   }
   if (info > 0) {
-    return err_numerical("skew_eig: heevd did not converge (info = {})", info);
+    return err_numerical("skew_eig: the eigensolver did not converge (info = {})", info);
   }
+#if defined(WWR_SELECTED_HIP)
+  // The whole range is all n pairs; fewer would leave columns of u unset.
+  if (found != n) {
+    return err_numerical("skew_eig: heevdx found {} of {} eigenpairs", found, n);
+  }
+  FBF_TRY(gpu_status(wwr::scal<R, int64_t>(blas, n, &unscale, w, 1)));
+#endif
   return {};
 }
 

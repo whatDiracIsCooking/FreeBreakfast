@@ -10,6 +10,9 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+// WWR_SELECTED_HIP: the bottom-of-the-range operand is HIP's alone (see
+// split_operands). Macros only.
+#include "selected_backend.h"
 
 import std;
 import free_breakfast.core;
@@ -24,7 +27,8 @@ namespace fb = free_breakfast;
 // pairs.
 constexpr std::int32_t kN = 37;
 // H = 0 at the PSB3 case's 124 orbitals, #992's input: rocSOLVER's heevd
-// returned NaN eigenvectors with info 0 for it at any order above 65.
+// returned NaN eigenvectors with info 0 for it at any order above 65. The
+// split-tridiagonal operands of #999 are at the same order.
 constexpr std::int32_t kZeroN = 124;
 
 template <typename T>
@@ -331,6 +335,127 @@ TYPED_TEST(SkewExpm, ZeroOperandIsExactlyTheIdentity) {
     for (std::size_t k = 0; k < nn; ++k) {
       ASSERT_EQ(widen(got_e[k]), one[k]) << "t = " << t << ", element " << k;
     }
+  }
+}
+
+// One #999 operand: H, and its 2-norm in closed form.
+struct SplitOperand {
+  const char *name;
+  HostMatrix h;
+  double norm;
+};
+
+double largest_frequency(const std::vector<double> &f) {
+  return std::abs(std::ranges::max(f, {}, [](double x) { return std::abs(x); }));
+}
+
+// Nonzero skew-Hermitian H whose iH reduces to a tridiagonal that splits, of
+// the kinds rocSOLVER's heevd (ROCm 7.2.4) returned info 0 and NaN
+// eigenvectors for at order 124 (#999's probes): the canonical form itself (a real
+// diagonal iH for a complex T, 2 x 2 blocks for a real one); one nonzero
+// pair; a dense leading half beside a zero one; and, under HIP, a dense H
+// scaled down to 1e-200 (1e-30 for a float T, inside its normal range).
+//
+// That last one passes only because skew_eig scales iH by a power of two
+// under HIP. CUDA calls cuSOLVER's heevd unscaled and is kept bitwise as it
+// was, and cuSOLVER misses this bar there too: for a real double T, U^H U - I
+// is 8e-5. So under CUDA the operand is not offered.
+template <typename T>
+std::vector<SplitOperand> split_operands(std::int32_t n) {
+  std::vector<SplitOperand> cases;
+  const std::vector<double> f = frequencies<T>(n);
+  cases.push_back({"canonical form", canonical_generator<T>(n, f), largest_frequency(f)});
+
+  HostMatrix pair(static_cast<std::size_t>(n) * n);
+  pair[1] = 1.0;
+  pair[n] = -1.0;
+  cases.push_back({"one pair", pair, 1.0});
+
+  const std::int32_t m = n / 2;
+  const std::vector<double> fm = frequencies<T>(m);
+  const HostMatrix block = conjugate(m, dense_unitary<T>(m), canonical_generator<T>(m, fm));
+  HostMatrix half(static_cast<std::size_t>(n) * n);
+  for (std::int32_t j = 0; j < m; ++j) {
+    for (std::int32_t i = 0; i < m; ++i) {
+      half[i + (j * n)] = block[i + (j * m)];
+    }
+  }
+  cases.push_back({"zero half", half, largest_frequency(fm)});
+
+#if defined(WWR_SELECTED_HIP)
+  const double scale = std::is_same_v<Real<T>, float> ? 1e-30 : 1e-200;
+  HostMatrix tiny = conjugate(n, dense_unitary<T>(n), canonical_generator<T>(n, f));
+  for (Cd &z : tiny) {
+    z *= scale;
+  }
+  cases.push_back({"scaled to the bottom of the range", tiny, scale * largest_frequency(f)});
+#endif
+  return cases;
+}
+
+// The bar is heevd's backward error, n eps ||H||_2 (rounding analysis, not a
+// fit to a run): U^H U = I to n eps, and iH U = U diag(w) to n eps ||H||_2,
+// each per element, which the matrix 2-norm bounds. Finiteness is its own
+// check: std::max would pass a NaN over.
+TYPED_TEST(SkewExpm, SplitTridiagonalOperandsDecomposeToRounding) {
+  FBF_REQUIRE_GPU();
+  using T = TypeParam;
+  constexpr std::int32_t n = kZeroN;
+  const auto nn = static_cast<std::size_t>(n) * n;
+  const double eps = std::numeric_limits<Real<T>>::epsilon();
+
+  fb::DeviceResources res{0};
+  fb::Buffers::device<T> h{nn, res.device()};
+  fb::Buffers::device<Eigvec<T>> u{nn, res.device()};
+  fb::Buffers::device<Real<T>> w{static_cast<std::size_t>(n), res.device()};
+  for (const SplitOperand &c : split_operands<T>(n)) {
+    SCOPED_TRACE(c.name);
+    std::vector<T> h_narrow;
+    for (const Cd z : c.h) {
+      h_narrow.push_back(narrow<T>(z));
+    }
+    upload(res, h, h_narrow);
+    ASSERT_TRUE(fb::skew_eig<T>(res, n, h.data(), u.data(), w.data()));
+
+    HostMatrix uh;
+    for (const Eigvec<T> x : download(res, u)) {
+      uh.push_back(widen(x));
+    }
+    const std::vector<Real<T>> got_w = download(res, w);
+    const auto bad_u = std::ranges::count_if(
+        uh, [](Cd z) { return !std::isfinite(z.real()) || !std::isfinite(z.imag()); });
+    const auto bad_w = std::ranges::count_if(got_w, [](Real<T> x) { return !std::isfinite(x); });
+    EXPECT_EQ(bad_u, 0) << "non-finite elements of U";
+    EXPECT_EQ(bad_w, 0) << "non-finite eigenvalues";
+    if (bad_u != 0 || bad_w != 0) {
+      continue;
+    }
+
+    // The Hermitian iH heevd sees: h's lower triangle, as passed.
+    HostMatrix ih(nn);
+    for (std::int32_t j = 0; j < n; ++j) {
+      ih[j + (j * n)] = (Cd{0.0, 1.0} * widen(h_narrow[j + (j * n)])).real();
+      for (std::int32_t i = j + 1; i < n; ++i) {
+        ih[i + (j * n)] = Cd{0.0, 1.0} * widen(h_narrow[i + (j * n)]);
+        ih[j + (i * n)] = std::conj(ih[i + (j * n)]);
+      }
+    }
+    const HostMatrix hu = multiply(n, ih, uh, false);
+    double orth = 0.0;
+    double resid = 0.0;
+    for (std::int32_t j = 0; j < n; ++j) {
+      for (std::int32_t i = 0; i < n; ++i) {
+        Cd gram = i == j ? -1.0 : 0.0;
+        for (std::int32_t k = 0; k < n; ++k) {
+          gram += std::conj(uh[k + (i * n)]) * uh[k + (j * n)];
+        }
+        orth = std::max(orth, std::abs(gram));
+        const std::size_t ij = i + (static_cast<std::size_t>(j) * n);
+        resid = std::max(resid, std::abs(hu[ij] - (uh[ij] * static_cast<double>(got_w[j]))));
+      }
+    }
+    EXPECT_LE(orth, n * eps);
+    EXPECT_LE(resid, n * eps * c.norm);
   }
 }
 

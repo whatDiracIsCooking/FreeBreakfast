@@ -13,7 +13,7 @@ in general.
 `iH` is Hermitian, so one Hermitian eigendecomposition gives every `t`:
 
 ```
-iH      = U diag(w) U^H            skew_eig: one heevd
+iH      = U diag(w) U^H            skew_eig: one heevd (heevdx on HIP)
 exp(tH) = U diag(e^{-i t w}) U^H   skew_expm: one phase-scale kernel, one gemm
 ```
 
@@ -41,6 +41,34 @@ for a zero `iH` of any order above 65, but every off-diagonal eigenvector
 element is NaN. The NaN went through the rotation into the orbitals, and
 surfaced as the next CI's "syevd did not converge" (#992). The guard does
 not depend on the vendor.
+
+**Under HIP the decomposition is `heevdx`, not `heevd`.** The zero `iH` is one
+case of a wider rocSOLVER defect (ROCm 7.2.4, #999): above order 65, `heevd`
+returns `info = 0` and NaN eigenvectors for any `iH` whose tridiagonal form
+splits — a diagonal or block-diagonal `H`, a single nonzero pair, a zero
+half, entries near 1e-200. None of the tree's orbital rotations hit it today
+(they are dense), but a block-structured one would. `heevdx` over the whole
+range (`RANGE_ALL`, so no bounds) gives every such input a finite `U`, at
+about 3 ms more at order 124.
+
+**Under HIP `iH` is also scaled by a power of two.** rocSOLVER's solvers
+are accurate to a fixed *absolute* size, not to `ε ‖H‖`. Below it the
+residual `iH U - U diag(w)` stops shrinking with `H`: in double it is 2e-8
+relative at `‖H‖ = 1e-8`, and below about 1e-160 both solvers return
+`U = I`, `w = 0` (#999's 1e-200 input included). Complex-float `heevdx`
+already misses its `n ε` bar 50× on #999's zero-half input once `iH`'s
+largest element drops under 1. `skew_eig` already has that element from
+the zero guard. So it scales `iH` by the power of two that puts the element's
+frexp exponent at `kSkewTopExponent = 10` (into `[512, 1024)`), and scales
+`w` back by the inverse. That is exact both ways, leaves `U` untouched, and
+costs two `scal`s and no extra sync. The target was measured, not derived.
+Over #999's inputs at order 124, `heevdx`'s residual is at its floor from
+exponent +1 (float) and −4 (double) upward, and +10 sits nine binades clear,
+far from overflow.
+
+CUDA keeps plain `heevd`: cuSOLVER's is correct, and that path is unchanged.
+The branch is a `WWR_SELECTED_HIP` `#if` in `expm.cpp`, with
+`selected_backend.h` from `wwr::backend`, as in `core/wwr`'s `Device`.
 
 **A real `T` still decomposes in complex arithmetic.** A real skew-symmetric
 `H` has imaginary eigenvalues in `±` pairs (and a `0` for odd n) and complex
@@ -79,7 +107,11 @@ Householder reflectors) and `B` a canonical form whose exponential is cos and
 sin alone. For a real `T`, `B` is 2×2 rotation generators; for a complex one,
 `diag(iφ)`. One frequency repeats, to cover a degenerate eigenspace. `H = 0`
 at order 124 (#992's input) must give `U = I`, `w = 0` and `exp(tH) = I`, each
-exactly.
+exactly. #999's split-tridiagonal inputs, at the same order, must give a
+finite `U` with `U^H U = I` to `n ε` and `iH U = U diag(w)` to `n ε ‖H‖₂`.
+The 1e-200 one is offered under HIP only. CUDA's unscaled `heevd` misses
+that bar too (`U^H U - I` is 8e-5 for a real double `T`), but the CUDA path
+is kept exactly as it was.
 
 ## Files
 

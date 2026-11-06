@@ -20,7 +20,8 @@ free_breakfast_add_gpu_device_library(
 # alone, so core::constants is PRIVATE, as is the device library: the
 # implementation unit includes the bridge header in its GMF and calls the
 # launcher, and a static library's private link dependencies still reach the
-# final link.
+# final link. wwr::backend is PRIVATE too: selected_backend.h, for skew_eig's
+# heevdx under HIP.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.recipes.expm
@@ -39,4 +40,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
   free_breakfast::recipes::expm::device
+  wwr::backend
 )
