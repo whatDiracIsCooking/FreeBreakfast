@@ -10,9 +10,6 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
-// WWR_SELECTED_HIP: the bottom-of-the-range operand is HIP's alone (see
-// split_operands). Macros only.
-#include "selected_backend.h"
 
 import std;
 import free_breakfast.core;
@@ -353,13 +350,13 @@ double largest_frequency(const std::vector<double> &f) {
 // the kinds rocSOLVER's heevd (ROCm 7.2.4) returned info 0 and NaN
 // eigenvectors for at order 124 (#999's probes): the canonical form itself (a real
 // diagonal iH for a complex T, 2 x 2 blocks for a real one); one nonzero
-// pair; a dense leading half beside a zero one; and, under HIP, a dense H
-// scaled down to 1e-200 (1e-30 for a float T, inside its normal range).
+// pair; a dense leading half beside a zero one; and a dense H scaled down to
+// 1e-200 (1e-30 for a float T, inside its normal range).
 //
-// That last one passes only because skew_eig scales iH by a power of two
-// under HIP. CUDA calls cuSOLVER's heevd unscaled and is kept bitwise as it
-// was, and cuSOLVER misses this bar there too: for a real double T, U^H U - I
-// is 8e-5. So under CUDA the operand is not offered.
+// That last one passes only because skew_eig scales iH by a power of two.
+// Unscaled, both vendors miss this bar: rocSOLVER returns U = I, w = 0
+// (#999), and cuSOLVER's heevd leaves U^H U - I at 8e-5 for a real double T
+// (#1004).
 template <typename T>
 std::vector<SplitOperand> split_operands(std::int32_t n) {
   std::vector<SplitOperand> cases;
@@ -382,14 +379,12 @@ std::vector<SplitOperand> split_operands(std::int32_t n) {
   }
   cases.push_back({"zero half", half, largest_frequency(fm)});
 
-#if defined(WWR_SELECTED_HIP)
   const double scale = std::is_same_v<Real<T>, float> ? 1e-30 : 1e-200;
   HostMatrix tiny = conjugate(n, dense_unitary<T>(n), canonical_generator<T>(n, f));
   for (Cd &z : tiny) {
     z *= scale;
   }
   cases.push_back({"scaled to the bottom of the range", tiny, scale * largest_frequency(f)});
-#endif
   return cases;
 }
 

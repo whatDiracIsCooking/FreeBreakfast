@@ -51,24 +51,42 @@ half, entries near 1e-200. None of the tree's orbital rotations hit it today
 range (`RANGE_ALL`, so no bounds) gives every such input a finite `U`, at
 about 3 ms more at order 124.
 
-**Under HIP `iH` is also scaled by a power of two.** rocSOLVER's solvers
-are accurate to a fixed *absolute* size, not to `ε ‖H‖`. Below it the
-residual `iH U - U diag(w)` stops shrinking with `H`: in double it is 2e-8
-relative at `‖H‖ = 1e-8`, and below about 1e-160 both solvers return
-`U = I`, `w = 0` (#999's 1e-200 input included). Complex-float `heevdx`
-already misses its `n ε` bar 50× on #999's zero-half input once `iH`'s
-largest element drops under 1. `skew_eig` already has that element from
-the zero guard. So it scales `iH` by the power of two that puts the element's
-frexp exponent at `kSkewTopExponent = 10` (into `[512, 1024)`), and scales
-`w` back by the inverse. That is exact both ways, leaves `U` untouched, and
-costs two `scal`s and no extra sync. The target was measured, not derived.
-Over #999's inputs at order 124, `heevdx`'s residual is at its floor from
-exponent +1 (float) and −4 (double) upward, and +10 sits nine binades clear,
-far from overflow.
+**`iH` is scaled by a power of two, on both backends.** Both vendors'
+solvers are accurate to a fixed *absolute* size, not to `ε ‖H‖`, though at
+very different sizes:
 
-CUDA keeps plain `heevd`: cuSOLVER's is correct, and that path is unchanged.
-The branch is a `WWR_SELECTED_HIP` `#if` in `expm.cpp`, with
-`selected_backend.h` from `wwr::backend`, as in `core/wwr`'s `Device`.
+- **rocSOLVER (#999).** The residual `iH U - U diag(w)` stops shrinking with
+  `H`: in double it is 2e-8 relative at `‖H‖ = 1e-8`, and below about 1e-160
+  both solvers return `U = I`, `w = 0` (#999's 1e-200 input included).
+  Complex-float `heevdx` already misses its `n ε` bar 50× on #999's zero-half
+  input once `iH`'s largest element drops under 1.
+- **cuSOLVER (#1004).** `heevd` holds its floor much further down, but not
+  all the way. On #999's operands for a real `T`, measured unscaled at order
+  124 with `iH`'s largest element put at each frexp exponent:
+
+  | `T` | at its floor down to exponent | below it, `U^H U - I` |
+  |---|---|---|
+  | `float` | −46 (≈ 1e-14) | 2.2 `n ε` (−47), 3.9 `n ε` (−49), 16 `n ε` (−52) |
+  | `double` | −475 (≈ 1e-143) | 9.4e3 `n ε` (−476), 1.6e9 `n ε` (−490) |
+  | complex `float`, `double` | the whole normal range | — |
+
+  "At its floor" is at most 0.09 `n ε` in `U^H U - I` and 0.04 `n ε ‖H‖₂`
+  in the residual, the same to the digits printed from +20 down. The
+  real-float edge is a decade under the smallest orbital rotations,
+  O(1e-13), though no caller runs one in float; double's is far below any.
+
+`skew_eig` already has `iH`'s largest element from the zero guard. So it
+scales `iH` by the power of two that puts the element's frexp exponent at
+`kSkewTopExponent = 10` (into `[512, 1024)`), and scales `w` back by the
+inverse. That is exact both ways, leaves `U` untouched, and costs two
+`scal`s and no extra sync. The target was measured, not derived: rocSOLVER's
+`heevdx` is at its floor from exponent +1 (float) and −4 (double) upward,
+cuSOLVER's `heevd` from −46 and −475 up to +20, the top probed. So one +10
+serves both, nine binades clear of rocSOLVER's edge and far from overflow.
+
+The one backend branch is the solver call, a `WWR_SELECTED_HIP` `#if` in
+`expm.cpp` with `selected_backend.h` from `wwr::backend`, as in `core/wwr`'s
+`Device`: CUDA keeps `heevd`, which is correct on every split input.
 
 **A real `T` still decomposes in complex arithmetic.** A real skew-symmetric
 `H` has imaginary eigenvalues in `±` pairs (and a `0` for odd n) and complex
@@ -108,10 +126,10 @@ sin alone. For a real `T`, `B` is 2×2 rotation generators; for a complex one,
 `diag(iφ)`. One frequency repeats, to cover a degenerate eigenspace. `H = 0`
 at order 124 (#992's input) must give `U = I`, `w = 0` and `exp(tH) = I`, each
 exactly. #999's split-tridiagonal inputs, at the same order, must give a
-finite `U` with `U^H U = I` to `n ε` and `iH U = U diag(w)` to `n ε ‖H‖₂`.
-The 1e-200 one is offered under HIP only. CUDA's unscaled `heevd` misses
-that bar too (`U^H U - I` is 8e-5 for a real double `T`), but the CUDA path
-is kept exactly as it was.
+finite `U` with `U^H U = I` to `n ε` and `iH U = U diag(w)` to `n ε ‖H‖₂`,
+on both backends. The 1e-200 one passes only because of the scaling: unscaled,
+rocSOLVER returns `U = I`, `w = 0`, and cuSOLVER leaves `U^H U - I` at 8e-5
+for a real double `T`.
 
 ## Files
 
