@@ -127,9 +127,20 @@ Their options are trailing arguments; there is no options struct.
    (kept as z_c's start) and H_oc w, which is added to g_I.
 1. Conjugate gradients on H̃ z_o = −(g_I + H_oc w) from zero, preconditioned by
    diag(H)⁻¹ (`response::Hessian::diagonal`; at a minimum diag(H) ≥ diag(H̃)
-   > 0), to ‖r‖ ≤ `tolerance` (1e-10 by default) in at most
-   `max_iterations` (200) products. H̃ is positive definite at a minimum;
-   a direction it is not positive along is a Divergence error.
+   > 0, and a pair below 1e-8 is left unscaled), to ‖r‖ ≤ `tolerance`
+   (1e-10 by default) in at most `max_iterations` (200) products. H̃ is
+   positive definite at a minimum; a direction it is not positive along is a
+   Divergence error. The solve is [`recipes::pcg_solve`](../../recipes/pcg/README.md)
+   over one column, with diag(H)⁻¹ as a one-`dgmm` preconditioner local to
+   `zvector.cpp`. Its operator is `RelaxedHessian`'s one-column `apply`,
+   not the block `apply(res, k, x, y)`, which is a `LinearOperator` as it is
+   (Schur hands it over unwrapped): the block apply's CI responses sum in
+   another order, good to their tolerance but not to the bit, and that
+   moved a solve by one product either way (22 → 23 and 22 → 21 in a skewed
+   formaldehyde QD-NEVPT2 walk). Through the one-column apply every solve
+   takes the products it took before `pcg_solve`, bit for bit.
+   Its `MaxIterationsExceeded` and `Divergence` errors are `pcg_solve`'s,
+   passed up.
 2. One more product at z_o, for the true residual: the recurrence's r drifts
    from it, H̃'s products being exact only to the CI response's conjugate
    gradients (`RelaxedHessian`'s `response_tolerance` of their right-hand
@@ -163,9 +174,10 @@ above (the caller assembles the response as Λᵀ·rhs, so the CI rows' scaling
 cancels), and solves each to ‖r‖ ≤ `tolerance` by one of three methods:
 
 - **`PerColumn`**: `zvector` on each column in turn.
-- **`Schur`**: `zvector`'s conjugate gradients on every column in lockstep.
-  A sweep gathers the active columns' directions and takes one block product
-  of H̃ (`RelaxedHessian::apply` over k columns: H over the block in one call,
+- **`Schur`**: `zvector`'s conjugate gradients on every column in lockstep,
+  `pcg_solve` over all the columns at once (its recurrence is this one, step
+  for step). A sweep gathers the active columns' directions and takes one
+  block product of H̃ (`RelaxedHessian::apply` over k columns: H over the block in one call,
   then every column's CI response by one lockstep conjugate gradients over
   all k · nroots vectors, one sigma of the block per step), and a column
   stops on its own residual as in `zvector`. A CI right-hand side is the
@@ -193,6 +205,16 @@ cancels), and solves each to ‖r‖ ≤ `tolerance` by one of three methods:
   every direction the diagonal preconditioner reaches: in the full
   determinant space (not spin-adapted) a lower root of another spin than the
   averaged ones would make it indefinite (a Divergence error).
+
+  Coupled keeps its own conjugate gradients rather than `pcg_solve`'s. Its
+  iterate is three blocks, the orbital and CI ones on the device and Θ on the
+  host (a few doubles a column, which `RelaxedHessian::apply_coupled` takes
+  and returns as host spans), and a column's dot is the sum over all three.
+  `pcg_solve`'s vectors are one device column each: putting Θ in them would
+  mean copying it to the host and back around every product and
+  preconditioner apply, and the one-dot-per-column inner products would sum
+  in another order than the three-part ones, so the products a column takes
+  would no longer be the method's own.
 
 The CI rows are z_c's, so all three return the same z_c (off every root).
 Schur and PerColumn solve H̃, whose products are good only to the CI
@@ -230,6 +252,12 @@ instead of one per column. That cut octatetraene's Schur to 28.18 s (1
 root) and 31.33 s (SA-2) on the 3080, and Coupled to 30.42 s and 41.19 s,
 so Schur stays the default; `PerColumn` was not re-measured. Its PR has
 both cards' numbers.
+
+Moving `zvector` and Schur onto `pcg_solve` (#830) changed none of this: on
+the 3080, old and new binaries interleaved, octatetraene's Schur took
+18.3 ms a product either way (1 root) and 19.1 to 19.2 ms (SA-2), and
+PerColumn 26.5 to 26.7 ms and 32.8 to 33.1 ms. The products themselves are
+the old loop's, bit for bit.
 
 Schur takes exactly PerColumn's products (1588 and 1587 over octatetraene's
 54 columns) and agrees with it to 6e-13 (one root) and 6e-10 in z_c of
@@ -287,5 +315,5 @@ energies.
 | File | Role |
 |------|------|
 | `zvector.cppm` | Module interface: `ZVector`, `zvector`, `CpSolver`, `ZVectors`, `zvectors` |
-| `zvector.cpp` | The preconditioned conjugate gradients and z_c's projection; `zvectors`' three methods |
+| `zvector.cpp` | The right-hand sides, the solves (`pcg_solve` for `zvector` and Schur, Coupled's own conjugate gradients) and z_c's projection; `zvectors`' three methods |
 | `CMakeLists.txt` | The module `free_breakfast.response.zvector` |
