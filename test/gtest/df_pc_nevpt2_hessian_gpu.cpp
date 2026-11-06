@@ -17,6 +17,10 @@
 //   element against this tree's numerical ladder;
 // - a C3v ammonia whose virtual e pairs are degenerate: refused, naming the
 //   pairs;
+// - a C2v formaldehyde CAS(6,6) whose Sr and Si keep under 1e-10: refused,
+//   naming the class and its kept (#943);
+// - HCN CAS(6,6), whose x and y coordinates lift Sir's null modes within
+//   1e-3 bohr: refused, naming each coordinate, the class and t* (#943);
 // - the input refusals.
 
 #include <gtest/gtest.h>
@@ -471,7 +475,83 @@ TEST(HessianDfPcNevpt2, DegenerateInactivePairIsRefused) {
   EXPECT_NE(h.error().message.find("hessian::df_pc_nevpt2"), std::string::npos)
       << h.error().message;
   EXPECT_NE(h.error().message.find("(coordinate "), std::string::npos) << h.error().message;
+  EXPECT_NE(h.error().message.find(", orbitals "), std::string::npos) << h.error().message;
+  EXPECT_NE(h.error().message.find(", gap "), std::string::npos) << h.error().message;
   std::cout << std::format("[ c3v      ] {}\n", h.error().message.substr(0, 300));
+}
+
+// The kept refusal (#943): a C2v formaldehyde in STO-3G with CAS(6,6) over
+// orbitals 5 to 10. Sr's and Si's metrics have real modes between the
+// default cut and 1e-10 of their largest, so their smallest kept
+// eigenvalues are about 3e-12 and 4e-12: under the 1e-10 at which PC's
+// second derivative is attainable (#917). At a pc_floor of 1e-10 they keep
+// 2.5e-10 and 2.8e-10 and the call is not refused.
+fb::json c2v_formaldehyde() {
+  const auto bohr = [](double angstrom) { return angstrom / fb::kAngstromPerBohr<double>; };
+  return {{"name", "h2co_c2v_sto3g_cas66"},
+          {"atoms",
+           {{{"symbol", "C"}, {"coord", {0.0, 0.0, 0.0}}},
+            {{"symbol", "O"}, {"coord", {0.0, 0.0, bohr(1.21)}}},
+            {{"symbol", "H"}, {"coord", {0.0, bohr(0.94), bohr(-0.59)}}},
+            {{"symbol", "H"}, {"coord", {0.0, bohr(-0.94), bohr(-0.59)}}}}},
+          {"charge", 0},
+          {"basis", {{"name", "sto-3g"}}},
+          {"aux_basis", {{"name", "cc-pVDZ-JKFIT"}}},
+          {"ncas", 6},
+          {"nelecas", 6},
+          {"active", {5, 6, 7, 8, 9, 10}}};
+}
+
+TEST(HessianDfPcNevpt2, ThinKeptClassIsRefused) {
+  FBF_REQUIRE_GPU();
+  const Reference ref = reference(c2v_formaldehyde());
+  ASSERT_TRUE(ref.solution.has_value());
+  const auto h = ref.hessian();
+  ASSERT_FALSE(h.has_value()) << "a class kept below 1e-10 was differentiated";
+  const std::string &m = h.error().message;
+  EXPECT_EQ(h.error().kind, fb::ErrorKind::Numerical) << m;
+  EXPECT_NE(m.find("hessian::df_pc_nevpt2: Sr keeps "), std::string::npos) << m;
+  EXPECT_NE(m.find("a pc_floor of 1e-10 or more cuts it"), std::string::npos) << m;
+  // The value it names: Sr's kept, below the bar.
+  const std::size_t at = m.find("Sr keeps ") + std::string_view{"Sr keeps "}.size();
+  EXPECT_LT(std::stod(m.substr(at)), 1e-10) << m;
+  std::cout << std::format("[ kept     ] {}\n", m.substr(0, 300));
+}
+
+// The Schur-lift refusal (#943): hcn_sto3g's geometry with CAS(6,6), the
+// fixture's pi space and the sigma pair beside it. A transverse coordinate's
+// CP response mixes sigma and pi inside the active space, so it breaks the
+// axial symmetry that keeps Sir's null modes null, and lifts them: at the
+// default cut each x and y coordinate's t* is about 2e-4 to 5e-4 bohr. The
+// z coordinates keep the symmetry and lift nothing.
+TEST(HessianDfPcNevpt2, NearbyBranchSwitchIsRefused) {
+  FBF_REQUIRE_GPU();
+  fb::json start = fixture("hcn_sto3g");
+  start["name"] = "hcn_sto3g_cas66";
+  start["ncas"] = 6;
+  start["nelecas"] = 6;
+  start["active"] = {4, 5, 6, 7, 8, 9};
+  const Reference ref = reference(start);
+  ASSERT_TRUE(ref.solution.has_value());
+  const auto h = ref.hessian();
+  ASSERT_FALSE(h.has_value()) << "a Schur lift within 1e-3 bohr was differentiated";
+  const std::string &m = h.error().message;
+  EXPECT_EQ(h.error().kind, fb::ErrorKind::Numerical) << m;
+  EXPECT_NE(m.find("hessian::df_pc_nevpt2: the PC surface switches branch"), std::string::npos)
+      << m;
+  // Every transverse coordinate is named, with its class and a t* under the
+  // bar; no axial one is.
+  for (std::size_t x = 0; x < 9; ++x) {
+    const std::string named = std::format("coordinate {} class Sir t* ", x);
+    const std::size_t at = m.find(named);
+    if (x % 3 == 2) {
+      EXPECT_EQ(at, std::string::npos) << named << m;
+      continue;
+    }
+    ASSERT_NE(at, std::string::npos) << named << m;
+    EXPECT_LT(std::stod(m.substr(at + named.size())), kLiftStep) << named << m;
+  }
+  std::cout << std::format("[ lift     ] {}\n", m.substr(0, 600));
 }
 
 TEST(HessianDfPcNevpt2, Refusals) {
