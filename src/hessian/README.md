@@ -1572,14 +1572,37 @@ the PC surface:
 Its other refusals are `df_sc_nevpt2`'s, plus the energy's own refusals of
 a class (no positive metric eigenvalue, or a pole), passed on.
 
-**Neither the kept nor the lift refusal is reached by a fixture.** On the
-four fixtures the smallest kept is 2.3e-6 and the smallest t* is 6.5 bohr
-(below). t* is a lift of round-off null modes, so it varies by run and by
-card, but it stays three or more orders above the bar. As #803's and #815's notes record, no fixture shows a physical
-lift. `hcn_sto3g` lifts Sir's null modes only along a CI direction that
-breaks the axial symmetry, and its nuclear CP responses keep that symmetry.
-Both checks are one comparison each and are not tested by an input that
-trips them.
+**Each refusal is reached by a real input (#943).** None of #803's four
+fixtures reaches the kept or the lift check: their smallest kept is 2.3e-6
+and their smallest t* is 6.5 bohr (below). t* is a lift of round-off null
+modes there, so it varies by run and by card, but it stays three or more
+orders above the bar. Three small inputs reach the three checks, at the
+default cut (gfx1200, `--preset hip`):
+
+- **kept**: a C2v formaldehyde in STO-3G with CAS(6,6) over orbitals 5 to
+  10. Sr's and Si's metrics carry real modes between the cut and 1e-10 of
+  their largest, as PSB3's do (`../nevpt2/energy/README.md`, "The
+  conditioning floor"), and keep 2.9e-12 and 3.8e-12. At a `pc_floor` of
+  1e-10 they keep 2.5e-10 and 2.8e-10 and nothing is refused, as the
+  message says. HF CAS(10,7) with its F 1s active also trips the check
+  (Sr keeps 5.9e-13). It is not the test's input, because in one of two
+  runs its CP-CASSCF solve left a residual of 1.4e-5 and `df_casscf`
+  refused first.
+- **t***: `hcn_sto3g`'s geometry with CAS(6,6) over orbitals 4 to 9, the
+  fixture's π space and the σ pair beside it. The fixture's CAS(4,4) holds
+  only π orbitals. An even number of π electrons there makes only Σ and Δ
+  configurations, so a bend's CP response c^B is 0 in the active space and
+  lifts nothing. With σ active, an x or y coordinate's c^B mixes σ and π.
+  That breaks the axial symmetry that keeps Sir's null modes null, so it
+  lifts them, with t* = 2.2e-4 to 4.6e-4 bohr on every x and y coordinate.
+  The z coordinates keep the symmetry and lift nothing. The lift is a
+  symmetry's, not round-off's, so t* repeats to the digits printed. At a
+  `pc_floor` of 1e-10 the same t* are about 5e-3 to 1e-2, and nothing is
+  refused.
+- **the degenerate pair**: the C3v ammonia below. PC's tangents record its
+  e pairs (gaps 1e-13, f^(x) 5e-2 to 7e-2) where SC's refuse, so the
+  branch is reached and is not shadowed by `df_nevpt2_tangents`' own
+  refusal.
 
 ### κ_oo at a near-degenerate pair
 
@@ -1634,7 +1657,13 @@ pair. The test asserts every element within 2× the bar. A pair below
   1.2850090413.
 - `DegenerateInactivePairIsRefused`: the C3v ammonia of the SC suite is
   Numerical, naming `hessian::df_pc_nevpt2` and each pair with its
-  coordinate.
+  coordinate, its orbitals and its gap.
+- `ThinKeptClassIsRefused` (#943): the C2v formaldehyde above is
+  Numerical, naming Sr with its kept below 1e-10 and the `pc_floor` that
+  cuts it.
+- `NearbyBranchSwitchIsRefused` (#943): HCN CAS(6,6) above is Numerical,
+  naming every x and y coordinate with class Sir and a t* below 1e-3 bohr,
+  and no z coordinate.
 - `Refusals`: `df_sc_nevpt2`'s input refusals.
 
 Measured on the gfx1200 (`--preset hip`) and the RTX 3080 (`--preset
