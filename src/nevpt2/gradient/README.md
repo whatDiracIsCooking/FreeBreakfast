@@ -1064,8 +1064,13 @@ Re-checked with the fix by #875's driver and directions
 `Nevpt2Psb3.PcQdActiveActiveGateAtTheTwist` is the regression test: the
 same twist in STO-3G (3 s on the RTX 3080, 14 s on the gfx1200; the
 cheapest of its family, `slow_test.h`), PC-QD state 0's residue 3.5e-10 before
-(three runs) and 3.3e-12 to 7.3e-12 after (four runs), against a bar of
-3e-11; SC-QD there is 8.5e-13.
+(three runs) and 3.3e-12 to 7.3e-12 after (four runs); SC-QD there is 8.5e-13.
+The residue is not round-off-free (#1000): S's and K's round-off does not
+rotate with the active basis, and Sr's and Si's smallest kept modes (3.5e-13 of
+σ_max) amplify it, so it varies from run to run (3.1e-12 to 8.7e-12 over 40
+runs, once 9.1e-11). The bar, 1.25e-10, is its measured sensitivity to an
+injected round-off times √N ε, N the longest reduction into K; the test's
+comment has the derivation. Without the term it is 3.48e-10.
 
 **Refusals.** A class `pc_effective_hamiltonian` refuses (no positive
 eigenvalue of S_N, or a pole: λ + Δ at round-off or an intruder,
