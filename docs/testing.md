@@ -46,6 +46,34 @@ clang `-x hip`, which is the one portability hole a single-backend run cannot se
 **The push gate's test set does not change in this milestone.** It is already a
 fixed set, and its job is "is this obviously broken". Selection applies to `pr`.
 
+## Acceptance criteria: one run, a bar from analysis
+
+This applies to every issue's `## Acceptance`, every test's assertion, and
+every flake fix. Comp-chem packages validate the same way.
+
+- **One run against a fixed bar set by analysis.** The algorithms are
+  deterministic. The only run-to-run variation on a GPU is the order of atomic
+  sums, which is bounded, at about √N·ε. So a bar comes from that bound, a
+  solver tolerance, or a conditioning estimate, written down where the bar is
+  set. It never comes from a spread measured over repeats.
+- **No repeat counts, ever, as acceptance.** That rules out "N consecutive
+  passes", "passes 20 times" and "replay 50×". A pass streak is neither
+  necessary nor sufficient: a race that fails 1 run in 30 passes 20 runs in a
+  row about half the time, and a correct fix needs no streak to show it.
+- **Repeated runs are for diagnosis only.** Rerunning a flaky case until it
+  fails, to capture a failing instance or its input, is legitimate. It
+  belongs in the investigation, and its numbers go in the PR as evidence. It
+  never goes in Acceptance.
+- **A flake fix is accepted like any other fix.** Find the cause by analysis,
+  usually of a captured input. Then assert the fix in one run on that input,
+  for example a unit test feeding the captured matrix, plus the suite that
+  flaked, plus unchanged goldens.
+- **Criteria must be necessary and sufficient.** Drop a check that another
+  check implies, and list what was dropped under "Not gated (implied: …)", so
+  nobody re-adds it. Close any gap where every check could pass on a wrong
+  result.
+- **If the bar can't be met, report the numbers. Never move the bar.**
+
 ## The entry point: `devtools/test.py`
 
 **Today:** five scripts, named three ways. `cpp-smoke.sh` and

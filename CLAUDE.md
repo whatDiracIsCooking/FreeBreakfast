@@ -317,6 +317,11 @@ variant. It does not check the container `name` field.
 
 ## Reading a test run
 
+**Acceptance is one run against a bar set by analysis. A pass streak is never
+acceptance.** No "N consecutive passes" or "replay N×" in an issue's Acceptance,
+a test, or a flake fix. Repeats are for diagnosis only, to catch a failing
+instance. `docs/testing.md`, "Acceptance criteria", has the rule and the reasons.
+
 **A green run means nothing until you know what skipped.**
 
 - C++ GPU cases call `FBF_REQUIRE_GPU()` (see

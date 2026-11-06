@@ -64,6 +64,18 @@ needs nothing else:
 <paths or package the PR will touch>
 ```
 
+**Acceptance is one run against a fixed bar set by analysis**
+(`docs/testing.md`, "Acceptance criteria"):
+- **Name each bar and where it comes from:** a rounding bound, a solver
+  tolerance, or a conditioning estimate.
+- **Never a repeat count:** not "N consecutive passes", not "replay N×", not a
+  spread measured over repeats. That holds for flake issues too. Their
+  acceptance is a one-run test on the captured failing input, plus the suite
+  that flaked. Rerunning to catch a failure belongs in Scope, as diagnosis,
+  never in Acceptance.
+- **Necessary and sufficient:** list checks that others imply under
+  "Not gated (implied: …)".
+
 ## 3. Wire the DAG — maximise what can run in parallel
 
 Add an edge **A → B** only when B genuinely cannot start until A lands — B
