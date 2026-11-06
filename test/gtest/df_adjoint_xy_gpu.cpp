@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -456,6 +457,7 @@ protected:
 // run is the budget's smallest that takes two coordinates a chunk, after
 // the refusal below one.
 TEST_F(HessianDfAdjointXy, MatchesTheLadder) {
+  FBF_FAMILY_REPRESENTATIVE();
   ASSERT_FALSE(HasFatalFailure());
   const auto tiny = run(*ref_->aux_, *c_, h_bar_dev_->data(), lambda_dev_->data(), 1);
   ASSERT_FALSE(tiny.has_value());

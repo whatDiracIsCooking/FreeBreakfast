@@ -448,6 +448,7 @@ protected:
 };
 
 TEST_F(HessianDfSaCasscfZ, TwoRootsEqualWeightsMatchReference) {
+  FBF_FAMILY_REPRESENTATIVE();
   check("h2o_631g_sa2");
 }
 

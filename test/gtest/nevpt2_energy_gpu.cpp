@@ -354,8 +354,9 @@ TEST_P(Nevpt2EnergyDeviceRdms, ClassEnergiesMatchGolden) {
   FBF_REQUIRE_GPU();
   const auto [c, batch] = GetParam();
   // Under slow_test.h: the cc-pVTZ CAS(10,10), and its cc-pVDZ batch 3, each
-  // ~2.3 s of tiled rdms. cc-pVDZ batch 0 stands for the tiling, CAS(8,8)
-  // batch 3 for the batching.
+  // ~2.3 s of tiled rdms. cc-pVDZ batch 0 stands for the tiling, a family of
+  // its own (the CAS(10,10) cases), and CAS(8,8) batch 3 for the batching.
+  FBF_FAMILY_REPRESENTATIVE("n2_ccpvdz_cas1010_df_batch0", "cas1010");
   if (std::string_view{c.name} == "n2_ccpvtz_cas1010_df" ||
       (std::string_view{c.name} == "n2_ccpvdz_cas1010_df" && batch != 0)) {
     FBF_SKIP_IF_FAST_TESTS();

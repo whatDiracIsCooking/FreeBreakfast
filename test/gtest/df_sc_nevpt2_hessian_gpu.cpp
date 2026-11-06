@@ -395,6 +395,7 @@ std::set<std::size_t> mixing_coordinates(const std::string &message) {
 // was SC's t -> 0 limit, 15.7 Eh/bohr^2 against PC's 1.29 (#952).
 TEST(HessianDfScNevpt2, RefusesTheSymmetricWater) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
   const Reference ref = reference(fb::test::symmetric_water());
   ASSERT_TRUE(ref.solution.has_value());
   auto refused = ref.hessian();
