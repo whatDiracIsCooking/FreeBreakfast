@@ -132,10 +132,34 @@ H      5.9322594717     1.9283875648    -2.0319280688
 )";
 
 // The gate's active-active residue (max |X^L - X^Lᵀ| on that block), the
-// Lagrangian's stationarity in the active-active rotations. Measured on the
-// RTX 3080: 3.5e-10 before #862's fix (three runs), 3.3e-12 to 7.3e-12 after
-// (four runs); SC-QD state 1 at the same geometry 8.5e-13.
-constexpr double kActiveActiveTolerance = 3e-11;
+// Lagrangian's stationarity in the active-active rotations. PC is invariant
+// under them only in exact arithmetic: S and K carry round-off r that does
+// not rotate with the basis, so the residue is -<∂L/∂(S, K), [G, r]>, G the
+// rotation's generator, and the bars along Sr's and Si's smallest kept
+// modes, 3.5e-13 of σ_max, amplify r by about 1/σ (#1000). No other block sees it: the Z-vector absorbs r there.
+// A CASSCF stopping point or an atomic order re-rolls r, so the residue
+// varies from run to run while active_core and virtual_active repeat.
+//
+// The bar is that sensitivity times r's bound. kRoundOffSensitivity is the
+// residue per unit relative r: symmetric Gaussian r added to every own S
+// and K before the solve, entries η max|S| and η max|K|, at η = 1e-14 gave
+// 2.3e-11 to 4.7e-11 over twelve draws (six per backend; 2.8e-10 and
+// 4.1e-10 at η = 1e-13, so linear), the largest taken. r's bound is
+// √N ε, N = 400 x 36 the longest reduction into K: f3ca's and f3ac's
+// consume, over the 400 determinants of CAS(6,6) and the n² of each W
+// element (src/nevpt2/rdm/README.md, "Design"). Measured with r as it comes
+// (gfx1200 and RTX 3080, 40 runs): 3.1e-12 to 8.7e-12; once 9.1e-11 in a
+// push-time smoke (#1000), an r of about 2e-14 against the bound's 2.7e-14.
+//
+// #862's defect, the kept span's rotation not taken, stays out of reach:
+// 3.48e-10 to 3.49e-10 on both backends with the term switched off (#1000,
+// six runs), and r moves that by at most 2.7e3 √N ε = 7e-11 (the term's
+// own sensitivity, 2.1e3 to 2.7e3 per unit η), so a defective run reads at
+// least 2.2 bars. SC-QD at the same geometry is 8.5e-13.
+constexpr double kRoundOffSensitivity = 4.7e3;
+constexpr double kLongestReduction = 400.0 * 36.0;
+const double kActiveActiveTolerance =
+    kRoundOffSensitivity * std::sqrt(kLongestReduction) * std::numeric_limits<double>::epsilon();
 
 // PC-QD state 0 at the twist, DF-SA3-CASSCF(6,6)/STO-3G over cc-pVDZ-JKFIT:
 // Sr's and Si's metrics drop real modes there, and the transition rows'
@@ -166,7 +190,7 @@ TEST(Nevpt2Psb3, PcQdActiveActiveGateAtTheTwist) {
   const double active_active = gate.at("active_active").get<double>();
   EXPECT_LE(active_active, kActiveActiveTolerance);
   std::cout << std::format("[ psb3     ] PC-QD state 0 at 90°, STO-3G: gate active_active {:.2e} "
-                           "(bar {:.0e}), active_core {:.2e}, virtual_active {:.2e}\n",
+                           "(bar {:.2e}), active_core {:.2e}, virtual_active {:.2e}\n",
                            active_active, kActiveActiveTolerance,
                            gate.at("active_core").get<double>(),
                            gate.at("virtual_active").get<double>());
