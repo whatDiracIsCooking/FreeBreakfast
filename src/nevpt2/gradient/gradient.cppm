@@ -502,7 +502,9 @@ qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
 /// built the same way from the same arguments, through
 /// pc_effective_hamiltonian instead of sc_effective_hamiltonian. Element
 /// [M n + N] is ⟨M|V|Ψ_N⁽¹⁾⟩ per class, ket N's own solve; at one root,
-/// weight 1, it is pc_energy's.
+/// weight 1, it is pc_energy's. @p pc_floor is pc_energy's, set on every
+/// pair's inputs (EnergyInputs::pc_floor; the kets' solves read it): 0, the
+/// default, leaves the cut as it is.
 ///
 /// @return The n^2 elements; qd_sc_energy's InvalidConfig; a refused class's
 ///         Numerical error naming the class and the state, as
@@ -513,7 +515,7 @@ qd_pc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
              const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
              const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
              std::span<const double> weights, const double *vectors, int32_t batch,
-             int32_t nfrozen = 0);
+             int32_t nfrozen = 0, double pc_floor = 0.0);
 
 /// @brief qd_pc_adjoint's result: QdScAdjoint's arrays, in its conventions,
 /// of the PC-QD functional.
@@ -544,7 +546,8 @@ struct QdPcAdjoint {
 /// order, go through the bra/ket rdms_adjoint as SC-QD's do; the shared
 /// builders, gamma_SA's bar onto every root and h_bar, Lambda, X, A and ε are
 /// the same code. At one root, weight 1 and W = 1, the result is
-/// pc_adjoint's to round-off.
+/// pc_adjoint's to round-off. @p pc_floor is qd_pc_energy's, so the adjoint
+/// is the derivative of the elements it reports.
 ///
 /// PC's finish drops the restricted inverse's rank-projector terms, exact
 /// when each b_{M←N} lies in S_N's kept span, which holds at eigenstates
@@ -558,7 +561,7 @@ qd_pc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
               const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
               const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
               std::span<const double> weights, const double *vectors, std::span<const double> w,
-              int32_t batch, int32_t nfrozen = 0);
+              int32_t batch, int32_t nfrozen = 0, double pc_floor = 0.0);
 
 /// @brief zc_multipliers' result.
 struct ZcMultipliers {
@@ -1049,7 +1052,8 @@ struct QdPcGradient {
 /// qd_sc_adjoint. The Lagrangian's assembly (z^c the same division over
 /// PC's A, under the same degenerate-pair rule; tau split into zeta and t;
 /// the CI right-hand side y_bar_r / (2 w_r); the gate) and the two
-/// derivative passes are the same code. The arguments are qd_sc_gradient's.
+/// derivative passes are the same code. The arguments are qd_sc_gradient's,
+/// and @p pc_floor qd_pc_energy's, read by the energy and the adjoint alike.
 ///
 /// @return The gradient; a refused class's Numerical error, qd_pc_energy's
 ///         unchanged, never a gradient with the class zeroed;
@@ -1061,15 +1065,15 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t state,
-               int32_t batch, int32_t nfrozen = 0);
+               int32_t batch, int32_t nfrozen = 0, double pc_floor = 0.0);
 
 /// @brief The PC-QD-NEVPT2 nuclear gradient G(W) of E[W] at any symmetric
 /// weight matrix @p w: qd_sc_gradient's W form with qd_pc_adjoint in place
 /// of qd_sc_adjoint. G is linear in W; the state form, dE_K/dR, is
 /// G(u_K u_K^T), u_K PC's H_eff's eigenvector, one code path.
 ///
-/// The arguments are qd_pc_gradient's with @p w for @p state, and
-/// @p limit_pair, mcscf::root_pair_multipliers': a pair of CASSCF roots
+/// The arguments are qd_pc_gradient's with @p w for @p state (@p pc_floor
+/// trailing), and @p limit_pair, mcscf::root_pair_multipliers': a pair of CASSCF roots
 /// whose zeta is taken at its limit 0, not refused under kRootGapFloor but
 /// gated on its tau (nevpt2::qd_pc_intersection's mean gradient inside a
 /// degenerate CASSCF pair, ../intersection/README.md).
@@ -1085,8 +1089,8 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
                std::span<const double> w, int32_t batch, double zvector_tolerance = 1e-10,
-               int32_t nfrozen = 0,
-               std::optional<std::array<int32_t, 2>> limit_pair = std::nullopt);
+               int32_t nfrozen = 0, std::optional<std::array<int32_t, 2>> limit_pair = std::nullopt,
+               double pc_floor = 0.0);
 
 /// @brief qd_sc_gradient's several-W form over qd_pc_adjoint: G(W) at each
 /// of @p w, sharing the same work. The arguments are its.
@@ -1100,7 +1104,7 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
                std::span<const std::vector<double>> w, int32_t batch,
-               double zvector_tolerance = 1e-10, int32_t nfrozen = 0);
+               double zvector_tolerance = 1e-10, int32_t nfrozen = 0, double pc_floor = 0.0);
 
 /// @brief The PC-QD-NEVPT2 interstate coupling between QD states @p p and
 /// @p q (PC's H_eff eigenvalues ascending), h_PQ = R_P^T (dH_eff/dR) R_Q:
@@ -1108,7 +1112,8 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
 /// qd_sc_energy and qd_sc_adjoint, the PC W form at W^PQ, R PC's H_eff's
 /// eigenvectors signed as qd_sc_coupling's.
 ///
-/// The arguments are qd_sc_coupling's, @p fold as its.
+/// The arguments are qd_sc_coupling's, @p fold as its, and @p pc_floor
+/// qd_pc_gradient's.
 ///
 /// @return h_PQ in QdPcGradient's fields (heff_gap |E_Q - E_P|); a refused
 ///         class's Numerical error, qd_pc_energy's unchanged, never a
@@ -1120,7 +1125,8 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
     const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
     int32_t ncore, int32_t ncas, int32_t p, int32_t q, int32_t batch,
     const std::function<Result<QdFold>(std::span<const double>, std::span<const double>)> &fold =
-        {});
+        {},
+    double pc_floor = 0.0);
 
 /// @brief qd_sc_energy's inputs on the DF-SA-CASSCF @p solution, handed to
 /// @p use: the MO blocks, and the n x n pairs [M n + N] (bra M, ket N) of

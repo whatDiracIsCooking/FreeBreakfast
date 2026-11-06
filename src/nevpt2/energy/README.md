@@ -561,7 +561,9 @@ derivative of the energy the others report. The gradient's entry points
 `pc_floor = 0`. Its one TOML key is `[hessian] pc_floor` (#923), which a
 PC `[nevpt2_gradient]` beside a `[hessian]` also takes.
 The QD paths (`pc_effective_hamiltonian` and its reverse pass) read it from
-each state's own inputs, which their callers leave at 0. `cut` and `kept`
+each state's own inputs, which the PC-QD entry points (`qd_pc_energy`,
+`qd_pc_adjoint`, `qd_pc_gradient`, `qd_pc_coupling`) set from their own
+trailing `pc_floor = 0` (#1020); nothing in the pipeline sets it there. `cut` and `kept`
 are reported per class, and per ket in an effective Hamiltonian; both are 0
 for Sijrs.
 

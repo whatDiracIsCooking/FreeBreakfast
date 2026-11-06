@@ -221,7 +221,7 @@ Nevpt2GradientStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClasse
     if (quasi_degenerate && pc) {
       return Gradient{FBF_TRY(nevpt2::qd_pc_gradient(res, molecule, basis, classes, fit->aux, h,
                                                      fit->b, fit->l.data(), solution, cas.ncore,
-                                                     cas.ncas, state, 0, nfrozen))};
+                                                     cas.ncas, state, 0, nfrozen, pc_floor))};
     }
     if (quasi_degenerate) {
       return Gradient{FBF_TRY(nevpt2::qd_sc_gradient(res, molecule, basis, classes, fit->aux, h,
