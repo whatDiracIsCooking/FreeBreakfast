@@ -104,8 +104,10 @@ Result<QdArrays> qd_arrays(DeviceResources &res, const std::string_view who,
 }
 
 // sc_effective_hamiltonian's pairs: the shared inputs, each pair's RDMs, and
-// f3ca and f3ac on the diagonal alone.
-std::vector<EnergyInputs> pair_inputs(const QdArrays &q, const size_t nroots) {
+// f3ca and f3ac on the diagonal alone; PC's conditioning floor @p pc_floor on
+// every pair (the kets' solves read it).
+std::vector<EnergyInputs> pair_inputs(const QdArrays &q, const size_t nroots,
+                                      const double pc_floor = 0.0) {
   std::vector<EnergyInputs> out;
   for (size_t k = 0; k < q.pairs.size(); ++k) {
     const QdRdms &p = q.pairs[k];
@@ -116,6 +118,7 @@ std::vector<EnergyInputs> pair_inputs(const QdArrays &q, const size_t nroots) {
     in.dm3 = p.dm3.data();
     in.f3ca = diagonal ? p.f3ca.data() : nullptr;
     in.f3ac = diagonal ? p.f3ac.data() : nullptr;
+    in.pc_floor = pc_floor;
     out.push_back(in);
   }
   return out;
@@ -144,15 +147,15 @@ qd_sc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
   return sc_effective_hamiltonian(res, q.x.walk_blocks(), pair_inputs(q, weights.size()), batch);
 }
 
-Result<std::vector<PcClassEnergies>>
-qd_pc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
-             const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
-             const int32_t nmo, const double *b, const double *c, const double *h,
-             const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
-             const double *vectors, const int32_t batch, const int32_t nfrozen) {
+Result<std::vector<PcClassEnergies>> qd_pc_energy(
+    DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+    const int32_t naux, const int32_t nao, const int32_t nmo, const double *b, const double *c,
+    const double *h, const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
+    const double *vectors, const int32_t batch, const int32_t nfrozen, const double pc_floor) {
   const QdArrays q = FBF_TRY(qd_arrays(res, "nevpt2::qd_pc_energy", alpha, beta, naux, nao, nmo, b,
                                        c, h, ncore, ncas, weights, vectors, nfrozen));
-  return pc_effective_hamiltonian(res, q.x.walk_blocks(), pair_inputs(q, weights.size()), batch);
+  return pc_effective_hamiltonian(res, q.x.walk_blocks(), pair_inputs(q, weights.size(), pc_floor),
+                                  batch);
 }
 
 // The reverse pass of E[W] around @p walk at each of the k matrices @p ws
@@ -161,13 +164,14 @@ qd_pc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
 // adds onto the zeroed bars it is handed and hands each transition pair to
 // the callback it is given; the RDMs' bars onto every root's y, then
 // builders_adjoint. The forward arrays are only read, so every W reads the
-// same ones; the energies are @p walk's to keep.
+// same ones; the energies are @p walk's to keep. Every pair's inputs carry
+// @p pc_floor.
 Result<std::vector<ScAdjoint>> qd_adjoint(
     DeviceResources &res, const std::string_view who, const ci::DeviceStringSet &alpha,
     const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao, const int32_t nmo,
     const double *b, const double *c, const double *h, const int32_t ncore, const int32_t ncas,
     const std::span<const double> weights, const double *vectors, const std::span<const double> ws,
-    const int32_t nfrozen,
+    const int32_t nfrozen, const double pc_floor,
     const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>,
                                std::span<const double>, std::span<const EnergyBars>,
                                const std::function<Status(int64_t, int64_t, const EnergyBars &)> &)>
@@ -186,7 +190,7 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
   const int64_t n = ncas;
   const int64_t n4 = n * n * n * n;
   const int64_t ndet = int64_t{alpha.size()} * beta.size();
-  const std::vector<EnergyInputs> inputs = pair_inputs(q, nroots);
+  const std::vector<EnergyInputs> inputs = pair_inputs(q, nroots, pc_floor);
   // rdms_adjoint overwrites its outputs, so each call writes these and they
   // are added on.
   Buffers::device<double> bra_bar(static_cast<size_t>(ndet), res.device());
@@ -263,10 +267,11 @@ qd_adjoints(DeviceResources &res, const std::string_view who, const ci::DeviceSt
             const int32_t nmo, const double *b, const double *c, const double *h,
             const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
             const double *vectors, const std::span<const double> ws, const int32_t batch,
-            std::vector<PcClassEnergies> *pc, const int32_t nfrozen) {
+            std::vector<PcClassEnergies> *pc, const int32_t nfrozen, const double pc_floor) {
   std::vector<std::vector<ClassEnergies>> elements;
   std::vector<ScAdjoint> adj = FBF_TRY(qd_adjoint(
       res, who, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, ws, nfrozen,
+      pc_floor,
       [&](const MoBlocks &blocks, const std::span<const EnergyInputs> pairs,
           const std::span<const double> w, const std::span<const EnergyBars> bars,
           const auto &transition) -> Status {
@@ -309,7 +314,7 @@ Result<QdScAdjoint> qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSe
   }
   std::vector<QdScAdjoint> adj =
       FBF_TRY(qd_adjoints(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights,
-                          vectors, w, batch, nullptr, nfrozen));
+                          vectors, w, batch, nullptr, nfrozen, 0.0));
   return std::move(adj.front());
 }
 
@@ -319,7 +324,8 @@ Result<QdPcAdjoint> qd_pc_adjoint(DeviceResources &res, const ci::DeviceStringSe
                                   const double *c, const double *h, const int32_t ncore,
                                   const int32_t ncas, const std::span<const double> weights,
                                   const double *vectors, const std::span<const double> w,
-                                  const int32_t batch, const int32_t nfrozen) {
+                                  const int32_t batch, const int32_t nfrozen,
+                                  const double pc_floor) {
   constexpr std::string_view kWho = "nevpt2::qd_pc_adjoint";
   FBF_TRY(check_weights(kWho, weights));
   if (w.size() != weights.size() * weights.size()) {
@@ -328,7 +334,7 @@ Result<QdPcAdjoint> qd_pc_adjoint(DeviceResources &res, const ci::DeviceStringSe
   std::vector<PcClassEnergies> elements;
   std::vector<QdScAdjoint> adj =
       FBF_TRY(qd_adjoints(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights,
-                          vectors, w, batch, &elements, nfrozen));
+                          vectors, w, batch, &elements, nfrozen, pc_floor));
   QdScAdjoint &a = adj.front();
   return QdPcAdjoint{.elements = std::move(elements),
                      .h_bar = std::move(a.h_bar),

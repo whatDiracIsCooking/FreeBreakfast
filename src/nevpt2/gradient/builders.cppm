@@ -215,13 +215,14 @@ with_qd_inputs(DeviceResources &res, std::string_view who, const ci::DeviceStrin
 /// matrices @p ws holds (k n^2 doubles, W_k at [k n^2, (k + 1) n^2)), over
 /// one set of forward arrays and RDMs: one QdScAdjoint per W, in order. PC's
 /// elements, the same at every W, go to *@p pc and each result's elements
-/// is empty. qd.cpp's, for the stacked QD Lagrangian in lagrangian.cpp.
+/// is empty; @p pc_floor is set on every pair's inputs (PC reads it, SC
+/// does not). qd.cpp's, for the stacked QD Lagrangian in lagrangian.cpp.
 Result<std::vector<QdScAdjoint>>
 qd_adjoints(DeviceResources &res, std::string_view who, const ci::DeviceStringSet &alpha,
             const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
             const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
             std::span<const double> weights, const double *vectors, std::span<const double> ws,
-            int32_t batch, std::vector<PcClassEnergies> *pc, int32_t nfrozen);
+            int32_t batch, std::vector<PcClassEnergies> *pc, int32_t nfrozen, double pc_floor);
 
 /// @brief fold_bars' result: h_bar and Λ, symmetrized.
 struct FoldedBars {

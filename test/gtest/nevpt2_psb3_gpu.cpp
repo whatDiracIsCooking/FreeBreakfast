@@ -22,8 +22,9 @@
 // 90° about C13=C14, in STO-3G, where PC-QD state 0's Lagrangian was not
 // stationary in the active-active rotations until the reverse pass took the
 // kept span's rotation into the dropped modes (src/nevpt2/energy/README.md,
-// "The PC reverse pass"). About 3 s on the RTX 3080 and 14 s on the gfx1200,
-// it is the cheapest PC-QD check at the twist.
+// "The PC reverse pass"). It runs at pc_floor 1e-10 (#1020), where that
+// defect reads about 1500 bars. About 3 s on the RTX 3080 and 14 s on the
+// gfx1200, it is the cheapest PC-QD check at the twist.
 
 #include <gtest/gtest.h>
 
@@ -136,27 +137,42 @@ H      5.9322594717     1.9283875648    -2.0319280688
 // under them only in exact arithmetic: S and K carry round-off r that does
 // not rotate with the basis, so the residue is -<∂L/∂(S, K), [G, r]>, G the
 // rotation's generator, and the bars along Sr's and Si's smallest kept
-// modes, 3.5e-13 of σ_max, amplify r by about 1/σ (#1000). No other block sees it: the Z-vector absorbs r there.
-// A CASSCF stopping point or an atomic order re-rolls r, so the residue
-// varies from run to run while active_core and virtual_active repeat.
+// modes amplify r (#1000). No other block sees it: the Z-vector absorbs r
+// there. A CASSCF stopping point or an atomic order re-rolls r, so the
+// residue varies from run to run while active_core and virtual_active
+// repeat.
 //
-// The bar is that sensitivity times r's bound. kRoundOffSensitivity is the
-// residue per unit relative r: symmetric Gaussian r added to every own S
-// and K before the solve, entries η max|S| and η max|K|, at η = 1e-14 gave
-// 2.3e-11 to 4.7e-11 over twelve draws (six per backend; 2.8e-10 and
-// 4.1e-10 at η = 1e-13, so linear), the largest taken. r's bound is
-// √N ε, N = 400 x 36 the longest reduction into K: f3ca's and f3ac's
-// consume, over the 400 determinants of CAS(6,6) and the n² of each W
-// element (src/nevpt2/rdm/README.md, "Design"). Measured with r as it comes
-// (gfx1200 and RTX 3080, 40 runs): 3.1e-12 to 8.7e-12; once 9.1e-11 in a
-// push-time smoke (#1000), an r of about 2e-14 against the bound's 2.7e-14.
+// The floor (#1020). At the default cut, max(1e-13, 100 ε √d) of σ_max, Sr
+// and Si keep modes from 3.5e-13 (ket 1's Sr) up, and their spectra run on
+// through 1e-9 with no gap, so no floor stands out of the spectrum itself.
+// kTwistPcFloor is the pipeline's PC [hessian] floor (#923), the smallest
+// at which PSB3's second-order ladder is clean (src/nevpt2/energy/README.md,
+// "The conditioning floor"): every kept mode is then 1.07e-10 of σ_max or
+// more, 300 times the default's smallest. It drops 19 to 48 modes per ket
+// where the default drops 10 to 27, and moves E_0 by 8.5e-11 Eh
+// (-245.4285464001 to -245.4285463148): a different, nearby functional
+// whose Lagrangian must be just as stationary, which is all the gate asks.
 //
-// #862's defect, the kept span's rotation not taken, stays out of reach:
-// 3.48e-10 to 3.49e-10 on both backends with the term switched off (#1000,
-// six runs), and r moves that by at most 2.7e3 √N ε = 7e-11 (the term's
-// own sensitivity, 2.1e3 to 2.7e3 per unit η), so a defective run reads at
-// least 2.2 bars. SC-QD at the same geometry is 8.5e-13.
-constexpr double kRoundOffSensitivity = 4.7e3;
+// The bar is the residue's sensitivity to r times r's bound, at that floor.
+// kRoundOffSensitivity is the residue per unit relative r: symmetric
+// Gaussian r added to every own S and K before the solve, entries η max|S|
+// and η max|K|, gave 2.2e-12 to 7.8e-12 at η = 1e-14 (six draws), 6.1e-11
+// and 6.5e-11 at 1e-13, 6.0e-10 and 6.5e-10 at 1e-12 (gfx1200), so linear
+// at 6e2 per unit η above r's own share; the largest, 7.8e2, is taken. At
+// the default cut the same η = 1e-14 gave 2.3e-11 to 4.7e-11 (4.7e3, #1000).
+// r's bound is √N ε, N = 400 x 36 the longest reduction into K: f3ca's and
+// f3ac's consume, over the 400 determinants of CAS(6,6) and the n² of each
+// W element (src/nevpt2/rdm/README.md, "Design"). The bar is 2.1e-11; with
+// r as it comes the residue measured 2.1e-12.
+//
+// #862's defect, the kept span's rotation not taken, is far out of reach at
+// the floor: 3.19e-8 with the term switched off (gfx1200), against 3.48e-10
+// at the default cut, past even the library's own 1e-8 gate, so the run is
+// refused (Numerical, naming the active-active block): about 1500 bars. The
+// floor drops real modes (σ to 1e-10) whose transition rows the term
+// carries. SC-QD at the same geometry is 8.5e-13.
+constexpr double kTwistPcFloor = 1e-10;
+constexpr double kRoundOffSensitivity = 7.8e2;
 constexpr double kLongestReduction = 400.0 * 36.0;
 const double kActiveActiveTolerance =
     kRoundOffSensitivity * std::sqrt(kLongestReduction) * std::numeric_limits<double>::epsilon();
@@ -170,30 +186,38 @@ TEST(Nevpt2Psb3, PcQdActiveActiveGateAtTheTwist) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("nevpt2_psb3_twist");
   ASSERT_TRUE(fb::write_file(dir / "psb3.xyz", std::string{kPsb3Twisted}).has_value());
-  const std::string toml =
-      std::format("[molecule]\nxyz = \"psb3.xyz\"\ncharge = 1\n[basis_set]\nbasis = \"sto-3g\"\n"
-                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n"
-                  "[scf]\nmax_iterations = 400\n"
-                  "[casscf]\nncas = 6\nnelecas = 6\nnroots = 3\nconv_tol_grad = {:g}\n"
-                  "[nevpt2_gradient]\nquasi_degenerate = true\nvariant = \"pc\"\nstate = 0\n",
-                  kConvTolGrad);
-  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
-  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  // The steps as a config would give them, but for the floor, which no TOML
+  // key sets on a QD [nevpt2_gradient].
+  fb::CasscfStep casscf;
+  casscf.ncas = 6;
+  casscf.nelecas = 6;
+  casscf.nroots = 3;
+  casscf.conv_tol_grad = kConvTolGrad;
+  auto calc = fb::Calculation::create(
+      {fb::MoleculeStep{.xyz = dir / "psb3.xyz", .charge = 1}, fb::BasisSetStep{.basis = "sto-3g"},
+       fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvdz-jkfit"},
+       fb::ScfStep{.max_iterations = 400}, casscf,
+       fb::Nevpt2GradientStep{.variant = fb::Nevpt2Variant::Pc,
+                              .quasi_degenerate = true,
+                              .state = 0,
+                              .pc_floor = kTwistPcFloor}},
+      []<class S>() -> fb::Result<S> { return S{}; });
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
-  const auto written = fb::read_json(dir / "out" / "nevpt2_gradient.json");
-  ASSERT_TRUE(written.has_value()) << written.error().message;
-  const fb::json &gate = written->at("asymmetry");
-
-  const double active_active = gate.at("active_active").get<double>();
+  const auto &out = calc->get<fb::Nevpt2GradientOutput>();
+  ASSERT_TRUE(out.has_value()) << out.error().message;
+  const auto &g = std::get<fb::nevpt2::QdPcGradient>(out->gradient);
+  // X^L's residues: core_core, active_active, virtual_virtual, active_core,
+  // virtual_core, virtual_active.
+  const std::array<double, 6> &gate = g.lagrangian.asymmetry;
+  const double active_active = gate[1];
   EXPECT_LE(active_active, kActiveActiveTolerance);
-  std::cout << std::format("[ psb3     ] PC-QD state 0 at 90°, STO-3G: gate active_active {:.2e} "
-                           "(bar {:.2e}), active_core {:.2e}, virtual_active {:.2e}\n",
-                           active_active, kActiveActiveTolerance,
-                           gate.at("active_core").get<double>(),
-                           gate.at("virtual_active").get<double>());
+  std::cout << std::format("[ psb3     ] PC-QD state 0 at 90°, STO-3G, pc_floor {:g}: gate "
+                           "active_active {:.2e} (bar {:.2e}), active_core {:.2e}, "
+                           "virtual_active {:.2e}\n",
+                           kTwistPcFloor, active_active, kActiveActiveTolerance, gate[3], gate[5]);
 }
 
 } // namespace

@@ -62,6 +62,8 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
     qd_pc_adjoint(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, w,
                   batch)
         -> QdPcAdjoint   elements (PcClassEnergies), then QdScAdjoint's arrays
+    both PC-QD ones take a trailing nfrozen = 0 and pc_floor = 0, pc_energy's,
+    set on every pair's inputs (#1020)
 
     qd_sc_lagrangian(res, molecule, basis, aux, h, b, solution, ncore, ncas, state, batch)
         -> QdScLagrangian
@@ -106,6 +108,8 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
     qd_pc_coupling(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, p, q,
                    batch, fold = {})
         -> QdPcGradient  PC's h_PQ = R_Pᵀ (∇H_eff) R_Q, G(W^PQ); heff_gap |E_Q − E_P|
+    each qd_pc_gradient and qd_pc_coupling takes a last pc_floor = 0, qd_pc_energy's,
+    read by the energy and the adjoint alike (#1020)
     qd_inputs(res, molecule, basis, aux, h, b, solution, ncore, ncas, use)
         -> Status        hands use(blocks, pairs) qd_sc_energy's inputs on the solution
     builders_tangent(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector,
@@ -1068,9 +1072,18 @@ cheapest of its family, `slow_test.h`), PC-QD state 0's residue 3.5e-10 before
 The residue is not round-off-free (#1000): S's and K's round-off does not
 rotate with the active basis, and Sr's and Si's smallest kept modes (3.5e-13 of
 σ_max) amplify it, so it varies from run to run (3.1e-12 to 8.7e-12 over 40
-runs, once 9.1e-11). The bar, 1.25e-10, is its measured sensitivity to an
-injected round-off times √N ε, N the longest reduction into K; the test's
-comment has the derivation. Without the term it is 3.48e-10.
+runs, once 9.1e-11). Its bar is its measured sensitivity to an injected
+round-off times √N ε, N the longest reduction into K: 1.25e-10 at the
+default cut, where the term's absence reads 3.48e-10, at worst 2.2 bars.
+
+So the test runs at `pc_floor` 1e-10 (#1020), which every PC-QD entry
+point takes as a trailing `pc_floor = 0` and sets on every pair's inputs,
+the default leaving every QD and NAC result bitwise as it was. At that
+floor every kept Sr and Si mode is 1.07e-10 of σ_max or more, E_0 moves by
+8.5e-11 Eh, the sensitivity falls from 4.7e3 to 7.8e2 per unit relative
+round-off and the bar to 2.1e-11 (residue 2.1e-12), and the term's absence
+reads 3.19e-8, about 1500 bars and past the library's own 1e-8 gate, which
+refuses the run. The test's comment has the derivation.
 
 **Refusals.** A class `pc_effective_hamiltonian` refuses (no positive
 eigenvalue of S_N, or a pole: λ + Δ at round-off or an intruder,

@@ -473,18 +473,21 @@ constexpr double kTraceTolerance = 1e-12;
 // weights, by mcscf::sa_gradient_weights (its own, recovered from its RDMs
 // only when it carries none; every one positive: a root of zero weight has
 // no SA CI row, and its multiplier's right-hand side divides by 2 w_r), and
-// the active strings; and the frozen core, 0 to ncore, which every
+// the active strings; and the frozen core, 0 to ncore, and PC's
+// conditioning floor (EnergyInputs::pc_floor, unread by SC), which every
 // adjoint's forward takes.
 struct QdSetup {
   std::vector<double> weights;
   ci::DeviceStringSet alpha;
   ci::DeviceStringSet beta;
   int32_t nfrozen = 0;
+  double pc_floor = 0.0;
 };
 
 Result<QdSetup> qd_setup(DeviceResources &res, const std::string_view who, const Molecule &molecule,
                          const BasisSet &basis, const mcscf::Solution &solution,
-                         const int32_t ncore, const int32_t ncas, const int32_t nfrozen) {
+                         const int32_t ncore, const int32_t ncas, const int32_t nfrozen,
+                         const double pc_floor = 0.0) {
   const SphericalMatrixAO &c = solution.c;
   const int64_t nao = basis.nao_sphe();
   if (c.n() != nao || ncore < 0 || ncas < 1 || ncore + ncas > nao) {
@@ -520,7 +523,8 @@ Result<QdSetup> qd_setup(DeviceResources &res, const std::string_view who, const
   return QdSetup{.weights = std::move(weights),
                  .alpha = std::move(alpha),
                  .beta = std::move(beta),
-                 .nfrozen = nfrozen};
+                 .nfrozen = nfrozen,
+                 .pc_floor = pc_floor};
 }
 
 Status qd_inputs(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
@@ -621,9 +625,9 @@ qd_lagrangians(DeviceResources &res, const std::string_view who, const QdSetup &
 
   // y_bar, h_bar, Lambda, X and A of E^corr[W], every W over one set of
   // forward arrays.
-  std::vector<QdScAdjoint> adjoints =
-      FBF_TRY(qd_adjoints(res, who, alpha, beta, naux, nmo32, nmo32, b.data(), c.data(), h.data(),
-                          ncore, ncas, weights, vectors, stacked, batch, pc, setup.nfrozen));
+  std::vector<QdScAdjoint> adjoints = FBF_TRY(
+      qd_adjoints(res, who, alpha, beta, naux, nmo32, nmo32, b.data(), c.data(), h.data(), ncore,
+                  ncas, weights, vectors, stacked, batch, pc, setup.nfrozen, setup.pc_floor));
   const CasscfIntegrals ints =
       FBF_TRY(casscf_integrals(res, basis, molecule, h, b, naux, c, ncore, ncas));
   const response::Fock averaged =
@@ -846,16 +850,17 @@ qd_lagrangian(DeviceResources &res, const std::string_view who, const QdSetup &s
 // H_eff's eigenvalues and R. At p = q that is state K's u_K u_K^T, bit for
 // bit (1/2 (x + x) = x), refused within kRootGapFloor of any other state;
 // at p != q it is the interstate coupling's W^PQ, trace 0, refused when E_P
-// and E_Q are that close (h_PQ / (E_Q - E_P) is the consumer's).
+// and E_Q are that close (h_PQ / (E_Q - E_P) is the consumer's). PC's energy
+// and adjoint read @p pc_floor.
 Result<QdScLagrangian>
 qd_state_lagrangian(DeviceResources &res, const std::string_view who, const Molecule &molecule,
                     const BasisSet &basis, const BasisSet &aux, const SphericalMatrixAO &h,
                     const Buffers::device<double> &b, const mcscf::Solution &solution,
                     const int32_t ncore, const int32_t ncas, const int32_t p, const int32_t q,
                     const int32_t batch, const int32_t nfrozen, std::vector<PcClassEnergies> *pc,
-                    const Folder &fold = {}) {
+                    const Folder &fold = {}, const double pc_floor = 0.0) {
   const QdSetup setup =
-      FBF_TRY(qd_setup(res, who, molecule, basis, solution, ncore, ncas, nfrozen));
+      FBF_TRY(qd_setup(res, who, molecule, basis, solution, ncore, ncas, nfrozen, pc_floor));
   const size_t nroots = solution.roots.energies.size();
   for (const int32_t state : {p, q}) {
     if (state < 0 || static_cast<size_t>(state) >= nroots) {
@@ -877,9 +882,9 @@ qd_state_lagrangian(DeviceResources &res, const std::string_view who, const Mole
     std::ranges::transform(elements, std::back_inserter(totals), &ClassEnergies::total);
   } else {
     // A refused class is the energy's error, returned before anything reads it.
-    const std::vector<PcClassEnergies> elements =
-        FBF_TRY(qd_pc_energy(res, setup.alpha, setup.beta, naux, nmo32, nmo32, b.data(), c.data(),
-                             h.data(), ncore, ncas, setup.weights, vectors, batch, nfrozen));
+    const std::vector<PcClassEnergies> elements = FBF_TRY(
+        qd_pc_energy(res, setup.alpha, setup.beta, naux, nmo32, nmo32, b.data(), c.data(), h.data(),
+                     ncore, ncas, setup.weights, vectors, batch, nfrozen, setup.pc_floor));
     std::ranges::transform(elements, std::back_inserter(totals), &PcClassEnergies::total);
   }
   std::vector<double> heff(nroots * nroots);
@@ -1166,17 +1171,19 @@ QdPcGradient pc_result(QdScGradient g, std::vector<PcClassEnergies> elements, co
                       .heff_gap = gap};
 }
 
-Result<QdPcGradient>
-qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-               const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-               const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-               const int32_t state, const int32_t batch, const int32_t nfrozen) {
+Result<QdPcGradient> qd_pc_gradient(DeviceResources &res, const Molecule &molecule,
+                                    const BasisSet &basis,
+                                    const std::span<const PrimitivePairClass> classes,
+                                    const BasisSet &aux, const SphericalMatrixAO &h,
+                                    const Buffers::device<double> &b, const double *l,
+                                    const mcscf::Solution &solution, const int32_t ncore,
+                                    const int32_t ncas, const int32_t state, const int32_t batch,
+                                    const int32_t nfrozen, const double pc_floor) {
   // A refused class is qd_pc_energy's error, here and so the gradient's.
   std::vector<PcClassEnergies> elements;
-  QdScLagrangian lagrangian =
-      FBF_TRY(qd_state_lagrangian(res, "nevpt2::qd_pc_gradient", molecule, basis, aux, h, b,
-                                  solution, ncore, ncas, state, state, batch, nfrozen, &elements));
+  QdScLagrangian lagrangian = FBF_TRY(
+      qd_state_lagrangian(res, "nevpt2::qd_pc_gradient", molecule, basis, aux, h, b, solution,
+                          ncore, ncas, state, state, batch, nfrozen, &elements, {}, pc_floor));
   QdScGradient g = FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
                                      ncas, std::move(lagrangian)));
   const double gap = smallest_gap(g.lagrangian.eigenvalues, static_cast<size_t>(state));
@@ -1189,10 +1196,11 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
                const std::span<const double> w, const int32_t batch, const double zvector_tolerance,
-               const int32_t nfrozen, const std::optional<std::array<int32_t, 2>> limit_pair) {
+               const int32_t nfrozen, const std::optional<std::array<int32_t, 2>> limit_pair,
+               const double pc_floor) {
   constexpr std::string_view kWho = "nevpt2::qd_pc_gradient";
   const QdSetup setup =
-      FBF_TRY(qd_setup(res, kWho, molecule, basis, solution, ncore, ncas, nfrozen));
+      FBF_TRY(qd_setup(res, kWho, molecule, basis, solution, ncore, ncas, nfrozen, pc_floor));
   // A refused class is qd_pc_adjoint's error, the same as qd_pc_energy's.
   std::vector<PcClassEnergies> elements;
   QdScLagrangian lagrangian =
@@ -1210,10 +1218,10 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
                const std::span<const std::vector<double>> ws, const int32_t batch,
-               const double zvector_tolerance, const int32_t nfrozen) {
+               const double zvector_tolerance, const int32_t nfrozen, const double pc_floor) {
   constexpr std::string_view kWho = "nevpt2::qd_pc_gradient";
   const QdSetup setup =
-      FBF_TRY(qd_setup(res, kWho, molecule, basis, solution, ncore, ncas, nfrozen));
+      FBF_TRY(qd_setup(res, kWho, molecule, basis, solution, ncore, ncas, nfrozen, pc_floor));
   // A refused class is qd_adjoints' error, the same as qd_pc_energy's.
   std::vector<PcClassEnergies> elements;
   std::vector<QdScLagrangian> lagrangians =
@@ -1233,7 +1241,8 @@ qd_pc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-               const int32_t p, const int32_t q, const int32_t batch, const Folder &fold) {
+               const int32_t p, const int32_t q, const int32_t batch, const Folder &fold,
+               const double pc_floor) {
   constexpr std::string_view kWho = "nevpt2::qd_pc_coupling";
   if (p == q) {
     return err_config("{}: states {} and {}: a coupling is between two states, and one state's "
@@ -1244,7 +1253,7 @@ qd_pc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &b
   std::vector<PcClassEnergies> elements;
   QdScLagrangian lagrangian =
       FBF_TRY(qd_state_lagrangian(res, kWho, molecule, basis, aux, h, b, solution, ncore, ncas, p,
-                                  q, batch, 0, &elements, fold));
+                                  q, batch, 0, &elements, fold, pc_floor));
   QdScGradient g = FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
                                      ncas, std::move(lagrangian)));
   const double gap = std::abs(g.lagrangian.eigenvalues[static_cast<size_t>(q)] -
