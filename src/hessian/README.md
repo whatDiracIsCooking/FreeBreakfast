@@ -744,8 +744,8 @@ included (a state average is refused: its Lagrangian is #621's). In order:
 **A saddle is refused.** A state-specific excited root is a saddle in λ: E_λλ's
 CI block 2 (H₀ − E) is negative along every lower root of the same spin. The
 outer conjugate gradients of `zvectors` meet that as negative curvature of H̃
-and return a Divergence, which is passed on (as is its
-MaxIterationsExceeded). They need not meet it: `RelaxedHessian`'s inner CI
+and return a Divergence, which is refused as H̃ not positive (as is its
+MaxIterationsExceeded, "A singular H̃" below). They need not meet it: `RelaxedHessian`'s inner CI
 conjugate gradients stop without an error on a direction H₀ − E is not
 positive along (or after 200 sigmas), and an outer solve over the H̃ those
 truncated responses make can still reach its tolerance. So the solution is
@@ -755,6 +755,53 @@ sits near 1e-9 (the inner solves' 1e-8, relative), three orders below the
 ceiling. Stationarity is assumed, not checked, as in
 `mcscf::df_gradient`: at a geometry that is not a stationary point of the
 orbitals and CI the formula is not the Hessian.
+
+### A singular H̃
+
+**A null direction of H̃ is refused too (#978), and the coordinates' columns
+cannot see one.** HF in cc-pVDZ with CAS(10,7) over every electron
+(`PipelineNevpt2.PcAcceptedThroughAContinuum`'s input) is the case. Its two
+weakly occupied active orbitals (0.016 and 0.018) are σ* and one orbital of
+the 2π pair, which correlates one 1π orbital more than the other (1π
+occupations 1.9979 and 1.9902 in one run, 1.9992 and 1.9889 in another, at
+the same energy). So the CASSCF is one point of a continuous family:
+rotating the active 2π orbital about the bond into its virtual partner, with
+the CI following, costs nothing. H̃'s smallest eigenvalue is −1.4e-11
+(largest 121, next 6.4e-3); its eigenvector is the active orbitals 5 and 6
+against the virtuals 9, 11 and 17. Every coordinate's right-hand side is
+orthogonal to it by symmetry, up to round-off (g·v 5e-13 to 7e-12 of ‖g‖
+11). The conjugate gradients divide that round-off by the null eigenvalue.
+The transverse columns' |z_o| then reaches 58 to 7.4e3 against 0.9, and the
+unreduced residual 1e-7 to 2e-5 (the CI response's 1e-8 of a right-hand side
+that large). So whether a run passed the 1e-6 ceiling depended on its
+round-off, or it met p·H̃p = −3e-13 instead: 9 of 27 runs refused on the RTX
+3080, 1 of 10 on the gfx1200. No tolerance fixes that. The point the CASSCF
+reached decides which way the active 2π orbital points, and bending in its
+plane and out of it are different second derivatives, so the transverse
+block of the Hessian would turn with it from run to run.
+
+**The probe.** `zvectors` solves one more column beside the coordinates': H̃
+u = −s for a fixed pseudo-random s (`kCasscfCpProbeSeed`, unit norm, no CI
+part), generic along every eigenvector. Its Rayleigh quotient ρ = u·H̃u /
+u·u = −u·s / u·u is at least λ_min(H̃). The bar is what the products
+resolve. Each product's CI response leaves R x wrong by up to its tolerance
+(1e-8) of R x, and at a minimum 0 ≤ −R ≤ H, so H̃'s eigenvalues are known to
+1e-8 ‖H‖ (Weyl). ‖H‖ is at least max diag(H), so 1e-8 max diag(H) is at most
+that resolution. ρ not above it is a Divergence that calls H̃ singular, and
+so is the solve meeting a direction it is not positive along, or running out
+of products: the probe's residual cannot fall below its part along a null
+direction. Since ρ ≥ λ_min, the check refuses only an H̃ whose smallest
+eigenvalue its products cannot resolve. The probe's column is dropped from
+the result.
+
+The refusal does not hang on round-off: s's part along the null direction
+is O(1), not O(ε), so no run can solve the probe's column without ρ falling
+to the null eigenvalue or the solve failing. At HF CAS(10,7) ρ is 7e-15 to
+5e-13 against a bar of 1.2e-6, seven orders apart, or the probe's column
+meets negative curvature or 200 products (measured on both cards). On every
+other input of the Hessian tests ρ is at least 2.2e-2, five orders above its
+bar, and the probe takes one fewer to 6 more products than the slowest
+coordinate (34 solves, RTX 3080).
 
 ### Memory
 
@@ -1585,9 +1632,8 @@ default cut (gfx1200, `--preset hip`):
   conditioning floor"), and keep 2.9e-12 and 3.8e-12. At a `pc_floor` of
   1e-10 they keep 2.5e-10 and 2.8e-10 and nothing is refused, as the
   message says. HF CAS(10,7) with its F 1s active also trips the check
-  (Sr keeps 5.9e-13). It is not the test's input, because in one of two
-  runs its CP-CASSCF solve left a residual of 1.4e-5 and `df_casscf`
-  refused first.
+  (Sr keeps 5.9e-13). It is not the test's input, because `df_casscf`
+  refuses it first: its H̃ is singular ("A singular H̃", #978).
 - **t***: `hcn_sto3g`'s geometry with CAS(6,6) over orbitals 4 to 9, the
   fixture's π space and the σ pair beside it. The fixture's CAS(4,4) holds
   only π orbitals. An even number of π electrons there makes only Σ and Δ
@@ -1664,6 +1710,9 @@ pair. The test asserts every element within 2× the bar. A pair below
 - `NearbyBranchSwitchIsRefused` (#943): HCN CAS(6,6) above is Numerical,
   naming every x and y coordinate with class Sir and a t* below 1e-3 bohr,
   and no z coordinate.
+- `ContinuousFamilyIsRefused` (#978, slow tier): HF CAS(10,7), the CASSCF
+  the kept bullet above names, is a Divergence from `hessian::df_casscf`
+  calling its H̃ singular ("A singular H̃").
 - `Refusals`: `df_sc_nevpt2`'s input refusals.
 
 Measured on the gfx1200 (`--preset hip`) and the RTX 3080 (`--preset
@@ -1806,7 +1855,7 @@ the issue also asks for waits on that step (#610).
 | `df_casscf_two_electron.cpp` | The CASSCF Γ̃ and Ŵ contractions and the J, K and active cross terms; with a rotation their product-rule derivative, the atom blocks over [C_o \| C K_o] |
 | `df_casscf_exy.cpp` | E_xy: the one-electron and nuclear-repulsion explicit terms, F, and the connection's three terms over the MO-basis B and the τ^x stack; with a rotation the z_o part, F_L and E^(2)'s commutator terms |
 | `state_specific.cppm` | Internal partition: `state_specific_electrons`, a one-root solution's inputs checked and its active electrons by spin, which `df_casscf` and `df_nevpt2_tangents` share |
-| `df_casscf.cpp` | The state-specific CASSCF Hessian: E_λx, E_xy, λ^x by `zvectors`, the unreduced residual check, Λᵀ E_λ· and the symmetrized sum; the CP step alone (`df_casscf_cp`) |
+| `df_casscf.cpp` | The state-specific CASSCF Hessian: E_λx, E_xy, λ^x by `zvectors` beside the probe column, the unreduced residual check, Λᵀ E_λ· and the symmetrized sum; the CP step alone (`df_casscf_cp`) |
 | `df_nevpt2_tangents.cpp` | The NEVPT2 parameter response and t_x: per chunk of derivative integrals, W^x to B's layout, the one-index transforms by κ_nr, f^(x) by `builders_tangent`, κ_oo under the degenerate-pair rule and its transform |
 | `df_adjoint_xy.cpp` | Σ h̄ h^xy + Σ Λ B^xy at a general MO adjoint: X, G, ⟨sym(G) μ^x, μ^y⟩ and the per-chunk N^y and ⟨μ^x, H^y⟩ over `df_integral_derivatives`' W^x, both by M^x's atom blocks, V^y, the Gram matrices and the second-derivative integrals at the adjoint's AO forms |
 | `df_sc_nevpt2.cpp` | The SC-NEVPT2 Hessian: E_cas, t in the coordinates, E_corr + Φ's adjoint and the gradient's multipliers, the HVP and its partnered pairs, the Z terms, the skeleton, the rotation cross terms and κ_oo rows as Gram matrices of nmo² stacks, the symmetrized sum |
