@@ -169,8 +169,17 @@ constexpr size_t kNoiseStarts = 4;
 constexpr double kNoiseKick = 1e-3;
 constexpr uint64_t kNoiseSeed = 812;
 // The re-solve that measures what the production tolerances leave: each of
-// them, the CASSCF's, its CI's and the Z-vector's, this many times tighter.
+// them, the CASSCF's, its CI's and the Z-vector's, this many times tighter;
+// the CASSCF's held at or above their round-off floors
+// (tightened_casscf_tolerances, #995).
 constexpr double kTightened = 100.0;
+// The roundings each floor carries, in units of eps |E|: ΔE is the
+// difference of two energies, and each g_pq = 2 (F_pq - F_qp) of two Fock
+// elements, each good to about eps |E|. At PSB3 (|E| 248, 2589 pairs at
+// cc-pVDZ, 6789 at cc-pVTZ) the gradient's floor is 5.6e-12 and 9.1e-12,
+// over mcscf/solve/README.md's measured 1.6e-12 to 3.4e-12 and 6.2e-12 to
+// 9e-12.
+constexpr double kRoundings = 2.0;
 // How far from orthonormal the config's coordinates may be: rounding of
 // rows written to 16 digits is ~1e-16.
 constexpr double kCoordinatesOrthonormal = 1e-10;
@@ -310,6 +319,16 @@ displaced_weights(size_t nao, std::span<const double> s, std::span<const double>
     overlaps[r] = overlap * overlap;
   }
   return {std::move(weights), std::move(overlaps)};
+}
+
+std::pair<double, double> tightened_casscf_tolerances(const double conv_tol,
+                                                      const double conv_tol_grad,
+                                                      const double energy, const size_t pairs) {
+  const double energy_floor =
+      kRoundings * std::numeric_limits<double>::epsilon() * std::abs(energy);
+  const double gradient_floor = energy_floor * std::sqrt(static_cast<double>(pairs));
+  return {std::min(conv_tol, std::max(conv_tol / kTightened, energy_floor)),
+          std::min(conv_tol_grad, std::max(conv_tol_grad / kTightened, gradient_floor))};
 }
 
 Status check_displaced_casscf(size_t nao, std::span<const double> s,
@@ -730,6 +749,8 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     std::vector<double> reference_ci;
     size_t reference_ncore = 0;
     CasscfStep displaced_casscf = chain_casscf;
+    std::pair<double, double> tight_tolerances{chain_casscf.conv_tol / kTightened,
+                                               chain_casscf.conv_tol_grad / kTightened};
     if (casscf_gradient || nevpt2_gradient) {
       auto chain = FBF_TRY(chain_at({}, chain_casscf));
       FBF_TRY(at_geometry(chain.run(node), "the reference geometry"));
@@ -754,6 +775,14 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       displaced_casscf.ci_guess = cas.vectors;
       FBF_LOG_INFO("hessian: reference DF-CASSCF({}, {}) over {} root(s), E = {:.10f}", cas.nelecas,
                    cas.ncas, cas.energies.size(), cas.energy);
+      // The tightened re-solve's tolerances, at the reference's energy and
+      // non-redundant pairs (core-other and active-virtual), as mcscf::solve
+      // counts them.
+      const size_t nmo = cas.mo_energies.size();
+      const auto ncas = static_cast<size_t>(cas.ncas);
+      tight_tolerances = tightened_casscf_tolerances(
+          chain_casscf.conv_tol, chain_casscf.conv_tol_grad, cas.energy,
+          (reference_ncore * (nmo - reference_ncore)) + (ncas * (nmo - reference_ncore - ncas)));
     }
     // The NEVPT2 gradient's hazards, worst over the displacements: the
     // largest |z^c| and Z-vector residual, the smallest inactive gap.
@@ -781,7 +810,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                         std::pair<ReferenceOrbitalsStep, std::vector<double>> *solved =
                             nullptr) -> Result<std::vector<double>> {
       // The production solves' diagnostics, not a tightened re-solve's.
-      const bool production = casscf_step.conv_tol_grad == displaced_casscf.conv_tol_grad;
+      const bool production = &casscf_step == &displaced_casscf;
       auto chain =
           FBF_TRY((Pipeline<DisplacedMoleculeStep, BasisSetStep, SphericalTransformStep,
                             PrimitivePairClassesStep, EriStep, OverlapStep, CoreHamiltonianStep,
@@ -887,19 +916,21 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     };
     // The production gradient at R + @p shift from the reference's start,
     // and the same solve tightened kTightened-fold, the CASSCF's conv_tol
-    // and conv_tol_grad (its CI's floor follows conv_tol_grad,
-    // mcscf::ci_tolerance_for) and the NEVPT2 Z-vector's, started from the
-    // production solve's orbitals and CI: their difference is what the
-    // production tolerances leave in the gradient.
+    // and conv_tol_grad held at their round-off floors (tight_tolerances;
+    // its CI's floor follows conv_tol_grad, mcscf::ci_tolerance_for) and the
+    // NEVPT2 Z-vector's, started from the production solve's orbitals and
+    // CI: their difference is what the production tolerances leave in the
+    // gradient.
     const auto production_and_tightened = [&](std::span<const double> shift,
                                               const std::string &where)
         -> Result<std::pair<std::vector<double>, std::vector<double>>> {
       gradients += 2;
       std::pair<ReferenceOrbitalsStep, std::vector<double>> solved;
       CasscfStep tight = displaced_casscf;
-      tight.conv_tol /= kTightened;
-      tight.conv_tol_grad /= kTightened;
-      const std::string tightened = std::format("{}, tightened {:g}-fold", where, kTightened);
+      std::tie(tight.conv_tol, tight.conv_tol_grad) = tight_tolerances;
+      const std::string tightened =
+          std::format("{}, tightened to conv_tol {:.2e} and conv_tol_grad {:.2e}", where,
+                      tight.conv_tol, tight.conv_tol_grad);
       if (casscf_gradient) {
         std::vector<double> g = FBF_TRY(casscf_chain_gradient_at(
             shift, where, *reference, displaced_casscf, chain_casscf_gradient, &solved));
@@ -1129,7 +1160,17 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
             {"solve_bound", solve_bound},
             {"solve_residual", worst_solve_residual},
             {"response", worst_response},
-            {"tightened", kTightened},
+            {"tightened",
+             {{"fold", kTightened},
+              {"conv_tol", tight_tolerances.first},
+              {"conv_tol_from", tight_tolerances.first == displaced_casscf.conv_tol / kTightened
+                                    ? "fold"
+                                    : "roundoff"},
+              {"conv_tol_grad", tight_tolerances.second},
+              {"conv_tol_grad_from",
+               tight_tolerances.second == displaced_casscf.conv_tol_grad / kTightened
+                   ? "fold"
+                   : "roundoff"}}},
             {"floor", floor},
             {"judged_above", kJudgedFloors * floor},
             {"points", noise_points},
