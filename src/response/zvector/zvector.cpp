@@ -1,7 +1,7 @@
 /// @file
 /// @brief zvector: the CI right-hand side's response folded into the orbital
-/// one, preconditioned conjugate gradients over H~ for z_o, and z_c from the
-/// CI response at the solution plus the right-hand side's.
+/// one, preconditioned conjugate gradients over H~ for z_o (recipes::pcg),
+/// and z_c from the CI response at the solution plus the right-hand side's.
 
 module free_breakfast.response.zvector;
 
@@ -15,6 +15,7 @@ import free_breakfast.ci.solver;
 import free_breakfast.response.hessian;
 import free_breakfast.response.relaxed_hessian;
 import free_breakfast.recipes.blas; // gemm
+import free_breakfast.recipes.pcg;
 
 #include "diagnostics.h"
 
@@ -41,6 +42,35 @@ Status inverse_orbital_diagonal(DeviceResources &res, const Hessian &hessian,
                                          wwr::wwrMemcpyHostToDevice, res.stream())));
   return res.sync();
 }
+
+// diag(H)^-1 as pcg_solve's preconditioner, S = diag(H)^-1 R over a block,
+// elementwise: each element reads only its own.
+struct OrbitalJacobi {
+  const double *inverse; // inverse_orbital_diagonal's, size() device doubles
+  int32_t pairs;
+
+  Status apply(DeviceResources &res, const int32_t k, const double *const x, double *const y) {
+    return gpu_status(wwr::dgmm<double, int32_t>(res.blas().get(), wwr::WWRBLAS_SIDE_LEFT, pairs, k,
+                                                 x, pairs, inverse, 1, y, pairs));
+  }
+};
+
+// H~ through RelaxedHessian's one-column apply, a column at a time, as
+// zvector's pcg_solve operator. The block apply is a LinearOperator as it is,
+// but its CI responses sum in another order, good to their tolerance and not
+// to the bit, and that moved a solve by one product either way (README.md
+// "The solve"); zvector has always taken the one-column products.
+struct OneColumnRelaxedHessian {
+  RelaxedHessian &relaxed;
+  size_t pairs;
+
+  Status apply(DeviceResources &res, const int32_t k, const double *const x, double *const y) {
+    for (size_t j = 0; j < static_cast<size_t>(k); ++j) {
+      FBF_TRY(relaxed.apply(res, x + (j * pairs), y + (j * pairs)));
+    }
+    return {};
+  }
+};
 
 // response_tolerance_for's fraction of the Z-vector tolerance and its floor.
 constexpr double kResponsePerTolerance = 1e-2;
@@ -192,87 +222,44 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed, const Hes
               0.0};
   const std::vector<bool> rotating = rotating_pairs(relaxed.weights());
   const bool rotates = std::ranges::contains(rotating, true);
-  // The residual r, the direction p, H~ p, the preconditioned residual,
-  // diag(H)^-1 and the orbital right-hand side b = g_I + H_oc w: held across
+  // The right-hand side -b, H~ z + b at the end and diag(H)^-1: held across
   // H~'s products, which take the workspace, so its own (docs/style.md
   // "Scratch memory"). And C^T delta_r's nroots overlaps.
-  Buffers::device<double> pcg(std::max<size_t>(6 * pairs, 1), res.device());
+  Buffers::device<double> work(std::max<size_t>(3 * pairs, 1), res.device());
   Buffers::device<double> overlaps(roots_count, res.device());
   double *const z = out.orbital.data();
-  double *const r = pcg.data();
-  double *const p = r + pairs;
-  double *const hp = p + pairs;
-  double *const s = hp + pairs;
-  double *const inverse_diagonal = s + pairs;
-  double *const b = inverse_diagonal + pairs;
+  double *const rhs = work.data();
+  double *const hz = rhs + pairs;
+  double *const inverse_diagonal = hz + pairs;
 
   // b = g_I + H_oc w for w_r = -(H_0 - E_r)^-1 P y_r, which z_c keeps
-  // (out.ci) until z_o's response is added to it.
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(b, gradient, pairs * sizeof(double),
+  // (out.ci) until z_o's response is added to it; then negated in place.
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rhs, gradient, pairs * sizeof(double),
                                          wwr::wwrMemcpyDeviceToDevice, stream)));
   if (ci_rhs == nullptr) {
     FBF_TRY(gpu_status(
         wwr::wwrMemsetAsync(out.ci.data(), 0, dim * roots_count * sizeof(double), stream)));
   } else {
-    FBF_TRY(relaxed.couple(res, ci_rhs, hp));
-    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kOne<double>, hp, 1, b, 1)));
+    FBF_TRY(relaxed.couple(res, ci_rhs, hz));
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kOne<double>, hz, 1, rhs, 1)));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.ci.data(), relaxed.delta(),
                                            dim * roots_count * sizeof(double),
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
   }
   if (rotates && !theta_rhs.empty()) {
-    FBF_TRY(couple_rotations(res, relaxed, roots, rotating, 1, theta_rhs, b, out.ci.data(), hp));
+    FBF_TRY(couple_rotations(res, relaxed, roots, rotating, 1, theta_rhs, rhs, out.ci.data(), hz));
   }
+  FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, n_pairs, &kNegOne<double>, rhs, 1)));
 
+  // H~ z = -b from z = 0, preconditioned by diag(H)^-1.
   FBF_TRY(inverse_orbital_diagonal(res, hessian, inverse_diagonal));
-  // s <- diag(H)^-1 r, elementwise: each element reads only its own.
-  const auto precondition = [&]() -> Status {
-    return gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, n_pairs, 1, r,
-                                                 n_pairs, inverse_diagonal, 1, s, n_pairs));
-  };
-  const auto dot = [&](const double *a, const double *b) -> Result<double> {
-    double value = 0.0;
-    FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, n_pairs, a, 1, b, 1, &value)));
-    return value;
-  };
-
-  // z = 0, r = -b, p = s = M r.
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(z, 0, pairs * sizeof(double), stream)));
-  FBF_TRY(gpu_status(
-      wwr::wwrMemcpyAsync(r, b, pairs * sizeof(double), wwr::wwrMemcpyDeviceToDevice, stream)));
-  FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, n_pairs, &kNegOne<double>, r, 1)));
-  FBF_TRY(precondition());
-  FBF_TRY(gpu_status(
-      wwr::wwrMemcpyAsync(p, s, pairs * sizeof(double), wwr::wwrMemcpyDeviceToDevice, stream)));
-  double rs = FBF_TRY(dot(r, s));
-  double r_norm = 0.0;
-  FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, n_pairs, r, 1, &r_norm)));
-  while (r_norm > tolerance) {
-    if (out.iterations == max_iterations) {
-      return err_max_iterations_exceeded(
-          "response::zvector: ||r|| {:.3e} after {} products, above {:.3e}", r_norm, max_iterations,
-          tolerance);
-    }
-    FBF_TRY(relaxed.apply(res, p, hp));
-    ++out.iterations;
-    const double php = FBF_TRY(dot(p, hp));
-    if (!(php > 0.0)) {
-      return err_divergence(
-          "response::zvector: p.H~p = {:.3e} after {} products: H~ is not positive "
-          "definite, so the orbitals are not a minimum",
-          php, out.iterations);
-    }
-    const double alpha = rs / php;
-    const double neg_alpha = -alpha;
-    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &alpha, p, 1, z, 1)));
-    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &neg_alpha, hp, 1, r, 1)));
-    FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, n_pairs, r, 1, &r_norm)));
-    FBF_TRY(precondition());
-    const double rs_new = FBF_TRY(dot(r, s));
-    const double beta = rs_new / rs;
-    FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, n_pairs, &beta, p, 1)));
-    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kOne<double>, s, 1, p, 1)));
-    rs = rs_new;
+  OneColumnRelaxedHessian one_column{relaxed, pairs};
+  OrbitalJacobi jacobi{inverse_diagonal, n_pairs};
+  const PcgOptions options{
+      .tolerance = tolerance, .max_iterations = max_iterations, .true_residuals = false};
+  if (n_pairs > 0) {
+    const PcgInfo info = FBF_TRY(pcg_solve(res, one_column, jacobi, n_pairs, 1, rhs, z, options));
+    out.iterations = info.iterations[0];
   }
 
   // The true residual H~ z + b, from one more product: the recurrence's r
@@ -280,9 +267,9 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed, const Hes
   // conjugate gradients. That product's respond leaves delta(z_o) in
   // relaxed.delta(), which with w is z_c once off every root (the other
   // roots' part respond adds is the state average's redundant rotations).
-  FBF_TRY(relaxed.apply(res, z, hp));
-  FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kOne<double>, b, 1, hp, 1)));
-  FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, n_pairs, hp, 1, &out.residual)));
+  FBF_TRY(relaxed.apply(res, z, hz));
+  FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kNegOne<double>, rhs, 1, hz, 1)));
+  FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, n_pairs, hz, 1, &out.residual)));
   FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32 * nroots, &kOne<double>,
                                                 relaxed.delta(), 1, out.ci.data(), 1)));
   // The rotations are z_c's part along the other roots, for the pairs of
@@ -386,118 +373,56 @@ Result<ZVectors> zvectors_schur(DeviceResources &res, RelaxedHessian &relaxed,
   const std::vector<bool> rotating = rotating_pairs(relaxed.weights());
   const bool rotates = std::ranges::contains(rotating, true);
 
-  // R, P, H~ P (scattered), S, B = g + H_oc w, the gathered P and H~ P, and
-  // diag(H)^-1: held across H~'s products, which take the workspace, so its
-  // own. And the roots' overlaps for z_c's projection.
-  Buffers::device<double> pcg(std::max<size_t>((7 * block) + pairs, 1), res.device());
+  // The right-hand sides -B, H~ Z + B at the end and diag(H)^-1: held across
+  // H~'s products, which take the workspace, so its own. And the roots'
+  // overlaps for z_c's projection.
+  Buffers::device<double> work(std::max<size_t>((2 * block) + pairs, 1), res.device());
   Buffers::device<double> overlaps(roots_count * roots_count * ncol, res.device());
   double *const z = out.orbital.data();
-  double *const r = pcg.data();
-  double *const p = r + block;
-  double *const hp = p + block;
-  double *const s = hp + block;
-  double *const b = s + block;
-  double *const xs = b + block;
-  double *const ys = xs + block;
-  double *const inverse_diagonal = ys + block;
+  double *const rhs = work.data();
+  double *const hz = rhs + block;
+  double *const inverse_diagonal = hz + block;
 
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(b, gradients, block * sizeof(double),
+  // B = G + H_oc W, then negated in place.
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rhs, gradients, block * sizeof(double),
                                          wwr::wwrMemcpyDeviceToDevice, stream)));
   if (ci_rhs == nullptr) {
     FBF_TRY(gpu_status(
         wwr::wwrMemsetAsync(out.ci.data(), 0, ci_block * ncol * sizeof(double), stream)));
   } else {
-    FBF_TRY(relaxed.couple(res, ncol32, ci_rhs, hp));
-    FBF_TRY(gpu_status(
-        wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(block), &kOne<double>, hp, 1, b, 1)));
+    FBF_TRY(relaxed.couple(res, ncol32, ci_rhs, hz));
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(block), &kOne<double>,
+                                                  hz, 1, rhs, 1)));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.ci.data(), relaxed.delta(),
                                            ci_block * ncol * sizeof(double),
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
   }
   if (rotates && !theta_rhs.empty()) {
-    FBF_TRY(couple_rotations(res, relaxed, roots, rotating, ncol, theta_rhs, b, out.ci.data(), hp));
+    FBF_TRY(
+        couple_rotations(res, relaxed, roots, rotating, ncol, theta_rhs, rhs, out.ci.data(), hz));
   }
-  FBF_TRY(inverse_orbital_diagonal(res, hessian, inverse_diagonal));
-  const auto precondition = [&]() -> Status {
-    return gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, n_pairs, ncol32, r,
-                                                 n_pairs, inverse_diagonal, 1, s, n_pairs));
-  };
-  const auto dot = [&](const double *u, const double *v) -> Result<double> {
-    double value = 0.0;
-    FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, n_pairs, u, 1, v, 1, &value)));
-    return value;
-  };
-  const auto norm = [&](const double *u) -> Result<double> {
-    double value = 0.0;
-    FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, n_pairs, u, 1, &value)));
-    return value;
-  };
-
-  // Z = 0, R = -B, P = S = M R.
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(z, 0, block * sizeof(double), stream)));
-  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n_pairs,
-                                                ncol32, &kNegOne<double>, b, n_pairs,
-                                                &kZero<double>, b, n_pairs, r, n_pairs)));
-  FBF_TRY(precondition());
   FBF_TRY(gpu_status(
-      wwr::wwrMemcpyAsync(p, s, block * sizeof(double), wwr::wwrMemcpyDeviceToDevice, stream)));
-  std::vector<double> rs(ncol);
-  std::vector<double> r_norm(ncol);
-  for (size_t x = 0; x < ncol; ++x) {
-    rs[x] = FBF_TRY(dot(r + (x * pairs), s + (x * pairs)));
-    r_norm[x] = FBF_TRY(norm(r + (x * pairs)));
-  }
+      wwr::scal<double, int32_t>(blas, static_cast<int32_t>(block), &kNegOne<double>, rhs, 1)));
 
-  for (int32_t sweeps = 0;; ++sweeps) {
-    const std::vector<size_t> active =
-        FBF_TRY(active_columns(r_norm, tolerance, sweeps, max_iterations, "Schur"));
-    if (active.empty()) {
-      break;
-    }
-    // H~ P over the active columns, gathered into XS and back from YS.
-    for (size_t i = 0; i < active.size(); ++i) {
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(xs + (i * pairs), p + (active[i] * pairs),
-                                             pairs * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
-                                             stream)));
-    }
-    FBF_TRY(relaxed.apply(res, static_cast<int32_t>(active.size()), xs, ys));
-    for (size_t i = 0; i < active.size(); ++i) {
-      const size_t x = active[i];
-      const size_t at = x * pairs;
-      const double *const hpx = ys + (i * pairs);
-      ++out.iterations[x];
-      const double php = FBF_TRY(dot(p + at, hpx));
-      if (!(php > 0.0)) {
-        return err_divergence("response::zvectors (Schur): p.H~p = {:.3e} in column {} after {} "
-                              "products: H~ is not positive definite, so the orbitals are not a "
-                              "minimum",
-                              php, x, out.iterations[x]);
-      }
-      const double alpha = rs[x] / php;
-      const double neg_alpha = -alpha;
-      FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &alpha, p + at, 1, z + at, 1)));
-      FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &neg_alpha, hpx, 1, r + at, 1)));
-      r_norm[x] = FBF_TRY(norm(r + at));
-    }
-    FBF_TRY(precondition());
-    for (const size_t x : active) {
-      const size_t at = x * pairs;
-      const double rs_new = FBF_TRY(dot(r + at, s + at));
-      const double beta = rs_new / rs[x];
-      FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, n_pairs, &beta, p + at, 1)));
-      FBF_TRY(gpu_status(
-          wwr::axpy<double, int32_t>(blas, n_pairs, &kOne<double>, s + at, 1, p + at, 1)));
-      rs[x] = rs_new;
-    }
+  // H~ Z = -B from Z = 0 in lockstep, one block product of H~ over the active
+  // columns a sweep, preconditioned by diag(H)^-1.
+  FBF_TRY(inverse_orbital_diagonal(res, hessian, inverse_diagonal));
+  OrbitalJacobi jacobi{inverse_diagonal, n_pairs};
+  const PcgOptions options{
+      .tolerance = tolerance, .max_iterations = max_iterations, .true_residuals = false};
+  if (n_pairs > 0) {
+    const PcgInfo info = FBF_TRY(pcg_solve(res, relaxed, jacobi, n_pairs, ncol32, rhs, z, options));
+    out.iterations = info.iterations;
   }
 
   // The true residuals H~ Z + B from one more block product, whose deltas
   // with w are z_c once off every root (zvector's step 3).
-  FBF_TRY(relaxed.apply(res, ncol32, z, hp));
-  FBF_TRY(gpu_status(
-      wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(block), &kOne<double>, b, 1, hp, 1)));
+  FBF_TRY(relaxed.apply(res, ncol32, z, hz));
+  FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(block), &kNegOne<double>,
+                                                rhs, 1, hz, 1)));
   for (size_t x = 0; x < ncol; ++x) {
-    out.residuals[x] = FBF_TRY(norm(hp + (x * pairs)));
+    FBF_TRY(gpu_status(
+        wwr::nrm2<double, int32_t>(blas, n_pairs, hz + (x * pairs), 1, &out.residuals[x])));
   }
   FBF_TRY(
       gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(ci_block * ncol),
