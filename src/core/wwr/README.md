@@ -157,7 +157,8 @@ a non-exportable pool is backed by ROCm's virtual-memory heap, whose
 `hipMemPoolDestroy` intermittently dereferences a null after a run of
 differently sized allocations, and an exportable pool never gets the heap.
 `Device::pool_props()` has the details and the upstream fix that retires it;
-it is the tree's one backend `#if` in host code.
+it is one of the tree's two backend `#if`s in host code; the other is
+`recipes/expm`'s `heevdx` under HIP (#999).
 
 ## DeviceStream
 

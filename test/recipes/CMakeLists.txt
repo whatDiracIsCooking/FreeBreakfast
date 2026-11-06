@@ -66,6 +66,8 @@ target_link_libraries(
           free_breakfast::test::support
           GTest::gtest
           GTest::gtest_main
+          # selected_backend.h, for expm_gpu.cpp's one HIP-only operand.
+          wwr::backend
 )
 
 # The properties are set here and are NOT inherited from test/gtest's: the
