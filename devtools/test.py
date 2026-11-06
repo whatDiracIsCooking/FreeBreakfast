@@ -7,6 +7,7 @@
                         [--record] [-- <ctest args>]
   devtools/test.py nightly [--mode auto|nightly|weekly] [--rev REF]
                         [--preset NAME] [-j N] [--report DIR]
+                        [--issue-title TITLE] [-- <ctest args>]
 
 push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   pushed range (PRE_COMMIT_FROM_REF...PRE_COMMIT_TO_REF, which pre-commit
@@ -44,7 +45,14 @@ nightly: what the timer runs (docs/testing.md "The nightly"). Fetch origin,
   `metrics`, then the slow-test report over it (devtools/slow_rule.py).
   Build and GPU run never overlap. CUDA (--preset default) by design.
   Logged to <report>/<mode>-<stamp>-<rev>-<preset>.log under the primary
-  checkout.
+  checkout. A failed night of origin/main opens a GitHub issue labelled
+  `nightly`, or comments on the open one with its title; a green one after
+  it comments that it recovered and closes it (devtools/nightly_issue.py).
+    --issue-title TITLE  file under this title (default: "Nightly fails on
+                   origin/main" for origin/main; another rev files nothing)
+    -- <args>      a reduced run: passed to ctest, and they select the GPU
+                   batches; no pytest, no slow-test report, and the record
+                   is `manual`, kept out of the timing series
 
 push and pr run with FREE_BREAKFAST_FAST_TESTS=1, so every case under
 FBF_SKIP_IF_FAST_TESTS() skips; nightly is the unskipped run. Each
@@ -1062,6 +1070,16 @@ def load_slow_rule():
     return module
 
 
+def load_nightly_issue():
+    """devtools/nightly_issue.py, by path, as load_metrics."""
+    spec = importlib.util.spec_from_file_location(
+        "fbf_nightly_issue", REPO_ROOT / "devtools" / "nightly_issue.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def slow_rule_report(
     build_dir: Path, host: str, results: Path, log: Path, tag: str
 ) -> dict | None:
@@ -1353,14 +1371,52 @@ def nightly_checkout(primary: Path, worktree: Path, rev: str) -> str:
     return sha
 
 
-def cmd_nightly(args: argparse.Namespace, cfg: dict[str, str]) -> int:
+def issue_title(args: argparse.Namespace) -> str | None:
+    """The title a night files under: --issue-title, else the default for
+    origin/main, else none (a night of another rev opens no issue)."""
+    if args.issue_title:
+        return args.issue_title
+    if args.rev == "origin/main":
+        return load_nightly_issue().DEFAULT_TITLE
+    return None
+
+
+def file_issue(
+    title: str | None, passed: bool, night: dict, body, log: Path | None, tag: str
+) -> str:
+    """The nightly's issue (#986): a failure opens or comments on it, a pass
+    comments on and closes an open one. `body` makes the failure's body.
+    Returns the summary field ('' when nothing was filed), `issue=FAILED`
+    when gh could not."""
+    if title is None:
+        return ""
+    ni = load_nightly_issue()
+    gh = ni.gh_runner(REPO_ROOT)
+    try:
+        if passed:
+            action, number = ni.report_recovery(gh, title, ni.recovery_body(night))
+        else:
+            action, number = ni.report_failure(gh, title, body())
+    except (ni.IssueError, OSError, ValueError, KeyError) as e:
+        say(f"{tag}: issue: FAILED to file {title!r}: {e}", err=True, log=log)
+        return "issue=FAILED"
+    if number is not None:
+        say(f"{tag}: issue: {action} #{number} ({title!r})", log=log)
+    return ni.summary_field(action, number)
+
+
+def cmd_nightly(
+    args: argparse.Namespace, cfg: dict[str, str], passthrough: list[str]
+) -> int:
     """The outer half: fetch, the clean checkout, then that checkout's own
     test.py with --in-checkout. What runs is the code under test, not
-    whatever the primary checkout has."""
+    whatever the primary checkout has. A checkout that cannot be made files
+    the night's issue here, since no inner half runs."""
     tag = "nightly"
     primary = Path(cfg["PRIMARY_ROOT"] or REPO_ROOT)
     worktree = primary / cfg["NIGHTLY_WORKTREE"]
     report = report_dir_of(args.report or str(primary / cfg["SLOW_TIER_REPORTS"]))
+    title = issue_title(args)
     try:
         mode = nightly_mode(
             args.mode, cfg["NIGHTLY_WEEKLY_DAY"], time.localtime().tm_wday
@@ -1371,6 +1427,26 @@ def cmd_nightly(args: argparse.Namespace, cfg: dict[str, str]) -> int:
     except NightlyError as e:
         say(f"{tag}: {e}", err=True)
         line = f"test.py nightly FAIL(rc=1)  rev={args.rev}  ({e})"
+        night = {
+            "summary": line,
+            "commit": args.rev,
+            "host": load_metrics().host_name(cfg["METRICS_HOST"]),
+            "preset": args.preset or "default",
+            "mode": args.mode,
+            "metrics": None,
+            "log": "(none: the checkout failed before the run)",
+        }
+        field = file_issue(
+            title,
+            False,
+            night,
+            lambda why=str(e): load_nightly_issue().failure_body(
+                night, ["checkout"], [], [why]
+            ),
+            None,
+            tag,
+        )
+        line += f"  {field}" if field else ""
         say(line, err=True)
         with (report / "summary.log").open("a") as f:
             f.write(line + "\n")
@@ -1390,17 +1466,29 @@ def cmd_nightly(args: argparse.Namespace, cfg: dict[str, str]) -> int:
         cmd += ["--preset", args.preset]
     if args.jobs:
         cmd += ["--jobs", args.jobs]
+    if title is not None:
+        cmd += ["--issue-title", title]
+    if passthrough:
+        cmd += ["--", *passthrough]
     return subprocess.run(cmd, cwd=worktree, check=False).returncode
 
 
-def nightly_run(args: argparse.Namespace, cfg: dict[str, str]) -> int:
+def nightly_run(
+    args: argparse.Namespace, cfg: dict[str, str], passthrough: list[str]
+) -> int:
     """The inner half, in the nightly checkout: build, then the tests under
-    the card, then the cross-backend check, then the record and the
-    slow-test report over it (#987). Strictly in that
+    the card, then the cross-backend check, then the record, the
+    slow-test report over it (#987) and the issue (#986). Strictly in that
     order: many GPU cases are bound by launch latency, and a compile beside
-    them would put noise in the series."""
+    them would put noise in the series.
+
+    `passthrough` (ctest's arguments) makes a reduced run: they select the
+    ctest entries and the GPU batches, pytest and the slow-test report do not
+    run, and the record is `manual`, out of the timing series."""
     mode = args.mode if args.mode != "auto" else "nightly"
     tag = mode
+    reduced = bool(passthrough)
+    failed: list[str] = []
     preset = args.preset or "default"
     backend = backend_of_preset(preset, cfg)
     jobs = args.jobs or cfg["BUILD_JOBS"]
@@ -1450,6 +1538,7 @@ def nightly_run(args: argparse.Namespace, cfg: dict[str, str]) -> int:
         build["files"] = metrics.ninja_files(build_dir / ".ninja_log", since)
     if rc != 0:
         say(f"{tag}: BUILD FAILED (rc={rc}) -- no tests run", err=True, log=log)
+        failed.append(f"build (rc={rc})")
 
     # 2. Everything, unskipped, under the card: a held card is waited for.
     if rc == 0:
@@ -1459,13 +1548,23 @@ def nightly_run(args: argparse.Namespace, cfg: dict[str, str]) -> int:
         )
         env = full_env()
         os.environ.pop("FREE_BREAKFAST_FAST_TESTS", None)
+        if reduced:
+            say(f"{tag}: a reduced run: ctest {shlex.join(passthrough)}", log=log)
         with Card(backend, cfg):
             crc = tier_tests(
-                run_cfg, preset, build_dir, [], log, results, tag=tag, env=env
+                run_cfg, preset, build_dir, passthrough, log, results, tag=tag, env=env
             )
             results.mkdir(parents=True, exist_ok=True)
-            prc = python_half(tag, cfg, log, results / "pytest.xml", select=[])
+            if reduced:
+                say(f"{tag}: a reduced run -- pytest does not run", log=log)
+                prc = 0
+            else:
+                prc = python_half(tag, cfg, log, results / "pytest.xml", select=[])
         rc = crc or prc
+        if crc:
+            failed.append(f"C++ tests: ctest or a GPU batch (rc={crc})")
+        if prc:
+            failed.append(f"pytest (rc={prc})")
 
         # 3. The HIP cover: a compile of every .cu through clang -x hip.
         xrc = run_phase(
@@ -1482,6 +1581,8 @@ def nightly_run(args: argparse.Namespace, cfg: dict[str, str]) -> int:
             )
         elif xrc != 0:
             say(f"{tag}: cross-backend-check FAILED (rc={xrc})", err=True, log=log)
+        if xrc:
+            failed.append(f"cross-backend-check (rc={xrc})")
         rc = rc or xrc
 
     # 4. The record, pass or fail.
@@ -1493,7 +1594,7 @@ def nightly_run(args: argparse.Namespace, cfg: dict[str, str]) -> int:
     try:
         gpu, tools = metrics.probe(build_dir, backend)
         record = metrics.make_record(
-            kind=mode,
+            kind="manual" if reduced else mode,
             host=metrics.host_name(cfg["METRICS_HOST"]),
             started=started,
             finished=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1518,24 +1619,74 @@ def nightly_run(args: argparse.Namespace, cfg: dict[str, str]) -> int:
     except (metrics.MetricsError, NightlyError, OSError, ValueError, SyntaxError) as e:
         say(f"{tag}: metrics: FAILED to record the run: {e}", err=True, log=log)
         summary += "  metrics=FAILED"
+        failed.append("metrics: the record was not written")
         rc = rc or 1
         recorded = False
+        sha = None
 
     # 5. The slow-test rule (#987), over the record just appended and the
     # series before it: a report, never a failure of the tests. Its findings
     # go to <results>/slow-rule.json, which is what #986's issue takes.
-    if recorded and record["cases"]:
+    if recorded and record["cases"] and not reduced:
         try:
             findings = slow_rule_report(build_dir, record["host"], results, log, tag)
             summary += "  " + load_slow_rule().summary_field(findings)
         except (SystemExit, OSError, ValueError, KeyError) as e:
             say(f"{tag}: slow-rule: FAILED to report: {e}", err=True, log=log)
             summary += "  slow-rule=FAILED"
+            failed.append("slow-rule: the report could not run")
             rc = rc or 1
+
+    # 6. The issue (#986): opened or commented on by a failure, closed by
+    # the next pass. It carries slow-rule.json when step 5 wrote one. A
+    # record or a report that failed after the tests passed fails the night,
+    # and so does an issue that could not be filed.
+    if rc != 0 and verdict == "PASS":
+        summary = summary.replace(" PASS ", f" FAIL(rc={rc}) ", 1)
+    night = {
+        "summary": summary,
+        "commit": record["commit"] if recorded else rev,
+        "host": metrics.host_name(cfg["METRICS_HOST"]),
+        "preset": preset,
+        "mode": "manual (a reduced run)" if reduced else mode,
+        "metrics": sha[:12] if sha else None,
+        "log": str(log),
+    }
+    field = file_issue(
+        args.issue_title,
+        rc == 0,
+        night,
+        lambda: nightly_issue_body(night, failed, record if recorded else None, log),
+        log,
+        tag,
+    )
+    if field == "issue=FAILED" and rc == 0:
+        rc = 1
+        summary = summary.replace(" PASS ", f" FAIL(rc={rc}) ", 1)
+    if field:
+        summary += f"  {field}"
     say(summary, log=log)
     with (report / "summary.log").open("a") as f:
         f.write(summary + "\n")
     return rc
+
+
+def nightly_issue_body(
+    night: dict, failed: list[str], record: dict | None, log: Path
+) -> str:
+    """A failed night's issue body: its failing cases from the record, the
+    failed cases' output from the log, and slow-rule.json's findings when
+    the night wrote it."""
+    ni = load_nightly_issue()
+    text = log.read_text(errors="replace") if log.is_file() else ""
+    lines = ni.excerpt(text, failed_output(text.splitlines()))
+    slow = log.with_suffix(".results") / "slow-rule.json"
+    rendered = None
+    if slow.is_file():
+        rendered = load_slow_rule().render(json.loads(slow.read_text()))
+    return ni.failure_body(
+        night, failed, record["cases"] if record else [], lines, rendered
+    )
 
 
 # --- arguments -------------------------------------------------------------
@@ -1602,12 +1753,17 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     nightly.add_argument(
         "--report", help="log directory (default: SLOW_TIER_REPORTS, primary checkout)"
     )
+    nightly.add_argument(
+        "--issue-title",
+        help="file the night's GitHub issue under this title (default: one for"
+        " origin/main; another rev files none)",
+    )
     # Internal: the outer half re-runs the nightly checkout's own test.py
     # with it, once the checkout is made.
     nightly.add_argument("--in-checkout", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
-    if passthrough and args.gate != "pr":
-        parser.error("only `pr` takes arguments after `--` (they go to ctest)")
+    if passthrough and args.gate == "push":
+        parser.error("only `pr` and `nightly` take arguments after `--` (ctest's)")
     return args, passthrough
 
 
@@ -1619,7 +1775,9 @@ def main(argv: list[str]) -> int:
     if args.gate == "push":
         return cmd_push(args, cfg)
     if args.gate == "nightly":
-        return nightly_run(args, cfg) if args.in_checkout else cmd_nightly(args, cfg)
+        if args.in_checkout:
+            return nightly_run(args, cfg, passthrough)
+        return cmd_nightly(args, cfg, passthrough)
     return cmd_pr(args, cfg, passthrough)
 
 

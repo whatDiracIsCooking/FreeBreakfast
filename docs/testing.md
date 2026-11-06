@@ -267,6 +267,8 @@ timer, `devtools/systemd/free-breakfast-nightly@.timer`.
    failed and nothing ran.
 7. **Report the slow-test rule** over that record and the series before it
    ("The slow-test rule, enforced" below), when any case ran.
+8. **File the night's issue** ("Failures open an issue" below): a failure
+   opens or comments on it, a pass closes it.
 
 The build and the GPU run are **strictly sequential**. Many GPU cases are bound
 by launch latency, so a busy host CPU would inflate their times and make the
@@ -275,7 +277,15 @@ series noisy.
 It logs to `<primary>/.slow-tier-reports/<mode>-<stamp>-<rev>-default.log`,
 with the per-case reports in `<log>.results/`, and appends
 `test.py nightly PASS  rev=…  preset=default  mode=nightly  stamp=…  metrics=…  slow-rule=N/M`
-to `summary.log`. The exit status is the first failing phase's.
+to `summary.log`, with `issue=…` after it when the night filed one. The exit
+status is the first failing phase's.
+
+**A reduced run** takes ctest's arguments after `--`, as `pr` does:
+`devtools/test.py nightly --rev REF -- -R Name`. They select the ctest
+entries and the GPU batches; pytest and the slow-test report do not run, and
+the record is `manual`, so it never enters the timing series. It is how a
+change to the nightly itself is tried end to end without an hour's run (#986's
+acceptance was three of them).
 
 ### Installing the timer (host only)
 
@@ -309,11 +319,34 @@ systemctl --user list-timers "$unit.timer"
 - **After editing a unit**, `systemctl --user daemon-reload`. To remove it,
   `systemctl --user disable --now "$unit.timer"`.
 
-**Failures open an issue (#986).** A failed nightly opens a GitHub issue
-labelled `nightly`, or comments on the one already open with the same title, so
-a failure that persists stays one issue. The body carries the failing cases, a
-log excerpt and the metrics commit. The next green nightly comments that it
-recovered, and closes the issue.
+### Failures open an issue
+
+**Today (#986):** the nightly's last step, `devtools/nightly_issue.py`, run
+through `gh`.
+
+- **A failed night opens an issue** labelled `nightly`, titled
+  `Nightly fails on origin/main`, and creates the label first where the
+  repository has none. When an open `nightly` issue already has that exact
+  title, the night **comments on it instead**, so a failure that persists
+  stays one issue. Open issues are *listed*, not searched: GitHub's search
+  index lags, and the next night must find this one's issue.
+- **The body** carries the summary line, the commit, the host, the **metrics
+  commit** (the record's, on the box's local `metrics` branch), the log's path,
+  the phases that failed, the **failing cases** (the record's `fail` cases),
+  the **slow-test findings** when the night wrote `slow-rule.json` (its
+  over-the-line cases and steps, as `slow_rule.py` prints them), and a **log
+  excerpt**: the failed cases' output, `[ RUN ]` to verdict, else the log's
+  tail, where a build or a phase says why it stopped. GitHub caps a body at
+  65,536 characters; the excerpt gives way first.
+- **The next green night comments that it recovered, and closes the issue.**
+  The failure after that opens a new one.
+- **Only a night of `origin/main` files**, by default. A run of another rev
+  files nothing unless given `--issue-title`, so a by-hand `--rev` run never
+  writes to the repository by surprise. A checkout that cannot be made (the
+  fetch, a bad rev) files from the outer half, since no inner half runs.
+- **An issue that cannot be filed fails the night**, as `issue=FAILED` on the
+  summary line, like a record that could not be written: `gh` missing,
+  unauthenticated (it reads `GH_TOKEN`), or refused.
 
 **A nightly failure is a blocker,** like any other test failure on main. It gets
 fixed on main first, and any work it paused is rebased onto the fix.
@@ -380,8 +413,8 @@ line is listed apart, as membership not recorded, never dropped.
 nightly's log and output; `slow-rule=<over>/<steps>` on its `summary.log`
 line (`slow-rule=none` when the series has no record of this host, and
 `slow-rule=FAILED`, which fails the night, when the report could not run); and
-the findings as JSON in `<log>.results/slow-rule.json`. That file is the hook
-for the nightly issue (#986): it carries `over_line`, `over_line_unrecorded`
+the findings as JSON in `<log>.results/slow-rule.json`, which a failed night's
+issue (#986) carries in its body. It holds `over_line`, `over_line_unrecorded`
 and `steps`, each case with its numbers, and the constants they were judged
 by.
 
