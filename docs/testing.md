@@ -278,6 +278,10 @@ never by hand. Records go into one file per month, `runs/YYYY-MM.jsonl`
   `git worktree add` writes under the common git directory and into the new
   worktree, and never into `main`'s tree or index.
 - **The branch is local to this box.** Nothing pushes it yet.
+- **`host` is `socket.gethostname()`.** Inside the devcontainer that is the
+  container's id, which changes at every `rebuild`, since nothing passes the
+  host's name in. The nightly (#985) has to pin a stable one before its
+  records form a series.
 - **A record is committed with `git commit-tree` and `git update-ref`**, not
   `git commit`: the hooks in the common git directory are `main`'s
   pre-commit hooks, which have no config on a data branch. Two runs
