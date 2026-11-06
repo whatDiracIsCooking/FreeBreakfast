@@ -336,7 +336,8 @@ Status RelaxedHessian::solve_response(DeviceResources &res, std::span<double> ga
       // right-hand side the roots span.
       const double tolerance =
           rr > 0.0 ? response_tolerance_ * rhs_norm : std::numeric_limits<double>::infinity();
-      FBF_TRY(solve_shifted(res, 1, e_r, cg_r, delta, std::span{&tolerance, 1}));
+      FBF_TRY(solve_shifted(res, 1, std::span{&e_r, 1}, cg_r, delta, std::span{&tolerance, 1},
+                            std::span{&rhs_norm, 1}));
     } else {
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cg_p, cg_r, dim * sizeof(double),
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
@@ -506,20 +507,23 @@ Status RelaxedHessian::shifted_sigma(DeviceResources &res, const size_t k, const
   return res.sync();
 }
 
-Status RelaxedHessian::solve_shifted(DeviceResources &res, const int32_t k, const double shift,
-                                     const double *const b, double *const x,
-                                     std::span<const double> tolerances) {
-  // (H_0 - E) off every root: one sigma of the block, then each vector
-  // shifted and projected (project's gemv pair, which the one-column solve
-  // has always taken).
+Status RelaxedHessian::solve_shifted(DeviceResources &res, const int32_t k,
+                                     std::span<const double> shifts, const double *const b,
+                                     double *const x, std::span<const double> tolerances,
+                                     std::span<const double> norms) {
+  // (H_0 - E_v) off every root: one sigma of the block, then each vector
+  // shifted by its own column's E_v and projected (project's gemv pair, which
+  // the one-column solve has always taken). pcg_solve names the block's
+  // columns, so every root's vectors go in one call.
   struct Shifted {
     RelaxedHessian &self;
-    double neg_shift;
-    Status apply(DeviceResources &on, const int32_t count, const double *v, double *w) {
-      FBF_TRY(self.sigma_->apply(on, count, v, w));
+    std::span<const double> shifts;
+    Status apply(DeviceResources &on, std::span<const size_t> columns, const double *v, double *w) {
+      FBF_TRY(self.sigma_->apply(on, static_cast<int32_t>(columns.size()), v, w));
       const auto dim32 = static_cast<int32_t>(self.dim_);
-      for (size_t c = 0; c < static_cast<size_t>(count); ++c) {
+      for (size_t c = 0; c < columns.size(); ++c) {
         const size_t at = c * self.dim_;
+        const double neg_shift = -shifts[columns[c]];
         FBF_TRY(gpu_status(
             wwr::axpy<double, int32_t>(on.blas().get(), dim32, &neg_shift, v + at, 1, w + at, 1)));
         FBF_TRY(self.project(on, w + at));
@@ -527,12 +531,13 @@ Status RelaxedHessian::solve_shifted(DeviceResources &res, const int32_t k, cons
       return {};
     }
   };
-  Shifted op{*this, -shift};
+  Shifted op{*this, shifts};
   // Unpreconditioned: plain conjugate gradients, r.r from the norm. At the
   // cap a vector stops silently, and on a direction H_0 - E is not positive
   // along (round-off's other spins) it stops where the sweep before left it.
   PcgOptions options;
   options.tolerances = tolerances;
+  options.norms = norms;
   options.max_iterations = response_max_iterations_;
   options.check_curvature = false;
   options.stop_silently = true;
@@ -607,30 +612,18 @@ Status RelaxedHessian::solve_responses(DeviceResources &res, const size_t k) {
     active[v] = rr[v] > 0.0 && rhs_norm[v] > kResponseRoundoff * std::sqrt(whole[v]);
   }
   if (pcg_ci_response_) {
-    // create's pcg_ci_response: solve_shifted over a root's k vectors
-    // (j nroots + r) at a time, packed into P's and A P's room, since they
-    // share its shift, each to the tolerance the loop below stops at.
-    double *const packed_b = p;
-    double *const packed_x = ap;
-    std::vector<double> tolerances(k);
-    for (size_t root = 0; root < roots_count; ++root) {
-      for (size_t j = 0; j < k; ++j) {
-        const size_t v = (j * roots_count) + root;
-        tolerances[j] =
-            active[v] ? response_tolerance_ * rhs_norm[v] : std::numeric_limits<double>::infinity();
-        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(packed_b + (j * dim), r + (v * dim),
-                                               dim * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
-                                               stream)));
-      }
-      FBF_TRY(solve_shifted(res, static_cast<int32_t>(k), roots_->energies[root], packed_b,
-                            packed_x, tolerances));
-      for (size_t j = 0; j < k; ++j) {
-        const size_t v = (j * roots_count) + root;
-        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(delta + (v * dim), packed_x + (j * dim),
-                                               dim * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
-                                               stream)));
-      }
+    // create's pcg_ci_response: solve_shifted over every vector at once,
+    // each at its root's energy and to the tolerance the loop below stops at,
+    // straight into delta (the norms are the loop's, from the strided dots,
+    // not nrm2's, so pcg_solve takes its own).
+    std::vector<double> shifts(count);
+    std::vector<double> tolerances(count);
+    for (size_t v = 0; v < count; ++v) {
+      shifts[v] = roots_->energies[v % roots_count];
+      tolerances[v] =
+          active[v] ? response_tolerance_ * rhs_norm[v] : std::numeric_limits<double>::infinity();
     }
+    FBF_TRY(solve_shifted(res, n, shifts, r, delta, tolerances, {}));
   } else {
     for (int32_t it = 0; it < response_max_iterations_ && std::ranges::contains(active, true);
          ++it) {

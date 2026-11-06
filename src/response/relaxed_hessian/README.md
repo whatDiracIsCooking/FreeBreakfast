@@ -139,44 +139,58 @@ large active space is that much device memory.
 
 With `create`'s `pcg_ci_response`, step 3's conjugate gradients are
 [`recipes::pcg_solve`](../../recipes/pcg/README.md) instead of the loops
-above, unpreconditioned, over a `LinearOperator` local to the solve: one
-sigma of the vectors it is handed, then each shifted by −E_r and projected
-off every root (`project`'s gemv pair). The stopping rule is passed to it
-unchanged: `response_tolerance` · ‖(1 − Σ_s c_s c_sᵀ) b_r‖ as each vector's
-absolute tolerance (infinite for a right-hand side the roots span, below, so
-no sigma runs), `response_max_iterations` under `stop_silently`, and
-`check_curvature` off, so a direction with p·Ap ≤ 0 (round-off's other spins)
-ends that vector's solve where the sweep before left it, without an error.
-There is one `pcg_solve` per root, in the block calls too, each over that
-root's k vectors packed together: the operator is not told which columns a
-sweep gathers, so a call's columns must share their shift.
+above, unpreconditioned, over an operator local to the solve: one sigma of
+the vectors it is handed, then each shifted by −E_r of its own root and
+projected off every root (`project`'s gemv pair). The operator takes
+`pcg_solve`'s column form, which names each gathered block's columns, so the
+block calls make **one** `pcg_solve` over all k · nroots vectors, each at its
+own root's E_r, straight into `delta()` (#1032; #831 made one per root, since
+an operator told only a count could not shift per column). The stopping rule
+is passed to it unchanged: `response_tolerance` · ‖(1 − Σ_s c_s c_sᵀ) b_r‖ as
+each vector's absolute tolerance (infinite for a right-hand side the roots
+span, below, so no sigma runs), `response_max_iterations` under
+`stop_silently`, and `check_curvature` off, so a direction with p·Ap ≤ 0
+(round-off's other spins) ends that vector's solve where the sweep before left
+it, without an error. The one-column call hands `pcg_solve` the ‖P b_r‖ it
+already took as `norms`, so no norm is taken twice.
 
 **What it changes.** For one column nothing but the time: it is the
 one-column loop's arithmetic step for step, so δ is the loop's to the bit
 and every solve takes the loop's sigmas (#831 ran both on every solve of the
 CASSCF, gradient, NAC, Z-vector, NEVPT2 and Hessian suites on the gfx1200:
-201,199 solves, 1,889,546 sigmas, no count and no bit of δ different). For a
-block it is the loop's recurrence but not its arithmetic (`pcg_solve`'s dot
-and nrm2 per vector against the strided-batched gemm, axpy against dgmm and
-geam): of 43,800 block vectors over the same suites, 105 took a sigma more or
-fewer, where a vector met its tolerance or its cap within round-off, and δ
-differed by at most 1e-8 relative, the tolerance itself (~1e-13 elsewhere).
+201,199 solves, 1,889,546 sigmas, no count and no bit of δ different; #1032's
+in-process A/B on the 3080 again found none). For a block it is the loop's
+recurrence but not its arithmetic (`pcg_solve`'s dot and nrm2 per vector
+against the strided-batched gemm, axpy against dgmm and geam): of 43,800
+block vectors over the same suites, 105 took a sigma more or fewer (#831),
+where a vector met its tolerance or its cap within round-off, and δ differed
+by at most 1e-8 relative, the tolerance itself (~1e-13 elsewhere). The one
+block call is #831's per-root calls to the bit, vector for vector.
 
-**Why it is off.** It is slower on the RTX 3080, which is the repo's rule
-for an option. Each `pcg_solve` takes one more norm of its right-hand side
-(its tolerance is absolute, so the relative one needs ‖b‖ first), a pool
-allocation and a closing sync, which is a few percent of a small system's
-one-column products; and in a block each vector reads its dots back on its
-own and each root's sweep is its own sigma, where the loop takes one
-strided-batched gemm and one sigma over every root's vectors. Measured on
-the 3080 with the card held, default against the option (#831):
+**Why it is still off.** #1032 cut `pcg_solve`'s per-call overheads (the
+duplicate norm, the closing sync, a readback per column per reduction, the
+dead last direction update) and made the block one call. That leaves the
+one-column path level with the loop, but the block path still slower on the
+RTX 3080, which is the repo's rule for an option. What remains is
+`pcg_solve`'s per-column BLAS-1 (a dot, two axpys, a nrm2, a scal and an
+axpy per vector per sweep, and the operator's axpy and gemv pair), against
+the loop's few block calls: on a small CI space each is a launch-bound
+kernel, and an SA3 block is nine or more vectors. Batching them would change
+the sums every caller's counts and `zvector`'s bitwise z rest on. Measured
+on the 3080 with the card held, main's binary (loops) and #1032's with the
+option on, alternated within one hold:
 
 | Case (`test/gtest`, unskipped) | Loops (default) | `pcg_ci_response` |
 |---|---|---|
-| `McscfSolveCiFloor.Psb3MeciReachesTheGradientBar` (`mcscf::solve`, one column) | 27.92, 27.60, 28.06 s | 27.92, 28.02, 28.11 s |
-| `McscfIntersectionTiming`, H₂CO skewed SA3: `df_gradient` × 2 + `df_nac` (one column) | 0.355, 0.355, 0.355 s | 0.366, 0.369, 0.366 s |
-| `McscfIntersectionTiming`, H₂CO SA2: `df_intersection`'s one call (block) | 0.239, 0.238 s | 0.258, 0.256 s |
-| `McscfIntersectionTiming`, H₂CO skewed SA3: `df_intersection`'s one call (block) | 0.285, 0.279 s | 0.341, 0.343 s |
+| `McscfSolveCiFloor.Psb3MeciReachesTheGradientBar` (`mcscf::solve`, one column) | 28.97, 29.23, 29.33 s | 29.17, 29.09, 29.62 s |
+| `McscfSolveSpan.EthyleneSa3OverEverySingletConverges` | 6.07, 6.08, 6.12 s | 6.03, 6.10, 6.14 s |
+| `McscfSolve.FullDensityFitting…/h2co_ccpvdz_sa2` | 2.175, 2.174, 2.198 s | 2.155, 2.184, 2.187 s |
+| `McscfIntersectionTiming`, H₂CO skewed SA3: `df_gradient` × 2 + `df_nac` (one column) | 0.355, 0.354, 0.354 s | 0.353, 0.353, 0.353 s |
+| `McscfIntersectionTiming`, H₂CO SA2: `df_intersection`'s one call (block) | 0.241, 0.235, 0.241 s | 0.243, 0.249, 0.247 s |
+| `McscfIntersectionTiming`, H₂CO skewed SA3: `df_intersection`'s one call (block) | 0.283, 0.281, 0.282 s | 0.305, 0.311, 0.311 s |
+
+Before #1032 (#831's measurement) the one-column chain was 0.355 against
+0.367 s and the two block rows +8% and +22%.
 
 ### A right-hand side the roots span
 
@@ -245,5 +259,5 @@ column), against the same fixture and bars as the default.
 | File | Role |
 |------|------|
 | `relaxed_hessian.cppm` | Module interface: `ResponseIntegrals`, `response_integrals`, `response_gradient`, `RelaxedHessian` |
-| `relaxed_hessian.cpp` | H′(x) and its adjoint, the CI response's conjugate gradients (one column, and a block's in lockstep, or `pcg_solve` per root) and transition RDMs, and the products |
+| `relaxed_hessian.cpp` | H′(x) and its adjoint, the CI response's conjugate gradients (one column, and a block's in lockstep, or one `pcg_solve`) and transition RDMs, and the products |
 | `CMakeLists.txt` | The module `free_breakfast.response.relaxed_hessian` |

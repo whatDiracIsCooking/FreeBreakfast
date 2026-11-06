@@ -106,10 +106,10 @@ public:
   ///         the error of the sigma's create.
   ///
   /// @p pcg_ci_response (off by default) runs the CI response's conjugate
-  /// gradients through recipes::pcg_solve, one call per root, instead of the
-  /// loops here (the block calls' over every root's vectors at once): the
-  /// same recurrence and stopping rule, but slower on the RTX 3080 (README.md
-  /// "The CI response through recipes::pcg_solve").
+  /// gradients through recipes::pcg_solve instead of the loops here, one
+  /// call over every root's vectors in the block calls: the same recurrence
+  /// and stopping rule, level for one column but slower in a block on the
+  /// RTX 3080 (README.md "The CI response through recipes::pcg_solve").
   [[nodiscard]] static Result<RelaxedHessian>
   create(DeviceResources &res, Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
          const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const ci::Roots &roots,
@@ -267,15 +267,18 @@ private:
   // E_r), not projected: one sigma of the block.
   [[nodiscard]] Status shifted_sigma(DeviceResources &res, size_t k, const double *x_c,
                                      double *y_c);
-  // x = (H_0 - E)^-1 b off every root for the k vectors of b (dim x k, each
-  // already off the roots), by recipes::pcg_solve unpreconditioned from
-  // x = 0: vector j to its absolute tolerances[j], silently capped at
-  // response_max_iterations_ sigmas, stopped without error on a
-  // non-positive curvature.
-  [[nodiscard]] Status solve_shifted(DeviceResources &res, int32_t k, double shift, const double *b,
-                                     double *x, std::span<const double> tolerances);
+  // x_j = (H_0 - shifts[j])^-1 b_j off every root for the k vectors of b
+  // (dim x k, each already off the roots), by recipes::pcg_solve
+  // unpreconditioned from x = 0 in one call: vector j to its absolute
+  // tolerances[j], silently capped at response_max_iterations_ sigmas,
+  // stopped without error on a non-positive curvature. @p norms, empty or
+  // nrm2(b_j) per vector, is pcg_solve's.
+  [[nodiscard]] Status solve_shifted(DeviceResources &res, int32_t k,
+                                     std::span<const double> shifts, const double *b, double *x,
+                                     std::span<const double> tolerances,
+                                     std::span<const double> norms);
   // The CI responses of k columns' b = ci_b_ into ci_delta_, lockstep, or
-  // by solve_shifted per root with pcg_ci_response_.
+  // by one solve_shifted over every vector with pcg_ci_response_.
   [[nodiscard]] Status solve_responses(DeviceResources &res, size_t k);
   // y_j += H_oc delta_j for k columns' CI blocks @p delta.
   [[nodiscard]] Status add_couplings(DeviceResources &res, size_t k, const double *delta,
