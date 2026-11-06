@@ -381,8 +381,11 @@ what `slow_test.h`'s rule is applied to.
 
 **Both PR gates have a budget: under five minutes on a busy card.** Those are
 `cpp-smoke.sh` at push and `cpp-tier.sh` before a PR. `test/support/slow_test.h`
-has the rule that keeps them inside it: a case past about ten seconds goes
-under `FBF_SKIP_IF_FAST_TESTS()` unless it is its family's cheapest.
+has the rule that keeps them inside it: a case past about 1.5 s on an idle
+RTX 3080 goes under `FBF_SKIP_IF_FAST_TESTS()` unless it is its family's
+cheapest (and, where that cheapest is a refusal, the cheapest validation case
+stays too). The line comes from the budget, not a measured idle-to-busy
+ratio: at ten seconds the batch was ~570 s on an idle 3080 (#977).
 
 ### The one portability hole no tier sees
 

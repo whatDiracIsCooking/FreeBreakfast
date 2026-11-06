@@ -12,9 +12,16 @@
 ///
 /// The fast set has a budget: cpp-tier.sh and cpp-smoke.sh gate a PR, and
 /// must finish in under five minutes on a busy card, where every case runs
-/// slower. So a case that takes more than about ten seconds there goes under
-/// this macro, unless it is the cheapest of its family: one parameter, one
-/// molecule or one mode stays in the fast set to stand for the rest.
+/// slower. So a case that takes more than about 1.5 s on an IDLE RTX 3080
+/// (the gtest `(N ms)` of a fast-tier run) goes under this macro, unless it
+/// is the cheapest of its family (a TEST suite, or a TEST_P across its
+/// params): one parameter, one molecule or one mode stays in the fast set to
+/// stand for the rest. Where the cheapest is a refusal, the family's cheapest
+/// validation case stays too. The line is set by the budget, not by a
+/// measured slowdown: at about ten seconds the batch was 552-592 s on an
+/// idle 3080 and ~770 s on the gfx1200; at 1.5 s it is ~289 s (estimated)
+/// and 419 s (#977). A busy card can be far slower (CLAUDE.md: 2.3 s alone,
+/// 158 s shared).
 ///
 /// Put the macro at the TOP of a test body, after FBF_REQUIRE_GPU():
 /// a slow test is also a GPU test, so it should still skip cleanly on a
