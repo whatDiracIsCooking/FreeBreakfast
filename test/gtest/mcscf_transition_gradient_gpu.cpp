@@ -4,7 +4,7 @@
 // skewed H2CO SA-3, CAS(4,3), cc-pVDZ / cc-pVDZ-JKFIT): this tree's
 // DF-CASSCF (mcscf::solve under DensityFitting::Full) from the exact RHF and
 // the Casci step's start, put in the reference's canonical orbitals with the
-// CI re-solved there (as mcscf_zvector_gpu.cpp does); then for every ordered
+// CI re-solved there (as response_zvector_gpu.cpp does); then for every ordered
 // pair (I, J), at ci::Rdm::trans_rdm12's symmetrized transition RDMs,
 //
 // - the RDMs against the reference's sym_1 and sym_2, in magnitude;
@@ -24,7 +24,7 @@
 // every z (zero z included, against the transition terms with no
 // multipliers), to 1e-10. And RDMs of the wrong length are refused.
 //
-// The setup is mcscf_zvector_gpu.cpp's, so this executable links pipeline;
+// The setup is response_zvector_gpu.cpp's, so this executable links pipeline;
 // mcscf does not. Runs the device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
@@ -41,7 +41,6 @@ import free_breakfast.integrals;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
-import free_breakfast.mcscf.zvector;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
@@ -71,7 +70,7 @@ constexpr double kOrbitalGradientTolerance = 1e-8;
 constexpr double kRdmTolerance = 1e-6;
 // The multipliers' path against itself: the same formula, to round-off.
 constexpr double kSelfTolerance = 1e-10;
-// The CASSCF's convergence, as mcscf_zvector_gpu.cpp's.
+// The CASSCF's convergence, as response_zvector_gpu.cpp's.
 constexpr double kConvTolGrad = 1e-10;
 // The energies and the canonical orbitals' spectra against the reference.
 constexpr double kEnergyTolerance = 1e-8;
@@ -485,23 +484,23 @@ TEST_P(McscfTransitionGradient, MatchesPyscfGradElecActive) {
   std::ranges::generate(z_o, [&] { return uniform(engine); });
   std::ranges::generate(z_c, [&] { return uniform(engine); });
   const auto make_z = [&](bool zero) {
-    fb::mcscf::ZVector z{fb::Buffers::device<double>(n_pairs, res.device()),
-                         fb::Buffers::device<double>(ci_count, res.device()),
-                         {},
-                         0,
-                         0.0};
+    fb::response::ZVector z{fb::Buffers::device<double>(n_pairs, res.device()),
+                            fb::Buffers::device<double>(ci_count, res.device()),
+                            {},
+                            0,
+                            0.0};
     upload(res, zero ? std::vector<double>(n_pairs, 0.0) : z_o, z.orbital.data());
     upload(res, zero ? std::vector<double>(ci_count, 0.0) : z_c, z.ci.data());
     return z;
   };
-  const fb::mcscf::ZVector arbitrary = make_z(false);
-  const fb::mcscf::ZVector zero = make_z(true);
+  const fb::response::ZVector arbitrary = make_z(false);
+  const fb::response::ZVector zero = make_z(true);
   std::optional<std::vector<double>> core_part;
   double self_error = 0.0;
   for (std::int32_t r = 0; r < nroots; ++r) {
     const auto root = static_cast<std::size_t>(r);
     const auto [gamma, gamma2] = transition(root, root);
-    for (const fb::mcscf::ZVector *z : {&arbitrary, &zero}) {
+    for (const fb::response::ZVector *z : {&arbitrary, &zero}) {
       const auto full =
           fb::mcscf::df_gradient(res, molecule->molecule, basis, pairs->classes, df.aux, h->h, df.b,
                                  df.l.data(), canon, ncore, ncas, r, z);

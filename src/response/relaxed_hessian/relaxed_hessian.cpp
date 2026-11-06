@@ -2,7 +2,7 @@
 /// @brief relaxed_hessian: H'(x) and its adjoint on the host, the CI response
 /// by conjugate gradients over the sigma, and H~ x = H x + R x.
 
-module free_breakfast.mcscf.relaxed_hessian;
+module free_breakfast.response.relaxed_hessian;
 
 import std;
 import free_breakfast.core.types;
@@ -20,7 +20,7 @@ import free_breakfast.recipes.blas; // gemm
 
 #include "diagnostics.h"
 
-namespace free_breakfast::mcscf {
+namespace free_breakfast::response {
 
 // The CI response's conjugate gradients stop after create's
 // response_max_iterations sigmas per root (200 by default), or at its
@@ -129,40 +129,42 @@ void response_gradient(const ResponseIntegrals &ints, std::span<const double> ga
   }
 }
 
-Result<RelaxedHessian> RelaxedHessian::create(
-    DeviceResources &res, response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
-    const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const ci::Roots &roots,
-    std::span<const double> weights, ResponseIntegrals ints, const double response_tolerance,
-    std::vector<bool> mixing, const int32_t response_max_iterations) {
+Result<RelaxedHessian>
+RelaxedHessian::create(DeviceResources &res, Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
+                       const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+                       const ci::Roots &roots, std::span<const double> weights,
+                       ResponseIntegrals ints, const double response_tolerance,
+                       std::vector<bool> mixing, const int32_t response_max_iterations) {
   const size_t mo = ints.nmo;
   const size_t core = ints.ncore;
   const size_t n = ints.ncas;
   if (ints.fock_inactive.size() != mo * mo || ints.ppaa.size() != mo * mo * n * n ||
       ints.papa.size() != mo * mo * n * n || core + n > mo) {
-    return err_config("mcscf::RelaxedHessian: needs F^I nmo^2 and ppaa, papa nmo^2 ncas^2 long, "
+    return err_config("response::RelaxedHessian: needs F^I nmo^2 and ppaa, papa nmo^2 ncas^2 long, "
                       "ncore + ncas <= nmo (nmo {}, ncore {}, ncas {}; got {}, {}, {})",
                       mo, core, n, ints.fock_inactive.size(), ints.ppaa.size(), ints.papa.size());
   }
   const size_t pairs = (core * (mo - core)) + (n * (mo - core - n));
   if (static_cast<size_t>(hessian.size()) != pairs) {
-    return err_config("mcscf::RelaxedHessian: H is over {} pairs, the integrals' orbitals {}",
+    return err_config("response::RelaxedHessian: H is over {} pairs, the integrals' orbitals {}",
                       hessian.size(), pairs);
   }
   const size_t roots_count = roots.energies.size();
   const auto dim = static_cast<size_t>(sigma.size());
   if (roots_count == 0 || weights.size() != roots_count ||
       roots.vectors.num_elements() < dim * roots_count) {
-    return err_config("mcscf::RelaxedHessian: needs one weight per root and the roots as that many "
-                      "vectors of {} (roots {}, weights {}, {} doubles)",
-                      dim, roots_count, weights.size(), roots.vectors.num_elements());
+    return err_config(
+        "response::RelaxedHessian: needs one weight per root and the roots as that many "
+        "vectors of {} (roots {}, weights {}, {} doubles)",
+        dim, roots_count, weights.size(), roots.vectors.num_elements());
   }
   if (!(response_tolerance > 0.0) || response_max_iterations < 1) {
-    return err_config("mcscf::RelaxedHessian: needs response_tolerance > 0 and "
+    return err_config("response::RelaxedHessian: needs response_tolerance > 0 and "
                       "response_max_iterations >= 1 (got {:g}, {})",
                       response_tolerance, response_max_iterations);
   }
   if (!mixing.empty() && mixing.size() != roots_count * (roots_count - 1) / 2) {
-    return err_config("mcscf::RelaxedHessian: {} mixing flags for {} roots, which have {} pairs",
+    return err_config("response::RelaxedHessian: {} mixing flags for {} roots, which have {} pairs",
                       mixing.size(), roots_count, roots_count * (roots_count - 1) / 2);
   }
   ci::Sigma response_sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
@@ -196,7 +198,7 @@ Result<RelaxedHessian> RelaxedHessian::create(
                         res};
 }
 
-RelaxedHessian::RelaxedHessian(response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
+RelaxedHessian::RelaxedHessian(Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
                                const ci::Roots &roots, std::vector<double> weights,
                                ResponseIntegrals ints, ci::Sigma response_sigma, const size_t dim,
                                const double response_tolerance,
@@ -244,7 +246,7 @@ Status RelaxedHessian::respond(DeviceResources &res, const double *const x,
                                std::span<double> gamma_t, std::span<double> gamma2_t) {
   if (gamma_t.size() != ints_.ncas * ints_.ncas ||
       gamma2_t.size() != gamma_t.size() * gamma_t.size()) {
-    return err_config("mcscf::RelaxedHessian::respond: gamma_t and gamma2_t must be ncas^2 and "
+    return err_config("response::RelaxedHessian::respond: gamma_t and gamma2_t must be ncas^2 and "
                       "ncas^4 long (ncas {}; got {}, {})",
                       ints_.ncas, gamma_t.size(), gamma2_t.size());
   }
@@ -262,7 +264,7 @@ Status RelaxedHessian::prime_sigma(DeviceResources &res, const double *const x, 
   const auto nroots = static_cast<int32_t>(weights_.size());
 
   // H'(x) from kappa(x), and b_r = H' c_r for every root.
-  FBF_TRY(response::unpack_orbital_pairs(res, nmo, ncore, ncas, x, response_matrix_.data()));
+  FBF_TRY(unpack_orbital_pairs(res, nmo, ncore, ncas, x, response_matrix_.data()));
   std::vector<double> kappa_host(mo * mo);
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(kappa_host.data(), response_matrix_.data(),
                                          mo * mo * sizeof(double), wwr::wwrMemcpyDeviceToHost,
@@ -414,9 +416,9 @@ Status RelaxedHessian::add_coupling(DeviceResources &res, std::span<const double
       gpu_status(wwr::wwrMemcpyAsync(response_matrix_.data(), a.data(), a.size() * sizeof(double),
                                      wwr::wwrMemcpyHostToDevice, res.stream())));
   FBF_TRY(res.sync());
-  FBF_TRY(response::pack_orbital_pairs(
-      res, static_cast<int32_t>(mo), static_cast<int32_t>(ints_.ncore),
-      static_cast<int32_t>(ints_.ncas), response_matrix_.data(), response_packed_.data()));
+  FBF_TRY(pack_orbital_pairs(res, static_cast<int32_t>(mo), static_cast<int32_t>(ints_.ncore),
+                             static_cast<int32_t>(ints_.ncas), response_matrix_.data(),
+                             response_packed_.data()));
   return gpu_status(wwr::axpy<double, int32_t>(res.blas().get(), n_pairs_, &kOne<double>,
                                                response_packed_.data(), 1, y, 1));
 }
@@ -630,7 +632,7 @@ Status RelaxedHessian::add_couplings(DeviceResources &res, const size_t k,
 Status RelaxedHessian::apply(DeviceResources &res, const int32_t k, const double *const x,
                              double *const y) {
   if (k < 0) {
-    return err_config("mcscf::RelaxedHessian::apply: the block has {} columns", k);
+    return err_config("response::RelaxedHessian::apply: the block has {} columns", k);
   }
   if (k == 0) {
     return {};
@@ -651,7 +653,7 @@ Status RelaxedHessian::apply(DeviceResources &res, const int32_t k, const double
 Status RelaxedHessian::couple(DeviceResources &res, const int32_t k, const double *const ci_rhs,
                               double *const y) {
   if (k < 0) {
-    return err_config("mcscf::RelaxedHessian::couple: the block has {} columns", k);
+    return err_config("response::RelaxedHessian::couple: the block has {} columns", k);
   }
   if (k == 0) {
     return {};
@@ -677,7 +679,7 @@ Status RelaxedHessian::apply_coupled(DeviceResources &res, const int32_t k, cons
   const size_t n_theta = roots_count * (roots_count - 1) / 2;
   if (k < 0 || (!theta.empty() && (theta.size() != static_cast<size_t>(k) * n_theta ||
                                    y_theta.size() != theta.size()))) {
-    return err_config("mcscf::RelaxedHessian::apply_coupled: the block has {} columns, theta {} "
+    return err_config("response::RelaxedHessian::apply_coupled: the block has {} columns, theta {} "
                       "and y_theta {} doubles (none, or {} rotations a column)",
                       k, theta.size(), y_theta.size(), n_theta);
   }
@@ -776,7 +778,7 @@ Status RelaxedHessian::apply_coupled(DeviceResources &res, const int32_t k, cons
 Status RelaxedHessian::coupling(DeviceResources &res, const int32_t k, const double *const x_c,
                                 double *const y) {
   if (k < 0) {
-    return err_config("mcscf::RelaxedHessian::coupling: the block has {} columns", k);
+    return err_config("response::RelaxedHessian::coupling: the block has {} columns", k);
   }
   if (k == 0) {
     return {};
@@ -793,4 +795,4 @@ Status RelaxedHessian::ci_diagonal(DeviceResources &res, double *const diagonal)
   return sigma_->diagonal(res, diagonal);
 }
 
-} // namespace free_breakfast::mcscf
+} // namespace free_breakfast::response

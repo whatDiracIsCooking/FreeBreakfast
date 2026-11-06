@@ -9,14 +9,12 @@
 # nevpt2::energy (ClassEnergies), core::wwr (Buffers), and the molecule,
 # bases, pair classes, SphericalMatrixAO, mcscf::Solution, ZVector and
 # GradientTerms of mcscf::df_gradient's signature are in its signatures, so
-# they are PUBLIC with core::resources and core::error_handling: zvector
-# too, internal to the MCSCF layer but in ScGradient as it is in
-# df_gradient's signature. The builders' einsums, the BLAS calls, b_mo,
-# rdms, the density-fitted adjoints, ci::Sigma and ci::Rdm, the CASSCF's
-# integrals, Fock and Hessian, H_eff's diagonalize, and the MCSCF layer's
-# internal relaxed_hessian and root_rotation (kRootGapFloor) are the
-# implementation units' alone. No device code of
-# its own.
+# they are PUBLIC with core::resources and core::error_handling: zvector too, in
+# ScGradient as it is in df_gradient's signature. The builders' einsums, the
+# BLAS calls, b_mo, rdms, the density-fitted adjoints, ci::Sigma and ci::Rdm,
+# the CASSCF's integrals, Fock and Hessian, H_eff's diagonalize, response's
+# relaxed_hessian and mcscf's root_rotation (kRootGapFloor) are the
+# implementation units' alone. No device code of its own.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.nevpt2.gradient
@@ -44,7 +42,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::matrix_ao
   free_breakfast::ci::strings
   free_breakfast::mcscf::solve
-  free_breakfast::mcscf::zvector
+  free_breakfast::response::zvector
   free_breakfast::mcscf::gradient
   free_breakfast::nevpt2::energy
   LINK_PRIVATE
@@ -63,6 +61,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::response::fock
   free_breakfast::response::hessian
   free_breakfast::response::orbital_pairs
-  free_breakfast::mcscf::relaxed_hessian
+  free_breakfast::response::relaxed_hessian
   free_breakfast::mcscf::root_rotation
 )

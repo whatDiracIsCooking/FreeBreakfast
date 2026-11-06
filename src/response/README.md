@@ -1,30 +1,35 @@
 # Response
 
-The derivatives of a (state-averaged) CASSCF energy with respect to the
-orbital rotation κ, at fixed orbitals and fixed RDMs, on the GPU: the energy
-and its gradient (`fock/`) and the orbital Hessian (`hessian/`), both over the
-packed orbital pairs (`orbital_pairs/`). They are what
-an optimizer steps over (`mcscf/solve`), and what a response solve inverts: a
-CASSCF nuclear gradient's Z-vector, E⁽²⁾ z = −∂L/∂κ, and CPHF for MP2
-gradients, which is the ncas = 0 RHF limit `fock/` already covers. The mature
+The orbital response of each reference, on the GPU. The derivatives of a
+(state-averaged) CASSCF energy with respect to the orbital rotation κ, at fixed
+orbitals and fixed RDMs: the energy and its gradient (`fock/`) and the orbital
+Hessian (`hessian/`), both over the packed orbital pairs (`orbital_pairs/`).
+They are what an optimizer steps over (`mcscf/solve`), and what a response
+solve inverts: RHF's CPHF (`cphf/`), and CASSCF's Z-vector, E⁽²⁾ z = −∂L/∂κ
+(`zvector/`), over the CI-relaxed Hessian (`relaxed_hessian/`). A correlated
+method's gradient or Hessian (NEVPT2's) supplies right-hand sides to these
+and nothing else. The mature
 MCSCF codes split the two the same way: OpenMolcas `RASSCF` / `MCLR`, Dalton
 `SIRIUS` / `RSP`, BAGEL `multi/casscf` / `cpcasscf`.
 
-It sits over `core`, `recipes` and `integrals` (J, K and `active_space`),
-takes the RDMs `ci.rdm` writes as plain host arrays, and **never imports
-`pipeline`** (nor `ci`, nor `mcscf`). `response.cppm`
-(`free_breakfast.response`) re-exports all four sub-modules, and each stays
+It sits over `core`, `recipes`, `integrals` (J, K and `active_space`) and
+`ci` (`relaxed_hessian` takes `ci.strings`, `ci.sigma`, `ci.rdm` and
+`ci.solver`; `ci` imports nothing of this layer, so there is no cycle), and
+**never imports `pipeline`** (nor `mcscf`). `response.cppm`
+(`free_breakfast.response`) re-exports all six sub-modules, and each stays
 importable on its own. `free_breakfast.mcscf` does not re-export this layer:
 a consumer that wants both imports both.
 
 Everything it exports is in **`namespace free_breakfast::response`**, spelled
 bare inside it: `response::Fock`, `response::fock`, `response::Hessian`,
-`response::pack_orbital_pairs`, `response::unpack_orbital_pairs`.
+`response::pack_orbital_pairs`, `response::unpack_orbital_pairs`,
+`response::RelaxedHessian`, `response::zvector`.
 `docs/style.md` "Namespaces, and when a name needs a prefix" has the rule.
 
 **"Response" also names something else nearby.** `mcscf/solve` calls the
 CI's reaction to each Hessian column, R, the CI's "response". That is part of
-the optimizer's coupled step and stays in `solve`; it is not this layer.
+the optimizer's coupled step and stays in `solve`, though the product it
+drives is `relaxed_hessian/`'s.
 
 ## Sub-modules
 
@@ -34,6 +39,8 @@ the optimizer's coupled step and stays in `solve`; it is not this layer.
 | `fock/` | `free_breakfast.response.fock` | At fixed orbitals and RDMs: the energy, the inactive and active Fock matrices F^I and F^A, the generalized Fock F and the orbital gradient (`response::fock`). |
 | `hessian/` | `free_breakfast.response.hessian` | At the same point: the exact orbital Hessian at fixed CI as a `LinearOperator` over the packed pairs, and its diagonal (`response::Hessian`). |
 | `cphf/` | `free_breakfast.response.cphf` | Closed-shell RHF's CPHF, M U = B for a block of right-hand sides, by lockstep preconditioned conjugate gradients over the density-fitted J and K (`response::cphf`): the nuclear Hessian's and the polarizability's orbital response. Its own (ε_a − ε_i) U + C_vᵀ G(D_U) C_o product over the vo block, not `hessian/`'s packed pairs. |
+| `relaxed_hessian/` | `free_breakfast.response.relaxed_hessian` | CASSCF's orbital Hessian with the CI relaxed, H̃ = H + R (`response::RelaxedHessian`), over `hessian/`'s H and the CI's response R through `ci`, and the orbital–CI coupling (`ResponseIntegrals`, `response_integrals`, `response_gradient`). `mcscf::solve`'s augmented Hessian steps over it. See `relaxed_hessian/README.md`. |
+| `zvector/` | `free_breakfast.response.zvector` | CASSCF's Z-vector: the Lagrange multipliers of one root's state-averaged gradient (`response::zvector`), z_o by preconditioned conjugate gradients over `RelaxedHessian` and z_c from its CI response; and the same equations on many right-hand sides at once (`response::zvectors`, the CP-CASSCF solve of a Hessian), by one of three `CpSolver`s. See `zvector/README.md`. |
 
 ## Orbitals and the packed order
 
@@ -75,15 +82,11 @@ writes the full κ that `recipes.expm` exponentiates.
 
 - **Active–active rotations.** The packed pairs hard-code CAS's three blocks;
   RAS and GAS need rotations between active subspaces too.
-- **The CI blocks of E⁽²⁾** in this layer: orbital–CI coupling over
-  transition RDMs, and CI–CI (H − E, projected). They would make it import
-  `ci`, so the SA-CASSCF Z-vector has them one layer up instead
-  (`../mcscf/relaxed_hessian/`).
-- **The Z-vector and the CASSCF nuclear gradient are done, density-fitted
-  only**: `mcscf::zvector` (`../mcscf/zvector/`) and `mcscf::df_gradient`
-  (`../mcscf/gradient/`), state-specific or any root of a state average. An
-  integral-direct gradient (exact J and K and four-center derivative
-  integrals) is not.
+- **The CASSCF nuclear gradient is done, density-fitted only**:
+  `response::zvector` (`zvector/`) over `relaxed_hessian/`'s CI blocks of
+  E⁽²⁾, and `mcscf::df_gradient` (`../mcscf/gradient/`), state-specific or any
+  root of a state average. An integral-direct gradient (exact J and K and
+  four-center derivative integrals) is not.
 - **E⁽³⁾ contractions**, E⁽³⁾(a, b) as a vector over κ and c, for NEVPT2
   analytic Hessians.
 
@@ -98,10 +101,14 @@ and `test/gtest/response_hessian_gpu.cpp` (suites `ResponseOrbitalPairs`,
 (`test/gtest/mcscf_setup.h`, shared with `mcscf_solve_gpu.cpp`); this layer's
 own targets link nothing of `pipeline`. `test/gtest/response_cphf_gpu.cpp`
 (`ResponseCphf`) is against `test/gtest/data/cphf/` (`cphf/README.md`).
+`test/gtest/response_zvector_gpu.cpp`, `response_zvectors_gpu.cpp` and
+`response_zvector_rotations_gpu.cpp` (suites `ResponseZvector*`) hold
+`zvector/`'s, and `relaxed_hessian/`'s products run through them and
+`mcscf_solve_gpu.cpp` (`zvector/README.md`, `relaxed_hessian/README.md`).
 
 ## Files
 
 | File | Role |
 |------|------|
-| `response.cppm` | Aggregate module interface; `export import`s the four sub-modules |
+| `response.cppm` | Aggregate module interface; `export import`s the six sub-modules |
 | `CMakeLists.txt` | Build configuration: `add_subdirectory` per module, and the `free_breakfast.response` module target |

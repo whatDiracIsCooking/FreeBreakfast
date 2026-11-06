@@ -32,7 +32,7 @@ export namespace free_breakfast::nevpt2 {
 struct QdIntersectionOptions {
   /// @brief One several-W qd_*_gradient call over the pair's three W's (one
   /// set of the adjoint's forward arrays, one CI-relaxed Hessian, one
-  /// mcscf::zvectors solve of the three columns), rather than three W-form
+  /// response::zvectors solve of the three columns), rather than three W-form
   /// calls. The derivative passes stay three. README.md "Sharing the three
   /// calls" has the measurement that sets the default: shared was faster on
   /// every case measured.
@@ -40,7 +40,7 @@ struct QdIntersectionOptions {
   /// @brief Each W's Z-vector tolerance: qd_*_gradient's
   /// @c zvector_tolerance, to which each solve's true residual is held (one
   /// parameter for the solve and its check). The CI response inside H~ is
-  /// converged to mcscf::response_tolerance_for it
+  /// converged to response::response_tolerance_for it
   /// (../gradient/README.md "The Z-vector's floor").
   double zvector_tolerance = 1e-10;
   /// @brief The frozen core: the lowest canonical core orbitals NEVPT2

@@ -1,7 +1,7 @@
 /// @file
 /// @brief df_casscf: the state-specific DF-CASSCF nuclear Hessian, E_xy
 /// (df_casscf_exy over mcscf::df_derivatives' F^[x]) plus the response term,
-/// lambda^x by mcscf::zvectors on df_derivatives' right-hand sides, assembled
+/// lambda^x by response::zvectors on df_derivatives' right-hand sides, assembled
 /// as Lambda^T E_lambda. by two gemms; the solution checked by one product of
 /// the unreduced operator; the sum symmetrized. The CP step on its own,
 /// df_casscf_cp, and state_specific_electrons, the inputs' check
@@ -29,8 +29,8 @@ import free_breakfast.response.hessian;
 import free_breakfast.response.orbital_pairs;
 import free_breakfast.mcscf.solve;
 import free_breakfast.mcscf.derivative;
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.relaxed_hessian;
+import free_breakfast.response.zvector;
 import :state_specific; // state_specific_electrons
 
 #include "diagnostics.h"
@@ -115,13 +115,12 @@ state_specific_electrons(const std::string_view who, const DeviceResources &res,
 
 // The probe's column is appended to the coordinates' as zvectors takes
 // them, its CI and rotation rows zero, solved with them, and dropped.
-Result<mcscf::ZVectors> probed_zvectors(DeviceResources &res, const std::string_view who,
-                                        mcscf::RelaxedHessian &relaxed,
-                                        const response::Hessian &hessian, const ci::Roots &roots,
-                                        const size_t n_x, const Buffers::device<double> &gradients,
-                                        const Buffers::device<double> &ci_rhs,
-                                        const std::span<const double> theta_rhs,
-                                        const double tolerance, const int32_t max_iterations) {
+Result<response::ZVectors>
+probed_zvectors(DeviceResources &res, const std::string_view who, response::RelaxedHessian &relaxed,
+                const response::Hessian &hessian, const ci::Roots &roots, const size_t n_x,
+                const Buffers::device<double> &gradients, const Buffers::device<double> &ci_rhs,
+                const std::span<const double> theta_rhs, const double tolerance,
+                const int32_t max_iterations) {
   const auto pairs = static_cast<size_t>(relaxed.size());
   const auto pairs32 = static_cast<int32_t>(pairs);
   const size_t dim = roots.vectors.num_elements();
@@ -153,9 +152,9 @@ Result<mcscf::ZVectors> probed_zvectors(DeviceResources &res, const std::string_
                           "degenerate set), and its Hessian depends on which point it reached",
                           who, why);
   };
-  Result<mcscf::ZVectors> solved =
-      mcscf::zvectors(res, relaxed, hessian, roots, static_cast<int32_t>(n_col), rhs.data(),
-                      rhs_ci.data(), mcscf::CpSolver::Schur, tolerance, max_iterations, theta);
+  Result<response::ZVectors> solved = response::zvectors(
+      res, relaxed, hessian, roots, static_cast<int32_t>(n_col), rhs.data(), rhs_ci.data(),
+      response::CpSolver::Schur, tolerance, max_iterations, theta);
   if (!solved.has_value()) {
     const ErrorKind kind = solved.error().kind;
     if (kind == ErrorKind::Divergence || kind == ErrorKind::MaxIterationsExceeded) {
@@ -163,7 +162,7 @@ Result<mcscf::ZVectors> probed_zvectors(DeviceResources &res, const std::string_
     }
     return err(std::move(solved.error()));
   }
-  mcscf::ZVectors &all = *solved;
+  response::ZVectors &all = *solved;
 
   // rho against the products' resolution: the CI response leaves each
   // product's R x wrong by up to kCasscfCpResponseTolerance of R x, and at a
@@ -189,11 +188,11 @@ Result<mcscf::ZVectors> probed_zvectors(DeviceResources &res, const std::string_
   }
 
   // The coordinates' columns alone.
-  mcscf::ZVectors cp{.orbital = Buffers::device<double>(pairs * n_x, res.device()),
-                     .ci = Buffers::device<double>(dim * n_x, res.device()),
-                     .theta = std::move(all.theta),
-                     .iterations = std::move(all.iterations),
-                     .residuals = std::move(all.residuals)};
+  response::ZVectors cp{.orbital = Buffers::device<double>(pairs * n_x, res.device()),
+                        .ci = Buffers::device<double>(dim * n_x, res.device()),
+                        .theta = std::move(all.theta),
+                        .iterations = std::move(all.iterations),
+                        .residuals = std::move(all.residuals)};
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cp.orbital.data(), all.orbital.data(),
                                          pairs * n_x * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
                                          stream)));
@@ -212,11 +211,11 @@ Result<mcscf::ZVectors> probed_zvectors(DeviceResources &res, const std::string_
 struct CasscfCp {
   mcscf::Derivatives derivatives;
   Buffers::device<double> gradients;
-  mcscf::ZVectors cp;
+  response::ZVectors cp;
   std::vector<double> residuals;
 };
 
-// lambda^x by mcscf::zvectors on df_derivatives' right-hand sides, checked by
+// lambda^x by response::zvectors on df_derivatives' right-hand sides, checked by
 // one product of the unreduced operator (df_casscf's steps 1, 3 and 4,
 // README.md); @p who names the caller in every refusal.
 Result<CasscfCp> casscf_cp(DeviceResources &res, const std::string_view who,
@@ -278,15 +277,16 @@ Result<CasscfCp> casscf_cp(DeviceResources &res, const std::string_view who,
       FBF_TRY(download(ints.hamiltonian.eri.data(), n_act * n_act * n_act * n_act))));
   response::Hessian hessian = FBF_TRY(
       response::Hessian::create(res, h, b, naux32, c, ncore, ncas, ints.ppaa, ints.papa, fock));
-  mcscf::ResponseIntegrals response_ints{nao,
-                                         static_cast<size_t>(ncore),
-                                         n_act,
-                                         FBF_TRY(download(fock.fock_inactive.data(), mm)),
-                                         FBF_TRY(download(ints.ppaa.data(), mm * n_act * n_act)),
-                                         FBF_TRY(download(ints.papa.data(), mm * n_act * n_act))};
-  mcscf::RelaxedHessian relaxed = FBF_TRY(
-      mcscf::RelaxedHessian::create(res, hessian, sigma, rdm, alpha, beta, solution.roots, weight,
-                                    std::move(response_ints), kCasscfCpResponseTolerance));
+  response::ResponseIntegrals response_ints{
+      nao,
+      static_cast<size_t>(ncore),
+      n_act,
+      FBF_TRY(download(fock.fock_inactive.data(), mm)),
+      FBF_TRY(download(ints.ppaa.data(), mm * n_act * n_act)),
+      FBF_TRY(download(ints.papa.data(), mm * n_act * n_act))};
+  response::RelaxedHessian relaxed = FBF_TRY(response::RelaxedHessian::create(
+      res, hessian, sigma, rdm, alpha, beta, solution.roots, weight, std::move(response_ints),
+      kCasscfCpResponseTolerance));
 
   // The right-hand sides in zvectors' coordinates: the orbital rows packed
   // (rhs_orbital holds G_pq at p > q, the order the packing reads), the CI
@@ -308,8 +308,9 @@ Result<CasscfCp> casscf_cp(DeviceResources &res, const std::string_view who,
                                          res.stream())));
   FBF_TRY(
       gpu_status(wwr::scal<double, int32_t>(blas, ci_count32, &kHalf<double>, ci_rhs.data(), 1)));
-  mcscf::ZVectors cp = FBF_TRY(probed_zvectors(res, who, relaxed, hessian, solution.roots, n_x,
-                                               gradients, ci_rhs, {}, tolerance, max_iterations));
+  response::ZVectors cp =
+      FBF_TRY(probed_zvectors(res, who, relaxed, hessian, solution.roots, n_x, gradients, ci_rhs,
+                              {}, tolerance, max_iterations));
 
   // The solution checked on the unreduced equations, which no inner solve
   // stands in for: r = H z_o + H_oc z_c + g, r_c = P (H' c + (H_0 - E) z_c)
@@ -348,7 +349,7 @@ Result<CasscfCp> casscf_cp(DeviceResources &res, const std::string_view who,
                   .residuals = std::move(residuals)};
 }
 
-Result<mcscf::ZVectors>
+Result<response::ZVectors>
 df_casscf_cp(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
              const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
              const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
@@ -395,7 +396,7 @@ Result<CasscfTerms> df_casscf(DeviceResources &res, const Molecule &molecule, co
   }
   const mcscf::Derivatives &derivatives = step.derivatives;
   const Buffers::device<double> &gradients = step.gradients;
-  const mcscf::ZVectors &cp = step.cp;
+  const response::ZVectors &cp = step.cp;
 
   // Lambda^T E_lambda.: element (x, y) is g^x . z_o^y + rhs_ci^x . z_c^y, the
   // CI rows the energy's own (2 Q H~^x c) against z_c, the response itself.

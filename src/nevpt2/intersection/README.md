@@ -43,7 +43,7 @@ carries its branching plane ("A MECI inside a degenerate CASSCF pair").
 2. G(W) at u_P u_Pᵀ, u_Q u_Qᵀ and W^PQ, all built from that one R: by
    default one several-W call of `qd_sc_gradient` (or `qd_pc_gradient`),
    which shares the adjoint's forward arrays, the CI-relaxed Hessian and one
-   `mcscf::zvectors` solve of the three columns (`../gradient/README.md`,
+   `response::zvectors` solve of the three columns (`../gradient/README.md`,
    "Several W's at once"); with `options.shared = false`, three W-form
    calls, each its own Lagrangian and Z-vector solve (#784's path).
 3. Each solve's true residual (`ZVector::residual`, one more product at the
@@ -51,7 +51,7 @@ carries its branching plane ("A MECI inside a degenerate CASSCF pair").
    solve's own tolerance, `options.zvector_tolerance` (1e-10 by default, the
    one parameter the W-form calls solve to), or the call returns `Numerical`
    naming the W (the gradient layer checks every column too). The CI
-   response inside H̃ is converged to `mcscf::response_tolerance_for` it
+   response inside H̃ is converged to `response::response_tolerance_for` it
    (`../gradient/README.md` "The Z-vector's floor"). Near a degeneracy the recurrence
    can report convergence while the true residual has not (#786).
 4. s_o and s_c from the three solves' multipliers, below.
@@ -132,7 +132,7 @@ residual the SA-CASSCF reports:
   derivative of.
 - **The CI multipliers, each root's block scaled by 2 w_r, with ρ** =
   `ci::Roots::davidson.max_residual_norm`. The Z-vector system's CI rows are
-  the true ∂L/∂c_r divided by 2 w_r (`../../mcscf/zvector/README.md`), so
+  the true ∂L/∂c_r divided by 2 w_r (`../../response/zvector/README.md`), so
   z_c,r multiplies the condition 2 w_r P (H₀ − E_r) c_r. That is the
   Davidson residual, which is orthogonal to every root (Galerkin), so P
   drops nothing. The spin penalty adds nothing to z_c · r: z_c is in the
@@ -691,7 +691,7 @@ DF-SA-CASSCF of `test/gtest/data/qd_nevpt2/`'s cases at #696's bars:
   The SC intersection of QD states 0 and 1, and the SC state gradient of
   state 0 (one column, whose true residual is now checked too), both
   succeed: every true residual is at most 1e-10. Before the CI response
-  inside H̃ was converged to `mcscf::response_tolerance_for` the Z-vector
+  inside H̃ was converged to `response::response_tolerance_for` the Z-vector
   tolerance, the intersection was refused at 2.55e-10 after 31 products
   (`../../mcscf/intersection/` "The floor under the true residual"). Now
   the three columns end at their recurrence's 9.8e-11, 6.0e-11 and

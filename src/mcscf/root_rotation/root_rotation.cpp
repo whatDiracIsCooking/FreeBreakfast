@@ -21,7 +21,7 @@ import free_breakfast.ci.rdm;
 import free_breakfast.response.fock;
 import free_breakfast.response.orbital_pairs;
 import free_breakfast.mcscf.derivative;
-import free_breakfast.mcscf.relaxed_hessian;
+import free_breakfast.response.relaxed_hessian;
 
 #include "diagnostics.h"
 
@@ -136,12 +136,12 @@ Result<RootRotation> root_rotation(DeviceResources &res, const Molecule &molecul
       FBF_TRY(casscf_integrals(res, basis, molecule, h, b, naux, c, ncore, ncas));
   const response::Fock f0 = FBF_TRY(response::fock(res, molecule, h, b, naux, c, ncore, ncas,
                                                    ints.ppaa, ints.papa, gamma, gamma2));
-  ResponseIntegrals response_ints{nao,
-                                  n_core,
-                                  n_act,
-                                  std::vector<double>(nn),
-                                  std::vector<double>(nn * na2),
-                                  std::vector<double>(nn * na2)};
+  response::ResponseIntegrals response_ints{nao,
+                                            n_core,
+                                            n_act,
+                                            std::vector<double>(nn),
+                                            std::vector<double>(nn * na2),
+                                            std::vector<double>(nn * na2)};
   FBF_TRY(download(response_ints.fock_inactive.data(), f0.fock_inactive.data(), nn));
   FBF_TRY(download(response_ints.ppaa.data(), ints.ppaa.data(), nn * na2));
   FBF_TRY(download(response_ints.papa.data(), ints.papa.data(), nn * na2));
@@ -180,7 +180,7 @@ Result<RootRotation> root_rotation(DeviceResources &res, const Molecule &molecul
       for (size_t i = 0; i < na4; ++i) {
         gamma2[i] = 0.125 * (gp[na2 + i] - gp[off + na2 + i]);
       }
-      response_gradient(response_ints, gamma, gamma2, a);
+      response::response_gradient(response_ints, gamma, gamma2, a);
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(a_full.data(), a.data(), sizeof(double) * nn,
                                              wwr::wwrMemcpyHostToDevice, stream)));
       FBF_TRY(response::pack_orbital_pairs(res, static_cast<int32_t>(nao), ncore, ncas,

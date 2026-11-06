@@ -5,7 +5,7 @@
 // fixture, never re-converged (PySCF's own two-root solution is a saddle
 // point). Two roots and three at equal weights: each root's couplings and
 // eq. rot, first over the fixture's lambda^x, then over lambda^x solved here
-// by mcscf::zvectors from mcscf::df_derivatives' right-hand sides (the chain
+// by response::zvectors from mcscf::df_derivatives' right-hand sides (the chain
 // a Hessian runs). Beside them the refusals: a near-degenerate pair (the
 // fixture's roots given energies a small gap apart), unequal weights and bad
 // sizes.
@@ -29,8 +29,6 @@ import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
 
 namespace {
 
@@ -108,7 +106,7 @@ double max_abs(const std::vector<double> &a) {
 }
 
 // The active-space Hamiltonian of ints in the row-major layout the sigma
-// takes (mcscf_zvectors_gpu.cpp's).
+// takes (response_zvectors_gpu.cpp's).
 void set_sigma_integrals(fb::DeviceResources &res, const fb::CasscfIntegrals &ints,
                          const std::size_t n, fb::ci::Sigma &sigma) {
   const std::vector<double> h_col = download(res, ints.hamiltonian.h_eff.data(), n * n);
@@ -334,15 +332,15 @@ protected:
     auto hessian = fb::response::Hessian::create(res, h_->spherical(), *b_, naux, *c_, ncore_,
                                                  ncas_, ints->ppaa, ints->papa, *sa_fock);
     EXPECT_TRUE(hessian) << hessian.error().message;
-    const fb::mcscf::ResponseIntegrals response_ints{
+    const fb::response::ResponseIntegrals response_ints{
         nao_,
         static_cast<std::size_t>(ncore_),
         n,
         download(res, sa_fock->fock_inactive.data(), nao_ * nao_),
         download(res, ints->ppaa.data(), nao_ * nao_ * n * n),
         download(res, ints->papa.data(), nao_ * nao_ * n * n)};
-    auto relaxed = fb::mcscf::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta,
-                                                     roots, weights_, response_ints);
+    auto relaxed = fb::response::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta,
+                                                        roots, weights_, response_ints);
     EXPECT_TRUE(relaxed) << relaxed.error().message;
 
     const fb::Buffers::device<double> gradients = pack(d.rhs_orbital.data());
@@ -356,8 +354,8 @@ protected:
     }
     fb::Buffers::device<double> ci_rhs_device(ci_rhs.size(), res.device());
     upload(res, ci_rhs, ci_rhs_device.data());
-    auto z = fb::mcscf::zvectors(res, *relaxed, *hessian, roots, static_cast<std::int32_t>(n_x_),
-                                 gradients.data(), ci_rhs_device.data());
+    auto z = fb::response::zvectors(res, *relaxed, *hessian, roots, static_cast<std::int32_t>(n_x_),
+                                    gradients.data(), ci_rhs_device.data());
     EXPECT_TRUE(z) << z.error().message;
 
     const std::vector<double> mine = download(res, z->orbital.data(), pairs() * n_x_);

@@ -1,6 +1,6 @@
 # The module: mcscf::df_nac, host code over the CI objects, the generalized
-# Fock, the orbital Hessian, the internal relaxed_hessian and zvector modules
-# (neither re-exported), the transition orbital gradient, the
+# Fock, the orbital Hessian, response's relaxed_hessian and zvector modules
+# (linked PRIVATE), the transition orbital gradient, the
 # transition-density gradient and the overlap's half derivative, with no
 # kernels of its own. DeviceResources, Molecule, BasisSet, PrimitivePairClass,
 # SphericalMatrixAO, Buffers, Solution and Result are in its signature, so
@@ -35,8 +35,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::rdm
   free_breakfast::response::fock
   free_breakfast::response::hessian
-  free_breakfast::mcscf::relaxed_hessian
-  free_breakfast::mcscf::zvector
+  free_breakfast::response::relaxed_hessian
+  free_breakfast::response::zvector
   free_breakfast::mcscf::gradient
   free_breakfast::mcscf::transition
   free_breakfast::mcscf::root_rotation

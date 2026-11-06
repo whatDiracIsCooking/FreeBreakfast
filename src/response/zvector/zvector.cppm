@@ -3,10 +3,10 @@
 /// gradient: z_o over the packed pairs by preconditioned conjugate gradients
 /// over the CI-relaxed Hessian, and z_c, the CI's response to it.
 ///
-/// Internal to the MCSCF layer: free_breakfast.mcscf does not re-export it.
-/// See README.md.
+/// CASSCF's orbital response: free_breakfast.response re-exports it. See
+/// README.md.
 
-export module free_breakfast.mcscf.zvector;
+export module free_breakfast.response.zvector;
 
 import std;
 import free_breakfast.core.types;
@@ -15,9 +15,9 @@ import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.ci.solver;
 import free_breakfast.response.hessian;
-import free_breakfast.mcscf.relaxed_hessian;
+import free_breakfast.response.relaxed_hessian;
 
-export namespace free_breakfast::mcscf {
+export namespace free_breakfast::response {
 
 /// @brief Two weights this close, relative to the larger, are equal: the
 /// rotation between their roots is redundant and stays projected. Weights
@@ -109,7 +109,7 @@ struct ZVector {
 ///         InvalidConfig too for a @p theta_rhs neither empty nor
 ///         nroots (nroots - 1) / 2 long.
 [[nodiscard]] Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
-                                      const response::Hessian &hessian, const ci::Roots &roots,
+                                      const Hessian &hessian, const ci::Roots &roots,
                                       const double *gradient, const double *ci_rhs = nullptr,
                                       double tolerance = 1e-10, int32_t max_iterations = 200,
                                       std::span<const double> theta_rhs = {});
@@ -187,10 +187,10 @@ struct ZVectors {
 ///         operator a method iterates on; or the first error of a product,
 ///         BLAS call or copy.
 [[nodiscard]] Result<ZVectors>
-zvectors(DeviceResources &res, RelaxedHessian &relaxed, const response::Hessian &hessian,
+zvectors(DeviceResources &res, RelaxedHessian &relaxed, const Hessian &hessian,
          const ci::Roots &roots, int32_t ncol, const double *gradients,
          const double *ci_rhs = nullptr, CpSolver solver = CpSolver::Schur,
          double tolerance = 1e-10, int32_t max_iterations = 200,
          std::span<const double> theta_rhs = {}, double ci_diagonal_floor = 1e-2);
 
-} // namespace free_breakfast::mcscf
+} // namespace free_breakfast::response

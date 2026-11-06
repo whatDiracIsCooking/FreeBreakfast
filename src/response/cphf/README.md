@@ -55,7 +55,7 @@ Preconditioned conjugate gradients from U = 0, preconditioner (ε_a − ε_i)⁻
 every column in lockstep: each sweep takes one product per column still
 above `tolerance` in ||r|| and leaves the stopped ones as they are, so the
 sweep count is the slowest column's. Its interface and stopping rules are
-`mcscf::zvector`'s: an absolute tolerance on each column's residual, the true
+`response::zvector`'s: an absolute tolerance on each column's residual, the true
 residual from one more product at the end, MaxIterationsExceeded when a
 column is still above it after `max_iterations` sweeps, and Divergence when a
 direction has p·Mp ≤ 0. That last is not the solver failing: M is not

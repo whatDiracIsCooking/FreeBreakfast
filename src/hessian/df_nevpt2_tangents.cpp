@@ -24,7 +24,7 @@ import free_breakfast.recipes.matrix_ao;
 import free_breakfast.ci.strings;
 import free_breakfast.response.orbital_pairs; // unpack_orbital_pairs
 import free_breakfast.mcscf.solve;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.zvector;
 import free_breakfast.mcscf.third_derivative; // df_integral_derivatives
 import free_breakfast.nevpt2.gradient;        // builders_tangent
 import :state_specific;                       // state_specific_electrons
@@ -52,7 +52,7 @@ Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
     const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
     const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
     const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-    const mcscf::ZVectors &cp, const bool pc,
+    const response::ZVectors &cp, const bool pc,
     const std::function<Status(int32_t x0, int32_t count, const double *h_dot, const double *b_dot,
                                const double *c_dot, const double *kappa)> &consume,
     const size_t max_bytes) {

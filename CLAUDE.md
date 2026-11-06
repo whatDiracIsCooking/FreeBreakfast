@@ -14,7 +14,8 @@ the FelizJueves submodule, integral-direct and density-fitted), `localization`
 (Pipek-Mezey orbital localization, IBOs and LIVVOs), `analysis` (IAO
 populations and partial charges), `ci` (determinant CI: strings, sigma, the
 solver and RDMs), `response` (the CASSCF energy, orbital gradient and
-orbital Hessian at fixed orbitals and RDMs, and RHF's CPHF), `mcscf` (the
+orbital Hessian at fixed orbitals and RDMs, and each reference's orbital
+response: RHF's CPHF, and CASSCF's Z-vector over the CI-relaxed Hessian), `mcscf` (the
 state-averaged CASSCF loop over them, and its roots' nonadiabatic couplings), `nevpt2`
 (SC- and PC-NEVPT2, and their QD-NEVPT2 effective Hamiltonians), `cis`, `geometry`,
 `gradient`, `hessian` (the full DF-RHF analytic nuclear Hessian, and the

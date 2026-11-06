@@ -192,7 +192,7 @@ and the integral-direct path, build their J and K one density at a time as
 before. The two paths agree to 1e-10 of each column's largest summand
 max |H_ij x_j| (`test/gtest/response_hessian_gpu.cpp`).
 
-What it buys, `bench/mcscf_zvectors.cpp`'s CP solves (3 n_atom columns,
+What it buys, `bench/response_zvectors.cpp`'s CP solves (3 n_atom columns,
 DF-CASSCF(4,4)/cc-pVDZ/cc-pVDZ-JKFIT), seconds before → after; water the best
 of 5, octatetraene (54 columns, nmo 162, naux 790) one solve after a warm-up:
 

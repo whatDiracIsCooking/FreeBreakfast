@@ -1,21 +1,15 @@
 # CASSCF over response, integrals, ci and core, never pipeline: the macro loop
 # that optimizes the orbitals and the CI over response's energy, gradient and
-# orbital Hessian.
-#
-# relaxed_hessian first: solve links it. It is internal to the layer, so the
-# aggregate below does not re-export it.
-add_subdirectory(relaxed_hessian)
+# orbital Hessian, and over its CI-relaxed Hessian.
 add_subdirectory(solve)
-# zvector over relaxed_hessian, internal too: the SA gradient links it.
-add_subdirectory(zvector)
 # The DF-CASSCF nuclear gradient at a solve's solution, state-specific or one
-# root of a state average (over zvector's multipliers).
+# root of a state average (over response::zvector's multipliers).
 add_subdirectory(gradient)
 # The orbital gradient of a transition element <c_s|H|c_r>, over
 # response::fock alone: nac's Z-vector right-hand side.
 add_subdirectory(transition)
 # The SA-CASSCF nonadiabatic couplings between two roots, over gradient's
-# transition-density terms and zvector's multipliers.
+# transition-density terms and response::zvector's multipliers.
 add_subdirectory(nac)
 # g_I, g_J and h_IJ of two equal-weight roots from one call, an MECI search's
 # step: one CI-relaxed Hessian and one block Z-vector solve for the three.

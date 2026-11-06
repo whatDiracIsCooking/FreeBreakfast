@@ -1,7 +1,7 @@
 /// @file
 /// @brief df_sacasscf: a state-averaged DF-CASSCF root's nuclear Hessian,
-/// eq. sa assembled from the merged parts: z by mcscf::zvector, lambda^x by
-/// mcscf::zvectors over the SA Hessian, E_I,xy (df_casscf_exy), the z terms
+/// eq. sa assembled from the merged parts: z by response::zvector, lambda^x by
+/// response::zvectors over the SA Hessian, E_I,xy (df_casscf_exy), the z terms
 /// (df_sacasscf_z), root I's parameter Hessian (RelaxedHessian's unreduced
 /// product at one-hot weights), the third-derivative action
 /// (mcscf::ThirdDerivative) and, at equal weights, eq. rot
@@ -29,10 +29,10 @@ import free_breakfast.response.hessian;
 import free_breakfast.response.orbital_pairs;
 import free_breakfast.mcscf.solve;
 import free_breakfast.mcscf.derivative;
-import free_breakfast.mcscf.relaxed_hessian;
+import free_breakfast.response.relaxed_hessian;
 import free_breakfast.mcscf.root_rotation;
 import free_breakfast.mcscf.third_derivative;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.zvector;
 import :state_specific; // probed_zvectors, kCasscfCpResponseTolerance
 
 #include "diagnostics.h"
@@ -189,13 +189,13 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
                                                         ints.ppaa, ints.papa, gamma_sa, gamma2_sa));
   // F^I, ppaa and papa on the host for each H~ (F^I is the core's alone, the
   // same at any RDMs).
-  const auto response_integrals = [&]() -> Result<mcscf::ResponseIntegrals> {
-    return mcscf::ResponseIntegrals{nao,
-                                    static_cast<size_t>(ncore),
-                                    n_act,
-                                    FBF_TRY(download(fock_sa.fock_inactive.data(), mm)),
-                                    FBF_TRY(download(ints.ppaa.data(), mm * n_act * n_act)),
-                                    FBF_TRY(download(ints.papa.data(), mm * n_act * n_act))};
+  const auto response_integrals = [&]() -> Result<response::ResponseIntegrals> {
+    return response::ResponseIntegrals{nao,
+                                       static_cast<size_t>(ncore),
+                                       n_act,
+                                       FBF_TRY(download(fock_sa.fock_inactive.data(), mm)),
+                                       FBF_TRY(download(ints.ppaa.data(), mm * n_act * n_act)),
+                                       FBF_TRY(download(ints.papa.data(), mm * n_act * n_act))};
   };
   ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
   FBF_TRY(sigma.set_integrals(
@@ -203,9 +203,9 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
       FBF_TRY(download(ints.hamiltonian.eri.data(), n_act * n_act * n_act * n_act))));
   response::Hessian hessian_sa = FBF_TRY(
       response::Hessian::create(res, h, b, naux32, c, ncore, ncas, ints.ppaa, ints.papa, fock_sa));
-  mcscf::RelaxedHessian relaxed_sa = FBF_TRY(
-      mcscf::RelaxedHessian::create(res, hessian_sa, sigma, rdm, alpha, beta, roots, weights,
-                                    FBF_TRY(response_integrals()), kCasscfCpResponseTolerance));
+  response::RelaxedHessian relaxed_sa = FBF_TRY(
+      response::RelaxedHessian::create(res, hessian_sa, sigma, rdm, alpha, beta, roots, weights,
+                                       FBF_TRY(response_integrals()), kCasscfCpResponseTolerance));
   const auto pairs = static_cast<size_t>(relaxed_sa.size());
   const auto pairs32 = static_cast<int32_t>(pairs);
 
@@ -214,9 +214,9 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   const auto [gamma_i, gamma2_i] = FBF_TRY(rdms(one_hot));
   const response::Fock fock_i = FBF_TRY(response::fock(res, molecule, h, b, naux32, c, ncore, ncas,
                                                        ints.ppaa, ints.papa, gamma_i, gamma2_i));
-  mcscf::ZVector z =
-      FBF_TRY(mcscf::zvector(res, relaxed_sa, hessian_sa, roots, fock_i.gradient.data(), nullptr,
-                             tolerance, max_iterations));
+  response::ZVector z =
+      FBF_TRY(response::zvector(res, relaxed_sa, hessian_sa, roots, fock_i.gradient.data(), nullptr,
+                                tolerance, max_iterations));
 
   // The third-derivative operator along z. Whether the rotations are
   // parameters is its rule (all weights equal, or all pairwise different), so
@@ -275,7 +275,7 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   }
   // With the probe column, which refuses a singular A (df_casscf's,
   // README.md "A singular H~").
-  mcscf::ZVectors cp =
+  response::ZVectors cp =
       FBF_TRY(probed_zvectors(res, "hessian::df_sacasscf", relaxed_sa, hessian_sa, roots, n_x,
                               gradients, ci_rhs, theta_rhs, tolerance, max_iterations));
 
@@ -360,7 +360,7 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   {
     response::Hessian hessian_i = FBF_TRY(
         response::Hessian::create(res, h, b, naux32, c, ncore, ncas, ints.ppaa, ints.papa, fock_i));
-    mcscf::RelaxedHessian relaxed_i = FBF_TRY(mcscf::RelaxedHessian::create(
+    response::RelaxedHessian relaxed_i = FBF_TRY(response::RelaxedHessian::create(
         res, hessian_i, sigma, rdm, alpha, beta, roots, one_hot, FBF_TRY(response_integrals())));
     Buffers::device<double> y_o(pairs * n_x, res.device());
     Buffers::device<double> y_c(n_ci * n_x, res.device());

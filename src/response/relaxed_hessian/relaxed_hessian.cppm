@@ -1,12 +1,12 @@
 /// @file
 /// @brief The orbital Hessian with the CI relaxed, H~ = H + R, over the packed
-/// pairs at fixed orbitals and roots: response::Hessian's H plus the CI's
+/// pairs at fixed orbitals and roots: Hessian's H plus the CI's
 /// response R, and the orbital-CI coupling R is built from.
 ///
-/// Internal to the MCSCF layer: free_breakfast.mcscf does not re-export it.
-/// See README.md.
+/// CASSCF's orbital response: free_breakfast.response re-exports it. See
+/// README.md.
 
-export module free_breakfast.mcscf.relaxed_hessian;
+export module free_breakfast.response.relaxed_hessian;
 
 import std;
 import free_breakfast.core.types;
@@ -19,7 +19,7 @@ import free_breakfast.ci.rdm;
 import free_breakfast.ci.solver;
 import free_breakfast.response.hessian;
 
-export namespace free_breakfast::mcscf {
+export namespace free_breakfast::response {
 
 /// @brief The integrals the CI response contracts, on the host: F^I
 /// (nmo x nmo) and ppaa, papa (casscf_integrals' layout), all column-major as
@@ -94,7 +94,7 @@ public:
   /// (w_r - w_s) times that part to R x, nothing, so leaving it out changes
   /// no product; but its 1/(E_s - E_r) amplifies the weights' recovery
   /// error and the roundoff near a degeneracy (README.md "Leaving a pair's
-  /// mixing out"). mcscf::rotating_pairs gives the mask that keeps only the
+  /// mixing out"). rotating_pairs gives the mask that keeps only the
   /// pairs of unequal weights.
   ///
   /// @return InvalidConfig when @p ints' sizes do not match their nmo, ncore
@@ -105,7 +105,7 @@ public:
   ///         @p response_max_iterations is below 1; or
   ///         the error of the sigma's create.
   [[nodiscard]] static Result<RelaxedHessian>
-  create(DeviceResources &res, response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
+  create(DeviceResources &res, Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
          const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const ci::Roots &roots,
          std::span<const double> weights, ResponseIntegrals ints, double response_tolerance = 1e-8,
          std::vector<bool> mixing = {}, int32_t response_max_iterations = 200);
@@ -227,7 +227,7 @@ public:
   [[nodiscard]] std::span<const double> weights() const noexcept { return weights_; }
 
 private:
-  RelaxedHessian(response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm, const ci::Roots &roots,
+  RelaxedHessian(Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm, const ci::Roots &roots,
                  std::vector<double> weights, ResponseIntegrals ints, ci::Sigma response_sigma,
                  size_t dim, double response_tolerance, int32_t response_max_iterations,
                  int32_t swap_parity, std::vector<bool> mixing, DeviceResources &res);
@@ -265,7 +265,7 @@ private:
   [[nodiscard]] Status add_couplings(DeviceResources &res, size_t k, const double *delta,
                                      double *y);
 
-  response::Hessian *hessian_;
+  Hessian *hessian_;
   ci::Sigma *sigma_;
   ci::Rdm *rdm_;
   const ci::Roots *roots_;
@@ -299,4 +299,4 @@ private:
   Buffers::device<double> block_;
 };
 
-} // namespace free_breakfast::mcscf
+} // namespace free_breakfast::response

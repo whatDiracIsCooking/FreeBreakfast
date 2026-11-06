@@ -1,5 +1,5 @@
-// mcscf::zvectors on the device: several right-hand sides at once, by each
-// CpSolver, against mcscf::zvector on each right-hand side alone. Over a
+// response::zvectors on the device: several right-hand sides at once, by each
+// CpSolver, against response::zvector on each right-hand side alone. Over a
 // state-specific case and a state average of data/casscf_gradient/
 // (casscf_gradient.json names the molecule, basis, fitting set, active space
 // and weights; its multipliers are not read): the DF-CASSCF by mcscf::solve
@@ -8,7 +8,7 @@
 // ones) and a random CI one, y_r = P H_y c_r for a random spin-free H_y (so in
 // the roots' spin, as zvector's own CI test makes it).
 //
-// The setup is mcscf_zvector_gpu.cpp's, so this executable links pipeline;
+// The setup is response_zvector_gpu.cpp's, so this executable links pipeline;
 // mcscf itself does not. Runs the device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
@@ -24,8 +24,6 @@ import free_breakfast.integrals;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
@@ -42,7 +40,7 @@ namespace fb = free_breakfast;
 constexpr std::int32_t kColumns = 3;
 // Each column's solve, and zvector's on it alone.
 constexpr double kResidualTolerance = 1e-10;
-// The CASSCF's convergence, as mcscf_zvector_gpu.cpp's.
+// The CASSCF's convergence, as response_zvector_gpu.cpp's.
 constexpr double kConvTolGrad = 1e-10;
 // Each column against zvector's on it alone, relative to the column's
 // largest |z_o| and |z_c|. Schur is compared over the same H~: the same
@@ -92,7 +90,7 @@ void upload(fb::DeviceResources &res, std::span<const double> host, double *data
 
 // The case's molecule through the real registry to the Scf step's inputs.
 std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeResources &node) {
-  const fb::test::ScratchDir dir("mcscf_zvectors");
+  const fb::test::ScratchDir dir("response_zvectors");
   std::string xyz =
       std::format("{}\n{}\n", entry.at("atoms").size(), entry.at("name").get<std::string>());
   for (const fb::json &atom : entry.at("atoms")) {
@@ -176,9 +174,9 @@ void random_hamiltonian(std::mt19937_64 &engine, std::size_t n, std::vector<doub
   }
 }
 
-class McscfZvectors : public ::testing::TestWithParam<std::string_view> {};
+class ResponseZvectors : public ::testing::TestWithParam<std::string_view> {};
 
-TEST_P(McscfZvectors, EachColumnIsZvectorsAlone) {
+TEST_P(ResponseZvectors, EachColumnIsZvectorsAlone) {
   FBF_REQUIRE_GPU();
   // Under slow_test.h (#977): the SA2 formaldehyde, 2.0 s on the RTX 3080.
   if (std::string_view{GetParam()} == "h2co_ccpvdz_sa2") {
@@ -280,7 +278,7 @@ TEST_P(McscfZvectors, EachColumnIsZvectorsAlone) {
   auto hessian = fb::response::Hessian::create(res, h->h, df.b, df.naux, c, ncore, ncas, ints->ppaa,
                                                ints->papa, *sa_fock);
   ASSERT_TRUE(hessian.has_value()) << hessian.error().message;
-  const fb::mcscf::ResponseIntegrals response_ints{
+  const fb::response::ResponseIntegrals response_ints{
       mo,
       core,
       n,
@@ -288,11 +286,12 @@ TEST_P(McscfZvectors, EachColumnIsZvectorsAlone) {
       download(res, ints->ppaa.data(), mo * mo * n * n),
       download(res, ints->papa.data(), mo * mo * n * n)};
   // H~ as the tree builds it, and with its CI responses solved tightly.
-  auto relaxed = fb::mcscf::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta,
-                                                   *roots, weights, response_ints);
+  auto relaxed = fb::response::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta,
+                                                      *roots, weights, response_ints);
   ASSERT_TRUE(relaxed.has_value()) << relaxed.error().message;
-  auto exact = fb::mcscf::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta, *roots,
-                                                 weights, response_ints, kExactResponseTolerance);
+  auto exact =
+      fb::response::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta, *roots,
+                                           weights, response_ints, kExactResponseTolerance);
   ASSERT_TRUE(exact.has_value()) << exact.error().message;
   const auto pairs = static_cast<std::size_t>(relaxed->size());
   const auto columns = static_cast<std::size_t>(kColumns);
@@ -343,19 +342,19 @@ TEST_P(McscfZvectors, EachColumnIsZvectorsAlone) {
 
   // No columns is refused.
   {
-    auto none = fb::mcscf::zvectors(res, *relaxed, *hessian, *roots, 0, gradients_device.data());
+    auto none = fb::response::zvectors(res, *relaxed, *hessian, *roots, 0, gradients_device.data());
     ASSERT_FALSE(none.has_value());
     EXPECT_EQ(none.error().kind, fb::ErrorKind::InvalidConfig);
   }
 
   // zvector on each column alone, over H~ as built and over the exact one.
-  const auto alone = [&](fb::mcscf::RelaxedHessian &over) {
+  const auto alone = [&](fb::response::RelaxedHessian &over) {
     std::pair<std::vector<double>, std::vector<double>> want{
         std::vector<double>(pairs * columns), std::vector<double>(ci_block * columns)};
     for (std::size_t col = 0; col < columns; ++col) {
-      auto z =
-          fb::mcscf::zvector(res, over, *hessian, *roots, gradients_device.data() + (col * pairs),
-                             y_device.data() + (col * ci_block), kResidualTolerance);
+      auto z = fb::response::zvector(res, over, *hessian, *roots,
+                                     gradients_device.data() + (col * pairs),
+                                     y_device.data() + (col * ci_block), kResidualTolerance);
       EXPECT_TRUE(z.has_value()) << z.error().message;
       if (!z.has_value()) {
         break;
@@ -371,14 +370,15 @@ TEST_P(McscfZvectors, EachColumnIsZvectorsAlone) {
   const auto tight = alone(*exact);
 
   for (const auto [solver, name, want] :
-       {std::tuple{fb::mcscf::CpSolver::Schur, "Schur", &as_built},
-        std::tuple{fb::mcscf::CpSolver::Coupled, "Coupled", &tight}}) {
+       {std::tuple{fb::response::CpSolver::Schur, "Schur", &as_built},
+        std::tuple{fb::response::CpSolver::Coupled, "Coupled", &tight}}) {
     SCOPED_TRACE(name);
     const std::vector<double> &want_o = want->first;
     const std::vector<double> &want_c = want->second;
     const auto begin = std::chrono::steady_clock::now();
-    auto z = fb::mcscf::zvectors(res, *relaxed, *hessian, *roots, kColumns, gradients_device.data(),
-                                 y_device.data(), solver, kResidualTolerance);
+    auto z =
+        fb::response::zvectors(res, *relaxed, *hessian, *roots, kColumns, gradients_device.data(),
+                               y_device.data(), solver, kResidualTolerance);
     const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - begin;
     ASSERT_TRUE(z.has_value()) << z.error().message;
     ASSERT_EQ(z->iterations.size(), columns);
@@ -425,7 +425,8 @@ TEST_P(McscfZvectors, EachColumnIsZvectorsAlone) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Pyscf, McscfZvectors, ::testing::Values("h2o_ccpvdz", "h2co_ccpvdz_sa2"),
+INSTANTIATE_TEST_SUITE_P(Pyscf, ResponseZvectors,
+                         ::testing::Values("h2o_ccpvdz", "h2co_ccpvdz_sa2"),
                          [](const auto &info) { return std::string(info.param); });
 
 } // namespace

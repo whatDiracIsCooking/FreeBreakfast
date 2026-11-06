@@ -2,8 +2,8 @@
 # Fock, the CI RDMs, relaxed_hessian's response_gradient and wwr's BLAS, with
 # no kernels of its own. DeviceResources, Buffers, Molecule, BasisSet,
 # SphericalMatrixAO, Derivatives and Result are in its signature, so those
-# targets are PUBLIC. The calls it makes are PRIVATE, relaxed_hessian (internal
-# to the layer) among them.
+# targets are PUBLIC. The calls it makes are PRIVATE, response's
+# relaxed_hessian among them.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.mcscf.root_rotation
@@ -29,5 +29,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::rdm
   free_breakfast::response::fock
   free_breakfast::response::orbital_pairs
-  free_breakfast::mcscf::relaxed_hessian
+  free_breakfast::response::relaxed_hessian
 )

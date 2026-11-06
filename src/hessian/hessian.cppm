@@ -25,7 +25,7 @@ import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.response.cphf;
 import free_breakfast.mcscf.solve;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.zvector;
 
 export namespace free_breakfast::hessian {
 
@@ -384,9 +384,9 @@ struct CasscfTerms {
   /// symmetrized.
   std::vector<double> response;
   /// @brief lambda^x, E_lambda lambda lambda^x = -E_lambda x, in
-  /// @c mcscf::zvectors' coordinates (z_o over the packed pairs, z_c off the
+  /// @c response::zvectors' coordinates (z_o over the packed pairs, z_c off the
   /// root), with the solver's own iterations and residuals.
-  mcscf::ZVectors cp;
+  response::ZVectors cp;
   /// @brief Per coordinate, the norm of both blocks of
   /// E_lambda lambda lambda^x + E_lambda x, by one product of the unreduced
   /// operator at the solution (the CI rows halved, as zvector's): what the
@@ -401,7 +401,7 @@ struct CasscfTerms {
 ///
 /// E_xy by @ref df_casscf_exy at the root's RDMs and F^[x];
 /// E_lambda x by @c mcscf::df_derivatives (weight 1); lambda^x by
-/// @c mcscf::zvectors (Schur) over the CI-relaxed Hessian at the solution,
+/// @c response::zvectors (Schur) over the CI-relaxed Hessian at the solution,
 /// all 3 n_atom columns at once, the CI right-hand sides halved into its
 /// convention. The response is assembled as Lambda^T E_lambda. (the
 /// solutions against the right-hand sides, orbital and CI rows), not as
@@ -460,10 +460,10 @@ df_casscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
 /// The inputs, the refusals and the memory are @ref df_casscf's, its
 /// messages naming hessian::df_casscf_cp.
 ///
-/// @return lambda^x in @c mcscf::zvectors' coordinates (z_o over the packed
+/// @return lambda^x in @c response::zvectors' coordinates (z_o over the packed
 ///         pairs, z_c, the CI response itself, off the root), with the
 ///         solver's own iterations and residuals; or @ref df_casscf's errors.
-[[nodiscard]] Result<mcscf::ZVectors>
+[[nodiscard]] Result<response::ZVectors>
 df_casscf_cp(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
              std::span<const PrimitivePairClass> classes, const BasisSet &aux,
              const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
@@ -550,7 +550,7 @@ struct DegeneratePair {
     DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
     std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
     const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
-    int32_t ncore, int32_t ncas, const mcscf::ZVectors &cp, bool pc,
+    int32_t ncore, int32_t ncas, const response::ZVectors &cp, bool pc,
     const std::function<Status(int32_t x0, int32_t count, const double *h_dot, const double *b_dot,
                                const double *c_dot, const double *kappa)> &consume,
     size_t max_bytes = 0);
@@ -649,7 +649,7 @@ struct SaCasscfZTerms {
 /// ncas orbitals (root r at r n_det), eigenvectors of the active-space H, at
 /// @p weights, all equal or all pairwise different. @p z is root I's
 /// multipliers in @c mcscf::ThirdDerivative's layout and the energy's
-/// convention, which is @c mcscf::zvector's (z_o, z_c, Theta) as it comes
+/// convention, which is @c response::zvector's (z_o, z_c, Theta) as it comes
 /// (zvector scales its equations' CI rows, not its unknowns): pairs + n_det
 /// nroots doubles, plus nroots (nroots - 1) / 2 at unequal weights. Its CI
 /// part is taken off every root here.
@@ -718,7 +718,7 @@ struct CasscfZTerms {
 ///
 /// The inputs are @ref df_casscf's: @p solution a one-root DF-CASSCF over
 /// the same fit, its root an eigenvector of the active-space H at its C.
-/// @p z is pairs + n_det doubles on the device in @c mcscf::zvector's
+/// @p z is pairs + n_det doubles on the device in @c response::zvector's
 /// coordinates (z_o over the packed pairs, then z, c -> c + z), its CI part
 /// taken off the root here. @p lambda is @p k such columns (size x k,
 /// column-major, device), null when @p k is 0.
@@ -961,15 +961,15 @@ struct SaCasscfTerms {
   /// (@c mcscf::root_rotation's, root I); zero at unequal weights, where the
   /// rotations are in lambda and the sum is complete without it.
   std::vector<double> rotation;
-  /// @brief z, root I's gradient multipliers (@c mcscf::zvector over the SA
+  /// @brief z, root I's gradient multipliers (@c response::zvector over the SA
   /// Hessian, g_I its right-hand side): z_o, z_c and, at unequal weights, the
   /// rotations Theta. The same vector as the energy's (only the equations'
   /// rows are scaled), so it is @ref df_sacasscf_z's z as it comes.
-  mcscf::ZVector z;
-  /// @brief lambda^x, A lambda^x = -d_x g_SA (@c mcscf::zvectors, Schur), with
+  response::ZVector z;
+  /// @brief lambda^x, A lambda^x = -d_x g_SA (@c response::zvectors, Schur), with
   /// the rotations at unequal weights in @c theta, and the solver's own
   /// iterations and residuals.
-  mcscf::ZVectors cp;
+  response::ZVectors cp;
   /// @brief Per coordinate, the norm of every block of A lambda^x + d_x g_SA
   /// (the CI rows over 2 w_r, the rotation rows over 2 (w_r - w_s), as
   /// zvector's) by one product of the unreduced operator.
@@ -983,11 +983,11 @@ struct SaCasscfTerms {
 ///                    + lambda^x^T L_lambdalambda lambda^y  (+ eq. rot at equal weights),
 ///
 /// L_xy = E_I,xy (@ref df_casscf_exy at root I's RDMs) + its z part and
-/// L_xlambda (@ref df_sacasscf_z, at z from @c mcscf::zvector);
+/// L_xlambda (@ref df_sacasscf_z, at z from @c response::zvector);
 /// L_lambdalambda = root I's parameter Hessian (@c RelaxedHessian's
 /// unreduced product at weights one-hot on I, the CI rows scaled back to the
 /// energy's) + the third-derivative action (@c mcscf::ThirdDerivative at z);
-/// lambda^x by @c mcscf::zvectors (Schur) over the SA Hessian on
+/// lambda^x by @c response::zvectors (Schur) over the SA Hessian on
 /// @c mcscf::df_derivatives' SA right-hand sides, every coordinate at once.
 /// At equal weights the rotations among the roots are not parameters and
 /// @c mcscf::root_rotation's eq. rot (factor 2 included) is added; at

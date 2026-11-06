@@ -1,4 +1,4 @@
-// mcscf::zvector on the device against PySCF's df.grad.sacasscf multipliers
+// response::zvector on the device against PySCF's df.grad.sacasscf multipliers
 // in data/casscf_gradient/casscf_gradient.json
 // (tools/emit/casscf_gradient_reference.py), for each state-averaged case:
 // the DF-CASSCF by mcscf::solve (DensityFitting::Full over the case's fitting
@@ -33,8 +33,6 @@ import free_breakfast.integrals;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
@@ -120,7 +118,7 @@ std::vector<double> eigenvectors(fb::DeviceResources &res, std::vector<double> &
 // The reference's molecule through the real registry to the Scf step's
 // inputs. The Scf step itself is run by hand: tau_j is not a TOML key.
 std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeResources &node) {
-  const fb::test::ScratchDir dir("mcscf_zvector");
+  const fb::test::ScratchDir dir("response_zvector");
   // Bohr in the reference, Angstrom in an XYZ file.
   std::string xyz =
       std::format("{}\n{}\n", entry.at("atoms").size(), entry.at("name").get<std::string>());
@@ -256,9 +254,9 @@ void solve_case(const fb::json &entry, fb::NodeResources &node, std::optional<So
   out.emplace(Solved{std::move(*calc), std::move(df), std::move(*sol), ncore, ncas, nelecas});
 }
 
-class McscfZvector : public ::testing::TestWithParam<std::string_view> {};
+class ResponseZvector : public ::testing::TestWithParam<std::string_view> {};
 
-TEST_P(McscfZvector, MatchesPyscfSaCasscfMultipliers) {
+TEST_P(ResponseZvector, MatchesPyscfSaCasscfMultipliers) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case(GetParam());
   ASSERT_TRUE(entry.contains("pairs"));
@@ -396,14 +394,15 @@ TEST_P(McscfZvector, MatchesPyscfSaCasscfMultipliers) {
   auto hessian = fb::response::Hessian::create(res, h->h, df.b, df.naux, c, ncore, ncas, ints->ppaa,
                                                ints->papa, *sa_fock);
   ASSERT_TRUE(hessian.has_value()) << hessian.error().message;
-  fb::mcscf::ResponseIntegrals response_ints{mo,
-                                             core,
-                                             n,
-                                             download(res, sa_fock->fock_inactive.data(), mo * mo),
-                                             download(res, ints->ppaa.data(), mo * mo * n * n),
-                                             download(res, ints->papa.data(), mo * mo * n * n)};
-  auto relaxed = fb::mcscf::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta,
-                                                   *roots, weights, std::move(response_ints));
+  fb::response::ResponseIntegrals response_ints{
+      mo,
+      core,
+      n,
+      download(res, sa_fock->fock_inactive.data(), mo * mo),
+      download(res, ints->ppaa.data(), mo * mo * n * n),
+      download(res, ints->papa.data(), mo * mo * n * n)};
+  auto relaxed = fb::response::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta,
+                                                      *roots, weights, std::move(response_ints));
   ASSERT_TRUE(relaxed.has_value()) << relaxed.error().message;
   const auto n_pairs = static_cast<std::size_t>(relaxed->size());
 
@@ -423,8 +422,8 @@ TEST_P(McscfZvector, MatchesPyscfSaCasscfMultipliers) {
     ASSERT_TRUE(root_fock.has_value()) << root_fock.error().message;
 
     const auto begin = std::chrono::steady_clock::now();
-    auto z = fb::mcscf::zvector(res, *relaxed, *hessian, *roots, root_fock->gradient.data(),
-                                nullptr, kResidualTolerance);
+    auto z = fb::response::zvector(res, *relaxed, *hessian, *roots, root_fock->gradient.data(),
+                                   nullptr, kResidualTolerance);
     const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - begin;
     ASSERT_TRUE(z.has_value()) << z.error().message;
     EXPECT_LT(z->residual, kResidualTolerance);
@@ -475,7 +474,7 @@ TEST_P(McscfZvector, MatchesPyscfSaCasscfMultipliers) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Pyscf, McscfZvector, ::testing::Values("h2co_ccpvdz_sa2"),
+INSTANTIATE_TEST_SUITE_P(Pyscf, ResponseZvector, ::testing::Values("h2co_ccpvdz_sa2"),
                          [](const auto &info) { return std::string(info.param); });
 
 // A CI right-hand side y: for a random y off every root, at the solution's
@@ -487,9 +486,9 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, McscfZvector, ::testing::Values("h2co_ccpvdz_sa2
 //   P ((H_0 - E_r) z_c,r + H'(z_o) c_r + y_r)  (two sigmas, H' from
 //                                               response_integrals),
 // and z_c off every root.
-class McscfZvectorCiRhs : public ::testing::TestWithParam<std::string_view> {};
+class ResponseZvectorCiRhs : public ::testing::TestWithParam<std::string_view> {};
 
-TEST_P(McscfZvectorCiRhs, SolvesTheCoupledEquations) {
+TEST_P(ResponseZvectorCiRhs, SolvesTheCoupledEquations) {
   FBF_REQUIRE_GPU();
   // Under slow_test.h (#977): the SA2 formaldehyde, 1.6 s on the RTX 3080.
   if (std::string_view{GetParam()} == "h2co_ccpvdz_sa2") {
@@ -551,15 +550,15 @@ TEST_P(McscfZvectorCiRhs, SolvesTheCoupledEquations) {
   auto hessian = fb::response::Hessian::create(res, h->h, df.b, df.naux, c, ncore, ncas, ints->ppaa,
                                                ints->papa, *sa_fock);
   ASSERT_TRUE(hessian.has_value()) << hessian.error().message;
-  const fb::mcscf::ResponseIntegrals response_ints{
+  const fb::response::ResponseIntegrals response_ints{
       mo,
       core,
       n,
       download(res, sa_fock->fock_inactive.data(), mo * mo),
       download(res, ints->ppaa.data(), mo * mo * n * n),
       download(res, ints->papa.data(), mo * mo * n * n)};
-  auto relaxed = fb::mcscf::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta,
-                                                   *roots, weights, response_ints);
+  auto relaxed = fb::response::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta,
+                                                      *roots, weights, response_ints);
   ASSERT_TRUE(relaxed.has_value()) << relaxed.error().message;
   const auto n_pairs = static_cast<std::size_t>(relaxed->size());
 
@@ -633,8 +632,8 @@ TEST_P(McscfZvectorCiRhs, SolvesTheCoupledEquations) {
                          download(res, gamma2_device.data(), n * n * n * n));
   ASSERT_TRUE(root_fock.has_value()) << root_fock.error().message;
 
-  auto z = fb::mcscf::zvector(res, *relaxed, *hessian, *roots, root_fock->gradient.data(),
-                              y_device.data(), kResidualTolerance);
+  auto z = fb::response::zvector(res, *relaxed, *hessian, *roots, root_fock->gradient.data(),
+                                 y_device.data(), kResidualTolerance);
   ASSERT_TRUE(z.has_value()) << z.error().message;
   // The recurrence reaches kResidualTolerance, the true residual only H~'s
   // products' precision of H_oc w.
@@ -671,7 +670,7 @@ TEST_P(McscfZvectorCiRhs, SolvesTheCoupledEquations) {
       gamma2_t[i] = 0.25 * (g2[i] - g2[i + gamma2_t.size()]);
     }
     std::vector<double> a(mo * mo);
-    fb::mcscf::response_gradient(response_ints, gamma_t, gamma2_t, a);
+    fb::response::response_gradient(response_ints, gamma_t, gamma2_t, a);
     fb::Buffers::device<double> a_device(mo * mo, res.device());
     upload(res, a, a_device.data());
     ASSERT_TRUE(fb::response::pack_orbital_pairs(res, static_cast<std::int32_t>(mo), ncore, ncas,
@@ -696,7 +695,7 @@ TEST_P(McscfZvectorCiRhs, SolvesTheCoupledEquations) {
                   .has_value());
   std::vector<double> h1(n * n);
   std::vector<double> eri1(n * n * n * n);
-  fb::mcscf::response_integrals(response_ints, download(res, kappa.data(), mo * mo), h1, eri1);
+  fb::response::response_integrals(response_ints, download(res, kappa.data(), mo * mo), h1, eri1);
   ASSERT_TRUE(response_sigma->set_integrals(res, 0.0, h1, eri1).has_value());
   ASSERT_TRUE(
       response_sigma->apply(res, nroots, roots->vectors.data(), sigma_out.data()).has_value());
@@ -733,7 +732,7 @@ TEST_P(McscfZvectorCiRhs, SolvesTheCoupledEquations) {
                            orbital_norm, ci_norm, ci_overlap);
 }
 
-INSTANTIATE_TEST_SUITE_P(Pyscf, McscfZvectorCiRhs,
+INSTANTIATE_TEST_SUITE_P(Pyscf, ResponseZvectorCiRhs,
                          ::testing::Values("h2o_ccpvdz", "h2co_ccpvdz_sa2"),
                          [](const auto &info) { return std::string(info.param); });
 
@@ -752,7 +751,7 @@ constexpr double kCappedProductDifference = 1e-6;
 // both are held to kResidualTolerance.
 constexpr double kFloorAgreement = 1e-7;
 
-TEST(McscfZvectorTuning, ResponseCapAndCoupledFloorTakeEffect) {
+TEST(ResponseZvectorTuning, ResponseCapAndCoupledFloorTakeEffect) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case("h2o_ccpvdz");
   const auto weights = entry.at("weights").get<std::vector<double>>();
@@ -791,7 +790,7 @@ TEST(McscfZvectorTuning, ResponseCapAndCoupledFloorTakeEffect) {
   auto hessian = fb::response::Hessian::create(res, h->h, df.b, df.naux, c, ncore, ncas, ints->ppaa,
                                                ints->papa, *sa_fock);
   ASSERT_TRUE(hessian.has_value()) << hessian.error().message;
-  const fb::mcscf::ResponseIntegrals response_ints{
+  const fb::response::ResponseIntegrals response_ints{
       mo,
       static_cast<std::size_t>(ncore),
       n,
@@ -799,8 +798,8 @@ TEST(McscfZvectorTuning, ResponseCapAndCoupledFloorTakeEffect) {
       download(res, ints->ppaa.data(), mo * mo * n * n),
       download(res, ints->papa.data(), mo * mo * n * n)};
   const auto relaxed_with = [&](std::int32_t cap) {
-    return fb::mcscf::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta, roots,
-                                             weights, response_ints, 1e-8, {}, cap);
+    return fb::response::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta, roots,
+                                                weights, response_ints, 1e-8, {}, cap);
   };
   auto relaxed = relaxed_with(200);
   auto capped = relaxed_with(1);
@@ -835,8 +834,9 @@ TEST(McscfZvectorTuning, ResponseCapAndCoupledFloorTakeEffect) {
 
   // The same column as a right-hand side, Coupled at the two floors.
   const auto coupled = [&](double floor) {
-    return fb::mcscf::zvectors(res, *relaxed, *hessian, roots, 1, x_device.data(), nullptr,
-                               fb::mcscf::CpSolver::Coupled, kResidualTolerance, 200, {}, floor);
+    return fb::response::zvectors(res, *relaxed, *hessian, roots, 1, x_device.data(), nullptr,
+                                  fb::response::CpSolver::Coupled, kResidualTolerance, 200, {},
+                                  floor);
   };
   const auto at_default = coupled(1e-2);
   const auto at_hundred = coupled(100.0);

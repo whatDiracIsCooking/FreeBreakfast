@@ -83,8 +83,8 @@ is this one, and so is everything this operator's callers assemble against it.
 
 **The CI convention is the energy's.** A vector's d_r is root r's first-order
 change, and a covector's CI rows are ∂E/∂d_r as written, the fixture's
-convention: not `mcscf::zvector`'s unweighted, unscaled equations
-(`../zvector/README.md`). A caller feeding `zvector`'s solutions in checks
+convention: not `response::zvector`'s unweighted, unscaled equations
+(`../../response/zvector/README.md`). A caller feeding `zvector`'s solutions in checks
 them against that README's convention first; this operator was tested on the
 fixture's z and λ^x only.
 
@@ -145,8 +145,8 @@ sigmas' integrals pass through the host.
 
 A state-averaged Hessian, root I, eq. (sa):
 
-1. its z (`mcscf::zvector` at root I; at unequal weights with Θ), and the
-   3N responses λ^x (`mcscf::zvectors`), each in this layout;
+1. its z (`response::zvector` at root I; at unequal weights with Θ), and the
+   3N responses λ^x (`response::zvectors`), each in this layout;
 2. `ThirdDerivative::create(..., z_I)`, then `apply` over the block Λ;
 3. the term is Λᵀ Y, symmetric in (x, y) to rounding.
 

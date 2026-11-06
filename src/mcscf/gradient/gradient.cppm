@@ -28,7 +28,7 @@ import free_breakfast.recipes.matrix_ao;
 import free_breakfast.ci.solver;
 import free_breakfast.ci.rdm;
 import free_breakfast.mcscf.solve;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.zvector;
 
 export namespace free_breakfast::mcscf {
 
@@ -85,7 +85,7 @@ struct MoAdjoint {
 /// (@c b_mo, then a trsm). The README has each piece.
 ///
 /// For a state average the terms are taken at root I's Lagrangian
-/// (README.md): the Z-vector (mcscf::zvector over the CI-relaxed Hessian at
+/// (README.md): the Z-vector (response::zvector over the CI-relaxed Hessian at
 /// the solution), then the same terms at gamma_I + gamma_T and Gamma_I +
 /// Gamma_T (gamma_T z_c's transition RDMs) plus their derivative along
 /// C -> C (1 + kappa(z_o)) at the averaged RDMs, all still in one Gam and
@@ -155,7 +155,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const Solution &solution, int32_t ncore, int32_t ncas, int32_t root,
-            const ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
+            const response::ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
 
 /// @brief @ref df_gradient at a weighted mix of the solution's roots,
 /// Sum_I v_I dE_I/dR, in place of one root: @p mix holds v_I, one per root,
@@ -185,7 +185,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const Solution &solution, int32_t ncore, int32_t ncas, std::span<const double> mix,
-            const ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
+            const response::ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
 
 /// @brief The terms of @ref df_gradient at the caller's active-space RDMs
 /// @p gamma and @p gamma2 with the core's own energy switched off: the
@@ -219,13 +219,12 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
 /// @return The terms, nuclear repulsion zero; InvalidConfig if @p gamma or
 ///         @p gamma2 is not ncas^2 or ncas^4 long; otherwise @ref df_gradient's
 ///         errors, whose messages name mcscf::df_gradient (they share its body).
-[[nodiscard]] Result<GradientTerms>
-df_transition_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-                       std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-                       const SphericalMatrixAO &h, const Buffers::device<double> &b,
-                       const double *l, const Solution &solution, int32_t ncore, int32_t ncas,
-                       std::span<const double> gamma, std::span<const double> gamma2,
-                       const ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
+[[nodiscard]] Result<GradientTerms> df_transition_gradient(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const double *l, const Solution &solution, int32_t ncore,
+    int32_t ncas, std::span<const double> gamma, std::span<const double> gamma2,
+    const response::ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
 
 /// @brief The weights w_r a state-averaged @p solution is over:
 /// @c Solution::weights as carried, when the weighted gamma is their sum of

@@ -29,7 +29,7 @@ import free_breakfast.integrals.eri.density_fitting;
 import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.ci;
 import free_breakfast.mcscf;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.zvector;
 import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
@@ -306,7 +306,7 @@ struct Reference {
   std::unique_ptr<fb::NodeResources> node;
   std::optional<fb::Calculation> calc;
   std::optional<fb::mcscf::Solution> solution;
-  std::optional<fb::mcscf::ZVectors> cp;
+  std::optional<fb::response::ZVectors> cp;
   std::int32_t ncore = 0;
   std::int32_t ncas = 0;
   std::int32_t nelecas = 0;
@@ -329,7 +329,7 @@ struct Reference {
   using Consumer = std::function<fb::Status(std::int32_t, std::int32_t, const double *,
                                             const double *, const double *, const double *)>;
   [[nodiscard]] fb::Result<std::vector<fb::hessian::DegeneratePair>>
-  tangents(const fb::mcscf::Solution &s, const fb::mcscf::ZVectors &z, const bool pc,
+  tangents(const fb::mcscf::Solution &s, const fb::response::ZVectors &z, const bool pc,
            const Consumer &consume, const std::size_t max_bytes = 0) const {
     return fb::hessian::df_nevpt2_tangents(res(), molecule(), basis(), classes(), fit().aux, h(),
                                            fit().b, fit().l.data(), s, ncore, ncas, z, pc, consume,
@@ -898,7 +898,7 @@ TEST(HessianNevpt2Tangents, Refusals) {
   };
   expect_refused(ref.tangents(*ref.solution, *ref.cp, false, Reference::Consumer{}), "no consumer");
   // lambda^x of one coordinate fewer.
-  fb::mcscf::ZVectors short_cp{
+  fb::response::ZVectors short_cp{
       .orbital = fb::Buffers::device<double>(
           ref.cp->orbital.num_elements() -
               (ref.cp->orbital.num_elements() / (3 * ref.basis().natoms())),

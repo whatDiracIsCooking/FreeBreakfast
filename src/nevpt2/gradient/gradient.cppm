@@ -40,7 +40,7 @@ import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.ci.strings;
 import free_breakfast.mcscf.solve;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.zvector;
 import free_breakfast.mcscf.gradient;
 import free_breakfast.nevpt2.density_fitting; // MoBlocks
 import free_breakfast.nevpt2.energy;
@@ -663,9 +663,9 @@ struct ScGradient {
   ClassEnergies energies;
   /// @brief z^c, with max |z^c| and the smallest inactive gap.
   ZcMultipliers zc;
-  /// @brief (Z, z) in mcscf::zvector's coordinates: Z over the packed pairs,
+  /// @brief (Z, z) in response::zvector's coordinates: Z over the packed pairs,
   /// z the CI part, off the root; its PCG iterations and residual.
-  mcscf::ZVector multipliers;
+  response::ZVector multipliers;
   /// @brief max |X^L_pq - X^L_qp| over p > q per block of the Lagrangian's
   /// orbital source term: core-core, active-active, virtual-virtual,
   /// active-core, virtual-core, virtual-active.
@@ -679,7 +679,7 @@ struct ScGradient {
 /// Z-vector on.
 ///
 /// @p corr is consumed: @p phi's h_bar, Lambda, y, X and A are added onto it
-/// in place. The Z-vector is mcscf::zvector over the CI-relaxed Hessian at
+/// in place. The Z-vector is response::zvector over the CI-relaxed Hessian at
 /// the solution, its orbital right-hand side g + A (g the CASSCF's orbital
 /// gradient, A = A^corr + A^{z^c} over the packed pairs) and its CI one
 /// 1/2 (y + y^c), the tex's J_cc = 2 P (H - E) P put in zvector's
@@ -700,7 +700,7 @@ struct ScGradient {
 ///         InvalidConfig for counts that do not fit or adjoints of the wrong
 ///         length; Numerical, naming the block and its residue, when the
 ///         gate fails; or the first error of casscf_integrals, the Fock, the
-///         CI objects, the Hessian, mcscf::zvector or mcscf::df_gradient.
+///         CI objects, the Hessian, response::zvector or mcscf::df_gradient.
 ///
 /// @p zvector_tolerance: the Z-vector is solved to it and its true residual
 /// held to it, as qd_sc_gradient's (README.md "The Z-vector's floor"). The
@@ -742,7 +742,7 @@ struct PcGradient {
   /// @brief z^c of PC's A and epsilon, as ScGradient::zc.
   ZcMultipliers zc;
   /// @brief (Z, z), as ScGradient::multipliers.
-  mcscf::ZVector multipliers;
+  response::ZVector multipliers;
   /// @brief The gate's residues per block, as ScGradient::asymmetry.
   std::array<double, 6> asymmetry{};
 };
@@ -803,9 +803,9 @@ struct QdScLagrangian {
   /// @brief zeta . g, and the folded (gamma^zeta, Gamma^zeta) that one
   /// mcscf::df_transition_gradient takes for zeta's nuclear term.
   mcscf::ZetaTerms zeta;
-  /// @brief (Z, z, Theta) in mcscf::zvector's coordinates, its PCG
+  /// @brief (Z, z, Theta) in response::zvector's coordinates, its PCG
   /// iterations and residual: df_gradient's multipliers.
-  mcscf::ZVector multipliers;
+  response::ZVector multipliers;
   /// @brief max |X^L_pq - X^L_qp| per block, as ScGradient::asymmetry.
   std::array<double, 6> asymmetry{};
 };
@@ -823,7 +823,7 @@ struct QdScLagrangian {
 /// below at W = u_K u_K^T, one code path: qd_sc_adjoint at W;
 /// zc_multipliers over its A and epsilon and zc_adjoint at the weights,
 /// added onto it; mcscf::root_pair_multipliers on the summed y_bar, and
-/// mcscf::zeta_terms on its zeta; then mcscf::zvector over the CI-relaxed
+/// mcscf::zeta_terms on its zeta; then response::zvector over the CI-relaxed
 /// Hessian at the solution and its weights, the orbital right-hand side
 /// g^rho + zeta . g + A over the packed pairs (g^rho response::fock's
 /// gradient at the rho-weighted RDMs, its core part at tr W), the CI one y_bar_r / (2 w_r) (zvector
@@ -929,7 +929,7 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
 /// The arguments are qd_sc_gradient's with @p w for @p state, and
 /// @p zvector_tolerance: the Lagrangian's Z-vector is solved to it and its
 /// true residual (one more product) held to it, the CI response inside each
-/// H~ product converged to mcscf::response_tolerance_for it (README.md
+/// H~ product converged to response::response_tolerance_for it (README.md
 /// "The Z-vector's floor"). The state form and the couplings take 1e-10.
 ///
 /// @return The gradient, heff_gap infinite; the W form of
@@ -949,7 +949,7 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
 /// qd_setup; one set of the adjoints' forward arrays and RDMs, the reverse
 /// pass walked per W; the CASSCF integrals, the state-averaged Fock and the
 /// CI-relaxed Hessian built once, and every W's right-hand sides solved
-/// together by one mcscf::zvectors (Schur), each column's true residual,
+/// together by one response::zvectors (Schur), each column's true residual,
 /// from one more product, held to @p zvector_tolerance; then the gate and the
 /// derivative passes per W. One W is the single W form's path. Each result
 /// equals that W's single call to the Z-vector solves' convergence.

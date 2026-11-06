@@ -25,7 +25,7 @@ import free_breakfast.recipes.matrix_ao;
 import free_breakfast.ci.strings;
 import free_breakfast.response.orbital_pairs; // unpack_orbital_pairs
 import free_breakfast.mcscf.solve;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.response.zvector;
 import free_breakfast.nevpt2.gradient; // pc_adjoint, zc_multipliers, zc_adjoint,
                                        // lagrangian_gradient, pc_hessian_product
 import :state_specific;                // state_specific_electrons

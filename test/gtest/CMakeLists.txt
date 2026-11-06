@@ -186,14 +186,14 @@ add_executable(
   response_cphf_gpu.cpp
   mcscf_solve_gpu.cpp
   mcscf_gradient_gpu.cpp
-  mcscf_zvector_gpu.cpp
-  mcscf_zvectors_gpu.cpp
+  response_zvector_gpu.cpp
+  response_zvectors_gpu.cpp
   mcscf_derivative_gpu.cpp
   mcscf_root_rotation_gpu.cpp
   mcscf_gradient_weights_gpu.cpp
   mcscf_third_derivative_gpu.cpp
   mcscf_integral_derivative_gpu.cpp
-  mcscf_zvector_rotations_gpu.cpp
+  response_zvector_rotations_gpu.cpp
   mcscf_transition_gradient_gpu.cpp
   mcscf_nac_gpu.cpp
   mcscf_intersection_gpu.cpp
@@ -241,8 +241,6 @@ target_link_libraries(
   free_breakfast::integrals
   free_breakfast::response
   free_breakfast::mcscf
-  free_breakfast::mcscf::relaxed_hessian
-  free_breakfast::mcscf::zvector
   free_breakfast::nevpt2
   free_breakfast::gradient
   free_breakfast::hessian

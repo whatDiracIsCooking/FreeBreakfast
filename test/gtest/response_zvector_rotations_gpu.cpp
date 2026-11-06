@@ -1,5 +1,5 @@
-// GPU cases for the rotations among the averaged roots in mcscf::zvector and
-// mcscf::zvectors (#613), against tools/emit/casscf_hessian_reference.py's
+// GPU cases for the rotations among the averaged roots in response::zvector and
+// response::zvectors (#613), against tools/emit/casscf_hessian_reference.py's
 // stretched water, CAS(4,4) / 6-31G / cc-pVDZ-JKFIT
 // (test/gtest/data/casscf_hessian/): the orbitals and roots loaded from the
 // fixture, never re-converged (PySCF's own two-root solution is a saddle
@@ -31,8 +31,6 @@ import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
-import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
 import free_breakfast.test.ci_oracles;
 
 namespace {
@@ -50,16 +48,16 @@ constexpr double kResponseTol = 1e-12;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_hessian";
 
-constexpr std::array kSolvers{fb::mcscf::CpSolver::PerColumn, fb::mcscf::CpSolver::Schur,
-                              fb::mcscf::CpSolver::Coupled};
+constexpr std::array kSolvers{fb::response::CpSolver::PerColumn, fb::response::CpSolver::Schur,
+                              fb::response::CpSolver::Coupled};
 
-std::string_view solver_name(const fb::mcscf::CpSolver solver) {
+std::string_view solver_name(const fb::response::CpSolver solver) {
   switch (solver) {
-  case fb::mcscf::CpSolver::PerColumn:
+  case fb::response::CpSolver::PerColumn:
     return "PerColumn";
-  case fb::mcscf::CpSolver::Schur:
+  case fb::response::CpSolver::Schur:
     return "Schur";
-  case fb::mcscf::CpSolver::Coupled:
+  case fb::response::CpSolver::Coupled:
     return "Coupled";
   }
   return "?";
@@ -145,7 +143,7 @@ void project_singlet(const fb::ci::StringSet &alpha, const fb::ci::StringSet &be
 }
 
 // The active-space Hamiltonian of ints in the row-major layout the sigma
-// takes (mcscf_zvectors_gpu.cpp's).
+// takes (response_zvectors_gpu.cpp's).
 void set_sigma_integrals(fb::DeviceResources &res, const fb::CasscfIntegrals &ints,
                          const std::size_t n, fb::ci::Sigma &sigma) {
   const std::vector<double> h_col = download(res, ints.hamiltonian.h_eff.data(), n * n);
@@ -165,7 +163,7 @@ void set_sigma_integrals(fb::DeviceResources &res, const fb::CasscfIntegrals &in
   EXPECT_TRUE(sigma.set_integrals(res, ints.hamiltonian.e_core, h_eff, eri).has_value());
 }
 
-class McscfZvectorRotations : public ::testing::Test {
+class ResponseZvectorRotations : public ::testing::Test {
 protected:
   // One case set up as the DF steps would, the fixture's orbitals made ours
   // (rows over N, in this tree's AO order) and its roots
@@ -321,16 +319,16 @@ protected:
                                                  ncas_, ints_->ppaa, ints_->papa, *sa_fock_);
     ASSERT_TRUE(hessian) << hessian.error().message;
     hessian_.emplace(std::move(*hessian));
-    fb::mcscf::ResponseIntegrals response_ints{
+    fb::response::ResponseIntegrals response_ints{
         nao_,
         static_cast<std::size_t>(ncore_),
         n,
         download(res, sa_fock_->fock_inactive.data(), nao_ * nao_),
         download(res, ints_->ppaa.data(), nao_ * nao_ * n * n),
         download(res, ints_->papa.data(), nao_ * nao_ * n * n)};
-    auto relaxed =
-        fb::mcscf::RelaxedHessian::create(res, *hessian_, *sigma_, *rdm_, *alpha_, *beta_, *roots_,
-                                          weights_, std::move(response_ints), kResponseTol);
+    auto relaxed = fb::response::RelaxedHessian::create(res, *hessian_, *sigma_, *rdm_, *alpha_,
+                                                        *beta_, *roots_, weights_,
+                                                        std::move(response_ints), kResponseTol);
     ASSERT_TRUE(relaxed) << relaxed.error().message;
     relaxed_.emplace(std::move(*relaxed));
   }
@@ -446,7 +444,7 @@ protected:
                          ? read_array(root_array(root, "z_theta"), {nr_, nr_})
                          : std::vector<double>(nr_ * nr_, 0.0),
                      1);
-      auto z = fb::mcscf::zvector(res, *relaxed_, *hessian_, *roots_, g.data());
+      auto z = fb::response::zvector(res, *relaxed_, *hessian_, *roots_, g.data());
       ASSERT_TRUE(z) << z.error().message;
       ASSERT_EQ(z->theta.size(), n_theta_);
       expect_solution(std::format("{} root {} zvector", case_["name"].get<std::string>(), root),
@@ -456,10 +454,10 @@ protected:
       want_c.insert(want_c.end(), c.begin(), c.end());
       want_t.insert(want_t.end(), t.begin(), t.end());
     }
-    for (const fb::mcscf::CpSolver solver : kSolvers) {
+    for (const fb::response::CpSolver solver : kSolvers) {
       auto z =
-          fb::mcscf::zvectors(res, *relaxed_, *hessian_, *roots_, static_cast<std::int32_t>(nr_),
-                              gradients.data(), nullptr, solver);
+          fb::response::zvectors(res, *relaxed_, *hessian_, *roots_, static_cast<std::int32_t>(nr_),
+                                 gradients.data(), nullptr, solver);
       ASSERT_TRUE(z) << solver_name(solver) << ": " << z.error().message;
       ASSERT_EQ(z->theta.size(), n_theta_ * nr_);
       expect_solution(
@@ -487,7 +485,7 @@ protected:
   std::optional<fb::ci::Roots> roots_;
   std::optional<fb::response::Fock> sa_fock_;
   std::optional<fb::response::Hessian> hessian_;
-  std::optional<fb::mcscf::RelaxedHessian> relaxed_;
+  std::optional<fb::response::RelaxedHessian> relaxed_;
   std::vector<double> weights_;
   std::size_t nao_ = 0;
   std::size_t naux_ = 0;
@@ -503,7 +501,7 @@ protected:
 
 // Three roots at (0.5, 0.3, 0.2): Theta_21 carries 0.07 to 0.15, the others
 // nothing (casscf_hessian.tex section 5.2).
-TEST_F(McscfZvectorRotations, ThreeRootsUnequalZMatchReference) {
+TEST_F(ResponseZvectorRotations, ThreeRootsUnequalZMatchReference) {
   FBF_REQUIRE_GPU();
   load("h2o_631g_sa3_unequal");
   check_z();
@@ -512,7 +510,7 @@ TEST_F(McscfZvectorRotations, ThreeRootsUnequalZMatchReference) {
 // lambda^x over df_derivatives' SA right-hand sides in zvector's convention:
 // the CI rows over 2 w_r, the rotation rows over 2 (w_r - w_s), which is
 // the derivative Hamiltonian's H~^x_sr.
-TEST_F(McscfZvectorRotations, ThreeRootsUnequalLambdaMatchReference) {
+TEST_F(ResponseZvectorRotations, ThreeRootsUnequalLambdaMatchReference) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   load("h2o_631g_sa3_unequal");
@@ -554,25 +552,26 @@ TEST_F(McscfZvectorRotations, ThreeRootsUnequalLambdaMatchReference) {
   const std::vector<double> want_c = read_array(array("lambda_ci"), {n_det_, nr_, n_x_});
   const std::vector<double> want_t =
       pack_theta(read_array(array("lambda_theta"), {nr_, nr_, n_x_}), n_x_);
-  for (const fb::mcscf::CpSolver solver : kSolvers) {
-    auto z =
-        fb::mcscf::zvectors(res, *relaxed_, *hessian_, *roots_, static_cast<std::int32_t>(n_x_),
-                            gradients.data(), ci_rhs_device.data(), solver, 1e-10, 200, theta_rhs);
+  for (const fb::response::CpSolver solver : kSolvers) {
+    auto z = fb::response::zvectors(res, *relaxed_, *hessian_, *roots_,
+                                    static_cast<std::int32_t>(n_x_), gradients.data(),
+                                    ci_rhs_device.data(), solver, 1e-10, 200, theta_rhs);
     ASSERT_TRUE(z) << solver_name(solver) << ": " << z.error().message;
     expect_solution(std::format("lambda^x {}", solver_name(solver)),
                     download(res, z->orbital.data(), pairs() * n_x_),
                     download(res, z->ci.data(), block * n_x_), z->theta, want_o, want_c, want_t);
   }
   // Without the rotation rows lambda^x is another one.
-  auto z = fb::mcscf::zvectors(res, *relaxed_, *hessian_, *roots_, static_cast<std::int32_t>(n_x_),
-                               gradients.data(), ci_rhs_device.data());
+  auto z =
+      fb::response::zvectors(res, *relaxed_, *hessian_, *roots_, static_cast<std::int32_t>(n_x_),
+                             gradients.data(), ci_rhs_device.data());
   ASSERT_TRUE(z) << z.error().message;
   EXPECT_GT(max_diff(z->theta, want_t), 1e-3);
 }
 
 // Two roots at (0.7, 0.3): the one rotation is a parameter, but it carries
 // no multiplier (the fixture's is 5e-13; the design observes it below 3e-7).
-TEST_F(McscfZvectorRotations, TwoRootsUnequalCarryNoRotation) {
+TEST_F(ResponseZvectorRotations, TwoRootsUnequalCarryNoRotation) {
   FBF_REQUIRE_GPU();
   load("h2o_631g_sa2_unequal");
   check_z();
@@ -580,25 +579,25 @@ TEST_F(McscfZvectorRotations, TwoRootsUnequalCarryNoRotation) {
 
 // At equal weights the rotations are redundant: none is reported, and z is
 // the fixture's.
-TEST_F(McscfZvectorRotations, ThreeRootsEqualReportNone) {
+TEST_F(ResponseZvectorRotations, ThreeRootsEqualReportNone) {
   FBF_REQUIRE_GPU();
   load("h2o_631g_sa3");
   check_z();
 }
 
-TEST_F(McscfZvectorRotations, Refusals) {
+TEST_F(ResponseZvectorRotations, Refusals) {
   FBF_REQUIRE_GPU();
   load("h2o_631g_sa3_unequal");
   fb::DeviceResources &res = *res_;
   const fb::Buffers::device<double> g = root_gradient(0);
   // A rotation right-hand side of the wrong length.
   const std::vector<double> short_t(n_theta_ - 1, 0.0);
-  auto one = fb::mcscf::zvector(res, *relaxed_, *hessian_, *roots_, g.data(), nullptr, 1e-10, 200,
-                                short_t);
+  auto one = fb::response::zvector(res, *relaxed_, *hessian_, *roots_, g.data(), nullptr, 1e-10,
+                                   200, short_t);
   ASSERT_FALSE(one);
   EXPECT_EQ(one.error().kind, fb::ErrorKind::InvalidConfig) << one.error().message;
-  auto many = fb::mcscf::zvectors(res, *relaxed_, *hessian_, *roots_, 1, g.data(), nullptr,
-                                  fb::mcscf::CpSolver::Schur, 1e-10, 200, short_t);
+  auto many = fb::response::zvectors(res, *relaxed_, *hessian_, *roots_, 1, g.data(), nullptr,
+                                     fb::response::CpSolver::Schur, 1e-10, 200, short_t);
   ASSERT_FALSE(many);
   EXPECT_EQ(many.error().kind, fb::ErrorKind::InvalidConfig) << many.error().message;
 
@@ -607,18 +606,18 @@ TEST_F(McscfZvectorRotations, Refusals) {
   // gradients cannot take.
   const std::vector<double> rising{0.2, 0.3, 0.5};
   const auto n = static_cast<std::size_t>(ncas_);
-  fb::mcscf::ResponseIntegrals response_ints{
+  fb::response::ResponseIntegrals response_ints{
       nao_,
       static_cast<std::size_t>(ncore_),
       n,
       download(res, sa_fock_->fock_inactive.data(), nao_ * nao_),
       download(res, ints_->ppaa.data(), nao_ * nao_ * n * n),
       download(res, ints_->papa.data(), nao_ * nao_ * n * n)};
-  auto over = fb::mcscf::RelaxedHessian::create(res, *hessian_, *sigma_, *rdm_, *alpha_, *beta_,
-                                                *roots_, rising, std::move(response_ints));
+  auto over = fb::response::RelaxedHessian::create(res, *hessian_, *sigma_, *rdm_, *alpha_, *beta_,
+                                                   *roots_, rising, std::move(response_ints));
   ASSERT_TRUE(over) << over.error().message;
-  auto coupled = fb::mcscf::zvectors(res, *over, *hessian_, *roots_, 1, g.data(), nullptr,
-                                     fb::mcscf::CpSolver::Coupled);
+  auto coupled = fb::response::zvectors(res, *over, *hessian_, *roots_, 1, g.data(), nullptr,
+                                        fb::response::CpSolver::Coupled);
   ASSERT_FALSE(coupled);
   EXPECT_EQ(coupled.error().kind, fb::ErrorKind::InvalidConfig) << coupled.error().message;
   EXPECT_NE(coupled.error().message.find("rise"), std::string::npos) << coupled.error().message;

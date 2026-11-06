@@ -3,7 +3,7 @@
 /// one, preconditioned conjugate gradients over H~ for z_o, and z_c from the
 /// CI response at the solution plus the right-hand side's.
 
-module free_breakfast.mcscf.zvector;
+module free_breakfast.response.zvector;
 
 import std;
 import free_breakfast.core.types;
@@ -13,12 +13,12 @@ import free_breakfast.core.wwr; // gemv, dgmm, axpy, dot, nrm2, scal, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.ci.solver;
 import free_breakfast.response.hessian;
-import free_breakfast.mcscf.relaxed_hessian;
+import free_breakfast.response.relaxed_hessian;
 import free_breakfast.recipes.blas; // gemm
 
 #include "diagnostics.h"
 
-namespace free_breakfast::mcscf {
+namespace free_breakfast::response {
 
 // A pair whose diag(H) is below this is left unscaled by the preconditioner.
 // At a minimum diag(H) >= diag(H~) > 0, so it guards only roundoff.
@@ -26,7 +26,7 @@ constexpr double kZvectorDiagonalFloor = 1e-8;
 
 // diag(H)^-1 into the size() device doubles @p inverse, floored, built on
 // the host.
-Status inverse_orbital_diagonal(DeviceResources &res, const response::Hessian &hessian,
+Status inverse_orbital_diagonal(DeviceResources &res, const Hessian &hessian,
                                 double *const inverse) {
   const auto pairs = static_cast<size_t>(hessian.size());
   std::vector<double> scale(pairs);
@@ -161,17 +161,16 @@ Status couple_rotations(DeviceResources &res, RelaxedHessian &relaxed, const ci:
   return res.sync();
 }
 
-Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
-                        const response::Hessian &hessian, const ci::Roots &roots,
-                        const double *const gradient, const double *const ci_rhs,
-                        const double tolerance, const int32_t max_iterations,
-                        const std::span<const double> theta_rhs) {
+Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed, const Hessian &hessian,
+                        const ci::Roots &roots, const double *const gradient,
+                        const double *const ci_rhs, const double tolerance,
+                        const int32_t max_iterations, const std::span<const double> theta_rhs) {
   const int32_t n_pairs = relaxed.size();
   const size_t roots_count = roots.energies.size();
   if (hessian.size() != n_pairs || roots_count == 0 ||
       roots.vectors.num_elements() % roots_count != 0 || !(tolerance > 0.0) || max_iterations < 1 ||
       (!theta_rhs.empty() && theta_rhs.size() != roots_count * (roots_count - 1) / 2)) {
-    return err_config("mcscf::zvector: needs H of H~'s {} pairs, at least one root as a whole "
+    return err_config("response::zvector: needs H of H~'s {} pairs, at least one root as a whole "
                       "number of vectors, tolerance > 0, max_iterations >= 1 and no rotation "
                       "right-hand side or one per pair of roots (H {}, {} roots in {} doubles, "
                       "tolerance {:g}, max_iterations {}, {} rotations)",
@@ -251,16 +250,17 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
   while (r_norm > tolerance) {
     if (out.iterations == max_iterations) {
       return err_max_iterations_exceeded(
-          "mcscf::zvector: ||r|| {:.3e} after {} products, above {:.3e}", r_norm, max_iterations,
+          "response::zvector: ||r|| {:.3e} after {} products, above {:.3e}", r_norm, max_iterations,
           tolerance);
     }
     FBF_TRY(relaxed.apply(res, p, hp));
     ++out.iterations;
     const double php = FBF_TRY(dot(p, hp));
     if (!(php > 0.0)) {
-      return err_divergence("mcscf::zvector: p.H~p = {:.3e} after {} products: H~ is not positive "
-                            "definite, so the orbitals are not a minimum",
-                            php, out.iterations);
+      return err_divergence(
+          "response::zvector: p.H~p = {:.3e} after {} products: H~ is not positive "
+          "definite, so the orbitals are not a minimum",
+          php, out.iterations);
     }
     const double alpha = rs / php;
     const double neg_alpha = -alpha;
@@ -330,7 +330,7 @@ Result<std::vector<size_t>> active_columns(std::span<const double> r_norm, const
   }
   if (!active.empty() && sweeps == max_iterations) {
     return err_max_iterations_exceeded(
-        "mcscf::zvectors ({}): {} of {} columns above {:.3e} after {} products, the largest "
+        "response::zvectors ({}): {} of {} columns above {:.3e} after {} products, the largest "
         "||r|| {:.3e}",
         method, active.size(), r_norm.size(), tolerance, max_iterations, std::ranges::max(r_norm));
   }
@@ -339,7 +339,7 @@ Result<std::vector<size_t>> active_columns(std::span<const double> r_norm, const
 
 // zvector on each column in turn.
 Result<ZVectors> zvectors_per_column(DeviceResources &res, RelaxedHessian &relaxed,
-                                     const response::Hessian &hessian, const ci::Roots &roots,
+                                     const Hessian &hessian, const ci::Roots &roots,
                                      const size_t ncol, const double *const gradients,
                                      const double *const ci_rhs, const double tolerance,
                                      const int32_t max_iterations,
@@ -370,10 +370,9 @@ Result<ZVectors> zvectors_per_column(DeviceResources &res, RelaxedHessian &relax
 // The Schur complement in lockstep: zvector's conjugate gradients on every
 // column, each sweep one block product of H~ over the active columns.
 Result<ZVectors> zvectors_schur(DeviceResources &res, RelaxedHessian &relaxed,
-                                const response::Hessian &hessian, const ci::Roots &roots,
-                                const size_t ncol, const double *const gradients,
-                                const double *const ci_rhs, const double tolerance,
-                                const int32_t max_iterations,
+                                const Hessian &hessian, const ci::Roots &roots, const size_t ncol,
+                                const double *const gradients, const double *const ci_rhs,
+                                const double tolerance, const int32_t max_iterations,
                                 const std::span<const double> theta_rhs, ZVectors &out) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const wwr::wwrStream_t stream = res.stream();
@@ -469,7 +468,7 @@ Result<ZVectors> zvectors_schur(DeviceResources &res, RelaxedHessian &relaxed,
       ++out.iterations[x];
       const double php = FBF_TRY(dot(p + at, hpx));
       if (!(php > 0.0)) {
-        return err_divergence("mcscf::zvectors (Schur): p.H~p = {:.3e} in column {} after {} "
+        return err_divergence("response::zvectors (Schur): p.H~p = {:.3e} in column {} after {} "
                               "products: H~ is not positive definite, so the orbitals are not a "
                               "minimum",
                               php, x, out.iterations[x]);
@@ -517,10 +516,9 @@ Result<ZVectors> zvectors_schur(DeviceResources &res, RelaxedHessian &relaxed,
 // H_co x = P H'(x) c_r and H_cc = P (H_0 - E_r) P, by preconditioned
 // conjugate gradients over both blocks at once.
 Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
-                                  const response::Hessian &hessian, const ci::Roots &roots,
-                                  const size_t ncol, const double *const gradients,
-                                  const double *const ci_rhs, const double tolerance,
-                                  const int32_t max_iterations,
+                                  const Hessian &hessian, const ci::Roots &roots, const size_t ncol,
+                                  const double *const gradients, const double *const ci_rhs,
+                                  const double tolerance, const int32_t max_iterations,
                                   const std::span<const double> theta_rhs,
                                   const double ci_diagonal_floor, ZVectors &out) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
@@ -612,12 +610,12 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
         d_theta[pair] = 2.0 * (weights[r] - weights[s]);
         const double diagonal = d_theta[pair] * (roots.energies[s] - roots.energies[r]);
         if (!(diagonal > 0.0)) {
-          return err_config("mcscf::zvectors (Coupled): roots {} and {} at weights {:g} and {:g}, "
-                            "energies {:.10f} and {:.10f}: the rotation between them is not "
-                            "positive, (w_r - w_s)(E_s - E_r) = {:.3e} (the weights must fall as "
-                            "the energies rise; Schur solves it)",
-                            r, s, weights[r], weights[s], roots.energies[r], roots.energies[s],
-                            0.5 * diagonal);
+          return err_config(
+              "response::zvectors (Coupled): roots {} and {} at weights {:g} and {:g}, "
+              "energies {:.10f} and {:.10f}: the rotation between them is not "
+              "positive, (w_r - w_s)(E_s - E_r) = {:.3e} (the weights must fall as "
+              "the energies rise; Schur solves it)",
+              r, s, weights[r], weights[s], roots.energies[r], roots.energies[s], 0.5 * diagonal);
         }
         inverse_theta[pair] = 1.0 / diagonal;
       }
@@ -745,7 +743,7 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
       }
       const double pap = FBF_TRY(dot(p_o + at, apx, p_c + at_c, apx_c)) + pap_theta;
       if (!(pap > 0.0)) {
-        return err_divergence("mcscf::zvectors (Coupled): p.Ap = {:.3e} in column {} after {} "
+        return err_divergence("response::zvectors (Coupled): p.Ap = {:.3e} in column {} after {} "
                               "products: the coupled Hessian is not positive definite along "
                               "it (not a minimum, or a lower root of another spin)",
                               pap, x, out.iterations[x]);
@@ -814,9 +812,8 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
   return std::move(out);
 }
 
-Result<ZVectors> zvectors(DeviceResources &res, RelaxedHessian &relaxed,
-                          const response::Hessian &hessian, const ci::Roots &roots,
-                          const int32_t ncol, const double *const gradients,
+Result<ZVectors> zvectors(DeviceResources &res, RelaxedHessian &relaxed, const Hessian &hessian,
+                          const ci::Roots &roots, const int32_t ncol, const double *const gradients,
                           const double *const ci_rhs, const CpSolver solver, const double tolerance,
                           const int32_t max_iterations, const std::span<const double> theta_rhs,
                           const double ci_diagonal_floor) {
@@ -827,7 +824,7 @@ Result<ZVectors> zvectors(DeviceResources &res, RelaxedHessian &relaxed,
       roots.vectors.num_elements() % roots_count != 0 || !(tolerance > 0.0) || max_iterations < 1 ||
       ncol < 1 || (!theta_rhs.empty() && theta_rhs.size() != n_theta * static_cast<size_t>(ncol)) ||
       !(ci_diagonal_floor > 0.0)) {
-    return err_config("mcscf::zvectors: needs H of H~'s {} pairs, at least one root as a whole "
+    return err_config("response::zvectors: needs H of H~'s {} pairs, at least one root as a whole "
                       "number of vectors, tolerance > 0, max_iterations >= 1, ncol >= 1, no "
                       "rotation right-hand side or one per pair of roots a column, and "
                       "ci_diagonal_floor > 0 (H {}, {} roots in {} doubles, tolerance {:g}, "
@@ -837,7 +834,7 @@ Result<ZVectors> zvectors(DeviceResources &res, RelaxedHessian &relaxed,
   }
   if (solver == CpSolver::Coupled &&
       std::ranges::any_of(relaxed.weights(), [](double w) { return !(w > 0.0); })) {
-    return err_config("mcscf::zvectors (Coupled): every weight must be positive, its CI rows "
+    return err_config("response::zvectors (Coupled): every weight must be positive, its CI rows "
                       "being scaled by 2 w_r to make the operator symmetric");
   }
   const ScopedDeviceIndex on{res.dev_idx()};
@@ -858,7 +855,7 @@ Result<ZVectors> zvectors(DeviceResources &res, RelaxedHessian &relaxed,
     return zvectors_coupled(res, relaxed, hessian, roots, columns, gradients, ci_rhs, tolerance,
                             max_iterations, theta_rhs, ci_diagonal_floor, out);
   }
-  return err_config("mcscf::zvectors: unknown solver {}", static_cast<int32_t>(solver));
+  return err_config("response::zvectors: unknown solver {}", static_cast<int32_t>(solver));
 }
 
-} // namespace free_breakfast::mcscf
+} // namespace free_breakfast::response
