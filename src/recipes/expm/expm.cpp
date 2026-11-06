@@ -27,12 +27,12 @@ namespace free_breakfast {
 // call so the two cannot disagree.
 constexpr auto kSkewEigMode = wwr::WWRSOLVER_EIG_MODE_VECTOR;
 constexpr auto kSkewFillMode = wwr::WWRBLAS_FILL_MODE_LOWER;
+// The frexp exponent iH's largest element is scaled to before the eigensolver:
+// see skew_eig.
+constexpr int32_t kSkewTopExponent = 10;
 #if defined(WWR_SELECTED_HIP)
 // heevdx's range: every eigenpair, so no vl/vu or il/iu.
 constexpr auto kSkewRange = wwr::WWRSOLVER_EIG_RANGE_ALL;
-// The frexp exponent iH's largest element is scaled to before heevdx: see
-// skew_eig.
-constexpr int32_t kSkewTopExponent = 10;
 #endif
 
 // Every scalar these calls pass is a host constant.
@@ -89,6 +89,32 @@ Status skew_eig(DeviceResources &res, const int32_t n, const T *h,
     return res.sync();
   }
 
+  // Both vendors' solvers lose accuracy at a fixed absolute size of iH, not
+  // at one relative to it, so iH goes in scaled by the power of two that puts
+  // its largest element's frexp exponent at kSkewTopExponent, and w comes out
+  // scaled back: exact both ways (short of the subnormal range), U untouched.
+  // The element is the zero guard's, so this costs two scals and no sync. The
+  // exponent is clamped so neither factor overflows.
+  //
+  // rocSOLVER (#999): the residual iH U - U diag(w) stops shrinking with H
+  // (2e-8 relative at ||H|| = 1e-8 in double), below about 1e-160 both its
+  // solvers return U = I, w = 0, and complex-float heevdx loses 50x its n eps
+  // bar on #999's zero-half input once the element drops under 1. cuSOLVER
+  // (#1004): on #999's operands for a real T, heevd holds its floor down to
+  // exponent -475 (double) and -46 (float), and one binade lower U^H U - I is
+  // 1e4 n eps and 2 n eps; on the complex ones it holds it over the whole
+  // normal range. Both are measured, not derived: rocSOLVER's heevdx is at its
+  // floor from +1 (float) and -4 (double) up, cuSOLVER's heevd from -46 and
+  // -475 up to +20, the top probed, so the one +10 serves both, far from
+  // overflow.
+  int32_t exponent = 0;
+  std::frexp(std::max(std::abs(re), std::abs(im)), &exponent);
+  constexpr int32_t kMaxExponent = std::numeric_limits<R>::max_exponent - 1;
+  const int32_t shift = std::clamp(kSkewTopExponent - exponent, -kMaxExponent, kMaxExponent);
+  const R scale = std::ldexp(R{1}, shift);
+  const R unscale = std::ldexp(R{1}, -shift);
+  FBF_TRY(gpu_status(wwr::scal<R, int64_t>(blas, 2 * nn, &scale, reinterpret_cast<R *>(u), 1)));
+
   // The solver's workspace size for n, queried per call: it is a host
   // computation.
   const wwr::wwrsolverDnHandle_t solver = res.solver().get();
@@ -98,26 +124,7 @@ Status skew_eig(DeviceResources &res, const int32_t n, const T *h,
   // returns info 0 and NaN eigenvectors above order 65 whenever iH's
   // tridiagonal form splits -- a diagonal or block-diagonal H, one nonzero
   // pair, a zero half, entries near 1e-200 (#999). heevdx gives every one a
-  // finite U. cuSOLVER's heevd is correct, so CUDA keeps it, unscaled.
-  //
-  // rocSOLVER's solvers are accurate to a fixed absolute size, not to
-  // eps ||H||: below it the residual iH U - U diag(w) stops shrinking with H
-  // (2e-8 relative at ||H|| = 1e-8 in double), and below about 1e-160 both
-  // return U = I, w = 0. heevdx in complex float loses 50x its n eps bar on
-  // #999's zero-half input once iH's largest element drops under 1. So iH
-  // goes in scaled by a power of two that puts that element's frexp exponent
-  // at kSkewTopExponent, and w comes out scaled back: exact both ways (short
-  // of the subnormal range), U untouched. The target is measured, not derived:
-  // on #999's inputs heevdx sits at its floor from exponent +1 (float) and -4
-  // (double) up, and +10 is nine binades clear, far from overflow. The
-  // exponent is clamped so neither factor overflows.
-  int32_t exponent = 0;
-  std::frexp(std::max(std::abs(re), std::abs(im)), &exponent);
-  constexpr int32_t kMaxExponent = std::numeric_limits<R>::max_exponent - 1;
-  const int32_t shift = std::clamp(kSkewTopExponent - exponent, -kMaxExponent, kMaxExponent);
-  const R scale = std::ldexp(R{1}, shift);
-  const R unscale = std::ldexp(R{1}, -shift);
-  FBF_TRY(gpu_status(wwr::scal<R, int64_t>(blas, 2 * nn, &scale, reinterpret_cast<R *>(u), 1)));
+  // finite U. cuSOLVER's heevd is correct on them, so CUDA keeps it.
   int32_t found = 0;
   FBF_TRY(gpu_status(wwr::heevdx_bufferSize<Z>(solver, kSkewEigMode, kSkewRange, kSkewFillMode, n,
                                                u, n, R{0}, R{0}, 0, 0, &found, w, &lwork)));
@@ -148,9 +155,8 @@ Status skew_eig(DeviceResources &res, const int32_t n, const T *h,
   if (found != n) {
     return err_numerical("skew_eig: heevdx found {} of {} eigenpairs", found, n);
   }
-  FBF_TRY(gpu_status(wwr::scal<R, int64_t>(blas, n, &unscale, w, 1)));
 #endif
-  return {};
+  return gpu_status(wwr::scal<R, int64_t>(blas, n, &unscale, w, 1));
 }
 
 template <wwr::usual_fp T>
