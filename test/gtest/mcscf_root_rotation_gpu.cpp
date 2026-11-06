@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -282,7 +283,10 @@ protected:
   // lambda^x's orbital part solved here: zvectors over H~ at the fixture's
   // orbitals and roots, on d's SA right-hand sides, the CI rows taken to its
   // convention (2 w_r Q H~^x c_r over 2 w_r). Against the fixture's on the way.
-  fb::Buffers::device<double> solved_kappa(const fb::mcscf::Derivatives &d) {
+  // @p pcg_ci_response is RelaxedHessian::create's, @p solver zvectors'.
+  fb::Buffers::device<double> solved_kappa(const fb::mcscf::Derivatives &d,
+                                           const bool pcg_ci_response,
+                                           const fb::response::CpSolver solver) {
     fb::DeviceResources &res = *res_;
     const auto n = static_cast<std::size_t>(ncas_);
     const std::size_t nr = weights_.size();
@@ -340,7 +344,8 @@ protected:
         download(res, ints->ppaa.data(), nao_ * nao_ * n * n),
         download(res, ints->papa.data(), nao_ * nao_ * n * n)};
     auto relaxed = fb::response::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta,
-                                                        roots, weights_, response_ints);
+                                                        roots, weights_, response_ints, 1e-8, {},
+                                                        200, pcg_ci_response);
     EXPECT_TRUE(relaxed) << relaxed.error().message;
 
     const fb::Buffers::device<double> gradients = pack(d.rhs_orbital.data());
@@ -355,7 +360,7 @@ protected:
     fb::Buffers::device<double> ci_rhs_device(ci_rhs.size(), res.device());
     upload(res, ci_rhs, ci_rhs_device.data());
     auto z = fb::response::zvectors(res, *relaxed, *hessian, roots, static_cast<std::int32_t>(n_x_),
-                                    gradients.data(), ci_rhs_device.data());
+                                    gradients.data(), ci_rhs_device.data(), solver);
     EXPECT_TRUE(z) << z.error().message;
 
     const std::vector<double> mine = download(res, z->orbital.data(), pairs() * n_x_);
@@ -408,7 +413,8 @@ protected:
     }
   }
 
-  void check_solved(const std::string &name);
+  void check_solved(const std::string &name, bool pcg_ci_response = false,
+                    fb::response::CpSolver solver = fb::response::CpSolver::Schur);
 
   fb::json case_;
   std::optional<fb::DeviceResources> res_;
@@ -457,11 +463,12 @@ TEST_F(McscfRootRotation, ThreeRootsMatchReference) {
 
 // The chain a Hessian runs: df_derivatives, zvectors on its right-hand sides,
 // then the term over that lambda^x.
-void McscfRootRotation::check_solved(const std::string &name) {
+void McscfRootRotation::check_solved(const std::string &name, const bool pcg_ci_response,
+                                     const fb::response::CpSolver solver) {
   load(name);
   auto d = derivatives();
   ASSERT_TRUE(d) << d.error().message;
-  const fb::Buffers::device<double> kappa = solved_kappa(*d);
+  const fb::Buffers::device<double> kappa = solved_kappa(*d, pcg_ci_response, solver);
   auto rot = run(*d, kappa.data(), energies(), weights_);
   ASSERT_TRUE(rot) << rot.error().message;
   check(*rot, kSolvedTol);
@@ -475,6 +482,21 @@ TEST_F(McscfRootRotation, TwoRootsOverSolvedLambdaMatchReference) {
 TEST_F(McscfRootRotation, ThreeRootsOverSolvedLambdaMatchReference) {
   FBF_REQUIRE_GPU();
   check_solved("h2o_631g_sa3");
+}
+
+// The same chain with RelaxedHessian's pcg_ci_response: the CI response of
+// zvectors' products from recipes::pcg_solve, a root at a time, through the
+// block calls (Schur) and the one-column ones (PerColumn), and lambda^x and
+// the term meet the same bars.
+TEST_F(McscfRootRotation, ThreeRootsOverPcgCiResponseMatchReference) {
+  FBF_REQUIRE_GPU();
+  check_solved("h2o_631g_sa3", true);
+}
+
+TEST_F(McscfRootRotation, ThreeRootsOverPcgCiResponsePerColumnMatchReference) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  check_solved("h2o_631g_sa3", true, fb::response::CpSolver::PerColumn);
 }
 
 TEST_F(McscfRootRotation, OneRootGivesZero) {

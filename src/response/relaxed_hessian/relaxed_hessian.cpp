@@ -1,6 +1,7 @@
 /// @file
 /// @brief relaxed_hessian: H'(x) and its adjoint on the host, the CI response
-/// by conjugate gradients over the sigma, and H~ x = H x + R x.
+/// by conjugate gradients over the sigma (or recipes::pcg_solve, with
+/// create's pcg_ci_response), and H~ x = H x + R x.
 
 module free_breakfast.response.relaxed_hessian;
 
@@ -17,6 +18,7 @@ import free_breakfast.ci.solver;
 import free_breakfast.response.hessian;
 import free_breakfast.response.orbital_pairs;
 import free_breakfast.recipes.blas; // gemm
+import free_breakfast.recipes.pcg;
 
 #include "diagnostics.h"
 
@@ -129,12 +131,11 @@ void response_gradient(const ResponseIntegrals &ints, std::span<const double> ga
   }
 }
 
-Result<RelaxedHessian>
-RelaxedHessian::create(DeviceResources &res, Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
-                       const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
-                       const ci::Roots &roots, std::span<const double> weights,
-                       ResponseIntegrals ints, const double response_tolerance,
-                       std::vector<bool> mixing, const int32_t response_max_iterations) {
+Result<RelaxedHessian> RelaxedHessian::create(
+    DeviceResources &res, Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
+    const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const ci::Roots &roots,
+    std::span<const double> weights, ResponseIntegrals ints, const double response_tolerance,
+    std::vector<bool> mixing, const int32_t response_max_iterations, const bool pcg_ci_response) {
   const size_t mo = ints.nmo;
   const size_t core = ints.ncore;
   const size_t n = ints.ncas;
@@ -195,6 +196,7 @@ RelaxedHessian::create(DeviceResources &res, Hessian &hessian, ci::Sigma &sigma,
                         response_max_iterations,
                         swap_parity,
                         std::move(mixing),
+                        pcg_ci_response,
                         res};
 }
 
@@ -203,11 +205,12 @@ RelaxedHessian::RelaxedHessian(Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
                                ResponseIntegrals ints, ci::Sigma response_sigma, const size_t dim,
                                const double response_tolerance,
                                const int32_t response_max_iterations, const int32_t swap_parity,
-                               std::vector<bool> mixing, DeviceResources &res)
+                               std::vector<bool> mixing, const bool pcg_ci_response,
+                               DeviceResources &res)
     : hessian_(&hessian), sigma_(&sigma), rdm_(&rdm), roots_(&roots), weights_(std::move(weights)),
       ints_(std::move(ints)), n_pairs_(hessian.size()), dim_(dim),
       response_tolerance_(response_tolerance), response_max_iterations_(response_max_iterations),
-      swap_parity_(swap_parity), mixing_(std::move(mixing)),
+      swap_parity_(swap_parity), mixing_(std::move(mixing)), pcg_ci_response_(pcg_ci_response),
       response_sigma_(std::move(response_sigma)), ci_b_(dim * weights_.size(), res.device()),
       ci_delta_(dim * weights_.size(), res.device()), cg_vectors_(3 * dim, res.device()),
       ci_overlaps_(weights_.size(), res.device()),
@@ -307,8 +310,9 @@ Status RelaxedHessian::solve_response(DeviceResources &res, std::span<double> ga
   const double *const ci_c = roots_->vectors.data();
   const auto ci_root = [dim](auto *base, const size_t r) { return base + (r * dim); };
 
-  // delta_r: conjugate gradients on (H_0 - E_r) off every root, and the
-  // other roots' part exactly, -(c_s . b_r) / (E_s - E_r) c_s.
+  // delta_r: conjugate gradients on (H_0 - E_r) off every root (or
+  // solve_shifted), and the other roots' part exactly,
+  // -(c_s . b_r) / (E_s - E_r) c_s.
   double *const cg_r = cg_vectors_.data();
   double *const cg_p = cg_r + dim;
   double *const cg_ap = cg_p + dim;
@@ -327,34 +331,44 @@ Status RelaxedHessian::solve_response(DeviceResources &res, std::span<double> ga
     // The roots span b_r: what the projection left is round-off, and the
     // response off the roots is zero.
     double rr = rhs_norm <= kResponseRoundoff * whole_norm ? 0.0 : rhs_norm * rhs_norm;
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cg_p, cg_r, dim * sizeof(double),
-                                           wwr::wwrMemcpyDeviceToDevice, stream)));
-    for (int32_t it = 0; it < response_max_iterations_ && rr > 0.0; ++it) {
-      FBF_TRY(sigma_->apply(res, 1, cg_p, cg_ap));
-      const double neg_e = -e_r;
-      FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &neg_e, cg_p, 1, cg_ap, 1)));
-      FBF_TRY(project(res, cg_ap));
-      double pap = 0.0;
-      FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, dim32, cg_p, 1, cg_ap, 1, &pap)));
-      // H_0 - E_r is positive off the roots in their spin; a direction it
-      // is not positive along (roundoff's other spins) ends the solve.
-      if (!(pap > 0.0)) {
-        break;
+    if (pcg_ci_response_) {
+      // create's pcg_ci_response: an infinite tolerance runs no sigma on a
+      // right-hand side the roots span.
+      const double tolerance =
+          rr > 0.0 ? response_tolerance_ * rhs_norm : std::numeric_limits<double>::infinity();
+      FBF_TRY(solve_shifted(res, 1, e_r, cg_r, delta, std::span{&tolerance, 1}));
+    } else {
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cg_p, cg_r, dim * sizeof(double),
+                                             wwr::wwrMemcpyDeviceToDevice, stream)));
+      for (int32_t it = 0; it < response_max_iterations_ && rr > 0.0; ++it) {
+        FBF_TRY(sigma_->apply(res, 1, cg_p, cg_ap));
+        const double neg_e = -e_r;
+        FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &neg_e, cg_p, 1, cg_ap, 1)));
+        FBF_TRY(project(res, cg_ap));
+        double pap = 0.0;
+        FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, dim32, cg_p, 1, cg_ap, 1, &pap)));
+        // H_0 - E_r is positive off the roots in their spin; a direction it
+        // is not positive along (roundoff's other spins) ends the solve.
+        if (!(pap > 0.0)) {
+          break;
+        }
+        const double alpha_step = rr / pap;
+        const double neg_alpha = -alpha_step;
+        FBF_TRY(
+            gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &alpha_step, cg_p, 1, delta, 1)));
+        FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &neg_alpha, cg_ap, 1, cg_r, 1)));
+        double r_norm = 0.0;
+        FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, dim32, cg_r, 1, &r_norm)));
+        const double rr_new = r_norm * r_norm;
+        if (r_norm <= response_tolerance_ * rhs_norm) {
+          break;
+        }
+        const double beta_step = rr_new / rr;
+        FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, dim32, &beta_step, cg_p, 1)));
+        FBF_TRY(
+            gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &kOne<double>, cg_r, 1, cg_p, 1)));
+        rr = rr_new;
       }
-      const double alpha_step = rr / pap;
-      const double neg_alpha = -alpha_step;
-      FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &alpha_step, cg_p, 1, delta, 1)));
-      FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &neg_alpha, cg_ap, 1, cg_r, 1)));
-      double r_norm = 0.0;
-      FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, dim32, cg_r, 1, &r_norm)));
-      const double rr_new = r_norm * r_norm;
-      if (r_norm <= response_tolerance_ * rhs_norm) {
-        break;
-      }
-      const double beta_step = rr_new / rr;
-      FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, dim32, &beta_step, cg_p, 1)));
-      FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &kOne<double>, cg_r, 1, cg_p, 1)));
-      rr = rr_new;
     }
     for (size_t s = 0; s < roots_count; ++s) {
       const double gap = roots_->energies[s] - e_r;
@@ -492,6 +506,41 @@ Status RelaxedHessian::shifted_sigma(DeviceResources &res, const size_t k, const
   return res.sync();
 }
 
+Status RelaxedHessian::solve_shifted(DeviceResources &res, const int32_t k, const double shift,
+                                     const double *const b, double *const x,
+                                     std::span<const double> tolerances) {
+  // (H_0 - E) off every root: one sigma of the block, then each vector
+  // shifted and projected (project's gemv pair, which the one-column solve
+  // has always taken).
+  struct Shifted {
+    RelaxedHessian &self;
+    double neg_shift;
+    Status apply(DeviceResources &on, const int32_t count, const double *v, double *w) {
+      FBF_TRY(self.sigma_->apply(on, count, v, w));
+      const auto dim32 = static_cast<int32_t>(self.dim_);
+      for (size_t c = 0; c < static_cast<size_t>(count); ++c) {
+        const size_t at = c * self.dim_;
+        FBF_TRY(gpu_status(
+            wwr::axpy<double, int32_t>(on.blas().get(), dim32, &neg_shift, v + at, 1, w + at, 1)));
+        FBF_TRY(self.project(on, w + at));
+      }
+      return {};
+    }
+  };
+  Shifted op{*this, -shift};
+  // Unpreconditioned: plain conjugate gradients, r.r from the norm. At the
+  // cap a vector stops silently, and on a direction H_0 - E is not positive
+  // along (round-off's other spins) it stops where the sweep before left it.
+  PcgOptions options;
+  options.tolerances = tolerances;
+  options.max_iterations = response_max_iterations_;
+  options.check_curvature = false;
+  options.stop_silently = true;
+  options.true_residuals = false;
+  return pcg_solve(res, op, nullptr, static_cast<int32_t>(dim_), k, b, x, options)
+      .transform([](const PcgInfo & /*info*/) {});
+}
+
 Status RelaxedHessian::solve_responses(DeviceResources &res, const size_t k) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const wwr::wwrStream_t stream = res.stream();
@@ -557,34 +606,62 @@ Status RelaxedHessian::solve_responses(DeviceResources &res, const size_t k) {
     // solve_response's.
     active[v] = rr[v] > 0.0 && rhs_norm[v] > kResponseRoundoff * std::sqrt(whole[v]);
   }
-  for (int32_t it = 0; it < response_max_iterations_ && std::ranges::contains(active, true); ++it) {
-    FBF_TRY(shifted_sigma(res, k, p, ap));
-    FBF_TRY(project_block(res, count, ap));
-    FBF_TRY(column_dots(p, ap));
-    // H_0 - E_r is positive off the roots in their spin; a direction it is
-    // not positive along (roundoff's other spins) ends that vector's solve.
-    for (size_t v = 0; v < count; ++v) {
-      active[v] = active[v] && host[v] > 0.0;
-      step_host[v] = active[v] ? rr[v] / host[v] : 0.0;
-    }
-    FBF_TRY(scaled_add(delta, p, &kOne<double>));
-    FBF_TRY(scaled_add(r, ap, &kNegOne<double>));
-    FBF_TRY(column_dots(r, r));
-    for (size_t v = 0; v < count; ++v) {
-      if (active[v] && std::sqrt(host[v]) <= response_tolerance_ * rhs_norm[v]) {
-        active[v] = false;
+  if (pcg_ci_response_) {
+    // create's pcg_ci_response: solve_shifted over a root's k vectors
+    // (j nroots + r) at a time, packed into P's and A P's room, since they
+    // share its shift, each to the tolerance the loop below stops at.
+    double *const packed_b = p;
+    double *const packed_x = ap;
+    std::vector<double> tolerances(k);
+    for (size_t root = 0; root < roots_count; ++root) {
+      for (size_t j = 0; j < k; ++j) {
+        const size_t v = (j * roots_count) + root;
+        tolerances[j] =
+            active[v] ? response_tolerance_ * rhs_norm[v] : std::numeric_limits<double>::infinity();
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(packed_b + (j * dim), r + (v * dim),
+                                               dim * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                               stream)));
       }
-      step_host[v] = active[v] ? host[v] / rr[v] : 0.0;
-      rr[v] = active[v] ? host[v] : rr[v];
+      FBF_TRY(solve_shifted(res, static_cast<int32_t>(k), roots_->energies[root], packed_b,
+                            packed_x, tolerances));
+      for (size_t j = 0; j < k; ++j) {
+        const size_t v = (j * roots_count) + root;
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(delta + (v * dim), packed_x + (j * dim),
+                                               dim * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                               stream)));
+      }
     }
-    // p <- r + beta p.
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(steps, step_host.data(), count * sizeof(double),
-                                           wwr::wwrMemcpyHostToDevice, stream)));
-    FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_RIGHT, dim32, n, p, dim32,
-                                                  steps, 1, product, dim32)));
-    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, dim32,
-                                                  n, &kOne<double>, r, dim32, &kOne<double>,
-                                                  product, dim32, p, dim32)));
+  } else {
+    for (int32_t it = 0; it < response_max_iterations_ && std::ranges::contains(active, true);
+         ++it) {
+      FBF_TRY(shifted_sigma(res, k, p, ap));
+      FBF_TRY(project_block(res, count, ap));
+      FBF_TRY(column_dots(p, ap));
+      // H_0 - E_r is positive off the roots in their spin; a direction it is
+      // not positive along (roundoff's other spins) ends that vector's solve.
+      for (size_t v = 0; v < count; ++v) {
+        active[v] = active[v] && host[v] > 0.0;
+        step_host[v] = active[v] ? rr[v] / host[v] : 0.0;
+      }
+      FBF_TRY(scaled_add(delta, p, &kOne<double>));
+      FBF_TRY(scaled_add(r, ap, &kNegOne<double>));
+      FBF_TRY(column_dots(r, r));
+      for (size_t v = 0; v < count; ++v) {
+        if (active[v] && std::sqrt(host[v]) <= response_tolerance_ * rhs_norm[v]) {
+          active[v] = false;
+        }
+        step_host[v] = active[v] ? host[v] / rr[v] : 0.0;
+        rr[v] = active[v] ? host[v] : rr[v];
+      }
+      // p <- r + beta p.
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(steps, step_host.data(), count * sizeof(double),
+                                             wwr::wwrMemcpyHostToDevice, stream)));
+      FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_RIGHT, dim32, n, p,
+                                                    dim32, steps, 1, product, dim32)));
+      FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N,
+                                                    dim32, n, &kOne<double>, r, dim32,
+                                                    &kOne<double>, product, dim32, p, dim32)));
+    }
   }
 
   // The other roots' part exactly, -(c_s . b_r) / (E_s - E_r) c_s, for every

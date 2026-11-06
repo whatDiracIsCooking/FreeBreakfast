@@ -4,8 +4,9 @@
 # the strings, the sigma, the Rdm, ci::Roots and Hessian are in its signature or
 # members, so core::wwr, core::resources, ci::strings, ci::sigma, ci::rdm,
 # ci::solver and response::hessian are PUBLIC; the packed order's copies, the
-# block calls' gemms and FBF_TRY are only used. It launches nothing of its own:
-# sigmas, RDMs, H's apply, BLAS and copies, so there is no device library.
+# block calls' gemms, the CI response's pcg_solve and FBF_TRY are only used.
+# It launches nothing of its own: sigmas, RDMs, H's apply, BLAS and copies, so
+# there is no device library.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.response.relaxed_hessian
@@ -29,4 +30,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::diagnostics_macros
   free_breakfast::response::orbital_pairs
   free_breakfast::recipes::blas
+  free_breakfast::recipes::pcg
 )
