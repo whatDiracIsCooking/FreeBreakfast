@@ -18,7 +18,7 @@
 // data/nevpt2_gradient/'s cases: against the numerical gradient, with
 // E_corr zeroed against the DF-CASSCF's, and the full Lagrangian's
 // stationarity. Then PC-NEVPT2's (pc_gradient) against the numerical one, its
-// z^c's zero branch on a forced near-degenerate pair, and its refusals. Then
+// z^c's division on a forced near-degenerate pair, and its refusals. Then
 // the SC-QD-NEVPT2 functional E[W] (qd_sc_energy, qd_sc_adjoint) on
 // data/qd_nevpt2/'s cases through this tree's own DF-SA-CASSCF: each adjoint
 // against a ladder at the eigenvector seed and a random W, the one-root call
@@ -1097,8 +1097,11 @@ INSTANTIATE_TEST_SUITE_P(Integrals, Nevpt2ZcIntegrals,
 
 // The degenerate-pair rule on a forced pair: the first virtual and a partner
 // put 1e-7 Eh apart, under the 1e-6 floor. With A as sc_adjoint gives it the
-// pair is refused, Numerical, naming it; with A_pq at round-off (1e-12) its
-// z is zero, and every pair without the moved orbital keeps its division.
+// pair is refused, Numerical, naming it; with A_pq set to 1e-12, which A's
+// rounding (nmo^2 unit roundoffs of its largest element) resolves, z is the
+// same division as above the floor; with A_pq at one unit roundoff of that
+// element, under it, z is zero; and every pair without the moved orbital
+// keeps its division (#974).
 TEST(Nevpt2Zc, DegeneratePairRule) {
   FBF_REQUIRE_GPU();
   const State &s = state();
@@ -1128,6 +1131,24 @@ TEST(Nevpt2Zc, DegeneratePairRule) {
   std::vector<double> a = adj.a;
   a[partner + (nmo * q)] = 1e-12;
   a[q + (nmo * partner)] = -1e-12;
+  const auto divided = multipliers(res, s, a, epsilon);
+  ASSERT_TRUE(divided.has_value()) << divided.error().message;
+  const std::vector<double> zd = download(res, divided->z.data(), nmo * nmo);
+  const double ratio = -1e-12 / (2.0 * (epsilon[partner] - epsilon[q]));
+  EXPECT_EQ(zd[partner + (nmo * q)], ratio);
+  EXPECT_EQ(zd[q + (nmo * partner)], ratio);
+
+  // The largest element other than the pair's, which is what the bound reads
+  // once the pair's is under it.
+  a[partner + (nmo * q)] = 0.0;
+  a[q + (nmo * partner)] = 0.0;
+  double a_max = 0.0;
+  for (const double v : a) {
+    a_max = std::max(a_max, std::abs(v));
+  }
+  const double unresolved = 0.5 * std::numeric_limits<double>::epsilon() * a_max;
+  a[partner + (nmo * q)] = unresolved;
+  a[q + (nmo * partner)] = -unresolved;
   const auto kept = multipliers(res, s, a, epsilon);
   ASSERT_TRUE(kept.has_value()) << kept.error().message;
   EXPECT_LE(kept->min_gap, 1e-7 * (1.0 + 1e-6));
@@ -1148,22 +1169,22 @@ TEST(Nevpt2Zc, DegeneratePairRule) {
   EXPECT_GT(unforced->max_z, 0.0);
 }
 
-// PC's z^c on a forced near-degenerate inactive pair takes the zero branch,
+// PC's z^c on a forced near-degenerate inactive pair keeps its division,
 // where SC's is refused. PC is invariant to a rotation of two inactive
 // orbitals only when their orbital energies are equal (nevpt2_energy_gpu.cpp's
 // Nevpt2PcEnergyAdjoint.InactiveRotationsAreRoundOff, at the class level):
-// at the real state, with distinct ε, its A_pq is not zero and z^c is the
-// same division as SC's. So in each of the core and the virtual space, the
-// pair with |A^SC| > 1e-6 closest in ε is pushed together, the upper one
-// moved to 1e-9 Eh above the lower through h alone (shifted_h: C^T h C
+// so its A_pq is the gap times a finite K_pq, and z_pq = -K_pq / 2 has a
+// limit as the gap closes (#974). In each of the core and the virtual space,
+// the pair with |A^SC| > 1e-6 closest in eps is pushed together, the upper
+// one moved to 1e-9 Eh above the lower through h alone (shifted_h: C^T h C
 // moves on that orbital's diagonal, so f stays diagonal and nothing else
-// does): PC's A_pq there is round-off, under zc_multipliers' 1e-8, and its
-// z_pq exactly 0, while SC's A_pq stays past it and the pair is refused,
-// Numerical, naming both orbitals. SC's A_pq falls too as the pair closes
-// (on the gfx1200, 7.3e-3 to 1.5e-7 on the core pair, 4.6e-5 to 7.4e-8 on
-// the virtual one), but stops there, where PC's reaches 1e-13: so the
-// control is the rule's own 1e-8, and PC's at least 1e3 below SC's.
-TEST(Nevpt2PcZc, DegeneratePairTakesTheZeroBranch) {
+// does): PC's A_pq falls with the gap, under zc_multipliers' 1e-8 and 1e3
+// below SC's, and its z_pq is the same division as above the floor, while
+// SC's A_pq stays past 1e-8 and the pair is refused, Numerical, naming both
+// orbitals. SC's A_pq falls too as the pair closes (on the gfx1200, 7.3e-3 to
+// 1.5e-7 on the core pair, 4.6e-5 to 7.4e-8 on the virtual one), but stops
+// there, where PC's reaches 1e-13.
+TEST(Nevpt2PcZc, DegeneratePairKeepsItsDivision) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
@@ -1214,8 +1235,9 @@ TEST(Nevpt2PcZc, DegeneratePairTakesTheZeroBranch) {
     const auto pc_z = multipliers(res, forced, pc_forced->a, pc_forced->epsilon);
     ASSERT_TRUE(pc_z.has_value()) << what << ": " << pc_z.error().message;
     const std::vector<double> z = download(res, pc_z->z.data(), nmo * nmo);
-    EXPECT_EQ(z[p + (nmo * q)], 0.0) << what;
-    EXPECT_EQ(z[q + (nmo * p)], 0.0) << what;
+    const double ratio = -pc_a / (2.0 * (pc_forced->epsilon[p] - pc_forced->epsilon[q]));
+    EXPECT_EQ(z[p + (nmo * q)], ratio) << what;
+    EXPECT_EQ(z[q + (nmo * p)], ratio) << what;
     EXPECT_LE(pc_z->min_gap, 1e-8) << what;
 
     const auto sc_z = multipliers(res, forced, sc_forced.a, sc_forced.epsilon);
@@ -1224,9 +1246,9 @@ TEST(Nevpt2PcZc, DegeneratePairTakesTheZeroBranch) {
     const std::string named = std::format("orbitals {} and {}", p, q);
     EXPECT_NE(sc_z.error().message.find(named), std::string::npos) << sc_z.error().message;
     std::cout << std::format("[ nevpt2   ] {} pair ({}, {}), gap {:.3e} -> {:.3e}: PC A {:+.3e} "
-                             "-> {:+.3e}, SC A {:+.3e} -> {:+.3e}\n",
-                             what, p, q, gap, forced_gap, pc_before, pc_a, sc.a[p + (nmo * q)],
-                             sc_a);
+                             "-> {:+.3e} (z {:+.3e}), SC A {:+.3e} -> {:+.3e}\n",
+                             what, p, q, gap, forced_gap, pc_before, pc_a, ratio,
+                             sc.a[p + (nmo * q)], sc_a);
   }
 }
 

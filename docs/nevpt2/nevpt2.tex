@@ -630,11 +630,16 @@ Park's Eqs.~56--57 \cite{park2019} and Eqs.~25--26 \cite{park2020} in this
 tree's sign of $\kappa$. \code{zc\_multipliers} takes only $A$ and $\eps$, so
 it serves SC, PC and QD alike.
 
-\paragraph{Degenerate pairs.} For $|\eps_p - \eps_q| < 10^{-6}\,E_h$, if
-$|A_{pq}| \le 10^{-8}$ (partners in different irreps, say) $z^c_{pq} = 0$;
-otherwise the pair is refused, naming both orbitals. PC's $A$ vanishes with
-the gap, so PC takes the zero branch where SC is refused: this is Park's
-reason for preferring PC \cite{park2019}.
+\paragraph{Degenerate pairs.} For $|\eps_p - \eps_q| < 10^{-6}\,E_h$, a pair
+with $|A_{pq}| > 10^{-8}$ is refused, naming both orbitals; one with $A_{pq}$
+under its rounding bound ($n_{\mathrm{mo}}^2$ unit roundoffs of $\max|A|$;
+partners in different irreps, say) has $z^c_{pq} = 0$; any other keeps
+Eq.~\eqref{eq:zc}. PC's $A$ vanishes with the gap,
+$A_{pq} = (\eps_p - \eps_q) K_{pq}$ with $K_{pq}$ finite, so PC's $z^c$ has
+the limit $-K_{pq}/2$ where SC's grows as the inverse gap and is refused:
+this is Park's reason for preferring PC \cite{park2019}. Dropping PC's $z^c$
+there would be a step of $O(z)$ in the gradient, not $O(\text{gap})$
+(\#974; \code{src/nevpt2/gradient/README.md}, ``Degenerate pairs'').
 
 \paragraph{The term $z^c$ adds.} $\Phi = \langle z^c, f\rangle$ with $D = 2$ on
 the core diagonal and $\gamma$ (or $\gamma^{\mathrm{SA}}$) on the active
@@ -1035,8 +1040,8 @@ invariant to turning $u_P$, $u_Q$ within their pair.
 \begin{itemize}
 \item \textbf{SC's inactive non-invariance.} SC is not invariant to rotations
   among inactive orbitals, so $z^c$ divides by orbital-energy gaps
-  (Eq.~\eqref{eq:zc}); a degenerate pair with a finite source is refused. PC
-  takes the zero branch there. Park finds SC's gradients unstable for this
+  (Eq.~\eqref{eq:zc}); a degenerate pair with a finite source is refused. PC's
+  source vanishes with the gap, and its $z^c$ keeps a finite limit there. Park finds SC's gradients unstable for this
   reason and recommends PC \cite{park2019}.
 \item \textbf{SC's small-norm pole.} A perturber whose own norm is tiny
   (around $10^{-8}$ on some symmetric cases) has a Rayleigh quotient $H/N$

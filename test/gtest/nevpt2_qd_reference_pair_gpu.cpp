@@ -111,13 +111,11 @@ const double kOneSidedNoise =
     std::sqrt(4.0 + 0.25 + (2.25 / kRepeats)) / std::sqrt((2.0 * (4.0 / 9.0)) + (2.0 / 144.0));
 // The continuity check's points along d1 (Angstrom): two under the CASSCF
 // floor (gaps 8.8e-10 and 2.2e-9 Eh, #892's 4.9e-4 Eh/A; the floor is at
-// 2.0e-5 A) and three over it (4.4e-8 to 8.8e-8). Each side clean of the
-// inactive orbitals' floor too (kZcGapFloor, 1e-6 Eh, nevpt2/gradient's
-// zc_multipliers): C3v's e core and virtual pairs split linearly as well,
-// at 1.7e-2 to 1.6e-1 Eh/A here, so between 6e-6 and 6e-5 A some of their
-// z^c are divided and some dropped, pair by pair, and g_mean . random1
-// moves by up to 1.5e-9 Eh/bohr where one crosses (README.md). Under 5e-6
-// A every such pair is dropped, over 1e-4 A every one divided.
+// 2.0e-5 A) and three over it (4.4e-8 to 8.8e-8). C3v's e core and
+// virtual pairs split linearly too, and some sit under the inactive
+// orbitals' floor at every point (kZcGapFloor, 1e-6 Eh, nevpt2/gradient's
+// zc_multipliers), where each z^c is divided when its A is resolved (#974,
+// ../gradient/README.md "Degenerate pairs").
 constexpr std::array<double, 5> kAlong{2e-6, 5e-6, 1e-4, 1.5e-4, 2e-4};
 constexpr std::size_t kBelow = 2;
 constexpr std::int32_t kRuns = 3;
@@ -683,7 +681,7 @@ TEST(Nevpt2QdReferencePair, MeanGradientMatchesDifferences) {
 // The mean gradient along the line exact + rho d1 across the CASSCF floor:
 // g_mean . u at kAlong's points, the mean-gradient path under the floor and
 // the (g_P + g_Q) / 2 path over it, for u g_mean's own direction at the
-// exact point (asserted) and random1 (reported). d1 is pure e to 1.4e-4, so
+// exact point and random1, both asserted. d1 is pure e to 1.4e-4, so
 // g_mean's a1 part is even in rho and its e part odd: g_mean . u = a +
 // b rho + c rho^2 + O(rho^3). Along g_mean's own direction, an a1 one, b = 0
 // and the rho^2 term is the whole change (+6.8e-10 Eh/bohr at 1e-4 A), which
@@ -701,11 +699,11 @@ TEST(Nevpt2QdReferencePair, MeanGradientMatchesDifferences) {
 //   solve leaves unconverged, which no restart averages away.
 // So the bar is not divided by sqrt(kRuns): the solves term is common to a
 // point's runs. On the C3v manifold g_mean is a1, and its a1 part is what
-// the carried-plane walk reads, so g_mean's direction is the one asserted.
-// random1's residuals, an e direction's, are printed only: they carry the
-// existing path's per-point scatter, about 2e-10 to 4e-10 Eh/bohr above
-// the floor too, from C3v's e core and virtual pairs crossing kZcGapFloor
-// one by one (#974; README.md, "The mean gradient across the floor").
+// the carried-plane walk reads. random1 has an e part, which the z^c of
+// C3v's e core and virtual pairs under kZcGapFloor reach: with those
+// dropped it scattered by 2e-10 to 4e-10 Eh/bohr point to point, over its
+// bar; divided where A resolves them, it is on the quadratic too (#974;
+// README.md, "The mean gradient across the floor").
 TEST(Nevpt2QdReferencePair, MeanGradientIsContinuousAcrossTheFloor) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
@@ -816,9 +814,7 @@ TEST(Nevpt2QdReferencePair, MeanGradientIsContinuousAcrossTheFloor) {
     for (std::size_t i = 0; i < kAlong.size(); ++i) {
       const double rho = kAlong[i] / fb::kAngstromPerBohr<double>;
       const double residual = mean[i] - (coef[0] + (coef[1] * rho) + (coef[2] * rho * rho));
-      if (d == 0) {
-        EXPECT_LE(std::abs(residual), bar) << directions[d].first << " at " << kAlong[i] << " A";
-      }
+      EXPECT_LE(std::abs(residual), bar) << directions[d].first << " at " << kAlong[i] << " A";
       line += std::format(" {:g} A {}{:+.12e} ({:+.1e})", kAlong[i], i < kBelow ? "g_mean " : "",
                           mean[i], residual);
     }

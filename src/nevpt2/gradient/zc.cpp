@@ -24,16 +24,20 @@ import :operands; // column_operand, contract, zeroed, add_onto, to_host, to_dev
 
 namespace free_breakfast::nevpt2 {
 
-// Below this gap (Eh) a core or virtual pair is degenerate and its z^c is not
-// a division the state determines. An abelian subgroup splits a degenerate
-// set across irreps, the two partners keep one orbital energy, and the energy
-// does not move along a rotation mixing them, so A vanishes too and zero is
-// the right representative. The demo's PC_GAP_FLOOR (reference_data/
+// Below this gap (Eh) a core or virtual pair is near-degenerate, and its z^c
+// is divided only where A resolves it. PC is invariant to the pair's
+// rotation at equal orbital energies, so its A_pq = (eps_p - eps_q) K_pq with
+// K_pq finite, and z_pq = -K_pq / 2 has a limit at the degeneracy: dropping
+// it is an O(z) step in the gradient, not an O(gap) one (README.md
+// "Degenerate pairs", #974). The demo's PC_GAP_FLOOR (reference_data/
 // nevpt2_grad.py; docs/nuclear_gradients.tex, "Degenerate (O2) pairs").
 constexpr double kZcGapFloor = 1e-6;
-// What a degenerate pair's |A_pq| must be under for that zero to stand; past
-// it the pair is refused. The demo's PC_ZERO_TOL.
+// Past this |A_pq| a near-degenerate pair is refused: its z^c would pass
+// kZcZeroSource / (2 kZcGapFloor), the largest the floor admits, which is
+// SC's 1/gap growth and not PC's limit. The demo's PC_ZERO_TOL.
 constexpr double kZcZeroSource = 1e-8;
+// The unit roundoff of a double.
+constexpr double kRoundoff = std::numeric_limits<double>::epsilon() / 2.0;
 Result<ZcMultipliers> zc_multipliers(DeviceResources &res, const int32_t nmo, const int32_t ncore,
                                      const int32_t ncas, const double *a, const double *epsilon) {
   if (nmo <= 0 || ncore < 0 || ncas < 0 || ncore + ncas > nmo) {
@@ -53,6 +57,14 @@ Result<ZcMultipliers> zc_multipliers(DeviceResources &res, const int32_t nmo, co
   // Along kappa_pq = -kappa_qp = t, p > q, f_pq and f_qp each move by
   // t (eps_p - eps_q) where f is diagonal, and nothing else z reads moves at
   // first order, so d/dt (E + <z, f>) = A_pq + 2 z_pq (eps_p - eps_q).
+  // A's rounding bound: nmo^2 unit roundoffs of its largest element. A
+  // near-degenerate A under it carries no ratio (an abelian subgroup's pair
+  // across irreps, or a symmetric point's), and its z^c is 0.
+  double a_max = 0.0;
+  for (const double v : source) {
+    a_max = std::max(a_max, std::abs(v));
+  }
+  const double a_resolution = static_cast<double>(n * n) * kRoundoff * a_max;
   for (const auto &[first, last] : {std::pair{size_t{0}, nc}, std::pair{nocc, n}}) {
     for (size_t p = first; p < last; ++p) {
       for (size_t q = first; q < p; ++q) {
@@ -67,7 +79,11 @@ Result<ZcMultipliers> zc_multipliers(DeviceResources &res, const int32_t nmo, co
                 "state, and dividing through would manufacture one",
                 p, q, std::abs(gap), kZcGapFloor, std::abs(a_pq), kZcZeroSource);
           }
-          continue;
+          // Unresolved, or a ratio past the floor's largest: 0.
+          if (std::abs(a_pq) <= a_resolution ||
+              std::abs(a_pq) * kZcGapFloor > kZcZeroSource * std::abs(gap)) {
+            continue;
+          }
         }
         const double value = -a_pq / (2.0 * gap);
         z[p + (n * q)] = value;

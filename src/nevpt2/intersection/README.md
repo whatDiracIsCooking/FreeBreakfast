@@ -579,7 +579,7 @@ continuity instead.
 
 `Nevpt2QdReferencePair.MeanGradientIsContinuousAcrossTheFloor`: ḡ · u at
 points along d₁, ḡ's own path under the floor and (g_P + g_Q)/2 over it,
-for u ḡ's direction at the exact point (asserted) and random1 (reported).
+for u ḡ's direction at the exact point and random1, both asserted.
 d₁ is pure e to 1.4e-4, so ḡ's a₁ part is even in ρ and its e part odd:
 ḡ · u = a + b ρ + c ρ², one quadratic fitted through both paths' points
 (along ḡ's own direction, a₁, b = 0 and the whole change is ρ², which no
@@ -588,37 +588,59 @@ line fits). Each point is the mean of 3 SAD-start runs, and the bar is
 the larger of the restarts' pooled sd and the solves' RMS of production
 less a re-solve with the Z-vector at 1e-12 and the CASSCF at conv_tol_grad
 1e-11 (1e-12 is under its own floor, about 3e-12, here). Not divided by √3:
-the solves' error is common to a point's runs. Residuals, Eh/bohr (ḡ: under
-the floor):
+the solves' error is common to a point's runs.
 
-| run | points (Å) | ḡ direction: σ restarts, solves; bar; worst residual | random1: σ; bar; residuals |
+Residuals, Eh/bohr (ḡ: under the CASSCF floor). Runs A, B and the control
+are before #974, with z^c dropped on every inactive pair under
+`kZcGapFloor`; the last three rows after it, with those A resolves divided
+(`../gradient/README.md`, "Degenerate pairs"):
+
+| run | points (Å) | ḡ direction: σ restarts, solves; bar; worst residual | random1: σ restarts, solves; bar; residuals |
 |---|---|---|---|
 | A | 5e-6ḡ, 1e-5ḡ, 2e-5ḡ, 5e-5, 1e-4 | 1.7e-13, 5.5e-11; 1.65e-10; 1.2e-11 | 4.6e-11, 9.6e-11; 2.9e-10; +3.3e-10, −6.8e-10, +4.4e-10, −9.7e-11, +1.3e-11 |
 | B (the test's) | 2e-6ḡ, 5e-6ḡ, 1e-4, 1.5e-4, 2e-4 | 1.2e-13, 4.8e-11; 1.43e-10; 3.0e-12 | 7.6e-11, 8.4e-11; 2.5e-10; +2.7e-10, −2.4e-10, −2.6e-10, +3.6e-10, −1.4e-10 |
 | control | 1e-4, 1.5e-4, 2e-4, 2.5e-4, 3e-4, all above | 2.2e-13, 2.6e-11; 7.8e-11; 6.2e-13 | 8.8e-11, 7.8e-11; 2.6e-10; worst +1.9e-10 |
+| A, #974 | as A | 2.4e-13, 5.5e-11; 1.65e-10; 1.2e-11 | 3.2e-10, 6.2e-10; 1.87e-9; +3.8e-10, −7.1e-10, +3.9e-10, −6.5e-11, +7.0e-12 |
+| B, #974 | as B | 2.8e-13, 4.7e-11; 1.42e-10; 3.2e-12 | 2.4e-10, 2.2e-10; 7.3e-10; +2.0e-10, −2.0e-10, −4.2e-11, +7.1e-11, −2.9e-11 |
+| B, #974, again | as B | 1.2e-13, 4.7e-11; 1.42e-10; 3.4e-12 | 3.3e-10, 4.4e-10; 1.31e-9; +2.0e-10, −1.8e-10, −1.6e-10, +2.2e-10, −8.6e-11 |
+| control, #974 | as the control | 2.6e-13, 2.6e-11; 7.8e-11; 6.3e-13 | 3.1e-10, 5.6e-10; 1.68e-9; worst −1.2e-10 |
 
 **Along ḡ, the a₁ direction the carried-plane walk reads, both paths lie
 on one quadratic** to 1.2e-11 and 3.0e-12 against bars of 1.65e-10 and
-1.43e-10.
+1.43e-10, and #974 moves none of it by more than 1e-12.
 
-**Along random1 they do not, at that bar, and the cause is not this path.**
-Run A's zig-zag repeats between runs, and a quadratic through the exact
-point and 2e-5, 5e-5 and 1e-4 Å leaves the 5e-6 and 1e-5 Å points off by
-−7.2e-10 and −1.5e-9. C3v's e core and virtual pairs split linearly in ρ
-too, at 1.7e-2 to 1.6e-1 Eh/Å, and cross `kZcGapFloor` (1e-6 Eh,
-`../gradient/`'s `zc_multipliers`) one by one between about 6e-6 and 6e-5
-Å, each pair's z^c switching from dropped to divided. At 5e-6 Å the dropped
-pairs' z^c would be at most 1.7e-8 (the core pair 5, 6 at a gap of
-2.9e-7). With the floor lowered to 1e-8 as a probe (not kept), ḡ · random1
-moved by 2e-9 to 8e-9 under the reference floor and by 1.2e-9 at 5e-5 Å,
-while ḡ's own direction moved by under 1e-12. Run B's points keep clear of
-that range, and the existing path alone (the control) still scatters by
-2e-10 to 4e-10 point to point, near its 3 σ_g: a deterministic per-point
-error σ_g does not see. That is filed as #974. **Unresolved**: the
+**Along random1, before #974, they did not**, and the cause was z^c's floor
+(#974). C3v's e core and virtual pairs split linearly in ρ, and many sit
+under `kZcGapFloor` (1e-6 Eh) at every point here: on the existing path,
+whose W forms g_P, g_Q and h_PQ are not the mean's, the pairs (11, 12),
+(14, 15), (21, 22), (38, 39) and (40, 41) at 1e-4 Å (gaps 2.1e-7 to
+7.6e-7). Each W form's PC A on them is the gap times a finite K, 7e-13 to
+1.2e-10 and reproducible to three digits, z up to 9e-5, and dropping them
+put g_P · random1 3.0e-6 Eh/bohr off and g_Q's 3.0e-6 the other way: in the
+mean those cancel to 2e-9, and what was left scattered the points by 2e-10
+to 4e-10 as pairs crossed the floor one by one (B's and the control's far
+points). Under the CASSCF floor the mean's own A on e pairs is O(ρ²)
+(z = O(gap)), and mostly round-off: 5e-16 to 3e-15, sign-random between
+runs. Now the per-state z^c are divided and the mean's unresolved ones
+kept at zero, and run B's five points lie on one quadratic along random1
+too, within their own noise: worst 2.0e-10 against 7.3e-10, and 2.2e-10
+against 1.31e-9 in a second run. The test asserts it.
+
+**What #974 does not remove.** The bar is wider: dividing small gaps
+carries A's rounding, e_A / (2 gap) per pair, and random1's restart sd
+went from 5e-11 to 9e-11 up to 2.4e-10 to 3.3e-10 (σ_g itself, the
+larger term, to 2.2e-10 to 6.2e-10). And run A still zig-zags at
+5e-6 to 2e-5 Å, by +3.8e-10, −7.1e-10, +3.9e-10, now inside its bar: the
+core pair (5, 6) is under the floor at 5e-6 and 1e-5 Å, its A 4.0e-15 and
+1.7e-14, under the rounding bound (5.5e-14), so it stays dropped. Dividing
+it alone (the floor at 1e-7, a probe) moved ḡ · random1 at 5e-6 Å by
++4.4e-10 to +6.4e-10 in all four runs: a deterministic step of z G, z = 7e-9
+there and twice that at 1e-5 Å. That step is the bound the rule leaves,
+e_A / (2 gap) |G| per dropped pair, and at a bound eighteen times the
+measured e_A it is about 1e-9 Eh/bohr here. **Unresolved, still**: the
 control's quadratic, extrapolated from 1e-4 to 3e-4 Å back to 0, lands
-2.9e-9 under the exact point's ḡ · random1. That extrapolation is too
-long to call it a discontinuity, and nothing here shows continuity along e
-directions to better than that.
+2.9e-9 under the exact point's ḡ · random1 (before #974; that
+extrapolation is too long to call a discontinuity).
 
 ## Tests
 
@@ -691,7 +713,8 @@ operations in a frame on the methyl C → lone H axis):
 - `Nevpt2QdReferencePair.MeanGradientMatchesDifferences` (slow, 10 s): the
   differences above, at the exact point.
 - `Nevpt2QdReferencePair.MeanGradientIsContinuousAcrossTheFloor` (slow,
-  28 s): the continuity above, run B's points.
+  28 s): the continuity above, run B's points, along ḡ's direction and
+  random1 both.
 - `PipelineOptimizeReferencePair.RefusesAStartInsideThePair` (fast) and
   `C3vWalkCarriesThePlaneThroughTheFloor` (slow, 11 s): the step's side,
   `../../pipeline/optimize/README.md`.
