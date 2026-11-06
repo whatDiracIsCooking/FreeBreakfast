@@ -1855,8 +1855,23 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2NuclearGradient,
 // the words, the states named and the floor, but the number is round-off and
 // need not (#755).
 std::string stable_part(const std::string &message) {
-  static const std::regex computed(R"(-?\d\.\d+e[+-]\d+)");
+  // std::format prints a non-finite value as inf, -inf or nan: an amplitude
+  // y / (λ + Δ) whose denominator rounds to exactly 0 on one side only (#1010).
+  static const std::regex computed(R"(-?(?:\d\.\d+e[+-]\d+|\binf\b|\bnan\b))");
   return std::regex_replace(message, computed, "#");
+}
+
+// The mask covers a non-finite number as it does a finite one: the refusal
+// #1010 captured, its amplitude -inf on one side and finite on the other.
+TEST(Nevpt2PcGradient, StablePartMasksNonFinite) {
+  const std::string head = "Sr has a denominator λ + Δ = 0.000e+00 at round-off (at most "
+                           "3.056e-12, 100 ε √d of its largest), amplitude ";
+  const std::string want = "Sr has a denominator λ + Δ = # at round-off (at most #, 100 ε "
+                           "√d of its largest), amplitude #";
+  for (const char *number : {"-inf", "inf", "nan", "-nan", "1.234e+05", "-1.234e+05"}) {
+    EXPECT_EQ(stable_part(head + number), want) << number;
+  }
+  EXPECT_EQ(stable_part("an infinite information nancy"), "an infinite information nancy");
 }
 
 // The shift of every virtual orbital energy that puts @p mode's denominator
