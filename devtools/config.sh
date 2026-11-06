@@ -436,6 +436,12 @@ SLOW_HUGE_CASES=${SLOW_HUGE_CASES:-}
 # configure/build/test output there, and is not driven by this file at all.
 SLOW_TIER_REPORTS=${SLOW_TIER_REPORTS:-.slow-tier-reports}
 
+# The worktree of the orphan `metrics` branch, which devtools/metrics.py
+# appends each recorded run to (`test.py pr --record`; docs/testing.md
+# "Metrics"). Resolved under the MAIN checkout, like GPU_LOCK_DIR, so every
+# worktree records through the one copy. Made on first use.
+METRICS_WORKTREE=${METRICS_WORKTREE:-.claude/worktrees/metrics}
+
 # --- environment ----------------------------------------------------------
 
 # gh reads GH_TOKEN (then GITHUB_TOKEN) and nothing else, but this project's

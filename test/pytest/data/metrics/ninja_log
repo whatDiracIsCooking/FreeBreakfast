@@ -1,0 +1,6 @@
+# ninja log v7
+0	1000	1	src/a.o	11
+5	1505	1	src/b.o	22
+0	200	1	src/b.o	33
+10	1260	1	src/c.o	44
+1300	1800	1	src/d.o	55

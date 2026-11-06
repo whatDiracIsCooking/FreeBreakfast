@@ -1,0 +1,3 @@
+set(CMAKE_CXX_COMPILER "/usr/bin/clang++")
+set(CMAKE_CXX_COMPILER_ID "Clang")
+set(CMAKE_CXX_COMPILER_VERSION "20.1.8")

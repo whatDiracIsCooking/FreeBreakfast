@@ -94,6 +94,7 @@ devtools/test.py push --dry-run              # which halves this push would run
 devtools/test.py pr --preset hip             # pin a card; the test preset follows
 devtools/test.py pr --only cpp -- -R Exch    # one half; after -- goes to ctest
 devtools/test.py pr --no-test                # configure + build only
+devtools/test.py pr --record                 # and append it to `metrics`
 ```
 
 - **`push` dispatches on the diff.** It reads the pushed range from
@@ -260,11 +261,36 @@ recent history, so the rule no longer depends on someone reading a log.
 
 ## Metrics
 
-**Planned in #982.** Every recorded run appends one JSON record, on one line,
-to the orphan branch `metrics`. The branch shares no history with `main`, never
-appears in a diff, and is never merged. It is written through its own worktree
-by `test.py`, never by hand. Records go into one file per month,
-`runs/YYYY-MM.jsonl`, so no single file grows without bound.
+**Today:** `devtools/metrics.py` (#982), the recorder, and
+`devtools/test.py pr --record`, which records a run by hand as `manual`.
+**Planned:** the nightly's records (#985).
+
+Every recorded run appends one JSON record, on one line, to the orphan branch
+`metrics`. The branch shares no history with `main`, never appears in a diff,
+and is never merged. It is written through its own worktree by `test.py`,
+never by hand. Records go into one file per month, `runs/YYYY-MM.jsonl`
+(the month the run started), so no single file grows without bound.
+
+- **The worktree** is `METRICS_WORKTREE` in `devtools/config.sh`,
+  `.claude/worktrees/metrics` under the primary checkout, so every worktree
+  records through the one copy. The first record makes it: on the local
+  `metrics` branch, else one tracking `origin/metrics`, else a new orphan.
+  `git worktree add` writes under the common git directory and into the new
+  worktree, and never into `main`'s tree or index.
+- **The branch is local to this box.** Nothing pushes it yet.
+- **A record is committed with `git commit-tree` and `git update-ref`**, not
+  `git commit`: the hooks in the common git directory are `main`'s
+  pre-commit hooks, which have no config on a data branch. Two runs
+  appending at once are serialised by `metrics.lock` in the common git
+  directory.
+- **`--record` refuses a dirty tree** (exit 2), because the record's commit
+  would not be what was tested.
+- **Where the cases come from:** `test.py pr --record` has ctest write
+  `--output-junit`, each GPU batch write `GTEST_OUTPUT=json:…`, and pytest
+  write `--junitxml` (`junit_family=xunit1`, which carries each case's file),
+  all into `<log>.results/` beside the gate's log, with ctest's listing,
+  which names each entry's binary. A batch that crashed writes no report, so
+  its cases are absent; the record's `result` still says `fail`.
 
 A record, schema version 1:
 
@@ -276,11 +302,11 @@ A record, schema version 1:
 | `host` | the machine's hostname; comparisons only ever use one host's records |
 | `commit` | the full SHA that was tested |
 | `backend`, `preset` | as the gate printed them |
-| `gpu` | name, driver version, VRAM |
-| `toolchain` | clang, CMake and nvcc or hipcc versions |
-| `build` | `mode` (`warm` or `clean`), `launcher` (on or off), `jobs` (`BUILD_JOBS`), wall time, and for a clean build the per-file times from `.ninja_log` |
-| `cases` | per test case: name, binary or pytest node, status (`pass`, `fail`, `skip`), seconds. From gtest's `--gtest_output=json`, ctest's `--output-junit` and pytest's JUnit XML |
-| `selection` | `shadow` records only: what was selected and any misses |
+| `gpu` | `name`, `driver` (version), `vram_mib`; `null` where the vendor tool cannot say |
+| `toolchain` | `clang`, `cmake`, and `nvcc` or `hipcc`: versions, the compilers' read from the build directory's own configure |
+| `build` | `mode` (`warm` or `clean`), `launcher` (`on` or `off`: whether the configure found sccache), `jobs` (`BUILD_JOBS`), `seconds` (configure and build wall time), and for a clean build `files`, each output's `file` and `seconds` from `.ninja_log`; `null` when the run built nothing |
+| `cases` | per test case: `name` (`Suite.Case`, or the pytest node id), `binary` (the gtest binary's name, or `pytest`), `status` (`pass`, `fail`, `skip`), `seconds`. From gtest's `--gtest_output=json`, ctest's `--output-junit` and pytest's JUnit XML |
+| `selection` | `shadow` records only, and absent from the rest: what was selected and any misses |
 | `result` | `pass` or `fail` |
 
 **Only this box's nightly and weekly records form the timing series.** Times

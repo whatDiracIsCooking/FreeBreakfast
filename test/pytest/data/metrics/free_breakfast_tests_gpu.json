@@ -1,0 +1,86 @@
+{
+  "tests": 4,
+  "failures": 1,
+  "disabled": 1,
+  "errors": 0,
+  "timestamp": "2026-11-01T03:40:00Z",
+  "time": "3.26s",
+  "name": "AllTests",
+  "testsuites": [
+    {
+      "name": "Overlap",
+      "tests": 2,
+      "failures": 0,
+      "disabled": 0,
+      "errors": 0,
+      "timestamp": "2026-11-01T03:40:00Z",
+      "time": "0.012s",
+      "testsuite": [
+        {
+          "name": "Symmetric",
+          "file": "test/gtest/overlap_gpu.cpp",
+          "line": 20,
+          "status": "RUN",
+          "result": "COMPLETED",
+          "timestamp": "2026-11-01T03:40:00Z",
+          "time": "0.012s",
+          "classname": "Overlap"
+        },
+        {
+          "name": "NeedsADevice",
+          "file": "test/gtest/overlap_gpu.cpp",
+          "line": 40,
+          "status": "RUN",
+          "result": "SKIPPED",
+          "timestamp": "2026-11-01T03:40:00Z",
+          "time": "0s",
+          "classname": "Overlap",
+          "skipped": [
+            {
+              "message": "test/gtest/overlap_gpu.cpp:41\nno GPU device available\n"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Exchange/ExchangeGolden",
+      "tests": 2,
+      "failures": 1,
+      "disabled": 1,
+      "errors": 0,
+      "timestamp": "2026-11-01T03:40:00Z",
+      "time": "3.25s",
+      "testsuite": [
+        {
+          "name": "Matches/1",
+          "value_param": "dd",
+          "file": "test/gtest/exchange_gpu.cpp",
+          "line": 80,
+          "status": "RUN",
+          "result": "COMPLETED",
+          "timestamp": "2026-11-01T03:40:00Z",
+          "time": "3.25s",
+          "classname": "Exchange/ExchangeGolden",
+          "failures": [
+            {
+              "failure": "test/gtest/exchange_gpu.cpp:95\nExpected: (err) <= (1e-10), actual: 3e-09 vs 1e-10",
+              "type": ""
+            }
+          ]
+        },
+        {
+          "name": "DISABLED_Huge/0",
+          "value_param": "ff",
+          "file": "test/gtest/exchange_gpu.cpp",
+          "line": 120,
+          "status": "NOTRUN",
+          "result": "SUPPRESSED",
+          "timestamp": "2026-11-01T03:40:00Z",
+          "time": "0s",
+          "classname": "Exchange/ExchangeGolden"
+        }
+      ]
+    }
+  ]
+}

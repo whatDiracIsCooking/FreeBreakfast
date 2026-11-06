@@ -1,0 +1,121 @@
+{
+  "schema": 1,
+  "kind": "weekly",
+  "started": "2026-11-01T03:00:00Z",
+  "finished": "2026-11-01T04:10:00Z",
+  "host": "box",
+  "commit": "0123456789abcdef0123456789abcdef01234567",
+  "backend": "cuda",
+  "preset": "default",
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 3080",
+    "driver": "580.126.20",
+    "vram_mib": 10240
+  },
+  "toolchain": {
+    "clang": "20.1.8",
+    "cmake": "4.2.3",
+    "nvcc": "13.0.88"
+  },
+  "build": {
+    "mode": "clean",
+    "launcher": "off",
+    "jobs": 8,
+    "seconds": 1234.568,
+    "files": [
+      {
+        "file": "src/b.o",
+        "seconds": 0.2
+      },
+      {
+        "file": "src/c.o",
+        "seconds": 1.25
+      },
+      {
+        "file": "src/d.o",
+        "seconds": 0.5
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "Basis.ParsesSto3g",
+      "binary": "free_breakfast_basis_tests_host",
+      "status": "pass",
+      "seconds": 0.031
+    },
+    {
+      "name": "Basis.RejectsCartesian",
+      "binary": "free_breakfast_basis_tests_host",
+      "status": "fail",
+      "seconds": 0.02
+    },
+    {
+      "name": "Gpu.Serial",
+      "binary": "free_breakfast_tests_gpu",
+      "status": "skip",
+      "seconds": 0.41
+    },
+    {
+      "name": "Unlisted.Case",
+      "binary": "ctest",
+      "status": "pass",
+      "seconds": 0.001
+    },
+    {
+      "name": "Overlap.Symmetric",
+      "binary": "free_breakfast_tests_gpu",
+      "status": "pass",
+      "seconds": 0.012
+    },
+    {
+      "name": "Overlap.NeedsADevice",
+      "binary": "free_breakfast_tests_gpu",
+      "status": "skip",
+      "seconds": 0.0
+    },
+    {
+      "name": "Exchange/ExchangeGolden.Matches/1",
+      "binary": "free_breakfast_tests_gpu",
+      "status": "fail",
+      "seconds": 3.25
+    },
+    {
+      "name": "Exchange/ExchangeGolden.DISABLED_Huge/0",
+      "binary": "free_breakfast_tests_gpu",
+      "status": "skip",
+      "seconds": 0.0
+    },
+    {
+      "name": "test/pytest/test_a.py::test_ok[x-1]",
+      "binary": "pytest",
+      "status": "pass",
+      "seconds": 0.11
+    },
+    {
+      "name": "test/pytest/test_a.py::TestGroup::test_in_class",
+      "binary": "pytest",
+      "status": "pass",
+      "seconds": 0.002
+    },
+    {
+      "name": "test/pytest/test_a.py::test_skipped",
+      "binary": "pytest",
+      "status": "skip",
+      "seconds": 0.0
+    },
+    {
+      "name": "test/pytest/sub/test_b.py::test_broken",
+      "binary": "pytest",
+      "status": "fail",
+      "seconds": 1.5
+    },
+    {
+      "name": "test/pytest/sub/test_b.py::test_errors",
+      "binary": "pytest",
+      "status": "fail",
+      "seconds": 0.0
+    }
+  ],
+  "result": "fail"
+}

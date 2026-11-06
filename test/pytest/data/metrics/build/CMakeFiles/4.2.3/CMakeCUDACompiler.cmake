@@ -1,0 +1,3 @@
+set(CMAKE_CUDA_COMPILER "/usr/local/cuda/bin/nvcc")
+set(CMAKE_CUDA_COMPILER_ID "NVIDIA")
+set(CMAKE_CUDA_COMPILER_VERSION "13.0.88")

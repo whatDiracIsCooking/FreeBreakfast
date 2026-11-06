@@ -4,7 +4,7 @@
   devtools/test.py push [--preset NAME] [-j N] [--dry-run]
   devtools/test.py pr   [--preset NAME] [--fresh] [--clean] [--no-test]
                         [--tidy] [--only cpp|python] [-j N] [--report DIR]
-                        [-- <ctest args>]
+                        [--record] [-- <ctest args>]
 
 push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   pushed range (PRE_COMMIT_FROM_REF...PRE_COMMIT_TO_REF, which pre-commit
@@ -29,6 +29,8 @@ pr: the gate before opening a PR (milestone-run requires it). Configure,
     --only LANG    run only the cpp or the python half
     -j N           compile jobs (default: BUILD_JOBS)
     --report DIR   log directory (default: SLOW_TIER_REPORTS)
+    --record       append the run to the `metrics` branch as a `manual`
+                   record (devtools/metrics.py; a clean tree only)
     -- <args>      passed to ctest verbatim; they select the GPU batches too
 
 Both gates run with FREE_BREAKFAST_FAST_TESTS=1, so every case under
@@ -48,6 +50,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import fcntl
+import importlib.util
 import json
 import os
 import re
@@ -81,6 +84,7 @@ CONFIG_VARS = (
     "FAST_TEST_ARGS",
     "PREPUSH_PATHS",
     "SLOW_TIER_REPORTS",
+    "METRICS_WORKTREE",
     "VENV_PATHS",
     "JOBS",
     "PRIMARY_ROOT",
@@ -664,9 +668,12 @@ def fast_env() -> dict[str, str]:
     return dict(os.environ, FREE_BREAKFAST_FAST_TESTS="1")
 
 
-def python_half(tag: str, cfg: dict[str, str], log: Path | None) -> int:
+def python_half(
+    tag: str, cfg: dict[str, str], log: Path | None, junit: Path | None = None
+) -> int:
     """The fast pytest set: FAST_TEST_ARGS over PREPUSH_PATHS, JOBS workers,
-    -rs so the skips are listed, and no .pytest_cache written."""
+    -rs so the skips are listed, and no .pytest_cache written. With `junit`,
+    a JUnit report there too (xunit1, which names each case's file)."""
     pytest = find_pytest(cfg)
     if pytest is None:
         say(f"{tag}: no pytest found in {cfg['VENV_PATHS']} or on PATH", err=True)
@@ -680,6 +687,8 @@ def python_half(tag: str, cfg: dict[str, str], log: Path | None) -> int:
     if cfg["JOBS"]:
         cmd += ["-n", cfg["JOBS"]]
     cmd += ["-q", "-rs", "-p", "no:cacheprovider"]
+    if junit is not None:
+        cmd += [f"--junitxml={junit}", "-o", "junit_family=xunit1"]
     cmd += shlex.split(cfg["FAST_TEST_ARGS"]) + shlex.split(cfg["PREPUSH_PATHS"])
     if log is None:
         say(f"--- pytest: {' '.join(cmd)} ---")
@@ -919,13 +928,18 @@ def tier_tests(
     build_dir: Path,
     passthrough: list[str],
     log: Path,
+    results: Path | None = None,
 ) -> int:
     """The C++ test phase, inside the held card. ctest runs the host entries,
     the RUN_SERIAL ones and anything a launcher wraps, CTEST_JOBS at once;
     the GPU entries that can share a process then run as one process per GPU
     binary, one after another. The split reads ctest's own listing, so the
     preset's filters and a `-- -R ...` pick the batches too; when the listing
-    cannot be read, ctest runs every entry."""
+    cannot be read, ctest runs every entry.
+
+    With `results`, the run's per-case reports go there for the metrics
+    record (run_cases): the listing, ctest's JUnit, and each batch's gtest
+    JSON."""
     tag = "pr"
     env = fast_env()
     gpu_bins = [build_dir / rel for rel in GPU_BINS]
@@ -936,6 +950,9 @@ def tier_tests(
         text=True,
         check=False,
     )
+    if results is not None:
+        results.mkdir(parents=True, exist_ok=True)
+        (results / "listing.json").write_text(listing.stdout)
     try:
         if listing.returncode != 0:
             raise ValueError(listing.returncode)
@@ -957,6 +974,8 @@ def tier_tests(
             "--exclude-from-file",
             exclude.name,
         ]
+        if results is not None:
+            cmd += ["--output-junit", str(results / "ctest.xml")]
         rc = run_phase("ctest", cmd + passthrough, log, env=env)
     for gpu_bin, gtest_filter in zip(gpu_bins, filters, strict=True):
         if not gtest_filter:
@@ -968,6 +987,8 @@ def tier_tests(
         batch_env = dict(
             env, GTEST_FILTER=gtest_filter, GTEST_ALSO_RUN_DISABLED_TESTS="1"
         )
+        if results is not None:
+            batch_env["GTEST_OUTPUT"] = f"json:{results / gpu_bin.name}.json"
         if (
             run_gpu_batch(
                 tag, gpu_bin, cfg, log, env=batch_env, cwd=gpu_bin.parent, echo_log=True
@@ -976,6 +997,41 @@ def tier_tests(
         ):
             rc = 1
     return rc
+
+
+def load_metrics():
+    """devtools/metrics.py, by path: under `python3 -I` the script's own
+    directory is not on sys.path."""
+    spec = importlib.util.spec_from_file_location(
+        "fbf_metrics", REPO_ROOT / "devtools" / "metrics.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_cases(metrics, results: Path) -> list[dict]:
+    """Every case a run's reports name: ctest's JUnit (each entry's binary
+    from the listing), each GPU batch's gtest JSON, pytest's JUnit. A report
+    that is absent was not written (that half did not run, or crashed), and
+    adds nothing."""
+    cases: list[dict] = []
+    listing = results / "listing.json"
+    binaries: dict[str, str] = {}
+    if listing.is_file():
+        try:
+            binaries = metrics.ctest_binaries(listing.read_text())
+        except ValueError:
+            binaries = {}
+    if (results / "ctest.xml").is_file():
+        cases += metrics.junit_cases(results / "ctest.xml", binaries)
+    for rel in GPU_BINS:
+        report = results / f"{Path(rel).name}.json"
+        if report.is_file():
+            cases += metrics.gtest_cases(report, Path(rel).name)
+    if (results / "pytest.xml").is_file():
+        cases += metrics.junit_cases(results / "pytest.xml")
+    return cases
 
 
 def cmd_pr(
@@ -1002,14 +1058,37 @@ def cmd_pr(
     report = report_dir_of(args.report or cfg["SLOW_TIER_REPORTS"])
     stamp = time.strftime("%Y%m%d-%H%M%S")
     rev, diff_hash = tree_rev()
+    if args.record and diff_hash:
+        # The record's commit would not be what was tested.
+        say(
+            f"{tag}: --record needs a clean tree; {rev} has tracked changes"
+            " -- commit or stash them",
+            err=True,
+        )
+        return 2
     log = report / f"pr-{stamp}-{rev}-{preset}.log"
     say(f"{tag}: {REPO_ROOT} @ {rev}  preset={preset} -> {log}")
     tree_rev_header(tag, log)
+    metrics = load_metrics() if args.record else None
+    results = log.with_suffix(".results") if args.record else None
+    started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    build_dir = build_dir_of(preset)
+    build: dict | None = None
 
     rc = 0
     if do_cpp:
-        build_dir = build_dir_of(preset)
+        since = metrics.ninja_offset(build_dir / ".ninja_log") if metrics else None
+        build_start = time.monotonic()
         rc = cpp_build(preset, args.fresh, args.clean, jobs, log, quiet=False)
+        if metrics:
+            build = {
+                "mode": "clean" if args.clean else "warm",
+                "launcher": metrics.launcher_on(build_dir),
+                "jobs": int(jobs) if jobs else os.cpu_count() or 0,
+                "seconds": time.monotonic() - build_start,
+            }
+            if args.clean and (build_dir / ".ninja_log").is_file():
+                build["files"] = metrics.ninja_files(build_dir / ".ninja_log", since)
         if rc == 0 and not args.no_test:
             has_test_preset = (
                 bool(test_preset)
@@ -1028,7 +1107,9 @@ def cmd_pr(
                     log=log,
                 )
                 with Card(backend_of_preset(test_preset, cfg), cfg):
-                    rc = tier_tests(cfg, test_preset, build_dir, passthrough, log)
+                    rc = tier_tests(
+                        cfg, test_preset, build_dir, passthrough, log, results
+                    )
             else:
                 say(
                     f"{tag}: no test preset '{test_preset or '<empty>'}' -- built only",
@@ -1063,7 +1144,11 @@ def cmd_pr(
                 ):
                     say(f"{tag}: clang-tidy reported findings (advisory)", log=log)
     if do_py:
-        prc = python_half(tag, cfg, log)
+        if results is not None:
+            results.mkdir(parents=True, exist_ok=True)
+        prc = python_half(
+            tag, cfg, log, results / "pytest.xml" if results is not None else None
+        )
         rc = rc or prc
 
     verdict = "PASS" if rc == 0 else f"FAIL(rc={rc})"
@@ -1072,6 +1157,43 @@ def cmd_pr(
         summary += f"  only={args.only}"
     if diff_hash:
         summary += f"  diff={diff_hash}"
+    if metrics is not None and results is not None:
+        root = Path(cfg["PRIMARY_ROOT"] or REPO_ROOT)
+        try:
+            backend = backend_of_preset(preset, cfg)
+            gpu, tools = metrics.probe(build_dir, backend)
+            record = metrics.make_record(
+                kind="manual",
+                started=started,
+                finished=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                commit=subprocess.run(
+                    ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip(),
+                backend=backend,
+                preset=preset,
+                gpu=gpu,
+                toolchain=tools,
+                build=metrics.build_info(**build) if build else None,
+                cases=run_cases(metrics, results),
+                result="pass" if rc == 0 else "fail",
+            )
+            sha, where = metrics.append(
+                record, REPO_ROOT, root / cfg["METRICS_WORKTREE"]
+            )
+            say(
+                f"{tag}: metrics: {len(record['cases'])} case(s) -> {where}"
+                f" @ {sha[:12]}",
+                log=log,
+            )
+            summary += f"  metrics={sha[:12]}"
+        except (metrics.MetricsError, OSError, ValueError, SyntaxError) as e:
+            # ET.ParseError is a SyntaxError.
+            say(f"{tag}: metrics: FAILED to record the run: {e}", err=True, log=log)
+            summary += "  metrics=FAILED"
+            rc = rc or 1
     say(summary, log=log)
     with (report / "summary.log").open("a") as f:
         f.write(summary + "\n")
@@ -1117,6 +1239,11 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     )
     pr.add_argument("--only", choices=("cpp", "python"), help="run one half")
     pr.add_argument("--report", help="log directory (default: SLOW_TIER_REPORTS)")
+    pr.add_argument(
+        "--record",
+        action="store_true",
+        help="append the run to the metrics branch (a clean tree only)",
+    )
     args = parser.parse_args(argv)
     if passthrough and args.gate != "pr":
         parser.error("only `pr` takes arguments after `--` (they go to ctest)")

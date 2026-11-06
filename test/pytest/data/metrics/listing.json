@@ -1,0 +1,37 @@
+{
+  "kind": "ctestInfo",
+  "version": {"major": 1, "minor": 0},
+  "tests": [
+    {
+      "name": "Basis.ParsesSto3g",
+      "command": [
+        "/w/build/test/basis/free_breakfast_basis_tests_host",
+        "--gtest_filter=Basis.ParsesSto3g",
+        "--gtest_also_run_disabled_tests"
+      ],
+      "properties": [{"name": "LABELS", "value": ["host"]}]
+    },
+    {
+      "name": "Basis.RejectsCartesian",
+      "command": [
+        "/w/build/test/basis/free_breakfast_basis_tests_host",
+        "--gtest_filter=Basis.RejectsCartesian",
+        "--gtest_also_run_disabled_tests"
+      ],
+      "properties": [{"name": "LABELS", "value": ["host"]}]
+    },
+    {
+      "name": "Gpu.Serial",
+      "command": [
+        "/w/build/test/gtest/free_breakfast_tests_gpu",
+        "--gtest_filter=Gpu.Serial",
+        "--gtest_also_run_disabled_tests"
+      ],
+      "properties": [
+        {"name": "LABELS", "value": ["gpu"]},
+        {"name": "RUN_SERIAL", "value": true}
+      ]
+    },
+    {"name": "NoCommand"}
+  ]
+}
