@@ -33,7 +33,7 @@ Interactive, and the one to develop in:
 
 ```sh
 devtools/devcontainer.sh rebuild
-devtools/devcontainer.sh shell -c devtools/cpp-tier.sh   # configure + build + ctest
+devtools/devcontainer.sh shell -c 'devtools/test.py pr' # configure + build + ctest + pytest
 devtools/devcontainer.sh shell                           # or just live in it
 ```
 
@@ -102,7 +102,7 @@ that from `devtools/cloud-env-setup.sh`, pasted in as the environment's setup
 script: the image's toolchain and `/opt` trees, plus both backends' SDKs cut
 down to the libraries WarpWraps links, so it fits the session's disk. There
 the pinned presets build and run the host tests, every GPU case skipping:
-`devtools/cpp-tier.sh --preset ci-cuda` (or `ci-hip`).
+`devtools/test.py pr --preset ci-cuda` (or `ci-hip`).
 
 A rented single-GPU cloud VM (a Lambda 1× A100, H100 or A10) runs the CUDA
 devcontainer like the workstation. `devtools/gpu-vm-setup.sh` covers what a
@@ -209,10 +209,11 @@ own, not a tree-wide switch.
 cmake --preset default && cmake --build --preset default && ctest --preset default
 ```
 
-or all three with a log and a PASS/FAIL line, which is what the gates run:
+or all three with a log and a PASS/FAIL line, then the fast pytest set, which
+is the PR gate ([`docs/testing.md`](docs/testing.md)):
 
 ```sh
-devtools/cpp-tier.sh [--preset NAME] [--fresh] [--clean] [--no-test] [--tidy] [-j N]
+devtools/test.py pr [--preset NAME] [--fresh] [--clean] [--no-test] [--tidy] [--only cpp|python] [-j N]
 ```
 
 | Preset | What it is for |
@@ -302,8 +303,8 @@ so those cases are `test/gtest/`'s); `test/gtest/` holds the rest, as
 and **skip with a reason** rather than failing, so the suite stays usable on a
 device-less build host — read the skip list before calling a run green. A
 second switch skips from the other end: `FREE_BREAKFAST_FAST_TESTS` makes
-`slow_test.h`'s macro skip the heavy validation cases, and `cpp-tier.sh` and
-`cpp-smoke.sh` both set it. `devtools/cpp-slow-tier.sh` is the run with nothing
+`slow_test.h`'s macro skip the heavy validation cases, and both gates of
+`devtools/test.py` set it. `devtools/cpp-slow-tier.sh` is the run with nothing
 skipped.
 
 Kernel code a GPU test needs lives in a device library the GPU binary links
@@ -320,7 +321,7 @@ never initialises the GPU runtime. The payoff is that `ctest -R <Suite>` selects
 properly and every skip is named:
 
 ```sh
-devtools/cpp-tier.sh -- -R Version
+devtools/test.py pr --only cpp -- -R Version
 ```
 
 **`ctest` runs this project's suites only.** The WarpWraps submodule is nested
@@ -356,8 +357,8 @@ cannot run, so a skip is never mistaken for a pass.
 
 ### What is gated where
 
-`git push` runs the fast pytest tier, and only when the push touches a `.py`;
-`devtools/cpp-smoke.sh` runs the C++ smoke gate when it touches C++. Per PR, CI
+`git push` runs `devtools/test.py push`: the fast pytest tier when the push
+touches a `.py`, and the C++ smoke gate when it touches C++. Per PR, CI
 runs `lint` and the fast pytest tier (`test`, on the oldest and newest
 supported Python); the `slow` job runs the slow pytest tier nightly and on a
 manual dispatch, never on a PR.
@@ -365,7 +366,7 @@ manual dispatch, never on a PR.
 **The `cpp` job in `.github/workflows/ci.yml` is `if: false`** — both matrix
 legs, cuda and hip. Until one of the two routes in that file's comment is set
 up, a PR touching only `src/` has its formatting and CMake lint checked on the
-server and nothing else: nothing builds or runs it. `devtools/cpp-tier.sh`
+server and nothing else: nothing builds or runs it. `devtools/test.py pr`
 before opening the PR is the whole correctness gate, and it is a human one. The
 `ci-cuda`/`ci-hip` presets were built for that job and need no GPU — the only
 obstacle is getting the toolchain image onto a runner.
@@ -400,7 +401,7 @@ Two front ends onto the same image:
 | | `docker/compose.yaml` | `.devcontainer/` + `devtools/` |
 |---|---|---|
 | Shape | one-shot: configure, build, test, exit | long-lived container you stay in |
-| Logs | tees everything to `.log/` | your terminal; `cpp-tier.sh` also logs |
+| Logs | tees everything to `.log/` | your terminal; `test.py` also logs |
 | Good for | CI, nightlies, sanitizer sweeps | iterating, agents, debugging |
 | Per worktree? | no | yes — container and volumes keyed on the workspace path |
 | CPU bounds | none | `CPUSET`/`CPUS` in `devtools/config.sh` |
@@ -492,14 +493,12 @@ the scripts.
 | `doctor.sh` | Report what is degraded here. Non-zero only on a FAIL. |
 | `devcontainer.sh` | `up` / `rebuild` / `shell` / `test` / `down`, per worktree. Takes `--cuda`/`--hip`/`--combined`. |
 | `worktree.sh` | `add` / `rm` / `sync` / `gc` / `list` for container-backed worktrees. |
-| `build.sh` | Configure + build, no ctest — the build half of `cpp-tier.sh`. |
-| `cpp-tier.sh` | Configure + build + ctest, logged. The C++ tier. |
-| `cpp-slow-tier.sh` | The same with nothing skipped — the deep-validation sweep. |
-| `cpp-smoke.sh` | The C++ half of the pre-push gate. |
+| `build.sh` | Configure + build, no ctest — the build half of `test.py`. |
+| `test.py` | The gates: `push` (what `git push` runs) and `pr` (configure + build + ctest + pytest, logged). See [`docs/testing.md`](docs/testing.md). |
+| `cpp-slow-tier.sh` | The C++ tier with nothing skipped — the deep-validation sweep. |
 | `cross-backend-check.sh` | Compile the tree for the *other* GPU backend. |
 | `coverage.sh` | Build instrumented, run ctest, `llvm-cov` summary of `src/`. |
 | `slow-tier.sh` | The slow Python tier, off the per-commit path, logged. |
-| `prepush-tests.sh` | The fast Python gate that `git push` runs. |
 | `format.sh` | clang-format + ruff format; `--check` is what the gates run. |
 | `cmake-lint.sh` | `cmake-lint` over the staged CMake files, at `git commit`. |
 | `check-int-types.py` | Reject `int`/`long`/… — every integer states its width. |
@@ -523,7 +522,7 @@ fail on drift, and you run `devtools/format.sh` to fix it. `ruff check` and
 `check-int-types.py` (fixed-width integers only) and `check-shared-mem.py`
 (statically sized shared memory, unless a line says why not). Both take an
 in-line escape with a reason. clang-tidy itself is advisory and off by default
-(`cpp-tier.sh --tidy`); its handling of C++23 named modules is still
+(`test.py pr --tidy`); its handling of C++23 named modules is still
 incomplete, so expect noise on `.cppm` files.
 
 `BUILD_JOBS` in `devtools/config.sh` is the one to set conservatively — a C++23

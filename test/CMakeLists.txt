@@ -30,7 +30,7 @@
 #               run_example.cmake, as the `gpu`-labelled example_* entries.
 #
 # All ten binaries, and examples/'s entries, are registered with ctest and
-# run by `ctest --preset <name>`, or by devtools/cpp-tier.sh, which is
+# run by `ctest --preset <name>`, or by `devtools/test.py pr`, which is
 # configure + build + ctest in one command.
 #
 # The PYTHON suite is not built by CMake: it lives in test/pytest/ -- a sibling

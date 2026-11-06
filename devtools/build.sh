@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Configure and build the C++ tree -- the build half of devtools/cpp-tier.sh,
-# on its own so a build-without-ctest run has a name of its own and cpp-tier
-# does not carry its own copy of the two cmake phases.
+# Configure and build the C++ tree -- the build half of `devtools/test.py pr`,
+# on its own so a build-without-ctest run has a name of its own and the gates
+# do not carry their own copy of the two cmake phases.
 #
 #   devtools/build.sh [--preset NAME] [--fresh] [--clean] [-j N] [--report DIR]
 #
@@ -18,7 +18,7 @@
 # and fails at find_package(spdlog) without them. `devtools/doctor.sh` lists
 # which of the two situations you are in.
 #
-# Flags (a subset of cpp-tier.sh's, minus everything about running tests):
+# Flags (a subset of `test.py pr`'s, minus everything about running tests):
 #   --preset NAME   configure/build preset (default: CMAKE_PRESET from
 #                   devtools/config.sh -- `auto`, the least-loaded live
 #                   card's preset; the choice is printed).
@@ -37,16 +37,17 @@
 #: -- help stops here --
 #
 # Two lives. Run directly, this is the build-only tier: configure + build,
-# logged, with its own PASS/FAIL summary line (tagged `build`, so it is
-# distinct from cpp-tier's `cpp-tier` line in the same summary.log). SOURCED --
-# which is how devtools/cpp-tier.sh uses it -- it defines run_phase,
-# cpp_build_dir, cpp_require_build_tools and cpp_build and does nothing else, so
-# the tier's configure, build and ctest all tee into ONE log (BUILD_LOG) and the
-# tier writes the single summary line. Nothing here duplicates a phase cpp-tier
-# also owns; there is exactly one copy of the cmake invocations, and it is here.
+# logged, with its own PASS/FAIL summary line (tagged `build`, so it is distinct
+# from `test.py pr`'s line in the same summary.log). SOURCED -- which is how
+# devtools/test.py (through bash) and cpp-slow-tier.sh use it -- it defines
+# run_phase, cpp_build_dir, cpp_require_build_tools and cpp_build and does
+# nothing else, so a gate's configure, build and ctest all tee into ONE log
+# (BUILD_LOG) and the gate writes the single summary line. Nothing here
+# duplicates a phase a gate also owns; there is exactly one copy of the cmake
+# invocations, and it is here.
 set -euo pipefail
 
-# Sourced from cpp-tier.sh, which has already loaded lib.sh (and with it
+# Sourced after lib.sh, which has already loaded (and with it
 # config.sh); only pull it in when run standalone, so we do not re-run its git
 # probes on every source.
 if [ -z "${REPO_ROOT:-}" ]; then
@@ -58,9 +59,8 @@ fi
 : "${BUILD_LOG:=/dev/null}"
 
 # Echo one phase's header and streamed output into BUILD_LOG, and return the
-# command's status (not tee's -- PIPESTATUS[0]). Shared with cpp-tier.sh's
-# ctest and clang-tidy phases, which is why it lives here rather than in either
-# script.
+# command's status (not tee's -- PIPESTATUS[0]). Shared with cpp-slow-tier.sh's
+# ctest phase, which is why it lives here; devtools/test.py has its own port.
 run_phase() {
   local name=$1; shift
   echo "--- $name: $* ---" | tee -a "$BUILD_LOG"
@@ -70,8 +70,8 @@ run_phase() {
 
 # The binary directory a preset configures into: `default` uses build/ but the
 # others use build-<preset>/, and a hardcoded build/ would point --tidy's
-# compile_commands.json at the previous preset's database, and cpp-smoke at
-# the wrong test binaries. preset_binary_dir (lib.sh) reads it out of
+# compile_commands.json at the previous preset's database, and the push gate
+# at the wrong test binaries. preset_binary_dir (lib.sh) reads it out of
 # CMakePresets.json; falls back to build/ when that cannot say.
 cpp_build_dir() {
   local d
@@ -100,7 +100,7 @@ cpp_require_build_tools() {
 cpp_build() {
   local preset=$1 fresh=$2 clean=$3 jobs=$4
 
-  # pre-commit's pre-push stage runs this (via cpp-smoke.sh) with GIT_DIR /
+  # pre-commit's pre-push stage runs this (via test.py push) with GIT_DIR /
   # GIT_WORK_TREE / GIT_INDEX_FILE set for its own hook dispatch. Those leak
   # into every child process, including the `git clone`/`git checkout` that
   # CMake's FetchContent shells out to for deps/CMakeLists.txt's

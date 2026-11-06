@@ -174,8 +174,8 @@ test -L /opt/rocm
 # gid 110 is Ubuntu 24.04's default for render, and the gid HERE is what a
 # `--group-add render` by NAME would resolve to -- which is why nothing passes
 # the name: the bind-mounted nodes keep the HOST's gid. Pass `--group-add
-# <host-gid>` to docker run instead, which is what the devcontainer runArgs and
-# cpp-tier.sh --rocm both do. Never rebuild the image to match a host.
+# <host-gid>` to docker run instead, which is what the devcontainer runArgs
+# do. Never rebuild the image to match a host.
 (getent group render >/dev/null || groupadd -g 110 render || groupadd render)
 (getent group video >/dev/null || groupadd video)
 usermod -aG render,video ubuntu

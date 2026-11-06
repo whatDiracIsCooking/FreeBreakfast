@@ -42,7 +42,7 @@ devtools/devcontainer.sh down      # stop and remove the container
   nothing is lost. Reclaiming the volumes is `worktree.sh rm`'s job.
 - `shell -c "<cmd>"` runs one command inside — how you inspect a container
   without an interactive session, and how the C++ tier is run:
-  `devtools/devcontainer.sh shell -c devtools/cpp-tier.sh`.
+  `devtools/devcontainer.sh shell -c 'devtools/test.py pr'`.
 
 ### Three images, one per GPU backend
 
@@ -55,7 +55,7 @@ There are **three** configs, one per backend, each on its own Dockerfile:
 | Variant | Config | Image | What it has |
 | --- | --- | --- | --- |
 | `cuda` | `.devcontainer/cuda/` | `docker/Dockerfile.cuda` | clang-20 + libc++, CMake 4.2, Ninja, CUDA 13, sccache, the `/opt` deps. **The default.** |
-| `hip` | `.devcontainer/hip/` | `docker/Dockerfile.hip` | The same toolchain with ROCm and no CUDA. Pins `CMAKE_PRESET`/`CTEST_PRESET` to `hip` in `containerEnv`, so `cpp-tier.sh` needs no flag inside. |
+| `hip` | `.devcontainer/hip/` | `docker/Dockerfile.hip` | The same toolchain with ROCm and no CUDA. Pins `CMAKE_PRESET`/`CTEST_PRESET` to `hip` in `containerEnv`, so `devtools/test.py pr` needs no flag inside. |
 | `combined` | `.devcontainer/combined/` | `docker/Dockerfile.combined` | Both SDKs, ~40GB. Stays on the `default` (CUDA) preset; `--preset hip` for the other. |
 
 The variant flag goes **before** the command:

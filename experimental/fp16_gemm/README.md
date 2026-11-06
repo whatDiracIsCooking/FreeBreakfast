@@ -34,7 +34,7 @@ that accumulator's unit roundoff, against the exact product of the rounded
 inputs:
 
 ```sh
-devtools/cpp-tier.sh --preset experimental -- -L experimental -R Fp16
+devtools/test.py pr --only cpp --preset experimental -- -L experimental -R Fp16
 ```
 
 `free_breakfast_fp16_gemm_bench [max_n] [reps]` prints TFLOP/s for `Hgemm`,

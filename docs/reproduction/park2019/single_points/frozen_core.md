@@ -133,8 +133,8 @@ owner, as before.
     docs/reproduction/park2019/single_points/<stem>_fc.toml'
   ```
 
-- **Card and build.** RTX 3080 (CUDA, 10 GiB), `devtools/cpp-tier.sh
-  --preset default --no-test`, the tree at #859's branch (8516b9f plus the
+- **Card and build.** RTX 3080 (CUDA, 10 GiB), the C++ PR gate (now
+  `devtools/test.py pr`) `--preset default --no-test`, the tree at #859's branch (8516b9f plus the
   change). All 17 points ran under one `with_gpu_card cuda` hold.
 - **Status.** All 17 logs end `completed: 0 errors, 0 warnings`, with the
   three `PC-QD-NEVPT2 state` lines and no refusal.

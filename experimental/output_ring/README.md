@@ -77,7 +77,7 @@ one-worker executor (the `corun_until` path), writes an empty array, and
 checks the shape-mismatch and unwritable-path errors:
 
 ```sh
-devtools/cpp-tier.sh --preset experimental
+devtools/test.py pr --only cpp --preset experimental
 ctest --test-dir build-experimental -L experimental -R OutputRing
 ```
 

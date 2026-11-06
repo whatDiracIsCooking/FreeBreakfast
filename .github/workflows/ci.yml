@@ -1,4 +1,4 @@
-# The server-side gate. The pre-push hook (devtools/prepush-tests.sh) is the
+# The server-side gate. The pre-push hook (devtools/test.py push) is the
 # same idea run locally and is bypassable with --no-verify; this is not.
 #
 # It runs the FAST tier only, for the same reason the push gate does: a
@@ -22,7 +22,7 @@
 # `cpp` job's comment for the two ways.
 #
 # So, today: a PR touching only src/ is checked by nothing on the server.
-# Until one of those routes is set up, `devtools/cpp-tier.sh` before opening
+# Until one of those routes is set up, `devtools/test.py pr` before opening
 # the PR is the whole gate, and it is a human one. Know that rather than
 # discover it.
 name: ci
@@ -155,7 +155,7 @@ jobs:
             # reported twice. It rides the build that is already happening, so
             # the marginal cost is clang-tidy itself.
             #
-            # ADVISORY BY CONSTRUCTION: cpp-tier.sh never lets it change the
+            # ADVISORY BY CONSTRUCTION: test.py pr never lets it change the
             # exit code, because clang-tidy's C++23-module support is still
             # incomplete enough to emit the odd bogus diagnostic on a .cppm.
             # Read it in the uploaded log, not in this job's colour.
@@ -215,7 +215,7 @@ jobs:
           # FATAL_ERROR naming it.
           submodules: recursive
 
-      # cpp-tier.sh puts `git rev-parse --short HEAD` in its log name, and git
+      # test.py pr puts `git rev-parse --short HEAD` in its log name, and git
       # refuses to read a repository owned by a different uid. Without this the
       # job dies on "detected dubious ownership", which reads like a checkout
       # problem rather than a container one.
@@ -235,9 +235,9 @@ jobs:
       # `ninja: build stopped` with nothing about memory in it. Lower this
       # first if that appears.
       #
-      # The preset is passed explicitly, so cpp-tier.sh moves the TEST preset
+      # The preset is passed explicitly, so test.py pr moves the TEST preset
       # with it -- both ci presets exclude the `gpu` label, so neither needs a
-      # device.
+      # device. --only cpp: the pytest half is the `test` job's.
       - name: cpp tier
         run: |
           docker run --rm \
@@ -245,12 +245,12 @@ jobs:
             -v "$PWD:/workspace" -w /workspace \
             -u "$(id -u):$(id -g)" \
             free-breakfast:${{ matrix.target }} \
-            devtools/cpp-tier.sh --preset ${{ matrix.preset }} ${{ matrix.tidy }}
+            devtools/test.py pr --only cpp --preset ${{ matrix.preset }} ${{ matrix.tidy }}
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cpp-tier-${{ matrix.backend }}
+          name: cpp-pr-${{ matrix.backend }}
           path: .slow-tier-reports/
           # SLOW_TIER_REPORTS is a dotdir, and upload-artifact excludes hidden
           # paths by default (since v4.4) -- without this the reports, the cuda

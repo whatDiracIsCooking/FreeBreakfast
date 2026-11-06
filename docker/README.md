@@ -6,11 +6,11 @@ This directory is **one of two front ends onto the same image**
 | | `docker/compose.yaml` (here) | `.devcontainer/cuda/` + `devtools/` |
 |---|---|---|
 | Shape | one-shot: configure, build, test, exit | long-lived container you stay in |
-| Logs | tees everything to `.log/` | on your terminal; `cpp-tier.sh` also logs |
+| Logs | tees everything to `.log/` | on your terminal; `test.py pr` also logs |
 | Good for | CI, nightlies, sanitizer sweeps, a clean reproducible run | iterating, agents, debugging |
 | Per worktree? | no — services are global | yes, container + volumes keyed on the workspace path |
 | CPU bounds | none | `CPUSET`/`CPUS` in `devtools/config.sh` |
-| Entry point | `dc test` | `devtools/devcontainer.sh shell -c devtools/cpp-tier.sh` |
+| Entry point | `dc test` | `devtools/devcontainer.sh shell -c 'devtools/test.py pr'` |
 
 They are not layered on each other and neither is deprecated. The rule of
 thumb: if you want to read the result and throw the container away, use

@@ -19,7 +19,7 @@
 # which says why for each. None of these cases is RUN_SERIAL, and none of their
 # full names is used in test/gtest, so their ctest names need no TEST_PREFIX.
 #
-# devtools/cpp-smoke.sh names the binary, as
+# devtools/test.py (push) names the binary, as
 # test/pipeline/free_breakfast_pipeline_tests_host. Keep the target name in
 # step if you rename it.
 include(GoogleTest)

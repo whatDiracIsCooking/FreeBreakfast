@@ -5,7 +5,7 @@ One per GPU file of `../docker/`.
 | File | What it is |
 |---|---|
 | `cuda/devcontainer.json` | **The development container.** `../../docker/Dockerfile.cuda` plus `--gpus all`: clang-20 + libc++, CMake 4.2, Ninja, CUDA 13, sccache. The default. GoogleTest is fetched at configure time; nothing is prebuilt in `/opt`. |
-| `hip/devcontainer.json` | The AMD variant: `Dockerfile.hip` — the same toolchain with ROCm and **no CUDA at all**. Pins `CMAKE_PRESET`/`CTEST_PRESET` to `hip`, so a bare `devtools/cpp-tier.sh` inside it builds the HIP backend into `build-hip/`. |
+| `hip/devcontainer.json` | The AMD variant: `Dockerfile.hip` — the same toolchain with ROCm and **no CUDA at all**. Pins `CMAKE_PRESET`/`CTEST_PRESET` to `hip`, so a bare `devtools/test.py pr` inside it builds the HIP backend into `build-hip/`. |
 | `combined/devcontainer.json` | `Dockerfile.combined`: both SDKs, ~40GB. For working on both backends in one shell. No preset pin — `auto` takes the least-loaded card; `--preset default` (CUDA) or `--preset hip` pins one. |
 
 **Each one carries an `initializeCommand` that builds its parent image first.**
@@ -51,8 +51,7 @@ The three GPU variants differ in `"build".target` and in `runArgs`, and the
 **You should not have to edit those gids.** They are written as
 `${localEnv:FREE_BREAKFAST_RENDER_GID:109}`: `devtools/devcontainer.sh up|rebuild`
 resolves `ROCM_GROUPS` (`devtools/config.sh`) with `getent` and exports one
-`FREE_BREAKFAST_<NAME>_GID` per group, so any host gets its own host's ids — the same
-resolution `cpp-tier.sh --rocm` does. The literal after the colon is only the
+`FREE_BREAKFAST_<NAME>_GID` per group, so any host gets its own host's ids. The literal after the colon is only the
 fallback for opening a config **without** that script (a VS Code "Reopen in
 Container", a bare `devcontainer up`); it is a last-known-good host gid rather
 than a group name, because a name is the silent-failure case above. Either

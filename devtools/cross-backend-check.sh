@@ -18,14 +18,14 @@
 #
 # WHAT IT COSTS. This is a COMPILE-ONLY check -- no GoogleTest fetch, no runtime
 # tests, no device -- which is why it is worth running every time where
-# devtools/cpp-tier.sh costs minutes. NO TIMINGS ARE QUOTED HERE ON PURPOSE:
+# devtools/test.py pr costs minutes. NO TIMINGS ARE QUOTED HERE ON PURPOSE:
 # this tree compiles WarpWraps's module surface as well as its own, so the cost
 # tracks the dependency and a number measured today would be stale by the next
 # submodule bump. Measure it on your box if you need one.
 #
 # WHAT IT DOES NOT DO. It proves the other backend COMPILES, not that it runs:
 # no kernel is launched and no result is checked. A real ROCm box running
-# `devtools/cpp-tier.sh --preset hip` is still the stronger statement, and is
+# `devtools/test.py pr --preset hip` is still the stronger statement, and is
 # what you want before trusting the backend in anger. This is the cheap check
 # you can afford every time.
 #

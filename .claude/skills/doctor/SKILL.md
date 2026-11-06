@@ -127,7 +127,7 @@ doctor suggests). The four **absolute** ones —
 `/opt/{spdlog,taskflow,tomlplusplus,googletest-src}` — are the prebuilt
 dependencies baked into `Dockerfile`, so on the host they are expected to
 be absent. Do not try to install them there: the answer is either the container
-or `devtools/cpp-tier.sh --preset workstation`, which fetches them instead. A
+or `devtools/test.py pr --preset workstation`, which fetches them instead. A
 `default` configure without them fails at `find_package(spdlog)` with a message
 that never mentions containers, which is the whole reason they are listed.
 
@@ -172,11 +172,12 @@ Five failures that look like something else entirely:
 
 4. **A stale CMake cache.** Doctor never configures, so it cannot see that
    `build/` holds a toolchain variable you changed an hour ago. A change that
-   "does nothing" wants `devtools/cpp-tier.sh --fresh`; a plain reconfigure
+   "does nothing" wants `devtools/test.py pr --fresh`; a plain reconfigure
    keeps the old value.
 
-5. **A C++ change with no gate behind it.** The push hook only fires on `.py`,
-   and the CI `cpp:` job ships `if: false`. Nothing server-side checks a
+5. **A C++ change with no gate behind it.** The push hook's C++ half
+   (`devtools/test.py push`) skips itself on a host without the toolchain or
+   a GPU, and the CI `cpp:` job ships `if: false`. Nothing server-side checks a
    `src/`-only PR until you have a GPU runner — doctor reports tools, not that
    absence.
 

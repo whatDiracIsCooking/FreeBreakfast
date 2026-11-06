@@ -77,7 +77,7 @@ output (`naux`, `|rows|` or `|cols|` zero) succeeds and writes nothing; for
 - its index order is chosen for the syrk that follows it, over
   `naux · nocc` rows; MP2's pair gemms want the other order, and forcing one
   layout pessimizes one consumer;
-- it is on the SCF's per-iteration hot path, and `devtools/cpp-tier.sh` is the
+- it is on the SCF's per-iteration hot path, and `devtools/test.py pr` is the
   only gate that would catch a regression there.
 
 Consolidate only if a third consumer turns up wanting jk's layout. Until then

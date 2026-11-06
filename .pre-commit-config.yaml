@@ -3,9 +3,9 @@
 #   commit: lint only, and only on the files you actually staged. pre-commit
 #           passes staged files to a hook, so a tree with pre-existing findings
 #           does not block every commit -- only files you touch are checked.
-#   push:   two test gates, each fired only by the file type it covers -- the
-#           fast Python tier (devtools/prepush-tests.sh) on a .py change, and
-#           the C++ smoke gate (devtools/cpp-smoke.sh) on a C++/build change.
+#   push:   one test gate, devtools/test.py push. It reads the pushed range
+#           itself and runs the fast Python tier when a .py changed and the
+#           C++ smoke when C++ or a build file did (docs/testing.md "Gates").
 #
 # No hook REWRITES a file. A formatter run as a hook rewrites whole files
 # behind your back and buries the real diff in restyling. The format is still
@@ -16,17 +16,14 @@
 # cmake-format is not part of it -- cmake-lint covers CMake. docs/style.md has
 # the parts of the style no tool checks.
 #
-# The C++ push gate is a SMOKE gate, not the full tier, and that distinction is
-# the whole point. A full C++23 named-module build plus every reference test
-# costs minutes even warm -- a single end-to-end validation case can run to
-# minutes on its own -- and a gate that costs minutes is one people bypass with
-# --no-verify -- worse than no gate. So devtools/cpp-smoke.sh does the cheap
-# half: an INCREMENTAL build (the host/gpu test split made it seconds warm,
-# ~1min cold) plus the host tests and a GPU smoke, with the heavy reference
-# cases skipped via FREE_BREAKFAST_FAST_TESTS. The FULL tier
-# (devtools/cpp-tier.sh, every case) stays off the push path, run before you
-# open the PR and by CI on a runner that has the toolchain -- same reasoning
-# that keeps `-m slow` off the Python gate.
+# The C++ half of the push gate is a SMOKE gate, not the PR gate, and that
+# distinction is the whole point. A full C++23 named-module build plus every
+# reference test costs minutes even warm, and a gate that costs minutes is one
+# people bypass with --no-verify -- worse than no gate. So `test.py push` does
+# the cheap half: an INCREMENTAL build plus the host tests and a GPU smoke,
+# with the heavy reference cases skipped via FREE_BREAKFAST_FAST_TESTS.
+# `devtools/test.py pr` stays off the push path, run before you open the PR --
+# same reasoning that keeps `-m slow` off the Python half.
 
 # deps/WarpWraps and deps/FelizJueves are submodules -- their own hooks are
 # their repositories' business, and rewriting files in there would show up as
@@ -138,38 +135,24 @@ repos:
         language: script
         files: '\.(cppm|cpp|cu|cuh|h|hpp)$'
 
-  # The fast test gate. `stages: [pre-push]` means it runs at `git push`, not
-  # on commit; `files: \.py$` is the entire "only when Python changed"
-  # condition -- push a docs-only change and it does not fire.
-  # pass_filenames: false because the script runs the curated set from
-  # devtools/config.sh, not the changed files. Bypass a one-off with
-  # `git push --no-verify`. It is a local gate, not server-enforced -- CI is.
+  # The push gate. `stages: [pre-push]` means it runs at `git push`, not on
+  # commit. It always runs and decides for itself what to test: pre-commit
+  # exports the pushed range as PRE_COMMIT_FROM_REF/PRE_COMMIT_TO_REF, and
+  # test.py diffs it, so the dispatch -- the Python half on a .py change, the
+  # C++ half on a source, header or CMake change, nothing on a docs-only push
+  # -- lives in one place. A `files:` filter here would be a second copy of
+  # it, and pass_filenames would let pre-commit split a long file list over
+  # several runs of the gate. The C++ half SKIPS itself -- not the push --
+  # when the toolchain or a GPU is absent, so a host-side push is not forced
+  # onto --no-verify. Bypass a one-off with `git push --no-verify`. It is a
+  # local gate, not server-enforced.
   - repo: local
     hooks:
-      - id: prepush-tests
-        name: fast test gate (pre-push, only when .py changed)
-        entry: devtools/prepush-tests.sh
+      - id: test-push
+        name: push gate (devtools/test.py push)
+        entry: devtools/test.py push
         language: script
         stages: [pre-push]
-        files: \.py$
-        pass_filenames: false
-        verbose: true
-
-      # The C++ smoke gate -- the Python gate's counterpart for C++. `files:`
-      # fires it only when a push touches C++ sources or the build files;
-      # devtools/cpp-smoke.sh does an incremental build + the host tests + a GPU
-      # smoke (the heavy end-to-end reference cases skip via
-      # FREE_BREAKFAST_FAST_TESTS). It SKIPS itself -- not the push --
-      # when the toolchain or a GPU is absent, so a host-side push is not forced
-      # onto --no-verify; see the script header. This deliberately revises the
-      # old "no C++ build on the push gate" stance: the host/gpu test split made
-      # the build cheap and the fast subset ~5s, so the gate is worth its
-      # seconds now. Bypass a one-off with `git push --no-verify`.
-      - id: cpp-smoke
-        name: C++ smoke gate (pre-push, only when C++ changed)
-        entry: devtools/cpp-smoke.sh
-        language: script
-        stages: [pre-push]
-        files: '\.(cpp|cppm|cu|cuh|h|hpp)$|(^|/)CMakeLists\.txt$|(^|/)CMakePresets\.json$|\.cmake$'
+        always_run: true
         pass_filenames: false
         verbose: true

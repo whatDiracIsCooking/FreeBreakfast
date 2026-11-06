@@ -17,8 +17,9 @@
 # Both from the REPO ROOT: the trailing `.` is the context, and this file
 # bind-mounts docker/install-rocm.sh from it.
 #
-# This is the image devtools/cross-backend-check.sh and `devtools/cpp-tier.sh
-# --rocm` reach for (CROSS_CHECK_IMAGE / ROCM_IMAGE in devtools/config.sh), so
+# This is the image devtools/cross-backend-check.sh and a ROCm run of
+# `devtools/test.py pr` reach for (CROSS_CHECK_IMAGE / ROCM_IMAGE in
+# devtools/config.sh), so
 # it is worth having even on a machine with no AMD card -- the cross-backend
 # check only compiles.
 ARG PROJECT_NAME=free-breakfast

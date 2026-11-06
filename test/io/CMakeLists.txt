@@ -19,7 +19,7 @@
 # their (suite, case) names is used in test/gtest, so their ctest names need no
 # TEST_PREFIX.
 #
-# devtools/cpp-smoke.sh names the binary, as
+# devtools/test.py (push) names the binary, as
 # test/io/free_breakfast_io_tests_host. Keep the target name in step if you
 # rename it.
 include(GoogleTest)

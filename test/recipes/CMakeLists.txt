@@ -21,7 +21,7 @@
 # their suite names is used in another tree, so their ctest names need no
 # TEST_PREFIX.
 #
-# devtools/cpp-smoke.sh and devtools/cpp-tier.sh name the binary, as
+# devtools/test.py (push and pr) names the binary, as
 # test/recipes/free_breakfast_recipes_tests_gpu. Keep the target name in step
 # if you rename it.
 include(GoogleTest)
@@ -70,7 +70,7 @@ target_link_libraries(
 
 # The properties are set here and are NOT inherited from test/gtest's: the
 # `gpu` label is what the ci-cuda and ci-hip test presets exclude (`-LE gpu`)
-# and what devtools/split-gpu-entries.py batches on.
+# and what devtools/test.py pr batches on.
 gtest_discover_tests(
   free_breakfast_recipes_tests_gpu
   DISCOVERY_MODE PRE_TEST

@@ -4,7 +4,7 @@ Opt-in scratch space: spikes, throwaway benchmarks of an idea, a module you are
 not ready to put under `src/` yet.
 
 ```sh
-devtools/cpp-tier.sh --preset experimental     # own build dir, build-experimental/
+devtools/test.py pr --only cpp --preset experimental     # own build dir, build-experimental/
 ```
 
 Nothing here is built by a normal configure — the directory is guarded by

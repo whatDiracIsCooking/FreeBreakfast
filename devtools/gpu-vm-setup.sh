@@ -181,4 +181,4 @@ say "done. Next:"
 [ -z "${GPU_VM_SETUP_REEXEC:-}" ] ||
   say "  log out and back in first -- this login is not in the docker group yet"
 say "  devtools/devcontainer.sh shell"
-say "  devtools/doctor.sh && devtools/cpp-tier.sh --preset default   # inside"
+say "  devtools/doctor.sh && devtools/test.py pr --preset default   # inside"

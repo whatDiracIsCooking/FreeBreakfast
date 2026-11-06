@@ -11,7 +11,7 @@
 # which says why for each. None of these cases is RUN_SERIAL, and their suite
 # name (Atom) is used nowhere else, so their ctest names need no TEST_PREFIX.
 #
-# devtools/cpp-smoke.sh names the binary, as
+# devtools/test.py (push) names the binary, as
 # test/atom/free_breakfast_atom_tests_host. Keep the target name in step if
 # you rename it.
 include(GoogleTest)

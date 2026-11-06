@@ -4,11 +4,12 @@
 # unchanged, and this is the one place that knows what the project is called
 # and how its tests run.
 #
-# Sourced (never executed) by devcontainer.sh, worktree.sh, doctor.sh,
-# prepush-tests.sh and slow-tier.sh. Every value uses ${VAR:-default} so an
+# Sourced (never executed) by devcontainer.sh, worktree.sh, doctor.sh and
+# slow-tier.sh, and evaluated in bash by devtools/test.py, which reads its
+# values back rather than keeping copies. Every value uses ${VAR:-default} so an
 # environment variable still wins for a one-off:
 #
-#   JOBS=16 devtools/prepush-tests.sh
+#   JOBS=16 devtools/test.py push
 #
 # The one thing this file CANNOT reach is the .devcontainer/<variant>/
 # devcontainer.json files --
@@ -43,7 +44,7 @@ PROJECT_NAME=${PROJECT_NAME:-free-breakfast}
 #                                            and the amdgpu kernel driver. It
 #                                            pins CMAKE_PRESET/CTEST_PRESET to
 #                                            `hip` in containerEnv, so
-#                                            cpp-tier.sh needs no flag in there.
+#                                            test.py needs no flag in there.
 #   .devcontainer/combined/devcontainer.json both SDKs, ~40GB. For working on
 #                                            both backends in one shell; `auto`
 #                                            (below) picks the less-loaded
@@ -66,7 +67,7 @@ DEVCONTAINER_CONFIG=${DEVCONTAINER_CONFIG:-.devcontainer/cuda/devcontainer.json}
 
 # --- C++ build (CMake) ------------------------------------------------------
 
-# Which CMakePresets.json presets devtools/cpp-tier.sh drives. The presets
+# Which CMakePresets.json presets devtools/test.py drives. The presets
 # themselves -- compiler, build type, CUDA arch, dependency prefixes -- live in
 # CMakePresets.json; only the CHOICE lives here.
 #
@@ -103,7 +104,7 @@ DEVCONTAINER_CONFIG=${DEVCONTAINER_CONFIG:-.devcontainer/cuda/devcontainer.json}
 # one.
 #
 # Override for one run rather than editing:
-#   CMAKE_PRESET=asan CTEST_PRESET=asan devtools/cpp-tier.sh
+#   CMAKE_PRESET=asan CTEST_PRESET=asan devtools/test.py pr
 #
 # CTEST_PRESET is separate because not every configure preset has a matching
 # test preset -- only default, workstation, debug and asan do. Set it empty to
@@ -194,9 +195,9 @@ CROSS_CHECK_DEVICE_TARGETS=${CROSS_CHECK_DEVICE_TARGETS-free_breakfast_device_li
 # --- the ROCm runtime tier -------------------------------------------------
 #
 # cross-backend-check.sh above proves the other backend COMPILES. On a machine
-# with a real AMD card, `cpp-tier.sh --rocm` is the stronger statement: it runs
-# that backend's ctest against the hardware, by re-execing cpp-tier.sh inside
-# ROCM_IMAGE with the device nodes and group ids below.
+# with a real AMD card, running that backend's ctest against the hardware is
+# the stronger statement: `devtools/test.py pr --preset hip` inside ROCM_IMAGE
+# (the hip or combined devcontainer), with the device nodes and group ids below.
 #
 # It exists because getting that passthrough right is fiddly and its failure
 # mode is indistinguishable from having no card at all -- see ROCM_GROUPS.
@@ -222,13 +223,12 @@ ROCM_DEVICES=${ROCM_DEVICES:-"/dev/kfd
 # is detected)" -- which reads exactly like a box with no GPU, and has been
 # misread as one.
 #
-# cpp-tier.sh --rocm builds its own --group-add args from this list and fails
-# loudly when a name does not resolve. devcontainer.sh instead exports one
-# FREE_BREAKFAST_<NAME>_GID per entry (render -> FREE_BREAKFAST_RENDER_GID) for
-# the ${localEnv:...} references in the hip/combined runArgs, and only warns:
-# the json carries a fallback gid so that opening it WITHOUT this script still
-# passes something. Adding a name here reaches the first automatically; the
-# second also needs the reference written into the json, since JSON cannot loop.
+# devcontainer.sh exports one FREE_BREAKFAST_<NAME>_GID per entry (render ->
+# FREE_BREAKFAST_RENDER_GID) for the ${localEnv:...} references in the
+# hip/combined runArgs, and only warns: the json carries a fallback gid so that
+# opening it WITHOUT this script still passes something. Adding a name here
+# reaches the export automatically; the json also needs the reference written
+# in, since JSON cannot loop.
 ROCM_GROUPS=${ROCM_GROUPS:-"render
 video"}
 
@@ -346,7 +346,7 @@ HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_
 
 # Cross-session GPU admission (see with_gpu_card() and gpu_auto_preset() in
 # lib.sh). One run's own GPU batch is one process (CTEST_JOBS below), but
-# nothing in that run coordinates with a second worktree's cpp-tier.sh or cpp-smoke.sh
+# nothing in that run coordinates with a second worktree's gate
 # running its own GPU binary against the same physical card at the same time.
 #
 # ONE RUN PER CARD. Two runs sharing the 10 GB RTX 3080 ran it out of memory
@@ -376,30 +376,30 @@ GPU_LOCK_DIR=${GPU_LOCK_DIR:-.sccache/gpu-locks}
 # (an idle card reads about 8%); raise it on a card with more memory.
 GPU_FOREIGN_VRAM_PCT=${GPU_FOREIGN_VRAM_PCT:-20}
 GPU_POLL_SECONDS=${GPU_POLL_SECONDS:-5}
-# cpp-tier.sh's ctest -j: the host entries, and those it cannot batch (the
+# `test.py pr`'s ctest -j: the host entries, and those it cannot batch (the
 # RUN_SERIAL ones run alone regardless). The GPU batch, in both gates, is ONE
-# gtest process (run_gpu_batch in lib.sh), not shards. Measured 2026-10-29,
-# the GPU batch at 1/2/3 shards, slowest shard: cuda 145/141/144s, hip 179/-/168s.
-# The card was already busy, so shards only spread its time and time-sliced it:
-# PipelineNevpt2.PcRefusalKeepsSc is 2.3s alone and 158s beside two
-# F/ExchangeGolden processes, so a sharded log's per-case times mislead, and
-# each extra process holds another kernel stack in VRAM. ctest's entries do
-# gain from -j (cuda 31s -> 13s at 3).
+# gtest process (run_gpu_batch in devtools/test.py), not shards. Measured
+# 2026-10-29, the GPU batch at 1/2/3 shards, slowest shard: cuda 145/141/144s,
+# hip 179/-/168s. The card was already busy, so shards only spread its time and
+# time-sliced it: PipelineNevpt2.PcRefusalKeepsSc is 2.3s alone and 158s beside
+# two F/ExchangeGolden processes, so a sharded log's per-case times mislead, and
+# each extra process holds another kernel stack in VRAM. ctest's entries do gain
+# from -j (cuda 31s -> 13s at 3).
 CTEST_JOBS=${CTEST_JOBS:-3}
-# The watchdog on the GPU batch (gpu_batch_watchdog in lib.sh). A batch that
-# prints nothing for GPU_BATCH_STALL_SECONDS, or is still running
-# GPU_BATCH_BUDGET_SECONDS after it started, is killed and the case it was in
-# is named, so a wedged card (issue #477: gfx1200, every process spinning in a
-# HIP sync, nothing printed) fails the gate instead of holding it -- and the
-# card lock -- for hours. Both are generous on purpose: every case also has
-# ctest's 120s backstop TIMEOUT (test/CMakeLists.txt), and a whole
-# batch is about 3 minutes, so a trip means a hang, not a slow card. 0 turns
-# either off.
+# The watchdog on the GPU batch (run_gpu_batch in devtools/test.py). A batch
+# that prints nothing for GPU_BATCH_STALL_SECONDS, or is still running
+# GPU_BATCH_BUDGET_SECONDS after it started, is killed and the case it was in is
+# named, so a wedged card (issue #477: gfx1200, every process spinning in a HIP
+# sync, nothing printed) fails the gate instead of holding it -- and the card
+# lock -- for hours. Both are generous on purpose: every case also has ctest's
+# 120s backstop TIMEOUT (test/CMakeLists.txt), and a whole batch is about 3
+# minutes, so a trip means a hang, not a slow card. 0 turns either off.
 GPU_BATCH_STALL_SECONDS=${GPU_BATCH_STALL_SECONDS:-600}
 GPU_BATCH_BUDGET_SECONDS=${GPU_BATCH_BUDGET_SECONDS:-2700}
 # Before it kills a hung batch the watchdog writes down the batch's state
-# (gpu_wedge_snapshot in lib.sh): the vendor tools, every thread's backtrace.
-# A wedged card can hang those as well, so each is cut off after this long.
+# (wedge_snapshot in devtools/test.py): the vendor tools, every thread's
+# backtrace. A wedged card can hang those as well, so each is cut off after this
+# long.
 GPU_WEDGE_TOOL_SECONDS=${GPU_WEDGE_TOOL_SECONDS:-120}
 # Readings averaged into one load figure (0.3s apart); one is too noisy. Load
 # only ranks the cards for `auto`.
@@ -429,8 +429,8 @@ PREPUSH_PATHS=${PREPUSH_PATHS:-}
 # pytest's own operators. Blank when the project has none.
 SLOW_HUGE_CASES=${SLOW_HUGE_CASES:-}
 
-# Where slow-tier.sh and cpp-tier.sh write their run logs. Relative paths are
-# resolved against the repo root. Gitignored by default.
+# Where slow-tier.sh and devtools/test.py write their run logs. Relative paths
+# are resolved against the repo root. Gitignored by default.
 #
 # NB docker/compose.yaml writes its own logs to .log/ instead -- it tees
 # configure/build/test output there, and is not driven by this file at all.
@@ -479,8 +479,8 @@ hipconfig:the HIP backend, and devtools/cross-backend-check.sh; present only in 
 compute-sanitizer:the GPU memcheck/racecheck run (docker compose run --rm compute-sanitizer)
 nsys:Nsight Systems profiling from inside the container
 sccache:warm rebuilds (the compiler cache the default preset wires in as CMAKE_*_COMPILER_LAUNCHER); without it every configure recompiles from scratch
-flock:cross-session GPU admission (one run per card, with_gpu_card in lib.sh); without it cpp-tier.sh/cpp-smoke.sh run unlocked
-clang-tidy:the advisory lint pass (cpp-tier.sh --tidy, and CI's cuda leg)
+flock:cross-session GPU admission for the shell tools (one run per card, with_gpu_card in lib.sh); without it they run unlocked. devtools/test.py takes the same locks with fcntl and needs no flock(1)
+clang-tidy:the advisory lint pass (test.py pr --tidy, and CI's cuda leg)
 clang-format:the C++ formatting pass (see CLAUDE.md -- it is not a git hook)
 cmake-format:the CMake formatting pass; run by hand, not by any hook
 cmake-lint:the CMake lint pass CI runs on every PR

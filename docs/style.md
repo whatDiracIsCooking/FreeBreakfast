@@ -16,7 +16,7 @@ disagree, the config is what gets enforced.
 | Statically sized shared memory (see [Shared memory](#shared-memory)) | `devtools/check-shared-mem.py` | the `dynamic-smem-ok:` marker | commit hook, CI `lint` |
 | No hand-written ceiling division (see [Launch shape and integer rounding](#launch-shape-and-integer-rounding)) | `devtools/check-ceil-div.py` | the script's `EXEMPT_FILES` | commit hook, CI `lint` |
 | No blocking `wwrMemcpy` (see [Host-device copies](#host-device-copies)) | `devtools/check-blocking-memcpy.py` | none | commit hook, CI `lint` |
-| C++ naming, bug-prone patterns | clang-tidy | [`.clang-tidy`](../.clang-tidy) | **advisory** — `devtools/cpp-tier.sh --tidy` |
+| C++ naming, bug-prone patterns | clang-tidy | [`.clang-tidy`](../.clang-tidy) | **advisory** — `devtools/test.py pr --tidy` |
 | Whitespace, line endings, final newline | editor + pre-commit | [`.editorconfig`](../.editorconfig) | commit hook |
 
 The two formatters only ever run in check mode from a hook or in CI, and fail

@@ -2,8 +2,8 @@
 name: test
 description: >-
   Run this repo's two suites the right way and interpret the result honestly —
-  the C++ tier (devtools/cpp-tier.sh, configure + build + ctest) and the Python
-  tier (pytest, fast/slow split) — pick the tier, use the right worker count for
+  the PR gate (devtools/test.py pr: configure + build + ctest, then the fast
+  pytest set) and the Python tier (pytest, fast/slow split) — pick the tier, use the right worker count for
   host vs container, and ALWAYS audit what skipped before calling a run green.
   Use when the user asks to run tests, check a change, or verify an edit.
 ---
@@ -21,39 +21,45 @@ whole C++ toolchain lives in the CUDA image.
 | | `test/core/`, `test/atom/`, `test/io/`, `test/pipeline/`, `test/gtest/` | `test/pytest/` |
 |---|---|---|
 | Language | C++23, googletest | Python, pytest |
-| Runner | `ctest` via `devtools/cpp-tier.sh` | `pytest` |
+| Runner | `ctest` via `devtools/test.py pr` | `pytest` |
 | Tests | the library's own units, including CUDA kernels | the Python-side suite — `test/pytest/`, marker and harness coverage plus the live BSE download test |
 | Needs | the CUDA image (clang-20, CMake 4.2, nvcc) | a venv |
-| Gated by | nothing automatic — see below | the pre-push hook and CI |
+| Gated by | the push gate's smoke (`devtools/test.py push`); `test.py pr` by hand | the push gate and CI |
 
 **Which one a change needs is not negotiable by convenience.** A change under
 `src/`, `deps/`, `cmake/` or `CMakeLists.txt` is verified by the C++ tier and by
 nothing else; a green `pytest` on it means only that the Python that would have
 exercised the old binary still imports. Say which suite you ran.
 
-## The C++ tier
+## The C++ tier: `devtools/test.py pr`
+
+`devtools/test.py` is the one entry point, a subcommand per gate
+(`docs/testing.md` "Gates"): `push` is what `git push` runs, `pr` is the gate
+before a PR. `pr` is the C++ tier followed by the fast pytest set.
 
 ```bash
-devtools/cpp-tier.sh                       # configure + build + ctest, `auto` preset
-devtools/cpp-tier.sh --preset default      # pin the CUDA card
-devtools/cpp-tier.sh --preset hip          # pin the HIP card
-devtools/cpp-tier.sh --preset debug        # switches the ctest preset too
-devtools/cpp-tier.sh --preset asan
-devtools/cpp-tier.sh --fresh               # wipe the CMake cache and reconfigure
-devtools/cpp-tier.sh --no-test             # configure + build only
-devtools/cpp-tier.sh --clean               # rebuild every object, keep the cache
-devtools/cpp-tier.sh --tidy                # + clang-tidy over src/*.cpp, ADVISORY
-devtools/cpp-tier.sh -j 8                  # parallel compile jobs (BUILD_JOBS)
-devtools/cpp-tier.sh -- -R Constants       # everything after -- goes to ctest
-devtools/cpp-tier.sh -- -R MemoryBuffer    # ctest -R matches gtest suite names
+devtools/test.py pr                        # configure + build + ctest + pytest, `auto` preset
+devtools/test.py pr --preset default       # pin the CUDA card
+devtools/test.py pr --preset hip           # pin the HIP card
+devtools/test.py pr --preset debug         # switches the ctest preset too
+devtools/test.py pr --preset asan
+devtools/test.py pr --only cpp             # the C++ half alone (or --only python)
+devtools/test.py pr --fresh                # wipe the CMake cache and reconfigure
+devtools/test.py pr --no-test              # configure + build only
+devtools/test.py pr --clean                # rebuild every object, keep the cache
+devtools/test.py pr --tidy                 # + clang-tidy over src/*.cpp, ADVISORY
+devtools/test.py pr -j 8                   # parallel compile jobs (BUILD_JOBS)
+devtools/test.py pr -- -R Constants        # everything after -- goes to ctest
+devtools/test.py pr -- -R MemoryBuffer     # ctest -R matches gtest suite names
+devtools/test.py push --dry-run            # which halves a push would run
 ```
 
-**`cpp-tier.sh` always skips the reference-grade/end-to-end validation cases**
-(it exports `FREE_BREAKFAST_FAST_TESTS=1` for the ctest phase, which makes
+**`test.py` always skips the reference-grade/end-to-end validation cases**
+(it exports `FREE_BREAKFAST_FAST_TESTS=1` for its C++ tests, which makes
 every case guarded by `FBF_SKIP_IF_FAST_TESTS()` `GTEST_SKIP` — see
 `test/support/slow_test.h`). Those are the cases that check a result against an
 external oracle to tight tolerance, or re-run a production-scale solve to
-compare timing or convergence. There is no flag on this script that turns them
+compare timing or convergence. There is no flag on `test.py` that turns them
 back on, and in a mature tree they are a handful of entries and the majority of
 a full run's wall time.
 
@@ -86,22 +92,25 @@ gpu: auto -> hip (hip) [ cuda=load:97%,vram:31%,held hip=load:0%,vram:2%,free ]
 
 A card counts as live only if its device nodes and compiler both exist, so in
 the single-backend `cuda`/`hip` containers `auto` is just that backend. The
-ctest phase (and cpp-smoke's GPU suite) then holds the WHOLE card
-(`with_gpu_card`): **one run per card**, because two runs sharing the 10 GB
+ctest phase (and the push gate's GPU smoke) then holds the WHOLE card
+(the `GPU_LOCK_DIR` locks `with_gpu_card` in lib.sh takes; `test.py` takes the
+same files with `fcntl.flock`): **one run per card**, because two runs sharing the 10 GB
 3080 ran it out of memory and bought no speed. It waits, printing why, while
 another run holds the card, and then while the card's VRAM is at or above
 `GPU_FOREIGN_VRAM_PCT` (20%) -- memory held by something that takes no lock,
 such as a binary run by hand. That second wait has no timeout. Compute load
 never makes a run wait. The two cards never block each other. Inside its card
-the tier runs ctest at `-j CTEST_JOBS` (3) and then the GPU batch as one gtest
-process; the smoke runs only the batch. The batch's summary lines are tagged
+`pr` runs ctest at `-j CTEST_JOBS` (3) and then the GPU batch as one gtest
+process per GPU binary; `push` runs only the batches. The batch's summary lines are tagged
 `[gpu]`, and a crash prints the case it died in. One process, not shards:
-processes on one card time-slice it and gained nothing (CLAUDE.md, "One
-process, not shards"), so a `[gpu]` log's per-case times are real. Knobs are
+processes on one card time-slice it and gained nothing (`docs/testing.md`, "One
+process, not shards"), so a `[gpu]` log's per-case times are real. A silent or
+overlong batch is killed by the watchdog, which names it on a
+`[gpu] hung in <case>` line and writes `<log>.gpu-wedge.txt` first. Knobs are
 the `GPU_*` variables and `CTEST_JOBS` in `config.sh`.
 
-**Report the preset the run resolved to**, not `auto` — the summary line and
-the log name carry it. Pin a backend with `--preset` when it matters: a change
+**Report the preset the run resolved to**, not `auto` — the
+`test.py pr PASS  rev=…  preset=…` line and the log name carry it. Pin a backend with `--preset` when it matters: a change
 touching a `.cu` needs **both** `--preset default` and `--preset hip` (or
 `devtools/cross-backend-check.sh` for the side you did not run), because nvcc
 passes code that clang rejects.
@@ -109,17 +118,17 @@ passes code that clang rejects.
 Run it **inside the container**, which is where the toolchain is:
 
 ```bash
-devtools/devcontainer.sh shell -c devtools/cpp-tier.sh
+devtools/devcontainer.sh shell -c 'devtools/test.py pr'
 ```
 
-On a host with no `cmake`/`ninja` the script refuses with exactly that command
+On a host with no `cmake`/`ninja` `test.py pr` refuses with exactly that command
 rather than half-running — take the refusal at face value; it is not a bug to
 work around.
 
 Things that will bite:
 
 - Only `default`, `workstation`, `debug` and `asan` have **test** presets. With
-  any other configure preset the script builds and then reports that there is
+  any other configure preset `test.py pr` builds and then reports that there is
   nothing to ctest — which is not the same as passing.
 - The `default` preset wants the prebuilt `/opt/{spdlog,taskflow,tomlplusplus,googletest-src}`
   trees, which exist only in the image. On a bare host use `--preset
@@ -127,15 +136,15 @@ Things that will bite:
   `find_package(spdlog)` with a message that never mentions containers.
 - `CMAKE_CUDA_ARCHITECTURES=native` queries a live device **at configure time**.
   No GPU, no configure — even for a CPU-only change.
-- Every run tees to `.slow-tier-reports/cpp-<stamp>-<rev>-<preset>.log`
-  (`cpp-slow-<stamp>-...` for `cpp-slow-tier.sh`) and appends a PASS/FAIL line
-  to `summary.log`. Quote the log path when reporting a failure; it has the
+- Every `pr` run tees to `.slow-tier-reports/pr-<stamp>-<rev>-<preset>.log`
+  (`push-…` for the push gate's C++ half, `cpp-slow-<stamp>-...` for
+  `cpp-slow-tier.sh`) and `pr` appends its PASS/FAIL line to `summary.log`. Quote the log path when reporting a failure; it has the
   compiler diagnostics that the summary does not.
 - **ctest reports one entry per gtest case**, discovered at test time
   (`DISCOVERY_MODE PRE_TEST`), so `-R` selects by gtest suite name and a skip
   is named rather than hidden. A GPU-less box reports a large `***Skipped`
   count and is still green — read the skip list before calling it verified,
-  exactly as with `pytest -rs`. `cpp-tier.sh` hands most GPU entries to
+  exactly as with `pytest -rs`. `test.py pr` hands most GPU entries to
   one gtest process rather than one process each (the CUDA context costs
   ~0.45s per process). ctest's summary then counts only the host,
   `RUN_SERIAL` and launcher-wrapped entries, and the rest report in the
@@ -217,7 +226,7 @@ docker compose -f docker/compose.yaml run --rm compute-sanitizer
 
 `SKIP_GTEST=1` / `SKIP_PYTEST=1` narrow it to one suite, `TEST_FILTER` is
 `--gtest_filter` and `PYTEST_ARGS` is appended to pytest. Prefer this when you
-want a clean throwaway run; prefer `cpp-tier.sh` inside the devcontainer when
+want a clean throwaway run; prefer `test.py pr` inside the devcontainer when
 you are iterating. See the `devbox` skill for the difference.
 
 ## After the run: audit the skips, then the workers

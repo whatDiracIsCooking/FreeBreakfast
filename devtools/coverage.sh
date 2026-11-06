@@ -5,7 +5,7 @@
 #   devtools/coverage.sh [--preset NAME] [--fresh] [--html] [-j N]
 #                        [-- <ctest args>]
 #
-# This is the coverage counterpart to devtools/cpp-tier.sh: it configures and
+# This is the coverage counterpart to devtools/test.py pr: it configures and
 # builds the tree with instrumentation (the `coverage` preset sets
 # FREE_BREAKFAST_COVERAGE=ON, which adds -fprofile-instr-generate -fcoverage-mapping to
 # CXX only -- nvcc's .cu units are untouched, exactly as ASAN is), runs ctest so
@@ -26,7 +26,7 @@
 # WITH src/ EMPTY THERE IS NOTHING TO MEASURE, and a percentage printed today is
 # noise. This tier becomes meaningful with the first module.
 #
-# THE TOOLCHAIN IS NOT ON YOUR HOST, same as cpp-tier.sh: clang-20 with libc++
+# THE TOOLCHAIN IS NOT ON YOUR HOST, same as test.py pr: clang-20 with libc++
 # and the matching llvm-cov/llvm-profdata live in the container, so the normal
 # way to call this is from inside it:
 #

@@ -1,4 +1,4 @@
-"""devtools/lib.sh run_gpu_batch: a hung batch is killed and named (#477).
+"""devtools/test.py run_gpu_batch: a hung batch is killed and named (#477).
 
 A wedged gfx1200 card leaves the process on it spinning in a HIP sync with
 nothing printed, and before the watchdog the gate waited on it forever. These
@@ -9,7 +9,7 @@ limits, so no GPU and no real wedge is needed.
 
 from __future__ import annotations
 
-import os
+import importlib.util
 import shutil
 import subprocess
 import time
@@ -17,38 +17,41 @@ from pathlib import Path
 
 import pytest
 
-_LIB = Path(__file__).resolve().parents[2] / "devtools" / "lib.sh"
+_TEST_PY = Path(__file__).resolve().parents[2] / "devtools" / "test.py"
+_spec = importlib.util.spec_from_file_location("devtools_test_py", _TEST_PY)
+gates = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gates)
 
 
 def run_batch(
-    tmp_path: Path, body: str, stall: int = 2, budget: int = 0
+    tmp_path: Path,
+    capfd: pytest.CaptureFixture[str],
+    body: str,
+    stall: int = 2,
+    budget: int = 0,
 ) -> tuple[subprocess.CompletedProcess[str], float]:
     batch = tmp_path / "fake_batch"
     batch.write_text("#!/usr/bin/env bash\n" + body)
     batch.chmod(0o755)
-    env = dict(
-        os.environ,
-        GPU_BATCH_STALL_SECONDS=str(stall),
-        GPU_BATCH_BUDGET_SECONDS=str(budget),
-        GPU_WEDGE_TOOL_SECONDS="20",
-        BUILD_LOG=str(tmp_path / "build.log"),
-    )
-    script = f'. "{_LIB}"; run_gpu_batch fake "{batch}"'
+    cfg = {
+        "GPU_BATCH_STALL_SECONDS": str(stall),
+        "GPU_BATCH_BUDGET_SECONDS": str(budget),
+        "GPU_WEDGE_TOOL_SECONDS": "20",
+    }
+    capfd.readouterr()
     start = time.monotonic()
-    proc = subprocess.run(
-        ["bash", "-c", script],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
-    return proc, time.monotonic() - start
+    rc = gates.run_gpu_batch("fake", batch, cfg, tmp_path / "build.log")
+    elapsed = time.monotonic() - start
+    out, err = capfd.readouterr()
+    return subprocess.CompletedProcess([], rc, out, err), elapsed
 
 
-def test_passing_batch_passes(tmp_path: Path) -> None:
+def test_passing_batch_passes(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
     proc, _ = run_batch(
         tmp_path,
+        capfd,
         'echo "[ RUN      ] Suite.Case"\necho "[       OK ] Suite.Case"\n'
         'echo "[  PASSED  ] 1 test."\n',
     )
@@ -57,11 +60,14 @@ def test_passing_batch_passes(tmp_path: Path) -> None:
     assert "fake:   [gpu] [  PASSED  ] 1 test." in proc.stdout
 
 
-def test_failed_case_keeps_its_assertion_text(tmp_path: Path) -> None:
+def test_failed_case_keeps_its_assertion_text(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
     # The summary names a failed case but not why; its own lines must reach
     # the console too, and a passing neighbour's must not (#870).
     proc, _ = run_batch(
         tmp_path,
+        capfd,
         'echo "[ RUN      ] Suite.Fine"\necho "fine chatter"\n'
         'echo "[       OK ] Suite.Fine (1 ms)"\n'
         'echo "[ RUN      ] Suite.Bad/h2co"\necho "bad.cpp:7: Failure"\n'
@@ -82,11 +88,14 @@ def test_failed_case_keeps_its_assertion_text(tmp_path: Path) -> None:
     assert "Expected: (error)" in (tmp_path / "build.log").read_text()
 
 
-def test_silent_batch_is_killed_and_its_case_named(tmp_path: Path) -> None:
+def test_silent_batch_is_killed_and_its_case_named(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
     # One case finishes; the next starts and goes silent, as a wedge does.
     # `exec` so the pid the launcher holds is the hanging process itself.
     proc, elapsed = run_batch(
         tmp_path,
+        capfd,
         'echo "[ RUN      ] Suite.Fine"\necho "[       OK ] Suite.Fine"\n'
         'echo "[ RUN      ] Wedge.Hangs/h2o"\nexec sleep 300\n',
     )
@@ -114,20 +123,27 @@ def test_silent_batch_is_killed_and_its_case_named(tmp_path: Path) -> None:
     ),
     reason="no rocgdb or gdb to attach",
 )
-def test_snapshot_backtraces_the_hung_batch(tmp_path: Path) -> None:
+def test_snapshot_backtraces_the_hung_batch(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
     # Yama's ptrace_scope=1 forbids a sibling attaching; ptraceable-exec.py is
     # what lets the watchdog's debugger in, so a refusal here is a regression.
-    proc, _ = run_batch(tmp_path, 'echo "[ RUN      ] Wedge.Spins"\nexec sleep 300\n')
+    proc, _ = run_batch(
+        tmp_path, capfd, 'echo "[ RUN      ] Wedge.Spins"\nexec sleep 300\n'
+    )
     assert proc.returncode == 1
     text = (tmp_path / "build.gpu-wedge.txt").read_text()
     assert "Operation not permitted" not in text, text
     assert "Thread 1" in text, text
 
 
-def test_chatty_batch_is_killed_at_its_budget(tmp_path: Path) -> None:
+def test_chatty_batch_is_killed_at_its_budget(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
     # Never silent, so only the wall-clock budget can catch it.
     proc, elapsed = run_batch(
         tmp_path,
+        capfd,
         'echo "[ RUN      ] Loop.Forever"\n'
         "while :; do echo iteration; sleep 0.2; done\n",
         stall=0,
@@ -139,9 +155,12 @@ def test_chatty_batch_is_killed_at_its_budget(tmp_path: Path) -> None:
     assert "hung in Loop.Forever" in proc.stderr
 
 
-def test_term_ignoring_batch_is_killed(tmp_path: Path) -> None:
+def test_term_ignoring_batch_is_killed(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+) -> None:
     proc, elapsed = run_batch(
         tmp_path,
+        capfd,
         "trap '' TERM\necho \"[ RUN      ] Stuck.InDriver\"\n"
         "while :; do sleep 1; done\n",
         stall=1,
@@ -152,9 +171,12 @@ def test_term_ignoring_batch_is_killed(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("stall", [0, 2])
-def test_crash_is_still_a_crash(tmp_path: Path, stall: int) -> None:
+def test_crash_is_still_a_crash(
+    tmp_path: Path, capfd: pytest.CaptureFixture[str], stall: int
+) -> None:
     proc, _ = run_batch(
         tmp_path,
+        capfd,
         'echo "[ RUN      ] Boom.Segv"\nexit 139\n',
         stall=stall,
     )

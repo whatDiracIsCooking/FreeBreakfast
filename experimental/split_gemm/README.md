@@ -57,8 +57,8 @@ Two knobs, and the measurement is about which of them matters:
 ## Bench
 
 ```sh
-devtools/cpp-tier.sh --preset experimental          # CUDA
-devtools/cpp-tier.sh --preset hip-experimental      # ROCm
+devtools/test.py pr --only cpp --preset experimental          # CUDA
+devtools/test.py pr --only cpp --preset hip-experimental      # ROCm
 build-experimental/experimental/split_gemm/free_breakfast_split_gemm_bench [reps] [budget_gib]
 ```
 

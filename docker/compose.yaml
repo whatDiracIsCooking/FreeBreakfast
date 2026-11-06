@@ -16,11 +16,11 @@
 # Use these when you want a clean, logged, unattended run on THIS machine -- a
 # nightly, a sanitizer sweep, a batch build you want a transcript of. Use the
 # devcontainer when you want to stay in the container and iterate;
-# `devtools/cpp-tier.sh` is the same three phases from inside it.
+# `devtools/test.py pr` is the same three phases from inside it.
 #
 # NOT WHAT CI RUNS, despite the overlap. .github/workflows/ci.yml's `cpp` job
 # (currently `if: false`) builds the image in the job and calls
-# devtools/cpp-tier.sh through a plain `docker run`, once per matrix leg -- it
+# devtools/test.py pr through a plain `docker run`, once per matrix leg -- it
 # needs a HIP leg as well as a CUDA one, which no service here provides.
 # Every service here also reserves a GPU, which no hosted runner has. The
 # sanitizer services below are the part with no CI counterpart at all, and the

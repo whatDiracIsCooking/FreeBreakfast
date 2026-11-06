@@ -25,7 +25,7 @@
 # device -- `native` architecture detection fails without one:
 #
 #   git submodule update --init --recursive
-#   devtools/cpp-tier.sh --preset ci-cuda      # or ci-hip
+#   devtools/test.py pr --preset ci-cuda      # or ci-hip
 #
 # Versions are the image's (docker/Dockerfile.*); bump them together.
 set -euo pipefail
