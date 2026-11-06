@@ -44,9 +44,6 @@ constexpr double kCasscfElectronCountTolerance = 1e-6;
 // Schur complement's inner CI solves stop on negative curvature and leave it
 // there. A converged solve sits near 1e-9 (the inner solves' 1e-8, relative).
 constexpr double kCasscfCpResidualCeiling = 1e-6;
-// H~'s CI response is solved to this, relative to its right-hand side
-// (RelaxedHessian::create's default, named for the bar below).
-constexpr double kCasscfCpResponseTolerance = 1e-8;
 // The probe column's seed: a fixed pseudo-random right-hand side, so that a
 // refusal repeats run to run (README.md "A singular H~").
 constexpr uint64_t kCasscfCpProbeSeed = 978;
@@ -116,20 +113,14 @@ state_specific_electrons(const std::string_view who, const DeviceResources &res,
   return std::pair{nelecas - nbeta, nbeta};
 }
 
-// mcscf::zvectors' Schur solve of the @p n_x columns @p gradients and
-// @p ci_rhs (one root), with one more column beside them, the probe: H~ u =
-// -s for probe_column's s, no CI part. The coordinates' right-hand sides can
-// be orthogonal to a null direction of H~ by symmetry, which leaves the
-// direction to round-off; the probe's s is not. H~ is refused as singular
-// when the probe's Rayleigh quotient rho = u.H~u / u.u = -u.s / u.u is not
-// above kCasscfCpResponseTolerance max diag(H), or when the solve meets a
-// direction it is not positive along or runs out of products (README.md "A
-// singular H~"). The probe's column is dropped from the result.
+// The probe's column is appended to the coordinates' as zvectors takes
+// them, its CI and rotation rows zero, solved with them, and dropped.
 Result<mcscf::ZVectors> probed_zvectors(DeviceResources &res, const std::string_view who,
                                         mcscf::RelaxedHessian &relaxed,
                                         const response::Hessian &hessian, const ci::Roots &roots,
                                         const size_t n_x, const Buffers::device<double> &gradients,
                                         const Buffers::device<double> &ci_rhs,
+                                        const std::span<const double> theta_rhs,
                                         const double tolerance, const int32_t max_iterations) {
   const auto pairs = static_cast<size_t>(relaxed.size());
   const auto pairs32 = static_cast<int32_t>(pairs);
@@ -151,6 +142,9 @@ Result<mcscf::ZVectors> probed_zvectors(DeviceResources &res, const std::string_
       wwr::wwrMemsetAsync(rhs_ci.data() + (dim * n_x), 0, dim * sizeof(double), stream)));
   // The host s goes out of scope only after the copy has left it.
   FBF_TRY(res.sync());
+  // The rotations' right-hand sides, if any, one more column of zeros.
+  std::vector<double> theta(theta_rhs.begin(), theta_rhs.end());
+  theta.resize(theta_rhs.size() + (theta_rhs.size() / n_x), 0.0);
 
   const auto singular = [&](const std::string &why) {
     return err_divergence("{}: the CP-CASSCF's H~ is singular or not positive ({}): the CASSCF "
@@ -161,7 +155,7 @@ Result<mcscf::ZVectors> probed_zvectors(DeviceResources &res, const std::string_
   };
   Result<mcscf::ZVectors> solved =
       mcscf::zvectors(res, relaxed, hessian, roots, static_cast<int32_t>(n_col), rhs.data(),
-                      rhs_ci.data(), mcscf::CpSolver::Schur, tolerance, max_iterations);
+                      rhs_ci.data(), mcscf::CpSolver::Schur, tolerance, max_iterations, theta);
   if (!solved.has_value()) {
     const ErrorKind kind = solved.error().kind;
     if (kind == ErrorKind::Divergence || kind == ErrorKind::MaxIterationsExceeded) {
@@ -197,7 +191,7 @@ Result<mcscf::ZVectors> probed_zvectors(DeviceResources &res, const std::string_
   // The coordinates' columns alone.
   mcscf::ZVectors cp{.orbital = Buffers::device<double>(pairs * n_x, res.device()),
                      .ci = Buffers::device<double>(dim * n_x, res.device()),
-                     .theta = {},
+                     .theta = std::move(all.theta),
                      .iterations = std::move(all.iterations),
                      .residuals = std::move(all.residuals)};
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cp.orbital.data(), all.orbital.data(),
@@ -205,6 +199,7 @@ Result<mcscf::ZVectors> probed_zvectors(DeviceResources &res, const std::string_
                                          stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cp.ci.data(), all.ci.data(), dim * n_x * sizeof(double),
                                          wwr::wwrMemcpyDeviceToDevice, stream)));
+  cp.theta.resize(cp.theta.size() / n_col * n_x);
   cp.iterations.resize(n_x);
   cp.residuals.resize(n_x);
   FBF_TRY(res.sync());
@@ -314,7 +309,7 @@ Result<CasscfCp> casscf_cp(DeviceResources &res, const std::string_view who,
   FBF_TRY(
       gpu_status(wwr::scal<double, int32_t>(blas, ci_count32, &kHalf<double>, ci_rhs.data(), 1)));
   mcscf::ZVectors cp = FBF_TRY(probed_zvectors(res, who, relaxed, hessian, solution.roots, n_x,
-                                               gradients, ci_rhs, tolerance, max_iterations));
+                                               gradients, ci_rhs, {}, tolerance, max_iterations));
 
   // The solution checked on the unreduced equations, which no inner solve
   // stands in for: r = H z_o + H_oc z_c + g, r_c = P (H' c + (H_0 - E) z_c)

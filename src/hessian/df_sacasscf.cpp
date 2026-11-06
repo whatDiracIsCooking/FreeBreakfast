@@ -33,6 +33,7 @@ import free_breakfast.mcscf.relaxed_hessian;
 import free_breakfast.mcscf.root_rotation;
 import free_breakfast.mcscf.third_derivative;
 import free_breakfast.mcscf.zvector;
+import :state_specific; // probed_zvectors, kCasscfCpResponseTolerance
 
 #include "diagnostics.h"
 
@@ -202,8 +203,9 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
       FBF_TRY(download(ints.hamiltonian.eri.data(), n_act * n_act * n_act * n_act))));
   response::Hessian hessian_sa = FBF_TRY(
       response::Hessian::create(res, h, b, naux32, c, ncore, ncas, ints.ppaa, ints.papa, fock_sa));
-  mcscf::RelaxedHessian relaxed_sa = FBF_TRY(mcscf::RelaxedHessian::create(
-      res, hessian_sa, sigma, rdm, alpha, beta, roots, weights, FBF_TRY(response_integrals())));
+  mcscf::RelaxedHessian relaxed_sa = FBF_TRY(
+      mcscf::RelaxedHessian::create(res, hessian_sa, sigma, rdm, alpha, beta, roots, weights,
+                                    FBF_TRY(response_integrals()), kCasscfCpResponseTolerance));
   const auto pairs = static_cast<size_t>(relaxed_sa.size());
   const auto pairs32 = static_cast<int32_t>(pairs);
 
@@ -271,9 +273,11 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
       }
     }
   }
-  mcscf::ZVectors cp = FBF_TRY(
-      mcscf::zvectors(res, relaxed_sa, hessian_sa, roots, n_x32, gradients.data(), ci_rhs.data(),
-                      mcscf::CpSolver::Schur, tolerance, max_iterations, theta_rhs));
+  // With the probe column, which refuses a singular A (df_casscf's,
+  // README.md "A singular H~").
+  mcscf::ZVectors cp =
+      FBF_TRY(probed_zvectors(res, "hessian::df_sacasscf", relaxed_sa, hessian_sa, roots, n_x,
+                              gradients, ci_rhs, theta_rhs, tolerance, max_iterations));
 
   // The solution checked on the unreduced equations (df_casscf's check), the
   // rotation rows y_theta + t at unequal weights.

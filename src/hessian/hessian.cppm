@@ -998,7 +998,8 @@ struct SaCasscfTerms {
 /// refuses a mixing rate max |theta^x_sr| above 10 per bohr, and at unequal
 /// weights the same bound is put on lambda^x's rotations. **A saddle is
 /// refused** as in @ref df_casscf: a lambda^x column whose unreduced residual
-/// is above 1e-6 is a Divergence.
+/// is above 1e-6 is a Divergence. So is a singular SA Hessian, found by
+/// @ref df_casscf's probe column (README.md "A singular H~").
 ///
 /// The inputs are @ref df_casscf's, @p solution a converged
 /// @c mcscf::solve of two roots or more over the same fit at @p weights
@@ -1024,8 +1025,9 @@ struct SaCasscfTerms {
 ///         the multiplicity, the vectors are not the roots', @p b is not
 ///         naux nao^2 long, or a part refuses (weights equal for some pairs
 ///         only); Numerical at a degeneracy; Divergence when a solve meets
-///         negative curvature or leaves a residual above 1e-6; or the first
-///         error of a part.
+///         negative curvature, the CP solve runs out of products or finds
+///         the SA Hessian singular by its probe column, or a residual is
+///         left above 1e-6; or the first error of a part.
 [[nodiscard]] Result<SaCasscfTerms>
 df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
