@@ -6,7 +6,7 @@
 /// of the helpers every gtest tree shares; consumers include it by bare name.
 ///
 /// The C++ analogue of the pytest `slow` marker: a full run executes these
-/// cases (a bare ctest, `devtools/cpp-slow-tier.sh`), while both gates,
+/// cases (a bare ctest, `devtools/test.py nightly`), while both gates,
 /// `devtools/test.py push` and `devtools/test.py pr`, opt out by exporting
 /// FREE_BREAKFAST_FAST_TESTS. Default -- the variable unset -- runs everything,
 /// so nothing changes for a bare ctest run.
