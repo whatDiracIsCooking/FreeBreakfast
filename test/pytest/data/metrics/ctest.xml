@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="(empty)"
+	tests="4"
+	failures="1"
+	disabled="0"
+	skipped="1"
+	hostname=""
+	time="1"
+	timestamp="2026-11-01T03:30:00"
+	>
+	<testcase name="Basis.ParsesSto3g" classname="Basis.ParsesSto3g" time="0.031" status="run">
+		<properties/>
+		<system-out>[       OK ] Basis.ParsesSto3g (30 ms)
+</system-out>
+	</testcase>
+	<testcase name="Basis.RejectsCartesian" classname="Basis.RejectsCartesian" time="0.02" status="fail">
+		<properties/>
+		<failure message="Failed"/>
+		<system-out>[  FAILED  ] Basis.RejectsCartesian (19 ms)
+</system-out>
+	</testcase>
+	<testcase name="Gpu.Serial" classname="Gpu.Serial" time="0.41" status="notrun">
+		<properties/>
+		<skipped message="SKIP_REGULAR_EXPRESSION_MATCHED"/>
+slow validation test skipped in fast mode (FREE_BREAKFAST_FAST_TESTS is set)
+	</testcase>
+	<testcase name="Unlisted.Case" classname="Unlisted.Case" time="0.001" status="run">
+		<properties/>
+	</testcase>
+</testsuite>
