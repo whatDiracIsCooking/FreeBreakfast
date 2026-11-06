@@ -173,8 +173,12 @@ CASES = [
 # The fitting set of each orbital basis an "rohf" case's DF-ROHF is over,
 # under data/aux_basis (pyscf_basis reads from data/basis, hence the relative
 # path): df_reference.py's pairing. Not imported from there, because
-# importing it pins BLAS and OpenMP to one thread.
-AUX_FILES = {"cc-pvdz": ("cc-pVDZ-JKFIT", "../aux_basis/cc-pVDZ-JKFIT.json")}
+# importing it pins BLAS and OpenMP to one thread. casscf_reference.py's
+# 6-31G water fits over the same JKFIT set.
+AUX_FILES = {
+    "cc-pvdz": ("cc-pVDZ-JKFIT", "../aux_basis/cc-pVDZ-JKFIT.json"),
+    "6-31g": ("cc-pVDZ-JKFIT", "../aux_basis/cc-pVDZ-JKFIT.json"),
+}
 
 # Roots solved for, and those of the case's spin kept among them, unless a
 # case says "nkeep".

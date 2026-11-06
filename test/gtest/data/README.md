@@ -536,7 +536,10 @@ zero orbital-Hessian eigenvalue at its minimum. So the two-root cases are
 formaldehyde's frontier CAS(4,3) (π, n, π*: the ground state and the n → π*
 singlet). The later tests (generalized Fock and gradient, Hessian, the SA
 loop and the Casscf step) must start at each case's recorded `active` or
-`avas`, not at a frontier selection of their own.
+`avas`, not at a frontier selection of their own. `h2o_631g` is water's
+case again in 6-31G, from the same `active` (6-31G's lowest virtuals are
+still 4a1 and 2b2): the PySCF comparison the fast set runs (#1008), where
+cc-pVDZ's integral-direct cases cost seconds each.
 
 g and H are the derivatives of E(C exp(κ)) at fixed RDMs, κ_pq = x_pq and
 κ_qp = −x_pq for each packed pair p > q:

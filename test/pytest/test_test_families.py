@@ -193,6 +193,57 @@ def test_marker_errors(tree, source, message):
     assert any(message in e for e in errors), errors
 
 
+# Other's two cases, one exempting the family; the same line count as SOURCE.
+EXEMPT_SOURCE = SOURCE.replace(
+    "TEST(Other, Cheap) {\n}",
+    'TEST(Other, Cheap) {\n  FBF_FAMILY_EXEMPT("a timing"); }',
+)
+
+
+def test_an_exempt_family_is_not_flagged(tree):
+    # A time does not make it a cheapest family: the exemption wins.
+    fams, errors, _ = run(tree, EXEMPT_SOURCE, times={"Other.Cheap": [0.1]})
+    assert errors == []
+    assert fams["Other"].by == "exempt"
+    assert fams["Other"].reason == "a timing"
+    assert fams["Other"].representative is None
+    assert "1 exempt, 3 flagged" in tf.summary(fams, "none")
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (
+            EXEMPT_SOURCE.replace('"a timing"', ""),
+            "takes one string literal, the reason",
+        ),
+        (
+            EXEMPT_SOURCE.replace('"a timing"', '"a", "b"'),
+            "takes one string literal, the reason",
+        ),
+        (EXEMPT_SOURCE.replace('"a timing"', '" "'), "takes one string literal"),
+        (EXEMPT_SOURCE.replace('"a timing"', "kWhy"), "string literals only"),
+        (
+            EXEMPT_SOURCE.replace(
+                "  // FBF_FAMILY_REPRESENTATIVE(); in a comment is not a marker",
+                "  FBF_FAMILY_REPRESENTATIVE();",
+            ),
+            "is exempt and also has a marked representative",
+        ),
+        (
+            EXEMPT_SOURCE.replace(
+                "  // FBF_FAMILY_REPRESENTATIVE(); in a comment is not a marker",
+                '  FBF_FAMILY_EXEMPT("again");',
+            ),
+            "is already exempt",
+        ),
+    ],
+)
+def test_exempt_errors(tree, source, message):
+    _, errors, _ = run(tree, source)
+    assert any(message in e for e in errors), errors
+
+
 def test_a_qualified_param_settles_an_ambiguity(tree):
     source = SOURCE.replace('"big_batch0", "big"', '"More/small_batch0"')
     fams, errors, _ = run(tree, source)
@@ -205,9 +256,13 @@ def test_markers_skip_comments_and_defines(tmp_path):
         "#define FBF_FAMILY_REPRESENTATIVE(...) static_assert(true)\n"
         '/// FBF_FAMILY_REPRESENTATIVE("doc")\n'
         '  FBF_FAMILY_REPRESENTATIVE("p", "r(e)?"); // trailing\n'
+        '  FBF_FAMILY_EXEMPT("why (#1)");\n'
     )
     got = tf.markers_in(tmp_path, {"h.h"})
-    assert [(m.line, m.args) for m in got] == [(3, ["p", "r(e)?"])]
+    assert [(m.line, m.args, m.macro) for m in got] == [
+        (3, ["p", "r(e)?"], tf.MARKER),
+        (4, ["why (#1)"], tf.EXEMPT),
+    ]
 
 
 def test_parse_log():
@@ -303,7 +358,7 @@ def test_cli(tree, tmp_path):
     doc = json.loads(proc.stdout)
     assert doc["families"]["Other"]["representative"] == "Other.Dear"
     assert doc["flagged"] == ["Param.Matches", "Param.Other", "Typed.Works"]
-    assert "2 marked, 1 cheapest by time, 3 flagged" in proc.stderr
+    assert "2 marked, 1 cheapest by time, 0 exempt, 3 flagged" in proc.stderr
     text = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert "Plain  [2]  ->  Plain.Validates  marked" in text.stdout
     # A marker that cannot be placed fails the run.
@@ -332,4 +387,4 @@ def test_the_trees_markers_parse():
     markers = tf.markers_in(_ROOT, files)
     assert markers, "no FBF_FAMILY_REPRESENTATIVE in test/"
     for m in markers:
-        assert len(m.args) <= 2, m
+        assert len(m.args) <= (2 if m.macro == tf.MARKER else 1), m

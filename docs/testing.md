@@ -350,12 +350,26 @@ family with its representative.
   string literals, and nothing but the lister checks them.
 - **Each family has one representative:** the marked case, or else the cheapest
   member by the metrics series (the median of its passes, this host's
-  `nightly`, `weekly` and `manual` records). A family with neither is flagged.
+  `nightly`, `weekly` and `manual` records). A family with neither is flagged,
+  unless it is exempt.
+- **An exempt family has no fast case, on purpose** (#1008):
+  `FBF_FAMILY_EXEMPT("why")` in any one of its cases, the reason a single
+  string literal on one line. The lister reports it as `exempt: why`, not
+  flagged. Exempt only where no smaller input keeps the family's check: a
+  measurement that asserts nothing, or a run whose size is the point. A
+  family takes a representative or an exemption, never both. The two at
+  #1008 are `McscfIntersectionTiming` (a timing) and `E2eCis` (the CIS
+  milestone's benzene run); `Nevpt2QdIntersection.Timing` needs none, being
+  one case of a family with fast ones.
 - **Where to mark.** Where a family's cheapest case is a refusal, mark its
   cheapest validation case, which stays in the fast set too. Where one mode of
   a `TEST_P` needs a fast case of its own, split it off. The markers at #984 are
   exactly #993's exceptions: eight refusal-led families' validation cases, and
   `Nevpt2EnergyDeviceRdms`'s `n2_ccpvdz_cas1010_df_batch0` for the tiled rdms.
+  #1008 added a smaller input as the representative of each family that had
+  none, where its every case was past the line: STO-3G or 6-31G water in
+  place of cc-pVDZ (`h2o_631g` in `data/casscf/`, PySCF over the same basis),
+  and fewer coordinates of a ladder.
 - **The slow-test rule, restated:** a case past about 1.5 s on an idle RTX 3080
   goes under `FBF_SKIP_IF_FAST_TESTS()` unless it is its family's
   representative (`slow_test.h` has where the line comes from).
@@ -376,7 +390,8 @@ whose definition line is the nearest one above it. Times come from
 `[       OK ] … (N ms)` and ctest `Passed … sec` lines. With no times, every
 unmarked family is flagged, which is the state until #982's records exist.
 It exits 1 when a marker cannot be placed (outside every test, an instance
-that matches nothing or more than one, a second marker for one family), and 2
+that matches nothing or more than one, a second marker for one family, an
+exemption without one reason, or a family both marked and exempt), and 2
 when there is nothing to list.
 
 ## Test selection

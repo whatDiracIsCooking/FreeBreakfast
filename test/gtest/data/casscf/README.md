@@ -5,15 +5,16 @@ hand-edited:
 
 - `casscf.json`: the exact CASSCF references. Its keys, its starts and its
   tolerances are documented in `../README.md` (`casscf/casscf.json`).
-- `casscf_df.json`: the same six cases density-fitted, and two more from
+- `casscf_df.json`: the same seven cases density-fitted, and two more from
   ROHF orbitals, below.
 
 ## `casscf_df.json`
 
-The six cases of `casscf.json` (H₂O CAS(4,4) from `active` [2, 3, 5, 6], N₂
+The seven cases of `casscf.json` (H₂O CAS(4,4) from `active` [2, 3, 5, 6], N₂
 CAS(6,6) frontier, H₂CO CAS(4,3) at two singlets weighted [0.5, 0.5] and
 [0.7, 0.3], H₂O AVAS O 2p + H 1s, and N₂ CAS(6,6) frontier at its lowest
-triplet, all cc-pVDZ) **from the same starts**: the
+triplet, all cc-pVDZ; and H₂O CAS(4,4) from the same `active` in 6-31G,
+`h2o_631g`, the fast set's PySCF comparison, #1008) **from the same starts**: the
 same exact RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) and the same
 `active` or AVAS pick, so the starting orbitals are the exact cases' own. Only
 the CASSCF is fitted: `mcscf.CASSCF(mf, ...).density_fit(auxbasis=...)`, which

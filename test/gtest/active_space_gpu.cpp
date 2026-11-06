@@ -482,12 +482,10 @@ INSTANTIATE_TEST_SUITE_P(Cases, ActiveSpaceGpu,
                                               info.param.screened ? "default" : "tau0");
                          });
 
-TEST(ActiveSpaceGpuCap, ScaledOrbitalsOnPrunedClassesMatchUnprunedOnes) {
-  // Orbitals scaled so that every m_v m_w is past the prune's |D| <= 2: the
-  // pruned classes, with the cap, give unpruned classes' (tu|vw) at tau = 0.
-  FBF_REQUIRE_GPU();
-  FBF_SKIP_IF_FAST_TESTS();
-  auto setup = make_setup(reference_case("h2o_ccpvdz"));
+// Orbitals scaled so that every m_v m_w is past the prune's |D| <= 2: the
+// pruned classes, with the cap, give unpruned classes' (tu|vw) at tau = 0.
+void expect_capped(std::string_view name) {
+  auto setup = make_setup(reference_case(name));
   ASSERT_NE(setup, nullptr);
   fb::DeviceResources &res = setup->res();
   const fb::ScopedDeviceIndex on{res.dev_idx()};
@@ -503,8 +501,16 @@ TEST(ActiveSpaceGpuCap, ScaledOrbitalsOnPrunedClassesMatchUnprunedOnes) {
   upload(res, c, scaled.data());
 
   // m_v = max_mu |(U C)_mu v| over the active columns: every product past 2.
-  ASSERT_NE(setup->transform->u, nullptr);
-  const std::vector<double> u = download(res, setup->transform->u->data(), n_cart * n);
+  // A set with no d shell (STO-3G) has no U: its Cartesian AOs are its own.
+  ASSERT_EQ(setup->transform->u == nullptr, n_cart == n);
+  std::vector<double> u(n_cart * n, 0.0);
+  if (setup->transform->u != nullptr) {
+    u = download(res, setup->transform->u->data(), n_cart * n);
+  } else {
+    for (std::size_t k = 0; k < n; ++k) {
+      u[k + (n_cart * k)] = 1.0;
+    }
+  }
   double smallest = std::numeric_limits<double>::infinity();
   for (std::size_t v = static_cast<std::size_t>(setup->ncore);
        v < static_cast<std::size_t>(setup->ncore + setup->ncas); ++v) {
@@ -554,6 +560,20 @@ TEST(ActiveSpaceGpuCap, ScaledOrbitalsOnPrunedClassesMatchUnprunedOnes) {
   for (std::size_t k = 0; k < x.papa.size(); ++k) {
     EXPECT_NEAR(x.papa[k], kScale4 * z.papa[k], pa_tolerance) << k;
   }
+}
+
+TEST(ActiveSpaceGpuCap, ScaledOrbitalsOnPrunedClassesMatchUnprunedOnes) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_capped("h2o_ccpvdz");
+}
+
+// The same check over STO-3G water, the family's fast case (#1008): no d
+// shell, so U is the identity, and the prune and the cap are the same code.
+TEST(ActiveSpaceGpuCap, ScaledSto3gOrbitalsOnPrunedClassesMatchUnprunedOnes) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  expect_capped("h2o_sto3g");
 }
 
 TEST(ActiveSpaceGpuRefusals, RefusesAnActiveSpacePastTheOrbitalsOrEmpty) {

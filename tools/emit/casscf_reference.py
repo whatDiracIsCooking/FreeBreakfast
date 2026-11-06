@@ -77,7 +77,7 @@ energy, the eigenvalues of the state-averaged Fock (`mc.get_fock`) within
 each of the core, active and virtual spaces, and the state-averaged natural
 occupations.
 
-**Density-fitted**: the same six cases again, from the same starts (the
+**Density-fitted**: the same seven cases again, from the same starts (the
 exact RHF's orbitals, the same `active` or AVAS pick), with
 `mcscf.CASSCF(...).density_fit(auxbasis=...)`: every two-electron quantity
 of the CASSCF, the core's J and K included, over the fitted integrals, and
@@ -140,9 +140,12 @@ from casci_reference import (  # noqa: E402
 from fci_reference import dense_hamiltonian  # noqa: E402
 from pyscf import ao2mo, df, fci, gto, lib, mcscf, scf  # noqa: E402
 from pyscf.mcscf import avas, mc1step  # noqa: E402
-from scf_reference import AMIDOGEN, BASES, METHYLENE, WATER, pyscf_basis  # noqa: E402
+from scf_reference import AMIDOGEN, METHYLENE, WATER, pyscf_basis  # noqa: E402
+from scf_reference import BASES as SCF_BASES  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+# fci_step_reference.py's pattern: scf_reference's sets, and 6-31G.
+BASES = {**SCF_BASES, "6-31g": "6-31g.json"}
 OUT = ROOT / "test" / "gtest" / "data" / "casscf" / "casscf.json"
 OUT_DF = OUT.with_name("casscf_df.json")
 
@@ -188,6 +191,17 @@ CASES = [
         "basis": "cc-pvdz",
         "cas": (6, 6),
         "multiplicity": 3,
+    },
+    # Water's case again in 6-31G, no d shells: the fast set's PySCF
+    # comparison of each family that reads this file (#1008), where cc-pVDZ's
+    # costs seconds per case integral-direct. 6-31G's lowest two virtuals are
+    # still 4a1 and 2b2, so the active set is the same sigma O-H bonds.
+    {
+        "name": "h2o_631g",
+        "atoms": WATER,
+        "basis": "6-31g",
+        "cas": (4, 4),
+        "active": [2, 3, 5, 6],
     },
     {
         "name": "h2o_ccpvdz_avas",

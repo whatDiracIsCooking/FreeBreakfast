@@ -977,6 +977,7 @@ TEST(McscfC3v, NearMeciIntersection) {
 // of kTimingRepeats. Measurement, not a gate: nothing is asserted on it.
 TEST(McscfIntersectionTiming, AgainstThreeCalls) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_EXEMPT("a measurement, not a check: it asserts nothing on the times it prints");
   FBF_SKIP_IF_FAST_TESTS();
   for (const std::string_view name : {"h2co_ccpvdz_sa2", "h2co_skew_ccpvdz_sa3"}) {
     const auto run = converge(reference_case(name));
