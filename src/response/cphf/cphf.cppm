@@ -1,7 +1,8 @@
 /// @file
 /// @brief The closed-shell coupled-perturbed Hartree-Fock equations
-/// M U = B for a block of right-hand sides at once, by preconditioned
-/// conjugate gradients run in lockstep over the density-fitted J and K.
+/// M U = B for a block of right-hand sides at once, by recipes::pcg_solve's
+/// lockstep preconditioned conjugate gradients over the density-fitted J and
+/// K.
 ///
 /// See README.md.
 
@@ -44,7 +45,8 @@ struct Cphf {
 /// @p batched J and K of a block of columns' D_U by the block forms of both,
 /// as many columns at once as half the device's free memory holds. The two
 /// give the same U to rounding. The preconditioner is (eps_a - eps_i)^-1, a
-/// pair whose difference is below 1e-8 left unscaled.
+/// pair whose difference is below 1e-8 left unscaled. Both are
+/// LinearOperators handed to recipes::pcg_solve.
 ///
 /// @p b is B over @p naux fitting functions and C's nao AOs, as
 /// @c df_coulomb reads it: naux nao^2 doubles. @p c is the nao x nmo
@@ -54,7 +56,8 @@ struct Cphf {
 /// n_vir = nmo - nocc; ncol is its length over n_vir n_occ.
 ///
 /// Queued on res.stream() with res.blas() (host pointer mode); each column's
-/// step synchronizes. Its scratch is its own, allocated per call:
+/// step synchronizes. Its scratch is its own and pcg_solve's, allocated per
+/// call:
 /// @c df_coulomb and @c df_exchange take res.device_workspace(), which grows
 /// to one column's X and Y, or with @p batched a batch's, and stays grown.
 /// The device res.dev_idx() names is made current for the call and the

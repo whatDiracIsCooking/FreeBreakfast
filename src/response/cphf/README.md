@@ -51,25 +51,36 @@ virtual–occupied block. For a field, B = −r_ai and α_xy = 4 B_x · U_y.
 
 ## The solver
 
-Preconditioned conjugate gradients from U = 0, preconditioner (ε_a − ε_i)⁻¹,
-every column in lockstep: each sweep takes one product per column still
-above `tolerance` in ||r|| and leaves the stopped ones as they are, so the
-sweep count is the slowest column's. Its interface and stopping rules are
-`response::zvector`'s: an absolute tolerance on each column's residual, the true
-residual from one more product at the end, MaxIterationsExceeded when a
-column is still above it after `max_iterations` sweeps, and Divergence when a
-direction has p·Mp ≤ 0. That last is not the solver failing: M is not
-positive definite, so the RHF reference is unstable and a CPHF over it has no
-meaning.
+[`recipes::pcg_solve`](../../recipes/pcg/README.md) from U = 0: the product
+above is its `LinearOperator`, the per-column and `batched` paths alike, and
+(ε_a − ε_i)⁻¹ a second, its preconditioner. Every column runs in lockstep:
+each sweep applies M once to the columns still above `tolerance` in ||r||,
+gathered side by side, and leaves the stopped ones as they are, so the sweep
+count is the slowest column's. The stopping rules are `pcg_solve`'s defaults,
+and `response::zvector`'s: an absolute tolerance on each column's residual,
+the true residual from one more product at the end, MaxIterationsExceeded
+when a column is still above it after `max_iterations` sweeps, and
+Divergence when a direction has p·Mp ≤ 0; either error's message is prefixed `response::cphf:`. Divergence is
+not the solver failing: M is not positive definite, so the RHF reference is
+unstable and a CPHF over it has no meaning. `pcg_solve`'s recurrence is the
+one this solve ran by hand before it, step for step, and moving onto it left
+the sweep counts unchanged.
+
+**It is the Z-vector of an RHF-based correlated gradient.** With one column
+and B = −L_ai, the Lagrangian's virtual–occupied block, `cphf` solves the
+Z-vector (Handy–Schaefer) equations of any correlated method over an RHF
+reference, MP2, CCSD or another: M is symmetric, so the adjoint equation
+Mᵀ z = −L is the same solve, and such a method needs no Z-vector solver of
+its own.
 
 ### `batched`, off by default
 
 All columns share M, so with `batched` a sweep's products are one batched
-build over the active columns' densities: their P gathered side by side, the
-gemms above batched over the block, J and K by the block forms of
-`df_coulomb` and `df_exchange` (`density_fitting/jk/`), and M P scattered
-back. A batch is as wide as half the device's free memory holds at the call,
-its own L, R, D_U, J, K and G C_o and the J/K scratch (X and Y,
+build over the active columns' densities: their P, which `pcg_solve` hands
+the operator gathered side by side, the gemms above batched over the block,
+and J and K by the block forms of `df_coulomb` and `df_exchange`
+(`density_fitting/jk/`). A batch is as wide as half the device's free
+memory holds at the call, its own L, R, D_U, J, K and G C_o and the J/K scratch (X and Y,
 2 · naux · 2 n_occ · nao doubles a column) together, and the int32_t BLAS
 dispatch allows; a sweep wider than that runs in batches of it. **The batch
 takes half the free VRAM, and the workspace is left grown to its X and Y**
@@ -111,5 +122,5 @@ on the nuclear and dipole columns.
 | File | Role |
 |------|------|
 | `cphf.cppm` | Module interface: `response::Cphf`, `response::cphf` |
-| `cphf.cpp` | The product and the lockstep conjugate gradients |
+| `cphf.cpp` | The product and the preconditioner as `LinearOperator`s, handed to `pcg_solve` |
 | `CMakeLists.txt` | Build configuration |
