@@ -255,4 +255,20 @@ struct HessianStep {
                                             std::span<const double> reference_ci,
                                             std::span<const double> ci, size_t nroots);
 
+/// @brief The numerical ladder's tightened CASSCF re-solve (its σ_solves):
+/// @p conv_tol and @p conv_tol_grad each 100 times tighter, but never below
+/// what fp64 resolves at the solve's weighted energy @p energy over
+/// @p pairs non-redundant rotations, and never looser than given.
+///
+/// mcscf::solve converges on |ΔE| < conv_tol, ΔE the difference of two
+/// computed energies, each good to about ε |E| (ε = 2.2e-16, one ulp at
+/// most): its floor is 2 ε |E|. And on ‖g‖ < conv_tol_grad over @p pairs
+/// elements, each g_pq = 2 (F_pq − F_qp) the difference of two Fock
+/// elements built from what builds E, so each good to about 2 ε |E| and,
+/// independent, ‖g‖'s floor 2 ε |E| √pairs. Host only.
+///
+/// @return {conv_tol, conv_tol_grad}: min(t, max(t / 100, its floor)) each.
+[[nodiscard]] std::pair<double, double>
+tightened_casscf_tolerances(double conv_tol, double conv_tol_grad, double energy, size_t pairs);
+
 } // namespace free_breakfast

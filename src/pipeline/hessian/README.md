@@ -459,6 +459,26 @@ does not see that; this does. It follows #803's fixture,
     square over the points and components of g_production − g_tight: the
     root mean square, as the restarts term, because the floor's model is an
     independent error of size σ in each gradient a stencil reads.
+
+    The CASSCF's two are held at their round-off floors
+    (`tightened_casscf_tolerances`, #995): min(t, max(t / 100, floor)).
+    `mcscf::solve` stops on |ΔE| < conv_tol, and ΔE is the difference of two
+    computed energies, each good to about ε |E| (ε = 2.2e-16): the floor is
+    2 ε |E|. At the skew fixture (E = −112.39) 100-fold of the tests'
+    conv_tol 1e-12 is 1e-14, under one ulp of E (1.42e-14), so it was met
+    only by a ΔE of exactly zero, and a re-solve sometimes ran out of macro
+    iterations with ‖g‖ already 6.4e-13 (#995); the floor is 5.0e-14. On
+    ‖g‖ < conv_tol_grad, each element g_pq = 2 (F_pq − F_qp) is the
+    difference of two Fock elements built from what builds E, so good to
+    about 2 ε |E|, and the norm over the n_pairs non-redundant rotations
+    has the floor 2 ε |E| √n_pairs: 3.3e-13 at the fixture (44 pairs), under
+    100-fold's 1e-12, which stands. At PSB3 (|E| 248, 2589 and 6789 pairs at
+    cc-pVDZ and cc-pVTZ) it is 5.6e-12 and 9.1e-12, over what
+    `src/mcscf/solve/README.md` measured ‖g‖ to settle at (1.6e-12 to
+    3.4e-12, and 6.2e-12 to 9e-12). `"tightened"` in `hessian.json`'s
+    `"noise"` carries both tolerances and which term set each (`"fold"` or
+    `"roundoff"`). The Z-vector's tolerance is a residual, not a difference
+    of energies, and stays 100-fold.
   - *the bound, rejected as the floor*: the gradient is ∂L/∂R of a
     Lagrangian stationary in the parameters x and multipliers z, so a
     residual r moves it by r · dx/dR to first order, at most ‖r‖ ‖dx/dR‖
@@ -832,5 +852,5 @@ OpenMolcas comparison (the issue's optional one) was made.
 | File | Role |
 |------|------|
 | `hessian.cppm` | Module interface: `HessianMethod`, `HessianOutput`, `HessianStep` |
-| `hessian.cpp` | `check_displaced_casscf`; the private reference-orbitals step; the ladder's stencil, verdict and restarts; `HessianStep::run`: its refusals, the analytic Hessian (RHF with its dipole derivative, CASSCF, SC- or PC-NEVPT2) over one nested pipeline, or the nested pipelines along each coordinate (RHF, CASSCF or NEVPT2 gradients) and their central differences, or the ladder, its noise and the bilinearity check; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
+| `hessian.cpp` | `check_displaced_casscf`; `tightened_casscf_tolerances`; the private reference-orbitals step; the ladder's stencil, verdict and restarts; `HessianStep::run`: its refusals, the analytic Hessian (RHF with its dipole derivative, CASSCF, SC- or PC-NEVPT2) over one nested pipeline, or the nested pipelines along each coordinate (RHF, CASSCF or NEVPT2 gradients) and their central differences, or the ladder, its noise and the bilinearity check; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
 | `CMakeLists.txt` | The module library |

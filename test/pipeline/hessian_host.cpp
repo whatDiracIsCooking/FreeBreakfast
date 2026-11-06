@@ -11,8 +11,9 @@
 // method beside a [nevpt2_gradient] (#818), its coordinates, what it
 // refuses before running, and examples/nevpt2_hessian.toml parsed; and the
 // guard on a displaced CASSCF, check_displaced_casscf, fed an active orbital
-// swapped out and roots swapped. Nothing is run, so nothing touches a
-// device.
+// swapped out and roots swapped; and the ladder's tightened re-solve's
+// tolerances (#995), held at their round-off floors. Nothing is run, so
+// nothing touches a device.
 
 #include <gtest/gtest.h>
 
@@ -537,6 +538,46 @@ TEST(PipelineHessian, TheDisplacedCasscfGuardRefusesASwappedOrbitalOrRoot) {
       fb::check_displaced_casscf(kNao, s, start, followed, reference, {roots.data(), 5}, 2);
   ASSERT_FALSE(sizes.has_value());
   EXPECT_EQ(sizes.error().kind, fb::ErrorKind::InvalidConfig);
+}
+
+// tightened_casscf_tolerances: 100-fold tighter, held at the round-off
+// floors 2 eps |E| on |Delta E| and 2 eps |E| sqrt(pairs) on ||g||. At the
+// skew fixture's E (h2co_skew_sto3g, 44 pairs) and the ladder tests'
+// conv_tol 1e-12, 1e-14 is under one ulp of E (1.42e-14): the energy's
+// floor, 5.0e-14, wins, and conv_tol_grad's 1e-12 stays 100-fold (its floor
+// 3.3e-13). Where 100-fold is above both floors, both are 100-fold; and where
+// a floor is above the given tolerance, the given one.
+TEST(PipelineHessian, TheTightenedReSolveIsHeldAtItsRoundOffFloors) {
+  constexpr double kEnergy = -112.3927911917753;
+  constexpr std::size_t kPairs = 44;
+  const double eps = std::numeric_limits<double>::epsilon();
+  const double energy_floor = 2.0 * eps * std::abs(kEnergy);
+  const double gradient_floor = energy_floor * std::sqrt(static_cast<double>(kPairs));
+
+  const auto [conv_tol, conv_tol_grad] =
+      fb::tightened_casscf_tolerances(1e-12, 1e-10, kEnergy, kPairs);
+  EXPECT_EQ(conv_tol, energy_floor);
+  EXPECT_NEAR(conv_tol, 4.99e-14, 1e-16);
+  EXPECT_GT(conv_tol, 1e-12 / 100.0);
+  EXPECT_EQ(conv_tol_grad, 1e-10 / 100.0);
+  EXPECT_LT(gradient_floor, conv_tol_grad);
+
+  // 100-fold still above round-off: unchanged.
+  const auto [loose_tol, loose_tol_grad] =
+      fb::tightened_casscf_tolerances(1e-10, 1e-8, kEnergy, kPairs);
+  EXPECT_EQ(loose_tol, 1e-10 / 100.0);
+  EXPECT_EQ(loose_tol_grad, 1e-8 / 100.0);
+
+  // The gradient's floor wins at PSB3's |E| and cc-pVTZ pairs (9.1e-12), and
+  // a floor above the given tolerance gives the given one.
+  const auto [psb3_tol, psb3_tol_grad] =
+      fb::tightened_casscf_tolerances(1e-10, 1e-10, -248.0, 6789);
+  EXPECT_EQ(psb3_tol, 1e-10 / 100.0);
+  EXPECT_EQ(psb3_tol_grad, 2.0 * eps * 248.0 * std::sqrt(6789.0));
+  const auto [capped_tol, capped_tol_grad] =
+      fb::tightened_casscf_tolerances(1e-14, 1e-12, -248.0, 6789);
+  EXPECT_EQ(capped_tol, 1e-14);
+  EXPECT_EQ(capped_tol_grad, 1e-12);
 }
 
 } // namespace
