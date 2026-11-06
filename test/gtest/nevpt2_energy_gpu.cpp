@@ -3731,6 +3731,7 @@ TEST_P(Nevpt2PcEnergyHvp, BarsMatchRichardsonLadder) {
   FBF_REQUIRE_GPU();
   const std::string group = GetParam();
   // Every input at once stands for the groups in the fast tier.
+  FBF_FAMILY_REPRESENTATIVE("all");
   if (group != "all") {
     FBF_SKIP_IF_FAST_TESTS();
   }

@@ -1,6 +1,6 @@
 """devtools/test.py: argument parsing, push dispatch, the GPU batch split,
-config.sh reading and the card lock. The watchdog has its own file,
-test_gpu_batch_watchdog.py. Nothing here builds or needs a GPU."""
+pr's representative set, config.sh reading and the card lock. The watchdog
+has its own file, test_gpu_batch_watchdog.py. Nothing here builds or needs a GPU."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ def test_pr_takes_ctest_args_after_dashdash() -> None:
 def test_pr_defaults() -> None:
     args, rest = gates.parse(["pr"])
     assert args.preset is None and args.jobs is None and args.only is None
-    assert not (args.fresh or args.clean or args.no_test or args.tidy)
+    assert not (args.fresh or args.clean or args.no_test or args.tidy or args.all)
     assert rest == []
 
 
@@ -293,6 +293,260 @@ def test_split_leaves_an_oversized_batch_to_ctest(tmp_path: Path) -> None:
 def test_split_rejects_a_listing_without_json() -> None:
     with pytest.raises(ValueError):
         gates.split_gpu_entries("ctest: no such preset", [])
+
+
+# --- pr's representative set ------------------------------------------------
+
+# test_families.py --json, stubbed: what pr reads from it.
+FAMILIES = {
+    "schema": 1,
+    "families": {
+        "Plain": {
+            "members": ["Plain.Refuses", "Plain.Validates"],
+            "representative": "Plain.Validates",
+            "by": "marked",
+        },
+        # A value param: ctest prints `/"Singlet"`, gtest `/Singlet`.
+        "Spin.Matches": {
+            "members": ["Cases/Spin.Matches/Singlet", "Cases/Spin.Matches/Triplet"],
+            "representative": "Cases/Spin.Matches/Singlet",
+            "by": "cheapest",
+        },
+        # A typed test: ctest prints `<double>`, gtest `/1`.
+        "Typed.Works": {
+            "members": ["Typed/0.Works", "Typed/1.Works"],
+            "representative": "Typed/1.Works",
+            "by": "cheapest",
+        },
+        "Timing": {
+            "members": ["Timing.Big"],
+            "representative": None,
+            "by": "exempt",
+            "reason": "a timing",
+        },
+        "New": {
+            "members": ["New.A", "New.B"],
+            "representative": None,
+            "by": None,
+        },
+        "Host": {
+            "members": ["Host.Cheap", "Host.Dear"],
+            "representative": "Host.Cheap",
+            "by": "cheapest",
+        },
+    },
+    "flagged": ["New"],
+    "exempt": ["Timing"],
+    "not_gtest": ["example_rhf"],
+    "errors": [],
+    "notes": [],
+}
+
+
+def _listing(gpu: Path, host: Path) -> dict:
+    flag = "--gtest_also_run_disabled_tests"
+
+    def gpu_entry(ctest_name: str, case: str) -> dict:
+        return _entry(ctest_name, [str(gpu), f"--gtest_filter={case}", flag])
+
+    return {
+        "tests": [
+            gpu_entry("Plain.Refuses", "Plain.Refuses"),
+            gpu_entry("Plain.Validates", "Plain.Validates"),
+            gpu_entry('Cases/Spin.Matches/"Singlet"', "Cases/Spin.Matches/Singlet"),
+            gpu_entry('Cases/Spin.Matches/"Triplet"', "Cases/Spin.Matches/Triplet"),
+            gpu_entry("Typed/0.Works<float>", "Typed/0.Works"),
+            gpu_entry("Typed/1.Works<double>", "Typed/1.Works"),
+            gpu_entry("Timing.Big", "Timing.Big"),
+            gpu_entry("New.A", "New.A"),
+            gpu_entry("New.B", "New.B"),
+            _entry("Host.Cheap", [str(host), "--gtest_filter=Host.Cheap"], ("host",)),
+            _entry("Host.Dear", [str(host), "--gtest_filter=Host.Dear"], ("host",)),
+            _entry("example_rhf", ["cmake", "-P", "run.cmake"], ("host",)),
+        ]
+    }
+
+
+def test_the_representative_set() -> None:
+    keep, reps, flagged = gates.representative_set(FAMILIES)
+    assert reps == {
+        "Plain.Validates",
+        "Cases/Spin.Matches/Singlet",
+        "Typed/1.Works",
+        "Host.Cheap",
+    }
+    # A flagged family runs whole; an exempt one not at all.
+    assert flagged == {"New"}
+    assert keep == reps | {"New.A", "New.B"}
+
+
+def test_select_joins_on_gtests_names(tmp_path: Path) -> None:
+    gpu, host = tmp_path / "gpu", tmp_path / "host"
+    keep, _, _ = gates.representative_set(FAMILIES)
+    text = "ctest chatter\n" + json.dumps(_listing(gpu, host))
+    cut, dropped, counts = gates.select_listing(text, keep)
+    assert dropped == [
+        "Plain.Refuses",
+        'Cases/Spin.Matches/"Triplet"',
+        "Typed/0.Works<float>",
+        "Timing.Big",
+        "Host.Dear",
+    ]
+    assert [t["name"] for t in json.loads(cut)["tests"]] == [
+        "Plain.Validates",
+        'Cases/Spin.Matches/"Singlet"',
+        "Typed/1.Works<double>",
+        "New.A",
+        "New.B",
+        "Host.Cheap",
+        "example_rhf",
+    ]
+    assert counts == {"entries": 12, "selected": 6, "not_gtest": 1}
+
+
+def test_gtest_name() -> None:
+    assert gates.gtest_name({"command": ["b", "--gtest_filter=A/B.c/1"]}) == "A/B.c/1"
+    assert gates.gtest_name({"command": ["cmake", "-P", "x"]}) is None
+    two = {"command": ["b", "--gtest_filter=A", "--gtest_filter=B"]}
+    assert gates.gtest_name(two) is None
+
+
+def test_skipped_cases() -> None:
+    log = "\n".join(
+        [
+            "[  SKIPPED ] Cases/Spin.Matches/Singlet (0 ms)",
+            "[  SKIPPED ] 1 test, listed below:",
+            "[  SKIPPED ] Cases/Spin.Matches/Singlet",
+            "1/3 Test #1: Host.Cheap .......................***Skipped   0.01 sec",
+            "2/3 Test #2: Host.Dear ........................   Passed    0.01 sec",
+            "3/3 Test #3: Unknown ..........................***Skipped   0.01 sec",
+        ]
+    )
+    names = {"Host.Cheap": "Host.Cheap", "Host.Dear": "Host.Dear"}
+    assert gates.skipped_cases(log, names) == {
+        "Cases/Spin.Matches/Singlet",
+        "Host.Cheap",
+    }
+
+
+def _stub_lister(root: Path, doc: dict | str, code: int = 0) -> None:
+    (root / "devtools").mkdir(parents=True)
+    out = doc if isinstance(doc, str) else json.dumps(doc)
+    (root / "devtools" / "test_families.py").write_text(
+        f"import sys\nsys.stdout.write({out!r})\nsys.exit({code})\n"
+    )
+
+
+def test_list_families_reads_the_listers_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_lister(tmp_path, FAMILIES)
+    monkeypatch.setattr(gates, "REPO_ROOT", tmp_path)
+    assert gates.list_families(tmp_path / "build") == FAMILIES
+
+
+@pytest.mark.parametrize(
+    ("doc", "code", "message"),
+    [
+        (dict(FAMILIES, errors=["x.cpp:3: bad"]), 1, "x.cpp:3: bad"),
+        ("", 2, "exited 2"),
+        ("not json", 0, "exited 0"),
+    ],
+)
+def test_list_families_refuses_an_incomplete_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, doc, code: int, message: str
+) -> None:
+    _stub_lister(tmp_path, doc, code)
+    monkeypatch.setattr(gates, "REPO_ROOT", tmp_path)
+    with pytest.raises(gates.SelectionError, match=message):
+        gates.list_families(tmp_path / "build")
+
+
+def test_tier_tests_runs_only_the_representatives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build = tmp_path / "build"
+    gpu = build / gates.GPU_BINS[2]
+    host = build / gates.HOST_BINS[-1]
+    gpu.parent.mkdir(parents=True)
+    host.parent.mkdir(parents=True, exist_ok=True)
+    gpu.touch()
+    host.touch()
+    listing = json.dumps(_listing(gpu, host))
+    seen: dict = {}
+
+    def fake_run(cmd, **kw):
+        assert "--show-only=json-v1" in cmd
+        return subprocess.CompletedProcess(cmd, 0, listing, "")
+
+    def fake_phase(name, cmd, log, env=None):
+        exclude = cmd[cmd.index("--exclude-from-file") + 1]
+        seen["excluded"] = Path(exclude).read_text().splitlines()
+        with log.open("a") as f:
+            f.write("1/1 Test #1: Host.Cheap ......***Skipped   0.01 sec\n")
+        return 0
+
+    def fake_batch(tag, binary, cfg, log, *, env, cwd, echo_log):
+        seen.setdefault("batches", []).append((binary, env["GTEST_FILTER"]))
+        return 0
+
+    monkeypatch.setattr(gates.subprocess, "run", fake_run)
+    monkeypatch.setattr(gates, "run_phase", fake_phase)
+    monkeypatch.setattr(gates, "run_gpu_batch", fake_batch)
+    log = tmp_path / "pr.log"
+    cfg = {"CTEST_JOBS": "1"}
+    assert gates.tier_tests(cfg, "p", build, [], log, families=FAMILIES) == 0
+    assert seen["batches"] == [
+        (
+            gpu,
+            "Plain.Validates:Cases/Spin.Matches/Singlet:Typed/1.Works:New.A:New.B",
+        )
+    ]
+    # Every batched entry, then every unselected one, is kept from ctest.
+    assert sorted(seen["excluded"]) == sorted(
+        [
+            "Plain.Validates",
+            'Cases/Spin.Matches/"Singlet"',
+            "Typed/1.Works<double>",
+            "New.A",
+            "New.B",
+            "Plain.Refuses",
+            'Cases/Spin.Matches/"Triplet"',
+            "Typed/0.Works<float>",
+            "Timing.Big",
+            "Host.Dear",
+        ]
+    )
+    text = log.read_text()
+    assert "6 of 12 ctest entries selected, against the lister's 4 representatives" in (
+        text
+    )
+    assert "flagged, run whole: New" in text
+    assert "skipped representative: Host.Cheap" in text
+
+
+def test_tier_tests_without_families_runs_the_listing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build = tmp_path / "build"
+    gpu = build / gates.GPU_BINS[2]
+    gpu.parent.mkdir(parents=True)
+    gpu.touch()
+    listing = json.dumps(_listing(gpu, build / "host"))
+    filters = []
+    monkeypatch.setattr(
+        gates.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, listing, ""),
+    )
+    monkeypatch.setattr(gates, "run_phase", lambda *a, **kw: 0)
+    monkeypatch.setattr(
+        gates,
+        "run_gpu_batch",
+        lambda *a, env, **kw: filters.append(env["GTEST_FILTER"]) or 0,
+    )
+    assert gates.tier_tests({"CTEST_JOBS": "1"}, "p", build, [], tmp_path / "l") == 0
+    assert filters[0].count(":") == 8
 
 
 # --- config.sh ---------------------------------------------------------------
