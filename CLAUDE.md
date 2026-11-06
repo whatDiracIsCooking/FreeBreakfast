@@ -261,6 +261,12 @@ is a human one. The `ci-cuda` and
 is getting the toolchain image onto a runner, and that file's comment has the
 two routes.
 
+**Where this is heading is `docs/testing.md`:** gates named `push`, `pr` and
+`nightly` behind one `devtools/test.py`, a nightly full run on this box,
+recorded build and test times, and test selection for PRs. It says which parts
+exist today. Until each lands, this section and "Reading a test run" describe
+the scripts as they actually behave.
+
 ## Containers: four files, two front ends
 
 `docker/Dockerfile.{base,cuda,hip,combined}` is a diamond, and the four
