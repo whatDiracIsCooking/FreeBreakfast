@@ -13,7 +13,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kHalf
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // axpy, nrm2, scal, wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
+import free_breakfast.core.wwr; // axpy, dot, nrm2, scal, wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.molecule;
@@ -44,6 +44,30 @@ constexpr double kCasscfElectronCountTolerance = 1e-6;
 // Schur complement's inner CI solves stop on negative curvature and leave it
 // there. A converged solve sits near 1e-9 (the inner solves' 1e-8, relative).
 constexpr double kCasscfCpResidualCeiling = 1e-6;
+// H~'s CI response is solved to this, relative to its right-hand side
+// (RelaxedHessian::create's default, named for the bar below).
+constexpr double kCasscfCpResponseTolerance = 1e-8;
+// The probe column's seed: a fixed pseudo-random right-hand side, so that a
+// refusal repeats run to run (README.md "A singular H~").
+constexpr uint64_t kCasscfCpProbeSeed = 978;
+
+// The probe's right-hand side: @p pairs pseudo-random doubles in [-1, 1) from
+// a fixed seed, by the generator's bits (no distribution, whose output the
+// standard leaves to the library), normalized.
+std::vector<double> probe_column(const size_t pairs) {
+  std::mt19937_64 bits(kCasscfCpProbeSeed);
+  std::vector<double> s(pairs);
+  double norm = 0.0;
+  for (double &v : s) {
+    v = (2.0 * std::ldexp(static_cast<double>(bits() >> 11), -53)) - 1.0;
+    norm += v * v;
+  }
+  norm = std::sqrt(norm);
+  for (double &v : s) {
+    v /= norm;
+  }
+  return s;
+}
 
 Result<std::pair<int32_t, int32_t>>
 state_specific_electrons(const std::string_view who, const DeviceResources &res,
@@ -90,6 +114,101 @@ state_specific_electrons(const std::string_view who, const DeviceResources &res,
   }
   const int32_t nbeta = (nelecas - two_s) / 2;
   return std::pair{nelecas - nbeta, nbeta};
+}
+
+// mcscf::zvectors' Schur solve of the @p n_x columns @p gradients and
+// @p ci_rhs (one root), with one more column beside them, the probe: H~ u =
+// -s for probe_column's s, no CI part. The coordinates' right-hand sides can
+// be orthogonal to a null direction of H~ by symmetry, which leaves the
+// direction to round-off; the probe's s is not. H~ is refused as singular
+// when the probe's Rayleigh quotient rho = u.H~u / u.u = -u.s / u.u is not
+// above kCasscfCpResponseTolerance max diag(H), or when the solve meets a
+// direction it is not positive along or runs out of products (README.md "A
+// singular H~"). The probe's column is dropped from the result.
+Result<mcscf::ZVectors> probed_zvectors(DeviceResources &res, const std::string_view who,
+                                        mcscf::RelaxedHessian &relaxed,
+                                        const response::Hessian &hessian, const ci::Roots &roots,
+                                        const size_t n_x, const Buffers::device<double> &gradients,
+                                        const Buffers::device<double> &ci_rhs,
+                                        const double tolerance, const int32_t max_iterations) {
+  const auto pairs = static_cast<size_t>(relaxed.size());
+  const auto pairs32 = static_cast<int32_t>(pairs);
+  const size_t dim = roots.vectors.num_elements();
+  const size_t n_col = n_x + 1;
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  const wwr::wwrStream_t stream = res.stream();
+  const std::vector<double> s = probe_column(pairs);
+  Buffers::device<double> rhs(pairs * n_col, res.device());
+  Buffers::device<double> rhs_ci(dim * n_col, res.device());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rhs.data(), gradients.data(), pairs * n_x * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+  FBF_TRY(
+      gpu_status(wwr::wwrMemcpyAsync(rhs.data() + (pairs * n_x), s.data(), pairs * sizeof(double),
+                                     wwr::wwrMemcpyHostToDevice, stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rhs_ci.data(), ci_rhs.data(), dim * n_x * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+  FBF_TRY(gpu_status(
+      wwr::wwrMemsetAsync(rhs_ci.data() + (dim * n_x), 0, dim * sizeof(double), stream)));
+  // The host s goes out of scope only after the copy has left it.
+  FBF_TRY(res.sync());
+
+  const auto singular = [&](const std::string &why) {
+    return err_divergence("{}: the CP-CASSCF's H~ is singular or not positive ({}): the CASSCF "
+                          "is not an isolated minimum (a saddle, or one point of a continuous "
+                          "family of solutions, as when the active space holds part of a "
+                          "degenerate set), and its Hessian depends on which point it reached",
+                          who, why);
+  };
+  Result<mcscf::ZVectors> solved =
+      mcscf::zvectors(res, relaxed, hessian, roots, static_cast<int32_t>(n_col), rhs.data(),
+                      rhs_ci.data(), mcscf::CpSolver::Schur, tolerance, max_iterations);
+  if (!solved.has_value()) {
+    const ErrorKind kind = solved.error().kind;
+    if (kind == ErrorKind::Divergence || kind == ErrorKind::MaxIterationsExceeded) {
+      return singular(solved.error().message);
+    }
+    return err(std::move(solved.error()));
+  }
+  mcscf::ZVectors &all = *solved;
+
+  // rho against the products' resolution: the CI response leaves each
+  // product's R x wrong by up to kCasscfCpResponseTolerance of R x, and at a
+  // minimum 0 <= -R <= H, so H~'s eigenvalues are known to that times ||H||,
+  // which max diag(H) bounds from below.
+  double us = 0.0;
+  double uu = 0.0;
+  const double *const u = all.orbital.data() + (pairs * n_x);
+  FBF_TRY(gpu_status(
+      wwr::dot<double, int32_t>(blas, pairs32, u, 1, rhs.data() + (pairs * n_x), 1, &us)));
+  FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, pairs32, u, 1, u, 1, &uu)));
+  std::vector<double> diagonal(pairs);
+  FBF_TRY(
+      gpu_status(wwr::wwrMemcpyAsync(diagonal.data(), hessian.diagonal().data(),
+                                     pairs * sizeof(double), wwr::wwrMemcpyDeviceToHost, stream)));
+  FBF_TRY(res.sync());
+  const double rho = uu > 0.0 ? -us / uu : 0.0;
+  const double bar = kCasscfCpResponseTolerance * std::ranges::max(diagonal);
+  if (!(rho > bar)) {
+    return singular(std::format("a generic direction's Rayleigh quotient {:.3e}, not above "
+                                "the {:.3e} its products resolve, {:.0e} of max diag(H)",
+                                rho, bar, kCasscfCpResponseTolerance));
+  }
+
+  // The coordinates' columns alone.
+  mcscf::ZVectors cp{.orbital = Buffers::device<double>(pairs * n_x, res.device()),
+                     .ci = Buffers::device<double>(dim * n_x, res.device()),
+                     .theta = {},
+                     .iterations = std::move(all.iterations),
+                     .residuals = std::move(all.residuals)};
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cp.orbital.data(), all.orbital.data(),
+                                         pairs * n_x * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                         stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cp.ci.data(), all.ci.data(), dim * n_x * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+  cp.iterations.resize(n_x);
+  cp.residuals.resize(n_x);
+  FBF_TRY(res.sync());
+  return std::move(cp);
 }
 
 // The CP-CASSCF step of a state-specific DF-CASSCF Hessian, and what the
@@ -170,8 +289,9 @@ Result<CasscfCp> casscf_cp(DeviceResources &res, const std::string_view who,
                                          FBF_TRY(download(fock.fock_inactive.data(), mm)),
                                          FBF_TRY(download(ints.ppaa.data(), mm * n_act * n_act)),
                                          FBF_TRY(download(ints.papa.data(), mm * n_act * n_act))};
-  mcscf::RelaxedHessian relaxed = FBF_TRY(mcscf::RelaxedHessian::create(
-      res, hessian, sigma, rdm, alpha, beta, solution.roots, weight, std::move(response_ints)));
+  mcscf::RelaxedHessian relaxed = FBF_TRY(
+      mcscf::RelaxedHessian::create(res, hessian, sigma, rdm, alpha, beta, solution.roots, weight,
+                                    std::move(response_ints), kCasscfCpResponseTolerance));
 
   // The right-hand sides in zvectors' coordinates: the orbital rows packed
   // (rhs_orbital holds G_pq at p > q, the order the packing reads), the CI
@@ -193,9 +313,8 @@ Result<CasscfCp> casscf_cp(DeviceResources &res, const std::string_view who,
                                          res.stream())));
   FBF_TRY(
       gpu_status(wwr::scal<double, int32_t>(blas, ci_count32, &kHalf<double>, ci_rhs.data(), 1)));
-  mcscf::ZVectors cp =
-      FBF_TRY(mcscf::zvectors(res, relaxed, hessian, solution.roots, n_x32, gradients.data(),
-                              ci_rhs.data(), mcscf::CpSolver::Schur, tolerance, max_iterations));
+  mcscf::ZVectors cp = FBF_TRY(probed_zvectors(res, who, relaxed, hessian, solution.roots, n_x,
+                                               gradients, ci_rhs, tolerance, max_iterations));
 
   // The solution checked on the unreduced equations, which no inner solve
   // stands in for: r = H z_o + H_oc z_c + g, r_c = P (H' c + (H_0 - E) z_c)

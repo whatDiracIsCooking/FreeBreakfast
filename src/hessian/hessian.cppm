@@ -440,9 +440,10 @@ struct CasscfTerms {
 ///         ncas^2 and ncas^4 long, trace(gamma) is no electron count of the
 ///         multiplicity, its vector is not the strings' length, or @p b is not
 ///         naux nao^2 long, or for any input a part refuses; Divergence when
-///         the CP solve meets negative curvature or leaves a residual above
-///         1e-6; or the first error of a part (Unsupported for memory, the
-///         solve's MaxIterationsExceeded, a GpuRuntime error).
+///         the CP solve meets negative curvature, runs out of products, finds
+///         H~ singular by its probe column (README.md "A singular H~") or
+///         leaves a residual above 1e-6; or the first error of a part
+///         (Unsupported for memory, a GpuRuntime error).
 [[nodiscard]] Result<CasscfTerms>
 df_casscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
           std::span<const PrimitivePairClass> classes, const BasisSet &aux,

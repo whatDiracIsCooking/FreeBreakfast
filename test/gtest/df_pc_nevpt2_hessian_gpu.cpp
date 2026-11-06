@@ -21,6 +21,8 @@
 //   naming the class and its kept (#943);
 // - HCN CAS(6,6), whose x and y coordinates lift Sir's null modes within
 //   1e-3 bohr: refused, naming each coordinate, the class and t* (#943);
+// - HF CAS(10,7), one orbital of a pi pair active: refused by df_casscf,
+//   its H~ singular (#978);
 // - the input refusals.
 
 #include <gtest/gtest.h>
@@ -556,6 +558,38 @@ TEST(HessianDfPcNevpt2, NearbyBranchSwitchIsRefused) {
     EXPECT_LT(std::stod(m.substr(at + named.size())), kLiftStep) << named << m;
   }
   std::cout << std::format("[ lift     ] {}\n", m.substr(0, 600));
+}
+
+// A CASSCF on a continuous family of solutions (#978): HF in cc-pVDZ with
+// CAS(10,7), PipelineNevpt2.PcAcceptedThroughAContinuum's, with one orbital
+// of the 2pi pair active and the other not. Rotating it about the bond into
+// its partner costs nothing, so H~ has a null direction the coordinates'
+// right-hand sides miss only by symmetry. df_casscf's probe column refuses it
+// every run, where the CP solve alone failed in some runs and not others.
+TEST(HessianDfPcNevpt2, ContinuousFamilyIsRefused) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const fb::json start{
+      {"name", "hf_ccpvdz_cas107"},
+      {"atoms",
+       {{{"symbol", "H"}, {"coord", {0.0, 0.0, 0.0}}},
+        {{"symbol", "F"}, {"coord", {0.0, 0.0, 0.917 / fb::kAngstromPerBohr<double>}}}}},
+      {"charge", 0},
+      {"basis", {{"name", "cc-pvdz"}}},
+      {"aux_basis", {{"name", "cc-pVDZ-JKFIT"}}},
+      {"ncas", 7},
+      {"nelecas", 10},
+      {"active", {0, 1, 2, 3, 4, 5, 6}}};
+  const Reference ref = reference(start);
+  ASSERT_TRUE(ref.solution.has_value());
+  const auto h = ref.hessian();
+  ASSERT_FALSE(h.has_value()) << "a CASSCF with a null direction was differentiated";
+  const std::string &m = h.error().message;
+  EXPECT_EQ(h.error().kind, fb::ErrorKind::Divergence) << m;
+  EXPECT_NE(m.find("hessian::df_casscf: the CP-CASSCF's H~ is singular or not positive"),
+            std::string::npos)
+      << m;
+  std::cout << std::format("[ family   ] {}\n", m.substr(0, 300));
 }
 
 TEST(HessianDfPcNevpt2, Refusals) {
