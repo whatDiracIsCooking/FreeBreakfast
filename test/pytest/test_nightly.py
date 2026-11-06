@@ -411,5 +411,10 @@ def test_the_units_verify(tmp_path: Path) -> None:
         text=True,
         check=False,
     )
-    # verify prints every parse problem, and exits 0 for some of them.
-    assert proc.returncode == 0 and not proc.stderr.strip(), proc.stderr
+    # verify prints every parse problem, and exits 0 for some of them. It also
+    # loads the host's own units and warns about theirs (a newer systemd on a
+    # CI image, #1026), so only the lines naming ours count.
+    ours = [
+        line for line in proc.stderr.splitlines() if "free-breakfast-nightly" in line
+    ]
+    assert proc.returncode == 0 and not ours, proc.stderr
