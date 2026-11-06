@@ -10,7 +10,6 @@
       "Bash(devtools/worktree.sh:*)",
       "Bash(devtools/doctor.sh:*)",
       "Bash(devtools/test.py:*)",
-      "Bash(devtools/slow-tier.sh:*)",
 
       "Bash(cmake:*)",
       "Bash(ctest:*)",

@@ -356,7 +356,10 @@ Rules:
   batch): if the gpu cases skip with "no GPU device visible", your
   card is down (nvidia-smi -L / rocminfo) — rerun on the other preset and say
   so in the PR. If the issue touches code the FBF_SKIP_IF_FAST_TESTS cases
-  validate, also run devtools/cpp-slow-tier.sh --preset <the same preset>.
+  validate, also run those cases unskipped: devtools/test.py pr --preset
+  <the same preset> does not, so run the affected suites by hand from the
+  build directory without FREE_BREAKFAST_FAST_TESTS, e.g.
+  `ctest --preset <preset> -R <Suite>` (the nightly runs all of them).
   Say in the PR which backend you did NOT run. If you touched a .cu, also run
   devtools/cross-backend-check.sh (exit 2 means it could not run — not a
   pass).

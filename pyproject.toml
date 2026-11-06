@@ -2,7 +2,7 @@
 # formatters. There is no Python package here -- `src/` is C++ -- so this
 # file declares no [build-system] and nothing is installable. Its two halves
 # must stay in sync with devtools/config.sh: `testpaths` and the `slow` marker
-# are what FAST_TEST_ARGS, PREPUSH_PATHS and slow-tier.sh assume exist.
+# are what FAST_TEST_ARGS, PREPUSH_PATHS and `test.py nightly` assume exist.
 #
 # bootstrap.sh rewrites `name` below along with every other free-breakfast
 # placeholder, and then runs `uv lock` -- the lock records the project name too.
@@ -84,8 +84,8 @@ tools = [
 testpaths = ["test/pytest"]
 markers = [
     # The fast/slow split the whole of devtools/ is built around: the push gate
-    # and the iteration loop run `-m "not slow"`, devtools/slow-tier.sh runs
-    # `-m slow` off the per-commit path. Mark a test slow when it is
+    # and the iteration loop run `-m "not slow"`; `devtools/test.py nightly`
+    # runs everything, `-m slow` included, off the per-commit path. Mark a test slow when it is
     # minutes-long, needs a big machine, or drives a compiler/GPU/network.
     # docker/compose.yaml's `test` service deselects the same marker.
     "slow: expensive tests, excluded from the default run and the push gate",

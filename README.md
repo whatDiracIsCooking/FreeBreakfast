@@ -304,8 +304,8 @@ and **skip with a reason** rather than failing, so the suite stays usable on a
 device-less build host — read the skip list before calling a run green. A
 second switch skips from the other end: `FREE_BREAKFAST_FAST_TESTS` makes
 `slow_test.h`'s macro skip the heavy validation cases, and both gates of
-`devtools/test.py` set it. `devtools/cpp-slow-tier.sh` is the run with nothing
-skipped.
+`devtools/test.py` set it. `devtools/test.py nightly`, a timer on this box, is
+the run with nothing skipped.
 
 Kernel code a GPU test needs lives in a device library the GPU binary links
 (`test/core/gpu_kernels/` for the core one), never in the test executable
@@ -334,7 +334,7 @@ produces:
 
 ```sh
 pytest -m "not slow" -n auto -rs   # the iteration loop
-devtools/slow-tier.sh              # the expensive tier, logged
+pytest -n auto -rs                 # everything, as the nightly runs it
 ```
 
 Three markers, declared in `pyproject.toml`: `slow` is the tier boundary, `gpu`
@@ -494,11 +494,9 @@ the scripts.
 | `devcontainer.sh` | `up` / `rebuild` / `shell` / `test` / `down`, per worktree. Takes `--cuda`/`--hip`/`--combined`. |
 | `worktree.sh` | `add` / `rm` / `sync` / `gc` / `list` for container-backed worktrees. |
 | `build.sh` | Configure + build, no ctest — the build half of `test.py`. |
-| `test.py` | The gates: `push` (what `git push` runs) and `pr` (configure + build + ctest + pytest, logged). See [`docs/testing.md`](docs/testing.md). |
-| `cpp-slow-tier.sh` | The C++ tier with nothing skipped — the deep-validation sweep. |
+| `test.py` | The gates: `push` (what `git push` runs), `pr` (configure + build + ctest + pytest, logged) and `nightly` (everything unskipped, on a clean `origin/main`, recorded; `systemd/` has its timer). See [`docs/testing.md`](docs/testing.md). |
 | `cross-backend-check.sh` | Compile the tree for the *other* GPU backend. |
 | `coverage.sh` | Build instrumented, run ctest, `llvm-cov` summary of `src/`. |
-| `slow-tier.sh` | The slow Python tier, off the per-commit path, logged. |
 | `format.sh` | clang-format + ruff format; `--check` is what the gates run. |
 | `cmake-lint.sh` | `cmake-lint` over the staged CMake files, at `git commit`. |
 | `check-int-types.py` | Reject `int`/`long`/… — every integer states its width. |

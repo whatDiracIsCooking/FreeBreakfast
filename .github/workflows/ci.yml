@@ -261,8 +261,8 @@ jobs:
     # The nightly cron, plus a manual run from the Actions tab. Both event
     # names are needed: a workflow_dispatch is not a schedule, so testing only
     # for 'schedule' left the manual run silently skipping this job -- the run
-    # went green having executed none of it. This is the job
-    # devtools/slow-tier.sh does locally.
+    # went green having executed none of it. Locally, the slow pytest tier
+    # runs in `devtools/test.py nightly`.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 180

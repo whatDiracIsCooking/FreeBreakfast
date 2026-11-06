@@ -31,10 +31,10 @@ def test_slow_tier_is_wired():
     """Marked slow, so the fast/slow split is exercised rather than assumed.
 
     `devtools/test.py push` and `devcontainer.sh test` deselect this one;
-    devtools/slow-tier.sh runs exactly this one and nothing else. If both hold,
-    the marker and FAST_TEST_ARGS/SLOW_TEST_ARGS agree. A bare `pytest` runs
-    everything -- the marker filter lives in devtools/config.sh, not in
-    pyproject's addopts, so an explicit `pytest -m slow` still works.
+    `devtools/test.py nightly` runs it with everything else. If both hold, the
+    marker and FAST_TEST_ARGS agree. A bare `pytest` runs everything -- the
+    marker filter lives in devtools/config.sh, not in pyproject's addopts, so
+    an explicit `pytest -m slow` still works.
     """
     assert True
 

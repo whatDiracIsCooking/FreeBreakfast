@@ -64,14 +64,17 @@ back on, and in a mature tree they are a handful of entries and the majority of
 a full run's wall time.
 
 ```bash
-devtools/cpp-slow-tier.sh                  # same flags, nothing skipped
+devtools/test.py nightly                   # origin/main, nothing skipped
+ctest --preset default -R <Suite>          # one family, unskipped, by hand
 ```
 
-is the un-skipped counterpart — the C++ analogue of `devtools/slow-tier.sh`.
-It is not gated anywhere and is not a per-PR requirement; reach for it the way
-you'd reach for `asan`/`compute-sanitizer` (an occasional deep-validation
-sweep, or when a change has real risk of reaching code you did not directly
-touch), not routinely before opening a PR.
+The **nightly** is the un-skipped run, of both languages: a timer on this box
+runs it on a clean checkout of `origin/main` and records it on `metrics`
+(`docs/testing.md` "The nightly"). By hand it takes the better part of an hour
+or more and tests `origin/main`, not your branch (`--rev` names another
+commit). For a change with real risk to the cases the gates skip, a bare
+`ctest` in the build directory, which does not set
+`FREE_BREAKFAST_FAST_TESTS`, runs them unskipped; scope it with `-R`.
 
 `--tidy` runs `clang-tidy -p <the preset's own build dir>` over the tracked
 `src/*.cpp` after a successful build. It is **advisory and never changes the
@@ -137,8 +140,8 @@ Things that will bite:
 - `CMAKE_CUDA_ARCHITECTURES=native` queries a live device **at configure time**.
   No GPU, no configure — even for a CPU-only change.
 - Every `pr` run tees to `.slow-tier-reports/pr-<stamp>-<rev>-<preset>.log`
-  (`push-…` for the push gate's C++ half, `cpp-slow-<stamp>-...` for
-  `cpp-slow-tier.sh`) and `pr` appends its PASS/FAIL line to `summary.log`. Quote the log path when reporting a failure; it has the
+  (`push-…` for the push gate's C++ half, `nightly-…`/`weekly-…` for the
+  nightly) and `pr` appends its PASS/FAIL line to `summary.log`. Quote the log path when reporting a failure; it has the
   compiler diagnostics that the summary does not.
 - **ctest reports one entry per gtest case**, discovered at test time
   (`DISCOVERY_MODE PRE_TEST`), so `-R` selects by gtest suite name and a skip
@@ -153,22 +156,20 @@ Things that will bite:
 
 ## The Python tier: pick the tier
 
-The fast/slow split is the spine of this repo's tooling — the marker
-expressions live in `devtools/config.sh` (`FAST_TEST_ARGS`, `SLOW_TEST_ARGS`),
-not in `pyproject.toml`, so an explicit `pytest -m slow` still works.
+The fast/slow split is the spine of this repo's tooling — the fast marker
+expression lives in `devtools/config.sh` (`FAST_TEST_ARGS`), not in
+`pyproject.toml`, so an explicit `pytest -m slow` still works.
 
 ```bash
 pytest -m "not slow" -n auto -rs          # the iteration loop — default to this
 pytest -m "not slow" -n auto -rs -k name  # narrower
-devtools/slow-tier.sh                     # the expensive tier, with a log
-pytest -n auto -rs                        # everything, however long that takes
+pytest -m slow -n auto -rs                # the expensive tier alone
+pytest -n auto -rs                        # everything: what the nightly runs
 ```
 
 **Default to the fast tier** unless the user specifically asked for the
 expensive one. Before running the whole suite, check what it costs — a slow
-tier is slow by construction, and `devtools/slow-tier.sh --skip-huge` exists
-for the cases (listed as `SLOW_HUGE_CASES` in the config) that need more RAM
-than a small box has and OOM rather than failing cleanly.
+tier is slow by construction.
 
 ## Host vs container — the worker count differs
 

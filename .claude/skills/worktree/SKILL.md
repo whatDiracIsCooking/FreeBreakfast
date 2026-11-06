@@ -75,8 +75,8 @@ Notes on the tool half:
 
 `git worktree add` checks out the tree but **not** its submodules, so
 `deps/WarpWraps` starts empty. You normally do nothing about it: the C++ entry
-points (`devtools/build.sh`, `devtools/test.py push` and `pr`,
-`cpp-slow-tier.sh`) all configure through `cpp_build`, which calls
+points (`devtools/build.sh`, `devtools/test.py push`, `pr` and `nightly`)
+all configure through `cpp_build`, which calls
 `init_submodules` (`devtools/lib.sh`) first and initialises any submodule that
 never has been. It is lazy on purpose, so a docs-only or Python-only worktree
 never clones it. It never touches an *initialised* submodule, so commits or a
@@ -160,6 +160,11 @@ git fetch origin main --quiet
 
 Then, for each worktree directory `wt` (from `git worktree list --porcelain`,
 paths under `.claude/worktrees/` only):
+
+0. **Never sweep `nightly` or `metrics`.** They are tooling's, not work:
+   `NIGHTLY_WORKTREE` (`test.py nightly`'s clean checkout, detached at
+   `origin/main`, so it reads as merged, with the warm build in it) and
+   `METRICS_WORKTREE` (the `metrics` branch). Both are in `devtools/config.sh`.
 
 1. **Skip if dirty.** `git -C "$wt" status --porcelain --ignore-submodules=none`
    non-empty means uncommitted work, in the worktree or its submodule. Leave it
