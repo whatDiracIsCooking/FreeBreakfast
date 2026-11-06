@@ -10,7 +10,9 @@
 // relaxed_fd (the analytic relaxed gradient differenced at re-solved displaced
 // geometries); z's and lambda^x's orbital parts, the CP residuals, the symmetry
 // before symmetrizing and the translational sum rule. At equal weights the
-// total without eq. rot misses relaxed_fd; and the refusals.
+// total without eq. rot misses relaxed_fd; and the refusals, among them a
+// state average on a continuous family of solutions, HF CAS(10,7) at two
+// roots, this tree's own DF-CASSCF through the registry (#997).
 
 #include <gtest/gtest.h>
 
@@ -34,6 +36,11 @@ import free_breakfast.response;
 import free_breakfast.mcscf;
 import free_breakfast.mcscf.zvector;
 import free_breakfast.hessian;
+import free_breakfast.io.base;
+import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.config;
+
+#include "scratch_dir.h"
 
 namespace {
 
@@ -498,6 +505,92 @@ TEST_F(HessianDfSaCasscf, Refusals) {
   fb::mcscf::Solution degenerate = solution();
   degenerate.roots.energies[1] = degenerate.roots.energies[0];
   refused(run(degenerate, weights_, 0), fb::ErrorKind::Numerical, "degenerate roots");
+}
+
+// A state average on a continuous family of solutions (#997):
+// HessianDfPcNevpt2.ContinuousFamilyIsRefused's HF in cc-pVDZ with CAS(10,7),
+// one orbital of the 2pi pair active and the other not, averaged over two
+// roots at equal weights. Rotating every orbital about the bond, each root
+// following, leaves every root's energy and so E_SA unchanged, and with one
+// 2pi orbital active it is no rotation inside the active space: A has a null
+// direction, which the average does not lift. df_sacasscf's probe column
+// refuses it.
+TEST_F(HessianDfSaCasscf, ContinuousFamilyIsRefused) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const fb::test::ScratchDir dir("df_sacasscf_hessian_family");
+  ASSERT_TRUE(fb::write_file(dir / "molecule.xyz", "2\nhf\nH 0 0 0\nF 0 0 0.917\n").has_value());
+  ASSERT_TRUE(fb::write_file(dir / "run.toml",
+                             "[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = "
+                             "\"cc-pvdz\"\n[eri]\nmode = \"density_fitting\"\naux_basis = "
+                             "\"cc-pVDZ-JKFIT\"\n[casscf]\nncas = 7\nnelecas = 10\nactive = "
+                             "[0, 1, 2, 3, 4, 5, 6]\nnroots = 2\nconv_tol = 1e-12\n"
+                             "conv_tol_grad = 1e-10\n")
+                  .has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  fb::DeviceResources &res = node.device(0);
+  const auto &cas = calc->get<fb::CasscfOutput>();
+  ASSERT_TRUE(cas.has_value()) << cas.error().message;
+  ASSERT_EQ(cas->weights.size(), 2U);
+  const fb::BasisSet &basis = calc->get<fb::BasisSetOutput>()->basis;
+  const auto &fit = std::get<fb::DensityFitted>(calc->get<fb::EriOutput>()->eri);
+  // The Solution as the [hessian] step builds it: gamma the weighted average
+  // of the roots' 1-RDMs, rdm2 already the average.
+  const auto n2 = static_cast<std::size_t>(cas->ncas) * static_cast<std::size_t>(cas->ncas);
+  std::vector<double> gamma(n2, 0.0);
+  for (std::size_t r = 0; r < cas->weights.size(); ++r) {
+    for (std::size_t i = 0; i < n2; ++i) {
+      gamma[i] += cas->weights[r] * cas->rdm1[(r * n2) + i];
+    }
+  }
+  fb::mcscf::Solution s{
+      .c = fb::SphericalMatrixAO(res, basis),
+      .roots = {.energies = cas->energies,
+                .spin_squares = cas->spin_squares,
+                .vectors = fb::Buffers::device<double>(cas->vectors.size(), res.device()),
+                .davidson = {},
+                .fp32_iterations = 0},
+      .energy = cas->energy,
+      .gradient_norm = cas->gradient_norm,
+      .gamma = std::move(gamma),
+      .gamma2 = cas->rdm2,
+      .root_gammas = cas->rdm1,
+      .iterations = {},
+      .weights = cas->weights};
+  upload(res, cas->vectors, s.roots.vectors.data());
+  ASSERT_EQ(wwr::wwrMemcpyAsync(s.c.data(), cas->c.data(), cas->c.num_elements() * sizeof(double),
+                                wwr::wwrMemcpyDeviceToDevice, res.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(res.sync().has_value());
+  std::cout << std::format("[ casscf   ] hf CAS(10,7) SA-2: E {:.10f} and {:.10f}, ||g|| {:.1e}\n",
+                           cas->energies[0], cas->energies[1], cas->gradient_norm);
+
+  const auto h = fb::hessian::df_sacasscf(res, calc->get<fb::MoleculeOutput>()->molecule, basis,
+                                          calc->get<fb::PrimitivePairClassesOutput>()->classes,
+                                          fit.aux, calc->get<fb::CoreHamiltonianOutput>()->h, fit.b,
+                                          fit.l.data(), s, cas->weights, 0, cas->ncore, cas->ncas);
+  ASSERT_FALSE(h.has_value()) << "a state average with a null direction was differentiated";
+  const std::string &m = h.error().message;
+  EXPECT_EQ(h.error().kind, fb::ErrorKind::Divergence) << m;
+  EXPECT_NE(m.find("hessian::df_sacasscf: the CP-CASSCF's H~ is singular or not positive"),
+            std::string::npos)
+      << m;
+  // When the probe's column finished, its rho, under the bar it names (it can
+  // instead meet a direction H~ is not positive along, or run out of
+  // products: the same refusal).
+  const std::string_view rho_at = "Rayleigh quotient ";
+  const std::string_view bar_at = "not above the ";
+  if (const std::size_t at = m.find(rho_at); at != std::string::npos) {
+    const std::size_t bar = m.find(bar_at, at);
+    ASSERT_NE(bar, std::string::npos) << m;
+    EXPECT_LT(std::stod(m.substr(at + rho_at.size())), std::stod(m.substr(bar + bar_at.size())))
+        << m;
+  }
+  std::cout << std::format("[ family   ] {}\n", m.substr(0, 400));
 }
 
 } // namespace

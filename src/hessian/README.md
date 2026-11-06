@@ -803,6 +803,40 @@ other input of the Hessian tests ρ is at least 2.2e-2, five orders above its
 bar, and the probe takes one fewer to 6 more products than the slowest
 coordinate (34 solves, RTX 3080).
 
+**`df_sacasscf` solves its λ^x the same way (#997).** The probe is one
+column more of the same `zvectors` call (`probed_zvectors`, shared through
+the `:state_specific` partition), its CI and Θ rows zero, and A's CI
+response is solved to the same 1e-8, so the bar is the same derivation. A
+state average does not lift the null direction. Rotating every orbital about
+the bond, each root following, maps every root to one of the same energy, so
+E_SA is unchanged at any weights. With one 2π orbital active it is not a
+rotation inside the active space. HF CAS(10,7) at two roots and equal
+weights is refused in one run on the gfx1200, with ρ = 1.7e-10 against its
+bar of 1.21e-6. Its roots are −100.03821 and −99.66527; root 1 is one
+component of the ¹Π pair, which a three-root average makes exactly
+degenerate. In other runs of the same input, the probe's column met p·H̃p
+< 0 or ran out of products (‖r‖ 8e-8 to 1.2e-5), and each was the same
+refusal. Where the probe finished, the coordinates' columns took 23 and 26
+products. z is solved first, over the same A, on root I's gradient. It met
+nothing, because its right-hand side is axially symmetric, as the
+coordinates' are.
+
+On the existing state averages ρ is 4.9e-3 to 0.30 against a bar of 8.6e-7,
+four orders and more above it (water SA-CAS(4,4)/6-31G, the four
+`HessianDfSaCasscf` cases and the three analytic SA `PipelineCasscfHessian`
+cases, gfx1200). Every root of one case has the same A and the same ρ. The
+probe took one fewer to 3 more products than the slowest coordinate.
+
+One caveat: for a diatomic, every transverse coordinate is a rigid
+translation or rotation. So translational and rotational invariance fix the
+transverse block, and the run-to-run turning #978 describes cannot show in
+it. With the coordinates' columns alone, a CAS(4,3) SA-2 of HF (active 3σ,
+one 1π, σ*), which has the same null direction, gave the same Hessian three
+times: H_xx = H_yy = −0.0134034, off-diagonal under 4e-13. With the probe,
+that input is refused too: its column meets p·H̃p = −6.4e-15 of p·p, a zero
+eigenvalue's round-off, after 10 products. The refusal stands on H̃ being
+singular, not on that input's numbers.
+
 ### Memory
 
 The parts run one after another, each freeing what it held:
@@ -1765,7 +1799,8 @@ be the solution's to 1e-8, or it is InvalidConfig) and the `root`. In order:
    weights, the rotation rows t_sr = H̃^x_sr (`hamiltonian`'s off-diagonal),
    as `../mcscf/zvector/README.md` has it. The same row scaling leaves λ^x
    the energy's; it is packed (pairs, d_r per root, Θ) into
-   `ThirdDerivative`'s layout, Λ.
+   `ThirdDerivative`'s layout, Λ. The solve carries `df_casscf`'s probe
+   column, so a singular A is refused ("A singular H̃" above).
 4. **The check**: `apply_coupled` at λ^x (Θ included), plus the right-hand
    sides, the rotation rows as y_θ + t; above 1e-6 in any column is a
    Divergence, as in `df_casscf`.
@@ -1827,7 +1862,11 @@ against `rot` (equal weights; zero at unequal) and the total against
 asymmetry to 1e-8, the sum rule to 1e-7. At equal weights the total less
 eq. rot must miss `relaxed_fd` by more than 1e-2. `Refusals`: a root out of
 range, one weight, a zero weight, the solution's weights swapped, one root,
-and a degenerate pair (Numerical).
+and a degenerate pair (Numerical). `ContinuousFamilyIsRefused` (slow-gated,
+11 to 19 s on the gfx1200): HF CAS(10,7), one orbital of the 2π pair active, at
+two roots and equal weights. It is this tree's own DF-CASSCF through the
+registry, and it must be a Divergence from `df_sacasscf` that calls A
+singular, with ρ under its bar when the message names one ("A singular H̃").
 
 Measured on the RTX 3080 (CUDA), worst over the ten roots, of max |H| 0.05
 to 0.48: E_I,xy ≤ 6.1e-12 from `exy`, L_xy's z part ≤ 1.1e-11 from `exy_z`,
