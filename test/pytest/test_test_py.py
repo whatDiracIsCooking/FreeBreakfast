@@ -120,37 +120,126 @@ def test_halves(files: list[str] | None, expected: tuple[bool, bool]) -> None:
     assert gates.halves(files) == expected
 
 
-def test_changed_files_reads_pre_commits_refs() -> None:
-    env = _clean_env(
-        PRE_COMMIT="1", PRE_COMMIT_FROM_REF="HEAD~1", PRE_COMMIT_TO_REF="HEAD"
-    )
-    expected = subprocess.run(
-        ["git", "-C", str(_ROOT), "diff", "--name-only", "HEAD~1...HEAD"],
-        env=_clean_env(),
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    assert gates.changed_files(env) == expected
-
-
-def test_a_whole_history_push_runs_both_halves() -> None:
-    # pre-commit sets no refs when the push includes the root commit.
-    assert gates.changed_files(_clean_env(PRE_COMMIT="1")) is None
-
-
-def test_dry_run_dispatch() -> None:
-    proc = subprocess.run(
-        [sys.executable, str(_TEST_PY), "push", "--dry-run"],
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
         env=_clean_env(
-            PRE_COMMIT="1", PRE_COMMIT_FROM_REF="HEAD", PRE_COMMIT_TO_REF="HEAD"
+            GIT_AUTHOR_NAME="t",
+            GIT_AUTHOR_EMAIL="t@example.com",
+            GIT_COMMITTER_NAME="t",
+            GIT_COMMITTER_EMAIL="t@example.com",
         ),
         capture_output=True,
         text=True,
-        check=False,
+        check=True,
+    ).stdout.strip()
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """A throwaway repository: a base commit, a C++ commit and a .py commit.
+    Never the real checkout, whose history a CI clone does not have."""
+    r = tmp_path / "repo"
+    r.mkdir()
+    _git(r, "init", "-q", "-b", "main")
+    (r / "README.md").write_text("base\n")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-q", "-m", "base")
+    (r / "src").mkdir()
+    (r / "src" / "a.cppm").write_text("export module a;\n")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-q", "-m", "cpp")
+    (r / "tool.py").write_text("x = 1\n")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-q", "-m", "py")
+    return r
+
+
+def _range(repo: Path, old: str, new: str) -> dict[str, str]:
+    return _clean_env(
+        PRE_COMMIT="1",
+        PRE_COMMIT_FROM_REF=_git(repo, "rev-parse", old),
+        PRE_COMMIT_TO_REF=_git(repo, "rev-parse", new),
     )
-    assert proc.returncode == 0, proc.stderr
-    assert "0 changed file(s) -> C++ half: no, Python half: no" in proc.stdout
+
+
+def test_changed_files_reads_pre_commits_refs(repo: Path) -> None:
+    files = gates.changed_files(_range(repo, "HEAD~2", "HEAD~1"), repo)
+    assert files == ["src/a.cppm"]
+    assert gates.halves(files) == (True, False)
+    files = gates.changed_files(_range(repo, "HEAD~1", "HEAD"), repo)
+    assert files == ["tool.py"]
+    assert gates.halves(files) == (False, True)
+    assert gates.changed_files(_range(repo, "HEAD~2", "HEAD"), repo) == [
+        "src/a.cppm",
+        "tool.py",
+    ]
+
+
+def test_by_hand_diffs_against_origin_main(repo: Path) -> None:
+    base = _git(repo, "rev-parse", "HEAD~2")
+    _git(repo, "update-ref", "refs/remotes/origin/main", base)
+    assert gates.changed_files(_clean_env(), repo) == ["src/a.cppm", "tool.py"]
+
+
+def test_by_hand_without_origin_main_fails_clearly(repo: Path) -> None:
+    # A shallow or remote-less clone has no origin/main to diff against.
+    with pytest.raises(gates.DiffError, match="git fetch origin main"):
+        gates.changed_files(_clean_env(), repo)
+
+
+def test_hooked_unreadable_range_tests_both_halves(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Under pre-commit a range git cannot read is never a reason to test less.
+    env = _clean_env(
+        PRE_COMMIT="1", PRE_COMMIT_FROM_REF="0" * 40, PRE_COMMIT_TO_REF="HEAD"
+    )
+    assert gates.changed_files(env, repo) is None
+    assert "testing both halves" in capsys.readouterr().err
+
+
+def test_a_whole_history_push_runs_both_halves(repo: Path) -> None:
+    # pre-commit sets no refs when the push includes the root commit.
+    assert gates.changed_files(_clean_env(PRE_COMMIT="1"), repo) is None
+
+
+def test_shallow_clone(repo: Path, tmp_path: Path) -> None:
+    # The CI case: a depth-1 clone lacks the parent commit a range names.
+    clone = tmp_path / "shallow"
+    _git(tmp_path, "clone", "-q", "--depth", "1", f"file://{repo}", str(clone))
+    parent = _git(repo, "rev-parse", "HEAD~1")
+    hooked = _clean_env(
+        PRE_COMMIT="1", PRE_COMMIT_FROM_REF=parent, PRE_COMMIT_TO_REF="HEAD"
+    )
+    assert gates.changed_files(hooked, clone) is None
+    # By hand it diffs against the clone's own origin/main: HEAD, so empty.
+    assert gates.changed_files(_clean_env(), clone) == []
+
+
+def test_dry_run_dispatch(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env = _range(repo, "HEAD~2", "HEAD")
+    real = gates.changed_files
+    monkeypatch.setattr(gates, "changed_files", lambda _env: real(env, repo))
+    args, _ = gates.parse(["push", "--dry-run"])
+    assert gates.cmd_push(args, {}) == 0
+    out = capsys.readouterr().out
+    assert "2 changed file(s) -> C++ half: yes, Python half: yes" in out
+    assert "push:   src/a.cppm" in out and "push:   tool.py" in out
+
+
+def test_push_by_hand_without_a_base_exits_2(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    real = gates.changed_files
+    monkeypatch.setattr(gates, "changed_files", lambda env: real(_clean_env(), repo))
+    args, _ = gates.parse(["push", "--dry-run"])
+    assert gates.cmd_push(args, {}) == 2
+    err = capsys.readouterr().err
+    assert "push: cannot diff origin/main...HEAD" in err
+    assert "Traceback" not in err
 
 
 # --- the GPU batch split -----------------------------------------------------

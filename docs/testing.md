@@ -103,7 +103,9 @@ devtools/test.py pr --no-test                # configure + build only
   `.cmake` did, and runs nothing for a docs-only push. The hook in
   `.pre-commit-config.yaml` is `always_run` with no `files:` filter, so the
   dispatch is written down once, in `test.py`. A push of a whole history
-  carries no range, and runs both.
+  carries no range, and runs both; so does a range git cannot read under the
+  hook (a shallow clone), with a line saying so. By hand, a range it cannot
+  read (no `origin/main`) exits 2 and names the fetch that fixes it.
 - **The C++ half of `push` skips itself**, exit 0, where `cmake` or `ninja` is
   missing, `cmake` is below the tree's floor, or the chosen backend has no
   device node: the toolchain lives in the GPU container, and a host-side push

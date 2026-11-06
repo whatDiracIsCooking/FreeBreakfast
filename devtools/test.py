@@ -690,14 +690,24 @@ def python_half(tag: str, cfg: dict[str, str], log: Path | None) -> int:
 # --- push ------------------------------------------------------------------
 
 
-def changed_files(env: dict[str, str]) -> list[str] | None:
+class DiffError(Exception):
+    """The range a push gate was asked to read cannot be diffed."""
+
+
+def changed_files(env: dict[str, str], root: Path = REPO_ROOT) -> list[str] | None:
     """The files a push changes: pre-commit's PRE_COMMIT_FROM_REF...TO_REF,
-    the same three-dot diff its own `files:` filters read; by hand,
-    origin/main...HEAD. None when git cannot say -- pre-commit sets no refs
-    for a push of a whole history -- and then both halves run."""
+    the same three-dot diff its own `files:` filters read (two dots when the
+    two have no merge base); by hand, origin/main...HEAD.
+
+    None means both halves run: pre-commit sets no refs for a push of a whole
+    history, and under pre-commit a range git cannot read (a shallow clone
+    missing the remote's commit) is reported and tested in full, never
+    skipped. By hand, an unreadable range raises DiffError instead, naming
+    the fix."""
     old, new = env.get("PRE_COMMIT_FROM_REF"), env.get("PRE_COMMIT_TO_REF")
+    hooked = env.get("PRE_COMMIT") == "1"
     if not (old and new):
-        if env.get("PRE_COMMIT") == "1":
+        if hooked:
             return None
         old, new = "origin/main", "HEAD"
     git_env = {k: v for k, v in env.items() if not k.startswith("GIT_")}
@@ -706,7 +716,7 @@ def changed_files(env: dict[str, str]) -> list[str] | None:
             [
                 "git",
                 "-C",
-                str(REPO_ROOT),
+                str(root),
                 "diff",
                 "--name-only",
                 "--no-ext-diff",
@@ -720,7 +730,19 @@ def changed_files(env: dict[str, str]) -> list[str] | None:
         )
         if proc.returncode == 0:
             return [f for f in proc.stdout.split("\0") if f]
-    return None
+    why = proc.stderr.strip().splitlines()[-1:] or ["no output"]
+    if hooked:
+        say(
+            f"push: cannot diff {old}...{new} ({why[0]}) -- testing both halves",
+            err=True,
+        )
+        return None
+    raise DiffError(
+        f"cannot diff {old}...{new} ({why[0]}). By hand, `push` diffs against"
+        " origin/main: fetch it (`git fetch origin main`, or `git fetch"
+        " --unshallow` in a shallow clone), or set PRE_COMMIT_FROM_REF and"
+        " PRE_COMMIT_TO_REF to the range to test."
+    )
 
 
 def halves(files: list[str] | None) -> tuple[bool, bool]:
@@ -850,7 +872,11 @@ def cpp_push(cfg: dict[str, str], preset: str, jobs: str) -> tuple[int, str]:
 
 
 def cmd_push(args: argparse.Namespace, cfg: dict[str, str]) -> int:
-    files = changed_files(dict(os.environ))
+    try:
+        files = changed_files(dict(os.environ))
+    except DiffError as e:
+        say(f"push: {e}", err=True)
+        return 2
     cpp, py = halves(files)
     what = "the whole history" if files is None else f"{len(files)} changed file(s)"
     say(
