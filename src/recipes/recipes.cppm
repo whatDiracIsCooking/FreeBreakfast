@@ -20,6 +20,7 @@ export import free_breakfast.recipes.lu;
 export import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.recipes.norm;
 export import free_breakfast.recipes.orthogonalize;
+export import free_breakfast.recipes.pcg;
 export import free_breakfast.recipes.polynomial_roots;
 export import free_breakfast.recipes.sort;
 export import free_breakfast.recipes.symmetrize;

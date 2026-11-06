@@ -47,6 +47,7 @@ add_executable(
   norm_gpu.cpp
   orthogonalize_gpu.cpp
   orthonormalize_gpu.cpp
+  pcg_gpu.cpp
   polynomial_roots_gpu.cpp
   sort_gpu.cpp
   symmetrize_gpu.cpp
