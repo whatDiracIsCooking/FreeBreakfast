@@ -56,6 +56,29 @@ Status skew_eig(DeviceResources &res, const int32_t n, const T *h,
     FBF_TRY(gpu_status(wwr::scal<Z, int64_t>(blas, nn, &kImaginaryUnit<Z>, u, 1)));
   }
 
+  // H = 0: iH = I diag(0) I^H, returned as that with no heevd. It is the
+  // exact decomposition at H = 0 and nowhere else (a nonzero H has a nonzero
+  // eigenvalue, which w = 0 misses by its whole size), so the test is
+  // equality: iamax's largest |re| + |im| is 0 exactly when every element is.
+  // rocSOLVER's heevd gives this input info 0 and NaN eigenvectors above
+  // order 65 (#992), and a zero orbital step is this input.
+  int64_t top_at = 0;
+  FBF_TRY(gpu_status(wwr::iamax<Z, int64_t>(blas, nn, u, 1, &top_at)));
+  Z top{};
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(&top, u + (top_at - 1), sizeof(Z),
+                                         wwr::wwrMemcpyDeviceToHost, res.stream())));
+  FBF_TRY(res.sync());
+  if (const auto [re, im] = std::bit_cast<std::array<R, 2>>(top); re == R{0} && im == R{0}) {
+    // u is iH, so already 0: the ones go onto its diagonal, stride n + 1.
+    const std::vector<Z> ones(static_cast<size_t>(n), kOne<Z>);
+    FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(
+        u, (static_cast<size_t>(n) + 1) * sizeof(Z), ones.data(), sizeof(Z), sizeof(Z),
+        static_cast<size_t>(n), wwr::wwrMemcpyHostToDevice, res.stream())));
+    FBF_TRY(
+        gpu_status(wwr::wwrMemsetAsync(w, 0, static_cast<size_t>(n) * sizeof(R), res.stream())));
+    return res.sync();
+  }
+
   // heevd's workspace size for n, queried per call: it is a host computation.
   int32_t lwork = 0;
   FBF_TRY(gpu_status(wwr::heevd_bufferSize<Z>(res.solver().get(), kSkewEigMode, kSkewFillMode, n, u,

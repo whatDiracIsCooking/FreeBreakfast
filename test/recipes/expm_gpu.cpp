@@ -23,6 +23,9 @@ namespace fb = free_breakfast;
 // Odd, so the real case has the lone zero eigenvalue as well as the +-theta
 // pairs.
 constexpr std::int32_t kN = 37;
+// H = 0 at the PSB3 case's 124 orbitals, #992's input: rocSOLVER's heevd
+// returned NaN eigenvectors with info 0 for it at any order above 65.
+constexpr std::int32_t kZeroN = 124;
 
 template <typename T>
 using Real = wwr::ComplexToRealType<T>;
@@ -295,6 +298,39 @@ TYPED_TEST(SkewExpm, ExponentialMatchesTheClosedFormAtEveryStep) {
     ASSERT_TRUE(
         fb::skew_expm<T>(res, p.n, p.u.data(), p.w.data(), static_cast<Real<T>>(t), p.e.data()));
     EXPECT_LE(p.expm_error(t), tolerance<T>(p.n, t, max_frequency)) << "t = " << t;
+  }
+}
+
+// H = 0, a zero orbital step: iH = I diag(0) I^H and exp(t 0) = I, each
+// exactly, whatever the vendor's heevd makes of it.
+TYPED_TEST(SkewExpm, ZeroOperandIsExactlyTheIdentity) {
+  FBF_REQUIRE_GPU();
+  using T = TypeParam;
+
+  fb::DeviceResources res{0};
+  const auto nn = static_cast<std::size_t>(kZeroN) * kZeroN;
+  fb::Buffers::device<T> h{nn, res.device()};
+  fb::Buffers::device<Eigvec<T>> u{nn, res.device()};
+  fb::Buffers::device<Real<T>> w{static_cast<std::size_t>(kZeroN), res.device()};
+  fb::Buffers::device<T> e{nn, res.device()};
+  upload(res, h, std::vector<T>(nn, narrow<T>(0.0)));
+  ASSERT_TRUE(fb::skew_eig<T>(res, kZeroN, h.data(), u.data(), w.data()));
+
+  const HostMatrix one = identity(kZeroN);
+  const std::vector<Eigvec<T>> got_u = download(res, u);
+  for (std::size_t k = 0; k < nn; ++k) {
+    ASSERT_EQ(widen(got_u[k]), one[k]) << "U element " << k;
+  }
+  for (const Real<T> x : download(res, w)) {
+    ASSERT_EQ(x, Real<T>{0});
+  }
+  for (const double t : {0.37, -1.1}) {
+    ASSERT_TRUE(
+        fb::skew_expm<T>(res, kZeroN, u.data(), w.data(), static_cast<Real<T>>(t), e.data()));
+    const std::vector<T> got_e = download(res, e);
+    for (std::size_t k = 0; k < nn; ++k) {
+      ASSERT_EQ(widen(got_e[k]), one[k]) << "t = " << t << ", element " << k;
+    }
   }
 }
 
