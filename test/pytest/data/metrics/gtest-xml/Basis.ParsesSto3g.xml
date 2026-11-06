@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="1" failures="0" disabled="0" errors="0" time="0.03" timestamp="2026-11-01T03:30:00.000" name="AllTests">
+  <testsuite name="Basis" tests="1" failures="0" disabled="0" skipped="0" errors="0" time="0.03" timestamp="2026-11-01T03:30:00.000">
+    <testcase name="ParsesSto3g" file="test/basis/basis_host.cpp" line="12" status="run" result="completed" time="0.03" timestamp="2026-11-01T03:30:00.000" classname="Basis" />
+  </testsuite>
+</testsuites>

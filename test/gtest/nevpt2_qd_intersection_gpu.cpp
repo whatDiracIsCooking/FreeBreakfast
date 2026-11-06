@@ -492,6 +492,7 @@ TEST_P(Nevpt2QdIntersectionWForms, MatchesWForms) {
   // on the gfx1200 (#793), so every case but the weighted PC one, the
   // cheapest.
   const WFormCase &c = GetParam();
+  FBF_FAMILY_REPRESENTATIVE("h2co_skew_ccpvdz_sa3_weighted_pc");
   if (c.name != "h2co_skew_ccpvdz_sa3_weighted" || !c.pc) {
     FBF_SKIP_IF_FAST_TESTS();
   }

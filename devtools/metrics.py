@@ -12,6 +12,7 @@ The record is read from what the run already wrote:
   gtest_cases   a GPU batch's --gtest_output=json
   junit_cases   ctest's --output-junit, and pytest's --junitxml
                 (junit_family=xunit1, which carries each case's file)
+  gtest_xml_slow  each ctest entry's gtest XML, for its `slow` (with_slow)
   ninja_files   the build's .ninja_log, for a clean build's per-file times
   probe         the card and the toolchain the build directory was made with
 
@@ -154,6 +155,34 @@ def junit_cases(path: Path, binaries: dict[str, str] | None = None) -> list[dict
             }
         )
     return cases
+
+
+def gtest_xml_slow(directory: Path) -> dict[str, bool]:
+    """{case: whether it reached FBF_SKIP_IF_FAST_TESTS} from the gtest XML
+    reports under `directory`, one per entry ctest ran (test/CMakeLists.txt's
+    _fb_gtest_xml_dir; a param's `/` makes subdirectories). ctest's JUnit
+    carries no gtest property, so this is what gives a host or RUN_SERIAL
+    case its `slow` (#1016). A report that cannot be parsed adds nothing."""
+    out: dict[str, bool] = {}
+    for path in sorted(Path(directory).rglob("*.xml")):
+        try:
+            root = ET.parse(path).getroot()
+        except (ET.ParseError, OSError):
+            continue
+        for suite in root.iter("testsuite"):
+            for case in suite.iter("testcase"):
+                slow = any(
+                    p.get("name") == "fbf_slow" and p.get("value") == "1"
+                    for p in case.iter("property")
+                )
+                out[f"{suite.get('name')}.{case.get('name')}"] = slow
+    return out
+
+
+def with_slow(cases: list[dict], slow: dict[str, bool]) -> list[dict]:
+    """`cases` (junit_cases' ctest ones), each named in `slow` given that
+    `slow` field, as gtest_cases gives a batch's."""
+    return [dict(c, slow=slow[c["name"]]) if c["name"] in slow else c for c in cases]
 
 
 def ctest_binaries(listing_text: str) -> dict[str, str]:

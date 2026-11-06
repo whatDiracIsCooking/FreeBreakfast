@@ -39,12 +39,14 @@ set_target_properties(
 )
 
 target_link_libraries(
-  free_breakfast_basis_tests_host PRIVATE free_breakfast::basis GTest::gtest
-                                          GTest::gtest_main
+  free_breakfast_basis_tests_host
+  PRIVATE free_breakfast::basis free_breakfast::test::support GTest::gtest
+          GTest::gtest_main
 )
 
 gtest_discover_tests(
   free_breakfast_basis_tests_host
   DISCOVERY_MODE PRE_TEST
+  XML_OUTPUT_DIR ${_fb_gtest_xml_dir}
   PROPERTIES TIMEOUT ${_fb_test_timeout}
 )

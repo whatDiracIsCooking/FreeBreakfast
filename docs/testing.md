@@ -370,10 +370,17 @@ reading a log. It reports two things, and neither fails the night:
 records the gtest property `fbf_slow` in every mode, before it decides whether
 to skip, and `metrics.gtest_cases` carries it as each case's `slow`. A
 nightly runs everything, so its record says which cases a fast run would
-skip, including a `TEST_P` that reaches the macro only for some params. Only
-a gtest JSON report carries properties, so a case ctest runs (the host
-binaries, and the `RUN_SERIAL` cases) has no `slow`; one of those over the
-line is listed apart, as membership not recorded, never dropped.
+skip, including a `TEST_P` that reaches the macro only for some params.
+ctest's JUnit carries no gtest property, so a case ctest runs (the host
+binaries, and the `RUN_SERIAL` cases) gets its `slow` from its own gtest XML
+report instead (#1016): every host and `RUN_SERIAL` registration passes
+`XML_OUTPUT_DIR`, one report per entry in the build directory's `gtest-xml/`
+(not the batched GPU ones, which have their batch's JSON, and whose command
+must stay bare for `batchable()`),
+and a recorded run moves that directory into its reports
+(`metrics.gtest_xml_slow`). A case with no report there (one that crashed, a
+record from before #1016) has no `slow`; one of those over the line is listed
+apart, as membership not recorded, never dropped.
 
 **The step bar comes from the series' own spread**, by analysis, not tuning
 (see "Acceptance criteria"):
@@ -470,7 +477,9 @@ never by hand. Records go into one file per month, `runs/YYYY-MM.jsonl`
   `--output-junit`, each GPU batch write `GTEST_OUTPUT=json:…`, and pytest
   write `--junitxml` (`junit_family=xunit1`, which carries each case's file),
   all into `<log>.results/` beside the gate's log, with ctest's listing,
-  which names each entry's binary. A batch that crashed writes no report, so
+  which names each entry's binary, and `gtest-xml/`, each ctest entry's own
+  gtest XML (moved from the build directory, which a recorded run clears
+  first), which gives a ctest case its `slow`. A batch that crashed writes no report, so
   its cases are absent; the record's `result` still says `fail`.
 
 A record, schema version 1:
@@ -486,7 +495,7 @@ A record, schema version 1:
 | `gpu` | `name`, `driver` (version), `vram_mib`; `null` where the vendor tool cannot say |
 | `toolchain` | `clang`, `cmake`, and `nvcc` or `hipcc`: versions, the compilers' read from the build directory's own configure |
 | `build` | `mode` (`warm` or `clean`), `launcher` (`on` or `off`: whether the configure found sccache), `jobs` (`BUILD_JOBS`), `seconds` (configure and build wall time), and for a clean build `files`, each output's `file` and `seconds` from `.ninja_log`; `null` when the run built nothing |
-| `cases` | per test case: `name` (`Suite.Case`, or the pytest node id), `binary` (the gtest binary's name, or `pytest`), `status` (`pass`, `fail`, `skip`), `seconds`, and for a case from a gtest JSON report `slow` (whether it reached `FBF_SKIP_IF_FAST_TESTS()`, which a fast run skips; #987, absent before it). From gtest's `--gtest_output=json`, ctest's `--output-junit` and pytest's JUnit XML |
+| `cases` | per test case: `name` (`Suite.Case`, or the pytest node id), `binary` (the gtest binary's name, or `pytest`), `status` (`pass`, `fail`, `skip`), `seconds`, and for a gtest case `slow` (whether it reached `FBF_SKIP_IF_FAST_TESTS()`, which a fast run skips; #987, absent before it, and for a ctest-run case before #1016). From gtest's `--gtest_output=json`, ctest's `--output-junit` with each entry's gtest XML, and pytest's JUnit XML |
 | `selection` | `shadow` records only, and absent from the rest: what was selected and any misses |
 | `result` | `pass` or `fail` |
 

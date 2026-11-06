@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="1" failures="0" disabled="0" errors="0" time="0.41" timestamp="2026-11-01T03:30:01.000" name="AllTests">
+  <testsuite name="Gpu" tests="1" failures="0" disabled="0" skipped="1" errors="0" time="0.41" timestamp="2026-11-01T03:30:01.000">
+    <testcase name="Serial" file="test/gtest/serial_gpu.cpp" line="40" status="run" result="skipped" time="0.41" timestamp="2026-11-01T03:30:01.000" classname="Gpu">
+      <skipped message="slow validation test skipped in fast mode (FREE_BREAKFAST_FAST_TESTS is set)"/>
+      <properties>
+        <property name="fbf_slow" value="1"/>
+      </properties>
+    </testcase>
+  </testsuite>
+</testsuites>

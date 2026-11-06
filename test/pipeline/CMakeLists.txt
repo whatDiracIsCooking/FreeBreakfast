@@ -66,5 +66,6 @@ target_compile_definitions(
 gtest_discover_tests(
   free_breakfast_pipeline_tests_host
   DISCOVERY_MODE PRE_TEST
+  XML_OUTPUT_DIR ${_fb_gtest_xml_dir}
   PROPERTIES TIMEOUT ${_fb_test_timeout}
 )

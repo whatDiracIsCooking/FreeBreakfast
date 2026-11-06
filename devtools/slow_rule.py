@@ -11,9 +11,9 @@ branch, and the series of the ones before it, and reports two things:
   devtools/test_families.py's, read from a built build dir. A case is in the
   fast set when its record says `slow: false`: FBF_SKIP_IF_FAST_TESTS records
   the gtest property `fbf_slow` in every mode, and metrics.gtest_cases reads
-  it. A case run by ctest (a host binary, a RUN_SERIAL case) has no gtest
-  report, so its membership is not recorded; one over the line is listed
-  apart, as unknown.
+  it, and a case run by ctest (a host binary, a RUN_SERIAL case) gets it
+  from its entry's own gtest XML (#1016). A case with neither has no
+  membership recorded; one over the line is listed apart, as unknown.
 - **A step:** a case whose time stepped up against its own recent history,
   past a bar set by the series' spread: the median of its passes over the
   last WINDOW records, plus K robust standard deviations. The deviation is
@@ -244,8 +244,8 @@ def render(findings: dict) -> list[str]:
     if f["over_line_unrecorded"]:
         out.append(
             f"slow-rule: {len(f['over_line_unrecorded'])} case(s) over the line"
-            " whose fast-set membership the record does not carry (run by ctest,"
-            " or recorded before #987):"
+            " whose fast-set membership the record does not carry (no gtest"
+            " report, or recorded before #987/#1016):"
         )
         out += [
             f"  {r['seconds']:9.3f} s  {r['name']}  (family {r['family']})"
