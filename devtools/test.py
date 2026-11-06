@@ -41,9 +41,10 @@ nightly: what the timer runs (docs/testing.md "The nightly"). Fetch origin,
   --mode weekly, clean with the compiler launcher off), then under the card
   lock every C++ case unskipped and the whole pytest suite, then
   cross-backend-check.sh, and a `nightly` or `weekly` record appended to
-  `metrics`. Build and GPU run never overlap. CUDA (--preset default) by
-  design. Logged to <report>/<mode>-<stamp>-<rev>-<preset>.log under the
-  primary checkout.
+  `metrics`, then the slow-test report over it (devtools/slow_rule.py).
+  Build and GPU run never overlap. CUDA (--preset default) by design.
+  Logged to <report>/<mode>-<stamp>-<rev>-<preset>.log under the primary
+  checkout.
 
 push and pr run with FREE_BREAKFAST_FAST_TESTS=1, so every case under
 FBF_SKIP_IF_FAST_TESTS() skips; nightly is the unskipped run. Each
@@ -1051,6 +1052,35 @@ def load_metrics():
     return module
 
 
+def load_slow_rule():
+    """devtools/slow_rule.py, by path, as load_metrics."""
+    spec = importlib.util.spec_from_file_location(
+        "fbf_slow_rule", REPO_ROOT / "devtools" / "slow_rule.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def slow_rule_report(
+    build_dir: Path, host: str, results: Path, log: Path, tag: str
+) -> dict | None:
+    """The nightly's slow-test report (#987, devtools/slow_rule.py), printed
+    and logged, and written to <results>/slow-rule.json. Returns the
+    findings, None when the series has no record of `host`."""
+    slow_rule = load_slow_rule()
+    results.mkdir(parents=True, exist_ok=True)
+    findings = slow_rule.nightly_report(
+        build_dir, REPO_ROOT, host, results / "slow-rule.json"
+    )
+    if findings is None:
+        say(f"{tag}: slow-rule: no nightly record of {host!r} to report", log=log)
+        return None
+    for line in slow_rule.render(findings):
+        say(f"{tag}: {line}", log=log)
+    return findings
+
+
 def run_cases(metrics, results: Path) -> list[dict]:
     """Every case a run's reports name: ctest's JUnit (each entry's binary
     from the listing), each GPU batch's gtest JSON, pytest's JUnit. A report
@@ -1483,10 +1513,24 @@ def nightly_run(args: argparse.Namespace, cfg: dict[str, str]) -> int:
             log=log,
         )
         summary += f"  metrics={sha[:12]}"
+        recorded = True
     except (metrics.MetricsError, NightlyError, OSError, ValueError, SyntaxError) as e:
         say(f"{tag}: metrics: FAILED to record the run: {e}", err=True, log=log)
         summary += "  metrics=FAILED"
         rc = rc or 1
+        recorded = False
+
+    # 5. The slow-test rule (#987), over the record just appended and the
+    # series before it: a report, never a failure of the tests. Its findings
+    # go to <results>/slow-rule.json, which is what #986's issue takes.
+    if recorded and record["cases"]:
+        try:
+            findings = slow_rule_report(build_dir, record["host"], results, log, tag)
+            summary += "  " + load_slow_rule().summary_field(findings)
+        except (SystemExit, OSError, ValueError, KeyError) as e:
+            say(f"{tag}: slow-rule: FAILED to report: {e}", err=True, log=log)
+            summary += "  slow-rule=FAILED"
+            rc = rc or 1
     say(summary, log=log)
     with (report / "summary.log").open("a") as f:
         f.write(summary + "\n")

@@ -66,25 +66,29 @@
       "name": "Overlap.Symmetric",
       "binary": "free_breakfast_tests_gpu",
       "status": "pass",
-      "seconds": 0.012
+      "seconds": 0.012,
+      "slow": false
     },
     {
       "name": "Overlap.NeedsADevice",
       "binary": "free_breakfast_tests_gpu",
       "status": "skip",
-      "seconds": 0.0
+      "seconds": 0.0,
+      "slow": false
     },
     {
       "name": "Exchange/ExchangeGolden.Matches/1",
       "binary": "free_breakfast_tests_gpu",
       "status": "fail",
-      "seconds": 3.25
+      "seconds": 3.25,
+      "slow": true
     },
     {
       "name": "Exchange/ExchangeGolden.DISABLED_Huge/0",
       "binary": "free_breakfast_tests_gpu",
       "status": "skip",
-      "seconds": 0.0
+      "seconds": 0.0,
+      "slow": false
     },
     {
       "name": "test/pytest/test_a.py::test_ok[x-1]",

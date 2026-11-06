@@ -81,7 +81,11 @@ def gtest_cases(path: Path, binary: str) -> list[dict]:
     A case GTEST_SKIP'd (result SKIPPED) or never run (status NOTRUN, a
     disabled case the filter left out) is `skip`; one with any failure is
     `fail`. A process that crashed wrote no report, and its cases are absent:
-    the record's `result` carries that run's failure."""
+    the record's `result` carries that run's failure.
+
+    `slow` is whether the case reached FBF_SKIP_IF_FAST_TESTS (its gtest
+    property `fbf_slow`, recorded in every mode): a fast run skips it. Only a
+    gtest report can say, so only these cases carry the field."""
     doc = json.loads(Path(path).read_text())
     cases = []
     for suite in doc.get("testsuites", []):
@@ -101,6 +105,7 @@ def gtest_cases(path: Path, binary: str) -> list[dict]:
                     "binary": binary,
                     "status": status,
                     "seconds": _seconds(case.get("time")),
+                    "slow": case.get("fbf_slow") == "1",
                 }
             )
     return cases

@@ -62,6 +62,7 @@
           "timestamp": "2026-11-01T03:40:00Z",
           "time": "3.25s",
           "classname": "Exchange/ExchangeGolden",
+          "fbf_slow": "1",
           "failures": [
             {
               "failure": "test/gtest/exchange_gpu.cpp:95\nExpected: (err) <= (1e-10), actual: 3e-09 vs 1e-10",
