@@ -1,8 +1,9 @@
 // GPU cases for recipes.pcg: block preconditioned conjugate gradients on a
 // dense A held as a one-gemm LinearOperator, against a host Cholesky solve;
 // columns stopping at their own sweep and tolerance; a Jacobi preconditioner
-// on an ill-conditioned diagonal; the curvature check and the silent stops;
-// and the refusals.
+// on an ill-conditioned diagonal; the column form, which names each block's
+// columns; the caller's norms; the curvature check and the silent stops; and
+// the refusals.
 
 #include <gtest/gtest.h>
 
@@ -80,6 +81,41 @@ struct Dense {
 };
 
 static_assert(fb::LinearOperator<Dense, double>);
+
+// A + s_j I for each column j, through pcg_solve's column form: the original
+// index of each of the block's columns picks its shift. Records each apply's
+// columns. It has no count form, so pcg_solve can only call this one.
+struct ShiftedDense {
+  std::int32_t n;
+  const double *a;
+  std::vector<double> shifts;
+  std::vector<std::vector<std::size_t>> columns;
+
+  fb::Status apply(fb::DeviceResources &res, std::span<const std::size_t> block, const double *x,
+                   double *y) {
+    columns.emplace_back(block.begin(), block.end());
+    const wwr::wwrblasHandle_t blas = res.blas().get();
+    const auto k = static_cast<std::int32_t>(block.size());
+    const double one = 1.0;
+    const double zero = 0.0;
+    if (auto status = fb::gpu_status(wwr::gemm<double, std::int32_t>(
+            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, k, n, &one, a, n, x, n, &zero, y, n));
+        !status) {
+      return status;
+    }
+    for (std::size_t c = 0; c < block.size(); ++c) {
+      const std::size_t at = c * static_cast<std::size_t>(n);
+      if (auto status = fb::gpu_status(
+              wwr::axpy<double, std::int32_t>(blas, n, &shifts[block[c]], x + at, 1, y + at, 1));
+          !status) {
+        return status;
+      }
+    }
+    return {};
+  }
+};
+
+static_assert(!fb::LinearOperator<ShiftedDense, double>);
 
 // Column-major A = D^1/2 C D^1/2, C with unit diagonal and symmetric
 // off-diagonal elements uniform in +-0.5 / n, so each row of C - I sums under
@@ -280,6 +316,99 @@ TEST(RecipesPcg, ColumnsStopAtTheirOwnTolerance) {
   }
 }
 
+// The column form: A + s_j I per column, s = 0, 5, 20, at 1e-2, 1e-6, 1e-10,
+// so the columns drop out at different sweeps and the gathered blocks are
+// subsets. Each apply is told exactly the columns still running, ascending,
+// and the true residuals' every column; each column solves its own system.
+// lambda_min(A + s I) > 0.5, so ||x - x_ref|| <= (tol + drift) / 0.5 plus the
+// reference's rounding.
+TEST(RecipesPcg, ColumnFormNamesEachBlocksColumns) {
+  FBF_REQUIRE_GPU();
+  constexpr std::int32_t kCols = 3;
+  const std::array<double, kCols> tolerances{1e-2, 1e-6, 1e-10};
+  fb::DeviceResources res{0};
+  const auto a = spd(0.0, true);
+  const auto b = random_columns(kCols, 6U);
+  auto d_a = to_device(res, a);
+  auto d_b = to_device(res, b);
+  fb::Buffers::device<double> d_x(b.size(), res.device());
+  ShiftedDense op{kN, d_a.data(), {0.0, 5.0, 20.0}, {}};
+  fb::PcgOptions options;
+  options.tolerances = tolerances;
+  const auto info = fb::pcg_solve(res, op, nullptr, kN, kCols, d_b.data(), d_x.data(), options);
+  ASSERT_TRUE(info) << info.error().message;
+  ASSERT_EQ(static_cast<std::int32_t>(op.columns.size()), info->sweeps + 1);
+  for (std::int32_t s = 1; s <= info->sweeps; ++s) {
+    std::vector<std::size_t> running;
+    for (std::size_t c = 0; c < static_cast<std::size_t>(kCols); ++c) {
+      if (info->iterations[c] >= s) {
+        running.push_back(c);
+      }
+    }
+    EXPECT_EQ(op.columns[s - 1], running) << s;
+  }
+  EXPECT_EQ(op.columns.back(), (std::vector<std::size_t>{0, 1, 2}));
+  EXPECT_LT(op.columns[info->sweeps - 1].size(), static_cast<std::size_t>(kCols));
+  const auto x = to_host(res, d_x.data(), b.size());
+  for (std::int32_t c = 0; c < kCols; ++c) {
+    SCOPED_TRACE(c);
+    EXPECT_TRUE(info->converged[c]);
+    EXPECT_LE(info->residuals[c], tolerances[c] + kDrift);
+    auto shifted = a;
+    for (std::int32_t i = 0; i < kN; ++i) {
+      shifted[i + i * kN] += op.shifts[c];
+    }
+    const std::vector<double> column(b.begin() + c * kN, b.begin() + (c + 1) * kN);
+    const std::vector<double> x_column(x.begin() + c * kN, x.begin() + (c + 1) * kN);
+    EXPECT_LE(host_residual(shifted, x_column, column, 0), tolerances[c] + kDrift);
+    EXPECT_LE(column_distance(x_column, host_solve(shifted, column, 1), 0),
+              (tolerances[c] + kDrift) / 0.5 + 1e-14);
+  }
+}
+
+// norms: the caller's ||b_j|| in place of the call's own. Given the host's,
+// which differs from the device nrm2 by rounding alone, the solve takes the
+// same products to the same x within the drift of ColumnsStopAtTheirOwnTolerance
+// (1e-12 relative).
+TEST(RecipesPcg, CallersNormsReplaceTheCallsOwn) {
+  FBF_REQUIRE_GPU();
+  constexpr std::int32_t kCols = 2;
+  fb::DeviceResources res{0};
+  const auto a = spd(0.0, true);
+  const auto b = random_columns(kCols, 7U);
+  auto d_a = to_device(res, a);
+  auto d_b = to_device(res, b);
+  std::vector<double> norms(kCols);
+  for (std::int32_t c = 0; c < kCols; ++c) {
+    double sum = 0.0;
+    for (std::int32_t i = 0; i < kN; ++i) {
+      sum += b[i + c * kN] * b[i + c * kN];
+    }
+    norms[c] = std::sqrt(sum);
+  }
+  fb::Buffers::device<double> d_own(b.size(), res.device());
+  Dense own_op{kN, d_a.data()};
+  const auto own = fb::pcg_solve(res, own_op, nullptr, kN, kCols, d_b.data(), d_own.data());
+  ASSERT_TRUE(own) << own.error().message;
+  fb::Buffers::device<double> d_given(b.size(), res.device());
+  Dense given_op{kN, d_a.data()};
+  fb::PcgOptions options;
+  options.norms = norms;
+  const auto given =
+      fb::pcg_solve(res, given_op, nullptr, kN, kCols, d_b.data(), d_given.data(), options);
+  ASSERT_TRUE(given) << given.error().message;
+  EXPECT_EQ(given->iterations, own->iterations);
+  EXPECT_EQ(given_op.counts, own_op.counts);
+  const auto x_own = to_host(res, d_own.data(), b.size());
+  const auto x_given = to_host(res, d_given.data(), b.size());
+  for (std::int32_t c = 0; c < kCols; ++c) {
+    EXPECT_TRUE(given->converged[c]) << c;
+    EXPECT_LE(column_distance(x_given, x_own, c),
+              1e-12 * column_distance(x_own, std::vector<double>(b.size(), 0.0), c))
+        << c;
+  }
+}
+
 // A = D^1/2 C D^1/2 over six decades: Jacobi's M A has C's spectrum, kappa < 3,
 // so with rho = (sqrt 3 - 1) / (sqrt 3 + 1) < 0.268 CG's bound
 // ||r_m|| / ||r_0|| <= 2 rho^m sqrt(kappa(A)), kappa(A) < 1.5e6 / 0.5, reaches
@@ -449,6 +578,14 @@ TEST(RecipesPcg, Refusals) {
   fb::PcgOptions mismatched;
   mismatched.tolerances = two;
   EXPECT_TRUE(refused(kN, 1, mismatched));
+  const std::array<double, 1> one_norm{1.0};
+  fb::PcgOptions wrong_norms;
+  wrong_norms.norms = two;
+  EXPECT_TRUE(refused(kN, 1, wrong_norms));
+  fb::PcgOptions norms_from_x;
+  norms_from_x.norms = one_norm;
+  norms_from_x.start_from_x = true;
+  EXPECT_TRUE(refused(kN, 1, norms_from_x));
   EXPECT_TRUE(op.counts.empty());
 }
 

@@ -30,6 +30,12 @@ struct PcgOptions {
   /// @brief When not empty, one tolerance per column, replacing
   /// @ref tolerance. Read during the call only.
   std::span<const double> tolerances;
+  /// @brief When not empty, ||b_j||_2 per column as the caller already holds
+  /// it (to set its tolerances, say), taken as the starting residual's norm
+  /// instead of the call's own nrm2 of each column. It is the recurrence's
+  /// ||r_0|| (unpreconditioned, r_0.r_0 is its square), so it should be that
+  /// nrm2. From X = 0 only; read during the call only.
+  std::span<const double> norms;
   /// @brief Sweeps before a column still above its tolerance stops. At least 1.
   int32_t max_iterations = 100;
   /// @brief Start from the X passed in, R = B - A X by one product over every
@@ -73,15 +79,22 @@ struct PcgInfo {
 /// stepped; with @p precondition nullptr it is the identity, and the search
 /// direction is the residual itself (plain CG, r.r taken as ||r||^2).
 ///
-/// Everything is queued on res.stream() with res.blas() held in host pointer
-/// mode, @p op's and @p precondition's applies included; each dot and norm
-/// syncs. The residual and direction blocks are pool buffers of the call's
-/// own, allocated on entry, so @p op and @p precondition may take
-/// res.device_workspace(). The device res.dev_idx() names is made current for
-/// the call.
+/// @p op is applied as op.apply(res, count, x, y), a LinearOperator; or, when
+/// it has one, as op.apply(res, columns, x, y), where @p columns
+/// (std::span<const size_t>) lists the original index of each of the block's
+/// columns, ascending: for an operator that differs per column, such as a
+/// shift per right-hand side.
 ///
-/// @param op            Applied as op.apply(res, count, x, y). Must be
-///                      symmetric positive definite on the columns' span.
+/// Everything is queued on res.stream(), @p op's and @p precondition's
+/// applies in host pointer mode on res.blas(); a sweep's reductions are
+/// formed in device pointer mode and read back in two copies, each a sync.
+/// The residual and direction blocks are pool buffers of the call's own,
+/// allocated on entry, so @p op and @p precondition may take
+/// res.device_workspace(). The device res.dev_idx() names is made current for
+/// the call. X's last update is ordered on res.stream(), not synced.
+///
+/// @param op            Applied as above. Must be symmetric positive definite
+///                      on the columns' span.
 /// @param precondition  A LinearOperator applying M, symmetric positive
 ///                      definite, or nullptr for none.
 /// @param n             The order of @p op.
@@ -97,18 +110,27 @@ struct PcgInfo {
 ///         check_curvature is off); or the first failing call's error, @p op's
 ///         and @p precondition's included. After an error, @p x holds the
 ///         iterate as far as it got.
-template <real_fp T, LinearOperator<T> Op, class Precondition>
+template <real_fp T, class Op, class Precondition>
   requires std::same_as<std::remove_cvref_t<Precondition>, std::nullptr_t> ||
            LinearOperator<std::remove_reference_t<Precondition>, T>
 [[nodiscard]] Result<PcgInfo> pcg_solve(DeviceResources &res, Op &op, Precondition &&precondition,
                                         const int32_t n, const int32_t k, const T *b, T *x,
                                         const PcgOptions &options = {}) {
   constexpr bool kPreconditioned = !std::same_as<std::remove_cvref_t<Precondition>, std::nullptr_t>;
+  constexpr bool kColumns = requires(std::span<const size_t> columns, const T *from, T *to) {
+    { op.apply(res, columns, from, to) } -> std::convertible_to<Status>;
+  };
+  static_assert(kColumns || LinearOperator<Op, T>,
+                "pcg_solve: op needs apply(res, count, x, y) or apply(res, columns, x, y)");
   if (n < 1 || k < 1 || options.max_iterations < 1 ||
-      (!options.tolerances.empty() && std::cmp_not_equal(options.tolerances.size(), k))) {
-    return err_config("pcg_solve: needs n >= 1, k >= 1, max_iterations >= 1 and tolerances empty "
-                      "or one per column (n = {}, k = {}, max_iterations = {}, tolerances = {})",
-                      n, k, options.max_iterations, options.tolerances.size());
+      (!options.tolerances.empty() && std::cmp_not_equal(options.tolerances.size(), k)) ||
+      (!options.norms.empty() &&
+       (options.start_from_x || std::cmp_not_equal(options.norms.size(), k)))) {
+    return err_config("pcg_solve: needs n >= 1, k >= 1, max_iterations >= 1, tolerances empty "
+                      "or one per column, and norms empty or one per column from X = 0 (n = {}, "
+                      "k = {}, max_iterations = {}, tolerances = {}, norms = {})",
+                      n, k, options.max_iterations, options.tolerances.size(),
+                      options.norms.size());
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
@@ -120,30 +142,51 @@ template <real_fp T, LinearOperator<T> Op, class Precondition>
     return static_cast<T>(options.tolerances.empty() ? options.tolerance : options.tolerances[j]);
   };
 
-  // Every scalar is a host value and every reduction is read on the host, so
-  // host pointer mode for the call; the previous mode is restored.
+  // Every scalar a BLAS call takes is a host value, so host pointer mode for
+  // the call, the previous mode restored; reduce below switches to device mode
+  // only while it queues the reductions it reads back.
   const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t, CreatePolicy<wwr::wwrblasStatus_t>>
       host_scalars{blas, wwr::WWRBLAS_POINTER_MODE_HOST};
 
-  // R, P, the gathered block an apply reads and the block it writes: held
-  // across op.apply and precondition.apply, each of which may take
-  // res.device_workspace(), so the call's own (docs/style.md "Scratch
-  // memory"). Their frees are ordered on the stream after the work.
-  Buffers::device<T> vectors(4 * block, res.device());
+  // R, P, the gathered block an apply reads and the block it writes, and the
+  // 2 k reductions a readback copies: held across op.apply and
+  // precondition.apply, each of which may take res.device_workspace(), so the
+  // call's own (docs/style.md "Scratch memory"). Their frees are ordered on
+  // the stream after the work.
+  Buffers::device<T> vectors((4 * block) + (2 * cols), res.device());
   T *const r = vectors.data();
   T *const p = r + block;
   T *const xs = p + block;
   T *const ys = xs + block;
+  T *const scalars = ys + block;
 
-  const auto dot = [&](const T *u, const T *v) -> Result<T> {
-    T value{};
-    FBF_TRY(gpu_status(wwr::dot<T, int32_t>(blas, n, u, 1, v, 1, &value)));
-    return value;
+  // The reductions @p issue queues, each into its slot of scalars, in device
+  // pointer mode, then the first @p count read back into read by one copy and
+  // one sync: a sweep's dots and norms cost one round trip, not one each. The
+  // sums are the host-mode calls' own.
+  std::vector<T> read(2 * cols);
+  const auto reduce = [&](const size_t count, const auto &issue) -> Status {
+    FBF_TRY(gpu_status(wwr::wwrblasSetPointerMode(blas, wwr::WWRBLAS_POINTER_MODE_DEVICE)));
+    const Status issued = issue();
+    FBF_TRY(gpu_status(wwr::wwrblasSetPointerMode(blas, wwr::WWRBLAS_POINTER_MODE_HOST)));
+    FBF_TRY(issued);
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(read.data(), scalars, count * sizeof(T),
+                                           wwr::wwrMemcpyDeviceToHost, stream)));
+    return res.sync();
   };
-  const auto norm = [&](const T *u) -> Result<T> {
-    T value{};
-    FBF_TRY(gpu_status(wwr::nrm2<T, int32_t>(blas, n, u, 1, &value)));
-    return value;
+  const auto dot = [&](const T *u, const T *v, T *into) {
+    return gpu_status(wwr::dot<T, int32_t>(blas, n, u, 1, v, 1, into));
+  };
+  const auto norm = [&](const T *u, T *into) {
+    return gpu_status(wwr::nrm2<T, int32_t>(blas, n, u, 1, into));
+  };
+  // @p op over the block @p from of the listed columns' vectors, into @p to.
+  const auto apply = [&](const std::vector<size_t> &columns, const T *from, T *to) -> Status {
+    if constexpr (kColumns) {
+      return op.apply(res, std::span<const size_t>{columns}, from, to);
+    } else {
+      return op.apply(res, static_cast<int32_t>(columns.size()), from, to);
+    }
   };
   // The listed columns of @p from packed into xs, or @p from itself when the
   // list is every column (it is ascending, so that is the identity gather).
@@ -158,10 +201,12 @@ template <real_fp T, LinearOperator<T> Op, class Precondition>
     }
     return xs;
   };
+  std::vector<size_t> every(cols);
+  std::iota(every.begin(), every.end(), size_t{0});
 
   // R = B - A X0 or B, and P = S = M R over every column.
   if (options.start_from_x) {
-    FBF_TRY(op.apply(res, k, x, r));
+    FBF_TRY(apply(every, x, r));
     for (size_t j = 0; j < cols; ++j) {
       FBF_TRY(gpu_status(wwr::scal<T, int32_t>(blas, n, &kNegOne<T>, r + (j * nz), 1)));
       FBF_TRY(
@@ -178,12 +223,29 @@ template <real_fp T, LinearOperator<T> Op, class Precondition>
     FBF_TRY(gpu_status(
         wwr::wwrMemcpyAsync(p, r, block * sizeof(T), wwr::wwrMemcpyDeviceToDevice, stream)));
   }
+  // ||r|| (unless the caller's norms give it) and, preconditioned, r.s per
+  // column.
   std::vector<T> rs(cols);
   std::vector<T> r_norm(cols);
+  const bool own_norms = options.norms.empty();
+  const size_t at_rs = own_norms ? cols : 0;
+  if (own_norms || kPreconditioned) {
+    FBF_TRY(reduce(at_rs + (kPreconditioned ? cols : 0), [&]() -> Status {
+      for (size_t j = 0; j < cols; ++j) {
+        if (own_norms) {
+          FBF_TRY(norm(r + (j * nz), scalars + j));
+        }
+        if constexpr (kPreconditioned) {
+          FBF_TRY(dot(r + (j * nz), p + (j * nz), scalars + at_rs + j));
+        }
+      }
+      return {};
+    }));
+  }
   for (size_t j = 0; j < cols; ++j) {
-    r_norm[j] = FBF_TRY(norm(r + (j * nz)));
+    r_norm[j] = own_norms ? read[j] : static_cast<T>(options.norms[j]);
     if constexpr (kPreconditioned) {
-      rs[j] = FBF_TRY(dot(r + (j * nz), p + (j * nz)));
+      rs[j] = read[at_rs + j];
     } else {
       rs[j] = r_norm[j] * r_norm[j];
     }
@@ -220,16 +282,22 @@ template <real_fp T, LinearOperator<T> Op, class Precondition>
     FBF_LOG_DEBUG("pcg_solve: sweep {}, {} of {} columns active, largest ||r|| {:.3e}", info.sweeps,
                   active.size(), cols, static_cast<double>(largest));
 
-    // A P over the active columns, one apply into YS.
+    // A P over the active columns, one apply into YS, and every p.Ap read
+    // back at once.
     const T *const p_active = FBF_TRY(gather(active, p));
-    FBF_TRY(op.apply(res, static_cast<int32_t>(active.size()), p_active, ys));
+    FBF_TRY(apply(active, p_active, ys));
+    FBF_TRY(reduce(active.size(), [&]() -> Status {
+      for (size_t i = 0; i < active.size(); ++i) {
+        FBF_TRY(dot(p + (active[i] * nz), ys + (i * nz), scalars + i));
+      }
+      return {};
+    }));
     stepped.clear();
     for (size_t i = 0; i < active.size(); ++i) {
       const size_t j = active[i];
       const size_t at = j * nz;
-      const T *const ap = ys + (i * nz);
       ++info.iterations[j];
-      const T pap = FBF_TRY(dot(p + at, ap));
+      const T pap = read[i];
       if (!(pap > T{0})) {
         if (options.check_curvature) {
           return err_divergence("pcg_solve: p.Ap = {:.3e} in column {} after {} products: A is "
@@ -242,30 +310,44 @@ template <real_fp T, LinearOperator<T> Op, class Precondition>
       const T alpha = rs[j] / pap;
       const T neg_alpha = -alpha;
       FBF_TRY(gpu_status(wwr::axpy<T, int32_t>(blas, n, &alpha, p + at, 1, x + at, 1)));
-      FBF_TRY(gpu_status(wwr::axpy<T, int32_t>(blas, n, &neg_alpha, ap, 1, r + at, 1)));
-      r_norm[j] = FBF_TRY(norm(r + at));
+      FBF_TRY(gpu_status(wwr::axpy<T, int32_t>(blas, n, &neg_alpha, ys + (i * nz), 1, r + at, 1)));
       stepped.push_back(j);
     }
     if (stepped.empty()) {
       continue;
     }
 
-    // S = M R over the stepped columns, into YS (A P is consumed), then
-    // P = S + beta P. Without M, S is R and r.s is ||r||^2.
-    [[maybe_unused]] const T *s_stepped = nullptr;
+    // S = M R over the stepped columns, into YS (A P is consumed), then their
+    // ||r|| and r.s read back at once. Without M, S is R and r.s is ||r||^2.
+    const size_t m = stepped.size();
     if constexpr (kPreconditioned) {
       const T *const r_stepped = FBF_TRY(gather(stepped, r));
-      FBF_TRY(precondition.apply(res, static_cast<int32_t>(stepped.size()), r_stepped, ys));
-      s_stepped = ys;
+      FBF_TRY(precondition.apply(res, static_cast<int32_t>(m), r_stepped, ys));
     }
-    for (size_t i = 0; i < stepped.size(); ++i) {
+    FBF_TRY(reduce(kPreconditioned ? 2 * m : m, [&]() -> Status {
+      for (size_t i = 0; i < m; ++i) {
+        FBF_TRY(norm(r + (stepped[i] * nz), scalars + i));
+        if constexpr (kPreconditioned) {
+          FBF_TRY(dot(r + (stepped[i] * nz), ys + (i * nz), scalars + m + i));
+        }
+      }
+      return {};
+    }));
+    // P = S + beta P, for the columns another sweep can read: not one that
+    // has reached its tolerance, nor any after the last sweep.
+    const bool last = info.sweeps == options.max_iterations;
+    for (size_t i = 0; i < m; ++i) {
       const size_t j = stepped[i];
+      r_norm[j] = read[i];
+      if (last || r_norm[j] <= tolerance(j)) {
+        continue;
+      }
       const size_t at = j * nz;
       T rs_new{};
       const T *s = r + at;
       if constexpr (kPreconditioned) {
-        s = s_stepped + (i * nz);
-        rs_new = FBF_TRY(dot(r + at, s));
+        s = ys + (i * nz);
+        rs_new = read[m + i];
       } else {
         rs_new = r_norm[j] * r_norm[j];
       }
@@ -283,15 +365,22 @@ template <real_fp T, LinearOperator<T> Op, class Precondition>
   // The true residuals A X - B from one more product over every column: the
   // recurrence's R drifts from them in rounding.
   if (options.true_residuals) {
-    FBF_TRY(op.apply(res, k, x, ys));
-    info.residuals.resize(cols);
+    FBF_TRY(apply(every, x, ys));
     for (size_t j = 0; j < cols; ++j) {
       FBF_TRY(gpu_status(
           wwr::axpy<T, int32_t>(blas, n, &kNegOne<T>, b + (j * nz), 1, ys + (j * nz), 1)));
-      info.residuals[j] = static_cast<double>(FBF_TRY(norm(ys + (j * nz))));
+    }
+    FBF_TRY(reduce(cols, [&]() -> Status {
+      for (size_t j = 0; j < cols; ++j) {
+        FBF_TRY(norm(ys + (j * nz), scalars + j));
+      }
+      return {};
+    }));
+    info.residuals.resize(cols);
+    for (size_t j = 0; j < cols; ++j) {
+      info.residuals[j] = static_cast<double>(read[j]);
     }
   }
-  FBF_TRY(res.sync());
   return info;
 }
 

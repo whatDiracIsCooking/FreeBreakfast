@@ -485,8 +485,9 @@ TEST_F(McscfRootRotation, ThreeRootsOverSolvedLambdaMatchReference) {
 }
 
 // The same chain with RelaxedHessian's pcg_ci_response: the CI response of
-// zvectors' products from recipes::pcg_solve, a root at a time, through the
-// block calls (Schur) and the one-column ones (PerColumn), and lambda^x and
+// zvectors' products from recipes::pcg_solve, one call over every root's
+// vectors in the block calls (Schur) and one per column in the one-column
+// ones (PerColumn), and lambda^x and
 // the term meet the same bars.
 TEST_F(McscfRootRotation, ThreeRootsOverPcgCiResponseMatchReference) {
   FBF_REQUIRE_GPU();
