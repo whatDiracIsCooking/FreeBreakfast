@@ -312,8 +312,8 @@ is written. Test selection needs it to be readable by a machine, so (#984):
 
 ### The contract
 
-**Planned in #983 (the map) and #989 (the selector).** This is the draft
-contract. #989 updates it to what was actually built.
+**The map exists (#983, "The map" below); the selector is planned in #989.**
+This is the draft contract. #989 updates it to what was actually built.
 
 **Inputs:** the diff from the merge base with `origin/main`, and the gate's own
 build directory once it is built and scanned. The graph is read from the build
@@ -337,6 +337,57 @@ sources of truth.
 - **Not** the `.modmap` named in `compile_commands.json`. It lists every
   transitively visible module, which clang needs, so it is a closure rather than
   an edge list. Selecting from it would select nearly everything.
+
+### The map: `devtools/test_map.py`
+
+**Today (#983):** the graph above, built and written as one JSON map. It is
+an analysis tool, not wired into any gate; #989's selector reads it.
+
+```bash
+python3 devtools/test_map.py build-hip -o map.json   # the map; report on stderr
+python3 devtools/test_map.py build-hip --file src/integrals/mmd/mmd_launch.cu
+```
+
+It needs a configured and built build dir (the scan is part of the build).
+It writes its own File API query, and when the dir has no codemodel reply yet
+it re-runs `cmake` on the dir once to get one. It runs `ctest --show-only=json-v1`
+and each gtest binary's `--gtest_list_tests --gtest_output=json`, which lists
+every case with its file and never initialises the GPU runtime. `--ctest-json`
+takes a saved listing instead. On `build-hip` it takes about 20 s.
+
+What it reads, beyond the graph above:
+
+- **Headers of units the scanner never sees**, `.cu` device code, come from
+  `ninja -t deps`; ninja deletes their depfiles once it has read them. Every
+  source the codemodel names is placed even when no depfile is found.
+- **An owner is a module or a target.** A module's interface, partitions and
+  implementation units are one owner, its target. A link edge is kept only to
+  a non-module target (a device library, gtest): between module targets the
+  import edges are the finer record. An `INTERFACE` or imported target
+  compiles nothing, so the map looks through it to what it links.
+- **A test file** is a source that defines a gtest case some ctest entry
+  runs. Its direct dependencies, all at distance 0, are its own `requires`,
+  its binary (the binary's other units, such as a `main.cpp`, are that
+  binary's own owner), and the non-module targets the binary links. A header
+  a test file includes is owned by that test file alone.
+
+The map, schema 1:
+
+| Key | Holds |
+| --- | --- |
+| `files` | every placed file under the source dir: its `kinds` (`module-interface`, `module-partition`, `module-implementation`, `source`, `header`, `test`), its `owners`, and `tests`, each test file it reaches with its distance |
+| `owners` | each module or target: `kind`, its `target`, and `depends_on`, its direct edges |
+| `tests` | each test file: `targets`, its direct `requires` as the scanner wrote them, `links`, and its ctest `entries` |
+| `unmapped` | `files` under `src/` and `test/` it could not place, each with a `category`; ctest `entries` that are not one gtest case; `modules` required but provided by no unit |
+
+`category` says why a file is unplaced. `cmake` and `data` run everything, per
+the list above. `doc`, `config` (`.clang-format`), `python` and `unconfigured`
+(the nearest `CMakeLists.txt` is not configured in this preset: `test/experimental/`
+outside the experimental presets) have no effect on this build. `other` is
+anything else, a file the map cannot account for, and the report lists each
+one. On `build-hip` at #983, `other` is empty, and the unmapped entries are
+`example_rhf` and `example_hessian`, which run `free-breakfast` through a cmake
+script rather than a gtest case.
 
 **Selection:**
 
