@@ -104,11 +104,18 @@ public:
   ///         @p mixing is neither empty nor nroots (nroots - 1) / 2 long, or
   ///         @p response_max_iterations is below 1; or
   ///         the error of the sigma's create.
+  ///
+  /// @p pcg_ci_response (off by default) runs the CI response's conjugate
+  /// gradients through recipes::pcg_solve, one call per root, instead of the
+  /// loops here (the block calls' over every root's vectors at once): the
+  /// same recurrence and stopping rule, but slower on the RTX 3080 (README.md
+  /// "The CI response through recipes::pcg_solve").
   [[nodiscard]] static Result<RelaxedHessian>
   create(DeviceResources &res, Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
          const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const ci::Roots &roots,
          std::span<const double> weights, ResponseIntegrals ints, double response_tolerance = 1e-8,
-         std::vector<bool> mixing = {}, int32_t response_max_iterations = 200);
+         std::vector<bool> mixing = {}, int32_t response_max_iterations = 200,
+         bool pcg_ci_response = false);
 
   RelaxedHessian(RelaxedHessian &&) noexcept = default;
   RelaxedHessian &operator=(RelaxedHessian &&) noexcept = default;
@@ -230,7 +237,8 @@ private:
   RelaxedHessian(Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm, const ci::Roots &roots,
                  std::vector<double> weights, ResponseIntegrals ints, ci::Sigma response_sigma,
                  size_t dim, double response_tolerance, int32_t response_max_iterations,
-                 int32_t swap_parity, std::vector<bool> mixing, DeviceResources &res);
+                 int32_t swap_parity, std::vector<bool> mixing, bool pcg_ci_response,
+                 DeviceResources &res);
 
   // Whether delta carries the other-roots part of the pair of roots @p r and
   // @p s (in either order): create's mixing, or every pair when it is empty.
@@ -259,7 +267,15 @@ private:
   // E_r), not projected: one sigma of the block.
   [[nodiscard]] Status shifted_sigma(DeviceResources &res, size_t k, const double *x_c,
                                      double *y_c);
-  // The CI responses of k columns' b = ci_b_ into ci_delta_, lockstep.
+  // x = (H_0 - E)^-1 b off every root for the k vectors of b (dim x k, each
+  // already off the roots), by recipes::pcg_solve unpreconditioned from
+  // x = 0: vector j to its absolute tolerances[j], silently capped at
+  // response_max_iterations_ sigmas, stopped without error on a
+  // non-positive curvature.
+  [[nodiscard]] Status solve_shifted(DeviceResources &res, int32_t k, double shift, const double *b,
+                                     double *x, std::span<const double> tolerances);
+  // The CI responses of k columns' b = ci_b_ into ci_delta_, lockstep, or
+  // by solve_shifted per root with pcg_ci_response_.
   [[nodiscard]] Status solve_responses(DeviceResources &res, size_t k);
   // y_j += H_oc delta_j for k columns' CI blocks @p delta.
   [[nodiscard]] Status add_couplings(DeviceResources &res, size_t k, const double *delta,
@@ -280,6 +296,8 @@ private:
   int32_t swap_parity_;
   // create's mixing: per pair r < s, lexicographic; empty for every pair.
   std::vector<bool> mixing_;
+  // create's pcg_ci_response.
+  bool pcg_ci_response_;
   // H'(x)'s sigma; the CI blocks b = H' c and delta (dim x nroots each);
   // conjugate gradients' three vectors; the roots' overlaps; kappa, then the
   // gradient's antisymmetric matrix; the packed gradient; and the transition

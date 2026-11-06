@@ -32,6 +32,7 @@ transition RDMs are read back, and H′ and its adjoint are host work.
 | `response_tolerance` | 1e-8 | the CI response's conjugate gradients' stop, relative to their right-hand side |
 | `mixing` | empty (every pair) | which pairs of roots carry their other-roots part ("Leaving a pair's mixing out") |
 | `response_max_iterations` | 200 | their sigmas per root, a silent stop |
+| `pcg_ci_response` | off | those conjugate gradients through `recipes::pcg_solve` instead of the loops here ("The CI response through `recipes::pcg_solve`") |
 
 `response_tolerance` (1e-8 by default) is where the CI response's conjugate
 gradients stop, relative to their right-hand side, and
@@ -134,6 +135,49 @@ b at k blocks, and k nroots² doubles for `apply_coupled`'s rotation
 matrices. Six CI blocks per column, so a block of 3N columns over a
 large active space is that much device memory.
 
+### The CI response through `recipes::pcg_solve`
+
+With `create`'s `pcg_ci_response`, step 3's conjugate gradients are
+[`recipes::pcg_solve`](../../recipes/pcg/README.md) instead of the loops
+above, unpreconditioned, over a `LinearOperator` local to the solve: one
+sigma of the vectors it is handed, then each shifted by −E_r and projected
+off every root (`project`'s gemv pair). The stopping rule is passed to it
+unchanged: `response_tolerance` · ‖(1 − Σ_s c_s c_sᵀ) b_r‖ as each vector's
+absolute tolerance (infinite for a right-hand side the roots span, below, so
+no sigma runs), `response_max_iterations` under `stop_silently`, and
+`check_curvature` off, so a direction with p·Ap ≤ 0 (round-off's other spins)
+ends that vector's solve where the sweep before left it, without an error.
+There is one `pcg_solve` per root, in the block calls too, each over that
+root's k vectors packed together: the operator is not told which columns a
+sweep gathers, so a call's columns must share their shift.
+
+**What it changes.** For one column nothing but the time: it is the
+one-column loop's arithmetic step for step, so δ is the loop's to the bit
+and every solve takes the loop's sigmas (#831 ran both on every solve of the
+CASSCF, gradient, NAC, Z-vector, NEVPT2 and Hessian suites on the gfx1200:
+201,199 solves, 1,889,546 sigmas, no count and no bit of δ different). For a
+block it is the loop's recurrence but not its arithmetic (`pcg_solve`'s dot
+and nrm2 per vector against the strided-batched gemm, axpy against dgmm and
+geam): of 43,800 block vectors over the same suites, 105 took a sigma more or
+fewer, where a vector met its tolerance or its cap within round-off, and δ
+differed by at most 1e-8 relative, the tolerance itself (~1e-13 elsewhere).
+
+**Why it is off.** It is slower on the RTX 3080, which is the repo's rule
+for an option. Each `pcg_solve` takes one more norm of its right-hand side
+(its tolerance is absolute, so the relative one needs ‖b‖ first), a pool
+allocation and a closing sync, which is a few percent of a small system's
+one-column products; and in a block each vector reads its dots back on its
+own and each root's sweep is its own sigma, where the loop takes one
+strided-batched gemm and one sigma over every root's vectors. Measured on
+the 3080 with the card held, default against the option (#831):
+
+| Case (`test/gtest`, unskipped) | Loops (default) | `pcg_ci_response` |
+|---|---|---|
+| `McscfSolveCiFloor.Psb3MeciReachesTheGradientBar` (`mcscf::solve`, one column) | 27.92, 27.60, 28.06 s | 27.92, 28.02, 28.11 s |
+| `McscfIntersectionTiming`, H₂CO skewed SA3: `df_gradient` × 2 + `df_nac` (one column) | 0.355, 0.355, 0.355 s | 0.366, 0.369, 0.366 s |
+| `McscfIntersectionTiming`, H₂CO SA2: `df_intersection`'s one call (block) | 0.239, 0.238 s | 0.258, 0.256 s |
+| `McscfIntersectionTiming`, H₂CO skewed SA3: `df_intersection`'s one call (block) | 0.285, 0.279 s | 0.341, 0.343 s |
+
 ### A right-hand side the roots span
 
 When the projected right-hand side (1 − Σ_s c_s c_sᵀ) b_r is at most 1e-12
@@ -192,12 +236,14 @@ through `response::zvector`'s CI right-hand side, and
 `test/gtest/response_zvectors_gpu.cpp` the block calls through
 `response::zvectors`, and `test/gtest/response_zvector_rotations_gpu.cpp`
 `coupling` and `apply_coupled`'s rotations through its rotations at unequal
-weights.
+weights. `test/gtest/mcscf_root_rotation_gpu.cpp` solves its Z-vectors with
+`pcg_ci_response` too, by `Schur` (the block calls) and by `PerColumn` (one
+column), against the same fixture and bars as the default.
 
 ## Files
 
 | File | Role |
 |------|------|
 | `relaxed_hessian.cppm` | Module interface: `ResponseIntegrals`, `response_integrals`, `response_gradient`, `RelaxedHessian` |
-| `relaxed_hessian.cpp` | H′(x) and its adjoint, the CI response's conjugate gradients (one column, and a block's in lockstep) and transition RDMs, and the products |
+| `relaxed_hessian.cpp` | H′(x) and its adjoint, the CI response's conjugate gradients (one column, and a block's in lockstep, or `pcg_solve` per root) and transition RDMs, and the products |
 | `CMakeLists.txt` | The module `free_breakfast.response.relaxed_hessian` |
