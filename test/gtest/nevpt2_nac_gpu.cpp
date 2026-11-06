@@ -805,6 +805,7 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdNacFold,
 // h6_631g_sa2's one pair.
 TEST(Nevpt2QdNac, TotalFollowsTheOptions) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
   QdRun run = qd_run("h6_631g_sa2");
   ASSERT_TRUE(run.solution.has_value());
   for (const bool pc : {false, true}) {

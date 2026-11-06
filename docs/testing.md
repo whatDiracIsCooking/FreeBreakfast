@@ -323,20 +323,61 @@ either a code change or a recorded environment change, never a mystery.
 
 ## Families
 
-`slow_test.h`'s rule says a slow case leaves the fast set "unless it is the
-cheapest of its family: one parameter, one molecule or one mode stays in the
-fast set to stand for the rest". Today a family is judged by hand when the test
-is written. Test selection needs it to be readable by a machine, so (#984):
+**Today (#984):** a family is readable by a machine. `slow_test.h` states the
+slow-test rule in these terms, the marker lives beside
+`FBF_SKIP_IF_FAST_TESTS()` in it, and `devtools/test_families.py` lists every
+family with its representative.
 
-- **A family is a gtest suite by default:** the suite name with any
-  `INSTANTIATE_TEST_SUITE_P` prefix removed, so every parameter of one
-  `TEST_P` is one family.
-- **A marker overrides it.** A macro in `test/support/` marks a case as its
-  family's representative, where the suite is the wrong boundary. #984 names it.
+- **A family is a gtest suite by default** (`TEST`, `TEST_F`). A `TEST_P` is a
+  family of its own, across its params and its `INSTANTIATE_TEST_SUITE_P`
+  prefixes: `Cases/Foo.Bar/x` and `More/Foo.Bar/y` are both `Foo.Bar`. A
+  `TYPED_TEST` is the same across its types. This is the boundary #993 applied.
+- **A marker overrides the cheapest**, where it is the wrong stand-in:
+  `FBF_FAMILY_REPRESENTATIVE`, at the top of the test body. It compiles to
+  `static_assert(true)`, nothing at run time; the lister reads it from the
+  source.
+
+  ```cpp
+  FBF_FAMILY_REPRESENTATIVE();                 // a TEST or TEST_F: this case
+  FBF_FAMILY_REPRESENTATIVE("p");              // a TEST_P: the instance p
+  FBF_FAMILY_REPRESENTATIVE("p", "regex");     // ... of a family of its own
+  ```
+
+  An instance is named by its param, or by `Prefix/param` where two
+  instantiations share a param. The two-argument form splits a mode off a
+  `TEST_P`: the instances whose param matches the regex (Python `re.search`)
+  are the family `Foo.Bar[regex]`, and `p` represents it. The arguments are
+  string literals, and nothing but the lister checks them.
 - **Each family has one representative:** the marked case, or else the cheapest
-  case by the metrics series. A family with neither is flagged.
-- **The slow-test rule, restated:** a case past about ten seconds goes under
-  `FBF_SKIP_IF_FAST_TESTS()` unless it is its family's representative.
+  member by the metrics series (the median of its passes, this host's
+  `nightly`, `weekly` and `manual` records). A family with neither is flagged.
+- **Where to mark.** Where a family's cheapest case is a refusal, mark its
+  cheapest validation case, which stays in the fast set too. Where one mode of
+  a `TEST_P` needs a fast case of its own, split it off. The markers at #984 are
+  exactly #993's exceptions: eight refusal-led families' validation cases, and
+  `Nevpt2EnergyDeviceRdms`'s `n2_ccpvdz_cas1010_df_batch0` for the tiled rdms.
+- **The slow-test rule, restated:** a case past about 1.5 s on an idle RTX 3080
+  goes under `FBF_SKIP_IF_FAST_TESTS()` unless it is its family's
+  representative (`slow_test.h` has where the line comes from).
+
+```bash
+python3 devtools/test_families.py build-hip            # family [members] -> representative
+python3 devtools/test_families.py build-hip --flagged  # only the flagged
+python3 devtools/test_families.py build-hip --json     # for #989
+python3 devtools/test_families.py build-hip --log .slow-tier-reports/pr-….log
+```
+
+It lists the ctest entries that are one gtest case, and each gtest binary's
+`--gtest_list_tests --gtest_output=json`, which gives each case's file and
+line and never initialises the GPU runtime. A marker belongs to the case
+whose definition line is the nearest one above it. Times come from
+`--metrics FILE`, or else the checkout's `metrics` branch when it has one
+(`--no-metrics` turns that off); `--log` adds a gate's log, its gtest
+`[       OK ] … (N ms)` and ctest `Passed … sec` lines. With no times, every
+unmarked family is flagged, which is the state until #982's records exist.
+It exits 1 when a marker cannot be placed (outside every test, an instance
+that matches nothing or more than one, a second marker for one family), and 2
+when there is nothing to list.
 
 ## Test selection
 

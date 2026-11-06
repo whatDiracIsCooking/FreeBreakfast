@@ -332,6 +332,7 @@ TEST(HessianDfPcNevpt2, MatchesTheSkewFixture) {
 
 TEST(HessianDfPcNevpt2, MatchesTheSymmetricFixture) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
   const fb::json &doc = fixture("nh3_cs_sto3g");
   const Reference ref = reference(doc);
   ASSERT_TRUE(ref.solution.has_value());

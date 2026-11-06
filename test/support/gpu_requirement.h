@@ -21,8 +21,9 @@
 /// test that FAILS on a GPU-less box makes the whole suite unusable there; one
 /// that skips keeps the host-side coverage meaningful. The cost is that a green
 /// run on a laptop proves much less than a green run on a GPU box -- which is
-/// why devtools/cpp-tier.sh records the ctest output in full, and why `-rs` is
-/// the habit on the Python side.
+/// why both gates (`devtools/test.py push` and `pr`) log the ctest output in
+/// full and print the skip lists, and why `-rs` is the habit on the Python
+/// side.
 ///
 /// Note the error check is not folded away: a runtime that cannot be queried
 /// at all (no driver, a library mismatch) returns non-success and leaves the

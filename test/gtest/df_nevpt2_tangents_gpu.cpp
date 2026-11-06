@@ -791,6 +791,7 @@ TEST(HessianNevpt2Tangents, MatchesTheLadder) {
 // The fast set's: the carbon's three coordinates.
 TEST(HessianNevpt2Tangents, MatchesTheLadderOnOneAtom) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
   expect_ladder({0, 1, 2});
 }
 

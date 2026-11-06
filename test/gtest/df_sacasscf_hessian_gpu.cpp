@@ -457,6 +457,7 @@ TEST_F(HessianDfSaCasscf, TwoRootsEqualWeightsMatchReference) {
 }
 
 TEST_F(HessianDfSaCasscf, TwoRootsUnequalWeightsMatchReference) {
+  FBF_FAMILY_REPRESENTATIVE();
   check("h2o_631g_sa2_unequal");
 }
 

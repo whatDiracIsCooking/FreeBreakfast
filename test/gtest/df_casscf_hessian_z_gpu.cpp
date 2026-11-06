@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -747,6 +748,7 @@ protected:
 
 TEST_F(HessianDfCasscfZ, MatchesLaddersOfZg) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
   load();
   ASSERT_FALSE(HasFatalFailure());
   ASSERT_FALSE(HasFailure());
