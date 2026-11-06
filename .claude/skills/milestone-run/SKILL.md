@@ -366,6 +366,10 @@ Rules:
   devtools/cmake-lint.sh if you touched CMake.
 - If a suite fails, or passing would mean loosening a tolerance or moving a
   ratchet, stop and reply "STUCK: <reason>" — no PR needed.
+- Acceptance is one run against a bar set by analysis (docs/testing.md,
+  "Acceptance criteria"). Never add or claim a repeat count ("N consecutive
+  passes", "replay N×") as evidence a fix works. Rerun a flaky case only to
+  capture a failing input, and report those runs as diagnosis.
 - Commit and push with `git -C <abs worktree path> …`, authored as the noreply
   address (`git -c user.email=<email> commit`), never a personal one. Never
   --no-verify, never CLAUDE_ALLOW_MAIN_EDITS. End the commit message with the
