@@ -142,6 +142,10 @@ GPU_BINS = (
     "test/recipes/free_breakfast_recipes_tests_gpu",
     "test/gtest/free_breakfast_tests_gpu",
 )
+# Where each ctest entry writes its gtest XML report, under the build
+# directory: test/CMakeLists.txt's _fb_gtest_xml_dir. A recorded run moves it
+# into its reports, as `gtest-xml/`, for the ctest cases' `slow` (#1016).
+GTEST_XML_DIR = "gtest-xml"
 
 # The two lock files of a card, held together. Branches from before
 # 2026-10-28 let two runs share a card, each holding one; holding both keeps
@@ -989,8 +993,9 @@ def tier_tests(
     cannot be read, ctest runs every entry.
 
     With `results`, the run's per-case reports go there for the metrics
-    record (run_cases): the listing, ctest's JUnit, and each batch's gtest
-    JSON. `env` is the tests' (default: fast_env, the gate's)."""
+    record (run_cases): the listing, ctest's JUnit and its entries' gtest
+    XML, and each batch's gtest JSON. `env` is the tests' (default:
+    fast_env, the gate's)."""
     env = fast_env() if env is None else env
     gpu_bins = [build_dir / rel for rel in GPU_BINS]
     listing = subprocess.run(
@@ -1026,7 +1031,13 @@ def tier_tests(
         ]
         if results is not None:
             cmd += ["--output-junit", str(results / "ctest.xml")]
+            # Only this run's entries: a stale report would carry an old
+            # membership.
+            shutil.rmtree(build_dir / GTEST_XML_DIR, ignore_errors=True)
         rc = run_phase("ctest", cmd + passthrough, log, env=env)
+        if results is not None and (build_dir / GTEST_XML_DIR).is_dir():
+            shutil.rmtree(results / GTEST_XML_DIR, ignore_errors=True)
+            shutil.move(build_dir / GTEST_XML_DIR, results / GTEST_XML_DIR)
     for gpu_bin, gtest_filter in zip(gpu_bins, filters, strict=True):
         if not gtest_filter:
             continue
@@ -1101,7 +1112,8 @@ def slow_rule_report(
 
 def run_cases(metrics, results: Path) -> list[dict]:
     """Every case a run's reports name: ctest's JUnit (each entry's binary
-    from the listing), each GPU batch's gtest JSON, pytest's JUnit. A report
+    from the listing, its `slow` from the entry's gtest XML), each GPU
+    batch's gtest JSON, pytest's JUnit. A report
     that is absent was not written (that half did not run, or crashed), and
     adds nothing."""
     cases: list[dict] = []
@@ -1113,7 +1125,10 @@ def run_cases(metrics, results: Path) -> list[dict]:
         except ValueError:
             binaries = {}
     if (results / "ctest.xml").is_file():
-        cases += metrics.junit_cases(results / "ctest.xml", binaries)
+        cases += metrics.with_slow(
+            metrics.junit_cases(results / "ctest.xml", binaries),
+            metrics.gtest_xml_slow(results / GTEST_XML_DIR),
+        )
     for rel in GPU_BINS:
         report = results / f"{Path(rel).name}.json"
         if report.is_file():

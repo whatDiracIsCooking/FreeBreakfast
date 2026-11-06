@@ -169,6 +169,60 @@ def test_ctest_junit_cases_take_their_binary_from_the_listing() -> None:
     ]
 
 
+def test_gtest_xml_slow_reads_each_entry_report() -> None:
+    # One report per ctest entry; a param's `/` nests it; a report that does
+    # not parse adds nothing.
+    assert metrics.gtest_xml_slow(_DATA / "gtest-xml") == {
+        "Basis.ParsesSto3g": False,
+        "Cases/Foo.Bar/x": True,
+        "Gpu.Serial": True,
+    }
+
+
+def test_with_slow_marks_only_the_cases_it_names() -> None:
+    binaries = metrics.ctest_binaries((_DATA / "listing.json").read_text())
+    cases = metrics.with_slow(
+        metrics.junit_cases(_DATA / "ctest.xml", binaries),
+        metrics.gtest_xml_slow(_DATA / "gtest-xml"),
+    )
+    assert {c["name"]: c.get("slow") for c in cases} == {
+        "Basis.ParsesSto3g": False,
+        "Basis.RejectsCartesian": None,
+        "Gpu.Serial": True,
+        "Unlisted.Case": None,
+    }
+
+
+def test_gtest_xml_slow_of_no_directory(tmp_path: Path) -> None:
+    assert metrics.gtest_xml_slow(tmp_path / "absent") == {}
+
+
+def test_every_ctest_entry_writes_its_report_where_test_py_reads_it() -> None:
+    # test/CMakeLists.txt's _fb_gtest_xml_dir is test.py's GTEST_XML_DIR under
+    # the build directory, and every registration ctest runs passes it (the
+    # host binaries, the RUN_SERIAL cases), so no ctest-run case is left with
+    # its membership unrecorded (#1016). A batched GPU registration must not:
+    # the flag would make batchable() refuse its every entry.
+    text = (_ROOT / "test" / "CMakeLists.txt").read_text()
+    assert (
+        f'set(_fb_gtest_xml_dir "${{PROJECT_BINARY_DIR}}/{gates.GTEST_XML_DIR}")'
+        in text
+    )
+    ctest_run = batched = 0
+    for cml in sorted((_ROOT / "test").glob("*/CMakeLists.txt")):
+        if cml.parent.name == "experimental":
+            continue
+        for call in re.findall(
+            r"^gtest_discover_tests\((.*?)^\)", cml.read_text(), re.S | re.M
+        ):
+            by_ctest = "_tests_host" in call or "RUN_SERIAL TRUE" in call
+            ctest_run += by_ctest
+            batched += not by_ctest
+            assert ("XML_OUTPUT_DIR ${_fb_gtest_xml_dir}" in call) == by_ctest, cml
+    assert ctest_run >= 8
+    assert batched >= 4
+
+
 def test_pytest_junit_cases_are_node_ids() -> None:
     cases = metrics.junit_cases(_DATA / "pytest.xml")
     assert [(c["name"], c["binary"], c["status"], c["seconds"]) for c in cases] == [

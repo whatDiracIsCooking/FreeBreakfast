@@ -7,6 +7,7 @@ import std;
 import free_breakfast.basis;
 
 #include "gaussian_moments.h"
+#include "slow_test.h"
 
 namespace {
 
@@ -66,6 +67,9 @@ TEST(BasisSet, NameIsWhatTheConstructorWasGiven) {
 }
 
 TEST(BasisSetDeathTest, AtomShellOffsetsAbortOnBadPartition) {
+  // Under slow_test.h (#1016): six deaths, 2.3 s idle and 6.2 s beside the
+  // host batch; AoOffsetAbortsOutOfRange, two, stands for the family.
+  FBF_SKIP_IF_FAST_TESTS();
   const auto shells = [] {
     return std::vector<fb::Shell>{fb::Shell(0, {{1.0, 1.0}}, kOrigin),
                                   fb::Shell(0, {{1.0, 1.0}}, kOrigin)};

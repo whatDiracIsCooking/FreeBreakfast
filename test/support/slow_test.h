@@ -60,8 +60,8 @@
 /// a representative or an exemption, never both.
 ///
 /// FBF_SKIP_IF_FAST_TESTS also records the gtest property `fbf_slow`, in
-/// every mode, so a full run's --gtest_output=json says which cases a fast run
-/// would have skipped: the nightly reads it to tell the fast set from the slow
+/// every mode, so a full run's gtest reports (a GPU batch's JSON, each ctest
+/// entry's XML) say which cases a fast run would have skipped: the nightly reads it to tell the fast set from the slow
 /// one (docs/testing.md "The slow-test rule, enforced"; #987). A case that
 /// reaches the macro only for some params is marked for exactly those.
 ///

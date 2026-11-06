@@ -102,6 +102,10 @@ TEST(IoSad, NothingElseIsBaked) {
 }
 
 TEST(IoSad, BakedMatchesComputedForHCO) {
+  // The fast set's one check of the stamps' values, the bitwise check a
+  // data/basis or atomic-SCF change fails until data/sad is regenerated; the
+  // cheaper two check only which stamps exist.
+  FBF_FAMILY_REPRESENTATIVE();
   for (const std::string_view name : kCompiledInSets) {
     expect_baked_matches_computed(name, [](std::int32_t z) { return z == 1 || z == 6 || z == 8; });
   }

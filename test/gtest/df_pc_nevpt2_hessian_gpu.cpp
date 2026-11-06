@@ -511,6 +511,7 @@ fb::json c2v_formaldehyde() {
 
 TEST(HessianDfPcNevpt2, ThinKeptClassIsRefused) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const Reference ref = reference(c2v_formaldehyde());
   ASSERT_TRUE(ref.solution.has_value());
   const auto h = ref.hessian();
@@ -533,6 +534,7 @@ TEST(HessianDfPcNevpt2, ThinKeptClassIsRefused) {
 // z coordinates keep the symmetry and lift nothing.
 TEST(HessianDfPcNevpt2, NearbyBranchSwitchIsRefused) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   fb::json start = fixture("hcn_sto3g");
   start["name"] = "hcn_sto3g_cas66";
   start["ncas"] = 6;

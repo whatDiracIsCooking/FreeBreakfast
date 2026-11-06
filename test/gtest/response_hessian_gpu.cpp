@@ -578,8 +578,9 @@ fb::Result<fb::response::Hessian> build_hessian(Setup &setup, const fb::Spherica
 
 struct Case {
   std::string_view name;
-  // Under slow_test.h: every case but H2O cc-pVDZ, the cheapest. H2O 6-31G is
-  // the PySCF comparison's fast case (#1008), and slow everywhere else.
+  // Under slow_test.h: every case but H2O cc-pVDZ, the density-fitted H's
+  // marked representative. H2O 6-31G is the PySCF comparison's fast case
+  // (#1008), and slow everywhere else.
   bool slow;
 };
 
@@ -1094,6 +1095,9 @@ std::optional<FittedHessian> fitted_hessian(Setup &setup, const fb::SphericalMat
 // within the fit's error.
 TEST_P(ResponseHessian, DensityFittedMatchesItsHostReferenceAndTheDirectOne) {
   FBF_REQUIRE_GPU();
+  // H2O cc-pVDZ, not the cheaper 6-31G: it is the integral-direct H that
+  // MatchesPyscfAtTheCasciOrbitals leaves to this case in the fast set.
+  FBF_FAMILY_REPRESENTATIVE("h2o_ccpvdz");
   if (GetParam().slow) {
     FBF_SKIP_IF_FAST_TESTS();
   }

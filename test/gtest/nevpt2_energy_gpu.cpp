@@ -1221,6 +1221,7 @@ TEST_P(Nevpt2EnergyHvp, BarsMatchRichardsonLadder) {
   const std::string group = GetParam();
   // ~9 s a group on the RTX 3080 (one product, sixteen reverse passes):
   // every input at once stands for the groups in the fast tier.
+  FBF_FAMILY_REPRESENTATIVE("all");
   if (group != "all") {
     FBF_SKIP_IF_FAST_TESTS();
   }

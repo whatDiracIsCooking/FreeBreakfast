@@ -42,7 +42,8 @@
       "name": "Basis.ParsesSto3g",
       "binary": "free_breakfast_basis_tests_host",
       "status": "pass",
-      "seconds": 0.031
+      "seconds": 0.031,
+      "slow": false
     },
     {
       "name": "Basis.RejectsCartesian",
@@ -54,7 +55,8 @@
       "name": "Gpu.Serial",
       "binary": "free_breakfast_tests_gpu",
       "status": "skip",
-      "seconds": 0.41
+      "seconds": 0.41,
+      "slow": true
     },
     {
       "name": "Unlisted.Case",

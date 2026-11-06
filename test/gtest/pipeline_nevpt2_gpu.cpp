@@ -364,6 +364,9 @@ constexpr double kHfPcCorr = -0.1415607176;
 constexpr double kHfPcBand = 1e-8;
 TEST(PipelineNevpt2, PcAcceptedThroughAContinuum) {
   FBF_REQUIRE_GPU();
+  // The family's one validation case: its other two are refusals, the
+  // cheaper (slow_test.h: a refusal-led family marks its validation case).
+  FBF_FAMILY_REPRESENTATIVE();
   const fb::test::ScratchDir dir("pipeline_nevpt2");
   ASSERT_TRUE(
       fb::write_file(dir / "hf.xyz", "2\nhydrogen fluoride\nH 0 0 0\nF 0 0 0.917\n").has_value());

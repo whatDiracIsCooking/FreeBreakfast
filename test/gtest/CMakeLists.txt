@@ -323,6 +323,7 @@ endforeach()
 gtest_discover_tests(
   free_breakfast_tests_host
   DISCOVERY_MODE PRE_TEST
+  XML_OUTPUT_DIR ${_fb_gtest_xml_dir}
   PROPERTIES TIMEOUT ${_fb_test_timeout}
 )
 
@@ -387,6 +388,7 @@ gtest_discover_tests(
 gtest_discover_tests(
   free_breakfast_tests_gpu
   DISCOVERY_MODE PRE_TEST
+  XML_OUTPUT_DIR ${_fb_gtest_xml_dir}
   TEST_FILTER "${_fb_serial_cases}"
   PROPERTIES TIMEOUT ${_fb_test_timeout} LABELS gpu RUN_SERIAL TRUE
 )

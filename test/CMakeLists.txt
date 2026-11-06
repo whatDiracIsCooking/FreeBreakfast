@@ -70,6 +70,18 @@
 # slows every GPU test by an order of magnitude, which is what the multiplier
 # is for. Set here, before the trees are added, so they share one value.
 math(EXPR _fb_test_timeout "120 * ${FREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER}")
+#
+# Where each entry ctest runs writes its gtest XML report, one file per entry
+# (gtest_discover_tests' XML_OUTPUT_DIR names it after the entry, so parallel
+# entries never share one). The report carries the case's `fbf_slow`
+# property (slow_test.h), which ctest's own JUnit cannot: devtools/test.py
+# moves the directory into a recorded run's reports, so a host or RUN_SERIAL
+# case's fast-set membership reaches the metrics record too (#1016). Only the
+# host and RUN_SERIAL registrations pass it: a GPU entry test.py batches has
+# its own gtest JSON, and an extra flag on its command would make test.py's
+# batchable() leave it to ctest, every GPU case at once on the card. Keep the
+# path in step with test.py's GTEST_XML_DIR.
+set(_fb_gtest_xml_dir "${PROJECT_BINARY_DIR}/gtest-xml")
 
 add_subdirectory(support)
 add_subdirectory(ci_oracles)
