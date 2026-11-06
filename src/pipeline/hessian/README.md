@@ -711,9 +711,9 @@ optimization and the Hessian 2.0 s together.
   others [2, 3, 5, 6]. Then the Hessian against the fixture's `relaxed_fd`
   (a fourth-order difference of the relaxed gradient) to the issue's 1e-5,
   `hessian.json` against the product, and the asymmetry and translational
-  sum under 1e-5, all printed. `h2o_631g`, state-specific, is the fast case;
-  `h2o_631g_sa2` (0.5, 0.5), `h2o_631g_sa2_unequal` (0.7, 0.3) and
-  `h2o_ccpvdz` are slow-gated. Beside them, `[casscf]` cut to two macro
+  sum under 1e-5, all printed. Every case is slow-gated: `h2o_631g`,
+  state-specific, since #977, `h2o_631g_sa2` (0.5, 0.5),
+  `h2o_631g_sa2_unequal` (0.7, 0.3) and `h2o_ccpvdz` before it. Beside them, `[casscf]` cut to two macro
   iterations: MaxIterationsExceeded, `[hessian] at the reference geometry:
   ...`. And `PipelineCasscfHessianCiGuess`, per case (`h2o_631g` fast, the
   others slow-gated): every one of the 6N displaced solves from the
@@ -745,14 +745,14 @@ Measured on the gfx1200 (HIP), against `relaxed_fd`:
 | `h2o_ccpvdz` | 5.7e-8 | 1.9e-8 | 9.5e-9 | 5.5 s |
 
   The analytic method, `hessian::df_casscf` / `df_sacasscf` through the
-  step, against `relaxed_fd` to 1e-7 (all in the fast tier):
-  `h2o_631g` and `h2o_ccpvdz` state-specific, and root 1 of both two-root
-  averages (equal weights, with eq. rot; and (0.7, 0.3), the rotations in
-  λ). `StateAveragedRootAnalyticMatchesNumerical` (slow-gated) runs the
+  step, against `relaxed_fd` to 1e-7: `h2o_631g` state-specific (fast),
+  and `h2o_ccpvdz` state-specific and root 1 of both two-root averages
+  (equal weights, with eq. rot; and (0.7, 0.3), the rotations in λ),
+  slow-gated since #977. `StateAveragedRootAnalyticMatchesNumerical` (slow-gated) runs the
   analytic `[hessian]` for root 1 of `h2o_631g_sa2`, then the step again,
   numerically, at the Calculation's molecule: the two to 1e-5, their
   frequencies to 0.1 cm⁻¹. `OptimizedWaterAnalyticFrequenciesMatchNumerical`
-  (fast) optimizes the CASSCF water of `data/casscf_gradient/casscf_optimize.json`
+  (slow-gated since #977) optimizes the CASSCF water of `data/casscf_gradient/casscf_optimize.json`
   from its start (as `pipeline_optimize_gpu.cpp` does), checks the optimum's
   energy and that the outer CASSCF, picked afresh there, is the optimized
   root, then the analytic `[hessian]` at the optimum -- three positive
@@ -804,8 +804,8 @@ OpenMolcas comparison (the issue's optional one) was made.
   method over the NEVPT2 chain (#818), its wiring and not the Hessian (that
   is `hessian::df_sc_nevpt2`'s and `df_pc_nevpt2`'s own tests'), on #803's
   fixtures with `[casscf]` at `conv_tol_grad = 1e-10`:
-  `ScSkewMatchesTheDirectCall` (fast) and `PcSkewMatchesTheDirectCall`
-  (slow-gated): `h2co_skew_sto3g` run by `Calculation`, `hessian.json`
+  `ScSkewMatchesTheDirectCall` and `PcSkewMatchesTheDirectCall` (both
+  slow-gated, SC since #977): `h2co_skew_sto3g` run by `Calculation`, `hessian.json`
   and the product against the variant's call made directly on the
   Calculation's outer products (the same chain the step reruns) to 1e-10
   of the largest element, every frequency published; PC's direct call at
