@@ -226,6 +226,7 @@ TEST(PipelineCalculation, ACasciConfigRunsEndToEnd) {
 // hand on the same products, and a lower energy than the CASCI at its start.
 TEST(PipelineCalculation, ACasscfConfigRunsEndToEnd) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::test::ScratchDir dir("pipeline_calculation");
   write_inputs(dir, "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n"
                     "[casci]\nncas = 4\nnelecas = 4\n"

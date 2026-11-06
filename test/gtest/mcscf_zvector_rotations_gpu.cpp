@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -513,6 +514,7 @@ TEST_F(McscfZvectorRotations, ThreeRootsUnequalZMatchReference) {
 // the derivative Hamiltonian's H~^x_sr.
 TEST_F(McscfZvectorRotations, ThreeRootsUnequalLambdaMatchReference) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   load("h2o_631g_sa3_unequal");
   fb::DeviceResources &res = *res_;
   const std::size_t block = n_det_ * nr_;

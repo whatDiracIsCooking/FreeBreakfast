@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -264,6 +265,7 @@ TEST(DfHessian, TzJkfitMatchesPyscf) {
 // About 3.5 s on either card since #632 (40.6 s on the RTX 3080 before), so
 // no longer a slow-tier case.
 TEST(DfHessian, TzAcCdThroughFfIMatchesPyscf) {
+  FBF_SKIP_IF_FAST_TESTS();
   check_hessian("h2o_ccpvtz_accd66", 3, 6);
 }
 

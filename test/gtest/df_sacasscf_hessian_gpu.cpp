@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -451,6 +452,7 @@ protected:
 };
 
 TEST_F(HessianDfSaCasscf, TwoRootsEqualWeightsMatchReference) {
+  FBF_SKIP_IF_FAST_TESTS();
   check("h2o_631g_sa2");
 }
 
@@ -459,10 +461,12 @@ TEST_F(HessianDfSaCasscf, TwoRootsUnequalWeightsMatchReference) {
 }
 
 TEST_F(HessianDfSaCasscf, ThreeRootsEqualWeightsMatchReference) {
+  FBF_SKIP_IF_FAST_TESTS();
   check("h2o_631g_sa3");
 }
 
 TEST_F(HessianDfSaCasscf, ThreeRootsUnequalWeightsMatchReference) {
+  FBF_SKIP_IF_FAST_TESTS();
   check("h2o_631g_sa3_unequal");
 }
 

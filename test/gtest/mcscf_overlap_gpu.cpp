@@ -386,7 +386,10 @@ class McscfOverlap : public ::testing::TestWithParam<FdCase> {};
 TEST_P(McscfOverlap, FiniteDifferenceMatchesNac) {
   FBF_REQUIRE_GPU();
   const FdCase &param = GetParam();
-  if (param.every_coordinate) {
+  // Under slow_test.h: every coordinate; and (#977) the unequal and skew
+  // one-coordinate cases, 2.7 and 2.8 s on the RTX 3080, Sa2OneCoordinate
+  // standing for them.
+  if (param.every_coordinate || param.label != "Sa2OneCoordinate") {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const fb::json &entry = reference_case(param.name);

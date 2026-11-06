@@ -319,6 +319,7 @@ TEST_F(HessianDfRhf, WaterTripleZetaMatchesPyscf) {
 // same skew water and sets, configured as pipeline_hessian_gpu.cpp does.
 TEST_F(HessianDfRhf, WaterMatchesCentralDifference) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const std::vector<double> analytic = check("h2o_ccpvdz");
   ASSERT_FALSE(HasFailure());
 

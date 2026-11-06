@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -339,6 +340,7 @@ double seconds_since(const std::chrono::steady_clock::time_point start) {
 // slots (four blocks: two atoms a batch, three batches, six walks).
 TEST_F(HessianDfRhfTwoElectron, BatchesAgreeAndMemoryRefusal) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   load("h2o_ccpvdz");
   ASSERT_FALSE(HasFatalFailure());
   {

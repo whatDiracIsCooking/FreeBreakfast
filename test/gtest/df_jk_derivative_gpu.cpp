@@ -263,6 +263,7 @@ TEST(DfJkDerivative, DzJkfitMatchesPyscf) {
 }
 
 TEST(DfJkDerivative, TzJkfitMatchesPyscf) {
+  FBF_SKIP_IF_FAST_TESTS();
   check_case("h2o_ccpvtz");
 }
 

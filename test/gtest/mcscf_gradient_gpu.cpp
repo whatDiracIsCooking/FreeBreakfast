@@ -44,6 +44,7 @@ import free_breakfast.pipeline.casci;
 
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
+#include "slow_test.h"
 
 namespace {
 
@@ -269,6 +270,10 @@ class McscfGradient : public ::testing::TestWithParam<std::string_view> {};
 // over atoms, and the refusals on the same solution.
 TEST_P(McscfGradient, DfCasscfMatchesPyscf) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h (#977): the SA2 formaldehyde, 2.1 s on the RTX 3080.
+  if (std::string_view{GetParam()} == "h2co_ccpvdz_sa2") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const std::string name{GetParam()};
   const fb::json &entry = reference_case(name);
   const auto weights = entry.at("weights").get<std::vector<double>>();

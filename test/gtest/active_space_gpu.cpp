@@ -375,9 +375,9 @@ TEST_P(ActiveSpaceGpu, MatchesPyscfGivesBackTheRhfEnergyAndIsSymmetric) {
 
 TEST_P(ActiveSpaceGpu, CasscfIntegralsMatchPyscfTheHamiltonianAndAreSymmetric) {
   FBF_REQUIRE_GPU();
-  // Under slow_test.h: the cc-pVDZ cases, 3 to 5.5 s each, but N2's at the
-  // defaults, the cheapest; STO-3G keeps both modes.
-  if (GetParam().name != "h2o_sto3g" && !(GetParam().name == "n2_ccpvdz" && GetParam().screened)) {
+  // Under slow_test.h: the cc-pVDZ cases, 1.7 to 5.5 s each (#977); STO-3G
+  // keeps both modes.
+  if (GetParam().name != "h2o_sto3g") {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const fb::json &entry = reference_case(GetParam().name);

@@ -889,6 +889,7 @@ std::array<std::vector<double>, 3> rotated(std::span<const double> zp, std::span
 // refuses its Lagrangian: active-active asymmetry 2.4e-1 in SC.)
 TEST(Nevpt2QdIntersection, DegeneratePair) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   constexpr std::size_t kN = 2;
   for (const bool pc : {false, true}) {
     const std::string label = std::format("{} degenerate h2co_ccpvdz_sa2 (0, 1)", pc ? "PC" : "SC");
@@ -987,6 +988,10 @@ class Nevpt2QdIntersectionBound : public ::testing::TestWithParam<bool> {};
 
 TEST_P(Nevpt2QdIntersectionBound, HoldsForAStoppedSolve) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h (#977): PC, 2.2 s on the RTX 3080; SC stands for it.
+  if (GetParam()) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const bool pc = GetParam();
   QdRun run = qd_run("h2co_skew_ccpvdz_sa3");
   ASSERT_TRUE(run.solution.has_value());

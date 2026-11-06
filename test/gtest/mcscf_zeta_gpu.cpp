@@ -63,6 +63,7 @@ import free_breakfast.pipeline.casci;
 
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
+#include "slow_test.h"
 
 namespace {
 
@@ -295,6 +296,10 @@ class McscfZetaTerms : public ::testing::TestWithParam<std::string_view> {};
 
 TEST_P(McscfZetaTerms, AreThePairSums) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h (#977): the skew SA3 formaldehyde, 2.0 s on the RTX 3080.
+  if (std::string_view{GetParam()} == "h2co_skew_ccpvdz_sa3") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const std::string name{GetParam()};
   const auto start_time = std::chrono::steady_clock::now();
   const auto run = converge(reference_case(name));

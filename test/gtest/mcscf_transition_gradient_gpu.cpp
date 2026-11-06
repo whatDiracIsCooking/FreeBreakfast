@@ -48,6 +48,7 @@ import free_breakfast.pipeline.casci;
 
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
+#include "slow_test.h"
 
 namespace {
 
@@ -195,6 +196,10 @@ class McscfTransitionGradient : public ::testing::TestWithParam<std::string_view
 
 TEST_P(McscfTransitionGradient, MatchesPyscfGradElecActive) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h (#977): the skew SA3 formaldehyde, 2.9 s on the RTX 3080.
+  if (std::string_view{GetParam()} == "h2co_skew_ccpvdz_sa3") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const std::string name{GetParam()};
   const fb::json &entry = reference_case(name);
   const auto weights = entry.at("weights").get<std::vector<double>>();

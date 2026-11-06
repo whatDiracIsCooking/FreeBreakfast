@@ -697,6 +697,7 @@ void expect_final_ci(Setup &setup, const fb::mcscf::Solution &sol,
 
 TEST(McscfSolveFinalCi, ResolvedFromItsOwnOrbitalsEndsOnTheTightCi) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &entry = nac_case("h2co_skew_ccpvdz_sa3");
   auto setup = make_setup(entry, false);
   ASSERT_NE(setup, nullptr);
