@@ -29,6 +29,19 @@ Padé degree to pick, and no host sync to read a norm. A degenerate `w` is
 fine. `heevd` may return any basis of that eigenspace, and the exponential
 depends only on the projector.
 
+**`H = 0` skips `heevd`.** `skew_eig` reads `iH`'s largest element back
+(`iamax`, one sync). When it is exactly `0`, it writes the exact answer, `U = I`
+and `w = 0`, so `exp(tH) = I` at every `t`. The test is equality and nothing
+looser: `U = I, w = 0` is the decomposition of `H = 0` and of no other `H`. A
+nonzero `H` has a nonzero eigenvalue, and `w = 0` would miss it by its whole
+size. Two things make the case matter. A converged CASSCF can take a zero
+orbital step (`mcscf::solve`, when the augmented Hessian adds nothing). And
+rocSOLVER's `heevd` (ROCm 7.2.4) returns `info = 0` with the right eigenvalues
+for a zero `iH` of any order above 65, but every off-diagonal eigenvector
+element is NaN. The NaN went through the rotation into the orbitals, and
+surfaced as the next CI's "syevd did not converge" (#992). The guard does
+not depend on the vendor.
+
 **A real `T` still decomposes in complex arithmetic.** A real skew-symmetric
 `H` has imaginary eigenvalues in `±` pairs (and a `0` for odd n) and complex
 eigenvectors, so `u` is always complex: `T` itself when `T` is complex, `T`'s
@@ -64,7 +77,9 @@ calls, so `u` and `w` must live in the caller's own buffers.
 reference implementation: `H = Q B Q^H`, with `Q` a dense unitary (two
 Householder reflectors) and `B` a canonical form whose exponential is cos and
 sin alone. For a real `T`, `B` is 2×2 rotation generators; for a complex one,
-`diag(iφ)`. One frequency repeats, to cover a degenerate eigenspace.
+`diag(iφ)`. One frequency repeats, to cover a degenerate eigenspace. `H = 0`
+at order 124 (#992's input) must give `U = I`, `w = 0` and `exp(tH) = I`, each
+exactly.
 
 ## Files
 

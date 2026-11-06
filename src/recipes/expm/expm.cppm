@@ -32,12 +32,16 @@ export namespace free_breakfast {
 /// checked. All three are column-major device pointers, @p h and @p u with
 /// packed leading dimension n, and none may overlap another.
 ///
+/// An @p h that is exactly 0 gets the exact answer, U = I and w = 0, without
+/// heevd.
+///
 /// heevd's work is res.device_workspace(), grown to heevd's size for n if it
 /// is smaller: the one allocation this can make. res.info() takes heevd's
 /// flag. None of @p h, @p u or @p w may point into res.device_workspace().
 ///
 /// Everything is queued on res.stream() with res.blas() held in host pointer
-/// mode, and the call synchronizes that stream once, to read the flag. The
+/// mode, and the call synchronizes that stream twice: to read iH's largest
+/// element, and heevd's flag. The
 /// device res.dev_idx() names is made current for the call and the previous
 /// one restored. Instantiated for float, double, wwrFloatComplex and
 /// wwrDoubleComplex.
