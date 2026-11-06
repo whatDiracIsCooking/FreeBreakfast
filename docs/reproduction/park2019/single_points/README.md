@@ -331,8 +331,9 @@ is given. The MECI−MECI shifts above need no S0.
 
 ## What was run
 
-- **Card and build:** RTX 3080 (CUDA, 10 GiB), `devtools/cpp-tier.sh
-  --preset default --no-test` (`cpp-tier PASS rev=4f84cfc preset=default`),
+- **Card and build:** RTX 3080 (CUDA, 10 GiB), the C++ PR gate (now
+  `devtools/test.py pr`) `--preset default --no-test`, passing at
+  `rev=4f84cfc preset=default`,
   the tree at 4f84cfc. Every run held the card with
   `with_gpu_card cuda`.
 - **Wall time:** 1–3 s for each ethylene point and 4–5 s (cc-pVDZ) or

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Configure, build and ctest the C++ tree WITHOUT skipping anything -- the
-# deep-validation counterpart to devtools/cpp-tier.sh, the same way
+# deep-validation counterpart to `devtools/test.py pr`, the same way
 # devtools/slow-tier.sh is the expensive counterpart to the fast pytest tier.
 #
 #   devtools/cpp-slow-tier.sh [--preset NAME] [--fresh] [--clean] [--no-test]
 #                             [--tidy] [-j N] [--report DIR] [-- <ctest args>]
 #
-# devtools/cpp-tier.sh ALWAYS runs with FREE_BREAKFAST_FAST_TESTS=1,
+# `devtools/test.py pr` ALWAYS runs with FREE_BREAKFAST_FAST_TESTS=1,
 # which GTEST_SKIPs every case guarded by
 # FBF_SKIP_IF_FAST_TESTS() (see test/support/slow_test.h and
-# cpp-tier.sh's own header) -- the reference-grade and end-to-end validation
+# test.py's own docstring) -- the reference-grade and end-to-end validation
 # cases, which in a mature tree are a handful of entries and the majority of a
 # full run's wall time. This script is where they run: every gtest case,
 # unskipped.
@@ -35,8 +35,8 @@
 # and fails at find_package(spdlog) without them. `devtools/doctor.sh` lists
 # which of the two situations you are in.
 #
-# Flags: identical to cpp-tier.sh, minus anything about skipping tests -- there
-# is no flag here that turns skipping back on; use cpp-tier.sh for that.
+# Flags: as `test.py pr`'s C++ half, minus anything about skipping tests --
+# there is no flag here that turns skipping back on; use `test.py pr` for that.
 #   --preset NAME   configure/build preset (default: CMAKE_PRESET from
 #                   devtools/config.sh -- `auto`, the least-loaded live
 #                   card's preset; the choice is printed). The test preset follows it when one of
@@ -50,7 +50,7 @@
 #   --tidy          after a successful build, run clang-tidy over the .cpp
 #                   implementation units using the build's
 #                   compile_commands.json. Reports findings; does NOT fail
-#                   the run -- see cpp-tier.sh's header for why.
+#                   the run -- see test.py pr's --tidy for why.
 #   -j N            parallel compile jobs (default: BUILD_JOBS from config.sh,
 #                   or Ninja's own choice when that is empty). Module builds
 #                   are memory-hungry per job -- a too-high N OOMs rather than
@@ -71,8 +71,8 @@
 #
 # The configure and build phases themselves are NOT here: they live in
 # devtools/build.sh, which this sources for cpp_build, cpp_build_dir,
-# cpp_require_build_tools and run_phase -- the same functions cpp-tier.sh
-# sources, so there is exactly one copy of the cmake invocations.
+# cpp_require_build_tools and run_phase -- the same functions test.py
+# calls, so there is exactly one copy of the cmake invocations.
 set -euo pipefail
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"

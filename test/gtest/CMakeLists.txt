@@ -19,7 +19,7 @@
 # and CXX_SCAN_FOR_MODULES, and nvcc neither understands `import std` nor
 # participates in module dependency scanning.
 #
-# devtools/cpp-smoke.sh and devtools/cpp-tier.sh name both binaries, as
+# devtools/test.py (push and pr) names both binaries, as
 # free_breakfast_tests_{host,gpu} (docker/compose.yaml runs `ctest --test-dir`
 # and names neither). Keep the target names in step if you rename them.
 #
@@ -307,7 +307,7 @@ endforeach()
 #
 # What the single entry costs, once a suite outgrows one file:
 #
-#   * `ctest -R <name>` selects nothing. cpp-tier.sh advertises `-- -R Version`
+#   * `ctest -R <name>` selects nothing. `test.py pr` advertises `-- -R Version`
 #     as the way to scope a run; against one entry that matches zero tests and
 #     still reports success.
 #   * `100% tests passed, 1 of 1` reads identically whether every case ran or

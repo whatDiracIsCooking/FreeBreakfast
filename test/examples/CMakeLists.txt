@@ -14,7 +14,7 @@
 # The entries are GPU ones, so they carry the `gpu` label the ci-* test
 # presets exclude, and skip rather than fail with no device (run_example.cmake
 # says how). Their command is cmake, not a GPU test binary, so
-# devtools/split-gpu-entries.py leaves them to ctest, beside the host entries.
+# devtools/test.py pr leaves them to ctest, beside the host entries.
 set(_fb_examples "${PROJECT_SOURCE_DIR}/examples")
 
 # example_<name> runs examples/<name>.toml into the build tree's <name>/.

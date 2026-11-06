@@ -75,8 +75,8 @@ Notes on the tool half:
 
 `git worktree add` checks out the tree but **not** its submodules, so
 `deps/WarpWraps` starts empty. You normally do nothing about it: the C++ entry
-points (`devtools/build.sh`, `cpp-tier.sh`, `cpp-slow-tier.sh`,
-`cpp-smoke.sh`) all configure through `cpp_build`, which calls
+points (`devtools/build.sh`, `devtools/test.py push` and `pr`,
+`cpp-slow-tier.sh`) all configure through `cpp_build`, which calls
 `init_submodules` (`devtools/lib.sh`) first and initialises any submodule that
 never has been. It is lazy on purpose, so a docs-only or Python-only worktree
 never clones it. It never touches an *initialised* submodule, so commits or a

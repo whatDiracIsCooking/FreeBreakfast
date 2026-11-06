@@ -141,15 +141,15 @@
     "GPU_TARGETS": "gfx1200",
     "AMDGPU_TARGETS": "gfx1200"
     // Deliberately NO CMAKE_PRESET/CTEST_PRESET pin, unlike ../hip/. Both
-    // backends are available here, so which one a bare `devtools/cpp-tier.sh`
+    // backends are available here, so which one a bare `devtools/test.py pr`
     // should build is a choice rather than a property of the container: it
     // falls through to config.sh's `auto`, which builds for whichever card is
     // least loaded right now (devtools/lib.sh gpu_auto_preset), and either
     // backend is one flag away.
     //
-    //   devtools/cpp-tier.sh                 auto: either of the two below
-    //   devtools/cpp-tier.sh --preset default CUDA, into build/
-    //   devtools/cpp-tier.sh --preset hip    HIP,  into build-hip/
+    //   devtools/test.py pr                  auto: either of the two below
+    //   devtools/test.py pr --preset default CUDA, into build/
+    //   devtools/test.py pr --preset hip     HIP,  into build-hip/
     //
     // Separate binaryDirs, so the two coexist and neither reconfigures the
     // other -- which is the point of having both in one container.

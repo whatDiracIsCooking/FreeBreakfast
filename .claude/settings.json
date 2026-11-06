@@ -9,7 +9,7 @@
       "Bash(devtools/devcontainer.sh:*)",
       "Bash(devtools/worktree.sh:*)",
       "Bash(devtools/doctor.sh:*)",
-      "Bash(devtools/cpp-tier.sh:*)",
+      "Bash(devtools/test.py:*)",
       "Bash(devtools/slow-tier.sh:*)",
 
       "Bash(cmake:*)",

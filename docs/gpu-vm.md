@@ -67,7 +67,7 @@ Inside the container, everything works as it does on the workstation:
 
 ```bash
 devtools/doctor.sh
-devtools/cpp-tier.sh --preset default
+devtools/test.py pr --preset default
 ```
 
 The `default` preset compiles for `native`, so the binary targets whichever
@@ -155,7 +155,7 @@ neither, and the devcontainer's `--device=` lines then make `docker run` fail.
   `FBF_SKIP_IF_FAST_TESTS()`. Benchmark numbers do not transfer either way.
 - **Build parallelism.** A 1× H100 or A100 VM has 26 to 30 vCPUs and over
   200 GiB of memory. `BUILD_JOBS` (default 12) is capped for memory, not
-  cores, so `BUILD_JOBS=24 devtools/cpp-tier.sh` is safe there.
+  cores, so `BUILD_JOBS=24 devtools/test.py pr` is safe there.
 - **Nothing survives termination.** These VMs are terminated, not stopped,
   and the root volume goes with them: the images, the build directories,
   `.sccache` and the `~/.claude` login. Push branches before you terminate.

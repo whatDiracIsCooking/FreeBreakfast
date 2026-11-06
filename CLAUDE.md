@@ -186,7 +186,7 @@ when it reports errors.
 shadow gap collides with the GPU driver's virtual-address reservation, and the
 first device allocation then fails as `cudaErrorMemoryAllocation` on a card with
 plenty of free memory. It is set in the `asan`/`hip-asan` *test* presets (so
-`cpp-tier.sh --preset asan` works) and separately in compose's `asan` service,
+`devtools/test.py pr --preset asan` works) and separately in compose's `asan` service,
 because compose runs bare `ctest --test-dir` and never sees a test preset. Both
 copies are deliberate; keep them in step.
 
@@ -233,39 +233,40 @@ check in `test/io/sad_host.cpp` fails until you do. The commands are in
 |---|---|---|
 | Source | `src/`, `cmake/`, `deps/` (+ opt-in `bench/`, `experimental/`) | `test/pytest/`, `devtools/hooks/*.py`, `tools/` |
 | Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, and `test/atom/` (the `src/atom` tests), `test/basis/` (the host-only `src/basis` tests), `test/io/` (the host-only `src/io` tests), `test/sad/` (the `src/sad` tests, a GPU-free module) and `test/pipeline/` (the `src/pipeline` tests that need no device), each a host binary, `test/recipes/` (the `src/recipes` tests), a GPU binary, and `test/examples/` (`examples/` configs through the `free-breakfast` binary), run by ctest | `test/pytest/`, run by pytest |
-| Driver | `devtools/cpp-tier.sh`, `cpp-slow-tier.sh` | `pytest`, `devtools/slow-tier.sh` |
+| Driver | `devtools/test.py push` / `pr`, `cpp-slow-tier.sh` | `devtools/test.py push` / `pr`, `pytest`, `devtools/slow-tier.sh` |
 | Lint | `cmake-lint`, `clang-format --check` (commit hook + CI); `clang-tidy` via `--tidy` | `ruff check`, `ruff format --check` (commit hook + CI) |
-| Gated by | `cmake-lint` + format check at commit, `cpp-smoke.sh` at push; on the server **format + cmake-lint only, no build or test** | pre-push hook + CI |
+| Gated by | `cmake-lint` + format check at commit, `test.py push`'s C++ half at push; on the server **format + cmake-lint only, no build or test** | `test.py push`'s Python half + CI |
 
 **A change under `src/` is verified by the C++ tier and by nothing else.** A
 green pytest run on it means the Python that would have exercised the *old*
 binary still imports. Say which suite you ran.
 
-`clang-tidy` is configured and runnable (`devtools/cpp-tier.sh --tidy`) but is
+`clang-tidy` is configured and runnable (`devtools/test.py pr --tidy`) but is
 **advisory, not a gate**, and off by default: its C++23 named-module support is
 still incomplete enough to emit bogus diagnostics on a `.cppm`. Do not bend the
 module hierarchy to satisfy it.
 
 ### What is gated, and what is not
 
-`git push` runs the fast pytest tier when the push touches a `.py`, and
-`devtools/cpp-smoke.sh` when it touches C++. CI runs lint + the fast pytest
-tier per PR.
+There are two gates, both `devtools/test.py` (`docs/testing.md` "Gates").
+`git push` runs `test.py push`, by pre-commit's pre-push stage: the fast pytest
+tier when the push touches a `.py`, the C++ smoke (an incremental build, the
+host binaries, each GPU binary as one process) when it touches C++ or a build
+file. `test.py pr` is the gate before a PR: configure, build, ctest and the GPU
+batches, then the fast pytest tier. CI runs lint + the fast pytest tier per PR.
 
 **The `cpp` job in `.github/workflows/ci.yml` is `if: false`** — both matrix
 legs, cuda and hip. A PR touching only `src/` gets its formatting and CMake lint
 checked on the server and nothing else: nothing builds or runs it.
-`devtools/cpp-tier.sh` before opening it is the whole correctness gate, and it
+`devtools/test.py pr` before opening it is the whole correctness gate, and it
 is a human one. The `ci-cuda` and
 `ci-hip` presets were built for that job and need **no GPU** — the only obstacle
 is getting the toolchain image onto a runner, and that file's comment has the
 two routes.
 
-**Where this is heading is `docs/testing.md`:** gates named `push`, `pr` and
-`nightly` behind one `devtools/test.py`, a nightly full run on this box,
-recorded build and test times, and test selection for PRs. It says which parts
-exist today. Until each lands, this section and "Reading a test run" describe
-the scripts as they actually behave.
+**`docs/testing.md` is the home of the test infrastructure:** the gates, how
+to read their runs, and where it is heading (a `nightly` gate, recorded build
+and test times, and test selection for PRs). It says which parts exist today.
 
 ## Containers: four files, two front ends
 
@@ -317,80 +318,26 @@ variant. It does not check the container `name` field.
 
 ## Reading a test run
 
-**Acceptance is one run against a bar set by analysis. A pass streak is never
-acceptance.** No "N consecutive passes" or "replay N×" in an issue's Acceptance,
-a test, or a flake fix. Repeats are for diagnosis only, to catch a failing
-instance. `docs/testing.md`, "Acceptance criteria", has the rule and the reasons.
+**A green run means nothing until you know what skipped.** `docs/testing.md`
+"Reading a gate's run" has the whole of it. The short version:
 
-**A green run means nothing until you know what skipped.**
-
-- C++ GPU cases call `FBF_REQUIRE_GPU()` (see
-  `test/support/gpu_requirement.h`) and `GTEST_SKIP` with a reason rather than
-  failing, so the suite stays usable on a device-less host. Read the skip
-  lists: ctest's `***Skipped`, and gtest's `[  SKIPPED ]` in the `[gpu]`
-  summary that `cpp-smoke.sh` and `cpp-tier.sh` print.
-- Python: always pass `-rs`. Without it the suite looks identical on a GPU box
-  and a laptop.
-- `FREE_BREAKFAST_FAST_TESTS` makes `slow_test.h`'s macro skip the heavy
-  validation cases. `cpp-tier.sh` and `cpp-smoke.sh` set it;
-  `cpp-slow-tier.sh` is the un-skipped run.
-- **A card can be enumerated and still run nothing**, in which case every GPU
-  case skips and ctest prints `100% passed`. The AMD one wedges with `amdgpu`
-  still bound and the KFD node still listing it, while HIP returns
-  `hipErrorNoDevice`; `devtools/doctor.sh`'s `gpu devices` section reads the
-  PCI device's runtime-PM state and warns rather than reporting the card `ok`,
-  on both sides of the host/container split. The cause is host-side (a reboot
-  fixes it), so believe doctor over the enumeration.
-- **A card can also wedge mid-run** (gfx1200, #477): every process on it
-  spins in a HIP sync and prints nothing. The GPU batch of `cpp-tier.sh` and
-  `cpp-smoke.sh` is watched for that (`GPU_BATCH_STALL_SECONDS` and
-  `GPU_BATCH_BUDGET_SECONDS` in `devtools/config.sh`): a silent batch is
-  killed and the line `[gpu] hung in <case>` names where. When the same gate
-  hangs in a different case each time, suspect the card before the case, and
-  rerun the gate on the other backend. Before the kill the watchdog writes the
-  batch's state (vendor tools, a rocgdb backtrace of every thread) beside the
-  tier's log, as `<log>.gpu-wedge.txt`, and the `state before the kill:` line
-  names it —
-  attach it to #477, with the host's `dmesg` it ends by asking for.
-
-Tests are registered **one ctest entry per gtest case** via
-`gtest_discover_tests(… DISCOVERY_MODE PRE_TEST)`. `PRE_TEST` defers enumeration
-to the start of the ctest run on the machine that will run the tests, and
-`--gtest_list_tests` only walks the registry so it never initialises the GPU
-runtime. A single `add_test` entry instead would make `ctest -R` select nothing
-while still reporting success, and `1 of 1 passed` would read identically
-whether every case ran or most of them skipped.
-
-**`cpp-tier.sh` does not run every entry as its own process, though.** A GPU
-process spends about 0.45s creating the runtime's context before its case
-starts, which was most of the tier's wall clock. So it lists the entries
-(`ctest --show-only=json-v1`, so the preset's filters and `-- -R …` still
-select), and `devtools/split-gpu-entries.py` takes out the GPU ones that can
-share a process. Those run as one gtest process per GPU binary
-(`free_breakfast_core_tests_gpu`, `free_breakfast_recipes_tests_gpu`, then
-`free_breakfast_tests_gpu`), one after
-the other and never at once, as in `cpp-smoke.sh`. ctest runs the rest,
-`CTEST_JOBS` at once: the host entries, the `RUN_SERIAL` cases it keeps alone
-on the card, and every entry when a launcher such as compute-sanitizer wraps
-them. So its ctest summary counts only those, and each batch reports in its own
-`--- gpu batch` and `[gpu]` lines below it: read both. `cpp-slow-tier.sh` still
-runs plain ctest.
-
-**One process, not shards.** Processes on one card time-slice it, and a
-latency-bound case (a CASSCF's thousands of tiny synchronised launches) waits
-behind its neighbours' long kernels: `PipelineNevpt2.PcRefusalKeepsSc` is
-2.3s alone and 158s beside two `F/ExchangeGolden` processes. Shards bought no
-wall clock on either card (`devtools/config.sh` has the numbers) and made
-every per-case time in a log unreadable, so the times in a `[gpu]` log are
-what `slow_test.h`'s rule is applied to.
-
-**Both PR gates have a budget: under five minutes on a busy card.** Those are
-`cpp-smoke.sh` at push and `cpp-tier.sh` before a PR. `test/support/slow_test.h`
-has the rule that keeps them inside it: a case past about 1.5 s on an idle
-RTX 3080 goes under `FBF_SKIP_IF_FAST_TESTS()` unless it is its family's
-cheapest (and, where that cheapest is a refusal, the cheapest validation case
-stays too). The line comes from the budget, not a measured idle-to-busy
-ratio: at ten seconds the batch was ~570 s on an idle 3080 (#977).
+- C++ GPU cases call `FBF_REQUIRE_GPU()` (`test/support/gpu_requirement.h`)
+  and skip with a reason on a device-less host. Read ctest's `***Skipped` and
+  the `[  SKIPPED ]` list in the `[gpu]` lines `devtools/test.py` prints.
+  Python: always pass `-rs`.
+- `FREE_BREAKFAST_FAST_TESTS`, which both gates set, skips the heavy validation
+  cases; `cpp-slow-tier.sh` is the un-skipped run.
+- **A card can be enumerated and still run nothing**, and then every GPU case
+  skips and ctest prints `100% passed`: believe `devtools/doctor.sh`'s
+  `gpu devices` section over the enumeration. **A card can also wedge mid-run**
+  (gfx1200, #477): the gates' watchdog kills a silent batch, names it on a
+  `[gpu] hung in <case>` line, and writes `<log>.gpu-wedge.txt` first; attach
+  that to #477.
+- `test.py pr` runs most GPU entries as one gtest process per GPU binary, so
+  its ctest summary counts only the rest. Read the `--- gpu batch` and `[gpu]`
+  lines below it too.
+- **Both gates have a budget: under five minutes on a busy card.**
+  `test/support/slow_test.h` has the rule that keeps them inside it.
 
 ### The one portability hole no tier sees
 
@@ -500,7 +447,7 @@ notice. Don't poll for it with a `pgrep -f` loop**: such a loop never exits. The
 Bash tool runs a command as `bash -c '<the whole script>'`, so that shell's own
 command line contains the pattern, and `pgrep -f` matches the full command line
 and skips only its own PID, not its parent's. A loop like
-`until ! pgrep -f "cpp-tier.sh --preset default"; do sleep 5; done` therefore
+`until ! pgrep -f "test.py pr --preset default"; do sleep 5; done` therefore
 always finds itself. One sat for hours as the status bar's "1 shell still
 running", while a parallel session ran the same bug. If you really must wait on
 something you did not start, wait on its PID (`while kill -0 "$pid"; do …`) or

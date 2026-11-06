@@ -8,7 +8,7 @@ counts match his. [tier2a.md](tier2a.md) has the molecule, the carbon
 numbering and the method.
 
 Every number is from one card, CUDA (RTX 3080, 10 GiB), with
-`--preset default` at 728da1a (`cpp-tier PASS rev=728da1a preset=default`).
+`--preset default` at 728da1a (the PR gate passing at `rev=728da1a preset=default`).
 Each run held the card with `with_gpu_card cuda`
 ([README.md](README.md), "How the runs are made"). No C++ changed, and no
 tests were run for this tier.

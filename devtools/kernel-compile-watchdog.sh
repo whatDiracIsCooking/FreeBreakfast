@@ -71,7 +71,7 @@
 # failed configure, or no object matched) -- never a silent skip.
 #: -- help stops here --
 #
-# Deliberately not a hook and not part of cpp-tier.sh: a serial sweep of the
+# Deliberately not a hook and not part of test.py pr: a serial sweep of the
 # DF ladder is minutes of compiler time, which is the slow tier's budget and
 # not the commit gate's. Run it when you change what is emitted -- after
 # tools/emit/*.py, or after bumping deps/FelizJueves -- narrowed to the

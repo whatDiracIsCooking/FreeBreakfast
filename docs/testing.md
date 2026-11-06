@@ -4,9 +4,8 @@ This is where the test infrastructure is heading, and the contract each piece of
 it is built against. The work is the
 [Automated test infrastructure](https://github.com/whatDiracIsCooking/FreeBreakfast/milestone/28)
 milestone. Each section says what exists **today** and what is still
-**planned**, and names the issue that delivers it. Until those land, CLAUDE.md's
-"The two languages, and what verifies which" and "Reading a test run" describe
-the scripts as they actually behave.
+**planned**, and names the issue that delivers it. The `push` and `pr` gates
+exist (#981); "Reading a gate's run" below is how to read them.
 
 ## The problem
 
@@ -76,23 +75,53 @@ every flake fix. Comp-chem packages validate the same way.
 
 ## The entry point: `devtools/test.py`
 
-**Today:** five scripts, named three ways. `cpp-smoke.sh` and
-`prepush-tests.sh` are the push gate's two halves, `cpp-tier.sh` is the PR
-gate, and `cpp-slow-tier.sh` and `slow-tier.sh` are the full C++ and Python
-runs.
+**Today:** `devtools/test.py push` and `devtools/test.py pr` (#981), which
+replaced the three gate scripts. `cpp-slow-tier.sh` and `slow-tier.sh`, the
+full C++ and Python runs, are still scripts of their own.
 
-**Planned:** one entry point with a subcommand per gate.
+**Planned:** the `nightly` subcommand, and selection for `pr`.
 
 ```bash
-devtools/test.py push       # what the pre-push hook calls (#981)
-devtools/test.py pr         # before a PR (#981); --affected arrives in #989
+devtools/test.py push       # what the pre-push hook calls
+devtools/test.py pr         # before a PR; --affected arrives in #989
 devtools/test.py nightly    # what the timer calls (#985)
 ```
+
+`devtools/test.py --help` lists every flag. The ones worth knowing:
+
+```bash
+devtools/test.py push --dry-run              # which halves this push would run
+devtools/test.py pr --preset hip             # pin a card; the test preset follows
+devtools/test.py pr --only cpp -- -R Exch    # one half; after -- goes to ctest
+devtools/test.py pr --no-test                # configure + build only
+```
+
+- **`push` dispatches on the diff.** It reads the pushed range from
+  pre-commit's `PRE_COMMIT_FROM_REF...PRE_COMMIT_TO_REF` (by hand,
+  `origin/main...HEAD`), runs the Python half when a `.py` changed and the C++
+  half when a source, a header, a `CMakeLists.txt`, `CMakePresets.json` or a
+  `.cmake` did, and runs nothing for a docs-only push. The hook in
+  `.pre-commit-config.yaml` is `always_run` with no `files:` filter, so the
+  dispatch is written down once, in `test.py`. A push of a whole history
+  carries no range, and runs both.
+- **The C++ half of `push` skips itself**, exit 0, where `cmake` or `ninja` is
+  missing, `cmake` is below the tree's floor, or the chosen backend has no
+  device node: the toolchain lives in the GPU container, and a host-side push
+  should not be forced onto `--no-verify`.
+- **`pr` runs both languages:** configure, build, ctest and the GPU batches,
+  then the fast pytest set (`FAST_TEST_ARGS` over `PREPUSH_PATHS`, the same set
+  `push` runs). It logs to `.slow-tier-reports/pr-<stamp>-<rev>-<preset>.log`
+  and appends its result line, `test.py pr PASS  rev=…  preset=…  stamp=…`, to
+  `summary.log`. `push`'s C++ half logs to `push-<stamp>-<rev>-<preset>.log`.
+  `rev` is `+dirty` when tracked files differ from HEAD (lib.sh `tree_rev`).
+- **Report the preset the run resolved to**, not `auto`. `auto` picks the
+  least-loaded live card before the build and prints
+  `gpu: auto -> <preset> (<backend>) [ <each card's load> ]`.
 
 - **Standard library only.** It is the push hook on the host and in the
   container, so it must run under a bare `python3`, with neither `.venv` nor
   `/opt/venv` present. It still finds pytest through `VENV_PATHS` to run the
-  Python half, exactly as `prepush-tests.sh` does now.
+  Python half, as the shell tools' `find_tool` does.
 - **No shims.** The old scripts are deleted, not wrapped, and every reference to
   them is updated in the same PR. #981 removes the three gate scripts, and #985
   removes the two full-run scripts.
@@ -101,14 +130,98 @@ devtools/test.py nightly    # what the timer calls (#985)
   is never written down twice, and an environment override (`CTEST_JOBS=1`)
   still wins as it does for every shell tool. The rest of `devtools/` is shell,
   and it keeps reading the same file.
+- **lib.sh's functions are called, not copied:** `gpu_auto_preset`,
+  `cpp_build` (the one copy of the configure and build phases), `tree_rev` and
+  `gpu_card_mem` run in bash. What only the gates used, the watched GPU batch
+  and the batch split, moved into `test.py`.
 - **The card lock is shared with the shell tools.** `with_gpu_card` in
   `devtools/lib.sh` holds `flock(1)` locks under `GPU_LOCK_DIR`. `test.py`
   takes the same files with `fcntl.flock`, which is the same kernel lock, so a
   `test.py` run and a `kernel-compile-watchdog.sh` run still exclude each other.
 - **What it keeps from the scripts:** preset auto-pick, `FREE_BREAKFAST_FAST_TESTS`,
-  the GPU batch as one gtest process per GPU binary (`split-gpu-entries.py`'s
-  logic), the stall watchdog with its wedge-state dump, and the skip lists
+  the GPU batch as one gtest process per GPU binary (`batchable` and
+  `split_gpu_entries`), the stall watchdog with its wedge-state dump, and the skip lists
   printed after every run.
+
+## Reading a gate's run
+
+**A green run means nothing until you know what skipped.**
+
+- C++ GPU cases call `FBF_REQUIRE_GPU()` (see
+  `test/support/gpu_requirement.h`) and `GTEST_SKIP` with a reason rather than
+  failing, so the suite stays usable on a device-less host. Read the skip
+  lists: ctest's `***Skipped`, and gtest's `[  SKIPPED ]` in the `[gpu]`
+  summary lines both gates print.
+- Python: always pass `-rs`. Without it the suite looks identical on a GPU box
+  and a laptop. Both gates pass it.
+- `FREE_BREAKFAST_FAST_TESTS` makes `slow_test.h`'s macro skip the heavy
+  validation cases. Both gates set it, and no flag turns it off;
+  `cpp-slow-tier.sh` is the un-skipped run.
+- **A card can be enumerated and still run nothing**, in which case every GPU
+  case skips and ctest prints `100% passed`. The AMD one wedges with `amdgpu`
+  still bound and the KFD node still listing it, while HIP returns
+  `hipErrorNoDevice`; `devtools/doctor.sh`'s `gpu devices` section reads the
+  PCI device's runtime-PM state and warns rather than reporting the card `ok`,
+  on both sides of the host/container split. The cause is host-side (a reboot
+  fixes it), so believe doctor over the enumeration.
+- **A card can also wedge mid-run** (gfx1200, #477): every process on it
+  spins in a HIP sync and prints nothing. Every GPU batch of both gates is
+  watched for that (`GPU_BATCH_STALL_SECONDS` and `GPU_BATCH_BUDGET_SECONDS`
+  in `devtools/config.sh`): a silent batch is killed and the line
+  `[gpu] hung in <case>` names where. When the same gate hangs in a different
+  case each time, suspect the card before the case, and rerun the gate on the
+  other backend. Before the kill the watchdog writes the batch's state (vendor
+  tools, a rocgdb backtrace of every thread) beside the gate's log, as
+  `<log>.gpu-wedge.txt`, and the `state before the kill:` line names it.
+  Attach it to #477, with the host's `dmesg` it ends by asking for. The batch
+  is started with `PR_SET_PTRACER` naming `test.py`, which is what lets the
+  debugger attach under Yama's `ptrace_scope=1`.
+
+Tests are registered **one ctest entry per gtest case** via
+`gtest_discover_tests(… DISCOVERY_MODE PRE_TEST)`. `PRE_TEST` defers enumeration
+to the start of the ctest run on the machine that will run the tests, and
+`--gtest_list_tests` only walks the registry so it never initialises the GPU
+runtime. A single `add_test` entry instead would make `ctest -R` select nothing
+while still reporting success, and `1 of 1 passed` would read identically
+whether every case ran or most of them skipped.
+
+**`test.py pr` does not run every entry as its own process, though.** A GPU
+process spends about 0.45s creating the runtime's context before its case
+starts, which was most of the gate's wall clock. So it lists the entries
+(`ctest --show-only=json-v1`, so the preset's filters and `-- -R …` still
+select), and takes out the GPU ones that can share a process: exactly one GPU
+binary with one `--gtest_filter`, labelled `gpu`, not `RUN_SERIAL`, and no
+launcher in front (`batchable` in `test.py`). Those run as one gtest process
+per GPU binary (`free_breakfast_core_tests_gpu`,
+`free_breakfast_recipes_tests_gpu`, then `free_breakfast_tests_gpu`), one after
+the other and never at once, as in `push`. ctest runs the rest, `CTEST_JOBS` at
+once: the host entries, the `RUN_SERIAL` cases it keeps alone on the card, and
+every entry when a launcher such as compute-sanitizer wraps them. So its ctest
+summary counts only those, and each batch reports in its own `--- gpu batch`
+and `[gpu]` lines below it: read both. `cpp-slow-tier.sh` still runs plain
+ctest.
+
+**The card is held for the whole test phase**, by the lock files under
+`GPU_LOCK_DIR` (`with_gpu_card` in `devtools/lib.sh` for the shell tools,
+`fcntl.flock` on the same files in `test.py`). A gate waits, saying so, while
+another run holds the card, and then while the card's VRAM is at or above
+`GPU_FOREIGN_VRAM_PCT`, which is memory held by something that takes no lock.
+Compute load never makes it wait. The two cards never block each other.
+
+### One process, not shards
+
+Processes on one card time-slice it, and a latency-bound case (a CASSCF's
+thousands of tiny synchronised launches) waits behind its neighbours' long
+kernels: `PipelineNevpt2.PcRefusalKeepsSc` is 2.3s alone and 158s beside two
+`F/ExchangeGolden` processes. Shards bought no wall clock on either card
+(`devtools/config.sh` has the numbers) and made every per-case time in a log
+unreadable, so the times in a `[gpu]` log are what `slow_test.h`'s rule is
+applied to.
+
+**Both gates have a budget: under five minutes on a busy card.**
+`test/support/slow_test.h` has the rule that keeps them inside it: a case past
+about ten seconds goes under `FBF_SKIP_IF_FAST_TESTS()` unless it is its
+family's cheapest.
 
 ## The nightly
 
@@ -289,7 +402,7 @@ safe: it runs everything the gate leaves out, within a day.
   Getting the toolchain image onto a runner is its own project.
 - **A HIP nightly**, and the sanitizers on a schedule. The cross-backend compile
   check is the nightly's HIP cover for now.
-- **Moving CLAUDE.md's testing sections here.** Those sections describe the
-  scripts as they run today, and #981 and #985 rewrite those scripts. Each of
-  those PRs moves the matching text into this file and leaves CLAUDE.md a
-  summary and a link, so the prose moves once, with the code it describes.
+- **Moving CLAUDE.md's testing sections here** happens with the code each
+  describes. #981 moved "Reading a test run" (now "Reading a gate's run"
+  above) and left CLAUDE.md a summary and a link; #985 does the same for the
+  full-run scripts.

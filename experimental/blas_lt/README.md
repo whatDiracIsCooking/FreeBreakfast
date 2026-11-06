@@ -50,8 +50,8 @@ and this bench should say so.
 ## Bench
 
 ```sh
-devtools/cpp-tier.sh --preset experimental          # CUDA
-devtools/cpp-tier.sh --preset hip-experimental      # ROCm
+devtools/test.py pr --only cpp --preset experimental          # CUDA
+devtools/test.py pr --only cpp --preset hip-experimental      # ROCm
 build-experimental/experimental/blas_lt/free_breakfast_blas_lt_bench [reps] [budget_gib]
 ```
 

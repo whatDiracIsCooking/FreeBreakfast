@@ -77,7 +77,7 @@ usage_from_header() {
 # cannot say. Read from the file because CMake will not tell: `cmake --preset X
 # -N` lists the cache variables but, in 4.x, no "Binary directory" line --
 # scraping for one came back empty for every preset, and the build/ fallback
-# then sent cpp-smoke under `hip` looking for build/'s test binaries.
+# then sent the push gate under `hip` looking for build/'s test binaries.
 preset_binary_dir() {
   python3 -I - "$REPO_ROOT" "$1" 2>/dev/null <<'EOF' || true
 import json, sys
@@ -103,9 +103,9 @@ EOF
 # --- GPU cards: one run per card, load, and the `auto` preset --------------
 #
 # Admission of GPU-bound commands across every worktree/session on this host.
-# One run is one GPU process at a time (run_gpu_batch below) plus cpp-tier.sh's
-# ctest -j CTEST_JOBS for the rest, but nothing in that run coordinates with
-# a second session's cpp-tier.sh or cpp-smoke.sh running its own ctest/gtest
+# One run is one GPU process at a time (devtools/test.py's run_gpu_batch) plus
+# `test.py pr`'s ctest -j CTEST_JOBS for the rest, but nothing in that run
+# coordinates with a second session's gate running its own ctest/gtest
 # binary against the same physical GPU at the same time, which is what
 # actually timed out a full-tier run under cross-worktree contention.
 #
@@ -146,8 +146,8 @@ gpu_backend_of_preset() {
 
 # Whether this machine can build AND run a backend: its device nodes exist and
 # its compiler is on PATH. Device nodes rather than nvidia-smi, for the reason
-# cpp-smoke.sh gives: NVML routinely fails inside a container whose CUDA
-# runtime works.
+# devtools/test.py's push gate gives: NVML routinely fails inside a container
+# whose CUDA runtime works.
 gpu_card_alive() {
   case "$1" in
     cuda) [ -e /dev/nvidiactl ] && compgen -G '/dev/nvidia[0-9]*' >/dev/null &&
@@ -368,179 +368,6 @@ with_gpu_card() {
   return "$rc"
 }
 
-# Run a gtest binary as one process, inside the card the caller holds -- call
-# it under with_gpu_card:
-#
-#   with_gpu_card "$backend" run_gpu_batch cpp-smoke "$bin"
-#
-# One process for the whole batch, not one per case, so the GPU runtime's
-# context creation (about 0.45s on the 3080) is paid once. And not several:
-# processes on one card time-slice it, and a latency-bound case beside a
-# long-kernel one ran 70x slower (config.sh says more, by CTEST_JOBS). A
-# GTEST_FILTER in the environment narrows what runs. The output is appended to
-# BUILD_LOG and its summary lines printed, tagged `<tag>:   [gpu]`. A failed
-# case's whole output, from its [ RUN ] to its verdict, is printed too, on
-# stderr and tagged `<tag>:   [gpu] |`: the summary names the case but holds
-# none of its `Expected: ...` lines, and a run read from its console output
-# alone could not be diagnosed after the fact (#870). For a crash, where gtest
-# prints no FAILED line, the case that was running (a [ RUN ] with no verdict)
-# is named, and its output so far printed the same way.
-#
-# A batch that HANGS is killed, not waited on forever: gpu_batch_watchdog
-# below. On gfx1200 a card can wedge with every process on it spinning in a
-# HIP sync at full CPU, printing nothing, until killed (issue #477) -- and
-# before this a wedge held the gate, and the card lock, for hours with no test
-# named. The batch is started through devtools/ptraceable-exec.py so that the
-# watchdog's debugger may attach to it before the kill: gpu_wedge_snapshot.
-run_gpu_batch() {
-  local tag=$1 bin=$2 dir pid src rc=0
-  local -a launch=()
-  [ -x "$bin" ] || {
-    echo "$tag: missing binary $bin -- see $BUILD_LOG" >&2
-    return 1
-  }
-  command -v python3 >/dev/null &&
-    launch=(python3 -I "$REPO_ROOT/devtools/ptraceable-exec.py" "$$")
-  dir=$(mktemp -d)
-  "${launch[@]}" "$bin" >"$dir/log" 2>&1 &
-  pid=$!
-  gpu_batch_watchdog "$tag" "$dir" "$pid"
-  wait "$pid" && src=0 || src=$?
-  echo "--- gpu batch: $bin ---" >>"$BUILD_LOG"
-  cat "$dir/log" >>"$BUILD_LOG"
-  grep -E 'ran\.|PASSED|SKIPPED|FAILED' "$dir/log" | sed "s|^|$tag:   [gpu] |"
-  gtest_failed_output "$dir/log" | sed "s/^/$tag:   [gpu] | /" >&2
-  if [ -e "$dir/killed" ]; then
-    rc=1
-    echo "$tag:   [gpu] KILLED by the watchdog: $(<"$dir/killed")" >&2
-    echo "$tag:   [gpu] hung in $(gtest_running_case "$dir/log")" >&2
-    [ -s "$dir/wedge" ] &&
-      echo "$tag:   [gpu] state before the kill: $(<"$dir/wedge")" >&2
-    echo "$tag: the GPU batch hung -- possibly a card wedge (issue #477: host" \
-      "spinning, GPU 100% busy, no memory activity). Check the card" \
-      "(devtools/doctor.sh; dmesg on the HOST), and rerun the gate on the" \
-      "other backend if it is the card." >&2
-  elif [ "$src" != 0 ]; then
-    rc=1
-    echo "$tag:   [gpu] exited $src" >&2
-    gtest_running_case "$dir/log" | sed "s|^|$tag:   [gpu] died in |" >&2
-  fi
-  rm -rf "$dir"
-  return $rc
-}
-
-# The gtest case a log was in the middle of: the last `[ RUN ]` with no verdict
-# after it, or `<unknown>` when every case it started finished.
-gtest_running_case() {
-  awk '/^\[ RUN      \]/ { t = $NF } /^\[ *(OK|FAILED|SKIPPED) *\]/ { t = "" }
-       END { print (t != "" ? t : "<unknown>") }' "$1"
-}
-
-# The output of every case in a gtest log that failed, from its [ RUN ] line
-# to its [  FAILED  ] one, and of the case it was in the middle of when it
-# stopped (a crash or a kill), if any: what the summary lines leave out.
-gtest_failed_output() {
-  awk '/^\[ RUN      \]/ { buf = "" }
-       /^\[ RUN      \]/, /^\[ *(OK|FAILED|SKIPPED) *\]/ { buf = buf $0 "\n" }
-       /^\[ *(OK|SKIPPED) *\]/ { buf = "" }
-       /^\[  FAILED  \] .*\)$/ && buf != "" { printf "%s", buf; buf = "" }
-       END { printf "%s", buf }' "$1"
-}
-
-# Wait for the batch `pid` (its log is <dir>/log), killing it if it prints
-# nothing for GPU_BATCH_STALL_SECONDS or is still running
-# GPU_BATCH_BUDGET_SECONDS after the start (config.sh; 0 turns either off).
-# A killed batch gets <dir>/killed holding the reason, which run_gpu_batch
-# reports. It is TERMed, then KILLed if it has not gone in 10s. Returns once
-# the batch has exited or been killed.
-#
-# The kill is reported the moment it happens, not only in the summary: a
-# process stuck in the driver can outlive even SIGKILL, and then the wait that
-# follows is the hang, but by then the case has been named. Before the kill the
-# batch's state is written down (gpu_wedge_snapshot); <dir>/wedge holds the
-# path.
-gpu_batch_watchdog() {
-  local tag=$1 dir=$2 pid=$3 t size reason start=$SECONDS quiet=$SECONDS last=-1
-  while kill -0 "$pid" 2>/dev/null; do
-    size=$(stat -c %s "$dir/log" 2>/dev/null || echo 0)
-    if [ "$size" != "$last" ]; then
-      last=$size
-      quiet=$SECONDS
-    fi
-    reason=""
-    if [ "$GPU_BATCH_STALL_SECONDS" -gt 0 ] &&
-       [ $((SECONDS - quiet)) -ge "$GPU_BATCH_STALL_SECONDS" ]; then
-      reason="no output for ${GPU_BATCH_STALL_SECONDS}s (GPU_BATCH_STALL_SECONDS)"
-    elif [ "$GPU_BATCH_BUDGET_SECONDS" -gt 0 ] &&
-         [ $((SECONDS - start)) -ge "$GPU_BATCH_BUDGET_SECONDS" ]; then
-      reason="still running after ${GPU_BATCH_BUDGET_SECONDS}s (GPU_BATCH_BUDGET_SECONDS)"
-    fi
-    if [ -n "$reason" ]; then
-      echo "$reason" >"$dir/killed"
-      echo "$tag:   [gpu] watchdog: $reason -- killing pid $pid, in" \
-        "$(gtest_running_case "$dir/log") (see issue #477)" >&2
-      gpu_wedge_snapshot "$pid" "$dir/log" "$reason" >"$dir/wedge"
-      kill -TERM "$pid" 2>/dev/null
-      for ((t = 0; t < 10; t++)); do
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 1
-      done
-      kill -KILL "$pid" 2>/dev/null
-      return 0
-    fi
-    sleep 1
-  done
-}
-
-# Write down what a hung batch (pid, log, reason) was doing, before the
-# watchdog kills it, and echo the file's path. The kill frees the card at once,
-# so this is the only moment a wedge (issue #477) can be read: what each GPU
-# tool reports about its card, every thread's scheduler state, CPU time and
-# kernel wait channel, a debugger's backtrace of every thread (rocgdb, else
-# gdb; the batch was started through ptraceable-exec.py, which is what allows
-# it), and the end of the batch's log. A wedge can hang the vendor tools and
-# the debugger too, so each is cut off after GPU_WEDGE_TOOL_SECONDS.
-#
-# The file sits beside BUILD_LOG, as <log>.gpu-wedge.txt, so it outlives the
-# batch's directory; with no BUILD_LOG file it goes in TMPDIR. What it cannot
-# hold is the kernel's side -- an amdgpu ring timeout or MES fault is in dmesg,
-# which the container cannot read -- so it ends with the host command for that.
-gpu_wedge_snapshot() {
-  local pid=$1 log=$2 reason=$3 out t tool secs=$GPU_WEDGE_TOOL_SECONDS
-  case "${BUILD_LOG:-}" in
-    "" | /dev/null) out=$(mktemp "${TMPDIR:-/tmp}/gpu-wedge.XXXXXX");;
-    *) out="${BUILD_LOG%.log}.gpu-wedge.txt";;
-  esac
-  {
-    echo "=== GPU batch, pid $pid, $(date -u '+%F %T') UTC"
-    echo "watchdog: $reason; in $(gtest_running_case "$log")"
-    for tool in "rocm-smi --showuse --showmemuse --showmeminfo vram" \
-                "nvidia-smi"; do
-      command -v "${tool%% *}" >/dev/null || continue
-      echo; echo "=== $tool"
-      # shellcheck disable=SC2086  # the tool and its flags, split on purpose
-      timeout "$secs" $tool || echo "($tool: exit $?)"
-    done
-    echo; echo "=== threads: tid state utime stime (clock ticks) wchan"
-    for t in /proc/"$pid"/task/*; do
-      # stat's comm is parenthesised and may hold spaces: read after the `)`.
-      echo "${t##*/} $(sed 's/.*) //' "$t/stat" | awk '{print $1, $12, $13}')" \
-        "$(cat "$t/wchan")"
-    done
-    tool=$(command -v rocgdb || command -v /opt/rocm/bin/rocgdb ||
-      command -v gdb) || tool=""
-    echo; echo "=== backtrace (${tool:-no debugger found})"
-    [ -z "$tool" ] || timeout "$secs" "$tool" -p "$pid" -batch \
-      -ex "info threads" -ex "thread apply all bt 30" </dev/null
-    echo; echo "=== the last 40 lines of the batch's log"
-    tail -n 40 "$log"
-    echo
-    echo "=== the kernel's side is in the HOST's dmesg; there, before a reboot:"
-    echo "  sudo dmesg -T | grep -iE 'amdgpu|kfd|mes|ring|timeout|reset|NVRM|Xid'"
-  } >"$out" 2>&1
-  echo "$out"
-}
-
 # The xdist worker flag, or nothing when JOBS is empty (a suite without
 # pytest-xdist installed). Used as `${XDIST[@]}`.
 xdist_args() {
@@ -576,9 +403,9 @@ find_tool() {
 # nothing. The `|| true` is load-bearing: getent exits 2 when the key is not
 # found, and under `set -euo pipefail` that 2 would kill the CALLER here --
 # before its own diagnostic, and with an exit code indistinguishable from a
-# deliberate "cannot run". Both ROCm-on-a-real-card paths need the numeric HOST
+# deliberate "cannot run". The ROCm-on-a-real-card path needs the numeric HOST
 # gid of the device groups (render, video), so the trap lives here once rather
-# than copied into each; see cpp-tier.sh --rocm and devcontainer.sh.
+# than copied into each; see devcontainer.sh.
 host_gid() {
   getent group "$1" 2>/dev/null | cut -d: -f3 || true
 }
@@ -632,7 +459,7 @@ init_submodules() {
 # The revision a run tested, for its log name, header and PASS line.
 #
 #   tree_rev "$REPO_ROOT"   # sets TREE_REV, TREE_DIFF_HASH (and TREE_ROOT)
-#   tree_rev_header cpp-tier "$log"
+#   tree_rev_header build "$log"
 #
 # TREE_REV is HEAD's short sha -- on a clean tree exactly the `rev=` every
 # tier always printed -- with `+dirty` appended when the tested tree differs

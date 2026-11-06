@@ -50,9 +50,11 @@ A repo with none of these has nothing to do in this step.
 git push -u origin <branch>
 ```
 
-- A push touching any `.py` auto-runs the fast test gate
-  (`devtools/prepush-tests.sh`). A successful push therefore *implies* that
-  gate passed. Do not bypass with `--no-verify`.
+- Every push runs the push gate, `devtools/test.py push`: the fast pytest set
+  when the push touches a `.py`, the C++ smoke when it touches C++ or a build
+  file. A successful push therefore *implies* the gate passed (read its
+  `test.py push PASS` line: a C++ half that skipped itself says so). Do not
+  bypass with `--no-verify`.
 - If the worktree's git dir has gone missing (`fatal: not a git repository:
   …/worktrees/<name>`), push from the main checkout instead:
   `git -C <repo-root>/main push origin <branch>`.

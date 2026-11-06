@@ -38,7 +38,7 @@ each). Everything below runs from the main checkout root.
   a module build is memory-hungry per job, so the box, not GitHub, is the
   limit: past ~4, warn the user that builds will thrash and GPU runs will
   queue, then honour the number they gave.
-- **`both`** — require every PR that touches C++ to pass `cpp-tier.sh` on
+- **`both`** — require every PR that touches C++ to pass `devtools/test.py pr` on
   **both** cards (`--preset default` = CUDA, `--preset hip` = HIP). Without
   it, **one backend suffices**: each agent runs the tier with the default
   `auto` preset, which takes the least-loaded live card, and the other backend
@@ -116,8 +116,8 @@ Then warm the shared `.sccache` from the main checkout, one build per backend
 you will use, so `max` cold module builds do not all start from nothing:
 
 ```bash
-devtools/cpp-tier.sh --no-test                   # CUDA (build/)
-devtools/cpp-tier.sh --preset hip --no-test      # HIP  (build-hip/)
+devtools/test.py pr --preset default --no-test   # CUDA (build/)
+devtools/test.py pr --preset hip --no-test       # HIP  (build-hip/)
 ```
 
 The live cards decide what can run: `auto` already skips a card with no
@@ -226,17 +226,17 @@ git -C <wt> fetch origin main && git -C <wt> rebase origin/main
 git -C <wt> push --force-with-lease
 ```
 
-**The push smoke is the check.** A C++ PR's push runs the pre-push hook's
-`cpp-smoke.sh` (about ten minutes on the 3080, more on the gfx1200): it
+**The push smoke is the check.** A C++ PR's push runs `devtools/test.py push`,
+whose C++ half (about ten minutes on the 3080, more on the gfx1200)
 rebuilds the whole tree on the rebased branch and runs the GPU batch, so a
-second full `cpp-tier.sh` after a rebase repeats it — on the gfx1200 that
+second full `test.py pr` after a rebase repeats it — on the gfx1200 that
 wasted about twenty minutes a PR. Never rerun the full tier solely because of
 a rebase. The one exception: when the commits the rebase brought in change C++
 the PR builds against or its tests exercise (`git log <old base>..origin/main
 --stat`), rerun **just the affected suites** before pushing:
 
 ```bash
-devtools/cpp-tier.sh --preset <the preset its run used> -j <J> -- -R '<suites>'   # inside <wt>
+devtools/test.py pr --only cpp --preset <the preset its run used> -j <J> -- -R '<suites>'   # inside <wt>
 ```
 
 A Python- or docs-only PR skips the rebuild; the required checks cover it.
@@ -244,7 +244,7 @@ A Python- or docs-only PR skips the rebuild; the required checks cover it.
 **The other card, for cross-call or bitwise assertions.** A PR run on one
 backend only that adds an assertion of repeatability (bitwise, or across two
 calls) gets an orchestrator-side run of just those cases on the other card
-before merging: `devtools/cpp-tier.sh --preset hip -- -R '<cases>'` (or
+before merging: `devtools/test.py pr --only cpp --preset hip -- -R '<cases>'` (or
 `--preset default`). An agent once assumed rocBLAS was bitwise-repeatable
 without checking.
 
@@ -341,14 +341,17 @@ Rules:
 - CI runs only lint + the fast pytest tier; nothing on the server builds C++.
   Your reported run is the only evidence the PR's C++ works. Never claim a
   check passed that you did not see.
-- C++ changes: run the fast tier on your assigned card, from the worktree:
-    devtools/cpp-tier.sh --preset <preset> -j <J>
+- C++ changes: run the PR gate on your assigned card, from the worktree:
+    devtools/test.py pr --preset <preset> -j <J>
+  (the C++ tier, then the fast pytest set; its last line is
+  "test.py pr PASS  rev=… preset=…").
   Bash needs dangerouslyDisableSandbox to see the GPU. With --preset auto the
   run prints "gpu: auto -> <preset> (<backend>)" with each card's load and
   whether another run holds it; quote that preset in the PR. The test phase
-  takes the whole card (with_gpu_card, devtools/lib.sh) and says it is waiting
+  takes the whole card (the GPU_LOCK_DIR locks) and says it is waiting
   while another run holds it or its VRAM is taken — that is expected, not a
-  hang. Read the
+  hang. A batch the watchdog kills prints "[gpu] hung in <case>" and
+  writes <log>.gpu-wedge.txt. Read the
   ***Skipped list and the [gpu] SKIPPED list (most gpu cases run in the
   batch): if the gpu cases skip with "no GPU device visible", your
   card is down (nvidia-smi -L / rocminfo) — rerun on the other preset and say
@@ -385,12 +388,12 @@ Rules:
   FelizJueves tools/emit/*_kernels.py scripts) rather than hand-merging their
   text.
 - Rebase onto origin/main right before you push, and do NOT rerun the full
-  tier after that rebase: the push's cpp-smoke rebuilds the tree and runs the
-  GPU batch. Rerun only the suites a new main commit changes underneath you
+  tier after that rebase: the push's devtools/test.py push rebuilds the
+  tree and runs the GPU batch. Rerun only the suites a new main commit changes underneath you
   (C++ your code builds against or your tests exercise), with
-  `devtools/cpp-tier.sh --preset <preset> -j <J> -- -R '<suites>'`.
+  `devtools/test.py pr --only cpp --preset <preset> -j <J> -- -R '<suites>'`.
 - When you were given a card, push with its preset:
-  `CMAKE_PRESET=<preset> git -C <wt> push …`. The pre-push cpp-smoke
+  `CMAKE_PRESET=<preset> git -C <wt> push …`. The push gate's C++ half
   otherwise takes `auto`, the least-loaded card, which may be your sibling's.
 - If the issue is ambiguous in a way the code can't answer, reply
   "STUCK: <question>" rather than guessing.

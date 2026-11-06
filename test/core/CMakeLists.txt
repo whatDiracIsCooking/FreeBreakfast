@@ -19,7 +19,7 @@
 # FREE_BREAKFAST_COMPILE_TIME_ONLY gate, so cross-backend-check.sh still
 # compiles it.
 #
-# devtools/cpp-smoke.sh and devtools/cpp-tier.sh name both binaries, as
+# devtools/test.py (push and pr) names both binaries, as
 # test/core/free_breakfast_core_tests_{host,gpu}. Keep the target names in step
 # if you rename them.
 include(GoogleTest)
@@ -79,7 +79,7 @@ target_link_libraries(
 
 # The properties are set per call and are NOT inherited from test/gtest's: the
 # GPU call's `gpu` label is what the ci-cuda and ci-hip test presets exclude
-# (`-LE gpu`) and what devtools/split-gpu-entries.py batches on.
+# (`-LE gpu`) and what devtools/test.py pr batches on.
 gtest_discover_tests(
   free_breakfast_core_tests_host
   DISCOVERY_MODE PRE_TEST

@@ -18,7 +18,7 @@
 # suite names (Basis<Partition>, Basis<Partition>DeathTest) is used in
 # test/gtest, so their ctest names need no TEST_PREFIX.
 #
-# devtools/cpp-smoke.sh names the binary, as
+# devtools/test.py (push) names the binary, as
 # test/basis/free_breakfast_basis_tests_host. Keep the target name in step if
 # you rename it.
 include(GoogleTest)

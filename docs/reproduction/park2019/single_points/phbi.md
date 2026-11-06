@@ -395,11 +395,11 @@ NEVPT2 times are not comparable with the others.
 ## What was run
 
 - **Card and build.** NVIDIA A100-SXM4-40GB (CUDA, 39.49 GiB),
-  `devtools/cpp-tier.sh --preset default --no-test`
-  (`cpp-tier PASS rev=7960956 preset=default`), the tree at 7960956. The
+  the C++ PR gate (now `devtools/test.py pr`) `--preset default --no-test`,
+  passing at `rev=7960956 preset=default`, the tree at 7960956. The
   aug-cc-pVTZ (12e,11o) point, the twisted (12e,11o) points and the
   (14e,12o) lone-pair starts were run on the same card at 33f2d63
-  (`cpp-tier PASS rev=33f2d63 preset=default`, built `--no-test`). Every
+  (passing at `rev=33f2d63 preset=default`, built `--no-test`). Every
   run held the card with `with_gpu_card cuda`, one at a time. Each
   checked-in config's numbers are from a run of that file as checked in.
 - **Orbital checks.** The π-character metric, the aug-cc-pVTZ projection,
@@ -409,7 +409,7 @@ NEVPT2 times are not comparable with the others.
   used `gto.intor_cross` against PySCF's MINAO. None is checked in, as in
   [README.md](README.md).
 - **The carried starts (#939)** ran on the same card at the tree of
-  #939's PR (`cpp-tier.sh --preset default`), one at a time under
+  #939's PR (the PR gate, `--preset default`), one at a time under
   `with_gpu_card cuda`: the S0 minimum with `write_npy` (67 s), the two
   walks and the two one-step jumps, each final step with `[nevpt2]`. Each
   log ended `completed: 0 errors, 0 warnings`, with no PC refusal.

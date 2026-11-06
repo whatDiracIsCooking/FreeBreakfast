@@ -447,10 +447,9 @@ remote_env_args() {
 # ownership. The container user then joins a group the devices do not grant,
 # the container starts clean, and the first device call fails with
 # hipErrorNoDevice -- indistinguishable from a machine with no AMD card.
-# cpp-tier.sh --rocm has always resolved these with getent; this is the same
-# resolution for the interactive path, off the same config.sh list.
+# So this resolves them with getent, off config.sh's list.
 #
-# NON-FATAL, unlike cpp-tier.sh's, because each reference carries a baked-in
+# NON-FATAL, because each reference carries a baked-in
 # default after the colon (`${localEnv:FREE_BREAKFAST_RENDER_GID:109}`). An
 # unresolvable group leaves that value standing instead of passing an empty
 # --group-add, and that default is also what a VS Code "Reopen in Container"

@@ -292,8 +292,9 @@ to ≤ 0.13°.
 
 ## What was run
 
-- **Card and build.** RTX 3080 (CUDA, 10 GiB), `devtools/cpp-tier.sh
-  --preset default --no-test` (`cpp-tier PASS rev=e1868b8 preset=default`),
+- **Card and build.** RTX 3080 (CUDA, 10 GiB), the C++ PR gate (now
+  `devtools/test.py pr`) `--preset default --no-test`, passing at
+  `rev=e1868b8 preset=default`,
   the tree at e1868b8. No ctest was run: this PR changes no code. Every run
   held the card with `with_gpu_card cuda`, as in README.md "How the runs
   are made". The 12 single points ran under one hold.

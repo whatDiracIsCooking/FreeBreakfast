@@ -51,8 +51,7 @@
   //
   // devtools/devcontainer.sh resolves them for you: on `up` and `rebuild` it
   // runs `getent group` over ROCM_GROUPS (config.sh) and exports one
-  // FREE_BREAKFAST_<NAME>_GID per group, which is what ${localEnv:...} reads here --
-  // the same resolution cpp-tier.sh --rocm does.
+  // FREE_BREAKFAST_<NAME>_GID per group, which is what ${localEnv:...} reads here.
   //
   // The value AFTER THE COLON is the fallback when that variable is not set,
   // which is what a VS Code "Reopen in Container" or a bare `devcontainer up`
@@ -148,7 +147,7 @@
     "GPU_TARGETS": "gfx1200",
     "AMDGPU_TARGETS": "gfx1200",
     // devtools/config.sh reads ${CMAKE_PRESET:-auto} and ${CTEST_PRESET:-auto},
-    // so pinning them here makes a bare `devtools/cpp-tier.sh` inside this
+    // so pinning them here makes a bare `devtools/test.py pr` inside this
     // container drive the `hip` preset and build-hip/ with no flag. `auto`
     // would land there too -- there is no NVIDIA device or nvcc here -- but
     // when no card is live it falls back to `default`, whose

@@ -17,7 +17,7 @@
 # Sad, is shared with sad_gpu.cpp's but no case name is, so their ctest names
 # need no TEST_PREFIX.
 #
-# devtools/cpp-smoke.sh names the binary, as
+# devtools/test.py (push) names the binary, as
 # test/sad/free_breakfast_sad_tests_host. Keep the target name in step if you
 # rename it.
 include(GoogleTest)
