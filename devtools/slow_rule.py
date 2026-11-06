@@ -15,10 +15,12 @@ branch, and the series of the ones before it, and reports two things:
   report, so its membership is not recorded; one over the line is listed
   apart, as unknown.
 - **A step:** a case whose time stepped up against its own recent history,
-  past a bar set by that history's spread: the median of its passes over the
-  last WINDOW records, plus K robust standard deviations (1.4826 x the median
-  absolute deviation), the deviation floored at the reports' resolution. A
-  case with fewer than MIN_HISTORY passes in the window is not judged.
+  past a bar set by the series' spread: the median of its passes over the
+  last WINDOW records, plus K robust standard deviations. The deviation is
+  the larger of the case's own (1.4826 x its median absolute deviation), the
+  box's (the median over the cases of that, relative to their medians, times
+  this case's median), and the reports' resolution. A case with fewer than
+  MIN_HISTORY passes in the window is not judged.
 
 docs/testing.md has where each constant comes from. Neither finding fails the
 night: they are a report, written into the nightly's log and summary, and as
@@ -47,6 +49,9 @@ MIN_HISTORY = 7  # passes in the window; half of it, the median's breakdown poin
 K = 5.0  # robust standard deviations above the median
 MAD_TO_SIGMA = 1.4826  # 1 / Phi^-1(3/4): the MAD of a normal sample, as its sigma
 RESOLUTION = 0.001  # s: gtest's JSON times are whole milliseconds
+# A case's relative spread joins the box's only where the resolution is at most
+# 1% of its time, so quantization does not pass for noise.
+POOL_MIN_SECONDS = 100 * RESOLUTION
 SERIES_KINDS = ("nightly", "weekly")
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -126,38 +131,60 @@ def over_line(record: dict, fams: dict) -> tuple[list[dict], list[dict]]:
     return sorted(over, key=key), sorted(unknown, key=key)
 
 
-def step(history: list[float], seconds: float) -> dict | None:
+def _centre(window: list[float]) -> tuple[float, float]:
+    median = statistics.median(window)
+    return median, statistics.median(abs(x - median) for x in window)
+
+
+def pooled_spread(histories: dict[str, list[float]]) -> float:
+    """The box's relative spread: the median, over the cases with a full
+    enough window and a time well above the resolution, of each one's robust
+    sigma over its median. 0 where no case qualifies."""
+    ratios = []
+    for history in histories.values():
+        window = history[-WINDOW:]
+        if len(window) < MIN_HISTORY:
+            continue
+        median, mad = _centre(window)
+        if median >= POOL_MIN_SECONDS:
+            ratios.append(MAD_TO_SIGMA * mad / median)
+    return statistics.median(ratios) if ratios else 0.0
+
+
+def step(history: list[float], seconds: float, pooled: float = 0.0) -> dict | None:
     """The bar a time is judged against, and whether it is past it; None when
-    the history is too short to judge."""
+    the history is too short to judge. `pooled` is pooled_spread's."""
     window = history[-WINDOW:]
     if len(window) < MIN_HISTORY:
         return None
-    median = statistics.median(window)
-    mad = statistics.median(abs(x - median) for x in window)
-    bar = median + K * max(MAD_TO_SIGMA * mad, RESOLUTION)
+    median, mad = _centre(window)
+    sigma = max(MAD_TO_SIGMA * mad, pooled * median, RESOLUTION)
+    bar = median + K * sigma
     return {
         "seconds": seconds,
         "median": median,
-        "mad": mad,
+        "sigma": sigma,
         "bar": bar,
         "nights": len(window),
         "stepped": seconds > bar,
     }
 
 
-def steps(records: list[dict]) -> tuple[list[dict], int, int]:
+def steps(records: list[dict]) -> tuple[list[dict], int, int, float]:
     """(the latest record's steps, cases judged, cases with too short a
-    history). The window is the WINDOW records before the latest."""
+    history, the pooled relative spread). The window is the WINDOW records
+    before the latest."""
     if not records:
-        return [], 0, 0
+        return [], 0, 0, 0.0
     current, prior = records[-1], records[:-1][-WINDOW:]
     history: dict[str, list[float]] = defaultdict(list)
     for rec in prior:
         for name, seconds in _passes(rec).items():
             history[name].append(seconds)
+    pooled = pooled_spread(history)
     flagged, judged, short = [], 0, 0
     for name, seconds in sorted(_passes(current).items()):
-        verdict = step(history.get(name, []), seconds)
+        verdict = step(history.get(name, []), seconds, pooled)
         if verdict is None:
             short += 1
             continue
@@ -165,7 +192,7 @@ def steps(records: list[dict]) -> tuple[list[dict], int, int]:
         if verdict.pop("stepped"):
             flagged.append({"name": name, **verdict})
     flagged.sort(key=lambda r: (-(r["seconds"] - r["median"]), r["name"]))
-    return flagged, judged, short
+    return flagged, judged, short, pooled
 
 
 # --- the report --------------------------------------------------------------
@@ -179,7 +206,7 @@ def check(text: str, host: str, fams: dict) -> dict | None:
         return None
     current = records[-1]
     over, unknown = over_line(current, fams)
-    stepped, judged, short = steps(records)
+    stepped, judged, short, pooled = steps(records)
     return {
         "schema": SCHEMA,
         "host": host,
@@ -190,6 +217,7 @@ def check(text: str, host: str, fams: dict) -> dict | None:
         "window": WINDOW,
         "min_history": MIN_HISTORY,
         "k": K,
+        "pooled_relative_sigma": pooled,
         "over_line": over,
         "over_line_unrecorded": unknown,
         "steps": stepped,
@@ -224,8 +252,9 @@ def render(findings: dict) -> list[str]:
             for r in f["over_line_unrecorded"]
         ]
     out.append(
-        f"slow-rule: {len(f['steps'])} step(s) past median + {f['k']:g} x 1.4826"
-        f" MAD of the last {f['window']} nights ({f['judged']} case(s) judged,"
+        f"slow-rule: {len(f['steps'])} step(s) past median + {f['k']:g} sigma"
+        f" over the last {f['window']} nights (the box's relative sigma"
+        f" {100 * f['pooled_relative_sigma']:.2f}%; {f['judged']} case(s) judged,"
         f" {f['too_short']} with under {f['min_history']} passes in the window)"
         + (":" if f["steps"] else "")
     )

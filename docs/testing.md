@@ -13,8 +13,9 @@ how to read them.
 Every case in the fast set runs before every PR, and the fast set grows with
 the tree. Both PR gates have a budget, **under five minutes on a busy card**,
 and `test/support/slow_test.h`'s rule keeps the fast set inside it by moving
-anything past about ten seconds into the slow set. That rule only works if
-something else runs the slow set on a schedule. Until #985 nothing did: the
+anything past about 1.5 s on an idle RTX 3080 into the slow set, unless it is
+its family's representative. That rule only works if something else runs the
+slow set on a schedule. Until #985 nothing did: the
 full runs were scripts run by hand, when someone remembered.
 
 The plan has three parts, and each leans on the one before:
@@ -224,8 +225,9 @@ applied to.
 
 **Both gates have a budget: under five minutes on a busy card.**
 `test/support/slow_test.h` has the rule that keeps them inside it: a case past
-about ten seconds goes under `FBF_SKIP_IF_FAST_TESTS()` unless it is its
-family's cheapest.
+about 1.5 s on an idle RTX 3080 goes under `FBF_SKIP_IF_FAST_TESTS()` unless it
+is its family's representative ("Families" below). The nightly flags every case
+that breaks it ("The slow-test rule, enforced").
 
 ## The nightly
 
@@ -263,6 +265,8 @@ timer, `devtools/systemd/free-breakfast-nightly@.timer`.
    it is never a pass.
 6. **Record the run** (see "Metrics"), pass or fail, even when the build
    failed and nothing ran.
+7. **Report the slow-test rule** over that record and the series before it
+   ("The slow-test rule, enforced" below), when any case ran.
 
 The build and the GPU run are **strictly sequential**. Many GPU cases are bound
 by launch latency, so a busy host CPU would inflate their times and make the
@@ -270,7 +274,7 @@ series noisy.
 
 It logs to `<primary>/.slow-tier-reports/<mode>-<stamp>-<rev>-default.log`,
 with the per-case reports in `<log>.results/`, and appends
-`test.py nightly PASS  rev=…  preset=default  mode=nightly  stamp=…  metrics=…`
+`test.py nightly PASS  rev=…  preset=default  mode=nightly  stamp=…  metrics=…  slow-rule=N/M`
 to `summary.log`. The exit status is the first failing phase's.
 
 ### Installing the timer (host only)
@@ -314,9 +318,82 @@ recovered, and closes the issue.
 **A nightly failure is a blocker,** like any other test failure on main. It gets
 fixed on main first, and any work it paused is rebased onto the fix.
 
-**The nightly also enforces the slow-test rule (#987).** It flags any fast-set
-case over about ten seconds, and any case whose time stepped up against its own
-recent history, so the rule no longer depends on someone reading a log.
+### The slow-test rule, enforced
+
+**Today (#987):** after its record is on the `metrics` branch, the nightly runs
+`devtools/slow_rule.py` over it, so the rule no longer depends on someone
+reading a log. It reports two things, and neither fails the night:
+
+- **Over the line:** a fast-set gtest case that took more than **1.5 s**
+  (`LINE_SECONDS`, `slow_test.h`'s line, which a pytest holds it to) and is
+  not its family's representative, nor in an exempt family. The families and
+  representatives are `devtools/test_families.py`'s, read from the night's
+  build directory, the cheapest by the same records' times. pytest cases and
+  the `example_*` entries are outside `slow_test.h`'s rule.
+- **A step:** a case, in either set and either language, whose time stepped up
+  against its own recent history past the bar below.
+
+**Which set a case is in comes from the run itself.** `FBF_SKIP_IF_FAST_TESTS()`
+records the gtest property `fbf_slow` in every mode, before it decides whether
+to skip, and `metrics.gtest_cases` carries it as each case's `slow`. A
+nightly runs everything, so its record says which cases a fast run would
+skip, including a `TEST_P` that reaches the macro only for some params. Only
+a gtest JSON report carries properties, so a case ctest runs (the host
+binaries, and the `RUN_SERIAL` cases) has no `slow`; one of those over the
+line is listed apart, as membership not recorded, never dropped.
+
+**The step bar comes from the series' own spread**, by analysis, not tuning
+(see "Acceptance criteria"):
+
+- **The window** is the 14 records before tonight's (`WINDOW`), this host's
+  `nightly` and `weekly` only: two weeks of nights, the clean-build weekly
+  twice among them. Its median and median absolute deviation (MAD) have a
+  breakdown point of 50%, so up to six bad nights (a busy host, a wedged
+  card) move neither. A deliberate change stops being reported once it holds
+  half the window, about a week, and the PR that made it says why.
+- **A case is judged** only with at least 7 passes in the window
+  (`MIN_HISTORY`, half of it); a new case, or a series younger than a week,
+  is counted as too short instead.
+- **The spread** σ is the largest of three. The case's own: 1.4826 × its MAD
+  (`MAD_TO_SIGMA`, 1/Φ⁻¹(3/4), which makes the MAD of normal noise its
+  standard deviation, and an outlier night cannot inflate it). The box's: the
+  median over every case with 7 passes in the window of that, divided by its
+  median, times this
+  case's median; only cases at 0.1 s and over (`POOL_MIN_SECONDS`) enter it,
+  where the 1 ms resolution is under 1% of the time. And the resolution
+  itself, 1 ms (`RESOLUTION`; gtest's JSON times are whole milliseconds). The
+  box's floor is needed: 14 points estimate a MAD poorly, and a sample whose
+  MAD came out small would make noise look like a step. Under normal noise,
+  a bar of 5 × the case's own MAD alone is crossed by about 2·10⁻³ of cases a
+  night at n = 14, and 1.6·10⁻² at n = 7 (a Monte Carlo of that null, not of
+  this tree's times), which is about four false steps a night (n = 14) to
+  thirty (n = 7) across 2,100 cases. The box's spread is a median over
+  hundreds of cases, so it is not small by chance.
+- **The bar** is the median + K·σ, K = 5 (`K`). With σ at least the true
+  spread, a new time minus the window's median has a standard deviation of
+  √(1 + π/2n)·σ (the median's own variance is πσ²/2n), so 5σ is 4.74 of them
+  at n = 14 and 4.52 at n = 7: a one-sided tail of 1.1·10⁻⁶ to 3.1·10⁻⁶ a case,
+  about 2·10⁻³ to 7·10⁻³ false steps a night across 2,100 cases, or one in five
+  months at worst. A case noisier than the box gets its own, larger σ.
+
+**Where it reports:** each finding as a `<mode>: slow-rule: …` line in the
+nightly's log and output; `slow-rule=<over>/<steps>` on its `summary.log`
+line (`slow-rule=none` when the series has no record of this host, and
+`slow-rule=FAILED`, which fails the night, when the report could not run); and
+the findings as JSON in `<log>.results/slow-rule.json`. That file is the hook
+for the nightly issue (#986): it carries `over_line`, `over_line_unrecorded`
+and `steps`, each case with its numbers, and the constants they were judged
+by.
+
+```bash
+python3 devtools/slow_rule.py build                # the latest nightly's report
+python3 devtools/slow_rule.py build --json         # its findings
+python3 devtools/slow_rule.py build --metrics runs.jsonl --host NAME
+```
+
+It reads the `metrics` branch by default and this host by `metrics.host_name`,
+as `test_families.py` does, and exits 2 when there is no record or no build to
+read.
 
 ## Metrics
 
@@ -376,7 +453,7 @@ A record, schema version 1:
 | `gpu` | `name`, `driver` (version), `vram_mib`; `null` where the vendor tool cannot say |
 | `toolchain` | `clang`, `cmake`, and `nvcc` or `hipcc`: versions, the compilers' read from the build directory's own configure |
 | `build` | `mode` (`warm` or `clean`), `launcher` (`on` or `off`: whether the configure found sccache), `jobs` (`BUILD_JOBS`), `seconds` (configure and build wall time), and for a clean build `files`, each output's `file` and `seconds` from `.ninja_log`; `null` when the run built nothing |
-| `cases` | per test case: `name` (`Suite.Case`, or the pytest node id), `binary` (the gtest binary's name, or `pytest`), `status` (`pass`, `fail`, `skip`), `seconds`. From gtest's `--gtest_output=json`, ctest's `--output-junit` and pytest's JUnit XML |
+| `cases` | per test case: `name` (`Suite.Case`, or the pytest node id), `binary` (the gtest binary's name, or `pytest`), `status` (`pass`, `fail`, `skip`), `seconds`, and for a case from a gtest JSON report `slow` (whether it reached `FBF_SKIP_IF_FAST_TESTS()`, which a fast run skips; #987, absent before it). From gtest's `--gtest_output=json`, ctest's `--output-junit` and pytest's JUnit XML |
 | `selection` | `shadow` records only, and absent from the rest: what was selected and any misses |
 | `result` | `pass` or `fail` |
 

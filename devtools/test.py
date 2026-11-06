@@ -1395,7 +1395,8 @@ def cmd_nightly(args: argparse.Namespace, cfg: dict[str, str]) -> int:
 
 def nightly_run(args: argparse.Namespace, cfg: dict[str, str]) -> int:
     """The inner half, in the nightly checkout: build, then the tests under
-    the card, then the cross-backend check, then the record. Strictly in that
+    the card, then the cross-backend check, then the record and the
+    slow-test report over it (#987). Strictly in that
     order: many GPU cases are bound by launch latency, and a compile beside
     them would put noise in the series."""
     mode = args.mode if args.mode != "auto" else "nightly"
