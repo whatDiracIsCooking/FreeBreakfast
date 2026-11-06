@@ -40,7 +40,7 @@ compile_commands.json
 # --- Run artifacts ---------------------------------------------------------
 # docker/compose.yaml tees all configure/build/test output here.
 /.log/
-# devtools/slow-tier.sh and devtools/test.py write timestamped run logs here.
+# devtools/test.py writes timestamped run logs here.
 .slow-tier-reports/
 # free-breakfast's default output directory (-o), for a run from the repo.
 fbf_output/

@@ -5,7 +5,8 @@ it is built against. The work is the
 [Automated test infrastructure](https://github.com/whatDiracIsCooking/FreeBreakfast/milestone/28)
 milestone. Each section says what exists **today** and what is still
 **planned**, and names the issue that delivers it. The `push` and `pr` gates
-exist (#981); "Reading a gate's run" below is how to read them.
+exist (#981), and so does the nightly (#985); "Reading a gate's run" below is
+how to read them.
 
 ## The problem
 
@@ -13,8 +14,8 @@ Every case in the fast set runs before every PR, and the fast set grows with
 the tree. Both PR gates have a budget, **under five minutes on a busy card**,
 and `test/support/slow_test.h`'s rule keeps the fast set inside it by moving
 anything past about ten seconds into the slow set. That rule only works if
-something else runs the slow set, and today nothing does on a schedule:
-`cpp-slow-tier.sh` is run by hand, when someone remembers.
+something else runs the slow set on a schedule. Until #985 nothing did: the
+full runs were scripts run by hand, when someone remembered.
 
 The plan has three parts, and each leans on the one before:
 
@@ -76,10 +77,10 @@ every flake fix. Comp-chem packages validate the same way.
 ## The entry point: `devtools/test.py`
 
 **Today:** `devtools/test.py push` and `devtools/test.py pr` (#981), which
-replaced the three gate scripts. `cpp-slow-tier.sh` and `slow-tier.sh`, the
-full C++ and Python runs, are still scripts of their own.
+replaced the three gate scripts, and `devtools/test.py nightly` (#985), which
+replaced the two full-run scripts.
 
-**Planned:** the `nightly` subcommand, and selection for `pr`.
+**Planned:** selection for `pr`.
 
 ```bash
 devtools/test.py push       # what the pre-push hook calls
@@ -159,7 +160,7 @@ devtools/test.py pr --record                 # and append it to `metrics`
   and a laptop. Both gates pass it.
 - `FREE_BREAKFAST_FAST_TESTS` makes `slow_test.h`'s macro skip the heavy
   validation cases. Both gates set it, and no flag turns it off;
-  `cpp-slow-tier.sh` is the un-skipped run.
+  `test.py nightly` is the un-skipped run, and it unsets it.
 - **A card can be enumerated and still run nothing**, in which case every GPU
   case skips and ctest prints `100% passed`. The AMD one wedges with `amdgpu`
   still bound and the KFD node still listing it, while HIP returns
@@ -201,8 +202,8 @@ the other and never at once, as in `push`. ctest runs the rest, `CTEST_JOBS` at
 once: the host entries, the `RUN_SERIAL` cases it keeps alone on the card, and
 every entry when a launcher such as compute-sanitizer wraps them. So its ctest
 summary counts only those, and each batch reports in its own `--- gpu batch`
-and `[gpu]` lines below it: read both. `cpp-slow-tier.sh` still runs plain
-ctest.
+and `[gpu]` lines below it: read both. The nightly splits its run the same
+way.
 
 **The card is held for the whole test phase**, by the lock files under
 `GPU_LOCK_DIR` (`with_gpu_card` in `devtools/lib.sh` for the shell tools,
@@ -228,23 +229,81 @@ family's cheapest.
 
 ## The nightly
 
-**Planned in #985.** It runs on this box, from a systemd user timer.
+**Today (#985):** `devtools/test.py nightly`, run on this box by a systemd user
+timer, `devtools/systemd/free-breakfast-nightly@.timer`.
 
-1. Check out `origin/main` clean in `.claude/worktrees/nightly`. It never runs
-   in the primary checkout, which may be mid-edit.
-2. Build. On six nights out of seven that is the usual sccache-warm build, and
-   its time is recorded as `warm` and kept out of the build-time trend. On the
-   seventh it is a **clean build with the compiler launcher off**, the way
-   `kernel-compile-watchdog.sh` compiles, so its times are real.
-3. Run everything, unskipped, under `with_gpu_card`: the C++ slow tier on CUDA
-   and the slow pytest tier. If the card is held, the run waits for it rather
-   than sharing it.
-4. Run `devtools/cross-backend-check.sh`.
-5. Record the run (see "Metrics").
+1. **Check out `origin/main` clean** in `NIGHTLY_WORKTREE`
+   (`.claude/worktrees/nightly` under the primary checkout), after a
+   `git fetch origin`. It is a detached worktree, made on the first night. Each
+   later night resets it: tracked changes and untracked files go, in the
+   submodules too, and ignored files stay, so the build directory is still
+   warm. It never runs in the primary checkout, which may be mid-edit.
+   `--rev` tests another commit.
+2. **Run that checkout's own `test.py`**, so what runs is the code under test,
+   not whatever the primary checkout has. Everything below is that run.
+3. **Build** with `--preset default`, the CUDA card. On six nights out of seven
+   that is the usual sccache-warm build, recorded as `nightly` with
+   `build.mode` `warm` and kept out of the build-time trend. On
+   `NIGHTLY_WEEKLY_DAY` (Sunday; `--mode weekly` forces it) it is a **clean
+   build with the compiler launcher off**, recorded as `weekly`, so its times,
+   per file from `.ninja_log`, are real. The launcher goes off by configuring
+   with `-DFREE_BREAKFAST_SCCACHE=OFF`, which `find_program` leaves alone, so
+   no launcher is installed, sccache or the GPU object cache. The next warm
+   night configures with `-UFREE_BREAKFAST_SCCACHE`, which finds it again.
+4. **Run everything, unskipped, under the card lock** (`Card` in `test.py`, the
+   same locks as `with_gpu_card`): every C++ case with no
+   `FREE_BREAKFAST_FAST_TESTS`, split as `pr` splits it (ctest for the host and
+   `RUN_SERIAL` entries, one watched process per GPU binary for the rest), then
+   the whole pytest suite, `slow` included. If the card is held, the run waits
+   for it rather than sharing it. The GPU batches' budget is
+   `NIGHTLY_GPU_BATCH_BUDGET_SECONDS` (4 h), since unskipped they run far past
+   the gates' 45 min; the stall watchdog is the gates' own.
+5. **Run `devtools/cross-backend-check.sh`**, outside the card, after the
+   tests. Its exit 2 (it could not run) fails the night, with a line saying so:
+   it is never a pass.
+6. **Record the run** (see "Metrics"), pass or fail, even when the build
+   failed and nothing ran.
 
 The build and the GPU run are **strictly sequential**. Many GPU cases are bound
 by launch latency, so a busy host CPU would inflate their times and make the
 series noisy.
+
+It logs to `<primary>/.slow-tier-reports/<mode>-<stamp>-<rev>-default.log`,
+with the per-case reports in `<log>.results/`, and appends
+`test.py nightly PASS  rev=…  preset=default  mode=nightly  stamp=…  metrics=…`
+to `summary.log`. The exit status is the first failing phase's.
+
+### Installing the timer (host only)
+
+The timer is a systemd **user** unit on the **host**: the container has no
+systemd user session. The service enters this checkout's **combined**
+devcontainer with `devtools/devcontainer.sh --combined shell -c`, because the
+C++ toolchain lives there, and the cross-backend check needs `hipconfig` as
+well as `nvcc`. It never starts or rebuilds the container: if it is not
+running, `shell` refuses, naming `up`, and the night fails loudly. Both units
+are templates whose instance is the primary checkout's path, so nothing in them
+names a machine or a user. From the primary checkout, on the host:
+
+```bash
+systemctl --user link "$PWD/devtools/systemd/free-breakfast-nightly@.service"
+systemctl --user link "$PWD/devtools/systemd/free-breakfast-nightly@.timer"
+unit="free-breakfast-nightly@$(systemd-escape --path "$PWD")"
+systemctl --user enable --now "$unit.timer"
+loginctl enable-linger "$USER"     # run with nobody logged in
+systemctl --user list-timers "$unit.timer"
+```
+
+- **A first run by hand**, to see it work before it runs unattended:
+  `systemctl --user start "$unit.service"`, then
+  `journalctl --user -u "$unit.service" -f`.
+- **It fires at 02:30** local time (`OnCalendar`). A night missed while the box
+  was off is not caught up at boot (`Persistent=false`).
+- **The service runs a login shell** (`bash -l`), for the `PATH` that finds
+  `npx`, the devcontainer CLI. `TimeoutStartSec=16h` is a backstop only.
+- **Stopping the unit stops the CLI, not the run:** `devcontainer exec` is an
+  attach, and the run carries on in the container.
+- **After editing a unit**, `systemctl --user daemon-reload`. To remove it,
+  `systemctl --user disable --now "$unit.timer"`.
 
 **Failures open an issue (#986).** A failed nightly opens a GitHub issue
 labelled `nightly`, or comments on the one already open with the same title, so
@@ -261,9 +320,10 @@ recent history, so the rule no longer depends on someone reading a log.
 
 ## Metrics
 
-**Today:** `devtools/metrics.py` (#982), the recorder, and
-`devtools/test.py pr --record`, which records a run by hand as `manual`.
-**Planned:** the nightly's records (#985).
+**Today:** `devtools/metrics.py` (#982), the recorder;
+`devtools/test.py pr --record`, which records a run by hand as `manual`; and
+`devtools/test.py nightly` (#985), which records every night as `nightly` or
+`weekly`.
 
 Every recorded run appends one JSON record, on one line, to the orphan branch
 `metrics`. The branch shares no history with `main`, never appears in a diff,
@@ -278,10 +338,17 @@ never by hand. Records go into one file per month, `runs/YYYY-MM.jsonl`
   `git worktree add` writes under the common git directory and into the new
   worktree, and never into `main`'s tree or index.
 - **The branch is local to this box.** Nothing pushes it yet.
-- **`host` is `socket.gethostname()`.** Inside the devcontainer that is the
-  container's id, which changes at every `rebuild`, since nothing passes the
-  host's name in. The nightly (#985) has to pin a stable one before its
-  records form a series.
+- **`host` is the machine, not the hostname** (`host_name` in `metrics.py`):
+  `METRICS_HOST` in `devtools/config.sh` when set, else the board's vendor and
+  name from `/sys/class/dmi/id` (`board_vendor`, `board_name`; else
+  `sys_vendor`, `product_name`), else the hostname where there is no DMI. The
+  hostname inside the devcontainer is the container's id, which changes at
+  every `rebuild` (#982's first record carries one), and `/etc/machine-id`
+  there is the image's. DMI is world-readable in the container and reads the
+  same as on the host, so every record from this box carries one name, through
+  rebuilds and from either side, with nothing passed in. Two machines with the
+  same board would share it, which is why `METRICS_HOST` exists; set it on a
+  cloud VM, whose DMI names only its instance type.
 - **A record is committed with `git commit-tree` and `git update-ref`**, not
   `git commit`: the hooks in the common git directory are `main`'s
   pre-commit hooks, which have no config on a data branch. Two runs
@@ -303,7 +370,7 @@ A record, schema version 1:
 | `schema` | `1` |
 | `kind` | `nightly`, `weekly` (the clean-build night), `manual`, or `shadow` (see "Test selection") |
 | `started`, `finished` | UTC, ISO 8601 |
-| `host` | the machine's hostname; comparisons only ever use one host's records |
+| `host` | the machine (`METRICS_HOST`, else its board from DMI); comparisons only ever use one host's records |
 | `commit` | the full SHA that was tested |
 | `backend`, `preset` | as the gate printed them |
 | `gpu` | `name`, `driver` (version), `vram_mib`; `null` where the vendor tool cannot say |
@@ -543,5 +610,5 @@ safe: it runs everything the gate leaves out, within a day.
   check is the nightly's HIP cover for now.
 - **Moving CLAUDE.md's testing sections here** happens with the code each
   describes. #981 moved "Reading a test run" (now "Reading a gate's run"
-  above) and left CLAUDE.md a summary and a link; #985 does the same for the
-  full-run scripts.
+  above) and left CLAUDE.md a summary and a link; #985 left CLAUDE.md one line
+  on the nightly and a link to "The nightly" above.
