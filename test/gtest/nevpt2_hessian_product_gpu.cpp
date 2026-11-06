@@ -1314,10 +1314,11 @@ std::vector<double> shifted_h(const State &s, std::span<const std::size_t> orbit
   return h;
 }
 
-// A degenerate inactive pair, z^c's zero branch: h2co_skew_sto3g with its
-// two virtuals, and its closest core pair, each brought to 1e-9 Eh apart
-// through h alone (shifted_h; Nevpt2PcZc's construction). PC's A vanishes
-// on such a pair, so z^c is zero there; the product passes the same ladder.
+// A degenerate inactive pair: h2co_skew_sto3g with its two virtuals, and its
+// closest core pair, each brought to 1e-9 Eh apart through h alone
+// (shifted_h; Nevpt2PcZc's construction). PC's A falls with the gap there,
+// and z^c keeps its division, -A / (2 gap), with a limit as the gap closes
+// (#974); the product passes the same ladder.
 TEST(Nevpt2PcHessianProduct, DegenerateInactivePair) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res(0);
@@ -1329,6 +1330,7 @@ TEST(Nevpt2PcHessianProduct, DegenerateInactivePair) {
   ASSERT_EQ(nmo - nocc, 2U) << "the case's two virtuals";
   const fb::ci::DeviceStringSet strings = strings_of(res, s);
   // The orbital energies PC reads.
+  std::vector<double> a_moved;
   const auto epsilon_of = [&](const State &x) -> std::vector<double> {
     const auto b = upload(res, x.b);
     const auto c = upload(res, x.c);
@@ -1337,7 +1339,11 @@ TEST(Nevpt2PcHessianProduct, DegenerateInactivePair) {
     const auto adj = nevpt2::pc_adjoint(res, strings, strings, x.naux, x.nao, x.nao, b.data(),
                                         c.data(), h.data(), x.ncore, x.ncas, v.data(), 0);
     EXPECT_TRUE(adj.has_value()) << adj.error().message;
-    return adj.has_value() ? download(res, adj->epsilon.data(), nmo) : std::vector<double>{};
+    if (!adj.has_value()) {
+      return {};
+    }
+    a_moved = download(res, adj->a.data(), nmo * nmo);
+    return download(res, adj->epsilon.data(), nmo);
   };
   const std::vector<double> eps = epsilon_of(s);
   ASSERT_EQ(eps.size(), nmo);
@@ -1361,8 +1367,17 @@ TEST(Nevpt2PcHessianProduct, DegenerateInactivePair) {
   ASSERT_FALSE(u.z.empty());
   for (const std::size_t lower : {nocc, core}) {
     EXPECT_LT(std::abs(moved[lower + 1] - moved[lower]), 1e-8) << "pair at " << lower;
-    EXPECT_EQ(u.z[lower + (nmo * (lower + 1))], 0.0) << "pair at " << lower;
-    EXPECT_EQ(u.z[(lower + 1) + (nmo * lower)], 0.0) << "pair at " << lower;
+    // A from a second pc_adjoint call, whose sums reassociate: the two
+    // divisions agree to A's rounding bound (zc_multipliers') over the gap.
+    const double gap = moved[lower + 1] - moved[lower];
+    const double ratio = -a_moved[(lower + 1) + (nmo * lower)] / (2.0 * gap);
+    const double a_max =
+        std::ranges::max(a_moved | std::views::transform([](double v) { return std::abs(v); }));
+    const double bound = static_cast<double>(nmo * nmo) * 0.5 *
+                         std::numeric_limits<double>::epsilon() * a_max / (2.0 * std::abs(gap));
+    EXPECT_NE(ratio, 0.0) << "pair at " << lower;
+    EXPECT_NEAR(u.z[lower + (nmo * (lower + 1))], ratio, bound) << "pair at " << lower;
+    EXPECT_NEAR(u.z[(lower + 1) + (nmo * lower)], ratio, bound) << "pair at " << lower;
   }
   auto got = u.product(res);
   ASSERT_TRUE(got.has_value()) << got.error().message;

@@ -538,14 +538,86 @@ sign of A's κ and the doubled sum, and the stationarity ladder pins both.
 PC gradient (#564) calls it with PC's A, which vanishes on degenerate pairs
 alone.
 
-**Degenerate pairs.** |ε_p − ε_q| < 1e-6 Eh (`kZcGapFloor`) is a division
-the state does not determine. When |A_pq| ≤ 1e-8 (`kZcZeroSource`), z is 0:
-an abelian subgroup splits a degenerate set across irreps, the energy does
-not move along a rotation mixing them, and 0 is the right representative.
-Otherwise the pair is refused, `Numerical`, naming both orbitals, the gap
-and |A|. Both are the demo's (`PC_GAP_FLOOR`, `PC_ZERO_TOL`;
+**Degenerate pairs.** Under |ε_p − ε_q| < 1e-6 Eh (`kZcGapFloor`) the
+pair is near-degenerate, and the rule is three branches on its A:
+
+- |A_pq| > 1e-8 (`kZcZeroSource`): refused, `Numerical`, naming both
+  orbitals, the gap and |A|. Its z would pass 1e-8 / (2 · 1e-6), the
+  largest the floor's boundary admits: SC's 1/gap growth (SC is not
+  invariant to the rotation), not a limit.
+- |A_pq| under A's rounding bound, nmo² unit roundoffs of A's largest
+  element: z = 0. An abelian subgroup's pair across irreps, or a
+  symmetric point's, where A carries no ratio.
+- Otherwise z = −A_pq / (2 (ε_p − ε_q)), the division above the floor
+  (and 0, as before #974, on the corner where |A| ≤ 1e-8 but |z| passes
+  the floor's largest).
+
+Both constants are the demo's (`PC_GAP_FLOOR`, `PC_ZERO_TOL`;
 `nuclear_gradients.tex`, "Degenerate (O2) pairs"). `min_gap` counts the
 degenerate pairs too.
+
+**Why the division, not the zero (#974).** PC is invariant to an inactive
+rotation exactly when the two orbital energies are equal
+(`Nevpt2PcEnergyAdjoint.InactiveRotationsAreRoundOff`): its zeroth-order
+Hamiltonian reads the inactive orbitals through ε alone, so along κ_pq it
+moves by κ_pq (ε_p − ε_q) times a one-body operator, and
+
+    A_pq = (ε_p − ε_q) K_pq,   z_pq = −K_pq / 2,
+
+K_pq the energy's derivative along that operator, a smooth function of the
+state. **z has a limit as the gap closes**: dropping it is not an O(gap)
+error but an O(z) one. The gradient is linear in z (Φ is, and the Z-vector
+equations are linear in their sources), g = g₀ + Σ_pq z_pq G^pq, so a pair
+dropped at the floor is a step of z_pq(floor) G^pq in g, wherever the floor
+sits. How large depends on K:
+
+- **One state** (a state gradient, or one of the QD W forms g_P, g_Q,
+  h_PQ): K is O(1) in the splitting. Off ethylene's C3v point
+  (`Nevpt2QdReferencePair`, 1e-4 Å along d₁) the per-state A of e pairs
+  under the floor were 7e-13 to 1.2e-10, reproducible to three digits
+  between runs, z up to 9e-5; dropping them put g_P · random1
+  3.0e-6 Eh/bohr high and g_Q's 3.0e-6 low (1 % of each), at every point from
+  1e-4 to 3e-4 Å.
+- **A state average of a degenerate pair** (the QD mean gradient inside it):
+  K is of the symmetry the pair breaks, so K = O(ρ), A = O(ρ²) and z =
+  O(gap), and the step falls with the floor. There the core pair (5, 6) at
+  5e-6, 1e-5 and 2e-5 Å had A = 4.0e-15, 1.7e-14 and 6.7e-14 (z 7e-9,
+  1.4e-8, 2.8e-8), and dividing it moved ḡ · random1 by +4.4e-10 to
+  +6.4e-10 at 5e-6 Å in all four runs.
+
+A regularized 1/gap (z = −A gap / (2 (gap² + δ²))) does not remove the
+step: it spreads it over a decade of gap round δ, the gradient in that
+decade is wrong by the same z, and below it z → 0 as before. The division
+itself is right at every gap; what limits it is the rounding of A.
+
+**The resolution of A.** A's absolute error e_A does not scale with the
+gap (A = X − Xᵀ, two O(|X|) sums that cancel to the gap times K), so the
+division carries e_A / (2 gap) of noise and the zero an error |z|. They
+cross at |A| = e_A: divide what A resolves, drop what it does not. Here
+e_A, the run-to-run spread of the mean's A on e pairs, was 5e-16 to 3e-15,
+against max |A| 3.7e-2 and max |X| 0.21 (nmo 82): about 100 unit roundoffs
+of A's largest element. The bound in the rule, nmo² of them, is 5.5e-14
+there, eighteen times over the spread. So the zero branch keeps what A
+cannot resolve (the mean's e pairs under the floor, sign-random between
+runs), and with every pair under the floor divided instead (the gap floor
+at 0, a probe), ḡ · random1 scattered by 4.5e-9 between restarts, against
+5.6e-11 with the rule. **The bound is what is left**: a pair kept at zero
+has |A| ≤ e_A, so its z, and the step it leaves, is at most e_A / (2 gap)
+times |G^pq|. On the mean path that is the core pair (5, 6) at 1e-5 Å
+(1.7e-14, under 5.5e-14): its step is about 1e-9 Eh/bohr along random1,
+under that test's bar but not under its per-point scatter (README of
+`../intersection/`, "The mean gradient across the floor").
+
+The division under the floor adds its own noise, e_A / (2 gap) per pair:
+over ethylene's points from 1e-4 to 3e-4 Å the restarts' sd of ḡ · random1
+rose from 6.5e-11 to 3.1e-10 Eh/bohr, the price of g_P and g_Q no longer
+3e-6 off. **Goldens**: every one passes unchanged at its bar (the fast
+tier, and the slow tier's NEVPT2, Hessian, MCSCF and optimizer suites, on
+the RTX 3080); a case can move only where a pair sits under 1e-6 with an
+A the bound resolves. The forced pairs of
+`Nevpt2Zc.DegeneratePairRule`, `Nevpt2PcZc.DegeneratePairKeepsItsDivision`
+and `Nevpt2PcHessianProduct.DegenerateInactivePair` are the rule's own
+tests, and now assert the division.
 
 **Φ's adjoints** (`zc_adjoint`, at fixed z). B goes to the MO basis whole,
 naux nmo² (z spans the virtual–virtual block, which nothing else here reads
@@ -1575,8 +1647,10 @@ once per process.
     D(t) = D(0) (1 + t²/t0²) exactly.
   - `Nevpt2Zc.DegeneratePairRule`: the first virtual and a partner with
     |A| > 1e-6 forced 1e-7 Eh apart: refused `Numerical`, the message naming
-    both; with A_pq set to 1e-12, z_pq = 0 and every pair without the moved
-    orbital the unforced division to the bit.
+    both; with A_pq set to 1e-12, z_pq the division −A / (2 gap) to the
+    bit; with it at one unit roundoff of A's largest element, under the
+    bound, z_pq = 0, and every pair without the moved orbital the unforced
+    division to the bit.
   - `Nevpt2Zc.Shapes`: z^c symmetric, zero off its two blocks and on the
     diagonal; h̄^{z^c} = z^c, A^{z^c} = X − Xᵀ, Λ^L symmetric; y^c symmetric
     under the swap of its two strings, as the singlet c is.
@@ -1652,12 +1726,15 @@ once per process.
     1e-9, X^L's six residues below 1e-9, PC's E_corr against `e_corr.pc` to
     1e-9, and a state average refused `Unsupported`. PC's z^c is not
     asserted to vanish: it does not (above).
-  - `Nevpt2PcZc.DegeneratePairTakesTheZeroBranch` (`h2o_ccpvdz`): in each of
+  - `Nevpt2PcZc.DegeneratePairKeepsItsDivision` (`h2o_ccpvdz`): in each of
     the core and the virtual space, the pair with |A^SC| > 1e-6 closest in ε,
     the upper orbital moved to 1e-9 Eh above the lower through h alone (h +
     δ v vᵀ, v = C^−T e_j, so only that orbital's diagonal of C^T h C moves
     and f stays diagonal): PC's A_pq at most 1e-8 and 1e3 below SC's, its
-    z_pq exactly 0, and SC's pair refused `Numerical`, naming both orbitals.
+    z_pq the division −A / (2 gap) to the bit, and SC's pair refused
+    `Numerical`, naming both orbitals. Measured on the RTX 3080: the
+    virtual pair (22, 21)'s K = A / gap is 1.40e-4 at the real gap (0.32
+    Eh) and 1.52e-4 forced to 1e-9, z 7.6e-5: the limit, not round-off.
     The port of `nevpt2_energy_gpu.cpp`'s degenerate-ε check to the
     gradient's inputs.
   - `Nevpt2PcGradient.RefusesWhatTheEnergyRefuses` (skew H₂O): a zero CI

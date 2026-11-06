@@ -564,8 +564,8 @@ qd_pc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
 struct ZcMultipliers {
   /// @brief z^c, nmo x nmo column-major and symmetric, on res's device:
   /// z_pq = -A_pq / (2 (eps_p - eps_q)) for p != q both core or both
-  /// virtual, 0 everywhere else, the diagonal included, and on a degenerate
-  /// pair whose A is round-off.
+  /// virtual, 0 everywhere else, the diagonal included, and on a pair under
+  /// the gap floor whose A its rounding does not resolve.
   Buffers::device<double> z;
   /// @brief max |z_pq|.
   double max_z = 0.0;
