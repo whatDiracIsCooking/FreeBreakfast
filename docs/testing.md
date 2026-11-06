@@ -357,10 +357,9 @@ family with its representative.
   string literal on one line. The lister reports it as `exempt: why`, not
   flagged. Exempt only where no smaller input keeps the family's check: a
   measurement that asserts nothing, or a run whose size is the point. A
-  family takes a representative or an exemption, never both. The two at
-  #1008 are `McscfIntersectionTiming` (a timing) and `E2eCis` (the CIS
-  milestone's benzene run); `Nevpt2QdIntersection.Timing` needs none, being
-  one case of a family with fast ones.
+  family takes a representative or an exemption, never both. The one at
+  #1008 is `McscfIntersectionTiming`, a timing; `Nevpt2QdIntersection.Timing`
+  needs none, being one case of a family with fast ones.
 - **Where to mark.** Where a family's cheapest case is a refusal, mark its
   cheapest validation case, which stays in the fast set too. Where one mode of
   a `TEST_P` needs a fast case of its own, split it off. The markers at #984 are
@@ -369,7 +368,8 @@ family with its representative.
   #1008 added a smaller input as the representative of each family that had
   none, where its every case was past the line: STO-3G or 6-31G water in
   place of cc-pVDZ (`h2o_631g` in `data/casscf/`, PySCF over the same basis),
-  and fewer coordinates of a ladder.
+  and fewer coordinates of a ladder; `E2eCis`'s one case, at 1.5 s on the
+  gfx1200, was only ungated.
 - **The slow-test rule, restated:** a case past about 1.5 s on an idle RTX 3080
   goes under `FBF_SKIP_IF_FAST_TESTS()` unless it is its family's
   representative (`slow_test.h` has where the line comes from).

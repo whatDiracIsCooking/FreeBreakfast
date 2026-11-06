@@ -14,8 +14,9 @@
 // takes the same three runs to 282 s on the RTX 3080, past the 120 s an entry
 // is given (test/CMakeLists.txt).
 //
-// Slow, so skipped in fast mode, and RUN_SERIAL (test/gtest/CMakeLists.txt).
-// Needs a GPU.
+// In the fast set since #1008, at 1.5 s on the gfx1200 (the 282 s above is
+// the integral-direct sigma's, not this run's), and RUN_SERIAL
+// (test/gtest/CMakeLists.txt). Needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -153,10 +154,8 @@ void expect_matches(const fb::CisOutput &out, const fb::json &entry, std::string
 // printed on one line.
 TEST(E2eCis, BenzeneCcpvdzDensityFitted) {
   FBF_REQUIRE_GPU();
-  // The family is this one production-scale case by design (the header says
-  // why); CisStep and CisStepReference keep the step in the fast set.
-  FBF_FAMILY_EXEMPT("the CIS milestone's production-scale run, benzene at n_ov = 1953");
-  FBF_SKIP_IF_FAST_TESTS();
+  // In the fast set (#1008): 1.5 s on the gfx1200, the family's only case.
+  FBF_FAMILY_REPRESENTATIVE();
   constexpr std::string_view kName = "benzene_ccpvdz_df";
   const fb::json &entry = reference_case(kName);
   // The reference's whole groups: the lowest five levels, six roots.

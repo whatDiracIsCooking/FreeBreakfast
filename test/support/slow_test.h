@@ -49,9 +49,9 @@
 /// An instance is named by its param, or `Prefix/param` where two
 /// instantiations share one; `re` is a Python regex, searched for.
 ///
-/// A family with no case that could stay fast, such as a measurement that is
-/// not a check, or a production-scale end-to-end run, is declared exempt
-/// instead, with the reason, in any one of its cases (#1008). The lister
+/// A family with no case that could stay fast, such as a measurement that
+/// asserts nothing, is declared exempt instead, with the reason, in any one
+/// of its cases (#1008). The reason is one string literal, on one line. The lister
 /// reports it as exempt rather than flagged:
 ///
 ///   FBF_FAMILY_EXEMPT("why");                the family of this case
