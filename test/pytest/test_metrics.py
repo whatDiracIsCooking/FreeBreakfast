@@ -127,24 +127,28 @@ def test_gtest_json_cases() -> None:
             "binary": "free_breakfast_tests_gpu",
             "status": "pass",
             "seconds": 0.012,
+            "slow": False,
         },
         {
             "name": "Overlap.NeedsADevice",
             "binary": "free_breakfast_tests_gpu",
             "status": "skip",
             "seconds": 0.0,
+            "slow": False,
         },
         {
             "name": "Exchange/ExchangeGolden.Matches/1",
             "binary": "free_breakfast_tests_gpu",
             "status": "fail",
             "seconds": 3.25,
+            "slow": True,
         },
         {
             "name": "Exchange/ExchangeGolden.DISABLED_Huge/0",
             "binary": "free_breakfast_tests_gpu",
             "status": "skip",
             "seconds": 0.0,
+            "slow": False,
         },
     ]
 

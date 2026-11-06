@@ -220,6 +220,22 @@ def ctest_cases(build: Path) -> tuple[dict[str, set[str]], list[str]]:
     return by_binary, other
 
 
+def build_cases(build: Path, source: Path) -> tuple[list[Case], list[str]]:
+    """Every gtest case a built build dir's ctest runs, and the ctest entries
+    that are not one gtest case. Raises SystemExit when the dir or a binary
+    cannot be listed. devtools/slow_rule.py reads the families through it."""
+    if not (build / "CTestTestfile.cmake").exists():
+        raise SystemExit(f"test_families: {build} is not a configured build dir")
+    by_binary, other = ctest_cases(build)
+    cases: list[Case] = []
+    for exe, names in sorted(by_binary.items()):
+        listing = run_gtest_listing(Path(exe))
+        if listing is None:
+            raise SystemExit(f"test_families: cannot list {exe}")
+        cases += [c for c in cases_from_listing(listing, source) if c.name in names]
+    return cases, other
+
+
 def markers_in(source: Path, files: set[str]) -> list[Marker]:
     """Every marker in the given test files. A line comment or a #define is
     not a marker, so the macro's own definition and its documentation are not."""
@@ -523,19 +539,11 @@ def main(argv: list[str] | None = None) -> int:
     cases: list[Case] = []
     other: list[str] = []
     if args.build_dir is not None:
-        build = args.build_dir.resolve()
-        if not (build / "CTestTestfile.cmake").exists():
-            print(
-                f"test_families: {build} is not a configured build dir", file=sys.stderr
-            )
+        try:
+            cases, other = build_cases(args.build_dir.resolve(), source)
+        except SystemExit as e:
+            print(e, file=sys.stderr)
             return 2
-        by_binary, other = ctest_cases(build)
-        for exe, names in sorted(by_binary.items()):
-            listing = run_gtest_listing(Path(exe))
-            if listing is None:
-                print(f"test_families: cannot list {exe}", file=sys.stderr)
-                return 2
-            cases += [c for c in cases_from_listing(listing, source) if c.name in names]
     for path in args.gtest_json:
         cases += cases_from_listing(json.loads(path.read_text()), source)
     if not cases:

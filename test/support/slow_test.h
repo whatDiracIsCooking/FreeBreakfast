@@ -59,6 +59,12 @@
 /// Exempt only where no smaller input keeps the family's check: a family takes
 /// a representative or an exemption, never both.
 ///
+/// FBF_SKIP_IF_FAST_TESTS also records the gtest property `fbf_slow`, in
+/// every mode, so a full run's --gtest_output=json says which cases a fast run
+/// would have skipped: the nightly reads it to tell the fast set from the slow
+/// one (docs/testing.md "The slow-test rule, enforced"; #987). A case that
+/// reaches the macro only for some params is marked for exactly those.
+///
 /// std::getenv comes from the including TU's `import std;` -- the macro is
 /// expanded at the point of use, like gpu_requirement.h, not resolved here.
 
@@ -68,6 +74,7 @@
 
 #define FBF_SKIP_IF_FAST_TESTS()                                                                   \
   do {                                                                                             \
+    ::testing::Test::RecordProperty("fbf_slow", "1");                                              \
     if (const char *fb_fast = std::getenv("FREE_BREAKFAST_FAST_TESTS");                            \
         fb_fast != nullptr && fb_fast[0] != '\0' && fb_fast[0] != '0') {                           \
       GTEST_SKIP() << "slow validation test skipped in fast mode "                                 \
