@@ -276,8 +276,9 @@ std::vector<double> spin_density(const std::vector<double> &c, std::size_t n, st
 
 TEST_P(PipelineScfRohf, MatchesPyscf) {
   FBF_REQUIRE_GPU();
-  // Under slow_test.h: CH2 cc-pVTZ, the dearest case.
-  if (GetParam() == "ch2_ccpvtz") {
+  // Under slow_test.h: CH2 cc-pVTZ, the dearest case, and (#977) the
+  // glycylglycine cation, 2.4 s on the RTX 3080.
+  if (GetParam() == "ch2_ccpvtz" || GetParam() == "glygly_cation_sto3g") {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const fb::json &expected = rohf_case(GetParam());

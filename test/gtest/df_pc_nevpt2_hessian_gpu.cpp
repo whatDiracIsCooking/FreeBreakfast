@@ -310,6 +310,7 @@ void print_diagnostics(const fb::hessian::PcNevpt2Terms &h, const fb::json &doc,
 
 TEST(HessianDfPcNevpt2, MatchesTheSkewFixture) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &doc = fixture("h2co_skew_sto3g");
   const Reference ref = reference(doc);
   ASSERT_TRUE(ref.solution.has_value());
@@ -345,6 +346,7 @@ TEST(HessianDfPcNevpt2, MatchesTheSymmetricFixture) {
 // to the fixture's bar, whose ladder ran through 5.6e-5 Eh.
 TEST(HessianDfPcNevpt2, MatchesTheNearDegenerateFixture) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &doc = fixture("h2co_neardeg_sto3g");
   const Reference ref = reference(doc);
   ASSERT_TRUE(ref.solution.has_value());
@@ -408,6 +410,7 @@ TEST(HessianDfPcNevpt2, MatchesTheNearDegenerateFixture) {
 
 TEST(HessianDfPcNevpt2, MatchesTheLinearFixture) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &doc = fixture("hcn_sto3g");
   const Reference ref = reference(doc);
   ASSERT_TRUE(ref.solution.has_value());
@@ -467,6 +470,7 @@ fb::json c3v_ammonia() {
 
 TEST(HessianDfPcNevpt2, DegenerateInactivePairIsRefused) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const Reference ref = reference(c3v_ammonia());
   ASSERT_TRUE(ref.solution.has_value());
   const auto h = ref.hessian();

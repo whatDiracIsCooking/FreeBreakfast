@@ -391,6 +391,7 @@ constexpr std::array<std::array<std::int32_t, 3>, 7> kSymmetricShapes{{
 
 TEST(CiSigmaGpu, SymmetricLayoutMatchesHost) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   fb::DeviceResources res{0};
   const auto doc =
       fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
@@ -456,6 +457,7 @@ TEST(CiSigmaGpu, MatchesHostOnDirectSpin1Cases) {
 
 TEST(CiSigmaGpu, MatchesHostOnRandomIntegrals) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   fb::DeviceResources res{0};
   for (const auto &[n, n_alpha, n_beta, k] : kRandomShapes) {
     SCOPED_TRACE(std::format("n = {}, N_alpha = {}, N_beta = {}, k = {}", n, n_alpha, n_beta, k));
@@ -476,6 +478,7 @@ TEST(CiSigmaGpu, MatchesHostAtCas1212) {
 // at CAS(12,12) in the slow tier.
 TEST(CiSigmaGpu, Fp32MatchesHostToFloatRounding) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   fb::DeviceResources res{0};
   const auto doc =
       fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
@@ -597,6 +600,7 @@ void check_blocked(std::int32_t n_alpha, std::int32_t n_beta, const Integrals &i
 // (the symmetric where N_alpha = N_beta) and both precisions.
 TEST(CiSigmaGpu, BlockedMatchesUnblocked) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const auto doc =
       fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
   ASSERT_TRUE(doc.has_value()) << doc.error().message;

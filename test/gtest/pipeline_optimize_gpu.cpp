@@ -296,6 +296,7 @@ TEST(PipelineOptimize, WaterReachesThePyscfMinimumAndLaterStepsRunThere) {
 
 TEST(PipelineOptimize, EthanolReachesThePyscfMinimum) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   expect_reference_minimum("ethanol_ccpvdz", "", kEthanolMaxSteps);
 }
 
@@ -304,6 +305,7 @@ TEST(PipelineOptimize, EthanolReachesThePyscfMinimum) {
 // last evaluation's largest force under the threshold, in as few steps.
 TEST(PipelineOptimize, WaterConvergesOverIntegralDirectEris) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &start = reference_case("h2o_ccpvdz");
   const fb::test::ScratchDir dir("pipeline_optimize_h2o_direct");
   const auto config = write_config(dir, start, "", /*integral_direct=*/true);
@@ -361,6 +363,7 @@ constexpr std::size_t kCasscfMaxSteps = 15;
 // tier.
 TEST(PipelineOptimize, WaterCasscfReachesThePyscfMinimum) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &expected = casscf_reference();
   const fb::test::ScratchDir dir("pipeline_optimize_casscf");
   std::string xyz = std::format("{}\nstart\n", expected.at("start").size());
@@ -482,6 +485,7 @@ Points mirrored(Points b) {
 // at every one. Fewer than 15 steps, a regression guard.
 TEST(PipelineOptimize, SkewFormaldehydeSaRootOneReachesThePyscfMinimum) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &expected = sa_casscf_reference();
   const auto state = expected.at("state").get<std::int32_t>();
   constexpr std::int32_t kFollowedRoot = 1;
@@ -665,9 +669,10 @@ std::filesystem::path write_nevpt2_config(const fb::test::ScratchDir &dir,
 // threshold too. The first evaluation is the start's PySCF energy
 // (nevpt2_gradient.json) and the outer [nevpt2_gradient], rerun at the
 // optimum from a fresh SCF and pick, the optimized energy. 13 steps in about
-// 4 s on the 3080, inside the fast tier.
+// 4 s on the 3080, under slow_test.h since #977.
 TEST(PipelineOptimize, WaterNevpt2ReachesAStationaryPointAtPyscfsEnergy) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &start = nevpt2_start();
   const fb::json &expected = nevpt2_optimum();
   const fb::test::ScratchDir dir("pipeline_optimize_nevpt2");
@@ -932,9 +937,10 @@ QdPath optimize_qd_state(std::string_view name, std::int32_t state, std::string_
 // held to optimize_qd_state's bars: no crossing along the path. The point
 // is planar (C2v), so its two roots are of different irreps and every
 // overlap is 1 to rounding; the next case is one where they are not. 10
-// steps in about 3 s on the 3080, inside the fast tier.
+// steps in about 3 s on the 3080, under slow_test.h since #977.
 TEST(PipelineOptimize, FormaldehydeQdStateOneReachesAStationaryPoint) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   optimize_qd_state("h2co_ccpvdz_sa2", 1, kScf, kQdMaxSteps);
 }
 
@@ -1195,10 +1201,11 @@ void write_xyz(const std::filesystem::path &path, const fb::json &atoms) {
 // - every optimize.json pair overlap after the first at or above the floor.
 // Logged, not gating: the first evaluation's energies, and a fresh single
 // point's g_0, g_1 and h_01 at the start (h up to its sign) against the
-// fixture's, and the step count. 42 steps in about 15 s on the 3080: past
-// ten seconds, but the family's cheapest, so in the fast tier.
+// fixture's, and the step count. 42 steps in about 15 s on the 3080, under
+// slow_test.h since #977.
 TEST(PipelineOptimize, EthyleneMeciReachesTheReferenceMeci) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &reference = meci_reference();
   const fb::json &meci = reference.at("meci");
   const double f_bar = kMaxForce + reference.at("optimizer").at("force_tolerance").get<double>();
@@ -1772,6 +1779,7 @@ TEST(PipelineOptimize, EthylenePcQdMeciIsAnMeciAndSeamStationary) {
 // file alone and printed.
 TEST(PipelineOptimize, SkewFormaldehydeQdMeciWritesItsBranchingSpace) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   constexpr double kQdProductBar = 1e-9;
   const fb::json start = qd_case("h2co_skew_ccpvdz_sa3");
   const fb::test::ScratchDir dir("pipeline_optimize_qd_meci_branching");

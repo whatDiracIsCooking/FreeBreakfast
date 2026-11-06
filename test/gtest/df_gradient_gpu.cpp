@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -213,6 +214,7 @@ TEST(DfGradient, TzJkfitMatchesPyscf) {
 
 // The aux i shells reach (ff|i) and (i|i), the ladders' top classes.
 TEST(DfGradient, TzAcCdThroughFfIMatchesPyscf) {
+  FBF_SKIP_IF_FAST_TESTS();
   check_gradient("h2o_ccpvtz_accd66", 3, 6);
 }
 

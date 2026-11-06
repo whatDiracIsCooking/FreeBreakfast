@@ -41,6 +41,7 @@ import free_breakfast.pipeline.casci;
 
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
+#include "slow_test.h"
 
 namespace {
 
@@ -490,6 +491,10 @@ class McscfZvectorCiRhs : public ::testing::TestWithParam<std::string_view> {};
 
 TEST_P(McscfZvectorCiRhs, SolvesTheCoupledEquations) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h (#977): the SA2 formaldehyde, 1.6 s on the RTX 3080.
+  if (std::string_view{GetParam()} == "h2co_ccpvdz_sa2") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const fb::json &entry = reference_case(GetParam());
   const auto weights = entry.at("weights").get<std::vector<double>>();
   const auto nroots = static_cast<std::int32_t>(weights.size());

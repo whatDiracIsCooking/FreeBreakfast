@@ -160,6 +160,10 @@ class ExchangeGolden : public ::testing::TestWithParam<const char *> {};
 // is recorded.
 TEST_P(ExchangeGolden, MatchesLibcint) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h (#977): CO cc-pVTZ, 4.1 s on the RTX 3080.
+  if (std::string_view{GetParam()} == "co_ccpvtz") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const Golden g = read_golden(GetParam());
   ASSERT_FALSE(g.vk.empty());
   const double scale = max_abs(g.vk);

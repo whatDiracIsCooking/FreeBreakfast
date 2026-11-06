@@ -212,6 +212,7 @@ void expect_skew(std::string_view variant) {
 
 TEST(PipelineNevpt2AnalyticHessian, ScSkewMatchesTheDirectCall) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   expect_skew("sc");
 }
 

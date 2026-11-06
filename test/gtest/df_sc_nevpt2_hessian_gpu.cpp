@@ -254,6 +254,7 @@ std::vector<std::size_t> iota(std::size_t n) {
 
 TEST(HessianDfScNevpt2, MatchesTheSkewFixture) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &doc = fixture("h2co_skew_sto3g");
   const Reference ref = reference(doc);
   ASSERT_TRUE(ref.solution.has_value());
@@ -468,6 +469,7 @@ fb::json c3v_ammonia() {
 
 TEST(HessianDfScNevpt2, DegenerateInactivePairIsRefused) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const Reference ref = reference(c3v_ammonia());
   ASSERT_TRUE(ref.solution.has_value());
   const auto h = ref.hessian();

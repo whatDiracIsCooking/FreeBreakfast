@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -177,6 +178,7 @@ double expect_near_all(const std::vector<double> &a, const std::vector<double> &
 // against each other.
 TEST(PipelineHessian, AnalyticAndNumericalDfRhfHessiansMatchPyscf) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &expected = reference_case(kNumericalFile, "cases", "h2o_ccpvdz");
   const std::size_t n = 3 * expected.at("atoms").size();
   std::vector<double> want;

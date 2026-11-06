@@ -22,6 +22,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -494,6 +495,7 @@ std::string refused_class(const std::string &message) {
 // Numerical naming that pair, not a PC class, and writes nothing.
 TEST(PipelineNevpt2Gradient, QdPcThroughAContinuumRefusesOnlyTheDegeneratePair) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::test::ScratchDir dir("pipeline_nevpt2_gradient_qd_continuum");
   ASSERT_TRUE(
       fb::write_file(dir / "hf.xyz", "2\nhydrogen fluoride\nH 0 0 0\nF 0 0 0.917\n").has_value());
@@ -727,11 +729,13 @@ void expect_frozen_qd_state(std::string_view variant) {
 
 TEST(PipelineNevpt2Gradient, FrozenCoreQdScMatchesItsOwnDifferences) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   expect_frozen_qd_state("sc");
 }
 
 TEST(PipelineNevpt2Gradient, FrozenCoreQdPcMatchesItsOwnDifferences) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   expect_frozen_qd_state("pc");
 }
 

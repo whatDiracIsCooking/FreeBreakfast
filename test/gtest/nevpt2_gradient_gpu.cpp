@@ -2734,6 +2734,10 @@ class Nevpt2QdPcAdjoint : public ::testing::TestWithParam<std::string> {};
 
 TEST_P(Nevpt2QdPcAdjoint, AdjointsMatchLadders) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h (#977): the skew H2CO and H8 ring, 2.3 and 3.5 s on the RTX 3080; H6 stands for them.
+  if (std::string_view{GetParam()} != "h6_631g_sa2") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   expect_qd_ladders(GetParam(), kQdPcSmooth, true);
 }
 
@@ -4179,10 +4183,10 @@ class Nevpt2QdCoupling : public ::testing::TestWithParam<std::string_view> {};
 TEST_P(Nevpt2QdCoupling, MatchesNumerical) {
   FBF_REQUIRE_GPU();
   // Under slow_test.h: the weighted skew H2CO, 5.9 s on the gfx1200 and 1.8 s
-  // on the RTX 3080 (#793). Its equal-weight
-  // twin stays in the fast set, and Nevpt2QdLagrangian.IsStationary/unequal
-  // keeps unequal weights there.
-  if (GetParam() == "h2co_skew_ccpvdz_sa3_weighted") {
+  // on the RTX 3080 (#793), and (#977) its equal-weight twin, 1.9 s there.
+  // The H8 ring stays in the fast set, and
+  // Nevpt2QdLagrangian.IsStationary/unequal keeps unequal weights there.
+  if (GetParam().starts_with("h2co_skew_ccpvdz_sa3")) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   expect_qd_coupling(std::string{GetParam()});
@@ -4237,10 +4241,11 @@ class Nevpt2QdPcGradient : public ::testing::TestWithParam<std::string_view> {};
 TEST_P(Nevpt2QdPcGradient, MatchesNumerical) {
   FBF_REQUIRE_GPU();
   // Under slow_test.h: the CAS(6,6) H8 ring in cc-pVDZ, 34.4 s on the gfx1200
-  // and 4.1 s on the RTX 3080 (#793). And the weighted skew H2CO, 5.2 s
-  // there: its equal-weight twin stays in the fast set, and
-  // Nevpt2QdLagrangian.IsStationary/unequal keeps unequal weights there.
-  if (GetParam() == "h8_ring12_ccpvdz_cas66_sa2" || GetParam() == "h2co_skew_ccpvdz_sa3_weighted") {
+  // and 4.1 s on the RTX 3080 (#793). And the skew H2CO, weighted 5.2 s
+  // there and (#977) equal 1.6 s: the planar H2CO's two stay in the fast
+  // set, and Nevpt2QdLagrangian.IsStationary/unequal keeps unequal weights.
+  if (GetParam() == "h8_ring12_ccpvdz_cas66_sa2" ||
+      GetParam().starts_with("h2co_skew_ccpvdz_sa3")) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   expect_qd_gradient(std::string{GetParam()}, true);
@@ -4380,6 +4385,7 @@ TEST(Nevpt2QdPcGradient, OneRootAgainstPcGradient) {
 // at PC's u_K u_K^T, one code path, so MatchesNumerical is its check there.
 TEST(Nevpt2QdPcGradient, WFormIsLinear) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const auto start = std::chrono::steady_clock::now();
   NuclearRun run = qd_run("h2co_skew_ccpvdz_sa3_weighted");
   expect_qd_w_linear(run, true, start);
@@ -4398,10 +4404,10 @@ class Nevpt2QdPcCoupling : public ::testing::TestWithParam<std::string_view> {};
 TEST_P(Nevpt2QdPcCoupling, MatchesNumerical) {
   FBF_REQUIRE_GPU();
   // Under slow_test.h: the weighted skew H2CO, 5.3 s on the gfx1200 and 1.9 s
-  // on the RTX 3080 (#793). Its equal-weight
-  // twin stays in the fast set, and Nevpt2QdLagrangian.IsStationary/unequal
-  // keeps unequal weights there.
-  if (GetParam() == "h2co_skew_ccpvdz_sa3_weighted") {
+  // on the RTX 3080 (#793), and (#977) its equal-weight twin, 2.0 s there.
+  // The H8 ring stays in the fast set, and
+  // Nevpt2QdLagrangian.IsStationary/unequal keeps unequal weights there.
+  if (GetParam().starts_with("h2co_skew_ccpvdz_sa3")) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   expect_qd_coupling(std::string{GetParam()}, true);
@@ -4665,6 +4671,10 @@ class Nevpt2QdFrozenCoreAdjoint : public ::testing::TestWithParam<FrozenLadderCa
 
 TEST_P(Nevpt2QdFrozenCoreAdjoint, AdjointsMatchLadders) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h (#977): PC, 2.3 s on the RTX 3080; SC stands for it.
+  if (GetParam().pc) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   expect_frozen_ladders(GetParam());
 }
 

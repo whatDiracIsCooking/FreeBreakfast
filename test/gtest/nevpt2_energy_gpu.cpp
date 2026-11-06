@@ -1580,6 +1580,11 @@ class Nevpt2PcEnergyAdjointLadder
 
 TEST_P(Nevpt2PcEnergyAdjointLadder, BarsMatchRichardsonLadder) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h (#977): the CAS(8,8) slab groups, 2.8 s each on the RTX 3080;
+  // CAS(4,4)'s stand for them.
+  if (std::get<0>(GetParam()) == kAdjointCase) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const auto [name, group] = GetParam();
   const std::filesystem::path dir = kDataDir / name;
   fb::DeviceResources res(0);

@@ -696,6 +696,10 @@ class Nevpt2QdNacBruteForce : public ::testing::TestWithParam<std::string_view> 
 
 TEST_P(Nevpt2QdNacBruteForce, MatchesNumerical) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h (#977): the H8 cases, 2.2 and 3.1 s on the RTX 3080; H6 stands for them.
+  if (std::string_view{GetParam()} != "h6_631g_sa2") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   expect_brute_force(std::string{GetParam()});
 }
 
@@ -779,8 +783,9 @@ class Nevpt2QdNacFold : public ::testing::TestWithParam<std::string_view> {};
 TEST_P(Nevpt2QdNacFold, MatchesThreeSolves) {
   FBF_REQUIRE_GPU();
   // Under slow_test.h: the skew H2CO cases, 17.5 and 17.6 s on the gfx1200
-  // and 6.0 and 6.2 s on the RTX 3080 (#793).
-  if (GetParam().starts_with("h2co_skew_ccpvdz_sa3")) {
+  // and 6.0 and 6.2 s on the RTX 3080 (#793); and (#977) the H8 cases, 2.9
+  // and 4.2 s on the RTX 3080. H6 stands for them all.
+  if (GetParam() != "h6_631g_sa2") {
     FBF_SKIP_IF_FAST_TESTS();
   }
   expect_fold(std::string{GetParam()});

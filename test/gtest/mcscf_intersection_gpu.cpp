@@ -317,6 +317,10 @@ class McscfIntersection : public ::testing::TestWithParam<std::string_view> {};
 
 TEST_P(McscfIntersection, MatchesSeparateCalls) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h (#977): the skew SA3 formaldehyde, 3.6 s on the RTX 3080.
+  if (std::string_view{GetParam()} == "h2co_skew_ccpvdz_sa3") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const std::string name{GetParam()};
   const fb::json &entry = reference_case(name);
   const auto nroots = static_cast<std::int32_t>(entry.at("weights").size());
@@ -872,6 +876,7 @@ std::vector<double> exact_c3v(const double cc) {
 //   1e-9 in the difference; and the gradient's Z-vector is solved to 1e-10.
 TEST(McscfC3v, ExactGradientAgainstFiniteDifference) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   constexpr double kCc = 1.45;
   constexpr double kStep = 1e-3;
   constexpr double kFdTolerance = 1e-8;

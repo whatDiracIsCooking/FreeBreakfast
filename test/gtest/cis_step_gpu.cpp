@@ -208,9 +208,10 @@ class CisStepReference : public ::testing::TestWithParam<Case> {};
 TEST_P(CisStepReference, MatchesPyscf) {
   FBF_REQUIRE_GPU();
   // Exact K at f: ~74 s on gfx1200, ~33 s on the 3080. The fitted f-shell
-  // case below stands for it in the fast set.
+  // case below stands for it in the fast set. And exact K in cc-pVDZ, 5.3 s
+  // on the 3080 (#977): its fitted twin stands for it.
   const bool exact_f = GetParam().name == "hf_ccpvtz";
-  if (exact_f) {
+  if (exact_f || GetParam().name == "h2o_ccpvdz") {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const fb::json &entry = reference_case(GetParam().name);

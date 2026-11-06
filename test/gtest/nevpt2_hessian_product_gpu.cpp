@@ -1203,6 +1203,7 @@ constexpr double kHcnLadderFloor = 1e-6;
 //   lift nothing and pass the ladder at the default cut.
 TEST(Nevpt2PcHessianProduct, SymmetricLiftReported) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   fb::DeviceResources res(0);
   const State &s = symmetric_state();
   ASSERT_FALSE(s.b.empty());

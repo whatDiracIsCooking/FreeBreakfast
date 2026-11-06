@@ -446,6 +446,7 @@ TEST(PipelineCasscfStart, ItsOwnNpyFilesReproduceARun) {
 // SA-CASSCF reaches another solution, -75.9010 Eh against -75.8487.)
 TEST(PipelineCasscfStart, CarriedToADisplacedGeometryAndBackIsTheSameState) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &entry = reference_case("h2o_ccpvdz", "casscf_df.json");
   const fb::test::ScratchDir dir("pipeline_casscf_start");
   auto first = run_in(
@@ -495,6 +496,7 @@ TEST(PipelineCasscfStart, CarriedToADisplacedGeometryAndBackIsTheSameState) {
 // as the Casci step is, one root.
 TEST(PipelineCasscfStart, ACasciOverACasscfsOrbitalsIsItsEnergy) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &entry = reference_case("h2o_ccpvdz");
   const fb::test::ScratchDir dir("pipeline_casscf_start");
   auto first =

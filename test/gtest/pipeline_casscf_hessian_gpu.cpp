@@ -260,6 +260,7 @@ void expect_relaxed_fd(std::string_view name, std::string_view active,
 
 TEST(PipelineCasscfHessian, StateSpecific631gMatchesRelaxedFd) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   expect_relaxed_fd("h2o_631g", kSigmaPairs);
 }
 
@@ -288,16 +289,19 @@ TEST(PipelineCasscfHessian, AnalyticStateSpecific631gMatchesRelaxedFd) {
 
 TEST(PipelineCasscfHessian, AnalyticStateSpecificCcpvdzMatchesRelaxedFd) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   expect_relaxed_fd("h2o_ccpvdz", kSigmaPairs, "analytic", 0, kAnalyticTolerance);
 }
 
 TEST(PipelineCasscfHessian, AnalyticStateAveragedEqualWeightsRoot1MatchesRelaxedFd) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   expect_relaxed_fd("h2o_631g_sa2", kSigmaPairs, "analytic", 1, kAnalyticTolerance);
 }
 
 TEST(PipelineCasscfHessian, AnalyticStateAveragedUnequalWeightsRoot1MatchesRelaxedFd) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   expect_relaxed_fd("h2o_631g_sa2_unequal", "3, 4, 5, 6", "analytic", 1, kAnalyticTolerance);
 }
 
@@ -337,6 +341,7 @@ TEST(PipelineCasscfHessian, StateAveragedRootAnalyticMatchesNumerical) {
 // frequencies to 0.1 cm⁻¹.
 TEST(PipelineCasscfHessian, OptimizedWaterAnalyticFrequenciesMatchNumerical) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const auto doc = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_gradient" /
                                  "casscf_optimize.json");
   ASSERT_TRUE(doc.has_value()) << doc.error().message;

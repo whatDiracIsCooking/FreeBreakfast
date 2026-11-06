@@ -819,6 +819,7 @@ fb::json c3v_ammonia() {
 
 TEST(HessianNevpt2Tangents, DegeneratePairRule) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   const Reference ref = reference(c3v_ammonia());
   ASSERT_TRUE(ref.cp.has_value());
   const auto ncore = static_cast<std::size_t>(ref.ncore);

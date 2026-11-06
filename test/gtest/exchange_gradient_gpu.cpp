@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -165,10 +166,12 @@ TEST(ExchangeGradientGolden, H2OCcPvdz) {
   expect_matches_libcint("h2o_ccpvdz");
 }
 
-// Every K class through (ff|ff), unscreened: about 5 s on the RX 9060 XT,
-// under slow_test.h's ten, so it stays in the fast tier.
+// Every K class through (ff|ff), unscreened: about 5 s on the RX 9060 XT
+// and 6.1 s on the RTX 3080, under slow_test.h since #977: cc-pVDZ stands
+// for the family in the fast tier.
 TEST(ExchangeGradientGolden, H2OCcPvtz) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   expect_matches_libcint("h2o_ccpvtz");
 }
 
