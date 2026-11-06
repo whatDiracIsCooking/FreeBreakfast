@@ -665,7 +665,7 @@ On a converged single-state CASSCF,
 $g_{\mathrm{orb}}$ \code{response::fock}'s orbital gradient over the packed
 non-redundant pairs. Stationarity in the CASSCF parameters is the Z-vector
 equation \cite{handy1984} over the CI-relaxed Hessian, solved by
-\code{mcscf::zvector} (preconditioned CG, CI block projected off $c$):
+\code{response::zvector} (preconditioned CG, CI block projected off $c$):
 orbital right-hand side $g + \operatorname{pack}(A^{\mathrm{corr}} + A^{z^c})$
 and CI right-hand side $\tfrac12 P_c(y + y^c)$. The $\tfrac12$ is
 \code{zvector}'s convention (its CI row is half the Hessian's).
@@ -750,7 +750,7 @@ its $W_{rr}$: every root carries $\eps$'s share through $\gamma^{\mathrm{SA}}$.
 
 The SA-CASSCF parameters are the non-redundant rotations, the roots $c_r$
 and the rotations $\Theta$ among them. With $(Z, z, \Theta)$ in
-\code{mcscf::zvector}'s coordinates,
+\code{response::zvector}'s coordinates,
 \begin{equation}
   \mathcal L = \mathcal E[W] + Z\cdot g_{\mathrm{SA}} + \sum_r 2w_r\,z_r\cdot(H - E_r)c_r
   + \sum_{r<s}\bigl(2(w_r - w_s)\Theta_{sr} + \zeta_{sr}\bigr)\langle c_s|H|c_r\rangle
@@ -805,7 +805,7 @@ $\sum_K dE_K/dR = G(1)$. The state form is a wrapper that builds
 $W = u_Ku_K^\T$, refusing a QD state within $10^{-8}\,E_h$ of another.
 
 A list of $W$'s shares the forward arrays, the Fock, the CI-relaxed Hessian
-and one block Z-vector solve (\code{mcscf::zvectors}) over all right-hand
+and one block Z-vector solve (\code{response::zvectors}) over all right-hand
 sides, each column's true residual checked against $10^{-10}$. The
 derivative passes stay one per $W$: one three-centre derivative kernel is
 most of each pass, so stacking them would need a multi-density kernel.
