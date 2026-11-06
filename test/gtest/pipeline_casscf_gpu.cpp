@@ -335,6 +335,7 @@ void expect_matches_density_fitted(std::string_view name) {
 
 TEST_P(PipelineCasscf, MatchesPyscfDensityFitted) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE("h2o_ccpvdz");
   if (GetParam().slow) {
     FBF_SKIP_IF_FAST_TESTS();
   }

@@ -33,7 +33,7 @@ A gate is named by **when it runs**, not by what it contains.
 | Gate | When | Runs | Budget |
 | --- | --- | --- | --- |
 | `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++, the Python half when it touches `.py`; the fast set of each | under 5 min on a busy card |
-| `pr` | by hand before opening a PR; `milestone-run` requires it | the fast set, both languages; later, only the selected part of it | under 5 min on a busy card |
+| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set | under 5 min on a busy card |
 | `nightly` | a timer on this box | everything, unskipped, both languages, plus the cross-backend compile check | none; it has the night |
 
 **The single-backend rule holds for all three.** A gate runs on one card, and
@@ -44,7 +44,9 @@ unattended HIP run on the gfx1200 can wedge the card (#477). It covers HIP with
 clang `-x hip`, which is the one portability hole a single-backend run cannot see.
 
 **The push gate's test set does not change in this milestone.** It is already a
-fixed set, and its job is "is this obviously broken". Selection applies to `pr`.
+fixed set, and its job is "is this obviously broken". Selection applies to `pr`,
+and only to its C++ half ("Test selection" below). **The nightly is what makes
+that safe:** it runs every case the `pr` gate leaves out, within a day.
 
 ## Acceptance criteria: one run, a bar from analysis
 
@@ -463,17 +465,65 @@ when there is nothing to list.
 
 ## Test selection
 
-### The contract
+**Today (#989):** `test.py pr` runs **each family's representative and nothing
+else** of the C++ cases, and the nightly runs the rest. The selection needs no
+diff and no graph: it is the same set for every PR. It came out of #988's
+replay, below, which found diff-based selection too expensive to be worth it.
 
-**The map exists (#983, "The map" below); the selector is planned in #989.**
-This is the draft contract. #989 updates it to what was actually built.
+- **The set is the lister's.** After the build, `pr` runs
+  `devtools/test_families.py <build dir> --json` ("Families" above) and takes
+  each family's `representative`, the marked case or else the cheapest by the
+  metrics series. Nothing in `test.py` re-derives it.
+- **An exempt family runs nothing**; that is what `FBF_FAMILY_EXEMPT` says.
+- **A flagged family runs whole**, every member of it in the fast set: with no
+  representative to stand in for it, selection runs more, never fewer. Each
+  one is named on a `pr:   flagged, run whole:` line.
+- **A ctest entry that is not one gtest case** (the examples, which run
+  `free-breakfast` through a cmake script) is in no family, and runs.
+- **A wrong marker fails the gate** (the lister's exit 1), before the card is
+  taken: the set would be missing a family. So does a lister that cannot list.
+  Fix the marker, or run the whole fast set with `--all`.
+- **The join is on gtest's names.** The lister names a case as gtest's own
+  `--gtest_list_tests` does, and so does each ctest entry's `--gtest_filter`,
+  so `pr` reads the case from the filter and never from ctest's entry name,
+  which prints a value param differently (`/"Singlet"` against `/Singlet`,
+  `<double>` against `/1`; #988).
+- **Then the split is the usual one** ("Reading a gate's run"): the unselected
+  entries go into ctest's exclude file beside the batched ones, and the
+  batches carry only selected cases. The preset's filters and a `-- -R …`
+  still narrow the listing first, so `-- -R Foo` runs `Foo`'s representatives;
+  `--all -- -R Foo` runs its whole fast set.
+- **It prints the count against the lister's:**
+  `pr: representatives only: N of M ctest entries selected, against the
+  lister's K representatives (…)`. Without a `--` filter, `N` is `K` plus the
+  flagged families' members and the entries that are not gtest cases.
+- **And the representatives that skipped:** `pr: N representative(s)
+  skipped`, each named on a `skipped representative:` line. A family whose
+  representative skipped ran nothing in this gate; under
+  `FREE_BREAKFAST_FAST_TESTS` that is a case that must be ungated, or a
+  different representative marked. #989 found eight families whose cheapest
+  case by the nightly's (unskipped) times is one `FBF_SKIP_IF_FAST_TESTS()`
+  gates, and marked each one's single fast instance: cheapest by time is not
+  cheapest in the fast set.
+- **Python is not selected.** `pr`'s Python half is the fast pytest set, as
+  before.
+- **What the gate gives up** is a regression that only a non-representative
+  case would catch: it is caught by the next nightly, which opens an issue
+  (#986), rather than before the merge.
 
-**Inputs:** the diff from the merge base with `origin/main`, and the gate's own
-build directory once it is built and scanned. The graph is read from the build
-being gated, so it is per backend and per preset by construction.
+### The map: `devtools/test_map.py`
 
-**The graph.** Nothing in it is written by hand; the compiler and CMake are the
-sources of truth.
+**Today (#983):** the build's dependency graph, written as one JSON map. It is
+an analysis tool, not wired into any gate. #988's replay read it, and it stays
+for that.
+
+```bash
+python3 devtools/test_map.py build-hip -o map.json   # the map; report on stderr
+python3 devtools/test_map.py build-hip --file src/integrals/mmd/mmd_launch.cu
+```
+
+Nothing in it is written by hand; the compiler and CMake are the sources of
+truth.
 
 - **Module edges** come from each translation unit's `.ddi` file, the
   dependency scanner's output, whose `requires` lists the modules that unit
@@ -490,16 +540,6 @@ sources of truth.
 - **Not** the `.modmap` named in `compile_commands.json`. It lists every
   transitively visible module, which clang needs, so it is a closure rather than
   an edge list. Selecting from it would select nearly everything.
-
-### The map: `devtools/test_map.py`
-
-**Today (#983):** the graph above, built and written as one JSON map. It is
-an analysis tool, not wired into any gate; #989's selector reads it.
-
-```bash
-python3 devtools/test_map.py build-hip -o map.json   # the map; report on stderr
-python3 devtools/test_map.py build-hip --file src/integrals/mmd/mmd_launch.cu
-```
 
 It needs a configured and built build dir (the scan is part of the build).
 It writes its own File API query, and when the dir has no codemodel reply yet
@@ -533,74 +573,39 @@ The map, schema 1:
 | `tests` | each test file: `targets`, its direct `requires` as the scanner wrote them, `links`, and its ctest `entries` |
 | `unmapped` | `files` under `src/` and `test/` it could not place, each with a `category`; ctest `entries` that are not one gtest case; `modules` required but provided by no unit |
 
-`category` says why a file is unplaced. `cmake` and `data` run everything, per
-the list above. `doc`, `config` (`.clang-format`), `python` and `unconfigured`
-(the nearest `CMakeLists.txt` is not configured in this preset: `test/experimental/`
-outside the experimental presets) have no effect on this build. `other` is
-anything else, a file the map cannot account for, and the report lists each
-one. On `build-hip` at #983, `other` is empty, and the unmapped entries are
-`example_rhf` and `example_hessian`, which run `free-breakfast` through a cmake
-script rather than a gtest case.
+`category` says why a file is unplaced. `cmake` and `data` would run
+everything under a diff-based selection. `doc`, `config` (`.clang-format`),
+`python` and `unconfigured` (the nearest `CMakeLists.txt` is not configured in
+this preset: `test/experimental/` outside the experimental presets) have no
+effect on this build. `other` is anything else, a file the map cannot account
+for, and the report lists each one. On `build-hip` at #983, `other` is empty,
+and the unmapped entries are `example_rhf` and `example_hessian`, which run
+`free-breakfast` through a cmake script rather than a gtest case.
 
-**Selection:**
+### The replay, and why selection is not diff-based
 
-1. Map each changed file to its owner: its module for a module unit, its target
-   otherwise.
-2. Take every module or target that depends on an owner, directly or
-   transitively, with its distance from the nearest owner.
-3. A **test file** is selected through its own direct `requires` and link edges:
-   - a test file that is itself changed, or that directly requires an owner or
-     a direct dependent of one (distance 0 or 1), runs **its whole fast set**;
-   - a test file whose nearest affected requirement is further away (distance 2
-     or more) runs **only its families' representatives**;
-   - any other test file does not run.
-4. **Host binaries always run in full.** They take seconds, and selecting among
-   them would buy nothing but risk. Selection applies to the GPU batches.
-5. **The Python fast tier is not selected.** It runs whole when a `.py` changed,
-   as it does now.
+**#988** replayed the last 50 merged PRs (#911 to #1013) against the drafted
+contract: a test file at distance 0 or 1 from a changed file's owner ran its
+whole fast set, one at distance 2 or more ran its families' representatives,
+and a `CMakeLists.txt`, `cmake/`, `deps/`, `data/`, `test/support/`,
+`tools/emit/`, `test/*/data/` or an unplaceable file ran everything. Each PR's
+selection was costed by the nightly's per-case times, against a fixed bar:
+**go** if the median PR's selection cost at most half the fast GPU batch.
 
-**These changes run everything:**
+It was a **no-go**: the median was **73%** (66% even with a `CMakeLists.txt`
+beside a new source counting only as that source), and no PR touching a
+`src/` module selected less than 56%. Two causes, both structural:
 
-- anything under `cmake/`, `deps/` or `test/support/`;
-- any `CMakeLists.txt` or `CMakePresets.json`;
-- anything under `data/` (basis sets and SAD stamps are compiled into the binary);
-- anything under `tools/emit/`;
-- a file under `test/*/data/` that no test can be shown to read;
-- any file the map cannot place. An unmapped file is a reason to run more,
-  never fewer.
+- **A `CMakeLists.txt` runs everything, and adding a file means touching one.**
+  17 of the 23 run-everything PRs were there only for that.
+- **Umbrella imports flatten the graph.** `free_breakfast.pipeline.config`
+  imports every pipeline step and is in 48 of the 157 GPU test files;
+  `free_breakfast.core` is in 154.
 
-**The selector prints what it selected and why,** file by file, the way the gates
-print their skip lists now. A selection nobody can read is one nobody can trust.
-
-### Shadow mode, and when it becomes the gate
-
-**#989** adds `test.py pr --affected` in **shadow mode**: the full fast set still
-runs, and the run also computes the selection and records it as a `shadow`
-metrics record. A **miss** is a failing entry that the selection did not select.
-
-**#990 makes the selection the PR gate,** with `--all` as the escape hatch, once
-the shadow records show:
-
-> **2 weeks or 20 PRs, whichever is later, with zero misses.**
-
-A miss resets the count. Its cause is fixed in the contract or the map first.
-
-### The replay, and its go or no-go
-
-Before any of the selector is built, **#988** replays the last ~50 merged PRs:
-for each, what the contract would have selected, and its share of the fast GPU
-batch's time by the nightly's per-case times. Selection saves little if most
-PRs land in modules that nearly every test imports (`core`, `recipes`, the base
-of `integrals`). The replay decides with a fixed bar:
-
-- **Go:** the median PR's selection costs **at most half** the full fast GPU
-  batch. #989 and #990 proceed as written.
-- **No-go:** otherwise. #989 becomes "`test.py pr` runs every family's
-  representative and nothing else, and the nightly carries the rest", which
-  needs no graph at all, and #990 closes. #983's map stays as an analysis tool.
-
-Either answer shortens the PR gate. The nightly is what makes the no-go version
-safe: it runs everything the gate leaves out, within a day.
+The representatives alone cost **53%** of that batch, for every PR, which is
+less than the contract selected for nearly every PR touching `src/`. So the
+gate is the representatives, and **#990**, which would have made a diff-based
+selection the gate, was closed. The replay's analysis is in #988's comments.
 
 ## What stays out of scope
 

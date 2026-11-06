@@ -736,6 +736,7 @@ class McscfIntersectionNearSeam : public ::testing::TestWithParam<SeamPoint> {};
 
 TEST_P(McscfIntersectionNearSeam, CarriedAgreesWithFresh) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE("AlongX");
   if (GetParam() != SeamPoint::AlongX) {
     FBF_SKIP_IF_FAST_TESTS();
   }
