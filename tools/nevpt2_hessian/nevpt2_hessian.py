@@ -3,9 +3,9 @@
 Hessian (milestone 24) is gated on: test/gtest/data/nevpt2_hessian/.
 
 No program has an SC- or PC-NEVPT2 Hessian, so the oracle is a stencil over
-the reference gradient: `.temp/nevpt2/nuclear_hessian.tex`, "The
-semi-numerical Hessian". Nor is there an analytic NEVPT2 gradient outside
-this tree's C++ (nevpt2-gpu-demo's nevpt2_grad.py takes its source terms
+the reference gradient: `docs/nevpt2/nevpt2.tex`, "The semi-numerical
+Hessian and the bilinearity check". Nor is there an analytic NEVPT2 gradient
+outside this tree's C++ (nevpt2-gpu-demo's nevpt2_grad.py takes its source terms
 from the GPU's dumps or from difference quotients), and the oracle must not
 be the code it gates, so the reference gradient is the one
 tools/emit/nevpt2_gradient_reference.py already is: a central difference of
@@ -55,7 +55,7 @@ cases' delta) and keeps it symmetric to that.
 **The coordinates.** Cartesian, or for the symmetric case its
 symmetry-adapted ones (an orthonormal Q, `coordinates`), so a failing block
 is named by its irreps rather than smeared over a Cartesian frame
-(nuclear_hessian.tex, "Which coordinates"). Element (i, j) is
+(docs/nevpt2/nevpt2.tex, "Which coordinates"). Element (i, j) is
 q_i^T dg/dq_j; a Cartesian Hessian is Q H Q^T.
 
 **The Hessian.** Column j is the fourth-order central stencil over those

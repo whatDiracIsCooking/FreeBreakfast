@@ -389,8 +389,8 @@ naming both.
   GPU case below).
 - **Watch the inactive gaps.** SC-NEVPT2 is not invariant to rotations
   among near-degenerate canonical core or virtual orbitals, so its energy
-  curves sharply where two of them nearly cross (`nuclear_gradient.tex`
-  §Hazards; `test/gtest/data/README.md`'s note on symmetric H₂O). The
+  curves sharply where two of them nearly cross (`docs/nevpt2/nevpt2.tex`,
+  "Numerical hazards and refusals"; `test/gtest/data/README.md`'s note on symmetric H₂O). The
   optimizer steps through that under its trust radius; only a pair the
   gradient cannot determine is refused.
 

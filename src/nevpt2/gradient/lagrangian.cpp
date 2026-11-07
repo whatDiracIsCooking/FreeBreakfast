@@ -46,8 +46,8 @@ import :builders; // with_qd_inputs
 namespace free_breakfast::nevpt2 {
 
 // The Lagrangian's orbital source term X^L must be symmetric in every block
-// at the solution (nuclear_gradient.tex, "A free, exact check of the whole
-// solve"). Its antisymmetric part is the Z-vector's residual on the
+// at the solution (docs/nevpt2/nevpt2.tex, "The gate: a free, exact check of
+// the whole solve"). Its antisymmetric part is the Z-vector's residual on the
 // non-redundant pairs (to its 1e-10), z^c's division on the inactive ones
 // (round-off), and on the active-active ones the CI equation's residual
 // (the CI response's conjugate gradients, 1e-10 of their right-hand side,

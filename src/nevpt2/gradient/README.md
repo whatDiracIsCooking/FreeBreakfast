@@ -2,12 +2,13 @@
 
 The SC-NEVPT2 correlation energy of one root as a function of the integrals
 (h, B) and the CI vector c, and its adjoint: the first piece of the NEVPT2
-nuclear gradient (`nuclear_gradient.tex` §5). Then the inactive-rotation
-multipliers z^c of its Lagrangian and the term Φ = ⟨z^c, f⟩ they add, with
-Φ's adjoints (Algorithm 1, steps 1–2). Then the gradient itself, of a
-single-state DF-CASSCF: the Z-vector, the Lagrangian's symmetry gate and
-the nuclear term (Algorithm 1 from step 6). And all of it again for
-PC-NEVPT2 (`nuclear_gradients.tex` Path 4), the same code over the PC class
+nuclear gradient (`docs/nevpt2/nevpt2.tex`, "The adjoints and the orbital
+source term"). Then the inactive-rotation multipliers z^c of its
+Lagrangian and the term Φ = ⟨z^c, f⟩ they add, with Φ's adjoints (its
+Algorithm ssgrad, steps 2–3). Then the gradient itself, of a single-state
+DF-CASSCF: the Z-vector, the Lagrangian's symmetry gate and the nuclear
+term (Algorithm ssgrad from step 4). And all of it again for PC-NEVPT2
+(the demo's `docs/nuclear_gradients.tex` Path 4), the same code over the PC class
 energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
 
     sc_energy(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, batch)
@@ -206,7 +207,7 @@ takes no bar, so no operand with a bar repeats a label. Then:
 h̄ and Λ are symmetrized last (Λ per L, (Λ + Λᵀ) / 2), since h and each B^L
 are symmetric and both X and `mcscf::df_gradient` read them so.
 
-**The orbital source term** is `nuclear_gradient.tex` Eq. Xao, an AO
+**The orbital source term** is `docs/nevpt2/nevpt2.tex` Eq. Xao, an AO
 half-transform rather than a probe pair by pair: Λ̃_q = Λ_q Cᵀ per q (one
 strided-batched gemm, naux × nao each), D = B_AOᵀ Λ̃ with B_AO read as an
 (naux nao) × nao matrix, which its symmetry in the AO pair allows (the DF
@@ -557,7 +558,7 @@ pair is near-degenerate, and the rule is three branches on its A:
   the floor's largest).
 
 Both constants are the demo's (`PC_GAP_FLOOR`, `PC_ZERO_TOL`;
-`nuclear_gradients.tex`, "Degenerate (O2) pairs"). `min_gap` counts the
+demo `docs/nuclear_gradients.tex`, "Degenerate (O2) pairs"). `min_gap` counts the
 degenerate pairs too.
 
 **Why the division, not the zero (#974).** PC is invariant to an inactive
@@ -1102,7 +1103,7 @@ bars until the walk ends (`nevpt2.energy`'s README, "PC-QD").
 
 ## The nuclear gradient
 
-On a converged single-state CASSCF the Lagrangian is (`nuclear_gradient.tex`
+On a converged single-state CASSCF the Lagrangian is (`docs/nevpt2/nevpt2.tex`
 Eq. L)
 
     L = E_cas + E_corr + Z · g_orb + z · g_ci + ⟨z^c, f⟩,
@@ -1223,7 +1224,7 @@ passes evaluations 0 and 1. The PC-QD MECI (cc-pVDZ, `conv_tol_grad` 1e-9 per
 `ScGradient` carries max |z^c| and the smallest inactive gap (SC's
 near-degeneracy hazard), the PCG iterations and residual (the CASSCF
 Hessian's conditioning), and the gate's six residues, to report with every
-gradient (`nuclear_gradient.tex`, "Hazards").
+gradient (`docs/nevpt2/nevpt2.tex`, "Numerical hazards and refusals").
 
 ## PC-NEVPT2
 
@@ -1265,7 +1266,7 @@ gradient with that class summed in as zero.
 state, batch)` is the SC-QD-NEVPT2 **Lagrangian and Z-vector** of QD state
 K = `state` (H_eff's eigenvalues ascending) on a DF-SA-CASSCF whose core
 and virtuals are canonical over the SA Fock, as the Casscf step leaves them
-(`nuclear_gradient.tex` Algorithm qdgrad, steps 1–8). The derivative passes
+(`docs/nevpt2/nevpt2.tex` Algorithm qdgrad). The derivative passes
 are `qd_sc_gradient`'s (below); `QdScLagrangian` hands them everything they
 read. With W = u_K u_Kᵀ and ρ_r = W_rr = u_rK², the Lagrangian is
 
@@ -1427,8 +1428,8 @@ state-specific part) builds W = u_K u_Kᵀ and hands it on, so steps 2–5 and
 the passes are one code path. `eigenvalues` is H_eff's from the state form
 and empty from the W form, whose `heff_gap` is infinite.
 
-Everything in L is linear in W (`nuclear_gradient.tex`, "The QD-NEVPT2
-energy functional") but the core's energy, which E[W] = Σ_r ρ_r E_r + … carries
+Everything in L is linear in W (`docs/nevpt2/nevpt2.tex`, "The functional
+E[W]") but the core's energy, which E[W] = Σ_r ρ_r E_r + … carries
 at tr W. So nothing from H_eff is read, ρ = diag W, and:
 
 - the RDMs at ρ, Σ_r ρ_r (γ_r, Γ_r), are taken root by root (`rdm12` takes

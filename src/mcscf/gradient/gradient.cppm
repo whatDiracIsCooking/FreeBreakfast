@@ -53,7 +53,7 @@ struct GradientTerms {
 };
 
 /// @brief The MO-basis adjoint of a term a caller adds to the Lagrangian
-/// (@c nuclear_gradient.tex Eqs. P-W): with Phi(h, B) that term, B^L_pq the
+/// (@c docs/nevpt2/nevpt2.tex Eq. grad): with Phi(h, B) that term, B^L_pq the
 /// fitted pairs (pq|rs) = Sum_L B^L_pq B^L_rs over the orbitals C,
 /// h_bar = dPhi/dh, Lambda^L = dPhi/dB^L, and X = 2 h h_bar +
 /// 2 Sum_L B^L Lambda^L, so that dPhi = Sum_xp theta_xp X_xp along

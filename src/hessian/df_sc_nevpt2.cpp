@@ -1,6 +1,6 @@
 /// @file
 /// @brief df_sc_nevpt2: the SC-NEVPT2 analytic nuclear Hessian on a
-/// single-state DF-CASSCF (nuclear_hessian.tex eq. hess), assembled from
+/// single-state DF-CASSCF (docs/nevpt2/nevpt2.tex eq. hess), assembled from
 /// merged parts: E_cas by df_casscf; the Z terms by df_casscf_z at the
 /// gradient's multipliers, and their kappa_oo rows in closed form; E_corr +
 /// Phi as df_adjoint_xy at its adjoint, the Hessian-vector product between

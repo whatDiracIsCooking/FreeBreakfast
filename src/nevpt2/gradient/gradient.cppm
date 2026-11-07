@@ -4,7 +4,7 @@
 /// Lambda = dE/dB, y = dE/dc, and the orbital source term X = 2 h h_bar +
 /// 2 sum_L B^L Lambda^L with A = X - X^T.
 ///
-/// nuclear_gradient.tex section 5: the per-root input builders (the inactive
+/// docs/nevpt2/nevpt2.tex "The single-state gradient": the per-root input builders (the inactive
 /// Fock's blocks, the orbital energies from (h, B, gamma), h2e, (tu|vw), and
 /// the RDMs) run forward and then backwards through nevpt2.energy's,
 /// nevpt2.rdm's and nevpt2.density_fitting's adjoints. Then the
@@ -675,7 +675,7 @@ struct ScGradient {
 /// @brief The nuclear gradient of the Lagrangian of E_cas + E_corr at the
 /// single-state DF-CASSCF @p solution, for a correlation energy whose
 /// adjoint is @p corr, inactive multipliers @p zc and their term's adjoint
-/// @p phi (zc_adjoint's at zc.z): nuclear_gradient.tex Algorithm 1 from the
+/// @p phi (zc_adjoint's at zc.z): docs/nevpt2/nevpt2.tex Algorithm ssgrad from the
 /// Z-vector on.
 ///
 /// @p corr is consumed: @p phi's h_bar, Lambda, y, X and A are added onto it
@@ -812,7 +812,7 @@ struct QdScLagrangian {
 
 /// @brief The SC-QD-NEVPT2 Lagrangian of state @p state (H_eff's eigenvalues
 /// ascending) on the DF-SA-CASSCF @p solution, and its multipliers:
-/// nuclear_gradient.tex Algorithm qdgrad up to the derivative passes.
+/// docs/nevpt2/nevpt2.tex Algorithm qdgrad up to the derivative passes.
 ///
 ///     L = E[W] + Z . g_SA + sum_r 2 w_r z_r . (H - E_r) c_r
 ///         + sum_{r<s} (2 (w_r - w_s) Theta_sr + zeta_sr) <c_s|H|c_r>
@@ -898,8 +898,8 @@ struct QdScGradient {
 
 /// @brief The SC-QD-NEVPT2 nuclear gradient of QD state @p state (H_eff's
 /// eigenvalues ascending) on the DF-SA-CASSCF @p solution: qd_sc_lagrangian,
-/// then its two derivative passes (nuclear_gradient.tex Algorithm qdgrad,
-/// step 5): one mcscf::df_gradient at the mix rho with (Z, z, Theta) as its
+/// then its two derivative passes (docs/nevpt2/nevpt2.tex Algorithm qdgrad,
+/// step 7): one mcscf::df_gradient at the mix rho with (Z, z, Theta) as its
 /// multipliers and the correlation + Phi arrays (h_bar, Lambda, X) as its
 /// extra, and one mcscf::df_transition_gradient at zeta's folded
 /// (gamma^zeta, Gamma^zeta) with neither, skipped when every zeta is zero.

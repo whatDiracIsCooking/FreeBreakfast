@@ -738,7 +738,7 @@ and state for PC: the largest Srsi's v² c n_act and Srs's v² m.
         h1e_v_sr, h1e_v_si, h1e_v_sir, e_core, e_virt   in their inputs' layouts
         lambda                                          Λ, nevpt2::slab_adjoint's
 
-`reverse.cpp`, `nuclear_gradient.tex` §5.2 (demo `docs/gradients.md`
+`reverse.cpp`, `docs/nevpt2/nevpt2.tex`, "The reverse passes" (demo `docs/gradients.md`
 §5.1–5.3): from the energy back to every `EnergyInputs` field and, through
 Λ, to B. It runs in two parts. The walk takes the energy back to the
 class-level inputs and the block bars M_G at fixed h1e, h2e and RDMs; the
@@ -1178,7 +1178,8 @@ its conditioning bound (#746, #766).
     bars: EnergyBars, as class_energies_adjoint's
 
 Also `reverse.cpp`, after SC's: the solve's adjoint (demo `docs/gradients.md`
-§4.3, §5.6 and §7; `nuclear_gradients.tex` Eqs. pcdot and pcadj). A tuple's
+§4.3, §5.6 and §7; demo `docs/nuclear_gradients.tex` Eqs. pcdot and
+pcadj). A tuple's
 energy is −c bᵀ A⁺ b, A = K + Δ S, b = S x + S₁ h1, and with x = A⁺ b, the
 solve the energy ran,
 

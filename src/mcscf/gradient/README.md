@@ -214,7 +214,7 @@ one `three_center_gradient` and one `metric_gradient` per call.
 ## A caller's Lagrangian
 
 Three arguments open the call up to a Lagrangian that is not the CASSCF's own
-(NEVPT2's, `nuclear_gradient.tex` Eq. total). `multipliers` and `extra`
+(NEVPT2's, `docs/nevpt2/nevpt2.tex` Eq. total). `multipliers` and `extra`
 default to null, which is the call above unchanged.
 
 **`mix`**, in place of `root`, is per-root weights v_I (one per root, each
@@ -335,8 +335,8 @@ A `mix` whose weights sum to 0 (within 1e-12, `kMixSumTolerance`), of
 either sign, is Σ_I v_I dE_I/dR with the core's own energy and the nuclear
 repulsion weighted by Σ_I v_I = 0. QD-NEVPT2's interstate coupling needs it:
 the reference part of its functional at W^PQ = ½ (R_P R_Qᵀ + R_Q R_Pᵀ),
-whose diagonal ρ_r = W^PQ_rr has trace 0 (`nuclear_gradient.tex`,
-"The interstate coupling and the derivative coupling").
+whose diagonal ρ_r = W^PQ_rr has trace 0 (`docs/nevpt2/nevpt2.tex`,
+"Interstate and derivative couplings").
 
 Every root's E(γ_r, Γ_r) is E_nuc + E_cc + E_act(γ_r, Γ_r), E_act linear
 ("A transition density" above), so Σ_I v_I E_I = E_act(Σ_I v_I γ_I,

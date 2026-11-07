@@ -1,6 +1,6 @@
 // GPU cases for hessian::df_casscf_z, the Z terms of a single-state
 // DF-CASSCF reference's Lagrangian Hessian at given multipliers (Z, z)
-// (nuclear_hessian.tex eq. hess), each against a Richardson ladder of Z . g
+// (docs/nevpt2/nevpt2.tex eq. hess), each against a Richardson ladder of Z . g
 // itself, g the CASSCF energy's exact gradient in its parameters: the
 // stretched water's CAS(4,4) / 6-31G over cc-pVDZ-JKFIT
 // (test/gtest/data/casscf_hessian/'s h2o_631g geometry and orbitals, the

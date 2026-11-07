@@ -335,7 +335,7 @@ so no IR intensities.
 ### Numerical
 
 Central differences of `nevpt2::sc_gradient` / `pc_gradient` over the 6N
-displaced geometries (`nuclear_hessian.tex` section 4, Algorithm 1 in
+displaced geometries (`docs/nevpt2/nevpt2.tex` Eq. semi, in
 Cartesian form). It is the CASSCF chain's numerical method with
 `[nevpt2_gradient]` where `[casscf_gradient]` stood:
 
@@ -417,7 +417,8 @@ then the class refusal above is what guards the Hessian. The floor used is
 
 ## The ladder and the bilinearity check
 
-`nuclear_hessian.tex` §3's diagnostic (#812): at a symmetric geometry an
+`docs/nevpt2/nevpt2.tex`'s bilinearity diagnostic ("The semi-numerical
+Hessian and the bilinearity check", #812): at a symmetric geometry an
 NEVPT2 energy can have a second derivative along every line and still no
 Hessian, because along a pair of directions that leave the symmetry it is
 not a quadratic form (SC's empty perturbers, #894). A difference Hessian
