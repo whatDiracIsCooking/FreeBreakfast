@@ -75,6 +75,65 @@ every flake fix. Comp-chem packages validate the same way.
   result.
 - **If the bar can't be met, report the numbers. Never move the bar.**
 
+## Which tier a check goes in
+
+A C++ check runs in one of three tiers, from cheapest to dearest:
+
+| Tier | How it fails | Where it lives |
+| --- | --- | --- |
+| **compile time** | the build | `static_assert`s; a TU of them alone is `test/compile/<tree>_compile.cpp` |
+| **host** | a host binary's case, on a box with no card | `*_host.cpp`, in a tree's `*_tests_host` binary |
+| **GPU** | a GPU binary's case, which skips without a card | `*_gpu.cpp`, in a tree's `*_tests_gpu` binary, guarded by `FBF_REQUIRE_GPU()` |
+
+**The rule: each claim goes in the cheapest tier that can check it fully, and
+is checked there only.** A claim the compiler can settle is a `static_assert`,
+not a case. A claim a host case can settle without a shim is a host case, not
+a GPU one. Only what needs the device goes in the GPU tier.
+
+- **The unit is a claim, not a feature.** A feature usually spans tiers.
+  `einsum`'s refusals return before any launch, so they are host cases
+  (`test/recipes/einsum_host.cpp`), and its numbers are GPU cases
+  (`einsum_gpu.cpp`). Placing the refusals low does not excuse the numbers
+  from the GPU tier, and a claim checked in a lower tier is not checked again
+  above it.
+- **Compile time owns logic, never numbers.** It owns concepts, types,
+  layouts, launch shapes, integer arithmetic and refusals of the wrong type.
+  A `static_assert` on a `constexpr` function checks it on the compiler's
+  evaluator, and the device's floating point can differ from that (FMA
+  contraction, intrinsics, flags). So a floating-point result a kernel
+  produces is a GPU claim, even where the same `constexpr` source runs on
+  both.
+- **A shim never buys a lower tier.** A shim is a fake device layer, a mock, or
+  a host-only branch of production code added so a test can run without a
+  card. A claim that needs one is a GPU claim. Never restructure `src/` to make
+  something host-testable: the tree is GPU-first, with no host-only splits.
+- **An oracle is not a shim.** `test/ci_oracles/` and the other host
+  references a GPU case compares its result against are a reference, not a
+  stand-in for the device, and they stay.
+- **The tier decides the binary, and so the label.** A host case in a GPU
+  binary carries that binary's `gpu` label, which the `ci-cuda` and `ci-hip`
+  test presets exclude, and runs in `test.py`'s GPU batch on the card. It
+  belongs in its tree's host binary, made for it if the tree has none. A host
+  binary may link the device runtime through the modules it imports: what
+  makes it host is that no case initialises a device, which the device-less
+  presets then hold it to.
+- **A compile-time TU builds without GoogleTest.** `test/compile/` is added
+  from the root `CMakeLists.txt`, outside the `FREE_BREAKFAST_COMPILE_TIME_ONLY`
+  gate that skips `test/`, so the compile-only configure builds it and
+  `devtools/cross-backend-check.sh` checks it for the other backend. It
+  declares no case, so ctest never lists it. A `static_assert` that guards a
+  runtime case's own setup (a table of what a call takes, which the case then
+  loops over, as `gemm_gpu.cpp`'s `kGemmTakes`) stays beside that case; only a
+  TU with no case moves.
+
+**Today:** `test/compile/recipes_compile.cpp` (the concepts `src/recipes`
+exports) is the compile-time tier, and `test/recipes/` has a host binary for
+its two host TUs, which rode in its GPU binary before. **Planned:** a check, in `devtools/test_families.py`, that flags a case
+in a GPU binary that never calls `FBF_REQUIRE_GPU()`, the mark of a host claim
+in the wrong binary; and a home for a "must not compile" claim that no concept
+can express, which today needs a try-compile entry the tree does not have
+(one a concept expresses is `static_assert(!Concept<…>)`).
+
 ## The entry point: `devtools/test.py`
 
 **Today:** `devtools/test.py push` and `devtools/test.py pr` (#981), which

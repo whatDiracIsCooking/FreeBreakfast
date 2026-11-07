@@ -8,9 +8,10 @@
 // blas/'s BlasOp and SandwichOp are not here: they live in the private
 // partition blas:shared and are not exported, so no importer can name them.
 // What they decide is checked through the exported functions they constrain,
-// in gemm_gpu.cpp (kGemmTakes, kRectGemmTakes), gemmwich_gpu.cpp and
-// gmmwich_gpu.cpp (kSquareTakes, kGeneralTakes, kComplexTakes): every op each
-// takes, and OP_C refused on a real T and OP_T on a complex one.
+// in test/recipes/: gemm_gpu.cpp (kGemmTakes, kRectGemmTakes), gemmwich_gpu.cpp
+// and gmmwich_gpu.cpp (kSquareTakes, kGeneralTakes, kComplexTakes): every op
+// each takes, and OP_C refused on a real T and OP_T on a complex one. Those
+// stay beside the cases they feed.
 
 import std;
 import free_breakfast.core;
