@@ -370,6 +370,161 @@ def test_cli(tree, tmp_path):
     assert "not inside any listed test" in bad.stderr
 
 
+GPU_SOURCE = """\
+#include "helpers.h"
+
+struct Guarded : ::testing::Test {
+  void SetUp() override { FBF_REQUIRE_GPU(); }
+};
+
+struct Derived : public Guarded {};
+
+struct Unguarded : ::testing::Test {
+  void SetUp() override {}
+};
+
+void inner() { FBF_REQUIRE_GPU(); }
+void outer(int x) { inner(); }
+
+template <typename T>
+void templated(T t) {
+  outer(0);
+}
+
+TEST(Plain, Direct) {
+  FBF_REQUIRE_GPU();
+}
+
+TEST(Plain, HostClaim) {
+  EXPECT_EQ(1, 1);
+}
+
+TEST_F(Guarded, InSetUp) {
+}
+
+TEST_F(Derived, ThroughItsBase) {
+}
+
+TEST_F(Unguarded, NoSetUpGuard) {
+}
+
+TEST(Plain, ThroughTwoCalls) {
+  outer(1);
+}
+
+TEST(Plain, ThroughATemplate) {
+  templated<double>(1.0);
+}
+
+TEST(Plain, ThroughALambda) {
+  const auto run = [&](int n) {
+    FBF_REQUIRE_GPU();
+  };
+  run(1);
+}
+
+TEST(Plain, ThroughAHeader) {
+  from_header();
+}
+
+TEST(Plain, OnlyInProse) {
+  // FBF_REQUIRE_GPU();
+  const char *s = "FBF_REQUIRE_GPU()";
+}
+
+TEST(Guarded, APlainTestNamedLikeTheFixture) {
+}
+
+TEST_P(Param, Shared) {
+}
+"""
+HELPERS = "#pragma once\ninline void from_header() { FBF_REQUIRE_GPU(); }\n"
+
+
+def gpu_tree(tmp_path: Path, binary: str = "free_breakfast_tests_gpu"):
+    """GPU_SOURCE and its header in tmp_path, and its cases as gtest lists
+    them: each at its macro's line, the TEST_P with three params."""
+    src = tmp_path / "test" / "a_gpu.cpp"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text(GPU_SOURCE)
+    (src.parent / "helpers.h").write_text(HELPERS)
+    suites: dict[str, list[dict]] = {}
+    for n, line in enumerate(GPU_SOURCE.splitlines(), 1):
+        if not line.startswith("TEST"):
+            continue
+        macro, args = line.split("(", 1)
+        suite, test = (a.strip() for a in args.split(")")[0].split(","))
+        if macro == "TEST_P":
+            for p in ("a", "b", "c"):
+                entry = {"name": f"{test}/{p}", "file": str(src), "line": n}
+                suites.setdefault(f"Cases/{suite}", []).append(
+                    entry | {"value_param": p}
+                )
+        else:
+            suites.setdefault(suite, []).append(
+                {"name": test, "file": str(src), "line": n}
+            )
+    listing = {"testsuites": [{"name": s, "testsuite": c} for s, c in suites.items()]}
+    return tf.cases_from_listing(listing, tmp_path, binary), listing
+
+
+def test_unguarded_gpu_cases(tmp_path):
+    cases, _ = gpu_tree(tmp_path)
+    got = [c.test for c in tf.unguarded(cases, tmp_path)]
+    assert got == [  # in line order
+        "Plain.HostClaim",
+        # Guarded's SetUp guards; this one's own SetUp is not a call to it.
+        "Unguarded.NoSetUpGuard",
+        "Plain.OnlyInProse",  # a comment and a string literal are not a call
+        "Guarded.APlainTestNamedLikeTheFixture",  # a TEST's suite is no class
+        "Param.Shared",  # once, for its three instances
+    ]
+
+
+def test_a_host_binary_is_never_unguarded(tmp_path):
+    cases, _ = gpu_tree(tmp_path, binary="free_breakfast_tests_host")
+    assert tf.unguarded(cases, tmp_path) == []
+
+
+def test_code_only_keeps_offsets():
+    text = 'a // FBF_REQUIRE_GPU()\nb "x(" /* y\n z */ R"d(q)d" \'(\' c\n'
+    code = tf.code_only(text)
+    assert len(code) == len(text)
+    assert code.count("\n") == text.count("\n")
+    assert "FBF" not in code and "(" not in code
+    assert code.split() == ["a", "b", "c"]
+
+
+def test_cli_unguarded(tmp_path):
+    _, listing = gpu_tree(tmp_path)
+    saved = tmp_path / "free_breakfast_tests_gpu.json"  # the binary is the stem
+    saved.write_text(json.dumps(listing))
+    cmd = [sys.executable, str(_TOOL), "--gtest-json", str(saved)]
+    cmd += ["--source", str(tmp_path), "--no-metrics"]
+    proc = subprocess.run([*cmd, "--unguarded"], capture_output=True, text=True)
+    assert proc.returncode == 1, proc.stderr
+    lines = proc.stdout.splitlines()
+    assert len(lines) == 5
+    assert lines[0] == "test/a_gpu.cpp:25  Plain.HostClaim  (free_breakfast_tests_gpu)"
+    assert "5 unguarded test definitions over" in proc.stderr
+    doc = json.loads(
+        subprocess.run([*cmd, "--json"], capture_output=True, text=True).stdout
+    )
+    assert [u["test"] for u in doc["unguarded"]][:2] == [
+        "Plain.HostClaim",
+        "Unguarded.NoSetUpGuard",
+    ]
+    # Every case guarded: exit 0, nothing listed.
+    (tmp_path / "test" / "a_gpu.cpp").write_text(
+        GPU_SOURCE.replace("{\n}", "{\n  FBF_REQUIRE_GPU();\n}")
+        .replace("EXPECT_EQ(1, 1);", "FBF_REQUIRE_GPU();")
+        .replace("  // FBF_REQUIRE_GPU();\n", "  FBF_REQUIRE_GPU();\n")
+    )
+    clean = subprocess.run([*cmd, "--unguarded"], capture_output=True, text=True)
+    assert clean.returncode == 0, clean.stdout
+    assert clean.stdout == ""
+
+
 def test_cli_needs_cases(tmp_path):
     proc = subprocess.run(
         [sys.executable, str(_TOOL), "--source", str(tmp_path)],

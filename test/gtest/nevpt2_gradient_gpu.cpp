@@ -54,11 +54,13 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
 #include "scratch_dir.h"
+#include "stable_part.h"
 
 namespace {
 
 namespace fb = free_breakfast;
 namespace nevpt2 = free_breakfast::nevpt2;
+using fb::test::stable_part;
 
 constexpr std::string_view kCase = "h2o_ccpvdz";
 // The fitting set both references were made over, compiled in.
@@ -1848,30 +1850,6 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2NuclearGradient,
                          ::testing::Values(std::string_view{"h2o_skew_ccpvdz"},
                                            std::string_view{"h2co_ccpvdz"}),
                          [](const auto &info) { return std::string(info.param); });
-
-// A refusal message with each computed number ({:.3e}, a gap or a
-// denominator) masked: two entry points that refuse the same state agree on
-// the words, the states named and the floor, but the number is round-off and
-// need not (#755).
-std::string stable_part(const std::string &message) {
-  // std::format prints a non-finite value as inf, -inf or nan: an amplitude
-  // y / (λ + Δ) whose denominator rounds to exactly 0 on one side only (#1010).
-  static const std::regex computed(R"(-?(?:\d\.\d+e[+-]\d+|\binf\b|\bnan\b))");
-  return std::regex_replace(message, computed, "#");
-}
-
-// The mask covers a non-finite number as it does a finite one: the refusal
-// #1010 captured, its amplitude -inf on one side and finite on the other.
-TEST(Nevpt2PcGradient, StablePartMasksNonFinite) {
-  const std::string head = "Sr has a denominator λ + Δ = 0.000e+00 at round-off (at most "
-                           "3.056e-12, 100 ε √d of its largest), amplitude ";
-  const std::string want = "Sr has a denominator λ + Δ = # at round-off (at most #, 100 ε "
-                           "√d of its largest), amplitude #";
-  for (const char *number : {"-inf", "inf", "nan", "-nan", "1.234e+05", "-1.234e+05"}) {
-    EXPECT_EQ(stable_part(head + number), want) << number;
-  }
-  EXPECT_EQ(stable_part("an infinite information nancy"), "an infinite information nancy");
-}
 
 // The shift of every virtual orbital energy that puts @p mode's denominator
 // at a quarter of its own coupling |y| = |t (λ + Δ)|: amplitude ±4, an

@@ -128,11 +128,27 @@ a GPU one. Only what needs the device goes in the GPU tier.
 
 **Today:** `test/compile/recipes_compile.cpp` (the concepts `src/recipes`
 exports) is the compile-time tier, and `test/recipes/` has a host binary for
-its two host TUs, which rode in its GPU binary before. **Planned:** a check, in `devtools/test_families.py`, that flags a case
-in a GPU binary that never calls `FBF_REQUIRE_GPU()`, the mark of a host claim
-in the wrong binary; and a home for a "must not compile" claim that no concept
-can express, which today needs a try-compile entry the tree does not have
-(one a concept expresses is `static_assert(!Concept<…>)`).
+its two host TUs, which rode in its GPU binary before.
+
+**A GPU-binary case that never reaches `FBF_REQUIRE_GPU()` is flagged**
+(#1037), as the mark of a host claim in the wrong binary:
+`devtools/test_families.py BUILD --unguarded` lists each one, by file and line,
+and exits 1 when there are any. A case reaches the guard when its body calls
+it, or calls a function or lambda that does, at any depth, or when its
+fixture's class or a base of it does. The analysis is by name, over the case's
+file and the headers beside it it includes by quotes, with comments and
+strings blanked. At #1037 it found nine on main, and each moved to its
+tree's host binary: `analysis_host.cpp`, `df_high_aux_host.cpp`,
+`infrared_host.cpp`, `nevpt2_density_fitting_host.cpp` and
+`stable_part_host.cpp` in `test/gtest/`, and the NEVPT2 Hessian's config
+refusals in `test/pipeline/hessian_host.cpp`. Where a host case shares a
+helper with GPU cases, the helper is a header beside them (`stable_part.h`,
+`df_high_aux_fixture.h`), never a second copy. The two copies of
+`stable_part`'s case became one. The check is not yet wired into a gate.
+
+**Planned:** a home for a "must not compile" claim that no concept can
+express, which today needs a try-compile entry the tree does not have (one a
+concept expresses is `static_assert(!Concept<…>)`).
 
 ## The entry point: `devtools/test.py`
 
@@ -623,6 +639,7 @@ family with its representative.
 python3 devtools/test_families.py build-hip            # family [members] -> representative
 python3 devtools/test_families.py build-hip --flagged  # only the flagged
 python3 devtools/test_families.py build-hip --json     # for #989
+python3 devtools/test_families.py build-hip --unguarded  # GPU cases with no FBF_REQUIRE_GPU()
 python3 devtools/test_families.py build-hip --log .slow-tier-reports/pr-….log
 ```
 

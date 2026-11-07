@@ -52,6 +52,11 @@ add_executable(
   ci_sigma_host.cpp
   cis_ris_basis_host.cpp
   geometry_host.cpp
+  analysis_host.cpp
+  df_high_aux_host.cpp
+  infrared_host.cpp
+  nevpt2_density_fitting_host.cpp
+  stable_part_host.cpp
 )
 
 # Both executables consume `import std` and this project's C++23 modules, so
@@ -74,6 +79,10 @@ target_link_libraries(
           free_breakfast::cis::ris_basis
           free_breakfast::geometry
           free_breakfast::io
+          free_breakfast::analysis::population
+          free_breakfast::analysis::bond
+          free_breakfast::hessian
+          free_breakfast::nevpt2
           free_breakfast::core::resources
           free_breakfast::test::support
           GTest::gtest

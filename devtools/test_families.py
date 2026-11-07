@@ -37,9 +37,19 @@ has one, filtered to this host and to the `nightly`, `weekly` and `manual`
 kinds. `--log FILE` adds a gate's log: gtest's `[       OK ] Case (N ms)` and
 ctest's `Passed  N sec` lines. A member's time is the median of its passes.
 
+A case in a GPU binary (one whose file name ends `_gpu`) that never reaches
+`FBF_REQUIRE_GPU()` is unguarded (#1037): docs/testing.md "Which tier a check
+goes in" says it is most likely a host claim in the wrong binary. A case
+reaches the guard when its body calls it, or calls a function or lambda that
+does, at any depth, or when its fixture's class (or a base of it) does. The
+analysis is by name, over the case's file and the headers beside it that it
+includes by quotes, and reads code only: comments and string literals are
+blanked first. A `--gtest-json` listing's binary is the file's stem.
+`--unguarded` prints only those cases, one per test definition.
+
 Exit status: 0 when every family has a representative, is exempt or is
-flagged, 1 when a marker cannot be placed or contradicts another, 2 when
-nothing could be read.
+flagged, 1 when a marker cannot be placed or contradicts another, or under
+`--unguarded` when a case is unguarded, 2 when nothing could be read.
 
 Standard library only: it must run under a bare `python3`.
 """
@@ -114,6 +124,12 @@ class Case:
     test: str  # Suite.Test, prefixes and params removed
     param: str | None  # a parameterized case's param; None for TEST/TEST_F
     prefix: str | None  # its INSTANTIATE prefix, if any
+    binary: str = ""  # the gtest binary's file name, when known
+    fixture: str = ""  # the suite's own name: a TEST_F/TEST_P's class
+
+    @property
+    def in_gpu_binary(self) -> bool:
+        return self.binary.endswith("_gpu")
 
     @property
     def default_family(self) -> str:
@@ -141,7 +157,7 @@ class Family:
 # --- reading ---------------------------------------------------------------
 
 
-def cases_from_listing(listing: dict, source: Path) -> list[Case]:
+def cases_from_listing(listing: dict, source: Path, binary: str = "") -> list[Case]:
     """Cases from one gtest binary's `--gtest_list_tests --gtest_output=json`."""
     out = []
     for suite in listing.get("testsuites", []):
@@ -165,6 +181,8 @@ def cases_from_listing(listing: dict, source: Path) -> list[Case]:
                     test=f"{parts[-1]}.{test}",
                     param=param if (typed or valued) else None,
                     prefix=prefix,
+                    binary=binary,
+                    fixture=parts[-1],
                 )
             )
     return out
@@ -232,7 +250,11 @@ def build_cases(build: Path, source: Path) -> tuple[list[Case], list[str]]:
         listing = run_gtest_listing(Path(exe))
         if listing is None:
             raise SystemExit(f"test_families: cannot list {exe}")
-        cases += [c for c in cases_from_listing(listing, source) if c.name in names]
+        cases += [
+            c
+            for c in cases_from_listing(listing, source, Path(exe).name)
+            if c.name in names
+        ]
     return cases, other
 
 
@@ -310,6 +332,166 @@ def metrics_branch_text(source: Path) -> str | None:
         files = sorted(n for n in names.split() if n.endswith(".jsonl"))
         return "".join(git("show", f"{ref}:runs/{n}") or "" for n in files)
     return None
+
+
+# --- the GPU guard (#1037) -------------------------------------------------
+
+GUARD = "FBF_REQUIRE_GPU"
+# A comment, a raw string, a string or a character literal: blanked before the
+# guard is looked for, so a mention of it in prose is not a call.
+_NOT_CODE = re.compile(
+    r"//[^\n]*"
+    r"|/\*.*?\*/"
+    r'|R"([^(\s]*)\(.*?\)\1"'
+    r'|"(?:[^"\\\n]|\\.)*"'
+    r"|'(?:[^'\\\n]|\\.)*'",
+    re.S,
+)
+_CALL = re.compile(r"\b([A-Za-z_]\w*)\s*(?:<[^;{}()]*>)?\s*\(")
+_LAMBDA = re.compile(r"\b([A-Za-z_]\w*)\s*=\s*\[[^\]]*\]")
+_CLASS = re.compile(r"\b(?:class|struct)\s+([A-Za-z_]\w*)\b([^;{}()]*)\{")
+_QUOTED_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.M)
+_TEST_MACRO = re.compile(r"\b(TEST|TEST_F|TEST_P|TYPED_TEST|TYPED_TEST_P)\s*\(")
+# What may sit between a definition's parameter list and its body.
+_BEFORE_BODY = re.compile(
+    r"(?:\s|const\b|noexcept\b|override\b|final\b|mutable\b|&|->\s*[\w:<>,*&\s]+?)*\{"
+)
+_KEYWORDS = frozenset(
+    ("if", "for", "while", "switch", "catch", "return", "sizeof", "alignof")
+    + ("decltype", "static_assert", "noexcept", "requires")
+)
+
+
+def code_only(text: str) -> str:
+    """The text with comments and string and character literals blanked, every
+    newline kept, so offsets and line numbers still hold."""
+    return _NOT_CODE.sub(lambda m: re.sub(r"[^\n]", " ", m.group(0)), text)
+
+
+def _past_match(code: str, i: int, open_: str, close: str) -> int:
+    """The index just past the bracket that closes the one at code[i]."""
+    depth = 0
+    for k in range(i, len(code)):
+        if code[k] == open_:
+            depth += 1
+        elif code[k] == close:
+            depth -= 1
+            if depth == 0:
+                return k + 1
+    return len(code)
+
+
+def _block(code: str, i: int) -> str:
+    """The brace block that opens at the first `{` at or after i."""
+    j = code.find("{", i)
+    return "" if j < 0 else code[j : _past_match(code, j, "{", "}")]
+
+
+def _bases(clause: str) -> list[str]:
+    """The base classes a class head names after its `:`, by their last name:
+    `: public ::testing::TestWithParam<Case>` is TestWithParam."""
+    if ":" not in clause:
+        return []
+    out = []
+    for part in clause.split(":", 1)[1].split(","):
+        names = re.findall(r"[A-Za-z_]\w*", re.sub(r"<.*", "", part))
+        if names:
+            out.append(names[-1])
+    return out
+
+
+def _member_blocks(body: str) -> str:
+    """The brace blocks one level inside a class body: its methods' bodies and
+    its members' initialisers, without the signatures between them, so a
+    method's own name is not read as a call."""
+    out = []
+    i = 1
+    while (j := body.find("{", i)) >= 0:
+        end = _past_match(body, j, "{", "}")
+        out.append(body[j:end])
+        i = end
+    return "\n".join(out)
+
+
+def guarding_names(code: str) -> set[str]:
+    """Every function, lambda or class defined in code (already code_only) that
+    reaches the guard: whose body calls it or a name that does, or, for a
+    class, one of whose bases does. A class's calls are its members' bodies',
+    so a SetUp() that calls the guard makes the class reach it."""
+    bodies: dict[str, list[str]] = defaultdict(list)
+    bases: dict[str, set[str]] = defaultdict(set)
+    for m in _CLASS.finditer(code):
+        bodies[m.group(1)].append(_member_blocks(_block(code, m.end() - 1)))
+        bases[m.group(1)].update(_bases(m.group(2)))
+    for m in _LAMBDA.finditer(code):
+        bodies[m.group(1)].append(_block(code, m.end()))
+    for m in _CALL.finditer(code):
+        if m.group(1) in _KEYWORDS or _TEST_MACRO.match(code, m.start()):
+            continue
+        end = _past_match(code, m.end() - 1, "(", ")")
+        if _BEFORE_BODY.match(code, end):
+            bodies[m.group(1)].append(_block(code, end))
+    calls = {n: {c for b in bs for c in _CALL.findall(b)} for n, bs in bodies.items()}
+    found: set[str] = set()
+    grew = True
+    while grew:
+        grew = False
+        for name, called in calls.items():
+            if name not in found and (
+                GUARD in called or called & found or bases[name] & found
+            ):
+                found.add(name)
+                grew = True
+    return found
+
+
+def _with_headers(path: Path, seen: set[Path] | None = None) -> str:
+    """A file's text, then each header beside it that it includes by quotes,
+    recursively. A header found elsewhere on the include path is not read."""
+    seen = set() if seen is None else seen
+    if path in seen or not path.is_file():
+        return ""
+    seen.add(path)
+    text = path.read_text(errors="replace")
+    parts = [text]
+    for name in _QUOTED_INCLUDE.findall(text):
+        parts.append(_with_headers(path.parent / name, seen))
+    return "\n".join(parts)
+
+
+def unguarded(cases: list[Case], source: Path) -> list[Case]:
+    """The GPU-binary cases that never reach FBF_REQUIRE_GPU(), one per test
+    definition: a TEST_P's instances, or a TYPED_TEST's types, share theirs."""
+    by_file: dict[str, list[Case]] = defaultdict(list)
+    for c in cases:
+        if c.in_gpu_binary:
+            by_file[c.file].append(c)
+    out = []
+    for f, members in sorted(by_file.items()):
+        path = source / f
+        if not path.is_file():
+            continue
+        own = code_only(path.read_text(errors="replace"))
+        found = guarding_names(code_only(_with_headers(path)))
+        starts = [0]
+        for line in own.splitlines(keepends=True):
+            starts.append(starts[-1] + len(line))
+        seen: set[tuple[int, str]] = set()
+        for c in sorted(members, key=lambda c: (c.line, c.name)):
+            if (c.line, c.test) in seen or not 0 < c.line < len(starts):
+                continue
+            seen.add((c.line, c.test))
+            m = _TEST_MACRO.search(own, starts[c.line - 1])
+            if m is None:
+                continue
+            body = _block(own, _past_match(own, m.end() - 1, "(", ")"))
+            called = set(_CALL.findall(body))
+            # A plain TEST's suite is only a name, not a class it runs in.
+            fixture = m.group(1) != "TEST" and c.fixture in found
+            if GUARD in called or called & found or fixture:
+                continue
+            out.append(c)
+    return out
 
 
 # --- the families ----------------------------------------------------------
@@ -533,6 +715,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--flagged", action="store_true", help="print only the flagged families"
     )
+    ap.add_argument(
+        "--unguarded",
+        action="store_true",
+        help="print only the GPU-binary cases that never reach FBF_REQUIRE_GPU(),"
+        " and exit 1 when there are any",
+    )
     args = ap.parse_args(argv)
     source = args.source.resolve()
 
@@ -545,12 +733,24 @@ def main(argv: list[str] | None = None) -> int:
             print(e, file=sys.stderr)
             return 2
     for path in args.gtest_json:
-        cases += cases_from_listing(json.loads(path.read_text()), source)
+        cases += cases_from_listing(json.loads(path.read_text()), source, path.stem)
     if not cases:
         print(
             "test_families: no cases: pass a build dir or --gtest-json", file=sys.stderr
         )
         return 2
+
+    bare = unguarded(cases, source)
+    if args.unguarded:
+        for c in bare:
+            print(f"{c.file}:{c.line}  {c.test}  ({c.binary})")
+        gpu = sum(c.in_gpu_binary for c in cases)
+        print(
+            f"test_families: {len(bare)} unguarded test definitions over {gpu} "
+            "GPU-binary cases (no FBF_REQUIRE_GPU() reached)",
+            file=sys.stderr,
+        )
+        return 1 if bare else 0
 
     if args.host is None:
         args.host = this_host()
@@ -593,6 +793,10 @@ def main(argv: list[str] | None = None) -> int:
             "flagged": sorted(f.name for f in fams.values() if f.by is None),
             "exempt": sorted(f.name for f in fams.values() if f.by == "exempt"),
             "not_gtest": sorted(other),
+            "unguarded": [
+                {"test": c.test, "file": c.file, "line": c.line, "binary": c.binary}
+                for c in bare
+            ],
             "errors": errors,
             "notes": notes,
         }
@@ -605,6 +809,12 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"note: {len(other)} ctest entries are not gtest cases: "
             + ", ".join(sorted(other)),
+            file=sys.stderr,
+        )
+    if bare:
+        print(
+            f"note: {len(bare)} GPU-binary test definitions never reach "
+            "FBF_REQUIRE_GPU() (--unguarded lists them)",
             file=sys.stderr,
         )
     for e in errors:
