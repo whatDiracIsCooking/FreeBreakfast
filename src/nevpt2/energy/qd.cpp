@@ -1,9 +1,9 @@
 /// @file
-/// @brief The SC- and PC-QD-NEVPT2 effective Hamiltonians and their reverse
-/// passes: their checks over the n x n pair inputs, and the class walks each
-/// shares with its one-state energy (energy.cpp's sc_couplings, pc.cpp's
-/// pc_couplings, reverse.cpp's sc_couplings_adjoint and
-/// pc_couplings_adjoint).
+/// @brief The SC- and PC-QD-NEVPT2 effective Hamiltonians, their reverse
+/// passes and SC's forward tangent: their checks over the n x n pair inputs,
+/// and the class walks each shares with its one-state energy (energy.cpp's
+/// sc_couplings, pc.cpp's pc_couplings, reverse.cpp's sc_couplings_adjoint,
+/// pc_couplings_adjoint and sc_couplings_tangent).
 
 module;
 
@@ -118,6 +118,39 @@ Result<ScEffectiveHamiltonianAdjoint> sc_effective_hamiltonian_adjoint(
   const int64_t n =
       FBF_TRY(qd_adjoint_states("sc_effective_hamiltonian_adjoint", pairs, hbar, bars));
   return sc_couplings_adjoint(res, blocks, pairs, n, hbar, batch, bars, transition);
+}
+
+Result<ScEffectiveHamiltonianTangent>
+sc_effective_hamiltonian_tangent(DeviceResources &res, const MoBlocks &blocks,
+                                 std::span<const EnergyInputs> pairs, const int32_t batch,
+                                 std::span<const EnergyDirection> directions) {
+  constexpr const char *kWho = "sc_effective_hamiltonian_tangent";
+  const int64_t n = FBF_TRY(qd_states(kWho, pairs));
+  // The pair walk reads every entry, as the reverse pass does.
+  if (std::ranges::any_of(pairs, [](const EnergyInputs &in) { return in.dm1 == nullptr; })) {
+    return err_config("{}: every pair's entry must be given, and one has a null dm1", kWho);
+  }
+  const auto n2 = static_cast<size_t>(n * n);
+  if (directions.size() % n2 != 0) {
+    return err_config("{}: {} directions over {} states is not a whole number of {} pairs", kWho,
+                      directions.size(), n, n2);
+  }
+  // The walk reads each direction's shared tangents once, from its first
+  // pair's.
+  const auto shared = [](const EnergyDirection &d) {
+    return std::tuple{d.in.h1e,      d.in.h2e,      d.in.e_core,    d.in.e_virt,
+                      d.in.h1e_v_sr, d.in.h1e_v_si, d.in.h1e_v_sir, d.blocks};
+  };
+  for (size_t u = 0; u < directions.size() / n2; ++u) {
+    for (size_t p = 1; p < n2; ++p) {
+      if (shared(directions[(u * n2) + p]) != shared(directions[u * n2])) {
+        return err_config("{}: direction {}'s pair ({}, {}) does not share its first pair's "
+                          "integral, orbital-energy and B tangents",
+                          kWho, u, static_cast<int64_t>(p) / n, static_cast<int64_t>(p) % n);
+      }
+    }
+  }
+  return sc_couplings_tangent(res, blocks, pairs, n, batch, directions);
 }
 
 Result<std::vector<PcClassEnergies>> pc_effective_hamiltonian(DeviceResources &res,

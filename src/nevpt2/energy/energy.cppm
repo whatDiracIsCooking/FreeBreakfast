@@ -485,6 +485,75 @@ struct ScEffectiveHamiltonianAdjoint {
     const std::function<Status(int64_t bra, int64_t ket, const EnergyBars &transition)>
         &transition);
 
+/// @brief sc_effective_hamiltonian_tangent's result: the matrix it walked,
+/// every pair's transition tables and their tangents, and Ċ per element.
+///
+/// A class's tuples are ClassEnergiesTangent's order (ScAmplitudes', Sir's
+/// at r ncore + i), whatever the batch; Sijrs has no tables (it couples no
+/// pair), its diagonal Ċ the kets'.
+struct ScEffectiveHamiltonianTangent {
+  /// @brief The n² elements, as sc_effective_hamiltonian computes them.
+  std::vector<ClassEnergies> elements;
+  /// @brief [J]: state J's own walk, class_energies_tangent of pair (J, J)
+  /// along its directions: the N^J, H^J and Δ every coupling with ket J
+  /// divides by, their tangents, and the diagonal element's Ė.
+  std::vector<ClassEnergiesTangent> kets;
+  /// @brief [I n + J][k][t]: T^t_IJ, the mean of the norm einsums of (I, J)
+  /// and (J, I), so the same at (J, I); on the diagonal N^J_t, kets[J]'s.
+  std::vector<std::array<std::vector<double>, 8>> transition;
+  /// @brief [I n + J][k][t m + u], m directions: Ṫ^t_IJ along direction u,
+  /// also where ket J's norm is guarded; on the diagonal kets[J]'s Ṅ.
+  std::vector<std::array<std::vector<double>, 8>> transition_dot;
+  /// @brief [J][k]: ket J's tuples the guard drops (|N^J_t| <= 1e-14),
+  /// ascending; none in a one-function class. Every coupling (I, J) skips
+  /// them, so they put nothing in @ref element_dot: their Ṫ^t_IJ, in
+  /// @ref transition_dot, is ⟨Φ^I_t|∂Φ^J_t⟩, the overlap a refusal of the
+  /// coupling's second order reads.
+  std::vector<std::array<std::vector<int64_t>, 8>> empty;
+  /// @brief [u][I n + J][k]: Ċ_IJ per class along direction u; on the
+  /// diagonal kets[J]'s Ė.
+  std::vector<std::vector<std::array<double, 8>>> element_dot;
+  /// @brief [u][I n + J]: Σ_k element_dot[u][I n + J][k].
+  std::vector<std::vector<double>> total_dot;
+};
+
+/// @brief The SC forward tangent of sc_effective_hamiltonian along each of
+/// m directions: per pair and tuple Ṫ^t_IJ, per ket (Ṅ, Ḣ, Δ̇), and Ċ per
+/// element and class.
+///
+/// @p pairs is sc_effective_hamiltonian's, every entry given (none omitted).
+/// @p directions holds m n² EnergyDirections, [u n² + I n + J] pair (I, J)'s
+/// along direction u: its RDMs' tangents those of the pair's transition
+/// RDMs (bilinear in the bra and ket, so the bra/ket nevpt2::rdms at the
+/// dotted bra plus at the dotted ket), f3ca's and f3ac's read on the
+/// diagonal alone; and, like the pairs, every other field and the blocks'
+/// tangent the same in every pair of one direction.
+///
+/// Each state's own walk is class_energies_tangent's. Each unordered pair
+/// M < N then walks every class's slabs once for all the directions: the
+/// norm einsums of (M, N) and (N, M) differentiated operand by operand, each
+/// side's metric blocks at their own builders' polarization along that
+/// side's RDM tangents (class_energies_tangent's rules), T and Ṫ their
+/// means. A coupling C = -T N / d, d = N Δ + H (ket N's own), is finished in
+/// that (N, d) form, with no 1/N:
+///
+///     Ċ = -(N/d) Ṫ - (T H/d²) Ṅ + (T N/d²) Ḣ + (T N²/d²) Δ̇,
+///
+/// over the tuples whose ket norm the coupling keeps (|N| > 1e-14); a
+/// one-function class's is c Ṫ + T c² (Δ̇ + η̇), c = -1 / (Δ + η) and η̇
+/// from the ket's blocks' tangents, as class_energies_tangent's. A guarded
+/// tuple gives zero and is reported (@ref ScEffectiveHamiltonianTangent::empty).
+///
+/// @return The elements and tangents; InvalidConfig when @p pairs is not as
+///         sc_effective_hamiltonian_adjoint takes it, @p directions is not a
+///         whole number of n², or one direction's shared fields or blocks
+///         differ between two of its pairs; or class_energies_tangent's
+///         errors.
+[[nodiscard]] Result<ScEffectiveHamiltonianTangent>
+sc_effective_hamiltonian_tangent(DeviceResources &res, const MoBlocks &blocks,
+                                 std::span<const EnergyInputs> pairs, int32_t batch,
+                                 std::span<const EnergyDirection> directions);
+
 /// @brief One perturber function of a PC class, mode k of tuple t in its
 /// ket's eigenbasis: its denominator λ_k + Δ_t and its first-order amplitude
 /// t = y_tk / (λ_k + Δ_t), the weight of the normalized perturber in Ψ⁽¹⁾.

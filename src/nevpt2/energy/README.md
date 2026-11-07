@@ -10,6 +10,7 @@ and their QD effective Hamiltonian ([PC-NEVPT2](#pc-nevpt2),
 ([The SC forward tangent](#the-sc-forward-tangent)) and Hessian-vector
 product ([The SC Hessian-vector product](#the-sc-hessian-vector-product)),
 and PC's forward tangent ([The PC forward tangent](#the-pc-forward-tangent)),
+and SC-QD's ([The SC-QD forward tangent](#the-sc-qd-forward-tangent)),
 each class walking its
 external index in batches over the density-fitted slabs; the two effective
 Hamiltonians also hand over their amplitudes
@@ -1170,6 +1171,68 @@ second route to the same fragility; PC divides by no norm and is unaffected.
 So the tests ladder SC only where it is smooth, and gate one SC density at
 its conditioning bound (#746, #766).
 
+## The SC-QD forward tangent
+
+    sc_effective_hamiltonian_tangent(res, blocks, pairs, batch, directions)
+        -> ScEffectiveHamiltonianTangent
+        elements                  sc_effective_hamiltonian's n² ClassEnergies
+        kets [J]                  class_energies_tangent of pair (J, J): N^J, H^J, Δ, their tangents
+        transition [IJ][k][t]     T^t_IJ (the diagonal: N^J_t)
+        transition_dot [IJ][k][t m + u]
+        empty [J][k]              ket J's guarded tuples (|N^J_t| <= 1e-14)
+        element_dot [u][IJ][k], total_dot [u][IJ]
+    pairs       sc_effective_hamiltonian's, every entry given
+    directions  m n² EnergyDirections, [u n² + I n + J]: pair (I, J)'s along u;
+                every field but the RDMs' (and the blocks') the same in each
+                pair of one u (checked)
+
+`reverse.cpp`, the QD analogue of [the SC forward tangent](#the-sc-forward-tangent)
+for the QD-NEVPT2 nuclear Hessian (#954; `docs/nevpt2/nevpt2.tex`
+Eqs. qd-rdm2 and qd-scfinish); `qd.cpp` checks the inputs. Along each
+direction it gives every pair's transition tables' tangents and Ċ for every
+ordered pair. **At n = 1 it is `class_energies_tangent`**, which is how each
+state's own walk runs.
+
+**The pair walk.** Each unordered pair M < N walks every class's slabs once
+for all m directions, as the reverse pass's part 2 does, with a tangent
+(`ScTangent`) that carries both sides' directions: the norm einsums of
+(M, N) and (N, M) at their operands' tangents, each side's metric blocks
+(dm3_h, dm2_h, hdm1, rm2, hdm2) its builder's polarization along that side's
+own RDM tangents, Sr's, Srsi's and Sir's RDMs found among the inputs by
+address. A block's ⟨I|J⟩ terms are constants, and cancel in the
+polarization. T and Ṫ are the two einsums' means, so the same at (M, N)
+and (N, M).
+
+**The finish.** The coupling is C = −T N / d, d = N Δ + H over ket N's own
+tables, differentiated in that form, with no 1/N:
+
+    Ċ = −(N/d) Ṫ − (T H/d²) Ṅ + (T N/d²) Ḣ + (T N²/d²) Δ̇
+
+(Eq. qd-scfinish's first derivatives); a one-function class's,
+C = T c with c = −1/(Δ + η^N), is c Ṫ + T c² (Δ̇ + η̇^N), η̇ from the ket's
+blocks' polarization. Sijrs couples no pair.
+
+**The guarded tuples.** A tuple whose ket norm the coupling drops
+(|N^N_t| ≤ 1e-14) adds nothing to Ċ, as the reverse pass gives it no bar,
+so the tangent is the derivative of the guarded matrix. Its Ṫ^t_MN is still
+formed and reported (`empty` names the tuples per ket, `transition_dot`
+holds Ṫ): at a symmetric geometry it is ⟨Φ^M_t|∂Φ^N_t⟩, the first-order
+overlap that decides whether the coupling's second order there exists
+(Eq. qd-scfail), and which the SC-QD Hessian's refusal reads.
+
+**What the caller forms.** The inputs are `EnergyInputs`, so the RDMs'
+tangents are the caller's: a transition RDM is bilinear in its bra and ket,
+so its tangent is the bra/ket `nevpt2::rdms` at (ċ_M, c_N) plus at
+(c_M, ċ_N) (Eq. qd-rdm2), and each root's own, with its f3s, the
+builders' (`builders_tangent`): the digests are linear in (tu|vw), so their
+share is the one-vector `rdms` at its tangent. The orbital energies' is the
+weights' average of each root's, ε being affine in γ.
+
+**Memory.** Per pair, the reverse pass's walk with the tangent's per
+direction held: each side's metric tangents (Si's dm3_h, n_act⁶, the
+largest) and the slab tangents' buffer. The host tables are one T and m Ṫ
+per tuple per class per ordered pair.
+
 ## The PC reverse pass
 
     pc_class_energies_adjoint(res, blocks, in, batch, bars) -> PcClassEnergiesAdjoint
@@ -1524,8 +1587,8 @@ and per direction the span bar's derivative (d × d) and U̇ (d × m).
 ## Not ported
 
 PC's Hessian-vector product (#815; what it can rely on at PSB3 is in [The
-conditioning floor](#the-conditioning-floor)), the nuclear Hessians, and
-the QD effective Hamiltonians' tangents. The demo's
+conditioning floor](#the-conditioning-floor)), the nuclear Hessians, PC-QD's
+tangent (#960), and the SC-QD reverse pass's tangent (#962). The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
 ## Tests
@@ -1713,6 +1776,24 @@ file, each under half a second; both fail with the guard back in place:
   summand (≤ 5.3e-14 measured), which take η's derivative by two separate
   rules, and ⟨v, HVP u⟩ = ⟨u, HVP v⟩ to 1e-8 (≤ 2.7e-14; 9.2e-3 on the
   1A2 root with the guard, whose empty Sij took K6).
+
+The SC-QD forward tangent, `test/gtest/nevpt2_qd_tangent_gpu.cpp`'s
+`Nevpt2QdTangent.DualToQdScAdjoint`, at this tree's loose DF-SA-CASSCF of
+three `data/qd_nevpt2/` cases: the chain from (h, B, c) built as
+`qd_sc_energy` builds it (`builders_tangent` per root, the bra/ket
+`nevpt2::rdms` per transition), along seeded random columns (h, B, each
+root's c alone, then all), each column's Σ W_MN Ċ_MN against
+`qd_sc_adjoint`'s ⟨h̄, ḣ⟩ + ⟨Λ, Ḃ⟩ + Σ_r ⟨y_r, ċ_r⟩ at a general symmetric W
+(off-diagonal, trace ≠ 1, a negative entry), relative to the largest
+summand: 1e-10 on `h8_sto3g_sa3` (fast-tier representative) and
+`h2co_ccpvdz_sa2` (C₂ᵥ, 4364 guarded tuples, walked in fours), and 1e-9 on
+`h2co_skew_ccpvdz_sa3` (slow tier), whose adjoint repeats only to 9e-10
+(Conditioning, above). Each part (the transitions' ket side, their bra
+side, the diagonal's digests at the dotted (tu|vw)) is a direction of its
+own and must exceed ten bars in some column. Measured on the gfx1200: ≤ 7.6e-15,
+≤ 4.1e-12 and ≤ 1.1e-10 (skew, along c_2); every part ≥ 5e8 bars. The
+guarded tuples' Ṫ is printed, not gated: on `h2co_ccpvdz_sa2` the same
+tuples are empty for both roots, so it vanishes at first order (#962).
 
 The PC reverse pass, `Nevpt2PcEnergyAdjoint` and `Nevpt2PcEnergyAdjointLadder`:
 

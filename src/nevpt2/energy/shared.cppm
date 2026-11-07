@@ -210,6 +210,14 @@ sc_couplings_adjoint(DeviceResources &res, const MoBlocks &blocks,
                      int32_t batch, std::span<const EnergyBars> bars,
                      const std::function<Status(int64_t, int64_t, const EnergyBars &)> &transition);
 
+/// @brief The SC forward tangent of n states over @p pairs along the m n²
+/// @p directions, as sc_effective_hamiltonian_tangent documents
+/// (reverse.cpp's). Nothing is validated: the caller has.
+Result<ScEffectiveHamiltonianTangent>
+sc_couplings_tangent(DeviceResources &res, const MoBlocks &blocks,
+                     std::span<const EnergyInputs> pairs, int64_t n, int32_t batch,
+                     std::span<const EnergyDirection> directions);
+
 /// @brief The PC class walk of n states over @p pairs, as sc_couplings is
 /// SC's: per ordered pair each class's ⟨I|V|Ψ_J⁽¹⁾⟩ and ket J's dropped
 /// count, as pc_effective_hamiltonian documents, at [I n + J], and
