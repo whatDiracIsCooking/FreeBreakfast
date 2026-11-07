@@ -8,7 +8,8 @@
 /// An internal partition (`module`, not `export module`): gradient.cpp and
 /// qd.cpp import it, nothing reaches an importer of
 /// free_breakfast.nevpt2.gradient. It only declares; every definition is
-/// gradient.cpp's but with_qd_inputs and qd_adjoints, qd.cpp's. See docs/style.md,
+/// gradient.cpp's but with_qd_inputs, qd_arrays, zeroed_rdms and
+/// qd_adjoints, qd.cpp's, and tangent.cpp's named so. See docs/style.md,
 /// "Module-private code".
 
 module free_breakfast.nevpt2.gradient:builders;
@@ -202,8 +203,7 @@ Result<ScArrays> sc_arrays(DeviceResources &res, std::string_view who,
 /// @brief The QD functionals' inputs, built as qd_sc_energy builds them from
 /// (h, B, c), the roots @p vectors and their @p weights, handed to @p use:
 /// the class walk's MO blocks (the correlated core's, with @p nfrozen) and
-/// the n x n pairs [M n + N]. qd.cpp's (the exception to the rule above:
-/// QdArrays is its own), for qd_inputs in lagrangian.cpp.
+/// the n x n pairs [M n + N]. qd.cpp's, for qd_inputs in lagrangian.cpp.
 Status
 with_qd_inputs(DeviceResources &res, std::string_view who, const ci::DeviceStringSet &alpha,
                const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
@@ -211,18 +211,44 @@ with_qd_inputs(DeviceResources &res, std::string_view who, const ci::DeviceStrin
                std::span<const double> weights, const double *vectors, int32_t nfrozen,
                const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>)> &use);
 
+/// @brief The QD functionals' arrays: the shared ones, their dm1 gamma_SA
+/// and what reads it built, and the n^2 pairs' RDMs, [M n + N] that of bra M
+/// and ket N. qd.cpp's, for tangent.cpp's QD point.
+struct QdArrays {
+  ScArrays x;
+  std::vector<PairRdms> pairs;
+};
+
+/// @brief qd_sc_energy's arrays from (h, B, c), the roots @p vectors and
+/// their @p weights: shared_arrays; every ordered pair's dm3 by
+/// nevpt2::rdms (one vector on the diagonal, with its f3s; bra/ket off it)
+/// and its dm2 and dm1 as traces; gamma_SA into x.dm1, and the builders that
+/// read it. qd.cpp's.
+Result<QdArrays> qd_arrays(DeviceResources &res, std::string_view who,
+                           const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+                           int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c,
+                           const double *h, int32_t ncore, int32_t ncas,
+                           std::span<const double> weights, const double *vectors, int32_t nfrozen);
+
+/// @brief A zeroed PairRdms over @p ncas active orbitals, with f3ca and f3ac
+/// if @p f3. qd.cpp's.
+Result<PairRdms> zeroed_rdms(DeviceResources &res, int64_t ncas, bool f3);
+
 /// @brief qd_sc_adjoint (@p pc null) or qd_pc_adjoint at each of the k
 /// matrices @p ws holds (k n^2 doubles, W_k at [k n^2, (k + 1) n^2)), over
 /// one set of forward arrays and RDMs: one QdScAdjoint per W, in order. PC's
 /// elements, the same at every W, go to *@p pc and each result's elements
 /// is empty; @p pc_floor is set on every pair's inputs (PC reads it, SC
-/// does not). qd.cpp's, for the stacked QD Lagrangian in lagrangian.cpp.
+/// does not). With @p builder_bars (one W, all-electron), the walk's bars
+/// kept in it, qd_sc_adjoint's. qd.cpp's, for the stacked QD Lagrangian in
+/// lagrangian.cpp.
 Result<std::vector<QdScAdjoint>>
 qd_adjoints(DeviceResources &res, std::string_view who, const ci::DeviceStringSet &alpha,
             const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
             const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
             std::span<const double> weights, const double *vectors, std::span<const double> ws,
-            int32_t batch, std::vector<PcClassEnergies> *pc, int32_t nfrozen, double pc_floor);
+            int32_t batch, std::vector<PcClassEnergies> *pc, int32_t nfrozen, double pc_floor,
+            std::optional<QdBuilderBars> *builder_bars = nullptr);
 
 /// @brief fold_bars' result: h_bar and Λ, symmetrized.
 struct FoldedBars {

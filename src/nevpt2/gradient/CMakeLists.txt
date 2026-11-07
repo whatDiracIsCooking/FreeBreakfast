@@ -2,7 +2,8 @@
 # qd_sc_energy and qd_sc_adjoint, z^c's zc_multipliers and zc_adjoint, and
 # the nuclear gradient's lagrangian_gradient and sc_gradient, and the
 # SC-QD-NEVPT2 Lagrangian's qd_sc_lagrangian, the builders' forward
-# tangent builders_tangent, and E_corr + Phi's Hessian-vector product
+# tangents builders_tangent and qd_builders_tangent (over a state
+# average), and E_corr + Phi's Hessian-vector product
 # sc_hessian_product; the internal
 # partitions :operands and :builders hold the array plumbing and the
 # builders the implementation units share. ci::strings,
