@@ -430,6 +430,22 @@ TEST(PipelineConfig, WriteNpyNamesTheOverlapsOwnFile) {
   expect_config_error(with_inputs("[overlap]\nnpy = \"s.npy\"\n"), "[overlap] has no option 'npy'");
 }
 
+TEST(PipelineConfig, WriteNpyNamesTheSphericalTransformsOwnFile) {
+  // As [overlap]'s: off unless asked, and a filled-in step writes nothing.
+  auto calc =
+      fb::parse_config(with_inputs("[spherical_transform]\nwrite_npy = true\n"), "/run", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_EQ(calc->step<fb::SphericalTransformStep>()->npy, kOut / "spherical_transform.npy");
+  for (std::string_view table :
+       {"[spherical_transform]\n", "[spherical_transform]\nwrite_npy = false\n", "[overlap]\n"}) {
+    auto off = fb::parse_config(with_inputs(table), "/run", kOut);
+    ASSERT_TRUE(off.has_value()) << off.error().message;
+    EXPECT_TRUE(off->step<fb::SphericalTransformStep>()->npy.empty()) << table;
+  }
+  expect_config_error(with_inputs("[spherical_transform]\nwrite_npy = \"yes\"\n"),
+                      "[spherical_transform] write_npy is not a boolean");
+}
+
 TEST(PipelineConfig, AnUnknownGuessTypeIsInvalidConfig) {
   expect_config_error(with_inputs("[guess]\ntype = \"core\"\n"), "[guess] has no type 'core'");
   expect_config_error(with_inputs("[guess]\ntype = \"SAD\"\n"), "[guess] has no type 'SAD'");

@@ -512,6 +512,7 @@ step, so no two collide:
 
 | Step | File |
 |------|------|
+| `[spherical_transform]` with `write_npy = true` | `spherical_transform.npy`: U, `nao_cart` × `nao_sphe`, float64 (the identity when no shell is above p) |
 | `[overlap]` with `write_npy = true` | `overlap.npy`: S, `nao_sphe` square, float64 |
 | `[scf]` | `scf.molden`: every MO, the occupied at 2 |
 | `[localization]` | `localization.molden`: the localized occupied orbitals in ascending energy, then the canonical virtuals |
@@ -532,8 +533,8 @@ no output, so a later config can rely on what an earlier run wrote
 (`final.xyz` is the one not named after its step).
 `write_npy` is a switch, off by default, not a path. A file already there is
 overwritten; a directory per run is what `-o` is for. The steps keep their
-`molden` member (and `LocalizationStep` its `livvo_molden`, `OverlapStep` its
-`npy`, `CasscfStep` its `orbitals_npy` and `ci_npy`, `GradientStep`, `CasscfGradientStep`, `Nevpt2GradientStep`, `NacStep` and `Nevpt2NacStep` their `json_path`), empty meaning not written, for a pipeline built by hand.
+`molden` member (and `LocalizationStep` its `livvo_molden`, `SphericalTransformStep` and
+`OverlapStep` their `npy`, `CasscfStep` its `orbitals_npy` and `ci_npy`, `GradientStep`, `CasscfGradientStep`, `Nevpt2GradientStep`, `NacStep` and `Nevpt2NacStep` their `json_path`), empty meaning not written, for a pipeline built by hand.
 
 **The outputs are kept apart from the inputs.** Both are `InvalidConfig`,
 comparing the directories named rather than their spelling (`.`, `''` and the

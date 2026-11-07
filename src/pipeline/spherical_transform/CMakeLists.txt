@@ -2,12 +2,15 @@
 # consumers build MatrixAOPairs over the buffer it uploads), and so are the
 # basis_set step, pipeline::step and core::resources, since View<BasisSetOutput>
 # and DeviceResources are in run's signature, and core::wwr, for the Buffers in
-# its output. diagnostics_macros is only FBF_TRY, expanded here.
+# its output. Everything run uses -- the host U, the log and the .npy writer --
+# is PRIVATE: run is defined in the implementation unit.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.spherical_transform
   PRIMARY_INTERFACE
   spherical_transform.cppm
+  IMPLEMENTATION
+  spherical_transform.cpp
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::error_handling
@@ -17,5 +20,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::matrix_ao
   free_breakfast::pipeline::step
   LINK_PRIVATE
+  free_breakfast::basis
+  free_breakfast::core::log
+  free_breakfast::io::npy
   free_breakfast::core::diagnostics_macros
 )
