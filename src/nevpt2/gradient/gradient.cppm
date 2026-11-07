@@ -23,8 +23,9 @@
 /// nuclear gradient over it (qd_sc_gradient), two derivative passes, and its
 /// interstate coupling h_PQ (qd_sc_coupling); and the PC-QD ones
 /// (qd_pc_gradient, qd_pc_coupling), the same over qd_pc_adjoint. And for
-/// the nuclear Hessian, the builders' forward tangent (builders_tangent) and
-/// the SC Hessian-vector product of E_corr + Phi (sc_hessian_product).
+/// the nuclear Hessian, the builders' forward tangent (builders_tangent, and
+/// over a state average qd_builders_tangent) and the SC Hessian-vector
+/// product of E_corr + Phi (sc_hessian_product).
 /// The README has the layouts and every term.
 
 export module free_breakfast.nevpt2.gradient;
@@ -274,6 +275,92 @@ builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
                  const double *vector, int32_t count, const double *h_dot, const double *b_dot,
                  const double *c_dot);
 
+/// @brief One ordered pair's RDMs (bra M, ket N), or their tangent or bars,
+/// on res's device in nevpt2::rdms' row-major layout: dm1 and dm2 the traces
+/// of dm3, as the forward takes them; f3ca and f3ac on the diagonal (M = N)
+/// alone, empty off it.
+struct PairRdms {
+  /// @brief ncas^2.
+  Buffers::device<double> dm1;
+  /// @brief ncas^4.
+  Buffers::device<double> dm2;
+  /// @brief ncas^6.
+  Buffers::device<double> dm3;
+  /// @brief ncas^6 on the diagonal, else empty.
+  Buffers::device<double> f3ca;
+  /// @brief ncas^6 on the diagonal, else empty.
+  Buffers::device<double> f3ac;
+};
+
+/// @brief What the QD builders make of (h, B, c) and the roots at one point,
+/// or their forward tangent along one direction: the shared outputs, with
+/// gamma_SA in place of one root's gamma, and every ordered pair's RDMs.
+struct QdBuilderOutputs {
+  /// @brief The shared outputs, BuilderOutputs' fields: dm1 is gamma_SA =
+  /// sum_r w_r gamma_r, so e_core, e_virt, f_core and f_virt are the
+  /// state-averaged Fock's; dm2, dm3, f3ca and f3ac are empty (each pair's
+  /// are in @ref pairs).
+  BuilderOutputs shared;
+  /// @brief [M n + N], bra M and ket N: their RDMs.
+  std::vector<PairRdms> pairs;
+
+  /// @brief The n^2 pairs' EnergyInputs, sc_effective_hamiltonian's: the
+  /// shared fields @ref shared's, each pair's RDMs its own, f3ca and f3ac on
+  /// the diagonal alone.
+  [[nodiscard]] std::vector<EnergyInputs> inputs() const {
+    std::vector<EnergyInputs> out;
+    for (const PairRdms &p : pairs) {
+      EnergyInputs in = shared.inputs();
+      in.dm1 = p.dm1.data();
+      in.dm2 = p.dm2.data();
+      in.dm3 = p.dm3.data();
+      in.f3ca = p.f3ca.num_elements() > 0 ? p.f3ca.data() : nullptr;
+      in.f3ac = p.f3ac.num_elements() > 0 ? p.f3ac.data() : nullptr;
+      out.push_back(in);
+    }
+    return out;
+  }
+};
+
+/// @brief qd_builders_tangent's result.
+struct QdBuildersTangent {
+  /// @brief The QD builders at the point itself.
+  QdBuilderOutputs value;
+  /// @brief Their forward tangent along each direction, in order.
+  std::vector<QdBuilderOutputs> tangents;
+};
+
+/// @brief The QD builders at (@p h, @p b, @p c) and the roots @p vectors at
+/// @p weights, as qd_sc_energy builds its inputs (the arguments are its,
+/// all-electron), with the state-averaged Fock's core-core and
+/// virtual-virtual blocks; and their forward tangent along each of
+/// @p count directions (h_dot, B_dot, {c_dot_r}), all in the MO basis of
+/// @p c: h_dot and B_dot as builders_tangent's, direction k's at
+/// @p h_dot + k nmo^2 and @p b_dot + k naux nmo^2; every root's c_dot, raw,
+/// at @p c_dot + k n ndet, root r's at + r ndet (n = weights.size(), the
+/// vectors' layout), any vectors: a component along another root is a
+/// rotation of the root set.
+///
+/// builders_tangent's product rule over the shared builders, at gamma_SA's
+/// tangent sum_r w_r (Gamma1(c_dot_r, c_r) + Gamma1(c_r, c_dot_r)), which
+/// along a rotation c_dot_r = theta c_s, c_dot_s = -theta c_r is
+/// (w_r - w_s) theta (gamma^(sr) + gamma^(rs)) (nevpt2.tex Eq. qd-gsa), so
+/// the shared outputs see an equal-weight rotation not at all. Each pair's
+/// RDM tangent is Gamma(c_dot_M, c_N) + Gamma(c_M, c_dot_N) (Eq. qd-rdm2's
+/// first order), by the bra/ket nevpt2::rdms (f3 off), and on the diagonal
+/// builders_tangent's three rdms, f3 at (tu|vw)'s tangent included.
+///
+/// @return The point and the tangents; InvalidConfig for a negative
+///         @p count, a null direction array when @p count > 0, or
+///         qd_sc_energy's checks; or the errors of nevpt2::rdms, b_mo and
+///         an einsum.
+[[nodiscard]] Result<QdBuildersTangent>
+qd_builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                    const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
+                    const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
+                    std::span<const double> weights, const double *vectors, int32_t count,
+                    const double *h_dot, const double *b_dot, const double *c_dot);
+
 /// @brief A block of directions (h_dot, B_dot, c_dot) in the MO basis of the
 /// orbitals, laid out as builders_tangent reads them: direction k's h_dot
 /// nmo x nmo at @ref h + k nmo^2, symmetric; B_dot naux x nmo^2 at
@@ -465,6 +552,22 @@ struct QdScAdjoint {
   Buffers::device<double> epsilon;
 };
 
+/// @brief The bars qd_sc_adjoint's walk puts on what it reads, the QD
+/// builders' outputs, laid out as their tangent (qd_builders_tangent's): so
+/// that a tangent paired with them is E[W]'s directional derivative, which
+/// the same pass's h_bar, Lambda and y give through the builders' reverse
+/// pass.
+struct QdBuilderBars {
+  /// @brief On the shared outputs the walk reads: h1e, h2e, e_core, e_virt
+  /// and h1e_v_*, the rest empty (the blocks' are @ref lambda's); and on
+  /// every pair's RDMs, f3ca and f3ac on the diagonal, each before the
+  /// traces' adjoint folds dm1's and dm2's into dm3's.
+  QdBuilderOutputs bars;
+  /// @brief On B through the slabs, naux x nmo^2 in ScAdjoint::lambda's
+  /// layout: what the walk adds itself, before the builders' share.
+  Buffers::device<double> lambda;
+};
+
 /// @brief The adjoint of E[W] = sum_MN W_MN H_MN, H_MN qd_sc_energy's
 /// element (M, N) total, at (@p h, @p b, @p c), the roots @p vectors at
 /// @p weights, and fixed @p w (W, n x n row-major, [M n + N] on element
@@ -484,10 +587,13 @@ struct QdScAdjoint {
 /// orbital energies' share; each root's own bars then fold and go through
 /// the one-vector rdms_adjoint onto its y and (tu|vw)'s bar; and h_bar,
 /// Lambda, X and A are formed as sc_adjoint forms them. At one root, weight
-/// 1 and W = 1, the result is sc_adjoint's to round-off.
+/// 1 and W = 1, the result is sc_adjoint's to round-off. With
+/// @p builder_bars, the walk's bars are kept in it too (QdBuilderBars), the
+/// tests' duality with qd_builders_tangent; all-electron.
 ///
 /// @return The elements and the adjoints; InvalidConfig for @p w not
-///         weights.size()^2 long, or qd_sc_energy's errors; or those of
+///         weights.size()^2 long, @p builder_bars with @p nfrozen > 0, or
+///         qd_sc_energy's errors; or those of
 ///         sc_effective_hamiltonian_adjoint, rdms_adjoint and the
 ///         density-fitted adjoints.
 [[nodiscard]] Result<QdScAdjoint>
@@ -495,7 +601,8 @@ qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
               const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
               const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
               std::span<const double> weights, const double *vectors, std::span<const double> w,
-              int32_t batch, int32_t nfrozen = 0);
+              int32_t batch, int32_t nfrozen = 0,
+              std::optional<QdBuilderBars> *builder_bars = nullptr);
 
 /// @brief The PC-QD-NEVPT2 effective Hamiltonian's correlation elements of
 /// the roots @p vectors over the shared orbitals @p c: qd_sc_energy's inputs,

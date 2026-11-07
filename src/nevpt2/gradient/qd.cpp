@@ -24,38 +24,18 @@ import :builders; // ScArrays, the builders, their runs and builders_adjoint
 
 namespace free_breakfast::nevpt2 {
 
-// One ordered pair's RDMs, row-major in nevpt2::rdms' layout: dm1, dm2 and
-// dm3, and f3ca and f3ac on the diagonal alone (empty off it). Or the bars on
-// a root's own.
-struct QdRdms {
-  Buffers::device<double> dm1;
-  Buffers::device<double> dm2;
-  Buffers::device<double> dm3;
-  Buffers::device<double> f3ca;
-  Buffers::device<double> f3ac;
-};
-
-// What both entry points build: the shared arrays, their dm1 gamma_SA, and
-// the n^2 pairs' RDMs, [M n + N] that of bra M and ket N.
-struct QdArrays {
-  ScArrays x;
-  std::vector<QdRdms> pairs;
-};
-
-// A zeroed QdRdms over @p ncas active orbitals, with f3ca and f3ac if @p f3.
-Result<QdRdms> zeroed_rdms(DeviceResources &res, const int64_t ncas, const bool f3) {
+// zeroed_rdms (declared in :builders).
+Result<PairRdms> zeroed_rdms(DeviceResources &res, const int64_t ncas, const bool f3) {
   const int64_t n4 = ncas * ncas * ncas * ncas;
   const int64_t n6 = f3 ? n4 * ncas * ncas : 0;
-  return QdRdms{.dm1 = FBF_TRY(zeroed(res, ncas * ncas)),
-                .dm2 = FBF_TRY(zeroed(res, n4)),
-                .dm3 = FBF_TRY(zeroed(res, n4 * ncas * ncas)),
-                .f3ca = FBF_TRY(zeroed(res, n6)),
-                .f3ac = FBF_TRY(zeroed(res, n6))};
+  return PairRdms{.dm1 = FBF_TRY(zeroed(res, ncas * ncas)),
+                  .dm2 = FBF_TRY(zeroed(res, n4)),
+                  .dm3 = FBF_TRY(zeroed(res, n4 * ncas * ncas)),
+                  .f3ca = FBF_TRY(zeroed(res, n6)),
+                  .f3ac = FBF_TRY(zeroed(res, n6))};
 }
 
-// shared_arrays; every ordered pair's dm3 by nevpt2::rdms (one vector on the
-// diagonal, with its f3s; bra/ket off it), and its dm2 and dm1 as traces;
-// gamma_SA = Σ_r w_r dm1_rr into x.dm1; then the builders that read it.
+// qd_arrays (declared in :builders): gamma_SA = Σ_r w_r dm1_rr.
 Result<QdArrays> qd_arrays(DeviceResources &res, const std::string_view who,
                            const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
                            const int32_t naux, const int32_t nao, const int32_t nmo,
@@ -74,11 +54,11 @@ Result<QdArrays> qd_arrays(DeviceResources &res, const std::string_view who,
   // and the bra/ket rdms cannot skip them yet (#719).
   Buffers::device<double> f3_scratch(static_cast<size_t>(2 * n6), res.device());
 
-  std::vector<QdRdms> pairs;
+  std::vector<PairRdms> pairs;
   pairs.reserve(static_cast<size_t>(nroots * nroots));
   for (int64_t bra = 0; bra < nroots; ++bra) {
     for (int64_t ket = 0; ket < nroots; ++ket) {
-      QdRdms p = FBF_TRY(zeroed_rdms(res, n, bra == ket));
+      PairRdms p = FBF_TRY(zeroed_rdms(res, n, bra == ket));
       if (bra == ket) {
         FBF_TRY(rdms(res, alpha, beta, vectors + (ket * ndet), x.eri.data(), p.dm3.data(),
                      p.f3ca.data(), p.f3ac.data(), FBF_TRY(rdm_budget())));
@@ -110,7 +90,7 @@ std::vector<EnergyInputs> pair_inputs(const QdArrays &q, const size_t nroots,
                                       const double pc_floor = 0.0) {
   std::vector<EnergyInputs> out;
   for (size_t k = 0; k < q.pairs.size(); ++k) {
-    const QdRdms &p = q.pairs[k];
+    const PairRdms &p = q.pairs[k];
     const bool diagonal = k % (nroots + 1) == 0;
     EnergyInputs in = q.x.inputs();
     in.dm1 = p.dm1.data();
@@ -165,7 +145,9 @@ Result<std::vector<PcClassEnergies>> qd_pc_energy(
 // the callback it is given; the RDMs' bars onto every root's y, then
 // builders_adjoint. The forward arrays are only read, so every W reads the
 // same ones; the energies are @p walk's to keep. Every pair's inputs carry
-// @p pc_floor.
+// @p pc_floor. With @p keep (one W, all-electron), the walk's bars are
+// copied into it as it hands them over (QdBuilderBars), before the traces'
+// and the builders' adjoints add onto them.
 Result<std::vector<ScAdjoint>> qd_adjoint(
     DeviceResources &res, const std::string_view who, const ci::DeviceStringSet &alpha,
     const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao, const int32_t nmo,
@@ -175,7 +157,8 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
     const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>,
                                std::span<const double>, std::span<const EnergyBars>,
                                const std::function<Status(int64_t, int64_t, const EnergyBars &)> &)>
-        &walk) {
+        &walk,
+    std::optional<QdBuilderBars> *keep) {
   FBF_TRY(check_weights(who, weights));
   const size_t nroots = weights.size();
   const size_t n2 = nroots * nroots;
@@ -183,14 +166,32 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
     return err_config("{}: W holds {} elements for {} roots: a whole number of n^2", who, ws.size(),
                       nroots);
   }
+  if (keep != nullptr && (ws.size() != n2 || nfrozen != 0)) {
+    return err_config("{}: the builders' bars are kept at one W, all-electron ({} W, {} frozen)",
+                      who, ws.size() / n2, nfrozen);
+  }
   QdArrays q = FBF_TRY(qd_arrays(res, who, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas,
                                  weights, vectors, nfrozen));
   ScArrays &x = q.x;
   const ScopedDeviceIndex on{res.dev_idx()};
   const int64_t n = ncas;
   const int64_t n4 = n * n * n * n;
+  const int64_t n6 = n4 * n * n;
   const int64_t ndet = int64_t{alpha.size()} * beta.size();
   const std::vector<EnergyInputs> inputs = pair_inputs(q, nroots, pc_floor);
+  // A device copy of @p count doubles at @p from, for keep.
+  const auto copy_of = [&](const double *from,
+                           const int64_t count) -> Result<Buffers::device<double>> {
+    Buffers::device<double> out(static_cast<size_t>(count), res.device());
+    if (count > 0) {
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.data(), from,
+                                             sizeof(double) * static_cast<size_t>(count),
+                                             wwr::wwrMemcpyDeviceToDevice, res.stream())));
+    }
+    return out;
+  };
+  const auto none = [&] { return Buffers::device<double>(0, res.device()); };
+  std::vector<std::optional<PairRdms>> kept(keep != nullptr ? n2 : 0);
   // rdms_adjoint overwrites its outputs, so each call writes these and they
   // are added on.
   Buffers::device<double> bra_bar(static_cast<size_t>(ndet), res.device());
@@ -204,7 +205,7 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
     // Each root's own RDMs' bars apart, and y over every root.
     ScArrays bar = FBF_TRY(zeroed_arrays(res, naux, ncore, ncas, nmo - ncore - ncas));
     LambdaBars lambda = FBF_TRY(lambda_bars(res, x, nmo));
-    std::vector<QdRdms> own;
+    std::vector<PairRdms> own;
     std::vector<EnergyBars> bars;
     for (size_t r = 0; r < nroots; ++r) {
       own.push_back(FBF_TRY(zeroed_rdms(res, n, true)));
@@ -223,7 +224,15 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
     // both roots' y. (tu|vw) takes none: dm3 does not read it.
     const auto transition = [&](const int64_t bra, const int64_t ket,
                                 const EnergyBars &t) -> Status {
-      QdRdms &p = q.pairs[static_cast<size_t>((bra * static_cast<int64_t>(nroots)) + ket)];
+      const auto at = static_cast<size_t>((bra * static_cast<int64_t>(nroots)) + ket);
+      PairRdms &p = q.pairs[at];
+      if (keep != nullptr) {
+        kept[at] = PairRdms{.dm1 = FBF_TRY(copy_of(t.dm1, n * n)),
+                            .dm2 = FBF_TRY(copy_of(t.dm2, n4)),
+                            .dm3 = FBF_TRY(copy_of(t.dm3, n6)),
+                            .f3ca = none(),
+                            .f3ac = none()};
+      }
       FBF_TRY(run_builds_adjoint(
           res, trace_builds(x, p.dm1.data(), p.dm2.data(), p.dm3.data(), t.dm1, t.dm2, t.dm3)));
       FBF_TRY(rdms_adjoint(res, alpha, beta, vectors + (bra * ndet), vectors + (ket * ndet),
@@ -235,13 +244,56 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
     };
     // A refused class is the walk's error, returned before any bar is read.
     FBF_TRY(walk(x.walk_blocks(), inputs, w, bars, transition));
+    if (keep != nullptr) {
+      const int64_t nc = ncore;
+      const int64_t nv = nmo - ncore - ncas;
+      for (size_t r = 0; r < nroots; ++r) {
+        const PairRdms &o = own[r];
+        kept[r * (nroots + 1)] = PairRdms{.dm1 = FBF_TRY(copy_of(o.dm1.data(), n * n)),
+                                          .dm2 = FBF_TRY(copy_of(o.dm2.data(), n4)),
+                                          .dm3 = FBF_TRY(copy_of(o.dm3.data(), n6)),
+                                          .f3ca = FBF_TRY(copy_of(o.f3ca.data(), n6)),
+                                          .f3ac = FBF_TRY(copy_of(o.f3ac.data(), n6))};
+      }
+      std::vector<PairRdms> pairs;
+      for (std::optional<PairRdms> &p : kept) {
+        pairs.push_back(p ? std::move(*p) : FBF_TRY(zeroed_rdms(res, n, false)));
+      }
+      *keep = QdBuilderBars{
+          .bars = {.shared = {.blocks = {.naux = naux,
+                                         .ncore = ncore,
+                                         .ncas = ncas,
+                                         .nvirt = static_cast<int32_t>(nv),
+                                         .aa = none(),
+                                         .ca = none(),
+                                         .va = none(),
+                                         .cv = none(),
+                                         .vc = none()},
+                              .eri = none(),
+                              .h1e = FBF_TRY(copy_of(bar.h1e.data(), n * n)),
+                              .h2e = FBF_TRY(copy_of(bar.h2e.data(), n4)),
+                              .e_core = FBF_TRY(copy_of(bar.e_core.data(), nc)),
+                              .e_virt = FBF_TRY(copy_of(bar.e_virt.data(), nv)),
+                              .h1e_v_sr = FBF_TRY(copy_of(bar.h1e_v_sr.data(), nv * n)),
+                              .h1e_v_si = FBF_TRY(copy_of(bar.h1e_v_si.data(), n * nc)),
+                              .h1e_v_sir = FBF_TRY(copy_of(bar.h1e_v_sir.data(), nv * nc)),
+                              .dm1 = none(),
+                              .dm2 = none(),
+                              .dm3 = none(),
+                              .f3ca = none(),
+                              .f3ac = none(),
+                              .f_core = none(),
+                              .f_virt = none()},
+                   .pairs = std::move(pairs)},
+          .lambda = FBF_TRY(copy_of(lambda.walk(), int64_t{naux} * nmo * nmo))};
+    }
 
     // Each root's own: gamma_SA's bar at its weight onto dm1's, the traces'
     // adjoint, then the one-vector rdms_adjoint onto its y and (tu|vw)'s bar.
     const auto own_rdms_adjoint = [&]() -> Result<Buffers::device<double>> {
       for (size_t r = 0; r < nroots; ++r) {
-        QdRdms &p = q.pairs[r * (nroots + 1)];
-        QdRdms &o = own[r];
+        PairRdms &p = q.pairs[r * (nroots + 1)];
+        PairRdms &o = own[r];
         const auto root = static_cast<int64_t>(r);
         FBF_TRY(contract(res, "tu->tu", {column_operand(bar.dm1.data(), {n, n})}, o.dm1.data(),
                          {n, n}, weights[r]));
@@ -267,7 +319,8 @@ qd_adjoints(DeviceResources &res, const std::string_view who, const ci::DeviceSt
             const int32_t nmo, const double *b, const double *c, const double *h,
             const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
             const double *vectors, const std::span<const double> ws, const int32_t batch,
-            std::vector<PcClassEnergies> *pc, const int32_t nfrozen, const double pc_floor) {
+            std::vector<PcClassEnergies> *pc, const int32_t nfrozen, const double pc_floor,
+            std::optional<QdBuilderBars> *builder_bars) {
   std::vector<std::vector<ClassEnergies>> elements;
   std::vector<ScAdjoint> adj = FBF_TRY(qd_adjoint(
       res, who, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, ws, nfrozen,
@@ -285,7 +338,8 @@ qd_adjoints(DeviceResources &res, const std::string_view who, const ci::DeviceSt
           elements.push_back(std::move(walked.elements));
         }
         return {};
-      }));
+      },
+      builder_bars));
   std::vector<QdScAdjoint> out;
   for (size_t k = 0; k < adj.size(); ++k) {
     out.push_back(QdScAdjoint{.elements = pc != nullptr ? std::vector<ClassEnergies>{}
@@ -306,7 +360,8 @@ Result<QdScAdjoint> qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSe
                                   const double *c, const double *h, const int32_t ncore,
                                   const int32_t ncas, const std::span<const double> weights,
                                   const double *vectors, const std::span<const double> w,
-                                  const int32_t batch, const int32_t nfrozen) {
+                                  const int32_t batch, const int32_t nfrozen,
+                                  std::optional<QdBuilderBars> *builder_bars) {
   constexpr std::string_view kWho = "nevpt2::qd_sc_adjoint";
   FBF_TRY(check_weights(kWho, weights));
   if (w.size() != weights.size() * weights.size()) {
@@ -314,7 +369,7 @@ Result<QdScAdjoint> qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSe
   }
   std::vector<QdScAdjoint> adj =
       FBF_TRY(qd_adjoints(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights,
-                          vectors, w, batch, nullptr, nfrozen, 0.0));
+                          vectors, w, batch, nullptr, nfrozen, 0.0, builder_bars));
   return std::move(adj.front());
 }
 
