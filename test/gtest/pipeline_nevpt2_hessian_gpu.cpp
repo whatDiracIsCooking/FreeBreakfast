@@ -18,11 +18,12 @@
 //   block than the fixture's energy stencil could); PC fails none. SC's step
 //   then returns Numerical naming them, and hessian.json carries the ladders
 //   and no frequencies.
-// - The refusals (fast): the config's (quasi_degenerate, a frozen core, a
-//   state average, integral-direct ERIs, a [casscf_gradient] beside it) and
-//   the step's own (the ladder under the analytic method among them), run
-//   directly, each returned before any displaced solve. The analytic method
-//   itself is pipeline_nevpt2_analytic_hessian_gpu.cpp's (#818).
+// - The refusals (fast): the step's own (the ladder under the analytic
+//   method among them), run directly, each returned before any displaced
+//   solve. The config's (quasi_degenerate, a frozen core, a state average,
+//   integral-direct ERIs, a [casscf_gradient] beside it) touch no device, and
+//   are test/pipeline/hessian_host.cpp's. The analytic method itself is
+//   pipeline_nevpt2_analytic_hessian_gpu.cpp's (#818).
 
 #include <gtest/gtest.h>
 
@@ -337,64 +338,6 @@ TEST(PipelineNevpt2Hessian, PcSymmetricIsBilinear) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_symmetric("pc");
-}
-
-// The config's refusals, planned and not run: each before anything touches a
-// device.
-TEST(PipelineNevpt2Hessian, ConfigRefusesWhatTheHessianDoesNotCover) {
-  const fb::test::ScratchDir dir("pipeline_nevpt2_hessian_config");
-  const auto planned = [&](std::string_view hessian, std::string_view extra = "",
-                           std::string_view eri = "density_fitting", std::int32_t nroots = 1) {
-    const std::filesystem::path path = write_config(dir, "pc", hessian, kScf, extra);
-    auto text = fb::read_file(path);
-    EXPECT_TRUE(text.has_value());
-    std::string toml = text.has_value() ? *text : std::string{};
-    const auto replace = [&](std::string_view from, std::string_view to) {
-      const std::size_t at = toml.find(from);
-      ASSERT_NE(at, std::string::npos) << from;
-      toml.replace(at, from.size(), to);
-    };
-    if (eri != "density_fitting") {
-      // An aux basis is refused beside the other mode.
-      if (const std::size_t at = toml.find("aux_basis = "); at != std::string::npos) {
-        toml.erase(at, toml.find('\n', at) + 1 - at);
-      }
-      replace("density_fitting", eri);
-    }
-    if (nroots != 1) {
-      replace("conv_tol_grad", std::format("nroots = {}\nconv_tol_grad", nroots));
-    }
-    return fb::parse_config(toml, dir.path(), dir / "out");
-  };
-  constexpr std::string_view kNumerical = "method = \"numerical\"\n";
-
-  // The chain copied in: the CASSCF and the gradient, the variant kept.
-  const auto ok = planned(kNumerical);
-  ASSERT_TRUE(ok.has_value()) << ok.error().message;
-  const auto &step = ok->step<fb::HessianStep>();
-  ASSERT_TRUE(step.has_value());
-  ASSERT_TRUE(step->nevpt2_gradient.has_value());
-  EXPECT_EQ(step->nevpt2_gradient->variant, fb::Nevpt2Variant::Pc);
-  EXPECT_FALSE(step->casscf_gradient.has_value());
-  EXPECT_EQ(step->casscf.ncas, 4);
-  EXPECT_EQ(step->method, fb::HessianMethod::Numerical);
-
-  const auto refused = [](const fb::Result<fb::Calculation> &calc, fb::ErrorKind kind,
-                          std::string_view says) {
-    ASSERT_FALSE(calc.has_value());
-    EXPECT_EQ(calc.error().kind, kind) << calc.error().message;
-    EXPECT_NE(calc.error().message.find(says), std::string::npos) << calc.error().message;
-  };
-  refused(planned(kNumerical, "quasi_degenerate = true\n", "density_fitting", 2),
-          fb::ErrorKind::Unsupported, "quasi_degenerate");
-  refused(planned(kNumerical, "frozen_core = 1\n"), fb::ErrorKind::InvalidConfig, "frozen_core");
-  refused(planned(kNumerical, "frozen_core = \"auto\"\n"), fb::ErrorKind::InvalidConfig,
-          "frozen_core");
-  // A state average: [nevpt2_gradient]'s own refusal, before anything runs.
-  refused(planned(kNumerical, "", "density_fitting", 2), fb::ErrorKind::Unsupported, "nroots");
-  refused(planned(kNumerical, "", "integral_direct"), fb::ErrorKind::Unsupported,
-          "integral_direct");
-  refused(planned(kNumerical, "[casscf_gradient]\n"), fb::ErrorKind::InvalidConfig, "names both");
 }
 
 // The step's own refusals, run directly on a planned step changed after

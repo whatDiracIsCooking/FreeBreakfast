@@ -7,7 +7,10 @@
 // after it; the CASSCF chain copied in beside a [casscf_gradient], the
 // analytic method there the root's (beside an [optimize] too), and its
 // refusals; the ladder, its pairs and coordinates (#812), on by default
-// beside a numerical [nevpt2_gradient], and their refusals; the analytic
+// beside a numerical [nevpt2_gradient], and their refusals; the chain the
+// numerical method copies in beside a [nevpt2_gradient], and what it
+// refuses there (a QD-NEVPT2, a frozen core, a state average, integral-direct
+// ERIs, a [casscf_gradient] beside it); the analytic
 // method beside a [nevpt2_gradient] (#818), its coordinates, what it
 // refuses before running, and examples/nevpt2_hessian.toml parsed; and the
 // guard on a displaced CASSCF, check_displaced_casscf, fed an active orbital
@@ -345,6 +348,50 @@ TEST(PipelineHessian, AMalformedLadderIsRefused) {
   EXPECT_EQ(rhf.error().kind, fb::ErrorKind::Unsupported);
   EXPECT_NE(rhf.error().message.find("the RHF chain has no such start"), std::string::npos)
       << rhf.error().message;
+}
+
+// Beside a [nevpt2_gradient] the numerical method copies the chain in -- the
+// CASSCF and the gradient, its variant kept -- and refuses what the Hessian
+// does not cover: a QD-NEVPT2, a frozen core, a state average, integral-direct
+// ERIs, and a [casscf_gradient] beside it. Moved from
+// test/gtest/pipeline_nevpt2_hessian_gpu.cpp, which ran it over its fixture's
+// files with no device (#1037).
+TEST(PipelineHessian, BesideANevpt2GradientTheNumericalMethodCopiesTheChainAndRefuses) {
+  const auto planned = [](std::string_view extra = "", std::string_view eri = "density_fitting",
+                          std::int32_t nroots = 1) {
+    const std::string aux = eri == "density_fitting" ? "aux_basis = \"a.json\"\n" : "";
+    const std::string roots = nroots == 1 ? "" : std::format("nroots = {}\n", nroots);
+    return fb::parse_config(with_inputs(std::format("[eri]\nmode = \"{}\"\n{}"
+                                                    "[casscf]\nncas = 4\nnelecas = 4\n{}"
+                                                    "[nevpt2_gradient]\nvariant = \"pc\"\n{}"
+                                                    "[hessian]\nmethod = \"numerical\"\n",
+                                                    eri, aux, roots, extra)),
+                            "", kOut);
+  };
+  const auto ok = planned();
+  ASSERT_TRUE(ok.has_value()) << ok.error().message;
+  const auto &step = ok->step<fb::HessianStep>();
+  ASSERT_TRUE(step.has_value());
+  ASSERT_TRUE(step->nevpt2_gradient.has_value());
+  EXPECT_EQ(step->nevpt2_gradient->variant, fb::Nevpt2Variant::Pc);
+  EXPECT_FALSE(step->casscf_gradient.has_value());
+  EXPECT_EQ(step->casscf.ncas, 4);
+  EXPECT_EQ(step->method, fb::HessianMethod::Numerical);
+
+  const auto refused = [](const fb::Result<fb::Calculation> &calc, fb::ErrorKind kind,
+                          std::string_view says) {
+    ASSERT_FALSE(calc.has_value()) << says;
+    EXPECT_EQ(calc.error().kind, kind) << calc.error().message;
+    EXPECT_NE(calc.error().message.find(says), std::string::npos) << calc.error().message;
+  };
+  refused(planned("quasi_degenerate = true\n", "density_fitting", 2), fb::ErrorKind::Unsupported,
+          "quasi_degenerate");
+  refused(planned("frozen_core = 1\n"), fb::ErrorKind::InvalidConfig, "frozen_core");
+  refused(planned("frozen_core = \"auto\"\n"), fb::ErrorKind::InvalidConfig, "frozen_core");
+  // A state average: [nevpt2_gradient]'s own refusal, before anything runs.
+  refused(planned("", "density_fitting", 2), fb::ErrorKind::Unsupported, "nroots");
+  refused(planned("", "integral_direct"), fb::ErrorKind::Unsupported, "integral_direct");
+  refused(planned("[casscf_gradient]\n"), fb::ErrorKind::InvalidConfig, "names both");
 }
 
 // Beside a [nevpt2_gradient] the analytic method -- the default -- is that

@@ -8,7 +8,8 @@
 // same B, and B_vc against B_cv. The adjoints of slab, h2e and mo_blocks by
 // duality: <Lambda, B-dot> against <bar, x-dot>, x-dot the forward builders'
 // tangent along B-dot, every block whole and in partial batches. Then the
-// refusals.
+// refusals. Each block's batch axis, a table lookup, is
+// nevpt2_density_fitting_host.cpp's.
 
 #include <gtest/gtest.h>
 
@@ -804,16 +805,6 @@ TEST(Nevpt2DensityFittingRefusals, BatchOutsideTheExtentAndTooManyOrbitalsAreInv
     const auto made = nevpt2::mo_blocks(res, kNaux, 7, 7, nullptr, nullptr, ncore, ncas);
     ASSERT_FALSE(made) << ncore << ", " << ncas;
     EXPECT_EQ(made.error().kind, fb::ErrorKind::InvalidConfig) << made.error().message;
-  }
-}
-
-TEST(Nevpt2DensityFitting, BatchAxesAreTheDemos) {
-  EXPECT_EQ(nevpt2::batch_axis(ExtBlock::Si), 2);
-  EXPECT_EQ(nevpt2::batch_axis(ExtBlock::Sij), 2);
-  EXPECT_EQ(nevpt2::batch_axis(ExtBlock::SrsiT), 1);
-  for (const ExtBlock block : {ExtBlock::Sr, ExtBlock::Sijrs, ExtBlock::Sijr, ExtBlock::Srsi,
-                               ExtBlock::Srs, ExtBlock::Sir1, ExtBlock::Sir2}) {
-    EXPECT_EQ(nevpt2::batch_axis(block), 0) << static_cast<std::int32_t>(block);
   }
 }
 
