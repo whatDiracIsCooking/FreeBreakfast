@@ -536,6 +536,7 @@ add_subdirectory(src)
 # tree, so a generator cannot rot unbuilt between regenerations.
 add_subdirectory(tools/sad)
 add_subdirectory(tools/qd_nevpt2_gradient)
+add_subdirectory(tools/qd_nevpt2_hessian)
 
 # The device kernels the core GPU tests drive. Outside the gate below on
 # purpose: they need no GoogleTest, and devtools/cross-backend-check.sh (which

@@ -22,3 +22,29 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
 
 `--jobs` is worker processes of one thread each, 8 by default and at most:
 the box's per-agent budget. About 15 minutes for all four cases.
+
+## The QD Hessian references (#953)
+
+`test/gtest/data/qd_nevpt2_hessian/`, whose README has the cases, the
+numbers and the keys.
+
+- `qd_nevpt2_hessian.py` writes them: the same stencil, ladder, floor and
+  symmetry check, over this tree's analytic SC- and PC-QD-NEVPT2 gradient
+  G(W) at each tracked state's W^K = u_K u_K^T and each pair's W^P + W^Q.
+  Its docstring is the method. Standard library only: it writes a request,
+  runs the C++ driver over it, and judges the points.
+- The driver is `free-breakfast-qd-nevpt2-hessian`
+  (`tools/qd_nevpt2_hessian/main.cpp`, built with the tree): at every
+  requested point the chain and guard of `tools/qd_nevpt2_gradient`'s
+  `ChainSampler`, then `nevpt2::qd_sc_gradient` / `qd_pc_gradient` at
+  every W. Needs a GPU.
+
+```sh
+tools/nevpt2_hessian/qd_nevpt2_hessian.py [--only CASE ...] \
+    [--binary build/tools/qd_nevpt2_hessian/free-breakfast-qd-nevpt2-hessian] \
+    [--points DIR [--keep]]
+```
+
+`--points DIR --keep` leaves the driver's raw points in `DIR`; `--points DIR`
+alone judges them again without the GPU. About 6 minutes per ladder (106
+points) on the RTX 3080, two ladders per case.
