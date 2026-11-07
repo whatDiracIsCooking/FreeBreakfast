@@ -233,7 +233,7 @@ check in `test/io/sad_host.cpp` fails until you do. The commands are in
 | | C++ | Python |
 |---|---|---|
 | Source | `src/`, `cmake/`, `deps/` (+ opt-in `bench/`, `experimental/`) | `test/pytest/`, `devtools/hooks/*.py`, `tools/` |
-| Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, and `test/atom/` (the `src/atom` tests), `test/basis/` (the host-only `src/basis` tests), `test/io/` (the host-only `src/io` tests), `test/sad/` (the `src/sad` tests, a GPU-free module) and `test/pipeline/` (the `src/pipeline` tests that need no device), each a host binary, `test/recipes/` (the `src/recipes` tests), a GPU binary, and `test/examples/` (`examples/` configs through the `free-breakfast` binary), run by ctest | `test/pytest/`, run by pytest |
+| Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, and `test/atom/` (the `src/atom` tests), `test/basis/` (the host-only `src/basis` tests), `test/io/` (the host-only `src/io` tests), `test/sad/` (the `src/sad` tests, a GPU-free module) and `test/pipeline/` (the `src/pipeline` tests that need no device), each a host binary, `test/recipes/` (the `src/recipes` tests), a host/GPU binary pair, `test/compile/` (TUs of `static_assert`s alone, built even under `FREE_BREAKFAST_COMPILE_TIME_ONLY`; no ctest entry), and `test/examples/` (`examples/` configs through the `free-breakfast` binary), run by ctest | `test/pytest/`, run by pytest |
 | Driver | `devtools/test.py push` / `pr` / `nightly` | `devtools/test.py push` / `pr` / `nightly`, `pytest` |
 | Lint | `cmake-lint`, `clang-format --check` (commit hook + CI); `clang-tidy` via `--tidy` | `ruff check`, `ruff format --check` (commit hook + CI) |
 | Gated by | `cmake-lint` + format check at commit, `test.py push`'s C++ half at push; on the server **format + cmake-lint only, no build or test** | `test.py push`'s Python half + CI |
@@ -401,7 +401,7 @@ hook: a full ladder is minutes of compiler time, the slow tier's budget.
   `(n + b - 1) / b`. `src/core/README.md` lists each directory's names, and
   `docs/style.md` "Launch shape and integer rounding" has the rule.
 - **No anonymous namespaces, no `detail` namespaces** — except anonymous
-  namespaces in `.cu`, `test/gtest/*.cpp`, `test/core/*.cpp`, `test/atom/*.cpp`, `test/io/*.cpp`, `test/sad/*.cpp`, `test/pipeline/*.cpp`, `test/recipes/*.cpp` and the `main.cpp` of `src/` and
+  namespaces in `.cu`, `test/gtest/*.cpp`, `test/core/*.cpp`, `test/atom/*.cpp`, `test/io/*.cpp`, `test/sad/*.cpp`, `test/pipeline/*.cpp`, `test/recipes/*.cpp`, `test/compile/*.cpp` and the `main.cpp` of `src/` and
   `tools/*/`, which are not module units. In a
   module, not exporting *is* the privacy; module-private code shared between
   units goes in a partition. `docs/style.md` "Module-private code" says which

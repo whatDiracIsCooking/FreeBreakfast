@@ -135,6 +135,7 @@ HOST_BINS = (
     "test/io/free_breakfast_io_tests_host",
     "test/sad/free_breakfast_sad_tests_host",
     "test/pipeline/free_breakfast_pipeline_tests_host",
+    "test/recipes/free_breakfast_recipes_tests_host",
     "test/gtest/free_breakfast_tests_host",
 )
 GPU_BINS = (

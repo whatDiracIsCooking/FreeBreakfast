@@ -543,6 +543,11 @@ add_subdirectory(tools/qd_nevpt2_gradient)
 # .cu code for the other backend.
 add_subdirectory(test/core/gpu_kernels)
 
+# The compile-time tier (docs/testing.md "Which tier a check goes in"): TUs of
+# static_asserts alone, no GoogleTest, so outside the gate below for the same
+# reason -- the compile-only configure, and cross-backend-check.sh, build them.
+add_subdirectory(test/compile)
+
 # Skipped under FREE_BREAKFAST_COMPILE_TIME_ONLY: there is no GoogleTest to
 # link against in that configuration (see the option's comment).
 if(NOT FREE_BREAKFAST_COMPILE_TIME_ONLY)
