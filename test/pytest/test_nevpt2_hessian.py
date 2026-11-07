@@ -1,5 +1,6 @@
-"""tools/nevpt2_hessian: the stencil helpers, and the committed SC- and
-PC-NEVPT2 Hessian references in test/gtest/data/nevpt2_hessian/ (#803).
+"""tools/nevpt2_hessian: the stencil helpers, the committed SC- and
+PC-NEVPT2 Hessian references in test/gtest/data/nevpt2_hessian/ (#803), and
+the SC- and PC-QD-NEVPT2 ones in test/gtest/data/qd_nevpt2_hessian/ (#953).
 
 The helpers (tools/nevpt2_hessian/stencil.py) and the fixtures' invariants
 are checked with the standard library alone, so they run on the push gate:
@@ -372,3 +373,177 @@ def test_the_reference_point_reruns():
     assert abs(ref.energy - want["energies"]["casscf"]) < 1e-11
     assert abs(ref.nevpt2["sc"] - want["e_corr"]["sc"]) < 1e-11
     assert abs(ref.nevpt2["pc"] - want["e_corr"]["pc"]) < 1e-11
+
+
+# ------------------------------------------------- the QD references (#953)
+
+QD_DATA = ROOT / "test" / "gtest" / "data" / "qd_nevpt2_hessian"
+QD_CASES = ("h2co_skew_ccpvdz_sa3", "h2co_skew_ccpvdz_sa3_weighted")
+
+
+def load_qd_tool():
+    spec = importlib.util.spec_from_file_location(
+        "qd_nevpt2_hessian", TOOL / "qd_nevpt2_hessian.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+qd_tool = load_qd_tool()
+
+
+@functools.cache
+def qd_fixture(name: str) -> dict:
+    return json.loads((QD_DATA / f"{name}.json").read_text())
+
+
+def qd_quantities(record: dict):
+    """Every differenced G(W) of a QD record: (scheme, part)."""
+    for scheme in record["schemes"]:
+        for part in record[scheme]["states"] + record[scheme]["pairs"]:
+            yield scheme, part
+
+
+def test_the_qd_cases_are_there():
+    assert sorted(p.stem for p in QD_DATA.glob("*.json")) == sorted(QD_CASES)
+    assert [c["name"] for c in qd_tool.CASES] == list(QD_CASES)
+    for name in QD_CASES:
+        record = qd_fixture(name)
+        assert record["name"] == name
+        for key in ("basis", "aux_basis"):
+            path = ROOT / record[key]["file"]
+            assert (
+                hashlib.sha256(path.read_bytes()).hexdigest() == record[key]["sha256"]
+            )
+        n = len(record["weights"])
+        assert n == 3
+        for scheme in record["schemes"]:
+            assert [p["state"] for p in record[scheme]["states"]] == list(range(n))
+            assert [p["pair"] for p in record[scheme]["pairs"]] == record["pairs"]
+    # Equal and unequal weights: theta in and out of the solve.
+    weights = {tuple(qd_fixture(name)["weights"]) for name in QD_CASES}
+    assert len(weights) == 2
+
+
+def test_the_qd_ladders_are_the_recorded_gradients():
+    for name in QD_CASES:
+        record = qd_fixture(name)
+        n = 3 * len(record["atoms"])
+        assert record["coordinates"]["vectors"] == [
+            [1.0 if i == j else 0.0 for i in range(n)] for j in range(n)
+        ]
+        for scheme, part in qd_quantities(record):
+            steps = record["steps"][scheme]
+            h = steps["h"]
+            assert steps["ladder"] == stencil.steps(h)
+            assert steps["displacements"] == stencil.displacements(h)
+            assert len(part["points"]) == n
+            for entry in part["points"]:
+                j = entry["column"]
+                points = dict(
+                    zip(steps["displacements"], entry["gradients"], strict=True)
+                )
+                ladder = stencil.column_ladder(points, h)
+                for k in range(3):
+                    for i in range(n):
+                        assert close(ladder[k][i], part["ladder"][k][i][j]), (
+                            name,
+                            scheme,
+                            k,
+                            i,
+                            j,
+                        )
+            finest = part["ladder"][-1]
+            assert part["hessian"] == stencil.symmetrized(finest)
+            assert part["asymmetry"] == stencil.asymmetry(finest)
+
+
+def test_the_qd_floor_is_the_measured_noise():
+    for name in QD_CASES:
+        record = qd_fixture(name)
+        for scheme, part in qd_quantities(record):
+            noise = part["noise"]
+            d = noise["differences"]
+            sigma = math.sqrt(
+                math.fsum(x * x for row in d for x in row) / (len(d) * len(d[0]))
+            )
+            assert math.isclose(sigma, noise["sigma_g"], rel_tol=1e-12)
+            assert len(d) == len(noise["pairs"]) > 0
+            h = record["steps"][scheme]["h"]
+            assert math.isclose(
+                noise["floor"], qd_tool.floor_of(sigma, h), rel_tol=1e-12
+            )
+
+
+def test_the_qd_bars_and_ratios_follow_the_rule():
+    for name in QD_CASES:
+        record = qd_fixture(name)
+        window = record["tolerances"]["ratio_window"]
+        assert window == [0.8 * 16, 1.2 * 16]
+        for scheme, part in qd_quantities(record):
+            floor = part["noise"]["floor"]
+            n = len(part["hessian"])
+            judged = []
+            for i in range(n):
+                for j in range(n):
+                    verdict = stencil.judge(
+                        [part["ladder"][k][i][j] for k in range(3)], floor, window
+                    )
+                    assert verdict["bar"] == part["column_bar"][i][j]
+                    assert verdict["ratio"] == part["ratios"][i][j]
+                    assert verdict["settled"] is not False, (name, scheme, i, j)
+                    if verdict["ratio"] is not None:
+                        judged.append(verdict["ratio"])
+            assert part["bar"] == stencil.symmetric_bar(part["column_bar"])
+            assert part["ratios_judged"] == len(judged)
+            assert all(window[0] < r < window[1] for r in judged)
+
+
+def test_every_qd_hessian_is_symmetric_to_its_bar():
+    for name in QD_CASES:
+        record = qd_fixture(name)
+        for scheme, part in qd_quantities(record):
+            assert (
+                stencil.symmetry_misses(part["ladder"][-1], part["column_bar"]) == []
+            ), (name, scheme)
+
+
+def test_each_pair_sum_is_its_states_sum():
+    # G is linear in W, so the pair's Hessian is its two states' sum, to the
+    # three bars (each point's Z-vectors are solved per W).
+    for name in QD_CASES:
+        record = qd_fixture(name)
+        for scheme in record["schemes"]:
+            states = record[scheme]["states"]
+            for part in record[scheme]["pairs"]:
+                p, q = (states[k] for k in part["pair"])
+                n = len(part["hessian"])
+                for i in range(n):
+                    for j in range(n):
+                        miss = abs(
+                            part["hessian"][i][j]
+                            - p["hessian"][i][j]
+                            - q["hessian"][i][j]
+                        )
+                        allowed = part["bar"][i][j] + p["bar"][i][j] + q["bar"][i][j]
+                        assert miss <= allowed, (name, scheme, part["pair"], i, j)
+
+
+def test_the_qd_guard_and_the_gaps():
+    for name in QD_CASES:
+        record = qd_fixture(name)
+        g = record["guard"]
+        assert g["prediction"] < 2.0
+        assert g["subspace"] < 1e-3 and g["ci"] < 1e-3
+        assert g["gradient_norm"] < 1e-10 and g["rerun_gradient_norm"] < 1e-10
+        assert g["rerun_energy"] < 1e-9
+        for scheme in record["schemes"]:
+            assert g[f"{scheme}_vectors"] < 1e-3
+            assert g[f"{scheme}_zvector_residual"] <= record["tolerances"]["zvector"]
+            # Every state's Hessian is defined: H_eff's gaps stay open.
+            assert min(record["reference"][scheme]["heff_gaps"]) > 0.1
+        assert min(record["reference"]["casscf_gaps"]) > 0.1
+        # The reference point is qd_nevpt2/'s: another CASSCF solution misses
+        # by millihartree.
+        assert max(record["reference"]["agreement"].values()) < 1e-10
