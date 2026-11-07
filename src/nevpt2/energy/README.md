@@ -865,7 +865,7 @@ E = −N²/d, and
 
     Ė = (−2N/d + N²Δ/d²) Ṅ + (N²/d²) Ḣ + (N³/d²) Δ̇,
 
-Park's P, Q and R (`nuclear_hessian.tex` Eq. finish's first order) with no
+Park's P, Q and R (`docs/nevpt2/nevpt2.tex` Eq. pqr) with no
 1/N: the (H, T) form's removable 1/N factors are fatal near the guard. A
 one-function class's Ė reads η instead
 ([One-function classes](#one-function-classes-949)). A
@@ -921,7 +921,7 @@ and the block twice; a caller with many directions chunks them.
     partners: none, or one EnergyDirection per direction, the pair checked
 
 `reverse.cpp`, forward over the reverse pass, for the nuclear Hessian
-(milestone 24, #811; `nuclear_hessian.tex` Eq. finish and §3). The bars are
+(milestone 24, #811; `docs/nevpt2/nevpt2.tex` Eq. finish, "SC's class tangent"). The bars are
 Σ_t P_t ∂N_t + Q_t ∂H_t + R_t ∂Δ_t, (P, Q, R) the finish's derivatives, so
 their tangent along ẋ is two terms, and Sijrs's.
 
@@ -1430,7 +1430,7 @@ per slab, per direction, the slab's tangent and ẏ (and ẋ), read back.
     span: false leaves the kept span's rotation out at both orders, for the tests alone
 
 `reverse.cpp`, forward over the PC reverse pass, for the nuclear Hessian
-(milestone 24, #815; `nuclear_hessian.tex` §2.3). SC's is one tangent of
+(milestone 24, #815; `docs/nevpt2/nevpt2.tex`, "PC's class tangent"). SC's is one tangent of
 the finish's multipliers and the bars at fixed multipliers differenced
 ([The SC Hessian-vector product](#the-sc-hessian-vector-product)); PC's is
 the same split over the solve.
