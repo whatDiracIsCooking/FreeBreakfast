@@ -1,6 +1,6 @@
 /// @file
 /// @brief df_pc_nevpt2: the PC-NEVPT2 analytic nuclear Hessian on a
-/// single-state DF-CASSCF (nuclear_hessian.tex eq. hess), df_sc_nevpt2's
+/// single-state DF-CASSCF (docs/nevpt2/nevpt2.tex eq. hess), df_sc_nevpt2's
 /// assembly over PC's adjoint, gradient multipliers and Hessian-vector
 /// product. Refused where one analytic Hessian does not represent the PC
 /// surface: a class kept below the HVP's conditioning floor, a coordinate

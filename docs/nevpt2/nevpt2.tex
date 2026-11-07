@@ -919,8 +919,13 @@ Beyond the five MO blocks the builders read $B_{cc}$ whole and $B_{vv}$'s
 diagonal.
 
 \subsection{The adjoints and the orbital source term}
+\label{sec:adjoints}
 
-One reverse pass (\S\ref{sec:reverse}, then the builders backwards,
+$(h, B)$ in the MO basis is the interface because every NEVPT2 input is
+built from it: the orbital energies, the inactive Fock blocks, the active
+$(tu|vw)$ and every external slab. So one reverse pass reaches the whole
+energy, and both the orbital rotations and the nuclear derivative
+integrals act on $(h, B)$ alone. One reverse pass (\S\ref{sec:reverse}, then the builders backwards,
 \code{rdms\_adjoint} and the DF adjoints) gives
 \begin{equation}
   \hb = \frac{\partial\Ecorr}{\partial h},\qquad
@@ -934,9 +939,18 @@ $\Phi(h, B)$ with symmetric adjoints moves by $\sum\theta_{xy}X_{xy}$,
   A = X - X^\T = \frac{\partial\Phi}{\partial\kappa},
   \label{eq:X}
 \end{equation}
-evaluated as an AO half-transform ($\tilde\Lb_q = \Lb_q C^\T$ per $q$, one
-batched GEMM, then $D = B_{\mathrm{AO}}^\T\tilde\Lb$, the DF-exchange shape)
-rather than pair by pair. Every block of $A$ has a reader: the mixed blocks
+$X$ needs $B^L_{xq}$ with $x$ general, which is the full-range $B$ or,
+without forming it, an AO half-transform:
+\begin{equation}
+  X = 2\,C^\T h^{\mathrm{AO}}C\,\hb
+    + 2\sum_L C^\T J^L\bigl(C\,\Lb^L\bigr),\qquad
+  J^L_{\mu\nu} = \sum_P (L^{-1})_{LP}\,(\mu\nu|P),
+  \label{eq:Xao}
+\end{equation}
+evaluated as $\tilde\Lb_q = \Lb_q C^\T$ per $q$ (one batched GEMM), then
+$D = B_{\mathrm{AO}}^\T\tilde\Lb$, the DF-exchange shape, rather than pair by
+pair. It is exact by construction: $\langle\kappa, A\rangle$ equals the
+forward tangent $\dot E(\kappa)$, a check rather than an assembly route. Every block of $A$ has a reader: the mixed blocks
 the Z-vector, core--core and virtual--virtual $z^c$, active--active the
 gauge identity. $A$ is Park's orbital source term $Y'$ \cite{park2019}.
 
@@ -990,15 +1004,49 @@ On a converged single-state CASSCF,
   \label{eq:L}
 \end{equation}
 $g_{\mathrm{orb}}$ \code{response::fock}'s orbital gradient over the packed
-non-redundant pairs. Stationarity in the CASSCF parameters is the Z-vector
-equation \cite{handy1984} over the CI-relaxed Hessian, solved by
-\code{response::zvector} (preconditioned CG on \code{recipes::pcg}, CI block projected off $c$):
-orbital right-hand side $g + \operatorname{pack}(A^{\mathrm{corr}} + A^{z^c})$
-and CI right-hand side $\tfrac12 P_c(y + y^c)$. The $\tfrac12$ is
-\code{zvector}'s convention (its CI row is half the Hessian's).
+non-redundant pairs. Stationarity in the CASSCF parameters
+$x = (\kappa_{\mathrm{nr}}, c)$ is the Z-vector equation \cite{handy1984}:
+with $J = \partial(g_{\mathrm{orb}}, g_{\mathrm{ci}})/\partial x$, the CASSCF
+electronic Hessian, symmetric at a stationary point,
+\begin{equation}
+  J\begin{pmatrix} Z\\ z\end{pmatrix} = -\begin{pmatrix}
+      A^{\mathrm{corr}}_{\mathrm{nr}} + A^{z^c}_{\mathrm{nr}}\\[2pt]
+      P_c\bigl(y + y^c\bigr)\end{pmatrix},
+  \qquad z\perp c,
+  \label{eq:cp}
+\end{equation}
+$\Ecas$ contributing no right-hand side because $g = 0$. Its blocks are what
+the tree has: $J_{\kappa\kappa}$ \code{response::Hessian};
+$J_{c\kappa}v = 2P_c(H[v] - \langle H[v]\rangle)c$, $H[v]$ the active
+Hamiltonian at the one-index-rotated integrals; $J_{\kappa c}v$ the orbital
+gradient at the transition RDMs between $v$ and $c$; and
+$J_{cc}v = 2P_c(H - \Ecas)P_cv$, one sigma vector. It is solved by
+\code{response::zvector} (preconditioned CG on \code{recipes::pcg}, CI block
+projected off $c$ before and after the preconditioner, since $c$ is an exact
+null vector of $J_{cc}$): orbital right-hand side
+$g + \operatorname{pack}(A^{\mathrm{corr}} + A^{z^c})$ and CI right-hand side
+$\tfrac12 P_c(y + y^c)$. The $\tfrac12$ is \code{zvector}'s convention: its
+CI row is half of Eq.~\eqref{eq:cp}'s, so a caller of Eq.~\eqref{eq:cp}'s
+form scales its CI right-hand side to match.
 
-\paragraph{The gate.} $\mathcal L$ is stationary in every rotation, so its
-total $X^{\mathcal L}$ must be symmetric in every block. Its antisymmetric part,
+\paragraph{The total adjoint.} Every term of Eq.~\eqref{eq:L} but $V_{nn}$ is
+a function of $(h, B)$ at fixed $(c, Z, z, z^c)$, so the nuclear term reads
+the sum of their adjoints,
+\begin{equation}
+  \hb^{\mathcal L} = \hb^{\mathrm{cas}} + \hb^{\mathrm{corr}} + \hb^{Z} + \hb^{z} + \hb^{z^c},\qquad
+  \Lb^{\mathcal L} = \Lb^{\mathrm{cas}} + \Lb^{\mathrm{corr}} + \Lb^{Z} + \Lb^{z} + \Lb^{z^c}:
+  \label{eq:total}
+\end{equation}
+CAS, $\hb^{\mathrm{cas}} = D$ and $\Lb^{\mathrm{cas},L}_{pq} =
+\sum_{rs}\Gamma_{pqrs}B^L_{rs}$ (the core parts J/K shapes, the active part
+$\G2$ against $B_{aa}$); $Z$, $\Ecas$'s adjoints at the rotated densities
+$D^Z = Z^\T D + DZ$ and their four-index analogue; $z$, $\Ecas$'s at the
+symmetrised transition densities between $z$ and $c$, times 2; $z^c$, $\Phi$'s
+above; corr, the reverse pass.
+
+\paragraph{The gate: a free, exact check of the whole solve.} $\mathcal L$
+is stationary in every rotation, so by Eq.~\eqref{eq:X} its total
+$X^{\mathcal L}$ must be symmetric in every block, gauge blocks included. Its antisymmetric part,
 \begin{equation}
   A^{\mathcal L} = 2(F - F^\T)\bigl(\gamma + \gamma_z, \Gamma + \Gamma_z\bigr) + A^Z + A^{\mathrm{corr}} + A^{z^c},
 \end{equation}
@@ -1346,6 +1394,57 @@ $\kappa_{oo}$--$\kappa_{oo}$ block, are each about $10^9$ bars and cancel to
 the fixture's bar: about nine of the parts' sixteen digits go into it. So
 PC's second-order $\kappa_{oo}$ terms do cancel the $1/(\eps_p - \eps_q)$ of
 Eq.~\eqref{eq:koo}, at the cost of digits, and that pair is not refused.
+
+\subsection{The semi-numerical Hessian and the bilinearity check}
+\label{sec:seminumerical}
+
+The numerical alternative differences the analytic gradient,
+\begin{equation}
+  H_{AB} \approx \frac{g_A(R + s\,q_B) - g_A(R - s\,q_B)}{2s},\qquad
+  H \leftarrow \tfrac12(H + H^\T),
+  \label{eq:semi}
+\end{equation}
+along each coordinate $q_B$, in the pipeline by a fourth-order stencil.
+Each displaced CASSCF starts from the reference's orbitals orthonormalised
+in the displaced metric, $C(S_{\mathrm{MO}})^{-1/2}$, and its CI, and passes
+the CASSCF chain's continuity guards. It is also the oracle for the analytic
+Hessian. It does not escape the differentiability problem of
+\S\ref{sec:hess-refusals}: along a pair of directions that leave the
+symmetry, a difference converges, if at all, to a polarisation of
+directional second derivatives that depends on the step and on the
+combination of coordinates.
+
+\paragraph{The diagnostic.} For coordinates $q_1$, $q_2$, check
+\begin{equation}
+  H(q_1 + q_2,\ q_1 + q_2) \stackrel{?}{=} H(q_1, q_1) + H(q_2, q_2) + 2H(q_1, q_2),
+  \label{eq:bilinear}
+\end{equation}
+with the step dependence of each element. A violation above the difference
+noise means that block has no Hessian, and it is reported rather than
+published as a frequency. With one coordinate in an irrep
+Eq.~\eqref{eq:bilinear} is empty and the ladder is the only evidence.
+
+\paragraph{Which coordinates.} Across two irreps the cross block vanishes
+by symmetry in symmetry-adapted coordinates, but the function need not be a
+quadratic form there either. A Cartesian step mixes irreps, so a Cartesian
+difference Hessian at a symmetric point depends on the frame, silently.
+Symmetry-adapted coordinates avoid that and name the failing block; on
+Cartesian pairs the check still detects a failure, at two more gradients
+per pair, without naming the irrep. The tree detects no point group, so the
+coordinates are the caller's (\code{[hessian] coordinates}, orthonormal
+rows). Element $(i, j)$ is $q_i^\T\,\partial g/\partial q_j$, and a Cartesian
+Hessian is $Q^\T HQ$.
+
+\paragraph{In the pipeline (\#812).} Under \code{[nevpt2\_gradient]} the
+numerical \code{[hessian]} runs a ladder by default: each column at $s = h$,
+$h/2$, $h/4$, the ratio of successive changes judged in $(12.8, 19.2)$ where
+the finer change is past ten noise floors, the floor measured from restarts
+and from re-solves at tolerances a hundred times tighter. It checks
+Eq.~\eqref{eq:bilinear} on every coordinate pair up to twelve coordinates.
+A failing pair withholds the frequencies: the run fails, naming the pairs.
+At \code{nh3\_cs\_sto3g} under SC in symmetry-adapted coordinates all ten
+A$''\times$A$''$ pairs fail and the cross-irrep pairs pass, which is the
+block the analytic route refuses.
 
 \subsection{In the pipeline}
 
@@ -1799,6 +1898,32 @@ Hessian refusals & each reached by a real input: \code{nh3\_cs\_sto3g}'s A$''\ti
 \end{tabularx}
 \end{center}
 
+A converged residual says a solve answered the equations it was given, not
+that they were the right ones, so each piece also has a check that reads no
+residual: forward/reverse duality ($\langle u, y\rangle = \dot E(u)$,
+$\langle\kappa, A\rangle = \dot E(\kappa)$, and along a seeded integral
+perturbation $\langle(\hb, \Lb), (\dot h, \dot B)\rangle = \dot E$); the gate;
+$\Ecorr\to0$, where every multiplier is zero and the gradient is the
+DF-CASSCF one; stationarity ladders of $\mathcal L$; and the translational
+and rotational sums.
+
+\paragraph{The oracle.}
+\label{sec:oracle}
+No program the tree can import has a NEVPT2 gradient, so the end-to-end
+oracle is the numerical gradient of re-converged energies, at the same
+settings and the same auxiliary basis (an approximation is tested against
+the same approximation). PySCF's DF-NEVPT2 gives SC, and block2's or this
+tree's energy gives PC. Each displaced CASSCF passes a continuity guard
+before it is differenced: its energy against the first-order prediction,
+its active subspace and CI vector against the reference's, and convergence.
+A displaced optimisation that lands on another stationary point gives a
+number from another reference. Central differences plus one Richardson step
+are good to about $10^{-6}\,E_h/a_0$, and that is the gate a consumer holds
+an analytic gradient to, not the tree's usual $10^{-7}$, because the oracle
+is itself a difference. Near-degenerate inactive orbitals (SC's hazard,
+\S\ref{sec:hazards}) are where it fails first: the analytic gradient is
+right there, but the energy curves too sharply for the differences.
+
 %======================================================================
 \section{Map to the code and to the papers}
 \label{sec:map}
@@ -1814,6 +1939,7 @@ here & code \\
 Eqs.~\eqref{eq:sc}, \eqref{eq:pc} & \code{class\_energies}, \code{pc\_class\_energies} \\
 Eqs.~\eqref{eq:qd-sc}--\eqref{eq:qd-pc} & \code{sc\_effective\_hamiltonian}, \code{pc\_effective\_hamiltonian} \\
 \S\ref{sec:reverse} & \code{class\_energies\_adjoint}, \code{pc\_class\_energies\_adjoint}, \code{*\_effective\_hamiltonian\_adjoint} \\
+Eqs.~\eqref{eq:cp}, \eqref{eq:total}, \eqref{eq:grad} & \code{response::zvector}; \code{mcscf::df\_gradient}'s multipliers and extra adjoint \\
 \S\ref{sec:ssgrad} & \code{sc\_energy}, \code{sc\_adjoint}, \code{pc\_*}, \code{zc\_multipliers}, \code{zc\_adjoint}, \code{lagrangian\_gradient}, \code{sc\_gradient}, \code{pc\_gradient} \\
 \S\ref{sec:qdgrad} & \code{qd\_*\_energy}, \code{qd\_*\_adjoint}, \code{qd\_sc\_lagrangian}, \code{qd\_*\_gradient} (state, $W$, several $W$) \\
 \S\ref{sec:nac} & \code{qd\_*\_coupling}, \code{*\_pt2\_transition\_density}, \code{qd\_*\_nac} \\
@@ -1824,6 +1950,7 @@ Eq.~\eqref{eq:eta} & \code{single\_function\_etas}, \code{single\_function\_eta\
 Eq.~\eqref{eq:tx}, Eq.~\eqref{eq:koo} & \code{nevpt2::builders\_tangent}, \code{hessian::df\_nevpt2\_tangents} \\
 \S\ref{sec:hvp} & \code{class\_energies\_hvp}, \code{pc\_class\_energies\_hvp}, \code{sc\_hessian\_product}, \code{pc\_hessian\_product} \\
 \S\ref{sec:hess-assembly} & \code{hessian::df\_sc\_nevpt2}, \code{df\_pc\_nevpt2}, \code{df\_adjoint\_xy}, \code{df\_casscf}, \code{df\_casscf\_z} \\
+\S\ref{sec:seminumerical} & \code{pipeline/hessian}'s numerical method, ladder and bilinearity check; \code{tools/nevpt2\_hessian} \\
 \bottomrule
 \end{tabularx}
 \end{center}

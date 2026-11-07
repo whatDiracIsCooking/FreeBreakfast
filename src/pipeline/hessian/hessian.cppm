@@ -109,7 +109,7 @@ struct HessianStep {
   /// @ref nevpt2_gradient unless the config says otherwise.
   bool ladder{false};
   /// @brief The coordinate pairs (i, j) the bilinearity check, Eq.
-  /// (bilinear) of nuclear_hessian.tex §3, is run on under @ref ladder: the
+  /// (bilinear) of docs/nevpt2/nevpt2.tex, is run on under @ref ladder: the
   /// ladder along (q_i + q_j) / sqrt 2 against (H_ii + H_jj + H_ij + H_ji) /
   /// 2. A pair failing it above the ladders' bars withholds the frequencies.
   /// Empty: none. std::nullopt: every pair, up to

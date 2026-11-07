@@ -5,7 +5,7 @@ No reference program has a NEVPT2 nuclear gradient this tree can import, so
 the oracle is the numerical gradient of re-converged energies, at the same
 settings and over the same fitting set the tree uses (this tree's
 data/aux_basis/cc-pVDZ-JKFIT.json, parsed as casci_reference.py parses it):
-`.temp/nevpt2/nuclear_gradient.tex`, "Checks", "The oracle".
+`docs/nevpt2/nevpt2.tex`, "Verification", "The oracle".
 
 At each geometry, for a single-state closed-shell DF-CASSCF:
 
@@ -149,7 +149,7 @@ COMMAND = (
 # to that rotation, curves ever more sharply as the step shrinks (along an H's
 # in-plane y: d2E/dy2 1.09, 1.75, 2.19, 2.34 at h = 2e-3 .. 2.5e-4, PC's flat at
 # 0.3866), so no step ladder converges and the ladder check refuses it. That
-# is the SC hazard of nuclear_gradient.tex (near-degenerate inactive
+# is the SC hazard of docs/nevpt2/nevpt2.tex (near-degenerate inactive
 # orbitals), and the analytic gradient there is right but this oracle cannot
 # see it.
 CASES = [

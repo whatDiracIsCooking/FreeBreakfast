@@ -729,7 +729,7 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
 No reference program has a NEVPT2 nuclear gradient this tree can import, so
 this is the oracle: the numerical gradient of re-converged energies, at the
 same settings and over the same fitting set as the tree
-(`.temp/nevpt2/nuclear_gradient.tex`, "Checks", "The oracle"). The gate a
+(`docs/nevpt2/nevpt2.tex`, "Verification", "The oracle"). The gate a
 consumer holds an analytic gradient to is ~1e-6 hartree/bohr, not 1e-7,
 because the oracle is itself a difference.
 
@@ -816,7 +816,7 @@ symmetry-breaking displacement mixes them, and SC, which is not invariant to
 that rotation, curves ever more sharply as the step shrinks: along an H's
 in-plane y, d²E/dy² is 1.09, 1.75, 2.19 and 2.34 at h = 2e-3, 1e-3, 5e-4 and
 2.5e-4, where PC's stays at 0.3866. No ladder converges, and the tool's ladder
-check refused it. That is the SC hazard `nuclear_gradient.tex` names
+check refused it. That is the SC hazard `docs/nevpt2/nevpt2.tex` names
 (near-degenerate inactive orbitals): an analytic gradient is right there, but
 this oracle cannot resolve it. N₂ is not a case for the reason
 `nevpt2/nevpt2_df.json` gives.

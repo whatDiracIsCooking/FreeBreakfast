@@ -31,7 +31,7 @@ as the average) and H′(x) the active-space Hamiltonian's first derivative
 along κ(x). **The CI rows are unweighted and unscaled**: the coordinates of
 PySCF's `gen_g_hop` (c → c + δc), the ones the CASSCF's z_c has always been
 in. A caller writing its CI block as the tex's J_cc = 2 P (H − E) P
-(`nuclear_gradient.tex`, Eq. cp) must scale its right-hand side to match.
+(`docs/nevpt2/nevpt2.tex`, Eq. cp) must scale its right-hand side to match.
 That CI row is twice this one (its J_cκ, 2 P (H[κ] − ⟨H[κ]⟩) c, is twice
 P H′ c too), so for the same z, its orbital rows being this tree's, it
 passes y = ½ P_c(y + y^c). Left unscaled, z_c and z_o both come out wrong,

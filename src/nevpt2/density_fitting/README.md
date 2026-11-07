@@ -76,7 +76,7 @@ integral-direct path here is a second driver, not a virtual.
 ## The adjoints
 
 The reverse of the three builders, for the NEVPT2 nuclear gradient
-(`nuclear_gradient.tex` §5): bars on the blocks, on h2e and on each slab,
+(`docs/nevpt2/nevpt2.tex`, "The adjoints and the orbital source term"): bars on the blocks, on h2e and on each slab,
 pulled back onto Λ = ∂E/∂B in the MO basis. **Λ is naux × nmo², B's own
 layout as `b_mo` reads it with C the identity**: (Q, p, q) at
 Q + naux (p + nmo q), p and q absolute, nmo = ncore + ncas + nvirt. Every
@@ -105,7 +105,7 @@ bars; an empty buffer adds nothing), each one in-place geam at its corner,
 B_vc's permuted back onto B_cv's. It also takes the bars on **B_cc's and
 B_vv's diagonals**, B_Q,ii and B_Q,aa (naux × ncore and naux × nvirt), which
 the orbital energies and h1e_v_sr read beyond the five blocks ((ii|jj),
-(aa|tu), ...; `nuclear_gradient.tex` §5.1): one geam each onto Λ's diagonal,
+(aa|tu), ...; `docs/nevpt2/nevpt2.tex`, "Density-fitted integrals, slab by slab"): one geam each onto Λ's diagonal,
 leading dimension naux (nmo + 1). `mo_blocks` never forms them; the bar is
 the whole of what is needed here.
 
@@ -129,7 +129,7 @@ limits, plus Λ's leading dimension: naux nmo (a B_vc operand's) and, for
   (ca and cv). Sharing one `b_half` per range would save it; the virtual one,
   the largest, already runs once.
 - Λ stays in the MO basis: taking it to the AO derivative integrals (or the
-  orbital source term, `nuclear_gradient.tex` Eq. Xao) is the consumer's.
+  orbital source term, `docs/nevpt2/nevpt2.tex` Eq. Xao) is the consumer's.
 - Only B_cc's and B_vv's diagonals have an adjoint. The core orbital
   energies' exchange term, Σ_j (ij|ji), reads B_cc off its diagonal too; a
   bar there is a `geam` onto Λ's core-core corner the same way, not yet

@@ -155,7 +155,7 @@ double compare_terms(const std::string &what, const fb::mcscf::GradientTerms &go
   return worst;
 }
 
-// E_cas's MO adjoint at the one-root @p sol, on the host (nuclear_gradient.tex
+// E_cas's MO adjoint at the one-root @p sol, on the host (docs/nevpt2/nevpt2.tex
 // Eq. total, "CAS"): h_bar = D, Lambda^L_pq = Sum_rs Gamma_pqrs B^L_rs over
 // the full-range Gamma (its core parts D (x) D - 1/2 D (x) D exchanged, less
 // the active-active of either, plus the active Gamma), and X = 2 h h_bar +

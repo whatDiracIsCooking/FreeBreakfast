@@ -488,7 +488,7 @@ struct DegeneratePair {
 
 /// @brief t_x, the first-order change of every input of a single-state
 /// NEVPT2 energy along each nuclear coordinate x = 3 A + k at a converged
-/// DF-CASSCF reference (nuclear_hessian.tex section 2.2), handed to
+/// DF-CASSCF reference (docs/nevpt2/nevpt2.tex Eqs. koo, tx), handed to
 /// @p consume a chunk of coordinates at a time:
 ///
 ///     h_dot^x = h1^x + kappa^xT h_MO + h_MO kappa^x
@@ -560,7 +560,7 @@ struct DegeneratePair {
 /// functional <h_bar, h_MO> + <Lambda, B_MO> of the density-fitted MO
 /// integrals at a fixed symmetric adjoint (h_bar, Lambda), the E_corr + Phi
 /// share of an NEVPT2 Hessian's skeleton L_AB without its integral curvature
-/// (nuclear_hessian.tex eq. LAB, first term).
+/// (docs/nevpt2/nevpt2.tex eq. Nab, first term).
 ///
 /// Along the path (README.md "The DF second derivative at an MO adjoint")
 ///
@@ -681,7 +681,7 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               int32_t root, const Buffers::device<double> &z);
 
 /// @brief The multiplier terms of a single-state Lagrangian's Hessian at
-/// given multipliers (Z, z) (nuclear_hessian.tex eq. hess): the three places
+/// given multipliers (Z, z) (docs/nevpt2/nevpt2.tex eq. hess): the three places
 /// Z . g, g the CASSCF energy's gradient in its parameters, enters
 /// L_AB, L_Ax and L_xx.
 struct CasscfZTerms {
@@ -800,7 +800,7 @@ struct ScNevpt2Terms {
 };
 
 /// @brief The SC-NEVPT2 analytic nuclear Hessian of the single-state
-/// DF-CASSCF @p solution (nuclear_hessian.tex eq. hess), every part from a
+/// DF-CASSCF @p solution (docs/nevpt2/nevpt2.tex eq. hess), every part from a
 /// merged one, no integrals of its own (README.md "The SC-NEVPT2 Hessian"):
 ///
 ///     H = E_cas                           (df_casscf)

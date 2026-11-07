@@ -851,7 +851,7 @@ template <class S>
                         "set it to 0",
                         kStep, kNevpt2);
     }
-    // nuclear_hessian.tex §3's diagnostic ships with the numerical NEVPT2
+    // docs/nevpt2/nevpt2.tex's bilinearity diagnostic ships with the numerical NEVPT2
     // Hessian: the ladder, and every pair (up to
     // HessianStep::kMaxEveryPairCoordinates), unless the config says
     // otherwise.
