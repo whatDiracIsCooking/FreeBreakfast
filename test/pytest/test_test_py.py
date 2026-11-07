@@ -351,3 +351,93 @@ def test_card_vram_reads_the_named_card(monkeypatch: pytest.MonkeyPatch) -> None
     assert card.vram() == "42"
     script, args = seen[0]
     assert args == ("hip",) and '"$1"' in script
+
+
+# --- the push gate's auto preset prefers a built tree -------------------------
+
+_TWO_CARDS = {"GPU_AUTO_PRESETS": "cuda:default hip:hip"}
+
+
+def _push_choice(monkeypatch: pytest.MonkeyPatch, built: set[str], live: set[str]):
+    """push_auto_preset over two cards, `built` the presets with a tree and
+    `live` those lib.sh would pick among: (its choice, the auto_preset calls
+    it made)."""
+    calls: list[str | None] = []
+
+    def fake_auto(among: str | None = None) -> str:
+        calls.append(among)
+        entries = (among or _TWO_CARDS["GPU_AUTO_PRESETS"]).split()
+        pick = [p for p in (e.split(":")[1] for e in entries) if p in live]
+        if pick:
+            return pick[0]
+        return "" if among is not None else "default"
+
+    monkeypatch.setattr(gates, "auto_preset", fake_auto)
+    monkeypatch.setattr(gates, "say", lambda *a, **k: None)
+    chosen = gates.push_auto_preset(_TWO_CARDS, built=lambda p: p in built)
+    return chosen, calls
+
+
+def test_push_auto_takes_the_one_built_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #1037's fresh worktree: `pr --preset default` built build/, and the
+    # freer card was the HIP one. The push stays on the built tree.
+    chosen, calls = _push_choice(monkeypatch, {"default"}, {"hip", "default"})
+    assert chosen == "default"
+    assert calls == ["cuda:default"]
+
+
+def test_push_auto_is_unchanged_with_all_or_no_trees_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for built in (set(), {"default", "hip"}):
+        chosen, calls = _push_choice(monkeypatch, built, {"hip"})
+        assert (chosen, calls) == ("hip", [None]), built
+
+
+def test_push_auto_leaves_a_built_tree_whose_card_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only hip is built, but its card is gone: build the other, never skip.
+    chosen, calls = _push_choice(monkeypatch, {"hip"}, {"default"})
+    assert chosen == "default"
+    assert calls == ["hip:hip", None]
+
+
+def test_auto_preset_among_narrows_lib_sh(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = []
+
+    def fake_lib(script: str, *args: str, **kw):
+        among = kw["env"]["GPU_AUTO_PRESETS"]
+        seen.append(among)
+        if among == "hip:hip":
+            err = "gpu: auto -> default (no live card: hip=absent)\n"
+            return subprocess.CompletedProcess([], 0, "default\n", err)
+        return subprocess.CompletedProcess([], 0, "hip\n", "")
+
+    monkeypatch.setattr(gates, "lib", fake_lib)
+    assert gates.auto_preset("cuda:default hip:hip") == "hip"
+    # No live card among them: "", not lib.sh's fallback.
+    assert gates.auto_preset("hip:hip") == ""
+    assert seen == ["cuda:default hip:hip", "hip:hip"]
+
+
+def test_a_build_stopped_part_way_is_not_built(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The host binaries link first, so one of them is no sign of a tree.
+    monkeypatch.setattr(gates, "build_dir_of", lambda preset: tmp_path)
+    for binary in gates.HOST_BINS:
+        (tmp_path / binary).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / binary).touch()
+    assert not gates.is_built("hip")
+    for binary in gates.GPU_BINS:
+        (tmp_path / binary).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / binary).touch()
+    assert gates.is_built("hip")
+
+
+def test_gpu_auto_presets_reaches_lib_sh_from_the_environment() -> None:
+    # auto_preset(among) narrows through GPU_AUTO_PRESETS in the
+    # environment, so config.sh must let the environment win.
+    cfg = gates.read_config(_clean_env(GPU_AUTO_PRESETS="hip:hip"))
+    assert cfg["GPU_AUTO_PRESETS"] == "hip:hip"

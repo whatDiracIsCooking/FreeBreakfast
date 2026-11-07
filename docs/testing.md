@@ -197,6 +197,15 @@ devtools/test.py pr --record                 # and append it to `metrics`
 - **Report the preset the run resolved to**, not `auto`. `auto` picks the
   least-loaded live card before the build and prints
   `gpu: auto -> <preset> (<backend>) [ <each card's load> ]`.
+- **`push` prefers a built tree.** Its C++ half is an incremental build, so
+  under `auto`, where some presets' trees are built (every binary the push
+  runs) and others are not, it picks among the built ones and says
+  `push: auto -> <preset>, the built tree`. A fresh `.claude/worktrees/`
+  checkout whose `pr --preset default` built `build/` therefore pushes on
+  CUDA, rather than building `build-hip/` from cold (about four minutes even
+  from sccache) and then running the GPU binaries on the slower card. With every
+  tree built, or none, or no built tree's card live, it is the plain card
+  choice. `CMAKE_PRESET=<preset> git push` still names one.
 
 - **Standard library only.** It is the push hook on the host and in the
   container, so it must run under a bare `python3`, with neither `.venv` nor

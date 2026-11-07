@@ -16,6 +16,9 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   pytest set (FAST_TEST_ARGS over PREPUSH_PATHS). C++: an incremental build,
   the host binaries, then each GPU binary as one process under the card lock.
   The C++ half skips itself, exit 0, where the toolchain or a GPU is absent.
+  Under CMAKE_PRESET=auto it prefers a preset whose tree is already built:
+  where only some are, the least-loaded live card among those, so a worktree
+  whose `pr` gate built one backend never cold-builds the other on push.
   --dry-run prints the changed files and which halves would run.
 
 pr: the gate before opening a PR (milestone-run requires it). Configure,
@@ -94,6 +97,7 @@ CONFIG_VARS = (
     "CMAKE_PRESET",
     "CTEST_PRESET",
     "GPU_HIP_PRESETS",
+    "GPU_AUTO_PRESETS",
     "BUILD_JOBS",
     "CTEST_JOBS",
     "GPU_LOCK_DIR",
@@ -218,11 +222,46 @@ def backend_of_preset(preset: str, cfg: dict[str, str]) -> str:
     return "hip" if preset in cfg["GPU_HIP_PRESETS"].split() else "cuda"
 
 
-def auto_preset() -> str:
+def auto_preset(among: str | None = None) -> str:
     """lib.sh's gpu_auto_preset: the least-loaded live card's preset. Its
-    `gpu: auto -> <preset>` line goes to stderr."""
-    proc = lib("gpu_auto_preset", capture=False, stdout=subprocess.PIPE)
-    return proc.stdout.strip()
+    `gpu: auto -> <preset>` line goes to stderr. `among` narrows the choice
+    to those GPU_AUTO_PRESETS entries (`backend:preset ...`); then "" when
+    none of their cards is live, rather than GPU_AUTO_FALLBACK."""
+    if among is None:
+        proc = lib("gpu_auto_preset", capture=False, stdout=subprocess.PIPE)
+        return proc.stdout.strip()
+    env = os.environ | {"GPU_AUTO_PRESETS": among}
+    proc = lib("gpu_auto_preset", env=env)
+    sys.stderr.write(proc.stderr)
+    return "" if "no live card" in proc.stderr else proc.stdout.strip()
+
+
+def is_built(preset: str) -> bool:
+    """Whether the preset's build directory holds a built tree: every binary
+    the push runs, so a build stopped part way, which links the small host
+    binaries first, does not count."""
+    build = build_dir_of(preset)
+    return all((build / b).is_file() for b in (*HOST_BINS, *GPU_BINS))
+
+
+def push_auto_preset(cfg: dict[str, str], built=is_built) -> str:
+    """CMAKE_PRESET=auto for the push gate. Its C++ half is an incremental
+    build, so where some presets' trees are built and others' are not, it
+    picks the least-loaded live card among the built ones: a fresh worktree
+    whose `pr` gate built one backend must not start a cold build of the
+    other on push. With every tree built, or none, or no built one's card
+    live, it is lib.sh's choice over every card, as before."""
+    entries = cfg["GPU_AUTO_PRESETS"].split()
+    warm = [e for e in entries if built(e.split(":", 1)[1])]
+    if warm and len(warm) < len(entries):
+        chosen = auto_preset(" ".join(warm))
+        if chosen:
+            say(
+                f"push: auto -> {chosen}, the built tree; the others are not "
+                "built (CMAKE_PRESET=<preset> git push picks one)"
+            )
+            return chosen
+    return auto_preset()
 
 
 def build_dir_of(preset: str) -> Path:
@@ -866,7 +905,7 @@ def cpp_push(cfg: dict[str, str], preset: str, jobs: str) -> tuple[int, str]:
     one process, under one hold of the card. (status, preset)."""
     tag = "push"
     if preset == "auto":
-        preset = auto_preset()
+        preset = push_auto_preset(cfg)
     backend = backend_of_preset(preset, cfg)
     why = cpp_unavailable(backend)
     if why:
