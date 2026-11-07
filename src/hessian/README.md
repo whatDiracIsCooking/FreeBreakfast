@@ -880,7 +880,7 @@ its first product.
 ## The NEVPT2 parameter response and total tangent
 
 `df_nevpt2_tangents` is the parameter response x^x of the single-state
-NEVPT2 nuclear Hessian (`nuclear_hessian.tex` §2.2, #813) and the total
+NEVPT2 nuclear Hessian (`docs/nevpt2/nevpt2.tex` eqs. koo and tx, #813) and the total
 first-order change t_x of the NEVPT2 functional's inputs, per coordinate:
 
     h_dot^x = h1^x + κ^xᵀ h_MO + h_MO κ^x
@@ -929,7 +929,7 @@ while |f^(x)_pq| ≤ 1e-8 (an abelian subgroup's split pair, or a
 displacement that does not split it). Past that the division is not one the
 state determines: **SC refuses**, Numerical, naming the pair, the gap,
 f^(x)_pq and the coordinate (SC is not invariant to the rotation, and κ_oo
-enters the Hessian quadratically, `nuclear_hessian.tex` §2.2); **PC records**
+enters the Hessian quadratically, `docs/nevpt2/nevpt2.tex` eq. koo); **PC records**
 it as a `DegeneratePair` (coordinate, p > q, gap, f), κ_oo^x_pq left 0, for
 #817 to measure, and goes on.
 
@@ -991,7 +991,7 @@ nitrogen's z, which keeps the C3 axis).
 ## The DF second derivative at an MO adjoint
 
 `df_adjoint_xy` is the first term of the NEVPT2 skeleton L_AB
-(`nuclear_hessian.tex` eq. LAB, #809): a fixed symmetric MO adjoint
+(`docs/nevpt2/nevpt2.tex` eq. Nab's first term, #809): a fixed symmetric MO adjoint
 (h̄, Λ), nevpt2::ScAdjoint's shapes, against the second derivatives of the
 integrals it is the adjoint of,
 
@@ -1240,7 +1240,7 @@ L_xλ λ^y ≤ 1.2e-13 from `lxl_lambda` (of 0.26–0.80); sum rules ≤ 6.6e-13
 
 ## The single-state Z terms
 
-A single-state reference's Lagrangian (`nuclear_hessian.tex`, eq. hess; a
+A single-state reference's Lagrangian (`docs/nevpt2/nevpt2.tex`, eq. hess; a
 NEVPT2 gradient's E_cas + Z·g + …) has three places its multipliers
 (Z, z) = Z meet the CASSCF gradient g = ∂E/∂λ: Z·∂²g/∂R∂R in L_AB,
 Z·∂²g/∂R∂x in L_Ax and Z·∂²g/∂x∂x in L_xx. `df_casscf_z` returns the three
@@ -1309,7 +1309,7 @@ already).
 
 ## The SC-NEVPT2 Hessian
 
-`df_sc_nevpt2` is `nuclear_hessian.tex` eq. (hess) for SC-NEVPT2 on a
+`df_sc_nevpt2` is `docs/nevpt2/nevpt2.tex` eq. (hess) for SC-NEVPT2 on a
 converged single-state DF-CASSCF (#816), assembled from the parts above and
 the NEVPT2 gradient's, no integrals of its own:
 
@@ -1686,7 +1686,7 @@ default cut (gfx1200, `--preset hip`):
 
 ### κ_oo at a near-degenerate pair
 
-`nuclear_hessian.tex` §2.2 left one question open: do PC's second-order κ_oo
+The Hessian's design notes left one question open: do PC's second-order κ_oo
 terms cancel κ_oo^x's 1/(ε_p − ε_q)? `h2co_neardeg_sto3g` measures it. Its
 virtual pair is 6.0e-3 Eh apart at R0, and the fixture's ladder runs
 through points where the gap is 5.6e-5. There:

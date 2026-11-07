@@ -293,8 +293,8 @@ own buffers.
     MoDirections  {count, h, b, c}: builders_tangent's direction layout, MO basis
 
 The E_corr + Φ part of milestone 24's Lagrangian Hessian (#814,
-`nuclear_hessian.tex` Eq. Lxx's level 1 and z^c term, and L_Ax's NEVPT2
-part): the tangent of `sc_adjoint` + `zc_adjoint` at fixed z^c along each
+`docs/nevpt2/nevpt2.tex` eq. hess's L_xx and L_Ax NEVPT2 parts, "The Hessian-vector
+product"): the tangent of `sc_adjoint` + `zc_adjoint` at fixed z^c along each
 direction (ḣ, Ḃ, ċ), in the MO basis of `c` as `builders_tangent` takes
 them, so #813's t_B goes in as it stands. ⟨t_A, product(t_B)⟩ over the
 parameter and integral directions together is then this part's share of
@@ -340,8 +340,8 @@ whole (one `b_mo`), which is the AO half-transform's X exactly (Cᵀ B_AO C Λ
 summed adjoint's (E_corr's and Φ's), and A = X − Xᵀ.
 
 **The CI direction is on the unit sphere: the Rayleigh-normalized
-functional.** `nuclear_hessian.tex` ("Which functional of c",
-"Normalization") leaves two conventions; this is the second. The product
+functional.** Two conventions fix the CI–CI block (`docs/nevpt2/nevpt2.tex`, "Φ, and the
+functional of c"); this is the second. The product
 is the Hessian of F(h, B, c) = (E_corr + Φ)(h, B, c/|c|), degree 0 in c, at
 the unit `vector`: h̄, Λ, X and A are the raw ones' tangents along
 (ḣ, Ḃ, u), u = ċ − (c·ċ) c, and the c-gradient F's is P y/|c| (P = 1 − c cᵀ,
@@ -363,8 +363,8 @@ class tables use Ĥ_D|Ψ₀⟩ = E₀|Ψ₀⟩ off the CASCI root too, as
 `class_energies` and its adjoint do ("The functional"), and the product is
 that functional's second derivative, with no Kollmar residual. A
 residual-including CI–CI block against this gradient's z, or the reverse,
-would be wrong without a symptom (`nuclear_hessian.tex` "Which functional of
-c"); the Hessian built on this product and `sc_gradient`'s multipliers is
+would be wrong without a symptom (`docs/nevpt2/nevpt2.tex`, "Φ, and the functional
+of c"); the Hessian built on this product and `sc_gradient`'s multipliers is
 consistent because both differentiate the same functional.
 
 **Empty perturbers.** They are `class_energies_hvp`'s: K6 along each
