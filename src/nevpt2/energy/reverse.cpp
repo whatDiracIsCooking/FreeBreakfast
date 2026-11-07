@@ -444,17 +444,22 @@ struct TangentSteps {
   double slabs = 0.0;
 };
 
-// What an own walk's tangent reads and holds. Every class term's operand is
+// What a walk's tangent reads and holds. Every class term's operand is
 // looked up in @p regions: the inputs' first ([0, inputs), the call's), then
 // the class's blocks and slabs, whose tangents' buffers @p held keeps, both
-// dropped as the class's walk returns. @p shifted is B + s Ḃ of direction
-// @p shifted_for, and @p plus and @p dd a slab's two scratch builds.
-// @p finish takes each slab's tables as ScWalk::finish does, and per
-// direction their tangents.
+// dropped as the class's walk returns. @p directions and @p steps are the
+// walk's first operands' (ScWalk::a); a pair's walk also has its second's,
+// @p b_directions and @p b_steps, the (N, M) entry's, and their RDMs among
+// the inputs. @p shifted is B + s Ḃ of direction @p shifted_for (Ḃ is every
+// pair's), and @p plus and @p dd a slab's two scratch builds. @p finish
+// takes each slab's tables as ScWalk::finish does, and per direction their
+// tangents.
 struct ScTangent {
   std::span<const EnergyDirection> directions;
   const MoBlocks *b = nullptr;
   std::vector<TangentSteps> steps;
+  std::span<const EnergyDirection> b_directions;
+  std::vector<TangentSteps> b_steps;
   std::vector<TangentRegion> regions;
   size_t inputs = 0;
   std::vector<Buffers::device<double>> held;
@@ -477,9 +482,10 @@ struct ScTangent {
 // over the class's table entries, and adds the multipliers onto their bars
 // (@p a_bar, @p b_bar, zeroed); @p first is the walk-order index of the
 // slab's first perturber (Srsi finishes once, at 0). With @p adjoint false
-// the walk only evaluates and finishes. An own walk with @p tangent also
-// forms every block's and slab's tangent and the tables' (Ṅ, Ḣ), and hands
-// them to the tangent's finish.
+// the walk only evaluates and finishes. A walk with @p tangent also forms
+// every block's and slab's tangent and the two tables' (an own walk's Ṅ and
+// Ḣ, a pair's the two norm einsums'), and hands them to the tangent's
+// finish.
 struct ScWalk {
   const ActiveOperands *a = nullptr;
   BlockBars *m_a = nullptr;
@@ -673,28 +679,33 @@ double single_function_ratio_dot(const std::array<std::vector<double>, 2> &xy, c
 using BlockBuild = std::function<Result<Buffers::device<double>>(const ActiveOperands &)>;
 
 // When @p w carries a tangent, registers the tangent of the block @p base,
-// which @p make builds from @p w's own operands, along every direction: its
-// central polarization (G(x + s ẋ) - G(x - s ẋ)) / 2s. A block is one
-// integral times one RDM, plus terms linear in one or the other, so of
-// degree at most two in (h1e, h2e, RDMs), and the difference is exact; s
-// (TangentSteps) sizes s ẋ to x, so it cancels nothing past round-off.
+// which @p make builds from @p w's operands (its second's, a pair's (N, M),
+// when @p second), along every direction: its central polarization
+// (G(x + s ẋ) - G(x - s ẋ)) / 2s. A block is one integral times one RDM,
+// plus terms linear in one or the other, so of degree at most two in (h1e,
+// h2e, RDMs), and the difference is exact, a transition's constant (⟨I|J⟩)
+// terms cancelling with the rest; s (TangentSteps) sizes s ẋ to x, so it
+// cancels nothing past round-off.
 Status block_tangent(DeviceResources &res, const ScWalk &w, const Buffers::device<double> &base,
-                     const BlockBuild &make) {
+                     const BlockBuild &make, const bool second = false) {
   ScTangent *const t = w.tangent;
   if (t == nullptr) {
     return {};
   }
+  const ActiveOperands &o = second ? *w.b : *w.a;
+  const std::span<const EnergyDirection> directions = second ? t->b_directions : t->directions;
+  const std::vector<TangentSteps> &steps = second ? t->b_steps : t->steps;
   const auto count = static_cast<int64_t>(base.num_elements());
   TangentRegion region{.base = base.data(), .count = count};
-  for (size_t u = 0; u < t->directions.size(); ++u) {
-    const double s = t->steps[u].blocks;
+  for (size_t u = 0; u < directions.size(); ++u) {
+    const double s = steps[u].blocks;
     if (s == 0.0) {
       region.dots.push_back(nullptr);
       continue;
     }
     Buffers::device<double> dot = FBF_TRY(device_zeros(res, count));
     for (const double sign : {1.0, -1.0}) {
-      const ShiftedOperands x = FBF_TRY(shifted_operands(res, *w.a, t->directions[u].in, sign * s));
+      const ShiftedOperands x = FBF_TRY(shifted_operands(res, o, directions[u].in, sign * s));
       const Buffers::device<double> g = FBF_TRY(make(x.ops));
       FBF_TRY(add_scaled(res, g.data(), count, dot.data(), sign / (2.0 * s)));
     }
@@ -994,15 +1005,18 @@ Result<double> reverse_si(ReverseContext &c, const ScWalk &w) {
       metric.push_back(FBF_TRY(make_hdm1(res, x->dm1, x->delta, overlap)));
     }
   }
-  if (own) {
-    FBF_TRY(block_tangent(res, w, metric[0], [&](const ActiveOperands &x) {
-      return make_dm3_h(res, x.dm2, x.dm3, x.delta);
-    }));
-    FBF_TRY(block_tangent(res, w, metric[1], [&](const ActiveOperands &x) {
-      return make_dm2_h(res, x.dm1, x.dm2, x.delta);
-    }));
-    FBF_TRY(block_tangent(res, w, metric[2],
-                          [&](const ActiveOperands &x) { return make_hdm1(res, x.dm1, x.delta); }));
+  // Each side's, a pair's (N, M) its second.
+  for (size_t side = 0; side < metric.size() / 3; ++side) {
+    const bool second = side == 1;
+    FBF_TRY(block_tangent(
+        res, w, metric[3 * side],
+        [&](const ActiveOperands &x) { return make_dm3_h(res, x.dm2, x.dm3, x.delta); }, second));
+    FBF_TRY(block_tangent(
+        res, w, metric[(3 * side) + 1],
+        [&](const ActiveOperands &x) { return make_dm2_h(res, x.dm1, x.dm2, x.delta); }, second));
+    FBF_TRY(block_tangent(
+        res, w, metric[(3 * side) + 2],
+        [&](const ActiveOperands &x) { return make_hdm1(res, x.dm1, x.delta); }, second));
   }
   Buffers::device<double> eq40 = FBF_TRY(device_zeros(res, 1));
 
@@ -1130,14 +1144,17 @@ Result<double> reverse_sijr(ReverseContext &c, const ScWalk &w) {
   if (own) {
     const EinsumOperand hdm1_op{.data = hdm1.front().data(), .dims = d2};
     a3 = FBF_TRY(make_a3(res, o.h1e, o.h2e, o.dm1, o.dm2, hdm1_op, o.delta));
-    FBF_TRY(block_tangent(res, w, hdm1.front(),
-                          [&](const ActiveOperands &x) { return make_hdm1(res, x.dm1, x.delta); }));
     FBF_TRY(
         block_tangent(res, w, *a3, [&](const ActiveOperands &x) -> Result<Buffers::device<double>> {
           const Buffers::device<double> x_hdm1 = FBF_TRY(make_hdm1(res, x.dm1, x.delta));
           const EinsumOperand x_hdm1_op{.data = x_hdm1.data(), .dims = d2};
           return make_a3(res, x.h1e, x.h2e, x.dm1, x.dm2, x_hdm1_op, x.delta);
         }));
+  }
+  for (size_t side = 0; side < hdm1.size(); ++side) {
+    FBF_TRY(block_tangent(
+        res, w, hdm1[side], [&](const ActiveOperands &x) { return make_hdm1(res, x.dm1, x.delta); },
+        side == 1));
   }
   Buffers::device<double> eq40 = FBF_TRY(device_zeros(res, 1));
 
@@ -1367,6 +1384,12 @@ Result<double> reverse_srs(ReverseContext &c, const ScWalk &w) {
     for (const ActiveOperands *x : {w.a, w.b}) {
       rm2.push_back(FBF_TRY(make_rm2(res, x->dm1, x->dm2, x->delta)));
     }
+    for (size_t side = 0; side < rm2.size(); ++side) {
+      FBF_TRY(block_tangent(
+          res, w, rm2[side],
+          [&](const ActiveOperands &x) { return make_rm2(res, x.dm1, x.dm2, x.delta); },
+          side == 1));
+    }
   }
   Buffers::device<double> eq40 = FBF_TRY(device_zeros(res, 1));
 
@@ -1445,9 +1468,6 @@ Result<double> reverse_sij(ReverseContext &c, const ScWalk &w) {
         FBF_TRY(make_hdm3(res, o.dm1, o.dm2, o.dm3, hdm2_op, o.delta));
     const EinsumOperand hdm3_op{.data = hdm3.data(), .dims = std::vector<int64_t>(6, n)};
     a9 = FBF_TRY(make_a9(res, o.h1e, o.h2e, hdm2_op, hdm3_op));
-    FBF_TRY(block_tangent(res, w, hdm2.front(), [&](const ActiveOperands &x) {
-      return make_hdm2(res, x.dm1, x.dm2, x.delta);
-    }));
     FBF_TRY(
         block_tangent(res, w, *a9, [&](const ActiveOperands &x) -> Result<Buffers::device<double>> {
           const Buffers::device<double> x_hdm2 = FBF_TRY(make_hdm2(res, x.dm1, x.dm2, x.delta));
@@ -1457,6 +1477,11 @@ Result<double> reverse_sij(ReverseContext &c, const ScWalk &w) {
           const EinsumOperand x_hdm3_op{.data = x_hdm3.data(), .dims = std::vector<int64_t>(6, n)};
           return make_a9(res, x.h1e, x.h2e, x_hdm2_op, x_hdm3_op);
         }));
+  }
+  for (size_t side = 0; side < hdm2.size(); ++side) {
+    FBF_TRY(block_tangent(
+        res, w, hdm2[side],
+        [&](const ActiveOperands &x) { return make_hdm2(res, x.dm1, x.dm2, x.delta); }, side == 1));
   }
   Buffers::device<double> eq40 = FBF_TRY(device_zeros(res, 1));
 
@@ -2512,6 +2537,213 @@ Result<ClassEnergiesTangent> class_energies_tangent(DeviceResources &res, const 
   out.energies.total = std::ranges::fold_left(out.energies.energies, 0.0, std::plus{});
   for (size_t u = 0; u < m; ++u) {
     out.total_dot[u] = std::ranges::fold_left(out.energy_dot[u], 0.0, std::plus{});
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// The SC-QD forward tangent: each state's own walk, then each pair's
+// ---------------------------------------------------------------------------
+
+Result<ScEffectiveHamiltonianTangent>
+sc_couplings_tangent(DeviceResources &res, const MoBlocks &blocks,
+                     std::span<const EnergyInputs> pairs, const int64_t ns, const int32_t batch,
+                     std::span<const EnergyDirection> directions) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const auto n2 = static_cast<size_t>(ns * ns);
+  const size_t m = directions.size() / n2;
+  const int64_t n = blocks.ncas;
+  const auto at = [ns](const int64_t i, const int64_t j) {
+    return static_cast<size_t>((i * ns) + j);
+  };
+  // Pair @p p's directions, one per u.
+  const auto along = [&](const size_t p) {
+    std::vector<EnergyDirection> d;
+    for (size_t u = 0; u < m; ++u) {
+      d.push_back(directions[(u * n2) + p]);
+    }
+    return d;
+  };
+  std::vector<ActiveOperands> ops;
+  for (const EnergyInputs &pair : pairs) {
+    ops.push_back(FBF_TRY(active_operands(res, blocks, pair)));
+  }
+  ScEffectiveHamiltonianTangent out;
+  out.elements.resize(n2);
+  out.transition.resize(n2);
+  out.transition_dot.resize(n2);
+  out.empty.resize(static_cast<size_t>(ns));
+  out.element_dot.assign(m, std::vector<std::array<double, 8>>(n2));
+  out.total_dot.assign(m, std::vector<double>(n2, 0.0));
+
+  // 1. Each state's own walk, the diagonal element and the tables every
+  //    coupling with that ket reads; a one-function class's η^J and η̇^J,
+  //    and the tuples the guard drops.
+  std::array<std::vector<std::optional<double>>, 8> eta;
+  std::array<std::vector<std::vector<double>>, 8> eta_dot;
+  for (int64_t j = 0; j < ns; ++j) {
+    const size_t jj = at(j, j);
+    const std::vector<EnergyDirection> d = along(jj);
+    ClassEnergiesTangent kt = FBF_TRY(class_energies_tangent(res, blocks, pairs[jj], batch, d));
+    out.elements[jj] = kt.energies;
+    for (size_t u = 0; u < m; ++u) {
+      out.element_dot[u][jj] = kt.energy_dot[u];
+      out.total_dot[u][jj] = kt.total_dot[u];
+    }
+    out.transition[jj] = kt.norm;
+    out.transition_dot[jj] = kt.norm_dot;
+    const std::vector<TangentSteps> steps = FBF_TRY(tangent_steps(res, blocks, pairs[jj], d));
+    for (const auto &[k, walk] : kScWalks) {
+      std::optional<double> &e = eta[k].emplace_back();
+      std::vector<double> &e_dot = eta_dot[k].emplace_back();
+      if (single_function_class(ops[jj], k)) {
+        const std::array<std::vector<double>, 2> xy =
+            FBF_TRY(single_function_blocks(res, ops[jj], k));
+        e = single_function_ratio(xy);
+        if (e) {
+          for (const auto &dot : FBF_TRY(single_function_block_dots(res, ops[jj], k, d, steps))) {
+            e_dot.push_back(single_function_ratio_dot(xy, *e, dot));
+          }
+        }
+      }
+      if (!e) {
+        for (size_t g = 0; g < kt.norm[k].size(); ++g) {
+          if (std::abs(kt.norm[k][g]) <= kNumericalZero) {
+            out.empty[static_cast<size_t>(j)][k].push_back(static_cast<int64_t>(g));
+          }
+        }
+      }
+    }
+    out.kets.push_back(std::move(kt));
+  }
+
+  // 2. Each unordered pair M < N: every class's slabs walked once, its two
+  //    norm einsums' tables and their tangents, the (N, M) side's blocks
+  //    along its own directions, T and Ṫ their means.
+  std::vector<double> unused_core;
+  std::vector<double> unused_virt;
+  const EnergyBars no_bars{};
+  ReverseContext c{.res = res,
+                   .blocks = blocks,
+                   .in = pairs.front(),
+                   .bars = no_bars,
+                   .batch = batch,
+                   .ops = ops.front(),
+                   .e = {.core = ops.front().e_core,
+                         .virt = ops.front().e_virt,
+                         .core_bar = unused_core,
+                         .virt_bar = unused_virt}};
+  BlockBars none = FBF_TRY(block_bars(res, n, false, false));
+  for (int64_t mi = 0; mi < ns; ++mi) {
+    for (int64_t ni = mi + 1; ni < ns; ++ni) {
+      const size_t mn = at(mi, ni);
+      const size_t nm = at(ni, mi);
+      const std::vector<EnergyDirection> da = along(mn);
+      const std::vector<EnergyDirection> db = along(nm);
+      ScTangent t = FBF_TRY(input_tangent(res, blocks, pairs[mn], da));
+      t.b_directions = db;
+      t.b_steps = FBF_TRY(tangent_steps(res, blocks, pairs[nm], db));
+      // (N, M)'s RDMs, which its side's terms read directly (Sr's, Srsi's
+      // and Sir's metrics).
+      for (const auto &[field, count] :
+           {std::pair{&EnergyInputs::dm1, n * n}, std::pair{&EnergyInputs::dm2, n * n * n * n},
+            std::pair{&EnergyInputs::dm3, n * n * n * n * n * n}}) {
+        TangentRegion r{.base = pairs[nm].*field, .count = count};
+        for (const EnergyDirection &d : db) {
+          r.dots.push_back(d.in.*field);
+        }
+        t.regions.push_back(std::move(r));
+      }
+      t.inputs = t.regions.size();
+      for (const auto &[k, walk] : kScWalks) {
+        std::vector<double> &table = out.transition[mn][k];
+        std::vector<double> &table_dot = out.transition_dot[mn][k];
+        t.finish = [&, k](const int64_t first, const std::vector<Perturber> &perturbers,
+                          const std::vector<double> &a, const std::vector<double> &b,
+                          const std::vector<std::vector<double>> &a_dots,
+                          const std::vector<std::vector<double>> &b_dots) {
+          for (size_t x = 0; x < perturbers.size(); ++x) {
+            const Perturber &p = perturbers[x];
+            const size_t g = perturber_index(k, first, x, p, blocks.ncore);
+            if (table.size() <= g) {
+              table.resize(g + 1, 0.0);
+              table_dot.resize((g + 1) * m, 0.0);
+            }
+            table[g] = 0.5 * (combined(p, a) + combined(p, b));
+            for (size_t u = 0; u < m; ++u) {
+              table_dot[(g * m) + u] = 0.5 * (combined(p, a_dots[u]) + combined(p, b_dots[u]));
+            }
+          }
+        };
+        const ScWalk w{.a = &ops[mn],
+                       .m_a = &none,
+                       .b = &ops[nm],
+                       .m_b = &none,
+                       .adjoint = false,
+                       .finish = [](int64_t, const std::vector<Perturber> &,
+                                    const std::vector<double> &, const std::vector<double> &,
+                                    std::vector<double> &, std::vector<double> &) {},
+                       .tangent = &t};
+        FBF_TRY(walk(c, w));
+        // The class's blocks and slab buffers are freed: drop their regions.
+        t.regions.resize(t.inputs);
+        t.held.clear();
+        out.transition[nm][k] = table;
+        out.transition_dot[nm][k] = table_dot;
+      }
+    }
+  }
+
+  // 3. Each coupling (I, J), I != J, over ket J's tables: C = -T N / d,
+  //    d = N Δ + H, and Ċ in that (N, d) form; a one-function class at η^J.
+  for (int64_t bra = 0; bra < ns; ++bra) {
+    for (int64_t ket = 0; ket < ns; ++ket) {
+      if (bra == ket) {
+        continue;
+      }
+      const size_t p = at(bra, ket);
+      const auto j = static_cast<size_t>(ket);
+      const ClassEnergiesTangent &kt = out.kets[j];
+      ClassEnergies &element = out.elements[p];
+      for (const auto &[k, walk] : kScWalks) {
+        const std::vector<double> &table = out.transition[p][k];
+        const std::vector<double> &table_dot = out.transition_dot[p][k];
+        const std::optional<double> &e = eta[k][j];
+        for (size_t g = 0; g < table.size(); ++g) {
+          const double tt = table[g];
+          const double norm = kt.norm[k][g];
+          const double h = kt.h[k][g];
+          const double diff = kt.delta[k][g];
+          element.norms[k] += tt;
+          if (e) {
+            const double cg = -1.0 / (diff + *e);
+            element.energies[k] += tt * cg;
+            for (size_t u = 0; u < m; ++u) {
+              out.element_dot[u][p][k] +=
+                  (cg * table_dot[(g * m) + u]) +
+                  (tt * cg * cg * (kt.delta_dot[k][(g * m) + u] + eta_dot[k][j][u]));
+            }
+            continue;
+          }
+          if (std::abs(norm) <= kNumericalZero) {
+            continue;
+          }
+          element.energies[k] -= tt / (diff + (h / norm));
+          const double d = (norm * diff) + h;
+          for (size_t u = 0; u < m; ++u) {
+            const size_t gu = (g * m) + u;
+            out.element_dot[u][p][k] += (-(norm / d) * table_dot[gu]) -
+                                        (tt * h / (d * d) * kt.norm_dot[k][gu]) +
+                                        (tt * norm / (d * d) * kt.h_dot[k][gu]) +
+                                        (tt * norm * norm / (d * d) * kt.delta_dot[k][gu]);
+          }
+        }
+      }
+      element.total = std::ranges::fold_left(element.energies, 0.0, std::plus{});
+      for (size_t u = 0; u < m; ++u) {
+        out.total_dot[u][p] = std::ranges::fold_left(out.element_dot[u][p], 0.0, std::plus{});
+      }
+    }
   }
   return out;
 }
