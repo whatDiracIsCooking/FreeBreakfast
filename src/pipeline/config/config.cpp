@@ -283,7 +283,7 @@ template <class S>
         step.aux_basis = (base_dir / step.aux_basis).string();
       }
     }
-  } else if constexpr (std::same_as<S, OverlapStep>) {
+  } else if constexpr (std::same_as<S, SphericalTransformStep> || std::same_as<S, OverlapStep>) {
     FBF_TRY(check_keys(table, kStep, {"write_npy"}));
     bool write_npy = false;
     FBF_TRY(read_key(table, kStep, "write_npy", base_dir, write_npy));
