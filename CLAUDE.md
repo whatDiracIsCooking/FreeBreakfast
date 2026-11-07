@@ -253,8 +253,12 @@ There are two gates, both `devtools/test.py` (`docs/testing.md` "Gates").
 `git push` runs `test.py push`, by pre-commit's pre-push stage: the fast pytest
 tier when the push touches a `.py`, the C++ smoke (an incremental build, the
 host binaries, each GPU binary as one process) when it touches C++ or a build
-file. `test.py pr` is the gate before a PR: configure, build, ctest and the GPU
-batches, then the fast pytest tier. CI runs lint + the fast pytest tier per PR.
+file. `test.py pr` is the gate before a PR: configure, build, then each C++
+family's representative and nothing else (`devtools/test_families.py`'s set;
+`--all` runs the whole fast set), split into ctest and the GPU batches, then
+the fast pytest tier. The nightly runs every case `pr` leaves out
+(`docs/testing.md` "Test selection"). CI runs lint + the fast pytest tier per
+PR.
 
 **The `cpp` job in `.github/workflows/ci.yml` is `if: false`** — both matrix
 legs, cuda and hip. A PR touching only `src/` gets its formatting and CMake lint

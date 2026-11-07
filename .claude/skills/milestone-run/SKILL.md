@@ -236,7 +236,7 @@ the PR builds against or its tests exercise (`git log <old base>..origin/main
 --stat`), rerun **just the affected suites** before pushing:
 
 ```bash
-devtools/test.py pr --only cpp --preset <the preset its run used> -j <J> -- -R '<suites>'   # inside <wt>
+devtools/test.py pr --all --only cpp --preset <the preset its run used> -j <J> -- -R '<suites>'   # inside <wt>
 ```
 
 A Python- or docs-only PR skips the rebuild; the required checks cover it.
@@ -244,7 +244,7 @@ A Python- or docs-only PR skips the rebuild; the required checks cover it.
 **The other card, for cross-call or bitwise assertions.** A PR run on one
 backend only that adds an assertion of repeatability (bitwise, or across two
 calls) gets an orchestrator-side run of just those cases on the other card
-before merging: `devtools/test.py pr --only cpp --preset hip -- -R '<cases>'` (or
+before merging: `devtools/test.py pr --all --only cpp --preset hip -- -R '<cases>'` (or
 `--preset default`). An agent once assumed rocBLAS was bitwise-repeatable
 without checking.
 
@@ -343,8 +343,11 @@ Rules:
   check passed that you did not see.
 - C++ changes: run the PR gate on your assigned card, from the worktree:
     devtools/test.py pr --preset <preset> -j <J>
-  (the C++ tier, then the fast pytest set; its last line is
-  "test.py pr PASS  rev=… preset=…").
+  (each C++ family's representative, then the fast pytest set; its last
+  line is "test.py pr PASS  rev=… preset=…"). Quote its "representatives
+  only: N of M ctest entries selected" line, and any "skipped
+  representative:" line: that family ran nothing. Rerun suites with
+  `--all -- -R '<suites>'`, their whole fast set.
   Bash needs dangerouslyDisableSandbox to see the GPU. With --preset auto the
   run prints "gpu: auto -> <preset> (<backend>)" with each card's load and
   whether another run holds it; quote that preset in the PR. The test phase
@@ -394,7 +397,7 @@ Rules:
   tier after that rebase: the push's devtools/test.py push rebuilds the
   tree and runs the GPU batch. Rerun only the suites a new main commit changes underneath you
   (C++ your code builds against or your tests exercise), with
-  `devtools/test.py pr --only cpp --preset <preset> -j <J> -- -R '<suites>'`.
+  `devtools/test.py pr --all --only cpp --preset <preset> -j <J> -- -R '<suites>'`.
 - When you were given a card, push with its preset:
   `CMAKE_PRESET=<preset> git -C <wt> push …`. The push gate's C++ half
   otherwise takes `auto`, the least-loaded card, which may be your sibling's.

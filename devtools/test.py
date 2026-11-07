@@ -3,7 +3,7 @@
 
   devtools/test.py push [--preset NAME] [-j N] [--dry-run]
   devtools/test.py pr   [--preset NAME] [--fresh] [--clean] [--no-test]
-                        [--tidy] [--only cpp|python] [-j N] [--report DIR]
+                        [--all] [--tidy] [--only cpp|python] [-j N] [--report DIR]
                         [--record] [-- <ctest args>]
   devtools/test.py nightly [--mode auto|nightly|weekly] [--rev REF]
                         [--preset NAME] [-j N] [--report DIR]
@@ -19,15 +19,18 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   --dry-run prints the changed files and which halves would run.
 
 pr: the gate before opening a PR (milestone-run requires it). Configure,
-  build, ctest, then the fast pytest set. The GPU entries that can share a
-  process run as one gtest process per GPU binary; ctest runs the rest. Logged
-  to <report>/pr-<stamp>-<rev>-<preset>.log, and its result line appended to
-  <report>/summary.log.
+  build, ctest, then the fast pytest set. Of the C++ cases only each family's
+  representative runs, as devtools/test_families.py lists them (an exempt
+  family runs nothing, a flagged one runs whole); the nightly runs the rest.
+  The GPU entries that can share a process run as one gtest process per GPU
+  binary; ctest runs the rest. Logged to <report>/pr-<stamp>-<rev>-<preset>.log,
+  and its result line appended to <report>/summary.log.
     --preset NAME  configure/build preset; the test preset follows it
                    (default: CMAKE_PRESET, `auto`, the least-loaded live card)
     --fresh        wipe the CMake cache first
     --clean        rebuild every object, keeping the cache
     --no-test      configure and build only
+    --all          run the whole fast set, not only the representatives
     --tidy         advisory clang-tidy over src/*.cpp after the build
     --only LANG    run only the cpp or the python half
     -j N           compile jobs (default: BUILD_JOBS)
@@ -652,6 +655,118 @@ def split_gpu_entries(
     return excluded, filters
 
 
+# --- the representatives (pr's selection) -----------------------------------
+
+
+class SelectionError(Exception):
+    """The lister could not give pr its representative set."""
+
+
+def gtest_name(test: dict) -> str | None:
+    """The gtest case a ctest entry runs: its one --gtest_filter, else None.
+
+    gtest's own name, not ctest's: ctest prints a value param as gtest's
+    PrintToString (`/"Singlet"` for `/Singlet`) and a typed test's type
+    (`<double>` for `/1`), and test_families.py names cases as gtest does
+    (#988)."""
+    filters = [a for a in test.get("command") or [] if a.startswith(FILTER_FLAG)]
+    return filters[0][len(FILTER_FLAG) :] if len(filters) == 1 else None
+
+
+def list_families(build_dir: Path) -> dict:
+    """devtools/test_families.py's --json over a built build dir: the one
+    source of the representative set. Raises SelectionError when it could
+    not list, or a marker is wrong (exit 1: the set would be incomplete)."""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(REPO_ROOT / "devtools" / "test_families.py"),
+            str(build_dir),
+            "--source",
+            str(REPO_ROOT),
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        doc = json.loads(proc.stdout) if proc.returncode in (0, 1) else None
+    except json.JSONDecodeError:
+        doc = None
+    if doc is None:
+        raise SelectionError(
+            f"devtools/test_families.py exited {proc.returncode}: "
+            + (proc.stderr.strip().splitlines() or ["no output"])[-1]
+        )
+    if doc.get("errors"):
+        raise SelectionError(
+            "devtools/test_families.py: a marker is wrong, so the representative"
+            " set is incomplete -- " + "; ".join(doc["errors"])
+        )
+    return doc
+
+
+def representative_set(doc: dict) -> tuple[set[str], set[str], set[str]]:
+    """From the lister's JSON: (the cases pr runs, the representatives among
+    them, the flagged families). Each family runs its representative; an
+    exempt family runs nothing; a flagged one, with no representative to
+    stand in for it, runs whole, since selection runs more, never fewer."""
+    keep: set[str] = set()
+    reps: set[str] = set()
+    flagged: set[str] = set()
+    for name, fam in doc.get("families", {}).items():
+        if fam.get("by") == "exempt":
+            continue
+        if fam.get("representative"):
+            reps.add(fam["representative"])
+        else:
+            flagged.add(name)
+            keep.update(fam.get("members", []))
+    return keep | reps, reps, flagged
+
+
+def select_listing(listing_text: str, keep: set[str]) -> tuple[str, list[str], dict]:
+    """ctest's listing cut to the entries whose gtest case is in `keep`:
+    (the cut listing, as text for split_gpu_entries; the ctest names left
+    out, for ctest's exclude file; the counts). An entry that is not one
+    gtest case (the examples, through a cmake script) is in no family, and
+    stays."""
+    listing = json.loads(listing_text[listing_text.index("{") :])
+    kept, dropped = [], []
+    counts = {"entries": 0, "selected": 0, "not_gtest": 0}
+    for test in listing.get("tests", []):
+        counts["entries"] += 1
+        case = gtest_name(test)
+        if case is None:
+            counts["not_gtest"] += 1
+            kept.append(test)
+        elif case in keep:
+            counts["selected"] += 1
+            kept.append(test)
+        else:
+            dropped.append(test["name"])
+    return json.dumps(dict(listing, tests=kept)), dropped, counts
+
+
+SKIPPED_GTEST = re.compile(r"^\[  SKIPPED \] (\S+) \(")
+SKIPPED_CTEST = re.compile(r"Test +#\d+: (\S+) \.*\s*\*+Skipped")
+
+
+def skipped_cases(log_text: str, ctest_names: dict[str, str]) -> set[str]:
+    """The gtest cases a test phase's log shows skipped: a batch's gtest
+    `[  SKIPPED ]` lines, and ctest's `***Skipped`, by `ctest_names` (ctest
+    name -> gtest name)."""
+    out = set()
+    for line in log_text.splitlines():
+        if m := SKIPPED_GTEST.match(line):
+            out.add(m.group(1))
+        elif (m := SKIPPED_CTEST.search(line)) and m.group(1) in ctest_names:
+            out.add(ctest_names[m.group(1)])
+    return out
+
+
 # --- phases ----------------------------------------------------------------
 
 
@@ -984,6 +1099,7 @@ def tier_tests(
     *,
     tag: str = "pr",
     env: dict[str, str] | None = None,
+    families: dict | None = None,
 ) -> int:
     """The C++ test phase, inside the held card. ctest runs the host entries,
     the RUN_SERIAL ones and anything a launcher wraps, CTEST_JOBS at once;
@@ -995,7 +1111,11 @@ def tier_tests(
     With `results`, the run's per-case reports go there for the metrics
     record (run_cases): the listing, ctest's JUnit and its entries' gtest
     XML, and each batch's gtest JSON. `env` is the tests' (default:
-    fast_env, the gate's)."""
+    fast_env, the gate's).
+
+    With `families`, test_families.py's JSON, only the representative set
+    runs (representative_set): every other entry is excluded from ctest and
+    left out of the batches. Without it, every entry of the listing runs."""
     env = fast_env() if env is None else env
     gpu_bins = [build_dir / rel for rel in GPU_BINS]
     listing = subprocess.run(
@@ -1008,13 +1128,37 @@ def tier_tests(
     if results is not None:
         results.mkdir(parents=True, exist_ok=True)
         (results / "listing.json").write_text(listing.stdout)
+    listing_text, dropped, reps = listing.stdout, [], set()
+    if families is not None:
+        keep, reps, flagged = representative_set(families)
+        try:
+            if listing.returncode != 0:
+                raise ValueError(listing.returncode)
+            listing_text, dropped, counts = select_listing(listing.stdout, keep)
+        except (ValueError, KeyError, TypeError) as e:
+            # Running everything here would silently be another gate.
+            say(f"{tag}: could not read ctest's listing to select from: {e}", log=log)
+            return 1
+        say(
+            f"{tag}: representatives only: {counts['selected']} of"
+            f" {counts['entries']} ctest entries selected, against the lister's"
+            f" {len(reps)} representatives"
+            f" ({len(families.get('exempt', []))} exempt families left out,"
+            f" {len(flagged)} flagged run whole, {counts['not_gtest']} entries"
+            " not gtest cases kept); the nightly runs the rest",
+            log=log,
+        )
+        for name in sorted(flagged):
+            say(f"{tag}:   flagged, run whole: {name}", log=log)
     try:
         if listing.returncode != 0:
             raise ValueError(listing.returncode)
-        excluded, filters = split_gpu_entries(listing.stdout, gpu_bins)
+        excluded, filters = split_gpu_entries(listing_text, gpu_bins)
     except (ValueError, KeyError, TypeError):
         say(f"{tag}: could not split the GPU entries -- ctest runs them all", log=log)
         excluded, filters = [], [""] * len(gpu_bins)
+    excluded += dropped
+    log_start = log.stat().st_size if log.exists() else 0
     rc = 0
     with tempfile.NamedTemporaryFile("w", suffix=".exclude") as exclude:
         exclude.write("".join(f"{n}\n" for n in excluded))
@@ -1057,6 +1201,26 @@ def tier_tests(
             != 0
         ):
             rc = 1
+    if reps:
+        # A family whose representative skipped ran nothing in this gate.
+        with log.open(errors="replace") as f:
+            f.seek(log_start)
+            text = f.read()
+        names = {}
+        try:
+            for test in json.loads(listing_text)["tests"]:
+                if (case := gtest_name(test)) is not None:
+                    names[test["name"]] = case
+        except (ValueError, KeyError, TypeError):
+            pass
+        skipped = sorted(skipped_cases(text, names) & reps)
+        say(
+            f"{tag}: {len(skipped)} representative(s) skipped"
+            + (", so their families ran nothing:" if skipped else ""),
+            log=log,
+        )
+        for case in skipped:
+            say(f"{tag}:   skipped representative: {case}", log=log)
     return rc
 
 
@@ -1210,10 +1374,31 @@ def cmd_pr(
                     " (FREE_BREAKFAST_FAST_TESTS=1)",
                     log=log,
                 )
-                with Card(backend_of_preset(test_preset, cfg), cfg):
-                    rc = tier_tests(
-                        cfg, test_preset, build_dir, passthrough, log, results
-                    )
+                families = None
+                if not args.all:
+                    # Before the card: the lister only walks gtest's registry.
+                    try:
+                        families = list_families(build_dir)
+                    except SelectionError as e:
+                        say(f"{tag}: {e}", err=True, log=log)
+                        say(
+                            f"{tag}: fix the marker, or run the whole fast set"
+                            " with --all",
+                            err=True,
+                            log=log,
+                        )
+                        rc = 1
+                if rc == 0:
+                    with Card(backend_of_preset(test_preset, cfg), cfg):
+                        rc = tier_tests(
+                            cfg,
+                            test_preset,
+                            build_dir,
+                            passthrough,
+                            log,
+                            results,
+                            families=families,
+                        )
             else:
                 say(
                     f"{tag}: no test preset '{test_preset or '<empty>'}' -- built only",
@@ -1259,6 +1444,8 @@ def cmd_pr(
     summary = f"test.py pr {verdict}  rev={rev}  preset={preset}  stamp={stamp}"
     if args.only:
         summary += f"  only={args.only}"
+    if args.all and do_cpp:
+        summary += "  all"
     if diff_hash:
         summary += f"  diff={diff_hash}"
     if metrics is not None and results is not None:
@@ -1745,6 +1932,11 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         "--clean", action="store_true", help="rebuild every object, keeping the cache"
     )
     pr.add_argument("--no-test", action="store_true", help="configure and build only")
+    pr.add_argument(
+        "--all",
+        action="store_true",
+        help="run the whole fast set, not only the family representatives",
+    )
     pr.add_argument(
         "--tidy", action="store_true", help="advisory clang-tidy after the build"
     )
