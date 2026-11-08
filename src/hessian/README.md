@@ -18,7 +18,8 @@ the **fixed-parameter second derivative** E_xy built on it,
 C → C (1 + ε K) (a state average's **L_xy z_o part**), the
 **state-specific Hessian**, `df_casscf` (eq. ss), its CP-CASSCF step λ^x on
 its own, `df_casscf_cp`, a state average's **z terms** at one root's
-multipliers, `df_sacasscf_z` (L_xy's z part and L_xλ, eq. sa), its
+multipliers or a QD-NEVPT2 Lagrangian's, `df_sacasscf_z` (L_xy's z part
+and L_xλ, eq. sa), its
 CP-SA-CASSCF step on its own, `df_sacasscf_cp`, and for the
 NEVPT2 Hessian (milestone 24) the **parameter response and total tangent**
 t_x of (h_MO, B_MO, c), `df_nevpt2_tangents`, and the **DF second
@@ -1059,7 +1060,8 @@ the Hessian's.
 `df_sacasscf`'s existing tests cover it): A, λ^x by `zvectors` with the probe
 column, the check on the unreduced equations and the bound on Θ. It takes
 weights equal for some pairs only (0.4, 0.4, 0.2), which `df_sacasscf`
-refuses later (`ThirdDerivative`'s rule): each pair is rotating or not by
+refuses before anything runs (eq. rot is for all-equal weights, λ^x's Θ for
+pairwise different ones, and E_I's Hessian there would need both): each pair is rotating or not by
 `response::rotating_pairs`, the rotating ones' Θ rows in the solve and in
 the check, an equal pair's rotation row left out of both (its residual would
 be 𝓗^x_sr itself, step 2's numerator). `SaCasscfCp` carries λ^x and the
@@ -1295,27 +1297,38 @@ eq. sa): E_I,xy plus the z terms, z = root I's multipliers,
 
 and `df_sacasscf_z` returns those two z terms at the gradient's own z (no z^x;
 the remaining terms, E_xy, the response, the third derivative and the
-root-rotation term, are #621's sum). It is assembly only:
+root-rotation term, are #621's sum). A QD-NEVPT2 state's Lagrangian
+(`docs/nevpt2/nevpt2.tex`, Eq. qd-Lxx) has the same terms at its own
+multipliers (Z, {z_r}, Θ) (`nevpt2::qd_sc_lagrangian`'s and
+`qd_pc_gradient`'s `lagrangian.multipliers`), its E_cas at ρ = diag W: Part
+I's level-2 terms at the SA weights, the CI curvature the root set's,
+½{K_u, K_v} c_r (Eq. qd-curv), which `ThirdDerivative`'s joint exponential
+already is. So the call takes the right-hand side's weights rather than a
+root: one-hot on I for `df_sacasscf`, ρ for a QD Lagrangian (linear in it),
+or none (empty) for the multipliers' terms alone. It is assembly only:
 
 ```cpp
 auto t = hessian::df_sacasscf_z(res, molecule, basis, classes, aux, h, b, l, c, ncore, ncas,
-                                nalpha, nbeta, roots, weights, root, z);
+                                nalpha, nbeta, roots, weights, rhs_weights, z);
 // t->lxy: L_xy's z part, CasscfExy's pieces (nuclear_repulsion zero), t->lxy.exy the sum
 // t->lxlambda: size x 3 n_atom on the device, column x = L_xλ's covector in
 //              ThirdDerivative's packed layout; L_xλ λ^y = column x . λ^y
 ```
 
 `z` is one column in `mcscf::ThirdDerivative`'s layout and **the energy's
-convention** (the packed pairs, d_r per root, Θ_sr for r < s at unequal
-weights), which is `response::zvector`'s (z_o, z_c, Θ) as it comes: zvector
+convention** (the packed pairs, d_r per root, Θ_sr for every r < s unless all
+weights are equal: at weights equal for some pairs only, such as
+(0.4, 0.4, 0.2), the equal pair's Θ is a slot too, zero in zvector's z),
+which is `response::zvector`'s (z_o, z_c, Θ) as it comes: zvector
 scales its equations' CI rows, not its unknowns (`df_sacasscf`'s step 2).
 The d_r are taken off every root first, as `ThirdDerivative` takes them. In
 order:
 
-1. **L_xλ's right-hand side**: `mcscf::df_derivatives` at one-hot weights on
-   root I (projected off every root, Θ rows at unequal weights), packed:
+1. **L_xλ's right-hand side**, if `rhs_weights` is not empty:
+   `mcscf::df_derivatives` at those weights (one-hot on root I, or ρ;
+   projected off every root, Θ rows unless all weights are equal), packed:
    `pack_orbital_pairs` per coordinate, the CI rows copied as the energy's
-   (2 w Q H̃^x c with w = 1), `rhs_theta` for r < s.
+   (2 ρ_r Q H̃^x c_r), `rhs_theta` for r < s.
 2. **L_xy's z_o part**: K = K(z_o) by `unpack_orbital_pairs`, `df_derivatives`
    at the averaged weights with that rotation (`fock_rotated`) and
    `df_casscf_exy` with it, at the averaged RDMs.
@@ -1328,7 +1341,7 @@ order:
 4. **I^x z**: `ThirdDerivative::create(z)`, then
    `mcscf::df_integral_derivatives` (h1^x and W^x, the connection included,
    W^x a chunk of coordinates at a time, each applied by `apply_integrals`),
-   added to step 1's columns.
+   added to step 1's columns (written whole without step 1).
 
 The test (`test/gtest/df_casscf_hessian_rotation_gpu.cpp`) that first
 assembled steps 2–3, and `test/gtest/mcscf_integral_derivative_gpu.cpp`
@@ -1337,7 +1350,7 @@ steps 1 and 4, are the same formulas; this is their one entry point.
 ### Memory
 
 The parts run one after another, each freeing what it held: four
-`df_derivatives` calls (one-hot, rotated, c + dc, c − dc), three
+`df_derivatives` calls (the right-hand side's, rotated, c + dc, c − dc), three
 `df_casscf_exy` calls, then the operator, then h1^x and W^x (W^x the
 largest, 3 GB per coordinate at 500 functions over 1500 fitting functions,
 so built for as many coordinates at once as the device's free memory holds
@@ -1358,9 +1371,10 @@ by part against `root_rhs_*` + `lxl_z_*` (the CI rows' singlet part), and
 L_xλ λ^y against `lxl_lambda`, all to 1e-10 absolute; each L_xy piece's
 asymmetry to 1e-11 and both terms' translational sum rule to 1e-9. Every
 case's z, λ^x and Θ come from the fixture, the three roots at unequal weights
-included (`response::zvector` carries Θ there since #613). `RefusesBadInputs`:
-weights equal for some pairs only, a root out of range, one root, and z of
-the wrong length (at unequal weights it carries the roots' rotations).
+included (`response::zvector` carries Θ there since #613), the right-hand
+side at one-hot weights. `RefusesBadInputs`: right-hand side weights not one
+per root, one root, and z of the wrong length (at unequal weights, and at
+partly equal ones, it carries the roots' rotations).
 
 Measured on the RTX 3080 (CUDA), worst over the ten roots: L_xy's z part
 ≤ 6.7e-13 from `exy_z` (of max 0.0088–0.021), ≤ 6.6e-13 two-electron,
@@ -1368,6 +1382,33 @@ Measured on the RTX 3080 (CUDA), worst over the ten roots: L_xy's z part
 ≤ 3.1e-13 orbital (of 1.9), ≤ 1.3e-11 CI (of 0.19), ≤ 7.4e-14 Θ (of 0.20);
 L_xλ λ^y ≤ 1.2e-13 from `lxl_lambda` (of 0.26–0.80); sum rules ≤ 6.6e-13;
 1.2–1.4 s a call (the water in 6-31G, 9 coordinates).
+
+`test/gtest/df_sacasscf_hessian_z_qd_gpu.cpp` (suite `HessianDfSaCasscfZQd`)
+runs the call **at a QD-NEVPT2 Lagrangian's multipliers**:
+`nevpt2::qd_sc_lagrangian`'s (Z, {z_r}, Θ) for state K = 1, on
+`data/qd_nevpt2/`'s `h2co_skew_ccpvdz_sa3` (equal weights, slow tier) and
+`h2co_skew_ccpvdz_sa3_weighted` (0.4, 0.4, 0.2, the representative). Each
+case uses this tree's own DF-SA-CASSCF through the registry, with no
+right-hand side. It checks the call and `ThirdDerivative` against a
+Richardson ladder of F = Z · g_SA + Σ_r z_r · g_ci,r (+ Θ · g_Θ) = d/dε
+E_SA(λ + ε z). F is evaluated on the host at each displaced geometry, along
+the symmetric connection and the root set's joint exponential, with the
+exponentials' derivatives exact. The ladder runs along two coordinates (O's
+z, the first H's y) and along their sum e, with the parameters moving along
+x_e: `df_sacasscf_cp`'s λ^x and, at partly equal weights,
+`df_qd_nevpt2_tangents`' rotations (Eq. qd-theta's for the equal pair).
+Checked: T(x_e, x_e, z) against d²/dt² F(R₀, t x_e), and L_ee + 2 L_eλ · x_e +
+T(x_e, x_e, z) against d²/dt² F(R₀ + t e, t x_e), each to 1e-7 absolute. Two
+shares must each exceed 10× the bar. The first is the root-set curvature's
+share: the third term's ladder in the joint parametrization, less the same
+ladder with each root on its own sphere. The second, at unequal weights, is
+Θ's share: the ladders at Θ alone.
+
+Measured on the gfx1200 (HIP), worst miss: weighted 2.1e-8 (third term) and
+2.0e-8 (total) of max 0.15; equal 2.0e-8 and 2.0e-8 of max 0.040. The
+polarized mixed element misses by ≤ 1.3e-8. The root-set curvature's share
+is 6.6e-4 (weighted) and 1.6e-4 (equal); Θ's share is 3.6e-3. Each case
+takes about 12 s, of which df_sacasscf_z and the operator take 9 s.
 
 ## The single-state Z terms
 
@@ -1394,7 +1435,7 @@ z, pairs + n_det doubles in `response::zvector`'s coordinates, its CI part
 taken off the root. Nothing restricted the parts to a state average but
 `df_sacasscf_z`'s own two-root check: `ThirdDerivative`, `df_derivatives` and
 `rdm12` take one weight of 1 as they are, and the operator has no rotations
-among one root.
+among one root. `df_casscf_z` passes no right-hand side weights.
 
 ### Memory
 
@@ -2035,6 +2076,6 @@ the issue also asks for waits on that step (#610).
 | `df_pc_nevpt2.cpp` | The PC-NEVPT2 Hessian: `df_sc_nevpt2.cpp`'s assembly over PC's adjoint and product, with its three refusals: a class kept below 1e-10, a coordinate's Schur-lift step below 1e-3 bohr, a degenerate inactive pair |
 | `df_qd_nevpt2_tangents.cpp` | The QD-NEVPT2 parameter response and t_x over a state average: per chunk, κ_nr and the CP's rotations, the active Hamiltonian's and f^SA's change by `qd_builders_tangent`, Eq. qd-theta at the equal pairs, κ_oo under the degenerate-pair rule |
 | `df_sacasscf.cpp` | A state-averaged root's Hessian, and `df_sacasscf_cp` (its λ^x alone) and `state_averaged_electrons`: z and λ^x by the Z-vectors, the residual check, root I's parameter Hessian by the one-hot unreduced product, the third-derivative action, the z terms, E_I,xy, eq. rot at equal weights and the symmetrized sum |
-| `df_sacasscf_z.cpp` | A state average's z terms at root I's z: L_xy's z part (E_xy along K(z_o), and at z_c's transition RDMs by the ± polarization) and L_xλ (root I's right-hand side + I^x z); `df_casscf_z`, the same at one root and given Z without the right-hand side, plus Λᵀ T(·, ·, Z) Λ |
+| `df_sacasscf_z.cpp` | A state average's z terms at given multipliers, root I's or a QD-NEVPT2 Lagrangian's: L_xy's z part (E_xy along K(z_o), and at z_c's transition RDMs by the ± polarization) and L_xλ (the right-hand side at the caller's weights, if any, + I^x z); `df_casscf_z`, the same at one root and given Z without the right-hand side, plus Λᵀ T(·, ·, Z) Λ |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |
 | `CMakeLists.txt` | Build configuration |

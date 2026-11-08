@@ -33,8 +33,9 @@ export namespace free_breakfast::mcscf {
 /// doubles: the orbital rotation over the packed pairs (response's order,
 /// kappa_pq for p > q), then each root's CI change d_r (dim doubles per
 /// root, root-major; the rotation is A = sum_r (d_r c_r^T - c_r d_r^T)),
-/// then, at unequal weights only, the rotations among the roots, Theta_sr
-/// for r < s in (r, s) lexicographic order (c_r gains Theta_sr c_s). The
+/// then, unless every weight is equal, the rotations among the roots,
+/// Theta_sr for every r < s in (r, s) lexicographic order (c_r gains
+/// Theta_sr c_s), an equal pair's among unequal ones included. The
 /// pairing of a covector with a vector is their dot product, so the
 /// third-derivative action of a Hessian is Lambda^T Y over the columns
 /// `apply` writes.
@@ -50,8 +51,8 @@ public:
   /// unit, orthogonal, and eigenvectors of the active-space H over these
   /// integrals (a converged SA-CASSCF's). @p z is one column of size() on the
   /// device, its CI part taken off every root here. The rotations among the
-  /// roots are parameters when the weights differ pairwise, and are not when
-  /// they are all equal.
+  /// roots are parameters, every pair's, unless the weights are all equal
+  /// (at 0.4, 0.4, 0.2 the equal pair's too).
   ///
   /// Reads every argument in the call and keeps none of them but @p alpha's
   /// and @p beta's device tables, which its sigmas and RDM read in place and
@@ -61,8 +62,7 @@ public:
   /// @return The operator; InvalidConfig for ncas < 1, ncore < 0, ncore +
   ///         ncas > nmo, naux < 1, a b, c or h of the wrong size, strings
   ///         over another active space, weights not positive or not summing
-  ///         to 1, or weights equal for some pairs of roots and not others;
-  ///         or the first error of a BLAS call, copy, sigma or RDM.
+  ///         to 1; or the first error of a BLAS call, copy, sigma or RDM.
   [[nodiscard]] static Result<ThirdDerivative>
   create(DeviceResources &res, const SphericalMatrixAO &h, const Buffers::device<double> &b,
          int32_t naux, const SphericalMatrixAO &c, int32_t ncore, int32_t ncas,
@@ -109,7 +109,7 @@ public:
                                        const double *w1, double *y);
 
   /// @brief The parameter count: pairs + dim nroots (+ nroots (nroots - 1) / 2
-  /// at unequal weights).
+  /// unless every weight is equal).
   [[nodiscard]] int32_t size() const noexcept { return size_; }
 
 private:
@@ -156,7 +156,7 @@ private:
   int32_t dim_;
   int32_t nroots_;
   int32_t pairs_;
-  int32_t n_theta_; // nroots (nroots - 1) / 2 at unequal weights, else 0
+  int32_t n_theta_; // nroots (nroots - 1) / 2 unless all weights are equal, else 0
   int32_t size_;
   std::vector<double> weights_;
   ci::Sigma sigma0_;     // H_0

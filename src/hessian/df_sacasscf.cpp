@@ -135,6 +135,17 @@ sacasscf_terms(DeviceResources &res, const std::string_view who, const Molecule 
   if (root && (*root < 0 || std::cmp_greater_equal(*root, nroots))) {
     return err_config("{}: root {} is not one of the {} roots", who, *root, nroots);
   }
+  // Eq. rot is for all-equal weights and lambda^x's rotations for pairwise
+  // different ones: E_I's Hessian at weights equal for some pairs only would
+  // need both.
+  if (root) {
+    const std::vector<bool> rotates = response::rotating_pairs(weights);
+    if (std::ranges::contains(rotates, true) && std::ranges::contains(rotates, false)) {
+      return err_config("{}: weights equal for {} of {} pairs of roots: the rotations among the "
+                        "roots are either all parameters or none",
+                        who, std::ranges::count(rotates, false), rotates.size());
+    }
+  }
   const auto [nalpha, nbeta] = FBF_TRY(
       state_averaged_electrons(who, res, molecule, basis, aux, b, solution, weights, ncore, ncas));
   const auto n_act = static_cast<size_t>(ncas);
@@ -336,8 +347,9 @@ sacasscf_terms(DeviceResources &res, const std::string_view who, const Molecule 
                                 tolerance, max_iterations));
 
   // The third-derivative operator along z. Whether the rotations are
-  // parameters is its rule (all weights equal, or all pairwise different), so
-  // z is laid out with every rotation and cut to its size().
+  // parameters is its rule (none at all-equal weights, every pair's
+  // otherwise; partly equal ones were refused above), so z is laid out with
+  // every rotation and cut to its size().
   Buffers::device<double> z_packed(pairs + n_ci + all_pairs, res.device());
   FBF_TRY(copy(z_packed.data(), z.orbital.data(), pairs, wwr::wwrMemcpyDeviceToDevice));
   FBF_TRY(copy(z_packed.data() + pairs, z.ci.data(), n_ci, wwr::wwrMemcpyDeviceToDevice));
@@ -429,7 +441,7 @@ sacasscf_terms(DeviceResources &res, const std::string_view who, const Molecule 
   // L_xy's z part and L_xlambda at z, and L_xlambda lambda^y.
   SaCasscfZTerms z_terms =
       FBF_TRY(df_sacasscf_z(res, molecule, basis, classes, aux, h, b, l, c, ncore, ncas, nalpha,
-                            nbeta, roots.vectors, weights, *root, z_column));
+                            nbeta, roots.vectors, weights, one_hot, z_column));
   std::vector<double> lxlambda_lambda =
       FBF_TRY(pair_columns(size32, z_terms.lxlambda.data(), lambda.data()));
 

@@ -61,10 +61,13 @@ reference:
   off every root and Θ antisymmetric, the rotations among the roots.
 
 A column (vector or covector) is `size()` doubles: the packed κ, then d_r per
-root (dim each, root-major), then, **at unequal weights only**, Θ_sr for
-r < s in (r, s) lexicographic order (c_r gains Θ_sr c_s). At equal weights
-E_SA is invariant to those rotations and they are not parameters; weights
-equal for some pairs and not others are refused. A covector's parts are
+root (dim each, root-major), then, **unless every weight is equal**, Θ_sr
+for every pair r < s in (r, s) lexicographic order (c_r gains Θ_sr c_s). At
+equal weights E_SA is invariant to those rotations and they are not
+parameters. At weights equal for some pairs only (0.4, 0.4, 0.2) every
+pair's is one, the equal pair's too: E_SA's gradient along it is zero, but
+its third derivatives along it are not, and a QD-NEVPT2 Lagrangian's
+response moves it (`nevpt2.tex` Eq. qd-theta). A covector's parts are
 ∂/∂κ_pq, ∂/∂d_r (projected off every root) and ∂/∂Θ_sr, so **the pairing is
 the plain dot product**, and a Hessian's third-derivative term is Λᵀ Y over
 the columns `apply` writes for Λ. This is
@@ -266,8 +269,9 @@ sigmas of the nroots roots; the water's nine columns take 0.02 s on the 3080,
   holds every coordinate's W) the walk runs once; past it, once per chunk.
   Restricting a walk to the chunk's atoms is #631's remedy.
 - **Integral-direct.** Density-fitted only, as the CASSCF gradient is.
-- **Partly equal weights**, where some rotations among the roots are
-  parameters and some are not, are refused.
+- **The rotations at equal weights.** At all-equal weights Θ is not in the
+  layout, so T along an equal-weight rotation (a QD-NEVPT2 x_A's θ^A, Eq.
+  qd-theta) is not formed there; at partly equal weights it is.
 
 ## Tests
 

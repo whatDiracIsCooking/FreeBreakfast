@@ -163,6 +163,7 @@ add_executable(
   df_casscf_hessian_gpu.cpp
   df_casscf_hessian_z_gpu.cpp
   df_sacasscf_hessian_z_gpu.cpp
+  df_sacasscf_hessian_z_qd_gpu.cpp
   df_sacasscf_hessian_gpu.cpp
   df_nevpt2_tangents_gpu.cpp
   df_qd_nevpt2_tangents_gpu.cpp

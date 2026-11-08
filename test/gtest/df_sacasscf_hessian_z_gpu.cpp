@@ -305,12 +305,22 @@ protected:
         rotations_, n);
   }
 
+  // The terms of root @p root: its right-hand side at weights one-hot on it.
   fb::Result<fb::hessian::SaCasscfZTerms> terms(const std::vector<double> &weights,
-                                                const std::int32_t root,
+                                                const std::size_t root,
+                                                const fb::Buffers::device<double> &z) {
+    std::vector<double> one_hot(weights.size(), 0.0);
+    if (root < one_hot.size()) {
+      one_hot[root] = 1.0;
+    }
+    return terms(weights, std::span<const double>(one_hot), z);
+  }
+  fb::Result<fb::hessian::SaCasscfZTerms> terms(const std::vector<double> &weights,
+                                                const std::span<const double> rhs_weights,
                                                 const fb::Buffers::device<double> &z) {
     return fb::hessian::df_sacasscf_z(*res_, *molecule_, *basis_, classes_, *aux_, h_->spherical(),
                                       *b_, metric_->spherical().data(), *c_, ncore_, ncas_, nalpha_,
-                                      nbeta_, *roots_, weights, root, z);
+                                      nbeta_, *roots_, weights, rhs_weights, z);
   }
 
   void check_root(const std::size_t root) {
@@ -320,7 +330,7 @@ protected:
     ASSERT_FALSE(HasFailure());
     const fb::Buffers::device<double> z = upload(*res_, z_host);
     const auto start = std::chrono::steady_clock::now();
-    auto got = terms(weights_, static_cast<std::int32_t>(root), z);
+    auto got = terms(weights_, root, z);
     ASSERT_TRUE(got) << got.error().message;
     const double seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -467,8 +477,9 @@ TEST_F(HessianDfSaCasscfZ, ThreeRootsUnequalWeightsMatchReference) {
   check("h2o_631g_sa3_unequal");
 }
 
-// Weights equal for some pairs only, a root out of range, one root, and z of
-// the wrong length are refused before anything runs.
+// Right-hand side weights not one per root, one root, and z of the wrong
+// length (at partly equal weights, z without the roots' rotations) are
+// refused before anything runs.
 TEST_F(HessianDfSaCasscfZ, RefusesBadInputs) {
   FBF_REQUIRE_GPU();
   load("h2o_631g_sa3");
@@ -480,14 +491,14 @@ TEST_F(HessianDfSaCasscfZ, RefusesBadInputs) {
     EXPECT_EQ(r.error().kind, fb::ErrorKind::InvalidConfig) << what;
     EXPECT_NE(r.error().message.find("hessian::df_sacasscf_z"), std::string::npos) << what;
   };
-  refused(terms({0.5, 0.25, 0.25}, 0, z), "mixed weights");
-  refused(terms(weights_, 3, z), "root out of range");
-  refused(terms(weights_, -1, z), "negative root");
-  refused(terms({1.0}, 0, z), "one root");
+  refused(terms({0.5, 0.25, 0.25}, std::size_t{0}, z), "partly equal weights, no rotations");
+  const std::vector<double> two{0.5, 0.5};
+  refused(terms(weights_, std::span<const double>(two), z), "two right-hand side weights");
+  refused(terms({1.0}, std::size_t{0}, z), "one root");
   const fb::Buffers::device<double> short_z(z_host.size() - 1, res_->device());
-  refused(terms(weights_, 0, short_z), "short z");
+  refused(terms(weights_, std::size_t{0}, short_z), "short z");
   // At unequal weights z also carries the roots' rotations.
-  refused(terms({0.5, 0.3, 0.2}, 0, z), "z without rotations");
+  refused(terms({0.5, 0.3, 0.2}, std::size_t{0}, z), "z without rotations");
 }
 
 } // namespace

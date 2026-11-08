@@ -1,12 +1,13 @@
 /// @file
-/// @brief df_sacasscf_z: a state-averaged DF-CASSCF Hessian's z terms at one
-/// root's z, L_xy's z part (df_casscf_exy along the z_o rotation, and at the
-/// transition RDMs of z_c by the +/- polarization) and L_xlambda (root I's
-/// right-hand side from mcscf::df_derivatives plus I^x z from
-/// mcscf::ThirdDerivative::apply_integrals), assembled from the merged parts.
-/// Beside it df_casscf_z, the same at one root of weight 1 and given (Z, z),
-/// without the root's right-hand side, and the third derivative's action
-/// over a block of response vectors.
+/// @brief df_sacasscf_z: a state-averaged DF-CASSCF Hessian's z terms at
+/// given multipliers (Z, {z_r}, Theta), one root's or a QD-NEVPT2
+/// Lagrangian's, L_xy's z part (df_casscf_exy along the z_o rotation, and at
+/// the transition RDMs of z_c by the +/- polarization) and L_xlambda (the
+/// right-hand side at the caller's weights from mcscf::df_derivatives, if
+/// any, plus I^x z from mcscf::ThirdDerivative::apply_integrals), assembled
+/// from the merged parts. Beside it df_casscf_z, the same at one root of
+/// weight 1 and given (Z, z), without a right-hand side, and the third
+/// derivative's action over a block of response vectors.
 
 module free_breakfast.hessian;
 
@@ -38,17 +39,17 @@ namespace free_breakfast::hessian {
 constexpr double kSaWeightTolerance = 1e-12;
 
 // The z terms at the roots' multipliers z, every argument but the lengths
-// checked by the caller: L_xy's z part, L_xlambda (with root I's right-hand
-// side when @p root >= 0, without it when < 0) and, for k > 0, the third
-// derivative's action Lambda^T T(., ., z) Lambda over @p lambda's k columns.
-// @p who names the entry in the length refusals.
+// checked by the caller: L_xy's z part, L_xlambda (with the right-hand side
+// of the energy at @p rhs_weights, without one when they are empty) and, for
+// k > 0, the third derivative's action Lambda^T T(., ., z) Lambda over
+// @p lambda's k columns. @p who names the entry in the length refusals.
 Result<CasscfZTerms>
 casscf_z_terms(const std::string_view who, DeviceResources &res, const Molecule &molecule,
                const BasisSet &basis, const std::span<const PrimitivePairClass> classes,
                const BasisSet &aux, const SphericalMatrixAO &h, const Buffers::device<double> &b,
                const double *l, const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas,
                const int32_t nalpha, const int32_t nbeta, const Buffers::device<double> &roots,
-               const std::span<const double> weights, const int32_t root,
+               const std::span<const double> weights, const std::span<const double> rhs_weights,
                const Buffers::device<double> &z, const int32_t k, const double *const lambda) {
   const size_t nao = basis.nao_sphe();
   const size_t naux = aux.nao_sphe();
@@ -70,7 +71,8 @@ casscf_z_terms(const std::string_view who, DeviceResources &res, const Molecule 
   const auto n_act = static_cast<size_t>(ncas);
   const auto nocc = static_cast<size_t>(ncore) + n_act;
   const size_t pairs = (n_act * static_cast<size_t>(ncore)) + ((nao - nocc) * nocc);
-  const size_t n_theta = equal_pairs == 0 ? all_pairs : 0;
+  // ThirdDerivative's layout: every pair's rotation unless all are equal.
+  const size_t n_theta = equal_pairs != all_pairs ? all_pairs : 0;
   const size_t n_ci = dim * nroots;
   const size_t size = pairs + n_ci + n_theta;
   if (roots.num_elements() != n_ci || z.num_elements() != size) {
@@ -119,15 +121,15 @@ casscf_z_terms(const std::string_view who, DeviceResources &res, const Molecule 
                          gamma2, fock_x, rotation);
   };
 
-  // L_xlambda's first part, root I's own CP right-hand side (one-hot
-  // weights), in ThirdDerivative's packed layout: the orbital pairs, the CI
-  // rows as they are (the energy's convention), Theta_sr for r < s. None
-  // without a root: step 4 then writes the columns whole.
+  // L_xlambda's first part, the CP right-hand side d_x d_lambda of the
+  // energy at @p rhs_weights (one-hot for one root's E_I, rho for a QD
+  // Lagrangian's E_cas, linear in them), in ThirdDerivative's packed layout:
+  // the orbital pairs, the CI rows as they are (the energy's convention),
+  // Theta_sr for r < s. None without weights: step 4 then writes the columns
+  // whole.
   Buffers::device<double> lxlambda(size * n_x, res.device());
-  if (root >= 0) {
-    std::vector<double> one_hot(nroots, 0.0);
-    one_hot[static_cast<size_t>(root)] = 1.0;
-    const mcscf::Derivatives own = FBF_TRY(derivatives(roots.data(), one_hot, nullptr));
+  if (!rhs_weights.empty()) {
+    const mcscf::Derivatives own = FBF_TRY(derivatives(roots.data(), rhs_weights, nullptr));
     std::vector<double> theta(n_theta * n_x);
     for (size_t x = 0; x < n_x; ++x) {
       double *column = lxlambda.data() + (x * size);
@@ -254,7 +256,7 @@ casscf_z_terms(const std::string_view who, DeviceResources &res, const Molecule 
     mcscf::ThirdDerivative op =
         FBF_TRY(mcscf::ThirdDerivative::create(res, h, b, static_cast<int32_t>(naux), c, ncore,
                                                ncas, alpha, beta, roots.data(), weights, z.data()));
-    if (root >= 0) {
+    if (!rhs_weights.empty()) {
       Buffers::device<double> y(size * n_x, res.device());
       FBF_TRY(mcscf::df_integral_derivatives(res, molecule, basis, classes, aux, h, b, l, c, op,
                                              y.data()));
@@ -287,37 +289,25 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
               const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas,
               const int32_t nalpha, const int32_t nbeta, const Buffers::device<double> &roots,
-              const std::span<const double> weights, const int32_t root,
+              const std::span<const double> weights, const std::span<const double> rhs_weights,
               const Buffers::device<double> &z) {
   const size_t nao = basis.nao_sphe();
   const uint32_t n_atom = basis.natoms();
   const size_t nroots = weights.size();
   if (c.dev_idx() != res.dev_idx() || c.n() != nao || molecule.natoms() != n_atom ||
       aux.natoms() != n_atom || ncore < 0 || ncas < 1 ||
-      int64_t{ncore} + int64_t{ncas} > static_cast<int64_t>(nao) || nroots < 2 || root < 0 ||
-      std::cmp_greater_equal(root, nroots)) {
+      int64_t{ncore} + int64_t{ncas} > static_cast<int64_t>(nao) || nroots < 2 ||
+      (!rhs_weights.empty() && rhs_weights.size() != nroots)) {
     return err_config("hessian::df_sacasscf_z: needs C nao square on device {}, a molecule and "
                       "two bases on the same atoms, ncore >= 0, ncas >= 1, ncore + ncas <= nao, "
-                      "two roots or more and a root among them (C {} square on device {}, {}, {} "
-                      "and {} atoms, ncore {}, ncas {}, nao {}, {} weights, root {})",
+                      "two roots or more and the right-hand side's weights one per root or none "
+                      "(C {} square on device {}, {}, {} and {} atoms, ncore {}, ncas {}, nao {}, "
+                      "{} weights, {} right-hand side weights)",
                       res.dev_idx(), c.n(), c.dev_idx(), molecule.natoms(), n_atom, aux.natoms(),
-                      ncore, ncas, nao, nroots, root);
-  }
-  size_t equal_pairs = 0;
-  size_t all_pairs = 0;
-  for (size_t r = 0; r < nroots; ++r) {
-    for (size_t s = r + 1; s < nroots; ++s) {
-      ++all_pairs;
-      equal_pairs += std::abs(weights[r] - weights[s]) < kSaWeightTolerance ? 1 : 0;
-    }
-  }
-  if (equal_pairs != 0 && equal_pairs != all_pairs) {
-    return err_config("hessian::df_sacasscf_z: weights equal for {} of {} pairs of roots: the "
-                      "rotations among the roots are either all parameters or none",
-                      equal_pairs, all_pairs);
+                      ncore, ncas, nao, nroots, rhs_weights.size());
   }
   return casscf_z_terms("hessian::df_sacasscf_z", res, molecule, basis, classes, aux, h, b, l, c,
-                        ncore, ncas, nalpha, nbeta, roots, weights, root, z, 0, nullptr)
+                        ncore, ncas, nalpha, nbeta, roots, weights, rhs_weights, z, 0, nullptr)
       .transform([](CasscfZTerms &&t) {
         return SaCasscfZTerms{.lxy = std::move(t.lxy), .lxlambda = std::move(t.lxlambda)};
       });
@@ -338,7 +328,7 @@ df_casscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   }
   const std::array<double, 1> one{1.0};
   return casscf_z_terms(kWho, res, molecule, basis, classes, aux, h, b, l, solution.c, ncore, ncas,
-                        nalpha, nbeta, solution.roots.vectors, one, -1, z, k, lambda);
+                        nalpha, nbeta, solution.roots.vectors, one, {}, z, k, lambda);
 }
 
 } // namespace free_breakfast::hessian

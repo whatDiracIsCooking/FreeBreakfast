@@ -611,30 +611,37 @@ df_adjoint_xy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               const SphericalMatrixAO &c, const double *h_bar, const double *lambda,
               size_t max_bytes = 0);
 
-/// @brief The z terms of a state-averaged DF-CASSCF Hessian at one root I's
-/// multipliers z (casscf_hessian.tex eq. sa, bullets 3 and 4).
+/// @brief The z terms of a state-averaged DF-CASSCF Lagrangian's Hessian at
+/// its multipliers z (casscf_hessian.tex eq. sa, bullets 3 and 4; for a
+/// QD-NEVPT2 state, docs/nevpt2/nevpt2.tex Eq. qd-Lxx's third derivative).
 struct SaCasscfZTerms {
   /// @brief L_xy's z part, z . d_xy g_SA: E_xy at z's densities (the
   /// z_o-rotated averaged densities and the transition RDMs of z_c), piece by
   /// piece as @ref df_casscf_exy returns them, 3 n_atom x 3 n_atom
   /// column-major, symmetric to rounding; nuclear_repulsion is zero.
   CasscfExy lxy;
-  /// @brief L_xlambda, root I's CP right-hand side d_x d_lambda E_I plus
-  /// I^x z, a covector per coordinate: size x 3 n_atom column-major on the
-  /// device, column x in @c mcscf::ThirdDerivative's packed layout (the
-  /// orbital pairs, d_r per root, Theta_sr for r < s at unequal weights), the
-  /// CI rows the energy's own. Its dot product with lambda^y in the same
-  /// layout is L_xlambda lambda^y, element (x, y).
+  /// @brief L_xlambda, the CP right-hand side d_x d_lambda E at the call's
+  /// right-hand side weights (none without them) plus I^x z, a covector per
+  /// coordinate: size x 3 n_atom column-major on the device, column x in
+  /// @c mcscf::ThirdDerivative's packed layout (the orbital pairs, d_r per
+  /// root, Theta_sr for every r < s unless all weights are equal), the CI
+  /// rows the energy's own. Its dot product with lambda^y in the same layout
+  /// is L_xlambda lambda^y, element (x, y).
   Buffers::device<double> lxlambda;
 };
 
-/// @brief The z terms of a state-averaged DF-CASSCF analytic Hessian for
-/// root @p root, at its Lagrangian multipliers @p z, every piece from a
-/// merged part (README.md, "The state-averaged z terms"):
+/// @brief The z terms of a state-averaged DF-CASSCF Lagrangian's analytic
+/// Hessian at its multipliers @p z = (Z, {z_r}, Theta): one root's
+/// (@ref df_sacasscf's), or a QD-NEVPT2 Lagrangian's (nevpt2::qd_sc_lagrangian
+/// and qd_pc_gradient's multipliers, docs/nevpt2/nevpt2.tex Eq. qd-Lxx's
+/// third derivative, its CI curvature the root set's, Eq. qd-curv), every
+/// piece from a merged part (README.md, "The state-averaged z terms"):
 ///
 ///     L_xy z part = df_casscf_exy along K(z_o) at the averaged RDMs
 ///                   + df_casscf_exy at the transition RDMs of z_c
-///     L_xlambda   = root I's df_derivatives right-hand side (one-hot weights)
+///     L_xlambda   = the df_derivatives right-hand side at @p rhs_weights
+///                   (one-hot for root I's E_I, rho = diag W for a QD
+///                   Lagrangian's E_cas; none when empty)
 ///                   + I^x z (mcscf::df_integral_derivatives, through
 ///                     ThirdDerivative::apply_integrals)
 ///
@@ -647,12 +654,15 @@ struct SaCasscfZTerms {
 /// @p c the nao x nao orbitals (core, active, virtual), @p roots the
 /// weights.size() >= 2 unit roots of @p nalpha and @p nbeta electrons in the
 /// ncas orbitals (root r at r n_det), eigenvectors of the active-space H, at
-/// @p weights, all equal or all pairwise different. @p z is root I's
-/// multipliers in @c mcscf::ThirdDerivative's layout and the energy's
-/// convention, which is @c response::zvector's (z_o, z_c, Theta) as it comes
-/// (zvector scales its equations' CI rows, not its unknowns): pairs + n_det
-/// nroots doubles, plus nroots (nroots - 1) / 2 at unequal weights. Its CI
-/// part is taken off every root here.
+/// @p weights (equal for some pairs only is taken). @p rhs_weights are the
+/// right-hand side's, one per root as @c mcscf::df_derivatives takes them
+/// (each >= 0, summing to 1), or empty for none. @p z is the multipliers in
+/// @c mcscf::ThirdDerivative's layout and the energy's convention, which is
+/// @c response::zvector's (z_o, z_c, Theta) as it comes (zvector scales its
+/// equations' CI rows, not its unknowns): pairs + n_det nroots doubles, plus
+/// nroots (nroots - 1) / 2 unless every weight is equal (an equal pair's
+/// Theta zero, as zvector leaves it). Its CI part is taken off every root
+/// here.
 ///
 /// The parts run one after another, each freeing what it held: four
 /// @c df_derivatives calls, three @c df_casscf_exy calls, then the derivative
@@ -668,17 +678,17 @@ struct SaCasscfZTerms {
 /// @return The two terms; InvalidConfig if @p c is not nao square on @p res's
 ///         device, the molecule and the bases do not share their atoms,
 ///         ncore < 0, ncas < 1 or ncore + ncas > nao, fewer than two weights,
-///         @p root not among them, weights equal for some pairs and not
-///         others, @p roots or @p z not of their lengths, or for any input a
-///         part refuses; or the first error of a part (Unsupported for
-///         memory, a GpuRuntime error).
+///         @p rhs_weights neither empty nor one per root, @p roots or @p z
+///         not of their lengths, or for any input a part refuses
+///         (df_derivatives' of @p rhs_weights); or the first error of a part
+///         (Unsupported for memory, a GpuRuntime error).
 [[nodiscard]] Result<SaCasscfZTerms>
 df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
               const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nalpha,
               int32_t nbeta, const Buffers::device<double> &roots, std::span<const double> weights,
-              int32_t root, const Buffers::device<double> &z);
+              std::span<const double> rhs_weights, const Buffers::device<double> &z);
 
 /// @brief The multiplier terms of a single-state Lagrangian's Hessian at
 /// given multipliers (Z, z) (docs/nevpt2/nevpt2.tex eq. hess): the three places
@@ -946,7 +956,7 @@ struct SaCasscfTerms {
   /// @brief E_I,xy and its pieces, @ref df_casscf_exy's at root I's RDMs.
   CasscfExy exy;
   /// @brief L_xy's z part and L_xlambda, @ref df_sacasscf_z's at the
-  /// gradient's own z.
+  /// gradient's own z, its right-hand side weights one-hot on I.
   SaCasscfZTerms z_terms;
   /// @brief L_xlambda lambda^y, element (x, y); the sum takes it and its
   /// transpose. Not symmetric.
@@ -1023,8 +1033,9 @@ struct SaCasscfTerms {
 ///         device, ncore < 0, ncas < 1 or ncore + ncas > nao, the RDMs are
 ///         not ncas^2 and ncas^4 long, trace(gamma) is no electron count of
 ///         the multiplicity, the vectors are not the roots', @p b is not
-///         naux nao^2 long, or a part refuses (weights equal for some pairs
-///         only); Numerical at a degeneracy; Divergence when a solve meets
+///         naux nao^2 long, or the weights are equal for some pairs only
+///         (eq. rot and lambda^x's rotations would both be needed);
+///         Numerical at a degeneracy; Divergence when a solve meets
 ///         negative curvature, the CP solve runs out of products or finds
 ///         the SA Hessian singular by its probe column, or a residual is
 ///         left above 1e-6; or the first error of a part.
