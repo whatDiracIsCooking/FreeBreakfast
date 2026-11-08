@@ -6,6 +6,9 @@
 /// product at one-hot weights), the third-derivative action
 /// (mcscf::ThirdDerivative) and, at equal weights, eq. rot
 /// (mcscf::root_rotation); the solution checked, the sum symmetrized.
+/// df_sacasscf_cp, its lambda^x alone (the same body, stopped after the CP
+/// step), and state_averaged_electrons, the inputs' check both share with
+/// df_qd_nevpt2_tangents.
 
 module free_breakfast.hessian;
 
@@ -48,21 +51,13 @@ constexpr double kSaCasscfCpResidualCeiling = 1e-6;
 // the solve's own RDMs, so a match is to rounding; a wrong weight misses by
 // the roots' difference times it.
 constexpr double kSaCasscfWeightsTolerance = 1e-8;
-// Roots closer than this (hartree) are degenerate: mcscf::root_rotation's
-// floor, checked here before anything runs, at any weights.
-constexpr double kSaCasscfRootGapFloor = 1e-8;
-// The largest rotation rate between two roots, per bohr, at which the
-// Hessian still describes E_I: mcscf::root_rotation's default max_rotation,
-// put on lambda^x's rotations at unequal weights (README.md).
-constexpr double kSaCasscfMaxRotation = 10.0;
 
-Result<SaCasscfTerms>
-df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-            const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-            const mcscf::Solution &solution, const std::span<const double> weights,
-            const int32_t root, const int32_t ncore, const int32_t ncas, const double tolerance,
-            const int32_t max_iterations) {
+Result<std::pair<int32_t, int32_t>>
+state_averaged_electrons(const std::string_view who, const DeviceResources &res,
+                         const Molecule &molecule, const BasisSet &basis, const BasisSet &aux,
+                         const Buffers::device<double> &b, const mcscf::Solution &solution,
+                         const std::span<const double> weights, const int32_t ncore,
+                         const int32_t ncas) {
   const SphericalMatrixAO &c = solution.c;
   const ci::Roots &roots = solution.roots;
   const size_t nao = basis.nao_sphe();
@@ -70,30 +65,27 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   const uint32_t n_atom = basis.natoms();
   const size_t nroots = roots.energies.size();
   if (nroots < 2 || weights.size() != nroots ||
-      std::ranges::any_of(
-          weights, [](const double w) { return !(w > 0.0); }) ||
-      root < 0 || std::cmp_greater_equal(root, nroots)) {
-    return err_config("hessian::df_sacasscf: needs a state average of two roots or more, one "
-                      "positive weight per root and a root among them ({} roots, {} weights, "
-                      "root {})",
-                      nroots, weights.size(), root);
+      std::ranges::any_of(weights, [](const double w) { return !(w > 0.0); })) {
+    return err_config("{}: needs a state average of two roots or more and one positive weight per "
+                      "root ({} roots, {} weights)",
+                      who, nroots, weights.size());
   }
   if (c.dev_idx() != res.dev_idx() || c.n() != nao || molecule.natoms() != n_atom ||
       aux.natoms() != n_atom || ncore < 0 || ncas < 1 ||
       int64_t{ncore} + int64_t{ncas} > static_cast<int64_t>(nao) ||
       b.num_elements() != naux * nao * nao) {
-    return err_config("hessian::df_sacasscf: needs C nao square on device {}, a molecule and two "
-                      "bases on the same atoms, ncore >= 0, ncas >= 1, ncore + ncas <= nao and B "
-                      "naux nao^2 long (C {} square on device {}, {}, {} and {} atoms, ncore {}, "
-                      "ncas {}, nao {}, naux {}, B {} doubles)",
-                      res.dev_idx(), c.n(), c.dev_idx(), molecule.natoms(), n_atom, aux.natoms(),
-                      ncore, ncas, nao, naux, b.num_elements());
+    return err_config("{}: needs C nao square on device {}, a molecule and two bases on the same "
+                      "atoms, ncore >= 0, ncas >= 1, ncore + ncas <= nao and B naux nao^2 long (C "
+                      "{} square on device {}, {}, {} and {} atoms, ncore {}, ncas {}, nao {}, "
+                      "naux {}, B {} doubles)",
+                      who, res.dev_idx(), c.n(), c.dev_idx(), molecule.natoms(), n_atom,
+                      aux.natoms(), ncore, ncas, nao, naux, b.num_elements());
   }
   const auto n_act = static_cast<size_t>(ncas);
   if (solution.gamma.size() != n_act * n_act ||
       solution.gamma2.size() != n_act * n_act * n_act * n_act) {
-    return err_config("hessian::df_sacasscf: RDMs of {} and {} elements for ncas {}",
-                      solution.gamma.size(), solution.gamma2.size(), ncas);
+    return err_config("{}: RDMs of {} and {} elements for ncas {}", who, solution.gamma.size(),
+                      solution.gamma2.size(), ncas);
   }
   double trace = 0.0;
   for (size_t t = 0; t < n_act; ++t) {
@@ -103,23 +95,49 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   const int32_t two_s = molecule.multiplicity() - 1;
   if (std::abs(trace - nelecas) > kSaCasscfElectronCountTolerance || nelecas < two_s ||
       (nelecas - two_s) % 2 != 0 || nelecas - ((nelecas - two_s) / 2) > ncas) {
-    return err_config("hessian::df_sacasscf: trace(gamma) {} is no electron count of "
-                      "multiplicity {} in {} orbitals",
-                      trace, molecule.multiplicity(), ncas);
+    return err_config("{}: trace(gamma) {} is no electron count of multiplicity {} in {} orbitals",
+                      who, trace, molecule.multiplicity(), ncas);
   }
-  // A degeneracy: the adiabatic energy has no Hessian there.
+  // A degeneracy: neither E_I's Hessian nor the rotations between the two
+  // roots exist there.
   for (size_t r = 0; r < nroots; ++r) {
     for (size_t s = r + 1; s < nroots; ++s) {
       const double gap = std::abs(roots.energies[r] - roots.energies[s]);
-      if (!(gap >= kSaCasscfRootGapFloor)) {
-        return err_numerical("hessian::df_sacasscf: roots {} and {} are {:.3e} hartree apart "
-                             "(under {:.0e}): a degeneracy, where E_I has no Hessian",
-                             r, s, gap, kSaCasscfRootGapFloor);
+      if (!(gap >= mcscf::kRootGapFloor)) {
+        return err_numerical("{}: roots {} and {} are {:.3e} hartree apart (under {:.0e}): a "
+                             "degeneracy, where the roots' rotations and E_I's Hessian do not "
+                             "exist",
+                             who, r, s, gap, mcscf::kRootGapFloor);
       }
     }
   }
   const int32_t nbeta = (nelecas - two_s) / 2;
-  const int32_t nalpha = nelecas - nbeta;
+  return std::pair{nelecas - nbeta, nbeta};
+}
+
+// df_sacasscf's body, or with no @p root df_sacasscf_cp's: everything up to
+// lambda^x and its checks, then (with a root) the rest of eq. sa. @p who
+// names the caller in every refusal.
+Result<std::variant<SaCasscfCp, SaCasscfTerms>>
+sacasscf_terms(DeviceResources &res, const std::string_view who, const Molecule &molecule,
+               const BasisSet &basis, const std::span<const PrimitivePairClass> classes,
+               const BasisSet &aux, const SphericalMatrixAO &h, const Buffers::device<double> &b,
+               const double *l, const mcscf::Solution &solution,
+               const std::span<const double> weights, const std::optional<int32_t> root,
+               const int32_t ncore, const int32_t ncas, const double tolerance,
+               const int32_t max_iterations) {
+  const SphericalMatrixAO &c = solution.c;
+  const ci::Roots &roots = solution.roots;
+  const size_t nao = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  const uint32_t n_atom = basis.natoms();
+  const size_t nroots = roots.energies.size();
+  if (root && (*root < 0 || std::cmp_greater_equal(*root, nroots))) {
+    return err_config("{}: root {} is not one of the {} roots", who, *root, nroots);
+  }
+  const auto [nalpha, nbeta] = FBF_TRY(
+      state_averaged_electrons(who, res, molecule, basis, aux, b, solution, weights, ncore, ncas));
+  const auto n_act = static_cast<size_t>(ncas);
   const ScopedDeviceIndex on{res.dev_idx()};
 
   const ci::DeviceStringSet alpha = FBF_TRY(ci::DeviceStringSet::create(res, ncas, nalpha));
@@ -128,8 +146,8 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   const auto dim = static_cast<size_t>(rdm.size());
   const size_t n_ci = dim * nroots;
   if (roots.vectors.num_elements() != n_ci) {
-    return err_config("hessian::df_sacasscf: {} roots of {} determinants, got {} doubles", nroots,
-                      dim, roots.vectors.num_elements());
+    return err_config("{}: {} roots of {} determinants, got {} doubles", who, nroots, dim,
+                      roots.vectors.num_elements());
   }
   const auto n_x = static_cast<size_t>(3) * n_atom;
   const auto n_x32 = static_cast<int32_t>(n_x);
@@ -138,9 +156,6 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   const auto nao32 = static_cast<int32_t>(nao);
   const auto n_ci32 = static_cast<int32_t>(n_ci);
   const size_t all_pairs = nroots * (nroots - 1) / 2;
-  const auto own = static_cast<size_t>(root);
-  std::vector<double> one_hot(nroots, 0.0);
-  one_hot[own] = 1.0;
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const auto copy = [&res](double *to, const double *from, const size_t count,
                            const wwr::wwrMemcpyKind kind) -> Status {
@@ -180,9 +195,9 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   // are the average at.
   for (size_t i = 0; i < gamma_sa.size(); ++i) {
     if (!(std::abs(gamma_sa[i] - solution.gamma[i]) <= kSaCasscfWeightsTolerance)) {
-      return err_config("hessian::df_sacasscf: the roots' gamma at the weights given differs from "
-                        "the solution's by {:.3e} at element {}: not the weights it averaged",
-                        std::abs(gamma_sa[i] - solution.gamma[i]), i);
+      return err_config("{}: the roots' gamma at the weights given differs from the solution's by "
+                        "{:.3e} at element {}: not the weights it averaged",
+                        who, std::abs(gamma_sa[i] - solution.gamma[i]), i);
     }
   }
   const response::Fock fock_sa = FBF_TRY(response::fock(res, molecule, h, b, naux32, c, ncore, ncas,
@@ -209,37 +224,6 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   const auto pairs = static_cast<size_t>(relaxed_sa.size());
   const auto pairs32 = static_cast<int32_t>(pairs);
 
-  // z: A z = -(g_I, 0), g_I root I's orbital gradient at the SA orbitals. Its
-  // CI rows' scaling leaves the solution the energy's.
-  const auto [gamma_i, gamma2_i] = FBF_TRY(rdms(one_hot));
-  const response::Fock fock_i = FBF_TRY(response::fock(res, molecule, h, b, naux32, c, ncore, ncas,
-                                                       ints.ppaa, ints.papa, gamma_i, gamma2_i));
-  response::ZVector z =
-      FBF_TRY(response::zvector(res, relaxed_sa, hessian_sa, roots, fock_i.gradient.data(), nullptr,
-                                tolerance, max_iterations));
-
-  // The third-derivative operator along z. Whether the rotations are
-  // parameters is its rule (all weights equal, or all pairwise different), so
-  // z is laid out with every rotation and cut to its size().
-  Buffers::device<double> z_packed(pairs + n_ci + all_pairs, res.device());
-  FBF_TRY(copy(z_packed.data(), z.orbital.data(), pairs, wwr::wwrMemcpyDeviceToDevice));
-  FBF_TRY(copy(z_packed.data() + pairs, z.ci.data(), n_ci, wwr::wwrMemcpyDeviceToDevice));
-  if (z.theta.size() != all_pairs) {
-    return err_config("hessian::df_sacasscf: zvector returned {} rotations for {} roots",
-                      z.theta.size(), nroots);
-  }
-  FBF_TRY(
-      copy(z_packed.data() + pairs + n_ci, z.theta.data(), all_pairs, wwr::wwrMemcpyHostToDevice));
-  FBF_TRY(res.sync());
-  mcscf::ThirdDerivative third_op =
-      FBF_TRY(mcscf::ThirdDerivative::create(res, h, b, naux32, c, ncore, ncas, alpha, beta,
-                                             roots.vectors.data(), weights, z_packed.data()));
-  const auto size = static_cast<size_t>(third_op.size());
-  const size_t n_theta = size - pairs - n_ci;
-  const bool rotating = n_theta != 0;
-  Buffers::device<double> z_column(size, res.device());
-  FBF_TRY(copy(z_column.data(), z_packed.data(), size, wwr::wwrMemcpyDeviceToDevice));
-
   // lambda^x over df_derivatives' SA right-hand sides in zvector's
   // convention: the orbital rows packed, the CI rows over 2 w_r, the
   // rotation rows over 2 (w_r - w_s), which is H~^x_sr itself.
@@ -263,6 +247,10 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
                                                     ci_rhs.data() + (x * n_ci) + (r * dim), 1)));
     }
   }
+  // The pairs of unequal weights rotate; zvectors takes every pair's
+  // right-hand side and projects the rest.
+  const std::vector<bool> rotates = response::rotating_pairs(weights);
+  const bool rotating = std::ranges::contains(rotates, true);
   std::vector<double> theta_rhs;
   if (rotating) {
     for (size_t x = 0; x < n_x; ++x) {
@@ -276,11 +264,11 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   // With the probe column, which refuses a singular A (df_casscf's,
   // README.md "A singular H~").
   response::ZVectors cp =
-      FBF_TRY(probed_zvectors(res, "hessian::df_sacasscf", relaxed_sa, hessian_sa, roots, n_x,
-                              gradients, ci_rhs, theta_rhs, tolerance, max_iterations));
+      FBF_TRY(probed_zvectors(res, who, relaxed_sa, hessian_sa, roots, n_x, gradients, ci_rhs,
+                              theta_rhs, tolerance, max_iterations));
 
   // The solution checked on the unreduced equations (df_casscf's check), the
-  // rotation rows y_theta + t at unequal weights.
+  // rotation rows y_theta + t of the rotating pairs.
   std::vector<double> residuals(n_x);
   {
     Buffers::device<double> r(pairs * n_x, res.device());
@@ -301,18 +289,19 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
       FBF_TRY(
           gpu_status(wwr::nrm2<double, int32_t>(blas, n_ci32, r_c.data() + (x * n_ci), 1, &ci)));
       double rotations = 0.0;
-      for (size_t k = 0; k < n_theta; ++k) {
-        const double row = r_theta[(x * n_theta) + k] + theta_rhs[(x * n_theta) + k];
-        rotations += row * row;
+      for (size_t k = 0; rotating && k < all_pairs; ++k) {
+        if (rotates[k]) {
+          const double row = r_theta[(x * all_pairs) + k] + theta_rhs[(x * all_pairs) + k];
+          rotations += row * row;
+        }
       }
       residuals[x] = std::hypot(orbital, ci, std::sqrt(rotations));
     }
     const auto worst = std::ranges::max_element(residuals);
     if (*worst > kSaCasscfCpResidualCeiling) {
-      return err_divergence("hessian::df_sacasscf: the CP-CASSCF solve left a residual of "
-                            "{:.3e} in coordinate {} (above {:.0e}): the SA Hessian is not "
-                            "positive there (a saddle)",
-                            *worst, std::distance(residuals.begin(), worst),
+      return err_divergence("{}: the CP-CASSCF solve left a residual of {:.3e} in coordinate {} "
+                            "(above {:.0e}): the SA Hessian is not positive there (a saddle)",
+                            who, *worst, std::distance(residuals.begin(), worst),
                             kSaCasscfCpResidualCeiling);
     }
   }
@@ -323,12 +312,54 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
         std::ranges::max_element(cp.theta, {}, [](const double t) { return std::abs(t); });
     if (std::abs(*fastest) > kSaCasscfMaxRotation) {
       const auto at = static_cast<size_t>(std::distance(cp.theta.begin(), fastest));
-      return err_numerical("hessian::df_sacasscf: the roots rotate into each other at {:.3e} per "
-                           "bohr along coordinate {} (above {:.0f}): too near a degeneracy for "
-                           "E_I to have a Hessian",
-                           std::abs(*fastest), at / n_theta, kSaCasscfMaxRotation);
+      return err_numerical("{}: the roots rotate into each other at {:.3e} per bohr along "
+                           "coordinate {} (above {:.0f}): too near a degeneracy for E_I to have a "
+                           "Hessian",
+                           who, std::abs(*fastest), at / all_pairs, kSaCasscfMaxRotation);
     }
   }
+
+  if (!root) {
+    return SaCasscfCp{.cp = std::move(cp), .residuals = std::move(residuals)};
+  }
+  const auto own = static_cast<size_t>(*root);
+  std::vector<double> one_hot(nroots, 0.0);
+  one_hot[own] = 1.0;
+
+  // z: A z = -(g_I, 0), g_I root I's orbital gradient at the SA orbitals. Its
+  // CI rows' scaling leaves the solution the energy's.
+  const auto [gamma_i, gamma2_i] = FBF_TRY(rdms(one_hot));
+  const response::Fock fock_i = FBF_TRY(response::fock(res, molecule, h, b, naux32, c, ncore, ncas,
+                                                       ints.ppaa, ints.papa, gamma_i, gamma2_i));
+  response::ZVector z =
+      FBF_TRY(response::zvector(res, relaxed_sa, hessian_sa, roots, fock_i.gradient.data(), nullptr,
+                                tolerance, max_iterations));
+
+  // The third-derivative operator along z. Whether the rotations are
+  // parameters is its rule (all weights equal, or all pairwise different), so
+  // z is laid out with every rotation and cut to its size().
+  Buffers::device<double> z_packed(pairs + n_ci + all_pairs, res.device());
+  FBF_TRY(copy(z_packed.data(), z.orbital.data(), pairs, wwr::wwrMemcpyDeviceToDevice));
+  FBF_TRY(copy(z_packed.data() + pairs, z.ci.data(), n_ci, wwr::wwrMemcpyDeviceToDevice));
+  if (z.theta.size() != all_pairs) {
+    return err_config("{}: zvector returned {} rotations for {} roots", who, z.theta.size(),
+                      nroots);
+  }
+  FBF_TRY(
+      copy(z_packed.data() + pairs + n_ci, z.theta.data(), all_pairs, wwr::wwrMemcpyHostToDevice));
+  FBF_TRY(res.sync());
+  mcscf::ThirdDerivative third_op =
+      FBF_TRY(mcscf::ThirdDerivative::create(res, h, b, naux32, c, ncore, ncas, alpha, beta,
+                                             roots.vectors.data(), weights, z_packed.data()));
+  const auto size = static_cast<size_t>(third_op.size());
+  const size_t n_theta = size - pairs - n_ci;
+  if (n_theta != (rotating ? all_pairs : 0)) {
+    return err_config("{}: ThirdDerivative carries {} rotations where the weights rotate {} of "
+                      "{} pairs",
+                      who, n_theta, std::ranges::count(rotates, true), all_pairs);
+  }
+  Buffers::device<double> z_column(size, res.device());
+  FBF_TRY(copy(z_column.data(), z_packed.data(), size, wwr::wwrMemcpyDeviceToDevice));
 
   // Lambda in ThirdDerivative's packed layout: pairs, d_r per root, Theta.
   Buffers::device<double> lambda(size * n_x, res.device());
@@ -398,7 +429,7 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   // L_xy's z part and L_xlambda at z, and L_xlambda lambda^y.
   SaCasscfZTerms z_terms =
       FBF_TRY(df_sacasscf_z(res, molecule, basis, classes, aux, h, b, l, c, ncore, ncas, nalpha,
-                            nbeta, roots.vectors, weights, root, z_column));
+                            nbeta, roots.vectors, weights, *root, z_column));
   std::vector<double> lxlambda_lambda =
       FBF_TRY(pair_columns(size32, z_terms.lxlambda.data(), lambda.data()));
 
@@ -452,6 +483,32 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
                        .z = std::move(z),
                        .cp = std::move(cp),
                        .residuals = std::move(residuals)};
+}
+
+Result<SaCasscfTerms>
+df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const mcscf::Solution &solution, const std::span<const double> weights,
+            const int32_t root, const int32_t ncore, const int32_t ncas, const double tolerance,
+            const int32_t max_iterations) {
+  auto terms =
+      FBF_TRY(sacasscf_terms(res, "hessian::df_sacasscf", molecule, basis, classes, aux, h, b, l,
+                             solution, weights, root, ncore, ncas, tolerance, max_iterations));
+  return std::get<SaCasscfTerms>(std::move(terms));
+}
+
+Result<SaCasscfCp>
+df_sacasscf_cp(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, const std::span<const double> weights,
+               const int32_t ncore, const int32_t ncas, const double tolerance,
+               const int32_t max_iterations) {
+  auto cp = FBF_TRY(sacasscf_terms(res, "hessian::df_sacasscf_cp", molecule, basis, classes, aux, h,
+                                   b, l, solution, weights, std::nullopt, ncore, ncas, tolerance,
+                                   max_iterations));
+  return std::get<SaCasscfCp>(std::move(cp));
 }
 
 } // namespace free_breakfast::hessian
