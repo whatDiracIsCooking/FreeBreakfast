@@ -379,6 +379,8 @@ def test_the_reference_point_reruns():
 
 QD_DATA = ROOT / "test" / "gtest" / "data" / "qd_nevpt2_hessian"
 QD_CASES = ("h2co_skew_ccpvdz_sa3", "h2co_skew_ccpvdz_sa3_weighted")
+# The C2v A1/B2 coupling cases (#1058): C_MN's ladders, and their analysis.
+COUPLING_CASES = ("h2nb_sto3g_sa2",)
 
 
 def load_qd_tool():
@@ -406,7 +408,11 @@ def qd_quantities(record: dict):
 
 
 def test_the_qd_cases_are_there():
-    assert sorted(p.stem for p in QD_DATA.glob("*.json")) == sorted(QD_CASES)
+    assert sorted(p.stem for p in QD_DATA.glob("*.json")) == sorted(
+        list(QD_CASES)
+        + list(COUPLING_CASES)
+        + [f"{name}.analysis" for name in COUPLING_CASES]
+    )
     assert [c["name"] for c in qd_tool.CASES] == list(QD_CASES)
     for name in QD_CASES:
         record = qd_fixture(name)
@@ -547,3 +553,278 @@ def test_the_qd_guard_and_the_gaps():
         # The reference point is qd_nevpt2/'s: another CASSCF solution misses
         # by millihartree.
         assert max(record["reference"]["agreement"].values()) < 1e-10
+
+
+# ------------------------------------------- the C2v A1/B2 coupling cases
+
+
+@functools.cache
+def coupling(name: str) -> tuple[dict, dict, dict]:
+    """The record, its analysis and the tool's case."""
+    (case,) = [c for c in qd_tool.COUPLING_CASES if c["name"] == name]
+    record = json.loads((QD_DATA / f"{name}.json").read_text())
+    analysis = json.loads((QD_DATA / f"{name}.analysis.json").read_text())
+    return record, analysis, case
+
+
+def test_the_coupling_cases_are_what_the_issue_asks():
+    assert [c["name"] for c in qd_tool.COUPLING_CASES] == list(COUPLING_CASES)
+    for name in COUPLING_CASES:
+        record, analysis, case = coupling(name)
+        assert record["name"] == analysis["name"] == name
+        for key in ("basis", "aux_basis"):
+            path = ROOT / record[key]["file"]
+            assert (
+                hashlib.sha256(path.read_bytes()).hexdigest() == record[key]["sha256"]
+            )
+        for key in ("atoms", "ncas", "nelecas", "active", "weights"):
+            assert record[key] == case["system"][key]
+        # A C2v SA2 whose roots are A1 and B2, laddered along two b2
+        # coordinates and their sum.
+        assert record["irreps"] == ["A1", "B2"]
+        assert len(record["weights"]) == 2
+        assert record["state_pairs"] == [[0, 1]]
+        coords = record["coordinates"]
+        assert coords == analysis["coordinates"]
+        assert coords == qd_tool.symmetry_coordinates(record["atoms"])
+        irreps = dict(zip(coords["labels"], coords["irreps"], strict=True))
+        assert [irreps[label] for label in record["coupled"]] == ["B2", "B2"]
+        assert not any(label.startswith(("T_", "R_")) for label in record["coupled"])
+        vectors = coords["vectors"]
+        for i, a in enumerate(vectors):
+            for j, b in enumerate(vectors):
+                assert math.isclose(
+                    qd_tool.dot(a, b), 1.0 if i == j else 0.0, abs_tol=1e-12
+                )
+
+
+def coupling_parts(record: dict):
+    for scheme in record["schemes"]:
+        for entry in record[scheme]:
+            yield scheme, entry
+
+
+def test_the_coupling_ladders_are_the_recorded_values():
+    for name in COUPLING_CASES:
+        record, _, case = coupling(name)
+        directions = qd_tool.coupling_directions(case, record["coordinates"])
+        for scheme, entry in coupling_parts(record):
+            steps = record["steps"][scheme]
+            h = steps["h"]
+            assert steps["ladder"] == stencil.steps(h)
+            assert steps["displacements"] == stencil.displacements(h)
+            assert [line["direction"] for line in entry["directions"]] == [
+                d for d, _ in directions
+            ]
+            for line, (_, q) in zip(entry["directions"], directions, strict=True):
+                assert line["vector"] == q
+                values = dict(zip(steps["displacements"], line["values"], strict=True))
+                for k, s in enumerate(stencil.steps(h)):
+                    assert close(stencil.derivative(values, s), line["ladder"][k])
+                # C_MN is odd under the b2 coordinate (C2 maps R0 + s q to
+                # R0 - s q and flips the B2 root's sign).
+                for d in steps["displacements"]:
+                    assert math.isclose(values[d], -values[-d], abs_tol=1e-12)
+
+
+def test_the_coupling_floor_is_the_measured_noise():
+    for name in COUPLING_CASES:
+        record, _, _ = coupling(name)
+        for scheme, entry in coupling_parts(record):
+            noise = entry["noise"]
+            d = noise["differences"]
+            assert len(d) == len(noise["pairs"]) > 0
+            sigma = math.sqrt(math.fsum(x * x for x in d) / len(d))
+            assert math.isclose(sigma, noise["sigma"], rel_tol=1e-12)
+            h = record["steps"][scheme]["h"]
+            assert math.isclose(
+                noise["floor"], qd_tool.floor_of(sigma, h), rel_tol=1e-12
+            )
+
+
+def test_every_coupling_ladder_settles_and_the_bilinearity_is_recorded():
+    for name in COUPLING_CASES:
+        record, _, _ = coupling(name)
+        window = record["tolerances"]["ratio_window"]
+        assert window == [0.8 * 16, 1.2 * 16]
+        failing = []
+        for scheme, entry in coupling_parts(record):
+            floor = entry["noise"]["floor"]
+            for line in entry["directions"]:
+                verdict = stencil.judge(line["ladder"], floor, window)
+                assert verdict["bar"] == line["bar"]
+                assert verdict["ratio"] == line["ratio"]
+                assert verdict["settled"] == line["settled"]
+                assert verdict["settled"] is not False, (name, line["direction"])
+            by_name = {line["direction"]: line for line in entry["directions"]}
+            assert [c["coordinates"] for c in entry["bilinearity"]] == [
+                record["coupled"]
+            ]
+            for check in entry["bilinearity"]:
+                a, b = check["coordinates"]
+                la, lb = by_name[a], by_name[b]
+                lu = by_name[f"({a} + {b})/sqrt2"]
+                residuals = [
+                    lu["ladder"][k]
+                    - (la["ladder"][k] + lb["ladder"][k]) / math.sqrt(2.0)
+                    for k in range(3)
+                ]
+                assert all(
+                    close(x, y)
+                    for x, y in zip(residuals, check["residuals"], strict=True)
+                )
+                allowed = lu["bar"] + (la["bar"] + lb["bar"]) / math.sqrt(2.0)
+                assert math.isclose(check["allowed"], allowed, rel_tol=1e-12)
+                fails = abs(residuals[-1]) > allowed
+                assert check["fails"] == fails
+                if fails and scheme == "sc":
+                    failing.append({"states": entry["pair"], "coordinates": [a, b]})
+        # SC's expected refusals are exactly where its ladder is not bilinear.
+        assert record["expected_refusals"]["sc"] == failing
+
+
+def test_pc_expected_refusals_are_the_analysis_lifts():
+    for name in COUPLING_CASES:
+        record, analysis, _ = coupling(name)
+        tol = analysis["tolerances"]
+        pc = analysis["pc"]
+        lifted = set()
+        for e in pc["lifts"]:
+            assert e["steps"] == analysis["steps"]
+            assert e["second_order"] == qd_close_rates(e["lift"], tol["lift_agree"])
+            assert e["bra_overlap_nonzero"] == (
+                qd_close_rates(e["bra_overlap"], tol["overlap_agree"])
+                and min(e["bra_overlap"]) > tol["overlap_floor"]
+            )
+            assert e["ket_overlap_first_order"] == qd_close_rates(
+                e["ket_overlap_rate"], tol["overlap_agree"]
+            )
+            if (
+                e["second_order"]
+                and e["bra_overlap_nonzero"]
+                and e["ket_overlap_first_order"]
+            ):
+                lifted.add(e["coordinate"])
+            # A lifted mode had been cut at R0.
+            (count,) = [
+                d["count"]
+                for d in pc["dropped"]
+                if d["ket"] == e["ket"] and d["class"] == e["class"]
+            ]
+            assert 0 < max(e["modes"]) <= count
+        b2 = [
+            label
+            for label, irrep in zip(
+                analysis["coordinates"]["labels"],
+                analysis["coordinates"]["irreps"],
+                strict=True,
+            )
+            if irrep == "B2"
+        ]
+        assert pc["lifted_coordinates"] == [label for label in b2 if label in lifted]
+        # Nothing lifts along the translation and the rotation.
+        assert not lifted & {"T_y", "R_x"}
+        assert record["expected_refusals"]["pc"] == qd_tool.pc_expected(analysis)
+        # PC's computed coupling cannot be laddered there: the sampler refuses
+        # the first displaced point as a rank change of the cut.
+        probe = record["pc_probe"]
+        assert probe["reference"]["returncode"] == 0
+        assert probe["displaced"]["returncode"] != 0
+        assert "rank change" in probe["displaced"]["message"]
+        assert "pc" not in record["schemes"]
+
+
+def qd_close_rates(rates: list[float], tol: float) -> bool:
+    a, b = rates
+    return abs(a - b) <= tol * max(abs(a), abs(b))
+
+
+def test_the_one_sided_tuples():
+    for name in COUPLING_CASES:
+        record, analysis, case = coupling(name)
+        tol = analysis["tolerances"]
+        sc = analysis["sc"]
+        assert sc["one_sided"], name
+        for item in sc["one_sided"]:
+            # Empty for its ket (the guard's), populated for the other root.
+            assert abs(item["norm_ket"]) <= tol["guard"] < tol["populated"]
+            assert abs(item["norm_bra"]) > tol["populated"]
+            assert item["one_function"] == (
+                (item["class"] == "Srs" and case["system"]["nelecas"] == 2)
+                or (
+                    item["class"] == "Sij"
+                    and 2 * case["system"]["ncas"] - case["system"]["nelecas"] == 2
+                )
+            )
+            first_order = all(
+                qd_close_rates(rates, tol["tangent_agree"])
+                or max(rates) < tol["tangent_zero"]
+                for rates in item["tangent"].values()
+            )
+            assert item["first_order"] == first_order
+            # The coordinate populates it at first order, and its transition
+            # tangent to the other root is nonzero along both b2 vibrations.
+            for label in record["coupled"]:
+                assert min(item["tangent"][label]) > tol["tangent_zero"]
+                assert min(item["population"][label]) > 0.0
+            assert item["rho_defect"] == (
+                not item["one_function"] and item["rho_spread"] > tol["rho_agree"]
+            )
+        candidates = [
+            i for i in sc["one_sided"] if i["first_order"] and not i["one_function"]
+        ]
+        if candidates:
+            assert sc["chosen"] in candidates
+        else:
+            assert sc["chosen"] is None
+        assert record["guarded_tuple"] == sc["chosen"]
+        # A one-function class's coupling is linear in T: a rho defect, the
+        # analytic refusal's, appears only in a class of several functions,
+        # and SC's ladder is bilinear exactly when there is none.
+        assert bool(sc["rho_defects"]) == bool(record["expected_refusals"]["sc"])
+
+
+def test_the_coupling_guard_and_the_agreement():
+    for name in COUPLING_CASES:
+        record, _, _ = coupling(name)
+        for scheme in record["schemes"]:
+            g = record["guard"][scheme]
+            assert g["prediction"] < 2.0
+            assert g["subspace"] < 1e-3 and g["ci"] < 1e-3
+            assert g["gradient_norm"] < 1e-10
+            assert g[f"{scheme}_vectors"] < 1e-3
+            assert g["core_gap"] > 0.05 and g["virtual_gap"] > 0.05
+        assert min(record["reference"]["casscf_gaps"]) > 0.1
+        assert min(record["reference"]["sc"]["heff_gaps"]) > 0.1
+        # The tree's reference point is the analysis's: another CASSCF
+        # solution misses by millihartree.
+        assert max(record["reference"]["agreement"].values()) < 1e-10
+        # C_MN vanishes at R0: the roots' irreps differ.
+        for key in ("sc", "pc"):
+            assert abs(record["reference"][key]["heff"][1]) < 1e-12
+
+
+@pytest.mark.slow
+def test_the_coupling_reference_reruns():
+    """The analysis's reference point again, over PySCF: its energies, both
+    H_eff and the guarded tuples, against the recorded analysis."""
+    pytest.importorskip("numpy", reason="needs the `tools` dependency group")
+    pytest.importorskip("pyscf", reason="needs the `tools` dependency group")
+    spec = importlib.util.spec_from_file_location(
+        "qd_coupling_analysis", TOOL / "qd_coupling_analysis.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for name in COUPLING_CASES:
+        _, analysis, case = coupling(name)
+        _, _, reference, guarded, one_sided, dropped = module.at_reference(case)
+        for key in ("casscf", "sc", "pc"):
+            for a, b in zip(reference[key], analysis["reference"][key], strict=True):
+                assert abs(a - b) < 1e-10, (name, key)
+        assert guarded == analysis["sc"]["guarded"]
+        assert [(i["class"], i["ket"], i["tuple"]) for i in one_sided] == [
+            (i["class"], i["ket"], i["tuple"]) for i in analysis["sc"]["one_sided"]
+        ]
+        assert [
+            {"ket": k, "class": c, "count": n} for (k, c), n in dropped.items()
+        ] == analysis["pc"]["dropped"]

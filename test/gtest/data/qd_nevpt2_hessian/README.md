@@ -143,3 +143,157 @@ RTX 3080 (CUDA), so 18 minutes in all; `--points DIR` alone re-judges kept
 points with no GPU. A miss prints `STUCK` with the numbers and writes nothing
 for that case. Not byte for byte: the GPU sums reassociate run to run, within
 the noise above.
+
+## The C2v A1/B2 coupling case (#1058)
+
+`h2nb_sto3g_sa2.json` and `h2nb_sto3g_sa2.analysis.json`: the check of
+`docs/nevpt2/nevpt2.tex`'s symmetric geometries (Table qdhesschecks, "a C2v
+SA2 with A1/B2 roots"). There, a model space whose roots have different
+irreps that a vibration couples can lose its Hessian in the coupling itself,
+one order before the diagonal: SC through a tuple empty for one ket and
+populated for the other (Eq. qd-scfail), PC through a null mode of a metric
+that the coordinate lifts (Eq. qd-pcfail). This case records where each
+variant is expected to be refused, for #959, #962 and #964–#966.
+
+**The case.** Aminoborylene H₂N–B, planar in yz with the C2 axis z: B–N
+1.36 Å, N–H 1.00 Å, angle BNH 115° (`atoms`, bohr). STO-3G / cc-pVDZ-JKFIT,
+all-electron, CAS(4,3) over the RHF's frontier π (b1), σ (a1) and empty
+in-plane p (b2), two roots at equal weights: 1A1 and 1B2, 0.197 Eh apart
+(SC's H_eff 0.190). The vibrations are 3a1 + b1 + 2b2, and the two b2 ones
+couple the roots. Every inactive pair is at least 0.15 Eh apart (core 0.27,
+virtual 0.15). In cc-pVDZ (explored at angle 123°) two virtuals of A1 and
+B2 are 8.7e-4 Eh apart, and SC's coupling curves on that scale: C₀₁ / s grows
+from 0.085 to 0.200 Eh/bohr between s = 2.5e-3 and 1.6e-4. The tree's reference point matches the
+analysis's PySCF one to 6.7e-13 (CASSCF), 5.1e-13 (SC's H_eff) and 4.0e-13 (PC's)
+(`reference.agreement`).
+
+**The coordinates** (`coordinates`) are an orthonormal C2v-adapted basis of
+the 12 Cartesian displacements, irrep by irrep: the translations and
+rotations first (T_z; R_z; T_x, R_y; T_y, R_x), then the vibrations ("A1 1"
+… "B2 2"). `qd_nevpt2_hessian.symmetry_coordinates` builds them. A
+pipeline `[hessian]` takes them as its `coordinates` rows, so a block is
+named by its labels. The coupled pair is `coupled`, B2 1 and B2 2.
+
+**The ladders.** C₀₁ = H_eff[0][1] (symmetrized, in the reference's root
+basis, signs carried) at every point of the fourth-order stencil at h, h/2
+and h/4 along B2 1, B2 2 and u = (B2 1 + B2 2)/√2, through the driver's
+`"gradients": false` mode: the same chain and guard as the Hessians, no
+gradient. Each first-derivative ladder is judged as a Hessian element is,
+over σ measured from twelve re-solves (each positive displacement started
+from its negative image's orbitals). The bilinearity of the pair is
+D(u) − (D(B2 1) + D(B2 2))/√2 at the finest rung, against u's bar plus
+(bar(B2 1) + bar(B2 2))/√2.
+
+| scheme, h | σ | floor (every bar) | D(B2 1) | D(B2 2) | D(u) | bilinearity residual / allowed |
+|---|---|---|---|---|---|---|
+| SC, 4e-5 | 1.2e-15 | 3.4e-9 | −3.900612e-3 | 2.269345e-3 | −1.153480e-3 | 1.7e-10 / 8.2e-9 |
+
+Every rung difference is under 2.0e-10, below the floor, so no ratio is
+judged.
+
+**SC's step.** At h = 2.5e-3 the ladder along B2 1 reads a ratio of −1.6
+(|D| 3.90052e-3, 3.90049e-3, 3.90051e-3; differences 3.6e-8 and −2.3e-8).
+Along that ray |C₀₁| / s drifts by 1.3e-7 Eh/bohr between s = 1.25e-3 and
+2e-5, and follows its s² term only below about 1e-4. That is not the norm
+guard: in a diagnostic build with the guard at 1e-16 instead of 1e-14, the
+same points moved by under 1e-14 Eh/bohr. So h = 4e-5 (points 1e-5 to 8e-5),
+where the CI guard's worst miss is 6.7e-8 of its 1e-3.
+
+**PC is not laddered.** Along either b2 vibration the lifted modes below
+pass PC's cut (1e-13 of the largest) once s exceeds about 2e-5, so the
+sampler refuses the first displaced point as a rank change of the cut
+(`pc_probe`: the reference, and +h along B2 1). The computed PC C₀₁ has a
+jump there, not a smooth surface. Its expected refusals come from the
+analysis alone, as the issue asks.
+
+### The expected refusals
+
+`expected_refusals`, per variant, a list of `{states, coordinates}` blocks:
+
+- **SC: none.** C₀₁'s ladder is bilinear on (B2 1, B2 2) to 1.7e-10 of
+  8.2e-9. The analysis agrees: every tuple empty for one ket and populated
+  for the other is in Sij, a one-function class at CAS(4,3)'s two active
+  holes. Its quotient is the one function's Dyall energy η whatever the
+  direction (ρ_t is constant, so Eq. qd-scfail's term is linear), and no
+  tuple of a class of several functions is one-sided (`analysis.sc.rho_defects`
+  is empty). Nothing in the totally symmetric block is expected either.
+- **PC: (0, 1) on (B2 1, B2 1), (B2 1, B2 2) and (B2 2, B2 2).** 1B2's
+  metrics have modes cut at R0 that both b2 vibrations lift at second order,
+  each with a first-order overlap to 1A1 (`analysis.pc.lifts`, at s = 1e-3
+  and 2e-3, every rate constant to 2%):
+
+  | class (ket 1B2) | cut at R0 | λ / σ_max / s², B2 1 / B2 2 | max_t \|⟨φ\|V\|1A1⟩\| | max_t \|⟨φ\|V\|1B2⟩\| / s |
+  |---|---|---|---|---|
+  | Sijr | 1 | 4.25e-4 / 4.82e-4 | 1.6e-3 | 7.3e-4 / 7.7e-4 |
+  | Srs | 3 | 4.25e-4 / 4.82e-4 | 0.149 | 1.5e-3 / 1.6e-3 |
+  | Sir | 10 | 1.89e-4 / 2.14e-4 | 3.3e-3 | 4.0e-3 / 4.3e-3 |
+
+  These are the nevpt2.tex picture exactly: λ = O(h²), ⟨φ|V|M⟩ = O(1),
+  ⟨φ|V|N⟩ = O(h). Nothing lifts along T_y or R_x, and 1A1's cut modes do
+  not lift. A block is listed when both of its coordinates lift
+  (`pc_expected`). A translation or rotation carries no coupling at first
+  order, so a block with one never is.
+
+### The one-sided tuples, and the guarded one #962 reads
+
+`analysis.sc.one_sided`: 13 tuples, all Sij (t = i n_core + j over the
+SA-canonical core, PySCF's order). Six are empty for 1A1 and seven for 1B2,
+each at R0 below 2e-17 for its ket and 1.2e-7 to 2.9e-4 for the other root.
+Both b2 vibrations populate each one at first order (N / s² 1.6e-10 to
+1.3e-4),
+with a transition tangent |Ṫ^t₀₁| up to 1.1e-4 (B2 1) and 2.0e-4 (B2 2), for
+tuple 18 = (3, 3), empty for 1B2. Those tangents are linear in s to 2%.
+
+But a one-function class keeps every tuple at η, so the tree's guard drops
+none of them, and `ScEffectiveHamiltonianTangent::empty` lists none.
+`guarded_tuple` (`analysis.sc.chosen`) is therefore **null**: this case has
+no norm-guarded tuple empty for one ket and populated for the other. On the
+same molecule, CAS(2,3) over σ, p and π* has them in Srsi, a class of three
+functions. There the tree's SA-CASSCF and PySCF's converge to different
+stationary points (roots 1.1e-3 Eh apart), so it is not written.
+
+### Keys (`h2nb_sto3g_sa2.json`)
+
+| key | meaning |
+|---|---|
+| `provenance`, `basis`, `aux_basis` | as above |
+| `atoms` (bohr), `ncas`, `nelecas`, `active`, `weights`, `irreps` | the case; `active` null for the frontier orbitals |
+| `schemes`, `state_pairs`, `coupled` | what is laddered |
+| `coordinates` | `labels`, `irreps`, `vectors` (row j = q_j, Cartesian, orthonormal) |
+| `reference` | at R0: CASSCF energies and gaps, ‖g‖, inactive gaps; SC's H_eff, eigenvalues, gaps and eigenvectors; PC's H_eff and its cut per coupling (`dropped`, n² rows of the eight classes); `agreement` against the analysis |
+| `steps`, `stencil`, `tolerances` | as above |
+| `guard` | per scheme, the worst guard values over every point |
+| `pc_probe` | the driver over both schemes at R0 and at +h along the first coupled coordinate: exit code and last message |
+| `sc` | per state pair: `directions` (each its `vector`, C at each displacement `values`, the `ladder`, `ratio`, `settled`, `bar`), `bilinearity` (per rung `residuals`, the finest `residual`, `allowed`, `fails`), `noise` (σ, floor, the re-solve pairs and differences) |
+| `expected_refusals` | per variant the expected-refused `{states, coordinates}` blocks |
+| `guarded_tuple` | the analysis's `sc.chosen` |
+
+C₀₁'s sign follows the reference roots' phases, which a rerun may flip; the
+magnitudes, bars and verdicts do not depend on it.
+
+### Keys (`h2nb_sto3g_sa2.analysis.json`)
+
+| key | meaning |
+|---|---|
+| `coordinates`, `steps` | the coordinates (the same as the record's) and the displacements read |
+| `tolerances` | the guard, the populated norm, the lifted fraction, the agreement of the rates at s and 2s, the overlap floor, ρ's spread |
+| `reference` | PySCF's CASSCF energies, SC's and PC's H_eff (symmetrized, flat), the SA-canonical core and virtual orbital energies |
+| `sc.guarded` | per class and ket, how many tuples the guard drops at R0 |
+| `sc.one_sided` | each tuple empty for `ket` and populated for `bra`: class, flat `tuple`, its `index` and `shape`, `one_function`, both norms, per b2 coordinate `tangent` \|T\|/s and `population` N/s² at both steps, per coupled coordinate `rho` (H/N), `rho_spread`, `rho_defect`, `first_order` |
+| `sc.chosen`, `sc.rho_defects` | the guarded tuple of largest Ṫ in a class of several functions (or null), and the one-sided tuples with a ρ defect |
+| `pc.dropped`, `pc.lifts`, `pc.lifted_coordinates` | the cut modes per ket and class at R0; per coordinate, ket and class the lifted modes (`modes`, `lift` λ/σ_max/s², `bra_overlap`, `ket_overlap_rate`, and the three verdicts); the coordinates along which a mode lifts with a nonzero overlap |
+
+`test/pytest/test_nevpt2_hessian.py` recomputes every ladder, the floor, the
+verdicts, the bilinearity and both variants' expected refusals from these,
+and (slow, `tools` group) reruns the analysis's reference point.
+
+### Regenerating
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    tools/nevpt2_hessian/qd_coupling_analysis.py     # about a minute, no GPU
+tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h2nb_sto3g_sa2   # GPU, seconds
+```
+
+The analysis runs on one BLAS thread and is byte-identical on a rerun. The
+ladders reproduce to their noise.

@@ -23,6 +23,18 @@ reference's root basis:
 This tool writes the request, runs the driver (or reads its output back with
 --points), and judges every ladder; standard library only, over stencil.py.
 
+**The C2v coupling case** (`COUPLING_CASES`, #1058; nevpt2.tex's symmetric
+geometries): a C2v SA2 whose roots are A1 and B2. The driver runs with
+`gradients` false, and the tool ladders C_MN = H_eff[M][N] (the reference's
+root basis) along each coupled b2 coordinate and along their sum. The
+coordinates are C2v-adapted (`symmetry_coordinates`). Each first-derivative
+ladder is judged as a Hessian element is, over sigma from re-solves of every
+positive displacement started from its negative image's orbitals. The pair's
+bilinearity is D(u) against (D(q_a) + D(q_b)) / sqrt 2. SC's expected
+refusals are the pairs that fail it. PC's come from qd_coupling_analysis.py
+(its lifted metric modes), whose output must exist first. `pc_probe` records
+the sampler's verdict on PC at one displaced point.
+
 **The Hessian.** Column j is the fourth-order central stencil over the
 gradients at R0 +- s q_j, R0 +- 2 s q_j for s = h, h/2 and h/4 (eight points,
 `stencil.displacements`); element (i, j) is q_i^T dG/dq_j. Per element the
@@ -80,7 +92,7 @@ SOURCE = ROOT / "test" / "gtest" / "data" / "qd_nevpt2" / "qd_nevpt2.json"
 BINARY = (
     ROOT / "build" / "tools" / "qd_nevpt2_hessian" / "free-breakfast-qd-nevpt2-hessian"
 )
-BASIS_FILES = {"cc-pvdz": "data/basis/cc-pVDZ.json"}
+BASIS_FILES = {"cc-pvdz": "data/basis/cc-pVDZ.json", "sto-3g": "data/basis/sto-3g.json"}
 AUX = ("cc-pVDZ-JKFIT", "data/aux_basis/cc-pVDZ-JKFIT.json")
 
 # The ladder's verdicts, #803's: the window about 16 a judged ratio must lie
@@ -111,6 +123,46 @@ CASES = [
         "source": "h2co_skew_ccpvdz_sa3_weighted",
         "h": {"pc": 0.0025},
         "pairs": [[0, 1], [0, 2], [1, 2]],
+    },
+]
+
+# The C2v SA2 case with A1/B2 roots (#1058, nevpt2.tex's symmetric
+# geometries, Table qdhesschecks): aminoborylene H2N-B, planar in yz, the C2
+# axis z, B-N 1.36 A, N-H 1.00 A, angle BNH 115 deg (bohr below). STO-3G
+# keeps every inactive pair apart (README: 0.07 Eh at least); in cc-pVDZ two
+# virtuals of A1 and B2 sit 8.7e-4 Eh apart and SC's coupling moves on that
+# scale. CAS(4,3) over the frontier pi (b1), sigma (a1) and the empty
+# in-plane p (b2): roots 1A1 and 1B2, which the two b2 vibrations couple.
+# Its analysis (guarded tuples, PC's lifted metric modes) is
+# qd_coupling_analysis.py's, written first.
+#
+# `h` per scheme: SC alone. PC's lifted modes pass its cut at every
+# displaced point (`pc_probe`), so the sampler refuses PC there. SC's C_01 / s
+# drifts by about 1e-7 Eh/bohr between s = 1e-3 and 2e-5 and is flat to its
+# s^2 term below 1e-4 (README), so h = 4e-5 (points 1e-5 to 8e-5); at
+# h = 2.5e-3 the CAS(4,3) ladder along B2 1 reads a ratio of -1.6.
+H2NB = [
+    ["B", [0.0, 0.0, 0.0]],
+    ["N", [0.0, 0.0, -2.570028]],
+    ["H", [0.0, 1.712674, -3.36866]],
+    ["H", [0.0, -1.712674, -3.36866]],
+]
+COUPLING_CASES = [
+    {
+        "name": "h2nb_sto3g_sa2",
+        "system": {
+            "atoms": H2NB,
+            "basis": "sto-3g",
+            "ncas": 3,
+            "nelecas": 4,
+            "active": None,
+            "weights": [0.5, 0.5],
+        },
+        "irreps": ["A1", "B2"],
+        "h": {"sc": 4e-5},
+        "state_pairs": [[0, 1]],
+        # The two b2 vibrations: C_01's ladder along each and along their sum.
+        "coupled": ["B2 1", "B2 2"],
     },
 ]
 
@@ -489,6 +541,488 @@ def dumps(value, depth: int = 0) -> str:
     return json.dumps(value, separators=(",", ":"))
 
 
+# ---------------------------------------------------- the C2v coupling case
+
+# C2v on Cartesian displacements, the C2 axis z: each operation's action on
+# (x, y, z), and each irrep's characters over (E, C2, sigma_xz, sigma_yz).
+C2V_OPERATIONS = ((1, 1, 1), (-1, -1, 1), (1, -1, 1), (-1, 1, 1))
+C2V_CHARACTERS = {
+    "A1": (1, 1, 1, 1),
+    "A2": (1, 1, -1, -1),
+    "B1": (1, -1, 1, -1),
+    "B2": (1, -1, -1, 1),
+}
+# A vector shorter than this after projection is not in the irrep.
+SALC_TOL = 1e-8
+
+
+def normalized(v: list[float]) -> list[float]:
+    norm = math.sqrt(dot(v, v))
+    return [x / norm for x in v]
+
+
+def symmetry_coordinates(atoms: list) -> dict:
+    """An orthonormal basis of the 3N Cartesian displacements adapted to C2v
+    (the C2 axis z through the origin): per irrep A1, A2, B1, B2, first the
+    translations and rotations (about the centroid) it holds, labelled T_x ..
+    R_z, then its vibrations, "<irrep> k", the projections of the Cartesian
+    unit vectors in order, each orthogonalized against those before it."""
+    pos = [a[1] for a in atoms]
+    n = 3 * len(atoms)
+
+    def image(op: tuple, v: list[float]) -> list[float]:
+        out = [0.0] * n
+        for i, p in enumerate(pos):
+            q = [op[k] * p[k] for k in range(3)]
+            (j,) = [
+                j
+                for j, r in enumerate(pos)
+                if atoms[j][0] == atoms[i][0]
+                and max(abs(q[k] - r[k]) for k in range(3)) < 1e-9
+            ]
+            for k in range(3):
+                out[3 * j + k] = op[k] * v[3 * i + k]
+        return out
+
+    def project(irrep: str, v: list[float]) -> list[float]:
+        images = [image(op, v) for op in C2V_OPERATIONS]
+        chars = C2V_CHARACTERS[irrep]
+        return [
+            sum(c * w[m] for c, w in zip(chars, images, strict=True)) / 4.0
+            for m in range(n)
+        ]
+
+    centre = [sum(p[k] for p in pos) / len(pos) for k in range(3)]
+    rigid = []
+    for k, axis in enumerate("xyz"):
+        rigid.append((f"T_{axis}", [1.0 if m % 3 == k else 0.0 for m in range(n)]))
+    for k, axis in enumerate("xyz"):
+        e = [1.0 if m == k else 0.0 for m in range(3)]
+        v = []
+        for p in pos:
+            r = [p[m] - centre[m] for m in range(3)]
+            v += [
+                e[1] * r[2] - e[2] * r[1],
+                e[2] * r[0] - e[0] * r[2],
+                e[0] * r[1] - e[1] * r[0],
+            ]
+        rigid.append((f"R_{axis}", v))
+    labels, irreps, vectors = [], [], []
+    for irrep in C2V_CHARACTERS:
+        basis = []
+        candidates = [(label, v) for label, v in rigid] + [
+            (None, [1.0 if m == j else 0.0 for m in range(n)]) for j in range(n)
+        ]
+        count = 0
+        for label, v in candidates:
+            w = project(irrep, v)
+            for b in basis:
+                c = dot(b, w)
+                w = [x - c * y for x, y in zip(w, b, strict=True)]
+            if math.sqrt(dot(w, w)) < SALC_TOL * math.sqrt(dot(v, v)):
+                continue
+            if label is None:
+                count += 1
+                label = f"{irrep} {count}"
+            basis.append(normalized(w))
+            labels.append(label)
+            irreps.append(irrep)
+        vectors += basis
+    assert len(vectors) == n, (len(vectors), n)
+    return {"labels": labels, "irreps": irreps, "vectors": vectors}
+
+
+def coupling_directions(case: dict, coords: dict) -> list[tuple[str, list[float]]]:
+    """The directions C_MN is laddered along: each coupled coordinate, then
+    each pair's (q_a + q_b) / sqrt 2."""
+    by_label = dict(zip(coords["labels"], coords["vectors"], strict=True))
+    coupled = case["coupled"]
+    out = [(label, by_label[label]) for label in coupled]
+    for a in range(len(coupled)):
+        for b in range(a + 1, len(coupled)):
+            qa, qb = by_label[coupled[a]], by_label[coupled[b]]
+            out.append(
+                (
+                    f"({coupled[a]} + {coupled[b]})/sqrt2",
+                    [(x + y) / math.sqrt(2.0) for x, y in zip(qa, qb, strict=True)],
+                )
+            )
+    return out
+
+
+def plan_coupling(h: float, directions: list) -> tuple[list[dict], dict]:
+    """The request's points: index 0 the reference, then per direction its
+    eight displacements; then the noise, each positive displacement solved
+    again from the orbitals of its negative image (a different start)."""
+    disps = stencil.displacements(h)
+    dim = len(directions[0][1])
+    points = [{"displacement": [0.0] * dim, "from": None}]
+    where = {"reference": 0, "directions": [], "noise": []}
+    for _, q in directions:
+        row = {}
+        for d in disps:
+            row[d] = len(points)
+            points.append({"displacement": [d * x for x in q], "from": None})
+        where["directions"].append(row)
+    for row in where["directions"]:
+        for d in disps:
+            if d > 0.0:
+                where["noise"].append((len(points), row[d]))
+                points.append(
+                    {"displacement": points[row[d]]["displacement"], "from": row[-d]}
+                )
+    return points, where
+
+
+def coupling_request(case: dict, schemes: list[str], points: list[dict]) -> dict:
+    return {
+        "system": case["system"],
+        "schemes": schemes,
+        "gradients": False,
+        "zvector_tolerance": ZVECTOR_TOL,
+        "pairs": [],
+        "seams": [],
+        "points": points,
+    }
+
+
+def element(point: dict, scheme: str, pair: list[int]) -> float:
+    """H_eff[M][N] at a point, in the reference's root basis (the driver's
+    `heff`, symmetrized)."""
+    heff = point[scheme]["heff"]
+    n = math.isqrt(len(heff))
+    return heff[pair[0] * n + pair[1]]
+
+
+def analyse_coupling(
+    case: dict, result: dict, where: dict, directions: list, scheme: str, h: float
+) -> tuple[list[dict], list[str]]:
+    """Per state pair (M, N): C_MN's ladder of first derivatives along each
+    direction, judged as the Hessians' elements are, and the bilinearity of
+    each coupled pair: D(u) against (D(q_a) + D(q_b)) / sqrt 2 at the finest
+    rung, u = (q_a + q_b) / sqrt 2. Returns the entries and the failures."""
+    disps = stencil.displacements(h)
+    pts = result["points"]
+    failures = []
+    out = []
+    coupled = case["coupled"]
+    for pair in case["state_pairs"]:
+        label = f"{case['name']} {scheme} C_{pair[0]}{pair[1]}"
+        spread = [
+            element(pts[a], scheme, pair) - element(pts[b], scheme, pair)
+            for a, b in where["noise"]
+        ]
+        sigma = math.sqrt(math.fsum(x * x for x in spread) / len(spread))
+        floor = floor_of(sigma, h)
+        lines = []
+        for (name, q), row in zip(directions, where["directions"], strict=True):
+            values = {d: element(pts[row[d]], scheme, pair) for d in disps}
+            ladder = [stencil.derivative(values, s) for s in stencil.steps(h)]
+            verdict = stencil.judge(ladder, floor, RATIO_WINDOW)
+            if verdict["settled"] is False:
+                shown = (
+                    "unjudged"
+                    if verdict["ratio"] is None
+                    else f"{verdict['ratio']:.3f}"
+                )
+                failures.append(
+                    f"{label} along {name}: ratio {shown} (ladder {ladder[0]:.9e} "
+                    f"{ladder[1]:.9e} {ladder[2]:.9e}; D(h)-D(h/2) "
+                    f"{verdict['upper']:.3e}, D(h/2)-D(h/4) {verdict['lower']:.3e}, "
+                    f"floor {floor:.1e})"
+                )
+            lines.append(
+                {
+                    "direction": name,
+                    "vector": q,
+                    "values": [values[d] for d in disps],
+                    "ladder": ladder,
+                    "ratio": verdict["ratio"],
+                    "settled": verdict["settled"],
+                    "bar": verdict["bar"],
+                }
+            )
+        by_name = {line["direction"]: line for line in lines}
+        checks = []
+        for a in range(len(coupled)):
+            for b in range(a + 1, len(coupled)):
+                la, lb = by_name[coupled[a]], by_name[coupled[b]]
+                lu = by_name[f"({coupled[a]} + {coupled[b]})/sqrt2"]
+                residuals = [
+                    lu["ladder"][k]
+                    - (la["ladder"][k] + lb["ladder"][k]) / math.sqrt(2.0)
+                    for k in range(3)
+                ]
+                allowed = lu["bar"] + (la["bar"] + lb["bar"]) / math.sqrt(2.0)
+                checks.append(
+                    {
+                        "coordinates": [coupled[a], coupled[b]],
+                        "residuals": residuals,
+                        "residual": residuals[-1],
+                        "allowed": allowed,
+                        "fails": abs(residuals[-1]) > allowed,
+                    }
+                )
+        print(
+            f"{label}: sigma {sigma:.1e}, floor {floor:.1e}, "
+            + ", ".join(
+                f"{line['direction']} {line['ladder'][-1]:.6e} (bar {line['bar']:.1e})"
+                for line in lines
+            )
+            + ", "
+            + ", ".join(
+                f"bilinearity {c['coordinates']} {c['residual']:.2e} of "
+                f"{c['allowed']:.2e}"
+                for c in checks
+            ),
+            flush=True,
+        )
+        out.append(
+            {
+                "pair": pair,
+                "directions": lines,
+                "bilinearity": checks,
+                "noise": {
+                    "sigma": sigma,
+                    "floor": floor,
+                    "pairs": where["noise"],
+                    "differences": spread,
+                },
+            }
+        )
+    return out, failures
+
+
+def pc_probe(binary: pathlib.Path, case: dict, h: float, coords: dict) -> dict:
+    """Both schemes at the reference and at +h along the first coupled
+    coordinate: the reference's PC H_eff, and the sampler's verdict on PC
+    at the displaced point (a refused point fails the run; its message is
+    recorded)."""
+    by_label = dict(zip(coords["labels"], coords["vectors"], strict=True))
+    q = by_label[case["coupled"][0]]
+    zero = [0.0] * len(q)
+    out = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for key, points in (
+            ("reference", [{"displacement": zero, "from": None}]),
+            (
+                "displaced",
+                [
+                    {"displacement": zero, "from": None},
+                    {"displacement": [h * x for x in q], "from": None},
+                ],
+            ),
+        ):
+            request = pathlib.Path(tmp) / f"{key}.request.json"
+            answer = pathlib.Path(tmp) / f"{key}.points.json"
+            request.write_text(json.dumps(coupling_request(case, ["sc", "pc"], points)))
+            run = subprocess.run(
+                [str(binary), str(request), str(answer)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            lines = [line for line in run.stderr.splitlines() if line.strip()]
+            out[key] = {
+                "displacement": h if key == "displaced" else 0.0,
+                "returncode": run.returncode,
+                "message": lines[-1] if lines else "",
+                "result": json.loads(answer.read_text())
+                if run.returncode == 0
+                else None,
+            }
+    return out
+
+
+def coupling_guard(result: dict, schemes: list[str]) -> dict:
+    pts = result["points"]
+    worst = {
+        "prediction": max(p["prediction"] for p in pts),
+        "subspace": max(p["subspace"] for p in pts),
+        "ci": max(p["ci"] for p in pts),
+        "gradient_norm": max(p["gradient_norm"] for p in pts),
+        "core_gap": min(p["core_gap"] for p in pts),
+        "virtual_gap": min(p["virtual_gap"] for p in pts),
+        "points": len(pts),
+    }
+    for scheme in schemes:
+        worst[f"{scheme}_vectors"] = max(p[scheme]["vector_miss"] for p in pts)
+    return worst
+
+
+def analysis_path(out: pathlib.Path, name: str) -> pathlib.Path:
+    return out / f"{name}.analysis.json"
+
+
+def pc_expected(analysis: dict) -> list[dict]:
+    """PC's expected-refused blocks (nevpt2.tex's symmetric geometries): a
+    state pair and two coordinates along both of which a null mode of some
+    ket's metric lifts at second order with a first-order overlap
+    <phi|V|M> to the other state (qd_coupling_analysis.py's verdicts)."""
+    lifted = analysis["pc"]["lifted_coordinates"]
+    out = []
+    for a in range(len(lifted)):
+        for b in range(a, len(lifted)):
+            out.append(
+                {
+                    "states": analysis["pc"]["state_pair"],
+                    "coordinates": [lifted[a], lifted[b]],
+                }
+            )
+    return out
+
+
+def write_coupling(case: dict, args) -> bool:
+    """One coupling case: the ladders of C_MN over one driver run per scheme
+    and step, the PC probe, and the record. False (STUCK, nothing written)
+    when a ladder does not settle."""
+    name = case["name"]
+    started = time.perf_counter()
+    coords = symmetry_coordinates(case["system"]["atoms"])
+    directions = coupling_directions(case, coords)
+    analysis_file = analysis_path(args.out, name)
+    if not analysis_file.exists():
+        print(
+            f"STUCK: {name}: {analysis_file} is missing; run "
+            "qd_coupling_analysis.py first",
+            flush=True,
+        )
+        return False
+    analysis = json.loads(analysis_file.read_text())
+    assert analysis["coordinates"] == coords, "the analysis's coordinates differ"
+    runs = {}
+    parts = {}
+    failures = []
+    for scheme, h in case["h"].items():
+        points, where = plan_coupling(h, directions)
+        file = f"{name}.{scheme}.h{h:g}.points.json"
+        if args.points and not args.keep:
+            path = args.points / file
+        else:
+            directory = args.points or pathlib.Path(tempfile.mkdtemp())
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / file
+            run_driver(args.binary, coupling_request(case, [scheme], points), path)
+        result = json.loads(path.read_text())
+        assert len(result["points"]) == len(points), path
+        entries, missed = analyse_coupling(case, result, where, directions, scheme, h)
+        runs[scheme] = result
+        parts[scheme] = entries
+        failures += missed
+    print(f"{name}: {time.perf_counter() - started:.0f} s", flush=True)
+    if failures:
+        print(f"STUCK: {name}", flush=True)
+        for line in failures:
+            print(f"  {line}", flush=True)
+        return False
+    probe_file = (args.points / f"{name}.pc_probe.json") if args.points else None
+    if probe_file is not None and not args.keep and probe_file.exists():
+        probe = json.loads(probe_file.read_text())
+    else:
+        probe = pc_probe(args.binary, case, min(case["h"].values()), coords)
+        if probe_file is not None:
+            probe_file.write_text(json.dumps(probe))
+    ref = next(iter(runs.values()))["reference"]
+    pc_ref = probe["reference"]["result"]["reference"]
+    tree = {
+        "casscf": ref["casscf_energies"],
+        "sc": ref["sc"]["heff"],
+        "pc": pc_ref["pc"]["heff"],
+    }
+    python = analysis["reference"]
+    agreement = {
+        key: max(abs(a - b) for a, b in zip(tree[key], python[key], strict=True))
+        for key in tree
+    }
+    expected = {
+        "sc": [
+            {"states": entry["pair"], "coordinates": check["coordinates"]}
+            for entry in parts["sc"]
+            for check in entry["bilinearity"]
+            if check["fails"]
+        ],
+        "pc": pc_expected(analysis),
+    }
+    basis_file = BASIS_FILES[case["system"]["basis"]]
+    record = {
+        "description": "C_MN = H_eff[M][N] of SC-QD-NEVPT2 (DF-SA-CASSCF "
+        "reference) at a C2v geometry whose two roots are 1A1 and 1B2: per "
+        "state pair the fourth-order central stencil at h, h/2, h/4 of C_MN's "
+        "first derivative along each coupled b2 coordinate and along their "
+        "sum, every point re-converged through the continuity guard, the "
+        "bilinearity of each pair, and the blocks the analytic Hessians are "
+        "expected to refuse, per variant. Hartree, bohr. "
+        "tools/nevpt2_hessian/qd_nevpt2_hessian.py over "
+        "free-breakfast-qd-nevpt2-hessian (gradients false)",
+        "provenance": {
+            "command": "tools/nevpt2_hessian/qd_nevpt2_hessian.py",
+            "driver": "tools/qd_nevpt2_hessian/main.cpp",
+            "analysis": f"{analysis_file.name} "
+            "(tools/nevpt2_hessian/qd_coupling_analysis.py)",
+        },
+        "name": name,
+        "basis": {
+            "name": case["system"]["basis"],
+            "file": basis_file,
+            "sha256": sha256(basis_file),
+        },
+        "aux_basis": {"name": AUX[0], "file": AUX[1], "sha256": sha256(AUX[1])},
+        **{k: case["system"][k] for k in ("atoms", "ncas", "nelecas", "active")},
+        "weights": case["system"]["weights"],
+        "irreps": case["irreps"],
+        "schemes": list(case["h"]),
+        "state_pairs": case["state_pairs"],
+        "coupled": case["coupled"],
+        "coordinates": coords,
+        "reference": {
+            "casscf_energies": ref["casscf_energies"],
+            "casscf_gaps": gaps(ref["casscf_energies"]),
+            "gradient_norm": ref["gradient_norm"],
+            "inactive_gaps": {"core": ref["core_gap"], "virtual": ref["virtual_gap"]},
+            "sc": {
+                "energies": ref["sc"]["energies"],
+                "heff_gaps": gaps(ref["sc"]["energies"]),
+                "heff": ref["sc"]["heff"],
+                "vectors": ref["sc"]["vectors"],
+            },
+            "pc": {
+                "energies": pc_ref["pc"]["energies"],
+                "heff": pc_ref["pc"]["heff"],
+                "dropped": pc_ref["pc_dropped"],
+            },
+            "agreement": agreement,
+        },
+        "steps": {
+            scheme: {
+                "h": h,
+                "ladder": stencil.steps(h),
+                "displacements": stencil.displacements(h),
+            }
+            for scheme, h in case["h"].items()
+        },
+        "stencil": {"offsets": list(stencil.OFFSETS), "weights": list(stencil.WEIGHTS)},
+        "tolerances": {
+            "ratio_window": list(RATIO_WINDOW),
+            "floor_factor": FLOOR_FACTOR,
+        },
+        "guard": {
+            scheme: coupling_guard(result, [scheme]) for scheme, result in runs.items()
+        },
+        "pc_probe": {
+            key: {k: v for k, v in value.items() if k != "result"}
+            for key, value in probe.items()
+        },
+        **parts,
+        "expected_refusals": expected,
+        "guarded_tuple": analysis["sc"]["chosen"],
+    }
+    args.out.mkdir(parents=True, exist_ok=True)
+    out = args.out / f"{name}.json"
+    out.write_text(dumps(record) + "\n")
+    print(f"wrote {out}", flush=True)
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=pathlib.Path, default=OUT, help="directory")
@@ -555,6 +1089,11 @@ def main() -> None:
         out = args.out / f"{case['name']}.json"
         out.write_text(dumps(record(case, sys_, coords, runs, quantities_)) + "\n")
         print(f"wrote {out}", flush=True)
+    for case in COUPLING_CASES:
+        if args.only and case["name"] not in args.only:
+            continue
+        if not write_coupling(case, args):
+            status = 1
     sys.exit(status)
 
 
