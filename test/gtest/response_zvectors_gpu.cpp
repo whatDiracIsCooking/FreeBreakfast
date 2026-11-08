@@ -54,6 +54,10 @@ constexpr double kAgreement = 1e-10;
 constexpr double kExactResponseTolerance = 1e-12;
 // z_c is projected off every root: max |<z_c,r|c_s>|.
 constexpr double kCiOverlapTolerance = 1e-10;
+// The restart's case: the tolerance this many times one product's rounding,
+// eps max diag(H) max ||z_o|| (eps ||H~|| ||z||). The gap it must clear is at
+// most that rounding, under the restart's margin of half the tolerance.
+constexpr double kRoundingMultiple = 8.0;
 
 const fb::json &reference_case(std::string_view name) {
   static const fb::json kDoc = [] {
@@ -422,6 +426,38 @@ TEST_P(ResponseZvectors, EachColumnIsZvectorsAlone) {
     }
     std::cout << std::format("[ zvectors ] {} {}: {} columns in {:.2f} s\n",
                              entry.at("name").get<std::string>(), name, kColumns, seconds.count());
+  }
+  // A tolerance a few times one product's rounding (#1108): the restart
+  // (zvector README.md "The restart") takes a column whose true residual
+  // misses, by a gap of at most that rounding, to half the tolerance, so
+  // every column meets it; without it a column whose recurrence stops within
+  // the gap below it is returned above it. Over the SA2 formaldehyde's 9
+  // determinants the CI response is exact, and the gap is rounding alone.
+  if (std::string_view{GetParam()} == "h2co_ccpvdz_sa2") {
+    const std::vector<double> diagonal = download(res, hessian->diagonal().data(), pairs);
+    const std::vector<double> z_o = as_built.first;
+    double largest_z = 0.0;
+    for (std::size_t col = 0; col < columns; ++col) {
+      double norm = 0.0;
+      for (std::size_t k = 0; k < pairs; ++k) {
+        norm += z_o[(col * pairs) + k] * z_o[(col * pairs) + k];
+      }
+      largest_z = std::max(largest_z, std::sqrt(norm));
+    }
+    const double rounding =
+        std::numeric_limits<double>::epsilon() * std::ranges::max(diagonal) * largest_z;
+    const double tolerance = kRoundingMultiple * rounding;
+    auto z =
+        fb::response::zvectors(res, *exact, *hessian, *roots, kColumns, gradients_device.data(),
+                               y_device.data(), fb::response::CpSolver::Schur, tolerance);
+    ASSERT_TRUE(z.has_value()) << z.error().message;
+    for (std::size_t col = 0; col < columns; ++col) {
+      EXPECT_LE(z->residuals[col], tolerance) << "column " << col;
+      std::cout << std::format("[ zvectors ] {} Schur at {:.3e} ({} x one product's rounding) "
+                               "column {}: {} products, residual {:.3e}\n",
+                               entry.at("name").get<std::string>(), tolerance, kRoundingMultiple,
+                               col, z->iterations[col], z->residuals[col]);
+    }
   }
 }
 

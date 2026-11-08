@@ -152,7 +152,11 @@ Their options are trailing arguments; there is no options struct.
    with the recurrence under 1e-10 (#858, #864;
    [`../../mcscf/intersection/`](../../mcscf/intersection/README.md) "The floor under the
    true residual").
-3. That product's `respond` leaves δ(z_o) in `RelaxedHessian::delta()`, and
+3. A true residual above `tolerance` t but at most 1.5 t restarts the
+   conjugate gradients from z_o once, from that residual, to t / 2, within
+   what is left of `max_iterations`, and the true residual is taken again
+   ("The restart").
+4. The last product's `respond` leaves δ(z_o) in `RelaxedHessian::delta()`, and
    z_c is δ + w with every root projected out. The other roots' part
    `respond` adds is the state average's rotations among its roots: at
    unequal weights Θ is read off it first ("The rotations among the roots");
@@ -164,6 +168,59 @@ weight 1 on root I) and the SA orbitals. H, g and so H̃ are each twice PySCF's
 `gen_g_hop` ones, which leaves z_o as PySCF's; z_c is in the CI coordinates of
 PySCF's `gen_g_hop` (c → c + δc, unnormalized), so it is PySCF's `Lvec` CI
 part as it is.
+
+## The restart
+
+The recurrence stops at ‖r‖ ≤ t, and `nevpt2`'s Lagrangians
+(`lagrangian_zvector`) and `mcscf::intersection` hold the true residual to
+the same t. The two differ by a gap: what H̃'s products leave (the CI
+response, step 2) and rounding. With no margin between them, a recurrence
+that stops within the gap below t leaves a true residual above it, however
+small the gap: that column was refused by luck (#1108).
+
+**Measured** (RTX 3080, CUDA, `--preset default`) over a regeneration of
+`test/gtest/data/qd_nevpt2_hessian/h2co_skew_ccpvdz_sa3` (SA3-CASSCF(4,3) /
+cc-pVDZ, SC and PC, `tools/qd_nevpt2_hessian` at t = 3e-12 and its noise
+measurement at 3e-11): each Schur column's last recurrence residual against
+its true one, 1272 columns.
+
+- **Not a plateau.** The products shrink ‖r‖ by about 0.3 each throughout,
+  and the last by 0.16 to 0.55, in 20 to 22 products.
+- **Not the CI response.** Over 9 determinants the response is exact to
+  rounding: the true residual at a response tolerance of 1e-10, 1e-12 and
+  1e-13 agrees to seven figures.
+- **The gap is rounding.** |true − recurrence| ≤ 3.1e-15 (mean 4.9e-16) at
+  3e-12 and ≤ 2.4e-15 at 3e-11, so absolute: at most 43 ε ‖z_o‖ (‖z_o‖ 0.20
+  to 0.52), under ε max diag(H) ‖z_o‖ (max diag(H) 94), one product's rounding
+  ε ‖H̃‖ ‖z_o‖. At 3e-12 it is at most 1.0e-3 t, so the bar sits about 270
+  times above what one product can resolve, and is not a floor.
+- **The refusal.** The last recurrence lands about log-uniformly over one
+  product's contraction below t, so within 1e-3 t of it about once in a
+  thousand columns. A regeneration solves more than a thousand at t: #1099's
+  run met one at point 27, column 5 of 6, 3.000e-12 after 20 products; the
+  committed record's worst was 2.989e-12, and this run's 0.99995 t.
+
+**The rule.** A column whose true residual r_t lies in (t, (2 − f) t], f = ½
+(`kRestartTolerance`), restarts `pcg_solve` from its z_o (`start_from_x`, its
+residual recomputed by one product) to f t, within what is left of
+`max_iterations` (`stop_silently`: the caller judges the residual), and its
+true residual is taken again. That is at most f t plus the new gap, so it
+meets t when the gap is at most (1 − f) t. The first gap is at least r_t − t,
+so above (2 − f) t a restart could not clear it, and none is tried: that is a
+floor (the CI response's, at a loose response tolerance), returned as it was.
+That keeps the callers that build H̃ at `RelaxedHessian`'s default 1e-8 as
+they were (`mcscf::df_gradient`, `df_nac`, the CASSCF Hessians: a true
+residual near 1e-9 against 1e-10, not held). Schur restarts in lockstep,
+every column from Z, the missed ones to f t and the rest at an infinite
+tolerance, so they take no product and keep their z. Without a miss
+nothing runs, and every solve is as it was, to the bit. Coupled keeps its
+own conjugate gradients, without a restart.
+
+**Forced.** With the first recurrence stopped at 1.4 t instead (a temporary
+switch, since removed), 430 of a whole regeneration's columns missed, at
+1.0002 t to 1.398 t (412 at 3e-12, 18 at 3e-11); each restart took 1 or 2
+more products, to 0.104 t to 0.4999 t, and the columns that had not missed
+kept their products and residuals to the bit.
 
 ## Many right-hand sides
 
@@ -296,7 +353,11 @@ orbitals): three columns, root 0's gradient then random orbital right-hand
 sides, each with a random CI one y_r = P H_y c_r. Schur against `zvector` on
 each column alone over the same H̃, Coupled against `zvector` over an H̃ whose
 CI responses are solved to 1e-12, each to 1e-10 of the column's largest
-|z_o| and |z_c|, and z_c off every root; and no columns refused.
+|z_o| and |z_c|, and z_c off every root; and no columns refused. On
+`h2co_ccpvdz_sa2`, whose 9 determinants make the CI response exact, Schur
+at a tolerance of 8 ε max diag(H) max ‖z_o‖ (4.9e-13, eight times one
+product's rounding): every column's true residual within it ("The
+restart"; the rule, not a reproducer of #1108's draw, which no input fixes).
 
 `test/gtest/response_zvector_rotations_gpu.cpp`, on
 `test/gtest/data/casscf_hessian/`'s stretched water (CAS(4,4) / 6-31G /

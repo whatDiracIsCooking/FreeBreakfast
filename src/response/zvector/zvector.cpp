@@ -25,6 +25,23 @@ namespace free_breakfast::response {
 // At a minimum diag(H) >= diag(H~) > 0, so it guards only roundoff.
 constexpr double kZvectorDiagonalFloor = 1e-8;
 
+// A column whose true residual misses the tolerance its recurrence met is
+// restarted from it, its recurrence taken to this fraction f of the
+// tolerance t (README.md "The restart"). The restart meets t when the gap
+// between the true residual and the recurrence is at most (1 - f) t; the
+// first solve's gap is at least its true residual less t, so a true residual
+// above (2 - f) t is a floor the restart would not clear, and is returned as
+// it is. Measured, the gap is rounding, at most 43 eps ||z|| (1.0e-3 t at
+// t = 3e-12).
+constexpr double kRestartTolerance = 0.5;
+
+// Whether a true residual @p residual of a recurrence that met @p tolerance
+// is restarted: above it, and within the miss kRestartTolerance's margin
+// clears.
+bool restart_clears(const double residual, const double tolerance) {
+  return residual > tolerance && residual <= (2.0 - kRestartTolerance) * tolerance;
+}
+
 // diag(H)^-1 into the size() device doubles @p inverse, floored, built on
 // the host.
 Status inverse_orbital_diagonal(DeviceResources &res, const Hessian &hessian,
@@ -255,7 +272,7 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed, const Hes
   FBF_TRY(inverse_orbital_diagonal(res, hessian, inverse_diagonal));
   OneColumnRelaxedHessian one_column{relaxed, pairs};
   OrbitalJacobi jacobi{inverse_diagonal, n_pairs};
-  const PcgOptions options{
+  PcgOptions options{
       .tolerance = tolerance, .max_iterations = max_iterations, .true_residuals = false};
   if (n_pairs > 0) {
     const PcgInfo info = FBF_TRY(pcg_solve(res, one_column, jacobi, n_pairs, 1, rhs, z, options));
@@ -264,12 +281,28 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed, const Hes
 
   // The true residual H~ z + b, from one more product: the recurrence's r
   // drifts from it, H~'s products being good only to the CI response's
-  // conjugate gradients. That product's respond leaves delta(z_o) in
-  // relaxed.delta(), which with w is z_c once off every root (the other
-  // roots' part respond adds is the state average's redundant rotations).
-  FBF_TRY(relaxed.apply(res, z, hz));
-  FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kNegOne<double>, rhs, 1, hz, 1)));
-  FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, n_pairs, hz, 1, &out.residual)));
+  // conjugate gradients and to rounding. That product's respond leaves
+  // delta(z_o) in relaxed.delta(), which with w is z_c once off every root
+  // (the other roots' part respond adds is the state average's redundant
+  // rotations).
+  const auto true_residual = [&]() -> Status {
+    FBF_TRY(relaxed.apply(res, z, hz));
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kNegOne<double>, rhs, 1, hz, 1)));
+    return gpu_status(wwr::nrm2<double, int32_t>(blas, n_pairs, hz, 1, &out.residual));
+  };
+  FBF_TRY(true_residual());
+  // A true residual just above the tolerance its recurrence met restarts the
+  // recurrence from it, once, within what is left of max_iterations (README.md
+  // "The restart").
+  if (n_pairs > 0 && restart_clears(out.residual, tolerance) && out.iterations < max_iterations) {
+    options.tolerance = kRestartTolerance * tolerance;
+    options.max_iterations = max_iterations - out.iterations;
+    options.start_from_x = true;
+    options.stop_silently = true;
+    const PcgInfo info = FBF_TRY(pcg_solve(res, one_column, jacobi, n_pairs, 1, rhs, z, options));
+    out.iterations += info.iterations[0];
+    FBF_TRY(true_residual());
+  }
   FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32 * nroots, &kOne<double>,
                                                 relaxed.delta(), 1, out.ci.data(), 1)));
   // The rotations are z_c's part along the other roots, for the pairs of
@@ -408,7 +441,7 @@ Result<ZVectors> zvectors_schur(DeviceResources &res, RelaxedHessian &relaxed,
   // columns a sweep, preconditioned by diag(H)^-1.
   FBF_TRY(inverse_orbital_diagonal(res, hessian, inverse_diagonal));
   OrbitalJacobi jacobi{inverse_diagonal, n_pairs};
-  const PcgOptions options{
+  PcgOptions options{
       .tolerance = tolerance, .max_iterations = max_iterations, .true_residuals = false};
   if (n_pairs > 0) {
     const PcgInfo info = FBF_TRY(pcg_solve(res, relaxed, jacobi, n_pairs, ncol32, rhs, z, options));
@@ -417,12 +450,39 @@ Result<ZVectors> zvectors_schur(DeviceResources &res, RelaxedHessian &relaxed,
 
   // The true residuals H~ Z + B from one more block product, whose deltas
   // with w are z_c once off every root (zvector's step 3).
-  FBF_TRY(relaxed.apply(res, ncol32, z, hz));
-  FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(block), &kNegOne<double>,
-                                                rhs, 1, hz, 1)));
+  const auto true_residuals = [&]() -> Status {
+    FBF_TRY(relaxed.apply(res, ncol32, z, hz));
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(block),
+                                                  &kNegOne<double>, rhs, 1, hz, 1)));
+    for (size_t x = 0; x < ncol; ++x) {
+      FBF_TRY(gpu_status(
+          wwr::nrm2<double, int32_t>(blas, n_pairs, hz + (x * pairs), 1, &out.residuals[x])));
+    }
+    return {};
+  };
+  FBF_TRY(true_residuals());
+  // zvector's restart, once, over every column from Z: a column that missed
+  // to kRestartTolerance of the tolerance; the rest, which meet it or which
+  // a restart would not clear, held where they are by an infinite one.
+  std::vector<double> restart(ncol, std::numeric_limits<double>::infinity());
+  bool missed = false;
   for (size_t x = 0; x < ncol; ++x) {
-    FBF_TRY(gpu_status(
-        wwr::nrm2<double, int32_t>(blas, n_pairs, hz + (x * pairs), 1, &out.residuals[x])));
+    if (restart_clears(out.residuals[x], tolerance)) {
+      restart[x] = kRestartTolerance * tolerance;
+      missed = true;
+    }
+  }
+  const int32_t spent = std::ranges::max(out.iterations);
+  if (n_pairs > 0 && missed && spent < max_iterations) {
+    options.tolerances = restart;
+    options.max_iterations = max_iterations - spent;
+    options.start_from_x = true;
+    options.stop_silently = true;
+    const PcgInfo info = FBF_TRY(pcg_solve(res, relaxed, jacobi, n_pairs, ncol32, rhs, z, options));
+    for (size_t x = 0; x < ncol; ++x) {
+      out.iterations[x] += info.iterations[x];
+    }
+    FBF_TRY(true_residuals());
   }
   FBF_TRY(
       gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(ci_block * ncol),

@@ -57,8 +57,8 @@ struct ZVector {
   /// for one root), c_r gaining Theta_sr c_s (README.md "The rotations among
   /// the roots"). Zero for a pair of equal weights, where they are redundant.
   std::vector<double> theta;
-  /// @brief H~ products the conjugate gradients took (the residual's not
-  /// counted).
+  /// @brief H~ products the conjugate gradients took, a restart's included
+  /// (the residuals' and the restart's first not counted).
   int32_t iterations;
   /// @brief ||H~ z_o + g_I - H_oc (H_0 - E)^-1 P y||, from one more product
   /// at the solution.
@@ -68,7 +68,10 @@ struct ZVector {
 /// @brief The Z-vector of root I of a state-averaged CASSCF: H~ z_o = -g_I by
 /// conjugate gradients from zero, preconditioned by diag(H)^-1, to
 /// ||r|| <= @p tolerance, and z_c from @ref RelaxedHessian::respond at z_o
-/// with every root projected out.
+/// with every root projected out. A true residual (ZVector::residual) above
+/// @p tolerance restarts the conjugate gradients from it once, to half of
+/// it, within the same @p max_iterations (README.md "The restart"); the
+/// residual returned is the last one, which the caller holds to its bar.
 ///
 /// @p relaxed is H~ at the state-averaged orbitals and roots; @p hessian and
 /// @p roots are the ones it was created over (H's diagonal is the
@@ -141,8 +144,8 @@ struct ZVectors {
   /// @brief The rotations among the roots per column, on the host: one
   /// ZVector::theta (nroots (nroots - 1) / 2) each.
   std::vector<double> theta;
-  /// @brief Products each column took (the residual's not counted): H~'s,
-  /// or the coupled operator's.
+  /// @brief Products each column took (the residuals' and a restart's first
+  /// not counted): H~'s, or the coupled operator's.
   std::vector<int32_t> iterations;
   /// @brief Each column's true residual from one more product: PerColumn and
   /// Schur ||H~ z_o + g - H_oc (H_0 - E)^-1 P y||, ZVector::residual's (the
@@ -161,7 +164,9 @@ struct ZVectors {
 /// @p theta_rhs on the host. Every method carries the rotations among the
 /// roots at unequal weights. Each column is solved as @ref zvector solves it
 /// alone, to ||r|| <= @p tolerance per column, the CI rows in zvector's
-/// convention (unweighted, unscaled). @p solver picks the method, Schur by
+/// convention (unweighted, unscaled); PerColumn and Schur restart a column
+/// whose true residual misses as zvector does (Schur in lockstep, the other
+/// columns kept at @p tolerance), Coupled does not. @p solver picks the method, Schur by
 /// default (the fastest measured; Coupled is slower on a larger molecule, so
 /// it is not); the others reach the same solution to the CI response's
 /// precision (README.md "Which is the default" has the measurements).

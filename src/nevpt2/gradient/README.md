@@ -1487,6 +1487,18 @@ cc-pVTZ, and ‖g‖ is 0.07 to 0.5 in every case. So a bar relative to ‖g‖
 would buy nothing. `mcscf/intersection/README.md` "The floor under the true
 residual" has the CASSCF intersection's side (#858), the same mechanism.
 
+**The recurrence on the bar (#1108).** Holding the true residual to the
+tolerance the recurrence stops at leaves no margin for the gap between
+them. `tools/qd_nevpt2_hessian`'s skew reference (`h2co_skew_ccpvdz_sa3`,
+Z-vectors at 3e-12) was refused at point 27 with column 5 of 6 at 3.000e-12
+after 20 products, and its committed record's worst was 2.989e-12. Its
+residual history is no plateau and no floor: about 0.3 per product down to
+the bar, a CI response exact to rounding over 9 determinants, and a gap of at
+most 3.1e-15 (1.0e-3 of the bar), one product's rounding ε ‖H̃‖ ‖z‖. So the
+3e-12 bar stays, and a column whose true residual misses by less than half
+the tolerance restarts once from it (`../../response/zvector/README.md` "The
+restart", which has the measurements).
+
 **One parameter.** The W-form and several-W `qd_sc_gradient` /
 `qd_pc_gradient` take it as their trailing `zvector_tolerance` (1e-10 by
 default), the solve's tolerance and its check's together.
