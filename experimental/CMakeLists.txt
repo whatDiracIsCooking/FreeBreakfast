@@ -47,3 +47,8 @@ add_subdirectory(blas_lt)
 # on a hi/lo fp32 split -- the speed-against-accuracy curve of spending fp32
 # throughput to buy fp64 accuracy. Benchmark only, like blas_lt.
 add_subdirectory(split_gemm)
+
+# The DF exchange build cut into batches, B resident or streamed from pinned
+# memory through a ring of device slots: what each batch costs on top of the
+# one-call build. Benchmark only, like blas_lt.
+add_subdirectory(gemm_host_offload)
