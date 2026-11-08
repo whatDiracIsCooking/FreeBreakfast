@@ -3,9 +3,9 @@
 The third derivative of a state-averaged DF-CASSCF energy in its parameters,
 contracted once with a fixed vector z, on the GPU: for each vector v of a
 block, the covector a ↦ T(a, v, z). It is the λ^xᵀ (z · ∂²g_SA/∂λ∂λ) λ^y term
-of a state-averaged nuclear Hessian (`.temp/hessian/casscf_hessian.tex` §5.1,
-eq. (sa)'s fourth bullet), which only exists as an action, and the same
-object an NEVPT2 Hessian's Lagrangian needs with its own multipliers.
+of a state-averaged nuclear Hessian (`docs/hessian/hessian.tex`, "The
+Lagrangian", eq. (sa)'s fourth bullet), which only exists as an action, and
+the same object an NEVPT2 Hessian's Lagrangian needs with its own multipliers.
 
 ## Module
 

@@ -195,10 +195,12 @@ with each column's true residual taken from a product at the response's
 So the response is converged to `response_tolerance_for` the Z-vector's
 tolerance t (`response.zvector`): 1e-2 t, relative, but never below 1e-10. At
 the default t = 1e-10 that is 1e-10, the setting measured above: the true
-residual is within 0.2% of the recurrence, so a recurrence just under the
-bar leaves the true residual under it too. A looser t takes a cheaper
-response at 1e-2 t, well under the bar's own error. `nevpt2`'s Lagrangian
-(`lagrangian_zvector`) takes the same rule for its own tolerance.
+residual is within 0.2% of the recurrence, and a column whose true residual
+still lands just over the bar, in (t, 1.5 t], gets one restart
+([`../../response/zvector/`](../../response/zvector/README.md) "The restart").
+A looser t takes a cheaper response at 1e-2 t, well under the bar's own
+error. `nevpt2`'s Lagrangian (`lagrangian_zvector`) takes the same rule for its
+own tolerance.
 
 **Why not tighter.** The response cannot be pushed below round-off, and
 where the roots nearly span the space, round-off arrives early. Ethylene's
