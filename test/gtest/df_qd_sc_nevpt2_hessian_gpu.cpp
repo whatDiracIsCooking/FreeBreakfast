@@ -9,11 +9,14 @@
 //   element within 2x the fixture's bar; each part's largest element in bars
 //   (the visibility rule), theta's share at equal weights, and the reports;
 // - h2nb_sto3g_sa2 (C2v A1/B2, its symmetry-adapted coordinates): #953's SC
-//   expected-refusal set is empty, so no block is refused, on both states
-//   (the rigid translations, round-off directions, break no symmetry); no
-//   element couples two irreps; and term (ii)'s h_01 along the b2
-//   vibrations is held to the fixture's C_01 ladders. The fixture carries no
-//   whole-Hessian reference for this case;
+//   expected-refusal set is empty, so no block is refused on state 0 (the
+//   rigid translations, round-off directions, break no symmetry); no element
+//   couples two irreps; the rotation block is the gradient's, (R_z, R_z) =
+//   v^T L G from the state's own G (no reference data); and term (ii)'s
+//   h_01 along the b2 vibrations is held to the fixture's C_01 ladders.
+//   State 1 is refused by SC's conditioning rule (#1102): root 1's Si
+//   tuples keep N of 1e-10 and 3e-11, whose Hessian spreads run to run past
+//   every bar;
 // - the refusals before anything runs, each on a constructed input: a QD
 //   gap, a CASSCF root gap and the ensemble's edge under kRootGapFloor, a
 //   frozen core; and an inactive pair under 1e-6 Eh that a coordinate
@@ -485,10 +488,12 @@ void expect_matches(const std::string &name, const std::int32_t state) {
       "[ qd sc    ] {}: E {}, QD gap {:.4f}, root gap {:.4f}, edge {:.4f}, inactive gap {:.3e}, "
       "smallest |Delta + H/N| {:.3e}, max |theta| {:.3f}, max |kappa_oo| {:.2f}, max |zeta| "
       "{:.3e}, max |z^c| {:.3e}, term (ii)'s share {:.3e}; CP residual {:.1e}, Z-vector {:.1e}, "
-      "asymmetry {:.1e} (bar {:.1e}), sum rule {:.1e}, defect {:.1e}, t_mix {:.3e} bohr\n",
+      "asymmetry {:.1e} (bar {:.1e}), sum rule {:.1e}, defect {:.1e}, t_mix {:.3e} bohr, "
+      "rounding {:.2e} at {}\n",
       label, h->eigenvalues, h->qd_gap, h->root_gap, h->edge_gap, h->min_gap, h->min_denominator,
       h->max_theta, h->max_kappa_oo, h->max_zeta, h->max_zc, h->term_ii_share, h->cp_residual,
-      h->zvector_residual, h->asymmetry, solve_bar(*h), h->translation, h->defect, h->mix_step);
+      h->zvector_residual, h->asymmetry, solve_bar(*h), h->translation, h->defect, h->mix_step,
+      h->rounding, h->rounding_at);
   EXPECT_LE(h->cp_residual, kCpResidual) << label;
   EXPECT_LE(h->asymmetry, solve_bar(*h)) << label;
   EXPECT_GT(h->term_ii_share, 0.0) << label;
@@ -515,11 +520,16 @@ TEST(HessianDfQdScNevpt2, MatchesTheUnequalWeightFixture) {
   expect_matches("h2co_skew_ccpvdz_sa3_w424", 1);
 }
 
-// The A1/B2 coupling case in its symmetry-adapted coordinates: #953's SC
-// expected-refusal set is empty, so neither state is refused; the coupling
-// h_01 along the two b2 vibrations (term (ii)'s input, the only first-order
-// quantity the fixture ladders) against its C_01 ladders.
-TEST(HessianDfQdScNevpt2, CoupledA1B2RefusesNothing) {
+// The A1/B2 coupling case in its symmetry-adapted coordinates. State 1 is
+// refused by SC's conditioning rule, naming root 1's Si (#1102: its Hessian
+// spread past the bars run to run, 1.4e-5 at (A1 1, A1 1) against a bar of
+// 1.6e-8). State 0, which #953's SC expected-refusal set leaves unrefused,
+// couples no two irreps, and its rotation block is the gradient's: a
+// rotation-invariant energy has (R_z, R_z) = -(1/n) Sum_A G_A . (z x v_A),
+// v_A = z x (x_A - c) / n the coordinate's row, from the state's own G and
+// held to the solves' bar. Then the coupling h_01 along the two b2
+// vibrations (term (ii)'s input) against the C_01 ladders.
+TEST(HessianDfQdScNevpt2, CoupledA1B2RefusesStateOne) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   const std::string name = "h2nb_sto3g_sa2";
@@ -536,36 +546,101 @@ TEST(HessianDfQdScNevpt2, CoupledA1B2RefusesNothing) {
   }
   const std::size_t k = vectors.size();
   const std::size_t n_x = 3 * ref.basis().natoms();
-  for (const std::int32_t state : {0, 1}) {
-    const auto h = ref.hessian(*ref.solution, state, q);
-    ASSERT_TRUE(h.has_value()) << "state " << state << ": " << h.error().message;
-    ASSERT_EQ(h->hessian.size(), k * k);
-    std::cout << std::format("[ qd a1b2  ] state {}: E {}, QD gap {:.4f}, edge {:.4f}, defect "
-                             "{:.1e}, t_mix {:.3e}, term (ii)'s share {:.3e}, asymmetry {:.1e}\n",
-                             state, h->eigenvalues, h->qd_gap, h->edge_gap, h->defect, h->mix_step,
-                             h->term_ii_share, h->asymmetry);
-    // No element couples two irreps: C2v's zeros, to the solves' error.
-    double across = 0.0;
+
+  // State 1: refused, naming the class.
+  {
+    const auto h = ref.hessian(*ref.solution, 1, q);
+    ASSERT_FALSE(h.has_value()) << "state 1 was not refused";
+    EXPECT_EQ(h.error().kind, fb::ErrorKind::Numerical) << h.error().message;
+    EXPECT_NE(h.error().message.find("SC-NEVPT2 has no attainable Hessian"), std::string::npos)
+        << h.error().message;
+    EXPECT_NE(h.error().message.find("reference root 1's class Si"), std::string::npos)
+        << h.error().message;
+    std::cout << std::format("[ qd a1b2  ] state 1 refused: {}\n", h.error().message);
+  }
+
+  const auto h = ref.hessian(*ref.solution, 0, q);
+  ASSERT_TRUE(h.has_value()) << "state 0: " << h.error().message;
+  ASSERT_EQ(h->hessian.size(), k * k);
+  std::cout << std::format("[ qd a1b2  ] state 0: E {}, QD gap {:.4f}, edge {:.4f}, defect "
+                           "{:.1e}, t_mix {:.3e}, term (ii)'s share {:.3e}, asymmetry {:.1e}, "
+                           "rounding {:.2e} at {}\n",
+                           h->eigenvalues, h->qd_gap, h->edge_gap, h->defect, h->mix_step,
+                           h->term_ii_share, h->asymmetry, h->rounding, h->rounding_at);
+  // No element couples two irreps: C2v's zeros, to the solves' error.
+  double across = 0.0;
+  for (std::size_t j = 0; j < k; ++j) {
+    for (std::size_t i = 0; i < k; ++i) {
+      if (irreps[i] != irreps[j]) {
+        across = std::max(across, std::abs(h->hessian[i + (k * j)]));
+      }
+    }
+  }
+  std::cout << std::format("[ qd a1b2  ] state 0: largest element across irreps {:.1e}, the "
+                           "solves' bar {:.1e}\n",
+                           across, solve_bar(*h));
+  EXPECT_LE(across, solve_bar(*h));
+  EXPECT_LE(h->asymmetry, solve_bar(*h));
+  for (std::size_t i = 0; i < k; ++i) {
+    std::string row;
     for (std::size_t j = 0; j < k; ++j) {
-      for (std::size_t i = 0; i < k; ++i) {
-        if (irreps[i] != irreps[j]) {
-          across = std::max(across, std::abs(h->hessian[i + (k * j)]));
+      row += std::format(" {:11.4e}", h->hessian[i + (k * j)]);
+    }
+    std::cout << std::format("[ qd a1b2  ] {:5}{}\n", labels[i], row);
+  }
+
+  // The rotation block from the gradient alone. With z x (x_A - c) = n v_A,
+  // n and z x c = (d_x, d_y, 0) are fitted over the atoms by least squares
+  // (exact for a rotation row); Sum_A G_A = 0 drops c from the sum.
+  {
+    const auto rz =
+        static_cast<std::size_t>(std::ranges::find(labels, std::string{"R_z"}) - labels.begin());
+    ASSERT_LT(rz, k);
+    const std::vector<double> &v = vectors[rz];
+    const fb::json &atoms = doc.at("atoms");
+    // Normal equations over the unknowns (n, d_x, d_y): n v_Ax + d_x = -y_A,
+    // n v_Ay + d_y = x_A.
+    std::array<std::array<double, 4>, 3> a{};
+    for (std::size_t at = 0; at < n_x / 3; ++at) {
+      const auto x = atoms.at(at).at(1).get<std::vector<double>>();
+      for (const auto &[row, rhs] : {std::pair{std::array{v[3 * at], 1.0, 0.0}, -x[1]},
+                                     std::pair{std::array{v[(3 * at) + 1], 0.0, 1.0}, x[0]}}) {
+        for (std::size_t r = 0; r < 3; ++r) {
+          for (std::size_t c = 0; c < 3; ++c) {
+            a[r][c] += row[r] * row[c];
+          }
+          a[r][3] += row[r] * rhs;
         }
       }
     }
-    std::cout << std::format("[ qd a1b2  ] state {}: largest element across irreps {:.1e}, "
-                             "the solves' bar {:.1e}\n",
-                             state, across, solve_bar(*h));
-    EXPECT_LE(across, solve_bar(*h)) << "state " << state;
-    EXPECT_LE(h->asymmetry, solve_bar(*h)) << "state " << state;
-    for (std::size_t i = 0; i < k; ++i) {
-      std::string row;
-      for (std::size_t j = 0; j < k; ++j) {
-        row += std::format(" {:11.4e}", h->hessian[i + (k * j)]);
+    for (std::size_t p = 0; p < 3; ++p) {
+      for (std::size_t r = 0; r < 3; ++r) {
+        if (r != p) {
+          const double f = a[r][p] / a[p][p];
+          for (std::size_t c = 0; c < 4; ++c) {
+            a[r][c] -= f * a[p][c];
+          }
+        }
       }
-      std::cout << std::format("[ qd a1b2  ] {:5}{}\n", labels[i], row);
     }
+    const double n = a[0][3] / a[0][0];
+    const auto g = fb::nevpt2::qd_sc_gradient(
+        ref.res(), ref.molecule(), ref.basis(), ref.classes(), ref.fit().aux, ref.h(), ref.fit().b,
+        ref.fit().l.data(), *ref.solution, ref.ncore, ref.ncas, 0, 0);
+    ASSERT_TRUE(g.has_value()) << g.error().message;
+    ASSERT_EQ(g->total.size(), n_x);
+    // z x v_A = (-v_Ay, v_Ax, 0).
+    double want = 0.0;
+    for (std::size_t at = 0; at < n_x / 3; ++at) {
+      want -= ((g->total[3 * at] * -v[(3 * at) + 1]) + (g->total[(3 * at) + 1] * v[3 * at])) / n;
+    }
+    const double got = h->hessian[rz * (k + 1)];
+    std::cout << std::format("[ qd a1b2  ] state 0: (R_z, R_z) {:.12e} against v^T L G "
+                             "{:.12e} (n {:.6f}), miss {:.1e}, the solves' bar {:.1e}\n",
+                             got, want, n, std::abs(got - want), solve_bar(*h));
+    EXPECT_LE(std::abs(got - want), kBars * solve_bar(*h));
   }
+
   // h_01 along each b2 vibration: the couplings in the coordinates, against
   // the fixture's D at the finest rung (signs follow the roots' phases).
   const auto response = fb::hessian::df_qd_eigenvector_response(
@@ -573,11 +648,11 @@ TEST(HessianDfQdScNevpt2, CoupledA1B2RefusesNothing) {
       ref.fit().l.data(), *ref.solution, ref.ncore, ref.ncas, false);
   ASSERT_TRUE(response.has_value()) << response.error().message;
   for (const fb::json &direction : doc.at("sc").at(0).at("directions")) {
-    const auto v = direction.at("vector").get<std::vector<double>>();
-    ASSERT_EQ(v.size(), n_x);
+    const auto dv = direction.at("vector").get<std::vector<double>>();
+    ASSERT_EQ(dv.size(), n_x);
     double got = 0.0;
     for (std::size_t x = 0; x < n_x; ++x) {
-      got += v[x] * response->couplings[x];
+      got += dv[x] * response->couplings[x];
     }
     const double want = direction.at("ladder").back().get<double>();
     const double bar = direction.at("bar").get<double>();

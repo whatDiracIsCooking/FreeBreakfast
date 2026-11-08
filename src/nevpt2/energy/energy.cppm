@@ -381,6 +381,20 @@ struct ClassEnergiesHvp {
   /// none both populate. Not "no Hessian on the pair": a bound on the
   /// relative error K6 at the mean η leaves there.
   std::vector<double> defect;
+  /// @brief The kept perturbers' worst relative rounding bound on N,
+  /// max_t σ_t / |N_t| over every class whose finish divides by its N (not
+  /// Sijrs, nor a one-function class): σ_t = ε/2 absolute in Sr, Si and Sir,
+  /// whose norm and H einsums cancel O(1) terms, and 4ε |N_t| in the others
+  /// (README "The SC-QD reverse pass", Conditioning; #1055). Each walk of the
+  /// tables shifts η_t = H_t / N_t by about that, so a second derivative
+  /// assembled from separate walks inherits it (hessian's README, "The SC
+  /// conditioning refusal"). The ket is 0.
+  double rounding = 0.0;
+  /// @brief Where @ref rounding is: {ket, class, perturber}, the ket -1 when
+  /// nothing is kept.
+  std::array<int64_t, 3> rounding_at{-1, 0, 0};
+  /// @brief That perturber's N.
+  double rounding_norm = 0.0;
 };
 
 /// @brief The SC energy's Hessian-vector product in its inputs, forward over
@@ -576,6 +590,21 @@ struct ScEffectiveHamiltonianHvp {
   /// tuples empty for bra I too that u populates; what a check of the
   /// product sees of it.
   std::vector<double> coupling_k6;
+  /// @brief The kept perturbers' worst relative rounding bound on N,
+  /// max_t σ_t / |N_t| over every class whose finish divides by its N (not
+  /// Sijrs, nor a one-function class): σ_t = ε/2 absolute in Sr, Si and Sir,
+  /// whose norm and H einsums cancel O(1) terms, and 4ε |N_t| in the others
+  /// (README "The SC-QD reverse pass", Conditioning; #1055). Each walk of the
+  /// tables shifts η_t = H_t / N_t by about that, so a second derivative
+  /// assembled from separate walks inherits it (hessian's README, "The SC
+  /// conditioning refusal"). Over the kets
+  /// H̄ weighs (Σ_I |H̄_IJ| > 0), whose bars the product forms.
+  double rounding = 0.0;
+  /// @brief Where @ref rounding is: {ket, class, perturber}, the ket -1 when
+  /// nothing is kept.
+  std::array<int64_t, 3> rounding_at{-1, 0, 0};
+  /// @brief That perturber's N.
+  double rounding_norm = 0.0;
 };
 
 /// @brief The Hessian-vector product of L = Σ_IJ H̄_IJ H_IJ in its inputs,

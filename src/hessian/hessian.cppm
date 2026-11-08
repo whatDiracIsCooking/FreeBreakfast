@@ -820,6 +820,10 @@ struct ScNevpt2Terms {
   /// @brief The smallest t_mix = 1 / 2 |kappa_oo_pq| over the coordinates
   /// and the canonical inactive pairs (bohr; infinite when none mixes).
   double mix_step{std::numeric_limits<double>::infinity()};
+  /// @brief nevpt2::sc_hessian_product's rounding bound, the worst kept
+  /// perturber's sigma / |N|: past 1e-7 the call is refused (README "The SC
+  /// conditioning refusal").
+  double rounding{0.0};
 };
 
 /// @brief The SC-NEVPT2 analytic nuclear Hessian of the single-state
@@ -863,7 +867,10 @@ struct ScNevpt2Terms {
 ///         refused pair of coordinates, or every coordinate that mixes an
 ///         inactive pair within 1e-3 bohr (its pair, gap and t_mix; "use
 ///         PC-NEVPT2"), or df_nevpt2_tangents' degenerate
-///         inactive pair, or the gradient's z^c or gate; Divergence for the CP
+///         inactive pair, or the gradient's z^c or gate, or a kept
+///         perturber whose rounding bound sigma / |N| is past 1e-7 (its
+///         class, perturber, N and bound; README "The SC conditioning
+///         refusal"); Divergence for the CP
 ///         solve's saddle; Unsupported for naux nmo^2 past int32_t or memory;
 ///         or the first error of a part.
 [[nodiscard]] Result<ScNevpt2Terms>
@@ -1435,6 +1442,12 @@ struct QdScNevpt2Terms {
   /// @brief The smallest t_mix = 1 / 2 |kappa_oo_pq| over the coordinates
   /// and the canonical inactive pairs (bohr), as ScNevpt2Terms::mix_step.
   double mix_step{std::numeric_limits<double>::infinity()};
+  /// @brief nevpt2::qd_sc_hessian_product's rounding bound, the worst kept
+  /// tuple's sigma / |N| over the reference roots W weighs, and where it is
+  /// ({root, class, tuple}; the root -1 when none): past 1e-7 the call is
+  /// refused (README "The SC conditioning refusal").
+  double rounding{0.0};
+  std::array<int64_t, 3> rounding_at{-1, 0, 0};
 };
 
 /// @brief The SC-QD-NEVPT2 analytic nuclear Hessian of QD state @p state
@@ -1451,9 +1464,11 @@ struct QdScNevpt2Terms {
 /// all-electron only). Then, after the CP solve, as @ref df_sc_nevpt2
 /// refuses: an inactive pair under 1e-6 Eh that a coordinate splits
 /// (@ref df_qd_nevpt2_tangents'), a coordinate that mixes one within 1e-3
-/// bohr, and the pairs of coordinates nevpt2::qd_sc_hessian_product refuses
-/// on any model state's empty tuples (#962's per-block refusal), named
-/// together.
+/// bohr, a kept tuple of a reference root W weighs whose rounding bound
+/// sigma / |N| is past 1e-7 (README "The SC conditioning refusal", #1102:
+/// its Hessian would spread past the bars run to run), and the pairs of
+/// coordinates nevpt2::qd_sc_hessian_product refuses on any model state's
+/// empty tuples (#962's per-block refusal), named together.
 ///
 /// The inputs are @ref df_sc_nevpt2's, @p solution a converged
 /// DF-SA-CASSCF of two roots or more, its core and virtuals canonical in
@@ -1527,8 +1542,8 @@ struct QdPcNevpt2Terms {
   /// df_qd_sc_nevpt2 returns them: hvp is nevpt2::qd_pc_hessian_product's
   /// (no partners), the multipliers and E^corr[W] + Phi^SA's adjoint
   /// nevpt2::qd_pc_gradient's, term (ii) PC's, all at the call's pc_floor.
-  /// SC's min_denominator, defect and mix_step are not PC's and stay at their
-  /// defaults.
+  /// SC's min_denominator, defect, mix_step and rounding are not PC's and
+  /// stay at their defaults.
   QdScNevpt2Terms terms;
   /// @brief Per model state N, each class's smallest kept metric eigenvalue
   /// over its largest (nevpt2::PcClassEnergies::kept, ket N's) at the floor;

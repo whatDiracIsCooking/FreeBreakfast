@@ -101,6 +101,11 @@ std::pair<double, double> norm_to_energy(const std::vector<double> &t,
   return {norm_total, energy_total};
 }
 
+double norm_rounding(const size_t k, const double norm) {
+  constexpr double kEpsilon = std::numeric_limits<double>::epsilon();
+  return k == 0 || k == 1 || k == 7 ? 0.5 * kEpsilon / std::abs(norm) : 4.0 * kEpsilon;
+}
+
 bool single_function_class(const ActiveOperands &own, const size_t k) {
   const int64_t n = own.dm1.dims.empty() ? 0 : own.dm1.dims[0];
   return (k == 5 && own.nelecas == 2) || (k == 6 && (2 * n) - own.nelecas == 2);

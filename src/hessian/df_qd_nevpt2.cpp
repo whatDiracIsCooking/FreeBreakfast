@@ -826,6 +826,11 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
         const nevpt2::QdScHessianProduct p =
             FBF_TRY(product(static_cast<int32_t>(count), t_h.data() + (j0 * nn),
                             t_b.data() + (j0 * naux * nn), t_c.data() + (j0 * n_ci), {}));
+        // The tables are the same along every direction: one chunk's bound
+        // is the call's.
+        out.rounding = p.rounding;
+        out.rounding_at = p.rounding_at;
+        FBF_TRY(sc_rounding_refusal(kWho, p.rounding, p.rounding_at, p.rounding_norm));
         for (size_t u = 0; u < count; ++u) {
           FBF_TRY(pair_with(p.products[u], paired.data() + ((j0 + u) * k)));
           for (const std::array<int64_t, 8> &ket : p.populated[u]) {

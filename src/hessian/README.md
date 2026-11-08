@@ -1880,7 +1880,9 @@ InvalidConfig. Its other refusals are its parts', passed on as they come:
 `df_nevpt2_tangents`' degenerate inactive pair (Numerical), the CP solve's
 saddle (Divergence), z^c's degenerate pair and the gradient's gate
 (Numerical). The tangents run before the gradient, so a degenerate pair
-names the tangents.
+names the tangents. Its own refusal is the product's: a kept perturber whose
+rounding bound is past 1e-7 (Numerical; "The SC conditioning refusal",
+under the SC-QD Hessian).
 
 ### Memory
 
@@ -2217,7 +2219,58 @@ population floor being against its own scale (#952's rule, there against the
 largest scale). Every gap of Table qd-divisions is returned, with the
 smallest |Δ_t + H_t/N_t| over every state's kept perturbers (d_t / N_t, from
 `sc_effective_hamiltonian`'s amplitudes), max |θ|, max |κ_oo|, max |ζ| and
-term (ii)'s share.
+term (ii)'s share. After the first product, a kept tuple whose rounding
+bound is past 1e-7 is refused (Numerical, below), and the bound is returned
+as `rounding` and `rounding_at`.
+
+### The SC conditioning refusal
+
+Both SC Hessians, `df_sc_nevpt2` and `df_qd_sc_nevpt2` in every form, refuse
+when a kept perturber's relative rounding bound on its norm, ρ_t = σ_t / |N_t|,
+is past `kScNevpt2Rounding` = 1e-7 (#1102). The bound is taken over the
+reference roots W weighs (Σ_I |W_IJ| > 0; the one root for a single state).
+It is computed from the tables the product walks (`nevpt2::ClassEnergiesHvp`
+and `ScEffectiveHamiltonianHvp::rounding`). The message names the root, the
+class, the perturber, its N and ρ, and says to use PC.
+
+**Why.** The finish reads η_t = H_t / N_t. Sr's, Si's and Sir's N and H are
+einsums whose O(1) terms cancel (`../nevpt2/energy/README.md`, "The SC-QD
+reverse pass", Conditioning, #1055). The atomics leave σ = ε/2 absolute on
+each, so every walk of the tables moves η_t by about ρ_t (1 + |η_t|). The
+other classes do not cancel: σ = 4ε |N|, so ρ is a constant 8.9e-16. The
+Hessian's parts come from separate walks: the Lagrangian's adjoint
+(skeleton, z terms, rotation terms), and the product's own adjoint and
+tangent (the HVP). The parts cancel, 149 to 0.77 at `h2nb_sto3g_sa2`'s
+(A1 1, A1 1), so the assembled element carries ρ times the perturber's share
+of the parts. That share is the perturber's own (its |Ṅ| / N and |Ḣ| / N
+along the coordinates). ρ alone does not give the error, and the threshold
+is set in the measured gap, not from a bar.
+
+**What it separates** (gfx1200, `--preset hip`):
+
+| case | worst ρ (root, class, perturber, N) | the Hessian |
+|---|---|---|
+| skew, K = 1 and K = 2 | 4.75e-9 (0, Sir, 7, 2.3e-8) | 0.010 and 0.017 bars |
+| `_w424`, K = 1 | 4.09e-9 (0, Sir, 7, 2.7e-8) | 0.030 bars |
+| `h2nb_sto3g_sa2`, state 0 | 1.24e-8 (0, Si, 2, 9.0e-9) | repeats to 1e-11; (R_z, R_z) = vᵀ L G to 3e-13 |
+| `h2nb_sto3g_sa2`, state 1 | 3.84e-6 (1, Si, 2, 2.9e-11); Si 0 at 9.2e-7 | spreads 1e3 bars run to run: refused |
+| single-state skew, water | 4.9e-11, 1.2e-11 | as before |
+
+On `h2nb_sto3g_sa2`'s state 1 (diagnosis, #1102), 14 values (7 processes,
+each with the state form and its identical W = diag(0, 1) form) spread by
+σ = 1.4e-5 at (A1 1, A1 1) (bar 1.6e-8), 9.2e-6 at (A1 3, A1 3) (bar
+4.1e-9) and 3.2e-7 at (R_z, R_z) (bar 4.1e-9). Their means sat within one
+standard error of the semi-numerical reference and of vᵀ L G: noise, with no
+missing term. Two `qd_sc_lagrangian` calls at that W in one process gave h̄
+7.6e-10 apart, Λ 2.8e-9 and y 9.9e-8 (1e-12 to 2e-10 at diag(1, 0)).
+Guarding just root 1's two Si perturbers made them repeat to 1e-15 to
+3e-14. Those perturbers are real: they move G by up to 5e-9. So no guard
+can drop them, and the energy and gradient keep PySCF's 1e-14, repeating to
+1e-14.
+
+1e-7 is the log-midpoint between the largest accepted ρ (1.24e-8) and the
+smallest refused one (9.2e-7). That leaves a margin of 8 and 9 either side,
+and 21 to skew. A case between them is accepted on that measurement alone.
 
 ### Memory
 
@@ -2239,13 +2292,15 @@ through the registry, against their semi-numerical SC Hessians (#953, #1060):
   at equal weights θ's share, E_ρ's θθ block
   Σ 2(ρ_r − ρ_s)(E_s − E_r) θ^A θ^B, over 10 bars too; CP residual ≤ 1e-9,
   asymmetry within the solves' error (as below).
-- `CoupledA1B2RefusesNothing`: `h2nb_sto3g_sa2` in its symmetry-adapted
-  coordinates, both states: not refused (#953's SC expected-refusal set is
-  empty), nothing across irreps or in the asymmetry above the solves'
-  error (1e-10, their residual, times the largest element of any part:
-  1.4e-8 and 2.1e-8 here), and h_01 along B2 1, B2 2 and
-  their sum within 2× the C_01 ladders' bars. The fixture has no
-  whole-Hessian reference for this case.
+- `CoupledA1B2RefusesStateOne`: `h2nb_sto3g_sa2` in its symmetry-adapted
+  coordinates. State 1 is refused by the conditioning rule, naming root 1's
+  Si (#1102). State 0 is not refused (#953's SC expected-refusal set is
+  empty), and nothing across irreps or in the asymmetry is above the
+  solves' error (1e-10, their residual, times the largest element of any
+  part: 1.4e-8 here). Its rotation block is the gradient's: (R_z, R_z) =
+  −(1/n) Σ_A G_A · (ẑ × v_A) from the state's own G, within 2× that bar
+  (3e-13 measured), with no reference data. h_01 along B2 1, B2 2 and their
+  sum is within 2× the C_01 ladders' bars.
 - `RefusesBeforeAnythingRuns` (on `h2co_ccpvdz_sa2`): a frozen core, roots 0
   and 1 5e-9 Eh apart, root 1 moved to 5e-9 below the third root, H_eff's
   diagonal made equal (a QD gap of 0), a state out of range and three bad Ws.

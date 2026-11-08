@@ -419,14 +419,17 @@ no IR intensities.
   `edge`, E_{n+1} − E_n; `inactive_gap`, the smallest core-core or
   virtual-virtual SA-Fock gap), `max_theta`, `max_kappa_oo`, `max_zeta`,
   `max_zc`, `cp_residual` and `zvector_residual`; under SC
-  `min_denominator`, `defect` and `mix_step`; under PC `kept` (per model
+  `min_denominator`, `defect`, `mix_step` and `rounding` (the worst kept
+  tuple's rounding bound σ / |N|, refused past 1e-7); under PC `kept` (per model
   state, each class's smallest kept metric eigenvalue over its largest) and
   `lift_step` (the smallest t* of any coordinate, ket and class). A gap or
   step that is infinite (no further root, nothing lifting) is `null`.
 - **Refusals are returned as they are**, the step's error, naming what
   failed (`../../hessian/README.md` has each): a QD gap, two CASSCF roots
   or the ensemble's edge under `mcscf::kRootGapFloor`; SC's pairs of
-  coordinates the products refuse on any model state's empty tuples; PC's
+  coordinates the products refuse on any model state's empty tuples, and a
+  kept tuple whose rounding bound is past 1e-7 (SC's conditioning refusal,
+  #1102: `h2nb_sto3g_sa2`'s state 1); PC's
   class kept below 1e-10, its lifted blocks (at `h2nb_sto3g_sa2` in its
   symmetry-adapted coordinates, exactly the B2 × B2 blocks (B2 1, B2 1),
   (B2 1, B2 2) and (B2 2, B2 2), on either state), a Schur lift within

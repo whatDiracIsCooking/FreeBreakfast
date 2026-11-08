@@ -611,6 +611,11 @@ Result<ScHessianProduct> sc_hessian_product(DeviceResources &res, const ci::Devi
                  std::span<const EnergyDirection> partner_dirs, const bool both) -> Status {
         ClassEnergiesHvp got =
             FBF_TRY(class_energies_hvp(res, blocks, in, batch, dirs, bars, partner_dirs));
+        if (got.rounding > out.rounding) {
+          out.rounding = got.rounding;
+          out.rounding_at = got.rounding_at;
+          out.rounding_norm = got.rounding_norm;
+        }
         if (both) {
           out.populated = std::move(got.populated);
           out.population = std::move(got.population);
@@ -1258,6 +1263,9 @@ Result<QdScHessianProduct> qd_sc_hessian_product(
         out.defect = std::move(walked.defect);
         out.coupling_defect = std::move(walked.coupling_defect);
         out.coupling_k6 = std::move(walked.coupling_k6);
+        out.rounding = walked.rounding;
+        out.rounding_at = walked.rounding_at;
+        out.rounding_norm = walked.rounding_norm;
         return {};
       }};
   QdProducts p =
