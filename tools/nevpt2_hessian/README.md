@@ -102,8 +102,8 @@ and `ethylene_meci.json`, whose README section has the numbers.
 - `qd_nevpt2_hessian.py` (`CROSSING_CASES`) then ladders, at each MECI, the
   pair sum G(W^0 + W^1), the fixed seam W and the third state. The driver's
   `crossing` request tracks the pair by its two-state eigenspace
-  (`tracked_pair` in `tools/qd_nevpt2_hessian/main.cpp`) rather than by
-  u_K, and takes no W^0 or W^1. About 2.3 minutes per case.
+  (`src/pipeline/hessian`'s `tracked_qd_pair`, which the driver calls)
+  rather than by u_K, and takes no W^0 or W^1. About 2.3 minutes per case.
 
 ```sh
 tools/nevpt2_hessian/qd_meci.py [--binary build/src/free-breakfast]

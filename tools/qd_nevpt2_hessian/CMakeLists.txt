@@ -7,7 +7,9 @@
 # Not a module library: one main.cpp over tools/qd_nevpt2_gradient's chain
 # and guard (ChainSampler) and the gradient it differences
 # (nevpt2::qd_sc_gradient, qd_pc_gradient), rerun over the pipeline steps the
-# sampler's chain is made of. It sets the module-scanning properties itself,
+# sampler's chain is made of, its H_eff eigenstates matched by the [hessian]
+# step's own tracked_qd_state and tracked_qd_pair (pipeline::hessian), the one
+# R_P match of the tree. It sets the module-scanning properties itself,
 # as src/main.cpp does.
 add_executable(free_breakfast_qd_nevpt2_hessian main.cpp)
 set_target_properties(
@@ -34,4 +36,5 @@ target_link_libraries(
           free_breakfast::pipeline::step
           free_breakfast::pipeline::overlap
           free_breakfast::pipeline::nevpt2
+          free_breakfast::pipeline::hessian
 )

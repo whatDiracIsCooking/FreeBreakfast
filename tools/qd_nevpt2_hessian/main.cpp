@@ -27,7 +27,9 @@
 ///   root's energy within kPredictionBound |dR|^2 of its first-order
 ///   prediction from `mcscf::df_gradient` at the reference, and H_eff's
 ///   eigenstates matched to the reference's by the overlap of u_K in the
-///   matched root basis (within kCiTol of 1), never by rank.
+///   matched root basis, never by rank: `pipeline::hessian`'s
+///   `tracked_qd_state`, the `[hessian]` step's own match (within 1e-3 of
+///   1, no tie).
 /// - **The gradients.** The sampler hands out energies and orbitals, not the
 ///   chain's products, so the point's chain is rerun from its converged
 ///   orbitals (the same steps and bars; the CASSCF starts converged), its
@@ -42,8 +44,9 @@
 ///   degenerate at the reference, a MECI): u_P and u_Q are not defined one
 ///   by one there (any rotation within their eigenspace is as good, and a
 ///   step of any size turns them by O(1)), so they are not matched by u_K:
-///   their two-state eigenspace is (@ref tracked_pair, a principal-angle
-///   match), and the other states by u_K among the rest. No W^P or W^Q is
+///   their two-state eigenspace is (`pipeline::hessian`'s
+///   `tracked_qd_pair`, a principal-angle match), and the other states by
+///   u_K. No W^P or W^Q is
 ///   taken, only the pair's W^P + W^Q, the projector onto that eigenspace
 ///   (Eq. qd-pair), and the seams; a pair holding one of P, Q alone is
 ///   refused (a cone's vertex).
@@ -76,6 +79,9 @@ import free_breakfast.pipeline.pipeline;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.overlap;
 import free_breakfast.pipeline.nevpt2;
+// The H_eff eigenstates' match, the step's own (tracked_qd_state,
+// tracked_qd_pair).
+import free_breakfast.pipeline.hessian;
 // The chain at every point and its CASSCF guard.
 import free_breakfast.tools.qd_nevpt2_gradient;
 
@@ -215,80 +221,19 @@ struct Request {
   double zvector_tolerance = 0.0;
 };
 
-// The crossing pair's tracking: which two of a displaced H_eff's
-// eigenstates span the reference's two-state eigenspace span{R_P, R_Q}, and
-// how far from it their span is. @p reference and @p vectors hold n
-// eigenvectors each (state k at [k n, (k + 1) n)), both in the reference's
-// root basis, @p vectors ascending; @p pair is {P, Q}, two distinct states
-// of @p reference.
+// The eigenstates of a displaced H_eff in the reference's order: @p vectors
+// (state k at [k n, (k + 1) n), in the reference's root basis, so every root
+// sign 1) each matched to the reference state K by pipeline::hessian's
+// tracked_qd_state (the step's own R_P match, its 1e-3 bar and tie), which
+// must make a permutation. @p matched takes u_k at [K n, (K + 1) n), signed
+// so that its overlap with u_K is positive; the result is the matched
+// energies, and @p miss the worst 1 - |overlap|.
 //
-// The two displaced states are the k_a < k_b of largest projection onto the
-// reference's eigenspace, w_k = <R_P|u_k>^2 + <R_Q|u_k>^2 (the w_k sum to 2).
-// The miss is 1 - sigma_min of the 2 x 2 overlap M_Xk = <R_X|u_k>, X in
-// {P, Q}, k in {k_a, k_b}: sigma_min is the cosine of the larger principal
-// angle between the two spaces, so the miss is O(|dR|^2) for a pair that
-// followed the reference, whatever rotation it took inside its eigenspace,
-// and about 1 when a third state has mixed in. Only u_a u_a^T + u_b u_b^T is
-// defined by this, not u_a or u_b.
-//
-// Returns {k_a, k_b} and the miss; Numerical when the miss is kCiTol or
-// more (the u_K match's bar), naming it; InvalidConfig for spans that are
-// not n x n or a pair that is not two distinct states.
-fb::Result<std::pair<std::array<std::size_t, 2>, double>>
-tracked_pair(std::span<const double> reference, std::span<const double> vectors, std::size_t n,
-             std::array<std::size_t, 2> pair) {
-  if (reference.size() != n * n || vectors.size() != n * n || n < 2 || pair[0] >= n ||
-      pair[1] >= n || pair[0] == pair[1]) {
-    return fb::err_config("tracked_pair: the pair ({}, {}) of {} states, {} and {} vector "
-                          "components",
-                          pair[0], pair[1], n, reference.size(), vectors.size());
-  }
-  // overlaps[x][k] = <R_X|u_k>.
-  std::array<std::vector<double>, 2> overlaps{std::vector<double>(n, 0.0),
-                                              std::vector<double>(n, 0.0)};
-  std::vector<double> weight(n, 0.0);
-  for (std::size_t k = 0; k < n; ++k) {
-    for (std::size_t x = 0; x < 2; ++x) {
-      for (std::size_t i = 0; i < n; ++i) {
-        overlaps[x][k] += reference[(pair[x] * n) + i] * vectors[(k * n) + i];
-      }
-      weight[k] += overlaps[x][k] * overlaps[x][k];
-    }
-  }
-  std::vector<std::size_t> order(n);
-  std::iota(order.begin(), order.end(), std::size_t{0});
-  std::ranges::stable_sort(order,
-                           [&](std::size_t a, std::size_t b) { return weight[a] > weight[b]; });
-  const std::array<std::size_t, 2> states{std::min(order[0], order[1]),
-                                          std::max(order[0], order[1])};
-  const double m00 = overlaps[0][states[0]];
-  const double m01 = overlaps[0][states[1]];
-  const double m10 = overlaps[1][states[0]];
-  const double m11 = overlaps[1][states[1]];
-  const double frobenius = (m00 * m00) + (m01 * m01) + (m10 * m10) + (m11 * m11);
-  const double det = (m00 * m11) - (m01 * m10);
-  const double discriminant = std::max(0.0, (frobenius * frobenius) - (4.0 * det * det));
-  const double sigma_min = std::sqrt(std::max(0.0, 0.5 * (frobenius - std::sqrt(discriminant))));
-  const double miss = 1.0 - sigma_min;
-  if (!(miss < kCiTol)) {
-    return fb::err_numerical("the crossing pair ({}, {})'s eigenspace is not the displaced states "
-                             "({}, {})': 1 - sigma_min {:.3e}, not below {}",
-                             pair[0], pair[1], states[0], states[1], miss, kCiTol);
-  }
-  return std::pair{states, miss};
-}
-
-// The eigenstates of a displaced H_eff in the reference's order (the
-// gradient tool's matched_states): @p vectors (state k at [k n, (k + 1) n),
-// in the reference's root basis) each matched to the reference state K of
-// largest |<u_K|u_k>|, which must be a permutation. @p matched takes u_k at
-// [K n, (K + 1) n), signed so that its overlap with u_K is positive; the
-// result is the matched energies, and @p miss the worst 1 - |overlap|.
-//
-// With a @p crossing {P, Q}, its two states are tracked_pair's instead, put
-// at P's and Q's places in ascending energy (the lower at the smaller of P
-// and Q) as the displaced solve signs them, its miss in @p pair_miss (and
-// in @p miss); every other state is matched among the rest.
+// With a @p crossing {P, Q}, its two states are tracked_qd_pair's instead
+// (their two-state eigenspace), put at P's and Q's places in ascending
+// energy (the lower at the smaller of P and Q) as the displaced solve signs
+// them, its miss in @p pair_miss (and in @p miss); every other state by
+// tracked_qd_state, never one of the pair's.
 fb::Result<std::vector<double>> matched_states(std::span<const double> energies,
                                                std::span<const double> vectors,
                                                std::span<const double> reference,
@@ -296,11 +241,15 @@ fb::Result<std::vector<double>> matched_states(std::span<const double> energies,
                                                double &miss, double &pair_miss,
                                                std::vector<double> &matched) {
   const std::size_t n = energies.size();
+  const std::vector<double> signs(n, 1.0);
+  const auto state = [&](std::size_t k) { return reference.subspan(k * n, n); };
   std::vector<double> out(n);
   std::vector<bool> taken(n, false);
   matched.assign(n * n, 0.0);
   if (crossing) {
-    const auto [states, pair] = FBF_TRY(tracked_pair(reference, vectors, n, *crossing));
+    std::vector<double> pair(state((*crossing)[0]).begin(), state((*crossing)[0]).end());
+    pair.insert(pair.end(), state((*crossing)[1]).begin(), state((*crossing)[1]).end());
+    const auto [states, pair_overlap_miss] = FBF_TRY(fb::tracked_qd_pair(pair, vectors, signs));
     const std::array<std::size_t, 2> slots{std::min((*crossing)[0], (*crossing)[1]),
                                            std::max((*crossing)[0], (*crossing)[1])};
     for (std::size_t x = 0; x < 2; ++x) {
@@ -310,39 +259,25 @@ fb::Result<std::vector<double>> matched_states(std::span<const double> energies,
         matched[(slots[x] * n) + i] = vectors[(states[x] * n) + i];
       }
     }
-    pair_miss = pair;
-    miss = std::max(miss, pair);
+    pair_miss = pair_overlap_miss;
+    miss = std::max(miss, pair_overlap_miss);
   }
   for (std::size_t big_k = 0; big_k < n; ++big_k) {
     if (crossing && ((*crossing)[0] == big_k || (*crossing)[1] == big_k)) {
       continue;
     }
-    std::size_t best = n;
-    double best_overlap = 0.0;
-    double best_sign = 1.0;
-    for (std::size_t k = 0; k < n; ++k) {
-      if (crossing && taken[k]) {
-        continue;
-      }
-      double overlap = 0.0;
-      for (std::size_t i = 0; i < n; ++i) {
-        overlap += reference[(big_k * n) + i] * vectors[(k * n) + i];
-      }
-      if (std::abs(overlap) > best_overlap) {
-        best_overlap = std::abs(overlap);
-        best_sign = overlap < 0.0 ? -1.0 : 1.0;
-        best = k;
-      }
-    }
-    if (best == n || taken[best]) {
-      return fb::err_numerical("H_eff's eigenstate {} matches no displaced state alone", big_k);
+    const auto [best, overlap] = FBF_TRY(fb::tracked_qd_state(state(big_k), vectors, signs));
+    if (taken[best]) {
+      return fb::err_numerical("H_eff's eigenstate {} matches displaced state {}, already taken",
+                               big_k, best);
     }
     taken[best] = true;
     out[big_k] = energies[best];
+    const double sign = overlap < 0.0 ? -1.0 : 1.0;
     for (std::size_t i = 0; i < n; ++i) {
-      matched[(big_k * n) + i] = best_sign * vectors[(best * n) + i];
+      matched[(big_k * n) + i] = sign * vectors[(best * n) + i];
     }
-    miss = std::max(miss, 1.0 - best_overlap);
+    miss = std::max(miss, 1.0 - std::abs(overlap));
   }
   return out;
 }
@@ -607,14 +542,15 @@ fb::Status run(std::span<char *const> args) {
       double miss = 0.0;
       double pair_miss = 0.0;
       std::vector<double> u;
-      const std::vector<double> energies =
-          FBF_TRY(matched_states(sc ? p.sc : p.pc, sc ? p.sc_vectors : p.pc_vectors,
-                                 reference_vectors(scheme), sys.crossing, miss, pair_miss, u));
-      if (miss >= kCiTol) {
-        return fb::err_numerical("point {}: a displaced {} H_eff eigenvector's overlap off 1 by "
-                                 "{:.2e}",
-                                 index, scheme, miss);
+      fb::Result<std::vector<double>> matched =
+          matched_states(sc ? p.sc : p.pc, sc ? p.sc_vectors : p.pc_vectors,
+                         reference_vectors(scheme), sys.crossing, miss, pair_miss, u);
+      if (!matched) {
+        fb::Error error = std::move(matched).error();
+        error.message = std::format("point {}: {}: {}", index, scheme, error.message);
+        return std::unexpected(std::move(error));
       }
+      const std::vector<double> energies = *std::move(matched);
       entry[std::string(scheme)] = {{"energies", energies},
                                     {"heff", sc ? p.sc_heff : p.pc_heff},
                                     {"vectors", u},

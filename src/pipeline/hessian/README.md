@@ -436,13 +436,55 @@ form) in place of the state-specific gradient:
   the A1/B2 case) to reach its asymptotic range. Under PC, `pc_floor` is
   read as for the NEVPT2 chain ([The PC floor](#the-pc-floor)); the
   references are at the round-off cut, `pc_floor = 0`.
-- **Not ported from the reference's driver** (`tools/qd_nevpt2_hessian`):
-  its polish of every point to CASSCF ‖g‖ < 3e-12, its energy-prediction
-  guard, the active space's overlap bar and PC's cut-rank guard. The step
-  keeps the CASSCF chain's guards instead, as the issue asks, and the
-  driver's tracking (u_K by overlap, signed root basis) is re-done here
-  over the step's own products; the two are a candidate for one shared
-  routine.
+- **One R_P match, shared with the references' driver.**
+  `tracked_qd_state` is the tree's only H_eff eigenstate match:
+  `tools/qd_nevpt2_hessian`, which samples
+  `test/gtest/data/qd_nevpt2_hessian/`, calls it for every state it
+  tracks (its vectors already in the reference's root basis, every sign 1),
+  and takes u_k's sign from its signed overlap. At a crossing (a MECI, two
+  states degenerate at the reference) the driver tracks the pair by its
+  two-state eigenspace instead, with `tracked_qd_pair`: the two u_k of
+  largest projection onto span{R_P, R_Q}, refused when 1 − σ_min of their
+  2 × 2 overlap (the larger principal angle's cosine) is 1e-3 or more. The
+  step itself never calls the pair's: its Hessian is one state's, E_P,
+  which has none at a crossing (a cone's vertex); only the pair sum
+  W^P + W^Q is smooth there (Eq. qd-pair), and the step has no W input.
+- **The driver's other guards, not ported, and why.** The driver is an
+  oracle's sampler: its points must hold at a fixed bar whatever h the
+  generator picks, with nothing downstream but its own ladder. The step
+  has the ladder, its measured floor and the bilinearity check behind its
+  guards, and its precision is the config's:
+  - *The polish of every point to CASSCF ‖g‖ < 3e-12*
+    (`tools/qd_nevpt2_gradient`'s `kPolishTarget`). A reference is sampled once and kept, so it
+    is converged past any consumer's bar. The step's precision is
+    `[casscf]`'s conv_tol and conv_tol_grad, which the config sets; the
+    ladder's σ_solves measures what they leave (the re-solve 100 times
+    tighter) and puts it in the floor every element is judged against, so
+    a loose solve widens the bars instead of passing as signal. Polishing
+    regardless would override the config and hide that cost.
+  - *The energy-prediction guard* (each root within 2 |dR|² of its
+    first-order prediction from the reference's `mcscf::df_gradient`). It
+    catches a solve that landed on another stationary point or state. The
+    step catches the same directly, by `check_displaced_casscf` (an active
+    orbital swapped in from outside, a root that changed places), and a
+    jump the two miss puts a step into the gradient along that coordinate,
+    which the ladder lists as unsettled (its ratio off 16, logged at warn)
+    and the pairs' bilinearity check refuses. The guard would also cost a
+    CASSCF gradient per root at the reference.
+  - *The active space's overlap bar, 1 − overlap < 1e-3.* The step's
+    `check_displaced_casscf` bar is 1/2 on each orbital's weight in the
+    start's active space: a follow is 1 − O(h²), a swap about 0, so either
+    bar splits them. 1e-3 is the references' certificate that every point
+    sat close to the reference's space at their h; in the step an orbital
+    that rotated far without swapping moves the surface smoothly, and the
+    ladder judges whether h was small enough for it.
+  - *PC's cut-rank guard* (each class's dropped metric modes the
+    reference's). A mode crossing the cut makes PC's energy jump. The
+    references run at the round-off cut, `pc_floor = 0`, where kept modes
+    can sit just above it; the step's PC default is `pc_floor = 1e-10` of
+    each metric's largest eigenvalue (below, #917), which keeps the kept
+    modes clear of the cut, and a mode that still crosses within a step is
+    a jump the ladder lists and the bilinearity check refuses, as above.
 
 ### The PC floor
 
@@ -780,9 +822,14 @@ integral-direct `[eri]` -- the default one -- is refused there too
   non-orthonormal basis, passing a solve that followed and refusing an active
   orbital swapped out and two roots exchanged -- the forced refusals; and
   `tracked_qd_state` over three roots: a state that followed, at its own
-  rank and at another, and through a flipped root sign, found; without
-  the sign, a swap (best overlap 0.8) and a tie (1/√2 each) refused,
-  Numerical -- the forced state swap, never differenced.
+  rank and at another, through a flipped root sign, and with its sign
+  turned (the overlap returned negative), found; without the sign, a swap
+  (best overlap 0.8) and a tie (1/√2 each) refused, Numerical -- the
+  forced state swap, never differenced; and `tracked_qd_pair` over three
+  roots: a pair turned 45° inside its eigenspace and tipped 0.01 rad out of
+  it, found at ranks 1 and 2 with miss 1 − cos 0.01, and through a flipped
+  root sign (where `tracked_qd_state` ties on it), and a third state mixed
+  in (σ_min 0.8) refused, Numerical.
 - `test/gtest/pipeline_hessian_gpu.cpp`, TOML configs in cc-pVDZ /
   cc-pVDZ-JKFIT run by `Calculation`:
   - `AnalyticAndNumericalDfRhfHessiansMatchPyscf`: the skew water by both
@@ -969,5 +1016,5 @@ OpenMolcas comparison (the issue's optional one) was made.
 | File | Role |
 |------|------|
 | `hessian.cppm` | Module interface: `HessianMethod`, `HessianOutput`, `HessianStep` |
-| `hessian.cpp` | `check_displaced_casscf`; `tracked_qd_state`; `tightened_casscf_tolerances`; the private reference-orbitals step; the ladder's stencil, verdict and restarts; `HessianStep::run`: its refusals, the analytic Hessian (RHF with its dipole derivative, CASSCF, SC- or PC-NEVPT2) over one nested pipeline, or the nested pipelines along each coordinate (RHF, CASSCF or NEVPT2 gradients) and their central differences, or the ladder, its noise and the bilinearity check; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
+| `hessian.cpp` | `check_displaced_casscf`; `tracked_qd_state` and `tracked_qd_pair`; `tightened_casscf_tolerances`; the private reference-orbitals step; the ladder's stencil, verdict and restarts; `HessianStep::run`: its refusals, the analytic Hessian (RHF with its dipole derivative, CASSCF, SC- or PC-NEVPT2) over one nested pipeline, or the nested pipelines along each coordinate (RHF, CASSCF or NEVPT2 gradients) and their central differences, or the ladder, its noise and the bilinearity check; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
 | `CMakeLists.txt` | The module library |
