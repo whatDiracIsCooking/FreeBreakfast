@@ -223,4 +223,27 @@ pc_effective_hamiltonian_tangent(DeviceResources &res, const MoBlocks &blocks,
   return pc_couplings_tangent(res, blocks, pairs, n, batch, directions, span, kWho);
 }
 
+Result<std::vector<PcClassEnergies>> pc_effective_hamiltonian_hvp(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+    std::span<const double> hbar, const int32_t batch, std::span<const EnergyDirection> directions,
+    std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t, int64_t, int64_t, const EnergyBars &)> &transition,
+    const bool span) {
+  constexpr const char *kWho = "pc_effective_hamiltonian_hvp";
+  const int64_t n = FBF_TRY(qd_tangent_states(kWho, pairs, directions));
+  const auto n2 = static_cast<size_t>(n * n);
+  const size_t m = directions.size() / n2;
+  if (std::cmp_not_equal(hbar.size(), n2) || bars.size() != m * static_cast<size_t>(n)) {
+    return err_config("{}: {} states over {} directions take {} H-bar elements and {} EnergyBars, "
+                      "not {} and {}",
+                      kWho, n, m, n2, m * static_cast<size_t>(n), hbar.size(), bars.size());
+  }
+  for (size_t u = 0; u < m; ++u) {
+    FBF_TRY(qd_adjoint_states(kWho, pairs, hbar,
+                              bars.subspan(u * static_cast<size_t>(n), static_cast<size_t>(n))));
+  }
+  return pc_couplings_hvp(res, blocks, pairs, n, hbar, batch, directions, bars, transition, span,
+                          kWho);
+}
+
 } // namespace free_breakfast::nevpt2

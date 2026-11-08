@@ -744,6 +744,61 @@ qd_pc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
               std::span<const double> weights, const double *vectors, std::span<const double> w,
               int32_t batch, int32_t nfrozen = 0, double pc_floor = 0.0);
 
+/// @brief qd_pc_hessian_product's result.
+struct QdPcHessianProduct {
+  /// @brief The n^2 elements, as qd_pc_energy computes them.
+  std::vector<PcClassEnergies> elements;
+  /// @brief Per direction, the product, as QdScHessianProduct::products.
+  std::vector<AdjointTangent> products;
+  /// @brief Per direction and ket, [u][N][k]: class k's Schur lift ℓ of ket
+  /// N's metric along N's own RDMs' path (PcMetricLifts::lift), per |u_N|²
+  /// (u_N the direction's root-N part along the generators); 0 where nothing
+  /// rises.
+  std::vector<std::vector<std::array<double, 8>>> lifts;
+  /// @brief [u][N][k]: t* = √(2 cut / (ℓ |u_N|²)) in the direction's own
+  /// units, pc_hessian_product's; infinite where ℓ is not positive.
+  std::vector<std::vector<std::array<double, 8>>> lift_steps;
+  /// @brief [u][N][M][k]: ket N's null modes' first-order overlap with bra
+  /// M's rows along the direction, in units of its round-off
+  /// (PcMetricLifts::overlap); 0 at M = N.
+  std::vector<std::vector<std::vector<std::array<double, 8>>>> overlaps;
+  /// @brief Empty unless asked for: per direction, the product's parts, as
+  /// QdScHessianProduct::parts.
+  std::vector<std::array<AdjointTangent, 4>> parts;
+};
+
+/// @brief The Hessian-vector product of E^corr[W] + Phi^SA in (h, B, {c_r}),
+/// PC-QD: qd_sc_hessian_product with qd_pc_adjoint's reverse pass and
+/// pc_effective_hamiltonian_hvp in place of SC's pair walk, and nothing else
+/// (README "The PC-QD Hessian-vector product in (h, B, {c_r})"), as
+/// pc_hessian_product is sc_hessian_product's. @p pc_floor is
+/// qd_pc_adjoint's; @p span false leaves the kept span's rotation out
+/// (pc_effective_hamiltonian_hvp's), for the tests alone.
+///
+/// **The Schur lift on every model state** (Eq. qd-pcfail), before the walk:
+/// per direction and ket N, each class's lift along N's own RDMs' path on
+/// the root set (c_N(t) = e^{tK} c_N), its t*, and per bra M its null modes'
+/// first-order overlap with M's rows (pc_metric_lifts on every model state),
+/// all reported. A ket whose class's null modes reach some bra M at first
+/// order, along the direction and along its partner (the direction itself
+/// without partners), past 100 times that overlap's round-off, refuses the
+/// block: the cut keeps the lifted modes dropped, and the coupling (M, N)
+/// misses a first-order piece, so that (pair, direction-pair) block has no
+/// Hessian. Only modes that reach the cut within a step of 1e-3 in the
+/// direction's own units count (#817's step; t* below it). A lift with no
+/// bra overlap is Part I's, reported by t* alone.
+///
+/// @return The products; qd_sc_hessian_product's InvalidConfig; Numerical,
+///         naming the coupling, the directions, the ket's class and both t*,
+///         for a refused block; pc_effective_hamiltonian_hvp's and
+///         qd_pc_adjoint's refusals; or the error of a call it makes.
+[[nodiscard]] Result<QdPcHessianProduct> qd_pc_hessian_product(
+    DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+    int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c, const double *h,
+    int32_t ncore, int32_t ncas, std::span<const double> weights, const double *vectors,
+    std::span<const double> w, const double *z, int32_t batch, const MoDirections &directions,
+    const MoDirections &partners = {}, bool parts = false, double pc_floor = 0.0, bool span = true);
+
 /// @brief zc_multipliers' result.
 struct ZcMultipliers {
   /// @brief z^c, nmo x nmo column-major and symmetric, on res's device:

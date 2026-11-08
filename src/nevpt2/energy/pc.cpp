@@ -1269,23 +1269,35 @@ Result<PcClassEnergies> pc_class_energies(DeviceResources &res, const MoBlocks &
 constexpr double kPcNullModes = 10.0;
 
 Result<PcMetricLifts> pc_metric_lifts(DeviceResources &res, const MoBlocks &blocks,
-                                      const EnergyInputs &in, const EnergyInputs &first,
-                                      const EnergyInputs &second) {
+                                      std::span<const EnergyInputs> pairs,
+                                      std::span<const EnergyInputs> first,
+                                      const EnergyInputs &second, const int64_t ket,
+                                      const double step) {
   const ScopedDeviceIndex on{res.dev_idx()};
   const int64_t n = blocks.ncas;
   const int64_t nc = blocks.ncore;
+  const auto ns = static_cast<int64_t>(std::llround(std::sqrt(static_cast<double>(pairs.size()))));
+  if (ns * ns != std::ssize(pairs) || first.size() != pairs.size() || ket < 0 || ket >= ns) {
+    return err_config("nevpt2::pc_metric_lifts: {} pairs and {} first derivatives for ket {}: "
+                      "n^2 of each, and a ket among the n states",
+                      pairs.size(), first.size(), ket);
+  }
+  const auto at = [&](const int64_t i, const int64_t j) {
+    return static_cast<size_t>((i * ns) + j);
+  };
+  const EnergyInputs &in = pairs[at(ket, ket)];
   const ActiveOperands o = FBF_TRY(active_operands(res, blocks, in));
-  // The paths' RDMs over @p in's other fields; the transitions' builders
+  // A path's RDMs over pair @p p's other fields; the transitions' builders
   // (own false) read the RDMs alone, linearly.
-  const auto along = [&](const EnergyInputs &d) -> Result<ActiveOperands> {
-    EnergyInputs x = in;
+  const auto along = [&](const size_t p, const EnergyInputs &d) -> Result<ActiveOperands> {
+    EnergyInputs x = pairs[p];
     x.dm1 = d.dm1;
     x.dm2 = d.dm2;
     x.dm3 = d.dm3;
     return active_operands(res, blocks, x);
   };
-  const ActiveOperands o1 = FBF_TRY(along(first));
-  const ActiveOperands o2 = FBF_TRY(along(second));
+  const ActiveOperands o1 = FBF_TRY(along(at(ket, ket), first[at(ket, ket)]));
+  const ActiveOperands o2 = FBF_TRY(along(at(ket, ket), second));
   struct Class {
     size_t k;
     const char *name;
@@ -1303,6 +1315,7 @@ Result<PcMetricLifts> pc_metric_lifts(DeviceResources &res, const MoBlocks &bloc
        {7, "Sir", pc_sir_matrices, 2 * n * n, 1,
         walk_extent(blocks, ExtBlock::Sir1) > 0 && nc > 0}}};
   PcMetricLifts out;
+  out.overlap.assign(static_cast<size_t>(ns), {});
   for (const Class &cl : classes) {
     if (!cl.walked) {
       continue;
@@ -1317,6 +1330,7 @@ Result<PcMetricLifts> pc_metric_lifts(DeviceResources &res, const MoBlocks &bloc
     out.cut[cl.k] = std::max(std::max(kPcTau, kPcNoise * std::numeric_limits<double>::epsilon() *
                                                   std::sqrt(static_cast<double>(d))),
                              in.pc_floor);
+    out.kept[cl.k] = cs.kept;
     if (!cs.modes) {
       continue;
     }
@@ -1355,7 +1369,93 @@ Result<PcMetricLifts> pc_metric_lifts(DeviceResources &res, const MoBlocks &bloc
     FBF_TRY(diagonalize(res, ndi, l.data(), eig.data()));
     const std::vector<double> lifts = FBF_TRY(download(res, eig.data(), nd));
     out.lift[cl.k] = lifts.back() / largest;
+    // Each bra's first-order overlap with the null modes, in L's eigenbasis
+    // E (l now holds it): a null mode v moves as v' = -S⁺ S' v and pair
+    // (N, M)'s row A (T_{M←N} = A U, A pair (N, M)'s metric read column-major)
+    // as A', so the bra rows' part along v moves as
+    //   Eᵀ [V_nᵀ A'ᵀ - W (A U)ᵀ],
+    // and S₁'s the same; each mode's norm of it over ‖A'‖ + ‖W‖ ‖A U‖
+    // (../gradient/README.md, "The Schur lift on every model state").
+    const auto fro = [&](const double *x, const int64_t count) -> Result<double> {
+      const std::vector<double> h = FBF_TRY(download(res, x, count));
+      double sum = 0.0;
+      for (const double v : h) {
+        sum += v * v;
+      }
+      return std::sqrt(sum);
+    };
+    for (int64_t bra = 0; bra < ns; ++bra) {
+      if (bra == ket) {
+        continue;
+      }
+      const ActiveOperands ot = FBF_TRY(active_operands(res, blocks, pairs[at(ket, bra)]));
+      const ActiveOperands od = FBF_TRY(along(at(ket, bra), first[at(ket, bra)]));
+      const PcMatrices a = FBF_TRY(cl.build(res, ot, false));
+      const PcMatrices a1 = FBF_TRY(cl.build(res, od, false));
+      // The parts: S's (c = d) and S₁'s (c = n1), each a pair of nd x c
+      // column-major blocks, V_nᵀ A'ᵀ and W (A U)ᵀ.
+      double num = 0.0;
+      double scale = 0.0;
+      std::vector<double> rows(static_cast<size_t>(nd), 0.0);
+      for (const bool one : {false, true}) {
+        if (one && (cl.n1 == 0 || !a.s1)) {
+          continue;
+        }
+        const int64_t cols = one ? cl.n1 : d;
+        const auto ci = static_cast<int32_t>(cols);
+        const double *const raw = one ? a.s1->data() : a.s.data();
+        const double *const raw_dot = one ? a1.s1->data() : a1.s.data();
+        Buffers::device<double> lead = FBF_TRY(leak_of(res, dm.v.data(), raw_dot, d, nd, cols));
+        // (A U)ᵀ = Uᵀ Aᵀ, m x cols column-major, A the raw buffer read
+        // column-major (S's d x d; S₁'s n1 x d, so that b' = Aᵀ h1 there too).
+        Buffers::device<double> au(static_cast<size_t>(m * cols), res.device());
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_T>(
+            res.blas(), mi, ci, di, &kOne<double>, cs.u.data(), raw, &kZero<double>, au.data())));
+        Buffers::device<double> wa(static_cast<size_t>(nd * cols), res.device());
+        FBF_TRY(gpu_status(gemm(res.blas(), ndi, ci, mi, &kOne<double>, w.data(), au.data(),
+                                &kZero<double>, wa.data())));
+        // The terms' whole sizes, ‖A'‖ and ‖W‖ ‖A U‖: what round-off is
+        // relative to, even where a symmetry zeroes both parts.
+        scale += FBF_TRY(fro(raw_dot, d * cols)) +
+                 (FBF_TRY(fro(w.data(), nd * m)) * FBF_TRY(fro(au.data(), m * cols)));
+        // ρ = Eᵀ (lead - wa).
+        FBF_TRY(einsum(res.stream(), "i->i", {{.data = wa.data(), .dims = {nd * cols}}},
+                       lead.data(), {nd * cols}, -1.0));
+        Buffers::device<double> rho(static_cast<size_t>(nd * cols), res.device());
+        FBF_TRY(
+            gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), ndi, ci, ndi, &kOne<double>, l.data(),
+                                               lead.data(), &kZero<double>, rho.data())));
+        const std::vector<double> h = FBF_TRY(download(res, rho.data(), nd * cols));
+        for (int64_t e = 0; e < nd; ++e) {
+          for (int64_t col = 0; col < cols; ++col) {
+            const double x = h[static_cast<size_t>(e + (nd * col))];
+            rows[static_cast<size_t>(e)] += x * x;
+          }
+        }
+      }
+      // Over the modes that reach the cut within @p step: ½ ℓ_e step² past it.
+      for (int64_t e = 0; e < nd; ++e) {
+        if (0.5 * (lifts[static_cast<size_t>(e)] / largest) * step * step >= out.cut[cl.k]) {
+          num = std::max(num, std::sqrt(rows[static_cast<size_t>(e)]));
+        }
+      }
+      // In units of its round-off: V_n is S's null space to ε √d over the
+      // kept modes' gap, kept of the largest.
+      const double round_off =
+          std::numeric_limits<double>::epsilon() * std::sqrt(static_cast<double>(d)) / cs.kept;
+      out.overlap[static_cast<size_t>(bra)][cl.k] =
+          scale > 0.0 && cs.kept > 0.0 ? num / (scale * round_off) : 0.0;
+    }
   }
+  return out;
+}
+
+Result<PcMetricLifts> pc_metric_lifts(DeviceResources &res, const MoBlocks &blocks,
+                                      const EnergyInputs &in, const EnergyInputs &first,
+                                      const EnergyInputs &second) {
+  PcMetricLifts out = FBF_TRY(pc_metric_lifts(res, blocks, {&in, 1}, {&first, 1}, second, 0,
+                                              std::numeric_limits<double>::infinity()));
+  out.overlap.clear();
   return out;
 }
 
