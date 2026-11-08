@@ -33,6 +33,14 @@
 // of three functions, are empty for one root and populated for the other
 // (#962): there a guarded tuple's Ṫ to the other root is above ten of its
 // column's duality bars, and that column's duality holds to 1e-10.
+//
+// nevpt2::pc_effective_hamiltonian_tangent, PC-QD's, is held the same way
+// against qd_pc_adjoint, also ladder-validated (Nevpt2QdPcAdjoint), on
+// h2co_ccpvdz_sa2 and h2co_skew_ccpvdz_sa3; its parts are the transitions'
+// two sides and each root's own dm1-dm3 (its metric S_N). At the default cut
+// the metrics drop only null modes, where the kept span's rotation (#862) is
+// round-off; at pc_floor 1e-3 they drop real ones, and the tangent without
+// the rotation must then miss by more than ten bars.
 
 #include <gtest/gtest.h>
 
@@ -73,6 +81,18 @@ constexpr double kDuality = 1e-10;
 // summand, where its misses run; the other cases are held to kDuality.
 constexpr double kMixedPrecision = 0.5 * std::numeric_limits<double>::epsilon();
 constexpr double kSinglePrecision = 4.0 * std::numeric_limits<double>::epsilon();
+// PC's conditioning floor (src/nevpt2/energy/README.md, "PC-QD" under "The
+// PC forward tangent"; #917's mechanism). Each walk's einsums carry ε
+// relative round-off on S and K, and a ket's solve amplifies it by its
+// metric's condition number over the kept range, 1 / kept (relative to
+// σ_max), so class k's coupling Ċ^k_IJ is off by about ε |Ċ^k_IJ| / kept_{J,k}
+// in each of the tangent and the adjoint. The floor is twice that, under W:
+// 2 Σ_IJ |W_IJ| Σ_k ε |Ċ^k_IJ| / kept_{J,k}, read off the tangent's own
+// elements. h2co_skew_ccpvdz_sa3 at the default cut is held to it (never
+// under kDuality): root 1 keeps Sijr, Srs and Sir modes at 6e-8 to 2e-7 of
+// σ_max, and its in-process repeats spread its Sijr and Sir couplings by at
+// most 0.07 of this floor.
+constexpr double kPcConditioning = std::numeric_limits<double>::epsilon();
 // The visibility rule: a part above this many bars in some column.
 constexpr double kVisible = 10.0;
 // Between the tangent's elements and qd_sc_adjoint's: the same inputs, the
@@ -327,12 +347,20 @@ std::vector<double> general_w(const std::size_t n) {
 
 // The parts of a column's pair tangents, each a direction of its own: the
 // whole, the off-diagonal RDMs' ket side alone (rdms at c_M, ċ_N), their
-// bra side alone (ċ_M, c_N), and the diagonal's digests at the dotted
-// (tu|vw) alone (f3ca and f3ac of rdms at c_r over (tu|vw)'s tangent).
-constexpr std::array<std::string_view, 4> kParts{"whole", "ket", "bra", "digest"};
+// bra side alone (ċ_M, c_N), and for SC the diagonal's digests at the dotted
+// (tu|vw) alone (f3ca and f3ac of rdms at c_r over (tu|vw)'s tangent), for
+// PC each root's own dm1, dm2 and dm3 alone, what moves its metric S_N.
+constexpr std::array<std::string_view, 4> kScParts{"whole", "ket", "bra", "digest"};
+constexpr std::array<std::string_view, 4> kPcParts{"whole", "ket", "bra", "own"};
 
-// The duality on @p name, the tangent walked in batches of @p batch.
-void expect_duality(const std::string &name, const std::int32_t batch, const bool floored) {
+// The duality on @p name, the SC tangent (or with @p pc PC's) walked in
+// batches of @p batch; PC's at the conditioning floor @p pc_floor
+// (EnergyInputs::pc_floor) on every pair and the adjoint, which with
+// @p pc_floor > 0 cuts real modes, and the kept span's rotation must then be
+// visible too.
+void expect_duality(const std::string &name, const std::int32_t batch, const bool floored,
+                    const bool pc = false, const double pc_floor = 0.0) {
+  const std::array<std::string_view, 4> &parts = pc ? kPcParts : kScParts;
   const Point p = sa_casscf(name);
   ASSERT_FALSE(p.b.empty());
   fb::DeviceResources res(0);
@@ -412,6 +440,7 @@ void expect_duality(const std::string &name, const std::int32_t batch, const boo
   // The pairs: the shared fields root 0's, the orbital energies averaged,
   // each root's own RDMs its builders', each transition's rdms'.
   nevpt2::EnergyInputs shared = first.inputs();
+  shared.pc_floor = pc_floor;
   shared.e_core = averaged(std::nullopt, &nevpt2::BuilderOutputs::e_core);
   shared.e_virt = averaged(std::nullopt, &nevpt2::BuilderOutputs::e_virt);
   std::vector<nevpt2::EnergyInputs> pairs(n2, shared);
@@ -443,7 +472,7 @@ void expect_duality(const std::string &name, const std::int32_t batch, const boo
   // The directions, [(part m + u) n² + pair]: the whole moves column u's
   // integrals, orbital energies and B too, each other part its RDMs alone.
   std::vector<nevpt2::EnergyDirection> directions;
-  for (const std::string_view part : kParts) {
+  for (const std::string_view part : parts) {
     for (std::size_t u = 0; u < m; ++u) {
       const nevpt2::BuilderOutputs &t0 = roots.front().tangents[u];
       const bool whole = part == "whole";
@@ -468,6 +497,11 @@ void expect_duality(const std::string &name, const std::int32_t batch, const boo
             in.dm3 = own.dm3;
             in.f3ca = own.f3ca;
             in.f3ac = own.f3ac;
+          } else if (i == j && part == "own") {
+            const nevpt2::EnergyInputs own = roots[i].tangents[u].inputs();
+            in.dm1 = own.dm1;
+            in.dm2 = own.dm2;
+            in.dm3 = own.dm3;
           } else if (i == j && part == "digest") {
             // f3 is linear in (tu|vw): rdms at its tangent is the digests'.
             const auto [dm1, dm2, dm3, f3ca, f3ac] = rdm_buffers();
@@ -476,7 +510,7 @@ void expect_duality(const std::string &name, const std::int32_t batch, const boo
             ASSERT_TRUE(got) << got.error().message;
             in.f3ca = f3ca;
             in.f3ac = f3ac;
-          } else if (i != j && part != "digest") {
+          } else if (i != j && (part == "whole" || part == "ket" || part == "bra")) {
             const auto [dm1, dm2, dm3, f3ca, f3ac] = rdm_buffers();
             if (part != "bra") {
               const auto got = nevpt2::rdms(res, *strings, *strings, ci, dj, first.eri.data(), dm1,
@@ -511,31 +545,89 @@ void expect_duality(const std::string &name, const std::int32_t batch, const boo
     }
   }
 
-  const auto got =
-      nevpt2::sc_effective_hamiltonian_tangent(res, first.blocks, pairs, batch, directions);
-  ASSERT_TRUE(got) << got.error().message;
-  ASSERT_EQ(got->total_dot.size(), kParts.size() * m);
-
+  // The tangent's Ċ per column and element, and with @p pc the whole part's
+  // without the kept span's rotation; and the adjoint's elements and bars.
   const std::vector<double> w = general_w(nroots);
-  const auto adj =
-      nevpt2::qd_sc_adjoint(res, *strings, *strings, p.naux, p.nao, p.nao, b.data(), c.data(),
-                            h.data(), p.ncore, p.ncas, p.weights, vectors.data(), w, 0);
-  ASSERT_TRUE(adj) << adj.error().message;
-  ASSERT_EQ(adj->elements.size(), n2);
-  for (std::size_t q = 0; q < n2; ++q) {
-    EXPECT_NEAR(got->elements[q].total, adj->elements[q].total, kSameElements) << name << " " << q;
+  std::vector<std::vector<double>> total_dot;
+  std::vector<std::vector<double>> span_off;
+  std::vector<double> tangent_elements;
+  std::vector<double> adjoint_elements;
+  std::vector<double> h_bar;
+  std::vector<double> lambda;
+  std::vector<double> y;
+  const auto bars_of = [&](const auto &adj) {
+    for (const auto &e : adj.elements) {
+      adjoint_elements.push_back(e.total);
+    }
+    h_bar = download(res, adj.h_bar.data(), nmo * nmo);
+    lambda = download(res, adj.lambda.data(), static_cast<std::size_t>(p.naux) * nmo * nmo);
+    y = download(res, adj.y.data(), p.vectors.size());
+  };
+  std::optional<nevpt2::ScEffectiveHamiltonianTangent> sc;
+  std::optional<nevpt2::PcEffectiveHamiltonianTangent> pct;
+  if (pc) {
+    auto got =
+        nevpt2::pc_effective_hamiltonian_tangent(res, first.blocks, pairs, batch, directions);
+    ASSERT_TRUE(got) << got.error().message;
+    total_dot = got->total_dot;
+    for (const nevpt2::PcClassEnergies &e : got->elements) {
+      tangent_elements.push_back(e.total);
+    }
+    const auto off = nevpt2::pc_effective_hamiltonian_tangent(
+        res, first.blocks, pairs, batch, std::span(directions).first(m * n2), false);
+    ASSERT_TRUE(off) << off.error().message;
+    span_off = off->total_dot;
+    const auto adj = nevpt2::qd_pc_adjoint(res, *strings, *strings, p.naux, p.nao, p.nao, b.data(),
+                                           c.data(), h.data(), p.ncore, p.ncas, p.weights,
+                                           vectors.data(), w, 0, 0, pc_floor);
+    ASSERT_TRUE(adj) << adj.error().message;
+    bars_of(*adj);
+    pct = std::move(*got);
+  } else {
+    auto got =
+        nevpt2::sc_effective_hamiltonian_tangent(res, first.blocks, pairs, batch, directions);
+    ASSERT_TRUE(got) << got.error().message;
+    total_dot = got->total_dot;
+    for (const nevpt2::ClassEnergies &e : got->elements) {
+      tangent_elements.push_back(e.total);
+    }
+    sc = std::move(*got);
+    const auto adj =
+        nevpt2::qd_sc_adjoint(res, *strings, *strings, p.naux, p.nao, p.nao, b.data(), c.data(),
+                              h.data(), p.ncore, p.ncas, p.weights, vectors.data(), w, 0);
+    ASSERT_TRUE(adj) << adj.error().message;
+    bars_of(*adj);
   }
-  const std::vector<double> h_bar = download(res, adj->h_bar.data(), nmo * nmo);
-  const std::vector<double> lambda =
-      download(res, adj->lambda.data(), static_cast<std::size_t>(p.naux) * nmo * nmo);
-  const std::vector<double> y = download(res, adj->y.data(), p.vectors.size());
+  ASSERT_EQ(total_dot.size(), parts.size() * m);
+  ASSERT_EQ(adjoint_elements.size(), n2);
+  for (std::size_t q = 0; q < n2; ++q) {
+    EXPECT_NEAR(tangent_elements[q], adjoint_elements[q], kSameElements) << name << " " << q;
+  }
 
   // Column u's conditioning floor: twice Σ |W| |∂Ċ/∂x| σ_x over the kept
   // tuples of every class finished in the (N, d) form (Sijrs has no tables;
   // a one-function class, Srs at two active electrons or Sij at two active
   // holes, reads η and divides by no norm).
-  const std::size_t mm = kParts.size() * m;
+  const std::size_t mm = parts.size() * m;
   const auto floor_of = [&](const std::size_t u) {
+    if (pct) {
+      // PC's: the solves' conditioning (kPcConditioning).
+      double sum = 0.0;
+      for (std::size_t q = 0; q < n2; ++q) {
+        const nevpt2::PcClassEnergies &ket = pct->elements[(q % nroots) * (nroots + 1)];
+        for (std::size_t k = 0; k < kClassNames.size(); ++k) {
+          if (ket.kept[k] > 0.0) {
+            sum += std::abs(w[q]) * kPcConditioning * std::abs(pct->element_dot[u][q][k]) /
+                   ket.kept[k];
+          }
+        }
+      }
+      return 2.0 * sum;
+    }
+    if (!sc) {
+      return 0.0;
+    }
+    const nevpt2::ScEffectiveHamiltonianTangent *const got = &*sc;
     double sum = 0.0;
     for (std::size_t q = 0; q < n2; ++q) {
       const nevpt2::ClassEnergiesTangent &kt = got->kets[q % nroots];
@@ -585,9 +677,10 @@ void expect_duality(const std::string &name, const std::int32_t batch, const boo
 
   // Column u's Σ W Ċ for part @p k.
   const auto weighted = [&](const std::size_t k, const std::size_t u) {
-    return dot(w, got->total_dot[(k * m) + u]);
+    return dot(w, total_dot[(k * m) + u]);
   };
-  std::array<double, kParts.size()> visible{};
+  std::array<double, kScParts.size()> visible{};
+  double span_visible = 0.0;
   std::vector<double> bars;
   for (std::size_t u = 0; u < m; ++u) {
     std::vector<double> summands{dot(h_bar, cols[u].h), dot(lambda, cols[u].b)};
@@ -606,19 +699,32 @@ void expect_duality(const std::string &name, const std::int32_t batch, const boo
     const double tangent = weighted(0, u);
     EXPECT_LE(std::abs(tangent - predicted), bar)
         << name << " " << cols[u].name << ": Σ W Ċ " << tangent << ", <bars, u> " << predicted;
-    std::cout << std::format("[ nevpt2   ] qd tangent {} batch {} {}: Σ W Ċ {:+.12e}, <bars, u> "
-                             "{:+.12e}, miss / largest summand {:.2e}, floor {:.2e}\n",
-                             name, batch, cols[u].name, tangent, predicted,
-                             std::abs(tangent - predicted) / scale, floor / scale);
-    for (std::size_t k = 1; k < kParts.size(); ++k) {
+    const double off = pc ? std::abs(dot(w, span_off[u]) - tangent) / bar : 0.0;
+    span_visible = std::max(span_visible, off);
+    std::cout << std::format("[ nevpt2   ] qd {} tangent {} batch {} {}: Σ W Ċ {:+.12e}, <bars, u> "
+                             "{:+.12e}, miss / largest summand {:.2e}, floor {:.2e}{}\n",
+                             pc ? "pc" : "sc", name, batch, cols[u].name, tangent, predicted,
+                             std::abs(tangent - predicted) / scale, floor / scale,
+                             pc ? std::format(", span's rotation {:.2e} bars", off) : "");
+    for (std::size_t k = 1; k < parts.size(); ++k) {
       visible[k] = std::max(visible[k], std::abs(weighted(k, u)) / bar);
     }
   }
-  for (std::size_t k = 1; k < kParts.size(); ++k) {
-    EXPECT_GT(visible[k], kVisible) << name << ": part " << kParts[k];
-    std::cout << std::format("[ nevpt2   ] qd tangent {}: part {} at most {:.2e} bars\n", name,
-                             kParts[k], visible[k]);
+  for (std::size_t k = 1; k < parts.size(); ++k) {
+    EXPECT_GT(visible[k], kVisible) << name << ": part " << parts[k];
+    std::cout << std::format("[ nevpt2   ] qd {} tangent {}: part {} at most {:.2e} bars\n",
+                             pc ? "pc" : "sc", name, parts[k], visible[k]);
   }
+  if (!sc) {
+    if (pc_floor > 0.0) {
+      EXPECT_GT(span_visible, kVisible) << name << ": the kept span's rotation";
+    }
+    std::cout << std::format("[ nevpt2   ] qd pc tangent {} floor {:g}: span's rotation at most "
+                             "{:.2e} bars\n",
+                             name, pc_floor, span_visible);
+    return;
+  }
+  const nevpt2::ScEffectiveHamiltonianTangent *const got = &*sc;
 
   // The guarded tuples: each coupling's transition tangent there, against
   // the column's bar; and over the tuples empty for the ket alone (the
@@ -642,7 +748,7 @@ void expect_duality(const std::string &name, const std::int32_t batch, const boo
         for (const std::int64_t t : empty) {
           const auto x = static_cast<std::size_t>(t);
           for (std::size_t u = 0; u < m; ++u) {
-            const double ratio = std::abs(t_dot[(x * kParts.size() * m) + u]) / bars[u];
+            const double ratio = std::abs(t_dot[(x * parts.size() * m) + u]) / bars[u];
             largest = std::max(largest, ratio);
             if (std::abs(bra_norm[x]) > 1e-14 && ratio > one_sided) {
               one_sided = ratio;
@@ -689,5 +795,33 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdTangent,
                                            std::tuple{std::string{"h2nb_sto3g_cas23_sa2"}, 0,
                                                       false}),
                          [](const auto &info) { return std::get<0>(info.param); });
+
+// A conditioning floor that cuts real metric modes, where the kept span's
+// rotation (#862) carries energy: at the default cut every dropped mode is
+// null and the rotation is round-off.
+constexpr double kRealModesFloor = 1e-3;
+
+class Nevpt2QdPcTangent
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t, double>> {};
+
+// PC's: h2co_ccpvdz_sa2 in batches of four (its 4364 empty SC tuples), and
+// h2co_skew_ccpvdz_sa3 whole, each at the default cut and at kRealModesFloor;
+// skew at the default cut held to its conditioning floor (kPcConditioning).
+TEST_P(Nevpt2QdPcTangent, DualToQdPcAdjoint) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE("h2co_ccpvdz_sa2");
+  const auto [name, batch, floor] = GetParam();
+  expect_duality(name, batch, name == "h2co_skew_ccpvdz_sa3" && floor == 0.0, true, floor);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Cases, Nevpt2QdPcTangent,
+    ::testing::Values(std::tuple{std::string{"h2co_ccpvdz_sa2"}, 4, 0.0},
+                      std::tuple{std::string{"h2co_skew_ccpvdz_sa3"}, 0, 0.0},
+                      std::tuple{std::string{"h2co_ccpvdz_sa2"}, 4, kRealModesFloor},
+                      std::tuple{std::string{"h2co_skew_ccpvdz_sa3"}, 0, kRealModesFloor}),
+    [](const auto &info) {
+      return std::get<0>(info.param) + (std::get<2>(info.param) > 0.0 ? "_floored" : "");
+    });
 
 } // namespace

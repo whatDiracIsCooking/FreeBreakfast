@@ -1,10 +1,10 @@
 /// @file
 /// @brief The SC- and PC-QD-NEVPT2 effective Hamiltonians, their reverse
-/// passes and SC's forward tangent and Hessian-vector product: their checks
+/// passes and forward tangents, and SC's Hessian-vector product: their checks
 /// over the n x n pair inputs, and the class walks each shares with its
 /// one-state energy (energy.cpp's sc_couplings, pc.cpp's pc_couplings,
 /// reverse.cpp's sc_couplings_adjoint, pc_couplings_adjoint,
-/// sc_couplings_tangent and sc_couplings_hvp).
+/// sc_couplings_tangent, pc_couplings_tangent and sc_couplings_hvp).
 
 module;
 
@@ -212,6 +212,15 @@ Result<PcEffectiveHamiltonianAdjoint> pc_effective_hamiltonian_adjoint(
   const int64_t n =
       FBF_TRY(qd_adjoint_states("pc_effective_hamiltonian_adjoint", pairs, hbar, bars));
   return pc_couplings_adjoint(res, blocks, pairs, n, hbar, batch, bars, transition);
+}
+
+Result<PcEffectiveHamiltonianTangent>
+pc_effective_hamiltonian_tangent(DeviceResources &res, const MoBlocks &blocks,
+                                 std::span<const EnergyInputs> pairs, const int32_t batch,
+                                 std::span<const EnergyDirection> directions, const bool span) {
+  constexpr const char *kWho = "pc_effective_hamiltonian_tangent";
+  const int64_t n = FBF_TRY(qd_tangent_states(kWho, pairs, directions));
+  return pc_couplings_tangent(res, blocks, pairs, n, batch, directions, span, kWho);
 }
 
 } // namespace free_breakfast::nevpt2
