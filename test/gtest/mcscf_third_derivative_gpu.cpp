@@ -7,8 +7,8 @@
 // roots are saddle points; the fixture's are the minima), the integrals this
 // tree's. Checked: lambda^xT (z . d2 g_SA) lambda^y against the fixture's
 // `third` (a mixed fourth-order difference of the exact gradient), the
-// two random vectors' `third_random`, its symmetry in (x, y), and the
-// refusals. Beside them, mcscf::df_integral_derivatives' chunks handed to a
+// two random vectors' `third_random`, its symmetry in (x, y), the refusals,
+// and partly equal weights (0.4, 0.4, 0.2) taken with every rotation. Beside them, mcscf::df_integral_derivatives' chunks handed to a
 // test consumer under a budget of two coordinates per chunk, against a
 // Richardson ladder of (h_MO, L) along every coordinate, the connection
 // included.
@@ -386,11 +386,19 @@ TEST_P(McscfThirdDerivative, MatchesTheFixture) {
                 *strings, *strings, roots.data(), unnormalized, z.data()),
             "weights not summing to 1");
     if (nroots == 3) {
+      // Partly equal weights are taken, every pair's rotation a parameter.
+      const std::size_t n_theta = rotations ? 3 : 0;
+      const std::size_t pairs = z_host.size() - (dim * nroots) - n_theta;
+      fb::Buffers::device<double> zero_z(pairs + (dim * nroots) + 3, res.device());
+      ASSERT_EQ(wwr::wwrMemsetAsync(zero_z.data(), 0, zero_z.num_elements() * sizeof(double),
+                                    res.stream()),
+                wwr::wwrSuccess);
       const std::vector<double> partly{0.4, 0.4, 0.2};
-      refused(fb::mcscf::ThirdDerivative::create(
-                  res, h_pair.spherical(), b, static_cast<std::int32_t>(naux), c, ncore, ncas,
-                  *strings, *strings, roots.data(), partly, z.data()),
-              "partly equal weights");
+      const auto made = fb::mcscf::ThirdDerivative::create(
+          res, h_pair.spherical(), b, static_cast<std::int32_t>(naux), c, ncore, ncas, *strings,
+          *strings, roots.data(), partly, zero_z.data());
+      ASSERT_TRUE(made.has_value()) << made.error().message;
+      EXPECT_EQ(static_cast<std::size_t>(made->size()), zero_z.num_elements());
     }
   }
 

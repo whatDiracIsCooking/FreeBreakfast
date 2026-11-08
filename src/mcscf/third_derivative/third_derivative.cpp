@@ -118,6 +118,9 @@ Result<ThirdDerivative> ThirdDerivative::create(
         "mcscf::ThirdDerivative: the weights must be positive and sum to 1 (got {} of them)",
         weights.size());
   }
+  // Every pair's rotation is a parameter unless all the weights are equal:
+  // a pair of equal weights among unequal ones is one too (its gradient row
+  // is zero, its third derivatives are not), as a QD Lagrangian's x_A has it.
   size_t equal_pairs = 0;
   size_t all_pairs = 0;
   for (size_t r = 0; r < weights.size(); ++r) {
@@ -125,11 +128,6 @@ Result<ThirdDerivative> ThirdDerivative::create(
       ++all_pairs;
       equal_pairs += std::abs(weights[r] - weights[s]) < kThirdWeightTolerance ? 1 : 0;
     }
-  }
-  if (equal_pairs != 0 && equal_pairs != all_pairs) {
-    return err_config("mcscf::ThirdDerivative: weights equal for {} of {} pairs of roots: the "
-                      "rotations among the roots are either all parameters or none",
-                      equal_pairs, all_pairs);
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   ci::Sigma sigma0 = FBF_TRY(ci::Sigma::create(res, alpha, beta));
@@ -144,7 +142,7 @@ Result<ThirdDerivative> ThirdDerivative::create(
                      naux,
                      dim,
                      weights,
-                     equal_pairs == 0 && all_pairs > 0,
+                     equal_pairs != all_pairs,
                      std::move(sigma0),
                      std::move(sigma_z),
                      std::move(sigma_work),
