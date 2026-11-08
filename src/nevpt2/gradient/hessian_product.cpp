@@ -893,13 +893,42 @@ qd_rdms_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
   return y;
 }
 
-Result<QdScHessianProduct> qd_sc_hessian_product(
-    DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
-    const int32_t naux, const int32_t nao, const int32_t nmo, const double *b, const double *c,
-    const double *h, const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
-    const double *vectors, const std::span<const double> w, const double *z, const int32_t batch,
-    const MoDirections &directions, const MoDirections &partners, const bool parts) {
-  constexpr std::string_view kWho = "nevpt2::qd_sc_hessian_product";
+// What qd_hessian_product's body asks of its pair walk: @p adjoint runs
+// qd_sc_adjoint's or qd_pc_adjoint's reverse pass at W, its arrays and
+// folded bars kept into the given QdFixedBars; @p check reads every
+// direction's QD builders' tangent (and its CI part u along the generators)
+// and its partner's before the walk; @p hvp is the pair walk's
+// Hessian-vector product along them onto the bars, each transition's
+// tangent bars handed to the transition callback.
+struct QdProductWalk {
+  std::function<Result<QdScAdjoint>(std::optional<QdFixedBars> &)> adjoint;
+  std::function<Status(QdFixedBars &, std::span<const QdDirectionArrays>, const double *u,
+                       std::span<const QdDirectionArrays>, const double *u_partners)>
+      check;
+  std::function<Status(const MoBlocks &, std::span<const EnergyInputs>,
+                       std::span<const EnergyDirection>, std::span<const EnergyBars>,
+                       const std::function<Status(int64_t, int64_t, int64_t, const EnergyBars &)> &,
+                       std::span<const EnergyDirection>)>
+      hvp;
+};
+
+// The QD products and their parts, of either pair walk.
+struct QdProducts {
+  std::vector<AdjointTangent> products;
+  std::vector<std::array<AdjointTangent, 4>> parts;
+};
+
+// qd_sc_hessian_product's and qd_pc_hessian_product's one body: everything
+// but the pair walk (README "The SC-QD Hessian-vector product in
+// (h, B, {c_r})").
+Result<QdProducts>
+qd_hessian_product(DeviceResources &res, const std::string_view kWho,
+                   const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+                   const int32_t naux, const int32_t nao, const int32_t nmo, const double *b,
+                   const double *c, const double *h, const int32_t ncore, const int32_t ncas,
+                   const std::span<const double> weights, const double *vectors,
+                   const std::span<const double> w, const double *z, const MoDirections &directions,
+                   const MoDirections &partners, const bool parts, const QdProductWalk &walk_of) {
   const auto complete = [](const MoDirections &d) {
     return d.count >= 0 && (d.count == 0 || (d.h != nullptr && d.b != nullptr && d.c != nullptr));
   };
@@ -917,15 +946,11 @@ Result<QdScHessianProduct> qd_sc_hessian_product(
   if (w.size() != nroots * nroots) {
     return err_config("{}: W holds {} elements for {} roots: n^2", kWho, w.size(), nroots);
   }
-  // qd_sc_adjoint's reverse pass, its arrays and folded bars kept (one W,
+  // The pair walk's reverse pass, its arrays and folded bars kept (one W,
   // all-electron: the Hessian this feeds refuses a frozen core).
-  QdScHessianProduct out;
+  QdProducts out;
   std::optional<QdFixedBars> kept;
-  std::vector<QdScAdjoint> adj =
-      FBF_TRY(qd_adjoints(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights,
-                          vectors, w, batch, nullptr, 0, 0.0, nullptr, &kept));
-  QdScAdjoint &corr = adj.front();
-  out.elements = std::move(corr.elements);
+  QdScAdjoint corr = FBF_TRY(walk_of.adjoint(kept));
   QdFixedBars &fixed = *kept;
   ScArrays &x = fixed.arrays.x;
   const ScopedDeviceIndex on{res.dev_idx()};
@@ -1014,6 +1039,9 @@ Result<QdScHessianProduct> qd_sc_hessian_product(
   };
   std::vector<QdDirectionArrays> dots = FBF_TRY(tangents(directions, u_all));
   std::vector<QdDirectionArrays> partner_dots = FBF_TRY(tangents(partners, u_partners));
+  if (walk_of.check) {
+    FBF_TRY(walk_of.check(fixed, dots, u_all.data(), partner_dots, u_partners.data()));
+  }
 
   // sc_effective_hamiltonian_hvp along every direction at once, onto fresh
   // bars: per direction the shared ones, Λ and each root's own; each
@@ -1068,13 +1096,8 @@ Result<QdScHessianProduct> qd_sc_hessian_product(
       FBF_TRY(add_onto(res, ndet, 1, ket_bar.data(), yu + (ket * ndet), ndet));
       return {};
     };
-    ScEffectiveHamiltonianHvp walked = FBF_TRY(
-        sc_effective_hamiltonian_hvp(res, x.walk_blocks(), pair_inputs(fixed.arrays, nroots), w,
-                                     batch, hvp_dirs, hvp_bars, transition, hvp_partners));
-    out.populated = std::move(walked.populated);
-    out.defect = std::move(walked.defect);
-    out.coupling_defect = std::move(walked.coupling_defect);
-    out.coupling_k6 = std::move(walked.coupling_k6);
+    FBF_TRY(walk_of.hvp(x.walk_blocks(), pair_inputs(fixed.arrays, nroots), hvp_dirs, hvp_bars,
+                        transition, hvp_partners));
     // The launches above read the scratch, which goes with this branch.
     FBF_TRY(res.sync());
   }
@@ -1206,6 +1229,218 @@ Result<QdScHessianProduct> qd_sc_hessian_product(
     out.parts.push_back(std::move(split));
   }
   FBF_TRY(res.sync());
+  return out;
+}
+
+Result<QdScHessianProduct> qd_sc_hessian_product(
+    DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+    const int32_t naux, const int32_t nao, const int32_t nmo, const double *b, const double *c,
+    const double *h, const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
+    const double *vectors, const std::span<const double> w, const double *z, const int32_t batch,
+    const MoDirections &directions, const MoDirections &partners, const bool parts) {
+  constexpr std::string_view kWho = "nevpt2::qd_sc_hessian_product";
+  QdScHessianProduct out;
+  const QdProductWalk walk{
+      .adjoint = [&](std::optional<QdFixedBars> &kept) -> Result<QdScAdjoint> {
+        std::vector<QdScAdjoint> adj =
+            FBF_TRY(qd_adjoints(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas,
+                                weights, vectors, w, batch, nullptr, 0, 0.0, nullptr, &kept));
+        out.elements = std::move(adj.front().elements);
+        return std::move(adj.front());
+      },
+      .check = {},
+      .hvp = [&](const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+                 std::span<const EnergyDirection> dirs, std::span<const EnergyBars> bars,
+                 const auto &transition, std::span<const EnergyDirection> partner_dirs) -> Status {
+        ScEffectiveHamiltonianHvp walked = FBF_TRY(sc_effective_hamiltonian_hvp(
+            res, blocks, pairs, w, batch, dirs, bars, transition, partner_dirs));
+        out.populated = std::move(walked.populated);
+        out.defect = std::move(walked.defect);
+        out.coupling_defect = std::move(walked.coupling_defect);
+        out.coupling_k6 = std::move(walked.coupling_k6);
+        return {};
+      }};
+  QdProducts p =
+      FBF_TRY(qd_hessian_product(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas,
+                                 weights, vectors, w, z, directions, partners, parts, walk));
+  out.products = std::move(p.products);
+  out.parts = std::move(p.parts);
+  return out;
+}
+
+// A Schur-lift overlap past this many units of its round-off (PcMetricLifts::
+// overlap) is a first-order overlap of the lifted functions with the bra:
+// the cut's own multiple of σ's round-off (100 ε √d), which every structural
+// null's has measured below (README "The Schur lift on every model state").
+constexpr double kPcLiftOverlap = 100.0;
+// A null mode lifts when it reaches the cut within this step along the
+// direction, in its own units (t* below it): the step #817's single-state
+// assembly refuses on (hessian's kPcNevpt2LiftStep, 1e-3 bohr for its
+// nuclear directions). A mode that needs more is no lift within any step a
+// Hessian takes, and a direction that the response leaves at round-off by
+// symmetry lifts nothing (README "The Schur lift on every model state").
+constexpr double kPcLiftStep = 1e-3;
+
+// The eight classes, in the energies' order, for the refusal's message.
+constexpr std::array<std::string_view, 8> kPcClassNames{"Sr",   "Si",  "Sijrs", "Sijr",
+                                                        "Srsi", "Srs", "Sij",   "Sir"};
+
+Result<QdPcHessianProduct> qd_pc_hessian_product(
+    DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+    const int32_t naux, const int32_t nao, const int32_t nmo, const double *b, const double *c,
+    const double *h, const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
+    const double *vectors, const std::span<const double> w, const double *z, const int32_t batch,
+    const MoDirections &directions, const MoDirections &partners, const bool parts,
+    const double pc_floor, const bool span) {
+  constexpr std::string_view kWho = "nevpt2::qd_pc_hessian_product";
+  QdPcHessianProduct out;
+  const size_t nroots = weights.size();
+  const auto ndet = static_cast<int64_t>(alpha.size()) * static_cast<int64_t>(beta.size());
+  // Ket N's lifts and overlaps along one direction's QD builders' tangent
+  // @p dot, its CI part @p u along the generators: the path of N's own RDMs
+  // is c_N(t) = e^{tK} c_N, so their second derivative is
+  // Γ(K u_N, c_N) + Γ(c_N, K u_N) + 2 Γ(u_N, u_N) (dm3's from nevpt2::rdms,
+  // dm2 and dm1 its traces; at n = 1, 2 γ(u, u) - 2 |u|² γ(c, c)), and each
+  // transition (N, M)'s first derivative the tangent's own.
+  const auto lifts_along = [&](QdFixedBars &fixed, const QdDirectionArrays &dot, const double *u,
+                               std::vector<PcMetricLifts> &into,
+                               std::vector<double> &uu) -> Status {
+    ScArrays &x = fixed.arrays.x;
+    const int64_t n = ncas;
+    const int64_t n6 = n * n * n * n * n * n;
+    const std::vector<double> c_host =
+        FBF_TRY(to_host(res, vectors, static_cast<size_t>(nroots) * static_cast<size_t>(ndet)));
+    const std::vector<double> u_host =
+        FBF_TRY(to_host(res, u, static_cast<size_t>(nroots) * static_cast<size_t>(ndet)));
+    const std::vector<EnergyInputs> pairs = pair_inputs(fixed.arrays, nroots, pc_floor);
+    std::vector<EnergyInputs> first;
+    for (const EnergyDirection &d : dot.directions()) {
+      first.push_back(d.in);
+    }
+    Buffers::device<double> part = FBF_TRY(zeroed(res, n6));
+    for (size_t r = 0; r < nroots; ++r) {
+      const std::span<const double> ur = root_of(u_host, static_cast<size_t>(ndet), r);
+      const double norm = host_dot(ur, ur);
+      uu.push_back(norm);
+      PcMetricLifts lifts{};
+      lifts.overlap.assign(nroots, {});
+      if (norm > 0.0) {
+        const double *const cr = vectors + (static_cast<int64_t>(r) * ndet);
+        const double *const urd = u + (static_cast<int64_t>(r) * ndet);
+        const Buffers::device<double> ku =
+            FBF_TRY(to_device(res, generator_apply(c_host, nroots, u_host, ur)));
+        Buffers::device<double> second3 = FBF_TRY(zeroed(res, n6));
+        for (const auto &[bra, ket] : {std::pair{ku.data(), cr}, std::pair{cr, ku.data()}}) {
+          FBF_TRY(rdms(res, alpha, beta, bra, ket, x.eri.data(), nullptr, nullptr, part.data(),
+                       nullptr, nullptr, FBF_TRY(rdm_budget())));
+          FBF_TRY(contract(res, "a->a", {column_operand(part.data(), {n6})}, second3.data(), {n6},
+                           1.0));
+        }
+        FBF_TRY(rdms(res, alpha, beta, urd, x.eri.data(), part.data(), nullptr, nullptr,
+                     FBF_TRY(rdm_budget())));
+        FBF_TRY(
+            contract(res, "a->a", {column_operand(part.data(), {n6})}, second3.data(), {n6}, 2.0));
+        Buffers::device<double> second2 = FBF_TRY(zeroed(res, n * n * n * n));
+        Buffers::device<double> second1 = FBF_TRY(zeroed(res, n * n));
+        FBF_TRY(run_builds(res, trace_builds(x, second1.data(), second2.data(), second3.data(),
+                                             nullptr, nullptr, nullptr)));
+        const EnergyInputs second{
+            .dm1 = second1.data(), .dm2 = second2.data(), .dm3 = second3.data()};
+        lifts = FBF_TRY(pc_metric_lifts(res, x.walk_blocks(), pairs, first, second,
+                                        static_cast<int64_t>(r), kPcLiftStep));
+        for (double &l : lifts.lift) {
+          l /= norm;
+        }
+        // The launches above read this branch's buffers.
+        FBF_TRY(res.sync());
+      }
+      into.push_back(std::move(lifts));
+    }
+    return {};
+  };
+  // t* in the direction's own units: the null mode's ½ ℓ |u_N|² t² reaches
+  // the cut there.
+  const auto steps_of = [](const PcMetricLifts &l, const double norm) {
+    std::array<double, 8> steps{};
+    for (size_t k = 0; k < steps.size(); ++k) {
+      steps[k] = l.lift[k] > 0.0 && norm > 0.0 ? std::sqrt(2.0 * l.cut[k] / (l.lift[k] * norm))
+                                               : std::numeric_limits<double>::infinity();
+    }
+    return steps;
+  };
+  const QdProductWalk walk{
+      .adjoint = [&](std::optional<QdFixedBars> &kept) -> Result<QdScAdjoint> {
+        std::vector<QdScAdjoint> adj = FBF_TRY(
+            qd_adjoints(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights,
+                        vectors, w, batch, &out.elements, 0, pc_floor, nullptr, &kept));
+        return std::move(adj.front());
+      },
+      // The Schur lift on every model state, before the walk: per direction
+      // and every ket N, its lifts, t* and each bra's overlap; a ket whose
+      // class's null modes reach a bra M at first order along the direction
+      // and along its partner (itself without partners) refuses the block
+      // (Eq. qd-pcfail).
+      .check = [&](QdFixedBars &fixed, std::span<const QdDirectionArrays> dots, const double *u,
+                   std::span<const QdDirectionArrays> partner_dots,
+                   const double *u_partners) -> Status {
+        const int64_t ny = static_cast<int64_t>(nroots) * ndet;
+        for (size_t k = 0; k < dots.size(); ++k) {
+          std::vector<PcMetricLifts> own;
+          std::vector<double> uu;
+          FBF_TRY(lifts_along(fixed, dots[k], u + (static_cast<int64_t>(k) * ny), own, uu));
+          std::vector<PcMetricLifts> other;
+          std::vector<double> vv;
+          if (!partner_dots.empty()) {
+            FBF_TRY(lifts_along(fixed, partner_dots[k], u_partners + (static_cast<int64_t>(k) * ny),
+                                other, vv));
+          }
+          const std::vector<PcMetricLifts> &with = partner_dots.empty() ? own : other;
+          const std::vector<double> &with_uu = partner_dots.empty() ? uu : vv;
+          out.lifts.emplace_back();
+          out.lift_steps.emplace_back();
+          out.overlaps.emplace_back();
+          for (size_t ket = 0; ket < nroots; ++ket) {
+            out.lifts.back().push_back(own[ket].lift);
+            out.lift_steps.back().push_back(steps_of(own[ket], uu[ket]));
+            out.overlaps.back().push_back(own[ket].overlap);
+            for (size_t bra = 0; bra < nroots; ++bra) {
+              for (size_t cls = 0; cls < 8; ++cls) {
+                const double a = own[ket].overlap[bra][cls];
+                const double e = with[ket].overlap[bra][cls];
+                if (bra == ket || a <= kPcLiftOverlap || e <= kPcLiftOverlap) {
+                  continue;
+                }
+                return err_numerical(
+                    "{}: the coupling ({}, {}) has no Hessian on directions ({}, partner {}): "
+                    "ket {}'s class {} null modes lift (t* {:.3e} along the direction, {:.3e} "
+                    "along its partner) with a first-order overlap to bra {} ({:.3e} and "
+                    "{:.3e} of their round-off, past {:.0f}): the cut keeps them dropped, and "
+                    "the coupling misses a first-order piece (Eq. qd-pcfail)",
+                    kWho, bra, ket, k, k, ket, kPcClassNames[cls], steps_of(own[ket], uu[ket])[cls],
+                    steps_of(with[ket], with_uu[ket])[cls], bra, a, e, kPcLiftOverlap);
+              }
+            }
+          }
+        }
+        return {};
+      },
+      .hvp = [&](const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+                 std::span<const EnergyDirection> dirs, std::span<const EnergyBars> bars,
+                 const auto &transition, std::span<const EnergyDirection>) -> Status {
+        // The pairs at the floor, which the kets' solves read.
+        std::vector<EnergyInputs> floored(pairs.begin(), pairs.end());
+        for (EnergyInputs &in : floored) {
+          in.pc_floor = pc_floor;
+        }
+        FBF_TRY(pc_effective_hamiltonian_hvp(res, blocks, floored, w, batch, dirs, bars, transition,
+                                             span));
+        return {};
+      }};
+  QdProducts p =
+      FBF_TRY(qd_hessian_product(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas,
+                                 weights, vectors, w, z, directions, partners, parts, walk));
+  out.products = std::move(p.products);
+  out.parts = std::move(p.parts);
   return out;
 }
 

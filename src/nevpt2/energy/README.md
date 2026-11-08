@@ -1796,11 +1796,71 @@ The base walk keeps, per class, U, V, M and M_Δ, and per slab ȳ and x̄
 (the slab rows' size, on the host), each with its tangent per direction,
 and per direction the span bar's derivative (d × d) and U̇ (d × m).
 
+### PC-QD
+
+    pc_effective_hamiltonian_hvp(res, blocks, pairs, hbar, batch, directions, bars,
+                                 transition, span = true) -> vector<PcClassEnergies>
+        the n² elements, as pc_effective_hamiltonian computes them
+    pairs, hbar        pc_effective_hamiltonian_adjoint's
+    directions         pc_effective_hamiltonian_tangent's: m n², [u n² + I n + J]
+    bars[u n + J]      added onto: the tangent of that reverse pass's bars[J] along u
+    transition         (u, bra, ket, bars): each ordered pair's dm1–dm3 bars' tangent
+    span               false leaves the kept span's rotation out, for the tests alone
+
+The QD analogue of the one-state product above, for the PC-QD-NEVPT2
+nuclear Hessian (#964; `docs/nevpt2/nevpt2.tex` Eq. qd-pcfinish), forward
+over [the PC-QD reverse pass](#pc-qd). **`pc_class_energies_hvp` is its
+n = 1, H̄ = 1** (`pc_couplings_hvp` in `reverse.cpp`; `qd.cpp` checks the
+inputs as for SC's), so the one-state product is this one's arithmetic.
+Per class and tuple the coupling is −c β, β = b′ᵀ A⁺ b, and its second
+derivative is
+
+    ∂₁₂β = xᵀ ∂₁₂b′ + uᵀ ∂₁₂b − uᵀ ∂₁₂A x + r′₁ᵀ A⁺ r₂ + r′₂ᵀ A⁺ r₁
+           + (the rank-projector terms of A⁺),
+
+x = A⁺ b, u = A⁺ b′, r = ∂b − ∂A x and r′ = ∂b′ − ∂A u. The three terms of
+the one-state product carry it over every ket's solve, each a fixed walk
+of the pair reverse pass (`pc_fixed_adjoint`, every pair at once):
+
+- **The multipliers' tangent** (the r′ᵀ A⁺ r cross terms). Per ket J and
+  bra I, through J's own factorization,
+  ġ_I = (ẏ_{I←J} − Ḋ_J g_I) / (λ + Δ), ẏ and Ḋ_J the forward tangent's
+  (`pc_effective_hamiltonian_tangent`, each transition row's leak through
+  the kept span's rotation in ẏ); the reverse pass's multipliers are linear
+  in the g's, so ȳ, x̄, M_J = Σ gs wᵀ (gs = Σ_I H̄_IJ g_I) and M_Δ,J move by
+  the same rules in the ġ's, and R onto the orbital energies by
+  ġs·w + gs·ẇ + gsᵀ Ṡ′ w (`pc_hvp_slab`).
+- **Every ket's U along U̇_J = V_n Θ′_J**, one symmetric difference (the
+  bars are quadratic in U): T_{I←J} = S^{(J,I)ᵀ} U_J moves with it, so every
+  transition row does.
+- **The inputs' tangent at fixed multipliers** (the ∂₁₂ terms), every pair
+  along its own direction at once, the six-point line difference; the
+  transitions' matrices are rebuilt over each pair's shifted RDMs.
+
+**The rank-projector terms** are the kept span's: each ket's span bar
+collects every bra's T̄_{I←J} through Ū = Σ_I (S^{(J,I)} T̄_{I←J} +
+S₁^{(J,I)} t̄1_{I←J}) + K U (M + Mᵀ), and so does its Daleckii–Krein
+derivative (`pc_hvp_keep`'s R_kk, over each transition's matrix rebuilt),
+U's tangent, and the transitions' leaks in the fixed walks. They read
+b′'s part along S_J's dropped modes: of order √σ_n for a real mode, zero
+at an exact null mode, whose first derivative is not zero where it lifts
+(`../gradient/README.md`, "The Schur lift on every model state"). As in
+Part I, S_J does not move along an orbital direction, so they enter the
+CI–CI and CI–orbital blocks alone. Sijrs's share is SC's at Σ_J H̄_JJ.
+
+**Refusals** are the one-state product's on every ket: a ket whose class
+keeps a metric mode below 1e-10 of its largest is Numerical, naming the
+state and the class (#917), and the energy's own refusals come back as
+`pc_effective_hamiltonian`'s.
+
+**Cost.** One tangent walk for every direction and pair at once, then per
+direction nine fixed walks over all n² pairs and Sijrs's kernel; the base
+walk keeps, per class and ket, U, V, M and M_Δ and their tangents, and per
+slab every pair's ȳ (and the kets' x̄) with theirs.
+
 ## Not ported
 
-PC's Hessian-vector product (#815; what it can rely on at PSB3 is in [The
-conditioning floor](#the-conditioning-floor)), the nuclear Hessians, PC-QD's
-reverse tangent (#964). The demo's
+The nuclear Hessians (`../../hessian/`). The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
 ## Tests
@@ -2182,6 +2242,15 @@ at `pc_floor` 1e-3 (real modes dropped, every kept spectrum gapped):
   twist (`SpanTermVisibleAtPsb3Twist`'s state) keeps Sr at 3.9e-13 of its
   largest at the default cut, refused, Numerical, naming the class and
   `pc_floor`; at `pc_floor` 1e-10 the product runs.
+
+The PC-QD Hessian-vector product, `pc_effective_hamiltonian_hvp`, is
+checked through the product it feeds (`test/gtest/nevpt2_qd_hessian_product_gpu.cpp`,
+`Nevpt2QdPcHessianProduct`; `../gradient/README.md`, Tests): ladders of
+`qd_pc_adjoint` on `h2co_skew_ccpvdz_sa3` at `pc_floor` 1e-3 along every
+input group, and its three kinds of term each visible, the cross terms
+through a call along the orbital energies alone. Its n = 1 is
+`pc_class_energies_hvp`, so the one-state cases above check that
+arithmetic too.
 
 The PC-QD reverse pass, in the same file, over `test/gtest/data/qd_nevpt2/`
 with a seeded random, unsymmetric H̄:

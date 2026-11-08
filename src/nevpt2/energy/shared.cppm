@@ -404,6 +404,18 @@ pc_couplings_tangent(DeviceResources &res, const MoBlocks &blocks,
                      std::span<const EnergyInputs> pairs, int64_t n, int32_t batch,
                      std::span<const EnergyDirection> directions, bool span, std::string_view who);
 
+/// @brief The PC Hessian-vector product of n states over @p pairs along the
+/// m n² @p directions onto the m n @p bars, as pc_effective_hamiltonian_hvp
+/// documents (reverse.cpp's); pc_class_energies_hvp is n = 1, H̄ = 1, no
+/// transition. Only the directions' blocks are checked (InvalidConfig naming
+/// @p who): the caller has checked the rest.
+Result<std::vector<PcClassEnergies>> pc_couplings_hvp(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs, int64_t n,
+    std::span<const double> hbar, int32_t batch, std::span<const EnergyDirection> directions,
+    std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t, int64_t, int64_t, const EnergyBars &)> &transition,
+    bool span, std::string_view who);
+
 /// @brief One ket's perturber functions of a class, as the walk meets them:
 /// the mode nearest a pole, the mode of largest amplitude, and the largest
 /// |λ + Δ|, what pc_intruder_check reads.

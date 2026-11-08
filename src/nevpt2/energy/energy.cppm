@@ -892,6 +892,21 @@ struct PcMetricLifts {
   /// @brief [k]: the class's cut over S's largest eigenvalue,
   /// max(1e-13, 100 ε √d, pc_floor); 0 for Sijrs and a class with no tuple.
   std::array<double, 8> cut{};
+  /// @brief [k]: the class's smallest kept eigenvalue over its largest
+  /// (PcClassEnergies::kept); 0 where nothing was solved.
+  std::array<double, 8> kept{};
+  /// @brief QD only (empty at one state): [M][k], per bra M, how the ket's
+  /// null modes (those the call's step reaches) reach M's rows at first
+  /// order along the path, in units of
+  /// its round-off ε √d / kept (V_n's accuracy):
+  /// max_e ‖Eᵀ ρ‖_e / (‖A'‖ + ‖W‖ ‖A U‖) over L's eigenvectors e, with
+  ///     ρ = V_nᵀ A'ᵀ - W (A U)ᵀ,  W = V_nᵀ S' U,
+  /// A pair (N, M)'s transition metric (and S₁ the same), the rows' part
+  /// along a null mode v moving as v' = -S⁺ S' v: zero to round-off when
+  /// the lifted functions have no first-order overlap with bra M's
+  /// (⟨φ|V|M⟩, Eq. qd-pcfail), of order the lift's root otherwise. 0 at
+  /// M = N, for a class with no null mode, and where nothing moves.
+  std::vector<std::array<double, 8>> overlap;
 };
 
 /// @brief Each PC class's Schur lift along a path of the RDMs (README "The
@@ -914,6 +929,26 @@ struct PcMetricLifts {
                                                     const EnergyInputs &in,
                                                     const EnergyInputs &first,
                                                     const EnergyInputs &second);
+
+/// @brief pc_metric_lifts on every model state (../gradient/README.md, "The
+/// Schur lift on every model state"): ket @p ket's lifts over pc_effective_hamiltonian's n²
+/// @p pairs, its own path's first and second derivatives
+/// @p first[ket n + ket] and @p second, and per bra M != ket the null modes'
+/// first-order overlap with M's rows (PcMetricLifts::overlap), over pair
+/// (ket, M)'s transition metrics and their first derivatives
+/// @p first[ket n + M] (each EnergyInputs' dm1, dm2 and dm3 read alone),
+/// taken over the null modes that reach the cut within @p step along the
+/// path (½ ℓ_e step² at least the cut; infinity: every null mode). At one
+/// state it is the overload above.
+///
+/// @return The lifts and overlaps; InvalidConfig when @p pairs and @p first
+///         are not n² each or @p ket is not a state; pc_class_energies'
+///         refusal; or a builder's or the solver's error.
+[[nodiscard]] Result<PcMetricLifts> pc_metric_lifts(DeviceResources &res, const MoBlocks &blocks,
+                                                    std::span<const EnergyInputs> pairs,
+                                                    std::span<const EnergyInputs> first,
+                                                    const EnergyInputs &second, int64_t ket,
+                                                    double step);
 
 /// @brief pc_effective_hamiltonian_adjoint's result: the matrix it walked, and
 /// each class's homogeneity sum assembled from its bars.
@@ -1017,5 +1052,47 @@ struct PcEffectiveHamiltonianTangent {
 pc_effective_hamiltonian_tangent(DeviceResources &res, const MoBlocks &blocks,
                                  std::span<const EnergyInputs> pairs, int32_t batch,
                                  std::span<const EnergyDirection> directions, bool span = true);
+
+/// @brief The Hessian-vector product of L = Σ_IJ H̄_IJ H_IJ, H_IJ
+/// pc_effective_hamiltonian's element (I, J) total, in its inputs, forward
+/// over pc_effective_hamiltonian_adjoint: along each of m directions, the
+/// tangent of every bar that reverse pass forms (docs/nevpt2/nevpt2.tex
+/// Eq. qd-pcfinish). pc_class_energies_hvp is its n = 1, H̄ = 1.
+///
+/// @p pairs and @p hbar are pc_effective_hamiltonian_adjoint's, @p directions
+/// pc_effective_hamiltonian_tangent's (m n², [u n² + I n + J]). @p bars holds
+/// m n EnergyBars, [u n + J] direction u's as that reverse pass's bars[J],
+/// added onto: the shared fields' bars one pointer within each u (checked).
+/// Each ordered pair's transition bars' tangent is handed to
+/// @p transition(u, bra, ket, bars), dm1, dm2 and dm3 alone set, as the
+/// reverse pass hands its own (device buffers on res.stream(), freed after
+/// the call); null: not formed.
+///
+/// pc_class_energies_hvp's three terms over every ket's solve, each a fixed
+/// walk of the pair reverse pass: the multipliers' tangent (per ket J and bra
+/// I, ġ_I = (ẏ_{I←J} - Ḋ_J g_I) / (λ + Δ) through J's factorization, ẏ and
+/// Ḋ pc_effective_hamiltonian_tangent's, the transition rows' leak through
+/// the kept span's rotation in them); every ket's U along U̇ = V_n Θ', one
+/// symmetric difference; and the inputs' tangent at fixed multipliers, every
+/// pair along its own direction, ±s, ±2s, ±3s. Each ket's span bar collects
+/// every bra's T̄_{I←J}, and so does its Daleckii–Krein derivative. Sijrs's
+/// share is SC's at Σ_J H̄_JJ. @p span false leaves the rotation out at both
+/// orders, for the tests alone.
+///
+/// @return The n² elements, as pc_effective_hamiltonian computes them;
+///         InvalidConfig as pc_effective_hamiltonian_tangent's, or for @p bars
+///         not m n or not sharing one direction's shared bars; Numerical,
+///         naming the state and the class, when a ket keeps a metric mode
+///         below 1e-10 of its largest (pc_class_energies_hvp's #917 rule);
+///         pc_effective_hamiltonian's refusals; or the tangent's and reverse
+///         pass's errors, and @p transition's.
+[[nodiscard]] Result<std::vector<PcClassEnergies>>
+pc_effective_hamiltonian_hvp(DeviceResources &res, const MoBlocks &blocks,
+                             std::span<const EnergyInputs> pairs, std::span<const double> hbar,
+                             int32_t batch, std::span<const EnergyDirection> directions,
+                             std::span<const EnergyBars> bars,
+                             const std::function<Status(int64_t direction, int64_t bra, int64_t ket,
+                                                        const EnergyBars &transition)> &transition,
+                             bool span = true);
 
 } // namespace free_breakfast::nevpt2

@@ -4140,40 +4140,42 @@ struct PcTangent {
   }
 };
 
-// What every PC class's reverse walk reads of the n states besides
-// ReverseContext: their operands and H̄, n x n row-major as the pairs, and the
-// block bars each pair's matrices are built from, [I ns + J]: a state's own
-// (every block) on the diagonal, pair (I, J)'s metrics off it. With
-// @p tangent (one state), the walk forms Ė instead of the bars.
-// One class of the PC Hessian-vector product (pc_class_energies_hvp), as
-// its base walk keeps it for the fixed walks: the solve's U and S's modes
-// (V, σ and the pair floor; their leaks a fixed walk forms anew over its own
-// matrices), the multipliers, M and M_Δ (m x m, row-major as the walk
-// accumulates them), the slab rows' ȳ and x̄ per slab, and per direction
-// their tangents, U̇ = V_n Θ' (empty where nothing rotates) and the span
-// bar's derivative in V and σ (d x d column-major, unsymmetrized; none
-// where nothing rotates).
-struct PcHvpClass {
-  bool walked = false;
+// One ket of one class of the PC Hessian-vector product
+// (pc_couplings_hvp), as its base walk keeps it for the fixed walks: the
+// solve's U and S's modes (V, σ and the pair floor; their leaks a fixed walk
+// forms anew over its own matrices), the ket's multipliers M and M_Δ (m x m,
+// row-major as the walk accumulates them, every bra's share at its H̄
+// weight), and per direction their tangents, U̇ = V_n Θ' (empty where
+// nothing rotates) and the span bar's derivative in V and σ (d x d
+// column-major, unsymmetrized; none where nothing rotates).
+struct PcHvpKet {
   int64_t m = 0;
   std::optional<Buffers::device<double>> u;
   std::optional<DroppedModes> modes;
   std::optional<Buffers::device<double>> mgg, mgg_delta;
   std::vector<Buffers::device<double>> mgg_dot, mgg_delta_dot;
-  std::vector<std::vector<double>> ybar, xbar;
-  std::vector<std::vector<std::vector<double>>> ybar_dot, xbar_dot;
   std::vector<Buffers::device<double>> u_dot;
   std::vector<std::optional<Buffers::device<double>>> span_dot;
+};
+
+// One class of the PC Hessian-vector product: its kets, and the slab rows'
+// ȳ and x̄ per slab (every pair's block, packed as the walk packs y), and per
+// direction their tangents.
+struct PcHvpClass {
+  bool walked = false;
+  std::vector<PcHvpKet> kets;
+  std::vector<std::vector<double>> ybar, xbar;
+  std::vector<std::vector<std::vector<double>>> ybar_dot, xbar_dot;
   /// @brief A fixed walk's slab, counted as the base walk's.
   size_t slab = 0;
 };
 
-// The PC Hessian-vector product's walks. The base walk (@p fixed false, one
-// state, with a tangent) keeps every class's PcHvpClass and the orbital
-// energies' bar tangents [u]; a fixed walk then runs the reverse pass at the
-// kept multipliers, their tangent along direction @p dot when set, over its
-// own inputs' matrices with no solve, U moved by @p u_step U̇ of direction
-// @p line. @p span false leaves the kept span's rotation out.
+// The PC Hessian-vector product's walks. The base walk (@p fixed false, with
+// a tangent) keeps every class's PcHvpClass and the orbital energies' bar
+// tangents [u]; a fixed walk then runs the reverse pass at the kept
+// multipliers, their tangent along direction @p dot when set, over its own
+// inputs' matrices with no solve, every ket's U moved by @p u_step U̇ of
+// direction @p line. @p span false leaves the kept span's rotation out.
 struct PcHvp {
   bool fixed = false;
   bool span = true;
@@ -4184,15 +4186,20 @@ struct PcHvp {
   std::vector<std::vector<double>> core_dot, virt_dot;
 };
 
+// What every PC class's reverse walk reads of the n states besides
+// ReverseContext: their operands and H̄, n x n row-major as the pairs, and the
+// block bars each pair's matrices are built from, [I ns + J]: a state's own
+// (every block) on the diagonal, pair (I, J)'s metrics off it. With
+// @p tangent, the walk forms Ċ instead of the bars.
 struct PcStates {
   int64_t ns = 1;
   std::span<const ActiveOperands> ops;
   std::span<const double> hbar;
   std::span<BlockBars> m;
   PcTangent *tangent = nullptr;
-  /// @brief The Hessian-vector product's walks (pc_class_energies_hvp): with
-  /// a tangent, the base walk that keeps the multipliers; without, a fixed
-  /// walk at them.
+  /// @brief The Hessian-vector product's walks (pc_couplings_hvp): with a
+  /// tangent, the base walk that keeps the multipliers; without, a fixed walk
+  /// at them.
   PcHvp *hvp = nullptr;
 };
 
@@ -4209,9 +4216,10 @@ struct PcReverse {
   std::vector<PcDenominators> modes;
   std::vector<double> dot;
   std::vector<Buffers::device<double>> kdot, sdot;
-  /// @brief The HVP's base walk's, per direction where the span rotates
-  /// (empty elsewhere): Θ (nd x m, its pairs divided), Θ' = Θ V_kᵀ U, and
-  /// Vᵀ Ṡ V's dropped and kept blocks, nd x nd and m x m.
+  /// @brief The HVP's base walk's, per ket and direction, [J dirs + u],
+  /// where the span rotates (empty elsewhere): Θ (nd x m, its pairs
+  /// divided), Θ' = Θ V_kᵀ U, and Vᵀ Ṡ V's dropped and kept blocks, nd x nd
+  /// and m x m.
   std::vector<Buffers::device<double>> theta, theta_u, edd, ekk;
   /// @brief The class's builder, which the HVP's walks rebuild from.
   PcBuild build = nullptr;
@@ -4382,7 +4390,7 @@ Status pc_solve_tangent(ReverseContext &c, const PcStates &q, PcReverse &r, cons
       if (q.hvp != nullptr) {
         // Where nothing rotates along this direction, empty.
         for (auto *v : {&r.theta, &r.theta_u, &r.edd, &r.ekk}) {
-          if (v->size() < u + 1) {
+          if (v->size() < (static_cast<size_t>(j) * dirs) + u + 1) {
             v->push_back(FBF_TRY(device_zeros(res, 0)));
           }
         }
@@ -4424,7 +4432,13 @@ Status pc_solve_tangent(ReverseContext &c, const PcStates &q, PcReverse &r, cons
                            t1dot.data(), {n1, m}, 1.0));
           }
         }
-        if (const auto &a = rotation[u]; a) {
+        // Θ' of ket J along u: the tangent's own, or the HVP's kept one.
+        const Buffers::device<double> *a = rotation[u] ? &*rotation[u] : nullptr;
+        if (q.hvp != nullptr) {
+          const Buffers::device<double> &kept = r.theta_u[(static_cast<size_t>(j) * dirs) + u];
+          a = kept.num_elements() > 0 ? &kept : nullptr;
+        }
+        if (a != nullptr) {
           FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), di, mi, ndi, &kOne<double>,
                                                      r.kets.leak[ij]->data(), a->data(),
                                                      &kOne<double>, tdot.data())));
@@ -4463,68 +4477,111 @@ Result<Buffers::device<double>> duplicate(DeviceResources &res, const double *co
   return out;
 }
 
-// A fixed walk's kets (one state): the class's matrices over this walk's
-// own operands, no solve. U is the base walk's, moved by u_step U̇ of the
-// line's direction; T = S U and t1 = S₁ᵀ U are formed over the matrices, and
-// with the span the dropped modes' leaks V_nᵀ S, V_nᵀ S₁ and V_nᵀ K U over
-// the base walk's V and σ.
+// A fixed walk's kets: the class's matrices over this walk's own operands,
+// no solve. Each ket J's U is the base walk's, moved by u_step U̇ of the
+// line's direction; its T = S U and t1 = S₁ᵀ U are formed over its own
+// matrices, and with the span its dropped modes' leaks V_nᵀ S, V_nᵀ S₁ and
+// V_nᵀ K U over the base walk's V and σ. Every transition (I, J)'s
+// T_{I←J} = S^{(J,I)ᵀ} U_J and t1, and with the span its leak, over pair
+// (J, I)'s matrices, as pc_kets forms them.
 Result<PcReverse> pc_fixed_kets(ReverseContext &c, const PcStates &q, const char *name,
                                 const int64_t d, const int64_t n1, const PcBuild build) {
   DeviceResources &res = c.res;
   const PcHvp &hvp = *q.hvp;
   PcHvpClass &h = q.hvp->classes[pc_class_index(name)];
   h.slab = 0;
-  const int64_t m = h.m;
+  const int64_t ns = q.ns;
+  const auto n2 = static_cast<size_t>(ns * ns);
   const auto di = static_cast<int32_t>(d);
-  const auto mi = static_cast<int32_t>(m);
-  const PcMatrices mats = FBF_TRY(build(res, q.ops.front(), true));
-  const Buffers::device<double> s_sym = FBF_TRY(symmetrized(res, mats.s.data(), d));
-  Buffers::device<double> u = FBF_TRY(duplicate(res, h.u->data(), d * m));
-  if (hvp.u_step != 0.0 && hvp.line < h.u_dot.size() && h.u_dot[hvp.line].num_elements() > 0) {
-    FBF_TRY(add_scaled(res, h.u_dot[hvp.line].data(), d * m, u.data(), hvp.u_step));
-  }
-  Buffers::device<double> t(static_cast<size_t>(d * m), res.device());
-  FBF_TRY(gpu_status(gemm(res.blas(), di, mi, di, &kOne<double>, s_sym.data(), u.data(),
-                          &kZero<double>, t.data())));
-  std::optional<Buffers::device<double>> t1;
-  if (n1 > 0) {
-    // U column-major d x m reads row-major as the m x d "ki", as solve_class.
-    t1 = FBF_TRY(device_zeros(res, n1 * m));
-    FBF_TRY(einsum(res.stream(), "ia,ki->ak",
-                   {EinsumOperand{.data = mats.s1->data(), .dims = {d, n1}},
-                    EinsumOperand{.data = u.data(), .dims = {m, d}}},
-                   t1->data(), {n1, m}, 1.0));
-  }
-  std::optional<DroppedModes> modes;
-  if (hvp.span && h.modes) {
-    const Buffers::device<double> k_sym = FBF_TRY(symmetrized(res, mats.k->data(), d));
-    modes = FBF_TRY(dropped_modes(res, FBF_TRY(duplicate(res, h.modes->v.data(), d * d)),
-                                  h.modes->sigma, h.modes->floor, k_sym.data(), s_sym.data(),
-                                  u.data(), d, m, n1 > 0 ? mats.s1->data() : nullptr, n1));
-  }
-  FBF_TRY(res.sync());
   PcReverse r{.name = name,
-              .kets = PcKets{.ns = 1},
+              .kets = PcKets{.ns = ns},
               .w = {},
-              .energy = {0.0},
-              .modes = std::vector<PcDenominators>(1),
+              .energy = std::vector<double>(n2, 0.0),
+              .modes = std::vector<PcDenominators>(static_cast<size_t>(ns)),
               .dot = {},
               .kdot = {},
               .sdot = {},
               .build = build};
-  r.kets.solves.push_back(ClassSolve{.lambda = std::vector<double>(static_cast<size_t>(m), 0.0),
-                                     .t = std::move(t),
-                                     .t1 = std::move(t1),
-                                     .dropped = d - m,
-                                     .u = std::move(u),
-                                     .modes = std::move(modes)});
-  r.kets.ms = {m};
-  r.kets.given = {true};
-  r.kets.t.resize(1);
-  r.kets.t1.resize(1);
-  r.kets.leak.resize(1);
-  r.kets.leak1.resize(1);
-  r.w.push_back(FBF_TRY(pc_walk_bars(res, m, d, n1, true)));
+  r.kets.given.assign(n2, true);
+  r.kets.t.resize(n2);
+  r.kets.t1.resize(n2);
+  r.kets.leak.resize(n2);
+  r.kets.leak1.resize(n2);
+  for (int64_t j = 0; j < ns; ++j) {
+    const PcHvpKet &k = h.kets[static_cast<size_t>(j)];
+    const int64_t m = k.m;
+    const auto mi = static_cast<int32_t>(m);
+    const PcMatrices mats = FBF_TRY(build(res, q.ops[static_cast<size_t>((j * ns) + j)], true));
+    const Buffers::device<double> s_sym = FBF_TRY(symmetrized(res, mats.s.data(), d));
+    Buffers::device<double> u = FBF_TRY(duplicate(res, k.u->data(), d * m));
+    if (hvp.u_step != 0.0 && hvp.line < k.u_dot.size() && k.u_dot[hvp.line].num_elements() > 0) {
+      FBF_TRY(add_scaled(res, k.u_dot[hvp.line].data(), d * m, u.data(), hvp.u_step));
+    }
+    Buffers::device<double> t(static_cast<size_t>(d * m), res.device());
+    FBF_TRY(gpu_status(gemm(res.blas(), di, mi, di, &kOne<double>, s_sym.data(), u.data(),
+                            &kZero<double>, t.data())));
+    std::optional<Buffers::device<double>> t1;
+    if (n1 > 0) {
+      // U column-major d x m reads row-major as the m x d "ki", as solve_class.
+      t1 = FBF_TRY(device_zeros(res, n1 * m));
+      FBF_TRY(einsum(res.stream(), "ia,ki->ak",
+                     {EinsumOperand{.data = mats.s1->data(), .dims = {d, n1}},
+                      EinsumOperand{.data = u.data(), .dims = {m, d}}},
+                     t1->data(), {n1, m}, 1.0));
+    }
+    std::optional<DroppedModes> modes;
+    if (hvp.span && k.modes) {
+      const Buffers::device<double> k_sym = FBF_TRY(symmetrized(res, mats.k->data(), d));
+      modes = FBF_TRY(dropped_modes(res, FBF_TRY(duplicate(res, k.modes->v.data(), d * d)),
+                                    k.modes->sigma, k.modes->floor, k_sym.data(), s_sym.data(),
+                                    u.data(), d, m, n1 > 0 ? mats.s1->data() : nullptr, n1));
+    }
+    FBF_TRY(res.sync());
+    r.kets.solves.push_back(ClassSolve{.lambda = std::vector<double>(static_cast<size_t>(m), 0.0),
+                                       .t = std::move(t),
+                                       .t1 = std::move(t1),
+                                       .dropped = d - m,
+                                       .u = std::move(u),
+                                       .modes = std::move(modes)});
+    r.kets.ms.push_back(m);
+  }
+  for (int64_t i = 0; i < ns; ++i) {
+    for (int64_t j = 0; j < ns; ++j) {
+      if (i == j) {
+        continue;
+      }
+      const auto ij = static_cast<size_t>((i * ns) + j);
+      const ClassSolve &cs = r.kets.solves[static_cast<size_t>(j)];
+      const int64_t m = r.kets.m(j);
+      const PcMatrices mats = FBF_TRY(build(res, q.ops[static_cast<size_t>((j * ns) + i)], false));
+      // S^{(J,I)} row-major is S^{(J,I)ᵀ} column-major, as pc_kets reads it.
+      Buffers::device<double> t(static_cast<size_t>(d * m), res.device());
+      FBF_TRY(gpu_status(gemm(res.blas(), di, static_cast<int32_t>(m), di, &kOne<double>,
+                              mats.s.data(), cs.u.data(), &kZero<double>, t.data())));
+      r.kets.t[ij] = std::move(t);
+      if (mats.s1) {
+        Buffers::device<double> t1 = FBF_TRY(device_zeros(res, n1 * m));
+        FBF_TRY(einsum(res.stream(), "ia,ki->ak",
+                       {EinsumOperand{.data = mats.s1->data(), .dims = {d, n1}},
+                        EinsumOperand{.data = cs.u.data(), .dims = {m, d}}},
+                       t1.data(), {n1, m}, 1.0));
+        r.kets.t1[ij] = std::move(t1);
+      }
+      if (cs.modes) {
+        r.kets.leak[ij] = FBF_TRY(leak_of(res, cs.modes->v.data(), mats.s.data(), d, d - m, d));
+        if (mats.s1) {
+          r.kets.leak1[ij] =
+              FBF_TRY(leak_of(res, cs.modes->v.data(), mats.s1->data(), d, d - m, n1));
+        }
+      }
+      FBF_TRY(res.sync());
+    }
+  }
+  for (size_t p = 0; p < n2; ++p) {
+    const int64_t j = static_cast<int64_t>(p) % ns;
+    r.w.push_back(
+        FBF_TRY(pc_walk_bars(res, r.kets.m(j), d, n1, static_cast<int64_t>(p) / ns == j)));
+  }
   return r;
 }
 
@@ -4552,15 +4609,22 @@ Result<PcReverse> pc_reverse_kets(ReverseContext &c, const PcStates &q, const ch
     FBF_TRY(pc_solve_tangent(c, q, r, d, n1, build));
   }
   if (q.hvp != nullptr) {
-    // The base walk: the class's record, its multipliers' tangents zeroed.
+    // The base walk: the class's record, each ket's multipliers and their
+    // tangents zeroed.
     PcHvpClass &h = q.hvp->classes[pc_class_index(name)];
     h = PcHvpClass{};
     h.walked = true;
-    h.m = r.kets.m(0);
     const size_t dirs = q.tangent->t.directions.size();
-    for (size_t u = 0; u < dirs; ++u) {
-      h.mgg_dot.push_back(FBF_TRY(device_zeros(c.res, h.m * h.m)));
-      h.mgg_delta_dot.push_back(FBF_TRY(device_zeros(c.res, h.m * h.m)));
+    for (int64_t j = 0; j < ns; ++j) {
+      PcHvpKet k;
+      k.m = r.kets.m(j);
+      k.mgg = FBF_TRY(device_zeros(c.res, k.m * k.m));
+      k.mgg_delta = FBF_TRY(device_zeros(c.res, k.m * k.m));
+      for (size_t u = 0; u < dirs; ++u) {
+        k.mgg_dot.push_back(FBF_TRY(device_zeros(c.res, k.m * k.m)));
+        k.mgg_delta_dot.push_back(FBF_TRY(device_zeros(c.res, k.m * k.m)));
+      }
+      h.kets.push_back(std::move(k));
     }
     h.ybar_dot.resize(dirs);
     h.xbar_dot.resize(dirs);
@@ -4568,51 +4632,69 @@ Result<PcReverse> pc_reverse_kets(ReverseContext &c, const PcStates &q, const ch
   return r;
 }
 
-// One slab's rows as the HVP's base walk reads them (one state): y and the
-// exchange rows x, their tangents per direction, and the reverse pass's ȳ,
-// x̄, weights w and Δ per tuple.
+// One slab's rows as the HVP's base walk reads them: y and the exchange rows
+// x, every pair's block packed at @p at (PcKets::offsets, [I ns + J]), their
+// tangents per direction, and the reverse pass's ȳ, x̄, the kets' weights w
+// (at the own blocks) and Δ per tuple.
 struct PcSlabRows {
+  const std::vector<int64_t> &at;
   const std::vector<double> &y, &x;
   const std::vector<std::vector<double>> &ydot, &xdot;
   const std::vector<double> &ybar, &xbar, &w, &delta;
 };
 
-// The HVP's base walk over one slab (one state): ȳ and x̄ kept, and per
-// direction their tangents, M's and M_Δ's, and R's onto the orbital
-// energies' bar tangents. With g = y / (λ + Δ) (g_x the exchange row's), the
-// solve differentiated through its own factorization:
-//   ġ = (ẏ - Ḋ g) / (λ + Δ),  Ḋ = K̇' + Δ Ṡ' + Δ̇ 1,
-// ẏ and Ḋ the tangent's, the span's rotation in them. Then, as the reverse
-// pass's multipliers are linear in g at a single coupling (ȳ = -2 s g,
-// w = s g) and in (g, g_x) at a pair (ȳ = -(4 g - g_x) on the direct row,
-// x̄ = g on the exchange row, w = 2 g - g_x), their tangents are the same in
-// (ġ, ġ_x); M = Σ g wᵀ and M_Δ = Σ Δ g wᵀ move by Σ (ġ wᵀ + g ẇᵀ) and
-// Σ Δ̇ g wᵀ + Δ (ġ wᵀ + g ẇᵀ); R = gᵀ (Uᵀ S U) w by ġ·w + g·ẇ + gᵀ Ṡ' w.
+// The HVP's base walk over one slab: ȳ and x̄ kept, and per direction their
+// tangents, each ket's M's and M_Δ's, and R's onto the orbital energies' bar
+// tangents. Per ket J, with g_I = y_{I←J} / (λ + Δ) for every bra I (g its
+// own, g_x the exchange row's), the solve differentiated through its own
+// factorization:
+//   ġ_I = (ẏ_{I←J} - Ḋ g_I) / (λ + Δ),  Ḋ = K̇'_J + Δ Ṡ'_J + Δ̇ 1,
+// ẏ and Ḋ the tangent's, the span's rotation in them. The reverse pass's
+// multipliers (pc_slab_reverse's) are linear in the g's, so their tangents
+// are the same in the ġ's; with gs = Σ_I H̄_IJ g_I and w the ket's weight,
+// M_J = Σ gs wᵀ and M_Δ,J = Σ Δ gs wᵀ move by Σ (ġs wᵀ + gs ẇᵀ) and
+// Σ Δ̇ gs wᵀ + Δ (ġs wᵀ + gs ẇᵀ), and R = gsᵀ (Uᵀ S U) w by
+// ġs·w + gs·ẇ + gsᵀ Ṡ' w. At one state these are the one-state rules.
 Status pc_hvp_slab(ReverseContext &c, const PcStates &q, PcReverse &r,
                    const std::vector<Perturber> &rows, const PcSlabRows &s) {
   DeviceResources &res = c.res;
   const wwr::wwrStream_t stream = res.stream();
   PcHvpClass &h = q.hvp->classes[pc_class_index(r.name)];
-  const std::vector<double> &lambda = r.kets.solves.front().lambda;
-  const auto m = static_cast<size_t>(std::ssize(lambda));
-  const auto mi = static_cast<int32_t>(m);
+  const int64_t ns = q.ns;
   const bool exchange = !s.x.empty();
-  const auto nt = static_cast<int64_t>(s.y.size() / std::max<size_t>(m, 1));
+  const auto nt = static_cast<int64_t>(rows.size());
   const auto nti = static_cast<int32_t>(nt);
-  const auto row_of = [&](const Perturber &p) { return static_cast<size_t>(p.t1) * m; };
-  const auto xrow_of = [&](const Perturber &p) {
-    return p.t2 < 0 ? row_of(p) : static_cast<size_t>(p.t2) * m;
+  const auto pair = [&](const int64_t i, const int64_t j) {
+    return static_cast<size_t>((i * ns) + j);
   };
-  // g and g_x, each at its tuple's row (as w is).
+  // Tuple p's row in pair (I, J)'s block, and its exchange row in the ket's.
+  const auto row_of = [&](const Perturber &p, const size_t ij, const size_t m) {
+    return static_cast<size_t>(s.at[ij]) + (static_cast<size_t>(p.t1) * m);
+  };
+  const auto xrow_of = [&](const Perturber &p, const size_t jj, const size_t m) {
+    return static_cast<size_t>(s.at[jj]) + (static_cast<size_t>(p.t2 < 0 ? p.t1 : p.t2) * m);
+  };
+  // g at every pair's block, g_x at the kets' own, and gs = Σ_I H̄_IJ g_I at
+  // the kets' own.
   std::vector<double> g(s.y.size(), 0.0);
   std::vector<double> gx(exchange ? s.y.size() : 0, 0.0);
-  for (size_t t = 0; t < rows.size(); ++t) {
-    const Perturber &p = rows[t];
-    for (size_t k = 0; k < m; ++k) {
-      const double den = lambda[k] + s.delta[t];
-      g[row_of(p) + k] = s.y[row_of(p) + k] / den;
-      if (p.t2 >= 0) {
-        gx[row_of(p) + k] = s.x[xrow_of(p) + k] / den;
+  std::vector<double> gs(s.y.size(), 0.0);
+  for (int64_t j = 0; j < ns; ++j) {
+    const size_t jj = pair(j, j);
+    const std::vector<double> &lambda = r.kets.solves[static_cast<size_t>(j)].lambda;
+    const size_t m = lambda.size();
+    for (size_t t = 0; t < rows.size(); ++t) {
+      const Perturber &p = rows[t];
+      for (size_t k = 0; k < m; ++k) {
+        const double den = lambda[k] + s.delta[t];
+        for (int64_t i = 0; i < ns; ++i) {
+          const size_t e = row_of(p, pair(i, j), m) + k;
+          g[e] = s.y[e] / den;
+          gs[row_of(p, jj, m) + k] += q.hbar[pair(i, j)] * g[e];
+        }
+        if (p.t2 >= 0) {
+          gx[row_of(p, jj, m) + k] = s.x[xrow_of(p, jj, m) + k] / den;
+        }
       }
     }
   }
@@ -4620,29 +4702,38 @@ Status pc_hvp_slab(ReverseContext &c, const PcStates &q, PcReverse &r,
   h.xbar.push_back(s.xbar);
   const Buffers::device<double> g_d = FBF_TRY(upload(res, g));
   const Buffers::device<double> gx_d = FBF_TRY(upload(res, gx));
+  const Buffers::device<double> gs_d = FBF_TRY(upload(res, gs));
   const Buffers::device<double> w_d = FBF_TRY(upload(res, s.w));
   const Buffers::device<double> delta_d = FBF_TRY(upload(res, s.delta));
-  Buffers::device<double> work(static_cast<size_t>(std::max<int64_t>(nt, 1) * mi), res.device());
-  // Ḋ's matrices times the rows' amplitudes, m x nt column-major (each
-  // matrix symmetric), read back.
-  const auto times = [&](const Buffers::device<double> &a,
-                         const Buffers::device<double> &v) -> Result<std::vector<double>> {
-    if (v.num_elements() == 0) {
-      return std::vector<double>{};
+  const EinsumOperand dt{.data = delta_d.data(), .dims = {nt}};
+  // Each ket's own M_J and M_Δ,J, every bra's share at its weight.
+  for (int64_t j = 0; j < ns; ++j) {
+    PcHvpKet &k = h.kets[static_cast<size_t>(j)];
+    const size_t jj = pair(j, j);
+    const EinsumOperand gs_op{.data = gs_d.data() + s.at[jj], .dims = {nt, k.m}};
+    const EinsumOperand w_op{.data = w_d.data() + s.at[jj], .dims = {nt, k.m}};
+    FBF_TRY(einsum(stream, "tk,tl->kl", {gs_op, w_op}, k.mgg->data(), {k.m, k.m}, 1.0));
+    FBF_TRY(einsum(stream, "t,tk,tl->kl", {dt, gs_op, w_op}, k.mgg_delta->data(), {k.m, k.m}, 1.0));
+  }
+  Buffers::device<double> work(s.y.size() + 1, res.device());
+  // Ḋ's matrices of ket J times a block of amplitudes at @p from, m x nt
+  // column-major (each matrix symmetric), read back.
+  const auto times = [&](const Buffers::device<double> &a, const double *const from,
+                         const int64_t m) -> Result<std::vector<double>> {
+    if (a.num_elements() == 0 || m == 0 || nt == 0) {
+      return std::vector<double>(static_cast<size_t>(m * nt), 0.0);
     }
-    FBF_TRY(gpu_status(gemm(res.blas(), mi, nti, mi, &kOne<double>, a.data(), v.data(),
-                            &kZero<double>, work.data())));
-    return download(res, work.data(), nt * static_cast<int64_t>(m));
+    const auto mi = static_cast<int32_t>(m);
+    FBF_TRY(gpu_status(
+        gemm(res.blas(), mi, nti, mi, &kOne<double>, a.data(), from, &kZero<double>, work.data())));
+    return download(res, work.data(), nt * m);
   };
   PcTangent &tg = *q.tangent;
-  for (size_t u = 0; u < tg.t.directions.size(); ++u) {
-    const std::vector<double> kg = FBF_TRY(times(r.kdot[u], g_d));
-    const std::vector<double> sg = FBF_TRY(times(r.sdot[u], g_d));
-    const std::vector<double> kgx = FBF_TRY(times(r.kdot[u], gx_d));
-    const std::vector<double> sgx = FBF_TRY(times(r.sdot[u], gx_d));
+  const size_t dirs = tg.t.directions.size();
+  for (size_t u = 0; u < dirs; ++u) {
     std::vector<double> ybar_dot(s.ybar.size(), 0.0);
     std::vector<double> xbar_dot(s.xbar.size(), 0.0);
-    std::vector<double> g_dot(g.size(), 0.0);
+    std::vector<double> gs_dot(g.size(), 0.0);
     std::vector<double> w_dot(g.size(), 0.0);
     std::vector<double> delta_dot(rows.size(), 0.0);
     std::vector<double> unused;
@@ -4653,52 +4744,110 @@ Status pc_hvp_slab(ReverseContext &c, const PcStates &q, PcReverse &r,
                                .core_bar = q.hvp->core_dot[u],
                                .virt_bar = q.hvp->virt_dot[u]};
     for (size_t t = 0; t < rows.size(); ++t) {
-      const Perturber &p = rows[t];
-      const double dd = perturber_delta(p, moved);
-      delta_dot[t] = dd;
-      const size_t row = row_of(p);
-      double r_dot = 0.0;
-      for (size_t k = 0; k < m; ++k) {
-        const double den = lambda[k] + s.delta[t];
-        const size_t e = row + k;
-        const double gd = (s.ydot[u][e] - kg[e] - (s.delta[t] * sg[e]) - (dd * g[e])) / den;
-        g_dot[e] = gd;
-        if (p.t2 < 0) {
-          ybar_dot[e] += -2.0 * p.s * gd;
-          w_dot[e] = p.s * gd;
-          r_dot += (s.w[e] * gd) + (g[e] * w_dot[e]) + (g[e] * p.s * sg[e]);
-        } else {
-          const size_t xe = xrow_of(p) + k;
-          const double gxd = (s.xdot[u][xe] - kgx[e] - (s.delta[t] * sgx[e]) - (dd * gx[e])) / den;
-          ybar_dot[e] += -((4.0 * gd) - gxd);
-          xbar_dot[xe] += gd;
-          w_dot[e] = (2.0 * gd) - gxd;
-          r_dot += (s.w[e] * gd) + (g[e] * w_dot[e]) + (g[e] * ((2.0 * sg[e]) - sgx[e]));
-        }
+      delta_dot[t] = perturber_delta(rows[t], moved);
+    }
+    for (int64_t j = 0; j < ns; ++j) {
+      const size_t jj = pair(j, j);
+      const std::vector<double> &lambda = r.kets.solves[static_cast<size_t>(j)].lambda;
+      const size_t m = lambda.size();
+      const auto mj = static_cast<int64_t>(m);
+      const Buffers::device<double> &kdot = r.kdot[(static_cast<size_t>(j) * dirs) + u];
+      const Buffers::device<double> &sdot = r.sdot[(static_cast<size_t>(j) * dirs) + u];
+      // K̇' g_I and Ṡ' g_I per bra, and K̇' g_x and Ṡ' g_x on the own block.
+      std::vector<std::vector<double>> kg, sg;
+      for (int64_t i = 0; i < ns; ++i) {
+        const double *const block = g_d.data() + s.at[pair(i, j)];
+        kg.push_back(FBF_TRY(times(kdot, block, mj)));
+        sg.push_back(FBF_TRY(times(sdot, block, mj)));
       }
-      add_delta_bar(p, r_dot, onto);
+      const std::vector<double> kgx =
+          exchange ? FBF_TRY(times(kdot, gx_d.data() + s.at[jj], mj)) : std::vector<double>{};
+      const std::vector<double> sgx =
+          exchange ? FBF_TRY(times(sdot, gx_d.data() + s.at[jj], mj)) : std::vector<double>{};
+      for (size_t t = 0; t < rows.size(); ++t) {
+        const Perturber &p = rows[t];
+        const double dd = delta_dot[t];
+        const size_t local = static_cast<size_t>(p.t1) * m;
+        const size_t own = row_of(p, jj, m);
+        const size_t xown = xrow_of(p, jj, m);
+        double r_dot = 0.0;
+        for (size_t k = 0; k < m; ++k) {
+          const double den = lambda[k] + s.delta[t];
+          // ġ of every bra's row, the own first.
+          const auto g_dot = [&](const int64_t i) {
+            const size_t e = row_of(p, pair(i, j), m) + k;
+            const auto ii = static_cast<size_t>(i);
+            return (s.ydot[u][e] - kg[ii][local + k] - (s.delta[t] * sg[ii][local + k]) -
+                    (dd * g[e])) /
+                   den;
+          };
+          const double gd = g_dot(j);
+          const double hjj = q.hbar[jj];
+          double gxd = 0.0;
+          double sw = 0.0;
+          if (p.t2 < 0) {
+            ybar_dot[own + k] += hjj * (-2.0 * p.s * gd);
+            w_dot[own + k] = p.s * gd;
+            sw = p.s * sg[static_cast<size_t>(j)][local + k];
+          } else {
+            // g_x sits at the tuple's own row, as w does.
+            const size_t xe = xown + k;
+            const size_t xl = local + k;
+            gxd = (s.xdot[u][xe] - kgx[xl] - (s.delta[t] * sgx[xl]) - (dd * gx[own + k])) / den;
+            ybar_dot[own + k] += hjj * -((4.0 * gd) - gxd);
+            xbar_dot[xe] += hjj * gd;
+            w_dot[own + k] = (2.0 * gd) - gxd;
+            sw = (2.0 * sg[static_cast<size_t>(j)][local + k]) - sgx[xl];
+          }
+          double gsd = hjj * gd;
+          for (int64_t i = 0; i < ns; ++i) {
+            if (i == j) {
+              continue;
+            }
+            const size_t ij = pair(i, j);
+            const double hij = q.hbar[ij];
+            const size_t irow = row_of(p, ij, m) + k;
+            const double gid = g_dot(i);
+            gsd += hij * gid;
+            if (p.t2 < 0) {
+              ybar_dot[irow] += -p.s * hij * gd;
+              ybar_dot[own + k] += -p.s * hij * gid;
+            } else {
+              ybar_dot[irow] += -hij * ((2.0 * gd) - gxd);
+              ybar_dot[own + k] += -2.0 * hij * gid;
+              xbar_dot[xown + k] += hij * gid;
+            }
+          }
+          gs_dot[own + k] = gsd;
+          r_dot += (gsd * s.w[own + k]) + (gs[own + k] * w_dot[own + k]) + (gs[own + k] * sw);
+        }
+        add_delta_bar(p, r_dot, onto);
+      }
     }
     h.ybar_dot[u].push_back(std::move(ybar_dot));
     h.xbar_dot[u].push_back(std::move(xbar_dot));
-    const Buffers::device<double> g_dot_d = FBF_TRY(upload(res, g_dot));
+    const Buffers::device<double> gs_dot_d = FBF_TRY(upload(res, gs_dot));
     const Buffers::device<double> w_dot_d = FBF_TRY(upload(res, w_dot));
     const Buffers::device<double> delta_dot_d = FBF_TRY(upload(res, delta_dot));
-    const auto op = [&](const Buffers::device<double> &b) {
-      return EinsumOperand{.data = b.data(), .dims = {nt, static_cast<int64_t>(m)}};
-    };
-    const EinsumOperand dt{.data = delta_d.data(), .dims = {nt}};
     const EinsumOperand ddt{.data = delta_dot_d.data(), .dims = {nt}};
-    const std::vector<int64_t> mm{static_cast<int64_t>(m), static_cast<int64_t>(m)};
-    double *const mdot = h.mgg_dot[u].data();
-    double *const mddot = h.mgg_delta_dot[u].data();
-    FBF_TRY(einsum(stream, "tk,tl->kl", {op(g_dot_d), op(w_d)}, mdot, mm, 1.0));
-    FBF_TRY(einsum(stream, "tk,tl->kl", {op(g_d), op(w_dot_d)}, mdot, mm, 1.0));
-    FBF_TRY(einsum(stream, "t,tk,tl->kl", {dt, op(g_dot_d), op(w_d)}, mddot, mm, 1.0));
-    FBF_TRY(einsum(stream, "t,tk,tl->kl", {dt, op(g_d), op(w_dot_d)}, mddot, mm, 1.0));
-    FBF_TRY(einsum(stream, "t,tk,tl->kl", {ddt, op(g_d), op(w_d)}, mddot, mm, 1.0));
+    for (int64_t j = 0; j < ns; ++j) {
+      PcHvpKet &k = h.kets[static_cast<size_t>(j)];
+      const int64_t at = s.at[pair(j, j)];
+      const auto op = [&](const Buffers::device<double> &b) {
+        return EinsumOperand{.data = b.data() + at, .dims = {nt, k.m}};
+      };
+      const std::vector<int64_t> mm{k.m, k.m};
+      double *const mdot = k.mgg_dot[u].data();
+      double *const mddot = k.mgg_delta_dot[u].data();
+      FBF_TRY(einsum(stream, "tk,tl->kl", {op(gs_dot_d), op(w_d)}, mdot, mm, 1.0));
+      FBF_TRY(einsum(stream, "tk,tl->kl", {op(gs_d), op(w_dot_d)}, mdot, mm, 1.0));
+      FBF_TRY(einsum(stream, "t,tk,tl->kl", {dt, op(gs_dot_d), op(w_d)}, mddot, mm, 1.0));
+      FBF_TRY(einsum(stream, "t,tk,tl->kl", {dt, op(gs_d), op(w_dot_d)}, mddot, mm, 1.0));
+      FBF_TRY(einsum(stream, "t,tk,tl->kl", {ddt, op(gs_d), op(w_d)}, mddot, mm, 1.0));
+    }
     FBF_TRY(res.sync());
   }
-  return {};
+  return res.sync();
 }
 
 // A tangent walk's slab, every pair's (pc_slab_reverse's y, x, w and Δ at
@@ -4874,8 +5023,13 @@ Status pc_slab_reverse(ReverseContext &c, const PcStates &q, PcReverse &r,
     }
     const Buffers::device<double> ybar_d = FBF_TRY(upload(res, ybar[at_slab]));
     const Buffers::device<double> xbar_d = FBF_TRY(upload(res, xbar[at_slab]));
-    return adjoint_terms(res, pair_terms.front(), ybar_d.data(), exchange ? xbar_d.data() : nullptr,
-                         dims(0), c.ops.delta, nullptr);
+    for (int64_t p = 0; p < ns * ns; ++p) {
+      const auto pp = static_cast<size_t>(p);
+      FBF_TRY(adjoint_terms(res, pair_terms[pp], ybar_d.data() + at[pp],
+                            exchange ? xbar_d.data() + at[pp] : nullptr, dims(p % ns), c.ops.delta,
+                            nullptr));
+    }
+    return res.sync();
   }
   Buffers::device<double> y_d = FBF_TRY(device_zeros(res, count));
   Buffers::device<double> x_d = FBF_TRY(device_zeros(res, exchange ? count : 0));
@@ -4971,7 +5125,8 @@ Status pc_slab_reverse(ReverseContext &c, const PcStates &q, PcReverse &r,
     }
     // The HVP's base walk also takes the adjoint below, for T̄ and t̄1.
     FBF_TRY(pc_hvp_slab(c, q, r, rows,
-                        {.y = y,
+                        {.at = at,
+                         .y = y,
                          .x = x,
                          .ydot = ydot,
                          .xdot = xdot,
@@ -5196,45 +5351,62 @@ Status add_symmetrized(DeviceResources &res, const Buffers::device<double> &x, d
   return transpose(res.stream(), op, {1, 0}, s, 0.5);
 }
 
-// A fixed walk's finish (one state): M and M_Δ (or their tangent) as the
-// base walk kept them, the matrix bars over this walk's T̄ and t̄1, the span
-// bar over this walk's leaks, and along a direction the span bar's
-// derivative in V and σ (pc_hvp_keep's), back onto the blocks. Nothing is
+// A fixed walk's finish: each ket's M and M_Δ (or their tangent) as the base
+// walk kept them, every pair's matrix bars over this walk's T̄ and t̄1, each
+// ket's span bar over this walk's leaks, and along a direction its span bar's
+// derivative in V and σ (pc_hvp_keep's), back onto the blocks, a ket's own at
+// I = J and pair (J, I)'s off it, as pc_reverse_finish puts them. Nothing is
 // checked: the base walk has.
 Result<PcClassSums> pc_fixed_finish(ReverseContext &c, const PcStates &q, PcReverse &r,
                                     const int64_t d, const int64_t n1, const PcBack back) {
   DeviceResources &res = c.res;
   const PcHvp &hvp = *q.hvp;
   const PcHvpClass &h = hvp.classes[pc_class_index(r.name)];
-  PcWalkBars &w = r.w.front();
-  const int64_t mm = h.m * h.m;
-  FBF_TRY(
-      add_scaled(res, hvp.dot ? h.mgg_dot[*hvp.dot].data() : h.mgg->data(), mm, w.mgg.data(), 1.0));
-  FBF_TRY(add_scaled(res, hvp.dot ? h.mgg_delta_dot[*hvp.dot].data() : h.mgg_delta->data(), mm,
-                     w.mgg_delta.data(), 1.0));
-  std::optional<Buffers::device<double>> span;
-  if (hvp.span) {
-    span = FBF_TRY(pc_span_bar(res, q, r, 0, d, n1));
-  }
-  PcMatrixBars b = FBF_TRY(pc_matrix_bars(res, r.kets.solves.front(), w, d, n1, true));
-  if (span) {
-    FBF_TRY(add_symmetrized(res, *span, b.s.data(), d));
-  }
-  if (hvp.dot && *hvp.dot < h.span_dot.size() && h.span_dot[*hvp.dot]) {
-    FBF_TRY(add_symmetrized(res, *h.span_dot[*hvp.dot], b.s.data(), d));
+  const int64_t ns = q.ns;
+  std::vector<std::optional<Buffers::device<double>>> span(static_cast<size_t>(ns));
+  for (int64_t j = 0; j < ns; ++j) {
+    const PcHvpKet &k = h.kets[static_cast<size_t>(j)];
+    PcWalkBars &w = r.w[static_cast<size_t>((j * ns) + j)];
+    const int64_t mm = k.m * k.m;
+    FBF_TRY(add_scaled(res, hvp.dot ? k.mgg_dot[*hvp.dot].data() : k.mgg->data(), mm, w.mgg.data(),
+                       1.0));
+    FBF_TRY(add_scaled(res, hvp.dot ? k.mgg_delta_dot[*hvp.dot].data() : k.mgg_delta->data(), mm,
+                       w.mgg_delta.data(), 1.0));
+    // Before pc_matrix_bars, which spends the own T̄.
+    if (hvp.span) {
+      span[static_cast<size_t>(j)] = FBF_TRY(pc_span_bar(res, q, r, j, d, n1));
+    }
   }
   Buffers::device<double> acc = FBF_TRY(device_zeros(res, 1));
-  FBF_TRY(back(res, q.ops.front(), true, b, q.m.front(), acc.data()));
+  for (int64_t i = 0; i < ns; ++i) {
+    for (int64_t j = 0; j < ns; ++j) {
+      const auto built = static_cast<size_t>((j * ns) + i);
+      PcMatrixBars b =
+          FBF_TRY(pc_matrix_bars(res, r.kets.solves[static_cast<size_t>(j)],
+                                 r.w[static_cast<size_t>((i * ns) + j)], d, n1, i == j));
+      if (i == j) {
+        const PcHvpKet &k = h.kets[static_cast<size_t>(j)];
+        if (const auto &x = span[static_cast<size_t>(j)]; x) {
+          FBF_TRY(add_symmetrized(res, *x, b.s.data(), d));
+        }
+        if (hvp.dot && *hvp.dot < k.span_dot.size() && k.span_dot[*hvp.dot]) {
+          FBF_TRY(add_symmetrized(res, *k.span_dot[*hvp.dot], b.s.data(), d));
+        }
+      }
+      FBF_TRY(back(res, q.ops[built], i == j, b, q.m[built], acc.data()));
+    }
+  }
   FBF_TRY(res.sync());
-  return pc_no_tuples(1);
+  return pc_no_tuples(ns);
 }
 
-// The HVP's base walk, once a class has walked (one state): its record
-// kept for the fixed walks (U, S's modes, M, M_Δ), and per direction where
-// the span rotates, U̇ = V_n Θ' and the span bar's derivative in S's
-// eigenvectors and eigenvalues at fixed matrices (Daleckii–Krein). With the
-// span bar Y = V_n Ψ V_kᵀ, Ψ = (V_nᵀ R V_k) ⊘ Γ, R = Ū Uᵀ, Γ_nl = σ_l - σ_n,
-// and E = Vᵀ Ṡ V, Θ = E_nk ⊘ Γ:
+// The HVP's base walk, once a class has walked: each ket's record kept for
+// the fixed walks (U, S's modes; M and M_Δ are pc_hvp_slab's), and per
+// direction where its span rotates, U̇ = V_n Θ' and the span bar's
+// derivative in S's eigenvectors and eigenvalues at fixed matrices
+// (Daleckii–Krein). With the span bar Y = V_n Ψ V_kᵀ, Ψ = (V_nᵀ R V_k) ⊘ Γ,
+// R = Ū Uᵀ (Ū pc_span_coefficients', every bra's share in it),
+// Γ_nl = σ_l - σ_n, and E = Vᵀ Ṡ V, Θ = E_nk ⊘ Γ:
 //   Ẏ = V_n [(E_nn Ψ - Ψ E_kk - Θ R_kk) ⊘ Γ] V_kᵀ + V_n Ψ Θᵀ V_nᵀ - V_k Θᵀ Ψ V_kᵀ,
 // R_kk = V_kᵀ R V_k (R's other blocks vanish, U ⊥ V_n); every divided
 // difference of 1 / (σ_l - σ_n) is a product of two first-order ones, so no
@@ -5244,112 +5416,142 @@ Status pc_hvp_keep(ReverseContext &c, const PcStates &q, PcReverse &r, const int
                    const int64_t n1) {
   DeviceResources &res = c.res;
   PcHvpClass &h = q.hvp->classes[pc_class_index(r.name)];
-  ClassSolve &cs = r.kets.solves.front();
-  PcWalkBars &w = r.w.front();
-  const int64_t m = h.m;
-  const int64_t nd = d - m;
-  const auto di = static_cast<int32_t>(d);
-  const auto mi = static_cast<int32_t>(m);
-  const auto ndi = static_cast<int32_t>(nd);
+  const int64_t ns = q.ns;
   const size_t dirs = q.tangent->t.directions.size();
-  h.span_dot.resize(dirs);
-  h.u_dot.clear();
-  const bool rotates =
-      q.hvp->span && cs.modes && std::ranges::any_of(r.theta, [](const Buffers::device<double> &x) {
-        return x.num_elements() > 0;
-      });
-  if (rotates) {
-    const DroppedModes &dm = *cs.modes;
-    const double *const vn = dm.v.data();
-    const double *const vk = dm.v.data() + (nd * d);
-    const Buffers::device<double> psi = *FBF_TRY(pc_span_coefficients(res, q, r, 0, d, n1));
-    // R_kk = (V_kᵀ Ū)(Uᵀ V_k), V_kᵀ Ū = (S V_k)ᵀ T̄ + (V_kᵀ S₁) t̄1ᵀ + (K V_k)ᵀ U (M + Mᵀ),
-    // over the matrices rebuilt.
-    const PcMatrices mats = FBF_TRY(r.build(res, q.ops.front(), true));
-    const Buffers::device<double> s_sym = FBF_TRY(symmetrized(res, mats.s.data(), d));
-    const Buffers::device<double> k_sym = FBF_TRY(symmetrized(res, mats.k->data(), d));
-    Buffers::device<double> work(static_cast<size_t>(d * m), res.device());
-    Buffers::device<double> vkbar(static_cast<size_t>(m * m), res.device());
-    FBF_TRY(gpu_status(gemm(res.blas(), di, mi, di, &kOne<double>, s_sym.data(), vk, &kZero<double>,
-                            work.data())));
-    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), mi, mi, di, &kOne<double>, work.data(),
-                                               w.t.data(), &kZero<double>, vkbar.data())));
-    if (n1 > 0) {
-      const Buffers::device<double> vks1 = FBF_TRY(leak_of(res, vk, mats.s1->data(), d, m, n1));
-      // t̄1 row-major n1 x m reads column-major as its transpose.
-      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-          res.blas(), mi, mi, static_cast<int32_t>(n1), &kOne<double>, vks1.data(), w.t1.data(),
-          &kOne<double>, vkbar.data())));
-      FBF_TRY(res.sync());
-    }
-    FBF_TRY(gpu_status(gemm(res.blas(), di, mi, di, &kOne<double>, k_sym.data(), vk, &kZero<double>,
-                            work.data())));
-    Buffers::device<double> kvu(static_cast<size_t>(m * m), res.device());
-    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), mi, mi, di, &kOne<double>, work.data(),
-                                               cs.u.data(), &kZero<double>, kvu.data())));
-    FBF_TRY(gpu_status(gemm(res.blas(), mi, mi, mi, &kOne<double>, kvu.data(), w.mgg.data(),
-                            &kOne<double>, vkbar.data())));
-    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-        res.blas(), mi, mi, mi, &kOne<double>, kvu.data(), w.mgg.data(), &kOne<double>,
-        vkbar.data())));
-    Buffers::device<double> uv(static_cast<size_t>(m * m), res.device());
-    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), mi, mi, di, &kOne<double>, cs.u.data(),
-                                               vk, &kZero<double>, uv.data())));
-    Buffers::device<double> rkk(static_cast<size_t>(m * m), res.device());
-    FBF_TRY(gpu_status(gemm(res.blas(), mi, mi, mi, &kOne<double>, vkbar.data(), uv.data(),
-                            &kZero<double>, rkk.data())));
-    Buffers::device<double> dk(static_cast<size_t>(nd * m), res.device());
-    Buffers::device<double> dd(static_cast<size_t>(nd * nd), res.device());
-    Buffers::device<double> kk(static_cast<size_t>(m * m), res.device());
-    Buffers::device<double> part(static_cast<size_t>(d * std::max(m, nd)), res.device());
-    for (size_t u = 0; u < dirs; ++u) {
-      const Buffers::device<double> &theta = r.theta[u];
-      if (theta.num_elements() == 0) {
-        h.u_dot.push_back(FBF_TRY(device_zeros(res, 0)));
-        continue;
-      }
-      // U̇ = V_n Θ'.
-      Buffers::device<double> u_dot(static_cast<size_t>(d * m), res.device());
-      FBF_TRY(gpu_status(gemm(res.blas(), di, mi, ndi, &kOne<double>, vn, r.theta_u[u].data(),
-                              &kZero<double>, u_dot.data())));
-      h.u_dot.push_back(std::move(u_dot));
-      // (E_nn Ψ - Ψ E_kk - Θ R_kk) ⊘ Γ.
-      FBF_TRY(gpu_status(gemm(res.blas(), ndi, mi, ndi, &kOne<double>, r.edd[u].data(), psi.data(),
-                              &kZero<double>, dk.data())));
-      FBF_TRY(gpu_status(gemm(res.blas(), ndi, mi, mi, &kNegOne<double>, psi.data(),
-                              r.ekk[u].data(), &kOne<double>, dk.data())));
-      FBF_TRY(gpu_status(gemm(res.blas(), ndi, mi, mi, &kNegOne<double>, theta.data(), rkk.data(),
-                              &kOne<double>, dk.data())));
-      const Buffers::device<double> dk_g = FBF_TRY(by_gaps(res, dk, dm, m));
-      // Ψ Θᵀ and -Θᵀ Ψ.
-      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-          res.blas(), ndi, ndi, mi, &kOne<double>, psi.data(), theta.data(), &kZero<double>,
-          dd.data())));
-      FBF_TRY(
-          gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), mi, mi, ndi, &kNegOne<double>,
-                                             theta.data(), psi.data(), &kZero<double>, kk.data())));
-      Buffers::device<double> y(static_cast<size_t>(d * d), res.device());
-      // V_n DK V_kᵀ + V_n DD V_nᵀ + V_k KK V_kᵀ.
-      FBF_TRY(gpu_status(gemm(res.blas(), di, mi, ndi, &kOne<double>, vn, dk_g.data(),
-                              &kZero<double>, part.data())));
-      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-          res.blas(), di, di, mi, &kOne<double>, part.data(), vk, &kZero<double>, y.data())));
-      FBF_TRY(gpu_status(gemm(res.blas(), di, ndi, ndi, &kOne<double>, vn, dd.data(),
-                              &kZero<double>, part.data())));
-      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-          res.blas(), di, di, ndi, &kOne<double>, part.data(), vn, &kOne<double>, y.data())));
-      FBF_TRY(gpu_status(
-          gemm(res.blas(), di, mi, mi, &kOne<double>, vk, kk.data(), &kZero<double>, part.data())));
-      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-          res.blas(), di, di, mi, &kOne<double>, part.data(), vk, &kOne<double>, y.data())));
-      FBF_TRY(res.sync());
-      h.span_dot[u] = std::move(y);
-    }
+  const auto di = static_cast<int32_t>(d);
+  // The span coefficients read each ket's own M, every bra's share at its
+  // weight: the tangent walk's per-pair M is spent.
+  for (int64_t j = 0; j < ns; ++j) {
+    const PcHvpKet &k = h.kets[static_cast<size_t>(j)];
+    PcWalkBars &w = r.w[static_cast<size_t>((j * ns) + j)];
+    FBF_TRY(zero(res, w.mgg.data(), k.m * k.m));
+    FBF_TRY(add_scaled(res, k.mgg->data(), k.m * k.m, w.mgg.data(), 1.0));
   }
-  h.u = std::move(cs.u);
-  h.modes = std::move(cs.modes);
-  h.mgg = std::move(w.mgg);
-  h.mgg_delta = std::move(w.mgg_delta);
+  for (int64_t j = 0; j < ns; ++j) {
+    PcHvpKet &k = h.kets[static_cast<size_t>(j)];
+    ClassSolve &cs = r.kets.solves[static_cast<size_t>(j)];
+    const PcWalkBars &w = r.w[static_cast<size_t>((j * ns) + j)];
+    const int64_t m = k.m;
+    const int64_t nd = d - m;
+    const auto mi = static_cast<int32_t>(m);
+    const auto ndi = static_cast<int32_t>(nd);
+    const auto theta_of = [&](const size_t u) -> const Buffers::device<double> & {
+      return r.theta[(static_cast<size_t>(j) * dirs) + u];
+    };
+    k.span_dot.clear();
+    k.span_dot.resize(dirs);
+    k.u_dot.clear();
+    bool rotates = q.hvp->span && cs.modes.has_value();
+    if (rotates) {
+      rotates = false;
+      for (size_t u = 0; u < dirs; ++u) {
+        rotates = rotates || theta_of(u).num_elements() > 0;
+      }
+    }
+    if (rotates) {
+      const DroppedModes &dm = *cs.modes;
+      const double *const vn = dm.v.data();
+      const double *const vk = dm.v.data() + (nd * d);
+      const Buffers::device<double> psi = *FBF_TRY(pc_span_coefficients(res, q, r, j, d, n1));
+      // R_kk = (V_kᵀ Ū)(Uᵀ V_k), V_kᵀ Ū = Σ_I [(V_kᵀ A_I) T̄_{I←J} + (V_kᵀ S₁_I) t̄1_{I←J}ᵀ]
+      //   + (K V_k)ᵀ U (M + Mᵀ),
+      // A_I the matrix T_{I←J} = A_I U reads (ket J's own S, or pair (J, I)'s
+      // transition S unsymmetrized) and S₁_I likewise, over the matrices
+      // rebuilt.
+      Buffers::device<double> vkbar = FBF_TRY(device_zeros(res, m * m));
+      std::optional<Buffers::device<double>> k_sym;
+      for (int64_t i = 0; i < ns; ++i) {
+        const bool own = i == j;
+        const PcMatrices mats =
+            FBF_TRY(r.build(res, q.ops[static_cast<size_t>((j * ns) + i)], own));
+        const PcWalkBars &wi = r.w[static_cast<size_t>((i * ns) + j)];
+        const Buffers::device<double> a = own ? FBF_TRY(symmetrized(res, mats.s.data(), d))
+                                              : FBF_TRY(duplicate(res, mats.s.data(), d * d));
+        const Buffers::device<double> vka = FBF_TRY(leak_of(res, vk, a.data(), d, m, d));
+        FBF_TRY(gpu_status(gemm(res.blas(), mi, mi, di, &kOne<double>, vka.data(), wi.t.data(),
+                                &kOne<double>, vkbar.data())));
+        if (n1 > 0) {
+          const Buffers::device<double> vks1 = FBF_TRY(leak_of(res, vk, mats.s1->data(), d, m, n1));
+          // t̄1 row-major n1 x m reads column-major as its transpose.
+          FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+              res.blas(), mi, mi, static_cast<int32_t>(n1), &kOne<double>, vks1.data(),
+              wi.t1.data(), &kOne<double>, vkbar.data())));
+        }
+        if (own) {
+          k_sym = FBF_TRY(symmetrized(res, mats.k->data(), d));
+        }
+        FBF_TRY(res.sync());
+      }
+      Buffers::device<double> work(static_cast<size_t>(d * m), res.device());
+      FBF_TRY(gpu_status(gemm(res.blas(), di, mi, di, &kOne<double>, k_sym->data(), vk,
+                              &kZero<double>, work.data())));
+      Buffers::device<double> kvu(static_cast<size_t>(m * m), res.device());
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), mi, mi, di, &kOne<double>, work.data(),
+                                                 cs.u.data(), &kZero<double>, kvu.data())));
+      FBF_TRY(gpu_status(gemm(res.blas(), mi, mi, mi, &kOne<double>, kvu.data(), w.mgg.data(),
+                              &kOne<double>, vkbar.data())));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+          res.blas(), mi, mi, mi, &kOne<double>, kvu.data(), w.mgg.data(), &kOne<double>,
+          vkbar.data())));
+      Buffers::device<double> uv(static_cast<size_t>(m * m), res.device());
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), mi, mi, di, &kOne<double>, cs.u.data(),
+                                                 vk, &kZero<double>, uv.data())));
+      Buffers::device<double> rkk(static_cast<size_t>(m * m), res.device());
+      FBF_TRY(gpu_status(gemm(res.blas(), mi, mi, mi, &kOne<double>, vkbar.data(), uv.data(),
+                              &kZero<double>, rkk.data())));
+      Buffers::device<double> dk(static_cast<size_t>(nd * m), res.device());
+      Buffers::device<double> dd(static_cast<size_t>(nd * nd), res.device());
+      Buffers::device<double> kk(static_cast<size_t>(m * m), res.device());
+      Buffers::device<double> part(static_cast<size_t>(d * std::max(m, nd)), res.device());
+      for (size_t u = 0; u < dirs; ++u) {
+        const size_t ju = (static_cast<size_t>(j) * dirs) + u;
+        const Buffers::device<double> &theta = r.theta[ju];
+        if (theta.num_elements() == 0) {
+          k.u_dot.push_back(FBF_TRY(device_zeros(res, 0)));
+          continue;
+        }
+        // U̇ = V_n Θ'.
+        Buffers::device<double> u_dot(static_cast<size_t>(d * m), res.device());
+        FBF_TRY(gpu_status(gemm(res.blas(), di, mi, ndi, &kOne<double>, vn, r.theta_u[ju].data(),
+                                &kZero<double>, u_dot.data())));
+        k.u_dot.push_back(std::move(u_dot));
+        // (E_nn Ψ - Ψ E_kk - Θ R_kk) ⊘ Γ.
+        FBF_TRY(gpu_status(gemm(res.blas(), ndi, mi, ndi, &kOne<double>, r.edd[ju].data(),
+                                psi.data(), &kZero<double>, dk.data())));
+        FBF_TRY(gpu_status(gemm(res.blas(), ndi, mi, mi, &kNegOne<double>, psi.data(),
+                                r.ekk[ju].data(), &kOne<double>, dk.data())));
+        FBF_TRY(gpu_status(gemm(res.blas(), ndi, mi, mi, &kNegOne<double>, theta.data(), rkk.data(),
+                                &kOne<double>, dk.data())));
+        const Buffers::device<double> dk_g = FBF_TRY(by_gaps(res, dk, dm, m));
+        // Ψ Θᵀ and -Θᵀ Ψ.
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+            res.blas(), ndi, ndi, mi, &kOne<double>, psi.data(), theta.data(), &kZero<double>,
+            dd.data())));
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), mi, mi, ndi, &kNegOne<double>,
+                                                   theta.data(), psi.data(), &kZero<double>,
+                                                   kk.data())));
+        Buffers::device<double> y(static_cast<size_t>(d * d), res.device());
+        // V_n DK V_kᵀ + V_n DD V_nᵀ + V_k KK V_kᵀ.
+        FBF_TRY(gpu_status(gemm(res.blas(), di, mi, ndi, &kOne<double>, vn, dk_g.data(),
+                                &kZero<double>, part.data())));
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+            res.blas(), di, di, mi, &kOne<double>, part.data(), vk, &kZero<double>, y.data())));
+        FBF_TRY(gpu_status(gemm(res.blas(), di, ndi, ndi, &kOne<double>, vn, dd.data(),
+                                &kZero<double>, part.data())));
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+            res.blas(), di, di, ndi, &kOne<double>, part.data(), vn, &kOne<double>, y.data())));
+        FBF_TRY(gpu_status(gemm(res.blas(), di, mi, mi, &kOne<double>, vk, kk.data(),
+                                &kZero<double>, part.data())));
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+            res.blas(), di, di, mi, &kOne<double>, part.data(), vk, &kOne<double>, y.data())));
+        FBF_TRY(res.sync());
+        k.span_dot[u] = std::move(y);
+      }
+    }
+    FBF_TRY(res.sync());
+    k.u = std::move(cs.u);
+    k.modes = std::move(cs.modes);
+  }
   return res.sync();
 }
 
@@ -6218,82 +6420,122 @@ const std::array<std::pair<size_t, PcWalk>, 7> kPcWalks{{{0, pc_reverse_sr},
                                                          {6, pc_reverse_sij},
                                                          {7, pc_reverse_sir}}};
 
-// The PC reverse pass at @p hvp's kept multipliers (a fixed walk) over
-// @p in and @p blocks, onto @p bars but the orbital energies': every class
-// the base walk walked, then the sweep. Sijrs is not walked.
-Status pc_fixed_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
-                        const int32_t batch, const EnergyBars &bars, PcHvp &hvp) {
-  const ActiveOperands o = FBF_TRY(active_operands(res, blocks, in));
+// The PC reverse pass at @p hvp's kept multipliers (a fixed walk) over the
+// @p ns² @p pairs and @p blocks, onto @p bars ([I ns + J]: each state's own
+// on the diagonal, the shared fields the first's; each transition's dm1–dm3
+// off it) but the orbital energies': every class the base walk walked, then
+// the sweeps. Sijrs is not walked.
+Status pc_fixed_adjoint(DeviceResources &res, const MoBlocks &blocks,
+                        std::span<const EnergyInputs> pairs, const int64_t ns,
+                        std::span<const double> hbar, const int32_t batch,
+                        std::span<const EnergyBars> bars, PcHvp &hvp) {
+  std::vector<ActiveOperands> ops;
+  for (const EnergyInputs &pair : pairs) {
+    ops.push_back(FBF_TRY(active_operands(res, blocks, pair)));
+  }
+  const ActiveOperands &o = ops.front();
   std::vector<double> core_bar(o.e_core.size(), 0.0);
   std::vector<double> virt_bar(o.e_virt.size(), 0.0);
   ReverseContext c{
       .res = res,
       .blocks = blocks,
-      .in = in,
-      .bars = bars,
+      .in = pairs.front(),
+      .bars = bars.front(),
       .batch = batch,
       .ops = o,
       .e = {.core = o.e_core, .virt = o.e_virt, .core_bar = core_bar, .virt_bar = virt_bar}};
   std::vector<BlockBars> m;
-  m.push_back(FBF_TRY(block_bars(res, blocks.ncas, true, true)));
-  const double one = 1.0;
-  const PcStates q{.ns = 1, .ops = {&o, 1}, .hbar = {&one, 1}, .m = m, .hvp = &hvp};
+  for (int64_t p = 0; p < ns * ns; ++p) {
+    m.push_back(FBF_TRY(block_bars(res, blocks.ncas, p / ns == p % ns, true)));
+  }
+  const PcStates q{.ns = ns, .ops = ops, .hbar = hbar, .m = m, .hvp = &hvp};
   for (const auto &[k, walk] : kPcWalks) {
     if (hvp.classes[k].walked) {
       FBF_TRY(walk(c, q));
     }
   }
-  const std::array wanted{bars.h1e, bars.h2e, bars.dm1, bars.dm2, bars.dm3, bars.f3ca, bars.f3ac};
-  if (std::ranges::any_of(wanted, [](const double *b) { return b != nullptr; })) {
-    FBF_TRY(sweep_blocks(res, o, m.front(), bars));
+  for (int64_t p = 0; p < ns * ns; ++p) {
+    const auto pp = static_cast<size_t>(p);
+    const EnergyBars &b = bars[pp];
+    if (p / ns == p % ns) {
+      const std::array wanted{b.h1e, b.h2e, b.dm1, b.dm2, b.dm3, b.f3ca, b.f3ac};
+      if (std::ranges::any_of(wanted, [](const double *x) { return x != nullptr; })) {
+        FBF_TRY(sweep_blocks(res, ops[pp], m[pp], b));
+      }
+    } else if (b.dm1 != nullptr) {
+      FBF_TRY(sweep_metrics(res, ops[pp], m[pp], b));
+    }
   }
   return res.sync();
 }
 
-// The step U's symmetric difference takes along direction @p u: the power of
-// two nearest ‖U‖ / ‖U̇‖ over the classes whose U moves (the difference is
-// exact, so the step only keeps it clear of round-off); 0 when none does.
+// The step every ket's U's symmetric difference takes along direction @p u:
+// the power of two nearest ‖U‖ / ‖U̇‖, the smallest over the kets whose U
+// moves (the difference is exact, so the step only keeps it clear of
+// round-off); 0 when none does.
 Result<double> pc_u_step(DeviceResources &res, const PcHvp &hvp, const size_t u) {
   double step = 0.0;
   for (const PcHvpClass &h : hvp.classes) {
-    if (!h.walked || u >= h.u_dot.size() || h.u_dot[u].num_elements() == 0) {
+    if (!h.walked) {
       continue;
     }
-    Buffers::device<double> acc = FBF_TRY(device_zeros(res, 2));
-    const auto count = static_cast<int64_t>(h.u->num_elements());
-    FBF_TRY(add_squares(res, h.u->data(), count, acc.data()));
-    FBF_TRY(add_squares(res, h.u_dot[u].data(), count, acc.data() + 1));
-    const std::vector<double> sq = FBF_TRY(download(res, acc.data(), 2));
-    const double s = polarization_step(std::sqrt(sq[0]), std::sqrt(sq[1]));
-    if (s != 0.0) {
-      step = step == 0.0 ? s : std::min(step, s);
+    for (const PcHvpKet &k : h.kets) {
+      if (u >= k.u_dot.size() || k.u_dot[u].num_elements() == 0) {
+        continue;
+      }
+      Buffers::device<double> acc = FBF_TRY(device_zeros(res, 2));
+      const auto count = static_cast<int64_t>(k.u->num_elements());
+      FBF_TRY(add_squares(res, k.u->data(), count, acc.data()));
+      FBF_TRY(add_squares(res, k.u_dot[u].data(), count, acc.data() + 1));
+      const std::vector<double> sq = FBF_TRY(download(res, acc.data(), 2));
+      const double s = polarization_step(std::sqrt(sq[0]), std::sqrt(sq[1]));
+      if (s != 0.0) {
+        step = step == 0.0 ? s : std::min(step, s);
+      }
     }
   }
   return step;
 }
 
-Result<PcClassEnergiesHvp> pc_class_energies_hvp(DeviceResources &res, const MoBlocks &blocks,
-                                                 const EnergyInputs &in, const int32_t batch,
-                                                 std::span<const EnergyDirection> directions,
-                                                 std::span<const EnergyBars> bars,
-                                                 const bool span) {
+Result<std::vector<PcClassEnergies>> pc_couplings_hvp(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+    const int64_t ns, std::span<const double> hbar, const int32_t batch,
+    std::span<const EnergyDirection> directions, std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t, int64_t, int64_t, const EnergyBars &)> &transition,
+    const bool span, const std::string_view who) {
   const ScopedDeviceIndex on{res.dev_idx()};
-  if (bars.size() != directions.size()) {
-    return err_config("nevpt2::pc_class_energies_hvp: {} bars for {} directions", bars.size(),
-                      directions.size());
+  FBF_TRY(check_directions(blocks, directions, who));
+  const auto n2 = static_cast<size_t>(ns * ns);
+  const size_t dirs = directions.size() / n2;
+  const int64_t n = blocks.ncas;
+  std::vector<ActiveOperands> ops;
+  for (const EnergyInputs &pair : pairs) {
+    ops.push_back(FBF_TRY(active_operands(res, blocks, pair)));
   }
-  FBF_TRY(check_directions(blocks, directions, "pc_class_energies_hvp"));
-  const ActiveOperands o = FBF_TRY(active_operands(res, blocks, in));
-  const size_t dirs = directions.size();
-
-  // The base walk: every class's solve, its tangent along every direction,
-  // and the multipliers and their tangents kept.
+  // Pair p's directions, one per u; the shared fields' and the blocks'
+  // tangents are the first pair's.
+  std::vector<std::vector<EnergyDirection>> along(n2);
+  for (size_t u = 0; u < dirs; ++u) {
+    for (size_t p = 0; p < n2; ++p) {
+      along[p].push_back(directions[(u * n2) + p]);
+    }
+  }
+  const std::vector<EnergyDirection> &first = along.front();
   PcTangent tg{
-      .t = FBF_TRY(input_tangent(res, blocks, in, directions)),
-      .e_core = FBF_TRY(orbital_energy_dots(res, directions, &EnergyInputs::e_core, blocks.ncore)),
-      .e_virt = FBF_TRY(orbital_energy_dots(res, directions, &EnergyInputs::e_virt, blocks.nvirt)),
+      .t = FBF_TRY(input_tangent(res, blocks, pairs.front(), first)),
+      .e_core = FBF_TRY(orbital_energy_dots(res, first, &EnergyInputs::e_core, blocks.ncore)),
+      .e_virt = FBF_TRY(orbital_energy_dots(res, first, &EnergyInputs::e_virt, blocks.nvirt)),
       .unused = {},
-      .span = span};
+      .span = span,
+      .pairs = {},
+      .steps = {}};
+  if (ns > 1) {
+    for (size_t p = 0; p < n2; ++p) {
+      tg.pairs.emplace_back(along[p]);
+      tg.steps.push_back(FBF_TRY(tangent_steps(res, blocks, pairs[p], along[p])));
+    }
+  }
+  const ActiveOperands &o = ops.front();
   PcHvp hvp{
       .fixed = false,
       .span = span,
@@ -6309,78 +6551,164 @@ Result<PcClassEnergiesHvp> pc_class_energies_hvp(DeviceResources &res, const MoB
   ReverseContext c{
       .res = res,
       .blocks = blocks,
-      .in = in,
+      .in = pairs.front(),
       .bars = no_bars,
       .batch = batch,
       .ops = o,
       .e = {.core = o.e_core, .virt = o.e_virt, .core_bar = core_bar, .virt_bar = virt_bar}};
   std::vector<BlockBars> m;
-  m.push_back(FBF_TRY(block_bars(res, blocks.ncas, false, false)));
-  const double one = 1.0;
-  const PcStates q{.ns = 1, .ops = {&o, 1}, .hbar = {&one, 1}, .m = m, .tangent = &tg, .hvp = &hvp};
-  PcClassEnergiesHvp out;
+  for (size_t p = 0; p < n2; ++p) {
+    m.push_back(FBF_TRY(block_bars(res, blocks.ncas, false, false)));
+  }
+  const PcStates q{.ns = ns, .ops = ops, .hbar = hbar, .m = m, .tangent = &tg, .hvp = &hvp};
+
+  // The base walk: every class's solves, their tangents along every
+  // direction, and the multipliers and their tangents kept.
+  std::vector<PcClassEnergies> out(n2);
   for (const auto &[k, walk] : kPcWalks) {
     const PcClassSums x = FBF_TRY(walk(c, q));
-    out.energies.energies[k] = x.energy.front();
-    out.energies.dropped[k] = x.dropped.front();
-    pc_report_modes(x.modes, 0, k, out.energies);
-    out.energies.cut[k] = x.cut.empty() ? 0.0 : x.cut.front();
-    out.energies.kept[k] = x.kept.empty() ? 0.0 : x.kept.front();
+    for (size_t p = 0; p < n2; ++p) {
+      const size_t j = p % static_cast<size_t>(ns);
+      out[p].energies[k] = x.energy[p];
+      out[p].dropped[k] = x.dropped[j];
+      out[p].cut[k] = j < x.cut.size() ? x.cut[j] : 0.0;
+      out[p].kept[k] = j < x.kept.size() ? x.kept[j] : 0.0;
+      pc_report_modes(x.modes, j, k, out[p]);
+    }
     // The class's T, t1 and slab buffers are freed: drop their regions.
     tg.t.regions.resize(tg.t.inputs);
     tg.t.held.clear();
   }
-  out.energies.energies[2] = FBF_TRY(energy_sijrs(res, blocks, in, batch)).second;
-  out.energies.total = std::ranges::fold_left(out.energies.energies, 0.0, std::plus{});
-  for (const auto &[k, walk] : kPcWalks) {
-    if (hvp.classes[k].walked && out.energies.kept[k] < kPcHessianKept) {
-      return err_numerical("nevpt2::pc_class_energies_hvp: {} keeps a metric mode at {:.3e} of "
-                           "its largest, below {:.0e}: its solve is not differentiable twice "
-                           "there (#917). Raise EnergyInputs::pc_floor to {:.0e} or more",
-                           kScClassNames[k], out.energies.kept[k], kPcHessianKept, kPcHessianKept);
+  const double sijrs = FBF_TRY(energy_sijrs(res, blocks, pairs.front(), batch)).second;
+  double trace = 0.0;
+  for (int64_t j = 0; j < ns; ++j) {
+    const auto jj = static_cast<size_t>((j * ns) + j);
+    out[jj].energies[2] = sijrs;
+    trace += hbar[jj];
+  }
+  for (PcClassEnergies &element : out) {
+    element.total = std::ranges::fold_left(element.energies, 0.0, std::plus{});
+  }
+  for (int64_t j = 0; j < ns; ++j) {
+    const PcClassEnergies &own = out[static_cast<size_t>((j * ns) + j)];
+    for (const auto &[k, walk] : kPcWalks) {
+      if (q.hvp->classes[k].walked && own.kept[k] < kPcHessianKept) {
+        const std::string what =
+            std::format("{} keeps a metric mode at {:.3e} of its largest, below {:.0e}: its "
+                        "solve is not differentiable twice there (#917). Raise "
+                        "EnergyInputs::pc_floor to {:.0e} or more",
+                        kScClassNames[k], own.kept[k], kPcHessianKept, kPcHessianKept);
+        if (ns == 1) {
+          return err_numerical("nevpt2::pc_class_energies_hvp: {}", what);
+        }
+        return err_numerical("nevpt2::{}: state {}: {}", who, j, what);
+      }
     }
   }
 
   hvp.fixed = true;
   for (size_t u = 0; u < dirs; ++u) {
+    // This direction's bars, [I ns + J]: each state's own (the shared
+    // fields the first's), and each transition's dm1–dm3, held until the end.
+    std::vector<Buffers::device<double>> held;
+    std::vector<EnergyBars> set(n2);
+    for (size_t p = 0; p < n2; ++p) {
+      const auto i = static_cast<int64_t>(p) / ns;
+      const auto j = static_cast<int64_t>(p) % ns;
+      if (i == j) {
+        set[p] = bars[(u * static_cast<size_t>(ns)) + static_cast<size_t>(j)];
+        continue;
+      }
+      if (!transition) {
+        continue;
+      }
+      for (const auto &[field, count] :
+           {std::pair{&EnergyBars::dm1, n * n}, std::pair{&EnergyBars::dm2, n * n * n * n},
+            std::pair{&EnergyBars::dm3, n * n * n * n * n * n}}) {
+        held.push_back(FBF_TRY(device_zeros(res, count)));
+        set[p].*field = held.back().data();
+      }
+    }
+    const EnergyBars &shared = set.front();
     // The multipliers' tangent, through one fixed walk, and R's onto the
     // orbital energies.
     hvp.dot = u;
-    FBF_TRY(pc_fixed_adjoint(res, blocks, in, batch, bars[u], hvp));
-    FBF_TRY(add_orbital_energy_bars(res, hvp.core_dot[u], hvp.virt_dot[u], bars[u]));
+    FBF_TRY(pc_fixed_adjoint(res, blocks, pairs, ns, hbar, batch, set, hvp));
+    FBF_TRY(add_orbital_energy_bars(res, hvp.core_dot[u], hvp.virt_dot[u], shared));
     hvp.dot.reset();
     // U's tangent: the bars are quadratic in U, so one symmetric difference.
     if (span) {
       const double u_step = FBF_TRY(pc_u_step(res, hvp, u));
       if (u_step != 0.0) {
         hvp.line = u;
-        FBF_TRY(line_derivative(res, blocks, {&bars[u], 1}, u_step, 1,
+        FBF_TRY(line_derivative(res, blocks, set, u_step, 1,
                                 [&](const double t, std::span<const EnergyBars> scratch) -> Status {
                                   hvp.u_step = t;
-                                  return pc_fixed_adjoint(res, blocks, in, batch, scratch.front(),
-                                                          hvp);
+                                  return pc_fixed_adjoint(res, blocks, pairs, ns, hbar, batch,
+                                                          scratch, hvp);
                                 }));
         hvp.u_step = 0.0;
       }
     }
-    // The inputs' tangent at fixed multipliers. The orbital energies are
-    // read by the multipliers alone, so they need no difference.
-    EnergyDirection du = directions[u];
-    du.in.e_core = nullptr;
-    du.in.e_virt = nullptr;
-    const double step = FBF_TRY(line_step(res, blocks, in, du));
-    if (step != 0.0) {
-      FBF_TRY(line_derivative(res, blocks, {&bars[u], 1}, step, kLineWeights.size(),
-                              [&](const double t, std::span<const EnergyBars> scratch) -> Status {
-                                const ShiftedInputs x =
-                                    FBF_TRY(shifted_inputs(res, blocks, in, du, t));
-                                return pc_fixed_adjoint(res, x.blocks(), x.in, batch,
-                                                        scratch.front(), hvp);
-                              }));
+    // The inputs' tangent at fixed multipliers, every pair along its own
+    // direction. The orbital energies are read by the multipliers alone, so
+    // they need no difference.
+    std::vector<EnergyDirection> du;
+    double step = 0.0;
+    for (size_t p = 0; p < n2; ++p) {
+      EnergyDirection d = along[p][u];
+      d.in.e_core = nullptr;
+      d.in.e_virt = nullptr;
+      const double s = FBF_TRY(line_step(res, blocks, pairs[p], d));
+      if (s != 0.0) {
+        step = step == 0.0 ? s : std::min(step, s);
+      }
+      // Every pair reads the first's blocks.
+      if (p > 0) {
+        d.blocks = nullptr;
+      }
+      du.push_back(d);
     }
-    FBF_TRY(sijrs_hvp(res, blocks, in, batch, directions[u], bars[u]));
+    if (step != 0.0) {
+      FBF_TRY(line_derivative(
+          res, blocks, set, step, kLineWeights.size(),
+          [&](const double t, std::span<const EnergyBars> scratch) -> Status {
+            std::vector<ShiftedInputs> x;
+            std::vector<EnergyInputs> moved;
+            for (size_t p = 0; p < n2; ++p) {
+              x.push_back(FBF_TRY(shifted_inputs(res, blocks, pairs[p], du[p], t)));
+              moved.push_back(x.back().in);
+            }
+            return pc_fixed_adjoint(res, x.front().blocks(), moved, ns, hbar, batch, scratch, hvp);
+          }));
+    }
+    // Sijrs reads no RDM: Σ_J H̄_JJ times its one state's product.
+    FBF_TRY(sijrs_hvp(res, blocks, pairs.front(), batch, along.front()[u], shared, trace));
+    for (size_t p = 0; p < n2 && transition; ++p) {
+      const auto i = static_cast<int64_t>(p) / ns;
+      const auto j = static_cast<int64_t>(p) % ns;
+      if (i != j) {
+        FBF_TRY(transition(static_cast<int64_t>(u), i, j, set[p]));
+      }
+    }
   }
   return out;
+}
+
+Result<PcClassEnergiesHvp> pc_class_energies_hvp(DeviceResources &res, const MoBlocks &blocks,
+                                                 const EnergyInputs &in, const int32_t batch,
+                                                 std::span<const EnergyDirection> directions,
+                                                 std::span<const EnergyBars> bars,
+                                                 const bool span) {
+  if (bars.size() != directions.size()) {
+    return err_config("nevpt2::pc_class_energies_hvp: {} bars for {} directions", bars.size(),
+                      directions.size());
+  }
+  const double one = 1.0;
+  std::vector<PcClassEnergies> got =
+      FBF_TRY(pc_couplings_hvp(res, blocks, {&in, 1}, 1, {&one, 1}, batch, directions, bars, {},
+                               span, "pc_class_energies_hvp"));
+  return PcClassEnergiesHvp{.energies = std::move(got.front())};
 }
 
 } // namespace free_breakfast::nevpt2
