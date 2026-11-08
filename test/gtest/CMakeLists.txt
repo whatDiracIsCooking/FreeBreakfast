@@ -173,6 +173,7 @@ add_executable(
   df_sc_nevpt2_hessian_gpu.cpp
   df_qd_sc_nevpt2_hessian_gpu.cpp
   df_qd_pc_nevpt2_hessian_gpu.cpp
+  df_qd_nevpt2_crossing_hessian_gpu.cpp
   df_pc_nevpt2_hessian_gpu.cpp
   infrared_gpu.cpp
   pipeline_gradient_gpu.cpp

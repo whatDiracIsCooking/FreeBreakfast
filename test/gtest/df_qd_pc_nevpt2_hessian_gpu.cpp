@@ -684,8 +684,9 @@ TEST(HessianDfQdPcNevpt2, RefusesBeforeAnythingRuns) {
                  "W short", "W of 3");
   expect_refused(w_form(std::vector<double>{0.5, 0.1, 0.2, 0.5}), fb::ErrorKind::InvalidConfig,
                  "W asymmetric", "not symmetric");
-  expect_refused(w_form(std::vector<double>{1.5, 0.0, 0.0, -0.5}), fb::ErrorKind::InvalidConfig,
-                 "rho negative", "no mixture");
+  expect_refused(
+      w_form(std::vector<double>{0.5, 0.0, 0.0, std::numeric_limits<double>::quiet_NaN()}),
+      fb::ErrorKind::InvalidConfig, "W not finite", "not finite");
 }
 
 // A class kept under 1e-10 of its metric's largest eigenvalue, at the

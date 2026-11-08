@@ -54,6 +54,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::response::zvector
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
   free_breakfast::integrals::one_electron::hessian

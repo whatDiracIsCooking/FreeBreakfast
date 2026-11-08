@@ -19,7 +19,8 @@ module free_breakfast.hessian;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants; // kZero, kOne, kTwo, kNegOne
+import free_breakfast.core.primitives; // math::binomial
+import free_breakfast.core.constants;  // kZero, kOne, kTwo, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, axpy, gemm, gemv, gemmStridedBatched, wwrMemcpyAsync,
                                 // wwrMemsetAsync, wwrMemGetInfo, ScopedDeviceIndex, gpu_status
@@ -123,7 +124,10 @@ Result<QdScForward> qd_sc_forward(DeviceResources &res, const Molecule &molecule
 }
 
 // The ensemble's edge: E_{n+1} - E_n, the n + 1-th root of the active space
-// at the solution's orbitals over its n-th; infinite when there is none.
+// at the solution's orbitals over its n-th; infinite when there is none of
+// the roots' spin S (Weyl's count, (2S + 1) / (m + 1) C(m + 1, N/2 - S)
+// C(m + 1, N/2 + S + 1) over m orbitals and N electrons: an average over
+// every state of the spin, as ethylene's SA3-CAS(2,2), has no edge).
 Result<double> qd_sc_edge_gap(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                               const SphericalMatrixAO &h, const Buffers::device<double> &b,
                               const int32_t naux, const mcscf::Solution &solution,
@@ -133,6 +137,20 @@ Result<double> qd_sc_edge_gap(DeviceResources &res, const Molecule &molecule, co
   const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
   if (nroots + 1 > dim) {
     return std::numeric_limits<double>::infinity();
+  }
+  if (!solution.roots.spin_squares.empty()) {
+    // 2S from <S^2> = S (S + 1).
+    const auto two_s = static_cast<int32_t>(
+        std::lround(std::sqrt(1.0 + (4.0 * solution.roots.spin_squares.front())) - 1.0));
+    const int32_t electrons = alpha.n_electrons() + beta.n_electrons();
+    if ((electrons - two_s) % 2 == 0 && two_s <= electrons) {
+      const double states = (two_s + 1.0) / (ncas + 1.0) *
+                            math::binomial(ncas + 1, (electrons - two_s) / 2) *
+                            math::binomial(ncas + 1, ((electrons + two_s) / 2) + 1);
+      if (static_cast<double>(nroots) + 0.5 > states) {
+        return std::numeric_limits<double>::infinity();
+      }
+    }
   }
   const auto n_act = static_cast<size_t>(ncas);
   const CasscfIntegrals ints =
@@ -156,18 +174,23 @@ Result<double> qd_sc_edge_gap(DeviceResources &res, const Molecule &molecule, co
   return more.energies[nroots] - solution.roots.energies[nroots - 1];
 }
 
-// The body of all four forms: term (i) at W (@p state's W^P when given, else
-// @p w_given), then for a state term (ii); SC's when @p pc_floor is empty,
-// else PC's at that floor (its reports beside the terms).
+// The body of all six forms: term (i) at W (@p state's W^P when given; at a
+// crossing @p pair's W = sum_XY c_XY R_X R_Y^T; else @p w_given), then for a
+// state term (ii), and at a crossing the outside-state sum (Eqs. qd-pair and
+// qd-lowdin); SC's when @p pc_floor is empty, else PC's at that floor (its
+// reports beside the terms).
 Result<QdPcNevpt2Terms>
 qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                 const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                 const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                 const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
                 const std::optional<int32_t> state, const std::span<const double> w_given,
+                const std::optional<std::array<int32_t, 2>> pair, const std::span<const double> c2,
                 const int32_t batch, const std::span<const double> coordinates,
                 const int32_t nfrozen, const std::optional<double> pc_floor) {
-  const std::string_view kWho = pc_floor ? "hessian::df_qd_pc_nevpt2" : "hessian::df_qd_sc_nevpt2";
+  const std::string_view kWho =
+      pair ? (pc_floor ? "hessian::df_qd_pc_nevpt2_crossing" : "hessian::df_qd_sc_nevpt2_crossing")
+           : (pc_floor ? "hessian::df_qd_pc_nevpt2" : "hessian::df_qd_sc_nevpt2");
   const bool pc = pc_floor.has_value();
   const double floor = pc_floor.value_or(0.0);
   if (nfrozen != 0) {
@@ -193,27 +216,34 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
   if (state && (*state < 0 || std::cmp_greater_equal(*state, nroots))) {
     return err_config("{}: state {} is not one of the {} QD states", kWho, *state, nroots);
   }
-  if (!state) {
-    if (w_given.size() != nroots * nroots) {
-      return err_config("{}: W of {} doubles for {} roots", kWho, w_given.size(), nroots);
+  // W (or the crossing's c over (P, Q)) symmetric and finite.
+  const auto symmetric = [&](const std::span<const double> m, const size_t n,
+                             const std::string_view what) -> Status {
+    if (m.size() != n * n) {
+      return err_config("{}: {} of {} doubles for {} rows", kWho, what, m.size(), n);
     }
-    double trace = 0.0;
-    for (size_t r = 0; r < nroots; ++r) {
-      for (size_t s = 0; s < r; ++s) {
-        if (!(std::abs(w_given[(r * nroots) + s] - w_given[(s * nroots) + r]) <=
-              kQdNevpt2WeightTolerance)) {
-          return err_config("{}: W is not symmetric at ({}, {})", kWho, r, s);
+    for (size_t r = 0; r < n; ++r) {
+      for (size_t s = 0; s <= r; ++s) {
+        if (!std::isfinite(m[(r * n) + s]) || !std::isfinite(m[(s * n) + r])) {
+          return err_config("{}: {} is not finite at ({}, {})", kWho, what, r, s);
+        }
+        if (!(std::abs(m[(r * n) + s] - m[(s * n) + r]) <= kQdNevpt2WeightTolerance)) {
+          return err_config("{}: {} is not symmetric at ({}, {})", kWho, what, r, s);
         }
       }
-      const double rho = w_given[r * (nroots + 1)];
-      if (!(rho >= -kQdNevpt2WeightTolerance)) {
-        return err_config("{}: W's diagonal is no mixture: rho_{} = {:g}", kWho, r, rho);
-      }
-      trace += rho;
     }
-    if (!(std::abs(trace - 1.0) <= kQdNevpt2WeightTolerance)) {
-      return err_config("{}: W's diagonal is no mixture: it sums to {:.15g}", kWho, trace);
+    return {};
+  };
+  if (pair) {
+    const auto [p, qq] = *pair;
+    if (p < 0 || qq < 0 || std::cmp_greater_equal(p, nroots) ||
+        std::cmp_greater_equal(qq, nroots) || p == qq) {
+      return err_config("{}: ({}, {}) is not a pair of two of the {} QD states", kWho, p, qq,
+                        nroots);
     }
+    FBF_TRY(symmetric(c2, 2, "c"));
+  } else if (!state) {
+    FBF_TRY(symmetric(w_given, nroots, "W"));
   }
 
   // The coordinates: k orthonormal rows of n_x, the identity when none.
@@ -389,7 +419,25 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
       out.min_denominator = forward.min_denominator;
     }
     out.eigenvalues = std::move(forward.eigenvalues);
-    if (state) {
+    if (pair) {
+      // Every outside state gapped from both of the pair (the pair's own gap
+      // is not divided by).
+      for (size_t s = 0; s < nroots; ++s) {
+        if (std::cmp_equal(s, (*pair)[0]) || std::cmp_equal(s, (*pair)[1])) {
+          continue;
+        }
+        for (const int32_t x : *pair) {
+          const double gap = std::abs(out.eigenvalues[s] - out.eigenvalues[static_cast<size_t>(x)]);
+          if (!(gap >= mcscf::kRootGapFloor)) {
+            return err_numerical("{}: QD state {} is {:.3e} Eh from the crossing pair's state {}, "
+                                 "under {:g}: the outside-state sum divides by that gap, and the "
+                                 "pair's eigenspace is not isolated",
+                                 kWho, s, gap, x, mcscf::kRootGapFloor);
+          }
+          out.qd_gap = std::min(out.qd_gap, gap);
+        }
+      }
+    } else if (state) {
       const auto p = static_cast<size_t>(*state);
       for (size_t other = 0; other < nroots; ++other) {
         if (other == p) {
@@ -412,8 +460,83 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
           out.w[(i * nroots) + j] = u[i] * u[j];
         }
       }
-    } else {
+    } else if (!pair) {
       out.w.assign(w_given.begin(), w_given.end());
+    }
+  }
+  // At a crossing the couplings first, and c's basis of the eigenspace. The
+  // eigensolver's R_P, R_Q are any basis of it, and at a gap of 1e-7 a
+  // rounding of 1e-14 in H_eff turns them by 1e-7 rad from one call to the
+  // next. c is over V = R M instead, M = A (A^T A)^(-1/2) the polar factor
+  // of A_ab = R_{X_a}[r_b], the Loewdin-orthonormalized projections of
+  // CASSCF roots r_0 < r_1 (the pair with |det A| largest) onto the
+  // eigenspace: V depends on its projector alone (R -> R O gives M -> O^T
+  // M). In R's basis that is c~ = M c M^T, which W and the outside-state sum
+  // both read; c = 1 is c~ = 1.
+  std::optional<QdEigenvectorResponse> crossing;
+  std::array<double, 4> ct{};
+  if (pair) {
+    crossing = FBF_TRY(df_qd_eigenvector_response(res, molecule, basis, classes, aux, h, b, l,
+                                                  solution, ncore, ncas, pc, batch,
+                                                  kQdNevpt2ZvectorTolerance, floor, *pair));
+    out.eigenvalues = crossing->eigenvalues;
+    {
+      const double *const u0 =
+          crossing->eigenvectors.data() + (static_cast<size_t>((*pair)[0]) * nroots);
+      const double *const u1 =
+          crossing->eigenvectors.data() + (static_cast<size_t>((*pair)[1]) * nroots);
+      std::array<double, 4> a{}; // A_ab at [2 a + b]
+      double best = -1.0;
+      for (size_t i = 0; i < nroots; ++i) {
+        for (size_t j = i + 1; j < nroots; ++j) {
+          const double det = std::abs((u0[i] * u1[j]) - (u0[j] * u1[i]));
+          if (det > best) {
+            best = det;
+            a = {u0[i], u0[j], u1[i], u1[j]};
+          }
+        }
+      }
+      // S = A^T A, and S^(-1/2) = (S + sqrt(det S) 1)^(-1) sqrt(tr S + 2
+      // sqrt(det S)), a 2 x 2's closed form.
+      const double s00 = (a[0] * a[0]) + (a[2] * a[2]);
+      const double s01 = (a[0] * a[1]) + (a[2] * a[3]);
+      const double s11 = (a[1] * a[1]) + (a[3] * a[3]);
+      const double root = std::sqrt((s00 * s11) - (s01 * s01));
+      const double norm = std::sqrt(s00 + s11 + (2.0 * root));
+      const double r00 = s00 + root;
+      const double r11 = s11 + root;
+      const double inv = norm / ((r00 * r11) - (s01 * s01));
+      const std::array<double, 4> half{r11 * inv, -s01 * inv, -s01 * inv, r00 * inv};
+      std::array<double, 4> m{};
+      for (size_t x = 0; x < 2; ++x) {
+        for (size_t y = 0; y < 2; ++y) {
+          m[(x * 2) + y] = (a[x * 2] * half[y]) + (a[(x * 2) + 1] * half[2 + y]);
+        }
+      }
+      for (size_t x = 0; x < 2; ++x) {
+        for (size_t y = 0; y < 2; ++y) {
+          for (size_t u = 0; u < 2; ++u) {
+            for (size_t v = 0; v < 2; ++v) {
+              ct[(x * 2) + y] += m[(x * 2) + u] * c2[(u * 2) + v] * m[(y * 2) + v];
+            }
+          }
+        }
+      }
+    }
+    out.w.assign(nroots * nroots, 0.0);
+    for (size_t a = 0; a < 2; ++a) {
+      for (size_t bb = 0; bb < 2; ++bb) {
+        const double cab = ct[(a * 2) + bb];
+        const double *const u_x =
+            crossing->eigenvectors.data() + (static_cast<size_t>((*pair)[a]) * nroots);
+        const double *const u_y =
+            crossing->eigenvectors.data() + (static_cast<size_t>((*pair)[bb]) * nroots);
+        for (size_t i = 0; i < nroots; ++i) {
+          for (size_t j = 0; j < nroots; ++j) {
+            out.w[(i * nroots) + j] += cab * u_x[i] * u_y[j];
+          }
+        }
+      }
     }
   }
 
@@ -797,17 +920,15 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
   // in both orders, and x_A (d^2 E_rho / dx dx) x_B, the unreduced
   // CI-relaxed Hessian at rho (H at E_rho's Fock), its CI rows times
   // 2 rho_r and its rotation rows times 2 (rho_r - rho_s), back to the
-  // energy's.
-  const std::span<const double> rho = out.rho;
-  for (const double r : rho) {
-    if (!(r >= -kQdNevpt2WeightTolerance)) {
-      return err_config("{}: rho = diag W is no mixture ({})", kWho, rho);
-    }
-  }
-  std::vector<double> e_rho_xy;
-  std::vector<double> e_rho_lx;
-  std::vector<double> e_rho_xx;
-  {
+  // energy's. E_rho is linear in rho with the core at tr rho, and every piece below is
+  // E_rho's at a mixture (the core at weight 1): rho = a p+ - b p-, p+ and p-
+  // its positive and negative parts each summing to 1, takes it at p+ times
+  // a, less it at p- times b (one pass for a state's or a mixture's rho; two
+  // for a seam's, whose diagonal sums to 0).
+  std::vector<double> e_sa_share(k * k, 0.0);
+  const auto add_e_rho = [&](const std::span<const double> rho, const double scale) -> Status {
+    std::vector<double> e_rho_xy;
+    std::vector<double> e_rho_lx;
     ci::Rdm rdm = FBF_TRY(ci::Rdm::create(res, alpha, beta));
     std::vector<double> gamma(n_act * n_act);
     std::vector<double> gamma2(n_act * n_act * n_act * n_act);
@@ -903,7 +1024,29 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
                    wwr::wwrMemcpyHostToDevice));
       FBF_TRY(res.sync());
     }
-    e_rho_xx = FBF_TRY(gram(size32, lambda_q.data(), y.data()));
+    const std::vector<double> e_rho_xx = FBF_TRY(gram(size32, lambda_q.data(), y.data()));
+    for (size_t e = 0; e < k * k; ++e) {
+      e_sa_share[e] += scale * (e_rho_xy[e] + e_rho_lx[e] + e_rho_xx[e]);
+    }
+    return {};
+  };
+  {
+    std::vector<double> plus(nroots, 0.0);
+    std::vector<double> minus(nroots, 0.0);
+    for (size_t r = 0; r < nroots; ++r) {
+      if (out.rho[r] > 0.0) {
+        plus[r] = out.rho[r];
+      } else if (out.rho[r] < -kQdNevpt2WeightTolerance) {
+        minus[r] = -out.rho[r];
+      }
+    }
+    for (const auto &[part, sign] : {std::pair{&plus, 1.0}, std::pair{&minus, -1.0}}) {
+      const double mass = std::ranges::fold_left(*part, 0.0, std::plus<>{});
+      if (mass > 0.0) {
+        std::ranges::transform(*part, part->begin(), [mass](const double x) { return x / mass; });
+        FBF_TRY(add_e_rho(*part, sign * mass));
+      }
+    }
   }
 
   // 6. The multipliers' z terms at (Z, z, Theta), every rotation a parameter:
@@ -1024,11 +1167,48 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
     out.term_ii = to_coordinates(std::span<const double>(response.term)
                                      .subspan(static_cast<size_t>(*state) * n_x * n_x, n_x * n_x));
   }
+  // At a crossing, the outside-state sum over S not in {P, Q} (Eqs. qd-pair
+  // and qd-lowdin): sum_XY c_XY sum_S (h_XS,x h_SY,y + h_XS,y h_SY,x) / 2
+  // (1 / (E_X - E_S) + 1 / (E_Y - E_S)), the pair's own coupling never
+  // divided. c = 1 is Eq. qd-pair's 2 sum_X sum_S h_XS h_XS / (E_X - E_S);
+  // c's (X, Y) unit pair Eq. qd-lowdin's sum at E_X = E_Y = E_0; c~ = M c M^T
+  // in R's basis, as W's.
+  if (pair) {
+    const std::vector<double> &e = crossing->eigenvalues;
+    const auto coupling = [&](const size_t a, const size_t s) {
+      const size_t lo = std::min(a, s);
+      const size_t hi = std::max(a, s);
+      return crossing->couplings.data() +
+             (((lo * nroots) - (lo * (lo + 1) / 2) + (hi - lo - 1)) * n_x);
+    };
+    std::vector<double> outside(n_x * n_x, 0.0);
+    for (size_t a = 0; a < 2; ++a) {
+      for (size_t bb = 0; bb < 2; ++bb) {
+        const double cab = ct[(a * 2) + bb];
+        const auto x = static_cast<size_t>((*pair)[a]);
+        const auto y = static_cast<size_t>((*pair)[bb]);
+        for (size_t s = 0; s < nroots; ++s) {
+          if (std::cmp_equal(s, (*pair)[0]) || std::cmp_equal(s, (*pair)[1]) || cab == 0.0) {
+            continue;
+          }
+          const double f = 0.5 * cab * ((1.0 / (e[x] - e[s])) + (1.0 / (e[y] - e[s])));
+          const double *const h_x = coupling(x, s);
+          const double *const h_y = coupling(y, s);
+          for (size_t v = 0; v < n_x; ++v) {
+            for (size_t u = 0; u < n_x; ++u) {
+              outside[u + (n_x * v)] += f * ((h_x[u] * h_y[v]) + (h_x[v] * h_y[u]));
+            }
+          }
+        }
+      }
+    }
+    out.term_ii = to_coordinates(outside);
+  }
 
   // 11. The parts summed and symmetrized.
   out.e_sa.resize(k * k);
   for (size_t e = 0; e < k * k; ++e) {
-    out.e_sa[e] = e_rho_xy[e] + e_rho_lx[e] + e_rho_xx[e];
+    out.e_sa[e] = e_sa_share[e];
   }
   out.hessian.resize(k * k);
   const auto element = [&](const size_t at) {
@@ -1089,9 +1269,9 @@ df_qd_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &
                 const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
                 const int32_t state, const int32_t batch, const std::span<const double> coordinates,
                 const int32_t nfrozen) {
-  QdPcNevpt2Terms t =
-      FBF_TRY(qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
-                              state, {}, batch, coordinates, nfrozen, std::nullopt));
+  QdPcNevpt2Terms t = FBF_TRY(qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution,
+                                              ncore, ncas, state, {}, std::nullopt, {}, batch,
+                                              coordinates, nfrozen, std::nullopt));
   return std::move(t.terms);
 }
 
@@ -1102,9 +1282,9 @@ df_qd_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &
                 const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
                 const std::span<const double> w, const int32_t batch,
                 const std::span<const double> coordinates, const int32_t nfrozen) {
-  QdPcNevpt2Terms t =
-      FBF_TRY(qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
-                              std::nullopt, w, batch, coordinates, nfrozen, std::nullopt));
+  QdPcNevpt2Terms t = FBF_TRY(qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution,
+                                              ncore, ncas, std::nullopt, w, std::nullopt, {}, batch,
+                                              coordinates, nfrozen, std::nullopt));
   return std::move(t.terms);
 }
 
@@ -1116,7 +1296,7 @@ df_qd_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &
                 const int32_t state, const int32_t batch, const std::span<const double> coordinates,
                 const double pc_floor, const int32_t nfrozen) {
   return qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, state,
-                         {}, batch, coordinates, nfrozen, pc_floor);
+                         {}, std::nullopt, {}, batch, coordinates, nfrozen, pc_floor);
 }
 
 Result<QdPcNevpt2Terms>
@@ -1128,7 +1308,33 @@ df_qd_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &
                 const std::span<const double> coordinates, const double pc_floor,
                 const int32_t nfrozen) {
   return qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
-                         std::nullopt, w, batch, coordinates, nfrozen, pc_floor);
+                         std::nullopt, w, std::nullopt, {}, batch, coordinates, nfrozen, pc_floor);
+}
+
+Result<QdScNevpt2Terms>
+df_qd_sc_nevpt2_crossing(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                         const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                         const SphericalMatrixAO &h, const Buffers::device<double> &b,
+                         const double *l, const mcscf::Solution &solution, const int32_t ncore,
+                         const int32_t ncas, const int32_t p, const int32_t q,
+                         const std::span<const double> c, const int32_t batch,
+                         const std::span<const double> coordinates, const int32_t nfrozen) {
+  QdPcNevpt2Terms t = FBF_TRY(qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution,
+                                              ncore, ncas, std::nullopt, {}, std::array{p, q}, c,
+                                              batch, coordinates, nfrozen, std::nullopt));
+  return std::move(t.terms);
+}
+
+Result<QdPcNevpt2Terms> df_qd_pc_nevpt2_crossing(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+    const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+    const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas, const int32_t p,
+    const int32_t q, const std::span<const double> c, const int32_t batch,
+    const std::span<const double> coordinates, const double pc_floor, const int32_t nfrozen) {
+  return qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
+                         std::nullopt, {}, std::array{p, q}, c, batch, coordinates, nfrozen,
+                         pc_floor);
 }
 
 } // namespace free_breakfast::hessian

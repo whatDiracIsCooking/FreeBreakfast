@@ -654,8 +654,9 @@ TEST(HessianDfQdScNevpt2, RefusesBeforeAnythingRuns) {
                  "W short", "W of 3");
   expect_refused(w_form(std::vector<double>{0.5, 0.1, 0.2, 0.5}), fb::ErrorKind::InvalidConfig,
                  "W asymmetric", "not symmetric");
-  expect_refused(w_form(std::vector<double>{1.5, 0.0, 0.0, -0.5}), fb::ErrorKind::InvalidConfig,
-                 "rho negative", "no mixture");
+  expect_refused(
+      w_form(std::vector<double>{0.5, 0.0, 0.0, std::numeric_limits<double>::quiet_NaN()}),
+      fb::ErrorKind::InvalidConfig, "W not finite", "not finite");
 }
 
 // An inactive pair under 1e-6 Eh that a coordinate splits: the C3v ammonia's
