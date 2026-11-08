@@ -1,10 +1,10 @@
 % nevpt2.tex -- SC- and PC-NEVPT2, their quasidegenerate (QD) extensions,
-% analytic nuclear gradients, single-state analytic nuclear Hessians and
-% nonadiabatic couplings, as implemented in free-breakfast's src/nevpt2 layer
+% analytic nuclear gradients, analytic nuclear Hessians (single-state and
+% QD) and nonadiabatic couplings, as implemented in free-breakfast's src/nevpt2 layer
 % and the src/hessian calls built on it.
 %
-% This is a description of the code as it stands (7 November 2026, main at
-% 862d9e0c), with the equations it evaluates and the algorithms it runs. The
+% This is a description of the code as it stands (8 November 2026, main at
+% b7a5a266), with the equations it evaluates and the algorithms it runs. The
 % module READMEs under src/nevpt2/ and src/hessian/ are the finer-grained
 % record (layouts, memory, every measured number); where the two disagree,
 % the code and its READMEs win.
@@ -67,7 +67,7 @@
 \large Energies, analytic nuclear gradients and Hessians, and nonadiabatic
 couplings, density-fitted, on the GPU}
 \author{free-breakfast implementation notes}
-\date{7 November 2026}
+\date{8 November 2026}
 
 \begin{document}
 \sloppy
@@ -79,7 +79,7 @@ strongly contracted (SC) and partially contracted (PC) $n$-electron valence
 state perturbation theory (NEVPT2) energies of a CASSCF reference, their
 quasidegenerate (QD) effective Hamiltonians over a state-averaged CASSCF,
 the analytic nuclear gradient of every one of them, the analytic nuclear
-Hessian of single-state SC and PC, the QD interstate
+Hessian of single-state SC and PC and of an SC-QD state, the QD interstate
 coupling and derivative (nonadiabatic) coupling, and what a QD
 minimum-energy conical intersection search needs. Everything is density
 fitted and runs on the device. The organising idea is that every
@@ -91,7 +91,8 @@ machinery the tree already has: one Z-vector solve over the CI-relaxed
 Hessian and one or two passes of the density-fitted derivative integrals.
 The Hessian is the same idea one order up: the energy's tangent along each
 coordinate's first-order response, forward over the reverse pass, against
-$3N$ CP-CASSCF responses and the gradient's own multipliers.
+$3N$ CP-CASSCF responses and the gradient's own multipliers; a QD state's
+adds one closed-form eigenvector term built from the interstate couplings.
 No derivative is written by hand beyond a few scalar finishes, and no
 finite difference appears in any production path except those that are
 exact: the Hessian-vector products' bars at fixed multipliers are
@@ -121,8 +122,14 @@ differences recover their derivative with no truncation error.
   single-state DF-CASSCF, all-electron, in Cartesian or caller-given
   coordinates (\S\ref{sec:hessian}), with the refusals that keep a
   non-smooth surface from being reported as a Hessian. Unpublished for any
-  internally contracted MRPT2 as far as we know. There is no QD-NEVPT2
-  Hessian.
+  internally contracted MRPT2 as far as we know.
+\item The analytic nuclear Hessian of an SC-QD-NEVPT2 state on a
+  DF-SA-CASSCF at any weights (\S\ref{sec:qdhess}), with every
+  model state's refusals and a report of every small denominator
+  (\S\ref{sec:qd-diff}); and the semi-numerical QD Hessian in the pipeline
+  (\S\ref{sec:qd-build}). PC-QD's analytic Hessian (\#966), the pair-mean
+  Hessian at a crossing (\#967) and the analytic \code{[hessian]} over a QD
+  chain (\#968) are not yet in the tree.
 \item The QD interstate coupling $\mathbf h_{PQ}$, and the full derivative
   coupling $\mathbf d_{PQ} = \langle\Psi_P|\nabla\Psi_Q\rangle$, including the
   PT2 term \cite{park2020,park2017}.
@@ -140,7 +147,7 @@ sigma vectors and RDMs) and, for derivatives, \code{response} and
 \code{response}; the DF gradient, derivative integrals and CASSCF couplings
 in \code{mcscf}). It never imports \code{pipeline} or \code{hessian}. The
 nuclear Hessian is assembled one layer up, in \code{hessian}
-(\code{df\_sc\_nevpt2}, \code{df\_pc\_nevpt2}), from this layer's tangents
+(\code{df\_sc\_nevpt2}, \code{df\_pc\_nevpt2}, \code{df\_qd\_sc\_nevpt2}), from this layer's tangents
 and Hessian-vector products and the CASSCF Hessian's parts. The pipeline's
 \code{[nevpt2]}, \code{[nevpt2\_gradient]}, \code{[nevpt2\_nac]},
 \code{[optimize]} and \code{[hessian]} steps wrap both. Its six sub-modules are:
@@ -153,8 +160,8 @@ module & role \\
 \midrule
 \code{nevpt2.density\_fitting} & MO blocks of $B$, the active $(tu|vw)$, the ten external blocks slab by slab, and their adjoints onto $\Lb$ (\S\ref{sec:df}) \\
 \code{nevpt2.rdm} & dm3 and the integral-contracted 4-RDMs f3ca, f3ac, of one vector or between two, and their adjoints (\S\ref{sec:rdm}) \\
-\code{nevpt2.energy} & the eight SC and PC class energies, the SC- and PC-QD effective Hamiltonians, the amplitude hand-over, the reverse passes of all four, and the single-state classes' forward tangents and Hessian-vector products (\S\S\ref{sec:energy}--\ref{sec:reverse}, \S\ref{sec:hvp}) \\
-\code{nevpt2.gradient} & the energy as a function of $(h, B, C, c)$, $z^c$, the Lagrangians, Z-vectors and nuclear terms; single-state and QD, SC and PC (\S\S\ref{sec:ssgrad}--\ref{sec:qdgrad}); the builders' forward tangent and the Hessian-vector product in $(h, B, c)$ (\S\ref{sec:hessian}) \\
+\code{nevpt2.energy} & the eight SC and PC class energies, the SC- and PC-QD effective Hamiltonians, the amplitude hand-over, the reverse passes of all four, and their forward tangents and Hessian-vector products, single-state and QD (\S\S\ref{sec:energy}--\ref{sec:reverse}, \S\ref{sec:hvp}, \S\ref{sec:qd-Lxx}) \\
+\code{nevpt2.gradient} & the energy as a function of $(h, B, C, c)$, $z^c$, the Lagrangians, Z-vectors and nuclear terms; single-state and QD, SC and PC (\S\S\ref{sec:ssgrad}--\ref{sec:qdgrad}); the builders' forward tangent and the Hessian-vector product in $(h, B, c)$, and their QD forms over a state average (\S\ref{sec:hessian}, \S\ref{sec:qdhess}) \\
 \code{nevpt2.nac} & the PT2 transition density and the QD derivative coupling (\S\ref{sec:nac}) \\
 \code{nevpt2.intersection} & a QD pair's branching space and gap sensitivities (\S\ref{sec:meci}) \\
 \bottomrule
@@ -858,6 +865,7 @@ unchanged. At fixed slabs and orbital energies a PC class is homogeneous of
 degree one in $(S, S_1, K)$, which gives PC's analogue of Eq.~\eqref{eq:eq40}.
 
 \subsection{The QD reverse passes}
+\label{sec:qd-reverse}
 
 Both QD passes differentiate $L = \sum_{MN}\bar H_{MN}H_{MN}$ for a given
 $\bar H$; at $n = 1$, $\bar H = 1$ they are the single-state passes einsum
@@ -1102,8 +1110,8 @@ DF-CASSCF, in $k$ coordinates $q_i = \sum_x Q_{ix}R_x$ (orthonormal rows, the
 Cartesian ones when none are given). They are all-electron, and a state
 average or a frozen core is refused. They are assembled in \code{hessian}
 from this layer's tangents and Hessian-vector products and from the CASSCF
-Hessian's parts, with no integrals of their own. There is no QD-NEVPT2
-Hessian.
+Hessian's parts, with no integrals of their own. The QD-NEVPT2 Hessian is
+\S\ref{sec:qdhess}.
 
 \subsection{The $2n+1$ form}
 
@@ -1131,6 +1139,7 @@ factorisation the tangent reuses, so neither needs an amplitude response of
 its own.
 
 \subsection{The parameter response and the tangent}
+\label{sec:hess-response}
 
 $g_x$ is block triangular: the CASSCF constraints transform covariantly
 under $\kappa_{oo}$ and do not respond to it at a stationary point.
@@ -1444,7 +1453,28 @@ Eq.~\eqref{eq:bilinear} on every coordinate pair up to twelve coordinates.
 A failing pair withholds the frequencies: the run fails, naming the pairs.
 At \code{nh3\_cs\_sto3g} under SC in symmetry-adapted coordinates all ten
 A$''\times$A$''$ pairs fail and the cross-irrep pairs pass, which is the
-block the analytic route refuses.
+block the analytic route refuses. Algorithm~\ref{alg:semi} is the whole
+method.
+
+\begin{algorithm}[htbp]
+\caption{The semi-numerical NEVPT2 Hessian (\code{pipeline/hessian}'s numerical method)}
+\label{alg:semi}
+\begin{algorithmic}[1]
+\Require the reference geometry's converged CASSCF and NEVPT2 gradient; coordinates $q_i$ (the caller's orthonormal rows, or Cartesian); step $h$
+\For{each coordinate $q_B$, at $s = h, h/2, h/4$ under the ladder (the default; without it $s = h$ alone)}
+  \For{each displacement $\pm s\,q_B$, $\pm 2s\,q_B$ (without the ladder $\pm h\,q_B$)}
+    \State re-converge the CASSCF from the reference's orbitals orthonormalised in the displaced metric, $C(S_{\mathrm{MO}})^{-1/2}$, and its CI \Comment{warm start}
+    \State continuity guards on every root, refusing on failure; for a QD state, track it by $|\langle R_P|u_k\rangle|$ (\S\ref{sec:qd-build})
+    \State the analytic NEVPT2 gradient (one Z-vector solve)
+  \EndFor
+  \State column $H_{\cdot B}$ at $s$: the fourth-order central form of Eq.~\eqref{eq:semi} (without the ladder, Eq.~\eqref{eq:semi} itself)
+\EndFor
+\State under the ladder, judge each element's ratio of successive changes in $(12.8, 19.2)$ past ten noise floors; the finest rung's Hessian
+\State symmetrise; report the asymmetry
+\State Eq.~\eqref{eq:bilinear} on every coordinate pair, up to twelve coordinates; a failing pair withholds the frequencies
+\State $Q^\T HQ$; harmonic analysis
+\end{algorithmic}
+\end{algorithm}
 
 \subsection{In the pipeline}
 
@@ -1459,8 +1489,11 @@ symmetry-adapted ones. Under \code{variant = "pc"} the whole chain runs at
 \code{[nevpt2\_gradient]} included, so the gradient written beside the
 Hessian is the same energy's; \code{pc\_floor = 0} restores the round-off
 cut bitwise. Refused before anything runs: integral-direct ERIs, a state
-average, \code{quasi\_degenerate}, a frozen core and a
-\code{[casscf\_gradient]} beside it. Stationarity is assumed, not checked:
+average (outside a QD chain), a frozen core and a
+\code{[casscf\_gradient]} beside it. Beside a \code{quasi\_degenerate}
+\code{[nevpt2\_gradient]} the numerical method is the semi-numerical QD
+Hessian (\#959, \S\ref{sec:qd-build}), and the analytic one is refused
+until \#968. Stationarity is assumed, not checked:
 converge \code{[casscf]} to \code{conv\_tol\_grad} $= 10^{-10}$. Harmonic
 analysis follows; there are no IR intensities.
 
@@ -1515,6 +1548,7 @@ reference-basis dependence \cite{granovsky2011}. Along $c_r \to c_r +
   \tau_{sr} = c_s^\T\bar y_r - c_r^\T\bar y_s,\qquad
   \zeta_{sr} = -\frac{\tau_{sr}}{E_s - E_r}\ (w_r = w_s),\qquad
   t_{sr} = \frac{\tau_{sr}}{2(w_r - w_s)}\ (w_r\ne w_s),
+  \label{eq:qd-tau}
 \end{equation}
 $\bar y_r$ the raw CI bar of $\mathcal E^{\mathrm{corr}}[W] + \Phi^{\mathrm{SA}}$.
 $\zeta$'s orbital term is $\zeta_{sr}g^{(sr)}$, the orbital gradient of
@@ -1591,6 +1625,7 @@ With $W^{PQ} = \tfrac12(u_Pu_Q^\T + u_Qu_P^\T)$ (Park's $R_{PQMN}$),
 \begin{equation}
   \mathbf h_{PQ} = u_P^\T(\nabla\Heff)u_Q = G(W^{PQ}),\qquad
   \tr W^{PQ} = 0,
+  \label{eq:hpq}
 \end{equation}
 so the first pass takes \code{df\_gradient}'s core-off path: the reference
 part $\sum_r R_{rP}R_{rQ}\nabla E_r$ has no core energy and no nuclear
@@ -1807,6 +1842,877 @@ now converges there ($\tau = 5.6\times10^{-18}$, QD gap
 $4.8\times10^{-11}$), $3.1\times10^{-5}$\,\AA{} from exact C$_{3v}$.
 
 %======================================================================
+\section{The QD-NEVPT2 nuclear Hessian}
+\label{sec:qdhess}
+
+The reference is a DF-SA-CASSCF over $n$ roots $r, s, M, N$ with weights
+$w_r$, CI vectors $c_r$ and energies $E_r$. The couplings $C_{MN}$ are
+Eqs.~\eqref{eq:qd-sc}--\eqref{eq:qd-pc}, $\Heff$ is Eq.~\eqref{eq:heff}, and
+its eigenpairs $\Heff R_P = E_PR_P$ are the QD states $P, Q$ ($R_P$ is
+\S\ref{sec:qdgrad}'s $u_P$). The functional is $\mathcal E[W]$ of
+Eq.~\eqref{eq:EW}, $E_P = \mathcal E[W^P]$ with $W^P = R_PR_P^\T$, and its
+Lagrangian $\Lag[W]$ is Eq.~\eqref{eq:qdL}, with multipliers $\lambda[W] =
+(Z, \{z_r\}, \Theta, \zeta, z^c)$ and, at unequal weights, the rotation
+unknowns $t$ inside $Z$'s solve. In this section and the next two
+$N_{\mathrm{at}}$ counts atoms, because $N$ is a root; $A, B$ are nuclear
+coordinates.
+
+\paragraph{What is built.} \code{hessian::df\_qd\_sc\_nevpt2} (\#965) is
+the analytic Hessian of an SC-QD-NEVPT2 state, all-electron, in Cartesian or
+caller-given coordinates, assembled in \code{hessian} as the single-state
+Hessians are (\S\ref{sec:hess-assembly}) from: the SA parameter response
+(\code{df\_sacasscf\_cp}, \code{df\_qd\_nevpt2\_tangents}, \#961); the
+builders' forward tangent over a state average (\code{qd\_builders\_tangent},
+\#958); the pair walk's forward tangents
+(\code{sc\_effective\_hamiltonian\_tangent}, \#954;
+\code{pc\_effective\_hamiltonian\_tangent}, \#960) and Hessian-vector
+products (\code{sc\_effective\_hamiltonian\_hvp}, \#962;
+\code{qd\_sc\_hessian\_product}, \#963; \code{pc\_effective\_hamiltonian\_hvp}
+and \code{qd\_pc\_hessian\_product}, \#964); the multipliers' CASSCF terms
+(\code{df\_sacasscf\_z} at a QD Lagrangian, \#956); the $\zeta$ term
+(\code{df\_qd\_zeta}, \#955); and term~(ii)
+(\code{df\_qd\_eigenvector\_response}, \#957). Not yet in the tree: the
+PC-QD Hessian \code{df\_qd\_pc\_nevpt2} (\#966), every piece of which above
+is; the pair-mean Hessian and the seam's $2\times2$ at a crossing
+(Eqs.~\eqref{eq:qd-pair} and \eqref{eq:qd-lowdin}, \#967); and the analytic
+\code{[hessian]} over a \code{quasi\_degenerate} \code{[nevpt2\_gradient]}
+(\#968). The pipeline's semi-numerical QD Hessian is in the tree (\#959,
+\S\ref{sec:qd-build}).
+
+\subsection{The eigenvalue's second derivative}
+\label{sec:qd-eig}
+
+Write $\mathsf H^A = d\Heff/dR_A$ and $\mathsf H^{AB} = d^2\Heff/dR_A\,dR_B$.
+These are \emph{total} derivatives, element by element, with every
+SA-CASSCF parameter relaxed. Write $\tilde{\mathsf h}^A = R^\T\mathsf H^A R$
+for the first derivative in the QD eigenbasis. Its elements are the
+interstate couplings, $\tilde{\mathsf h}^A_{PQ} = \mathbf h_{PQ,A}$
+(Eq.~\eqref{eq:hpq}, $\mathcal E[W^{PQ}]$'s gradient), and
+$\tilde{\mathsf h}^A_{PP} = dE_P/dR_A$.
+
+For a simple eigenvalue $E_P$, in the gauge $R_P^\T\,dR_P = 0$,
+\begin{equation}
+  \frac{dR_P}{dR_A} = \sum_{Q\neq P} R_Q\,\frac{\tilde{\mathsf h}^A_{QP}}{E_P - E_Q},
+  \label{eq:qd-dR}
+\end{equation}
+and differentiating $dE_P/dR_A = R_P^\T\mathsf H^A R_P$ once more gives
+\begin{equation}
+\boxed{\;
+  \frac{d^2E_P}{dR_A\,dR_B}
+  = \underbrace{R_P^\T\,\mathsf H^{AB}R_P}_{\text{(i): }d^2\mathcal E[W^P]\text{ at fixed }W}
+  \;+\; \underbrace{2\sum_{Q\neq P}\frac{\tilde{\mathsf h}^A_{PQ}\,\tilde{\mathsf h}^B_{PQ}}{E_P - E_Q}}_{\text{(ii): the QD eigenvector response}}.\;}
+  \label{eq:qd-hess}
+\end{equation}
+The expression is symmetric in $A$ and $B$, and term~(ii) has the sign of
+second-order perturbation theory: the lower state's curvature goes down
+and the upper state's goes up.
+
+\paragraph{Term (ii) needs no new machinery.} It is built from first
+derivatives only, the $n-1$ couplings $\mathbf h_{PQ}$ that
+\code{qd\_sc\_coupling} and \code{qd\_pc\_coupling} return ($G(W^{PQ})$,
+trace-zero $W$, no core energy). Over all $P$ that is the $n(n-1)/2$
+off-diagonal elements of $\tilde{\mathsf h}$. Because $\mathcal E$ is
+linear in $W$, \code{df\_qd\_eigenvector\_response} (\#957) takes them all
+through one call of the several-$W$ form (\S\ref{sec:qdgrad}), one shared
+Z-vector solve, each $W^{PQ}$'s single core-off \code{df\_gradient} pass:
+the list form takes trace-zero $W$s as they stand. It returns term~(ii) and
+Eq.~\eqref{eq:qd-dR} for every state, the couplings, and the sum rule below
+as a diagnostic. $R$, like $W$, needs no multiplier and no response solve:
+the $n\times n$ eigenproblem is differentiated in closed form, on the host.
+A pair of QD states closer than \code{mcscf::kRootGapFloor}
+($10^{-8}\,E_h$) is refused, naming both, before any adjoint is built.
+
+\paragraph{Term (i) is Eq.~\eqref{eq:hess} at fixed $W$.} That derivation
+used only $\Lag_x = 0$ and $g = 0$ at the solution. Both hold for $\Lag[W]$
+at any symmetric $W$, since the gradient's multipliers make $\Lag[W]$
+stationary in every SA-CASSCF parameter, including the rotations among the
+roots. So
+\begin{equation}
+  R_P^\T\mathsf H^{AB}R_P = \Lag_{AB} + \Lag_{Ax}\,x_B + x_A^\T\Lag_{xB}
+    + x_A^\T\Lag_{xx}\,x_B,\qquad \Lag = \Lag[W^P],\quad g_x\,x_A = -g_A,
+  \label{eq:qd-hessW}
+\end{equation}
+where $x$ and $g$ are now the SA-CASSCF's (\S\ref{sec:qd-response}).
+
+\paragraph{Two linearities set the cost.}
+\begin{itemize}
+\item \textbf{$x_A$ does not depend on $W$.} The responses are the
+  reference's, so one block CP-SA-CASSCF solve over $3N_{\mathrm{at}}$
+  right-hand sides serves every QD state.
+\item \textbf{$\lambda[W]$ is linear in $W$.} The multiplier equations do
+  not depend on $W$, and their sources ($A^{\mathrm{corr}}$, $\bar y_r$,
+  $\tau$, $g^\rho$) are linear in it. So $\Lag[W]$, and with it every term
+  of Eq.~\eqref{eq:qd-hessW}, is linear in $W$. Term~(i) for all $n$
+  states is $\sum_{MN}R_{MP}R_{NP}\,\mathsf H^{AB}_{MN}$ over the
+  $n(n+1)/2$ element Hessians, or Eq.~\eqref{eq:qd-hessW} once per
+  wanted $P$. Each costs about the same, and there are at most $n \le
+  n(n+1)/2$ states, so per-state is never worse, and it is what
+  \code{df\_qd\_sc\_nevpt2} does. Its $W$ overload is term~(i) at any
+  symmetric $W$ whose diagonal is a mixture, the form
+  Eq.~\eqref{eq:qd-lowdin}'s seam $2\times2$ needs.
+\end{itemize}
+
+\paragraph{The sum rule.} Term~(ii) is antisymmetric under $P
+\leftrightarrow Q$ term by term, so it cancels in the sum over states:
+\begin{equation}
+  \sum_P\frac{d^2E_P}{dR_A\,dR_B} = \frac{d^2\,\mathcal E[1]}{dR_A\,dR_B}
+  = \frac{d^2\tr\Heff}{dR_A\,dR_B}.
+  \label{eq:qd-sum}
+\end{equation}
+This is the second-order form of the gradient's $\sum_K dE_K/dR = G(1)$
+(\S\ref{sec:qdgrad}), and it checks term~(ii) against term~(i) with no
+oracle. At a crossing the individual $E_P$ have no Hessian, but $\tr\Heff$
+and the pair's sum do (Eq.~\eqref{eq:qd-pair}), so this is the check that
+still runs there (\S\ref{sec:meci}'s ethylene MECI).
+
+\subsection{The parameter response on a state average}
+\label{sec:qd-response}
+
+The parameters are $x = (\kappa_{\mathrm{nr}}, \kappa_{oo}, \{c_r\})$. A CI
+direction is taken jointly over the roots, in the exponential
+parametrisation of the root set,
+\begin{equation}
+  c_r(K) = e^{K}c_r,\qquad
+  K = \sum_r\bigl(\xi_r c_r^\T - c_r\xi_r^\T\bigr)
+    + \sum_{r<s}\theta_{sr}\bigl(c_sc_r^\T - c_rc_s^\T\bigr),
+  \qquad \xi_r\perp\text{every root}.
+  \label{eq:qd-K}
+\end{equation}
+So $\xi_r$ is root $r$'s out-of-span move, and $\theta_{sr}$ mixes $c_s$
+into $c_r$. \code{df\_qd\_nevpt2\_tangents} (\#961) forms the response $x_A$
+and the total tangent $t_A$ of every input of $\Heff$,
+$(h, B, \{c_r\})$, as Eq.~\eqref{eq:tx} with $\dot c^A_r = \xi^A_r +
+\sum_s\theta^A_{sr}c_s$. The response has three parts, block triangular as
+at $n = 1$ (\S\ref{sec:hess-response}):
+\begin{enumerate}
+\item \textbf{CP-SA-CASSCF}, $3N_{\mathrm{at}}$ right-hand sides, over
+  $(\kappa_{\mathrm{nr}}, \{\xi_r\})$ and the $\theta_{sr}$ of pairs with
+  $w_r \neq w_s$, which the SA orbital Hessian carries as its $\Theta$ rows
+  (\code{response::zvector}'s convention). This is
+  \code{df\_sacasscf\_cp}, the response \code{hessian::df\_sacasscf} forms
+  for one root of a state average, stopped there. It takes weights equal
+  for some pairs only, such as $(0.4, 0.4, 0.2)$: each pair is rotating or
+  not by \code{response::rotating\_pairs}, and an equal pair's row is left
+  out of the solve. It does not depend on the state, so one solve serves
+  every QD state.
+\item \textbf{Equal-weight rotations}, closed form once 1.\ is done.
+  $E_{\mathrm{SA}}$ is blind to them, so the condition $\langle c_s|H|c_r\rangle
+  = 0$ fixes them. Along Eq.~\eqref{eq:qd-K} that element moves by
+  $\theta_{sr}(E_s - E_r)$, hence
+  \begin{equation}
+    \theta^A_{sr} = \frac{\mathcal H^A_{sr}}{E_r - E_s}\qquad(w_r = w_s),
+    \label{eq:qd-theta}
+  \end{equation}
+  where $\mathcal H^A_{sr}$ is the total first-order change of $\langle
+  c_s|H|c_r\rangle$ at $\theta = 0$: the derivative integrals, the
+  connection and $\kappa^A_{\mathrm{nr}}$, through the active
+  Hamiltonian's tangent (\code{qd\_builders\_tangent}'s one- and
+  two-electron parts) against the transition RDMs. The out-of-span moves
+  contribute nothing: $\langle\xi^A_s|H|c_r\rangle = E_r\langle
+  \xi^A_s|c_r\rangle = 0$, because $\xi \perp$ every root. That holds only
+  at eigenvectors, so the reference must be converged tightly (the tests
+  take $\lVert g\rVert < 10^{-10}$). An unequal pair's $\Theta$ meets the
+  same condition: its CP row is $(E_s - E_r)\Theta_{sr} + c_s\cdot H'c_r +
+  \tilde H^A_{sr} = 0$.
+\item \textbf{Pseudocanonical at the SA Fock}, closed form once 1.\ and 2.\
+  are done: Eq.~\eqref{eq:koo} with $f \to f^{\mathrm{SA}}$ and $\eps_p =
+  f^{\mathrm{SA}}_{pp}$, the solution canonical in $f^{\mathrm{SA}}$. The
+  response of $\gamma^{\mathrm{SA}} = \sum_r w_r\G1_r$ along $x_A$ is
+  \begin{equation}
+    \dot\gamma^{\mathrm{SA}}_A = \sum_r w_r\,\G1(\xi^A_r, c_r)^{\mathrm{sym}}
+      + \sum_{r<s}(w_r - w_s)\,\theta^A_{sr}\,2\gamma^{(sr)},
+    \label{eq:qd-gsa}
+  \end{equation}
+  with $\G1(u, c)^{\mathrm{sym}} = \langle u|E|c\rangle + \langle c|E|u\rangle$
+  the tangent RDM. So $f^{\mathrm{SA}}$ sees an equal-weight rotation not at
+  all, and an unequal one only through $w_r - w_s$; the tangent of
+  $f^{\mathrm{SA}}$ is taken before step 2's $\theta$ is added and serves
+  both. The degenerate-pair rule is the single-state one ($10^{-6}\,E_h$,
+  $10^{-8}$): SC refuses, naming the pair and the coordinate, and PC
+  records it.
+\end{enumerate}
+Eq.~\eqref{eq:qd-theta} is a second $1/\text{gap}$, this time the CASSCF
+root gap, and it enters Eq.~\eqref{eq:qd-hessW} quadratically. Unlike in a
+CASSCF Hessian it is not suppressed by the stationarity of $E_r$:
+$\mathcal E^{\mathrm{corr}}[W]$ reads each $c_r$ individually, which is the
+reason the gradient carries $\zeta$ at all. Two roots under
+\code{mcscf::kRootGapFloor} apart are refused before anything runs, and a
+rotation $|\theta^A_{sr}|$ above 10 per bohr, the CP solve's or
+Eq.~\eqref{eq:qd-theta}'s, is refused, naming the pair and the coordinate
+(\code{root\_rotation}'s bound, where the quadratic model holds within about
+$1/20$ bohr). \code{theta} returns every rotation for the $\Lag_{xx}$
+actions, and \code{max\_theta}, \code{max\_kappa\_oo} are reported.
+
+\subsection{The parameter Hessian \texorpdfstring{$\Lag_{xx}[W]$}{L\_xx[W]}}
+\label{sec:qd-Lxx}
+
+\begin{equation}
+  \Lag_{xx}[W] =
+  \underbrace{\frac{\partial^2\mathcal E[W]}{\partial x\,\partial x}}_{\text{level 1, over pairs}}
+  + \underbrace{Z\cdot\frac{\partial^2 g_{\mathrm{SA}}}{\partial x\,\partial x}
+    + \sum_r z_r\cdot\frac{\partial^2 g_{\mathrm{ci},r}}{\partial x\,\partial x}}_{\text{third derivative of }E_{\mathrm{SA}}}
+  + \underbrace{\sum_{\substack{r<s\\w_r=w_s}}\zeta_{sr}\,
+    \frac{\partial^2\langle c_s|H|c_r\rangle}{\partial x\,\partial x}}_{\text{a CASSCF Hessian at transition RDMs}}
+  + z^c\cdot\frac{\partial^2 f^{\mathrm{SA}}}{\partial x\,\partial x}.
+  \label{eq:qd-Lxx}
+\end{equation}
+As at $n = 1$ only the actions $x_A^\T\Lag_{xx}x_B$ are formed.
+
+\paragraph{The CI curvature on the root set.} The single-state sphere's
+$-(u\cdot v)\,c$ (\S\ref{sec:hvp}) generalises along Eq.~\eqref{eq:qd-K} to
+\begin{equation}
+  \frac{\partial^2 c_r}{\partial K_u\,\partial K_v} = \tfrac12\{K_u, K_v\}\,c_r,
+  \label{eq:qd-curv}
+\end{equation}
+contracted with the raw $\partial\Lag/\partial c_r$ of every root. At
+$n = 1$, $\tfrac12\{K_u,K_v\}c = -(u\cdot v)\,c$, the sphere's term.
+Along two rotations it is not zero. For example, $\theta_{sr}$ against
+itself gives $-\theta^2(c_r\,\partial_{c_r} + c_s\,\partial_{c_s})\Lag$.
+The off-shell extension is again the gradient's own (raw $\bar y_r$, the
+rank-reduced one; \S\ref{sec:hvp}, ``$\Phi$, and the functional of $c$''),
+so a Hessian built on these products and the gradient's multipliers
+differentiates one functional. \code{qd\_sc\_hessian\_product} takes a raw
+$\dot c$ to the generators' $u_r = \dot c_r - \tfrac12\sum_s
+c_s(c_s\cdot\dot c_r + c_r\cdot\dot c_s)$ (an orthogonal projection, $K(\dot
+c) = K(u)$), and returns the gradient over raw CI directions of the Hessian
+in $K$, the curvature its last part. \code{mcscf::ThirdDerivative}'s joint
+exponential already is Eq.~\eqref{eq:qd-curv}.
+
+\paragraph{The RDMs.} A transition RDM $\Gamma^{(MN)}$ is bilinear in
+$(c_M, c_N)$, so along directions $u = \{u_r\}$ and $v = \{v_r\}$
+\begin{equation}
+  \frac{\partial^2\Gamma^{(MN)}}{\partial u\,\partial v} = \Gamma(u_M, v_N) + \Gamma(v_M, u_N),
+  \qquad \frac{\partial^3\Gamma^{(MN)}}{\partial u\,\partial v\,\partial w} = 0,
+  \label{eq:qd-rdm2}
+\end{equation}
+with $\Gamma(a, b)$ \code{nevpt2::rdms} at bra $a$, ket $b$. The single-state
+``no tower'' property survives: everything is quadratic in the roots, the
+digests are linear in the integrals, and $\eps$ is affine in
+$\gamma^{\mathrm{SA}}$. What is new is the off-diagonal finishes. In the
+pair walk (\S\ref{sec:qd-walk}, \S\ref{sec:qd-reverse}) each unordered
+pair's $2\times2$ block takes the tangent builders at two directions on its
+transition RDMs.
+
+\paragraph{The SC off-diagonal finish.} Per perturber $t$ of ket $N$ and
+bra $M$, the coupling of Eq.~\eqref{eq:qd-sc} is $g = -T\,N/d$ with $T =
+\bar T^t_{MN}$, $N = N^N_t$, $H = H^N_t$, $\Delta = \Delta_t$ and $d =
+N\Delta + H$, differentiated in that form, with no $1/N$. Its first
+derivatives, \S\ref{sec:qd-reverse}'s SC-QD multipliers in this form, are
+\[
+  g_T = -\frac Nd,\qquad g_N = -\frac{TH}{d^2},\qquad
+  g_H = \frac{TN}{d^2},\qquad g_\Delta = \frac{TN^2}{d^2},
+\]
+and its second derivatives are
+\begin{equation}
+\begin{aligned}
+  g_{TT} &= 0, & g_{TN} &= -\frac{H}{d^2}, & g_{TH} &= \frac{N}{d^2}, & g_{T\Delta} &= \frac{N^2}{d^2},\\
+  g_{NN} &= \frac{2TH\Delta}{d^3}, & g_{NH} &= \frac{T(H - N\Delta)}{d^3}, & g_{N\Delta} &= \frac{2TNH}{d^3}, \\
+  g_{HH} &= -\frac{2TN}{d^3}, & g_{H\Delta} &= -\frac{2TN^2}{d^3}, & g_{\Delta\Delta} &= -\frac{2TN^3}{d^3}.
+\end{aligned}
+\label{eq:qd-scfinish}
+\end{equation}
+Each is weighted by $W_{MN}$. The $T$ bars split $\tfrac12$, $\tfrac12$
+onto the norm einsums of $(M,N)$ and $(N,M)$, and the ket's own $(N, H,
+\Delta)$ collect from every bra, its own coupling included: the diagonal
+energy is the same $g$ at $T = N$, so one finish serves every coupling.
+\code{sc\_effective\_hamiltonian\_tangent} (\#954) gives the
+first-order $(\dot T, \dot N, \dot H, \dot\Delta)$ along each direction,
+and \code{sc\_effective\_hamiltonian\_hvp} (\#962) takes the
+multipliers' tangent, Eq.~\eqref{eq:qd-scfinish} times it, onto every bar by
+one reverse pass at fixed multipliers, the bars at fixed multipliers by the
+exact line difference of \S\ref{sec:hvp}; at $n = 1$ the two are
+\code{class\_energies\_tangent} and \code{class\_energies\_hvp}. A
+one-function class is $C = Tc$, $c = -1/(\Delta + \eta^N)$, with
+$\dot c = c^2(\dot\Delta + \dot\eta^N)$. Three structural facts are
+identities of these formulas, not separately gated (the HVP's ladders are):
+\begin{itemize}
+\item \textbf{Euler.} $g$ is homogeneous of degree 1 in $(T, N, H)$, so
+  $Tg_{TX} + Ng_{NX} + Hg_{HX} = 0$ for $X \in \{T, N, H\}$: three exact
+  zeros, where the diagonal finish (Eq.~\eqref{eq:finish}) had two.
+\item \textbf{Rank one.} $g$ reads $(H, \Delta)$ only through $d$, so that
+  block is $g_{dd}\,(1, N)\otimes(1, N)$ with $g_{dd} = -2TN/d^3$.
+\item \textbf{The diagonal.} At $M = N$, where $T = N$, the total second
+  derivatives of $g(N, N, H, \Delta)$ are Eq.~\eqref{eq:finish}. For
+  example, $E_{NN} = 2g_{TN} + g_{NN}$ and $E_{N\Delta} = g_{T\Delta} +
+  g_{N\Delta}$.
+\end{itemize}
+
+\paragraph{Empty tuples, on every root.} A tuple ket $N$'s guard drops
+($|N^N_t| \le 10^{-14}$) that a direction $u$ populates, by the single-state
+rule over ket $N$'s tables (\S\ref{sec:hess-refusals}), takes K6 in every
+coupling with ket $N$, whatever $W$ weighs it: $\bar T = -1/(\Delta +
+\eta)$, $\eta = H^{uu}/N^{uu}$. On the diagonal that is the single-state
+$\bar P$, $\bar Q$. In a coupling $(M, N)$ it is $\bar T$ on $T$, and where
+the bra's tuple is empty too, $T$, $N$ and $H$ are all of second order
+along $u$, the coupling is the quadratic form $\bar T\,T^{uu}$, and its $N$
+and $H$ multipliers have limits ($-\rho\eta\bar T^2$ and $\rho\bar T^2$,
+$\rho = T^{uu}/N^{uu}$). Where the bra's tuple is populated, $T$ is of first
+order (Eq.~\eqref{eq:qd-scfail}), and only $\bar T$ on $T$ is formed. The
+refusal that goes with it is \S\ref{sec:qd-sym}'s.
+
+\paragraph{The PC off-diagonal finish.} Per class and tuple $t$, $C_{MN}
+\ni -\nu\,\beta$ with $\beta = b'^\T A^{+}b$, $b' = b^{M\leftarrow N}_t$, $b
+= b^N_t$ and $A = A_{N,t} = K_N + \Delta_tS_N$ (Eq.~\eqref{eq:qd-pc}). With
+$x = A^+b$ and $u = A^+b'$, and first-order residuals $r_i = \partial_ib -
+\partial_iA\,x$ and $r'_i = \partial_ib' - \partial_iA\,u$ along directions
+$i = 1, 2$,
+\begin{equation}
+  \partial_{12}\beta = x^\T\partial_{12}b' + u^\T\partial_{12}b
+    - u^\T\partial_{12}A\,x
+    + r'^\T_1A^+r_2 + r'^\T_2A^+r_1
+    + \bigl(\text{rank-projector terms of }A^+\bigr).
+  \label{eq:qd-pcfinish}
+\end{equation}
+At $M = N$, where $b' = b$, $u = x$ and $r' = r$, this is the single-state
+PC second derivative: \code{pc\_class\_energies\_hvp} is
+\code{pc\_effective\_hamiltonian\_hvp}'s $n = 1$, $\bar H = 1$ (\#964),
+and \code{pc\_effective\_hamiltonian\_tangent} (\#960) is the first order,
+$\dot\beta = x^\T\dot b' + u^\T\dot b - u^\T\dot A\,x$ plus the kept span's
+rotation. The three kinds of term are carried as at $n = 1$
+(\S\ref{sec:hvp}): the $r'^\T A^+r$ cross terms through the multipliers'
+tangent in each ket's own factorisation, $\dot g_M = (\dot y_{M\leftarrow N}
+- \dot D_Ng_M)/(\lambda + \Delta)$; the $\partial_{12}$ terms at fixed
+multipliers by the line difference; and the rank-projector terms through
+each ket's span bar, which collects every bra's, and its Daleckii--Krein
+derivative. They read $b'$'s component in $S_N$'s dropped span. That is
+zero at an exact null mode, but its first derivative is not where the mode
+lifts, which is the off-diagonal failure of \S\ref{sec:qd-sym}. As at
+$n = 1$, $S_N$ does not move along an orbital direction, so the projector
+terms appear in the CI--CI and CI--orbital blocks and never in the
+orbital--orbital one, and both $S_N$ and the transition metrics
+$S^{(N,M)}$, $S_1^{(N,M)}$ move along both $c_M$ and $c_N$ through
+Eq.~\eqref{eq:qd-rdm2}. \code{qd\_pc\_hessian\_product} is
+\code{qd\_sc\_hessian\_product} with this pair walk in place of SC's and
+nothing else; it refuses a ket whose kept metric spectrum reaches below
+$10^{-10}$ of its largest (\#917), naming the state and the class.
+
+\paragraph{The $\zeta$ term is a Hessian, not a third derivative.}
+$\langle c_s|H|c_r\rangle$ is energy-like. Its second derivative is the
+CASSCF Hessian operator at the transition RDMs $(\gamma^{(sr)},
+\Gamma^{(sr)})$: the orbital--orbital part is \code{response::Hessian}'s at
+those densities less its value at zero RDMs, and the CI legs are transition
+sigma vectors. By linearity all pairs fold into one apply at
+$(\gamma^\zeta, \Gamma^\zeta)$, as the gradient folds them. The transition
+energy is \emph{not} stationary (its orbital gradient $g^{(sr)}$ is the
+gradient's $\zeta$ source), so the operator must be the full second
+derivative along $e^\kappa$, gradient terms included, and not a form
+simplified at a stationary point. \code{response::Hessian} is that:
+it is \code{gen\_g\_hop}'s operator, whose $-\tfrac12(F + F^\T)\kappa$ term
+carries the exponential's $\tfrac12\kappa^2$ against the gradient.
+\code{df\_qd\_zeta} (\#955) returns the term's three shares (xx, Ax, AB) at
+given $\zeta$; its CI part is the second derivative of $\tfrac12\sum
+\mathcal Z_{pq}\langle e^Kc_q|H|e^Kc_p\rangle$ ($\mathcal Z$ the symmetric
+matrix of the $\zeta$), Eq.~\eqref{eq:qd-curv} included, from sigma vectors
+and two Gram matrices. Its test differences $\langle c_s|H|c_r\rangle$
+itself, never the Hessian operator: differencing a Hessian-vector product
+applies the direction in the displaced point's frame and is not this term
+off stationarity. Along orbital directions alone the gradient term a
+stationary form would drop is $1.05\times10^{-4}$ there, against the
+ladder's $10^{-7}$ bar.
+
+\paragraph{The third derivative and $z^c$.} $Z\cdot\partial^2g_{\mathrm{SA}}$
+and $z_r\cdot\partial^2g_{\mathrm{ci},r}$ are the single-state level-2 term
+(\code{df\_casscf\_z}'s, \S\ref{sec:hess-assembly}) at the SA weights, with
+the curvature of Eq.~\eqref{eq:qd-curv} in place of the sphere's. They are
+\code{hessian::df\_sacasscf\_z}'s pieces, which since \#956 take the
+right-hand side's weights rather than a root: one-hot on root $I$ for
+\code{df\_sacasscf}, $\rho = \operatorname{diag}W$ for a QD Lagrangian, or
+none for the multipliers' terms alone, at $\lambda[W^P]$'s $(Z, z,
+\Theta)$. At all-equal weights $z$ carries every rotation, which makes them
+parameters (\code{ThirdDerivative::create}'s \code{equal\_rotations}).
+$z^c\cdot\partial^2f^{\mathrm{SA}}$ is $\Phi^{\mathrm{SA}}$'s share of the
+product, closed form at the weights, with $\G1$'s second derivative
+$\sum_r w_r[\G1(u_r, v_r) + \G1(v_r, u_r)]$, the rotations' share of it
+included.
+
+\subsection{The mixed and skeleton terms}
+\label{sec:qd-mixed}
+
+\paragraph{$\Lag_{Ax}[W]$.} The single-state parts at $W$, plus one:
+\begin{itemize}
+\item \textbf{NEVPT2:} the pair reverse pass (\code{qd\_sc\_adjoint},
+  \code{qd\_pc\_adjoint}) run on dotted integrals $(h^A, B^A)$, forward
+  over reverse, giving $(\dot A^{\mathrm{corr}}_A, \{\dot{\bar y}_{r,A}\})$
+  and the rotation source's tangent $\dot\tau_A$ (Eq.~\eqref{eq:qd-tau})
+  from them. As at $n = 1$ it is not formed on its own: each coordinate's
+  total tangent $t_A$ carries $I^A$, so $\langle t_A, \mathrm{HVP}\,t_B\rangle$
+  holds it (Eq.~\eqref{eq:Nab});
+\item \textbf{CASSCF:} $\partial g_{\mathrm{SA}}/\partial R_A$, the
+  right-hand side of \S\ref{sec:qd-response} step 1, already formed;
+\item \textbf{constraints:} $Z$, $z_r$ and $z^c$ against
+  $\partial^2/\partial R\,\partial x$ of their conditions, as at $n = 1$
+  (\code{df\_sacasscf\_z}'s $I^xz$);
+\item \textbf{new:} $\zeta\cdot\partial^2\langle c_s|H|c_r\rangle/\partial
+  R_A\,\partial x$, the orbital and CI gradients of the transition energy
+  at derivative integrals: \code{response::fock} at $(\gamma^\zeta,
+  \Gamma^\zeta)$ on $(h^A, B^A)$ plus the connection, less its zero-RDM
+  value (\code{df\_qd\_zeta}'s \code{lxlambda}).
+\end{itemize}
+
+\paragraph{$\Lag_{AB}[W]$.} The skeleton of Eq.~\eqref{eq:Nab},
+\code{df\_adjoint\_xy} at the total adjoint of $\mathcal
+E^{\mathrm{corr}}[W] + \Phi^{\mathrm{SA}}$, plus the reference's at $\rho$
+and the multipliers' ($E_{xy}$ at the $\rho$-weighted RDMs,
+\code{df\_sacasscf\_z}'s $L_{xy}$), plus $\zeta$'s transition term at
+$(\gamma^\zeta, \Gamma^\zeta)$, which has no core energy
+(\code{df\_qd\_zeta}'s \code{lxy}), against the second-derivative integrals.
+The integrals' curvature of $\mathcal E^{\mathrm{corr}}[W]$ is the same
+forward-over-reverse pass as $\Lag_{Ax}$'s NEVPT2 part, paired with
+$(h^B, B^B)$, and is again inside the product along $t$.
+
+%======================================================================
+\section{Where the QD Hessian exists, and where it is tractable}
+\label{sec:qd-diff}
+
+Each region below gets three questions:
+\begin{itemize}
+\item Is $E_P$ twice differentiable there?
+\item If not, is that physics or an artefact of the method?
+\item Is the analytic route numerically tractable, and how does it compare
+  with the semi-numerical one?
+\end{itemize}
+The single-state refusals (\S\ref{sec:hess-refusals}) apply to term~(i)
+root by root. This section adds what QD and the state average bring.
+
+\subsection{The divisions, and how hard each one bites}
+
+Every hazard is a small number in a denominator. The Hessian sees each
+one at one or two powers more than the gradient does.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.28\textwidth}p{0.12\textwidth}p{0.12\textwidth}p{0.40\textwidth}@{}}
+\toprule
+small quantity & gradient & Hessian & nature \\
+\midrule
+QD gap $E_P - E_Q$ & none & $1/\text{gap}$ (term~(ii)) & physical: a seam or avoided crossing of the corrected states \\
+in-ensemble reference gap $E_r - E_s$ & $1/\text{gap}$ ($\zeta$, $t$) & $1/\text{gap}^2$ ($\theta^A$ twice) & artefact: QD-NEVPT2 is not invariant to rotations of the model space \\
+ensemble edge $E_{n+1} - E_n$ (first excluded root) & $1/\text{gap}$ (the solve) & $1/\text{gap}^2$ & artefact: the averaged ensemble changes \\
+smallest SA-CASSCF Hessian eigenvalue $\mu$ & $1/\mu$ & $1/\mu^2$ & artefact: active-space or solution instability \\
+inactive gap $\eps_p - \eps_q$ & $1/\text{gap}$ (SC's $z^c$) & $1/\text{gap}^2$ ($\kappa_{oo}^A$ twice) & artefact: the pseudocanonical gauge (the tree's PC too, \S\ref{sec:hess-response}) \\
+perturber denominator $d_t = N_t\Delta_t + H_t$ & $1/d^2$ & $1/d^3$ (Eq.~\eqref{eq:qd-scfinish}) & near-intruder: perturbation theory itself failing \\
+PC metric eigenvalue $\sigma$ near the cut & smooth & not $C^2$ (the lift) & artefact: the cut \\
+symmetry-empty perturber or null mode & $C^1$ & not bilinear & artefact: internal contraction, \S\ref{sec:qd-sym} \\
+\bottomrule
+\end{tabular}
+\caption{What divides, at which power. ``Artefact'' means a property of
+the method's functional, not of the Born--Oppenheimer surfaces it
+approximates. The analytic Hessian reproduces an artefact exactly; it does
+not remove one. \code{df\_qd\_sc\_nevpt2} returns the QD, root, edge and
+inactive gaps, the smallest $|\Delta_t + H_t/N_t|$ over every state's kept perturbers, and
+$\max|\theta|$, $\max|\kappa_{oo}|$, $\max|\zeta|$.}
+\label{tab:qd-divisions}
+\end{table}
+
+The near-intruder row is not hypothetical. At ethylene S$_0$, state~2's
+Sr class has its smallest $|\lambda + \Delta|$ at $9.6\times10^{-3}$ in
+aug-cc-pVDZ and at $1.9\times10^{-3}$ in aug-cc-pVTZ
+(\code{src/nevpt2/energy/README.md}, the negative-denominator table). At
+$1/d^3$ the second of those amplifies the finish's error by about
+$10^8$, against $10^5$ for the gradient. Higher roots in diffuse bases are
+the first place a QD Hessian stops being tractable even where it exists.
+
+\subsection{The QD gap: physical, and where the analytic route wins}
+
+\paragraph{Near a crossing, not at it.} $E_P$ is smooth, but term~(ii)
+grows as $|\mathbf h_{PQ}|^2/(E_P - E_Q)$. The analytic term is closed
+form, so its relative error is that of $\mathbf h_{PQ}$, which is set by
+the Z-vector residual, whatever the gap. A central difference of the
+gradient needs a step small against the length over which the
+curvature changes, about $|E_P - E_Q|/|\mathbf g_P - \mathbf g_Q|$. It
+also needs the states tracked across the step. So the semi-numerical
+route fails first as the gap closes. This is the one region where the
+analytic Hessian buys more than exactness: it is the only usable one.
+\emph{Usable} is not \emph{meaningful}, though. Where term~(ii) dominates,
+the surface is strongly anharmonic (a pseudo-Jahn--Teller double well),
+and harmonic frequencies do not describe the motion. Term~(ii)'s share
+($\max|\text{term (ii)}|/\max|H|$) is returned for that reason. There, the
+quantities worth reporting are the vibronic-model ones (the diabatic second
+derivatives below, and $\mathbf h_{PQ}$), not frequencies.
+
+\paragraph{At a crossing.} $E_P$ has no Hessian: it is a cone. Two
+related objects still exist, provided every other state stays gapped. Both
+are \#967, not yet in the tree.
+\begin{itemize}
+\item \textbf{The pair's mean.} $\Pi = W^P + W^Q$ is the projector onto
+  the degenerate eigenspace, well defined where $R_P$ and $R_Q$
+  separately are not. $E_P + E_Q = \mathcal E[\Pi]$ is smooth, and
+  \begin{equation}
+    \frac{d^2(E_P + E_Q)}{dR_A\,dR_B} = \Pi\text{-term (i)}
+      + 2\sum_{X\in\{P,Q\}}\sum_{S\notin\{P,Q\}}\frac{\tilde{\mathsf h}^A_{XS}\tilde{\mathsf h}^B_{XS}}{E_X - E_S}.
+    \label{eq:qd-pair}
+  \end{equation}
+  The $P$--$Q$ term of Eq.~\eqref{eq:qd-hess} cancels, as in
+  Eq.~\eqref{eq:qd-sum}, and the double sum does not depend on the basis
+  chosen in the eigenspace.
+\item \textbf{The second-order effective $2\times2$.} In any orthonormal
+  basis $X, Y$ of the eigenspace, at energy $E_0$,
+  \begin{equation}
+    \frac{\partial^2\tilde H_{XY}}{\partial R_A\,\partial R_B}
+    = R_X^\T\mathsf H^{AB}R_Y
+      + \sum_{S\notin\{P,Q\}}\frac{\tilde{\mathsf h}^A_{XS}\tilde{\mathsf h}^B_{SY}
+      + \tilde{\mathsf h}^B_{XS}\tilde{\mathsf h}^A_{SY}}{E_0 - E_S}.
+    \label{eq:qd-lowdin}
+  \end{equation}
+  This is quasi-degenerate (L\"owdin) perturbation theory. Its first term
+  is term~(i) at $W = \tfrac12(R_XR_Y^\T + R_YR_X^\T)$, linear like
+  everything else. Together with $\tilde{\mathsf h}^A_{XY}$ it is the
+  second-order topography of the seam: what an intersection-space Hessian
+  at a MECI needs (\code{geometry::optimize\_meci}, \S\ref{sec:meci}, is
+  the consumer), and what the branching plane leaves out.
+\end{itemize}
+
+\paragraph{Degenerate by symmetry.} QD states in an E or T irrep are
+exactly degenerate, and term~(ii) is $0/0$.
+\begin{itemize}
+\item \textbf{Jahn--Teller:} a linear splitting, $\tilde{\mathsf h}^A_{XY}
+  \neq 0$. A cone, with no Hessian for either component.
+\item \textbf{Renner--Teller and the like:} no linear splitting. The
+  components are smooth, and their Hessians are the eigenvalues of
+  Eq.~\eqref{eq:qd-lowdin}'s matrix, not Eq.~\eqref{eq:qd-hess}.
+\end{itemize}
+Either way Eq.~\eqref{eq:qd-hess} refuses a degenerate $E_P$ and never
+divides: \code{df\_qd\_eigenvector\_response} and
+\code{df\_qd\_sc\_nevpt2} refuse a QD gap under
+\code{mcscf::kRootGapFloor}, naming both states.
+
+\subsection{The reference gaps: artefacts, in QD's own domain}
+
+\paragraph{Within the ensemble.} At a crossing of two averaged CASSCF
+roots, the roots rotate by $90^\circ$ over a width of about the gap.
+QD-NEVPT2 in the form the tree computes (Park's ``SA-NEVPT2'', with no
+extended-invariance rotation) is not invariant to that rotation, so $E_P$
+changes by $O(1)$ of the non-invariance over that width. It has a cusp at
+the reference intersection even where the QD gap is wide open.
+Eq.~\eqref{eq:qd-theta} is that cusp's $1/\text{gap}^2$ curvature, computed
+exactly. This bites where QD is used most: near-degenerate references are
+the reason to run QD at all, and the reference seam is generally not the QD
+seam. A Hessian there is the method's, not the molecule's. The tree refuses
+two roots under \code{mcscf::kRootGapFloor}, the gradient's \#892 refusal,
+and a rotation $|\theta^A|$ above 10 per bohr (\S\ref{sec:qd-response}),
+and reports the smallest root gap and $\max|\theta^A|$; a threshold set by
+the cusp's own curvature has not been measured. The remedy is an invariant
+QD formulation (an XMCQDPT2/XMS-style rotation of the model space by
+$f^{\mathrm{SA}}$ before the dressing \cite{granovsky2011}). It would add
+one more closed-form block to $x_A$, and it is out of scope here.
+
+\paragraph{At the ensemble's edge.} The CI block of the SA-CASSCF Hessian
+has $2w_r(E_k - E_r)$ for every excluded root $k$, smallest at $r = n$,
+$k = n + 1$. As that gap closes, the solve degrades. Where it closes, the
+excluded root enters the average and the SA-CASSCF itself is
+discontinuous. Both routes fail there. \code{df\_qd\_sc\_nevpt2} finds
+$E_{n+1}$ by one \code{ci::solve} of $n + 1$ roots at the solution's
+orbitals, refuses an edge under \code{mcscf::kRootGapFloor} and reports it;
+the pipeline's numerical method logs it at every displacement.
+
+\subsection{Symmetric geometries}
+\label{sec:qd-sym}
+
+The setting: a symmetric reference geometry $R_0$, states $M$ and $N$ of
+the model space, and a coordinate $q$ whose irrep lies in
+$\Gamma_M\otimes\Gamma_N$. Then $q$ can couple $M$ and $N$.
+\begin{itemize}
+\item \textbf{The totally symmetric block} is as well defined as at
+  $n = 1$. Along a totally symmetric $q$ no symmetry-empty perturber is
+  populated, and states of different irreps do not couple.
+\item \textbf{Diagonal elements} carry the single-state per-root failures
+  into term~(i): SC's $\rho_\tau$ and PC's lift, at second order in the
+  perturber.
+\item \textbf{Off-diagonal elements} fail one order earlier, in the
+  coupling itself, when the model space holds irreps $\Gamma_M \neq
+  \Gamma_N$ and some vibration carries $\Gamma_M\otimes\Gamma_N$. Both
+  variants do, for the same reason. Mixing irreps is not enough: H$_2$CO's
+  $A_1$/$A_2$ pair has no $a_2$ vibration to couple it.
+\end{itemize}
+
+\paragraph{SC.} Take a tuple $t$ empty for ket $N$ by symmetry ($\Phi^N_t
+= 0$) but populated for bra $M$. SC's perturber is one function per
+tuple, so Cauchy--Schwarz bounds $|T^t_{MN}| \le (N^M_tN^N_t)^{1/2}$. Along
+$h\,q$, $\Phi^N_t \approx h\,\partial_q\Phi^N_t$, so
+\begin{equation}
+  T^t_{MN} = O(h),\qquad
+  \frac{H^N_t}{N^N_t} \to \rho_t(q),\qquad
+  C^t_{MN} \approx -\frac{h\,\langle\Phi^M_t|\partial_q\Phi^N_t\rangle}{\Delta_t + \rho_t(q)},
+  \label{eq:qd-scfail}
+\end{equation}
+with $\rho_t(q)$ the Rayleigh quotient of $\partial_q\Phi^N_t$ in the
+Dyall tables. This is odd and homogeneous of degree~1 in $q$, but not
+linear, unless $\rho_t$ is constant over the coordinates of $q$'s irrep.
+That holds on a single coordinate, for parallel derivatives, for Sijrs
+($H = 0$), and for a one-function class (Eq.~\eqref{eq:eta}: $\rho_t =
+\eta$ whatever the direction). With the roles swapped (empty bra, populated
+ket) the denominator is the populated ket's and the term is linear. But
+$\Heff$ averages $C_{MN}$ and $C_{NM}$, so either state's empty tuples
+count.
+\begin{itemize}
+\item \textbf{The functional.} $\mathsf H^A_{MN}$ at $R_0$ is a
+  directional derivative, not a gradient. Term~(ii) along such
+  coordinates is $2\tilde{\mathsf h}(q)^2/(E_P - E_Q)$, a degree-2
+  function that is not a quadratic form, so that block has no Hessian.
+  The coupling $\mathbf h_{PQ}$, and the NAC $\mathbf h_{PQ}/(E_Q - E_P)$,
+  are ill-defined there too.
+\item \textbf{The tree's computed coupling.} It drops a perturber by the
+  \emph{ket's} norm, $|N^N_t| \le 10^{-14}$ (\S\ref{sec:hazards}, SC's
+  guard). At $R_0$ the reported $\mathbf h_{PQ}$ therefore omits this term
+  without saying so, and it is added back once $|h\,\partial_q\Phi^N_t|^2$
+  passes the guard. \code{sc\_effective\_hamiltonian\_tangent} still forms
+  and reports a guarded tuple's $\dot T^t_{MN} =
+  \langle\Phi^M_t|\partial\Phi^N_t\rangle$, which is what the refusal
+  below reads.
+\item \textbf{The gradient is unaffected.} At $R_0$, $W^P_{MN} = 0$
+  across irreps, so $dE_P/dR$ never reads $\mathsf H^A_{MN}$, and nearby
+  it reads it only at weight $O(h)$. The gradient stays $C^1$.
+\end{itemize}
+
+\paragraph{PC.} The same thing happens through the lifted null modes of
+$S_N$: PC does not escape it. At $R_0$ an exact null vector $v$ of $S_N$
+annihilates every row of a transition metric whose bra is $N$, so
+$v^\T b^{M\leftarrow N} = 0$ and $C_{MN}$'s \emph{value} at $R_0$ is safe.
+Along $h\,q$, though, a spatial-symmetry null mode lifts. The function $G
+v$ (the internal functions combined by $v$) becomes $h\,w_v(q)$, with
+eigenvalue $\lambda = O(h^2)$. Normalise it, $\phi = w_v/\lVert
+w_v\rVert$. In an abelian group, symmetry allows $\langle\phi|V|M\rangle =
+O(1)$ and then forces $\langle\phi|V|N\rangle = O(h)$ (the two cannot both
+be $O(1)$ unless $q$ is totally symmetric). The exact functional, with the
+lifted mode kept, therefore carries
+\begin{equation}
+  C_{MN} \ni -\nu\,\frac{\langle\phi|V|M\rangle\,\langle\phi|V|N\rangle}{\Delta_t + \langle\phi|\hat H_D|\phi\rangle}
+  = O(h)\times(\text{a function of }q\text{'s direction}),
+  \label{eq:qd-pcfail}
+\end{equation}
+which is SC's Eq.~\eqref{eq:qd-scfail} with $\phi$ in place of the
+normalised $\partial_q\Phi^N_t$. On the diagonal the same mode gives
+$|\langle\phi|V|N\rangle|^2 = O(h^2)$: that is the single-state Schur lift.
+With the tree's absolute cut, the lifted mode stays dropped while $\lambda$
+is below the cut. The computed $C_{MN}$ is then smooth, but it is missing
+an $O(h)$ piece, and $E_P$ misses an $O(h^2)$ piece through term~(ii),
+Hessian-sized and unreported. Once $\lambda$ crosses the cut, the piece
+switches on with a jump.
+
+\paragraph{One refusal covers both, on every root.} The off-diagonal
+failure needs exactly what the diagonal one needs, SC's $\rho_\tau$ defect
+on the pair of coordinates or PC's Schur lift, and in addition a non-zero
+first-order overlap with some bra in the model space: SC's
+$\langle\Phi^M_t|\partial_q\Phi^N_t\rangle$, the tangent of $T^t_{MN}$ at
+one dotted ket; PC's $\langle\phi|V|M\rangle$. So the existing refusals run
+on \emph{every} model state's guarded tuples and metrics, whatever $W^P$
+weighs it: a state with $W^P_{NN} = 0$ still enters through $\mathbf
+h_{PN}$. A defect with a non-zero transition tangent refuses that (pair,
+coordinate pair) block; one with a zero tangent is the single-state
+term~(i) case.
+\begin{itemize}
+\item \textbf{SC} (\code{sc\_effective\_hamiltonian\_hvp}, \#962): with
+  partners, each ket's empty tuples that both directions populate are
+  scored twice, by the single-state weighted defect over that ket's tables
+  (\code{defect}) and, per bra $M$, by $\rho_\tau$ weighted by the tuple's
+  share of coupling $(M, N)$'s first order, $\max(|\dot T_u|, |\dot
+  T_v|)/|\Delta + \eta|$ against the largest over ket $N$'s tuples
+  (\code{coupling\_defect}). Either past $10^{-6}$
+  (\code{kEmptyDefectTolerance}) refuses, Numerical, naming the coupling,
+  the class, the tuple and the directions. \code{df\_qd\_sc\_nevpt2} takes
+  every pair of coordinates that both populate an empty tuple of some model
+  state as each other's partners.
+\item \textbf{PC} (\code{qd\_pc\_hessian\_product}, \#964): per direction
+  and ket $N$, the Schur lift $L$ of $N$'s null modes along the root set's
+  path ($\Gamma''(c_N, c_N) = \Gamma(Ku_N, c_N) + \Gamma(c_N, Ku_N) +
+  2\Gamma(u_N, u_N)$) and, per bra $M$, how those modes reach $M$'s rows at
+  first order (\code{overlaps}, in units of the null space's own round-off,
+  over the modes that reach the cut within $10^{-3}$ along the direction,
+  \code{kPcLiftStep}). A pair $(M, N)$ whose overlap is past 100
+  (\code{kPcLiftOverlap}) along the direction and along its partner refuses
+  that block, Numerical, naming the coupling, the directions, the class and
+  both $t^*$. A lift with no bra overlap is the single-state one, reported
+  by $t^*$.
+\end{itemize}
+A model space within one irrep, or one whose irreps no vibration couples,
+never meets the off-diagonal case by symmetry, only by accident: a
+perturber empty at an accidental zero of its amplitude. That is what
+\#894's SC-QD miss at ethylene's Py was, a one-function perturber the guard
+dropped, and \#949's one-function classes removed it (Eq.~\eqref{eq:eta}).
+
+\paragraph{Measured on the C$_{2v}$ A$_1$/B$_2$ case.}
+\code{h2nb\_sto3g\_sa2} (\#1058) is H$_2$N--B, STO-3G, CAS(4,3) over the
+frontier $\pi$, $\sigma$ and empty in-plane p, SA-2 over 1A$_1$ and 1B$_2$,
+whose two b$_2$ vibrations couple the roots. SC refuses nothing: every
+tuple empty for one root and populated for the other is in Sij, a
+one-function class, so Eq.~\eqref{eq:qd-scfail}'s term is linear, and
+$C_{01}$'s ladder is bilinear on (B$_2$ 1, B$_2$ 2) to $1.7\times10^{-10}$ of
+an allowed $8.2\times10^{-9}$. PC refuses exactly (B$_2$ 1, B$_2$ 1),
+(B$_2$ 1, B$_2$ 2) and (B$_2$ 2, B$_2$ 2), on the coupling $(0, 1)$ through
+1B$_2$'s Sijr, $t^* = 1.5\times10^{-5}$\,bohr along each, as the fixture's
+analysis expects (1B$_2$'s Sijr, Srs and Sir modes lift as $\lambda/
+\sigma_{\max}/s^2 \approx 2$--$5\times10^{-4}$, with $\langle\phi|V|1A_1\rangle
+= O(1)$ and $\langle\phi|V|1B_2\rangle = O(s)$). Every other block, the
+totally symmetric one included, is accepted.
+
+\paragraph{Degenerate inactive orbitals.} Every non-abelian point group
+at its symmetric geometry has them ($e$ and $t$ orbitals: NH$_3$,
+CH$_4$, benzene, any linear molecule's $\pi$). A coordinate that splits
+the pair leaves $\kappa^A_{oo}$ undetermined: the pseudocanonical
+orbitals of a degenerate block depend on the direction of the split. The
+tree's PC is invariant to that rotation only at exact degeneracy, and SC
+not in general. The single-state Hessians refuse this
+(\S\ref{sec:hess-refusals}: gap below $10^{-6}\,E_h$ with $|f^{(x)}_{pq}| >
+10^{-8}$), and \code{df\_qd\_nevpt2\_tangents} applies the same rule at
+$f^{\mathrm{SA}}$ (on C$_{3v}$ ammonia's SA-2 CAS(8,7) in 6-31G, SC refuses
+and PC records 22 pairs). A semi-numerical Hessian there is suspect for the
+same reason: the step picks the orbitals. That is \code{pipeline/hessian}'s
+growing-$z^c$ warning.
+
+\subsection{Summary}
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabular}{@{}p{0.30\textwidth}p{0.17\textwidth}p{0.45\textwidth}@{}}
+\toprule
+region & Hessian of $E_P$ & analytic route \\
+\midrule
+C$_1$, or abelian-symmetric totally symmetric block; every gap of Table~\ref{tab:qd-divisions} open & exists & tractable; the reference case \\
+abelian-symmetric, model space in one irrep, full Hessian & exists unless the per-root refusals fire & tractable where they pass \\
+abelian-symmetric, model space with irreps $\Gamma_M \neq \Gamma_N$ that a vibration of $\Gamma_M\otimes\Gamma_N$ couples, along those vibrations & may not exist (\S\ref{sec:qd-sym}) & refuse per block on every root's $\rho_\tau$ / lift with a non-zero transition tangent \\
+near a QD crossing & exists, large term~(ii) & tractable, and better than finite differences; harmonic frequencies unreliable \\
+at a QD crossing & none (cone) & pair mean Eq.~\eqref{eq:qd-pair} and seam $2\times2$ Eq.~\eqref{eq:qd-lowdin} instead (\#967) \\
+symmetry-degenerate QD states & none (JT) or by Eq.~\eqref{eq:qd-lowdin} (RT) & refuse Eq.~\eqref{eq:qd-hess} \\
+near a reference-root crossing & exists, $1/\text{gap}^2$, an artefact & computable, not physical; refused at the root-gap floor and $|\theta| > 10$/bohr \\
+ensemble edge, active-space instability & degrades, then discontinuous & refuse; both routes fail \\
+degenerate inactive orbitals (non-abelian groups) & not determined & refuse, as the single-state Hessians do \\
+higher roots, diffuse bases & exists & $1/d^3$ near-intruders; tractable only with the smallest $|d|$ reported \\
+PC, large active space & exists & on-shell residual amplified by $S^+$; tight CI convergence \\
+\bottomrule
+\end{tabular}
+\caption{Where an analytic QD-NEVPT2 Hessian is defined, and where it is
+worth computing.}
+\label{tab:qd-regions}
+\end{table}
+
+%======================================================================
+\section{The QD Hessian: algorithm, checks and status}
+\label{sec:qd-build}
+
+\begin{algorithm}[htbp]
+\caption{Analytic DF-QD-NEVPT2 nuclear Hessian of state $P$
+(\code{df\_qd\_sc\_nevpt2}; PC's, \#966, the same over PC's walk)}
+\label{alg:qdhess}
+\begin{algorithmic}[1]
+\Require converged DF-SA-CASSCF, all-electron; $P$; coordinates
+\State refuse if two CASSCF roots, $E_{n+1} - E_n$ or $\min_{Q\neq P}|E_Q - E_P|$ is under \code{kRootGapFloor} (Table~\ref{tab:qd-divisions}); $\Heff$, $R$, $W^P = R_PR_P^\T$
+\State $x_A$, $A = 1..3N_{\mathrm{at}}$ $\gets$ \code{df\_sacasscf\_cp}, then Eq.~\eqref{eq:qd-theta}, then $\kappa_{oo}$ at $f^{\mathrm{SA}}$ (\code{df\_qd\_nevpt2\_tangents}); $t_A$; refuse $|\theta| > 10$/bohr and a split degenerate inactive pair
+\State $\lambda[W^P]$ $\gets$ the gradient's Lagrangian at $W^P$ (\code{qd\_sc\_lagrangian}); refuse a coordinate mixing an inactive pair within $10^{-3}$\,bohr
+\State $\langle t_A, \mathrm{HVP}\,t_B\rangle$ $\gets$ \code{qd\_sc\_hessian\_product} at $W^P$ along each $t$; coordinates populating an empty tuple again as each other's partners \Comment{Eq.~\eqref{eq:qd-Lxx} level 1, $z^c$; \S\ref{sec:qd-mixed}'s NEVPT2 parts}
+\State $E_\rho$'s share: $E_{xy}$ at $\rho$, the CP right-hand side at $\rho$ against $x_B$ both ways, $x_A^\T\tilde H_\rho x_B$
+\State $(Z, z, \Theta)$'s terms $\gets$ \code{df\_sacasscf\_z} and \code{ThirdDerivative} over $x$; $\zeta$'s three shares $\gets$ \code{df\_qd\_zeta}
+\State skeleton $\gets$ \code{df\_adjoint\_xy}; $\tau\kappa$, $\kappa\kappa$ and the $\kappa_{oo}$ rows as at $n = 1$ \Comment{Eq.~\eqref{eq:Nab}}
+\State term (i) $\gets$ the sum (Eq.~\eqref{eq:qd-hessW}); term (ii) $\gets$ Eq.~\eqref{eq:qd-hess} from the $\mathbf h_{PQ}$ (\code{df\_qd\_eigenvector\_response}'s, one shared solve)
+\State on \emph{every} model state: SC's $\rho_\tau$ and PC's Schur-lift tests; refuse a block where a defect has a non-zero transition tangent to a bra (\S\ref{sec:qd-sym})
+\State report the asymmetry and translational sum, every gap of Table~\ref{tab:qd-divisions}, the smallest $|\Delta_t + H_t/N_t|$, $\max|\theta^A|$, $\max|\kappa^A_{oo}|$, $\max|\zeta|$, $\max|z^c|$, term (ii)'s share, and every part
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{The assembly.} \code{df\_qd\_sc\_nevpt2} is
+\code{df\_sc\_nevpt2}'s assembly (\S\ref{sec:hess-assembly}) part for
+part, in the same parametrization and coordinates, over
+\begin{equation}
+  \Lag[W] = E_\rho + (Z, z, \Theta)\cdot g_{\mathrm{SA}}
+    + \sum_{r<s}\zeta_{sr}\langle c_s|H|c_r\rangle
+    + \mathcal E^{\mathrm{corr}}[W] + \Phi^{\mathrm{SA}},\qquad
+  x_A = (\kappa_{\mathrm{nr}}, \kappa_{oo}, \xi_r, \theta_{sr}).
+\end{equation}
+$E_\rho = \sum_r\rho_rE_r$ takes $\Ecas$'s place. It is not stationary in
+the SA parameters (the multipliers make $\Lag$ so), so its share is not
+\code{df\_casscf}'s whole Hessian but its three places, as
+\code{df\_sacasscf}'s root $I$ at one-hot weights: $E_{xy}$ at the
+$\rho$-weighted RDMs and $F^{[x]}$, the CP right-hand side at $\rho$
+against $x_B$ in both orders, and $x_A^\T\tilde H_\rho x_B$
+(\code{RelaxedHessian::apply\_coupled} at $\rho$: CI rows $\times\,2\rho_r$,
+rotation rows $\times\,2(\rho_r - \rho_s)$). $x$'s layout is
+\code{ThirdDerivative}'s with \emph{every} pair's rotation, at all-equal
+weights too: $x_A$ moves an equal-weight rotation, and $E_\rho$, the
+level-2 term and $\zeta$'s term all see it. The $\kappa_{oo}$ rows'
+derivation carries over: $E_\rho$ and $\langle c_s|H|c_r\rangle$ are
+invariant under a core--core or virtual--virtual rotation and
+$g_{\mathrm{SA}}$ is covariant, so each leaves only BCH's $-\tfrac12\nabla
+F\cdot[\kappa_{\mathrm{nr}}, \kappa_{oo}]$, and by the Lagrangian's orbital
+stationarity the rows are $\tfrac12\langle\kappa^B_{oo},
+[X_N, \kappa^A_{\mathrm{nr}}]\rangle + (A\leftrightarrow B)$ at $N =
+\mathcal E^{\mathrm{corr}}[W] + \Phi^{\mathrm{SA}}$, as at $n = 1$. A
+coordinate whose total tangent is below $10^{-6}$ of the largest (a rigid
+translation, whose $t$ is the CP residual and round-off) breaks no
+symmetry. The result is exactly symmetric, with the asymmetry before
+symmetrising returned; the $W$ overload returns term~(i) alone.
+
+\begin{table}[htbp]
+\centering
+\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{0.33\textwidth}>{\raggedright\arraybackslash}p{0.25\textwidth}>{\raggedright\arraybackslash}X@{}}
+\toprule
+check & what it pins & status \\
+\midrule
+$n = 1$: equals the single-state Hessian (\code{df\_sc\_nevpt2}, \code{df\_pc\_nevpt2}) & reduction: term (ii) empty, $W = 1$, no $\theta$ or $\zeta$ & by construction in the walks (each is the one-state walk at $n = 1$); not run on the whole Hessian \\
+Eq.~\eqref{eq:qd-scfinish}'s three Euler zeros, rank-one $(H,\Delta)$, and its $M = N$ reduction to Eq.~\eqref{eq:finish}; Eq.~\eqref{eq:qd-pcfinish} at $M = N$ & the off-diagonal finishes & identities of the formulas, not gated; the forward tangents against the reverse passes by duality, $10^{-10}$ (\code{Nevpt2QdTangent}, \code{Nevpt2QdPcTangent}), and the HVPs against ladders of the bars, $10^{-7}$, with the off-diagonal and PC's three kinds of term each visible (\code{Nevpt2QdHvp}, \code{Nevpt2QdHessianProduct}, \code{Nevpt2QdPcHessianProduct}) \\
+sum rule Eq.~\eqref{eq:qd-sum} & term (ii)'s antisymmetry, linearity of term (i) in $W$ & term (ii)'s half returned as a diagnostic, zero by construction ($2\times10^{-18}$); the whole sum not run \\
+term (i) at a general symmetric $W$ against differences of $\mathcal E[W]$'s gradient at that fixed $W$ & Eq.~\eqref{eq:qd-hessW} without the eigenvector term & the pair sums $W^P + W^Q$ are in the references (\#953); not yet gated against the $W$ overload \\
+term (ii) alone: Eq.~\eqref{eq:qd-dR} against differences of $R_P$, phase-aligned & the $\mathbf h_{PQ}$ inputs and the eigenvector derivative & the list call's $\mathbf h_{PQ}$ against each pair's own solve, $10^{-9}$ (\code{HessianDfQdEigenvectorResponse}); term (ii) through the whole Hessian; $dR_P$ against differences not run \\
+\code{h2co\_ccpvdz\_sa2} (C$_{2v}$, $A_1$/$A_2$): term (ii) $= 0$ in every block, since H$_2$CO has no $a_2$ vibration & the decoupled case: the model space mixes irreps, but no coordinate couples them & not run (the case is term (ii)'s degenerate-pair refusal) \\
+a C$_{2v}$ SA2 with $A_1$/$B_2$ roots: ladders of $C_{MN}$ along two $b_2$ coordinates and their sum, and the per-root refusals & \S\ref{sec:qd-sym}'s off-diagonal failure, SC and PC; that the refusal fires where the ladder is not bilinear & \code{h2nb\_sto3g\_sa2} (\#1058): SC's ladder bilinear, nothing refused by the product, the Hessian (\code{CoupledA1B2RefusesNothing}, $\mathbf h_{01}$ against the ladders) or the pipeline; PC's product refuses exactly the expected B$_2\times$B$_2$ blocks. Whole-Hessian references, \#1093 \\
+Eq.~\eqref{eq:qd-pair} at the ethylene MECI against differences of $E_0 + E_1$'s gradient & the pair-mean Hessian at a cone & references in the tree (\#1059: SC and PC, pair sum, seam $W$, third state); the analytic side, \#967 \\
+\code{h2co\_skew\_ccpvdz\_sa3} (C$_1$), equal and unequal weights & $\theta$ in and out of the solve, Eq.~\eqref{eq:qd-curv} & SC: states 1 and 2 at equal weights and state 1 at 0.4/0.2/0.4, every element within $2\times$ bar (worst 0.010--0.030 bars), every part and $\theta$'s $\theta\theta$ block above 10 bars (\code{HessianDfQdScNevpt2}); PC, \#966 \\
+semi-numerical QD Hessian (Algorithm~\ref{alg:semi} over the QD gradient, roots tracked by $R_P$'s overlap) & the whole thing & the references (\#953, \#1060; \code{tools/qd\_nevpt2\_hessian}) and the pipeline's numerical method against them (\code{PipelineQdNevpt2Hessian}) \\
+\bottomrule
+\end{tabularx}
+\caption{The QD Hessian's checks, and where each stands.}
+\label{tab:qdhesschecks}
+\end{table}
+
+\paragraph{The semi-numerical QD Hessian (\#959).} Under a
+\code{quasi\_degenerate} \code{[nevpt2\_gradient]}, \code{[hessian]}'s
+numerical method is Algorithm~\ref{alg:semi} over \code{qd\_sc\_gradient}
+or \code{qd\_pc\_gradient}'s state form, state $P$ by \code{state}
+($\Heff$'s eigenvalues ascending at the reference), over \code{[casscf]}'s
+\code{nroots} at its \code{weights}. The state is tracked, not ranked: at
+each displacement each root is signed against the reference's by CI
+overlap, which takes the displaced eigenvectors $u_k$ into the reference's
+root basis, and \code{tracked\_qd\_state} picks the $k$ of largest
+$|\langle R_P|u_k\rangle|$. A best overlap that misses 1 by $10^{-3}$ or
+more, or a second state within $10^{-3}$ of it, is refused, naming the
+geometry. Each displacement logs the tracked state, the QD gap, the smallest
+CASSCF root gap, the ensemble edge (a CASCI of $n + 1$ roots over the
+solve's orbitals), $\max|\zeta|$ and the NEVPT2 chain's hazards; the worst
+of each is \code{hessian.json}'s \code{qd}. The analytic method refuses a
+\code{quasi\_degenerate} chain (Unsupported) until \#968. The references in
+\code{test/gtest/data/qd\_nevpt2\_hessian/} are this algorithm's over the
+same gradient (a fourth-order stencil at $h$, $h/2$, $h/4$; SC at
+$3.125\times10^{-4}$\,bohr and PC at $2.5\times10^{-3}$ on the skew H$_2$CO,
+since SC reaches its asymptotic range only at the smaller step), written by
+\code{tools/nevpt2\_hessian/qd\_nevpt2\_hessian.py} over the C++ driver
+\code{free-breakfast-qd-nevpt2-hessian}.
+
+\paragraph{Status.} In build order: (0) the semi-numerical QD Hessian, the
+oracle, with the bilinearity check of Eq.~\eqref{eq:bilinear} because of
+\S\ref{sec:qd-sym} (\#953, \#959, \#1058, \#1059, \#1060); (1) the off-diagonal
+finishes and the forward tangents (\#954, \#958, \#960, \#962, \#964);
+(2) term (ii) from the couplings (\#957); (3) the pair-walk level-1 HVP at
+general $W$ (\#963, \#964); (4) term (i)'s assembly over
+\code{df\_sacasscf\_cp}'s responses and \code{df\_sacasscf\_z}'s terms at
+$\lambda[W]$, with the $\zeta$ Hessian (\#955, \#956, \#961) and SC's
+whole Hessian (\#965); (5) Eq.~\eqref{eq:qd-hess} gated against (0), SC on
+the C$_1$ cases. SC went first, since \#949 had removed \#894. Not yet
+landed: PC's Hessian (\#966), the crossing's Eqs.~\eqref{eq:qd-pair} and
+\eqref{eq:qd-lowdin} (\#967), the A$_1$/B$_2$ whole-Hessian references
+(\#1093), and the analytic \code{[hessian]}, its frequencies and example
+(\#968).
+
+\paragraph{Cost.} One block CP-SA-CASSCF solve over $3N_{\mathrm{at}}$
+right-hand sides, shared by every $P$. Per wanted $P$: $3N_{\mathrm{at}}$
+pair-walk HVPs (each about $n(n+1)/2$ single-state ones, the gradient's own
+scaling) and $3N_{\mathrm{at}}$ forward-over-reverse tangents. The $n-1$
+couplings are one shared solve. This is the same order as the
+semi-numerical route's $6N_{\mathrm{at}}$ QD gradients (eight per
+coordinate under the ladder). Measured: 25--26\,s a call on the skew
+H$_2$CO (cc-pVDZ, CAS(4,3), three roots, 12 coordinates) on the gfx1200.
+
+%======================================================================
 \section{Numerical hazards and refusals}
 \label{sec:hazards}
 
@@ -1849,6 +2755,14 @@ $4.8\times10^{-11}$), $3.1\times10^{-5}$\,\AA{} from exact C$_{3v}$.
   $T^{PQ}$ couple are refused, except PC's intersection inside the QD
   pair's own CASSCF pair, which returns the mean gradient alone
   (\S\ref{sec:meci}).
+\item \textbf{The QD Hessian's divisions.} Each gap the gradient divides
+  by, the Hessian divides by once more (Table~\ref{tab:qd-divisions}), and
+  the QD gap enters for the first time, through term~(ii). The QD gap, the
+  CASSCF root gaps and the ensemble's edge are refused under
+  \code{mcscf::kRootGapFloor}, a root rotation $|\theta^A|$ above 10 per
+  bohr, and, on every model state, a block where a symmetry defect has a
+  first-order overlap with some bra (\S\ref{sec:qd-sym}); the rest are
+  reported.
 \item \textbf{Reproducibility.} The einsums and the DF derivative kernels sum
   with atomics, so two runs differ at the $10^{-12}$ relative level (more
   where a solve is ill-conditioned); \code{rdms} and its adjoint are
@@ -1894,6 +2808,14 @@ $t_x$, \code{builders\_tangent} & ladders along each input; $f$ against \code{zc
 HVPs & ladders of the adjoint along $t_B$; Euler zeros of Eq.~\eqref{eq:finish}; PC at $f = 10^{-10}$ on PSB3; the Schur-lift report against a direct probe of the kept $\sigma$ \\
 SC, PC Hessians & semi-numerical Hessians of \#803's fixtures (two for SC, four for PC), every element within $2\times$ bar (worst 0.085--0.118 bars); each part above 10 bars; CP residual $\le 10^{-8}$, asymmetry $\le 10^{-9}$, translation sum $\le 10^{-8}$ \\
 Hessian refusals & each reached by a real input: \code{nh3\_cs\_sto3g}'s A$''\times$A$''$ block and \code{nevpt2.toml}'s water (SC); a thin kept class, HCN CAS(6,6)'s lift, C$_{3v}$ ammonia's degenerate pair (PC, \#943) \\
+SA response, $t_x$ & CP residuals $\le 10^{-9}$; Eq.~\eqref{eq:qd-theta}'s condition on every pair and $f^{\mathrm{SA}}$'s off-diagonal change, zero to $10^{-10}$ of the largest summand, at equal and partly equal weights \\
+QD forward tangents & duality against \code{qd\_sc\_adjoint}, \code{qd\_pc\_adjoint} at a general symmetric $W$, $10^{-10}$ of the largest summand (skew's conditioning floor where larger); Eq.~\eqref{eq:qd-gsa}, $10^{-12}$ \\
+QD HVPs & ladders of the QD adjoints' bars, every field, $10^{-7}$; the curvature, the off-diagonal finish and PC's three kinds of term each above ten bars; K6 against $\mathcal E[W]$'s second difference \\
+QD refusals & a constructed one-sided Srsi tuple (SC); \code{h2nb\_sto3g\_sa2}'s expected blocks, exactly (none for SC, B$_2\times$B$_2$ for PC) \\
+$z$, $\zeta$ terms at QD multipliers & Richardson ladders of $Z\cdot g_{\mathrm{SA}} + \sum z_r\cdot g_{\mathrm{ci},r}$ and of $\langle c_s|H|c_r\rangle$ itself, $10^{-7}$; the root-set curvature's and $\Theta$'s shares, and $\zeta$'s every piece, above ten bars \\
+term (ii) & the list call's $\mathbf h_{PQ}$ against each pair's own solve, $10^{-9}$; a degenerate QD pair refused \\
+SC-QD Hessian & the semi-numerical references of \#953 and \#1060 (skew H$_2$CO, states 1 and 2 at equal weights, state 1 at 0.4/0.2/0.4), every element within $2\times$ bar (worst 0.010--0.030 bars), every part above 10 bars; nothing across irreps on \code{h2nb\_sto3g\_sa2} \\
+semi-numerical QD Hessian & the pipeline's against the references, every element within $2\times$ bar; SC's pairs on the A$_1$/B$_2$ case all bilinear \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -1951,6 +2873,14 @@ Eq.~\eqref{eq:tx}, Eq.~\eqref{eq:koo} & \code{nevpt2::builders\_tangent}, \code{
 \S\ref{sec:hvp} & \code{class\_energies\_hvp}, \code{pc\_class\_energies\_hvp}, \code{sc\_hessian\_product}, \code{pc\_hessian\_product} \\
 \S\ref{sec:hess-assembly} & \code{hessian::df\_sc\_nevpt2}, \code{df\_pc\_nevpt2}, \code{df\_adjoint\_xy}, \code{df\_casscf}, \code{df\_casscf\_z} \\
 \S\ref{sec:seminumerical} & \code{pipeline/hessian}'s numerical method, ladder and bilinearity check; \code{tools/nevpt2\_hessian} \\
+Eqs.~\eqref{eq:qd-dR}, \eqref{eq:qd-hess} term (ii) & \code{hessian::df\_qd\_eigenvector\_response} \\
+\S\ref{sec:qd-response} & \code{hessian::df\_sacasscf\_cp}, \code{df\_qd\_nevpt2\_tangents}; \code{nevpt2::qd\_builders\_tangent} \\
+Eqs.~\eqref{eq:qd-rdm2}, \eqref{eq:qd-scfinish} & \code{sc\_effective\_hamiltonian\_tangent}, \code{sc\_effective\_hamiltonian\_hvp} \\
+Eq.~\eqref{eq:qd-pcfinish} & \code{pc\_effective\_hamiltonian\_tangent}, \code{pc\_effective\_hamiltonian\_hvp} \\
+Eqs.~\eqref{eq:qd-Lxx}, \eqref{eq:qd-curv} & \code{qd\_sc\_hessian\_product}, \code{qd\_pc\_hessian\_product}; \code{hessian::df\_sacasscf\_z} at a QD Lagrangian, \code{df\_qd\_zeta} \\
+\S\ref{sec:qd-sym} & the products' \code{coupling\_defect} (SC) and \code{overlaps} (PC) \\
+Eq.~\eqref{eq:qd-hessW}, Algorithm~\ref{alg:qdhess} & \code{hessian::df\_qd\_sc\_nevpt2} (state and $W$ forms); PC's, \#966 \\
+Table~\ref{tab:qdhesschecks}'s semi-numerical row & \code{pipeline/hessian}'s QD chain, \code{tracked\_qd\_state}; \code{tools/qd\_nevpt2\_hessian}, \code{tools/nevpt2\_hessian/qd\_nevpt2\_hessian.py} \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -1978,9 +2908,9 @@ the Z-vector right-hand sides & \cite{park2020}, Eqs.~28--29 \\
 \item Park's QD gradient is PC only, with SC called straightforward
   \cite{park2020}; both are implemented here, with SC's hazards stated.
 \item Park reports gradients and optimised geometries, not Hessians. The
-  single-state Hessian of \S\ref{sec:hessian} has no counterpart in his
-  papers; its only reference is the semi-numerical Hessian over the
-  analytic gradient.
+  single-state Hessian of \S\ref{sec:hessian} and the QD Hessian of
+  \S\ref{sec:qdhess} have no counterpart in his papers; their only
+  reference is the semi-numerical Hessian over the analytic gradient.
 \item SC's one-function classes keep every perturber at $\eta$
   (Eq.~\eqref{eq:eta}) instead of PySCF's guard, so this SC differs from
   PySCF's and Park's where a one-function perturber's norm passes through

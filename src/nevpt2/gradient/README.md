@@ -1236,8 +1236,8 @@ where SC hands them over pair at a time; the callback is the same.
 Element [M n + N] is ⟨M|V|Ψ_N⁽¹⁾⟩ per class over ket N's own solve, so
 the matrix is not symmetric, and W need not be either.
 
-**The dropped rank-projector terms.** PC's finish (design doc Eq.
-qd-pcdot) differentiates the restricted inverse (K_N + Δ S_N)⁺ as if S_N's
+**The dropped rank-projector terms.** PC's finish (`docs/nevpt2/nevpt2.tex`
+Eq. pcdot's QD form) differentiates the restricted inverse (K_N + Δ S_N)⁺ as if S_N's
 kept span were fixed. That is exact when b_{M←N} lies in S_N's kept span,
 which holds when S_N's dropped modes annihilate |N⟩, so at eigenstates.
 #703's ladders move the RDMs along random tangents that carry no
