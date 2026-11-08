@@ -1177,6 +1177,86 @@ struct QdNevpt2Tangents {
                                const double *c_dot, const double *kappa)> &consume,
     size_t max_bytes = 0);
 
+/// @brief The zeta term of a QD-NEVPT2 Lagrangian's Hessian, T = Sum_{r<s}
+/// zeta_sr <c_s|H|c_r> (docs/nevpt2/nevpt2.tex Eq. qd-Lxx's last-but-one
+/// term and its mixed and skeleton shares): its three places, each the
+/// second derivative of T itself, which is not stationary.
+struct QdZetaTerms {
+  /// @brief T's share of L_AB, d2 T / dR_x dR_y at fixed parameters along
+  /// the orthonormal connection: E_xy at the folded transition RDMs less its
+  /// zero-RDM value (no core energy), piece by piece as @ref df_casscf_exy
+  /// returns them, 3 n_atom x 3 n_atom column-major, symmetric to rounding;
+  /// nuclear_repulsion is zero.
+  CasscfExy lxy;
+  /// @brief T's share of L_Ax, d2 T / dR_x dx, a covector per coordinate:
+  /// size x 3 n_atom column-major on the device, column x in this call's
+  /// layout (the packed orbital pairs, d_r per root off every root, then
+  /// Theta_sr for every r < s). Its dot product with x^y in the same layout
+  /// is element (x, y).
+  Buffers::device<double> lxlambda;
+  /// @brief Lambda^T (d2 T / dx dx) Lambda over the call's k columns Lambda:
+  /// k x k column-major on the host, symmetric to rounding; empty for k = 0.
+  std::vector<double> lxx;
+};
+
+/// @brief The three shares of the zeta term T = Sum_{r<s} zeta_sr
+/// <c_s|H|c_r> of a QD-NEVPT2 Lagrangian's analytic Hessian, at a converged
+/// DF-SA-CASSCF @p solution and caller-supplied @p zeta (the Lagrangian's
+/// equal-weight pairs', @c mcscf::RootPairMultipliers::zeta; nevpt2.tex Eqs.
+/// qd-Lxx and the mixed and skeleton terms), README.md "The zeta term":
+///
+///     lxy      = 1/2 (E_xy(c + C S) - E_xy(c - C S)),   S = (n / 4) Z
+///     lxlambda = the same half difference of the CP right-hand sides
+///                (orbital, CI), and (Z M^x)_rs - (Z M^x)_sr per pair,
+///                M^x = <c_r|H~^x|c_s>
+///     lxx      = Lambda^T T_xx Lambda,
+///     T_uv     = kappa_u^T (H(gamma^zeta) - H(0)) kappa_v         (orbital)
+///              + g(R_u) . kappa_v + g(R_v) . kappa_u            (orbital-CI)
+///              + <X_u, H X_v Z> - 1/2 <X_v, K_u H C Z>
+///              - 1/2 <X_u, K_v H C Z>                           (CI)
+///
+/// with Z the symmetric n x n of the zeta (zero diagonal), C the roots,
+/// K_u the root set's generator of u (Eq. qd-K) and X_u = K_u C, H(.)
+/// @c response::Hessian at the RDMs given, R_u = Sum_q T(X_u,q, (C Z)_q) the
+/// symmetrized transition RDMs and g(.) @c mcscf::transition_orbital_gradient
+/// at them. Every core-energy part multiplies the change of <c_s|c_r> = 0
+/// and drops. The roots are any orthonormal set: nothing assumes they are
+/// eigenvectors.
+///
+/// **The parameters**: one column of size = pairs + n_det nroots +
+/// nroots (nroots - 1) / 2 doubles, @c mcscf::ThirdDerivative's layout with
+/// every pair's rotation Theta_sr (c_r gaining Theta_sr c_s), at equal
+/// weights too: T moves along an equal-weight rotation, which E_SA does not.
+/// A column's CI part is taken off every root here.
+///
+/// The inputs are @ref df_sacasscf_cp's less the weights, which T does not
+/// read: @p zeta one per pair r < s in (r, s) lexicographic order, @p lambda
+/// @p k columns of size (size x k column-major on the device), null for k = 0.
+///
+/// The parts run one after another, each freeing what it held: three
+/// @c mcscf::df_derivatives calls (at c + C S, c - C S and the roots) and two
+/// @ref df_casscf_exy calls, then for k > 0 the active-space integrals,
+/// @c mcscf::zeta_terms' folded RDMs, two orbital Hessians, one sigma per
+/// root of every column and one @c transition_orbital_gradient per column.
+/// Each part refuses its own memory, Unsupported, before it allocates.
+///
+/// Queued on res.stream() with res.blas() (host pointer mode); it
+/// synchronizes many times. None of @p b and @p l may point into
+/// res.device_workspace(). The device res.dev_idx() names is made current for
+/// the call and the previous one restored.
+///
+/// @return The three shares; InvalidConfig for @ref df_sacasscf_cp's input
+///         refusals, @p zeta not one per pair, a negative @p k or a null
+///         @p lambda with k > 0, or for any input a part refuses; Numerical
+///         for two roots under @c mcscf::kRootGapFloor apart; or the first
+///         error of a part (Unsupported for memory, a GpuRuntime error).
+[[nodiscard]] Result<QdZetaTerms>
+df_qd_zeta(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+           std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+           const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+           const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
+           std::span<const double> zeta, int32_t k = 0, const double *lambda = nullptr);
+
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
 /// (hartree / bohr^2), as @c gradient::RhfTerms holds the gradient's.
