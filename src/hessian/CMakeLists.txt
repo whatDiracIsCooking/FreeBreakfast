@@ -9,8 +9,9 @@
 # integrals, the MO-basis fit, the dipole integrals and their derivative, the
 # CASSCF's integrals, CI, Fock, orbital and relaxed Hessians, derivatives,
 # root rotation, transition gradient, zeta terms and third derivative, the
-# NEVPT2 builders' tangent, the gemms and the FBF_TRY header are the
-# implementation units' own, so PRIVATE.
+# NEVPT2 builders' tangent, H_eff's MO blocks, diagonalization and QD
+# gradients, the gemms and the FBF_TRY header are the implementation units'
+# own, so PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.hessian
@@ -24,6 +25,7 @@ free_breakfast_add_cxx_module_library(
   df_nevpt2_tangents.cpp
   df_qd_nevpt2_tangents.cpp
   df_qd_zeta.cpp
+  df_qd_eigenvector_response.cpp
   df_sc_nevpt2.cpp
   df_pc_nevpt2.cpp
   df_adjoint_xy.cpp
@@ -73,6 +75,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::response::relaxed_hessian
   free_breakfast::mcscf::root_rotation
   free_breakfast::mcscf::third_derivative
+  free_breakfast::recipes::diagonalize
+  free_breakfast::nevpt2::density_fitting
   free_breakfast::nevpt2::energy
   free_breakfast::nevpt2::gradient
 )

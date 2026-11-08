@@ -1257,6 +1257,79 @@ df_qd_zeta(DeviceResources &res, const Molecule &molecule, const BasisSet &basis
            const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
            std::span<const double> zeta, int32_t k = 0, const double *lambda = nullptr);
 
+/// @brief @ref df_qd_eigenvector_response's result: term (ii) of every QD
+/// state's Hessian, the couplings it is built from, and dR_P/dR_x. Every
+/// array is on the host; x = 3 A + k, nx = 3 n_atom.
+struct QdEigenvectorResponse {
+  /// @brief H_eff's eigenvalues E_P, ascending.
+  std::vector<double> eigenvalues;
+  /// @brief H_eff's eigenvectors R, n x n, state P's column at [P n,
+  /// (P + 1) n), each signed so that its largest-magnitude component is
+  /// positive (nevpt2::qd_sc_coupling's convention), in the solution's roots'
+  /// phases.
+  std::vector<double> eigenvectors;
+  /// @brief h_PQ = G(W^PQ) for every pair P < Q in (P, Q) lexicographic
+  /// order, nx a pair: component x of pair k at [k nx + x]; h_QP = h_PQ.
+  std::vector<double> couplings;
+  /// @brief Term (ii) per state, Eq. qd-hess: 2 Sum_{Q != P} h_PQ,x h_PQ,y /
+  /// (E_P - E_Q), nx x nx column-major, state P's at [P nx^2], exactly
+  /// symmetric.
+  std::vector<double> term;
+  /// @brief dR_P/dR_x per state, Eq. qd-dR in the gauge R_P^T dR_P = 0:
+  /// Sum_{Q != P} R_Q h_QP,x / (E_P - E_Q), n x nx column-major, state P's at
+  /// [P n nx], component i along x at [P n nx + i + n x].
+  std::vector<double> dr;
+  /// @brief max |term (ii)_P| per state: the numerator of its share of the
+  /// Hessian (the whole Hessian's assembler divides by its own largest).
+  std::vector<double> largest;
+  /// @brief max |Sum_P term (ii)_P|, Eq. qd-sum's term (ii) part, zero by
+  /// construction (each pair enters P and Q with opposite signs): a
+  /// diagnostic, never gated.
+  double sum_rule = 0.0;
+  /// @brief The smallest |E_P - E_Q|, P != Q; infinite for one root.
+  double qd_gap = std::numeric_limits<double>::infinity();
+  /// @brief The largest true residual of the shared Z-vector solve's
+  /// columns, each held to the call's tolerance.
+  double max_residual = 0.0;
+};
+
+/// @brief Term (ii) of the QD-NEVPT2 nuclear Hessian (docs/nevpt2/nevpt2.tex
+/// Eq. qd-hess), the QD eigenvector response, for every state at once, from
+/// first derivatives alone, at a converged DF-SA-CASSCF @p solution: SC's
+/// (@p pc false) or PC's.
+///
+///     term (ii)_P,xy = 2 Sum_{Q != P} h_PQ,x h_PQ,y / (E_P - E_Q)
+///     dR_P/dR_x      = Sum_{Q != P} R_Q h_QP,x / (E_P - E_Q)       (Eq. qd-dR)
+///
+/// with h_PQ = G(W^PQ), W^PQ = 1/2 (R_P R_Q^T + R_Q R_P^T), the interstate
+/// coupling of nevpt2::qd_sc_coupling (or qd_pc_coupling). In order:
+///
+/// 1. H_eff = diag(E_r) + 1/2 (C + C^T) over nevpt2::qd_inputs and the
+///    method's effective Hamiltonian, its eigenvalues and R;
+/// 2. **the refusal**, before any adjoint is built: a pair of QD states under
+///    @c mcscf::kRootGapFloor apart is Numerical, naming both (term (ii)
+///    divides by their gap, and a symmetry-degenerate E_P has no Hessian of
+///    this form; README.md "Term (ii)");
+/// 3. every n (n - 1) / 2 trace-zero W^PQ through one call of
+///    nevpt2::qd_sc_gradient's (qd_pc_gradient's) several-W form: one shared
+///    Z-vector solve, each column's true residual held to
+///    @p zvector_tolerance, and each W's single core-off df_gradient pass;
+/// 4. the closed forms above on the host.
+///
+/// One root returns its eigenvalue, R = 1 and empty sums (zero term, zero
+/// dR), with no gradient call. The inputs are nevpt2::qd_sc_coupling's less
+/// the pair, all-electron; @p batch is the effective Hamiltonian's.
+///
+/// @return Term (ii) and its parts; InvalidConfig for a tolerance not
+///         positive; Numerical for a degenerate QD pair; or the first error
+///         of nevpt2::qd_inputs, the effective Hamiltonian (a refused PC
+///         class among them) or the several-W gradient, unchanged.
+[[nodiscard]] Result<QdEigenvectorResponse> df_qd_eigenvector_response(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
+    int32_t ncore, int32_t ncas, bool pc, int32_t batch = 0, double zvector_tolerance = 1e-10);
+
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
 /// (hartree / bohr^2), as @c gradient::RhfTerms holds the gradient's.

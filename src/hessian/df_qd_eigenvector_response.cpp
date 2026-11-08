@@ -1,0 +1,207 @@
+/// @file
+/// @brief df_qd_eigenvector_response: term (ii) of a QD-NEVPT2 state's
+/// Hessian, the eigenvector response, from the interstate couplings h_PQ
+/// alone. H_eff and R once over nevpt2::qd_inputs, every pair's gap checked
+/// before any adjoint is built, then one several-W gradient over every
+/// trace-zero W^PQ (one Z-vector solve), and the closed forms on the host.
+
+module free_breakfast.hessian;
+
+import std;
+import free_breakfast.core.types;
+import free_breakfast.core.error_handling;
+import free_breakfast.core.wwr; // Buffers, wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
+import free_breakfast.core.resources;
+import free_breakfast.basis;
+import free_breakfast.molecule;
+import free_breakfast.integrals.mmd;
+import free_breakfast.recipes.diagonalize;
+import free_breakfast.recipes.matrix_ao;
+import free_breakfast.mcscf.solve;
+import free_breakfast.mcscf.root_rotation;    // kRootGapFloor
+import free_breakfast.nevpt2.density_fitting; // MoBlocks
+import free_breakfast.nevpt2.energy;
+import free_breakfast.nevpt2.gradient; // qd_inputs, the several-W forms
+
+#include "diagnostics.h"
+
+namespace free_breakfast::hessian {
+
+// H_eff = diag(E_r) + 1/2 (C + C^T) from the n x n elements' @p totals
+// ([M n + N] bra M, ket N), diagonalized: eigenvalues ascending and R,
+// column K at [K n], each signed so that its largest-magnitude component is
+// positive (nevpt2::qd_sc_coupling's convention, so h_PQ's sign is its).
+Result<std::pair<std::vector<double>, std::vector<double>>>
+qd_response_eigen(DeviceResources &res, const std::span<const double> energies,
+                  const std::span<const double> totals) {
+  const size_t n = energies.size();
+  std::vector<double> heff(n * n);
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = 0; j < n; ++j) {
+      heff[i + (n * j)] =
+          (i == j ? energies[i] : 0.0) + (0.5 * (totals[(i * n) + j] + totals[(j * n) + i]));
+    }
+  }
+  std::vector<double> values(n);
+  {
+    Buffers::device<double> heff_d(n * n, res.device());
+    Buffers::device<double> values_d(n, res.device());
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(heff_d.data(), heff.data(), n * n * sizeof(double),
+                                           wwr::wwrMemcpyHostToDevice, res.stream())));
+    FBF_TRY(diagonalize<double>(res, static_cast<int32_t>(n), heff_d.data(), values_d.data()));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(heff.data(), heff_d.data(), n * n * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToHost, res.stream())));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(values.data(), values_d.data(), n * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToHost, res.stream())));
+    FBF_TRY(res.sync());
+  }
+  for (size_t col = 0; col < n; ++col) {
+    const std::span<double> v{heff.data() + (col * n), n};
+    if (*std::ranges::max_element(v, {}, [](const double x) { return std::abs(x); }) < 0.0) {
+      std::ranges::transform(v, v.begin(), std::negate<>{});
+    }
+  }
+  return std::pair{std::move(values), std::move(heff)};
+}
+
+Result<QdEigenvectorResponse>
+df_qd_eigenvector_response(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                           const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                           const SphericalMatrixAO &h, const Buffers::device<double> &b,
+                           const double *l, const mcscf::Solution &solution, const int32_t ncore,
+                           const int32_t ncas, const bool pc, const int32_t batch,
+                           const double zvector_tolerance) {
+  constexpr std::string_view kWho = "hessian::df_qd_eigenvector_response";
+  if (!(zvector_tolerance > 0.0)) {
+    return err_config("{}: a Z-vector tolerance of {:g}", kWho, zvector_tolerance);
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const size_t n = solution.roots.energies.size();
+
+  // H_eff's correlation elements; a refused PC class is the walk's error.
+  std::vector<double> totals;
+  FBF_TRY(nevpt2::qd_inputs(
+      res, molecule, basis, aux, h, b, solution, ncore, ncas,
+      [&](const nevpt2::MoBlocks &blocks,
+          const std::span<const nevpt2::EnergyInputs> pairs) -> Status {
+        if (pc) {
+          const std::vector<nevpt2::PcClassEnergies> e =
+              FBF_TRY(nevpt2::pc_effective_hamiltonian(res, blocks, pairs, batch));
+          std::ranges::transform(e, std::back_inserter(totals), &nevpt2::PcClassEnergies::total);
+        } else {
+          const std::vector<nevpt2::ClassEnergies> e =
+              FBF_TRY(nevpt2::sc_effective_hamiltonian(res, blocks, pairs, batch));
+          std::ranges::transform(e, std::back_inserter(totals), &nevpt2::ClassEnergies::total);
+        }
+        return {};
+      }));
+  auto [eigenvalues, r] = FBF_TRY(qd_response_eigen(res, solution.roots.energies, totals));
+
+  // Every pair's gap, before any adjoint: term (ii) divides by each.
+  double qd_gap = std::numeric_limits<double>::infinity();
+  for (size_t p = 0; p < n; ++p) {
+    for (size_t q = p + 1; q < n; ++q) {
+      const double gap = std::abs(eigenvalues[q] - eigenvalues[p]);
+      if (gap < mcscf::kRootGapFloor) {
+        return err_numerical("{}: QD states {} and {} are {:.3e} Eh apart, under {:g}: term (ii) "
+                             "divides by their gap, and a degenerate state has no Hessian of "
+                             "this form",
+                             kWho, p, q, gap, mcscf::kRootGapFloor);
+      }
+      qd_gap = std::min(qd_gap, gap);
+    }
+  }
+
+  const size_t nx = 3 * static_cast<size_t>(basis.natoms());
+  const size_t n_pairs = n * (n - 1) / 2;
+  QdEigenvectorResponse out{.eigenvalues = std::move(eigenvalues),
+                            .eigenvectors = std::move(r),
+                            .couplings = std::vector<double>(n_pairs * nx, 0.0),
+                            .term = std::vector<double>(n * nx * nx, 0.0),
+                            .dr = std::vector<double>(n * n * nx, 0.0),
+                            .largest = std::vector<double>(n, 0.0),
+                            .qd_gap = qd_gap};
+  if (n_pairs == 0) {
+    return out;
+  }
+
+  // W^PQ = 1/2 (R_P R_Q^T + R_Q R_P^T), n x n row-major, for every P < Q,
+  // all of them through one several-W gradient (one Z-vector solve).
+  std::vector<std::vector<double>> ws;
+  ws.reserve(n_pairs);
+  for (size_t p = 0; p < n; ++p) {
+    for (size_t q = p + 1; q < n; ++q) {
+      const double *const u_p = out.eigenvectors.data() + (p * n);
+      const double *const u_q = out.eigenvectors.data() + (q * n);
+      std::vector<double> w(n * n);
+      for (size_t i = 0; i < n; ++i) {
+        for (size_t j = 0; j < n; ++j) {
+          w[(i * n) + j] = 0.5 * ((u_p[i] * u_q[j]) + (u_q[i] * u_p[j]));
+        }
+      }
+      ws.push_back(std::move(w));
+    }
+  }
+  const auto take = [&](auto gradients) -> Status {
+    for (size_t pair = 0; pair < n_pairs; ++pair) {
+      const auto &g = gradients[pair];
+      if (g.total.size() != nx) {
+        return err_config("{}: coupling {} has {} components, not {}", kWho, pair, g.total.size(),
+                          nx);
+      }
+      std::ranges::copy(g.total, out.couplings.begin() + static_cast<std::ptrdiff_t>(pair * nx));
+      out.max_residual = std::max(out.max_residual, g.lagrangian.multipliers.residual);
+    }
+    return {};
+  };
+  if (pc) {
+    FBF_TRY(
+        take(FBF_TRY(nevpt2::qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
+                                            ncore, ncas, ws, batch, zvector_tolerance))));
+  } else {
+    FBF_TRY(
+        take(FBF_TRY(nevpt2::qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
+                                            ncore, ncas, ws, batch, zvector_tolerance))));
+  }
+
+  // Term (ii) and dR_P/dR_x (Eqs. qd-hess and qd-dR) per state, over its
+  // pairs: h_PQ = h_QP, and pair (min, max)'s place in lexicographic order.
+  const auto pair_of = [n](const size_t a, const size_t c) {
+    const size_t lo = std::min(a, c);
+    const size_t hi = std::max(a, c);
+    return (lo * n) - (lo * (lo + 1) / 2) + (hi - lo - 1);
+  };
+  std::vector<double> sum(nx * nx, 0.0);
+  for (size_t p = 0; p < n; ++p) {
+    double *const term = out.term.data() + (p * nx * nx);
+    double *const dr = out.dr.data() + (p * n * nx);
+    for (size_t q = 0; q < n; ++q) {
+      if (q == p) {
+        continue;
+      }
+      const double *const hpq = out.couplings.data() + (pair_of(p, q) * nx);
+      const double inverse = 1.0 / (out.eigenvalues[p] - out.eigenvalues[q]);
+      const double *const u_q = out.eigenvectors.data() + (q * n);
+      for (size_t y = 0; y < nx; ++y) {
+        for (size_t x = 0; x < nx; ++x) {
+          term[x + (nx * y)] += 2.0 * hpq[x] * hpq[y] * inverse;
+        }
+      }
+      for (size_t x = 0; x < nx; ++x) {
+        for (size_t i = 0; i < n; ++i) {
+          dr[i + (n * x)] += u_q[i] * hpq[x] * inverse;
+        }
+      }
+    }
+    for (size_t e = 0; e < nx * nx; ++e) {
+      out.largest[p] = std::max(out.largest[p], std::abs(term[e]));
+      sum[e] += term[e];
+    }
+  }
+  for (const double e : sum) {
+    out.sum_rule = std::max(out.sum_rule, std::abs(e));
+  }
+  return out;
+}
+
+} // namespace free_breakfast::hessian
