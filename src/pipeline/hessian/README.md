@@ -490,12 +490,18 @@ and bilinearity check, with `nevpt2::qd_sc_gradient` / `qd_pc_gradient`
   the A1/B2 case) to reach its asymptotic range. Under PC, `pc_floor` is
   read as for the NEVPT2 chain ([The PC floor](#the-pc-floor)); the
   references are at the round-off cut, `pc_floor = 0`.
-- **One R_P match, shared with the references' driver.**
-  `tracked_qd_state` is the tree's only H_eff eigenstate match:
-  `tools/qd_nevpt2_hessian`, which samples
-  `test/gtest/data/qd_nevpt2_hessian/`, calls it for every state it
-  tracks (its vectors already in the reference's root basis, every sign 1),
-  and takes u_k's sign from its signed overlap. At a crossing (a MECI, two
+- **One R_P match, shared with the references' drivers.**
+  `tracked_qd_state` is the tree's only match of a displaced H_eff
+  eigenstate to a fixed reference's: `tools/qd_nevpt2_hessian`, which
+  samples `test/gtest/data/qd_nevpt2_hessian/`, and
+  `tools/qd_nevpt2_gradient`, which samples
+  `test/gtest/data/qd_nevpt2_gradient/` and `qd_nevpt2_nac/coupling/`,
+  call it for every state they track (their vectors already in the
+  reference's root basis, every sign 1), and take u_k's sign from its
+  signed overlap. `[optimize]`'s `qd_state_overlap` and `pair_overlap`
+  follow a state, or a MECI's pair, from one optimizer step to the next
+  instead, and differ by design (`../optimize/README.md`, "Why not
+  tracked_qd_state"). At a crossing (a MECI, two
   states degenerate at the reference) the driver tracks the pair by its
   two-state eigenspace instead, with `tracked_qd_pair`: the two u_k of
   largest projection onto span{R_P, R_Q}, refused when 1 − σ_min of their

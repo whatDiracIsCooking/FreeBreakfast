@@ -431,6 +431,42 @@ orbitals.
 Every refusal of `[nevpt2_gradient]` stops it as in the NEVPT2 chain, H_eff
 eigenvalue K within `mcscf::kRootGapFloor` of another among them.
 
+## Why not tracked_qd_state
+
+The QD Hessian (`../hessian/`) and the references' drivers
+(`tools/qd_nevpt2_gradient`, `tools/qd_nevpt2_hessian`) match a QD state
+with `tracked_qd_state`, and a crossing pair with `tracked_qd_pair`: the
+tree's one R_P match and one pair-subspace match. `qd_state_overlap` and the
+two `pair_overlap`s are kept apart from them on purpose (#1107). They answer
+a different question, and putting them onto those functions would change
+what this step does:
+
+- **Against what, and over how far.** The pipeline/hessian functions compare
+  a displaced point with one fixed reference geometry, a step h of at most
+  5e-3 bohr, so a state that followed misses 1 by O(h²): 5.2e-7 at worst
+  over the references. That is why their bar is 1e-3. This step compares
+  each evaluation with the last one, a step of up to the trust radius
+  (0.3 bohr to start, 1.0 at most). A followed state turns by degrees
+  there, and `kStateOverlapFloor` (0.9, about 26°) is the floor. At a 1e-3
+  bar an ordinary step would be refused, since a 2.6° turn already misses
+  it.
+- **The root basis.** The pipeline/hessian functions take one sign per root.
+  Their displaced roots are the reference's, one to one, which
+  `check_displaced_casscf` checks before they run. Across an optimizer
+  step, the CASSCF roots may swap order. `qd_state_overlap` therefore
+  carries u through `match_roots`' permutation and signs. The pairs'
+  roots also mix near a crossing, so `pair_overlap` carries u through the
+  whole row-normalized S and matches no root at all.
+- **Which state.** `tracked_qd_state` picks the displaced state of largest
+  overlap, and the Hessian step re-takes its gradient when that state is
+  not the one of the same rank. `tracked_qd_pair` likewise picks the two of
+  largest weight. This step never changes K, P or Q. A state that leaves
+  its index is refused, not followed onto another surface ("The state is
+  followed, not its index alone").
+- **CASSCF roots.** The CASSCF MECI's `pair_overlap(root_overlaps, I, J)`
+  follows two CASSCF roots, not QD states, so it is outside both functions'
+  domain.
+
 ## Why a nested Pipeline, not a looping planner
 
 `geometry::optimize` owns its loop and calls back for each energy and
