@@ -36,7 +36,9 @@
 //   <u, HVP u> is held to a ladder of E[W]'s second difference along the
 //   straight line in the inputs, two-level Richardson, to 1e-7, and the
 //   couplings' K6 share of it (ScEffectiveHamiltonianHvp::coupling_k6) is
-//   above ten of those bars.
+//   above ten of those bars. The roots' relative sign is pinned (d H_01 / ds
+//   > 0): the SA-CASSCF does not repeat it, and E[W] at the other sign is E
+//   at W's off-diagonal negated (#1071).
 // - The ρ_τ refusal on constructed inputs: a ket with an empty active
 //   orbital and a virtual whose B to the other active orbitals is zeroed, so
 //   that Srsi's (r, r, i) tuples are empty for that ket and populated for
@@ -720,11 +722,28 @@ MovedInputs moved_inputs(fb::DeviceResources &res, const nevpt2::QdBuilderOutput
   return out;
 }
 
+// d H_01 / ds along @p t at @p value, H the SC effective Hamiltonian: a
+// central difference at s = 1e-4. It changes sign with either root's, and
+// with no orbital's, so its sign is the roots' relative phase.
+double coupling_slope(fb::DeviceResources &res, const nevpt2::QdBuilderOutputs &value,
+                      const nevpt2::QdBuilderOutputs &t) {
+  constexpr double kS = 1e-4;
+  const MovedInputs up = moved_inputs(res, value, t, kS);
+  const MovedInputs down = moved_inputs(res, value, t, -kS);
+  const auto e_up = nevpt2::sc_effective_hamiltonian(res, *up.blocks, up.pairs, 0);
+  const auto e_down = nevpt2::sc_effective_hamiltonian(res, *down.blocks, down.pairs, 0);
+  EXPECT_TRUE(e_up && e_down);
+  if (!e_up || !e_down) {
+    return 0.0;
+  }
+  return ((*e_up)[1].total - (*e_down)[1].total) / (2.0 * kS);
+}
+
 TEST(Nevpt2QdHvpEmpty, CouplingK6MatchesTheEnergysSecondDifference) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   const std::string name = "h2co_ccpvdz_sa2";
-  const Point p = sa_casscf(name);
+  Point p = sa_casscf(name);
   ASSERT_FALSE(p.b.empty());
   fb::DeviceResources res(0);
   const std::size_t nroots = p.weights.size();
@@ -733,18 +752,40 @@ TEST(Nevpt2QdHvpEmpty, CouplingK6MatchesTheEnergysSecondDifference) {
   const fb::Buffers::device<double> b = upload(res, p.b);
   const fb::Buffers::device<double> c = upload(res, p.c);
   const fb::Buffers::device<double> h = upload(res, p.h);
-  const fb::Buffers::device<double> vectors = upload(res, p.vectors);
   const Line l = line_of(p, "B");
   const auto [h_mo, b_mo] = mo_tangent(p, l);
   const fb::Buffers::device<double> h_dot = upload(res, h_mo);
   const fb::Buffers::device<double> b_dot = upload(res, b_mo);
   const fb::Buffers::device<double> c_dot = upload(res, l.c);
-  auto tangent = nevpt2::qd_builders_tangent(
-      res, *strings, *strings, p.naux, p.nao, p.nao, b.data(), c.data(), h.data(), p.ncore, p.ncas,
-      p.weights, vectors.data(), 1, h_dot.data(), b_dot.data(), c_dot.data());
+  const auto builders_tangent = [&](const fb::Buffers::device<double> &vectors) {
+    return nevpt2::qd_builders_tangent(res, *strings, *strings, p.naux, p.nao, p.nao, b.data(),
+                                       c.data(), h.data(), p.ncore, p.ncas, p.weights,
+                                       vectors.data(), 1, h_dot.data(), b_dot.data(), c_dot.data());
+  };
+  // The point, pinned. The SA-CASSCF repeats to 1e-8 in C and 1e-12 in
+  // each root's energy, but not in the roots' relative sign, and E[W] at
+  // the other sign is E at W's off-diagonal negated: <u, HVP u> is
+  // -1963.74 at one and -1803.91 at the other (#1071). Root 1 is negated
+  // where needed so that d H_01 / ds is positive, the sign at which this
+  // case's numbers below were measured.
+  {
+    const fb::Buffers::device<double> vectors = upload(res, p.vectors);
+    const auto first = builders_tangent(vectors);
+    ASSERT_TRUE(first) << first.error().message;
+    if (coupling_slope(res, first->value, first->tangents.front()) < 0.0) {
+      const std::size_t ndet = p.vectors.size() / nroots;
+      for (std::size_t i = ndet; i < 2 * ndet; ++i) {
+        p.vectors[i] = -p.vectors[i];
+      }
+    }
+  }
+  const fb::Buffers::device<double> vectors = upload(res, p.vectors);
+  const auto tangent = builders_tangent(vectors);
   ASSERT_TRUE(tangent) << tangent.error().message;
   const nevpt2::QdBuilderOutputs &value = tangent->value;
   const nevpt2::QdBuilderOutputs &t = tangent->tangents.front();
+  const double slope = coupling_slope(res, value, t);
+  ASSERT_GT(slope, 0.0) << "the pinned phase";
   std::vector<nevpt2::EnergyDirection> directions;
   for (const nevpt2::EnergyInputs &in : t.inputs()) {
     directions.push_back({.in = in, .blocks = &t.shared.blocks});
@@ -832,10 +873,10 @@ TEST(Nevpt2QdHvpEmpty, CouplingK6MatchesTheEnergysSecondDifference) {
   EXPECT_GT(std::abs(k6), kVisible * bar) << "the couplings' K6";
   std::cout << std::format("[ nevpt2   ] qd hvp K6 {}: <u, HVP u> {:+.12e}, E[W]'' ladder "
                            "{:+.12e} (rung {}, change {:.1e}), relative {:.2e}; {} empty tuples "
-                           "populated, the couplings' K6 {:+.3e} ({:.2e} bars)\n",
+                           "populated, the couplings' K6 {:+.3e} ({:.2e} bars); dH_01/ds {:+.6e}\n",
                            name, predicted, ladder, best, best_change / std::abs(predicted),
                            std::abs(ladder - predicted) / std::abs(predicted), populated, k6,
-                           std::abs(k6) / bar);
+                           std::abs(k6) / bar, slope);
 }
 
 // ---- The ρ_τ refusal, on constructed inputs --------------------------------

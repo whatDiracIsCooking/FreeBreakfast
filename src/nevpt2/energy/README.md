@@ -2065,7 +2065,16 @@ The SC-QD Hessian-vector product, `test/gtest/nevpt2_qd_hvp_gpu.cpp`:
   along it (s = 2.5e-3 / 2^k, k < 10, two-level Richardson; the energy
   moves by about the guard through it) to 1e-7, and `coupling_k6` above ten
   of those bars. Measured: 2.0e-8; the couplings' K6 −91.4 of −1963.7,
-  4.7e5 bars.
+  4.7e5 bars. The roots' relative sign is pinned, dH₀₁/ds > 0 along the
+  line (+1.51e-2), with root 1 negated where the SA-CASSCF lands on the
+  other sign. Nothing else about its point varies run to run: C repeats to
+  1e-8, each root's energy to 1e-12. A root's sign enters E[W] only through
+  W's off-diagonal, so flipping it is the same as negating W₀₁ (#1071).
+  Measured: flipping a root, negating W₀₁, or both, give ⟨u, HVP u⟩ values
+  that agree to 1e-11 relative. At the other sign, ⟨u, HVP u⟩ is −1803.91 with K6 +91.4. There the
+  ladder settles only to 1.5e-7 of it: rung-to-rung change 6.8e-7, against
+  3.1e-7 at this sign. On the gfx1200 the SA-CASSCF landed on the other
+  sign in 4 of 5 runs.
 - `Nevpt2QdHvpEmpty.OneSidedTupleIsRefusedOnANonProportionalPair`:
   constructed inputs, `h8_sto3g_sa3`'s MO integrals over a CAS(2,3)
   partition, ket 1's CI never occupying active orbital 0 and virtual 0's B
