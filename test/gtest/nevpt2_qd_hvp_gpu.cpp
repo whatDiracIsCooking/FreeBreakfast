@@ -628,13 +628,16 @@ TEST_P(Nevpt2QdHvp, BarsMatchRichardsonLadder) {
 // h8_sto3g_sa3, every path. h6_631g_sa2 (CAS(2,3): Srs a one-function
 // class) and h2co_ccpvdz_sa2 (CAS(4,3): Sij), along kQdSmooth's random-seed
 // paths, carry the one-function classes h8's CAS(4,4) does not.
-// h2co_skew_ccpvdz_sa3 is not here: its bars repeat run to run only to
-// ~1e-9 (#1055), so a ladder of them at t <= 1e-3 floors above 1e-7 (c_0's
-// transition (1, 2) bars settle at 5.6e-7 at the coarsest rung), and along
-// B, at the general W and at kQdSmooth's eigen seed alike, root 2's
-// near-guard tuples (own norms near 1e-12) put a pole within the ladder's
-// reach: no rung down to 2e-6 settles (README, "The SC-QD Hessian-vector
-// product"). h2co_ccpvdz_sa2's B populates its empty tuples, whose bars
+// h2co_skew_ccpvdz_sa3 is not here (#1055; README, "The SC-QD reverse
+// pass", Conditioning). Root 2's Si tuples have norms of 2e-7 to 7e-7, and
+// their bars carry each walk's round-off times 1/N: the transition bars
+// repeat only to ~1e-9 of their largest element, so a ladder's central
+// difference at t is floored near 1e-9 / t, at least 1e-6 for t <= 1e-3 (c_0
+// moves the (1, 2) transitions only through ε: they settle at 1.9e-6 to
+// 2.5e-6, at the coarsest rung pair, every other field under 3e-8). Along
+// B the same tuples have N / |Ṅ| of 5e-4 to 8e-4, so the ladder's coarse
+// rungs reach the norm's near-zero (no Taylor regime there; root 2's fields
+// end at 4.7e-4 to 3e-3), and its fine rungs are floored: no window. h2co_ccpvdz_sa2's B populates its empty tuples, whose bars
 // jump at the guard: Nevpt2QdHvpEmpty checks it through the energy.
 INSTANTIATE_TEST_SUITE_P(
     Cases, Nevpt2QdHvp,

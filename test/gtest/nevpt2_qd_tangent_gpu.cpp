@@ -2,8 +2,9 @@
 // effective Hamiltonian's forward tangent, against qd_sc_adjoint's bars by
 // duality: along a block of random tangents of (h, B, every root's c), each
 // column's Σ_MN W_MN Ċ_MN must be <h̄, ḣ> + <Λ, Ḃ> + Σ_r <y_r, ċ_r> to 1e-10
-// of the largest of those summands (1e-9 on h2co_skew_ccpvdz_sa3, below), at a general symmetric W (off-diagonal,
-// trace != 1, a negative entry). qd_sc_adjoint is ladder-validated
+// of the largest of those summands (on h2co_skew_ccpvdz_sa3, to the column's
+// conditioning floor where that is larger, below), at a general
+// symmetric W (off-diagonal, trace != 1, a negative entry). qd_sc_adjoint is ladder-validated
 // (nevpt2_gradient_gpu.cpp's Nevpt2QdAdjoint), so duality proves the
 // tangent; no ladder of qd_sc_energy is run here.
 //
@@ -57,11 +58,21 @@ namespace nevpt2 = free_breakfast::nevpt2;
 
 // The issue's duality bar, relative to the column's largest summand.
 constexpr double kDuality = 1e-10;
-// h2co_skew_ccpvdz_sa3's: its qd_sc_adjoint bars repeat run to run only to
-// 9e-10 of their largest element (src/nevpt2/energy/README.md, "The SC-QD
-// reverse pass", Conditioning: root 2's tuples with own norms near 1e-12),
-// so the oracle's floor, to one figure, is the bar there.
-constexpr double kSkewDuality = 1e-9;
+// The conditioning floor (src/nevpt2/energy/README.md, "The SC-QD reverse
+// pass", Conditioning; #1055). The tangent and qd_sc_adjoint each walk the
+// tables N, H, T (and Ṅ, Ḣ) afresh, and einsum's atomics put an absolute
+// round-off σ on each, different in the two walks. So the duality misses by
+// up to 2 Σ_IJ |W_IJ| Σ_t Σ_x |∂Ċ^t_IJ / ∂x| σ_x over the finish's (N, d)
+// form, read off the tangent's own tables. σ_x is kMixedPrecision absolute
+// in Sr, Si and Sir, whose norm and H are three einsums of mixed RDM order
+// that cancel: one unit round-off of their O(1) terms (measured: at most
+// 4e-17); and kSinglePrecision |x| in the others (measured: at most 3 ε |x|).
+// It is a worst-case sum, printed for every case; h2co_skew_ccpvdz_sa3's bar
+// is it (never under kDuality), since root 2's Si tuples (N 2e-7 to 7e-7,
+// |Ṅ| / N up to 5e5 along its own c) put it at 1e-8 to 1e-7 of the largest
+// summand, where its misses run; the other cases are held to kDuality.
+constexpr double kMixedPrecision = 0.5 * std::numeric_limits<double>::epsilon();
+constexpr double kSinglePrecision = 4.0 * std::numeric_limits<double>::epsilon();
 // The visibility rule: a part above this many bars in some column.
 constexpr double kVisible = 10.0;
 // Between the tangent's elements and qd_sc_adjoint's: the same inputs, the
@@ -321,7 +332,7 @@ std::vector<double> general_w(const std::size_t n) {
 constexpr std::array<std::string_view, 4> kParts{"whole", "ket", "bra", "digest"};
 
 // The duality on @p name, the tangent walked in batches of @p batch.
-void expect_duality(const std::string &name, const std::int32_t batch, const double duality) {
+void expect_duality(const std::string &name, const std::int32_t batch, const bool floored) {
   const Point p = sa_casscf(name);
   ASSERT_FALSE(p.b.empty());
   fb::DeviceResources res(0);
@@ -519,6 +530,59 @@ void expect_duality(const std::string &name, const std::int32_t batch, const dou
       download(res, adj->lambda.data(), static_cast<std::size_t>(p.naux) * nmo * nmo);
   const std::vector<double> y = download(res, adj->y.data(), p.vectors.size());
 
+  // Column u's conditioning floor: twice Σ |W| |∂Ċ/∂x| σ_x over the kept
+  // tuples of every class finished in the (N, d) form (Sijrs has no tables;
+  // a one-function class, Srs at two active electrons or Sij at two active
+  // holes, reads η and divides by no norm).
+  const std::size_t mm = kParts.size() * m;
+  const auto floor_of = [&](const std::size_t u) {
+    double sum = 0.0;
+    for (std::size_t q = 0; q < n2; ++q) {
+      const nevpt2::ClassEnergiesTangent &kt = got->kets[q % nroots];
+      for (std::size_t k = 0; k < kClassNames.size(); ++k) {
+        if (kClassNames[k] == std::string_view{"Sijrs"} ||
+            (kClassNames[k] == std::string_view{"Srs"} && p.nelecas == 2) ||
+            (kClassNames[k] == std::string_view{"Sij"} && (2 * p.ncas) - p.nelecas == 2)) {
+          continue;
+        }
+        const bool mixed = k == 0 || k == 1 || k == 7;
+        const auto sigma = [&](const double x) {
+          return mixed ? kMixedPrecision : kSinglePrecision * std::abs(x);
+        };
+        for (std::size_t t = 0; t < kt.norm[k].size(); ++t) {
+          const double n = kt.norm[k][t];
+          if (std::abs(n) <= 1e-14) {
+            continue;
+          }
+          const double hh = kt.h[k][t];
+          const double delta = kt.delta[k][t];
+          const double tt = got->transition[q][k][t];
+          const std::size_t at = (t * mm) + u;
+          const double t_dot = got->transition_dot[q][k][at];
+          const double n_dot = kt.norm_dot[k][at];
+          const double h_dot = kt.h_dot[k][at];
+          const double delta_dot = kt.delta_dot[k][at];
+          const double d = (n * delta) + hh;
+          const double d2 = d * d;
+          const double d3 = d2 * d;
+          // Ċ = -(N/d) Ṫ - (T H/d²) Ṅ + (T N/d²) Ḣ + (T N²/d²) Δ̇, by N, H, T,
+          // Ṅ and Ḣ.
+          const double by_n = (-t_dot * hh / d2) + (2.0 * tt * hh * delta * n_dot / d3) +
+                              (tt * h_dot * (hh - (n * delta)) / d3) +
+                              (2.0 * tt * n * hh * delta_dot / d3);
+          const double by_h = (t_dot * n / d2) + (tt * n_dot * (hh - (n * delta)) / d3) -
+                              (2.0 * tt * n * h_dot / d3) - (2.0 * tt * n * n * delta_dot / d3);
+          const double by_t = ((n * h_dot) - (hh * n_dot) + (n * n * delta_dot)) / d2;
+          sum += std::abs(w[q]) *
+                 ((std::abs(by_n) * sigma(n)) + (std::abs(by_h) * sigma(hh)) +
+                  (std::abs(by_t) * sigma(tt)) + (std::abs(tt * hh / d2) * sigma(n_dot)) +
+                  (std::abs(tt * n / d2) * sigma(h_dot)));
+        }
+      }
+    }
+    return 2.0 * sum;
+  };
+
   // Column u's Σ W Ċ for part @p k.
   const auto weighted = [&](const std::size_t k, const std::size_t u) {
     return dot(w, got->total_dot[(k * m) + u]);
@@ -536,15 +600,16 @@ void expect_duality(const std::string &name, const std::int32_t batch, const dou
     for (const double x : summands) {
       scale = std::max(scale, std::abs(x));
     }
-    const double bar = duality * scale;
+    const double floor = floor_of(u);
+    const double bar = floored ? std::max(kDuality * scale, floor) : kDuality * scale;
     bars.push_back(bar);
     const double tangent = weighted(0, u);
     EXPECT_LE(std::abs(tangent - predicted), bar)
         << name << " " << cols[u].name << ": Σ W Ċ " << tangent << ", <bars, u> " << predicted;
     std::cout << std::format("[ nevpt2   ] qd tangent {} batch {} {}: Σ W Ċ {:+.12e}, <bars, u> "
-                             "{:+.12e}, miss / largest summand {:.2e}\n",
+                             "{:+.12e}, miss / largest summand {:.2e}, floor {:.2e}\n",
                              name, batch, cols[u].name, tangent, predicted,
-                             std::abs(tangent - predicted) / scale);
+                             std::abs(tangent - predicted) / scale, floor / scale);
     for (std::size_t k = 1; k < kParts.size(); ++k) {
       visible[k] = std::max(visible[k], std::abs(weighted(k, u)) / bar);
     }
@@ -601,7 +666,7 @@ void expect_duality(const std::string &name, const std::int32_t batch, const dou
 }
 
 class Nevpt2QdTangent
-    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t, double>> {};
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t, bool>> {};
 
 // h8_sto3g_sa3 and h2co_skew_ccpvdz_sa3 whole; h2co_ccpvdz_sa2, the case
 // with guarded tuples, in batches of four (29 virtuals: a partial last
@@ -610,19 +675,19 @@ class Nevpt2QdTangent
 TEST_P(Nevpt2QdTangent, DualToQdScAdjoint) {
   FBF_REQUIRE_GPU();
   FBF_FAMILY_REPRESENTATIVE("h8_sto3g_sa3");
-  const auto [name, batch, duality] = GetParam();
+  const auto [name, batch, floored] = GetParam();
   if (name == "h2co_skew_ccpvdz_sa3") {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  expect_duality(name, batch, duality);
+  expect_duality(name, batch, floored);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    Cases, Nevpt2QdTangent,
-    ::testing::Values(std::tuple{std::string{"h8_sto3g_sa3"}, 0, kDuality},
-                      std::tuple{std::string{"h2co_ccpvdz_sa2"}, 4, kDuality},
-                      std::tuple{std::string{"h2co_skew_ccpvdz_sa3"}, 0, kSkewDuality},
-                      std::tuple{std::string{"h2nb_sto3g_cas23_sa2"}, 0, kDuality}),
-    [](const auto &info) { return std::get<0>(info.param); });
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdTangent,
+                         ::testing::Values(std::tuple{std::string{"h8_sto3g_sa3"}, 0, false},
+                                           std::tuple{std::string{"h2co_ccpvdz_sa2"}, 4, false},
+                                           std::tuple{std::string{"h2co_skew_ccpvdz_sa3"}, 0, true},
+                                           std::tuple{std::string{"h2nb_sto3g_cas23_sa2"}, 0,
+                                                      false}),
+                         [](const auto &info) { return std::get<0>(info.param); });
 
 } // namespace
