@@ -2422,6 +2422,12 @@ constexpr double kQdEpsilonTolerance = 1e-10;
 // 0.000 -1.000 -13037, a step); a random diagonal W (measured, not kept)
 // was not smooth along the eigenvector seed's failing paths either. Every
 // case's c_0 ladders at both seeds, and h8_sto3g_sa3 along every path.
+// These are E[W]'s ladders, of its first derivatives: they do not say where
+// the bars' own ladder (the SC-QD Hessian-vector product's) is smooth. On
+// h2co_skew_ccpvdz_sa3 it is nowhere (#1055): root 2's Si tuples (N 2e-7 to
+// 7e-7) floor its bars' repeat near 1e-9 of their largest element, and
+// along B their N / |Ṅ| of 5e-4 to 8e-4 is inside the ladder's steps
+// (nevpt2_qd_hvp_gpu.cpp, beside its case list).
 const std::map<std::string, std::string, std::less<>> kQdSmooth{
     {"h2co_ccpvdz_sa2", "eigen:h eigen:B eigen:C eigen:c_0 eigen:c_1 random:c_0 random:c_1"},
     {"h2co_ccpvdz_sa2_weighted", "eigen:h eigen:B eigen:c_0 eigen:c_1 random:c_0 random:c_1"},

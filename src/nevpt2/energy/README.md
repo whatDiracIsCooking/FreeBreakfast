@@ -1156,14 +1156,56 @@ a class walks; or, in part 3, one state's full `BlockBars` and blocks, as
 24 MB. The host tables are three doubles per perturber per class per state.
 
 **Conditioning.** The bars inherit the coupling's: a perturber whose own
-norm N^J is small (1e-12 on the H₂CO and H₈-ring cases) has a Rayleigh
-quotient H^J / N^J that round-off moves, and the transition numerator T_IJ
-does not shrink with N^J. `h2co_skew_ccpvdz_sa3`'s bars repeat run to run to
-9e-10 of their largest element, `h8_ring_sto3g_sa3`'s to 3e-8, 2e-8 already
-at n = 1 (`class_energies_adjoint`'s own arithmetic); `h8_sto3g_sa3`'s to
-3e-13 (RTX 3080). Along raw B, h or RDM directions the energy is not smooth
-at a finite-difference ladder's scale on five of the six cases, one state
-alone included; the orbital energies move Δ alone and are.
+norm N^J is small has a Rayleigh quotient η = H^J / N^J whose derivative,
+η̇ = (Ḣ − η Ṅ) / N, is large, and the transition numerator T_IJ does not
+shrink with N^J as fast as the 1/N grows. `h8_ring_sto3g_sa3`'s bars repeat
+run to run to 3e-8 of their largest element, 2e-8 already at n = 1
+(`class_energies_adjoint`'s own arithmetic); `h8_sto3g_sa3`'s to 3e-13
+(RTX 3080). Along raw B, h or RDM directions the energy is not smooth at a
+finite-difference ladder's scale on five of the six cases, one state alone
+included; the orbital energies move Δ alone and are.
+
+**`h2co_skew_ccpvdz_sa3`'s floor (#1055).** Its bars repeat only to ~1e-9
+of their largest element, and #954's duality on it missed by up to 3.7e-8
+(RTX 3080). Measured on both cards (`--preset default` and `hip`, one saved
+SA-CASSCF point re-read in each process, card held), the source is:
+
+- **Not the point moving.** Three in-process repeats at one point spread
+  the c_2 column's miss over 3.4e-9 to 3.7e-8 (RTX 3080) and 5.0e-9 to
+  1.7e-8 (gfx1200). The tables of a run at `conv_tol_grad` 1e-9 match the
+  loose ones to seven figures, and the spread is the same (up to 3.0e-8).
+- **Not the near-guard tuples.** Root 2's smallest kept norms (3.6e-13 to
+  3.4e-12, Sijr, Srsi and the one-function Sij) repeat to 1e-16 relative.
+  With the guard raised to 1e-8 (145 tuples dropped, in the tangent and
+  the adjoint alike), the spread is unchanged (3.3e-8). At 1e-6 it falls
+  to 2e-13.
+- **Root 2's Si tuples, through the atomics.** With W's entries one at a
+  time, only the couplings with ket 2 spread ((0, 1) repeats to 1e-13), and
+  among the tangent's per-class Ċ only Si's does: tuples t0, t3 and t4, N
+  6.6e-7, 2.0e-7 and 6.6e-7, with |Ṅ| / N up to 4.7e5 along root 2's c and
+  η̇ to −1.1e6. Si's norm and H are three einsums of mixed RDM order
+  (dm3_h, dm2_h, dm1_h) whose O(0.1) terms cancel to N, and einsum's
+  atomics reassociate them, so each walk carries an absolute σ ≤ 4.2e-17 on
+  N and H (Sr and Sir alike; every other class repeats to ≤ 3 ε relative).
+  That is 1.4e-10 of N at t3. The tangent and the adjoint each walk the
+  tables afresh, so through η̇ they evaluate the coupling's first
+  derivative at two points 1e-10 apart in N: Ċ's Si share moves by 5e-10
+  to 2e-9 per coupling, as measured, and the adjoint's root-2 CI bar y_2
+  by 2e-9 to 8e-9 of 2.7 (roots 0 and 1: 3e-11).
+
+So it is a floor, not a defect. The derivative is ill-conditioned at this
+point, and a deterministic reduction would only make the two walks agree at
+the same perturbed tables. The bound is first-order: the duality misses by
+at most 2 Σ_IJ |W_IJ| Σ_t Σ_x |∂Ċ^t_IJ / ∂x| σ_x over x = N, H, T, Ṅ, Ḣ of
+the finish's (N, d) form, with σ_x one unit round-off (ε/2) absolute in Sr,
+Si and Sir and 4 ε |x| in the others. `Nevpt2QdTangent` computes it from the
+tangent's own tables and holds skew to it (never under 1e-10). At the saved
+point it is 1.5e-7 along c_2 (misses up to 3.7e-8 RTX 3080 and 1.7e-8
+gfx1200), 1.4e-8 along all (4.2e-9, 1.9e-9), 5.6e-9 along B (1.3e-9,
+1.4e-9) and 1.6e-9 along h (3.7e-10, 3.9e-10). Along c_1 it is
+1.5e-10, along c_0 under 1e-10, and the misses there are at most 4.4e-11. Any SC-QD consumer reading
+skew's root-2 bars (the QD Hessian, #965) inherits the same ~1e-8 relative
+floor.
 
 **A known limitation of SC, not a defect.** Park (JCTC 2019,
 doi:10.1021/acs.jctc.9b00919; arXiv:1907.10180) finds SC-NEVPT2's analytic
@@ -1885,16 +1927,16 @@ three `data/qd_nevpt2/` cases: the chain from (h, B, c) built as
 root's c alone, then all), each column's Σ W_MN Ċ_MN against
 `qd_sc_adjoint`'s ⟨h̄, ḣ⟩ + ⟨Λ, Ḃ⟩ + Σ_r ⟨y_r, ċ_r⟩ at a general symmetric W
 (off-diagonal, trace ≠ 1, a negative entry), relative to the largest
-summand: 1e-10 on `h8_sto3g_sa3` (fast-tier representative) and
-`h2co_ccpvdz_sa2` (C₂ᵥ, 4364 guarded tuples, walked in fours), and 1e-9 on
-`h2co_skew_ccpvdz_sa3` (slow tier), whose adjoint repeats only to 9e-10
-(Conditioning, above). Each part (the transitions' ket side, their bra
+summand: 1e-10 on `h8_sto3g_sa3` (fast-tier representative),
+`h2co_ccpvdz_sa2` (C₂ᵥ, 4364 guarded tuples, walked in fours) and
+`h2nb_sto3g_cas23_sa2`. On `h2co_skew_ccpvdz_sa3` (slow tier) each column is
+held to its conditioning floor where that is larger, computed from the
+tangent's tables (Conditioning, above, #1055); the floor is printed for
+every case. Each part (the transitions' ket side, their bra
 side, the diagonal's digests at the dotted (tu|vw)) is a direction of its
 own and must exceed ten bars in some column. Measured on the gfx1200: ≤ 7.6e-15,
-≤ 4.1e-12 and ≤ 1.1e-10 (skew, along c_2); every part ≥ 5e8 bars. On the
-RTX 3080 the skew case misses its 1e-9 bar in two of three runs (up to
-3.7e-8 along c_2, the CASSCF's loose point moving run to run), #1055's
-floor. The guarded tuples' Ṫ: on `h2co_ccpvdz_sa2` the same tuples are
+≤ 4.1e-12 and ≤ 1.1e-10 (skew, along c_2); every part ≥ 5e8 bars. Skew's
+misses against its floor, on both cards, are in Conditioning above. The guarded tuples' Ṫ: on `h2co_ccpvdz_sa2` the same tuples are
 empty for both roots, so it vanishes at first order; on
 `h2nb_sto3g_cas23_sa2` (`data/qd_nevpt2/`, geometry only: C₂ᵥ H₂NB STO-3G
 CAS(2,3), two roots of the CASCI over the RHF's orbitals, since this
@@ -1920,11 +1962,14 @@ The SC-QD Hessian-vector product, `test/gtest/nevpt2_qd_hvp_gpu.cpp`:
   off-diagonal part, Eq. qd-scfinish's off-diagonal terms, and at its
   diagonal, the 3 x 3, each above ten bars in some field. Measured on the
   RTX 3080: worst 5.2e-10 (h8), 1.1e-9 (h6), 7.9e-9 (h2co); parts ≥ 1.8e5
-  bars. Not `h2co_skew_ccpvdz_sa3`: its bars repeat only to ~1e-9 (#1055),
-  which over t floors the ladder above 1e-7 (c_0's transition (1, 2)
-  fields settle at 5.6e-7, at the coarsest rung), and along B root 2's
-  near-guard tuples put a pole within reach (no rung to 2e-6 settles, at
-  the general W and at kQdSmooth's eigen seed alike). Nor
+  bars. Not `h2co_skew_ccpvdz_sa3`, which ladders along no path at 1e-7
+  (#1055; Conditioning, above). Its bars repeat only to ~1e-9, which floors
+  a central difference at t near 1e-9 / t. Along c_0, which moves the (1, 2)
+  transitions only through ε, those fields settle at 1.9e-6 to 2.5e-6, at
+  the coarsest rung pair, and every other field is under 3e-8 (RTX 3080).
+  Along B, root 2's Si tuples have N / |Ṅ| of 5e-4 to 8e-4, inside the
+  ladder's steps: the coarse rungs reach the norm's near-zero, and root 2's
+  fields end at 4.7e-4 to 3e-3. Nor
   `h2co_ccpvdz_sa2`'s B: it populates the empty tuples, whose bars jump as
   their norms cross the guard (Λ's extrapolants settle at 3e-5, then grow).
 - `Nevpt2QdHvpEmpty.CouplingK6MatchesTheEnergysSecondDifference` (slow
