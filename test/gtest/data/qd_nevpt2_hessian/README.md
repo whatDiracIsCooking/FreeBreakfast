@@ -421,7 +421,8 @@ none of them, and `ScEffectiveHamiltonianTangent::empty` lists none.
 no norm-guarded tuple empty for one ket and populated for the other. On the
 same molecule, CAS(2,3) over σ, p and π* has them in Srsi, a class of three
 functions. There the tree's SA-CASSCF and PySCF's converge to different
-stationary points (roots 1.1e-3 Eh apart), so it is not written.
+stationary points (roots 1.1e-3 Eh apart), so it is not written. Its
+Srsi tuples are linear anyway: see "The search for an SC ρ refusal" below.
 
 ### Keys (`h2nb_sto3g_sa2.json`)
 
@@ -468,6 +469,75 @@ tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h2nb_sto3g_sa2   # GPU, seconds
 
 The analysis runs on one BLAS thread and is byte-identical on a rerun. The
 ladders reproduce to their noise.
+
+### The search for an SC ρ refusal (#1064): none found
+
+`h2nb_sto3g_sa2`'s SC expected-refusal set is empty, so the "exactly the
+expected-refusal blocks" checks of #959, #962 and #965 show only that
+nothing is refused falsely. #1064 looked for a physical case where SC's
+off-diagonal failure (`docs/nevpt2/nevpt2.tex`, Eq. qd-scfail) should fire.
+It found none. The constructed-input refusal test of #962
+(`Nevpt2QdHvpEmpty` in `test/gtest/nevpt2_qd_hvp_gpu.cpp`) remains the
+only coverage of that refusal.
+
+**What a case needs.** All three of:
+
+1. A tuple empty for ket N by symmetry and populated for bra M, in a class
+   of several functions. Sij at two active holes and Srs at two active
+   electrons are one-function classes: their quotient is η in every
+   direction, so C_MN is linear.
+2. A Rayleigh quotient ρ_t(q) of ∂_qΦ^N_t that differs between two
+   coordinates of the coupling irrep. A planar XY₂ has only one b2
+   vibration, so it cannot qualify. With the roles swapped (empty bra) the
+   term is linear.
+3. An SA-CASSCF that stays at the symmetric point, with inactive pairs
+   apart.
+
+**The screen.** Each candidate is a `COUPLING_CASES`-shaped entry: frontier
+active space, two roots at equal weights, cc-pVDZ-JKFIT. It ran through
+`qd_coupling_analysis.py`'s `at_reference`, with PySCF's polished
+SA-CASSCF from the C2v RHF. Recorded per candidate: the polish's least
+orbital-Hessian eigenvalue, which must clear `POLISH_CURVATURE` = 1e-3, and
+the one-sided tuples per class. A candidate with a one-sided tuple in a
+class of several functions then ran the whole `analyse`. The reported ρ
+is H/N of that tuple at s = 1e-3 and 2e-3 along B2 1 and B2 2,
+extrapolated to R0 as ρ(s) + (ρ(s) − ρ(2s))/3.
+
+H₂N–B is `H2NB`. H₂N–Al copies its shape with Al–N 1.75 Å. The b2
+vibrations are B2 1 and B2 2. Every one-sided tuple of a class of several
+functions is empty for 1B2 (ket 1).
+
+| candidate (STO-3G but where noted) | active (irreps) | one-sided tuples | least orbital-Hessian eigenvalue; inactive gaps (core, virtual) | ρ at R0, B2 1 / B2 2 (relative difference) | verdict |
+|---|---|---|---|---|---|
+| H₂NB CAS(2,2) | a1, b2 | Srs 10, Sij 24 | 0.070; 0.072, 0.147 | — | one-function classes only |
+| H₂NB CAS(2,3) | a1, b2, b1 | Srsi 4, Srs 9 | 0.020; 0.071, 0.146 | 0.3039808960 / 0.3039808960 (1.7e-10) | ρ constant: linear (Ṫ 4.9e-7, 1.2e-6) |
+| H₂NB CAS(2,4) | a1, b2, b1, a1 | Srsi 2, Srs 4 | 7.6e-3; 0.071, 0.185 | 0.3087984664 / 0.3087984664 (2.8e-10) | ρ constant: linear (Ṫ 2.0e-7, 5.5e-7) |
+| H₂NB CAS(2,5) | a1, b2, b1, a1, b2 | Srsi 1, Srs 1 | **5.9e-4**; 0.071, one virtual | 0.3088984136 / 0.3088984136 (1.0e-10) | soft orbital mode, and ρ constant |
+| H₂NB CAS(4,4) | b1, a1, b2, b1 | none | 2.3e-3; 0.27, 0.19 | — | no one-sided tuple |
+| H₂NB CAS(4,5) | b1, a1, b2, b1, a1 | — | polish stalls at \|g\| 7.6e-5; CASCI 1.8e-7 off it | — | no stationary point reached |
+| H₂NB CAS(6,5) | a1, b1, a1, b2, b1 | none | 0.021; 0.41, 0.16 | — | no one-sided tuple |
+| H₂NB 6-31G CAS(4,3) | b1, a1, b2 | Sij 11 | 3.9e-3; 0.27, **3.8e-3** | — | one-function class only; virtuals near-degenerate |
+| H₂NAl CAS(2,3) | a1, b2, b1 | Srsi 7, Srs 9 | 3.7e-3; **2.5e-4**, 0.10 | 0.1417995473 / 0.1417995472 (4.1e-10) | ρ constant; core near-degenerate |
+| H₂NAl CAS(4,4) | b1, a1, b2, b1 | none | 0.010; 6.8e-4, 0.22 | — | no one-sided tuple |
+
+**Why it fails.** Every candidate whose one-sided tuples lie in a class of
+several functions (Srsi each time) falls under nevpt2.tex's
+parallel-derivatives exception. At s = 1e-3, ρ already agrees between B2 1
+and B2 2 to 6e-8 to 1.2e-7, and that difference is its s² term. Extrapolated to
+R0, ρ agrees to 1e-10 to 4e-10. Then C_MN is bilinear, like
+`h2nb_sto3g_sa2`'s Sij, and nothing should be refused. Adding a second a1
+active orbital (CAS(2,4)) or a second b2 one (CAS(2,5)) does not change
+that. With four or more active electrons the one-sided tuples go away
+entirely. The tangents are also small, 5.7e-8 to 1.2e-6. The SA-CASSCF
+stability of the CAS(2,3) point (the bistability #962 met) therefore
+decides nothing and was not rechecked. The orbital Hessian above is
+PySCF's at fixed CI, so a positive value does not rule out an orbital-CI
+saddle.
+
+#1058's earlier rejects still stand: H₂CO (A1/A2, no a2 vibration),
+vinylidene and cis-diazene (relax below C2v), H₄ CAS(2,2) (the B2 root's
+`df_gradient` `pcg_solve` failure), and H₂NB cc-pVDZ (two virtuals of A1
+and B2 8.7e-4 Eh apart).
 
 ## The C2v A1/B2 whole Hessians (#1093)
 
