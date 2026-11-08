@@ -218,6 +218,16 @@ sc_couplings_tangent(DeviceResources &res, const MoBlocks &blocks,
                      std::span<const EnergyInputs> pairs, int64_t n, int32_t batch,
                      std::span<const EnergyDirection> directions);
 
+/// @brief The SC-QD Hessian-vector product of n states, as
+/// sc_effective_hamiltonian_hvp documents (reverse.cpp's). Nothing is
+/// validated: the caller has.
+Result<ScEffectiveHamiltonianHvp> sc_couplings_hvp(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs, int64_t n,
+    std::span<const double> hbar, int32_t batch, std::span<const EnergyDirection> directions,
+    std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t, int64_t, int64_t, const EnergyBars &)> &transition,
+    std::span<const EnergyDirection> partners);
+
 /// @brief The PC class walk of n states over @p pairs, as sc_couplings is
 /// SC's: per ordered pair each class's ⟨I|V|Ψ_J⁽¹⁾⟩ and ket J's dropped
 /// count, as pc_effective_hamiltonian documents, at [I n + J], and

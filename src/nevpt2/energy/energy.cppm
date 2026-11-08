@@ -554,6 +554,87 @@ sc_effective_hamiltonian_tangent(DeviceResources &res, const MoBlocks &blocks,
                                  std::span<const EnergyInputs> pairs, int32_t batch,
                                  std::span<const EnergyDirection> directions);
 
+/// @brief sc_effective_hamiltonian_hvp's result: the matrix it walked, and
+/// per direction what the kets' empty tuples took.
+struct ScEffectiveHamiltonianHvp {
+  /// @brief The n² elements, as sc_effective_hamiltonian computes them.
+  std::vector<ClassEnergies> elements;
+  /// @brief [u][J][k]: ket J's empty tuples (|N^J| <= 1e-14) direction u
+  /// populates, each given K6 on its own tables and in every coupling with
+  /// ket J.
+  std::vector<std::vector<std::array<int64_t, 8>>> populated;
+  /// @brief [u]: the largest of ClassEnergiesHvp::defect over the kets, on
+  /// (u, its partner); 0 with no partner.
+  std::vector<double> defect;
+  /// @brief [u]: the same ρ_τ weighted by the tuple's share of a coupling's
+  /// first-order scale, max(|Ṫ_u|, |Ṫ_v|) / |Δ + η| against the largest over
+  /// the coupling's tuples, the largest over every coupling (I, J), I != J;
+  /// 0 with no partner.
+  std::vector<double> coupling_defect;
+  /// @brief [u]: K6's share of ⟨u, HVP u⟩ through the couplings,
+  /// Σ_{I != J} H̄_IJ (T̄ T^{uu} - ρ η T̄² N^{uu} + ρ T̄² H^{uu}) over ket J's
+  /// tuples empty for bra I too that u populates; what a check of the
+  /// product sees of it.
+  std::vector<double> coupling_k6;
+};
+
+/// @brief The Hessian-vector product of L = Σ_IJ H̄_IJ H_IJ in its inputs,
+/// forward over sc_effective_hamiltonian_adjoint: along each of m
+/// directions, the tangent of every bar that reverse pass forms.
+/// class_energies_hvp is its n = 1, H̄ = 1, Sijrs's kernel and all.
+///
+/// @p pairs and @p hbar are sc_effective_hamiltonian_adjoint's, @p directions
+/// sc_effective_hamiltonian_tangent's (m n², [u n² + I n + J]). @p bars holds
+/// m n EnergyBars, [u n + J] direction u's as that reverse pass's bars[J]:
+/// the shared fields' bars one pointer within each u (checked). Each ordered
+/// pair's transition bars' tangent is handed to @p transition(u, bra, ket,
+/// bars), dm1, dm2 and dm3 alone set, as the reverse pass hands its own
+/// (device buffers on res.stream(), freed after the call); null: not formed.
+/// @p partners is none or m n², pair entries as @p directions'.
+///
+/// Per tuple, the coupling g = -T N / d (d = N Δ + H, the ket's) and the
+/// diagonal (g at T = N) are differentiated twice in the (N, d) form
+/// (docs/nevpt2/nevpt2.tex Eq. qd-scfinish): the multipliers' tangent times
+/// sc_effective_hamiltonian_tangent's (Ṫ, Ṅ, Ḣ, Δ̇), through one reverse
+/// pass at those multipliers; the T bars split ½/½ onto (M, N)'s and (N,
+/// M)'s norm einsums, the kets' own tables collecting from every bra. The
+/// bars at fixed multipliers are then differenced along each direction,
+/// exactly, as class_energies_hvp's are, each pair moved along its own
+/// RDMs' tangent. A one-function class is c = -1 / (Δ + η^J) throughout.
+///
+/// **Empty tuples, on every root.** A tuple a ket's guard drops that a
+/// direction populates (class_energies_hvp's rule, over that ket's tables)
+/// takes K6 in every coupling with that ket, its own diagonal included
+/// (Part I's), whatever H̄ weighs it: T̄ = -1 / (Δ + η) on T, and where the
+/// bra's tuple is empty too, -ρ η T̄² on N and ρ T̄² on H, ρ = T^{uu} /
+/// N^{uu}, the limit along the ray. With @p partners each ket's tuples
+/// both populate are scored as class_energies_hvp scores them, and per bra
+/// by their share of the coupling's first order: past 1e-6 the call is
+/// refused, the coupling's score first (Eq. qd-scfail).
+///
+/// Memory and cost: per direction, n own walks and n(n - 1)/2 pair walks at
+/// fixed multipliers, each seven times; with any empty tuple, Part I's six
+/// tangent calls per ket (twelve with a partner), and six pair walks per
+/// pair whose tuples are empty for both.
+///
+/// @return The elements and the empty tuples' counts and scores;
+///         InvalidConfig as sc_effective_hamiltonian_tangent's, for @p bars not
+///         m n or not sharing one direction's shared bars, or @p partners not
+///         empty or m n²; Numerical, naming the coupling (bra, ket), the class,
+///         the tuple and the directions, when a populated empty tuple with a
+///         first-order transition tangent is not proportional on a pair, or
+///         naming the state, the class and the perturber for the diagonal's
+///         defect; or the tangent's and reverse pass's errors, and
+///         @p transition's.
+[[nodiscard]] Result<ScEffectiveHamiltonianHvp>
+sc_effective_hamiltonian_hvp(DeviceResources &res, const MoBlocks &blocks,
+                             std::span<const EnergyInputs> pairs, std::span<const double> hbar,
+                             int32_t batch, std::span<const EnergyDirection> directions,
+                             std::span<const EnergyBars> bars,
+                             const std::function<Status(int64_t direction, int64_t bra, int64_t ket,
+                                                        const EnergyBars &transition)> &transition,
+                             std::span<const EnergyDirection> partners = {});
+
 /// @brief One perturber function of a PC class, mode k of tuple t in its
 /// ket's eigenbasis: its denominator λ_k + Δ_t and its first-order amplitude
 /// t = y_tk / (λ_k + Δ_t), the weight of the normalized perturber in Ψ⁽¹⁾.

@@ -10,7 +10,9 @@ and their QD effective Hamiltonian ([PC-NEVPT2](#pc-nevpt2),
 ([The SC forward tangent](#the-sc-forward-tangent)) and Hessian-vector
 product ([The SC Hessian-vector product](#the-sc-hessian-vector-product)),
 and PC's forward tangent ([The PC forward tangent](#the-pc-forward-tangent)),
-and SC-QD's ([The SC-QD forward tangent](#the-sc-qd-forward-tangent)),
+and SC-QD's ([The SC-QD forward tangent](#the-sc-qd-forward-tangent)) and
+Hessian-vector product
+([The SC-QD Hessian-vector product](#the-sc-qd-hessian-vector-product)),
 each class walking its
 external index in batches over the density-fitted slabs; the two effective
 Hamiltonians also hand over their amplitudes
@@ -1233,6 +1235,104 @@ direction held: each side's metric tangents (Si's dm3_h, n_act⁶, the
 largest) and the slab tangents' buffer. The host tables are one T and m Ṫ
 per tuple per class per ordered pair.
 
+## The SC-QD Hessian-vector product
+
+    sc_effective_hamiltonian_hvp(res, blocks, pairs, hbar, batch, directions, bars,
+                                 transition, partners = {}) -> ScEffectiveHamiltonianHvp
+        elements          sc_effective_hamiltonian's n² ClassEnergies
+        populated [u][J]  per class, ket J's empty tuples direction u populates (K6's)
+        defect [u]        the kets' ClassEnergiesHvp::defect on (u, its partner)
+        coupling_defect [u]  the same ρ_τ, weighted by the couplings' first order
+        coupling_k6 [u]   K6's share of ⟨u, HVP u⟩ through the couplings
+    directions  sc_effective_hamiltonian_tangent's, m n²
+    bars        m n EnergyBars, [u n + J]: direction u's, as the reverse pass's bars[J]
+    transition  (u, bra, ket, bars): each ordered pair's transition bars' tangent
+    partners    none, or m n², each pair's entry as the directions'
+
+`reverse.cpp`, forward over [the SC-QD reverse pass](#the-sc-qd-reverse-pass),
+for the QD-NEVPT2 nuclear Hessian (#962; `docs/nevpt2/nevpt2.tex` Eq.
+qd-scfinish, the QD analogue of #811's
+[SC Hessian-vector product](#the-sc-hessian-vector-product)); `qd.cpp`
+checks the inputs. Along each direction, the tangent of every bar the
+reverse pass forms: the shared fields' and Λ, each state's own RDMs', and
+each ordered pair's transition dm1–dm3, handed over as the reverse pass
+hands its own. **At n = 1 it is `class_energies_hvp`**, term for term.
+
+**One finish for every coupling, the diagonal included.** The reverse
+pass's bars are Σ over its tables of a multiplier times the table's
+derivative. Per tuple, the coupling with ket N is g = −T N / d,
+d = N Δ + H over ket N's tables, and the diagonal energy is the same g at
+T = N, so a ket's own tables (N, H, Δ) take every coupling with that ket,
+its own among them, and pair {M, N}'s T takes H̄_MN g_T of ket N and H̄_NM
+g_T of ket M, half onto each of its two norm einsums:
+
+    P_N = Σ_I H̄_IN g_N (+ H̄_NN g_T, the I = N coupling's T slot)
+    Q_N = Σ_I H̄_IN g_H,   R_N = Σ_I H̄_IN g_Δ,   T̄_MN = H̄_MN g_T(N) + H̄_NM g_T(M)
+
+These are the reverse pass's multipliers exactly (its A_J's share is
+g_N, g_H and g_Δ). Their tangent is Eq. qd-scfinish's ten second
+derivatives (g_TT = 0) times `sc_effective_hamiltonian_tangent`'s (Ṫ, Ṅ,
+Ḣ, Δ̇), the I = N coupling's Ṫ its Ṅ. On the diagonal that is
+E_NN = 2 g_TN + g_NN and the rest, Eq. finish's 3 x 3 (the host-only
+facts, Euler's three zeros, the rank-one (H, Δ) block and the M = N
+reduction, are identities of these formulas; not gated). A one-function
+class is C = T c, c = −1/(Δ + η^N): c on T, and D̄ = Σ_I H̄_IN T c² on Δ
+and through η^N on the ket's blocks, as the reverse pass puts them; its
+tangent through ċ = c² (Δ̇ + η̇^N). One reverse pass at the tangent
+multipliers takes them onto every bar: `fixed_adjoint` per state, and per
+pair `pair_fixed_adjoint`, the pair walk with a table for its finish, its
+metric bars swept onto the two transition sets.
+
+**The bars at fixed multipliers, differenced.** As at n = 1, every table is
+a polynomial of degree at most six in its inputs, so `kLineWeights`' six
+passes at ±s, ±2s, ±3s are the bars' derivative at fixed multipliers
+exactly: each state's own walk along its own entry, each pair's walk along
+both its entries (its RDMs moved along their own tangents, the shared
+fields and B along the direction's), at the smaller of the two sides'
+steps. The transition bars are differenced with the shared ones and handed
+over pair by pair. Sijrs reads no RDM: its share is `sijrs_hvp`'s at
+Σ_J H̄_JJ.
+
+**Empty tuples, on every root.** A tuple ket N's guard drops (|N^N_t| ≤
+1e-14) that u populates, by Part I's rule over ket N's tables (second
+tables of N and H along u, the population floor against u's scale), takes
+K6 in every coupling with ket N, whatever H̄ weighs it: the multipliers'
+limits along the ray, T̄ = −1/(Δ + η), η = H^{uu}/N^{uu} (the mean of η_u and
+η_v with a partner both populate):
+
+- on the diagonal, Part I's P̄ = 2T̄ + Δ T̄², Q̄ = T̄², at H̄_NN;
+- in coupling (M, N), T̄ on T; and **where the bra's tuple is empty too**, T,
+  N and H are all of second order along u, the coupling is the quadratic
+  form T̄ T^{uu}, and its N and H multipliers have limits, −ρ η T̄² and
+  ρ T̄², ρ = T^{uu}/N^{uu} (T's second table from the pair walk differenced,
+  `pair_second_tables`). Against u, ḡ_T T^{uu} + ḡ_N N^{uu} + ḡ_H H^{uu} =
+  T̄ T^{uu}; `coupling_k6` is that share;
+- where the bra's tuple is populated, T is of first order (Eq. qd-scfail:
+  Ṫ = ⟨Φ^M|∂Φ^N⟩), T/N grows as 1/s, and N's and H's multipliers have no
+  limit: only T̄ on T is formed. What the omitted terms carry reads the
+  tables' third order along the ray, which nothing here forms.
+
+**The refusal, on every model state.** With partners, each ket's empty
+tuples both directions populate are scored twice. Part I's weighted defect,
+ρ_τ w / S over that ket's tables (`defect`, the diagonal case); and per bra
+M, ρ_τ weighted by the tuple's share of coupling (M, N)'s first order,
+max(|Ṫ_u|, |Ṫ_v|) / |Δ + η| against the largest such over ket N's tuples
+(`coupling_defect`). A tuple with a zero transition tangent scores zero
+there, so only a defect with a first-order overlap to some bra counts.
+Either past `kEmptyDefectTolerance` (1e-6) refuses the call, Numerical, the
+coupling's score first: its message names the coupling (bra, ket), the
+class, the tuple and the directions (the block), the diagonal's the state,
+the class and the perturber. Every ket is scored, its H̄ weight zero or
+not: a state W does not weigh still enters through h_PQ.
+
+**Cost.** Per direction, n own walks and n(n − 1)/2 pair walks at fixed
+multipliers, each seven times (one at the tangent multipliers, six
+shifted); with any guarded tuple, Part I's six `class_energies_tangent`
+calls per ket (twelve with a partner), and six pair walks for each pair
+with a tuple empty for both. The forward tangent runs once for every
+direction and partner together. Memory: one pair's two transition sets at
+a time, besides the reverse pass's.
+
 ## The PC reverse pass
 
     pc_class_energies_adjoint(res, blocks, in, batch, bars) -> PcClassEnergiesAdjoint
@@ -1588,7 +1688,7 @@ and per direction the span bar's derivative (d × d) and U̇ (d × m).
 
 PC's Hessian-vector product (#815; what it can rely on at PSB3 is in [The
 conditioning floor](#the-conditioning-floor)), the nuclear Hessians, PC-QD's
-tangent (#960), and the SC-QD reverse pass's tangent (#962). The demo's
+tangent (#960). The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
 ## Tests
@@ -1791,9 +1891,64 @@ summand: 1e-10 on `h8_sto3g_sa3` (fast-tier representative) and
 (Conditioning, above). Each part (the transitions' ket side, their bra
 side, the diagonal's digests at the dotted (tu|vw)) is a direction of its
 own and must exceed ten bars in some column. Measured on the gfx1200: ≤ 7.6e-15,
-≤ 4.1e-12 and ≤ 1.1e-10 (skew, along c_2); every part ≥ 5e8 bars. The
-guarded tuples' Ṫ is printed, not gated: on `h2co_ccpvdz_sa2` the same
-tuples are empty for both roots, so it vanishes at first order (#962).
+≤ 4.1e-12 and ≤ 1.1e-10 (skew, along c_2); every part ≥ 5e8 bars. On the
+RTX 3080 the skew case misses its 1e-9 bar in two of three runs (up to
+3.7e-8 along c_2, the CASSCF's loose point moving run to run), #1055's
+floor. The guarded tuples' Ṫ: on `h2co_ccpvdz_sa2` the same tuples are
+empty for both roots, so it vanishes at first order; on
+`h2nb_sto3g_cas23_sa2` (`data/qd_nevpt2/`, geometry only: C₂ᵥ H₂NB STO-3G
+CAS(2,3), two roots of the CASCI over the RHF's orbitals, since this
+tree's SA-CASSCF there falls off the symmetric saddle run to run onto a
+point 1.0e-4 Eh lower with no empty tuple) 20 tuples are guarded, Srsi's
+empty for one root and populated for the other, and the largest such Ṫ
+must exceed ten bars (#962). Measured on the RTX 3080: 2.3e6 to 3.5e6 bars,
+every column's duality ≤ 3.3e-13.
+
+The SC-QD Hessian-vector product, `test/gtest/nevpt2_qd_hvp_gpu.cpp`:
+
+- `Nevpt2QdHvp.BarsMatchRichardsonLadder`: along one straight line in
+  (h, B, c) per case and path, the product at the line's tangent of the
+  builders' outputs (`qd_builders_tangent`) against central differences of
+  `qd_sc_adjoint`'s builder bars (`QdBuilderBars`), t = 1e-3 / 2^k, k < 10,
+  two-level Richardson, per field the extrapolant that moves least: every
+  field (shared, each state's own RDMs, each transition, Λ) to 1e-7 of its
+  largest element, at a general symmetric W. Every path on `h8_sto3g_sa3`
+  (B the fast-tier representative); B and c_0 on `h6_631g_sa2` (Srs a
+  one-function class) and c_0, c_1 on `h2co_ccpvdz_sa2` (Sij), kQdSmooth's
+  random-seed paths. Visibility, per path: the product along the line's
+  orbital energies alone (Δ̇ and no fixed-multiplier difference) at W's
+  off-diagonal part, Eq. qd-scfinish's off-diagonal terms, and at its
+  diagonal, the 3 x 3, each above ten bars in some field. Measured on the
+  RTX 3080: worst 5.2e-10 (h8), 1.1e-9 (h6), 7.9e-9 (h2co); parts ≥ 1.8e5
+  bars. Not `h2co_skew_ccpvdz_sa3`: its bars repeat only to ~1e-9 (#1055),
+  which over t floors the ladder above 1e-7 (c_0's transition (1, 2)
+  fields settle at 5.6e-7, at the coarsest rung), and along B root 2's
+  near-guard tuples put a pole within reach (no rung to 2e-6 settles, at
+  the general W and at kQdSmooth's eigen seed alike). Nor
+  `h2co_ccpvdz_sa2`'s B: it populates the empty tuples, whose bars jump as
+  their norms cross the guard (Λ's extrapolants settle at 3e-5, then grow).
+- `Nevpt2QdHvpEmpty.CouplingK6MatchesTheEnergysSecondDifference` (slow
+  tier): that B line in the inputs, where 4364 tuples empty for both roots
+  take K6 in every coupling: ⟨u, HVP u⟩ against E[W]'s second difference
+  along it (s = 2.5e-3 / 2^k, k < 10, two-level Richardson; the energy
+  moves by about the guard through it) to 1e-7, and `coupling_k6` above ten
+  of those bars. Measured: 2.0e-8; the couplings' K6 −91.4 of −1963.7,
+  4.7e5 bars.
+- `Nevpt2QdHvpEmpty.OneSidedTupleIsRefusedOnANonProportionalPair`:
+  constructed inputs, `h8_sto3g_sa3`'s MO integrals over a CAS(2,3)
+  partition, ket 1's CI never occupying active orbital 0 and virtual 0's B
+  to the other two active orbitals zeroed, so Srsi's (r₀, r₀, i) tuples are
+  empty for ket 1 and populated for bra 0 (|Ṫ| 2.9e-5). Along a random B
+  direction alone, or with itself as partner, accepted; against a second
+  one, refused, Numerical, naming the coupling (0, 1), Srsi and the
+  directions.
+- `Nevpt2QdHvpEmpty.A1B2FixtureRefusesTheExpectedBlocks` (slow tier):
+  `data/qd_nevpt2_hessian/h2nb_sto3g_sa2.json` (#1058), this tree's
+  SA-CASSCF, `df_sacasscf_cp` and `df_qd_nevpt2_tangents` combined into the
+  fixture's C₂ᵥ coordinates; along every pair of its six vibrations, the
+  other as partner, the refused blocks are exactly its SC expected ones
+  (none). Measured: none refused; b1 populates 114 empty tuples (defects
+  ≤ 1.3e-13), the b2 ones are Sij's, a one-function class.
 
 The PC reverse pass, `Nevpt2PcEnergyAdjoint` and `Nevpt2PcEnergyAdjointLadder`:
 
