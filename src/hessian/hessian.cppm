@@ -628,6 +628,10 @@ struct SaCasscfZTerms {
   /// rows the energy's own. Its dot product with lambda^y in the same layout
   /// is L_xlambda lambda^y, element (x, y).
   Buffers::device<double> lxlambda;
+  /// @brief Lambda^T (z . d2 g_SA / dlambda dlambda) Lambda over the call's k
+  /// columns Lambda, @c mcscf::ThirdDerivative's action: k x k column-major
+  /// on the host, (i, j) = T(lambda_i, lambda_j, z); empty for k = 0.
+  std::vector<double> third;
 };
 
 /// @brief The z terms of a state-averaged DF-CASSCF Lagrangian's analytic
@@ -644,6 +648,8 @@ struct SaCasscfZTerms {
 ///                   Lagrangian's E_cas; none when empty)
 ///                   + I^x z (mcscf::df_integral_derivatives, through
 ///                     ThirdDerivative::apply_integrals)
+///     third       = Lambda^T ThirdDerivative(z).apply(Lambda), over @p k
+///                   columns @p lambda (none for k = 0)
 ///
 /// the transition RDMs, and their F^[x], as half the difference of those of
 /// the roots c_r + dc_r and c_r - dc_r, dc_r = d_r + Sum_s Theta_sr c_s.
@@ -661,8 +667,13 @@ struct SaCasscfZTerms {
 /// @c response::zvector's (z_o, z_c, Theta) as it comes (zvector scales its
 /// equations' CI rows, not its unknowns): pairs + n_det nroots doubles, plus
 /// nroots (nroots - 1) / 2 unless every weight is equal (an equal pair's
-/// Theta zero, as zvector leaves it). Its CI part is taken off every root
-/// here.
+/// Theta zero, as zvector leaves it). At all-equal weights a z that carries
+/// them too makes every rotation a parameter (ThirdDerivative's
+/// equal_rotations): a QD-NEVPT2 x_A moves the equal-weight rotations (Eq.
+/// qd-theta), so its L_xlambda's rotation rows and third derivative need
+/// them. Its CI part is taken off every root here. @p lambda is @p k
+/// columns in z's layout (size x k column-major on the device), null for
+/// k = 0.
 ///
 /// The parts run one after another, each freeing what it held: four
 /// @c df_derivatives calls, three @c df_casscf_exy calls, then the derivative
@@ -679,7 +690,8 @@ struct SaCasscfZTerms {
 ///         device, the molecule and the bases do not share their atoms,
 ///         ncore < 0, ncas < 1 or ncore + ncas > nao, fewer than two weights,
 ///         @p rhs_weights neither empty nor one per root, @p roots or @p z
-///         not of their lengths, or for any input a part refuses
+///         not of their lengths, a negative @p k or a null @p lambda with
+///         k > 0, or for any input a part refuses
 ///         (df_derivatives' of @p rhs_weights); or the first error of a part
 ///         (Unsupported for memory, a GpuRuntime error).
 [[nodiscard]] Result<SaCasscfZTerms>
@@ -688,7 +700,8 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
               const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nalpha,
               int32_t nbeta, const Buffers::device<double> &roots, std::span<const double> weights,
-              std::span<const double> rhs_weights, const Buffers::device<double> &z);
+              std::span<const double> rhs_weights, const Buffers::device<double> &z, int32_t k = 0,
+              const double *lambda = nullptr);
 
 /// @brief The multiplier terms of a single-state Lagrangian's Hessian at
 /// given multipliers (Z, z) (docs/nevpt2/nevpt2.tex eq. hess): the three places
@@ -1329,6 +1342,165 @@ struct QdEigenvectorResponse {
     std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
     const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
     int32_t ncore, int32_t ncas, bool pc, int32_t batch = 0, double zvector_tolerance = 1e-10);
+
+/// @brief The SC-QD-NEVPT2 analytic nuclear Hessian and its parts, each k x k
+/// in the call's k coordinates (hartree / bohr^2), column-major, with every
+/// gap it divides by.
+struct QdScNevpt2Terms {
+  /// @brief The parts below summed and symmetrized, (H + H^T) / 2, exactly
+  /// symmetric: d^2 E_P / dq_i dq_j for a state (term (i) + term (ii)), or
+  /// term (i) alone, d^2 E[W] at fixed W, for a weight matrix.
+  std::vector<double> hessian;
+  /// @brief max |H - H^T| of the sum before it was symmetrized.
+  double asymmetry{0.0};
+  /// @brief The translational sum rule, as ScNevpt2Terms::translation.
+  double translation{0.0};
+  /// @brief E_rho = sum_r rho_r E_r's share, rho = diag W, of every place
+  /// it enters: E_xy at the rho-weighted RDMs, its L_Ax x_B + x_A L_xB (the CP
+  /// right-hand side at rho) and x_A (d^2 E_rho / dx dx) x_B (the unreduced
+  /// CI-relaxed Hessian at rho, the rotations among the roots included).
+  std::vector<double> e_sa;
+  /// @brief (Z, z, Theta) . d^2 g_SA / dR dR, the multipliers' L_xy part.
+  std::vector<double> z_lxy;
+  /// @brief I^x z against x^y, both orders, symmetric.
+  std::vector<double> z_lx;
+  /// @brief x_A ((Z, z, Theta) . d^2 g_SA / dx dx) x_B, mcscf::ThirdDerivative's.
+  std::vector<double> z_third;
+  /// @brief The kappa_oo rows, as ScNevpt2Terms::z_koo, at E^corr[W] + Phi^SA's
+  /// orbital source.
+  std::vector<double> z_koo;
+  /// @brief The zeta term's three shares, @ref df_qd_zeta's: L_AB, the L_Ax
+  /// pair, and x_A T_xx x_B.
+  std::vector<double> zeta;
+  /// @brief The skeleton at E^corr[W] + Phi^SA's adjoint, @ref df_adjoint_xy's.
+  std::vector<double> skeleton;
+  /// @brief <t_A, HVP t_B>, nevpt2::qd_sc_hessian_product's product along t_B
+  /// paired with t_A (a pair that both populate an empty tuple with each as
+  /// the other's partner); not symmetrized.
+  std::vector<double> hvp;
+  /// @brief The rotation cross terms, as ScNevpt2Terms::rotation_tau and
+  /// rotation_kappa.
+  std::vector<double> rotation_tau;
+  std::vector<double> rotation_kappa;
+  /// @brief Term (ii), @ref df_qd_eigenvector_response's for the state, in the
+  /// coordinates; empty for a weight matrix.
+  std::vector<double> term_ii;
+  /// @brief max |term (ii)| over max |hessian|; 0 for a weight matrix.
+  double term_ii_share{0.0};
+  /// @brief H_eff's eigenvalues, ascending; the seed W (n x n row-major,
+  /// R_P R_P^T for a state) and rho = diag W.
+  std::vector<double> eigenvalues;
+  std::vector<double> w;
+  std::vector<double> rho;
+  /// @brief Table qd-divisions' gaps (hartree): the smallest |E_Q - E_P|, Q
+  /// != P (infinite for a weight matrix), the smallest CASSCF root gap, the
+  /// ensemble's edge E_{n+1} - E_n (infinite when the active space has no
+  /// further root), and the smallest core-core or virtual-virtual SA-Fock gap.
+  double qd_gap{std::numeric_limits<double>::infinity()};
+  double root_gap{std::numeric_limits<double>::infinity()};
+  double edge_gap{std::numeric_limits<double>::infinity()};
+  double min_gap{std::numeric_limits<double>::infinity()};
+  /// @brief The smallest |Delta_t + H_t / N_t| over every state's kept
+  /// perturbers (d_t / N_t, d_t = N_t Delta_t + H_t; hartree): the
+  /// near-intruder the finish divides by.
+  double min_denominator{std::numeric_limits<double>::infinity()};
+  /// @brief max |theta^x_sr|, max |kappa_oo^x_pq| (per bohr, Cartesian), max
+  /// |zeta_sr| and max |z^c|.
+  double max_theta{0.0};
+  double max_kappa_oo{0.0};
+  double max_zeta{0.0};
+  double max_zc{0.0};
+  /// @brief The CP solve's worst unreduced residual and the Lagrangian's
+  /// Z-vector's true residual.
+  double cp_residual{0.0};
+  double zvector_residual{0.0};
+  /// @brief The largest weighted rho_tau of an accepted pair, ket or
+  /// coupling (0 when no pair of coordinates populates an empty tuple).
+  double defect{0.0};
+  /// @brief The smallest t_mix = 1 / 2 |kappa_oo_pq| over the coordinates
+  /// and the canonical inactive pairs (bohr), as ScNevpt2Terms::mix_step.
+  double mix_step{std::numeric_limits<double>::infinity()};
+};
+
+/// @brief The SC-QD-NEVPT2 analytic nuclear Hessian of QD state @p state
+/// (H_eff's eigenvalues ascending) on the DF-SA-CASSCF @p solution
+/// (docs/nevpt2/nevpt2.tex Eq. qd-hess, Algorithm qdhess): term (i) at
+/// W^P = R_P R_P^T (the W form below) plus term (ii),
+/// @ref df_qd_eigenvector_response's, in the same coordinates (README.md
+/// "The SC-QD-NEVPT2 Hessian").
+///
+/// **Refused before anything runs** (Numerical, naming what): a QD gap
+/// |E_Q - E_P| under mcscf::kRootGapFloor, two CASSCF roots under it, or the
+/// ensemble's edge E_{n+1} - E_n under it (the n + 1-th root of the active
+/// space at the solution's orbitals); @p nfrozen other than 0 (Unsupported:
+/// all-electron only). Then, after the CP solve, as @ref df_sc_nevpt2
+/// refuses: an inactive pair under 1e-6 Eh that a coordinate splits
+/// (@ref df_qd_nevpt2_tangents'), a coordinate that mixes one within 1e-3
+/// bohr, and the pairs of coordinates nevpt2::qd_sc_hessian_product refuses
+/// on any model state's empty tuples (#962's per-block refusal), named
+/// together.
+///
+/// The inputs are @ref df_sc_nevpt2's, @p solution a converged
+/// DF-SA-CASSCF of two roots or more, its core and virtuals canonical in
+/// f^SA, its weights mcscf::sa_gradient_weights'; @p batch is the class
+/// walks'. The memory is the W form's and @ref df_qd_eigenvector_response's,
+/// one after the other.
+///
+/// @return The Hessian, its parts and the gaps; InvalidConfig as
+///         @ref df_sacasscf_cp's inputs, @p state not a QD state, or
+///         coordinates that are not orthonormal rows of 3 n_atom; the
+///         refusals above; or the first error of a part.
+[[nodiscard]] Result<QdScNevpt2Terms>
+df_qd_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+                const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t state,
+                int32_t batch = 0, std::span<const double> coordinates = {}, int32_t nfrozen = 0);
+
+/// @brief Term (i) of the SC-QD-NEVPT2 nuclear Hessian at a fixed symmetric
+/// weight matrix @p w (n x n row-major), d^2 E[W] / dq_i dq_j at fixed W
+/// (docs/nevpt2/nevpt2.tex Eq. qd-hessW): Part I's assembly
+/// (@ref df_sc_nevpt2's, part for part, in the same parametrization and
+/// coordinates) over the state average's Lagrangian at W,
+///
+///     L = E_rho + Z . g_SA + sum_r 2 w_r z_r . (H - E_r) c_r
+///         + sum_{r<s} (2 (w_r - w_s) Theta_sr + zeta_sr) <c_s|H|c_r>
+///         + E^corr[W] + Phi^SA,
+///
+/// the response x_A = (kappa_nr, kappa_oo, xi_r, theta_sr) of
+/// @ref df_sacasscf_cp and @ref df_qd_nevpt2_tangents (every pair's rotation,
+/// Eq. qd-theta's at an equal pair), and the multipliers of
+/// nevpt2::qd_sc_lagrangian's W form:
+///
+///     H = E_rho's (E_xy at rho, its L_Ax pair, x_A H~_rho x_B)
+///       + the multipliers' (df_sacasscf_z's L_xy and I^x z, ThirdDerivative's
+///         x_A T x_B, every rotation a parameter)
+///       + the zeta term (df_qd_zeta) + the kappa_oo rows (closed form)
+///       + Sum h_bar h^AB + Lambda B^AB    (df_adjoint_xy)
+///       + <t_A, HVP t_B>                  (nevpt2::qd_sc_hessian_product)
+///       + the rotation cross terms        (as df_sc_nevpt2's)
+///
+/// rho = diag W must be a mixture, each >= 0 and summing to 1 (E_rho's core
+/// energy at weight 1; a W of any other trace is a sum of these by
+/// linearity). The refusals and the reports are the state form's but the QD
+/// gap (infinite here) and term (ii) (empty).
+///
+/// The parts run one after another, each freeing what it held. Held
+/// throughout: t_i's (h, B, {c_r}) and kappa (k (naux nmo^2 + 2 nmo^2 + n
+/// n_det)), kappa_nr, x_A in the coordinates, and E^corr[W] + Phi^SA's
+/// adjoint (naux nmo^2).
+///
+/// @return The Hessian and its parts; InvalidConfig for a W not n^2 long,
+///         not symmetric to 1e-12 or whose diagonal is no mixture, and the
+///         state form's input refusals; its other refusals; or the first
+///         error of a part.
+[[nodiscard]] Result<QdScNevpt2Terms>
+df_qd_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
+                std::span<const double> w, int32_t batch = 0,
+                std::span<const double> coordinates = {}, int32_t nfrozen = 0);
 
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}

@@ -67,7 +67,12 @@ equal weights E_SA is invariant to those rotations and they are not
 parameters. At weights equal for some pairs only (0.4, 0.4, 0.2) every
 pair's is one, the equal pair's too: E_SA's gradient along it is zero, but
 its third derivatives along it are not, and a QD-NEVPT2 Lagrangian's
-response moves it (`nevpt2.tex` Eq. qd-theta). A covector's parts are
+response moves it (`nevpt2.tex` Eq. qd-theta). For the same reason
+`create`'s `equal_rotations` makes them parameters at all-equal weights too
+(off by default, so an equal-weight SA Hessian's layout stays as it was):
+the SC-QD-NEVPT2 Hessian's x_A carries Eq. qd-theta's θ^A for every pair,
+and its level-2 term along them is not zero (`hessian::df_qd_sc_nevpt2`, via
+`df_sacasscf_z` when its z carries every rotation). A covector's parts are
 ∂/∂κ_pq, ∂/∂d_r (projected off every root) and ∂/∂Θ_sr, so **the pairing is
 the plain dot product**, and a Hessian's third-derivative term is Λᵀ Y over
 the columns `apply` writes for Λ. This is
@@ -269,9 +274,6 @@ sigmas of the nroots roots; the water's nine columns take 0.02 s on the 3080,
   holds every coordinate's W) the walk runs once; past it, once per chunk.
   Restricting a walk to the chunk's atoms is #631's remedy.
 - **Integral-direct.** Density-fitted only, as the CASSCF gradient is.
-- **The rotations at equal weights.** At all-equal weights Θ is not in the
-  layout, so T along an equal-weight rotation (a QD-NEVPT2 x_A's θ^A, Eq.
-  qd-theta) is not formed there; at partly equal weights it is.
 
 ## Tests
 

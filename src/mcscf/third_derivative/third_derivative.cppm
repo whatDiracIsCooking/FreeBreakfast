@@ -33,9 +33,10 @@ export namespace free_breakfast::mcscf {
 /// doubles: the orbital rotation over the packed pairs (response's order,
 /// kappa_pq for p > q), then each root's CI change d_r (dim doubles per
 /// root, root-major; the rotation is A = sum_r (d_r c_r^T - c_r d_r^T)),
-/// then, unless every weight is equal, the rotations among the roots,
-/// Theta_sr for every r < s in (r, s) lexicographic order (c_r gains
-/// Theta_sr c_s), an equal pair's among unequal ones included. The
+/// then, unless every weight is equal (and create's @p equal_rotations is
+/// false), the rotations among the roots, Theta_sr for every r < s in
+/// (r, s) lexicographic order (c_r gains Theta_sr c_s), an equal pair's
+/// among unequal ones included. The
 /// pairing of a covector with a vector is their dot product, so the
 /// third-derivative action of a Hessian is Lambda^T Y over the columns
 /// `apply` writes.
@@ -52,7 +53,9 @@ public:
   /// integrals (a converged SA-CASSCF's). @p z is one column of size() on the
   /// device, its CI part taken off every root here. The rotations among the
   /// roots are parameters, every pair's, unless the weights are all equal
-  /// (at 0.4, 0.4, 0.2 the equal pair's too).
+  /// (at 0.4, 0.4, 0.2 the equal pair's too); with @p equal_rotations they
+  /// are at all-equal weights as well, E_SA's gradient along each zero but
+  /// its third derivatives not (a QD-NEVPT2 x_A's theta^A, Eq. qd-theta).
   ///
   /// Reads every argument in the call and keeps none of them but @p alpha's
   /// and @p beta's device tables, which its sigmas and RDM read in place and
@@ -67,7 +70,7 @@ public:
   create(DeviceResources &res, const SphericalMatrixAO &h, const Buffers::device<double> &b,
          int32_t naux, const SphericalMatrixAO &c, int32_t ncore, int32_t ncas,
          const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const double *roots,
-         std::span<const double> weights, const double *z);
+         std::span<const double> weights, const double *z, bool equal_rotations = false);
 
   ThirdDerivative(ThirdDerivative &&) noexcept = default;
   ThirdDerivative &operator=(ThirdDerivative &&) noexcept = default;
@@ -109,7 +112,7 @@ public:
                                        const double *w1, double *y);
 
   /// @brief The parameter count: pairs + dim nroots (+ nroots (nroots - 1) / 2
-  /// unless every weight is equal).
+  /// unless every weight is equal and create's equal_rotations is false).
   [[nodiscard]] int32_t size() const noexcept { return size_; }
 
 private:
@@ -156,7 +159,7 @@ private:
   int32_t dim_;
   int32_t nroots_;
   int32_t pairs_;
-  int32_t n_theta_; // nroots (nroots - 1) / 2 unless all weights are equal, else 0
+  int32_t n_theta_; // nroots (nroots - 1) / 2 when the rotations are parameters, else 0
   int32_t size_;
   std::vector<double> weights_;
   ci::Sigma sigma0_;     // H_0

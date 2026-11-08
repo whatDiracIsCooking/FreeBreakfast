@@ -7,8 +7,9 @@
 # core::error_handling, response::cphf, mcscf::solve and response::zvector are
 # PUBLIC. The derivative calls, the J and K builds, the second-derivative
 # integrals, the MO-basis fit, the dipole integrals and their derivative, the
-# CASSCF's integrals, CI, Fock, orbital and relaxed Hessians, derivatives,
-# root rotation, transition gradient, zeta terms and third derivative, the
+# CASSCF's integrals, CI (and its solver), Fock, orbital and relaxed
+# Hessians, derivatives, root rotation, transition gradient, zeta terms and
+# third derivative, the
 # NEVPT2 builders' tangent, H_eff's MO blocks, diagonalization and QD
 # gradients, the gemms and the FBF_TRY header are the implementation units'
 # own, so PRIVATE.
@@ -26,6 +27,7 @@ free_breakfast_add_cxx_module_library(
   df_qd_nevpt2_tangents.cpp
   df_qd_zeta.cpp
   df_qd_eigenvector_response.cpp
+  df_qd_sc_nevpt2.cpp
   df_sc_nevpt2.cpp
   df_pc_nevpt2.cpp
   df_adjoint_xy.cpp
@@ -66,6 +68,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::strings
   free_breakfast::ci::sigma
   free_breakfast::ci::rdm
+  free_breakfast::ci::solver
   free_breakfast::response::fock
   free_breakfast::response::hessian
   free_breakfast::response::orbital_pairs

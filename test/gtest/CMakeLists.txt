@@ -171,6 +171,7 @@ add_executable(
   df_qd_eigenvector_response_gpu.cpp
   df_adjoint_xy_gpu.cpp
   df_sc_nevpt2_hessian_gpu.cpp
+  df_qd_sc_nevpt2_hessian_gpu.cpp
   df_pc_nevpt2_hessian_gpu.cpp
   infrared_gpu.cpp
   pipeline_gradient_gpu.cpp
