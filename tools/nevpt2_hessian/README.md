@@ -87,3 +87,26 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
     tools/nevpt2_hessian/qd_coupling_analysis.py
 tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h2nb_sto3g_sa2
 ```
+
+## The SA3 crossing (#1059)
+
+`test/gtest/data/qd_nevpt2_hessian/ethylene_ccpvdz_sa3_{sc,pc}_meci.json`
+and `ethylene_meci.json`, whose README section has the numbers.
+
+- `qd_meci.py` writes the MECIs first: ethylene's SC- and PC-QD-NEVPT2
+  states 0 and 1 over its DF-SA3-CASSCF(2,2), each converged by the tree's
+  `[optimize]` MECI mode through the `free-breakfast` binary
+  (`examples/qd_meci.toml`'s config), its end-point criteria and the third
+  state's margin checked and recorded. Standard library only; about a
+  minute per variant on the RTX 3080.
+- `qd_nevpt2_hessian.py` (`CROSSING_CASES`) then ladders, at each MECI, the
+  pair sum G(W^0 + W^1), the fixed seam W and the third state. The driver's
+  `crossing` request tracks the pair by its two-state eigenspace
+  (`tracked_pair` in `tools/qd_nevpt2_hessian/main.cpp`) rather than by
+  u_K, and takes no W^0 or W^1. About 2.3 minutes per case.
+
+```sh
+tools/nevpt2_hessian/qd_meci.py [--binary build/src/free-breakfast]
+tools/nevpt2_hessian/qd_nevpt2_hessian.py \
+    --only ethylene_ccpvdz_sa3_sc_meci ethylene_ccpvdz_sa3_pc_meci
+```

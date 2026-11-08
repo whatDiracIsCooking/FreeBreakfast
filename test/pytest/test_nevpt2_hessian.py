@@ -387,18 +387,20 @@ QD_CASES = (
 SEARCH = "qd_weight_search"
 # The C2v A1/B2 coupling cases (#1058): C_MN's ladders, and their analysis.
 COUPLING_CASES = ("h2nb_sto3g_sa2",)
+# The SA3 crossing cases (#1059), one per scheme at its own MECI, and
+# qd_meci.py's record of the MECIs.
+CROSSING_CASES = ("ethylene_ccpvdz_sa3_sc_meci", "ethylene_ccpvdz_sa3_pc_meci")
+MECI = "ethylene_meci"
 
 
-def load_qd_tool():
-    spec = importlib.util.spec_from_file_location(
-        "qd_nevpt2_hessian", TOOL / "qd_nevpt2_hessian.py"
-    )
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-qd_tool = load_qd_tool()
+qd_tool = load_module("qd_nevpt2_hessian", TOOL / "qd_nevpt2_hessian.py")
 
 
 @functools.cache
@@ -409,7 +411,8 @@ def qd_fixture(name: str) -> dict:
 def qd_quantities(record: dict):
     """Every differenced G(W) of a QD record: (scheme, part)."""
     for scheme in record["schemes"]:
-        for part in record[scheme]["states"] + record[scheme]["pairs"]:
+        parts = record[scheme]
+        for part in parts["states"] + parts["pairs"] + parts.get("seams", []):
             yield scheme, part
 
 
@@ -419,6 +422,8 @@ def test_the_qd_cases_are_there():
         + list(COUPLING_CASES)
         + [f"{name}.analysis" for name in COUPLING_CASES]
         + [SEARCH]
+        + list(CROSSING_CASES)
+        + [MECI]
     )
     assert [c["name"] for c in qd_tool.CASES] == list(QD_CASES)
     for name in QD_CASES:
@@ -447,7 +452,7 @@ def test_the_qd_cases_are_there():
 
 
 def test_the_qd_ladders_are_the_recorded_gradients():
-    for name in QD_CASES:
+    for name in QD_CASES + CROSSING_CASES:
         record = qd_fixture(name)
         n = 3 * len(record["atoms"])
         assert record["coordinates"]["vectors"] == [
@@ -480,7 +485,7 @@ def test_the_qd_ladders_are_the_recorded_gradients():
 
 
 def test_the_qd_floor_is_the_measured_noise():
-    for name in QD_CASES:
+    for name in QD_CASES + CROSSING_CASES:
         record = qd_fixture(name)
         for scheme, part in qd_quantities(record):
             noise = part["noise"]
@@ -497,7 +502,7 @@ def test_the_qd_floor_is_the_measured_noise():
 
 
 def test_the_qd_bars_and_ratios_follow_the_rule():
-    for name in QD_CASES:
+    for name in QD_CASES + CROSSING_CASES:
         record = qd_fixture(name)
         window = record["tolerances"]["ratio_window"]
         assert window == [0.8 * 16, 1.2 * 16]
@@ -521,7 +526,7 @@ def test_the_qd_bars_and_ratios_follow_the_rule():
 
 
 def test_every_qd_hessian_is_symmetric_to_its_bar():
-    for name in QD_CASES:
+    for name in QD_CASES + CROSSING_CASES:
         record = qd_fixture(name)
         for scheme, part in qd_quantities(record):
             assert (
@@ -567,6 +572,105 @@ def test_the_qd_guard_and_the_gaps():
         # The reference point is qd_nevpt2/'s: another CASSCF solution misses
         # by millihartree.
         assert max(record["reference"]["agreement"].values()) < 1e-10
+
+
+# ------------------------------------------ the SA3 crossing (#1059)
+
+
+def test_the_crossing_cases_are_what_the_issue_asks():
+    # One case per scheme, at that scheme's own MECI of QD states 0 and 1:
+    # the third state's W^2, the pair sum's W^0 + W^1 and the seam's fixed
+    # 1/2 (R_0 R_1^T + R_1 R_0^T); no W^0 or W^1 (a cone).
+    assert [c["name"] for c in qd_tool.CROSSING_CASES] == list(CROSSING_CASES)
+    meci = qd_fixture(MECI)
+    for case in qd_tool.CROSSING_CASES:
+        record = qd_fixture(case["name"])
+        (entry,) = [m for m in meci["meci"] if m["variant"] == case["meci"]]
+        assert record["schemes"] == [case["meci"]]
+        assert record["crossing"] == [0, 1]
+        assert record["pairs"] == [[0, 1]] and record["seams"] == [[0, 1]]
+        assert record["atoms"] == entry["system"]["atoms"]
+        assert record["weights"] == entry["system"]["weights"]
+        assert record["meci"]["final"] == entry["final"]
+        assert record["meci"]["steps"] == entry["steps"]
+        for key in ("basis", "aux_basis"):
+            path = ROOT / record[key]["file"]
+            assert (
+                hashlib.sha256(path.read_bytes()).hexdigest() == record[key]["sha256"]
+            )
+        part = record[case["meci"]]
+        assert [p["state"] for p in part["states"]] == [2]
+        assert [p["pair"] for p in part["pairs"]] == [[0, 1]]
+        assert [p["seam"] for p in part["seams"]] == [[0, 1]]
+
+
+def test_the_meci_is_converged_by_its_own_criteria():
+    # [optimize]'s five end-point criteria on its last evaluation, each at
+    # the config's bar, and the third state above mcscf::kRootGapFloor.
+    meci_tool = load_module("qd_meci", TOOL / "qd_meci.py")
+    meci = qd_fixture(MECI)
+    assert meci["root_gap_floor"] == meci_tool.ROOT_GAP_FLOOR == 1e-8
+    assert [m["variant"] for m in meci["meci"]] == list(meci_tool.VARIANTS)
+    for entry in meci["meci"]:
+        assert entry["config"] == meci_tool.config(entry["variant"])
+        last = entry["evaluations"][-1]
+        assert len(entry["evaluations"]) == entry["steps"]
+        values = {"max_gap": last["gap"]} | {
+            k: last[k] for k in meci_tool.CRITERIA if k != "max_gap"
+        }
+        for key, bar in meci_tool.CRITERIA.items():
+            assert entry["criteria"][key] == {
+                "value": values[key],
+                "bar": bar,
+                "met": True,
+            }
+            assert abs(values[key]) <= bar, (entry["variant"], key)
+        final = entry["final"]
+        assert final["gap"] == final["upper"] - final["lower"] <= 1e-7
+        assert final["third_state_margin"] > meci["root_gap_floor"]
+        assert final["third_state_margin"] == last["third_state_margin"]
+
+
+def test_the_crossing_pair_is_tracked_and_the_third_state_gapped():
+    meci = qd_fixture(MECI)
+    for name in CROSSING_CASES:
+        record = qd_fixture(name)
+        (scheme,) = record["schemes"]
+        ref = record["reference"][scheme]
+        g = record["guard"]
+        # The reference is the MECI: the pair's gap is [optimize]'s, the QD
+        # energies its last evaluation's (agreement), the third state apart.
+        assert ref["pair_gap"] <= record["meci"]["criteria"]["max_gap"]["bar"]
+        assert max(record["reference"]["agreement"].values()) < 1e-10
+        assert ref["third_state_gap"] > meci["root_gap_floor"]
+        assert g[f"{scheme}_third_state_gap"] > meci["root_gap_floor"]
+        assert ref["third_state_gap"] == qd_tool.third_state_gap(
+            ref["energies"], record["crossing"]
+        )
+        # The pair's eigenspace followed the reference's at every point,
+        # while its two states turned inside it: a u_K match would have
+        # refused.
+        assert g[f"{scheme}_pair_miss"] < 1e-3
+        assert g[f"{scheme}_pair_rotation"] > 1e-3
+        assert g[f"{scheme}_vectors"] < 1e-3
+        assert g["prediction"] < 2.0
+        assert g["subspace"] < 1e-3 and g["ci"] < 1e-3
+        assert g["gradient_norm"] < 1e-10 and g["rerun_gradient_norm"] < 1e-10
+        assert g["rerun_energy"] < 1e-9
+        assert g[f"{scheme}_zvector_residual"] <= record["tolerances"]["zvector"]
+        # The CASSCF roots under the pair stay apart.
+        assert min(record["reference"]["casscf_gaps"]) > 1e-2
+
+
+def test_pair_rotation_and_third_state_gap():
+    # A rotation by t inside the pair's eigenspace reads 1 - cos t (t < 45
+    # degrees), and the third state's gap is its distance from the pair.
+    c, s = math.cos(0.3), math.sin(0.3)
+    reference = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    turned = [c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0]
+    assert math.isclose(qd_tool.pair_rotation(reference, turned, [0, 1]), 1 - c)
+    assert qd_tool.pair_rotation(reference, reference, [0, 1]) == 0.0
+    assert qd_tool.third_state_gap([-1.0, -0.75, -0.5], [0, 1]) == 0.25
 
 
 def test_the_weight_search_screens_and_names_the_case():
