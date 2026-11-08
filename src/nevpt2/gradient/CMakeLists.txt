@@ -3,8 +3,8 @@
 # the nuclear gradient's lagrangian_gradient and sc_gradient, and the
 # SC-QD-NEVPT2 Lagrangian's qd_sc_lagrangian, the builders' forward
 # tangents builders_tangent and qd_builders_tangent (over a state
-# average), and E_corr + Phi's Hessian-vector product
-# sc_hessian_product; the internal
+# average), and E_corr + Phi's Hessian-vector products
+# sc_hessian_product and (SC-QD) qd_sc_hessian_product; the internal
 # partitions :operands and :builders hold the array plumbing and the
 # builders the implementation units share. ci::strings,
 # nevpt2::energy (ClassEnergies), core::wwr (Buffers), and the molecule,

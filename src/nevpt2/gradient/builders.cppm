@@ -234,21 +234,41 @@ Result<QdArrays> qd_arrays(DeviceResources &res, std::string_view who,
 /// if @p f3. qd.cpp's.
 Result<PairRdms> zeroed_rdms(DeviceResources &res, int64_t ncas, bool f3);
 
+/// @brief sc_effective_hamiltonian's n^2 pairs over @p q: the shared inputs,
+/// each pair's RDMs, and f3ca and f3ac on the diagonal alone; PC's
+/// conditioning floor @p pc_floor on every pair. qd.cpp's.
+std::vector<EnergyInputs> pair_inputs(const QdArrays &q, size_t nroots, double pc_floor = 0.0);
+
+/// @brief What qd_sc_adjoint's reverse pass leaves at the point, for a QD
+/// Hessian-vector product's one-slot-dotted terms (hessian_product.cpp):
+/// its forward arrays, the shared bars once the builders have run backwards,
+/// each root's own RDMs' bars and each transition's dm3 bar ([M n + N],
+/// empty on the diagonal), both after the traces' adjoint has folded dm1's
+/// and dm2's into dm3's. qd.cpp's.
+struct QdFixedBars {
+  QdArrays arrays;
+  ScArrays bar;
+  std::vector<PairRdms> own;
+  std::vector<Buffers::device<double>> transitions;
+};
+
 /// @brief qd_sc_adjoint (@p pc null) or qd_pc_adjoint at each of the k
 /// matrices @p ws holds (k n^2 doubles, W_k at [k n^2, (k + 1) n^2)), over
 /// one set of forward arrays and RDMs: one QdScAdjoint per W, in order. PC's
 /// elements, the same at every W, go to *@p pc and each result's elements
 /// is empty; @p pc_floor is set on every pair's inputs (PC reads it, SC
 /// does not). With @p builder_bars (one W, all-electron), the walk's bars
-/// kept in it, qd_sc_adjoint's. qd.cpp's, for the stacked QD Lagrangian in
-/// lagrangian.cpp.
+/// kept in it, qd_sc_adjoint's; with @p fixed (the same), the pass's arrays
+/// and folded bars moved into it. qd.cpp's, for the stacked QD Lagrangian
+/// in lagrangian.cpp and qd_sc_hessian_product.
 Result<std::vector<QdScAdjoint>>
 qd_adjoints(DeviceResources &res, std::string_view who, const ci::DeviceStringSet &alpha,
             const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
             const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
             std::span<const double> weights, const double *vectors, std::span<const double> ws,
             int32_t batch, std::vector<PcClassEnergies> *pc, int32_t nfrozen, double pc_floor,
-            std::optional<QdBuilderBars> *builder_bars = nullptr);
+            std::optional<QdBuilderBars> *builder_bars = nullptr,
+            std::optional<QdFixedBars> *fixed = nullptr);
 
 /// @brief fold_bars' result: h_bar and Λ, symmetrized.
 struct FoldedBars {
@@ -290,6 +310,41 @@ Result<ScArrays> direction_arrays(DeviceResources &res, const ci::DeviceStringSe
                                   const ci::DeviceStringSet &beta, ScArrays &x,
                                   const double *vector, const double *h_dot, const double *b_dot,
                                   const double *c_dot, Buffers::device<double> *vv_dot);
+
+/// @brief The QD builders' forward tangent along one direction: every shared
+/// ScArrays field's (dm1 gamma_SA's, the weights' sum of the diagonal pairs'
+/// dm1 tangents) and every ordered pair's RDMs', [M n + N] (f3ca and f3ac on
+/// the diagonal alone).
+struct QdDirectionArrays {
+  ScArrays shared;
+  std::vector<PairRdms> pairs;
+
+  // The n^2 EnergyDirections sc_effective_hamiltonian_tangent and _hvp read,
+  // [M n + N], each over @ref shared's blocks.
+  [[nodiscard]] std::vector<EnergyDirection> directions() const {
+    std::vector<EnergyDirection> out;
+    for (const PairRdms &p : pairs) {
+      EnergyInputs in = shared.inputs();
+      in.dm1 = p.dm1.data();
+      in.dm2 = p.dm2.data();
+      in.dm3 = p.dm3.data();
+      in.f3ca = p.f3ca.num_elements() > 0 ? p.f3ca.data() : nullptr;
+      in.f3ac = p.f3ac.num_elements() > 0 ? p.f3ac.data() : nullptr;
+      out.push_back({.in = in, .blocks = &shared.blocks});
+    }
+    return out;
+  }
+};
+
+/// @brief qd_builders_tangent's along one direction (@p h_dot, @p b_dot, and
+/// every root's @p c_dot, root r's at + r ndet), at the QD point @p q of the
+/// roots @p vectors at @p weights; with @p vv_dot, B_vv's tangent allocated
+/// into it, as direction_arrays'. tangent.cpp's.
+Result<QdDirectionArrays>
+qd_direction_arrays(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                    const ci::DeviceStringSet &beta, QdArrays &q, std::span<const double> weights,
+                    const double *vectors, const double *h_dot, const double *b_dot,
+                    const double *c_dot, Buffers::device<double> *vv_dot);
 
 /// @brief Where a class walk adds its bars: @p bar's fields, the
 /// core-indexed ones past the frozen core as ScArrays::inputs reads them, and

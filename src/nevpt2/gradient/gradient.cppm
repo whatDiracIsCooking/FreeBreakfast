@@ -604,6 +604,80 @@ qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
               int32_t batch, int32_t nfrozen = 0,
               std::optional<QdBuilderBars> *builder_bars = nullptr);
 
+/// @brief qd_sc_hessian_product's result.
+struct QdScHessianProduct {
+  /// @brief The n^2 elements, as qd_sc_energy computes them.
+  std::vector<ClassEnergies> elements;
+  /// @brief Per direction, the product: the tangent of qd_sc_adjoint's +
+  /// zc_adjoint's h_bar, Lambda, X and A, and y over every root (root r's at
+  /// r ndet) in the root set's exponential parametrization (below).
+  std::vector<AdjointTangent> products;
+  /// @brief sc_effective_hamiltonian_hvp's, per direction: [u][J][k] ket J's
+  /// empty tuples it populates, the defects with its partner, and K6's
+  /// share through the couplings.
+  std::vector<std::vector<std::array<int64_t, 8>>> populated;
+  std::vector<double> defect;
+  std::vector<double> coupling_defect;
+  std::vector<double> coupling_k6;
+  /// @brief Empty unless asked for: per direction, the product split into
+  /// its separately coded parts, in order the pair walk's tangent
+  /// (sc_effective_hamiltonian_hvp's tangent bars run back through the
+  /// reverse pass), the one-slot-dotted terms at fixed bars, Phi^SA's, and
+  /// the root-set curvature's (y alone). They sum to products[u].
+  std::vector<std::array<AdjointTangent, 4>> parts;
+};
+
+/// @brief The Hessian-vector product of E^corr[W] + Phi^SA in (h, B, {c_r}),
+/// SC-QD: the tangent of qd_sc_adjoint at @p w plus zc_adjoint at the
+/// weights (at fixed @p z) along each of @p directions, forward over the
+/// reverse pass (docs/nevpt2/nevpt2.tex Eq. qd-Lxx's level-1 term, over
+/// pairs). sc_hessian_product is its n = 1 analogue.
+///
+/// The arguments but these are qd_sc_adjoint's, all-electron. @p w is any
+/// n x n matrix (qd_sc_adjoint's); @p z is z^c, nmo x nmo column-major on
+/// the device, symmetric (zc_multipliers' over qd_sc_adjoint's A and
+/// epsilon). @p vectors must be orthonormal (within 1e-10). Direction k's
+/// h_dot and B_dot are builders_tangent's; its c_dot holds every root's,
+/// raw, at c + k n ndet (root r's at + r ndet), qd_builders_tangent's
+/// layout.
+///
+/// **The CI directions move the root set**, c_r(K) = e^K c_r with K over
+/// each root's out-of-span move and the rotations among the roots (Eq.
+/// qd-K): a direction's CI part is first taken to the generators', u =
+/// Pi(c_dot), u_r = c_dot_r - 1/2 sum_s c_s (c_s . c_dot_r + c_r . c_dot_s)
+/// (at n = 1, c_dot - (c . c_dot) c). h_bar, Lambda, X and A are the
+/// adjoints' tangents along (h_dot, B_dot, u). y is the gradient over raw
+/// CI directions of the Hessian in K, so that sum_r t_r . y_r(v) for a
+/// t = K_t c is the Hessian element: K^*(sum_r y_dot_r c_r^T + M), K^* the
+/// adjoint of c_dot -> K(c_dot), y_dot the raw ys' tangent along u, and M =
+/// 1/2 sum_r (y_r u_r^T - (K_u y_r) c_r^T) the curvature 1/2 {K_t, K_u} c_r
+/// (Eq. qd-curv) against every root's raw y_r (qd_sc_adjoint's + y^c). At
+/// n = 1 that is the sphere's -(t . u)(c . y).
+///
+/// In order: qd_sc_adjoint's reverse pass, its arrays and folded bars kept;
+/// the QD builders' tangent (qd_builders_tangent's) along each direction;
+/// sc_effective_hamiltonian_hvp at @p w along them, with @p partners' as
+/// its partners when given, each transition's tangent bars through the
+/// bra/ket rdms_adjoint as they are handed over; then per direction the
+/// reverse pass's tangent, every builder's adjoint at the tangent bars plus
+/// its one-slot-dotted terms at the fixed bars, each root's own RDM step as
+/// sc_hessian_product's and each transition's at the dotted (bra, ket);
+/// Phi^SA's in closed form; and y's curvature on the host. With @p parts,
+/// the product's parts (QdScHessianProduct::parts) at two reverse-pass
+/// tangents per direction in place of one.
+///
+/// @return The products; InvalidConfig for counts that do not fit, a null
+///         direction array or z, partners neither none nor one per
+///         direction, @p w not n^2 long or @p vectors not orthonormal, or
+///         qd_sc_adjoint's checks; sc_effective_hamiltonian_hvp's Numerical
+///         refusals; or the error of a call it makes.
+[[nodiscard]] Result<QdScHessianProduct> qd_sc_hessian_product(
+    DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+    int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c, const double *h,
+    int32_t ncore, int32_t ncas, std::span<const double> weights, const double *vectors,
+    std::span<const double> w, const double *z, int32_t batch, const MoDirections &directions,
+    const MoDirections &partners = {}, bool parts = false);
+
 /// @brief The PC-QD-NEVPT2 effective Hamiltonian's correlation elements of
 /// the roots @p vectors over the shared orbitals @p c: qd_sc_energy's inputs,
 /// built the same way from the same arguments, through

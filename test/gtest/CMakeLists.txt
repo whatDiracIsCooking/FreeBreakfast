@@ -223,6 +223,7 @@ add_executable(
   nevpt2_builders_tangent_gpu.cpp
   nevpt2_qd_builders_tangent_gpu.cpp
   nevpt2_hessian_product_gpu.cpp
+  nevpt2_qd_hessian_product_gpu.cpp
   nevpt2_qd_intersection_gpu.cpp
   nevpt2_qd_reference_pair_gpu.cpp
   nevpt2_numerical_heff_gpu.cpp
