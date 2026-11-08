@@ -184,6 +184,7 @@ add_executable(
   pipeline_hessian_gpu.cpp
   pipeline_casscf_hessian_gpu.cpp
   pipeline_nevpt2_hessian_gpu.cpp
+  pipeline_qd_nevpt2_hessian_gpu.cpp
   pipeline_nevpt2_analytic_hessian_gpu.cpp
   active_space_gpu.cpp
   pipek_mezey_gpu.cpp

@@ -3,7 +3,8 @@
 /// molecule -- the closed-shell RHF's, or with a `[casscf_gradient]` that
 /// root's of a DF-CASSCF (state-specific or state-averaged), or with a
 /// `[nevpt2_gradient]` the SC- or PC-NEVPT2 energy's on a single-state
-/// DF-CASSCF -- and its harmonic frequencies and normal modes. By default
+/// DF-CASSCF, or numerically one SC- or PC-QD-NEVPT2 state's on a
+/// DF-SA-CASSCF -- and its harmonic frequencies and normal modes. By default
 /// analytic, @c hessian::df_rhf, @c hessian::df_casscf,
 /// @c hessian::df_sacasscf, @c hessian::df_sc_nevpt2 or
 /// @c hessian::df_pc_nevpt2 over one nested Pipeline run of the chain from
@@ -11,7 +12,8 @@
 /// chain to `[gradient]`, `[casscf_gradient]` or `[nevpt2_gradient]`, rerun
 /// at each of the 6N
 /// displaced geometries, each displaced CASSCF started from the reference's
-/// orbitals and CI and checked against it.
+/// orbitals and CI and checked against it, and a QD-NEVPT2 state tracked by
+/// its eigenvector's overlap with the reference's.
 ///
 /// Node-shaped, because each method runs Pipelines of its own, as
 /// `[optimize]`'s evaluations do. It reads the MoleculeOutput, so beside an
@@ -158,8 +160,12 @@ struct HessianStep {
   /// only -- HessianMethod::Analytic's @c hessian::df_sc_nevpt2 or
   /// @c hessian::df_pc_nevpt2 by @ref Nevpt2GradientStep::variant, or
   /// HessianMethod::Numerical's differences of this gradient over the
-  /// CASSCF chain's displaced solves, each followed by this step. Exclusive
-  /// with @ref casscf_gradient.
+  /// CASSCF chain's displaced solves, each followed by this step. With
+  /// @ref Nevpt2GradientStep::quasi_degenerate, numerically only, QD state
+  /// @ref Nevpt2GradientStep::state's of the state-averaged @ref casscf: at
+  /// each displacement the state whose H_eff eigenvector overlaps the
+  /// reference's most (@ref tracked_qd_state), not the one of the same rank.
+  /// Exclusive with @ref casscf_gradient.
   std::optional<Nevpt2GradientStep> nevpt2_gradient{};
 
   /// @brief Where the Hessian is written as JSON, if not empty: the method,
@@ -189,7 +195,13 @@ struct HessianStep {
   /// overlap, C (Cᵀ S C)^-1/2, and from its CI vectors, and held to it by
   /// @ref check_displaced_casscf; under @ref nevpt2_gradient the same, its
   /// gradient the NEVPT2's, each displacement's max |z^c|, smallest
-  /// inactive gap and Z-vector residual logged.
+  /// inactive gap and Z-vector residual logged. Under a quasi_degenerate
+  /// @ref nevpt2_gradient, the QD state's gradient at the reference too,
+  /// for its eigenvector R_P; at each displacement the state
+  /// @ref tracked_qd_state picks, its gradient retaken when that is not the
+  /// state of the same rank, and the QD gap, the smallest CASSCF root gap,
+  /// the ensemble's edge E_{n+1} - E_n (a CASCI of n + 1 roots over the
+  /// solve's orbitals) and max |zeta| logged.
   /// Under @ref ladder, eight displaced gradients per coordinate, four
   /// restarts and one re-solve 100 times tighter at each of four of them for
   /// the noise, and eight per pair of @ref pairs. Then symmetrized, checked, and its harmonic vibrations;
@@ -215,9 +227,14 @@ struct HessianStep {
   ///         anything runs: InvalidConfig beside @ref casscf_gradient or for
   ///         a @ref Nevpt2GradientStep::frozen_core other than 0;
   ///         Unsupported for an integral-direct @ref eri, a state-averaged
-  ///         @ref casscf (nroots above 1) or
-  ///         @ref Nevpt2GradientStep::quasi_degenerate, each naming the
-  ///         reason; analytic, then the CASSCF's error and the NEVPT2
+  ///         @ref casscf (nroots above 1) without
+  ///         @ref Nevpt2GradientStep::quasi_degenerate, or quasi_degenerate
+  ///         under the analytic method, each naming the reason;
+  ///         InvalidConfig for quasi_degenerate over fewer than two roots or
+  ///         a @ref Nevpt2GradientStep::state past them; numerical QD, a
+  ///         displacement's @ref tracked_qd_state refusal (Numerical),
+  ///         naming the geometry, its gradient never differenced;
+  ///         analytic, then the CASSCF's error and the NEVPT2
   ///         Hessian's as it is (Numerical naming SC's refused coordinate
   ///         pairs, or PC's refused classes, lifts and degenerate pairs);
   ///         numerical, the CASSCF chain's errors, and the NEVPT2
@@ -254,6 +271,28 @@ struct HessianStep {
                                             std::span<const double> active,
                                             std::span<const double> reference_ci,
                                             std::span<const double> ci, size_t nroots);
+
+/// @brief The numerical QD-NEVPT2 Hessian's state tracking at one displaced
+/// solve: which of its H_eff eigenstates is the reference's state P. Each
+/// displaced eigenvector u_k (H_eff's, over the displaced CASSCF roots) is
+/// taken into the reference's root basis by @p signs, s_r = ±1 the sign of
+/// ⟨reference root r|displaced root r⟩ (the roots matched by index, as
+/// @ref check_displaced_casscf holds them), and overlapped with
+/// @p reference, R_P: o_k = Σ_r R_P,r s_r u_k,r. The state is the k of
+/// largest |o_k|, whatever its rank. A solve that followed the reference has
+/// 1 - |o_k| = O(h²); a state that swapped with another has about 0.
+///
+/// @p reference holds n numbers, @p vectors n² (state k at [k n, (k + 1) n)),
+/// @p signs n. Host only.
+///
+/// @return {k, |o_k|}; Numerical when two states tie, the second |o| within
+///         1e-3 of the largest, or when 1 - |o_k| is 1e-3 or more (the bar
+///         `test/gtest/data/qd_nevpt2_hessian/`'s references were sampled
+///         under), naming the overlaps; InvalidConfig for spans of
+///         mismatched sizes.
+[[nodiscard]] Result<std::pair<size_t, double>> tracked_qd_state(std::span<const double> reference,
+                                                                 std::span<const double> vectors,
+                                                                 std::span<const double> signs);
 
 /// @brief The numerical ladder's tightened CASSCF re-solve (its σ_solves):
 /// @p conv_tol and @p conv_tol_grad each 100 times tighter, but never below

@@ -9,7 +9,7 @@
 # (one_electron::dipole) and the basis's shells it is checked against (basis),
 # the copy of C it takes (core::wwr), the reference orbitals'
 # orthonormalization (recipes::blas, recipes::orthogonalize, core::constants),
-# the planner it nests
+# the QD ensemble's edge (pipeline::casci), the planner it nests
 # (pipeline::pipeline), the file it writes (io::json), core::log and
 # diagnostics_macros (FBF_TRY, FBF_LOG_INFO) are PRIVATE.
 free_breakfast_add_cxx_module_library(
@@ -38,6 +38,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::hessian
   free_breakfast::integrals::one_electron::dipole
   free_breakfast::io::json
+  free_breakfast::pipeline::casci
   free_breakfast::pipeline::pipeline
   free_breakfast::recipes::blas
   free_breakfast::recipes::orthogonalize

@@ -792,10 +792,10 @@ template <class S>
 /// `[casscf_gradient]` in @p doc the chain ends in `[casscf]` and it, both
 /// copied in too, and the Hessian is that root's, analytic or numerical;
 /// with a `[nevpt2_gradient]` the same, the Hessian that NEVPT2 energy's,
-/// analytic or numerical, state-specific and all-electron
-/// (`quasi_degenerate` and a `frozen_core` other than 0 refused, a state
-/// average by check_nevpt2_gradient), the only chain whose analytic method
-/// takes `coordinates`. Two of
+/// analytic or numerical, all-electron (a `frozen_core` other than 0
+/// refused), state-specific (a state average refused by
+/// check_nevpt2_gradient) or, numerically only, one `quasi_degenerate`
+/// state's, the only chain whose analytic method takes `coordinates`. Two of
 /// `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]` are refused,
 /// since the Hessian is one energy's. The molecule is not among them: the
 /// step reads the pipeline's own.
@@ -837,14 +837,16 @@ template <class S>
     const Nevpt2GradientStep &nevpt2 = step.nevpt2_gradient.emplace();
     FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.nevpt2_gradient.value()));
     // What milestone 24's Hessian covers, and hessian::df_sc_nevpt2 and
-    // df_pc_nevpt2 take: HessianStep::run refuses each again. A state
-    // average is check_nevpt2_gradient's, as for any [nevpt2_gradient] that
-    // is not quasi-degenerate.
+    // df_pc_nevpt2 take, and the numerical method over a QD state:
+    // HessianStep::run refuses each again. A state average is
+    // check_nevpt2_gradient's, as for any [nevpt2_gradient] that is not
+    // quasi-degenerate.
     constexpr std::string_view kNevpt2 = Nevpt2GradientStep::kName;
-    if (nevpt2.quasi_degenerate) {
-      return err_unsupported("[{}] is a state-specific NEVPT2 energy's, and [{}] is "
-                             "quasi_degenerate: QD-NEVPT2 has no Hessian here",
-                             kStep, kNevpt2);
+    if (nevpt2.quasi_degenerate && step.method == HessianMethod::Analytic) {
+      return err_unsupported("[{}] method 'analytic' is a state-specific NEVPT2 energy's, and "
+                             "[{}] is quasi_degenerate: the QD-NEVPT2 Hessian is numerical only "
+                             "here, set [{}] method = 'numerical'",
+                             kStep, kNevpt2, kStep);
     }
     if (nevpt2.frozen_core != 0) {
       return err_config("[{}] is the all-electron NEVPT2 energy's, and [{}] frozen_core is not 0: "

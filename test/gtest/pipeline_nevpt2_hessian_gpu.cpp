@@ -20,7 +20,7 @@
 //   and no frequencies.
 // - The refusals (fast): the step's own (the ladder under the analytic
 //   method among them), run directly, each returned before any displaced
-//   solve. The config's (quasi_degenerate, a frozen core, a state average,
+//   solve. The config's (a frozen core, a state average,
 //   integral-direct ERIs, a [casscf_gradient] beside it) touch no device, and
 //   are test/pipeline/hessian_host.cpp's. The analytic method itself is
 //   pipeline_nevpt2_analytic_hessian_gpu.cpp's (#818).
@@ -382,8 +382,9 @@ TEST(PipelineNevpt2Hessian, StepRefusesBeforeAnyDisplacedSolve) {
   }
   {
     fb::HessianStep step = planned;
+    // QD over this single root; a QD Hessian is pipeline_qd_nevpt2_hessian_gpu.cpp's.
     step.nevpt2_gradient->quasi_degenerate = true;
-    refused(step, fb::ErrorKind::Unsupported, "quasi_degenerate");
+    refused(step, fb::ErrorKind::InvalidConfig, "QD needs two roots or more");
   }
   {
     fb::HessianStep step = planned;

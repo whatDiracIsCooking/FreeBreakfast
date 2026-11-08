@@ -6,7 +6,8 @@
 /// a nested Pipeline run of the chain to GradientStep, and their central
 /// differences -- the RHF's, or over the CASSCF chain (to CasscfGradientStep
 /// or Nevpt2GradientStep), each displaced solve started from the reference's
-/// orbitals and CI and checked against it; then the
+/// orbitals and CI and checked against it, a QD-NEVPT2 state tracked by its
+/// eigenvector's overlap; then the
 /// symmetrized Hessian, its two checks, the harmonic vibrations, the analytic
 /// RHF's dipole derivative and IR intensities, and hessian.json.
 
@@ -24,7 +25,8 @@ import free_breakfast.basis;
 import free_breakfast.hessian;
 import free_breakfast.integrals.one_electron.dipole; // kDipoleMaxL
 import free_breakfast.pipeline.pipeline;
-import free_breakfast.recipes.blas; // gemm, gemmwich
+import free_breakfast.pipeline.casci; // the QD ensemble's edge, E_{n+1} - E_n
+import free_breakfast.recipes.blas;   // gemm, gemmwich
 import free_breakfast.recipes.orthogonalize;
 
 #include "diagnostics.h"
@@ -123,15 +125,16 @@ struct ReferenceOrbitalsStep {
   return rows;
 }
 
-// @p status, its error's message prefixed with the step and @p where it was
+// @p result, its error's message prefixed with the step and @p where it was
 // met: which of the 6N + 1 geometries.
-[[nodiscard]] Status at_geometry(Status status, std::string_view where) {
-  if (!status) {
-    Error error = std::move(status).error();
+template <class T>
+[[nodiscard]] Result<T> at_geometry(Result<T> result, std::string_view where) {
+  if (!result) {
+    Error error = std::move(result).error();
     error.message = std::format("[{}] at {}: {}", HessianStep::kName, where, error.message);
     return std::unexpected(std::move(error));
   }
-  return status;
+  return result;
 }
 
 // The ladder, #803's fixture's procedure (tools/nevpt2_hessian/stencil.py)
@@ -183,6 +186,11 @@ constexpr double kRoundings = 2.0;
 // How far from orthonormal the config's coordinates may be: rounding of
 // rows written to 16 digits is ~1e-16.
 constexpr double kCoordinatesOrthonormal = 1e-10;
+// tracked_qd_state's bar on 1 - |<R_P|u_k>|, and its tie: the continuity
+// guard the QD references were sampled under (tools/qd_nevpt2_hessian's
+// u_K match, the library's 1e-3 CI bar). Their worst miss over every point,
+// h up to 5e-3 bohr, is 5.2e-7; a state that swapped has about 1.
+constexpr double kQdStateMiss = 1e-3;
 
 // D(s) at s = h, h/2, h/4 over @p values, values[p] the vector read at
 // h kLadderPoints[p].
@@ -321,6 +329,46 @@ displaced_weights(size_t nao, std::span<const double> s, std::span<const double>
   return {std::move(weights), std::move(overlaps)};
 }
 
+Result<std::pair<size_t, double>> tracked_qd_state(std::span<const double> reference,
+                                                   std::span<const double> vectors,
+                                                   std::span<const double> signs) {
+  const size_t n = reference.size();
+  if (n == 0 || vectors.size() != n * n || signs.size() != n) {
+    return err_config("[{}] tracked_qd_state: a reference state of {}, eigenvectors of {} and {} "
+                      "root signs",
+                      HessianStep::kName, n, vectors.size(), signs.size());
+  }
+  std::vector<double> overlaps(n, 0.0);
+  for (size_t k = 0; k < n; ++k) {
+    for (size_t r = 0; r < n; ++r) {
+      overlaps[k] += reference[r] * signs[r] * vectors[(k * n) + r];
+    }
+    overlaps[k] = std::abs(overlaps[k]);
+  }
+  const auto best = static_cast<size_t>(std::ranges::max_element(overlaps) - overlaps.begin());
+  double second = 0.0;
+  size_t rival = best;
+  for (size_t k = 0; k < n; ++k) {
+    if (k != best && overlaps[k] >= second) {
+      second = overlaps[k];
+      rival = k;
+    }
+  }
+  if (rival != best && overlaps[best] - second <= kQdStateMiss) {
+    return err_numerical("[{}] QD states {} and {} tie for the reference's state: their "
+                         "eigenvectors overlap it by {:.6f} and {:.6f}, within {}",
+                         HessianStep::kName, best, rival, overlaps[best], second, kQdStateMiss);
+  }
+  if (!(1.0 - overlaps[best] < kQdStateMiss)) {
+    return err_numerical("[{}] no QD state is the reference's: the closest, state {}, overlaps it "
+                         "by {:.6f}, 1 - |overlap| {:.3e}, not below {} (the states swapped or "
+                         "mixed across the step)",
+                         HessianStep::kName, best, overlaps[best], 1.0 - overlaps[best],
+                         kQdStateMiss);
+  }
+  return std::pair{best, overlaps[best]};
+}
+
 std::pair<double, double> tightened_casscf_tolerances(const double conv_tol,
                                                       const double conv_tol_grad,
                                                       const double energy, const size_t pairs) {
@@ -385,15 +433,29 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   }
   // The NEVPT2 Hessian, by either method, is of one root's state-specific
   // energy, all-electron: what milestone 24 covers, the fixture validates,
-  // and hessian::df_sc_nevpt2 and df_pc_nevpt2 take.
+  // and hessian::df_sc_nevpt2 and df_pc_nevpt2 take. Or, numerically only,
+  // one QD-NEVPT2 state's of a state average, all-electron too.
   if (nevpt2_gradient) {
     constexpr std::string_view kNevpt2 = Nevpt2GradientStep::kName;
-    if (nevpt2_gradient->quasi_degenerate) {
-      return err_unsupported("[{}] is a state-specific NEVPT2 energy's, and [{}] is "
-                             "quasi_degenerate: QD-NEVPT2 has no Hessian here",
-                             kName, kNevpt2);
+    if (nevpt2_gradient->quasi_degenerate && method == HessianMethod::Analytic) {
+      return err_unsupported("[{}] method 'analytic' is a state-specific NEVPT2 energy's, and "
+                             "[{}] is quasi_degenerate: the QD-NEVPT2 Hessian is numerical only "
+                             "here, set [{}] method = 'numerical'",
+                             kName, kNevpt2, kName);
     }
-    if (casscf.nroots != 1) {
+    if (nevpt2_gradient->quasi_degenerate) {
+      if (casscf.nroots < 2) {
+        return err_config("[{}] differences a QD-NEVPT2 state of a state average, and [{}] "
+                          "nroots is {}: QD needs two roots or more",
+                          kName, CasscfStep::kName, casscf.nroots);
+      }
+      if (nevpt2_gradient->state < 0 || nevpt2_gradient->state >= casscf.nroots) {
+        return err_config("[{}] differences QD state {}, and H_eff over [{}]'s {} roots has "
+                          "states 0 to {}",
+                          kName, nevpt2_gradient->state, CasscfStep::kName, casscf.nroots,
+                          casscf.nroots - 1);
+      }
+    } else if (casscf.nroots != 1) {
       return err_unsupported("[{}] is the NEVPT2 energy's of a single-state CASSCF, and [{}] "
                              "nroots is {}: a state-averaged reference has no NEVPT2 Hessian "
                              "here",
@@ -554,6 +616,9 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   // checked pair's verdict, and the pairs that are not bilinear.
   json ladder_doc;
   json bilinearity;
+  // Under a QD [nevpt2_gradient], the tracking's and the hazards' worst
+  // values over the displacements, for hessian.json.
+  json qd_doc;
   std::vector<std::array<size_t, 2>> failing;
   // The CasscfOutput @p cas back into the mcscf::Solution the analytic
   // Hessians take, as [casscf_gradient] and [nevpt2_gradient] build it for
@@ -748,6 +813,76 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     std::optional<ReferenceOrbitalsStep> reference;
     std::vector<double> reference_ci;
     size_t reference_ncore = 0;
+    // Under a QD [nevpt2_gradient]: the state differenced, P, and its H_eff
+    // eigenvector R_P at the reference, over the reference's roots.
+    const bool qd = nevpt2_gradient && nevpt2_gradient->quasi_degenerate;
+    const auto qd_state = static_cast<size_t>(qd ? nevpt2_gradient->state : 0);
+    std::vector<double> qd_reference_state;
+    // @p step over a CASSCF chain's products, outside the chain: the QD
+    // gradient at the reference, and a displaced one retaken at the state
+    // tracked.
+    const auto nevpt2_gradient_on = [&](const auto &chain, const Nevpt2GradientStep &step) {
+      return step.run(
+          View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput, EriOutput,
+               CoreHamiltonianOutput, ScfOutput, CasscfOutput>(
+              *chain.template get<MoleculeOutput>(), *chain.template get<BasisSetOutput>(),
+              *chain.template get<PrimitivePairClassesOutput>(), *chain.template get<EriOutput>(),
+              *chain.template get<CoreHamiltonianOutput>(), *chain.template get<ScfOutput>(),
+              *chain.template get<CasscfOutput>()),
+          res);
+    };
+    // The ensemble's edge, E_{n+1} - E_n: a CASCI of n + 1 roots over a
+    // chain's converged CASSCF orbitals, its integrals exact (CasciStep's),
+    // the difference of its own two top roots. Infinite where the CI space
+    // has no root past the average.
+    const auto ensemble_edge = [&](const auto &chain) -> Result<double> {
+      const CasscfOutput &cas = *chain.template get<CasscfOutput>();
+      const size_t nroots = cas.energies.size();
+      if (cas.vectors.size() / nroots <= nroots) {
+        return std::numeric_limits<double>::infinity();
+      }
+      const BasisSet &basis = chain.template get<BasisSetOutput>()->basis;
+      const ScfOutput &start = *chain.template get<ScfOutput>();
+      ScfOutput orbitals{
+          .energy = std::numeric_limits<double>::quiet_NaN(),
+          .iterations = 0,
+          .n_alpha = start.n_alpha,
+          .n_beta = start.n_beta,
+          .mo_energies = cas.mo_energies,
+          .c = SphericalMatrixAO(res, basis),
+          .d = SphericalMatrixAO(res, basis),
+      };
+      {
+        const ScopedDeviceIndex on{res.dev_idx()};
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(orbitals.c.data(), cas.c.data(),
+                                               cas.c.num_elements() * sizeof(double),
+                                               wwr::wwrMemcpyDeviceToDevice, res.stream())));
+        FBF_TRY(res.sync());
+      }
+      CasciStep casci;
+      casci.ncas = cas.ncas;
+      casci.nelecas = cas.nelecas;
+      casci.nroots = static_cast<int32_t>(nroots + 1);
+      const CasciOutput ci = FBF_TRY(casci.run(
+          View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
+               CoreHamiltonianOutput, ScfOutput>(
+              *chain.template get<MoleculeOutput>(), *chain.template get<BasisSetOutput>(),
+              *chain.template get<SphericalTransformOutput>(),
+              *chain.template get<PrimitivePairClassesOutput>(),
+              *chain.template get<CoreHamiltonianOutput>(), orbitals),
+          res));
+      return ci.energies[nroots] - ci.energies[nroots - 1];
+    };
+    // The QD diagnostics, worst over the displacements: the smallest
+    // tracked overlap |<R_P|u_k>|, QD gap, CASSCF root gap and ensemble
+    // edge, the largest |zeta|, and how many points tracked P to another
+    // rank.
+    double worst_qd_overlap = 1.0;
+    double worst_qd_gap = std::numeric_limits<double>::infinity();
+    double worst_root_gap = std::numeric_limits<double>::infinity();
+    double worst_edge = std::numeric_limits<double>::infinity();
+    double worst_zeta = 0.0;
+    size_t reranked = 0;
     CasscfStep displaced_casscf = chain_casscf;
     std::pair<double, double> tight_tolerances{chain_casscf.conv_tol / kTightened,
                                                chain_casscf.conv_tol_grad / kTightened};
@@ -775,6 +910,41 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       displaced_casscf.ci_guess = cas.vectors;
       FBF_LOG_INFO("hessian: reference DF-CASSCF({}, {}) over {} root(s), E = {:.10f}", cas.nelecas,
                    cas.ncas, cas.energies.size(), cas.energy);
+      if (qd) {
+        // State P's gradient at the reference, for its eigenvector R_P, the
+        // one every displaced state is tracked to.
+        const Nevpt2GradientOutput at_reference = FBF_TRY(at_geometry(
+            nevpt2_gradient_on(chain, chain_nevpt2_gradient), "the reference geometry"));
+        const double edge = FBF_TRY(at_geometry(ensemble_edge(chain), "the reference geometry"));
+        FBF_TRY(std::visit(
+            [&]<class G>(const G &g) -> Status {
+              if constexpr (std::same_as<G, nevpt2::QdScGradient> ||
+                            std::same_as<G, nevpt2::QdPcGradient>) {
+                const size_t n = g.lagrangian.eigenvalues.size();
+                if (g.lagrangian.eigenvectors.size() != n * n || qd_state >= n) {
+                  return err_numerical("[{}] the reference's H_eff has {} eigenvalues and {} "
+                                       "eigenvector elements, and state {} is differenced",
+                                       kName, n, g.lagrangian.eigenvectors.size(), qd_state);
+                }
+                qd_reference_state.assign(g.lagrangian.eigenvectors.begin() +
+                                              static_cast<std::ptrdiff_t>(qd_state * n),
+                                          g.lagrangian.eigenvectors.begin() +
+                                              static_cast<std::ptrdiff_t>((qd_state + 1) * n));
+                FBF_LOG_INFO("hessian: reference {}-QD-NEVPT2 state {} of {}, E = {:.10f}, QD gap "
+                             "{:.3e}, smallest CASSCF root gap {:.3e}, E_{{n+1}} - E_n {:.3e}, "
+                             "max |zeta| {:.3e}",
+                             std::same_as<G, nevpt2::QdPcGradient> ? "PC" : "SC", qd_state, n,
+                             g.lagrangian.eigenvalues[qd_state], g.heff_gap, g.root_gap, edge,
+                             g.max_zeta);
+                return {};
+              } else {
+                return err_numerical("[{}] differences a QD-NEVPT2 state, and the reference's "
+                                     "[{}] is state-specific",
+                                     kName, Nevpt2GradientStep::kName);
+              }
+            },
+            at_reference.gradient));
+      }
       // The tightened re-solve's tolerances, at the reference's energy and
       // non-redundant pairs (core-other and active-virtual), as mcscf::solve
       // counts them.
@@ -890,9 +1060,58 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                              g.multipliers.residual, g.multipliers.iterations);
                 return g.terms.total;
               } else {
-                return err_unsupported("[{}] differences a state-specific NEVPT2 gradient, and "
-                                       "got a QD-NEVPT2 one",
-                                       kName);
+                // QD: the state is P's eigenvector carried, not P's rank.
+                // Each displaced root's sign against the reference's (the
+                // roots matched by index, as check_displaced_casscf held
+                // them), then the state tracked; a refusal is never
+                // differenced.
+                const size_t nroots = cas.energies.size();
+                const size_t dim = cas.vectors.size() / nroots;
+                std::vector<double> signs(nroots);
+                for (size_t r = 0; r < nroots; ++r) {
+                  const auto first_r = static_cast<std::ptrdiff_t>(r * dim);
+                  const double overlap = std::transform_reduce(cas.vectors.begin() + first_r,
+                                                               cas.vectors.begin() + first_r + dim,
+                                                               reference_ci.begin() + first_r, 0.0);
+                  signs[r] = overlap < 0.0 ? -1.0 : 1.0;
+                }
+                const auto [state, overlap] = FBF_TRY(at_geometry(
+                    tracked_qd_state(qd_reference_state, g.lagrangian.eigenvectors, signs), where));
+                std::optional<Nevpt2GradientOutput> retaken;
+                const G *tracked = &g;
+                if (state != qd_state) {
+                  Nevpt2GradientStep at_state = last;
+                  at_state.state = static_cast<int32_t>(state);
+                  retaken = FBF_TRY(at_geometry(nevpt2_gradient_on(chain, at_state), where));
+                  tracked = &std::get<G>(retaken->gradient);
+                  ++reranked;
+                  FBF_LOG_INFO("hessian: {}: the reference's QD state {} is state {} here", where,
+                               qd_state, state);
+                }
+                const nevpt2::QdScLagrangian &lagrangian = tracked->lagrangian;
+                worst_zc = std::max(worst_zc, lagrangian.zc.max_z);
+                worst_gap = std::min(worst_gap, lagrangian.zc.min_gap);
+                worst_residual = std::max(worst_residual, lagrangian.multipliers.residual);
+                if (production) {
+                  const double edge = FBF_TRY(at_geometry(ensemble_edge(chain), where));
+                  worst_solve_residual =
+                      std::max(worst_solve_residual, cas.gradient_norm + cas.ci_residual_norm +
+                                                         lagrangian.multipliers.residual);
+                  worst_qd_overlap = std::min(worst_qd_overlap, overlap);
+                  worst_qd_gap = std::min(worst_qd_gap, tracked->heff_gap);
+                  worst_root_gap = std::min(worst_root_gap, tracked->root_gap);
+                  worst_edge = std::min(worst_edge, edge);
+                  worst_zeta = std::max(worst_zeta, tracked->max_zeta);
+                  FBF_LOG_INFO("hessian: {}: {}-QD-NEVPT2 state {} (|<R_P|u>| {:.9f}), E = "
+                               "{:.10f}, QD gap {:.3e}, smallest CASSCF root gap {:.3e}, "
+                               "E_{{n+1}} - E_n {:.3e}, max |zeta| {:.3e}, max |z^c| {:.3e}, "
+                               "smallest inactive gap {:.3e}, Z-vector residual {:.3e}",
+                               where, std::same_as<G, nevpt2::QdPcGradient> ? "PC" : "SC", state,
+                               overlap, lagrangian.eigenvalues[state], tracked->heff_gap,
+                               tracked->root_gap, edge, tracked->max_zeta, lagrangian.zc.max_z,
+                               lagrangian.zc.min_gap, lagrangian.multipliers.residual);
+                }
+                return tracked->total;
               }
             },
             chain.template get<Nevpt2GradientOutput>()->gradient);
@@ -942,6 +1161,8 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       std::vector<double> g = FBF_TRY(casscf_chain_gradient_at(
           shift, where, *reference, displaced_casscf, chain_nevpt2_gradient, &solved));
       tight.ci_guess = std::move(solved.second);
+      // The QD gradient's state form takes no Z-vector tolerance (its own
+      // 1e-10), so under QD only the CASSCF is tightened.
       Nevpt2GradientStep tight_nevpt2 = chain_nevpt2_gradient;
       tight_nevpt2.zvector_tolerance /= kTightened;
       return std::pair{std::move(g), FBF_TRY(casscf_chain_gradient_at(
@@ -1188,6 +1409,22 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                    "inactive gap {:.3e}, largest Z-vector residual {:.3e}",
                    gradients, worst_zc, worst_gap, worst_residual);
     }
+    if (qd) {
+      FBF_LOG_INFO("hessian: QD state {} tracked over every displacement: smallest |<R_P|u>| "
+                   "{:.9f}, {} point(s) at another rank; smallest QD gap {:.3e}, CASSCF root gap "
+                   "{:.3e}, E_{{n+1}} - E_n {:.3e}; max |zeta| {:.3e}",
+                   qd_state, worst_qd_overlap, reranked, worst_qd_gap, worst_root_gap, worst_edge,
+                   worst_zeta);
+      qd_doc = {
+          {"state", qd_state},
+          {"overlap", worst_qd_overlap},
+          {"reranked", reranked},
+          {"heff_gap", worst_qd_gap},
+          {"root_gap", worst_root_gap},
+          {"edge", std::isfinite(worst_edge) ? json(worst_edge) : json(nullptr)},
+          {"max_zeta", worst_zeta},
+      };
+    }
   }
 
   // Back to Cartesians, Q^T H Q: the numerical method's rows and the analytic
@@ -1281,6 +1518,9 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     }
     if (nevpt2_gradient) {
       doc["variant"] = nevpt2_gradient->variant == Nevpt2Variant::Pc ? "pc" : "sc";
+      if (nevpt2_gradient->quasi_degenerate) {
+        doc["qd"] = std::move(qd_doc);
+      }
       if (nevpt2_gradient->variant == Nevpt2Variant::Pc) {
         doc["pc_floor"] = pc_floor;
       }

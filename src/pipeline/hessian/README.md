@@ -3,7 +3,8 @@
 The closed-shell RHF Cartesian Hessian at the pipeline's molecule -- or a
 DF-CASSCF root's, state-specific or one root of a state average (below,
 "The CASSCF chain"), or the SC- or PC-NEVPT2 energy's on a single-state
-DF-CASSCF (below, "The NEVPT2 chain") -- its harmonic
+DF-CASSCF (below, "The NEVPT2 chain"), or, numerically, one SC- or
+PC-QD-NEVPT2 state's on a DF-SA-CASSCF (below, "The QD-NEVPT2 chain") -- its harmonic
 frequencies and normal modes, and (analytic RHF) the IR intensities. Two
 methods:
 
@@ -375,12 +376,73 @@ displaced: molecule -> ... -> eri -> overlap -> core_hamiltonian
 pipeline/config), because `hessian::df_sc_nevpt2` and `df_pc_nevpt2` take
 none of it and the numerical method is validated on the same ground: an
 integral-direct `eri` (Unsupported), a state-averaged `casscf` (`nroots`
-above 1, Unsupported), a `quasi_degenerate` gradient (Unsupported:
-QD-NEVPT2 has no Hessian here), a `frozen_core` other than 0
+above 1, Unsupported) unless `quasi_degenerate` (the next section), a
+`quasi_degenerate` gradient under the analytic method (Unsupported: the
+QD Hessian is numerical only here), a `frozen_core` other than 0
 (InvalidConfig: the Hessian is all-electron), and a `casscf_gradient`
 beside it (InvalidConfig: one energy). The outer `[casscf]` and
 `[nevpt2_gradient]` run too, once, at the molecule, as the CASSCF chain's
 do.
+
+## The QD-NEVPT2 chain
+
+With a `quasi_degenerate` `[nevpt2_gradient]` (#959), the Hessian is QD
+state P's, P its `state` (H_eff's eigenvalues ascending at the reference),
+of the DF-SA-CASSCF over `[casscf]`'s `nroots` (two or more) at its
+`weights`: `docs/nevpt2/nevpt2.tex`'s semi-numerical QD Hessian (Table
+qdhesschecks, "Part I's Algorithm semi over the QD gradient, roots tracked
+by R_P's overlap"), the oracle the analytic one is gated on. **Numerical
+only**: the analytic method refuses it (Unsupported) until there is an
+analytic QD Hessian. It is the NEVPT2 chain's numerical method above, the
+same pipelines, guards, ladder and bilinearity check, with
+`nevpt2::qd_sc_gradient` / `qd_pc_gradient` (the gradient step's state
+form) in place of the state-specific gradient:
+
+- **The CASSCF chain's guards, as they are**: the reference's orbitals
+  orthonormalized in the displaced metric, its CI vectors as the guess,
+  `check_displaced_casscf` on every root (each more the reference's root r
+  than anything else).
+- **The state is tracked, not ranked.** At the reference, state P's
+  gradient is taken once more, outside the chain, for its eigenvector
+  R_P over the reference's roots. At each displacement, each displaced
+  root's sign against the reference's (the CI overlap of root r with
+  reference root r) takes the displaced H_eff eigenvectors u_k into the
+  reference's root basis, and `tracked_qd_state` picks the k of largest
+  |⟨R_P|u_k⟩|. A k other than P's rank has its gradient retaken at state k
+  (`hessian.json`'s `qd.reranked` counts them). **Refused, Numerical,
+  naming the geometry**, when the best overlap misses 1 by 1e-3 or more,
+  or when a second state is within 1e-3 of it (a tie): the bar the
+  references in `test/gtest/data/qd_nevpt2_hessian/` were sampled under
+  (their worst miss 5.2e-7, at h up to 2.5e-3). A refused point is never
+  differenced.
+- **Logged per displacement**, at info: the tracked state and its overlap,
+  E_P, the QD gap (smallest |E_P − E_Q|, what term (ii) of the analytic
+  Hessian divides by), the smallest CASSCF root gap (what ζ and t divide
+  by), the ensemble's edge E_{n+1} − E_n, max |ζ|, and the NEVPT2 chain's
+  max |z^c|, smallest inactive gap and Z-vector residual. The edge is a
+  CASCI of n + 1 roots over the solve's own orbitals (`CasciStep`, its
+  integrals exact, so both energies are the CASCI's): where it closes the
+  averaged ensemble changes and SA-CASSCF itself is discontinuous. The
+  worst of each, over every production point, is logged once and
+  written as `hessian.json`'s `qd` (`state`, `overlap`, `reranked`,
+  `heff_gap`, `root_gap`, `edge`, `max_zeta`).
+- **The ladder's tightened re-solve tightens the CASSCF only.** The state
+  form of the QD gradient takes no Z-vector tolerance (its own 1e-10), so
+  σ_solves measures what `[casscf]`'s tolerances leave, not the Z-vector's.
+- **The step h.** As the NEVPT2 chain's, and the references' choice is the
+  guide (`test/gtest/data/qd_nevpt2_hessian/README.md`, "The step"): the
+  CI guard's overlap falls off by 9.3e-3 at 0.02 bohr on the skew H₂CO, and
+  SC needs a far smaller h than PC (3.125e-4 against 2.5e-3 there, 4e-5 on
+  the A1/B2 case) to reach its asymptotic range. Under PC, `pc_floor` is
+  read as for the NEVPT2 chain ([The PC floor](#the-pc-floor)); the
+  references are at the round-off cut, `pc_floor = 0`.
+- **Not ported from the reference's driver** (`tools/qd_nevpt2_hessian`):
+  its polish of every point to CASSCF ‖g‖ < 3e-12, its energy-prediction
+  guard, the active space's overlap bar and PC's cut-rank guard. The step
+  keeps the CASSCF chain's guards instead, as the issue asks, and the
+  driver's tracking (u_K by overlap, signed root basis) is re-done here
+  over the step's own products; the two are a candidate for one shared
+  routine.
 
 ### The PC floor
 
@@ -628,10 +690,11 @@ pc_floor = 1e-10       # PC only, the default: 0 or more, 0 the round-off cut
 
 `pc_floor` ([The PC floor](#the-pc-floor)) is read under either method,
 and only beside a `[nevpt2_gradient]` of variant `"pc"` (InvalidConfig
-otherwise, and for a negative or non-finite one). By either method `quasi_degenerate` (Unsupported), a `frozen_core` other
-than 0 (InvalidConfig), a state average (`[nevpt2_gradient]`'s own
-refusal, Unsupported) and an integral-direct `[eri]` (Unsupported) are
-refused. Numerically:
+otherwise, and for a negative or non-finite one). By either method a `frozen_core` other
+than 0 (InvalidConfig), a state average without `quasi_degenerate`
+(`[nevpt2_gradient]`'s own refusal, Unsupported) and an integral-direct
+`[eri]` (Unsupported) are refused, and `quasi_degenerate` under the
+analytic method (Unsupported). Numerically:
 
 ```toml
 [casscf]
@@ -647,6 +710,26 @@ displacement = 0.03    # bohr: the ladder's h, so its finest step is 0.0075
 ladder = true          # the default here; false for 2 gradients per coordinate
 pairs = [[7, 8]]       # the default here: every pair, up to 12 coordinates
 coordinates = [[1, 0, 0, ...], ...]  # optional: n orthonormal rows of n
+```
+
+A QD state's numerical Hessian (#959), at the h the references use for SC
+(PC's is 2.5e-3, with `pc_floor = 0.0` to match them):
+
+```toml
+[casscf]
+ncas = 3
+nelecas = 4
+nroots = 3
+weights = [0.3333333333333333, 0.3333333333333333, 0.3333333333333333]
+conv_tol = 1e-12
+conv_tol_grad = 1e-10
+[nevpt2_gradient]
+variant = "sc"         # or "pc"
+quasi_degenerate = true
+state = 1              # P: H_eff's eigenvalues ascending at the reference
+[hessian]
+method = "numerical"   # the analytic method refuses quasi_degenerate
+displacement = 3.125e-4
 ```
 
 `ladder` and `pairs` are the numerical method's, and `coordinates` the
@@ -689,11 +772,17 @@ integral-direct `[eri]` -- the default one -- is refused there too
   a negative or non-finite floor refused, and the key beside anything but
   a PC `[nevpt2_gradient]`) and its refusals before
   running (a state average, an integral-direct `[eri]` written or by
-  default, `frozen_core` 1 and `"auto"`, `quasi_degenerate`);
+  default, `frozen_core` 1 and `"auto"`, `quasi_degenerate`); a QD
+  state's numerical Hessian read (the ladder and every pair on by
+  default), over one root and a `state` past the roots refused;
   `examples/nevpt2_hessian.toml` read as the binary reads it; and
   `check_displaced_casscf` over a
   non-orthonormal basis, passing a solve that followed and refusing an active
-  orbital swapped out and two roots exchanged -- the forced refusals.
+  orbital swapped out and two roots exchanged -- the forced refusals; and
+  `tracked_qd_state` over three roots: a state that followed, at its own
+  rank and at another, and through a flipped root sign, found; without
+  the sign, a swap (best overlap 0.8) and a tie (1/√2 each) refused,
+  Numerical -- the forced state swap, never differenced.
 - `test/gtest/pipeline_hessian_gpu.cpp`, TOML configs in cc-pVDZ /
   cc-pVDZ-JKFIT run by `Calculation`:
   - `AnalyticAndNumericalDfRhfHessiansMatchPyscf`: the skew water by both
@@ -809,7 +898,7 @@ OpenMolcas comparison (the issue's optional one) was made.
   fixture's coordinates: the fixture's three pairs fail, every failing pair
   is in A″ × A″, the step returns Numerical naming them and `hessian.json`
   has no frequencies) and `PcSymmetricIsBilinear` (no pair fails). Fast:
-  the config's refusals (`quasi_degenerate`; `frozen_core` 1 and `"auto"`;
+  the config's refusals (`frozen_core` 1 and `"auto"`;
   a state average; integral-direct ERIs; a `[casscf_gradient]` beside it)
   and the step's own, run directly on a planned step changed after
   planning (the ladder under the analytic method among them), each
@@ -820,6 +909,33 @@ OpenMolcas comparison (the issue's optional one) was made.
   the ten A″ × A″ pairs failing and nothing else, (8,11) at 81 times its
   allowance; nh3 PC 62 s, none (worst 0.07). The noise table above has
   each σ term.
+
+- `test/gtest/pipeline_qd_nevpt2_hessian_gpu.cpp`, the QD-NEVPT2 chain
+  (#959), against `test/gtest/data/qd_nevpt2_hessian/` (#953, #1058), each
+  run's outer CASSCF roots and QD state energy first held to the
+  reference's to 1e-8. Slow: `ScSkewStateOneMatchesTheReference` and
+  `PcSkewStateOneMatchesTheReference` (`h2co_skew_ccpvdz_sa3`, equal
+  weights, state 1, the ladder at the reference's h, SC 3.125e-4 and PC
+  2.5e-3 at `pc_floor = 0`, no pairs: every element within 2 × the
+  reference's `bar` of its `hessian`, nothing unsettled, no point at
+  another rank); `ScCoupledA1B2FlagsNoPair` (`h2nb_sto3g_sa2` in its
+  symmetry-adapted coordinates at h = 4e-5, states 0 and 1, the 15 pairs
+  of its six vibrations: none fails, the reference's expected SC refusals
+  being none, and the frequencies are published). Fast:
+  `StepRefusesBeforeAnyDisplacedSolve`, the step's QD refusals run
+  directly (the analytic method, one root, a state past the roots).
+  Measured on the RTX 3080 (CUDA), one run each: the C1 case SC 48 s, PC
+  52 s (116 gradients each), the worst element at 0.087 (SC) and 0.019
+  (PC) of 2 × the reference's bar, σ_g 2.6e-13 and 4.0e-13, no ratio judged
+  (every finer difference under 10 floors, as in the reference), the
+  smallest |⟨R_P|u⟩| 1 − 4.0e-10 and 1 − 2.5e-8; the A1/B2 case 39 s per
+  state, no pair failing, (B2 1, B2 2) at a residual of 6.3e-8 (state 0)
+  and 2.4e-7 (state 1) against allowances of 7.8e-6 and 6.8e-6, and one
+  unsettled diagonal element, (B1 1, B1 1), warned and not gated. The C1
+  case runs `[casscf]` at `conv_tol_grad = 5e-10`: at 1e-10 the ladder's
+  tightened re-solve (1e-12) stalls at 2.3e-12 at +h along coordinate 1,
+  above `tightened_casscf_tolerances`' modelled floor (8.4e-13), and the
+  run fails there, MaxIterationsExceeded, naming the point.
 
 - `test/gtest/pipeline_nevpt2_analytic_hessian_gpu.cpp`, the analytic
   method over the NEVPT2 chain (#818), its wiring and not the Hessian (that
@@ -853,5 +969,5 @@ OpenMolcas comparison (the issue's optional one) was made.
 | File | Role |
 |------|------|
 | `hessian.cppm` | Module interface: `HessianMethod`, `HessianOutput`, `HessianStep` |
-| `hessian.cpp` | `check_displaced_casscf`; `tightened_casscf_tolerances`; the private reference-orbitals step; the ladder's stencil, verdict and restarts; `HessianStep::run`: its refusals, the analytic Hessian (RHF with its dipole derivative, CASSCF, SC- or PC-NEVPT2) over one nested pipeline, or the nested pipelines along each coordinate (RHF, CASSCF or NEVPT2 gradients) and their central differences, or the ladder, its noise and the bilinearity check; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
+| `hessian.cpp` | `check_displaced_casscf`; `tracked_qd_state`; `tightened_casscf_tolerances`; the private reference-orbitals step; the ladder's stencil, verdict and restarts; `HessianStep::run`: its refusals, the analytic Hessian (RHF with its dipole derivative, CASSCF, SC- or PC-NEVPT2) over one nested pipeline, or the nested pipelines along each coordinate (RHF, CASSCF or NEVPT2 gradients) and their central differences, or the ladder, its noise and the bilinearity check; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
 | `CMakeLists.txt` | The module library |
