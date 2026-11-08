@@ -48,3 +48,25 @@ tools/nevpt2_hessian/qd_nevpt2_hessian.py [--only CASE ...] \
 `--points DIR --keep` leaves the driver's raw points in `DIR`; `--points DIR`
 alone judges them again without the GPU. About 6 minutes per ladder (106
 points) on the RTX 3080, two ladders per case.
+
+## The C2v A1/B2 coupling case (#1058)
+
+`test/gtest/data/qd_nevpt2_hessian/h2nb_sto3g_sa2.json` and its
+`.analysis.json`, whose README section has the numbers.
+
+- `qd_coupling_analysis.py` writes the analysis first. Over
+  `tools/emit/qd_nevpt2_reference.py`'s SC- and PC-QD-NEVPT2 at R0 and at
+  two steps along each b2 coordinate, it records the tuples the guard drops
+  for one ket and the other keeps, with their transition tangents, and PC's
+  cut metric modes that the coordinate lifts with an overlap to the other
+  state. Needs the `tools` group (PySCF). About a minute, no GPU.
+- `qd_nevpt2_hessian.py` (`COUPLING_CASES`) then ladders SC's C_MN through
+  the driver's `"gradients": false` mode. It judges each ladder and the pair's
+  bilinearity, probes PC at one displaced point, and writes the record with
+  both variants' expected refusals. Seconds on the RTX 3080.
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    tools/nevpt2_hessian/qd_coupling_analysis.py
+tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h2nb_sto3g_sa2
+```
