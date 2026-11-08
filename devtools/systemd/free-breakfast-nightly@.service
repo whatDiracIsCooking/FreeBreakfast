@@ -3,6 +3,10 @@
 # manager. A template: the instance is the primary checkout's path, escaped,
 # so nothing here names a machine or a user.
 #
+# The path is %f, never %I: %I unescapes the instance but drops the leading
+# "/" that `systemd-escape --path` strips, so bash resolved the relative path
+# against $HOME and the first unattended night exited 127 (#985).
+#
 #   systemctl --user link "$PWD/devtools/systemd/free-breakfast-nightly@.service"
 #   systemctl --user link "$PWD/devtools/systemd/free-breakfast-nightly@.timer"
 #   systemctl --user enable --now \
@@ -11,8 +15,8 @@
 # docs/testing.md has the rest: linger, a first run by hand, the journal.
 
 [Unit]
-Description=free-breakfast nightly: test.py nightly in %I
-Documentation=file://%I/docs/testing.md
+Description=free-breakfast nightly: test.py nightly in %f
+Documentation=file://%f/docs/testing.md
 
 [Service]
 Type=oneshot
@@ -22,7 +26,7 @@ Type=oneshot
 # loudly rather than being rebuilt unattended. The combined variant, because
 # the nightly's cross-backend check needs hipconfig as well as nvcc.
 # `$$` is a literal `$` to systemd.
-Environment=FREE_BREAKFAST_ROOT=%I
+Environment=FREE_BREAKFAST_ROOT=%f
 ExecStart=/bin/bash -lc 'exec "$${FREE_BREAKFAST_ROOT}/devtools/devcontainer.sh" --combined shell -c "$${FREE_BREAKFAST_ROOT}/devtools/test.py nightly"'
 # A backstop only: the GPU batches have their own watchdog, and a run that
 # waits on a held card waits with no timeout of its own.

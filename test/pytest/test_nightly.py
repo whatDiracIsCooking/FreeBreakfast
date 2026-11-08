@@ -379,7 +379,10 @@ def test_the_service_runs_the_nightly_in_the_container() -> None:
     assert len(start) == 1
     assert "devtools/devcontainer.sh" in start[0] and "--combined shell -c" in start[0]
     assert "devtools/test.py nightly" in start[0]
-    assert "Environment=FREE_BREAKFAST_ROOT=%I" in text
+    # %f is the instance unescaped *with* its leading "/"; %I drops it, and the
+    # root resolved against $HOME (#985's first night, exit 127).
+    assert "Environment=FREE_BREAKFAST_ROOT=%f" in text
+    assert not [ln for ln in text.splitlines() if "%I" in ln and not ln.startswith("#")]
     assert "Type=oneshot" in text
 
 
