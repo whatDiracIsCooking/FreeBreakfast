@@ -2234,10 +2234,12 @@ through the registry, against their semi-numerical SC Hessians (#953, #1060):
   equal weights only: at 0.4/0.2/0.4 its one pair's multiplier is 2.8e-6);
   at equal weights θ's share, E_ρ's θθ block
   Σ 2(ρ_r − ρ_s)(E_s − E_r) θ^A θ^B, over 10 bars too; CP residual ≤ 1e-9,
-  asymmetry ≤ 1e-9.
+  asymmetry within the solves' error (as below).
 - `CoupledA1B2RefusesNothing`: `h2nb_sto3g_sa2` in its symmetry-adapted
   coordinates, both states: not refused (#953's SC expected-refusal set is
-  empty), nothing across irreps above 1e-9, and h_01 along B2 1, B2 2 and
+  empty), nothing across irreps or in the asymmetry above the solves'
+  error (1e-10, their residual, times the largest element of any part:
+  1.4e-8 and 2.1e-8 here), and h_01 along B2 1, B2 2 and
   their sum within 2× the C_01 ladders' bars. The fixture has no
   whole-Hessian reference for this case.
 - `RefusesBeforeAnythingRuns` (on `h2co_ccpvdz_sa2`): a frozen core, roots 0
@@ -2260,7 +2262,7 @@ Measured on the gfx1200 (`--preset hip`), each call 25–26 s:
 
 Root 2's ~1e-8 relative floor (`../nevpt2/energy/README.md`, Conditioning)
 is not reached: K = 2 sits at 0.018 bars. On the A1/B2 case the largest
-element across irreps is 2e-10 and h_01 meets the ladders to 1.2e-10 (bar
+element across irreps is 1.3e-10 to 6e-10 run to run and h_01 meets the ladders to 1.2e-10 (bar
 3.4e-9).
 
 ## The state-averaged CASSCF Hessian
