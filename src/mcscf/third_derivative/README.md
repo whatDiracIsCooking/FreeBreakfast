@@ -167,7 +167,7 @@ specific to E_SA's own multipliers.
 L_xλ, the SA Hessian's mixed Lagrangian row, is root I's CP right-hand
 side plus I^x z: z · ∂_x ∂_λ g_SA, the exact SA Hessian of E_x(λ) (the
 energy at the derivative integrals, in this same exp(K)/exp(A)
-parametrization) applied to z (`casscf_hessian.tex` eq. (sa)). The
+parametrization) applied to z (`docs/hessian/hessian.tex` eq. (sa)). The
 integrals enter E_SA linearly, so I^x z is the derivative of the Hessian
 action along z, E''[φ_a, φ_z] + E'[φ_az], along the integrals moved by I^x:
 

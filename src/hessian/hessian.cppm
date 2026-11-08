@@ -113,8 +113,8 @@ struct RhfTwoElectron {
 
 /// @brief The two-electron explicit part of the closed-shell DF-RHF nuclear
 /// Hessian at fixed orbitals: the second-derivative integrals contracted with
-/// the fitted densities, and the fit's cross terms (rhf_hessian.tex eqs. dfj,
-/// dfk). With T_mn,P = (mn|P), M = (P|Q) = L L^T, d = M^-1 T^T vec D,
+/// the fitted densities, and the fit's cross terms (docs/hessian/hessian.tex
+/// eqs. dfj, dfk). With T_mn,P = (mn|P), M = (P|Q) = L L^T, d = M^-1 T^T vec D,
 /// c_ij = M^-1 T_ij over occupied i, j, and R^x_ij = T^x_ij - M^x c_ij,
 ///
 ///     E_J^xy = u^xy^T d - 1/2 d^T M^xy d + g^x^T M^-1 g^y,  g^x = 2 Sum_i R^x_ii
@@ -171,9 +171,9 @@ df_rhf_two_electron(DeviceResources &res, const BasisSet &basis,
                     const Buffers::device<double> &c, int32_t nocc, size_t max_bytes = 0);
 
 /// @brief The two-electron explicit part of a DF-CASSCF nuclear Hessian
-/// (casscf_hessian.tex eq. df2) and its pieces, each 3 n_atom x 3 n_atom,
-/// x = 3 A + k the coordinate R_{A,k} (hartree / bohr^2), symmetric to
-/// rounding.
+/// (docs/hessian/hessian.tex eq. df2) and its pieces, each 3 n_atom x
+/// 3 n_atom, x = 3 A + k the coordinate R_{A,k} (hartree / bohr^2), symmetric
+/// to rounding.
 struct CasscfTwoElectron {
   /// @brief Sum_aP Gam~_aP T^xy_aP, Gam~ = Gamma c.
   std::vector<double> three_center;
@@ -192,7 +192,7 @@ struct CasscfTwoElectron {
 };
 
 /// @brief The two-electron explicit part of the DF-CASSCF nuclear Hessian at
-/// fixed orbitals and RDMs (casscf_hessian.tex eq. df2): with
+/// fixed orbitals and RDMs (docs/hessian/hessian.tex eq. df2): with
 /// T_a,P = (a|P) over AO pairs a, M = (P|Q) = L L^T, the fitted pairs
 /// c = T M^-1 and R^x = T^x - c M^x, for the pair-space density Gamma_ab of
 /// E_2 = 1/2 Sum Gamma_ab (T M^-1 T^T)_ab,
@@ -201,7 +201,7 @@ struct CasscfTwoElectron {
 ///
 /// the first two by @c three_center_hessian and @c metric_hessian at
 /// @c mcscf::df_gradient's Gam and W (at these RDMs, no Lagrangian), the
-/// cross term split as the design's section 6 so no pair-space Gamma is
+/// cross term split as the design's section df so no pair-space Gamma is
 /// formed: J (Gamma = D (x) D - D_a (x) D_a, two Gram matrices of L^-1 g^x),
 /// K (core with core and with active, -Sum_i Sum_pq G_pq (ip|iq)) and the
 /// active 2-RDM's (Sum Gamma_tuvw R^x_tu^T M^-1 R^y_vw).
@@ -262,9 +262,9 @@ struct CasscfTwoElectron {
     std::span<const double> gamma2, const double *rotation = nullptr);
 
 /// @brief E_xy, the fixed-parameter second derivative of a DF-CASSCF energy
-/// along the symmetric (Lowdin) connection (casscf_hessian.tex eq. exy), and
-/// its pieces, each 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
-/// (hartree / bohr^2), column-major and symmetric to rounding.
+/// along the symmetric (Lowdin) connection (docs/hessian/hessian.tex eq.
+/// exy), and its pieces, each 3 n_atom x 3 n_atom, x = 3 A + k the coordinate
+/// R_{A,k} (hartree / bohr^2), column-major and symmetric to rounding.
 struct CasscfExy {
   /// @brief Sum D^AO h^xy: T's and V's second-derivative integrals against
   /// the 1-RDM in the AO basis. S^xy is the connection's.
@@ -289,10 +289,10 @@ struct CasscfExy {
   std::vector<double> exy;
 };
 
-/// @brief E_xy of a DF-CASSCF at fixed orbitals and RDMs (casscf_hessian.tex
-/// eq. exy): the explicit part (Sum D^AO h^xy, V_nn^xy and the fitted
-/// eq. df2) plus the connection C T(x), T = (C^T S(x) C)^-1/2, to second
-/// order:
+/// @brief E_xy of a DF-CASSCF at fixed orbitals and RDMs
+/// (docs/hessian/hessian.tex eq. exy): the explicit part (Sum D^AO h^xy,
+/// V_nn^xy and the fitted eq. df2) plus the connection C T(x),
+/// T = (C^T S(x) C)^-1/2, to second order:
 ///
 ///     E_xy = explicit + 2 Sum F tau^xy + 2 Sum (F^[x] tau^y + F^[y] tau^x)
 ///            + E^(2)[tau^x, tau^y],
@@ -395,7 +395,7 @@ struct CasscfTerms {
 };
 
 /// @brief The state-specific DF-CASSCF analytic nuclear Hessian at a
-/// converged solve (casscf_hessian.tex eq. ss, Algorithm 1):
+/// converged solve (docs/hessian/hessian.tex eq. ss, Algorithm ss):
 ///
 ///     d^2E/dx dy = E_xy + E_x lambda lambda^y,   E_lambda lambda lambda^y = -E_lambda y,
 ///
@@ -612,8 +612,8 @@ df_adjoint_xy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               size_t max_bytes = 0);
 
 /// @brief The z terms of a state-averaged DF-CASSCF Lagrangian's Hessian at
-/// its multipliers z (casscf_hessian.tex eq. sa, bullets 3 and 4; for a
-/// QD-NEVPT2 state, docs/nevpt2/nevpt2.tex Eq. qd-Lxx's third derivative).
+/// its multipliers z (docs/hessian/hessian.tex eq. sa, bullets 3 and 4; for
+/// a QD-NEVPT2 state, docs/nevpt2/nevpt2.tex Eq. qd-Lxx's third derivative).
 struct SaCasscfZTerms {
   /// @brief L_xy's z part, z . d_xy g_SA: E_xy at z's densities (the
   /// z_o-rotated averaged densities and the transition RDMs of z_c), piece by
@@ -964,8 +964,8 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
              std::span<const double> coordinates = {}, double pc_floor = 0.0);
 
 /// @brief A state-averaged DF-CASSCF root's analytic nuclear Hessian and its
-/// terms (casscf_hessian.tex eq. sa), each 3 n_atom x 3 n_atom, x = 3 A + k
-/// the coordinate R_{A,k} (hartree / bohr^2), column-major.
+/// terms (docs/hessian/hessian.tex eq. sa), each 3 n_atom x 3 n_atom,
+/// x = 3 A + k the coordinate R_{A,k} (hartree / bohr^2), column-major.
 struct SaCasscfTerms {
   /// @brief d^2E_I/dx dy, the sum of the terms below symmetrized,
   /// (H + H^T) / 2: exactly symmetric.
@@ -1007,7 +1007,7 @@ struct SaCasscfTerms {
 };
 
 /// @brief Root @p root's state-averaged DF-CASSCF analytic nuclear Hessian
-/// at a converged average (casscf_hessian.tex eq. sa):
+/// at a converged average (docs/hessian/hessian.tex eq. sa):
 ///
 ///     d^2E_I/dx dy = L_xy + L_xlambda lambda^y + lambda^x^T L_lambday
 ///                    + lambda^x^T L_lambdalambda lambda^y  (+ eq. rot at equal weights),
@@ -1729,11 +1729,11 @@ struct RhfTerms {
 /// mu_c = <m| r_c |n> about the origin (@c dipole), electrons of charge -1,
 /// D = 2 C_o C_o^T, mu^x the integrals' nuclear derivative at fixed D
 /// (@c dipole_gradient), S^x the overlap's (@c overlap_derivative) and mu_pq
-/// = C_p^T mu C_q (rhf_hessian.tex section 10, step 6). U^x is the CPHF
-/// solution a Hessian solves anyway, @c df_rhf's response.cphf.solution, so
-/// the derivative costs no response solve of its own. For a neutral molecule
-/// it does not depend on the origin, and its sum over the atoms vanishes to
-/// the CPHF's tolerance.
+/// = C_p^T mu C_q (docs/hessian/hessian.tex section rhf-plan, step 6). U^x is
+/// the CPHF solution a Hessian solves anyway, @c df_rhf's
+/// response.cphf.solution, so the derivative costs no response solve of its
+/// own. For a neutral molecule it does not depend on the origin, and its sum
+/// over the atoms vanishes to the CPHF's tolerance.
 ///
 /// @p molecule is the molecule @p basis was placed on, and @p classes are
 /// @c primitive_pair_classes of @p basis. @p c is the nao x nmo orbitals,

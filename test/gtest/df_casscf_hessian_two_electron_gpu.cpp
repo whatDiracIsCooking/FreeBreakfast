@@ -1,5 +1,5 @@
 // GPU cases for hessian::df_casscf_two_electron, the two-electron explicit
-// part of the DF-CASSCF nuclear Hessian (casscf_hessian.tex eq. df2): its
+// part of the DF-CASSCF nuclear Hessian (docs/hessian/hessian.tex eq. df2): its
 // second-derivative contractions and its J, K and active cross terms against
 // data/casscf_hessian/ (tools/emit/casscf_hessian_reference.py, over the same
 // cc-pVDZ-JKFIT fit), at the fixture's orbitals and roots, for the stretched

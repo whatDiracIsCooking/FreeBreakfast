@@ -3,9 +3,9 @@
 // partial_hess_elec and hess_nuc over the same fitting set (data/rhf_hessian/,
 // tools/emit/rhf_hessian_reference.py), for the skew water and a skew
 // formaldehyde in cc-pVDZ / cc-pVDZ-JKFIT; its U^x against PySCF's CPHF
-// solutions; its symmetry; the AO form (rhf_hessian.tex's hess-ao, over W^y)
-// built here from the same U^x, whose asymmetry is the CPHF residual's, against
-// it; and the refusals.
+// solutions; its symmetry; the AO form (docs/hessian/hessian.tex eq. hess-ao,
+// over W^y) built here from the same U^x, whose asymmetry is the CPHF
+// residual's, against it; and the refusals.
 
 #include <gtest/gtest.h>
 

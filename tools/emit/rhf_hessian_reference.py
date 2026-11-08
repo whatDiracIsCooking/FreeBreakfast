@@ -6,7 +6,7 @@ The response part of the closed-shell DF-RHF nuclear Hessian is everything the
 orbitals' first-order response contributes: PySCF's `pyscf.df.hessian.rhf`
 total less its explicit part, `partial_hess_elec` + `hess_nuc` (the second
 derivative integrals contracted with the converged D, W and D (x) D). The
-design (`rhf_hessian.tex`'s hess-sym) writes it
+design (`docs/hessian/hessian.tex` eq. hess-sym) writes it
 
     -4 B^x . U^y - 2 (Sigma + Sigma^T) + 2 Omega + Theta,
 

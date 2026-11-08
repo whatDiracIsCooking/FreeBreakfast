@@ -5,14 +5,15 @@ the closed-shell DF-RHF one, **`df_rhf`**, every term of it returned beside
 the symmetrized total. Its parts are entry points of their own: the
 **response part**, everything the orbitals' first-order response adds to the
 explicit part (the second-derivative integrals contracted with D, W and
-D ⊗ D, and V_nn's), in the symmetric form of the design (`rhf_hessian.tex`
-eq. hess-sym, Algorithm 1 lines 2–9); and the explicit part's
+D ⊗ D, and V_nn's), in the symmetric form of the design (`docs/hessian/hessian.tex`
+eq. hess-sym, Algorithm hessian lines 2–9; "the design" below is that
+document); and the explicit part's
 **two-electron terms**, the fitted Coulomb and exchange energies
 differentiated twice at fixed orbitals, the fit's cross terms included (eqs.
 dfj, dfk). Beside them, the **dipole derivative** the same CPHF solution
 gives, `rhf_dipole_derivative`, and the **IR intensities** it projects to,
 `infrared_intensities`. For DF-CASSCF: the **CASSCF two-electron
-explicit part**, `df_casscf_two_electron` (`casscf_hessian.tex` eq. df2),
+explicit part**, `df_casscf_two_electron` (eq. df2),
 the **fixed-parameter second derivative** E_xy built on it,
 `df_casscf_exy` (eq. exy) and, with a rotation, its derivative along
 C → C (1 + ε K) (a state average's **L_xy z_o part**), the
@@ -68,7 +69,7 @@ n_occ — not pipeline types, so this module stays below `pipeline`, as
 
 ## The whole Hessian
 
-`df_rhf` is the design's Algorithm 1 end to end:
+`df_rhf` is the design's Algorithm hessian end to end:
 
     H = H_1e + V_nn^xy + E_J^xy + E_x^xy + H_resp,
     H_1e = Σ_mn D_mn (T + V)^xy_mn − W_mn S^xy_mn,   D = 2 C_o C_oᵀ, W = 2 C_o ε_o C_oᵀ
@@ -122,9 +123,9 @@ is 1.1e-11 against the bend's 0.12, and the frequencies (1776.03, 4113.30,
 
 ## The dipole derivative and IR intensities
 
-`rhf_dipole_derivative` is design §10 step 6: with μ_c = ⟨m| r_c |n⟩ about
+`rhf_dipole_derivative` is the design's section rhf-plan, step 6: with μ_c = ⟨m| r_c |n⟩ about
 the origin (`dipole`), electrons of charge −1 and D^x = D_U^x − D_S^x
-(rhf_hessian.tex eq. dy),
+(eq. dy),
 
     dμ/dx = −tr(D μ^x) − tr(D^x μ) + Z_A e_k
           = −tr(D μ^x) − 4 Σ_ai U^x_ai μ_ai + 2 Σ_ij S^x_ij μ_ij + Z_A e_k
@@ -222,7 +223,7 @@ symmetric to rounding. (The design's −4 Bᵀ U is the unsymmetrized term.)
    (−F + G), one dgmm (S diag(ε_i)) and one axpy over every coordinate.
 4. **The CPHF**, `response::cphf`, every column in lockstep. Its result is
    returned as is: U^x, the residuals and the sweep count. U^x is what
-   `rhf_dipole_derivative` reuses for the IR intensities (design §10, step 6).
+   `rhf_dipole_derivative` reuses for the IR intensities (the design's section rhf-plan, step 6).
 5. **The terms**, over the oo blocks packed to n_occ² × 3 n_atom: P = Bᵀ U +
    S_ooᵀ F_oo (two gemms), H = −2 (P + Pᵀ) (one geam), then
    H += 2 S_ooᵀ (G_oo + S_oo ∘ E), E_ij = ε_i + ε_j (a dgmm, an axpy and a
@@ -378,7 +379,7 @@ barely show in.
 
 ## The CASSCF two-electron explicit part
 
-`df_casscf_two_electron` is `casscf_hessian.tex` eq. (df2) at fixed orbitals
+`df_casscf_two_electron` is `docs/hessian/hessian.tex` eq. (df2) at fixed orbitals
 and RDMs, for the energy E₂ = ½ Σ Γ_ab (T M⁻¹ Tᵀ)_ab over AO pairs a, b:
 
     E₂^xy = Σ Γ̃ T^xy − ½ Σ Ŵ M^xy + Σ_ab Γ_ab [R^x M⁻¹ R^yᵀ]_ab,
@@ -404,7 +405,7 @@ writes them: one root's own for its explicit part (the fixture's per-root
    d = c · G_J, d_a = c · G_a by gemvs (G_J = diag(2_core, γ),
    G_a = diag(0_core, γ) over the occupied orbitals), and the core rows and
    active pairs packed out of it by geams.
-2. **The cross term** is split as the design's §6, so no pair-space Γ is
+2. **The cross term** is split as the design's section df, so no pair-space Γ is
    formed. With r^x = L⁻¹ R^x over the occupied pairs, one **atom block**
    (the three coordinates of one atom, 3 naux n_occ² doubles) built exactly
    as `df_rhf_two_electron` builds it (`occupied_atom_block`, the
@@ -472,7 +473,7 @@ digits quoted.
 
 ## The CASSCF fixed-parameter second derivative
 
-`df_casscf_exy` is `casscf_hessian.tex` eq. (exy): the second derivative of
+`df_casscf_exy` is `docs/hessian/hessian.tex` eq. (exy): the second derivative of
 the energy at fixed orbital rotations and CI, the orbitals carried by the
 symmetric (Löwdin) connection C T(x), T = (Cᵀ S(x) C)^−½, to second order:
 
@@ -495,7 +496,7 @@ auto e = hessian::df_casscf_exy(res, molecule, basis, classes, aux, h, b, l, c, 
 **The ⅜ terms are not optional.** The linearized connection 1 − ½ S^x δx
 is not orthonormal at second order; τ^xy's ⅜ (S^x S^y + S^y S^x) is what
 makes it so, and without it E_xy is wrong by about its own size (the design's
-§10: 0.93 against finite differences; `DroppingTheThreeEighthsTermsMisses`
+section checks: 0.93 against finite differences; `DroppingTheThreeEighthsTermsMisses`
 below measures it here).
 
 **Any densities.** γ and Γ are any active 1- and 2-RDMs over the closed-shell
@@ -597,7 +598,7 @@ size.
 
 ## L_xy's z_o part
 
-A state-averaged root's L_xy = E_I,xy + z · ∂_xy g_SA (`casscf_hessian.tex`
+A state-averaged root's L_xy = E_I,xy + z · ∂_xy g_SA (`docs/hessian/hessian.tex`
 eq. sa) takes E_xy at z's densities: the transition RDMs of z_c, which fit
 the form above (E_xy at root I's RDMs plus them, as `mcscf::df_gradient`
 takes them), and the z_o-rotated densities K D − D K and K on each index of
@@ -706,7 +707,7 @@ sequence as before.
 
 ## The state-specific CASSCF Hessian
 
-`df_casscf` is `casscf_hessian.tex` eq. (ss), Algorithm 1: at a converged
+`df_casscf` is `docs/hessian/hessian.tex` eq. (ss), Algorithm ss: at a converged
 state-specific DF-CASSCF,
 
     d²E/dx dy = E_xy + E_xλ λ^y,   E_λλ λ^y = −E_λy,
@@ -1294,7 +1295,7 @@ as large as Φ itself at a random adjoint); the chunked run against the whole
 
 ## The state-averaged z terms
 
-A state average's root I has the Hessian of its Lagrangian (`casscf_hessian.tex`
+A state average's root I has the Hessian of its Lagrangian (`docs/hessian/hessian.tex`
 eq. sa): E_I,xy plus the z terms, z = root I's multipliers,
 
     L_xy = E_I,xy + z · ∂_xy g_SA,      L_xλ = ∂_x ∂_λ E_I + z · ∂_x ∂_λ g_SA,
@@ -2495,7 +2496,7 @@ auto seam = hessian::df_qd_pc_nevpt2_crossing(res, ..., solution, ncore, ncas, 0
 
 ## The state-averaged CASSCF Hessian
 
-`df_sacasscf` is `casscf_hessian.tex` eq. (sa) for root I of a converged
+`df_sacasscf` is `docs/hessian/hessian.tex` eq. (sa) for root I of a converged
 state average, every term from a merged part, no integrals of its own:
 
     d²E_I/dx dy = L_xy + L_xλ λ^y + λ^xᵀ L_λy + λ^xᵀ L_λλ λ^y   (+ eq. rot at equal weights),

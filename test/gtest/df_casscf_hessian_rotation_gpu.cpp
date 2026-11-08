@@ -1,18 +1,17 @@
-// GPU cases for the z_o part of a state-averaged DF-CASSCF Hessian's L_xy:
-// E_xy (casscf_hessian.tex eq. exy) differentiated along the orbital rotation
+// GPU cases for the z_o part of a state-averaged DF-CASSCF Hessian's L_xy: E_xy
+// (docs/hessian/hessian.tex eq. exy) differentiated along the orbital rotation
 // C -> C (1 + e K_z) at fixed MO-basis RDMs, by hessian::df_casscf_exy and
 // df_casscf_two_electron with a rotation and mcscf::df_derivatives'
 // fock_rotated, at the averaged RDMs and K_z = the fixture's z_orb. The
-// fixture's L_xy z part (data/casscf_hessian/, z_one_electron ...
-// exy_z) is that at z's densities, orbital and CI parts together, so the
-// test adds the z_c part the merged entry points already give (E_xy at the
-// roots' transition RDMs with their first-order change, by the +/-
-// polarization of rdm12 and df_derivatives) and compares each piece and the
-// sum. The orbitals, roots and z are loaded from the fixture, never
-// re-converged: PySCF's two-root solutions are saddle points. Two roots at
-// equal weights and at (0.7, 0.3), three at equal weights and at
-// (0.5, 0.3, 0.2), every root; the z_o part's symmetry and translational sum
-// rule; and the refusal of a rotation without every orbital.
+// fixture's L_xy z part (data/casscf_hessian/, z_one_electron ... exy_z) is
+// that at z's densities, orbital and CI parts together, so the test adds the
+// z_c part the merged entry points already give (E_xy at the roots' transition
+// RDMs with their first-order change, by the +/- polarization of rdm12 and
+// df_derivatives) and compares each piece and the sum. The orbitals, roots and
+// z are loaded from the fixture, never re-converged: PySCF's two-root solutions
+// are saddle points. Two roots at equal weights and at (0.7, 0.3), three at
+// equal weights and at (0.5, 0.3, 0.2), every root; the z_o part's symmetry and
+// translational sum rule; and the refusal of a rotation without every orbital.
 
 #include <gtest/gtest.h>
 

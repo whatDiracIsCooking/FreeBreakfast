@@ -1,15 +1,14 @@
-// GPU cases for hessian::df_sacasscf_z: a state-averaged DF-CASSCF Hessian's
-// z terms at one root's multipliers (casscf_hessian.tex eq. sa, bullets 3 and
-// 4), L_xy's z part and L_xlambda, against test/gtest/data/casscf_hessian/
-// (tools/emit/casscf_hessian_reference.py): the stretched water's
-// SA-CAS(4,4) / 6-31G over cc-pVDZ-JKFIT at two roots (0.5, 0.5) and
-// (0.7, 0.3), three equal and (0.5, 0.3, 0.2), every root. The orbitals,
-// roots and z are the fixture's, never re-converged (PySCF's two-root
-// solutions are saddle points). Checked: L_xy's z part piece by piece
-// against z_one_electron ... exy_z, its symmetry and translational sum rule;
-// L_xlambda's covectors against root_rhs + lxl_z (their CI rows' singlet
-// part, as the fixture's are over the singlet space) and L_xlambda lambda^y
-// against lxl_lambda; and the refusals.
+// GPU cases for hessian::df_sacasscf_z: a state-averaged DF-CASSCF Hessian's z
+// terms at one root's multipliers (docs/hessian/hessian.tex eq. sa, bullets 3
+// and 4), L_xy's z part and L_xlambda, against test/gtest/data/casscf_hessian/
+// (tools/emit/casscf_hessian_reference.py): the stretched water's SA-CAS(4,4) /
+// 6-31G over cc-pVDZ-JKFIT at two roots (0.5, 0.5) and (0.7, 0.3), three equal
+// and (0.5, 0.3, 0.2), every root. The orbitals, roots and z are the fixture's,
+// never re-converged (PySCF's two-root solutions are saddle points). Checked:
+// L_xy's z part piece by piece against z_one_electron ... exy_z, its symmetry
+// and translational sum rule; L_xlambda's covectors against root_rhs + lxl_z
+// (their CI rows' singlet part, as the fixture's are over the singlet space)
+// and L_xlambda lambda^y against lxl_lambda; and the refusals.
 
 #include <gtest/gtest.h>
 

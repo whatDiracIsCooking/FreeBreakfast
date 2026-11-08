@@ -1,7 +1,7 @@
 # Root rotation
 
 The term the rotations among the averaged roots add to an **equal-weight**
-state-averaged DF-CASSCF Hessian, `casscf_hessian.tex` eq. (rot), and the
+state-averaged DF-CASSCF Hessian, `docs/hessian/hessian.tex` eq. (rot), and the
 rotations themselves, eq. (theta), for every nuclear coordinate at once:
 
     ΔH_I(x, y) = 2 Σ_{s≠I} ℋ^x_Is ℋ^y_Is / (E_I − E_s),

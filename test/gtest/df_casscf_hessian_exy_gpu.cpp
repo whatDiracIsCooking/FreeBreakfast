@@ -1,14 +1,14 @@
 // GPU cases for hessian::df_casscf_exy, the fixed-parameter second derivative
-// E_xy of a DF-CASSCF energy along the Lowdin connection (casscf_hessian.tex
-// eq. exy): each of its pieces (the explicit one-electron, V_nn and
-// two-electron parts and the connection's three terms) and their sum against
-// data/casscf_hessian/ (tools/emit/casscf_hessian_reference.py, over the same
-// cc-pVDZ-JKFIT fit), at the fixture's orbitals and roots, with F^[x] from
-// mcscf::df_derivatives at the same root: the stretched water CAS(4,4) in
-// 6-31G and in cc-pVDZ (d shells), and one root of a two-root and of a
-// three-root state average; that dropping tau^xy's 3/8 (S^x S^y + S^y S^x)
-// misses the reference; symmetry and the translational sum rule; and the
-// refusals.
+// E_xy of a DF-CASSCF energy along the Lowdin connection
+// (docs/hessian/hessian.tex eq. exy): each of its pieces (the explicit
+// one-electron, V_nn and two-electron parts and the connection's three terms)
+// and their sum against data/casscf_hessian/
+// (tools/emit/casscf_hessian_reference.py, over the same cc-pVDZ-JKFIT fit), at
+// the fixture's orbitals and roots, with F^[x] from mcscf::df_derivatives at
+// the same root: the stretched water CAS(4,4) in 6-31G and in cc-pVDZ (d
+// shells), and one root of a two-root and of a three-root state average; that
+// dropping tau^xy's 3/8 (S^x S^y + S^y S^x) misses the reference; symmetry and
+// the translational sum rule; and the refusals.
 
 #include <gtest/gtest.h>
 

@@ -1,6 +1,6 @@
 /// @file
 /// @brief The root-rotation term of an equal-weight state-averaged DF-CASSCF
-/// Hessian (casscf_hessian.tex eqs. theta and rot): the orbital-relaxed
+/// Hessian (docs/hessian/hessian.tex eqs. theta and rot): the orbital-relaxed
 /// couplings between the averaged roots, the roots' rotations among
 /// themselves, and the term they add to each root's Hessian, refused near a
 /// degeneracy. See README.md for the layouts.
