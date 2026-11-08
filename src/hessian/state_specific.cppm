@@ -1,14 +1,16 @@
 /// @file
 /// @brief What df_casscf and df_nevpt2_tangents share about a state-specific
 /// DF-CASSCF solution: its inputs checked, and its active electrons by spin
-/// from trace(gamma) and the molecule's multiplicity. Beside it, the CP solve
+/// from trace(gamma) and the molecule's multiplicity; the same for a state
+/// average, which df_sacasscf and df_qd_nevpt2_tangents share, and the
+/// mixing-rate bound they put on its roots. Beside them, the CP solve
 /// df_casscf and df_sacasscf share: zvectors with the probe column that
 /// refuses a singular H~.
 ///
 /// An internal partition (`module`, not `export module`): only this module's
 /// implementation units import it, so nothing here reaches an importer of
 /// free_breakfast.hessian. It declares the functions; df_casscf.cpp defines
-/// them. See
+/// them, but state_averaged_electrons, which df_sacasscf.cpp does. See
 /// docs/style.md, "Module-private code".
 
 module free_breakfast.hessian:state_specific;
@@ -38,6 +40,23 @@ state_specific_electrons(std::string_view who, const DeviceResources &res, const
                          const BasisSet &basis, const BasisSet &aux,
                          const Buffers::device<double> &b, const mcscf::Solution &solution,
                          int32_t ncore, int32_t ncas);
+
+/// @brief (nalpha, nbeta) of a state-averaged DF-CASSCF @p solution at
+/// @p weights, its inputs checked first: two roots or more, one positive
+/// weight per root, then state_specific_electrons' checks but the root
+/// count; and no two roots under mcscf::kRootGapFloor apart (Numerical,
+/// naming them: a degeneracy). Each refusal's message starts with @p who.
+Result<std::pair<int32_t, int32_t>>
+state_averaged_electrons(std::string_view who, const DeviceResources &res, const Molecule &molecule,
+                         const BasisSet &basis, const BasisSet &aux,
+                         const Buffers::device<double> &b, const mcscf::Solution &solution,
+                         std::span<const double> weights, int32_t ncore, int32_t ncas);
+
+// The largest rotation rate between two roots, per bohr, at which a state
+// average's Hessian still describes its states: mcscf::root_rotation's
+// default max_rotation, put on lambda^x's rotations at unequal weights and on
+// eq. qd-theta's at equal ones (README.md).
+constexpr double kSaCasscfMaxRotation = 10.0;
 
 // H~'s CI response is solved to this, relative to its right-hand side
 // (RelaxedHessian::create's default, named for probed_zvectors' bar).

@@ -18,12 +18,14 @@ the **fixed-parameter second derivative** E_xy built on it,
 C → C (1 + ε K) (a state average's **L_xy z_o part**), the
 **state-specific Hessian**, `df_casscf` (eq. ss), its CP-CASSCF step λ^x on
 its own, `df_casscf_cp`, a state average's **z terms** at one root's
-multipliers, `df_sacasscf_z` (L_xy's z part and L_xλ, eq. sa), and for the
+multipliers, `df_sacasscf_z` (L_xy's z part and L_xλ, eq. sa), its
+CP-SA-CASSCF step on its own, `df_sacasscf_cp`, and for the
 NEVPT2 Hessian (milestone 24) the **parameter response and total tangent**
 t_x of (h_MO, B_MO, c), `df_nevpt2_tangents`, and the **DF second
 derivative at an MO adjoint**, Σ h̄ h^xy + Σ Λ B^xy, `df_adjoint_xy`, and
 the **SC- and PC-NEVPT2 Hessians** they assemble into, `df_sc_nevpt2` and
-`df_pc_nevpt2`, all below.
+`df_pc_nevpt2`, and for the QD-NEVPT2 Hessian the same tangent over a state
+average, `df_qd_nevpt2_tangents`, all below.
 
 ```cpp
 import free_breakfast.hessian;
@@ -988,6 +990,135 @@ the full ladder 15 s (72 solves); the ammonia's SC refusal at
 coordinate 0, PC's 22 records (both pairs at every coordinate but the
 nitrogen's z, which keeps the C3 axis).
 
+## The QD-NEVPT2 parameter response and total tangent
+
+`df_qd_nevpt2_tangents` is the same over a state average, the parameter
+response x^x of the QD-NEVPT2 Hessian and the total tangent t_x of every
+input of H^eff, (h_MO, B_MO, {c_r}) (`docs/nevpt2/nevpt2.tex`, the QD
+Hessian's parameter response: Eqs. qd-K, qd-theta, qd-gsa, and koo at
+f^SA; #961):
+
+    h_dot^x   = h1^x + κ^xᵀ h_MO + h_MO κ^x
+    B_dot^x   = W^x  + κ^xᵀ B_Q  + B_Q κ^x          (each fitted index Q)
+    c_dot^x_r = ξ^x_r + Σ_s θ^x_sr c_s              (θ_rs = −θ_sr)
+    κ^x       = κ_nr^x + κ_oo^x
+
+```cpp
+auto cp = hessian::df_sacasscf_cp(res, molecule, basis, classes, aux, h_core, b, l, solution,
+                                  weights, ncore, ncas);  // once, for every QD state
+auto t = hessian::df_qd_nevpt2_tangents(
+    res, molecule, basis, classes, aux, h_core, b, l, solution, weights, ncore, ncas, cp->cp,
+    /*pc=*/false,
+    [&](int32_t x0, int32_t count, const double *h_dot, const double *b_dot,
+        const double *c_dot, const double *kappa) -> Status { ...; return {}; });
+// t->theta: every rotation per coordinate; t->max_theta, t->max_kappa_oo;
+// t->recorded: PC's degenerate pairs
+```
+
+Three steps, block triangular, each closed once the one before it is done:
+
+1. **CP-SA-CASSCF**: `df_sacasscf_cp`, `df_sacasscf`'s λ^x on its own
+   (below), the caller's: it does not depend on the state, so one solve
+   serves every QD state. Its z_o is κ_nr (unpacked as in
+   `df_nevpt2_tangents`), its z_c the ξ^x_r (off every root), and its Θ the
+   rotations of the pairs of **unequal** weights, which E_SA sees.
+2. **The equal-weight rotations**, closed form (Eq. qd-theta):
+   θ^x_sr = 𝓗^x_sr / (E_r − E_s), 𝓗^x_sr the first-order change of
+   ⟨c_s|H|c_r⟩ along step 1: Σ ḣ1eff_tu γ^(sr)_tu + ½ Σ (tu|vw)˙ Γ^(sr)_tuvw,
+   the active Hamiltonian's tangent from `nevpt2::qd_builders_tangent`'s
+   `h1e` and `eri` against the value's transition RDMs (both integrals are
+   symmetric, so their column-major and the RDMs' row-major layouts dot
+   flat). ξ adds nothing (⟨ξ_s|H|c_r⟩ = E_r ⟨ξ_s|c_r⟩ = 0), and neither does
+   κ_oo (a core-core or virtual-virtual rotation leaves h1eff and (tu|vw)).
+   An unequal pair's Θ meets the same condition: its CP row is
+   (E_s − E_r) Θ_sr + c_s · H′ c_r + H̃^x_sr = 0.
+3. **κ_oo at f^SA** (Eq. koo, f → f^SA): `qd_builders_tangent`'s f_core and
+   f_virt along steps 1 and 2 (an equal-weight rotation does not move f^SA,
+   Eq. qd-gsa, so the tangent is taken before step 2's θ is added and serves
+   both), ε f^SA's diagonal, the solution canonical in f^SA (an off-diagonal
+   above 1e-8 is refused). The degenerate-pair rule is `df_nevpt2_tangents`'
+   (1e-6 Eh, 1e-8): SC refuses, naming the pair and the coordinate; PC
+   records it.
+
+Then c_dot = ξ + every θ, κ the total, both one-index transforms on h_dot and
+B_dot, and the chunk is the consumer's. `theta` returns every rotation
+(the CP solve's as they come, Eq. qd-theta's at the equal pairs) for the
+Hessian's L_xx actions.
+
+**Near a degeneracy it refuses.** Two roots under `mcscf::kRootGapFloor`
+(1e-8 Eh) apart are Numerical before anything runs (`state_averaged_electrons`,
+`df_sacasscf`'s check). A rotation |θ^x_sr| above 10 per bohr, the CP solve's
+or Eq. qd-theta's, is Numerical, naming the pair and the coordinate:
+`root_rotation`'s bound, where the quadratic model holds within about
+1/20 bohr. The QD gap itself is not this call's: H^eff's eigenvectors are
+the Hessian's.
+
+### `df_sacasscf_cp`
+
+`df_sacasscf`'s steps 1, 3 and 4 below, the same body stopped there (so
+`df_sacasscf`'s existing tests cover it): A, λ^x by `zvectors` with the probe
+column, the check on the unreduced equations and the bound on Θ. It takes
+weights equal for some pairs only (0.4, 0.4, 0.2), which `df_sacasscf`
+refuses later (`ThirdDerivative`'s rule): each pair is rotating or not by
+`response::rotating_pairs`, the rotating ones' Θ rows in the solve and in
+the check, an equal pair's rotation row left out of both (its residual would
+be 𝓗^x_sr itself, step 2's numerator). `SaCasscfCp` carries λ^x and the
+residuals.
+
+### Memory
+
+`df_nevpt2_tangents`', with `qd_builders_tangent`'s arrays per coordinate
+(the shared outputs and every ordered pair's RDM tangents, n² of them, three
+n_act⁶ on the diagonal and dm3's off it) in place of `builders_tangent`'s,
+and c_dot k n n_det for a chunk of k.
+
+### Tests
+
+`test/gtest/df_qd_nevpt2_tangents_gpu.cpp` (suite `HessianQdNevpt2Tangents`),
+on this tree's DF-SA-CASSCF of `qd_nevpt2/`'s `h2co_skew_ccpvdz_sa3` (C1,
+three roots at equal weights, slow tier) and `h2co_skew_ccpvdz_sa3_weighted`
+(0.4, 0.4, 0.2, the representative) through the registry. Each defining
+condition is checked on the tangent handed over, every coordinate:
+
+- CP-SA-CASSCF: `df_sacasscf_cp`'s residuals within 1e-9.
+- The rotations, every pair: ⟨ċ_s|H|c_r⟩ + ⟨c_s|H|ċ_r⟩ + ⟨c_s|Ḣ|c_r⟩ zero to
+  1e-10 of its largest summand, Ḣ's h1eff and (tu|vw) rebuilt on the host from
+  h_dot and B_dot and each product by `ci::Sigma` (H without its constant,
+  the roots' orthonormality, ċ_s · c_r + c_s · ċ_r, checked to 1e-12 beside
+  it).
+- κ_oo: f^SA's off-diagonal change along t_x (`qd_builders_tangent` at the
+  tangent handed over) zero to 1e-10 of the larger of f^(x) and κ_oo's part,
+  κᵀ f + f κ, per block and coordinate.
+
+The reference is converged to ‖g‖ < 1e-10, which takes the CI's residual to
+~6e-14: Eq. qd-theta reads H c_r = E_r c_r (ξ adds nothing to ⟨c_s|H|c_r⟩
+only at eigenvectors), and at 1e-8 the CI's ~1e-10 residual against ξ missed
+the weighted case's bar by 1.06×.
+
+`DegeneratePairRule` (slow tier): `df_nevpt2_tangents`' C3v ammonia in
+6-31G, SA-2 CAS(8,7) over its full valence, both roots A1, whose virtual e
+pairs stay degenerate: SC refused, naming a pair and a coordinate; PC's
+records. (HF's SA-2 CAS(2,2) over the σ bond and antibond is a saddle: its
+CP solve meets negative curvature.) `Refusals`: no consumer, λ^x
+short, roots 0 and 1 of the weighted case moved within the gap floor, and to
+1e-6 Eh apart (θ past the bound), and `df_sacasscf_cp` naming itself.
+
+Measured on the gfx1200 (`--preset hip`):
+
+| | equal weights | 0.4, 0.4, 0.2 |
+|---|---|---|
+| CP residual, worst column | 8.3e-11 | 7.4e-11 |
+| Rotation condition, equal pairs, worst / largest summand | 5.6e-13 | 2.3e-13 |
+| Unequal pairs' rows, absolute | (none) | 1.1e-14 |
+| κ_oo condition, worst / larger summand | 1.0e-12 | 2.4e-12 |
+| Orthonormality | 1.1e-15 | 1.7e-16 |
+| max \|θ\|, max \|κ_oo\| | 0.69, 15.5 | 0.25, 32.6 |
+| Largest equal-weight coupling 𝓗 | 0.21 | 0.037 |
+| `df_sacasscf_cp`, the tangents | 1.0 s, 0.41 s | 0.94 s, 0.39 s |
+
+The ammonia's SC refusal is at coordinate 0 (orbitals 9 and 8, 1e-11 Eh
+apart); PC records 22 pairs.
+
 ## The DF second derivative at an MO adjoint
 
 `df_adjoint_xy` is the first term of the NEVPT2 skeleton L_AB
@@ -1828,6 +1959,9 @@ be the solution's to 1e-8, or it is InvalidConfig) and the `root`. In order:
    the sum is complete without it.
 10. The sum, symmetrized; `asymmetry` is what that discarded.
 
+Steps 1, 3 and 4 are `df_sacasscf_cp` (above), and run first, before z;
+the order is otherwise as listed.
+
 **Degeneracies are refused.** Two roots under 1e-8 hartree apart are
 Numerical before anything runs. At equal weights `root_rotation` refuses a
 mixing rate max_x |θ^x_sr| above 10 per bohr; at unequal weights that rate
@@ -1886,20 +2020,21 @@ the issue also asks for waits on that step (#610).
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::df_adjoint_xy`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::CasscfZTerms`, `hessian::df_casscf_z`, `hessian::ScNevpt2Terms`, `hessian::df_sc_nevpt2`, `hessian::PcNevpt2Terms`, `hessian::df_pc_nevpt2`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::QdNevpt2Tangents`, `hessian::df_qd_nevpt2_tangents`, `hessian::df_adjoint_xy`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::CasscfZTerms`, `hessian::df_casscf_z`, `hessian::ScNevpt2Terms`, `hessian::df_sc_nevpt2`, `hessian::PcNevpt2Terms`, `hessian::df_pc_nevpt2`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::SaCasscfCp`, `hessian::df_sacasscf_cp`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build, or a batch of them from one walk |
 | `df_rhf_two_electron.cpp` | The fitted densities' second-derivative contractions and the cross terms' atom blocks |
 | `df_casscf_two_electron.cpp` | The CASSCF Γ̃ and Ŵ contractions and the J, K and active cross terms; with a rotation their product-rule derivative, the atom blocks over [C_o \| C K_o] |
 | `df_casscf_exy.cpp` | E_xy: the one-electron and nuclear-repulsion explicit terms, F, and the connection's three terms over the MO-basis B and the τ^x stack; with a rotation the z_o part, F_L and E^(2)'s commutator terms |
-| `state_specific.cppm` | Internal partition: `state_specific_electrons`, a one-root solution's inputs checked and its active electrons by spin, which `df_casscf` and `df_nevpt2_tangents` share |
+| `state_specific.cppm` | Internal partition: `state_specific_electrons`, a one-root solution's inputs checked and its active electrons by spin, which `df_casscf` and `df_nevpt2_tangents` share; `state_averaged_electrons` and `kSaCasscfMaxRotation`, the same for a state average and its rotations' bound, which `df_sacasscf` and `df_qd_nevpt2_tangents` share; `probed_zvectors` |
 | `df_casscf.cpp` | The state-specific CASSCF Hessian: E_λx, E_xy, λ^x by `zvectors` beside the probe column, the unreduced residual check, Λᵀ E_λ· and the symmetrized sum; the CP step alone (`df_casscf_cp`) |
 | `df_nevpt2_tangents.cpp` | The NEVPT2 parameter response and t_x: per chunk of derivative integrals, W^x to B's layout, the one-index transforms by κ_nr, f^(x) by `builders_tangent`, κ_oo under the degenerate-pair rule and its transform |
 | `df_adjoint_xy.cpp` | Σ h̄ h^xy + Σ Λ B^xy at a general MO adjoint: X, G, ⟨sym(G) μ^x, μ^y⟩ and the per-chunk N^y and ⟨μ^x, H^y⟩ over `df_integral_derivatives`' W^x, both by M^x's atom blocks, V^y, the Gram matrices and the second-derivative integrals at the adjoint's AO forms |
 | `df_sc_nevpt2.cpp` | The SC-NEVPT2 Hessian: E_cas, t in the coordinates, E_corr + Φ's adjoint and the gradient's multipliers, the HVP and its partnered pairs, the Z terms, the skeleton, the rotation cross terms and κ_oo rows as Gram matrices of nmo² stacks, the symmetrized sum |
 | `df_pc_nevpt2.cpp` | The PC-NEVPT2 Hessian: `df_sc_nevpt2.cpp`'s assembly over PC's adjoint and product, with its three refusals: a class kept below 1e-10, a coordinate's Schur-lift step below 1e-3 bohr, a degenerate inactive pair |
-| `df_sacasscf.cpp` | A state-averaged root's Hessian: z and λ^x by the Z-vectors, the residual check, root I's parameter Hessian by the one-hot unreduced product, the third-derivative action, the z terms, E_I,xy, eq. rot at equal weights and the symmetrized sum |
+| `df_qd_nevpt2_tangents.cpp` | The QD-NEVPT2 parameter response and t_x over a state average: per chunk, κ_nr and the CP's rotations, the active Hamiltonian's and f^SA's change by `qd_builders_tangent`, Eq. qd-theta at the equal pairs, κ_oo under the degenerate-pair rule |
+| `df_sacasscf.cpp` | A state-averaged root's Hessian, and `df_sacasscf_cp` (its λ^x alone) and `state_averaged_electrons`: z and λ^x by the Z-vectors, the residual check, root I's parameter Hessian by the one-hot unreduced product, the third-derivative action, the z terms, E_I,xy, eq. rot at equal weights and the symmetrized sum |
 | `df_sacasscf_z.cpp` | A state average's z terms at root I's z: L_xy's z part (E_xy along K(z_o), and at z_c's transition RDMs by the ± polarization) and L_xλ (root I's right-hand side + I^x z); `df_casscf_z`, the same at one root and given Z without the right-hand side, plus Λᵀ T(·, ·, Z) Λ |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |
 | `CMakeLists.txt` | Build configuration |

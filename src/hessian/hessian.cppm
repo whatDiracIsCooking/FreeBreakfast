@@ -1035,6 +1035,137 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             const mcscf::Solution &solution, std::span<const double> weights, int32_t root,
             int32_t ncore, int32_t ncas, double tolerance = 1e-10, int32_t max_iterations = 200);
 
+/// @brief @ref df_sacasscf_cp's lambda^x and the check it passed.
+struct SaCasscfCp {
+  /// @brief lambda^x, as SaCasscfTerms::cp: A lambda^x = -d_x g_SA over every
+  /// coordinate, z_o over the packed pairs, z_c (xi_r per root, off every
+  /// root) and in @c theta the rotations of the pairs of unequal weights (zero
+  /// for an equal pair).
+  response::ZVectors cp;
+  /// @brief Per coordinate, as SaCasscfTerms::residuals: the norm of every
+  /// block of A lambda^x + d_x g_SA by one product of the unreduced
+  /// operator, the rotation rows those of the pairs of unequal weights.
+  std::vector<double> residuals;
+};
+
+/// @brief lambda^x alone: @ref df_sacasscf's CP-SA-CASSCF step,
+/// A lambda^x = -d_x g_SA for every coordinate, the same solve, the same
+/// check on the unreduced equations and the same bound on the rotations,
+/// without z or any term of the Hessian. It does not depend on a root, so one
+/// solve serves every state built on the average (@ref df_qd_nevpt2_tangents);
+/// @ref df_sacasscf's SaCasscfTerms::cp is the same solution, and df_sacasscf
+/// runs this step as its own.
+///
+/// The weights may be equal for some pairs only (0.4, 0.4, 0.2): each pair of
+/// unequal weights carries its rotation Theta_sr in the solve and in the
+/// check, each equal pair none (its rotation is eq. qd-theta's, closed form;
+/// @ref df_qd_nevpt2_tangents).
+///
+/// The inputs, the refusals and the memory are @ref df_sacasscf's less the
+/// root, its messages naming hessian::df_sacasscf_cp.
+///
+/// @return lambda^x and its residuals; or @ref df_sacasscf's errors (the
+///         root's aside).
+[[nodiscard]] Result<SaCasscfCp>
+df_sacasscf_cp(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, std::span<const double> weights, int32_t ncore,
+               int32_t ncas, double tolerance = 1e-10, int32_t max_iterations = 200);
+
+/// @brief What @ref df_qd_nevpt2_tangents reports beside the tangents it hands
+/// over.
+struct QdNevpt2Tangents {
+  /// @brief The rotations among the roots per coordinate, nroots (nroots - 1)
+  /// / 2 a coordinate in (r, s) lexicographic order (ZVector::theta's), c_r
+  /// gaining theta_sr c_s: the CP solve's at a pair of unequal weights,
+  /// eq. qd-theta's at an equal one. Element (pair, x) at pair + npairs x.
+  std::vector<double> theta;
+  /// @brief max |theta^x_sr| over every coordinate and pair.
+  double max_theta{0.0};
+  /// @brief max |kappa_oo^x_pq| over every coordinate and pair.
+  double max_kappa_oo{0.0};
+  /// @brief The pairs PC recorded under the degenerate-pair rule, in
+  /// coordinate order (empty for SC).
+  std::vector<DegeneratePair> recorded;
+};
+
+/// @brief t_x, the first-order change of every input of a QD-NEVPT2
+/// effective Hamiltonian along each nuclear coordinate x = 3 A + k at a
+/// converged DF-SA-CASSCF reference, and the parameter response x_A it comes
+/// from (docs/nevpt2/nevpt2.tex, the QD Hessian's parameter response: Eqs.
+/// qd-K, qd-theta, qd-gsa and koo at f^SA), handed to @p consume a chunk of
+/// coordinates at a time:
+///
+///     h_dot^x   = h1^x + kappa^xT h_MO + h_MO kappa^x
+///     B_dot^x   = W^x + kappa^xT B_Q + B_Q kappa^x     (each fitted index Q)
+///     c_dot^x_r = xi^x_r + sum_s theta^x_sr c_s        (theta_rs = -theta_sr)
+///     kappa^x   = kappa_nr^x + kappa_oo^x,
+///
+/// in three steps, each closed once the one before it is done:
+///
+/// 1. **CP-SA-CASSCF**, @p cp (@ref df_sacasscf_cp's, the caller's, so one
+///    solve serves every QD state): kappa_nr^x, xi^x_r per root and the
+///    rotations theta^x_sr of the pairs of unequal weights.
+/// 2. **The equal-weight rotations**, Eq. qd-theta:
+///    theta^x_sr = H^x_sr / (E_r - E_s), H^x_sr the first-order change of
+///    <c_s|H|c_r> along everything above (the derivative integrals with the
+///    connection, and kappa_nr^x; xi adds nothing, being off every root): the
+///    active Hamiltonian's tangent (h1eff and (tu|vw) of
+///    @c nevpt2::qd_builders_tangent) against the roots' transition RDMs.
+/// 3. **kappa_oo at f^SA**, Eq. koo with f -> f^SA:
+///    kappa_oo^x_pq = -f^(x)_pq / (eps_p - eps_q) over the core and over the
+///    virtuals, f^(x) the change of the state-averaged Fock's blocks along
+///    steps 1 and 2 (@c nevpt2::qd_builders_tangent; an equal-weight rotation
+///    does not move it, Eq. qd-gsa), eps its diagonal, under
+///    @ref df_nevpt2_tangents' degenerate-pair rule: for SC (@p pc false) a
+///    pair under 1e-6 Eh with |f^(x)_pq| > 1e-8 is Numerical, naming the
+///    pair and the coordinate; for PC it is recorded, kappa_oo^x_pq left 0.
+///
+/// So t_x is (h_MO, B_MO, {c_r}) of the re-solved SA-CASSCF differentiated
+/// along x, its roots diagonalizing H, its core and virtuals canonical in
+/// f^SA, its active orbitals turned by no active-active rotation.
+///
+/// **Near a degeneracy it refuses.** Two roots under
+/// @c mcscf::kRootGapFloor (1e-8 Eh) apart are Numerical, naming them,
+/// before anything runs; a rotation |theta^x_sr| above 10 per bohr
+/// (@c mcscf::root_rotation's bound) is Numerical, naming the pair and the
+/// coordinate.
+///
+/// @p consume(x0, count, h_dot, b_dot, c_dot, kappa) is
+/// @ref df_nevpt2_tangents', but @p c_dot holds every root's: count blocks of
+/// nroots n_det, root r's at + r n_det in a block (the vectors' layout).
+///
+/// The inputs are @ref df_sacasscf_cp's, @p solution's core and virtuals
+/// canonical in f^SA (as the Casscf step leaves them; an off-diagonal
+/// |f_pq| above 1e-8 is refused), and @p cp at the same solution and
+/// weights. All-electron.
+///
+/// The memory is @ref df_nevpt2_tangents', with
+/// @c nevpt2::qd_builders_tangent's arrays (every ordered pair's RDMs per
+/// coordinate) in place of builders_tangent's. Queued on res.stream() with
+/// res.blas() (host pointer mode); it synchronizes many times. None of @p b
+/// and @p l may point into res.device_workspace(). The device res.dev_idx()
+/// names is made current for the call and the previous one restored.
+///
+/// @return The rotations, the largest rotation and kappa_oo, and PC's
+///         records; InvalidConfig for @ref df_sacasscf_cp's input refusals, a
+///         null @p consume, @p cp not of 3 n_atom columns over the packed
+///         pairs, the roots' determinants and the pairs of roots, or core or
+///         virtuals not canonical; Numerical at a degeneracy, a rotation past
+///         the bound, or for SC at a degenerate pair; Unsupported for naux nmo
+///         past int32_t or memory past the budget; or the first error of a
+///         part or of @p consume.
+[[nodiscard]] Result<QdNevpt2Tangents> df_qd_nevpt2_tangents(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
+    std::span<const double> weights, int32_t ncore, int32_t ncas, const response::ZVectors &cp,
+    bool pc,
+    const std::function<Status(int32_t x0, int32_t count, const double *h_dot, const double *b_dot,
+                               const double *c_dot, const double *kappa)> &consume,
+    size_t max_bytes = 0);
+
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
 /// (hartree / bohr^2), as @c gradient::RhfTerms holds the gradient's.

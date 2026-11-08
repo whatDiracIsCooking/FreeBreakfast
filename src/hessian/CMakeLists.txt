@@ -21,6 +21,7 @@ free_breakfast_add_cxx_module_library(
   IMPLEMENTATION
   df_casscf.cpp
   df_nevpt2_tangents.cpp
+  df_qd_nevpt2_tangents.cpp
   df_sc_nevpt2.cpp
   df_pc_nevpt2.cpp
   df_adjoint_xy.cpp
