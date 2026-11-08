@@ -208,8 +208,8 @@ The two differ in the program (PySCF here, the tree's own pipeline there),
 not in the quantity: the same fitting set, weights and SA-canonical
 orbitals. **Done** (#743, `coupling/h8_ring_sto3g_sa3.json`'s
 `brute_force_cross_check`): every direction and pair agrees within the two
-error bars combined, SC within 1.5e-7 (0.39 of the bars) and PC within
-2.9e-8 (0.17), below.
+error bars combined, SC within 6.4e-8 (0.10 of the bars) and PC within
+1.5e-8 (0.06), below.
 
 ### Files
 
@@ -269,7 +269,7 @@ reference (`guard.inactive_gap` has the smallest at any point).
 |---|---|---|---|---:|---|---|---|---|
 | `h2co_skew_ccpvdz_sa3` | 3, equal | 1e-3, 5e-4, 2.5e-4 | 3 directions and all 12 Cartesian | 96 | 0.1080, 0.1938 | 0.1545, 0.1986 (0.1546, 0.1985) | 0.072, 7.6e-3 | 1.0e-12, 2.8e-12 |
 | `h2co_skew_ccpvdz_sa3_weighted` | 3, 0.4/0.4/0.2 | 2.5e-4, 1.25e-4, 6.25e-5 | 3 directions | 24 | 0.1465, 0.3048 | 0.1555, 0.2029 (0.1566, 0.1907) | 2.6e-3, 3.6e-3 | 7.7e-13, 2.9e-12 |
-| `h8_ring_sto3g_sa3` | 3, equal | 6e-5, 3e-5, 1.5e-5 | 3 directions | 24 | 0.1031, 0.0217 | 0.1416, 4.7e-3 (0.1400, 6.0e-3) | —, 1.8e-3 | 7.3e-13, 2.9e-12 |
+| `h8_ring_sto3g_sa3` | 3, equal | 6e-5, 3e-5, 1.5e-5 | 3 directions | 24 | 0.1031, 0.0217 | 0.1416, 4.7e-3 (0.1400, 6.0e-3) | —, 1.8e-3 | 2.1e-14, 2.8e-12 |
 
 The points include six for the noise (below). The directions are
 `../qd_nevpt2_gradient/`'s three per case (seed 696, translation and rotation
@@ -354,6 +354,11 @@ below a floor:
     −0.0142168, −0.0142167) are flat to the noise at every step tried, and
     at a quarter of the steps the same happens along component 1. These are
     point errors of ~1e-10.
+  - **ring, SC `zeroth` 1.3e-11 and PC `zeroth` 6e-12.** Here the point
+    error is round-off, but each backend repeats its own (#1111, "Across
+    backends" below). The noise is three times the largest point
+    difference between any two of ten runs, five per card: 4.3e-12 (SC)
+    and 2.0e-12 (PC).
   - **weighted, PC `zeroth`: 3e-10.** One point along direction 2 at
     h = 1.25e-4 sits 2.2e-10 off its neighbours.
 
@@ -361,7 +366,7 @@ below a floor:
 |---|---|---|---|---|
 | `h2co_skew_ccpvdz_sa3` | 1e-11 (≤ 5.2e-13) | 2e-10 (2.1e-13) | 2e-10 (2.9e-12) | 3e-12 (4.0e-13) |
 | `h2co_skew_ccpvdz_sa3_weighted` | 1e-11 (≤ 1.5e-13) | 3.6e-12 (1.2e-12) | 3e-10 (5.9e-13) | 3e-12 (2.6e-13) |
-| `h8_ring_sto3g_sa3` | 1e-12 (≤ 3.2e-15) | 3e-12 (5.8e-13) | 3e-12 (2.1e-13) | 3e-12 (3.5e-14) |
+| `h8_ring_sto3g_sa3` | 1e-12 (≤ 3.8e-15) | 1.3e-11 (4.9e-13) | 6e-12 (5.6e-13) | 3e-12 (7.4e-14) |
 
 **Checks before writing.** Every case, family and component must pass, or
 nothing is written:
@@ -389,10 +394,10 @@ the error bar, not the finest step, is the claim.
 |---|---|---|---|---|---|
 | `h2co_skew_ccpvdz_sa3` | 8.9e-9 / 7.3e-9 | 2.0e-8, 2.2e-8, 2.2e-8 / 2.0e-8, 7.5e-8, 7.5e-8 | 4.1e-7 / 5.6e-7 | 2.0e-8, 3.3e-8, 3.3e-8 / 2.0e-8, 3.6e-8, 3.6e-8 | 4.6e-7 / 4.8e-7 |
 | `h2co_skew_ccpvdz_sa3_weighted` | 3.5e-8 | 8.0e-8, 8.4e-8, 8.3e-8 | 5.2e-8 | 8.1e-8, 3.6e-7, 3.6e-7 | 3.9e-6 |
-| `h8_ring_sto3g_sa3` | 1.1e-7 | 3.3e-8, 3.6e-8, 3.6e-8 | 2.7e-7 | 3.3e-8, 3.4e-8, 3.4e-8 | 1.4e-7 |
+| `h8_ring_sto3g_sa3` | 1.1e-7 | 3.4e-8, 3.6e-8, 3.6e-8 | 5.2e-7 | 3.4e-8, 3.4e-8, 3.4e-8 | 2.3e-7 |
 
 - **The Richardson part of each bar**, |R(fine) − R(coarse)|, is at most
-  1.6e-7 (skew H₂CO), 1.5e-6 (weighted, PC `zeroth`) and 1.7e-7 (ring). Per
+  1.6e-7 (skew H₂CO), 1.5e-6 (weighted, PC `zeroth`) and 8.2e-8 (ring). Per
   component it is never more than 0.39 of the consumer's bar, twice the
   error bar (#743's "How results are compared").
 - **Above #744's data gate of 2e-7:**
@@ -400,12 +405,13 @@ the error bar, not the finest step, is the claim.
   - the weighted case's PC `zeroth` (3.9e-6) and PC h (3.6e-7). The
     weighted case's PC point error, over the small steps its SC needs, is
     the cause.
-  - the ring's `sc_zeroth` (2.7e-7).
+  - the ring's SC and PC `zeroth` (5.2e-7, 2.3e-7), from the noise that
+    covers both backends (below).
 
   So a consumer's bar there is up to 7.8e-6 (weighted PC `zeroth`) and
   1.1e-6 elsewhere. Everything else is under 2e-7.
 - **Ladder ratios** where the floor allows: 3.93–4.02 on 8 directional and
-  12 Cartesian components of skew H₂CO, 3.96–4.09 on 7 of the ring. The
+  12 Cartesian components of skew H₂CO, 3.97–4.00 on 7 of the ring. The
   weighted case's rungs all sit under its floor, so its error bar is the
   evidence.
 
@@ -418,7 +424,7 @@ the error bar, not the finest step, is the claim.
   - skew H₂CO directions within 7.7e-10 (0.11 of the error bar), Cartesian
     within 9.5e-10 (0.13);
   - weighted within 1.1e-8 (0.32);
-  - ring within 4.3e-9 (0.04).
+  - ring within 4.0e-9 (0.04).
 
   This checks the differencing, the matching and the phase alignment
   against code that is already gated. The h difference is not compared: with
@@ -426,14 +432,15 @@ the error bar, not the finest step, is the claim.
   matched basis, not `df_nac`'s h_IJ.
 - **Against `brute_force/`** (`brute_force_cross_check`, the ring). `zeroth`
   along the same three directions matches #744's PySCF full-space overlap
-  differences within the two error bars combined: SC within 1.5e-7 (0.39 of
-  the bars), PC within 2.9e-8 (0.17). The directions are identical (miss
+  differences within the two error bars combined: SC within 6.4e-8 (0.10 of
+  the bars), PC within 1.5e-8 (0.06). The directions are identical (miss
   0.0). The pair signs, s_P s_Q read off the data (sum over components of
   ours × theirs), are [1, 1, 1] on the committed run and consistent
   (product +1) on every run. They differ from run to run because the
   solver's CI phases do.
-- **Internal:** `zeroth` against `d_nev + d_cas` within 3.6e-9 everywhere (at
-  most 0.008 of the bars summed), which checks Eqs. 47 + 48's split.
+- **Internal:** `zeroth` against `d_nev + d_cas` within 2.9e-9 on the H₂CO
+  cases and 2.6e-8 on the ring (at most 0.007 of the bars summed), which
+  checks Eqs. 47 + 48's split.
 - **Full 3N translational sum of h** (skew H₂CO): SC within 2.9e-8 (0.20 of
   twice its family's largest error bar), PC within 3.9e-9 (0.05). The
   reference parts are within 2.4e-11. Against twice the case's largest
@@ -455,6 +462,84 @@ per pair) was:
 | `h2co_skew_ccpvdz_sa3` | 5.0e-8 (`pc_d_nev`) | 0.86 |
 | `h2co_skew_ccpvdz_sa3_weighted` | 2.6e-7 (`pc_d_nev`) | 0.42 |
 | `h8_ring_sto3g_sa3` | 8.9e-8 (`sc_zeroth`) | 0.69 |
+
+That table is the bars of the time, before the ring's overlap noise was
+raised (below).
+
+#### Across backends (#1111)
+
+The ring's first record was made on the RX 9060 XT (HIP). On the RTX 3080
+(CUDA), `sc_zeroth` missed it by up to 1.41 of its bar, at pair (1, 2),
+while runs on one card agreed to within 0.40. Ten runs of one build were
+compared, five per card (diagnosis runs). With the old bars:
+
+| `sc_zeroth`, pair (1, 2), direction | 0 | 1 | 2 |
+|---|---:|---:|---:|
+| CUDA mean − HIP mean, in bars | +0.99 | −1.05 | −0.37 |
+| the same, in standard errors | 8.3 | 18.1 | 7.3 |
+| spread within CUDA, in bars | 0.59 | 0.26 | 0.24 |
+| spread within HIP, in bars | 0.12 | 0.19 | 0.15 |
+
+So the offset is **systematic**, not either card's spread. Nothing else
+shows one. In every other family and pair, the two cards' means differ by
+at most 0.08 of a bar, at `pc_zeroth`, whose spread on each card is up to
+0.66.
+
+**The source, point by point.** Each displaced point's `sc_zeroth` (1, 2)
+differs between the cards' means by up to 3.6e-12. That is δh₁₂ /
+(E₂ − E₁) at every point, to within the cards' spread, with δh₁₂ the
+difference of the same point's `sc_h` and E₂ − E₁ = 4.7e-3 Eh: an error
+in H_eff's off-diagonal rotates the displaced eigenvectors R(R) by
+δh / gap. Up to 1.6e-14 Eh of δh₁₂ against a within-card spread of
+7e-15. It is all in `sc_h_pt2`; `sc_h_reference`, the CASSCF energies,
+differ by under 2e-15.
+
+- **Not the CASSCF point.** The cards' means of `casscf_zeroth` agree to
+  1.1e-13 at every point, within its run-to-run spread of 3.2e-13. The
+  CASSCF energies agree to 1.5e-14.
+- **The class is Srsi, ket 2.** Per class, H_eff's (1, 2) from
+  `Nevpt2Output::qd_couplings` was printed at each point (three runs per
+  card, temporary instrumentation, not committed). Srsi carries 89% of the
+  difference: it differs by up to 1.9e-14 between the cards, against a
+  within-card spread of 1.1e-15. Every other class is under 2e-15. Srsi's
+  element is 5.5e-6 Eh, so this is 3.4e-9 of it.
+- Within Srsi, C₁₂ carries it, at 3.3e-14 against a 1.9e-15 spread. C₁₂
+  uses ket 2's denominators Δ_t + H²_t / N²_t. C₂₁ differs by only 5.5e-15.
+  The transition norm Σ_t T^t₁₂ agrees to 9e-16, within its spread. So the
+  numerators are not the cause. Ket 2's Srsi Rayleigh quotients are: small
+  norms make η = H / N sensitive to rounding in H and N (the same
+  conditioning as "Conditioning" in `src/nevpt2/energy/README.md`).
+- **Why it repeats on each card.** The within-card spread is 17 times
+  smaller. So the rounding is mostly deterministic: the order of a reduction
+  that one backend's library always takes and the other's does not. Atomics
+  would spread it within a card too.
+
+**What it is, and the bar.** It is round-off, conditioned by the gap 4.7e-3
+and ket 2's small Srsi norms. It is not a bug, and no change in the tree
+removes it: one backend's reduction order is not the other's. So the bar
+carries it:
+
+- The noise is three times the largest point difference between any two of
+  the ten runs, across or within cards: 4.3e-12 SC and 2.0e-12 PC, so
+  1.3e-11 and 6e-12. A point error e moves a Richardson value by up to
+  1.5 e / h, and the bar carries noise / 2h.
+- This assumes no backend's own error is larger than the difference
+  between the two. Only that difference can be measured.
+- PC shows no offset, but its spread within one card, 2.0e-12, already
+  passed what the 3e-12 floor covers (1e-12). It gets the same rule.
+
+The SC `zeroth` bar becomes 5.2e-7, and PC's becomes 2.3e-7. Both are inside
+the 5e-6 bound and inside every check before writing.
+
+**Against those bars** (the committed record is a HIP run made with them):
+
+- the ten runs: CUDA's within 0.39 of a bar and HIP's within 0.05 on
+  `sc_zeroth`, and both within 0.22 on `pc_zeroth`;
+- a CUDA regeneration (the acceptance run): within 0.30, at `sc_zeroth`
+  (1, 2).
+
+`../qd_nevpt2_gradient/`'s ring shows a smaller CUDA–HIP offset, 0.78 of a
+bar (#1107), inside its bar.
 
 ### Visibility
 

@@ -213,8 +213,13 @@ constexpr std::array kCouplingCases{
          false,
          1e-11,
          {kOverlapNoiseFloor, 3e-10}},
-    // #744's steps: the SC pair (1, 2), 4.7 mEh apart, needs them.
-    Spec{"h8_ring_sto3g_sa3", {6e-5, 3e-5, 1.5e-5}, true, false, 1e-12},
+    // #744's steps: the SC pair (1, 2), 4.7 mEh apart, needs them. Its SC
+    // overlaps carry H_eff's own rounding through 1 / (E_2 - E_1): up to
+    // 2e-14 Eh in Srsi's (1, 2) coupling, from ket 2's small norms, which
+    // each backend repeats as its own. The largest point difference of any
+    // two of ten runs, five per card, is 4.3e-12 (SC) and 2.0e-12 (PC), and
+    // the noise is three times that (README.md, "Across backends", #1111).
+    Spec{"h8_ring_sto3g_sa3", {6e-5, 3e-5, 1.5e-5}, true, false, 1e-12, {1.3e-11, 6e-12}},
 };
 
 // The measured noise's margin: a point error e moves a Richardson value by
