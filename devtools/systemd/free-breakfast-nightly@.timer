@@ -2,7 +2,7 @@
 # service file has the install commands.
 
 [Unit]
-Description=free-breakfast nightly timer for %I
+Description=free-breakfast nightly timer for %f
 
 [Timer]
 OnCalendar=*-*-* 02:30:00
