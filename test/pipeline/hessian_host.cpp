@@ -725,7 +725,8 @@ TEST(PipelineHessian, TheQdStateIsTrackedByItsEigenvectorAndASwapIsRefused) {
 // inside the eigenspace (by 45 degrees, where a one-by-one match ties) and
 // whatever their ranks, and through a flipped root sign; its miss is the
 // larger principal angle's 1 - cos, 1 - cos 0.01 for a pair tipped 0.01 rad
-// towards root 2. A third state mixed in (P's space tipped 37 degrees) is
+// towards root 2, and good to about eps at 1e-10 and below. A third state
+// mixed in (P's space tipped 37 degrees) is
 // Numerical; spans that do not fit are InvalidConfig.
 TEST(PipelineHessian, TheQdPairIsTrackedByItsEigenspaceAndAMixIsRefused) {
   const std::vector<double> pair{1.0, 0.0, 0.0, 0.0, 1.0, 0.0};
@@ -753,6 +754,23 @@ TEST(PipelineHessian, TheQdPairIsTrackedByItsEigenspaceAndAMixIsRefused) {
   ASSERT_TRUE(through_a_sign.has_value()) << through_a_sign.error().message;
   EXPECT_EQ(through_a_sign->first, (std::array<size_t, 2>{1, 2}));
   EXPECT_NEAR(through_a_sign->second, 1.0 - c, 1e-12);
+
+  // At a near-perfect match the miss is good to about eps (#1112): tipped so
+  // that 1 - cos is 1e-10, it reads 1e-10, where 1 - sigma_min from M's own
+  // sigma^2 read ~1e-8; tipped by 1e-10 rad, theta^2 / 2 = 5e-21 to 1e-12
+  // of itself.
+  const auto tipped = [&](double angle) {
+    const double ct = std::cos(angle);
+    const double st = std::sin(angle);
+    return std::vector<double>{-r * st, -r * st, ct, r * ct, r * ct, st, -r, r, 0.0};
+  };
+  const double small = 2.0 * std::asin(std::sqrt(0.5e-10)); // 1 - cos = 1e-10
+  const auto near = fb::tracked_qd_pair(pair, tipped(small), same_signs);
+  ASSERT_TRUE(near.has_value()) << near.error().message;
+  EXPECT_NEAR(near->second, 1e-10, 1e-15);
+  const auto nearer = fb::tracked_qd_pair(pair, tipped(1e-10), same_signs);
+  ASSERT_TRUE(nearer.has_value()) << nearer.error().message;
+  EXPECT_NEAR(nearer->second, 5e-21, 5e-33);
 
   // A mix: P's vector tipped 37 degrees into root 2, the third state too.
   const std::vector<double> mixed{0.8, 0.0, 0.6, 0.0, 1.0, 0.0, -0.6, 0.0, 0.8};
