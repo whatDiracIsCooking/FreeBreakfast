@@ -12,8 +12,11 @@
 //   expected-refusal set is empty, so no block is refused on state 0 (the
 //   rigid translations, round-off directions, break no symmetry); no element
 //   couples two irreps; the rotation block is the gradient's, (R_z, R_z) =
-//   v^T L G from the state's own G (no reference data); and term (ii)'s
-//   h_01 along the b2 vibrations is held to the fixture's C_01 ladders.
+//   v^T L G from the state's own G; every element of its laddered block
+//   within 2x the bar of h2nb_sto3g_sa2_hessian's state 0 (#1093: every
+//   coordinate but B1 1, B2 1 and B2 2, along which SC's surface crosses
+//   over and its reference does not ladder); and term (ii)'s h_01 along the
+//   b2 vibrations is held to the fixture's C_01 ladders.
 //   State 1 is refused by SC's conditioning rule (#1102): root 1's Si
 //   tuples keep N of 1e-10 and 3e-11, whose Hessian spreads run to run past
 //   every bar;
@@ -527,8 +530,10 @@ TEST(HessianDfQdScNevpt2, MatchesTheUnequalWeightFixture) {
 // couples no two irreps, and its rotation block is the gradient's: a
 // rotation-invariant energy has (R_z, R_z) = -(1/n) Sum_A G_A . (z x v_A),
 // v_A = z x (x_A - c) / n the coordinate's row, from the state's own G and
-// held to the solves' bar. Then the coupling h_01 along the two b2
-// vibrations (term (ii)'s input) against the C_01 ladders.
+// held to the solves' bar; its block over the coordinates
+// h2nb_sto3g_sa2_hessian's SC ladders, every element within kBars of that
+// reference (#1093). Then the coupling h_01 along the two b2 vibrations
+// (term (ii)'s input, their only check) against the C_01 ladders.
 TEST(HessianDfQdScNevpt2, CoupledA1B2RefusesStateOne) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
@@ -581,6 +586,36 @@ TEST(HessianDfQdScNevpt2, CoupledA1B2RefusesStateOne) {
                            across, solve_bar(*h));
   EXPECT_LE(across, solve_bar(*h));
   EXPECT_LE(h->asymmetry, solve_bar(*h));
+  // The laddered block against the whole-Hessian reference, element by
+  // element (the same coordinates, rows picked by label).
+  {
+    const fb::json &whole = fixture("h2nb_sto3g_sa2_hessian");
+    ASSERT_EQ(whole.at("coordinates"), doc.at("coordinates"));
+    const auto rows = whole.at("steps").at("sc").at("coordinates").get<std::vector<std::string>>();
+    const fb::json &want = whole.at("sc").at("states").at(0);
+    ASSERT_EQ(want.at("state").get<std::int32_t>(), 0);
+    const auto hessian = matrix(want.at("hessian"));
+    const auto bar = matrix(want.at("bar"));
+    ASSERT_EQ(hessian.size(), rows.size());
+    std::vector<std::size_t> at;
+    for (const std::string &row : rows) {
+      at.push_back(static_cast<std::size_t>(std::ranges::find(labels, row) - labels.begin()));
+      ASSERT_LT(at.back(), k) << row;
+    }
+    double worst = 0.0;
+    for (std::size_t j = 0; j < rows.size(); ++j) {
+      for (std::size_t i = 0; i < rows.size(); ++i) {
+        const double got = h->hessian[at[i] + (k * at[j])];
+        const double miss = std::abs(got - hessian[i][j]) / bar[i][j];
+        worst = std::max(worst, miss);
+        EXPECT_LE(miss, kBars) << "(" << rows[i] << ", " << rows[j] << ") " << got << " against "
+                               << hessian[i][j] << ", bar " << bar[i][j];
+      }
+    }
+    std::cout << std::format("[ qd a1b2  ] state 0: worst element {:.3f} bars (allowed {:g}) over "
+                             "{}\n",
+                             worst, kBars, rows);
+  }
   for (std::size_t i = 0; i < k; ++i) {
     std::string row;
     for (std::size_t j = 0; j < k; ++j) {

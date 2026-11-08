@@ -391,6 +391,11 @@ COUPLING_CASES = ("h2nb_sto3g_sa2",)
 # qd_meci.py's record of the MECIs.
 CROSSING_CASES = ("ethylene_ccpvdz_sa3_sc_meci", "ethylene_ccpvdz_sa3_pc_meci")
 MECI = "ethylene_meci"
+# The A1/B2 case's whole state Hessians (#1093), in its C2v-adapted
+# coordinates.
+SYMMETRIC_CASES = ("h2nb_sto3g_sa2_hessian",)
+# Every record of whole Hessians.
+HESSIAN_CASES = QD_CASES + CROSSING_CASES + SYMMETRIC_CASES
 
 
 def load_module(name: str, path: Path):
@@ -424,6 +429,7 @@ def test_the_qd_cases_are_there():
         + [SEARCH]
         + list(CROSSING_CASES)
         + [MECI]
+        + list(SYMMETRIC_CASES)
     )
     assert [c["name"] for c in qd_tool.CASES] == list(QD_CASES)
     for name in QD_CASES:
@@ -451,16 +457,32 @@ def test_the_qd_cases_are_there():
         assert any(len(set(w)) > 1 for w in weights), scheme
 
 
+def laddered(record: dict, scheme: str) -> list[str]:
+    """The coordinates @p scheme ladders: the step's, or every one."""
+    return record["steps"][scheme].get("coordinates", record["coordinates"]["labels"])
+
+
 def test_the_qd_ladders_are_the_recorded_gradients():
-    for name in QD_CASES + CROSSING_CASES:
+    for name in HESSIAN_CASES:
         record = qd_fixture(name)
-        n = 3 * len(record["atoms"])
-        assert record["coordinates"]["vectors"] == [
-            [1.0 if i == j else 0.0 for i in range(n)] for j in range(n)
-        ]
+        n_x = 3 * len(record["atoms"])
+        if name in SYMMETRIC_CASES:
+            assert record["coordinates"] == qd_tool.symmetry_coordinates(
+                record["atoms"]
+            )
+        else:
+            assert record["coordinates"]["vectors"] == [
+                [1.0 if i == j else 0.0 for i in range(n_x)] for j in range(n_x)
+            ]
         for scheme, part in qd_quantities(record):
             steps = record["steps"][scheme]
             h = steps["h"]
+            labels = laddered(record, scheme)
+            assert [x for x in record["coordinates"]["labels"] if x in labels] == (
+                labels
+            )
+            n = len(labels)
+            assert len(part["hessian"]) == n
             assert steps["ladder"] == stencil.steps(h)
             assert steps["displacements"] == stencil.displacements(h)
             assert len(part["points"]) == n
@@ -484,8 +506,69 @@ def test_the_qd_ladders_are_the_recorded_gradients():
             assert part["asymmetry"] == stencil.asymmetry(finest)
 
 
+def test_symmetry_sigma_reads_the_forbidden_elements():
+    # Two irreps: only the (A, B) elements are read, each rung over its gain.
+    h = 1e-3
+    ladder = [
+        [[5.0, 2.0 * stencil.noise_gain(s)], [2.0 * stencil.noise_gain(s), 7.0]]
+        for s in stencil.steps(h)
+    ]
+    assert math.isclose(qd_tool.symmetry_sigma(ladder, ["A", "B"], h), 2.0)
+
+
+def test_the_symmetric_case_is_what_the_issue_asks():
+    # The A1/B2 case's whole state Hessians (#1093), in the coupling record's
+    # coordinates: PC ladders every coordinate but its expected-refused b2
+    # vibrations, both states; SC every one but the three vibrations that
+    # lower the symmetry, state 0 alone (#1102 refuses state 1).
+    (name,) = SYMMETRIC_CASES
+    record = qd_fixture(name)
+    (case,) = qd_tool.SYMMETRIC_CASES
+    assert case["name"] == name and record["name"] == name
+    coupling_record = qd_fixture(case["coupling"])
+    assert record["coordinates"] == coupling_record["coordinates"]
+    for key in ("atoms", "ncas", "nelecas", "active", "weights"):
+        assert record[key] == coupling_record[key]
+    for key in ("basis", "aux_basis"):
+        path = ROOT / record[key]["file"]
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == record[key]["sha256"]
+    refused = {
+        c
+        for block in coupling_record["expected_refusals"]["pc"]
+        for c in block["coordinates"]
+    }
+    coords = record["coordinates"]
+    # SC skips every vibration that lowers the symmetry (README), PC the
+    # ones its expected refusals hold.
+    lowering = [
+        label
+        for label, irrep in zip(coords["labels"], coords["irreps"], strict=True)
+        if irrep != "A1" and not label.startswith(("T_", "R_"))
+    ]
+    assert lowering == ["B1 1", "B2 1", "B2 2"]
+    assert record["not_laddered"]["sc"]["coordinates"] == lowering
+    assert sorted(record["not_laddered"]["pc"]["coordinates"]) == sorted(refused)
+    assert record["schemes"] == ["sc", "pc"]
+    assert record["not_laddered"] == case["not_laddered"]
+    for scheme in record["schemes"]:
+        skipped = record["not_laddered"][scheme]
+        assert laddered(record, scheme) == [
+            x for x in coords["labels"] if x not in skipped["coordinates"]
+        ]
+        assert [p["state"] for p in record[scheme]["states"]] == [
+            k for k in range(2) if k not in skipped["states"]
+        ]
+        assert [p["pair"] for p in record[scheme]["pairs"]] == [
+            p for p in record["pairs"] if p not in skipped["pairs"]
+        ]
+    assert [p["state"] for p in record["sc"]["states"]] == [0]
+    assert [p["state"] for p in record["pc"]["states"]] == [0, 1]
+    assert record["steps"]["sc"]["h"] == 0.0003125
+    assert record["steps"]["pc"]["h"] == 0.0025
+
+
 def test_the_qd_floor_is_the_measured_noise():
-    for name in QD_CASES + CROSSING_CASES:
+    for name in HESSIAN_CASES:
         record = qd_fixture(name)
         for scheme, part in qd_quantities(record):
             noise = part["noise"]
@@ -493,6 +576,23 @@ def test_the_qd_floor_is_the_measured_noise():
             sigma = math.sqrt(
                 math.fsum(x * x for row in d for x in row) / (len(d) * len(d[0]))
             )
+            if name in SYMMETRIC_CASES:
+                # The larger of the restarts' and the forbidden elements'.
+                irreps = dict(
+                    zip(
+                        record["coordinates"]["labels"],
+                        record["coordinates"]["irreps"],
+                        strict=True,
+                    )
+                )
+                forbidden = qd_tool.symmetry_sigma(
+                    part["ladder"],
+                    [irreps[x] for x in laddered(record, scheme)],
+                    record["steps"][scheme]["h"],
+                )
+                assert math.isclose(sigma, noise["sigma_restarts"], rel_tol=1e-12)
+                assert math.isclose(forbidden, noise["sigma_forbidden"], rel_tol=1e-12)
+                sigma = max(sigma, forbidden)
             assert math.isclose(sigma, noise["sigma_g"], rel_tol=1e-12)
             assert len(d) == len(noise["pairs"]) > 0
             h = record["steps"][scheme]["h"]
@@ -502,7 +602,7 @@ def test_the_qd_floor_is_the_measured_noise():
 
 
 def test_the_qd_bars_and_ratios_follow_the_rule():
-    for name in QD_CASES + CROSSING_CASES:
+    for name in HESSIAN_CASES:
         record = qd_fixture(name)
         window = record["tolerances"]["ratio_window"]
         assert window == [0.8 * 16, 1.2 * 16]
@@ -526,7 +626,7 @@ def test_the_qd_bars_and_ratios_follow_the_rule():
 
 
 def test_every_qd_hessian_is_symmetric_to_its_bar():
-    for name in QD_CASES + CROSSING_CASES:
+    for name in HESSIAN_CASES:
         record = qd_fixture(name)
         for scheme, part in qd_quantities(record):
             assert (
@@ -537,7 +637,7 @@ def test_every_qd_hessian_is_symmetric_to_its_bar():
 def test_each_pair_sum_is_its_states_sum():
     # G is linear in W, so the pair's Hessian is its two states' sum, to the
     # three bars (each point's Z-vectors are solved per W).
-    for name in QD_CASES:
+    for name in QD_CASES + SYMMETRIC_CASES:
         record = qd_fixture(name)
         for scheme in record["schemes"]:
             states = record[scheme]["states"]
@@ -556,7 +656,7 @@ def test_each_pair_sum_is_its_states_sum():
 
 
 def test_the_qd_guard_and_the_gaps():
-    for name in QD_CASES:
+    for name in QD_CASES + SYMMETRIC_CASES:
         record = qd_fixture(name)
         g = record["guard"]
         assert g["prediction"] < 2.0
