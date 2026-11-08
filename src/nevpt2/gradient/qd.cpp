@@ -83,11 +83,9 @@ Result<QdArrays> qd_arrays(DeviceResources &res, const std::string_view who,
   return QdArrays{.x = std::move(x), .pairs = std::move(pairs)};
 }
 
-// sc_effective_hamiltonian's pairs: the shared inputs, each pair's RDMs, and
-// f3ca and f3ac on the diagonal alone; PC's conditioning floor @p pc_floor on
-// every pair (the kets' solves read it).
+// pair_inputs (declared in :builders).
 std::vector<EnergyInputs> pair_inputs(const QdArrays &q, const size_t nroots,
-                                      const double pc_floor = 0.0) {
+                                      const double pc_floor) {
   std::vector<EnergyInputs> out;
   for (size_t k = 0; k < q.pairs.size(); ++k) {
     const PairRdms &p = q.pairs[k];
@@ -147,7 +145,9 @@ Result<std::vector<PcClassEnergies>> qd_pc_energy(
 // same ones; the energies are @p walk's to keep. Every pair's inputs carry
 // @p pc_floor. With @p keep (one W, all-electron), the walk's bars are
 // copied into it as it hands them over (QdBuilderBars), before the traces'
-// and the builders' adjoints add onto them.
+// and the builders' adjoints add onto them. With @p fixed (the same), the
+// arrays and the folded bars are moved into it once the pass is done
+// (QdFixedBars).
 Result<std::vector<ScAdjoint>> qd_adjoint(
     DeviceResources &res, const std::string_view who, const ci::DeviceStringSet &alpha,
     const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao, const int32_t nmo,
@@ -158,7 +158,7 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
                                std::span<const double>, std::span<const EnergyBars>,
                                const std::function<Status(int64_t, int64_t, const EnergyBars &)> &)>
         &walk,
-    std::optional<QdBuilderBars> *keep) {
+    std::optional<QdBuilderBars> *keep, std::optional<QdFixedBars> *fixed) {
   FBF_TRY(check_weights(who, weights));
   const size_t nroots = weights.size();
   const size_t n2 = nroots * nroots;
@@ -166,7 +166,7 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
     return err_config("{}: W holds {} elements for {} roots: a whole number of n^2", who, ws.size(),
                       nroots);
   }
-  if (keep != nullptr && (ws.size() != n2 || nfrozen != 0)) {
+  if ((keep != nullptr || fixed != nullptr) && (ws.size() != n2 || nfrozen != 0)) {
     return err_config("{}: the builders' bars are kept at one W, all-electron ({} W, {} frozen)",
                       who, ws.size() / n2, nfrozen);
   }
@@ -192,6 +192,12 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
   };
   const auto none = [&] { return Buffers::device<double>(0, res.device()); };
   std::vector<std::optional<PairRdms>> kept(keep != nullptr ? n2 : 0);
+  std::vector<Buffers::device<double>> folded;
+  if (fixed != nullptr) {
+    for (size_t k = 0; k < n2; ++k) {
+      folded.push_back(none());
+    }
+  }
   // rdms_adjoint overwrites its outputs, so each call writes these and they
   // are added on.
   Buffers::device<double> bra_bar(static_cast<size_t>(ndet), res.device());
@@ -235,6 +241,9 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
       }
       FBF_TRY(run_builds_adjoint(
           res, trace_builds(x, p.dm1.data(), p.dm2.data(), p.dm3.data(), t.dm1, t.dm2, t.dm3)));
+      if (fixed != nullptr) {
+        folded[at] = FBF_TRY(copy_of(t.dm3, n6));
+      }
       FBF_TRY(rdms_adjoint(res, alpha, beta, vectors + (bra * ndet), vectors + (ket * ndet),
                            x.eri.data(), t.dm3, nullptr, nullptr, bra_bar.data(), ket_bar.data(),
                            eri_bar.data(), FBF_TRY(rdm_budget())));
@@ -309,6 +318,13 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
     };
     out.push_back(FBF_TRY(builders_adjoint(res, naux, nao, nmo, b, c, ncore, ncas, x, bar,
                                            std::move(lambda), own_rdms_adjoint)));
+    if (fixed != nullptr) {
+      // One W: the pass is done, and nothing below reads these.
+      fixed->emplace(QdFixedBars{.arrays = std::move(q),
+                                 .bar = std::move(bar),
+                                 .own = std::move(own),
+                                 .transitions = std::move(folded)});
+    }
   }
   return out;
 }
@@ -320,7 +336,7 @@ qd_adjoints(DeviceResources &res, const std::string_view who, const ci::DeviceSt
             const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
             const double *vectors, const std::span<const double> ws, const int32_t batch,
             std::vector<PcClassEnergies> *pc, const int32_t nfrozen, const double pc_floor,
-            std::optional<QdBuilderBars> *builder_bars) {
+            std::optional<QdBuilderBars> *builder_bars, std::optional<QdFixedBars> *fixed) {
   std::vector<std::vector<ClassEnergies>> elements;
   std::vector<ScAdjoint> adj = FBF_TRY(qd_adjoint(
       res, who, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, ws, nfrozen,
@@ -339,7 +355,7 @@ qd_adjoints(DeviceResources &res, const std::string_view who, const ci::DeviceSt
         }
         return {};
       },
-      builder_bars));
+      builder_bars, fixed));
   std::vector<QdScAdjoint> out;
   for (size_t k = 0; k < adj.size(); ++k) {
     out.push_back(QdScAdjoint{.elements = pc != nullptr ? std::vector<ClassEnergies>{}

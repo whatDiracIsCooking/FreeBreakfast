@@ -312,6 +312,41 @@ BuilderOutputs qd_shared_outputs(DeviceResources &res, ScArrays &x, Buffers::dev
   return out;
 }
 
+// qd_direction_arrays (declared in :builders).
+Result<QdDirectionArrays> qd_direction_arrays(
+    DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+    QdArrays &q, const std::span<const double> weights, const double *vectors, const double *h_dot,
+    const double *b_dot, const double *c_dot, Buffers::device<double> *vv_dot) {
+  ScArrays &x = q.x;
+  const auto nroots = static_cast<int64_t>(weights.size());
+  const int64_t n = x.blocks.ncas;
+  const auto ndet = static_cast<int64_t>(alpha.size()) * static_cast<int64_t>(beta.size());
+  ScArrays dot = FBF_TRY(integrals_tangent(res, x, h_dot, b_dot, vv_dot));
+  // Every pair's RDMs, Eq. qd-rdm2's first order; gamma_SA's tangent the
+  // weights' sum of the diagonal's dm1.
+  std::vector<PairRdms> pairs;
+  for (int64_t bra = 0; bra < nroots; ++bra) {
+    for (int64_t ket = 0; ket < nroots; ++ket) {
+      const bool diagonal = bra == ket;
+      PairRdms p = FBF_TRY(zeroed_rdms(res, n, diagonal));
+      FBF_TRY(pair_rdms_tangent(
+          res, alpha, beta, x, dot.eri.data(), vectors + (bra * ndet), vectors + (ket * ndet),
+          c_dot + (bra * ndet), c_dot + (ket * ndet), p.dm1.data(), p.dm2.data(), p.dm3.data(),
+          diagonal ? p.f3ca.data() : nullptr, diagonal ? p.f3ac.data() : nullptr));
+      if (diagonal) {
+        FBF_TRY(contract(res, "tu->tu", {column_operand(p.dm1.data(), {n, n})}, dot.dm1.data(),
+                         {n, n}, weights[static_cast<size_t>(bra)]));
+      }
+      pairs.push_back(std::move(p));
+    }
+  }
+  // The builders that read gamma_SA, d and g.
+  const std::vector<FockBuild> at = fock_builds(x, nullptr);
+  const std::vector<FockBuild> along = fock_builds(dot, nullptr);
+  FBF_TRY(run_builds_tangent(res, x, std::span(at).subspan(1), std::span(along).subspan(1)));
+  return QdDirectionArrays{.shared = std::move(dot), .pairs = std::move(pairs)};
+}
+
 Result<QdBuildersTangent>
 qd_builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
                     const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
@@ -330,7 +365,6 @@ qd_builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
   ScArrays &x = q.x;
   const ScopedDeviceIndex on{res.dev_idx()};
   const auto nroots = static_cast<int64_t>(weights.size());
-  const int64_t n = ncas;
   const int64_t nc = ncore;
   const int64_t nocc = nc + ncas;
   const int64_t nv = nmo - nocc;
@@ -348,36 +382,16 @@ qd_builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
   Buffers::device<double> f_virt = FBF_TRY(zeroed(res, nv * nv));
   const std::vector<FockBuild> f_at = f_oo_builds(x, vv.data(), f_core.data(), f_virt.data());
   FBF_TRY(run_builds(res, f_at));
-  const std::vector<FockBuild> at = fock_builds(x, nullptr);
 
   std::vector<QdBuilderOutputs> tangents;
   tangents.reserve(static_cast<size_t>(count));
   for (int64_t k = 0; k < count; ++k) {
     Buffers::device<double> vv_dot(0, res.device());
-    ScArrays dot =
-        FBF_TRY(integrals_tangent(res, x, h_dot + (k * nmo2), b_dot + (k * naux * nmo2), &vv_dot));
-    const double *const dirs = c_dot + (k * nroots * ndet);
-    // Every pair's RDMs, Eq. qd-rdm2's first order; gamma_SA's tangent the
-    // weights' sum of the diagonal's dm1.
-    std::vector<PairRdms> pairs;
-    for (int64_t bra = 0; bra < nroots; ++bra) {
-      for (int64_t ket = 0; ket < nroots; ++ket) {
-        const bool diagonal = bra == ket;
-        PairRdms p = FBF_TRY(zeroed_rdms(res, n, diagonal));
-        FBF_TRY(pair_rdms_tangent(
-            res, alpha, beta, x, dot.eri.data(), vectors + (bra * ndet), vectors + (ket * ndet),
-            dirs + (bra * ndet), dirs + (ket * ndet), p.dm1.data(), p.dm2.data(), p.dm3.data(),
-            diagonal ? p.f3ca.data() : nullptr, diagonal ? p.f3ac.data() : nullptr));
-        if (diagonal) {
-          FBF_TRY(contract(res, "tu->tu", {column_operand(p.dm1.data(), {n, n})}, dot.dm1.data(),
-                           {n, n}, weights[static_cast<size_t>(bra)]));
-        }
-        pairs.push_back(std::move(p));
-      }
-    }
-    // The builders that read gamma_SA, d and g; then f's two blocks.
-    const std::vector<FockBuild> along = fock_builds(dot, nullptr);
-    FBF_TRY(run_builds_tangent(res, x, std::span(at).subspan(1), std::span(along).subspan(1)));
+    QdDirectionArrays d = FBF_TRY(qd_direction_arrays(res, alpha, beta, q, weights, vectors,
+                                                      h_dot + (k * nmo2), b_dot + (k * naux * nmo2),
+                                                      c_dot + (k * nroots * ndet), &vv_dot));
+    ScArrays &dot = d.shared;
+    // f's two blocks.
     Buffers::device<double> f_core_dot = FBF_TRY(zeroed(res, nc * nc));
     Buffers::device<double> f_virt_dot = FBF_TRY(zeroed(res, nv * nv));
     FBF_TRY(run_builds_tangent(
@@ -386,7 +400,7 @@ qd_builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
     FBF_TRY(res.sync());
     tangents.push_back(
         {.shared = qd_shared_outputs(res, dot, std::move(f_core_dot), std::move(f_virt_dot)),
-         .pairs = std::move(pairs)});
+         .pairs = std::move(d.pairs)});
   }
   // The launches above read vv, which goes with this frame.
   FBF_TRY(res.sync());

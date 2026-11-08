@@ -6,7 +6,9 @@
 /// adjoints, the RDM step and the folds, beside the one-slot-dotted terms
 /// those adjoints take at the fixed bars; Phi's share is closed form; and
 /// the CI direction is on the unit sphere through the Rayleigh-normalized
-/// functional.
+/// functional. qd_sc_hessian_product: the same over qd_sc_adjoint at a
+/// fixed W, sc_effective_hamiltonian_hvp's tangent bars and every pair's
+/// RDM step, with the root set moved by c_r(K) = e^K c_r and its curvature.
 
 module free_breakfast.nevpt2.gradient;
 
@@ -31,8 +33,9 @@ import :builders; // ScArrays, the builders, their adjoints and tangents
 
 namespace free_breakfast::nevpt2 {
 
-// How far |c|^2 may sit from 1: the Rayleigh normalization's formulas are
-// taken at a unit vector, and a converged CI root is one to round-off.
+// How far |c|^2 may sit from 1, and over a root set C^T C from 1: the
+// Rayleigh normalization's and the root set's formulas are taken at unit
+// (orthonormal) vectors, and converged CI roots are so to round-off.
 constexpr double kUnitVectorTolerance = 1e-10;
 
 // The one-slot-dotted terms of one build's adjoint at fixed bars: per term,
@@ -77,21 +80,17 @@ struct BarsTangent {
 // The tangent of builders_adjoint's h_bar, Λ and y along one direction:
 // @p bar_dot holds the tangent bars the class walk handed over (zero for
 // the one-slot part alone) and @p lambda_raw its Λ, both added onto and
-// consumed; @p dot the builders' tangent along the direction, @p u its CI
-// part. Every build runs backwards at the tangent bars, the last first, as
-// builders_adjoint runs it at the bars; with @p one_slot, each also adds
-// its terms at the fixed bars @p bar with one operand at its tangent, and
-// so do the RDM step (rdms_adjoint is bilinear in its bars and c, and
-// linear in (tu|vw) through f3) and h2e's adjoint (linear in B).
-Result<BarsTangent> bars_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
-                                 const ci::DeviceStringSet &beta, const int32_t nmo,
-                                 const double *vector, const double *u, ScArrays &x, ScArrays &bar,
-                                 ScArrays &dot, ScArrays &bar_dot,
-                                 Buffers::device<double> &lambda_raw, const bool one_slot) {
-  const int64_t n = x.blocks.ncas;
-  const int64_t n4 = n * n * n * n;
-  const int64_t n6 = n4 * n * n;
-  const auto ndet = static_cast<int64_t>(alpha.size()) * static_cast<int64_t>(beta.size());
+// consumed; @p dot the builders' tangent along the direction. Every build
+// runs backwards at the tangent bars, the last first, as builders_adjoint
+// runs it at the bars; with @p one_slot, each also adds its terms at the
+// fixed bars @p bar with one operand at its tangent, and so does h2e's
+// adjoint (linear in B). @p rdm_step is the RDM step's tangent, run where
+// builders_adjoint runs its own: it reads bar_dot's RDM and γ bars, adds
+// (tu|vw)'s tangent bar onto bar_dot.eri, and returns y's.
+Result<BarsTangent> bars_tangent(DeviceResources &res, const int32_t nmo, ScArrays &x,
+                                 ScArrays &bar, ScArrays &dot, ScArrays &bar_dot,
+                                 Buffers::device<double> &lambda_raw, const bool one_slot,
+                                 const std::function<Result<Buffers::device<double>>()> &rdm_step) {
   const std::vector<FockBuild> fixed = fock_builds(x, &bar);
   const std::vector<FockBuild> tangent = fock_builds(x, &bar_dot);
   const std::vector<FockBuild> along = fock_builds(dot, nullptr);
@@ -105,9 +104,39 @@ Result<BarsTangent> bars_tangent(DeviceResources &res, const ci::DeviceStringSet
   for (size_t i = tangent.size(); i-- > 1;) {
     FBF_TRY(build_back(i));
   }
+  Buffers::device<double> y = FBF_TRY(rdm_step());
 
-  // The RDM step. Its outputs land in buffers of their own, added on: each
-  // rdms_adjoint overwrites its outputs and takes the workspace.
+  // (tu|vw)'s builder, then the folds: h2e's adjoint at B's tangent first,
+  // at the fixed bar.
+  FBF_TRY(build_back(0));
+  if (one_slot) {
+    FBF_TRY(h2e_adjoint(res, dot.blocks, bar.h2e.data(), lambda_raw.data()));
+  }
+  FoldedBars folded = FBF_TRY(fold_bars(res, nmo, x.blocks, bar_dot, lambda_raw));
+  // The launches above read this frame's buffers.
+  FBF_TRY(res.sync());
+  return BarsTangent{
+      .h_bar = std::move(folded.h_bar), .lambda = std::move(folded.lambda), .y = std::move(y)};
+}
+
+// One root's RDM step of bars_tangent, at the root @p vector and its
+// direction's CI part @p u: @p bar_dot's dm1 and dm2 bars folded into its
+// dm3's by the traces' adjoint, then the one-vector rdms_adjoint onto y and
+// (tu|vw)'s bar; with @p one_slot, its share at the fixed bars @p bar too
+// (rdms_adjoint is bilinear in its bars and c, and linear in (tu|vw)
+// through f3).
+Result<Buffers::device<double>> root_rdms_tangent(DeviceResources &res,
+                                                  const ci::DeviceStringSet &alpha,
+                                                  const ci::DeviceStringSet &beta,
+                                                  const double *vector, const double *u,
+                                                  ScArrays &x, ScArrays &bar, ScArrays &dot,
+                                                  ScArrays &bar_dot, const bool one_slot) {
+  const int64_t n = x.blocks.ncas;
+  const int64_t n4 = n * n * n * n;
+  const int64_t n6 = n4 * n * n;
+  const auto ndet = static_cast<int64_t>(alpha.size()) * static_cast<int64_t>(beta.size());
+  // Its outputs land in buffers of their own, added on: each rdms_adjoint
+  // overwrites its outputs and takes the workspace.
   FBF_TRY(run_builds_adjoint(res, trace_builds(x, x.dm1.data(), x.dm2.data(), x.dm3.data(),
                                                bar_dot.dm1.data(), bar_dot.dm2.data(),
                                                bar_dot.dm3.data())));
@@ -150,18 +179,9 @@ Result<BarsTangent> bars_tangent(DeviceResources &res, const ci::DeviceStringSet
                          bar.f3ac.data(), y_part.data(), eri_part.data(), FBF_TRY(rdm_budget())));
     FBF_TRY(add_y(y_part));
   }
-
-  // (tu|vw)'s builder, then the folds: h2e's adjoint at B's tangent first,
-  // at the fixed bar.
-  FBF_TRY(build_back(0));
-  if (one_slot) {
-    FBF_TRY(h2e_adjoint(res, dot.blocks, bar.h2e.data(), lambda_raw.data()));
-  }
-  FoldedBars folded = FBF_TRY(fold_bars(res, nmo, x.blocks, bar_dot, lambda_raw));
   // The launches above read this frame's buffers.
   FBF_TRY(res.sync());
-  return BarsTangent{
-      .h_bar = std::move(folded.h_bar), .lambda = std::move(folded.lambda), .y = std::move(y)};
+  return y;
 }
 
 // Phi's Λ at (B, D) onto @p lambda (naux x nmo^2): z g_L + D w_L
@@ -216,10 +236,11 @@ Status phi_w(DeviceResources &res, const int64_t naux, const int64_t nmo, const 
   return res.sync();
 }
 
-// y = sigma(W + W^T) applied to @p vector, W column-major ncas^2 on the
-// device: zc_adjoint's y^c at weight 1, onto @p y.
+// y_r += w_r sigma(W + W^T) c_r over the weights.size() vectors @p vectors
+// (root r's at r ndet), W column-major ncas^2 on the device: zc_adjoint's
+// y^c at those weights, onto @p y.
 Status phi_sigma(DeviceResources &res, ci::Sigma &sigma, const int64_t ncas, const double *w_act,
-                 const double *vector, double *y) {
+                 const std::span<const double> weights, const double *vectors, double *y) {
   const int64_t n = ncas;
   const std::vector<double> w = FBF_TRY(to_host(res, w_act, static_cast<size_t>(n * n)));
   std::vector<double> one_body(static_cast<size_t>(n * n));
@@ -232,9 +253,13 @@ Status phi_sigma(DeviceResources &res, ci::Sigma &sigma, const int64_t ncas, con
   const std::vector<double> no_eri(static_cast<size_t>(n * n * n * n), 0.0);
   FBF_TRY(sigma.set_integrals(res, 0.0, one_body, no_eri));
   const int64_t ndet = sigma.size();
-  Buffers::device<double> out(static_cast<size_t>(ndet), res.device());
-  FBF_TRY(sigma.apply(res, 1, vector, out.data()));
-  FBF_TRY(add_onto(res, ndet, 1, out.data(), y, ndet));
+  const auto count = static_cast<int64_t>(weights.size());
+  Buffers::device<double> out(static_cast<size_t>(ndet * count), res.device());
+  FBF_TRY(sigma.apply(res, static_cast<int32_t>(count), vectors, out.data()));
+  for (int64_t r = 0; r < count; ++r) {
+    FBF_TRY(contract(res, "a->a", {column_operand(out.data() + (r * ndet), {ndet})}, y + (r * ndet),
+                     {ndet}, weights[static_cast<size_t>(r)]));
+  }
   return res.sync();
 }
 
@@ -463,14 +488,19 @@ Result<Products> hessian_product(DeviceResources &res, const std::string_view kW
     FBF_TRY(phi_w(res, naux, nmo, nc, n, b_dot, bmo.data(), z, w_dot.data()));
     FBF_TRY(phi_w(res, naux, nmo, nc, n, bmo.data(), b_dot, z, w_dot.data()));
     Buffers::device<double> phi_y_dot = FBF_TRY(zeroed(res, ndet));
-    FBF_TRY(phi_sigma(res, sigma, n, w_act.data(), uk, phi_y_dot.data()));
-    FBF_TRY(phi_sigma(res, sigma, n, w_dot.data(), vector, phi_y_dot.data()));
+    FBF_TRY(phi_sigma(res, sigma, n, w_act.data(), one_root, uk, phi_y_dot.data()));
+    FBF_TRY(phi_sigma(res, sigma, n, w_dot.data(), one_root, vector, phi_y_dot.data()));
 
     // The product: the reverse pass's tangent at the class walk's tangent
     // bars with the one-slot terms, plus Phi's; X's own one-slot share is
     // 2 ḣ h̄ + 2 Ḃ Λ at the summed adjoint.
-    BarsTangent t = FBF_TRY(bars_tangent(res, alpha, beta, nmo, vector, uk, x, bar, dot,
-                                         both.bars[k], both.lambdas[k].whole, true));
+    const auto root_step = [&](ScArrays &bar_dot, const bool one_slot) {
+      return [&, one_slot] {
+        return root_rdms_tangent(res, alpha, beta, vector, uk, x, bar, dot, bar_dot, one_slot);
+      };
+    };
+    BarsTangent t = FBF_TRY(bars_tangent(res, nmo, x, bar, dot, both.bars[k], both.lambdas[k].whole,
+                                         true, root_step(both.bars[k], true)));
     FBF_TRY(add_onto(res, lambda_size, 1, phi_lambda_dot.data(), t.lambda.data(), lambda_size));
     FBF_TRY(add_onto(res, ndet, 1, phi_y_dot.data(), t.y.data(), ndet));
     AdjointTangent product{.h_bar = std::move(t.h_bar),
@@ -523,20 +553,19 @@ Result<Products> hessian_product(DeviceResources &res, const std::string_view kW
       p.a = FBF_TRY(antisymmetric_part(res, nmo, p.x.data()));
       return p;
     };
-    AdjointTangent slab_part =
-        FBF_TRY(finish(FBF_TRY(bars_tangent(res, alpha, beta, nmo, vector, uk, x, bar, dot,
-                                            slabs->bars[k], slabs->lambdas[k].whole, false)),
-                       false));
-    AdjointTangent builder_part =
-        FBF_TRY(finish(FBF_TRY(bars_tangent(res, alpha, beta, nmo, vector, uk, x, bar, dot,
-                                            builders->bars[k], builders->lambdas[k].whole, false)),
-                       false));
+    AdjointTangent slab_part = FBF_TRY(
+        finish(FBF_TRY(bars_tangent(res, nmo, x, bar, dot, slabs->bars[k], slabs->lambdas[k].whole,
+                                    false, root_step(slabs->bars[k], false))),
+               false));
+    AdjointTangent builder_part = FBF_TRY(finish(
+        FBF_TRY(bars_tangent(res, nmo, x, bar, dot, builders->bars[k], builders->lambdas[k].whole,
+                             false, root_step(builders->bars[k], false))),
+        false));
     ScArrays none = FBF_TRY(zeroed_arrays(res, naux, ncore, ncas, nvirt));
     Buffers::device<double> no_lambda = FBF_TRY(zeroed(res, lambda_size));
-    AdjointTangent one_slot_part =
-        FBF_TRY(finish(FBF_TRY(bars_tangent(res, alpha, beta, nmo, vector, uk, x, bar, dot, none,
-                                            no_lambda, true)),
-                       true));
+    AdjointTangent one_slot_part = FBF_TRY(finish(
+        FBF_TRY(bars_tangent(res, nmo, x, bar, dot, none, no_lambda, true, root_step(none, true))),
+        true));
     const auto phi_share = [&]() -> Result<AdjointTangent> {
       AdjointTangent p{.h_bar = FBF_TRY(zeroed(res, nmo2)),
                        .lambda = std::move(phi_lambda_dot),
@@ -679,6 +708,504 @@ Result<PcHessianProduct> pc_hessian_product(DeviceResources &res, const ci::Devi
                                        vector, z, directions, {}, parts, walk));
   out.products = std::move(p.products);
   out.parts = std::move(p.parts);
+  return out;
+}
+
+// ---- SC-QD: qd_sc_hessian_product ----------------------------------------
+
+// One ndet slice of the n stacked vectors @p v, root r's.
+std::span<const double> root_of(std::span<const double> v, const size_t ndet, const size_t r) {
+  return v.subspan(r * ndet, ndet);
+}
+
+// Pi(@p dot) over the roots @p c (n stacked, root r's at r ndet): the part
+// of each direction along the root set's generators (Eq. qd-K),
+// u_r = dot_r - 1/2 sum_s c_s (c_s . dot_r + c_r . dot_s), so each root's
+// out-of-span move and the in-span move's antisymmetric part; at n = 1,
+// dot - (c . dot) c. An orthogonal projection on the stacked vectors.
+std::vector<double> root_set_projection(std::span<const double> c, const size_t n,
+                                        std::span<const double> dot) {
+  const size_t ndet = c.size() / n;
+  std::vector<double> out(dot.begin(), dot.end());
+  for (size_t r = 0; r < n; ++r) {
+    for (size_t s = 0; s < n; ++s) {
+      const double coef = 0.5 * (host_dot(root_of(c, ndet, s), root_of(dot, ndet, r)) +
+                                 host_dot(root_of(c, ndet, r), root_of(dot, ndet, s)));
+      for (size_t e = 0; e < ndet; ++e) {
+        out[(r * ndet) + e] -= coef * c[(s * ndet) + e];
+      }
+    }
+  }
+  return out;
+}
+
+// K @p y, K the generator of the projected direction @p u (Pi's image) over
+// the roots @p c: K = sum_r (xi_r c_r^T - c_r xi_r^T) + C A C^T with
+// xi_r = u_r - sum_s c_s (c_s . u_r) and A = C^T U, so
+// K y = sum_r [u_r (c_r . y) - c_r (xi_r . y)].
+std::vector<double> generator_apply(std::span<const double> c, const size_t n,
+                                    std::span<const double> u, std::span<const double> y) {
+  const size_t ndet = y.size();
+  std::vector<double> out(ndet, 0.0);
+  for (size_t r = 0; r < n; ++r) {
+    const std::span<const double> ur = root_of(u, ndet, r);
+    double xi_y = host_dot(ur, y);
+    for (size_t s = 0; s < n; ++s) {
+      xi_y -= host_dot(root_of(c, ndet, s), ur) * host_dot(root_of(c, ndet, s), y);
+    }
+    const double cy = host_dot(root_of(c, ndet, r), y);
+    for (size_t e = 0; e < ndet; ++e) {
+      out[e] += (cy * ur[e]) - (xi_y * c[(r * ndet) + e]);
+    }
+  }
+  return out;
+}
+
+// K^*(M) for M = sum_i a_i b_i^T over the m stacked pairs (@p a, @p b): the
+// gradient over raw CI directions t (n stacked) of <M, K(Pi t)>_F, n stacked
+// vectors in the tangent space:
+//   K^*(M)_r = (1 - P) (M - M^T) c_r + 1/2 sum_s c_s (Q_sr - Q_rs),
+// Q = C^T M C and P the roots' projector. K^*(sum_r y_r c_r^T) is Pi(y).
+std::vector<double> generator_adjoint(std::span<const double> c, const size_t n,
+                                      std::span<const double> a, std::span<const double> b) {
+  const size_t ndet = c.size() / n;
+  const size_t m = a.size() / ndet;
+  // c_s . a_i and c_s . b_i.
+  std::vector<double> ca(n * m);
+  std::vector<double> cb(n * m);
+  for (size_t s = 0; s < n; ++s) {
+    for (size_t i = 0; i < m; ++i) {
+      ca[(s * m) + i] = host_dot(root_of(c, ndet, s), root_of(a, ndet, i));
+      cb[(s * m) + i] = host_dot(root_of(c, ndet, s), root_of(b, ndet, i));
+    }
+  }
+  const auto q = [&](const size_t s, const size_t r) {
+    double sum = 0.0;
+    for (size_t i = 0; i < m; ++i) {
+      sum += ca[(s * m) + i] * cb[(r * m) + i];
+    }
+    return sum;
+  };
+  std::vector<double> out(n * ndet, 0.0);
+  for (size_t r = 0; r < n; ++r) {
+    const std::span<double> v = std::span(out).subspan(r * ndet, ndet);
+    for (size_t i = 0; i < m; ++i) {
+      for (size_t e = 0; e < ndet; ++e) {
+        v[e] += (a[(i * ndet) + e] * cb[(r * m) + i]) - (b[(i * ndet) + e] * ca[(r * m) + i]);
+      }
+    }
+    for (size_t s = 0; s < n; ++s) {
+      const double coef = host_dot(root_of(c, ndet, s), v) - (0.5 * (q(s, r) - q(r, s)));
+      for (size_t e = 0; e < ndet; ++e) {
+        v[e] -= coef * c[(s * ndet) + e];
+      }
+    }
+  }
+  return out;
+}
+
+// The QD RDM step of bars_tangent along one direction, at the roots
+// @p vectors of @p weights and the direction's CI part @p u (n stacked):
+// each root r's own bars' tangent @p own_dot[r] takes w_r times bar_dot's
+// gamma_SA bar, folds by the traces' adjoint and goes through the
+// one-vector rdms_adjoint at c_r onto y_r and (tu|vw)'s bar; with
+// @p one_slot, root r's share at its fixed own bars as sc_hessian_product's
+// root's (three calls), and each transition's at its fixed dm3 bar, the
+// bra/ket rdms_adjoint at (u_M, u_N): bilinear in (bra, ket), its bra's bar
+// is linear in the ket alone and its ket's in the bra, so the one call is
+// both roots' tangent. y starts at @p y_walk, the transitions' share the
+// walk handed over, when given.
+Result<Buffers::device<double>>
+qd_rdms_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                const ci::DeviceStringSet &beta, const std::span<const double> weights,
+                const double *vectors, const double *u, QdFixedBars &fixed, ScArrays &dot,
+                ScArrays &bar_dot, std::span<PairRdms> own_dot,
+                const Buffers::device<double> *y_walk, const bool one_slot) {
+  ScArrays &x = fixed.arrays.x;
+  const int64_t n = x.blocks.ncas;
+  const int64_t n4 = n * n * n * n;
+  const int64_t n6 = n4 * n * n;
+  const auto nroots = static_cast<int64_t>(weights.size());
+  const auto ndet = static_cast<int64_t>(alpha.size()) * static_cast<int64_t>(beta.size());
+  Buffers::device<double> y = FBF_TRY(zeroed(res, nroots * ndet));
+  if (y_walk != nullptr) {
+    FBF_TRY(add_onto(res, nroots * ndet, 1, y_walk->data(), y.data(), nroots * ndet));
+  }
+  Buffers::device<double> y_part(static_cast<size_t>(ndet), res.device());
+  Buffers::device<double> spare(static_cast<size_t>(ndet), res.device());
+  Buffers::device<double> eri_part(static_cast<size_t>(n4), res.device());
+  const auto add_y = [&](const Buffers::device<double> &from, const int64_t root) {
+    return add_onto(res, ndet, 1, from.data(), y.data() + (root * ndet), ndet);
+  };
+  const auto add_eri = [&] {
+    return add_onto(res, n4, 1, eri_part.data(), bar_dot.eri.data(), n4);
+  };
+  Buffers::device<double> no_dm3 = FBF_TRY(zeroed(res, one_slot ? n6 : 0));
+  for (int64_t r = 0; r < nroots; ++r) {
+    const double *const cr = vectors + (r * ndet);
+    const double *const ur = u + (r * ndet);
+    PairRdms &p = fixed.arrays.pairs[static_cast<size_t>(r * (nroots + 1))];
+    PairRdms &o = own_dot[static_cast<size_t>(r)];
+    FBF_TRY(contract(res, "tu->tu", {column_operand(bar_dot.dm1.data(), {n, n})}, o.dm1.data(),
+                     {n, n}, weights[static_cast<size_t>(r)]));
+    FBF_TRY(run_builds_adjoint(res, trace_builds(x, p.dm1.data(), p.dm2.data(), p.dm3.data(),
+                                                 o.dm1.data(), o.dm2.data(), o.dm3.data())));
+    FBF_TRY(rdms_adjoint(res, alpha, beta, cr, x.eri.data(), o.dm3.data(), o.f3ca.data(),
+                         o.f3ac.data(), y_part.data(), eri_part.data(), FBF_TRY(rdm_budget())));
+    FBF_TRY(add_y(y_part, r));
+    FBF_TRY(add_eri());
+    if (!one_slot) {
+      continue;
+    }
+    const PairRdms &f = fixed.own[static_cast<size_t>(r)];
+    FBF_TRY(rdms_adjoint(res, alpha, beta, cr, ur, x.eri.data(), f.dm3.data(), f.f3ca.data(),
+                         f.f3ac.data(), y_part.data(), spare.data(), eri_part.data(),
+                         FBF_TRY(rdm_budget())));
+    FBF_TRY(add_y(y_part, r));
+    FBF_TRY(add_eri());
+    FBF_TRY(rdms_adjoint(res, alpha, beta, ur, cr, x.eri.data(), f.dm3.data(), f.f3ca.data(),
+                         f.f3ac.data(), spare.data(), y_part.data(), eri_part.data(),
+                         FBF_TRY(rdm_budget())));
+    FBF_TRY(add_y(y_part, r));
+    FBF_TRY(add_eri());
+    FBF_TRY(rdms_adjoint(res, alpha, beta, cr, dot.eri.data(), no_dm3.data(), f.f3ca.data(),
+                         f.f3ac.data(), y_part.data(), eri_part.data(), FBF_TRY(rdm_budget())));
+    FBF_TRY(add_y(y_part, r));
+  }
+  if (one_slot) {
+    // A transition dm3 does not read (tu|vw): its bar is written zero.
+    for (int64_t bra = 0; bra < nroots; ++bra) {
+      for (int64_t ket = 0; ket < nroots; ++ket) {
+        if (bra == ket) {
+          continue;
+        }
+        FBF_TRY(rdms_adjoint(res, alpha, beta, u + (bra * ndet), u + (ket * ndet), x.eri.data(),
+                             fixed.transitions[static_cast<size_t>((bra * nroots) + ket)].data(),
+                             nullptr, nullptr, y_part.data(), spare.data(), eri_part.data(),
+                             FBF_TRY(rdm_budget())));
+        FBF_TRY(add_y(y_part, bra));
+        FBF_TRY(add_y(spare, ket));
+      }
+    }
+  }
+  // The launches above read this frame's buffers.
+  FBF_TRY(res.sync());
+  return y;
+}
+
+Result<QdScHessianProduct> qd_sc_hessian_product(
+    DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+    const int32_t naux, const int32_t nao, const int32_t nmo, const double *b, const double *c,
+    const double *h, const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
+    const double *vectors, const std::span<const double> w, const double *z, const int32_t batch,
+    const MoDirections &directions, const MoDirections &partners, const bool parts) {
+  constexpr std::string_view kWho = "nevpt2::qd_sc_hessian_product";
+  const auto complete = [](const MoDirections &d) {
+    return d.count >= 0 && (d.count == 0 || (d.h != nullptr && d.b != nullptr && d.c != nullptr));
+  };
+  if (!complete(directions) || !complete(partners) || z == nullptr) {
+    return err_config("{}: {} directions and {} partners, each of h, b and c given when any are, "
+                      "and z given",
+                      kWho, directions.count, partners.count);
+  }
+  if (partners.count != 0 && partners.count != directions.count) {
+    return err_config("{}: {} partners for {} directions (none, or one per direction)", kWho,
+                      partners.count, directions.count);
+  }
+  FBF_TRY(check_weights(kWho, weights));
+  const size_t nroots = weights.size();
+  if (w.size() != nroots * nroots) {
+    return err_config("{}: W holds {} elements for {} roots: n^2", kWho, w.size(), nroots);
+  }
+  // qd_sc_adjoint's reverse pass, its arrays and folded bars kept (one W,
+  // all-electron: the Hessian this feeds refuses a frozen core).
+  QdScHessianProduct out;
+  std::optional<QdFixedBars> kept;
+  std::vector<QdScAdjoint> adj =
+      FBF_TRY(qd_adjoints(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights,
+                          vectors, w, batch, nullptr, 0, 0.0, nullptr, &kept));
+  QdScAdjoint &corr = adj.front();
+  out.elements = std::move(corr.elements);
+  QdFixedBars &fixed = *kept;
+  ScArrays &x = fixed.arrays.x;
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const int64_t nc = ncore;
+  const int64_t n = ncas;
+  const int64_t nmo2 = int64_t{nmo} * nmo;
+  const int64_t lambda_size = int64_t{naux} * nmo2;
+  const auto ndet = static_cast<int64_t>(alpha.size()) * static_cast<int64_t>(beta.size());
+  const auto nn = static_cast<int64_t>(nroots);
+  const int64_t ny = nn * ndet;
+  const auto nvirt = static_cast<int32_t>(nmo - ncore - ncas);
+  const auto count = static_cast<size_t>(directions.count);
+
+  const std::vector<double> c_host = FBF_TRY(to_host(res, vectors, static_cast<size_t>(ny)));
+  for (size_t r = 0; r < nroots; ++r) {
+    for (size_t s = 0; s < nroots; ++s) {
+      const double overlap = host_dot(root_of(c_host, static_cast<size_t>(ndet), r),
+                                      root_of(c_host, static_cast<size_t>(ndet), s));
+      if (std::abs(overlap - (r == s ? 1.0 : 0.0)) > kUnitVectorTolerance) {
+        return err_config("{}: roots {} and {} overlap by {:.17g}: the vectors must be "
+                          "orthonormal within {:g}",
+                          kWho, r, s, overlap, kUnitVectorTolerance);
+      }
+    }
+  }
+
+  // Phi^SA's adjoint at the weights; B whole in the MO basis; D (2 on the
+  // core's diagonal, gamma_SA on the active block); W at the point; and the
+  // summed adjoint's h_bar, Λ and y.
+  const ZcAdjoint phi = FBF_TRY(
+      zc_adjoint(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, z));
+  Buffers::device<double> bmo = FBF_TRY(zeroed(res, lambda_size));
+  if (naux > 0) {
+    FBF_TRY(b_mo(res, naux, nao, nmo, b, c, {.first = 0, .count = nmo}, {.first = 0, .count = nmo},
+                 bmo.data()));
+  }
+  std::vector<double> core_density(static_cast<size_t>(nmo2), 0.0);
+  for (int64_t i = 0; i < nc; ++i) {
+    core_density[static_cast<size_t>(i * (nmo + 1))] = 2.0;
+  }
+  Buffers::device<double> dens = FBF_TRY(to_device(res, core_density));
+  FBF_TRY(add_onto(res, n, n, x.dm1.data(), dens.data() + nc + (nmo * nc), nmo));
+  Buffers::device<double> w_act = FBF_TRY(zeroed(res, n * n));
+  FBF_TRY(phi_w(res, naux, nmo, nc, n, bmo.data(), bmo.data(), z, w_act.data()));
+  Buffers::device<double> h_total = FBF_TRY(zeroed(res, nmo2));
+  FBF_TRY(add_onto(res, nmo2, 1, corr.h_bar.data(), h_total.data(), nmo2));
+  FBF_TRY(add_onto(res, nmo2, 1, phi.h_bar.data(), h_total.data(), nmo2));
+  Buffers::device<double> lambda_total = FBF_TRY(zeroed(res, lambda_size));
+  FBF_TRY(add_onto(res, lambda_size, 1, corr.lambda.data(), lambda_total.data(), lambda_size));
+  FBF_TRY(add_onto(res, lambda_size, 1, phi.lambda.data(), lambda_total.data(), lambda_size));
+  std::vector<double> y_total = FBF_TRY(to_host(res, corr.y.data(), static_cast<size_t>(ny)));
+  {
+    const std::vector<double> yc = FBF_TRY(to_host(res, phi.y.data(), static_cast<size_t>(ny)));
+    for (size_t k = 0; k < y_total.size(); ++k) {
+      y_total[k] += yc[k];
+    }
+  }
+  ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
+
+  // Each direction's CI part along the generators, u = Pi(c_dot), and the
+  // QD builders' tangent along it.
+  const auto projected = [&](const MoDirections &d) -> Result<Buffers::device<double>> {
+    const auto m = static_cast<size_t>(d.count);
+    const size_t block = static_cast<size_t>(ny);
+    const std::vector<double> all = FBF_TRY(to_host(res, d.c, m * block));
+    std::vector<double> u(all.size());
+    for (size_t k = 0; k < m; ++k) {
+      const std::vector<double> uk =
+          root_set_projection(c_host, nroots, std::span(all).subspan(k * block, block));
+      std::ranges::copy(uk, u.begin() + static_cast<std::ptrdiff_t>(k * block));
+    }
+    return to_device(res, u);
+  };
+  const Buffers::device<double> u_all = FBF_TRY(projected(directions));
+  const Buffers::device<double> u_partners = FBF_TRY(projected(partners));
+  const auto tangents =
+      [&](const MoDirections &d,
+          const Buffers::device<double> &u) -> Result<std::vector<QdDirectionArrays>> {
+    std::vector<QdDirectionArrays> dots;
+    for (int64_t k = 0; k < d.count; ++k) {
+      dots.push_back(FBF_TRY(qd_direction_arrays(res, alpha, beta, fixed.arrays, weights, vectors,
+                                                 d.h + (k * nmo2), d.b + (k * lambda_size),
+                                                 u.data() + (k * ny), nullptr)));
+    }
+    return dots;
+  };
+  std::vector<QdDirectionArrays> dots = FBF_TRY(tangents(directions, u_all));
+  std::vector<QdDirectionArrays> partner_dots = FBF_TRY(tangents(partners, u_partners));
+
+  // sc_effective_hamiltonian_hvp along every direction at once, onto fresh
+  // bars: per direction the shared ones, Λ and each root's own; each
+  // transition's tangent bars, as they are handed over, folded and through
+  // the bra/ket rdms_adjoint at the roots onto that direction's y_walk.
+  std::vector<ScArrays> bar_dots;
+  std::vector<LambdaBars> lambda_dots;
+  std::vector<std::vector<PairRdms>> own_dots;
+  std::vector<Buffers::device<double>> y_walk;
+  std::vector<EnergyBars> hvp_bars;
+  std::vector<EnergyDirection> hvp_dirs;
+  std::vector<EnergyDirection> hvp_partners;
+  for (size_t k = 0; k < count; ++k) {
+    bar_dots.push_back(FBF_TRY(zeroed_arrays(res, naux, ncore, ncas, nvirt)));
+    lambda_dots.push_back(FBF_TRY(lambda_bars(res, x, nmo)));
+    own_dots.emplace_back();
+    for (size_t r = 0; r < nroots; ++r) {
+      own_dots.back().push_back(FBF_TRY(zeroed_rdms(res, n, true)));
+    }
+    y_walk.push_back(FBF_TRY(zeroed(res, ny)));
+  }
+  for (size_t k = 0; k < count; ++k) {
+    for (size_t r = 0; r < nroots; ++r) {
+      EnergyBars e = energy_bars(bar_dots[k], lambda_dots[k]);
+      PairRdms &o = own_dots[k][r];
+      e.dm1 = o.dm1.data();
+      e.dm2 = o.dm2.data();
+      e.dm3 = o.dm3.data();
+      e.f3ca = o.f3ca.data();
+      e.f3ac = o.f3ac.data();
+      hvp_bars.push_back(e);
+    }
+    std::ranges::copy(dots[k].directions(), std::back_inserter(hvp_dirs));
+  }
+  for (const QdDirectionArrays &d : partner_dots) {
+    std::ranges::copy(d.directions(), std::back_inserter(hvp_partners));
+  }
+  if (count > 0) {
+    Buffers::device<double> bra_bar(static_cast<size_t>(ndet), res.device());
+    Buffers::device<double> ket_bar(static_cast<size_t>(ndet), res.device());
+    Buffers::device<double> eri_bar(static_cast<size_t>(n * n * n * n), res.device());
+    const auto transition = [&](const int64_t u, const int64_t bra, const int64_t ket,
+                                const EnergyBars &t) -> Status {
+      PairRdms &p = fixed.arrays.pairs[static_cast<size_t>((bra * nn) + ket)];
+      FBF_TRY(run_builds_adjoint(
+          res, trace_builds(x, p.dm1.data(), p.dm2.data(), p.dm3.data(), t.dm1, t.dm2, t.dm3)));
+      FBF_TRY(rdms_adjoint(res, alpha, beta, vectors + (bra * ndet), vectors + (ket * ndet),
+                           x.eri.data(), t.dm3, nullptr, nullptr, bra_bar.data(), ket_bar.data(),
+                           eri_bar.data(), FBF_TRY(rdm_budget())));
+      double *const yu = y_walk[static_cast<size_t>(u)].data();
+      FBF_TRY(add_onto(res, ndet, 1, bra_bar.data(), yu + (bra * ndet), ndet));
+      FBF_TRY(add_onto(res, ndet, 1, ket_bar.data(), yu + (ket * ndet), ndet));
+      return {};
+    };
+    ScEffectiveHamiltonianHvp walked = FBF_TRY(
+        sc_effective_hamiltonian_hvp(res, x.walk_blocks(), pair_inputs(fixed.arrays, nroots), w,
+                                     batch, hvp_dirs, hvp_bars, transition, hvp_partners));
+    out.populated = std::move(walked.populated);
+    out.defect = std::move(walked.defect);
+    out.coupling_defect = std::move(walked.coupling_defect);
+    out.coupling_k6 = std::move(walked.coupling_k6);
+    // The launches above read the scratch, which goes with this branch.
+    FBF_TRY(res.sync());
+  }
+
+  // An AdjointTangent from a reverse-pass tangent's (h_bar, Λ, raw y), y
+  // taken to the generators' (Pi), X = 2 h h_bar + 2 B Λ and A.
+  const auto finish = [&](BarsTangent t) -> Result<AdjointTangent> {
+    const std::vector<double> y_raw = FBF_TRY(to_host(res, t.y.data(), static_cast<size_t>(ny)));
+    AdjointTangent p{.h_bar = std::move(t.h_bar),
+                     .lambda = std::move(t.lambda),
+                     .y = FBF_TRY(to_device(res, generator_adjoint(c_host, nroots, y_raw, c_host))),
+                     .x = FBF_TRY(zeroed(res, nmo2)),
+                     .a = Buffers::device<double>(0, res.device())};
+    FBF_TRY(add_source(res, naux, nmo, x.h_mo.data(), bmo.data(), p.h_bar.data(), p.lambda.data(),
+                       p.x.data()));
+    return p;
+  };
+  // @p from's h_bar, Λ, y and X onto @p to's; A is formed from the sum.
+  const auto add_into = [&](const AdjointTangent &from, AdjointTangent &to) -> Status {
+    FBF_TRY(add_onto(res, nmo2, 1, from.h_bar.data(), to.h_bar.data(), nmo2));
+    FBF_TRY(add_onto(res, lambda_size, 1, from.lambda.data(), to.lambda.data(), lambda_size));
+    FBF_TRY(add_onto(res, ny, 1, from.y.data(), to.y.data(), ny));
+    return add_onto(res, nmo2, 1, from.x.data(), to.x.data(), nmo2);
+  };
+
+  for (size_t k = 0; k < count; ++k) {
+    const double *const h_dot = directions.h + (static_cast<int64_t>(k) * nmo2);
+    const double *const b_dot = directions.b + (static_cast<int64_t>(k) * lambda_size);
+    const double *const uk = u_all.data() + (static_cast<int64_t>(k) * ny);
+    ScArrays &dot = dots[k].shared;
+    const std::vector<double> u_host = FBF_TRY(to_host(res, uk, static_cast<size_t>(ny)));
+
+    // Phi^SA's tangent: Λ at (Ḃ, D) + (B, Ḋ), Ḋ gamma_SA's tangent; y^c_r's,
+    // w_r sigma(W + W^T) at u_r plus w_r sigma(Ẇ + Ẇ^T) at c_r.
+    Buffers::device<double> dens_dot = FBF_TRY(zeroed(res, nmo2));
+    FBF_TRY(add_onto(res, n, n, dot.dm1.data(), dens_dot.data() + nc + (nmo * nc), nmo));
+    Buffers::device<double> phi_lambda_dot = FBF_TRY(zeroed(res, lambda_size));
+    FBF_TRY(phi_lambda(res, naux, nmo, b_dot, dens.data(), z, phi_lambda_dot.data()));
+    FBF_TRY(phi_lambda(res, naux, nmo, bmo.data(), dens_dot.data(), z, phi_lambda_dot.data()));
+    Buffers::device<double> w_dot = FBF_TRY(zeroed(res, n * n));
+    FBF_TRY(phi_w(res, naux, nmo, nc, n, b_dot, bmo.data(), z, w_dot.data()));
+    FBF_TRY(phi_w(res, naux, nmo, nc, n, bmo.data(), b_dot, z, w_dot.data()));
+    Buffers::device<double> phi_y_dot = FBF_TRY(zeroed(res, ny));
+    FBF_TRY(phi_sigma(res, sigma, n, w_act.data(), weights, uk, phi_y_dot.data()));
+    FBF_TRY(phi_sigma(res, sigma, n, w_dot.data(), weights, vectors, phi_y_dot.data()));
+
+    // The curvature, 1/2 {K_t, K_u} c_r against every root's raw y_r:
+    // K^*(M), M = 1/2 sum_r (y_r u_r^T - (K_u y_r) c_r^T).
+    std::vector<double> left(static_cast<size_t>(2 * ny));
+    std::vector<double> right(static_cast<size_t>(2 * ny));
+    for (size_t r = 0; r < nroots; ++r) {
+      const auto at = static_cast<std::ptrdiff_t>(r * static_cast<size_t>(ndet));
+      const auto second = at + static_cast<std::ptrdiff_t>(ny);
+      const std::vector<double> ky =
+          generator_apply(c_host, nroots, u_host, root_of(y_total, static_cast<size_t>(ndet), r));
+      for (int64_t e = 0; e < ndet; ++e) {
+        left[static_cast<size_t>(at + e)] = -0.5 * ky[static_cast<size_t>(e)];
+        right[static_cast<size_t>(at + e)] = c_host[static_cast<size_t>(at + e)];
+        left[static_cast<size_t>(second + e)] = 0.5 * y_total[static_cast<size_t>(at + e)];
+        right[static_cast<size_t>(second + e)] = u_host[static_cast<size_t>(at + e)];
+      }
+    }
+    AdjointTangent curvature{
+        .h_bar = FBF_TRY(zeroed(res, nmo2)),
+        .lambda = FBF_TRY(zeroed(res, lambda_size)),
+        .y = FBF_TRY(to_device(res, generator_adjoint(c_host, nroots, left, right))),
+        .x = FBF_TRY(zeroed(res, nmo2)),
+        .a = Buffers::device<double>(0, res.device())};
+
+    // Phi^SA's share: its Λ and y tangents, X's 2 B Λ̇^c, and its one-slot
+    // X terms 2 ḣ z + 2 Ḃ Λ^c.
+    const auto phi_share = [&]() -> Result<AdjointTangent> {
+      AdjointTangent p = FBF_TRY(finish(BarsTangent{.h_bar = FBF_TRY(zeroed(res, nmo2)),
+                                                    .lambda = std::move(phi_lambda_dot),
+                                                    .y = std::move(phi_y_dot)}));
+      FBF_TRY(add_source(res, naux, nmo, h_dot, b_dot, z, phi.lambda.data(), p.x.data()));
+      return p;
+    };
+    const auto step = [&](std::vector<PairRdms> &own_dot, ScArrays &bar_dot,
+                          const Buffers::device<double> *walk_y, const bool one_slot) {
+      return [&, walk_y, one_slot] {
+        return qd_rdms_tangent(res, alpha, beta, weights, vectors, uk, fixed, dot, bar_dot, own_dot,
+                               walk_y, one_slot);
+      };
+    };
+
+    if (!parts) {
+      // One sweep: the walk's tangent bars and the one-slot terms together,
+      // X's own one-slot share 2 ḣ h̄ + 2 Ḃ Λ at the summed adjoint.
+      AdjointTangent product = FBF_TRY(finish(
+          FBF_TRY(bars_tangent(res, nmo, x, fixed.bar, dot, bar_dots[k], lambda_dots[k].whole, true,
+                               step(own_dots[k], bar_dots[k], &y_walk[k], true)))));
+      FBF_TRY(add_source(res, naux, nmo, h_dot, b_dot, corr.h_bar.data(), corr.lambda.data(),
+                         product.x.data()));
+      FBF_TRY(add_into(FBF_TRY(phi_share()), product));
+      FBF_TRY(add_into(curvature, product));
+      product.a = FBF_TRY(antisymmetric_part(res, nmo, product.x.data()));
+      out.products.push_back(std::move(product));
+      continue;
+    }
+    // The parts, each a whole AdjointTangent, and the product their sum.
+    AdjointTangent walk_part = FBF_TRY(
+        finish(FBF_TRY(bars_tangent(res, nmo, x, fixed.bar, dot, bar_dots[k], lambda_dots[k].whole,
+                                    false, step(own_dots[k], bar_dots[k], &y_walk[k], false)))));
+    ScArrays none = FBF_TRY(zeroed_arrays(res, naux, ncore, ncas, nvirt));
+    Buffers::device<double> no_lambda = FBF_TRY(zeroed(res, lambda_size));
+    std::vector<PairRdms> no_own;
+    for (size_t r = 0; r < nroots; ++r) {
+      no_own.push_back(FBF_TRY(zeroed_rdms(res, n, true)));
+    }
+    AdjointTangent one_slot_part = FBF_TRY(finish(FBF_TRY(bars_tangent(
+        res, nmo, x, fixed.bar, dot, none, no_lambda, true, step(no_own, none, nullptr, true)))));
+    FBF_TRY(add_source(res, naux, nmo, h_dot, b_dot, corr.h_bar.data(), corr.lambda.data(),
+                       one_slot_part.x.data()));
+    AdjointTangent phi_part = FBF_TRY(phi_share());
+    std::array<AdjointTangent, 4> split{std::move(walk_part), std::move(one_slot_part),
+                                        std::move(phi_part), std::move(curvature)};
+    AdjointTangent product{.h_bar = FBF_TRY(zeroed(res, nmo2)),
+                           .lambda = FBF_TRY(zeroed(res, lambda_size)),
+                           .y = FBF_TRY(zeroed(res, ny)),
+                           .x = FBF_TRY(zeroed(res, nmo2)),
+                           .a = Buffers::device<double>(0, res.device())};
+    for (AdjointTangent &p : split) {
+      p.a = FBF_TRY(antisymmetric_part(res, nmo, p.x.data()));
+      FBF_TRY(add_into(p, product));
+    }
+    product.a = FBF_TRY(antisymmetric_part(res, nmo, product.x.data()));
+    out.products.push_back(std::move(product));
+    out.parts.push_back(std::move(split));
+  }
+  FBF_TRY(res.sync());
   return out;
 }
 
