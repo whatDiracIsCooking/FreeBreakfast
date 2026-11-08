@@ -16,8 +16,9 @@
 //   reference's expected SC refusals, none, so the frequencies are
 //   published. PC's is not gated (the README: its computed surface jumps
 //   at the cut, and its refusal is analytic).
-// - The refusals (fast): the step's own QD ones, run directly, each before
-//   any displaced solve. The swap refusal itself is tracked_qd_state's
+// - The refusals (fast): the step's own QD ones, run directly by either
+//   method (a frozen core, integral-direct ERIs, one root, a state past
+//   them), each before any displaced solve. The swap refusal itself is tracked_qd_state's
 //   (test/pipeline/hessian_host.cpp), at_geometry naming the point.
 
 #include <gtest/gtest.h>
@@ -314,24 +315,36 @@ TEST(PipelineQdNevpt2Hessian, StepRefusesBeforeAnyDisplacedSolve) {
     EXPECT_NE(out.error().message.find(says), std::string::npos) << out.error().message;
     EXPECT_FALSE(out.error().message.starts_with("[hessian] at ")) << out.error().message;
   };
-  {
-    fb::HessianStep step = planned;
-    step.method = fb::HessianMethod::Analytic;
-    step.ladder = false;
-    step.pairs.emplace();
-    step.coordinates.clear();
-    refused(step, fb::ErrorKind::Unsupported, "the QD-NEVPT2 Hessian is numerical only");
-  }
-  {
-    fb::HessianStep step = planned;
-    step.casscf.nroots = 1;
-    step.casscf.weights = {1.0};
-    refused(step, fb::ErrorKind::InvalidConfig, "QD needs two roots or more");
-  }
-  {
-    fb::HessianStep step = planned;
-    step.nevpt2_gradient->state = 2;
-    refused(step, fb::ErrorKind::InvalidConfig, "differences QD state 2");
+  // By either method: the analytic one (#968) refuses the same.
+  for (const fb::HessianMethod method :
+       {fb::HessianMethod::Numerical, fb::HessianMethod::Analytic}) {
+    fb::HessianStep base = planned;
+    base.method = method;
+    if (method == fb::HessianMethod::Analytic) {
+      base.ladder = false;
+      base.pairs.emplace();
+    }
+    {
+      fb::HessianStep step = base;
+      step.nevpt2_gradient->frozen_core = 1;
+      refused(step, fb::ErrorKind::InvalidConfig, "frozen_core is 1");
+    }
+    {
+      fb::HessianStep step = base;
+      step.eri.mode = fb::EriMode::IntegralDirect;
+      refused(step, fb::ErrorKind::Unsupported, "'integral_direct'");
+    }
+    {
+      fb::HessianStep step = base;
+      step.casscf.nroots = 1;
+      step.casscf.weights = {1.0};
+      refused(step, fb::ErrorKind::InvalidConfig, "QD needs two roots or more");
+    }
+    {
+      fb::HessianStep step = base;
+      step.nevpt2_gradient->state = 2;
+      refused(step, fb::ErrorKind::InvalidConfig, "is QD state 2's");
+    }
   }
 }
 

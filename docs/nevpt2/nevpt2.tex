@@ -123,13 +123,12 @@ differences recover their derivative with no truncation error.
   coordinates (\S\ref{sec:hessian}), with the refusals that keep a
   non-smooth surface from being reported as a Hessian. Unpublished for any
   internally contracted MRPT2 as far as we know.
-\item The analytic nuclear Hessian of an SC-QD-NEVPT2 state on a
+\item The analytic nuclear Hessian of an SC- or PC-QD-NEVPT2 state on a
   DF-SA-CASSCF at any weights (\S\ref{sec:qdhess}), with every
   model state's refusals and a report of every small denominator
-  (\S\ref{sec:qd-diff}); and the semi-numerical QD Hessian in the pipeline
-  (\S\ref{sec:qd-build}). PC-QD's analytic Hessian (\#966), the pair-mean
-  Hessian at a crossing (\#967) and the analytic \code{[hessian]} over a QD
-  chain (\#968) are not yet in the tree.
+  (\S\ref{sec:qd-diff}); at a crossing, the pair's sum and the seam's
+  second-order $2\times2$ (\#967); and both the analytic and the
+  semi-numerical QD Hessian in the pipeline (\S\ref{sec:qd-build}, \#968).
 \item The QD interstate coupling $\mathbf h_{PQ}$, and the full derivative
   coupling $\mathbf d_{PQ} = \langle\Psi_P|\nabla\Psi_Q\rangle$, including the
   PT2 term \cite{park2020,park2017}.
@@ -1491,9 +1490,10 @@ Hessian is the same energy's; \code{pc\_floor = 0} restores the round-off
 cut bitwise. Refused before anything runs: integral-direct ERIs, a state
 average (outside a QD chain), a frozen core and a
 \code{[casscf\_gradient]} beside it. Beside a \code{quasi\_degenerate}
-\code{[nevpt2\_gradient]} the numerical method is the semi-numerical QD
-Hessian (\#959, \S\ref{sec:qd-build}), and the analytic one is refused
-until \#968. Stationarity is assumed, not checked:
+\code{[nevpt2\_gradient]} the Hessian is QD state $P$'s, by either
+method: the analytic one is \code{df\_qd\_sc\_nevpt2} or
+\code{df\_qd\_pc\_nevpt2} (\#968), the numerical one the semi-numerical QD
+Hessian (\#959, \S\ref{sec:qd-build}). Stationarity is assumed, not checked:
 converge \code{[casscf]} to \code{conv\_tol\_grad} $= 10^{-10}$. Harmonic
 analysis follows; there are no IR intensities.
 
@@ -1871,12 +1871,13 @@ products (\code{sc\_effective\_hamiltonian\_hvp}, \#962;
 and \code{qd\_pc\_hessian\_product}, \#964); the multipliers' CASSCF terms
 (\code{df\_sacasscf\_z} at a QD Lagrangian, \#956); the $\zeta$ term
 (\code{df\_qd\_zeta}, \#955); and term~(ii)
-(\code{df\_qd\_eigenvector\_response}, \#957). Not yet in the tree: the
-PC-QD Hessian \code{df\_qd\_pc\_nevpt2} (\#966), every piece of which above
-is; the pair-mean Hessian and the seam's $2\times2$ at a crossing
-(Eqs.~\eqref{eq:qd-pair} and \eqref{eq:qd-lowdin}, \#967); and the analytic
+(\code{df\_qd\_eigenvector\_response}, \#957); the PC-QD Hessian
+\code{df\_qd\_pc\_nevpt2} over the same pieces (\#966); the pair's sum and
+the seam's $2\times2$ at a crossing (Eqs.~\eqref{eq:qd-pair} and
+\eqref{eq:qd-lowdin}, \code{df\_qd\_sc\_nevpt2\_crossing} and
+\code{df\_qd\_pc\_nevpt2\_crossing}, \#967); and the analytic
 \code{[hessian]} over a \code{quasi\_degenerate} \code{[nevpt2\_gradient]}
-(\#968). The pipeline's semi-numerical QD Hessian is in the tree (\#959,
+(\#968), beside the pipeline's semi-numerical QD Hessian (\#959,
 \S\ref{sec:qd-build}).
 
 \subsection{The eigenvalue's second derivative}
@@ -1948,8 +1949,13 @@ where $x$ and $g$ are now the SA-CASSCF's (\S\ref{sec:qd-response}).
   wanted $P$. Each costs about the same, and there are at most $n \le
   n(n+1)/2$ states, so per-state is never worse, and it is what
   \code{df\_qd\_sc\_nevpt2} does. Its $W$ overload is term~(i) at any
-  symmetric $W$ whose diagonal is a mixture, the form
-  Eq.~\eqref{eq:qd-lowdin}'s seam $2\times2$ needs.
+  symmetric $W$, the form Eq.~\eqref{eq:qd-lowdin}'s seam $2\times2$ needs
+  (trace 0, negative diagonal entries): $E_\rho$'s share is linear in
+  $\rho = \operatorname{diag}W$, but each of its pieces takes the core at
+  weight 1, so it is taken at $\rho = a\,p_+ - b\,p_-$, $p_\pm$ the
+  mixtures of $\rho$'s positive and negative parts (a second pass only when
+  $\rho$ has a negative entry); every other part is linear in $W$ as it
+  stands.
 \end{itemize}
 
 \paragraph{The sum rule.} Term~(ii) is antisymmetric under $P
@@ -2333,7 +2339,15 @@ derivatives below, and $\mathbf h_{PQ}$), not frequencies.
 
 \paragraph{At a crossing.} $E_P$ has no Hessian: it is a cone. Two
 related objects still exist, provided every other state stays gapped. Both
-are \#967, not yet in the tree.
+are in the tree (\#967, \code{df\_qd\_sc\_nevpt2\_crossing} and
+\code{df\_qd\_pc\_nevpt2\_crossing}: one call per symmetric $2\times2$
+$c$ over a basis of the eigenspace, term~(i) at $W = \sum c_{ab}V_aV_b^\T$
+plus the outside-state sums, an outside state within
+\code{mcscf::kRootGapFloor} of $P$ or $Q$ refused). The basis $V$ is the
+eigenspace's, not the eigensolver's: the L\"owdin-orthonormalized
+projections of two CASSCF roots onto it, which depend only on the
+projector, so that $2\times2$ elements from separate calls are one
+matrix.
 \begin{itemize}
 \item \textbf{The pair's mean.} $\Pi = W^P + W^Q$ is the projector onto
   the degenerate eigenspace, well defined where $R_P$ and $R_Q$
@@ -2593,7 +2607,7 @@ worth computing.}
 
 \begin{algorithm}[htbp]
 \caption{Analytic DF-QD-NEVPT2 nuclear Hessian of state $P$
-(\code{df\_qd\_sc\_nevpt2}; PC's, \#966, the same over PC's walk)}
+(\code{df\_qd\_sc\_nevpt2}; \code{df\_qd\_pc\_nevpt2} the same over PC's walk)}
 \label{alg:qdhess}
 \begin{algorithmic}[1]
 \Require converged DF-SA-CASSCF, all-electron; $P$; coordinates
@@ -2655,9 +2669,9 @@ sum rule Eq.~\eqref{eq:qd-sum} & term (ii)'s antisymmetry, linearity of term (i)
 term (i) at a general symmetric $W$ against differences of $\mathcal E[W]$'s gradient at that fixed $W$ & Eq.~\eqref{eq:qd-hessW} without the eigenvector term & the pair sums $W^P + W^Q$ are in the references (\#953); not yet gated against the $W$ overload \\
 term (ii) alone: Eq.~\eqref{eq:qd-dR} against differences of $R_P$, phase-aligned & the $\mathbf h_{PQ}$ inputs and the eigenvector derivative & the list call's $\mathbf h_{PQ}$ against each pair's own solve, $10^{-9}$ (\code{HessianDfQdEigenvectorResponse}); term (ii) through the whole Hessian; $dR_P$ against differences not run \\
 \code{h2co\_ccpvdz\_sa2} (C$_{2v}$, $A_1$/$A_2$): term (ii) $= 0$ in every block, since H$_2$CO has no $a_2$ vibration & the decoupled case: the model space mixes irreps, but no coordinate couples them & not run (the case is term (ii)'s degenerate-pair refusal) \\
-a C$_{2v}$ SA2 with $A_1$/$B_2$ roots: ladders of $C_{MN}$ along two $b_2$ coordinates and their sum, and the per-root refusals & \S\ref{sec:qd-sym}'s off-diagonal failure, SC and PC; that the refusal fires where the ladder is not bilinear & \code{h2nb\_sto3g\_sa2} (\#1058): SC's ladder bilinear, nothing refused by the product, the Hessian (\code{CoupledA1B2RefusesNothing}, $\mathbf h_{01}$ against the ladders) or the pipeline; PC's product refuses exactly the expected B$_2\times$B$_2$ blocks. Whole-Hessian references, \#1093 \\
-Eq.~\eqref{eq:qd-pair} at the ethylene MECI against differences of $E_0 + E_1$'s gradient & the pair-mean Hessian at a cone & references in the tree (\#1059: SC and PC, pair sum, seam $W$, third state); the analytic side, \#967 \\
-\code{h2co\_skew\_ccpvdz\_sa3} (C$_1$), equal and unequal weights & $\theta$ in and out of the solve, Eq.~\eqref{eq:qd-curv} & SC: states 1 and 2 at equal weights and state 1 at 0.4/0.2/0.4, every element within $2\times$ bar (worst 0.010--0.030 bars), every part and $\theta$'s $\theta\theta$ block above 10 bars (\code{HessianDfQdScNevpt2}); PC, \#966 \\
+a C$_{2v}$ SA2 with $A_1$/$B_2$ roots: ladders of $C_{MN}$ along two $b_2$ coordinates and their sum, and the per-root refusals & \S\ref{sec:qd-sym}'s off-diagonal failure, SC and PC; that the refusal fires where the ladder is not bilinear & \code{h2nb\_sto3g\_sa2} (\#1058): SC's ladder bilinear, nothing refused by the product, the Hessian (\code{CoupledA1B2RefusesNothing}, $\mathbf h_{01}$ against the ladders) or the pipeline; PC's product and Hessian refuse exactly the expected B$_2\times$B$_2$ blocks, and the analytic \code{[hessian]} returns that refusal naming them (\code{PipelineQdNevpt2-} \code{AnalyticHessian}, \code{PcCoupledA1B2-} \code{RefusalNamesTheB2Blocks}). Whole-Hessian references, \#1093, not yet landed \\
+Eq.~\eqref{eq:qd-pair} at the ethylene MECI against differences of $E_0 + E_1$'s gradient & the pair-mean Hessian at a cone & references in the tree (\#1059: SC and PC, pair sum, seam $W$, third state); the analytic side (\#967): term (i) at the seam $W$, the pair sum at the MECI and away from a crossing, the outside-state sum, the seam $2\times2$ and a third state refused, SC and PC (\code{HessianDfQd-} \code{Nevpt2Crossing}) \\
+\code{h2co\_skew\_ccpvdz\_sa3} (C$_1$), equal and unequal weights & $\theta$ in and out of the solve, Eq.~\eqref{eq:qd-curv} & SC: states 1 and 2 at equal weights and state 1 at 0.4/0.2/0.4, every element within $2\times$ bar (worst 0.010--0.030 bars), every part and $\theta$'s $\theta\theta$ block above 10 bars (\code{HessianDfQdScNevpt2}); PC the same three, within $2\times$ bar (\code{HessianDfQdPcNevpt2}); the analytic \code{[hessian]} at state 1 against a direct call, $10^{-10}$, SC and PC (\code{PipelineQdNevpt2AnalyticHessian}) \\
 semi-numerical QD Hessian (Algorithm~\ref{alg:semi} over the QD gradient, roots tracked by $R_P$'s overlap) & the whole thing & the references (\#953, \#1060; \code{tools/qd\_nevpt2\_hessian}) and the pipeline's numerical method against them (\code{PipelineQdNevpt2Hessian}) \\
 \bottomrule
 \end{tabularx}
@@ -2679,8 +2693,13 @@ more, or a second state within $10^{-3}$ of it, is refused, naming the
 geometry. Each displacement logs the tracked state, the QD gap, the smallest
 CASSCF root gap, the ensemble edge (a CASCI of $n + 1$ roots over the
 solve's orbitals), $\max|\zeta|$ and the NEVPT2 chain's hazards; the worst
-of each is \code{hessian.json}'s \code{qd}. The analytic method refuses a
-\code{quasi\_degenerate} chain (Unsupported) until \#968. The references in
+of each is \code{hessian.json}'s \code{qd}. The analytic method over the
+same chain (\#968) is Eq.~\eqref{eq:qd-hess} itself,
+\code{df\_qd\_sc\_nevpt2} or \code{df\_qd\_pc\_nevpt2} at the state, in
+\code{coordinates} when given; its \code{qd} is the call's report (the
+eigenvalues, term~(ii)'s share, every gap of
+Table~\ref{tab:qd-divisions}), and a refusal is the step's error, naming
+the blocks. The references in
 \code{test/gtest/data/qd\_nevpt2\_hessian/} are this algorithm's over the
 same gradient (a fourth-order stencil at $h$, $h/2$, $h/4$; SC at
 $3.125\times10^{-4}$\,bohr and PC at $2.5\times10^{-3}$ on the skew H$_2$CO,
@@ -2697,11 +2716,11 @@ general $W$ (\#963, \#964); (4) term (i)'s assembly over
 \code{df\_sacasscf\_cp}'s responses and \code{df\_sacasscf\_z}'s terms at
 $\lambda[W]$, with the $\zeta$ Hessian (\#955, \#956, \#961) and SC's
 whole Hessian (\#965); (5) Eq.~\eqref{eq:qd-hess} gated against (0), SC on
-the C$_1$ cases. SC went first, since \#949 had removed \#894. Not yet
-landed: PC's Hessian (\#966), the crossing's Eqs.~\eqref{eq:qd-pair} and
-\eqref{eq:qd-lowdin} (\#967), the A$_1$/B$_2$ whole-Hessian references
-(\#1093), and the analytic \code{[hessian]}, its frequencies and example
-(\#968).
+the C$_1$ cases. SC went first, since \#949 had removed \#894. Then
+PC's Hessian (\#966), the crossing's Eqs.~\eqref{eq:qd-pair} and
+\eqref{eq:qd-lowdin} (\#967), and the analytic \code{[hessian]}, its
+frequencies and example (\#968). Not yet landed: the A$_1$/B$_2$
+whole-Hessian references (\#1093).
 
 \paragraph{Cost.} One block CP-SA-CASSCF solve over $3N_{\mathrm{at}}$
 right-hand sides, shared by every $P$. Per wanted $P$: $3N_{\mathrm{at}}$
@@ -2879,8 +2898,10 @@ Eqs.~\eqref{eq:qd-rdm2}, \eqref{eq:qd-scfinish} & \code{sc\_effective\_hamiltoni
 Eq.~\eqref{eq:qd-pcfinish} & \code{pc\_effective\_hamiltonian\_tangent}, \code{pc\_effective\_hamiltonian\_hvp} \\
 Eqs.~\eqref{eq:qd-Lxx}, \eqref{eq:qd-curv} & \code{qd\_sc\_hessian\_product}, \code{qd\_pc\_hessian\_product}; \code{hessian::df\_sacasscf\_z} at a QD Lagrangian, \code{df\_qd\_zeta} \\
 \S\ref{sec:qd-sym} & the products' \code{coupling\_defect} (SC) and \code{overlaps} (PC) \\
-Eq.~\eqref{eq:qd-hessW}, Algorithm~\ref{alg:qdhess} & \code{hessian::df\_qd\_sc\_nevpt2} (state and $W$ forms); PC's, \#966 \\
-Table~\ref{tab:qdhesschecks}'s semi-numerical row & \code{pipeline/hessian}'s QD chain, \code{tracked\_qd\_state}; \code{tools/qd\_nevpt2\_hessian}, \code{tools/nevpt2\_hessian/qd\_nevpt2\_hessian.py} \\
+Eq.~\eqref{eq:qd-hessW}, Algorithm~\ref{alg:qdhess} & \code{hessian::df\_qd\_sc\_nevpt2}, \code{df\_qd\_pc\_nevpt2} (state and $W$ forms) \\
+Eqs.~\eqref{eq:qd-pair}, \eqref{eq:qd-lowdin} & \code{hessian::df\_qd\_sc\_nevpt2\_crossing}, \code{df\_qd\_pc\_nevpt2\_crossing} \\
+Table~\ref{tab:qdhesschecks}'s semi-numerical row & \code{pipeline/hessian}'s QD chain, numerical method, \code{tracked\_qd\_state}; \code{tools/qd\_nevpt2\_hessian}, \code{tools/nevpt2\_hessian/qd\_nevpt2\_hessian.py} \\
+Eq.~\eqref{eq:qd-hess} in the pipeline & \code{pipeline/hessian}'s QD chain, analytic method \\
 \bottomrule
 \end{tabularx}
 \end{center}

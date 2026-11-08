@@ -1,7 +1,8 @@
 /// @file
 /// @brief HessianStep: the analytic Hessian, hessian::df_rhf over one nested
 /// Pipeline run of the chain to ScfStep, or hessian::df_casscf,
-/// df_sacasscf, df_sc_nevpt2 or df_pc_nevpt2 over one to CasscfStep; or the
+/// df_sacasscf, df_sc_nevpt2, df_pc_nevpt2, df_qd_sc_nevpt2 or
+/// df_qd_pc_nevpt2 over one to CasscfStep; or the
 /// 6N displaced gradients, each
 /// a nested Pipeline run of the chain to GradientStep, and their central
 /// differences -- the RHF's, or over the CASSCF chain (to CasscfGradientStep
@@ -481,24 +482,19 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   }
   // The NEVPT2 Hessian, by either method, is of one root's state-specific
   // energy, all-electron: what milestone 24 covers, the fixture validates,
-  // and hessian::df_sc_nevpt2 and df_pc_nevpt2 take. Or, numerically only,
-  // one QD-NEVPT2 state's of a state average, all-electron too.
+  // and hessian::df_sc_nevpt2 and df_pc_nevpt2 take. Or one QD-NEVPT2
+  // state's of a state average, all-electron too: hessian::df_qd_sc_nevpt2
+  // and df_qd_pc_nevpt2's, or its differences.
   if (nevpt2_gradient) {
     constexpr std::string_view kNevpt2 = Nevpt2GradientStep::kName;
-    if (nevpt2_gradient->quasi_degenerate && method == HessianMethod::Analytic) {
-      return err_unsupported("[{}] method 'analytic' is a state-specific NEVPT2 energy's, and "
-                             "[{}] is quasi_degenerate: the QD-NEVPT2 Hessian is numerical only "
-                             "here, set [{}] method = 'numerical'",
-                             kName, kNevpt2, kName);
-    }
     if (nevpt2_gradient->quasi_degenerate) {
       if (casscf.nroots < 2) {
-        return err_config("[{}] differences a QD-NEVPT2 state of a state average, and [{}] "
-                          "nroots is {}: QD needs two roots or more",
+        return err_config("[{}] is a QD-NEVPT2 state's of a state average, and [{}] nroots is "
+                          "{}: QD needs two roots or more",
                           kName, CasscfStep::kName, casscf.nroots);
       }
       if (nevpt2_gradient->state < 0 || nevpt2_gradient->state >= casscf.nroots) {
-        return err_config("[{}] differences QD state {}, and H_eff over [{}]'s {} roots has "
+        return err_config("[{}] is QD state {}'s, and H_eff over [{}]'s {} roots has "
                           "states 0 to {}",
                           kName, nevpt2_gradient->state, CasscfStep::kName, casscf.nroots,
                           casscf.nroots - 1);
@@ -755,9 +751,11 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   } else if (method == HessianMethod::Analytic && nevpt2_gradient) {
     // One chain to [casscf] at R, and the variant's analytic Hessian at its
     // single-state solution, the gradient step's own call (batch 0, PC at
-    // @ref pc_floor) in the config's coordinates. A refusal -- the pairs SC's
-    // empty perturbers make no bilinear form on, PC's kept classes, lifts
-    // and degenerate pairs -- is returned as it is, naming them.
+    // @ref pc_floor) in the config's coordinates; under quasi_degenerate,
+    // QD state P's on the state average, hessian::df_qd_sc_nevpt2 or
+    // df_qd_pc_nevpt2 (state form). A refusal -- the pairs SC's empty
+    // perturbers make no bilinear form on, PC's kept classes, lifts and
+    // degenerate pairs, QD's gaps -- is returned as it is, naming them.
     auto chain = FBF_TRY(chain_at({}, chain_casscf));
     FBF_TRY(chain.run(node));
     const CasscfOutput &cas = *chain.get<CasscfOutput>();
@@ -770,7 +768,66 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     const bool pc = nevpt2_gradient->variant == Nevpt2Variant::Pc;
     double e_corr = 0.0;
     double residual = 0.0;
-    if (pc) {
+    if (nevpt2_gradient->quasi_degenerate) {
+      const int32_t state = nevpt2_gradient->state;
+      // hessian.json has no infinity: an absent gap (an edge past the CI
+      // space, SC's reports under PC) is null.
+      const auto finite = [](double v) { return std::isfinite(v) ? json(v) : json(nullptr); };
+      hessian::QdScNevpt2Terms terms;
+      json conditioning;
+      if (pc) {
+        hessian::QdPcNevpt2Terms got = FBF_TRY(hessian::df_qd_pc_nevpt2(
+            res, chain_molecule, basis, classes, fit.aux, h, fit.b, fit.l.data(), solution,
+            cas.ncore, cas.ncas, state, 0, coordinates, pc_floor));
+        // PC's conditioning: each model state's kept per class, and the
+        // smallest t* of any coordinate, ket and class.
+        double lift = std::numeric_limits<double>::infinity();
+        for (const auto &kets : got.lift_steps) {
+          for (const std::array<double, 8> &classes_t : kets) {
+            lift = std::min(lift, std::ranges::min(classes_t));
+          }
+        }
+        conditioning = {{"kept", got.kept}, {"lift_step", finite(lift)}};
+        terms = std::move(got.terms);
+      } else {
+        terms = FBF_TRY(hessian::df_qd_sc_nevpt2(res, chain_molecule, basis, classes, fit.aux, h,
+                                                 fit.b, fit.l.data(), solution, cas.ncore, cas.ncas,
+                                                 state, 0, coordinates));
+      }
+      raw = std::move(terms.hessian);
+      asymmetry = terms.asymmetry;
+      const double energy = terms.eigenvalues.at(static_cast<size_t>(state));
+      FBF_LOG_INFO("hessian: analytic {}-QD-NEVPT2 state {} over DF-SA-CASSCF({}, {}) of {} "
+                   "roots, E = {:.10f}; term (ii)'s share {:.3e}; QD gap {:.3e}, CASSCF root gap "
+                   "{:.3e}, E_{{n+1}} - E_n {:.3e}, inactive gap {:.3e}; CP residual {:.3e}, "
+                   "Z-vector residual {:.3e}",
+                   pc ? "PC" : "SC", state, cas.nelecas, cas.ncas, cas.energies.size(), energy,
+                   terms.term_ii_share, terms.qd_gap, terms.root_gap, terms.edge_gap, terms.min_gap,
+                   terms.cp_residual, terms.zvector_residual);
+      qd_doc = {
+          {"state", state},
+          {"energy", energy},
+          {"eigenvalues", terms.eigenvalues},
+          {"term_ii_share", terms.term_ii_share},
+          {"heff_gap", finite(terms.qd_gap)},
+          {"root_gap", finite(terms.root_gap)},
+          {"edge", finite(terms.edge_gap)},
+          {"inactive_gap", finite(terms.min_gap)},
+          {"max_theta", terms.max_theta},
+          {"max_kappa_oo", terms.max_kappa_oo},
+          {"max_zeta", terms.max_zeta},
+          {"max_zc", terms.max_zc},
+          {"cp_residual", terms.cp_residual},
+          {"zvector_residual", terms.zvector_residual},
+      };
+      if (pc) {
+        qd_doc.update(conditioning);
+      } else {
+        qd_doc.update(json{{"min_denominator", finite(terms.min_denominator)},
+                           {"defect", terms.defect},
+                           {"mix_step", finite(terms.mix_step)}});
+      }
+    } else if (pc) {
       hessian::PcNevpt2Terms terms = FBF_TRY(hessian::df_pc_nevpt2(
           res, chain_molecule, basis, classes, fit.aux, h, fit.b, fit.l.data(), solution, cas.ncore,
           cas.ncas, 0, coordinates, pc_floor));
@@ -787,9 +844,11 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       e_corr = terms.e_corr;
       residual = terms.zvector_residual;
     }
-    FBF_LOG_INFO("hessian: analytic {}-NEVPT2 over DF-CASSCF({}, {}), E = {:.10f}, Z-vector "
-                 "residual {:.3e}",
-                 pc ? "PC" : "SC", cas.nelecas, cas.ncas, cas.energies[0] + e_corr, residual);
+    if (!nevpt2_gradient->quasi_degenerate) {
+      FBF_LOG_INFO("hessian: analytic {}-NEVPT2 over DF-CASSCF({}, {}), E = {:.10f}, Z-vector "
+                   "residual {:.3e}",
+                   pc ? "PC" : "SC", cas.nelecas, cas.ncas, cas.energies[0] + e_corr, residual);
+    }
   } else if (method == HessianMethod::Analytic) {
     auto chain = FBF_TRY(chain_at({}));
     FBF_TRY(chain.run(node));
