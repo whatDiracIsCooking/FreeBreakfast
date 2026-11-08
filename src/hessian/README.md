@@ -26,7 +26,9 @@ t_x of (h_MO, B_MO, c), `df_nevpt2_tangents`, and the **DF second
 derivative at an MO adjoint**, Σ h̄ h^xy + Σ Λ B^xy, `df_adjoint_xy`, and
 the **SC- and PC-NEVPT2 Hessians** they assemble into, `df_sc_nevpt2` and
 `df_pc_nevpt2`, and for the QD-NEVPT2 Hessian the same tangent over a state
-average, `df_qd_nevpt2_tangents`, all below.
+average, `df_qd_nevpt2_tangents`, and the **ζ term**
+ζ · ∂²⟨c_s|H|c_r⟩ of a QD-NEVPT2 Lagrangian's Hessian, `df_qd_zeta`, all
+below.
 
 ```cpp
 import free_breakfast.hessian;
@@ -1479,6 +1481,122 @@ third term's miss rises from 4.1e-9 at a 4e-3 step to 3.1e-8 at 2e-3 and
 d_r's projection is a no-op on zvector's z, which is off the roots
 already).
 
+## The zeta term
+
+A QD-NEVPT2 Lagrangian holds its equal-weight roots apart with the
+multipliers ζ (`mcscf::root_pair_multipliers`), and so carries
+T = Σ_{r<s} ζ_sr ⟨c_s|H|c_r⟩ (`docs/nevpt2/nevpt2.tex`, Eq. qd-Lxx's ζ term
+and the mixed and skeleton terms). T is energy-like but **not stationary**:
+its orbital gradient is the gradient's ζ · g, and its CI gradient along an
+equal-weight rotation is ζ_sr (E_s − E_r). So each of its three shares is
+the full second derivative of T itself. `df_qd_zeta` returns them at
+caller-supplied ζ:
+
+```cpp
+auto t = hessian::df_qd_zeta(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
+                             zeta, k, lambda);
+// t->lxy:      ∂²T/∂R∂R at fixed parameters, CasscfExy's pieces, t->lxy.exy the sum
+// t->lxlambda: ∂²T/∂R∂x, size × 3 n_atom on the device, column x a covector
+// t->lxx:      Λᵀ (∂²T/∂x∂x) Λ, k × k on the host, over lambda's k columns
+```
+
+**The parameters** are `mcscf::ThirdDerivative`'s layout, with every pair's
+rotation Θ_sr (c_r gaining Θ_sr c_s): the packed pairs, d_r per root (taken
+off every root here), then Θ_sr for every r < s. This holds at equal weights
+too, where `ThirdDerivative` has no Θ slots, because T moves along an
+equal-weight rotation and E_SA does not. That is the layout
+`df_qd_nevpt2_tangents`' rotations fill.
+
+Z is the symmetric n × n of the ζ with a zero diagonal, so
+T = ½ Σ_{r≠s} Z_rs ⟨c_s|H|c_r⟩. The core energy multiplies ⟨c_s|c_r⟩, and
+every derivative of that overlap is zero along C e^κ and e^A c. So every
+share drops the core energy, and nothing below assumes the roots are
+eigenvectors of H.
+
+1. **The skeleton and mixed shares, by polarization.** With S = (n/4) Z and
+   the roots c ± C S at weights 1/n, ½ (RDM(+) − RDM(−)) = Σ_{r<s} ζ_sr
+   T^(sr), the folded transition RDMs. Anything affine in the RDMs at a
+   fixed core is then its value there, less its value at zero RDMs, from two
+   `mcscf::df_derivatives` calls and two `df_casscf_exy` calls. This covers
+   E_xy (`lxy`), F^[x] and the orbital right-hand side (`lxlambda`'s orbital
+   rows). The CI right-hand sides, 2 (1/n) Q_± H̃^x (c_r ± dc_r), are
+   projected off the roots (Q Q_± = Q, since the vectors lie in the roots'
+   span) and differenced. That gives Q H̃^x (C Z)_r, the CI rows. The
+   rotation rows are (Z M^x)_rs − (Z M^x)_sr, since rotating the roots moves
+   M = Cᵀ H C by Aᵀ M + M A. M^x = ⟨c_r|H̃^x|c_s⟩ is a third
+   `df_derivatives` call's `hamiltonian`, at the roots, and its core energy
+   (a multiple of the identity) drops from the difference.
+2. **xx**, along two columns u and v with X_u = K_u C = D_u + C A_u (K_u
+   the root set's generator, Eq. qd-K):
+
+       T_uv = κ_uᵀ (H(γ^ζ, Γ^ζ) − H(0)) κ_v                        orbital
+            + g(R_u) · κ_v + g(R_v) · κ_u                             orbital–CI
+            + ⟨X_u, H X_v Z⟩ − ½ ⟨X_v, K_u H C Z⟩ − ½ ⟨X_u, K_v H C Z⟩   CI
+
+   H(·) is `response::Hessian` at the RDMs given, and (γ^ζ, Γ^ζ) are
+   `mcscf::zeta_terms`' folded RDMs. R_u = Σ_q T(X_u,q, (C Z)_q) is the
+   first-order change of those RDMs along u, and g(R) is
+   `mcscf::transition_orbital_gradient` there. The CI part is the second
+   derivative of ½ Σ Z_pq ⟨e^K c_q|H|e^K c_p⟩, the curvature ½ {K_u, K_v}
+   included (Eq. qd-curv). (K_u K_v c_q) · H c_p = −(X_v)_q · (K_u H C)_p,
+   so it needs only the sigmas H X (one per root of every column) and
+   K_u H C = D_u (Cᵀ H C) − C (D_uᵀ H C) + C A_u (Cᵀ H C). The sigma is the
+   active Hamiltonian without its core energy. The CI part comes from two
+   Gram matrices, Xᵀ (H X) and Xᵀ P.
+
+**`response::Hessian` is the exact second derivative off stationarity.** It
+is gen_g_hop's h_op, whose −½ (F + Fᵀ) κ term carries the exponential's
+½ κ² against the gradient. So the orbital part needs nothing added for T
+not being stationary. The test checks this with a ladder of T along orbital
+directions alone: the gradient term ∂T/∂U · ½ {K_u, K_v}, which a form
+simplified at a stationary point would drop, is 1.05e-4 there, against the
+ladder's 1e-7 bar.
+
+### Memory
+
+The parts run one after another, each freeing what it held: three
+`df_derivatives` calls and two `df_casscf_exy` calls; then for k > 0
+`casscf_integrals`, `zeta_terms`, two `response::fock` and two orbital
+Hessians, and one `transition_orbital_gradient` per column. Held throughout
+are L_xλ (size × 3 n_atom) and a copy of C. For xx, κ, the stacks X, H X
+and P (n_det × n k each) and the gradients (pairs × k) are held too. Each
+part refuses its own memory, Unsupported, before it allocates.
+
+### Tests
+
+`test/gtest/df_qd_zeta_hessian_gpu.cpp` (suite `HessianDfQdZeta`) runs on
+`data/qd_nevpt2/`'s `h2co_skew_ccpvdz_sa3` (three roots at equal weights)
+through the registry, at `nevpt2::qd_sc_lagrangian`'s ζ for state K = 1.
+Each root's phase is fixed, its largest element positive. Every share is
+checked against a Richardson ladder of **T itself**, never of a Hessian
+product. T is evaluated on the host from this tree's integrals at each
+geometry, along the symmetric connection, C(R) e^K and the joint e^A c_r,
+the exponentials exact. T is ½ (E(c + c S) − E(c − c S)), with the
+densities of the two sides differenced before they are contracted and given
+one core weight. Each side's energy is 145 hartree, and its core energy's
+rounding, lifted by 1/t², would otherwise put 1e-8 into the CI ladders.
+
+- lxx along two random directions u and v (each block of norm 1: orbital,
+  CI off the roots, rotations), and along their orbital parts alone and
+  their CI parts alone: each of a, b and a + b against d²/dt² T(R₀, t a);
+- lxlambda · u and lxlambda · v at O's z and the first H's y against
+  d/dR_x of dT/dt (R, t u) at t = 0, at fixed parameters;
+- lxy along those two coordinates and their sum against
+  d²/dt² T(R₀ + t e, 0);
+
+each to 1e-7 absolute. Every share must exceed 10× the bar, and so must
+each piece within xx (orbital, orbital–CI, CI), the orbital part's gradient
+term, and each block of L_Ax's rows. The refusals follow: ζ one short, no Λ
+for k = 2, and ncore + ncas past nmo.
+
+Measured on the gfx1200 (HIP): xx 1.3e-3 (orbital 7.3e-5, orbital–CI
+1.3e-4, CI 5.1e-4), its misses ≤ 7.9e-10 (orbital alone ≤ 5.7e-14);
+L_Ax 4.6e-4 (orbital rows 2.0e-4, CI 4.7e-5, rotations 2.1e-4), missing by
+1.1e-13; L_AB 8.8e-5, missing by 7.4e-13. xx's asymmetry is 6e-16. The call
+takes 6.1 s with k = 6, and the ladders take 1.5 s. The CI ladders'
+remaining misses are rounding, not truncation: they do not shrink at half
+the step.
+
 ## The SC-NEVPT2 Hessian
 
 `df_sc_nevpt2` is `docs/nevpt2/nevpt2.tex` eq. (hess) for SC-NEVPT2 on a
@@ -2061,7 +2179,7 @@ the issue also asks for waits on that step (#610).
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::QdNevpt2Tangents`, `hessian::df_qd_nevpt2_tangents`, `hessian::df_adjoint_xy`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::CasscfZTerms`, `hessian::df_casscf_z`, `hessian::ScNevpt2Terms`, `hessian::df_sc_nevpt2`, `hessian::PcNevpt2Terms`, `hessian::df_pc_nevpt2`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::SaCasscfCp`, `hessian::df_sacasscf_cp`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::QdNevpt2Tangents`, `hessian::df_qd_nevpt2_tangents`, `hessian::QdZetaTerms`, `hessian::df_qd_zeta`, `hessian::df_adjoint_xy`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::CasscfZTerms`, `hessian::df_casscf_z`, `hessian::ScNevpt2Terms`, `hessian::df_sc_nevpt2`, `hessian::PcNevpt2Terms`, `hessian::df_pc_nevpt2`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::SaCasscfCp`, `hessian::df_sacasscf_cp`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build, or a batch of them from one walk |
@@ -2075,6 +2193,7 @@ the issue also asks for waits on that step (#610).
 | `df_sc_nevpt2.cpp` | The SC-NEVPT2 Hessian: E_cas, t in the coordinates, E_corr + Φ's adjoint and the gradient's multipliers, the HVP and its partnered pairs, the Z terms, the skeleton, the rotation cross terms and κ_oo rows as Gram matrices of nmo² stacks, the symmetrized sum |
 | `df_pc_nevpt2.cpp` | The PC-NEVPT2 Hessian: `df_sc_nevpt2.cpp`'s assembly over PC's adjoint and product, with its three refusals: a class kept below 1e-10, a coordinate's Schur-lift step below 1e-3 bohr, a degenerate inactive pair |
 | `df_qd_nevpt2_tangents.cpp` | The QD-NEVPT2 parameter response and t_x over a state average: per chunk, κ_nr and the CP's rotations, the active Hamiltonian's and f^SA's change by `qd_builders_tangent`, Eq. qd-theta at the equal pairs, κ_oo under the degenerate-pair rule |
+| `df_qd_zeta.cpp` | The ζ term of a QD-NEVPT2 Lagrangian's Hessian: L_xy and L_xλ by the ± polarization of the roots over `df_derivatives` and `df_casscf_exy`, the rotation rows from the transition Hamiltonian's derivative, and Λᵀ T_xx Λ from the orbital Hessian at the folded RDMs, the orbital gradient at each column's first-order transition RDMs and transition sigmas |
 | `df_sacasscf.cpp` | A state-averaged root's Hessian, and `df_sacasscf_cp` (its λ^x alone) and `state_averaged_electrons`: z and λ^x by the Z-vectors, the residual check, root I's parameter Hessian by the one-hot unreduced product, the third-derivative action, the z terms, E_I,xy, eq. rot at equal weights and the symmetrized sum |
 | `df_sacasscf_z.cpp` | A state average's z terms at given multipliers, root I's or a QD-NEVPT2 Lagrangian's: L_xy's z part (E_xy along K(z_o), and at z_c's transition RDMs by the ± polarization) and L_xλ (the right-hand side at the caller's weights, if any, + I^x z); `df_casscf_z`, the same at one root and given Z without the right-hand side, plus Λᵀ T(·, ·, Z) Λ |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |

@@ -8,8 +8,9 @@
 # PUBLIC. The derivative calls, the J and K builds, the second-derivative
 # integrals, the MO-basis fit, the dipole integrals and their derivative, the
 # CASSCF's integrals, CI, Fock, orbital and relaxed Hessians, derivatives,
-# root rotation and third derivative, the NEVPT2 builders' tangent, the gemms
-# and the FBF_TRY header are the implementation units' own, so PRIVATE.
+# root rotation, transition gradient, zeta terms and third derivative, the
+# NEVPT2 builders' tangent, the gemms and the FBF_TRY header are the
+# implementation units' own, so PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.hessian
@@ -22,6 +23,7 @@ free_breakfast_add_cxx_module_library(
   df_casscf.cpp
   df_nevpt2_tangents.cpp
   df_qd_nevpt2_tangents.cpp
+  df_qd_zeta.cpp
   df_sc_nevpt2.cpp
   df_pc_nevpt2.cpp
   df_adjoint_xy.cpp
@@ -66,6 +68,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::response::hessian
   free_breakfast::response::orbital_pairs
   free_breakfast::mcscf::derivative
+  free_breakfast::mcscf::gradient
+  free_breakfast::mcscf::transition
   free_breakfast::response::relaxed_hessian
   free_breakfast::mcscf::root_rotation
   free_breakfast::mcscf::third_derivative
