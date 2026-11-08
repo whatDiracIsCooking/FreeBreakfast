@@ -2109,12 +2109,15 @@ The SC-QD Hessian-vector product, `test/gtest/nevpt2_qd_hvp_gpu.cpp`:
   off-diagonal part, Eq. qd-scfinish's off-diagonal terms, and at its
   diagonal, the 3 x 3, each above ten bars in some field. Measured on the
   RTX 3080: worst 5.2e-10 (h8), 1.1e-9 (h6), 7.9e-9 (h2co); parts ≥ 1.8e5
-  bars. Not `h2co_skew_ccpvdz_sa3`, which ladders along no path at 1e-7
-  (#1055; Conditioning, above). Its bars repeat only to ~1e-9, which floors
-  a central difference at t near 1e-9 / t. Along c_0, which moves the (1, 2)
-  transitions only through ε, those fields settle at 1.9e-6 to 2.5e-6, at
-  the coarsest rung pair, and every other field is under 3e-8 (RTX 3080).
-  Along B, root 2's Si tuples have N / |Ṅ| of 5e-4 to 8e-4, inside the
+  bars. `h2co_skew_ccpvdz_sa3` (slow tier) along c_0 alone (#1055, #1069;
+  Conditioning, above): its bars repeat only to ~1e-9, which floors a
+  central difference at t near 1e-9 / t, and c_0 moves the (1, 2)
+  transitions only through ε, so those fields (both orders) settle at the
+  coarsest rung pair, at 1.9e-6 to 2.5e-6 in #1055's runs and 4.7e-7 to
+  5.7e-7 in #1069's, and are printed beside that floor (1.4e-9 / t at the
+  extrapolant's finest rung, 5.6e-6) rather than gated. Every other field
+  is held to 1e-7: worst 1.4e-8 (RTX 3080), 2.5 s. Along B,
+  root 2's Si tuples have N / |Ṅ| of 5e-4 to 8e-4, inside the
   ladder's steps: the coarse rungs reach the norm's near-zero, and root 2's
   fields end at 4.7e-4 to 3e-3. Nor
   `h2co_ccpvdz_sa2`'s B: it populates the empty tuples, whose bars jump as
