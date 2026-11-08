@@ -84,7 +84,7 @@ rotations among the roots"); pairs of equal weight stay projected. The call
 folds Θ into z_c as its part along the roots (below), so any number of roots
 at any weights, partly equal included, is one formula. Projected out, as
 before #613, the gradient was off by up to 3.3e-3 at three roots
-(0.5, 0.3, 0.2), 7% of a root's gradient (`casscf_hessian.tex` §5.2; the
+(0.5, 0.3, 0.2), 7% of a root's gradient (`docs/hessian/hessian.tex` section roots; the
 fixture `test/gtest/data/casscf_hessian/` records it as
 `gradient_projected_vs_fd`); for two roots Θ carries nothing (5e-13 there).
 PySCF's analytic SA gradient refuses unequal weights.

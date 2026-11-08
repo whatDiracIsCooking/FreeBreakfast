@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Write the reference data the DF-CASSCF analytic nuclear Hessian's tests read.
 
-The design is `casscf_hessian.tex` (with `check_df.py` and `check_sa.py`
-beside it), ported here onto density fitting throughout: a Coulomb-metric fit
-over this tree's own data/aux_basis file, the metric applied through its
-Cholesky factor everywhere (never an explicit M^-1: at cond(M) ~ 2e6 an
-inverse puts ~1e-10 on every energy and 1e-4 on a second difference).
+The design is Part II of `docs/hessian/hessian.tex` (its section checks: the
+density-fitting and state-average checks), ported here onto density fitting
+throughout: a Coulomb-metric fit over this tree's own data/aux_basis file,
+the metric applied through its Cholesky factor everywhere (never an explicit
+M^-1: at cond(M) ~ 2e6 an inverse puts ~1e-10 on every energy and 1e-4 on a
+second difference).
 
 **The energy.** E(x, lambda) is the CASSCF energy over the fitted integrals
 at geometry x along the symmetric (Lowdin) connection, orbitals
@@ -126,7 +127,7 @@ COMMAND = (
 )
 
 ANGSTROM = 1.0 / lib.param.BOHR
-# The design's water (check_casscf.py): both O-H bonds stretched, to 1.40 and
+# The design's water (its section checks): both O-H bonds stretched, to 1.40 and
 # 1.51 A, in no symmetry plane, so the active space is the two sigma/sigma*
 # pairs (natural occupations near 1.88, 1.84, 0.16, 0.12). Bohr.
 WATER_STRETCHED = [
@@ -846,9 +847,9 @@ def e2_matrix(point: Point, d, g) -> numpy.ndarray:
 
 
 def two_index(hm, gm, a, b) -> tuple[numpy.ndarray, numpy.ndarray]:
-    """check_df.py's doubly one-index transform, every ordered pair of
-    positions spelled out: the brute-force form e2_matrix is checked
-    against."""
+    """The design's density-fitting check's doubly one-index transform,
+    every ordered pair of positions spelled out: the brute-force form
+    e2_matrix is checked against."""
     h2 = a.T @ hm @ b + b.T @ hm @ a
     g = numpy.zeros_like(gm)
     for pa in range(4):
@@ -1536,8 +1537,8 @@ def main() -> None:
         written.append(info)
     doc = {
         "description": "The DF-CASSCF analytic nuclear Hessian's reference data "
-        "(casscf_hessian.tex over a Coulomb-metric fit): per case the "
-        "orbitals and roots, the state-averaged CP right-hand sides and "
+        "(docs/hessian/hessian.tex Part II over a Coulomb-metric fit): per "
+        "case the orbitals and roots, the state-averaged CP right-hand sides and "
         "responses lambda^x; per root E_xy and its pieces, F and F^[x], "
         "the response terms, at a state average the multipliers z and the z "
         "terms, the third-derivative action and the root-rotation term, the "

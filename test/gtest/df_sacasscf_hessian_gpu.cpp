@@ -1,5 +1,5 @@
 // GPU cases for hessian::df_sacasscf, a state-averaged DF-CASSCF root's
-// analytic nuclear Hessian (casscf_hessian.tex eq. sa), against
+// analytic nuclear Hessian (docs/hessian/hessian.tex eq. sa), against
 // test/gtest/data/casscf_hessian/ (tools/emit/casscf_hessian_reference.py,
 // over the same cc-pVDZ-JKFIT fit): the stretched water's SA-CAS(4,4) / 6-31G
 // at two roots (0.5, 0.5) and (0.7, 0.3), three equal and (0.5, 0.3, 0.2),

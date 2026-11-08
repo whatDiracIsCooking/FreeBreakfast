@@ -1,7 +1,7 @@
 /// @file
 /// @brief df_casscf_exy: the fixed-parameter second derivative of a DF-CASSCF
-/// energy (casscf_hessian.tex eq. exy) at any active RDMs: the explicit part
-/// (the one-electron second derivatives at D^AO, V_nn's and
+/// energy (docs/hessian/hessian.tex eq. exy) at any active RDMs: the explicit
+/// part (the one-electron second derivatives at D^AO, V_nn's and
 /// df_casscf_two_electron) and the Lowdin connection's three terms, each a
 /// handful of gemms over the MO-basis fit B and the stack of tau^x. With a
 /// rotation K, the same at the K-rotated densities (a state average's z_o

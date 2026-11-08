@@ -50,7 +50,8 @@ constexpr double kHessianTol = 1e-7;
 // accumulated separately by atomics.
 constexpr double kAsymmetryRelTol = 1e-10;
 // Sum_A H[3 A + k][y], absolute: the response part's sum over its second index
-// holds only to the CPHF tolerance (rhf_hessian.tex, "Checks").
+// holds only to the CPHF tolerance (docs/hessian/hessian.tex section
+// rhf-checks).
 constexpr double kSumRuleTol = 1e-8;
 constexpr double kCphfTolerance = 1e-10;
 // Against central differences of the gradient at h = 1e-3 bohr: their h^2

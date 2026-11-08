@@ -226,7 +226,7 @@ displaced: molecule -> ... -> eri -> overlap -> core_hamiltonian
 A displaced CASSCF is a nonlinear solve, and it can converge somewhere else
 than the reference's solution moved -- quietly, with a gradient that differences
 into a wrong Hessian. Building the design's check met two such failures
-(`casscf_hessian.tex` section 11 item 1): a weakly correlated CAS(4,4) that
+(`docs/hessian/hessian.tex` section plan, item 1): a weakly correlated CAS(4,4) that
 never converged, and a start that was not orthonormal converging O(h) off with no
 error. So:
 

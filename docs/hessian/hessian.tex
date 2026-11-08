@@ -1,14 +1,20 @@
-% hessian.tex -- the RHF and CASSCF analytic nuclear Hessians: the parts of
-% their design derivations that the module READMEs under src/ cite.
+% hessian.tex -- the RHF and CASSCF analytic nuclear Hessians: their design
+% derivations, the parts the module READMEs, sources, tests and reference
+% generators under src/, test/ and tools/ cite.
 %
 % These are the design notes of 31 October 2026, written before src/hessian
 % and the modules beneath it, and they keep that note's voice: "the tree
 % lacks" means it lacked it then. Each section ends with what has landed
 % since, and the module READMEs are the record of the code as it stands;
 % where the two disagree, the code and its READMEs win. Equation labels are
-% the notes' own, so a README's "eq. (sa)" is \eqref{eq:sa} here; the RHF
-% part's two labels that collide with the CASSCF part's carry an rhf- prefix.
-% Code names are the tree's current ones.
+% the notes' own, so a README's "eq. (sa)" is \eqref{eq:sa} here, and a
+% section, algorithm or equation is cited by its label without the prefix
+% ("section roots", "Algorithm ss"); the RHF part's labels that collide with
+% the CASSCF part's carry an rhf- prefix (sec:rhf-notation, eq:rhf-energy,
+% sec:rhf-gradient, eq:rhf-gradient, sec:rhf-df, sec:rhf-algorithm,
+% sec:rhf-checks, sec:rhf-plan). Code names are the tree's current ones.
+% The CASSCF notes' inventory of what then existed is left out: the module
+% READMEs are that record now.
 %
 % Build: pdflatex hessian.tex, twice (cross-references).
 \documentclass[11pt]{article}
@@ -19,6 +25,8 @@
 \usepackage[margin=2.5cm]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage[noend]{algpseudocode}
 \usepackage[hidelinks]{hyperref}
 
 \newcommand{\code}[1]{\texttt{#1}}
@@ -30,10 +38,13 @@
 \newcommand{\Lag}{\mathcal L}
 \newcommand{\Exy}{E^{xy}}
 \newcommand{\sym}{\operatorname{sym}}
+\newcommand{\Dsk}[1]{D_S^{#1}}
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
 
 \title{The RHF and CASSCF analytic nuclear Hessians\\
-\large design notes: the skeleton Fock derivatives, CP-CASSCF and the state
-average}
+\large design notes: derivation, coupled-perturbed equations, density
+fitting and the state average}
 \author{free-breakfast design notes}
 \date{31 October 2026; brought into the tree 8 November 2026}
 
@@ -42,17 +53,19 @@ average}
 \maketitle
 
 \begin{abstract}
-Part~I is the closed-shell RHF Hessian's notation and its skeleton Fock
-derivatives, the $3N$ AO matrices $\Fsk{x}$ every coupled-perturbed
-right-hand side needs, and with them the one-electron derivative integrals
-as matrices rather than contracted scalars. Part~II is the CASSCF Hessian,
-state-specific and state-averaged: the second-order connection, the
-CP-CASSCF right-hand side and its $3N$ solves with the $Z$-vector's
-operator, the state average's Lagrangian, whose second derivative needs the
-gradient's own $Z$ and a third derivative of the averaged energy contracted
-once with it, and the rotations among the averaged roots. Both are
-excerpts: the parts of the design that the module READMEs cite, with the
-notation that makes them read.
+Part~I is the closed-shell RHF Hessian: the derivation in the vocabulary of
+the tree's RHF gradient, two equivalent forms of the result (one manifestly
+symmetric, one made only of AO matrices and Fock builds), the CPHF
+equations, the skeleton Fock derivatives every right-hand side needs, the
+density-fitted variant, the algorithm, its checks and a build order. By
+Wigner's $2n+1$ rule no second-order response is needed. Part~II is the
+CASSCF Hessian, state-specific and state-averaged: the second-order
+connection, the CP-CASSCF right-hand side and its $3N$ solves with the
+$Z$-vector's operator, the state average's Lagrangian, whose second
+derivative needs the gradient's own $Z$ and a third derivative of the
+averaged energy contracted once with it, the rotations among the averaged
+roots, the explicit part over density fitting, the algorithm, the
+conditions it needs, its checks and a build order.
 \end{abstract}
 
 \tableofcontents
@@ -127,6 +140,272 @@ solve per nuclear coordinate; $\Fsk{x}$ enters both, and every CPHF
 right-hand side.
 
 %======================================================================
+\section{The gradient, as the tree computes it}
+\label{sec:rhf-gradient}
+
+Differentiating \eqref{eq:rhf-energy} and using the SCF conditions gives the
+familiar
+\begin{equation}
+  E^x = \sum D_{\mu\nu} h^x_{\mu\nu}
+  + \tfrac12 \sum D_{\mu\nu} D_{\lambda\sigma}
+    \asym{\mu\nu}{\lambda\sigma}^x
+  - \sum W_{\mu\nu} S^x_{\mu\nu} + V_{nn}^x,
+  \label{eq:rhf-gradient}
+\end{equation}
+which is exactly \code{gradient::rhf}'s term list
+(\code{src/gradient/README.md}): \code{kinetic\_gradient} and
+\code{potential\_gradient} at $D$, \code{overlap\_gradient} at $-W$,
+\code{coulomb\_gradient} on $D$ and $-\frac12$\,\code{exchange\_gradient}
+on $D$, and the nuclear repulsion. The orbital response is absent because
+$E$ is stationary in the occupied--virtual rotations, and the normalization
+response is carried by $-W S^x$.
+
+The Hessian is the derivative of \eqref{eq:rhf-gradient}. Equation
+\eqref{eq:rhf-gradient} holds at \emph{every} geometry provided $D$ and $W$
+are the converged ones there, so differentiating it is legitimate, and two
+kinds of term result: those where $y$ hits an integral (the \emph{explicit}
+part) and those where $y$ hits $D$ or $W$ (the \emph{response} part):
+\begin{equation}
+  \Exy = \Exy_{\mathrm{expl}}
+  + \sum D^y_{\mu\nu}\,\Fsk{x}_{\mu\nu}
+  - \sum W^y_{\mu\nu}\,S^x_{\mu\nu},
+  \label{eq:hess-ao}
+\end{equation}
+\begin{equation}
+  \Exy_{\mathrm{expl}} = \sum D_{\mu\nu} h^{xy}_{\mu\nu}
+  + \tfrac12 \sum D_{\mu\nu} D_{\lambda\sigma}
+    \asym{\mu\nu}{\lambda\sigma}^{xy}
+  - \sum W_{\mu\nu} S^{xy}_{\mu\nu} + V_{nn}^{xy}.
+  \label{eq:explicit}
+\end{equation}
+The middle term of \eqref{eq:hess-ao} collects $D^y h^x$ and the two halves
+of $\frac12 (D D)^y \asym{}{}^x$, which are equal by the pair symmetry of
+$\asym{}{}$. Here $D^y$ and $W^y$ are \emph{total} derivatives: they need
+the orbitals' response.
+
+%======================================================================
+\section{The orbital response}
+\label{sec:response}
+
+\subsection{Parametrization and the orthonormality constraint}
+
+Expand the perturbed coefficients in the unperturbed ones,
+\begin{equation}
+  \frac{\partial C_{\mu p}}{\partial y} = \sum_q C_{\mu q}\,U^y_{qp}.
+\end{equation}
+Differentiating $C^{\mathsf T} S C = 1$ gives
+\begin{equation}
+  U^y_{pq} + U^y_{qp} + S^y_{pq} = 0.
+  \label{eq:ortho}
+\end{equation}
+The occupied--occupied block of $U^y$ is a rotation among occupied orbitals
+plus a symmetric part fixed by \eqref{eq:ortho}. $D$ and $E$ are invariant
+to the rotation, so we choose
+\begin{equation}
+  U^y_{ij} = -\tfrac12 S^y_{ij}
+  \label{eq:uoo}
+\end{equation}
+(the orbitals do \emph{not} stay canonical along $y$; this is why $W$
+is better differentiated as $\frac12 DFD$ than as $2C_o\eps_oC_o^{\mathsf T}$).
+The virtual--occupied block $U^y_{ai}$ is the unknown, and the
+occupied--virtual block follows from \eqref{eq:ortho}:
+$U^y_{ia} = -U^y_{ai} - S^y_{ai}$. The virtual--virtual block never
+enters a closed-shell quantity.
+
+\subsection{The density derivative}
+
+With \eqref{eq:uoo},
+\begin{equation}
+  D^y = D_U^y - \Dsk{y}, \qquad
+  D_U^y = 2\sum_{ai} U^y_{ai}\,\bigl(C_a C_i^{\mathsf T} + C_i C_a^{\mathsf T}\bigr),
+  \qquad
+  \Dsk{y} = 2\,C_o\,S^y_{oo}\,C_o^{\mathsf T},
+  \label{eq:dy}
+\end{equation}
+where $S^y_{oo}$ is the $n_o\times n_o$ block of $S^y_{pq}$. $\Dsk{y}$ is
+known from the overlap derivative alone; $D_U^y$ needs the CPHF solution.
+In code $D_U^y = 2(X + X^{\mathsf T})$ with $X = C_v U^y C_o^{\mathsf T}$:
+two GEMMs.
+
+\subsection{The coupled-perturbed Hartree--Fock equations}
+
+Differentiate the condition $F_{ai} = C_a^{\mathsf T} F C_i = 0$. Three
+pieces appear: the coefficient derivatives on either side, the skeleton
+derivative \eqref{eq:skeleton}, and the Fock change from $D^y$:
+\begin{equation}
+  0 = \frac{dF_{ai}}{dy}
+  = U^y_{ia}\,\eps_i + U^y_{ai}\,\eps_a + \Fsk{y}_{ai} + G(D^y)_{ai}.
+\end{equation}
+Substituting $U^y_{ia} = -U^y_{ai} - S^y_{ai}$ and \eqref{eq:dy}:
+\begin{equation}
+  \boxed{\;
+  \sum_{bk} M_{ai,bk}\,U^y_{bk} = B^y_{ai}, \qquad
+  B^y_{ai} = -\Fsk{y}_{ai} + \eps_i\,S^y_{ai} + G(\Dsk{y})_{ai}
+  \;}
+  \label{eq:cphf}
+\end{equation}
+with the electronic Hessian
+\begin{equation}
+  M_{ai,bk} = (\eps_a - \eps_i)\,\delta_{ab}\delta_{ik}
+  + 4(ai|bk) - (ab|ik) - (ak|ib).
+  \label{eq:m}
+\end{equation}
+$M$ is symmetric, and positive definite exactly when the RHF solution is a
+minimum under real singlet rotations (it is the real RHF$\to$RHF stability
+matrix up to a factor). A CPHF solve that does not converge is therefore a
+diagnostic of an unstable reference, not of the solver.
+
+\paragraph{The product never forms $M$.} For a trial $U$,
+\begin{equation}
+  (MU)_{ai} = (\eps_a - \eps_i)\,U_{ai} + C_a^{\mathsf T}\,G(D_U)\,C_i,
+  \label{eq:matvec}
+\end{equation}
+with $D_U$ built from $U$ as in \eqref{eq:dy}. So one product is two GEMMs
+to $D_U$, one J/K build on a symmetric density, and two GEMMs back to the
+$ai$ block: the same work as one SCF iteration. The $3N$ right-hand
+sides are independent, so the J/K builds batch across them, and the
+diagonal $(\eps_a - \eps_i)$ is the obvious preconditioner.
+
+\paragraph{How many solves.} One per coordinate, $3N$, or by translational
+invariance $3(N-1)$: the response to moving every nucleus together is a
+pure translation of the orbitals, so one atom's three responses are minus
+the sum of the others'. Rotational invariance gives three more only at a
+stationary point and only with care; it is not worth it. The $2n+1$ rule
+says first-order response suffices for a second derivative: no $U^{xy}$ is
+ever needed. The $Z$-vector trick does not help here: it removes response
+solves when there is one functional to differentiate, and a Hessian has
+$3N$ gradient components.
+
+\paragraph{Since written.} The CPHF is \code{response::cphf}
+(\code{src/response/cphf}), every right-hand side in one block.
+
+%======================================================================
+\section{The Hessian}
+\label{sec:hessian}
+
+\subsection{The AO form}
+
+Equation \eqref{eq:hess-ao} with $D^y$ from \eqref{eq:dy} and $W^y$ from
+\eqref{eq:dw},
+\begin{equation}
+  W^y = \tfrac12\bigl(D^y F D + D F^y D + D F D^y\bigr),
+  \qquad F^y = \Fsk{y} + G(D^y),
+  \label{eq:wy}
+\end{equation}
+is already a complete algorithm: per coordinate $y$, form $D^y$, one J/K
+build for $G(D^y)$, a handful of GEMMs for $W^y$, then $3N$ dot products
+$\tr(D^y \Fsk{x}) - \tr(W^y S^x)$ for every $x$. It is not manifestly
+symmetric in $x$ and $y$, but it is the exact derivative of an exact
+gradient, so its asymmetry measures the CPHF residual. Symmetrizing
+$\frac12(\Exy + E^{yx})$ at the end is standard, and the discarded
+antisymmetric part is a free convergence diagnostic.
+
+\subsection{The symmetric form}
+
+Expanding \eqref{eq:hess-ao} in MOs, using \eqref{eq:cphf} to eliminate the
+$\Fsk{x}_{ai}$ and the bilinear symmetry of $G$ (two terms
+$\pm 4\sum_{ai} U^y_{ai}\,G(\Dsk{x})_{ai}$ cancel, one from each of $D^y$
+and $W^y$), gives
+\begin{equation}
+  \boxed{\;
+  \begin{aligned}
+  \Exy = \Exy_{\mathrm{expl}}
+  &- 4\sum_{ai} B^x_{ai}\,U^y_{ai}
+   - 2\sum_{ij}\bigl(S^x_{ij}\,\Fsk{y}_{ij} + S^y_{ij}\,\Fsk{x}_{ij}\bigr)\\
+  &+ 2\sum_{ij} S^x_{ij}\,S^y_{ij}\,(\eps_i + \eps_j)
+   + \tr\bigl[\Dsk{x}\,G(\Dsk{y})\bigr].
+  \end{aligned}\;}
+  \label{eq:hess-sym}
+\end{equation}
+Every term is symmetric in $x\leftrightarrow y$; the first because
+$\sum_{ai} B^x_{ai} U^y_{ai} = B^{x\mathsf T} M^{-1} B^y$. That term is the
+orbital relaxation, and it is negative semi-definite since $M$ is positive
+definite: letting the orbitals relax can only lower the curvature. It is
+the term that a frozen-orbital Hessian omits and that dominates the error
+of one.
+
+The two forms agree to the CPHF tolerance (section~\ref{sec:rhf-checks}).
+\eqref{eq:hess-sym} costs fewer J/K builds (the $G(\Dsk{y})$ are needed
+for $B^y$ anyway) and needs no $W^y$; \eqref{eq:hess-ao} is shorter to
+write over AO matrices. The recommendation is \eqref{eq:hess-sym}, with
+\eqref{eq:hess-ao} kept as a test.
+
+\subsection{Nuclear repulsion}
+
+With $\mathbf R = \mathbf R_A - \mathbf R_B$ and $R = |\mathbf R|$, the
+off-diagonal blocks are
+\begin{equation}
+  \frac{\partial^2 V_{nn}}{\partial A_k\,\partial B_l}
+  = -Z_A Z_B\,\frac{3R_kR_l - R^2\delta_{kl}}{R^5}
+  \qquad (A \neq B),
+\end{equation}
+and each diagonal block is minus the sum of its row's off-diagonal blocks.
+
+\paragraph{Since written.} The response part, in the symmetric form
+\eqref{eq:hess-sym}, is \code{hessian::df\_rhf\_response}
+(\code{src/hessian}), and its tests build the AO form \eqref{eq:hess-ao}
+from the same $U^x$ as the check this section recommends.
+
+%======================================================================
+\section{The explicit part and its integrals}
+\label{sec:integrals}
+
+$\Exy_{\mathrm{expl}}$ \eqref{eq:explicit} needs four second-derivative
+integral classes, each only ever contracted, never stored:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+class & contracted with & centres differentiated \\
+\midrule
+$S^{xy}$ & $-W$ & 2 (bra, ket) \\
+$T^{xy}$ & $D$ & 2 \\
+$V^{xy}$ & $D$ & 2, plus every nucleus $C$ (operator) \\
+$(\mu\nu|\lambda\sigma)^{xy}$ & $\frac12 D\otimes D$ (antisymmetrized) & 4 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Shape of the output.} A shell pair touches two atoms, so an
+overlap or kinetic second derivative fills at most a $6\times6$ block of
+the $3N\times3N$ Hessian, and a nuclear-attraction one, whose operator
+nucleus $C$ is a third atom, a $9\times9$ block; a quartet touches four, a
+$12\times12$ block with 78 unique entries. Translational invariance,
+$\sum_A \partial/\partial A_k = 0$ applied to each integral, removes one
+centre: a quartet's derivatives need only three centres' worth of distinct
+integrals (45 unique second-derivative entries), and an overlap or kinetic
+pair's only one. The tree's first-derivative kernels do not use
+translational invariance
+(\code{src/integrals/one\_electron/gradient/README.md}); for second
+derivatives the saving is large enough that they should.
+
+\paragraph{The nuclear-attraction operator.} $V^{xy}$ has three kinds of
+term: both derivatives on basis centres, one on a basis centre and one on
+the operator's nucleus, and both on the operator's nucleus. The last is
+the second derivative of the electrostatic potential at nucleus $C$, the
+same integral family as electric-field-gradient integrals. Translational
+invariance turns the operator derivatives into basis-centre ones,
+$\partial_C = -(\partial_A + \partial_B)$ for the $C$-term of a pair on
+$A,B$, which is how most codes avoid a separate kernel.
+
+\paragraph{Angular momentum.} In McMurchie--Davidson form a derivative on
+a Gaussian is a sum of functions of $l\pm1$, so a second derivative needs
+Hermite expansions to $l+2$ on that centre, and a quartet's to $L+2$ in
+total over the two centres differentiated. At f this is the same register
+and stack pressure that bounded the f-shell first-derivative and exchange
+kernels; the generated kernels' compile time and spill behaviour should be
+measured with \code{devtools/kernel-compile-watchdog.sh} before anything
+is assumed.
+
+\paragraph{Since written.} The one-electron contractions are
+\code{overlap\_hessian}, \code{kinetic\_hessian} and
+\code{potential\_hessian} (\code{src/integrals/one\_electron/hessian}),
+their diagonal blocks from translational invariance; the fitted
+two-electron ones are \code{metric\_hessian} and
+\code{three\_center\_hessian}
+(\code{src/integrals/eri/density\_fitting/hessian}).
+
+%======================================================================
 \section{The skeleton Fock derivatives}
 \label{sec:skeleton}
 
@@ -161,6 +440,230 @@ n_{\mathrm{AO}}]$ tensors of \code{src/integrals/one\_electron/gradient};
 the two-electron part, over density fitting, is \code{df\_jk\_derivative}
 (\code{src/integrals/eri/density\_fitting/gradient}). \code{src/hessian}
 assembles $\Fsk{x}$ from them.
+
+%======================================================================
+\section{Density fitting}
+\label{sec:rhf-df}
+
+The tree's DF-RHF gradient fits $J$ and $K$ with a Coulomb-metric auxiliary
+basis, $M_{PQ} = (P|Q) = (LL^{\mathsf T})_{PQ}$ and $T_{\mu\nu,P} =
+(\mu\nu|P)$. The DF Hessian has the same structure as sections
+\ref{sec:response} and \ref{sec:hessian}, with $G$ replaced by the DF $G$
+everywhere (in $F$, in the CPHF product \eqref{eq:matvec}, and in
+$G(\Dsk{y})$), and the explicit and skeleton parts differentiated through
+the fit. The Coulomb-metric fit is variational in the fit coefficients, so
+no fit response appears; only $M^{-1}$'s derivative does.
+
+\subsection{Coulomb}
+
+$E_J = \frac12\,u^{\mathsf T} M^{-1} u$ with $u = T^{\mathsf T}\mathrm{vec}\,D$
+and $d = M^{-1}u$, the vector \code{gradient::df\_rhf} already builds. At
+fixed $D$,
+\begin{align}
+  E_J^x &= u^{x\mathsf T} d - \tfrac12\,d^{\mathsf T} M^x d,\\
+  E_J^{xy} &= u^{xy\mathsf T} d - \tfrac12\,d^{\mathsf T} M^{xy} d
+  + \bigl(u^x - M^x d\bigr)^{\mathsf T} M^{-1} \bigl(u^y - M^y d\bigr),
+  \label{eq:dfj}
+\end{align}
+with $u^x = T^{x\mathsf T}\mathrm{vec}\,D$. The last term is new
+relative to the gradient: a $3N\times3N$ Gram matrix of the vectors
+$L^{-1}(u^x - M^x d)$, each of length $n_{\mathrm{aux}}$: one triangular
+solve per coordinate and one GEMM.
+
+\subsection{Exchange}
+
+$E_x = -\sum_{ij} T_{ij}^{\mathsf T} M^{-1} T_{ij}$ with $T_{ij,P} = (ij|P)$
+at fixed MO coefficients and $c_{ij} = M^{-1}T_{ij}$, the fitted occupied
+pairs of the gradient. At fixed $C$,
+\begin{align}
+  E_x^x &= -\sum_{ij}\bigl(2\,T^{x\mathsf T}_{ij} c_{ij}
+          - c_{ij}^{\mathsf T} M^x c_{ij}\bigr),\\
+  E_x^{xy} &= -\sum_{ij}\Bigl(2\,T^{xy\mathsf T}_{ij} c_{ij}
+          - c_{ij}^{\mathsf T} M^{xy} c_{ij}
+          + 2\,\bigl(T^x_{ij} - M^x c_{ij}\bigr)^{\mathsf T} M^{-1}
+              \bigl(T^y_{ij} - M^y c_{ij}\bigr)\Bigr).
+  \label{eq:dfk}
+\end{align}
+The cross term is the DF Hessian's bottleneck: it needs the half-transformed
+derivative three-centre integrals $T^x_{ij,P}$ for every coordinate,
+$3N\,n_o^2\,n_{\mathrm{aux}}$ doubles in all. It should be built per atom
+(only that atom's AOs and aux functions contribute to $T^x$) and contracted
+into the Hessian one pair of atom blocks at a time, never held whole.
+
+These are the fixed-orbital (explicit) parts. Their skeleton analogues,
+the derivative of the DF Fock matrix at fixed $D$, follow the same way:
+$J^{(x)} = T^x d + T\,M^{-1}(u^x - M^x d)$, and the exchange analogue
+with $c_{ij}$.
+
+\subsection{What the fit adds to the kernel list}
+
+$(\mu\nu|P)^{xy}$ and $(P|Q)^{xy}$, the second-derivative three- and
+two-centre integrals, contracted with $D\otimes d$, $d\otimes d$ and the
+exchange analogues of \code{gradient::df\_rhf}'s $\Gamma^K$ and $W^K$;
+and $(\mu\nu|P)^x$ and $(P|Q)^x$ as \emph{uncontracted} per-coordinate
+slabs (or contracted over one index only) for \eqref{eq:dfj},
+\eqref{eq:dfk} and the skeleton Fock. The existing
+\code{three\_center\_gradient} and \code{metric\_gradient} compute the
+right integrals and contract them to scalars, like their direct
+counterparts. The aux side carries shells two $l$ above the orbital side
+(to i), so second derivatives push the aux Hermite expansion to $l = 8$;
+that is a strong argument for using translational invariance to move the
+derivatives off the aux centre wherever possible.
+
+\paragraph{Since written.} The two-electron explicit part, \eqref{eq:dfj}
+and \eqref{eq:dfk} with their cross terms built one atom block at a time,
+is \code{hessian::df\_rhf\_two\_electron} (\code{src/hessian}).
+
+%======================================================================
+\section{The algorithm}
+\label{sec:rhf-algorithm}
+
+\begin{algorithm}[ht]
+\caption{RHF analytic Hessian (symmetric form \eqref{eq:hess-sym})}
+\label{alg:hessian}
+\begin{algorithmic}[1]
+\Require converged $C$, $\eps$, $n_o$; $D$, $W$; the basis (and aux basis)
+\Ensure $\Exy$, $3N\times3N$
+\State $H \gets \Exy_{\mathrm{expl}}$: second-derivative integrals contracted
+       with $D$, $-W$, $\frac12 D\otimes D$ \eqref{eq:explicit}; add $V_{nn}^{xy}$
+\For{each coordinate $x$ (batched)}
+  \State $S^x$, $\Fsk{x}$ as AO matrices \Comment{derivative J/K build}
+  \State $S^x_{pq} \gets C^{\mathsf T} S^x C$,\;
+         $\Fsk{x}_{pq} \gets C^{\mathsf T}\Fsk{x}C$ (occupied columns only)
+  \State $\Dsk{x} \gets 2C_oS^x_{oo}C_o^{\mathsf T}$, then $G(\Dsk{x})$
+         \Comment{one J/K build}
+  \State $B^x_{ai} \gets -\Fsk{x}_{ai} + \eps_iS^x_{ai} + G(\Dsk{x})_{ai}$
+\EndFor
+\State solve $MU^x = B^x$ for all $x$ together by preconditioned CG
+       \eqref{eq:matvec}, preconditioner $(\eps_a-\eps_i)^{-1}$
+\State $H \mathrel{+}= -4\,B^{\mathsf T}U
+  - 2(\Sigma + \Sigma^{\mathsf T})
+  + 2\,\Omega + \Theta$, where
+  $\Sigma_{xy} = \sum_{ij}S^x_{ij}\Fsk{y}_{ij}$,
+  $\Omega_{xy} = \sum_{ij}S^x_{ij}S^y_{ij}(\eps_i+\eps_j)$,
+  $\Theta_{xy} = \tr[\Dsk{x}G(\Dsk{y})]$
+\State check $\|H - H^{\mathsf T}\|$ and the translational sum rule; symmetrize
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Cost.} The J/K builds dominate: $3N$ for the $G(\Dsk{x})$, and
+$3N$ per CG iteration, typically 10--20 iterations to $10^{-8}$ in the
+residual. That is $3N$ times a short SCF. The derivative J/K build for the
+$\Fsk{x}$ costs a small multiple of one gradient. The second-derivative
+ERI contraction is one pass over the quartets, more expensive per quartet
+than a gradient but done once. For a molecule of 30 atoms the CPHF is
+about 90 batched solves, and it is the term to make fast. (These are
+expectations from the operation counts, not measurements.)
+
+\paragraph{The CPHF solver.} All $3N$ systems share $M$, so a block CG (or
+plain CG run in lockstep, with per-column convergence masks) turns the
+$3N$ J/K builds per iteration into one batched build over $3N$ densities.
+The integral-direct J/K and the DF J/K both take one density per call
+today; a multi-density build is the natural extension, and it serves
+TDHF and polarizabilities too. Memory per column is $n_vn_o$ for each of
+$U$, $B$, the residual and the search direction: small.
+\code{response::zvector} is the tree's closest existing linear solver over
+a response product and is the model for its interface and stopping rules.
+
+\paragraph{Since written.} \code{hessian::df\_rhf} is
+Algorithm~\ref{alg:hessian} end to end over density fitting
+(\code{src/hessian/README.md}, ``The whole Hessian'').
+
+%======================================================================
+\section{Checks}
+\label{sec:rhf-checks}
+
+\paragraph{Formulas.} The design implemented \eqref{eq:cphf},
+\eqref{eq:hess-ao} and \eqref{eq:hess-sym} with PySCF supplying the
+integrals ($\Exy_{\mathrm{expl}}$ from \code{partial\_hess\_elec} plus
+\code{hess\_nuc}, $\Fsk{x}$ from \code{make\_h1}, $S^x$ from
+\code{int1e\_ipovlp}) and solved the CPHF directly with a dense $M$. For
+water in 6-31G at a distorted $C_1$ geometry:
+
+\begin{center}
+\begin{tabular}{@{}lr@{}}
+\toprule
+comparison & max.\ abs.\ difference ($E_h/a_0^2$) \\
+\midrule
+symmetric form \eqref{eq:hess-sym} vs.\ \code{pyscf.hessian.rhf} & $1.9\times10^{-8}$ \\
+symmetric form vs.\ central difference of analytic gradients & $7.0\times10^{-8}$ \\
+AO form \eqref{eq:hess-ao} vs.\ \code{pyscf.hessian.rhf} & $1.9\times10^{-8}$ \\
+asymmetry of the AO form & $3.9\times10^{-10}$ \\
+asymmetry of the symmetric form & $1.5\times10^{-15}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The largest Hessian element is 0.71, so the agreement is at PySCF's own
+CPHF tolerance and the finite difference's step error.
+
+\paragraph{For the GPU implementation.} In order of how cheaply they catch
+a bug:
+\begin{enumerate}
+  \item $H = H^{\mathsf T}$ in the AO form, to the CPHF tolerance;
+  \item translational invariance: $\sum_B \partial^2E/\partial A_k\partial
+        B_l = 0$ for every $A, k, l$. Before symmetrizing
+        \eqref{eq:hess-sym}, the sum over the first index $x$ is exact, since
+        $\sum_x B^x = 0$ and $\sum_x S^x = 0$ are integral identities; the
+        sum over the second index $y$ needs $\sum_y U^y = 0$ and so holds
+        only to the CPHF tolerance (unless the last atom's $U$ is taken as
+        minus the sum of the others', section~\ref{sec:response}), and
+        symmetrizing mixes the two;
+  \item rotational invariance at a converged stationary geometry: six
+        zero eigenvalues (five for a linear molecule) after mass-weighting;
+  \item each term against PySCF separately (\code{partial\_hess\_elec}
+        for the explicit part, \code{make\_h1} for $\Fsk{x}$, the
+        \code{mo1} of \code{solve\_mo1} for $U$), as the tree's gradient
+        tests compare each term; for DF, against \code{pyscf.df.hessian.rhf}
+        over the \emph{same} aux set, not against the direct Hessian;
+  \item the whole against a central difference of \code{gradient::rhf}
+        or \code{gradient::df\_rhf}, which tests the tree against itself.
+\end{enumerate}
+
+%======================================================================
+\section{What to build, in order}
+\label{sec:rhf-plan}
+
+\begin{enumerate}
+  \item \textbf{The semi-numerical Hessian.} A central difference of the
+        existing analytic gradient: $6N$ SCF + gradient runs at
+        $10^{-3}$ to $10^{-4}$ bohr steps, accurate to about $10^{-6}$
+        with tight SCF convergence. It needs no new kernel, gives
+        frequencies now, and is the reference the analytic one is tested
+        against. It belongs beside the geometry-optimization step as a
+        pipeline step.
+  \item \textbf{Matrix-valued first derivatives.} $S^x$, $h^x$ and the
+        derivative J/K as $3N$ AO matrices (section~\ref{sec:skeleton}),
+        and the DF analogues. With these alone the CPHF right-hand sides
+        exist.
+  \item \textbf{The batched CPHF solver} over a multi-density J/K build,
+        testable on its own against \code{solve\_mo1}.
+  \item \textbf{The response part of $\Exy$} \eqref{eq:hess-sym}: GEMMs and
+        dot products once 2 and 3 exist. At this point the Hessian minus
+        $\Exy_{\mathrm{expl}}$ can be checked against PySCF.
+  \item \textbf{Second-derivative integrals}, one-electron first (cheap,
+        easy to verify), then the ERI or DF three- and two-centre
+        families, generated by FelizJueves with translational invariance
+        built in, and their compile times measured.
+  \item \textbf{Frequencies and intensities.} Mass-weighting, projection of
+        translations and rotations, harmonic frequencies. IR intensities
+        need the dipole derivatives, which reuse the $U^x$:
+        $\partial\boldsymbol\mu_{\mathrm{el}}/\partial x =
+        -\tr(D\,\boldsymbol\mu^x) - 4\sum_{ai}U^x_{ai}\,\boldsymbol\mu_{ai}
+        + 2\sum_{ij} S^x_{ij}\,\boldsymbol\mu_{ij}$ (with $\boldsymbol\mu$
+        the dipole integrals $\langle\mu|\mathbf r|\nu\rangle$, electrons
+        carrying charge $-1$), plus the nuclear charge $Z_A\,\mathbf e_k$.
+\end{enumerate}
+
+Steps 2--4 also serve any other second-order RHF property with a nuclear
+perturbation, and the batched CPHF serves electric ones (polarizabilities)
+with $B$ replaced by the dipole integrals.
+
+\paragraph{Since written.} Step 1 is \code{src/pipeline/hessian}'s
+numerical method; step 6's dipole derivative and IR intensities are
+\code{hessian::rhf\_dipole\_derivative} and
+\code{hessian::infrared\_intensities}, and its harmonic analysis is
+\code{geometry::harmonic\_analysis}.
 
 %======================================================================
 \part{CASSCF}
@@ -571,6 +1074,354 @@ $A$ with a multiplier of its own (\code{src/response/zvector/README.md},
 \code{mcscf::root\_rotation} (\code{src/mcscf/root\_rotation}).
 
 %======================================================================
+\section{The explicit part over density fitting}
+\label{sec:df}
+
+The explicit part of \eqref{eq:exy} is the second-derivative integrals
+contracted with $D^{\mathrm{AO}}$ and $\Gamma^{\mathrm{AO}}$. One-electron:
+as RHF, at the CASSCF $D$. Two-electron, over a Coulomb-metric fit with
+$T_{a,P} = (a|P)$ for an AO pair $a = (\mu\nu)$, $N = M^{-1}$ and fitted
+pairs $c = TN$: for any symmetric pair-space density $\Gamma_{ab}$ (the
+energy being $E_2 = \frac12\sum_{ab}\Gamma_{ab}(TNT^{\mathsf T})_{ab}$),
+\begin{equation}
+\boxed{\;
+  E_2^{xy} = \sum_{aP}\tilde\Gamma_{aP}\,T^{xy}_{aP}
+  - \tfrac12\sum_{PQ}\hat W_{PQ}\,M^{xy}_{PQ}
+  + \sum_{ab}\Gamma_{ab}\bigl[R^x N R^{y\mathsf T}\bigr]_{ab},
+  \qquad R^x = T^x - c\,M^x,\;}
+  \label{eq:df2}
+\end{equation}
+with $\tilde\Gamma = \Gamma c$ and $\hat W = c^{\mathsf T}\Gamma c$, the
+same intermediates as the gradient. For $\Gamma = D\otimes D$ this is
+Part~I's DF Coulomb second derivative \eqref{eq:dfj}. The first two terms
+are the gradient's contractions with second-derivative integrals. The third
+is new, and it is affordable only because $\Gamma$ factorizes. The tree's
+gradient already splits $E_2$ into the pieces that make it so
+(\code{src/mcscf/gradient/README.md}):
+\begin{itemize}
+  \item \textbf{J}, core--core and core--active: $\Gamma = D\otimes D -
+        D_a\otimes D_a$. The cross term is two Gram matrices of vectors
+        $u^x - M^x d$, length $n_{\mathrm{aux}}$, as for RHF.
+  \item \textbf{K}, core with core and with active: $-\sum_i\sum_{pq}
+        G_{pq}(ip|iq)$. The cross term needs $R^x$ half-transformed to
+        $(i, p)$ pairs, $3N\,n_{\mathrm{core}}n_{\mathrm{occ}}n_{\mathrm{aux}}$
+        in all. Build it per atom.
+  \item \textbf{active--active}: $\frac12\sum\Gamma_{tuvw}(tu|vw)$. The
+        cross term is $\sum\Gamma_{tuvw}(R^x_{tu})^{\mathsf T}N R^y_{vw}$
+        with $R^x$ over active pairs, $3N\,n_{\mathrm{act}}^2n_{\mathrm{aux}}$:
+        small, and the cleanest of the three.
+\end{itemize}
+The left/right forms of Wang et al.'s SI (their Eqs.~S9 and S15, the DF-J
+and DF-K gradients at independent $D_L$ and $D_R$) are the gradients these
+cross terms differentiate. Their DF-K-MO variant (Eqs.~S16--S19), which
+contracts over MO pairs and never forms an $n_{\mathrm{aux}}n_{\mathrm{AO}}^2$
+transition tensor, is the right shape for the $R^x$ half-transforms too.
+
+The connection terms of \eqref{eq:exy} need $F^{[x]}$ (the derivative J/K
+builds of section~\ref{sec:ss}) and $E^{(2)}[\tau^x,\tau^y]$, which is the
+orbital-Hessian contraction with symmetric generators. Where $\tau^x$ and
+$\tau^y$ fall on different pairs of a core density, it is J/K builds on
+$C\tau^x$-rotated densities, $3N$ of them, contracted pairwise. Where both
+fall on the same pair, the core part is $\tau^{x\mathsf T}J(D)\tau^y$-type
+contractions of the unperturbed J/K. Where they meet the active 2-RDM, it
+needs the $(pq|tu)$- and $(pt|qu)$-type integrals with two general
+indices: the \code{ppaa} and \code{papa} blocks that \code{response::Hessian}
+already contracts for antisymmetric generators.
+
+\paragraph{Since written.} \eqref{eq:df2}, split as above, is
+\code{hessian::df\_casscf\_two\_electron}, and \eqref{eq:exy} built on it
+is \code{hessian::df\_casscf\_exy}; $F^{[x]}$ and the right-hand sides
+\eqref{eq:rhs-orb}--\eqref{eq:rhs-ci} are \code{mcscf::df\_derivatives}
+(\code{src/mcscf/derivative}).
+
+%======================================================================
+\section{The algorithm}
+\label{sec:algorithm}
+
+\begin{algorithm}[ht]
+\caption{State-specific CASSCF analytic Hessian, Eq.~\eqref{eq:ss}}
+\label{alg:ss}
+\begin{algorithmic}[1]
+\Require converged $C$, $c$; $D$, $\Gamma$, $F$; basis and aux basis
+\Ensure $\Exy$, $3N\times3N$
+\State $H \gets$ explicit part: second-derivative integrals against
+       $D^{\mathrm{AO}}$, $\Gamma$ split as in section~\ref{sec:df};
+       $+V_{nn}^{xy}$
+\For{each coordinate $x$ (batched)}
+  \State $S^x$, $h^x$, derivative J/K at the core and active densities,
+         $(pt|uv)^x$ \Comment{matrix-valued derivatives}
+  \State $\tau^x \gets -\frac12 S^x$;\; $F^{[x]}$;\;
+         $E_{\lambda x}$ by \eqref{eq:rhs-orb}--\eqref{eq:rhs-ci}
+\EndFor
+\State $H \mathrel{+}= 2F\cdot\tau^{xy} + 2(F^{[x]}\cdot\tau^y + F^{[y]}\cdot\tau^x)
+       + E^{(2)}[\tau^x,\tau^y]$ \Comment{connection, Eq.~\eqref{eq:exy}}
+\State solve $E_{\lambda\lambda}\lambda^x = -E_{\lambda x}$ for all $x$:
+       block PCG, batched products \Comment{the $Z$-vector operator}
+\State $H \mathrel{+}= -\Lambda^{\mathsf T}E_{\lambda\lambda}\Lambda$
+       \;$=\; \Lambda^{\mathsf T}E_{\lambda\cdot}$, \;$\Lambda = (\lambda^1\cdots\lambda^{3N})$
+\State check symmetry and the translational sum rule; symmetrize
+\end{algorithmic}
+\end{algorithm}
+
+The state average adds, in order of difficulty: the $z$-weighted copies
+of lines 1--4 (the gradient's densities, one more pass); the root-rotation
+responses \eqref{eq:theta}, closed form once $\lambda^x$ is known; the
+$z$-contracted SA Hessian at derivative integrals in $\Lag_{x\lambda}$;
+and the third-derivative action $\lambda^{x\mathsf T}(z\cdot
+\partial_{\lambda\lambda}g_{\mathrm{SA}})\lambda^y$, $3N(3N+1)/2$ pairs,
+each a doubly-rotated J/K build unless it is organized as $3N$ actions
+on $\lambda^y$ followed by dot products.
+
+\paragraph{Cost.} As for RHF, the response dominates: $3N$ CP-CASSCF
+solves, each costing about one $Z$-vector, against a gradient that costs
+one. A CASSCF Hessian is therefore about $3N$ CASSCF gradients plus the
+explicit part, and the semi-numerical route costs $6N$ CASSCF runs
+\emph{plus} $6N$ gradients. The analytic route wins by more than the
+factor of two that counting suggests, because each displaced CASSCF
+re-converges the orbitals from scratch. That is an expectation from the
+operation counts, not a measurement.
+
+\paragraph{Since written.} \code{hessian::df\_casscf} is
+Algorithm~\ref{alg:ss}, with its CP-CASSCF step on its own as
+\code{hessian::df\_casscf\_cp}; the state average is
+\code{hessian::df\_sacasscf}, its $z$ terms \code{hessian::df\_sacasscf\_z}
+(\code{src/hessian/README.md}).
+
+%======================================================================
+\section{Differentiability}
+\label{sec:diff}
+
+Every condition a smooth CASSCF gradient needs, the Hessian needs too,
+and more sharply, because the response now enters quadratically:
+\begin{itemize}
+  \item a non-singular $E_{\lambda\lambda}$ (or $A$), a true minimum in the
+        orbital--CI space. A near-singular one, such as an active orbital
+        with occupation near 0 or 2 that is nearly redundant with the core
+        or virtual space, makes $\lambda^x$ large and the Hessian
+        ill-conditioned before it makes the gradient wrong;
+  \item no root flipping in the state average and no active-space swap
+        along the displacements. The semi-numerical Hessian is exposed to
+        this, the analytic one is not, and the disagreement between them
+        is a diagnostic;
+  \item for the state average, a gap to every other averaged root
+        (section~\ref{sec:roots}).
+\end{itemize}
+
+%======================================================================
+\section{Checks}
+\label{sec:checks}
+
+\paragraph{The state-specific formula.} The design's check evaluates the
+CASSCF energy $E(x,\lambda)$ directly: L\"owdin connection to all orders,
+orbitals $C(x)e^{K(\kappa)}$, and the CI vector $c_0 + Q\theta$
+normalized, with $Q$ an orthonormal basis of $c_0$'s complement. It takes
+$E_{xy}$, $E_{x\lambda}$ and $E_{\lambda\lambda}$ by central finite
+differences at fixed parameters and assembles \eqref{eq:ss}. The reference
+is a central difference of PySCF's analytic CASSCF gradient, re-converged
+at each displaced geometry. For water, CAS(4,4)/6-31G, at a $C_1$ geometry
+with both O--H bonds stretched (1.40 and 1.51~\AA), so that the active
+space is the two $\sigma/\sigma^*$ pairs with natural occupations near
+1.88, 1.84, 0.16 and 0.12:
+
+\begin{center}
+\begin{tabular}{@{}lr@{}}
+\toprule
+comparison & max.\ abs.\ difference ($E_h/a_0^2$) \\
+\midrule
+formula \eqref{eq:ss} vs.\ FD of PySCF's analytic gradient & $2.8\times10^{-4}$ \\
+asymmetry of that FD reference (its own noise) & $2.3\times10^{-4}$ \\
+diagonal of \eqref{eq:ss} vs.\ FD of self-relaxed energies & $2.5\times10^{-6}$ \\
+$E_{xy}$ alone (no response) vs.\ FD of PySCF's gradient & $4.8\times10^{-1}$ \\
+asymmetry of \eqref{eq:ss} & $2\times10^{-16}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The largest Hessian element is 0.06, and the response term is
+not small: dropping it misses by 0.48. The first row sits at the
+reference's own noise, set by PySCF's reachable gradient convergence
+($10^{-6}$). The third row replaces PySCF with a reference that has no
+solver noise: $E(x,\lambda)$ relaxed to $10^{-9}$ in its gradient at each
+displaced geometry by Newton steps, the relaxed energies then differenced.
+This checks the structure \eqref{eq:ss} and the connection, but
+not the analytic expansions \eqref{eq:exy}--\eqref{eq:rhs-ci} term by
+term.
+
+\paragraph{The analytic terms.} A second check takes the derivative AO
+integrals (first and second, at fixed AO coefficients) by finite
+difference. It assembles $E_{xy}$ by \eqref{eq:exy} and $E_{\lambda x}$ by
+\eqref{eq:rhs-orb}--\eqref{eq:rhs-ci} exactly as written, with $E^{(2)}$
+over every pair of index positions. It compares them with the
+fixed-parameter finite differences above, at the same molecule:
+
+\begin{center}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+term & max.\ size & max.\ abs.\ difference \\
+\midrule
+$E_{xy}$, \eqref{eq:exy} & 0.44 & $2.5\times10^{-7}$ \\
+\quad the same without the $\frac38(S^xS^y + S^yS^x)$ of $\tau^{xy}$ & & $9.3\times10^{-1}$ \\
+orbital right-hand side, \eqref{eq:rhs-orb} & 2.0 & $1.5\times10^{-6}$ \\
+CI right-hand side, \eqref{eq:rhs-ci} & 0.21 & $2.5\times10^{-7}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The second-order connection is not a small correction: without
+its $S^xS^y$ terms $E_{xy}$ is wrong by twice its own size.
+
+\paragraph{The state average.} A third check does the same for
+SA-CASSCF(4,4) over two or three singlet roots, at the same geometry. The
+roots are $(Ve^{A})_{\cdot r}$ over an orthonormal basis $V$ of the singlet
+CI space, $A$ holding the root--complement rotations and, as separate
+parameters, the root--root rotations $\theta$. The reference solution is
+polished by Newton steps to $|g_{\mathrm{SA}}| < 10^{-10}$. The reference
+energies are re-relaxed at each displaced geometry and the roots
+re-diagonalized in their span. Every piece of \eqref{eq:sa} is a finite
+difference of the energy matrix $\langle c_r|H|c_s\rangle$, with the $z$
+terms as a directional difference of $E_{\mathrm{SA}}$ along $z$. The
+Hessian is compared on its diagonal and along three random directions.
+The gradient compares the Lagrangian with the rotations projected (the tree,
+PySCF) and with them in $A$ against the differenced relaxed energies. Each
+row is the worst over the roots:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+weights & gradient, projected & gradient, rotations in $A$ & Hessian \\
+\midrule
+$(0.5, 0.5)$ & $6\times10^{-7}$ & --- & $3\times10^{-5}$ \\
+$(0.7, 0.3)$ & $6\times10^{-7}$ & $6\times10^{-7}$ & $5\times10^{-5}$ \\
+$(\frac13, \frac13, \frac13)$ & $2\times10^{-6}$ & --- & $2\times10^{-5}$ \\
+$(0.5, 0.3, 0.2)$ & $\mathbf{3.3\times10^{-3}}$ & $2\times10^{-6}$ & $3\times10^{-5}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The Hessian column is \eqref{eq:sa}, plus \eqref{eq:rot} at
+equal weights. The largest Hessian elements are 0.05 to 0.48 and the
+largest gradients 0.04 to 0.16. Without \eqref{eq:rot} the equal-weight
+Hessians miss by 0.04 (two roots) and 0.48 (three). With one copy of the
+product instead of two they miss by half that. The residuals are
+round-off of the nested differences, not a missing term: they grow about
+tenfold for each halving of the step ($2\times10^{-3}$ here).
+Section~\ref{sec:roots} has what the gradient rows mean.
+
+$\Lag_{x\lambda}$ is also checked analytically in $x$, both parts against
+the mixed $(x,\lambda)$ difference, at every weight set above: root $I$'s
+right-hand side \eqref{eq:rhs-orb}--\eqref{eq:rhs-ci} at its own densities
+(the root--root rotations included at unequal weights) to $6\times10^{-6}$
+of a maximum of 1.9, and $z$ times the SA Hessian at the derivative
+integrals plus the $\tau^x$ one-index transform to $5\times10^{-6}$ of a
+maximum of 0.14. The SA Hessian product in the second is still a difference
+in $\lambda$; it is the operator the tree already has. Not checked
+analytically: the $z$ part of $\Lag_{xy}$ (\eqref{eq:exy} at $z$'s
+densities), the third derivative, and partly equal weights.
+
+\paragraph{Density fitting.} A fourth check repeats the state-specific
+checks over a Coulomb-metric fit (cc-pVDZ-JKFIT), at the same molecule.
+The DF first-derivative four-index integrals are formed analytically,
+$T^xc^{\mathsf T} + cT^{x\mathsf T} - cM^xc^{\mathsf T}$, from
+finite-difference $T^x$ and $M^x$. PySCF's DF-CASSCF is only the starting
+point. The solution is polished on the check's own DF energy, and the
+reference is that energy relaxed by Newton steps on its analytic gradient
+to $10^{-10}$:
+
+\begin{center}
+\begin{tabular}{@{}lr@{}}
+\toprule
+comparison & max.\ abs.\ difference \\
+\midrule
+\eqref{eq:df2} vs.\ FD of $\frac12\Gamma\cdot(TNT^{\mathsf T})$, fixed $\Gamma^{\mathrm{AO}}$ & $3.4\times10^{-8}$ \\
+\quad the same without the $R^xNR^{y\mathsf T}$ term & $3.2\times10^{-2}$ \\
+J + K + active cross terms (section~\ref{sec:df}) vs.\ generic $\Gamma_{ab}$ & $5\times10^{-14}$ \\
+$E_{xy}$, \eqref{eq:exy}, over DF integrals & $2.1\times10^{-7}$ \\
+orbital and CI right-hand sides & $1.5\times10^{-6}$, $2.4\times10^{-7}$ \\
+\eqref{eq:ss} vs.\ relaxed DF energies (diagonal, 3 directions) & $1.0\times10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The metric is ill-conditioned, $\kappa(M)\approx2\times10^{6}$
+here. An explicit $M^{-1}$ puts $10^{-10}$ of round-off on every energy,
+which a second difference at step $10^{-3}$ turns into $10^{-4}$: the first
+run of the check missed by that much. Contract through the Cholesky factor
+of $M$ in anything that is differenced, the semi-numerical Hessian of
+section~\ref{sec:plan} included. The analytic Hessian never differences an
+energy and is not affected.
+
+\paragraph{For the GPU implementation.}
+\begin{enumerate}
+  \item symmetry, and the translational sum rule;
+  \item $E_{xy}$ alone against a finite difference of the energy at fixed
+        parameters, exactly as the check does: it isolates the
+        connection, the bug most likely to survive everything else;
+  \item each $\lambda^x$ against the difference of converged parameters
+        at displaced geometries (after aligning phases and the connection);
+  \item the whole against a central difference of \code{mcscf::df\_gradient},
+        SS and each SA root. Include an equal-weight case with three roots,
+        where \eqref{eq:rot} is as large as the Hessian, and an unequal-weight
+        case;
+  \item against OpenMolcas, which computes analytic CASSCF Hessians, over
+        the same auxiliary basis for the DF form.
+\end{enumerate}
+
+\paragraph{Since written.} \code{tools/emit/casscf\_hessian\_reference.py}
+ports these checks onto density fitting throughout, and its data under
+\code{test/gtest/data/casscf\_hessian/} reproduce the tables above.
+
+%======================================================================
+\section{What to build, in order}
+\label{sec:plan}
+
+\begin{enumerate}
+  \item \textbf{The semi-numerical Hessian} over \code{mcscf::df\_gradient},
+        SS and SA, with the previous geometry's orbitals and CI as guess
+        and a check that the active orbitals and the root order did not
+        change. It is the reference everything below is tested against,
+        and it is only as good as its displaced solves. Building this
+        document's check hit two failures that raised no error and gave
+        differenced energies and gradients wrong by an order of magnitude.
+        A weakly correlated CAS(4,4) near equilibrium never converged.
+        Then a displaced CASSCF started from the reference orbitals, which
+        are not orthonormal in the displaced overlap metric, converged to an
+        energy $O(\delta x)$ off: PySCF does not re-orthonormalize a guess.
+        Orthonormalize the guess with the connection, $C(S_{\mathrm{MO}})^{-1/2}$.
+        Refuse an unconverged
+        displacement.
+  \item \textbf{The RHF Hessian's kernels} (Part~I,
+        section~\ref{sec:rhf-plan}, items 2, 3 and 5): matrix-valued first
+        derivatives, the multi-density J/K, second-derivative integrals.
+        The CASSCF Hessian needs all of them, at more densities.
+  \item \textbf{The left/right SVD-factored DF-K}, after Wang et al., for
+        the non-PSD response and transition densities.
+  \item \textbf{The second-order connection} and $E_{xy}$ \eqref{eq:exy},
+        checked against fixed-parameter finite differences.
+  \item \textbf{The batched CP-CASSCF solve}, the $Z$-vector's operator on
+        $3N$ right-hand sides. Measure the batched Schur complement
+        against the unreduced coupled PCG before choosing.
+  \item \textbf{The SS Hessian} \eqref{eq:ss}. Frequencies of a
+        single-state CASSCF.
+  \item \textbf{The SA Hessian} \eqref{eq:sa}: the $z$ terms, the root
+        rotations (\eqref{eq:rot} at equal weights, in $\lambda$ otherwise)
+        with their refusal, and last the third derivative. The NEVPT2
+        Hessian needs the same third derivative, so it is built once for
+        both. First, and independently of the Hessian, make
+        \code{mcscf::df\_gradient} refuse three or more roots at unequal
+        weights, or carry their rotations in the $Z$-vector
+        (section~\ref{sec:roots}).
+\end{enumerate}
+
+\paragraph{Since written.} Item 1 is \code{src/pipeline/hessian}'s
+numerical method over the CASSCF chain, which orthonormalizes its guess in the
+displaced metric and refuses a displaced solve that left the reference's
+solution (\code{src/pipeline/hessian/README.md});
+items 6 and 7 are the modules of section~\ref{sec:algorithm}'s ``Since
+written''; and \code{mcscf::df\_gradient} carries the unequal-weight
+rotations.
+
+%======================================================================
 \section*{References}
 \begin{itemize}
   \item J.~A. Pople, R. Krishnan, H.~B. Schlegel, J.~S. Binkley,
@@ -579,6 +1430,12 @@ $A$ with a multiplier of its own (\code{src/response/zvector/README.md},
   \item Y. Yamaguchi, Y. Osamura, J.~D. Goddard, H.~F. Schaefer III,
         \emph{A New Dimension to Quantum Chemistry} (Oxford, 1994): the
         RHF and MCSCF second derivatives.
+  \item N.~C. Handy, H.~F. Schaefer III, \emph{J.\ Chem.\ Phys.}\
+        \textbf{81}, 5031 (1984): the $Z$-vector, and why it does not
+        remove the $3N$ solves of a Hessian.
+  \item P. Deglmann, F. Furche, R. Ahlrichs,
+        \emph{Chem.\ Phys.\ Lett.}\ \textbf{362}, 511 (2002): an efficient
+        RI SCF Hessian.
   \item R. Wang, Y. Wang, L. Lu, D. Hait, T.~J. Mart\'inez, ``Complete
         Active Space Self-Consistent Field with GPU-Accelerated Density
         Fitting'', ChemRxiv (2025), doi:10.26434/chemrxiv-2025-nd968, and

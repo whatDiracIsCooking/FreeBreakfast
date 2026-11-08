@@ -2,7 +2,7 @@
 
 The per-coordinate derivatives of a DF-CASSCF energy at fixed parameters, on
 the GPU, for every nuclear coordinate at once: the derivative generalized Fock
-F^[x] and the CP-CASSCF right-hand sides E_λx, `casscf_hessian.tex` eqs.
+F^[x] and the CP-CASSCF right-hand sides E_λx, `docs/hessian/hessian.tex` eqs.
 (fock), (rhs-orb) and (rhs-ci). They are what the analytic Hessian's response
 solve takes (E_λλ λ^x = −E_λx) and what its connection terms
 2 Σ F^[x] τ^y read.
@@ -145,7 +145,7 @@ then Cᵀ (H̃ c) is `hamiltonian`, and H̃ c − C (Cᵀ H̃ c) scaled by 2 w_r
 
 The z_o part of a state-averaged Lagrangian is E_SA's derivative along the
 orbital rotation C → C (1 + ε K) at fixed MO-basis RDMs
-(`casscf_hessian.tex` §5.1). In the fixed basis that is every quantity at
+(`docs/hessian/hessian.tex` section sa-lagrangian). In the fixed basis that is every quantity at
 the K-rotated densities K D − D K and K on each index of Γ, which have a
 virtual index and so are not the closed-shell-core form `df_derivatives`
 takes its RDMs in. In the rotating basis they are the unrotated densities,

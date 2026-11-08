@@ -500,7 +500,7 @@ protected:
 };
 
 // Three roots at (0.5, 0.3, 0.2): Theta_21 carries 0.07 to 0.15, the others
-// nothing (casscf_hessian.tex section 5.2).
+// nothing (docs/hessian/hessian.tex section roots).
 TEST_F(ResponseZvectorRotations, ThreeRootsUnequalZMatchReference) {
   FBF_REQUIRE_GPU();
   load("h2o_631g_sa3_unequal");

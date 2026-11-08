@@ -1,9 +1,9 @@
 /// @file
 /// @brief The per-coordinate derivative quantities of a DF-CASSCF at fixed
 /// parameters, on the GPU: the derivative generalized Fock F^[x] and the
-/// CP-CASSCF right-hand sides (casscf_hessian.tex eqs. fock, rhs-orb and
-/// rhs-ci), every nuclear coordinate at once, at the RDMs of any weighting of
-/// any roots. See README.md for the algebra and the layouts.
+/// CP-CASSCF right-hand sides (docs/hessian/hessian.tex eqs. fock, rhs-orb
+/// and rhs-ci), every nuclear coordinate at once, at the RDMs of any weighting
+/// of any roots. See README.md for the algebra and the layouts.
 
 export module free_breakfast.mcscf.derivative;
 
@@ -62,7 +62,8 @@ struct Derivatives {
 /// @p roots at @p weights.
 ///
 /// The energy is E = sum_r w_r <c_r|H|c_r> over the fit B, with the
-/// connection first and the rotation second (casscf_hessian.tex eq. order):
+/// connection first and the rotation second (docs/hessian/hessian.tex eq.
+/// order):
 /// one root at weight 1 is a state-specific CASSCF's (E_lambda x), the roots of
 /// a state average at its weights are the SA right-hand sides at the averaged
 /// densities, and one-hot weights over the same roots are root I's own

@@ -1,12 +1,12 @@
-// GPU cases for mcscf::root_rotation, the root-rotation term of an
-// equal-weight state-averaged DF-CASSCF Hessian (casscf_hessian.tex eqs.
-// theta and rot), against tools/emit/casscf_hessian_reference.py's fixtures
+// GPU cases for mcscf::root_rotation, the root-rotation term of an equal-weight
+// state-averaged DF-CASSCF Hessian (docs/hessian/hessian.tex eqs. theta and
+// rot), against tools/emit/casscf_hessian_reference.py's fixtures
 // (test/gtest/data/casscf_hessian/): the orbitals and roots loaded from the
 // fixture, never re-converged (PySCF's own two-root solution is a saddle
-// point). Two roots and three at equal weights: each root's couplings and
-// eq. rot, first over the fixture's lambda^x, then over lambda^x solved here
-// by response::zvectors from mcscf::df_derivatives' right-hand sides (the chain
-// a Hessian runs). Beside them the refusals: a near-degenerate pair (the
+// point). Two roots and three at equal weights: each root's couplings and eq.
+// rot, first over the fixture's lambda^x, then over lambda^x solved here by
+// response::zvectors from mcscf::df_derivatives' right-hand sides (the chain a
+// Hessian runs). Beside them the refusals: a near-degenerate pair (the
 // fixture's roots given energies a small gap apart), unequal weights and bad
 // sizes.
 

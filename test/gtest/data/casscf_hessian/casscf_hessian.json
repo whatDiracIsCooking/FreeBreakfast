@@ -1,5 +1,5 @@
 {
- "description": "The DF-CASSCF analytic nuclear Hessian's reference data (casscf_hessian.tex over a Coulomb-metric fit): per case the orbitals and roots, the state-averaged CP right-hand sides and responses lambda^x; per root E_xy and its pieces, F and F^[x], the response terms, at a state average the multipliers z and the z terms, the third-derivative action and the root-rotation term, the analytic Hessian and the relaxed-gradient difference it is checked against. Coordinates in bohr, energies in hartree; arrays are '<f8' Fortran-order .npy files beside this one, test/gtest/data/README.md has every layout",
+ "description": "The DF-CASSCF analytic nuclear Hessian's reference data (docs/hessian/hessian.tex Part II over a Coulomb-metric fit): per case the orbitals and roots, the state-averaged CP right-hand sides and responses lambda^x; per root E_xy and its pieces, F and F^[x], the response terms, at a state average the multipliers z and the z terms, the third-derivative action and the root-rotation term, the analytic Hessian and the relaxed-gradient difference it is checked against. Coordinates in bohr, energies in hartree; arrays are '<f8' Fortran-order .npy files beside this one, test/gtest/data/README.md has every layout",
  "provenance": {
   "pyscf": "2.14.0",
   "libcint": "6.1.3",

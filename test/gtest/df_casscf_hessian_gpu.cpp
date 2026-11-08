@@ -1,17 +1,17 @@
 // GPU cases for hessian::df_casscf, the state-specific DF-CASSCF analytic
-// nuclear Hessian (casscf_hessian.tex eq. ss), against data/casscf_hessian/
-// (tools/emit/casscf_hessian_reference.py, over the same cc-pVDZ-JKFIT fit) at
-// the fixture's orbitals and root, loaded, never re-converged (PySCF's own
-// cc-pVDZ solution is a saddle point): the stretched water CAS(4,4) in 6-31G
-// and in cc-pVDZ (d shells). E_xy, the response term, lambda^x's orbital part
-// and the total against the emitter's, and the total against its relaxed_fd,
-// the analytic relaxed gradient differenced at re-solved displaced
-// geometries; the CP residuals, the symmetry before symmetrizing and the
-// translational sum rule. The fixture's geometry is not a stationary point
-// (|dE/dx| up to 0.074), so the six near-zero mass-weighted eigenvalues of a
-// minimum are not checked here. Beside them: an excited root (the second
-// CASCI root at the fixture's orbitals, a saddle in the parameters) refused,
-// and the input refusals.
+// nuclear Hessian (docs/hessian/hessian.tex eq. ss), against
+// data/casscf_hessian/ (tools/emit/casscf_hessian_reference.py, over the same
+// cc-pVDZ-JKFIT fit) at the fixture's orbitals and root, loaded, never
+// re-converged (PySCF's own cc-pVDZ solution is a saddle point): the stretched
+// water CAS(4,4) in 6-31G and in cc-pVDZ (d shells). E_xy, the response term,
+// lambda^x's orbital part and the total against the emitter's, and the total
+// against its relaxed_fd, the analytic relaxed gradient differenced at
+// re-solved displaced geometries; the CP residuals, the symmetry before
+// symmetrizing and the translational sum rule. The fixture's geometry is not a
+// stationary point (|dE/dx| up to 0.074), so the six near-zero mass-weighted
+// eigenvalues of a minimum are not checked here. Beside them: an excited root
+// (the second CASCI root at the fixture's orbitals, a saddle in the parameters)
+// refused, and the input refusals.
 
 #include <gtest/gtest.h>
 
