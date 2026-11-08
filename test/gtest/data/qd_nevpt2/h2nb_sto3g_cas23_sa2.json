@@ -1,0 +1,18 @@
+{
+  "description": "Geometry only, hand-written (#962): no golden. H2N-B at ../qd_nevpt2_hessian/h2nb_sto3g_sa2.json's geometry (C2v, bohr), STO-3G / cc-pVDZ-JKFIT, CAS(2,3) over the RHF's frontier orbitals, two roots at equal weights, read at the CASCI over the RHF's orbitals (the casci key): this tree's SA-CASSCF there is bistable run to run, between the C2v point and a symmetry-broken one 1.0e-4 Eh lower with no empty tuple, and the duality the case is read for holds at any point. Its Srsi tuples are empty for one root and populated for the other, in a class of three functions: nevpt2_qd_tangent_gpu.cpp's one-sided guarded tuple.",
+  "name": "h2nb_sto3g_cas23_sa2",
+  "basis": "sto-3g",
+  "aux_basis": {
+    "name": "cc-pVDZ-JKFIT"
+  },
+  "atoms": [
+    ["B", [0.0, 0.0, 0.0]],
+    ["N", [0.0, 0.0, -2.570028]],
+    ["H", [0.0, 1.712674, -3.36866]],
+    ["H", [0.0, -1.712674, -3.36866]]
+  ],
+  "ncas": 3,
+  "nelecas": 2,
+  "weights": [0.5, 0.5],
+  "casci": true
+}

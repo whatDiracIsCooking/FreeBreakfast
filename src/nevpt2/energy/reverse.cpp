@@ -2545,6 +2545,89 @@ Result<ClassEnergiesTangent> class_energies_tangent(DeviceResources &res, const 
 // The SC-QD forward tangent: each state's own walk, then each pair's
 // ---------------------------------------------------------------------------
 
+// One unordered pair's transition tables and their tangents, [k][t] and
+// [k][t m + u] over m = da.size(): T and Ṫ, the means of the norm einsums of
+// @p mn, (M, N), along @p da and of @p nm, (N, M), along @p db.
+struct PairTables {
+  std::array<std::vector<double>, 8> t, t_dot;
+};
+
+// Every class's slabs walked once for all the directions, the norm einsums
+// of (M, N) and (N, M) at their operands' tangents, the (N, M) side's blocks
+// along its own directions: sc_couplings_tangent's pair walk.
+Result<PairTables> pair_tables(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &mn,
+                               const EnergyInputs &nm, const int32_t batch,
+                               std::span<const EnergyDirection> da,
+                               std::span<const EnergyDirection> db) {
+  const int64_t n = blocks.ncas;
+  const size_t m = da.size();
+  const ActiveOperands a = FBF_TRY(active_operands(res, blocks, mn));
+  const ActiveOperands b = FBF_TRY(active_operands(res, blocks, nm));
+  std::vector<double> unused_core;
+  std::vector<double> unused_virt;
+  const EnergyBars no_bars{};
+  ReverseContext c{
+      .res = res,
+      .blocks = blocks,
+      .in = mn,
+      .bars = no_bars,
+      .batch = batch,
+      .ops = a,
+      .e = {.core = a.e_core, .virt = a.e_virt, .core_bar = unused_core, .virt_bar = unused_virt}};
+  BlockBars none = FBF_TRY(block_bars(res, n, false, false));
+  ScTangent t = FBF_TRY(input_tangent(res, blocks, mn, da));
+  t.b_directions = db;
+  t.b_steps = FBF_TRY(tangent_steps(res, blocks, nm, db));
+  // (N, M)'s RDMs, which its side's terms read directly (Sr's, Srsi's and
+  // Sir's metrics).
+  for (const auto &[field, count] :
+       {std::pair{&EnergyInputs::dm1, n * n}, std::pair{&EnergyInputs::dm2, n * n * n * n},
+        std::pair{&EnergyInputs::dm3, n * n * n * n * n * n}}) {
+    TangentRegion r{.base = nm.*field, .count = count};
+    for (const EnergyDirection &d : db) {
+      r.dots.push_back(d.in.*field);
+    }
+    t.regions.push_back(std::move(r));
+  }
+  t.inputs = t.regions.size();
+  PairTables out;
+  for (const auto &[k, walk] : kScWalks) {
+    std::vector<double> &table = out.t[k];
+    std::vector<double> &table_dot = out.t_dot[k];
+    t.finish = [&, k](const int64_t first, const std::vector<Perturber> &perturbers,
+                      const std::vector<double> &ta, const std::vector<double> &tb,
+                      const std::vector<std::vector<double>> &a_dots,
+                      const std::vector<std::vector<double>> &b_dots) {
+      for (size_t x = 0; x < perturbers.size(); ++x) {
+        const Perturber &p = perturbers[x];
+        const size_t g = perturber_index(k, first, x, p, blocks.ncore);
+        if (table.size() <= g) {
+          table.resize(g + 1, 0.0);
+          table_dot.resize((g + 1) * m, 0.0);
+        }
+        table[g] = 0.5 * (combined(p, ta) + combined(p, tb));
+        for (size_t u = 0; u < m; ++u) {
+          table_dot[(g * m) + u] = 0.5 * (combined(p, a_dots[u]) + combined(p, b_dots[u]));
+        }
+      }
+    };
+    const ScWalk w{.a = &a,
+                   .m_a = &none,
+                   .b = &b,
+                   .m_b = &none,
+                   .adjoint = false,
+                   .finish = [](int64_t, const std::vector<Perturber> &,
+                                const std::vector<double> &, const std::vector<double> &,
+                                std::vector<double> &, std::vector<double> &) {},
+                   .tangent = &t};
+    FBF_TRY(walk(c, w));
+    // The class's blocks and slab buffers are freed: drop their regions.
+    t.regions.resize(t.inputs);
+    t.held.clear();
+  }
+  return out;
+}
+
 Result<ScEffectiveHamiltonianTangent>
 sc_couplings_tangent(DeviceResources &res, const MoBlocks &blocks,
                      std::span<const EnergyInputs> pairs, const int64_t ns, const int32_t batch,
@@ -2620,77 +2703,16 @@ sc_couplings_tangent(DeviceResources &res, const MoBlocks &blocks,
   // 2. Each unordered pair M < N: every class's slabs walked once, its two
   //    norm einsums' tables and their tangents, the (N, M) side's blocks
   //    along its own directions, T and Ṫ their means.
-  std::vector<double> unused_core;
-  std::vector<double> unused_virt;
-  const EnergyBars no_bars{};
-  ReverseContext c{.res = res,
-                   .blocks = blocks,
-                   .in = pairs.front(),
-                   .bars = no_bars,
-                   .batch = batch,
-                   .ops = ops.front(),
-                   .e = {.core = ops.front().e_core,
-                         .virt = ops.front().e_virt,
-                         .core_bar = unused_core,
-                         .virt_bar = unused_virt}};
-  BlockBars none = FBF_TRY(block_bars(res, n, false, false));
   for (int64_t mi = 0; mi < ns; ++mi) {
     for (int64_t ni = mi + 1; ni < ns; ++ni) {
       const size_t mn = at(mi, ni);
       const size_t nm = at(ni, mi);
-      const std::vector<EnergyDirection> da = along(mn);
-      const std::vector<EnergyDirection> db = along(nm);
-      ScTangent t = FBF_TRY(input_tangent(res, blocks, pairs[mn], da));
-      t.b_directions = db;
-      t.b_steps = FBF_TRY(tangent_steps(res, blocks, pairs[nm], db));
-      // (N, M)'s RDMs, which its side's terms read directly (Sr's, Srsi's
-      // and Sir's metrics).
-      for (const auto &[field, count] :
-           {std::pair{&EnergyInputs::dm1, n * n}, std::pair{&EnergyInputs::dm2, n * n * n * n},
-            std::pair{&EnergyInputs::dm3, n * n * n * n * n * n}}) {
-        TangentRegion r{.base = pairs[nm].*field, .count = count};
-        for (const EnergyDirection &d : db) {
-          r.dots.push_back(d.in.*field);
-        }
-        t.regions.push_back(std::move(r));
-      }
-      t.inputs = t.regions.size();
-      for (const auto &[k, walk] : kScWalks) {
-        std::vector<double> &table = out.transition[mn][k];
-        std::vector<double> &table_dot = out.transition_dot[mn][k];
-        t.finish = [&, k](const int64_t first, const std::vector<Perturber> &perturbers,
-                          const std::vector<double> &a, const std::vector<double> &b,
-                          const std::vector<std::vector<double>> &a_dots,
-                          const std::vector<std::vector<double>> &b_dots) {
-          for (size_t x = 0; x < perturbers.size(); ++x) {
-            const Perturber &p = perturbers[x];
-            const size_t g = perturber_index(k, first, x, p, blocks.ncore);
-            if (table.size() <= g) {
-              table.resize(g + 1, 0.0);
-              table_dot.resize((g + 1) * m, 0.0);
-            }
-            table[g] = 0.5 * (combined(p, a) + combined(p, b));
-            for (size_t u = 0; u < m; ++u) {
-              table_dot[(g * m) + u] = 0.5 * (combined(p, a_dots[u]) + combined(p, b_dots[u]));
-            }
-          }
-        };
-        const ScWalk w{.a = &ops[mn],
-                       .m_a = &none,
-                       .b = &ops[nm],
-                       .m_b = &none,
-                       .adjoint = false,
-                       .finish = [](int64_t, const std::vector<Perturber> &,
-                                    const std::vector<double> &, const std::vector<double> &,
-                                    std::vector<double> &, std::vector<double> &) {},
-                       .tangent = &t};
-        FBF_TRY(walk(c, w));
-        // The class's blocks and slab buffers are freed: drop their regions.
-        t.regions.resize(t.inputs);
-        t.held.clear();
-        out.transition[nm][k] = table;
-        out.transition_dot[nm][k] = table_dot;
-      }
+      PairTables t =
+          FBF_TRY(pair_tables(res, blocks, pairs[mn], pairs[nm], batch, along(mn), along(nm)));
+      out.transition[nm] = t.t;
+      out.transition_dot[nm] = t.t_dot;
+      out.transition[mn] = std::move(t.t);
+      out.transition_dot[mn] = std::move(t.t_dot);
     }
   }
 
@@ -2940,24 +2962,27 @@ constexpr std::array<double, 3> kLineWeights{1.5, -0.6, 0.1};
 // R alone, which is left out.
 //
 // line_derivative is the difference itself: Σ_k w_k (A(k s) - A(-k s)) / 2ks
-// onto @p bars' wanted fields but the orbital energies', A(t) the bars
-// @p pass puts on its scratch at the signed step t; over @p levels rungs, 3
-// (kLineWeights') or 1 (one symmetric difference, weight 1: exact for A
-// quadratic).
-Status line_derivative(DeviceResources &res, const MoBlocks &blocks, const EnergyBars &bars,
-                       const double step, const size_t levels,
-                       const std::function<Status(double, const EnergyBars &)> &pass) {
+// onto each of @p bars' wanted fields but the orbital energies', A(t) the
+// bars @p pass puts on its scratch (one EnergyBars per entry of @p bars) at
+// the signed step t; over @p levels rungs, 3 (kLineWeights') or 1 (one
+// symmetric difference, weight 1: exact for A quadratic).
+Status line_derivative(DeviceResources &res, const MoBlocks &blocks,
+                       std::span<const EnergyBars> bars, const double step, const size_t levels,
+                       const std::function<Status(double, std::span<const EnergyBars>)> &pass) {
   // Scratch bars for the wanted fields but the orbital energies'.
   std::vector<Buffers::device<double>> held;
-  EnergyBars scratch{};
+  std::vector<EnergyBars> scratch(bars.size());
   std::vector<std::tuple<double *, double *, int64_t>> pairs;
-  for (const auto &[field, count] : bar_fields(blocks)) {
-    if (bars.*field == nullptr || field == &EnergyBars::e_core || field == &EnergyBars::e_virt) {
-      continue;
+  for (size_t b = 0; b < bars.size(); ++b) {
+    for (const auto &[field, count] : bar_fields(blocks)) {
+      if (bars[b].*field == nullptr || field == &EnergyBars::e_core ||
+          field == &EnergyBars::e_virt) {
+        continue;
+      }
+      held.push_back(FBF_TRY(device_zeros(res, count)));
+      scratch[b].*field = held.back().data();
+      pairs.emplace_back(held.back().data(), bars[b].*field, count);
     }
-    held.push_back(FBF_TRY(device_zeros(res, count)));
-    scratch.*field = held.back().data();
-    pairs.emplace_back(held.back().data(), bars.*field, count);
   }
   for (size_t level = 0; level < levels; ++level) {
     const auto k = static_cast<double>(level + 1);
@@ -2979,10 +3004,11 @@ Status fixed_adjoint_tangent(DeviceResources &res, const MoBlocks &blocks, const
                              const int32_t batch, const EnergyDirection &d, const double step,
                              const ScMultipliers &mult, const EnergyBars &bars) {
   const ScMultipliers no_r{.p = mult.p, .q = mult.q, .r = {}, .blocks = mult.blocks};
-  return line_derivative(res, blocks, bars, step, kLineWeights.size(),
-                         [&](const double t, const EnergyBars &scratch) -> Status {
+  return line_derivative(res, blocks, {&bars, 1}, step, kLineWeights.size(),
+                         [&](const double t, std::span<const EnergyBars> scratch) -> Status {
                            const ShiftedInputs x = FBF_TRY(shifted_inputs(res, blocks, in, d, t));
-                           return fixed_adjoint(res, x.blocks(), x.in, batch, scratch, no_r);
+                           return fixed_adjoint(res, x.blocks(), x.in, batch, scratch.front(),
+                                                no_r);
                          });
 }
 
@@ -3026,12 +3052,20 @@ Result<SecondTables> second_tables(DeviceResources &res, const MoBlocks &blocks,
 // as slab_tangent's), the tangent of sijrs_adjoint's bars along (ġ, ε̇) by
 // device::sijrs_adjoint_tangent (ε̇'s onto @p bars' orbital energies), pulled
 // back onto Λ through B, and the bar itself through Ḃ: Λ is linear in B at a
-// fixed slab bar.
+// fixed slab bar. Everything is scaled by @p weight, Σ_J H̄_JJ in SC-QD.
 Status sijrs_hvp(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
-                 const int32_t batch, const EnergyDirection &d, const EnergyBars &bars) {
-  if (blocks.ncore == 0 || blocks.nvirt == 0) {
+                 const int32_t batch, const EnergyDirection &d, const EnergyBars &bars,
+                 const double weight = 1.0) {
+  if (blocks.ncore == 0 || blocks.nvirt == 0 || weight == 0.0) {
     return {};
   }
+  // The kernel adds its orbital-energy bars at weight 1: away from it they
+  // go through buffers of their own, scaled once at the end.
+  const bool scaled = weight != 1.0;
+  Buffers::device<double> e_core_bar = FBF_TRY(device_zeros(res, scaled ? blocks.ncore : 0));
+  Buffers::device<double> e_virt_bar = FBF_TRY(device_zeros(res, scaled ? blocks.nvirt : 0));
+  double *const core_bar = scaled && bars.e_core != nullptr ? e_core_bar.data() : bars.e_core;
+  double *const virt_bar = scaled && bars.e_virt != nullptr ? e_virt_bar.data() : bars.e_virt;
   const int32_t extent = walk_extent(blocks, ExtBlock::Sijrs);
   const int32_t step = batch_step(extent, batch);
   Buffers::device<double> g = slab_buffer(res, blocks, ExtBlock::Sijrs, step);
@@ -3072,17 +3106,32 @@ Status sijrs_hvp(DeviceResources &res, const MoBlocks &blocks, const EnergyInput
     FBF_TRY(zero(res, g_bar_dot.data(), count));
     FBF_TRY(gpu_status(device::sijrs_adjoint_tangent(
         res.stream(), g.data(), g_dot.data(), b1 - b0, b0, blocks.ncore, blocks.nvirt, in.e_core,
-        in.e_virt, d.in.e_core, d.in.e_virt, g_bar_dot.data(), bars.e_core, bars.e_virt)));
+        in.e_virt, d.in.e_core, d.in.e_virt, g_bar_dot.data(), core_bar, virt_bar)));
     if (bars.lambda == nullptr) {
       continue;
     }
-    FBF_TRY(slab_adjoint(res, blocks, ExtBlock::Sijrs, b0, b1, g_bar_dot.data(), bars.lambda));
+    if (scaled) {
+      // g_dot is spent: it takes the weighted slab bar.
+      FBF_TRY(zero(res, g_dot.data(), count));
+      FBF_TRY(add_scaled(res, g_bar_dot.data(), count, g_dot.data(), weight));
+    }
+    FBF_TRY(slab_adjoint(res, blocks, ExtBlock::Sijrs, b0, b1,
+                         scaled ? g_dot.data() : g_bar_dot.data(), bars.lambda));
     if (d.blocks != nullptr) {
       FBF_TRY(zero(res, g_bar.data(), count));
       FBF_TRY(gpu_status(device::sijrs_adjoint(res.stream(), g.data(), b1 - b0, b0, blocks.ncore,
                                                blocks.nvirt, in.e_core, in.e_virt, g_bar.data(),
-                                               nullptr, nullptr, 1.0)));
+                                               nullptr, nullptr, weight)));
       FBF_TRY(slab_adjoint(res, *d.blocks, ExtBlock::Sijrs, b0, b1, g_bar.data(), bars.lambda));
+    }
+  }
+  if (scaled) {
+    for (const auto &[from, to, count] :
+         {std::tuple{&e_core_bar, bars.e_core, int64_t{blocks.ncore}},
+          std::tuple{&e_virt_bar, bars.e_virt, int64_t{blocks.nvirt}}}) {
+      if (to != nullptr) {
+        FBF_TRY(add_scaled(res, from->data(), count, to, weight));
+      }
     }
   }
   return res.sync();
@@ -3392,6 +3441,624 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
       FBF_TRY(fixed_adjoint_tangent(res, blocks, in, batch, du, step, fixed, bars[u]));
     }
     FBF_TRY(sijrs_hvp(res, blocks, in, batch, du, bars[u]));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// The SC-QD Hessian-vector product: forward over the pair walk
+// ---------------------------------------------------------------------------
+
+// One tuple's coupling g = -T N / d, d = N Δ + H over its ket's own tables,
+// differentiated (docs/nevpt2/nevpt2.tex Eq. qd-scfinish): the first
+// derivatives in (T, N, H, Δ), and the second, g_TT = 0. At T = N it is the
+// diagonal energy -N² / d, whose total derivatives are E_N = g_T + g_N,
+// E_NN = 2 g_TN + g_NN, E_NH = g_TH + g_NH, E_NΔ = g_TΔ + g_NΔ and the rest
+// g's own (Eq. finish): so a state's own tables take the ket's share of
+// every coupling, its own included, through the one form.
+struct CouplingFinish {
+  double t, n, h, d;
+  double tn, th, td, nn, nh, nd, hh, hd, dd;
+};
+
+CouplingFinish coupling_finish(const double t, const double n, const double h, const double delta) {
+  const double d = (n * delta) + h;
+  const double d2 = d * d;
+  const double d3 = d2 * d;
+  return {.t = -n / d,
+          .n = -t * h / d2,
+          .h = t * n / d2,
+          .d = t * n * n / d2,
+          .tn = -h / d2,
+          .th = n / d2,
+          .td = n * n / d2,
+          .nn = 2.0 * t * h * delta / d3,
+          .nh = t * (h - (n * delta)) / d3,
+          .nd = 2.0 * t * n * h / d3,
+          .hh = -2.0 * t * n / d3,
+          .hd = -2.0 * t * n * n / d3,
+          .dd = -2.0 * t * n * n * n / d3};
+}
+
+// The pair walk of (M, N) at fixed multipliers: @p coef[k][t] on T^t_MN,
+// half onto each of the norm einsums of @p mn, (M, N), and @p nm, (N, M),
+// through the slabs (onto @p shared's Λ) and h1e_v's rows (its h1e_v_*), and
+// each side's metric bars swept onto @p t_mn's and @p t_nm's dm1..dm3 (when
+// its dm1 is set): sc_couplings_adjoint's part 2 with a table in place of
+// its finish.
+Status pair_fixed_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &mn,
+                          const EnergyInputs &nm, const int32_t batch, const EnergyBars &shared,
+                          const std::array<std::vector<double>, 8> &coef, const EnergyBars &t_mn,
+                          const EnergyBars &t_nm) {
+  const ActiveOperands a = FBF_TRY(active_operands(res, blocks, mn));
+  const ActiveOperands b = FBF_TRY(active_operands(res, blocks, nm));
+  std::vector<double> unused_core(a.e_core.size(), 0.0);
+  std::vector<double> unused_virt(a.e_virt.size(), 0.0);
+  ReverseContext c{
+      .res = res,
+      .blocks = blocks,
+      .in = mn,
+      .bars = shared,
+      .batch = batch,
+      .ops = a,
+      .e = {.core = a.e_core, .virt = a.e_virt, .core_bar = unused_core, .virt_bar = unused_virt}};
+  BlockBars m_a = FBF_TRY(block_bars(res, blocks.ncas, false, true));
+  BlockBars m_b = FBF_TRY(block_bars(res, blocks.ncas, false, true));
+  const int64_t nc = blocks.ncore;
+  for (const auto &[k, walk] : kScWalks) {
+    const ScWalk w{.a = &a,
+                   .m_a = &m_a,
+                   .b = &b,
+                   .m_b = &m_b,
+                   .finish = [&, k](const int64_t first, const std::vector<Perturber> &perturbers,
+                                    const std::vector<double> &, const std::vector<double> &,
+                                    std::vector<double> &a_bar, std::vector<double> &b_bar) {
+                     for (size_t x = 0; x < perturbers.size(); ++x) {
+                       const Perturber &p = perturbers[x];
+                       const double half = 0.5 * coef[k][perturber_index(k, first, x, p, nc)];
+                       spread(p, half, a_bar);
+                       spread(p, half, b_bar);
+                     }
+                   }};
+    FBF_TRY(walk(c, w));
+  }
+  for (const auto &[o, m, t] : {std::tuple{&a, &m_a, &t_mn}, std::tuple{&b, &m_b, &t_nm}}) {
+    if (t->dm1 != nullptr) {
+      FBF_TRY(sweep_metrics(res, *o, *m, *t));
+    }
+  }
+  return res.sync();
+}
+
+// The pair walk's shared bars alone: h1e_v's rows and Λ, all it adds to.
+EnergyBars pair_shared_bars(const EnergyBars &b) {
+  return {
+      .h1e_v_sr = b.h1e_v_sr, .h1e_v_si = b.h1e_v_si, .h1e_v_sir = b.h1e_v_sir, .lambda = b.lambda};
+}
+
+// The step a pair's line is differenced at: the smaller of its two sides'
+// line_step, each moving its own RDMs; 0 when neither moves anything.
+Result<double> pair_line_step(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &mn,
+                              const EnergyInputs &nm, const EnergyDirection &da,
+                              const EnergyDirection &db) {
+  double step = 0.0;
+  for (const auto &[in, d] : {std::pair{&mn, &da}, std::pair{&nm, &db}}) {
+    const double s = FBF_TRY(line_step(res, blocks, *in, *d));
+    if (s != 0.0) {
+      step = step == 0.0 ? s : std::min(step, s);
+    }
+  }
+  return step;
+}
+
+// T's second derivatives along one direction, [k][t]: kLineWeights'
+// difference of pair_tables' Ṫ along (@p da, @p db) at the pair moved along
+// them by ±k @p step, exact as second_tables' (T is of degree at most six).
+Result<std::array<std::vector<double>, 8>>
+pair_second_tables(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &mn,
+                   const EnergyInputs &nm, const int32_t batch, const EnergyDirection &da,
+                   const EnergyDirection &db, const double step) {
+  std::array<std::vector<double>, 8> out;
+  for (size_t level = 0; level < kLineWeights.size(); ++level) {
+    const auto k = static_cast<double>(level + 1);
+    for (const double sign : {1.0, -1.0}) {
+      const ShiftedInputs xa = FBF_TRY(shifted_inputs(res, blocks, mn, da, sign * k * step));
+      const ShiftedInputs xb = FBF_TRY(shifted_inputs(res, blocks, nm, db, sign * k * step));
+      const PairTables t =
+          FBF_TRY(pair_tables(res, xa.blocks(), xa.in, xb.in, batch, {&da, 1}, {&db, 1}));
+      const double weight = sign * kLineWeights[level] / (2.0 * k * step);
+      for (size_t c = 0; c < 8; ++c) {
+        out[c].resize(t.t_dot[c].size(), 0.0);
+        for (size_t e = 0; e < t.t_dot[c].size(); ++e) {
+          out[c][e] += weight * t.t_dot[c][e];
+        }
+      }
+    }
+  }
+  return out;
+}
+
+Result<ScEffectiveHamiltonianHvp> sc_couplings_hvp(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+    const int64_t ns, std::span<const double> hbar, const int32_t batch,
+    std::span<const EnergyDirection> directions, std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t, int64_t, int64_t, const EnergyBars &)> &transition,
+    std::span<const EnergyDirection> partners) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const auto n2 = static_cast<size_t>(ns * ns);
+  const size_t m = directions.size() / n2;
+  const int64_t n = blocks.ncas;
+  const auto at = [ns](const int64_t i, const int64_t j) {
+    return static_cast<size_t>((i * ns) + j);
+  };
+  const auto pair_of = [ns](const int64_t i, const int64_t j) {
+    return static_cast<size_t>((std::min(i, j) * ns) + std::max(i, j));
+  };
+  // Direction u's (or, past m, partner u - m's) entry for pair p.
+  const auto dir = [&](const size_t u, const size_t p) -> const EnergyDirection & {
+    return u < m ? directions[(u * n2) + p] : partners[((u - m) * n2) + p];
+  };
+
+  // Every pair's tables and their tangents along the directions, and along
+  // the partners after them: mt columns, [k][t mt + u].
+  std::vector<EnergyDirection> all(directions.begin(), directions.end());
+  all.insert(all.end(), partners.begin(), partners.end());
+  const size_t mt = all.size() / n2;
+  ScEffectiveHamiltonianTangent tan =
+      FBF_TRY(sc_couplings_tangent(res, blocks, pairs, ns, batch, all));
+  const auto table = [&](const int64_t i, const int64_t j) -> const auto & {
+    return tan.transition[at(i, j)];
+  };
+  const auto table_dot = [&](const int64_t i, const int64_t j) -> const auto & {
+    return tan.transition_dot[at(i, j)];
+  };
+
+  // A one-function class per ket: its blocks, η, and their tangents along
+  // each direction. It has no guarded tuple.
+  std::vector<std::array<std::optional<double>, 8>> eta_of(static_cast<size_t>(ns));
+  std::vector<std::array<std::array<std::vector<double>, 2>, 8>> xy(static_cast<size_t>(ns));
+  std::vector<std::array<std::vector<std::array<std::vector<double>, 2>>, 8>> xy_dot(
+      static_cast<size_t>(ns));
+  for (int64_t j = 0; j < ns; ++j) {
+    const auto jj = static_cast<size_t>(j);
+    const ActiveOperands o = FBF_TRY(active_operands(res, blocks, pairs[at(j, j)]));
+    std::vector<EnergyDirection> own;
+    for (size_t u = 0; u < m; ++u) {
+      own.push_back(dir(u, at(j, j)));
+    }
+    const std::vector<TangentSteps> steps =
+        FBF_TRY(tangent_steps(res, blocks, pairs[at(j, j)], own));
+    for (size_t k = 0; k < 8; ++k) {
+      if (single_function_class(o, k)) {
+        xy[jj][k] = FBF_TRY(single_function_blocks(res, o, k));
+        eta_of[jj][k] = single_function_ratio(xy[jj][k]);
+        xy_dot[jj][k] = FBF_TRY(single_function_block_dots(res, o, k, own, steps));
+      }
+    }
+  }
+  const auto guarded = [&](const int64_t j, const size_t k, const size_t g) {
+    return !eta_of[static_cast<size_t>(j)][k] &&
+           std::abs(tan.kets[static_cast<size_t>(j)].norm[k][g]) <= kNumericalZero;
+  };
+
+  // The multipliers at the base point. Ket J's own tables take every
+  // coupling with ket J, its own included: P = Σ_I H̄_IJ g_N, Q = Σ_I H̄_IJ
+  // g_H, R = Σ_I H̄_IJ g_Δ, and the I = J coupling's T slot on N as well (its
+  // T is N). Pair {I, J}'s T takes H̄_IJ g_T of ket J and H̄_JI g_T of ket I.
+  // A one-function class's coupling is T c, c = -1 / (Δ + η^J): c on T, and
+  // D̄ = Σ_I H̄_IJ T c² on Δ and, summed, on η^J, which goes to its blocks.
+  // Zero on a guarded tuple.
+  std::vector<ScMultipliers> own(static_cast<size_t>(ns));
+  std::vector<std::array<double, 8>> eta_bar(static_cast<size_t>(ns));
+  std::map<size_t, std::array<std::vector<double>, 8>> coef;
+  for (int64_t mi = 0; mi < ns; ++mi) {
+    for (int64_t ni = mi + 1; ni < ns; ++ni) {
+      std::array<std::vector<double>, 8> &c = coef[at(mi, ni)];
+      for (size_t k = 0; k < 8; ++k) {
+        c[k].assign(table(mi, ni)[k].size(), 0.0);
+      }
+    }
+  }
+  std::vector<bool> any_guarded(static_cast<size_t>(ns), false);
+  for (int64_t j = 0; j < ns; ++j) {
+    const auto jj = static_cast<size_t>(j);
+    const ClassEnergiesTangent &kt = tan.kets[jj];
+    ScMultipliers &mult = own[jj];
+    for (size_t k = 0; k < 8; ++k) {
+      const size_t count = kt.norm[k].size();
+      for (std::vector<double> *v : {&mult.p[k], &mult.q[k], &mult.r[k]}) {
+        v->assign(count, 0.0);
+      }
+      for (size_t g = 0; g < count; ++g) {
+        const double delta = kt.delta[k][g];
+        if (eta_of[jj][k]) {
+          const double cg = -1.0 / (delta + *eta_of[jj][k]);
+          for (int64_t i = 0; i < ns; ++i) {
+            const double w = hbar[at(i, j)];
+            (i == j ? mult.p[k][g] : coef[pair_of(i, j)][k][g]) += w * cg;
+            mult.r[k][g] += w * table(i, j)[k][g] * cg * cg;
+          }
+          eta_bar[jj][k] += mult.r[k][g];
+          continue;
+        }
+        if (guarded(j, k, g)) {
+          any_guarded[jj] = true;
+          continue;
+        }
+        for (int64_t i = 0; i < ns; ++i) {
+          const double w = hbar[at(i, j)];
+          const CouplingFinish f =
+              coupling_finish(table(i, j)[k][g], kt.norm[k][g], kt.h[k][g], delta);
+          (i == j ? mult.p[k][g] : coef[pair_of(i, j)][k][g]) += w * f.t;
+          mult.p[k][g] += w * f.n;
+          mult.q[k][g] += w * f.h;
+          mult.r[k][g] += w * f.d;
+        }
+      }
+      if (eta_of[jj][k]) {
+        mult.blocks[k] = single_function_eta_bars(xy[jj][k], *eta_of[jj][k], eta_bar[jj][k]);
+      }
+    }
+  }
+
+  ScEffectiveHamiltonianHvp out{
+      .elements = tan.elements,
+      .populated = std::vector<std::vector<std::array<int64_t, 8>>>(
+          m, std::vector<std::array<int64_t, 8>>(static_cast<size_t>(ns))),
+      .defect = std::vector<double>(m, 0.0),
+      .coupling_defect = std::vector<double>(m, 0.0),
+      .coupling_k6 = std::vector<double>(m, 0.0)};
+  double trace = 0.0;
+  for (int64_t j = 0; j < ns; ++j) {
+    trace += hbar[at(j, j)];
+  }
+
+  for (size_t u = 0; u < m; ++u) {
+    // The multipliers' tangent along u: Eq. qd-scfinish's second derivatives
+    // times (Ṫ, Ṅ, Ḣ, Δ̇), the I = J coupling's Ṫ its Ṅ; a one-function
+    // class's through ċ = c² (Δ̇ + η̇^J) and D̄'s tangent, and its block bars'
+    // at η̄̇ and the blocks' (Ẋ, Ẏ). Zero on a guarded tuple.
+    std::vector<ScMultipliers> dot(static_cast<size_t>(ns));
+    std::map<size_t, std::array<std::vector<double>, 8>> coef_dot;
+    for (const auto &[p, c] : coef) {
+      for (size_t k = 0; k < 8; ++k) {
+        coef_dot[p][k].assign(c[k].size(), 0.0);
+      }
+    }
+    for (int64_t j = 0; j < ns; ++j) {
+      const auto jj = static_cast<size_t>(j);
+      const ClassEnergiesTangent &kt = tan.kets[jj];
+      ScMultipliers &d = dot[jj];
+      for (size_t k = 0; k < 8; ++k) {
+        const size_t count = kt.norm[k].size();
+        for (std::vector<double> *v : {&d.p[k], &d.q[k], &d.r[k]}) {
+          v->assign(count, 0.0);
+        }
+        if (eta_of[jj][k]) {
+          const double e = *eta_of[jj][k];
+          const double e_dot = single_function_ratio_dot(xy[jj][k], e, xy_dot[jj][k][u]);
+          double eta_bar_dot = 0.0;
+          for (size_t g = 0; g < count; ++g) {
+            const size_t gu = (g * mt) + u;
+            const double cg = -1.0 / (kt.delta[k][g] + e);
+            const double c_dot = cg * cg * (kt.delta_dot[k][gu] + e_dot);
+            for (int64_t i = 0; i < ns; ++i) {
+              const double w = hbar[at(i, j)];
+              (i == j ? d.p[k][g] : coef_dot[pair_of(i, j)][k][g]) += w * c_dot;
+              d.r[k][g] +=
+                  w * ((table_dot(i, j)[k][gu] * cg * cg) + (2.0 * table(i, j)[k][g] * cg * c_dot));
+            }
+            eta_bar_dot += d.r[k][g];
+          }
+          // single_function_eta_bars' M_X = η̄ Y / S and M_Y = η̄ (X - 2η Y) / S
+          // differentiated, Ṡ = 2 <Y, Ẏ>.
+          const auto &[x, y] = xy[jj][k];
+          const auto &[x_dot, y_dot] = xy_dot[jj][k][u];
+          const double sy = std::inner_product(y.begin(), y.end(), y.begin(), 0.0);
+          const double sy_dot = 2.0 * std::inner_product(y.begin(), y.end(), y_dot.begin(), 0.0);
+          const double eb = eta_bar[jj][k];
+          d.blocks[k] = {std::vector<double>(x.size()), std::vector<double>(y.size())};
+          for (size_t i = 0; i < x.size(); ++i) {
+            const double r = x[i] - (2.0 * e * y[i]);
+            const double r_dot = x_dot[i] - (2.0 * e_dot * y[i]) - (2.0 * e * y_dot[i]);
+            d.blocks[k][0][i] =
+                ((eta_bar_dot * y[i]) + (eb * y_dot[i])) / sy - (eb * y[i] * sy_dot / (sy * sy));
+            d.blocks[k][1][i] =
+                ((eta_bar_dot * r) + (eb * r_dot)) / sy - (eb * r * sy_dot / (sy * sy));
+          }
+          continue;
+        }
+        for (size_t g = 0; g < count; ++g) {
+          if (guarded(j, k, g)) {
+            continue;
+          }
+          const size_t gu = (g * mt) + u;
+          const double n_dot = kt.norm_dot[k][gu];
+          const double h_dot = kt.h_dot[k][gu];
+          const double d_dot = kt.delta_dot[k][gu];
+          for (int64_t i = 0; i < ns; ++i) {
+            const double w = hbar[at(i, j)];
+            const CouplingFinish f =
+                coupling_finish(table(i, j)[k][g], kt.norm[k][g], kt.h[k][g], kt.delta[k][g]);
+            const double t_dot = table_dot(i, j)[k][gu];
+            (i == j ? d.p[k][g] : coef_dot[pair_of(i, j)][k][g]) +=
+                w * ((f.tn * n_dot) + (f.th * h_dot) + (f.td * d_dot));
+            d.p[k][g] += w * ((f.tn * t_dot) + (f.nn * n_dot) + (f.nh * h_dot) + (f.nd * d_dot));
+            d.q[k][g] += w * ((f.th * t_dot) + (f.nh * n_dot) + (f.hh * h_dot) + (f.hd * d_dot));
+            d.r[k][g] += w * ((f.td * t_dot) + (f.nd * n_dot) + (f.hd * h_dot) + (f.dd * d_dot));
+          }
+        }
+      }
+    }
+
+    // The fixed multipliers the bars are differenced at: the base's, and on
+    // each empty tuple of a ket's that u populates, K6, every coupling's
+    // limit along the ray (Part I's, n = 1, on the I = J coupling).
+    std::vector<ScMultipliers> fixed;
+    for (const ScMultipliers &x : own) {
+      fixed.push_back({.p = x.p, .q = x.q, .r = {}, .blocks = x.blocks});
+    }
+    std::map<size_t, std::array<std::vector<double>, 8>> coef_fixed = coef;
+    double worst = 0.0;
+    std::tuple<int64_t, size_t, size_t, double> worst_at{};
+    double worst_coupling = 0.0;
+    std::tuple<int64_t, int64_t, size_t, size_t, double> worst_coupling_at{};
+    std::map<size_t, std::array<std::vector<double>, 8>> second_t;
+    for (int64_t j = 0; j < ns; ++j) {
+      const auto jj = static_cast<size_t>(j);
+      if (!any_guarded[jj]) {
+        continue;
+      }
+      const ClassEnergiesTangent &kt = tan.kets[jj];
+      const EnergyDirection &du = dir(u, at(j, j));
+      const EnergyDirection *const dv = partners.empty() ? nullptr : &dir(m + u, at(j, j));
+      const double step = FBF_TRY(line_step(res, blocks, pairs[at(j, j)], du));
+      if (step == 0.0) {
+        continue;
+      }
+      std::vector<EnergyDirection> along{du};
+      if (dv != nullptr) {
+        along.push_back(*dv);
+      }
+      const size_t mu = along.size();
+      const SecondTables su =
+          FBF_TRY(second_tables(res, blocks, pairs[at(j, j)], batch, du, along, step));
+      std::optional<SecondTables> sv;
+      double step_v = 0.0;
+      if (dv != nullptr) {
+        step_v = FBF_TRY(line_step(res, blocks, pairs[at(j, j)], *dv));
+        if (step_v != 0.0) {
+          sv = FBF_TRY(second_tables(res, blocks, pairs[at(j, j)], batch, *dv, {dv, 1}, step_v));
+        }
+      }
+      // Part I's population scales over ket J's tables.
+      double largest = 0.0;
+      for (size_t k = 0; k < 8; ++k) {
+        for (const double x : kt.norm[k]) {
+          largest = std::max(largest, std::abs(x));
+        }
+      }
+      double scale_u = largest / (64.0 * step * step);
+      double scale_v = sv ? largest / (64.0 * step_v * step_v) : 0.0;
+      for (size_t k = 0; k < 8; ++k) {
+        for (size_t g = 0; g < kt.norm[k].size(); ++g) {
+          scale_u = std::max(scale_u, std::abs(su.norm[k][g * mu]));
+          if (sv) {
+            scale_v = std::max(scale_v, std::abs(sv->norm[k][g]));
+          }
+        }
+      }
+      const auto populated_both = [&](const size_t k, const size_t g) {
+        return sv && su.norm[k][g * mu] > kEmptyPopulationFloor * scale_u &&
+               sv->norm[k][g] > kEmptyPopulationFloor * scale_v;
+      };
+      // A tuple's η: its own H / N, a one-function class's η^J, or an empty
+      // one both populate, the mean of η_u and η_v; none otherwise.
+      const auto eta_at = [&](const size_t k, const size_t g) -> std::optional<double> {
+        if (eta_of[jj][k]) {
+          return *eta_of[jj][k];
+        }
+        if (!guarded(j, k, g)) {
+          return kt.h[k][g] / kt.norm[k][g];
+        }
+        if (populated_both(k, g)) {
+          return 0.5 * ((su.h[k][g * mu] / su.norm[k][g * mu]) + (sv->h[k][g] / sv->norm[k][g]));
+        }
+        return std::nullopt;
+      };
+      // With a partner, S: ket J's Hessian scale on the pair, Part I's, and
+      // per bra I the coupling (I, J)'s first-order scale, the largest
+      // max(|Ṫ_u|, |Ṫ_v|) / |Δ + η| over ket J's tuples.
+      double pair_scale = 0.0;
+      std::vector<double> coupling_scale(static_cast<size_t>(ns), 0.0);
+      if (sv) {
+        for (size_t k = 0; k < 8; ++k) {
+          for (size_t g = 0; g < kt.norm[k].size(); ++g) {
+            const std::optional<double> eta = eta_at(k, g);
+            if (!eta) {
+              continue;
+            }
+            const double gap = std::abs(kt.delta[k][g] + *eta);
+            pair_scale = std::max(pair_scale,
+                                  std::sqrt(std::abs(su.norm[k][g * mu] * sv->norm[k][g])) / gap);
+            for (int64_t i = 0; i < ns; ++i) {
+              if (i != j) {
+                const std::vector<double> &td = table_dot(i, j)[k];
+                coupling_scale[static_cast<size_t>(i)] = std::max(
+                    coupling_scale[static_cast<size_t>(i)],
+                    std::max(std::abs(td[(g * mt) + u]), std::abs(td[(g * mt) + m + u])) / gap);
+              }
+            }
+          }
+        }
+      }
+      for (size_t k = 0; k < 8; ++k) {
+        for (size_t g = 0; g < kt.norm[k].size(); ++g) {
+          if (!guarded(j, k, g)) {
+            continue;
+          }
+          const EmptyPair e{.nuu = su.norm[k][g * mu],
+                            .huu = su.h[k][g * mu],
+                            .nvv = sv ? sv->norm[k][g] : 0.0,
+                            .hvv = sv ? sv->h[k][g] : 0.0,
+                            .nuv = mu > 1 ? su.norm[k][(g * mu) + 1] : 0.0,
+                            .huv = mu > 1 ? su.h[k][(g * mu) + 1] : 0.0};
+          if (e.nuu <= kEmptyPopulationFloor * scale_u) {
+            continue;
+          }
+          const double delta = kt.delta[k][g];
+          double eta = e.huu / e.nuu;
+          double rho = 0.0;
+          if (populated_both(k, g)) {
+            eta = *eta_at(k, g);
+            rho = empty_defect(e, delta);
+            const double weighted =
+                rho * std::sqrt(e.nuu * e.nvv) / std::abs(delta + eta) / pair_scale;
+            if (weighted > worst) {
+              worst = weighted;
+              worst_at = {j, k, g, rho};
+            }
+          }
+          const double tbar = -1.0 / (delta + eta);
+          ++out.populated[u][jj][k];
+          for (int64_t i = 0; i < ns; ++i) {
+            const double w = hbar[at(i, j)];
+            if (i == j) {
+              fixed[jj].p[k][g] += w * ((2.0 * tbar) + (delta * tbar * tbar));
+              fixed[jj].q[k][g] += w * tbar * tbar;
+              continue;
+            }
+            // The coupling's T slot at the ray's limit, T̄.
+            coef_fixed[pair_of(i, j)][k][g] += w * tbar;
+            const std::vector<double> &td = table_dot(i, j)[k];
+            if (rho > 0.0 && coupling_scale[static_cast<size_t>(i)] > 0.0) {
+              // A first-order transition tangent to bra I: the coupling is
+              // Eq. qd-scfail's, of degree one, and has a Hessian on the pair
+              // only where H is proportional to N there.
+              const double share =
+                  std::max(std::abs(td[(g * mt) + u]), std::abs(td[(g * mt) + m + u])) /
+                  std::abs(delta + eta) / coupling_scale[static_cast<size_t>(i)];
+              if (rho * share > worst_coupling) {
+                worst_coupling = rho * share;
+                worst_coupling_at = {i, j, k, g, rho};
+              }
+            }
+            if (!guarded(i, k, g)) {
+              // Populated for bra I: T is of first order along u and T / N
+              // grows as 1/s, so N's and H's multipliers have no limit; only
+              // T's is formed (README, "The SC-QD Hessian-vector product").
+              continue;
+            }
+            // Empty for bra I too: T, N and H are all of second order, and
+            // the coupling a quadratic form along u, T̄ T^{uu}. N's and H's
+            // multipliers at the ray's limit, with ρ = T^{uu} / N^{uu}:
+            // -ρ η T̄² and ρ T̄².
+            const size_t p = pair_of(i, j);
+            auto found = second_t.find(p);
+            if (found == second_t.end()) {
+              const size_t mn = p;
+              const size_t nm = at(static_cast<int64_t>(p) % ns, static_cast<int64_t>(p) / ns);
+              const double s = FBF_TRY(
+                  pair_line_step(res, blocks, pairs[mn], pairs[nm], dir(u, mn), dir(u, nm)));
+              std::array<std::vector<double>, 8> tuu{};
+              if (s != 0.0) {
+                tuu = FBF_TRY(pair_second_tables(res, blocks, pairs[mn], pairs[nm], batch,
+                                                 dir(u, mn), dir(u, nm), s));
+              }
+              found = second_t.emplace(p, std::move(tuu)).first;
+            }
+            if (found->second[k].empty()) {
+              continue;
+            }
+            const double ratio = found->second[k][g] / e.nuu;
+            fixed[jj].p[k][g] += w * (-ratio * eta * tbar * tbar);
+            fixed[jj].q[k][g] += w * ratio * tbar * tbar;
+            out.coupling_k6[u] += w * ((tbar * found->second[k][g]) +
+                                       (ratio * tbar * tbar * (e.huu - (eta * e.nuu))));
+          }
+        }
+      }
+    }
+    out.defect[u] = worst;
+    out.coupling_defect[u] = worst_coupling;
+    if (worst_coupling > kEmptyDefectTolerance) {
+      const auto [bra, ket, k, g, rho] = worst_coupling_at;
+      return err_numerical(
+          "nevpt2::sc_effective_hamiltonian_hvp: the coupling ({}, {}) has no Hessian on "
+          "directions ({}, partner {}): ket {}'s class {} tuple {} is empty (|N| <= 1e-14) and "
+          "populated by both, with a first-order transition tangent to bra {}, but its H is not "
+          "proportional to its N on the pair: rho_tau {:.3e}, weighted by its share of the "
+          "coupling's first-order scale {:.3e}, past {:.0e}",
+          bra, ket, u, u, ket, kScClassNames[k], g, bra, rho, worst_coupling,
+          kEmptyDefectTolerance);
+    }
+    if (worst > kEmptyDefectTolerance) {
+      const auto [j, k, g, rho] = worst_at;
+      return err_numerical(
+          "nevpt2::sc_effective_hamiltonian_hvp: state {}'s class {} perturber {} is empty "
+          "(|N| <= 1e-14) and populated by direction {} and its partner, but its H is not "
+          "proportional to its N on the pair: rho_tau {:.3e}, weighted by its share of the "
+          "pair's Hessian scale {:.3e}, past {:.0e}. Its energy has no Hessian on that pair",
+          j, kScClassNames[k], g, u, rho, worst, kEmptyDefectTolerance);
+    }
+
+    // Each state's own walk: the multipliers' tangent through one fixed
+    // walk (R's onto the orbital energies), and the bars at fixed
+    // multipliers differenced along the direction.
+    const EnergyBars &shared = bars[u * static_cast<size_t>(ns)];
+    for (int64_t j = 0; j < ns; ++j) {
+      const auto jj = static_cast<size_t>(j);
+      const EnergyBars &b = bars[(u * static_cast<size_t>(ns)) + jj];
+      const EnergyDirection &du = dir(u, at(j, j));
+      FBF_TRY(fixed_adjoint(res, blocks, pairs[at(j, j)], batch, b, dot[jj]));
+      const double step = FBF_TRY(line_step(res, blocks, pairs[at(j, j)], du));
+      if (step != 0.0) {
+        FBF_TRY(fixed_adjoint_tangent(res, blocks, pairs[at(j, j)], batch, du, step, fixed[jj], b));
+      }
+    }
+    // Each pair's walk the same way, its transition bars handed over.
+    const EnergyBars pair_shared = pair_shared_bars(shared);
+    for (int64_t mi = 0; mi < ns; ++mi) {
+      for (int64_t ni = mi + 1; ni < ns; ++ni) {
+        const size_t mn = at(mi, ni);
+        const size_t nm = at(ni, mi);
+        std::vector<Buffers::device<double>> held;
+        std::array<EnergyBars, 2> t{};
+        if (transition) {
+          for (EnergyBars &x : t) {
+            for (const auto &[field, count] :
+                 {std::pair{&EnergyBars::dm1, n * n}, std::pair{&EnergyBars::dm2, n * n * n * n},
+                  std::pair{&EnergyBars::dm3, n * n * n * n * n * n}}) {
+              held.push_back(FBF_TRY(device_zeros(res, count)));
+              x.*field = held.back().data();
+            }
+          }
+        }
+        FBF_TRY(pair_fixed_adjoint(res, blocks, pairs[mn], pairs[nm], batch, pair_shared,
+                                   coef_dot[mn], t[0], t[1]));
+        const double step =
+            FBF_TRY(pair_line_step(res, blocks, pairs[mn], pairs[nm], dir(u, mn), dir(u, nm)));
+        if (step != 0.0) {
+          const std::array<EnergyBars, 3> targets{pair_shared, t[0], t[1]};
+          FBF_TRY(line_derivative(
+              res, blocks, targets, step, kLineWeights.size(),
+              [&](const double s, std::span<const EnergyBars> scratch) -> Status {
+                const ShiftedInputs xa =
+                    FBF_TRY(shifted_inputs(res, blocks, pairs[mn], dir(u, mn), s));
+                const ShiftedInputs xb =
+                    FBF_TRY(shifted_inputs(res, blocks, pairs[nm], dir(u, nm), s));
+                return pair_fixed_adjoint(res, xa.blocks(), xa.in, xb.in, batch, scratch[0],
+                                          coef_fixed[mn], scratch[1], scratch[2]);
+              }));
+        }
+        if (transition) {
+          FBF_TRY(transition(static_cast<int64_t>(u), mi, ni, t[0]));
+          FBF_TRY(transition(static_cast<int64_t>(u), ni, mi, t[1]));
+        }
+      }
+    }
+    // Sijrs reads no RDM: Σ_J H̄_JJ times its one state's product.
+    FBF_TRY(sijrs_hvp(res, blocks, pairs.front(), batch, dir(u, 0), shared, trace));
   }
   return out;
 }
@@ -5434,10 +6101,11 @@ Result<PcClassEnergiesHvp> pc_class_energies_hvp(DeviceResources &res, const MoB
       const double u_step = FBF_TRY(pc_u_step(res, hvp, u));
       if (u_step != 0.0) {
         hvp.line = u;
-        FBF_TRY(line_derivative(res, blocks, bars[u], u_step, 1,
-                                [&](const double t, const EnergyBars &scratch) -> Status {
+        FBF_TRY(line_derivative(res, blocks, {&bars[u], 1}, u_step, 1,
+                                [&](const double t, std::span<const EnergyBars> scratch) -> Status {
                                   hvp.u_step = t;
-                                  return pc_fixed_adjoint(res, blocks, in, batch, scratch, hvp);
+                                  return pc_fixed_adjoint(res, blocks, in, batch, scratch.front(),
+                                                          hvp);
                                 }));
         hvp.u_step = 0.0;
       }
@@ -5449,11 +6117,12 @@ Result<PcClassEnergiesHvp> pc_class_energies_hvp(DeviceResources &res, const MoB
     du.in.e_virt = nullptr;
     const double step = FBF_TRY(line_step(res, blocks, in, du));
     if (step != 0.0) {
-      FBF_TRY(line_derivative(res, blocks, bars[u], step, kLineWeights.size(),
-                              [&](const double t, const EnergyBars &scratch) -> Status {
+      FBF_TRY(line_derivative(res, blocks, {&bars[u], 1}, step, kLineWeights.size(),
+                              [&](const double t, std::span<const EnergyBars> scratch) -> Status {
                                 const ShiftedInputs x =
                                     FBF_TRY(shifted_inputs(res, blocks, in, du, t));
-                                return pc_fixed_adjoint(res, x.blocks(), x.in, batch, scratch, hvp);
+                                return pc_fixed_adjoint(res, x.blocks(), x.in, batch,
+                                                        scratch.front(), hvp);
                               }));
     }
     FBF_TRY(sijrs_hvp(res, blocks, in, batch, directions[u], bars[u]));

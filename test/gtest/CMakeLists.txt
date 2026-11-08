@@ -215,6 +215,7 @@ add_executable(
   nevpt2_energy_gpu.cpp
   nevpt2_qd_energy_gpu.cpp
   nevpt2_qd_tangent_gpu.cpp
+  nevpt2_qd_hvp_gpu.cpp
   nevpt2_pt2_density_gpu.cpp
   nevpt2_nac_gpu.cpp
   nevpt2_gradient_gpu.cpp

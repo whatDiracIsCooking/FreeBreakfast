@@ -1,9 +1,10 @@
 /// @file
 /// @brief The SC- and PC-QD-NEVPT2 effective Hamiltonians, their reverse
-/// passes and SC's forward tangent: their checks over the n x n pair inputs,
-/// and the class walks each shares with its one-state energy (energy.cpp's
-/// sc_couplings, pc.cpp's pc_couplings, reverse.cpp's sc_couplings_adjoint,
-/// pc_couplings_adjoint and sc_couplings_tangent).
+/// passes and SC's forward tangent and Hessian-vector product: their checks
+/// over the n x n pair inputs, and the class walks each shares with its
+/// one-state energy (energy.cpp's sc_couplings, pc.cpp's pc_couplings,
+/// reverse.cpp's sc_couplings_adjoint, pc_couplings_adjoint,
+/// sc_couplings_tangent and sc_couplings_hvp).
 
 module;
 
@@ -120,19 +121,20 @@ Result<ScEffectiveHamiltonianAdjoint> sc_effective_hamiltonian_adjoint(
   return sc_couplings_adjoint(res, blocks, pairs, n, hbar, batch, bars, transition);
 }
 
-Result<ScEffectiveHamiltonianTangent>
-sc_effective_hamiltonian_tangent(DeviceResources &res, const MoBlocks &blocks,
-                                 std::span<const EnergyInputs> pairs, const int32_t batch,
-                                 std::span<const EnergyDirection> directions) {
-  constexpr const char *kWho = "sc_effective_hamiltonian_tangent";
-  const int64_t n = FBF_TRY(qd_states(kWho, pairs));
+// n, as qd_states, when besides every entry of @p pairs is given and
+// @p directions is m n² for some m, each direction's pairs sharing its first
+// pair's integral, orbital-energy and B tangents; InvalidConfig, naming
+// @p who, otherwise. The forward tangent's checks, and the HVP's.
+Result<int64_t> qd_tangent_states(const char *who, std::span<const EnergyInputs> pairs,
+                                  std::span<const EnergyDirection> directions) {
+  const int64_t n = FBF_TRY(qd_states(who, pairs));
   // The pair walk reads every entry, as the reverse pass does.
   if (std::ranges::any_of(pairs, [](const EnergyInputs &in) { return in.dm1 == nullptr; })) {
-    return err_config("{}: every pair's entry must be given, and one has a null dm1", kWho);
+    return err_config("{}: every pair's entry must be given, and one has a null dm1", who);
   }
   const auto n2 = static_cast<size_t>(n * n);
   if (directions.size() % n2 != 0) {
-    return err_config("{}: {} directions over {} states is not a whole number of {} pairs", kWho,
+    return err_config("{}: {} directions over {} states is not a whole number of {} pairs", who,
                       directions.size(), n, n2);
   }
   // The walk reads each direction's shared tangents once, from its first
@@ -146,11 +148,51 @@ sc_effective_hamiltonian_tangent(DeviceResources &res, const MoBlocks &blocks,
       if (shared(directions[(u * n2) + p]) != shared(directions[u * n2])) {
         return err_config("{}: direction {}'s pair ({}, {}) does not share its first pair's "
                           "integral, orbital-energy and B tangents",
-                          kWho, u, static_cast<int64_t>(p) / n, static_cast<int64_t>(p) % n);
+                          who, u, static_cast<int64_t>(p) / n, static_cast<int64_t>(p) % n);
       }
     }
   }
+  return n;
+}
+
+Result<ScEffectiveHamiltonianTangent>
+sc_effective_hamiltonian_tangent(DeviceResources &res, const MoBlocks &blocks,
+                                 std::span<const EnergyInputs> pairs, const int32_t batch,
+                                 std::span<const EnergyDirection> directions) {
+  const int64_t n =
+      FBF_TRY(qd_tangent_states("sc_effective_hamiltonian_tangent", pairs, directions));
   return sc_couplings_tangent(res, blocks, pairs, n, batch, directions);
+}
+
+Result<ScEffectiveHamiltonianHvp> sc_effective_hamiltonian_hvp(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+    std::span<const double> hbar, const int32_t batch, std::span<const EnergyDirection> directions,
+    std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t, int64_t, int64_t, const EnergyBars &)> &transition,
+    std::span<const EnergyDirection> partners) {
+  constexpr const char *kWho = "sc_effective_hamiltonian_hvp";
+  const int64_t n = FBF_TRY(qd_tangent_states(kWho, pairs, directions));
+  const auto n2 = static_cast<size_t>(n * n);
+  const size_t m = directions.size() / n2;
+  if (!partners.empty()) {
+    if (partners.size() != directions.size()) {
+      return err_config("{}: {} partners for {} directions (none, or one per pair of each "
+                        "direction)",
+                        kWho, partners.size(), directions.size());
+    }
+    FBF_TRY(qd_tangent_states(kWho, pairs, partners));
+  }
+  if (std::cmp_not_equal(hbar.size(), n2) || bars.size() != m * static_cast<size_t>(n)) {
+    return err_config("{}: {} states over {} directions take {} H-bar elements and {} EnergyBars, "
+                      "not {} and {}",
+                      kWho, n, m, n2, m * static_cast<size_t>(n), hbar.size(), bars.size());
+  }
+  for (size_t u = 0; u < m; ++u) {
+    FBF_TRY(qd_adjoint_states(kWho, pairs, hbar,
+                              bars.subspan(u * static_cast<size_t>(n), static_cast<size_t>(n))));
+  }
+  return sc_couplings_hvp(res, blocks, pairs, n, hbar, batch, directions, bars, transition,
+                          partners);
 }
 
 Result<std::vector<PcClassEnergies>> pc_effective_hamiltonian(DeviceResources &res,

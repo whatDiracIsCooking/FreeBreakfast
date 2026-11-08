@@ -23,9 +23,15 @@
 // so the guard is crossed) and h2co_skew_ccpvdz_sa3 (C1, three roots),
 // converged loosely: duality holds at any point, and the symmetry, which
 // empties the tuples, is exact at every iterate. The guarded tuples'
-// transition tangent is printed, not gated: on h2co_ccpvdz_sa2 the same
-// tuples are empty for both roots, so it vanishes at first order (#962
-// gates it on a fixture where a tuple is empty for one ket alone).
+// transition tangent is printed: on h2co_ccpvdz_sa2 the same tuples are
+// empty for both roots, so it vanishes at first order. It is gated on
+// h2nb_sto3g_cas23_sa2 (data/qd_nevpt2/h2nb_sto3g_cas23_sa2.json, C2v,
+// two roots of CAS(2,3)'s CASCI over the RHF's orbitals: the SA-CASSCF
+// there is bistable run to run, between the symmetric point, a saddle, and
+// one 1.0e-4 Eh lower that has no empty tuple), whose Srsi tuples, a class
+// of three functions, are empty for one root and populated for the other
+// (#962): there a guarded tuple's Ṫ to the other root is above ten of its
+// column's duality bars, and that column's duality holds to 1e-10.
 
 #include <gtest/gtest.h>
 
@@ -97,6 +103,18 @@ double dot(std::span<const double> a, std::span<const double> b) {
 }
 
 const fb::json &qd_case(const std::string &name) {
+  // A geometry-only case is a file of its own.
+  static std::map<std::string, fb::json> own;
+  if (const std::filesystem::path file =
+          std::filesystem::path{FBF_TEST_DATA_DIR} / "qd_nevpt2" / (name + ".json");
+      std::filesystem::exists(file)) {
+    if (!own.contains(name)) {
+      auto read = fb::read_json(file);
+      EXPECT_TRUE(read.has_value()) << read.error().message;
+      own[name] = read.has_value() ? std::move(*read) : fb::json{};
+    }
+    return own.at(name);
+  }
   static const fb::json kDoc = [] {
     auto read =
         fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "qd_nevpt2" / "qd_nevpt2.json");
@@ -129,7 +147,9 @@ struct Point {
 };
 
 // This tree's DF-SA-CASSCF of qd_nevpt2.json's @p name through the real
-// registry, as nevpt2_gradient_gpu.cpp's run_qd_casscf, at kConvTolGrad.
+// registry, as nevpt2_gradient_gpu.cpp's run_qd_casscf, at kConvTolGrad; or
+// for a geometry-only case marked "casci", the CASCI over the RHF's
+// orbitals, a point no optimizer can carry off its symmetry.
 Point sa_casscf(const std::string &name) {
   const fb::json &entry = qd_case(name);
   Point p{.weights = entry.at("weights").get<std::vector<double>>()};
@@ -149,12 +169,16 @@ Point sa_casscf(const std::string &name) {
   for (const double w : p.weights) {
     weights += std::format("{}{:.17g}", weights.empty() ? "" : ", ", w);
   }
+  const bool casci = entry.value("casci", false);
   const std::string toml = std::format(
       "[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
       "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
-      "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\nweights = [{}]\nconv_tol_grad = {:g}\n",
-      entry.at("basis").get<std::string>(), kDfAuxBasis, entry.at("ncas").get<std::int32_t>(),
-      entry.at("nelecas").get<std::int32_t>(), p.weights.size(), weights, kConvTolGrad);
+      "[{}]\nncas = {}\nnelecas = {}\nnroots = {}\n{}",
+      entry.at("basis").get<std::string>(), kDfAuxBasis, casci ? "casci" : "casscf",
+      entry.at("ncas").get<std::int32_t>(), entry.at("nelecas").get<std::int32_t>(),
+      p.weights.size(),
+      casci ? std::string{}
+            : std::format("weights = [{}]\nconv_tol_grad = {:g}\n", weights, kConvTolGrad));
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   EXPECT_TRUE(calc.has_value()) << calc.error().message;
@@ -167,25 +191,39 @@ Point sa_casscf(const std::string &name) {
   if (!ran.has_value()) {
     return p;
   }
-  const auto &casscf = calc->get<fb::CasscfOutput>();
   const auto &eri = calc->get<fb::EriOutput>();
   const auto &h = calc->get<fb::CoreHamiltonianOutput>();
-  EXPECT_TRUE(casscf.has_value() && eri.has_value() && h.has_value());
-  if (!casscf.has_value() || !eri.has_value() || !h.has_value()) {
+  EXPECT_TRUE(eri.has_value() && h.has_value());
+  if (!eri.has_value() || !h.has_value()) {
     return p;
   }
   fb::DeviceResources &res = node.device(0);
   const auto &df = std::get<fb::DensityFitted>(eri->eri);
   p.naux = df.naux;
-  p.nao = static_cast<std::int32_t>(casscf->c.n());
-  p.ncore = casscf->ncore;
-  p.ncas = casscf->ncas;
-  p.nelecas = casscf->nelecas;
-  const auto nao = static_cast<std::size_t>(p.nao);
-  p.b = download(res, df.b.data(), static_cast<std::size_t>(p.naux) * nao * nao);
-  p.c = download(res, casscf->c.data(), nao * nao);
-  p.h = download(res, h->h.data(), nao * nao);
-  p.vectors = casscf->vectors;
+  const auto take = [&](const auto &out) {
+    p.nao = static_cast<std::int32_t>(out.c.n());
+    p.ncore = out.ncore;
+    p.ncas = out.ncas;
+    p.nelecas = out.nelecas;
+    const auto nao = static_cast<std::size_t>(p.nao);
+    p.b = download(res, df.b.data(), static_cast<std::size_t>(p.naux) * nao * nao);
+    p.c = download(res, out.c.data(), nao * nao);
+    p.h = download(res, h->h.data(), nao * nao);
+    p.vectors = out.vectors;
+  };
+  if (casci) {
+    const auto &out = calc->get<fb::CasciOutput>();
+    EXPECT_TRUE(out.has_value());
+    if (out.has_value()) {
+      take(*out);
+    }
+  } else {
+    const auto &out = calc->get<fb::CasscfOutput>();
+    EXPECT_TRUE(out.has_value());
+    if (out.has_value()) {
+      take(*out);
+    }
+  }
   return p;
 }
 
@@ -518,9 +556,12 @@ void expect_duality(const std::string &name, const std::int32_t batch, const dou
   }
 
   // The guarded tuples: each coupling's transition tangent there, against
-  // the column's bar.
+  // the column's bar; and over the tuples empty for the ket alone (the
+  // bra's own norm past the guard) in a class of several functions.
   std::size_t guarded = 0;
   double largest = 0.0;
+  double one_sided = 0.0;
+  std::string one_sided_at;
   std::string per_class;
   for (std::size_t ket = 0; ket < nroots; ++ket) {
     for (std::size_t k = 0; k < 8; ++k) {
@@ -532,21 +573,30 @@ void expect_duality(const std::string &name, const std::int32_t batch, const dou
           continue;
         }
         const std::vector<double> &t_dot = got->transition_dot[(bra * nroots) + ket][k];
+        const std::vector<double> &bra_norm = got->kets[bra].norm[k];
         for (const std::int64_t t : empty) {
+          const auto x = static_cast<std::size_t>(t);
           for (std::size_t u = 0; u < m; ++u) {
-            largest = std::max(
-                largest,
-                std::abs(t_dot[(static_cast<std::size_t>(t) * kParts.size() * m) + u]) / bars[u]);
+            const double ratio = std::abs(t_dot[(x * kParts.size() * m) + u]) / bars[u];
+            largest = std::max(largest, ratio);
+            if (std::abs(bra_norm[x]) > 1e-14 && ratio > one_sided) {
+              one_sided = ratio;
+              one_sided_at =
+                  std::format("ket {} {} tuple {} column {}", ket, kClassNames[k], t, cols[u].name);
+            }
           }
         }
       }
     }
   }
   std::cout << std::format("[ nevpt2   ] qd tangent {}: {} guarded tuples,{}; largest Ṫ there "
-                           "{:.2e} bars\n",
-                           name, guarded, per_class, largest);
+                           "{:.2e} bars, {:.2e} where one-sided ({})\n",
+                           name, guarded, per_class, largest, one_sided, one_sided_at);
   if (name == "h2co_ccpvdz_sa2") {
     EXPECT_GT(guarded, 0U) << name;
+  }
+  if (name == "h2nb_sto3g_cas23_sa2") {
+    EXPECT_GT(one_sided, kVisible) << name << ": a one-sided guarded tuple's Ṫ";
   }
 }
 
@@ -567,11 +617,12 @@ TEST_P(Nevpt2QdTangent, DualToQdScAdjoint) {
   expect_duality(name, batch, duality);
 }
 
-INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdTangent,
-                         ::testing::Values(std::tuple{std::string{"h8_sto3g_sa3"}, 0, kDuality},
-                                           std::tuple{std::string{"h2co_ccpvdz_sa2"}, 4, kDuality},
-                                           std::tuple{std::string{"h2co_skew_ccpvdz_sa3"}, 0,
-                                                      kSkewDuality}),
-                         [](const auto &info) { return std::get<0>(info.param); });
+INSTANTIATE_TEST_SUITE_P(
+    Cases, Nevpt2QdTangent,
+    ::testing::Values(std::tuple{std::string{"h8_sto3g_sa3"}, 0, kDuality},
+                      std::tuple{std::string{"h2co_ccpvdz_sa2"}, 4, kDuality},
+                      std::tuple{std::string{"h2co_skew_ccpvdz_sa3"}, 0, kSkewDuality},
+                      std::tuple{std::string{"h2nb_sto3g_cas23_sa2"}, 0, kDuality}),
+    [](const auto &info) { return std::get<0>(info.param); });
 
 } // namespace
