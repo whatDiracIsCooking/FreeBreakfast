@@ -55,18 +55,33 @@ constexpr double kConvTol = 1e-12;
 constexpr double kBars = 2.0;
 // The visibility rule: each part has an element above this many bars.
 constexpr double kVisibleBars = 10.0;
-// The CP solve's unreduced residual (df_sacasscf_cp's columns sit near 1e-10)
-// and the asymmetry, a fraction of the smallest bar (1.1e-7).
+// The CP solve's unreduced residual (df_sacasscf_cp's columns sit near 1e-10).
 constexpr double kCpResidual = 1e-9;
-constexpr double kAsymmetry = 1e-9;
-// The A1/B2 case's coupling against the fixture's C_01 ladders: within 2x
-// each direction's bar (3.4e-9, its noise floor), as the Hessian's elements.
-constexpr double kCouplingBars = 2.0;
+// What no part determines, the asymmetry and an element C2v forbids, is the
+// solves' error: first order in their residuals (the CP's and the
+// Z-vector's, 1e-10), each times the size of what it multiplies, so at most
+// this times the largest element of any part (the skeleton and the HVP,
+// which cancel to the Hessian's size).
+constexpr double kSolveTolerance = 1e-10;
 
 double max_abs(std::span<const double> v) {
   return std::ranges::fold_left(
       v, 0.0, [](const double m, const double x) { return std::max(m, std::abs(x)); });
 }
+
+// kSolveTolerance times the largest element of any part.
+double solve_bar(const fb::hessian::QdScNevpt2Terms &h) {
+  double largest = 0.0;
+  for (const std::vector<double> *part :
+       {&h.e_sa, &h.z_lxy, &h.z_lx, &h.z_third, &h.z_koo, &h.zeta, &h.skeleton, &h.hvp,
+        &h.rotation_tau, &h.rotation_kappa, &h.term_ii}) {
+    largest = std::max(largest, max_abs(*part));
+  }
+  return kSolveTolerance * largest;
+}
+// The A1/B2 case's coupling against the fixture's C_01 ladders: within 2x
+// each direction's bar (3.4e-9, its noise floor), as the Hessian's elements.
+constexpr double kCouplingBars = 2.0;
 
 // A state average's start: atoms (bohr), basis, fitting set, active space,
 // weights.
@@ -470,12 +485,12 @@ void expect_matches(const std::string &name, const std::int32_t state) {
       "[ qd sc    ] {}: E {}, QD gap {:.4f}, root gap {:.4f}, edge {:.4f}, inactive gap {:.3e}, "
       "smallest |Delta + H/N| {:.3e}, max |theta| {:.3f}, max |kappa_oo| {:.2f}, max |zeta| "
       "{:.3e}, max |z^c| {:.3e}, term (ii)'s share {:.3e}; CP residual {:.1e}, Z-vector {:.1e}, "
-      "asymmetry {:.1e}, sum rule {:.1e}, defect {:.1e}, t_mix {:.3e} bohr\n",
+      "asymmetry {:.1e} (bar {:.1e}), sum rule {:.1e}, defect {:.1e}, t_mix {:.3e} bohr\n",
       label, h->eigenvalues, h->qd_gap, h->root_gap, h->edge_gap, h->min_gap, h->min_denominator,
       h->max_theta, h->max_kappa_oo, h->max_zeta, h->max_zc, h->term_ii_share, h->cp_residual,
-      h->zvector_residual, h->asymmetry, h->translation, h->defect, h->mix_step);
+      h->zvector_residual, h->asymmetry, solve_bar(*h), h->translation, h->defect, h->mix_step);
   EXPECT_LE(h->cp_residual, kCpResidual) << label;
-  EXPECT_LE(h->asymmetry, kAsymmetry) << label;
+  EXPECT_LE(h->asymmetry, solve_bar(*h)) << label;
   EXPECT_GT(h->term_ii_share, 0.0) << label;
   if (equal) {
     expect_theta_visible(ref, *h, bar, label);
@@ -529,8 +544,7 @@ TEST(HessianDfQdScNevpt2, CoupledA1B2RefusesNothing) {
                              "{:.1e}, t_mix {:.3e}, term (ii)'s share {:.3e}, asymmetry {:.1e}\n",
                              state, h->eigenvalues, h->qd_gap, h->edge_gap, h->defect, h->mix_step,
                              h->term_ii_share, h->asymmetry);
-    // No element couples two irreps: C2v's zeros, to the symmetrization's
-    // rounding (kAsymmetry).
+    // No element couples two irreps: C2v's zeros, to the solves' error.
     double across = 0.0;
     for (std::size_t j = 0; j < k; ++j) {
       for (std::size_t i = 0; i < k; ++i) {
@@ -539,10 +553,11 @@ TEST(HessianDfQdScNevpt2, CoupledA1B2RefusesNothing) {
         }
       }
     }
-    std::cout << std::format("[ qd a1b2  ] state {}: largest element across irreps {:.1e}\n", state,
-                             across);
-    EXPECT_LE(across, kAsymmetry) << "state " << state;
-    EXPECT_LE(h->asymmetry, kAsymmetry) << "state " << state;
+    std::cout << std::format("[ qd a1b2  ] state {}: largest element across irreps {:.1e}, "
+                             "the solves' bar {:.1e}\n",
+                             state, across, solve_bar(*h));
+    EXPECT_LE(across, solve_bar(*h)) << "state " << state;
+    EXPECT_LE(h->asymmetry, solve_bar(*h)) << "state " << state;
     for (std::size_t i = 0; i < k; ++i) {
       std::string row;
       for (std::size_t j = 0; j < k; ++j) {
