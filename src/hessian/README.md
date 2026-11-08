@@ -27,8 +27,9 @@ derivative at an MO adjoint**, Σ h̄ h^xy + Σ Λ B^xy, `df_adjoint_xy`, and
 the **SC- and PC-NEVPT2 Hessians** they assemble into, `df_sc_nevpt2` and
 `df_pc_nevpt2`, and for the QD-NEVPT2 Hessian the same tangent over a state
 average, `df_qd_nevpt2_tangents`, and the **ζ term**
-ζ · ∂²⟨c_s|H|c_r⟩ of a QD-NEVPT2 Lagrangian's Hessian, `df_qd_zeta`, all
-below.
+ζ · ∂²⟨c_s|H|c_r⟩ of a QD-NEVPT2 Lagrangian's Hessian, `df_qd_zeta`, and
+its **term (ii)**, the QD eigenvector response from the couplings h_PQ,
+`df_qd_eigenvector_response`, all below.
 
 ```cpp
 import free_breakfast.hessian;
@@ -1597,6 +1598,80 @@ takes 6.1 s with k = 6, and the ladders take 1.5 s. The CI ladders'
 remaining misses are rounding, not truncation: they do not shrink at half
 the step.
 
+## Term (ii)
+
+A QD-NEVPT2 state's Hessian is two terms (`docs/nevpt2/nevpt2.tex`
+Eq. qd-hess): term (i), d²𝓔[W] at fixed W = R_P R_Pᵀ, and term (ii), the
+response of H_eff's eigenvector. Term (ii) needs only first derivatives, the
+couplings h_PQ = G(W^PQ) that `nevpt2::qd_sc_coupling` and `qd_pc_coupling`
+return, and `df_qd_eigenvector_response` builds it for every state at once:
+
+```cpp
+auto t = hessian::df_qd_eigenvector_response(res, molecule, basis, classes, aux, h, b, l,
+                                             solution, ncore, ncas, pc);
+// t->term:      2 Σ_{Q≠P} h_PQ,x h_PQ,y / (E_P − E_Q), per state, nx × nx
+// t->dr:        dR_P/dR_x = Σ_{Q≠P} R_Q h_QP,x / (E_P − E_Q) (Eq. qd-dR), per state, n × nx
+// t->couplings: h_PQ for every P < Q; t->eigenvalues, t->eigenvectors: H_eff's
+// t->largest:   max |term_P|, its share's numerator; t->sum_rule, t->qd_gap, t->max_residual
+```
+
+1. **H_eff and R**, over `nevpt2::qd_inputs` and the method's effective
+   Hamiltonian, R signed as `qd_sc_coupling` signs it, so h_PQ has its sign.
+2. **The refusal**, before any adjoint is built. A pair of QD states under
+   `mcscf::kRootGapFloor` apart is Numerical and names both. Term (ii)
+   divides by their gap, and a symmetry-degenerate E_P has no Hessian of
+   this form: a Jahn–Teller pair is a cone, and a Renner–Teller pair's
+   components are the eigenvalues of the second-order 2 × 2, not this sum.
+3. **Every coupling through one solve.** 𝓔 is linear in W, so the
+   n (n − 1) / 2 trace-zero W^PQ = ½ (R_P R_Qᵀ + R_Q R_Pᵀ) go through one
+   call of `qd_sc_gradient`'s (`qd_pc_gradient`'s) several-W form. That
+   call shares one Z-vector solve, holds each column's true residual to the
+   tolerance, and takes each W's single core-off `df_gradient` pass (ρ sums
+   to 0). That is how `qd_*_coupling` calls the W form, so the list form
+   needed no change for a trace-zero W.
+4. **The closed forms**, on the host. dR_P is in the gauge R_Pᵀ dR_P = 0.
+   R needs no multiplier and no response solve, because the n × n
+   eigenproblem is differentiated in closed form.
+
+Term (ii) has the sign of second-order perturbation theory: the lower
+state's curvature goes down, the upper state's up. It is antisymmetric
+under P ↔ Q term by term, so it cancels from Σ_P (Eq. qd-sum). `sum_rule`
+returns that sum's largest element as a diagnostic. It is zero by
+construction, to rounding, and never gated. `largest` is the numerator of
+term (ii)'s share of the Hessian. The share itself is the whole Hessian's
+to report (#965, #966), since only that call holds term (i).
+
+### Tests
+
+`test/gtest/df_qd_eigenvector_response_gpu.cpp` (suite
+`HessianDfQdEigenvectorResponse`) runs on `data/qd_nevpt2/`'s cases through
+the registry:
+
+- `h2co_skew_ccpvdz_sa3` (C1, three roots at equal weights), SC
+  (`ScListMatchesPairs`, the family's representative) and PC
+  (`PcListMatchesPairs`). The one list call's
+  h_PQ for each of the three pairs is held against that pair's own
+  `qd_sc_coupling` / `qd_pc_coupling`, an independently converged solve, to
+  1e-9 Eh/bohr on every component. H_eff's eigenvalues must agree to 1e-12.
+  Each term's size, the sum rule and dR's gauge are printed.
+- `h2co_ccpvdz_sa2`, made degenerate: root 1's CASSCF energy moved so that
+  H_eff's diagonal is equal, its off-diagonal zero by C2v symmetry. SC and
+  PC are both Numerical, naming QD states 0 and 1, from the energies alone.
+
+Measured on the gfx1200 (HIP): the list call misses the per-pair couplings
+by at most 4.5e-13 (SC) and 2.1e-12 (PC), each Z-vector column's true
+residual under 7.1e-11. That is far under the bar and far under skew's
+root-2 conditioning floor (`../nevpt2/energy/README.md`): one walk's
+forward tables serve every W, and the couplings come out within rounding of
+the per-pair walks'. The largest coupling is h_02, 4.3e-2 (SC) and 7.2e-2
+(PC). Term (ii) is up to 1.1e-2 (SC) and 2.9e-2 (PC) Eh/bohr² on states 0
+and 2, and 8e-4 on state 1. The sum rule holds to 2e-18, and dR's gauge to
+2e-17. The SC case takes 2.0 to 3.2 s, PC 2.1 s, and the refusal 0.3 s.
+
+Term (ii)'s value and dR_P are closed forms over the validated couplings.
+They are gated through the whole Hessian against #953's semi-numerical
+references (#965, #966), where term (ii) must be visible.
+
 ## The SC-NEVPT2 Hessian
 
 `df_sc_nevpt2` is `docs/nevpt2/nevpt2.tex` eq. (hess) for SC-NEVPT2 on a
@@ -2179,7 +2254,7 @@ the issue also asks for waits on that step (#610).
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::QdNevpt2Tangents`, `hessian::df_qd_nevpt2_tangents`, `hessian::QdZetaTerms`, `hessian::df_qd_zeta`, `hessian::df_adjoint_xy`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::CasscfZTerms`, `hessian::df_casscf_z`, `hessian::ScNevpt2Terms`, `hessian::df_sc_nevpt2`, `hessian::PcNevpt2Terms`, `hessian::df_pc_nevpt2`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::SaCasscfCp`, `hessian::df_sacasscf_cp`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::df_casscf_cp`, `hessian::DegeneratePair`, `hessian::df_nevpt2_tangents`, `hessian::QdNevpt2Tangents`, `hessian::df_qd_nevpt2_tangents`, `hessian::QdZetaTerms`, `hessian::df_qd_zeta`, `hessian::QdEigenvectorResponse`, `hessian::df_qd_eigenvector_response`, `hessian::df_adjoint_xy`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::CasscfZTerms`, `hessian::df_casscf_z`, `hessian::ScNevpt2Terms`, `hessian::df_sc_nevpt2`, `hessian::PcNevpt2Terms`, `hessian::df_pc_nevpt2`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::SaCasscfCp`, `hessian::df_sacasscf_cp`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build, or a batch of them from one walk |
@@ -2194,6 +2269,7 @@ the issue also asks for waits on that step (#610).
 | `df_pc_nevpt2.cpp` | The PC-NEVPT2 Hessian: `df_sc_nevpt2.cpp`'s assembly over PC's adjoint and product, with its three refusals: a class kept below 1e-10, a coordinate's Schur-lift step below 1e-3 bohr, a degenerate inactive pair |
 | `df_qd_nevpt2_tangents.cpp` | The QD-NEVPT2 parameter response and t_x over a state average: per chunk, κ_nr and the CP's rotations, the active Hamiltonian's and f^SA's change by `qd_builders_tangent`, Eq. qd-theta at the equal pairs, κ_oo under the degenerate-pair rule |
 | `df_qd_zeta.cpp` | The ζ term of a QD-NEVPT2 Lagrangian's Hessian: L_xy and L_xλ by the ± polarization of the roots over `df_derivatives` and `df_casscf_exy`, the rotation rows from the transition Hamiltonian's derivative, and Λᵀ T_xx Λ from the orbital Hessian at the folded RDMs, the orbital gradient at each column's first-order transition RDMs and transition sigmas |
+| `df_qd_eigenvector_response.cpp` | Term (ii) of a QD-NEVPT2 state's Hessian: H_eff and R over `qd_inputs`, the QD gap's refusal, every trace-zero W^PQ through one several-W gradient, and the closed forms Eqs. qd-hess (ii) and qd-dR |
 | `df_sacasscf.cpp` | A state-averaged root's Hessian, and `df_sacasscf_cp` (its λ^x alone) and `state_averaged_electrons`: z and λ^x by the Z-vectors, the residual check, root I's parameter Hessian by the one-hot unreduced product, the third-derivative action, the z terms, E_I,xy, eq. rot at equal weights and the symmetrized sum |
 | `df_sacasscf_z.cpp` | A state average's z terms at given multipliers, root I's or a QD-NEVPT2 Lagrangian's: L_xy's z part (E_xy along K(z_o), and at z_c's transition RDMs by the ± polarization) and L_xλ (the right-hand side at the caller's weights, if any, + I^x z); `df_casscf_z`, the same at one root and given Z without the right-hand side, plus Λᵀ T(·, ·, Z) Λ |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |
