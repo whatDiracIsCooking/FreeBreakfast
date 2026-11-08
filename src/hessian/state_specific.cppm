@@ -5,12 +5,14 @@
 /// average, which df_sacasscf and df_qd_nevpt2_tangents share, and the
 /// mixing-rate bound they put on its roots. Beside them, the CP solve
 /// df_casscf and df_sacasscf share: zvectors with the probe column that
-/// refuses a singular H~.
+/// refuses a singular H~; and H_eff's eigenpairs, which
+/// df_qd_eigenvector_response and df_qd_sc_nevpt2 share.
 ///
 /// An internal partition (`module`, not `export module`): only this module's
 /// implementation units import it, so nothing here reaches an importer of
 /// free_breakfast.hessian. It declares the functions; df_casscf.cpp defines
-/// them, but state_averaged_electrons, which df_sacasscf.cpp does. See
+/// them, but state_averaged_electrons, which df_sacasscf.cpp does, and
+/// qd_response_eigen, which df_qd_eigenvector_response.cpp does. See
 /// docs/style.md, "Module-private code".
 
 module free_breakfast.hessian:state_specific;
@@ -80,5 +82,14 @@ probed_zvectors(DeviceResources &res, std::string_view who, response::RelaxedHes
                 const response::Hessian &hessian, const ci::Roots &roots, size_t n_x,
                 const Buffers::device<double> &gradients, const Buffers::device<double> &ci_rhs,
                 std::span<const double> theta_rhs, double tolerance, int32_t max_iterations);
+
+/// @brief H_eff = diag(E_r) + 1/2 (C + C^T) of a QD-NEVPT2 state average, from
+/// its root energies @p energies and the n x n correlation elements' totals
+/// @p totals ([M n + N] bra M, ket N), diagonalized: the eigenvalues ascending
+/// and R, column K at [K n], each signed so that its largest-magnitude
+/// component is positive (nevpt2::qd_sc_coupling's convention).
+Result<std::pair<std::vector<double>, std::vector<double>>>
+qd_response_eigen(DeviceResources &res, std::span<const double> energies,
+                  std::span<const double> totals);
 
 } // namespace free_breakfast::hessian

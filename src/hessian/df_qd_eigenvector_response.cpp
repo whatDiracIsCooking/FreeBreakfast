@@ -22,15 +22,13 @@ import free_breakfast.mcscf.root_rotation;    // kRootGapFloor
 import free_breakfast.nevpt2.density_fitting; // MoBlocks
 import free_breakfast.nevpt2.energy;
 import free_breakfast.nevpt2.gradient; // qd_inputs, the several-W forms
+import :state_specific;                // qd_response_eigen
 
 #include "diagnostics.h"
 
 namespace free_breakfast::hessian {
 
-// H_eff = diag(E_r) + 1/2 (C + C^T) from the n x n elements' @p totals
-// ([M n + N] bra M, ket N), diagonalized: eigenvalues ascending and R,
-// column K at [K n], each signed so that its largest-magnitude component is
-// positive (nevpt2::qd_sc_coupling's convention, so h_PQ's sign is its).
+// The partition's: h_PQ's sign is R's.
 Result<std::pair<std::vector<double>, std::vector<double>>>
 qd_response_eigen(DeviceResources &res, const std::span<const double> energies,
                   const std::span<const double> totals) {

@@ -91,7 +91,7 @@ Result<ThirdDerivative> ThirdDerivative::create(
     DeviceResources &res, const SphericalMatrixAO &h, const Buffers::device<double> &b,
     const int32_t naux, const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas,
     const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const double *const roots,
-    std::span<const double> weights, const double *const z) {
+    std::span<const double> weights, const double *const z, const bool equal_rotations) {
   const auto nmo = static_cast<int32_t>(c.n());
   if (ncas < 1 || ncore < 0 || ncore + ncas > nmo || naux < 1) {
     return err_config("mcscf::ThirdDerivative: needs ncas >= 1, ncore >= 0, ncore + ncas <= nmo "
@@ -118,9 +118,10 @@ Result<ThirdDerivative> ThirdDerivative::create(
         "mcscf::ThirdDerivative: the weights must be positive and sum to 1 (got {} of them)",
         weights.size());
   }
-  // Every pair's rotation is a parameter unless all the weights are equal:
-  // a pair of equal weights among unequal ones is one too (its gradient row
-  // is zero, its third derivatives are not), as a QD Lagrangian's x_A has it.
+  // Every pair's rotation is a parameter unless all the weights are equal
+  // (and the caller did not ask for them there): a pair of equal weights
+  // among unequal ones is one too (its gradient row is zero, its third
+  // derivatives are not), as a QD Lagrangian's x_A has it.
   size_t equal_pairs = 0;
   size_t all_pairs = 0;
   for (size_t r = 0; r < weights.size(); ++r) {
@@ -142,7 +143,7 @@ Result<ThirdDerivative> ThirdDerivative::create(
                      naux,
                      dim,
                      weights,
-                     equal_pairs != all_pairs,
+                     equal_rotations || equal_pairs != all_pairs,
                      std::move(sigma0),
                      std::move(sigma_z),
                      std::move(sigma_work),
