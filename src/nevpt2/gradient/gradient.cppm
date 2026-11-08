@@ -409,6 +409,12 @@ struct ScHessianProduct {
   /// the empty perturbers' weighted rho_tau relative to the pair's Hessian
   /// scale; 0 without partners.
   std::vector<double> defect;
+  /// @brief class_energies_hvp's rounding bound on its kept perturbers'
+  /// N, where it is ({ket, class, perturber}) and that N: what a second
+  /// derivative assembled from separate walks of the tables inherits.
+  double rounding = 0.0;
+  std::array<int64_t, 3> rounding_at{-1, 0, 0};
+  double rounding_norm = 0.0;
   /// @brief Empty unless asked for: per direction, the product split into
   /// its separately coded parts, in order the class walk's tangent along
   /// B_dot alone (the slabs), the class walk's tangent along the builders'
@@ -619,6 +625,12 @@ struct QdScHessianProduct {
   std::vector<double> defect;
   std::vector<double> coupling_defect;
   std::vector<double> coupling_k6;
+  /// @brief sc_effective_hamiltonian_hvp's rounding bound on its kept perturbers'
+  /// N, where it is ({ket, class, perturber}) and that N: what a second
+  /// derivative assembled from separate walks of the tables inherits.
+  double rounding = 0.0;
+  std::array<int64_t, 3> rounding_at{-1, 0, 0};
+  double rounding_norm = 0.0;
   /// @brief Empty unless asked for: per direction, the product split into
   /// its separately coded parts, in order the pair walk's tangent
   /// (sc_effective_hamiltonian_hvp's tangent bars run back through the

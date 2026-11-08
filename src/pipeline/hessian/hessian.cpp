@@ -825,7 +825,8 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       } else {
         qd_doc.update(json{{"min_denominator", finite(terms.min_denominator)},
                            {"defect", terms.defect},
-                           {"mix_step", finite(terms.mix_step)}});
+                           {"mix_step", finite(terms.mix_step)},
+                           {"rounding", terms.rounding}});
       }
     } else if (pc) {
       hessian::PcNevpt2Terms terms = FBF_TRY(hessian::df_pc_nevpt2(

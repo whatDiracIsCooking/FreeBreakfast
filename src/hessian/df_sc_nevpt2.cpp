@@ -287,6 +287,7 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
   // copies of the moved fields and the tangent bars).
   std::vector<double> hvp(k * k, 0.0);
   double defect = 0.0;
+  double rounding = 0.0;
   std::vector<std::string> refused;
   {
     Buffers::device<double> paired(k * k, res.device());
@@ -322,6 +323,10 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
       const nevpt2::ScHessianProduct p =
           FBF_TRY(product(static_cast<int32_t>(count), t_h.data() + (j0 * nn),
                           t_b.data() + (j0 * naux * nn), t_c.data() + (j0 * ndet), {}));
+      // The tables are the same along every direction: one chunk's bound is
+      // the call's.
+      rounding = p.rounding;
+      FBF_TRY(sc_rounding_refusal(kWho, p.rounding, p.rounding_at, p.rounding_norm));
       for (size_t u = 0; u < count; ++u) {
         FBF_TRY(pair_with(p.products[u], paired.data() + ((j0 + u) * k)));
         population[j0 + u] = p.population[u];
@@ -573,7 +578,24 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
                        .min_gap = gradient.zc.min_gap,
                        .zvector_residual = gradient.multipliers.residual,
                        .defect = defect,
-                       .mix_step = mix_step};
+                       .mix_step = mix_step,
+                       .rounding = rounding};
+}
+
+Status sc_rounding_refusal(const std::string_view who, const double rounding,
+                           const std::array<int64_t, 3> at, const double norm) {
+  constexpr std::array<std::string_view, 8> kClasses{"Sr",   "Si",  "Sijrs", "Sijr",
+                                                     "Srsi", "Srs", "Sij",   "Sir"};
+  if (!(rounding > kScNevpt2Rounding)) {
+    return {};
+  }
+  return err_numerical(
+      "{}: SC-NEVPT2 has no attainable Hessian here: reference root {}'s class {} perturber {} "
+      "keeps N = {:.3e}, whose rounding bound sigma / |N| = {:.2e} is past {:g}. Each walk of the "
+      "tables moves its H / N by about that, and the Hessian, assembled from separate walks whose "
+      "parts cancel, would spread past its bars (README \"The SC conditioning refusal\", "
+      "#1102); use PC-NEVPT2",
+      who, at[0], kClasses[static_cast<size_t>(at[1])], at[2], norm, rounding, kScNevpt2Rounding);
 }
 
 } // namespace free_breakfast::hessian

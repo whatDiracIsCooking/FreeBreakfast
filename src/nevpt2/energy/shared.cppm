@@ -55,6 +55,13 @@ Result<ActiveOperands> active_operands(DeviceResources &res, const MoBlocks &blo
 // (single_function_class) has no guard.
 constexpr double kNumericalZero = 1e-14;
 
+// A kept perturber's relative rounding bound on its N, σ / |N| (README "The
+// SC-QD reverse pass", Conditioning; #1055): Sr's, Si's and Sir's norm and
+// H (@p k 0, 1 and 7) are einsums of mixed RDM order whose O(1) terms cancel,
+// and the atomics leave one unit round-off of them absolute, σ = ε/2; every
+// other class's terms do not cancel, σ = 4ε |N| (measured: at most 3ε).
+double norm_rounding(size_t k, double norm);
+
 // Whether SC class @p k (PySCF's order) of the state whose own operands are
 // @p own spans one function per perturber: Srs at two active electrons (both
 // removed leave the active vacuum) and Sij at two active holes (both filled

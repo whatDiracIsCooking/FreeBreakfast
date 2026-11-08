@@ -286,10 +286,11 @@ TEST(HessianDfScNevpt2, MatchesTheSkewFixture) {
   }
   std::cout << std::format("[ skew     ] E_corr {:.10f} (fixture {:.10f}), CP residual {:.1e}, "
                            "Z-vector {:.1e}, asymmetry {:.1e}, sum rule {:.1e}, max |z^c| "
-                           "{:.3e}, min gap {:.3e}, defect {:.1e}, t_mix {:.3e} bohr\n",
+                           "{:.3e}, min gap {:.3e}, defect {:.1e}, t_mix {:.3e} bohr, rounding "
+                           "{:.2e}\n",
                            h->e_corr, doc.at("e_corr").at("sc").get<double>(), cp,
                            h->zvector_residual, h->asymmetry, h->translation, h->max_zc, h->min_gap,
-                           h->defect, h->mix_step);
+                           h->defect, h->mix_step, h->rounding);
   EXPECT_LE(cp, kCpResidual);
   EXPECT_LE(h->asymmetry, kAsymmetry);
   EXPECT_LE(h->translation, kSumRule);
@@ -442,8 +443,8 @@ TEST(HessianDfScNevpt2, SymmetricWaterRefusesOnlyItsB2Vibration) {
     }
   }
   std::cout << std::format("[ water    ] without the B2 vibration: translations' rows {:.1e}, "
-                           "asymmetry {:.1e}, defect {:.1e}, t_mix {:.3e} bohr\n",
-                           rigid, h->asymmetry, h->defect, h->mix_step);
+                           "asymmetry {:.1e}, defect {:.1e}, t_mix {:.3e} bohr, rounding {:.2e}\n",
+                           rigid, h->asymmetry, h->defect, h->mix_step, h->rounding);
   EXPECT_LE(rigid, kSumRule);
   EXPECT_LE(h->asymmetry, kAsymmetry);
 }

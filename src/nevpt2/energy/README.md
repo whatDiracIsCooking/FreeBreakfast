@@ -919,6 +919,9 @@ and the block twice; a caller with many directions chunks them.
         population [u]   the largest N^{uu} over those (0: none)
         scale [u]        u's population scale, kEmptyPopulationFloor's base
         defect [u]       the empties' weighted ρ_τ on (u, its partner), over S
+        rounding, rounding_at, rounding_norm
+                         the kept perturbers' worst σ / |N| (σ = ε/2 in Sr, Si, Sir;
+                         4ε |N| in the others), its {0, class, perturber} and N
     bars[u] (EnergyBars, added onto): the tangent of class_energies_adjoint's
         bars along directions[u], every field they name, Λ included
     partners: none, or one EnergyDirection per direction, the pair checked
@@ -1286,6 +1289,8 @@ per tuple per class per ordered pair.
         defect [u]        the kets' ClassEnergiesHvp::defect on (u, its partner)
         coupling_defect [u]  the same ρ_τ, weighted by the couplings' first order
         coupling_k6 [u]   K6's share of ⟨u, HVP u⟩ through the couplings
+        rounding, rounding_at, rounding_norm
+                          as class_energies_hvp's, over the kets H̄ weighs, {ket, class, tuple}
     directions  sc_effective_hamiltonian_tangent's, m n²
     bars        m n EnergyBars, [u n + J]: direction u's, as the reverse pass's bars[J]
     transition  (u, bra, ket, bars): each ordered pair's transition bars' tangent

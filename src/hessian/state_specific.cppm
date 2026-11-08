@@ -5,14 +5,17 @@
 /// average, which df_sacasscf and df_qd_nevpt2_tangents share, and the
 /// mixing-rate bound they put on its roots. Beside them, the CP solve
 /// df_casscf and df_sacasscf share: zvectors with the probe column that
-/// refuses a singular H~; and H_eff's eigenpairs, which
-/// df_qd_eigenvector_response and the QD Hessians (df_qd_nevpt2.cpp) share.
+/// refuses a singular H~; H_eff's eigenpairs, which
+/// df_qd_eigenvector_response and the QD Hessians (df_qd_nevpt2.cpp) share;
+/// and SC's conditioning refusal, which df_sc_nevpt2 and df_qd_sc_nevpt2
+/// share.
 ///
 /// An internal partition (`module`, not `export module`): only this module's
 /// implementation units import it, so nothing here reaches an importer of
 /// free_breakfast.hessian. It declares the functions; df_casscf.cpp defines
-/// them, but state_averaged_electrons, which df_sacasscf.cpp does, and
-/// qd_response_eigen, which df_qd_eigenvector_response.cpp does. See
+/// them, but state_averaged_electrons, which df_sacasscf.cpp does,
+/// qd_response_eigen, which df_qd_eigenvector_response.cpp does, and
+/// sc_rounding_refusal, which df_sc_nevpt2.cpp does. See
 /// docs/style.md, "Module-private code".
 
 module free_breakfast.hessian:state_specific;
@@ -82,6 +85,24 @@ probed_zvectors(DeviceResources &res, std::string_view who, response::RelaxedHes
                 const response::Hessian &hessian, const ci::Roots &roots, size_t n_x,
                 const Buffers::device<double> &gradients, const Buffers::device<double> &ci_rhs,
                 std::span<const double> theta_rhs, double tolerance, int32_t max_iterations);
+
+// SC's conditioning refusal (README.md "The SC conditioning refusal",
+// #1102): a kept perturber's relative rounding bound on its N
+// (nevpt2::ClassEnergiesHvp::rounding) past this is refused. The Hessian is
+// assembled from separate walks of the tables whose parts cancel, and each
+// moves that perturber's H / N by about the bound. The bound sits at the
+// log-midpoint of the measured gap: accepted cases reach 1.2e-8 and repeat
+// to 1e-11; h2nb_sto3g_sa2's state 1, at 9.2e-7 and 3.8e-6, spreads 1e3
+// bars run to run.
+constexpr double kScNevpt2Rounding = 1e-7;
+
+/// @brief A Numerical error whose message starts with @p who when
+/// @p rounding, a product's worst kept perturber's sigma / |N|, is past
+/// kScNevpt2Rounding, naming the reference root, class and perturber
+/// @p at ({root, class, perturber}, nevpt2's rounding_at) and its N @p norm;
+/// nothing otherwise.
+Status sc_rounding_refusal(std::string_view who, double rounding, std::array<int64_t, 3> at,
+                           double norm);
 
 /// @brief H_eff = diag(E_r) + 1/2 (C + C^T) of a QD-NEVPT2 state average, from
 /// its root energies @p energies and the n x n correlation elements' totals

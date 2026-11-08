@@ -3213,6 +3213,9 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
   ScMultipliers base;
   std::array<double, 8> eta_bar{};
   bool any_guarded = false;
+  double rounding = 0.0;
+  std::array<int64_t, 3> rounding_at{-1, 0, 0};
+  double rounding_norm = 0.0;
   for (size_t k = 0; k < 8; ++k) {
     const size_t count = t.norm[k].size();
     for (std::vector<double> *v : {&base.p[k], &base.q[k], &base.r[k]}) {
@@ -3234,6 +3237,11 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
         any_guarded = true;
         continue;
       }
+      if (k != 2 && norm_rounding(k, norm) > rounding) {
+        rounding = norm_rounding(k, norm);
+        rounding_at = {0, static_cast<int64_t>(k), static_cast<int64_t>(g)};
+        rounding_norm = norm;
+      }
       const double d = (norm * t.delta[k][g]) + t.h[k][g];
       base.p[k][g] = (-2.0 * norm / d) + (norm * norm * t.delta[k][g] / (d * d));
       base.q[k][g] = norm * norm / (d * d);
@@ -3245,7 +3253,10 @@ Result<ClassEnergiesHvp> class_energies_hvp(DeviceResources &res, const MoBlocks
                        .populated = std::vector<std::array<int64_t, 8>>(m),
                        .population = std::vector<double>(m, 0.0),
                        .scale = std::vector<double>(m, 0.0),
-                       .defect = std::vector<double>(m, 0.0)};
+                       .defect = std::vector<double>(m, 0.0),
+                       .rounding = rounding,
+                       .rounding_at = rounding_at,
+                       .rounding_norm = rounding_norm};
   for (size_t u = 0; u < m; ++u) {
     const EnergyDirection &du = directions[u];
     const EnergyDirection *const dv = partners.empty() ? nullptr : &partners[u];
@@ -3708,6 +3719,30 @@ Result<ScEffectiveHamiltonianHvp> sc_couplings_hvp(
       .defect = std::vector<double>(m, 0.0),
       .coupling_defect = std::vector<double>(m, 0.0),
       .coupling_k6 = std::vector<double>(m, 0.0)};
+  // The kept tuples' rounding bound, over the kets H̄ weighs.
+  for (int64_t j = 0; j < ns; ++j) {
+    double weight = 0.0;
+    for (int64_t i = 0; i < ns; ++i) {
+      weight += std::abs(hbar[at(i, j)]);
+    }
+    if (weight == 0.0) {
+      continue;
+    }
+    const ClassEnergiesTangent &kt = tan.kets[static_cast<size_t>(j)];
+    for (size_t k = 0; k < 8; ++k) {
+      if (k == 2 || eta_of[static_cast<size_t>(j)][k]) {
+        continue;
+      }
+      for (size_t g = 0; g < kt.norm[k].size(); ++g) {
+        if (guarded(j, k, g) || norm_rounding(k, kt.norm[k][g]) <= out.rounding) {
+          continue;
+        }
+        out.rounding = norm_rounding(k, kt.norm[k][g]);
+        out.rounding_at = {j, static_cast<int64_t>(k), static_cast<int64_t>(g)};
+        out.rounding_norm = kt.norm[k][g];
+      }
+    }
+  }
   double trace = 0.0;
   for (int64_t j = 0; j < ns; ++j) {
     trace += hbar[at(j, j)];

@@ -238,6 +238,11 @@ void expect_skew(std::string_view variant) {
   }
   EXPECT_EQ(qd.contains("kept"), variant == "pc");
   EXPECT_EQ(qd.contains("min_denominator"), variant == "sc");
+  EXPECT_EQ(qd.contains("rounding"), variant == "sc");
+  if (variant == "sc") {
+    // sigma / |N| of one tuple, its N repeating to round-off between the runs.
+    EXPECT_NEAR(qd.at("rounding").get<double>(), want.rounding, 1e-6 * want.rounding);
+  }
   // Every vibration published: C1, no pair refused.
   EXPECT_EQ(out.at("frequencies").size(), n - 6);
   EXPECT_EQ(product.vibrations.frequencies.size(), n - 6);
