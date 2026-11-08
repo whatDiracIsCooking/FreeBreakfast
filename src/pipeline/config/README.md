@@ -452,9 +452,12 @@ too. **With a `[nevpt2_gradient]` the Hessian is that SC- or PC-NEVPT2
 energy's** (`hessian/README.md` "The NEVPT2 chain"), `[casscf]` and
 `[nevpt2_gradient]` copied in: analytic by default (`hessian::df_sc_nevpt2`
 or `df_pc_nevpt2`, the variant's, and the one analytic method that takes
-`coordinates`), or numerical, differencing the gradient. By either method
-it is state-specific (`quasi_degenerate = true` refused as Unsupported, and
-a state average by `[nevpt2_gradient]`'s own refusal, Unsupported),
+`coordinates`), or numerical, differencing the gradient. With
+`quasi_degenerate = true` it is QD state `state`'s over the state-averaged
+`[casscf]`, by either method (`hessian/README.md` "The QD-NEVPT2 chain"):
+analytic by default (`hessian::df_qd_sc_nevpt2` or `df_qd_pc_nevpt2`), or
+numerical, the state tracked by its eigenvector. Without it a state average
+is `[nevpt2_gradient]`'s own refusal (Unsupported). By either method it is
 all-electron (a `frozen_core` other than 0, `"auto"` included, refused as
 InvalidConfig) and density-fitted (an integral-direct `[eri]` refused as
 Unsupported), each before anything runs, since the analytic calls take none
@@ -526,7 +529,7 @@ step, so no two collide:
 | `[nac]` | `nac.json`: the options, the CASSCF's root energies, and per pair the roots, the gap, h_IJ and d^CSF (unscaled) and `total`, each one row of three per atom, and the Z-vector's products and residual |
 | `[nevpt2_nac]` | `nevpt2_nac.json`: the variant and the options, the CASSCF's root energies, H_eff's eigenvalues and R, and per pair the QD states, E_Q − E_P, h_PQ, d^CAS, d^PT2 and the CSF part (unscaled) and `total`, each one row of three per atom, and the diagnostics |
 | `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted (under `meci`: the mean energy, the lower and upper energies and the gap, and per evaluation those, the branching plane's dimension, the pair overlap and the CASSCF's `gradient_norm` and `ci_residual_norm`; over QD states also `heff_gap`, `third_state_margin` and `root_gap`) |
-| `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the CASSCF chain's root, the NEVPT2 chain's variant (and PC's `pc_floor`), the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
+| `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the CASSCF chain's root, the NEVPT2 chain's variant (and PC's `pc_floor`), under `quasi_degenerate` its `qd` report (`hessian/README.md` "The QD-NEVPT2 chain"), the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
 
 There is no `molden` key, nor a `livvo_molden`, `npy` or `json_path` one: a config names
 no output, so a later config can rely on what an earlier run wrote
@@ -609,8 +612,7 @@ than after the SCF has converged. `parse_config` touches no disk.
 Some refusals are not `InvalidConfig` but `Unsupported`, since the request
 is well formed and the method is what is missing: `[nevpt2]`,
 `[casscf_gradient]`, `[nevpt2_gradient]`, `[nac]`, `[nevpt2_nac]` or the analytic `[hessian]` under
-an integral-direct `[eri]`, a `[hessian]` beside a `[nevpt2_gradient]`
-that is `quasi_degenerate`, `[cis]` under a
+an integral-direct `[eri]`, `[cis]` under a
 density-fitted one, `[nevpt2_gradient]`'s state
 average (without `quasi_degenerate`) and multiplicity other than 1, and
 `[nevpt2_nac]`'s multiplicity other than 1.

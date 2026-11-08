@@ -3,11 +3,12 @@
 /// molecule -- the closed-shell RHF's, or with a `[casscf_gradient]` that
 /// root's of a DF-CASSCF (state-specific or state-averaged), or with a
 /// `[nevpt2_gradient]` the SC- or PC-NEVPT2 energy's on a single-state
-/// DF-CASSCF, or numerically one SC- or PC-QD-NEVPT2 state's on a
-/// DF-SA-CASSCF -- and its harmonic frequencies and normal modes. By default
-/// analytic, @c hessian::df_rhf, @c hessian::df_casscf,
-/// @c hessian::df_sacasscf, @c hessian::df_sc_nevpt2 or
-/// @c hessian::df_pc_nevpt2 over one nested Pipeline run of the chain from
+/// DF-CASSCF, or one SC- or PC-QD-NEVPT2 state's on a DF-SA-CASSCF -- and
+/// its harmonic frequencies and normal modes. By default analytic,
+/// @c hessian::df_rhf, @c hessian::df_casscf, @c hessian::df_sacasscf,
+/// @c hessian::df_sc_nevpt2, @c hessian::df_pc_nevpt2,
+/// @c hessian::df_qd_sc_nevpt2 or @c hessian::df_qd_pc_nevpt2 over one
+/// nested Pipeline run of the chain from
 /// the molecule to `[scf]` or `[casscf]`; or by central differences of the analytic gradient of the
 /// chain to `[gradient]`, `[casscf_gradient]` or `[nevpt2_gradient]`, rerun
 /// at each of the 6N
@@ -39,7 +40,8 @@ export namespace free_breakfast {
 enum class HessianMethod : uint8_t {
   /// @c hessian::df_rhf at the SCF of one chain run, or the CASSCF root's
   /// (@c hessian::df_casscf, @c hessian::df_sacasscf), or its SC- or
-  /// PC-NEVPT2 energy's (@c hessian::df_sc_nevpt2, @c hessian::df_pc_nevpt2):
+  /// PC-NEVPT2 energy's (@c hessian::df_sc_nevpt2, @c hessian::df_pc_nevpt2),
+  /// or a QD state's (@c hessian::df_qd_sc_nevpt2, @c df_qd_pc_nevpt2):
   /// density fitting only.
   Analytic,
   /// Central differences of the analytic gradient, the RHF's, a DF-CASSCF
@@ -161,10 +163,13 @@ struct HessianStep {
   /// @c hessian::df_pc_nevpt2 by @ref Nevpt2GradientStep::variant, or
   /// HessianMethod::Numerical's differences of this gradient over the
   /// CASSCF chain's displaced solves, each followed by this step. With
-  /// @ref Nevpt2GradientStep::quasi_degenerate, numerically only, QD state
-  /// @ref Nevpt2GradientStep::state's of the state-averaged @ref casscf: at
-  /// each displacement the state whose H_eff eigenvector overlaps the
-  /// reference's most (@ref tracked_qd_state), not the one of the same rank.
+  /// @ref Nevpt2GradientStep::quasi_degenerate, QD state
+  /// @ref Nevpt2GradientStep::state's of the state-averaged @ref casscf:
+  /// HessianMethod::Analytic's @c hessian::df_qd_sc_nevpt2 or
+  /// @c hessian::df_qd_pc_nevpt2 (the state form, in @ref coordinates), or
+  /// HessianMethod::Numerical's differences, at each displacement the state
+  /// whose H_eff eigenvector overlaps the reference's most
+  /// (@ref tracked_qd_state), not the one of the same rank.
   /// Exclusive with @ref casscf_gradient.
   std::optional<Nevpt2GradientStep> nevpt2_gradient{};
 
@@ -173,7 +178,9 @@ struct HessianStep {
   /// translational sum, the frequencies and the normal modes, and when the
   /// product has them the dipole derivative and the IR intensities; under
   /// @ref ladder its rungs, ratios, bars and noise, and each checked pair's
-  /// verdict (README.md has the keys). Written before a failing pair's
+  /// verdict; under a quasi_degenerate @ref nevpt2_gradient, `qd`: the
+  /// tracking's worst (numerical), or the state's eigenvalues, term (ii)'s
+  /// share, gaps and reports (analytic) (README.md has the keys). Written before a failing pair's
   /// error, without the frequencies and modes. Arrives
   /// resolved (pipeline/config sets it to hessian.json in the run's output
   /// directory).
@@ -185,7 +192,8 @@ struct HessianStep {
   /// the chain ending in @ref casscf and @c hessian::df_casscf or
   /// @c hessian::df_sacasscf at its solution; with @ref nevpt2_gradient,
   /// @c hessian::df_sc_nevpt2 or @c hessian::df_pc_nevpt2 there, in
-  /// @ref coordinates); under
+  /// @ref coordinates, or under quasi_degenerate @c hessian::df_qd_sc_nevpt2
+  /// or @c hessian::df_qd_pc_nevpt2 of its state); under
   /// HessianMethod::Numerical the 6N gradients at the geometry displaced by
   /// ±@ref displacement along each coordinate, each one Pipeline run of the
   /// chain ending in GradientStep, and their central differences; under
@@ -228,15 +236,17 @@ struct HessianStep {
   ///         a @ref Nevpt2GradientStep::frozen_core other than 0;
   ///         Unsupported for an integral-direct @ref eri, a state-averaged
   ///         @ref casscf (nroots above 1) without
-  ///         @ref Nevpt2GradientStep::quasi_degenerate, or quasi_degenerate
-  ///         under the analytic method, each naming the reason;
+  ///         @ref Nevpt2GradientStep::quasi_degenerate, each naming the
+  ///         reason;
   ///         InvalidConfig for quasi_degenerate over fewer than two roots or
   ///         a @ref Nevpt2GradientStep::state past them; numerical QD, a
   ///         displacement's @ref tracked_qd_state refusal (Numerical),
   ///         naming the geometry, its gradient never differenced;
   ///         analytic, then the CASSCF's error and the NEVPT2
   ///         Hessian's as it is (Numerical naming SC's refused coordinate
-  ///         pairs, or PC's refused classes, lifts and degenerate pairs);
+  ///         pairs, or PC's refused classes, lifts and degenerate pairs, or
+  ///         under quasi_degenerate the QD Hessian's gaps and refused
+  ///         blocks);
   ///         numerical, the CASSCF chain's errors, and the NEVPT2
   ///         gradient's (PC's refusals among them), naming the geometry.
   ///         Before anything runs: InvalidConfig for @ref ladder or

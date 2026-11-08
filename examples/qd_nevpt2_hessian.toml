@@ -1,0 +1,33 @@
+# The analytic SC-QD-NEVPT2 Hessian of the excited QD state of a skew
+# formaldehyde over its DF-SA2-CASSCF(4,4): hessian::df_qd_sc_nevpt2 at one
+# state-averaged CASSCF, term (i) at W^P = R_P R_P^T plus the eigenvector
+# response, term (ii), symmetrized, and its harmonic frequencies (logged).
+# nevpt2_hessian.toml's geometry, C1, where no pair of coordinates is
+# refused. hessian.json's "qd" has the state, H_eff's eigenvalues, term
+# (ii)'s share of the Hessian and every gap the Hessian divides by. The
+# skew geometry is not a minimum, so its frequencies show the method, not
+# formaldehyde's spectrum. Writes hessian.json beside the outer steps'
+# files; the CASSCF the Hessian is taken at is a nested run's.
+[molecule]
+xyz = "h2co_skew.xyz"
+[basis_set]
+basis = "sto-3g"
+[eri]
+mode = "density_fitting"      # the analytic QD Hessian needs it
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+energy_tolerance = 1e-12
+commutator_tolerance = 1e-10
+[casscf]                      # the state average QD couples
+ncas = 4
+nelecas = 4
+active = [6, 7, 8, 9]
+nroots = 2                    # quasi_degenerate needs 2 or more
+conv_tol = 1e-12
+conv_tol_grad = 1e-10         # the Hessian assumes a stationary CASSCF
+[nevpt2_gradient]             # all-electron
+variant = "sc"                # or "pc"
+quasi_degenerate = true
+state = 1                     # H_eff's eigenvalues ascending
+[hessian]
+method = "analytic"           # the default; or "numerical"
