@@ -88,6 +88,21 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
 tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h2nb_sto3g_sa2
 ```
 
+## The C2v A1/B2 whole Hessians (#1093)
+
+`test/gtest/data/qd_nevpt2_hessian/h2nb_sto3g_sa2_hessian.json`, whose
+README section has the numbers. `qd_nevpt2_hessian.py` (`SYMMETRIC_CASES`)
+ladders the coupling case's state Hessians in its C2v-adapted coordinates,
+each scheme skipping the coordinates, states and pairs its `not_laddered`
+names: PC (2.5e-3) the two b2 vibrations, SC (3.125e-4) the three
+symmetry-lowering vibrations and state 1. Its noise floor also reads σ_g
+off the elements C2v forbids (`symmetry_sigma`). The coupling case's record
+must exist first. About 2 minutes on the gfx1200.
+
+```sh
+tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h2nb_sto3g_sa2_hessian
+```
+
 ## The SA3 crossing (#1059)
 
 `test/gtest/data/qd_nevpt2_hessian/ethylene_ccpvdz_sa3_{sc,pc}_meci.json`

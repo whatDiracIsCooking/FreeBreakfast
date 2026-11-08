@@ -121,6 +121,19 @@ floor is 20 σ_g (gain(h/2) + gain(h/4)), gain(s) the stencil's noise gain
 `stencil.noise_gain`, as `../nevpt2_hessian/`'s. Measured σ_g: 2.8e-13 to
 3.0e-12 Eh/bohr.
 
+**On a symmetry-adapted case** (#1093's `h2nb_sto3g_sa2_hessian`) σ_g is
+the larger of the restarts' and the one the point group's zeros imply. An
+element H[i][j] whose coordinates belong to different irreps is zero by
+symmetry, so each rung's value there is pure stencil noise, σ_g gain(s); the
+RMS of value / gain(s) over those elements and the three rungs is σ_g
+measured a second way (`noise.sigma_forbidden`, beside
+`noise.sigma_restarts`). The restarts at R0 miss noise that the displaced
+points carry: on that case SC's read 4.2e-15 against the zeros' 4.6e-14.
+Its restarts start from the first two columns that are not a rigid
+translation or rotation (a restart from a rigidly moved start re-converges
+to the reference's own orbitals); on a Cartesian case those are the first
+two columns, as before.
+
 Every point is polished to CASSCF ‖g‖ < 3e-12 by the sampler; the rerun the
 gradient is taken over starts there and stops at its own ‖g‖ (worst 5.0e-11
 and 1.0e-10), which the restarts' spread includes.
@@ -455,3 +468,59 @@ tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h2nb_sto3g_sa2   # GPU, seconds
 
 The analysis runs on one BLAS thread and is byte-identical on a rerun. The
 ladders reproduce to their noise.
+
+## The C2v A1/B2 whole Hessians (#1093)
+
+`h2nb_sto3g_sa2_hessian.json`: the state Hessians of the coupling case
+above (the same system, `coordinates` and, to 1.7e-13, reference point,
+`reference.agreement`), laddered as the C1 cases' are, for #965's and
+#966's check on the symmetric geometry. Each scheme skips what has no smooth
+surface to ladder, and records it (`not_laddered`):
+
+| scheme, h (bohr) | laddered | not laddered | σ_g (restarts, zeros) | floor (every bar) | worst asymmetry |
+|---|---|---|---|---|---|
+| SC, 3.125e-4 | state 0; T_z, A1 1–3, R_z, T_x, R_y, T_y, R_x | B1 1, B2 1, B2 2; state 1, the pair | 4.2e-15, 4.6e-14 | 1.7e-8 | 4.3e-9 |
+| PC, 2.5e-3 | states 0, 1 and the pair; every coordinate but B2 1, B2 2 | B2 1, B2 2 | 2.0e-13 to 5.9e-13, 1.0e-13 to 2.4e-13 | 8.9e-9 to 2.7e-8 | 2.6e-9 |
+
+Every element of every ladder settles inside its floor on the first run at
+these steps: the largest finer difference is 0.72 floors (SC), the largest
+coarser one 0.30. No ratio is judged and every bar is its floor. The PC
+pair is its two states' sum within the three bars. Guard, worst over the
+172 points: prediction 0.49 |dR|², active space 8.8e-6, CI 3.2e-4.
+
+**PC skips the b2 vibrations.** Its sampler refuses a point along B2 1
+from 2e-5 bohr and along B2 2 from 1.5e-5, a rank change of the cut as the
+lifted modes above pass it (accepted at 1.5e-5 and 1e-5). Every block the
+two make is an expected refusal of the analytic PC Hessian. Along every other
+coordinate the sampler took ±5e-3.
+
+**SC skips the three vibrations that lower the symmetry**, which populate
+perturbers empty by symmetry at second order (`docs/nevpt2/nevpt2.tex`,
+Sec. hess-refusals, "SC: empty perturbers"). Along them the semi-numerical
+surface crosses over on a scale of 1e-5 to 1e-4 bohr, and no step settles:
+
+- B1 1: G·q / s for state 0 reads −0.045571 at s = 1e-5, −0.045964 at 2e-5,
+  −0.046022 at 4e-5 and −0.046032 at 8e-5, then −0.0460337 at 1.56e-4,
+  −0.0460342 at 3.125e-4 and −0.0460342 at 6.25e-4. (B1 1, B1 1) reads
+  ratio 0.14 at h = 4e-5 (rungs differ by 7.3e-5 and 5.1e-4) and 0.26 at
+  3.125e-4 (5.9e-7 and 2.3e-6).
+- B2 1, B2 2: at 3.125e-4, state 1's (B2 1, B2 1) reads ratio 2.7 (2.4e-5
+  and 9.0e-6), (B2 1, B2 2) 12.7 and (B2 2, B2 2) 10.3, and state 0's
+  (B2 1, B2 1) 1.8. Their only check is C₀₁'s ladders above.
+
+State 1 and the pair are not laddered for SC. The analytic SC Hessian
+refuses state 1 by its conditioning rule (root 1's Si, #1102), and its
+ladder along B1 1 reads a ratio of 8.3 at 3.125e-4.
+
+The keys are the Keys table's, with `coordinates` the coupling case's
+(`labels`, `irreps`, `vectors`), `steps.<scheme>.coordinates` the labels
+laddered (each quantity's matrices are over those, in that order),
+`not_laddered` per scheme (`coordinates`, `states`, `pairs`), and in each
+`noise` `sigma_restarts` and `sigma_forbidden`.
+
+```sh
+tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h2nb_sto3g_sa2_hessian
+```
+
+About 2 minutes on the gfx1200 (HIP), both schemes. It reads
+`h2nb_sto3g_sa2.json`'s reference point, so that case is written first.

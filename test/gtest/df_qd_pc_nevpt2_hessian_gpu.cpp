@@ -11,8 +11,9 @@
 // - h2nb_sto3g_sa2 (C2v A1/B2, its symmetry-adapted coordinates): exactly
 //   #953's PC expected-refusal blocks, (B2 1, B2 1), (B2 1, B2 2) and
 //   (B2 2, B2 2), refused on both states, each with its t* under 1e-3 bohr,
-//   and nothing else. The whole-Hessian comparison on this case waits on its
-//   references (#1093);
+//   and nothing else; and, in the coordinates h2nb_sto3g_sa2_hessian's PC
+//   ladders (every one but the two b2 vibrations, along which its sampler
+//   refuses PC, #1093), every element of both states within 2x its bar;
 // - the refusals before anything runs, each on a constructed input: a QD
 //   gap, a CASSCF root gap and the ensemble's edge under kRootGapFloor, a
 //   frozen core, and a class kept under 1e-10 (df_pc_nevpt2_hessian_gpu's
@@ -616,6 +617,69 @@ TEST(HessianDfQdPcNevpt2, CoupledA1B2RefusesTheExpectedBlocks) {
     }
     EXPECT_EQ(reasons, expected.size()) << m;
     EXPECT_NE(m.find("the coupling (0, 1)"), std::string::npos) << m;
+  }
+}
+
+// The A1/B2 case's whole state Hessians in the coordinates the reference's
+// PC ladders (#1093): its sampler refuses a point along either b2 vibration
+// as a rank change of the cut, and every block of the two is an expected
+// refusal, so h2nb_sto3g_sa2_hessian carries PC over every other coordinate
+// (the totally symmetric block among them), and the analytic Hessian in
+// those rows is held to it on both states, every element within kBars.
+TEST(HessianDfQdPcNevpt2, CoupledA1B2MatchesOffTheRefusedCoordinates) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const fb::json &doc = fixture("h2nb_sto3g_sa2_hessian");
+  // The coupling case's system: one SA-CASSCF for both A1/B2 cases.
+  const Reference &ref = reference(start_of(doc, "h2nb_sto3g_sa2"));
+  ASSERT_TRUE(ref.solution.has_value());
+  const auto vectors = matrix(doc.at("coordinates").at("vectors"));
+  const auto labels = doc.at("coordinates").at("labels").get<std::vector<std::string>>();
+  const auto rows = doc.at("steps").at("pc").at("coordinates").get<std::vector<std::string>>();
+  // Every coordinate but those of the coupling record's refused blocks.
+  std::set<std::string> refused;
+  for (const fb::json &block : fixture("h2nb_sto3g_sa2").at("expected_refusals").at("pc")) {
+    for (const fb::json &c : block.at("coordinates")) {
+      refused.insert(c.get<std::string>());
+    }
+  }
+  std::vector<std::string> others;
+  std::ranges::copy_if(labels, std::back_inserter(others),
+                       [&](const std::string &l) { return !refused.contains(l); });
+  ASSERT_EQ(rows, others);
+  std::vector<double> q;
+  for (const std::string &row : rows) {
+    const auto at = std::ranges::find(labels, row) - labels.begin();
+    q.insert(q.end(), vectors[at].begin(), vectors[at].end());
+  }
+  const std::size_t k = rows.size();
+  for (const std::int32_t state : {0, 1}) {
+    const fb::json &want = doc.at("pc").at("states").at(state);
+    ASSERT_EQ(want.at("state").get<std::int32_t>(), state);
+    const auto start = std::chrono::steady_clock::now();
+    const auto got = ref.hessian(*ref.solution, state, q);
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    ASSERT_TRUE(got.has_value()) << "state " << state << ": " << got.error().message;
+    const fb::hessian::QdScNevpt2Terms &h = got->terms;
+    const auto hessian = matrix(want.at("hessian"));
+    const auto bar = matrix(want.at("bar"));
+    ASSERT_EQ(hessian.size(), k);
+    ASSERT_EQ(h.hessian.size(), k * k);
+    double worst = 0.0;
+    for (std::size_t j = 0; j < k; ++j) {
+      for (std::size_t i = 0; i < k; ++i) {
+        const double value = h.hessian[i + (k * j)];
+        const double miss = std::abs(value - hessian[i][j]) / bar[i][j];
+        worst = std::max(worst, miss);
+        EXPECT_LE(miss, kBars) << "state " << state << ": (" << rows[i] << ", " << rows[j] << ") "
+                               << value << " against " << hessian[i][j] << ", bar " << bar[i][j];
+      }
+    }
+    std::cout << std::format("[ qd a1b2  ] state {}: worst element {:.3f} bars (allowed {:g}) over "
+                             "{}; asymmetry {:.1e} (bar {:.1e}); {:.1f} s\n",
+                             state, worst, kBars, rows, h.asymmetry, solve_bar(h), seconds);
+    EXPECT_LE(h.asymmetry, solve_bar(h)) << "state " << state;
   }
 }
 

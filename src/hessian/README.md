@@ -2482,10 +2482,13 @@ auto seam = hessian::df_qd_pc_nevpt2_crossing(res, ..., solution, ncore, ncas, 0
   solves, M₀₀ + M₁₁ within 2× the pair ladder's bars, and the turned
   elements the turn of M's (so its determinant, its eigenvalues, the same)
   within 2× the seam bar. And term (i) at the fixture's seam W through the W
-  form, within 2× the seam ladder's bars: W from its recorded R
-  (`reference.<scheme>.vectors`, the R its ladder was taken at), signed into
-  this solve's root phases by H_eff's off-diagonal signs, never this
-  solve's own R;
+  form, within 2× the seam ladder's bars: the seam entry's recorded `w`
+  (W = ½ s (V₀ V₁ᵀ + V₁ V₀ᵀ) over the eigenspace's projector-built basis V,
+  CASSCF roots `roots` r₀, r₁, `sign` s that of the reference
+  H_eff[r₀][r₁]), carried into this solve's root phases by H_eff's
+  off-diagonal signs, never a W from this solve's own R; and that W against
+  this solve's own crossing basis signed by its H_eff[r₀][r₁], within the
+  projector's first-order bar;
 - `RefusesBeforeAnythingRuns`: a pair of one state, a state past the roots,
   an asymmetric c, and a third state on the pair (SC's H_eff made rank-one
   degenerate about λ by the roots' energies alone).

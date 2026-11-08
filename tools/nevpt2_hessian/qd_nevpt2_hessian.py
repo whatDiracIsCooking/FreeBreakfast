@@ -62,6 +62,14 @@ refusals are the pairs that fail it. PC's come from qd_coupling_analysis.py
 (its lifted metric modes), whose output must exist first. `pc_probe` records
 the sampler's verdict on PC at one displaced point.
 
+**The C2v whole-Hessian case** (`SYMMETRIC_CASES`, #1093): the coupling
+case's system, its state Hessians laddered as the C1 cases' are, in its
+C2v-adapted coordinates. Each scheme skips the coordinates, states and pairs
+its `not_laddered` names (recorded): PC the two b2 vibrations, along which
+its sampler refuses a point and its analytic Hessian every block; SC the
+three that lower the symmetry, along which its surface crosses over on a
+scale of 1e-5 to 1e-4 bohr, and state 1, which its analytic Hessian refuses.
+
 **The Hessian.** Column j is the fourth-order central stencil over the
 gradients at R0 +- s q_j, R0 +- 2 s q_j for s = h, h/2 and h/4 (eight points,
 `stencil.displacements`); element (i, j) is q_i^T dG/dq_j. Per element the
@@ -75,13 +83,23 @@ be symmetric to its bar, the oracle's own check that the displaced solves lie
 on one surface and that the states were tracked.
 
 **The noise floor.** sigma_g per quantity is measured, not assumed: the
-reference geometry re-converged from the orbitals of NOISE_STARTS displaced
+reference geometry re-converged from the orbitals of NOISE_COLUMNS' displaced
 points (the +-h points of the first columns), every gradient against the
 reference's own, the RMS over components and starts. A stencil at s
 multiplies independent noise by stencil.noise_gain(s), so the finer
 difference carries at most sigma_g (gain(h/2) + gain(h/4)); the floor is
 FLOOR_FACTOR = 20 times that, as #803's, so a one-sigma noise moves a judged
 ratio by 5% and the 20% window holds four.
+
+On a symmetry-adapted case sigma_g is the larger of the restarts' and the one
+the point group's zeros imply (`symmetry_sigma`): an element H[i][j] whose
+coordinates are of different irreps is zero by symmetry, so its value on each
+rung is that stencil's noise alone, and the RMS of value / noise_gain(s) over
+those elements and rungs is a second measurement of sigma_g. The restarts
+miss noise that the displaced points carry and a restart at R0 does not (on
+#1093's case SC's read 4.2e-15 against the zeros' 4.6e-14). The restarts
+start from the first NOISE_COLUMNS columns that are not a rigid motion
+(`noise_columns`; on a Cartesian case, the first ones, unchanged).
 
 **The guard** is the driver's (its docstring); a refused point fails the run
 and nothing is written. Its worst values are recorded.
@@ -140,7 +158,9 @@ FLOOR_FACTOR = 20.0
 ZVECTOR_TOL = 3e-12
 # The noise measurement: the reference geometry from the orbitals of the
 # +h and -h points of this many columns, and those points and the reference
-# again with the Z-vectors solved to ZVECTOR_LOOSE.
+# again with the Z-vectors solved to ZVECTOR_LOOSE. The columns are the first
+# that are not a rigid translation or rotation (`noise_columns`): a restart
+# from a rigidly moved start re-converges to the reference's own orbitals.
 NOISE_COLUMNS = 2
 ZVECTOR_LOOSE = 10 * ZVECTOR_TOL
 
@@ -230,6 +250,43 @@ COUPLING_CASES = [
     },
 ]
 
+# The A1/B2 case's whole state Hessians (#1093): COUPLING_CASES' system in
+# its C2v-adapted coordinates (`symmetry_coordinates`), the reference point
+# held to the coupling record's (`coupling`). Each scheme ladders every
+# coordinate but its `not_laddered` ones, and every state and pair but its
+# `not_laddered` ones (README):
+#
+# - PC, at the C1 cases' 2.5e-3, both states and the pair, skips the two b2
+#   vibrations: its sampler refuses a point along either once the lifted
+#   modes pass its cut (from 1.5e-5 bohr along B2 2 and 2e-5 along B2 1),
+#   and the analytic PC Hessian refuses every block they make (the coupling
+#   record's `expected_refusals`).
+# - SC, at the C1 cases' 3.125e-4, skips the three vibrations that lower the
+#   symmetry, B1 1, B2 1 and B2 2, which populate perturbers empty by
+#   symmetry at second order (nevpt2.tex Sec. hess-refusals): along them its
+#   surface crosses over on a scale of 1e-5 to 1e-4 bohr and settles at
+#   neither 4e-5 nor 3.125e-4; the b2 ones' only check is the
+#   coupling record's C_01 ladders. State 0 alone: the analytic SC Hessian
+#   refuses state 1 by its conditioning rule (root 1's Si, #1102), so state
+#   1 and the pair are not laddered.
+SYMMETRIC_CASES = [
+    {
+        "name": "h2nb_sto3g_sa2_hessian",
+        "coupling": "h2nb_sto3g_sa2",
+        "system": COUPLING_CASES[0]["system"],
+        "h": {"sc": 0.0003125, "pc": 0.0025},
+        "pairs": [[0, 1]],
+        "not_laddered": {
+            "sc": {
+                "coordinates": ["B1 1", "B2 1", "B2 2"],
+                "states": [1],
+                "pairs": [[0, 1]],
+            },
+            "pc": {"coordinates": ["B2 1", "B2 2"], "states": [], "pairs": []},
+        },
+    },
+]
+
 
 # The SA3 crossing (#1059): ethylene's DF-SA3-CASSCF(2,2) at the MECI of QD
 # states 0 and 1, one case per scheme at that scheme's MECI (qd_meci.py's
@@ -297,6 +354,32 @@ def coordinates(natom: int, symbols: list[str]) -> dict:
     }
 
 
+def scheme_labels(case: dict, scheme: str, coords: dict) -> list[str]:
+    """The coordinates @p scheme ladders: every one but the case's
+    `not_laddered` ones, in @p coords' order."""
+    skipped = case.get("not_laddered", {}).get(scheme, {}).get("coordinates", [])
+    return [label for label in coords["labels"] if label not in skipped]
+
+
+def laddered(coords: dict, labels) -> dict:
+    """@p coords restricted to the coordinates @p labels names, in its order:
+    the columns a scheme ladders."""
+    keep = [i for i, label in enumerate(coords["labels"]) if label in labels]
+    assert len(keep) == len(labels), (labels, coords["labels"])
+    return {key: [value[i] for i in keep] for key, value in coords.items()}
+
+
+def noise_columns(coords: dict) -> list[int]:
+    """The first NOISE_COLUMNS columns that are not labelled a rigid motion
+    (`symmetry_coordinates`' T_ and R_; every Cartesian one counts)."""
+    vibrations = [
+        j
+        for j, label in enumerate(coords["labels"])
+        if not label.startswith(("T_", "R_"))
+    ]
+    return vibrations[:NOISE_COLUMNS]
+
+
 def plan(h: float, coords: dict) -> tuple[list[dict], dict]:
     """The request's points at the ladder's @p h, and where each lands: index
     0 the reference; then per column and displacement; then the noise
@@ -313,14 +396,12 @@ def plan(h: float, coords: dict) -> tuple[list[dict], dict]:
             points.append({"displacement": [d * x for x in q], "from": None})
         where["columns"].append(row)
     zero = [0.0] * len(vectors[0])
-    for j in range(min(NOISE_COLUMNS, len(vectors))):
+    for j in noise_columns(coords):
         for d in (-h, h):
             where["noise"].append((len(points), 0))
             points.append({"displacement": zero, "from": where["columns"][j][d]})
     loose = [0] + [
-        where["columns"][j][d]
-        for j in range(min(NOISE_COLUMNS, len(vectors)))
-        for d in (-h, h)
+        where["columns"][j][d] for j in noise_columns(coords) for d in (-h, h)
     ]
     for original in loose:
         where["noise"].append((len(points), original))
@@ -366,6 +447,22 @@ def floor_of(sigma: float, h: float) -> float:
     )
 
 
+def symmetry_sigma(ladder: list, irreps: list[str], h: float) -> float:
+    """sigma_g implied by the elements a point group forbids: H[i][j] with
+    q_i and q_j of different irreps is zero by symmetry, so each rung's value
+    there is the stencil's noise, sigma_g times stencil.noise_gain(s). The RMS
+    of value / gain(s) over those elements and the three rungs."""
+    n = len(irreps)
+    scaled = [
+        ladder[k][i][j] / stencil.noise_gain(s)
+        for k, s in enumerate(stencil.steps(h))
+        for i in range(n)
+        for j in range(n)
+        if irreps[i] != irreps[j]
+    ]
+    return math.sqrt(math.fsum(x * x for x in scaled) / len(scaled))
+
+
 def analyse(
     case: dict, coords: dict, result: dict, where: dict, schemes: list[str], h: float
 ) -> dict:
@@ -382,7 +479,12 @@ def analyse(
         part = {"states": [], "pairs": []}
         if case.get("seams"):
             part["seams"] = []
+        skipped = case.get("not_laddered", {}).get(scheme, {})
         for slot, (kind, index) in enumerate(quantities(case, nstates)):
+            if (kind == "state" and index in skipped.get("states", [])) or (
+                kind == "pair" and case["pairs"][index] in skipped.get("pairs", [])
+            ):
+                continue
 
             def grad(p: int, slot: int = slot, scheme: str = scheme) -> list[float]:
                 return pts[p][scheme]["gradients"][slot]
@@ -395,10 +497,9 @@ def analyse(
                 [x - y for x, y in zip(grad(a), grad(b), strict=True)]
                 for a, b in where["noise"]
             ]
-            sigma = math.sqrt(
+            restarts = math.sqrt(
                 math.fsum(x * x for d in spread for x in d) / (len(spread) * len(g0))
             )
-            floor = floor_of(sigma, h)
             points = [
                 {d: projected(grad(where["columns"][j][d])) for d in disps}
                 for j in range(n)
@@ -408,6 +509,15 @@ def analyse(
                 [[columns[j][k][i] for j in range(n)] for i in range(n)]
                 for k in range(3)
             ]
+            # A symmetry-adapted case's sigma_g is also read off the elements
+            # its point group forbids (the docstring's noise floor).
+            forbidden = (
+                symmetry_sigma(ladder, coords["irreps"], h)
+                if "irreps" in coords
+                else None
+            )
+            sigma = max(restarts, forbidden or 0.0)
+            floor = floor_of(sigma, h)
             verdicts = [
                 [
                     stencil.judge(
@@ -443,7 +553,8 @@ def analyse(
                     f"> bar {allowed:.3e}"
                 )
             print(
-                f"{label}: sigma_g {sigma:.1e}, floor {floor:.1e}, "
+                f"{label}: sigma_g {sigma:.1e} (restarts {restarts:.1e}, "
+                f"forbidden {forbidden or 0.0:.1e}), floor {floor:.1e}, "
                 f"{len(judged)} ratios judged {min(judged, default=0):.3f}.."
                 f"{max(judged, default=0):.3f}, max bar {max(map(max, bar)):.2e}, "
                 f"max asymmetry {max(map(max, asym)):.2e}, "
@@ -463,6 +574,11 @@ def analyse(
                     "floor": floor,
                     "pairs": where["noise"],
                     "differences": spread,
+                    **(
+                        {"sigma_restarts": restarts, "sigma_forbidden": forbidden}
+                        if forbidden is not None
+                        else {}
+                    ),
                 },
                 "ratio_range": [min(judged), max(judged)] if judged else None,
                 "ratios_judged": len(judged),
@@ -615,7 +731,8 @@ def agreement(case: dict, runs: list[tuple[dict, list[str]]]) -> dict:
     (the CASSCF roots and SC's): a different CASSCF solution misses by
     millihartree. A crossing case's is the pair's QD energies against its
     MECI's last evaluation, qd_meci.py's record of the [optimize] run (which
-    records no CASSCF energies)."""
+    records no CASSCF energies). A symmetric case's is its coupling record's
+    reference point, the same driver's (the CASSCF roots, SC's and PC's)."""
     if "meci" in case:
         final = meci_entry(case)["final"]
         out = {}
@@ -629,7 +746,13 @@ def agreement(case: dict, runs: list[tuple[dict, list[str]]]) -> dict:
                     abs(lower - final["lower"]), abs(upper - final["upper"])
                 )
         return out
-    if "system" in case:
+    if "coupling" in case:
+        # The coupling record's reference point: the same system, run by the
+        # same driver (its CASSCF roots and both schemes' H_eff eigenvalues).
+        doc = json.loads((OUT / f"{case['coupling']}.json").read_text())
+        entry = doc["reference"]
+        golden = {scheme: sorted(entry[scheme]["energies"]) for scheme in ("sc", "pc")}
+    elif "system" in case:
         doc = json.loads(SEARCH.read_text())
         (entry,) = [
             c for c in doc["candidates"] if c["weights"] == case["system"]["weights"]
@@ -689,7 +812,9 @@ def record(
             "command": "tools/nevpt2_hessian/qd_nevpt2_hessian.py",
             "driver": "tools/qd_nevpt2_hessian/main.cpp",
             "source": (
-                "tools/nevpt2_hessian/qd_weight_search.py"
+                f"{case['coupling']}.json (the coupling case's system)"
+                if "coupling" in case
+                else "tools/nevpt2_hessian/qd_weight_search.py"
                 if "system" in case
                 else f"{MECI.name} {case['meci']} (tools/nevpt2_hessian/qd_meci.py)"
                 if "meci" in case
@@ -754,6 +879,8 @@ def record(
                 "h": h,
                 "ladder": stencil.steps(h),
                 "displacements": stencil.displacements(h),
+                # The coordinates the scheme ladders, row and column.
+                "coordinates": scheme_labels(case, scheme, coords),
             }
             for scheme, h in case["h"].items()
         },
@@ -767,6 +894,7 @@ def record(
             "noise_columns": NOISE_COLUMNS,
         },
         "guard": guard(runs),
+        **({"not_laddered": case["not_laddered"]} if "not_laddered" in case else {}),
         **quantities_,
     }
 
@@ -1315,22 +1443,29 @@ def main() -> None:
     )
     args = parser.parse_args()
     status = 0
-    for case in CASES + CROSSING_CASES:
+    for case in CASES + CROSSING_CASES + SYMMETRIC_CASES:
         if args.only and case["name"] not in args.only:
             continue
         started = time.perf_counter()
         sys_ = system(case)
         symbols = [a[0] for a in sys_["atoms"]]
-        coords = coordinates(len(sys_["atoms"]), symbols)
-        # One driver run per distinct h, over the schemes that take it.
-        by_h: dict[float, list[str]] = {}
+        coords = (
+            symmetry_coordinates(sys_["atoms"])
+            if "coupling" in case
+            else coordinates(len(sys_["atoms"]), symbols)
+        )
+        # One driver run per distinct h and columns, over the schemes that
+        # take them.
+        by_h: dict[tuple, list[str]] = {}
         for scheme, h in case["h"].items():
-            by_h.setdefault(h, []).append(scheme)
+            labels = tuple(scheme_labels(case, scheme, coords))
+            by_h.setdefault((h, labels), []).append(scheme)
         runs = []
         quantities_ = {}
         failures = []
-        for h, schemes in by_h.items():
-            points, where = plan(h, coords)
+        for (h, labels), schemes in by_h.items():
+            columns = laddered(coords, labels)
+            points, where = plan(h, columns)
             file = f"{case['name']}.h{h:g}.points.json"
             if args.points and not args.keep:
                 path = args.points / file
@@ -1351,7 +1486,7 @@ def main() -> None:
                 run_driver(args.binary, request, path)
             result = json.loads(path.read_text())
             assert len(result["points"]) == len(points), path
-            analysis = analyse(case, coords, result, where, schemes, h)
+            analysis = analyse(case, columns, result, where, schemes, h)
             runs.append((result, schemes))
             quantities_.update(analysis["quantities"])
             failures += analysis["failures"]
