@@ -8,15 +8,16 @@
 // analytic method there the root's (beside an [optimize] too), and its
 // refusals; the ladder, its pairs and coordinates (#812), on by default
 // beside a numerical [nevpt2_gradient], and their refusals; the chain the
-// numerical method copies in beside a [nevpt2_gradient], and what it
-// refuses there (a QD-NEVPT2, a frozen core, a state average, integral-direct
-// ERIs, a [casscf_gradient] beside it); the analytic
+// numerical method copies in beside a [nevpt2_gradient], a QD state's
+// among them (#959), and what it refuses there (a frozen core, a state
+// average, integral-direct ERIs, a [casscf_gradient] beside it); the analytic
 // method beside a [nevpt2_gradient] (#818), its coordinates, what it
 // refuses before running, and examples/nevpt2_hessian.toml parsed; and the
 // guard on a displaced CASSCF, check_displaced_casscf, fed an active orbital
-// swapped out and roots swapped; and the ladder's tightened re-solve's
-// tolerances (#995), held at their round-off floors. Nothing is run, so
-// nothing touches a device.
+// swapped out and roots swapped; the QD state tracking, tracked_qd_state,
+// fed a state that followed, one at another rank, a swap and a tie; and the
+// ladder's tightened re-solve's tolerances (#995), held at their round-off
+// floors. Nothing is run, so nothing touches a device.
 
 #include <gtest/gtest.h>
 
@@ -352,8 +353,10 @@ TEST(PipelineHessian, AMalformedLadderIsRefused) {
 
 // Beside a [nevpt2_gradient] the numerical method copies the chain in -- the
 // CASSCF and the gradient, its variant kept -- and refuses what the Hessian
-// does not cover: a QD-NEVPT2, a frozen core, a state average, integral-direct
-// ERIs, and a [casscf_gradient] beside it. Moved from
+// does not cover: a frozen core, a state average, integral-direct ERIs, and a
+// [casscf_gradient] beside it. A QD state of a state average it does cover
+// (#959): the ladder and every pair on by default, as for one root; over one
+// root, the QD gradient's own refusal. Moved from
 // test/gtest/pipeline_nevpt2_hessian_gpu.cpp, which ran it over its fixture's
 // files with no device (#1037).
 TEST(PipelineHessian, BesideANevpt2GradientTheNumericalMethodCopiesTheChainAndRefuses) {
@@ -384,8 +387,18 @@ TEST(PipelineHessian, BesideANevpt2GradientTheNumericalMethodCopiesTheChainAndRe
     EXPECT_EQ(calc.error().kind, kind) << calc.error().message;
     EXPECT_NE(calc.error().message.find(says), std::string::npos) << calc.error().message;
   };
-  refused(planned("quasi_degenerate = true\n", "density_fitting", 2), fb::ErrorKind::Unsupported,
-          "quasi_degenerate");
+  const auto qd = planned("quasi_degenerate = true\nstate = 1\n", "density_fitting", 2);
+  ASSERT_TRUE(qd.has_value()) << qd.error().message;
+  const fb::HessianStep &qd_step = *qd->step<fb::HessianStep>();
+  ASSERT_TRUE(qd_step.nevpt2_gradient.has_value());
+  EXPECT_TRUE(qd_step.nevpt2_gradient->quasi_degenerate);
+  EXPECT_EQ(qd_step.nevpt2_gradient->state, 1);
+  EXPECT_EQ(qd_step.casscf.nroots, 2);
+  EXPECT_TRUE(qd_step.ladder);
+  EXPECT_FALSE(qd_step.pairs.has_value());
+  refused(planned("quasi_degenerate = true\n"), fb::ErrorKind::InvalidConfig, "nroots is 1");
+  refused(planned("quasi_degenerate = true\nstate = 2\n", "density_fitting", 2),
+          fb::ErrorKind::InvalidConfig, "state is 2");
   refused(planned("frozen_core = 1\n"), fb::ErrorKind::InvalidConfig, "frozen_core");
   refused(planned("frozen_core = \"auto\"\n"), fb::ErrorKind::InvalidConfig, "frozen_core");
   // A state average: [nevpt2_gradient]'s own refusal, before anything runs.
@@ -485,7 +498,7 @@ TEST(PipelineHessian, PcFloorIsReadDefaultsTo1em10AndIsValidated) {
 // What hessian::df_sc_nevpt2 and df_pc_nevpt2 cannot take, refused when the
 // config is read, before anything runs: a state-averaged reference and an
 // integral-direct [eri] (Unsupported), a frozen core (InvalidConfig) and a
-// quasi-degenerate gradient (Unsupported).
+// quasi-degenerate gradient (Unsupported: numerical only).
 TEST(PipelineHessian, TheAnalyticNevpt2HessianRefusesWhatItCannotTake) {
   const auto refused = [](std::string_view tables, fb::ErrorKind kind, std::string_view says) {
     auto calc = fb::parse_config(with_inputs(tables), "", kOut);
@@ -515,8 +528,9 @@ TEST(PipelineHessian, TheAnalyticNevpt2HessianRefusesWhatItCannotTake) {
                         "quasi_degenerate = true\n[hessian]\n",
                         kFitted, gradient),
             fb::ErrorKind::Unsupported,
-            "[hessian] is a state-specific NEVPT2 energy's, and [nevpt2_gradient] is "
-            "quasi_degenerate");
+            "[hessian] method 'analytic' is a state-specific NEVPT2 energy's, and "
+            "[nevpt2_gradient] is quasi_degenerate: the QD-NEVPT2 Hessian is numerical only "
+            "here");
   }
 }
 
@@ -583,6 +597,69 @@ TEST(PipelineHessian, TheDisplacedCasscfGuardRefusesASwappedOrbitalOrRoot) {
   // Spans that do not fit each other.
   const fb::Status sizes =
       fb::check_displaced_casscf(kNao, s, start, followed, reference, {roots.data(), 5}, 2);
+  ASSERT_FALSE(sizes.has_value());
+  EXPECT_EQ(sizes.error().kind, fb::ErrorKind::InvalidConfig);
+}
+
+// tracked_qd_state over three roots: the reference's state P = (0.8, 0.6, 0)
+// is found in a displaced H_eff whose eigenvectors moved a little, whatever
+// the rank it took there, and through a root whose CI flipped sign; a state
+// that swapped (P's overlap 0.8 with the best) and two that tie (each
+// overlapping P by 1/sqrt 2) are Numerical, never a state. The step names the
+// geometry around it (at_geometry), and returns before differencing.
+TEST(PipelineHessian, TheQdStateIsTrackedByItsEigenvectorAndASwapIsRefused) {
+  const std::vector<double> p{0.8, 0.6, 0.0};
+  const std::vector<double> same_signs{1.0, 1.0, 1.0};
+  const double c = std::cos(0.01);
+  const double t = std::sin(0.01);
+  // P turned by 0.01 rad towards root 2, at rank 0, then at rank 1.
+  const std::vector<double> followed{0.8 * c, 0.6 * c, t, -0.6, 0.8, 0.0, -0.8 * t, -0.6 * t, c};
+  const auto at_rank_0 = fb::tracked_qd_state(p, followed, same_signs);
+  ASSERT_TRUE(at_rank_0.has_value()) << at_rank_0.error().message;
+  EXPECT_EQ(at_rank_0->first, 0U);
+  EXPECT_NEAR(at_rank_0->second, c, 1e-15);
+  const std::vector<double> reordered{-0.6, 0.8, 0.0, 0.8 * c, 0.6 * c, t, -0.8 * t, -0.6 * t, c};
+  const auto at_rank_1 = fb::tracked_qd_state(p, reordered, same_signs);
+  ASSERT_TRUE(at_rank_1.has_value()) << at_rank_1.error().message;
+  EXPECT_EQ(at_rank_1->first, 1U);
+  // Root 1's CI flipped: its component of every eigenvector flips with it.
+  const std::vector<double> flipped{0.8 * c, -0.6 * c, t, -0.6, -0.8, 0.0, -0.8 * t, 0.6 * t, c};
+  const auto through_a_sign = fb::tracked_qd_state(p, flipped, std::vector<double>{1.0, -1.0, 1.0});
+  ASSERT_TRUE(through_a_sign.has_value()) << through_a_sign.error().message;
+  EXPECT_EQ(through_a_sign->first, 0U);
+  EXPECT_NEAR(through_a_sign->second, c, 1e-15);
+  // Without the sign, the same eigenvectors lose P: 0.64 - 0.36.
+  const auto unsigned_overlap = fb::tracked_qd_state(p, flipped, same_signs);
+  ASSERT_FALSE(unsigned_overlap.has_value());
+  EXPECT_EQ(unsigned_overlap.error().kind, fb::ErrorKind::Numerical);
+
+  // A swap: P turned 37 degrees into root 2, its best overlap 0.8.
+  const std::vector<double> swapped{0.64, 0.48, 0.6, -0.6, 0.8, 0.0, -0.48, -0.36, 0.8};
+  const auto swap = fb::tracked_qd_state(p, swapped, same_signs);
+  ASSERT_FALSE(swap.has_value());
+  EXPECT_EQ(swap.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_NE(swap.error().message.find("no QD state is the reference's: the closest, state 0, "
+                                      "overlaps it by 0.800000"),
+            std::string::npos)
+      << swap.error().message;
+  // A tie: P split evenly over two states.
+  const double r = std::sqrt(0.5);
+  const std::vector<double> split{r * 0.8 - r * -0.6,
+                                  r * 0.6 - r * 0.8,
+                                  0.0,
+                                  r * 0.8 + r * -0.6,
+                                  r * 0.6 + r * 0.8,
+                                  0.0,
+                                  0.0,
+                                  0.0,
+                                  1.0};
+  const auto tie = fb::tracked_qd_state(p, split, same_signs);
+  ASSERT_FALSE(tie.has_value());
+  EXPECT_EQ(tie.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_NE(tie.error().message.find("tie for the reference's state"), std::string::npos)
+      << tie.error().message;
+
+  const auto sizes = fb::tracked_qd_state(p, {followed.data(), 8}, same_signs);
   ASSERT_FALSE(sizes.has_value());
   EXPECT_EQ(sizes.error().kind, fb::ErrorKind::InvalidConfig);
 }
