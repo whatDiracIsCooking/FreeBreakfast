@@ -580,7 +580,11 @@ does not see that; this does. It follows #803's fixture,
     100-fold's 1e-12, which stands. At PSB3 (|E| 248, 2589 and 6789 pairs at
     cc-pVDZ and cc-pVTZ) it is 5.6e-12 and 9.1e-12, over what
     `src/mcscf/solve/README.md` measured ‖g‖ to settle at (1.6e-12 to
-    3.4e-12, and 6.2e-12 to 9e-12). `"tightened"` in `hessian.json`'s
+    3.4e-12, and 6.2e-12 to 9e-12). On `h2co_skew_ccpvdz_sa3` (279 pairs)
+    it is 8.4e-13, over the ~1.5e-13 where that SA3's re-solve settles, and
+    on `h2nb_sto3g_sa2` (47 pairs) 2.4e-13, which its re-solves pass to
+    2e-14 (#1090: both once stalled above 1e-12, on the solver's
+    subspace, not on round-off). `"tightened"` in `hessian.json`'s
     `"noise"` carries both tolerances and which term set each (`"fold"` or
     `"roundoff"`). The Z-vector's tolerance is a residual, not a difference
     of energies, and stays 100-fold.
@@ -971,18 +975,19 @@ OpenMolcas comparison (the issue's optional one) was made.
   being none, and the frequencies are published). Fast:
   `StepRefusesBeforeAnyDisplacedSolve`, the step's QD refusals run
   directly (the analytic method, one root, a state past the roots).
-  Measured on the RTX 3080 (CUDA), one run each: the C1 case SC 48 s, PC
-  52 s (116 gradients each), the worst element at 0.087 (SC) and 0.019
-  (PC) of 2 × the reference's bar, σ_g 2.6e-13 and 4.0e-13, no ratio judged
-  (every finer difference under 10 floors, as in the reference), the
-  smallest |⟨R_P|u⟩| 1 − 4.0e-10 and 1 − 2.5e-8; the A1/B2 case 39 s per
-  state, no pair failing, (B2 1, B2 2) at a residual of 6.3e-8 (state 0)
-  and 2.4e-7 (state 1) against allowances of 7.8e-6 and 6.8e-6, and one
-  unsettled diagonal element, (B1 1, B1 1), warned and not gated. The C1
-  case runs `[casscf]` at `conv_tol_grad = 5e-10`: at 1e-10 the ladder's
-  tightened re-solve (1e-12) stalls at 2.3e-12 at +h along coordinate 1,
-  above `tightened_casscf_tolerances`' modelled floor (8.4e-13), and the
-  run fails there, MaxIterationsExceeded, naming the point.
+  Both cases run `[casscf]` at `conv_tol_grad = 1e-10`, so the ladder's
+  tightened re-solve asks 1e-12. Measured on the RTX 3080 (CUDA), one run
+  each: the C1 case SC 48 s, PC 51 s, the worst element at 0.038 (SC) and
+  0.006 (PC) of 2 × the reference's bar, σ_g 2.3e-13 and 2.1e-13, no ratio
+  judged (every finer difference under 10 floors, as in the reference);
+  the A1/B2 case 39 s per state, no pair failing, (B2 1, B2 2) at a
+  residual of 5.7e-8 (state 0) and 2.4e-7 (state 1) against allowances of
+  7.8e-6 and 6.6e-6, and one unsettled diagonal element, (B1 1, B1 1),
+  warned and not gated. Before #1090 that re-solve stalled on both
+  (1.2e-12 on the A1/B2 case, 2.3e-12 on the C1's) and the run failed
+  there, MaxIterationsExceeded: `mcscf::solve`'s subspace refused its first
+  column below ~1e-12 |diag(H)|, so its step was 0 (`../../mcscf/solve/README.md`,
+  "The subspace's linear-dependence floor"), and the C1 case ran at 5e-10.
 
 - `test/gtest/pipeline_nevpt2_analytic_hessian_gpu.cpp`, the analytic
   method over the NEVPT2 chain (#818), its wiring and not the Hessian (that

@@ -951,6 +951,43 @@ TEST(McscfSolveLimits, OutOfMacroIterationsIsMaxIterationsExceeded) {
   EXPECT_EQ(got.error().kind, fb::ErrorKind::MaxIterationsExceeded) << got.error().message;
 }
 
+// The subspace's linear-dependence floor is relative (#1090): H2O cc-pVDZ
+// CAS(4,4) in Full over cc-pVDZ-JKFIT reaches conv_tol_grad 1e-12, every
+// accepted iteration before the last taking a step of at least one Hessian
+// product. Under the old absolute floor the first correction, ~||g|| /
+// |diag(H)|, was refused once ||g|| fell to ~1.3e-12, and the solve repeated
+// that point, step 0, until max_cycle (README.md, "The subspace's
+// linear-dependence floor").
+constexpr double kSubspaceConvTolGrad = 1e-12;
+
+TEST(McscfSolveSubspace, ReachesTheGradientBarBelowTheOldFloor) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz", "casscf_df.json");
+  auto setup = make_setup(entry, true);
+  ASSERT_NE(setup, nullptr);
+  const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+  const auto weights = entry.at("weights").get<std::vector<double>>();
+  const auto nroots = static_cast<std::int32_t>(weights.size());
+  const auto df = setup->fit(kDfAuxBasis);
+  ASSERT_TRUE(df.has_value());
+
+  fb::mcscf::Options options;
+  options.conv_tol_grad = kSubspaceConvTolGrad;
+  options.density_fitting = fb::mcscf::DensityFitting::Full;
+  const auto sol = setup->solve(setup->start->c, nroots, weights, options, &df->b, df->naux);
+  ASSERT_TRUE(sol.has_value()) << sol.error().message;
+  EXPECT_LT(sol->gradient_norm, kSubspaceConvTolGrad);
+  for (std::size_t i = 0; i + 1 < sol->iterations.size(); ++i) {
+    const fb::mcscf::Iteration &it = sol->iterations[i];
+    if (it.accepted) {
+      EXPECT_GT(it.hessian_products, 0)
+          << "macro iteration " << i + 1 << " |g| " << it.gradient_norm;
+    }
+  }
+  std::cout << std::format("[ subspace ] h2o_ccpvdz full at {:.0e}: {} macro, |g| {:.3e}\n",
+                           kSubspaceConvTolGrad, sol->iterations.size(), sol->gradient_norm);
+}
+
 // A tuning option takes effect (#866): with ah_max_iterations 1 no micro
 // iteration adds more than one column to the augmented Hessian's subspace,
 // so no macro iteration takes more Hessian products than micro iterations,

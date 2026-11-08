@@ -51,13 +51,10 @@ constexpr double kEnergyTolerance = 1e-8;
 constexpr double kBarFactor = 2.0;
 // The C1 case's state: K >= 1, the first excited QD state.
 constexpr std::int32_t kSkewState = 1;
-// [casscf] conv_tol_grad. The A1/B2 case's (STO-3G) is the NEVPT2 chain's
-// 1e-10. The C1 case's (cc-pVDZ) is 5e-10: the ladder's tightened re-solve
-// asks 100 times tighter, and at 1e-10 that is 1e-12, where this SA3's
-// solve stalls (2.3e-12 at +h along coordinate 1, 50 macro iterations),
-// above tightened_casscf_tolerances' modelled round-off floor of 8.4e-13.
-constexpr double kCoupledConvTolGrad = 1e-10;
-constexpr double kSkewConvTolGrad = 5e-10;
+// [casscf] conv_tol_grad, both cases': the NEVPT2 chain's 1e-10. The
+// ladder's tightened re-solve then asks 1e-12 (#1090: the solve's subspace
+// once refused its first column there, mcscf/solve/README.md).
+constexpr double kConvTolGrad = 1e-10;
 
 const fb::json &reference(std::string_view name) {
   static std::map<std::string, fb::json, std::less<>> docs;
@@ -180,7 +177,7 @@ void expect_skew(std::string_view variant) {
   const std::string hessian =
       std::format("method = \"numerical\"\ndisplacement = {:.17g}\nladder = true\npairs = []\n{}",
                   h, variant == "pc" ? "pc_floor = 0.0\n" : "");
-  const auto [ran, out] = run_hessian(kSkew, variant, kSkewState, hessian, kSkewConvTolGrad);
+  const auto [ran, out] = run_hessian(kSkew, variant, kSkewState, hessian, kConvTolGrad);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   ASSERT_FALSE(out.is_null()) << (ran.has_value() ? std::string{} : ran.error().message);
   EXPECT_EQ(out.at("variant").get<std::string>(), variant);
@@ -247,7 +244,7 @@ void expect_coupled(std::int32_t state) {
     hessian += "],\n";
   }
   hessian += "]\n";
-  const auto [ran, out] = run_hessian(kCoupled, "sc", state, hessian, kCoupledConvTolGrad);
+  const auto [ran, out] = run_hessian(kCoupled, "sc", state, hessian, kConvTolGrad);
   ASSERT_FALSE(out.is_null()) << (ran.has_value() ? std::string{} : ran.error().message);
   EXPECT_TRUE(out.at("failing_pairs").empty()) << out.at("failing_pairs").dump();
   EXPECT_EQ(out.at("bilinearity").size(), 15U);
@@ -299,8 +296,8 @@ TEST(PipelineQdNevpt2Hessian, StepRefusesBeforeAnyDisplacedSolve) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_qd_nevpt2_hessian_step");
   auto read = fb::read_config(
-      write_config(dir, kCoupled, "sc", 1, "method = \"numerical\"\n", kCoupledConvTolGrad),
-      dir.path(), dir / "out");
+      write_config(dir, kCoupled, "sc", 1, "method = \"numerical\"\n", kConvTolGrad), dir.path(),
+      dir / "out");
   ASSERT_TRUE(read.has_value()) << read.error().message;
   fb::HessianStep planned = *read->step<fb::HessianStep>();
   planned.json_path.clear();

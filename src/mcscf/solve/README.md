@@ -117,8 +117,10 @@ Each macro iteration, at the current C:
    already taken. Q holds at most 40 columns (`ah_max_subspace`); past that
    it restarts on the current direction Q u / ‖u‖, whose image is a gemv of
    the old one's, so no product is lost. A solve adds at most 50 columns,
-   and a correction re-orthogonalized to 1e-12 or less ends it; either way
-   its last root is taken, and the energy test guards the step.
+   and a correction scaled to unit norm and re-orthogonalized to 1e-12 or
+   less ends it (relative, as `davidson_solve`'s: see "The subspace's
+   linear-dependence floor" below); either way its last root is taken, and
+   the energy test guards the step.
 
    This is what `davidson_solve` from e₀ did, for fewer products. Its subspace was [e₀, (0, Q)]: e₀'s row is the only one a
    correction has after the first, and re-orthogonalizing against e₀
@@ -374,6 +376,64 @@ case converges (two repeats each, ‖g‖ 2.9e-12 to 8.2e-12). cc-pVTZ, one run
 each: FC converges at 1e-9, 1e-10 and 1e-11 in 6, 6 and 7 macro iterations
 (1.68 s, 1.68 s, 1.87 s; the old 1.68 s, 1.67 s at 1e-9, 1e-10), the MECI in
 8 at all three (2.86 s; the old 2.82 s, 2.85 s).
+
+## The subspace's linear-dependence floor
+
+The augmented Hessian's subspace takes a correction r / (μ − σ − diag(H)) as
+its next column unless, re-orthogonalized against Q, nothing is left of it.
+"Nothing" is 1e-12 (`kAhLinearDependenceFloor`, `davidson_solve`'s default
+floor), and it is **relative**: the correction is scaled to unit norm before
+it is projected, so what is left is a fraction of the correction, at any
+‖g‖. At q = 0 nothing is projected out and the first column is always taken;
+a zero or subnormal correction ends the solve. This is
+`../../recipes/davidson/README.md`'s rule (#330), which the subspace solve
+replaced and had lost.
+
+Taken on the correction's own norm, ~‖g‖ / |diag(H)|, the floor refused Q's
+first column whenever ‖g‖ fell below about 1e-12 |diag(H)|. With no column
+there is no product and dx = 0: the micro iterations repeat on an unchanged
+model gradient, the orbitals do not move, and each macro iteration
+recomputes the same point until `max_cycle` (#1090). The numerical
+`[hessian]`'s tightened re-solve asks for `conv_tol_grad` 1e-12 at a
+`[casscf]` of 1e-10, and stopped there. In the solver's own trail (CUDA, RTX
+3080), each of 50 macro iterations read `micro 4 Hx 0 step 0`:
+
+| Case | Asked | ‖g‖ over the 50 | ΔE | CI residual |
+|---|---|---|---|---|
+| `h2nb_sto3g_sa2` SC, +4e-5 bohr along coordinate 0 | 1e-12 | 1.217e-12, bitwise | 0 | 5.689e-13 |
+| `h2co_skew_ccpvdz_sa3` SC, +3.125e-4 along coordinate 1 | 1e-12 | 2.271e-12 to 2.273e-12 | 0, ±1.42e-14 (an ulp) | — |
+
+The stall was not a round-off floor: ‖g‖ recomputed at the same orbitals
+moved by ~1e-15, three orders under it, and it sat at ~1e-12 |diag(H)|, the
+threshold's scale, not ε |E|'s. After the fix, from the same production
+solves, both re-solves step and converge, no iteration of any solve in the
+two tests reading `Hx 0 step 0`. On H₂CO SA3 the
+re-solve at +3.125e-4 along coordinate 1 takes 5 macro iterations, ‖g‖
+5.1e-13, 2.0e-13, 1.8e-13, 1.4e-13 and 1.8e-13, ΔE a few ulps either way:
+the true floor, ~1.5e-13, under `tightened_casscf_tolerances`' modelled
+8.4e-13 (`../../pipeline/hessian/README.md`, "The noise floor"). On H₂NB
+state 1's at +4e-5 along coordinate 0, 4 iterations, ‖g‖ 4.3e-13, 6.2e-14,
+3.1e-14 and 2.1e-14. Both tests' 16 tightened re-solves converge in 2 to 5
+macro iterations.
+
+In-process A/B, the old rule against this one, from each case's recorded
+start in `ApproxHessian` (aug-cc-pVDZ-acCD-6-6) and `Full`
+(cc-pVDZ-JKFIT), one run (`mcscf_solve_gpu.cpp`'s six cases):
+
+- at `conv_tol_grad` 1e-9, every one of the twelve solves takes the same
+  macro and micro iterations under both, and the same Hessian products
+  but one (N₂ triplet `Full`, 49 against 50, its energy 4e-14 apart: the
+  atomics' run-to-run path, both converged);
+- at 1e-12, the old rule ran out of `max_cycle` in ten of the twelve
+  (last ‖g‖ 1.08e-12 to 2.89e-12), and this one converges in all twelve,
+  in 6 to 10 macro iterations, to ‖g‖ 1.6e-13 to 8.6e-13. The other two
+  converged under both: H₂CO SA2 [0.7, 0.3] in `Full` identically, and N₂
+  in `ApproxHessian` in the same 9 macro iterations, two products more
+  under this rule (50 against 48) and to 2.8e-13 rather than 9.7e-13: the
+  columns the old floor refused near the end.
+
+So 1e-12 is reachable at cc-pVDZ, and the old floor was the solver's:
+`McscfSolveSubspace.ReachesTheGradientBarBelowTheOldFloor` holds H₂O there.
 
 ## The level shift
 
@@ -637,6 +697,10 @@ singlet, `molecule` at multiplicity 3; ⟨S²⟩ = 2), at `conv_tol_grad` 1e-9:
   `Full` over cc-pVDZ-JKFIT, converges to ‖g‖ < 1e-11 within the default
   `max_cycle`, with the final CI's two checks above. With the old floor it
   ran out of macro iterations at ‖g‖ 4.3e-10;
+- the subspace's relative floor: H₂O cc-pVDZ CAS(4,4) in `Full` over
+  cc-pVDZ-JKFIT converges to ‖g‖ < 1e-12, every accepted iteration before
+  the last taking at least one Hessian product. Under the old absolute
+  floor it ran out of macro iterations at ‖g‖ 1.3e-12, step 0;
 - `MaxIterationsExceeded`, and the refusals (a density-fitted mode without B,
   a B of the wrong size and each tuning option out of range among them);
 - one tuning option taking effect: H₂O STO-3G with `ah_max_iterations` 1

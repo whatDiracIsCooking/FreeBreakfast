@@ -77,9 +77,15 @@ constexpr double kAhDenominatorFloor = 1e-8;
 // than that is noise: rotating a near-empty active natural orbital into the
 // virtuals (HF CAS(10,7)'s, occupation ~1e-5, a Ritz value of 5e-12), where
 // a step of g / 5e-12 at ||g|| ~ 1e-9 left the quadratic region (#463).
-// A correction re-orthogonalized against Q to this norm or below has nothing
-// new in it, and the solve stops on the solution it has: davidson_solve's
-// default floor, which the subspace solve replaced.
+// A correction scaled to unit norm and re-orthogonalized against Q to this
+// norm or below has nothing new in it, and the solve stops on the solution it
+// has: davidson_solve's default floor, which the subspace solve replaced, and
+// relative as that one is. Taken on the correction's own norm, ~||g|| /
+// |diag(H)|, it refused Q's first column whenever ||g|| was below ~1e-12
+// |diag(H)|: no product, dx = 0, and a solve asked for conv_tol_grad 1e-12
+// repeated one point for 50 macro iterations (#1090; README.md, "The
+// subspace's linear-dependence floor"). At q = 0 nothing is projected out, so
+// the first column is always taken.
 constexpr double kAhLinearDependenceFloor = 1e-12;
 // Micro iterations stop once the model gradient is
 // options.micro_gradient_fraction (0.1) of ||g||. The trust radius doubles
@@ -606,7 +612,18 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
           q = 1;
         }
 
-        // The correction off Q, twice, then normalized as Q's next column.
+        // The correction scaled to unit norm, off Q twice, then normalized
+        // as Q's next column: what is left measures what it has outside Q
+        // as a fraction of itself, at any ||g|| (kAhLinearDependenceFloor).
+        double unprojected_norm = 0.0;
+        FBF_TRY(gpu_status(
+            wwr::nrm2<double, int32_t>(blas, n_pairs, ah_correction.data(), 1, &unprojected_norm)));
+        if (!(unprojected_norm >= std::numeric_limits<double>::min())) {
+          break; // zero or subnormal: nothing to scale
+        }
+        const double unit = 1.0 / unprojected_norm;
+        FBF_TRY(
+            gpu_status(wwr::scal<double, int32_t>(blas, n_pairs, &unit, ah_correction.data(), 1)));
         for (int32_t pass = 0; pass < 2; ++pass) {
           FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
               blas, wwr::WWRBLAS_OP_T, n_pairs, q, &kOne<double>, ah_basis.data(), n_pairs,
