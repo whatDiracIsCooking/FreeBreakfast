@@ -322,7 +322,10 @@ struct HessianStep {
 /// cosine of the larger principal angle between the two spaces, so the miss
 /// is O(h²) for a pair that followed the reference, whatever rotation it took
 /// inside its eigenspace, and about 1 when a third state has mixed in. Only
-/// u_a u_a^T + u_b u_b^T is defined by this, not u_a or u_b.
+/// u_a u_a^T + u_b u_b^T is defined by this, not u_a or u_b. It is taken from
+/// the complement, R_X's overlaps with the other n - 2 states (the u_k are
+/// orthonormal), as sin² / (1 + cos) of that angle, so it is good to about ε
+/// however small: 1 - σ_min from M's own σ² reads ~1e-8 at a match.
 ///
 /// @p reference holds 2n numbers, R_P then R_Q; @p vectors n² and @p signs
 /// n, as @ref tracked_qd_state's. Host only.

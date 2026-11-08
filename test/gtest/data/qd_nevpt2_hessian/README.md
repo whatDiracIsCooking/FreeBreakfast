@@ -257,8 +257,12 @@ most 1 − 1/√2), which a u_K match would refuse. The driver's `crossing`
 instead matches the two-state space (`tracked_pair`: the two displaced
 states of largest projection onto span{R_0, R_1}, and 1 − σ_min of their
 2 × 2 overlap, the larger principal angle's cosine), within 1e-3 like
-every other match: its worst miss is 1.1e-8 (SC) and 1.7e-8 (PC)
-(`guard.<scheme>_pair_miss`).
+every other match: its worst miss is 2.4e-10 (SC) and 1.4e-8 (PC)
+(`guard.<scheme>_pair_miss`), the third state's own 1 − |overlap| to
+1e-17, as it must be over three states. Those two values were re-judged
+at the recorded points (#1112): the miss first read 1.1e-8 and 1.7e-8,
+the rounding floor of 1 − σ_min taken from M's own σ², and nothing
+else in the records changed.
 
 **The step**: SC at #953's 3.125e-4, PC at 2.5e-3; both settled on the first
 run. Every element of every ladder settles inside its floor (σ_g 1.3e-13 to

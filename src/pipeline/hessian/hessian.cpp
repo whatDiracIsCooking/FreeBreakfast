@@ -398,17 +398,26 @@ Result<std::pair<std::array<size_t, 2>, double>> tracked_qd_pair(std::span<const
   std::iota(order.begin(), order.end(), size_t{0});
   std::ranges::stable_sort(order, [&](size_t a, size_t b) { return weight[a] > weight[b]; });
   const std::array<size_t, 2> states{std::min(order[0], order[1]), std::max(order[0], order[1])};
-  // sigma_min of the 2 x 2 M in closed form: sigma^2 are the roots of
-  // s^2 - |M|_F^2 s + det(M)^2.
-  const double m00 = overlaps[0][states[0]];
-  const double m01 = overlaps[0][states[1]];
-  const double m10 = overlaps[1][states[0]];
-  const double m11 = overlaps[1][states[1]];
-  const double frobenius = (m00 * m00) + (m01 * m01) + (m10 * m10) + (m11 * m11);
-  const double det = (m00 * m11) - (m01 * m10);
-  const double discriminant = std::max(0.0, (frobenius * frobenius) - (4.0 * det * det));
-  const double sigma_min = std::sqrt(std::max(0.0, 0.5 * (frobenius - std::sqrt(discriminant))));
-  const double miss = 1.0 - sigma_min;
+  // 1 - sigma_min of the 2 x 2 M from its complement, not from M: the u_k
+  // are an orthonormal basis, so R_X's part outside span{u_a, u_b} is its
+  // overlaps with every other u_k, and the 2 x 2 G = C C^T over those,
+  // C_Xk = <R_X|u_k>, has eigenvalues 1 - sigma^2, the principal angles'
+  // sin^2. sigma_min from M's own sigma^2 (the roots of s^2 - |M|_F^2 s +
+  // det(M)^2) loses half its digits to cancellation: at a match it reads
+  // 1 - sigma_min to ~1e-8, where each of G's small sums is good to ~eps.
+  std::array<double, 3> g{}; // G_PP, G_QQ, G_PQ
+  for (size_t k = 0; k < n; ++k) {
+    if (k == states[0] || k == states[1]) {
+      continue;
+    }
+    g[0] += overlaps[0][k] * overlaps[0][k];
+    g[1] += overlaps[1][k] * overlaps[1][k];
+    g[2] += overlaps[0][k] * overlaps[1][k];
+  }
+  // G's larger eigenvalue (a sum of two non-negative terms, no cancellation),
+  // sin^2 of the larger angle; 1 - cos as sin^2 / (1 + cos).
+  const double sine2 = std::min(1.0, (0.5 * (g[0] + g[1])) + std::hypot(0.5 * (g[0] - g[1]), g[2]));
+  const double miss = sine2 / (1.0 + std::sqrt(1.0 - sine2));
   if (!(miss < kQdStateMiss)) {
     return err_numerical("[{}] the reference pair's eigenspace is not the QD states ({}, {})': "
                          "1 - sigma_min {:.3e}, not below {} (a third state mixed in across the "

@@ -505,7 +505,11 @@ and bilinearity check, with `nevpt2::qd_sc_gradient` / `qd_pc_gradient`
   states degenerate at the reference) the driver tracks the pair by its
   two-state eigenspace instead, with `tracked_qd_pair`: the two u_k of
   largest projection onto span{R_P, R_Q}, refused when 1 − σ_min of their
-  2 × 2 overlap (the larger principal angle's cosine) is 1e-3 or more. The
+  2 × 2 overlap (the larger principal angle's cosine) is 1e-3 or more.
+  The miss is taken from the complement, the reference pair's overlaps
+  with the other n − 2 states, as sin² / (1 + cos), so it is good to about
+  ε however small; 1 − σ_min from the overlap's own σ² cancels to a floor
+  of ~1e-8 (#1112). The
   step itself never calls the pair's: its Hessian is one state's, E_P,
   which has none at a crossing (a cone's vertex); only the pair sum
   W^P + W^Q is smooth there (Eq. qd-pair), and the step has no W input.
@@ -898,7 +902,9 @@ integral-direct `[eri]` -- the default one -- is refused there too
   (best overlap 0.8) and a tie (1/√2 each) refused, Numerical -- the
   forced state swap, never differenced; and `tracked_qd_pair` over three
   roots: a pair turned 45° inside its eigenspace and tipped 0.01 rad out of
-  it, found at ranks 1 and 2 with miss 1 − cos 0.01, and through a flipped
+  it, found at ranks 1 and 2 with miss 1 − cos 0.01 (and tipped so 1 − cos
+  is 1e-10, or by 1e-10 rad, its miss to about ε: 1e-10 to 1e-15, 5e-21 to
+  1e-12 of itself, #1112), and through a flipped
   root sign (where `tracked_qd_state` ties on it), and a third state mixed
   in (σ_min 0.8) refused, Numerical.
 - `test/gtest/pipeline_hessian_gpu.cpp`, TOML configs in cc-pVDZ /
