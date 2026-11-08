@@ -3,7 +3,8 @@
 /// Hessian, the eigenvector response, from the interstate couplings h_PQ
 /// alone. H_eff and R once over nevpt2::qd_inputs, every pair's gap checked
 /// before any adjoint is built, then one several-W gradient over every
-/// trace-zero W^PQ (one Z-vector solve), and the closed forms on the host.
+/// trace-zero W^PQ (one Z-vector solve), and the closed forms on the host;
+/// PC's at its pc_floor throughout.
 
 module free_breakfast.hessian;
 
@@ -68,7 +69,7 @@ df_qd_eigenvector_response(DeviceResources &res, const Molecule &molecule, const
                            const SphericalMatrixAO &h, const Buffers::device<double> &b,
                            const double *l, const mcscf::Solution &solution, const int32_t ncore,
                            const int32_t ncas, const bool pc, const int32_t batch,
-                           const double zvector_tolerance) {
+                           const double zvector_tolerance, const double pc_floor) {
   constexpr std::string_view kWho = "hessian::df_qd_eigenvector_response";
   if (!(zvector_tolerance > 0.0)) {
     return err_config("{}: a Z-vector tolerance of {:g}", kWho, zvector_tolerance);
@@ -83,8 +84,13 @@ df_qd_eigenvector_response(DeviceResources &res, const Molecule &molecule, const
       [&](const nevpt2::MoBlocks &blocks,
           const std::span<const nevpt2::EnergyInputs> pairs) -> Status {
         if (pc) {
+          // The pairs at the floor, which the kets' solves read.
+          std::vector<nevpt2::EnergyInputs> floored(pairs.begin(), pairs.end());
+          for (nevpt2::EnergyInputs &in : floored) {
+            in.pc_floor = pc_floor;
+          }
           const std::vector<nevpt2::PcClassEnergies> e =
-              FBF_TRY(nevpt2::pc_effective_hamiltonian(res, blocks, pairs, batch));
+              FBF_TRY(nevpt2::pc_effective_hamiltonian(res, blocks, floored, batch));
           std::ranges::transform(e, std::back_inserter(totals), &nevpt2::PcClassEnergies::total);
         } else {
           const std::vector<nevpt2::ClassEnergies> e =
@@ -153,9 +159,9 @@ df_qd_eigenvector_response(DeviceResources &res, const Molecule &molecule, const
     return {};
   };
   if (pc) {
-    FBF_TRY(
-        take(FBF_TRY(nevpt2::qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
-                                            ncore, ncas, ws, batch, zvector_tolerance))));
+    FBF_TRY(take(
+        FBF_TRY(nevpt2::qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
+                                       ncas, ws, batch, zvector_tolerance, 0, pc_floor))));
   } else {
     FBF_TRY(
         take(FBF_TRY(nevpt2::qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,

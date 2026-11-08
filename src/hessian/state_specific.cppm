@@ -6,7 +6,7 @@
 /// mixing-rate bound they put on its roots. Beside them, the CP solve
 /// df_casscf and df_sacasscf share: zvectors with the probe column that
 /// refuses a singular H~; and H_eff's eigenpairs, which
-/// df_qd_eigenvector_response and df_qd_sc_nevpt2 share.
+/// df_qd_eigenvector_response and the QD Hessians (df_qd_nevpt2.cpp) share.
 ///
 /// An internal partition (`module`, not `export module`): only this module's
 /// implementation units import it, so nothing here reaches an importer of
