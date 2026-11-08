@@ -13,8 +13,10 @@
 //   field the one that moves least to the next: every field within 1e-7 of
 //   its largest element, where SC-QD's adjoint ladders (kQdSmooth in
 //   nevpt2_gradient_gpu.cpp; #724, #894): every path on h8_sto3g_sa3, and
-//   for the one-function classes h8 lacks, h6_631g_sa2 and h2co_ccpvdz_sa2
-//   (below, beside the case list, why not h2co_skew_ccpvdz_sa3).
+//   for the one-function classes h8 lacks, h6_631g_sa2 and h2co_ccpvdz_sa2;
+//   and h2co_skew_ccpvdz_sa3 along c_0, every field but the (1, 2)
+//   transitions, which sit at its conditioning floor and are printed beside
+//   it (below, beside the case list).
 // - Visibility, in the same cases: the product along the line's orbital
 //   energies alone, which move Δ and nothing a fixed-multiplier difference
 //   sees, so it is the finish's second derivatives times Δ̇ alone. At W's
@@ -86,6 +88,10 @@ constexpr double kT0 = 1e-3;
 constexpr std::int32_t kRungs = 10;
 // The CASSCF's bar: loose, since no stationarity is used.
 constexpr double kConvTolGrad = 1e-6;
+// h2co_skew_ccpvdz_sa3's bars' repeat, relative to their largest element
+// (README, "The SC-QD reverse pass", Conditioning): a central difference at
+// t is floored near it over t.
+constexpr double kSkewRepeat = 1e-9;
 // B_dot a tenth the length of the others, as the ladders' directions.
 constexpr double kBScale = 0.1;
 constexpr std::string_view kDfAuxBasis = "cc-pVDZ-JKFIT";
@@ -543,9 +549,14 @@ void expect_ladder(const std::string &name, const std::string &path) {
     scale[field] = max_abs(x);
   }
   // Each field's own ladder: the extrapolant that moves least to the next,
-  // relative to the field's largest element, is its value.
+  // relative to the field's largest element, is its value. On
+  // h2co_skew_ccpvdz_sa3 the (1, 2) transitions, both orders, are printed
+  // against their floor rather than held to the bar (below, beside the case
+  // list).
+  const bool skew = name == "h2co_skew_ccpvdz_sa3";
   double worst = 0.0;
   std::string report;
+  std::string floored;
   for (const auto &[field, x] : hvp) {
     ASSERT_EQ(d.front().at(field).size(), x.size()) << field;
     if (scale[field] == 0.0) {
@@ -569,6 +580,16 @@ void expect_ladder(const std::string &name, const std::string &path) {
     for (std::size_t e = 0; e < x.size(); ++e) {
       miss = std::max(miss, std::abs(x[e] - richardson(best, field, e)));
     }
+    if (skew && (field.ends_with("(1, 2)") || field.ends_with("(2, 1)"))) {
+      // The extrapolant's finest rung, t = kT0 / 2^(best + 2), divides the
+      // bars' repeat: (16 · 4 / 45) D_{best+2}'s share of it, ~1.4 kSkewRepeat
+      // / t.
+      const double floor =
+          1.4 * kSkewRepeat / std::ldexp(kT0, -static_cast<std::int32_t>(best + 2));
+      floored += std::format(" {} {:.1e} (rung {}, Si floor {:.1e})", field, miss / scale[field],
+                             best, floor);
+      continue;
+    }
     EXPECT_LE(miss, kLadder * scale[field]) << name << " " << path << " " << field;
     worst = std::max(worst, miss / scale[field]);
     report += std::format(" {} {:.1e} (rung {}, change {:.1e})", field, miss / scale[field], best,
@@ -576,6 +597,10 @@ void expect_ladder(const std::string &name, const std::string &path) {
   }
   std::cout << std::format("[ nevpt2   ] qd hvp ladder {} {}: worst {:.2e};{}\n", name, path, worst,
                            report);
+  if (!floored.empty()) {
+    std::cout << std::format("[ nevpt2   ] qd hvp ladder {} {}: not gated, floored;{}\n", name,
+                             path, floored);
+  }
 
   // The visibility: the product along the line's orbital energies alone, at
   // W's off-diagonal and diagonal parts, against the whole product's bars.
@@ -630,17 +655,19 @@ TEST_P(Nevpt2QdHvp, BarsMatchRichardsonLadder) {
 // h8_sto3g_sa3, every path. h6_631g_sa2 (CAS(2,3): Srs a one-function
 // class) and h2co_ccpvdz_sa2 (CAS(4,3): Sij), along kQdSmooth's random-seed
 // paths, carry the one-function classes h8's CAS(4,4) does not.
-// h2co_skew_ccpvdz_sa3 is not here (#1055; README, "The SC-QD reverse
-// pass", Conditioning). Root 2's Si tuples have norms of 2e-7 to 7e-7, and
-// their bars carry each walk's round-off times 1/N: the transition bars
-// repeat only to ~1e-9 of their largest element, so a ladder's central
-// difference at t is floored near 1e-9 / t, at least 1e-6 for t <= 1e-3 (c_0
-// moves the (1, 2) transitions only through ε: they settle at 1.9e-6 to
-// 2.5e-6, at the coarsest rung pair, every other field under 3e-8). Along
-// B the same tuples have N / |Ṅ| of 5e-4 to 8e-4, so the ladder's coarse
-// rungs reach the norm's near-zero (no Taylor regime there; root 2's fields
-// end at 4.7e-4 to 3e-3), and its fine rungs are floored: no window. h2co_ccpvdz_sa2's B populates its empty tuples, whose bars
-// jump at the guard: Nevpt2QdHvpEmpty checks it through the energy.
+// h2co_skew_ccpvdz_sa3 along c_0 only (#1055, #1069; README, "The SC-QD
+// reverse pass", Conditioning). Root 2's Si tuples have norms of 2e-7 to
+// 7e-7, and their bars carry each walk's round-off times 1/N: the transition
+// bars repeat only to ~1e-9 of their largest element (kSkewRepeat), so a
+// ladder's central difference at t is floored near 1e-9 / t, at least 1e-6
+// for t <= 1e-3. c_0 moves the (1, 2) transitions only through ε, so they
+// settle at that floor, at the coarsest rung pair, and are printed beside
+// it; every other field is held to kLadder. Along B the same tuples have
+// N / |Ṅ| of 5e-4 to 8e-4, so the ladder's coarse rungs reach the norm's
+// near-zero (no Taylor regime there; root 2's fields end at 4.7e-4 to
+// 3e-3), and its fine rungs are floored: no window. h2co_ccpvdz_sa2's B
+// populates its empty tuples, whose bars jump at the guard:
+// Nevpt2QdHvpEmpty checks it through the energy.
 INSTANTIATE_TEST_SUITE_P(
     Cases, Nevpt2QdHvp,
     ::testing::Values(std::tuple{std::string{"h8_sto3g_sa3"}, std::string{"h"}},
@@ -651,7 +678,8 @@ INSTANTIATE_TEST_SUITE_P(
                       std::tuple{std::string{"h6_631g_sa2"}, std::string{"B"}},
                       std::tuple{std::string{"h6_631g_sa2"}, std::string{"c_0"}},
                       std::tuple{std::string{"h2co_ccpvdz_sa2"}, std::string{"c_0"}},
-                      std::tuple{std::string{"h2co_ccpvdz_sa2"}, std::string{"c_1"}}),
+                      std::tuple{std::string{"h2co_ccpvdz_sa2"}, std::string{"c_1"}},
+                      std::tuple{std::string{"h2co_skew_ccpvdz_sa3"}, std::string{"c_0"}}),
     [](const auto &info) { return std::get<0>(info.param) + "_" + std::get<1>(info.param); });
 
 // ---- An accepted off-diagonal K6 ---------------------------------------------
