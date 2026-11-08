@@ -24,14 +24,16 @@
 ///   `[optimize]` carries them), at the same weights, auxiliary basis and
 ///   bars, and runs the same QD-NEVPT2. Each displaced CASSCF root is matched
 ///   to the reference's by `mcscf::state_overlaps`, and each eigenstate K of
-///   H_eff by the overlap of u_K in that matched root basis, never by rank.
+///   H_eff by the overlap of u_K in that matched root basis, never by rank:
+///   pipeline::hessian's `tracked_qd_state`, the tree's one R_P match.
 ///   E_K is invariant to the signs of the roots and of u_K.
 /// - **The continuity guard** (nevpt2_gradient_reference.py's, #555): the
 ///   CASSCF converged to the bars; each root's energy within
 ///   kPredictionBound h^2 of E_r + g_r . dR; the active space's smallest
 ///   singular value of overlap with the reference's (through the AO cross
 ///   overlap) within kSubspaceTol of 1; each matched root's CI overlap within
-///   kCiTol of 1 in magnitude; each matched u_K's overlap within kCiTol of 1;
+///   kCiTol of 1 in magnitude; each matched u_K's overlap within 1e-3 of 1,
+///   with no second state within 1e-3 of it (`tracked_qd_state`'s bar);
 ///   and for PC, every coupling's metrics cut exactly the reference's modes.
 ///   A miss refuses the case.
 /// - **The differences.** Along three seeded unit directions u (translation
@@ -113,6 +115,8 @@ import free_breakfast.io.json;
 import free_breakfast.mcscf.gradient;
 import free_breakfast.mcscf.nac;
 import free_breakfast.pipeline.nevpt2;
+// tracked_qd_state: the tree's one R_P match (#1107).
+import free_breakfast.pipeline.hessian;
 // The chain at every point, its CASSCF guard and Richardson (#783).
 import free_breakfast.tools.qd_nevpt2_gradient;
 
@@ -125,7 +129,6 @@ constexpr std::string_view kAuxBasis = "cc-pVDZ-JKFIT";
 
 // The chain's guard bounds and the coupling mode's polish and error-bar
 // bound are the library's (qd_nevpt2_gradient.cppm).
-using fb::nevpt2::kCiTol;
 using fb::nevpt2::kCouplingErrorBarTol;
 using fb::nevpt2::kPolishTarget;
 using fb::nevpt2::kPredictionBound;
@@ -297,42 +300,35 @@ fb::Result<System> read_system(const fb::json &doc, std::string_view name, bool 
 
 // The eigenstates of a displaced H_eff in the reference's order: @p vectors
 // (state k at [k n, (k + 1) n), in the reference's root basis, as
-// ChainPoint's), each reference state K matched to the displaced k of largest
-// |<u_K|u_k>|, which must be a permutation. Returns the matched energies;
-// @p miss takes the worst 1 - |overlap|, and @p matched u_k, state K at
-// [K n, (K + 1) n), signed so that its overlap with u_K is positive.
+// ChainPoint's, so every root sign 1) each matched to the reference state K
+// by pipeline::hessian's tracked_qd_state (the tree's one R_P match, its
+// 1e-3 bar and its tie), which must make a permutation. Returns
+// the matched energies; @p miss takes the worst 1 - |overlap|, and
+// @p matched u_k, state K at [K n, (K + 1) n), signed so that its overlap
+// with u_K is positive.
 fb::Result<std::vector<double>> matched_states(std::span<const double> energies,
                                                std::span<const double> vectors,
                                                std::span<const double> reference, double &miss,
                                                std::vector<double> &matched) {
   const std::size_t n = energies.size();
+  const std::vector<double> signs(n, 1.0);
   std::vector<double> out(n);
   std::vector<bool> taken(n, false);
   matched.assign(n * n, 0.0);
   for (std::size_t big_k = 0; big_k < n; ++big_k) {
-    std::size_t best = n;
-    double best_overlap = 0.0;
-    double best_sign = 1.0;
-    for (std::size_t k = 0; k < n; ++k) {
-      double overlap = 0.0;
-      for (std::size_t i = 0; i < n; ++i) {
-        overlap += reference[(big_k * n) + i] * vectors[(k * n) + i];
-      }
-      if (std::abs(overlap) > best_overlap) {
-        best_overlap = std::abs(overlap);
-        best_sign = overlap < 0.0 ? -1.0 : 1.0;
-        best = k;
-      }
-    }
-    if (best == n || taken[best]) {
-      return fb::err_numerical("H_eff's eigenstate {} matches no displaced state alone", big_k);
+    const auto [best, overlap] =
+        FBF_TRY(fb::tracked_qd_state(reference.subspan(big_k * n, n), vectors, signs));
+    if (taken[best]) {
+      return fb::err_numerical("H_eff's eigenstate {} matches displaced state {}, already taken",
+                               big_k, best);
     }
     taken[best] = true;
     out[big_k] = energies[best];
+    const double sign = overlap < 0.0 ? -1.0 : 1.0;
     for (std::size_t i = 0; i < n; ++i) {
-      matched[(big_k * n) + i] = best_sign * vectors[(best * n) + i];
+      matched[(big_k * n) + i] = sign * vectors[(best * n) + i];
     }
-    miss = std::max(miss, 1.0 - best_overlap);
+    miss = std::max(miss, 1.0 - std::abs(overlap));
   }
   return out;
 }
@@ -964,20 +960,28 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
     Point p;
     p.at = from == nullptr ? FBF_TRY(sampler.at(displacement))
                            : FBF_TRY(sampler.at(displacement, *from));
+    // tracked_qd_state refuses a u_K off 1 by 1e-3 or more; the case and
+    // the scheme are named here.
+    const auto named =
+        [&](std::string_view scheme,
+            fb::Result<std::vector<double>> matched) -> fb::Result<std::vector<double>> {
+      if (!matched) {
+        fb::Error error = std::move(matched).error();
+        error.message = std::format("{}: {}: {}", sys.name, scheme, error.message);
+        return std::unexpected(std::move(error));
+      }
+      return matched;
+    };
     if (qd) {
-      p.sc = FBF_TRY(matched_states(p.at.sc, p.at.sc_vectors, nev0.qd_vectors, p.sc_vectors,
-                                    p.sc_vectors_matched));
+      p.sc = FBF_TRY(named("sc", matched_states(p.at.sc, p.at.sc_vectors, nev0.qd_vectors,
+                                                p.sc_vectors, p.sc_vectors_matched)));
       if (pc) {
-        p.pc = FBF_TRY(matched_states(p.at.pc, p.at.pc_vectors, nev0.pc_qd_vectors, p.pc_vectors,
-                                      p.pc_vectors_matched));
+        p.pc = FBF_TRY(named("pc", matched_states(p.at.pc, p.at.pc_vectors, nev0.pc_qd_vectors,
+                                                  p.pc_vectors, p.pc_vectors_matched)));
       }
     } else {
       p.sc = p.at.sc;
       p.pc = p.at.pc;
-    }
-    if (std::max(p.sc_vectors, p.pc_vectors) >= kCiTol) {
-      return fb::err_numerical("{}: a displaced H_eff eigenvector's overlap off 1 by {:.2e}",
-                               sys.name, std::max(p.sc_vectors, p.pc_vectors));
     }
     ++points;
     return p;

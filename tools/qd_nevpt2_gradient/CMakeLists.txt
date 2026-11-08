@@ -39,7 +39,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::overlap
 )
 
-# The tool: its case tables, the guard's H_eff-eigenstate matching and energy
+# The tool: its case tables, the guard's H_eff-eigenstate matching (over
+# pipeline::hessian's tracked_qd_state, the tree's one R_P match) and energy
 # prediction (which read mcscf::df_gradient), the checks and the JSON. Not a
 # module library, so it sets the module-scanning properties itself, as
 # src/main.cpp does.
@@ -63,4 +64,5 @@ target_link_libraries(
           free_breakfast::mcscf::gradient
           free_breakfast::mcscf::nac
           free_breakfast::pipeline::nevpt2
+          free_breakfast::pipeline::hessian
 )
