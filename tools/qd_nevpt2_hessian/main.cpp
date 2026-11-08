@@ -38,8 +38,24 @@
 ///   root basis carried into the rerun's: each state's W^K = u_K u_K^T
 ///   (u_K the matched eigenvector, so the state is tracked, Eq. qd-hess's
 ///   whole state Hessian); each requested pair's W^P + W^Q (Eq. qd-pair); and
-///   each requested seam's W = 1/2 (R_X R_Y^T + R_Y R_X^T), R the reference's
-///   eigenvectors held fixed (Eq. qd-lowdin's first term).
+///   each requested seam's fixed W (Eq. qd-lowdin's first term), below.
+/// - **The seam's W, and its gauge** (#1098). Eq. qd-lowdin's first term is
+///   term (i) at W = 1/2 (V_0 V_1^T + V_1 V_0^T) for an orthonormal basis
+///   V of the pair's eigenspace. At a crossing the eigensolver's R_X, R_Y
+///   are not that basis' gauge: a rounding of 1e-14 in H_eff turns them by
+///   1e-7 rad at a 1e-7 gap, and its sign rule flips them, so a W built
+///   from them changes from run to run by more than the seam ladder's bar.
+///   W is built instead from the eigenspace's projector alone, as
+///   `hessian::df_qd_sc_nevpt2_crossing` builds its c's basis: V_b the
+///   Loewdin-orthonormalized projections of CASSCF roots r_0 < r_1 onto
+///   span{R_X, R_Y} (the pair of roots whose 2 x 2 block of [R_X R_Y] has
+///   the largest |det|), V = R A (A^T A)^(-1/2), A_ab = R_{X_a}[r_b]. That
+///   leaves the CASSCF roots' own phases, which flip W through V_0 and
+///   V_1: W is multiplied by the sign of the reference H_eff's
+///   [r_0][r_1], which carries the same two phases, so W is one operator
+///   whatever either solve's phases (refused below kSeamSignFloor, where
+///   that sign is not the reference's). The output records each seam's W,
+///   its roots and the sign (`reference.<scheme>.seams`).
 /// - **At a crossing** (#1059: the request's `crossing`, two states P and Q
 ///   degenerate at the reference, a MECI): u_P and u_Q are not defined one
 ///   by one there (any rotation within their eigenspace is as good, and a
@@ -101,6 +117,10 @@ constexpr std::int32_t kRerunMaxCycle = 200;
 // The rerun's roots against the sampler's at the same orbitals: the same
 // solution up to the CI solve's convergence.
 constexpr double kRerunEnergyTol = 1e-9;
+// The smallest |H_eff[r_0][r_1]| whose sign fixes a seam's W: a hundred
+// times the reference H_eff's run-to-run spread (its energies reproduce to
+// 7e-13, `reference.agreement`).
+constexpr double kSeamSignFloor = 1e-10;
 
 // The rerun's root: the molecule from atoms in memory (the library's
 // ChainGeometryStep).
@@ -282,15 +302,80 @@ fb::Result<std::vector<double>> matched_states(std::span<const double> energies,
   return out;
 }
 
+// One seam's fixed W at the reference (see the file comment): the seam
+// (X, Y), the CASSCF roots r_0 < r_1 its basis projects, the sign of
+// H_eff[r_0][r_1] and W, n x n row-major in the reference's root basis.
+struct SeamWeight {
+  std::array<std::size_t, 2> seam{};
+  std::array<std::size_t, 2> roots{};
+  double sign = 1.0;
+  std::vector<double> w;
+};
+
+// Seam (@p x, @p y)'s W from the reference's eigenvectors @p r (state k at
+// [k n, (k + 1) n)) and its symmetrized H_eff @p heff (n x n row-major).
+fb::Result<SeamWeight> seam_weight(std::span<const double> r, std::span<const double> heff,
+                                   std::size_t n, std::size_t x, std::size_t y) {
+  const std::span<const double> u0 = r.subspan(x * n, n);
+  const std::span<const double> u1 = r.subspan(y * n, n);
+  SeamWeight out{.seam = {x, y}};
+  // A_ab = R_{X_a}[r_b] at [2 a + b].
+  std::array<double, 4> a{};
+  double best = -1.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = i + 1; j < n; ++j) {
+      const double det = std::abs((u0[i] * u1[j]) - (u0[j] * u1[i]));
+      if (det > best) {
+        best = det;
+        a = {u0[i], u0[j], u1[i], u1[j]};
+        out.roots = {i, j};
+      }
+    }
+  }
+  const auto [r0, r1] = out.roots;
+  const double coupling = heff[(r0 * n) + r1];
+  if (!(std::abs(coupling) >= kSeamSignFloor)) {
+    return fb::err_numerical("seam ({}, {}): H_eff[{}][{}] is {:.2e}, below {:.0e}: its sign "
+                             "cannot fix W's",
+                             x, y, r0, r1, coupling, kSeamSignFloor);
+  }
+  out.sign = coupling < 0.0 ? -1.0 : 1.0;
+  // M = A (A^T A)^(-1/2), the 2 x 2 closed form S^(-1/2) = (S + sqrt(det S)
+  // 1)^(-1) sqrt(tr S + 2 sqrt(det S)).
+  const double s00 = (a[0] * a[0]) + (a[2] * a[2]);
+  const double s01 = (a[0] * a[1]) + (a[2] * a[3]);
+  const double s11 = (a[1] * a[1]) + (a[3] * a[3]);
+  const double root = std::sqrt((s00 * s11) - (s01 * s01));
+  const double norm = std::sqrt(s00 + s11 + (2.0 * root));
+  const double t00 = s00 + root;
+  const double t11 = s11 + root;
+  const double inv = norm / ((t00 * t11) - (s01 * s01));
+  const std::array<double, 4> half{t11 * inv, -s01 * inv, -s01 * inv, t00 * inv};
+  // V_b = sum_a R_{X_a} M_ab.
+  std::array<std::vector<double>, 2> v{std::vector<double>(n, 0.0), std::vector<double>(n, 0.0)};
+  for (std::size_t bb = 0; bb < 2; ++bb) {
+    const double m0 = (a[0] * half[bb]) + (a[1] * half[2 + bb]);
+    const double m1 = (a[2] * half[bb]) + (a[3] * half[2 + bb]);
+    for (std::size_t i = 0; i < n; ++i) {
+      v[bb][i] = (u0[i] * m0) + (u1[i] * m1);
+    }
+  }
+  out.w.resize(n * n);
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      out.w[(i * n) + j] = 0.5 * out.sign * ((v[0][i] * v[1][j]) + (v[1][i] * v[0][j]));
+    }
+  }
+  return out;
+}
+
 // The weight matrices one scheme's gradient is taken at, n x n row-major in
 // the reference's root basis: each of @p states' u_K u_K^T, then each pair's
-// u_P u_P^T + u_Q u_Q^T, then each seam's 1/2 (R_X R_Y^T + R_Y R_X^T) at the
-// reference's @p r0.
-std::vector<std::vector<double>>
-weight_matrices(std::span<const double> u, std::span<const double> r0, std::size_t n,
-                std::span<const std::size_t> states,
-                std::span<const std::array<std::size_t, 2>> pairs,
-                std::span<const std::array<std::size_t, 2>> seams) {
+// u_P u_P^T + u_Q u_Q^T, then each of @p seams' fixed W.
+std::vector<std::vector<double>> weight_matrices(std::span<const double> u, std::size_t n,
+                                                 std::span<const std::size_t> states,
+                                                 std::span<const std::array<std::size_t, 2>> pairs,
+                                                 std::span<const SeamWeight> seams) {
   const auto outer = [n](std::span<const double> a, std::span<const double> b) {
     std::vector<double> w(n * n);
     for (std::size_t i = 0; i < n; ++i) {
@@ -313,8 +398,8 @@ weight_matrices(std::span<const double> u, std::span<const double> r0, std::size
     }
     out.push_back(std::move(w));
   }
-  for (const auto &[x, y] : seams) {
-    out.push_back(outer(column(r0, x), column(r0, y)));
+  for (const SeamWeight &seam : seams) {
+    out.push_back(seam.w);
   }
   return out;
 }
@@ -475,11 +560,28 @@ fb::Status run(std::span<char *const> args) {
       {"casscf_energies", cas0.energies},   {"gradient_norm", cas0.gradient_norm},
       {"casscf_gradient", casscf_gradient}, {"core_gap", ref.core_gap},
       {"virtual_gap", ref.virtual_gap},     {"polish_passes", sampler.polish_passes()}};
+  // Each scheme's seams' W, in the schemes' order.
+  std::vector<std::vector<SeamWeight>> seam_weights;
   for (const std::string_view scheme : schemes) {
     const bool sc = scheme == "sc";
+    const std::vector<double> &heff = sc ? nev0.qd_heff : nev0.pc_qd_heff;
+    std::vector<SeamWeight> ws;
+    fb::json seam_json = fb::json::array();
+    for (const auto &[x, y] : seams) {
+      fb::Result<SeamWeight> w = seam_weight(reference_vectors(scheme), heff, n, x, y);
+      if (!w) {
+        fb::Error error = std::move(w).error();
+        error.message = std::format("reference: {}: {}", scheme, error.message);
+        return std::unexpected(std::move(error));
+      }
+      seam_json.push_back({{"seam", w->seam}, {"roots", w->roots}, {"sign", w->sign}, {"w", w->w}});
+      ws.push_back(*std::move(w));
+    }
+    seam_weights.push_back(std::move(ws));
     reference[std::string(scheme)] = {{"energies", sc ? nev0.qd_energies : nev0.pc_qd_energies},
-                                      {"heff", sc ? nev0.qd_heff : nev0.pc_qd_heff},
-                                      {"vectors", reference_vectors(scheme)}};
+                                      {"heff", heff},
+                                      {"vectors", reference_vectors(scheme)},
+                                      {"seams", seam_json}};
   }
   {
     fb::json dropped = fb::json::array();
@@ -630,7 +732,7 @@ fb::Status run(std::span<char *const> args) {
       for (std::size_t si = 0; si < schemes.size(); ++si) {
         const std::string_view scheme = schemes[si];
         const std::vector<std::vector<double>> ws =
-            weight_matrices(matched_u[si], reference_vectors(scheme), n, states, pairs, seams);
+            weight_matrices(matched_u[si], n, states, pairs, seam_weights[si]);
         // Each W into the rerun's root basis.
         std::vector<std::vector<double>> carried;
         for (const std::vector<double> &w : ws) {

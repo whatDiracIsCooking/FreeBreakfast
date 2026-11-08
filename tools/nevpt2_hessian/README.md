@@ -103,7 +103,13 @@ and `ethylene_meci.json`, whose README section has the numbers.
   pair sum G(W^0 + W^1), the fixed seam W and the third state. The driver's
   `crossing` request tracks the pair by its two-state eigenspace
   (`src/pipeline/hessian`'s `tracked_qd_pair`, which the driver calls)
-  rather than by u_K, and takes no W^0 or W^1. About 2.3 minutes per case.
+  rather than by u_K, and takes no W^0 or W^1. The seam's W is the
+  eigenspace's own, not the eigensolver's R_0, R_1 (which a rerun returns
+  turned by ~1e-7 rad and signed differently, #1098): ½ s (V_0 V_1ᵀ + V_1
+  V_0ᵀ), V the Löwdin-orthonormalized projections of two CASSCF roots onto
+  the eigenspace (`hessian::df_qd_sc_nevpt2_crossing`'s basis) and s the
+  sign of H_eff between those roots; each seam entry records it (`w`,
+  `roots`, `sign`). About 2.3 minutes per case.
 
 ```sh
 tools/nevpt2_hessian/qd_meci.py [--binary build/src/free-breakfast]

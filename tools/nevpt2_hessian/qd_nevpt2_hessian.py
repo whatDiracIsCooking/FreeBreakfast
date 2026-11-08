@@ -31,9 +31,16 @@ smooth there, while the third state stays gapped:
 
 - **the pair sum** G(W^0 + W^1), W^0 + W^1 the projector onto the tracked
   eigenspace: Eq. qd-pair's left side at a crossing;
-- **the seam** G(W) at W = 1/2 (R_0 R_1^T + R_1 R_0^T), R the reference's
-  eigenvectors held fixed (a non-projector W: Eq. qd-lowdin's first term is
-  its Hessian at fixed W);
+- **the seam** G(W) at the reference's fixed W = 1/2 s (V_0 V_1^T + V_1
+  V_0^T) (a non-projector W: Eq. qd-lowdin's first term is its Hessian at
+  fixed W). V is the pair's eigenspace's own basis, not the eigensolver's
+  R_0, R_1, which a rerun returns turned and signed differently (#1098): the
+  Loewdin-orthonormalized projections of CASSCF roots r_0 < r_1 onto it (the
+  roots whose 2 x 2 block of [R_0 R_1] has the largest |det|), as
+  hessian::df_qd_sc_nevpt2_crossing's c basis; s the sign of H_eff[r_0][r_1],
+  which carries those roots' phases. The driver builds it
+  (`seam_weight` here is the same convention), and each seam entry records
+  the W it was laddered at (`w`, `roots`, `sign`);
 - **the third state**, W^2 = u_2 u_2^T, tracked by u_2 as away from a
   crossing.
 
@@ -472,6 +479,9 @@ def analyse(
                 part["pairs"].append(entry)
             elif kind == "seam":
                 entry["seam"] = case["seams"][index]
+                fixed = result["reference"][scheme]["seams"][index]
+                assert fixed["seam"] == entry["seam"], (fixed["seam"], entry["seam"])
+                entry |= {k: fixed[k] for k in ("w", "roots", "sign")}
                 part["seams"].append(entry)
             else:
                 entry["state"] = index
@@ -543,6 +553,44 @@ def pair_rotation(reference: list[float], vectors: list[float], crossing: list[i
         max(abs(dot(column(reference, big), column(vectors, k))) for k in crossing)
         for big in crossing
     )
+
+
+def seam_weight(vectors: list[float], heff: list[float], x: int, y: int) -> dict:
+    """The driver's seam W for (x, y) (its seam_weight): from the reference's
+    eigenvectors (state k at [k n, (k + 1) n)) and its symmetrized H_eff
+    (n x n row-major), W = 1/2 s (V_0 V_1^T + V_1 V_0^T), n x n row-major,
+    V the Loewdin-orthonormalized projections of CASSCF roots r_0 < r_1 onto
+    span{R_x, R_y} and s the sign of H_eff[r_0][r_1]."""
+    n = math.isqrt(len(heff))
+    u0, u1 = vectors[x * n : (x + 1) * n], vectors[y * n : (y + 1) * n]
+    dets = {
+        (i, j): abs(u0[i] * u1[j] - u0[j] * u1[i])
+        for i in range(n)
+        for j in range(i + 1, n)
+    }
+    r0, r1 = max(dets, key=dets.get)
+    a = [[u0[r0], u0[r1]], [u1[r0], u1[r1]]]
+    s = [
+        [math.fsum(a[k][i] * a[k][j] for k in range(2)) for j in range(2)]
+        for i in range(2)
+    ]
+    root = math.sqrt(s[0][0] * s[1][1] - s[0][1] ** 2)
+    norm = math.sqrt(s[0][0] + s[1][1] + 2 * root)
+    t00, t11 = s[0][0] + root, s[1][1] + root
+    inv = norm / (t00 * t11 - s[0][1] ** 2)
+    half = [[t11 * inv, -s[0][1] * inv], [-s[0][1] * inv, t00 * inv]]
+    m = [
+        [math.fsum(a[x_][u] * half[u][b] for u in range(2)) for b in range(2)]
+        for x_ in range(2)
+    ]
+    v = [[u0[i] * m[0][b] + u1[i] * m[1][b] for i in range(n)] for b in range(2)]
+    sign = -1.0 if heff[r0 * n + r1] < 0 else 1.0
+    w = [
+        0.5 * sign * (v[0][i] * v[1][j] + v[1][i] * v[0][j])
+        for i in range(n)
+        for j in range(n)
+    ]
+    return {"seam": [x, y], "roots": [r0, r1], "sign": sign, "w": w}
 
 
 def third_state_gap(energies: list[float], crossing: list[int]) -> float:
