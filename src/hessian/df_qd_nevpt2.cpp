@@ -1,15 +1,19 @@
 /// @file
-/// @brief df_qd_sc_nevpt2: the SC-QD-NEVPT2 analytic nuclear Hessian on a
-/// DF-SA-CASSCF (docs/nevpt2/nevpt2.tex Eqs. qd-hess and qd-hessW, Algorithm
-/// qdhess), assembled as df_sc_nevpt2 is, part for part, from merged ones:
-/// E_rho's at the rho-weighted RDMs; the multipliers' z terms (df_sacasscf_z's
-/// body with ThirdDerivative's action, every rotation among the roots a
-/// parameter); the zeta term (df_qd_zeta); E^corr[W] + Phi^SA as
-/// df_adjoint_xy at its adjoint, the Hessian-vector product between the
-/// tangents t_x of df_qd_nevpt2_tangents and the rotation cross terms; the
-/// kappa_oo rows in closed form; and for a state, term (ii)
-/// (df_qd_eigenvector_response). Every gap of Table qd-divisions is checked
-/// first and returned.
+/// @brief df_qd_sc_nevpt2 and df_qd_pc_nevpt2: the SC- and PC-QD-NEVPT2
+/// analytic nuclear Hessians on a DF-SA-CASSCF (docs/nevpt2/nevpt2.tex Eqs.
+/// qd-hess and qd-hessW, Algorithm qdhess), one assembly over each method's
+/// pieces, as df_sc_nevpt2 is, part for part, from merged ones: E_rho's at the
+/// rho-weighted RDMs; the multipliers' z terms (df_sacasscf_z's body with
+/// ThirdDerivative's action, every rotation among the roots a parameter); the
+/// zeta term (df_qd_zeta); E^corr[W] + Phi^SA as df_adjoint_xy at its
+/// adjoint, the Hessian-vector product between the tangents t_x of
+/// df_qd_nevpt2_tangents and the rotation cross terms; the kappa_oo rows in
+/// closed form; and for a state, term (ii) (df_qd_eigenvector_response).
+/// Every gap of Table qd-divisions is checked first and returned. SC's
+/// Lagrangian is nevpt2::qd_sc_lagrangian's and its product
+/// qd_sc_hessian_product's; PC's are qd_pc_gradient's and
+/// qd_pc_hessian_product's, every one at the same pc_floor, under
+/// df_pc_nevpt2's refusals on every model state.
 
 module free_breakfast.hessian;
 
@@ -41,25 +45,40 @@ import free_breakfast.mcscf.gradient;      // sa_gradient_weights
 import free_breakfast.mcscf.root_rotation; // kRootGapFloor
 import free_breakfast.response.zvector;
 import free_breakfast.nevpt2.density_fitting; // MoBlocks
-import free_breakfast.nevpt2.energy;          // sc_effective_hamiltonian, ScAmplitudes
-import free_breakfast.nevpt2.gradient;        // qd_inputs, qd_sc_lagrangian, qd_sc_hessian_product
-import :state_specific;                       // state_averaged_electrons, qd_response_eigen
+import free_breakfast.nevpt2.energy;   // sc_effective_hamiltonian, ScAmplitudes, PcClassEnergies
+import free_breakfast.nevpt2.gradient; // qd_inputs, qd_sc_lagrangian, qd_sc_hessian_product,
+                                       // qd_pc_energy, qd_pc_gradient, qd_pc_hessian_product
+import :state_specific;                // state_averaged_electrons, qd_response_eigen
 
 #include "diagnostics.h"
 
 namespace free_breakfast::hessian {
 
 // The coordinates' rows are orthonormal to this (df_sc_nevpt2's).
-constexpr double kQdScNevpt2OrthonormalTolerance = 1e-10;
+constexpr double kQdNevpt2OrthonormalTolerance = 1e-10;
 // df_sc_nevpt2's kScNevpt2MixStep: a coordinate that mixes a canonical
-// inactive pair within this (bohr) is refused.
+// inactive pair within this (bohr) is refused (SC).
 constexpr double kQdScNevpt2MixStep = 1e-3;
 // A coordinate whose total tangent is below this fraction of the largest
 // over the coordinates moves nothing: a rigid translation or rotation, its
-// tangent the CP solve's residual (1e-10) and round-off.
+// tangent the CP solve's residual (1e-10) and round-off (SC).
 constexpr double kQdScNevpt2RigidTangent = 1e-6;
 // W symmetric, and rho = diag W a mixture, to this.
-constexpr double kQdScNevpt2WeightTolerance = 1e-12;
+constexpr double kQdNevpt2WeightTolerance = 1e-12;
+// df_pc_nevpt2's kPcNevpt2Kept: a class's smallest kept metric eigenvalue,
+// over its largest, below which its second derivative is not attainable
+// (#917), on any model state (PC).
+constexpr double kQdPcNevpt2Kept = 1e-10;
+// df_pc_nevpt2's kPcNevpt2LiftStep: the step (bohr along a coordinate)
+// within which no model state's Schur lift may reach the cut (#817's
+// convention; PC).
+constexpr double kQdPcNevpt2LiftStep = 1e-3;
+// PC's Lagrangian's Z-vector is solved to this, SC's own (qd_sc_lagrangian
+// takes the nevpt2 module's 1e-10).
+constexpr double kQdNevpt2ZvectorTolerance = 1e-10;
+// PySCF's class order, PcClassEnergies'.
+constexpr std::array<std::string_view, 8> kQdPcNevpt2Classes{"Sr",   "Si",  "Sijrs", "Sijr",
+                                                             "Srsi", "Srs", "Sij",   "Sir"};
 
 // H_eff's correlation elements over qd_inputs, the smallest kept
 // |Delta_t + H_t / N_t| over every state (1 / max |c_t|, the amplitudes'),
@@ -137,17 +156,20 @@ Result<double> qd_sc_edge_gap(DeviceResources &res, const Molecule &molecule, co
   return more.energies[nroots] - solution.roots.energies[nroots - 1];
 }
 
-// The body of both forms: term (i) at W (@p state's W^P when given, else
-// @p w_given), then for a state term (ii).
-Result<QdScNevpt2Terms>
-qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-                   const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-                   const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-                   const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-                   const std::optional<int32_t> state, const std::span<const double> w_given,
-                   const int32_t batch, const std::span<const double> coordinates,
-                   const int32_t nfrozen) {
-  constexpr std::string_view kWho = "hessian::df_qd_sc_nevpt2";
+// The body of all four forms: term (i) at W (@p state's W^P when given, else
+// @p w_given), then for a state term (ii); SC's when @p pc_floor is empty,
+// else PC's at that floor (its reports beside the terms).
+Result<QdPcNevpt2Terms>
+qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+                const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+                const std::optional<int32_t> state, const std::span<const double> w_given,
+                const int32_t batch, const std::span<const double> coordinates,
+                const int32_t nfrozen, const std::optional<double> pc_floor) {
+  const std::string_view kWho = pc_floor ? "hessian::df_qd_pc_nevpt2" : "hessian::df_qd_sc_nevpt2";
+  const bool pc = pc_floor.has_value();
+  const double floor = pc_floor.value_or(0.0);
   if (nfrozen != 0) {
     return err_unsupported("{}: the analytic QD Hessian is all-electron, and {} core orbitals are "
                            "frozen",
@@ -179,17 +201,17 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
     for (size_t r = 0; r < nroots; ++r) {
       for (size_t s = 0; s < r; ++s) {
         if (!(std::abs(w_given[(r * nroots) + s] - w_given[(s * nroots) + r]) <=
-              kQdScNevpt2WeightTolerance)) {
+              kQdNevpt2WeightTolerance)) {
           return err_config("{}: W is not symmetric at ({}, {})", kWho, r, s);
         }
       }
       const double rho = w_given[r * (nroots + 1)];
-      if (!(rho >= -kQdScNevpt2WeightTolerance)) {
+      if (!(rho >= -kQdNevpt2WeightTolerance)) {
         return err_config("{}: W's diagonal is no mixture: rho_{} = {:g}", kWho, r, rho);
       }
       trace += rho;
     }
-    if (!(std::abs(trace - 1.0) <= kQdScNevpt2WeightTolerance)) {
+    if (!(std::abs(trace - 1.0) <= kQdNevpt2WeightTolerance)) {
       return err_config("{}: W's diagonal is no mixture: it sums to {:.15g}", kWho, trace);
     }
   }
@@ -214,7 +236,7 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
       for (size_t x = 0; x < n_x; ++x) {
         s += q[(i * n_x) + x] * q[(j * n_x) + x];
       }
-      if (!(std::abs(s - (i == j ? 1.0 : 0.0)) <= kQdScNevpt2OrthonormalTolerance)) {
+      if (!(std::abs(s - (i == j ? 1.0 : 0.0)) <= kQdNevpt2OrthonormalTolerance)) {
         return err_config("{}: coordinates {} and {} have overlap {:.3e}: not orthonormal rows",
                           kWho, i, j, s);
       }
@@ -314,8 +336,10 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
   };
 
   // 1. The gaps refused before anything runs: the ensemble's edge, and H_eff
-  // (its eigenpairs, and the smallest denominator) with the QD gap.
-  QdScNevpt2Terms out;
+  // (its eigenpairs; SC's smallest denominator, PC's kept classes, a class
+  // kept below kQdPcNevpt2Kept refused) with the QD gap.
+  QdPcNevpt2Terms result;
+  QdScNevpt2Terms &out = result.terms;
   for (size_t r = 0; r < nroots; ++r) {
     for (size_t s = r + 1; s < nroots; ++s) {
       out.root_gap =
@@ -330,9 +354,40 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
                          kWho, nroots, nroots - 1, out.edge_gap, mcscf::kRootGapFloor);
   }
   {
-    QdScForward forward =
-        FBF_TRY(qd_sc_forward(res, molecule, basis, aux, h, b, solution, ncore, ncas, batch));
-    out.min_denominator = forward.min_denominator;
+    QdScForward forward;
+    if (pc) {
+      const std::vector<nevpt2::PcClassEnergies> elements = FBF_TRY(nevpt2::qd_pc_energy(
+          res, alpha, beta, naux32, nmo32, nmo32, b.data(), solution.c.data(), h.data(), ncore,
+          ncas, weights, solution.roots.vectors.data(), batch, 0, floor));
+      std::vector<double> totals;
+      std::ranges::transform(elements, std::back_inserter(totals), &nevpt2::PcClassEnergies::total);
+      // Ket N's conditioning is the same at every [M n + N]: its diagonal's.
+      std::string thin;
+      for (size_t n = 0; n < nroots; ++n) {
+        const std::array<double, 8> &kept = elements[n * (nroots + 1)].kept;
+        result.kept.push_back(kept);
+        for (size_t cls = 0; cls < kept.size(); ++cls) {
+          // kept is 0 for Sijrs and a class with no tuple: no solve.
+          if (kept[cls] > 0.0 && kept[cls] < kQdPcNevpt2Kept) {
+            thin += std::format("{}state {}'s {} keeps {:.2e}", thin.empty() ? "" : ", ", n,
+                                kQdPcNevpt2Classes[cls], kept[cls]);
+          }
+        }
+      }
+      if (!thin.empty()) {
+        return err_numerical("{}: {} of its metric's largest eigenvalue at a pc_floor of {:g}, "
+                             "below {:g}, where PC's second derivative is not attainable (#917); "
+                             "a pc_floor of {:g} or more cuts it",
+                             kWho, thin, floor, kQdPcNevpt2Kept, kQdPcNevpt2Kept);
+      }
+      auto [values, vectors] = FBF_TRY(qd_response_eigen(res, solution.roots.energies, totals));
+      forward.eigenvalues = std::move(values);
+      forward.eigenvectors = std::move(vectors);
+    } else {
+      forward =
+          FBF_TRY(qd_sc_forward(res, molecule, basis, aux, h, b, solution, ncore, ncas, batch));
+      out.min_denominator = forward.min_denominator;
+    }
     out.eigenvalues = std::move(forward.eigenvalues);
     if (state) {
       const auto p = static_cast<size_t>(*state);
@@ -373,7 +428,7 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
   Buffers::device<double> t_c = FBF_TRY(zeroed(n_ci * k));
   Buffers::device<double> t_kappa = FBF_TRY(zeroed(nn * k));
   const QdNevpt2Tangents tangents = FBF_TRY(df_qd_nevpt2_tangents(
-      res, molecule, basis, classes, aux, h, b, l, solution, weights, ncore, ncas, cp.cp, false,
+      res, molecule, basis, classes, aux, h, b, l, solution, weights, ncore, ncas, cp.cp, pc,
       [&](const int32_t x0, const int32_t count, const double *h_dot, const double *b_dot,
           const double *c_dot, const double *kappa) -> Status {
         FBF_TRY(accumulate(nn32, x0, count, h_dot, t_h.data()));
@@ -383,6 +438,19 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
       }));
   out.max_theta = tangents.max_theta;
   out.max_kappa_oo = tangents.max_kappa_oo;
+  // PC's degenerate pair the displacement splits (SC's the tangents refuse):
+  // kappa_oo^x_pq is not a division the state determines, and the canonical
+  // orbitals PC reads are not differentiable there (df_pc_nevpt2's refusal).
+  if (!tangents.recorded.empty()) {
+    std::string named;
+    for (const DegeneratePair &d : tangents.recorded) {
+      named += std::format("{}(coordinate {}, orbitals {} and {}, gap {:.2e}, f {:.2e})",
+                           named.empty() ? "" : ", ", d.coordinate, d.p, d.q, d.gap, d.f);
+    }
+    return err_numerical("{}: the canonical inactive orbitals are not differentiable at a "
+                         "degenerate pair the displacement splits: {}",
+                         kWho, named);
+  }
   Buffers::device<double> t_nr = FBF_TRY(zeroed(nn * k));
   // x_A in the coordinates, size x k column-major: lambda_i = sum_x Q_ix x_x.
   Buffers::device<double> lambda_q = FBF_TRY(zeroed(size * k));
@@ -413,10 +481,20 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
   };
 
   // 3. The Lagrangian at W: E^corr[W] + Phi^SA's adjoint (h_bar, Lambda), z^c,
-  // zeta and the multipliers (Z, z, Theta). Then the inactive pairs' mixing
-  // (df_sc_nevpt2's t_mix rule, every coordinate named).
-  nevpt2::QdScLagrangian lagrangian = FBF_TRY(nevpt2::qd_sc_lagrangian(
-      res, molecule, basis, aux, h, b, solution, ncore, ncas, out.w, batch));
+  // zeta and the multipliers (Z, z, Theta), PC's from qd_pc_gradient's W form
+  // at the floor (its derivative passes unread). Then, for SC, the inactive
+  // pairs' mixing (df_sc_nevpt2's t_mix rule, every coordinate named): PC is
+  // invariant to that rotation.
+  nevpt2::QdScLagrangian lagrangian = FBF_TRY([&]() -> Result<nevpt2::QdScLagrangian> {
+    if (pc) {
+      nevpt2::QdPcGradient g = FBF_TRY(
+          nevpt2::qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
+                                 out.w, batch, kQdNevpt2ZvectorTolerance, 0, std::nullopt, floor));
+      return std::move(g.lagrangian);
+    }
+    return nevpt2::qd_sc_lagrangian(res, molecule, basis, aux, h, b, solution, ncore, ncas, out.w,
+                                    batch);
+  }());
   out.rho = lagrangian.rho;
   out.min_gap = lagrangian.zc.min_gap;
   out.max_zc = lagrangian.zc.max_z;
@@ -424,7 +502,7 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
   for (const double zeta : lagrangian.pairs.zeta) {
     out.max_zeta = std::max(out.max_zeta, std::abs(zeta));
   }
-  {
+  if (!pc) {
     const std::vector<double> epsilon = FBF_TRY(download(lagrangian.corr.epsilon.data(), nmo));
     const std::vector<double> kappa = FBF_TRY(download(t_kappa.data(), nn * k));
     const std::vector<double> kappa_nr = FBF_TRY(download(t_nr.data(), nn * k));
@@ -509,84 +587,196 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
     const size_t per_direction =
         sizeof(double) * ((16 * naux * nn) + (8 * nroots * nroots * act6) + (8 * n_ci) + (16 * nn));
     const size_t chunk = std::clamp<size_t>(free_bytes / 2 / per_direction, 1, k);
-    std::vector<bool> breaking(k, false);
-    for (size_t j0 = 0; j0 < k; j0 += chunk) {
-      const size_t count = std::min(chunk, k - j0);
-      const nevpt2::QdScHessianProduct p =
-          FBF_TRY(product(static_cast<int32_t>(count), t_h.data() + (j0 * nn),
-                          t_b.data() + (j0 * naux * nn), t_c.data() + (j0 * n_ci), {}));
-      for (size_t u = 0; u < count; ++u) {
-        FBF_TRY(pair_with(p.products[u], paired.data() + ((j0 + u) * k)));
-        for (const std::array<int64_t, 8> &ket : p.populated[u]) {
-          breaking[j0 + u] =
-              breaking[j0 + u] || std::ranges::any_of(ket, [](const int64_t n) { return n > 0; });
+    if (pc) {
+      // PC has no empty tuples and its product no partners: the product along
+      // every coordinate at the floor, with each direction's Schur lift on
+      // every model state. A chunk the product refuses (a ket whose class's
+      // null modes reach another model state at first order along a
+      // direction, the block (i, i)) is taken a direction at a time, each
+      // refused one named. Block (i, j) needs that overlap along both, so
+      // only pairs of such coordinates are taken again, j as i's partner.
+      const auto pc_product = [&](const size_t j0, const size_t count,
+                                  const nevpt2::MoDirections &partners) {
+        return nevpt2::qd_pc_hessian_product(res, alpha, beta, naux32, nmo32, nmo32, b.data(), c,
+                                             h.data(), ncore, ncas, weights, vectors, out.w,
+                                             lagrangian.zc.z.data(), batch,
+                                             {.count = static_cast<int32_t>(count),
+                                              .h = t_h.data() + (j0 * nn),
+                                              .b = t_b.data() + (j0 * naux * nn),
+                                              .c = t_c.data() + (j0 * n_ci)},
+                                             partners, false, floor);
+      };
+      result.lift_steps.assign(k, {});
+      const auto take = [&](const size_t j0, const nevpt2::QdPcHessianProduct &p) -> Status {
+        for (size_t u = 0; u < p.products.size(); ++u) {
+          FBF_TRY(pair_with(p.products[u], paired.data() + ((j0 + u) * k)));
+          result.lift_steps[j0 + u] = p.lift_steps[u];
         }
-      }
-      FBF_TRY(res.sync());
-    }
-    out.hvp = FBF_TRY(download(paired.data(), k * k));
-    // A coordinate that moves nothing (a rigid translation or rotation, whose
-    // tangent is the CP solve's residual and round-off) breaks no symmetry:
-    // the product's population floor is against its own scale, and against
-    // that round-off populates everything (df_sc_nevpt2's #952 rule, there
-    // against the largest scale; here by the tangent's size).
-    {
-      std::vector<double> size_of(k, 0.0);
-      for (size_t i = 0; i < k; ++i) {
-        double norm_h = 0.0;
-        double norm_b = 0.0;
-        double norm_c = 0.0;
-        FBF_TRY(
-            gpu_status(wwr::nrm2<double, int32_t>(blas, nn32, t_h.data() + (i * nn), 1, &norm_h)));
-        FBF_TRY(gpu_status(
-            wwr::nrm2<double, int32_t>(blas, bn32, t_b.data() + (i * naux * nn), 1, &norm_b)));
-        FBF_TRY(gpu_status(
-            wwr::nrm2<double, int32_t>(blas, n_ci32, t_c.data() + (i * n_ci), 1, &norm_c)));
-        size_of[i] = std::hypot(norm_h, norm_b, norm_c);
-      }
-      const double largest = std::ranges::max(size_of);
-      for (size_t i = 0; i < k; ++i) {
-        breaking[i] = breaking[i] && size_of[i] > kQdScNevpt2RigidTangent * largest;
-      }
-    }
-
-    // The pairs: directions (t_j, t_i), partners (t_i, t_j).
-    Buffers::device<double> two_h(2 * nn, res.device());
-    Buffers::device<double> two_b(2 * naux * nn, res.device());
-    Buffers::device<double> two_c(2 * n_ci, res.device());
-    Buffers::device<double> swap_h(2 * nn, res.device());
-    Buffers::device<double> swap_b(2 * naux * nn, res.device());
-    Buffers::device<double> swap_c(2 * n_ci, res.device());
-    for (size_t j = 0; j < k; ++j) {
-      for (size_t i = 0; i < j; ++i) {
-        if (!breaking[i] || !breaking[j]) {
+        return res.sync();
+      };
+      std::vector<size_t> own_refused;
+      std::vector<std::pair<std::pair<size_t, size_t>, std::string>> blocks;
+      for (size_t j0 = 0; j0 < k; j0 += chunk) {
+        const size_t count = std::min(chunk, k - j0);
+        auto p = pc_product(j0, count, {});
+        if (p.has_value()) {
+          FBF_TRY(take(j0, *p));
           continue;
         }
-        for (const auto &[stack, rows, two, swap] :
-             {std::tuple{t_h.data(), nn, two_h.data(), swap_h.data()},
-              std::tuple{t_b.data(), naux * nn, two_b.data(), swap_b.data()},
-              std::tuple{t_c.data(), n_ci, two_c.data(), swap_c.data()}}) {
-          FBF_TRY(copy(two, stack + (j * rows), rows, wwr::wwrMemcpyDeviceToDevice));
-          FBF_TRY(copy(two + rows, stack + (i * rows), rows, wwr::wwrMemcpyDeviceToDevice));
-          FBF_TRY(copy(swap, stack + (i * rows), rows, wwr::wwrMemcpyDeviceToDevice));
-          FBF_TRY(copy(swap + rows, stack + (j * rows), rows, wwr::wwrMemcpyDeviceToDevice));
+        if (p.error().kind != ErrorKind::Numerical) {
+          return std::unexpected(std::move(p.error()));
         }
-        auto p = product(2, two_h.data(), two_b.data(), two_c.data(),
-                         {.count = 2, .h = swap_h.data(), .b = swap_b.data(), .c = swap_c.data()});
-        if (!p.has_value()) {
+        for (size_t u = 0; u < count; ++u) {
+          auto one = count == 1 ? std::move(p) : pc_product(j0 + u, 1, {});
+          if (one.has_value()) {
+            FBF_TRY(take(j0 + u, *one));
+            continue;
+          }
+          if (one.error().kind != ErrorKind::Numerical) {
+            return std::unexpected(std::move(one.error()));
+          }
+          own_refused.push_back(j0 + u);
+          blocks.push_back({{j0 + u, j0 + u}, std::move(one.error().message)});
+        }
+      }
+      out.hvp = FBF_TRY(download(paired.data(), k * k));
+      for (size_t a = 0; a < own_refused.size(); ++a) {
+        for (size_t bb = a + 1; bb < own_refused.size(); ++bb) {
+          const size_t j = own_refused[bb];
+          auto p = pc_product(own_refused[a], 1,
+                              {.count = 1,
+                               .h = t_h.data() + (j * nn),
+                               .b = t_b.data() + (j * naux * nn),
+                               .c = t_c.data() + (j * n_ci)});
+          if (p.has_value()) {
+            continue;
+          }
           if (p.error().kind != ErrorKind::Numerical) {
             return std::unexpected(std::move(p.error()));
           }
-          refused.push_back(std::format("({}, {}): {}", i, j, p.error().message));
-          continue;
+          blocks.push_back({{own_refused[a], j}, std::move(p.error().message)});
         }
-        out.defect = std::max(
-            {out.defect, p->defect[0], p->defect[1], p->coupling_defect[0], p->coupling_defect[1]});
-        FBF_TRY(pair_with(p->products[0], paired.data()));
-        FBF_TRY(pair_with(p->products[1], paired.data() + k));
-        const std::vector<double> two_columns = FBF_TRY(download(paired.data(), 2 * k));
-        out.hvp[i + (k * j)] = two_columns[i];
-        out.hvp[j + (k * i)] = two_columns[k + j];
+      }
+      std::ranges::sort(blocks, {}, [](const auto &block) { return block.first; });
+      // df_pc_nevpt2's Schur-lift rule on every model state, along each
+      // coordinate the product took: a class's dropped mode that reaches the
+      // cut within kQdPcNevpt2LiftStep with no overlap to another state.
+      std::string branch;
+      for (size_t i = 0; i < k; ++i) {
+        for (size_t n = 0; n < result.lift_steps[i].size(); ++n) {
+          for (size_t cls = 0; cls < kQdPcNevpt2Classes.size(); ++cls) {
+            const double step = result.lift_steps[i][n][cls];
+            if (step < kQdPcNevpt2LiftStep) {
+              branch +=
+                  std::format("{}coordinate {} state {} class {} t* {:.3e} bohr",
+                              branch.empty() ? "" : ", ", i, n, kQdPcNevpt2Classes[cls], step);
+            }
+          }
+        }
+      }
+      std::string why;
+      if (!blocks.empty()) {
+        std::string named;
+        std::string each;
+        for (const auto &[at, message] : blocks) {
+          named += std::format("{}({}, {})", named.empty() ? "" : ", ", at.first, at.second);
+          each += std::format("; ({}, {}): {}", at.first, at.second, message);
+        }
+        why = std::format("PC-QD-NEVPT2 has no Hessian on the coordinate pairs {}: a model "
+                          "state's cut metric modes lift along both with a first-order overlap "
+                          "to another state, so their coupling misses a first-order piece "
+                          "(Eq. qd-pcfail){}",
+                          named, each);
+      }
+      if (!branch.empty()) {
+        why += std::format("{}the PC surface switches branch within {:g} bohr (a Schur lift "
+                           "reaches the cut, README \"The PC-NEVPT2 Hessian\"): {}",
+                           why.empty() ? "" : "; and ", kQdPcNevpt2LiftStep, branch);
+      }
+      if (!why.empty()) {
+        return err_numerical("{}: {}", kWho, why);
+      }
+    } else {
+      std::vector<bool> breaking(k, false);
+      for (size_t j0 = 0; j0 < k; j0 += chunk) {
+        const size_t count = std::min(chunk, k - j0);
+        const nevpt2::QdScHessianProduct p =
+            FBF_TRY(product(static_cast<int32_t>(count), t_h.data() + (j0 * nn),
+                            t_b.data() + (j0 * naux * nn), t_c.data() + (j0 * n_ci), {}));
+        for (size_t u = 0; u < count; ++u) {
+          FBF_TRY(pair_with(p.products[u], paired.data() + ((j0 + u) * k)));
+          for (const std::array<int64_t, 8> &ket : p.populated[u]) {
+            breaking[j0 + u] =
+                breaking[j0 + u] || std::ranges::any_of(ket, [](const int64_t n) { return n > 0; });
+          }
+        }
+        FBF_TRY(res.sync());
+      }
+      out.hvp = FBF_TRY(download(paired.data(), k * k));
+      // A coordinate that moves nothing (a rigid translation or rotation, whose
+      // tangent is the CP solve's residual and round-off) breaks no symmetry:
+      // the product's population floor is against its own scale, and against
+      // that round-off populates everything (df_sc_nevpt2's #952 rule, there
+      // against the largest scale; here by the tangent's size).
+      {
+        std::vector<double> size_of(k, 0.0);
+        for (size_t i = 0; i < k; ++i) {
+          double norm_h = 0.0;
+          double norm_b = 0.0;
+          double norm_c = 0.0;
+          FBF_TRY(gpu_status(
+              wwr::nrm2<double, int32_t>(blas, nn32, t_h.data() + (i * nn), 1, &norm_h)));
+          FBF_TRY(gpu_status(
+              wwr::nrm2<double, int32_t>(blas, bn32, t_b.data() + (i * naux * nn), 1, &norm_b)));
+          FBF_TRY(gpu_status(
+              wwr::nrm2<double, int32_t>(blas, n_ci32, t_c.data() + (i * n_ci), 1, &norm_c)));
+          size_of[i] = std::hypot(norm_h, norm_b, norm_c);
+        }
+        const double largest = std::ranges::max(size_of);
+        for (size_t i = 0; i < k; ++i) {
+          breaking[i] = breaking[i] && size_of[i] > kQdScNevpt2RigidTangent * largest;
+        }
+      }
+
+      // The pairs: directions (t_j, t_i), partners (t_i, t_j).
+      Buffers::device<double> two_h(2 * nn, res.device());
+      Buffers::device<double> two_b(2 * naux * nn, res.device());
+      Buffers::device<double> two_c(2 * n_ci, res.device());
+      Buffers::device<double> swap_h(2 * nn, res.device());
+      Buffers::device<double> swap_b(2 * naux * nn, res.device());
+      Buffers::device<double> swap_c(2 * n_ci, res.device());
+      for (size_t j = 0; j < k; ++j) {
+        for (size_t i = 0; i < j; ++i) {
+          if (!breaking[i] || !breaking[j]) {
+            continue;
+          }
+          for (const auto &[stack, rows, two, swap] :
+               {std::tuple{t_h.data(), nn, two_h.data(), swap_h.data()},
+                std::tuple{t_b.data(), naux * nn, two_b.data(), swap_b.data()},
+                std::tuple{t_c.data(), n_ci, two_c.data(), swap_c.data()}}) {
+            FBF_TRY(copy(two, stack + (j * rows), rows, wwr::wwrMemcpyDeviceToDevice));
+            FBF_TRY(copy(two + rows, stack + (i * rows), rows, wwr::wwrMemcpyDeviceToDevice));
+            FBF_TRY(copy(swap, stack + (i * rows), rows, wwr::wwrMemcpyDeviceToDevice));
+            FBF_TRY(copy(swap + rows, stack + (j * rows), rows, wwr::wwrMemcpyDeviceToDevice));
+          }
+          auto p =
+              product(2, two_h.data(), two_b.data(), two_c.data(),
+                      {.count = 2, .h = swap_h.data(), .b = swap_b.data(), .c = swap_c.data()});
+          if (!p.has_value()) {
+            if (p.error().kind != ErrorKind::Numerical) {
+              return std::unexpected(std::move(p.error()));
+            }
+            refused.push_back(std::format("({}, {}): {}", i, j, p.error().message));
+            continue;
+          }
+          out.defect = std::max({out.defect, p->defect[0], p->defect[1], p->coupling_defect[0],
+                                 p->coupling_defect[1]});
+          FBF_TRY(pair_with(p->products[0], paired.data()));
+          FBF_TRY(pair_with(p->products[1], paired.data() + k));
+          const std::vector<double> two_columns = FBF_TRY(download(paired.data(), 2 * k));
+          out.hvp[i + (k * j)] = two_columns[i];
+          out.hvp[j + (k * i)] = two_columns[k + j];
+        }
       }
     }
   }
@@ -610,7 +800,7 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
   // energy's.
   const std::span<const double> rho = out.rho;
   for (const double r : rho) {
-    if (!(r >= -kQdScNevpt2WeightTolerance)) {
+    if (!(r >= -kQdNevpt2WeightTolerance)) {
       return err_config("{}: rho = diag W is no mixture ({})", kWho, rho);
     }
   }
@@ -828,8 +1018,9 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
 
   // 10. Term (ii) for a state, in the coordinates.
   if (state) {
-    const QdEigenvectorResponse response = FBF_TRY(df_qd_eigenvector_response(
-        res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, false, batch));
+    const QdEigenvectorResponse response = FBF_TRY(
+        df_qd_eigenvector_response(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
+                                   ncas, pc, batch, kQdNevpt2ZvectorTolerance, floor));
     out.term_ii = to_coordinates(std::span<const double>(response.term)
                                      .subspan(static_cast<size_t>(*state) * n_x * n_x, n_x * n_x));
   }
@@ -888,7 +1079,7 @@ qd_sc_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
       }
     }
   }
-  return out;
+  return result;
 }
 
 Result<QdScNevpt2Terms>
@@ -898,8 +1089,10 @@ df_qd_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &
                 const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
                 const int32_t state, const int32_t batch, const std::span<const double> coordinates,
                 const int32_t nfrozen) {
-  return qd_sc_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
-                            state, {}, batch, coordinates, nfrozen);
+  QdPcNevpt2Terms t =
+      FBF_TRY(qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
+                              state, {}, batch, coordinates, nfrozen, std::nullopt));
+  return std::move(t.terms);
 }
 
 Result<QdScNevpt2Terms>
@@ -909,8 +1102,33 @@ df_qd_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &
                 const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
                 const std::span<const double> w, const int32_t batch,
                 const std::span<const double> coordinates, const int32_t nfrozen) {
-  return qd_sc_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
-                            std::nullopt, w, batch, coordinates, nfrozen);
+  QdPcNevpt2Terms t =
+      FBF_TRY(qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
+                              std::nullopt, w, batch, coordinates, nfrozen, std::nullopt));
+  return std::move(t.terms);
+}
+
+Result<QdPcNevpt2Terms>
+df_qd_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+                const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+                const int32_t state, const int32_t batch, const std::span<const double> coordinates,
+                const double pc_floor, const int32_t nfrozen) {
+  return qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, state,
+                         {}, batch, coordinates, nfrozen, pc_floor);
+}
+
+Result<QdPcNevpt2Terms>
+df_qd_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+                const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+                const std::span<const double> w, const int32_t batch,
+                const std::span<const double> coordinates, const double pc_floor,
+                const int32_t nfrozen) {
+  return qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
+                         std::nullopt, w, batch, coordinates, nfrozen, pc_floor);
 }
 
 } // namespace free_breakfast::hessian

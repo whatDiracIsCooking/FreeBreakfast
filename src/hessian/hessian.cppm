@@ -1331,17 +1331,21 @@ struct QdEigenvectorResponse {
 ///
 /// One root returns its eigenvalue, R = 1 and empty sums (zero term, zero
 /// dR), with no gradient call. The inputs are nevpt2::qd_sc_coupling's less
-/// the pair, all-electron; @p batch is the effective Hamiltonian's.
+/// the pair, all-electron; @p batch is the effective Hamiltonian's, and
+/// @p pc_floor PC's conditioning floor (EnergyInputs::pc_floor), read by
+/// H_eff and every coupling alike (unread for SC).
 ///
 /// @return Term (ii) and its parts; InvalidConfig for a tolerance not
 ///         positive; Numerical for a degenerate QD pair; or the first error
 ///         of nevpt2::qd_inputs, the effective Hamiltonian (a refused PC
 ///         class among them) or the several-W gradient, unchanged.
-[[nodiscard]] Result<QdEigenvectorResponse> df_qd_eigenvector_response(
-    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-    std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
-    const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
-    int32_t ncore, int32_t ncas, bool pc, int32_t batch = 0, double zvector_tolerance = 1e-10);
+[[nodiscard]] Result<QdEigenvectorResponse>
+df_qd_eigenvector_response(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                           std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                           const SphericalMatrixAO &h, const Buffers::device<double> &b,
+                           const double *l, const mcscf::Solution &solution, int32_t ncore,
+                           int32_t ncas, bool pc, int32_t batch = 0,
+                           double zvector_tolerance = 1e-10, double pc_floor = 0.0);
 
 /// @brief The SC-QD-NEVPT2 analytic nuclear Hessian and its parts, each k x k
 /// in the call's k coordinates (hartree / bohr^2), column-major, with every
@@ -1376,7 +1380,8 @@ struct QdScNevpt2Terms {
   std::vector<double> skeleton;
   /// @brief <t_A, HVP t_B>, nevpt2::qd_sc_hessian_product's product along t_B
   /// paired with t_A (a pair that both populate an empty tuple with each as
-  /// the other's partner); not symmetrized.
+  /// the other's partner; @ref df_qd_pc_nevpt2's, qd_pc_hessian_product's);
+  /// not symmetrized.
   std::vector<double> hvp;
   /// @brief The rotation cross terms, as ScNevpt2Terms::rotation_tau and
   /// rotation_kappa.
@@ -1501,6 +1506,76 @@ df_qd_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &
                 const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
                 std::span<const double> w, int32_t batch = 0,
                 std::span<const double> coordinates = {}, int32_t nfrozen = 0);
+
+/// @brief The PC-QD-NEVPT2 analytic nuclear Hessian and its parts: @ref
+/// df_qd_sc_nevpt2's assembly over PC's pieces, in its fields, and PC's
+/// conditioning on every model state.
+struct QdPcNevpt2Terms {
+  /// @brief The Hessian, its parts, the gaps and the reports, as
+  /// df_qd_sc_nevpt2 returns them: hvp is nevpt2::qd_pc_hessian_product's
+  /// (no partners), the multipliers and E^corr[W] + Phi^SA's adjoint
+  /// nevpt2::qd_pc_gradient's, term (ii) PC's, all at the call's pc_floor.
+  /// SC's min_denominator, defect and mix_step are not PC's and stay at their
+  /// defaults.
+  QdScNevpt2Terms terms;
+  /// @brief Per model state N, each class's smallest kept metric eigenvalue
+  /// over its largest (nevpt2::PcClassEnergies::kept, ket N's) at the floor;
+  /// 0 for Sijrs and a class with no tuple.
+  std::vector<std::array<double, 8>> kept;
+  /// @brief [i][N][class]: t* (bohr) along coordinate i at which ket N's
+  /// class's Schur lift reaches the cut (nevpt2::QdPcHessianProduct's);
+  /// infinite where nothing rises.
+  std::vector<std::vector<std::array<double, 8>>> lift_steps;
+};
+
+/// @brief The PC-QD-NEVPT2 analytic nuclear Hessian of QD state @p state
+/// (PC's H_eff eigenvalues ascending) on the DF-SA-CASSCF @p solution
+/// (docs/nevpt2/nevpt2.tex Eq. qd-hess, Algorithm qdhess): @ref
+/// df_qd_sc_nevpt2's state form, part for part, with PC's pieces --
+/// nevpt2::qd_pc_energy's H_eff, nevpt2::qd_pc_gradient's Lagrangian at
+/// W^P, nevpt2::qd_pc_hessian_product's product and PC's term (ii) -- every
+/// one at @p pc_floor (EnergyInputs::pc_floor), so all of them differentiate
+/// one energy (README.md "The PC-QD-NEVPT2 Hessian").
+///
+/// **Refused before anything runs** (Numerical, naming what): the SC form's
+/// gaps (a QD gap, two CASSCF roots, the ensemble's edge, each under
+/// mcscf::kRootGapFloor), and a class of any model state kept below 1e-10 of
+/// its metric's largest eigenvalue (naming the state, the class, its kept and
+/// @p pc_floor: PC's second derivative is not attainable there, #917);
+/// @p nfrozen other than 0 (Unsupported). **After the CP solve**, as
+/// @ref df_pc_nevpt2 refuses, on every model state: a degenerate inactive
+/// pair a coordinate splits (@ref df_qd_nevpt2_tangents' records); the pairs
+/// of coordinates (i, j) along both of which a ket's cut metric modes lift
+/// with a first-order overlap to another state (nevpt2::qd_pc_hessian_product's
+/// refusal, Eq. qd-pcfail), with each one's t*; and a coordinate along which
+/// any state's Schur lift reaches the cut within 1e-3 bohr; all named
+/// together.
+///
+/// The inputs are @ref df_qd_sc_nevpt2's, and @p pc_floor @ref df_pc_nevpt2's.
+///
+/// @return The Hessian, its parts, the gaps and PC's conditioning;
+///         InvalidConfig as @ref df_qd_sc_nevpt2's; the refusals above; or
+///         the first error of a part (a class qd_pc_energy refuses among
+///         them).
+[[nodiscard]] Result<QdPcNevpt2Terms>
+df_qd_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+                const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t state,
+                int32_t batch = 0, std::span<const double> coordinates = {}, double pc_floor = 0.0,
+                int32_t nfrozen = 0);
+
+/// @brief Term (i) of the PC-QD-NEVPT2 nuclear Hessian at a fixed symmetric
+/// weight matrix @p w (n x n row-major), d^2 E[W] / dq_i dq_j at fixed W
+/// (Eq. qd-hessW): @ref df_qd_sc_nevpt2's W form with the state form's PC
+/// pieces above. rho = diag W must be a mixture. The refusals are the state
+/// form's but the QD gap; @p pc_floor is its.
+[[nodiscard]] Result<QdPcNevpt2Terms> df_qd_pc_nevpt2(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
+    int32_t ncore, int32_t ncas, std::span<const double> w, int32_t batch = 0,
+    std::span<const double> coordinates = {}, double pc_floor = 0.0, int32_t nfrozen = 0);
 
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}

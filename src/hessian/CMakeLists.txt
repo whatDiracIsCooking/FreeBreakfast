@@ -27,7 +27,7 @@ free_breakfast_add_cxx_module_library(
   df_qd_nevpt2_tangents.cpp
   df_qd_zeta.cpp
   df_qd_eigenvector_response.cpp
-  df_qd_sc_nevpt2.cpp
+  df_qd_nevpt2.cpp
   df_sc_nevpt2.cpp
   df_pc_nevpt2.cpp
   df_adjoint_xy.cpp
