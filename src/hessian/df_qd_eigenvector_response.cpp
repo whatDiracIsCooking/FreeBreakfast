@@ -69,13 +69,24 @@ df_qd_eigenvector_response(DeviceResources &res, const Molecule &molecule, const
                            const SphericalMatrixAO &h, const Buffers::device<double> &b,
                            const double *l, const mcscf::Solution &solution, const int32_t ncore,
                            const int32_t ncas, const bool pc, const int32_t batch,
-                           const double zvector_tolerance, const double pc_floor) {
+                           const double zvector_tolerance, const double pc_floor,
+                           const std::optional<std::array<int32_t, 2>> pair) {
   constexpr std::string_view kWho = "hessian::df_qd_eigenvector_response";
   if (!(zvector_tolerance > 0.0)) {
     return err_config("{}: a Z-vector tolerance of {:g}", kWho, zvector_tolerance);
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const size_t n = solution.roots.energies.size();
+  if (pair && ((*pair)[0] < 0 || (*pair)[1] < 0 || std::cmp_greater_equal((*pair)[0], n) ||
+               std::cmp_greater_equal((*pair)[1], n) || (*pair)[0] == (*pair)[1])) {
+    return err_config("{}: ({}, {}) is not a pair of two of the {} QD states", kWho, (*pair)[0],
+                      (*pair)[1], n);
+  }
+  // The crossing pair (P, Q) in either order: its gap is never divided by.
+  const auto excluded = [&pair](const size_t a, const size_t c) {
+    return pair && ((std::cmp_equal(a, (*pair)[0]) && std::cmp_equal(c, (*pair)[1])) ||
+                    (std::cmp_equal(a, (*pair)[1]) && std::cmp_equal(c, (*pair)[0])));
+  };
 
   // H_eff's correlation elements; a refused PC class is the walk's error.
   std::vector<double> totals;
@@ -101,10 +112,14 @@ df_qd_eigenvector_response(DeviceResources &res, const Molecule &molecule, const
       }));
   auto [eigenvalues, r] = FBF_TRY(qd_response_eigen(res, solution.roots.energies, totals));
 
-  // Every pair's gap, before any adjoint: term (ii) divides by each.
+  // Every pair's gap but the crossing pair's, before any adjoint: term (ii)
+  // divides by each.
   double qd_gap = std::numeric_limits<double>::infinity();
   for (size_t p = 0; p < n; ++p) {
     for (size_t q = p + 1; q < n; ++q) {
+      if (excluded(p, q)) {
+        continue;
+      }
       const double gap = std::abs(eigenvalues[q] - eigenvalues[p]);
       if (gap < mcscf::kRootGapFloor) {
         return err_numerical("{}: QD states {} and {} are {:.3e} Eh apart, under {:g}: term (ii) "
@@ -180,7 +195,7 @@ df_qd_eigenvector_response(DeviceResources &res, const Molecule &molecule, const
     double *const term = out.term.data() + (p * nx * nx);
     double *const dr = out.dr.data() + (p * n * nx);
     for (size_t q = 0; q < n; ++q) {
-      if (q == p) {
+      if (q == p || excluded(p, q)) {
         continue;
       }
       const double *const hpq = out.couplings.data() + (pair_of(p, q) * nx);

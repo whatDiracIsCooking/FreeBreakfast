@@ -1335,25 +1335,32 @@ struct QdEigenvectorResponse {
 /// @p pc_floor PC's conditioning floor (EnergyInputs::pc_floor), read by
 /// H_eff and every coupling alike (unread for SC).
 ///
+/// With @p pair, a crossing pair (P, Q) (Eqs. qd-pair and qd-lowdin): its
+/// gap is neither refused nor divided by, every other pair's still is; h_PQ
+/// is still returned (in the call's basis of the eigenspace), and P's and Q's
+/// term and dR sum over S not in {P, Q} alone, the outside states.
+///
 /// @return Term (ii) and its parts; InvalidConfig for a tolerance not
-///         positive; Numerical for a degenerate QD pair; or the first error
-///         of nevpt2::qd_inputs, the effective Hamiltonian (a refused PC
-///         class among them) or the several-W gradient, unchanged.
-[[nodiscard]] Result<QdEigenvectorResponse>
-df_qd_eigenvector_response(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-                           std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-                           const SphericalMatrixAO &h, const Buffers::device<double> &b,
-                           const double *l, const mcscf::Solution &solution, int32_t ncore,
-                           int32_t ncas, bool pc, int32_t batch = 0,
-                           double zvector_tolerance = 1e-10, double pc_floor = 0.0);
+///         positive or a @p pair not two distinct states; Numerical for a
+///         degenerate QD pair; or the first error of nevpt2::qd_inputs, the
+///         effective Hamiltonian (a refused PC class among them) or the
+///         several-W gradient, unchanged.
+[[nodiscard]] Result<QdEigenvectorResponse> df_qd_eigenvector_response(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
+    int32_t ncore, int32_t ncas, bool pc, int32_t batch = 0, double zvector_tolerance = 1e-10,
+    double pc_floor = 0.0, std::optional<std::array<int32_t, 2>> pair = std::nullopt);
 
 /// @brief The SC-QD-NEVPT2 analytic nuclear Hessian and its parts, each k x k
 /// in the call's k coordinates (hartree / bohr^2), column-major, with every
 /// gap it divides by.
 struct QdScNevpt2Terms {
   /// @brief The parts below summed and symmetrized, (H + H^T) / 2, exactly
-  /// symmetric: d^2 E_P / dq_i dq_j for a state (term (i) + term (ii)), or
-  /// term (i) alone, d^2 E[W] at fixed W, for a weight matrix.
+  /// symmetric: d^2 E_P / dq_i dq_j for a state (term (i) + term (ii)),
+  /// term (i) alone, d^2 E[W] at fixed W, for a weight matrix, or at a
+  /// crossing term (i) at W = sum_XY c_XY R_X R_Y^T plus the outside-state
+  /// sum (@ref df_qd_sc_nevpt2_crossing).
   std::vector<double> hessian;
   /// @brief max |H - H^T| of the sum before it was symmetrized.
   double asymmetry{0.0};
@@ -1388,7 +1395,8 @@ struct QdScNevpt2Terms {
   std::vector<double> rotation_tau;
   std::vector<double> rotation_kappa;
   /// @brief Term (ii), @ref df_qd_eigenvector_response's for the state, in the
-  /// coordinates; empty for a weight matrix.
+  /// coordinates; at a crossing the outside-state sum over S not in {P, Q}
+  /// in its place; empty for a weight matrix.
   std::vector<double> term_ii;
   /// @brief max |term (ii)| over max |hessian|; 0 for a weight matrix.
   double term_ii_share{0.0};
@@ -1398,7 +1406,9 @@ struct QdScNevpt2Terms {
   std::vector<double> w;
   std::vector<double> rho;
   /// @brief Table qd-divisions' gaps (hartree): the smallest |E_Q - E_P|, Q
-  /// != P (infinite for a weight matrix), the smallest CASSCF root gap, the
+  /// != P (infinite for a weight matrix; at a crossing the smallest between
+  /// the pair and an outside state, the pair's own gap not among them), the
+  /// smallest CASSCF root gap, the
   /// ensemble's edge E_{n+1} - E_n (infinite when the active space has no
   /// further root), and the smallest core-core or virtual-virtual SA-Fock gap.
   double qd_gap{std::numeric_limits<double>::infinity()};
@@ -1485,10 +1495,13 @@ df_qd_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &
 ///       + <t_A, HVP t_B>                  (nevpt2::qd_sc_hessian_product)
 ///       + the rotation cross terms        (as df_sc_nevpt2's)
 ///
-/// rho = diag W must be a mixture, each >= 0 and summing to 1 (E_rho's core
-/// energy at weight 1; a W of any other trace is a sum of these by
-/// linearity). The refusals and the reports are the state form's but the QD
-/// gap (infinite here) and term (ii) (empty).
+/// W is any symmetric matrix: rho = diag W need not be a mixture. E_rho's
+/// share, whose pieces take the core at weight 1, is taken at rho = a p+ -
+/// b p- by linearity, p+ and p- the mixtures of rho's positive and negative
+/// parts (a second pass only when rho has a negative entry, as a seam's W
+/// of Eq. qd-lowdin, trace 0, does); every other part is linear in W and
+/// takes it as it stands. The refusals and the reports are the state form's
+/// but the QD gap (infinite here) and term (ii) (empty).
 ///
 /// The parts run one after another, each freeing what it held. Held
 /// throughout: t_i's (h, B, {c_r}) and kappa (k (naux nmo^2 + 2 nmo^2 + n
@@ -1496,9 +1509,8 @@ df_qd_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &
 /// adjoint (naux nmo^2).
 ///
 /// @return The Hessian and its parts; InvalidConfig for a W not n^2 long,
-///         not symmetric to 1e-12 or whose diagonal is no mixture, and the
-///         state form's input refusals; its other refusals; or the first
-///         error of a part.
+///         not finite or not symmetric to 1e-12, and the state form's input
+///         refusals; its other refusals; or the first error of a part.
 [[nodiscard]] Result<QdScNevpt2Terms>
 df_qd_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                 std::span<const PrimitivePairClass> classes, const BasisSet &aux,
@@ -1568,13 +1580,65 @@ df_qd_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &
 /// @brief Term (i) of the PC-QD-NEVPT2 nuclear Hessian at a fixed symmetric
 /// weight matrix @p w (n x n row-major), d^2 E[W] / dq_i dq_j at fixed W
 /// (Eq. qd-hessW): @ref df_qd_sc_nevpt2's W form with the state form's PC
-/// pieces above. rho = diag W must be a mixture. The refusals are the state
-/// form's but the QD gap; @p pc_floor is its.
+/// pieces above, at any symmetric W. The refusals are the state form's but
+/// the QD gap; @p pc_floor is its.
 [[nodiscard]] Result<QdPcNevpt2Terms> df_qd_pc_nevpt2(
     DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
     std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
     const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
     int32_t ncore, int32_t ncas, std::span<const double> w, int32_t batch = 0,
+    std::span<const double> coordinates = {}, double pc_floor = 0.0, int32_t nfrozen = 0);
+
+/// @brief The SC-QD-NEVPT2 Hessian at a crossing of QD states @p p and @p q
+/// (docs/nevpt2/nevpt2.tex Eqs. qd-pair and qd-lowdin), where E_P and E_Q
+/// have none (a cone) but every other state stays gapped: for a symmetric
+/// 2 x 2 @p c, row-major, over a basis V_0, V_1 of the pair's eigenspace,
+///
+///     H[c] = term (i) at W = sum_ab c_ab V_a V_b^T             (the W form)
+///          + sum_XY c~_XY sum_{S not in {P, Q}} (h_XS,A h_SY,B + h_XS,B h_SY,A)
+///                          (1 / (E_X - E_S) + 1 / (E_Y - E_S)) / 2,
+///
+/// X, Y over {p, q}, R and h_XS = G(W^XS) @ref df_qd_eigenvector_response's
+/// with the pair excluded, V = R M and c~ = M c M^T c in R's basis.
+/// **V is set by the eigenspace's projector alone**: the eigensolver's R_P,
+/// R_Q are any basis of it (a 1e-14 rounding of H_eff turns them by 1e-7
+/// rad at a 1e-7 gap), so M = A (A^T A)^(-1/2), A_ab = R_{X_a}[r_b], makes V
+/// the Loewdin-orthonormalized projections of CASSCF roots r_0 < r_1 (the
+/// pair of roots whose |det A| is largest) onto it, the same from one call
+/// to the next. c = 1 is the pair's sum d^2 (E_P + E_Q), Eq. qd-pair, in any
+/// basis, and defined away from a crossing too (there the sum of the two
+/// states' Hessians). c = sym(e_a e_b^T) is element (a, b) of the seam's
+/// second-order effective 2 x 2, Eq. qd-lowdin (at E_X = E_Y = E_0; c =
+/// [[0, 1/2], [1/2, 0]] its off-diagonal, term (i) at the seam's W = 1/2
+/// (V_0 V_1^T + V_1 V_0^T)): its elements are V's, its eigenvalues are
+/// basis-free. term_ii holds the outside-state sum; qd_gap the smallest
+/// |E_X - E_S|; w the W.
+///
+/// **Refused before anything runs**, beside the state form's gaps but the
+/// pair's own: an outside state within mcscf::kRootGapFloor of P or Q
+/// (Numerical, naming it and the pair's state; the pair's eigenspace is not
+/// isolated there), and two outside states within it of each other (@ref
+/// df_qd_eigenvector_response's refusal). The other refusals are the W
+/// form's. The couplings run first, then term (i).
+///
+/// @return H[c] and its parts; InvalidConfig for (p, q) not two distinct QD
+///         states or @p c not 4 finite doubles symmetric to 1e-12, and the W
+///         form's; the refusals above; or the first error of a part.
+[[nodiscard]] Result<QdScNevpt2Terms> df_qd_sc_nevpt2_crossing(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
+    int32_t ncore, int32_t ncas, int32_t p, int32_t q, std::span<const double> c, int32_t batch = 0,
+    std::span<const double> coordinates = {}, int32_t nfrozen = 0);
+
+/// @brief The PC-QD-NEVPT2 Hessian at a crossing of QD states @p p and @p q:
+/// @ref df_qd_sc_nevpt2_crossing's form over PC's pieces, at @p pc_floor,
+/// with @ref df_qd_pc_nevpt2's refusals but the pair's own gap.
+[[nodiscard]] Result<QdPcNevpt2Terms> df_qd_pc_nevpt2_crossing(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
+    int32_t ncore, int32_t ncas, int32_t p, int32_t q, std::span<const double> c, int32_t batch = 0,
     std::span<const double> coordinates = {}, double pc_floor = 0.0, int32_t nfrozen = 0);
 
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
