@@ -273,7 +273,10 @@ active_strings(DeviceResources &res, const std::string_view who, const Molecule 
 // solve; more are one response::zvectors (Schur) over the one Hessian, split
 // into a ZVector per column. Either way each column's true residual (one
 // more product) is held to @p tolerance (Numerical naming @p who and the
-// column): the conjugate gradients stop on their recurrence (#786).
+// column): the conjugate gradients stop on their recurrence (#786), and a
+// column whose true residual then misses is restarted from it once, to half
+// the tolerance (response/zvector/README.md "The restart", #1108), so a
+// refusal here is a floor, not a recurrence that landed on the bar.
 Result<std::vector<response::ZVector>>
 lagrangian_zvector(DeviceResources &res, const std::string_view who, const SphericalMatrixAO &h,
                    const Buffers::device<double> &b, const int32_t naux,
