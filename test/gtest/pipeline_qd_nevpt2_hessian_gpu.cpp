@@ -182,7 +182,7 @@ void expect_skew(std::string_view variant) {
                   h, variant == "pc" ? "pc_floor = 0.0\n" : "");
   const auto [ran, out] = run_hessian(kSkew, variant, kSkewState, hessian, kSkewConvTolGrad);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
-  ASSERT_FALSE(out.is_null());
+  ASSERT_FALSE(out.is_null()) << (ran.has_value() ? std::string{} : ran.error().message);
   EXPECT_EQ(out.at("variant").get<std::string>(), variant);
   EXPECT_EQ(out.at("ladder").at("steps").at(0).get<double>(), h);
   EXPECT_EQ(out.at("qd").at("state").get<std::int32_t>(), kSkewState);
@@ -248,7 +248,7 @@ void expect_coupled(std::int32_t state) {
   }
   hessian += "]\n";
   const auto [ran, out] = run_hessian(kCoupled, "sc", state, hessian, kCoupledConvTolGrad);
-  ASSERT_FALSE(out.is_null());
+  ASSERT_FALSE(out.is_null()) << (ran.has_value() ? std::string{} : ran.error().message);
   EXPECT_TRUE(out.at("failing_pairs").empty()) << out.at("failing_pairs").dump();
   EXPECT_EQ(out.at("bilinearity").size(), 15U);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
