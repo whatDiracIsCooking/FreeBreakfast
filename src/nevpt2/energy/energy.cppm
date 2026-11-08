@@ -966,4 +966,56 @@ struct PcEffectiveHamiltonianAdjoint {
     const std::function<Status(int64_t bra, int64_t ket, const EnergyBars &transition)>
         &transition);
 
+/// @brief pc_effective_hamiltonian_tangent's result: the matrix it walked,
+/// and Ċ per element and class.
+struct PcEffectiveHamiltonianTangent {
+  /// @brief The n² elements, as pc_effective_hamiltonian computes them.
+  std::vector<PcClassEnergies> elements;
+  /// @brief [u][I n + J][k]: Ċ_IJ per class along direction u; on the
+  /// diagonal state J's pc_class_energies_tangent Ė, Sijrs's there alone.
+  std::vector<std::vector<std::array<double, 8>>> element_dot;
+  /// @brief [u][I n + J]: Σ_k element_dot[u][I n + J][k].
+  std::vector<std::vector<double>> total_dot;
+};
+
+/// @brief The PC forward tangent of pc_effective_hamiltonian along each of
+/// m directions: Ċ per element and class (docs/nevpt2/nevpt2.tex
+/// Eq. qd-pcfinish's first order, over Eq. qd-rdm2's RDM tangents).
+///
+/// @p pairs and @p directions are sc_effective_hamiltonian_tangent's: every
+/// pair given, m n² directions, [u n² + I n + J] pair (I, J)'s along u, its
+/// RDMs' tangents those of the pair's transition RDMs and every other
+/// field and the blocks' the same in every pair of one direction (checked).
+///
+/// Per class, every ket J's solve is the energy's, reused, with no
+/// eigenvalue or eigenvector derivative. A coupling is -c b_{I←J}ᵀ A_J⁺ b_J,
+/// A_J = K_J + Δ S_J, so with x = A_J⁺ b_J and u = A_J⁺ b_{I←J} its tangent
+/// is -c (xᵀ ḃ_{I←J} + uᵀ ḃ_J - uᵀ Ȧ_J x), read in J's eigenbasis as
+/// pc_class_energies_tangent reads it: ẏ_{I←J} and ẏ_J the slab einsums at
+/// their operands' tangents, and Ȧ_J's projection U_Jᵀ (K̇_J + Δ Ṡ_J) U_J +
+/// Δ̇. Ṡ_J, K̇_J, Ṡ₁_J are ket J's builders' polarization along its own
+/// pair's directions, and S^{(J,I)} and S₁^{(J,I)}, which T_{I←J} =
+/// S^{(J,I)ᵀ} U_J reads unsymmetrized, along pair (J, I)'s. Where S_J's cut
+/// drops real modes U_J rotates into them, U̇_J = V_n Θ' as at n = 1, and
+/// each transition row takes it through its leak V_nᵀ S^{(J,I)}: the
+/// forward side of pc_effective_hamiltonian_adjoint's kept-span bar (#862).
+/// @p span false leaves U̇ out, as pc_class_energies_tangent's, for the tests
+/// alone. Sijrs is SC's kernel, on the diagonal.
+///
+/// Each class walks its slabs once for every pair and direction, as the
+/// energy does: per direction, the n solves' tangents (d x m_J, two m_J x m_J
+/// each) and the n² - n transition rows' (d x m_J), and per pair M and M_Δ
+/// (m_J x m_J), held across the walk.
+///
+/// @return The elements and tangents; InvalidConfig when @p pairs or
+///         @p directions are not as sc_effective_hamiltonian_tangent takes
+///         them, or a direction's blocks are not shaped as @p blocks; or
+///         pc_effective_hamiltonian's errors, its refusals among them (a
+///         ket's metric with no positive eigenvalue, a pole), naming the
+///         class and the state, never a coupling summed as zero.
+[[nodiscard]] Result<PcEffectiveHamiltonianTangent>
+pc_effective_hamiltonian_tangent(DeviceResources &res, const MoBlocks &blocks,
+                                 std::span<const EnergyInputs> pairs, int32_t batch,
+                                 std::span<const EnergyDirection> directions, bool span = true);
+
 } // namespace free_breakfast::nevpt2

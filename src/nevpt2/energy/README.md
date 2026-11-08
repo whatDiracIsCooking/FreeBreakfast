@@ -1626,6 +1626,76 @@ tangents per direction once solved (S, K and S₁ built twice per direction,
 then Ṫ, ṫ1, K̇' and Ṡ' held through the walk, d × m and two m × m each), and
 per slab, per direction, the slab's tangent and ẏ (and ẋ), read back.
 
+### PC-QD
+
+    pc_effective_hamiltonian_tangent(res, blocks, pairs, batch, directions, span = true)
+        -> PcEffectiveHamiltonianTangent
+        elements                  pc_effective_hamiltonian's n² PcClassEnergies
+        element_dot [u][IJ][k], total_dot [u][IJ]
+    pairs, directions  sc_effective_hamiltonian_tangent's: every entry given,
+                       m n² directions, [u n² + I n + J] pair (I, J)'s along u
+    span               false leaves the kept span's rotation out, for the tests alone
+
+The QD analogue of the one-state tangent above, for the PC-QD-NEVPT2
+nuclear Hessian (#960; `docs/nevpt2/nevpt2.tex` Eqs. qd-rdm2 and
+qd-pcfinish, its first order); `qd.cpp` checks the inputs as for SC. **The
+one-state tangent is its n = 1** (`pc_couplings_tangent`), as
+`pc_class_energies_adjoint` is the PC-QD reverse pass's.
+
+Per class and tuple the coupling is −c β, β = b′ᵀ A⁺ b with b′ = b_{I←J},
+b = b_J and A = K_J + Δ S_J. With x = A⁺ b and u = A⁺ b′,
+
+    β̇ = xᵀ ḃ′ + uᵀ ḃ − uᵀ Ȧ x   (+ the kept span's rotation, below)
+
+the first-order residuals r = ḃ − Ȧ x and r′ = ḃ′ − Ȧ u read once each. In
+ket J's eigenbasis, with g_I = y_{I←J} / (λ + Δ) and g = y_J / (λ + Δ):
+
+    single:   Ċ_IJ = −c (ẏ_{I←J}·g + g_I·ẏ_J) + c g_I·g Δ̇ + g_Iᵀ Ḋ_J (c g)
+    pair:     Ċ_IJ = −(2 ẏ_{I←J}·g + 2 g_I·ẏ_J − g_I·ẋ_J − ẏ_{I←J}·g_x)
+                     + (2 g_I·g − g_I·g_x) Δ̇ + g_Iᵀ Ḋ_J (2g − g_x)
+
+with Ḋ_J = K̇′_J + Δ Ṡ′_J ket J's projected pencil, summed over the tuples
+as <M_IJ, K̇′_J> + <M_Δ,IJ, Ṡ′_J>, M_IJ = Σ_t g_I wᵀ held per pair. At I = J
+this is the one-state Ė term for term.
+
+- **Each ket's solve** moves as at n = 1: Ṡ_J, K̇_J and Ṡ₁_J their builder's
+  polarization over pair (J, J) along its own directions, Ṫ_J = Ṡ_J U_J.
+- **Each transition row** T_{I←J} = S^{(J,I)ᵀ} U_J moves along both of its
+  sides: S^{(J,I)} and S₁^{(J,I)} by their builder's polarization over pair
+  (J, I) along that pair's directions, which carry Eq. qd-rdm2's bra and
+  ket tangents of the transition RDMs, unsymmetrized as T reads them.
+- **The kept span's rotation (#862).** Where S_J's cut drops modes, U_J
+  rotates into them, U̇_J = V_n Θ′, as at n = 1, and each transition row
+  takes it through its leak (`PcKets::leak`): Ṫ_{I←J} += (V_nᵀ S^{(J,I)})ᵀ
+  Θ′, ṫ1 the same over V_nᵀ S₁^{(J,I)}. This is the forward side of the
+  reverse pass's `pc_span_bar`, whose Ū sums every bra's T̄_{I←J}; a
+  transition row's part along a real dropped mode is of order √σ_n, so it
+  is the term the transitions need, where the own row's is negligible.
+
+**Refusals** are the energy's: the same `pc_kets` solves and one
+`pc_intruder_check` per ket before Ċ is finished, so a ket's metric with no
+positive eigenvalue or a pole comes back with `pc_effective_hamiltonian`'s
+error, naming the class and the state. **Sijrs** is SC's kernel, on the
+diagonal; it couples no pair.
+
+**Conditioning.** The tangent and the reverse pass each walk the solves
+afresh, and each solve amplifies its einsums' atomic round-off on S and K by
+its metric's condition number over the kept range (#917). On
+`h2co_skew_ccpvdz_sa3` root 1 keeps Sijr, Srs and Sir modes at 6e-8 to 2e-7
+of σ_max. Repeated in one process at one point (diagnosis), the PC-QD
+couplings with ket 1 spread in Sijr and Sir by up to 2.8e-10, and the
+duality's c_1 and all columns by 6e-11 and 3e-11 of the largest summand,
+in the tangent and the adjoint alike; every other ket's couplings repeat to
+round-off. The spread is at most 0.07 of ε |Ċ^k_IJ| / kept_{J,k}, so
+`Nevpt2QdPcTangent` holds skew at the default cut to twice that, summed
+under |W|, from the tangent's own elements (never under 1e-10). At
+`pc_floor` 1e-3 the kept modes clear 1e-3 and skew repeats to 1e-15.
+
+**Memory.** Besides the energy's (n solves and n² − n transition rows per
+class): per direction, each ket's Ṫ, ṫ1, K̇′ and Ṡ′ and each transition's
+Ṫ and ṫ1 (d × m_J each), and per pair M and M_Δ (m_J × m_J), held across
+the class's walk; per slab, every pair's ẏ, read back per direction.
+
 ## The PC Hessian-vector product
 
     pc_class_energies_hvp(res, blocks, in, batch, directions, bars, span = true)
@@ -1730,7 +1800,7 @@ and per direction the span bar's derivative (d × d) and U̇ (d × m).
 
 PC's Hessian-vector product (#815; what it can rely on at PSB3 is in [The
 conditioning floor](#the-conditioning-floor)), the nuclear Hessians, PC-QD's
-tangent (#960). The demo's
+reverse tangent (#964). The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
 ## Tests
@@ -1945,6 +2015,23 @@ point 1.0e-4 Eh lower with no empty tuple) 20 tuples are guarded, Srsi's
 empty for one root and populated for the other, and the largest such Ṫ
 must exceed ten bars (#962). Measured on the RTX 3080: 2.3e6 to 3.5e6 bars,
 every column's duality ≤ 3.3e-13.
+
+`Nevpt2QdPcTangent.DualToQdPcAdjoint`, the PC-QD forward tangent, the same
+chain and columns against `qd_pc_adjoint`'s bars at the same W, 1e-10 of the
+largest summand, on `h2co_ccpvdz_sa2` (walked in fours, the fast tier's
+representative) and `h2co_skew_ccpvdz_sa3`, which at the default cut is held
+to its conditioning floor where that is larger (PC-QD's Conditioning,
+above). Its parts are the transitions'
+ket side, their bra side, and each root's own dm1–dm3 alone (what moves
+S_N), each above ten bars in some column. At the default cut every dropped
+mode is null and the kept span's rotation is round-off (at most 0.36 bars),
+so each case also runs at `pc_floor` 1e-3 (`_floored`), which cuts real
+modes on every pair and in the adjoint alike: there the tangent without the
+rotation must miss by more than ten bars. Measured on the RTX 3080: misses
+≤ 6.5e-13 (sa2); skew's up to 1.6e-10 over separate runs (each run's loose
+CASSCF a slightly different point), against a floor of 2.4e-9 to 7.4e-9;
+floored ≤ 1.4e-14 on both; every part ≥ 3e9 bars at 1e-10; the rotation
+floored 3.9e6 to 8.5e6 (sa2) and 2.0e7 to 4.1e7 (skew) bars.
 
 The SC-QD Hessian-vector product, `test/gtest/nevpt2_qd_hvp_gpu.cpp`:
 
