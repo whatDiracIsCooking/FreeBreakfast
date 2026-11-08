@@ -19,21 +19,29 @@ pieces must reproduce.
 
 ## Cases
 
-The system, basis, active space and weights of each are
-`../qd_nevpt2/qd_nevpt2.json`'s; cc-pVDZ / cc-pVDZ-JKFIT, CAS(4,3), three
-roots, all-electron, Cartesian coordinates (C1: every block defined).
+The system, basis, active space and weights of the first two are
+`../qd_nevpt2/qd_nevpt2.json`'s; the third is the same geometry at
+0.4/0.2/0.4, its reference point `qd_weight_search.json`'s (below).
+cc-pVDZ / cc-pVDZ-JKFIT, CAS(4,3), three roots, all-electron, Cartesian
+coordinates (C1: every block defined).
 
 | case | weights | scheme, h (bohr) | bar, max (Eh/bohr²) | floor | worst asymmetry | inactive gaps (core, virtual) | H_eff gaps |
 |---|---|---|---|---|---|---|---|
 | `h2co_skew_ccpvdz_sa3` | equal | SC, 3.125e-4 | 5.0e-7 | 1.1e-7 – 5.0e-7 | 8.5e-9 | 0.072, 7.6e-3 | 0.1545, 0.1986 |
 | | | PC, 2.5e-3 | 6.4e-8 | 1.3e-8 – 6.4e-8 | 1.3e-9 | | 0.1546, 0.1985 |
 | `h2co_skew_ccpvdz_sa3_weighted` | 0.4/0.4/0.2 | PC, 2.5e-3 | 1.4e-7 | 2.4e-8 – 1.4e-7 | 2.2e-8 | 2.6e-3, 3.6e-3 | 0.1566, 0.1907 |
+| `h2co_skew_ccpvdz_sa3_w424` | 0.4/0.2/0.4 | SC, 3.125e-4 | 3.5e-7 | 1.2e-7 – 3.5e-7 | 1.1e-8 | 0.084, 6.5e-3 | 0.1489, 0.2004 |
+
+**For #965's unequal-weight check**: SC on `h2co_skew_ccpvdz_sa3_w424`, PC
+on `h2co_skew_ccpvdz_sa3_weighted`. The equal-weight check reads both
+schemes on `h2co_skew_ccpvdz_sa3`.
 
 Per scheme, every one of the three states' Hessians (`states`) and every
 pair's (`pairs`, (0,1), (0,2), (1,2)). Every element of every ladder settles:
 each finer difference D(h/2) − D(h/4) lies below the measured floor, and
 each coarser one D(h) − D(h/2) below 19.2 floors (the largest is 1.0e-7, SC
-state 0), so no ratio is judged and every bar is its floor. Every Hessian is
+state 0 of the equal-weight case; 2.5e-8, the pair (0,2), on
+`_w424`), so no ratio is judged and every bar is its floor. Every Hessian is
 symmetric to its bar. The pair sums equal their two states' sums within the
 three bars (G is linear in W; each W has its own Z-vector solve).
 
@@ -56,8 +64,51 @@ on 62 elements of state 1 (22), state 2 (1) and the pairs (0,1) and (1,2),
 mostly along C y and C z (ratios 9.7 to 12.7, rung differences up to
 1.1e-4): its curvature has not reached the
 asymptotic range at a step the floor still resolves, so the case carries PC
-only, and SC's unequal-weight reference is still to find (#953's
-"Remaining").
+only. SC's unequal-weight reference is `h2co_skew_ccpvdz_sa3_w424`, below.
+
+## SC's unequal-weight case (#1060)
+
+`qd_weight_search.json` (`tools/nevpt2_hessian/qd_weight_search.py`, PySCF
+over `tools/emit/qd_nevpt2_reference.py`'s SC-QD-NEVPT2, the point polished
+to |g| < 1e-10) screens the skew geometry at sixteen weightings, at the
+reference point alone: the inactive gaps, per root and class the smallest
+norm the guard keeps and how many kept norms are under 1e-6, the root gaps
+and SC's spectrum. The weightings fall on two SA-CASSCF solutions:
+
+| branch | weightings | E₀ (Eh) | closest core pair | closest virtual pair |
+|---|---|---|---|---|
+| the equal-weight one's | equal; 0.4/0.3/0.3, 0.3/0.4/0.3, 0.3/0.3/0.4, 0.2/0.4/0.4, **0.4/0.2/0.4**, 0.35/0.35/0.3, 0.3/0.35/0.35, 0.25/0.25/0.5, 0.2/0.3/0.5 | −113.82 to −113.86 | 0.053 – 0.084 | 6.2e-3 – 9.6e-3 |
+| 0.4/0.4/0.2's | 0.4/0.4/0.2, 0.5/0.3/0.2, 0.5/0.25/0.25, 0.6/0.2/0.2, 0.45/0.35/0.2, 0.38/0.38/0.24 | −113.896 to −113.902 | 2.6e-3 – 1.3e-2 | 3.6e-3 – 5.6e-3 |
+
+Every weighting of the second branch gives root 3 at most 0.25, and its
+third root sits about 0.1 Eh above the first branch's. The SC energy's
+canonical-orbital response divides by these pairs' gaps, so its curvature
+changes on a scale of the gap. That fits 0.4/0.4/0.2's slow ratios
+(9.7–12.7 at 3.125e-4). The smallest kept norms do not separate the
+branches. Si's per root are 3e-6, 2e-7, 5e-7 at 0.4/0.2/0.4, against
+4e-6, 1e-7, 2e-7 at equal weights (which settles) and 2e-7, 7e-8, 7e-7 at
+0.4/0.4/0.2. Every candidate keeps some tuple between 5e-14 and 5e-13.
+
+0.4/0.2/0.4 is the weighting with the widest core gap, 0.084 Eh (virtual
+6.5e-3), and its ratio of 2 between weights exercises θ. Its SC ladder at
+the equal-weight case's h = 3.125e-4 settles on the first run: every rung
+difference is under 2.5e-8, against floors of 1.2e-7 to 3.5e-7 (σ_g 3.2e-13
+to 9.7e-13). Every Hessian is symmetric to its bar (worst 1.1e-8). The pair
+sums hold. The guard's worst values are prediction 0.57 |dR|², active space
+4.8e-7, CI 9.1e-6 and u_K 5.4e-10. The tree's reference point matches the
+search's PySCF one to 2.0e-12 (CASSCF) and 1.6e-12 (SC's H_eff)
+(`reference.agreement`). No other weighting was laddered. Only SC is
+written for this case; PC's unequal-weight reference is
+`h2co_skew_ccpvdz_sa3_weighted`.
+
+### Keys (`qd_weight_search.json`)
+
+| key | meaning |
+|---|---|
+| `atoms` (bohr), `basis`, `ncas`, `nelecas` | the geometry every candidate shares |
+| `tolerances` | the guard (1e-14) and the kept norm counted `small` (1e-6) |
+| `chosen` | the case laddered |
+| `candidates` | per weighting: `weights`, `casscf_energies`, `casscf_gaps`, `next_root_gap`, `inactive_gaps` (`core`, `virtual`: the smallest SA-canonical spacing), `sc_energies` (H_eff's eigenvalues), `smallest_kept` (per class but Sijrs, per root, the smallest kept `norm` and the `small` count) |
 
 ## The noise floor
 
@@ -139,7 +190,10 @@ tools/nevpt2_hessian/qd_nevpt2_hessian.py [--only CASE ...] \
 ```
 
 About 6 minutes per ladder (106 points, both schemes' gradients) on the
-RTX 3080 (CUDA), so 18 minutes in all; `--points DIR` alone re-judges kept
+RTX 3080 (CUDA), so 18 minutes for the first two cases; `_w424`'s SC ladder
+took 4 minutes on the gfx1200 (HIP). `qd_weight_search.py` (the `tools`
+group, no GPU) writes `qd_weight_search.json` first, which `_w424`'s
+agreement reads; `--points DIR` alone re-judges kept
 points with no GPU. A miss prints `STUCK` with the numbers and writes nothing
 for that case. Not byte for byte: the GPU sums reassociate run to run, within
 the noise above.

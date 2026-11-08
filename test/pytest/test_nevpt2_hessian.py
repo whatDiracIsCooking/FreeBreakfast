@@ -378,7 +378,13 @@ def test_the_reference_point_reruns():
 # ------------------------------------------------- the QD references (#953)
 
 QD_DATA = ROOT / "test" / "gtest" / "data" / "qd_nevpt2_hessian"
-QD_CASES = ("h2co_skew_ccpvdz_sa3", "h2co_skew_ccpvdz_sa3_weighted")
+QD_CASES = (
+    "h2co_skew_ccpvdz_sa3",
+    "h2co_skew_ccpvdz_sa3_weighted",
+    "h2co_skew_ccpvdz_sa3_w424",
+)
+# qd_weight_search.py's screening of SC's unequal-weight candidates (#1060).
+SEARCH = "qd_weight_search"
 # The C2v A1/B2 coupling cases (#1058): C_MN's ladders, and their analysis.
 COUPLING_CASES = ("h2nb_sto3g_sa2",)
 
@@ -412,6 +418,7 @@ def test_the_qd_cases_are_there():
         list(QD_CASES)
         + list(COUPLING_CASES)
         + [f"{name}.analysis" for name in COUPLING_CASES]
+        + [SEARCH]
     )
     assert [c["name"] for c in qd_tool.CASES] == list(QD_CASES)
     for name in QD_CASES:
@@ -427,9 +434,16 @@ def test_the_qd_cases_are_there():
         for scheme in record["schemes"]:
             assert [p["state"] for p in record[scheme]["states"]] == list(range(n))
             assert [p["pair"] for p in record[scheme]["pairs"]] == record["pairs"]
-    # Equal and unequal weights: theta in and out of the solve.
-    weights = {tuple(qd_fixture(name)["weights"]) for name in QD_CASES}
-    assert len(weights) == 2
+    # Each scheme at equal and at unequal weights: theta out of and in the
+    # solve.
+    for scheme in ("sc", "pc"):
+        weights = [
+            qd_fixture(name)["weights"]
+            for name in QD_CASES
+            if scheme in qd_fixture(name)["schemes"]
+        ]
+        assert any(len(set(w)) == 1 for w in weights), scheme
+        assert any(len(set(w)) > 1 for w in weights), scheme
 
 
 def test_the_qd_ladders_are_the_recorded_gradients():
@@ -553,6 +567,69 @@ def test_the_qd_guard_and_the_gaps():
         # The reference point is qd_nevpt2/'s: another CASSCF solution misses
         # by millihartree.
         assert max(record["reference"]["agreement"].values()) < 1e-10
+
+
+def test_the_weight_search_screens_and_names_the_case():
+    # Every candidate is the C1 skew case at another weighting; the chosen
+    # one is a ladder written above, at that weighting and geometry, and the
+    # rejected 0.4/0.4/0.2 is a different CASSCF solution, its closest core
+    # pair ten times closer than the chosen case's.
+    search = qd_fixture(SEARCH)
+    record = qd_fixture(search["chosen"])
+    (case,) = [c for c in qd_tool.CASES if c["name"] == search["chosen"]]
+    assert "sc" in record["schemes"]
+    for key in ("atoms", "ncas", "nelecas"):
+        assert search[key] == record[key] == case["system"][key]
+    assert search["basis"] == record["basis"]["name"]
+    by_weights = {tuple(c["weights"]): c for c in search["candidates"]}
+    assert len(by_weights) == len(search["candidates"])
+    chosen = by_weights[tuple(record["weights"])]
+    assert len(set(record["weights"])) > 1
+    rejected = by_weights[tuple(qd_fixture("h2co_skew_ccpvdz_sa3_weighted")["weights"])]
+    assert rejected["inactive_gaps"]["core"] < 0.1 * chosen["inactive_gaps"]["core"]
+    # The chosen point is the tree's: the record's agreement is against it.
+    for a, b in zip(
+        chosen["casscf_energies"],
+        record["reference"]["casscf_energies"],
+        strict=True,
+    ):
+        assert abs(a - b) < 1e-10
+    for a, b in zip(
+        chosen["sc_energies"], record["reference"]["sc"]["energies"], strict=True
+    ):
+        assert abs(a - b) < 1e-10
+    for candidate in search["candidates"]:
+        assert candidate["casscf_gaps"] == qd_tool.gaps(candidate["casscf_energies"])
+        for entries in candidate["smallest_kept"].values():
+            assert len(entries) == 3
+            for entry in entries:
+                assert entry["norm"] is None or entry["norm"] > 1e-14
+
+
+@pytest.mark.slow
+def test_the_weight_search_reruns():
+    """The chosen candidate's reference point again, over PySCF."""
+    pytest.importorskip("numpy", reason="needs the `tools` dependency group")
+    pytest.importorskip("pyscf", reason="needs the `tools` dependency group")
+    spec = importlib.util.spec_from_file_location(
+        "qd_weight_search", TOOL / "qd_weight_search.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    search = qd_fixture(SEARCH)
+    (recorded,) = [
+        c
+        for c in search["candidates"]
+        if c["weights"] == qd_fixture(search["chosen"])["weights"]
+    ]
+    again = module.screen(recorded["weights"])
+    for key in ("casscf_energies", "sc_energies"):
+        for a, b in zip(again[key], recorded[key], strict=True):
+            assert abs(a - b) < 1e-10, key
+    for key in ("core", "virtual"):
+        assert math.isclose(
+            again["inactive_gaps"][key], recorded["inactive_gaps"][key], rel_tol=1e-8
+        )
 
 
 # ------------------------------------------- the C2v A1/B2 coupling cases
