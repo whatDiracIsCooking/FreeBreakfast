@@ -209,15 +209,16 @@ third state stays gapped:
 
 - **the pair sum** G(W^0 + W^1), the projector onto the pair's tracked
   eigenspace: Eq. qd-pair's left side (`pairs`, (0,1));
-- **the seam** G(W) at the fixed W = ½(R_0 R_1ᵀ + R_1 R_0ᵀ), R the
-  reference's eigenvectors (`reference.<scheme>.vectors`), a non-projector W
-  whose fixed-W Hessian is Eq. qd-lowdin's first term (`seams`, (0,1));
+- **the seam** G(W) at a fixed W = ½ s (V_0 V_1ᵀ + V_1 V_0ᵀ) over an
+  orthonormal basis V of the pair's eigenspace, a non-projector W whose
+  fixed-W Hessian is Eq. qd-lowdin's first term (`seams`, (0,1)), recorded
+  as laddered (below);
 - **the third state**, W^2 = u_2 u_2ᵀ, tracked by u_2 (`states`, 2).
 
 | case | scheme, h (bohr) | MECI: evaluations, gap (Eh) | third state above the pair | bar, max (Eh/bohr²): pair, seam, state 2 | worst asymmetry |
 |---|---|---|---|---|---|
-| `ethylene_ccpvdz_sa3_sc_meci` | SC, 3.125e-4 | 97, 7.9e-8 | 0.1813 | 5.0e-7, 7.3e-8, 2.9e-7 | 5.3e-9 |
-| `ethylene_ccpvdz_sa3_pc_meci` | PC, 2.5e-3 | 83, 8.1e-8 | 0.1813 | 6.3e-8, 1.6e-8, 3.6e-8 | 5.4e-10 |
+| `ethylene_ccpvdz_sa3_sc_meci` | SC, 3.125e-4 | 97, 7.9e-8 | 0.1813 | 5.0e-7, 4.8e-8, 2.9e-7 | 1.9e-9 |
+| `ethylene_ccpvdz_sa3_pc_meci` | PC, 2.5e-3 | 83, 8.1e-8 | 0.1813 | 6.2e-8, 5.6e-8, 3.6e-8 | 3.0e-10 |
 
 **The MECIs** are `ethylene_meci.json`, written first by
 `tools/nevpt2_hessian/qd_meci.py`: the tree's `[optimize]` MECI mode
@@ -231,7 +232,7 @@ above `mcscf::kRootGapFloor` (1e-8); over every laddered point its gap from
 the pair stays above 0.180 Eh (`guard.<scheme>_third_state_gap`), and the
 generator refuses a case where it does not. The CASSCF roots under the
 pair are 0.029 Eh apart. The driver's fresh reference point reproduces
-`[optimize]`'s last QD energies to 8.5e-14 (SC) and 6.8e-13 (PC)
+`[optimize]`'s last QD energies to 1.4e-13 (SC) and 4.7e-13 (PC)
 (`reference.agreement`); its pair gap is 7.9e-8 and 8.1e-8
 (`reference.<scheme>.pair_gap`).
 
@@ -243,22 +244,51 @@ most 1 − 1/√2), which a u_K match would refuse. The driver's `crossing`
 instead matches the two-state space (`tracked_pair`: the two displaced
 states of largest projection onto span{R_0, R_1}, and 1 − σ_min of their
 2 × 2 overlap, the larger principal angle's cosine), within 1e-3 like
-every other match: its worst miss is 1.1e-8 (SC) and 1.4e-8 (PC)
+every other match: its worst miss is 1.1e-8 (SC) and 1.7e-8 (PC)
 (`guard.<scheme>_pair_miss`).
 
 **The step**: SC at #953's 3.125e-4, PC at 2.5e-3; both settled on the first
-run. Every element of every ladder settles inside its floor (σ_g 2.0e-13 to
+run. Every element of every ladder settles inside its floor (σ_g 1.3e-13 to
 1.4e-12); no ratio is judged, every bar is its floor, and every Hessian is
 symmetric to its bar. The largest coarse rung difference is the SC seam's,
-2.6e-7 against its floor of 7.3e-8 (the rule allows 19.2 floors). Guard,
+2.8e-7 against its floor of 4.8e-8 (the rule allows 19.2 floors). Guard,
 worst over every point: prediction 0.34 |dR|², active space 1.3e-5, CI
-3.1e-4, rerun energies 3.3e-13 Eh off the sampler's. About 2.3 minutes per
+3.1e-4, rerun energies 2.7e-13 Eh off the sampler's. About 2.3 minutes per
 case on the RTX 3080 (154 points).
+
+**The seam's W, and its gauge** (#1098). Eq. qd-lowdin's first term is
+term (i) at W = ½(V_0 V_1ᵀ + V_1 V_0ᵀ) for an orthonormal basis V of the
+pair's eigenspace, and its elements are V's. The eigensolver's R_0, R_1 are
+not a stable V: at a gap of 8e-8 each rerun returns them turned inside the
+eigenspace (1.9e-7 rad SC, 5.8e-7 PC, measured on #1091's regeneration) and
+signed afresh, and with W = ½(R_0 R_1ᵀ + R_1 R_0ᵀ) that rerun missed SC's
+seam with its sign flipped and PC's by 9.19 bars. The driver's W depends on
+the eigenspace's projector alone: V the Löwdin-orthonormalized projections
+of CASSCF roots r_0 < r_1 onto span{R_0, R_1} (the pair of roots whose
+2 × 2 block of [R_0 R_1] has the largest |det|),
+`hessian::df_qd_sc_nevpt2_crossing`'s basis of the eigenspace. The CASSCF
+roots' own phases still flip V_0 or V_1, so W is multiplied by s, the sign
+of the reference H_eff[r_0][r_1], which carries the same two phases
+(|H_eff[0][1]| is 1.1e-6 SC and 2.3e-6 PC; the driver refuses one below
+1e-10): W = ½ s (V_0 V_1ᵀ + V_1 V_0ᵀ) is one operator whatever either
+solve's phases. Each seam entry records the W it was laddered at (`w`,
+n × n row-major in the record's root basis), `roots` (r_0, r_1) and
+`sign`; a consumer carries `w` into its own root phases, as it carries
+H_eff. Here V is within 2e-3 of CASSCF roots 0 and 1, so W is about
+½ s (e_0 e_1ᵀ + e_1 e_0ᵀ).
+
+A second run of the generator over both cases reproduced every element of
+every ladder within 0.029 of the committed bars (the seams 0.029 SC and
+0.002 PC; the pair sums and the third state 0.003 or less). Its SC
+reference came back with CASSCF root 1's phase flipped: its W read the
+opposite sign in its own basis, and carried into the committed one matched
+`w` to 7e-14.
 
 The keys are the Keys table's, plus `crossing` (the tracked pair), `seams`,
 `meci` (the record, the evaluations, the criteria and the final values from
 `ethylene_meci.json`), per scheme `seams` (one per seam, `seam`, as a pair's
-entry), `reference.<scheme>.pair_gap` and `third_state_gap`, and in `guard`
+entry, with its `w`, `roots` and `sign`), `reference.<scheme>.pair_gap`,
+`third_state_gap` and `seams` (the driver's W per seam), and in `guard`
 `<scheme>_pair_miss`, `<scheme>_pair_rotation` and `<scheme>_third_state_gap`.
 `ethylene_meci.json` holds per variant the `config`, `start`, `steps`,
 `criteria` (value, bar, met), `final` (the head's energies and gap, the last

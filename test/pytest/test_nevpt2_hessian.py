@@ -662,6 +662,87 @@ def test_the_crossing_pair_is_tracked_and_the_third_state_gapped():
         assert min(record["reference"]["casscf_gaps"]) > 1e-2
 
 
+def matmul(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
+    n = len(b)
+    return [
+        [math.fsum(row[k] * b[k][j] for k in range(n)) for j in range(len(b[0]))]
+        for row in a
+    ]
+
+
+def test_each_seam_records_its_w_in_the_seam_form():
+    # The seam was laddered at a recorded W (#1098): symmetric, of the seam
+    # form 1/2 s (V_0 V_1^T + V_1 V_0^T) over an orthonormal basis V of the
+    # pair's recorded eigenspace (trace 0, W^2 = P / 4 with P = R_0 R_0^T +
+    # R_1 R_1^T, and W = P W P), and the driver's gauge: V from that
+    # projector and CASSCF roots alone, s the sign of H_eff[r_0][r_1].
+    for name in CROSSING_CASES:
+        record = qd_fixture(name)
+        (scheme,) = record["schemes"]
+        ref = record["reference"][scheme]
+        n = len(record["weights"])
+        r = ref["vectors"]
+        (x, y) = record["crossing"]
+        p = [
+            [
+                r[x * n + i] * r[x * n + j] + r[y * n + i] * r[y * n + j]
+                for j in range(n)
+            ]
+            for i in range(n)
+        ]
+        (seam,) = record[scheme]["seams"]
+        assert seam["seam"] == [x, y]
+        w = [seam["w"][i * n : (i + 1) * n] for i in range(n)]
+        assert all(w[i][j] == w[j][i] for i in range(n) for j in range(n)), name
+        assert abs(math.fsum(w[i][i] for i in range(n))) < 1e-14, name
+
+        w2 = matmul(w, w)
+        pwp = matmul(matmul(p, w), p)
+        for i in range(n):
+            for j in range(n):
+                assert abs(w2[i][j] - p[i][j] / 4) < 1e-14, (name, i, j)
+                assert abs(pwp[i][j] - w[i][j]) < 1e-14, (name, i, j)
+        want = qd_tool.seam_weight(r, ref["heff"], x, y)
+        assert seam["roots"] == want["roots"] and seam["sign"] == want["sign"]
+        assert (
+            max(abs(a - b) for a, b in zip(seam["w"], want["w"], strict=True)) < 1e-14
+        )
+        r0, r1 = seam["roots"]
+        assert seam["sign"] * ref["heff"][r0 * n + r1] > 0
+
+
+def test_the_seam_weight_does_not_depend_on_the_eigenspaces_basis():
+    # The driver's gauge: any rotation and sign of R_0, R_1 inside their
+    # eigenspace gives the same W, and flipping one CASSCF root's phase
+    # (H_eff and R carried into it) flips W's operator by nothing: W carried
+    # back is the same.
+    c, s = math.cos(0.1), math.sin(0.1)
+    r = [c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0]
+    heff = [-1.0, 2e-6, 3e-4, 2e-6, -1.0, -4e-4, 3e-4, -4e-4, -0.8]
+    base = qd_tool.seam_weight(r, heff, 0, 1)
+    for t in (0.0, 0.4, -1.2, 2.5):
+        ct, st = math.cos(t), math.sin(t)
+        u0 = [ct * a + st * b for a, b in zip(r[0:3], r[3:6], strict=True)]
+        u1 = [-st * a + ct * b for a, b in zip(r[0:3], r[3:6], strict=True)]
+        for flip in (1.0, -1.0):
+            turned = qd_tool.seam_weight(
+                u0 + [flip * x for x in u1] + r[6:], heff, 0, 1
+            )
+            assert (
+                max(abs(a - b) for a, b in zip(turned["w"], base["w"], strict=True))
+                < 1e-14
+            )
+    d = [1.0, -1.0, 1.0]
+    flipped = qd_tool.seam_weight(
+        [d[i % 3] * x for i, x in enumerate(r)],
+        [d[i // 3] * d[i % 3] * x for i, x in enumerate(heff)],
+        0,
+        1,
+    )
+    back = [d[i // 3] * d[i % 3] * x for i, x in enumerate(flipped["w"])]
+    assert max(abs(a - b) for a, b in zip(back, base["w"], strict=True)) < 1e-14
+
+
 def test_pair_rotation_and_third_state_gap():
     # A rotation by t inside the pair's eigenspace reads 1 - cos t (t < 45
     # degrees), and the third state's gap is its distance from the pair.

@@ -12,9 +12,12 @@
 //   in a basis of the eigenspace turned by 0.3 rad its elements the turn of
 //   these, and so its determinant (its eigenvalues) the same, within 2x the
 //   fixture's seam bar;
-// - term (i) at the fixture's seam W = 1/2 (R_0 R_1^T + R_1 R_0^T), R its
-//   recorded eigenvectors signed into this solve's root phases, through the
-//   W form, within 2x the seam ladder's bars, SC and PC;
+// - term (i) at the fixture's recorded seam W (the W its seam ladder was
+//   taken at, the driver's gauge: 1/2 s (V_0 V_1^T + V_1 V_0^T), V the
+//   eigenspace's own basis and s the sign of H_eff[r_0][r_1]) signed into
+//   this solve's root phases, through the W form, within 2x the seam
+//   ladder's bars, SC and PC; and that W the crossing's own W at the 2 x 2's
+//   off-diagonal times s, the two gauges one;
 // - the refusals: a third state within kRootGapFloor of the pair (H_eff made
 //   rank-one degenerate by the roots' energies alone), a pair that is not
 //   two states, and a c that is not symmetric.
@@ -454,6 +457,8 @@ void expect_seam(const std::string &name, const bool pc) {
   const std::array<std::tuple<std::size_t, std::size_t, double>, 5> calls{
       {{0, 0, 0.0}, {0, 1, 0.0}, {1, 1, 0.0}, {0, 0, kTurn}, {0, 1, kTurn}}};
   std::array<std::vector<double>, 5> m;
+  // The crossing's W at M_01: 1/2 (V_0 V_1^T + V_1 V_0^T).
+  std::vector<double> crossing_w;
   const auto start = std::chrono::steady_clock::now();
   for (std::size_t e = 0; e < calls.size(); ++e) {
     const auto [x, y, t] = calls[e];
@@ -461,6 +466,9 @@ void expect_seam(const std::string &name, const bool pc) {
     ASSERT_TRUE(got.has_value()) << label << ": " << got.error().message;
     EXPECT_LE(got->asymmetry, solve_bar(*got)) << label << " call " << e;
     m[e] = got->hessian;
+    if (e == 1) {
+      crossing_w = got->w;
+    }
   }
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -500,14 +508,14 @@ void expect_seam(const std::string &name, const bool pc) {
   EXPECT_LE(turned, kBars) << label;
   EXPECT_LE(turned_det, kBars) << label;
 
-  // Term (i) at the fixture's seam W, R its recorded eigenvectors
-  // (reference.<scheme>.vectors, the R the seam ladder was taken at) signed
-  // into this solve's root phases by H_eff's off-diagonal signs, through the
-  // W form: never this solve's own R, whose basis of the eigenspace is
-  // another.
+  // Term (i) at the fixture's seam W (seam.w, the W the seam ladder was
+  // taken at) carried into this solve's root phases by H_eff's off-diagonal
+  // signs, through the W form: never a W from this solve's own R, whose
+  // basis of the eigenspace is another.
   const std::size_t n = ref.solution->roots.energies.size();
   const auto theirs = doc.at("reference").at(std::string{scheme}).at("heff");
-  const auto r = doc.at("reference").at(std::string{scheme}).at("vectors");
+  const auto recorded = seam->at("w").get<std::vector<double>>();
+  ASSERT_EQ(recorded.size(), n * n) << label;
   const std::vector<double> ours = ref.heff(pc);
   std::vector<double> phase(n, 1.0);
   for (std::size_t s = 1; s < n; ++s) {
@@ -516,13 +524,32 @@ void expect_seam(const std::string &name, const bool pc) {
   std::vector<double> w(n * n);
   for (std::size_t i = 0; i < n; ++i) {
     for (std::size_t j = 0; j < n; ++j) {
-      const double r0i = r.at(i).get<double>();
-      const double r1i = r.at(n + i).get<double>();
-      const double r0j = r.at(j).get<double>();
-      const double r1j = r.at(n + j).get<double>();
-      w[(i * n) + j] = 0.5 * phase[i] * phase[j] * ((r0i * r1j) + (r1i * r0j));
+      w[(i * n) + j] = phase[i] * phase[j] * recorded[(i * n) + j];
     }
   }
+  // The driver's gauge is the crossing's basis of the eigenspace, signed by
+  // H_eff[r_0][r_1] (here in this solve's phases): the two W are one, to the
+  // two solves' difference in the eigenspace's projector, first order in
+  // their H_eff's: |dP| <= 2 ||dH|| / gap, ||dH|| <= n max |dH_ij|, the gap
+  // the third state's.
+  const auto roots = seam->at("roots").get<std::array<std::size_t, 2>>();
+  const double sign = ours[(roots[0] * n) + roots[1]] < 0.0 ? -1.0 : 1.0;
+  ASSERT_EQ(crossing_w.size(), n * n) << label;
+  double gauge_miss = 0.0;
+  double heff_miss = 0.0;
+  for (std::size_t i = 0; i < n * n; ++i) {
+    gauge_miss = std::max(gauge_miss, std::abs(w[i] - (sign * crossing_w[i])));
+    heff_miss = std::max(
+        heff_miss, std::abs(ours[i] - (phase[i / n] * phase[i % n] * theirs.at(i).get<double>())));
+  }
+  const double third_gap =
+      doc.at("reference").at(std::string{scheme}).at("third_state_gap").get<double>();
+  const double gauge_bar = kBars * 2.0 * static_cast<double>(n) * heff_miss / third_gap;
+  std::cout << std::format("[ qd seam  ] {}: the recorded W against the crossing's (sign {:g}), "
+                           "max miss {:.2e} (bar {:.2e}: H_eff's {:.2e} over the third state's "
+                           "gap)\n",
+                           label, sign, gauge_miss, gauge_bar, heff_miss);
+  EXPECT_LE(gauge_miss, gauge_bar) << label;
   const auto fixed = ref.w_form(pc, w);
   ASSERT_TRUE(fixed.has_value()) << label << ": " << fixed.error().message;
   const auto want = matrix(seam->at("hessian"));
