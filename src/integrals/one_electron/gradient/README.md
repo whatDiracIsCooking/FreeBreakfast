@@ -12,9 +12,9 @@ in FelizJueves (`docs/implementation/gradient.md`): an RHF gradient takes M = D
 for T and V, and M = −W, the energy-weighted density negated, for S.
 
 Beside them, the derivative integrals themselves, which a Hessian's CPHF
-right-hand sides need as matrices (`.temp/hessian/rhf_hessian.tex` §6, "The
-one-electron part"): S^x, T^x and V^x, dX_mn/dR_{A,k} for every atom and axis,
-as the `[n_atom, 3, n_ao, n_ao]` spherical tensor on the device
+right-hand sides need as matrices (`docs/hessian/hessian.tex`, "The skeleton
+Fock derivatives", "The one-electron part"): S^x, T^x and V^x, dX_mn/dR_{A,k}
+for every atom and axis, as the `[n_atom, 3, n_ao, n_ao]` spherical tensor on the device
 (`overlap_derivative`, `kinetic_derivative`, `potential_derivative`), over
 FelizJueves's `ips_`, `ipt_`, `ipv_` and `iprv_{la}{lb}` kernels.
 

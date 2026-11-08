@@ -45,10 +45,10 @@ directions.
 At unequal weights E_SA is not invariant to rotating its roots among
 themselves, c_r → c_r + Σ_s Θ_sr c_s (Θ antisymmetric), and every pair r < s
 of unequal weight is a parameter of A with a multiplier of its own
-(`.temp/hessian/casscf_hessian.tex` §5.2): ∂²E_SA/∂Θ_sr² =
-2 (w_r − w_s)(E_s − E_r), coupled to the orbitals through (w_r − w_s) times
-the r–s transition orbital gradient. Scaled by 2 (w_r − w_s), as the CI rows
-are by 2 w_r, its row is **the CI row of root r taken along c_s**, the
+(`docs/hessian/hessian.tex`, "The rotations among the averaged roots"):
+∂²E_SA/∂Θ_sr² = 2 (w_r − w_s)(E_s − E_r), coupled to the orbitals through
+(w_r − w_s) times the r–s transition orbital gradient. Scaled by 2 (w_r − w_s),
+as the CI rows are by 2 w_r, its row is **the CI row of root r taken along c_s**, the
 component the projection P drops:
 
     (E_s − E_r) Θ_sr + c_s · H′(z_o) c_r = −t_sr.
@@ -225,8 +225,8 @@ kept their products and residuals to the bit.
 ## Many right-hand sides
 
 A Hessian solves these equations once per nuclear coordinate, E_λλ λ^x =
-−E_λx for 3N right-hand sides over one A (`.temp/hessian/casscf_hessian.tex`
-§4.3). `zvectors` takes them as a block, each column in the convention
+−E_λx for 3N right-hand sides over one A (`docs/hessian/hessian.tex`, "Solving
+it"). `zvectors` takes them as a block, each column in the convention
 above (the caller assembles the response as Λᵀ·rhs, so the CI rows' scaling
 cancels), and solves each to ‖r‖ ≤ `tolerance` by one of three methods:
 
