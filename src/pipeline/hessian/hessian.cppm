@@ -280,19 +280,49 @@ struct HessianStep {
 /// @ref check_displaced_casscf holds them), and overlapped with
 /// @p reference, R_P: o_k = Σ_r R_P,r s_r u_k,r. The state is the k of
 /// largest |o_k|, whatever its rank. A solve that followed the reference has
-/// 1 - |o_k| = O(h²); a state that swapped with another has about 0.
+/// 1 - |o_k| = O(h²); a state that swapped with another has about 0. The one
+/// R_P match of the tree: the step's, and `tools/qd_nevpt2_hessian`'s for
+/// every state its references track (vectors already in the reference's
+/// root basis, @p signs all 1).
 ///
 /// @p reference holds n numbers, @p vectors n² (state k at [k n, (k + 1) n)),
 /// @p signs n. Host only.
 ///
-/// @return {k, |o_k|}; Numerical when two states tie, the second |o| within
-///         1e-3 of the largest, or when 1 - |o_k| is 1e-3 or more (the bar
-///         `test/gtest/data/qd_nevpt2_hessian/`'s references were sampled
-///         under), naming the overlaps; InvalidConfig for spans of
-///         mismatched sizes.
+/// @return {k, o_k}, o_k signed (u_k's sign against R_P, so -u_k is the one
+///         that continues it when negative); Numerical when two states tie,
+///         the second |o| within 1e-3 of the largest, or when 1 - |o_k| is
+///         1e-3 or more (the bar `test/gtest/data/qd_nevpt2_hessian/`'s
+///         references were sampled under), naming the overlaps;
+///         InvalidConfig for spans of mismatched sizes.
 [[nodiscard]] Result<std::pair<size_t, double>> tracked_qd_state(std::span<const double> reference,
                                                                  std::span<const double> vectors,
                                                                  std::span<const double> signs);
+
+/// @brief @ref tracked_qd_state for two states P and Q degenerate at the
+/// reference (a crossing, a MECI): u_P and u_Q are not defined one by one
+/// there, any rotation within their eigenspace is as good, and a step of any
+/// size turns them by O(1), so the pair is tracked by its two-state
+/// eigenspace span{R_P, R_Q} instead (docs/nevpt2/nevpt2.tex, Eq. qd-pair:
+/// only W^P + W^Q, its projector, is smooth there).
+///
+/// Each u_k is taken into the reference's root basis by @p signs as there,
+/// and the two displaced states are the k_a < k_b of largest projection onto
+/// the eigenspace, w_k = ⟨R_P|u_k⟩² + ⟨R_Q|u_k⟩² (the w_k sum to 2). The
+/// miss is 1 - σ_min of the 2 x 2 overlap M_Xk = ⟨R_X|u_k⟩: σ_min is the
+/// cosine of the larger principal angle between the two spaces, so the miss
+/// is O(h²) for a pair that followed the reference, whatever rotation it took
+/// inside its eigenspace, and about 1 when a third state has mixed in. Only
+/// u_a u_a^T + u_b u_b^T is defined by this, not u_a or u_b.
+///
+/// @p reference holds 2n numbers, R_P then R_Q; @p vectors n² and @p signs
+/// n, as @ref tracked_qd_state's. Host only.
+///
+/// @return {{k_a, k_b}, the miss}; Numerical when the miss is 1e-3 or more
+///         (@ref tracked_qd_state's bar), naming it; InvalidConfig for spans
+///         of mismatched sizes or fewer than two states.
+[[nodiscard]] Result<std::pair<std::array<size_t, 2>, double>>
+tracked_qd_pair(std::span<const double> reference, std::span<const double> vectors,
+                std::span<const double> signs);
 
 /// @brief The numerical ladder's tightened CASSCF re-solve (its σ_solves):
 /// @p conv_tol and @p conv_tol_grad each 100 times tighter, but never below

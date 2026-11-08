@@ -15,7 +15,9 @@
 // refuses before running, and examples/nevpt2_hessian.toml parsed; and the
 // guard on a displaced CASSCF, check_displaced_casscf, fed an active orbital
 // swapped out and roots swapped; the QD state tracking, tracked_qd_state,
-// fed a state that followed, one at another rank, a swap and a tie; and the
+// fed a state that followed, one at another rank, a swap and a tie, and the
+// pair's, tracked_qd_pair, fed a pair turned inside its eigenspace and a
+// third state mixed in; and the
 // ladder's tightened re-solve's tolerances (#995), held at their round-off
 // floors. Nothing is run, so nothing touches a device.
 
@@ -659,7 +661,65 @@ TEST(PipelineHessian, TheQdStateIsTrackedByItsEigenvectorAndASwapIsRefused) {
   EXPECT_NE(tie.error().message.find("tie for the reference's state"), std::string::npos)
       << tie.error().message;
 
+  // The overlap is signed: -u_k, P followed with its sign turned.
+  std::vector<double> negated = followed;
+  for (size_t i = 0; i < 3; ++i) {
+    negated[i] = -negated[i];
+  }
+  const auto turned = fb::tracked_qd_state(p, negated, same_signs);
+  ASSERT_TRUE(turned.has_value()) << turned.error().message;
+  EXPECT_EQ(turned->first, 0U);
+  EXPECT_NEAR(turned->second, -c, 1e-15);
+
   const auto sizes = fb::tracked_qd_state(p, {followed.data(), 8}, same_signs);
+  ASSERT_FALSE(sizes.has_value());
+  EXPECT_EQ(sizes.error().kind, fb::ErrorKind::InvalidConfig);
+}
+
+// tracked_qd_pair over three roots: the reference's pair R_P = e_0,
+// R_Q = e_1, degenerate there, found wherever its displaced states turned
+// inside the eigenspace (by 45 degrees, where a one-by-one match ties) and
+// whatever their ranks, and through a flipped root sign; its miss is the
+// larger principal angle's 1 - cos, 1 - cos 0.01 for a pair tipped 0.01 rad
+// towards root 2. A third state mixed in (P's space tipped 37 degrees) is
+// Numerical; spans that do not fit are InvalidConfig.
+TEST(PipelineHessian, TheQdPairIsTrackedByItsEigenspaceAndAMixIsRefused) {
+  const std::vector<double> pair{1.0, 0.0, 0.0, 0.0, 1.0, 0.0};
+  const std::vector<double> same_signs{1.0, 1.0, 1.0};
+  const double r = std::sqrt(0.5);
+  const double c = std::cos(0.01);
+  const double t = std::sin(0.01);
+  // The pair turned 45 degrees in its plane, a = (r, r, 0) and
+  // b = (-r, r, 0), then a tipped by 0.01 rad towards root 2; the gapped
+  // state, root 2 tipped back, at rank 0.
+  const std::vector<double> turned{-r * t, -r * t, c, r * c, r * c, t, -r, r, 0.0};
+  const auto found = fb::tracked_qd_pair(pair, turned, same_signs);
+  ASSERT_TRUE(found.has_value()) << found.error().message;
+  EXPECT_EQ(found->first, (std::array<size_t, 2>{1, 2}));
+  EXPECT_NEAR(found->second, 1.0 - c, 1e-12);
+  // A one-by-one match would tie on it: R_P overlaps both by 1/sqrt 2.
+  EXPECT_FALSE(fb::tracked_qd_state({pair.data(), 3}, turned, same_signs).has_value());
+  // Root 1's CI flipped: its component of every eigenvector flips with it.
+  std::vector<double> flipped = turned;
+  for (size_t k = 0; k < 3; ++k) {
+    flipped[(k * 3) + 1] = -flipped[(k * 3) + 1];
+  }
+  const auto through_a_sign =
+      fb::tracked_qd_pair(pair, flipped, std::vector<double>{1.0, -1.0, 1.0});
+  ASSERT_TRUE(through_a_sign.has_value()) << through_a_sign.error().message;
+  EXPECT_EQ(through_a_sign->first, (std::array<size_t, 2>{1, 2}));
+  EXPECT_NEAR(through_a_sign->second, 1.0 - c, 1e-12);
+
+  // A mix: P's vector tipped 37 degrees into root 2, the third state too.
+  const std::vector<double> mixed{0.8, 0.0, 0.6, 0.0, 1.0, 0.0, -0.6, 0.0, 0.8};
+  const auto mix = fb::tracked_qd_pair(pair, mixed, same_signs);
+  ASSERT_FALSE(mix.has_value());
+  EXPECT_EQ(mix.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_NE(mix.error().message.find("the reference pair's eigenspace is not the QD states (0, 1)"),
+            std::string::npos)
+      << mix.error().message;
+
+  const auto sizes = fb::tracked_qd_pair({pair.data(), 3}, turned, same_signs);
   ASSERT_FALSE(sizes.has_value());
   EXPECT_EQ(sizes.error().kind, fb::ErrorKind::InvalidConfig);
 }

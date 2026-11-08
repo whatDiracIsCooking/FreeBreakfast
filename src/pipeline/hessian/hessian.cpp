@@ -186,10 +186,12 @@ constexpr double kRoundings = 2.0;
 // How far from orthonormal the config's coordinates may be: rounding of
 // rows written to 16 digits is ~1e-16.
 constexpr double kCoordinatesOrthonormal = 1e-10;
-// tracked_qd_state's bar on 1 - |<R_P|u_k>|, and its tie: the continuity
-// guard the QD references were sampled under (tools/qd_nevpt2_hessian's
-// u_K match, the library's 1e-3 CI bar). Their worst miss over every point,
-// h up to 5e-3 bohr, is 5.2e-7; a state that swapped has about 1.
+// tracked_qd_state's bar on 1 - |<R_P|u_k>|, and its tie, and
+// tracked_qd_pair's on 1 - sigma_min: the continuity guard the QD
+// references were sampled under (tools/qd_nevpt2_hessian calls both; the
+// library's 1e-3 CI bar). Their worst miss over every point, h up to 5e-3
+// bohr, is 5.2e-7, and a crossing pair's 1.4e-8; a state that swapped has
+// about 1.
 constexpr double kQdStateMiss = 1e-3;
 
 // D(s) at s = h, h/2, h/4 over @p values, values[p] the vector read at
@@ -338,12 +340,13 @@ Result<std::pair<size_t, double>> tracked_qd_state(std::span<const double> refer
                       "root signs",
                       HessianStep::kName, n, vectors.size(), signs.size());
   }
+  std::vector<double> signed_overlaps(n, 0.0);
   std::vector<double> overlaps(n, 0.0);
   for (size_t k = 0; k < n; ++k) {
     for (size_t r = 0; r < n; ++r) {
-      overlaps[k] += reference[r] * signs[r] * vectors[(k * n) + r];
+      signed_overlaps[k] += reference[r] * signs[r] * vectors[(k * n) + r];
     }
-    overlaps[k] = std::abs(overlaps[k]);
+    overlaps[k] = std::abs(signed_overlaps[k]);
   }
   const auto best = static_cast<size_t>(std::ranges::max_element(overlaps) - overlaps.begin());
   double second = 0.0;
@@ -366,7 +369,52 @@ Result<std::pair<size_t, double>> tracked_qd_state(std::span<const double> refer
                          HessianStep::kName, best, overlaps[best], 1.0 - overlaps[best],
                          kQdStateMiss);
   }
-  return std::pair{best, overlaps[best]};
+  return std::pair{best, signed_overlaps[best]};
+}
+
+Result<std::pair<std::array<size_t, 2>, double>> tracked_qd_pair(std::span<const double> reference,
+                                                                 std::span<const double> vectors,
+                                                                 std::span<const double> signs) {
+  const size_t n = signs.size();
+  if (n < 2 || reference.size() != 2 * n || vectors.size() != n * n) {
+    return err_config("[{}] tracked_qd_pair: a reference pair of {}, eigenvectors of {} and {} "
+                      "root signs",
+                      HessianStep::kName, reference.size(), vectors.size(), n);
+  }
+  // overlaps[x][k] = <R_X|u_k>, X in {P, Q}.
+  std::array<std::vector<double>, 2> overlaps{std::vector<double>(n, 0.0),
+                                              std::vector<double>(n, 0.0)};
+  std::vector<double> weight(n, 0.0);
+  for (size_t k = 0; k < n; ++k) {
+    for (size_t x = 0; x < 2; ++x) {
+      for (size_t r = 0; r < n; ++r) {
+        overlaps[x][k] += reference[(x * n) + r] * signs[r] * vectors[(k * n) + r];
+      }
+      weight[k] += overlaps[x][k] * overlaps[x][k];
+    }
+  }
+  std::vector<size_t> order(n);
+  std::iota(order.begin(), order.end(), size_t{0});
+  std::ranges::stable_sort(order, [&](size_t a, size_t b) { return weight[a] > weight[b]; });
+  const std::array<size_t, 2> states{std::min(order[0], order[1]), std::max(order[0], order[1])};
+  // sigma_min of the 2 x 2 M in closed form: sigma^2 are the roots of
+  // s^2 - |M|_F^2 s + det(M)^2.
+  const double m00 = overlaps[0][states[0]];
+  const double m01 = overlaps[0][states[1]];
+  const double m10 = overlaps[1][states[0]];
+  const double m11 = overlaps[1][states[1]];
+  const double frobenius = (m00 * m00) + (m01 * m01) + (m10 * m10) + (m11 * m11);
+  const double det = (m00 * m11) - (m01 * m10);
+  const double discriminant = std::max(0.0, (frobenius * frobenius) - (4.0 * det * det));
+  const double sigma_min = std::sqrt(std::max(0.0, 0.5 * (frobenius - std::sqrt(discriminant))));
+  const double miss = 1.0 - sigma_min;
+  if (!(miss < kQdStateMiss)) {
+    return err_numerical("[{}] the reference pair's eigenspace is not the QD states ({}, {})': "
+                         "1 - sigma_min {:.3e}, not below {} (a third state mixed in across the "
+                         "step)",
+                         HessianStep::kName, states[0], states[1], miss, kQdStateMiss);
+  }
+  return std::pair{states, miss};
 }
 
 std::pair<double, double> tightened_casscf_tolerances(const double conv_tol,
@@ -1075,8 +1123,9 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                                                                reference_ci.begin() + first_r, 0.0);
                   signs[r] = overlap < 0.0 ? -1.0 : 1.0;
                 }
-                const auto [state, overlap] = FBF_TRY(at_geometry(
+                const auto [state, signed_overlap] = FBF_TRY(at_geometry(
                     tracked_qd_state(qd_reference_state, g.lagrangian.eigenvectors, signs), where));
+                const double overlap = std::abs(signed_overlap);
                 std::optional<Nevpt2GradientOutput> retaken;
                 const G *tracked = &g;
                 if (state != qd_state) {

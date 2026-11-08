@@ -25,9 +25,9 @@ DF-SA3-CASSCF(2,2) at the MECI of QD states 0 and 1, one per scheme, each at
 its own scheme's MECI, which qd_meci.py converges with the tree's
 `[optimize]` MECI mode and records first. At a cone E_0 and E_1 have no
 Hessian, and u_0, u_1 are not defined one by one, so the driver tracks the
-pair by its two-state eigenspace (its `crossing`; `tracked_pair`'s
-principal-angle match) and differences only what is smooth there, while the
-third state stays gapped:
+pair by its two-state eigenspace (its `crossing`; src/pipeline/hessian's
+`tracked_qd_pair`, a principal-angle match) and differences only what is
+smooth there, while the third state stays gapped:
 
 - **the pair sum** G(W^0 + W^1), W^0 + W^1 the projector onto the tracked
   eigenspace: Eq. qd-pair's left side at a crossing;
