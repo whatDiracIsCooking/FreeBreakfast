@@ -49,6 +49,23 @@ tools/nevpt2_hessian/qd_nevpt2_hessian.py [--only CASE ...] \
 alone judges them again without the GPU. About 6 minutes per ladder (106
 points) on the RTX 3080, two ladders per case.
 
+## SC's unequal-weight case (#1060)
+
+`qd_weight_search.py` screens the skew case at sixteen weightings, at
+their reference points alone, over `tools/emit/qd_nevpt2_reference.py`'s
+SC-QD-NEVPT2: the inactive gaps, the smallest kept tuple norms per root and
+class, the root gaps and SC's spectrum. It writes
+`test/gtest/data/qd_nevpt2_hessian/qd_weight_search.json`, which also holds
+the reference point that the laddered case
+(`h2co_skew_ccpvdz_sa3_w424`, 0.4/0.2/0.4) is held to, and so runs first.
+Needs the `tools` group (PySCF). A few minutes, no GPU.
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    tools/nevpt2_hessian/qd_weight_search.py
+tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h2co_skew_ccpvdz_sa3_w424
+```
+
 ## The C2v A1/B2 coupling case (#1058)
 
 `test/gtest/data/qd_nevpt2_hessian/h2nb_sto3g_sa2.json` and its

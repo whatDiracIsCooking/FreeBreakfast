@@ -89,6 +89,9 @@ import stencil  # noqa: E402
 
 OUT = ROOT / "test" / "gtest" / "data" / "qd_nevpt2_hessian"
 SOURCE = ROOT / "test" / "gtest" / "data" / "qd_nevpt2" / "qd_nevpt2.json"
+# qd_weight_search.py's screening: the reference point of a case with its
+# own `system`.
+SEARCH = OUT / "qd_weight_search.json"
 BINARY = (
     ROOT / "build" / "tools" / "qd_nevpt2_hessian" / "free-breakfast-qd-nevpt2-hessian"
 )
@@ -108,9 +111,24 @@ ZVECTOR_TOL = 3e-12
 NOISE_COLUMNS = 2
 ZVECTOR_LOOSE = 10 * ZVECTOR_TOL
 
-# Every case: qd_nevpt2.json's system (`source`), the ladder's h (bohr), the
-# schemes, and the pairs whose sum is differenced. The coordinates are
-# Cartesian (C1).
+SKEW = [
+    ["C", [0.0, 0.0, 0.0]],
+    ["O", [0.12, -0.08, 2.29]],
+    ["H", [0.45, 1.74, -1.13]],
+    ["H", [-0.31, -1.81, -1.02]],
+]
+
+# Every case: qd_nevpt2.json's system (`source`) or its own (`system`), the
+# ladder's h (bohr), the schemes, and the pairs whose sum is differenced.
+# The coordinates are Cartesian (C1).
+#
+# SC does not settle on 0.4/0.4/0.2 (README), a different SA-CASSCF
+# solution from the equal-weight one: its closest core pair is 2.6e-3 Eh
+# apart. `h2co_skew_ccpvdz_sa3_w424` is SC's unequal-weight case (#1060):
+# the same geometry at 0.4/0.2/0.4, which qd_weight_search.py's screening
+# puts on the equal-weight solution's branch (core pair 0.084 Eh apart) and
+# whose reference point it records. Its SC ladder settles at the equal-weight
+# case's step.
 CASES = [
     {
         "name": "h2co_skew_ccpvdz_sa3",
@@ -122,6 +140,19 @@ CASES = [
         "name": "h2co_skew_ccpvdz_sa3_weighted",
         "source": "h2co_skew_ccpvdz_sa3_weighted",
         "h": {"pc": 0.0025},
+        "pairs": [[0, 1], [0, 2], [1, 2]],
+    },
+    {
+        "name": "h2co_skew_ccpvdz_sa3_w424",
+        "system": {
+            "atoms": SKEW,
+            "basis": "cc-pvdz",
+            "ncas": 3,
+            "nelecas": 4,
+            "active": None,
+            "weights": [0.4, 0.2, 0.4],
+        },
+        "h": {"sc": 0.0003125},
         "pairs": [[0, 1], [0, 2], [1, 2]],
     },
 ]
@@ -172,7 +203,9 @@ def sha256(relative: str) -> str:
 
 
 def system(case: dict) -> dict:
-    """qd_nevpt2.json's entry for the case."""
+    """qd_nevpt2.json's entry for the case, or its own `system`."""
+    if "system" in case:
+        return case["system"]
     doc = json.loads(SOURCE.read_text())
     (entry,) = [c for c in doc["cases"] if c["name"] == case["source"]]
     return {
@@ -415,12 +448,21 @@ def gaps(values: list[float]) -> list[float]:
 
 def agreement(case: dict, runs: list[tuple[dict, list[str]]]) -> dict:
     """The reference point's energies against qd_nevpt2.json's goldens (the
-    CASSCF roots, SC's and PC's H_eff eigenvalues): a different CASSCF
-    solution misses by millihartree."""
-    doc = json.loads(SOURCE.read_text())
-    (entry,) = [c for c in doc["cases"] if c["name"] == case["source"]]
-    (pc,) = [c for c in doc["pc"]["cases"] if c["name"] == case["source"]]
-    golden = {"sc": entry["eigenvalues"], "pc": pc["eigenvalues"]}
+    CASSCF roots, SC's and PC's H_eff eigenvalues), or, for a case with its
+    own `system`, against qd_weight_search.py's PySCF point at its weights
+    (the CASSCF roots and SC's): a different CASSCF solution misses by
+    millihartree."""
+    if "system" in case:
+        doc = json.loads(SEARCH.read_text())
+        (entry,) = [
+            c for c in doc["candidates"] if c["weights"] == case["system"]["weights"]
+        ]
+        golden = {"sc": entry["sc_energies"]}
+    else:
+        doc = json.loads(SOURCE.read_text())
+        (entry,) = [c for c in doc["cases"] if c["name"] == case["source"]]
+        (pc,) = [c for c in doc["pc"]["cases"] if c["name"] == case["source"]]
+        golden = {"sc": entry["eigenvalues"], "pc": pc["eigenvalues"]}
     out = {
         "casscf": max(
             abs(a - b)
@@ -469,7 +511,11 @@ def record(
         "provenance": {
             "command": "tools/nevpt2_hessian/qd_nevpt2_hessian.py",
             "driver": "tools/qd_nevpt2_hessian/main.cpp",
-            "source": f"test/gtest/data/qd_nevpt2/qd_nevpt2.json {case['source']}",
+            "source": (
+                "tools/nevpt2_hessian/qd_weight_search.py"
+                if "system" in case
+                else f"test/gtest/data/qd_nevpt2/qd_nevpt2.json {case['source']}"
+            ),
         },
         "name": case["name"],
         "basis": {
