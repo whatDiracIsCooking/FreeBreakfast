@@ -198,6 +198,80 @@ points with no GPU. A miss prints `STUCK` with the numbers and writes nothing
 for that case. Not byte for byte: the GPU sums reassociate run to run, within
 the noise above.
 
+## The SA3 crossing (#1059)
+
+Ethylene's DF-SA3-CASSCF(2,2) (every singlet of the CAS, equal weights),
+cc-pVDZ / cc-pVDZ-JKFIT, at the minimum-energy conical intersection of QD
+states 0 and 1: one case per scheme, each at its own scheme's MECI. At a
+cone E_0 and E_1 have no Hessian (`docs/nevpt2/nevpt2.tex`, Eq. qd-pair and
+Eq. qd-lowdin), so each case ladders only what is smooth there while the
+third state stays gapped:
+
+- **the pair sum** G(W^0 + W^1), the projector onto the pair's tracked
+  eigenspace: Eq. qd-pair's left side (`pairs`, (0,1));
+- **the seam** G(W) at the fixed W = ½(R_0 R_1ᵀ + R_1 R_0ᵀ), R the
+  reference's eigenvectors (`reference.<scheme>.vectors`), a non-projector W
+  whose fixed-W Hessian is Eq. qd-lowdin's first term (`seams`, (0,1));
+- **the third state**, W^2 = u_2 u_2ᵀ, tracked by u_2 (`states`, 2).
+
+| case | scheme, h (bohr) | MECI: evaluations, gap (Eh) | third state above the pair | bar, max (Eh/bohr²): pair, seam, state 2 | worst asymmetry |
+|---|---|---|---|---|---|
+| `ethylene_ccpvdz_sa3_sc_meci` | SC, 3.125e-4 | 97, 7.9e-8 | 0.1813 | 5.0e-7, 7.3e-8, 2.9e-7 | 5.3e-9 |
+| `ethylene_ccpvdz_sa3_pc_meci` | PC, 2.5e-3 | 83, 8.1e-8 | 0.1813 | 6.3e-8, 1.6e-8, 3.6e-8 | 5.4e-10 |
+
+**The MECIs** are `ethylene_meci.json`, written first by
+`tools/nevpt2_hessian/qd_meci.py`: the tree's `[optimize]` MECI mode
+(`src/pipeline/optimize/README.md`, "The QD-NEVPT2 MECI") through the
+`free-breakfast` binary, `examples/qd_meci.toml`'s config at each `variant`,
+from `examples/ethylene.xyz`. Each is converged by the step's own five
+end-point criteria (`max_gap` 1e-7 and Opt=Tight's four), which the record
+holds per variant with the last evaluation's values; the final geometry is
+`final.xyz`'s, in bohr. The third state's margin there is 0.1813 Eh, far
+above `mcscf::kRootGapFloor` (1e-8); over every laddered point its gap from
+the pair stays above 0.180 Eh (`guard.<scheme>_third_state_gap`), and the
+generator refuses a case where it does not. The CASSCF roots under the
+pair are 0.029 Eh apart. The driver's fresh reference point reproduces
+`[optimize]`'s last QD energies to 8.5e-14 (SC) and 6.8e-13 (PC)
+(`reference.agreement`); its pair gap is 7.9e-8 and 8.1e-8
+(`reference.<scheme>.pair_gap`).
+
+**Tracking the pair by its eigenspace.** At a crossing u_0 and u_1 are not
+defined one by one, and a step of any size turns them inside their
+eigenspace: over the laddered points the better of their overlaps with R_0
+or R_1 falls to 0.77 (SC) and 0.73 (PC) (`guard.<scheme>_pair_rotation`, at
+most 1 − 1/√2), which a u_K match would refuse. The driver's `crossing`
+instead matches the two-state space (`tracked_pair`: the two displaced
+states of largest projection onto span{R_0, R_1}, and 1 − σ_min of their
+2 × 2 overlap, the larger principal angle's cosine), within 1e-3 like
+every other match: its worst miss is 1.1e-8 (SC) and 1.4e-8 (PC)
+(`guard.<scheme>_pair_miss`).
+
+**The step**: SC at #953's 3.125e-4, PC at 2.5e-3; both settled on the first
+run. Every element of every ladder settles inside its floor (σ_g 2.0e-13 to
+1.4e-12); no ratio is judged, every bar is its floor, and every Hessian is
+symmetric to its bar. The largest coarse rung difference is the SC seam's,
+2.6e-7 against its floor of 7.3e-8 (the rule allows 19.2 floors). Guard,
+worst over every point: prediction 0.34 |dR|², active space 1.3e-5, CI
+3.1e-4, rerun energies 3.3e-13 Eh off the sampler's. About 2.3 minutes per
+case on the RTX 3080 (154 points).
+
+The keys are the Keys table's, plus `crossing` (the tracked pair), `seams`,
+`meci` (the record, the evaluations, the criteria and the final values from
+`ethylene_meci.json`), per scheme `seams` (one per seam, `seam`, as a pair's
+entry), `reference.<scheme>.pair_gap` and `third_state_gap`, and in `guard`
+`<scheme>_pair_miss`, `<scheme>_pair_rotation` and `<scheme>_third_state_gap`.
+`ethylene_meci.json` holds per variant the `config`, `start`, `steps`,
+`criteria` (value, bar, met), `final` (the head's energies and gap, the last
+evaluation's margins, gaps, sensitivities and convergence, and g_P, g_Q,
+h_PQ as the step wrote them), `system` (what the crossing case reads) and
+every `evaluations` entry's energies, gap, four norms and margin.
+
+```sh
+tools/nevpt2_hessian/qd_meci.py
+tools/nevpt2_hessian/qd_nevpt2_hessian.py \
+    --only ethylene_ccpvdz_sa3_sc_meci ethylene_ccpvdz_sa3_pc_meci
+```
+
 ## The C2v A1/B2 coupling case (#1058)
 
 `h2nb_sto3g_sa2.json` and `h2nb_sto3g_sa2.analysis.json`: the check of

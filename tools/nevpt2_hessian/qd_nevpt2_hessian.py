@@ -20,6 +20,26 @@ reference's root basis:
   Eq. qd-hess, roots tracked by R_P's overlap;
 - **the pair sum**, W^P + W^Q, both tracked: Eq. qd-pair's left side.
 
+**The SA3 crossing cases** (`CROSSING_CASES`, #1059): ethylene's
+DF-SA3-CASSCF(2,2) at the MECI of QD states 0 and 1, one per scheme, each at
+its own scheme's MECI, which qd_meci.py converges with the tree's
+`[optimize]` MECI mode and records first. At a cone E_0 and E_1 have no
+Hessian, and u_0, u_1 are not defined one by one, so the driver tracks the
+pair by its two-state eigenspace (its `crossing`; `tracked_pair`'s
+principal-angle match) and differences only what is smooth there, while the
+third state stays gapped:
+
+- **the pair sum** G(W^0 + W^1), W^0 + W^1 the projector onto the tracked
+  eigenspace: Eq. qd-pair's left side at a crossing;
+- **the seam** G(W) at W = 1/2 (R_0 R_1^T + R_1 R_0^T), R the reference's
+  eigenvectors held fixed (a non-projector W: Eq. qd-lowdin's first term is
+  its Hessian at fixed W);
+- **the third state**, W^2 = u_2 u_2^T, tracked by u_2 as away from a
+  crossing.
+
+The third state's gap from the pair, at the reference and at every point,
+must stay above mcscf::kRootGapFloor (`ROOT_GAP_FLOOR`), and is recorded.
+
 This tool writes the request, runs the driver (or reads its output back with
 --points), and judges every ladder; standard library only, over stencil.py.
 
@@ -92,6 +112,12 @@ SOURCE = ROOT / "test" / "gtest" / "data" / "qd_nevpt2" / "qd_nevpt2.json"
 # qd_weight_search.py's screening: the reference point of a case with its
 # own `system`.
 SEARCH = OUT / "qd_weight_search.json"
+# qd_meci.py's MECIs: the geometry of each crossing case, and the [optimize]
+# end point it is held to.
+MECI = OUT / "ethylene_meci.json"
+# mcscf::kRootGapFloor (src/mcscf/root_rotation): the third state's gap from
+# a crossing pair must stay above it.
+ROOT_GAP_FLOOR = 1e-8
 BINARY = (
     ROOT / "build" / "tools" / "qd_nevpt2_hessian" / "free-breakfast-qd-nevpt2-hessian"
 )
@@ -198,14 +224,42 @@ COUPLING_CASES = [
 ]
 
 
+# The SA3 crossing (#1059): ethylene's DF-SA3-CASSCF(2,2) at the MECI of QD
+# states 0 and 1, one case per scheme at that scheme's MECI (qd_meci.py's
+# `variant`), Cartesian coordinates. `crossing` is the degenerate pair the
+# driver tracks by its eigenspace; `pairs` and `seams` what is differenced
+# over it; the third state's own W^2 beside them.
+CROSSING_CASES = [
+    {
+        "name": "ethylene_ccpvdz_sa3_sc_meci",
+        "meci": "sc",
+        "h": {"sc": 0.0003125},
+        "crossing": [0, 1],
+        "pairs": [[0, 1]],
+        "seams": [[0, 1]],
+    },
+    {
+        "name": "ethylene_ccpvdz_sa3_pc_meci",
+        "meci": "pc",
+        "h": {"pc": 0.0025},
+        "crossing": [0, 1],
+        "pairs": [[0, 1]],
+        "seams": [[0, 1]],
+    },
+]
+
+
 def sha256(relative: str) -> str:
     return hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
 
 
 def system(case: dict) -> dict:
-    """qd_nevpt2.json's entry for the case, or its own `system`."""
+    """qd_nevpt2.json's entry for the case, its own `system`, or its MECI's
+    (qd_meci.py's record)."""
     if "system" in case:
         return case["system"]
+    if "meci" in case:
+        return meci_entry(case)["system"]
     doc = json.loads(SOURCE.read_text())
     (entry,) = [c for c in doc["cases"] if c["name"] == case["source"]]
     return {
@@ -216,6 +270,13 @@ def system(case: dict) -> dict:
         "active": None,
         "weights": entry["weights"],
     }
+
+
+def meci_entry(case: dict) -> dict:
+    """qd_meci.py's record of the case's MECI."""
+    doc = json.loads(MECI.read_text())
+    (entry,) = [m for m in doc["meci"] if m["variant"] == case["meci"]]
+    return entry
 
 
 def coordinates(natom: int, symbols: list[str]) -> dict:
@@ -279,11 +340,15 @@ def dot(a: list[float], b: list[float]) -> float:
 
 
 def quantities(case: dict, n: int) -> list[tuple[str, int]]:
-    """Each differenced G(W): ("state", K) per state, then ("pair", i) per
-    requested pair, in the driver's order."""
-    return [("state", k) for k in range(n)] + [
-        ("pair", i) for i in range(len(case["pairs"]))
-    ]
+    """Each differenced G(W): ("state", K) per state but a crossing pair's,
+    then ("pair", i) per requested pair, then ("seam", i) per requested seam,
+    in the driver's order."""
+    crossing = case.get("crossing") or []
+    return (
+        [("state", k) for k in range(n) if k not in crossing]
+        + [("pair", i) for i in range(len(case["pairs"]))]
+        + [("seam", i) for i in range(len(case.get("seams", [])))]
+    )
 
 
 def floor_of(sigma: float, h: float) -> float:
@@ -308,6 +373,8 @@ def analyse(
     out = {}
     for scheme in schemes:
         part = {"states": [], "pairs": []}
+        if case.get("seams"):
+            part["seams"] = []
         for slot, (kind, index) in enumerate(quantities(case, nstates)):
 
             def grad(p: int, slot: int = slot, scheme: str = scheme) -> list[float]:
@@ -403,6 +470,9 @@ def analyse(
             if kind == "pair":
                 entry["pair"] = case["pairs"][index]
                 part["pairs"].append(entry)
+            elif kind == "seam":
+                entry["seam"] = case["seams"][index]
+                part["seams"].append(entry)
             else:
                 entry["state"] = index
                 part["states"].append(entry)
@@ -412,7 +482,8 @@ def analyse(
 
 def guard(runs: list[tuple[dict, list[str]]]) -> dict:
     """The worst guard values over every point of every run (a run is the
-    driver's output and the schemes taken from it)."""
+    driver's output and the schemes taken from it); over a crossing, also
+    the pair's eigenspace miss and the third state's gap."""
     pts = [p for result, _ in runs for p in result["points"]]
     worst = {
         "prediction": max(p["prediction"] for p in pts),
@@ -429,6 +500,23 @@ def guard(runs: list[tuple[dict, list[str]]]) -> dict:
         for scheme in schemes:
             run = result["points"]
             worst[f"{scheme}_vectors"] = max(p[scheme]["vector_miss"] for p in run)
+            if result.get("crossing"):
+                worst[f"{scheme}_pair_miss"] = max(p[scheme]["pair_miss"] for p in run)
+                # What a u_K match would have seen: the worst, over points
+                # and the pair's K, of 1 - the larger |<R_K|u>| over the
+                # pair's two displaced states.
+                worst[f"{scheme}_pair_rotation"] = max(
+                    pair_rotation(
+                        result["reference"][scheme]["vectors"],
+                        p[scheme]["vectors"],
+                        result["crossing"],
+                    )
+                    for p in run
+                )
+                worst[f"{scheme}_third_state_gap"] = min(
+                    third_state_gap(p[scheme]["energies"], result["crossing"])
+                    for p in run
+                )
             # Each at its own tolerance: the noise's looser solves apart.
             for key, tol in (
                 ("zvector_residual", ZVECTOR_TOL),
@@ -442,6 +530,32 @@ def guard(runs: list[tuple[dict, list[str]]]) -> dict:
     return worst
 
 
+def pair_rotation(reference: list[float], vectors: list[float], crossing: list[int]):
+    """1 - min over the crossing's K of max over its two displaced states u
+    of |<R_K|u>| (n x n, state k at [k n, (k + 1) n)): 0 for a pair that
+    did not turn inside its eigenspace, up to 1 - 1/sqrt 2."""
+    n = math.isqrt(len(reference))
+
+    def column(m: list[float], k: int) -> list[float]:
+        return m[k * n : (k + 1) * n]
+
+    return 1.0 - min(
+        max(abs(dot(column(reference, big), column(vectors, k))) for k in crossing)
+        for big in crossing
+    )
+
+
+def third_state_gap(energies: list[float], crossing: list[int]) -> float:
+    """The smallest |E_S - E_X| over the crossing pair's X and every other
+    state S."""
+    return min(
+        abs(energies[s] - energies[x])
+        for x in crossing
+        for s in range(len(energies))
+        if s not in crossing
+    )
+
+
 def gaps(values: list[float]) -> list[float]:
     return [b - a for a, b in zip(values, values[1:], strict=False)]
 
@@ -451,7 +565,22 @@ def agreement(case: dict, runs: list[tuple[dict, list[str]]]) -> dict:
     CASSCF roots, SC's and PC's H_eff eigenvalues), or, for a case with its
     own `system`, against qd_weight_search.py's PySCF point at its weights
     (the CASSCF roots and SC's): a different CASSCF solution misses by
-    millihartree."""
+    millihartree. A crossing case's is the pair's QD energies against its
+    MECI's last evaluation, qd_meci.py's record of the [optimize] run (which
+    records no CASSCF energies)."""
+    if "meci" in case:
+        final = meci_entry(case)["final"]
+        out = {}
+        for result, schemes in runs:
+            ref = result["reference"]
+            for scheme in schemes:
+                lower, upper = sorted(
+                    ref[scheme]["energies"][x] for x in case["crossing"]
+                )
+                out[scheme] = max(
+                    abs(lower - final["lower"]), abs(upper - final["upper"])
+                )
+        return out
     if "system" in case:
         doc = json.loads(SEARCH.read_text())
         (entry,) = [
@@ -514,6 +643,8 @@ def record(
             "source": (
                 "tools/nevpt2_hessian/qd_weight_search.py"
                 if "system" in case
+                else f"{MECI.name} {case['meci']} (tools/nevpt2_hessian/qd_meci.py)"
+                if "meci" in case
                 else f"test/gtest/data/qd_nevpt2/qd_nevpt2.json {case['source']}"
             ),
         },
@@ -531,6 +662,15 @@ def record(
         "weights": sys_["weights"],
         "schemes": list(case["h"]),
         "pairs": case["pairs"],
+        **(
+            {
+                "crossing": case["crossing"],
+                "seams": case["seams"],
+                "meci": meci_summary(case),
+            }
+            if "crossing" in case
+            else {}
+        ),
         "reference": {
             "casscf_energies": ref["casscf_energies"],
             "casscf_gaps": gaps(ref["casscf_energies"]),
@@ -544,6 +684,19 @@ def record(
                     "heff_gaps": gaps(heff[scheme]["energies"]),
                     "heff": heff[scheme]["heff"],
                     "vectors": heff[scheme]["vectors"],
+                    **(
+                        {
+                            "pair_gap": abs(
+                                heff[scheme]["energies"][case["crossing"][1]]
+                                - heff[scheme]["energies"][case["crossing"][0]]
+                            ),
+                            "third_state_gap": third_state_gap(
+                                heff[scheme]["energies"], case["crossing"]
+                            ),
+                        }
+                        if "crossing" in case
+                        else {}
+                    ),
                 }
                 for scheme in case["h"]
             },
@@ -568,6 +721,35 @@ def record(
         "guard": guard(runs),
         **quantities_,
     }
+
+
+def meci_summary(case: dict) -> dict:
+    """What the crossing case's geometry is: qd_meci.py's record of the
+    [optimize] MECI, its end point and the criteria it met."""
+    entry = meci_entry(case)
+    return {
+        "variant": entry["variant"],
+        "record": MECI.name,
+        "steps": entry["steps"],
+        "criteria": entry["criteria"],
+        "final": entry["final"],
+    }
+
+
+def crossing_failures(case: dict, runs: list[tuple[dict, list[str]]]) -> list[str]:
+    """A crossing case's own refusals: the third state within ROOT_GAP_FLOOR
+    of the pair at any point."""
+    out = []
+    for result, schemes in runs:
+        for scheme in schemes:
+            for index, p in enumerate(result["points"]):
+                gap = third_state_gap(p[scheme]["energies"], case["crossing"])
+                if not gap > ROOT_GAP_FLOOR:
+                    out.append(
+                        f"{case['name']} {scheme}: point {index}'s third state is "
+                        f"{gap:.3e} from the crossing pair, not above {ROOT_GAP_FLOOR}"
+                    )
+    return out
 
 
 def dumps(value, depth: int = 0) -> str:
@@ -1085,7 +1267,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     status = 0
-    for case in CASES:
+    for case in CASES + CROSSING_CASES:
         if args.only and case["name"] not in args.only:
             continue
         started = time.perf_counter()
@@ -1114,7 +1296,8 @@ def main() -> None:
                     "gradients": True,
                     "zvector_tolerance": ZVECTOR_TOL,
                     "pairs": case["pairs"],
-                    "seams": [],
+                    "seams": case.get("seams", []),
+                    "crossing": case.get("crossing"),
                     "points": points,
                 }
                 run_driver(args.binary, request, path)
@@ -1124,6 +1307,8 @@ def main() -> None:
             runs.append((result, schemes))
             quantities_.update(analysis["quantities"])
             failures += analysis["failures"]
+            if "crossing" in case:
+                failures += crossing_failures(case, [(result, schemes)])
         print(f"{case['name']}: {time.perf_counter() - started:.0f} s", flush=True)
         if failures:
             print(f"STUCK: {case['name']}", flush=True)
