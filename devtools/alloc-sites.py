@@ -15,23 +15,23 @@ docs/style.md "Allocations go through the pool" is the rule. Three commands:
             `make_unique` of one, or an `emplace` / `emplace_back` into a
             container (vector, optional, ...) of them that this file or one
             in its directory declares by name;
-        device_workspace / pinned_workspace / host_workspace
+        device_workspace / pinned_workspace
             a borrow (the type is std::byte, the size its byte count);
         device_regions / pinned_regions
             a carve (the type is its template arguments, the size its counts);
-        MirroredBuffer
-            a device and a pinned buffer at once (#1130 deletes it).
+        counted_pinned
+            a counted persistent pinned allocation (the type is its template
+            argument, the size its count).
 
       Only what is spelled at the site is seen: a helper that returns a buffer
       (`device_zeros(res, n)`) is one row in the helper, not one per caller.
-      #1130's counted pinned allocation joins the kinds when it lands.
 
   check <paths>                  (the pre-commit hook `pool-bypass`)
       Flags allocation the pool cap cannot see:
         - outside src/core/wwr/: `wwrMalloc*`, `wwrHostAlloc`, a raw
           `cudaMalloc*` / `hipMalloc*` / `cudaHostAlloc` / `hipHostMalloc`;
-        - outside src/core/: `Buffers::pinned` / `StreamBuffers::pinned`, and
-          a `MirroredBuffer` construction, which #1130's pinned cap cannot see;
+        - outside src/core/: `Buffers::pinned` / `StreamBuffers::pinned`,
+          which the pinned cap cannot see;
         - outside src/core/wwr/: `wwrMemGetInfo`, beyond the per-file counts in
           devtools/alloc-sites-memgetinfo.txt. Each entry names the issue that
           migrates it; an entry whose file has fewer calls than it allows, or
@@ -81,9 +81,9 @@ CPP_SUFFIXES = frozenset({".cppm", ".cpp", ".cu", ".cuh", ".h", ".hpp"})
 _SUPPRESS = re.compile(r"pool-bypass-ok:\s*\S")
 
 _BUFFER = re.compile(r"(?<!\w)(StreamBuffers|Buffers)::(device|pinned|host)\s*<")
-_MIRRORED = re.compile(r"(?<!\w)MirroredBuffer\s*<")
 _MAKE = re.compile(r"(?<!\w)make_(?:shared|unique)\s*<\s*(?:const\s+)?")
-_WORKSPACE = re.compile(r"(?<![\w])(device|pinned|host)_workspace\s*\(")
+_WORKSPACE = re.compile(r"(?<![\w])(device|pinned)_workspace\s*\(")
+_COUNTED = re.compile(r"(?<![\w])counted_pinned\s*<")
 _REGIONS = re.compile(r"(?<![\w])(device|pinned)_regions\s*<")
 _CONTAINER = re.compile(r"(?<!\w)(?:std::)?(?:vector|optional|deque|list|array)\s*<")
 _EMPLACE = re.compile(r"(?<![\w])([A-Za-z_]\w*)\s*(?:\.|->)\s*emplace(?:_back)?\s*\(")
@@ -151,8 +151,12 @@ def _balanced(text: str, i: int) -> int:
     return len(text)
 
 
-def _split_top_level(args: str) -> list[str]:
-    """Split a call's argument text on its top-level commas."""
+def _split_top_level(args: str, keep_empty: bool = False) -> list[str]:
+    """Split a call's argument text on its top-level commas.
+
+    An argument blanked to spaces (a string literal) is dropped unless
+    `keep_empty`, which keeps the arguments' positions.
+    """
     out, depth, start = [], 0, 0
     for j, c in enumerate(args):
         if c in "([{":
@@ -163,7 +167,7 @@ def _split_top_level(args: str) -> list[str]:
             out.append(args[start:j])
             start = j + 1
     out.append(args[start:])
-    return [a.strip() for a in out if a.strip()]
+    return [a.strip() for a in out if keep_empty or a.strip()]
 
 
 def _squash(text: str) -> str:
@@ -310,20 +314,11 @@ def declared_names(code: str) -> Names:
         if tail := _DECLARATORS.match(code, end):
             for name in re.split(r"\s*,\s*", tail.group(1)):
                 names[name] = held
-    for regex in (_BUFFER, _MIRRORED):
-        for m in regex.finditer(code):
-            kind, elem, end = _typed(code, m)
-            if tail := _MEMBER.match(code, end):
-                names[tail.group(1)] = (kind, elem, True)
+    for m in _BUFFER.finditer(code):
+        kind, elem, end = _buffer_type(code, m)
+        if tail := _MEMBER.match(code, end):
+            names[tail.group(1)] = (kind, elem, True)
     return names
-
-
-def _typed(code: str, m: re.Match) -> tuple[str, str, int]:
-    """(kind, element type, end) for a `Buffers::x<T>` or MirroredBuffer match."""
-    if m.re is _BUFFER:
-        return _buffer_type(code, m)
-    end = _balanced(code, m.end() - 1)
-    return "MirroredBuffer", _squash(code[m.end() : end - 1]), end
 
 
 def find_sites(text: str, path: str = "", siblings: Names | None = None) -> list[Site]:
@@ -342,16 +337,21 @@ def find_sites(text: str, path: str = "", siblings: Names | None = None) -> list
     def row(offset: int, kind: str, elem: str, size: str) -> None:
         found.append((offset, kind, elem, size))
 
+    def sizes(space: str, args: str) -> str:
+        # The pinned spellings take the caller's name first: not a size.
+        parts = _split_top_level(args, keep_empty=True)
+        return ", ".join(map(_squash, parts[1:] if space == "pinned" else parts))
+
     def first_arg(args: str) -> str:
         parts = _split_top_level(args)
         return parts[0] if parts else ""
 
     make_ends = set()
     for m in _MAKE.finditer(code):
-        b = _BUFFER.match(code, m.end()) or _MIRRORED.match(code, m.end())
+        b = _BUFFER.match(code, m.end())
         if not b:
             continue
-        kind, elem, end = _typed(code, b)
+        kind, elem, end = _buffer_type(code, b)
         close = _skip_ws(code, end)
         if code.startswith(">", close):
             paren = _skip_ws(code, close + 1)
@@ -360,27 +360,26 @@ def find_sites(text: str, path: str = "", siblings: Names | None = None) -> list
                 row(m.start(), kind, elem, _squash(first_arg(args)))
                 make_ends.add(b.start())
 
-    for regex in (_BUFFER, _MIRRORED):
-        for m in regex.finditer(code):
-            if m.start() in make_ends:
-                continue
-            kind, elem, end = _typed(code, m)
-            j = _skip_ws(code, end)
-            named = _IDENT.match(code, j)
-            if named:
-                j = _skip_ws(code, named.end())
-            if j >= len(code) or code[j] not in "({":
-                continue
-            args = code[j + 1 : _balanced(code, j) - 1]
-            if not args.strip():
-                continue  # empty, or a function declaration
-            if named:
-                column = m.start() - starts[_line_of(starts, m.start()) - 1]
-                line_head = code[starts[_line_of(starts, m.start()) - 1] : m.start()]
-                at_namespace = column == 0 or line_head.strip() in {"export", "static"}
-                if at_namespace or (code[j] == "(" and _looks_like_parameters(args)):
-                    continue  # a function returning a buffer
-            row(m.start(), kind, elem, _squash(first_arg(args)))
+    for m in _BUFFER.finditer(code):
+        if m.start() in make_ends:
+            continue
+        kind, elem, end = _buffer_type(code, m)
+        j = _skip_ws(code, end)
+        named = _IDENT.match(code, j)
+        if named:
+            j = _skip_ws(code, named.end())
+        if j >= len(code) or code[j] not in "({":
+            continue
+        args = code[j + 1 : _balanced(code, j) - 1]
+        if not args.strip():
+            continue  # empty, or a function declaration
+        if named:
+            column = m.start() - starts[_line_of(starts, m.start()) - 1]
+            line_head = code[starts[_line_of(starts, m.start()) - 1] : m.start()]
+            at_namespace = column == 0 or line_head.strip() in {"export", "static"}
+            if at_namespace or (code[j] == "(" and _looks_like_parameters(args)):
+                continue  # a function returning a buffer
+        row(m.start(), kind, elem, _squash(first_arg(args)))
 
     for m in _EMPLACE.finditer(code):
         if (held := names.get(m.group(1))) and not held[2]:
@@ -407,7 +406,7 @@ def find_sites(text: str, path: str = "", siblings: Names | None = None) -> list
         args = code[m.end() : _balanced(code, m.end() - 1) - 1]
         if _looks_like_parameters(args):
             continue  # its definition
-        row(m.start(), f"{m.group(1)}_workspace", "std::byte", _squash(args))
+        row(m.start(), f"{m.group(1)}_workspace", "std::byte", sizes(m.group(1), args))
 
     for m in _REGIONS.finditer(code):
         end = _balanced(code, m.end() - 1)
@@ -418,7 +417,19 @@ def find_sites(text: str, path: str = "", siblings: Names | None = None) -> list
         if _looks_like_parameters(args):
             continue
         elem = _squash(code[m.end() : end - 1])
-        row(m.start(), f"{m.group(1)}_regions", elem, _squash(args))
+        row(m.start(), f"{m.group(1)}_regions", elem, sizes(m.group(1), args))
+
+    for m in _COUNTED.finditer(code):
+        end = _balanced(code, m.end() - 1)
+        j = _skip_ws(code, end)
+        if not code.startswith("(", j):
+            continue
+        args = code[j + 1 : _balanced(code, j) - 1]
+        if _looks_like_parameters(args):
+            continue
+        parts = _split_top_level(args, keep_empty=True)
+        size = _squash(parts[-1]) if parts else ""
+        row(m.start(), "counted_pinned", _squash(code[m.end() : end - 1]), size)
 
     found.sort()
     return [
@@ -529,9 +540,6 @@ def find_bypasses(
     code_lines = blank_comments_and_literals(text).split("\n")
     found: list[tuple[int, int, str]] = []
     memgetinfo: list[tuple[int, int]] = []
-    mirrored = set()
-    if not in_core and "MirroredBuffer" in text:
-        mirrored = {s.line for s in find_sites(text, rel) if s.kind == "MirroredBuffer"}
     for lineno, code in enumerate(code_lines, 1):
         if is_suppressed(raw_lines, lineno - 1):
             continue
@@ -547,9 +555,6 @@ def find_bypasses(
             found.append(
                 (lineno, m.start() + 1, "pinned memory outside src/core/ (#1130)")
             )
-        if lineno in mirrored:
-            col = code.find("MirroredBuffer") + 1
-            found.append((lineno, col, "a MirroredBuffer's pinned side (#1130)"))
     allowed, owner = allowlist.get(rel, (0, ""))
     if len(memgetinfo) > allowed:
         what = (

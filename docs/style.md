@@ -471,7 +471,7 @@ runs: a solver's `lwork`, an intermediate product, a buffer that is written and
 consumed before the call returns. Don't allocate a `Buffers::device` for it, and
 don't make the caller lend one. Ask the workspace once, for the total, and carve
 it.
-The same goes for a generic solver's host scratch and `host_workspace()`.
+A generic solver's host scratch comes from `pinned_workspace()` the same way.
 
 **Carve it with `device_regions`**, which takes one count per region and
 returns the regions' starts:
@@ -521,10 +521,10 @@ memory read with `wwrMemGetInfo`, which counts neither what the pool holds
 reserved but unused nor the cap. Only `src/core/wwr/` calls the runtime
 directly.
 
-**Pinned memory belongs to `src/core/`.** A `Buffers::pinned`,
-`StreamBuffers::pinned` or `MirroredBuffer` anywhere else is outside the pinned
-cap that #1130 adds. The few there are today carry
-`pool-bypass-ok: until #1130`.
+**Pinned memory belongs to `src/core/`.** Outside it, pinned memory comes from
+`DeviceResources`: `pinned_workspace` / `pinned_regions` for fixed-size staging,
+`counted_pinned` for a product kept in pinned memory. A `Buffers::pinned` or
+`StreamBuffers::pinned` anywhere else is outside the pinned cap.
 
 `devtools/alloc-sites.py check` flags each of these at commit. A line that must
 bypass the pool says why, as `// pool-bypass-ok: <reason>` on the line itself
