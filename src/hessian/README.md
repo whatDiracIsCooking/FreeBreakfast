@@ -1645,13 +1645,16 @@ to report (#965, #966), since only that call holds term (i).
 
 ### Tests
 
-`test/gtest/df_qd_eigenvector_response_gpu.cpp` (suite
-`HessianDfQdEigenvectorResponse`) runs on `data/qd_nevpt2/`'s cases through
-the registry:
+`test/gtest/df_qd_eigenvector_response_gpu.cpp` (suites
+`HessianDfQdEigenvectorResponse` and, PC's half split off as its own family,
+`HessianDfQdPcEigenvectorResponse`, #1161) runs on `data/qd_nevpt2/`'s cases
+through the registry:
 
 - `h2co_skew_ccpvdz_sa3` (C1, three roots at equal weights), SC
-  (`ScListMatchesPairs`, the family's representative) and PC
-  (`PcListMatchesPairs`). The one list call's
+  (`ScListMatchesPairs`, its family's representative) and PC
+  (`HessianDfQdPcEigenvectorResponse.ListMatchesPairs`, its own). Each
+  takes about 1.7 s on an idle RTX 3080, so both stay in the fast set as
+  representatives. The one list call's
   h_PQ for each of the three pairs is held against that pair's own
   `qd_sc_coupling` / `qd_pc_coupling`, an independently converged solve, to
   1e-9 Eh/bohr on every component. H_eff's eigenvalues must agree to 1e-12.

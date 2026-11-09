@@ -282,10 +282,13 @@ TEST(HessianDfQdEigenvectorResponse, ScListMatchesPairs) {
   expect_couplings_match("h2co_skew_ccpvdz_sa3", false);
 }
 
-// 2.1 s on the gfx1200 (the slower card), as SC's 2.0 to 3.2 s: in the fast set,
-// so that the gate runs both halves of the acceptance.
-TEST(HessianDfQdEigenvectorResponse, PcListMatchesPairs) {
+// PC's half of the acceptance, a family of its own so that it is its
+// family's representative and the gate runs both halves (slow_test.h, "split
+// the mode off"; #1161): 1.7 s on an idle RTX 3080 and 2.1 s on the gfx1200,
+// as SC's 1.7 s and 2.0 to 3.2 s, past the line for a case that is not one.
+TEST(HessianDfQdPcEigenvectorResponse, ListMatchesPairs) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
   expect_couplings_match("h2co_skew_ccpvdz_sa3", true);
 }
 
