@@ -67,8 +67,8 @@ stream, and for `res.stream()`, before it returns: the buffers are freed and
 the carve released.
 
 **Records are in descending ζ order, per class, and written once, in it.** On
-the class's stream, after a fork from `res.stream()`, where the tables were
-uploaded: `mmd_order` writes each enumerated record's key `-ζ` (from its
+the class's stream, after a fork from the class before (the first class's
+from `res.stream()`, where the tables were uploaded): `mmd_order` writes each enumerated record's key `-ζ` (from its
 two exponents alone) and its index, and sorts them stably
 ([`src/recipes/sort`](../../recipes/sort/README.md)); then `mmd_records` writes record
 `k` from enumerated record `perm[k]`, every field at once. Nothing is permuted
@@ -77,7 +77,12 @@ Within a class the
 record bound rises with ζ, so this is descending `Ip`: a bra's ket loop runs until `Dmax · Ip · Iq < τ`, so the
 longest loops launch first and a build's tail is short. No kernel depends on
 the order (each accumulates), and it is fixed per basis, so it costs one sort
-per class, once. It also spreads a shell pair's records across warps, so
+per class, once. Every class sorts in one carve of `res`'s device workspace,
+sized to the largest class, which is why the forks chain: the sorts run one
+after another. Four pool
+buffers per class, freed before the next class drew its own, would leave the
+call's peak to the pool: ROCm's (7.2.4) can serve a later request from a
+freed block whole and count the block's size, not the request's (#1143). It also spreads a shell pair's records across warps, so
 `jab`'s and the one-electron scatters' atomic adds collide less.
 
 **The bound is a field, formed once per basis.** `I = pair_bound(ζ, la + lb)`,
@@ -172,7 +177,7 @@ V read every record. J prunes a copy of them
 | `PrimitivePairClassView` | The class's device fields by pointer, for the launchers (`primitive_pair_class_view.h`, re-exported) |
 | `mixed_primitive_pair_classes(res, rows, cols)` | The same, between two bases: every ORDERED shell pair (i of `rows`, j of `cols`), never swapped, so `la > lb` classes appear; `off_a` indexes `rows`' AOs and `off_b` `cols'`. What `overlap_mixed` reads, and nothing else: the symmetric builds would mirror its values |
 | `primitive_pair_classes(res, basis)` | `Result<std::vector<PrimitivePairClass>>`: every reached class, ascending, none empty, each on a new `DeviceStream`, finished when it returns. `BasisSet` already bounds `nao_cart()` to `INT32_MAX`; a class past `INT32_MAX` records, or a basis past `INT32_MAX` primitives, aborts |
-| `primitive_pair_classes_footprint(basis)` | `MemoryFootprint`: what `primitive_pair_classes` holds, from the host basis: the records persistent; the tables and one class's sort at a time scratch; the tables' staging, the pinned workspace (`core/footprint`) |
+| `primitive_pair_classes_footprint(basis)` | `MemoryFootprint`: what `primitive_pair_classes` holds, from the host basis: the records persistent; the tables scratch; the sort, sized to the largest class, the device workspace; the tables' staging, the pinned workspace (`core/footprint`) |
 
 ## Tests
 

@@ -39,8 +39,9 @@ free_breakfast_add_gpu_device_library(
 # K build's block tables, made once per basis by the exchange helpers'
 # launcher. StreamBuffers, DeviceStream, DeviceResources, Result, BasisSet and
 # PrimitivePairClass are in its interface, so their modules are PUBLIC;
-# diagnostics.h (FBF_TRY), the device library and the helpers, whose bridge
-# headers the implementation unit includes in its GMF, are its only.
+# diagnostics.h (FBF_TRY), align_up (core::primitives), the device library and
+# the helpers, whose bridge headers the implementation unit includes in its
+# GMF, are its only.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.exchange.pairs
@@ -60,6 +61,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::eri::integral_direct::exchange::pairs::headers
   LINK_PRIVATE
   free_breakfast::core::diagnostics_macros
+  free_breakfast::core::primitives
   free_breakfast::integrals::eri::integral_direct::exchange::pairs::device
   free_breakfast::integrals::eri::integral_direct::exchange::helpers
 )

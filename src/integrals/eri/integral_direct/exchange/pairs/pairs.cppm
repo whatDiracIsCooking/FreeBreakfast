@@ -260,7 +260,10 @@ struct OrderedPairClass {
 /// allocated here too, and left unwritten, the set's own on its first class.
 ///
 /// No host synchronization: each class's stream waits on an event recorded on
-/// its mmd class's stream, so it reads mmd's final records. A bra's tables
+/// its mmd class's stream, so it reads mmd's final records, and on one
+/// recorded on the class before's (res.stream()'s for the first), so the
+/// gathers sort one after another in one carve of res's device workspace, sized
+/// to the class of the most slots. A bra's tables
 /// read every class's groups, so every class's stream is joined into
 /// res.stream() after its gather and forked back from it for its tables, and
 /// joined and forked once more after them, so a class's frees follow every
@@ -282,9 +285,9 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
 
 /// @brief What @ref ordered_pair_classes holds over @p basis's mmd classes,
 /// from the host basis alone: every ordered class's records, tables and K
-/// build scratch, persistent; each class's gather sort, scratch, freed before
-/// the next class is made. Nothing of either workspace. Empty for an empty
-/// basis.
+/// build scratch, persistent; the gathers' sort, sized to the class of the
+/// most slots, the device workspace. Nothing of the pinned workspace. Empty
+/// for an empty basis.
 [[nodiscard]] MemoryFootprint ordered_pair_classes_footprint(const BasisSet &basis);
 
 } // namespace free_breakfast
