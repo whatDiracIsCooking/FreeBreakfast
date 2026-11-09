@@ -102,9 +102,9 @@ TEST(LibraryFootprint, PrimitivePairClasses) {
   const fb::MemoryFootprint fp = fb::primitive_pair_classes_footprint(w.basis);
   ASSERT_EQ(w.classes.size(), 6U);
   fb::DeviceResources res{0};
-  // At the peak: the classes' 20 fields each, the 11 tables and one class's 4
-  // sort buffers.
-  expect_routine_footprint(res, fp, (6 * 20) + 11 + 4, [&] {
+  // At the peak: the classes' 20 fields each and the 11 tables; the classes
+  // sort in the device workspace.
+  expect_routine_footprint(res, fp, (6 * 20) + 11, [&] {
     const auto classes = fb::primitive_pair_classes(res, w.basis);
     ASSERT_TRUE(classes);
   });
@@ -130,9 +130,9 @@ TEST(LibraryFootprint, OrderedPairClasses) {
   const Water w;
   const fb::MemoryFootprint fp = fb::ordered_pair_classes_footprint(w.basis);
   fb::DeviceResources res{0};
-  // At most the 9 ordered classes' 30 fields each and one gather's 4 sort
-  // buffers (an empty field allocates nothing).
-  expect_routine_footprint(res, fp, (9 * 30) + 4, [&] {
+  // At most the 9 ordered classes' 30 fields each (an empty field allocates
+  // nothing); the gathers sort in the device workspace.
+  expect_routine_footprint(res, fp, 9 * 30, [&] {
     const auto k_classes = fb::ordered_pair_classes(res, w.basis, w.classes);
     ASSERT_TRUE(k_classes);
     ASSERT_EQ(k_classes->size(), 9U);

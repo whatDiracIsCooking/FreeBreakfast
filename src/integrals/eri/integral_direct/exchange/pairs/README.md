@@ -139,7 +139,12 @@ per set of classes.
 
 **No host synchronization, and no host copy.** Each class's stream is forked
 from its `mmd` class's (an event, `ForkStream::fork_from`), so it reads
-`mmd`'s final records. A bra's tables read every class's `group_start` and
+`mmd`'s final records, and from the class before's (`res.stream()` for the
+first): every gather sorts in one carve of `res`'s device workspace, sized to
+the class of the most slots, one after another. Four pool buffers per class,
+freed before the next class allocated, would leave the call's peak to the pool:
+ROCm's (7.2.4) can serve a later request from a freed block whole and count
+the block's size in `UsedMemCurrent`, not the request's (#1143). A bra's tables read every class's `group_start` and
 `off_a`, so once every class is gathered, each class's stream is joined into
 `res.stream()` and forked back from it for its tables, then joined and forked
 once more, so a class's frees follow every table that read it. Each `mmd`
@@ -160,7 +165,7 @@ error.
 | `OrderedPairClass` | One ordered class `(la, lb)`: `n_rec`, `n_groups`, the basis's `n_ao` and `n_shells`, its tables' `n_blk` (one per class of the set), its `work_stream` (also `device_stream()`, as `mmd`'s classes name theirs), one device-only `StreamBuffers::device` per field (`record_bound` and `rank_b` among them), the groups' bounds `group_start`, the K build's `dc` rows and `blocks` tables (once per basis) and its scratch `dcd`, `geom`, `factor` and `rank_offset`, and on the set's first class the set's `centre`, `shell_start`, `decay` and `g_max` (per build); `view()` gives an `OrderedPairClassView` |
 | `OrderedPairClassView` | The class's device fields by pointer, for the launchers (`ordered_pair_class_view.h`, re-exported) |
 | `ordered_pair_classes(res, basis, classes)` | `Result<std::vector<OrderedPairClass>>` from `primitive_pair_classes(res, basis)`: every reached ordered class, ascending `(la, lb)`, none empty, each on a new `DeviceStream`, a set the K build takes whole |
-| `ordered_pair_classes_footprint(basis)` | `MemoryFootprint`: what `ordered_pair_classes` holds, from the host basis: every class persistent, each gather's sort scratch while its class is made. The call and its footprint size a class from one `OrderedClassSizes` |
+| `ordered_pair_classes_footprint(basis)` | `MemoryFootprint`: what `ordered_pair_classes` holds, from the host basis: every class persistent; the gathers' sort, sized to the class of the most slots, the device workspace. The call and its footprint size a class from one `OrderedClassSizes` |
 
 ## Tests
 
@@ -206,7 +211,7 @@ displacements and both offsets with the bound.
 |------|------|
 | `ordered_pair_class_view.h` | `OrderedPairClassView`, the single definition, for `#include` and `import` alike |
 | `pairs.cppm` | Module interface: `OrderedPairClass`, `ordered_pair_classes`, its footprint, the view re-exported |
-| `pairs.cpp` | The check against the basis, the sizes from it, then per class the fork from `mmd`'s stream, the order and the gather on the device; after a join, every bra's `dc` rows and tables; and the joins back |
+| `pairs.cpp` | The check against the basis, the sizes from it, then per class the forks from `mmd`'s stream and the class before's, the order (in the device workspace) and the gather on the device; after a join, every bra's `dc` rows and tables; and the joins back |
 | `pairs_bridge.h` | The order's, the gather's and the `dc` rows' launchers, and the slots the first two share, declared once for `pairs.cpp`'s GMF and the `.cu` |
 | `pairs_launch.cu` | The key, group-start, gather and `dc`-row kernels, and the launchers: `ordered_pair_order` (the two sorts and `group_start`), `ordered_pair_gather` (every field, from `mmd`'s class), `ordered_pair_bra_rows` |
 | `CMakeLists.txt` | The interface library `free_breakfast.integrals.eri.integral_direct.exchange.pairs.headers`, the device library and the module library |

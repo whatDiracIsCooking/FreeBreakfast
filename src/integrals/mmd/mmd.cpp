@@ -229,18 +229,12 @@ PrimitivePairClass make_class(DeviceResources &res, const ClassKey key, const in
 // in it, so nothing is permuted after. Within a class the record bound
 // (form_bounds) rises with zeta, so this is descending Ip: a J build's bras
 // with the longest ket loops launch first. Every kernel accumulates, so none
-// depends on the order. The sort's scratch is drawn on cls's stream and
-// returned in its order.
-Status form_records(PrimitivePairClass &cls, const device::PrimitivePairSource &src) {
-  const std::shared_ptr<DeviceStream> &ds = cls.handle;
-  const wwr::wwrStream_t stream = ds->stream();
-  const auto n = static_cast<size_t>(cls.n_rec);
-  StreamBuffers::device<double> key(n, ds);
-  StreamBuffers::device<double> key_alt(n, ds);
-  StreamBuffers::device<uint32_t> perm(n, ds);
-  StreamBuffers::device<uint32_t> perm_alt(n, ds);
-  FBF_TRY(gpu_status(device::mmd_order(stream, cls.n_rec, src, key.data(), key_alt.data(),
-                                       perm.data(), perm_alt.data())));
+// depends on the order. The sort runs in @p key, @p key_alt, @p perm and
+// @p perm_alt, one per record at least (mmd_sort_scratch).
+Status form_records(PrimitivePairClass &cls, const device::PrimitivePairSource &src, double *key,
+                    double *key_alt, uint32_t *perm, uint32_t *perm_alt) {
+  const wwr::wwrStream_t stream = cls.handle->stream();
+  FBF_TRY(gpu_status(device::mmd_order(stream, cls.n_rec, src, key, key_alt, perm, perm_alt)));
   const device::PrimitivePairRecords out{
       .zeta = cls.zeta.data(),
       .p_x = cls.p_x.data(),
@@ -260,7 +254,7 @@ Status form_records(PrimitivePairClass &cls, const device::PrimitivePairSource &
       .rank_a = cls.rank_a.data(),
       .rank_b = cls.rank_b.data(),
   };
-  return gpu_status(device::mmd_records(stream, cls.n_rec, src, perm.data(), out));
+  return gpu_status(device::mmd_records(stream, cls.n_rec, src, perm, out));
 }
 
 // Each record's three bounds, on cls's stream after form_records, so they are
@@ -301,13 +295,35 @@ Status form_bounds(PrimitivePairClass &cls) {
   return {};
 }
 
-// Every class formed on its own stream, forked from res.stream(), where the
-// tables were uploaded: its records, then its bounds.
+// The bytes of form_classes' sort scratch for a largest class of @p n
+// records, as device_regions carves it: two double keys and two uint32_t
+// permutations a record.
+size_t mmd_sort_bytes(const size_t n) {
+  const size_t a = DeviceResources::kWorkspaceAlignment;
+  return (2 * math::align_up(sizeof(double) * n, a)) +
+         (2 * math::align_up(sizeof(uint32_t) * n, a));
+}
+
+// Every class formed on its own stream: its records, then its bounds. The
+// first forks from res.stream(), where the tables were uploaded, and each
+// later one from the class before, so every sort runs in one carve of res's
+// device workspace, sized to the largest class, one after another. Not four
+// pool buffers per class, freed before the next class draws its own: ROCm's
+// pool (7.2.4) can serve a later request from such a freed block and count the
+// block's size, not the request's, so the call's peak would pass its footprint
+// (#1143).
 Status form_classes(DeviceResources &res, std::vector<PrimitivePairClass> &classes,
                     const PairTable &pairs, const DeviceTables &t) {
+  size_t n_max = 0;
+  for (const PrimitivePairClass &cls : classes) {
+    n_max = std::max(n_max, static_cast<size_t>(cls.n_rec));
+  }
+  const auto [key, key_alt, perm, perm_alt] =
+      res.device_regions<double, double, uint32_t, uint32_t>(n_max, n_max, n_max, n_max);
   for (size_t c = 0; c < classes.size(); ++c) {
     PrimitivePairClass &cls = classes[c];
-    FBF_TRY(gpu_status(cls.handle->fork_stream().fork_from(res.stream())));
+    FBF_TRY(gpu_status(cls.handle->fork_stream().fork_from(
+        c == 0 ? res.stream() : classes[c - 1].handle->stream())));
     const size_t first = pairs.pair_begin[c];
     const device::PrimitivePairSource src{
         .n_pairs = static_cast<int32_t>(pairs.pair_begin[c + 1] - first),
@@ -323,7 +339,7 @@ Status form_classes(DeviceResources &res, std::vector<PrimitivePairClass> &class
         .ao_offset = t.ao_offset.data(),
         .rank = t.rank.data(),
     };
-    FBF_TRY(form_records(cls, src));
+    FBF_TRY(form_records(cls, src, key, key_alt, perm, perm_alt));
     FBF_TRY(form_bounds(cls));
   }
   return {};
@@ -425,15 +441,15 @@ MemoryFootprint primitive_pair_classes_footprint(const BasisSet &basis) {
   }
   const size_t npairs = nsh * (nsh + 1) / 2;
   // make_class's fields: 16 doubles and 4 int32_t a record, the classes' own;
-  // form_records' sort: two double keys and two uint32_t permutations a
-  // record, on the class's stream, one class at a time.
+  // form_classes' sort, sized to the largest class, in the device workspace.
   MemoryFootprint out;
-  size_t sort = 0;
+  size_t n_max = 0;
   for (const ClassPairs &cp : sweep | std::views::values) {
     const auto n = static_cast<size_t>(cp.rec_begin.back());
     out.device.persistent += n * ((16 * sizeof(double)) + (4 * sizeof(int32_t)));
-    sort = std::max(sort, n * (2 * (sizeof(double) + sizeof(uint32_t))));
+    n_max = std::max(n_max, n);
   }
+  out.device.workspace = mmd_sort_bytes(n_max);
   // upload's tables, one buffer a field (ShellTable, PairTable): prim_begin,
   // exponent, coefficient, c_x, c_y, c_z, ao_offset, rank; bra, ket,
   // rec_begin. Staged from one pinned carve of the same counts.
@@ -453,7 +469,7 @@ MemoryFootprint primitive_pair_classes_footprint(const BasisSet &basis) {
     tables += bytes;
     out.pinned.workspace += math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
   }
-  out.device.scratch = tables + sort;
+  out.device.scratch = tables;
   return out;
 }
 

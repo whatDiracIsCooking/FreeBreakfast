@@ -21,6 +21,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives;
 import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
@@ -163,29 +164,31 @@ size_t ordered_slots(const int32_t la, const int32_t lb, const int64_t n_rec) {
   return static_cast<size_t>(n_rec) * (la == lb ? 2 : 1);
 }
 
+// The bytes of the gathers' sort scratch for a class of the most slots,
+// @p n_slots, as device_regions carves it: two double keys and two uint32_t
+// permutations a slot.
+size_t ordered_sort_bytes(const size_t n_slots) {
+  const size_t a = DeviceResources::kWorkspaceAlignment;
+  return (2 * math::align_up(sizeof(double) * n_slots, a)) +
+         (2 * math::align_up(sizeof(uint32_t) * n_slots, a));
+}
+
 // The class's order and its records from the mmd class from, on its stream:
 // the order and group_start (ordered_pair_order), then every field in that
-// order (ordered_pair_gather). The scratch is drawn on the class's stream and
-// returned in its order.
-Status gather_ordered(OrderedPairClass &cls, const PrimitivePairClass &from) {
-  const std::shared_ptr<DeviceStream> &ds = cls.work_stream;
-  const wwr::wwrStream_t stream = ds->stream();
+// order (ordered_pair_gather). The sort runs in @p key, @p key_alt, @p perm
+// and @p perm_alt, one per slot at least.
+Status gather_ordered(OrderedPairClass &cls, const PrimitivePairClass &from, double *key,
+                      double *key_alt, uint32_t *perm, uint32_t *perm_alt) {
+  const wwr::wwrStream_t stream = cls.work_stream->stream();
   const PrimitivePairClassView v = from.view();
-  const size_t n_slots = ordered_slots(from.la, from.lb, from.n_rec);
-  StreamBuffers::device<double> key(n_slots, ds);
-  StreamBuffers::device<double> key_alt(n_slots, ds);
-  StreamBuffers::device<uint32_t> perm(n_slots, ds);
-  StreamBuffers::device<uint32_t> perm_alt(n_slots, ds);
-  FBF_TRY(gpu_status(device::ordered_pair_order(stream, v, cls.la, cls.n_groups, key.data(),
-                                                key_alt.data(), perm.data(), perm_alt.data(),
-                                                cls.group_start.data())));
+  FBF_TRY(gpu_status(device::ordered_pair_order(stream, v, cls.la, cls.n_groups, key, key_alt, perm,
+                                                perm_alt, cls.group_start.data())));
   double *const doubles[] = {
       cls.zeta.data(), cls.p_x.data(),          cls.p_y.data(),  cls.p_z.data(),  cls.pa_x.data(),
       cls.pa_y.data(), cls.pa_z.data(),         cls.pb_x.data(), cls.pb_y.data(), cls.pb_z.data(),
       cls.s.data(),    cls.record_bound.data(), cls.ea.data(),   cls.eb.data()};
   int32_t *const ints[] = {cls.off_a.data(), cls.off_b.data(), cls.rank_b.data()};
-  return gpu_status(
-      device::ordered_pair_gather(stream, v, cls.la, cls.n_rec, perm.data(), doubles, ints));
+  return gpu_status(device::ordered_pair_gather(stream, v, cls.la, cls.n_rec, perm, doubles, ints));
 }
 
 // The class's two E tables, kbr's Eac and Ebd, from its gathered records, on
@@ -366,6 +369,20 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t hub = res.stream();
+  size_t n_slots = 0;
+  for (const auto &entry : plan) {
+    n_slots = std::max(n_slots,
+                       ordered_slots(entry.first.first, entry.first.second, entry.second->n_rec));
+  }
+  // Every gather sorts in one carve of res's device workspace, sized to the
+  // class of the most slots, one after another: the first class forks from
+  // hub, the workspace's stream, and each later one from the class before.
+  // Not four pool buffers per class, freed before the next class allocates:
+  // ROCm's pool (7.2.4) can serve a later request from such a freed block
+  // and count the block's size, not the request's, so the call's peak would
+  // pass its footprint (#1143).
+  const auto [key, key_alt, perm, perm_alt] =
+      res.device_regions<double, double, uint32_t, uint32_t>(n_slots, n_slots, n_slots, n_slots);
   std::vector<OrderedPairClass> out;
   out.reserve(plan.size());
   for (size_t c = 0; c < plan.size(); ++c) {
@@ -384,9 +401,12 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
     OrderedPairClass &cls = out.emplace_back(make_ordered_class(
         res, la, lb, static_cast<int32_t>(n), n_groups, n_ao, ob.n_shells, std::move(n_blk[c]), z));
     // Fork from mmd's stream, so the class reads mmd's final records, without
-    // a host synchronization.
-    FBF_TRY(gpu_status(cls.work_stream->fork_stream().fork_from(from->device_stream()->stream())));
-    FBF_TRY(gather_ordered(cls, *from));
+    // a host synchronization; and from the class before (hub for the first),
+    // so its gather sorts in the scratch after the one before has.
+    ForkStream &fork = cls.work_stream->fork_stream();
+    FBF_TRY(gpu_status(fork.fork_from(from->device_stream()->stream())));
+    FBF_TRY(gpu_status(fork.fork_from(c == 0 ? hub : out[c - 1].work_stream->stream())));
+    FBF_TRY(gather_ordered(cls, *from, key, key_alt, perm, perm_alt));
     if (cls.e_bra.num_elements() > 0) {
       FBF_TRY(write_e_tables(cls));
     }
@@ -419,9 +439,10 @@ MemoryFootprint ordered_pair_classes_footprint(const BasisSet &basis) {
     }
   }
   const std::vector<std::vector<int64_t>> blocks = ordered_blocks(ob, keys);
-  // Class after class: its fields, kept; then its gather's sort, freed before
-  // the next class is made.
+  // Every class's fields, kept; and the gathers' sort, sized to the class of
+  // the most slots, in the device workspace.
   MemoryFootprint out;
+  size_t n_slots = 0;
   for (size_t c = 0; c < keys.size(); ++c) {
     const auto [la, lb] = keys[c];
     const auto ula = static_cast<size_t>(la);
@@ -437,9 +458,11 @@ MemoryFootprint ordered_pair_classes_footprint(const BasisSet &basis) {
     // The mmd class it is gathered from: (l, l)'s (P^2 + sum p^2) / 2 records,
     // or P(la) P(lb).
     const int64_t mmd_rec = la == lb ? ((ob.prims[ula] * ob.prims[ula]) + ob.prims_sq[ula]) / 2 : n;
-    const size_t sort = ordered_slots(la, lb, mmd_rec) * (2 * (sizeof(double) + sizeof(uint32_t)));
-    out.device = then(out.device, Footprint<wwr::extension::MemoryKind::Device>{
-                                      .persistent = z.bytes(), .scratch = sort});
+    n_slots = std::max(n_slots, ordered_slots(la, lb, mmd_rec));
+    out.device.persistent += z.bytes();
+  }
+  if (n_slots > 0) {
+    out.device.workspace = ordered_sort_bytes(n_slots);
   }
   return out;
 }

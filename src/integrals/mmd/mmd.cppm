@@ -201,9 +201,9 @@ struct PrimitivePairClass {
 
 /// @brief What @ref primitive_pair_classes holds over @p basis, from the
 /// host basis alone: the classes' records persistent; the uploaded shell and
-/// pair tables, and one class's sort at a time, scratch on the device; the
-/// tables' pinned staging, the pinned workspace. Nothing of the device
-/// workspace. Empty for an empty basis.
+/// pair tables, scratch on the device; the sort, sized to the largest class,
+/// the device workspace; the tables' pinned staging, the pinned workspace.
+/// Empty for an empty basis.
 [[nodiscard]] MemoryFootprint primitive_pair_classes_footprint(const BasisSet &basis);
 
 /// @brief The primitive-pair records between two bases, @p rows and @p cols, on
