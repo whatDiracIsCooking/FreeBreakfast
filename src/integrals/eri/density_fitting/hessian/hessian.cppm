@@ -61,8 +61,8 @@ export namespace free_breakfast {
 ///
 /// **Refused up front, not split.** The Cartesian Gam and its transform's
 /// intermediate are scratch from res.device_workspace(); if they and the
-/// staging need more bytes than the device has free (beyond what the
-/// workspace already holds), the call is Unsupported, naming the bytes,
+/// staging need more bytes than res.memory_budget() (or than the workspace
+/// already holds, if more), the call is Unsupported, naming the bytes,
 /// before anything is allocated.
 ///
 /// Queued on res.stream(), and synchronized: the call returns when H is on the

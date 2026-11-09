@@ -66,8 +66,8 @@ struct OrbitalRange {
 ///
 /// The scratch is @ref b_half's X, naux |rows| nao doubles, from
 /// res.device_workspace(), which grows if it is smaller; none of @p b, @p c
-/// and @p out may point into it. A workspace that would have to grow past the
-/// device's free memory is refused up front, since the allocation would abort
+/// and @p out may point into it. A workspace that would have to grow past
+/// res.memory_budget() is refused up front, since the allocation would abort
 /// (CreatePolicy) rather than return.
 ///
 /// Queued on res.stream() with res.blas() in host pointer mode (its default),
@@ -86,7 +86,7 @@ struct OrbitalRange {
 /// @return Success, writing nothing when @p out is empty (naux, |rows| or
 ///         |cols| zero); InvalidConfig for a negative count, a range outside
 ///         [0, nmo), or naux |rows| past int32_t; Unsupported for scratch
-///         past the device's free memory, naming the bytes; or the GpuRuntime
+///         past res.memory_budget(), naming the bytes; or the GpuRuntime
 ///         error of the first runtime or BLAS call that failed, which leaves
 ///         @p out unspecified.
 [[nodiscard]] Status b_mo(DeviceResources &res, int32_t naux, int32_t nao, int32_t nmo,

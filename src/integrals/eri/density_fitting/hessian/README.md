@@ -75,7 +75,7 @@ kernels' ladders, read from their bridges; `tools/emit/df_hessian_kernels.py`
 refuses another ladder and `hessian_launch.cu` checks the tables at compile
 time), both bases made by `place` over one molecule, and the Cartesian Γ held
 in full within the kernels' 32-bit index, refused before anything is
-allocated past the device's free memory.
+allocated past the device's memory budget (`DeviceResources::memory_budget()`).
 
 ## Tests
 

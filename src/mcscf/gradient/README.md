@@ -485,8 +485,8 @@ back-transform (naux max(ncore, ncas) nao), and the active pairs and Z (naux
 ncas² each); for a state average (or given multipliers) also four more fitted
 densities, a second G, and the response's pairs, their scratch and the SA V
 and Z (three more of each size). It refuses (`Unsupported`, naming the bytes)
-when those would not fit the device's free memory, before anything is
-allocated. A state average's CI objects, Hessian and nao²-sized matrices are
+when those would not fit the device's memory budget (`DeviceResources::memory_budget()`),
+before anything is allocated. A state average's CI objects, Hessian and nao²-sized matrices are
 not counted. An extra adjoint adds Λ Cᵀ (naux nao², the size of Γ) and Gᵃᵘˣ
 (naux²), both counted; Λ itself is the caller's. `casscf_integrals` and
 `response::fock` hold their own nmo² ncas² integrals for the call. naux nao²

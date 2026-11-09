@@ -124,8 +124,8 @@ struct MoAdjoint {
 /// call's own device memory is about 8 naux (nao^2 + naux +
 /// 2 ncore nocc + max(ncore, ncas) nao + 2 ncas^2) bytes, nocc =
 /// ncore + ncas, and an extra adjoint's 8 naux (nao^2 + naux) more. Past the
-/// device's free memory it is Unsupported, naming the bytes, before anything
-/// is allocated.
+/// memory budget (res.memory_budget()) it is Unsupported, naming the bytes,
+/// before anything is allocated.
 ///
 /// Queued on res.stream(); each derivative call synchronizes it, so the call
 /// returns with everything done. Scratch for @c b_mo, the Fock and the
@@ -134,7 +134,7 @@ struct MoAdjoint {
 /// the call and the previous one restored.
 ///
 /// @return The gradient and its terms; Unsupported for memory past the
-///         device's free bytes, for naux nao^2 past int32_t, or for a state
+///         memory budget, for naux nao^2 past int32_t, or for a state
 ///         average whose weights are recovered and whose roots' 1-RDMs are
 ///         linearly dependent (they cannot be); InvalidConfig if solution.c is not
 ///         basis.nao_sphe() square or not on @p res's device, if ncore is

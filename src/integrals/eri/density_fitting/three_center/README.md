@@ -100,8 +100,8 @@ workspace's; `b` is the caller's.
 - **The whole tensor must fit, and is refused up front if not.** The staging,
   the Cartesian tensor and the intermediate (`naux · nao_cart²`) are counted
   before anything is allocated; past `max_bytes` (a test's forced limit, the
-  default unlimited) or the device's free memory, the call is
-  `Unsupported`, naming the bytes. Splitting over m would need FelizJueves's
+  default unlimited) or the device's memory budget (`DeviceResources::memory_budget()`),
+  the call is `Unsupported`, naming the bytes and the budget. Splitting over m would need FelizJueves's
   mirrored store changed.
 - `nao_cart² naux_cart` within `INT32_MAX`, the kernels' 32-bit index, else
   `Unsupported`.

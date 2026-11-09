@@ -12,17 +12,6 @@
 #
 # <path>                                                     <calls> <owner>
 
-# #1129: the library refusal checks under those steps. gradient.cpp's four are
-# metric_derivative, three_center_gradient, three_center_derivative and
-# df_jk_derivative.
-src/integrals/eri/density_fitting/three_center/three_center.cpp    1 #1129
-src/integrals/eri/density_fitting/mo/mo.cpp                        1 #1129
-src/integrals/eri/density_fitting/gradient/gradient.cpp            4 #1129
-src/integrals/eri/density_fitting/hessian/hessian.cpp              1 #1129
-src/cis/ris_precondition/ris_precondition.cpp                      1 #1129
-src/cis/sigma/df_sigma.cpp                                         2 #1129
-src/mcscf/gradient/gradient.cpp                                    1 #1129
-
 # #1052: NEVPT2's adaptive RDM and slab budgets.
 src/nevpt2/rdm/rdm.cpp                                             1 #1052
 src/pipeline/nevpt2/nevpt2.cpp                                     3 #1052

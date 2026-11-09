@@ -148,8 +148,8 @@ multiplicity other than 1); an ScfOutput whose `n_alpha`, `n_beta` are not the
 molecule's N / 2 each; no virtual orbital, or an n_ov past `int32_t`; or more
 states than n_ov. Then the module calls' own: `cis::Sigma::create`'s,
 `cis::DfSigma::create`'s (Unsupported, naming the bytes, for MO blocks and
-scratch past the device's free memory), TDA-ris's fits' (Unsupported, naming
-the bytes, for a B and the blocks past the device's free memory, or the
+scratch past the device's memory budget (`DeviceResources::memory_budget()`)), TDA-ris's fits' (Unsupported,
+naming the bytes, for a B and the blocks past that budget, or the
 `ris_basis`, `metric`, `three_center`, `density_fit` or `b_mo` error), `Preconditioner::cluster`'s (the
 sigma's, or `diagonalize`'s), `cis::RisPreconditioner::create`'s (the RIS
 basis's, its fit's, or a RIS-JK GMRES budget it refuses), the RIS correction's

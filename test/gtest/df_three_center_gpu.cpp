@@ -3,8 +3,8 @@
 // and cc-pVTZ / cc-pVTZ-JKFIT (orbitals to f, aux to g, so (ff|g)) over
 // FelizJueves's water, against PySCF's int3c2e (data/density_fitting/);
 // exactly (m, n)-symmetric, and bit-identical across two runs; and the
-// refusals: a g orbital shell, a k aux shell, and a tensor past a forced
-// small limit.
+// refusals: a g orbital shell, a k aux shell, a tensor past a forced
+// small limit, and a tensor past a capped pool's memory budget.
 
 #include <gtest/gtest.h>
 
@@ -229,6 +229,60 @@ TEST(DfThreeCenter, Refusals) {
   // 2 pi^{5/2} / (p alpha sqrt(p + alpha)), p = 2, alpha = 1.
   EXPECT_NEAR(download(res, b.data(), 1)[0],
               2.0 * std::pow(std::numbers::pi, 2.5) / (2.0 * std::sqrt(3.0)), 1e-13);
+}
+
+// Under a pool cap below the scratch, the call refuses it as Unsupported,
+// naming the bytes and the budget, before allocating it: past the cap its
+// allocation would abort. Benzene in cc-pVTZ / cc-pVTZ-JKFIT, whose scratch
+// is some GB, against a 64 MiB cap -- well above a pool chunk, so the cap and
+// not the chunking is what the budget meets. The classes are built on an
+// uncapped DeviceResources; b is not touched before the refusal.
+TEST(DfThreeCenter, ScratchPastTheMemoryBudgetIsUnsupported) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources setup{0};
+  std::vector<fb::Atom> atoms;
+  for (std::int32_t k = 0; k < 6; ++k) {
+    const double angle = std::numbers::pi * k / 3.0;
+    atoms.push_back(fb::Atom{
+        fb::Vec<double, 3>{2.640 * std::cos(angle), 2.640 * std::sin(angle), 0.0}, fb::Element::C});
+    atoms.push_back(fb::Atom{
+        fb::Vec<double, 3>{4.690 * std::cos(angle), 4.690 * std::sin(angle), 0.0}, fb::Element::H});
+  }
+  const fb::Molecule molecule(setup, std::move(atoms));
+  const auto stamp = fb::resolve_basis("cc-pvtz");
+  ASSERT_TRUE(stamp) << stamp.error().message;
+  const auto basis = fb::place(stamp->primitive_normalized(), molecule);
+  ASSERT_TRUE(basis) << basis.error().message;
+  const auto aux_stamp = fb::resolve_aux_basis("cc-pvtz-jkfit");
+  ASSERT_TRUE(aux_stamp) << aux_stamp.error().message;
+  const auto aux = fb::place(aux_stamp->primitive_normalized(), molecule);
+  ASSERT_TRUE(aux) << aux.error().message;
+  const auto classes = fb::primitive_pair_classes(setup, *basis);
+  ASSERT_TRUE(classes) << classes.error().message;
+
+  constexpr std::uint64_t kCap = std::uint64_t{64} << 20;
+  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
+  const std::size_t budget = res.memory_budget().value();
+  ASSERT_LE(budget, kCap);
+  const fb::Status status = fb::three_center(res, *basis, *classes, *aux, nullptr);
+  ASSERT_FALSE(status);
+  EXPECT_EQ(status.error().kind, fb::ErrorKind::Unsupported) << status.error().message;
+
+  // The Cartesian tensor's bytes, nao_cart^2 naux_cart doubles, and a need
+  // past the cap; then the budget as it was read here.
+  const std::string &msg = status.error().message;
+  std::smatch m;
+  ASSERT_TRUE(std::regex_search(
+      msg, m,
+      std::regex{
+          R"(needs (\d+) bytes of device scratch \(the Cartesian tensor alone (\d+) bytes\))"}))
+      << msg;
+  const std::size_t n = basis->nao_cart();
+  EXPECT_EQ(std::stoull(m[2].str()), sizeof(double) * n * n * aux->nao_cart());
+  EXPECT_GT(std::stoull(m[1].str()), kCap);
+  EXPECT_NE(msg.find(std::format("budget is {}", budget)), std::string::npos) << msg;
+  // The budget as it was: nothing was allocated.
+  EXPECT_EQ(res.memory_budget().value(), budget);
 }
 
 } // namespace

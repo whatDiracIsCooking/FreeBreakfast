@@ -65,8 +65,8 @@ export namespace free_breakfast {
 ///
 /// **Refused up front, not split.** The Cartesian Gam and its transform's
 /// intermediate are scratch from res.device_workspace(); if they and the
-/// staging need more bytes than the device has free (beyond what the
-/// workspace already holds), the call is Unsupported, naming the bytes,
+/// staging need more bytes than res.memory_budget() (or than the workspace
+/// already holds, if more), the call is Unsupported, naming the bytes,
 /// before anything is allocated.
 ///
 /// Queued on res.stream(), and synchronized: the call returns when G is on the
@@ -187,7 +187,7 @@ three_center_gradient(DeviceResources &res, const BasisSet &basis,
 /// res.device_workspace(): the fitted pairs (naux nocc nao), the metric
 /// derivative (3 naux^2 and its Cartesian copy), and one aux atom's blocks
 /// (about 9 nao^2 nblk beside the Cartesian 3 nao_cart^2 nblk_cart); past
-/// the device's free memory it is Unsupported, naming the bytes, before
+/// res.memory_budget() it is Unsupported, naming the bytes, before
 /// anything is allocated. None of @p b, @p l, @p c, @p jx, @p kx and @p g
 /// may point into it.
 ///
@@ -199,7 +199,7 @@ three_center_gradient(DeviceResources &res, const BasisSet &basis,
 ///         @p nocc is outside [0, nao], or if @p classes do not hold
 ///         @p basis's shell pairs; Unsupported for a shell past the ladders,
 ///         an index past the kernels' or the BLAS calls' 32 bits, or scratch
-///         past the device's free bytes; or the GpuRuntime error of the first
+///         past res.memory_budget(); or the GpuRuntime error of the first
 ///         copy, launch or BLAS call that failed.
 [[nodiscard]] Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
                                       std::span<const PrimitivePairClass> classes,

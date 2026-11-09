@@ -16,7 +16,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne
 import free_breakfast.core.primitives;
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemmStridedBatched, wwrMemGetInfo, gpu_status
+import free_breakfast.core.wwr; // gemmStridedBatched, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.core.footprint;
 import free_breakfast.basis;
@@ -150,18 +150,17 @@ Status three_center(DeviceResources &res, const BasisSet &basis,
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  // Past the device's memory an allocation would abort (CreatePolicy), not
+  // Past the memory budget an allocation would abort (CreatePolicy), not
   // return. The scratch is the call's own, not the workspace: about three B's,
   // which the grow-only workspace would hold until the process ends (#905).
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  const size_t available = std::min(max_bytes, free_bytes);
-  if (need > available) {
+  const size_t budget = FBF_TRY(res.memory_budget());
+  if (const size_t available = std::min(max_bytes, budget); need > available) {
     return err_unsupported("three_center: (mn|P) over {} Cartesian orbital and {} Cartesian "
                            "fitting functions needs {} bytes of device scratch (the Cartesian "
-                           "tensor alone {} bytes), and {} bytes are available",
-                           n, n_aux, need, sizeof(double) * n_cart, available);
+                           "tensor alone {} bytes), and {} bytes are available (device {}'s "
+                           "budget is {})",
+                           n, n_aux, need, sizeof(double) * n_cart, available, res.dev_idx(),
+                           budget);
   }
 
   // mmd's records, every class's in turn, field-major over all of them, in

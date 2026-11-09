@@ -42,8 +42,9 @@ export namespace free_breakfast {
 /// intermediate and the staging are the call's own buffers, freed at return
 /// (stream-ordered), not res.device_workspace(): they are about three B's, and
 /// the grow-only workspace would keep them for the rest of the process. If
-/// they need more bytes than @p max_bytes, or than the device has free, the
-/// call is Unsupported, naming the bytes, before anything is allocated.
+/// they need more bytes than @p max_bytes, or than res.memory_budget(), the
+/// call is Unsupported, naming the bytes and the budget, before anything is
+/// allocated.
 /// Splitting the tensor over m would need FelizJueves's mirrored store
 /// changed. @p max_bytes is the cap a test forces; leave it at its default to
 /// be limited by the device alone.

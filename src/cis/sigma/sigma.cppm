@@ -208,7 +208,7 @@ public:
   ///         1 <= n_occ < nao, or when n_occ · n_virt, naux · n_virt or
   ///         naux · n_occ · max_block does not fit an int32_t; Unsupported,
   ///         naming the bytes, before anything is allocated, when the MO
-  ///         blocks and the scratch exceed the device's free memory (an
+  ///         blocks and the scratch exceed res.memory_budget() (an
   ///         allocation past it would abort under CreatePolicy); else
   ///         b_mo's errors.
   [[nodiscard]] static Result<DfSigma> create(DeviceResources &res,
@@ -229,7 +229,7 @@ public:
   ///         or @p max_block is below 1, or when n_occ · n_virt,
   ///         naux_k · n_virt or naux_k · n_occ · max_block does not fit an
   ///         int32_t; Unsupported, naming the bytes, when the workspace's
-  ///         growth for a block exceeds the device's free memory.
+  ///         growth for a block exceeds res.memory_budget().
   [[nodiscard]] static Result<DfSigma> create(DeviceResources &res, Buffers::device<double> b_vo,
                                               int32_t naux_j, Buffers::device<double> b_oo,
                                               Buffers::device<double> b_vv, int32_t naux_k,
