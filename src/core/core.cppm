@@ -38,11 +38,6 @@ export import free_breakfast.core.log;
 // itself.
 export import free_breakfast.core.wwr;
 
-// MirroredBuffer: a device and a pinned buffer paired for h2d / d2h on a
-// DeviceStream. Its own module, not a partition of core.wwr, because it is
-// built from StreamBuffers, which core.wwr's primary interface defines.
-export import free_breakfast.core.mirrored_buffer;
-
 // Footprint<K> and MemoryFootprint, with then / drop: the bytes a routine or a
 // step holds, per memory kind and lifetime. Its own module rather than a
 // partition of core.wwr: it is vocabulary over wwr's MemoryKind, not a binding.

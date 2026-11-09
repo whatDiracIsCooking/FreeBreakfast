@@ -75,8 +75,7 @@ free_breakfast_add_gpu_device_library(
 # The classes: the shell-pair sweep on the host, the shell and shell-pair
 # tables staged there and uploaded, everything else on the device.
 # StreamBuffers, DeviceStream, DeviceResources, Result and BasisSet are in its
-# interface, so their modules are PUBLIC; MirroredBuffer stages the tables in
-# the implementation unit only. The device library is PRIVATE: the
+# interface, so their modules are PUBLIC. The device library is PRIVATE: the
 # implementation unit includes the bridge header in its GMF and calls the
 # launchers.
 free_breakfast_add_cxx_module_library(
@@ -95,7 +94,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::basis
   free_breakfast::integrals::mmd::headers
   LINK_PRIVATE
-  free_breakfast::core::mirrored_buffer
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::mmd::device
 )

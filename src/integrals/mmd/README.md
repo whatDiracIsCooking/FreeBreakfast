@@ -59,13 +59,16 @@ shell pairs, so that is all the host forms and uploads:
 A record is then named by its index in that enumeration (shell pair, then bra
 primitive, then ket primitive). One thread per record finds its shell pair by
 a binary search of the prefix and its two primitives by a division
-(`mmd_launch.cu`'s `record_primitives`). The tables are staged in
-`MirroredBuffer`s that live for the call only, so `primitive_pair_classes`
-waits for every class's stream before it returns.
+(`mmd_launch.cu`'s `record_primitives`). The tables are staged
+from one carve of `res`'s pinned workspace (`pinned_regions`) and copied on
+`res.stream()` into device buffers that live for the call only, every class's
+pairs one after the other, so `primitive_pair_classes` waits for every class's
+stream, and for `res.stream()`, before it returns: the buffers are freed and
+the carve released.
 
 **Records are in descending ζ order, per class, and written once, in it.** On
-the class's stream, after its shell pairs' upload and a fork from the shell
-table's stream: `mmd_order` writes each enumerated record's key `-ζ` (from its
+the class's stream, after a fork from `res.stream()`, where the tables were
+uploaded: `mmd_order` writes each enumerated record's key `-ζ` (from its
 two exponents alone) and its index, and sorts them stably
 ([`src/recipes/sort`](../../recipes/sort/README.md)); then `mmd_records` writes record
 `k` from enumerated record `perm[k]`, every field at once. Nothing is permuted

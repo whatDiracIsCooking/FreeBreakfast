@@ -8,7 +8,7 @@
 /// which includes this header in its global module fragment and re-exports the
 /// name from within the namespace.
 ///
-/// The owner, @c Molecule, holds MirroredBuffers and so lives only in a module;
+/// The owner, @c Molecule, holds device buffers and so lives only in a module;
 /// it hands out a NucleiView with @c view(). A view is valid while its owner is
 /// alive.
 

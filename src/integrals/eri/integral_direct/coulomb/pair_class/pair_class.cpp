@@ -44,19 +44,18 @@ coulomb_prune(DeviceResources &res, const std::span<const PrimitivePairClass> cl
     FBF_TRY(gpu_status(device::coulomb_prune_keep(stream, classes[c].view(), maxima.data(), tau,
                                                   dest[c].data(), counts.data() + c)));
   }
-  // The one readback: J's classes are sized to their kept counts.
-  // pool-bypass-ok: until #1130, which carves it from the pinned workspace.
-  Buffers::pinned<int32_t> kept(classes.size());
-  FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(kept.data(), counts.data(), sizeof(int32_t) * classes.size(),
-                                     wwr::wwrMemcpyDeviceToHost, stream)));
+  // The one readback, into a carve of the pinned workspace, drained before it
+  // is read: J's classes are sized to their kept counts.
+  const auto [kept] = FBF_TRY(res.pinned_regions<int32_t>("coulomb_prune", classes.size()));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(kept, counts.data(), sizeof(int32_t) * classes.size(),
+                                         wwr::wwrMemcpyDeviceToHost, stream)));
   FBF_TRY(gpu_status(wwr::wwrStreamSynchronize(stream)));
 
   std::vector<CoulombPairClass> out;
   // out[k] is classes[from[k]] pruned.
   std::vector<size_t> from;
   for (size_t c = 0; c < classes.size(); ++c) {
-    const int32_t n_rec = kept.data()[c];
+    const int32_t n_rec = kept[c];
     if (n_rec == 0) {
       continue;
     }

@@ -1,6 +1,6 @@
 /// @file
 /// @brief DeviceResources: one device's context, the library handles bound to
-/// its stream, and the solver scratch they share
+/// its stream, the solver scratch they share, and its pinned host memory
 
 export module free_breakfast.core.resources:device_resources;
 
@@ -8,14 +8,76 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.nontransferrable;
 import free_breakfast.core.primitives;
+import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 
 export namespace free_breakfast {
 
+class DeviceResources;
+
+/// @brief A pinned host buffer counted in the pinned total of the
+/// DeviceResources that allocated it (DeviceResources::counted_pinned): its
+/// bytes join the total when it is allocated and leave it when it is freed.
+///
+/// For a product that lives in pinned memory past the call that made it, such
+/// as an offloaded block streamed through a ring. Fixed-size staging -- an
+/// upload, a readback, a ring's slots -- takes the pinned workspace instead.
+///
+/// It may outlive its DeviceResources: the total it returns its bytes to is
+/// shared with it. Its free is immediate, not stream-ordered, so drain every
+/// copy that reads or writes it before it is destroyed or assigned to.
+/// Movable, not copyable; a moved-from one owns nothing.
+template <typename T>
+class CountedPinned : private NonCopyable {
+public:
+  CountedPinned(CountedPinned &&) noexcept = default;
+
+  CountedPinned &operator=(CountedPinned &&other) noexcept {
+    if (this != &other) {
+      release();
+      buffer_ = std::move(other.buffer_);
+      counted_ = std::move(other.counted_);
+    }
+    return *this;
+  }
+
+  ~CountedPinned() { release(); }
+
+  /// @brief The first element.
+  T *data() noexcept { return buffer_.data(); }
+  /// @copydoc data()
+  const T *data() const noexcept { return buffer_.data(); }
+  /// @brief Number of elements.
+  size_t num_elements() const noexcept { return buffer_.num_elements(); }
+
+private:
+  friend class DeviceResources;
+
+  // Allocate count elements and add their bytes to *counted. A failed
+  // allocation aborts (CreatePolicy).
+  CountedPinned(const size_t count, std::shared_ptr<size_t> counted)
+      : buffer_(count), counted_(std::move(counted)) {
+    *counted_ += buffer_.num_elements() * sizeof(T);
+  }
+
+  // Take this buffer's bytes back out of the total; skipped when moved from.
+  void release() noexcept {
+    if (counted_) {
+      *counted_ -= buffer_.num_elements() * sizeof(T);
+      counted_.reset();
+    }
+  }
+
+  Buffers::pinned<T> buffer_;
+  std::shared_ptr<size_t> counted_;
+};
+
 /// @brief One device's working set: a shared Device (ForkStream + memory pool),
-/// the BLAS and dense-solver handles bound to that Device's stream, and the
-/// solver scratch those calls share: a byte workspace on the device and one on
-/// the host, and a device info flag with a pinned slot to read it back into.
+/// the BLAS and dense-solver handles bound to that Device's stream, the scratch
+/// those calls share (a byte workspace on the device, and a device info flag
+/// with a pinned slot to read it back into), and the device's pinned host
+/// memory: a pinned workspace for fixed-size staging, and counted pinned
+/// buffers, both held under one optional cap.
 ///
 /// The handles anchor to the Device, never to this class: a handle member
 /// holding a shared_ptr back to its own owner would be a reference cycle (wwr
@@ -31,19 +93,29 @@ export namespace free_breakfast {
 /// select it; only buffer allocation and free do.
 ///
 /// **The workspaces only grow.** device_workspace(bytes) and
-/// host_workspace(bytes) reallocate when asked for more than they hold, rounded
-/// up to kWorkspaceAlignment, and never shrink. A growth frees the old block, so
-/// take the buffer -- or a reinterpret_buffer_view of it -- just before the call
-/// that uses it, and never hold its pointer across another request. Pass the
-/// routine its own lwork, not the buffer's size, which may be larger.
+/// pinned_workspace(caller, bytes) reallocate when asked for more than they
+/// hold, rounded up to kWorkspaceAlignment, and never shrink. A growth frees
+/// the old block, so take the buffer -- or a view or region of it -- just
+/// before the call that uses it, and never hold its pointer across another
+/// request. Pass the routine its own lwork, not the buffer's size, which may be
+/// larger.
 ///
-/// **One routine owns the device workspace at a time.** A routine may carve all
-/// of its device scratch from it -- a solver's work and its own intermediates
-/// alike -- by asking once for the total and splitting the result. So nothing
-/// nests: a routine holds no region of it across a call to another that uses
-/// it, and no argument to one may point into it. A callback into caller code
-/// (an iterative solver's operator) counts as such a call: assume it takes the
-/// workspace. The README has why, and davidson_solve the pattern.
+/// **One routine owns each workspace at a time.** A routine may carve all of
+/// its device scratch from the device workspace -- a solver's work and its own
+/// intermediates alike -- by asking once for the total and splitting the
+/// result. So nothing nests: a routine holds no region of it across a call to
+/// another that uses it, and no argument to one may point into it. A callback
+/// into caller code (an iterative solver's operator) counts as such a call:
+/// assume it takes the workspace. The README has why, and davidson_solve the
+/// pattern. The pinned workspace follows the same rule, and one more: the CPU
+/// writes it, so a routine drains the copies that read or write a region (a
+/// sync, or an event the reader waits on) before it rewrites the region or
+/// returns.
+///
+/// **The pinned cap.** pinned_cap() bytes (0: none) bound the pinned total,
+/// pinned_bytes(): the pinned workspace plus every live CountedPinned. A
+/// workspace growth or counted allocation that would take the total past it
+/// returns Unsupported, and allocates nothing.
 ///
 /// Movable, not copyable. A moved-from DeviceResources holds no Device.
 class DeviceResources : private NonCopyable {
@@ -67,13 +139,16 @@ public:
   static constexpr size_t kWorkspaceAlignmentIn = kWorkspaceAlignment / sizeof(T);
 
   /// @brief Create a Device on `dev_idx` whose pool keeps up to
-  /// `pool_release_threshold` bytes cached, and bind a BLAS and a solver handle
-  /// to its stream. A failed creation aborts (CreatePolicy).
+  /// `pool_release_threshold` bytes cached, bind a BLAS and a solver handle to
+  /// its stream, and hold its pinned memory to `pinned_cap` bytes (0: no cap).
+  /// A failed creation aborts (CreatePolicy).
   explicit DeviceResources(int32_t dev_idx = 0,
-                           uint64_t pool_release_threshold = kDefaultPoolReleaseThreshold)
+                           uint64_t pool_release_threshold = kDefaultPoolReleaseThreshold,
+                           size_t pinned_cap = 0)
       : device_(std::make_shared<Device>(dev_idx, pool_release_threshold)), blas_(device_),
-        solver_(device_), device_workspace_(0, device_), host_workspace_(0), info_(1, device_),
-        info_host_(1) {}
+        solver_(device_), device_workspace_(0, device_), info_(1, device_), info_host_(1),
+        pinned_workspace_(0), pinned_counted_(std::make_shared<size_t>(0)),
+        pinned_cap_(pinned_cap) {}
 
   /// @brief The shared Device; pass it to Buffers to allocate from its pool.
   const std::shared_ptr<Device> &device() const noexcept { return device_; }
@@ -137,20 +212,90 @@ public:
     }
   }
 
-  /// @brief The scratch host workspace (a solver's bufferOnHost), grown to hold
-  /// at least `bytes`.
+  /// @brief The pinned host workspace, grown to hold at least `bytes`: the
+  /// whole block, which may be larger.
   ///
-  /// Plain host memory, not pinned: a solver reads and writes it from the CPU
-  /// and never copies it to or from the device, so pinning would buy nothing
-  /// and cost a page-locking allocation on every growth. A growth frees the old
-  /// block at once, not on stream(), so grow it only once the calls that used
-  /// it have returned. A failed allocation aborts (CreatePolicy).
-  Buffers::host<std::byte> &host_workspace(size_t bytes) {
-    if (bytes > host_workspace_.num_elements()) {
-      host_workspace_ = Buffers::host<std::byte>(math::align_up(bytes, kWorkspaceAlignment));
+  /// For fixed-size staging: an upload's source, a small readback, the bounce
+  /// buffer of a load from disk, the slots of an offload ring. A growth to
+  /// align_up(bytes, kWorkspaceAlignment) that would take pinned_bytes() past
+  /// pinned_cap() returns Unsupported naming `caller`, and keeps the old block.
+  /// Otherwise it synchronizes stream() and frees the old block -- a pinned
+  /// free is not stream-ordered -- before allocating the new one, so the two
+  /// are never held at once; a GpuRuntime error if the sync fails. A failed allocation aborts (CreatePolicy).
+  [[nodiscard]] Result<std::span<std::byte>> pinned_workspace(const std::string_view caller,
+                                                              const size_t bytes) {
+    if (bytes > pinned_workspace_.num_elements()) {
+      const size_t grown = math::align_up(bytes, kWorkspaceAlignment);
+      if (auto admitted = admit_pinned(caller, grown, pinned_workspace_.num_elements());
+          !admitted) {
+        return std::unexpected(std::move(admitted).error());
+      }
+      if (pinned_workspace_.num_elements() != 0) {
+        if (auto synced = sync(); !synced) {
+          return std::unexpected(std::move(synced).error());
+        }
+        pinned_workspace_ = Buffers::pinned<std::byte>(0);
+      }
+      pinned_workspace_ = Buffers::pinned<std::byte>(grown);
     }
-    return host_workspace_;
+    return std::span<std::byte>(pinned_workspace_.data(), pinned_workspace_.num_elements());
   }
+
+  /// @brief The pinned workspace carved into one region per count, as
+  /// device_regions carves the device workspace: each region rounded up to
+  /// kWorkspaceAlignment, from a single pinned_workspace request for the
+  /// total, which `caller` names.
+  ///
+  /// Returns the regions' starts in order, or pinned_workspace's error. They
+  /// are the pinned workspace's, so its rules hold: never keep them across
+  /// another request, and drain the copies that use them before returning.
+  template <typename... Ts, std::same_as<size_t>... Counts>
+    requires(sizeof...(Ts) == sizeof...(Counts) || sizeof...(Ts) == 1) &&
+            ((kWorkspaceAlignment % sizeof(Ts) == 0) && ...)
+  auto pinned_regions(const std::string_view caller, const Counts... counts) {
+    if constexpr (sizeof...(Ts) != sizeof...(Counts)) {
+      using T = std::tuple_element_t<0, std::tuple<Ts...>>;
+      return pinned_regions<std::conditional_t<true, T, Counts>...>(caller, counts...);
+    } else {
+      size_t bytes = 0;
+      const std::array<size_t, sizeof...(Ts)> at{std::exchange(
+          bytes, bytes + math::align_up(counts * sizeof(Ts), kWorkspaceAlignment))...};
+      Result<std::tuple<Ts *...>> out;
+      if (auto block = pinned_workspace(caller, bytes); !block) {
+        out = std::unexpected(std::move(block).error());
+      } else {
+        std::byte *const base = block->data();
+        size_t i = 0;
+        out = std::tuple<Ts *...>{reinterpret_cast<Ts *>(base + at[i++])...};
+      }
+      return out;
+    }
+  }
+
+  /// @brief A pinned buffer of `count` elements whose bytes are counted in
+  /// pinned_bytes() for as long as it lives: for a product that stays in
+  /// pinned memory past one call.
+  ///
+  /// One that would take pinned_bytes() past pinned_cap() returns Unsupported
+  /// naming `caller`, and allocates nothing. A failed allocation aborts
+  /// (CreatePolicy).
+  template <typename T>
+  [[nodiscard]] Result<CountedPinned<T>> counted_pinned(const std::string_view caller,
+                                                        const size_t count) {
+    if (auto admitted = admit_pinned(caller, count * sizeof(T), 0); !admitted) {
+      return std::unexpected(std::move(admitted).error());
+    }
+    return CountedPinned<T>(count, pinned_counted_);
+  }
+
+  /// @brief The pinned total, in bytes: the pinned workspace plus every live
+  /// CountedPinned this allocated.
+  size_t pinned_bytes() const noexcept {
+    return pinned_workspace_.num_elements() + *pinned_counted_;
+  }
+
+  /// @brief The cap on pinned_bytes(), in bytes; 0 for none.
+  size_t pinned_cap() const noexcept { return pinned_cap_; }
 
   /// @brief One device int32_t for a solver's devInfo, allocated with the
   /// handles. Read it back with fetch_info().
@@ -174,15 +319,33 @@ public:
   }
 
 private:
+  // Refuse a pinned request of `bytes` that replaces `freed` bytes of the
+  // total when the result would pass the cap.
+  [[nodiscard]] Status admit_pinned(const std::string_view caller, const size_t bytes,
+                                    const size_t freed) const {
+    const size_t total = pinned_bytes();
+    if (const size_t after = total - freed + bytes; pinned_cap_ != 0 && after > pinned_cap_) {
+      return err_unsupported("{}: {} pinned bytes would take device {}'s pinned total from {} "
+                             "to {} bytes, past its cap of {}",
+                             caller, bytes, dev_idx(), total, after, pinned_cap_);
+    }
+    return {};
+  }
+
   // Declared first: blas_, solver_ and the device buffers are constructed from
   // it.
   std::shared_ptr<Device> device_;
   BlasHandle blas_;
   SolverHandle solver_;
   Buffers::device<std::byte> device_workspace_;
-  Buffers::host<std::byte> host_workspace_;
   Buffers::device<int32_t> info_;
+  // Four bytes, fixed, read by fetch_info() at any time: not counted.
   Buffers::pinned<int32_t> info_host_;
+  Buffers::pinned<std::byte> pinned_workspace_;
+  // The bytes of the live CountedPinned buffers, shared with them so one can
+  // outlive this.
+  std::shared_ptr<size_t> pinned_counted_;
+  size_t pinned_cap_;
 };
 
 } // namespace free_breakfast
