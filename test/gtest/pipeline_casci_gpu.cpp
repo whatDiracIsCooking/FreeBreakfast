@@ -429,17 +429,17 @@ TEST(PipelineCasci, AnAvasLabelNamingNoMinaoAoIsInvalidConfig) {
 
 // An AVAS pick past avas_max_ncas is refused, never truncated, when the step
 // runs, and the ScfOutput it selected from is kept; at a cap of the pick
-// itself it runs. Water's O 2p and H 1s at 0.2 pick PySCF's 6 orbitals.
+// itself the same selection, over that ScfOutput (one chain, not two), picks
+// it. Water's O 2p and H 1s at 0.2 pick PySCF's 6 orbitals.
 TEST(PipelineCasci, AnAvasPickPastTheCapIsInvalidConfig) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case("h2o_ccpvdz_avas");
   const auto pick = entry.at("ncas").get<std::int32_t>();
   const fb::test::ScratchDir dir("pipeline_casci");
-  const auto capped = [&](std::int32_t cap) {
-    return write_config(dir, entry,
-                        casci_tables(entry, 1) + std::format("avas_max_ncas = {}\n", cap));
-  };
-  auto calc = fb::read_config(capped(pick - 1), dir.path(), dir / "out");
+  auto calc = fb::read_config(
+      write_config(dir, entry,
+                   casci_tables(entry, 1) + std::format("avas_max_ncas = {}\n", pick - 1)),
+      dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
@@ -453,12 +453,17 @@ TEST(PipelineCasci, AnAvasPickPastTheCapIsInvalidConfig) {
   ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
   EXPECT_FALSE(calc->get<fb::CasciOutput>().has_value());
 
-  auto at_cap = fb::read_config(capped(pick), dir.path(), dir / "out");
-  ASSERT_TRUE(at_cap.has_value()) << at_cap.error().message;
-  const fb::Status ran_at_cap = at_cap->run(node);
-  ASSERT_TRUE(ran_at_cap.has_value()) << ran_at_cap.error().message;
-  ASSERT_TRUE(at_cap->get<fb::CasciOutput>().has_value());
-  EXPECT_EQ(at_cap->get<fb::CasciOutput>()->ncas, pick);
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  fb::ActiveSpaceSelection at_cap = *calc->step<fb::CasciStep>();
+  ASSERT_EQ(at_cap.avas_max_ncas, pick - 1);
+  at_cap.avas_max_ncas = pick;
+  const auto selected =
+      at_cap.select(res, calc->get<fb::MoleculeOutput>()->molecule,
+                    calc->get<fb::BasisSetOutput>()->basis, *calc->get<fb::ScfOutput>());
+  ASSERT_TRUE(selected.has_value()) << selected.error().message;
+  EXPECT_EQ(selected->ncas, pick);
+  EXPECT_EQ(selected->nelecas, entry.at("nelecas").get<std::int32_t>());
 }
 
 // An open-shell ScfOutput, n_alpha != n_beta, by index, with its core doubly
