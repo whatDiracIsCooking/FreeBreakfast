@@ -7,9 +7,10 @@
 # entry is run_example.cmake over one config: the exit status, the closing
 # `completed: 0 errors` line, the files the run writes, and a JSON's keys.
 #
-# Two of examples/, the cheapest that between them write a Molden file and a
-# JSON one; the rest are run by hand (examples/README.md). Each is about a
-# second or two on the card, inside test/support/slow_test.h's rule.
+# Three of examples/, the cheapest that between them write a Molden file and
+# a JSON one, and run under [memory] caps; the rest are run by hand
+# (examples/README.md). Each is about a second or two on the card, inside
+# test/support/slow_test.h's rule.
 #
 # The entries are GPU ones, so they carry the `gpu` label the ci-* test
 # presets exclude, and skip rather than fail with no device (run_example.cmake
@@ -27,6 +28,15 @@ add_test(
     -DOUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/rhf -DFILES=scf.molden
     ${_fb_driver}
 )
+# Under [memory] caps: pre-flight must have folded the plan and found it fits.
+add_test(
+  NAME example_memory
+  COMMAND
+    ${CMAKE_COMMAND} -DBINARY=$<TARGET_FILE:free_breakfast_main>
+    -DINPUT_DIR=${_fb_examples} -DCONFIG=${_fb_examples}/memory.toml
+    -DOUTPUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/memory -DFILES=scf.molden
+    "-DEXPECT=pre-flight: the plan fits: device peak" ${_fb_driver}
+)
 add_test(
   NAME example_hessian
   COMMAND
@@ -38,7 +48,7 @@ add_test(
     ${_fb_driver}
 )
 set_tests_properties(
-  example_rhf example_hessian
+  example_rhf example_memory example_hessian
   PROPERTIES LABELS gpu TIMEOUT ${_fb_test_timeout} SKIP_REGULAR_EXPRESSION
              "run_example: no GPU device visible to the runtime"
 )

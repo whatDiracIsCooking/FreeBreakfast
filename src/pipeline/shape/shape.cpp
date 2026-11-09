@@ -1,6 +1,6 @@
 /// @file
 /// @brief plan_shape: the molecule read, the bases placed, and the counts
-/// taken from them.
+/// taken from them; and preflight, the plan held to the [memory] caps.
 
 module free_breakfast.pipeline.shape;
 
@@ -8,6 +8,9 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.wwr; // Buffers, ScopedDeviceIndex, PoolUsage
+import free_breakfast.core.log;
+import free_breakfast.core.primitives; // math::idivup
 import free_breakfast.io.basis;
 import free_breakfast.recipes.diagonalize; // syevd_lwork
 import free_breakfast.recipes.expm;        // skew_eig_lwork
@@ -228,6 +231,234 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
     }
   }
   return shape;
+}
+
+// The bound on ROCm's reuse rounding, as a divisor of the request: a request
+// is served whole from a freed block of up to 9/8 its size, and counted as
+// the block (core/wwr's README, "Reuse rounding (HIP)").
+constexpr size_t kReuseRoundingDivisor = 8;
+
+// Whether @p res's pool counts a reused block whole rather than the request:
+// a 1024-byte block freed, then 1000 bytes asked for. ROCm's pool does, CUDA's
+// does not. The probe's block stays cached in the pool.
+[[nodiscard]] Result<bool> pool_rounds_reused_blocks(DeviceResources &res) {
+  {
+    const Buffers::device<std::byte> block(1024, res.device());
+  }
+  FBF_TRY(res.sync());
+  const uint64_t before = res.device()->pool_usage().used_current;
+  const Buffers::device<std::byte> probe(1000, res.device());
+  FBF_TRY(res.sync());
+  return res.device()->pool_usage().used_current - before > 1000;
+}
+
+// The most a plan's device peak may reach in a pool capped at @p pool_cap:
+// the cap less the fragmentation headroom, and on a pool that rounds a reused
+// block, less the rounding of every allocation live at the peak. Those
+// allocations' requests sum to at most the peak P, each is counted at most
+// an eighth past its request, so the largest P with P + ceil(P / 8) within
+// what the headroom leaves. Both terms are left: the rounding fills the
+// blocks it reuses, and the headroom covers the chunks' free parts beside
+// them.
+[[nodiscard]] size_t preflight_device_room(const uint64_t pool_cap, const bool rounds_reuse) {
+  const auto limit = static_cast<size_t>(pool_cap - kPoolHeadroomBytes);
+  if (!rounds_reuse) {
+    return limit;
+  }
+  const auto rounded = [](size_t peak) { return peak + math::idivup(peak, kReuseRoundingDivisor); };
+  size_t peak = limit - (limit / (kReuseRoundingDivisor + 1));
+  while (peak > 0 && rounded(peak) > limit) {
+    --peak;
+  }
+  while (rounded(peak + 1) <= limit) {
+    ++peak;
+  }
+  return peak;
+}
+
+// The node's MemAvailable, in bytes, from /proc/meminfo.
+[[nodiscard]] Result<size_t> read_mem_available() {
+  std::ifstream meminfo("/proc/meminfo");
+  if (!meminfo) {
+    return err_io("pre-flight: cannot open '/proc/meminfo'");
+  }
+  constexpr std::string_view kKey = "MemAvailable:";
+  for (std::string line; std::getline(meminfo, line);) {
+    if (line.starts_with(kKey)) {
+      std::istringstream fields(line.substr(kKey.size()));
+      size_t kib = 0;
+      std::string unit;
+      if (!(fields >> kib >> unit) || unit != "kB") {
+        return err_io("pre-flight: cannot parse '{}' in '/proc/meminfo'", line);
+      }
+      return kib * 1024;
+    }
+  }
+  return err_io("pre-flight: no MemAvailable in '/proc/meminfo'");
+}
+
+// The planned steps' active-space selections, when every active space the
+// plan holds is AVAS's: the top-level CASCI and CASSCF, and no FCI (every
+// orbital) and no space by index, which the shared worst case also sizes.
+// Empty when there is none, or any other. A chain's copies need no look: the
+// steps holding them ([optimize], [hessian]) have no footprint yet.
+[[nodiscard]] std::vector<ActiveSpaceSelection *> avas_only_selections(Calculation &calc) {
+  std::vector<ActiveSpaceSelection *> selections;
+  if (std::optional<CasciStep> &casci = calc.step<CasciStep>()) {
+    selections.push_back(&*casci);
+  }
+  if (std::optional<CasscfStep> &casscf = calc.step<CasscfStep>()) {
+    selections.push_back(&*casscf);
+  }
+  const bool all_avas = std::ranges::all_of(
+      selections, [](const ActiveSpaceSelection *selection) { return !selection->avas.empty(); });
+  if (!all_avas || calc.step<FciStep>()) {
+    selections.clear();
+  }
+  return selections;
+}
+
+// Whether @p steps, every one footprinted, fit @p caps: check_plan's test,
+// without its log lines.
+[[nodiscard]] bool plan_fits(std::span<const StepFootprint> steps, const PlanCaps &caps) {
+  std::vector<MemoryFootprint> footprints;
+  for (const StepFootprint &step : steps) {
+    if (!step.footprint) {
+      return false;
+    }
+    footprints.push_back(*step.footprint);
+  }
+  const MemoryFootprint peak = plan_footprint(footprints).footprint;
+  return (caps.device_room == 0 || peak.device.peak() <= caps.device_room) &&
+         (caps.max_pinned_mem_per_gpu == 0 || peak.pinned.peak() <= caps.max_pinned_mem_per_gpu);
+}
+
+// Under AVAS, narrow the plan to the most active orbitals that fit @p caps,
+// when its worst case does not: each AVAS step's avas_max_ncas is set to it,
+// so a pick of more is refused at the step (#1042's check), and @p dims
+// shaped at it. The fold grows with the active space, so the largest fitting
+// one is found by bisection. Returns the orbitals the plan now fits for any
+// pick up to, 0 when not even one does (@p dims unchanged), and none when
+// there is nothing to narrow: no AVAS-only plan, or a step with no footprint,
+// which check_plan refuses on its own.
+[[nodiscard]] std::optional<size_t> narrow_avas(Calculation &calc, FootprintDimensions &dims,
+                                                const PlanCaps &caps) {
+  const std::vector<ActiveSpaceSelection *> selections = avas_only_selections(calc);
+  if (selections.empty() || dims.ncas == 0 ||
+      !std::ranges::all_of(calc.footprints(dims),
+                           [](const StepFootprint &step) { return step.footprint.has_value(); })) {
+    return std::nullopt;
+  }
+  const size_t worst = dims.ncas;
+  const size_t electrons = dims.n_alpha + dims.n_beta;
+  const auto at = [&](size_t ncas) {
+    FootprintDimensions narrowed = dims;
+    narrowed.ncas = ncas;
+    narrowed.nelecas = std::min(ncas, electrons);
+    return narrowed;
+  };
+  if (plan_fits(calc.footprints(dims), caps)) {
+    log::info(std::format("pre-flight: fits for any AVAS pick up to {} orbitals", worst));
+    return worst;
+  }
+  size_t fits = 0;
+  size_t past = worst;
+  while (past - fits > 1) {
+    const size_t mid = fits + ((past - fits) / 2);
+    (plan_fits(calc.footprints(at(mid)), caps) ? fits : past) = mid;
+  }
+  if (fits == 0) {
+    return 0;
+  }
+  for (ActiveSpaceSelection *selection : selections) {
+    selection->avas_max_ncas = static_cast<int32_t>(fits);
+  }
+  dims = at(fits);
+  log::warn(std::format("pre-flight: AVAS's worst case, {} orbitals, does not fit under the "
+                        "[memory] caps; fits for any AVAS pick up to {} orbitals, so a pick of "
+                        "more is refused at the step (avas_max_ncas is set to {})",
+                        worst, fits, fits));
+  return fits;
+}
+
+Status preflight(Calculation &calc, NodeResources &node) {
+  const size_t device_cap = calc.max_device_mem_per_gpu;
+  const size_t pinned_cap = calc.max_pinned_mem_per_gpu;
+  if (device_cap == 0 && pinned_cap == 0) {
+    return {};
+  }
+  constexpr uint64_t kReserve = DeviceResources::kDeviceReserve;
+  if (device_cap != 0 && device_cap <= kReserve + kPoolHeadroomBytes) {
+    return err_config("pre-flight: max_device_mem_per_gpu = {} bytes leaves no pool: {} bytes of "
+                      "it are the reserve outside the pool, and {} the fragmentation headroom",
+                      device_cap, kReserve, kPoolHeadroomBytes);
+  }
+  if (pinned_cap != 0) {
+    FBF_TRY(check_pinned_node(pinned_cap, node.device_count(), FBF_TRY(read_mem_available())));
+  }
+  if (node.device_count() == 0) {
+    return {};
+  }
+
+  // The caps are set when a DeviceResources is built, so the node's are
+  // rebuilt with them: the pool's maxSize, and its release threshold, are
+  // the device cap less the reserve outside the pool.
+  const uint64_t pool_cap = device_cap != 0 ? device_cap - kReserve : 0;
+  for (DeviceResources &res : node.devices()) {
+    const ScopedDeviceIndex on{res.dev_idx()};
+    res = DeviceResources{res.dev_idx(), DeviceResources::kDefaultPoolReleaseThreshold, pinned_cap,
+                          pool_cap};
+  }
+
+  DeviceResources &res = node.device(0);
+  const ScopedDeviceIndex on{res.dev_idx()};
+  PlanShape shape = FBF_TRY(plan_shape(calc, res));
+  const bool rounds_reuse = device_cap != 0 && FBF_TRY(pool_rounds_reused_blocks(res));
+  const PlanCaps caps{.max_device_mem_per_gpu = device_cap,
+                      .device_room =
+                          device_cap != 0 ? preflight_device_room(pool_cap, rounds_reuse) : 0,
+                      .max_pinned_mem_per_gpu = pinned_cap};
+  const std::optional<size_t> avas_fits = narrow_avas(calc, shape.dims, caps);
+  auto plan = check_plan(calc.footprints(shape.dims), caps);
+  if (!plan) {
+    if (avas_fits == 0U) {
+      plan.error().message += "; no AVAS pick fits, not even of 1 orbital: raise the cap";
+    }
+    return std::unexpected(std::move(plan).error());
+  }
+
+  // Grown once to the plan's maximum, so no footprinted step grows them and
+  // the fold needs no old-plus-new term for a growth (#1123 sizes them at
+  // construction instead).
+  (void)res.device_workspace(plan->footprint.device.workspace);
+  FBF_TRY(res.pinned_workspace("pre-flight", plan->footprint.pinned.workspace));
+
+  // The pre-warm: what the plan may use of the pool, taken once and freed.
+  // The cap is the pool's release threshold, so the pool keeps it, and
+  // memory another process holds is reported here rather than at a step.
+  if (device_cap != 0) {
+    const PoolUsage usage = res.device()->pool_usage();
+    // min(pool_cap, free + reserved) - used: below pool_cap - used only when
+    // the driver cannot supply the cap.
+    const size_t budget = FBF_TRY(res.memory_budget());
+    if (budget + usage.used_current < pool_cap) {
+      const uint64_t free_bytes = budget + usage.used_current - usage.reserved_current;
+      return err_allocation(
+          "pre-flight: device {} has {} bytes free ({:.3f} GiB), and its pool "
+          "holds {} more, short of the pool's cap of {} bytes ({:.3f} GiB): "
+          "max_device_mem_per_gpu = {} less the {} reserve outside the pool; "
+          "another process holds the rest",
+          res.dev_idx(), free_bytes, static_cast<double>(free_bytes) / (1024.0 * 1024.0 * 1024.0),
+          usage.reserved_current - usage.used_current, pool_cap,
+          static_cast<double>(pool_cap) / (1024.0 * 1024.0 * 1024.0), device_cap, kReserve);
+    }
+    const uint64_t taken = usage.used_current + kPoolHeadroomBytes;
+    if (pool_cap > taken) {
+      const Buffers::device<std::byte> warm(static_cast<size_t>(pool_cap - taken), res.device());
+    }
+    FBF_TRY(res.sync());
+  }
+  return {};
 }
 
 } // namespace free_breakfast

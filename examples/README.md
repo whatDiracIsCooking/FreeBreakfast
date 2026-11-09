@@ -16,6 +16,7 @@ step's own options its README under [`src/pipeline/`](../src/pipeline/README.md)
 | File | Shows | Writes |
 |------|-------|--------|
 | [`rhf.toml`](rhf.toml) | The smallest config: RHF water in STO-3G over integral-direct ERIs, every other table filled in | `scf.molden` |
+| [`memory.toml`](memory.toml) | `rhf.toml` under `[memory]` caps: the plan held to `max_device_mem_per_gpu` and `max_pinned_mem_per_gpu` before the first step, and run inside them (`src/pipeline/README.md`, "Memory caps") | `scf.molden` |
 | [`casscf.toml`](casscf.toml) | CASSCF(4,4) water in cc-pVDZ over density-fitted ERIs (cc-pVDZ-JKFIT), the frontier orbitals active | `scf.molden`, `casscf.molden` |
 | [`nevpt2.toml`](nevpt2.toml) | `[nevpt2]`: SC- and PC-NEVPT2 over that CASSCF | `scf.molden`, `casscf.molden` (the energies are printed) |
 | [`qd_nevpt2.toml`](qd_nevpt2.toml) | `[nevpt2] quasi_degenerate = true`: SC- and PC-QD-NEVPT2 over a CASSCF of two roots | `scf.molden`, `casscf.molden` (the states are printed) |
@@ -33,14 +34,15 @@ step's own options its README under [`src/pipeline/`](../src/pipeline/README.md)
 
 ## Tested
 
-`test/examples/` runs `rhf.toml` and `hessian.toml` through the binary as
-the ctest entries `example_rhf` and `example_hessian` (label `gpu`), in the
-fast tier: each checks the exit status, the closing `completed: 0 errors`
-line, the files in the table above, and `hessian.json`'s keys. A config
+`test/examples/` runs `rhf.toml`, `memory.toml` and `hessian.toml` through
+the binary as the ctest entries `example_rhf`, `example_memory` and
+`example_hessian` (label `gpu`), in the fast tier: each checks the exit
+status, the closing `completed: 0 errors` line, the files in the table above,
+`memory.toml`'s pre-flight lines, and `hessian.json`'s keys. A config
 that stops parsing fails its entry on any machine, since `main` plans the
 config before it looks for a device; with no device the entry skips. The
 other nine are run by hand; `nevpt2_hessian.toml` and
 `qd_nevpt2_hessian.toml` are also parsed by
 `test/pipeline/hessian_host.cpp`. A config added here goes in the table
 above, and in `test/examples/CMakeLists.txt` only if it is as cheap as
-those two.
+those three.

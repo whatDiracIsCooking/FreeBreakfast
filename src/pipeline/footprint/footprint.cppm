@@ -6,12 +6,14 @@
 /// A step's footprint is the member
 /// `MemoryFootprint footprint(const FootprintDimensions &) const`, which
 /// unpacks the dimensions into its routines' arguments and composes their
-/// footprints with `then` / `drop`. See README.md for the peak model.
+/// footprints with `then` / `drop`. See README.md for the peak model, and for
+/// check_plan, the fold held to the `[memory]` caps.
 
 export module free_breakfast.pipeline.footprint;
 
 import std;
 import free_breakfast.core.types;
+import free_breakfast.core.error_handling;
 export import free_breakfast.core.footprint;
 export import free_breakfast.basis;
 
@@ -88,6 +90,16 @@ constexpr bool kHasFootprintMember = requires {
                             MemoryFootprint (S::*)(const FootprintDimensions &) const noexcept>;
 };
 
+// The same for the optional `size_t adaptive_unit(const FootprintDimensions &)
+// const`: the bytes one more unit of an adaptive step's adaptive part takes.
+template <class S>
+constexpr bool kHasAdaptiveUnitMember = requires {
+  requires std::same_as<decltype(&S::adaptive_unit),
+                        size_t (S::*)(const FootprintDimensions &) const> ||
+               std::same_as<decltype(&S::adaptive_unit),
+                            size_t (S::*)(const FootprintDimensions &) const noexcept>;
+};
+
 } // namespace free_breakfast
 
 export namespace free_breakfast {
@@ -107,6 +119,52 @@ step_footprint(const S &step, const FootprintDimensions &dims) {
     return std::nullopt;
   }
 }
+
+/// @brief For an adaptive step, whose footprint's scratch is the least it
+///        runs with: the bytes one more unit of its adaptive part takes at
+///        @p dims (a tile's row, a batch's member). None for a step without
+///        a `size_t adaptive_unit(const FootprintDimensions &) const` member,
+///        which is every step that is not adaptive.
+///
+/// Pre-flight warns when the cap leaves an adaptive step less than this above
+/// its least: the plan fits, but that step runs at its narrowest.
+template <class S>
+[[nodiscard]] constexpr std::optional<size_t> step_adaptive_unit(const S &step,
+                                                                 const FootprintDimensions &dims) {
+  if constexpr (kHasAdaptiveUnitMember<S>) {
+    return step.adaptive_unit(dims);
+  } else {
+    return std::nullopt;
+  }
+}
+
+/// @brief One planned step as pre-flight sees it: its name, its footprint
+///        (none for a step without one yet), and its adaptive unit (none for
+///        a step that is not adaptive). Pipeline::footprints lists them in
+///        plan order.
+struct StepFootprint {
+  std::string_view name;
+  std::optional<MemoryFootprint> footprint;
+  std::optional<size_t> adaptive_unit;
+};
+
+/// @brief The `[memory]` caps as one device's fold is held to them.
+///
+/// @ref device_room is what the fold's device peak may reach: the pool's cap
+/// (max_device_mem_per_gpu less the reserve outside the pool) less the
+/// fragmentation headroom and, on a pool that rounds a reused block, its
+/// rounding; pipeline.shape's preflight computes it. The caps themselves are
+/// carried for the messages. 0 is no cap, for either kind.
+struct PlanCaps {
+  /// @brief `[memory] max_device_mem_per_gpu`; 0 for none.
+  size_t max_device_mem_per_gpu = 0;
+  /// @brief The most the fold's device peak may reach under it; 0 for no cap.
+  size_t device_room = 0;
+  /// @brief `[memory] max_pinned_mem_per_gpu`, which the fold's pinned peak
+  ///        may reach exactly: pinned allocations are not pooled, so nothing
+  ///        is left above it; 0 for none.
+  size_t max_pinned_mem_per_gpu = 0;
+};
 
 /// @brief One device's plan, folded: @ref footprint is `then` over its steps'
 ///        footprints in plan order, and each kind's peak step is the position
@@ -149,5 +207,32 @@ struct PlanFootprint {
   }
   return plan;
 }
+
+/// @brief Fold @p steps, one device's plan in plan order, and hold it to
+///        @p caps; at least one cap is set (an uncapped plan is not checked).
+///
+/// Logs, at info, each kind's peak and the step reaching it, and the
+/// workspace gap: the workspace is held throughout at the plan's maximum,
+/// and the peak step uses only its own part of it. For each adaptive step
+/// (an @ref StepFootprint::adaptive_unit) under a device cap, the bytes the
+/// cap leaves it above its least scratch at its point in the fold, at warn
+/// level when that is under one more unit.
+///
+/// @return The folded plan; ErrorKind::InvalidConfig naming the first step
+///         with no footprint, which no cap can be checked against, or the
+///         step that reaches a kind's peak past its cap, with the peak and
+///         the cap.
+[[nodiscard]] Result<PlanFootprint> check_plan(std::span<const StepFootprint> steps,
+                                               const PlanCaps &caps);
+
+/// @brief The machine check under a pinned cap: @p devices DeviceResources,
+///        each allowed @p max_pinned_mem_per_gpu of pinned memory, must fit
+///        the node's @p mem_available (`/proc/meminfo`'s MemAvailable).
+///
+/// Pinned memory is non-pageable, so the node's RAM bounds it, and this
+/// stands in for a node-wide host cap. ErrorKind::InvalidConfig naming the
+/// product and MemAvailable when it is above.
+[[nodiscard]] Status check_pinned_node(size_t max_pinned_mem_per_gpu, size_t devices,
+                                       size_t mem_available);
 
 } // namespace free_breakfast

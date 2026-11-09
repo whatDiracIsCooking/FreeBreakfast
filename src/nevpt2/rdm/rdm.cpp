@@ -24,14 +24,6 @@ import free_breakfast.ci.strings;
 
 namespace free_breakfast::nevpt2 {
 
-// What the tile leaves of the memory budget: two pool chunks, the
-// fragmentation headroom (pipeline/footprint's README). The pool takes memory
-// from the driver in 32 MiB chunks, so what it reserves can run up to two of
-// them past what is in use; past its limit an allocation aborts
-// (CreatePolicy) rather than returns, so this keeps the scratch on the
-// refusing side of it.
-constexpr size_t kPoolHeadroomBytes = size_t{64} << 20;
-
 // One region's bytes in the scratch: @p count doubles, rounded up to the
 // alignment every region starts on.
 size_t rdms_region(const size_t count) {

@@ -47,7 +47,7 @@ export namespace free_breakfast {
 /// A struct over the pipeline rather than an alias of it, so the caps travel
 /// with the plan they bound; it is still that pipeline, and its inherited
 /// `create` returns the bare one, with no caps. The caps are only read and
-/// stored here: nothing yet enforces them.
+/// stored here: pipeline.shape's preflight holds the plan to them.
 struct Calculation
     : Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep,
                EriStep, OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,

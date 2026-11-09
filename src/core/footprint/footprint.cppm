@@ -14,6 +14,18 @@ import free_breakfast.core.wwr;
 
 export namespace free_breakfast {
 
+/// @brief The fragmentation headroom, in bytes: what pre-flight leaves between
+///        a plan's device peak and its pool's cap, and what an adaptive
+///        routine leaves of the memory budget when it sizes its adaptive part.
+///
+/// Two of the pool's 32 MiB chunks: a pool whose allocations pack holds past
+/// its peak use at most the free top of its last chunk and the holes small
+/// frees leave in the chunk its small allocations share, each under a chunk
+/// (pipeline/footprint's README, "Fragmentation headroom"). Past its cap an
+/// allocation through the pool aborts rather than returns, so this keeps a
+/// footprint that fits on the refusing side of it.
+inline constexpr size_t kPoolHeadroomBytes = size_t{64} << 20;
+
 /// @brief The bytes of memory kind `K` a routine or step holds, one field per
 ///        lifetime.
 ///

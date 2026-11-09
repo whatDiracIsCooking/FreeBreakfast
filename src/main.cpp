@@ -11,7 +11,8 @@
 /// config's paths are relative to the input directory (default `.`), and every
 /// file the run writes lands in the output directory (default `fbf_output`),
 /// named after the step that wrote it. `read_config` plans the pipeline,
-/// `run` runs it, and main prints each product the pipeline built.
+/// `preflight` holds it to the config's `[memory]` caps and sets the node up
+/// under them, `run` runs it, and main prints each product the pipeline built.
 
 #include "diagnostics.h"
 
@@ -19,6 +20,7 @@ import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.config;
+import free_breakfast.pipeline.shape; // preflight
 
 namespace {
 
@@ -235,6 +237,10 @@ fb::Status run(std::span<char *const> args) {
 
   fb::NodeResources node;
   node.log();
+  // Under a [memory] cap: refused here if the plan cannot fit, before any
+  // step runs; the devices rebuilt with the caps, their workspaces grown to
+  // the plan's maximum and the pool pre-warmed. Without one, nothing.
+  FBF_TRY(fb::preflight(calc, node));
   FBF_TRY(calc.run(node));
   print_products(calc);
   return {};

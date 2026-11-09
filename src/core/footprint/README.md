@@ -14,8 +14,8 @@ also re-exported by `free_breakfast.core`.
 It imports `core.types` and `core.wwr`, the latter only for wwr's
 `MemoryKind` (`wwr::extension::MemoryKind`). It lives in `core`, not in
 `pipeline`, because nothing below `pipeline` may import the pipeline, and the
-library routines export footprints too. Templates and `constexpr` functions
-only, so there is no implementation unit.
+library routines export footprints too. Templates, `constexpr` functions and
+one constant only, so there is no implementation unit.
 
 | Export | What |
 |---|---|
@@ -23,6 +23,16 @@ only, so there is no implementation unit.
 | `MemoryFootprint` | What a routine or step reports: `Footprint<Device> device` and `Footprint<Pinned> pinned` |
 | `then(a, b)` | `a` runs and its output is kept, then `b` runs |
 | `drop(f)` | What `f` returned is freed before the enclosing routine returns |
+| `kPoolHeadroomBytes` | The fragmentation headroom, 64 MiB: two pool chunks |
+
+**The headroom is one constant.** Pre-flight (`pipeline/shape`) leaves it
+between a plan's device peak and the pool's cap, and an adaptive routine
+(FCI's sigma, NEVPT2's tile and walk) leaves it of the memory budget when it
+sizes its adaptive part; the footprint tests use it to set their caps. It is
+here, beside the vocabulary, because both the library layer and the pipeline
+need it, and nothing below the pipeline may import the pipeline. Why two
+chunks is [`pipeline/footprint`'s README](../../pipeline/footprint/README.md),
+"Fragmentation headroom".
 
 ## The three lifetimes
 

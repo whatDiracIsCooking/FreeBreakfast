@@ -126,6 +126,7 @@ add_executable(
   pipeline_df_scf_gpu.cpp
   pipeline_calculation_gpu.cpp
   pipeline_shape_gpu.cpp
+  pipeline_preflight_gpu.cpp
   launch_gpu.cpp
   overlap_gpu.cpp
   overlap_mixed_gpu.cpp

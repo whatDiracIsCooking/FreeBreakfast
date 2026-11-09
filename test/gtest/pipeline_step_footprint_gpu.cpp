@@ -542,7 +542,7 @@ TEST(StepFootprint, FciAtTheLeast) {
   }
   const std::size_t rounding = granularity * (kFciLive + 16);
   ASSERT_LT(rounding, std::size_t{120} * 56 * sizeof(double));
-  const std::uint64_t cap = f.fp.device.peak() + (std::size_t{64} << 20U) + rounding;
+  const std::uint64_t cap = f.fp.device.peak() + fb::kPoolHeadroomBytes + rounding;
   fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   expect_ran(f.fci.run(f.plan.ci_view(), res));

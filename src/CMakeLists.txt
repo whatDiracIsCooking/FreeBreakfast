@@ -63,4 +63,5 @@ target_link_libraries(
           free_breakfast::core::resources
           free_breakfast::core::diagnostics_macros
           free_breakfast::pipeline::config
+          free_breakfast::pipeline::shape
 )

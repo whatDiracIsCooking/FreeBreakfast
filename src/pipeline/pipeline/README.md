@@ -8,7 +8,8 @@
 `free_breakfast.pipeline.pipeline`, target `free_breakfast::pipeline::pipeline`.
 Templates only, so no implementation unit. It imports `pipeline.step`,
 `core.resources` (the node, and Taskflow through it) and `core.wwr`
-(`ScopedDeviceIndex`), and **no step module**: a registry of made-up steps
+(`ScopedDeviceIndex`), re-exports `pipeline.footprint` (`footprints`
+returns its `StepFootprint`), and imports **no step module**: a registry of made-up steps
 compiles none of the real ones. The real registry is `pipeline.config`'s
 `Calculation`.
 
@@ -27,7 +28,10 @@ public:
 
   template <class T> const Result<T> &get() const;          // T a product of Steps
   template <class S> const std::optional<S> &step() const;  // S one of Steps
+  template <class S> std::optional<S> &step();              // to change before run
   template <class S> const std::optional<std::filesystem::path> &from() const;  // S loadable
+
+  std::vector<StepFootprint> footprints(const FootprintDimensions &dims) const;
 };
 ```
 
@@ -117,7 +121,21 @@ Products are immutable, so it hands out `const Result<T>&`.
 `step<S>()` returns the planned step, as given or filled in, so a caller can
 read the options a product was made with. A loaded step has no options, so
 `step<S>()` is empty for it, and `from<S>()` is the path its product is read
-from.
+from. On a non-const pipeline it is the step itself, to change before `run`:
+pre-flight narrows an AVAS step's `avas_max_ncas` to what the `[memory]`
+caps fit (`shape/README.md`).
+
+## Footprints
+
+`footprints(dims)` lists each planned step's `StepFootprint` in plan order,
+every step (host ones included, which hold nothing of either kind): its
+`kName`, its footprint at `dims` (`step_footprint`, none for a step without
+one yet) and its adaptive unit (`step_adaptive_unit`). It is what pre-flight
+folds and holds to the caps (`check_plan`, `footprint/README.md`). A loaded
+step holds no step value, so it reports a default-constructed one's
+footprint: its product is as resident as a computed one, and a loadable
+step's footprint, the Molecule's and the Guess's, is its load's too and reads
+no option.
 
 **Free order.** The destructor destroys the products in reverse plan order,
 with their device current. The run has already waited on every device step.
@@ -140,6 +158,8 @@ copyable nor assignable.
     consumers;
   - a failed step failing its consumers;
   - an unplanned product, a second `run`, and a device step with no device.
+- `test/pipeline/preflight_host.cpp`, over made-up steps with footprints:
+  `footprints` in plan order, a loaded step's, and `check_plan` over them.
 - `test/gtest/pipeline_calculation_gpu.cpp`: the real registry from a config
   file, against the same steps called by hand, and a failed root step failing
   every product after it.

@@ -1,0 +1,12 @@
+# examples/rhf.toml under [memory] caps: RHF water in STO-3G, the plan held
+# to them before the first step (pre-flight), and run inside them.
+# Each cap is per GPU; either may be left out. A plan past one is refused,
+# naming the step that reaches the peak.
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "sto-3g"
+[scf]
+[memory]
+max_device_mem_per_gpu = "1GiB"    # the context and libraries' reserve included
+max_pinned_mem_per_gpu = "256MiB"  # the pinned workspace and kept pinned products

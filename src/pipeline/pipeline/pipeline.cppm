@@ -17,6 +17,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.core.wwr;
 import free_breakfast.pipeline.step;
+export import free_breakfast.pipeline.footprint;
 
 #include "diagnostics.h"
 
@@ -299,6 +300,44 @@ public:
     requires(std::same_as<S, Steps> || ...)
   [[nodiscard]] const std::optional<S> &step() const {
     return std::get<std::optional<S>>(steps_);
+  }
+
+  /// @brief The planned step of type `S`, to change before @ref run: what
+  /// pre-flight narrows (an AVAS step's `avas_max_ncas`, to what the
+  /// `[memory]` caps fit).
+  template <class S>
+    requires(std::same_as<S, Steps> || ...)
+  [[nodiscard]] std::optional<S> &step() {
+    return std::get<std::optional<S>>(steps_);
+  }
+
+  /// @brief Each planned step's footprint at @p dims, and its adaptive unit,
+  /// in plan order: what pre-flight folds (`check_plan`).
+  ///
+  /// A loaded step, which holds no step value, reports a default-constructed
+  /// one's: its product is as resident as a computed one, and a loadable
+  /// step's footprint is its load's too, so it must not read the step's
+  /// options. Host steps are listed too, and report what they hold of the
+  /// device and pinned memory: nothing, for a host step as it should be.
+  [[nodiscard]] std::vector<StepFootprint> footprints(const FootprintDimensions &dims) const {
+    std::vector<StepFootprint> out;
+    out.reserve(order_.size());
+    for (const size_t i : order_) {
+      (void)with_index(i, [&]<size_t I>() -> Status {
+        StepFootprint fp{.name = kNames[I]};
+        if (const auto &planned = std::get<I>(steps_)) {
+          fp.footprint = step_footprint(*planned, dims);
+          fp.adaptive_unit = step_adaptive_unit(*planned, dims);
+        } else {
+          const StepAt<I> loaded{};
+          fp.footprint = step_footprint(loaded, dims);
+          fp.adaptive_unit = step_adaptive_unit(loaded, dims);
+        }
+        out.push_back(std::move(fp));
+        return {};
+      });
+    }
+    return out;
   }
 
   /// @brief Where the product of step `S` is loaded from; empty if the
