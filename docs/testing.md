@@ -369,7 +369,42 @@ status is the first failing phase's.
 entries and the GPU batches; pytest and the slow-test report do not run, and
 the record is `manual`, so it never enters the timing series. It is how a
 change to the nightly itself is tried end to end without an hour's run (#986's
-acceptance was three of them).
+acceptance was three of them). Its summary line carries `run=reduced`, and a
+`--rev` run's carries `ref=REF`, so neither is mistaken for the timer's night.
+
+### How to tell it ran
+
+A passing night makes no noise, and neither does a night that never ran: the
+box off at 02:30, the combined devcontainer down, a broken unit (#1120's exited
+127 in 6 ms). The signals, cheapest first:
+
+- **The summary line**, the newest `test.py nightly` line in
+  `<primary>/.slow-tier-reports/summary.log`.
+- **The `metrics` record**, its `metrics=` commit on the box's local `metrics`
+  branch ("Metrics" below).
+- **systemd, on the host:** `systemctl --user list-timers "$unit.timer"` for
+  the last and next fire, and
+  `journalctl --user -u "$unit.service" --since yesterday` for what it did.
+- **The `nightly` issue**, which is opened only by a night that ran and failed.
+
+**The staleness check** (#1127, `devtools/nightly_stale.py`) reads the first of
+these for you. `devtools/doctor.sh` reports it under `nightly`, and
+`test.py push` and `pr` print it as one `WARNING nightly:` line at the end, and
+never fail on it. It warns when the newest timer night, any result, is older
+than `NIGHTLY_STALE_HOURS` (36, `devtools/config.sh`), or is a FAIL, and says
+"no nightly has run here" when there is none but the timer is installed. Lines
+with `ref=` or `run=reduced` do not count. With no line and no timer unit, a
+VM or another box not meant to run the nightly, it is a note, not a warning.
+On the host, doctor also shows the timer's last and next trigger, and the
+service's last result when it is not `success`; in the container there is no
+systemd user manager, and it says so.
+
+- **It reads the primary checkout's** `summary.log`, from any worktree, since
+  that is where the nightly writes it. A worktree's own reports directory holds
+  only its `pr` runs.
+- **A night's time is its log's mtime**, the end of the run, where the log is
+  still there, else its `stamp=` as local time. The host and the container keep
+  different time zones, and the mtime means the same in both.
 
 ### Installing the timer (host only)
 
