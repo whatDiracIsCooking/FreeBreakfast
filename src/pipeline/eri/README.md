@@ -72,8 +72,8 @@ On `res.stream()`:
 1. The aux basis: `aux_basis`, or, left empty, `<BasisSet::name()>-acCD-6-6`
    (below). Then `resolve_aux_basis`, and `place(stamp.primitive_normalized(),
    molecule)`, as the `BasisSet` step places the orbital basis.
-2. B's and L's bytes, `naux · (nao² + naux)` doubles, against the device's free memory:
-   past it, `Unsupported` naming the bytes, since the allocation would
+2. B's and L's bytes, `naux · (nao² + naux)` doubles, against the device's
+   memory budget (`DeviceResources::memory_budget()`): past it, `Unsupported` naming the bytes, since the allocation would
    otherwise abort (`CreatePolicy`).
 3. `metric` into a `MatrixAOPair` made for the aux basis, over its own
    `upload_spherical_transform_matrix`, and the spherical metric copied into
