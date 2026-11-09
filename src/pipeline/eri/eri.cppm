@@ -103,8 +103,8 @@ struct EriStep {
   /// EriMode::DensityFitting, an unreadable aux file is ErrorKind::IO; an
   /// unknown name, a malformed set or one lacking an element the molecule
   /// uses is ErrorKind::InvalidConfig; an orbital shell above f, an aux shell
-  /// above i, or a B or three-center scratch past the device's free memory is
-  /// ErrorKind::Unsupported, naming the shell or the bytes; a metric that is
+  /// above i, or a B or three-center scratch past the device's memory budget
+  /// (`DeviceResources::memory_budget()`) is ErrorKind::Unsupported, naming the shell or the bytes; a metric that is
   /// not positive definite is ErrorKind::Numerical; a failed copy, launch or
   /// BLAS call is ErrorKind::GpuRuntime.
   [[nodiscard]] Result<EriOutput>
