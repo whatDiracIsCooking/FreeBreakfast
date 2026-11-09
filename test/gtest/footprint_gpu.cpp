@@ -1,7 +1,9 @@
 // The footprints (#1044) of the library routines the RHF chain calls outside
 // src/recipes (#1048): the Molecule's upload, mmd's classes, J's and K's
 // classes and builds, the one-electron integrals, and the density-fitting
-// metric, three-center tensor, fit, J, K and MO transform. Each is held to the
+// metric, three-center tensor, fit, J, K and MO transform; and those CASCI and
+// FCI call (#1049): the mixed classes and overlap AVAS builds, the active-space
+// Hamiltonian, and the CI's strings, sigma and solve. Each is held to the
 // pool peak of one call by test/support/pool_footprint.h's two bars, sound
 // (the measured peak is no more than the footprint's) and tight (within
 // G x A), so an undercount fails at the routine that owns the allocation.
@@ -22,6 +24,7 @@ import free_breakfast.io.basis;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 import free_breakfast.recipes.diagonalize; // syevd_lwork
+import free_breakfast.ci;
 
 #include "pool_footprint.h"
 
@@ -54,13 +57,23 @@ fb::BasisSet placed(const std::string &name, const fb::Molecule &molecule) {
 // pipeline grows them before the first step: the pool's peak is then the
 // call's persistent and scratch, with @p live allocations live at it. No
 // routine here keeps a CountedPinned, so the pinned total is the workspace.
+// With @p workspace_bound the device workspace is held to at most the
+// footprint's, and the gap logged: a Davidson's syevd is counted at its
+// subspace's largest order, which a solve that converges first never reaches.
 template <typename Call>
 void expect_routine_footprint(fb::DeviceResources &res, const fb::MemoryFootprint &fp,
-                              const std::size_t live, Call &&call) {
+                              const std::size_t live, Call &&call, bool workspace_bound = false) {
   const std::size_t device_before = res.device_workspace(0).num_elements();
   const std::size_t pinned_before = res.pinned_bytes();
   call();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), std::max(device_before, fp.device.workspace));
+  const std::size_t grown = res.device_workspace(0).num_elements();
+  if (workspace_bound) {
+    EXPECT_LE(grown, std::max(device_before, fp.device.workspace));
+    std::cout << std::format("[ footprint ] workspace {} of the bound {}\n", grown,
+                             fp.device.workspace);
+  } else {
+    EXPECT_EQ(grown, std::max(device_before, fp.device.workspace));
+  }
   EXPECT_EQ(res.pinned_bytes(), std::max(pinned_before, fp.pinned.peak()));
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), call);
   fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
@@ -276,6 +289,212 @@ TEST(LibraryFootprint, DfJkAndMo) {
       EXPECT_TRUE(
           fb::b_mo(res, in.naux, in.nao, in.nao, in.b.data(), c.data(), rows, cols, out.data()));
     });
+  }
+}
+
+// MINAO against cc-pVDZ, as AVAS builds <MINAO AO | basis AO>, and MINAO
+// against itself.
+TEST(LibraryFootprint, MixedClassesAndOverlap) {
+  FBF_REQUIRE_GPU();
+  Water w;
+  const fb::BasisSet minao = placed("minao", w.molecule);
+  for (const fb::BasisSet *cols : std::array<const fb::BasisSet *, 2>{&w.basis, &minao}) {
+    SCOPED_TRACE(cols == &minao ? "minao" : "cc-pvdz");
+    const std::size_t n_classes =
+        fb::mixed_primitive_pair_classes(w.inputs, minao, *cols).value().size();
+    {
+      fb::DeviceResources res{0};
+      // The classes' 20 fields each and the 11 tables.
+      expect_routine_footprint(res, fb::mixed_primitive_pair_classes_footprint(minao, *cols),
+                               (n_classes * 20) + 11, [&] {
+                                 const auto classes =
+                                     fb::mixed_primitive_pair_classes(res, minao, *cols);
+                                 ASSERT_TRUE(classes);
+                               });
+    }
+    fb::DeviceResources res{0};
+    fb::Buffers::device<double> s(std::size_t{minao.nao_sphe()} * cols->nao_sphe(), res.device());
+    // The Cartesian block beside the records' build: their fields and tables.
+    expect_routine_footprint(
+        res, fb::overlap_mixed_spherical_footprint(minao, *cols), 1 + (n_classes * 20) + 11,
+        [&] { EXPECT_TRUE(fb::overlap_mixed_spherical(res, minao, *cols, s)); });
+  }
+}
+
+// Water in cc-pVDZ, 2 core and 4 active orbitals over C = I: the allocation
+// does not depend on C's values.
+TEST(LibraryFootprint, ActiveSpaceHamiltonian) {
+  FBF_REQUIRE_GPU();
+  const Water w;
+  fb::DeviceResources res{0};
+  const auto u = fb::upload_spherical_transform_matrix(res, w.basis);
+  ASSERT_TRUE(u);
+  auto j_classes = fb::coulomb_pair_classes(res, w.classes);
+  ASSERT_TRUE(j_classes);
+  auto k_classes = fb::ordered_pair_classes(res, w.basis, w.classes);
+  ASSERT_TRUE(k_classes);
+  const fb::SphericalMatrixAO h(res, w.basis);
+  fb::SphericalMatrixAO c(res, w.basis);
+  const std::size_t nao = w.basis.nao_sphe();
+  std::vector<double> identity(nao * nao, 0.0);
+  for (std::size_t i = 0; i < nao; ++i) {
+    identity[i * (nao + 1)] = 1.0;
+  }
+  EXPECT_EQ(wwr::wwrMemcpyAsync(c.data(), identity.data(), sizeof(double) * identity.size(),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(res.sync());
+  // A fresh workspace: the classes' sorts grew it.
+  fb::DeviceResources own{0};
+  const fb::MemoryFootprint fp = fb::active_space_hamiltonian_footprint(w.basis, 2, 4);
+  ASSERT_GT(fp.device.workspace, 0U);
+  // h_eff, (tu|vw), the density, J and K.
+  expect_routine_footprint(own, fp, 5, [&] {
+    const auto ham = fb::active_space_hamiltonian(own, w.basis, w.molecule, h, *u, *j_classes,
+                                                  *k_classes, c, 2, 4);
+    ASSERT_TRUE(ham) << ham.error().message;
+  });
+}
+
+TEST(LibraryFootprint, DeviceStringSet) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  // The strings and their links.
+  expect_routine_footprint(res, fb::ci::device_string_set_footprint(8, 3), 2,
+                           [&] { EXPECT_TRUE(fb::ci::DeviceStringSet::create(res, 8, 3)); });
+  EXPECT_EQ(fb::ci::device_string_set_footprint(8, 3).device.persistent,
+            (56 * sizeof(std::uint64_t)) + (56 * 3 * 6 * sizeof(fb::ci::Replacement)));
+}
+
+// Integrals of an aufbau-dominated H over n orbitals: h_tt = t, small
+// symmetric couplings and two-electron terms, so the lowest root of each spin
+// is near the lowest determinants and the Davidson converges. eri 8-fold,
+// row-major (t, u, v, w) as Sigma::set_integrals takes it.
+struct CiIntegrals {
+  std::vector<double> h;
+  std::vector<double> eri;
+};
+
+CiIntegrals ci_integrals(std::int32_t n) {
+  std::mt19937_64 engine{20261109U};
+  std::uniform_real_distribution<double> uniform{-1.0, 1.0};
+  const auto m = static_cast<std::size_t>(n);
+  CiIntegrals out{std::vector<double>(m * m), std::vector<double>(m * m * m * m)};
+  for (std::size_t t = 0; t < m; ++t) {
+    for (std::size_t u = 0; u <= t; ++u) {
+      out.h[(t * m) + u] = out.h[(u * m) + t] =
+          t == u ? static_cast<double>(t) : 1e-2 * uniform(engine);
+    }
+  }
+  for (std::size_t t = 0; t < m; ++t) {
+    for (std::size_t u = 0; u <= t; ++u) {
+      for (std::size_t v = 0; v < m; ++v) {
+        for (std::size_t x = 0; x <= v; ++x) {
+          if ((t * (t + 1) / 2) + u < (v * (v + 1) / 2) + x) {
+            continue;
+          }
+          const double value = 1e-2 * uniform(engine);
+          for (const auto [a, b, c, d] :
+               {std::array{t, u, v, x}, std::array{u, t, v, x}, std::array{t, u, x, v},
+                std::array{u, t, x, v}, std::array{v, x, t, u}, std::array{x, v, t, u},
+                std::array{v, x, u, t}, std::array{x, v, u, t}}) {
+            out.eri[(((((a * m) + b) * m) + c) * m) + d] = value;
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// Over one string set, or two: a Sigma's tables and apply scratch (whole, and
+// at the least under a limit of one byte), with rdm1's workspace; then
+// ci::solve over it, a singlet in the symmetric layout and a triplet in the
+// full one, with its two stages and the roots unpacked.
+TEST(LibraryFootprint, SigmaAndSolve) {
+  FBF_REQUIRE_GPU();
+  constexpr std::int32_t kOrbitals = 6;
+  constexpr std::int32_t kRoots = 2;
+  const CiIntegrals ints = ci_integrals(kOrbitals);
+  struct Sector {
+    std::int32_t n_alpha;
+    std::int32_t n_beta;
+  };
+  for (const Sector sector : {Sector{3, 3}, Sector{4, 2}}) {
+    SCOPED_TRACE(std::format("({}, {})", sector.n_alpha, sector.n_beta));
+    const bool one_set = sector.n_alpha == sector.n_beta;
+    const fb::ci::Layout layout = one_set ? fb::ci::Layout::symmetric : fb::ci::Layout::full;
+    for (const std::size_t limit : {std::numeric_limits<std::size_t>::max(), std::size_t{1}}) {
+      SCOPED_TRACE(limit);
+      fb::DeviceResources res{0};
+      const auto alpha = fb::ci::DeviceStringSet::create(res, kOrbitals, sector.n_alpha);
+      const auto beta = fb::ci::DeviceStringSet::create(res, kOrbitals, sector.n_beta);
+      ASSERT_TRUE(alpha && beta);
+      const fb::ci::DeviceStringSet &b = one_set ? *alpha : *beta;
+      const auto dim = static_cast<std::size_t>(alpha->size()) * b.size();
+      const fb::MemoryFootprint tables =
+          fb::ci::sigma_footprint(kOrbitals, alpha->size(), b.size(), layout);
+      const auto held = [](std::size_t bytes) {
+        return fb::MemoryFootprint{.device = {.persistent = bytes}};
+      };
+      // The Sigma, its scratch from one apply, and a 1-RDM.
+      const std::size_t apply =
+          fb::ci::sigma_apply_bytes(kOrbitals, alpha->size(), b.size(), layout, limit);
+      if (limit == 1) {
+        EXPECT_LT(apply, fb::ci::sigma_apply_bytes(kOrbitals, alpha->size(), b.size(), layout));
+      }
+      const std::size_t length =
+          layout == fb::ci::Layout::symmetric
+              ? static_cast<std::size_t>(alpha->size()) * (alpha->size() + 1) / 2
+              : dim;
+      fb::Buffers::device<double> x(length, res.device());
+      fb::Buffers::device<double> y(length, res.device());
+      fb::Buffers::device<double> gamma(kOrbitals * kOrbitals, res.device());
+      EXPECT_EQ(wwr::wwrMemsetAsync(x.data(), 0, sizeof(double) * length, res.stream()),
+                wwr::wwrSuccess);
+      // The three tables and the scratch.
+      expect_routine_footprint(res, then(tables, held(apply)), 4, [&] {
+        auto sigma = fb::ci::Sigma::create(res, *alpha, b);
+        ASSERT_TRUE(sigma);
+        sigma->set_scratch_limit(limit);
+        ASSERT_TRUE(sigma->set_integrals(res, 0.0, ints.h, ints.eri));
+        EXPECT_TRUE(sigma->apply(res, 1, x.data(), y.data(), layout));
+        EXPECT_TRUE(sigma->rdm1(res, x.data(), gamma.data(), layout));
+      });
+
+      // The solve, over a Sigma and diagonal of its own each run, as a step
+      // makes them.
+      const auto lwork = [&] {
+        std::vector<std::size_t> out(16 * kRoots + 1);
+        for (std::size_t order = 0; order < out.size(); ++order) {
+          out[order] = fb::syevd_lwork<double>(res, static_cast<std::int32_t>(order)).value();
+        }
+        return out;
+      }();
+      const fb::ci::SolverOptions options;
+      const fb::MemoryFootprint solve = fb::ci::solve_footprint(
+          kOrbitals, sector.n_alpha, sector.n_beta, kRoots, options, false, lwork, limit);
+      // The sigma's tables, the diagonal, the solve's guesses, shifted
+      // diagonal, values, vectors, picks, P-space U and values (empty) and
+      // S^2's table; the Davidson's 11; the sigma's scratch; the unpacked
+      // roots.
+      fb::DeviceResources own{0};
+      expect_routine_footprint(
+          own, then(then(held(tables.device.persistent), held(sizeof(double) * dim)), solve),
+          3 + 1 + 8 + 11 + 1 + 1,
+          [&] {
+            auto sigma = fb::ci::Sigma::create(own, *alpha, b);
+            ASSERT_TRUE(sigma);
+            sigma->set_scratch_limit(limit);
+            ASSERT_TRUE(sigma->set_integrals(own, 0.0, ints.h, ints.eri));
+            fb::Buffers::device<double> diagonal(dim, own.device());
+            ASSERT_TRUE(sigma->diagonal(own, diagonal.data()));
+            const auto roots =
+                fb::ci::solve(own, *sigma, *alpha, b, diagonal.data(), kRoots, options);
+            ASSERT_TRUE(roots) << roots.error().message;
+          },
+          true);
+    }
   }
 }
 

@@ -34,6 +34,12 @@ struct FootprintDimensions {
   /// @brief The density-fitting aux basis, placed as the Eri step places it;
   ///        null without density fitting.
   const BasisSet *aux = nullptr;
+  /// @brief MINAO, placed and primitive-normalized as AVAS places it; null
+  ///        when no planned active space is picked by AVAS.
+  const BasisSet *minao = nullptr;
+  /// @brief The molecule's atoms, in order: what AVAS's labels are matched
+  ///        against (avas_minao_aos).
+  std::vector<Atom> atoms;
   /// @brief Spherical AOs: @ref basis's.
   size_t nao = 0;
   /// @brief Auxiliary basis functions: @ref aux's; 0 without density fitting.
@@ -48,10 +54,13 @@ struct FootprintDimensions {
   ///        below the diagonal. Square, indexed `[la][lb]` over the momenta
   ///        @ref basis reaches: what J's classes are sized from.
   std::vector<std::vector<size_t>> mmd_records;
-  /// @brief syevd's work at order @ref nao, in doubles, as the solver sizes
-  ///        it (diagonalize's own query); 0 for no basis. The step footprints
-  ///        read it here, so none holds a solver handle.
-  size_t syevd_lwork = 0;
+  /// @brief syevd's work by order, in doubles, as the solver sizes it
+  ///        (diagonalize's own query): syevd_lwork[k] at order k, for every
+  ///        order through the plan's largest eigensolve, nao or a planned
+  ///        step's subspace (a Davidson's 16 nroots columns, the augmented
+  ///        Hessian's ah_max_subspace + 1); empty for no basis. The step
+  ///        footprints read it here, so none holds a solver handle.
+  std::vector<size_t> syevd_lwork;
   /// @brief Worst-case active orbitals and electrons; 0 when no active space
   ///        is planned.
   size_t ncas = 0;

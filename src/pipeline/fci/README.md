@@ -40,51 +40,48 @@ struct FciStep {
 
 `run`, all on `res.stream()`:
 
-1. **The estimate.** The device bytes the solve holds at its peak, inside
-   `ci::solve`'s Davidson, against `wwrMemGetInfo`'s free memory; past it, the
-   step returns `Allocation` before anything is allocated. Without this, the
-   first allocation to fail would abort the process (`CreatePolicy`), not
-   return an error.
+1. **The refusal.** The step's own footprint (`footprint(dims)`, below), from
+   dimensions it builds out of its inputs (the basis, mmd's record counts
+   from `PrimitivePairClassesOutput`, syevd's work through the CI's orders),
+   against `DeviceResources::memory_budget()` less one pool chunk (32 MiB)
+   of fragmentation headroom, the pipeline's, with what the device
+   workspace has still to grow by. Past that, at the least sigma
+   scratch, the step returns `Allocation` before anything is allocated;
+   without this, the first allocation to fail would abort the process
+   (`CreatePolicy`), not return an error. A space of more determinants than
+   an `int32_t` counts is refused there too.
 2. **The solve**, `CasciStep::run`'s calls with `ncas` the ScfOutput's orbital
    count and `nelecas` every electron (`casci/README.md`): with no core and
    every orbital active, `CasciStep::orbital_order` would be the identity,
    so the ScfOutput's C goes in as it is.
    `active_space_hamiltonian` builds h and (pq|rs) over every orbital, E_core
-   the nuclear repulsion alone; `ci::Sigma` and `ci::solve` find the roots, and
-   `ci::Sigma::rdm1` each root's 1-RDM. The product keeps the energies, ⟨S²⟩, 1-RDMs and
-   Davidson record; the CI vectors are dropped.
+   the nuclear repulsion alone, and it and the J and K classes are freed once
+   h and (pq|rs) are on the host, before the CI allocates; `ci::Sigma` and
+   `ci::solve` find the roots, and `ci::Sigma::rdm1` each root's 1-RDM. The
+   product keeps the energies, ⟨S²⟩, 1-RDMs and Davidson record; the CI
+   vectors are dropped.
 
-A singlet solve runs in the symmetric layout (`../../ci/solver/`), on packed
-vectors. With s = C(n, N/2) strings, dim = s² determinants, t = s (s + 1) / 2
-packed elements (for any other spin s_α = C(n, N_α) and s_β = C(n, N_β)
-strings, dim = s_α s_β, and the full layout's t = dim; two string sets; and
-one string's block of G is the larger of s_α and s_β rows),
-g = min(t, 2 nroots) guesses, m = max(2 nroots,
-min(t, 16 nroots)) subspace columns (`ci::solve`'s choices) and
-P = n (n + 1) / 2, the estimate counts, in doubles:
+**The footprint** is `then(drop(J, K, the Hamiltonian), drop(the CI))`, each
+piece its library's own: `coulomb_pair_classes_footprint`,
+`ordered_pair_classes_footprint`, `active_space_hamiltonian_footprint`, and
+`pipeline/active_space`'s `active_space_ci_footprint` (the string set or
+sets, `ci::sigma_footprint`, the diagonal, `ci::solve_footprint`, the
+1-RDMs). Nothing is persistent: the product is on the host.
 
-| Holder | Size |
-|---|---|
-| `ci::solve` | g t guesses, nroots t vectors, its t penalized diagonal, and the step's dim diagonal; after the Davidson, nroots dim unpacked roots, counted where they outweigh the Davidson's |
-| `davidson_solve` | 2 m t for V and A V, 3 nroots t for A X, R and the corrections, and the m-sized projections |
-| `ci::Sigma::apply`'s scratch | t (P + 1) for G, one vector's (`apply` goes a vector at a time), plus one ≤ 64 MiB chunk of D, when that fits; else blocked (below), down to s (P + 1) for one string's block. The workspace outlives the Davidson, so it is added to the larger of the Davidson and the unpacked roots |
-| `ci::Sigma`'s tables | two string sets (8 bytes a string, 12 a replacement), the P × (P + 1) contraction |
-| The integrals | (pq\|rs) n⁴ and h n² |
-
-For H₂O 6-31G (13 orbitals, 1,656,369 determinants, 828,828 packed, 3 roots)
-G is 0.61 GB of a 1.45 GB estimate, the Davidson subspace most of the rest;
-in the full layout they were 1.2 GB of 2.8 GB. The J and K classes and
-`active_space_hamiltonian`'s own scratch are left out; they scale with the
-basis, not the determinants. The comparison is against free memory as the
-runtime reports it, so memory the pool has cached counts as used: the refusal
-errs toward refusing.
-
-The step refuses only when the rest of the estimate plus one string's block of
-G does not fit. Otherwise it hands `ci::Sigma::set_workspace_limit` whatever the
-estimate leaves free. When G for the whole triangle fits, the sigma is the
-unblocked single pass and gives the same result to the bit. When it does not,
-G goes a block of strings at a time, at twice the gathers and gemm
-(`../../ci/sigma/README.md`).
+**The sigma's scratch is the one adaptive part.** `ci::Sigma::apply`'s G, one
+vector's (`apply` goes a vector at a time) and a ≤ 64 MiB chunk of D, is the
+Sigma's own pool buffer (`../../ci/sigma/README.md`). The footprint counts it
+at the least the sigma runs with, one string's block of G
+(`ci::sigma_apply_bytes` at limit 0), as `core/footprint` has an adaptive
+routine's scratch: pre-flight then refuses only a plan that cannot run even
+blocked. At run time the step finds the largest `ci::Sigma::set_scratch_limit`
+its footprint fits the budget at, by bisection over the footprint itself, and
+passes it on; when G for the whole space fits, it sets none, and the sigma is
+the unblocked single pass, the same result to the bit. When it does not, G
+goes a block of strings at a time, at twice the gathers and gemm. The
+footprint's other terms, the CI vectors, the Davidson subspace and the n⁴
+integrals among them, are exact (`test/gtest/pipeline_step_footprint_gpu.cpp`
+holds a capped run to the footprint byte for byte on the 3080).
 
 What it settled:
 
@@ -102,17 +99,16 @@ What it settled:
   `ci::solve`'s default spin penalty. The electron count is the ScfOutput's
   `n_alpha + n_beta`; a multiplicity that does not fit it (2S above N, of the
   other parity, or N_α above the orbitals) is `InvalidConfig`, before the
-  estimate.
-- **No range check of its own** beyond `nroots >= 1`, which the estimate
+  refusal.
+- **No range check of its own** beyond `nroots >= 1`, which the footprint
   needs; `nroots` past the space is `ci::solve`'s InvalidConfig. With no core
   and every orbital active, none of `orbital_order`'s range checks can fail.
-- **The estimate is not exported.** Nothing outside the step needs it, and
-  the oversized case is tested through the step.
 
 Errors: InvalidConfig for `nroots` below 1 or a multiplicity that does not
 fit the electrons; Allocation for a space past the
-device's free memory, naming the electrons, orbitals, roots, the estimate and
-the free memory; GpuRuntime for a failed memory query or copy; then the module
+device's memory budget, naming the electrons, orbitals, roots, the footprint
+at the least scratch and the budget, or of more determinants than an
+`int32_t` counts; GpuRuntime for a failed memory query or copy; then the module
 calls' own: `ci::solve`'s InvalidConfig for `nroots` past the space,
 MaxIterationsExceeded, Divergence, or Numerical for a root of the wrong spin.
 
@@ -135,12 +131,16 @@ An FCI energy and its natural occupations are invariant under any rotation of
 the orbitals, so the two SCFs' convergence does not enter. Also H₂O cc-pVDZ
 (1.8e9 determinants) refused as Allocation when the step runs, its ScfOutput built,
 and multiplicities 2, 11 and 13 for H₂O STO-3G refused as InvalidConfig.
-The `[fci]` parsing is in `test/pipeline/config_host.cpp`.
+The `[fci]` parsing is in `test/pipeline/config_host.cpp`. The footprint, in
+`test/gtest/pipeline_step_footprint_gpu.cpp`: N₂ STO-3G under a pool cap of
+its footprint and the pool's rounding, which leaves the sigma the least
+scratch, held to the footprint; and unbounded, held to it plus G for the
+whole space less the least.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `fci.cppm` | Module interface: `FciOutput`, `FciStep` |
-| `fci.cpp` | The device-memory estimate, and `run`: the refusal, the Hamiltonian, the CI solve, the 1-RDMs |
+| `fci.cppm` | Module interface: `FciOutput`, `FciStep` and its footprint |
+| `fci.cpp` | The footprint, and `run`: the refusal and the sigma's limit, the Hamiltonian, the CI solve, the 1-RDMs |
 | `CMakeLists.txt` | The module library |

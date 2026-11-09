@@ -13,6 +13,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.ci.strings;
 
 export namespace free_breakfast::ci {
@@ -74,8 +75,11 @@ enum class Layout : int32_t { full, symmetric };
 /// result does not depend on the run. D and G are packed over the orbital
 /// pairs v ≥ w, since (tu|vw) is symmetric in each pair. The block goes one
 /// vector at a time, so its scratch, G for one vector (dim · (n(n+1)/2 + 1)
-/// doubles) and D for one chunk, is res.device_workspace() and does not grow
-/// with the block.
+/// doubles) and D for one chunk, does not grow with the block. It is the
+/// Sigma's own pool buffer, allocated by the first apply and kept to the
+/// Sigma's end (a solve's every apply reuses it), sized as
+/// @ref sigma_apply_bytes says: a one-step intermediate, so not the device
+/// workspace, which holds its largest through every step.
 ///
 /// Over one StringSet for both spins, apply and apply_fp32 also take blocks in
 /// Layout::symmetric, where H's commuting with the swap of the two strings
@@ -83,7 +87,7 @@ enum class Layout : int32_t { full, symmetric };
 /// G of its mirror. That halves the gathers, the gemm and G's scratch.
 ///
 /// G for one vector can still be past the device (5 GB at CAS(14,14) in the
-/// symmetric layout), so set_workspace_limit bounds the scratch: past the
+/// symmetric layout), so set_scratch_limit bounds the scratch: past the
 /// limit, G is computed a block of strings at a time, at up to twice the
 /// gathers and gemm.
 ///
@@ -149,8 +153,9 @@ public:
   [[nodiscard]] Status apply_fp32(DeviceResources &res, int32_t k, const double *x, double *y,
                                   Layout layout = Layout::full);
 
-  /// @brief Bound the device workspace apply and apply_fp32 take to @p bytes;
-  /// unbounded until called.
+  /// @brief Bound the scratch apply and apply_fp32 take to @p bytes; unbounded
+  /// until called. Call it before the first apply: the scratch is allocated
+  /// once, at the first apply, and only grows.
   ///
   /// Where G for a whole vector and a chunk of D fit, a call runs as it would
   /// unbounded, and gives the same result to the bit. Past it, G is held for a
@@ -164,11 +169,9 @@ public:
   /// never less than one string, so a limit under one string's G and D is
   /// exceeded by that much.
   ///
-  /// While bounded, a call first grows the workspace to the lesser of
-  /// @p bytes and apply's unblocked scratch, so apply_fp32 followed by apply
-  /// (solve's two stages) shares one allocation rather than holding the old
-  /// and the new across a growth: the bound covers the peak.
-  void set_workspace_limit(size_t bytes) noexcept { workspace_limit_ = bytes; }
+  /// The scratch is sized for apply and apply_fp32 alike (@ref
+  /// sigma_apply_bytes), so solve's two stages share one allocation.
+  void set_scratch_limit(size_t bytes) noexcept { scratch_limit_ = bytes; }
 
   /// @brief diag(H) into the size() device doubles @p diagonal: Slater–Condon's
   /// rule over each determinant's occupied spin orbitals, α (ascending) then β
@@ -205,7 +208,9 @@ public:
   /// apply's gather of D_K = (E c)_K over each chunk of determinants, packed
   /// over v ≥ w, then one gemv per chunk, Σ_K c_K D_K, which is 2 γ_vw off the
   /// diagonal and γ_vv on it, unpacked into @p gamma. Its scratch, D for one
-  /// chunk and the n(n+1)/2 packed sums, is res.device_workspace(). Queued on
+  /// chunk (at most 64 MiB) and the n(n+1)/2 packed sums, is
+  /// res.device_workspace(): fixed-size, as @ref sigma_footprint counts it.
+  /// Queued on
   /// res.stream() with res.blas(), in host pointer mode.
   ///
   /// Layout::symmetric takes a packed swap-symmetric c, for which D_K is D
@@ -234,7 +239,7 @@ private:
   Status apply_as(DeviceResources &res, int32_t k, const double *x, double *y, const T *contraction,
                   Layout layout);
 
-  // apply_as past workspace_limit_: G a block of strings at a time.
+  // apply_as past scratch_limit_: G a block of strings at a time.
   template <typename T>
   Status apply_blocked(DeviceResources &res, int32_t k, const double *x, double *y,
                        const T *contraction, Layout layout);
@@ -248,8 +253,8 @@ private:
   bool one_set_; // alpha and beta are the same (n, N): Layout::symmetric applies
   bool has_integrals_ = false;
   double e_core_ = 0.0;
-  // set_workspace_limit's bound on apply's scratch, in bytes.
-  size_t workspace_limit_ = std::numeric_limits<size_t>::max();
+  // set_scratch_limit's bound on apply's scratch, in bytes.
+  size_t scratch_limit_ = std::numeric_limits<size_t>::max();
   // The sets' device tables, borrowed: one per spin, the same for one set.
   const Replacement *alpha_links_;
   const Replacement *beta_links_;
@@ -262,6 +267,28 @@ private:
   Buffers::device<float> contraction_fp32_;
   // n + 2 n²: h_ii, (ii|jj) and (ij|ji), for the diagonal.
   Buffers::device<double> diagonal_terms_;
+  // apply's G and D, sigma_apply_bytes of them, from the first apply on.
+  Buffers::device<std::byte> apply_scratch_;
 };
+
+/// @brief What a @ref Sigma over @p n_orbitals orbitals and @p n_alpha_strings
+/// x @p n_beta_strings determinants holds from create on: its contraction in
+/// double and in float and its diagonal terms, persistent; rdm1's D for one
+/// chunk and packed sums over the size(@p rdm1_layout) rows, the device
+/// workspace. The apply scratch is @ref sigma_apply_bytes, held from the
+/// first apply on.
+[[nodiscard]] MemoryFootprint sigma_footprint(int32_t n_orbitals, int32_t n_alpha_strings,
+                                              int32_t n_beta_strings,
+                                              Layout rdm1_layout = Layout::full);
+
+/// @brief The bytes of the scratch a @ref Sigma of these sizes allocates at its
+/// first apply in @p layout and keeps to its end, under set_scratch_limit
+/// @p limit: G for a whole vector and one chunk of D where that fits the
+/// limit, for apply's double and apply_fp32's float alike, else G for the
+/// largest block of strings that does. A block is never less than one string,
+/// so at limit 0 it is the least the Sigma runs with: one string's G.
+[[nodiscard]] size_t sigma_apply_bytes(int32_t n_orbitals, int32_t n_alpha_strings,
+                                       int32_t n_beta_strings, Layout layout,
+                                       size_t limit = std::numeric_limits<size_t>::max());
 
 } // namespace free_breakfast::ci

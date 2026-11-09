@@ -117,25 +117,31 @@ CasciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
                       molecule.multiplicity(), n_electrons, n_active);
   }
 
-  const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
-  std::vector<CoulombPairClass> j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
-  std::vector<OrderedPairClass> k_classes = FBF_TRY(ordered_pair_classes(res, basis, pairs));
-  const ActiveSpaceHamiltonian ham = FBF_TRY(active_space_hamiltonian(
-      res, basis, molecule, in.get<CoreHamiltonianOutput>().h, in.get<SphericalTransformOutput>().u,
-      j_classes, k_classes, space.c, ncore, n_active));
-
-  // The sigma takes host arrays, row-major: h_eff transposed, and (tu|vw)
-  // from the Hamiltonian's t-fastest order to w-fastest.
+  // The J and K classes and the Hamiltonian, freed once it is on the host,
+  // before the CI allocates.
   const auto n = static_cast<size_t>(n_active);
   std::vector<double> h_col(n * n);
   std::vector<double> eri_col(n * n * n * n);
-  FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(h_col.data(), ham.h_eff.data(), h_col.size() * sizeof(double),
-                                     wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(eri_col.data(), ham.eri.data(),
-                                         eri_col.size() * sizeof(double),
-                                         wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(res.sync());
+  double e_core = 0.0;
+  {
+    const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
+    std::vector<CoulombPairClass> j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
+    std::vector<OrderedPairClass> k_classes = FBF_TRY(ordered_pair_classes(res, basis, pairs));
+    const ActiveSpaceHamiltonian ham = FBF_TRY(active_space_hamiltonian(
+        res, basis, molecule, in.get<CoreHamiltonianOutput>().h,
+        in.get<SphericalTransformOutput>().u, j_classes, k_classes, space.c, ncore, n_active));
+    e_core = ham.e_core;
+
+    // The sigma takes host arrays, row-major: h_eff transposed, and (tu|vw)
+    // from the Hamiltonian's t-fastest order to w-fastest.
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(h_col.data(), ham.h_eff.data(),
+                                           h_col.size() * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToHost, stream)));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(eri_col.data(), ham.eri.data(),
+                                           eri_col.size() * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToHost, stream)));
+    FBF_TRY(res.sync());
+  }
   std::vector<double> h_eff(n * n);
   std::vector<double> eri(n * n * n * n);
   for (size_t t = 0; t < n; ++t) {
@@ -161,7 +167,7 @@ CasciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   }
   const ci::DeviceStringSet &beta = own_beta ? *own_beta : alpha;
   ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
-  FBF_TRY(sigma.set_integrals(res, ham.e_core, h_eff, eri));
+  FBF_TRY(sigma.set_integrals(res, e_core, h_eff, eri));
   const auto dim = static_cast<size_t>(sigma.size());
   Buffers::device<double> diagonal_device(dim, res.device());
   FBF_TRY(sigma.diagonal(res, diagonal_device.data()));
@@ -198,6 +204,30 @@ CasciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
       .rdm1 = std::move(gamma),
       .davidson = roots.davidson,
   };
+}
+
+MemoryFootprint CasciStep::footprint(const FootprintDimensions &dims) const {
+  const BasisSet &basis = *dims.basis;
+  const auto n_electrons = static_cast<int32_t>(dims.n_alpha + dims.n_beta);
+  const auto n_active = static_cast<int32_t>(dims.ncas);
+  const auto n_active_electrons = static_cast<int32_t>(dims.nelecas);
+  const int32_t ncore = (n_electrons - n_active_electrons) / 2;
+  // N_alpha - N_beta = 2S, the molecule's, as run takes it.
+  const auto two_s = static_cast<int32_t>(dims.n_alpha - dims.n_beta);
+  const int32_t n_beta = (n_active_electrons - two_s) / 2;
+  const MemoryFootprint hamiltonian = drop(then(
+      then(coulomb_pair_classes_footprint(dims.mmd_records), ordered_pair_classes_footprint(basis)),
+      active_space_hamiltonian_footprint(basis, ncore, n_active)));
+  MemoryFootprint ci = active_space_ci_footprint(n_active, n_active_electrons - n_beta, n_beta,
+                                                 nroots, ci::SolverOptions{}, dims.syevd_lwork);
+  if (!molden.empty()) {
+    // casci_eigh's matrix and eigenvalues, beside everything the CI holds.
+    const auto n = static_cast<size_t>(n_active);
+    MemoryFootprint eigh = diagonalize_footprint<double>(dims.syevd_lwork[n]);
+    eigh.device.scratch = sizeof(double) * ((n * n) + n);
+    ci = then(ci, eigh);
+  }
+  return then(select_footprint(dims), then(hamiltonian, drop(ci)));
 }
 
 } // namespace free_breakfast

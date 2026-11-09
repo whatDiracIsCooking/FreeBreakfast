@@ -15,7 +15,7 @@ whole registry.
 
 | Export | What |
 |---|---|
-| `PlanShape` | The placed bases, owned (`basis`, `aux`), and `dims`, whose `basis` and `aux` point at them. The bases sit behind `unique_ptr`, so a move leaves the pointers valid |
+| `PlanShape` | The placed bases, owned (`basis`, `aux`, `minao`), and `dims`, whose `basis`, `aux` and `minao` point at them. The bases sit behind `unique_ptr`, so a move leaves the pointers valid |
 | `plan_shape(calc, res)` | The shape of `calc`, on `res`'s device |
 
 ## What it reads
@@ -34,9 +34,18 @@ whole registry.
   the shell pairs i <= j. mmd screens nothing, so this is exactly what
   `primitive_pair_classes` builds (`test/gtest/pipeline_shape_gpu.cpp` checks
   the two class by class).
-- **syevd's lwork** at nao, `recipes/diagonalize`'s own `syevd_lwork` query
-  through `res.solver()`, which `diagonalize_footprint` and
-  `orthogonalize_footprint` take.
+- **syevd's lwork** at every order from 0 through the plan's largest
+  eigensolve, `recipes/diagonalize`'s own `syevd_lwork` query through
+  `res.solver()`, one host call an order. The largest is nao, or a planned
+  CI's subspace past it: ci::solve's Davidson diagonalizes at up to 16 nroots
+  columns (CASCI, FCI and CASSCF, the chain copies included) and a CASSCF's
+  augmented Hessian at ah_max_subspace + 1. The RHF chain reads
+  `syevd_lwork[nao]`; the CI steps' small eigensolves (AVAS's, the subspace's)
+  read their own orders.
+- **MINAO**, placed and primitive-normalized as AVAS places it, when any
+  planned active space is AVAS's, and the molecule's **atoms**, which AVAS's
+  labels are matched against: what the selection's footprint sizes MINAO's
+  overlaps and the labelled count from.
 - **The active space** at its largest. An explicit `ncas` / `nelecas` is used
   as written. Under AVAS it is `avas_max_ncas` when set, and otherwise twice
   the MINAO AOs the labels name (`pipeline/active_space`'s own

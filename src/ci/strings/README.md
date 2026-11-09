@@ -20,6 +20,7 @@ GPU sigma, RDMs and S² all read.
 | `replacements(address)`, `replacements_per_string()` | The N (n - N + 1) nonzero a†_p a_q \|I> for one string, as `ci::Replacement{target, sign, p, q}` |
 | `ci::DeviceStringSet::create(res, n_orbitals, n_electrons)` | A `ci::StringSet` with `strings()` and every list uploaded to `res`'s device; `Result<DeviceStringSet>` |
 | `device_strings()`, `device_replacements()`, `dev_idx()` | The device copies, and the device they are on |
+| `ci::device_string_set_footprint(n_orbitals, n_electrons)` | `MemoryFootprint`: what `ci::DeviceStringSet::create` holds, C(n, N) strings and their N (n - N + 1) links each, persistent |
 
 ## Design
 
@@ -87,6 +88,6 @@ test, which builds its sets as `ci::DeviceStringSet`s.
 | File | Role |
 |------|------|
 | `replacement.h` | `ci::Replacement`, the one definition the module and the `.cu` gathers share |
-| `strings.cppm` | Module interface: `ci::StringSet`, `ci::DeviceStringSet`, and `ci::Replacement` re-exported |
+| `strings.cppm` | Module interface: `ci::StringSet`, `ci::DeviceStringSet` and its footprint, and `ci::Replacement` re-exported |
 | `strings.cpp` | Enumeration, addressing and the replacement lists; `ci::DeviceStringSet`'s upload |
 | `CMakeLists.txt` | The module `free_breakfast.ci.strings`, and `free_breakfast::ci::strings::headers` for `replacement.h` |

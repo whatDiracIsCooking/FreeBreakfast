@@ -1,7 +1,8 @@
 # Everything PUBLIC: davidson_solve is a template over the caller's operator,
 # instantiated in the consumer's TU, so what it names -- wwr's BLAS and
 # ScopedPointerMode (core::wwr), kOne / kNegOne (core::constants), the log
-# sink, diagonalize, orthonormalize -- must reach it. The FBF_TRY /
+# sink, diagonalize, orthonormalize, and the footprint's align_up and
+# MemoryFootprint -- must reach it. The FBF_TRY /
 # FBF_LOG_* macros expand in this interface unit, so their header is PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
@@ -16,6 +17,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::log
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::primitives
+  free_breakfast::core::footprint
   free_breakfast::recipes::blas
   free_breakfast::recipes::diagonalize
   free_breakfast::recipes::linear_operator

@@ -151,10 +151,18 @@ TEST(DevicePool, PeakOfOneBufferAndItsFootprintBars) {
   const fbt::FootprintSlack granule{.bytes = g, .reason = "one granule, to test the widening"};
 
   fbt::expect_footprint(peak, fp(exact), 1);
-  EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, fp(exact - g), 1), "unsound footprint");
-  // A slack widens the tight bar only: one granule under is still unsound.
-  EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, fp(exact - g), 1, granule),
-                          "unsound footprint");
+  // Under: one granule, or on a pool that rounds reuse (ROCm's), past its
+  // allowance of footprint / kPoolReuseDivisor, within which one granule
+  // under passes.
+  const std::size_t under =
+      peak.reuse_rounding ? ((exact * fbt::kPoolReuseDivisor) / (fbt::kPoolReuseDivisor + 1)) - 1
+                          : exact - g;
+  if (peak.reuse_rounding) {
+    fbt::expect_footprint(peak, fp(exact - g), 1);
+  }
+  EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, fp(under), 1), "unsound footprint");
+  // A slack widens the tight bar only: under is still unsound.
+  EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, fp(under), 1, granule), "unsound footprint");
   fbt::expect_footprint(peak, fp(exact + g), 1, granule);
   // Past G x A, the tight bar fails without the slack and passes with it.
   EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, fp(exact + 2 * g), 1), "loose footprint");
@@ -162,6 +170,60 @@ TEST(DevicePool, PeakOfOneBufferAndItsFootprintBars) {
   // A slack without a reason is refused.
   EXPECT_NONFATAL_FAILURE(
       fbt::expect_footprint(peak, fp(exact), 1, fbt::FootprintSlack{.bytes = g}), "needs a reason");
+}
+
+// The pool's reuse rounding, the bound pool_footprint.h's sound bar allows on
+// a pool that has it: a block X freed and then reused, whole, for a smaller
+// request Y, UsedMemCurrent counting X. For each X from 2 B to 64 MiB, on a
+// fresh Device so nothing else is cached, the smallest Y the pool serves from
+// X, by bisection. On ROCm 7.2.4 (gfx1200) it is the smallest Y with
+// 8 X <= 9 Y, so X - Y <= Y / 8 (kPoolReuseDivisor), reached from ~12 kB up;
+// CUDA's pool counts the request, and serves nothing whole.
+TEST(DevicePool, ReuseRounding) {
+  FBF_REQUIRE_GPU();
+  // Whether a request of y, after a block of x is freed, is counted as x.
+  const auto reuses = [](std::uint64_t x, std::uint64_t y) {
+    fb::Device dev{0};
+    wwr::wwrError_t err{};
+    void *first = pool_alloc(dev, x, err);
+    EXPECT_EQ(err, wwr::wwrSuccess);
+    EXPECT_EQ(wwr::wwrFreeAsync(first, dev.stream()), wwr::wwrSuccess);
+    EXPECT_EQ(wwr::wwrDeviceSynchronize(), wwr::wwrSuccess);
+    const std::uint64_t before = dev.pool_usage().used_current;
+    void *second = pool_alloc(dev, y, err);
+    EXPECT_EQ(err, wwr::wwrSuccess);
+    EXPECT_EQ(wwr::wwrDeviceSynchronize(), wwr::wwrSuccess);
+    const std::uint64_t grown = dev.pool_usage().used_current - before;
+    EXPECT_EQ(wwr::wwrFreeAsync(second, dev.stream()), wwr::wwrSuccess);
+    EXPECT_EQ(wwr::wwrDeviceSynchronize(), wwr::wwrSuccess);
+    EXPECT_TRUE(grown == y || grown == x) << x << " " << y << " " << grown;
+    return grown == x && x != y;
+  };
+  std::uint64_t most = 0;
+  double ratio = 0.0;
+  for (std::uint64_t x = 2; x <= (std::uint64_t{64} << 20U); x = (x * 3) / 2 + 1) {
+    if (!reuses(x, x - 1)) {
+      continue;
+    }
+    std::uint64_t lo = 1;     // not reused (or x itself)
+    std::uint64_t hi = x - 1; // reused
+    if (reuses(x, lo)) {
+      hi = lo;
+    }
+    while (hi - lo > 1) {
+      const std::uint64_t mid = lo + ((hi - lo) / 2);
+      (reuses(x, mid) ? hi : lo) = mid;
+    }
+    const std::uint64_t over = x - hi;
+    EXPECT_LE(over * fbt::kPoolReuseDivisor, hi) << "block " << x;
+    most = std::max(most, over);
+    ratio = std::max(ratio, static_cast<double>(over) / static_cast<double>(hi));
+    std::cout << std::format(
+        "[ reuse ] block {} smallest request served {} overcount {} ({:.4f})\n", x, hi, over,
+        static_cast<double>(over) / static_cast<double>(hi));
+  }
+  std::cout << std::format("[ reuse ] largest overcount {}, largest ratio {:.4f}\n", most, ratio);
+  EXPECT_EQ(most > 0, fbt::pool_rounds_reuse(0));
 }
 
 } // namespace

@@ -64,8 +64,20 @@ template <class S>
                                                     std::span<const std::string> labels) {
   const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
   const BasisSet minao = FBF_TRY(place(stamp, molecule));
-  const std::vector<bool> chosen = FBF_TRY(avas_minao_aos(molecule, minao, labels));
+  const std::vector<bool> chosen = FBF_TRY(avas_minao_aos(molecule.atoms(), minao, labels));
   return static_cast<size_t>(std::ranges::count(chosen, true));
+}
+
+// The largest order a planned @p selection's CI diagonalizes at, past its
+// active space: its Davidson's Rayleigh-Ritz problem, 16 nroots columns at
+// most (ci::solve's subspace), and for a CASSCF the augmented Hessian's
+// projected problem, ah_max_subspace + 1.
+[[nodiscard]] size_t ci_eigensolve_order(const int32_t nroots, const bool casscf) {
+  size_t order = 16 * static_cast<size_t>(std::max(nroots, 1));
+  if (casscf) {
+    order = std::max(order, static_cast<size_t>(mcscf::Options{}.ah_max_subspace) + 1);
+  }
+  return order;
 }
 
 // The active space @p selection may take, at its largest, over @p nao
@@ -95,6 +107,7 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
   const Molecule &molecule = read->molecule;
   FootprintDimensions &dims = shape.dims;
   dims.natoms = molecule.natoms();
+  dims.atoms = molecule.atoms();
 
   // n_alpha - n_beta = 2S = multiplicity - 1, and N has its parity: the Scf's
   // split.
@@ -145,26 +158,51 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
     }
   }
 
-  // diagonalize's own query.
-  dims.syevd_lwork = FBF_TRY(syevd_lwork<double>(res, static_cast<int32_t>(dims.nao)));
-
   // The largest active space: of most orbitals, then of nelecas nearest half
-  // filling (ncas electrons), which spans the most determinants.
+  // filling (ncas electrons), which spans the most determinants. And the
+  // largest order any planned step diagonalizes at: nao, or a CI's subspace.
   std::vector<const ActiveSpaceSelection *> selections;
+  size_t max_order = dims.nao;
   if (const std::optional<CasciStep> &casci = calc.step<CasciStep>()) {
     selections.push_back(&*casci);
+    max_order = std::max(max_order, ci_eigensolve_order(casci->nroots, false));
   }
   if (const std::optional<CasscfStep> &casscf = calc.step<CasscfStep>()) {
     selections.push_back(&*casscf);
+    max_order = std::max(max_order, ci_eigensolve_order(casscf->nroots, true));
   }
   if (const std::optional<OptimizeStep> &optimize = calc.step<OptimizeStep>();
       optimize && (optimize->meci || optimize->casscf_gradient || optimize->nevpt2_gradient)) {
     selections.push_back(&optimize->casscf);
+    max_order = std::max(max_order, ci_eigensolve_order(optimize->casscf.nroots, true));
   }
   if (const std::optional<HessianStep> &hessian = calc.step<HessianStep>();
       hessian && (hessian->casscf_gradient || hessian->nevpt2_gradient)) {
     selections.push_back(&hessian->casscf);
+    max_order = std::max(max_order, ci_eigensolve_order(hessian->casscf.nroots, true));
   }
+  if (const std::optional<FciStep> &fci = calc.step<FciStep>()) {
+    max_order = std::max(max_order, ci_eigensolve_order(fci->nroots, false));
+  }
+
+  // MINAO, placed as AVAS places it, when a selection is AVAS's.
+  if (std::ranges::any_of(selections, [](const ActiveSpaceSelection *selection) {
+        return !selection->avas.empty();
+      })) {
+    const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
+    shape.minao =
+        std::make_unique<const BasisSet>(FBF_TRY(place(stamp.primitive_normalized(), molecule)));
+    dims.minao = shape.minao.get();
+    // AVAS diagonalizes the labelled MINAO AOs' overlap.
+    max_order = std::max(max_order, static_cast<size_t>(shape.minao->nao_sphe()));
+  }
+
+  // diagonalize's own query, at every order through the largest.
+  dims.syevd_lwork.resize(max_order + 1);
+  for (size_t order = 0; order <= max_order; ++order) {
+    dims.syevd_lwork[order] = FBF_TRY(syevd_lwork<double>(res, static_cast<int32_t>(order)));
+  }
+
   std::vector<std::pair<size_t, size_t>> spaces;
   for (const ActiveSpaceSelection *selection : selections) {
     spaces.push_back(FBF_TRY(largest_active_space(*selection, molecule, dims.nao, n_electrons)));

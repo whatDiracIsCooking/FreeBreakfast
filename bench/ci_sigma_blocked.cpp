@@ -1,5 +1,5 @@
-// ci::Sigma's apply and apply_fp32 unbounded against blocked under a workspace
-// limit, per column, with the workspace each grows to; or ci::solve's singlets
+// ci::Sigma's apply and apply_fp32 unbounded against blocked under a scratch
+// limit, per column, with the scratch each allocates; or ci::solve's singlets
 // in the symmetric layout under that limit, the solve that past ~CAS(13,13)
 // does not fit a 10 GB card unblocked. Over the active spaces of a
 // direct_spin1-schema JSON file (tools/emit/ci_bench_integrals.py's schema).
@@ -9,7 +9,7 @@
 //                                   [device = 0]
 //
 // LIMIT_MIB 0 leaves ci::Sigma unbounded: the solve is then the unblocked one,
-// as before set_workspace_limit existed. `columns` times every layout and
+// as before set_scratch_limit existed. `columns` times every layout and
 // precision unbounded too, so it is for spaces whose unblocked G fits.
 
 import std;
@@ -32,8 +32,8 @@ constexpr double kMiB = 1024.0 * 1024.0;
 
 // Milliseconds per column of apply (apply_fp32 with fp32) of x into y on a
 // fresh DeviceResources and ci::Sigma under bound (0: unbounded), over reps
-// after two to warm up (the first grows the workspace), and the MiB of
-// workspace it grew to.
+// after two to warm up (the first allocates the scratch), and the MiB of
+// scratch it allocated (ci::sigma_apply_bytes).
 std::pair<double, double> time_column(std::int32_t device, std::int32_t reps,
                                       const fb::ci::DeviceStringSet &alpha,
                                       const fb::ci::DeviceStringSet &beta, double e_core,
@@ -47,7 +47,7 @@ std::pair<double, double> time_column(std::int32_t device, std::int32_t reps,
     std::exit(1);
   }
   if (bound != 0) {
-    sigma->set_workspace_limit(bound);
+    sigma->set_scratch_limit(bound);
   }
   const auto apply = [&] {
     return fp32 ? sigma->apply_fp32(res, 1, x, y, layout) : sigma->apply(res, 1, x, y, layout);
@@ -65,7 +65,10 @@ std::pair<double, double> time_column(std::int32_t device, std::int32_t reps,
   }
   (void)res.sync();
   return {1e3 * seconds_since(start) / reps,
-          static_cast<double>(res.device_workspace(0).num_elements()) / kMiB};
+          static_cast<double>(fb::ci::sigma_apply_bytes(
+              alpha.n_orbitals(), alpha.size(), beta.size(), layout,
+              bound != 0 ? bound : std::numeric_limits<std::size_t>::max())) /
+              kMiB};
 }
 
 } // namespace
@@ -133,7 +136,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
     }
 
     if (limit != 0) {
-      sigma->set_workspace_limit(limit);
+      sigma->set_scratch_limit(limit);
     }
     const auto start = Clock::now();
     const auto roots = fb::ci::solve(res, *sigma, *alpha, *beta, diagonal.data(), n_roots);
@@ -142,9 +145,12 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
       std::println("  ci_solve: {}", roots.error().message);
       return 1;
     }
-    std::println("  ci_solve: {:.1f} s, iterations FP32 {} + FP64 {}, workspace {:.1f} MiB", wall,
-                 roots->fp32_iterations, roots->davidson.iterations,
-                 static_cast<double>(res.device_workspace(0).num_elements()) / kMiB);
+    std::println("  ci_solve: {:.1f} s, iterations FP32 {} + FP64 {}, sigma scratch {:.1f} MiB",
+                 wall, roots->fp32_iterations, roots->davidson.iterations,
+                 static_cast<double>(fb::ci::sigma_apply_bytes(
+                     n, alpha->size(), beta->size(), fb::ci::Layout::symmetric,
+                     limit != 0 ? limit : std::numeric_limits<std::size_t>::max())) /
+                     kMiB);
     for (std::size_t r = 0; r < roots->energies.size(); ++r) {
       std::println("  root {}: E {:.10f}  <S^2> {:.2e}", r, roots->energies[r],
                    roots->spin_squares[r]);

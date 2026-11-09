@@ -9,9 +9,25 @@ ScfOutput's orbitals it gives. Not a step: no `kName`, no product, no `[table]`.
 `free_breakfast.pipeline.active_space`, target
 `free_breakfast::pipeline::active_space`. It re-exports
 `free_breakfast.pipeline.scf` (`Molecule`, `BasisSet`, `ScfOutput`,
-`SphericalMatrixAO`). `select` is defined in the implementation unit, so
-AVAS's `io.basis` (MINAO), `overlap_mixed_spherical` and `diagonalize` are
-PRIVATE links.
+`SphericalMatrixAO`) and `free_breakfast.ci.solver` (`ci::SolverOptions`, in
+`active_space_ci_footprint`'s signature). `select` is defined in the
+implementation unit, so AVAS's `io.basis` (MINAO), `overlap_mixed_spherical`
+and `diagonalize` are PRIVATE links.
+
+**The footprints** (`pipeline/footprint`). `select_footprint(dims)` is what
+`select` holds at `dims`' ncas and nelecas: `ActiveSpace::c` persistent; R's
+upload scratch; under `orbitals` S, the work, M and X with the overlap and the
+two `orthogonalize`s; under `avas` MINAO's two mixed overlaps
+(`overlap_mixed_spherical_footprint`, `dims.minao` and the labels matched
+against `dims.atoms`), freed to the host before the eigenproblems, then each
+eigenproblem's matrix and eigenvalues, one at a time, at its own order's
+syevd work. Under AVAS the space the selection picks is not known before it
+runs: `plan_shape`'s dims are the largest it may pick, and the footprint is
+exact at the pick when a caller puts that in. `active_space_ci_footprint`
+is the CI CASCI and FCI run over a selected space: the string sets, the
+sigma, its diagonal, `ci::solve` and the 1-RDMs, every library's own
+footprint composed. `avas_minao_aos` takes the atoms rather than the
+molecule, so the footprint, which has no device-side molecule, can call it.
 
 ## The selection
 
@@ -231,6 +247,6 @@ CASSCF's file there.
 
 | File | Role |
 |------|------|
-| `active_space.cppm` | Module interface: `ActiveSpace`, `ActiveSpaceSelection` |
-| `active_space.cpp` | `orbital_order`, the AVAS selection, the carried orbitals, and `select`: R and C R |
+| `active_space.cppm` | Module interface: `ActiveSpace`, `ActiveSpaceSelection`, the CI's footprint |
+| `active_space.cpp` | `orbital_order`, the AVAS selection, the carried orbitals, and `select`: R and C R; the footprints |
 | `CMakeLists.txt` | The module library |

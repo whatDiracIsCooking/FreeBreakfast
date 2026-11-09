@@ -122,4 +122,13 @@ template <real_fp T>
 [[nodiscard]] Result<int32_t> orthonormalize(DeviceResources &res, int32_t n, int32_t k, T *v,
                                              T floor);
 
+/// @brief What @ref orthonormalize takes for an n x k block, @p syevd_lwork
+/// being syevd's largest work over the orders 1..k (@ref syevd_lwork), the
+/// orders its passes diagonalize at: G, its eigenvalues and D, scratch; the
+/// device workspace, the larger of syevd's work and the n x k product. The
+/// product is sized to every column kept, which is the most it holds. Empty
+/// for k <= 0.
+template <real_fp T>
+[[nodiscard]] MemoryFootprint orthonormalize_footprint(int32_t n, int32_t k, size_t syevd_lwork);
+
 } // namespace free_breakfast

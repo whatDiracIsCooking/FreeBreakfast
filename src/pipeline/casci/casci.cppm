@@ -16,6 +16,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.recipes.davidson; // DavidsonInfo, in the product
 export import free_breakfast.pipeline.scf;
 export import free_breakfast.pipeline.active_space; // CasciStep's base
@@ -90,6 +91,14 @@ struct CasciStep : ActiveSpaceSelection {
   run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
            CoreHamiltonianOutput, ScfOutput> in,
       DeviceResources &res) const;
+
+  /// @brief What @ref run holds at @p dims' active space: CasciOutput::c,
+  /// persistent; the selection's scratch; J's and K's classes and the
+  /// Hamiltonian, freed once it is on the host; then the CI (strings,
+  /// sigma, diagonal, solve, 1-RDMs) and, with @ref molden, the natural
+  /// orbitals' eigenproblem. J's classes are counted at every mmd record,
+  /// their bound: the prune at tau keeps fewer.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast

@@ -44,11 +44,13 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::recipes::davidson
   free_breakfast::ci::strings
   free_breakfast::ci::sigma
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::diagonalize
   free_breakfast::recipes::orthogonalize

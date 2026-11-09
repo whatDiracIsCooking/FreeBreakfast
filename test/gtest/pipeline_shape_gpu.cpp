@@ -109,11 +109,17 @@ TEST(PipelineShape, WaterDensityFittedMatchesHandCount) {
   EXPECT_EQ(fb::primitive_pair_classes_footprint(*dims.basis).device.persistent,
             std::size_t{1629} * ((16 * sizeof(double)) + (4 * sizeof(std::int32_t))));
 
-  // syevd's work, as diagonalize sizes its workspace from the same query.
-  ASSERT_GT(dims.syevd_lwork, std::size_t{0});
-  auto lwork = fb::syevd_lwork<double>(res, 24);
-  ASSERT_TRUE(lwork.has_value()) << lwork.error().message;
-  EXPECT_EQ(dims.syevd_lwork, *lwork);
+  // syevd's work by order, as diagonalize sizes its workspace from the same
+  // query: through nao, the largest order an RHF plan diagonalizes at.
+  ASSERT_EQ(dims.syevd_lwork.size(), std::size_t{25});
+  for (std::int32_t order = 0; order <= 24; ++order) {
+    auto lwork = fb::syevd_lwork<double>(res, order);
+    ASSERT_TRUE(lwork.has_value()) << lwork.error().message;
+    EXPECT_EQ(dims.syevd_lwork[static_cast<std::size_t>(order)], *lwork) << "order " << order;
+  }
+  EXPECT_GT(dims.syevd_lwork[24], std::size_t{0});
+  EXPECT_EQ(dims.minao, nullptr);
+  EXPECT_EQ(dims.atoms.size(), std::size_t{3});
 }
 
 // mmd's classes, built on the device from the shape's own basis, hold the
@@ -160,6 +166,27 @@ TEST(PipelineShape, AvasBoundIsTheCapOrTheLabelledAos) {
   EXPECT_EQ(active("avas = [\"O 2p\", \"H 1s\"]\n"), (Space{10, 10}));
   EXPECT_EQ(active("avas = [\"O 2p\", \"H 1s\"]\navas_max_ncas = 7\n"), (Space{7, 7}));
   EXPECT_EQ(active("ncas = 4\nnelecas = 2\n"), (Space{4, 2}));
+}
+
+// The orders syevd's work is queried through: a CI's Davidson subspace, 16
+// nroots, past nao; a CASSCF's augmented Hessian, ah_max_subspace + 1; and
+// under AVAS MINAO, placed, with its 7 AOs on water.
+TEST(PipelineShape, EigensolveOrdersAndMinao) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::PlanShape casci = water_shape(res, "[casci]\nncas = 4\nnelecas = 4\nnroots = 3\n");
+  EXPECT_EQ(casci.dims.syevd_lwork.size(), std::size_t{49});
+  EXPECT_EQ(casci.dims.minao, nullptr);
+  auto lwork = fb::syevd_lwork<double>(res, 48);
+  ASSERT_TRUE(lwork.has_value()) << lwork.error().message;
+  EXPECT_EQ(casci.dims.syevd_lwork.back(), *lwork);
+  const fb::PlanShape casscf =
+      water_shape(res, std::string(kDensityFitted) + "[casscf]\navas = [\"O 2p\"]\n");
+  EXPECT_EQ(casscf.dims.syevd_lwork.size(),
+            static_cast<std::size_t>(fb::mcscf::Options{}.ah_max_subspace) + 2);
+  ASSERT_NE(casscf.dims.minao, nullptr);
+  EXPECT_EQ(casscf.dims.minao, casscf.minao.get());
+  EXPECT_EQ(casscf.dims.minao->nao_sphe(), 7U);
 }
 
 // An FCI beside a CASCI: the FCI's space, every orbital and electron, is the

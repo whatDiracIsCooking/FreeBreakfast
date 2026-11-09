@@ -16,6 +16,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.molecule;
 import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
@@ -91,6 +92,16 @@ active_space_hamiltonian(DeviceResources &res, const BasisSet &basis, const Mole
                          std::span<CoulombPairClass> j_classes,
                          std::span<OrderedPairClass> k_classes, const SphericalMatrixAO &c,
                          int32_t ncore, int32_t ncas, double tau_j = 1e-14, double tau_k = 1e-13);
+
+/// @brief What @ref active_space_hamiltonian holds over @p basis with @p ncore
+/// core and @p ncas active orbitals: h_eff and (tu|vw), n_act^2 and n_act^4
+/// doubles, persistent; the core's and then each pair's density, J and K, a
+/// Cartesian matrix each, scratch; U C over the ncore + ncas columns,
+/// gemmwich's intermediate, one projected block and the spherical P, the
+/// device workspace. coulomb and exchange allocate nothing of their own.
+/// Empty for ncas < 1, which the call refuses.
+[[nodiscard]] MemoryFootprint active_space_hamiltonian_footprint(const BasisSet &basis,
+                                                                 int32_t ncore, int32_t ncas);
 
 /// @brief What a CASSCF macro iteration needs of its orbitals: the active-space
 /// Hamiltonian, and the two classes of integrals over every orbital p, q and

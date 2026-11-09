@@ -9,6 +9,8 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
+import free_breakfast.core.footprint;
 
 #include "diagnostics.h"
 
@@ -144,6 +146,19 @@ Result<DeviceStringSet> DeviceStringSet::create(DeviceResources &res, const int3
   // Pageable sources, which the move out of here must not race.
   FBF_TRY(res.sync());
   return device_set;
+}
+
+MemoryFootprint device_string_set_footprint(const int32_t n_orbitals, const int32_t n_electrons) {
+  if (n_orbitals < 0 || n_orbitals > kMaxStringOrbitals || n_electrons < 0 ||
+      n_electrons > n_orbitals) {
+    return {};
+  }
+  const auto count = static_cast<size_t>(std::round(math::binomial(n_orbitals, n_electrons)));
+  const auto per =
+      static_cast<size_t>(n_electrons) * static_cast<size_t>(n_orbitals - n_electrons + 1);
+  MemoryFootprint out;
+  out.device.persistent = (count * sizeof(uint64_t)) + (count * per * sizeof(Replacement));
+  return out;
 }
 
 } // namespace free_breakfast::ci

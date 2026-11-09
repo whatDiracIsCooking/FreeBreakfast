@@ -14,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // wwrMemcpyAsync
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 // Re-exported: SolverOptions and Roots hold its options and info, and a
 // sigma is written against its LinearOperator.
 export import free_breakfast.recipes.davidson;
@@ -620,5 +621,34 @@ template <LinearOperator<double> Op>
   }
   return out;
 }
+
+/// @brief What @ref solve holds over a @ref Sigma of @p n_alpha_electrons and
+/// @p n_beta_electrons in @p n_orbitals, @p n_roots roots, @p options, and a
+/// start (@p with_start) or not, the Sigma's scratch bounded by
+/// set_scratch_limit @p sigma_scratch_limit:
+///
+/// - persistent: Roots::vectors, n_roots dim doubles, and the Sigma's apply
+///   scratch (@ref sigma_apply_bytes in the layout solve picks), which its
+///   first apply allocates and the Sigma keeps; none without a Davidson.
+/// - scratch: at its most, the guesses, the penalized diagonal, the values,
+///   the vectors, the P-space's picks, U and Λ and S²'s table held across
+///   davidson_solve's own (@ref davidson_footprint), or across
+///   orthonormalize's of a start, or, in the symmetric layout, the unpacked
+///   roots beside the packed ones.
+/// - workspace: the largest of pick_lowest's, the P-space Hamiltonian's
+///   strings, syevd's on H_PP, the Davidson's, the preconditioner's and
+///   orthonormalize's.
+///
+/// @p syevd_lwork is syevd's work by order, syevd_lwork[k] at order k
+/// (@ref syevd_lwork), through at least the Davidson's subspace, 16 n_roots
+/// columns at most, and the P-space's order: a shorter table aborts, as the
+/// footprint would otherwise be unsound. The Davidson's syevd is counted at
+/// the most it takes over the subspace's orders, which a solve that
+/// converges before the subspace fills does not reach.
+[[nodiscard]] MemoryFootprint
+solve_footprint(int32_t n_orbitals, int32_t n_alpha_electrons, int32_t n_beta_electrons,
+                int32_t n_roots, const SolverOptions &options, bool with_start,
+                std::span<const size_t> syevd_lwork,
+                size_t sigma_scratch_limit = std::numeric_limits<size_t>::max());
 
 } // namespace free_breakfast::ci

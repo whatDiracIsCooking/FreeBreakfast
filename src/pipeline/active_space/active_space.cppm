@@ -13,12 +13,14 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.pipeline.footprint;
+export import free_breakfast.ci.solver;    // SolverOptions, in active_space_ci_footprint
 export import free_breakfast.pipeline.scf; // Molecule, BasisSet, ScfOutput, SphericalMatrixAO
 
 export namespace free_breakfast {
 
 /// @brief Which of MINAO's spherical AOs the AVAS @p labels name (select's rule, for its bound).
-[[nodiscard]] Result<std::vector<bool>> avas_minao_aos(const Molecule &molecule,
+[[nodiscard]] Result<std::vector<bool>> avas_minao_aos(std::span<const Atom> atoms,
                                                        const BasisSet &minao,
                                                        std::span<const std::string> labels);
 
@@ -122,6 +124,28 @@ struct ActiveSpaceSelection {
   ///         GpuRuntime for a failed copy or BLAS call.
   [[nodiscard]] Result<ActiveSpace> select(DeviceResources &res, const Molecule &molecule,
                                            const BasisSet &basis, const ScfOutput &scf) const;
+
+  /// @brief What @ref select holds at @p dims' active space, ncas and
+  /// nelecas: ActiveSpace::c, persistent; R's upload, or under @ref orbitals
+  /// S, the work, M and X and their overlap and orthogonalizations, or under
+  /// @ref avas MINAO's overlaps and the eigenproblems, scratch; and their
+  /// workspaces. Under @ref avas it is exact at the space AVAS picks, which
+  /// a caller that knows it puts in @p dims (plan_shape's is the largest it
+  /// may pick).
+  [[nodiscard]] MemoryFootprint select_footprint(const FootprintDimensions &dims) const;
 };
+
+/// @brief What a CI over an active space of @p ncas orbitals and
+/// @p n_alpha + @p n_beta electrons holds, as CASCI and FCI run it: the
+/// DeviceStringSets (one for both spins when N_alpha = N_beta), the
+/// ci::Sigma, diag(H), ci::solve's roots at @p options (its scratch under
+/// set_scratch_limit @p sigma_scratch_limit; @ref ci::solve_footprint) and
+/// the @p nroots spin-summed 1-RDMs, each @ref ci::sigma_footprint's rdm1.
+/// Everything is persistent: all of it is held to the step's end.
+/// @p syevd_lwork is FootprintDimensions::syevd_lwork.
+[[nodiscard]] MemoryFootprint
+active_space_ci_footprint(int32_t ncas, int32_t n_alpha, int32_t n_beta, int32_t nroots,
+                          const ci::SolverOptions &options, std::span<const size_t> syevd_lwork,
+                          size_t sigma_scratch_limit = std::numeric_limits<size_t>::max());
 
 } // namespace free_breakfast

@@ -25,8 +25,11 @@ struct PlanShape {
   std::unique_ptr<const BasisSet> basis;
   /// @brief The density-fitting aux basis; null without density fitting.
   std::unique_ptr<const BasisSet> aux;
-  /// @brief The plan's dimensions, @c basis and @c aux pointing at the two
-  ///        above.
+  /// @brief MINAO over the molecule; null unless a planned active space is
+  ///        AVAS's.
+  std::unique_ptr<const BasisSet> minao;
+  /// @brief The plan's dimensions, @c basis, @c aux and @c minao pointing at
+  ///        the three above.
   FootprintDimensions dims;
 };
 
@@ -40,11 +43,14 @@ struct PlanShape {
 /// `[optimize]`'s or `[hessian]`'s chain, which the config copies from the
 /// same tables. The counts:
 ///
-/// - nao, naux, nocc = n_beta, n_alpha, n_beta, natoms, from the bases and the
-///   molecule's electrons at its multiplicity;
+/// - nao, naux, nocc = n_beta, n_alpha, n_beta, natoms and the atoms, from
+///   the bases and the molecule's electrons at its multiplicity;
 /// - mmd_records, the sum over shell pairs i <= j of nprim_i nprim_j per
 ///   class (mmd screens nothing, so this is every class's record count);
-/// - syevd_lwork at nao, queried through res.solver() (a host computation);
+/// - syevd_lwork at every order through the plan's largest eigensolve, nao
+///   or a planned CI's subspace (16 nroots, and for a CASSCF
+///   ah_max_subspace + 1), queried through res.solver() (host computations);
+/// - MINAO, placed, when a planned active space is AVAS's;
 /// - ncas and nelecas, the largest active space a planned step may take:
 ///   an explicit ncas and nelecas; under AVAS, avas_max_ncas when set, else
 ///   twice the labelled MINAO AOs (each of the occupied and the virtual

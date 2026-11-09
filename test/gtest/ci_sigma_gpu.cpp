@@ -20,6 +20,8 @@ import free_breakfast.recipes;
 import free_breakfast.ci;
 import free_breakfast.test.ci_oracles;
 
+#include "pool_footprint.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -519,8 +521,9 @@ TEST(CiSigmaGpu, Rdm1MatchesHostAtCas1212) {
 }
 
 // apply (or apply_fp32) of a random block of k vectors, swap-symmetric and
-// packed in the symmetric layout, unbounded and then under workspace limits
-// on a fresh DeviceResources each, so the workspace's size is the call's:
+// packed in the symmetric layout, unbounded and then under scratch limits
+// on a fresh DeviceResources each, so the pool's growth across the call is
+// the scratch the Sigma allocates, which sigma_apply_bytes says:
 //
 // - at the unbounded scratch, the unblocked path: bit for bit;
 // - one byte under it, at a third of it (a ragged last block) and at one
@@ -541,21 +544,34 @@ void check_blocked(std::int32_t n_alpha, std::int32_t n_beta, const Integrals &i
           : random_block(m * static_cast<std::size_t>(beta->size()) * static_cast<std::size_t>(k),
                          seed);
 
-  // Y = H X under limit (none for nullopt), and the workspace it grew to.
+  // Y = H X under limit (none for nullopt), and the scratch it allocated: the
+  // pool's growth across the call, held to sigma_apply_bytes to the pool's
+  // rounding of one allocation.
   const auto run = [&](std::optional<std::size_t> limit) {
     fb::DeviceResources res{0};
     auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
     EXPECT_TRUE(sigma.has_value());
     EXPECT_TRUE(sigma->set_integrals(res, ints.e_core, ints.h1, ints.eri).has_value());
     if (limit) {
-      sigma->set_workspace_limit(*limit);
+      sigma->set_scratch_limit(*limit);
     }
     const auto x = to_device(res, c);
     fb::Buffers::device<double> y(c.size(), res.device());
+    EXPECT_TRUE(res.sync());
+    const std::size_t granularity = fb::test::pool_granularity(*res.device());
+    const std::size_t before = res.device()->pool_usage().used_current;
     const auto applied = fp32 ? sigma->apply_fp32(res, k, x.data(), y.data(), layout)
                               : sigma->apply(res, k, x.data(), y.data(), layout);
     EXPECT_TRUE(applied.has_value()) << applied.error().message;
-    return std::pair{to_host(res, y), res.device_workspace(0).num_elements()};
+    EXPECT_TRUE(res.sync());
+    const std::size_t grown = res.device()->pool_usage().used_current - before;
+    const std::size_t bytes =
+        fb::ci::sigma_apply_bytes(ints.n, alpha->size(), beta->size(), layout,
+                                  limit.value_or(std::numeric_limits<std::size_t>::max()));
+    EXPECT_GE(grown, bytes);
+    EXPECT_LT(grown, bytes + granularity) << "the pool's rounding of the one allocation";
+    EXPECT_EQ(res.device_workspace(0).num_elements(), 0U) << "apply takes no workspace";
+    return std::pair{to_host(res, y), bytes};
   };
   const auto [want, unbounded] = run(std::nullopt);
   ASSERT_GT(unbounded, 0U);

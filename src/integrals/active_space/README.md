@@ -13,7 +13,7 @@ density fitting from the fitted factor B.
 `free_breakfast.integrals.active_space`, target
 `free_breakfast::integrals::active_space`, re-exported by
 `free_breakfast.integrals`. Two functions, one of them overloaded for density
-fitting, and their products:
+fitting, their products, and the Hamiltonian's footprint:
 
 ```cpp
 struct ActiveSpaceHamiltonian {
@@ -35,6 +35,11 @@ struct CasscfIntegrals {
   Buffers::device<double> ppaa;       // (pq|uv) at p + nmo (q + nmo (u + n_act v))
   Buffers::device<double> papa;       // (pu|qv) at p + nmo (q + nmo (u + n_act v))
 };
+
+// h_eff and (tu|vw) persistent, the density, J and K scratch, the projection
+// scratch the device workspace: the Hamiltonian's footprint (core/footprint).
+MemoryFootprint active_space_hamiltonian_footprint(const BasisSet &basis, int32_t ncore,
+                                                   int32_t ncas);
 
 Result<CasscfIntegrals> casscf_integrals(/* active_space_hamiltonian's arguments, but tau_k = 1e-14 */);
 
