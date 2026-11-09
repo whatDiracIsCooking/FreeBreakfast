@@ -31,6 +31,7 @@ add_executable(
   diagnostics_host.cpp
   gpu_policy_host.cpp
   node_resources_host.cpp
+  footprint_host.cpp
 )
 
 add_executable(

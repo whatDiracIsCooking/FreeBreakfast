@@ -1,3 +1,4 @@
+add_subdirectory(footprint)
 add_subdirectory(step)
 add_subdirectory(pipeline)
 add_subdirectory(molecule)

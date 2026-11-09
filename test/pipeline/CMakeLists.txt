@@ -5,7 +5,8 @@
 # contract and the planner over made-up steps, the contract of every real
 # step, the TOML front end, the Guess step's load, the Hessian, Nac and
 # Nevpt2Nac steps' contracts and configs, and the Optimize step's QD state
-# following and the files its walk keeps over a stub evaluation.
+# following and the files its walk keeps over a stub evaluation, and the
+# footprint fold over made-up steps.
 # None constructs a DeviceResources, so a green run here is meaningful on a
 # device-less box.
 #
@@ -35,6 +36,7 @@ add_executable(
   nac_host.cpp
   nevpt2_nac_host.cpp
   optimize_host.cpp
+  footprint_host.cpp
 )
 
 set_target_properties(
@@ -47,6 +49,7 @@ target_link_libraries(
   PRIVATE free_breakfast::core
           free_breakfast::core::resources
           free_breakfast::io
+          free_breakfast::pipeline::footprint
           free_breakfast::pipeline::step
           free_breakfast::pipeline::pipeline
           free_breakfast::pipeline::guess
