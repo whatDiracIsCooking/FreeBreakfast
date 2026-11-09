@@ -566,7 +566,11 @@ INSTANTIATE_TEST_SUITE_P(
 // from R0's orbitals carried over, as the couplings' check above, its
 // columns phase-aligned to C(R0) (O_yy > 0) before the contraction; a
 // rotation within the core, the active or the virtual block moves f only at
-// second order, D^X being off those blocks.
+// second order, D^X being off those blocks. D^X is drawn in the orbitals
+// s_p phi_p, s_p the sign of Sum_mu C_mu p (#1139): an orbital's sign is
+// not reproducible run to run, and a D^X in the raw orbitals made each run a
+// different case, max |d[D^X]| ranging over 0.70 to 1.30 on one card, in
+// some of which the ladder's curvature is too small to see.
 //
 // Every coordinate of h2co_ccpvdz_sa2, each a ladder of central differences
 // at t = kDensityT0 / 2^k, k < kDensityRungs (nevpt2_gradient_gpu.cpp's
@@ -575,15 +579,19 @@ INSTANTIATE_TEST_SUITE_P(
 // never settle at 4 is logged with them and not asserted. Visibility: the
 // basis-motion part (NacCombination::basis_motion) and the orbital-response
 // part (response, T being zero) each have a max over 10x the bar, so the
-// ladder sees both. Under FBF_SKIP_IF_FAST_TESTS(). Measured on the RTX
-// 3080: all 12 coordinates settled, the worst extrapolant 1.3e-8 of
-// max |d[D^X]| = 1.50 (bar 1.5e-7); motion 1.0e7 and response 8.5e6 times
-// the bar; min |O_yy| 0.9975; 15 s.
+// ladder sees both. Under FBF_SKIP_IF_FAST_TESTS(). Measured on the
+// gfx1200: all 12 coordinates settled, the worst extrapolant 9.1e-10 of
+// max |d[D^X]| = 1.97 (bar 2.0e-7); motion 1.2e7 and response 5.4e6 times
+// the bar; min |O_yy| 0.9975; the smallest |Sum_mu C_mu p| 3.8e-2; 25 s.
 
 constexpr double kDensityT0 = 1.6e-2;
 constexpr std::int32_t kDensityRungs = 7;
 constexpr double kDensityTolerance = 1e-7;
 constexpr double kDensityVisibility = 10.0;
+// The smallest |Sum_mu C_mu p| that fixes s_p: the solution's orbitals vary
+// run to run by its convergence (||g|| < 1e-10, so ~1e-10 in C) and the
+// round-off below it, and a sum this far above them keeps its sign.
+constexpr double kDensitySignMargin = 1e-6;
 
 // The longest run of ratios (D_k - D_{k+1}) / (D_{k+1} - D_{k+2}) in
 // (3.2, 4.8), and over it the finer of the two neighbouring Richardson
@@ -704,6 +712,21 @@ void expect_density_ladder(const fb::json &entry, std::span<const std::size_t> c
   const std::size_t nmo = reference->basis().nao_sphe();
   const auto ncore = static_cast<std::size_t>(reference->ncore);
   const std::size_t nocc = ncore + static_cast<std::size_t>(reference->ncas);
+  // Each orbital's sign s_p, that of Sum_mu C_mu p (#1139): the solution's
+  // orbitals are the SCF's eigenvectors rotated, and an eigenvector's sign is
+  // not reproducible (on the gfx1200 it follows the sign of the round-off in
+  // the Fock's symmetry zeros). D^X is fixed in the signed orbitals s_p phi_p,
+  // so the case is one instance whatever the signs came out.
+  const std::vector<double> c0 = download(res, sol.c.data(), nmo * nmo);
+  std::vector<double> sign(nmo, 1.0);
+  double margin = std::numeric_limits<double>::infinity();
+  for (std::size_t p = 0; p < nmo; ++p) {
+    const auto column = std::span<const double>(c0).subspan(nmo * p, nmo);
+    const double sum = std::accumulate(column.begin(), column.end(), 0.0);
+    sign[p] = sum < 0.0 ? -1.0 : 1.0;
+    margin = std::min(margin, std::abs(sum));
+  }
+  EXPECT_GT(margin, kDensitySignMargin);
 
   // D^X on (t, i), (a, t) and (a, i): row in a later space than its column.
   const auto space = [&](std::size_t p) { return p < ncore ? 0 : (p < nocc ? 1 : 2); };
@@ -713,7 +736,7 @@ void expect_density_ladder(const fb::json &entry, std::span<const std::size_t> c
   for (std::size_t x = 0; x < nmo; ++x) {
     for (std::size_t y = 0; y < nmo; ++y) {
       if (space(x) > space(y)) {
-        d_x[(x * nmo) + y] = uniform(engine);
+        d_x[(x * nmo) + y] = sign[x] * sign[y] * uniform(engine);
       }
     }
   }
@@ -774,9 +797,9 @@ void expect_density_ladder(const fb::json &entry, std::span<const std::size_t> c
   std::cout << std::format(
       "[ overlap] D^X: max |d| {:.6e}, bar {:.2e}, worst {:.2e} ({:.2e} "
       "relative), {} unsettled, visibility motion {:.3e} and response "
-      "{:.3e} times the bar, min |O_yy| {:.6f}, z-vector {} products to {:.2e}, "
-      "{:.2f} s in all\n",
-      scale, bar, worst, worst / scale, unsettled, motion / bar, response / bar, diagonal,
+      "{:.3e} times the bar, min |O_yy| {:.6f}, sign margin {:.3e}, z-vector {} products "
+      "to {:.2e}, {:.2f} s in all\n",
+      scale, bar, worst, worst / scale, unsettled, motion / bar, response / bar, diagonal, margin,
       d->iterations, d->residual, seconds.count());
 }
 
@@ -793,6 +816,11 @@ TEST(McscfOverlapDensity, LadderMatchesNac) {
 // cc-pVDZ-JKFIT fit), and the ladder along one coordinate, C's x, where
 // every coordinate is fourteen re-converged solutions. The visibility of the
 // basis motion and the response is still over every coordinate of d.
+// Measured on the gfx1200: max |d[D^X]| = 1.32, d_x -7.18e-2, the
+// extrapolant within 7.5e-11 of max |d|; the ladder's finest difference
+// D_5 - D_6 is 1.33e-7 against a run-to-run spread of 4e-9 in it, so all
+// five ratios settle (the raw-orbital case that flaked had 2.6e-9 there,
+// under its 1.7e-8 noise); the smallest |Sum_mu C_mu p| 5.2e-2.
 TEST(McscfOverlapDensity, LadderMatchesNacAlongOneSto3gCoordinate) {
   FBF_REQUIRE_GPU();
   FBF_FAMILY_REPRESENTATIVE();
