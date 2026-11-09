@@ -3,9 +3,10 @@
 # (linked PRIVATE), the transition orbital gradient, the
 # transition-density gradient and the overlap's half derivative, with no
 # kernels of its own. DeviceResources, Molecule, BasisSet, PrimitivePairClass,
-# SphericalMatrixAO, Buffers, Solution and Result are in its signature, so
-# core::resources, core::wwr, molecule, basis, mmd, recipes::matrix_ao,
-# mcscf::solve and core::error_handling are PUBLIC.
+# SphericalMatrixAO, Buffers, Solution, Result and MemoryFootprint are in its
+# signature, so core::resources, core::wwr, molecule, basis, mmd,
+# recipes::matrix_ao, mcscf::solve, core::error_handling and core::footprint
+# are PUBLIC.
 # The calls it makes, and root_rotation's kRootGapFloor, are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
@@ -25,8 +26,10 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::mmd
   free_breakfast::recipes::matrix_ao
   free_breakfast::mcscf::solve
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::diagnostics_macros
+  free_breakfast::core::primitives
   free_breakfast::recipes::blas
   free_breakfast::integrals::active_space
   free_breakfast::integrals::one_electron::gradient

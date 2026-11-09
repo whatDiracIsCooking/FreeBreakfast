@@ -388,4 +388,19 @@ MemoryFootprint one_electron_gradient_footprint(const BasisSet &basis) {
   return out;
 }
 
+MemoryFootprint overlap_half_gradient_footprint(const BasisSet &basis) {
+  if (basis.nshells() == 0) {
+    return {};
+  }
+  const size_t n_cart = basis.nao_cart();
+  const size_t n = basis.nao_sphe();
+  // U and the pair, then the Cartesian slabs, their spherical copies and the
+  // rows' sums, three of each.
+  MemoryFootprint slabs;
+  slabs.device.persistent = sizeof(double) * 3 * ((n_cart * n_cart) + (n * n) + n);
+  return drop(then(
+      then(upload_spherical_transform_matrix_footprint(basis), matrix_ao_pair_footprint(basis)),
+      slabs));
+}
+
 } // namespace free_breakfast

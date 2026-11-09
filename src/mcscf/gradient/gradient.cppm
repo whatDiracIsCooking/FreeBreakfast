@@ -21,6 +21,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -226,6 +227,50 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
     int32_t ncas, std::span<const double> gamma, std::span<const double> gamma2,
     const response::ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
 
+/// @brief Which of @ref df_gradient's and @ref df_transition_gradient's
+/// calls a @ref df_gradient_footprint is of.
+enum class GradientForm : uint8_t {
+  /// @brief @ref df_gradient at a root, or at a mix of the roots summing to 1.
+  Mix,
+  /// @brief @ref df_gradient at a mix summing to 0 (the core's energy off).
+  ZeroMix,
+  /// @brief @ref df_transition_gradient at the caller's RDMs.
+  Transition,
+};
+
+/// @brief What @p form's call holds over @p basis and @p aux, with @p ncore
+/// core and @p ncas active orbitals holding @p nelecas electrons at
+/// @p multiplicity, and a solution of @p nroots roots, all of it freed by the
+/// call's return (the terms are on the host): scratch and the device
+/// workspace.
+///
+/// In the call's order, each phase beside what is held before it: the fitted
+/// integrals and the solution's Fock, kept; kappa; for a call that responds
+/// (a state average, or @p multipliers given), the Lagrangian -- the CI
+/// strings, the RDMs, and when no @p multipliers are given the sigma, the
+/// Hessian, the CI-relaxed Hessian, the right-hand side's Fock (a mix
+/// summing to 0: the transition orbital gradient), the sigma's apply scratch
+/// grown to Layout::full and @c response::zvector's, then z_c and c +- z_c --
+/// and its Fock (a transition's too), kept; [C | C~] and the five response
+/// matrices; the orbital response; D, D_a, the one-electron D, -W (and a
+/// transition's D_c) and the one-electron terms; Gam, W and the fitted
+/// densities, an @p extra adjoint's half transform and G^aux; Y, G, and the
+/// fitted core and active pairs with their V and Z (three of each when it
+/// responds). The device workspace is the largest of every call's: the
+/// integrals', the Focks', the Hessians' and their product's, the RDMs',
+/// the two-factor df_exchange's, b_mo's and the two derivative
+/// contractions'. @p rotating says the rotations among the roots are not
+/// zero (unequal weights, or @p multipliers with a nonzero theta): z_c then
+/// takes their nroots^2 matrix, and zvector its own. Empty where the call
+/// refuses before allocating. B, L, C, the CI vectors and the multipliers
+/// are the caller's.
+[[nodiscard]] MemoryFootprint df_gradient_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                    int32_t ncore, int32_t ncas, int32_t nelecas,
+                                                    int32_t multiplicity, int32_t nroots,
+                                                    bool rotating,
+                                                    GradientForm form = GradientForm::Mix,
+                                                    bool multipliers = false, bool extra = false);
+
 /// @brief The weights w_r a state-averaged @p solution is over:
 /// @c Solution::weights as carried, when the weighted gamma is their sum of
 /// @c Solution::root_gammas to 1e-10 (every solution @c solve returns).
@@ -299,6 +344,10 @@ root_pair_multipliers(DeviceResources &res, const ci::Roots &roots, std::span<co
 /// catches a W, a method or a pair the caller's argument does not cover.
 constexpr double kLimitTauGate = 1e-11;
 
+/// @brief What @ref root_pair_multipliers holds over @p nroots roots: the
+/// nroots^2 overlaps, scratch. Empty for one root, which has no pairs.
+[[nodiscard]] MemoryFootprint root_pair_multipliers_footprint(int32_t nroots);
+
 /// @brief A zeta's two consumers, over its pairs' transition RDMs.
 struct ZetaTerms {
   /// @brief zeta . g = Sum_{r<s} zeta_sr g^(sr), g^(sr)
@@ -344,5 +393,16 @@ zeta_terms(DeviceResources &res, const Molecule &molecule, const SphericalMatrix
            const Buffers::device<double> &b, int32_t naux, const Solution &solution, int32_t ncore,
            int32_t ncas, const Buffers::device<double> &ppaa, const Buffers::device<double> &papa,
            ci::Rdm &rdm, std::span<const double> zeta);
+
+/// @brief What @ref zeta_terms holds over @p nmo orbitals, @p naux fitting
+/// functions, @p ncore core and @p ncas active, with CI vectors of @p dim
+/// determinants (the Rdm's size()), when at least one zeta is nonzero: the
+/// orbital part over the packed pairs, persistent; the RDMs' device copy and
+/// one pair's @c transition_orbital_gradient at a time, scratch; the larger
+/// of @c trans_rdm12's and the gradient's device workspace. A zeta of all
+/// zeros allocates only the orbital part and the RDMs. Empty where the call
+/// refuses.
+[[nodiscard]] MemoryFootprint zeta_terms_footprint(int32_t nmo, int32_t naux, int32_t ncore,
+                                                   int32_t ncas, int32_t dim);
 
 } // namespace free_breakfast::mcscf

@@ -4,7 +4,8 @@
 # re-exported: plan_shape reads a Calculation and returns the dimensions.
 # core::resources is in their signatures. The rest -- the aux and MINAO
 # readers, the solvers' size queries, the steps' View, the pool's buffers for
-# the pre-warm and the log -- is PRIVATE: it is the implementation unit's.
+# the pre-warm, the log and response::zvector's rotating_pairs (the CASSCF's
+# weights) -- is PRIVATE: it is the implementation unit's.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.shape
@@ -27,5 +28,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::io::basis
   free_breakfast::recipes::diagonalize
   free_breakfast::recipes::expm
+  free_breakfast::response::zvector
   free_breakfast::pipeline::step
 )

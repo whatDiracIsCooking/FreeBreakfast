@@ -84,6 +84,9 @@ d, with the device workspace the largest of `three_center_gradient`'s,
 `metric_gradient`'s and `b_mo`'s over the occupied block, or `rhf`'s
 `coulomb_gradient_footprint` and `exchange_gradient_footprint` in turn. Each
 callee's footprint is its own module's, next to its allocations.
+`one_electron_terms_footprint(basis)` is the exported `one_electron_terms`'s
+at a caller's D and −W (the CASSCF gradient's): the three derivative calls'
+scratch, one at a time.
 
 ## Tests
 

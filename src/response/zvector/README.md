@@ -108,6 +108,7 @@ Everything is in `namespace free_breakfast::response`.
 | `CpSolver` | How `zvectors` solves: `PerColumn`, `Schur` or `Coupled` (below) |
 | `ZVectors` | `zvectors`' result: `orbital` (size() × ncol), `ci` (ncol blocks of dim × nroots), `theta` (ncol of `ZVector::theta`), and per column `iterations` and `residuals` |
 | `zvectors` | The same equations on ncol right-hand sides at once: g (size() × ncol), an optional y (ncol blocks) and an optional t (ncol of them), by a `CpSolver` |
+| `zvector_footprint` | What `zvector` holds past the `RelaxedHessian`'s own, given one H̃ product's (`hessian_apply_footprint`): z_o and z_c persistent; its right-hand-side work, `pcg_solve`'s vectors and a product's, the rotations' matrices, scratch ("Memory") |
 | `kRotationWeightTolerance` | 1e-8: two weights this close, relative to the larger, are equal, and their pair stays projected |
 | `response_tolerance_for` | The CI response's tolerance inside H̃ (`RelaxedHessian::create`'s, relative) for a Z-vector tolerance t whose true residual is held: 1e-2 t, at least 1e-10 (step 2 below) |
 | `rotating_pairs` | Which pairs r < s (`ZVector::theta`'s order) rotate: those whose weights differ past `kRotationWeightTolerance`. `mcscf::root_pair_multipliers` splits a τ by it (`../../mcscf/gradient/README.md` "Holding the roots apart") |
@@ -330,6 +331,33 @@ density_fitting/jk (#595) is not reached from here, and Schur saves only the
 CI side (4% and 11%) while Coupled's extra products cost more than its
 cheaper ones save. A block J/K inside `response::Hessian::apply` would help
 Schur and Coupled alike, Coupled more (its products are mostly that).
+
+## Memory
+
+`zvector_footprint(n_pairs, dim, nroots, product, rotating, theta_rhs)` is
+`zvector`'s in `core/footprint`'s terms, and general in its own arguments, so
+the Hessians (#1053) can take it beside the gradients and the couplings. The
+ZVector (z_o, z_c) is persistent. Scratch: -b, H̃ z + b and diag(H)⁻¹, and
+C^T δ_r's nroots overlaps, held throughout; beside them one phase at a time.
+The phases are:
+
+- the rotation right-hand side's CI blocks and nroots² matrix (only with
+  unequal weights and a t);
+- `pcg_solve`'s one buffer, 4 n_pairs + 2 doubles at one column, with one
+  product (`recipes/pcg`, counted here inline: that recipe has no footprint
+  of its own);
+- the true residual's product;
+- `read_rotations`' nroots² overlaps (unequal weights only).
+
+The product is the caller's `hessian_apply_footprint`. That footprint is
+exact only at k = 1, which is every product `zvector` takes. The block forms
+(`zvectors`) are #1053's: the density-fitted `Hessian::apply` at k > 1 sizes
+its batch from free memory, and #1053 moves that site to the memory budget.
+The `RelaxedHessian`'s members, and the borrowed CI sigma's apply scratch
+grown to `Layout::full`, are counted by their owners.
+`CasscfReaderFootprint.Zvector` and `.UnequalWeights`
+(`test/gtest/pipeline_step_footprint_gpu.cpp`) hold it to the
+pool.
 
 ## Tests
 

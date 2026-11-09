@@ -22,7 +22,7 @@ in `test/ci_oracles/`: linked by the tests alone, not exported from here.
 | `ci::Rdm::trans_rdm1(res, bra, ket, gamma, layout)` | On the device, over two full or packed vectors: γ^IJ_pq = ⟨bra\| E_pq \|ket⟩, n × n, not symmetric; `Status` |
 | `ci::Rdm::trans_rdm12(res, bra, ket, gamma, gamma2, layout)` | On the device: the symmetrized γ_pq = ½ (⟨bra\| E_pq \|ket⟩ + ⟨ket\| E_pq \|bra⟩) and Γ_tuvw = ½ (⟨bra\| E_tu E_vw − δ_uv E_tw \|ket⟩ + (bra ↔ ket)), n⁴ row-major; `Status` |
 | `ci::Rdm::size(layout)` | A vector's length: alpha.size() · beta.size(), dim, or the triangle's m (m + 1) / 2 for `ci::Layout::symmetric` |
-| `ci::rdm12_footprint(n_orbitals, rows)`, `ci::trans_rdm12_footprint(n_orbitals, rows)` | `MemoryFootprint` (`core/footprint`) of `rdm12` and `trans_rdm12` over vectors of `rows` (`size(layout)`): M and one chunk of D (two half-chunks for `trans_rdm12`), the device workspace alone; `create` allocates nothing |
+| `ci::rdm12_footprint(n_orbitals, rows)`, `ci::trans_rdm12_footprint(n_orbitals, rows)`, `ci::trans_rdm1_footprint(n_orbitals, rows)` | `MemoryFootprint` (`core/footprint`) of `rdm12`, `trans_rdm12` and `trans_rdm1` over vectors of `rows` (`size(layout)`): M and one chunk of D (two half-chunks for `trans_rdm12`; one chunk and no M for `trans_rdm1`), the device workspace alone; `create` allocates nothing |
 
 For `ci::Rdm::rdm12`, `vectors`, `gamma` and `gamma2` are device arrays: the
 vectors root r at [r · dim, (r + 1) · dim), which is what `ci::Roots::vectors`
@@ -175,13 +175,13 @@ full spin, one orbital, N_α < N_β) match the polarization
 packed, (5, 5)'s 106 953 triangle rows match `rdm12`'s. The symmetric layout
 over two sets is refused with γ and Γ untouched.
 
-The footprints are held to the pool by `LibraryFootprint.RdmAndOrbitalPairs` (`test/gtest/footprint_gpu.cpp`): `create` allocates nothing, and `rdm12` and `trans_rdm12` grow the workspace to exactly theirs.
+The footprints are held to the pool by `LibraryFootprint.RdmAndOrbitalPairs` (`test/gtest/footprint_gpu.cpp`): `create` allocates nothing, and `rdm12` and `trans_rdm12` grow the workspace to exactly theirs; `CasscfReaderFootprint.SharedRoutines` (`test/gtest/pipeline_step_footprint_gpu.cpp`) holds `trans_rdm1`'s.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `rdm.cppm` | Module interface: `ci::Rdm` (`rdm12`, `trans_rdm1`, `trans_rdm12`), and the footprints of `rdm12` and `trans_rdm12` |
+| `rdm.cppm` | Module interface: `ci::Rdm` (`rdm12`, `trans_rdm1`, `trans_rdm12`), and the footprints of `rdm12`, `trans_rdm12` and `trans_rdm1` |
 | `rdm.cpp` | `ci::Rdm`'s checks, its syrk, syr2k and gemms, and the gather's launch |
 | `ci_rdm_bridge.h` | The launchers, shared by the module (GMF) and the `.cu` |
 | `ci_rdm.cu` | The gather of D, one thread per determinant (or triangle element), and Γ's assembly |

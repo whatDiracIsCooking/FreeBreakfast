@@ -54,9 +54,10 @@ size_t rdm_chunk_rows(const size_t nn, const size_t rows, const size_t vectors) 
   return std::clamp<size_t>(kRdmChunkBytes / (vectors * sizeof(double) * nn), 1, rows);
 }
 
-// M and @p vectors chunks of D, each a workspace region.
+// M (unless @p with_m is false) and @p vectors chunks of D, each a workspace
+// region.
 MemoryFootprint rdm_workspace_footprint(const int32_t n_orbitals, const int32_t rows,
-                                        const size_t vectors) {
+                                        const size_t vectors, const bool with_m = true) {
   MemoryFootprint out;
   if (n_orbitals <= 0 || rows <= 0) {
     return out;
@@ -66,7 +67,7 @@ MemoryFootprint rdm_workspace_footprint(const int32_t n_orbitals, const int32_t 
   };
   const size_t nn = static_cast<size_t>(n_orbitals) * static_cast<size_t>(n_orbitals);
   const size_t chunk = rdm_chunk_rows(nn, static_cast<size_t>(rows), vectors);
-  out.device.workspace = region(nn * nn) + (vectors * region(chunk * nn));
+  out.device.workspace = (with_m ? region(nn * nn) : 0) + (vectors * region(chunk * nn));
   return out;
 }
 
@@ -76,6 +77,10 @@ MemoryFootprint rdm12_footprint(const int32_t n_orbitals, const int32_t rows) {
 
 MemoryFootprint trans_rdm12_footprint(const int32_t n_orbitals, const int32_t rows) {
   return rdm_workspace_footprint(n_orbitals, rows, 2);
+}
+
+MemoryFootprint trans_rdm1_footprint(const int32_t n_orbitals, const int32_t rows) {
+  return rdm_workspace_footprint(n_orbitals, rows, 1, false);
 }
 
 Result<Rdm> Rdm::create(DeviceResources &res, const DeviceStringSet &alpha,
@@ -175,8 +180,7 @@ Status Rdm::trans_rdm1(DeviceResources &res, const double *const bra, const doub
   const int32_t rows = size(layout);
   const size_t nn = static_cast<size_t>(n_orbitals_) * static_cast<size_t>(n_orbitals_);
   const auto nn32 = static_cast<int32_t>(nn);
-  const auto chunk = static_cast<int32_t>(
-      std::clamp<size_t>(kRdmChunkBytes / (sizeof(double) * nn), 1, static_cast<size_t>(rows)));
+  const auto chunk = static_cast<int32_t>(rdm_chunk_rows(nn, static_cast<size_t>(rows), 1));
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const auto [d] = res.device_regions<double>(static_cast<size_t>(chunk) * nn);

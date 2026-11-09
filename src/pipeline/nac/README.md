@@ -93,6 +93,17 @@ struct NacStep {
   1e-8 tightens `[casscf]` (`conv_tol_grad = 1e-10`, as the test does).
 - **`Device`-shaped**: B, L, C and the CI vectors live on the device.
 
+```cpp
+MemoryFootprint footprint(const FootprintDimensions &dims) const;
+```
+
+The step's footprint: C and the CASSCF's CI vectors back on the device, then
+`mcscf::df_nac_footprint`, sized over what `[casscf_gradient]`'s is
+(`dims.casscf_nroots` and `dims.casscf_unequal_weights` among it). Each pair's
+call frees all it holds before the next, so the footprint is one pair's
+whatever `pairs` holds. It is empty without density fitting or with fewer
+than two roots, which `run` refuses before anything is allocated.
+
 ## Config
 
 [`examples/nac.toml`](../../../examples/nac.toml) is a whole config, over
@@ -133,6 +144,10 @@ above is that run's, on the gfx1200).
   d_10 = −d_01 by hand over the same products and Σ_A h_01 = 0, to 1e-9,
   and d_01 is more than 1e-6 off the equal-weight one, so the weights reach
   `df_nac`. Measured on the RTX 3080: 4e-16, 1.4e-15 and 1.5e-3; 0.3 s.
+- `test/gtest/pipeline_step_footprint_gpu.cpp`'s
+  `CasscfReaderFootprint.NacStep` and `.UnequalWeights`: the step's
+  footprint at `plan_shape`'s dimensions over water's SA-2 CAS(4,4), at equal
+  and unequal weights, against the pool peak of one run.
 
 ## Files
 

@@ -7,10 +7,11 @@
 # zeta_terms, over response::zvector's rotating_pairs,
 # root_rotation's kRootGapFloor and transition's g^(sr).
 # DeviceResources, Molecule, BasisSet, PrimitivePairClass, SphericalMatrixAO,
-# Buffers, Solution, ZVector, ci::Roots, ci::Rdm and Result are in its
-# signature, so core::resources, core::wwr, molecule, basis, mmd,
-# recipes::matrix_ao, ci::solver, ci::rdm, mcscf::solve, response::zvector and
-# core::error_handling are PUBLIC. The calls it makes are PRIVATE.
+# Buffers, Solution, ZVector, ci::Roots, ci::Rdm, Result and MemoryFootprint
+# are in its signature, so core::resources, core::wwr, molecule, basis, mmd,
+# recipes::matrix_ao, ci::solver, ci::rdm, mcscf::solve, response::zvector,
+# core::error_handling and core::footprint are PUBLIC. The calls it makes
+# are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.mcscf.gradient
@@ -32,8 +33,10 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::rdm
   free_breakfast::mcscf::solve
   free_breakfast::response::zvector
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
   free_breakfast::integrals::active_space

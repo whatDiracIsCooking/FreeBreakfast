@@ -81,6 +81,18 @@ struct CasscfGradientStep {
   (`conv_tol_grad = 1e-9`, as the test does).
 - **`Device`-shaped**: B, L, C and the CI vectors live on the device.
 
+```cpp
+MemoryFootprint footprint(const FootprintDimensions &dims) const;
+```
+
+The step's footprint: C and the CASSCF's CI vectors back on the device
+(nao² + dim · nroots doubles), then `mcscf::df_gradient_footprint` at a root.
+It is sized over the aux basis, the active space at `dims` (ncore from the
+electrons, the multiplicity from n_alpha − n_beta), and the planned CASSCF's
+roots and weights, `dims.casscf_nroots` and `dims.casscf_unequal_weights`.
+The gradient is on the host, so nothing is persistent. It is empty without
+density fitting, which `run` refuses before anything is allocated.
+
 ## Config
 
 ```toml
@@ -108,6 +120,10 @@ nelecas = 4
   `[optimize]` (`test/gtest/pipeline_optimize_gpu.cpp`'s skew formaldehyde
   S1, `../optimize/README.md`), and `df_gradient`'s own SA roots against
   `casscf_gradient.json` in `test/gtest/mcscf_gradient_gpu.cpp`.
+- `test/gtest/pipeline_step_footprint_gpu.cpp`'s
+  `CasscfReaderFootprint.CasscfGradientStep` and `.UnequalWeights`: the
+  step's footprint at `plan_shape`'s dimensions over water's SA-2 CAS(4,4),
+  at equal and unequal weights, against the pool peak of one run.
 
 ## Files
 

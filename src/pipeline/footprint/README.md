@@ -58,6 +58,15 @@ at naux: no step fits with lindep. `skew_eig_lwork`, beside it, is the CASSCF
 orbital step's other eigensolver query, `skew_eig`'s heevd at nao, filled
 only when a CASSCF is planned.
 
+**The CASSCF's roots are carried for its readers.** `casscf_nroots` and
+`casscf_unequal_weights` are the planned CASSCF step's roots and whether two
+of its weights differ. The CasscfGradient and Nac steps read the CASSCF's
+product, so their footprints are sized over its CI vectors (dim × nroots)
+and, for a state average, the Z-vector, whose rotations among the roots are
+allocated only at unequal weights. Neither step carries the CASSCF's
+options, so `plan_shape` copies these two. Only these two are carried, not
+the weights themselves: nothing a footprint counts depends on their values.
+
 **MINAO and the atoms are carried for AVAS.** The selection's footprint sizes
 MINAO's overlaps from the MINAO basis `plan_shape` places, and the labelled
 AOs from the labels matched against the atoms (`avas_minao_aos`), so neither

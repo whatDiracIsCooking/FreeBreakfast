@@ -10,6 +10,7 @@ import free_breakfast.core.constants; // kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // axpy
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.molecule;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.response.fock;
@@ -38,6 +39,25 @@ Result<Buffers::device<double>> transition_orbital_gradient(
   // Waited for: the axpy reads core's gradient, freed on return.
   FBF_TRY(res.sync());
   return std::move(transition.gradient);
+}
+
+MemoryFootprint transition_orbital_gradient_footprint(const int32_t nmo, const int32_t naux,
+                                                      const int32_t ncore, const int32_t ncas) {
+  const MemoryFootprint fock = response::fock_footprint(nmo, naux, ncore, ncas);
+  if (fock == MemoryFootprint{}) {
+    return {}; // refused by fock before anything is allocated
+  }
+  // The transition Fock, held while the zero-RDM one is built; its packed
+  // gradient is returned and the rest freed.
+  const MemoryFootprint both = then(fock, fock);
+  const auto n_mo = static_cast<size_t>(nmo);
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  MemoryFootprint out = both;
+  out.device.persistent =
+      sizeof(double) * ((n_core * (n_mo - n_core)) + (n_act * (n_mo - n_core - n_act)));
+  out.device.scratch = both.device.persistent + both.device.scratch - out.device.persistent;
+  return out;
 }
 
 } // namespace free_breakfast::mcscf

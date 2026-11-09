@@ -294,8 +294,31 @@ the outputs within the spread above, not by the outputs' bits.
 `df_transition_gradient`'s, which checks its own memory, plus the CI
 objects, `response::Hessian` and `RelaxedHessian` at the solution (as
 `df_gradient` holds them for a root of a state average), the averaged Fock,
-the transition orbital gradient and the Z-vector, none counted. Queued on res.stream(); the call returns with
+the transition orbital gradient and the Z-vector, none counted by that check. Queued on res.stream(); the call returns with
 everything done.
+
+**The footprints** count all of it, in the call's order, each phase beside
+what is held before it. `df_nac_footprint(basis, aux, ncore, ncas, nelecas,
+multiplicity, nroots, rotating)` is the pair's:
+
+- the setup, kept to the end: the CI strings, the integrals, the averaged
+  Fock, the sigma's tables, the Hessian and the CI-relaxed Hessian;
+- the pair's RDMs on the device, with the workspace of `trans_rdm12` and
+  `trans_rdm1` (`ci::trans_rdm1_footprint`);
+- the transition orbital gradient, kept;
+- the sigma's apply scratch grown to `Layout::full` and
+  `response::zvector_footprint`, the ZVector kept;
+- h_IJ's `df_transition_gradient` over the multipliers
+  (`mcscf::df_gradient_footprint`, `GradientForm::Transition`);
+- d^CSF's half gradient: a, the gemmwich's work and A, then
+  `overlap_half_gradient_footprint`.
+
+`nac_combination_terms_footprint(basis, ncas, nelecas, multiplicity, d_x)`
+is the strings, the RDMs and the CSF term's half gradient, and D^X's over
+every orbital with `d_x`. `df_nac_combination_footprint` is the combination
+call's: those terms, then the pair's sequence, with the right-hand side on
+the device kept beside the transition gradient. Held to the pool by
+`CasscfReaderFootprint` (`test/gtest/pipeline_step_footprint_gpu.cpp`).
 
 ## Tests
 

@@ -131,9 +131,9 @@ under one more unit: the plan fits, but the step runs at its narrowest.
 **A step without a footprint is refused under a cap.** The fold would count
 it as zero and could pass a plan that does not fit, so it names the step
 and says to drop `[memory]` to run uncapped. Today that is every step from
-`[localization]` on but `[casci]`, `[casscf]` and `[fci]`: CIS, the
-gradients and couplings (#1050), the Hessians (#1053), the NEVPT2 steps
-(#1152) and the nested ones. Each joins the capped plans as its footprint
+`[localization]` on but `[casci]`, `[casscf]`, `[fci]`, `[gradient]`,
+`[casscf_gradient]` and `[nac]`: localization and CIS (#1159), the Hessians
+(#1053), the NEVPT2 steps (#1152) and the nested ones. Each joins the capped plans as its footprint
 lands, with no change here.
 
 **AVAS under a cap.** An AVAS step's active space is unknown until it runs,

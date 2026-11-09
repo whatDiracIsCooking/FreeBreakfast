@@ -13,6 +13,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.ci.solver;
 import free_breakfast.response.hessian;
 import free_breakfast.response.relaxed_hessian;
@@ -116,6 +117,31 @@ struct ZVector {
                                       const double *gradient, const double *ci_rhs = nullptr,
                                       double tolerance = 1e-10, int32_t max_iterations = 200,
                                       std::span<const double> theta_rhs = {});
+
+/// @brief What @ref zvector holds over @p n_pairs orbital pairs (H~'s
+/// size()) and @p nroots CI vectors of @p dim determinants, past the
+/// RelaxedHessian's own (@c relaxed_hessian_footprint):
+///
+/// - persistent: the ZVector's z_o and z_c;
+/// - scratch: -b, H~ z + b and diag(H)^-1, and C^T delta_r's overlaps, held
+///   throughout; beside them, one phase at a time: with @p rotating and
+///   @p theta_rhs, the rotations' CI blocks and their nroots^2 matrix;
+///   pcg_solve's R, P, the gathered blocks and its reductions (recipes/pcg,
+///   4 n_pairs + 2 doubles at one column) with one product; the true
+///   residual's product; with @p rotating, read_rotations' nroots^2
+///   overlaps;
+/// - workspace: @p product's.
+///
+/// @p product is one H~ product's own, beyond the RelaxedHessian's members:
+/// @c hessian_apply_footprint of the Hessian @p relaxed was created over
+/// (one column at a time). @p rotating is whether a pair of the relaxed
+/// Hessian's weights differs (@ref rotating_pairs), @p theta_rhs whether a
+/// rotation right-hand side is given. A CI right-hand side allocates nothing
+/// of zvector's own. Not counted: the borrowed CI sigma's apply scratch,
+/// which the products grow to Layout::full and its owner keeps.
+[[nodiscard]] MemoryFootprint zvector_footprint(int32_t n_pairs, int32_t dim, int32_t nroots,
+                                                const MemoryFootprint &product, bool rotating,
+                                                bool theta_rhs = false);
 
 /// @brief How @ref zvectors solves its columns (README.md "Many right-hand
 /// sides").

@@ -122,6 +122,12 @@ potential_gradient(DeviceResources &res, const BasisSet &basis,
 overlap_half_gradient(DeviceResources &res, const BasisSet &basis,
                       std::span<const PrimitivePairClass> classes, const SphericalMatrixAO &a);
 
+/// @brief What @ref overlap_half_gradient holds over @p basis, all of it
+/// scratch: U and the @c MatrixAOPair the slabs are carried through, then the
+/// three Cartesian ip1 slabs, their spherical copies and the three rows' sums.
+/// Empty for a basis without shells.
+[[nodiscard]] MemoryFootprint overlap_half_gradient_footprint(const BasisSet &basis);
+
 /// @brief S^x: dS_mn/dR_{A,k} for every atom A of @p basis and axis k, as
 /// spherical AO matrices of @p basis on @p res's device.
 ///

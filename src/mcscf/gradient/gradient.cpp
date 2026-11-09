@@ -18,6 +18,8 @@ import free_breakfast.core.constants; // kZero, kOne, kNegOne, kTwo, kNegTwo, kH
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemv, trsv, trsm, geam, axpy, gemmStridedBatched, wwrMemcpyAsync
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial, math::align_up
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -1241,6 +1243,218 @@ Result<ZetaTerms> zeta_terms(DeviceResources &res, const Molecule &molecule,
   }
   FBF_TRY(res.sync());
   return out;
+}
+
+// The CI the footprints below are over: nelecas electrons in ncas orbitals at
+// the multiplicity, as df_gradient_terms takes them (n_beta = (nelecas - 2S) /
+// 2); invalid when the call would refuse them.
+struct GradientCiShape {
+  bool valid = false;
+  int32_t n_alpha = 0;
+  int32_t n_beta = 0;
+  int32_t alpha_strings = 0;
+  int32_t beta_strings = 0;
+  size_t dim = 0;
+};
+
+GradientCiShape gradient_ci_shape(const int32_t ncas, const int32_t nelecas,
+                                  const int32_t multiplicity) {
+  GradientCiShape out;
+  const int32_t two_s = multiplicity - 1;
+  if (ncas < 1 || nelecas < two_s || two_s < 0 || (nelecas - two_s) % 2 != 0 ||
+      nelecas - ((nelecas - two_s) / 2) > ncas) {
+    return out;
+  }
+  out.n_beta = (nelecas - two_s) / 2;
+  out.n_alpha = nelecas - out.n_beta;
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  out.alpha_strings = strings(out.n_alpha);
+  out.beta_strings = strings(out.n_beta);
+  out.dim = static_cast<size_t>(out.alpha_strings) * static_cast<size_t>(out.beta_strings);
+  out.valid = true;
+  return out;
+}
+
+// @p doubles doubles allocated and kept.
+MemoryFootprint gradient_held(const size_t doubles) {
+  return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+}
+
+// What sa_gradient_lagrangian holds, all of it freed on return (its RDMs go
+// back on the host, kappa into the caller's buffer): the CI strings, the RDMs'
+// device copy; when it solves (@p solves), the CI sigma, the Hessian, the
+// CI-relaxed Hessian and the right-hand side's Fock (or, for a mix summing to
+// 0, @p zero_mix, the transition orbital gradient), the sigma's apply scratch
+// its products grow to Layout::full, and zvector's, the ZVector kept past the
+// rest; then z_c, with @p rotating the rotations' nroots^2 matrix, and the
+// shifted vectors c +- z_c.
+MemoryFootprint sa_gradient_lagrangian_footprint(const int32_t nmo, const int32_t naux,
+                                                 const int32_t ncore, const int32_t ncas,
+                                                 const GradientCiShape &ci, const int32_t nroots,
+                                                 const bool solves, const bool zero_mix,
+                                                 const bool rotating) {
+  const auto n = static_cast<size_t>(ncas);
+  const auto roots = static_cast<size_t>(nroots);
+  const size_t block = ci.dim * roots;
+  const MemoryFootprint strings = then(ci::device_string_set_footprint(ncas, ci.n_alpha),
+                                       ci::device_string_set_footprint(ncas, ci.n_beta));
+  MemoryFootprint rdms = gradient_held((n * n) + (n * n * n * n));
+  rdms.device.workspace = ci::rdm12_footprint(ncas, static_cast<int32_t>(ci.dim)).device.workspace;
+  MemoryFootprint solved;
+  if (solves) {
+    // The sigma's tables; its rdm1 workspace is never taken here.
+    MemoryFootprint tables;
+    tables.device.persistent =
+        ci::sigma_footprint(ncas, ci.alpha_strings, ci.beta_strings).device.persistent;
+    MemoryFootprint growth;
+    growth.device.persistent =
+        ci::sigma_apply_bytes(ncas, ci.alpha_strings, ci.beta_strings, ci::Layout::full);
+    const int32_t n_pairs = (ncore * (nmo - ncore)) + (ncas * (nmo - ncore - ncas));
+    const MemoryFootprint z = response::zvector_footprint(
+        n_pairs, static_cast<int32_t>(ci.dim), nroots,
+        response::hessian_apply_footprint(nmo, naux, ncore, ncas), rotating);
+    const MemoryFootprint own = zero_mix
+                                    ? transition_orbital_gradient_footprint(nmo, naux, ncore, ncas)
+                                    : response::fock_footprint(nmo, naux, ncore, ncas);
+    const MemoryFootprint chain =
+        then(tables, then(response::hessian_footprint(nmo, naux, ncore, ncas),
+                          then(response::relaxed_hessian_footprint(ncas, ci.n_alpha, ci.n_beta,
+                                                                   nroots, nmo, ncore),
+                               then(own, then(growth, z)))));
+    // The ZVector outlives the block that solved it; the rest is freed there.
+    solved = chain;
+    solved.device.persistent = z.device.persistent;
+    solved.device.scratch = chain.device.persistent + chain.device.scratch - z.device.persistent;
+  }
+  const MemoryFootprint rotations =
+      rotating ? drop(gradient_held(roots * roots)) : MemoryFootprint{};
+  const MemoryFootprint after =
+      then(gradient_held(block), then(rotations, gradient_held(2 * block)));
+  return drop(then(strings, then(rdms, then(solved, after))));
+}
+
+// What sa_gradient_orbital_response holds over @p nao orbitals, all of it
+// freed on return: J, K, a work matrix, V_cL and V_cL + V_aL in both bases,
+// C~_a gamma and T, G1 and G2, R1 and R2; and the device workspace, the
+// one-density df_coulomb's and the two-factor df_exchange's (X and Y, naux
+// rank nao each) at rank ncore, when there is a core, and at rank ncas.
+MemoryFootprint sa_gradient_orbital_response_footprint(const int32_t nao, const int32_t naux,
+                                                       const int32_t ncore, const int32_t ncas) {
+  const auto n = static_cast<size_t>(nao);
+  const auto a = static_cast<size_t>(ncas);
+  MemoryFootprint out =
+      drop(gradient_held((7 * n * n) + (2 * n * a) + (2 * a * a * a * a) + (2 * n * a * a * a)));
+  const auto two_factor = [&](const int32_t rank) {
+    return 2 * math::align_up(sizeof(double) * static_cast<size_t>(naux) *
+                                  static_cast<size_t>(rank) * n,
+                              DeviceResources::kWorkspaceAlignment);
+  };
+  out.device.workspace =
+      std::max(df_coulomb_footprint(nao, naux).device.workspace, two_factor(ncas));
+  if (ncore > 0) {
+    out.device.workspace = std::max(out.device.workspace, two_factor(ncore));
+  }
+  return out;
+}
+
+MemoryFootprint df_gradient_footprint(const BasisSet &basis, const BasisSet &aux,
+                                      const int32_t ncore, const int32_t ncas,
+                                      const int32_t nelecas, const int32_t multiplicity,
+                                      const int32_t nroots, const bool rotating,
+                                      const GradientForm form, const bool multipliers,
+                                      const bool extra) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const GradientCiShape ci = gradient_ci_shape(ncas, nelecas, multiplicity);
+  if (ncore < 0 || ncas < 1 || ncore + ncas > nmo || naux < 1 || nroots < 1 ||
+      (nroots > 1 && !ci.valid)) {
+    return {}; // refused before anything is allocated
+  }
+  const bool transition = form != GradientForm::Mix;
+  const bool responds = form == GradientForm::Transition ? multipliers : nroots > 1 || multipliers;
+  if (responds && !ci.valid) {
+    return {};
+  }
+  const auto n = static_cast<size_t>(nmo);
+  const auto q = static_cast<size_t>(naux);
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const size_t n_occ = n_core + n_act;
+  const size_t nn = n * n;
+  const auto region = [](const size_t doubles) {
+    return math::align_up(sizeof(double) * doubles, DeviceResources::kWorkspaceAlignment);
+  };
+
+  // The integrals and the solution's Fock, kept; kappa; the Lagrangian; its
+  // Fock, kept.
+  const MemoryFootprint fock = response::fock_footprint(nmo, naux, ncore, ncas);
+  MemoryFootprint chain = then(casscf_integrals_footprint(nmo, naux, ncore, ncas), fock);
+  chain = then(chain, gradient_held(responds ? nn : 1));
+  if (responds) {
+    chain = then(chain,
+                 sa_gradient_lagrangian_footprint(nmo, naux, ncore, ncas, ci, nroots, !multipliers,
+                                                  form == GradientForm::ZeroMix, rotating));
+  }
+  if (responds || transition) {
+    chain = then(chain, fock);
+  }
+  // [C | C~], D_cL, D_aL, the averaged D and D_a, F_L; the response.
+  chain = then(chain, gradient_held((responds ? 2 * nn : 1) + (5 * nn)));
+  if (responds) {
+    chain = then(chain, sa_gradient_orbital_response_footprint(nmo, naux, ncore, ncas));
+  }
+  // D, D_a, the one-electron D, -W and the transition's D_c; the work and
+  // C F C^T regions; the one-electron terms.
+  MemoryFootprint densities = gradient_held((4 * nn) + (transition ? nn : 1));
+  densities.device.workspace = 2 * region(nn);
+  chain = then(chain, densities);
+  chain = then(chain, gradient::one_electron_terms_footprint(basis));
+  // Gam, W and the fitted densities; the extra adjoint's half transform and
+  // G^aux; Y, G, the core and active pairs with their V and Z.
+  const size_t pieces = responds ? 3 : 1;
+  chain = then(chain, gradient_held((q * nn) + (q * q) + ((responds ? 6 : 2) * q) +
+                                    (extra ? (q * nn) + (q * q) : 2)));
+  chain =
+      then(chain,
+           gradient_held((q * std::max(n_core, n_act) * n) + ((responds ? 2 : 1) * n_occ * n_occ) +
+                         (2 * pieces * q * n_core * n_occ) + (2 * pieces * q * n_act * n_act)));
+  // b_mo over the core rows and the active ones, the rotated forms the same
+  // widths; the two derivative contractions.
+  const OrbitalRange core{.first = 0, .count = ncore};
+  const OrbitalRange occupied{.first = 0, .count = ncore + ncas};
+  const OrbitalRange active{.first = ncore, .count = ncas};
+  for (const MemoryFootprint &call :
+       {b_mo_footprint(naux, nmo, core, occupied), b_mo_footprint(naux, nmo, active, active),
+        three_center_gradient_footprint(basis, aux), metric_gradient_footprint(aux)}) {
+    chain = then(chain, call);
+  }
+  return drop(chain);
+}
+
+MemoryFootprint root_pair_multipliers_footprint(const int32_t nroots) {
+  if (nroots < 2) {
+    return {};
+  }
+  const auto roots = static_cast<size_t>(nroots);
+  return drop(gradient_held(roots * roots));
+}
+
+MemoryFootprint zeta_terms_footprint(const int32_t nmo, const int32_t naux, const int32_t ncore,
+                                     const int32_t ncas, const int32_t dim) {
+  if (ncore < 0 || ncas < 1 || ncore + ncas > nmo || dim < 1) {
+    return {};
+  }
+  const auto n_mo = static_cast<size_t>(nmo);
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const size_t m = n_act * n_act;
+  MemoryFootprint rdms = gradient_held(m + (m * m));
+  rdms.device.workspace = ci::trans_rdm12_footprint(ncas, dim).device.workspace;
+  return then(
+      gradient_held((n_core * (n_mo - n_core)) + (n_act * (n_mo - n_core - n_act))),
+      drop(then(rdms, drop(transition_orbital_gradient_footprint(nmo, naux, ncore, ncas)))));
 }
 
 } // namespace free_breakfast::mcscf
