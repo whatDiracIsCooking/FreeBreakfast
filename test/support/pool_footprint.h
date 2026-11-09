@@ -116,7 +116,7 @@ struct FootprintSlack {
 ///   allocation live at the peak may be served from a freed block and counted
 ///   at most request / 8 past what it asked, and the live allocations' requests
 ///   sum to at most the footprint. That is pool rounding, as G is, and the
-///   footprint keeps counting requested bytes; at run time pre-flight's 32 MiB
+///   footprint keeps counting requested bytes; at run time pre-flight's 64 MiB
 ///   of headroom covers the overcounts measured (src/pipeline/footprint/
 ///   README.md says where the bound outgrows it). Logged whenever
 ///   the allowance is used. Never widened otherwise.
