@@ -32,7 +32,7 @@ m and n), not a real fit: dense fp64 GEMM time does not depend on the values.
 Shapes: `nao ∈ {256, 448, 640}`, `naux = 3 nao` (the JKFIT ratio), and
 `nocc ∈ {64, 128}`, all of B on the card so the one-call build is there to
 compare against. The pipeline runs on `nao = 640` only, at `nocc = 128`
-(gemms limit on the 3080: copies ~0.26 s, gemms ~0.65 s) and `nocc = 32`
+(gemms limit on the 3080: copies 0.47 s, gemms 0.75 s) and `nocc = 32`
 (copies limit).
 
 Two cuts:
@@ -83,39 +83,85 @@ Every rep goes to the CSV (`group,nao,naux,nocc,variant,mode,depth,batch,n_b,rep
 
 ## Results
 
-**The full sweep has not been run.** Only a smoke run so far: RTX 3080,
-`--nao 256 --reps 2 --warmup 1 --only resident`, 2026-11-08. Two reps is too
-few to fit δ with confidence; read these as the shape of the answer, not the
-numbers.
+RTX 3080 (PCIe 4 x16), clocks unpinned, `--reps 10 --warmup 3`, all
+defaults, 2026-11-08; 65 min of a held card. Times are medians, ms.
 
-- **K agrees everywhere.** The m cut is bitwise against the one-call build at
-  every batch size, in all three resident variants; the P cut agrees to
-  ~2e-14 relative. Graph capture of the cuBLAS calls works.
-- **Launch overhead is not δ.** `chopped`, `events` and `graph` agree within
-  noise: m-cut δ ≈ 31, 30 and 25 µs/batch (±7) at nocc 64. Capturing the
-  launches away and adding the ring's event waits both change nothing
-  measurable.
-- **The P cut shows tile quantization.** b = 32, 64, 128 are cheap; the 1.5×
-  points b = 24, 48, 96 each cost 15–20% more than their power-of-two
-  neighbours, and below b = 16 time climbs steeply (b = 8 is 2.6× T_1). So δ
-  for P is not a constant, and a straight-line fit over it (~475 µs/batch) is
-  not meaningful.
-- **The m cut is flat down to ~8 slabs per batch, then steps up ~20%** (b ≤ 4
-  at nocc 64, b ≤ 2 at nocc 128): a threshold more than a linear δ.
-- **The reps spread 1–3% of the median** with clocks unpinned. On the 640
-  shape that hides a δ below ~10 µs.
+**K agrees everywhere.** The m cut is bitwise against the one-call build at
+every batch size but b = 1 (~1e-15, see below); the P cut agrees to ≤ 6e-14
+relative, resident and streamed.
 
-T_1 at nao 256, naux 768: 29.5 ms at nocc 64 and 59.4 ms at nocc 128, about
-330 GF/s, ~70% of the 3080's fp64 peak.
+### δ is not launch overhead or event waits
+
+`chopped`, `events` and `graph` agree within their fit errors at every shape,
+on both cuts. At nao 640, nocc 128, m cut: δ = −8.3, −7.5 and −10.4 ± 46
+µs/batch. Neither capturing the launches away nor adding the ring's waits
+changes anything measurable, so whatever a batch costs is the GEMMs' own.
+
+### The m cut: no linear δ, a step at small b, and b = 1 is fastest
+
+δ fits to zero within error at nao ≥ 448 (it is 30–55 ± 8 µs at nao 256).
+What there is instead is a step at small b, the slabs per batch (`chopped`):
+
+| nao, nocc | T_1 | b = 32 | b = 8 | b = 4 | b = 2 | b = 1 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 256, 128 | 64.0 | 64.9 | 65.7 | 65.6 | 75.6 | 76.5 |
+| 448, 128 | 369.2 | 371.5 | 371.3 | 371.6 | 403.5 | **357.5** |
+| 640, 64 | 397.2 | 394.7 | 415.7 | 415.8 | 413.4 | **377.5** |
+| 640, 128 | 749.7 | 753.9 | 777.7 | 809.8 | 810.6 | **719.2** |
+
+So at the 640 shape the cost starts below ~32 slabs per batch and reaches 8%
+at b ≤ 4. And at nao ≥ 448, **b = 1 beats the one-call build by 3–5%**, with
+K at ~1e-15 instead of bitwise: cuBLAS evidently takes another algorithm for
+a batch count of one. That says the one strided-batched call `df_exchange`
+makes now is not the fastest form of its own gemm at these shapes. Worth an
+A/B in `jk.cpp` itself (one gemm per slab, or the batched call with a
+different count) before trusting it beyond this card.
+
+### The P cut: tile quantization, not δ
+
+The P cut's straight-line fit (0.5–5 ms/batch) means nothing: its cost is a
+function of b, not of n_b. At nao 640, nocc 128 (`chopped`, T_1 = 749.7):
+
+| b | 1024…128 | 96 | 64 | 48 | 32 | 24 | 16 | 12 | 8 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ms | 749.7–753.8 | 904.0 | 754.0 | 904.5 | 755.7 | 906.4 | 1207.8 | 1509.5 | 2112.5 |
+
+Every power of two from 32 up costs ≤ 1%; the 1.5× points 96, 48 and 24 cost
+20%, the same 150 ms each, and below 32 the time grows like 1/b. nocc 64 and
+nao 448 show the same pattern. **A P batch should be a power of two ≥ 32.**
+
+### Streaming B: the overlap works, and the model holds
+
+The copies alone take 467.1 ms for B's 5.86 GiB (13.5 GB/s, ~half of PCIe 4
+x16's peak), whatever the chunking: `copies` δ = 1.4 µs/chunk. Ring depth R =
+3 is indistinguishable from R = 2 everywhere, so R = 2 is enough.
+
+**Gemms limit (nocc 128, standalone T_1 = 765.9):** at P b = 32 and 64 the
+pipeline takes 758.1 and 764.6 ms, `over` ≤ 0: all 5.86 GiB of copies are
+hidden and the build costs what it does resident. Above that, `over` is the
+unhidden first copy: near the model's T_copy/n_b at small n_b (166 ms at
+n_b = 3 against 156) and falling faster than it (14 at n_b = 15 against 31). At 96, 48, 24 and below 32 the
+P cut's tile penalty shows up unchanged. The m cut's best is b = 1 (770.1
+ms, `over` 4.3) or b = 8 (778.0): the same step as resident.
+
+**Copies limit (nocc 32, T_1 = 200.2):** the P cut gets to 469.7–470.5 ms for
+b = 12…32, within 3 ms of the copies alone. Above that, `over` is exactly
+the compute of the *last* batch, the part that cannot overlap a copy (40 ms
+when it is 384 aux functions, 13 at 128, 19 at 192: T_1 × its share of
+naux). The m cut never gets below 543 ms, `over` 76–98 ms at every b: that
+cut's one syrk runs only after the last slab lands, and nothing hides it.
+For a streamed build **the P cut is the one to use**: its syrk goes with
+each batch.
+
+### Noise
+
+At nao 640 the resident reps spread 4–7% (IQR) while the minima sit within
+0.1% of the median: a few slow reps per config, consistent with clock or
+thermal excursions over a 40 min resident run. The pipeline group's IQR is
+≤ 0.1%. The conclusions above are all 3% effects or larger, or zero.
 
 ### Still to do
 
-1. **The full sweep is ~1 hour of a held card, not ~15 min**: on the 640
-   shape one build is 0.3–0.65 s. The resident groups are ~40 min, the
-   pipeline ~20. Consider dropping `graph` on nao 448 and 640, now that it
-   has answered its question (saves ~¼ of the resident time).
-2. Run it under `with_gpu_card cuda` (`devtools/lib.sh`), through a script
-   file rather than an inline `bash -c`, from the build dir's `.log/`.
-3. Fill in this section with the fits, the pipeline's `over` column against
-   `T_copy/n_b + n_b·δ`, and whether the m cut's step is per-call tile fill.
-4. Then the same on gfx1200 (`hip-experimental`).
+1. The same sweep on gfx1200 (`hip-experimental`).
+2. The m cut's b = 1 result: A/B one gemm per slab against the one batched
+   call in `df_exchange` itself, on both cards.
