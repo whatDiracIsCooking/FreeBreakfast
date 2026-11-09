@@ -43,6 +43,11 @@ export import free_breakfast.core.wwr;
 // built from StreamBuffers, which core.wwr's primary interface defines.
 export import free_breakfast.core.mirrored_buffer;
 
+// Footprint<K> and MemoryFootprint, with then / drop: the bytes a routine or a
+// step holds, per memory kind and lifetime. Its own module rather than a
+// partition of core.wwr: it is vocabulary over wwr's MemoryKind, not a binding.
+export import free_breakfast.core.footprint;
+
 // Deliberately absent: free_breakfast.core.resources (NodeResources). It
 // re-exports taskflow, which every importer of this module would then compile
 // against. Import it explicitly where it is used.
