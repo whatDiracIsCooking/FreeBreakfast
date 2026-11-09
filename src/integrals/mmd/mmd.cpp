@@ -429,30 +429,32 @@ Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &
   return form_sweep(res, basis_sweep(basis), bases, "primitive_pair_classes");
 }
 
-MemoryFootprint primitive_pair_classes_footprint(const BasisSet &basis) {
-  if (basis.nshells() == 0) {
-    return {};
-  }
-  const std::map<ClassKey, ClassPairs> sweep = basis_sweep(basis);
-  const size_t nsh = basis.nshells();
+// form_sweep's footprint over @p sweep, its shells those of @p bases in turn:
+// make_class's fields, 16 doubles and 4 int32_t a record, the classes' own;
+// form_classes' sort, sized to the largest class, the device workspace; and
+// upload's tables, one buffer a field (ShellTable, PairTable): prim_begin,
+// exponent, coefficient, c_x, c_y, c_z, ao_offset, rank; bra, ket, rec_begin,
+// scratch, staged from one pinned carve of the same counts.
+MemoryFootprint sweep_footprint(const std::map<ClassKey, ClassPairs> &sweep,
+                                const std::span<const BasisSet *const> bases) {
+  size_t nsh = 0;
   size_t nprim = 0;
-  for (const Shell &shell : basis.shells()) {
-    nprim += shell.nprimitives();
+  for (const BasisSet *basis : bases) {
+    nsh += basis->nshells();
+    for (const Shell &shell : basis->shells()) {
+      nprim += shell.nprimitives();
+    }
   }
-  const size_t npairs = nsh * (nsh + 1) / 2;
-  // make_class's fields: 16 doubles and 4 int32_t a record, the classes' own;
-  // form_classes' sort, sized to the largest class, in the device workspace.
   MemoryFootprint out;
   size_t n_max = 0;
+  size_t npairs = 0;
   for (const ClassPairs &cp : sweep | std::views::values) {
     const auto n = static_cast<size_t>(cp.rec_begin.back());
     out.device.persistent += n * ((16 * sizeof(double)) + (4 * sizeof(int32_t)));
     n_max = std::max(n_max, n);
+    npairs += cp.bra.size();
   }
   out.device.workspace = mmd_sort_bytes(n_max);
-  // upload's tables, one buffer a field (ShellTable, PairTable): prim_begin,
-  // exponent, coefficient, c_x, c_y, c_z, ao_offset, rank; bra, ket,
-  // rec_begin. Staged from one pinned carve of the same counts.
   const std::array<size_t, 11> table_bytes{sizeof(int32_t) * (nsh + 1),
                                            sizeof(double) * nprim,
                                            sizeof(double) * nprim,
@@ -473,26 +475,43 @@ MemoryFootprint primitive_pair_classes_footprint(const BasisSet &basis) {
   return out;
 }
 
-Result<std::vector<PrimitivePairClass>>
-mixed_primitive_pair_classes(DeviceResources &res, const BasisSet &rows, const BasisSet &cols) {
-  const std::vector<Shell> &row_shells = rows.shells();
-  const std::vector<Shell> &col_shells = cols.shells();
-  const uint32_t n_rows = rows.nshells();
-  if (n_rows == 0 || cols.nshells() == 0) {
-    return std::vector<PrimitivePairClass>{};
+MemoryFootprint primitive_pair_classes_footprint(const BasisSet &basis) {
+  if (basis.nshells() == 0) {
+    return {};
   }
+  const std::array<const BasisSet *, 1> bases{&basis};
+  return sweep_footprint(basis_sweep(basis), bases);
+}
 
-  // The sweep: every ordered shell pair (i of rows, j of cols), never swapped,
-  // listed in its class (la of i, lb of j). In the shell table cols' shells
-  // follow rows', so j is n_rows + j there.
+// The sweep of every ordered shell pair (i of rows, j of cols), never swapped,
+// in its class (la of i, lb of j). In the shell table cols' shells follow
+// rows', so j is n_rows + j there.
+std::map<ClassKey, ClassPairs> mixed_sweep(const BasisSet &rows, const BasisSet &cols) {
   std::map<ClassKey, ClassPairs> sweep;
+  const uint32_t n_rows = rows.nshells();
   for (uint32_t i = 0; i < n_rows; ++i) {
     for (uint32_t j = 0; j < cols.nshells(); ++j) {
-      add_pair(sweep, row_shells[i], col_shells[j], i, n_rows + j);
+      add_pair(sweep, rows.shells()[i], cols.shells()[j], i, n_rows + j);
     }
   }
+  return sweep;
+}
+
+MemoryFootprint mixed_primitive_pair_classes_footprint(const BasisSet &rows, const BasisSet &cols) {
+  if (rows.nshells() == 0 || cols.nshells() == 0) {
+    return {};
+  }
   const std::array<const BasisSet *, 2> bases{&rows, &cols};
-  return form_sweep(res, sweep, bases, "mixed_primitive_pair_classes");
+  return sweep_footprint(mixed_sweep(rows, cols), bases);
+}
+
+Result<std::vector<PrimitivePairClass>>
+mixed_primitive_pair_classes(DeviceResources &res, const BasisSet &rows, const BasisSet &cols) {
+  if (rows.nshells() == 0 || cols.nshells() == 0) {
+    return std::vector<PrimitivePairClass>{};
+  }
+  const std::array<const BasisSet *, 2> bases{&rows, &cols};
+  return form_sweep(res, mixed_sweep(rows, cols), bases, "mixed_primitive_pair_classes");
 }
 
 } // namespace free_breakfast

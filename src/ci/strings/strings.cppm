@@ -23,6 +23,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 
 export namespace free_breakfast::ci {
 
@@ -140,5 +141,11 @@ private:
   Buffers::device<uint64_t> device_strings_;
   Buffers::device<Replacement> device_replacements_;
 };
+
+/// @brief What @ref DeviceStringSet::create holds on the device for
+/// @p n_electrons in @p n_orbitals: the C(n, N) strings and their replacement
+/// lists, N (n - N + 1) links each, persistent. Empty for a set past
+/// StringSet::create's limits, which create refuses.
+[[nodiscard]] MemoryFootprint device_string_set_footprint(int32_t n_orbitals, int32_t n_electrons);
 
 } // namespace free_breakfast::ci

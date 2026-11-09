@@ -15,6 +15,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.recipes.davidson; // DavidsonInfo, in the product
 export import free_breakfast.pipeline.scf;
 
@@ -50,10 +51,9 @@ struct FciStep {
   /// @brief The @ref nroots lowest roots of spin S, 2S + 1 the molecule's
   /// multiplicity, by CasciStep's path with ncas the ScfOutput's orbital count
   /// and nelecas every electron, so no core and the ScfOutput's orbitals in
-  /// their own order. First, before anything is allocated,
-  /// the device memory the determinant space needs (the CI vectors, the
-  /// Davidson subspace, the sigma's scratch, the n^4 integrals) is estimated
-  /// against what the device has free. `ci::solve` runs at a 1e-11 relative
+  /// their own order. First, before anything is allocated, its
+  /// @ref footprint is held against the device's memory budget, and
+  /// ci::Sigma's scratch limited to what the budget leaves. `ci::solve` runs at a 1e-11 relative
   /// residual and 400 iterations, not its defaults (README.md has why).
   /// Synchronizes res.stream(): the integrals and every Davidson iteration
   /// are read back to the host.
@@ -63,9 +63,10 @@ struct FciStep {
   ///         (n_alpha != n_beta), whose n_alpha + n_beta is otherwise the
   ///         electron count; InvalidConfig for a multiplicity that does
   ///         not fit the electrons (2S above N, of the other parity, or
-  ///         N_alpha above nmo); Allocation when
-  ///         the estimate exceeds the device's memory budget
-  ///         (`DeviceResources::memory_budget()`); GpuRuntime for a
+  ///         N_alpha above nmo); Allocation for more determinants than an
+  ///         int32_t counts, or when the footprint at the least scratch
+  ///         exceeds the memory budget (`DeviceResources::memory_budget()`)
+  ///         less its headroom; GpuRuntime for a
   ///         failed memory query or copy; or the error of the first module
   ///         call that failed: `active_space_hamiltonian`'s, `ci::Sigma`'s, or
   ///         `ci::solve`'s.
@@ -73,6 +74,15 @@ struct FciStep {
   run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
            CoreHamiltonianOutput, ScfOutput> in,
       DeviceResources &res) const;
+
+  /// @brief What @ref run holds at @p dims' space, every orbital and
+  /// electron: J's and K's classes and the Hamiltonian, freed once it is on
+  /// the host, then the CI (strings, sigma, diagonal, solve, 1-RDMs), all
+  /// scratch: the product is on the host. ci::Sigma's scratch is the least
+  /// it runs with, one string's G (core/footprint's rule for an adaptive
+  /// part); run takes up to G for the whole space as the budget allows. J's
+  /// classes are counted at every mmd record, their bound.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast

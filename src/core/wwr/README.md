@@ -188,6 +188,22 @@ current value as CUDA does, so `pool_usage()` floors each high-water mark at
 its current value; after `reset_pool_high_water()` both backends then read
 the same.
 
+**Reuse rounding (HIP).** ROCm's pool serves a request whole from a block an
+earlier allocation freed, when the block is at most 9/8 of the request, and
+`UsedMem*` then counts the block, not the request: one allocation is counted
+at most request / 8 past what it asked. CUDA's pool counts the request and
+serves nothing whole. Measured on the gfx1200 (ROCm 7.2.4) by
+`test/core/device_pool_gpu.cpp`'s `DevicePool.ReuseRounding`: for each block
+X from 2 B to 64 MiB, freed on a fresh `Device`, the smallest request served
+from it whole, by bisection, is the smallest Y with 8 X ≤ 9 Y, so
+X − Y ≤ Y / 8, the bound reached from about 12 kB up (smaller blocks round
+it down). It is pool rounding, as the granularity is, only larger and only
+on reuse: a footprint keeps counting requested bytes, and
+`test/support/pool_footprint.h`'s sound bar allows each allocation live at a
+peak its 1/8 on a pool that has it (`kPoolReuseDivisor`, `pool_rounds_reuse`).
+#1143 and #1049 are where it showed: steps that free one phase's buffers
+before the next phase allocates.
+
 ### The fixed reserve outside the pool
 
 What a process holds on the device that no pool counts, measured on the 3080

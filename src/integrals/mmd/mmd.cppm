@@ -231,4 +231,10 @@ struct PrimitivePairClass {
 [[nodiscard]] Result<std::vector<PrimitivePairClass>>
 mixed_primitive_pair_classes(DeviceResources &res, const BasisSet &rows, const BasisSet &cols);
 
+/// @brief What @ref mixed_primitive_pair_classes holds, as
+/// @ref primitive_pair_classes_footprint counts it, over every ordered shell
+/// pair of @p rows and @p cols. Empty if either basis is.
+[[nodiscard]] MemoryFootprint mixed_primitive_pair_classes_footprint(const BasisSet &rows,
+                                                                     const BasisSet &cols);
+
 } // namespace free_breakfast

@@ -13,6 +13,8 @@ import free_breakfast.core.constants; // kOne, kZero, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // axpy, scal, dot, gemmStridedBatched, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;
 import free_breakfast.molecule;
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm, gemmwich
@@ -40,6 +42,14 @@ struct ActiveSpaceScratch {
                      const size_t cols) {
     std::tie(c_cart, work, block, p_sphe) =
         res.device_regions<double>(n_cart * cols, n_cart * cols, cols * cols, n_sphe * n_sphe);
+  }
+
+  // The workspace bytes the constructor's regions take.
+  static size_t bytes(const size_t n_cart, const size_t n_sphe, const size_t cols) {
+    const auto region = [](const size_t count) {
+      return math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
+    };
+    return (2 * region(n_cart * cols)) + region(cols * cols) + region(n_sphe * n_sphe);
   }
 };
 
@@ -260,6 +270,21 @@ Result<ActiveSpaceHamiltonian> active_space_hamiltonian(
       check_active_space("active_space_hamiltonian", res, basis, h, c, ncore, ncas, tau_j, tau_k));
   return build_active_space(res, basis, molecule, h, u, j_classes, k_classes, c, ncore, ncas, tau_j,
                             tau_k, nullptr, nullptr);
+}
+
+MemoryFootprint active_space_hamiltonian_footprint(const BasisSet &basis, const int32_t ncore,
+                                                   const int32_t ncas) {
+  if (ncas < 1 || ncore < 0) {
+    return {};
+  }
+  const size_t n_cart = basis.nao_cart();
+  const auto na = static_cast<size_t>(ncas);
+  MemoryFootprint out;
+  out.device.persistent = sizeof(double) * ((na * na) + (na * na * na * na));
+  out.device.scratch = 3 * sizeof(double) * n_cart * n_cart;
+  out.device.workspace =
+      ActiveSpaceScratch::bytes(n_cart, basis.nao_sphe(), static_cast<size_t>(ncore) + na);
+  return out;
 }
 
 Result<CasscfIntegrals> casscf_integrals(DeviceResources &res, const BasisSet &basis,

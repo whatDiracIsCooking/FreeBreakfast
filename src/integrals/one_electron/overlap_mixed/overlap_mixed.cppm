@@ -13,6 +13,7 @@ import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 
 export namespace free_breakfast {
@@ -62,5 +63,13 @@ export namespace free_breakfast {
 ///         leaves @p s unspecified.
 [[nodiscard]] Status overlap_mixed_spherical(DeviceResources &res, const BasisSet &rows,
                                              const BasisSet &cols, Buffers::device<double> &s);
+
+/// @brief What @ref overlap_mixed_spherical holds over @p rows and @p cols:
+/// the Cartesian block, both U's and the intermediate, all allocated first,
+/// and beside them the mixed records overlap_mixed builds
+/// (mixed_primitive_pair_classes_footprint), scratch; the records' sort, the device workspace, and their
+/// tables' staging, the pinned workspace. Empty if either basis is.
+[[nodiscard]] MemoryFootprint overlap_mixed_spherical_footprint(const BasisSet &rows,
+                                                                const BasisSet &cols);
 
 } // namespace free_breakfast

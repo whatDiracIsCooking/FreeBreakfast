@@ -176,6 +176,7 @@ V read every record. J prunes a copy of them
 | `PrimitivePairClass` | One class `(la, lb)`: `n_rec`, `handle`, one device buffer per field (the three bounds among them), `device_stream()`; `view()` gives a `PrimitivePairClassView` |
 | `PrimitivePairClassView` | The class's device fields by pointer, for the launchers (`primitive_pair_class_view.h`, re-exported) |
 | `mixed_primitive_pair_classes(res, rows, cols)` | The same, between two bases: every ORDERED shell pair (i of `rows`, j of `cols`), never swapped, so `la > lb` classes appear; `off_a` indexes `rows`' AOs and `off_b` `cols'`. What `overlap_mixed` reads, and nothing else: the symmetric builds would mirror its values |
+| `mixed_primitive_pair_classes_footprint(rows, cols)` | Its footprint, counted as `primitive_pair_classes_footprint` counts the one-basis classes' |
 | `primitive_pair_classes(res, basis)` | `Result<std::vector<PrimitivePairClass>>`: every reached class, ascending, none empty, each on a new `DeviceStream`, finished when it returns. `BasisSet` already bounds `nao_cart()` to `INT32_MAX`; a class past `INT32_MAX` records, or a basis past `INT32_MAX` primitives, aborts |
 | `primitive_pair_classes_footprint(basis)` | `MemoryFootprint`: what `primitive_pair_classes` holds, from the host basis: the records persistent; the tables scratch; the sort, sized to the largest class, the device workspace; the tables' staging, the pinned workspace (`core/footprint`) |
 

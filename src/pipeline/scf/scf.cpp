@@ -359,7 +359,7 @@ MemoryFootprint ScfStep::footprint(const FootprintDimensions &dims) const {
   const auto borrowed = [](size_t bytes) {
     return MemoryFootprint{.device = {.workspace = bytes}};
   };
-  const MemoryFootprint eigensolve = diagonalize_footprint<double>(dims.syevd_lwork);
+  const MemoryFootprint eigensolve = diagonalize_footprint<double>(dims.syevd_lwork[dims.nao]);
 
   // scf_loop's ScfState but C and D (d, f, f_diis, e, tmp, work, c and eps),
   // and an open shell's OpenShellState (da, db, fa, fb and the identity).

@@ -17,6 +17,8 @@ import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up, math::binomial
+import free_breakfast.core.footprint;
 import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma;              // Layout
 import free_breakfast.recipes.diagonalize;   // diagonalize
@@ -327,6 +329,128 @@ Status pspace(DeviceResources &res, const StringSet &alpha, const StringSet &bet
                                          static_cast<size_t>(n_roots) * sizeof(double),
                                          wwr::wwrMemcpyDeviceToDevice, stream)));
   return gpu_status(device::scatter(stream, n, n_roots, p, picks, vectors, root_vectors));
+}
+
+MemoryFootprint solve_footprint(const int32_t n_orbitals, const int32_t n_alpha_electrons,
+                                const int32_t n_beta_electrons, const int32_t n_roots,
+                                const SolverOptions &options, const bool with_start,
+                                const std::span<const size_t> syevd_lwork,
+                                const size_t sigma_scratch_limit) {
+  constexpr size_t kAlign = DeviceResources::kWorkspaceAlignment;
+  const auto aligned = [](const size_t bytes) { return math::align_up(bytes, kAlign); };
+  const auto strings = [&](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(n_orbitals, electrons)));
+  };
+  const size_t alpha_strings = strings(n_alpha_electrons);
+  const size_t beta_strings = strings(n_beta_electrons);
+  const size_t dim = alpha_strings * beta_strings;
+  const auto roots = static_cast<size_t>(n_roots);
+  if (dim == 0 || roots == 0 || roots > dim) {
+    return {}; // refused before anything is allocated
+  }
+  // solve's own choices, as it makes them over a Sigma.
+  const int32_t two_s = std::abs(n_alpha_electrons - n_beta_electrons);
+  const size_t packed_dim = alpha_strings * (alpha_strings + 1) / 2;
+  const Layout layout = two_s == 0 && options.spin_penalty > 0.0 && roots <= packed_dim
+                            ? Layout::symmetric
+                            : Layout::full;
+  const size_t length = layout == Layout::symmetric ? packed_dim : dim;
+  const size_t guess_count = std::min(length, 2 * roots);
+  const size_t max_subspace = std::max(2 * roots, std::min(length, 16 * roots));
+  const auto n = static_cast<int64_t>(length);
+  const auto gc = static_cast<int64_t>(guess_count);
+  const int64_t p = options.pspace_size <= 0 ? 0
+                    : n - std::max<int64_t>(options.pspace_size, gc) < gc
+                        ? n
+                        : std::max<int64_t>(options.pspace_size, gc);
+  const bool exact = p == n;
+  const auto pz = static_cast<size_t>(p);
+  const size_t needed = std::max(max_subspace, pz) + 1;
+  if (syevd_lwork.size() < needed) {
+    check_or_abort(Status{err_config("ci::solve_footprint: syevd's work is given through order "
+                                     "{}, and the solve diagonalizes up to order {}",
+                                     static_cast<int64_t>(syevd_lwork.size()) - 1, needed - 1)});
+  }
+  const auto lwork_through = [&](const size_t order) {
+    return *std::ranges::max_element(syevd_lwork.first(order + 1));
+  };
+  const auto davidson_order = static_cast<int32_t>(length);
+  const auto ortho = [&](const size_t k) {
+    return orthonormalize_footprint<double>(davidson_order, static_cast<int32_t>(k),
+                                            lwork_through(k));
+  };
+
+  // Held from entry: guess, shifted, values, vectors, picks, the P-space's U
+  // and Λ, and S²'s table.
+  const size_t held = (sizeof(double) * ((length * guess_count) + length + roots +
+                                         (length * roots) + (pz * pz) + pz)) +
+                      (sizeof(int32_t) * std::max(pz, guess_count)) +
+                      (sizeof(int32_t) * beta_strings * static_cast<size_t>(n_orbitals) *
+                       static_cast<size_t>(n_orbitals));
+  const size_t sigma =
+      exact ? 0
+            : sigma_apply_bytes(n_orbitals, static_cast<int32_t>(alpha_strings),
+                                static_cast<int32_t>(beta_strings), layout, sigma_scratch_limit);
+  size_t peak = held;
+  size_t workspace = 0;
+  if (p > 0) {
+    workspace = std::max(
+        {workspace,
+         aligned(sizeof(uint64_t) * device::kCiLowestScratch) + aligned(sizeof(int32_t) * pz),
+         aligned(sizeof(uint64_t) * alpha_strings) +
+             aligned(layout == Layout::symmetric ? 0 : sizeof(uint64_t) * beta_strings),
+         diagonalize_footprint<double>(syevd_lwork[pz]).device.workspace});
+  }
+  if (!exact) {
+    // The guesses: the caller's start, orthonormalized; the P-space's
+    // eigenvectors or the lowest diagonal's picks, made orthonormal by Gram-
+    // Schmidt or, canonically, by orthonormalize.
+    if (with_start) {
+      const MemoryFootprint start = ortho(roots);
+      peak = std::max(peak, held + start.device.scratch);
+      workspace = std::max(workspace, start.device.workspace);
+    } else {
+      if (p == 0) {
+        workspace = std::max(workspace, aligned(sizeof(uint64_t) * device::kCiLowestScratch) +
+                                            aligned(sizeof(int32_t) * guess_count));
+      }
+      if (options.davidson.canonical_orthonormalization) {
+        const MemoryFootprint guesses = ortho(guess_count);
+        peak = std::max(peak, held + guesses.device.scratch);
+        workspace = std::max(workspace, guesses.device.workspace);
+      }
+    }
+    // Both stages' davidson_solve, the Sigma's scratch from the first apply.
+    const MemoryFootprint davidson =
+        davidson_footprint<double>(davidson_order, n_roots, static_cast<int32_t>(max_subspace),
+                                   options.davidson, lwork_through(max_subspace));
+    peak = std::max(peak, held + sigma + davidson.device.scratch);
+    workspace = std::max(workspace, davidson.device.workspace);
+    // The preconditioner's: Olsen's dots, or the P-space's gathers.
+    if (p > 0) {
+      workspace = std::max(workspace, aligned(sizeof(double) * 2 * roots) +
+                                          (2 * aligned(sizeof(double) * pz)) +
+                                          aligned(sizeof(double) * length));
+    } else if (options.olsen_correction) {
+      workspace = std::max(workspace, aligned(sizeof(double) * 2 * roots));
+    }
+    // Stage 2 from [X, X_prev], orthonormalized.
+    if (options.fp32_tolerance > options.davidson.residual_tolerance &&
+        options.restart_with_previous && guess_count >= 2 * roots) {
+      const MemoryFootprint previous = ortho(2 * roots);
+      peak = std::max(peak, held + sigma + previous.device.scratch);
+      workspace = std::max(workspace, previous.device.workspace);
+    }
+  }
+  // The roots unpacked beside the packed ones.
+  if (layout == Layout::symmetric) {
+    peak = std::max(peak, held + sigma + (sizeof(double) * dim * roots));
+  }
+  MemoryFootprint out;
+  out.device.persistent = (sizeof(double) * dim * roots) + sigma;
+  out.device.scratch = peak - out.device.persistent;
+  out.device.workspace = workspace;
+  return out;
 }
 
 } // namespace free_breakfast::ci

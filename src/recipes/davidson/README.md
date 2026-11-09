@@ -61,6 +61,7 @@ After `MaxIterationsExceeded` or `Divergence`, `eigenvalues` and `eigenvectors` 
 |---|---|
 | `davidson_solve<T>(…)` | `Result<DavidsonInfo>`: the `n_roots` lowest eigenpairs of `op`. Any `real_fp` `T`; a template instantiated by the caller. |
 | `previous_eigenvectors` | The optional last argument, null by default: out, n × n_roots, X_prev on every return that writes `eigenvectors` |
+| `davidson_footprint<T>(n, n_roots, max_subspace, options, syevd_lwork)` | `MemoryFootprint`: the subspace buffers (and, with `canonical_orthonormalization`, orthonormalize's), scratch; the device workspace, syevd's work at its largest over the subspace's orders, `syevd_lwork`, or orthonormalize's product. The operator and the preconditioner are the caller's to add |
 | `DavidsonOptions` | `residual_tolerance` (1e-8), `max_iterations` (100), `linear_dependence_floor` (1e-12), `canonical_orthonormalization` (false) |
 | `DavidsonInfo` | `iterations`, `max_residual_norm` |
 | `DavidsonPreconditioner<F, T>` | `f(res, theta, ritz_vectors, residual, correction)`, callable on a const `F`, returns something convertible to `Status`; `theta` is a host `std::span<const T>` of the current Ritz values, one per column |
@@ -106,5 +107,5 @@ const auto info = fb::davidson_solve<double>(res, op, precondition, n, n_roots, 
 
 | File | Role |
 |------|------|
-| `davidson.cppm` | Module interface: `davidson_solve`, its options, info and preconditioner concept |
+| `davidson.cppm` | Module interface: `davidson_solve`, its footprint, its options, info and preconditioner concept |
 | `CMakeLists.txt` | The module `free_breakfast.recipes.davidson` |

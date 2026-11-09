@@ -225,6 +225,21 @@ MemoryFootprint orthogonalize_footprint(const int32_t n, const size_t syevd_lwor
   return out;
 }
 
+template <real_fp T>
+MemoryFootprint orthonormalize_footprint(const int32_t n, const int32_t k,
+                                         const size_t syevd_lwork) {
+  if (k <= 0) {
+    return {};
+  }
+  const auto kz = static_cast<size_t>(k);
+  MemoryFootprint out = diagonalize_footprint<T>(syevd_lwork);
+  out.device.scratch = sizeof(T) * ((kz * kz) + (2 * kz));
+  out.device.workspace =
+      std::max(out.device.workspace, math::align_up(static_cast<size_t>(n) * kz * sizeof(T),
+                                                    DeviceResources::kWorkspaceAlignment));
+  return out;
+}
+
 template Status orthogonalize<float>(DeviceResources &, int32_t, const float *, float *, float);
 template Status orthogonalize<double>(DeviceResources &, int32_t, const double *, double *, double);
 template Result<int32_t> orthonormalize<float>(DeviceResources &, int32_t, int32_t, float *, float);
@@ -232,5 +247,7 @@ template Result<int32_t> orthonormalize<double>(DeviceResources &, int32_t, int3
                                                 double);
 template MemoryFootprint orthogonalize_footprint<float>(int32_t, size_t);
 template MemoryFootprint orthogonalize_footprint<double>(int32_t, size_t);
+template MemoryFootprint orthonormalize_footprint<float>(int32_t, int32_t, size_t);
+template MemoryFootprint orthonormalize_footprint<double>(int32_t, int32_t, size_t);
 
 } // namespace free_breakfast

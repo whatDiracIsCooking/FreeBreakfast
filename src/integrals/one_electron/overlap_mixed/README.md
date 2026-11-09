@@ -65,6 +65,7 @@ at the end, so the host U's outlive their upload. `localization/ibo` and
 |---|---|
 | `overlap_mixed(res, rows, cols, s)` | `Status`: the Cartesian S_{rows,cols} into `s` |
 | `overlap_mixed_spherical(res, rows, cols, s)` | `Status`: the spherical S_{rows,cols} into `s` |
+| `overlap_mixed_spherical_footprint(rows, cols)` | `MemoryFootprint`: the Cartesian block, both U's and the intermediate, allocated first, beside the mixed records, scratch; the records' sort the device workspace and their staging the pinned one |
 
 ## Usage
 
@@ -93,7 +94,7 @@ Every build writes into a buffer of NaN. Plus the refusals.
 
 | File | Role |
 |------|------|
-| `overlap_mixed.cppm` | Module interface: `overlap_mixed`, `overlap_mixed_spherical` |
+| `overlap_mixed.cppm` | Module interface: `overlap_mixed`, `overlap_mixed_spherical` and its footprint |
 | `overlap_mixed.cpp` | Implementation: the checks, the records, the zeroing, the launch; the spherical form's two gemms |
 | `overlap_mixed_launch.cu` | The launcher over the generated kernels, the class swapped |
 | `overlap_mixed_bridge.h` | The launcher's declaration, shared by the `.cu` and the implementation unit's GMF |

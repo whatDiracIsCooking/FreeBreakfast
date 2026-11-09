@@ -60,7 +60,8 @@ struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_
    own default screens (`tau_j` 1e-14; see `integrals/active_space/`), from J
    and K classes built from `PrimitivePairClassesOutput` per run, as the Scf step does.
    E_core holds the core's energy and the nuclear repulsion, so every energy
-   is a total.
+   is a total. It and the classes are freed once h_eff and (tu|vw) are on the
+   host, before the CI allocates.
 3. **The CI.** h_eff and (tu|vw) are read back and reordered row-major,
    `ci::Sigma` (the GPU sigma) is built over the strings of N_α and N_β
    electrons, N_α − N_β = 2S from the molecule's multiplicity 2S + 1, its
@@ -73,6 +74,15 @@ struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_
    by descending occupation; the core at occupation 2, the rest at 0. Each
    orbital's energy is its expectation in the ScfOutput's Fock matrix,
    Σ_k R_kj² ε_k, as the Localization step's Molden file gives its orbitals.
+
+**The footprint**, `footprint(dims)` at `dims`' ncas and nelecas, is
+`then(select_footprint, then(drop(J, K, the Hamiltonian), drop(the CI and the
+Molden eigenproblem)))`: `CasciOutput::c` the one persistent term, every other
+its library's own (`coulomb_pair_classes_footprint` at every mmd record, the
+prune's bound; `ordered_pair_classes_footprint`;
+`active_space_hamiltonian_footprint`; `active_space_ci_footprint` at
+`ci::solve`'s defaults). Under AVAS it is exact at the space picked, which a
+caller that knows it puts in `dims`.
 
 What it settled:
 
@@ -177,5 +187,5 @@ hand in `pipeline_calculation_gpu.cpp`.
 | File | Role |
 |------|------|
 | `casci.cppm` | Module interface: `CasciOutput`, `CasciStep` |
-| `casci.cpp` | `run`: the selection, the Hamiltonian, the CI solve, the 1-RDMs, the Molden file |
+| `casci.cpp` | `run`: the selection, the Hamiltonian, the CI solve, the 1-RDMs, the Molden file; and `footprint` |
 | `CMakeLists.txt` | The module library |

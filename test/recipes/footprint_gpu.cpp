@@ -1,5 +1,6 @@
 // The footprints (#1044) of the recipes the RHF chain calls (#1048):
-// diagonalize, orthogonalize, Diis, and matrix_ao's U and MatrixAOPair. Each
+// diagonalize, orthogonalize, Diis, and matrix_ao's U and MatrixAOPair; and
+// those the CI calls (#1049): orthonormalize and davidson_solve. Each
 // is held to the pool peak of one call by test/support/pool_footprint.h's two
 // bars, sound (the measured peak is no more than the footprint's) and tight
 // (within G x A), so an undercount fails at the routine that owns the
@@ -88,6 +89,128 @@ TEST(RecipesFootprint, Orthogonalize) {
   // U and the eigenvalues.
   expect_routine_footprint(
       res, fp, 2, [&] { EXPECT_TRUE(fb::orthogonalize<double>(res, kN, s.data(), x.data())); });
+}
+
+// syevd's largest work over orders 1..k: what the orthonormalize and
+// Davidson footprints take for the orders they diagonalize at.
+std::size_t lwork_through(fb::DeviceResources &res, std::int32_t k) {
+  std::size_t most = 0;
+  for (std::int32_t order = 1; order <= k; ++order) {
+    const auto lwork = fb::syevd_lwork<double>(res, order);
+    EXPECT_TRUE(lwork);
+    most = std::max(most, lwork.value_or(0));
+  }
+  return most;
+}
+
+// A random kN x kK block, independent columns: both canonical passes keep
+// all kK, and the product is kN x kK.
+TEST(RecipesFootprint, Orthonormalize) {
+  FBF_REQUIRE_GPU();
+  constexpr std::int32_t kK = 6;
+  fb::DeviceResources res{0};
+  const fb::MemoryFootprint fp =
+      fb::orthonormalize_footprint<double>(kN, kK, lwork_through(res, kK));
+  std::mt19937 gen{20261109U};
+  std::uniform_real_distribution<double> dist{-1.0, 1.0};
+  std::vector<double> host(static_cast<std::size_t>(kN) * kK);
+  for (double &x : host) {
+    x = dist(gen);
+  }
+  fb::Buffers::device<double> v(host.size(), res.device());
+  // G, its eigenvalues and D, one buffer.
+  expect_routine_footprint(res, fp, 1, [&] {
+    EXPECT_EQ(wwr::wwrMemcpyAsync(v.data(), host.data(), sizeof(double) * host.size(),
+                                  wwr::wwrMemcpyHostToDevice, res.stream()),
+              wwr::wwrSuccess);
+    const auto kept = fb::orthonormalize<double>(res, kN, kK, v.data(), 1e-12);
+    ASSERT_TRUE(kept);
+    EXPECT_EQ(*kept, kK);
+  });
+}
+
+// davidson_solve over A = diag(1..kN) + 1e-2 (R + R^T), one gemm an apply, a
+// host-side diagonal preconditioner: neither allocates through the pool. Two
+// roots in a subspace of 2 n_roots, which the second iteration fills, so
+// syevd runs at every order up to it; with canonical_orthonormalization off
+// and on.
+TEST(RecipesFootprint, Davidson) {
+  FBF_REQUIRE_GPU();
+  constexpr std::int32_t kRoots = 2;
+  constexpr std::int32_t kSubspace = 2 * kRoots;
+  std::mt19937 gen{20261004U};
+  std::uniform_real_distribution<double> dist{-1.0, 1.0};
+  std::vector<double> a(static_cast<std::size_t>(kN) * kN, 0.0);
+  for (std::int32_t j = 0; j < kN; ++j) {
+    for (std::int32_t i = j; i < kN; ++i) {
+      a[i + (j * kN)] = a[j + (i * kN)] = i == j ? static_cast<double>(j + 1) : 1e-2 * dist(gen);
+    }
+  }
+  struct Dense {
+    const double *a;
+    fb::Status apply(fb::DeviceResources &r, std::int32_t k, const double *x, double *y) const {
+      const double one = 1.0;
+      const double zero = 0.0;
+      return fb::gpu_status(wwr::gemm<double, std::int32_t>(r.blas().get(), wwr::WWRBLAS_OP_N,
+                                                            wwr::WWRBLAS_OP_N, kN, k, kN, &one, a,
+                                                            kN, x, kN, &zero, y, kN));
+    }
+  };
+  for (const bool canonical : {false, true}) {
+    SCOPED_TRACE(canonical);
+    fb::DeviceResources res{0};
+    fb::Buffers::device<double> a_device(a.size(), res.device());
+    EXPECT_EQ(wwr::wwrMemcpyAsync(a_device.data(), a.data(), sizeof(double) * a.size(),
+                                  wwr::wwrMemcpyHostToDevice, res.stream()),
+              wwr::wwrSuccess);
+    // The unit vectors on the two lowest diagonal elements.
+    std::vector<double> guess_host(static_cast<std::size_t>(kN) * kRoots, 0.0);
+    for (std::int32_t r = 0; r < kRoots; ++r) {
+      guess_host[r + (r * kN)] = 1.0;
+    }
+    fb::Buffers::device<double> guess(guess_host.size(), res.device());
+    EXPECT_EQ(wwr::wwrMemcpyAsync(guess.data(), guess_host.data(),
+                                  sizeof(double) * guess_host.size(), wwr::wwrMemcpyHostToDevice,
+                                  res.stream()),
+              wwr::wwrSuccess);
+    fb::Buffers::device<double> values(kRoots, res.device());
+    fb::Buffers::device<double> vectors(guess_host.size(), res.device());
+    EXPECT_TRUE(res.sync());
+    fb::DavidsonOptions options;
+    options.canonical_orthonormalization = canonical;
+    const fb::MemoryFootprint fp = fb::davidson_footprint<double>(kN, kRoots, kSubspace, options,
+                                                                  lwork_through(res, kSubspace));
+    const auto precondition = [&](fb::DeviceResources &r, std::span<const double> theta,
+                                  const double *, const double *residual,
+                                  double *correction) -> fb::Status {
+      std::vector<double> host(static_cast<std::size_t>(kN) * theta.size());
+      EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), residual, sizeof(double) * host.size(),
+                                    wwr::wwrMemcpyDeviceToHost, r.stream()),
+                wwr::wwrSuccess);
+      EXPECT_TRUE(r.sync());
+      for (std::size_t c = 0; c < theta.size(); ++c) {
+        for (std::int32_t j = 0; j < kN; ++j) {
+          double d = theta[c] - a[j + (j * kN)];
+          d = std::abs(d) < 1e-3 ? (d < 0.0 ? -1e-3 : 1e-3) : d;
+          host[(c * kN) + j] /= d;
+        }
+      }
+      EXPECT_EQ(wwr::wwrMemcpyAsync(correction, host.data(), sizeof(double) * host.size(),
+                                    wwr::wwrMemcpyHostToDevice, r.stream()),
+                wwr::wwrSuccess);
+      return r.sync();
+    };
+    Dense op{a_device.data()};
+    // V, A V, V^T A V, H, the Ritz values, A X, R, the corrections, V^T C, the
+    // norms and the overlaps; orthonormalize's one buffer when canonical.
+    expect_routine_footprint(res, fp, 11 + (canonical ? 1 : 0), [&] {
+      const auto info =
+          fb::davidson_solve<double>(res, op, precondition, kN, kRoots, kSubspace, guess.data(),
+                                     kRoots, values.data(), vectors.data(), options);
+      ASSERT_TRUE(info) << info.error().message;
+      EXPECT_GE(info->iterations, 2);
+    });
+  }
 }
 
 // The history allocated, then pushed past its capacity: the pushes allocate

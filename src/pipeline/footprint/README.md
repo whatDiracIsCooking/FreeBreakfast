@@ -18,7 +18,7 @@ functions only, so there is no implementation unit.
 
 | Export | What |
 |---|---|
-| `FootprintDimensions` | The plan's dimensions, before the first step: the placed orbital basis and, under density fitting, the aux basis (const pointers), nao, naux, nocc / n_alpha / n_beta, natoms, mmd's record counts per (la, lb), syevd's lwork at nao, and worst-case ncas / nelecas (0 when no active space is planned). [`pipeline/shape`](../shape/README.md)'s `plan_shape` fills it |
+| `FootprintDimensions` | The plan's dimensions, before the first step: the placed orbital basis and, under density fitting, the aux basis, and under AVAS MINAO (const pointers), the molecule's atoms, nao, naux, nocc / n_alpha / n_beta, natoms, mmd's record counts per (la, lb), syevd's lwork at every order through the plan's largest eigensolve, and worst-case ncas / nelecas (0 when no active space is planned). [`pipeline/shape`](../shape/README.md)'s `plan_shape` fills it |
 | `step_footprint(step, dims)` | A step's footprint, or none for a step that has no footprint member yet |
 | `PlanFootprint`, `plan_footprint(steps)` | The plan fold: `then` over one device's step footprints in plan order, with the step at which each kind's peak is reached |
 
@@ -34,11 +34,26 @@ no Cartesian AO count and no table of K's blocks. `nao` and `naux` stay, as
 the scalars most footprints are written in. `mmd_records` stays because J's
 footprint, `coulomb_pair_classes_footprint`, takes it.
 
-**syevd's lwork is a dimension.** `diagonalize`, `orthogonalize` and the
-lindep fit size their workspace by the solver's own query, a host computation
-through a handle. `plan_shape` makes it once, at nao, through the plan's
-`DeviceResources`, so a step's `footprint(dims)` holds no handle. There is
-none at naux: no step fits with lindep.
+**syevd's lwork is a dimension, by order.** `diagonalize`, `orthogonalize`,
+`orthonormalize` and the lindep fit size their workspace by the solver's own
+query, a host computation through a handle. `syevd_lwork[k]` is that query at
+order k, for every k from 0 through the plan's largest eigensolve, which
+`plan_shape` makes through the plan's `DeviceResources`, so a step's
+`footprint(dims)` holds no handle. The RHF chain reads `syevd_lwork[nao]`.
+The CI steps diagonalize at orders of their own: AVAS's labelled MINAO
+overlap and its projectors, the natural orbitals at ncas, and the Davidson's
+Rayleigh-Ritz problem, at every subspace size up to 16 nroots columns, which
+can pass nao (FCI over 7 orbitals, 16 columns). A footprint reads each order
+it diagonalizes at, and the Davidson's largest over its subspace: the most it
+can take, reached when the subspace fills before it converges. One table,
+one name: the largest order is nao, a CI's 16 nroots, a CASSCF's augmented
+Hessian (ah_max_subspace + 1) or MINAO's AO count under AVAS. There is none
+at naux: no step fits with lindep.
+
+**MINAO and the atoms are carried for AVAS.** The selection's footprint sizes
+MINAO's overlaps from the MINAO basis `plan_shape` places, and the labelled
+AOs from the labels matched against the atoms (`avas_minao_aos`), so neither
+is counted beside them.
 
 ## A step's footprint
 
@@ -55,7 +70,8 @@ routines export (`core/footprint`'s library pattern) with `then` and `drop`,
 so it reads like the routine it describes:
 `return then(drop(b_mo_fp), drop(jk_fp));`.
 
-The RHF chain's steps carry theirs, from the Molecule to the Scf.
+The RHF chain's steps carry theirs, from the Molecule to the Scf, and the CI
+steps CASCI and FCI theirs (#1049; CASSCF's is #1151).
 `test/gtest/pipeline_step_footprint_gpu.cpp` is the step test's pattern: the
 dimensions are `plan_shape`'s over a parsed config, the step is the one it
 planned, and each runs on a fresh `DeviceResources`, once to grow the
@@ -145,6 +161,22 @@ chain's per-class streams (mmd's, J's and K's classes), which allocate beside
 headroom is that one chunk, not the largest gap measured, because the gap is
 the chunk's remainder and any run can leave nearly all of it. The test holds
 each chain's gap to it.
+
+**Reuse rounding (HIP).** ROCm's pool also serves a request whole from a
+block an earlier allocation freed, when the block is at most 9/8 of the
+request, and counts the block: up to request / 8 more than asked, on reuse
+only (`core/wwr`'s README has the measurement). A step that frees one phase
+before the next allocates, as CASCI and FCI free the Hamiltonian before the
+CI, can then peak a few bytes past its footprint on the gfx1200 (12 B and
+64 B measured, #1049). The footprint still counts requested bytes, and the
+footprint tests' sound bar allows the pool its rounding there: at most 1/8
+of the footprint, the sum of the requests live at the peak
+(`test/support/pool_footprint.h`), logged when used, and nothing on CUDA. At
+run time pre-flight's 32 MiB headroom covers the overcounts measured, as it
+covers the chunk rounding above. The bound itself, 1/8 of a footprint, is
+larger than 32 MiB for a step past 256 MiB, so a HIP plan whose peak sits
+within that of its cap could still be refused by the pool: pre-flight's to
+weigh (#1051).
 
 **HIP is not measured here.** ROCm's pool reserves in its own steps and resets
 a high-water mark to 0 (`core/wwr`'s README); its gap needs its own run on the

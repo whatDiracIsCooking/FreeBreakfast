@@ -17,13 +17,15 @@ clarity, not speed, and linked by the tests alone.
 | `ci::Sigma::set_integrals(res, e_core, h_eff, eri)` | Upload an H over them, replacing any before; `Status` |
 | `ci::Sigma::apply(res, k, x, y, layout = full)` | Y = H X for size(layout) × k device blocks: the `LinearOperator` member; `Status` |
 | `ci::Sigma::apply_fp32(res, k, x, y, layout = full)` | The same Y = H X over the same double blocks, D, G and the gemm in float, to ~1e-7 relative; `ci::solve`'s first stage; `Status` |
-| `ci::Sigma::set_workspace_limit(bytes)` | Bound `apply`'s and `apply_fp32`'s device workspace; past it G is computed a block of strings at a time (below) |
+| `ci::Sigma::set_scratch_limit(bytes)` | Bound `apply`'s and `apply_fp32`'s scratch; past it G is computed a block of strings at a time (below). Before the first apply, which allocates the scratch |
 | `ci::Sigma::diagonal(res, diagonal)` | diag(H) into size() device doubles; `Status` |
 | `ci::Sigma::exchange()` | The device (ij\|ji), n × n, that `ci::solve`'s spin-averaged diagonal takes; null before `set_integrals` |
 | `ci::Sigma::contraction()` | The device ½ (tu\|vw) and k_vw, packed over the pairs, that `apply` contracts and `ci::solve`'s P-space reads its Slater–Condon elements from; null before `set_integrals` |
 | `ci::Sigma::rdm1(res, c, gamma, layout)` | The 1-RDM γ_tu = ⟨c\|E_tu\|c⟩ of one device vector, full or packed (`layout`, default full), into n × n device doubles; `Status` |
 | `ci::Sigma::size(layout = full)` | The operator's n: alpha.size() · beta.size(), or the symmetric layout's alpha.size() (alpha.size() + 1) / 2 |
 | `ci::Layout` | `full`, every determinant; or `symmetric`, the packed triangle of a vector symmetric under the swap of the two strings |
+| `ci::sigma_footprint(n_orbitals, n_alpha_strings, n_beta_strings, rdm1_layout = full)` | `MemoryFootprint`: the contraction (double and float) and the diagonal terms, persistent; `rdm1`'s packed sums and D chunk, the device workspace |
+| `ci::sigma_apply_bytes(n_orbitals, n_alpha_strings, n_beta_strings, layout, limit = unbounded)` | The bytes of the scratch the first `apply` allocates and the Sigma keeps: G and a chunk of D for the whole vector, double's or float's, where that fits `limit`, else the largest block of strings that does; at limit 0 the least it runs with, one string's |
 | `ci::unpack(res, n_strings, k, x, y)` | k symmetric-layout device vectors into full ones; `Status` |
 | `ci::pack(res, n_strings, k, x, y)` | k full-layout device vectors into symmetric-layout ones, `ci::unpack`'s inverse on swap-symmetric vectors (its adjoint: any other goes to its symmetric part); `ci::solve`'s start; `Status` |
 
@@ -76,7 +78,12 @@ Step 3 turns the host's scatter into a gather, so no thread writes another's
 element: nothing is atomic and a run's result does not depend on scheduling.
 D and G are packed over the pairs v ≥ w, n(n+1)/2 of them, because (tu\|vw) is
 symmetric in each pair; D's packed entry is D[vw] + D[wv]. The scratch is
-`res.device_workspace()`: G for one vector's rows, rows · (P + 1) with
+the Sigma's own pool buffer, allocated by the first `apply` and kept to its
+end (so a solve's every apply reuses it), not `res.device_workspace()`: the
+workspace is fixed-size and held through every step of a plan at its
+largest, and this is a one-step intermediate whose size is sometimes chosen
+from the memory budget (`core/footprint`, #1049). It is G for one vector's
+rows, rows · (P + 1) with
 P = n(n+1)/2, and D for one 64 MiB chunk of them. G spans the whole vector
 because step 3 reads any J's row, but only J's in I's own vector, so `apply`
 runs the three steps one vector of the block at a time and the scratch does
@@ -91,9 +98,9 @@ the triangle's in the symmetric one (below), so G is, in double:
 
 and half that again in float (`apply_fp32`).
 
-**Past a workspace limit, G goes a block of strings at a time.** At
+**Past a scratch limit, G goes a block of strings at a time.** At
 CAS(14,14) the symmetric G is 5 GB beside ~5 GB of Davidson subspace, past the
-RTX 3080's 10 GB, so `set_workspace_limit` bounds the scratch. While G for the
+RTX 3080's 10 GB, so `set_scratch_limit` bounds the scratch. While G for the
 whole vector and a chunk of D fit the limit nothing changes, to the bit (and
 unset, the limit is unbounded). Past it, step 3 is split by which of I's links
 a G row serves. Row I = (a, b) reads G at
@@ -135,15 +142,17 @@ more. (A block also holds both G(s, x) and G(x, s) when s, x ∈ S; skipping the
 mirrored copies would trim the work by |S|² / 2 a block, at the cost of a
 ragged block.)
 
-The block is the most strings whose G and D fit the limit, at least one. While
-bounded, a call first grows the workspace to the lesser of the limit and
-`apply`'s unblocked double scratch, so `ci::solve`'s `apply_fp32` stage and its
-`apply` stage carve one allocation, and the limit holds at the peak: a growth
-from the float workspace to the double one would hold both for a moment.
-`pipeline/fci` sets the limit to whatever its memory estimate leaves free.
+The block is the most strings whose G and D fit the limit, at least one. The
+scratch is sized once for `apply` and `apply_fp32` alike
+(`ci::sigma_apply_bytes`: the larger of the two, each unblocked where it fits
+the limit), so `ci::solve`'s `apply_fp32` stage and its `apply` stage share one
+allocation, and the limit holds at the peak. A later call in a layout of more
+rows frees the old scratch before it allocates the new. `pipeline/fci` sets
+the limit to what its footprint leaves of the memory budget.
 
 On the RTX 3080, at N₂ cc-pVDZ CAS(12,12) (78 pairs) a sigma column costs, per
-`bench/ci_sigma_blocked`, with the workspace it takes:
+`bench/ci_sigma_blocked`, with the scratch it takes (measured when the scratch
+was still the device workspace, #1049 moved it; the sizes are the same):
 
 | Layout, precision | Unbounded | Under 200 MiB | Under 100 MiB |
 |---|---|---|---|
@@ -152,11 +161,11 @@ On the RTX 3080, at N₂ cc-pVDZ CAS(12,12) (78 pairs) a sigma column costs, per
 | symmetric, FP64 | 18.2 ms, 322 MiB | 38.5 ms | 37.4 ms |
 | symmetric, FP32 | 3.0 ms, 193 MiB | 3.0 ms (fits unblocked) | 6.9 ms |
 
-(the workspace under a limit is the limit: the call grows it there first).
+(the scratch under a limit is at most the limit).
 Blocking costs the predicted 2×, and nothing more as the blocks shrink. So blocking is
 off unless asked for: unset, `apply` is the single pass it was. N₂ cc-pVDZ
-CAS(14,14), three singlets, which wants a 5 GB G unblocked and aborts on the
-workspace growth on that card, converges in `ci::solve`'s symmetric layout
+CAS(14,14), three singlets, which wants a 5 GB G unblocked and aborts on its
+allocation on that card, converges in `ci::solve`'s symmetric layout
 under a 3000 MiB limit in 217 s, at a card-wide peak of 9,475 MiB, 767 of it
 held before the run.
 

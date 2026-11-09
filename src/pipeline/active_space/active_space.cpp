@@ -11,6 +11,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.atom;
 import free_breakfast.io.basis;
 import free_breakfast.io.npy;
@@ -18,6 +19,8 @@ import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.recipes.orthogonalize;
 import free_breakfast.integrals.one_electron.overlap_mixed;
+import free_breakfast.ci.strings;
+import free_breakfast.ci.sigma;
 
 #include "diagnostics.h"
 
@@ -110,7 +113,7 @@ struct AvasRotation {
 // "<symbol> <n><l>": every component of the shell of that n and l on every
 // atom of that element, n counted from l + 1 over the atom's shells of that l
 // in file order, as PySCF's ao_labels counts them.
-[[nodiscard]] Result<std::vector<bool>> avas_minao_aos(const Molecule &molecule,
+[[nodiscard]] Result<std::vector<bool>> avas_minao_aos(std::span<const Atom> atoms,
                                                        const BasisSet &minao,
                                                        std::span<const std::string> labels) {
   constexpr std::string_view kMomenta = "spdfghi";
@@ -142,7 +145,7 @@ struct AvasRotation {
   std::vector<bool> chosen(minao.nao_sphe(), false);
   std::vector<bool> matched(parsed.size(), false);
   for (uint32_t atom = 0; atom < minao.natoms(); ++atom) {
-    const Element element = molecule.atoms()[atom].element;
+    const Element element = atoms[atom].element;
     std::array<int32_t, kMomenta.size()> seen{};
     const uint32_t first = minao.atom_shell_offset(atom);
     for (uint32_t s = first; s < first + minao.atom_shell_count(atom); ++s) {
@@ -188,31 +191,34 @@ struct AvasRotation {
   }
   const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
   const BasisSet minao = FBF_TRY(place(stamp.primitive_normalized(), molecule));
-  const std::vector<bool> chosen = FBF_TRY(avas_minao_aos(molecule, minao, labels));
+  const std::vector<bool> chosen = FBF_TRY(avas_minao_aos(molecule.atoms(), minao, labels));
 
   const size_t nms = minao.nao_sphe();
   const size_t nao = basis.nao_sphe();
   const size_t nmo = scf.mo_energies.size();
   const auto nocc = static_cast<size_t>(scf.n_alpha);
   const wwr::wwrStream_t stream = res.stream();
-  // <MINAO AO | MO> = S(MINAO, basis) C, nms x nmo, and S(MINAO, MINAO).
-  Buffers::device<double> s_mix_device(nms * nao, res.device());
-  Buffers::device<double> s_mm_device(nms * nms, res.device());
-  Buffers::device<double> s_mo_device(nms * nmo, res.device());
-  FBF_TRY(overlap_mixed_spherical(res, minao, basis, s_mix_device));
-  FBF_TRY(overlap_mixed_spherical(res, minao, minao, s_mm_device));
-  FBF_TRY(gpu_status(gemm(res.blas(), static_cast<int32_t>(nms), static_cast<int32_t>(nmo),
-                          static_cast<int32_t>(nao), &kOne<double>, s_mix_device.data(),
-                          scf.c.data(), &kZero<double>, s_mo_device.data())));
+  // <MINAO AO | MO> = S(MINAO, basis) C, nms x nmo, and S(MINAO, MINAO), to
+  // the host; their device buffers are freed before the eigenproblems.
   std::vector<double> s_mo(nms * nmo);
   std::vector<double> s_mm(nms * nms);
-  FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(s_mo.data(), s_mo_device.data(), s_mo.size() * sizeof(double),
-                                     wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(s_mm.data(), s_mm_device.data(), s_mm.size() * sizeof(double),
-                                     wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(res.sync());
+  {
+    Buffers::device<double> s_mix_device(nms * nao, res.device());
+    Buffers::device<double> s_mm_device(nms * nms, res.device());
+    Buffers::device<double> s_mo_device(nms * nmo, res.device());
+    FBF_TRY(overlap_mixed_spherical(res, minao, basis, s_mix_device));
+    FBF_TRY(overlap_mixed_spherical(res, minao, minao, s_mm_device));
+    FBF_TRY(gpu_status(gemm(res.blas(), static_cast<int32_t>(nms), static_cast<int32_t>(nmo),
+                            static_cast<int32_t>(nao), &kOne<double>, s_mix_device.data(),
+                            scf.c.data(), &kZero<double>, s_mo_device.data())));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(s_mo.data(), s_mo_device.data(),
+                                           s_mo.size() * sizeof(double), wwr::wwrMemcpyDeviceToHost,
+                                           stream)));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(s_mm.data(), s_mm_device.data(),
+                                           s_mm.size() * sizeof(double), wwr::wwrMemcpyDeviceToHost,
+                                           stream)));
+    FBF_TRY(res.sync());
+  }
 
   std::vector<size_t> picked;
   for (size_t p = 0; p < chosen.size(); ++p) {
@@ -479,6 +485,93 @@ carried_orbitals(DeviceResources &res, const BasisSet &basis, const ScfOutput &s
       .r = std::move(space.r),
       .c = std::move(c),
   };
+}
+
+MemoryFootprint ActiveSpaceSelection::select_footprint(const FootprintDimensions &dims) const {
+  const BasisSet &basis = *dims.basis;
+  const size_t nao = dims.nao;
+  const size_t nmo = nao; // the ScfOutput's orbitals span the basis
+  const size_t nn = nao * nmo;
+  const size_t n_electrons = dims.n_alpha + dims.n_beta;
+  const size_t ncore = dims.nelecas <= n_electrons ? (n_electrons - dims.nelecas) / 2 : 0;
+  const size_t ncas = std::min(dims.ncas, nmo - std::min(ncore, nmo));
+  const auto held = [](size_t bytes) { return MemoryFootprint{.device = {.persistent = bytes}}; };
+  // diagonalize at order n of an n x n matrix and its eigenvalues held across
+  // it: active_space_eigh's.
+  const auto eigh = [&](const size_t n) {
+    MemoryFootprint out = diagonalize_footprint<double>(dims.syevd_lwork[n]);
+    out.device.scratch = n == 0 ? 0 : sizeof(double) * ((n * n) + n);
+    return out;
+  };
+  const auto widest = [](MemoryFootprint a, const MemoryFootprint &b) {
+    a.device.scratch = std::max(a.device.scratch, b.device.scratch);
+    a.device.workspace = std::max(a.device.workspace, b.device.workspace);
+    a.pinned.workspace = std::max(a.pinned.workspace, b.pinned.workspace);
+    return a;
+  };
+  // ActiveSpace::c throughout.
+  const MemoryFootprint c = held(sizeof(double) * nn);
+
+  if (!orbitals.empty()) {
+    // carried_orbitals: S, the work, M and X held across S's build and the two
+    // Löwdin orthogonalizations, of the ncore + ncas core and active columns
+    // and of the rest.
+    const size_t n_a = ncore + ncas;
+    const MemoryFootprint steps = widest(
+        widest(overlap_mixed_spherical_footprint(basis, basis),
+               orthogonalize_footprint<double>(static_cast<int32_t>(n_a), dims.syevd_lwork[n_a])),
+        orthogonalize_footprint<double>(static_cast<int32_t>(nmo - n_a),
+                                        dims.syevd_lwork[nmo - n_a]));
+    return then(c, drop(then(held(sizeof(double) * ((2 * nao * nao) + (2 * nmo * nmo))), steps)));
+  }
+
+  // R's upload, beside C R.
+  const MemoryFootprint rotation =
+      then(c, MemoryFootprint{.device = {.scratch = sizeof(double) * nmo * nmo}});
+  if (avas.empty()) {
+    return rotation;
+  }
+  // AVAS: the three overlaps held across the two mixed builds, then the
+  // eigenproblems one at a time: the labelled AOs' overlap, the occupied and
+  // the virtual projectors, and each of core, active and the rest
+  // canonicalized.
+  const BasisSet &minao = *dims.minao;
+  const size_t nms = minao.nao_sphe();
+  const std::vector<bool> chosen = check_or_abort(avas_minao_aos(dims.atoms, minao, avas));
+  const auto m = static_cast<size_t>(std::ranges::count(chosen, true));
+  const size_t nocc = dims.n_alpha;
+  const MemoryFootprint overlaps = then(held(sizeof(double) * nms * (nao + nms + nmo)),
+                                        widest(overlap_mixed_spherical_footprint(minao, basis),
+                                               overlap_mixed_spherical_footprint(minao, minao)));
+  MemoryFootprint eighs;
+  for (const size_t n : {m, nocc, nmo - nocc, ncore, ncas, nmo - ncore - ncas}) {
+    eighs = widest(eighs, eigh(n));
+  }
+  return then(drop(then(drop(overlaps), eighs)), rotation);
+}
+
+MemoryFootprint active_space_ci_footprint(const int32_t ncas, const int32_t n_alpha,
+                                          const int32_t n_beta, const int32_t nroots,
+                                          const ci::SolverOptions &options,
+                                          const std::span<const size_t> syevd_lwork,
+                                          const size_t sigma_scratch_limit) {
+  const auto strings = [&](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha_strings = strings(n_alpha);
+  const int32_t beta_strings = strings(n_beta);
+  const size_t dim = static_cast<size_t>(alpha_strings) * static_cast<size_t>(beta_strings);
+  const auto n = static_cast<size_t>(ncas);
+  const auto held = [](size_t bytes) { return MemoryFootprint{.device = {.persistent = bytes}}; };
+  MemoryFootprint sets = ci::device_string_set_footprint(ncas, n_alpha);
+  if (n_alpha != n_beta) {
+    sets = then(sets, ci::device_string_set_footprint(ncas, n_beta));
+  }
+  return then(then(then(then(sets, ci::sigma_footprint(ncas, alpha_strings, beta_strings)),
+                        held(sizeof(double) * dim)),
+                   ci::solve_footprint(ncas, n_alpha, n_beta, nroots, options, false, syevd_lwork,
+                                       sigma_scratch_limit)),
+              held(sizeof(double) * static_cast<size_t>(nroots) * n * n));
 }
 
 } // namespace free_breakfast

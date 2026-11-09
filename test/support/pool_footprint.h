@@ -31,7 +31,40 @@ struct PoolPeak {
   /// The pool's allocation granularity G: what a one-byte allocation adds to
   /// UsedMemCurrent, measured on the same pool just before the call.
   std::size_t granularity = 0;
+  /// Whether the pool rounds a reused block (pool_rounds_reuse): ROCm's does,
+  /// CUDA's does not.
+  bool reuse_rounding = false;
 };
+
+/// @brief The bound on a pool's reuse rounding, as a divisor of the request:
+/// ROCm 7.2.4's pool serves a request whole from a freed block of up to 9/8
+/// of its size, and UsedMem counts the block, so one allocation is counted at
+/// most request / 8 past what it asked (src/core/wwr/README.md, measured by
+/// test/core/device_pool_gpu.cpp's DevicePool.ReuseRounding). CUDA's counts
+/// the request.
+inline constexpr std::size_t kPoolReuseDivisor = 8;
+
+/// @brief Whether the pool of device @p dev_idx counts a reused block whole
+/// rather than the request: a 1024-byte block freed, then 1000 bytes asked
+/// for, on a throwaway Device, so the measured pool's cache is untouched.
+/// Measured once per process.
+inline bool pool_rounds_reuse(std::int32_t dev_idx) {
+  static const bool rounds = [dev_idx] {
+    Device dev{dev_idx};
+    void *ptr = nullptr;
+    EXPECT_EQ(wwr::wwrMallocFromPoolAsync(&ptr, 1024, dev.pool(), dev.stream()), wwr::wwrSuccess);
+    EXPECT_EQ(wwr::wwrFreeAsync(ptr, dev.stream()), wwr::wwrSuccess);
+    EXPECT_EQ(wwr::wwrDeviceSynchronize(), wwr::wwrSuccess);
+    const auto before = dev.pool_usage().used_current;
+    EXPECT_EQ(wwr::wwrMallocFromPoolAsync(&ptr, 1000, dev.pool(), dev.stream()), wwr::wwrSuccess);
+    EXPECT_EQ(wwr::wwrDeviceSynchronize(), wwr::wwrSuccess);
+    const auto grown = dev.pool_usage().used_current - before;
+    EXPECT_EQ(wwr::wwrFreeAsync(ptr, dev.stream()), wwr::wwrSuccess);
+    EXPECT_EQ(wwr::wwrDeviceSynchronize(), wwr::wwrSuccess);
+    return grown == 1024;
+  }();
+  return rounds;
+}
 
 /// @brief The pool's allocation granularity: the UsedMemCurrent a one-byte
 /// allocation adds, measured. Neither backend states it for a pool, so it is
@@ -53,7 +86,8 @@ inline std::size_t pool_granularity(Device &dev) {
 /// streams of the same pool has finished too.
 template <typename Call>
 PoolPeak measure_pool_peak(Device &dev, Call &&call) {
-  PoolPeak peak{.granularity = pool_granularity(dev)};
+  PoolPeak peak{.granularity = pool_granularity(dev),
+                .reuse_rounding = pool_rounds_reuse(dev.dev_idx())};
   dev.reset_pool_high_water();
   const auto start = dev.pool_usage();
   std::forward<Call>(call)();
@@ -76,7 +110,16 @@ struct FootprintSlack {
 /// routine's, with `live_allocs` allocations live at its peak. Two bars, each a non-fatal
 /// failure at the caller's line:
 ///
-/// - sound: measured.used <= footprint.peak(). Never widened.
+/// - sound: measured.used <= footprint.peak(), on a pool that counts requests
+///   (CUDA's). On one that rounds reuse (ROCm's, measured.reuse_rounding),
+///   measured.used <= footprint.peak() * (1 + 1 / kPoolReuseDivisor): each
+///   allocation live at the peak may be served from a freed block and counted
+///   at most request / 8 past what it asked, and the live allocations' requests
+///   sum to at most the footprint. That is pool rounding, as G is, and the
+///   footprint keeps counting requested bytes; at run time pre-flight's 32 MiB
+///   of headroom covers the overcounts measured (src/pipeline/footprint/
+///   README.md says where the bound outgrows it). Logged whenever
+///   the allowance is used. Never widened otherwise.
 /// - tight: footprint.peak() - measured.used <= G * live_allocs (+ slack.bytes),
 ///   G the pool's granularity: each live allocation may round up by under one
 ///   granule, so a footprint that counts bytes exactly is over by at most that.
@@ -95,10 +138,17 @@ inline void expect_footprint(const PoolPeak &measured,
     std::cout << std::format("[ footprint ] slack of {} bytes: {}\n", slack->bytes, slack->reason);
     allowance += slack->bytes;
   }
-  if (measured.used > footprint_peak) {
+  const std::size_t reuse = measured.reuse_rounding ? footprint_peak / kPoolReuseDivisor : 0;
+  if (measured.used > footprint_peak + reuse) {
     ADD_FAILURE_AT(location.file_name(), location.line())
         << "unsound footprint: measured peak " << measured.used << " bytes exceeds the footprint's "
-        << footprint_peak << " by " << (measured.used - footprint_peak) << " bytes";
+        << footprint_peak << " by " << (measured.used - footprint_peak) << " bytes"
+        << (reuse != 0 ? std::format(", past the pool's reuse rounding of {}", reuse)
+                       : std::string{});
+  } else if (measured.used > footprint_peak) {
+    std::cout << std::format("[ footprint ] reuse rounding: measured {} is {} over the footprint's "
+                             "{}, within the pool's {} (a freed block served whole)\n",
+                             measured.used, measured.used - footprint_peak, footprint_peak, reuse);
   } else if (footprint_peak - measured.used > allowance) {
     ADD_FAILURE_AT(location.file_name(), location.line())
         << "loose footprint: " << footprint_peak << " bytes is " << (footprint_peak - measured.used)

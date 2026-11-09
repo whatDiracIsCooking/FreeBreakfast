@@ -17,8 +17,13 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::core::resources
+  free_breakfast::pipeline::footprint
   free_breakfast::pipeline::scf
+  free_breakfast::ci::solver
   LINK_PRIVATE
+  free_breakfast::core::primitives
+  free_breakfast::ci::strings
+  free_breakfast::ci::sigma
   free_breakfast::core::constants
   free_breakfast::core::log
   free_breakfast::core::wwr

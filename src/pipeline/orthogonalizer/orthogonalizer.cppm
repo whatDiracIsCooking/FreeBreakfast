@@ -51,7 +51,8 @@ struct OrthogonalizerStep {
   /// @brief X, persistent, then @ref orthogonalize_footprint at nao.
   [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const {
     return then(MemoryFootprint{.device = {.persistent = sizeof(double) * dims.nao * dims.nao}},
-                orthogonalize_footprint<double>(static_cast<int32_t>(dims.nao), dims.syevd_lwork));
+                orthogonalize_footprint<double>(static_cast<int32_t>(dims.nao),
+                                                dims.syevd_lwork[dims.nao]));
   }
 };
 

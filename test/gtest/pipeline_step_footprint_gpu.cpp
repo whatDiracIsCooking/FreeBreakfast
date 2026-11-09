@@ -1,4 +1,5 @@
-// The RHF chain's step footprints (#1140), each held to the pool peak of one
+// The step footprints of the RHF chain (#1140) and of CASCI and FCI (#1049),
+// each held to the pool peak of one
 // run of its step by test/support/pool_footprint.h's two bars, sound and
 // tight. The dimensions are plan_shape's over a parsed water config, so the
 // dims pass is exercised end to end, and each step is the one the config
@@ -11,6 +12,9 @@
 // fresh DeviceResources reach exactly the footprint's, and then again,
 // measured, the workspaces already grown, as the pipeline grows them before
 // the first step: the pool's peak is then the step's persistent and scratch.
+// CASCI over an explicit space, over AVAS's pick (the footprint at the space
+// it picked) and over a carried orbitals file; FCI under a pool cap that
+// leaves its sigma the least scratch it runs with, and unbounded.
 
 #include <gtest/gtest.h>
 
@@ -22,6 +26,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.core.nontransferrable;
 import free_breakfast.io.base;
+import free_breakfast.io.npy;
+import free_breakfast.ci;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.shape;
 import free_breakfast.integrals.eri.density_fitting.jk; // df_exchange_footprint
@@ -65,6 +71,8 @@ struct System {
   fb::EriMode mode = fb::EriMode::IntegralDirect;
   // The cation's doublet, an open shell, in place of the neutral singlet.
   bool cation = false;
+  // TOML tables after [scf]: a CI step's.
+  std::string_view tables{};
 };
 
 // The step the plan configured, or its defaults where the planner filled none.
@@ -89,17 +97,19 @@ struct Plan {
   std::optional<fb::OrthogonalizerOutput> x;
   std::optional<fb::CoreHamiltonianOutput> h;
   std::optional<fb::GuessOutput> guess;
+  std::optional<fb::ScfOutput> scf;
 
   explicit Plan(const System &system) {
     EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", system.xyz).has_value());
     std::filesystem::create_directories(dir / "out");
     const std::string toml =
         std::format("[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\nmultiplicity = {}\n"
-                    "[basis_set]\nbasis = \"{}\"\n{}[scf]\n",
+                    "[basis_set]\nbasis = \"{}\"\n{}[scf]\n{}",
                     system.cation ? 1 : 0, system.cation ? 2 : 1, system.basis,
                     system.mode == fb::EriMode::DensityFitting
                         ? "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n"
-                        : "");
+                        : "",
+                    system.tables);
     auto parsed = fb::parse_config(toml, dir.path(), dir / "out");
     EXPECT_TRUE(parsed.has_value()) << parsed.error().message;
     calc.emplace(std::move(parsed).value());
@@ -158,6 +168,23 @@ struct Plan {
                     fb::EriOutput, fb::OverlapOutput, fb::OrthogonalizerOutput,
                     fb::CoreHamiltonianOutput, fb::GuessOutput>{
         *molecule, *basis, *transform, *eri, *overlap, *x, *h, *guess};
+  }
+
+  // The chain through the Scf, on inputs.
+  void run_through_scf() {
+    run_chain();
+    auto converged = planned<fb::ScfStep>(*calc).run(scf_view(), inputs);
+    ASSERT_TRUE(converged) << converged.error().message;
+    scf.emplace(std::move(*converged));
+  }
+
+  // What a CASCI or FCI step reads.
+  [[nodiscard]] fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+                         fb::PrimitivePairClassesOutput, fb::CoreHamiltonianOutput, fb::ScfOutput>
+  ci_view() const {
+    return fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+                    fb::PrimitivePairClassesOutput, fb::CoreHamiltonianOutput, fb::ScfOutput>{
+        *molecule, *basis, *transform, *pairs, *h, *scf};
   }
 
   // The Guess step, which runs in a subflow.
@@ -357,5 +384,173 @@ INSTANTIATE_TEST_SUITE_P(
                               System{.xyz = kBenzeneXyz, .basis = "sto-3g", .mode = kDf},
                               8 + 5 + 4}),
     [](const ::testing::TestParamInfo<ScfCase> &info) { return std::string(info.param.name); });
+
+// @p dims with mmd's record counts replaced by those J's classes keep at
+// coulomb_pair_classes' default tau over @p plan's classes: what a step's
+// J classes hold, where its footprint counts every record.
+fb::FootprintDimensions with_kept_records(const Plan &plan, fb::FootprintDimensions dims) {
+  fb::DeviceResources res{0};
+  const auto j_classes = fb::coulomb_pair_classes(res, plan.pairs->classes);
+  EXPECT_TRUE(j_classes);
+  for (std::vector<std::size_t> &row : dims.mmd_records) {
+    std::ranges::fill(row, 0);
+  }
+  for (const fb::CoulombPairClass &cls : j_classes.value()) {
+    dims.mmd_records[static_cast<std::size_t>(cls.la)][static_cast<std::size_t>(cls.lb)] =
+        static_cast<std::size_t>(cls.n_rec);
+  }
+  return dims;
+}
+
+// The tight bar's slack for the J prune: the footprint's peak at every mmd
+// record less its peak at the records J keeps, exactly, and 0 when the J
+// classes are not live at the step's peak.
+fbt::FootprintSlack prune_slack(const fb::MemoryFootprint &every, const fb::MemoryFootprint &kept) {
+  return fbt::FootprintSlack{
+      .bytes = (every.device.persistent + every.device.scratch) -
+               (kept.device.persistent + kept.device.scratch),
+      .reason = "J's classes hold the records the tau = 1e-13 prune keeps; the footprint, every "
+                "mmd record"};
+}
+
+// At the CI's peak, the Davidson's: CasciOutput::c; the one string set, the
+// sigma's 3 tables, the diagonal; ci::solve's 8 (guesses, shifted diagonal,
+// values, vectors, picks, the empty P-space pair, S^2's table) and the
+// Davidson's 11; the sigma's scratch.
+constexpr std::size_t kCasciLive = 1 + 1 + 3 + 1 + 8 + 11 + 1;
+
+// Water in cc-pVDZ, CAS(8, 8) by index, two roots, with the Molden file's
+// natural-orbital eigenproblem: the CI's Davidson, over 2,485 packed
+// determinants, is the peak, past the Hamiltonian's. The workspace is the
+// Davidson's syevd at its 32-column subspace, which this solve fills.
+TEST(StepFootprint, CasciExplicit) {
+  FBF_REQUIRE_GPU();
+  Plan plan(System{.tables = "[casci]\nncas = 8\nnelecas = 8\nnroots = 2\n"});
+  plan.run_through_scf();
+  const fb::FootprintDimensions &dims = plan.dims();
+  ASSERT_EQ(dims.ncas, 8U);
+  ASSERT_EQ(dims.nelecas, 8U);
+  // Set on the step, as a caller would: the config has no molden key.
+  auto casci = planned<fb::CasciStep>(*plan.calc);
+  casci.molden = plan.dir / "casci.molden";
+  const fb::MemoryFootprint fp = casci.footprint(dims);
+  expect_step_footprint(
+      fp, kCasciLive, [&](fb::DeviceResources &res) { expect_ran(casci.run(plan.ci_view(), res)); },
+      prune_slack(fp, casci.footprint(with_kept_records(plan, dims))));
+}
+
+// AVAS over O 2p: the footprint at the space AVAS picked, which plan_shape's
+// bound (6 orbitals, half filling) need not be.
+TEST(StepFootprint, CasciAvas) {
+  FBF_REQUIRE_GPU();
+  Plan plan(System{.tables = "[casci]\navas = [\"O 2p\"]\n"});
+  plan.run_through_scf();
+  const auto casci = planned<fb::CasciStep>(*plan.calc);
+  ASSERT_NE(plan.dims().minao, nullptr);
+  const auto picked = casci.run(plan.ci_view(), plan.inputs);
+  ASSERT_TRUE(picked) << picked.error().message;
+  fb::FootprintDimensions dims = plan.dims();
+  std::cout << std::format("[ footprint ] AVAS picked CAS({}, {}), the bound CAS({}, {})\n",
+                           picked->nelecas, picked->ncas, dims.nelecas, dims.ncas);
+  dims.ncas = static_cast<std::size_t>(picked->ncas);
+  dims.nelecas = static_cast<std::size_t>(picked->nelecas);
+  const fb::MemoryFootprint fp = casci.footprint(dims);
+  expect_step_footprint(
+      fp, kCasciLive, [&](fb::DeviceResources &res) { expect_ran(casci.run(plan.ci_view(), res)); },
+      prune_slack(fp, casci.footprint(with_kept_records(plan, dims))));
+}
+
+// The Scf's own orbitals carried in as an orbitals file: S, the work, M, X,
+// and the overlap and the two Löwdin orthogonalizations.
+TEST(StepFootprint, CasciCarriedOrbitals) {
+  FBF_REQUIRE_GPU();
+  Plan plan(System{.tables = "[casci]\nncas = 4\nnelecas = 4\norbitals = \"c.npy\"\n"});
+  plan.run_through_scf();
+  const std::size_t nao = plan.dims().nao;
+  fb::NpyArray c{.shape = {nao, nao}, .data = std::vector<double>(nao * nao)};
+  EXPECT_EQ(wwr::wwrMemcpyAsync(c.data.data(), plan.scf->c.data(), sizeof(double) * nao * nao,
+                                wwr::wwrMemcpyDeviceToHost, plan.inputs.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(plan.inputs.sync());
+  ASSERT_TRUE(fb::write_npy(plan.dir / "c.npy", c));
+  const auto casci = planned<fb::CasciStep>(*plan.calc);
+  const fb::FootprintDimensions &dims = plan.dims();
+  const fb::MemoryFootprint fp = casci.footprint(dims);
+  expect_step_footprint(
+      fp, kCasciLive, [&](fb::DeviceResources &res) { expect_ran(casci.run(plan.ci_view(), res)); },
+      prune_slack(fp, casci.footprint(with_kept_records(plan, dims))));
+}
+
+// N2 in STO-3G, 14 electrons in 10 orbitals, two roots: 14,400 determinants,
+// 7,260 in the symmetric layout. Its plan, footprint and the sigma's scratch,
+// the least (one string's G, the footprint's) and G for the whole space.
+struct FciPlan {
+  static constexpr std::string_view kN2 = R"(2
+nitrogen
+N 0.0 0.0  0.55
+N 0.0 0.0 -0.55
+)";
+  Plan plan{System{.xyz = kN2, .basis = "sto-3g", .tables = "[fci]\nnroots = 2\n"}};
+  fb::FciStep fci;
+  fb::MemoryFootprint fp;
+  std::size_t least = fb::ci::sigma_apply_bytes(10, 120, 120, fb::ci::Layout::symmetric, 0);
+  std::size_t whole = fb::ci::sigma_apply_bytes(10, 120, 120, fb::ci::Layout::symmetric);
+
+  FciPlan() {
+    plan.run_through_scf();
+    EXPECT_EQ(plan.dims().ncas, 10U);
+    EXPECT_EQ(plan.dims().nelecas, 14U);
+    fci = planned<fb::FciStep>(*plan.calc);
+    fp = fci.footprint(plan.dims());
+    EXPECT_LT(least, whole);
+  }
+};
+
+// At the CI's peak: the one string set, the sigma's 3 tables, the diagonal,
+// ci::solve's 8, the Davidson's 11 and the sigma's scratch.
+constexpr std::size_t kFciLive = 1 + 3 + 1 + 8 + 11 + 1;
+
+// Under a pool cap of the footprint's peak, the 32 MiB of fragmentation
+// headroom the step leaves (the pool reserves in chunks, and the cap bounds
+// what it reserves), and the pool's rounding of every allocation live at its
+// peak, the sigma takes the least scratch it runs with and the run is held to
+// the footprint itself. A block of strings is 120 rows of 56 doubles, 53,760
+// bytes, past the rounding, so the cap leaves no room for a second string's.
+TEST(StepFootprint, FciAtTheLeast) {
+  FBF_REQUIRE_GPU();
+  const FciPlan f;
+  std::size_t granularity = 0;
+  {
+    fb::DeviceResources probe{0};
+    granularity = fbt::pool_granularity(*probe.device());
+  }
+  const std::size_t rounding = granularity * (kFciLive + 16);
+  ASSERT_LT(rounding, std::size_t{120} * 56 * sizeof(double));
+  const std::uint64_t cap = f.fp.device.peak() + (std::size_t{32} << 20U) + rounding;
+  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  expect_ran(f.fci.run(f.plan.ci_view(), res));
+  EXPECT_EQ(res.device_workspace(0).num_elements(), f.fp.device.workspace);
+  const fbt::PoolPeak peak =
+      fbt::measure_pool_peak(*res.device(), [&] { expect_ran(f.fci.run(f.plan.ci_view(), res)); });
+  std::cout << std::format("[ footprint ] capped at {}: measured {} (G {}), footprint {} + "
+                           "workspace {}\n",
+                           cap, peak.used, peak.granularity,
+                           f.fp.device.persistent + f.fp.device.scratch, f.fp.device.workspace);
+  fbt::expect_footprint(
+      peak, {.persistent = f.fp.device.persistent, .scratch = f.fp.device.scratch}, kFciLive);
+}
+
+// Unbounded, the sigma takes G for the whole space, past the footprint's
+// least by exactly the difference.
+TEST(StepFootprint, FciUnbounded) {
+  FBF_REQUIRE_GPU();
+  const FciPlan f;
+  fb::MemoryFootprint unbounded = f.fp;
+  unbounded.device.scratch += f.whole - f.least;
+  expect_step_footprint(unbounded, kFciLive, [&](fb::DeviceResources &res) {
+    expect_ran(f.fci.run(f.plan.ci_view(), res));
+  });
+}
 
 } // namespace

@@ -18,9 +18,13 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::recipes::davidson
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   free_breakfast::pipeline::scf
   LINK_PRIVATE
   free_breakfast::core::wwr
+  free_breakfast::core::primitives
+  free_breakfast::recipes::diagonalize
+  free_breakfast::pipeline::active_space
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::eri::integral_direct::coulomb
   free_breakfast::integrals::eri::integral_direct::exchange

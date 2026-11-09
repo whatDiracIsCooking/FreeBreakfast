@@ -20,6 +20,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::recipes::davidson
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   free_breakfast::pipeline::scf
   free_breakfast::pipeline::active_space
   LINK_PRIVATE

@@ -14,6 +14,7 @@ import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
@@ -79,18 +80,21 @@ Status overlap_mixed_spherical(DeviceResources &res, const BasisSet &rows, const
     return err_config("overlap_mixed_spherical: the buffer holds {} doubles, but S is {} x {}",
                       s.num_elements(), n_rows, n_cols);
   }
+  // Every buffer before overlap_mixed builds its records, so none of the
+  // call's own is allocated after a pool block is freed: ROCm's pool can
+  // serve a later request from a freed block whole, past its size (#1143).
   Buffers::device<double> cart(static_cast<size_t>(n_rows_cart) * n_cols_cart, res.device());
+  const std::vector<double> u_rows_host = spherical_transform_matrix(rows);
+  const std::vector<double> u_cols_host = spherical_transform_matrix(cols);
+  Buffers::device<double> u_rows(u_rows_host.size(), res.device());
+  Buffers::device<double> u_cols(u_cols_host.size(), res.device());
+  Buffers::device<double> t(static_cast<size_t>(n_rows_cart) * n_cols, res.device());
   FBF_TRY(overlap_mixed(res, rows, cols, cart));
   if (s.num_elements() == 0) {
     return {};
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  const std::vector<double> u_rows_host = spherical_transform_matrix(rows);
-  const std::vector<double> u_cols_host = spherical_transform_matrix(cols);
-  Buffers::device<double> u_rows(u_rows_host.size(), res.device());
-  Buffers::device<double> u_cols(u_cols_host.size(), res.device());
-  Buffers::device<double> t(static_cast<size_t>(n_rows_cart) * n_cols, res.device());
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(u_rows.data(), u_rows_host.data(),
                                          u_rows_host.size() * sizeof(double),
                                          wwr::wwrMemcpyHostToDevice, stream)));
@@ -104,6 +108,25 @@ Status overlap_mixed_spherical(DeviceResources &res, const BasisSet &rows, const
                                              u_rows.data(), t.data(), &kZero<double>, s.data())));
   // The uploads read pageable host memory that goes with this frame.
   return res.sync();
+}
+
+MemoryFootprint overlap_mixed_spherical_footprint(const BasisSet &rows, const BasisSet &cols) {
+  if (rows.nshells() == 0 || cols.nshells() == 0) {
+    return {};
+  }
+  const size_t n_rows_cart = rows.nao_cart();
+  const size_t n_cols_cart = cols.nao_cart();
+  // The Cartesian block, U_rows, U_cols and T = S_cart U_cols throughout,
+  // and overlap_mixed's records, built and freed beside them.
+  const MemoryFootprint records = mixed_primitive_pair_classes_footprint(rows, cols);
+  const size_t cart = sizeof(double) * n_rows_cart * n_cols_cart;
+  const size_t transform =
+      sizeof(double) * ((n_rows_cart * rows.nao_sphe()) + (n_cols_cart * cols.nao_sphe()) +
+                        (n_rows_cart * cols.nao_sphe()));
+  MemoryFootprint out = records;
+  out.device.persistent = 0;
+  out.device.scratch = cart + transform + records.device.persistent + records.device.scratch;
+  return out;
 }
 
 } // namespace free_breakfast

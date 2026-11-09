@@ -14,6 +14,8 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr; // BLAS, wwrMemcpy2DAsync, ScopedPointerMode, CreatePolicy
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.recipes.orthogonalize; // orthonormalize
@@ -594,6 +596,40 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
       "davidson_solve: {} roots not converged in {} iterations (max residual {:.3e}, tolerance "
       "{:.3e})",
       n_roots, options.max_iterations, info.max_residual_norm, options.residual_tolerance);
+}
+
+/// @brief What @ref davidson_solve holds of its own over an operator of order
+/// @p n, @p n_roots roots and @p max_subspace columns, @p syevd_lwork being
+/// syevd's largest work over the orders up to @p max_subspace (the
+/// Rayleigh-Ritz problem's, at every subspace size it reaches): its subspace
+/// buffers, scratch, with orthonormalize's under
+/// canonical_orthonormalization; the device workspace, syevd's work or
+/// orthonormalize's.
+///
+/// @p op and @p precondition are the caller's, so neither is counted: a caller
+/// adds what they hold. The syevd term is the subspace's largest, reached
+/// only when the subspace fills before convergence.
+template <real_fp T>
+[[nodiscard]] MemoryFootprint
+davidson_footprint(const int32_t n, const int32_t n_roots, const int32_t max_subspace,
+                   const DavidsonOptions &options, const size_t syevd_lwork) {
+  const auto nz = static_cast<size_t>(n);
+  const auto roots = static_cast<size_t>(n_roots);
+  const auto columns = static_cast<size_t>(max_subspace);
+  MemoryFootprint out;
+  // V and A V; V^T A V, H and the Ritz values; A X, R and the corrections;
+  // V^T C, the norms and the overlaps.
+  out.device.scratch = sizeof(T) * ((2 * nz * columns) + (2 * columns * columns) + columns +
+                                    (3 * nz * roots) + (columns * roots) + (2 * roots));
+  out.device.workspace =
+      math::align_up(syevd_lwork * sizeof(T), DeviceResources::kWorkspaceAlignment);
+  if (options.canonical_orthonormalization) {
+    // The corrections, at most n_roots columns, orthonormalized as a block.
+    const MemoryFootprint block = orthonormalize_footprint<T>(n, n_roots, syevd_lwork);
+    out.device.scratch += block.device.scratch;
+    out.device.workspace = std::max(out.device.workspace, block.device.workspace);
+  }
+  return out;
 }
 
 } // namespace free_breakfast
