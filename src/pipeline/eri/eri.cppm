@@ -71,6 +71,9 @@ struct EriOutput {
   std::variant<IntegralDirect, DensityFitted> eri;
 };
 
+/// @brief What an empty EriStep::aux_basis stands for: @p basis's carried `-acCD-6-6` set.
+[[nodiscard]] Result<std::string> default_aux_basis(const BasisSet &basis);
+
 /// @brief Builds the @ref BasisSet's two-electron integrals on @p res's
 /// device: under EriMode::IntegralDirect J's and K's pair classes, under
 /// EriMode::DensityFitting @ref aux_basis resolved and placed over the
