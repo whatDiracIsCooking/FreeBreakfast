@@ -45,7 +45,6 @@ add_executable(
   device_resources_gpu.cpp
   fork_stream_gpu.cpp
   device_stream_gpu.cpp
-  mirrored_buffer_gpu.cpp
   scoped_device_index_gpu.cpp
 )
 

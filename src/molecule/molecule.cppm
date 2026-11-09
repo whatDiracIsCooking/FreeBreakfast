@@ -25,7 +25,6 @@ export import free_breakfast.core.types;
 export import free_breakfast.atom;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
-import free_breakfast.core.mirrored_buffer;
 import free_breakfast.core.resources;
 
 export namespace free_breakfast {
@@ -60,21 +59,22 @@ using free_breakfast::NucleiView;
 /// Element; Z is read with @ref nuclear_charge above.
 ///
 /// The nuclei -- Z and the positions, in atom order, the point charges V
-/// attracts to -- are copied to the device once, at construction, one
-/// @c MirroredBuffer per field on a new @c DeviceStream of res.device(). The
-/// pinned side they were written into is kept for the Molecule's lifetime.
+/// attracts to -- are copied to the device once, at construction: staged in a
+/// carve of res's pinned workspace and copied on res.stream() into a device
+/// buffer per field, drawn from res.device(). Nothing pinned is kept.
 /// Movable, not copyable.
 class Molecule {
 public:
   /// @brief Hold @p atoms and copy their nuclei to @p res's device.
   ///
   /// The device res.dev_idx() names is made current for the call and the
-  /// previous one restored. The copies' stream is synchronized once, after
-  /// them: every class's stream reads the nuclei, and none is ordered after
-  /// that stream. A molecule with no atoms, or more than an int32_t counts,
-  /// aborts; so does a failed allocation (CreatePolicy) or copy. The copies
-  /// only move data just created, so their failure means a broken context, not
-  /// a bad input.
+  /// previous one restored. res.stream() is synchronized once, after the
+  /// copies: every class's stream reads the nuclei, and none is ordered after
+  /// res.stream(), and the pinned carve is released with it. A molecule with no
+  /// atoms, or more than an int32_t counts, aborts; so does a failed
+  /// allocation (CreatePolicy) or copy, or a pinned carve res's pinned cap
+  /// refuses. The copies only move data just created, so their failure means
+  /// a broken context, not a bad input.
   ///
   /// @param res           The device the nuclei go to.
   /// @param atoms         The nuclei and their positions (bohr).
@@ -112,51 +112,53 @@ public:
   /// falls as the charge rises -- hence the subtraction.
   [[nodiscard]] int32_t electron_count() const { return total_nuclear_charge() - charge_; }
 
-  /// @brief The nuclei's own work stream: they were allocated and copied on
-  /// it, and its dev_idx() is the device they are on.
+  /// @brief A work stream of the nuclei's own, on the device they are on (its
+  /// dev_idx()): they are complete on every stream once constructed, so a
+  /// reader needs no ordering against it.
   [[nodiscard]] const std::shared_ptr<DeviceStream> &device_stream() const noexcept {
-    return nuclei_.z.handle();
+    return nuclei_.stream;
   }
 
   /// @brief The nuclei on the device by pointer, for a launcher. Valid while
   /// this is alive.
   [[nodiscard]] NucleiView view() const {
-    return {.n_nuc = static_cast<int32_t>(atoms_.size()),
-            .z = nuclei_.z.device().data(),
-            .c = nuclei_.c.device().data()};
+    return {
+        .n_nuc = static_cast<int32_t>(atoms_.size()), .z = nuclei_.z.data(), .c = nuclei_.c.data()};
   }
 
 private:
   struct Nuclei {
-    MirroredBuffer<double> z;
-    MirroredBuffer<double> c;
+    std::shared_ptr<DeviceStream> stream;
+    Buffers::device<double> z;
+    Buffers::device<double> c;
   };
 
-  // Write the nuclei into the pinned side and copy them to the device, on a
-  // stream of their own.
+  // Write the nuclei into a carve of res's pinned workspace and copy them to
+  // the device on res.stream(), which is drained before the carve is
+  // released.
   [[nodiscard]] static Nuclei upload(DeviceResources &res, const std::vector<Atom> &atoms) {
     if (atoms.empty() || atoms.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
       check_or_abort(err_config("Molecule: a molecule of {} atoms", atoms.size()));
     }
     const ScopedDeviceIndex on{res.dev_idx()};
-    const auto ds = std::make_shared<DeviceStream>(res.device());
-    Nuclei out{
-        // pool-bypass-ok: until #1130, which stages Z from a pinned_regions carve.
-        .z = MirroredBuffer<double>(atoms.size(), ds),
-        // pool-bypass-ok: until #1130, as z.
-        .c = MirroredBuffer<double>(3 * atoms.size(), ds),
-    };
-    double *z = out.z.pinned().data();
-    double *c = out.c.pinned().data();
-    for (size_t a = 0; a < atoms.size(); ++a) {
+    const size_t n = atoms.size();
+    const auto [z, c] = check_or_abort(res.pinned_regions<double>("Molecule", n, 3 * n));
+    for (size_t a = 0; a < n; ++a) {
       z[a] = static_cast<double>(nuclear_charge(atoms[a]));
       c[(3 * a) + 0] = atoms[a].position.x;
       c[(3 * a) + 1] = atoms[a].position.y;
       c[(3 * a) + 2] = atoms[a].position.z;
     }
-    check_or_abort(gpu_status(out.z.to_device()));
-    // Both copies are on one stream, so this one sync covers z's as well.
-    check_or_abort(gpu_status(out.c.to_device_sync()));
+    Nuclei out{
+        .stream = std::make_shared<DeviceStream>(res.device()),
+        .z = Buffers::device<double>(n, res.device()),
+        .c = Buffers::device<double>(3 * n, res.device()),
+    };
+    check_or_abort(gpu_status(wwr::wwrMemcpyAsync(out.z.data(), z, sizeof(double) * n,
+                                                  wwr::wwrMemcpyHostToDevice, res.stream())));
+    check_or_abort(gpu_status(wwr::wwrMemcpyAsync(out.c.data(), c, sizeof(double) * 3 * n,
+                                                  wwr::wwrMemcpyHostToDevice, res.stream())));
+    check_or_abort(res.sync());
     return out;
   }
 

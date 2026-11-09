@@ -15,7 +15,6 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
-import free_breakfast.core.mirrored_buffer;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 
@@ -46,35 +45,43 @@ struct ClassPairs {
   std::vector<int64_t> rec_begin{0};
 };
 
-// The shells and primitives of the bases swept, staged, one basis after the
-// other: what every class's records are formed from. A MirroredBuffer's destructor waits for its stream, so the
-// pinned side outlives the upload.
+// The shells and primitives of the bases swept, one basis after the other, on
+// the host: what every class's records are formed from.
 struct ShellTable {
-  MirroredBuffer<int32_t> prim_begin;
-  MirroredBuffer<double> exponent;
-  MirroredBuffer<double> coefficient;
-  MirroredBuffer<double> c_x;
-  MirroredBuffer<double> c_y;
-  MirroredBuffer<double> c_z;
-  MirroredBuffer<int32_t> ao_offset;
-  MirroredBuffer<int32_t> rank;
+  std::vector<int32_t> prim_begin{0};
+  std::vector<double> exponent;
+  std::vector<double> coefficient;
+  std::vector<double> c_x;
+  std::vector<double> c_y;
+  std::vector<double> c_z;
+  std::vector<int32_t> ao_offset;
+  std::vector<int32_t> rank;
 };
 
-// One class's ClassPairs, staged.
+// Every class's shell pairs on the host, one class after the other, in class
+// order: class c's start at pair_begin[c] in bra and ket, and its n_pairs + 1
+// record prefix at pair_begin[c] + c in rec_begin.
 struct PairTable {
-  MirroredBuffer<uint32_t> bra;
-  MirroredBuffer<uint32_t> ket;
-  MirroredBuffer<int32_t> rec_begin;
+  std::vector<uint32_t> bra;
+  std::vector<uint32_t> ket;
+  std::vector<int32_t> rec_begin;
+  std::vector<size_t> pair_begin{0};
 };
 
-// values in a new MirroredBuffer on ds, on its pinned side only.
-template <typename T>
-MirroredBuffer<T> staged(const std::vector<T> &values, const std::shared_ptr<DeviceStream> &ds) {
-  // pool-bypass-ok: until #1130, which stages the tables from a pinned_regions carve.
-  MirroredBuffer<T> out(values.size(), ds);
-  std::ranges::copy(values, out.pinned().data());
-  return out;
-}
+// Both tables on the device, a buffer per field, for the call only.
+struct DeviceTables {
+  Buffers::device<int32_t> prim_begin;
+  Buffers::device<double> exponent;
+  Buffers::device<double> coefficient;
+  Buffers::device<double> c_x;
+  Buffers::device<double> c_y;
+  Buffers::device<double> c_z;
+  Buffers::device<int32_t> ao_offset;
+  Buffers::device<int32_t> rank;
+  Buffers::device<uint32_t> bra;
+  Buffers::device<uint32_t> ket;
+  Buffers::device<int32_t> rec_begin;
+};
 
 // Each shell's rank: its index among basis's shells of its momentum, in basis
 // order.
@@ -87,21 +94,13 @@ std::vector<int32_t> shell_ranks(const BasisSet &basis) {
   return rank;
 }
 
-// The shells and primitives of bases staged on ds, one basis after the other,
-// so a shell's index in the table is its index in its basis plus the shell
-// counts of the bases before it. Each shell keeps its own basis's AO offset and
-// rank. BasisSet guarantees nao_cart() fits an int32_t, so the offset casts
-// are exact; the primitive count, across every basis, is checked here.
-ShellTable stage_shells(const std::span<const BasisSet *const> bases,
-                        const std::shared_ptr<DeviceStream> &ds, const std::string_view what) {
-  std::vector<int32_t> prim_begin{0};
-  std::vector<double> exponent;
-  std::vector<double> coefficient;
-  std::vector<double> c_x;
-  std::vector<double> c_y;
-  std::vector<double> c_z;
-  std::vector<int32_t> ao_offset;
-  std::vector<int32_t> rank;
+// The shells and primitives of bases, one basis after the other, so a shell's
+// index in the table is its index in its basis plus the shell counts of the
+// bases before it. Each shell keeps its own basis's AO offset and rank.
+// BasisSet guarantees nao_cart() fits an int32_t, so the offset casts are
+// exact; the primitive count, across every basis, is checked here.
+ShellTable shell_table(const std::span<const BasisSet *const> bases, const std::string_view what) {
+  ShellTable t;
   int64_t n_prim = 0;
   for (const BasisSet *basis : bases) {
     const std::vector<Shell> &shells = basis->shells();
@@ -111,59 +110,84 @@ ShellTable stage_shells(const std::span<const BasisSet *const> bases,
         check_or_abort(Status{err_config("{}: the bases have more than {} primitives", what,
                                          std::numeric_limits<int32_t>::max())});
       }
-      prim_begin.push_back(static_cast<int32_t>(n_prim));
+      t.prim_begin.push_back(static_cast<int32_t>(n_prim));
       for (const Primitive &p : shells[i].primitives()) {
-        exponent.push_back(p.exponent);
-        coefficient.push_back(p.coefficient);
+        t.exponent.push_back(p.exponent);
+        t.coefficient.push_back(p.coefficient);
       }
-      c_x.push_back(shells[i].center().x);
-      c_y.push_back(shells[i].center().y);
-      c_z.push_back(shells[i].center().z);
-      ao_offset.push_back(static_cast<int32_t>(basis->ao_offset_cart(i)));
+      t.c_x.push_back(shells[i].center().x);
+      t.c_y.push_back(shells[i].center().y);
+      t.c_z.push_back(shells[i].center().z);
+      t.ao_offset.push_back(static_cast<int32_t>(basis->ao_offset_cart(i)));
     }
-    std::ranges::copy(shell_ranks(*basis), std::back_inserter(rank));
+    std::ranges::copy(shell_ranks(*basis), std::back_inserter(t.rank));
   }
-  return {
-      .prim_begin = staged(prim_begin, ds),
-      .exponent = staged(exponent, ds),
-      .coefficient = staged(coefficient, ds),
-      .c_x = staged(c_x, ds),
-      .c_y = staged(c_y, ds),
-      .c_z = staged(c_z, ds),
-      .ao_offset = staged(ao_offset, ds),
-      .rank = staged(rank, ds),
+  return t;
+}
+
+// sweep's shell pairs, class after class, their record prefixes narrowed to
+// int32_t: each one's last entry, its class's record count, is checked
+// already.
+PairTable pair_table(const std::map<ClassKey, ClassPairs> &sweep) {
+  PairTable t;
+  for (const ClassPairs &cp : sweep | std::views::values) {
+    std::ranges::copy(cp.bra, std::back_inserter(t.bra));
+    std::ranges::copy(cp.ket, std::back_inserter(t.ket));
+    std::ranges::transform(cp.rec_begin, std::back_inserter(t.rec_begin),
+                           [](const int64_t r) { return static_cast<int32_t>(r); });
+    t.pair_begin.push_back(t.bra.size());
+  }
+  return t;
+}
+
+// values written to their pinned region, then copied from it to `to` on
+// res.stream().
+template <typename T>
+Status stage(DeviceResources &res, const std::vector<T> &values, T *const pinned,
+             Buffers::device<T> &to) {
+  std::ranges::copy(values, pinned);
+  return gpu_status(wwr::wwrMemcpyAsync(to.data(), pinned, sizeof(T) * values.size(),
+                                        wwr::wwrMemcpyHostToDevice, res.stream()));
+}
+
+// Both tables staged from one carve of res's pinned workspace and copied to
+// the device on res.stream(). The carve is res's until res.stream() is
+// synchronized, which the caller does before it returns.
+Result<DeviceTables> upload(DeviceResources &res, const ShellTable &s, const PairTable &p,
+                            const std::string_view what) {
+  const auto [prim_begin, exponent, coefficient, c_x, c_y, c_z, ao_offset, rank, bra, ket,
+              rec_begin] =
+      FBF_TRY((res.pinned_regions<int32_t, double, double, double, double, double, int32_t, int32_t,
+                                  uint32_t, uint32_t, int32_t>(
+          what, s.prim_begin.size(), s.exponent.size(), s.coefficient.size(), s.c_x.size(),
+          s.c_y.size(), s.c_z.size(), s.ao_offset.size(), s.rank.size(), p.bra.size(), p.ket.size(),
+          p.rec_begin.size())));
+  const std::shared_ptr<Device> &dev = res.device();
+  DeviceTables out{
+      .prim_begin = Buffers::device<int32_t>(s.prim_begin.size(), dev),
+      .exponent = Buffers::device<double>(s.exponent.size(), dev),
+      .coefficient = Buffers::device<double>(s.coefficient.size(), dev),
+      .c_x = Buffers::device<double>(s.c_x.size(), dev),
+      .c_y = Buffers::device<double>(s.c_y.size(), dev),
+      .c_z = Buffers::device<double>(s.c_z.size(), dev),
+      .ao_offset = Buffers::device<int32_t>(s.ao_offset.size(), dev),
+      .rank = Buffers::device<int32_t>(s.rank.size(), dev),
+      .bra = Buffers::device<uint32_t>(p.bra.size(), dev),
+      .ket = Buffers::device<uint32_t>(p.ket.size(), dev),
+      .rec_begin = Buffers::device<int32_t>(p.rec_begin.size(), dev),
   };
-}
-
-// One class's shell pairs staged on ds, their record prefix narrowed to
-// int32_t: its last entry, the class's record count, is checked already.
-PairTable stage_pairs(const ClassPairs &pairs, const std::shared_ptr<DeviceStream> &ds) {
-  std::vector<int32_t> rec_begin(pairs.rec_begin.size());
-  std::ranges::transform(pairs.rec_begin, rec_begin.begin(),
-                         [](const int64_t r) { return static_cast<int32_t>(r); });
-  return {.bra = staged(pairs.bra, ds),
-          .ket = staged(pairs.ket, ds),
-          .rec_begin = staged(rec_begin, ds)};
-}
-
-// Queue every staged field's pinned-to-device copy on its stream.
-Status upload(ShellTable &table) {
-  for (MirroredBuffer<double> *field :
-       {&table.exponent, &table.coefficient, &table.c_x, &table.c_y, &table.c_z}) {
-    FBF_TRY(gpu_status(field->to_device()));
-  }
-  for (MirroredBuffer<int32_t> *field : {&table.prim_begin, &table.ao_offset, &table.rank}) {
-    FBF_TRY(gpu_status(field->to_device()));
-  }
-  return {};
-}
-
-// Queue each staged shell-pair field's pinned-to-device copy on its stream.
-Status upload(PairTable &pairs) {
-  FBF_TRY(gpu_status(pairs.bra.to_device()));
-  FBF_TRY(gpu_status(pairs.ket.to_device()));
-  FBF_TRY(gpu_status(pairs.rec_begin.to_device()));
-  return {};
+  FBF_TRY(stage(res, s.prim_begin, prim_begin, out.prim_begin));
+  FBF_TRY(stage(res, s.exponent, exponent, out.exponent));
+  FBF_TRY(stage(res, s.coefficient, coefficient, out.coefficient));
+  FBF_TRY(stage(res, s.c_x, c_x, out.c_x));
+  FBF_TRY(stage(res, s.c_y, c_y, out.c_y));
+  FBF_TRY(stage(res, s.c_z, c_z, out.c_z));
+  FBF_TRY(stage(res, s.ao_offset, ao_offset, out.ao_offset));
+  FBF_TRY(stage(res, s.rank, rank, out.rank));
+  FBF_TRY(stage(res, p.bra, bra, out.bra));
+  FBF_TRY(stage(res, p.ket, ket, out.ket));
+  FBF_TRY(stage(res, p.rec_begin, rec_begin, out.rec_begin));
+  return out;
 }
 
 // A class of n records on a new stream of res's Device, every field zeroed.
@@ -275,30 +299,27 @@ Status form_bounds(PrimitivePairClass &cls) {
   return {};
 }
 
-// Every class formed on its own stream: its shell pairs uploaded there, the
-// stream forked from table_ds's (where the shell table was uploaded), then its
-// records and bounds.
-Status form_classes(std::vector<PrimitivePairClass> &classes, std::vector<PairTable> &pairs,
-                    ShellTable &table, DeviceStream &table_ds) {
-  FBF_TRY(upload(table));
+// Every class formed on its own stream, forked from res.stream(), where the
+// tables were uploaded: its records, then its bounds.
+Status form_classes(DeviceResources &res, std::vector<PrimitivePairClass> &classes,
+                    const PairTable &pairs, const DeviceTables &t) {
   for (size_t c = 0; c < classes.size(); ++c) {
     PrimitivePairClass &cls = classes[c];
-    PairTable &pt = pairs[c];
-    FBF_TRY(upload(pt));
-    FBF_TRY(gpu_status(cls.handle->fork_stream().fork_from(table_ds.stream())));
+    FBF_TRY(gpu_status(cls.handle->fork_stream().fork_from(res.stream())));
+    const size_t first = pairs.pair_begin[c];
     const device::PrimitivePairSource src{
-        .n_pairs = static_cast<int32_t>(pt.bra.size()),
-        .bra = pt.bra.device().data(),
-        .ket = pt.ket.device().data(),
-        .rec_begin = pt.rec_begin.device().data(),
-        .prim_begin = table.prim_begin.device().data(),
-        .exponent = table.exponent.device().data(),
-        .coefficient = table.coefficient.device().data(),
-        .c_x = table.c_x.device().data(),
-        .c_y = table.c_y.device().data(),
-        .c_z = table.c_z.device().data(),
-        .ao_offset = table.ao_offset.device().data(),
-        .rank = table.rank.device().data(),
+        .n_pairs = static_cast<int32_t>(pairs.pair_begin[c + 1] - first),
+        .bra = t.bra.data() + first,
+        .ket = t.ket.data() + first,
+        .rec_begin = t.rec_begin.data() + first + c,
+        .prim_begin = t.prim_begin.data(),
+        .exponent = t.exponent.data(),
+        .coefficient = t.coefficient.data(),
+        .c_x = t.c_x.data(),
+        .c_y = t.c_y.data(),
+        .c_z = t.c_z.data(),
+        .ao_offset = t.ao_offset.data(),
+        .rank = t.rank.data(),
     };
     FBF_TRY(form_records(cls, src));
     FBF_TRY(form_bounds(cls));
@@ -325,17 +346,11 @@ Result<std::vector<PrimitivePairClass>> form_sweep(DeviceResources &res,
                                                    const std::map<ClassKey, ClassPairs> &sweep,
                                                    const std::span<const BasisSet *const> bases,
                                                    const std::string_view what) {
-  // The shell table, on a stream of its own that every class's stream forks
-  // from. Its device side is freed on that stream when the call returns, so
-  // the classes' streams, which read it, are waited for first (below).
   const ScopedDeviceIndex on{res.dev_idx()};
-  const auto table_ds = std::make_shared<DeviceStream>(res.device());
-  ShellTable table = stage_shells(bases, table_ds, what);
+  const ShellTable shells = shell_table(bases, what);
 
   std::vector<PrimitivePairClass> out;
-  std::vector<PairTable> pairs;
   out.reserve(sweep.size());
-  pairs.reserve(sweep.size());
   for (const auto &[key, cp] : sweep) {
     const int64_t n = cp.rec_begin.back();
     if (n > std::numeric_limits<int32_t>::max()) {
@@ -344,13 +359,21 @@ Result<std::vector<PrimitivePairClass>> form_sweep(DeviceResources &res,
                             key.second, n, std::numeric_limits<int32_t>::max())});
     }
     out.push_back(make_class(res, key, static_cast<int32_t>(n)));
-    pairs.push_back(stage_pairs(cp, out.back().handle));
   }
+  const PairTable pairs = pair_table(sweep);
 
-  // Wait for every class's stream however the forming went: the tables are
-  // this call's, and are freed when it returns.
-  const Status formed = form_classes(out, pairs, table, *table_ds);
-  Status waited;
+  // The tables are this call's: their device side is freed on res.stream()
+  // when it returns, and the pinned carve they were staged from is released.
+  // Every class's stream reads them, so it and res.stream() are waited for
+  // first, however the upload and the forming went.
+  const Result<DeviceTables> tables = upload(res, shells, pairs, what);
+  Status formed;
+  if (tables) {
+    formed = form_classes(res, out, pairs, *tables);
+  } else {
+    formed = std::unexpected(tables.error());
+  }
+  Status waited = res.sync();
   for (PrimitivePairClass &cls : out) {
     if (const Status s = gpu_status(cls.handle->fork_stream().sync()); !s && waited) {
       waited = s;

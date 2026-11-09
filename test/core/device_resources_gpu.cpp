@@ -1,7 +1,8 @@
 // GPU smoke cases for resources:device_resources: DeviceResources constructed on a
 // real device, its handles bound to the Device's stream, the one-way
 // ownership that lets a buffer outlive the bundle that handed out its Device,
-// and the solver scratch: grow-only workspaces and the info flag.
+// the solver scratch (grow-only workspaces and the info flag), and the pinned
+// memory: the pinned workspace's carve, counted buffers and the pinned cap.
 
 #include <gtest/gtest.h>
 
@@ -175,10 +176,11 @@ TEST(DeviceResources, WorkspacesGrowAlignedAndNeverShrink) {
   EXPECT_EQ(res.device_workspace(kAlign).data(), grown);
   EXPECT_EQ(res.device_workspace(kAlign).num_elements(), 2 * kAlign);
 
-  EXPECT_EQ(res.host_workspace(0).num_elements(), 0U);
-  EXPECT_EQ(res.host_workspace(3 * kAlign - 1).num_elements(), 3 * kAlign);
-  const std::byte *host = res.host_workspace(0).data();
-  EXPECT_EQ(res.host_workspace(1).data(), host);
+  EXPECT_EQ(res.pinned_workspace("test", 0).value().size(), 0U);
+  EXPECT_EQ(res.pinned_workspace("test", (3 * kAlign) - 1).value().size(), 3 * kAlign);
+  const std::byte *pinned = res.pinned_workspace("test", 0).value().data();
+  EXPECT_EQ(res.pinned_workspace("test", 1).value().data(), pinned);
+  EXPECT_EQ(res.pinned_bytes(), 3 * kAlign);
 }
 
 // The rounding is what lets one byte workspace serve every solver element type:
@@ -218,6 +220,119 @@ TEST(DeviceResources, DeviceRegionsCarveAlignedInOrder) {
   EXPECT_EQ(reinterpret_cast<const std::byte *>(y) - reinterpret_cast<const std::byte *>(x),
             static_cast<std::ptrdiff_t>(kAlign));
   EXPECT_EQ(res.device_workspace(0).num_elements(), 3 * kAlign);
+}
+
+// pinned_regions carves the pinned workspace as device_regions carves the
+// device one: each region aligned for its type, in order, none overlapping
+// the next, in one request for the total.
+TEST(DeviceResources, PinnedRegionsCarveAlignedInOrder) {
+  FBF_REQUIRE_GPU();
+
+  constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
+  fb::DeviceResources res{0};
+
+  const auto [a, b, c] = res.pinned_regions<double, std::int32_t, std::complex<double>>(
+                                "test", std::size_t{33}, std::size_t{1}, std::size_t{5})
+                             .value();
+  static_assert(std::is_same_v<decltype(b), std::int32_t *const>);
+  const std::byte *const base = res.pinned_workspace("test", 0).value().data();
+  EXPECT_EQ(reinterpret_cast<const std::byte *>(a), base);
+  EXPECT_EQ(reinterpret_cast<const std::byte *>(b), base + (2 * kAlign));
+  EXPECT_EQ(reinterpret_cast<const std::byte *>(c), base + (3 * kAlign));
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(a) % alignof(double), 0U);
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(c) % alignof(std::complex<double>), 0U);
+  EXPECT_LE(reinterpret_cast<const std::byte *>(a + 33), reinterpret_cast<const std::byte *>(b));
+  EXPECT_LE(reinterpret_cast<const std::byte *>(b + 1), reinterpret_cast<const std::byte *>(c));
+  EXPECT_EQ(res.pinned_workspace("test", 0).value().size(), 4 * kAlign);
+
+  // Every region is the host's to write, end to end.
+  std::fill_n(a, 33, 1.0);
+  b[0] = 2;
+  std::fill_n(c, 5, std::complex<double>{3.0, 4.0});
+  EXPECT_EQ(a[32], 1.0);
+  EXPECT_EQ(b[0], 2);
+  EXPECT_EQ(c[0], (std::complex<double>{3.0, 4.0}));
+
+  const auto [x, y] = res.pinned_regions<float>("test", std::size_t{64}, std::size_t{65}).value();
+  EXPECT_EQ(reinterpret_cast<const std::byte *>(y) - reinterpret_cast<const std::byte *>(x),
+            static_cast<std::ptrdiff_t>(kAlign));
+  EXPECT_EQ(res.pinned_workspace("test", 0).value().size(), 4 * kAlign);
+}
+
+// Under a pinned cap of C, a counted allocation of C/2 fits; a workspace
+// growth or a second allocation that would pass C is refused as Unsupported,
+// naming the caller and the sizes, and allocates nothing; freeing the counted
+// buffer gives its bytes back.
+TEST(DeviceResources, PinnedCapRefusesWhatWouldPassIt) {
+  FBF_REQUIRE_GPU();
+
+  constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
+  constexpr std::size_t kCap = 64 * kAlign;
+  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, kCap};
+  EXPECT_EQ(res.pinned_cap(), kCap);
+  const std::size_t start = res.pinned_bytes();
+  EXPECT_EQ(start, 0U);
+
+  const auto refused = [](const auto &result, const std::string &request) {
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().kind, fb::ErrorKind::Unsupported);
+    const std::string &msg = result.error().message;
+    EXPECT_NE(msg.find("caller-x"), std::string::npos) << msg;
+    EXPECT_NE(msg.find(request), std::string::npos) << msg;
+    EXPECT_NE(msg.find(std::to_string(kCap)), std::string::npos) << msg;
+  };
+
+  {
+    auto half = res.counted_pinned<double>("caller-x", kCap / 2 / sizeof(double));
+    ASSERT_TRUE(half.has_value());
+    EXPECT_EQ(half->num_elements(), kCap / 2 / sizeof(double));
+    EXPECT_EQ(res.pinned_bytes(), start + (kCap / 2));
+    half->data()[0] = 1.0; // the host's to write
+
+    // A growth past what is left: refused, and the workspace is unchanged.
+    refused(res.pinned_workspace("caller-x", (kCap / 2) + 1), std::to_string((kCap / 2) + kAlign));
+    EXPECT_EQ(res.pinned_workspace("caller-x", 0).value().size(), 0U);
+    refused(res.pinned_regions<double>("caller-x", (kCap / 2 / sizeof(double)) + 1),
+            std::to_string((kCap / 2) + kAlign));
+    EXPECT_EQ(res.pinned_bytes(), start + (kCap / 2));
+
+    // A second allocation past it: refused, and nothing is counted.
+    refused(res.counted_pinned<std::byte>("caller-x", (kCap / 2) + 1),
+            std::to_string((kCap / 2) + 1));
+    EXPECT_EQ(res.pinned_bytes(), start + (kCap / 2));
+
+    // Exactly what is left fits.
+    EXPECT_EQ(res.pinned_workspace("caller-x", kCap / 2).value().size(), kCap / 2);
+    EXPECT_EQ(res.pinned_bytes(), kCap);
+    refused(res.counted_pinned<std::byte>("caller-x", 1), "1");
+  }
+
+  // half is freed: only the workspace is left.
+  EXPECT_EQ(res.pinned_bytes(), start + (kCap / 2));
+  auto again = res.counted_pinned<std::byte>("caller-x", kCap / 2);
+  ASSERT_TRUE(again.has_value());
+  EXPECT_EQ(res.pinned_bytes(), kCap);
+}
+
+// A counted buffer carries its count when moved, and may outlive the
+// DeviceResources that allocated it.
+TEST(DeviceResources, CountedPinnedMovesItsCount) {
+  FBF_REQUIRE_GPU();
+
+  std::optional<fb::CountedPinned<float>> kept;
+  {
+    fb::DeviceResources res{0};
+    auto a = res.counted_pinned<float>("test", kCount).value();
+    EXPECT_EQ(res.pinned_bytes(), kCount * sizeof(float));
+    fb::CountedPinned<float> b{std::move(a)};
+    EXPECT_EQ(res.pinned_bytes(), kCount * sizeof(float));
+    b = res.counted_pinned<float>("test", 2 * kCount).value();
+    EXPECT_EQ(res.pinned_bytes(), 2 * kCount * sizeof(float));
+    kept.emplace(std::move(b));
+  }
+  ASSERT_EQ(kept->num_elements(), 2 * kCount);
+  kept->data()[2 * kCount - 1] = 1.0F;
+  kept.reset();
 }
 
 // fetch_info() reads back what was last written to info() on the work stream:

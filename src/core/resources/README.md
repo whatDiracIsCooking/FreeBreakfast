@@ -11,7 +11,7 @@ taskflow into every unit that does. Import and link it explicitly.
 
 | Partition | Exports |
 |-----------|---------|
-| `:device_resources` | `DeviceResources` |
+| `:device_resources` | `DeviceResources`, `CountedPinned<T>` |
 | `:node_resources` | `NodeResources`, `NodeResourcesConfig`; re-exports `free_breakfast.third_party.taskflow` (`tf::Executor`, `tf::Taskflow`, `tf::Task`, `tf::FlowBuilder`, `tf::Subflow`) |
 | `:sys_env` | nothing: an internal partition, the host queries `NodeResources` is built from |
 
@@ -30,8 +30,9 @@ taskflow into every unit that does. Import and link it explicitly.
 ## DeviceResources
 
 One device's working set: a shared `Device` (its `ForkStream` work stream and
-memory pool) plus a `BlasHandle` and a `SolverHandle` bound to that stream, and
-the solver scratch they share (see "Solver scratch" below).
+memory pool) plus a `BlasHandle` and a `SolverHandle` bound to that stream, the
+solver scratch they share (see "Solver scratch" below), and the device's pinned
+host memory (see "Pinned memory").
 
 ```cpp
 import free_breakfast.core;
@@ -117,7 +118,6 @@ them from `res` instead of from its caller:
 | Member | What | Kind |
 |---|---|---|
 | `device_workspace(bytes)` | `Buffers::device<std::byte>&`, grown to hold `bytes` | from the `Device`'s pool, on `stream()` |
-| `host_workspace(bytes)` | `Buffers::host<std::byte>&`, grown to hold `bytes`: a generic (`X`) routine's `bufferOnHost` | plain host |
 | `info()` | `Buffers::device<int32_t>&`, one element, for `devInfo` | from the pool |
 | `fetch_info()` | `Result<int32_t>`: copies `info()` to a pinned slot on `stream()`, syncs, returns it | |
 
@@ -164,11 +164,6 @@ queued against it is safe, but a pointer or view held across another request
 dangles. Pass the routine its own `lwork`, not the buffer's size, which may be
 larger.
 
-**The host workspace is plain, not pinned.** The solver reads and writes it
-from the CPU and never copies it to or from the device, so pinning buys
-nothing and costs a page-locking allocation on every growth. Its free is
-immediate, not stream-ordered.
-
 **One routine owns the device workspace at a time.** It is not only for the
 solver's own work: a routine can carve all of its device scratch from it,
 asking once for the total and splitting the result, so its caller lends
@@ -205,9 +200,59 @@ overwrites the workspace on every apply.
 
 **`info` is on the work stream.** The solver handle writes `info()` on
 `stream()`, and `fetch_info()` copies on that same stream, so the read is
-ordered after the write. That is why these live here rather than in a
-`MirroredBuffer`, which is bound to a `DeviceStream` — a different stream —
-and would race the solver's write.
+ordered after the write. A buffer on any other stream would race the
+solver's write. The pinned slot is four bytes, fixed, and read at any time, so
+it is a member of its own, outside the pinned workspace and the cap.
+
+### Pinned memory
+
+Pinned host memory is a per-device resource too, for loading and offloading:
+`DeviceResources` owns all of it outside `src/core/resources/`, so one total
+can be held under one cap.
+
+| Member | What |
+|---|---|
+| `pinned_workspace(caller, bytes)` | `Result<std::span<std::byte>>`: the pinned workspace, grown to hold `bytes`, the whole block |
+| `pinned_regions<Ts...>(caller, counts...)` | `Result<std::tuple<Ts *...>>`: it carved as `device_regions` carves the device one |
+| `counted_pinned<T>(caller, count)` | `Result<CountedPinned<T>>`: a pinned buffer counted while it lives |
+| `pinned_bytes()` | the pinned total: the workspace plus every live `CountedPinned` |
+| `pinned_cap()` | the cap on it, in bytes, the constructor's third argument; 0 for none |
+
+**The workspace is for fixed-size uses**: an upload's staging, a small
+readback, the bounce buffer of a load from disk, the slots of an offload ring.
+It grows as the device workspace does, in 256 B steps, and never shrinks. A
+growth synchronizes `stream()` and frees the old block before it allocates the
+new one, since a pinned free is not stream-ordered; the two are never held at
+once. Carve it with `pinned_regions`, which lays the regions out exactly as
+`device_regions` does:
+
+```cpp
+const auto [z, c] = FBF_TRY(res.pinned_regions<double>("Molecule", n, 3 * n));
+// ... write z and c on the host, copy them on res.stream() ...
+FBF_TRY(res.sync()); // drained: the carve can be released
+```
+
+**`CountedPinned<T>` is for a product that lives in pinned memory**, past the
+call that made it: an offloaded block streamed through a ring. Its bytes join
+`pinned_bytes()` when it is allocated and leave when it is freed or assigned
+to. It shares the count with `DeviceResources`, so it may outlive it. It hands
+out `data()` and `num_elements()` only. Its free is immediate: drain the copies
+that use it first.
+
+**The cap.** A workspace growth or a counted allocation that would take
+`pinned_bytes()` past `pinned_cap()` returns `Unsupported`, naming the caller,
+the request, the total and the cap, and allocates nothing. With no cap (0, the
+default) nothing is refused. The caller names itself because the refusal is
+the run-time end of a configured limit, and the message has to say which step
+asked.
+
+**The one rule the device workspace does not need.** The CPU writes the pinned
+workspace, and a copy that reads it runs later, on the stream. So a routine
+must not rewrite a region until the stream has drained the copy that reads it
+(a sync, or an event the ring waits on), and it drains its copies before it
+returns, since the next routine to take the workspace writes it at once. "One
+routine at a time" applies as it does to the device workspace: ask once for
+the total, hold no region across a call to another routine that uses it.
 
 Movable, not copyable (the handles are move-only). A moved-from
 `DeviceResources` holds no `Device`.
