@@ -17,7 +17,7 @@ the product). `run` is defined in the implementation unit, so
 `diagonalize` and `io.molden` are PRIVATE links.
 
 **The active-space selection** -- `ncas`, `nelecas`, `active`, `avas`,
-`avas_threshold`, `orbitals`, `orbital_order`, AVAS over MINAO, and the
+`avas_threshold`, `avas_max_ncas`, `orbitals`, `orbital_order`, AVAS over MINAO, and the
 rotation C R -- is `pipeline/active_space`'s, shared with the steps that take
 one; see [`active_space/README.md`](../active_space/README.md). So `[casci]`
 takes `orbitals`, another run's `.npy` orbitals (a Casscf step's
@@ -37,7 +37,8 @@ struct CasciOutput {
   DavidsonInfo davidson;
 };
 
-struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_threshold
+struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_threshold,
+                                           // avas_max_ncas
   static constexpr std::string_view kName = "casci";
 
   int32_t nroots = 1;

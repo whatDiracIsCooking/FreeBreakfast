@@ -427,6 +427,40 @@ TEST(PipelineCasci, AnAvasLabelNamingNoMinaoAoIsInvalidConfig) {
   EXPECT_FALSE(calc->get<fb::CasciOutput>().has_value());
 }
 
+// An AVAS pick past avas_max_ncas is refused, never truncated, when the step
+// runs, and the ScfOutput it selected from is kept; at a cap of the pick
+// itself it runs. Water's O 2p and H 1s at 0.2 pick PySCF's 6 orbitals.
+TEST(PipelineCasci, AnAvasPickPastTheCapIsInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz_avas");
+  const auto pick = entry.at("ncas").get<std::int32_t>();
+  const fb::test::ScratchDir dir("pipeline_casci");
+  const auto capped = [&](std::int32_t cap) {
+    return write_config(dir, entry,
+                        casci_tables(entry, 1) + std::format("avas_max_ncas = {}\n", cap));
+  };
+  auto calc = fb::read_config(capped(pick - 1), dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_FALSE(ran.has_value());
+  EXPECT_EQ(ran.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(ran.error().message.find(std::format(
+                "active space: AVAS picked {} orbitals at threshold 0.2, avas_max_ncas is {}", pick,
+                pick - 1)),
+            std::string::npos)
+      << ran.error().message;
+  ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
+  EXPECT_FALSE(calc->get<fb::CasciOutput>().has_value());
+
+  auto at_cap = fb::read_config(capped(pick), dir.path(), dir / "out");
+  ASSERT_TRUE(at_cap.has_value()) << at_cap.error().message;
+  const fb::Status ran_at_cap = at_cap->run(node);
+  ASSERT_TRUE(ran_at_cap.has_value()) << ran_at_cap.error().message;
+  ASSERT_TRUE(at_cap->get<fb::CasciOutput>().has_value());
+  EXPECT_EQ(at_cap->get<fb::CasciOutput>()->ncas, pick);
+}
+
 // An open-shell ScfOutput, n_alpha != n_beta, by index, with its core doubly
 // occupied and every singly occupied orbital active: each broken is refused by
 // the selection, naming the orbital. The rest of the chain is water's in STO-3G, 7 orbitals, under

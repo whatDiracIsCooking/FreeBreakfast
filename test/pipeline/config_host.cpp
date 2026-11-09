@@ -561,6 +561,18 @@ TEST(PipelineConfig, TheCasciAvasOptionsAreReadInPlaceOfAnActiveSpace) {
   auto plain = fb::parse_config(with_inputs("[casci]\navas = [\"N 2p\"]\n"), "", kOut);
   ASSERT_TRUE(plain.has_value()) << plain.error().message;
   EXPECT_EQ(plain->step<fb::CasciStep>()->avas_threshold, 0.2);
+  EXPECT_EQ(plain->step<fb::CasciStep>()->avas_max_ncas, 0);
+
+  // The cap, read beside avas in either step; the refusal of a pick past it
+  // needs the SCF's orbitals, so is the selection's when the step runs.
+  auto capped =
+      fb::parse_config(with_inputs("[casci]\navas = [\"O 2p\"]\navas_max_ncas = 12\n"), "", kOut);
+  ASSERT_TRUE(capped.has_value()) << capped.error().message;
+  EXPECT_EQ(capped->step<fb::CasciStep>()->avas_max_ncas, 12);
+  auto capped_casscf =
+      fb::parse_config(with_inputs("[casscf]\navas = [\"O 2p\"]\navas_max_ncas = 1\n"), "", kOut);
+  ASSERT_TRUE(capped_casscf.has_value()) << capped_casscf.error().message;
+  EXPECT_EQ(capped_casscf->step<fb::CasscfStep>()->avas_max_ncas, 1);
 }
 
 TEST(PipelineConfig, AMalformedCasciAvasIsInvalidConfig) {
@@ -579,6 +591,14 @@ TEST(PipelineConfig, AMalformedCasciAvasIsInvalidConfig) {
                       "[casci] avas is not an array of strings");
   expect_config_error(with_inputs("[casci]\navas = [\"O 2p\"]\navas_threshold = \"x\"\n"),
                       "[casci] avas_threshold is not a number");
+  expect_config_error(with_inputs("[casci]\nncas = 2\nnelecas = 2\navas_max_ncas = 12\n"),
+                      "[casci] avas_max_ncas needs 'avas'");
+  expect_config_error(with_inputs("[casci]\navas = [\"O 2p\"]\navas_max_ncas = 0\n"),
+                      "[casci] avas_max_ncas is 0, below 1");
+  expect_config_error(with_inputs("[casci]\navas = [\"O 2p\"]\navas_max_ncas = -3\n"),
+                      "[casci] avas_max_ncas is -3, below 1");
+  expect_config_error(with_inputs("[casci]\navas = [\"O 2p\"]\navas_max_ncas = 4.5\n"),
+                      "[casci] avas_max_ncas");
 }
 
 // The ranges need the molecule's electrons and the basis's orbitals, so
@@ -698,6 +718,10 @@ TEST(PipelineConfig, AMalformedCasscfTableIsInvalidConfig) {
   expect_config_error(with_inputs("[casscf]\nncas = 2\nnelecas = 2\navas_threshold = 0.3\n"),
                       "[casscf] avas_threshold needs 'avas'");
   expect_config_error(with_inputs("[casscf]\navas = []\n"), "[casscf] avas names no AO label");
+  expect_config_error(with_inputs("[casscf]\nncas = 2\nnelecas = 2\navas_max_ncas = 12\n"),
+                      "[casscf] avas_max_ncas needs 'avas'");
+  expect_config_error(with_inputs("[casscf]\navas = [\"O 2p\"]\navas_max_ncas = 0\n"),
+                      "[casscf] avas_max_ncas is 0, below 1");
   expect_config_error(with_inputs("[casscf]\nncas = 2\nnelecas = 2\nactive = [3, 4.0]\n"),
                       "[casscf] active is not an array of 32-bit integers");
   expect_config_error(with_inputs("[casscf]\nncas = 4\nnelecas = 4\nnroot = 2\n"),

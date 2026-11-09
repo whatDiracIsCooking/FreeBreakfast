@@ -37,7 +37,8 @@ struct ActiveSpace {
 };
 
 /// @brief The options that pick an active space: by index (@ref ncas,
-/// @ref nelecas, @ref active) or by AVAS (@ref avas, @ref avas_threshold).
+/// @ref nelecas, @ref active) or by AVAS (@ref avas, @ref avas_threshold,
+/// @ref avas_max_ncas).
 struct ActiveSpaceSelection {
   /// @brief The active orbitals. Required in a config without @ref avas; at
   /// least 1. Left at 0 under @ref avas, which picks it.
@@ -65,6 +66,10 @@ struct ActiveSpaceSelection {
   /// @brief The projection weight an orbital needs to be active under
   /// @ref avas, in (0, 1): PySCF's default.
   double avas_threshold = 0.2;
+  /// @brief The most active orbitals @ref avas may pick, if above 0: a pick
+  /// of more is refused, never truncated, since AVAS is defined by
+  /// @ref avas_threshold and a cut could split a degenerate set. 0: no cap.
+  int32_t avas_max_ncas = 0;
   /// @brief A float64 .npy of orbitals to start from in place of the
   /// ScfOutput's, if not empty: nao x nmo (AO by MO, this tree's spherical AO
   /// order), as a Casscf step's `orbitals_npy` writes them, of this basis at
@@ -104,7 +109,7 @@ struct ActiveSpaceSelection {
   ///         InvalidConfig for a malformed label or one naming no MINAO AO of
   ///         the molecule, @ref avas_threshold outside (0, 1), @ref ncas,
   ///         @ref nelecas or @ref active set beside it, or no orbital
-  ///         selected, Numerical for a labelled MINAO overlap not positive
+  ///         selected, or more selected than @ref avas_max_ncas, Numerical for a labelled MINAO overlap not positive
   ///         definite, or `overlap_mixed_spherical`'s or `diagonalize`'s
   ///         error; under @ref orbitals, InvalidConfig beside @ref avas or
   ///         for a file not nao x nmo (naming both shapes), `read_npy`'s IO

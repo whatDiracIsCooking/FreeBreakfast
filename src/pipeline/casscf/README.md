@@ -21,7 +21,8 @@ and `free_breakfast.mcscf.solve` (`mcscf::Iteration`, in the product, and
 implementation unit, so `integrals.active_space`, `response.fock`,
 `diagonalize`, `io.molden` and `io.npy` are PRIVATE links.
 
-The selection -- `ncas`, `nelecas`, `active`, `avas`, `avas_threshold` -- is
+The selection -- `ncas`, `nelecas`, `active`, `avas`, `avas_threshold`,
+`avas_max_ncas` -- is
 `pipeline/active_space`'s ([`active_space/README.md`](../active_space/README.md)).
 The loop, its defaults and what each settles are
 [`mcscf/solve/README.md`](../../mcscf/solve/README.md)'s. This step adds the
@@ -46,7 +47,8 @@ struct CasscfOutput {
   std::vector<mcscf::Iteration> iterations; // one per macro iteration
 };
 
-struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_threshold, orbitals
+struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_threshold,
+                                            // avas_max_ncas, orbitals
   static constexpr std::string_view kName = "casscf";
 
   int32_t nroots = 1;
