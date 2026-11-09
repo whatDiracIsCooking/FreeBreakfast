@@ -241,25 +241,24 @@ the C and N 1s frozen reproduces his absolute energies to 0.5 µEh
 
 ## Memory
 
-The step measures the device's free memory once its integrals and the
-CASSCF's products are held, and
+The step's two adaptive parts size themselves when they run, from
+`DeviceResources::memory_budget()` less the pool's 32 MiB fragmentation
+headroom (`pipeline/footprint`'s README); each is scratch of its call's own,
+freed before the step allocates again, so neither leaves less for what
+follows, and neither touches the workspace, which holds fixed sizes only:
 
-- **gives `nevpt2::rdms` half of it**, not the layer's default (the free
-  memory less 512 MiB). The device workspace never shrinks, so at the default
-  a large active space would leave `class_energies` almost nothing for its own
-  buffers, and a failed allocation aborts. `rdms` grows the workspace only to
-  the tile it plans: all of the determinants when they fit, which they do
-  with room to spare at every size the tests run (CAS(6,6), 400 of them, is
-  4.4 MB). Half is a cap, not a reservation, so a sibling process on the card
-  is not starved by it;
-- **sizes the slab batch** of `class_energies` to an eighth of what is free
-  after `rdms`: the most of a class's external index whose widest slab fits.
-  A class holds two slabs at once (Sir, Srsi), and `nevpt2::slab` grows the
-  workspace to a third for its gemm product. At the tests' sizes every class
-  takes one slab. PC reuses that batch. Its solve's d × d matrices, d a
-  class's internal dimension (n_act³ for Sr and Si), are allocated past that
-  budget and freed when the class returns: at n_act = 12 each is 24 MB, the
-  size of dm3.
+- **`nevpt2::rdms`' tile** (no `max_bytes`): as many determinants as the
+  budget holds, all of them when they fit, which they do with room to spare
+  at every size the tests run (CAS(6,6), 400 of them, is 4.4 MB); at the
+  least, one determinant (`rdms_footprint`).
+- **Each class's slab batch** (`nevpt2::kBatchFromBudget`), for SC, PC and
+  both effective Hamiltonians: per class, once its intermediates are built
+  and its PC solve done, the most of its external index whose slabs, slab's
+  gemm product and per-slab tables fit, up to the whole extent; at the least,
+  a batch of one (`class_energies_footprint`). The walk is the class's last
+  allocation. PC's d × d matrices, d a class's internal dimension (n_act³
+  for Sr and Si), are held through its walk and freed when the class
+  returns: at n_act = 12 each is 24 MB, the size of dm3.
 
 The per-root arrays (the RDMs, the one-electron blocks, R, Rᵀ F^I R, C_r)
 are the step's own buffers, not the workspace's: each is held across calls

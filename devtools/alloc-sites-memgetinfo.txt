@@ -12,11 +12,6 @@
 #
 # <path>                                                     <calls> <owner>
 
-# #1052: NEVPT2's adaptive RDM and slab budgets.
-src/nevpt2/rdm/rdm.cpp                                             1 #1052
-src/pipeline/nevpt2/nevpt2.cpp                                     3 #1052
-src/nevpt2/gradient/gradient.cpp                                   1 #1052
-
 # #1053: the analytic Hessians' column widths and batches.
 src/response/hessian/hessian.cpp                                   1 #1053
 src/response/cphf/cphf.cpp                                         1 #1053

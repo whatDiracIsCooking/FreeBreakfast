@@ -232,9 +232,9 @@ inputs and their bars are buffers of their own (all are held across calls
 that take the workspace): two n⁶ (dm3 and the f3s) of each, the MO blocks
 twice, and Λ, naux nmo², three times at the end (the raw one, the
 symmetrized one, and Λ̃, naux nao nmo). `nevpt2::rdms` and `rdms_adjoint`
-each get half the device's free memory at their call, as the Nevpt2 step
-gives `rdms`, so that the energy's own buffers find room after the workspace
-has grown (it never shrinks).
+size their tiles at their call from `res.memory_budget()`, as everywhere: the
+tile is scratch of the call's own, freed when it returns, so it leaves
+nothing behind for the energy's buffers to find room beside.
 
 ## The forward tangent of the builders
 

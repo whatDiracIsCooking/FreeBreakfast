@@ -151,8 +151,7 @@ Result<Buffers::device<double>> root_rdms_tangent(DeviceResources &res,
     return add_onto(res, n4, 1, eri_part.data(), bar_dot.eri.data(), n4);
   };
   FBF_TRY(rdms_adjoint(res, alpha, beta, vector, x.eri.data(), bar_dot.dm3.data(),
-                       bar_dot.f3ca.data(), bar_dot.f3ac.data(), y_part.data(), eri_part.data(),
-                       FBF_TRY(rdm_budget())));
+                       bar_dot.f3ca.data(), bar_dot.f3ac.data(), y_part.data(), eri_part.data()));
   FBF_TRY(add_y(y_part));
   FBF_TRY(add_eri());
   Buffers::device<double> no_dm3(0, res.device());
@@ -162,13 +161,11 @@ Result<Buffers::device<double>> root_rdms_tangent(DeviceResources &res,
     // bra's bar at (c, u) plus the ket's at (u, c); (tu|vw)'s bar takes both
     // builds' bars.
     FBF_TRY(rdms_adjoint(res, alpha, beta, vector, u, x.eri.data(), bar.dm3.data(), bar.f3ca.data(),
-                         bar.f3ac.data(), y_part.data(), spare.data(), eri_part.data(),
-                         FBF_TRY(rdm_budget())));
+                         bar.f3ac.data(), y_part.data(), spare.data(), eri_part.data()));
     FBF_TRY(add_y(y_part));
     FBF_TRY(add_eri());
     FBF_TRY(rdms_adjoint(res, alpha, beta, u, vector, x.eri.data(), bar.dm3.data(), bar.f3ca.data(),
-                         bar.f3ac.data(), spare.data(), y_part.data(), eri_part.data(),
-                         FBF_TRY(rdm_budget())));
+                         bar.f3ac.data(), spare.data(), y_part.data(), eri_part.data()));
     FBF_TRY(add_y(y_part));
     FBF_TRY(add_eri());
     // (tu|vw)'s tangent: f3 is linear in it and dm3 does not read it, so y's
@@ -176,7 +173,7 @@ Result<Buffers::device<double>> root_rdms_tangent(DeviceResources &res,
     // (tu|vw) bar does not move with (tu|vw), and is dropped.
     no_dm3 = FBF_TRY(zeroed(res, n6));
     FBF_TRY(rdms_adjoint(res, alpha, beta, vector, dot.eri.data(), no_dm3.data(), bar.f3ca.data(),
-                         bar.f3ac.data(), y_part.data(), eri_part.data(), FBF_TRY(rdm_budget())));
+                         bar.f3ac.data(), y_part.data(), eri_part.data()));
     FBF_TRY(add_y(y_part));
   }
   // The launches above read this frame's buffers.
@@ -675,8 +672,7 @@ Result<PcHessianProduct> pc_hessian_product(DeviceResources &res, const ci::Devi
           PcMetricLifts lifts{};
           if (uu > 0.0) {
             Buffers::device<double> dm3 = FBF_TRY(zeroed(res, n6));
-            FBF_TRY(rdms(res, alpha, beta, uk, x.eri.data(), dm3.data(), nullptr, nullptr,
-                         FBF_TRY(rdm_budget())));
+            FBF_TRY(rdms(res, alpha, beta, uk, x.eri.data(), dm3.data(), nullptr, nullptr));
             Buffers::device<double> second3 = FBF_TRY(zeroed(res, n6));
             FBF_TRY(contract(res, "a->a", {column_operand(dm3.data(), {n6})}, second3.data(), {n6},
                              2.0));
@@ -856,7 +852,7 @@ qd_rdms_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
     FBF_TRY(run_builds_adjoint(res, trace_builds(x, p.dm1.data(), p.dm2.data(), p.dm3.data(),
                                                  o.dm1.data(), o.dm2.data(), o.dm3.data())));
     FBF_TRY(rdms_adjoint(res, alpha, beta, cr, x.eri.data(), o.dm3.data(), o.f3ca.data(),
-                         o.f3ac.data(), y_part.data(), eri_part.data(), FBF_TRY(rdm_budget())));
+                         o.f3ac.data(), y_part.data(), eri_part.data()));
     FBF_TRY(add_y(y_part, r));
     FBF_TRY(add_eri());
     if (!one_slot) {
@@ -864,17 +860,15 @@ qd_rdms_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
     }
     const PairRdms &f = fixed.own[static_cast<size_t>(r)];
     FBF_TRY(rdms_adjoint(res, alpha, beta, cr, ur, x.eri.data(), f.dm3.data(), f.f3ca.data(),
-                         f.f3ac.data(), y_part.data(), spare.data(), eri_part.data(),
-                         FBF_TRY(rdm_budget())));
+                         f.f3ac.data(), y_part.data(), spare.data(), eri_part.data()));
     FBF_TRY(add_y(y_part, r));
     FBF_TRY(add_eri());
     FBF_TRY(rdms_adjoint(res, alpha, beta, ur, cr, x.eri.data(), f.dm3.data(), f.f3ca.data(),
-                         f.f3ac.data(), spare.data(), y_part.data(), eri_part.data(),
-                         FBF_TRY(rdm_budget())));
+                         f.f3ac.data(), spare.data(), y_part.data(), eri_part.data()));
     FBF_TRY(add_y(y_part, r));
     FBF_TRY(add_eri());
     FBF_TRY(rdms_adjoint(res, alpha, beta, cr, dot.eri.data(), no_dm3.data(), f.f3ca.data(),
-                         f.f3ac.data(), y_part.data(), eri_part.data(), FBF_TRY(rdm_budget())));
+                         f.f3ac.data(), y_part.data(), eri_part.data()));
     FBF_TRY(add_y(y_part, r));
   }
   if (one_slot) {
@@ -886,8 +880,7 @@ qd_rdms_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
         }
         FBF_TRY(rdms_adjoint(res, alpha, beta, u + (bra * ndet), u + (ket * ndet), x.eri.data(),
                              fixed.transitions[static_cast<size_t>((bra * nroots) + ket)].data(),
-                             nullptr, nullptr, y_part.data(), spare.data(), eri_part.data(),
-                             FBF_TRY(rdm_budget())));
+                             nullptr, nullptr, y_part.data(), spare.data(), eri_part.data()));
         FBF_TRY(add_y(y_part, bra));
         FBF_TRY(add_y(spare, ket));
       }
@@ -1095,7 +1088,7 @@ qd_hessian_product(DeviceResources &res, const std::string_view kWho,
           res, trace_builds(x, p.dm1.data(), p.dm2.data(), p.dm3.data(), t.dm1, t.dm2, t.dm3)));
       FBF_TRY(rdms_adjoint(res, alpha, beta, vectors + (bra * ndet), vectors + (ket * ndet),
                            x.eri.data(), t.dm3, nullptr, nullptr, bra_bar.data(), ket_bar.data(),
-                           eri_bar.data(), FBF_TRY(rdm_budget())));
+                           eri_bar.data()));
       double *const yu = y_walk[static_cast<size_t>(u)].data();
       FBF_TRY(add_onto(res, ndet, 1, bra_bar.data(), yu + (bra * ndet), ndet));
       FBF_TRY(add_onto(res, ndet, 1, ket_bar.data(), yu + (ket * ndet), ndet));
@@ -1340,12 +1333,11 @@ Result<QdPcHessianProduct> qd_pc_hessian_product(
         Buffers::device<double> second3 = FBF_TRY(zeroed(res, n6));
         for (const auto &[bra, ket] : {std::pair{ku.data(), cr}, std::pair{cr, ku.data()}}) {
           FBF_TRY(rdms(res, alpha, beta, bra, ket, x.eri.data(), nullptr, nullptr, part.data(),
-                       nullptr, nullptr, FBF_TRY(rdm_budget())));
+                       nullptr, nullptr));
           FBF_TRY(contract(res, "a->a", {column_operand(part.data(), {n6})}, second3.data(), {n6},
                            1.0));
         }
-        FBF_TRY(rdms(res, alpha, beta, urd, x.eri.data(), part.data(), nullptr, nullptr,
-                     FBF_TRY(rdm_budget())));
+        FBF_TRY(rdms(res, alpha, beta, urd, x.eri.data(), part.data(), nullptr, nullptr));
         FBF_TRY(
             contract(res, "a->a", {column_operand(part.data(), {n6})}, second3.data(), {n6}, 2.0));
         Buffers::device<double> second2 = FBF_TRY(zeroed(res, n * n * n * n));

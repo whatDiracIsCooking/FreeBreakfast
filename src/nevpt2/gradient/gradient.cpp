@@ -28,13 +28,6 @@ import :builders; // ScArrays, FockBuild, the builders and their reverse pass
 
 namespace free_breakfast::nevpt2 {
 
-Result<size_t> rdm_budget() {
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  return free_bytes / 2;
-}
-
 // adjoint_slot (declared in :builders).
 Status adjoint_slot(DeviceResources &res, const std::string_view subscripts,
                     const std::vector<EinsumOperand> &operands, const size_t k,
@@ -349,8 +342,7 @@ Result<ScArrays> sc_arrays(DeviceResources &res, const std::string_view who,
   ScArrays x =
       FBF_TRY(shared_arrays(res, who, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, nfrozen));
   const ScopedDeviceIndex on{res.dev_idx()};
-  FBF_TRY(rdms(res, alpha, beta, vector, x.eri.data(), x.dm3.data(), x.f3ca.data(), x.f3ac.data(),
-               FBF_TRY(rdm_budget())));
+  FBF_TRY(rdms(res, alpha, beta, vector, x.eri.data(), x.dm3.data(), x.f3ca.data(), x.f3ac.data()));
   FBF_TRY(run_builds(
       res, trace_builds(x, x.dm1.data(), x.dm2.data(), x.dm3.data(), nullptr, nullptr, nullptr)));
   const std::vector<FockBuild> builds = fock_builds(x, nullptr);
@@ -526,7 +518,7 @@ Result<Buffers::device<double>> root_rdms_adjoint(DeviceResources &res,
                                                bar.dm1.data(), bar.dm2.data(), bar.dm3.data())));
   Buffers::device<double> y(static_cast<size_t>(alpha.size()) * beta.size(), res.device());
   FBF_TRY(rdms_adjoint(res, alpha, beta, vector, x.eri.data(), bar.dm3.data(), bar.f3ca.data(),
-                       bar.f3ac.data(), y.data(), bar.eri.data(), FBF_TRY(rdm_budget())));
+                       bar.f3ac.data(), y.data(), bar.eri.data()));
   return y;
 }
 

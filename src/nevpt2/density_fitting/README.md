@@ -11,6 +11,10 @@ on the device. Link `free_breakfast::nevpt2::density_fitting`.
     h2e(res, blocks, out)                       h2e[t,u,v,w] = (tv|uw)
     slab(res, blocks, block, b0, b1, out)       block, batch axis in [b0, b1)
     batch_axis(block), block_shape(blocks, block)
+    block_shape(ncore, ncas, nvirt, block)      the same, from the counts
+
+    mo_blocks_footprint(naux, nao, nmo, ncore, ncas)  the five blocks, b_mo's X
+    h2e_footprint(ncas), slab_footprint(ncore, ncas, nvirt, block, width)
 
     h2e_adjoint(res, blocks, h2e_bar, lambda)                 lambda +=
     slab_adjoint(res, blocks, block, b0, b1, slab_bar, lambda) lambda +=
@@ -66,8 +70,17 @@ plain gemm does; here the fast index is Q, so the batch is strided over y.
 
 Then one permute (`nevpt2::device::permute`, `nevpt2_permute.cu`, one thread
 per output element) into the slab. Sijrs needs none: its gemm writes the slab
-directly. C, when a permute follows, is scratch from `res.device_workspace()`,
-the slab's own size. h2e is the same build over B_aa × B_aa, axes 0 2 1 3.
+directly. C, when a permute follows, is a buffer of the call's own, the
+slab's own size, freed in stream order when it returns: a walk may size its
+batch from the memory budget (`nevpt2::kBatchFromBudget`), and a carve of the
+workspace sized from the budget would hold it for the whole run. h2e is the
+same build over B_aa × B_aa, axes 0 2 1 3.
+
+**The footprints.** `mo_blocks_footprint` is the five blocks, persistent, and
+the largest of its four `b_mo` calls' X, the workspace (`b_mo_footprint`'s);
+`h2e_footprint` C, n_act⁴ doubles of scratch; `slab_footprint` C at a batch
+of `width`, scratch, and nothing for Sijrs. They take the counts, not the
+blocks, so a step can size them before any block exists.
 
 **No `IntegralSource` interface.** The demo's virtual base let an
 integral-direct source hand out views into whole blocks; a future
@@ -150,3 +163,7 @@ unsymmetric B and Ḃ (3 core, 4 active, 5 virtual, naux 6): ⟨Λ, Ḃ⟩ again
 for the linear blocks). Every block whole and walked in batches of 1, 2 and
 3, the last one partial; h2e; each block bar alone, then all of them with
 the two diagonals; and every adjoint accumulated onto one Λ.
+
+`test/gtest/nevpt2_footprint_gpu.cpp` holds `mo_blocks`, `h2e` and every
+block's `slab` to their footprints (`expect_footprint`: sound and tight), and
+`block_shape`'s two overloads to each other.

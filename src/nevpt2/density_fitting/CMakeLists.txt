@@ -17,7 +17,8 @@ free_breakfast_add_gpu_device_library(
 
 # The module: nevpt2's MO blocks, h2e and slabs. DeviceResources, Buffers and
 # Result are in its signatures, so core::resources, core::wwr and
-# core::error_handling are PUBLIC. b_mo, the gemm's constants, the FBF_TRY
+# core::error_handling are PUBLIC, as is core::footprint for its
+# MemoryFootprints. b_mo, the gemm's constants, the FBF_TRY
 # header and the device library are the implementation unit's alone.
 free_breakfast_add_cxx_module_library(
   NAME
@@ -32,6 +33,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::constants
   free_breakfast::core::diagnostics_macros

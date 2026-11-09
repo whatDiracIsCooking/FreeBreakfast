@@ -19,10 +19,10 @@ target `free_breakfast::nevpt2::rdm`.
 |---|---|
 | `nevpt2::rdms(res, alpha, beta, vector, eri, dm3, f3ca, f3ac, max_bytes)` | The three tensors of the device CI `vector` over the two `ci::DeviceStringSet`s, from the device (tu\|vw) `eri`, into the device `dm3`, `f3ca`, `f3ac`; `Result<int64_t>`, the number of tiles it took |
 | `nevpt2::rdms(res, alpha, beta, bra, ket, eri, dm1, dm2, dm3, f3ca, f3ac, max_bytes)` | The same between the device `bra` ⟨I\| and `ket` \|J⟩, with the transition `dm1` (n²) and `dm2` (n⁴), either of which may be null; `bra == ket` (one pointer) is the one-vector build, bit for bit; in both overloads `f3ca` and `f3ac` may be null together, and only dm3 (and dm1, dm2) is built |
-| `nevpt2::rdms_workspace_bytes(n, width, transition = false, f3 = true)` | The bytes of `res.device_workspace()` a build over `n` active orbitals carves at tile width `width`; a `transition` (bra ≠ ket) build's, and one with null f3s (`f3 = false`) |
+| `nevpt2::rdms_footprint(n, width = 1, transition = false, f3 = true)` | `MemoryFootprint`: the one block of device scratch a build over `n` active orbitals holds at tile width `width`; a `transition` (bra ≠ ket) build's, and one with null f3s (`f3 = false`). At the default width, one determinant, the least the build runs with |
 | `nevpt2::rdms_adjoint(res, alpha, beta, vector, eri, dm3_bar, f3ca_bar, f3ac_bar, vector_bar, eri_bar, max_bytes)` | From device bars on the three tensors, `vector_bar` = ∂E/∂c and `eri_bar` = ∂E/∂(tu\|vw) of E = ⟨dm3̄, dm3⟩ + ⟨f3cā, f3ca⟩ + ⟨f3ac̄, f3ac⟩, both overwritten; `Result<int64_t>`, the number of tiles |
 | `nevpt2::rdms_adjoint(res, alpha, beta, bra, ket, eri, dm3_bar, f3ca_bar, f3ac_bar, bra_bar, ket_bar, eri_bar, max_bytes)` | The bra/ket build's adjoint: `bra_bar` = ∂E/∂c_I and `ket_bar` = ∂E/∂c_J apart; in both overloads the f3 bars may be null together, and only dm3's transpose runs |
-| `nevpt2::rdms_adjoint_workspace_bytes(n, width, transition = false, f3 = true)` | The same, for the adjoint; a `transition` call's, and one with null f3 bars (`f3 = false`) |
+| `nevpt2::rdms_adjoint_footprint(n, width = 1, transition = false, f3 = true)` | The same, for the adjoint; a `transition` call's, and one with null f3 bars (`f3 = false`) |
 
 ## Layouts
 
@@ -101,7 +101,7 @@ identity, which holds between any two states.
 
 **One pointer, `bra == ket`, is the one-vector build, operation for
 operation**: one L2, the consume reading it, fdm2's old read, and the plan
-against `rdms_workspace_bytes(n, width)` (the ket's L2 is a region of no
+against `rdms_footprint(n, width)` (the ket's L2 is a region of no
 bytes). The one-vector overload is that call. dm3, f3ca and f3ac are then
 bit for bit what they were before the bra/ket overload existed (checked by
 a dump of all three at one tile and many, before and after, on the RTX
@@ -124,17 +124,21 @@ a different leading dimension and batch stride on the same gemm, so the
 digest lands in f3ca's layout directly and accumulates with β = 1, as dm3's
 and f3ac's do.
 
-**The tile width is planned from bytes, not a count.** The scratch is carved
-from `res.device_workspace()` in six regions: the two (tu\|vw) copies and fdm2
+**The tile width is planned from bytes, not a count.** The scratch is one
+block of the call's own, from `res.device()`'s pool and freed in stream order
+when the call returns, carved in six regions: the two (tu\|vw) copies and fdm2
 (n⁴ doubles each) and the tile's R, L2 and W ((2 n² + n⁴) doubles per
 determinant), each rounded up to `kWorkspaceAlignment`, which is exactly
-`rdms_workspace_bytes(n, width)`; a transition build a seventh, the ket's
-L2 (n⁴ more per determinant), `rdms_workspace_bytes(n, width, true)`. The width is the widest whose bytes fit the
-budget, at most every determinant; the tiles are that wide but for the last,
-which takes the remainder. The budget is `max_bytes`, capped at what the
-device can give: the workspace already held, or the free memory less 512 MiB
-for the BLAS libraries' own workspaces and the pool's rounding. There is no
-tile-count knob. The demo once saw an auto-sized unequal split at CAS(10,10)
+`rdms_footprint(n, width)`'s scratch; a transition build a seventh, the
+ket's L2 (n⁴ more per determinant), `rdms_footprint(n, width, true)`. The
+width is the widest whose bytes fit the budget, at most every determinant;
+the tiles are that wide but for the last, which takes the remainder. The
+budget is `max_bytes`, capped at what the device can give:
+`res.memory_budget()` less 32 MiB, the pool's fragmentation headroom
+(`pipeline/footprint`'s README). The block is the call's last allocation, so
+it may take the rest. It is never the workspace: the workspace is held at the
+plan's maximum through every step, so a budget-sized carve there would hold
+the budget for the whole run. There is no tile-count knob. The demo once saw an auto-sized unequal split at CAS(10,10)
 corrupt memory instead of failing; here every buffer's extent is the one the
 width was planned from, and `TinyBudgetsMatchOneTile` runs unequal and
 one-determinant tiles under compute-sanitizer.
@@ -146,7 +150,7 @@ together, in either overload, everything that exists only for f3 is
 skipped: the eri's conversion, the consumes and the f3 digests, fdm2 and the
 wedge and, between two vectors, the ket's L2 and its gather. What is left is
 dm3 += L2 Rᵀ and the dm1 and dm2 gemvs, about a third of the gemm work;
-(tu\|vw) is not read. The plan is then `rdms_workspace_bytes(n, width,
+(tu\|vw) is not read. The plan is then `rdms_footprint(n, width,
 transition, false)`: two regions, R and L2 ((n² + n⁴) doubles per
 determinant), the same with or without a transition, so the tiles are
 wider under one budget. dm1, dm2 and dm3 are the f3 build's bit for bit at
@@ -155,7 +159,7 @@ One null and one given is `InvalidConfig`, before anything is queued, as
 for the adjoint's f3 bars.
 
 **A budget below one determinant is `Unsupported`, refused before anything
-is queued or allocated**: a failed workspace growth aborts in this tree
+is queued or allocated**: a failed allocation aborts in this tree
 (`CreatePolicy`), so the check has to come first.
 
 Every launch and BLAS call is on `res.stream()`; it does not synchronize.
@@ -193,7 +197,7 @@ reads (tu\|vw) as it is given, so a caller whose integrals carry the
 eightfold symmetry folds the bar itself. The 4-RDM is never formed.
 
 **The plan is `rdms`' own**, the checks, the budget and the walk down to the
-widest width, against `rdms_adjoint_workspace_bytes`: fifteen regions, each
+widest width, against `rdms_adjoint_footprint`: fifteen regions, each
 rounded up to `kWorkspaceAlignment`: the two (tu\|vw) copies, the two fdm2
 bars and the consume's bar (n⁴ doubles each); the two pre-wedge f3 bars,
 dm3's total bar and dm3 (n⁶ each); and the tile's R, L2, W and their bars
@@ -225,7 +229,7 @@ running sum and, between two vectors, the ket's L2 and its bar. What is left
 is dm3's digest transposed and the produce's transpose, about a third of the
 full transition adjoint's work; (tu\|vw) is not read and `eri_bar` is
 written zero, since dm3 does not read it. The plan is then
-`rdms_adjoint_workspace_bytes(n, width, transition, false)`: four regions,
+`rdms_adjoint_footprint(n, width, transition, false)`: four regions,
 R, L2 and their bars, ((2 n² + 2 n⁴) doubles per determinant), the same with
 or without a transition. One null and one given is `InvalidConfig`, before
 anything is queued. It is the switch `rdms`' own null-f3 build takes: the
@@ -238,7 +242,7 @@ the ket, between two states as of one; so a caller folds their bars into
 dm3̄ along those traces, as `nevpt2::sc_adjoint` does for one vector.
 
 With the f3 bars the transition plan is the one-vector one's fifteen regions
-and the ket's L2 and its bar, `rdms_adjoint_workspace_bytes(n, width, true)`
+and the ket's L2 and its bar, `rdms_adjoint_footprint(n, width, true)`
 (2 n⁴ more doubles per determinant). A budget below one determinant is
 `Unsupported` before anything is queued or allocated, as for `rdms`.
 
@@ -251,13 +255,13 @@ would be 8 MB each, and the energy's chain test covers them. On those three:
 
 - `MatchesPyscf`: one tile at the default budget, each tensor within 1e-12 of
   max\|PySCF's\|;
-- `TinyBudgetsMatchOneTile`: budgets of `rdms_workspace_bytes(n, w + 1) − 1`,
+- `TinyBudgetsMatchOneTile`: budgets of `rdms_footprint(n, w + 1)`'s scratch less a byte,
   which must give width w exactly (the tile count says so), for w = 1, 7, 10
   (36 determinants: every tile one determinant; 6 tiles, the last one; 4
   tiles, the last 6) and w = 23, 64 (4900: 213 tiles, the last one; 77, the
   last 36); each within 1e-13 of the one-tile build and 1e-12 of PySCF's;
 - `BudgetBelowOneDeterminantIsUnsupported`: 0 and
-  `rdms_workspace_bytes(n, 1) − 1` are `Unsupported`, the outputs keep what
+  `rdms_footprint(n, 1)`'s scratch less a byte are `Unsupported`, the outputs keep what
   they held and the workspace is not grown;
 - `Refusals`: sets over different orbital counts, or none.
 
@@ -269,10 +273,10 @@ beta sets differ, between two random vectors:
 
 - `TransitionMatchesPyscf`: one tile, each tensor within 1e-12 of max\|PySCF's\|;
 - `TransitionTinyBudgetsMatchOneTile`: budgets of
-  `rdms_workspace_bytes(n, w + 1, true) − 1` for w = 1, 7, 10 (36
+  `rdms_footprint(n, w + 1, true)`'s scratch less a byte for w = 1, 7, 10 (36
   determinants) and 7, 23 (300: 43 tiles, the last 6; 14, the last one),
   each within 1e-13 of the one-tile build and 1e-12 of PySCF's; and
-  `rdms_workspace_bytes(n, 1, true) − 1` is `Unsupported` with the workspace
+  `rdms_footprint(n, 1, true)`'s scratch less a byte is `Unsupported` with the workspace
   not grown, where the one-vector build at the same budget runs;
 - `BraEqualKetIsTheOneVectorBuild`: on the three one-vector cases, at one
   tile and at width 7 or 23, the bra/ket call with one pointer gives the
@@ -286,7 +290,7 @@ beta sets differ, between two random vectors:
   The floor is measured in the same case first: two f3 builds are bitwise
   one another, since nothing is atomic;
 - `NullF3PlanAndRefusals`: the null-f3 bytes are R and L2 alone, transition
-  or not, and a call on a fresh workspace carves exactly that; a budget
+  or not, and a call on a fresh DeviceResources grows no workspace; a budget
   below one determinant is `Unsupported` and one null f3 is `InvalidConfig`,
   in both overloads, each with nothing written or grown.
 
@@ -315,8 +319,8 @@ linear in (tu\|vw):
   (two pointers, one pointer, and one pointer for the two bars) is the
   one-vector adjoint's vector_bar, and eri_bar its eri_bar, within 1e-13;
 - `TransitionAdjointPlanAndRefusals`: the null-f3 bytes are R, L2 and their
-  bars alone, transition or not, and a null-f3 call on a fresh workspace
-  carves exactly that; the f3 transition bytes are the one-vector ones plus
+  bars alone, transition or not, and a null-f3 call on a fresh
+  DeviceResources grows no workspace; the f3 transition bytes are the one-vector ones plus
   the ket's L2 and its bar; a budget below one determinant is `Unsupported`
   with and without f3, one null f3 bar is `InvalidConfig` in both overloads,
   each with nothing written or grown; and the sets `rdms` refuses.
@@ -327,14 +331,21 @@ random unit vector at the default budget, prints the tile count and the
 pool's peak, and checks Σ_pqr dm3[p, p, q, q, r, r] = N³.
 On the 16 GiB RX 9060 XT (gfx1200, HIP) with the card otherwise idle it
 took 9 tiles, a 16.1 GB workspace and a pool peak of 16.2 GB (79 MB of it the
-inputs and outputs), in 42 s. It is registered RUN_SERIAL, since its default
-budget is nearly the whole card.
+inputs and outputs), in 42 s, when the tile was the workspace's; it is now
+its own scratch, the same bytes. It is registered RUN_SERIAL, since its
+default budget is nearly the whole card.
+
+`test/gtest/nevpt2_footprint_gpu.cpp` holds both builds and both adjoints,
+one-vector and transition, with and without f3, to their footprints at one
+determinant (`expect_footprint`: sound and tight), and at a 64 MiB pool cap
+has CAS(8,8)'s build, 165 MB whole, tile from the budget: more than one
+determinant, fewer than all, and the pool under the cap.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `rdm.cppm` | Module interface: `nevpt2::rdms` and `nevpt2::rdms_adjoint` (each of one vector and between two) and their `_workspace_bytes` |
+| `rdm.cppm` | Module interface: `nevpt2::rdms` and `nevpt2::rdms_adjoint` (each of one vector and between two) and their `_footprint`s |
 | `rdm.cpp` | The checks, the tile plan, the consume and digest gemms and their transposes, and the launches |
 | `nevpt2_rdm_bridge.h` | The launchers, shared by the module (GMF) and the `.cu` |
 | `nevpt2_rdm.cu` | The eri's conversion, R and L2 per tile, fdm2 and the wedge, and the transposes of each |

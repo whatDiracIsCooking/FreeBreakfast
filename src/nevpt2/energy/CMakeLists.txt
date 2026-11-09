@@ -17,9 +17,10 @@ free_breakfast_add_gpu_device_library(
 
 # The module. DeviceResources, MoBlocks, Result and PcAmplitudes' Buffers are in
 # its signatures, so core::resources, nevpt2::density_fitting,
-# core::error_handling and core::wwr are PUBLIC.
-# The einsum, the solver, BLAS, the FBF_TRY header and the device library are
-# the implementation units' alone.
+# core::error_handling and core::wwr are PUBLIC, and core::footprint for
+# class_energies_footprint.
+# The einsum, the solver, BLAS, align_up, the FBF_TRY header and the device
+# library are the implementation units' alone.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.nevpt2.energy
@@ -38,9 +39,11 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::nevpt2::density_fitting
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
   free_breakfast::recipes::diagonalize

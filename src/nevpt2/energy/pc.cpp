@@ -474,14 +474,6 @@ Status pc_intruder_check(const char *name, const PcDenominators &modes, const in
   return {};
 }
 
-// The output of one slab's einsums, zeroed, from the workspace.
-Result<double *> workspace_out(DeviceResources &res, const int64_t count) {
-  double *const out = std::get<0>(res.device_regions<double>(static_cast<size_t>(count)));
-  FBF_TRY(gpu_status(
-      wwr::wwrMemsetAsync(out, 0, sizeof(double) * static_cast<size_t>(count), res.stream())));
-  return out;
-}
-
 // One class over ns states: its couplings [I ns + J] and each ket's dropped
 // count.
 struct PcClass {
@@ -709,8 +701,12 @@ Result<PcClass> pc_sr(DeviceResources &res, const MoBlocks &blocks, const Energy
   PcKets kets = FBF_TRY(pc_kets(res, "Sr", ops, ns, d, n, pc_sr_matrices, cached));
   const std::vector<double> &e_virt = ops.front().e_virt;
 
-  const int32_t step = batch_step(extent, batch);
+  constexpr std::array kSlabs{ExtBlock::Sr};
+  const int64_t y_per_unit = kets.offsets(1).back();
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, y_per_unit));
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sr, step);
+  Buffers::device<double> y_buf(static_cast<size_t>(y_per_unit * std::min(step, extent)),
+                                res.device());
   Finish f(ns);
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
@@ -720,7 +716,7 @@ Result<PcClass> pc_sr(DeviceResources &res, const MoBlocks &blocks, const Energy
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Sr, b0, b1));
     const EinsumOperand h1e_v{.data = in.h1e_v_sr + b0, .dims = {nb, n}, .strides = {1, nv}};
     const std::vector<int64_t> at = kets.offsets(nb);
-    double *const y_d = FBF_TRY(workspace_out(res, at.back()));
+    double *const y_d = FBF_TRY(zeroed_prefix(res, y_buf, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
@@ -764,8 +760,12 @@ Result<PcClass> pc_si(DeviceResources &res, const MoBlocks &blocks, const Energy
   PcKets kets = FBF_TRY(pc_kets(res, "Si", ops, ns, d, n, pc_si_matrices, cached));
   const std::vector<double> &e_core = ops.front().e_core;
 
-  const int32_t step = batch_step(extent, batch);
+  constexpr std::array kSlabs{ExtBlock::Si};
+  const int64_t y_per_unit = kets.offsets(1).back();
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, y_per_unit));
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Si, step);
+  Buffers::device<double> y_buf(static_cast<size_t>(y_per_unit * std::min(step, extent)),
+                                res.device());
   Finish f(ns);
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
@@ -775,7 +775,7 @@ Result<PcClass> pc_si(DeviceResources &res, const MoBlocks &blocks, const Energy
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Si, b0, b1));
     const EinsumOperand h1e_v{.data = in.h1e_v_si + (n * b0), .dims = {n, nb}, .strides = {1, n}};
     const std::vector<int64_t> at = kets.offsets(nb);
-    double *const y_d = FBF_TRY(workspace_out(res, at.back()));
+    double *const y_d = FBF_TRY(zeroed_prefix(res, y_buf, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
@@ -823,8 +823,12 @@ Result<PcClass> pc_sijr(DeviceResources &res, const MoBlocks &blocks, const int3
   const std::vector<double> &e_core = ops.front().e_core;
   const std::vector<double> &e_virt = ops.front().e_virt;
 
-  const int32_t step = batch_step(extent, batch);
+  constexpr std::array kSlabs{ExtBlock::Sijr};
+  const int64_t y_per_unit = kets.offsets(nc * nc).back();
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, y_per_unit));
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sijr, step);
+  Buffers::device<double> y_buf(static_cast<size_t>(y_per_unit * std::min(step, extent)),
+                                res.device());
   Finish f(ns);
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
@@ -833,7 +837,7 @@ Result<PcClass> pc_sijr(DeviceResources &res, const MoBlocks &blocks, const int3
     const EinsumOperand h2e_v =
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Sijr, b0, b1));
     const std::vector<int64_t> at = kets.offsets(nr * nc * nc);
-    double *const y_d = FBF_TRY(workspace_out(res, at.back()));
+    double *const y_d = FBF_TRY(zeroed_prefix(res, y_buf, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
@@ -917,9 +921,14 @@ Result<PcClass> pc_srsi(DeviceResources &res, const MoBlocks &blocks, const int3
   const std::vector<double> &e_core = ops.front().e_core;
   const std::vector<double> &e_virt = ops.front().e_virt;
 
-  const int32_t step = batch_step(extent, batch);
+  // y and, with the diagonal given, the exchange rows yt: two halves.
+  constexpr std::array kSlabs{ExtBlock::Srsi, ExtBlock::SrsiT};
+  const int64_t y_per_unit = (cached != nullptr ? 1 : 2) * kets.offsets(nv * nc).back();
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, y_per_unit));
   Buffers::device<double> slab_a = slab_buffer(res, blocks, ExtBlock::Srsi, step);
   Buffers::device<double> slab_b = slab_buffer(res, blocks, ExtBlock::SrsiT, step);
+  Buffers::device<double> y_buf(static_cast<size_t>(y_per_unit * std::min(step, extent)),
+                                res.device());
   Finish f(ns);
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
@@ -936,7 +945,7 @@ Result<PcClass> pc_srsi(DeviceResources &res, const MoBlocks &blocks, const int3
     // Cached kets carry their own exchange rows, so only a call with its
     // diagonal given takes yt.
     const int64_t halves = cached != nullptr ? 1 : 2;
-    double *const y_d = FBF_TRY(workspace_out(res, halves * at.back()));
+    double *const y_d = FBF_TRY(zeroed_prefix(res, y_buf, halves * at.back()));
     double *const yt_d = y_d + at.back();
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
@@ -1022,8 +1031,12 @@ Result<PcClass> pc_srs(DeviceResources &res, const MoBlocks &blocks, const int32
   PcKets kets = FBF_TRY(pc_kets(res, "Srs", ops, ns, d, 0, pc_srs_matrices, cached));
   const std::vector<double> &e_virt = ops.front().e_virt;
 
-  const int32_t step = batch_step(extent, batch);
+  constexpr std::array kSlabs{ExtBlock::Srs};
+  const int64_t y_per_unit = kets.offsets(nv).back();
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, y_per_unit));
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Srs, step);
+  Buffers::device<double> y_buf(static_cast<size_t>(y_per_unit * std::min(step, extent)),
+                                res.device());
   Finish f(ns);
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
@@ -1032,7 +1045,7 @@ Result<PcClass> pc_srs(DeviceResources &res, const MoBlocks &blocks, const int32
     const EinsumOperand h2e_v =
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Srs, b0, b1));
     const std::vector<int64_t> at = kets.offsets(nb * nv);
-    double *const y_d = FBF_TRY(workspace_out(res, at.back()));
+    double *const y_d = FBF_TRY(zeroed_prefix(res, y_buf, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
@@ -1080,8 +1093,12 @@ Result<PcClass> pc_sij(DeviceResources &res, const MoBlocks &blocks, const int32
   PcKets kets = FBF_TRY(pc_kets(res, "Sij", ops, ns, d, 0, pc_sij_matrices, cached));
   const std::vector<double> &e_core = ops.front().e_core;
 
-  const int32_t step = batch_step(extent, batch);
+  constexpr std::array kSlabs{ExtBlock::Sij};
+  const int64_t y_per_unit = kets.offsets(nc).back();
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, y_per_unit));
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sij, step);
+  Buffers::device<double> y_buf(static_cast<size_t>(y_per_unit * std::min(step, extent)),
+                                res.device());
   Finish f(ns);
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
@@ -1090,7 +1107,7 @@ Result<PcClass> pc_sij(DeviceResources &res, const MoBlocks &blocks, const int32
     const EinsumOperand h2e_v =
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Sij, b0, b1));
     const std::vector<int64_t> at = kets.offsets(nb * nc);
-    double *const y_d = FBF_TRY(workspace_out(res, at.back()));
+    double *const y_d = FBF_TRY(zeroed_prefix(res, y_buf, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         if (!kets.given[static_cast<size_t>((i * ns) + j)]) {
@@ -1144,9 +1161,13 @@ Result<PcClass> pc_sir(DeviceResources &res, const MoBlocks &blocks, const Energ
   const std::vector<double> &e_core = ops.front().e_core;
   const std::vector<double> &e_virt = ops.front().e_virt;
 
-  const int32_t step = batch_step(extent, batch);
+  constexpr std::array kSlabs{ExtBlock::Sir1, ExtBlock::Sir2};
+  const int64_t y_per_unit = kets.offsets(nc).back();
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, y_per_unit));
   Buffers::device<double> slab_1 = slab_buffer(res, blocks, ExtBlock::Sir1, step);
   Buffers::device<double> slab_2 = slab_buffer(res, blocks, ExtBlock::Sir2, step);
+  Buffers::device<double> y_buf(static_cast<size_t>(y_per_unit * std::min(step, extent)),
+                                res.device());
   Finish f(ns);
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
@@ -1159,7 +1180,7 @@ Result<PcClass> pc_sir(DeviceResources &res, const MoBlocks &blocks, const Energ
         column_major(slab_2.data(), slab_dims(blocks, ExtBlock::Sir2, b0, b1));
     const EinsumOperand h1e_v{.data = in.h1e_v_sir + b0, .dims = {nb, nc}, .strides = {1, nv}};
     const std::vector<int64_t> at = kets.offsets(nb * nc);
-    double *const y_d = FBF_TRY(workspace_out(res, at.back()));
+    double *const y_d = FBF_TRY(zeroed_prefix(res, y_buf, at.back()));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         if (!kets.given[static_cast<size_t>((i * ns) + j)]) {

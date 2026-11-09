@@ -61,11 +61,10 @@ Result<QdArrays> qd_arrays(DeviceResources &res, const std::string_view who,
       PairRdms p = FBF_TRY(zeroed_rdms(res, n, bra == ket));
       if (bra == ket) {
         FBF_TRY(rdms(res, alpha, beta, vectors + (ket * ndet), x.eri.data(), p.dm3.data(),
-                     p.f3ca.data(), p.f3ac.data(), FBF_TRY(rdm_budget())));
+                     p.f3ca.data(), p.f3ac.data()));
       } else {
         FBF_TRY(rdms(res, alpha, beta, vectors + (bra * ndet), vectors + (ket * ndet), x.eri.data(),
-                     nullptr, nullptr, p.dm3.data(), f3_scratch.data(), f3_scratch.data() + n6,
-                     FBF_TRY(rdm_budget())));
+                     nullptr, nullptr, p.dm3.data(), f3_scratch.data(), f3_scratch.data() + n6));
       }
       FBF_TRY(run_builds(res, trace_builds(x, p.dm1.data(), p.dm2.data(), p.dm3.data(), nullptr,
                                            nullptr, nullptr)));
@@ -246,7 +245,7 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
       }
       FBF_TRY(rdms_adjoint(res, alpha, beta, vectors + (bra * ndet), vectors + (ket * ndet),
                            x.eri.data(), t.dm3, nullptr, nullptr, bra_bar.data(), ket_bar.data(),
-                           eri_bar.data(), FBF_TRY(rdm_budget())));
+                           eri_bar.data()));
       FBF_TRY(add_onto(res, ndet, 1, bra_bar.data(), y.data() + (bra * ndet), ndet));
       FBF_TRY(add_onto(res, ndet, 1, ket_bar.data(), y.data() + (ket * ndet), ndet));
       return {};
@@ -309,8 +308,7 @@ Result<std::vector<ScAdjoint>> qd_adjoint(
         FBF_TRY(run_builds_adjoint(res, trace_builds(x, p.dm1.data(), p.dm2.data(), p.dm3.data(),
                                                      o.dm1.data(), o.dm2.data(), o.dm3.data())));
         FBF_TRY(rdms_adjoint(res, alpha, beta, vectors + (root * ndet), x.eri.data(), o.dm3.data(),
-                             o.f3ca.data(), o.f3ac.data(), bra_bar.data(), eri_bar.data(),
-                             FBF_TRY(rdm_budget())));
+                             o.f3ca.data(), o.f3ac.data(), bra_bar.data(), eri_bar.data()));
         FBF_TRY(add_onto(res, ndet, 1, bra_bar.data(), y.data() + (root * ndet), ndet));
         FBF_TRY(add_onto(res, n4, 1, eri_bar.data(), bar.eri.data(), n4));
       }

@@ -243,7 +243,7 @@ TEST(NevptRdm, MatchesPyscf) {
   }
 }
 
-// Each budget is rdms_workspace_bytes at width w + 1, less a byte: the widest
+// Each budget is rdms_footprint's scratch at width w + 1, less a byte: the widest
 // tile that fits is w, so the tile count says the width was read back exactly.
 // Widths with a one-determinant last tile, an unequal last tile wider than
 // one, and every tile one determinant (on the 36-determinant cases).
@@ -264,7 +264,7 @@ TEST(NevptRdm, TinyBudgetsMatchOneTile) {
         ndet == 36 ? std::vector<std::int64_t>{1, 7, 10} : std::vector<std::int64_t>{23, 64};
     for (const std::int64_t w : widths) {
       SCOPED_TRACE("width " + std::to_string(w));
-      const auto got = build(res, *s, fb::nevpt2::rdms_workspace_bytes(c.n, w + 1) - 1);
+      const auto got = build(res, *s, fb::nevpt2::rdms_footprint(c.n, w + 1).device.scratch - 1);
       ASSERT_TRUE(got);
       EXPECT_EQ(got->tiles, fb::math::idivup(ndet, w));
       EXPECT_LE(rel_diff(got->dm3, one->dm3), kTileRelTol) << "dm3";
@@ -293,7 +293,8 @@ TEST(NevptRdm, BudgetBelowOneDeterminantIsUnsupported) {
   }
   ASSERT_TRUE(res.sync().has_value());
   const std::size_t held = res.device_workspace(0).num_elements();
-  for (const std::size_t budget : {std::size_t{0}, fb::nevpt2::rdms_workspace_bytes(c.n, 1) - 1}) {
+  for (const std::size_t budget :
+       {std::size_t{0}, fb::nevpt2::rdms_footprint(c.n, 1).device.scratch - 1}) {
     const auto got = fb::nevpt2::rdms(res, s->strings, s->strings, s->ci.data(), s->eri.data(),
                                       s->dm3.data(), s->f3ca.data(), s->f3ac.data(), budget);
     ASSERT_FALSE(got);
@@ -433,8 +434,9 @@ TEST(NevptRdm, AdjointMatchesPolarization) {
     const auto one = adjoint(res, *s, dm3_bar, f3ca_bar, f3ac_bar);
     ASSERT_TRUE(one);
     EXPECT_EQ(one->tiles, 1);
-    const auto tiled = adjoint(res, *s, dm3_bar, f3ca_bar, f3ac_bar,
-                               fb::nevpt2::rdms_adjoint_workspace_bytes(sp.n, sp.width + 1) - 1);
+    const auto tiled =
+        adjoint(res, *s, dm3_bar, f3ca_bar, f3ac_bar,
+                fb::nevpt2::rdms_adjoint_footprint(sp.n, sp.width + 1).device.scratch - 1);
     ASSERT_TRUE(tiled);
     EXPECT_EQ(tiled->tiles, fb::math::idivup(static_cast<std::int64_t>(ndet), sp.width));
     EXPECT_LE(rel_diff(tiled->vector_bar, one->vector_bar), kTileRelTol) << "y";
@@ -486,7 +488,7 @@ TEST(NevptRdm, AdjointRefusals) {
   double *const p = scratch.data();
   const std::size_t held = res.device_workspace(0).num_elements();
   for (const std::size_t budget :
-       {std::size_t{0}, fb::nevpt2::rdms_adjoint_workspace_bytes(kN, 1) - 1}) {
+       {std::size_t{0}, fb::nevpt2::rdms_adjoint_footprint(kN, 1).device.scratch - 1}) {
     const auto got = fb::nevpt2::rdms_adjoint(res, *four, *four, p, p, p, p, p, p, p, budget);
     ASSERT_FALSE(got);
     EXPECT_EQ(got.error().kind, fb::ErrorKind::Unsupported) << got.error().message;
@@ -652,8 +654,9 @@ TEST(NevptRdm, TransitionTinyBudgetsMatchOneTile) {
         ndet == 36 ? std::vector<std::int64_t>{1, 7, 10} : std::vector<std::int64_t>{7, 23};
     for (const std::int64_t w : widths) {
       SCOPED_TRACE("width " + std::to_string(w));
-      const auto got = build_transition(res, *s, s->bra.data(), s->ket.data(),
-                                        fb::nevpt2::rdms_workspace_bytes(c.n, w + 1, true) - 1);
+      const auto got =
+          build_transition(res, *s, s->bra.data(), s->ket.data(),
+                           fb::nevpt2::rdms_footprint(c.n, w + 1, true).device.scratch - 1);
       ASSERT_TRUE(got);
       EXPECT_EQ(got->tiles, fb::math::idivup(ndet, w));
       EXPECT_LE(rel_diff(got->dm1, one->dm1), kTileRelTol) << "dm1";
@@ -665,7 +668,7 @@ TEST(NevptRdm, TransitionTinyBudgetsMatchOneTile) {
     }
 
     const std::size_t held = res.device_workspace(0).num_elements();
-    const std::size_t below = fb::nevpt2::rdms_workspace_bytes(c.n, 1, true) - 1;
+    const std::size_t below = fb::nevpt2::rdms_footprint(c.n, 1, true).device.scratch - 1;
     const auto refused = fb::nevpt2::rdms(res, s->alpha, s->beta, s->bra.data(), s->ket.data(),
                                           s->eri.data(), s->dm1.data(), s->dm2.data(),
                                           s->dm3.data(), s->f3ca.data(), s->f3ac.data(), below);
@@ -700,7 +703,7 @@ TEST(NevptRdm, BraEqualKetIsTheOneVectorBuild) {
     const auto ndet = static_cast<std::int64_t>(golden->ci.size());
     for (const std::int64_t w : {ndet, ndet == 36 ? std::int64_t{7} : std::int64_t{23}}) {
       SCOPED_TRACE("width " + std::to_string(w));
-      const std::size_t budget = fb::nevpt2::rdms_workspace_bytes(c.n, w + 1) - 1;
+      const std::size_t budget = fb::nevpt2::rdms_footprint(c.n, w + 1).device.scratch - 1;
       const auto one = build(res, *s, budget);
       ASSERT_TRUE(one);
       EXPECT_EQ(one->tiles, fb::math::idivup(ndet, w));
@@ -710,7 +713,7 @@ TEST(NevptRdm, BraEqualKetIsTheOneVectorBuild) {
         const auto tiles = fb::nevpt2::rdms(
             res, s->strings, s->strings, s->ci.data(), ket, s->eri.data(), dm1.data(), dm2.data(),
             s->dm3.data(), s->f3ca.data(), s->f3ac.data(),
-            same ? budget : fb::nevpt2::rdms_workspace_bytes(c.n, w + 1, true) - 1);
+            same ? budget : fb::nevpt2::rdms_footprint(c.n, w + 1, true).device.scratch - 1);
         ASSERT_TRUE(tiles) << (tiles ? "" : tiles.error().message);
         EXPECT_EQ(*tiles, one->tiles);
         const Built got{*tiles, on_host(res, s->dm3), on_host(res, s->f3ca), on_host(res, s->f3ac)};
@@ -749,7 +752,7 @@ TEST(NevptRdm, NullF3IsTheF3BuildsDms) {
     const auto ndet = static_cast<std::int64_t>(golden->ci.size());
     for (const std::int64_t w : {ndet, ndet == 36 ? std::int64_t{7} : std::int64_t{23}}) {
       SCOPED_TRACE("width " + std::to_string(w));
-      const std::size_t budget = fb::nevpt2::rdms_workspace_bytes(c.n, w + 1) - 1;
+      const std::size_t budget = fb::nevpt2::rdms_footprint(c.n, w + 1).device.scratch - 1;
       const auto on = build(res, *s, budget);
       const auto again = build(res, *s, budget);
       ASSERT_TRUE(on && again);
@@ -757,7 +760,7 @@ TEST(NevptRdm, NullF3IsTheF3BuildsDms) {
       EXPECT_EQ(again->dm3, on->dm3) << "two f3 builds";
       const auto tiles = fb::nevpt2::rdms(
           res, s->strings, s->strings, s->ci.data(), s->eri.data(), s->dm3.data(), nullptr, nullptr,
-          fb::nevpt2::rdms_workspace_bytes(c.n, w + 1, false, false) - 1);
+          fb::nevpt2::rdms_footprint(c.n, w + 1, false, false).device.scratch - 1);
       ASSERT_TRUE(tiles) << (tiles ? "" : tiles.error().message);
       EXPECT_EQ(*tiles, on->tiles);
       EXPECT_EQ(on_host(res, s->dm3), on->dm3) << "dm3";
@@ -772,7 +775,7 @@ TEST(NevptRdm, NullF3IsTheF3BuildsDms) {
     const auto ndet = static_cast<std::int64_t>(golden->bra.size());
     for (const std::int64_t w : {ndet, ndet == 36 ? std::int64_t{7} : std::int64_t{23}}) {
       SCOPED_TRACE("width " + std::to_string(w));
-      const std::size_t budget = fb::nevpt2::rdms_workspace_bytes(c.n, w + 1, true) - 1;
+      const std::size_t budget = fb::nevpt2::rdms_footprint(c.n, w + 1, true).device.scratch - 1;
       const auto on = build_transition(res, *s, s->bra.data(), s->ket.data(), budget);
       const auto again = build_transition(res, *s, s->bra.data(), s->ket.data(), budget);
       ASSERT_TRUE(on && again);
@@ -783,7 +786,7 @@ TEST(NevptRdm, NullF3IsTheF3BuildsDms) {
       const auto tiles =
           fb::nevpt2::rdms(res, s->alpha, s->beta, s->bra.data(), s->ket.data(), nullptr,
                            s->dm1.data(), s->dm2.data(), s->dm3.data(), nullptr, nullptr,
-                           fb::nevpt2::rdms_workspace_bytes(c.n, w + 1, true, false) - 1);
+                           fb::nevpt2::rdms_footprint(c.n, w + 1, true, false).device.scratch - 1);
       ASSERT_TRUE(tiles) << (tiles ? "" : tiles.error().message);
       EXPECT_EQ(*tiles, on->tiles);
       EXPECT_EQ(on_host(res, s->dm1), on->dm1) << "dm1";
@@ -809,16 +812,16 @@ TEST(NevptRdm, NullF3PlanAndRefusals) {
   for (const std::int64_t w : {std::int64_t{1}, std::int64_t{36}}) {
     const auto t = static_cast<std::size_t>(w) * sizeof(double);
     const std::size_t lean = align(16 * t) + align(256 * t);
-    EXPECT_EQ(fb::nevpt2::rdms_workspace_bytes(kN, w, true, false), lean);
-    EXPECT_EQ(fb::nevpt2::rdms_workspace_bytes(kN, w, false, false), lean);
-    EXPECT_EQ(fb::nevpt2::rdms_workspace_bytes(kN, w, true, true),
-              fb::nevpt2::rdms_workspace_bytes(kN, w, true));
+    EXPECT_EQ(fb::nevpt2::rdms_footprint(kN, w, true, false).device.scratch, lean);
+    EXPECT_EQ(fb::nevpt2::rdms_footprint(kN, w, false, false).device.scratch, lean);
+    EXPECT_EQ(fb::nevpt2::rdms_footprint(kN, w, true, true).device.scratch,
+              fb::nevpt2::rdms_footprint(kN, w, true).device.scratch);
   }
 
   auto four = fb::ci::DeviceStringSet::create(res, kN, 2);
   ASSERT_TRUE(four);
   {
-    // A fresh workspace, so what one null-f3 tile carves is all it holds.
+    // A fresh DeviceResources, whose workspace nothing has grown.
     fb::DeviceResources fresh{0};
     std::mt19937_64 rng{719};
     const auto bra = on_device(fresh, random_vector(rng, 36));
@@ -830,8 +833,8 @@ TEST(NevptRdm, NullF3PlanAndRefusals) {
                                       dm1.data(), dm2.data(), dm3.data(), nullptr, nullptr);
     ASSERT_TRUE(got) << (got ? "" : got.error().message);
     EXPECT_EQ(*got, 1);
-    EXPECT_EQ(fresh.device_workspace(0).num_elements(),
-              fb::nevpt2::rdms_workspace_bytes(kN, 36, true, false));
+    // Its scratch is its own block, so the workspace is not grown.
+    EXPECT_EQ(fresh.device_workspace(0).num_elements(), 0U);
   }
 
   const std::vector<double> sentinel(std::size_t{1} << 12, 0.25);
@@ -839,15 +842,16 @@ TEST(NevptRdm, NullF3PlanAndRefusals) {
   double *const p = scratch.data();
   const std::size_t held = res.device_workspace(0).num_elements();
   for (const std::size_t budget :
-       {std::size_t{0}, fb::nevpt2::rdms_workspace_bytes(kN, 1, true, false) - 1}) {
+       {std::size_t{0}, fb::nevpt2::rdms_footprint(kN, 1, true, false).device.scratch - 1}) {
     const auto got =
         fb::nevpt2::rdms(res, *four, *four, p, p + 1, p, p, p, p, nullptr, nullptr, budget);
     ASSERT_FALSE(got);
     EXPECT_EQ(got.error().kind, fb::ErrorKind::Unsupported) << got.error().message;
     EXPECT_NE(got.error().message.find("nevpt2::rdms:"), std::string::npos);
   }
-  const auto single = fb::nevpt2::rdms(res, *four, *four, p, p, p, nullptr, nullptr,
-                                       fb::nevpt2::rdms_workspace_bytes(kN, 1, false, false) - 1);
+  const auto single =
+      fb::nevpt2::rdms(res, *four, *four, p, p, p, nullptr, nullptr,
+                       fb::nevpt2::rdms_footprint(kN, 1, false, false).device.scratch - 1);
   ASSERT_FALSE(single);
   EXPECT_EQ(single.error().kind, fb::ErrorKind::Unsupported) << single.error().message;
   for (const auto &[ca, ac] :
@@ -974,7 +978,7 @@ TEST(NevptRdm, TransitionAdjointMatchesPolarization) {
       EXPECT_EQ(one->tiles, 1);
       const auto tiled = transition_adjoint(
           res, *alpha, *beta, bra_d.data(), ket_d.data(), eri_d.data(), dm3_bar.data(), ca, ac,
-          fb::nevpt2::rdms_adjoint_workspace_bytes(sp.n, sp.width + 1, true, f3) - 1);
+          fb::nevpt2::rdms_adjoint_footprint(sp.n, sp.width + 1, true, f3).device.scratch - 1);
       ASSERT_TRUE(tiled);
       EXPECT_EQ(tiled->tiles, fb::math::idivup(static_cast<std::int64_t>(ndet), sp.width));
       EXPECT_LE(rel_diff(tiled->bra_bar, one->bra_bar), kTileRelTol) << "bra bar";
@@ -1117,10 +1121,10 @@ TEST(NevptRdm, TransitionAdjointPlanAndRefusals) {
   for (const std::int64_t w : {std::int64_t{1}, std::int64_t{36}}) {
     const auto t = static_cast<std::size_t>(w) * sizeof(double);
     const std::size_t lean = (2 * align(16 * t)) + (2 * align(256 * t));
-    EXPECT_EQ(fb::nevpt2::rdms_adjoint_workspace_bytes(kN, w, true, false), lean);
-    EXPECT_EQ(fb::nevpt2::rdms_adjoint_workspace_bytes(kN, w, false, false), lean);
-    EXPECT_EQ(fb::nevpt2::rdms_adjoint_workspace_bytes(kN, w, true, true),
-              fb::nevpt2::rdms_adjoint_workspace_bytes(kN, w) + (2 * align(256 * t)));
+    EXPECT_EQ(fb::nevpt2::rdms_adjoint_footprint(kN, w, true, false).device.scratch, lean);
+    EXPECT_EQ(fb::nevpt2::rdms_adjoint_footprint(kN, w, false, false).device.scratch, lean);
+    EXPECT_EQ(fb::nevpt2::rdms_adjoint_footprint(kN, w, true, true).device.scratch,
+              fb::nevpt2::rdms_adjoint_footprint(kN, w).device.scratch + (2 * align(256 * t)));
   }
 
   auto four = fb::ci::DeviceStringSet::create(res, kN, 2);
@@ -1128,7 +1132,7 @@ TEST(NevptRdm, TransitionAdjointPlanAndRefusals) {
   auto none = fb::ci::DeviceStringSet::create(res, 0, 0);
   ASSERT_TRUE(four && five && none);
   {
-    // A fresh workspace, so what one null-f3 tile carves is all it holds.
+    // A fresh DeviceResources, whose workspace nothing has grown.
     fb::DeviceResources fresh{0};
     std::mt19937_64 rng{697};
     const auto bra = on_device(fresh, random_vector(rng, 36));
@@ -1138,8 +1142,8 @@ TEST(NevptRdm, TransitionAdjointPlanAndRefusals) {
                                         dm3_bar.data(), nullptr, nullptr);
     ASSERT_TRUE(got);
     EXPECT_EQ(got->tiles, 1);
-    EXPECT_EQ(fresh.device_workspace(0).num_elements(),
-              fb::nevpt2::rdms_adjoint_workspace_bytes(kN, 36, true, false));
+    // Its scratch is its own block, so the workspace is not grown.
+    EXPECT_EQ(fresh.device_workspace(0).num_elements(), 0U);
   }
 
   const std::vector<double> sentinel(std::size_t{1} << 12, 0.25);
@@ -1150,7 +1154,7 @@ TEST(NevptRdm, TransitionAdjointPlanAndRefusals) {
     SCOPED_TRACE(f3 ? "with f3 bars" : "null f3 bars");
     double *const f3_bar = f3 ? p : nullptr;
     for (const std::size_t budget :
-         {std::size_t{0}, fb::nevpt2::rdms_adjoint_workspace_bytes(kN, 1, true, f3) - 1}) {
+         {std::size_t{0}, fb::nevpt2::rdms_adjoint_footprint(kN, 1, true, f3).device.scratch - 1}) {
       const auto got =
           fb::nevpt2::rdms_adjoint(res, *four, *four, p, p, p, p, f3_bar, f3_bar, p, p, p, budget);
       ASSERT_FALSE(got);

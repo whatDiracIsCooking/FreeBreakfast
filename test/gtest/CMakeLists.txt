@@ -223,6 +223,7 @@ add_executable(
   mcscf_zeta_gpu.cpp
   nevpt2_density_fitting_gpu.cpp
   nevpt2_rdm_gpu.cpp
+  nevpt2_footprint_gpu.cpp
   nevpt2_energy_gpu.cpp
   nevpt2_qd_energy_gpu.cpp
   nevpt2_qd_tangent_gpu.cpp

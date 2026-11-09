@@ -18,8 +18,9 @@ free_breakfast_add_gpu_device_library(
 )
 
 # The module: nevpt2::rdms. ci::strings is PUBLIC because the interface takes
-# DeviceStringSets, core::error_handling because it returns a Result, and
-# core::resources because it takes DeviceResources. The implementation unit
+# DeviceStringSets, core::error_handling because it returns a Result,
+# core::resources because it takes DeviceResources, and core::footprint
+# because rdms_footprint returns a MemoryFootprint. The implementation unit
 # alone GMF-includes the bridge and calls the gemms, so the device library,
 # core::wwr, constants, primitives and the FBF_TRY header are PRIVATE.
 free_breakfast_add_cxx_module_library(
@@ -34,6 +35,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::ci::strings
   LINK_PRIVATE
   free_breakfast::core::wwr

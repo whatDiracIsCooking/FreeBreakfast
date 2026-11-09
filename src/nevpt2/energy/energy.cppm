@@ -14,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.nevpt2.density_fitting;
 
 export namespace free_breakfast::nevpt2 {
@@ -76,21 +77,42 @@ struct ClassEnergies {
   double total = 0.0;
 };
 
+/// @brief A walk's @p batch that sizes each class's slab batch from the memory
+/// budget: the widest whose walk fits res.memory_budget() less the pool's
+/// 32 MiB fragmentation headroom, up to the class's whole extent. The walk's
+/// buffers are a class's last allocations, so they may take the rest.
+inline constexpr int32_t kBatchFromBudget = -1;
+
 /// @brief The eight SC-NEVPT2 class energies of one state, each class walking
 /// its external index in batches of at most @p batch, building each slab with
 /// nevpt2::slab over @p blocks.
 ///
-/// @p batch <= 0 takes each class's whole extent in one slab. A class's
-/// RDM-only intermediates are built once, before its walk; its slab, and for
-/// Sir and Srsi the second slab, are device buffers of the batch's size,
-/// allocated per class. Every launch is on res.stream(), and each slab's norm
-/// and H vectors are read back to the host for PySCF's `_norm_to_energy`, so
-/// the call synchronizes once per slab.
+/// @p batch 0 takes each class's whole extent in one slab, and
+/// @ref kBatchFromBudget (any negative) the widest the memory budget holds,
+/// per class. A class's RDM-only intermediates are built once, before its
+/// walk; its slab, for Sir and Srsi the second slab, slab's gemm product and
+/// its per-slab norm and H tables are device buffers of the batch's size,
+/// allocated per class: never the workspace, which holds only fixed sizes.
+/// Every launch is on res.stream(), and each slab's norm and H vectors are
+/// read back to the host for PySCF's `_norm_to_energy`, so the call
+/// synchronizes once per slab.
 ///
-/// @return The norms and energies; or the first error of a slab build, an
-///         einsum (InvalidConfig only for a size past its limits) or a launch.
+/// @return The norms and energies; Unsupported, under @ref kBatchFromBudget,
+///         for a class whose batch of one does not fit the budget; or the
+///         first error of a slab build, an einsum (InvalidConfig only for a
+///         size past its limits) or a launch.
 [[nodiscard]] Result<ClassEnergies> class_energies(DeviceResources &res, const MoBlocks &blocks,
                                                    const EnergyInputs &in, int32_t batch);
+
+/// @brief What @ref class_energies holds over @p ncore, @p ncas and @p nvirt
+/// orbitals (the blocks' counts) and a state of @p nelecas active electrons
+/// at @p batch: its scratch is the most of each class's intermediates and
+/// walk, a class at a time; its workspace make_a16's and make_a22's fdm2s.
+/// For @ref kBatchFromBudget it is at a batch of one: the least the call runs
+/// with. The electrons count because Srs at two of them, and Sij at two
+/// holes, build their one function's blocks once more.
+[[nodiscard]] MemoryFootprint class_energies_footprint(int32_t ncore, int32_t ncas, int32_t nvirt,
+                                                       int32_t nelecas, int32_t batch);
 
 /// @brief Each state's SC first-order wave function in the seven classes
 /// with an active index: per perturber t, Ψ_J⁽¹⁾ holds c_t P_t V|J⟩ with
