@@ -91,6 +91,27 @@ Result<Buffers::device<double>> device_zeros(DeviceResources &res, int64_t count
 Result<std::vector<double>> download(DeviceResources &res, const double *d, int64_t count);
 Result<Buffers::device<double>> upload(DeviceResources &res, const std::vector<double> &host);
 int32_t batch_step(int32_t extent, int32_t batch);
+// What a forward walk over @p slabs holds at @p step beyond its fixed
+// buffers: each slab's buffer (every slab walks the first one's extent, at
+// most @p step of it), the largest slab's gemm product (slab builds them one
+// at a time), and @p table_per_unit doubles of per-slab output per unit of
+// the batch.
+size_t walk_bytes(int32_t ncore, int32_t ncas, int32_t nvirt, std::span<const ExtBlock> slabs,
+                  int32_t step, int64_t table_per_unit);
+// A forward walk's step: batch_step's for @p batch >= 0, and for
+// kBatchFromBudget the widest whose walk_bytes fit res.memory_budget() less
+// kPoolHeadroomBytes, up to the whole extent: the walk's buffers are the
+// class's last allocations. Unsupported when one unit of the batch does not
+// fit.
+Result<int32_t> walk_step(DeviceResources &res, const MoBlocks &blocks,
+                          std::span<const ExtBlock> slabs, int32_t batch, int64_t table_per_unit);
+// A walk's per-slab output: the first @p count doubles of @p buffer (sized
+// to the walk's widest slab before the walk), zeroed on res.stream().
+Result<double *> zeroed_prefix(DeviceResources &res, Buffers::device<double> &buffer,
+                               int64_t count);
+// What a walk sized from the budget leaves of it: one pool chunk, the
+// fragmentation headroom (pipeline/footprint's README).
+constexpr size_t kPoolHeadroomBytes = size_t{32} << 20;
 std::vector<int64_t> slab_dims(const MoBlocks &blocks, ExtBlock block, int32_t b0, int32_t b1);
 Buffers::device<double> slab_buffer(DeviceResources &res, const MoBlocks &blocks, ExtBlock block,
                                     int32_t step);

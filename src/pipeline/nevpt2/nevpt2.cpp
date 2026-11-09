@@ -40,29 +40,6 @@ namespace free_breakfast {
                                           wwr::wwrMemcpyDeviceToDevice, res.stream()));
 }
 
-// The slab batch: the most of each class's external index whose slab fits
-// @p bytes, at least one. A class holds up to two slabs and nevpt2::slab
-// grows the workspace to a third for its gemm product, so the caller gives
-// each a share of what is free.
-[[nodiscard]] int32_t nevpt2_batch(const nevpt2::MoBlocks &blocks, size_t bytes) {
-  size_t widest = 1; // doubles per unit of the batch axis, over every block
-  for (const nevpt2::ExtBlock block :
-       {nevpt2::ExtBlock::Sr, nevpt2::ExtBlock::Si, nevpt2::ExtBlock::Sijrs, nevpt2::ExtBlock::Sijr,
-        nevpt2::ExtBlock::Srsi, nevpt2::ExtBlock::SrsiT, nevpt2::ExtBlock::Srs,
-        nevpt2::ExtBlock::Sij, nevpt2::ExtBlock::Sir1, nevpt2::ExtBlock::Sir2}) {
-    const std::array<int32_t, 4> shape = nevpt2::block_shape(blocks, block);
-    size_t per = 1;
-    for (size_t k = 0; k < shape.size(); ++k) {
-      if (std::cmp_not_equal(k, nevpt2::batch_axis(block))) {
-        per *= static_cast<size_t>(shape[k]);
-      }
-    }
-    widest = std::max(widest, per);
-  }
-  const size_t batch = bytes / (sizeof(double) * widest);
-  return static_cast<int32_t>(std::clamp<size_t>(batch, 1, std::numeric_limits<int32_t>::max()));
-}
-
 // Each element's chemical core, PySCF's `pyscf.data.elements.chemcore_atm`
 // (2.14), by the first Z of each count: none to Be, then 1 (B), 5 (Al),
 // 9 (Ga), 14 (Y), 18 (In), 23 (Lu), 34 (Tl), 50 (Rf) and 55 (Nh). Not a
@@ -248,17 +225,12 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
                       kName, cas.vectors.size(), cas.rdm1.size(), nroots, dim, n * n);
   }
 
-  // The budgets, from what is free with the CASSCF's products and these
-  // integrals held. nevpt2::rdms' default is the free memory less 512 MiB,
-  // and the workspace never shrinks: at that, class_energies' own buffers
-  // would find nothing left, and a failed allocation aborts. So rdms gets
-  // half of what is free (it grows the workspace only to the tile it plans,
-  // all of the determinants when they fit), and each slab an eighth.
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  const size_t rdm_budget = free_bytes / 2;
-
+  // The adaptive parts size themselves from the memory budget when they run:
+  // nevpt2::rdms its tile (all of the determinants when they fit), and each
+  // class its slab batch (nevpt2::kBatchFromBudget). Each is scratch of the
+  // call's own, freed before the next allocation of this step, so neither
+  // leaves less for what follows; at the least, one determinant and a batch
+  // of one, they are the footprint's.
   // Every per-root array is the step's own, not the workspace's: each is
   // held across calls that take the workspace (ci::Rdm, response::fock,
   // mo_blocks, rdms, class_energies). With quasi_degenerate each root's RDMs
@@ -371,12 +343,9 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
     }
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(dm2_r, dm2_host.data(), n4 * sizeof(double),
                                            wwr::wwrMemcpyHostToDevice, stream)));
-    const int64_t tiles =
-        FBF_TRY(nevpt2::rdms(res, strings, strings, vector, ints.hamiltonian.eri.data(), dm3_r,
-                             f3ca_r, f3ac_r, rdm_budget));
-
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    const int32_t batch = nevpt2_batch(blocks, free_bytes / 8);
+    const int64_t tiles = FBF_TRY(nevpt2::rdms(res, strings, strings, vector,
+                                               ints.hamiltonian.eri.data(), dm3_r, f3ca_r, f3ac_r));
+    constexpr int32_t batch = nevpt2::kBatchFromBudget;
     const nevpt2::EnergyInputs inputs{.h1e = h1e.data(),
                                       .h2e = h2e.data(),
                                       .e_core = e_core.data(),
@@ -401,11 +370,9 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
       log::warn(
           std::format("NEVPT2 root {}: PC refused, SC kept: {}", root, out.pc_refusals.back()));
     }
-    log::info(std::format("NEVPT2 root {}: SC E_corr {:.12f}, PC E_corr {} ({} RDM tiles, "
-                          "slab batch {})",
-                          root, out.roots.back().total,
-                          pc ? std::format("{:.12f}", pc->total) : std::string{"refused"}, tiles,
-                          batch));
+    log::info(std::format("NEVPT2 root {}: SC E_corr {:.12f}, PC E_corr {} ({} RDM tiles)", root,
+                          out.roots.back().total,
+                          pc ? std::format("{:.12f}", pc->total) : std::string{"refused"}, tiles));
   }
   if (!quasi_degenerate) {
     return out;
@@ -441,8 +408,7 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
   Buffers::device<double> tdm1(2 * n2, res.device());
   Buffers::device<double> tdm2(2 * n4, res.device());
   Buffers::device<double> tdm3(2 * n6, res.device());
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  const int32_t batch = nevpt2_batch(blocks, free_bytes / 8);
+  constexpr int32_t batch = nevpt2::kBatchFromBudget;
   // Every entry starts omitted (null RDMs): the layer builds and walks
   // nothing of it.
   const nevpt2::EnergyInputs shared{.h1e = h1e.data(),
@@ -502,7 +468,7 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
         FBF_TRY(nevpt2::rdms(res, strings, strings, vectors.data() + (bra * dim),
                              vectors.data() + (ket * dim), ints.hamiltonian.eri.data(),
                              tdm1.data() + (slot * n2), tdm2.data() + (slot * n4),
-                             tdm3.data() + (slot * n6), nullptr, nullptr, rdm_budget));
+                             tdm3.data() + (slot * n6), nullptr, nullptr));
         nevpt2::EnergyInputs &in = pairs[(bra * nroots) + ket];
         in.dm1 = tdm1.data() + (slot * n2);
         in.dm2 = tdm2.data() + (slot * n4);

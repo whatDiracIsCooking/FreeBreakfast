@@ -207,17 +207,15 @@ Status pair_rdms_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
   const auto add_n6 = [&](const Buffers::device<double> &from, double *to) {
     return add_onto(res, n6, 1, from.data(), to, n6);
   };
-  FBF_TRY(rdms(res, alpha, beta, bra_dot, ket, x.eri.data(), nullptr, nullptr, dm3, f3ca, f3ac,
-               FBF_TRY(rdm_budget())));
+  FBF_TRY(rdms(res, alpha, beta, bra_dot, ket, x.eri.data(), nullptr, nullptr, dm3, f3ca, f3ac));
   FBF_TRY(rdms(res, alpha, beta, bra, ket_dot, x.eri.data(), nullptr, nullptr, dm3_more.data(),
-               f3 ? f3ca_more.data() : nullptr, f3 ? f3ac_more.data() : nullptr,
-               FBF_TRY(rdm_budget())));
+               f3 ? f3ca_more.data() : nullptr, f3 ? f3ac_more.data() : nullptr));
   FBF_TRY(add_n6(dm3_more, dm3));
   if (f3) {
     FBF_TRY(add_n6(f3ca_more, f3ca));
     FBF_TRY(add_n6(f3ac_more, f3ac));
-    FBF_TRY(rdms(res, alpha, beta, bra, eri_dot, dm3_more.data(), f3ca_more.data(),
-                 f3ac_more.data(), FBF_TRY(rdm_budget())));
+    FBF_TRY(
+        rdms(res, alpha, beta, bra, eri_dot, dm3_more.data(), f3ca_more.data(), f3ac_more.data()));
     FBF_TRY(add_n6(f3ca_more, f3ca));
     FBF_TRY(add_n6(f3ac_more, f3ac));
   }

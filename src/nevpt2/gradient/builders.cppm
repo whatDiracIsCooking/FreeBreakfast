@@ -27,11 +27,6 @@ import free_breakfast.nevpt2.gradient;        // ScAdjoint, QdScAdjoint
 
 namespace free_breakfast::nevpt2 {
 
-/// @brief Half the device's free memory: nevpt2::rdms' budget, as the Nevpt2
-/// step gives it, so that class_energies' own buffers still find room after
-/// the workspace has grown to it (the workspace never shrinks).
-Result<size_t> rdm_budget();
-
 /// @brief Every array the builders write or read beyond (h, B, c):
 /// class_energies' EnergyInputs and the intermediates, each packed
 /// column-major (the RDMs row-major). The adjoint holds a second one for the

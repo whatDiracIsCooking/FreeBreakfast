@@ -21,6 +21,8 @@ Hamiltonians also hand over their amplitudes
     class_energies(res, blocks, in, batch) -> ClassEnergies
         norms[8], energies[8]   Sr, Si, Sijrs, Sijr, Srsi, Srs, Sij, Sir
         total                   Σ energies, the correlation energy
+    class_energies_footprint(ncore, ncas, nvirt, nelecas, batch)
+    kBatchFromBudget            batch: each class's widest that the budget holds
 
 ## The port
 
@@ -100,12 +102,34 @@ correlated core.
 
 ## Memory
 
-The intermediates live across `nevpt2::slab`, which takes
-`res.device_workspace()` for its gemm product, so they and the slab buffers
-are `Buffers::device` of their own, freed when their class returns. The
-largest are the n_act⁶ ones (a16, a22, dm3_h, hdm3, rm3): at most two at once.
-`fdm2` and each slab's norm and H vectors are workspace regions, taken after
-the slab is built and dead before the next one is.
+The intermediates and the slab buffers are `Buffers::device` of their own,
+freed when their class returns. The largest are the n_act⁶ ones (a16, a22,
+dm3_h, hdm3, rm3): at most two at once. `fdm2` (make_a16's one, make_a22's
+two), n_act⁴ each, is the workspace's: fixed sizes, independent of the batch.
+
+**The batch.** A walk's buffers are its slabs (two for Sir and Srsi), the
+gemm product `nevpt2::slab` holds while it builds one (its own buffer, never
+the workspace), and the slab's norm and H tables (PC: its y rows), all
+allocated once before the walk at the batch's width. 0 is each class's whole
+extent; `kBatchFromBudget` (any negative batch) sizes each class's batch
+when its walk starts, its intermediates built and its PC solve done: the
+widest whose walk fits `res.memory_budget()` less the pool's 32 MiB
+fragmentation headroom (`pipeline/footprint`'s README), up to the whole
+extent, and `Unsupported` when a batch of one does not fit. The walk is the
+class's last allocation, so it may take the rest. The adjoints, tangents and
+HVPs take a fixed batch only: their callers pass 0.
+
+**The footprint.** `class_energies_footprint(ncore, ncas, nvirt, nelecas,
+batch)` is the call's peak, class by class in its order: each make_* and its
+temporaries, then the walk at its widest (`batch_step`'s step, or one for
+`kBatchFromBudget`: the least the call runs with); its workspace the fdm2s.
+It is persistent-free (the result is on the host). `nelecas` matters only at
+two active electrons (Srs) or two holes (Sij), whose one-function η builds
+the class's blocks once more. `test/gtest/nevpt2_footprint_gpu.cpp` holds it
+sound and tight at CAS(4,4) and CAS(8,8), at a batch of one and whole; has
+the batch from the budget take more than one and stay under a pool cap; and
+the SC and PC energies at the least (rdms at one determinant, a batch of one)
+equal the unconstrained ones to 1e-10 Eh.
 
 ## One-function classes (#949)
 
@@ -645,7 +669,8 @@ PSB3 with the floor raised to 1e-10 or more.
 **Memory.** The solve's d × d matrices (S, K, their symmetrized copies, V,
 and the d × m X, U, T and gemmwich's work) are buffers of their own, freed
 when the class returns; at n = 12, d = n³ is 24 MB per matrix, below the n⁶
-intermediates. The slab's y is a workspace region, taken after the slab.
+intermediates. The slab's y is a buffer of the walk's, sized to its widest
+slab before the walk.
 
 ## PC-QD-NEVPT2
 
@@ -687,7 +712,7 @@ Then, the conventions being `test/gtest/data/qd_nevpt2/README.md`'s,
   symmetric. **Sijrs is SC's**: the diagonal `energy_sijrs`, zero off it.
 
 Each class walks its slabs **once** for every pair: per slab, n² einsums into
-one workspace region, pair (I, J)'s y block (tuples × m_J) at
+one buffer, pair (I, J)'s y block (tuples × m_J) at
 `PcKets::offsets`, read back and finished on the host, each ket's smallest
 denominator checked as `pc_class_energies` does. The memory over one class
 is n solves (λ, T, U, and t1) and n² − n transition T and t1, d × m_J each,

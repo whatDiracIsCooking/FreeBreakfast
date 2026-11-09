@@ -60,7 +60,7 @@ export namespace free_breakfast::nevpt2 {
 /// major, as nevpt2::rdms takes it; its active electrons are the two sets'.
 /// dm1 and dm2 are traces of nevpt2::rdms' dm3 (make_dm123's convention).
 /// Each class walks its slabs in batches of at most @p batch, as in
-/// class_energies. nevpt2::rdms gets half the device's free memory at entry.
+/// class_energies. nevpt2::rdms sizes its tile from the memory budget.
 ///
 /// @p nfrozen is the frozen core, the lowest core columns of @p c: they
 /// leave every class with a core index and stay in the core density, so in

@@ -17,55 +17,70 @@ import free_breakfast.core.primitives; // math::align_up, math::idivup
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.ci.strings;
 
 #include "diagnostics.h"
 
 namespace free_breakfast::nevpt2 {
 
-// What the default budget leaves free beside the workspace: the BLAS
-// libraries allocate their own workspaces outside the pool, and the pool
-// rounds its allocations up, so the free memory is not all the workspace's to
-// take. A growth past the device's memory would abort (CreatePolicy) rather
-// than return, so this is what keeps the build on the refusing side of it.
-constexpr size_t kRdmsHeadroomBytes = size_t{512} << 20;
+// What the tile leaves of the memory budget: one pool chunk, the
+// fragmentation headroom (pipeline/footprint's README). The pool takes memory
+// from the driver in 32 MiB chunks, so what it reserves can run that far past
+// what is in use; past its limit an allocation aborts (CreatePolicy) rather
+// than returns, so this keeps the scratch on the refusing side of it.
+constexpr size_t kPoolHeadroomBytes = size_t{32} << 20;
 
-size_t rdms_workspace_bytes(const int32_t n_orbitals, const int64_t width, const bool transition,
-                            const bool f3) noexcept {
+// One region's bytes in the scratch: @p count doubles, rounded up to the
+// alignment every region starts on.
+size_t rdms_region(const size_t count) {
+  return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
+}
+
+// @p scratch carved into one region per count, in order, each rdms_region's
+// bytes: device_regions' carve, over the call's own scratch.
+template <size_t N>
+std::array<double *, N> rdms_carve(Buffers::device<std::byte> &scratch,
+                                   const std::array<size_t, N> &counts) {
+  std::array<double *, N> out{};
+  size_t at = 0;
+  for (size_t k = 0; k < N; ++k) {
+    out[k] = reinterpret_cast<double *>(scratch.data() + at);
+    at += rdms_region(counts[k]);
+  }
+  return out;
+}
+
+MemoryFootprint rdms_footprint(const int32_t n_orbitals, const int64_t width, const bool transition,
+                               const bool f3) noexcept {
   const auto n = static_cast<size_t>(n_orbitals);
   const size_t nn = n * n;
   const auto w = static_cast<size_t>(width);
-  const auto region = [](const size_t count) {
-    return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
-  };
-  // rdms' device_regions, in its order: eri, consume and fdm2, then R, L2, W,
-  // and the ket's L2, which is empty for one vector. Without f3 only R and L2
-  // are not empty.
-  if (!f3) {
-    return region(nn * w) + region(nn * nn * w);
-  }
-  return (3 * region(nn * nn)) + region(nn * w) + region(nn * nn * w) + region(nn * w) +
-         region(transition ? nn * nn * w : 0);
+  // rdms' regions, in its order: eri, consume and fdm2, then R, L2, W, and
+  // the ket's L2, which is empty for one vector. Without f3 only R and L2 are
+  // not empty.
+  const size_t bytes = f3 ? (3 * rdms_region(nn * nn)) + rdms_region(nn * w) +
+                                rdms_region(nn * nn * w) + rdms_region(nn * w) +
+                                rdms_region(transition ? nn * nn * w : 0)
+                          : rdms_region(nn * w) + rdms_region(nn * nn * w);
+  return {.device = {.scratch = bytes}};
 }
 
-size_t rdms_adjoint_workspace_bytes(const int32_t n_orbitals, const int64_t width,
-                                    const bool transition, const bool f3) noexcept {
+MemoryFootprint rdms_adjoint_footprint(const int32_t n_orbitals, const int64_t width,
+                                       const bool transition, const bool f3) noexcept {
   const auto n = static_cast<size_t>(n_orbitals);
   const size_t nn = n * n;
   const size_t n4 = nn * nn;
   const auto w = static_cast<size_t>(width);
-  const auto region = [](const size_t count) {
-    return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
-  };
-  // rdms_adjoint's device_regions, in its order: eri, consume, the two fdm2
-  // bars and the consume's; the two raw f3 bars, dm3's bar and dm3; then R,
-  // L2, W, R̄, L2̄, W̄; then the ket's L2 and its bar. Without f3 only R, L2
-  // and their bars are not empty.
-  if (!f3) {
-    return (2 * region(nn * w)) + (2 * region(n4 * w));
-  }
-  return (5 * region(n4)) + (4 * region(n4 * nn)) + (4 * region(nn * w)) + (2 * region(n4 * w)) +
-         (2 * region(transition ? n4 * w : 0));
+  // rdms_adjoint's regions, in its order: eri, consume, the two fdm2 bars and
+  // the consume's; the two raw f3 bars, dm3's bar and dm3; then R, L2, W, R̄,
+  // L2̄, W̄; then the ket's L2 and its bar. Without f3 only R, L2 and their
+  // bars are not empty.
+  const size_t bytes = f3 ? (5 * rdms_region(n4)) + (4 * rdms_region(n4 * nn)) +
+                                (4 * rdms_region(nn * w)) + (2 * rdms_region(n4 * w)) +
+                                (2 * rdms_region(transition ? n4 * w : 0))
+                          : (2 * rdms_region(nn * w)) + (2 * rdms_region(n4 * w));
+  return {.device = {.scratch = bytes}};
 }
 
 // W = (tu|vw) · L2 for one order over a tile of @p width, as n strided
@@ -111,8 +126,7 @@ Status rdms_digest(DeviceResources &res, const int64_t rows, const int64_t cols,
 // @p bytes(n, width) fits the budget, at most every determinant. @p per_det is
 // the doubles a determinant adds to @p bytes, an underestimate of its bytes
 // (every region is at least its doubles'), so the first guess is at or above
-// the answer and the walk down past the rounding is short. The caller holds
-// the ScopedDeviceIndex the free memory is read under.
+// the answer and the walk down past the rounding is short.
 Result<int64_t> rdms_tile_width(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                 const ci::DeviceStringSet &beta, const size_t max_bytes,
                                 const std::string_view name,
@@ -137,19 +151,18 @@ Result<int64_t> rdms_tile_width(DeviceResources &res, const ci::DeviceStringSet 
   const int32_t n = alpha.n_orbitals();
 
   // The budget, and the widest tile it holds, before anything is queued or
-  // allocated: past the device's memory the workspace's growth would abort,
-  // not return. A growth allocates the new block before it frees the old, so
-  // it needs the free memory alone.
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  const size_t held = res.device_workspace(0).num_elements();
-  const size_t usable = free_bytes > kRdmsHeadroomBytes ? free_bytes - kRdmsHeadroomBytes : 0;
-  const size_t budget = std::min(max_bytes, std::max(held, usable));
+  // allocated: the scratch is the call's last allocation, so it may take the
+  // memory budget less the headroom, and past the budget it would abort, not
+  // return.
+  const size_t memory = FBF_TRY(res.memory_budget());
+  const size_t usable = memory > kPoolHeadroomBytes ? memory - kPoolHeadroomBytes : 0;
+  const size_t budget = std::min(max_bytes, usable);
   if (budget < bytes(n, 1)) {
     return err_unsupported("nevpt2::{}: a tile of one determinant over {} active orbitals needs "
-                           "{} bytes of device workspace, and the budget is {} bytes",
-                           name, n, bytes(n, 1), budget);
+                           "{} bytes of device scratch, and the budget is {} bytes (max_bytes {}, "
+                           "device {}'s memory budget {} less {} of headroom)",
+                           name, n, bytes(n, 1), budget, max_bytes, res.dev_idx(), memory,
+                           kPoolHeadroomBytes);
   }
   int64_t width =
       std::min(ndet, static_cast<int64_t>((budget - bytes(n, 0)) / (per_det * sizeof(double))));
@@ -232,7 +245,7 @@ Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
   const int64_t nn = n * n;
   const int64_t n4 = nn * nn;
   const auto bytes = [transition, f3](const int32_t m, const int64_t w) {
-    return rdms_workspace_bytes(m, w, transition, f3);
+    return rdms_footprint(m, w, transition, f3).device.scratch;
   };
   const int64_t per_det = f3 ? (2 * nn) + (transition ? 2 * n4 : n4) : nn + n4;
   const int64_t width = FBF_TRY(
@@ -258,11 +271,14 @@ Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
   }
   // Every f3-only region is empty without f3: (tu|vw)'s two copies, fdm2, W
   // and the ket's L2, which is also empty for one vector.
+  // One scratch block, the call's own: its size is the tile's, which the
+  // budget sets, so it is never the workspace's.
   const auto f4 = static_cast<size_t>(f3 ? n4 : 0);
-  const auto [eri_rm, consume, fdm2, r, l2, w, l2_ket_region] = res.device_regions<double>(
-      f4, f4, f4, static_cast<size_t>(nn * width), static_cast<size_t>(n4 * width),
-      static_cast<size_t>(f3 ? nn * width : 0),
-      static_cast<size_t>(f3 && transition ? n4 * width : 0));
+  Buffers::device<std::byte> scratch(bytes(n32, width), res.device());
+  const auto [eri_rm, consume, fdm2, r, l2, w, l2_ket_region] = rdms_carve<7>(
+      scratch, {f4, f4, f4, static_cast<size_t>(nn * width), static_cast<size_t>(n4 * width),
+                static_cast<size_t>(f3 ? nn * width : 0),
+                static_cast<size_t>(f3 && transition ? n4 * width : 0)});
   // L2 is the bra's; the consume reads the ket's, which is the same one for
   // one vector.
   double *const l2_ket = transition ? l2_ket_region : l2;
@@ -344,7 +360,7 @@ Result<int64_t> rdms_adjoint_of(DeviceResources &res, const ci::DeviceStringSet 
   const int64_t nn = n * n;
   const int64_t n4 = nn * nn;
   const auto bytes = [transition, f3](const int32_t m, const int64_t w) {
-    return rdms_adjoint_workspace_bytes(m, w, transition, f3);
+    return rdms_adjoint_footprint(m, w, transition, f3).device.scratch;
   };
   const int64_t per_det = f3 ? (4 * nn) + (transition ? 4 * n4 : 2 * n4) : (2 * nn) + (2 * n4);
   const int64_t width = FBF_TRY(rdms_tile_width(res, alpha, beta, max_bytes, "rdms_adjoint", bytes,
@@ -362,10 +378,11 @@ Result<int64_t> rdms_adjoint_of(DeviceResources &res, const ci::DeviceStringSet 
   const auto t4 = static_cast<size_t>(n4 * width);
   const size_t tw = f3 ? t2 : 0;
   const size_t tk = f3 && transition ? t4 : 0;
+  Buffers::device<std::byte> scratch(bytes(n32, width), res.device());
   const auto [eri_rm, consume, fdm2_ca_bar, fdm2_ac_bar, consume_bar, raw_ca_bar, raw_ac_bar,
               dm3_total_region, dm3, r, l2, w, r_bar, l2_bar, w_bar, l2_ket_region,
-              l2_ket_bar_region] = res.device_regions<double>(f4, f4, f4, f4, f4, f6, f6, f6, f6,
-                                                              t2, t4, tw, t2, t4, tw, tk, tk);
+              l2_ket_bar_region] =
+      rdms_carve<17>(scratch, {f4, f4, f4, f4, f4, f6, f6, f6, f6, t2, t4, tw, t2, t4, tw, tk, tk});
   // The consume reads the ket's L2, the bra's for one vector, and its
   // transpose writes that L2's bar.
   double *const l2_ket = transition ? l2_ket_region : l2;

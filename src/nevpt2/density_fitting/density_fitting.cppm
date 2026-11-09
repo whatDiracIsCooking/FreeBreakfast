@@ -17,6 +17,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 
 export namespace free_breakfast::nevpt2 {
 
@@ -79,15 +80,25 @@ struct MoBlocks {
                                          int32_t nmo, const double *b, const double *c,
                                          int32_t ncore, int32_t ncas);
 
+/// @brief What @ref mo_blocks holds: the five blocks, persistent, and the
+/// largest of its four @ref b_mo calls' workspace (b_mo_footprint's).
+[[nodiscard]] MemoryFootprint mo_blocks_footprint(int32_t naux, int32_t nao, int32_t nmo,
+                                                  int32_t ncore, int32_t ncas);
+
 /// @brief The active h2e[t, u, v, w] = (tv|uw), physicist, ncas^4 doubles at
 /// t + ncas (u + ncas (v + ncas w)), from B_aa: one gemm and a permute.
 ///
 /// Queued on res.stream() with no host synchronization; the gemm's product is
-/// scratch from res.device_workspace(), which @p out must not point into.
+/// a buffer of the call's own, ncas^4 doubles, freed in stream order on
+/// return (@ref h2e_footprint).
 ///
 /// @return Success; InvalidConfig past the int32_t BLAS dispatch; or the
 ///         GpuRuntime error of the first call that failed.
 [[nodiscard]] Status h2e(DeviceResources &res, const MoBlocks &blocks, double *out);
+
+/// @brief What @ref h2e holds beside @p out: its gemm's product, ncas^4
+/// doubles of scratch.
+[[nodiscard]] MemoryFootprint h2e_footprint(int32_t ncas);
 
 /// @brief The axis of @p block that a slab restricts: 0, except Si and Sij
 /// (2) and SrsiT (1). Each class output element depends on exactly one index
@@ -98,15 +109,22 @@ struct MoBlocks {
 /// are the same with its @ref batch_axis shortened to b1 - b0.
 [[nodiscard]] std::array<int32_t, 4> block_shape(const MoBlocks &blocks, ExtBlock block);
 
+/// @brief @ref block_shape from the three orbital counts alone, for a
+/// footprint sized before the blocks exist.
+[[nodiscard]] std::array<int32_t, 4> block_shape(int32_t ncore, int32_t ncas, int32_t nvirt,
+                                                 ExtBlock block);
+
 /// @brief @p block with its @ref batch_axis restricted to [@p b0, @p b1), into
 /// @p out: C[x, y, z, w] = sum_Q X_Q,xy Y_Q,zw over x in the batch, one
 /// strided-batched gemm, then a permute of C into the block's physicist
 /// layout (none for Sijrs, whose layout is C's).
 ///
 /// @p out is the slab, column-major with @ref block_shape's dimensions and
-/// the batch axis b1 - b0 long, overwritten. It must not overlap the blocks
-/// or point into res.device_workspace(), which holds C when a permute
-/// follows. Queued on res.stream() with no host synchronization.
+/// the batch axis b1 - b0 long, overwritten. It must not overlap the blocks.
+/// When a permute follows, C is a buffer of the call's own, the slab's size,
+/// freed in stream order on return (@ref slab_footprint): never the
+/// workspace, since a walk may size its batch from the memory budget. Queued
+/// on res.stream() with no host synchronization.
 ///
 /// @return Success, writing nothing for an empty slab; InvalidConfig for a
 ///         range outside [0, extent] or b1 < b0, or past the int32_t BLAS
@@ -114,6 +132,12 @@ struct MoBlocks {
 ///         which leaves @p out unspecified.
 [[nodiscard]] Status slab(DeviceResources &res, const MoBlocks &blocks, ExtBlock block, int32_t b0,
                           int32_t b1, double *out);
+
+/// @brief What @ref slab holds beside @p out for @p block over a batch of
+/// @p width: C, the slab's count of doubles, scratch; nothing for Sijrs,
+/// whose layout is C's.
+[[nodiscard]] MemoryFootprint slab_footprint(int32_t ncore, int32_t ncas, int32_t nvirt,
+                                             ExtBlock block, int32_t width);
 
 // ---------------------------------------------------------------------------
 // The adjoints: bars on the blocks, h2e and the slabs pulled back onto

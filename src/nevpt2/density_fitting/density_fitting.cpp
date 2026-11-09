@@ -16,6 +16,7 @@ import free_breakfast.core.constants; // kZero, kOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemmStridedBatched, geam, wwrMemsetAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.integrals.eri.density_fitting.mo;
 
 #include "diagnostics.h"
@@ -113,34 +114,55 @@ std::array<int32_t, 4> slab_axes(const ExtBlock block) {
   std::unreachable();
 }
 
-// The table's X and Y columns.
-SlabOperands slab_operands(const MoBlocks &m, const ExtBlock block) {
-  const auto op = [&](const MoBlock x, const MoBlock y) {
-    return SlabOperands{block_operand(m, x), block_operand(m, y), slab_axes(block)};
-  };
+// The table's X and Y columns, as blocks.
+std::array<MoBlock, 2> slab_pair(const ExtBlock block) {
   switch (block) {
   case ExtBlock::Sr:
-    return op(MoBlock::Va, MoBlock::Aa);
+    return {MoBlock::Va, MoBlock::Aa};
   case ExtBlock::Si:
-    return op(MoBlock::Ca, MoBlock::Aa);
+    return {MoBlock::Ca, MoBlock::Aa};
   case ExtBlock::Sijrs:
-    return op(MoBlock::Cv, MoBlock::Cv);
+    return {MoBlock::Cv, MoBlock::Cv};
   case ExtBlock::Sijr:
-    return op(MoBlock::Vc, MoBlock::Ca);
+    return {MoBlock::Vc, MoBlock::Ca};
   case ExtBlock::Srsi:
-    return op(MoBlock::Vc, MoBlock::Va);
+    return {MoBlock::Vc, MoBlock::Va};
   case ExtBlock::SrsiT:
-    return op(MoBlock::Va, MoBlock::Vc);
+    return {MoBlock::Va, MoBlock::Vc};
   case ExtBlock::Srs:
-    return op(MoBlock::Va, MoBlock::Va);
+    return {MoBlock::Va, MoBlock::Va};
   case ExtBlock::Sij:
-    return op(MoBlock::Ca, MoBlock::Ca);
+    return {MoBlock::Ca, MoBlock::Ca};
   case ExtBlock::Sir1:
-    return op(MoBlock::Vc, MoBlock::Aa);
+    return {MoBlock::Vc, MoBlock::Aa};
   case ExtBlock::Sir2:
-    return op(MoBlock::Va, MoBlock::Ca);
+    return {MoBlock::Va, MoBlock::Ca};
   }
   std::unreachable();
+}
+
+// A block's orbital pair's extents nx x ny, from the three counts: what
+// block_operand gives its nx and ny.
+std::array<int32_t, 2> pair_extents(const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+                                    const MoBlock which) {
+  switch (which) {
+  case MoBlock::Aa:
+    return {ncas, ncas};
+  case MoBlock::Ca:
+    return {ncore, ncas};
+  case MoBlock::Va:
+    return {nvirt, ncas};
+  case MoBlock::Cv:
+    return {ncore, nvirt};
+  case MoBlock::Vc:
+    return {nvirt, ncore};
+  }
+  std::unreachable();
+}
+
+SlabOperands slab_operands(const MoBlocks &m, const ExtBlock block) {
+  const std::array<MoBlock, 2> pair = slab_pair(block);
+  return SlabOperands{block_operand(m, pair[0]), block_operand(m, pair[1]), slab_axes(block)};
 }
 
 // out = in permuted by axes: out axis k is in axis axes[k], in column-major
@@ -158,7 +180,9 @@ Status permute_slab(DeviceResources &res, const std::array<int64_t, 4> &dims,
 }
 
 // C[x, y, z, w] for x in [b0, b1), then its permute into out. C, column-major
-// (nb, ny, nz, nw), is out itself for the identity, else workspace scratch.
+// (nb, ny, nz, nw), is out itself for the identity, else a buffer of the
+// call's own, freed in stream order on return: its size is the slab's, which
+// a walk may size from the memory budget, so it is never the workspace's.
 //
 // X's element (Q, x, y) is at Q + naux (x + nx y), so the batch's x for one
 // y is the naux x nb matrix at naux (b0 + nx y), and consecutive y are
@@ -179,8 +203,8 @@ Status build_slab(DeviceResources &res, const int32_t naux, const SlabOperands &
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const bool identity = op.axes == std::array<int32_t, 4>{0, 1, 2, 3};
-  double *const c =
-      identity ? out : std::get<0>(res.device_regions<double>(static_cast<size_t>(count)));
+  Buffers::device<double> product(identity ? 0 : static_cast<size_t>(count), res.device());
+  double *const c = identity ? out : product.data();
 
   if (naux == 0) {
     // No fitting function to sum over: C = 0, which a gemm of inner dimension
@@ -247,11 +271,64 @@ int32_t batch_axis(const ExtBlock block) {
   return static_cast<int32_t>(std::ranges::find(axes, 0) - axes.begin());
 }
 
+std::array<int32_t, 4> block_shape(const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+                                   const ExtBlock block) {
+  const std::array<MoBlock, 2> pair = slab_pair(block);
+  const std::array<int32_t, 2> x = pair_extents(ncore, ncas, nvirt, pair[0]);
+  const std::array<int32_t, 2> y = pair_extents(ncore, ncas, nvirt, pair[1]);
+  const std::array<int32_t, 4> c{x[0], x[1], y[0], y[1]};
+  const std::array<int32_t, 4> axes = slab_axes(block);
+  return {c[static_cast<size_t>(axes[0])], c[static_cast<size_t>(axes[1])],
+          c[static_cast<size_t>(axes[2])], c[static_cast<size_t>(axes[3])]};
+}
+
 std::array<int32_t, 4> block_shape(const MoBlocks &blocks, const ExtBlock block) {
-  const SlabOperands op = slab_operands(blocks, block);
-  const std::array<int32_t, 4> c{op.x.nx, op.x.ny, op.y.nx, op.y.ny};
-  return {c[static_cast<size_t>(op.axes[0])], c[static_cast<size_t>(op.axes[1])],
-          c[static_cast<size_t>(op.axes[2])], c[static_cast<size_t>(op.axes[3])]};
+  return block_shape(blocks.ncore, blocks.ncas, blocks.nvirt, block);
+}
+
+MemoryFootprint slab_footprint(const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+                               const ExtBlock block, const int32_t width) {
+  // build_slab's product, C: the slab's own count, for every block whose
+  // layout is not C's.
+  if (slab_axes(block) == std::array<int32_t, 4>{0, 1, 2, 3}) {
+    return {};
+  }
+  std::array<int32_t, 4> shape = block_shape(ncore, ncas, nvirt, block);
+  shape[static_cast<size_t>(batch_axis(block))] = width;
+  size_t count = 1;
+  for (const int32_t extent : shape) {
+    count *= static_cast<size_t>(std::max(extent, 0));
+  }
+  return {.device = {.scratch = sizeof(double) * count}};
+}
+
+MemoryFootprint h2e_footprint(const int32_t ncas) {
+  // build_slab's product over B_aa x B_aa, axes 0 2 1 3: ncas^4 doubles.
+  const auto n = static_cast<size_t>(std::max(ncas, 0));
+  return {.device = {.scratch = sizeof(double) * n * n * n * n}};
+}
+
+MemoryFootprint mo_blocks_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
+                                    const int32_t ncore, const int32_t ncas) {
+  // The five blocks, allocated before the first b_mo, kept; then the four
+  // b_mo calls one after another, each borrowing its X from the workspace.
+  // The permute into B_vc allocates nothing.
+  const int32_t nvirt = nmo - ncore - ncas;
+  const OrbitalRange core{.first = 0, .count = ncore};
+  const OrbitalRange active{.first = ncore, .count = ncas};
+  const OrbitalRange virt{.first = ncore + ncas, .count = nvirt};
+  const auto bytes = [&](const OrbitalRange p, const OrbitalRange q) {
+    return sizeof(double) * static_cast<size_t>(std::max(naux, 0)) * static_cast<size_t>(p.count) *
+           static_cast<size_t>(q.count);
+  };
+  MemoryFootprint out{.device = {.persistent = bytes(active, active) + bytes(core, active) +
+                                               bytes(virt, active) + (2 * bytes(core, virt))}};
+  for (const auto &[p, q] : {std::pair{active, active}, std::pair{core, active},
+                             std::pair{virt, active}, std::pair{core, virt}}) {
+    out.device.workspace =
+        std::max(out.device.workspace, b_mo_footprint(naux, nao, p, q).device.workspace);
+  }
+  return out;
 }
 
 Status slab(DeviceResources &res, const MoBlocks &blocks, const ExtBlock block, const int32_t b0,

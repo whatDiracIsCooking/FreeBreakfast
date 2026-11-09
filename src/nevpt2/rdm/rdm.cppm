@@ -12,20 +12,24 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.ci.strings;
 
 export namespace free_breakfast::nevpt2 {
 
-/// @brief The bytes of res.device_workspace() a call to @ref rdms over
-/// @p n_orbitals active orbitals carves at tile width @p width: the two
+/// @brief What a call to @ref rdms over @p n_orbitals active orbitals holds
+/// at tile width @p width: one block of device scratch, carved into the two
 /// copies of (tu|vw) and fdm2, n⁴ doubles each, and the tile's R, L2 and W,
 /// (2 n² + n⁴) @p width doubles, each region rounded up to
 /// DeviceResources::kWorkspaceAlignment. A @p transition call (a bra other
 /// than its ket) carves the ket's own L2 too, n⁴ @p width doubles more.
 /// Without @p f3 (null f3ca and f3ac) it is the tile's R and L2 alone,
 /// (n² + n⁴) @p width doubles, transition or not.
-[[nodiscard]] size_t rdms_workspace_bytes(int32_t n_orbitals, int64_t width,
-                                          bool transition = false, bool f3 = true) noexcept;
+///
+/// At the default width, one determinant, it is the least the build runs
+/// with: its footprint. A call sizes its width from the budget.
+[[nodiscard]] MemoryFootprint rdms_footprint(int32_t n_orbitals, int64_t width = 1,
+                                             bool transition = false, bool f3 = true) noexcept;
 
 /// @brief dm3, f3ca and f3ac of the CI vector @p vector on the device, in
 /// PySCF's layout: each n⁶ row-major, (p, q, r, s, t, u) at
@@ -49,19 +53,19 @@ export namespace free_breakfast::nevpt2 {
 /// that exists only for f3 is skipped (the eri's conversion, the consumes,
 /// the f3 digests, fdm2 and the wedge), and @p eri is not read. dm3 is then
 /// the f3 build's bit for bit at the same tile width; the plan is
-/// rdms_workspace_bytes(n, width, false, false). One null and one given is
+/// rdms_footprint(n, width, false, false). One null and one given is
 /// InvalidConfig.
 ///
-/// **The tile width is the widest whose rdms_workspace_bytes fits the
-/// budget**, at most every determinant: the budget is @p max_bytes, or less
-/// if the device has less: the larger of the workspace already held and the
-/// free memory less 512 MiB of headroom, for the BLAS libraries' own
-/// workspaces and the pool. The tiles are that wide but for the last, which
-/// takes the remainder. There is no knob for the count.
+/// **The tile width is the widest whose rdms_footprint fits the budget**, at
+/// most every determinant: the budget is @p max_bytes, or less if the device
+/// has less: res.memory_budget() less 32 MiB, the pool's fragmentation
+/// headroom (pipeline/footprint's README). The tiles are that wide but for
+/// the last, which takes the remainder. There is no knob for the count.
 ///
-/// Every scratch region is res.device_workspace()'s. Queued on res.stream()
-/// with res.blas(), whose pointer mode must be host (its default); it does
-/// not synchronize.
+/// The scratch is one block of the call's own, from res.device()'s pool,
+/// freed in stream order when the call returns; the workspace is not used.
+/// Queued on res.stream() with res.blas(), whose pointer mode must be host
+/// (its default); it does not synchronize.
 ///
 /// @param alpha, beta The two spins' strings, on res's device (one set may be
 ///        both); the vector is alpha-major, (K_α, K_β) at
@@ -71,12 +75,12 @@ export namespace free_breakfast::nevpt2 {
 ///        ActiveSpaceHamiltonian::eri holds it.
 /// @param dm3, f3ca, f3ac Device, n⁶ doubles each, overwritten; f3ca and
 ///        f3ac may be null together.
-/// @param max_bytes The most of the device workspace the build may hold.
+/// @param max_bytes The most device scratch the build may hold.
 /// @return The number of tiles; InvalidConfig, with nothing queued, for one
 ///         f3 null and the other not, a set on another device than @p res,
 ///         sets over different orbital counts or none, or more determinants
 ///         than an int32_t counts; Unsupported, with nothing queued or
-///         allocated, for a budget below rdms_workspace_bytes(n, 1, false,
+///         allocated, for a budget below rdms_footprint(n, 1, false,
 ///         f3); or the GpuRuntime error of a launch or a BLAS call.
 [[nodiscard]] Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                    const ci::DeviceStringSet &beta, const double *vector,
@@ -105,13 +109,13 @@ export namespace free_breakfast::nevpt2 {
 /// **Null f3ca and f3ac are QD-NEVPT2's off-diagonal call**: it reads f3 on
 /// each root's diagonal only. What is left is dm3 += L2 Rᵀ and the dm1 and
 /// dm2 gemvs, with no ket's L2 and no (tu|vw) (not read), planned against
-/// rdms_workspace_bytes(n, width, true, false); dm1, dm2 and dm3 are the f3
+/// rdms_footprint(n, width, true, false); dm1, dm2 and dm3 are the f3
 /// build's bit for bit at the same tile width.
 ///
 /// **bra == ket (one pointer) is the one-vector build**: dm3, f3ca and f3ac
 /// are the other overload's bit for bit, planned against the same
-/// rdms_workspace_bytes(n, width), with one L2 per tile. A bra and a ket that
-/// are different pointers plan against rdms_workspace_bytes(n, width, true),
+/// rdms_footprint(n, width), with one L2 per tile. A bra and a ket that
+/// are different pointers plan against rdms_footprint(n, width, true),
 /// even if they hold the same vector.
 ///
 /// @param bra, ket Device, alpha.size() · beta.size() doubles each, laid out
@@ -119,7 +123,7 @@ export namespace free_breakfast::nevpt2 {
 /// @param dm1, dm2 Device, n² and n⁴ doubles, overwritten; either may be
 ///        null, and is then not built.
 /// @param alpha, beta, eri, dm3, f3ca, f3ac, max_bytes As for @ref rdms.
-/// @return As for @ref rdms, against rdms_workspace_bytes(n, 1, bra != ket,
+/// @return As for @ref rdms, against rdms_footprint(n, 1, bra != ket,
 ///         f3) for the budget.
 [[nodiscard]] Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                    const ci::DeviceStringSet &beta, const double *bra,
@@ -127,18 +131,20 @@ export namespace free_breakfast::nevpt2 {
                                    double *dm3, double *f3ca, double *f3ac,
                                    size_t max_bytes = std::numeric_limits<size_t>::max());
 
-/// @brief The bytes of res.device_workspace() a call to @ref rdms_adjoint
-/// over @p n_orbitals active orbitals carves at tile width @p width: the two
-/// copies of (tu|vw), the two fdm2 bars and the consume's bar, n⁴ doubles
-/// each; the two pre-wedge f3 bars, dm3's total bar and dm3 itself, n⁶ each;
-/// and the tile's R, L2, W and their bars, (4 n² + 2 n⁴) @p width doubles;
-/// each region rounded up to DeviceResources::kWorkspaceAlignment. A
-/// @p transition call (the bra/ket overload) carves the ket's own L2 and its
-/// bar too, 2 n⁴ @p width doubles more. Without @p f3 (null f3 bars) it is
-/// the tile's R, L2 and their bars alone, (2 n² + 2 n⁴) @p width doubles,
-/// transition or not.
-[[nodiscard]] size_t rdms_adjoint_workspace_bytes(int32_t n_orbitals, int64_t width,
-                                                  bool transition = false, bool f3 = true) noexcept;
+/// @brief What a call to @ref rdms_adjoint over @p n_orbitals active
+/// orbitals holds at tile width @p width: one block of device scratch, carved
+/// into the two copies of (tu|vw), the two fdm2 bars and the consume's bar,
+/// n⁴ doubles each; the two pre-wedge f3 bars, dm3's total bar and dm3
+/// itself, n⁶ each; and the tile's R, L2, W and their bars, (4 n² + 2 n⁴)
+/// @p width doubles; each region rounded up to
+/// DeviceResources::kWorkspaceAlignment. A @p transition call (the bra/ket
+/// overload) carves the ket's own L2 and its bar too, 2 n⁴ @p width doubles
+/// more. Without @p f3 (null f3 bars) it is the tile's R, L2 and their bars
+/// alone, (2 n² + 2 n⁴) @p width doubles, transition or not. At the default
+/// width it is the call's footprint, as for @ref rdms_footprint.
+[[nodiscard]] MemoryFootprint rdms_adjoint_footprint(int32_t n_orbitals, int64_t width = 1,
+                                                     bool transition = false,
+                                                     bool f3 = true) noexcept;
 
 /// @brief The adjoint of @ref rdms: given bars @p dm3_bar, @p f3ca_bar and
 /// @p f3ac_bar on its three outputs (same layout), write @p vector_bar =
@@ -149,7 +155,7 @@ export namespace free_breakfast::nevpt2 {
 /// everything that exists only for f3 is skipped (the wedge and fdm2
 /// transposes, the consume and its transpose, the f3 digests' transposes);
 /// @p eri is not read and @p eri_bar is written zero, since dm3 does not read
-/// (tu|vw). The plan is then rdms_adjoint_workspace_bytes(n, width, false,
+/// (tu|vw). The plan is then rdms_adjoint_footprint(n, width, false,
 /// false). One null and one given is InvalidConfig.
 ///
 /// rdms is quadratic in c and linear in (tu|vw), so these are exact:
@@ -169,7 +175,7 @@ export namespace free_breakfast::nevpt2 {
 /// the last. The 4-RDM is never formed, and nothing is atomic.
 ///
 /// The tile width is planned as rdms plans it, from
-/// rdms_adjoint_workspace_bytes against the same budget; the tiles are that
+/// rdms_adjoint_footprint against the same budget; the tiles are that
 /// wide but for the last.
 ///
 /// @param alpha, beta, vector, eri As for @ref rdms.
@@ -177,10 +183,10 @@ export namespace free_breakfast::nevpt2 {
 ///        may be null together.
 /// @param vector_bar Device, alpha.size() · beta.size() doubles, overwritten.
 /// @param eri_bar Device, n⁴ doubles in @p eri's layout, overwritten.
-/// @param max_bytes The most of the device workspace the call may hold.
+/// @param max_bytes The most device scratch the call may hold.
 /// @return The number of tiles; InvalidConfig, with nothing queued, for one
 ///         f3 bar null and the other not; the refusals of @ref rdms, against
-///         rdms_adjoint_workspace_bytes(n, 1, false, f3) for the budget; or
+///         rdms_adjoint_footprint(n, 1, false, f3) for the budget; or
 ///         the GpuRuntime error of a launch or a BLAS call.
 [[nodiscard]] Result<int64_t> rdms_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                            const ci::DeviceStringSet &beta, const double *vector,
@@ -199,7 +205,7 @@ export namespace free_breakfast::nevpt2 {
 /// this is QD-NEVPT2's off-diagonal call: it reads f3 on each root's
 /// diagonal only. What is left is dm3's digest transposed and the produce's
 /// transpose, with no ket's L2 and no (tu|vw) (not read; @p eri_bar written
-/// zero), planned against rdms_adjoint_workspace_bytes(n, width, true,
+/// zero), planned against rdms_adjoint_footprint(n, width, true,
 /// false). With them given it is the full transition adjoint: the ket's L2,
 /// which the consume reads, is gathered as rdms gathers it, and its bar goes
 /// onto the ket.
@@ -220,7 +226,7 @@ export namespace free_breakfast::nevpt2 {
 /// @param bra_bar, ket_bar Device, alpha.size() · beta.size() doubles each,
 ///        overwritten.
 /// @return As for the one-vector @ref rdms_adjoint, against
-///         rdms_adjoint_workspace_bytes(n, 1, true, f3) for the budget.
+///         rdms_adjoint_footprint(n, 1, true, f3) for the budget.
 [[nodiscard]] Result<int64_t> rdms_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                            const ci::DeviceStringSet &beta, const double *bra,
                                            const double *ket, const double *eri,

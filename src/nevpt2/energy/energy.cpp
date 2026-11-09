@@ -19,6 +19,8 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, wwrMemcpyAsync, wwrMemsetAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.einsum;
 import free_breakfast.nevpt2.density_fitting;
 import :shared;
@@ -326,6 +328,71 @@ void append_sc_amplitudes(const std::vector<std::vector<double>> &tables,
 // The walk's step: @p batch, or the whole extent in one piece.
 int32_t batch_step(const int32_t extent, const int32_t batch) {
   return batch > 0 ? batch : std::max(extent, 1);
+}
+
+size_t walk_bytes(const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+                  const std::span<const ExtBlock> slabs, const int32_t step,
+                  const int64_t table_per_unit) {
+  const auto extent = [&](const ExtBlock block) {
+    return block_shape(ncore, ncas, nvirt, block)[static_cast<size_t>(batch_axis(block))];
+  };
+  const int32_t nb = std::min(step, extent(slabs.front()));
+  size_t bytes = sizeof(double) * static_cast<size_t>(table_per_unit * nb);
+  size_t product = 0;
+  for (const ExtBlock block : slabs) {
+    // slab_buffer's count, which is also slab's product's when it permutes.
+    std::array<int32_t, 4> shape = block_shape(ncore, ncas, nvirt, block);
+    shape[static_cast<size_t>(batch_axis(block))] = std::min(nb, extent(block));
+    bytes += sizeof(double) * static_cast<size_t>(std::ranges::fold_left(
+                                  shape, int64_t{1}, [](const int64_t a, const int32_t b) {
+                                    return a * std::max(b, 0);
+                                  }));
+    product = std::max(
+        product,
+        slab_footprint(ncore, ncas, nvirt, block, std::min(nb, extent(block))).device.scratch);
+  }
+  return bytes + product;
+}
+
+Result<int32_t> walk_step(DeviceResources &res, const MoBlocks &blocks,
+                          const std::span<const ExtBlock> slabs, const int32_t batch,
+                          const int64_t table_per_unit) {
+  const int32_t extent = walk_extent(blocks, slabs.front());
+  if (batch >= 0 || extent <= 1) {
+    return batch_step(extent, batch);
+  }
+  const size_t memory = FBF_TRY(res.memory_budget());
+  const size_t budget = memory > kPoolHeadroomBytes ? memory - kPoolHeadroomBytes : 0;
+  const auto bytes = [&](const int32_t step) {
+    return walk_bytes(blocks.ncore, blocks.ncas, blocks.nvirt, slabs, step, table_per_unit);
+  };
+  if (bytes(1) > budget) {
+    return err_unsupported("nevpt2: a slab batch of one needs {} bytes of device scratch, and "
+                           "device {}'s memory budget is {} ({} less {} of headroom)",
+                           bytes(1), res.dev_idx(), budget, memory, kPoolHeadroomBytes);
+  }
+  // The widest step in [1, extent] that fits: walk_bytes grows with it.
+  int32_t lo = 1;
+  int32_t hi = extent;
+  while (lo < hi) {
+    const int32_t mid = lo + ((hi - lo + 1) / 2);
+    if (bytes(mid) <= budget) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo;
+}
+
+// A walk's per-slab output, the first @p count doubles of @p buffer, zeroed.
+Result<double *> zeroed_prefix(DeviceResources &res, Buffers::device<double> &buffer,
+                               const int64_t count) {
+  if (count > 0) {
+    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(
+        buffer.data(), 0, sizeof(double) * static_cast<size_t>(count), res.stream())));
+  }
+  return buffer.data();
 }
 
 // The dimensions of @p block's slab over [b0, b1).
@@ -751,11 +818,14 @@ energy_sr(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
 
   const std::vector<double> &e_virt = ops.front().e_virt;
   const int32_t extent = walk_extent(blocks, ExtBlock::Sr);
-  const int32_t step = batch_step(extent, batch);
-  Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sr, step);
   std::vector<std::pair<double, double>> out(static_cast<size_t>(ns * ns));
   const PairTableSlots slots = pair_table_slots(ops, ns);
   const auto *const cached = FBF_TRY(sc_cached_kets("Sr", ops, ns, amplitudes));
+  constexpr std::array kSlabs{ExtBlock::Sr};
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, slots.count));
+  Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sr, step);
+  Buffers::device<double> table_buf(static_cast<size_t>(slots.count * std::min(step, extent)),
+                                    res.device());
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -764,7 +834,7 @@ energy_sr(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Sr, b0, b1));
     const EinsumOperand h1e_v{.data = in.h1e_v_sr + b0, .dims = {nb, n}, .strides = {1, nv}};
 
-    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * nb));
+    double *const tables = FBF_TRY(zeroed_prefix(res, table_buf, slots.count * nb));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         const ActiveOperands &o = ops[static_cast<size_t>((i * ns) + j)];
@@ -840,11 +910,14 @@ energy_si(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
 
   const std::vector<double> &e_core = ops.front().e_core;
   const int32_t extent = walk_extent(blocks, ExtBlock::Si);
-  const int32_t step = batch_step(extent, batch);
-  Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Si, step);
   std::vector<std::pair<double, double>> out(static_cast<size_t>(ns * ns));
   const PairTableSlots slots = pair_table_slots(ops, ns);
   const auto *const cached = FBF_TRY(sc_cached_kets("Si", ops, ns, amplitudes));
+  constexpr std::array kSlabs{ExtBlock::Si};
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, slots.count));
+  Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Si, step);
+  Buffers::device<double> table_buf(static_cast<size_t>(slots.count * std::min(step, extent)),
+                                    res.device());
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -853,7 +926,7 @@ energy_si(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Si, b0, b1));
     const EinsumOperand h1e_v{.data = in.h1e_v_si + (n * b0), .dims = {n, nb}, .strides = {1, n}};
 
-    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * nb));
+    double *const tables = FBF_TRY(zeroed_prefix(res, table_buf, slots.count * nb));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         const auto p = static_cast<size_t>((i * ns) + j);
@@ -902,7 +975,8 @@ Result<std::pair<double, double>> energy_sijrs(DeviceResources &res, const MoBlo
   }
   Buffers::device<double> acc = FBF_TRY(device_zeros(res, 2));
   const int32_t extent = walk_extent(blocks, ExtBlock::Sijrs);
-  const int32_t step = batch_step(extent, batch);
+  constexpr std::array kSlabs{ExtBlock::Sijrs};
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, 0));
   Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sijrs, step);
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
@@ -946,11 +1020,14 @@ energy_sijr(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
   const std::vector<double> &e_core = ops.front().e_core;
   const std::vector<double> &e_virt = ops.front().e_virt;
   const int32_t extent = walk_extent(blocks, ExtBlock::Sijr);
-  const int32_t step = batch_step(extent, batch);
-  Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sijr, step);
   std::vector<std::pair<double, double>> out(static_cast<size_t>(ns * ns));
   const PairTableSlots slots = pair_table_slots(ops, ns);
   const auto *const cached = FBF_TRY(sc_cached_kets("Sijr", ops, ns, amplitudes));
+  constexpr std::array kSlabs{ExtBlock::Sijr};
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, slots.count * nc * nc));
+  Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sijr, step);
+  Buffers::device<double> table_buf(
+      static_cast<size_t>(slots.count * std::min(step, extent) * nc * nc), res.device());
   size_t at_c = 0; // the cached kets' first perturber of this slab
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
@@ -960,7 +1037,7 @@ energy_sijr(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Sijr, b0, b1));
 
     const int64_t count = nr * nc * nc;
-    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * count));
+    double *const tables = FBF_TRY(zeroed_prefix(res, table_buf, slots.count * count));
     const std::vector<int64_t> out_dims{nr, nc, nc};
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
@@ -1041,7 +1118,8 @@ energy_srsi(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
   const auto *const cached = FBF_TRY(sc_cached_kets("Srsi", ops, ns, amplitudes));
   Buffers::device<double> tables = FBF_TRY(device_zeros(res, slots.count * count));
   const int32_t extent = walk_extent(blocks, ExtBlock::Srsi);
-  const int32_t step = batch_step(extent, batch);
+  constexpr std::array kSlabs{ExtBlock::Srsi, ExtBlock::SrsiT};
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, 0));
   Buffers::device<double> slab_a = slab_buffer(res, blocks, ExtBlock::Srsi, step);
   Buffers::device<double> slab_b = slab_buffer(res, blocks, ExtBlock::SrsiT, step);
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
@@ -1146,11 +1224,14 @@ energy_srs(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
 
   const std::vector<double> &e_virt = ops.front().e_virt;
   const int32_t extent = walk_extent(blocks, ExtBlock::Srs);
-  const int32_t step = batch_step(extent, batch);
-  Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Srs, step);
   const PairTableSlots slots = pair_table_slots(ops, ns);
   const auto *const cached = FBF_TRY(sc_cached_kets("Srs", ops, ns, amplitudes));
   const std::vector<std::optional<double>> eta = FBF_TRY(single_function_etas(res, ops, ns, 5));
+  constexpr std::array kSlabs{ExtBlock::Srs};
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, slots.count * nv));
+  Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Srs, step);
+  Buffers::device<double> table_buf(static_cast<size_t>(slots.count * std::min(step, extent) * nv),
+                                    res.device());
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -1159,7 +1240,7 @@ energy_srs(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Srs, b0, b1));
 
     const int64_t count = nb * nv;
-    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * count));
+    double *const tables = FBF_TRY(zeroed_prefix(res, table_buf, slots.count * count));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         const int64_t slot = slots.norm[static_cast<size_t>((i * ns) + j)];
@@ -1233,11 +1314,14 @@ energy_sij(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
 
   const std::vector<double> &e_core = ops.front().e_core;
   const int32_t extent = walk_extent(blocks, ExtBlock::Sij);
-  const int32_t step = batch_step(extent, batch);
-  Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sij, step);
   const PairTableSlots slots = pair_table_slots(ops, ns);
   const auto *const cached = FBF_TRY(sc_cached_kets("Sij", ops, ns, amplitudes));
   const std::vector<std::optional<double>> eta = FBF_TRY(single_function_etas(res, ops, ns, 6));
+  constexpr std::array kSlabs{ExtBlock::Sij};
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, slots.count * nc));
+  Buffers::device<double> slab_buf = slab_buffer(res, blocks, ExtBlock::Sij, step);
+  Buffers::device<double> table_buf(static_cast<size_t>(slots.count * std::min(step, extent) * nc),
+                                    res.device());
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -1246,7 +1330,7 @@ energy_sij(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
         column_major(slab_buf.data(), slab_dims(blocks, ExtBlock::Sij, b0, b1));
 
     const int64_t count = nb * nc;
-    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * count));
+    double *const tables = FBF_TRY(zeroed_prefix(res, table_buf, slots.count * count));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         const int64_t slot = slots.norm[static_cast<size_t>((i * ns) + j)];
@@ -1305,12 +1389,15 @@ energy_sir(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
   const std::vector<double> &e_core = ops.front().e_core;
   const std::vector<double> &e_virt = ops.front().e_virt;
   const int32_t extent = walk_extent(blocks, ExtBlock::Sir1);
-  const int32_t step = batch_step(extent, batch);
-  Buffers::device<double> slab_1 = slab_buffer(res, blocks, ExtBlock::Sir1, step);
-  Buffers::device<double> slab_2 = slab_buffer(res, blocks, ExtBlock::Sir2, step);
   std::vector<std::pair<double, double>> out(static_cast<size_t>(ns * ns));
   const PairTableSlots slots = pair_table_slots(ops, ns);
   const auto *const cached = FBF_TRY(sc_cached_kets("Sir", ops, ns, amplitudes));
+  constexpr std::array kSlabs{ExtBlock::Sir1, ExtBlock::Sir2};
+  const int32_t step = FBF_TRY(walk_step(res, blocks, kSlabs, batch, slots.count * nc));
+  Buffers::device<double> slab_1 = slab_buffer(res, blocks, ExtBlock::Sir1, step);
+  Buffers::device<double> slab_2 = slab_buffer(res, blocks, ExtBlock::Sir2, step);
+  Buffers::device<double> table_buf(static_cast<size_t>(slots.count * std::min(step, extent) * nc),
+                                    res.device());
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -1324,7 +1411,7 @@ energy_sir(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
 
     const int64_t count = nc * nb;
     const std::vector<int64_t> out_dims{nc, nb};
-    double *const tables = FBF_TRY(workspace_zeros(res, slots.count * count));
+    double *const tables = FBF_TRY(zeroed_prefix(res, table_buf, slots.count * count));
     for (int64_t i = 0; i < ns; ++i) {
       for (int64_t j = 0; j < ns; ++j) {
         const ActiveOperands &o = ops[static_cast<size_t>((i * ns) + j)];
@@ -1508,6 +1595,121 @@ Result<ClassEnergies> class_energies(DeviceResources &res, const MoBlocks &block
                                      const EnergyInputs &in, const int32_t batch) {
   std::vector<ClassEnergies> out = FBF_TRY(sc_couplings(res, blocks, {&in, 1}, 1, batch));
   return out.front();
+}
+
+// The device bytes live at once, and their most: a footprint's mirror of a
+// call's allocations, taken and given back in its order.
+struct HeldBytes {
+  size_t live = 0;
+  size_t peak = 0;
+  void take(const size_t bytes) {
+    live += bytes;
+    peak = std::max(peak, live);
+  }
+  void give(const size_t bytes) { live -= bytes; }
+  // A walk's buffers, at their widest at once, and given back.
+  void walk(const size_t bytes) {
+    take(bytes);
+    give(bytes);
+  }
+};
+
+MemoryFootprint class_energies_footprint(const int32_t ncore, const int32_t ncas,
+                                         const int32_t nvirt, const int32_t nelecas,
+                                         const int32_t batch) {
+  // sc_couplings over one state, every allocation in its order (each make_*
+  // and class above): its intermediates n², n⁴ and n⁶ doubles, and each walk
+  // at its step, the least (one) for a batch from the budget.
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = sizeof(double) * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  const auto step = [&](const ExtBlock block) {
+    const int32_t extent =
+        block_shape(ncore, ncas, nvirt, block)[static_cast<size_t>(batch_axis(block))];
+    return batch < 0 ? 1 : batch_step(extent, batch);
+  };
+  const auto walk = [&](const std::span<const ExtBlock> slabs, const int64_t per_unit) {
+    return walk_bytes(ncore, ncas, nvirt, slabs, step(slabs.front()), per_unit);
+  };
+  const auto nc = static_cast<int64_t>(ncore);
+  const auto nv = static_cast<int64_t>(nvirt);
+  constexpr int64_t kTables = 2; // ns = 1: its norm table and its H table
+  HeldBytes h;
+  h.take(n2); // active_operands' delta, held through every class
+
+  // Sr: a16; a17 beside make_a17's h1e copy; a19 beside make_a19's.
+  h.take(n6);
+  h.take(n2);
+  h.take(n4);
+  h.give(n2);
+  h.take(n2);
+  h.take(n2);
+  h.give(n2);
+  h.walk(walk(std::array{ExtBlock::Sr}, kTables));
+  h.give(n6 + n4 + n2);
+
+  // Si: a22, a23, a25, then dm3_h, dm2_h and dm1_h.
+  h.take(n6 + n4 + n2 + n6 + n4 + n2);
+  h.walk(walk(std::array{ExtBlock::Si}, kTables));
+  h.give(n6 + n4 + n2 + n6 + n4 + n2);
+
+  // Sijrs: its two accumulators, then the walk, no tables.
+  if (ncore > 0 && nvirt > 0) {
+    h.take(2 * sizeof(double));
+    h.walk(walk(std::array{ExtBlock::Sijrs}, 0));
+    h.give(2 * sizeof(double));
+  }
+
+  // Sijr: hdm1 and a3.
+  h.take(2 * n2);
+  h.walk(walk(std::array{ExtBlock::Sijr}, kTables * nc * nc));
+  h.give(2 * n2);
+
+  // Srsi: k27 and its whole (v, v, c) tables.
+  const size_t srsi_tables = sizeof(double) * static_cast<size_t>(kTables * nv * nv * nc);
+  h.take(n2 + srsi_tables);
+  h.walk(walk(std::array{ExtBlock::Srsi, ExtBlock::SrsiT}, 0));
+  h.give(n2 + srsi_tables);
+
+  // Srs: make_a7's rm2, rm3 and a7, rm3 given back; at two active electrons
+  // make_a7 again for η, all three given back; then the walk.
+  if (nvirt > 0) {
+    h.take(n4 + n6 + n4);
+    h.give(n6);
+    if (nelecas == 2) {
+      h.take(n4 + n6 + n4);
+      h.give(n4 + n6 + n4);
+    }
+    h.walk(walk(std::array{ExtBlock::Srs}, kTables * nv));
+    h.give(2 * n4);
+  }
+
+  // Sij: make_hdm2's two (its dm2b given back), hdm3, a9, hdm3 given back;
+  // at two active holes the three again for η, all given back.
+  if (ncore > 0) {
+    h.take(2 * n4);
+    h.give(n4);
+    h.take(n6 + n4);
+    h.give(n6);
+    if ((2 * ncas) - nelecas == 2) {
+      h.take(2 * n4);
+      h.give(n4);
+      h.take(n6 + n4);
+      h.give(n4 + n6 + n4);
+    }
+    h.walk(walk(std::array{ExtBlock::Sij}, kTables * nc));
+    h.give(2 * n4);
+  }
+
+  // Sir: a12 and a13.
+  h.take(2 * n4);
+  h.walk(walk(std::array{ExtBlock::Sir1, ExtBlock::Sir2}, kTables * nc));
+  h.give(2 * n4);
+
+  // make_a16's fdm2 and make_a22's two, the workspace.
+  const size_t region = math::align_up(n4, DeviceResources::kWorkspaceAlignment);
+  return {.device = {.scratch = h.peak, .workspace = 2 * region}};
 }
 
 } // namespace free_breakfast::nevpt2
