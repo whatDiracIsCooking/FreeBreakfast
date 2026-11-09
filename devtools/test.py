@@ -114,6 +114,7 @@ CONFIG_VARS = (
     "NIGHTLY_WORKTREE",
     "NIGHTLY_WEEKLY_DAY",
     "NIGHTLY_GPU_BATCH_BUDGET_SECONDS",
+    "NIGHTLY_STALE_HOURS",
     "VENV_PATHS",
     "JOBS",
     "PRIMARY_ROOT",
@@ -1131,6 +1132,29 @@ def load_nightly_issue():
     return module
 
 
+def nightly_warning(cfg: dict[str, str], tag: str) -> None:
+    """One line when the nightly looks stopped or failed
+    (devtools/nightly_stale.py, which doctor.sh runs too). Never fails the
+    gate: any error in the check is swallowed. summary.log is the primary
+    checkout's, where the nightly writes it, from any worktree."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "fbf_nightly_stale", REPO_ROOT / "devtools" / "nightly_stale.py"
+        )
+        stale = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(stale)
+        primary = Path(cfg["PRIMARY_ROOT"] or REPO_ROOT)
+        level, text = stale.check(
+            primary / cfg["SLOW_TIER_REPORTS"],
+            float(cfg["NIGHTLY_STALE_HOURS"]),
+            primary,
+        )
+    except Exception:  # noqa: BLE001 -- a warning must never break a gate
+        return
+    if level == "warn":
+        say(f"{tag}: WARNING nightly: {text}", err=True)
+
+
 def slow_rule_report(
     build_dir: Path, host: str, results: Path, log: Path, tag: str
 ) -> dict | None:
@@ -1460,6 +1484,14 @@ def file_issue(
     return ni.summary_field(action, number)
 
 
+def run_fields(args: argparse.Namespace, passthrough: list[str]) -> str:
+    """The summary-line fields that mark a night the timer did not start:
+    `ref=` for another rev, `run=reduced` for ctest arguments. The staleness
+    check (devtools/nightly_stale.py) passes over both."""
+    fields = f"  ref={args.rev}" if args.rev != "origin/main" else ""
+    return fields + ("  run=reduced" if passthrough else "")
+
+
 def cmd_nightly(
     args: argparse.Namespace, cfg: dict[str, str], passthrough: list[str]
 ) -> int:
@@ -1481,7 +1513,11 @@ def cmd_nightly(
         sha = nightly_checkout(primary, worktree, args.rev)
     except NightlyError as e:
         say(f"{tag}: {e}", err=True)
-        line = f"test.py nightly FAIL(rc=1)  rev={args.rev}  ({e})"
+        line = (
+            f"test.py nightly FAIL(rc=1)  rev={args.rev}"
+            f"  stamp={time.strftime('%Y%m%d-%H%M%S')}{run_fields(args, passthrough)}"
+            f"  ({e})"
+        )
         night = {
             "summary": line,
             "commit": args.rev,
@@ -1516,6 +1552,8 @@ def cmd_nightly(
         mode,
         "--report",
         str(report),
+        "--rev",
+        args.rev,
     ]
     if args.preset:
         cmd += ["--preset", args.preset]
@@ -1644,7 +1682,7 @@ def nightly_run(
     verdict = "PASS" if rc == 0 else f"FAIL(rc={rc})"
     summary = (
         f"test.py nightly {verdict}  rev={rev}  preset={preset}  mode={mode}"
-        f"  stamp={stamp}"
+        f"  stamp={stamp}{run_fields(args, passthrough)}"
     )
     try:
         gpu, tools = metrics.probe(build_dir, backend)
@@ -1827,13 +1865,16 @@ def main(argv: list[str]) -> int:
     strip_git_env()
     os.chdir(REPO_ROOT)
     cfg = read_config()
-    if args.gate == "push":
-        return cmd_push(args, cfg)
     if args.gate == "nightly":
         if args.in_checkout:
             return nightly_run(args, cfg, passthrough)
         return cmd_nightly(args, cfg, passthrough)
-    return cmd_pr(args, cfg, passthrough)
+    if args.gate == "push":
+        rc = cmd_push(args, cfg)
+    else:
+        rc = cmd_pr(args, cfg, passthrough)
+    nightly_warning(cfg, args.gate)
+    return rc
 
 
 if __name__ == "__main__":

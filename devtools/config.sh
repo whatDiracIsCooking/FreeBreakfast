@@ -456,6 +456,12 @@ NIGHTLY_WORKTREE=${NIGHTLY_WORKTREE:-.claude/worktrees/nightly}
 NIGHTLY_WEEKLY_DAY=${NIGHTLY_WEEKLY_DAY:-Sun}
 NIGHTLY_GPU_BATCH_BUDGET_SECONDS=${NIGHTLY_GPU_BATCH_BUDGET_SECONDS:-14400}
 
+# The nightly's dead man's switch (devtools/nightly_stale.py): doctor.sh and
+# test.py push/pr warn when the newest timer night in summary.log is older
+# than this many hours, or failed. 36 is a night and a half: one missed night
+# warns by the next working day, and the 02:30 fire's own run time does not.
+NIGHTLY_STALE_HOURS=${NIGHTLY_STALE_HOURS:-36}
+
 # --- environment ----------------------------------------------------------
 
 # gh reads GH_TOKEN (then GITHUB_TOKEN) and nothing else, but this project's

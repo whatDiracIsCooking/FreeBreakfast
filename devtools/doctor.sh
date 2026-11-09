@@ -686,6 +686,30 @@ if [ -n "${AGY_PIN_FILES:-}" ] && [ -x "$AV" ]; then
   fi
 fi
 
+# --- nightly ----------------------------------------------------------------
+# A dead man's switch: a nightly that stopped looks just like a quiet green
+# one. The check is devtools/nightly_stale.py's (test.py push/pr print the same
+# line); it reads the PRIMARY checkout's summary.log, where the nightly writes
+# it, so a worktree reports the box's nightly. On the host it also reports the
+# systemd timer and service. No timer unit and no nightly on record is a box
+# not meant to run it: a note, not a warning.
+echo "nightly"
+case "$SLOW_TIER_REPORTS" in /*) reports=$SLOW_TIER_REPORTS ;; *) reports="$PRIMARY/$SLOW_TIER_REPORTS" ;; esac
+if ! command -v python3 >/dev/null 2>&1; then
+  note "no python3: cannot check the nightly"
+elif ! stale=$(python3 "$TOP/devtools/nightly_stale.py" --reports "$reports" \
+                 --hours "$NIGHTLY_STALE_HOURS" --primary "$PRIMARY" --systemd); then
+  warn "nightly: devtools/nightly_stale.py failed; the nightly is unchecked"
+else
+  while IFS=$'\t' read -r level text; do
+    case "$level" in
+      ok) ok "nightly: $text" ;;
+      warn) warn "nightly: $text" ;;
+      *) note "nightly: $text" ;;
+    esac
+  done <<< "$stale"
+fi
+
 # --- docker hygiene (report-only) -----------------------------------------
 # Worktree containers/volumes/images leak when a worktree is removed with plain
 # `git worktree remove` (bypassing worktree.sh rm), or via an agent's worktrees
