@@ -14,13 +14,13 @@ namespace {
 
 namespace fb = free_breakfast;
 
-// A setup step: a product of nao^2 doubles, built with a Cartesian one as
-// scratch, and a little pinned staging.
+// A setup step: a product of nao^2 doubles, built with two more as scratch,
+// and a little pinned staging.
 struct SetupStep {
   static constexpr std::string_view kName = "setup";
   fb::MemoryFootprint footprint(const fb::FootprintDimensions &dims) const {
     return {.device = {.persistent = dims.nao * dims.nao * 8,
-                       .scratch = dims.nao_cartesian * dims.nao_cartesian * 8,
+                       .scratch = 2 * dims.nao * dims.nao * 8,
                        .workspace = 0},
             .pinned = {.persistent = 0, .scratch = 0, .workspace = 64}};
   }
@@ -61,7 +61,7 @@ struct UnfootprintedStep {
   static constexpr std::string_view kName = "unfootprinted";
 };
 
-const fb::FootprintDimensions kDims{.nao = 10, .nao_cartesian = 12, .naux = 30, .natoms = 3};
+const fb::FootprintDimensions kDims{.nao = 10, .naux = 30, .natoms = 3};
 
 TEST(PipelineFootprint, FoldMatchesHandComputedPeak) {
   const std::array<std::string_view, 4> names{SetupStep::kName, TensorStep::kName,
@@ -73,7 +73,7 @@ TEST(PipelineFootprint, FoldMatchesHandComputedPeak) {
 
   // Device, persistent: setup 800, tensor 24000, offload 80, host 0.
   // Held at each step, without the workspace:
-  //   setup   800 + 12*12*8 = 1952
+  //   setup   800 + 2*10*10*8 = 2400
   //   tensor  800 + 24000 + 3*24000 = 96800
   //   offload 800 + 24000 + 80 = 24880
   //   host    24880

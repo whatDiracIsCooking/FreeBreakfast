@@ -9,17 +9,36 @@ the peak a plan reaches and the step that reaches it. The vocabulary itself —
 ## Module
 
 `free_breakfast.pipeline.footprint`, target
-`free_breakfast::pipeline::footprint`. It imports `core.types` and
-`core.footprint`, and re-exports the latter, so a step module importing it
-has `MemoryFootprint`, `then` and `drop`. Nothing from `pipeline.step` or any
-method layer: every step module imports it. Templates and `constexpr`
+`free_breakfast::pipeline::footprint`. It imports `core.types`, and
+re-exports `core.footprint` and `basis`, so a step module importing it has
+`MemoryFootprint`, `then` and `drop`, and can read the bases the dimensions
+carry. `basis` is host data; nothing GPU-side, nothing from `pipeline.step`
+and no method layer: every step module imports it. Templates and `constexpr`
 functions only, so there is no implementation unit.
 
 | Export | What |
 |---|---|
-| `FootprintDimensions` | The plan's dimensions, before the first step: nao (spherical and Cartesian), naux, nocc / n_alpha / n_beta, natoms, mmd's record counts per (la, lb), K's block counts per (la, lb), and worst-case ncas / nelecas (0 when no active space is planned). #1046 fills it |
+| `FootprintDimensions` | The plan's dimensions, before the first step: the placed orbital basis and, under density fitting, the aux basis (const pointers), nao, naux, nocc / n_alpha / n_beta, natoms, mmd's record counts per (la, lb), syevd's lwork at nao, and worst-case ncas / nelecas (0 when no active space is planned). [`pipeline/shape`](../shape/README.md)'s `plan_shape` fills it |
 | `step_footprint(step, dims)` | A step's footprint, or none for a step that has no footprint member yet |
 | `PlanFootprint`, `plan_footprint(steps)` | The plan fold: `then` over one device's step footprints in plan order, with the step at which each kind's peak is reached |
+
+## The dimensions
+
+**The bases are carried, not counted.** mmd's, K's and the three-center
+tensor's footprints, and the spherical transform's, take the host `BasisSet`
+(and the aux one), their routines' own argument; their tables are sized per
+shell and per primitive, which no count of AOs fixes. So `basis` and `aux`
+point at the bases `plan_shape` placed, and a step footprint passes them
+straight on. Counts the bases already say are not kept beside them: there is
+no Cartesian AO count and no table of K's blocks. `nao` and `naux` stay, as
+the scalars most footprints are written in. `mmd_records` stays because J's
+footprint, `coulomb_pair_classes_footprint`, takes it.
+
+**syevd's lwork is a dimension.** `diagonalize`, `orthogonalize` and the
+lindep fit size their workspace by the solver's own query, a host computation
+through a handle. `plan_shape` makes it once, at nao, through the plan's
+`DeviceResources`, so a step's `footprint(dims)` holds no handle. There is
+none at naux: no step fits with lindep.
 
 ## A step's footprint
 
