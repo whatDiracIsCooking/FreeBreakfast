@@ -10,6 +10,8 @@ import free_breakfast.core.constants; // kZero, kOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemm(StridedBatched), wwrMemGetInfo, wwrMemsetAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives;
+import free_breakfast.core.footprint;
 
 #include "diagnostics.h"
 
@@ -101,6 +103,18 @@ Status b_mo(DeviceResources &res, const int32_t naux, const int32_t nao, const i
   return gpu_status(wwr::gemm<double, int32_t>(
       res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, x_rows, cols.count, nao,
       &kOne<double>, x, x_rows, c + (int64_t{nao} * cols.first), nao, &kZero<double>, out, x_rows));
+}
+
+MemoryFootprint b_mo_footprint(const int32_t naux, const int32_t nao, const OrbitalRange rows,
+                               const OrbitalRange cols) {
+  MemoryFootprint out;
+  if (naux > 0 && nao > 0 && rows.count > 0 && cols.count > 0) {
+    out.device.workspace =
+        math::align_up(sizeof(double) * static_cast<size_t>(naux) *
+                           static_cast<size_t>(rows.count) * static_cast<size_t>(nao),
+                       DeviceResources::kWorkspaceAlignment);
+  }
+  return out;
 }
 
 } // namespace free_breakfast

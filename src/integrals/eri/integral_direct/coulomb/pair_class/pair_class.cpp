@@ -14,6 +14,8 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
@@ -181,6 +183,36 @@ coulomb_pair_classes(DeviceResources &res, const std::span<const PrimitivePairCl
   for (const PrimitivePairClass &cls : classes) {
     FBF_TRY(gpu_status(cls.device_stream()->fork_stream().fork_from(stream)));
   }
+  return out;
+}
+
+MemoryFootprint
+coulomb_pair_classes_footprint(const std::span<const std::vector<size_t>> mmd_records) {
+  MemoryFootprint out;
+  size_t n_classes = 0;
+  size_t n_rec = 0;
+  for (size_t la = 0; la < mmd_records.size(); ++la) {
+    for (size_t lb = la; lb < mmd_records[la].size(); ++lb) {
+      const size_t n = mmd_records[la][lb];
+      if (n == 0) {
+        continue;
+      }
+      ++n_classes;
+      n_rec += n;
+      // A CoulombPairClass's fields: 22 doubles and 5 four-byte integers a
+      // record, and dq, jp and ket_dq, n_hermite doubles each.
+      const size_t n_hermite = coulomb_hermite_count(static_cast<int32_t>(la + lb));
+      out.device.persistent +=
+          n * ((22 * sizeof(double)) + (5 * sizeof(int32_t)) + (3 * n_hermite * sizeof(double)));
+    }
+  }
+  if (n_classes == 0) {
+    return {};
+  }
+  // coulomb_prune's maxima, counts and every class's destinations.
+  out.device.scratch = (2 * sizeof(double)) + (sizeof(int32_t) * (n_classes + n_rec));
+  out.pinned.workspace =
+      math::align_up(sizeof(int32_t) * n_classes, DeviceResources::kWorkspaceAlignment);
   return out;
 }
 

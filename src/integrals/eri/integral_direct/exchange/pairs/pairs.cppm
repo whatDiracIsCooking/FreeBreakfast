@@ -23,6 +23,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 
@@ -278,5 +279,12 @@ struct OrderedPairClass {
 [[nodiscard]] Result<std::vector<OrderedPairClass>>
 ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
                      const std::vector<PrimitivePairClass> &classes);
+
+/// @brief What @ref ordered_pair_classes holds over @p basis's mmd classes,
+/// from the host basis alone: every ordered class's records, tables and K
+/// build scratch, persistent; each class's gather sort, scratch, freed before
+/// the next class is made. Nothing of either workspace. Empty for an empty
+/// basis.
+[[nodiscard]] MemoryFootprint ordered_pair_classes_footprint(const BasisSet &basis);
 
 } // namespace free_breakfast

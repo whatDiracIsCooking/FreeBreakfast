@@ -13,6 +13,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 
 export namespace free_breakfast {
 
@@ -65,5 +66,14 @@ export namespace free_breakfast {
 ///         first runtime, launch, solver or BLAS call that failed.
 [[nodiscard]] Status density_fit(DeviceResources &res, int32_t nao, int32_t naux, double *metric,
                                  double *b, double lindep = 0.0);
+
+/// @brief What @ref density_fit takes: nothing on the Cholesky path; with
+/// @p lindep, the metric's copy and @ref orthogonalize_footprint's scratch,
+/// and the device workspace, the larger of orthogonalize's and one slab's.
+/// Empty for nao or naux 0.
+///
+/// @return The footprint, or the GpuRuntime error of syevd's size query.
+[[nodiscard]] Result<MemoryFootprint> density_fit_footprint(DeviceResources &res, int32_t nao,
+                                                            int32_t naux, double lindep = 0.0);
 
 } // namespace free_breakfast

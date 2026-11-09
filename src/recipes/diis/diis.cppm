@@ -24,6 +24,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 
 export namespace free_breakfast {
 
@@ -124,5 +125,11 @@ private:
   Buffers::device<double> coeff_;
   Buffers::device<int32_t> singular_;
 };
+
+/// @brief What a @ref Diis for length-@p len vectors and @p max_history pairs
+/// holds, all allocated by its constructor and kept: the two histories, the
+/// Gram, the coefficients and the singular flag, persistent. Nothing else is
+/// allocated by push_and_extrapolate.
+[[nodiscard]] MemoryFootprint diis_footprint(size_t len, size_t max_history);
 
 } // namespace free_breakfast

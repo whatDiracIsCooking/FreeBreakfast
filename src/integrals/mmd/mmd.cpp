@@ -13,9 +13,11 @@ module free_breakfast.integrals.mmd;
 
 import std;
 import free_breakfast.core.types;
+import free_breakfast.core.primitives;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 
 #include "diagnostics.h"
@@ -384,18 +386,14 @@ Result<std::vector<PrimitivePairClass>> form_sweep(DeviceResources &res,
   return out;
 }
 
-Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &res,
-                                                               const BasisSet &basis) {
+// The sweep: every shell pair i <= j, in la <= lb order, listed in its class
+// with its first record. Keyed by (la, lb), so the result comes out in
+// ascending class order. No record is formed here: a pair is O(1) however many
+// primitives it has. primitive_pair_classes forms it, and its footprint sizes
+// it.
+std::map<ClassKey, ClassPairs> basis_sweep(const BasisSet &basis) {
   const std::vector<Shell> &shells = basis.shells();
   const uint32_t nsh = basis.nshells();
-  if (nsh == 0) {
-    return std::vector<PrimitivePairClass>{};
-  }
-
-  // The sweep: every shell pair i <= j, in la <= lb order, listed in its
-  // class with its first record. Keyed by (la, lb), so the result comes out in
-  // ascending class order. No record is formed here: a pair is O(1) however
-  // many primitives it has.
   std::map<ClassKey, ClassPairs> sweep;
   for (uint32_t i = 0; i < nsh; ++i) {
     for (uint32_t j = i; j < nsh; ++j) {
@@ -403,8 +401,60 @@ Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &
       add_pair(sweep, shells[bra], shells[ket], bra, ket);
     }
   }
+  return sweep;
+}
+
+Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &res,
+                                                               const BasisSet &basis) {
+  if (basis.nshells() == 0) {
+    return std::vector<PrimitivePairClass>{};
+  }
   const std::array<const BasisSet *, 1> bases{&basis};
-  return form_sweep(res, sweep, bases, "primitive_pair_classes");
+  return form_sweep(res, basis_sweep(basis), bases, "primitive_pair_classes");
+}
+
+MemoryFootprint primitive_pair_classes_footprint(const BasisSet &basis) {
+  if (basis.nshells() == 0) {
+    return {};
+  }
+  const std::map<ClassKey, ClassPairs> sweep = basis_sweep(basis);
+  const size_t nsh = basis.nshells();
+  size_t nprim = 0;
+  for (const Shell &shell : basis.shells()) {
+    nprim += shell.nprimitives();
+  }
+  const size_t npairs = nsh * (nsh + 1) / 2;
+  // make_class's fields: 16 doubles and 4 int32_t a record, the classes' own;
+  // form_records' sort: two double keys and two uint32_t permutations a
+  // record, on the class's stream, one class at a time.
+  MemoryFootprint out;
+  size_t sort = 0;
+  for (const ClassPairs &cp : sweep | std::views::values) {
+    const auto n = static_cast<size_t>(cp.rec_begin.back());
+    out.device.persistent += n * ((16 * sizeof(double)) + (4 * sizeof(int32_t)));
+    sort = std::max(sort, n * (2 * (sizeof(double) + sizeof(uint32_t))));
+  }
+  // upload's tables, one buffer a field (ShellTable, PairTable): prim_begin,
+  // exponent, coefficient, c_x, c_y, c_z, ao_offset, rank; bra, ket,
+  // rec_begin. Staged from one pinned carve of the same counts.
+  const std::array<size_t, 11> table_bytes{sizeof(int32_t) * (nsh + 1),
+                                           sizeof(double) * nprim,
+                                           sizeof(double) * nprim,
+                                           sizeof(double) * nsh,
+                                           sizeof(double) * nsh,
+                                           sizeof(double) * nsh,
+                                           sizeof(int32_t) * nsh,
+                                           sizeof(int32_t) * nsh,
+                                           sizeof(uint32_t) * npairs,
+                                           sizeof(uint32_t) * npairs,
+                                           sizeof(int32_t) * (npairs + sweep.size())};
+  size_t tables = 0;
+  for (const size_t bytes : table_bytes) {
+    tables += bytes;
+    out.pinned.workspace += math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
+  }
+  out.device.scratch = tables + sort;
+  return out;
 }
 
 Result<std::vector<PrimitivePairClass>>

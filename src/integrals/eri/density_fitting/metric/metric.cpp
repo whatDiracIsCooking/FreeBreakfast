@@ -15,6 +15,8 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.recipes.symmetrize;
@@ -128,6 +130,7 @@ Status metric(DeviceResources &res, const BasisSet &aux, MatrixAOPair &m) {
     }
   }
 
+  // The staging's two regions: metric_footprint sizes the same counts.
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
   const auto [d_records, d_pairs] =
@@ -161,6 +164,27 @@ Status metric(DeviceResources &res, const BasisSet &aux, MatrixAOPair &m) {
   // symmetric.
   const auto ns = static_cast<int32_t>(m.spherical().n());
   return symmetrize(res, ns, m.spherical().data(), ns);
+}
+
+MemoryFootprint metric_footprint(const BasisSet &aux) {
+  const size_t nsh = aux.nshells();
+  if (nsh == 0) {
+    return {};
+  }
+  size_t n_rec = 0;
+  for (const Shell &shell : aux.shells()) {
+    n_rec += shell.nprimitives();
+  }
+  // metric's two device_regions: the records, one per primitive, and every
+  // shell pair P <= Q.
+  const size_t n_pairs = nsh * (nsh + 1) / 2;
+  MemoryFootprint out;
+  out.device.workspace =
+      math::align_up(sizeof(double) * static_cast<size_t>(device::kMetricRecordFields) * n_rec,
+                     DeviceResources::kWorkspaceAlignment) +
+      math::align_up(sizeof(int32_t) * static_cast<size_t>(device::kMetricPairFields) * n_pairs,
+                     DeviceResources::kWorkspaceAlignment);
+  return out;
 }
 
 } // namespace free_breakfast

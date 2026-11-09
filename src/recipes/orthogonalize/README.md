@@ -66,6 +66,7 @@ Then a second pass, since one leaves Qᵀ Q = I + E with ‖E‖ of order κ ε,
 |---|---|
 | `kOrthogonalizeEigenvalueFloor<T>` | The default floor, 1e-10. |
 | `orthogonalize<T>(res, n, s, x, floor)` | `Status`: X = S^{-1/2} into `x`. Instantiated for `float` and `double`. |
+| `orthogonalize_footprint<T>(res, n)` | `Result<MemoryFootprint>`: U and the eigenvalues scratch; the device workspace, the larger of syevd's work and M. |
 | `orthonormalize<T>(res, n, k, v, floor)` | `Result<int32_t>`: `v`'s columns orthonormalized in place, the kept count returned. Instantiated for `float` and `double`. |
 
 ## Usage
@@ -95,7 +96,7 @@ fb::Status status = fb::orthogonalize<double>(res, n, s.data(), x.data());
 
 | File | Role |
 |------|------|
-| `orthogonalize.cppm` | Module interface: `orthogonalize`, the default floor, and `orthonormalize` |
+| `orthogonalize.cppm` | Module interface: `orthogonalize`, its footprint, the default floor, and `orthonormalize` |
 | `orthogonalize.cpp` | Both implementations, the cond(S) log, and the `float`/`double` instantiations |
 | `inverse_sqrt.cu` | The `inverse_sqrt` kernel, over wwr's `parallel_for` |
 | `inverse_sqrt_bridge.h` | The launcher's declaration, shared by the `.cu` and the implementation unit's GMF |

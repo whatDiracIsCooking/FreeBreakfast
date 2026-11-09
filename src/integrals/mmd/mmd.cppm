@@ -32,6 +32,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 
 export namespace free_breakfast {
@@ -197,6 +198,13 @@ struct PrimitivePairClass {
 ///         the first copy, launch or wait that failed.
 [[nodiscard]] Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &res,
                                                                              const BasisSet &basis);
+
+/// @brief What @ref primitive_pair_classes holds over @p basis, from the
+/// host basis alone: the classes' records persistent; the uploaded shell and
+/// pair tables, and one class's sort at a time, scratch on the device; the
+/// tables' pinned staging, the pinned workspace. Nothing of the device
+/// workspace. Empty for an empty basis.
+[[nodiscard]] MemoryFootprint primitive_pair_classes_footprint(const BasisSet &basis);
 
 /// @brief The primitive-pair records between two bases, @p rows and @p cols, on
 /// @p res's device: what overlap_mixed reads.

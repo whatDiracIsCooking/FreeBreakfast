@@ -18,6 +18,7 @@ import free_breakfast.core.primitives;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemmStridedBatched, wwrMemGetInfo, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.blas;
@@ -42,6 +43,44 @@ struct ThreeCenterPair {
   int32_t rec0;
   int32_t rec1;
 };
+
+// The element counts of three_center's four buffers, over @p basis's
+// primitive-pair classes of @p n_bra_rec records in all and @p aux: the call
+// and its footprint size them alike.
+struct ThreeCenterSizes {
+  size_t n_aux_rec;
+  size_t n_pairs;
+  size_t n_staging;
+  size_t n_cell_fields;
+  size_t n_cart;
+  size_t n_work;
+};
+
+ThreeCenterSizes three_center_sizes(const BasisSet &basis, const BasisSet &aux,
+                                    const size_t n_bra_rec) {
+  const size_t n = basis.nao_cart();
+  const size_t n_aux = aux.nao_cart();
+  size_t n_aux_rec = 0;
+  for (const Shell &shell : aux.shells()) {
+    n_aux_rec += shell.nprimitives();
+  }
+  const size_t n_pairs = basis.nshells() * (basis.nshells() + 1) / 2;
+  return {
+      .n_aux_rec = n_aux_rec,
+      .n_pairs = n_pairs,
+      // The bra records, the aux records, then U and U_aux.
+      .n_staging = (static_cast<size_t>(device::kThreeCenterBraFields) * n_bra_rec) +
+                   (static_cast<size_t>(device::kThreeCenterAuxFields) * n_aux_rec) +
+                   (n * basis.nao_sphe()) + (n_aux * aux.nao_sphe()),
+      // One cell per (shell pair, aux shell).
+      .n_cell_fields =
+          static_cast<size_t>(device::kThreeCenterCellFields) * n_pairs * aux.nshells(),
+      .n_cart = n * n * n_aux,
+      // The aux index's transform out of the Cartesian tensor; the AO indices'
+      // two steps write back over the Cartesian tensor and then over this.
+      .n_work = aux.nao_sphe() * n * n,
+  };
+}
 
 Status three_center(DeviceResources &res, const BasisSet &basis,
                     const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
@@ -68,15 +107,12 @@ Status three_center(DeviceResources &res, const BasisSet &basis,
   }
 
   const size_t n = basis.nao_cart();
-  const size_t n_sph = basis.nao_sphe();
-  const size_t n_aux = aux.nao_cart();
-  const size_t n_aux_sph = aux.nao_sphe();
-  const size_t n_cart = n * n * n_aux;
   // The kernels index the tensor as a 32-bit (m n_ao + n) n_aux + P.
-  if (n_cart > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+  if (const size_t n_cart = n * n * aux.nao_cart();
+      n_cart > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
     return err_unsupported("three_center: the Cartesian tensor, {} x {} x {} = {} elements ({} "
                            "bytes), is past the kernels' 32-bit index",
-                           n, n, n_aux, n_cart, sizeof(double) * n_cart);
+                           n, n, aux.nao_cart(), n_cart, sizeof(double) * n_cart);
   }
 
   // The counts, from the classes' sizes and the bases alone, so the refusal
@@ -95,16 +131,16 @@ Status three_center(DeviceResources &res, const BasisSet &basis,
   for (const Shell &shell : aux_shells) {
     aux_rec_begin.push_back(aux_rec_begin.back() + static_cast<int32_t>(shell.nprimitives()));
   }
-  const auto n_aux_rec = static_cast<size_t>(aux_rec_begin.back());
-  const size_t n_pairs = shells.size() * (shells.size() + 1) / 2;
-  const size_t n_cells = n_pairs * aux_shells.size();
-  const size_t n_staging = (static_cast<size_t>(device::kThreeCenterBraFields) * n_bra_rec) +
-                           (static_cast<size_t>(device::kThreeCenterAuxFields) * n_aux_rec) +
-                           (n * n_sph) + (n_aux * n_aux_sph);
-  const size_t n_cell_fields = static_cast<size_t>(device::kThreeCenterCellFields) * n_cells;
-  // The aux index's transform out of the Cartesian tensor; the AO indices'
-  // two steps write back over the Cartesian tensor and then over this.
-  const size_t n_work = n_aux_sph * n * n;
+  const ThreeCenterSizes z = three_center_sizes(basis, aux, n_bra_rec);
+  const size_t n_sph = basis.nao_sphe();
+  const size_t n_aux = aux.nao_cart();
+  const size_t n_aux_sph = aux.nao_sphe();
+  const size_t n_aux_rec = z.n_aux_rec;
+  const size_t n_pairs = z.n_pairs;
+  const size_t n_staging = z.n_staging;
+  const size_t n_cell_fields = z.n_cell_fields;
+  const size_t n_cart = z.n_cart;
+  const size_t n_work = z.n_work;
   // Four buffers, each rounded up to the pool's 256-byte allocation step.
   const auto region = [](const size_t bytes) {
     return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
@@ -324,6 +360,25 @@ Status three_center(DeviceResources &res, const BasisSet &basis,
   // The two gemms round (m, n) and (n, m) in different orders; half of each
   // plus half of its mirror is exactly symmetric, written to b.
   return gpu_status(device::three_center_symmetrize(stream, n_sph32, n_aux_sph32, work, b));
+}
+
+MemoryFootprint three_center_footprint(const BasisSet &basis, const BasisSet &aux) {
+  if (basis.nshells() == 0 || aux.nshells() == 0) {
+    return {};
+  }
+  // mmd's records over every shell pair i <= j: sum_{i<j} p_i p_j + sum_i
+  // p_i^2 = (P^2 + sum_i p_i^2) / 2, P the primitives in all.
+  size_t p = 0;
+  size_t p_sq = 0;
+  for (const Shell &shell : basis.shells()) {
+    p += shell.nprimitives();
+    p_sq += static_cast<size_t>(shell.nprimitives()) * shell.nprimitives();
+  }
+  const ThreeCenterSizes z = three_center_sizes(basis, aux, ((p * p) + p_sq) / 2);
+  MemoryFootprint out;
+  out.device.scratch =
+      (sizeof(double) * (z.n_staging + z.n_cart + z.n_work)) + (sizeof(int32_t) * z.n_cell_fields);
+  return out;
 }
 
 } // namespace free_breakfast

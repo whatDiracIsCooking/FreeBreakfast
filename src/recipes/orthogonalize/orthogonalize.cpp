@@ -17,6 +17,8 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives;
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.blas;
 import free_breakfast.recipes.diagonalize;
 
@@ -210,10 +212,25 @@ Result<int32_t> orthonormalize(DeviceResources &res, const int32_t n, const int3
   return m;
 }
 
+template <real_fp T>
+Result<MemoryFootprint> orthogonalize_footprint(DeviceResources &res, const int32_t n) {
+  if (n <= 0) {
+    return MemoryFootprint{};
+  }
+  const size_t nn = static_cast<size_t>(n) * static_cast<size_t>(n);
+  MemoryFootprint out = FBF_TRY(diagonalize_footprint<T>(res, n));
+  out.device.scratch = sizeof(T) * (nn + static_cast<size_t>(n));
+  out.device.workspace = std::max(
+      out.device.workspace, math::align_up(nn * sizeof(T), DeviceResources::kWorkspaceAlignment));
+  return out;
+}
+
 template Status orthogonalize<float>(DeviceResources &, int32_t, const float *, float *, float);
 template Status orthogonalize<double>(DeviceResources &, int32_t, const double *, double *, double);
 template Result<int32_t> orthonormalize<float>(DeviceResources &, int32_t, int32_t, float *, float);
 template Result<int32_t> orthonormalize<double>(DeviceResources &, int32_t, int32_t, double *,
                                                 double);
+template Result<MemoryFootprint> orthogonalize_footprint<float>(DeviceResources &, int32_t);
+template Result<MemoryFootprint> orthogonalize_footprint<double>(DeviceResources &, int32_t);
 
 } // namespace free_breakfast

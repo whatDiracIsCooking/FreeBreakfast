@@ -13,6 +13,7 @@ export module free_breakfast.integrals.eri.density_fitting.metric;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
 
@@ -52,5 +53,9 @@ export namespace free_breakfast {
 ///         GpuRuntime error of the first copy, synchronization, launch or BLAS
 ///         call that failed, which leaves @p m unspecified.
 [[nodiscard]] Status metric(DeviceResources &res, const BasisSet &aux, MatrixAOPair &m);
+
+/// @brief What @ref metric takes over @p aux: the records' and pairs' staging,
+/// the device workspace. @p m is the caller's. Empty for an empty @p aux.
+[[nodiscard]] MemoryFootprint metric_footprint(const BasisSet &aux);
 
 } // namespace free_breakfast

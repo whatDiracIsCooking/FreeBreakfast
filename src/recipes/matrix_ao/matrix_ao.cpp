@@ -9,6 +9,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.recipes.blas;
 
@@ -34,6 +35,23 @@ upload_spherical_transform_matrix(DeviceResources &res, const BasisSet &basis) {
   // copy has finished reading it until the stream does.
   FBF_TRY(gpu_status(wwr::wwrStreamSynchronize(stream)));
   return std::shared_ptr<const Buffers::device<double>>{std::move(u)};
+}
+
+MemoryFootprint upload_spherical_transform_matrix_footprint(const BasisSet &basis) {
+  MemoryFootprint out;
+  if (basis.nao_cart() != basis.nao_sphe()) {
+    out.device.persistent = sizeof(double) * basis.nao_cart() * basis.nao_sphe();
+  }
+  return out;
+}
+
+MemoryFootprint matrix_ao_pair_footprint(const BasisSet &basis) {
+  const size_t cart = basis.nao_cart();
+  const size_t sphe = basis.nao_sphe();
+  MemoryFootprint out;
+  out.device.persistent =
+      sizeof(double) * ((cart * cart) + (sphe * sphe) + (cart == sphe ? 0 : cart * sphe));
+  return out;
 }
 
 // The scratch a pair over basis needs, after checking u fits it: nullptr

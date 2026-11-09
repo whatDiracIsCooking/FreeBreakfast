@@ -135,6 +135,13 @@ than the basis (H₂O in cc-pVTZ / cc-pVTZ-JKFIT: B 139 x 58² is 3.7 MB, X
 139 · 5 · 58 is 0.32 MB). The scratch is `res.device_workspace()`'s, carved by
 `device_regions`, so none of the operands may live there.
 
+## Footprint
+
+`df_coulomb_footprint(nao, naux)` and `df_exchange_footprint(nao, naux, nocc)`
+(`core/footprint`'s `MemoryFootprint`) are the one-density J's gamma and the
+one-factor K's X, each the device workspace; nothing else is allocated. The
+other forms have none yet.
+
 ## Limits
 
 J's gemvs run over `nao²` columns, K's syrk over `naux · nocc` rows and the

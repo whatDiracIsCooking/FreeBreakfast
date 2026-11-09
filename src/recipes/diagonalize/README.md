@@ -23,6 +23,7 @@ The symmetric eigendecomposition A = U diag(w) U^T on the GPU: one dense-solver 
 | Symbol | Role |
 |---|---|
 | `diagonalize<T>(res, n, a, w)` | `Status`: A = U diag(w) U^T, U into `a`, ascending eigenvalues into `w`. Instantiated for `float` and `double`. |
+| `diagonalize_footprint<T>(res, n)` | `Result<MemoryFootprint>`: syevd's work for order `n`, the device workspace, queried from the solver as `diagonalize` queries it. |
 
 ## Usage
 
@@ -48,6 +49,6 @@ fb::Status status = fb::diagonalize<double>(res, n, a.data(), w.data());  // a n
 
 | File | Role |
 |------|------|
-| `diagonalize.cppm` | Module interface: `diagonalize` |
+| `diagonalize.cppm` | Module interface: `diagonalize`, `diagonalize_footprint` |
 | `diagonalize.cpp` | Implementation, and the `float`/`double` instantiations |
 | `CMakeLists.txt` | The module `free_breakfast.recipes.diagonalize` |
