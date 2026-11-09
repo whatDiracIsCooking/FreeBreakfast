@@ -12,15 +12,6 @@
 #
 # <path>                                                     <calls> <owner>
 
-# #1047: the step-level refusal checks.
-src/pipeline/eri/eri.cpp                                           1 #1047
-src/pipeline/casscf/casscf.cpp                                     1 #1047
-src/pipeline/fci/fci.cpp                                           1 #1047
-src/pipeline/cis/cis.cpp                                           1 #1047
-src/gradient/df_rhf.cpp                                            1 #1047
-src/mcscf/derivative/derivative.cpp                                1 #1047
-src/mcscf/third_derivative/integral_derivative.cpp                 1 #1047
-
 # #1129: the library refusal checks under those steps. gradient.cpp's four are
 # metric_derivative, three_center_gradient, three_center_derivative and
 # df_jk_derivative.

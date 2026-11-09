@@ -148,16 +148,11 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
   const size_t held = (15 * stack) + (nao * na3 * n_x) + (3 * naux * na2 * n_x) +
                       (naux * n_act * nao) + (3 * naux * naux) + (3 * nn * max_blk) +
                       (3 * nn * n_act) + (2 * nao * n_occ * n_x) + rotated;
-  {
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    if (sizeof(double) * held > free_bytes) {
-      return err_unsupported("mcscf::df_derivatives: the derivative stacks of {} coordinates "
-                             "over {} orbital and {} fitting functions need {} bytes of device "
-                             "memory, and device {} has {} free",
-                             n_x, nao, naux, sizeof(double) * held, res.dev_idx(), free_bytes);
-    }
+  if (const size_t budget = FBF_TRY(res.memory_budget()); sizeof(double) * held > budget) {
+    return err_unsupported("mcscf::df_derivatives: the derivative stacks of {} coordinates "
+                           "over {} orbital and {} fitting functions need {} bytes of device "
+                           "memory, and device {}'s budget is {}",
+                           n_x, nao, naux, sizeof(double) * held, res.dev_idx(), budget);
   }
 
   // The roots' weighted RDMs, Gamma 8-fold symmetrized: F's formula assumes

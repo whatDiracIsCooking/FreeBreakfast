@@ -204,6 +204,46 @@ ordered after the write. A buffer on any other stream would race the
 solver's write. The pinned slot is four bytes, fixed, and read at any time, so
 it is a member of its own, outside the pinned workspace and the cap.
 
+### Memory budget
+
+`memory_budget()` is the device memory a refusal check counts on: the bytes
+the pool can still give before an allocation through it would abort
+(`CreatePolicy`). A site that can refuse its need as `Unsupported` compares it
+against this, never against `wwrMemGetInfo`'s free memory
+(`devtools/alloc-sites.py check` flags a new call outside `src/core/wwr/`).
+
+```cpp
+if (const size_t budget = FBF_TRY(res.memory_budget()); need > budget) {
+  return err_unsupported("...: {} bytes, and device {}'s budget is {}", need, res.dev_idx(), budget);
+}
+```
+
+| Member | What |
+|---|---|
+| `memory_budget()` | `Result<size_t>`: the limit less the pool's `UsedMemCurrent`, at least 0 |
+| `pool_cap()` | the `Device` pool's cap, in bytes, the constructor's fourth argument; 0 for none |
+| `kDeviceReserve` | 256 MiB: what the process holds on the device outside any pool |
+
+**The limit** is `pool_cap()` under a cap. With none it is the device's total
+less `kDeviceReserve`: the context and the BLAS and solver handles, which no
+pool counts. That is the 249 MiB `src/core/wwr/README.md` ("The fixed reserve
+outside the pool") measured on the 3080, rounded up, since it is a floor that
+grows as kernel modules are first loaded. A constant rather than a measurement
+at construction: by then the context's lazy growth has not happened, and
+another `DeviceResources` on the device would read as part of it. A cap is
+set that much below a device's share, so it is not taken out of the cap again.
+
+**Never more than the driver can supply**: the limit is bounded by the
+driver's free memory plus the pool's `ReservedMemCurrent`, since another
+process may hold part of the device, or of the cap, before the pool has taken
+it.
+
+**Reserved but unused counts as available.** That is the difference from the
+driver's free memory: a block the pool has freed and keeps cached (under a cap
+it keeps all of them, the cap being its release threshold) is the next
+allocation's, so freeing a buffer gives its bytes back to the budget at once.
+It is a read, not a sync, as `Device::pool_usage()` is.
+
 ### Pinned memory
 
 Pinned host memory is a per-device resource too, for loading and offloading:

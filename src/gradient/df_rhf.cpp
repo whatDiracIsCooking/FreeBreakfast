@@ -10,7 +10,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kNegTwo, kNegHalf
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemv, trsv, trsm, gemmStridedBatched, wwrMemGetInfo
+import free_breakfast.core.wwr; // gemv, trsv, trsm, gemmStridedBatched
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.molecule;
@@ -59,14 +59,11 @@ Result<RhfTerms> df_rhf(DeviceResources &res, const Molecule &molecule, const Ba
     const size_t w_count = static_cast<size_t>(naux) * static_cast<size_t>(naux);
     const size_t bytes =
         sizeof(double) * (gamma_count + c_count + y_count + w_count + static_cast<size_t>(naux));
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    if (bytes > free_bytes) {
+    if (const size_t budget = FBF_TRY(res.memory_budget()); bytes > budget) {
       return err_unsupported("gradient::df_rhf: Gam over {} orbital and {} fitting functions and "
-                             "its scratch need {} bytes of device memory, and device {} has {} "
-                             "free",
-                             nao, naux, bytes, res.dev_idx(), free_bytes);
+                             "its scratch need {} bytes of device memory, and device {}'s budget "
+                             "is {}",
+                             nao, naux, bytes, res.dev_idx(), budget);
     }
     Buffers::device<double> gamma(gamma_count, res.device());
     Buffers::device<double> fitted(c_count, res.device());

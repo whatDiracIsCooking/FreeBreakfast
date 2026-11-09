@@ -8,7 +8,7 @@ module free_breakfast.pipeline.eri;
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // wwrMemGetInfo, wwrMemcpyAsync, gpu_status
+import free_breakfast.core.wwr; // wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.io.basis;
 import free_breakfast.recipes.matrix_ao;
@@ -52,13 +52,10 @@ density_fitted(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput> 
   // allocation would abort (CreatePolicy), not return; three_center then
   // counts its own scratch against what B and L leave.
   const size_t b_bytes = sizeof(double) * naux * (nao * nao + naux);
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (b_bytes > free_bytes) {
+  if (const size_t budget = FBF_TRY(res.memory_budget()); b_bytes > budget) {
     return err_unsupported("eri: B and L over {} orbital and {} fitting functions need {} bytes "
-                           "of device memory, and device {} has {} free",
-                           nao, naux, b_bytes, res.dev_idx(), free_bytes);
+                           "of device memory, and device {}'s budget is {}",
+                           nao, naux, b_bytes, res.dev_idx(), budget);
   }
 
   MatrixAOPair m(res, aux, FBF_TRY(upload_spherical_transform_matrix(res, aux)));

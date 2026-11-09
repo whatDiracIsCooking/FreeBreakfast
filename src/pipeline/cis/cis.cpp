@@ -13,7 +13,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kSqrt2
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
-import free_breakfast.core.wwr; // Buffers, ScopedDeviceIndex, gpu_status, wwrMemGetInfo
+import free_breakfast.core.wwr; // Buffers, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.davidson;
@@ -96,13 +96,10 @@ cis_ris_sigma(DeviceResources &res, const BasisSet &basis,
   const size_t blocks_bytes = sizeof(double) * ((static_cast<size_t>(naux_j) * occ * virt) +
                                                 (static_cast<size_t>(naux_k) * occ * occ) +
                                                 (static_cast<size_t>(naux_k) * virt * virt));
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (b_bytes + blocks_bytes > free_bytes) {
+  if (const size_t budget = FBF_TRY(res.memory_budget()); b_bytes + blocks_bytes > budget) {
     return err_unsupported("cis: TDA-ris's fits over {} and {} RIS functions need {} bytes of B "
-                           "and {} of MO blocks, and device {} has {} free",
-                           naux_j, naux_k, b_bytes, blocks_bytes, res.dev_idx(), free_bytes);
+                           "and {} of MO blocks, and device {}'s budget is {}",
+                           naux_j, naux_k, b_bytes, blocks_bytes, res.dev_idx(), budget);
   }
 
   Buffers::device<double> b_vo(static_cast<size_t>(naux_j) * occ * virt, res.device());

@@ -2,7 +2,8 @@
 // real device, its handles bound to the Device's stream, the one-way
 // ownership that lets a buffer outlive the bundle that handed out its Device,
 // the solver scratch (grow-only workspaces and the info flag), and the pinned
-// memory: the pinned workspace's carve, counted buffers and the pinned cap.
+// memory: the pinned workspace's carve, counted buffers and the pinned cap;
+// and the memory budget under a pool cap.
 
 #include <gtest/gtest.h>
 
@@ -11,6 +12,8 @@
 import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
+
+#include "pool_footprint.h"
 
 namespace {
 
@@ -312,6 +315,33 @@ TEST(DeviceResources, PinnedCapRefusesWhatWouldPassIt) {
   auto again = res.counted_pinned<std::byte>("caller-x", kCap / 2);
   ASSERT_TRUE(again.has_value());
   EXPECT_EQ(res.pinned_bytes(), kCap);
+}
+
+// Under a pool cap, the budget is the cap less what the pool's live
+// allocations use: a live allocation takes exactly its size, rounded to the
+// pool's granularity, out of it, and its free gives that back -- the freed
+// block stays cached in the pool (a cap is also the release threshold), and
+// the budget counts it as available.
+TEST(DeviceResources, MemoryBudgetFollowsALiveAllocation) {
+  FBF_REQUIRE_GPU();
+
+  constexpr std::uint64_t kCap = std::uint64_t{64} << 20;
+  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
+  EXPECT_EQ(res.pool_cap(), kCap);
+  const std::size_t granularity = fb::test::pool_granularity(*res.device());
+  ASSERT_GT(granularity, 0U);
+
+  const std::size_t start = res.memory_budget().value();
+  EXPECT_EQ(start, kCap - res.device()->pool_usage().used_current);
+
+  // Off the granularity, so the rounding shows when it is above 1 B.
+  constexpr std::size_t kBytes = (std::size_t{3} << 20) + 8;
+  {
+    fb::Buffers::device<std::byte> live(kBytes, res.device());
+    EXPECT_EQ(start - res.memory_budget().value(), fb::math::align_up(kBytes, granularity));
+  }
+  ASSERT_TRUE(res.sync().has_value());
+  EXPECT_EQ(res.memory_budget().value(), start);
 }
 
 // A counted buffer carries its count when moved, and may outlive the
