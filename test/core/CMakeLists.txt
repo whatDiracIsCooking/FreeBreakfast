@@ -37,6 +37,7 @@ add_executable(
 add_executable(
   free_breakfast_core_tests_gpu
   device_gpu.cpp
+  device_pool_gpu.cpp
   gpu_policy_gpu.cpp
   node_resources_gpu.cpp
   primitives_gpu.cpp

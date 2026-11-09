@@ -33,7 +33,7 @@ by `free_breakfast.core`. Five partitions under the primary interface:
 | `:status` | `gpu_status` |
 | `:policy` | `AbortPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` / `PolicyMap` |
 | `:fork_stream` | `Stream`, `Event`, `ForkStreamConfig`, `ForkStream` |
-| `:device` | `MemPool`, `Device` |
+| `:device` | `MemPool`, `PoolUsage`, `Device` |
 | `:device_stream` | `DeviceStream` |
 | *(primary)* | the other aliases below, and the re-exports |
 
@@ -51,7 +51,7 @@ free functions (copy, memset, views, pointer-mode guards, …) come with it.
 
 | Alias | wwr type | Notes |
 | --- | --- | --- |
-| `Device` | *(composed here)* | One device: properties, an owned `ForkStream` as its work stream, and a memory pool (1 GiB release threshold by default). Hold as `std::shared_ptr`. See below. |
+| `Device` | *(composed here)* | One device: properties, an owned `ForkStream` as its work stream, and a memory pool (1 GiB release threshold by default; an optional cap). Hold as `std::shared_ptr`. See below. |
 | `DeviceStream` | *(composed here)* | Another work stream on a `Device`: its own `ForkStream`, the `Device`'s pool. Hold as `std::shared_ptr`. See below. |
 | `MemPool` | `MemPoolWrapper` | A memory pool on one device; `Device` owns one. |
 | `Stream` | `StreamWrapper` | A non-blocking stream. |
@@ -150,6 +150,65 @@ that is how much freed memory the pool keeps cached across stream syncs
 instead of returning to the driver, not a cap on allocation. The pool is
 declared before the `ForkStream`, so the stream — which synchronizes before
 destroying — is torn down first and no queued free outlives its pool.
+
+### Pool cap and usage
+
+The third constructor argument is the pool's cap in bytes, 0 (none) by
+default. A cap sets two pool attributes: `maxSize`, the hard limit, past which
+an allocation fails (through `Buffers`, that failure is `CreatePolicy`'s
+abort); and the release threshold, to the cap in place of the second argument,
+so memory one step frees stays in the pool for the next instead of going back
+to the driver, where another process could take it mid-run.
+
+```cpp
+auto dev = std::make_shared<fb::Device>(0, fb::Device::kDefaultPoolReleaseThreshold, cap);
+dev->reset_pool_high_water();
+// ... the call to measure ...
+const fb::PoolUsage u = dev->pool_usage(); // used / reserved, current / high
+```
+
+`pool_usage()` reads the pool's `UsedMemCurrent/High` and
+`ReservedMemCurrent/High`; `reset_pool_high_water()` sets both high-water marks
+back to the current values. `test/support/pool_footprint.h` builds the
+footprint tests' two helpers on them: `measure_pool_peak` (one call's peak
+above where it started) and `expect_footprint` (the sound and tight bars).
+
+What the counters count, measured on the 3080 (driver 580.126.20, CUDA 13.0):
+`UsedMem*` is the bytes requested, unrounded — a one-byte allocation adds
+1 — so the pool's granularity as the footprint helpers read it is 1 B there,
+though each allocation's address is 512 B-aligned; `ReservedMem*` grows in
+32 MiB chunks. `pool_granularity()` in the helper header measures it rather
+than assuming it.
+
+**HIP:** ROCm 7.2.4 on the gfx1200 enforces `maxSize` — the cap test's
+allocation past the cap fails with `wwrErrorMemoryAllocation` there, as on CUDA —
+and its `UsedMem*` also counts requested bytes (granularity 1 B). One
+difference: setting a high-water mark to 0 resets it to 0 there, not to the
+current value as CUDA does, so `pool_usage()` floors each high-water mark at
+its current value; after `reset_pool_high_water()` both backends then read
+the same.
+
+### The fixed reserve outside the pool
+
+What a process holds on the device that no pool counts, measured on the 3080
+(driver 580.126.20, CUDA 13.0) by a scratch gtest that stepped through
+creating each piece, holding each step 4 s while `nvidia-smi
+--query-compute-apps=used_memory` (the process's own) and
+`--query-gpu=memory.used` (the whole card, idle at 646 MiB) were sampled every
+0.5 s, the pool empty:
+
+| Step | Process | Card delta |
+| --- | --- | --- |
+| CUDA context (`wwrFree(nullptr)`), then the `Device` | 216 MiB | 221 MiB |
+| + one `BlasHandle` | 228 MiB | 233 MiB |
+| + one `SolverHandle` | 240 MiB | 245 MiB |
+| + one 512³ `dgemm` (pool trimmed back to 0 after) | 240 MiB | 249 MiB |
+
+**The fixed reserve is 249 MiB per process on the 3080** (the card's view,
+the larger of the two): a `max_device_mem_per_gpu` leaves that much outside the
+pool cap. It is a floor, not a constant: the context grows as lazily loaded
+kernel modules are first launched, so a run that touches many of the tree's
+kernels holds more, and another driver or card will differ.
 
 Under HIP the pool is created exportable (a POSIX file descriptor handle type)
 though nothing exports it. That is a workaround for a ROCm 7.2.4 defect (#300):
@@ -306,7 +365,7 @@ value to propagate.
 | `status.cppm` | `:status`: `gpu_status` |
 | `policy.cppm` | `:policy`: `AbortPolicy`, `LogPolicy` and the aliases over them |
 | `fork_stream.cppm` | `:fork_stream`: `Stream`, `Event`, `ForkStreamConfig`, `ForkStream` |
-| `device.cppm` | `:device`: `MemPool`, `Device` |
+| `device.cppm` | `:device`: `MemPool`, `PoolUsage`, `Device` |
 | `device_stream.cppm` | `:device_stream`: `DeviceStream` |
 | `CMakeLists.txt` | The module library, and the one list of wwr module targets it links |
 
