@@ -19,8 +19,8 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kTwo, kNegOne, kNegTwo
 import free_breakfast.core.primitives;
 import free_breakfast.core.error_handling;
-// gemmStridedBatched, gemm, gemv, trsv, trsm, geam, axpy, wwrMemGetInfo,
-// wwrMemsetAsync, wwrMemcpy2DAsync, gpu_status
+// gemmStridedBatched, gemm, gemv, trsv, trsm, geam, axpy, wwrMemsetAsync,
+// wwrMemcpy2DAsync, gpu_status
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
@@ -170,14 +170,17 @@ Status metric_derivative(DeviceResources &res, const BasisSet &aux, double *m1) 
                       region(sizeof(double) * 3 * n * n) + region(sizeof(double) * n * n_sph);
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (const size_t available = std::max(res.device_workspace(0).num_elements(), free_bytes);
-      need > available) {
+  // The carve's size is the shape's alone: compared against the larger of the
+  // workspace and the budget, since growing the workspace past the budget
+  // aborts (CreatePolicy). #1123 drops the check: a fixed workspace refuses an
+  // oversized borrow itself.
+  const size_t workspace = res.device_workspace(0).num_elements();
+  const size_t budget = FBF_TRY(res.memory_budget());
+  if (const size_t available = std::max(workspace, budget); need > available) {
     return err_unsupported("metric_derivative: over {} Cartesian fitting functions it needs {} "
-                           "bytes of device scratch, and {} bytes are available",
-                           n, need, available);
+                           "bytes of device scratch, and {} bytes are available (the larger of the "
+                           "workspace's {} and device {}'s budget {})",
+                           n, need, available, workspace, res.dev_idx(), budget);
   }
 
   const MetricPairs pairs = stage_metric_pairs(aux, rec_begin);
@@ -243,17 +246,19 @@ Result<std::vector<double>> three_center_gradient(DeviceResources &res, const Ba
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  // Past the device's memory the workspace's growth would abort
-  // (CreatePolicy), not return; three_center.cpp has the arithmetic.
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  const size_t available = std::max(res.device_workspace(0).num_elements(), free_bytes);
-  if (need > available) {
+  // The carve's size is the shape's alone: compared against the larger of the
+  // workspace and the budget, since growing the workspace past the budget
+  // aborts (CreatePolicy). #1123 drops the check: a fixed workspace refuses an
+  // oversized borrow itself.
+  const size_t workspace = res.device_workspace(0).num_elements();
+  const size_t budget = FBF_TRY(res.memory_budget());
+  if (const size_t available = std::max(workspace, budget); need > available) {
     return err_unsupported("three_center_gradient: over {} Cartesian orbital and {} Cartesian "
                            "fitting functions it needs {} bytes of device scratch (the Cartesian "
-                           "Gam alone {} bytes), and {} bytes are available",
-                           n, n_aux, need, sizeof(double) * n_cart, available);
+                           "Gam alone {} bytes), and {} bytes are available (the larger of the "
+                           "workspace's {} and device {}'s budget {})",
+                           n, n_aux, need, sizeof(double) * n_cart, available, workspace,
+                           res.dev_idx(), budget);
   }
 
   ThreeCenterBra bra = FBF_TRY(stage_three_center_bra(res, basis, classes, n_bra_rec, kWho));
@@ -420,15 +425,19 @@ Status three_center_derivative(DeviceResources &res, const BasisSet &basis,
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (const size_t available = std::max(res.device_workspace(0).num_elements(), free_bytes);
-      need > available) {
+  // The carve's size is the shape's alone: compared against the larger of the
+  // workspace and the budget, since growing the workspace past the budget
+  // aborts (CreatePolicy). #1123 drops the check: a fixed workspace refuses an
+  // oversized borrow itself.
+  const size_t workspace = res.device_workspace(0).num_elements();
+  const size_t budget = FBF_TRY(res.memory_budget());
+  if (const size_t available = std::max(workspace, budget); need > available) {
     return err_unsupported("three_center_derivative: over {} Cartesian orbital functions and "
                            "atom {}'s {} Cartesian fitting functions it needs {} bytes of device "
-                           "scratch, and {} bytes are available",
-                           n_cart, atom, nblk_cart, need, available);
+                           "scratch, and {} bytes are available (the larger of the workspace's {} "
+                           "and device {}'s budget {})",
+                           n_cart, atom, nblk_cart, need, available, workspace, res.dev_idx(),
+                           budget);
   }
 
   ThreeCenterBra bra = FBF_TRY(stage_three_center_bra(res, basis, classes, n_bra_rec, kWho));
@@ -555,15 +564,19 @@ Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
   for (const auto &[count, size] : regions) {
     need += math::align_up(count * size, DeviceResources::kWorkspaceAlignment);
   }
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (const size_t available = std::max(res.device_workspace(0).num_elements(), free_bytes);
-      need > available) {
+  // The carve's size is the shape's alone: compared against the larger of the
+  // workspace and the budget, since growing the workspace past the budget
+  // aborts (CreatePolicy). #1123 drops the check: a fixed workspace refuses an
+  // oversized borrow itself.
+  const size_t workspace = res.device_workspace(0).num_elements();
+  const size_t budget = FBF_TRY(res.memory_budget());
+  if (const size_t available = std::max(workspace, budget); need > available) {
     return err_unsupported("df_jk_derivative: over {} orbital and {} fitting functions ({} on "
                            "the largest aux atom) with {} occupied orbitals it needs {} bytes of "
-                           "device scratch, and {} bytes are available",
-                           nao, naux, max_blk, occ, need, available);
+                           "device scratch, and {} bytes are available (the larger of the "
+                           "workspace's {} and device {}'s budget {})",
+                           nao, naux, max_blk, occ, need, available, workspace, res.dev_idx(),
+                           budget);
   }
 
   ThreeCenterBra bra = FBF_TRY(stage_three_center_bra(res, basis, classes, n_bra_rec, kWho));

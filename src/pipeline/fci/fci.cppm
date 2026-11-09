@@ -64,7 +64,8 @@ struct FciStep {
   ///         electron count; InvalidConfig for a multiplicity that does
   ///         not fit the electrons (2S above N, of the other parity, or
   ///         N_alpha above nmo); Allocation when
-  ///         the estimate exceeds the device's free memory; GpuRuntime for a
+  ///         the estimate exceeds the device's memory budget
+  ///         (`DeviceResources::memory_budget()`); GpuRuntime for a
   ///         failed memory query or copy; or the error of the first module
   ///         call that failed: `active_space_hamiltonian`'s, `ci::Sigma`'s, or
   ///         `ci::solve`'s.

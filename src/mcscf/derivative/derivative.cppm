@@ -102,8 +102,8 @@ struct Derivatives {
 ///
 /// Memory: about 20 stacks of 3 n_atom nao^2 doubles, besides
 /// (3 n_atom)(nao ncas^3 + 2 naux ncas^2) and the derivative calls' own
-/// scratch; past the device's free memory it is Unsupported, before anything
-/// is allocated.
+/// scratch; past the device's memory budget (`DeviceResources::memory_budget()`)
+/// it is Unsupported, before anything is allocated.
 ///
 /// Queued on res.stream() with res.blas() (host pointer mode); it
 /// synchronizes many times. The device res.dev_idx() names is made current

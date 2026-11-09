@@ -18,7 +18,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.primitives;
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // wwrMemGetInfo, wwrMemsetAsync, gpu_status
+import free_breakfast.core.wwr; // wwrMemsetAsync, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
@@ -133,17 +133,19 @@ Result<std::vector<double>> three_center_hessian(DeviceResources &res, const Bas
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  // Past the device's memory the workspace's growth would abort
-  // (CreatePolicy), not return; three_center.cpp has the arithmetic.
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  const size_t available = std::max(res.device_workspace(0).num_elements(), free_bytes);
-  if (need > available) {
+  // The carve's size is the shape's alone: compared against the larger of the
+  // workspace and the budget, since growing the workspace past the budget
+  // aborts (CreatePolicy). #1123 drops the check: a fixed workspace refuses an
+  // oversized borrow itself.
+  const size_t workspace = res.device_workspace(0).num_elements();
+  const size_t budget = FBF_TRY(res.memory_budget());
+  if (const size_t available = std::max(workspace, budget); need > available) {
     return err_unsupported("three_center_hessian: over {} Cartesian orbital and {} Cartesian "
                            "fitting functions it needs {} bytes of device scratch (the Cartesian "
-                           "Gam alone {} bytes), and {} bytes are available",
-                           n, n_aux, need, sizeof(double) * n_cart, available);
+                           "Gam alone {} bytes), and {} bytes are available (the larger of the "
+                           "workspace's {} and device {}'s budget {})",
+                           n, n_aux, need, sizeof(double) * n_cart, available, workspace,
+                           res.dev_idx(), budget);
   }
 
   ThreeCenterBra bra = FBF_TRY(stage_three_center_bra(res, basis, classes, n_bra_rec, kWho));

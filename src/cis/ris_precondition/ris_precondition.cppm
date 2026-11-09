@@ -77,8 +77,8 @@ public:
   ///         negative ris.k_max_inner_iters, a ris.k_inner_tol that is not
   ///         positive, or naux · n_virt past an int32_t; Unsupported, naming
   ///         the bytes, before anything is allocated, when B, L's two copies
-  ///         and the exchange's blocks and GMRES scratch exceed the device's
-  ///         free memory; else the error of ris_basis, metric, three_center,
+  ///         and the exchange's blocks and GMRES scratch exceed
+  ///         res.memory_budget(); else the error of ris_basis, metric, three_center,
   ///         density_fit or b_mo.
   [[nodiscard]] static Result<RisPreconditioner>
   create(DeviceResources &res, const BasisSet &basis, std::span<const PrimitivePairClass> classes,

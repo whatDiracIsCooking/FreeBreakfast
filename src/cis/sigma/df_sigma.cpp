@@ -10,7 +10,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants;  // kOne, kZero, kTwo, kNegOne
 import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // dgmm, gemmStridedBatched, wwrMemGetInfo, gpu_status
+import free_breakfast.core.wwr; // dgmm, gemmStridedBatched, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.matrix_ao;
@@ -59,7 +59,7 @@ Result<DfSigma> DfSigma::create(DeviceResources &res, const Buffers::device<doub
   }
 
   const ScopedDeviceIndex on{res.dev_idx()};
-  // Past the device's memory an allocation aborts (CreatePolicy) rather than
+  // Past the memory budget an allocation aborts (CreatePolicy) rather than
   // returns, so the total is refused here, before any: the three MO blocks,
   // and the workspace's growth to the larger of b_mo's half transform (naux
   // n_virt nao, over the virtual rows) and apply's two regions.
@@ -75,16 +75,13 @@ Result<DfSigma> DfSigma::create(DeviceResources &res, const Buffers::device<doub
                                         aligned(aux * block) + aligned(aux * occ * virt * block));
   const size_t growth_bytes =
       scratch_bytes > res.device_workspace(0).num_elements() ? scratch_bytes : 0;
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (blocks_bytes + growth_bytes > free_bytes) {
+  if (const size_t budget = FBF_TRY(res.memory_budget()); blocks_bytes + growth_bytes > budget) {
     return err_unsupported("cis::DfSigma::create: the MO blocks of B over {} fitting functions, "
                            "{} occupied and {} virtual orbitals ({} bytes) and {} bytes of "
                            "workspace growth for a block of {} need {} bytes of device memory, "
-                           "and device {} has {} free",
+                           "and device {}'s budget is {}",
                            naux, n_occ, n_virt, blocks_bytes, growth_bytes, max_block,
-                           blocks_bytes + growth_bytes, res.dev_idx(), free_bytes);
+                           blocks_bytes + growth_bytes, res.dev_idx(), budget);
   }
 
   Buffers::device<double> b_vo(aux * occ * virt, res.device());
@@ -141,7 +138,7 @@ Result<DfSigma> DfSigma::create(DeviceResources &res, Buffers::device<double> b_
 
   const ScopedDeviceIndex on{res.dev_idx()};
   // apply's two regions, T (naux_j per column) and W (naux_k n_ov per
-  // column), refused past the device's memory before the workspace grows.
+  // column), refused past the memory budget before the workspace grows.
   const auto block = static_cast<size_t>(max_block);
   const auto aligned = [](const size_t count) {
     return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
@@ -149,13 +146,10 @@ Result<DfSigma> DfSigma::create(DeviceResources &res, Buffers::device<double> b_
   const size_t scratch_bytes = aligned(aux_j * block) + aligned(aux_k * occ * virt * block);
   const size_t growth_bytes =
       scratch_bytes > res.device_workspace(0).num_elements() ? scratch_bytes : 0;
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (growth_bytes > free_bytes) {
+  if (const size_t budget = FBF_TRY(res.memory_budget()); growth_bytes > budget) {
     return err_unsupported("cis::DfSigma::create: {} bytes of workspace growth for a block of {} "
-                           "over {} and {} fitting functions, and device {} has {} free",
-                           growth_bytes, max_block, naux_j, naux_k, res.dev_idx(), free_bytes);
+                           "over {} and {} fitting functions, and device {}'s budget is {}",
+                           growth_bytes, max_block, naux_j, naux_k, res.dev_idx(), budget);
   }
   // apply's regions, grown to here so that no apply allocates them. The
   // workspace only grows, so a later, larger user leaves it big enough.

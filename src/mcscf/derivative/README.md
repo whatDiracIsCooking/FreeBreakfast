@@ -194,8 +194,8 @@ Every coordinate at once: about 15 stacks of 3 n_atom nao² doubles at the
 peak (the AO derivative stacks, their MO blocks, the response densities' J
 and K, F̃, the outputs), beside 3 n_atom (nao ncas³ + 3 naux ncas²), one aux
 atom's derivative block (3 nao² nblk) and the derivative calls' own scratch.
-That estimate past the device's free memory is Unsupported before anything is
-allocated. Water in cc-pVDZ (24 functions, 9 coordinates) is under a
+That estimate past the device's memory budget (`DeviceResources::memory_budget()`) is
+Unsupported before anything is allocated. Water in cc-pVDZ (24 functions, 9 coordinates) is under a
 megabyte; 500 functions and 20 atoms would be about 1 GB of stacks. Nothing
 splits the coordinates into batches yet. A rotation adds six more stacks
 (the rotated J^x and K^x, their sum, F^I_L, F^A_L and `fock_rotated`), C K

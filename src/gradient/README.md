@@ -71,9 +71,9 @@ call's Cartesian copy and its transform's intermediate in
 `res.device_workspace()`. Beside it the call holds c (naux n_occ²), the
 half back-transform (naux n_occ nao), one naux² metric weight and d. At
 500 AOs and 1500 fitting functions Γ alone is 3 GB. The call refuses
-(Unsupported, naming the bytes) when its own buffers would not fit the
-device's free memory, and `three_center_gradient` refuses its scratch the
-same way; batching Γ over P is not done. naux nao² must also fit `int32_t`.
+(Unsupported, naming the bytes) when its own buffers would not fit
+the device's memory budget (`DeviceResources::memory_budget()`), and `three_center_gradient` refuses its
+scratch the same way; batching Γ over P is not done. naux nao² must also fit `int32_t`.
 
 ## Tests
 

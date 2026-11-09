@@ -167,9 +167,9 @@ cc-pVDZ-JKFIT, naux 558: 39 MB of B_vv in 49 MB in all). T and W are scratch fro
 which `create` grows for blocks of `max_block` columns, so no `apply`
 allocates or grows anything. `create` adds up the blocks and the workspace's
 growth, which is the larger of `b_mo`'s half transform and `apply`'s regions,
-and returns `Unsupported` naming the bytes when they are past the device's
-free memory. It does that before it allocates anything, since an allocation
-past the free memory aborts under `CreatePolicy`. A wider block is run in
+and returns `Unsupported` naming the bytes when they are past
+the device's memory budget (`DeviceResources::memory_budget()`). It does that before it allocates
+anything, since an allocation past the budget aborts under `CreatePolicy`. A wider block is run in
 slices of `max_block`. `CisStep` creates it at the guess's column count, the
 widest block `davidson_solve` applies. Chunking the exchange term over Q, so
 that B_vv need not be held whole, is the follow-up if a system needs it.

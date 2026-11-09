@@ -625,14 +625,11 @@ df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet
       sizeof(double) *
       (gamma_count + w_count + fit_count + (responds ? 2 : 1) * g_count + (pieces * core_count) +
        y_count + (pieces * active_count) + (extra != nullptr ? gamma_count + w_count : 0));
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (bytes > free_bytes) {
+  if (const size_t budget = FBF_TRY(res.memory_budget()); bytes > budget) {
     return err_unsupported("mcscf::df_gradient: Gam over {} orbital and {} fitting functions and "
-                           "its scratch need {} bytes of device memory, and device {} has {} "
-                           "free",
-                           nao, naux, bytes, res.dev_idx(), free_bytes);
+                           "its scratch need {} bytes of device memory, and device {}'s budget "
+                           "is {}",
+                           nao, naux, bytes, res.dev_idx(), budget);
   }
 
   // The fitted integrals and the generalized Fock at the solution's orbitals

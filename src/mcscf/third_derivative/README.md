@@ -203,8 +203,8 @@ by a trsm; M^x from `metric_derivative` through two trsms per coordinate.
 W^x is nmo² naux doubles per coordinate: about 0.15 MB for the water in
 6-31G, but 3 GB at 500 functions over 1500 fitting functions. So
 `df_integral_derivatives` holds W^x for a chunk of coordinates, as many as
-its budget takes (the device's free memory beside its own buffers, or
-`max_bytes`), hands the chunk to its consumer and moves on: I^x itself is
+its budget takes (the device's memory budget (`DeviceResources::memory_budget()`) beside
+its own buffers, or `max_bytes`), hands the chunk to its consumer and moves on: I^x itself is
 never whole. h1^x and τ^x (nmo² each) are built for every coordinate once
 and handed over beside each chunk's W^x.
 

@@ -78,8 +78,8 @@ low-stack from la + lb + lP = 5 (49 of 70 classes), gmetric from lP + lQ = 10
   `gradient_launch.cu` checks the tables against them at compile time.
 - Both bases made by `place` over one molecule; G has one row per atom.
 - The Cartesian Γ, n_cart² naux_cart doubles, held in full, and within the
-  kernels' 32-bit index; past the device's free memory the call is
-  Unsupported before anything is allocated.
+  kernels' 32-bit index; past the device's memory budget (`DeviceResources::memory_budget()`)
+  the call is Unsupported before anything is allocated.
 
 ## The derivative integrals
 
@@ -141,8 +141,8 @@ The scratch is one request: the staging, the fitted half-transformed pairs c
 (naux nocc nao), M1 and its Cartesian copy (3 naux² and 3 naux_cart²), g, and
 one aux atom's blocks (the Cartesian 3 nao_cart² nblk_cart, X and its swap
 3 nao² nblk each, Z nao² nblk, c's rows and F nocc nao nblk each), sized by the
-largest atom. Past the device's free memory the call is Unsupported, naming
-the bytes, before anything is staged; the 32-bit indices of the kernels (3
+largest atom. Past the device's memory budget (`DeviceResources::memory_budget()`) the call
+is Unsupported, naming the bytes, before anything is staged; the 32-bit indices of the kernels (3
 naux_cart², 3 nao_cart² nblk_cart) and of the BLAS calls (naux nao², 3 n_atom
 nao²) likewise.
 

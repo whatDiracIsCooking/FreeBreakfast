@@ -8,7 +8,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm(StridedBatched), wwrMemGetInfo, wwrMemsetAsync, gpu_status
+import free_breakfast.core.wwr; // gemm(StridedBatched), wwrMemsetAsync, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.core.primitives;
 import free_breakfast.core.footprint;
@@ -76,7 +76,7 @@ Status b_mo(DeviceResources &res, const int32_t naux, const int32_t nao, const i
     return gpu_status(wwr::wwrMemsetAsync(out, 0, sizeof(double) * count, res.stream()));
   }
 
-  // X past the device's memory would abort in device_workspace (CreatePolicy),
+  // X past the memory budget would abort in device_workspace (CreatePolicy),
   // not return. A workspace already that large is not grown, so is not
   // checked. X's doubles are below 2^62, but its bytes need not fit size_t.
   const size_t x_count = static_cast<size_t>(x_rows) * static_cast<size_t>(nao);
@@ -85,14 +85,11 @@ Status b_mo(DeviceResources &res, const int32_t naux, const int32_t nao, const i
   }
   const size_t x_bytes = sizeof(double) * x_count;
   if (x_bytes > res.device_workspace(0).num_elements()) {
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    if (x_bytes > free_bytes) {
+    if (const size_t budget = FBF_TRY(res.memory_budget()); x_bytes > budget) {
       return err_unsupported("b_mo: the half transform over {} fitting functions, {} orbital "
                              "functions and {} rows needs {} bytes of device memory, and device "
-                             "{} has {} free",
-                             naux, nao, rows.count, x_bytes, res.dev_idx(), free_bytes);
+                             "{}'s budget is {}",
+                             naux, nao, rows.count, x_bytes, res.dev_idx(), budget);
     }
   }
   const auto [x] = res.device_regions<double>(x_count);

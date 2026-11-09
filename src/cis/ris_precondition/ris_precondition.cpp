@@ -16,7 +16,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants;  // kOne, kZero, kTwo, kNegOne, kHalf
 import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // dgmm, gemmStridedBatched, nrm2, scal, axpy, wwrMemGetInfo
+import free_breakfast.core.wwr; // dgmm, gemmStridedBatched, nrm2, scal, axpy
 import free_breakfast.core.resources;
 import free_breakfast.atom;
 import free_breakfast.basis;
@@ -116,16 +116,13 @@ Result<RisPreconditioner> RisPreconditioner::create(
     }
   }
   const size_t need_bytes = b_bytes + factor_bytes + exchange_bytes;
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (need_bytes > free_bytes) {
+  if (const size_t budget = FBF_TRY(res.memory_budget()); need_bytes > budget) {
     return err_unsupported("cis::RisPreconditioner::create: B over {} RIS and {} orbital "
                            "functions ({} bytes), L twice over {} excitations ({} bytes) and the "
                            "exchange's blocks and scratch ({} bytes) need {} bytes of device "
-                           "memory, and device {} has {} free",
+                           "memory, and device {}'s budget is {}",
                            naux, nao, b_bytes, n_ov, factor_bytes, exchange_bytes, need_bytes,
-                           res.dev_idx(), free_bytes);
+                           res.dev_idx(), budget);
   }
 
   RisPreconditioner p{res, n_occ, static_cast<int32_t>(n_virt), naux, delta, max_columns, ris};
