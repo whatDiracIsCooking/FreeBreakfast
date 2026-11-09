@@ -143,19 +143,25 @@ TEST(DevicePool, PeakOfOneBufferAndItsFootprintBars) {
   const std::size_t exact = fb::math::align_up(kN * sizeof(double), g);
   EXPECT_EQ(peak.used, exact);
 
+  // A footprint of `bytes`, all of it scratch: the buffer lives only inside
+  // the measured call.
+  const auto fp = [](std::size_t bytes) {
+    return fb::Footprint<wwr::extension::MemoryKind::Device>{.scratch = bytes};
+  };
   const fbt::FootprintSlack granule{.bytes = g, .reason = "one granule, to test the widening"};
 
-  fbt::expect_footprint(peak, exact, 1);
-  EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, exact - g, 1), "unsound footprint");
+  fbt::expect_footprint(peak, fp(exact), 1);
+  EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, fp(exact - g), 1), "unsound footprint");
   // A slack widens the tight bar only: one granule under is still unsound.
-  EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, exact - g, 1, granule), "unsound footprint");
-  fbt::expect_footprint(peak, exact + g, 1, granule);
+  EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, fp(exact - g), 1, granule),
+                          "unsound footprint");
+  fbt::expect_footprint(peak, fp(exact + g), 1, granule);
   // Past G x A, the tight bar fails without the slack and passes with it.
-  EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, exact + 2 * g, 1), "loose footprint");
-  fbt::expect_footprint(peak, exact + 2 * g, 1, granule);
+  EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, fp(exact + 2 * g), 1), "loose footprint");
+  fbt::expect_footprint(peak, fp(exact + 2 * g), 1, granule);
   // A slack without a reason is refused.
-  EXPECT_NONFATAL_FAILURE(fbt::expect_footprint(peak, exact, 1, fbt::FootprintSlack{.bytes = g}),
-                          "needs a reason");
+  EXPECT_NONFATAL_FAILURE(
+      fbt::expect_footprint(peak, fp(exact), 1, fbt::FootprintSlack{.bytes = g}), "needs a reason");
 }
 
 } // namespace

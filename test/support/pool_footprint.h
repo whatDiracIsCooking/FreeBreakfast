@@ -11,9 +11,9 @@
 /// through the including TU's imports, so the header build and the module
 /// build never overlap.
 ///
-/// The footprint is taken as plain bytes -- its peak, and the allocations live
-/// at that peak -- rather than as a `Footprint<K>`: written before that
-/// vocabulary (#1044) landed, and a caller passes its peak and live count.
+/// The footprint held to a measurement is a device `Footprint<K>`
+/// (free_breakfast.core.footprint, re-exported by free_breakfast.core): the
+/// pool measured is a device pool.
 
 #pragma once
 
@@ -72,17 +72,19 @@ struct FootprintSlack {
   std::string_view reason;
 };
 
-/// @brief Hold a measured peak to a footprint of `footprint_peak` bytes with
-/// `live_allocs` allocations live at its peak. Two bars, each a non-fatal
+/// @brief Hold a measured peak to `footprint`, a step's or a library
+/// routine's, with `live_allocs` allocations live at its peak. Two bars, each a non-fatal
 /// failure at the caller's line:
 ///
-/// - sound: measured.used <= footprint_peak. Never widened.
-/// - tight: footprint_peak - measured.used <= G * live_allocs (+ slack.bytes),
+/// - sound: measured.used <= footprint.peak(). Never widened.
+/// - tight: footprint.peak() - measured.used <= G * live_allocs (+ slack.bytes),
 ///   G the pool's granularity: each live allocation may round up by under one
 ///   granule, so a footprint that counts bytes exactly is over by at most that.
-inline void expect_footprint(const PoolPeak &measured, std::size_t footprint_peak,
+inline void expect_footprint(const PoolPeak &measured,
+                             const Footprint<wwr::extension::MemoryKind::Device> &footprint,
                              std::size_t live_allocs, std::optional<FootprintSlack> slack = {},
                              std::source_location location = std::source_location::current()) {
+  const std::size_t footprint_peak = footprint.peak();
   const std::size_t rounding = measured.granularity * live_allocs;
   std::size_t allowance = rounding;
   if (slack) {
