@@ -1,0 +1,53 @@
+# wwrMemGetInfo outside src/core/wwr/: the sites the "Pipeline memory caps"
+# milestone migrates to DeviceResources::memory_budget() (#1047), which counts
+# what the pool holds reserved but unused as available.
+#
+# `devtools/alloc-sites.py check` reads this file: one entry per file, its
+# number of calls (comments and string literals not counted) and the issue that
+# migrates them. A file with more calls than its entry allows is flagged; one
+# with fewer, or one that is gone, is a stale entry and flagged too. So the
+# issue that migrates a file deletes its line here. The milestone closes with
+# this file holding comments only. A new call does not get an entry: it uses
+# memory_budget(), or says why not with `pool-bypass-ok: <reason>`.
+#
+# <path>                                                     <calls> <owner>
+
+# #1047: the step-level refusal checks.
+src/pipeline/eri/eri.cpp                                           1 #1047
+src/pipeline/casscf/casscf.cpp                                     1 #1047
+src/pipeline/fci/fci.cpp                                           1 #1047
+src/pipeline/cis/cis.cpp                                           1 #1047
+src/gradient/df_rhf.cpp                                            1 #1047
+src/mcscf/derivative/derivative.cpp                                1 #1047
+src/mcscf/third_derivative/integral_derivative.cpp                 1 #1047
+
+# #1129: the library refusal checks under those steps. gradient.cpp's four are
+# metric_derivative, three_center_gradient, three_center_derivative and
+# df_jk_derivative.
+src/integrals/eri/density_fitting/three_center/three_center.cpp    1 #1129
+src/integrals/eri/density_fitting/mo/mo.cpp                        1 #1129
+src/integrals/eri/density_fitting/gradient/gradient.cpp            4 #1129
+src/integrals/eri/density_fitting/hessian/hessian.cpp              1 #1129
+src/cis/ris_precondition/ris_precondition.cpp                      1 #1129
+src/cis/sigma/df_sigma.cpp                                         2 #1129
+src/mcscf/gradient/gradient.cpp                                    1 #1129
+
+# #1052: NEVPT2's adaptive RDM and slab budgets.
+src/nevpt2/rdm/rdm.cpp                                             1 #1052
+src/pipeline/nevpt2/nevpt2.cpp                                     3 #1052
+src/nevpt2/gradient/gradient.cpp                                   1 #1052
+
+# #1053: the analytic Hessians' column widths and batches.
+src/response/hessian/hessian.cpp                                   1 #1053
+src/response/cphf/cphf.cpp                                         1 #1053
+src/hessian/df_rhf_two_electron.cpp                                2 #1053
+src/hessian/df_rhf_response.cpp                                    1 #1053
+src/hessian/infrared.cpp                                           1 #1053
+src/hessian/df_adjoint_xy.cpp                                      1 #1053
+src/hessian/df_casscf_exy.cpp                                      1 #1053
+src/hessian/df_casscf_two_electron.cpp                             1 #1053
+src/hessian/df_sc_nevpt2.cpp                                       1 #1053
+src/hessian/df_pc_nevpt2.cpp                                       1 #1053
+src/hessian/df_nevpt2_tangents.cpp                                 1 #1053
+src/hessian/df_qd_nevpt2.cpp                                       1 #1053
+src/hessian/df_qd_nevpt2_tangents.cpp                              1 #1053

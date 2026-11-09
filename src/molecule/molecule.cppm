@@ -141,7 +141,9 @@ private:
     const ScopedDeviceIndex on{res.dev_idx()};
     const auto ds = std::make_shared<DeviceStream>(res.device());
     Nuclei out{
+        // pool-bypass-ok: until #1130, which stages Z from a pinned_regions carve.
         .z = MirroredBuffer<double>(atoms.size(), ds),
+        // pool-bypass-ok: until #1130, as z.
         .c = MirroredBuffer<double>(3 * atoms.size(), ds),
     };
     double *z = out.z.pinned().data();

@@ -16,6 +16,7 @@ disagree, the config is what gets enforced.
 | Statically sized shared memory (see [Shared memory](#shared-memory)) | `devtools/check-shared-mem.py` | the `dynamic-smem-ok:` marker | commit hook, CI `lint` |
 | No hand-written ceiling division (see [Launch shape and integer rounding](#launch-shape-and-integer-rounding)) | `devtools/check-ceil-div.py` | the script's `EXEMPT_FILES` | commit hook, CI `lint` |
 | No blocking `wwrMemcpy` (see [Host-device copies](#host-device-copies)) | `devtools/check-blocking-memcpy.py` | none | commit hook, CI `lint` |
+| Allocations go through the pool (see [Allocations go through the pool](#allocations-go-through-the-pool)) | `devtools/alloc-sites.py check` | the `pool-bypass-ok:` marker, `devtools/alloc-sites-memgetinfo.txt` | commit hook |
 | C++ naming, bug-prone patterns | clang-tidy | [`.clang-tidy`](../.clang-tidy) | **advisory** — `devtools/test.py pr --tidy` |
 | Whitespace, line endings, final newline | editor + pre-commit | [`.editorconfig`](../.editorconfig) | commit hook |
 
@@ -509,6 +510,29 @@ exceptions, which get their own buffers:
   `orthogonalize` holds U and the eigenvalues across `diagonalize` this way,
   and takes M from the workspace once `diagonalize` has returned
   (`src/recipes/orthogonalize/orthogonalize.cpp`).
+
+## Allocations go through the pool
+
+**Device memory comes from a `Device`'s pool**: a `Buffers::device` or
+`StreamBuffers::device`, or the workspace above. A pipeline's memory cap is
+the pool's, so it sees only what the pool hands out. A raw `wwrMalloc*`,
+`wwrHostAlloc`, `cudaMalloc*` or `hipMalloc*` is invisible to it. So is free
+memory read with `wwrMemGetInfo`, which counts neither what the pool holds
+reserved but unused nor the cap. Only `src/core/wwr/` calls the runtime
+directly.
+
+**Pinned memory belongs to `src/core/`.** A `Buffers::pinned`,
+`StreamBuffers::pinned` or `MirroredBuffer` anywhere else is outside the pinned
+cap that #1130 adds. The few there are today carry
+`pool-bypass-ok: until #1130`.
+
+`devtools/alloc-sites.py check` flags each of these at commit. A line that must
+bypass the pool says why, as `// pool-bypass-ok: <reason>` on the line itself
+or on a comment-only line above it. Today's `wwrMemGetInfo` calls are counted
+per file in `devtools/alloc-sites-memgetinfo.txt`, each with the issue that
+migrates it, and a new call gets no entry. `devtools/alloc-sites.py inventory
+<dirs>` lists every allocation site with its kind, type, size and function, and
+`changed <base>` lists the sites a branch adds or resizes.
 
 ## Host-device copies
 

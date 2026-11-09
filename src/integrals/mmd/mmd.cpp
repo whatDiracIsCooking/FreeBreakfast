@@ -70,6 +70,7 @@ struct PairTable {
 // values in a new MirroredBuffer on ds, on its pinned side only.
 template <typename T>
 MirroredBuffer<T> staged(const std::vector<T> &values, const std::shared_ptr<DeviceStream> &ds) {
+  // pool-bypass-ok: until #1130, which stages the tables from a pinned_regions carve.
   MirroredBuffer<T> out(values.size(), ds);
   std::ranges::copy(values, out.pinned().data());
   return out;
