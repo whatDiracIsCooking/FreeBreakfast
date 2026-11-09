@@ -1673,4 +1673,94 @@ TEST(PipelineConfig, AnOutputDirectoryThatCannotBeMadeIsIoError) {
       << calc.error().message;
 }
 
+// [memory] names no step: it sets the Calculation's caps, and without it
+// both are off (0), today's uncapped run.
+TEST(PipelineConfig, WithoutAMemoryTableNothingIsCapped) {
+  auto calc = fb::parse_config(with_inputs("[scf]\n"), "", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_EQ(calc->max_device_mem_per_gpu, 0U);
+  EXPECT_EQ(calc->max_pinned_mem_per_gpu, 0U);
+  EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
+}
+
+// Each key in both forms, an integer of bytes or a string with a unit, and
+// each alone: the other stays off.
+TEST(PipelineConfig, EachMemoryCapIsReadAloneInEitherForm) {
+  const auto expect_caps = [](std::string_view memory, std::size_t device, std::size_t pinned) {
+    auto calc = fb::parse_config(with_inputs(std::format("[scf]\n[memory]\n{}", memory)), "", kOut);
+    ASSERT_TRUE(calc.has_value()) << memory << ": " << calc.error().message;
+    EXPECT_EQ(calc->max_device_mem_per_gpu, device) << memory;
+    EXPECT_EQ(calc->max_pinned_mem_per_gpu, pinned) << memory;
+  };
+  expect_caps("max_device_mem_per_gpu = 8000000000\n", 8'000'000'000, 0);
+  expect_caps("max_device_mem_per_gpu = \"10GiB\"\n", std::size_t{10} << 30U, 0);
+  expect_caps("max_pinned_mem_per_gpu = 4096\n", 0, 4096);
+  expect_caps("max_pinned_mem_per_gpu = \"512MiB\"\n", 0, std::size_t{512} << 20U);
+  expect_caps("max_device_mem_per_gpu = \"1.5GB\"\nmax_pinned_mem_per_gpu = \"2KiB\"\n",
+              1'500'000'000, 2048);
+}
+
+// Binary units are powers of 1024, decimal ones of 1000; a fraction is
+// rounded down to a whole byte, and a space before the unit is allowed.
+TEST(PipelineConfig, MemoryUnitsAreBinaryOrDecimal) {
+  const auto device = [](std::string_view size) -> std::size_t {
+    auto calc = fb::parse_config(
+        with_inputs(std::format("[scf]\n[memory]\nmax_device_mem_per_gpu = \"{}\"\n", size)), "",
+        kOut);
+    EXPECT_TRUE(calc.has_value()) << size << ": " << calc.error().message;
+    return calc ? calc->max_device_mem_per_gpu : 0;
+  };
+  EXPECT_EQ(device("100B"), 100U);
+  EXPECT_EQ(device("3kB"), 3'000U);
+  EXPECT_EQ(device("3KiB"), 3'072U);
+  EXPECT_EQ(device("2MB"), 2'000'000U);
+  EXPECT_EQ(device("2MiB"), 2'097'152U);
+  EXPECT_EQ(device("1.5GB"), 1'500'000'000U);
+  EXPECT_EQ(device("1.5GiB"), 1'610'612'736U);
+  EXPECT_EQ(device("1TB"), 1'000'000'000'000U);
+  EXPECT_EQ(device("1TiB"), std::size_t{1} << 40U);
+  EXPECT_EQ(device("1.5 GiB"), 1'610'612'736U);
+  EXPECT_EQ(device("1.0005KiB"), 1'024U); // 1024.512 bytes, rounded down
+}
+
+TEST(PipelineConfig, AMalformedMemoryTableIsInvalidConfig) {
+  const auto refused = [](std::string_view memory, std::string_view needle) {
+    expect_config_error(with_inputs(std::format("[scf]\n[memory]\n{}", memory)), needle);
+  };
+  // A host-RAM cap was considered and dropped: pinned memory is the host
+  // memory a run holds that matters, and it is capped per GPU.
+  refused("max_mem_per_node = \"64GiB\"\n", "[memory] has no option 'max_mem_per_node'");
+  refused("max_device_mem = \"8GiB\"\n", "[memory] has no option 'max_device_mem'");
+  for (const std::string_view key : {"max_device_mem_per_gpu", "max_pinned_mem_per_gpu"}) {
+    refused(std::format("{} = -1\n", key), std::format("[memory] {} is -1, below 1 byte", key));
+    refused(std::format("{} = 0\n", key), std::format("[memory] {} is 0, below 1 byte", key));
+    refused(std::format("{} = \"-2GiB\"\n", key),
+            std::format("[memory] {} is \"-2GiB\", below 1 byte", key));
+    refused(std::format("{} = \"0GiB\"\n", key),
+            std::format("[memory] {} is \"0GiB\", below 1 byte", key));
+    refused(std::format("{} = \"0.5B\"\n", key),
+            std::format("[memory] {} is \"0.5B\", below 1 byte", key));
+    refused(std::format("{} = \"1024\"\n", key),
+            std::format("[memory] {} is \"1024\", with no unit", key));
+    refused(std::format("{} = \"10GiG\"\n", key),
+            std::format("[memory] {} has no unit 'GiG'", key));
+    // Units are case-sensitive: "gib" and "Gb" are not GiB and GB.
+    refused(std::format("{} = \"10gib\"\n", key),
+            std::format("[memory] {} has no unit 'gib'", key));
+    refused(std::format("{} = \"10Gb\"\n", key), std::format("[memory] {} has no unit 'Gb'", key));
+    refused(std::format("{} = \"1e9B\"\n", key), std::format("[memory] {} has no unit 'e9B'", key));
+    refused(std::format("{} = \"GiB\"\n", key),
+            std::format("[memory] {} is \"GiB\", not a number and a unit", key));
+    refused(std::format("{} = \"9000000TiB\"\n", key),
+            std::format("[memory] {} is \"9000000TiB\", past 2^63 bytes", key));
+    refused(std::format("{} = 1.5e9\n", key), std::format("[memory] {} is not a byte size", key));
+    refused(std::format("{} = true\n", key), std::format("[memory] {} is not a byte size", key));
+  }
+  expect_config_error(with_inputs("[scf]\nmemory = 5\n"), "[scf] has no option 'memory'");
+  expect_config_error(std::string("memory = 5\n").append(kInputs).append("[scf]\n"),
+                      "memory is not a table: write it as [memory]");
+  // Caps bound a run, so a config of caps alone still names no step.
+  expect_config_error("[memory]\nmax_device_mem_per_gpu = \"8GiB\"\n", "the config names no step");
+}
+
 } // namespace

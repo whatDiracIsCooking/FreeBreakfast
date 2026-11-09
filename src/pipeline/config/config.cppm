@@ -12,6 +12,7 @@
 export module free_breakfast.pipeline.config;
 
 import std;
+import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 export import free_breakfast.pipeline.pipeline;
 export import free_breakfast.pipeline.molecule;
@@ -40,13 +41,28 @@ export import free_breakfast.pipeline.hessian;
 
 export namespace free_breakfast {
 
-/// @brief The pipeline over every step a config file may name.
-using Calculation =
-    Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep, EriStep,
-             OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
-             LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step, CisStep, GradientStep,
-             CasscfGradientStep, Nevpt2GradientStep, NacStep, Nevpt2NacStep, OptimizeStep,
-             HessianStep>;
+/// @brief The pipeline over every step a config file may name, and the
+/// `[memory]` table's caps on what a run of it may hold.
+///
+/// A struct over the pipeline rather than an alias of it, so the caps travel
+/// with the plan they bound; it is still that pipeline, and its inherited
+/// `create` returns the bare one, with no caps. The caps are only read and
+/// stored here: nothing yet enforces them.
+struct Calculation
+    : Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep,
+               EriStep, OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
+               LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step, CisStep, GradientStep,
+               CasscfGradientStep, Nevpt2GradientStep, NacStep, Nevpt2NacStep, OptimizeStep,
+               HessianStep> {
+  /// @brief `[memory] max_device_mem_per_gpu`: one device's share of its
+  /// memory, in bytes, the context and the libraries' reserve included; 0
+  /// for no cap.
+  size_t max_device_mem_per_gpu = 0;
+  /// @brief `[memory] max_pinned_mem_per_gpu`: one device's pinned host
+  /// memory, in bytes, as its DeviceResources counts it (the pinned
+  /// workspace and the counted persistent pinned allocations); 0 for no cap.
+  size_t max_pinned_mem_per_gpu = 0;
+};
 
 /// @brief Parse a config from an in-memory TOML document and plan the
 /// pipeline it asks for.
@@ -75,7 +91,9 @@ using Calculation =
 /// past its roots, and one over a molecule of multiplicity other than 1 is
 /// ErrorKind::Unsupported. An `[optimize]` `meci` is refused as
 /// OptimizeStep::check_meci refuses it, and beside a `[nevpt2_gradient]`
-/// is ErrorKind::InvalidConfig.
+/// is ErrorKind::InvalidConfig. A `[memory]` table names no step: it sets
+/// the Calculation's caps, and a key it does not have, or a value that is not
+/// a byte size of at least 1, is ErrorKind::InvalidConfig.
 [[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,
                                                const std::filesystem::path &input_dir,
                                                const std::filesystem::path &output_dir);

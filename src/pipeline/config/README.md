@@ -11,12 +11,10 @@ names them all. It is the one library that imports every step, so only it and
 `main` pay that build fan-in.
 
 ```cpp
-using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
-                             PrimitivePairClassesStep, EriStep, OverlapStep,
-                             OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
-                             LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step,
-                             CisStep, GradientStep, CasscfGradientStep, Nevpt2GradientStep,
-                             OptimizeStep>;
+struct Calculation : Pipeline<MoleculeStep, BasisSetStep, /* ... every step ... */ HessianStep> {
+  size_t max_device_mem_per_gpu = 0;   // [memory]; 0: no cap
+  size_t max_pinned_mem_per_gpu = 0;   // [memory]; 0: no cap
+};
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &input_dir,
                                  const std::filesystem::path &output_dir);
@@ -24,6 +22,12 @@ Result<Calculation> read_config(const std::filesystem::path &path,
                                 const std::filesystem::path &input_dir,
                                 const std::filesystem::path &output_dir);
 ```
+
+`Calculation` is a struct over the registry's pipeline rather than an alias
+of it, so the `[memory]` caps travel with the plan they bound. It is that
+pipeline, so everything taking one takes it; the inherited
+`Calculation::create` returns the bare pipeline, with no caps, for a plan
+built by hand.
 
 A new step joins the registry here: its type in `Calculation`, and, if it has
 options, a branch in `read_step` reading them. A step with options and no
@@ -590,6 +594,9 @@ than after the SCF has converged. `parse_config` touches no disk.
 - an option of the other ERI mode (above): `[eri] aux_basis` under
   `"integral_direct"`, or `[scf] fock_rebuild_interval` under
   `"density_fitting"`; or an empty `aux_basis`;
+- a `[memory]` key other than its two (`max_mem_per_node` included), a
+  `memory` that is not a table, or a cap that is not a byte size of at least
+  1 (below, "The `[memory]` table");
 - a value of the wrong type. A boolean (`[localization] livvo`) is `true` or
   `false`, not `1` or `"true"`. Integers are read exactly, so `charge = 1.5` is
   refused, not truncated, and so is a value outside `int32_t`. A `double`
@@ -628,12 +635,60 @@ toml++ keeps a table's keys in a sorted `std::map`, so this module never sees
 the order the tables were written in. Pipeline order comes from each step's
 `View`, not the file.
 
+## The `[memory]` table
+
+The one table that names no step: it caps what a run may hold, per GPU, and
+sets `Calculation`'s two fields. Both keys are optional and independent; a
+missing key, or a missing table, leaves that cap off (0), which is the
+uncapped run every config had before the table.
+
+```toml
+[memory]
+max_device_mem_per_gpu = "10GiB"   # one device's share, its context and the
+                                   # libraries' reserve included
+max_pinned_mem_per_gpu = "16GiB"   # one device's pinned host memory, as its
+                                   # DeviceResources counts it
+```
+
+`max_device_mem_per_gpu` is one device's memory, everything on it counted:
+the CUDA or HIP context and the libraries' reserve as well as the pool.
+`max_pinned_mem_per_gpu` is the pinned host memory one device's
+`DeviceResources` owns: its pinned workspace and the counted persistent
+pinned allocations (offloaded products), the total its `pinned_cap` bounds.
+It has no default: unset, pinned memory is uncapped.
+
+**There is no host-RAM key.** Memory is capped as device and pinned memory:
+the pageable host allocations in the tree are O(nao²) or smaller (the
+largest active-space one O(ncas⁴)), and the large host-side data, staging
+and offloaded products, is pinned and capped above. `max_mem_per_node` was
+considered and dropped, and is refused as an unknown key. A pageable host
+allocation that grows to matter moves to pinned memory, or gets a key of its
+own then.
+
+A value is a byte size, in one of two forms:
+
+- an integer, of bytes: `max_device_mem_per_gpu = 8000000000`;
+- a string of a number and a unit, a space between them allowed: `"512MiB"`,
+  `"10GiB"`, `"1.5GB"`, `"1.5 GB"`. The units are `B`; `kB`, `MB`, `GB` and
+  `TB`, powers of 1000; and `KiB`, `MiB`, `GiB` and `TiB`, powers of 1024,
+  each spelt exactly (`"10gib"` and `"10Gb"` are refused). A fraction is
+  rounded down to a whole byte.
+
+Anything else is `InvalidConfig` naming the key: a size below 1 byte
+(`0`, `-1`, `"0GiB"`, `"0.5B"`), a string with no unit (`"1024"`), a unit not
+in that list, an exponent (`"1e9B"` reads as the unit `e9B`), a size past
+2⁶³ bytes, and a float or a boolean. A cap is never guessed.
+
+The table is only read and stored here. Nothing in this module checks a plan
+against it, and `Pipeline::run` does not read it.
+
 ## Tests
 
 `test/pipeline/config_host.cpp`, host-only: every option read, the step
 defaults kept, path resolution against the input directory, the output
 names, the inputs kept apart from the outputs, which steps are filled in and
-which are not, `from`, and each refusal above. Nothing is run.
+which are not, `from`, the `[memory]` caps in both forms and every unit, and
+each refusal above. Nothing is run.
 `test/gtest/pipeline_calculation_gpu.cpp` runs a config end to end, through
 the API. `test/examples/` runs `examples/rhf.toml` and `examples/hessian.toml`
 through the `free-breakfast` binary (`examples/README.md`): exit status,
@@ -643,6 +698,6 @@ the files written, and `hessian.json`'s keys.
 
 | File | Role |
 |------|------|
-| `config.cppm` | Module interface: `Calculation`, `parse_config`, `read_config` |
-| `config.cpp` | The document walk, each step's `read_step`, and `read_active_space` |
+| `config.cppm` | Module interface: `Calculation` and its caps, `parse_config`, `read_config` |
+| `config.cpp` | The document walk, each step's `read_step`, `read_active_space`, and the `[memory]` table's `read_memory` |
 | `CMakeLists.txt` | The module library |

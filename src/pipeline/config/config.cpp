@@ -1225,7 +1225,7 @@ template <class S>
       inputs.emplace_back(optimize->eri.aux_basis);
     }
   }
-  [&]<class... Ss>(std::type_identity<Pipeline<Ss...>>) {
+  [&]<class... Ss>(const Pipeline<Ss...> &) {
     const auto add_from = [&]<class S>() {
       if constexpr (LoadableStep<S> && !std::same_as<S, MoleculeStep>) {
         if (const auto &from = calc.from<S>()) {
@@ -1234,7 +1234,7 @@ template <class S>
       }
     };
     (add_from.template operator()<Ss>(), ...);
-  }(std::type_identity<Calculation>{});
+  }(calc);
   const std::filesystem::path out = resolved_dir(output_dir);
   for (const std::filesystem::path &input : inputs) {
     if (resolved_dir(input.parent_path()) == out) {
@@ -1243,6 +1243,86 @@ template <class S>
                         input.string(), out.string());
     }
   }
+  return {};
+}
+
+/// @brief `[memory] key` into @p out as bytes, if present: an integer of
+/// bytes, or a string of a number and a unit -- B; kB, MB, GB, TB, powers of
+/// 1000; KiB, MiB, GiB, TiB, powers of 1024 -- rounded down to a whole byte.
+/// Below 1 byte, a string with no unit or one of none of these, and anything
+/// else is refused: a cap is never guessed.
+[[nodiscard]] Status read_byte_size(const toml::table &table, std::string_view key, size_t &out) {
+  const auto node = table[key];
+  if (!node) {
+    return {};
+  }
+  if (const auto count = node.value_exact<int64_t>()) {
+    if (*count < 1) {
+      return err_config("[memory] {} is {}, below 1 byte", key, *count);
+    }
+    out = static_cast<size_t>(*count);
+    return {};
+  }
+  const auto text = node.value_exact<std::string>();
+  if (!text) {
+    return err_config("[memory] {} is not a byte size: an integer of bytes, or a string with a "
+                      "unit, such as \"10GiB\"",
+                      key);
+  }
+  double value = 0.0;
+  const char *const last = text->data() + text->size();
+  // fixed: an exponent is not a byte size's spelling, so "1e9B" stops at 'e'
+  // and reads as an unknown unit.
+  const auto [unit_first, ec] =
+      std::from_chars(text->data(), last, value, std::chars_format::fixed);
+  if (ec != std::errc{} || !std::isfinite(value)) {
+    return err_config("[memory] {} is \"{}\", not a number and a unit", key, *text);
+  }
+  std::string_view unit(unit_first, last);
+  unit.remove_prefix(std::min(unit.find_first_not_of(' '), unit.size()));
+  if (unit.empty()) {
+    return err_config("[memory] {} is \"{}\", with no unit: bytes are an integer, and a string "
+                      "needs a unit, such as \"10GiB\"",
+                      key, *text);
+  }
+  constexpr std::array<std::pair<std::string_view, double>, 9> kUnits{{{"B", 1.0},
+                                                                       {"kB", 1e3},
+                                                                       {"MB", 1e6},
+                                                                       {"GB", 1e9},
+                                                                       {"TB", 1e12},
+                                                                       {"KiB", 0x1p10},
+                                                                       {"MiB", 0x1p20},
+                                                                       {"GiB", 0x1p30},
+                                                                       {"TiB", 0x1p40}}};
+  const auto *const scale =
+      std::ranges::find(kUnits, unit, &std::pair<std::string_view, double>::first);
+  if (scale == kUnits.end()) {
+    return err_config("[memory] {} has no unit '{}' (B, kB, MB, GB, TB, KiB, MiB, GiB or TiB)", key,
+                      unit);
+  }
+  const double bytes = value * scale->second;
+  if (bytes < 1.0) {
+    return err_config("[memory] {} is \"{}\", below 1 byte", key, *text);
+  }
+  // 2^63: past every machine's memory, and still exact in a double.
+  if (bytes >= 0x1p63) {
+    return err_config("[memory] {} is \"{}\", past 2^63 bytes", key, *text);
+  }
+  out = static_cast<size_t>(bytes);
+  return {};
+}
+
+/// @brief The `[memory]` table, @p node, into @p calc's caps; a key it does not
+/// have is refused, as a step's is. No key is required, and an absent one
+/// leaves its cap off.
+[[nodiscard]] Status read_memory(const toml::node &node, Calculation &calc) {
+  const toml::table *table = node.as_table();
+  if (table == nullptr) {
+    return err_config("memory is not a table: write it as [memory]");
+  }
+  FBF_TRY(check_keys(*table, "memory", {"max_device_mem_per_gpu", "max_pinned_mem_per_gpu"}));
+  FBF_TRY(read_byte_size(*table, "max_device_mem_per_gpu", calc.max_device_mem_per_gpu));
+  FBF_TRY(read_byte_size(*table, "max_pinned_mem_per_gpu", calc.max_pinned_mem_per_gpu));
   return {};
 }
 
@@ -1257,7 +1337,10 @@ template <class S>
   const toml::table doc = FBF_TRY(parse_toml(toml_text));
   std::vector<Calculation::Step> steps;
   for (const auto &[key, value] : doc) {
-    steps.push_back(FBF_TRY(read_named_step(key.str(), value, input_dir, output_dir)));
+    // [memory] bounds the run rather than naming a step of it.
+    if (key.str() != "memory") {
+      steps.push_back(FBF_TRY(read_named_step(key.str(), value, input_dir, output_dir)));
+    }
   }
   if (steps.empty()) {
     return err_config("the config names no step");
@@ -1265,8 +1348,11 @@ template <class S>
   FBF_TRY(plan_optimize(steps, doc, input_dir, output_dir));
   FBF_TRY(plan_hessian(steps, doc, input_dir, output_dir));
   const toml::table empty;
-  Calculation calc = FBF_TRY(Calculation::create(
-      std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }));
+  Calculation calc{FBF_TRY(Calculation::create(
+      std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }))};
+  if (const toml::node *memory = doc.get("memory")) {
+    FBF_TRY(read_memory(*memory, calc));
+  }
   FBF_TRY(check_scf_against_eri(calc, doc));
   FBF_TRY(check_density_fitted_only(calc));
   FBF_TRY(check_nevpt2(calc));
