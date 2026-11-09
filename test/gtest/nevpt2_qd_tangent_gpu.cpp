@@ -2,8 +2,8 @@
 // effective Hamiltonian's forward tangent, against qd_sc_adjoint's bars by
 // duality: along a block of random tangents of (h, B, every root's c), each
 // column's Σ_MN W_MN Ċ_MN must be <h̄, ḣ> + <Λ, Ḃ> + Σ_r <y_r, ċ_r> to 1e-10
-// of the largest of those summands (on h2co_skew_ccpvdz_sa3, to the column's
-// conditioning floor where that is larger, below), at a general
+// of the largest of those summands, or to the column's conditioning floor
+// where that is larger (duality_bar, below), at a general
 // symmetric W (off-diagonal, trace != 1, a negative entry). qd_sc_adjoint is ladder-validated
 // (nevpt2_gradient_gpu.cpp's Nevpt2QdAdjoint), so duality proves the
 // tangent; no ladder of qd_sc_energy is run here.
@@ -75,10 +75,10 @@ constexpr double kDuality = 1e-10;
 // in Sr, Si and Sir, whose norm and H are three einsums of mixed RDM order
 // that cancel: one unit round-off of their O(1) terms (measured: at most
 // 4e-17); and kSinglePrecision |x| in the others (measured: at most 3 ε |x|).
-// It is a worst-case sum, printed for every case, and every SC case's bar is
-// it where it passes kDuality: kDuality of the largest summand bounds the
-// round-off only while the column's summands are as large as the tables the
-// walks reassociate, and nothing holds them there. h2co_ccpvdz_sa2's orbital
+// It is a worst-case sum, printed for every case, and every case's bar is it
+// where it passes kDuality (duality_bar): kDuality of the largest summand
+// bounds the round-off only while the column's summands are as large as the
+// tables the walks reassociate, and nothing holds them there. h2co_ccpvdz_sa2's orbital
 // and root signs are the eigensolvers' and change run to run (#1153), so each
 // run draws its seeded MO-basis columns and W in another gauge; in one, h's
 // summands summed to 1.9e-4 and the miss, 7.3e-14, was 3.8e-10 of them but
@@ -94,11 +94,25 @@ constexpr double kSinglePrecision = 4.0 * std::numeric_limits<double>::epsilon()
 // σ_max), so class k's coupling Ċ^k_IJ is off by about ε |Ċ^k_IJ| / kept_{J,k}
 // in each of the tangent and the adjoint. The floor is twice that, under W:
 // 2 Σ_IJ |W_IJ| Σ_k ε |Ċ^k_IJ| / kept_{J,k}, read off the tangent's own
-// elements. h2co_skew_ccpvdz_sa3 at the default cut is held to it (never
-// under kDuality): root 1 keeps Sijr, Srs and Sir modes at 6e-8 to 2e-7 of
-// σ_max, and its in-process repeats spread its Sijr and Sir couplings by at
-// most 0.07 of this floor.
+// elements. Every PC case is held to it where it passes kDuality, as every
+// SC case is to SC's (duality_bar). h2co_skew_ccpvdz_sa3 at the default cut
+// is always: root 1 keeps Sijr, Srs and Sir modes at 6e-8 to 2e-7 of σ_max,
+// and its in-process repeats spread its Sijr and Sir couplings by at most
+// 0.07 of this floor. The others are when the gauge makes a column's
+// summands small against its elements: the floor is relative to the
+// tangent's own elements, which the walks reassociate, not to the
+// summands, and in one run h2co_ccpvdz_sa2 at kRealModesFloor drew a B
+// column whose summands summed to 7.3e-7, its miss 1.0e-15 past kDuality of
+// them (7.3e-17) but 0.23 of its floor (4.4e-15; #1162).
 constexpr double kPcConditioning = std::numeric_limits<double>::epsilon();
+// A column's duality bar, SC's or PC's alike: kDuality of its largest
+// summand, or its conditioning floor where that is larger. The orbitals' and
+// roots' signs are the eigensolvers' and change run to run (#1153), so each
+// run seeds its MO-basis columns and W in another gauge, and only the floor
+// bounds the walks' round-off whatever the summands come to.
+double duality_bar(const double largest_summand, const double floor) {
+  return std::max(kDuality * largest_summand, floor);
+}
 // The visibility rule: a part above this many bars in some column.
 constexpr double kVisible = 10.0;
 // Between the tangent's elements and qd_sc_adjoint's: the same inputs, the
@@ -364,8 +378,8 @@ constexpr std::array<std::string_view, 4> kPcParts{"whole", "ket", "bra", "own"}
 // (EnergyInputs::pc_floor) on every pair and the adjoint, which with
 // @p pc_floor > 0 cuts real modes, and the kept span's rotation must then be
 // visible too.
-void expect_duality(const std::string &name, const std::int32_t batch, const bool floored,
-                    const bool pc = false, const double pc_floor = 0.0) {
+void expect_duality(const std::string &name, const std::int32_t batch, const bool pc = false,
+                    const double pc_floor = 0.0) {
   const std::array<std::string_view, 4> &parts = pc ? kPcParts : kScParts;
   const Point p = sa_casscf(name);
   ASSERT_FALSE(p.b.empty());
@@ -700,7 +714,7 @@ void expect_duality(const std::string &name, const std::int32_t batch, const boo
       scale = std::max(scale, std::abs(x));
     }
     const double floor = floor_of(u);
-    const double bar = floored ? std::max(kDuality * scale, floor) : kDuality * scale;
+    const double bar = duality_bar(scale, floor);
     bars.push_back(bar);
     const double tangent = weighted(0, u);
     EXPECT_LE(std::abs(tangent - predicted), bar)
@@ -790,7 +804,7 @@ TEST_P(Nevpt2QdTangent, DualToQdScAdjoint) {
   if (name == "h2co_skew_ccpvdz_sa3") {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  expect_duality(name, batch, true);
+  expect_duality(name, batch);
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdTangent,
@@ -809,13 +823,13 @@ class Nevpt2QdPcTangent
     : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t, double>> {};
 
 // PC's: h2co_ccpvdz_sa2 in batches of four (its 4364 empty SC tuples), and
-// h2co_skew_ccpvdz_sa3 whole, each at the default cut and at kRealModesFloor;
-// skew at the default cut held to its conditioning floor (kPcConditioning).
+// h2co_skew_ccpvdz_sa3 whole, each at the default cut and at kRealModesFloor,
+// every one held to duality_bar.
 TEST_P(Nevpt2QdPcTangent, DualToQdPcAdjoint) {
   FBF_REQUIRE_GPU();
   FBF_FAMILY_REPRESENTATIVE("h2co_ccpvdz_sa2");
   const auto [name, batch, floor] = GetParam();
-  expect_duality(name, batch, name == "h2co_skew_ccpvdz_sa3" && floor == 0.0, true, floor);
+  expect_duality(name, batch, true, floor);
 }
 
 INSTANTIATE_TEST_SUITE_P(

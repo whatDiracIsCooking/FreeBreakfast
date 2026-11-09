@@ -14,9 +14,9 @@
 //   generator map at the point. G's derivative at 0 is the Hessian in K,
 //   the curvature 1/2 {K_u, K_v} c_r against the raw y_r included. Central
 //   differences at t = 1e-3 / 2^k, k < 10, their two-level Richardson
-//   extrapolants, and per field the coarsest that moves under half a bar to
-//   the next (kSettled; else the one that moves least): every field (h_bar, Lambda, each root's y, X, A) within 1e-7 of its largest
-//   element. The paths are where SC-QD's adjoint ladders (kQdSmooth in
+//   extrapolants, and per field the coarsest settled one (settled_rung.h):
+//   every field (h_bar, Lambda, each root's y, X, A) within 1e-7 of its
+//   largest element. The paths are where SC-QD's adjoint ladders (kQdSmooth in
 //   nevpt2_gradient_gpu.cpp): at equal weights h8_sto3g_sa3 along h, B,
 //   each root's c and each pure rotation theta_rs; at unequal weights
 //   h2co_ccpvdz_sa2_weighted (0.7, 0.3) along each root's c and the
@@ -71,6 +71,7 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
 #include "scratch_dir.h"
+#include "settled_rung.h"
 
 namespace {
 
@@ -84,21 +85,6 @@ constexpr double kVisible = 10.0;
 // The ladder's rungs, t = kT0 / 2^k for k < kRungs.
 constexpr double kT0 = 1e-3;
 constexpr std::int32_t kRungs = 10;
-// A field's extrapolant is taken at the coarsest rung k whose next moves it
-// by at most this many bars, and only past that at the rung that moves least.
-// R_k, the two-level Richardson extrapolant at t_k, is off by c t_k^6 plus
-// noise: R_{k+1} - R_k = -(63/64) c t_k^6 + (n_{k+1} - n_k), so a settled
-// rung is off by at most (64/63) of half a bar plus its noise. The noise is
-// the evaluations' own round-off σ (einsum's atomics, through the bars'
-// conditioning) over the steps, 6.6 σ / t_k for R_k's weights on D_k, D_{k+1}
-// and D_{k+2}, and it doubles with every rung, so the coarsest settled rung
-// is the most accurate. The least-moving rung over all of them is not: two
-// noisy fine extrapolants can agree by chance. h2co_ccpvdz_sa2_weighted
-// along rot_01 settles at rung 0 (moved 1e-9 to 3e-8 of h_bar's scale, off
-// 5e-9), but its evaluations repeat in-process only to 1e-13 to 9e-13 of
-// their scale, 6.6 σ / t_6 up to 4e-7, and the nightly took rung 4 (off
-// 1.1e-7) and a rerun rung 6 (off 5.9e-7) on extrapolants that agreed (#1153).
-constexpr double kSettled = 0.5;
 // The parts' sum against a call without them: the same terms in two
 // sweeps, so they agree to the walk's and the einsums' rounding, far below
 // the ladder's bar.
@@ -841,7 +827,7 @@ Laddered expect_product(const std::string &name, const std::string &path,
   const Fields predicted = fields_of(res, p, got->first);
 
   // The ladder: D_k per field, and the coarsest settled two-level Richardson
-  // extrapolant (kSettled).
+  // extrapolant (settled_rung.h).
   const std::vector<double> u = roots.project(l.c);
   std::vector<Fields> d;
   for (std::int32_t k = 0; k < kRungs; ++k) {
@@ -881,23 +867,15 @@ Laddered expect_product(const std::string &name, const std::string &path,
       return result;
     }
     bars[field] = kLadder * scale;
-    // The coarsest settled rung (kSettled), else the one that moves least.
-    std::size_t best = 0;
-    double best_change = std::numeric_limits<double>::infinity();
-    for (std::size_t k = 0; k + 3 < static_cast<std::size_t>(kRungs); ++k) {
-      double change = 0.0;
+    const auto change = [&](const std::size_t k) {
+      double moved = 0.0;
       for (std::size_t e = 0; e < x.size(); ++e) {
-        change = std::max(change, std::abs(richardson(k + 1, field, e) - richardson(k, field, e)));
+        moved = std::max(moved, std::abs(richardson(k + 1, field, e) - richardson(k, field, e)));
       }
-      if (change <= kSettled * bars[field]) {
-        best = k;
-        break;
-      }
-      if (change < best_change) {
-        best_change = change;
-        best = k;
-      }
-    }
+      return moved;
+    };
+    const std::size_t best =
+        fb::test::settled_rung(static_cast<std::size_t>(kRungs) - 3, bars[field], change).rung;
     double miss = 0.0;
     for (std::size_t e = 0; e < x.size(); ++e) {
       miss = std::max(miss, std::abs(x[e] - richardson(best, field, e)));

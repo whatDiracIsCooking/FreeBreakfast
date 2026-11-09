@@ -10,7 +10,7 @@
 //   of the builders' outputs (qd_builders_tangent), so the bars' derivative
 //   along it is the product, field by field. Central differences at
 //   t = 1e-3 / 2^k, k < 10, their two-level Richardson extrapolants, and per
-//   field the one that moves least to the next: every field within 1e-7 of
+//   field the coarsest settled one (settled_rung.h): every field within 1e-7 of
 //   its largest element, where SC-QD's adjoint ladders (kQdSmooth in
 //   nevpt2_gradient_gpu.cpp; #724, #894): every path on h8_sto3g_sa3, and
 //   for the one-function classes h8 lacks, h6_631g_sa2 and h2co_ccpvdz_sa2;
@@ -73,6 +73,7 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
 #include "scratch_dir.h"
+#include "settled_rung.h"
 
 namespace {
 
@@ -515,8 +516,8 @@ void expect_ladder(const std::string &name, const std::string &path) {
   ASSERT_TRUE(got) << got.error().message;
   const Fields &hvp = got->second;
 
-  // The ladder: D_k per field, and the Richardson extrapolant that moves
-  // least to the next, over every field relative to its largest element.
+  // The ladder: D_k per field, and per field the coarsest settled two-level
+  // Richardson extrapolant (settled_rung.h).
   std::vector<Fields> d;
   for (std::int32_t k = 0; k < kRungs; ++k) {
     const double step = std::ldexp(kT0, -k);
@@ -548,8 +549,8 @@ void expect_ladder(const std::string &name, const std::string &path) {
   for (const auto &[field, x] : hvp) {
     scale[field] = max_abs(x);
   }
-  // Each field's own ladder: the extrapolant that moves least to the next,
-  // relative to the field's largest element, is its value. On
+  // Each field's own ladder: its coarsest settled extrapolant against its
+  // bar, 1e-7 of its largest element, is its value. On
   // h2co_skew_ccpvdz_sa3 the (1, 2) transitions, both orders, are printed
   // against their floor rather than held to the bar (below, beside the case
   // list).
@@ -564,18 +565,15 @@ void expect_ladder(const std::string &name, const std::string &path) {
       EXPECT_EQ(max_abs(d.back().at(field)), 0.0) << name << " " << path << " " << field;
       continue;
     }
-    std::size_t best = 0;
-    double best_change = std::numeric_limits<double>::infinity();
-    for (std::size_t k = 0; k + 3 < static_cast<std::size_t>(kRungs); ++k) {
-      double change = 0.0;
-      for (std::size_t e = 0; e < x.size(); ++e) {
-        change = std::max(change, std::abs(richardson(k + 1, field, e) - richardson(k, field, e)));
-      }
-      if (change < best_change) {
-        best_change = change;
-        best = k;
-      }
-    }
+    const auto [best, best_change] = fb::test::settled_rung(
+        static_cast<std::size_t>(kRungs) - 3, kLadder * scale[field], [&](const std::size_t k) {
+          double change = 0.0;
+          for (std::size_t e = 0; e < x.size(); ++e) {
+            change =
+                std::max(change, std::abs(richardson(k + 1, field, e) - richardson(k, field, e)));
+          }
+          return change;
+        });
     double miss = 0.0;
     for (std::size_t e = 0; e < x.size(); ++e) {
       miss = std::max(miss, std::abs(x[e] - richardson(best, field, e)));
@@ -859,8 +857,8 @@ TEST(Nevpt2QdHvpEmpty, CouplingK6MatchesTheEnergysSecondDifference) {
   }
 
   // E[W] along the line, its second difference D(s) at s = 2.5e-3 / 2^k,
-  // k < 10, and its two-level Richardson extrapolants; the one that moves
-  // least to the next is the ladder's value. Measured on the RTX 3080: D's
+  // k < 10, and its two-level Richardson extrapolants; the coarsest settled
+  // one against the bar (settled_rung.h) is the ladder's value. Measured on the RTX 3080: D's
   // error falls from 1.5e-3 to 2.9e-7 of <u, HVP u> by s = 9.8e-6 and then
   // grows (4.8e-5 at 2.4e-6), the populated tuples' H / N round-off near the
   // guard over s²; the extrapolants settle at s = 7.8e-5, to 2e-8.
@@ -885,17 +883,10 @@ TEST(Nevpt2QdHvpEmpty, CouplingK6MatchesTheEnergysSecondDifference) {
     const double r_next = ((4.0 * d[k + 2]) - d[k + 1]) / 3.0;
     return ((16.0 * r_next) - r) / 15.0;
   };
-  std::size_t best = 0;
-  double best_change = std::numeric_limits<double>::infinity();
-  for (std::size_t k = 0; k + 3 < d.size(); ++k) {
-    const double change = std::abs(r2(k + 1) - r2(k));
-    if (change < best_change) {
-      best_change = change;
-      best = k;
-    }
-  }
-  const double ladder = r2(best);
   const double bar = kLadder * std::abs(predicted);
+  const auto [best, best_change] = fb::test::settled_rung(
+      d.size() - 3, bar, [&](const std::size_t k) { return std::abs(r2(k + 1) - r2(k)); });
+  const double ladder = r2(best);
   EXPECT_LE(std::abs(ladder - predicted), bar);
   const double k6 = got->first.coupling_k6.front();
   EXPECT_GT(std::abs(k6), kVisible * bar) << "the couplings' K6";

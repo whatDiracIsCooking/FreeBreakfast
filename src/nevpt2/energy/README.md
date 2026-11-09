@@ -1717,9 +1717,10 @@ couplings with ket 1 spread in Sijr and Sir by up to 2.8e-10, and the
 duality's c_1 and all columns by 6e-11 and 3e-11 of the largest summand,
 in the tangent and the adjoint alike; every other ket's couplings repeat to
 round-off. The spread is at most 0.07 of ε |Ċ^k_IJ| / kept_{J,k}, so
-`Nevpt2QdPcTangent` holds skew at the default cut to twice that, summed
-under |W|, from the tangent's own elements (never under 1e-10). At
-`pc_floor` 1e-3 the kept modes clear 1e-3 and skew repeats to 1e-15.
+`Nevpt2QdPcTangent` holds every case to twice that, summed under |W|, from
+the tangent's own elements, where it passes 1e-10 of the largest summand,
+as `Nevpt2QdTangent` does with SC's floor. At `pc_floor` 1e-3 the kept
+modes clear 1e-3 and skew repeats to 1e-15.
 
 **Memory.** Besides the energy's (n solves and n² − n transition rows per
 class): per direction, each ket's Ṫ, ṫ1, K̇′ and Ṡ′ and each transition's
@@ -2021,15 +2022,17 @@ real perturbers with norms down to 6e-8 put a pole of the energy within
 ladder reaches 1e-7 there). `Nevpt2EnergyHvp.BarsMatchRichardsonLadder`:
 along a seeded random direction of every input (B alone and the RDMs alone
 in the slow tier), central differences of `class_energies_adjoint`'s bars at
-t = 1e-3 / 2^k, k < 8, Richardson-extrapolated, the extrapolant that moves
-least to the next taken; every bar field of the product to 1e-7 of its
-largest element. `Nevpt2EnergyHvpEmpty`: u random over every input, its
+t = 1e-3 / 2^k, k < 8, Richardson-extrapolated, the coarsest extrapolant
+that moves under half a bar to the next taken (else the one that moves
+least; `test/support/settled_rung.h`, #1157); every bar field of the product
+to 1e-7 of its largest element. `Nevpt2EnergyHvpEmpty`: u random over every input, its
 partner v = u/2 + w with w keeping N₂'s symmetry (B and h1e_v scaled entry
 by entry, B by one factor per orbital pair; h1e, h2e, the RDMs and ε
 random), so H ∝ N on every empty perturber both populate (Sijr's 24 and
 Srsi's 120); ⟨v, HVP u⟩ against the energy's mixed second difference along
 (u, v) at t = 2.5e-3 / 2^k, k < 8, twice Richardson-extrapolated (once
-leaves a t⁴ term of 1.6e-6 where σ_E/t² takes over), to 1e-7. Then two
+leaves a t⁴ term of 1.6e-6 where σ_E/t² takes over), the coarsest settled
+extrapolant, to 1e-7. Then two
 independent random B directions: refused, Numerical, naming the class and
 the perturber. Measured on the RTX 3080 (`--preset default`): bars' ladder
 worst 3.7e-9 (every input), 1.8e-8 (B), 8.2e-10 (RDMs); K6 1.2e-8 to
@@ -2113,10 +2116,14 @@ every column's duality ≤ 3.3e-13.
 
 `Nevpt2QdPcTangent.DualToQdPcAdjoint`, the PC-QD forward tangent, the same
 chain and columns against `qd_pc_adjoint`'s bars at the same W, 1e-10 of the
-largest summand, on `h2co_ccpvdz_sa2` (walked in fours, the fast tier's
-representative) and `h2co_skew_ccpvdz_sa3`, which at the default cut is held
-to its conditioning floor where that is larger (PC-QD's Conditioning,
-above). Its parts are the transitions'
+largest summand or the column's conditioning floor where that is larger
+(PC-QD's Conditioning, above), SC-QD's rule, on `h2co_ccpvdz_sa2` (walked in
+fours, the fast tier's representative) and `h2co_skew_ccpvdz_sa3`, whose
+floor passes 1e-10 at the default cut. The floor is relative to the
+tangent's elements, which the walks reassociate, and 1e-10 of the summands
+is not, in any gauge: in one run `h2co_ccpvdz_sa2_floored` drew a B column
+whose summands summed to 7.3e-7, its miss 1.0e-15 against 1e-10 of them
+(7.3e-17) but 0.23 of its floor, 4.4e-15 (#1162). Its parts are the transitions'
 ket side, their bra side, and each root's own dm1–dm3 alone (what moves
 S_N), each above ten bars in some column. At the default cut every dropped
 mode is null and the kept span's rotation is round-off (at most 0.36 bars),
@@ -2134,7 +2141,9 @@ The SC-QD Hessian-vector product, `test/gtest/nevpt2_qd_hvp_gpu.cpp`:
   (h, B, c) per case and path, the product at the line's tangent of the
   builders' outputs (`qd_builders_tangent`) against central differences of
   `qd_sc_adjoint`'s builder bars (`QdBuilderBars`), t = 1e-3 / 2^k, k < 10,
-  two-level Richardson, per field the extrapolant that moves least: every
+  two-level Richardson, per field the coarsest extrapolant that moves under
+  half a bar to the next (else the one that moves least;
+  `test/support/settled_rung.h`, #1157): every
   field (shared, each state's own RDMs, each transition, Λ) to 1e-7 of its
   largest element, at a general symmetric W. Every path on `h8_sto3g_sa3`
   (B the fast-tier representative); B and c_0 on `h6_631g_sa2` (Srs a
@@ -2160,8 +2169,9 @@ The SC-QD Hessian-vector product, `test/gtest/nevpt2_qd_hvp_gpu.cpp`:
 - `Nevpt2QdHvpEmpty.CouplingK6MatchesTheEnergysSecondDifference` (slow
   tier): that B line in the inputs, where 4364 tuples empty for both roots
   take K6 in every coupling: ⟨u, HVP u⟩ against E[W]'s second difference
-  along it (s = 2.5e-3 / 2^k, k < 10, two-level Richardson; the energy
-  moves by about the guard through it) to 1e-7, and `coupling_k6` above ten
+  along it (s = 2.5e-3 / 2^k, k < 10, two-level Richardson, the coarsest
+  settled extrapolant; the energy moves by about the guard through it) to
+  1e-7, and `coupling_k6` above ten
   of those bars. Measured: 2.0e-8; the couplings' K6 −91.4 of −1963.7,
   4.7e5 bars. The roots' relative sign is pinned, dH₀₁/ds > 0 along the
   line (+1.51e-2), with root 1 negated where the SA-CASSCF lands on the
@@ -2270,7 +2280,8 @@ at `pc_floor` 1e-3 (real modes dropped, every kept spectrum gapped):
 - `Nevpt2PcEnergyHvp.BarsMatchRichardsonLadder`, per input group (B, h1e_v,
   e, h, rdm, and all at once, the fast tier's): the product against central
   differences of `pc_class_energies_adjoint`'s bars at t = 1e-3 / 2^k,
-  k < 8, the steadiest Richardson extrapolant, every field to 1e-7 of its
+  k < 8, the coarsest settled Richardson extrapolant (else the one that
+  moves least; `test/support/settled_rung.h`), every field to 1e-7 of its
   largest element; and the product without the kept span's rotation
   missing the same ladder by more than ten bars (but along e, which moves
   no S). Measured: worst 1.9e-9; the rotation 1.9e4 to 2.8e6 bars.
