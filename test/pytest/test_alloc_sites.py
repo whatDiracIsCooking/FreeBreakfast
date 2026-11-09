@@ -50,6 +50,7 @@ def test_every_spelling_is_one_row() -> None:
             "static_cast<size_t>(m)",
             "every_spelling",
         ),
+        (38, "counted_pinned", "double", "n * m", "every_spelling"),
     ]
 
 
@@ -100,7 +101,7 @@ def test_diff_sites_names_added_and_resized() -> None:
 
 # -- the check ---------------------------------------------------------------
 
-_FLAGGED = {11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 25}
+_FLAGGED = {11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 25}
 
 
 def bypass_lines(text: str, rel: str = "src/x/x.cpp", allow=None) -> set[int]:
@@ -180,3 +181,18 @@ def test_main_check_reports_and_fails(tmp_path: Path, capsys) -> None:
 def test_main_inventory_json(capsys) -> None:
     assert sites.main(["inventory", "--json", str(_DATA / "spellings.cpp")]) == 0
     assert '"kind": "device_regions"' in capsys.readouterr().out
+
+
+def test_pinned_spellings_drop_the_callers_name() -> None:
+    source = (
+        "void f() {\n"
+        '  auto a = res.pinned_workspace("f", n * 8);\n'
+        '  auto b = res.pinned_regions<double, int32_t>("f", n, m);\n'
+        '  auto c = res.counted_pinned<double>("f", n);\n'
+        "}\n"
+    )
+    assert rows(source) == [
+        (2, "pinned_workspace", "std::byte", "n * 8", "f"),
+        (3, "pinned_regions", "double, int32_t", "n, m", "f"),
+        (4, "counted_pinned", "double", "n", "f"),
+    ]

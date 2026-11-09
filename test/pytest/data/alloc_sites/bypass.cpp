@@ -19,7 +19,7 @@ Status bypasses(DeviceResources &res, void **p, const size_t bytes) {
   hipHostMalloc(p, bytes);
   Buffers::pinned<double> pinned(bytes / sizeof(double));
   StreamBuffers::pinned<double> streamed(bytes / sizeof(double), res.device_stream());
-  auto mirrored = MirroredBuffer<double>(bytes / sizeof(double), res.device_stream());
+  auto counted = res.counted_pinned<double>("fixture", bytes / sizeof(double));
   size_t free_bytes = 0;
   size_t total_bytes = 0;
   FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));

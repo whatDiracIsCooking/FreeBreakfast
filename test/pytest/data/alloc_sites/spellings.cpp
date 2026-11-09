@@ -35,6 +35,7 @@ Status every_spelling(DeviceResources &res, const Buffers::device<double> &in, s
   std::byte *base = res.device_workspace(n * sizeof(double)).data();
   const auto [work, block] = res.device_regions<double, int32_t>(
       static_cast<size_t>(n) * static_cast<size_t>(m) * sizeof(double), static_cast<size_t>(m));
+  auto counted = res.counted_pinned<double>("every_spelling", n * m);
   // Buffers::device<double> commented(n, res.device());
   /* Buffers::device<double> blocked(n, res.device()); */
   const char *prose = "Buffers::device<double> quoted(n, res.device());";
