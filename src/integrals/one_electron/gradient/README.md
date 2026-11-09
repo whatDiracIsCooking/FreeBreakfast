@@ -136,6 +136,7 @@ against it.
 | `kinetic_derivative(res, basis, classes)` | The same for T |
 | `potential_derivative(res, basis, classes, molecule)` | The same for V, its operator term on every nucleus included |
 | `one_electron_gradient_footprint(basis)` | `MemoryFootprint`: what each of the three `*_gradient` contractions holds, all scratch: U, the `MatrixAOPair`, each Cartesian AO's atom, two atoms per mmd record and the device gradient |
+| `overlap_half_gradient_footprint(basis)` | `MemoryFootprint`: what `overlap_half_gradient` holds, all scratch: U, the `MatrixAOPair`, the three Cartesian ip1 slabs, their spherical copies and the three rows' sums |
 
 ## Usage
 
@@ -183,7 +184,7 @@ refusals of a matrix of the wrong order and a basis with no per-atom map.
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `overlap_gradient`, `kinetic_gradient`, `potential_gradient`, the three `*_derivative`, and `overlap_half_gradient` |
+| `gradient.cppm` | Module interface: `overlap_gradient`, `kinetic_gradient`, `potential_gradient`, the three `*_derivative`, `overlap_half_gradient`, and the footprints of the contractions and the half gradient |
 | `gradient.cpp` | Implementation: the checks, the Cartesian M, the AO atoms, the launches, the spherical derivative matrices, the half gradient's row sums into atoms |
 | `gradient_launch.cu` | The launchers over the generated kernels' tables, the record-atom gather, the centre-term assembly and the half gradient's row contraction |
 | `gradient_bridge.h` | The launchers' declarations, shared by the `.cu` and the implementation unit's GMF |

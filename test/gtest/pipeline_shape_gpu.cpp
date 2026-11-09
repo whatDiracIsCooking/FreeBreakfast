@@ -189,6 +189,30 @@ TEST(PipelineShape, EigensolveOrdersAndMinao) {
   EXPECT_EQ(casscf.dims.minao->nao_sphe(), 7U);
 }
 
+// The CASSCF step's roots, and whether two of its weights differ: none planned,
+// none given (equal, one root and three), given equal, and given unequal. A CASCI's roots are not
+// the CASSCF's.
+TEST(PipelineShape, CasscfRootsAndWeights) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::PlanShape none = water_shape(res, "[casci]\nncas = 4\nnelecas = 4\nnroots = 3\n");
+  EXPECT_EQ(none.dims.casscf_nroots, 0U);
+  EXPECT_FALSE(none.dims.casscf_unequal_weights);
+  const std::string casscf = std::string(kDensityFitted) + "[casscf]\nncas = 4\nnelecas = 4\n";
+  const fb::PlanShape one = water_shape(res, casscf);
+  EXPECT_EQ(one.dims.casscf_nroots, 1U);
+  EXPECT_FALSE(one.dims.casscf_unequal_weights);
+  const fb::PlanShape equal = water_shape(res, casscf + "nroots = 2\nweights = [0.5, 0.5]\n");
+  EXPECT_EQ(equal.dims.casscf_nroots, 2U);
+  EXPECT_FALSE(equal.dims.casscf_unequal_weights);
+  const fb::PlanShape three = water_shape(res, casscf + "nroots = 3\n");
+  EXPECT_EQ(three.dims.casscf_nroots, 3U);
+  EXPECT_FALSE(three.dims.casscf_unequal_weights);
+  const fb::PlanShape unequal = water_shape(res, casscf + "nroots = 2\nweights = [0.7, 0.3]\n");
+  EXPECT_EQ(unequal.dims.casscf_nroots, 2U);
+  EXPECT_TRUE(unequal.dims.casscf_unequal_weights);
+}
+
 // An FCI beside a CASCI: the FCI's space, every orbital and electron, is the
 // larger.
 TEST(PipelineShape, FciIsTheLargestActiveSpace) {

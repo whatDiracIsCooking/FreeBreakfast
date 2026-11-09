@@ -168,6 +168,11 @@ rhf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                                         const SphericalMatrixAO &d,
                                         const SphericalMatrixAO &minus_w, RhfTerms &g);
 
+/// @brief What @ref one_electron_terms (the overload at D and -W) holds over
+/// @p basis, all of it scratch: the three derivative calls' one at a time
+/// (@c one_electron_gradient_footprint). D and -W are the caller's.
+[[nodiscard]] MemoryFootprint one_electron_terms_footprint(const BasisSet &basis);
+
 } // namespace free_breakfast::gradient
 
 namespace free_breakfast::gradient {

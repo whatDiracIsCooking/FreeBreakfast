@@ -1,9 +1,10 @@
 # The module: response::zvector, declared in the interface and defined in the
 # implementation unit. free_breakfast.response re-exports it, and a consumer
 # (the SA-CASSCF gradient) links it PRIVATE.
-# DeviceResources, Buffers, ci::Roots, response::Hessian and RelaxedHessian
-# are in its signature or result, so core::wwr, core::resources, ci::solver,
-# response::hessian and response::relaxed_hessian are PUBLIC; the BLAS scalars,
+# DeviceResources, Buffers, ci::Roots, response::Hessian, RelaxedHessian and
+# MemoryFootprint are in its signature or result, so core::wwr,
+# core::resources, ci::solver, response::hessian, response::relaxed_hessian
+# and core::footprint are PUBLIC; the BLAS scalars,
 # the projections' gemms, recipes::pcg's solver and FBF_TRY are only used. It
 # launches nothing of its own: H~'s products, BLAS and copies, so there is no
 # device library.
@@ -23,6 +24,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::solver
   free_breakfast::response::hessian
   free_breakfast::response::relaxed_hessian
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::constants
   free_breakfast::core::diagnostics_macros

@@ -14,6 +14,7 @@ import free_breakfast.core.primitives; // math::idivup
 import free_breakfast.io.basis;
 import free_breakfast.recipes.diagonalize; // syevd_lwork
 import free_breakfast.recipes.expm;        // skew_eig_lwork
+import free_breakfast.response.zvector;    // rotating_pairs
 import free_breakfast.pipeline.step;       // View
 
 #include "diagnostics.h"
@@ -176,6 +177,10 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
     selections.push_back(&*casscf);
     max_order = std::max(max_order, ci_eigensolve_order(casscf->nroots, true));
     casscf_planned = true;
+    // What the steps reading its product are sized over.
+    dims.casscf_nroots = static_cast<size_t>(std::max(casscf->nroots, 1));
+    dims.casscf_unequal_weights =
+        std::ranges::contains(response::rotating_pairs(casscf->weights), true);
   }
   if (const std::optional<OptimizeStep> &optimize = calc.step<OptimizeStep>();
       optimize && (optimize->meci || optimize->casscf_gradient || optimize->nevpt2_gradient)) {

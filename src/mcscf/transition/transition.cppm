@@ -11,6 +11,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.molecule;
 import free_breakfast.recipes.matrix_ao;
 
@@ -40,5 +41,14 @@ export namespace free_breakfast::mcscf {
     const Buffers::device<double> &b, int32_t naux, const SphericalMatrixAO &c, int32_t ncore,
     int32_t ncas, const Buffers::device<double> &ppaa, const Buffers::device<double> &papa,
     std::span<const double> gamma, std::span<const double> gamma2);
+
+/// @brief What the density-fitted @ref transition_orbital_gradient holds over
+/// @p nmo orbitals, @p naux fitting functions, @p ncore core and @p ncas
+/// active: the returned gradient over the packed pairs, persistent; the
+/// transition @c response::Fock's other members, held while the zero-RDM one
+/// is built, and that one's, scratch; the device workspace @c fock's. ppaa,
+/// papa and the RDMs are the caller's. Empty where @c fock refuses.
+[[nodiscard]] MemoryFootprint transition_orbital_gradient_footprint(int32_t nmo, int32_t naux,
+                                                                    int32_t ncore, int32_t ncas);
 
 } // namespace free_breakfast::mcscf

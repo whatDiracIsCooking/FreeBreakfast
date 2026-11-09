@@ -11,6 +11,7 @@ import free_breakfast.core.constants; // kOne, kZero, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemv, dgmm, axpy, dot, nrm2, scal, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.ci.solver;
 import free_breakfast.response.hessian;
 import free_breakfast.response.relaxed_hessian;
@@ -321,6 +322,31 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed, const Hes
   }
   FBF_TRY(res.sync());
   return out;
+}
+
+MemoryFootprint zvector_footprint(const int32_t n_pairs, const int32_t dim, const int32_t nroots,
+                                  const MemoryFootprint &product, const bool rotating,
+                                  const bool theta_rhs) {
+  const auto pairs = static_cast<size_t>(std::max(n_pairs, 0));
+  const auto ci_block = static_cast<size_t>(std::max(dim, 0)) * static_cast<size_t>(nroots);
+  const auto roots = static_cast<size_t>(std::max(nroots, 0));
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  // z_o and z_c, returned.
+  const MemoryFootprint out = held(std::max<size_t>(pairs, 1) + ci_block);
+  // couple_rotations: the CI blocks along the roots, and add_rotations' matrix.
+  const MemoryFootprint couple = rotating && theta_rhs
+                                     ? drop(then(held(ci_block), drop(held(roots * roots))))
+                                     : MemoryFootprint{};
+  // pcg_solve's one allocation, (4 n k + 2 k) doubles at k = 1
+  // (recipes/pcg/pcg.cppm's vectors), held across its products.
+  const MemoryFootprint pcg =
+      pairs > 0 ? drop(then(held((4 * pairs) + 2), product)) : MemoryFootprint{};
+  const MemoryFootprint rotations = rotating ? drop(held(roots * roots)) : MemoryFootprint{};
+  const MemoryFootprint phases = then(couple, then(pcg, then(drop(product), rotations)));
+  // -b, H~ z + b and diag(H)^-1, and the overlaps, around every phase.
+  return then(out, drop(then(held(std::max<size_t>(3 * pairs, 1) + roots), phases)));
 }
 
 // The count vectors of @p v (dim x count) off every root: v <- v - C C^T v,

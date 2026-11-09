@@ -10,6 +10,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.io.json;
 import free_breakfast.mcscf.nac;
 
@@ -25,6 +26,36 @@ namespace free_breakfast {
     rows.push_back(json::array({v[a], v[a + 1], v[a + 2]}));
   }
   return rows;
+}
+
+// The CASSCF a step reading its product is sized over, at @p dims: its
+// active space, core and multiplicity as the Casscf step takes them, its
+// roots, and the orbitals and CI vectors run puts back on the device.
+struct NacCasscfShape {
+  int32_t ncore = 0;
+  int32_t ncas = 0;
+  int32_t nelecas = 0;
+  int32_t multiplicity = 1;
+  int32_t nroots = 0;
+  MemoryFootprint upload;
+};
+
+NacCasscfShape nac_casscf_shape(const FootprintDimensions &dims) {
+  NacCasscfShape out;
+  out.ncas = static_cast<int32_t>(dims.ncas);
+  out.nelecas = static_cast<int32_t>(dims.nelecas);
+  out.ncore = (static_cast<int32_t>(dims.n_alpha + dims.n_beta) - out.nelecas) / 2;
+  const auto two_s = static_cast<int32_t>(dims.n_alpha - dims.n_beta);
+  out.multiplicity = two_s + 1;
+  out.nroots = static_cast<int32_t>(dims.casscf_nroots);
+  const int32_t n_beta = (out.nelecas - two_s) / 2;
+  const auto strings = [&](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(out.ncas, electrons)));
+  };
+  const size_t dim = strings(out.nelecas - n_beta) * strings(n_beta);
+  out.upload.device.persistent =
+      sizeof(double) * ((dims.nao * dims.nao) + (dim * dims.casscf_nroots));
+  return out;
 }
 
 Result<NacOutput> NacStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput,
@@ -141,6 +172,16 @@ Result<NacOutput> NacStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePai
                                   }));
   }
   return out;
+}
+
+MemoryFootprint NacStep::footprint(const FootprintDimensions &dims) const {
+  if (dims.basis == nullptr || dims.aux == nullptr || dims.casscf_nroots < 2) {
+    return {};
+  }
+  const NacCasscfShape cas = nac_casscf_shape(dims);
+  return drop(then(cas.upload, mcscf::df_nac_footprint(*dims.basis, *dims.aux, cas.ncore, cas.ncas,
+                                                       cas.nelecas, cas.multiplicity, cas.nroots,
+                                                       dims.casscf_unequal_weights)));
 }
 
 } // namespace free_breakfast

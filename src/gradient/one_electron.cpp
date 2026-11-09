@@ -88,7 +88,11 @@ MemoryFootprint rhf_one_electron_footprint(const BasisSet &basis, const int32_t 
   // one after another.
   MemoryFootprint own;
   own.device.persistent = sizeof(double) * ((nao * nao) + occ + (nao * occ));
-  return then(d, drop(then(own, drop(one_electron_gradient_footprint(basis)))));
+  return then(d, drop(then(own, one_electron_terms_footprint(basis))));
+}
+
+MemoryFootprint one_electron_terms_footprint(const BasisSet &basis) {
+  return drop(one_electron_gradient_footprint(basis));
 }
 
 } // namespace free_breakfast::gradient

@@ -71,6 +71,12 @@ Two `response::fock`s' matrices, the zero-RDM one freed on return, the
 result the first's gradient. Queued on res.stream() with res.blas(), and
 waited for (the axpy reads the second Fock's gradient, freed on return).
 
+`transition_orbital_gradient_footprint(nmo, naux, ncore, ncas)` is that, in
+`core/footprint`'s terms: the returned gradient persistent; the first Fock's
+other members and the whole second Fock, scratch; `response::fock_footprint`'s
+device workspace. `CasscfReaderFootprint.SharedRoutines`
+(`test/gtest/pipeline_step_footprint_gpu.cpp`) holds it to the pool.
+
 ## Tests
 
 `test/gtest/mcscf_nac_gpu.cpp`, `McscfTransitionOrbitalGradient`, at

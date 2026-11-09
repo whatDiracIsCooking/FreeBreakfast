@@ -15,6 +15,8 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // wwrMemcpyAsync, gemmwich's BLAS handle
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -518,6 +520,159 @@ Result<NacCombination> df_nac(DeviceResources &res, const Molecule &molecule, co
                         .gap = terms.gap,
                         .iterations = z.iterations,
                         .residual = z.residual};
+}
+
+// The CI the footprints below are over (nelecas electrons in ncas orbitals at
+// the multiplicity, n_beta = (nelecas - 2S) / 2): the strings' electron
+// counts and the determinants; dim 0 when the call would refuse them.
+struct NacCiShape {
+  int32_t n_alpha = 0;
+  int32_t n_beta = 0;
+  int32_t alpha_strings = 0;
+  int32_t beta_strings = 0;
+  size_t dim = 0;
+};
+
+NacCiShape nac_ci_shape(const int32_t ncas, const int32_t nelecas, const int32_t multiplicity) {
+  NacCiShape out;
+  const int32_t two_s = multiplicity - 1;
+  if (ncas < 1 || two_s < 0 || nelecas < two_s || (nelecas - two_s) % 2 != 0 ||
+      nelecas - ((nelecas - two_s) / 2) > ncas) {
+    return out;
+  }
+  out.n_beta = (nelecas - two_s) / 2;
+  out.n_alpha = nelecas - out.n_beta;
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  out.alpha_strings = strings(out.n_alpha);
+  out.beta_strings = strings(out.n_beta);
+  out.dim = static_cast<size_t>(out.alpha_strings) * static_cast<size_t>(out.beta_strings);
+  return out;
+}
+
+MemoryFootprint nac_held(const size_t doubles) {
+  return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+}
+
+// nac_ci's strings, then the pairs' RDMs on the device (gamma, Gamma and
+// gamma^IJ) with trans_rdm12's and trans_rdm1's workspace.
+MemoryFootprint nac_rdms_footprint(const int32_t ncas, const NacCiShape &ci) {
+  const auto m = static_cast<size_t>(ncas) * static_cast<size_t>(ncas);
+  const auto rows = static_cast<int32_t>(ci.dim);
+  MemoryFootprint rdms = nac_held((2 * m) + (m * m));
+  rdms.device.workspace = std::max(ci::trans_rdm12_footprint(ncas, rows).device.workspace,
+                                   ci::trans_rdm1_footprint(ncas, rows).device.workspace);
+  return rdms;
+}
+
+MemoryFootprint nac_strings_footprint(const int32_t ncas, const NacCiShape &ci) {
+  return then(ci::device_string_set_footprint(ncas, ci.n_alpha),
+              ci::device_string_set_footprint(ncas, ci.n_beta));
+}
+
+// nac_setup's, all kept: the strings, the integrals, the averaged Fock, the
+// sigma's tables (its rdm1 workspace never taken), the Hessian and the
+// CI-relaxed Hessian.
+MemoryFootprint nac_setup_footprint(const int32_t nmo, const int32_t naux, const int32_t ncore,
+                                    const int32_t ncas, const int32_t nroots,
+                                    const NacCiShape &ci) {
+  MemoryFootprint tables;
+  tables.device.persistent =
+      ci::sigma_footprint(ncas, ci.alpha_strings, ci.beta_strings).device.persistent;
+  return then(nac_strings_footprint(ncas, ci),
+              then(casscf_integrals_footprint(nmo, naux, ncore, ncas),
+                   then(response::fock_footprint(nmo, naux, ncore, ncas),
+                        then(tables, then(response::hessian_footprint(nmo, naux, ncore, ncas),
+                                          response::relaxed_hessian_footprint(
+                                              ncas, ci.n_alpha, ci.n_beta, nroots, nmo, ncore))))));
+}
+
+// What the Z-vector over the setup adds and keeps: the borrowed sigma's apply
+// scratch, grown to Layout::full by the products, and zvector's.
+MemoryFootprint nac_zvector_footprint(const int32_t nmo, const int32_t naux, const int32_t ncore,
+                                      const int32_t ncas, const int32_t nroots,
+                                      const NacCiShape &ci, const bool rotating) {
+  MemoryFootprint growth;
+  growth.device.persistent =
+      ci::sigma_apply_bytes(ncas, ci.alpha_strings, ci.beta_strings, ci::Layout::full);
+  const int32_t n_pairs = (ncore * (nmo - ncore)) + (ncas * (nmo - ncore - ncas));
+  return then(growth, response::zvector_footprint(
+                          n_pairs, static_cast<int32_t>(ci.dim), nroots,
+                          response::hessian_apply_footprint(nmo, naux, ncore, ncas), rotating));
+}
+
+// nac_half_gradient's over @p width columns, all freed: a on the device, the
+// gemmwich's work and A in the AO basis, then overlap_half_gradient's.
+MemoryFootprint nac_half_gradient_footprint(const BasisSet &basis, const size_t width) {
+  const size_t mo = basis.nao_sphe();
+  return drop(then(nac_held((width * width) + (width * mo) + (mo * mo)),
+                   overlap_half_gradient_footprint(basis)));
+}
+
+MemoryFootprint df_nac_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                                 const int32_t ncas, const int32_t nelecas,
+                                 const int32_t multiplicity, const int32_t nroots,
+                                 const bool rotating) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const NacCiShape ci = nac_ci_shape(ncas, nelecas, multiplicity);
+  if (nroots < 2 || ncore < 0 || ncore + ncas > nmo || naux < 1 || ci.dim == 0) {
+    return {}; // refused before anything is allocated
+  }
+  // The setup; the pair's RDMs; the transition gradient, kept; the Z-vector;
+  // h_IJ's df_transition_gradient; d^CSF.
+  MemoryFootprint chain =
+      then(nac_setup_footprint(nmo, naux, ncore, ncas, nroots, ci), nac_rdms_footprint(ncas, ci));
+  chain = then(chain, transition_orbital_gradient_footprint(nmo, naux, ncore, ncas));
+  chain = then(chain, nac_zvector_footprint(nmo, naux, ncore, ncas, nroots, ci, rotating));
+  chain = then(chain, df_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots,
+                                            rotating, GradientForm::Transition, true));
+  chain = then(chain, nac_half_gradient_footprint(basis, static_cast<size_t>(ncas)));
+  return drop(chain);
+}
+
+MemoryFootprint nac_combination_terms_footprint(const BasisSet &basis, const int32_t ncas,
+                                                const int32_t nelecas, const int32_t multiplicity,
+                                                const bool d_x) {
+  const NacCiShape ci = nac_ci_shape(ncas, nelecas, multiplicity);
+  if (ci.dim == 0 || std::cmp_greater(ncas, basis.nao_sphe())) {
+    return {};
+  }
+  MemoryFootprint chain = then(nac_strings_footprint(ncas, ci), nac_rdms_footprint(ncas, ci));
+  chain = then(chain, nac_half_gradient_footprint(basis, static_cast<size_t>(ncas)));
+  if (d_x) {
+    chain = then(chain, nac_half_gradient_footprint(basis, basis.nao_sphe()));
+  }
+  return drop(chain);
+}
+
+MemoryFootprint df_nac_combination_footprint(const BasisSet &basis, const BasisSet &aux,
+                                             const int32_t ncore, const int32_t ncas,
+                                             const int32_t nelecas, const int32_t multiplicity,
+                                             const int32_t nroots, const bool rotating,
+                                             const bool d_x) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const NacCiShape ci = nac_ci_shape(ncas, nelecas, multiplicity);
+  if (nroots < 1 || ncore < 0 || ncore + ncas > nmo || naux < 1 || ci.dim == 0) {
+    return {};
+  }
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const auto n_mo = static_cast<size_t>(nmo);
+  const size_t n_pairs = (n_core * (n_mo - n_core)) + (n_act * (n_mo - n_core - n_act));
+  // The terms; the setup; the transition gradient and the right-hand side,
+  // kept; the Z-vector; the response's df_transition_gradient.
+  MemoryFootprint chain =
+      then(nac_combination_terms_footprint(basis, ncas, nelecas, multiplicity, d_x),
+           nac_setup_footprint(nmo, naux, ncore, ncas, nroots, ci));
+  chain = then(chain, transition_orbital_gradient_footprint(nmo, naux, ncore, ncas));
+  chain = then(chain, nac_held(n_pairs));
+  chain = then(chain, nac_zvector_footprint(nmo, naux, ncore, ncas, nroots, ci, rotating));
+  chain = then(chain, df_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots,
+                                            rotating, GradientForm::Transition, true));
+  return drop(chain);
 }
 
 } // namespace free_breakfast::mcscf

@@ -15,6 +15,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.mcscf.gradient; // mcscf::GradientTerms, in the product
 export import free_breakfast.pipeline.casscf;
 
@@ -60,6 +61,15 @@ struct CasscfGradientStep {
   run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput, EriOutput,
            CoreHamiltonianOutput, CasscfOutput> in,
       DeviceResources &res) const;
+
+  /// @brief What @ref run holds at @p dims, all of it freed on return (the
+  /// gradient is on the host): the orbitals and the CASSCF's CI vectors back
+  /// on the device, then @c mcscf::df_gradient_footprint at a root over the
+  /// aux basis, the planned CASSCF's roots and weights (@p dims's
+  /// casscf_nroots and casscf_unequal_weights) and the active space at
+  /// @p dims. Empty without density fitting, which @ref run refuses before
+  /// anything is allocated.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast

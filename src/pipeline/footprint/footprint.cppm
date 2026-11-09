@@ -71,6 +71,12 @@ struct FootprintDimensions {
   ///        is planned.
   size_t ncas = 0;
   size_t nelecas = 0;
+  /// @brief The planned CASSCF step's roots and whether two of its weights
+  ///        differ (response::rotating_pairs over them, equal when none are
+  ///        given): what its gradient and couplings are sized over. 0 and
+  ///        false when no CASSCF step is planned.
+  size_t casscf_nroots = 0;
+  bool casscf_unequal_weights = false;
 };
 
 } // namespace free_breakfast

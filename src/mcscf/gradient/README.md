@@ -487,10 +487,44 @@ densities, a second G, and the response's pairs, their scratch and the SA V
 and Z (three more of each size). It refuses (`Unsupported`, naming the bytes)
 when those would not fit the device's memory budget (`DeviceResources::memory_budget()`),
 before anything is allocated. A state average's CI objects, Hessian and nao²-sized matrices are
-not counted. An extra adjoint adds Λ Cᵀ (naux nao², the size of Γ) and Gᵃᵘˣ
+not counted by that refusal. An extra adjoint adds Λ Cᵀ (naux nao², the size of Γ) and Gᵃᵘˣ
 (naux²), both counted; Λ itself is the caller's. `casscf_integrals` and
 `response::fock` hold their own nmo² ncas² integrals for the call. naux nao²
 must fit `int32_t`.
+
+**The footprints** (`core/footprint`'s library pattern) count all of it.
+`df_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots,
+rotating, form, multipliers, extra)` is what each call holds, phase by phase
+in its order, every byte freed by the return. The `GradientForm` is a root or
+a mix summing to 1, a mix summing to 0, or `df_transition_gradient`. The
+phases:
+
+- the integrals and the solution's Fock, kept;
+- kappa;
+- for a call that responds, the Lagrangian (`sa_gradient_lagrangian`): the
+  CI strings and the RDMs' copy, and, with no multipliers given, the sigma's
+  tables, the Hessian, the CI-relaxed Hessian, the right-hand side's Fock (or
+  the transition orbital gradient), the sigma's apply scratch grown to
+  `Layout::full` and `response::zvector_footprint`, the ZVector kept past
+  the rest; then z_c, the rotations' nroots² matrix and c ± z_c;
+- the Lagrangian's Fock;
+- [C | C~] and the five response matrices;
+- the orbital response (`sa_gradient_orbital_response`: its eleven buffers,
+  and the two-factor `df_exchange`'s X and Y in the workspace);
+- D, D_a, the one-electron D, −W and a transition's D_c, with
+  `gradient::one_electron_terms_footprint`;
+- Γ, W, the fitted densities and an extra adjoint's two;
+- Y, G and the fitted pairs with their V and Z.
+
+The workspace is the largest of every call's: the integrals', the Focks', the
+Hessian's and its product's, the RDMs', `b_mo`'s, and the two derivative
+contractions'. `rotating` (the rotations among the roots are not zero) adds
+z_c's and zvector's nroots² matrices. They are small, and not at the peak in
+the tests' cases. `root_pair_multipliers_footprint(nroots)` is its nroots²
+overlaps. `zeta_terms_footprint(nmo, naux, ncore, ncas, dim)` is the orbital
+part, persistent, then the RDMs' copy and one pair's transition gradient.
+Each is held to the pool by `CasscfReaderFootprint`
+(`test/gtest/pipeline_step_footprint_gpu.cpp`).
 
 ## Tests
 

@@ -52,6 +52,8 @@ struct PlanShape {
 /// - syevd_lwork at every order through the plan's largest eigensolve, nao
 ///   or a planned CI's subspace (16 nroots, and for a CASSCF
 ///   ah_max_subspace + 1), queried through res.solver() (host computations);
+/// - casscf_nroots and casscf_unequal_weights, the CASSCF step's roots and
+///   whether two of its weights differ;
 /// - MINAO, placed, when a planned active space is AVAS's;
 /// - ncas and nelecas, the largest active space a planned step may take:
 ///   an explicit ncas and nelecas; under AVAS, avas_max_ncas when set, else

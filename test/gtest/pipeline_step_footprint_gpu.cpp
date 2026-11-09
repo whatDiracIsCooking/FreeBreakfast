@@ -1,5 +1,7 @@
 // The step footprints of the RHF chain (#1140), of CASCI and FCI (#1049), of
-// CASSCF (#1151) and of the RHF gradient (#1050), and mcscf::solve's own, each held to the pool peak of one
+// CASSCF (#1151), of the RHF gradient (#1050) and of the CASSCF gradient and
+// couplings (#1160), and mcscf::solve's own and the CASSCF readers' routines,
+// each held to the pool peak of one
 // run of its step by test/support/pool_footprint.h's two bars, sound and
 // tight. The dimensions are plan_shape's over a parsed water config, so the
 // dims pass is exercised end to end, and each step is the one the config
@@ -15,8 +17,10 @@
 // CASCI over an explicit space, over AVAS's pick (the footprint at the space
 // it picked) and over a carried orbitals file; FCI under a pool cap that
 // leaves its sigma the least scratch it runs with, and unbounded; and
-// CASSCF's loop and step, integral-direct and density-fitted; and the RHF
-// gradient, integral-direct and density-fitted.
+// CASSCF's loop and step, integral-direct and density-fitted; the RHF
+// gradient, integral-direct and density-fitted; and, over a density-fitted
+// SA-2 CASSCF, the routines its gradient and couplings call and the
+// CasscfGradient and Nac steps, at equal and unequal weights.
 
 #include <gtest/gtest.h>
 
@@ -34,6 +38,9 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.shape;
 import free_breakfast.mcscf;
 import free_breakfast.integrals.eri.density_fitting.jk; // df_exchange_footprint
+import free_breakfast.response;
+import free_breakfast.gradient;  // one_electron_terms
+import free_breakfast.integrals; // casscf_integrals, overlap_half_gradient
 
 #include "pool_footprint.h"
 #include "scratch_dir.h"
@@ -742,6 +749,542 @@ TEST(StepFootprint, GradientDirect) {
 TEST(StepFootprint, GradientDensityFitted) {
   FBF_REQUIRE_GPU();
   expect_gradient_footprint(fb::EriMode::DensityFitting, 4 + 7);
+}
+
+// The CASSCF gradient's and couplings' routines (#1160), over water's SA-2
+// CAS(4, 4), every build fitted (kCasscfTable), converged once for the suite;
+// and the CasscfGradient and Nac steps that read it. Each routine runs on a
+// fresh DeviceResources, its inputs (the plan's chain, the CASSCF's
+// mcscf::Solution and, for zvector, the CI-relaxed Hessian) on the plan's.
+// The CASSCF's product as the mcscf::Solution the readers build from it, on
+// @p res: gamma the weighted average of the roots' 1-RDMs, the weights
+// carried.
+fb::mcscf::Solution solution_of(fb::DeviceResources &res, const fb::BasisSet &basis,
+                                const fb::CasscfOutput &cas) {
+  std::vector<double> weights = cas.weights;
+  const auto n2 = static_cast<std::size_t>(cas.ncas) * static_cast<std::size_t>(cas.ncas);
+  std::vector<double> gamma(n2, 0.0);
+  for (std::size_t r = 0; r < weights.size(); ++r) {
+    for (std::size_t i = 0; i < n2; ++i) {
+      gamma[i] += weights[r] * cas.rdm1[(r * n2) + i];
+    }
+  }
+  fb::mcscf::Solution solution{
+      .c = fb::SphericalMatrixAO(res, basis),
+      .roots = {.energies = cas.energies,
+                .spin_squares = cas.spin_squares,
+                .vectors = fb::Buffers::device<double>(cas.vectors.size(), res.device()),
+                .davidson = {},
+                .fp32_iterations = 0},
+      .energy = cas.energy,
+      .gradient_norm = cas.gradient_norm,
+      .gamma = std::move(gamma),
+      .gamma2 = cas.rdm2,
+      .root_gammas = cas.rdm1,
+      .iterations = cas.iterations,
+      .weights = std::move(weights),
+  };
+  EXPECT_EQ(wwr::wwrMemcpyAsync(solution.roots.vectors.data(), cas.vectors.data(),
+                                cas.vectors.size() * sizeof(double), wwr::wwrMemcpyHostToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(solution.c.data(), cas.c.data(),
+                                cas.c.num_elements() * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync());
+  return solution;
+}
+
+// @p count doubles of @p from on the host.
+std::vector<double> to_host(fb::DeviceResources &res, const double *from, std::size_t count) {
+  std::vector<double> to(count);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(to.data(), from, count * sizeof(double), wwr::wwrMemcpyDeviceToHost,
+                                res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync());
+  return to;
+}
+
+// The CI-relaxed Hessian at a solution, as df_gradient and df_nac build it,
+// on @p res: kept on the heap, as its members point into their neighbours.
+struct Relaxed {
+  std::optional<fb::ci::DeviceStringSet> strings;
+  std::optional<fb::ci::Rdm> rdm;
+  std::optional<fb::CasscfIntegrals> ints;
+  std::optional<fb::response::Fock> fock;
+  std::optional<fb::ci::Sigma> sigma;
+  std::optional<fb::response::Hessian> hessian;
+  std::optional<fb::response::RelaxedHessian> relaxed;
+};
+
+// The SA-2 CAS(4, 4) and its readers' inputs, made once for a suite.
+struct SaCasscf {
+  Plan plan{
+      System{.mode = fb::EriMode::DensityFitting, .tables = std::string_view{kSaCasscfTables}}};
+  std::optional<fb::CasscfOutput> cas;
+  std::optional<fb::mcscf::Solution> solution;
+  // The same CASSCF at unequal weights, converged when first asked for: what
+  // makes the Z-vector carry rotations among the roots.
+  std::optional<fb::CasscfOutput> skewed_cas;
+  std::optional<fb::mcscf::Solution> skewed_solution;
+  static constexpr std::string_view kSaCasscfTables =
+      "[casscf]\nncas = 4\nnelecas = 4\nnroots = 2\nconv_tol = 1e-6\nconv_tol_grad = 1e-3\n"
+      "[casscf_gradient]\nroot = 1\n[nac]\n";
+
+  SaCasscf() {
+    plan.run_through_scf();
+    auto ran = planned<fb::CasscfStep>(*plan.calc).run(casscf_view(plan), plan.inputs);
+    EXPECT_TRUE(ran) << ran.error().message;
+    cas.emplace(std::move(*ran));
+    solution.emplace(solution_of(plan.inputs, basis(), *cas));
+  }
+
+  // The CASSCF at weights 0.7 and 0.3, and its solution.
+  [[nodiscard]] const fb::mcscf::Solution &skewed() {
+    if (!skewed_solution) {
+      auto casscf = planned<fb::CasscfStep>(*plan.calc);
+      casscf.weights = {0.7, 0.3};
+      auto ran = casscf.run(casscf_view(plan), plan.inputs);
+      EXPECT_TRUE(ran) << ran.error().message;
+      skewed_cas.emplace(std::move(*ran));
+      skewed_solution.emplace(solution_of(plan.inputs, basis(), *skewed_cas));
+    }
+    return *skewed_solution;
+  }
+
+  [[nodiscard]] const fb::Molecule &molecule() const { return plan.molecule->molecule; }
+  [[nodiscard]] const fb::BasisSet &basis() const { return plan.basis->basis; }
+  [[nodiscard]] std::span<const fb::PrimitivePairClass> classes() const {
+    return plan.pairs->classes;
+  }
+  [[nodiscard]] const fb::SphericalMatrixAO &h() const { return plan.h->h; }
+  [[nodiscard]] const fb::DensityFitted &fit() const {
+    return std::get<fb::DensityFitted>(plan.eri->eri);
+  }
+  [[nodiscard]] std::int32_t ncore() const { return cas->ncore; }
+  [[nodiscard]] std::int32_t ncas() const { return cas->ncas; }
+  [[nodiscard]] std::int32_t nelecas() const { return cas->nelecas; }
+  [[nodiscard]] std::int32_t nmo() const { return static_cast<std::int32_t>(basis().nao_sphe()); }
+  [[nodiscard]] std::int32_t naux() const { return fit().naux; }
+  [[nodiscard]] std::int32_t pairs() const {
+    return (ncore() * (nmo() - ncore())) + (ncas() * (nmo() - ncore() - ncas()));
+  }
+  [[nodiscard]] std::int32_t dim() const {
+    return static_cast<std::int32_t>(cas->vectors.size() / cas->energies.size());
+  }
+
+  // The CI-relaxed Hessian at @p sol, its weights the solution's, on the
+  // plan's DeviceResources.
+  [[nodiscard]] std::unique_ptr<Relaxed> relaxed(const fb::mcscf::Solution &sol) {
+    fb::DeviceResources &res = plan.inputs;
+    auto out = std::make_unique<Relaxed>();
+    out->strings.emplace(fb::ci::DeviceStringSet::create(res, ncas(), nelecas() / 2).value());
+    out->rdm.emplace(fb::ci::Rdm::create(res, *out->strings, *out->strings).value());
+    out->ints.emplace(
+        fb::casscf_integrals(res, basis(), molecule(), h(), fit().b, naux(), sol.c, ncore(), ncas())
+            .value());
+    out->fock.emplace(fb::response::fock(res, molecule(), h(), fit().b, naux(), sol.c, ncore(),
+                                         ncas(), out->ints->ppaa, out->ints->papa, sol.gamma,
+                                         sol.gamma2)
+                          .value());
+    out->sigma.emplace(fb::ci::Sigma::create(res, *out->strings, *out->strings).value());
+    const auto m = static_cast<std::size_t>(ncas()) * static_cast<std::size_t>(ncas());
+    EXPECT_TRUE(out->sigma->set_integrals(res, out->ints->hamiltonian.e_core,
+                                          to_host(res, out->ints->hamiltonian.h_eff.data(), m),
+                                          to_host(res, out->ints->hamiltonian.eri.data(), m * m)));
+    out->hessian.emplace(fb::response::Hessian::create(res, h(), fit().b, naux(), sol.c, ncore(),
+                                                       ncas(), out->ints->ppaa, out->ints->papa,
+                                                       *out->fock)
+                             .value());
+    const auto mo = static_cast<std::size_t>(nmo());
+    fb::response::ResponseIntegrals response{mo,
+                                             static_cast<std::size_t>(ncore()),
+                                             static_cast<std::size_t>(ncas()),
+                                             to_host(res, out->fock->fock_inactive.data(), mo * mo),
+                                             to_host(res, out->ints->ppaa.data(), mo * mo * m),
+                                             to_host(res, out->ints->papa.data(), mo * mo * m)};
+    auto made = fb::response::RelaxedHessian::create(res, *out->hessian, *out->sigma, *out->rdm,
+                                                     *out->strings, *out->strings, sol.roots,
+                                                     sol.weights, std::move(response));
+    EXPECT_TRUE(made) << made.error().message;
+    out->relaxed.emplace(std::move(*made));
+    return out;
+  }
+};
+
+// The SA-2 CAS(4, 4), converged at the suite's first case that asks for it
+// (after its FBF_REQUIRE_GPU) and freed at the suite's end.
+class CasscfReaderFootprint : public ::testing::Test {
+protected:
+  static void TearDownTestSuite() { sa_.reset(); }
+  static SaCasscf &sa() {
+    if (!sa_) {
+      sa_ = std::make_unique<SaCasscf>();
+    }
+    return *sa_;
+  }
+
+private:
+  static inline std::unique_ptr<SaCasscf> sa_;
+};
+
+// One root of @p sol as a solution of its own, on @p res: what df_gradient
+// takes without a response (the state-specific gradient). Its RDMs' values do
+// not matter to what it allocates; their sizes are checked.
+fb::mcscf::Solution one_root(fb::DeviceResources &res, const fb::BasisSet &basis,
+                             const fb::CasscfOutput &cas) {
+  const auto n2 = static_cast<std::size_t>(cas.ncas) * static_cast<std::size_t>(cas.ncas);
+  const std::size_t dim = cas.vectors.size() / cas.energies.size();
+  fb::mcscf::Solution solution{
+      .c = fb::SphericalMatrixAO(res, basis),
+      .roots = {.energies = {cas.energies[0]},
+                .spin_squares = {cas.spin_squares[0]},
+                .vectors = fb::Buffers::device<double>(dim, res.device()),
+                .davidson = {},
+                .fp32_iterations = 0},
+      .energy = cas.energies[0],
+      .gradient_norm = cas.gradient_norm,
+      .gamma = std::vector<double>(cas.rdm1.begin(), cas.rdm1.begin() + std::ptrdiff_t(n2)),
+      .gamma2 = cas.rdm2,
+      .root_gammas = std::vector<double>(cas.rdm1.begin(), cas.rdm1.begin() + std::ptrdiff_t(n2)),
+      .iterations = cas.iterations,
+      .weights = {1.0},
+  };
+  EXPECT_EQ(wwr::wwrMemcpyAsync(solution.roots.vectors.data(), cas.vectors.data(),
+                                dim * sizeof(double), wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(solution.c.data(), cas.c.data(),
+                                cas.c.num_elements() * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync());
+  return solution;
+}
+
+// df_gradient at root 1 of the state average: the Z-vector's Lagrangian, the
+// orbital response and the terms. Live at the peak, the Lagrangian's solve:
+// the integrals' 4 and the Fock's 6, kappa, the strings' 2 and the RDMs, the
+// sigma's 3 tables and its scratch, the Hessian's 11, the relaxed Hessian's 9
+// and H'(x)'s sigma's 4, the right-hand side's Fock's 6, the ZVector's 2, its
+// work 2, pcg's 1 and the product's 1.
+TEST_F(CasscfReaderFootprint, DfGradient) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  SaCasscf &s = sa();
+  const fb::DensityFitted &fit = s.fit();
+  expect_step_footprint(fb::mcscf::df_gradient_footprint(s.basis(), fit.aux, s.ncore(), s.ncas(),
+                                                         s.nelecas(), 1, 2, false),
+                        4 + 6 + 1 + 3 + 4 + 11 + 13 + 6 + 6, [&](fb::DeviceResources &res) {
+                          EXPECT_TRUE(fb::mcscf::df_gradient(
+                              res, s.molecule(), s.basis(), s.classes(), fit.aux, s.h(), fit.b,
+                              fit.l.data(), *s.solution, s.ncore(), s.ncas(), 1));
+                        });
+}
+
+// The routines the gradient and the couplings share, each held alone: the
+// transition 1-RDM, the transition orbital gradient, the root-pair
+// multipliers, zeta's terms (one pair, zeta nonzero), the overlap's half
+// gradient and the one-electron terms at a caller's D and -W.
+TEST_F(CasscfReaderFootprint, SharedRoutines) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  SaCasscf &s = sa();
+  fb::DeviceResources &in = s.plan.inputs;
+  const fb::mcscf::Solution &sol = *s.solution;
+  const auto m = static_cast<std::size_t>(s.ncas()) * static_cast<std::size_t>(s.ncas());
+  const auto dim = static_cast<std::size_t>(s.dim());
+  auto strings = fb::ci::DeviceStringSet::create(in, s.ncas(), s.nelecas() / 2);
+  ASSERT_TRUE(strings);
+  auto rdm = fb::ci::Rdm::create(in, *strings, *strings);
+  ASSERT_TRUE(rdm);
+  ASSERT_EQ(static_cast<std::size_t>(rdm->size()), dim);
+  const double *const bra = sol.roots.vectors.data();
+  const double *const ket = bra + dim;
+  fb::Buffers::device<double> rdms(m + (m * m), in.device());
+  ASSERT_TRUE(rdm->trans_rdm12(in, ket, bra, rdms.data(), rdms.data() + m));
+  const std::vector<double> gamma = to_host(in, rdms.data(), m);
+  const std::vector<double> gamma2 = to_host(in, rdms.data() + m, m * m);
+  const fb::CasscfIntegrals ints =
+      fb::casscf_integrals(in, s.basis(), s.molecule(), s.h(), s.fit().b, s.naux(), sol.c,
+                           s.ncore(), s.ncas())
+          .value();
+
+  // One chunk of D, the workspace alone.
+  expect_step_footprint(
+      fb::ci::trans_rdm1_footprint(s.ncas(), s.dim()), 0,
+      [&](fb::DeviceResources &res) { EXPECT_TRUE(rdm->trans_rdm1(res, bra, ket, rdms.data())); });
+  // Both Focks' six members each, and the second's 2 P_c, J and K.
+  const fb::MemoryFootprint transition =
+      fb::mcscf::transition_orbital_gradient_footprint(s.nmo(), s.naux(), s.ncore(), s.ncas());
+  EXPECT_GT(transition.device.persistent, 0U);
+  expect_step_footprint(transition, 6 + 6 + 3, [&](fb::DeviceResources &res) {
+    EXPECT_TRUE(fb::mcscf::transition_orbital_gradient(res, s.molecule(), s.h(), s.fit().b,
+                                                       s.naux(), sol.c, s.ncore(), s.ncas(),
+                                                       ints.ppaa, ints.papa, gamma, gamma2));
+  });
+  // The overlaps.
+  fb::Buffers::device<double> y_bar(2 * dim, in.device());
+  EXPECT_EQ(wwr::wwrMemsetAsync(y_bar.data(), 0, sizeof(double) * 2 * dim, in.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(in.sync());
+  expect_step_footprint(
+      fb::mcscf::root_pair_multipliers_footprint(2), 1, [&](fb::DeviceResources &res) {
+        EXPECT_TRUE(fb::mcscf::root_pair_multipliers(res, sol.roots, sol.weights, y_bar.data()));
+      });
+  // The orbital part and the RDMs, and the pair's transition gradient's.
+  const std::vector<double> zeta{0.25};
+  expect_step_footprint(
+      fb::mcscf::zeta_terms_footprint(s.nmo(), s.naux(), s.ncore(), s.ncas(), s.dim()),
+      2 + 6 + 6 + 3, [&](fb::DeviceResources &res) {
+        EXPECT_TRUE(fb::mcscf::zeta_terms(res, s.molecule(), s.h(), s.fit().b, s.naux(), sol,
+                                          s.ncore(), s.ncas(), ints.ppaa, ints.papa, *rdm, zeta));
+      });
+  // U, the pair's three, the slabs, their spherical copies and the rows.
+  fb::SphericalMatrixAO a(in, s.basis());
+  EXPECT_EQ(wwr::wwrMemsetAsync(a.data(), 0, sizeof(double) * a.num_elements(), in.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(in.sync());
+  expect_step_footprint(fb::overlap_half_gradient_footprint(s.basis()), 7,
+                        [&](fb::DeviceResources &res) {
+                          EXPECT_TRUE(fb::overlap_half_gradient(res, s.basis(), s.classes(), a));
+                        });
+  // One derivative call's seven.
+  expect_step_footprint(fb::gradient::one_electron_terms_footprint(s.basis()), 7,
+                        [&](fb::DeviceResources &res) {
+                          fb::gradient::RhfTerms g;
+                          EXPECT_TRUE(fb::gradient::one_electron_terms(res, s.molecule(), s.basis(),
+                                                                       s.classes(), a, a, g));
+                        });
+}
+
+// zvector over the CI-relaxed Hessian at @p sol, g the Fock's at root 0's
+// 1-RDM; at unequal weights (@p skew) with a CI right-hand side and a rotation
+// one, so the rotations' matrices are taken too. The products' sigma growth is
+// the warm-up run's, as its owner keeps it.
+void expect_zvector_footprint(SaCasscf &s, const fb::mcscf::Solution &sol, const bool skew) {
+  fb::DeviceResources &in = s.plan.inputs;
+  const auto m = static_cast<std::size_t>(s.ncas()) * static_cast<std::size_t>(s.ncas());
+  const fb::MemoryFootprint product =
+      fb::response::hessian_apply_footprint(s.nmo(), s.naux(), s.ncore(), s.ncas());
+  const std::unique_ptr<Relaxed> r = s.relaxed(sol);
+  const std::vector<double> root_gamma(sol.root_gammas.begin(),
+                                       sol.root_gammas.begin() + std::ptrdiff_t(m));
+  const fb::response::Fock own =
+      fb::response::fock(in, s.molecule(), s.h(), s.fit().b, s.naux(), sol.c, s.ncore(), s.ncas(),
+                         r->ints->ppaa, r->ints->papa, root_gamma, sol.gamma2)
+          .value();
+  fb::Buffers::device<double> ci_rhs(2 * static_cast<std::size_t>(s.dim()), in.device());
+  EXPECT_EQ(
+      wwr::wwrMemsetAsync(ci_rhs.data(), 0, sizeof(double) * ci_rhs.num_elements(), in.stream()),
+      wwr::wwrSuccess);
+  ASSERT_TRUE(in.sync());
+  const std::vector<double> theta_rhs{1e-3};
+  // z_o and z_c, -b and the rest, the overlaps, pcg's vectors and the
+  // product's scratch.
+  expect_step_footprint(
+      fb::response::zvector_footprint(s.pairs(), s.dim(), 2, product, skew, skew), 6,
+      [&](fb::DeviceResources &res) {
+        const auto z =
+            skew ? fb::response::zvector(res, *r->relaxed, *r->hessian, sol.roots,
+                                         own.gradient.data(), ci_rhs.data(), 1e-10, 200, theta_rhs)
+                 : fb::response::zvector(res, *r->relaxed, *r->hessian, sol.roots,
+                                         own.gradient.data());
+        ASSERT_TRUE(z) << z.error().message;
+        EXPECT_EQ(std::ranges::any_of(z->theta, [](double t) { return t != 0.0; }), skew);
+      });
+}
+
+TEST_F(CasscfReaderFootprint, Zvector) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_zvector_footprint(sa(), *sa().solution, false);
+}
+
+// The other calls df_gradient_footprint covers: one root, no response; a mix
+// summing to 0; and
+// df_transition_gradient at the pair's transition RDMs, without multipliers
+// and with given ones and an extra adjoint (values that do not matter).
+TEST_F(CasscfReaderFootprint, DfGradientForms) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  SaCasscf &s = sa();
+  fb::DeviceResources &in = s.plan.inputs;
+  const fb::DensityFitted &fit = s.fit();
+  const auto fp = [&](std::int32_t nroots, bool rotating, fb::mcscf::GradientForm form,
+                      bool multipliers = false, bool extra = false) {
+    return fb::mcscf::df_gradient_footprint(s.basis(), fit.aux, s.ncore(), s.ncas(), s.nelecas(), 1,
+                                            nroots, rotating, form, multipliers, extra);
+  };
+  const auto call = [&](fb::DeviceResources &res, const fb::mcscf::Solution &sol,
+                        std::span<const double> mix) {
+    EXPECT_TRUE(fb::mcscf::df_gradient(res, s.molecule(), s.basis(), s.classes(), fit.aux, s.h(),
+                                       fit.b, fit.l.data(), sol, s.ncore(), s.ncas(), mix));
+  };
+  {
+    const fb::mcscf::Solution single = one_root(in, s.basis(), *s.cas);
+    const std::vector<double> mix{1.0};
+    expect_step_footprint(fp(1, false, fb::mcscf::GradientForm::Mix), 24,
+                          [&](fb::DeviceResources &res) { call(res, single, mix); });
+  }
+  const std::vector<double> zero{0.5, -0.5};
+  expect_step_footprint(fp(2, false, fb::mcscf::GradientForm::ZeroMix), 70,
+                        [&](fb::DeviceResources &res) { call(res, *s.solution, zero); });
+
+  const fb::mcscf::Solution &sol = *s.solution;
+  const auto m = static_cast<std::size_t>(s.ncas()) * static_cast<std::size_t>(s.ncas());
+  const auto dim = static_cast<std::size_t>(s.dim());
+  const std::unique_ptr<Relaxed> r = s.relaxed(sol);
+  fb::Buffers::device<double> rdms(m + (m * m), in.device());
+  ASSERT_TRUE(r->rdm->trans_rdm12(in, sol.roots.vectors.data() + dim, sol.roots.vectors.data(),
+                                  rdms.data(), rdms.data() + m));
+  const std::vector<double> gamma = to_host(in, rdms.data(), m);
+  const std::vector<double> gamma2 = to_host(in, rdms.data() + m, m * m);
+  const auto transition = [&](fb::DeviceResources &res, const fb::response::ZVector *z,
+                              const fb::mcscf::MoAdjoint *extra) {
+    EXPECT_TRUE(fb::mcscf::df_transition_gradient(res, s.molecule(), s.basis(), s.classes(),
+                                                  fit.aux, s.h(), fit.b, fit.l.data(), sol,
+                                                  s.ncore(), s.ncas(), gamma, gamma2, z, extra));
+  };
+  expect_step_footprint(fp(2, false, fb::mcscf::GradientForm::Transition), 24,
+                        [&](fb::DeviceResources &res) { transition(res, nullptr, nullptr); });
+  const fb::Buffers::device<double> g =
+      fb::mcscf::transition_orbital_gradient(in, s.molecule(), s.h(), fit.b, s.naux(), sol.c,
+                                             s.ncore(), s.ncas(), r->ints->ppaa, r->ints->papa,
+                                             gamma, gamma2)
+          .value();
+  const fb::response::ZVector z =
+      fb::response::zvector(in, *r->relaxed, *r->hessian, sol.roots, g.data()).value();
+  const auto nn = static_cast<std::size_t>(s.nmo()) * static_cast<std::size_t>(s.nmo());
+  fb::Buffers::device<double> adjoint(nn + (static_cast<std::size_t>(s.naux()) * nn) + nn,
+                                      in.device());
+  EXPECT_EQ(
+      wwr::wwrMemsetAsync(adjoint.data(), 0, sizeof(double) * adjoint.num_elements(), in.stream()),
+      wwr::wwrSuccess);
+  ASSERT_TRUE(in.sync());
+  const fb::mcscf::MoAdjoint extra{.h_bar = adjoint.data(),
+                                   .lambda = adjoint.data() + nn,
+                                   .x = adjoint.data() + nn +
+                                        (static_cast<std::size_t>(s.naux()) * nn)};
+  expect_step_footprint(fp(2, false, fb::mcscf::GradientForm::Transition, true, true), 40,
+                        [&](fb::DeviceResources &res) { transition(res, &z, &extra); });
+}
+
+// df_nac for the pair (0, 1) at @p sol: its setup, the pair's RDMs, the
+// Z-vector, h_IJ and d^CSF; @p skew says the weights are unequal, and the
+// Z-vector rotates the roots. Live at the peak, h_IJ's terms beside the setup
+// and the Z-vector.
+void expect_df_nac_footprint(SaCasscf &s, const fb::mcscf::Solution &sol, const bool skew) {
+  const fb::DensityFitted &fit = s.fit();
+  expect_step_footprint(
+      fb::mcscf::df_nac_footprint(s.basis(), fit.aux, s.ncore(), s.ncas(), s.nelecas(), 1, 2, skew),
+      80, [&](fb::DeviceResources &res) {
+        EXPECT_TRUE(fb::mcscf::df_nac(res, s.molecule(), s.basis(), s.classes(), fit.aux, s.h(),
+                                      fit.b, fit.l.data(), sol, s.ncore(), s.ncas(), 0, 1,
+                                      fb::mcscf::NacOptions{}));
+      });
+}
+
+TEST_F(CasscfReaderFootprint, DfNac) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_df_nac_footprint(sa(), *sa().solution, false);
+}
+
+// The combination: nac_combination_terms alone, then the combination's df_nac,
+// over T coupling the two roots and a D^X with one core-virtual element.
+TEST_F(CasscfReaderFootprint, DfNacCombination) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  SaCasscf &s = sa();
+  const fb::DensityFitted &fit = s.fit();
+  const std::vector<double> t{0.0, 0.3, -0.3, 0.0};
+  const auto mo = static_cast<std::size_t>(s.nmo());
+  std::vector<double> d_x(mo * mo, 0.0);
+  d_x[((mo - 1) * mo) + 0] = 0.1;
+  // The strings, the RDMs, and a half gradient's: a, the work, A, U, the pair
+  // and the slabs.
+  expect_step_footprint(
+      fb::mcscf::nac_combination_terms_footprint(s.basis(), s.ncas(), s.nelecas(), 1, true),
+      2 + 1 + 3 + 7, [&](fb::DeviceResources &res) {
+        EXPECT_TRUE(fb::mcscf::nac_combination_terms(res, s.molecule(), s.basis(), s.classes(),
+                                                     fit.aux, fit.b, *s.solution, s.ncore(),
+                                                     s.ncas(), t, d_x));
+      });
+  expect_step_footprint(fb::mcscf::df_nac_combination_footprint(s.basis(), fit.aux, s.ncore(),
+                                                                s.ncas(), s.nelecas(), 1, 2, false,
+                                                                true),
+                        80, [&](fb::DeviceResources &res) {
+                          EXPECT_TRUE(fb::mcscf::df_nac(res, s.molecule(), s.basis(), s.classes(),
+                                                        fit.aux, s.h(), fit.b, fit.l.data(),
+                                                        *s.solution, s.ncore(), s.ncas(), t, d_x));
+                        });
+}
+
+// The steps at plan_shape's dimensions: the CASSCF's two roots, its explicit
+// space; over the CASSCF at its own equal weights, and at the skewed ones
+// with the dimensions' flag set as plan_shape sets it for them
+// (PipelineShape.CasscfRootsAndWeights). Live at the peak, the upload's two
+// beside their call's.
+template <class Step>
+void expect_reader_step_footprint(SaCasscf &s, const bool skew, const std::size_t live) {
+  fb::FootprintDimensions dims = s.plan.dims();
+  ASSERT_EQ(dims.casscf_nroots, 2U);
+  ASSERT_FALSE(dims.casscf_unequal_weights);
+  ASSERT_EQ(dims.ncas, 4U);
+  ASSERT_EQ(dims.nelecas, 4U);
+  dims.casscf_unequal_weights = skew;
+  if (skew) {
+    (void)s.skewed();
+  }
+  const fb::CasscfOutput &cas = skew ? *s.skewed_cas : *s.cas;
+  const auto step = planned<Step>(*s.plan.calc);
+  const fb::MemoryFootprint fp = step.footprint(dims);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  expect_step_footprint(fp, live, [&](fb::DeviceResources &res) {
+    expect_ran(step.run(
+        fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput,
+                 fb::EriOutput, fb::CoreHamiltonianOutput, fb::CasscfOutput>{
+            *s.plan.molecule, *s.plan.basis, *s.plan.pairs, *s.plan.eri, *s.plan.h, cas},
+        res));
+  });
+}
+
+constexpr std::size_t kGradientStepLive = 2 + 4 + 6 + 1 + 3 + 4 + 11 + 13 + 6 + 6;
+constexpr std::size_t kNacStepLive = 2 + 80;
+
+TEST_F(CasscfReaderFootprint, CasscfGradientStep) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_reader_step_footprint<fb::CasscfGradientStep>(sa(), false, kGradientStepLive);
+}
+
+TEST_F(CasscfReaderFootprint, NacStep) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_reader_step_footprint<fb::NacStep>(sa(), false, kNacStepLive);
+}
+
+// Everything above that unequal weights change, over the CASSCF converged at
+// weights 0.7 and 0.3: zvector with the rotations, df_gradient at a root,
+// df_nac, and both steps.
+TEST_F(CasscfReaderFootprint, UnequalWeights) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  SaCasscf &s = sa();
+  const fb::mcscf::Solution &sol = s.skewed();
+  const fb::DensityFitted &fit = s.fit();
+  expect_zvector_footprint(s, sol, true);
+  expect_step_footprint(fb::mcscf::df_gradient_footprint(s.basis(), fit.aux, s.ncore(), s.ncas(),
+                                                         s.nelecas(), 1, 2, true),
+                        kGradientStepLive - 2, [&](fb::DeviceResources &res) {
+                          EXPECT_TRUE(fb::mcscf::df_gradient(
+                              res, s.molecule(), s.basis(), s.classes(), fit.aux, s.h(), fit.b,
+                              fit.l.data(), sol, s.ncore(), s.ncas(), 1));
+                        });
+  expect_df_nac_footprint(s, sol, true);
+  expect_reader_step_footprint<fb::CasscfGradientStep>(s, true, kGradientStepLive);
+  expect_reader_step_footprint<fb::NacStep>(s, true, kNacStepLive);
 }
 
 } // namespace

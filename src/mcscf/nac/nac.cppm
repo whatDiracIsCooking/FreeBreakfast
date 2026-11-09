@@ -18,6 +18,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -208,5 +209,44 @@ df_nac(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
        std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
        const Buffers::device<double> &b, const double *l, const Solution &solution, int32_t ncore,
        int32_t ncas, std::span<const double> t, std::span<const double> d_x = {});
+
+/// @brief What the pair's @ref df_nac holds over @p basis and @p aux, with
+/// @p ncore core and @p ncas active orbitals holding @p nelecas electrons at
+/// @p multiplicity, over a solution of @p nroots roots, all of it freed on
+/// return (the coupling is on the host): scratch and the device workspace.
+///
+/// In the call's order, each beside what is held before it: the setup (the
+/// CI strings, the fitted integrals, the averaged Fock, the CI sigma's
+/// tables, the Hessian and the CI-relaxed Hessian), kept to the end; the
+/// pair's RDMs; the transition orbital gradient, kept; the sigma's apply
+/// scratch, grown to Layout::full by the products, and
+/// @c response::zvector's, the ZVector kept; h_IJ's
+/// @c df_transition_gradient over the multipliers
+/// (@c df_gradient_footprint, GradientForm::Transition); d^CSF's half
+/// gradient. @p rotating says the weights are unequal (the Z-vector carries
+/// rotations among the roots). Empty where the call refuses before
+/// allocating.
+[[nodiscard]] MemoryFootprint df_nac_footprint(const BasisSet &basis, const BasisSet &aux,
+                                               int32_t ncore, int32_t ncas, int32_t nelecas,
+                                               int32_t multiplicity, int32_t nroots, bool rotating);
+
+/// @brief What @ref nac_combination_terms holds over @p basis, with @p ncas
+/// active orbitals holding @p nelecas electrons at @p multiplicity, when T
+/// couples at least one pair, all of it freed on return: the CI strings, the
+/// RDMs' device copy, the CSF term's half gradient and, with @p d_x, D^X's
+/// over every orbital; the device workspace, the larger of trans_rdm12's and
+/// trans_rdm1's.
+[[nodiscard]] MemoryFootprint nac_combination_terms_footprint(const BasisSet &basis, int32_t ncas,
+                                                              int32_t nelecas, int32_t multiplicity,
+                                                              bool d_x);
+
+/// @brief What the combination's @ref df_nac holds, as @ref df_nac_footprint
+/// with @ref nac_combination_terms_footprint first, and past the transition
+/// gradient the right-hand side on the device, kept to the end.
+[[nodiscard]] MemoryFootprint df_nac_combination_footprint(const BasisSet &basis,
+                                                           const BasisSet &aux, int32_t ncore,
+                                                           int32_t ncas, int32_t nelecas,
+                                                           int32_t multiplicity, int32_t nroots,
+                                                           bool rotating, bool d_x);
 
 } // namespace free_breakfast::mcscf

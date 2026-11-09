@@ -166,4 +166,8 @@ private:
 /// device workspace.
 [[nodiscard]] MemoryFootprint trans_rdm12_footprint(int32_t n_orbitals, int32_t rows);
 
+/// @brief What @ref Rdm::trans_rdm1 takes: one chunk of D, as rdm12's, the
+/// device workspace, and no M.
+[[nodiscard]] MemoryFootprint trans_rdm1_footprint(int32_t n_orbitals, int32_t rows);
+
 } // namespace free_breakfast::ci
