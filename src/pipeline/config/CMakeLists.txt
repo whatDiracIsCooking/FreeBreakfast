@@ -12,6 +12,7 @@ free_breakfast_add_cxx_module_library(
   config.cpp
   IMPORT_STD
   LINK_PUBLIC
+  free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::pipeline::pipeline
   free_breakfast::pipeline::molecule
@@ -38,7 +39,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::optimize
   free_breakfast::pipeline::hessian
   LINK_PRIVATE
-  free_breakfast::core::types
   free_breakfast::io::base
   free_breakfast::io::basis
   free_breakfast::io::toml
