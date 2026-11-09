@@ -9,18 +9,24 @@ the peak a plan reaches and the step that reaches it. The vocabulary itself —
 ## Module
 
 `free_breakfast.pipeline.footprint`, target
-`free_breakfast::pipeline::footprint`. It imports `core.types`, and
-re-exports `core.footprint` and `basis`, so a step module importing it has
-`MemoryFootprint`, `then` and `drop`, and can read the bases the dimensions
-carry. `basis` is host data; nothing GPU-side, nothing from `pipeline.step`
-and no method layer: every step module imports it. Templates and `constexpr`
-functions only, so there is no implementation unit.
+`free_breakfast::pipeline::footprint`. It imports `core.types` and
+`core.error_handling`, and re-exports `core.footprint` and `basis`, so a step
+module importing it has `MemoryFootprint`, `then` and `drop`, and can read
+the bases the dimensions carry. `basis` is host data; nothing GPU-side,
+nothing from `pipeline.step` and no method layer: every step module imports
+it. The implementation unit is `check_plan`'s and `check_pinned_node`'s, for
+their messages and log lines.
 
 | Export | What |
 |---|---|
 | `FootprintDimensions` | The plan's dimensions, before the first step: the placed orbital basis and, under density fitting, the aux basis, and under AVAS MINAO (const pointers), the molecule's atoms, nao, naux, nocc / n_alpha / n_beta, natoms, mmd's record counts per (la, lb), syevd's lwork at every order through the plan's largest eigensolve, skew_eig's at nao for a planned CASSCF, and worst-case ncas / nelecas (0 when no active space is planned). [`pipeline/shape`](../shape/README.md)'s `plan_shape` fills it |
 | `step_footprint(step, dims)` | A step's footprint, or none for a step that has no footprint member yet |
 | `PlanFootprint`, `plan_footprint(steps)` | The plan fold: `then` over one device's step footprints in plan order, with the step at which each kind's peak is reached |
+| `step_adaptive_unit(step, dims)` | An adaptive step's bytes for one more unit of its adaptive part, or none for a step that is not adaptive |
+| `StepFootprint` | One planned step as pre-flight sees it: its name, footprint and adaptive unit. `Pipeline::footprints(dims)` lists them in plan order |
+| `PlanCaps` | The `[memory]` caps as the fold is held to them: `device_room`, the most the device peak may reach, and the two caps |
+| `check_plan(steps, caps)` | The fold held to the caps: refused naming the step with no footprint, or the step reaching a peak past its cap; logs the peaks, the workspace gap and each adaptive step's room |
+| `check_pinned_node(cap, devices, mem_available)` | The machine check: the devices times the pinned cap within MemAvailable |
 
 ## The dimensions
 
@@ -83,10 +89,46 @@ by `expect_footprint`'s two bars.
 **No public trait.** Every step will carry a footprint, and #1122 makes it a
 requirement of `PipelineStep`, so a "has a footprint" trait like
 `LoadableStep` would have nothing to sort. Until then an unexported detection
-recognises the member, and only `step_footprint` uses it: a member that is
+recognises the member, and only `step_footprint` uses it (and its twin
+`step_adaptive_unit`, the optional adaptive unit): a member that is
 non-const, static, overloaded, a template or of another signature is not a
 footprint, and `step_footprint` returns `std::nullopt`, so the fold's caller
 can name the step rather than count it as zero. #1122 deletes both.
+
+## An adaptive step's unit
+
+An adaptive step's footprint scratch is the least it runs with
+(`core/footprint`): the cap is checked against that, and the step takes what
+is left at run time. A step that says how much one more unit of its adaptive
+part takes,
+
+```cpp
+size_t adaptive_unit(const FootprintDimensions &dims) const;
+```
+
+gets a line from pre-flight: what the cap leaves it above its least at its
+point in the fold, at warn level when that is under one unit, so "fits, but
+runs at width 1" shows before the run starts. The member is optional, and
+recognised as `footprint` is (`step_adaptive_unit`); no step carries one
+yet, so the warning is exercised by the made-up steps of
+`test/pipeline/preflight_host.cpp`. FCI's sigma blocks and the NEVPT2 tiles
+are the first that should.
+
+## Holding the fold to the caps
+
+`check_plan(steps, caps)` folds a plan's `StepFootprint`s and holds each
+kind's peak to its cap: the device peak to `caps.device_room` (the pool's
+cap less the headroom and any reuse rounding; `pipeline/shape` computes it),
+the pinned peak to `max_pinned_mem_per_gpu` exactly, since pinned memory is
+not pooled. Past either it is `InvalidConfig` naming the step that reaches
+the peak, the peak and the cap. **A step with no footprint is refused** under
+any cap, naming it, rather than counted as zero, which could pass a plan that
+does not fit: until every step has one (#1122), a capped plan is one of
+footprinted steps. Without a cap it is not called at all. Its log lines are
+each kind's peak and step, the workspace gap (the plan's maximum workspace,
+held throughout, against what the peak step uses of it) and each adaptive
+step's room. `pipeline/README.md`'s "Memory caps" has the whole of
+pre-flight.
 
 ## The peak model
 
@@ -124,7 +166,7 @@ maximum before the first step and held through every one.
 - **Placement.** The device workspace is for what many steps use at similar
   sizes (a library's `lwork`, solver work). A one-step intermediate goes in
   named scratch, because the workspace holds its maximum through every step;
-  pre-flight logs the gap (#1051). Fixed-size staging, bounce buffers and ring
+  pre-flight logs the gap. Fixed-size staging, bounce buffers and ring
   slots go in the pinned workspace. A product kept in pinned memory (an
   offloaded B) is `pinned.persistent`.
 - **A loaded product is persistent too.** A `Load`ed step's product is as
@@ -134,8 +176,8 @@ maximum before the first step and held through every one.
 
 A plan whose footprint peak fits under a cap can still be refused by the pool:
 the pool takes memory from the driver in chunks, and what it has reserved, not
-what is in use, is what `maxSize` bounds. Pre-flight (#1051) therefore leaves
-**64 MiB** (two pool chunks) between a plan's device peak and the device's
+what is in use, is what `maxSize` bounds. Pre-flight therefore leaves
+**64 MiB** (two pool chunks, `kPoolHeadroomBytes` in `core/footprint`) between a plan's device peak and the device's
 budget, and an adaptive routine sizes its adaptive part to the budget less its
 own allocations still to come and this headroom (`core/footprint`).
 
@@ -214,13 +256,13 @@ CI, can then peak a few bytes past its footprint on the gfx1200 (12 B and
 64 B measured, #1049). The footprint still counts requested bytes, and the
 footprint tests' sound bar allows the pool its rounding there: at most 1/8
 of the footprint, the sum of the requests live at the peak
-(`test/support/pool_footprint.h`), logged when used, and nothing on CUDA. At
-run time pre-flight's 64 MiB headroom covers the overcounts measured, as it
-covers the chunk rounding above. The bound itself, 1/8 of a footprint, is
-larger than 64 MiB for a step past 512 MiB, so a HIP plan whose peak sits
-within that of its cap could still be refused by the pool: pre-flight's to
-weigh (#1051).
+(`test/support/pool_footprint.h`), logged when used, and nothing on CUDA. The
+bound, 1/8 of a peak, is larger than 64 MiB for a peak past 512 MiB, so on a
+pool that rounds, pre-flight leaves it beside the headroom: a peak P must fit
+the pool's cap less 64 MiB and ⌈P/8⌉ (`pipeline/shape`'s README, "The HIP
+margin", has why the two add).
 
-**HIP is not measured here.** ROCm's pool reserves in its own steps and resets
-a high-water mark to 0 (`core/wwr`'s README); its gap needs its own run on the
-gfx1200 before a HIP pre-flight leans on this number.
+**HIP's gap is not measured here.** ROCm's pool reserves in its own steps
+and resets a high-water mark to 0 (`core/wwr`'s README); its reserved gap
+needs its own run on the gfx1200. Until then a HIP pre-flight leans on this
+number for the chunks and adds the reuse bound above for the rounding.

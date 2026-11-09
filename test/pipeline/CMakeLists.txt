@@ -5,8 +5,9 @@
 # contract and the planner over made-up steps, the contract of every real
 # step, the TOML front end, the Guess step's load, the Hessian, Nac and
 # Nevpt2Nac steps' contracts and configs, and the Optimize step's QD state
-# following and the files its walk keeps over a stub evaluation, and the
-# footprint fold over made-up steps.
+# following and the files its walk keeps over a stub evaluation, the
+# footprint fold over made-up steps, and pre-flight's check of it against the
+# [memory] caps.
 # None constructs a DeviceResources, so a green run here is meaningful on a
 # device-less box.
 #
@@ -37,6 +38,7 @@ add_executable(
   nevpt2_nac_host.cpp
   optimize_host.cpp
   footprint_host.cpp
+  preflight_host.cpp
 )
 
 set_target_properties(

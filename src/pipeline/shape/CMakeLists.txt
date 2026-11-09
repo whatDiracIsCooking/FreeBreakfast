@@ -1,9 +1,10 @@
 # The plan's shape: a planned Calculation's bases placed and its footprint
-# dimensions filled, before the first step. pipeline::config and
-# pipeline::footprint are PUBLIC and re-exported: plan_shape reads a
-# Calculation and returns the dimensions. core::resources is in its signature.
-# The rest -- the aux and MINAO readers, the solvers' size queries, the steps'
-# View -- is PRIVATE: it is the implementation unit's.
+# dimensions filled, before the first step; and preflight, the plan held to
+# the [memory] caps. pipeline::config and pipeline::footprint are PUBLIC and
+# re-exported: plan_shape reads a Calculation and returns the dimensions.
+# core::resources is in their signatures. The rest -- the aux and MINAO
+# readers, the solvers' size queries, the steps' View, the pool's buffers for
+# the pre-warm and the log -- is PRIVATE: it is the implementation unit's.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.shape
@@ -20,6 +21,9 @@ free_breakfast_add_cxx_module_library(
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::core::diagnostics_macros
+  free_breakfast::core::wwr
+  free_breakfast::core::log
+  free_breakfast::core::primitives
   free_breakfast::io::basis
   free_breakfast::recipes::diagonalize
   free_breakfast::recipes::expm

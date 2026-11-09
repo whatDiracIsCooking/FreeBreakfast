@@ -201,7 +201,8 @@ nroots = 3                # default 1
 
 `[fci]` takes no active space: it is every orbital and every electron. Whether
 the determinant space fits is the device's to say, so `FciStep::run` estimates
-it against the free memory when the step runs (`fci/README.md`).
+it against the device's memory budget (`DeviceResources::memory_budget()`)
+when the step runs (`fci/README.md`).
 
 ```toml
 [cis]
@@ -679,8 +680,14 @@ Anything else is `InvalidConfig` naming the key: a size below 1 byte
 in that list, an exponent (`"1e9B"` reads as the unit `e9B`), a size past
 2⁶³ bytes, and a float or a boolean. A cap is never guessed.
 
-The table is only read and stored here. Nothing in this module checks a plan
-against it, and `Pipeline::run` does not read it.
+The table is only read and stored here, and `Pipeline::run` does not read
+it. What holds a plan to it is pre-flight (`pipeline/shape`'s `preflight`,
+which `main` calls before the first step): the devices rebuilt with the
+caps, the plan's footprint folded and refused past them, the workspaces
+grown to the plan's maximum and the pool pre-warmed. With neither key it does
+nothing. [`pipeline/README.md`](../README.md)'s "Memory caps" has the whole
+of it, and [`examples/memory.toml`](../../../examples/memory.toml) is a
+capped config.
 
 ## Tests
 

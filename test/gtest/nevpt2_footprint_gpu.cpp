@@ -483,7 +483,7 @@ TEST(Nevpt2Footprint, ClassEnergiesBatchFromTheBudgetUnderACap) {
   ASSERT_LT(least.device.scratch, whole.device.scratch);
   // A cap halfway between the least and the whole, above the 64 MiB of
   // headroom the walk leaves and the workspace the first call grows.
-  const std::uint64_t cap = (std::uint64_t{64} << 20) + least.device.workspace +
+  const std::uint64_t cap = fb::kPoolHeadroomBytes + least.device.workspace +
                             ((least.device.scratch + whole.device.scratch) / 2);
   fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   ASSERT_TRUE(nevpt2::class_energies(res, b, g.in, nevpt2::kBatchFromBudget));

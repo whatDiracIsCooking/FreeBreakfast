@@ -134,13 +134,11 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   for (size_t order = 0; order <= max_order; ++order) {
     dims.syevd_lwork[order] = FBF_TRY(syevd_lwork<double>(res, static_cast<int32_t>(order)));
   }
-  // The budget less two pool chunks of fragmentation headroom, as
-  // core/footprint has an adaptive routine leave (pipeline/footprint's
-  // README): the pool reserves in chunks, and what it reserves is what the
-  // cap bounds.
-  constexpr size_t kHeadroom = size_t{64} << 20U;
+  // The budget less the fragmentation headroom, as core/footprint has an
+  // adaptive routine leave: the pool reserves in chunks, and what it reserves
+  // is what the cap bounds.
   const size_t whole_budget = FBF_TRY(res.memory_budget());
-  const size_t budget = whole_budget > kHeadroom ? whole_budget - kHeadroom : 0;
+  const size_t budget = whole_budget > kPoolHeadroomBytes ? whole_budget - kPoolHeadroomBytes : 0;
   const size_t workspace = res.device_workspace(0).num_elements();
   const auto need = [&](const size_t limit) {
     const MemoryFootprint fp = fci_footprint(dims, nroots, limit);
@@ -157,7 +155,7 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
                             "{} MiB of headroom",
                             n_electrons, nmo, nroots, static_cast<double>(need(0)) / kGiB,
                             res.dev_idx(), static_cast<double>(whole_budget) / kGiB,
-                            kHeadroom >> 20U);
+                            kPoolHeadroomBytes >> 20U);
     }
     // The largest limit that fits: need grows with it.
     size_t fits = 0;

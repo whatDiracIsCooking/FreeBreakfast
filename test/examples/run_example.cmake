@@ -3,11 +3,12 @@
 #
 #   cmake -DBINARY=<free-breakfast> -DINPUT_DIR=<examples/> -DCONFIG=<x.toml>
 #         -DOUTPUT_DIR=<dir> -DFILES=<a,b,...> [-DJSON=<file.json>
-#         -DKEYS=<k1,k2,...>] -P run_example.cmake
+#         -DKEYS=<k1,k2,...>] [-DEXPECT=<regex>] -P run_example.cmake
 #
 # Fails when the binary exits non-zero, when it does not print its closing
-# `completed: 0 errors` line, when one of FILES is missing from OUTPUT_DIR, or
-# when JSON does not parse or lacks one of KEYS at its top level. A config that
+# `completed: 0 errors` line, when one of FILES is missing from OUTPUT_DIR,
+# when JSON does not parse or lacks one of KEYS at its top level, or when its
+# output does not match EXPECT. A config that
 # stops parsing fails here on any machine: main reads and plans it before it
 # looks for a device.
 #
@@ -40,6 +41,10 @@ if(NOT _rc STREQUAL "0")
 endif()
 if(NOT _out MATCHES "completed: 0 errors")
   message(FATAL_ERROR "free-breakfast ${CONFIG}: no `completed: 0 errors`")
+endif()
+
+if(DEFINED EXPECT AND NOT _out MATCHES "${EXPECT}")
+  message(FATAL_ERROR "free-breakfast ${CONFIG}: no line matching `${EXPECT}`")
 endif()
 
 string(REPLACE "," ";" _files "${FILES}")

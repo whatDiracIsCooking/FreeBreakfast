@@ -1,6 +1,8 @@
 /// @file
 /// @brief The plan's shape: a planned Calculation's bases placed and its
-///        FootprintDimensions filled, before the first step runs.
+///        FootprintDimensions filled, before the first step runs; and
+///        pre-flight, which holds the plan's footprint at that shape to the
+///        `[memory]` caps.
 ///
 /// Not a step, and not in pipeline.config: it needs the parsed Calculation,
 /// and pipeline.footprint, which every step module imports, must not import
@@ -67,5 +69,40 @@ struct PlanShape {
 ///         molecule's multiplicity, or a malformed AVAS label or one naming no
 ///         MINAO AO; or the GpuRuntime error of the size query.
 [[nodiscard]] Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res);
+
+/// @brief Pre-flight: hold @p calc's plan to its `[memory]` caps on @p node,
+///        and set the node up to run it under them, before the first step.
+///
+/// With neither cap set it does nothing: an uncapped plan is not checked.
+/// Otherwise, in order:
+///
+/// - a `max_device_mem_per_gpu` that leaves no pool past the reserve outside
+///   it (DeviceResources::kDeviceReserve) and the fragmentation headroom
+///   (kPoolHeadroomBytes) is refused;
+/// - under a pinned cap, the node's devices times it must fit MemAvailable
+///   (check_pinned_node);
+/// - each of @p node's DeviceResources is rebuilt with the pool capped at
+///   `max_device_mem_per_gpu` less the reserve and the pinned total at
+///   `max_pinned_mem_per_gpu`;
+/// - the plan is shaped on device 0 (plan_shape) and its footprints folded
+///   and checked (check_plan), the device peak against the pool's cap less
+///   the headroom and, on a pool that rounds a reused block, an eighth of
+///   the peak. A step with no footprint yet is refused under a cap. When the
+///   only active spaces planned are AVAS's and their worst case does not
+///   fit, each AVAS step's `avas_max_ncas` is narrowed to the most orbitals
+///   that do, so a larger pick is refused at the step;
+/// - the device and pinned workspaces are grown to the plan's maximum, so a
+///   footprinted step never grows them;
+/// - under a device cap, the pool's cap less the headroom is allocated and
+///   freed once, so memory another process holds is reported now, not at a
+///   later step; the pool keeps it, its release threshold being the cap.
+///
+/// A node with no device is left to Pipeline::run to refuse.
+///
+/// @return InvalidConfig for a cap leaving no pool, the machine check, or
+///         check_plan's refusal; Allocation when the device cannot supply
+///         the pool's cap, naming its free memory and the cap; plan_shape's
+///         error, or a pinned workspace's; GpuRuntime for a failed sync.
+[[nodiscard]] Status preflight(Calculation &calc, NodeResources &node);
 
 } // namespace free_breakfast

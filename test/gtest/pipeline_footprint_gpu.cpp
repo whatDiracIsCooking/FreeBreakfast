@@ -22,12 +22,6 @@ namespace {
 
 namespace fb = free_breakfast;
 
-// The README's headroom, two 32 MiB chunks: what a pool whose allocations
-// pack holds past its peak use is the free top of its last chunk and the
-// holes small frees leave in the chunk its small allocations share, each
-// under a chunk.
-constexpr std::size_t kHeadroom = std::size_t{64} << 20;
-
 // Water, in bohr.
 std::vector<fb::Atom> water() {
   return {fb::Atom{{0.0, 0.0, -0.1294}, fb::Element::O},
@@ -122,7 +116,7 @@ TEST_P(RhfChainHeadroom, ReservedPastUsedIsInsideTheHeadroom) {
   const std::uint64_t gap = usage.reserved_high - usage.used_high;
   std::cout << std::format("[ headroom ] {}: UsedMemHigh {} ReservedMemHigh {} gap {}\n",
                            GetParam().name, usage.used_high, usage.reserved_high, gap);
-  EXPECT_LE(gap, kHeadroom);
+  EXPECT_LE(gap, fb::kPoolHeadroomBytes);
 }
 
 INSTANTIATE_TEST_SUITE_P(
