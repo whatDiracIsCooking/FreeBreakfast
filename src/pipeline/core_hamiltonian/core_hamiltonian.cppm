@@ -13,6 +13,7 @@ import free_breakfast.core.resources;
 export import free_breakfast.pipeline.basis_set;
 import free_breakfast.integrals.one_electron.core_hamiltonian;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.pipeline.spherical_transform;
 export import free_breakfast.pipeline.primitive_pair_classes;
@@ -43,6 +44,16 @@ struct CoreHamiltonianStep {
                              in.get<MoleculeOutput>().molecule, h.cartesian()));
     FBF_TRY(h.cartesian_to_spherical(res));
     return CoreHamiltonianOutput{std::move(h.spherical())};
+  }
+
+  /// @brief H, persistent; the rest of its @ref MatrixAOPair, scratch.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const {
+    // The pair's spherical matrix is the product; its Cartesian matrix and
+    // the conversion's scratch are freed at return. core_hamiltonian allocates nothing.
+    const size_t kept = sizeof(double) * dims.nao * dims.nao;
+    MemoryFootprint pair = matrix_ao_pair_footprint(*dims.basis);
+    pair.device.persistent -= kept;
+    return then(MemoryFootprint{.device = {.persistent = kept}}, drop(pair));
   }
 };
 

@@ -66,7 +66,7 @@ Then a second pass, since one leaves Qᵀ Q = I + E with ‖E‖ of order κ ε,
 |---|---|
 | `kOrthogonalizeEigenvalueFloor<T>` | The default floor, 1e-10. |
 | `orthogonalize<T>(res, n, s, x, floor)` | `Status`: X = S^{-1/2} into `x`. Instantiated for `float` and `double`. |
-| `orthogonalize_footprint<T>(res, n)` | `Result<MemoryFootprint>`: U and the eigenvalues scratch; the device workspace, the larger of syevd's work and M. |
+| `orthogonalize_footprint<T>(n, syevd_lwork)` | `MemoryFootprint`: U and the eigenvalues scratch; the device workspace, the larger of syevd's work (`syevd_lwork` elements, `syevd_lwork<T>(res, n)`) and M. |
 | `orthonormalize<T>(res, n, k, v, floor)` | `Result<int32_t>`: `v`'s columns orthonormalized in place, the kept count returned. Instantiated for `float` and `double`. |
 
 ## Usage

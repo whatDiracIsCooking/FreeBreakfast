@@ -12,6 +12,7 @@ import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.io.basis;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.basis;
 export import free_breakfast.pipeline.molecule;
 
@@ -47,6 +48,9 @@ struct BasisSetStep {
     return BasisSetOutput{
         FBF_TRY(place(stamp.primitive_normalized(), in.get<MoleculeOutput>().molecule))};
   }
+
+  /// @brief Nothing: host-shaped, the basis is host data.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions & /*dims*/) const { return {}; }
 };
 
 } // namespace free_breakfast

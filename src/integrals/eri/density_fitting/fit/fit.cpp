@@ -78,16 +78,16 @@ Status density_fit(DeviceResources &res, const int32_t nao, const int32_t naux, 
       naux));
 }
 
-Result<MemoryFootprint> density_fit_footprint(DeviceResources &res, const int32_t nao,
-                                              const int32_t naux, const double lindep) {
+MemoryFootprint density_fit_footprint(const int32_t nao, const int32_t naux,
+                                      const size_t syevd_lwork, const double lindep) {
   // cholesky and trsm allocate nothing.
   if (nao <= 0 || naux <= 0 || !(lindep > 0.0)) {
-    return MemoryFootprint{};
+    return {};
   }
   const size_t nn = static_cast<size_t>(naux) * static_cast<size_t>(naux);
   const size_t slab = static_cast<size_t>(naux) * static_cast<size_t>(nao);
   // M's copy, held across orthogonalize and the slabs' gemms.
-  MemoryFootprint out = FBF_TRY(orthogonalize_footprint<double>(res, naux));
+  MemoryFootprint out = orthogonalize_footprint<double>(naux, syevd_lwork);
   out.device.scratch += sizeof(double) * nn;
   out.device.workspace =
       std::max(out.device.workspace,

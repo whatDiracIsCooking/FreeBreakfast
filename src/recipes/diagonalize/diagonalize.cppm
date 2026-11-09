@@ -41,12 +41,21 @@ export namespace free_breakfast {
 template <real_fp T>
 [[nodiscard]] Status diagonalize(DeviceResources &res, int32_t n, T *a, T *w);
 
-/// @brief What @ref diagonalize takes for order @p n: syevd's work, the device
-/// workspace, its size the solver's own (queried from res.solver(), a host
-/// computation). Empty for n <= 0.
+/// @brief syevd's work for order @p n, in elements of T, as @ref diagonalize
+/// sizes it: the solver's own query through res.solver(), a host computation.
+/// 0 for n <= 0.
 ///
-/// @return The footprint, or the GpuRuntime error of the size query.
+/// @return The size, or the GpuRuntime error of the query.
 template <real_fp T>
-[[nodiscard]] Result<MemoryFootprint> diagonalize_footprint(DeviceResources &res, int32_t n);
+[[nodiscard]] Result<size_t> syevd_lwork(DeviceResources &res, int32_t n);
+
+/// @brief What @ref diagonalize takes at an order whose @ref syevd_lwork is
+/// @p lwork: syevd's work, the device workspace. Empty for lwork 0, an empty
+/// matrix's.
+///
+/// It takes the size rather than a handle so that a footprint computed before
+/// the run (the pipeline's FootprintDimensions::syevd_lwork) holds none.
+template <real_fp T>
+[[nodiscard]] MemoryFootprint diagonalize_footprint(size_t lwork);
 
 } // namespace free_breakfast

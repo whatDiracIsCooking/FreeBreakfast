@@ -23,6 +23,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::basis_set
   free_breakfast::pipeline::primitive_pair_classes
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   LINK_PRIVATE
   free_breakfast::core::diagnostics_macros
   free_breakfast::io::basis

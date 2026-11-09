@@ -18,6 +18,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::basis_set
   free_breakfast::recipes::matrix_ao
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   free_breakfast::pipeline::spherical_transform
   free_breakfast::pipeline::primitive_pair_classes
   LINK_PRIVATE

@@ -18,6 +18,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::matrix_ao
   free_breakfast::recipes::orthogonalize
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   free_breakfast::pipeline::overlap
   LINK_PRIVATE
   free_breakfast::core::diagnostics_macros

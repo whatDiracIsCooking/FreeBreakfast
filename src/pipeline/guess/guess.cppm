@@ -15,6 +15,7 @@ import free_breakfast.sad;
 import free_breakfast.io.sad;
 import free_breakfast.io.npy;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.pipeline.basis_set;
 export import free_breakfast.third_party.taskflow;
 
@@ -68,6 +69,10 @@ struct GuessStep {
     subflow.join();
     return GuessOutput{FBF_TRY(std::move(d))};
   }
+
+  /// @brief Nothing: host-shaped, the density is host data, and the Scf
+  /// uploads it from pageable memory.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions & /*dims*/) const { return {}; }
 
   /// @brief A density read from the .npy file @p from, in place of @ref run:
   /// `nao_sphe` square, spherical, in the AO order of the @ref BasisSet it was

@@ -19,6 +19,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::basis_set
   free_breakfast::recipes::matrix_ao
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   LINK_PRIVATE
   free_breakfast::basis
   free_breakfast::core::log

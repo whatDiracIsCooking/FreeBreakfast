@@ -20,16 +20,18 @@ namespace free_breakfast {
 constexpr auto kDiagonalizeEigMode = wwr::WWRSOLVER_EIG_MODE_VECTOR;
 constexpr auto kDiagonalizeFillMode = wwr::WWRBLAS_FILL_MODE_LOWER;
 
-// syevd's workspace size for n, in elements of T, queried per call: it is a
-// host computation. The legacy API ignores the matrix and eigenvalue pointers
-// in a size query.
+// The legacy API ignores the matrix and eigenvalue pointers in a size query.
 template <real_fp T>
-Result<int32_t> syevd_lwork(DeviceResources &res, const int32_t n) {
+Result<size_t> syevd_lwork(DeviceResources &res, const int32_t n) {
+  if (n <= 0) {
+    return size_t{0};
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
   int32_t lwork = 0;
   FBF_TRY(
       gpu_status(wwr::syevd_bufferSize<T>(res.solver().get(), kDiagonalizeEigMode,
                                           kDiagonalizeFillMode, n, nullptr, n, nullptr, &lwork)));
-  return lwork;
+  return static_cast<size_t>(lwork);
 }
 
 template <real_fp T>
@@ -38,11 +40,11 @@ Status diagonalize(DeviceResources &res, const int32_t n, T *a, T *w) {
     return {};
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  const int32_t lwork = FBF_TRY(syevd_lwork<T>(res, n));
-  auto work = wwr::extension::reinterpret_buffer_view<T>(
-      res.device_workspace(static_cast<size_t>(lwork) * sizeof(T)));
-  FBF_TRY(gpu_status(wwr::syevd<T>(res.solver().get(), kDiagonalizeEigMode, kDiagonalizeFillMode, n,
-                                   a, n, w, work.data(), lwork, res.info().data())));
+  const size_t lwork = FBF_TRY(syevd_lwork<T>(res, n));
+  auto work = wwr::extension::reinterpret_buffer_view<T>(res.device_workspace(lwork * sizeof(T)));
+  FBF_TRY(
+      gpu_status(wwr::syevd<T>(res.solver().get(), kDiagonalizeEigMode, kDiagonalizeFillMode, n, a,
+                               n, w, work.data(), static_cast<int32_t>(lwork), res.info().data())));
 
   const int32_t info = FBF_TRY(res.fetch_info());
   // info < 0 names a bad argument (a bug in the caller, not in A); info > 0 is
@@ -57,21 +59,17 @@ Status diagonalize(DeviceResources &res, const int32_t n, T *a, T *w) {
 }
 
 template <real_fp T>
-Result<MemoryFootprint> diagonalize_footprint(DeviceResources &res, const int32_t n) {
-  if (n <= 0) {
-    return MemoryFootprint{};
-  }
-  const ScopedDeviceIndex on{res.dev_idx()};
-  const int32_t lwork = FBF_TRY(syevd_lwork<T>(res, n));
+MemoryFootprint diagonalize_footprint(const size_t lwork) {
   MemoryFootprint out;
-  out.device.workspace =
-      math::align_up(static_cast<size_t>(lwork) * sizeof(T), DeviceResources::kWorkspaceAlignment);
+  out.device.workspace = math::align_up(lwork * sizeof(T), DeviceResources::kWorkspaceAlignment);
   return out;
 }
 
 template Status diagonalize<float>(DeviceResources &, int32_t, float *, float *);
 template Status diagonalize<double>(DeviceResources &, int32_t, double *, double *);
-template Result<MemoryFootprint> diagonalize_footprint<float>(DeviceResources &, int32_t);
-template Result<MemoryFootprint> diagonalize_footprint<double>(DeviceResources &, int32_t);
+template Result<size_t> syevd_lwork<float>(DeviceResources &, int32_t);
+template Result<size_t> syevd_lwork<double>(DeviceResources &, int32_t);
+template MemoryFootprint diagonalize_footprint<float>(size_t);
+template MemoryFootprint diagonalize_footprint<double>(size_t);
 
 } // namespace free_breakfast

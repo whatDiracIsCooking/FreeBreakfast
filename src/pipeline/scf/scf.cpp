@@ -11,6 +11,7 @@ import free_breakfast.core.constants;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.core.log;
 import free_breakfast.recipes.diis;
 import free_breakfast.recipes.diagonalize;
@@ -178,7 +179,7 @@ struct DfFockBuilder {
       // C_occ, or an open shell's alpha occupied.
       FBF_TRY(df_exchange(res, n, fit.naux, n_alpha, fit.b.data(), c->data(), k.data()));
     } else {
-      FBF_TRY(guess_exchange(res, d));
+      FBF_TRY(guess_exchange(res, d, f));
     }
     const size_t bytes = d.num_elements() * sizeof(double);
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(f.data(), h.data(), bytes, wwr::wwrMemcpyDeviceToDevice,
@@ -204,7 +205,15 @@ struct DfFockBuilder {
 
   // K of the guess D, from the factor of its eigendecomposition. Once per run,
   // so its scratch is allocated here and freed stream-ordered at return.
-  [[nodiscard]] Status guess_exchange(DeviceResources &res, const SphericalMatrixAO &d) {
+  //
+  // The factor's rank is the guess's (a SAD guess's is about its minimal
+  // basis, above n_alpha), so it is taken n_alpha columns at a time: K is
+  // linear in C C^T, so the blocks' K sum to the whole, and df_exchange's
+  // workspace is the loop's own, naux n_alpha nao doubles, never sized by the
+  // data. The first block's K goes to k and each later one's to @p partial
+  // (the Fock matrix, written only after this), summed into k.
+  [[nodiscard]] Status guess_exchange(DeviceResources &res, const SphericalMatrixAO &d,
+                                      SphericalMatrixAO &partial) {
     const auto n = static_cast<int32_t>(d.n());
     const size_t nn = d.num_elements();
     Buffers::device<double> v(nn, res.device());
@@ -241,7 +250,18 @@ struct DfFockBuilder {
       FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(res.blas().get(), wwr::WWRBLAS_SIDE_RIGHT, n,
                                                     rank, factor, n, lambda.data(), 1, factor, n)));
     }
-    FBF_TRY(df_exchange(res, n, fit.naux, rank, fit.b.data(), factor, k.data()));
+    const int32_t width = std::max(n_alpha, 1);
+    for (int32_t done = 0; done == 0 || done < rank; done += width) {
+      const int32_t cols = std::min(width, rank - done);
+      double *const out = done == 0 ? k.data() : partial.data();
+      FBF_TRY(df_exchange(res, n, fit.naux, cols, fit.b.data(),
+                          factor + (static_cast<size_t>(done) * static_cast<size_t>(n)), out));
+      if (done > 0) {
+        FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(res.blas().get(),
+                                                      static_cast<int32_t>(k.num_elements()),
+                                                      &kOne<double>, out, 1, k.data(), 1)));
+      }
+    }
     // host is read by the upload above.
     return res.sync();
   }
@@ -327,6 +347,49 @@ ScfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriO
   }
   return scf_loop(res, builder, molecule, basis, s, x, h, guess, n_alpha, n_beta, max_iterations,
                   energy_tolerance, commutator_tolerance, diis_history, molden);
+}
+
+MemoryFootprint ScfStep::footprint(const FootprintDimensions &dims) const {
+  const BasisSet &basis = *dims.basis;
+  const bool open = dims.n_alpha != dims.n_beta;
+  const auto n = static_cast<int32_t>(dims.nao);
+  const size_t nn = dims.nao * dims.nao;
+  const size_t matrix = sizeof(double) * nn; // one SphericalMatrixAO
+  const auto held = [](size_t bytes) { return MemoryFootprint{.device = {.persistent = bytes}}; };
+  const auto borrowed = [](size_t bytes) {
+    return MemoryFootprint{.device = {.workspace = bytes}};
+  };
+  const MemoryFootprint eigensolve = diagonalize_footprint<double>(dims.syevd_lwork);
+
+  // scf_loop's ScfState but C and D (d, f, f_diis, e, tmp, work, c and eps),
+  // and an open shell's OpenShellState (da, db, fa, fb and the identity).
+  size_t state = (5 * matrix) + (sizeof(double) * dims.nao) + (open ? 5 * matrix : 0);
+  // The iterations' workspace: the eigensolve (canonicalize_open's, at
+  // n_alpha - n_beta, is smaller) and an open shell's six Roothaan products.
+  MemoryFootprint iterations =
+      then(eigensolve,
+           borrowed(open ? 6 * math::align_up(matrix, DeviceResources::kWorkspaceAlignment) : 0));
+  if (dims.aux != nullptr) {
+    // DfFockBuilder's J and K. Its first build factors the guess, V and the
+    // eigenvalues held across their eigensolve and K, whose columns go
+    // n_alpha at a time, as every later K's do (n_beta <= n_alpha).
+    state += 2 * matrix;
+    const auto naux = static_cast<int32_t>(dims.naux);
+    const MemoryFootprint guess_factor =
+        drop(then(held(matrix + (sizeof(double) * dims.nao)), eigensolve));
+    iterations = then(then(guess_factor, iterations),
+                      then(df_coulomb_footprint(n, naux),
+                           df_exchange_footprint(n, naux, static_cast<int32_t>(dims.n_alpha))));
+  } else {
+    // DirectFockBuilder's d_built, dd, g and k, and an open shell's da_built
+    // and db_built; J and K allocate nothing of their own.
+    const size_t cartesian = sizeof(double) * basis.nao_cart() * basis.nao_cart();
+    state += matrix + (2 * matrix_ao_pair_footprint(basis).device.persistent) + cartesian +
+             (open ? 2 * matrix : 0);
+  }
+  const MemoryFootprint loop =
+      then(then(held(state), diis_footprint(nn, static_cast<size_t>(diis_history))), iterations);
+  return then(held(2 * matrix), drop(loop));
 }
 
 } // namespace free_breakfast

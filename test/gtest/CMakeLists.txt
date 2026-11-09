@@ -107,6 +107,7 @@ add_executable(
   mmd_gpu.cpp
   footprint_gpu.cpp
   pipeline_footprint_gpu.cpp
+  pipeline_step_footprint_gpu.cpp
   molecule_gpu.cpp
   basis_gpu.cpp
   sad_gpu.cpp

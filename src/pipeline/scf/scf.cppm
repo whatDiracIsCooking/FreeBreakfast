@@ -16,6 +16,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.pipeline.orthogonalizer;
 export import free_breakfast.pipeline.core_hamiltonian;
@@ -76,6 +77,15 @@ struct ScfStep {
   run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriOutput, OverlapOutput,
            OrthogonalizerOutput, CoreHamiltonianOutput, GuessOutput> in,
       DeviceResources &res) const;
+
+  /// @brief C and D, persistent. Scratch: the rest of what the loop holds
+  /// through every iteration (its matrices, the DIIS history, an open shell's
+  /// spin matrices and identity) and the Fock builder's matrices, and under
+  /// density fitting the first build's factor of the guess. The workspace:
+  /// the eigensolve's, an open shell's Roothaan products, and density
+  /// fitting's J and K. Density fitting is @p dims's aux basis, which only a
+  /// density-fitted plan places; an open shell is n_alpha != n_beta.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast

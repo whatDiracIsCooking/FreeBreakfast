@@ -21,6 +21,7 @@ import free_breakfast.basis;
 import free_breakfast.io.basis;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
+import free_breakfast.recipes.diagonalize; // syevd_lwork
 
 #include "pool_footprint.h"
 
@@ -221,13 +222,14 @@ TEST(LibraryFootprint, DensityFit) {
   for (const double lindep : {0.0, 1e-10}) {
     SCOPED_TRACE(lindep);
     fb::DeviceResources res{0};
-    const auto fp = fb::density_fit_footprint(res, in.nao, in.naux, lindep);
-    ASSERT_TRUE(fp);
-    EXPECT_EQ(fp->device.peak() == 0, lindep == 0.0);
+    const auto lwork = fb::syevd_lwork<double>(res, in.naux);
+    ASSERT_TRUE(lwork);
+    const fb::MemoryFootprint fp = fb::density_fit_footprint(in.nao, in.naux, *lwork, lindep);
+    EXPECT_EQ(fp.device.peak() == 0, lindep == 0.0);
     fb::Buffers::device<double> metric(in.nn, res.device());
     fb::Buffers::device<double> b(in.nb, res.device());
     // M's copy, U and the eigenvalues.
-    expect_routine_footprint(res, *fp, lindep == 0.0 ? 0 : 3, [&] {
+    expect_routine_footprint(res, fp, lindep == 0.0 ? 0 : 3, [&] {
       EXPECT_EQ(wwr::wwrMemcpyAsync(metric.data(), in.metric.data(), sizeof(double) * in.nn,
                                     wwr::wwrMemcpyDeviceToDevice, res.stream()),
                 wwr::wwrSuccess);

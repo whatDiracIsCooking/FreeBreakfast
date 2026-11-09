@@ -13,6 +13,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 export import free_breakfast.pipeline.basis_set;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.integrals.mmd;
 
 #include "diagnostics.h"
@@ -43,6 +44,11 @@ struct PrimitivePairClassesStep {
                                                        DeviceResources &res) const {
     return PrimitivePairClassesOutput{
         FBF_TRY(primitive_pair_classes(res, in.get<BasisSetOutput>().basis))};
+  }
+
+  /// @brief mmd's classes (@ref primitive_pair_classes_footprint).
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const {
+    return primitive_pair_classes_footprint(*dims.basis);
   }
 };
 

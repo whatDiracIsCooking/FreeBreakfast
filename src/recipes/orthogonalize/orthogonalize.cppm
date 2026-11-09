@@ -69,13 +69,12 @@ template <real_fp T>
 [[nodiscard]] Status orthogonalize(DeviceResources &res, int32_t n, const T *s, T *x,
                                    T eigenvalue_floor = kOrthogonalizeEigenvalueFloor<T>);
 
-/// @brief What @ref orthogonalize takes for order @p n: U and the eigenvalues,
-/// scratch; the device workspace, the larger of syevd's work
-/// (@ref diagonalize_footprint) and M's n x n. Empty for n <= 0.
-///
-/// @return The footprint, or the GpuRuntime error of syevd's size query.
+/// @brief What @ref orthogonalize takes for order @p n, @p syevd_lwork being
+/// syevd's work at n (@ref syevd_lwork): U and the eigenvalues, scratch; the
+/// device workspace, the larger of syevd's work (@ref diagonalize_footprint)
+/// and M's n x n. Empty for n <= 0.
 template <real_fp T>
-[[nodiscard]] Result<MemoryFootprint> orthogonalize_footprint(DeviceResources &res, int32_t n);
+[[nodiscard]] MemoryFootprint orthogonalize_footprint(int32_t n, size_t syevd_lwork);
 
 /// @brief Orthonormalize the columns of the n x k device block @p v in place,
 /// dropping those that add no direction: canonical orthogonalization, then a

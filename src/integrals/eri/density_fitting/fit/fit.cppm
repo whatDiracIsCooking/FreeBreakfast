@@ -70,10 +70,9 @@ export namespace free_breakfast {
 /// @brief What @ref density_fit takes: nothing on the Cholesky path; with
 /// @p lindep, the metric's copy and @ref orthogonalize_footprint's scratch,
 /// and the device workspace, the larger of orthogonalize's and one slab's.
-/// Empty for nao or naux 0.
-///
-/// @return The footprint, or the GpuRuntime error of syevd's size query.
-[[nodiscard]] Result<MemoryFootprint> density_fit_footprint(DeviceResources &res, int32_t nao,
-                                                            int32_t naux, double lindep = 0.0);
+/// Empty for nao or naux 0. @p syevd_lwork is syevd's work at order naux
+/// (@ref syevd_lwork), read only with @p lindep; the Cholesky path passes 0.
+[[nodiscard]] MemoryFootprint density_fit_footprint(int32_t nao, int32_t naux, size_t syevd_lwork,
+                                                    double lindep = 0.0);
 
 } // namespace free_breakfast

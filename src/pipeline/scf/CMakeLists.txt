@@ -23,12 +23,14 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::recipes::matrix_ao
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   free_breakfast::pipeline::orthogonalizer
   free_breakfast::pipeline::core_hamiltonian
   free_breakfast::pipeline::guess
   free_breakfast::pipeline::eri
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::log
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros

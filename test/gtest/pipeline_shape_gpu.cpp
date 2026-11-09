@@ -111,11 +111,9 @@ TEST(PipelineShape, WaterDensityFittedMatchesHandCount) {
 
   // syevd's work, as diagonalize sizes its workspace from the same query.
   ASSERT_GT(dims.syevd_lwork, std::size_t{0});
-  auto diagonalize = fb::diagonalize_footprint<double>(res, 24);
-  ASSERT_TRUE(diagonalize.has_value()) << diagonalize.error().message;
-  EXPECT_EQ(fb::math::align_up(dims.syevd_lwork * sizeof(double),
-                               fb::DeviceResources::kWorkspaceAlignment),
-            diagonalize->device.workspace);
+  auto lwork = fb::syevd_lwork<double>(res, 24);
+  ASSERT_TRUE(lwork.has_value()) << lwork.error().message;
+  EXPECT_EQ(dims.syevd_lwork, *lwork);
 }
 
 // mmd's classes, built on the device from the shape's own basis, hold the

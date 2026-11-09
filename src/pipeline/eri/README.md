@@ -76,10 +76,11 @@ On `res.stream()`:
    past it, `Unsupported` naming the bytes, since the allocation would
    otherwise abort (`CreatePolicy`).
 3. `metric` into a `MatrixAOPair` made for the aux basis, over its own
-   `upload_spherical_transform_matrix`.
+   `upload_spherical_transform_matrix`, and the spherical metric copied into
+   `l`, its own `naux²` buffer. The pair and the aux U are freed there, before
+   B is allocated.
 4. `three_center` into B, `[m][n][P]` with P fastest.
-5. The spherical metric copied into `l`, its own `naux²` buffer, and
-   `density_fit` of B over it, in place: `l` is then L, and B `[Q][n][m]`,
+5. `density_fit` of B over `l`, in place: `l` is then L, and B `[Q][n][m]`,
    what `df_coulomb` and `df_exchange` read
    (`src/integrals/eri/density_fitting/jk/README.md`). The product keeps B,
    L and the placed aux basis.
@@ -112,9 +113,10 @@ basis.
   which the step uploads itself. A `View` entry the step does not read would
   only order the pipeline for no reason.
 - **`Device`-shaped**, because B and the classes live on the device.
-- **The transients are freed stream-ordered.** The metric pair is released at
-  return, after the copy into `l` that reads it was queued on the same
-  stream, and `three_center`'s scratch (about three B's) at its own return,
+- **The transients are freed stream-ordered.** The metric pair and the aux U
+  are released before B is allocated, after the copy into `l` that reads them
+  was queued on the same stream, so B and three_center's scratch never share
+  the device with them; and `three_center`'s scratch (about three B's) at its own return,
   so after the step the device holds B, L and the stack reservation, and not
   the 29 GB of scratch the grow-only workspace once kept at aug-cc-pVTZ pHBI
   (#905). `three_center` and `density_fit` each synchronize the stream
