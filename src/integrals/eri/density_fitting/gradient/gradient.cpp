@@ -23,6 +23,7 @@ import free_breakfast.core.error_handling;
 // wwrMemcpy2DAsync, gpu_status
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.blas;
@@ -198,6 +199,54 @@ Status metric_derivative(DeviceResources &res, const BasisSet &aux, double *m1) 
   return res.sync();
 }
 
+// three_center_gradient's carve over @p basis, @p aux and @p n_bra_rec of
+// mmd's records, the device workspace's: the staging (the bra records with
+// their exponents, the aux records, U and U_aux), the cells with their atoms,
+// the Cartesian Gam, its transform's intermediate and G, one region each.
+struct ThreeCenterGradientCounts {
+  size_t n_bra = 0;
+  size_t n_aux_fields = 0;
+  size_t n_staging = 0;
+  size_t n_cell_fields = 0;
+  size_t n_cart = 0;
+  size_t n_work = 0;
+  size_t n_g = 0;
+
+  [[nodiscard]] size_t bytes() const {
+    const auto region = [](const size_t b) {
+      return math::align_up(b, DeviceResources::kWorkspaceAlignment);
+    };
+    return region(sizeof(double) * n_staging) + region(sizeof(int32_t) * n_cell_fields) +
+           region(sizeof(double) * n_cart) + region(sizeof(double) * n_work) +
+           region(sizeof(double) * n_g);
+  }
+};
+
+ThreeCenterGradientCounts three_center_gradient_counts(const BasisSet &basis, const BasisSet &aux,
+                                                       const size_t n_bra_rec) {
+  const size_t n = basis.nao_cart();
+  const size_t n_sph = basis.nao_sphe();
+  const size_t n_aux = aux.nao_cart();
+  const size_t n_aux_sph = aux.nao_sphe();
+  size_t n_aux_rec = 0;
+  for (const Shell &shell : aux.shells()) {
+    n_aux_rec += shell.nprimitives();
+  }
+  const size_t n_pairs = basis.nshells() * (basis.nshells() + size_t{1}) / 2;
+  ThreeCenterGradientCounts z;
+  z.n_bra = static_cast<size_t>(device::kThreeCenterGradientBraFields) * n_bra_rec;
+  z.n_aux_fields = static_cast<size_t>(device::kMetricRecordFields) * n_aux_rec;
+  z.n_staging = z.n_bra + z.n_aux_fields + (n * n_sph) + (n_aux * n_aux_sph);
+  z.n_cell_fields =
+      static_cast<size_t>(device::kThreeCenterGradientCellFields) * n_pairs * aux.nshells();
+  z.n_cart = n * n * n_aux;
+  // Gam's aux index made Cartesian lands in cart, its n index in work, its m
+  // index back in cart.
+  z.n_work = n_aux * n * n_sph;
+  z.n_g = 3 * static_cast<size_t>(basis.natoms());
+  return z;
+}
+
 Result<std::vector<double>> three_center_gradient(DeviceResources &res, const BasisSet &basis,
                                                   const std::span<const PrimitivePairClass> classes,
                                                   const BasisSet &aux, const double *gamma) {
@@ -214,12 +263,11 @@ Result<std::vector<double>> three_center_gradient(DeviceResources &res, const Ba
   const size_t n_sph = basis.nao_sphe();
   const size_t n_aux = aux.nao_cart();
   const size_t n_aux_sph = aux.nao_sphe();
-  const size_t n_cart = n * n * n_aux;
   // The kernels index Gam as a 32-bit (m n_ao + n) n_aux + P.
-  if (n_cart > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+  if (n * n * n_aux > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
     return err_unsupported("three_center_gradient: the Cartesian Gam, {} x {} x {} = {} elements "
                            "({} bytes), is past the kernels' 32-bit index",
-                           n, n, n_aux, n_cart, sizeof(double) * n_cart);
+                           n, n, n_aux, n * n * n_aux, sizeof(double) * n * n * n_aux);
   }
 
   // The counts, from the classes' sizes and the bases alone, so the refusal
@@ -227,22 +275,14 @@ Result<std::vector<double>> three_center_gradient(DeviceResources &res, const Ba
   const size_t n_bra_rec = FBF_TRY(bra_record_count(classes, kWho));
   const std::vector<int32_t> aux_rec_begin = record_begins(aux);
   const auto n_aux_rec = static_cast<size_t>(aux_rec_begin.back());
-  const size_t n_pairs = shells.size() * (shells.size() + 1) / 2;
-  const size_t n_cells = n_pairs * aux_shells.size();
-  const size_t n_bra = static_cast<size_t>(device::kThreeCenterGradientBraFields) * n_bra_rec;
-  const size_t n_aux_fields = static_cast<size_t>(device::kMetricRecordFields) * n_aux_rec;
-  const size_t n_staging = n_bra + n_aux_fields + (n * n_sph) + (n_aux * n_aux_sph);
-  const size_t n_cell_fields =
-      static_cast<size_t>(device::kThreeCenterGradientCellFields) * n_cells;
-  // Gam's aux index made Cartesian lands in cart, its n index in work, its m
-  // index back in cart.
-  const size_t n_work = n_aux * n * n_sph;
-  const auto region = [](const size_t bytes) {
-    return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
-  };
-  const size_t need = region(sizeof(double) * n_staging) + region(sizeof(int32_t) * n_cell_fields) +
-                      region(sizeof(double) * n_cart) + region(sizeof(double) * n_work) +
-                      region(sizeof(double) * n_g);
+  const ThreeCenterGradientCounts z = three_center_gradient_counts(basis, aux, n_bra_rec);
+  const size_t n_staging = z.n_staging;
+  const size_t n_cell_fields = z.n_cell_fields;
+  const size_t n_cart = z.n_cart;
+  const size_t n_bra = z.n_bra;
+  const size_t n_aux_fields = z.n_aux_fields;
+  const size_t n_work = z.n_work;
+  const size_t need = z.bytes();
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
@@ -792,6 +832,49 @@ Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
   FBF_TRY(gpu_status(
       gemm<wwr::WWRBLAS_OP_T>(blas, n * n, nx, q, &kOne<double>, b, gx, &kOne<double>, jx)));
   return res.sync();
+}
+
+MemoryFootprint metric_gradient_footprint(const BasisSet &aux) {
+  if (aux.nshells() == 0) {
+    return {};
+  }
+  const size_t n = aux.nao_cart();
+  const size_t n_sph = aux.nao_sphe();
+  size_t n_rec = 0;
+  for (const Shell &shell : aux.shells()) {
+    n_rec += shell.nprimitives();
+  }
+  const size_t n_pairs = aux.nshells() * (aux.nshells() + size_t{1}) / 2;
+  const auto region = [](const size_t bytes) {
+    return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
+  };
+  // metric_gradient's carve: the records and U_aux, the pairs with their
+  // atoms, U_aux^T W's intermediate, the Cartesian W and G.
+  MemoryFootprint out;
+  out.device.workspace =
+      region(sizeof(double) *
+             ((static_cast<size_t>(device::kMetricRecordFields) * n_rec) + (n * n_sph))) +
+      region(sizeof(int32_t) * static_cast<size_t>(device::kMetricGradientPairFields) * n_pairs) +
+      region(sizeof(double) * n * n_sph) + region(sizeof(double) * n * n) +
+      region(sizeof(double) * 3 * static_cast<size_t>(aux.natoms()));
+  return out;
+}
+
+MemoryFootprint three_center_gradient_footprint(const BasisSet &basis, const BasisSet &aux) {
+  if (basis.nshells() == 0 || aux.nshells() == 0) {
+    return {};
+  }
+  // mmd's records over every shell pair i <= j: (P^2 + sum_i p_i^2) / 2, P the
+  // primitives in all.
+  size_t p = 0;
+  size_t p_sq = 0;
+  for (const Shell &shell : basis.shells()) {
+    p += shell.nprimitives();
+    p_sq += static_cast<size_t>(shell.nprimitives()) * shell.nprimitives();
+  }
+  MemoryFootprint out;
+  out.device.workspace = three_center_gradient_counts(basis, aux, ((p * p) + p_sq) / 2).bytes();
+  return out;
 }
 
 } // namespace free_breakfast

@@ -15,6 +15,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.gradient; // gradient::RhfTerms, in the product
 export import free_breakfast.pipeline.scf;
 
@@ -51,6 +52,12 @@ struct GradientStep {
   [[nodiscard]] Result<GradientOutput>
   run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput, EriOutput, ScfOutput> in,
       DeviceResources &res) const;
+
+  /// @brief What @ref run holds at @p dims: @c gradient::df_rhf_footprint over
+  /// the aux basis when @p dims carries one, else @c gradient::rhf_footprint,
+  /// at n_alpha occupied orbitals. The product is on the host: nothing is
+  /// persistent.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast

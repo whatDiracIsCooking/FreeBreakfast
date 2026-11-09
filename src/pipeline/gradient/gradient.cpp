@@ -68,4 +68,13 @@ Result<GradientOutput> GradientStep::run(
   return out;
 }
 
+MemoryFootprint GradientStep::footprint(const FootprintDimensions &dims) const {
+  if (dims.basis == nullptr) {
+    return {};
+  }
+  const auto nocc = static_cast<int32_t>(dims.n_alpha);
+  return dims.aux != nullptr ? gradient::df_rhf_footprint(*dims.basis, *dims.aux, nocc)
+                             : gradient::rhf_footprint(*dims.basis, nocc);
+}
+
 } // namespace free_breakfast

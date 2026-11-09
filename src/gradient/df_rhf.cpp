@@ -12,6 +12,7 @@ import free_breakfast.core.constants; // kZero, kOne, kNegTwo, kNegHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemv, trsv, trsm, gemmStridedBatched
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -122,6 +123,29 @@ Result<RhfTerms> df_rhf(DeviceResources &res, const Molecule &molecule, const Ba
     g.total = sum_of(std::move(g.total), *term);
   }
   return g;
+}
+
+MemoryFootprint df_rhf_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t nocc) {
+  const MemoryFootprint one = rhf_one_electron_footprint(basis, nocc);
+  const size_t nao = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  if (nocc <= 0 || naux == 0) {
+    return drop(one);
+  }
+  const auto occ = static_cast<size_t>(nocc);
+  // Gam, the fitted pairs, Y, W and d, then the derivative calls and b_mo
+  // over them, one at a time, in the workspace.
+  MemoryFootprint two;
+  two.device.persistent = sizeof(double) * ((naux * nao * nao) + (naux * occ * occ) +
+                                            (naux * occ * nao) + (naux * naux) + naux);
+  const OrbitalRange occupied{.first = 0, .count = nocc};
+  for (const MemoryFootprint &call :
+       {three_center_gradient_footprint(basis, aux), metric_gradient_footprint(aux),
+        b_mo_footprint(static_cast<int32_t>(naux), static_cast<int32_t>(nao), occupied,
+                       occupied)}) {
+    two = then(two, call);
+  }
+  return drop(then(one, drop(two)));
 }
 
 } // namespace free_breakfast::gradient

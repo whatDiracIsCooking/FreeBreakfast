@@ -21,6 +21,8 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
@@ -292,6 +294,51 @@ Result<std::vector<double>> coulomb_gradient(DeviceResources &res, const BasisSe
   // Also what keeps ao_atom, pageable, alive until its upload has read it.
   FBF_TRY(res.sync());
   return g;
+}
+
+MemoryFootprint coulomb_gradient_footprint(const BasisSet &basis) {
+  if (basis.nshells() == 0) {
+    return {};
+  }
+  // mmd's records of each class (la, lb), la <= lb, over every shell pair
+  // i <= j: J's classes keep every one at tau = 0.
+  int32_t l_max = 0;
+  for (const Shell &shell : basis.shells()) {
+    l_max = std::max(l_max, shell.angular_momentum());
+  }
+  const auto nl = static_cast<size_t>(l_max) + 1;
+  std::vector<std::vector<size_t>> records(nl, std::vector<size_t>(nl, 0));
+  const std::vector<Shell> &shells = basis.shells();
+  for (size_t i = 0; i < shells.size(); ++i) {
+    for (size_t j = i; j < shells.size(); ++j) {
+      const int32_t li = shells[i].angular_momentum();
+      const int32_t lj = shells[j].angular_momentum();
+      records[static_cast<size_t>(std::min(li, lj))][static_cast<size_t>(std::max(li, lj))] +=
+          size_t{shells[i].nprimitives()} * shells[j].nprimitives();
+    }
+  }
+  // The raised J_p, n_rec Hermite terms of order la + lb + 1 a record, and two
+  // atoms a record.
+  size_t n_jp = 0;
+  size_t n_atoms = 0;
+  for (size_t la = 0; la < nl; ++la) {
+    for (size_t lb = la; lb < nl; ++lb) {
+      n_jp += records[la][lb] * coulomb_hermite_count(static_cast<int32_t>(la + lb + 1));
+      n_atoms += 2 * records[la][lb];
+    }
+  }
+  const auto region = [](const size_t bytes) {
+    return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
+  };
+  MemoryFootprint out = drop(then(
+      then(upload_spherical_transform_matrix_footprint(basis), matrix_ao_pair_footprint(basis)),
+      coulomb_pair_classes_footprint(records)));
+  out.device.workspace =
+      std::max(out.device.workspace,
+               region(sizeof(double) * n_jp) +
+                   region(sizeof(double) * 3 * static_cast<size_t>(basis.natoms())) +
+                   region(sizeof(int32_t) * n_atoms) + region(sizeof(int32_t) * basis.nao_cart()));
+  return out;
 }
 
 } // namespace free_breakfast

@@ -17,6 +17,7 @@ export module free_breakfast.integrals.eri.integral_direct.exchange;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
@@ -165,5 +166,12 @@ exchange_block_factors(DeviceResources &res, std::span<OrderedPairClass> classes
                                                             const BasisSet &basis,
                                                             std::span<OrderedPairClass> classes,
                                                             const SphericalMatrixAO &density);
+
+/// @brief What @ref exchange_gradient holds over @p basis, all of it scratch: U
+/// and the @c MatrixAOPair the density is carried through, each Cartesian AO's
+/// atom, two atoms for each of the ordered classes' records (P^2 of them, P
+/// the basis's primitives), and the device gradient. Empty for a basis
+/// without shells.
+[[nodiscard]] MemoryFootprint exchange_gradient_footprint(const BasisSet &basis);
 
 } // namespace free_breakfast

@@ -11,6 +11,7 @@ import free_breakfast.core.constants; // kZero, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -76,6 +77,18 @@ Status one_electron_terms(DeviceResources &res, const Molecule &molecule, const 
   g.potential = FBF_TRY(potential_gradient(res, basis, classes, molecule, d));
   g.nuclear_repulsion = nuclear_repulsion_gradient(molecule);
   return {};
+}
+
+MemoryFootprint rhf_one_electron_footprint(const BasisSet &basis, const int32_t nocc) {
+  const size_t nao = basis.nao_sphe();
+  const auto occ = static_cast<size_t>(std::max(nocc, 0));
+  MemoryFootprint d;
+  d.device.persistent = sizeof(double) * nao * nao;
+  // -W, the diagonal and gmmwich's work, held while the derivative calls run
+  // one after another.
+  MemoryFootprint own;
+  own.device.persistent = sizeof(double) * ((nao * nao) + occ + (nao * occ));
+  return then(d, drop(then(own, drop(one_electron_gradient_footprint(basis)))));
 }
 
 } // namespace free_breakfast::gradient

@@ -208,6 +208,7 @@ functions are in their READMEs.
 | Symbol | Role |
 |---|---|
 | `coulomb_gradient(res, basis, classes, density, tau = 0)` | `Result<std::vector<double>>`: `dE_J/dR`, flat `(basis.natoms(), 3)`, of the spherical `density` from `mmd`'s `classes` ("The nuclear gradient"). InvalidConfig for a density not `nao_sphe` square or on another device, a basis with no per-atom map, a negative or NaN `tau`, a class above f, or what `check_one_electron_build` refuses |
+| `coulomb_gradient_footprint(basis)` | `MemoryFootprint`: what `coulomb_gradient` holds: U, the `MatrixAOPair` and J's classes over every record (with the prune's scratch and pinned staging), scratch; the raised J_p, the device gradient and the atom maps, the device workspace |
 | `coulomb(res, classes, density, j, tau = 1e-10)` | `Status`: the Cartesian J of `density` into `j` from J's `classes`, screened at `tau` (`0` screens nothing). Writes the classes' scratch, so one call at a time per set of classes. InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above f, or `j.n()^2` past `INT32_MAX` |
 
 ## Tests

@@ -404,6 +404,7 @@ Cartesian layout inside (`MatrixAOPair::spherical_to_cartesian`), as
 | `DensitySymmetry` | `Symmetric` or `Antisymmetric`: the density's, which `K` shares, and the mirror's sign. A general `D` is one call per part, which [`nonsymmetric_jk`](../nonsymmetric_jk/README.md) makes |
 | `exchange_block_factors(res, classes, density, tau = 1e-13)` | `Result<std::vector<double>>`: every block's density factor `F_ab` as `exchange` makes it for the same arguments (the same code path, with no `K`: no zeroing, no `kb`, no mirror), read back, bra class major, then ket class, then table order. A diagnostic: how many blocks the decay screens below `max\|D\|` decides whether it pays. Synchronizes `res.stream()` |
 | `exchange_gradient(res, basis, classes, density)` | `Result<std::vector<double>>`: `dE_K/dR` of `E_K = ½ Σ D_ab D_cd (ac\|bd)` for a symmetric spherical `density` (a contract, unchecked), `(natoms, 3)` row-major, over every ordered quartet, unscreened (O(N⁴)). Only reads the classes. Synchronizes `res.stream()`. InvalidConfig for a density of another order or device, a basis with no per-atom map, or what `exchange` refuses of the classes |
+| `exchange_gradient_footprint(basis)` | `MemoryFootprint`: what `exchange_gradient` holds, all scratch: U, the `MatrixAOPair`, each Cartesian AO's atom, two atoms for each of the ordered classes' P² records (P the basis's primitives) and the device gradient |
 | `OrderedPairClass`, `ordered_pair_classes`, ... | re-exported from [`pairs/`](pairs/README.md) |
 
 ## Tests

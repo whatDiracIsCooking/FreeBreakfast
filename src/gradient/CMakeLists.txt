@@ -1,8 +1,9 @@
 # The module: host code over the one-electron and density-fitting derivative
 # contractions and wwr's BLAS, with no kernels of its own. DeviceResources,
-# Molecule, BasisSet, PrimitivePairClass, SphericalMatrixAO and Result are in
-# its signatures, so core::resources, molecule, basis, mmd, recipes::matrix_ao
-# and core::error_handling are PUBLIC. The derivative calls, b_mo, the gemms
+# Molecule, BasisSet, PrimitivePairClass, SphericalMatrixAO, Result and
+# MemoryFootprint are in its signatures, so core::resources, molecule, basis,
+# mmd, recipes::matrix_ao, core::error_handling and core::footprint are
+# PUBLIC. The derivative calls, b_mo, the gemms
 # and the FBF_TRY header are the implementation units' own, so PRIVATE.
 # rhf takes K's OrderedPairClass, so exchange::pairs is PUBLIC too; its
 # coulomb_gradient and exchange_gradient are PRIVATE.
@@ -25,6 +26,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::mmd
   free_breakfast::integrals::eri::integral_direct::exchange::pairs
   free_breakfast::recipes::matrix_ao
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::constants
   free_breakfast::core::wwr

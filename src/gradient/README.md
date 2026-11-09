@@ -75,6 +75,16 @@ half back-transform (naux n_occ nao), one naux² metric weight and d. At
 the device's memory budget (`DeviceResources::memory_budget()`), and `three_center_gradient` refuses its
 scratch the same way; batching Γ over P is not done. naux nao² must also fit `int32_t`.
 
+**The footprints** (`core/footprint`'s library pattern). `df_rhf_footprint(basis,
+aux, nocc)` and `rhf_footprint(basis, nocc)` are what each entry point holds,
+none of it past the call: D, −W, gmmwich's diagonal and nao × n_occ work, and
+the one-electron derivative calls' scratch, one call at a time
+(`one_electron_gradient_footprint`); then, beside D, `df_rhf`'s Γ, c, Y, W and
+d, with the device workspace the largest of `three_center_gradient`'s,
+`metric_gradient`'s and `b_mo`'s over the occupied block, or `rhf`'s
+`coulomb_gradient_footprint` and `exchange_gradient_footprint` in turn. Each
+callee's footprint is its own module's, next to its allocations.
+
 ## Tests
 
 `test/gtest/df_rhf_gradient_gpu.cpp`, against `test/gtest/data/gradient/`'s

@@ -23,6 +23,7 @@ import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.core.wwr;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.molecule;
@@ -78,6 +79,13 @@ kinetic_gradient(DeviceResources &res, const BasisSet &basis,
 potential_gradient(DeviceResources &res, const BasisSet &basis,
                    std::span<const PrimitivePairClass> classes, const Molecule &molecule,
                    const SphericalMatrixAO &m);
+
+/// @brief What @ref overlap_gradient, @ref kinetic_gradient or
+/// @ref potential_gradient holds over @p basis, all of it scratch: U and the
+/// @c MatrixAOPair @p m is carried through, each Cartesian AO's atom, two atoms
+/// for each of mmd's records (a class's i <= j primitive pairs), and the
+/// device gradient. Empty for a basis without shells.
+[[nodiscard]] MemoryFootprint one_electron_gradient_footprint(const BasisSet &basis);
 
 /// @brief G[A, k] = Sum_{m on A} Sum_n A_mn dS_mn/dA_k with only m's centre
 /// moved: the overlap's first-index (half) derivative contracted with @p a, for
