@@ -16,6 +16,8 @@ import free_breakfast.core.constants; // kOne, kHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;
 import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma; // Layout
 
@@ -45,6 +47,36 @@ Status check_rdm12_weights(const std::span<const double> weights) {
 // The bytes of D one chunk of determinants may take: big enough that the
 // products over a chunk are wide ones, small enough to stay a modest scratch.
 constexpr size_t kRdmChunkBytes = size_t{64} << 20;
+
+// The rows of D one chunk holds in rdm12 (@p vectors 1) or trans_rdm12 (2),
+// over n^2 = @p nn: the call's own clamp, shared with the footprints.
+size_t rdm_chunk_rows(const size_t nn, const size_t rows, const size_t vectors) {
+  return std::clamp<size_t>(kRdmChunkBytes / (vectors * sizeof(double) * nn), 1, rows);
+}
+
+// M and @p vectors chunks of D, each a workspace region.
+MemoryFootprint rdm_workspace_footprint(const int32_t n_orbitals, const int32_t rows,
+                                        const size_t vectors) {
+  MemoryFootprint out;
+  if (n_orbitals <= 0 || rows <= 0) {
+    return out;
+  }
+  const auto region = [](const size_t count) {
+    return math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
+  };
+  const size_t nn = static_cast<size_t>(n_orbitals) * static_cast<size_t>(n_orbitals);
+  const size_t chunk = rdm_chunk_rows(nn, static_cast<size_t>(rows), vectors);
+  out.device.workspace = region(nn * nn) + (vectors * region(chunk * nn));
+  return out;
+}
+
+MemoryFootprint rdm12_footprint(const int32_t n_orbitals, const int32_t rows) {
+  return rdm_workspace_footprint(n_orbitals, rows, 1);
+}
+
+MemoryFootprint trans_rdm12_footprint(const int32_t n_orbitals, const int32_t rows) {
+  return rdm_workspace_footprint(n_orbitals, rows, 2);
+}
 
 Result<Rdm> Rdm::create(DeviceResources &res, const DeviceStringSet &alpha,
                         const DeviceStringSet &beta) {
@@ -105,8 +137,7 @@ Status Rdm::rdm12(DeviceResources &res, const std::span<const double> weights,
   const auto dim = static_cast<size_t>(rows);
   const size_t nn = n * n;
   const auto nn32 = static_cast<int32_t>(nn);
-  const auto chunk =
-      static_cast<int32_t>(std::clamp<size_t>(kRdmChunkBytes / (sizeof(double) * nn), 1, dim));
+  const auto chunk = static_cast<int32_t>(rdm_chunk_rows(nn, dim, 1));
 
   // The workspace: M, then one chunk of D.
   const ScopedDeviceIndex on{res.dev_idx()};
@@ -170,8 +201,7 @@ Status Rdm::trans_rdm12(DeviceResources &res, const double *const bra, const dou
   const size_t nn = static_cast<size_t>(n_orbitals_) * static_cast<size_t>(n_orbitals_);
   const auto nn32 = static_cast<int32_t>(nn);
   // Two chunks of D, one per vector, in rdm12's one chunk's bytes.
-  const auto chunk = static_cast<int32_t>(
-      std::clamp<size_t>(kRdmChunkBytes / (2 * sizeof(double) * nn), 1, static_cast<size_t>(rows)));
+  const auto chunk = static_cast<int32_t>(rdm_chunk_rows(nn, static_cast<size_t>(rows), 2));
 
   // The workspace: M, then a chunk of D_bra and one of D_ket.
   const ScopedDeviceIndex on{res.dev_idx()};

@@ -12,6 +12,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.io.molden;
 import free_breakfast.io.npy;
 import free_breakfast.recipes.blas; // gemm
@@ -294,6 +295,76 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, E
       .rdm2 = std::move(sol.gamma2),
       .iterations = std::move(sol.iterations),
   };
+}
+
+MemoryFootprint CasscfStep::footprint(const FootprintDimensions &dims) const {
+  const BasisSet &basis = *dims.basis;
+  const size_t nmo = dims.nao;
+  const size_t nn = nmo * nmo;
+  const auto n_electrons = static_cast<int32_t>(dims.n_alpha + dims.n_beta);
+  const auto ncas = static_cast<int32_t>(dims.ncas);
+  const auto nelecas = static_cast<int32_t>(dims.nelecas);
+  const int32_t ncore = (n_electrons - nelecas) / 2;
+  // N_alpha - N_beta = 2S, the molecule's, as run takes it.
+  const auto two_s = static_cast<int32_t>(dims.n_alpha - dims.n_beta);
+  const int32_t n_beta = (nelecas - two_s) / 2;
+  const auto held = [](size_t bytes) { return MemoryFootprint{.device = {.persistent = bytes}}; };
+  // casscf_eigh at order n: the matrix and eigenvalues beside diagonalize's
+  // work; nothing for n = 0.
+  const auto eigh = [&](const size_t n) {
+    MemoryFootprint out;
+    if (n > 0) {
+      out = diagonalize_footprint<double>(dims.syevd_lwork[n]);
+      out.device.scratch = sizeof(double) * ((n * n) + n);
+    }
+    return out;
+  };
+  const auto widest = [](MemoryFootprint a, const MemoryFootprint &b) {
+    a.device.scratch = std::max(a.device.scratch, b.device.scratch);
+    a.device.workspace = std::max(a.device.workspace, b.device.workspace);
+    a.pinned.workspace = std::max(a.pinned.workspace, b.pinned.workspace);
+    return a;
+  };
+
+  // The CI guess on the device: nroots vectors over the selected space.
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const size_t dim = strings(nelecas - n_beta) * strings(n_beta);
+  const bool guessed = !ci_guess.empty() || !ci.empty();
+  const MemoryFootprint guess =
+      held(guessed ? sizeof(double) * dim * static_cast<size_t>(nroots) : 0);
+
+  // mcscf::solve over the EriOutput: integral-direct, or every build fitted.
+  const bool fitted = dims.aux != nullptr;
+  const auto naux = static_cast<int32_t>(dims.naux);
+  mcscf::Options options;
+  options.density_fitting = fitted ? mcscf::DensityFitting::Full : mcscf::DensityFitting::Direct;
+  const MemoryFootprint solve =
+      mcscf::solve_footprint(basis, ncore, ncas, nelecas, two_s + 1, nroots, options, naux,
+                             dims.syevd_lwork, dims.skew_eig_lwork);
+
+  // The state-averaged Fock at the solution, both held to the end; the core's
+  // and the virtuals' eigenproblems; R on the device and C R; the Molden
+  // file's natural orbitals.
+  const auto nmo32 = static_cast<int32_t>(nmo);
+  const MemoryFootprint ints = fitted ? casscf_integrals_footprint(nmo32, naux, ncore, ncas)
+                                      : casscf_integrals_footprint(basis, ncore, ncas);
+  const MemoryFootprint fock = fitted ? response::fock_footprint(nmo32, naux, ncore, ncas)
+                                      : response::fock_footprint(basis, ncore, ncas);
+  const auto core = static_cast<size_t>(ncore);
+  const size_t nocc = core + static_cast<size_t>(ncas);
+  const MemoryFootprint canonical = widest(eigh(core), eigh(nmo - nocc));
+  const MemoryFootprint natural = molden.empty() ? MemoryFootprint{} : eigh(dims.ncas);
+  const MemoryFootprint tail =
+      then(ints, then(fock, then(drop(canonical), then(held(sizeof(double) * nn),
+                                                       then(held(sizeof(double) * nn), natural)))));
+  const MemoryFootprint whole = then(select_footprint(dims), then(guess, then(solve, tail)));
+  // CasscfOutput::c is the product; the rest is freed on return.
+  MemoryFootprint out = whole;
+  out.device.persistent = sizeof(double) * nn;
+  out.device.scratch = whole.device.persistent + whole.device.scratch - out.device.persistent;
+  return out;
 }
 
 } // namespace free_breakfast

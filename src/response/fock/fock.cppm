@@ -17,6 +17,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.molecule;
 import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
@@ -136,5 +137,23 @@ fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
                                 int32_t ncas, const Buffers::device<double> &ppaa,
                                 const Buffers::device<double> &papa, std::span<const double> gamma,
                                 std::span<const double> gamma2);
+
+/// @brief What the integral-direct @ref fock holds over @p basis (nmo = its
+/// spherical AOs) with @p ncore core and @p ncas active orbitals: the
+/// @ref Fock, three nmo^2 matrices, the packed gradient, gamma and Gamma,
+/// persistent; P_c, J and K, a Cartesian matrix each, scratch; U C,
+/// gemmwich's intermediate, one nmo^2 block and (pu|vw), the device
+/// workspace. ppaa and papa are the caller's. Empty for ncore + ncas = 0 or
+/// past nmo, which the call refuses.
+[[nodiscard]] MemoryFootprint fock_footprint(const BasisSet &basis, int32_t ncore, int32_t ncas);
+
+/// @brief What the density-fitted @ref fock holds over @p nmo orbitals and
+/// @p naux fitting functions: the @ref Fock, persistent, as the
+/// integral-direct one's; 2 P_c, J and K, three nmo^2 matrices, scratch; and
+/// the device workspace, the larger of the core's @c df_coulomb and
+/// @c df_exchange (none for ncore = 0) and the carve of one nmo^2 block and
+/// (pu|vw).
+[[nodiscard]] MemoryFootprint fock_footprint(int32_t nmo, int32_t naux, int32_t ncore,
+                                             int32_t ncas);
 
 } // namespace free_breakfast::response

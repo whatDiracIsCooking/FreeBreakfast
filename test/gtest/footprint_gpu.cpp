@@ -3,7 +3,9 @@
 // classes and builds, the one-electron integrals, and the density-fitting
 // metric, three-center tensor, fit, J, K and MO transform; and those CASCI and
 // FCI call (#1049): the mixed classes and overlap AVAS builds, the active-space
-// Hamiltonian, and the CI's strings, sigma and solve. Each is held to the
+// Hamiltonian, and the CI's strings, sigma and solve; and those CASSCF's loop
+// calls (#1151): its integrals, the RDMs, the Fock, the orbital Hessian and the
+// CI-relaxed one, and the packed pairs' copies. Each is held to the
 // pool peak of one call by test/support/pool_footprint.h's two bars, sound
 // (the measured peak is no more than the footprint's) and tight (within
 // G x A), so an undercount fails at the routine that owns the allocation.
@@ -25,6 +27,7 @@ import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 import free_breakfast.recipes.diagonalize; // syevd_lwork
 import free_breakfast.ci;
+import free_breakfast.response;
 
 #include "pool_footprint.h"
 
@@ -495,6 +498,281 @@ TEST(LibraryFootprint, SigmaAndSolve) {
           },
           true);
     }
+  }
+}
+
+// CASSCF's routines over water in cc-pVDZ, 2 core and 4 active orbitals, from
+// C = I and h = 0, and B unfitted (the three-center tensor) under density
+// fitting: the allocations depend on none of their values. The inputs live on
+// fit.w.inputs; each routine runs on a fresh DeviceResources of its own.
+constexpr std::int32_t kCore = 2;
+constexpr std::int32_t kActive = 4;
+
+struct CasscfInputs {
+  FitInputs fit;
+  fb::DeviceResources &inputs = fit.w.inputs;
+  const fb::BasisSet &basis = fit.w.basis;
+  std::shared_ptr<const fb::Buffers::device<double>> u =
+      fb::upload_spherical_transform_matrix(inputs, basis).value();
+  std::vector<fb::CoulombPairClass> j_classes =
+      fb::coulomb_pair_classes(inputs, fit.w.classes).value();
+  std::vector<fb::OrderedPairClass> k_classes =
+      fb::ordered_pair_classes(inputs, basis, fit.w.classes).value();
+  fb::SphericalMatrixAO h{inputs, basis};
+  fb::SphericalMatrixAO c{inputs, basis};
+  // gamma = 1 on the active diagonal, Gamma = 0, row-major as rdm12 gives them.
+  std::vector<double> gamma = std::vector<double>(kActive * kActive, 0.0);
+  std::vector<double> gamma2 = std::vector<double>(kActive * kActive * kActive * kActive, 0.0);
+
+  CasscfInputs() {
+    const std::size_t nao = basis.nao_sphe();
+    std::vector<double> identity(nao * nao, 0.0);
+    for (std::size_t i = 0; i < nao; ++i) {
+      identity[i * (nao + 1)] = 1.0;
+    }
+    for (std::size_t t = 0; t < kActive; ++t) {
+      gamma[t * (kActive + 1)] = 1.0;
+    }
+    EXPECT_EQ(wwr::wwrMemcpyAsync(c.data(), identity.data(), sizeof(double) * identity.size(),
+                                  wwr::wwrMemcpyHostToDevice, inputs.stream()),
+              wwr::wwrSuccess);
+    EXPECT_EQ(wwr::wwrMemsetAsync(h.data(), 0, sizeof(double) * nao * nao, inputs.stream()),
+              wwr::wwrSuccess);
+    EXPECT_TRUE(inputs.sync());
+  }
+
+  [[nodiscard]] std::int32_t nmo() const { return static_cast<std::int32_t>(basis.nao_sphe()); }
+  [[nodiscard]] std::int32_t pairs() const {
+    return (kCore * (nmo() - kCore)) + (kActive * (nmo() - kCore - kActive));
+  }
+  [[nodiscard]] fb::CasscfIntegrals direct_integrals(fb::DeviceResources &res) {
+    auto ints = fb::casscf_integrals(res, basis, fit.w.molecule, h, u, j_classes, k_classes, c,
+                                     kCore, kActive);
+    EXPECT_TRUE(ints) << ints.error().message;
+    return std::move(*ints);
+  }
+  [[nodiscard]] fb::CasscfIntegrals fitted_integrals(fb::DeviceResources &res) {
+    auto ints =
+        fb::casscf_integrals(res, basis, fit.w.molecule, h, fit.b, fit.naux, c, kCore, kActive);
+    EXPECT_TRUE(ints) << ints.error().message;
+    return std::move(*ints);
+  }
+  [[nodiscard]] fb::response::Fock fock(fb::DeviceResources &res, const fb::CasscfIntegrals &ints,
+                                        bool fitted) {
+    auto out = fitted ? fb::response::fock(res, fit.w.molecule, h, fit.b, fit.naux, c, kCore,
+                                           kActive, ints.ppaa, ints.papa, gamma, gamma2)
+                      : fb::response::fock(res, basis, fit.w.molecule, h, u, j_classes, k_classes,
+                                           c, kCore, kActive, ints.ppaa, ints.papa, gamma, gamma2);
+    EXPECT_TRUE(out) << out.error().message;
+    return std::move(*out);
+  }
+  [[nodiscard]] fb::response::Hessian hessian(fb::DeviceResources &res,
+                                              const fb::CasscfIntegrals &ints,
+                                              const fb::response::Fock &f, bool fitted) {
+    auto out = fitted ? fb::response::Hessian::create(res, h, fit.b, fit.naux, c, kCore, kActive,
+                                                      ints.ppaa, ints.papa, f)
+                      : fb::response::Hessian::create(res, basis, h, u, j_classes, k_classes, c,
+                                                      kCore, kActive, ints.ppaa, ints.papa, f);
+    EXPECT_TRUE(out) << out.error().message;
+    return std::move(*out);
+  }
+};
+
+TEST(LibraryFootprint, CasscfIntegrals) {
+  FBF_REQUIRE_GPU();
+  CasscfInputs in;
+  {
+    fb::DeviceResources res{0};
+    // ppaa, papa, h_eff, (tu|vw), and the density, J and K.
+    expect_routine_footprint(res, fb::casscf_integrals_footprint(in.basis, kCore, kActive), 7,
+                             [&] { (void)in.direct_integrals(res); });
+  }
+  {
+    fb::DeviceResources res{0};
+    // The four, and the core's P, J and K in one allocation.
+    expect_routine_footprint(res,
+                             fb::casscf_integrals_footprint(in.nmo(), in.fit.naux, kCore, kActive),
+                             5, [&] { (void)in.fitted_integrals(res); });
+  }
+}
+
+// Rdm::create allocates nothing, and rdm12 and trans_rdm12 take the device
+// workspace alone; so do the packed pairs' copies.
+TEST(LibraryFootprint, RdmAndOrbitalPairs) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources inputs{0};
+  const auto strings = fb::ci::DeviceStringSet::create(inputs, kActive, 2);
+  ASSERT_TRUE(strings);
+  const auto dim = static_cast<std::size_t>(strings->size()) * strings->size();
+  fb::Buffers::device<double> vectors(2 * dim, inputs.device());
+  fb::Buffers::device<double> gamma(kActive * kActive, inputs.device());
+  fb::Buffers::device<double> gamma2(kActive * kActive * kActive * kActive, inputs.device());
+  EXPECT_EQ(wwr::wwrMemsetAsync(vectors.data(), 0, sizeof(double) * 2 * dim, inputs.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(inputs.sync());
+  const std::vector<double> weights{0.5, 0.5};
+  {
+    fb::DeviceResources res{0};
+    expect_routine_footprint(res, {}, 0,
+                             [&] { EXPECT_TRUE(fb::ci::Rdm::create(res, *strings, *strings)); });
+  }
+  {
+    fb::DeviceResources res{0};
+    auto rdm = fb::ci::Rdm::create(res, *strings, *strings);
+    ASSERT_TRUE(rdm);
+    expect_routine_footprint(
+        res, fb::ci::rdm12_footprint(kActive, static_cast<std::int32_t>(dim)), 0, [&] {
+          EXPECT_TRUE(rdm->rdm12(res, weights, vectors.data(), gamma.data(), gamma2.data()));
+        });
+  }
+  {
+    fb::DeviceResources res{0};
+    auto rdm = fb::ci::Rdm::create(res, *strings, *strings);
+    ASSERT_TRUE(rdm);
+    expect_routine_footprint(
+        res, fb::ci::trans_rdm12_footprint(kActive, static_cast<std::int32_t>(dim)), 0, [&] {
+          EXPECT_TRUE(rdm->trans_rdm12(res, vectors.data(), vectors.data() + dim, gamma.data(),
+                                       gamma2.data()));
+        });
+  }
+  {
+    constexpr std::int32_t kOrbitals = 10;
+    const std::int32_t pairs =
+        (kCore * (kOrbitals - kCore)) + (kActive * (kOrbitals - kCore - kActive));
+    fb::DeviceResources res{0};
+    fb::Buffers::device<double> square(kOrbitals * kOrbitals, res.device());
+    fb::Buffers::device<double> packed(static_cast<std::size_t>(pairs), res.device());
+    expect_routine_footprint(res, {}, 0, [&] {
+      EXPECT_TRUE(fb::response::pack_orbital_pairs(res, kOrbitals, kCore, kActive, square.data(),
+                                                   packed.data()));
+      EXPECT_TRUE(fb::response::unpack_orbital_pairs(res, kOrbitals, kCore, kActive, packed.data(),
+                                                     square.data()));
+    });
+  }
+}
+
+TEST(LibraryFootprint, Fock) {
+  FBF_REQUIRE_GPU();
+  CasscfInputs in;
+  for (const bool fitted : {false, true}) {
+    SCOPED_TRACE(fitted);
+    const fb::CasscfIntegrals ints =
+        fitted ? in.fitted_integrals(in.inputs) : in.direct_integrals(in.inputs);
+    fb::DeviceResources res{0};
+    // F^I, F^A, F, the gradient, gamma and Gamma; and P_c, J and K.
+    expect_routine_footprint(
+        res,
+        fitted ? fb::response::fock_footprint(in.nmo(), in.fit.naux, kCore, kActive)
+               : fb::response::fock_footprint(in.basis, kCore, kActive),
+        6 + 3, [&] { (void)in.fock(res, ints, fitted); });
+  }
+}
+
+// The orbital Hessian's create and one column's product, integral-direct and
+// density-fitted.
+TEST(LibraryFootprint, Hessian) {
+  FBF_REQUIRE_GPU();
+  CasscfInputs in;
+  for (const bool fitted : {false, true}) {
+    SCOPED_TRACE(fitted);
+    const fb::CasscfIntegrals ints =
+        fitted ? in.fitted_integrals(in.inputs) : in.direct_integrals(in.inputs);
+    const fb::response::Fock f = in.fock(in.inputs, ints, fitted);
+    {
+      fb::DeviceResources res{0};
+      // Its nine buffers, and J and K's two (fitted) or the Cartesian three.
+      expect_routine_footprint(
+          res,
+          fitted ? fb::response::hessian_footprint(in.nmo(), in.fit.naux, kCore, kActive)
+                 : fb::response::hessian_footprint(in.basis, kCore, kActive),
+          fitted ? 9 + 2 : 9 + 3, [&] { (void)in.hessian(res, ints, f, fitted); });
+    }
+    fb::response::Hessian hessian = in.hessian(in.inputs, ints, f, fitted);
+    const auto pairs = static_cast<std::size_t>(in.pairs());
+    fb::Buffers::device<double> x(pairs, in.inputs.device());
+    fb::Buffers::device<double> y(pairs, in.inputs.device());
+    EXPECT_EQ(wwr::wwrMemsetAsync(x.data(), 0, sizeof(double) * pairs, in.inputs.stream()),
+              wwr::wwrSuccess);
+    ASSERT_TRUE(in.inputs.sync());
+    fb::DeviceResources res{0};
+    // The fitted product's one scratch allocation.
+    expect_routine_footprint(
+        res,
+        fitted ? fb::response::hessian_apply_footprint(in.nmo(), in.fit.naux, kCore, kActive)
+               : fb::response::hessian_apply_footprint(in.basis, kCore, kActive),
+        fitted ? 1 : 0, [&] { EXPECT_TRUE(hessian.apply(res, 1, x.data(), y.data())); });
+  }
+}
+
+// H~ over two singlet roots of CAS(4, 4)'s model H (the CI's integrals are
+// ci_integrals', the response's the water's): create and two columns' products
+// over the density-fitted H, whose product allocates its scratch; and a block
+// product of three columns over the integral-direct H, whose takes only the
+// workspace, which reserves the block's CI blocks and lockstep scratch.
+TEST(LibraryFootprint, RelaxedHessian) {
+  FBF_REQUIRE_GPU();
+  CasscfInputs in;
+  constexpr std::int32_t kRoots = 2;
+  constexpr std::size_t kBlock = 3;
+  const auto alpha = fb::ci::DeviceStringSet::create(in.inputs, kActive, 2);
+  ASSERT_TRUE(alpha);
+  auto sigma = fb::ci::Sigma::create(in.inputs, *alpha, *alpha);
+  ASSERT_TRUE(sigma);
+  const CiIntegrals model = ci_integrals(kActive);
+  ASSERT_TRUE(sigma->set_integrals(in.inputs, 0.0, model.h, model.eri));
+  const auto dim = static_cast<std::size_t>(sigma->size());
+  fb::Buffers::device<double> diagonal(dim, in.inputs.device());
+  ASSERT_TRUE(sigma->diagonal(in.inputs, diagonal.data()));
+  const auto roots = fb::ci::solve(in.inputs, *sigma, *alpha, *alpha, diagonal.data(), kRoots);
+  ASSERT_TRUE(roots) << roots.error().message;
+  auto rdm = fb::ci::Rdm::create(in.inputs, *alpha, *alpha);
+  ASSERT_TRUE(rdm);
+  const std::vector<double> weights{0.5, 0.5};
+  const auto pairs = static_cast<std::size_t>(in.pairs());
+  fb::Buffers::device<double> x(kBlock * pairs, in.inputs.device());
+  fb::Buffers::device<double> y(kBlock * pairs, in.inputs.device());
+  std::vector<double> ones(kBlock * pairs, 1e-3);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(x.data(), ones.data(), sizeof(double) * ones.size(),
+                                wwr::wwrMemcpyHostToDevice, in.inputs.stream()),
+            wwr::wwrSuccess);
+  for (const bool fitted : {true, false}) {
+    SCOPED_TRACE(fitted);
+    const fb::CasscfIntegrals ints =
+        fitted ? in.fitted_integrals(in.inputs) : in.direct_integrals(in.inputs);
+    const fb::response::Fock f = in.fock(in.inputs, ints, fitted);
+    fb::response::Hessian hessian = in.hessian(in.inputs, ints, f, fitted);
+    const auto nmo = static_cast<std::size_t>(in.nmo());
+    const auto host = [&](const fb::Buffers::device<double> &from) {
+      std::vector<double> to(from.num_elements());
+      EXPECT_EQ(wwr::wwrMemcpyAsync(to.data(), from.data(), sizeof(double) * to.size(),
+                                    wwr::wwrMemcpyDeviceToHost, in.inputs.stream()),
+                wwr::wwrSuccess);
+      EXPECT_TRUE(in.inputs.sync());
+      return to;
+    };
+    const fb::response::ResponseIntegrals response{
+        nmo, kCore, kActive, host(f.fock_inactive), host(ints.ppaa), host(ints.papa)};
+    const std::size_t block = fitted ? 0 : kBlock;
+    const fb::MemoryFootprint relaxed =
+        fb::response::relaxed_hessian_footprint(kActive, 2, 2, kRoots, in.nmo(), kCore, block);
+    const fb::MemoryFootprint product =
+        fitted ? fb::response::hessian_apply_footprint(in.nmo(), in.fit.naux, kCore, kActive)
+               : fb::response::hessian_apply_footprint(in.basis, kCore, kActive);
+    fb::DeviceResources res{0};
+    // H'(x)'s sigma's three tables and its scratch, the relaxed Hessian's nine
+    // buffers, and the fitted product's scratch.
+    expect_routine_footprint(res, then(relaxed, product), 3 + 1 + 9 + (fitted ? 1 : 0), [&] {
+      auto made = fb::response::RelaxedHessian::create(res, hessian, *sigma, *rdm, *alpha, *alpha,
+                                                       *roots, weights, response);
+      ASSERT_TRUE(made) << made.error().message;
+      if (fitted) {
+        for (std::size_t column = 0; column < 2; ++column) {
+          EXPECT_TRUE(made->apply(res, x.data() + (column * pairs), y.data() + (column * pairs)));
+        }
+      } else {
+        EXPECT_TRUE(made->apply(res, static_cast<std::int32_t>(kBlock), x.data(), y.data()));
+      }
+    });
   }
 }
 

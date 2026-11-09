@@ -11,6 +11,8 @@ import free_breakfast.core.constants; // kOne, kZero, kNegOne, kHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemv, geam, dgmm, gemmStridedBatched, axpy, dot, nrm2, ...
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
+import free_breakfast.core.footprint;
 import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma;
 import free_breakfast.ci.rdm;
@@ -451,21 +453,66 @@ Status RelaxedHessian::apply(DeviceResources &res, const double *const x, double
   return add_coupling(res, gamma_t, gamma2_t, y);
 }
 
+// The doubles reserve's lockstep scratch holds for @p count = k nroots vectors
+// of @p dim: r, p, A p and a product, the count shifts, the 2 count dots and
+// the count step lengths, and after the overlaps apply_coupled's rotation
+// matrices (nroots x nroots per column). Shared with the footprint.
+size_t relaxed_lockstep(const size_t dim, const size_t count, const size_t nroots) {
+  return (4 * dim * count) + (4 * count) + (2 * nroots * count);
+}
+
 void RelaxedHessian::reserve(DeviceResources &res, const size_t k) {
   const size_t ci_block = dim_ * weights_.size();
   const size_t count = k * weights_.size();
-  if (ci_b_.num_elements() < k * ci_block) {
-    ci_b_ = Buffers::device<double>(k * ci_block, res.device());
-  }
-  if (ci_delta_.num_elements() < k * ci_block) {
-    ci_delta_ = Buffers::device<double>(k * ci_block, res.device());
-  }
-  // apply_coupled's rotation matrices (nroots x nroots per column) after the
-  // overlaps.
-  const size_t lockstep = (4 * dim_ * count) + (4 * count) + (2 * weights_.size() * count);
-  if (block_.num_elements() < lockstep) {
-    block_ = Buffers::device<double>(lockstep, res.device());
-  }
+  // Each grows by freeing the old buffer before allocating the new one, so
+  // the two are never held at once: the peak is the grown sizes, whatever k
+  // the last call reserved for (relaxed_hessian_footprint).
+  const auto grow = [&res](Buffers::device<double> &buffer, const size_t size) {
+    if (buffer.num_elements() < size) {
+      buffer = Buffers::device<double>(0, res.device());
+      buffer = Buffers::device<double>(size, res.device());
+    }
+  };
+  grow(ci_b_, k * ci_block);
+  grow(ci_delta_, k * ci_block);
+  grow(block_, relaxed_lockstep(dim_, count, weights_.size()));
+}
+
+MemoryFootprint relaxed_hessian_footprint(const int32_t ncas, const int32_t n_alpha,
+                                          const int32_t n_beta, const int32_t nroots,
+                                          const int32_t nmo, const int32_t ncore,
+                                          const size_t block_columns) {
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha_strings = strings(n_alpha);
+  const int32_t beta_strings = strings(n_beta);
+  const size_t dim = static_cast<size_t>(alpha_strings) * static_cast<size_t>(beta_strings);
+  const auto roots = static_cast<size_t>(nroots);
+  const auto mo = static_cast<size_t>(nmo);
+  const auto n = static_cast<size_t>(ncas);
+  const auto core = static_cast<size_t>(ncore);
+  const size_t n_pairs = (core * (mo - core)) + (n * (mo - core - n));
+  // H'(x)'s sigma, its tables from create and its apply scratch from the first
+  // product.
+  const size_t response_sigma =
+      ci::sigma_footprint(ncas, alpha_strings, beta_strings).device.persistent +
+      ci::sigma_apply_bytes(ncas, alpha_strings, beta_strings, ci::Layout::full);
+  // The members, b and delta and the lockstep scratch at block_columns.
+  const size_t columns = std::max<size_t>(block_columns, 1);
+  const size_t members =
+      (2 * columns * dim * roots) + (3 * dim) + roots + (mo * mo) + std::max<size_t>(n_pairs, 1) +
+      (2 * n * n) + (2 * n * n * n * n) +
+      (block_columns > 0 ? relaxed_lockstep(dim, block_columns * roots, roots) : 1);
+  MemoryFootprint sigma;
+  sigma.device.persistent = response_sigma;
+  sigma.device.scratch = n_alpha == n_beta ? sizeof(double) * dim : 0;
+  MemoryFootprint held;
+  held.device.persistent = sizeof(double) * members;
+  MemoryFootprint out = then(sigma, held);
+  out.device.workspace =
+      ci::trans_rdm12_footprint(ncas, static_cast<int32_t>(dim)).device.workspace;
+  return out;
 }
 
 Status RelaxedHessian::project_block(DeviceResources &res, const size_t count, double *const v) {

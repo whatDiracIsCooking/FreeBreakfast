@@ -12,6 +12,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.molecule;
 import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
@@ -233,5 +234,39 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
       std::span<const double> weights = {}, const Options &options = {},
       const Buffers::device<double> *b = nullptr, int32_t naux = 0,
       std::span<const double> ci_guess = {});
+
+/// @brief What @ref solve holds over @p basis (nmo = its spherical AOs) with
+/// @p ncore core orbitals and @p nelecas electrons in @p ncas active ones,
+/// spin @p multiplicity, @p nroots roots, @p options, and, for a
+/// density-fitted options.density_fitting, @p naux fitting functions:
+///
+/// - persistent: the Solution's C and CI vectors.
+/// - scratch: at its most, what the loop holds across its macro iterations
+///   (the strings, the sigma's tables and its apply scratch at Layout::full,
+///   which the CI response's products grow it to; C twice, the diagonal, the
+///   RDMs, the step, kappa and its eigenpairs and exponential, the augmented
+///   Hessian's subspace and the last roots), with one macro iteration's
+///   largest phase over it: @c casscf_integrals'; or the CI's, warm from the
+///   last roots (cold from its own guesses in the first); or the Fock's, the
+///   Hessian's create and the relaxed Hessian's and one of its products,
+///   each on the integrals and the ones before it.
+/// - workspace: the largest of every routine's it calls: the integrals', the
+///   CI's, the RDMs' and transition RDMs', the Fock's, the Hessian's create
+///   and product, the 1-RDM's, the augmented Hessian's syevd at every order
+///   of its subspace (the most it takes, reached when the subspace fills),
+///   and skew_eig's and skew_expm's at nmo.
+///
+/// @p syevd_lwork is syevd's work by order (FootprintDimensions::syevd_lwork)
+/// through at least the larger of ci::solve_footprint's and the augmented
+/// Hessian's ah_max_subspace + 1, and @p skew_eig_lwork skew_eig's at nmo
+/// (@c skew_eig_lwork). The loop's steady state is counted: a macro
+/// iteration after a product grew the sigma's scratch, and a product after
+/// the first of its iteration; a solve that converges before either does not
+/// reach it. Empty for a problem @ref solve refuses before it allocates.
+[[nodiscard]] MemoryFootprint solve_footprint(const BasisSet &basis, int32_t ncore, int32_t ncas,
+                                              int32_t nelecas, int32_t multiplicity, int32_t nroots,
+                                              const Options &options, int32_t naux,
+                                              std::span<const size_t> syevd_lwork,
+                                              size_t skew_eig_lwork);
 
 } // namespace free_breakfast::mcscf

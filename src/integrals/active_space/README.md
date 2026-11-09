@@ -13,7 +13,7 @@ density fitting from the fitted factor B.
 `free_breakfast.integrals.active_space`, target
 `free_breakfast::integrals::active_space`, re-exported by
 `free_breakfast.integrals`. Two functions, one of them overloaded for density
-fitting, their products, and the Hamiltonian's footprint:
+fitting, their products, and their footprints:
 
 ```cpp
 struct ActiveSpaceHamiltonian {
@@ -48,6 +48,15 @@ Result<CasscfIntegrals> casscf_integrals(
     DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     const SphericalMatrixAO &h, const Buffers::device<double> &b, int32_t naux,
     const SphericalMatrixAO &c, int32_t ncore, int32_t ncas);
+
+// casscf_integrals' footprints: ppaa, papa, h_eff and (tu|vw) persistent;
+// integral-direct, the density, J and K scratch and the projection scratch
+// (over all nmo columns) the device workspace; density-fitted, the core's P,
+// J and K scratch and the larger of the core's df_coulomb / df_exchange and
+// the X, L, J_uv C carve the device workspace (the table below).
+MemoryFootprint casscf_integrals_footprint(const BasisSet &basis, int32_t ncore, int32_t ncas);
+MemoryFootprint casscf_integrals_footprint(int32_t nao, int32_t naux, int32_t ncore,
+                                           int32_t ncas);
 ```
 
 Columns `[0, ncore)` of C are the core, `[ncore, ncore + ncas)` the active
@@ -149,8 +158,8 @@ in ppaa's buffer until the batched Cᵀ J C overwrites it.
 
 | Region | Size | Where |
 |---|---|---|
-| P, J, K of the core | 3 nao² | allocated per call: `df_coulomb` and `df_exchange` take the workspace |
-| `df_exchange`'s X and lower triangle | naux · ncore · nao + nao² | `res.device_workspace()`, during the core's K |
+| P, J, K of the core | 3 nao² | allocated per call, whatever ncore: `df_coulomb` and `df_exchange` take the workspace |
+| `df_coulomb`'s γ, `df_exchange`'s X | naux, naux · ncore · nao | `res.device_workspace()`, during the core's J and K |
 | X, B's first half transform | naux · n_act · nao | `res.device_workspace()` |
 | L | naux · n_act · nmo | `res.device_workspace()` |
 | J_uv C, the batch's intermediate (and h_eff's `gemmwich` work) | nao · nmo · n_act² | `res.device_workspace()` |
@@ -201,3 +210,7 @@ cc-pVDZ-JKFIT: it is built for occupied pairs, and its Coulomb-metric fitting
 error reaches 1.6e-3 on the virtual-orbital pairs ppaa and papa span; (tu|vw)'s 8-fold symmetry, and ppaa's and
 papa's active blocks against it, to 1e-12 max; ppaa's and papa's permutational
 symmetries; and the refusals, with FCI (no core) taken.
+
+The footprints are held to the pool's peak in `test/gtest/footprint_gpu.cpp`
+(`LibraryFootprint.ActiveSpaceHamiltonian`, `LibraryFootprint.CasscfIntegrals`,
+both overloads), on water in cc-pVDZ.

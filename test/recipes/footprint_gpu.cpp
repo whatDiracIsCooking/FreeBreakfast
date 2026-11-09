@@ -1,6 +1,7 @@
 // The footprints (#1044) of the recipes the RHF chain calls (#1048):
 // diagonalize, orthogonalize, Diis, and matrix_ao's U and MatrixAOPair; and
-// those the CI calls (#1049): orthonormalize and davidson_solve. Each
+// those the CI calls (#1049): orthonormalize and davidson_solve; and those
+// CASSCF's orbital step calls (#1151): skew_eig and skew_expm. Each
 // is held to the pool peak of one call by test/support/pool_footprint.h's two
 // bars, sound (the measured peak is no more than the footprint's) and tight
 // (within G x A), so an undercount fails at the routine that owns the
@@ -215,6 +216,53 @@ TEST(RecipesFootprint, Davidson) {
 
 // The history allocated, then pushed past its capacity: the pushes allocate
 // nothing.
+// A real skew-symmetric matrix of order kN, nonzero (an exactly zero one takes
+// no heevd): its exponential's eigendecomposition takes heevd's work, and
+// each exponential its two complex blocks, both the device workspace only.
+TEST(RecipesFootprint, SkewEigAndExpm) {
+  FBF_REQUIRE_GPU();
+  const auto n = static_cast<std::size_t>(kN);
+  std::vector<double> host(n * n, 0.0);
+  for (std::size_t j = 0; j < n; ++j) {
+    for (std::size_t i = j + 1; i < n; ++i) {
+      host[i + (n * j)] = 1e-2 * static_cast<double>((i + (3 * j)) % 7);
+      host[j + (n * i)] = -host[i + (n * j)];
+    }
+  }
+  {
+    fb::DeviceResources res{0};
+    const auto lwork = fb::skew_eig_lwork<double>(res, kN);
+    ASSERT_TRUE(lwork);
+    const fb::MemoryFootprint fp = fb::skew_eig_footprint<double>(*lwork);
+    ASSERT_GT(fp.device.workspace, 0U);
+    fb::Buffers::device<double> h(n * n, res.device());
+    fb::Buffers::device<wwr::wwrDoubleComplex> u(n * n, res.device());
+    fb::Buffers::device<double> w(n, res.device());
+    EXPECT_EQ(wwr::wwrMemcpyAsync(h.data(), host.data(), sizeof(double) * host.size(),
+                                  wwr::wwrMemcpyHostToDevice, res.stream()),
+              wwr::wwrSuccess);
+    expect_routine_footprint(res, fp, 0, [&] {
+      EXPECT_TRUE(fb::skew_eig<double>(res, kN, h.data(), u.data(), w.data()));
+    });
+  }
+  {
+    fb::DeviceResources res{0};
+    const fb::MemoryFootprint fp = fb::skew_expm_footprint<double>(kN);
+    // Two complex blocks, rounded to the workspace's alignment.
+    EXPECT_EQ(fp.device.workspace, fb::math::align_up(2 * n * n * sizeof(wwr::wwrDoubleComplex),
+                                                      fb::DeviceResources::kWorkspaceAlignment));
+    fb::Buffers::device<wwr::wwrDoubleComplex> u(n * n, res.device());
+    fb::Buffers::device<double> w(n, res.device());
+    fb::Buffers::device<double> e(n * n, res.device());
+    EXPECT_EQ(wwr::wwrMemsetAsync(u.data(), 0, sizeof(wwr::wwrDoubleComplex) * n * n, res.stream()),
+              wwr::wwrSuccess);
+    EXPECT_EQ(wwr::wwrMemsetAsync(w.data(), 0, sizeof(double) * n, res.stream()), wwr::wwrSuccess);
+    expect_routine_footprint(res, fp, 0, [&] {
+      EXPECT_TRUE(fb::skew_expm<double>(res, kN, u.data(), w.data(), 0.5, e.data()));
+    });
+  }
+}
+
 TEST(RecipesFootprint, Diis) {
   FBF_REQUIRE_GPU();
   constexpr std::size_t kLen = static_cast<std::size_t>(kN) * kN;

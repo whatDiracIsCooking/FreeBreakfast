@@ -117,6 +117,14 @@ Both calls take `res.device_workspace()`: `skew_eig` for `heevd`'s work,
 product), `n²` or `2n²` complex elements. Neither keeps anything there between
 calls, so `u` and `w` must live in the caller's own buffers.
 
+Their footprints say so for a planner: `skew_eig_lwork<T>(res, n)` is
+`heevd`'s (under HIP `heevdx`'s) work at order n, the query `skew_eig` itself
+makes, shared with it; `skew_eig_footprint<T>(lwork)` takes that size, so a
+footprint computed before the run holds no handle (the pipeline's
+`FootprintDimensions::skew_eig_lwork`); and `skew_expm_footprint<T>(n)` is
+its blocks. Each is the device workspace alone. An exactly zero `h` takes no
+`heevd`, so none of its work.
+
 ## Tests
 
 `test/recipes/expm_gpu.cpp`, against a closed-form ground truth rather than a
@@ -131,12 +139,14 @@ on both backends. The 1e-200 one passes only because of the scaling: unscaled,
 rocSOLVER returns `U = I`, `w = 0`, and cuSOLVER leaves `U^H U - I` at 8e-5
 for a real double `T`.
 
+`RecipesFootprint.SkewEigAndExpm` (`test/recipes/footprint_gpu.cpp`) holds both footprints to the workspace each call grows, at order 50.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `expm.cppm` | Module interface: `skew_eig`, `skew_expm` |
-| `expm.cpp` | Implementation, and the four instantiations |
+| `expm.cppm` | Module interface: `skew_eig`, `skew_expm`, `skew_eig_lwork` and the two footprints |
+| `expm.cpp` | Implementation, and the four instantiations of each |
 | `expm.cu` | The phase-scale kernel |
 | `expm_bridge.h` | The launcher's declaration, shared by `expm.cpp` and `expm.cu` |
 | `CMakeLists.txt` | The device library and the module |

@@ -12,6 +12,8 @@ import free_breakfast.core.constants; // kOne, kZero, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemm, gemv, geam, gemmStridedBatched, gpu_status, wwrMemGetInfo
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.matrix_ao;
@@ -28,6 +30,132 @@ import free_breakfast.response.orbital_pairs;
 namespace free_breakfast::response {
 
 static_assert(LinearOperator<Hessian, double>);
+
+// build's workspace carve, in doubles: gemmwich's intermediate, one projected
+// nmo x nmo block, and the permuted Gamma of H_act's exchange part; density-
+// fitted (naux > 0), B half- and fully transformed over C_core, (Q|pp), and
+// (pp|ii) and (pi|pi) over every p and core i. Shared with the footprints.
+std::array<size_t, 8> hessian_build_counts(const size_t n_all, const size_t core, const size_t na,
+                                           const size_t n_cart, const size_t naux) {
+  const size_t mo_core = naux * core * n_all;
+  const size_t pc = naux > 0 ? n_all * core : 0;
+  return {n_cart * n_all, n_all * n_all, na * na * na * na, mo_core, mo_core, naux * n_all, pc, pc};
+}
+
+// apply's carve for a block of width columns, in doubles: kappa, X2 and the
+// ncas x nmo block va lands in, per column; h kappa, the other ncas x nmo
+// block, W and an n_cart^2 product, once; the densities D3 then D', per
+// column; J C, once; and the right factors R3 (n_cart x ncore) and R'
+// (n_cart x nocc), per column. Batched, every density's J and K too. Shared
+// with the footprints.
+std::array<size_t, 13> hessian_apply_counts(const size_t n_all, const size_t core, const size_t na,
+                                            const size_t n_cart, const size_t width,
+                                            const bool batched) {
+  const size_t nn = n_all * n_all;
+  const size_t occ = core + na;
+  const size_t square = n_cart * n_cart;
+  return {width * nn,
+          width * nn,
+          n_all * occ,
+          width * na * n_all,
+          na * n_all,
+          std::max(core, na) * n_cart,
+          square,
+          2 * width * square,
+          n_cart * n_all,
+          width * n_cart * core,
+          width * n_cart * occ,
+          batched ? 2 * width * square : 0,
+          batched ? 2 * width * square : 0};
+}
+
+// The Hessian's own buffers, create's persistent bytes, past its J and K
+// matrices: U C (n_cart rows), C^T h C, F + F^T, the two V's, the occupied
+// 1-RDM, gamma, H_act and the diagonal.
+size_t hessian_bytes(const size_t n_all, const size_t core, const size_t na, const size_t n_cart) {
+  const size_t occ = core + na;
+  const size_t n_pairs = (core * (n_all - core)) + (na * (n_all - occ));
+  return sizeof(double) * ((n_cart * n_all) + (4 * n_all * n_all) + (occ * occ) + (na * na) +
+                           (n_all * na * n_all * na) + n_pairs);
+}
+
+// The bytes device_regions takes for @p counts doubles.
+template <size_t N>
+size_t hessian_regions(const std::array<size_t, N> &counts) {
+  size_t bytes = 0;
+  for (const size_t count : counts) {
+    bytes += math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
+  }
+  return bytes;
+}
+
+// Whether the Hessian has pairs to apply over.
+bool hessian_has_pairs(const size_t n_all, const size_t core, const size_t na) {
+  return (core * (n_all - core)) + (na * (n_all - core - na)) > 0;
+}
+
+MemoryFootprint hessian_footprint(const BasisSet &basis, const int32_t ncore, const int32_t ncas) {
+  const size_t n_all = basis.nao_sphe();
+  const size_t n_cart = basis.nao_cart();
+  const auto core = static_cast<size_t>(ncore);
+  const auto na = static_cast<size_t>(ncas);
+  MemoryFootprint out;
+  out.device.persistent =
+      hessian_bytes(n_all, core, na, n_cart) + (3 * sizeof(double) * n_cart * n_cart);
+  out.device.workspace = hessian_regions(hessian_build_counts(n_all, core, na, n_cart, 0));
+  return out;
+}
+
+MemoryFootprint hessian_footprint(const int32_t nmo, const int32_t naux, const int32_t ncore,
+                                  const int32_t ncas) {
+  const auto n_all = static_cast<size_t>(nmo);
+  const auto core = static_cast<size_t>(ncore);
+  const auto na = static_cast<size_t>(ncas);
+  MemoryFootprint out;
+  out.device.persistent =
+      hessian_bytes(n_all, core, na, n_all) + (2 * sizeof(double) * n_all * n_all);
+  out.device.workspace =
+      hessian_regions(hessian_build_counts(n_all, core, na, n_all, static_cast<size_t>(naux)));
+  return out;
+}
+
+MemoryFootprint hessian_apply_footprint(const BasisSet &basis, const int32_t ncore,
+                                        const int32_t ncas) {
+  const size_t n_all = basis.nao_sphe();
+  const auto core = static_cast<size_t>(ncore);
+  const auto na = static_cast<size_t>(ncas);
+  MemoryFootprint out;
+  if (hessian_has_pairs(n_all, core, na)) {
+    // One region of every count's doubles, carved by hand.
+    const std::array<size_t, 13> counts =
+        hessian_apply_counts(n_all, core, na, basis.nao_cart(), 1, false);
+    out.device.workspace =
+        hessian_regions(std::array<size_t, 1>{std::reduce(counts.begin(), counts.end())});
+  }
+  return out;
+}
+
+MemoryFootprint hessian_apply_footprint(const int32_t nmo, const int32_t naux, const int32_t ncore,
+                                        const int32_t ncas) {
+  const auto n_all = static_cast<size_t>(nmo);
+  const auto core = static_cast<size_t>(ncore);
+  const auto na = static_cast<size_t>(ncas);
+  MemoryFootprint out;
+  if (!hessian_has_pairs(n_all, core, na)) {
+    return out;
+  }
+  const std::array<size_t, 13> counts = hessian_apply_counts(n_all, core, na, n_all, 1, false);
+  out.device.scratch = sizeof(double) * std::reduce(counts.begin(), counts.end());
+  if (ncore > 0 && nmo > ncore && naux > 0) {
+    // The two-factor df_exchange's X and Y at rank nocc, the larger of its
+    // two ranks (ncore for D3), each a workspace region.
+    const size_t xy =
+        math::align_up(sizeof(double) * static_cast<size_t>(naux) * (core + na) * n_all,
+                       DeviceResources::kWorkspaceAlignment);
+    out.device.workspace = std::max(df_coulomb_footprint(nmo, naux).device.workspace, 2 * xy);
+  }
+  return out;
+}
 
 Hessian::Hessian(DeviceResources &res, const int32_t nmo, const int32_t ncore, const int32_t ncas,
                  const int32_t n_cart, std::variant<Direct, Fitted> jk)
@@ -195,11 +323,10 @@ Result<Hessian> Hessian::build(DeviceResources &res, const SphericalMatrixAO &h,
   // every p and core i. coulomb and exchange, called while it is live, do
   // not take the workspace; df_coulomb and df_exchange are not called here.
   const size_t naux = fitted != nullptr ? static_cast<size_t>(fitted->naux) : 0;
-  const size_t mo_core = naux * core * n_all;
-  const size_t pc = fitted != nullptr ? n_all * core : 0;
+  const std::array<size_t, 8> counts = hessian_build_counts(n_all, core, na, n_cart, naux);
   const auto [work, block, gamma2_exchange, half, l_core, q_pp, j_core, k_core] =
-      res.device_regions<double>(n_cart * n_all, nn, na * na * na * na, mo_core, mo_core,
-                                 naux * n_all, pc, pc);
+      res.device_regions<double>(counts[0], counts[1], counts[2], counts[3], counts[4], counts[5],
+                                 counts[6], counts[7]);
 
   // U C, then C^T h C, and the MO matrices the product reads.
   if (u != nullptr) {
@@ -519,19 +646,8 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
   // per column. Batched, every density's J and K too. coulomb and exchange do not take the
   // workspace, so the integral-direct path carves it from there; df_coulomb
   // and df_exchange do, so the density-fitted one allocates it.
-  const std::array<size_t, 13> counts{width * nn,
-                                      width * nn,
-                                      n_all * occ,
-                                      width * na * n_all,
-                                      na * n_all,
-                                      std::max(core, na) * n_cart,
-                                      square,
-                                      2 * width * square,
-                                      n_cart * n_all,
-                                      width * n_cart * core,
-                                      width * n_cart * occ,
-                                      batched ? 2 * width * square : 0,
-                                      batched ? 2 * width * square : 0};
+  const std::array<size_t, 13> counts =
+      hessian_apply_counts(n_all, core, na, n_cart, width, batched);
   const size_t total = std::reduce(counts.begin(), counts.end());
   Buffers::device<double> owned(fitted != nullptr ? total : 0, res.device());
   double *at = fitted != nullptr ? owned.data() : std::get<0>(res.device_regions<double>(total));

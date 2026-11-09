@@ -16,6 +16,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.mcscf.solve; // mcscf::Iteration, in the product
 export import free_breakfast.pipeline.scf;
 export import free_breakfast.pipeline.active_space; // CasscfStep's base
@@ -162,6 +163,16 @@ struct CasscfStep : ActiveSpaceSelection {
   run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriOutput,
            CoreHamiltonianOutput, ScfOutput> in,
       DeviceResources &res) const;
+
+  /// @brief What @ref run holds at @p dims' active space: CasscfOutput::c,
+  /// persistent; the selection's scratch and its orbitals, the CI guess's
+  /// upload when one is given, and `mcscf::solve_footprint`'s solve
+  /// (integral-direct, or fully density-fitted under an aux basis), whose
+  /// solution is held through the rest: one more `casscf_integrals` and
+  /// `response::fock`, kept to the end, the canonicalization's two
+  /// eigenproblems, its rotation and C R, and, with @ref molden, the natural
+  /// orbitals' eigenproblem.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast

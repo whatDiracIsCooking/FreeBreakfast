@@ -15,6 +15,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 
 export namespace free_breakfast {
 
@@ -98,5 +99,28 @@ template <wwr::usual_fp T>
                                const wwr::RealToComplexType<wwr::ComplexToRealType<T>> *u,
                                const wwr::ComplexToRealType<T> *w, wwr::ComplexToRealType<T> t,
                                T *e);
+
+/// @brief heevd's work for order @p n, in complex elements of T's precision,
+/// as @ref skew_eig sizes it (heevdx's under HIP): the solver's own query
+/// through res.solver(), a host computation. 0 for n <= 0.
+///
+/// @return The size, or the GpuRuntime error of the query.
+template <wwr::usual_fp T>
+[[nodiscard]] Result<size_t> skew_eig_lwork(DeviceResources &res, int32_t n);
+
+/// @brief What @ref skew_eig takes at an order whose @ref skew_eig_lwork is
+/// @p lwork: heevd's work, the device workspace. Empty for lwork 0. An h that
+/// is exactly 0 takes none; this is the most it takes, at any other h.
+///
+/// It takes the size rather than a handle so that a footprint computed before
+/// the run (the pipeline's FootprintDimensions::skew_eig_lwork) holds none.
+template <wwr::usual_fp T>
+[[nodiscard]] MemoryFootprint skew_eig_footprint(size_t lwork);
+
+/// @brief What @ref skew_expm takes at order @p n: its intermediates, n^2
+/// complex elements (2 n^2 for a real T), the device workspace. Empty for
+/// n <= 0.
+template <wwr::usual_fp T>
+[[nodiscard]] MemoryFootprint skew_expm_footprint(int32_t n);
 
 } // namespace free_breakfast

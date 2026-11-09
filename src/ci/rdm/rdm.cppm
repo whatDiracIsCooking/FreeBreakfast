@@ -11,6 +11,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma; // Layout
 
@@ -152,5 +153,17 @@ private:
   const Replacement *alpha_links_;
   const Replacement *beta_links_;
 };
+
+/// @brief What @ref Rdm::rdm12 takes over @p n_orbitals orbitals and vectors of
+/// @p rows (Rdm::size in the call's layout): M, n^4 doubles, and one chunk of
+/// D, at most 64 MiB of rows of n^2 doubles, the device workspace. Rdm::create
+/// allocates nothing, and keeps nothing on the device past the sets'. Empty
+/// for no orbitals or rows.
+[[nodiscard]] MemoryFootprint rdm12_footprint(int32_t n_orbitals, int32_t rows);
+
+/// @brief What @ref Rdm::trans_rdm12 takes, as @ref rdm12_footprint: M and a
+/// chunk each of D_bra and D_ket, the two in rdm12's one chunk's bytes, the
+/// device workspace.
+[[nodiscard]] MemoryFootprint trans_rdm12_footprint(int32_t n_orbitals, int32_t rows);
 
 } // namespace free_breakfast::ci

@@ -10,6 +10,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.io.basis;
 import free_breakfast.recipes.diagonalize; // syevd_lwork
+import free_breakfast.recipes.expm;        // skew_eig_lwork
 import free_breakfast.pipeline.step;       // View
 
 #include "diagnostics.h"
@@ -163,6 +164,7 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
   // largest order any planned step diagonalizes at: nao, or a CI's subspace.
   std::vector<const ActiveSpaceSelection *> selections;
   size_t max_order = dims.nao;
+  bool casscf_planned = false;
   if (const std::optional<CasciStep> &casci = calc.step<CasciStep>()) {
     selections.push_back(&*casci);
     max_order = std::max(max_order, ci_eigensolve_order(casci->nroots, false));
@@ -170,16 +172,19 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
   if (const std::optional<CasscfStep> &casscf = calc.step<CasscfStep>()) {
     selections.push_back(&*casscf);
     max_order = std::max(max_order, ci_eigensolve_order(casscf->nroots, true));
+    casscf_planned = true;
   }
   if (const std::optional<OptimizeStep> &optimize = calc.step<OptimizeStep>();
       optimize && (optimize->meci || optimize->casscf_gradient || optimize->nevpt2_gradient)) {
     selections.push_back(&optimize->casscf);
     max_order = std::max(max_order, ci_eigensolve_order(optimize->casscf.nroots, true));
+    casscf_planned = true;
   }
   if (const std::optional<HessianStep> &hessian = calc.step<HessianStep>();
       hessian && (hessian->casscf_gradient || hessian->nevpt2_gradient)) {
     selections.push_back(&hessian->casscf);
     max_order = std::max(max_order, ci_eigensolve_order(hessian->casscf.nroots, true));
+    casscf_planned = true;
   }
   if (const std::optional<FciStep> &fci = calc.step<FciStep>()) {
     max_order = std::max(max_order, ci_eigensolve_order(fci->nroots, false));
@@ -201,6 +206,10 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
   dims.syevd_lwork.resize(max_order + 1);
   for (size_t order = 0; order <= max_order; ++order) {
     dims.syevd_lwork[order] = FBF_TRY(syevd_lwork<double>(res, static_cast<int32_t>(order)));
+  }
+  // A CASSCF's orbital step diagonalizes kappa through skew_eig at nmo = nao.
+  if (casscf_planned) {
+    dims.skew_eig_lwork = FBF_TRY(skew_eig_lwork<double>(res, static_cast<int32_t>(dims.nao)));
   }
 
   std::vector<std::pair<size_t, size_t>> spaces;

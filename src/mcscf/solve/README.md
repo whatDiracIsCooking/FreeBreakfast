@@ -21,6 +21,12 @@ Result<mcscf::Solution> mcscf::solve(
     std::span<const double> ci_guess = {});
 
 double mcscf::ci_tolerance_for(double conv_tol_grad, double energy, double tolerance);
+
+MemoryFootprint mcscf::solve_footprint(const BasisSet &basis, int32_t ncore, int32_t ncas,
+                                       int32_t nelecas, int32_t multiplicity, int32_t nroots,
+                                       const mcscf::Options &options, int32_t naux,
+                                       std::span<const size_t> syevd_lwork,
+                                       size_t skew_eig_lwork);
 ```
 
 The arguments through `k_classes` are `response::fock`'s; `c` is the start, its
@@ -48,6 +54,36 @@ of its two stages, the micro iterations and the Hessian products of the step, an
 iteration was accepted), and the weights it was solved at (equal ones as
 1 / nroots, exactly), which the gradient, the couplings and the intersection
 take from it (#856).
+
+**The footprint** (`core/footprint`), `solve_footprint`, takes `solve`'s own
+sizes, `naux` for the builds `options.density_fitting` fits, syevd's work by
+order (through `ci::solve_footprint`'s orders and `ah_max_subspace` + 1) and
+`skew_eig`'s at nmo, so a planner holds no handle. Persistent is the
+Solution's C and CI vectors. Scratch is what the loop holds across its macro
+iterations, with one iteration's largest phase on top:
+
+- held throughout: the strings, the sigma's tables, C now and accepted, the
+  diagonal, γ and Γ, the step, κ, its complex eigenvectors and eigenvalues,
+  the rotation and the augmented Hessian's subspace and small vectors; and,
+  from the second iteration, the last roots and the sigma's apply scratch at
+  `ci::Layout::full`, which the CI response's conjugate gradients grow it to
+  past the CI's own symmetric layout;
+- over those, `casscf_integrals_footprint`'s integrals, held through the
+  iteration, and then the largest of: their own build's scratch; the CI warm
+  from the last roots (`ci::solve_footprint` with a start, its new roots
+  beside the last); and the step's chain, `response::fock_footprint`'s Fock,
+  then `hessian_footprint`'s H, then `relaxed_hessian_footprint`'s H̃ and
+  one of its products (`hessian_apply_footprint`), each held under the next;
+- and the first iteration's cold CI, before any roots or product, which the
+  steady iteration almost always exceeds.
+
+Workspace is the largest of every routine's, the augmented Hessian's syevd
+counted at every order its subspace can reach, `skew_eig`'s and
+`skew_expm`'s at nmo. It is the steady state's: a solve that converges before
+a product grows the sigma's scratch, or before a second product in some
+iteration allocates H′(x)'s scratch beside the first's, peaks below it. The
+final CI frees the Fock before its CI (it does not read it), so its peak is
+the first evaluate's (#1151).
 
 ## The loop
 
@@ -721,11 +757,13 @@ the one that file was fitted over (its `aux_basis`; the sha256 recorded there
 is the tree's `data/aux_basis/cc-pVDZ-JKFIT.json`'s), not the acCD set above:
 at 1e-8 two fitting sets would differ by far more than the bar.
 
+`McscfSolveFootprint` (`test/gtest/pipeline_step_footprint_gpu.cpp`) holds `solve_footprint` to the pool's peak of one solve, water's SA-2 CAS(4, 4) in cc-pVDZ, integral-direct, `ApproxHessian` and `Full`; its workspace to at most the bound.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `solve.cppm` | Module interface: `mcscf::solve`, `mcscf::Options`, `mcscf::Iteration`, `mcscf::Solution` |
+| `solve.cppm` | Module interface: `mcscf::solve`, `mcscf::Options`, `mcscf::Iteration`, `mcscf::Solution`, `mcscf::solve_footprint` |
 | `solve.cpp` | The loop, and the augmented Hessian's persistent subspace over H̃ (the product, H's and the CI's response R, is `../../response/relaxed_hessian/`'s) |
 | `device::ah_precondition.cu` | The preconditioner's kernel, r / (μ − diag(H)) for one column |
 | `ah_precondition_bridge.h` | Its launcher, shared by the `.cu` and `solve.cpp`'s global module fragment |

@@ -13,6 +13,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma;
 import free_breakfast.ci.rdm;
@@ -259,7 +260,8 @@ private:
   [[nodiscard]] Status transition_rdms(DeviceResources &res, const double *delta,
                                        std::span<double> gamma_t, std::span<double> gamma2_t);
   // ci_b_ and ci_delta_ to k columns, and block_ to the lockstep scratch of
-  // k columns' vectors.
+  // k columns' vectors. Each growth frees the old buffer first, so the peak
+  // is the grown sizes whatever k came before.
   void reserve(DeviceResources &res, size_t k);
   // v <- v - C (C^T v) for the count vectors of v (dim x count).
   [[nodiscard]] Status project_block(DeviceResources &res, size_t count, double *v);
@@ -319,5 +321,28 @@ private:
   // count step lengths, and the nroots x count overlaps with the roots.
   Buffers::device<double> block_;
 };
+
+/// @brief What a @ref RelaxedHessian holds over the CI of @p n_alpha and
+/// @p n_beta electrons in @p ncas orbitals, @p nroots roots, and @p nmo
+/// orbitals with @p ncore core, from create to its end, its calls included:
+///
+/// - persistent: H'(x)'s sigma (@ref ci::sigma_footprint's tables) and the
+///   apply scratch its first apply allocates (@ref ci::sigma_apply_bytes,
+///   Layout::full); the CI blocks b and delta, dim nroots each; the conjugate
+///   gradients' three vectors; the overlaps; kappa's matrix, the packed
+///   gradient and the transition RDMs; and the block calls' lockstep scratch.
+///   With @p block_columns > 0, the most columns a block call (apply, couple,
+///   apply_coupled, coupling with k) takes, b and delta hold that many
+///   columns' blocks and the lockstep scratch that many columns' vectors.
+/// - scratch: create's swapped c_0, dim doubles over one set for both spins.
+/// - workspace: @ref ci::trans_rdm12_footprint over dim rows.
+///
+/// Not counted here: the borrowed sigma's apply scratch, which the products'
+/// conjugate gradients grow to Layout::full's (@ref ci::sigma_apply_bytes)
+/// and its owner keeps and counts; the Hessian's own (@ref hessian_footprint,
+/// @ref hessian_apply_footprint); and pcg_ci_response's recipes::pcg_solve.
+[[nodiscard]] MemoryFootprint relaxed_hessian_footprint(int32_t ncas, int32_t n_alpha,
+                                                        int32_t n_beta, int32_t nroots, int32_t nmo,
+                                                        int32_t ncore, size_t block_columns = 0);
 
 } // namespace free_breakfast::response

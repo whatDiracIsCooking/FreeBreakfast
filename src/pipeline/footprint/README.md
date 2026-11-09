@@ -18,7 +18,7 @@ functions only, so there is no implementation unit.
 
 | Export | What |
 |---|---|
-| `FootprintDimensions` | The plan's dimensions, before the first step: the placed orbital basis and, under density fitting, the aux basis, and under AVAS MINAO (const pointers), the molecule's atoms, nao, naux, nocc / n_alpha / n_beta, natoms, mmd's record counts per (la, lb), syevd's lwork at every order through the plan's largest eigensolve, and worst-case ncas / nelecas (0 when no active space is planned). [`pipeline/shape`](../shape/README.md)'s `plan_shape` fills it |
+| `FootprintDimensions` | The plan's dimensions, before the first step: the placed orbital basis and, under density fitting, the aux basis, and under AVAS MINAO (const pointers), the molecule's atoms, nao, naux, nocc / n_alpha / n_beta, natoms, mmd's record counts per (la, lb), syevd's lwork at every order through the plan's largest eigensolve, skew_eig's at nao for a planned CASSCF, and worst-case ncas / nelecas (0 when no active space is planned). [`pipeline/shape`](../shape/README.md)'s `plan_shape` fills it |
 | `step_footprint(step, dims)` | A step's footprint, or none for a step that has no footprint member yet |
 | `PlanFootprint`, `plan_footprint(steps)` | The plan fold: `then` over one device's step footprints in plan order, with the step at which each kind's peak is reached |
 
@@ -48,7 +48,9 @@ it diagonalizes at, and the Davidson's largest over its subspace: the most it
 can take, reached when the subspace fills before it converges. One table,
 one name: the largest order is nao, a CI's 16 nroots, a CASSCF's augmented
 Hessian (ah_max_subspace + 1) or MINAO's AO count under AVAS. There is none
-at naux: no step fits with lindep.
+at naux: no step fits with lindep. `skew_eig_lwork`, beside it, is the CASSCF
+orbital step's other eigensolver query, `skew_eig`'s heevd at nao, filled
+only when a CASSCF is planned.
 
 **MINAO and the atoms are carried for AVAS.** The selection's footprint sizes
 MINAO's overlaps from the MINAO basis `plan_shape` places, and the labelled
@@ -71,7 +73,7 @@ so it reads like the routine it describes:
 `return then(drop(b_mo_fp), drop(jk_fp));`.
 
 The RHF chain's steps carry theirs, from the Molecule to the Scf, and the CI
-steps CASCI and FCI theirs (#1049; CASSCF's is #1151).
+steps CASCI, FCI and CASSCF theirs (#1049, #1151).
 `test/gtest/pipeline_step_footprint_gpu.cpp` is the step test's pattern: the
 dimensions are `plan_shape`'s over a parsed config, the step is the one it
 planned, and each runs on a fresh `DeviceResources`, once to grow the

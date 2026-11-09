@@ -56,3 +56,5 @@ the Fock matrices: the Hessian packs and unpacks every product through it, and
 linked into `free_breakfast_tests_gpu`: the packed order element by element
 against a host enumeration of the pairs, and unpack as its antisymmetric
 inverse, over empty and non-empty core and active spaces; and the refusals.
+
+Both copies allocate nothing, held so by `LibraryFootprint.RdmAndOrbitalPairs` (`test/gtest/footprint_gpu.cpp`).

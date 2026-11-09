@@ -1,5 +1,5 @@
-// The step footprints of the RHF chain (#1140) and of CASCI and FCI (#1049),
-// each held to the pool peak of one
+// The step footprints of the RHF chain (#1140), of CASCI and FCI (#1049) and
+// of CASSCF (#1151), and mcscf::solve's own, each held to the pool peak of one
 // run of its step by test/support/pool_footprint.h's two bars, sound and
 // tight. The dimensions are plan_shape's over a parsed water config, so the
 // dims pass is exercised end to end, and each step is the one the config
@@ -14,7 +14,8 @@
 // the first step: the pool's peak is then the step's persistent and scratch.
 // CASCI over an explicit space, over AVAS's pick (the footprint at the space
 // it picked) and over a carried orbitals file; FCI under a pool cap that
-// leaves its sigma the least scratch it runs with, and unbounded.
+// leaves its sigma the least scratch it runs with, and unbounded; and
+// CASSCF's loop and step, integral-direct and density-fitted.
 
 #include <gtest/gtest.h>
 
@@ -30,6 +31,7 @@ import free_breakfast.io.npy;
 import free_breakfast.ci;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.shape;
+import free_breakfast.mcscf;
 import free_breakfast.integrals.eri.density_fitting.jk; // df_exchange_footprint
 
 #include "pool_footprint.h"
@@ -205,17 +207,30 @@ struct Plan {
 // @p run, a step's, held to @p fp on a fresh DeviceResources, with @p live
 // allocations live at its peak: run once to grow the workspaces to exactly
 // the footprint's, then measured.
+// With @p workspace_bound the device workspace is held to at most the
+// footprint's, and the gap logged: a Davidson's or the augmented Hessian's
+// syevd is counted at its subspace's largest order, which a solve that
+// converges first never reaches.
 template <typename Run>
 void expect_step_footprint(const fb::MemoryFootprint &fp, const std::size_t live, Run &&run,
                            std::optional<fbt::FootprintSlack> slack = {},
+                           bool workspace_bound = false,
                            std::source_location location = std::source_location::current()) {
   fb::DeviceResources res{0};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const std::size_t device_before = res.device_workspace(0).num_elements();
   const std::size_t pinned_before = res.pinned_bytes();
   run(res);
-  EXPECT_EQ(res.device_workspace(0).num_elements(), std::max(device_before, fp.device.workspace))
-      << "the device workspace, from line " << location.line();
+  const std::size_t grown = res.device_workspace(0).num_elements();
+  if (workspace_bound) {
+    EXPECT_LE(grown, std::max(device_before, fp.device.workspace))
+        << "the device workspace, from line " << location.line();
+    std::cout << std::format("[ footprint ] workspace {} of the bound {}\n", grown,
+                             fp.device.workspace);
+  } else {
+    EXPECT_EQ(grown, std::max(device_before, fp.device.workspace))
+        << "the device workspace, from line " << location.line();
+  }
   EXPECT_EQ(res.pinned_bytes(), std::max(pinned_before, fp.pinned.peak()))
       << "the pinned memory, from line " << location.line();
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { run(res); });
@@ -551,6 +566,145 @@ TEST(StepFootprint, FciUnbounded) {
   expect_step_footprint(unbounded, kFciLive, [&](fb::DeviceResources &res) {
     expect_ran(f.fci.run(f.plan.ci_view(), res));
   });
+}
+
+// What the Casscf step reads.
+fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput, fb::EriOutput,
+         fb::CoreHamiltonianOutput, fb::ScfOutput>
+casscf_view(const Plan &plan) {
+  return fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+                  fb::EriOutput, fb::CoreHamiltonianOutput, fb::ScfOutput>{
+      *plan.molecule, *plan.basis, *plan.transform, *plan.eri, *plan.h, *plan.scf};
+}
+
+// Water in cc-pVDZ, the SA-2 CAS(4, 4) over 2 core orbitals, converged loosely:
+// what the loop holds does not depend on how far it goes, once a second macro
+// iteration runs on a sigma a product has grown (the steady state its
+// footprint counts), and the tighter defaults only add iterations of it.
+constexpr std::string_view kCasscfTable =
+    "[casscf]\nncas = 4\nnelecas = 4\nnroots = 2\nconv_tol = 1e-6\nconv_tol_grad = 1e-3\n";
+
+struct SolveCase {
+  std::string_view name;
+  fb::mcscf::DensityFitting fitting;
+  // Live at the peak.
+  std::size_t live;
+  // Past slow_test.h's 1.5 s: the integral-direct J and K of each macro
+  // iteration's integrals and Fock.
+  bool slow;
+};
+
+class McscfSolveFootprint : public ::testing::TestWithParam<SolveCase> {};
+
+// mcscf::solve from the selected space, the step's call alone: integral-
+// direct; the Hessian fitted over B, the rest integral-direct over classes
+// built here (the Eri step makes one or the other); and every build fitted.
+// The workspace is held to its bound: the augmented Hessian's syevd is counted
+// at its subspace's largest order, and the CI's at 16 nroots columns.
+TEST_P(McscfSolveFootprint, MatchesThePoolPeak) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE("Full");
+  if (GetParam().slow) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  const fb::mcscf::DensityFitting fitting = GetParam().fitting;
+  const bool fitted = fitting != fb::mcscf::DensityFitting::Direct;
+  Plan plan(System{.mode = fitted ? fb::EriMode::DensityFitting : fb::EriMode::IntegralDirect,
+                   .tables = kCasscfTable});
+  plan.run_through_scf();
+  const fb::FootprintDimensions &dims = plan.dims();
+  ASSERT_GT(dims.skew_eig_lwork, 0U);
+  const auto casscf = planned<fb::CasscfStep>(*plan.calc);
+  const auto space =
+      casscf.select(plan.inputs, plan.molecule->molecule, plan.basis->basis, *plan.scf);
+  ASSERT_TRUE(space) << space.error().message;
+  std::vector<fb::CoulombPairClass> own_j;
+  std::vector<fb::OrderedPairClass> own_k;
+  std::span<fb::CoulombPairClass> j_classes;
+  std::span<fb::OrderedPairClass> k_classes;
+  const fb::Buffers::device<double> *b = nullptr;
+  std::int32_t naux = 0;
+  if (const auto *direct = std::get_if<fb::IntegralDirect>(&plan.eri->eri)) {
+    j_classes = direct->j_classes;
+    k_classes = direct->k_classes;
+  } else {
+    const auto &fit = std::get<fb::DensityFitted>(plan.eri->eri);
+    b = &fit.b;
+    naux = fit.naux;
+    if (fitting == fb::mcscf::DensityFitting::ApproxHessian) {
+      own_j = fb::coulomb_pair_classes(plan.inputs, plan.pairs->classes).value();
+      own_k = fb::ordered_pair_classes(plan.inputs, plan.basis->basis, plan.pairs->classes).value();
+      j_classes = own_j;
+      k_classes = own_k;
+    }
+  }
+  fb::mcscf::Options options;
+  options.density_fitting = fitting;
+  options.conv_tol = casscf.conv_tol;
+  options.conv_tol_grad = casscf.conv_tol_grad;
+  const fb::MemoryFootprint fp =
+      fb::mcscf::solve_footprint(plan.basis->basis, space->ncore, space->ncas, space->nelecas,
+                                 plan.molecule->molecule.multiplicity(), casscf.nroots, options,
+                                 naux, dims.syevd_lwork, dims.skew_eig_lwork);
+  expect_step_footprint(
+      fp, GetParam().live,
+      [&](fb::DeviceResources &res) {
+        const auto solved =
+            fb::mcscf::solve(res, plan.basis->basis, plan.molecule->molecule, plan.h->h,
+                             plan.transform->u, j_classes, k_classes, space->c, space->ncore,
+                             space->ncas, space->nelecas, casscf.nroots, {}, options, b, naux);
+        ASSERT_TRUE(solved) << solved.error().message;
+      },
+      {}, true);
+}
+
+// At the peak, the loop's: the one string set, the sigma's 3 tables and its
+// scratch, C twice, the diagonal, gamma, Gamma, the step, kappa, its
+// eigenvectors and eigenvalues, the rotation and the augmented Hessian's 10,
+// and the last roots: 25; the integrals' ppaa, papa, h_eff and (tu|vw), 4;
+// the Fock's 6; the Hessian's 9, and its J and K's 3 (integral-direct) or 2;
+// the relaxed Hessian's 9 and H'(x)'s sigma's 4; and the fitted product's
+// scratch, 1.
+INSTANTIATE_TEST_SUITE_P(
+    Fittings, McscfSolveFootprint,
+    ::testing::Values(
+        SolveCase{"Direct", fb::mcscf::DensityFitting::Direct, 25 + 4 + 6 + 12 + 13, true},
+        SolveCase{"ApproxHessian", fb::mcscf::DensityFitting::ApproxHessian,
+                  25 + 4 + 6 + 11 + 13 + 1, true},
+        SolveCase{"Full", fb::mcscf::DensityFitting::Full, 25 + 4 + 6 + 11 + 13 + 1, false}),
+    [](const ::testing::TestParamInfo<SolveCase> &info) { return std::string(info.param.name); });
+
+// The Casscf step: its footprint at the explicit space, mcscf::solve_footprint's
+// loop between the selection and the tail, the run on a fresh DeviceResources.
+// The workspace is held to its bound, as McscfSolveFootprint's. Live at the
+// peak: the selection's C beside the loop's, as McscfSolveFootprint counts it.
+void expect_casscf_footprint(const fb::EriMode mode) {
+  Plan plan(System{.mode = mode, .tables = kCasscfTable});
+  plan.run_through_scf();
+  const fb::FootprintDimensions &dims = plan.dims();
+  ASSERT_EQ(dims.ncas, 4U);
+  ASSERT_EQ(dims.nelecas, 4U);
+  auto casscf = planned<fb::CasscfStep>(*plan.calc);
+  casscf.molden = plan.dir / "casscf.molden";
+  const std::size_t hessian = mode == fb::EriMode::DensityFitting ? 11 + 1 : 12;
+  expect_step_footprint(
+      casscf.footprint(dims), 1 + 25 + 4 + 6 + hessian + 13,
+      [&](fb::DeviceResources &res) { expect_ran(casscf.run(casscf_view(plan), res)); }, {}, true);
+}
+
+// Under slow_test.h: the integral-direct J and K of every macro iteration.
+TEST(StepFootprint, CasscfDirect) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_casscf_footprint(fb::EriMode::IntegralDirect);
+}
+
+// Under slow_test.h too, at about 1.6 s: McscfSolveFootprint's Full, its
+// family's representative, holds the loop in the fast set.
+TEST(StepFootprint, CasscfDensityFitted) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_casscf_footprint(fb::EriMode::DensityFitting);
 }
 
 } // namespace
