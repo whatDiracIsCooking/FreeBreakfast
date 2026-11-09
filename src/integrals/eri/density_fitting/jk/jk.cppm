@@ -14,6 +14,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 
 export namespace free_breakfast {
 
@@ -77,6 +78,14 @@ export namespace free_breakfast {
 ///         that failed, which leaves @p k unspecified.
 [[nodiscard]] Status df_exchange(DeviceResources &res, int32_t nao, int32_t naux, int32_t nocc,
                                  const double *b, const double *c, double *k);
+
+/// @brief What the one-density @ref df_coulomb takes: gamma, naux doubles, the
+/// device workspace. Empty for nao or naux 0.
+[[nodiscard]] MemoryFootprint df_coulomb_footprint(int32_t nao, int32_t naux);
+
+/// @brief What the one-factor @ref df_exchange takes for @p nocc columns: X,
+/// naux nocc nao doubles, the device workspace. Empty for nao or naux nocc 0.
+[[nodiscard]] MemoryFootprint df_exchange_footprint(int32_t nao, int32_t naux, int32_t nocc);
 
 /// @brief The density-fitted exchange matrix K_mn = sum_ls (ml|ns) D_ls of the
 /// two-factor density D = L R^T, from @p left and @p right and never from D,

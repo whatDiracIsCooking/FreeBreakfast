@@ -79,6 +79,14 @@ absorb what FelizJueves's libcint-convention `c` carries beyond ours
 ([`../metric/README.md`](../metric/README.md), "The normalisation"). The
 three-center bra `s` is `mmd`'s, the same one J and K read.
 
+## Footprint
+
+`three_center_footprint(basis, aux)` (`core/footprint`'s `MemoryFootprint`)
+is the four buffers' scratch, from the host bases alone: the staging, the
+cells, the Cartesian tensor and the work. The call and its footprint size them
+from one `ThreeCenterSizes`. Nothing is adaptive and nothing is the
+workspace's; `b` is the caller's.
+
 ## Limits
 
 - Orbital shells through f (`kThreeCenterMaxMomentum`), aux shells through i

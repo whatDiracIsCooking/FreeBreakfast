@@ -26,6 +26,14 @@ B is the caller's buffer, not scratch: at `naux · nao²` doubles it is the
 largest thing a DF calculation holds (H₂O in cc-pVTZ / cc-pVTZ-JKFIT, 139 x
 58², is 3.7 MB). The fit takes no scratch.
 
+## Footprint
+
+`density_fit_footprint(res, nao, naux, lindep)` (`core/footprint`'s
+`MemoryFootprint`) is nothing on the Cholesky path: `cholesky` and the trsm
+allocate nothing. With `lindep`, M's copy and `orthogonalize`'s U and
+eigenvalues are scratch, and the device workspace is the larger of syevd's
+work, M^-1/2's product and one slab. It takes `res` for syevd's size query.
+
 ## Failure
 
 A metric that is not positive definite is `Numerical`, naming the pivot

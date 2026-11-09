@@ -13,6 +13,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 
 export namespace free_breakfast {
 
@@ -91,5 +92,10 @@ struct OrbitalRange {
 [[nodiscard]] Status b_mo(DeviceResources &res, int32_t naux, int32_t nao, int32_t nmo,
                           const double *b, const double *c, OrbitalRange rows, OrbitalRange cols,
                           double *out);
+
+/// @brief What @ref b_mo takes: X, naux |rows| nao doubles, the device
+/// workspace. Empty when @ref b_mo writes nothing or has no AO to sum over.
+[[nodiscard]] MemoryFootprint b_mo_footprint(int32_t naux, int32_t nao, OrbitalRange rows,
+                                             OrbitalRange cols);
 
 } // namespace free_breakfast

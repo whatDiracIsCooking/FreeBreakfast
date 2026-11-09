@@ -87,6 +87,12 @@ functions, which the fitted (mn|P) M⁻¹ (P|ls) is invariant under, provided
 (mn|P) is built over the same `BasisSet`; it shows only in a comparison of M
 itself against PySCF.
 
+## Footprint
+
+`metric_footprint(aux)` (`core/footprint`'s `MemoryFootprint`) is what
+`metric` takes: the records' and pairs' staging, from the device workspace.
+`m` is the caller's, and nothing else is allocated.
+
 ## Limits
 
 - Aux shells through i (`kMetricMaxMomentum`, the emitted table's extent,

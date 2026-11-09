@@ -85,3 +85,41 @@ maximum before the first step and held through every one.
   offloaded B) is `pinned.persistent`.
 - **A loaded product is persistent too.** A `Load`ed step's product is as
   resident as a computed one.
+
+## Fragmentation headroom
+
+A plan whose footprint peak fits under a cap can still be refused by the pool:
+the pool takes memory from the driver in chunks, and what it has reserved, not
+what is in use, is what `maxSize` bounds. Pre-flight (#1051) therefore leaves
+**32 MiB** (one pool chunk) between a plan's device peak and the device's
+budget, and an adaptive routine sizes its adaptive part to the budget less its
+own allocations still to come and this headroom (`core/footprint`).
+
+**The measurement.** `test/gtest/pipeline_footprint_gpu.cpp` runs the RHF
+chain, every step from the Molecule to the Scf, by hand on a fresh
+`DeviceResources`, and reads its pool's `ReservedMemHigh` against its
+`UsedMemHigh`. On the RTX 3080 (CUDA 13.0, driver 580.126.20, the default
+1 GiB release threshold, no cap):
+
+| Chain | UsedMemHigh | ReservedMemHigh | Reserved past used |
+|---|---|---|---|
+| water, cc-pVDZ, integral-direct | 1,724,192 | 33,554,432 | 31,830,240 |
+| water, cc-pVDZ, density-fitted | 2,778,052 | 33,554,432 | 30,776,380 |
+| water, cc-pVTZ, integral-direct | 6,863,968 | 33,554,432 | 26,690,464 |
+| water, cc-pVTZ, density-fitted | 46,946,660 | 67,108,864 | 20,162,204 |
+| benzene, cc-pVTZ, density-fitted | 3,957,730,548 | 3,959,422,976 | 1,692,428 |
+
+**The derivation.** Every gap is under one 32 MiB chunk (33,554,432 bytes),
+however large the run: the pool sub-allocates small requests from 32 MiB
+chunks and reserves a large one at its own size (benzene's B and three-center
+scratch, each past a chunk, leave 1.7 MB), so what it holds past its peak use
+is the unfilled part of the chunk its last small allocations opened. The
+chain's per-class streams (mmd's, J's and K's classes), which allocate beside
+`res.stream()`, leave no more. The
+headroom is that one chunk, not the largest gap measured, because the gap is
+the chunk's remainder and any run can leave nearly all of it. The test holds
+each chain's gap to it.
+
+**HIP is not measured here.** ROCm's pool reserves in its own steps and resets
+a high-water mark to 0 (`core/wwr`'s README); its gap needs its own run on the
+gfx1200 before a HIP pre-flight leans on this number.

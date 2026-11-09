@@ -10,6 +10,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 
 export namespace free_breakfast {
 
@@ -39,5 +40,13 @@ export namespace free_breakfast {
 ///         an argument syevd rejected.
 template <real_fp T>
 [[nodiscard]] Status diagonalize(DeviceResources &res, int32_t n, T *a, T *w);
+
+/// @brief What @ref diagonalize takes for order @p n: syevd's work, the device
+/// workspace, its size the solver's own (queried from res.solver(), a host
+/// computation). Empty for n <= 0.
+///
+/// @return The footprint, or the GpuRuntime error of the size query.
+template <real_fp T>
+[[nodiscard]] Result<MemoryFootprint> diagonalize_footprint(DeviceResources &res, int32_t n);
 
 } // namespace free_breakfast

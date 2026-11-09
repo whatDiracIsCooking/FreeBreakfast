@@ -13,6 +13,8 @@ import free_breakfast.core.constants; // kZero, kOne, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemv, gemm(StridedBatched), syrk, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives;
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.symmetrize;
 
 #include "diagnostics.h"
@@ -85,6 +87,25 @@ Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, 
                                                 wwr::WWRBLAS_OP_T, nao, rows32, &kTwo<double>, x,
                                                 rows32, &kZero<double>, k, nao)));
   return symmetrize(res, wwr::WWRBLAS_FILL_MODE_LOWER, nao, k, nao);
+}
+
+MemoryFootprint df_coulomb_footprint(const int32_t nao, const int32_t naux) {
+  MemoryFootprint out;
+  if (nao > 0 && naux > 0) {
+    out.device.workspace = math::align_up(sizeof(double) * static_cast<size_t>(naux),
+                                          DeviceResources::kWorkspaceAlignment);
+  }
+  return out;
+}
+
+MemoryFootprint df_exchange_footprint(const int32_t nao, const int32_t naux, const int32_t nocc) {
+  MemoryFootprint out;
+  if (nao > 0 && naux > 0 && nocc > 0) {
+    out.device.workspace = math::align_up(sizeof(double) * static_cast<size_t>(naux) *
+                                              static_cast<size_t>(nocc) * static_cast<size_t>(nao),
+                                          DeviceResources::kWorkspaceAlignment);
+  }
+  return out;
 }
 
 Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, const int32_t rank,

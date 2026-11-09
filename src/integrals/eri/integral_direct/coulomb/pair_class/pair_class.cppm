@@ -14,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.integrals.mmd;
 
 export namespace free_breakfast {
@@ -247,5 +248,14 @@ struct CoulombPairClass {
 [[nodiscard]] Result<std::vector<CoulombPairClass>>
 coulomb_pair_classes(DeviceResources &res, std::span<const PrimitivePairClass> classes,
                      double tau = 1e-13);
+
+/// @brief What @ref coulomb_pair_classes holds over mmd's classes of
+/// @p mmd_records records each, indexed `[la][lb]` (0 for a class the basis
+/// does not reach): J's classes, records and build scratch, persistent; the
+/// prune's maxima, counts and destinations, scratch; the kept counts' readback,
+/// the pinned workspace. Exact at tau = 0, which keeps every record; above it
+/// a bound, since a class is sized to its kept records.
+[[nodiscard]] MemoryFootprint
+coulomb_pair_classes_footprint(std::span<const std::vector<size_t>> mmd_records);
 
 } // namespace free_breakfast

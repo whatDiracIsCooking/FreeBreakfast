@@ -53,6 +53,6 @@ auto nuclei = h2.view();                                       // for a launcher
 
 | File | Role |
 |------|------|
-| `molecule.cppm` | Module interface: `distance`, `Molecule`, `nuclear_charge`, `nuclear_repulsion_energy`, `nuclear_repulsion_gradient`, `nuclear_repulsion_hessian`, and `NucleiView` re-exported |
+| `molecule.cppm` | Module interface: `distance`, `Molecule`, `nuclear_charge`, `nuclear_repulsion_energy`, `nuclear_repulsion_gradient`, `nuclear_repulsion_hessian`, `molecule_footprint`, and `NucleiView` re-exported |
 | `nuclei_view.h` | `NucleiView`'s single definition, for the module and the launchers |
 | `CMakeLists.txt` | The interface library `free_breakfast.molecule.headers` and the module |

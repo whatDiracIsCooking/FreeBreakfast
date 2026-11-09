@@ -21,6 +21,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 
@@ -43,34 +44,75 @@ int64_t ordered_block_count(const std::vector<uint32_t> &a, const std::vector<ui
   return n;
 }
 
-// An ordered class of n records in n_groups groups, of a basis of n_ao
+// The element counts of an ordered class's fields, make_ordered_class's and
+// its footprint's: a class of len records in groups groups, of a basis of n_ao
 // Cartesian AOs and n_shells shells per momentum, its tables n_blk blocks, its
 // E tables sized when rolled and the class within K's limit (else empty), and
-// the set's own scratch when it is the set's first, on a new stream of res's
-// Device.
-OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, const int32_t lb,
-                                    const int32_t n, const int32_t n_groups, const int32_t n_ao,
-                                    const std::vector<int32_t> &n_shells,
-                                    std::vector<int32_t> n_blk, const bool rolled,
-                                    const bool first) {
-  const auto ds = std::make_shared<DeviceStream>(res.device());
-  const auto len = static_cast<size_t>(n);
-  size_t n_blocks = 0;
-  for (const int32_t count : n_blk) {
-    n_blocks += static_cast<size_t>(count);
+// the set's own scratch when it is the set's first.
+struct OrderedClassSizes {
+  size_t len;
+  size_t groups;
+  size_t dc;
+  size_t blocks;
+  size_t n_e;
+  size_t n_dcd;
+  size_t n_rank;
+  size_t set_ao;
+  bool first;
+
+  // The bytes of every field: 14 doubles and 3 int32_t a record, then the
+  // rest, as make_ordered_class sizes them.
+  [[nodiscard]] size_t bytes() const {
+    const size_t doubles = (14 * len) + (2 * n_e) + n_dcd +
+                           (static_cast<size_t>(device::kExchangeGroupFields) * groups) +
+                           std::max(blocks, size_t{1}) + (3 * set_ao) +
+                           (first ? static_cast<size_t>(device::kExchangeDecayFields) + 1 : 0);
+    const size_t ints =
+        (3 * len) + (groups + 1) + dc +
+        std::max(static_cast<size_t>(device::kExchangeBlockFields) * blocks, size_t{1}) + n_rank +
+        set_ao;
+    return (sizeof(double) * doubles) + (sizeof(int32_t) * ints);
   }
-  const size_t n_dcd = static_cast<size_t>(n_shells[static_cast<size_t>(la)]) *
-                       static_cast<size_t>(n_shells[static_cast<size_t>(lb)]) *
-                       static_cast<size_t>(ordered_cartesian_count(la)) *
-                       static_cast<size_t>(ordered_cartesian_count(lb));
-  const auto fields = static_cast<size_t>(device::kExchangeBlockFields);
-  const auto groups = static_cast<size_t>(n_groups);
+};
+
+OrderedClassSizes ordered_class_sizes(const int32_t la, const int32_t lb, const int32_t n,
+                                      const int32_t n_groups, const int32_t n_ao,
+                                      const std::vector<int32_t> &n_shells,
+                                      const std::vector<int32_t> &n_blk, const bool rolled,
+                                      const bool first) {
+  const auto len = static_cast<size_t>(n);
+  size_t blocks = 0;
+  for (const int32_t count : n_blk) {
+    blocks += static_cast<size_t>(count);
+  }
   // A class above K's limit has no kernel, and the K build refuses it: no
   // table.
   const bool tables = rolled && std::max(la, lb) <= device::kExchangeMaxMomentum;
-  const size_t n_e = tables ? len * static_cast<size_t>(device::exchange_e_table_width(la, lb)) : 0;
-  const size_t n_rank = la == lb ? static_cast<size_t>(n_shells[static_cast<size_t>(la)]) : 0;
-  const size_t set_ao = first ? static_cast<size_t>(n_ao) : 0;
+  return {
+      .len = len,
+      .groups = static_cast<size_t>(n_groups),
+      .dc = n_shells.size() * len,
+      .blocks = blocks,
+      .n_e = tables ? len * static_cast<size_t>(device::exchange_e_table_width(la, lb)) : 0,
+      .n_dcd = static_cast<size_t>(n_shells[static_cast<size_t>(la)]) *
+               static_cast<size_t>(n_shells[static_cast<size_t>(lb)]) *
+               static_cast<size_t>(ordered_cartesian_count(la)) *
+               static_cast<size_t>(ordered_cartesian_count(lb)),
+      .n_rank = la == lb ? static_cast<size_t>(n_shells[static_cast<size_t>(la)]) : 0,
+      .set_ao = first ? static_cast<size_t>(n_ao) : 0,
+      .first = first,
+  };
+}
+
+// An ordered class of @p z's sizes (ordered_class_sizes), on a new stream of
+// res's Device.
+OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, const int32_t lb,
+                                    const int32_t n, const int32_t n_groups, const int32_t n_ao,
+                                    const std::vector<int32_t> &n_shells,
+                                    std::vector<int32_t> n_blk, const OrderedClassSizes &z) {
+  const auto ds = std::make_shared<DeviceStream>(res.device());
+  const size_t len = z.len;
+  const auto fields = static_cast<size_t>(device::kExchangeBlockFields);
   return {
       .la = la,
       .lb = lb,
@@ -97,22 +139,28 @@ OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, cons
       .off_a = StreamBuffers::device<int32_t>(len, ds),
       .off_b = StreamBuffers::device<int32_t>(len, ds),
       .rank_b = StreamBuffers::device<int32_t>(len, ds),
-      .group_start = StreamBuffers::device<int32_t>(groups + 1, ds),
-      .dc = StreamBuffers::device<int32_t>(n_shells.size() * len, ds),
-      .blocks = StreamBuffers::device<int32_t>(std::max(fields * n_blocks, size_t{1}), ds),
-      .e_bra = StreamBuffers::device<double>(n_e, ds),
-      .e_ket = StreamBuffers::device<double>(n_e, ds),
-      .dcd = StreamBuffers::device<double>(n_dcd, ds),
+      .group_start = StreamBuffers::device<int32_t>(z.groups + 1, ds),
+      .dc = StreamBuffers::device<int32_t>(z.dc, ds),
+      .blocks = StreamBuffers::device<int32_t>(std::max(fields * z.blocks, size_t{1}), ds),
+      .e_bra = StreamBuffers::device<double>(z.n_e, ds),
+      .e_ket = StreamBuffers::device<double>(z.n_e, ds),
+      .dcd = StreamBuffers::device<double>(z.n_dcd, ds),
       .geom = StreamBuffers::device<double>(
-          static_cast<size_t>(device::kExchangeGroupFields) * groups, ds),
-      .factor = StreamBuffers::device<double>(std::max(n_blocks, size_t{1}), ds),
-      .rank_offset = StreamBuffers::device<int32_t>(n_rank, ds),
-      .centre = StreamBuffers::device<double>(size_t{3} * set_ao, ds),
-      .shell_start = StreamBuffers::device<int32_t>(set_ao, ds),
+          static_cast<size_t>(device::kExchangeGroupFields) * z.groups, ds),
+      .factor = StreamBuffers::device<double>(std::max(z.blocks, size_t{1}), ds),
+      .rank_offset = StreamBuffers::device<int32_t>(z.n_rank, ds),
+      .centre = StreamBuffers::device<double>(size_t{3} * z.set_ao, ds),
+      .shell_start = StreamBuffers::device<int32_t>(z.set_ao, ds),
       .decay = StreamBuffers::device<double>(
-          first ? static_cast<size_t>(device::kExchangeDecayFields) : 0, ds),
-      .g_max = StreamBuffers::device<double>(first ? 1 : 0, ds),
+          z.first ? static_cast<size_t>(device::kExchangeDecayFields) : 0, ds),
+      .g_max = StreamBuffers::device<double>(z.first ? 1 : 0, ds),
   };
+}
+
+// One slot per orientation an ordered class takes of each record of its mmd
+// class (la, lb) of n_rec records (pairs_bridge.h): gather_ordered's sort.
+size_t ordered_slots(const int32_t la, const int32_t lb, const int64_t n_rec) {
+  return static_cast<size_t>(n_rec) * (la == lb ? 2 : 1);
 }
 
 // The class's order and its records from the mmd class from, on its stream:
@@ -123,9 +171,7 @@ Status gather_ordered(OrderedPairClass &cls, const PrimitivePairClass &from) {
   const std::shared_ptr<DeviceStream> &ds = cls.work_stream;
   const wwr::wwrStream_t stream = ds->stream();
   const PrimitivePairClassView v = from.view();
-  // One slot per orientation the class takes of each mmd record
-  // (pairs_bridge.h).
-  const size_t n_slots = static_cast<size_t>(from.n_rec) * (from.la == from.lb ? 2 : 1);
+  const size_t n_slots = ordered_slots(from.la, from.lb, from.n_rec);
   StreamBuffers::device<double> key(n_slots, ds);
   StreamBuffers::device<double> key_alt(n_slots, ds);
   StreamBuffers::device<uint32_t> perm(n_slots, ds);
@@ -197,29 +243,66 @@ Status rejoin(std::vector<OrderedPairClass> &classes, const wwr::wwrStream_t hub
   return {};
 }
 
-Result<std::vector<OrderedPairClass>>
-ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
-                     const std::vector<PrimitivePairClass> &classes) {
-  // Per momentum, its shells in basis order (a shell's index there is its
-  // rank), their primitives in all, and the sum of their squares: a class's
-  // record count, mmd's and ordered alike, is made of these, and its block
-  // tables' sizes of the shells.
-  const std::vector<Shell> &shells = basis.shells();
+// The basis's shells per momentum (a shell's index there is its rank), their
+// primitives in all and the sum of their squares, and the shell counts per
+// momentum through K's limit at least: what ordered_pair_classes and its
+// footprint size every class from. A class's record count, mmd's and ordered
+// alike, is made of the primitives, and its block tables' sizes of the shells.
+struct OrderedBasis {
   std::vector<std::vector<uint32_t>> of_l;
   std::vector<int64_t> prims;
   std::vector<int64_t> prims_sq;
+  std::vector<int32_t> n_shells;
+  // A basis with a shell past kb's momenta launches kbr, and every class of
+  // its set is a side of some kbr launch, so every class gets E tables.
+  bool rolled;
+};
+
+OrderedBasis ordered_basis(const BasisSet &basis) {
+  OrderedBasis out;
+  const std::vector<Shell> &shells = basis.shells();
   for (uint32_t i = 0; i < basis.nshells(); ++i) {
     const auto l = static_cast<size_t>(shells[i].angular_momentum());
-    if (l >= of_l.size()) {
-      of_l.resize(l + 1);
-      prims.resize(l + 1);
-      prims_sq.resize(l + 1);
+    if (l >= out.of_l.size()) {
+      out.of_l.resize(l + 1);
+      out.prims.resize(l + 1);
+      out.prims_sq.resize(l + 1);
     }
     const auto n = static_cast<int64_t>(shells[i].primitives().size());
-    of_l[l].push_back(i);
-    prims[l] += n;
-    prims_sq[l] += n * n;
+    out.of_l[l].push_back(i);
+    out.prims[l] += n;
+    out.prims_sq[l] += n * n;
   }
+  out.n_shells.resize(
+      std::max(out.of_l.size(), static_cast<size_t>(device::kExchangeMaxMomentum + 1)));
+  for (size_t l = 0; l < out.of_l.size(); ++l) {
+    out.n_shells[l] = static_cast<int32_t>(out.of_l[l].size());
+  }
+  out.rolled = out.of_l.size() > static_cast<size_t>(device::kExchangeKbMaxMomentum + 1);
+  return out;
+}
+
+// Every ordered class's block count against every one's, both in @p keys'
+// order: kb and the table index a block in 32 bits, which the caller checks.
+std::vector<std::vector<int64_t>>
+ordered_blocks(const OrderedBasis &ob, const std::span<const std::pair<int32_t, int32_t>> keys) {
+  std::vector<std::vector<int64_t>> n_blk(keys.size());
+  for (size_t a = 0; a < keys.size(); ++a) {
+    for (size_t b = 0; b < keys.size(); ++b) {
+      n_blk[a].push_back(ordered_block_count(ob.of_l[static_cast<size_t>(keys[a].first)],
+                                             ob.of_l[static_cast<size_t>(keys[b].first)]));
+    }
+  }
+  return n_blk;
+}
+
+Result<std::vector<OrderedPairClass>>
+ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
+                     const std::vector<PrimitivePairClass> &classes) {
+  const OrderedBasis ob = ordered_basis(basis);
+  const std::vector<std::vector<uint32_t>> &of_l = ob.of_l;
+  const std::vector<int64_t> &prims = ob.prims;
+  const std::vector<int64_t> &prims_sq = ob.prims_sq;
 
   // The classes must be the basis's mmd classes, each once: mmd stores every
   // shell pair i <= j once, so (la, lb) has P(la) P(lb) records, and (l, l)
@@ -261,34 +344,25 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
     }
   }
   std::ranges::sort(plan, {}, [](const auto &p) { return p.first; });
-
-  // The shell counts by momentum, through K's limit at least, and every bra's
-  // table sizes against every ket, in plan order: kb and the table index a
-  // block in 32 bits.
-  std::vector<int32_t> n_shells(
-      std::max(of_l.size(), static_cast<size_t>(device::kExchangeMaxMomentum + 1)));
-  for (size_t l = 0; l < of_l.size(); ++l) {
-    n_shells[l] = static_cast<int32_t>(of_l[l].size());
+  std::vector<std::pair<int32_t, int32_t>> keys;
+  for (const auto &entry : plan) {
+    keys.push_back(entry.first);
   }
+
+  // Every bra's table sizes against every ket, in plan order.
+  const std::vector<std::vector<int64_t>> blocks = ordered_blocks(ob, keys);
   std::vector<std::vector<int32_t>> n_blk(plan.size());
   for (size_t a = 0; a < plan.size(); ++a) {
-    const auto [la, lc] = plan[a].first;
     for (size_t b = 0; b < plan.size(); ++b) {
-      const auto [lb, ld] = plan[b].first;
-      const int64_t count =
-          ordered_block_count(of_l[static_cast<size_t>(la)], of_l[static_cast<size_t>(lb)]);
+      const int64_t count = blocks[a][b];
       if (count * device::kExchangeBlockFields > std::numeric_limits<int32_t>::max()) {
         return err_config("ordered_pair_classes: classes ({}, {}) and ({}, {}) make {} blocks, "
                           "too many for the kernels' 32-bit index",
-                          la, lc, lb, ld, count);
+                          keys[a].first, keys[a].second, keys[b].first, keys[b].second, count);
       }
       n_blk[a].push_back(static_cast<int32_t>(count));
     }
   }
-
-  // A basis with a shell past kb's momenta launches kbr, and every class of
-  // its set is a side of some kbr launch, so every class gets E tables.
-  const bool rolled = of_l.size() > static_cast<size_t>(device::kExchangeKbMaxMomentum + 1);
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t hub = res.stream();
@@ -303,10 +377,12 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
           Status{err_config("ordered_pair_classes: class ({}, {}) has {} records, past {}", la, lb,
                             n, std::numeric_limits<int32_t>::max())});
     }
+    const auto n_groups = static_cast<int32_t>(of_l[static_cast<size_t>(la)].size());
+    const auto n_ao = static_cast<int32_t>(basis.nao_cart());
+    const OrderedClassSizes z = ordered_class_sizes(la, lb, static_cast<int32_t>(n), n_groups, n_ao,
+                                                    ob.n_shells, n_blk[c], ob.rolled, c == 0);
     OrderedPairClass &cls = out.emplace_back(make_ordered_class(
-        res, la, lb, static_cast<int32_t>(n),
-        static_cast<int32_t>(of_l[static_cast<size_t>(la)].size()),
-        static_cast<int32_t>(basis.nao_cart()), n_shells, std::move(n_blk[c]), rolled, c == 0));
+        res, la, lb, static_cast<int32_t>(n), n_groups, n_ao, ob.n_shells, std::move(n_blk[c]), z));
     // Fork from mmd's stream, so the class reads mmd's final records, without
     // a host synchronization.
     FBF_TRY(gpu_status(cls.work_stream->fork_stream().fork_from(from->device_stream()->stream())));
@@ -326,6 +402,44 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
   // class queues its frees on its stream, so they wait for every read of it.
   for (const PrimitivePairClass &cls : classes) {
     FBF_TRY(gpu_status(cls.device_stream()->fork_stream().fork_from(hub)));
+  }
+  return out;
+}
+
+MemoryFootprint ordered_pair_classes_footprint(const BasisSet &basis) {
+  const OrderedBasis ob = ordered_basis(basis);
+  // The ordered classes the basis reaches, ascending (la, lb), as the call
+  // plans them from its mmd classes.
+  std::vector<std::pair<int32_t, int32_t>> keys;
+  for (size_t la = 0; la < ob.of_l.size(); ++la) {
+    for (size_t lb = 0; lb < ob.of_l.size(); ++lb) {
+      if (!ob.of_l[la].empty() && !ob.of_l[lb].empty()) {
+        keys.emplace_back(static_cast<int32_t>(la), static_cast<int32_t>(lb));
+      }
+    }
+  }
+  const std::vector<std::vector<int64_t>> blocks = ordered_blocks(ob, keys);
+  // Class after class: its fields, kept; then its gather's sort, freed before
+  // the next class is made.
+  MemoryFootprint out;
+  for (size_t c = 0; c < keys.size(); ++c) {
+    const auto [la, lb] = keys[c];
+    const auto ula = static_cast<size_t>(la);
+    const auto ulb = static_cast<size_t>(lb);
+    std::vector<int32_t> n_blk;
+    for (const int64_t count : blocks[c]) {
+      n_blk.push_back(static_cast<int32_t>(count));
+    }
+    const int64_t n = ob.prims[ula] * ob.prims[ulb];
+    const OrderedClassSizes z = ordered_class_sizes(
+        la, lb, static_cast<int32_t>(n), static_cast<int32_t>(ob.of_l[ula].size()),
+        static_cast<int32_t>(basis.nao_cart()), ob.n_shells, n_blk, ob.rolled, c == 0);
+    // The mmd class it is gathered from: (l, l)'s (P^2 + sum p^2) / 2 records,
+    // or P(la) P(lb).
+    const int64_t mmd_rec = la == lb ? ((ob.prims[ula] * ob.prims[ula]) + ob.prims_sq[ula]) / 2 : n;
+    const size_t sort = ordered_slots(la, lb, mmd_rec) * (2 * (sizeof(double) + sizeof(uint32_t)));
+    out.device = then(out.device, Footprint<wwr::extension::MemoryKind::Device>{
+                                      .persistent = z.bytes(), .scratch = sort});
   }
   return out;
 }

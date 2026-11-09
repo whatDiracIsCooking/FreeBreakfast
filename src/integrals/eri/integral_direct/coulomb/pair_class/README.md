@@ -102,6 +102,7 @@ a throwaway, not kept in `bench/`.
 | `CoulombPairClass` | J's class of records: `mmd`'s fields J reads and a build's scratch, device-only, on its own `DeviceStream`; `view()` gives a `PrimitivePairClassView` with the fields it does not carry null, `ket_view()` the same over the last build's sorted ket copies |
 | `coulomb_hermite_count(l)` | `size_t`: the Hermite functions of total order up to `l`, `(l+1)(l+2)(l+3)/6`: a record's row of `D_q` or `J_p` at `l = la + lb` (`n_hermite`), and of the gradient's raised `J_p` at `la + lb + 1` |
 | `coulomb_pair_classes(res, classes, tau = 1e-13)` | `Result<std::vector<CoulombPairClass>>`: J's classes from `classes` (`primitive_pair_classes` of one basis), without every record whose J terms, as bra and as ket, are all under `tau` **for any density with `\|D_cd\| <= 2`** (above), each class in `mmd`'s record order on a new `DeviceStream`, an emptied class left out. `tau = 0` keeps every record. InvalidConfig for a negative or NaN `tau` or a class above f (`kCoulombMaxMomentum`) |
+| `coulomb_pair_classes_footprint(mmd_records)` | `MemoryFootprint` over mmd's record counts `[la][lb]` (`FootprintDimensions::mmd_records`' shape): J's classes persistent, the prune's scratch, the count readback the pinned workspace. Exact at `tau = 0`, a bound above it |
 
 ## Tests
 
@@ -121,7 +122,7 @@ keeping every record and a `tau` above every bound none; and the refusals.
 
 | File | Role |
 |------|------|
-| `pair_class.cppm` | Module interface: `CoulombPairClass`, `coulomb_pair_classes` |
+| `pair_class.cppm` | Module interface: `CoulombPairClass`, `coulomb_pair_classes`, its footprint |
 | `pair_class.cpp` | The prune: the event waits, the maxima and scans, the count readback, J's classes and their scatters |
 | `pair_class_bridge.h` | The prune's launchers, declared once for the module and the device TU |
 | `pair_class_launch.cu` | The launchers, and the maxima, keep-scan and scatter kernels |

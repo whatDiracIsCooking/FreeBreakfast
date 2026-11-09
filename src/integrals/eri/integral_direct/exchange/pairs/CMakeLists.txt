@@ -54,6 +54,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::basis
   free_breakfast::integrals::mmd
   free_breakfast::integrals::eri::integral_direct::exchange::pairs::headers

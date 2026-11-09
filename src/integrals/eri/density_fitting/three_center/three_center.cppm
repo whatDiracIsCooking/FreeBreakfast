@@ -13,6 +13,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 
@@ -63,5 +64,12 @@ export namespace free_breakfast {
 [[nodiscard]] Status three_center(DeviceResources &res, const BasisSet &basis,
                                   std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                                   double *b, size_t max_bytes = std::numeric_limits<size_t>::max());
+
+/// @brief What @ref three_center takes over @p basis's primitive-pair classes
+/// and @p aux, from the host bases alone: the staging, the cells, the
+/// Cartesian tensor and the transform's work, scratch on the device. Nothing
+/// of the device workspace, and nothing adaptive: the four buffers are the
+/// call's whole need. Empty if either basis is.
+[[nodiscard]] MemoryFootprint three_center_footprint(const BasisSet &basis, const BasisSet &aux);
 
 } // namespace free_breakfast

@@ -69,6 +69,7 @@ add_executable(
   diis_gpu.cpp
   einsum_gpu.cpp
   expm_gpu.cpp
+  footprint_gpu.cpp
   lu_gpu.cpp
   matrix_ao_gpu.cpp
   norm_gpu.cpp

@@ -46,7 +46,9 @@ The other two directions (`cartesian_to_spherical` on a density, `spherical_to_c
 | `MatrixAO<L>(res, basis)` | One zero `n × n` device matrix in layout `L`; `n()`, `num_elements()`, `dev_idx()`, `data()` |
 | `CartesianMatrixAO`, `SphericalMatrixAO` | The two `MatrixAO` aliases |
 | `upload_spherical_transform_matrix(res, basis)` | `Result<std::shared_ptr<const Buffers::device<double>>>`: the shared device U, `nullptr` for the identity |
+| `upload_spherical_transform_matrix_footprint(basis)` | `MemoryFootprint`: U, persistent; nothing for the identity |
 | `MatrixAOPair(res, basis, u)` | One of each layout; `cartesian()`, `spherical()`, `dev_idx()` |
+| `matrix_ao_pair_footprint(basis)` | `MemoryFootprint`: both matrices and the conversion's scratch, persistent; U is the caller's |
 | `MatrixAOPair::cartesian_to_spherical(res)` | `Status`: `spherical = Uᵀ cartesian U` |
 | `MatrixAOPair::spherical_to_cartesian(res)` | `Status`: `cartesian = U spherical Uᵀ` |
 
@@ -78,6 +80,6 @@ s = density.spherical_to_cartesian(res);
 
 | File | Role |
 |------|------|
-| `matrix_ao.cppm` | Module interface: `BasisLayout`, `MatrixAO`, `upload_spherical_transform_matrix`, `MatrixAOPair` |
+| `matrix_ao.cppm` | Module interface: `BasisLayout`, `MatrixAO`, `upload_spherical_transform_matrix`, `MatrixAOPair`, and the footprints of the upload and the pair |
 | `matrix_ao.cpp` | The upload of U, the pair's check on it, `cartesian_to_spherical` and `spherical_to_cartesian` |
 | `CMakeLists.txt` | The module target `free_breakfast.recipes.matrix_ao` |

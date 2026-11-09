@@ -16,6 +16,7 @@ import free_breakfast.core.constants;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 
 #include "diagnostics.h"
 
@@ -28,6 +29,15 @@ Diis::Diis(DeviceResources &res, const size_t len, const size_t max_history)
     : len_(len), cap_(std::clamp<size_t>(max_history, 1, kDiisMaxHistoryLimit)),
       dev_idx_(res.dev_idx()), fock_(len_ * cap_, res.device()), error_(len_ * cap_, res.device()),
       gram_(cap_ * cap_, res.device()), coeff_(cap_, res.device()), singular_(1, res.device()) {}
+
+MemoryFootprint diis_footprint(const size_t len, const size_t max_history) {
+  // The constructor's buffers: fock_ and error_, gram_, coeff_, singular_.
+  const size_t cap = std::clamp<size_t>(max_history, 1, kDiisMaxHistoryLimit);
+  MemoryFootprint out;
+  out.device.persistent =
+      (sizeof(double) * ((2 * len * cap) + (cap * cap) + cap)) + sizeof(int32_t);
+  return out;
+}
 
 Status Diis::push_and_extrapolate(DeviceResources &res, const double *cur_fock,
                                   const double *cur_residual, double *out_fock) {

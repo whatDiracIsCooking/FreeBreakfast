@@ -26,6 +26,8 @@ export import free_breakfast.atom;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives;
+import free_breakfast.core.footprint;
 
 export namespace free_breakfast {
 
@@ -168,6 +170,18 @@ private:
   // After atoms_: it is uploaded from them.
   Nuclei nuclei_;
 };
+
+/// @brief What a @ref Molecule of @p natoms atoms holds: Z and the positions on
+/// the device, persistent; their staging, the pinned workspace.
+[[nodiscard]] MemoryFootprint molecule_footprint(const size_t natoms) {
+  const std::array<size_t, 2> bytes{sizeof(double) * natoms, sizeof(double) * 3 * natoms};
+  MemoryFootprint out;
+  for (const size_t b : bytes) {
+    out.device.persistent += b;
+    out.pinned.workspace += math::align_up(b, DeviceResources::kWorkspaceAlignment);
+  }
+  return out;
+}
 
 /// @brief Nuclear repulsion energy E_nn = Sum_{A<B} Z_A Z_B / R_AB, in hartree.
 ///

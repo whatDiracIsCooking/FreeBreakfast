@@ -10,6 +10,8 @@ import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // trsm, wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives;
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.cholesky;
 import free_breakfast.recipes.orthogonalize;
@@ -74,6 +76,23 @@ Status density_fit(DeviceResources &res, const int32_t nao, const int32_t naux, 
       res.blas().get(), wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
       wwr::WWRBLAS_DIAG_NON_UNIT, naux, static_cast<int32_t>(pairs), &kOne<double>, metric, naux, b,
       naux));
+}
+
+Result<MemoryFootprint> density_fit_footprint(DeviceResources &res, const int32_t nao,
+                                              const int32_t naux, const double lindep) {
+  // cholesky and trsm allocate nothing.
+  if (nao <= 0 || naux <= 0 || !(lindep > 0.0)) {
+    return MemoryFootprint{};
+  }
+  const size_t nn = static_cast<size_t>(naux) * static_cast<size_t>(naux);
+  const size_t slab = static_cast<size_t>(naux) * static_cast<size_t>(nao);
+  // M's copy, held across orthogonalize and the slabs' gemms.
+  MemoryFootprint out = FBF_TRY(orthogonalize_footprint<double>(res, naux));
+  out.device.scratch += sizeof(double) * nn;
+  out.device.workspace =
+      std::max(out.device.workspace,
+               math::align_up(sizeof(double) * slab, DeviceResources::kWorkspaceAlignment));
+  return out;
 }
 
 } // namespace free_breakfast

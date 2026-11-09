@@ -59,6 +59,9 @@ would have to grow, X's bytes are checked against the device's free memory
 first: past it is `Unsupported`, naming the bytes, since the allocation would
 abort (`CreatePolicy`) rather than return. `b_half` takes no scratch.
 
+`b_mo_footprint(naux, nao, rows, cols)` (`core/footprint`'s
+`MemoryFootprint`) is X, the device workspace.
+
 ## Limits
 
 Both gemms run in the `int32_t` BLAS dispatch, and the second's rows and

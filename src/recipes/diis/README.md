@@ -48,6 +48,7 @@ Both write the diagonal, with the same value. This runs on every push, including
 |---|---|
 | `kDiisMaxHistoryLimit` | 64: the largest history kept. |
 | `Diis(res, len, max_history)` | Allocate the ring, Gram and scratch on `res`'s device. A failed allocation aborts. |
+| `diis_footprint(len, max_history)` | `MemoryFootprint`: everything the constructor allocates, persistent; a push allocates nothing. |
 | `push_and_extrapolate(res, cur_fock, cur_residual, out_fock)` | `Status`: push the pair and, with two or more held, write `F*` to `out_fock`; with one, leave it untouched. |
 | `reset()` | Drop every pair and keep the buffers. Call it at the start of each run, so repeated runs on one object match a fresh one. |
 | `size()`, `capacity()`, `length()` | Pairs held, the clamped cap, and `len`. |
@@ -80,7 +81,7 @@ for (/* each SCF iteration */;;) {
 
 | File | Role |
 |------|------|
-| `diis.cppm` | Module interface: `Diis` and `kDiisMaxHistoryLimit` |
+| `diis.cppm` | Module interface: `Diis`, `diis_footprint` and `kDiisMaxHistoryLimit` |
 | `diis.cpp` | The constructor and `push_and_extrapolate` |
 | `diis_solve.cu` | The bordered-solve kernel and its launcher |
 | `diis_solve_bridge.h` | The launcher's declaration, shared by the `.cu` and the implementation unit's GMF |

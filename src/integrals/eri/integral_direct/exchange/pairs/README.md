@@ -160,6 +160,7 @@ error.
 | `OrderedPairClass` | One ordered class `(la, lb)`: `n_rec`, `n_groups`, the basis's `n_ao` and `n_shells`, its tables' `n_blk` (one per class of the set), its `work_stream` (also `device_stream()`, as `mmd`'s classes name theirs), one device-only `StreamBuffers::device` per field (`record_bound` and `rank_b` among them), the groups' bounds `group_start`, the K build's `dc` rows and `blocks` tables (once per basis) and its scratch `dcd`, `geom`, `factor` and `rank_offset`, and on the set's first class the set's `centre`, `shell_start`, `decay` and `g_max` (per build); `view()` gives an `OrderedPairClassView` |
 | `OrderedPairClassView` | The class's device fields by pointer, for the launchers (`ordered_pair_class_view.h`, re-exported) |
 | `ordered_pair_classes(res, basis, classes)` | `Result<std::vector<OrderedPairClass>>` from `primitive_pair_classes(res, basis)`: every reached ordered class, ascending `(la, lb)`, none empty, each on a new `DeviceStream`, a set the K build takes whole |
+| `ordered_pair_classes_footprint(basis)` | `MemoryFootprint`: what `ordered_pair_classes` holds, from the host basis: every class persistent, each gather's sort scratch while its class is made. The call and its footprint size a class from one `OrderedClassSizes` |
 
 ## Tests
 
@@ -204,7 +205,7 @@ displacements and both offsets with the bound.
 | File | Role |
 |------|------|
 | `ordered_pair_class_view.h` | `OrderedPairClassView`, the single definition, for `#include` and `import` alike |
-| `pairs.cppm` | Module interface: `OrderedPairClass`, `ordered_pair_classes`, the view re-exported |
+| `pairs.cppm` | Module interface: `OrderedPairClass`, `ordered_pair_classes`, its footprint, the view re-exported |
 | `pairs.cpp` | The check against the basis, the sizes from it, then per class the fork from `mmd`'s stream, the order and the gather on the device; after a join, every bra's `dc` rows and tables; and the joins back |
 | `pairs_bridge.h` | The order's, the gather's and the `dc` rows' launchers, and the slots the first two share, declared once for `pairs.cpp`'s GMF and the `.cu` |
 | `pairs_launch.cu` | The key, group-start, gather and `dc`-row kernels, and the launchers: `ordered_pair_order` (the two sorts and `group_start`), `ordered_pair_gather` (every field, from `mmd`'s class), `ordered_pair_bra_rows` |

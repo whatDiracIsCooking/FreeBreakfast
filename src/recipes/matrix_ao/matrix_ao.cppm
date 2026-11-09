@@ -22,6 +22,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.nontransferrable;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 
 export namespace free_breakfast {
@@ -104,6 +105,11 @@ using SphericalMatrixAO = MatrixAO<BasisLayout::Spherical>;
 [[nodiscard]] Result<std::shared_ptr<const Buffers::device<double>>>
 upload_spherical_transform_matrix(DeviceResources &res, const BasisSet &basis);
 
+/// @brief What @ref upload_spherical_transform_matrix holds for @p basis: U,
+/// nao_cart x nao_sphe, persistent; nothing when U is the identity. Its
+/// staging is pageable host memory, which a footprint does not count.
+[[nodiscard]] MemoryFootprint upload_spherical_transform_matrix_footprint(const BasisSet &basis);
+
 /// @brief One AO-basis quantity held in both layouts, a Cartesian and a
 /// spherical @ref MatrixAO over the same basis, with the products that carry
 /// one into the other.
@@ -185,5 +191,10 @@ private:
   // identity.
   Buffers::device<double> work_;
 };
+
+/// @brief What a @ref MatrixAOPair over @p basis holds, all of it allocated by
+/// its constructor: both matrices and the conversion's scratch (none when U is
+/// the identity), persistent. U is the caller's.
+[[nodiscard]] MemoryFootprint matrix_ao_pair_footprint(const BasisSet &basis);
 
 } // namespace free_breakfast
