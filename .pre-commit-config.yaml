@@ -135,6 +135,19 @@ repos:
         language: script
         files: '\.(cppm|cpp|cu|cuh|h|hpp)$'
 
+  # Allocation the pool cap cannot see -- docs/style.md "Allocations go through
+  # the pool". Flags a raw wwrMalloc* / cudaMalloc* / hipMalloc*, pinned memory
+  # outside src/core/, and wwrMemGetInfo past its allowlist. Staging the
+  # allowlist checks the whole of src/. Stdlib-only, reusing int-types'
+  # comment/literal blanking.
+  - repo: local
+    hooks:
+      - id: pool-bypass
+        name: allocations go through the pool (staged src/)
+        entry: devtools/alloc-sites.py check
+        language: script
+        files: '^(src/.*\.(cppm|cpp|cu|cuh|h|hpp)|devtools/alloc-sites-memgetinfo\.txt)$'
+
   # The push gate. `stages: [pre-push]` means it runs at `git push`, not on
   # commit. It always runs and decides for itself what to test: pre-commit
   # exports the pushed range as PRE_COMMIT_FROM_REF/PRE_COMMIT_TO_REF, and

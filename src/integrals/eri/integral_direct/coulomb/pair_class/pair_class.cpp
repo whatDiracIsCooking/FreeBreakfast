@@ -45,6 +45,7 @@ coulomb_prune(DeviceResources &res, const std::span<const PrimitivePairClass> cl
                                                   dest[c].data(), counts.data() + c)));
   }
   // The one readback: J's classes are sized to their kept counts.
+  // pool-bypass-ok: until #1130, which carves it from the pinned workspace.
   Buffers::pinned<int32_t> kept(classes.size());
   FBF_TRY(
       gpu_status(wwr::wwrMemcpyAsync(kept.data(), counts.data(), sizeof(int32_t) * classes.size(),
