@@ -3,8 +3,8 @@
 ///        run on a `NodeResources`, and the products it built.
 ///
 /// A class template over a registry of step types, so a test plans over a
-/// few made-up steps and the real registry is one instantiation
-/// (`pipeline.config`'s `Calculation`). `create` is the planner: it wires each
+/// few made-up steps and `pipeline.config`'s `Calculation` plans over the real
+/// registry, every step a config may name. `create` is the planner: it wires each
 /// step's `View` to the steps producing its types and refuses a pipeline that
 /// cannot run, before anything touches a device. `run` is the scheduling. See
 /// README.md.

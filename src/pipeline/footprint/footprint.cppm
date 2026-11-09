@@ -13,35 +13,45 @@ export module free_breakfast.pipeline.footprint;
 import std;
 import free_breakfast.core.types;
 export import free_breakfast.core.footprint;
+export import free_breakfast.basis;
 
 export namespace free_breakfast {
 
 /// @brief The plan's dimensions, before the first step runs: what every
 ///        step's footprint is computed from.
 ///
-/// The per-momentum tables are square, indexed `[la][lb]` over the momenta the
-/// basis reaches. Zero (or empty) means the plan has none: no density fitting
-/// leaves `naux` at 0, no planned active space leaves `ncas` and `nelecas` at
-/// 0.
+/// pipeline.shape's @ref plan_shape fills it from a planned Calculation. The
+/// bases are carried rather than counted, because the library footprints mmd's,
+/// K's and the three-center tensor's take the host basis, their routines' own
+/// argument, and a table of per-momentum counts would only restate it. Zero
+/// (or null, or empty) means the plan has none: no basis step leaves
+/// @ref basis null, no density fitting leaves @ref aux null and @ref naux at 0,
+/// no planned active space leaves @ref ncas and @ref nelecas at 0.
 struct FootprintDimensions {
-  /// @brief Spherical AOs.
+  /// @brief The orbital basis, placed and primitive-normalized as the
+  ///        BasisSet step places it; owned by whoever filled the dimensions.
+  const BasisSet *basis = nullptr;
+  /// @brief The density-fitting aux basis, placed as the Eri step places it;
+  ///        null without density fitting.
+  const BasisSet *aux = nullptr;
+  /// @brief Spherical AOs: @ref basis's.
   size_t nao = 0;
-  /// @brief Cartesian AOs.
-  size_t nao_cartesian = 0;
-  /// @brief Auxiliary basis functions; 0 without density fitting.
+  /// @brief Auxiliary basis functions: @ref aux's; 0 without density fitting.
   size_t naux = 0;
-  /// @brief Doubly occupied orbitals (closed shell).
+  /// @brief Doubly occupied orbitals: n_beta.
   size_t nocc = 0;
   /// @brief Alpha and beta electrons.
   size_t n_alpha = 0;
   size_t n_beta = 0;
   size_t natoms = 0;
   /// @brief mmd's primitive-pair records of class (la, lb), for la <= lb; 0
-  ///        below the diagonal.
+  ///        below the diagonal. Square, indexed `[la][lb]` over the momenta
+  ///        @ref basis reaches: what J's classes are sized from.
   std::vector<std::vector<size_t>> mmd_records;
-  /// @brief K's blocks of a bra drawn from momentum la's shells against a ket
-  ///        from lb's.
-  std::vector<std::vector<size_t>> k_blocks;
+  /// @brief syevd's work at order @ref nao, in doubles, as the solver sizes
+  ///        it (diagonalize's own query); 0 for no basis. The step footprints
+  ///        read it here, so none holds a solver handle.
+  size_t syevd_lwork = 0;
   /// @brief Worst-case active orbitals and electrons; 0 when no active space
   ///        is planned.
   size_t ncas = 0;

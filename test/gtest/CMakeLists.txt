@@ -124,6 +124,7 @@ add_executable(
   pipeline_scf_gpu.cpp
   pipeline_df_scf_gpu.cpp
   pipeline_calculation_gpu.cpp
+  pipeline_shape_gpu.cpp
   launch_gpu.cpp
   overlap_gpu.cpp
   overlap_mixed_gpu.cpp
@@ -299,6 +300,7 @@ target_link_libraries(
   free_breakfast::pipeline::nevpt2_gradient
   free_breakfast::pipeline::optimize
   free_breakfast::pipeline::config
+  free_breakfast::pipeline::shape
   free_breakfast::tools::qd_nevpt2_gradient
   free_breakfast::test::support
   GTest::gtest
