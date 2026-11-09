@@ -55,6 +55,13 @@ routines export (`core/footprint`'s library pattern) with `then` and `drop`,
 so it reads like the routine it describes:
 `return then(drop(b_mo_fp), drop(jk_fp));`.
 
+The RHF chain's steps carry theirs, from the Molecule to the Scf.
+`test/gtest/pipeline_step_footprint_gpu.cpp` is the step test's pattern: the
+dimensions are `plan_shape`'s over a parsed config, the step is the one it
+planned, and each runs on a fresh `DeviceResources`, once to grow the
+workspaces to exactly the footprint's, then again, measured, against the rest
+by `expect_footprint`'s two bars.
+
 **No public trait.** Every step will carry a footprint, and #1122 makes it a
 requirement of `PipelineStep`, so a "has a footprint" trait like
 `LoadableStep` would have nothing to sort. Until then an unexported detection

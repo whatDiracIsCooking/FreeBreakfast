@@ -226,6 +226,11 @@ What it settled:
   C̃ = V (Λ/2)^{1/2} over the eigenvalues above **1e-12 of the largest**
   (`kDensityFactorFloor`), scaled in place by a `dgmm`. What that drops is
   syevd's round-off, about n·ε of the largest, so K is exact for the guess.
+  C̃'s rank is the guess's (a SAD guess's is about its minimal basis, above
+  n_alpha), so its K is `df_exchange` over n_alpha columns at a time, summed
+  (the Fock matrix, written only after, holds each later block's K): the
+  workspace is then every later build's, naux · n_alpha · nao doubles, and
+  the step's footprint is exact rather than bounded by the data.
   A density loaded `from` a file need not be PSD; its negative part is left
   out of the first K with a warning, which moves only the first iterate.
 

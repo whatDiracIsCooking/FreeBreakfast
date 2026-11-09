@@ -22,6 +22,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.io.xyz;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.molecule;
 
 #include "diagnostics.h"
@@ -61,6 +62,13 @@ struct MoleculeStep {
   /// @brief Read @ref xyz. A missing or malformed file is ErrorKind::IO.
   [[nodiscard]] Result<MoleculeOutput> run(View<> /*in*/, DeviceResources &res) const {
     return MoleculeOutput{FBF_TRY(read_xyz(res, xyz, charge, multiplicity))};
+  }
+
+  /// @brief The Molecule's nuclei, Z and the positions, persistent; their
+  /// staging, the pinned workspace (@ref molecule_footprint). The same on the
+  /// load path, which reads its own Molecule.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const {
+    return molecule_footprint(dims.natoms);
   }
 
   /// @brief The geometry an `[optimize]` wrote to @p from (its final.xyz), in

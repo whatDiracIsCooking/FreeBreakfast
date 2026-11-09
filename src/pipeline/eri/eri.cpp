@@ -58,17 +58,20 @@ density_fitted(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput> 
                            nao, naux, b_bytes, res.dev_idx(), budget);
   }
 
-  MatrixAOPair m(res, aux, FBF_TRY(upload_spherical_transform_matrix(res, aux)));
-  FBF_TRY(metric(res, aux, m));
+  // The spherical metric copied into L's own buffer, which density_fit
+  // factors in place and the product keeps. The pair and the aux U are freed
+  // at the block's end, stream-ordered after the copy, so B and the
+  // three-center scratch never share the device with them.
+  Buffers::device<double> l(naux * naux, res.device());
+  {
+    MatrixAOPair m(res, aux, FBF_TRY(upload_spherical_transform_matrix(res, aux)));
+    FBF_TRY(metric(res, aux, m));
+    FBF_TRY(
+        gpu_status(wwr::wwrMemcpyAsync(l.data(), m.spherical().data(), sizeof(double) * naux * naux,
+                                       wwr::wwrMemcpyDeviceToDevice, res.stream())));
+  }
   Buffers::device<double> b(naux * nao * nao, res.device());
   FBF_TRY(three_center(res, basis, in.get<PrimitivePairClassesOutput>().classes, aux, b.data()));
-  // The spherical metric copied into L's own buffer, which density_fit
-  // factors in place and the product keeps; the pair is freed at return,
-  // stream-ordered after the copy.
-  Buffers::device<double> l(naux * naux, res.device());
-  FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(l.data(), m.spherical().data(), sizeof(double) * naux * naux,
-                                     wwr::wwrMemcpyDeviceToDevice, res.stream())));
   FBF_TRY(
       density_fit(res, static_cast<int32_t>(nao), static_cast<int32_t>(naux), l.data(), b.data()));
   return DensityFitted{.b = std::move(b),
@@ -93,6 +96,26 @@ Result<EriOutput> EriStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePai
   }
   const std::string spec = aux_basis.empty() ? FBF_TRY(default_aux_basis(basis)) : aux_basis;
   return EriOutput{FBF_TRY(density_fitted(in, res, spec))};
+}
+
+MemoryFootprint EriStep::footprint(const FootprintDimensions &dims) const {
+  const BasisSet &basis = *dims.basis;
+  if (mode == EriMode::IntegralDirect) {
+    return then(coulomb_pair_classes_footprint(dims.mmd_records),
+                ordered_pair_classes_footprint(basis));
+  }
+  const BasisSet &aux = *dims.aux;
+  const auto held = [](size_t bytes) { return MemoryFootprint{.device = {.persistent = bytes}}; };
+  // density_fitted's order: L; the aux U and the metric's pair, the metric
+  // into them, freed; B; the three-center tensor; the Cholesky fit.
+  const MemoryFootprint metric_fp =
+      then(then(upload_spherical_transform_matrix_footprint(aux), matrix_ao_pair_footprint(aux)),
+           metric_footprint(aux));
+  const MemoryFootprint l = held(sizeof(double) * dims.naux * dims.naux);
+  const MemoryFootprint b = held(sizeof(double) * dims.naux * dims.nao * dims.nao);
+  return then(
+      then(then(then(l, drop(metric_fp)), b), three_center_footprint(basis, aux)),
+      density_fit_footprint(static_cast<int32_t>(dims.nao), static_cast<int32_t>(dims.naux), 0));
 }
 
 } // namespace free_breakfast

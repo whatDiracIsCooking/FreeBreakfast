@@ -7,10 +7,10 @@ module free_breakfast.pipeline.shape;
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // syevd_bufferSize, gpu_status, ScopedDeviceIndex
 import free_breakfast.core.resources;
 import free_breakfast.io.basis;
-import free_breakfast.pipeline.step; // View
+import free_breakfast.recipes.diagonalize; // syevd_lwork
+import free_breakfast.pipeline.step;       // View
 
 #include "diagnostics.h"
 
@@ -145,16 +145,8 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
     }
   }
 
-  // diagonalize's query, at its eigenvector mode and lower triangle.
-  if (dims.nao > 0) {
-    const ScopedDeviceIndex on{res.dev_idx()};
-    const auto n = static_cast<int32_t>(dims.nao);
-    int32_t lwork = 0;
-    FBF_TRY(gpu_status(wwr::syevd_bufferSize<double>(
-        res.solver().get(), wwr::WWRSOLVER_EIG_MODE_VECTOR, wwr::WWRBLAS_FILL_MODE_LOWER, n,
-        nullptr, n, nullptr, &lwork)));
-    dims.syevd_lwork = static_cast<size_t>(lwork);
-  }
+  // diagonalize's own query.
+  dims.syevd_lwork = FBF_TRY(syevd_lwork<double>(res, static_cast<int32_t>(dims.nao)));
 
   // The largest active space: of most orbitals, then of nelecas nearest half
   // filling (ncas electrons), which spans the most determinants.

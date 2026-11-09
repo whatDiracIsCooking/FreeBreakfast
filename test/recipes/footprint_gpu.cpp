@@ -62,13 +62,14 @@ fb::Buffers::device<double> identity(fb::DeviceResources &res) {
 TEST(RecipesFootprint, Diagonalize) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const auto fp = fb::diagonalize_footprint<double>(res, kN);
-  ASSERT_TRUE(fp);
-  ASSERT_GT(fp->device.workspace, 0U);
+  const auto lwork = fb::syevd_lwork<double>(res, kN);
+  ASSERT_TRUE(lwork);
+  const fb::MemoryFootprint fp = fb::diagonalize_footprint<double>(*lwork);
+  ASSERT_GT(fp.device.workspace, 0U);
   const fb::Buffers::device<double> s = identity(res);
   fb::Buffers::device<double> a(s.num_elements(), res.device());
   fb::Buffers::device<double> w(kN, res.device());
-  expect_routine_footprint(res, *fp, 0, [&] {
+  expect_routine_footprint(res, fp, 0, [&] {
     EXPECT_EQ(wwr::wwrMemcpyAsync(a.data(), s.data(), sizeof(double) * s.num_elements(),
                                   wwr::wwrMemcpyDeviceToDevice, res.stream()),
               wwr::wwrSuccess);
@@ -79,13 +80,14 @@ TEST(RecipesFootprint, Diagonalize) {
 TEST(RecipesFootprint, Orthogonalize) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const auto fp = fb::orthogonalize_footprint<double>(res, kN);
-  ASSERT_TRUE(fp);
+  const auto lwork = fb::syevd_lwork<double>(res, kN);
+  ASSERT_TRUE(lwork);
+  const fb::MemoryFootprint fp = fb::orthogonalize_footprint<double>(kN, *lwork);
   const fb::Buffers::device<double> s = identity(res);
   fb::Buffers::device<double> x(s.num_elements(), res.device());
   // U and the eigenvalues.
   expect_routine_footprint(
-      res, *fp, 2, [&] { EXPECT_TRUE(fb::orthogonalize<double>(res, kN, s.data(), x.data())); });
+      res, fp, 2, [&] { EXPECT_TRUE(fb::orthogonalize<double>(res, kN, s.data(), x.data())); });
 }
 
 // The history allocated, then pushed past its capacity: the pushes allocate

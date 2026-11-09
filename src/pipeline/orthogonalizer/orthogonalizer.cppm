@@ -14,6 +14,7 @@ import free_breakfast.core.resources;
 export import free_breakfast.pipeline.basis_set;
 import free_breakfast.recipes.orthogonalize;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.pipeline.overlap;
 
@@ -45,6 +46,12 @@ struct OrthogonalizerStep {
     SphericalMatrixAO x(res, in.get<BasisSetOutput>().basis);
     FBF_TRY(orthogonalize(res, static_cast<int32_t>(s.n()), s.data(), x.data(), eigenvalue_floor));
     return OrthogonalizerOutput{std::move(x)};
+  }
+
+  /// @brief X, persistent, then @ref orthogonalize_footprint at nao.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const {
+    return then(MemoryFootprint{.device = {.persistent = sizeof(double) * dims.nao * dims.nao}},
+                orthogonalize_footprint<double>(static_cast<int32_t>(dims.nao), dims.syevd_lwork));
   }
 };
 

@@ -213,12 +213,12 @@ Result<int32_t> orthonormalize(DeviceResources &res, const int32_t n, const int3
 }
 
 template <real_fp T>
-Result<MemoryFootprint> orthogonalize_footprint(DeviceResources &res, const int32_t n) {
+MemoryFootprint orthogonalize_footprint(const int32_t n, const size_t syevd_lwork) {
   if (n <= 0) {
-    return MemoryFootprint{};
+    return {};
   }
   const size_t nn = static_cast<size_t>(n) * static_cast<size_t>(n);
-  MemoryFootprint out = FBF_TRY(diagonalize_footprint<T>(res, n));
+  MemoryFootprint out = diagonalize_footprint<T>(syevd_lwork);
   out.device.scratch = sizeof(T) * (nn + static_cast<size_t>(n));
   out.device.workspace = std::max(
       out.device.workspace, math::align_up(nn * sizeof(T), DeviceResources::kWorkspaceAlignment));
@@ -230,7 +230,7 @@ template Status orthogonalize<double>(DeviceResources &, int32_t, const double *
 template Result<int32_t> orthonormalize<float>(DeviceResources &, int32_t, int32_t, float *, float);
 template Result<int32_t> orthonormalize<double>(DeviceResources &, int32_t, int32_t, double *,
                                                 double);
-template Result<MemoryFootprint> orthogonalize_footprint<float>(DeviceResources &, int32_t);
-template Result<MemoryFootprint> orthogonalize_footprint<double>(DeviceResources &, int32_t);
+template MemoryFootprint orthogonalize_footprint<float>(int32_t, size_t);
+template MemoryFootprint orthogonalize_footprint<double>(int32_t, size_t);
 
 } // namespace free_breakfast

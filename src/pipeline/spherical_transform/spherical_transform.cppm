@@ -14,6 +14,7 @@ import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 export import free_breakfast.pipeline.basis_set;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.recipes.matrix_ao;
 
 export namespace free_breakfast {
@@ -47,6 +48,12 @@ struct SphericalTransformStep {
   /// @c write_npy's error.
   [[nodiscard]] Result<SphericalTransformOutput> run(View<BasisSetOutput> in,
                                                      DeviceResources &res) const;
+
+  /// @brief U, persistent (@ref upload_spherical_transform_matrix_footprint);
+  /// nothing when it is the identity. The .npy is written from the host.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const {
+    return upload_spherical_transform_matrix_footprint(*dims.basis);
+  }
 };
 
 } // namespace free_breakfast

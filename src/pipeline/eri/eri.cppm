@@ -18,6 +18,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.core.wwr;                               // Buffers, in the product
 export import free_breakfast.integrals.eri.integral_direct.coulomb;  // CoulombPairClass
 export import free_breakfast.integrals.eri.integral_direct.exchange; // OrderedPairClass
@@ -109,6 +110,15 @@ struct EriStep {
   [[nodiscard]] Result<EriOutput>
   run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput> in,
       DeviceResources &res) const;
+
+  /// @brief Under EriMode::IntegralDirect, J's classes then K's
+  /// (@ref coulomb_pair_classes_footprint, a bound above tau = 0, and
+  /// @ref ordered_pair_classes_footprint), persistent. Under
+  /// EriMode::DensityFitting, over @p dims's aux basis: B and L, persistent;
+  /// the aux U and the metric's pair, freed before B is allocated, then the
+  /// three-center tensor's scratch, scratch; the metric's staging, the
+  /// workspace.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast

@@ -34,9 +34,9 @@ whole registry.
   the shell pairs i <= j. mmd screens nothing, so this is exactly what
   `primitive_pair_classes` builds (`test/gtest/pipeline_shape_gpu.cpp` checks
   the two class by class).
-- **syevd's lwork** at nao, from `syevd_bufferSize` through `res.solver()`,
-  with diagonalize's eigenvector mode and lower triangle. The test pins this
-  to `diagonalize_footprint`'s workspace.
+- **syevd's lwork** at nao, `recipes/diagonalize`'s own `syevd_lwork` query
+  through `res.solver()`, which `diagonalize_footprint` and
+  `orthogonalize_footprint` take.
 - **The active space** at its largest. An explicit `ncas` / `nelecas` is used
   as written. Under AVAS it is `avas_max_ncas` when set, and otherwise twice
   the MINAO AOs the labels name (`pipeline/active_space`'s own

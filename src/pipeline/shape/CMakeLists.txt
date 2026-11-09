@@ -19,8 +19,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::config
   LINK_PRIVATE
   free_breakfast::core::types
-  free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::io::basis
+  free_breakfast::recipes::diagonalize
   free_breakfast::pipeline::step
 )

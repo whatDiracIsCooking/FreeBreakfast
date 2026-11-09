@@ -28,11 +28,13 @@ largest thing a DF calculation holds (H₂O in cc-pVTZ / cc-pVTZ-JKFIT, 139 x
 
 ## Footprint
 
-`density_fit_footprint(res, nao, naux, lindep)` (`core/footprint`'s
+`density_fit_footprint(nao, naux, syevd_lwork, lindep)` (`core/footprint`'s
 `MemoryFootprint`) is nothing on the Cholesky path: `cholesky` and the trsm
 allocate nothing. With `lindep`, M's copy and `orthogonalize`'s U and
 eigenvalues are scratch, and the device workspace is the larger of syevd's
-work, M^-1/2's product and one slab. It takes `res` for syevd's size query.
+work, M^-1/2's product and one slab. It takes syevd's work at naux
+(`syevd_lwork<double>(res, naux)`), read only with `lindep`, rather than a
+handle, so a footprint made before the run holds none.
 
 ## Failure
 
