@@ -61,6 +61,10 @@ struct FootprintDimensions {
   ///        Hessian's ah_max_subspace + 1); empty for no basis. The step
   ///        footprints read it here, so none holds a solver handle.
   std::vector<size_t> syevd_lwork;
+  /// @brief skew_eig's work at order nao, in complex doubles, as the solver
+  ///        sizes it (skew_eig_lwork): the CASSCF orbital step's
+  ///        exponential. 0 when no CASSCF is planned.
+  size_t skew_eig_lwork = 0;
   /// @brief Worst-case active orbitals and electrons; 0 when no active space
   ///        is planned.
   size_t ncas = 0;

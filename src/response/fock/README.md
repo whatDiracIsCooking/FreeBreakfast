@@ -38,6 +38,13 @@ Result<response::Fock> response::fock(
     int32_t ncore, int32_t ncas, const Buffers::device<double> &ppaa,
     const Buffers::device<double> &papa, std::span<const double> gamma,
     std::span<const double> gamma2);
+
+// Their footprints (core/footprint): the Fock persistent; P_c, J and K
+// scratch (Cartesian integral-direct, nmo^2 density-fitted); the carve of
+// U C, gemmwich's work, a block and (pu|vw) -- or, density-fitted, the larger
+// of that carve and the core's df_coulomb / df_exchange -- the workspace.
+MemoryFootprint response::fock_footprint(const BasisSet &basis, int32_t ncore, int32_t ncas);
+MemoryFootprint response::fock_footprint(int32_t nmo, int32_t naux, int32_t ncore, int32_t ncas);
 ```
 
 The integral-direct overload's arguments through `k_classes` are
@@ -165,3 +172,5 @@ orbitals pair with PySCF's by their energies, checked to 1e-6.
 - its RHF limit, ncas = 0 at a DF-RHF over the same set converged by the Scf
   step: E its energy to 1e-9 and |g_ai| < 1e-6;
 - the refusals, of both overloads.
+
+Both footprints are held to the pool's peak by `LibraryFootprint.Fock` (`test/gtest/footprint_gpu.cpp`), water in cc-pVDZ with 2 core and 4 active orbitals.

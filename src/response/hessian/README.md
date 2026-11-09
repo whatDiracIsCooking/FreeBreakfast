@@ -32,7 +32,26 @@ public:
   int32_t size() const noexcept;                                             // the pair count
   const Buffers::device<double> &diagonal() const noexcept;                  // diag(H)
 };
+
+// Their footprints (core/footprint). create's: the operator persistent (its
+// nine buffers and J and K's matrices), build's carve the workspace. apply's,
+// one column at a time: its carve, the workspace integral-direct and scratch
+// density-fitted, beside df_coulomb's and the two-factor df_exchange's
+// workspace at rank nocc.
+MemoryFootprint response::hessian_footprint(const BasisSet &basis, int32_t ncore, int32_t ncas);
+MemoryFootprint response::hessian_footprint(int32_t nmo, int32_t naux, int32_t ncore,
+                                            int32_t ncas);
+MemoryFootprint response::hessian_apply_footprint(const BasisSet &basis, int32_t ncore,
+                                                  int32_t ncas);
+MemoryFootprint response::hessian_apply_footprint(int32_t nmo, int32_t naux, int32_t ncore,
+                                                  int32_t ncas);
 ```
+
+`hessian_apply_footprint` is exact for every integral-direct call and every
+density-fitted one with k = 1. A density-fitted block with k > 1 and a core
+builds its columns' J and K together, as many as half the free memory holds
+(`wwrMemGetInfo`, which #1053 moves to the memory budget), so its scratch and
+J and K workspace grow with that width past the footprint.
 
 The integral-direct overload's arguments through `k_classes` are
 `response::fock`'s; the density-fitted one takes B in place of the basis, U
@@ -298,3 +317,5 @@ by AVAS.
   max |H_ij x_j|, H from one-column products of every unit vector: path
   agreement (seen: 1.9e-15 and 2.1e-16 on the gfx1200);
 - the density-fitted overload's refusals.
+
+`create`'s and one column's `apply`'s footprints, both overloads, are held to the pool's peak by `LibraryFootprint.Hessian` (`test/gtest/footprint_gpu.cpp`).

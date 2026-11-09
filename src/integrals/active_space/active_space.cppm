@@ -197,4 +197,26 @@ casscf_integrals(DeviceResources &res, const BasisSet &basis, const Molecule &mo
                  const SphericalMatrixAO &h, const Buffers::device<double> &b, int32_t naux,
                  const SphericalMatrixAO &c, int32_t ncore, int32_t ncas);
 
+/// @brief What the integral-direct @ref casscf_integrals holds over @p basis
+/// with @p ncore core and @p ncas active orbitals, nmo = nao: ppaa and papa,
+/// nmo^2 n_act^2 doubles each, and the Hamiltonian's h_eff and (tu|vw),
+/// persistent; the density, J and K, a Cartesian matrix each, scratch; U C,
+/// gemmwich's intermediate and one projected block over all nmo columns, and
+/// the spherical P, the device workspace. Empty for ncas < 1, which the call
+/// refuses.
+[[nodiscard]] MemoryFootprint casscf_integrals_footprint(const BasisSet &basis, int32_t ncore,
+                                                         int32_t ncas);
+
+/// @brief What the density-fitted @ref casscf_integrals holds over @p nao
+/// orbitals (nmo = nao), @p naux fitting functions, @p ncore core and @p ncas
+/// active: ppaa, papa, h_eff and (tu|vw), persistent, as the integral-direct
+/// one's; the core's P, J and K, three nao^2 matrices allocated whatever
+/// ncore, scratch; and the device workspace, the larger of the core's
+/// @c df_coulomb and @c df_exchange (none for ncore = 0) and the carve of X,
+/// L and the C^T J C batch's intermediate, naux n_act nao, naux n_act nao and
+/// nao^2 n_act^2 doubles. Empty for ncas < 1 or naux < 1, which the call
+/// refuses.
+[[nodiscard]] MemoryFootprint casscf_integrals_footprint(int32_t nao, int32_t naux, int32_t ncore,
+                                                         int32_t ncas);
+
 } // namespace free_breakfast

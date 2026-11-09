@@ -307,6 +307,50 @@ Result<CasscfIntegrals> casscf_integrals(DeviceResources &res, const BasisSet &b
       .hamiltonian = std::move(hamiltonian), .ppaa = std::move(ppaa), .papa = std::move(papa)};
 }
 
+// ppaa and papa, h_eff and (tu|vw): what either casscf_integrals returns.
+size_t casscf_integrals_bytes(const size_t nmo, const size_t ncas) {
+  const size_t pairs = ncas * ncas;
+  return sizeof(double) * ((2 * nmo * nmo * pairs) + pairs + (pairs * pairs));
+}
+
+MemoryFootprint casscf_integrals_footprint(const BasisSet &basis, const int32_t ncore,
+                                           const int32_t ncas) {
+  if (ncas < 1 || ncore < 0) {
+    return {};
+  }
+  const size_t n_cart = basis.nao_cart();
+  const size_t n_sphe = basis.nao_sphe();
+  MemoryFootprint out;
+  out.device.persistent = casscf_integrals_bytes(n_sphe, static_cast<size_t>(ncas));
+  out.device.scratch = 3 * sizeof(double) * n_cart * n_cart;
+  out.device.workspace = ActiveSpaceScratch::bytes(n_cart, n_sphe, n_sphe);
+  return out;
+}
+
+MemoryFootprint casscf_integrals_footprint(const int32_t nao, const int32_t naux,
+                                           const int32_t ncore, const int32_t ncas) {
+  if (ncas < 1 || ncore < 0 || naux < 1) {
+    return {};
+  }
+  const auto n_all = static_cast<size_t>(nao);
+  const size_t nn = n_all * n_all;
+  const auto na = static_cast<size_t>(ncas);
+  const size_t rows = static_cast<size_t>(naux) * na;
+  const auto region = [](const size_t count) {
+    return math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
+  };
+  MemoryFootprint out;
+  out.device.persistent = casscf_integrals_bytes(n_all, na);
+  out.device.scratch = 3 * sizeof(double) * nn;
+  out.device.workspace = (2 * region(rows * n_all)) + region(nn * na * na);
+  if (ncore > 0) {
+    out.device.workspace =
+        std::max({out.device.workspace, df_coulomb_footprint(nao, naux).device.workspace,
+                  df_exchange_footprint(nao, naux, ncore).device.workspace});
+  }
+  return out;
+}
+
 Result<CasscfIntegrals> casscf_integrals(DeviceResources &res, const BasisSet &basis,
                                          const Molecule &molecule, const SphericalMatrixAO &h,
                                          const Buffers::device<double> &b, const int32_t naux,

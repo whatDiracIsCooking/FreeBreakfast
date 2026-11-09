@@ -16,7 +16,8 @@ free_breakfast_add_gpu_device_library(
 
 # The module. DeviceResources and wwr's usual_fp / ComplexToRealType /
 # RealToComplexType are in its signatures, so core::resources and core::wwr
-# are PUBLIC. kImaginaryUnit and kOne / kZero are the implementation unit's
+# are PUBLIC, as is core::footprint, whose MemoryFootprint the footprints
+# return. kImaginaryUnit and kOne / kZero are the implementation unit's
 # alone, so core::constants is PRIVATE, as is the device library: the
 # implementation unit includes the bridge header in its GMF and calls the
 # launcher, and a static library's private link dependencies still reach the
@@ -35,8 +36,10 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
   free_breakfast::recipes::expm::device

@@ -25,7 +25,8 @@ free_breakfast_add_gpu_device_library(
 # The module: ci::Rdm. ci::strings is PUBLIC because the interface takes
 # DeviceStringSets, core::error_handling because it returns a Status,
 # core::resources because ci::Rdm takes DeviceResources, and ci::sigma because
-# rdm12 takes its ci::Layout. The implementation unit alone GMF-includes the
+# rdm12 takes its ci::Layout, and core::footprint for the footprints'
+# MemoryFootprint. The implementation unit alone GMF-includes the
 # bridge and calls the syrk and gemm, so the device library, core::wwr,
 # constants and the FBF_TRY header are PRIVATE.
 free_breakfast_add_cxx_module_library(
@@ -42,7 +43,9 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::ci::strings
   free_breakfast::ci::sigma
+  free_breakfast::core::footprint
   LINK_PRIVATE
+  free_breakfast::core::primitives
   free_breakfast::core::wwr
   free_breakfast::core::constants
   free_breakfast::core::diagnostics_macros

@@ -42,6 +42,9 @@ whole registry.
   augmented Hessian at ah_max_subspace + 1. The RHF chain reads
   `syevd_lwork[nao]`; the CI steps' small eigensolves (AVAS's, the subspace's)
   read their own orders.
+- **skew_eig's lwork** at nao, `recipes/expm`'s own `skew_eig_lwork` query,
+  when a CASSCF is planned (the step's, or a chain copy's): its orbital step
+  diagonalizes κ through `skew_eig` at nmo = nao. 0 otherwise.
 - **MINAO**, placed and primitive-normalized as AVAS places it, when any
   planned active space is AVAS's, and the molecule's **atoms**, which AVAS's
   labels are matched against: what the selection's footprint sizes MINAO's

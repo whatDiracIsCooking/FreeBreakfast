@@ -16,6 +16,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
@@ -206,5 +207,43 @@ private:
   Buffers::device<double> h_act_;    // (nmo ncas)^2, (p, u) at p + nmo u
   Buffers::device<double> diagonal_; // diag(H), n_pairs
 };
+
+/// @brief What the integral-direct @ref Hessian::create holds over @p basis
+/// (nmo = its spherical AOs) with @p ncore core and @p ncas active orbitals:
+/// the Hessian, persistent, kept to its end -- U C, C^T h C, F + F^T, the
+/// two V's, the occupied 1-RDM, gamma, H_act ((nmo ncas)^2), the diagonal,
+/// and the density, J and K, a Cartesian matrix each; gemmwich's
+/// intermediate, one nmo^2 block and the permuted Gamma, the device
+/// workspace. ppaa, papa and the Fock are the caller's.
+[[nodiscard]] MemoryFootprint hessian_footprint(const BasisSet &basis, int32_t ncore, int32_t ncas);
+
+/// @brief What the density-fitted @ref Hessian::create holds over @p nmo
+/// orbitals and @p naux fitting functions: the Hessian, persistent, as the
+/// integral-direct one's but with U C = C and two nmo^2 matrices for J and K
+/// in place of the Cartesian three; and the device workspace, the
+/// integral-direct one's with, past it, B half- and fully transformed over
+/// C_core (naux ncore nmo each), (Q|pp) and (pp|ii) and (pi|pi).
+[[nodiscard]] MemoryFootprint hessian_footprint(int32_t nmo, int32_t naux, int32_t ncore,
+                                                int32_t ncas);
+
+/// @brief What @ref Hessian::apply takes of an integral-direct Hessian over
+/// @p basis, @p ncore and @p ncas, for any block: one column at a time, its
+/// carve (kappa, X2, the products, the two densities and their right
+/// factors) the device workspace. Nothing persists. Empty for no pairs.
+[[nodiscard]] MemoryFootprint hessian_apply_footprint(const BasisSet &basis, int32_t ncore,
+                                                      int32_t ncas);
+
+/// @brief What @ref Hessian::apply takes of a density-fitted Hessian over
+/// @p nmo, @p naux, @p ncore and @p ncas, one column at a time: the
+/// integral-direct carve's counts allocated as scratch (df_coulomb and
+/// df_exchange take the workspace), and the device workspace, the larger of
+/// the one-density @c df_coulomb's and the two-factor @c df_exchange's at
+/// rank nocc (none for ncore = 0). That is every call with k = 1. A block
+/// with k > 1 and a core builds its columns' J and K together, as many as
+/// half the free memory holds (#1053 moves that to the memory budget): its
+/// scratch and workspace grow with that width, past this. Empty for no
+/// pairs.
+[[nodiscard]] MemoryFootprint hessian_apply_footprint(int32_t nmo, int32_t naux, int32_t ncore,
+                                                      int32_t ncas);
 
 } // namespace free_breakfast::response

@@ -18,6 +18,7 @@ roots) and `response.hessian`. `free_breakfast.response` re-exports it;
 | `ResponseIntegrals` | F^I, ppaa and papa on the host, column-major as the device's: what H′(x) contracts |
 | `response_integrals` | H′(x): h_eff′ and (tu\|vw)′ along κ(x), row-major as `ci::Sigma::set_integrals` takes them |
 | `response_gradient` | Its adjoint: the antisymmetric nmo × nmo whose packed pairs are the gradient in x of h_eff′·γ + (tu\|vw)′·Γ |
+| `relaxed_hessian_footprint` | `MemoryFootprint` (`core/footprint`) of a `RelaxedHessian` from create to its end: H′(x)'s sigma and its Layout::full apply scratch, the CI blocks, the conjugate gradients' vectors, the RDMs and the lockstep scratch at the most columns a block call takes, persistent; create's swapped c₀, scratch; `trans_rdm12`'s, the workspace. The borrowed sigma's scratch, which the products grow to Layout::full's, is its owner's to count; the Hessian's is `hessian_footprint`'s and `hessian_apply_footprint`'s |
 | `RelaxedHessian` | H̃ at one set of orbitals and roots: `apply` (y = H̃ x, one column or a block), `respond` (δ and its transition RDMs γ_T, Γ_T for one column), `couple` (w = −(H₀ − E)⁻¹ P y for a CI right-hand side y, and H_oc w; one column or a block), `apply_coupled` (the unreduced operator over (x, x_c), and optionally the rotations among the roots, a block), `coupling` (H_oc x_c alone, a block), `ci_diagonal` (diag H₀), `delta`, `size`, `weights` |
 
 `RelaxedHessian::create` takes the `response::Hessian`, the sigma whose
@@ -109,6 +110,12 @@ each). What the block changes is the CI side:
   determinant space holds the M_s = 0 triplets: below an excited singlet
   root, they make H₀ − E_r indefinite, and a conjugate gradients that
   reaches them diverges (water's SA-2 did, at p·Ap = −1.3e-13).
+
+A block call first reserves its k columns: b and δ grow to k CI blocks and
+the lockstep scratch to k · nroots vectors, each freeing the old buffer before
+it allocates the new one, so the peak is the grown sizes whatever k came
+before. They are kept to the end, `relaxed_hessian_footprint`'s
+`block_columns`.
 
 ### The rotations among the roots
 
@@ -254,10 +261,12 @@ weights. `test/gtest/mcscf_root_rotation_gpu.cpp` solves its Z-vectors with
 `pcg_ci_response` too, by `Schur` (the block calls) and by `PerColumn` (one
 column), against the same fixture and bars as the default.
 
+`relaxed_hessian_footprint` is held to the pool's peak by `LibraryFootprint.RelaxedHessian` (`test/gtest/footprint_gpu.cpp`): create and two one-column products over the density-fitted H, and create and a three-column block product over the integral-direct H.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `relaxed_hessian.cppm` | Module interface: `ResponseIntegrals`, `response_integrals`, `response_gradient`, `RelaxedHessian` |
+| `relaxed_hessian.cppm` | Module interface: `ResponseIntegrals`, `response_integrals`, `response_gradient`, `RelaxedHessian`, `relaxed_hessian_footprint` |
 | `relaxed_hessian.cpp` | H′(x) and its adjoint, the CI response's conjugate gradients (one column, and a block's in lockstep, or one `pcg_solve`) and transition RDMs, and the products |
 | `CMakeLists.txt` | The module `free_breakfast.response.relaxed_hessian` |

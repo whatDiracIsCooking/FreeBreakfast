@@ -65,6 +65,7 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
   Result<CasscfOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
                                 EriOutput, CoreHamiltonianOutput, ScfOutput> in,
                            DeviceResources &res) const;
+  MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 ```
 
@@ -105,6 +106,18 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
    product holds it, nao × nmo, and the CI vectors, dim × nroots (root r
    the column r), each float64 in Fortran order (`io/npy`), so `np.load`
    gives `mo_coeff`-shaped orbitals and `ci[:, r]` per root.
+
+**The footprint**, `footprint(dims)` at `dims`' ncas and nelecas, is
+`then(select_footprint, then(the CI guess's upload, then(mcscf::solve_footprint,
+then(casscf_integrals, then(response::fock, then(drop(the two canonical
+eigenproblems), then(R, then(C R, the Molden eigenproblem)))))))`:
+`CasscfOutput::c` the one persistent term, every other freed on return.
+`mcscf::solve_footprint` runs integral-direct over the EriOutput's classes, or
+`DensityFitting::Full` over an aux basis (`dims.aux`), at `dims.naux`; it
+reads `dims.syevd_lwork` and `dims.skew_eig_lwork`, which `plan_shape` fills
+for a planned CASSCF (`mcscf/solve/README.md` has what the loop holds). Under
+AVAS it is exact at the space picked, which a caller that knows it puts in
+`dims`, as the Casci step's.
 
 ## Starting from another run's orbitals
 
@@ -169,8 +182,9 @@ CASSCF, only the Hessian fitted) is not a config choice.
 **B is the pipeline's**, built once by the Eri step and shared with the SCF;
 it lives until the run ends.
 
-**Memory.** B, naux nmo² doubles, is refused past the device's free memory
-by the Eri step (`Unsupported`, naming the bytes). With it held, the step
+**Memory.** B, naux nmo² doubles, is refused past the device's memory budget
+(`DeviceResources::memory_budget()`) by the Eri step (`Unsupported`, naming
+the bytes). With it held, the step
 refuses, again `Unsupported`, a loop whose fitted
 `casscf_integrals` scratch is past what B leaves free:
 
@@ -183,9 +197,9 @@ refuses, again `Unsupported`, a loop whose fitted
 | papa | nmo² · ncas² |
 
 (`../../integrals/active_space/README.md`'s scratch table; nao = nmo.) Both
-checks are against `wwrMemGetInfo`'s free bytes, and both are needed: past
-the device's memory an allocation aborts (`CreatePolicy`) rather than
-returning. The rest of the loop (the CI, the Hessian's products, the core's
+checks are against the device's memory budget
+(`DeviceResources::memory_budget()`), and both are needed: past the device's
+memory an allocation aborts (`CreatePolicy`) rather than returning. The rest of the loop (the CI, the Hessian's products, the core's
 three nmo² matrices) is not counted; it is small beside these at the sizes
 this step runs.
 
@@ -267,10 +281,12 @@ refusals are in `test/pipeline/config_host.cpp`, and an end-to-end run with
 `pipeline_calculation_gpu.cpp`, which also runs an `[scf]` and a `[casscf]`
 over one `EriOutput` in each mode.
 
+The footprint (`StepFootprint.Casscf`, `test/gtest/pipeline_step_footprint_gpu.cpp`): water's SA-2 CAS(4, 4) in cc-pVDZ, integral-direct and density-fitted over cc-pVDZ-JKFIT, the run held to the footprint on a fresh `DeviceResources`, its workspace to at most the bound.
+
 ## Files
 
 | File | Role |
 |------|------|
 | `casscf.cppm` | Module interface: `CasscfOutput`, `CasscfStep`, `canonicalize_core_virtual` |
-| `casscf.cpp` | `run`: the selection, the CI start file, the fitted scratch's memory check, `mcscf::solve`, the Fock at the solution, the canonicalization, the Molden and `.npy` files |
+| `casscf.cpp` | `run`: the selection, the CI start file, the fitted scratch's memory check, `mcscf::solve`, the Fock at the solution, the canonicalization, the Molden and `.npy` files; and `footprint` |
 | `CMakeLists.txt` | The module library |

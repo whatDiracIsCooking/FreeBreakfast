@@ -17,6 +17,8 @@ import free_breakfast.core.constants;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.blas; // gemm
 
 #include "diagnostics.h"
@@ -38,6 +40,30 @@ constexpr auto kSkewRange = wwr::WWRSOLVER_EIG_RANGE_ALL;
 // Every scalar these calls pass is a host constant.
 using HostScalars =
     wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t, CreatePolicy<wwr::wwrblasStatus_t>>;
+
+// heevd's (heevdx's under HIP) work for order n, in Z, shared by skew_eig and
+// skew_eig_lwork so the two cannot disagree. The query reads neither the
+// matrix nor the eigenvalues, so the lwork query passes null for both.
+template <typename Z>
+Result<int32_t> skew_eig_query(const wwr::wwrsolverDnHandle_t solver, const int32_t n, Z *const u,
+                               wwr::ComplexToRealType<Z> *const w) {
+  using R = wwr::ComplexToRealType<Z>;
+  int32_t lwork = 0;
+#if defined(WWR_SELECTED_HIP)
+  // heevdx over the whole range, not heevd: rocSOLVER's heevd (ROCm 7.2.4)
+  // returns info 0 and NaN eigenvectors above order 65 whenever iH's
+  // tridiagonal form splits -- a diagonal or block-diagonal H, one nonzero
+  // pair, a zero half, entries near 1e-200 (#999). heevdx gives every one a
+  // finite U. cuSOLVER's heevd is correct on them, so CUDA keeps it.
+  int32_t found = 0;
+  FBF_TRY(gpu_status(wwr::heevdx_bufferSize<Z>(solver, kSkewEigMode, kSkewRange, kSkewFillMode, n,
+                                               u, n, R{0}, R{0}, 0, 0, &found, w, &lwork)));
+#else
+  FBF_TRY(gpu_status(
+      wwr::heevd_bufferSize<Z>(solver, kSkewEigMode, kSkewFillMode, n, u, n, w, &lwork)));
+#endif
+  return lwork;
+}
 
 template <wwr::usual_fp T>
 Status skew_eig(DeviceResources &res, const int32_t n, const T *h,
@@ -118,23 +144,14 @@ Status skew_eig(DeviceResources &res, const int32_t n, const T *h,
   // The solver's workspace size for n, queried per call: it is a host
   // computation.
   const wwr::wwrsolverDnHandle_t solver = res.solver().get();
-  int32_t lwork = 0;
+  const int32_t lwork = FBF_TRY(skew_eig_query<Z>(solver, n, u, w));
 #if defined(WWR_SELECTED_HIP)
-  // heevdx over the whole range, not heevd: rocSOLVER's heevd (ROCm 7.2.4)
-  // returns info 0 and NaN eigenvectors above order 65 whenever iH's
-  // tridiagonal form splits -- a diagonal or block-diagonal H, one nonzero
-  // pair, a zero half, entries near 1e-200 (#999). heevdx gives every one a
-  // finite U. cuSOLVER's heevd is correct on them, so CUDA keeps it.
   int32_t found = 0;
-  FBF_TRY(gpu_status(wwr::heevdx_bufferSize<Z>(solver, kSkewEigMode, kSkewRange, kSkewFillMode, n,
-                                               u, n, R{0}, R{0}, 0, 0, &found, w, &lwork)));
   auto work = wwr::extension::reinterpret_buffer_view<Z>(
       res.device_workspace(static_cast<size_t>(lwork) * sizeof(Z)));
   FBF_TRY(gpu_status(wwr::heevdx<Z>(solver, kSkewEigMode, kSkewRange, kSkewFillMode, n, u, n, R{0},
                                     R{0}, 0, 0, &found, w, work.data(), lwork, res.info().data())));
 #else
-  FBF_TRY(gpu_status(
-      wwr::heevd_bufferSize<Z>(solver, kSkewEigMode, kSkewFillMode, n, u, n, w, &lwork)));
   auto work = wwr::extension::reinterpret_buffer_view<Z>(
       res.device_workspace(static_cast<size_t>(lwork) * sizeof(Z)));
   FBF_TRY(gpu_status(wwr::heevd<Z>(solver, kSkewEigMode, kSkewFillMode, n, u, n, w, work.data(),
@@ -197,6 +214,38 @@ Status skew_expm(DeviceResources &res, const int32_t n,
   return {};
 }
 
+template <wwr::usual_fp T>
+Result<size_t> skew_eig_lwork(DeviceResources &res, const int32_t n) {
+  using Z = wwr::RealToComplexType<wwr::ComplexToRealType<T>>;
+  if (n <= 0) {
+    return size_t{0};
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const int32_t lwork = FBF_TRY(skew_eig_query<Z>(res.solver().get(), n, nullptr, nullptr));
+  return static_cast<size_t>(lwork);
+}
+
+template <wwr::usual_fp T>
+MemoryFootprint skew_eig_footprint(const size_t lwork) {
+  using Z = wwr::RealToComplexType<wwr::ComplexToRealType<T>>;
+  MemoryFootprint out;
+  out.device.workspace = math::align_up(lwork * sizeof(Z), DeviceResources::kWorkspaceAlignment);
+  return out;
+}
+
+template <wwr::usual_fp T>
+MemoryFootprint skew_expm_footprint(const int32_t n) {
+  using Z = wwr::RealToComplexType<wwr::ComplexToRealType<T>>;
+  MemoryFootprint out;
+  if (n > 0) {
+    constexpr size_t kBlocks = wwr::real_fp<T> ? 2 : 1;
+    const auto order = static_cast<size_t>(n);
+    out.device.workspace =
+        math::align_up(kBlocks * order * order * sizeof(Z), DeviceResources::kWorkspaceAlignment);
+  }
+  return out;
+}
+
 template Status skew_eig<float>(DeviceResources &, int32_t, const float *, wwr::wwrFloatComplex *,
                                 float *);
 template Status skew_eig<double>(DeviceResources &, int32_t, const double *,
@@ -218,5 +267,18 @@ template Status skew_expm<wwr::wwrFloatComplex>(DeviceResources &, int32_t,
 template Status skew_expm<wwr::wwrDoubleComplex>(DeviceResources &, int32_t,
                                                  const wwr::wwrDoubleComplex *, const double *,
                                                  double, wwr::wwrDoubleComplex *);
+
+template Result<size_t> skew_eig_lwork<float>(DeviceResources &, int32_t);
+template Result<size_t> skew_eig_lwork<double>(DeviceResources &, int32_t);
+template Result<size_t> skew_eig_lwork<wwr::wwrFloatComplex>(DeviceResources &, int32_t);
+template Result<size_t> skew_eig_lwork<wwr::wwrDoubleComplex>(DeviceResources &, int32_t);
+template MemoryFootprint skew_eig_footprint<float>(size_t);
+template MemoryFootprint skew_eig_footprint<double>(size_t);
+template MemoryFootprint skew_eig_footprint<wwr::wwrFloatComplex>(size_t);
+template MemoryFootprint skew_eig_footprint<wwr::wwrDoubleComplex>(size_t);
+template MemoryFootprint skew_expm_footprint<float>(int32_t);
+template MemoryFootprint skew_expm_footprint<double>(int32_t);
+template MemoryFootprint skew_expm_footprint<wwr::wwrFloatComplex>(int32_t);
+template MemoryFootprint skew_expm_footprint<wwr::wwrDoubleComplex>(int32_t);
 
 } // namespace free_breakfast

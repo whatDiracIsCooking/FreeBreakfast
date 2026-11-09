@@ -12,6 +12,8 @@ import free_breakfast.core.constants; // kOne, kZero, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // geam, gemv, axpy, scal, wwrMemcpy2DAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;
 import free_breakfast.molecule;
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm, gemmwich
@@ -370,6 +372,53 @@ Result<Fock> fock(DeviceResources &res, const Molecule &molecule, const Spherica
       res.device_regions<double>(nn, n_all * static_cast<size_t>(ncas) * static_cast<size_t>(ncas) *
                                          static_cast<size_t>(ncas));
   return finish_fock(res, build, ncore, ncas, ppaa, papa, block, paaa);
+}
+
+// The Fock fock returns over n_all orbitals: F^I, F^A, F, the packed
+// gradient, gamma and Gamma.
+size_t fock_bytes(const size_t n_all, const size_t ncore, const size_t ncas) {
+  const size_t n_pairs = (ncore * (n_all - ncore)) + (ncas * (n_all - ncore - ncas));
+  return sizeof(double) *
+         ((3 * n_all * n_all) + n_pairs + (ncas * ncas) + (ncas * ncas * ncas * ncas));
+}
+
+size_t fock_region(const size_t count) {
+  return math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
+}
+
+MemoryFootprint fock_footprint(const BasisSet &basis, const int32_t ncore, const int32_t ncas) {
+  const size_t n_all = basis.nao_sphe();
+  if (ncore < 0 || ncas < 0 || ncore + ncas == 0 ||
+      std::cmp_greater(int64_t{ncore} + ncas, n_all)) {
+    return {};
+  }
+  const size_t n_cart = basis.nao_cart();
+  const auto na = static_cast<size_t>(ncas);
+  MemoryFootprint out;
+  out.device.persistent = fock_bytes(n_all, static_cast<size_t>(ncore), na);
+  out.device.scratch = 3 * sizeof(double) * n_cart * n_cart;
+  out.device.workspace = (2 * fock_region(n_cart * n_all)) + fock_region(n_all * n_all) +
+                         fock_region(n_all * na * na * na);
+  return out;
+}
+
+MemoryFootprint fock_footprint(const int32_t nmo, const int32_t naux, const int32_t ncore,
+                               const int32_t ncas) {
+  if (nmo < 0 || naux < 0 || ncore < 0 || ncas < 0 || ncore + ncas == 0 || ncore + ncas > nmo) {
+    return {};
+  }
+  const auto n_all = static_cast<size_t>(nmo);
+  const auto na = static_cast<size_t>(ncas);
+  MemoryFootprint out;
+  out.device.persistent = fock_bytes(n_all, static_cast<size_t>(ncore), na);
+  out.device.scratch = 3 * sizeof(double) * n_all * n_all;
+  out.device.workspace = fock_region(n_all * n_all) + fock_region(n_all * na * na * na);
+  if (ncore > 0) {
+    out.device.workspace =
+        std::max({out.device.workspace, df_coulomb_footprint(nmo, naux).device.workspace,
+                  df_exchange_footprint(nmo, naux, ncore).device.workspace});
+  }
+  return out;
 }
 
 } // namespace free_breakfast::response

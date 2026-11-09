@@ -3,7 +3,8 @@
 # re-exports it, and mcscf's solve links it PRIVATE. DeviceResources, Buffers,
 # the strings, the sigma, the Rdm, ci::Roots and Hessian are in its signature or
 # members, so core::wwr, core::resources, ci::strings, ci::sigma, ci::rdm,
-# ci::solver and response::hessian are PUBLIC; the packed order's copies, the
+# ci::solver and response::hessian are PUBLIC, and core::footprint for the
+# footprint's MemoryFootprint; the packed order's copies, the
 # block calls' gemms, the CI response's pcg_solve and FBF_TRY are only used.
 # It launches nothing of its own: sigmas, RDMs, H's apply, BLAS and copies, so
 # there is no device library.
@@ -25,8 +26,10 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::rdm
   free_breakfast::ci::solver
   free_breakfast::response::hessian
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::response::orbital_pairs
   free_breakfast::recipes::blas

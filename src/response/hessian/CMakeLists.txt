@@ -2,7 +2,8 @@
 # implementation unit. BasisSet, DeviceResources, Buffers, the two kinds of
 # pair class, the AO matrices and response::Fock are in its signature or
 # members, so basis, core::wwr, core::resources, coulomb, exchange,
-# recipes::matrix_ao and response::fock are PUBLIC; the density-fitted J and K
+# recipes::matrix_ao and response::fock are PUBLIC, and core::footprint for the
+# footprints' MemoryFootprint; the density-fitted J and K
 # and the packed order's copies are only called, so jk and orbital_pairs are
 # PRIVATE. It launches nothing of its own: J and K are coulomb's and
 # exchange's or df_coulomb's and df_exchange's, the rest BLAS and copies, so
@@ -25,8 +26,10 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::eri::integral_direct::coulomb
   free_breakfast::integrals::eri::integral_direct::exchange
   free_breakfast::response::fock
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
   free_breakfast::recipes::linear_operator

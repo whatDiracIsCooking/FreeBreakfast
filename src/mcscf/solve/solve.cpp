@@ -18,6 +18,8 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr; // gemv, dgmm, nrm2, scal, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
+import free_breakfast.core.footprint;
 import free_breakfast.molecule;
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm
@@ -340,6 +342,9 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
       ci.davidson.residual_tolerance = tolerance;
       const std::span<const double> start =
           roots ? std::span<const double>{roots->vectors.data(), ci_block} : ci_guess;
+      // The final CI's evaluate frees the last Fock before its CI, which does
+      // not read it, so the CI's peak is the first evaluate's.
+      fock.reset();
       ci::Roots solved =
           FBF_TRY(ci::solve(res, sigma, alpha, beta, diagonal.data(), nroots, ci, start));
       roots = std::move(solved);
@@ -349,7 +354,6 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
           ci_rdm.rdm12(res, w, roots->vectors.data(), gamma_device.data(), gamma2_device.data()));
       gamma = FBF_TRY(casscf_download(res, gamma_device.data(), n * n));
       gamma2 = FBF_TRY(casscf_download(res, gamma2_device.data(), n * n * n * n));
-      fock.reset();
       fock.emplace(FBF_TRY(full ? response::fock(res, molecule, h, *b, naux, c_now, ncore, ncas,
                                                  ints.ppaa, ints.papa, gamma, gamma2)
                                 : response::fock(res, basis, molecule, h, u, j_classes, k_classes,
@@ -730,6 +734,133 @@ Result<Solution> solve(DeviceResources &res, const BasisSet &basis, const Molecu
   return err_max_iterations_exceeded(
       "mcscf::solve: not converged in {} macro iterations (last |g| {:.3e})", options.max_cycle,
       last_gradient);
+}
+
+MemoryFootprint solve_footprint(const BasisSet &basis, const int32_t ncore, const int32_t ncas,
+                                const int32_t nelecas, const int32_t multiplicity,
+                                const int32_t nroots, const Options &options, const int32_t naux,
+                                const std::span<const size_t> syevd_lwork,
+                                const size_t skew_eig_lwork) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const int32_t two_s = multiplicity - 1;
+  if (ncore < 0 || ncas < 1 || ncore + ncas > nmo || nelecas < 0 || nelecas > 2 * ncas ||
+      two_s < 0 || two_s > nelecas || (nelecas - two_s) % 2 != 0 || nelecas + two_s > 2 * ncas ||
+      nroots < 1) {
+    return {}; // refused before anything is allocated
+  }
+  const int32_t n_beta = (nelecas - two_s) / 2;
+  const int32_t n_alpha = nelecas - n_beta;
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha_strings = strings(n_alpha);
+  const int32_t beta_strings = strings(n_beta);
+  const size_t dim = static_cast<size_t>(alpha_strings) * static_cast<size_t>(beta_strings);
+  const auto roots_count = static_cast<size_t>(nroots);
+  if (roots_count > dim) {
+    return {};
+  }
+  const auto mo = static_cast<size_t>(nmo);
+  const auto n = static_cast<size_t>(ncas);
+  const int32_t n_pairs = (ncore * (nmo - ncore)) + (ncas * (nmo - ncore - ncas));
+  const auto pairs = static_cast<size_t>(n_pairs);
+  const auto held = [](const size_t bytes) {
+    return MemoryFootprint{.device = {.persistent = bytes}};
+  };
+  const auto widest = [](MemoryFootprint a, const MemoryFootprint &b) {
+    a.device.workspace = std::max(a.device.workspace, b.device.workspace);
+    a.pinned.workspace = std::max(a.pinned.workspace, b.pinned.workspace);
+    return a;
+  };
+  const bool direct_jk = options.density_fitting != DensityFitting::Full;
+  const bool direct_hessian = options.density_fitting == DensityFitting::Direct;
+
+  // Held from entry to return, in solve's order: the strings, the sigma's
+  // tables, C now and accepted, the diagonal, gamma and Gamma, the step x,
+  // kappa, its eigenvectors (complex) and eigenvalues, the rotation, and the
+  // augmented Hessian's subspace and small vectors.
+  const size_t q_width =
+      static_cast<size_t>(std::max(1, std::min(n_pairs, options.ah_max_subspace)));
+  const size_t ah_length = std::max<size_t>(pairs, 1);
+  if (syevd_lwork.size() < q_width + 2) {
+    check_or_abort(Status{err_config("mcscf::solve_footprint: syevd's work is given through order "
+                                     "{}, and the augmented Hessian diagonalizes up to order {}",
+                                     static_cast<int64_t>(syevd_lwork.size()) - 1, q_width + 1)});
+  }
+  MemoryFootprint sets = ci::device_string_set_footprint(ncas, n_alpha);
+  if (n_alpha != n_beta) {
+    sets = then(sets, ci::device_string_set_footprint(ncas, n_beta));
+  }
+  const MemoryFootprint tables = ci::sigma_footprint(ncas, alpha_strings, beta_strings);
+  const size_t loop_doubles = (2 * mo * mo) + dim + (n * n) + (n * n * n * n) + ah_length +
+                              (mo * mo) + mo + (mo * mo) + (ah_length * q_width) +
+                              (ah_length * (q_width + 1)) + (3 * ah_length) + (2 * ah_length) +
+                              ((q_width + 1) * (q_width + 1)) + (2 * (q_width + 1)) + (q_width + 2);
+  const size_t entry = sets.device.persistent + tables.device.persistent +
+                       (sizeof(double) * loop_doubles) + (sizeof(wwr::wwrDoubleComplex) * mo * mo);
+  const size_t roots = sizeof(double) * dim * roots_count;
+  // The sigma's apply scratch from the first product on: the CI response's
+  // conjugate gradients apply it in Layout::full, past the CI's own layout.
+  const size_t sigma_scratch =
+      ci::sigma_apply_bytes(ncas, alpha_strings, beta_strings, ci::Layout::full);
+
+  // One macro iteration's phases, each over the integrals.
+  const MemoryFootprint ints = direct_jk ? casscf_integrals_footprint(basis, ncore, ncas)
+                                         : casscf_integrals_footprint(nmo, naux, ncore, ncas);
+  // The CI: warm from the last roots, which it holds beside its own until it
+  // returns, the sigma's scratch already grown; and the first, cold, its
+  // sigma's scratch (in its own layout) and roots new.
+  const MemoryFootprint warm =
+      ci::solve_footprint(ncas, n_alpha, n_beta, nroots, options.ci, true, syevd_lwork);
+  const MemoryFootprint cold =
+      ci::solve_footprint(ncas, n_alpha, n_beta, nroots, options.ci, false, syevd_lwork);
+  MemoryFootprint warm_phase = warm;
+  warm_phase.device.persistent = 0;
+  warm_phase.device.scratch = roots + warm.device.scratch;
+  // The Fock, the Hessian, the relaxed Hessian and one of its products.
+  const MemoryFootprint fock = direct_jk ? response::fock_footprint(basis, ncore, ncas)
+                                         : response::fock_footprint(nmo, naux, ncore, ncas);
+  const MemoryFootprint hessian = direct_hessian
+                                      ? response::hessian_footprint(basis, ncore, ncas)
+                                      : response::hessian_footprint(nmo, naux, ncore, ncas);
+  const MemoryFootprint product = direct_hessian
+                                      ? response::hessian_apply_footprint(basis, ncore, ncas)
+                                      : response::hessian_apply_footprint(nmo, naux, ncore, ncas);
+  const MemoryFootprint relaxed =
+      response::relaxed_hessian_footprint(ncas, n_alpha, n_beta, nroots, nmo, ncore);
+  const MemoryFootprint step = then(fock, then(hessian, then(relaxed, product)));
+  // The steady iteration: everything held, the last roots and the sigma's
+  // grown scratch among it.
+  const MemoryFootprint steady = then(held(entry + roots + sigma_scratch),
+                                      drop(then(ints, then(drop(warm_phase), drop(step)))));
+  // The first iteration's CI, cold, before any roots or product.
+  const MemoryFootprint first = then(held(entry), drop(then(ints, drop(cold))));
+  // The converged return: each root's 1-RDM through one n^2 buffer, beside the
+  // last integrals and Fock.
+  const MemoryFootprint converged =
+      then(held(entry + roots + sigma_scratch),
+           drop(then(ints, then(fock, drop(held(sizeof(double) * n * n))))));
+
+  // The workspace: every routine's.
+  MemoryFootprint workspace = widest(widest(widest(ints, warm), cold), step);
+  workspace = widest(workspace, ci::rdm12_footprint(ncas, static_cast<int32_t>(dim)));
+  workspace = widest(workspace, tables);
+  // The augmented Hessian's projected problem, at every order up to q + 1.
+  for (size_t order = 1; order <= q_width + 1; ++order) {
+    workspace = widest(workspace, diagonalize_footprint<double>(syevd_lwork[order]));
+  }
+  workspace = widest(workspace, skew_eig_footprint<double>(skew_eig_lwork));
+  workspace = widest(workspace, skew_expm_footprint<double>(nmo));
+
+  const size_t peak = std::max({steady.device.peak() - steady.device.workspace,
+                                first.device.peak() - first.device.workspace,
+                                converged.device.peak() - converged.device.workspace});
+  MemoryFootprint out;
+  out.device.persistent = (sizeof(double) * mo * mo) + roots;
+  out.device.scratch = peak - out.device.persistent;
+  out.device.workspace = workspace.device.workspace;
+  out.pinned.workspace = workspace.pinned.workspace;
+  return out;
 }
 
 } // namespace free_breakfast::mcscf
