@@ -140,16 +140,13 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   const double held = fci_device_bytes(nmo, n_alpha, n_beta, nroots);
   const double need =
       held + fci_sigma_bytes(nmo, std::max(fci_strings(nmo, n_alpha), fci_strings(nmo, n_beta)));
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (need > static_cast<double>(free_bytes)) {
+  const size_t budget = FBF_TRY(res.memory_budget());
+  if (need > static_cast<double>(budget)) {
     constexpr double kGiB = 1024.0 * 1024.0 * 1024.0;
     return err_allocation("fci: {} electrons in {} orbitals, {} roots, need an estimated {:.3g} "
-                          "GiB of device memory, and device {} has {:.3g} GiB of {:.3g} free",
+                          "GiB of device memory, and device {}'s budget is {:.3g} GiB",
                           n_electrons, nmo, nroots, need / kGiB, res.dev_idx(),
-                          static_cast<double>(free_bytes) / kGiB,
-                          static_cast<double>(total_bytes) / kGiB);
+                          static_cast<double>(budget) / kGiB);
   }
 
   // From here CasciStep::run's path with no core and every orbital active,
@@ -196,7 +193,7 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
   // Everything the estimate leaves free, which is G for the whole triangle
   // (and the solve as it was) whenever that fits.
-  sigma.set_workspace_limit(static_cast<size_t>(static_cast<double>(free_bytes) - held));
+  sigma.set_workspace_limit(static_cast<size_t>(static_cast<double>(budget) - held));
   FBF_TRY(sigma.set_integrals(res, ham.e_core, h, eri));
   const auto dim = static_cast<size_t>(sigma.size());
   Buffers::device<double> diagonal_device(dim, res.device());

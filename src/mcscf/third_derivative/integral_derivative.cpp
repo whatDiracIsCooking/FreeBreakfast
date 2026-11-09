@@ -91,10 +91,8 @@ Status df_integral_derivatives(
   const ScopedDeviceIndex on{res.dev_idx()};
   size_t chunk = 0;
   {
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    const size_t budget = max_bytes == 0 ? free_bytes : std::min(free_bytes, max_bytes);
+    const size_t available = FBF_TRY(res.memory_budget());
+    const size_t budget = max_bytes == 0 ? available : std::min(available, max_bytes);
     const size_t one = sizeof(double) * (held + factor);
     if (one > budget) {
       return err_unsupported("mcscf::df_integral_derivatives: one coordinate over {} orbital and "

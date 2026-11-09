@@ -112,6 +112,12 @@ private:
 /// sync, or an event the reader waits on) before it rewrites the region or
 /// returns.
 ///
+/// **The memory budget.** memory_budget() is the device memory a refusal
+/// check may count on: what the pool can still hand out, counting memory it
+/// holds cached but unused as available. Past it an allocation through the
+/// pool would abort (CreatePolicy), so a site that can refuse compares its
+/// need against this, not against the driver's free memory.
+///
 /// **The pinned cap.** pinned_cap() bytes (0: none) bound the pinned total,
 /// pinned_bytes(): the pinned workspace plus every live CountedPinned. A
 /// workspace growth or counted allocation that would take the total past it
@@ -138,17 +144,29 @@ public:
     requires(kWorkspaceAlignment % sizeof(T) == 0)
   static constexpr size_t kWorkspaceAlignmentIn = kWorkspaceAlignment / sizeof(T);
 
+  /// @brief What a process holds on a device that no pool counts -- the
+  /// context, and the BLAS and solver handles' own workspaces -- in bytes:
+  /// 256 MiB, memory_budget()'s allowance for it on an uncapped pool.
+  ///
+  /// The 249 MiB measured on the 3080 (src/core/wwr/README.md, "The fixed
+  /// reserve outside the pool"), rounded up: it is a floor, which grows as
+  /// lazily loaded kernel modules are first launched. A pool cap is set
+  /// below the device's share by this much, so it is not taken again from
+  /// the cap.
+  static constexpr uint64_t kDeviceReserve = uint64_t{256} << 20;
+
   /// @brief Create a Device on `dev_idx` whose pool keeps up to
-  /// `pool_release_threshold` bytes cached, bind a BLAS and a solver handle to
-  /// its stream, and hold its pinned memory to `pinned_cap` bytes (0: no cap).
-  /// A failed creation aborts (CreatePolicy).
+  /// `pool_release_threshold` bytes cached and is capped at `pool_cap` bytes
+  /// (0: no cap; a cap is also the release threshold, see Device), bind a
+  /// BLAS and a solver handle to its stream, and hold its pinned memory to
+  /// `pinned_cap` bytes (0: no cap). A failed creation aborts (CreatePolicy).
   explicit DeviceResources(int32_t dev_idx = 0,
                            uint64_t pool_release_threshold = kDefaultPoolReleaseThreshold,
-                           size_t pinned_cap = 0)
-      : device_(std::make_shared<Device>(dev_idx, pool_release_threshold)), blas_(device_),
-        solver_(device_), device_workspace_(0, device_), info_(1, device_), info_host_(1),
-        pinned_workspace_(0), pinned_counted_(std::make_shared<size_t>(0)),
-        pinned_cap_(pinned_cap) {}
+                           size_t pinned_cap = 0, uint64_t pool_cap = 0)
+      : device_(std::make_shared<Device>(dev_idx, pool_release_threshold, pool_cap)),
+        blas_(device_), solver_(device_), device_workspace_(0, device_), info_(1, device_),
+        info_host_(1), pinned_workspace_(0), pinned_counted_(std::make_shared<size_t>(0)),
+        pinned_cap_(pinned_cap), pool_cap_(pool_cap) {}
 
   /// @brief The shared Device; pass it to Buffers to allocate from its pool.
   const std::shared_ptr<Device> &device() const noexcept { return device_; }
@@ -297,6 +315,38 @@ public:
   /// @brief The cap on pinned_bytes(), in bytes; 0 for none.
   size_t pinned_cap() const noexcept { return pinned_cap_; }
 
+  /// @brief The cap on device()'s pool, in bytes; 0 for none.
+  uint64_t pool_cap() const noexcept { return pool_cap_; }
+
+  /// @brief The device memory, in bytes, the pool can still give: its limit
+  /// less what its live allocations use (UsedMemCurrent). The limit is
+  /// pool_cap(), or with no cap the device's total less kDeviceReserve; and
+  /// never more than the driver can supply, its free memory plus what the
+  /// pool holds cached (ReservedMemCurrent), since another process may hold
+  /// part of the device. 0 when the pool already uses the limit. A GpuRuntime
+  /// error if the driver's free memory cannot be read; a failed pool query
+  /// aborts (CreatePolicy).
+  ///
+  /// Unlike the driver's free memory, it counts what the pool holds reserved
+  /// but unused as available: a freed block the pool keeps cached is the next
+  /// allocation's. A read, not a sync, as Device::pool_usage() is.
+  [[nodiscard]] Result<size_t> memory_budget() const {
+    const ScopedDeviceIndex on{dev_idx()};
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    // pool-bypass-ok: the budget authority itself, bounding the pool by the driver.
+    if (auto status = gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)); !status) {
+      return std::unexpected(std::move(status).error());
+    }
+    const PoolUsage usage = device_->pool_usage();
+    const uint64_t total = total_bytes;
+    const uint64_t uncapped = total > kDeviceReserve ? total - kDeviceReserve : 0;
+    const uint64_t limit = pool_cap_ != 0 ? pool_cap_ : uncapped;
+    const uint64_t supply = uint64_t{free_bytes} + usage.reserved_current;
+    const uint64_t bound = std::min(limit, supply);
+    return static_cast<size_t>(bound > usage.used_current ? bound - usage.used_current : 0);
+  }
+
   /// @brief One device int32_t for a solver's devInfo, allocated with the
   /// handles. Read it back with fetch_info().
   Buffers::device<int32_t> &info() noexcept { return info_; }
@@ -346,6 +396,7 @@ private:
   // outlive this.
   std::shared_ptr<size_t> pinned_counted_;
   size_t pinned_cap_;
+  uint64_t pool_cap_;
 };
 
 } // namespace free_breakfast

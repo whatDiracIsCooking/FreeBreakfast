@@ -171,15 +171,12 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, E
     const auto naux = static_cast<size_t>(fit->naux);
     const size_t scratch_bytes =
         sizeof(double) * ((2 * naux * ncas * nmo) + (3 * nmo * nmo * ncas * ncas));
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    if (scratch_bytes > free_bytes) {
+    if (const size_t budget = FBF_TRY(res.memory_budget()); scratch_bytes > budget) {
       return err_unsupported("casscf: the fitted integrals over {} orbitals, {} active and {} "
                              "fitting functions need {} bytes of device memory past B's {}, and "
-                             "device {} has {} free",
+                             "device {}'s budget is {}",
                              nmo, ncas, naux, scratch_bytes, fit->b.num_elements() * sizeof(double),
-                             res.dev_idx(), free_bytes);
+                             res.dev_idx(), budget);
     }
     options.density_fitting = mcscf::DensityFitting::Full;
   }

@@ -2,7 +2,8 @@
 // cc-pVDZ-JKFIT and cc-pVTZ / cc-pVTZ-JKFIT (f orbitals, g fitting functions)
 // against the B density_fit makes of PySCF's int2c2e and int3c2e
 // (data/density_fitting/), the default aux basis, and the step's refusals of
-// an aux basis it cannot resolve, place or default. Integral-direct: J's and
+// an aux basis it cannot resolve, place or default, and its refusal of a B
+// past the device's memory budget. Integral-direct: J's and
 // K's classes, and an aux basis refused. The step's contract is
 // test/pipeline/steps_host.cpp's; the rest builds on the device, so needs a GPU.
 
@@ -392,6 +393,56 @@ TEST(PipelineEri, AnAuxBasisItCannotResolveOrPlaceIsItsError) {
   EXPECT_EQ(unknown.error().kind, fb::ErrorKind::IO) << unknown.error().message;
   EXPECT_NE(unknown.error().message.find("cc-pVDZ-JKFIT"), std::string::npos)
       << unknown.error().message;
+}
+
+// Under a pool cap below B's bytes, the step refuses B as Unsupported, naming
+// the bytes B and L need and the budget, before allocating it: past the cap
+// its allocation would abort. Benzene in cc-pVTZ / cc-pVTZ-JKFIT, whose B is
+// some hundreds of MiB, against a 64 MiB cap -- well above a pool chunk, so
+// the cap and not the chunking is what the budget meets. The step's input is
+// built on an uncapped DeviceResources; nothing of it is touched before the
+// refusal.
+TEST(PipelineEri, ABPastTheMemoryBudgetIsUnsupported) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources setup{0};
+  std::vector<fb::Atom> atoms;
+  for (std::int32_t k = 0; k < 6; ++k) {
+    const double angle = std::numbers::pi * k / 3.0;
+    atoms.push_back(fb::Atom{
+        fb::Vec<double, 3>{2.640 * std::cos(angle), 2.640 * std::sin(angle), 0.0}, fb::Element::C});
+    atoms.push_back(fb::Atom{
+        fb::Vec<double, 3>{4.690 * std::cos(angle), 4.690 * std::sin(angle), 0.0}, fb::Element::H});
+  }
+  const fb::MoleculeOutput molecule{fb::Molecule(setup, std::move(atoms))};
+  auto basis = fb::BasisSetStep{.basis = "cc-pvtz"}.run(fb::View<fb::MoleculeOutput>{molecule});
+  ASSERT_TRUE(basis) << basis.error().message;
+  auto classes = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, setup);
+  ASSERT_TRUE(classes) << classes.error().message;
+
+  constexpr std::uint64_t kCap = std::uint64_t{64} << 20;
+  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
+  const std::size_t budget = res.memory_budget().value();
+  ASSERT_LE(budget, kCap);
+  auto eri = fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvtz-jkfit"}.run(
+      EriInput{molecule, *basis, *classes}, res);
+  ASSERT_FALSE(eri);
+  EXPECT_EQ(eri.error().kind, fb::ErrorKind::Unsupported) << eri.error().message;
+
+  // B's and L's bytes, naux (nao^2 + naux) doubles, over the functions the
+  // message names, and the budget as it was: nothing was allocated.
+  const std::string &msg = eri.error().message;
+  std::smatch m;
+  ASSERT_TRUE(std::regex_search(
+      msg, m, std::regex{R"(over (\d+) orbital and (\d+) fitting functions need (\d+) bytes)"}))
+      << msg;
+  const std::size_t nao = std::stoull(m[1].str());
+  const std::size_t naux = std::stoull(m[2].str());
+  EXPECT_EQ(nao, basis->basis.nao_sphe());
+  const std::size_t b_bytes = sizeof(double) * naux * ((nao * nao) + naux);
+  EXPECT_EQ(std::stoull(m[3].str()), b_bytes);
+  EXPECT_GT(b_bytes, kCap);
+  EXPECT_NE(msg.find(std::format("budget is {}", budget)), std::string::npos) << msg;
+  EXPECT_EQ(res.memory_budget().value(), budget);
 }
 
 } // namespace
