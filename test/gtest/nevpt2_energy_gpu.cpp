@@ -53,6 +53,7 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
 #include "scratch_dir.h"
+#include "settled_rung.h"
 #include "stable_part.h"
 
 namespace {
@@ -1208,10 +1209,10 @@ run_hvp(fb::DeviceResources &res, const HostCase &h, const std::vector<HostCase>
 // bars, field by field, along seeded random directions: every input at
 // once, and B alone and the RDMs alone. Central differences D(t) of the bars
 // at t = 1e-3 / 2^k, k < 8, their Richardson extrapolants R_k =
-// (4 D_{k+1} - D_k) / 3, and the R_k that agrees best with R_{k+1} (the
-// largest field-wise change, relative to the field's largest element,
-// smallest): every field of the product must be that R_k's to 1e-7 of the
-// field's largest element. Every direction but the RDMs' breaks N₂'s
+// (4 D_{k+1} - D_k) / 3, and the coarsest settled R_k (settled_rung.h; its
+// change to R_{k+1} the largest field-wise one, relative to the field's
+// largest element): every field of the product must be that R_k's to 1e-7
+// of the field's largest element. Every direction but the RDMs' breaks N₂'s
 // symmetry and populates the empty perturbers, and the ladder sees their
 // K6: off the base point their norms clear the guard, so the bars there
 // are the ray's limit, K6's. Without K6, Λ's misses 5e-3 (B) and 2e-3
@@ -1262,27 +1263,23 @@ TEST_P(Nevpt2EnergyHvp, BarsMatchRichardsonLadder) {
       scale[f] = std::max(scale[f], std::abs(x));
     }
   }
-  // R_k per field, and the k whose R_k moves least to R_{k+1}.
+  // R_k per field, and the coarsest settled k (settled_rung.h).
   const auto richardson = [&](const std::size_t k, const std::size_t f, const std::size_t e) {
     return ((4.0 * d[k + 1][f][e]) - d[k][f][e]) / 3.0;
   };
-  std::size_t best = 0;
-  double best_change = std::numeric_limits<double>::infinity();
-  for (std::size_t k = 0; k + 2 < static_cast<std::size_t>(kRungs); ++k) {
-    double change = 0.0;
-    for (std::size_t f = 0; f < fields.size(); ++f) {
-      for (std::size_t e = 0; e < fields[f].second->size(); ++e) {
-        if (scale[f] > 0.0) {
-          change =
-              std::max(change, std::abs(richardson(k + 1, f, e) - richardson(k, f, e)) / scale[f]);
+  const auto [best, best_change] =
+      fb::test::settled_rung(static_cast<std::size_t>(kRungs) - 2, 1e-7, [&](const std::size_t k) {
+        double change = 0.0;
+        for (std::size_t f = 0; f < fields.size(); ++f) {
+          for (std::size_t e = 0; e < fields[f].second->size(); ++e) {
+            if (scale[f] > 0.0) {
+              change = std::max(change,
+                                std::abs(richardson(k + 1, f, e) - richardson(k, f, e)) / scale[f]);
+            }
+          }
         }
-      }
-    }
-    if (change < best_change) {
-      best_change = change;
-      best = k;
-    }
-  }
+        return change;
+      });
   double worst = 0.0;
   std::string report;
   for (std::size_t f = 0; f < fields.size(); ++f) {
@@ -1382,8 +1379,8 @@ TEST(Nevpt2EnergyHvpEmpty, K6MatchesMixedLadderAndNonProportionalIsRefused) {
     return e ? e->total : std::nan("");
   };
   // D(t) at t = 2.5e-3 / 2^k, k < 8, and its two-level Richardson
-  // extrapolants R_k (the t² and t⁴ terms cancelled); the R_k that moves
-  // least to R_{k+1} is the ladder's value. Single-level Richardson cannot
+  // extrapolants R_k (the t² and t⁴ terms cancelled); the coarsest settled
+  // R_k against the bar (settled_rung.h) is the ladder's value. Single-level Richardson cannot
   // reach 1e-7 here: its t⁴ term is still 1.6e-6 where the energy's
   // round-off, σ_E / t², takes over (t ≈ 2e-5).
   constexpr std::int32_t kRungs = 8;
@@ -1397,15 +1394,9 @@ TEST(Nevpt2EnergyHvpEmpty, K6MatchesMixedLadderAndNonProportionalIsRefused) {
     const double r_next = ((4.0 * d[k + 2]) - d[k + 1]) / 3.0;
     return ((16.0 * r_next) - r) / 15.0;
   };
-  std::size_t best = 0;
-  double best_change = std::numeric_limits<double>::infinity();
-  for (std::size_t k = 0; k + 3 < d.size(); ++k) {
-    const double change = std::abs(r2(k + 1) - r2(k));
-    if (change < best_change) {
-      best_change = change;
-      best = k;
-    }
-  }
+  const auto [best, best_change] =
+      fb::test::settled_rung(d.size() - 3, 1e-7 * std::abs(predicted),
+                             [&](const std::size_t k) { return std::abs(r2(k + 1) - r2(k)); });
   const double ladder = r2(best);
   const double miss = std::abs(ladder - predicted);
   EXPECT_LE(miss, 1e-7 * std::abs(predicted));
@@ -3601,8 +3592,9 @@ run_pc_hvp(fb::DeviceResources &res, const HostCase &h, const std::vector<HostCa
 
 // The ladder of pc_class_energies_adjoint's bars along @p dx at @p floor:
 // central differences at t = kT0 / 2^k, k < kRungs, their Richardson
-// extrapolants, and the one that agrees best with the next (Nevpt2EnergyHvp's
-// rule), per field, flattened as bar_fields orders them.
+// extrapolants, and the coarsest settled one against @p bar, relative to
+// each field's largest element (settled_rung.h, Nevpt2EnergyHvp's rule), per
+// field, flattened as bar_fields orders them.
 struct PcBarsLadder {
   std::vector<std::vector<double>> best;
   double change = 0.0;
@@ -3611,7 +3603,7 @@ struct PcBarsLadder {
 
 std::optional<PcBarsLadder> pc_bars_ladder(fb::DeviceResources &res, const HostCase &h,
                                            const HostCase &dx, const double floor,
-                                           const std::vector<double> &scale) {
+                                           const std::vector<double> &scale, const double bar) {
   constexpr std::int32_t kRungs = 8;
   constexpr double kT0 = 1e-3;
   std::vector<std::vector<std::vector<double>>> d; // [k][field]
@@ -3637,22 +3629,20 @@ std::optional<PcBarsLadder> pc_bars_ladder(fb::DeviceResources &res, const HostC
   const auto richardson = [&](const std::size_t k, const std::size_t f, const std::size_t e) {
     return ((4.0 * d[k + 1][f][e]) - d[k][f][e]) / 3.0;
   };
-  PcBarsLadder out{.best = {}, .change = std::numeric_limits<double>::infinity(), .rung = 0};
-  for (std::size_t k = 0; k + 2 < static_cast<std::size_t>(kRungs); ++k) {
-    double change = 0.0;
-    for (std::size_t f = 0; f < scale.size(); ++f) {
-      for (std::size_t e = 0; e < d[k][f].size(); ++e) {
-        if (scale[f] > 0.0) {
-          change =
-              std::max(change, std::abs(richardson(k + 1, f, e) - richardson(k, f, e)) / scale[f]);
+  const fb::test::SettledRung settled =
+      fb::test::settled_rung(static_cast<std::size_t>(kRungs) - 2, bar, [&](const std::size_t k) {
+        double change = 0.0;
+        for (std::size_t f = 0; f < scale.size(); ++f) {
+          for (std::size_t e = 0; e < d[k][f].size(); ++e) {
+            if (scale[f] > 0.0) {
+              change = std::max(change,
+                                std::abs(richardson(k + 1, f, e) - richardson(k, f, e)) / scale[f]);
+            }
+          }
         }
-      }
-    }
-    if (change < out.change) {
-      out.change = change;
-      out.rung = k;
-    }
-  }
+        return change;
+      });
+  PcBarsLadder out{.best = {}, .change = settled.change, .rung = settled.rung};
   for (std::size_t f = 0; f < scale.size(); ++f) {
     std::vector<double> x(d[out.rung][f].size());
     for (std::size_t e = 0; e < x.size(); ++e) {
@@ -3720,7 +3710,7 @@ TEST_P(Nevpt2PcEnergyHvp, BarsMatchRichardsonLadder) {
   ASSERT_TRUE(without) << without.error().message;
   const HostBars &hvp = got->second.front();
   const std::vector<double> scale = field_scales(hvp);
-  const auto ladder = pc_bars_ladder(res, h, dx, kPcHvpFloor, scale);
+  const auto ladder = pc_bars_ladder(res, h, dx, kPcHvpFloor, scale, kPcHvpTolerance);
   ASSERT_TRUE(ladder.has_value());
   const auto [miss, worst] = ladder_misses(hvp, *ladder, scale);
   const auto [miss_off, worst_off] = ladder_misses(without->second.front(), *ladder, scale);

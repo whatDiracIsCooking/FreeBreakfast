@@ -2439,9 +2439,10 @@ a negative entry, each asserted), z^c its own `zc_multipliers` at W.
   at tK to first order in t, so its derivative is the Hessian in K,
   curvature included. The ladder is t = 1e-3 / 2^k, k < 10, two-level
   Richardson, the coarsest extrapolant that moves under half a bar to the
-  next (else the one that moves least), bar 1e-7 of each field's largest
-  element. Not `nevpt2_qd_hvp_gpu.cpp`'s least-moving one over every rung:
-  the extrapolants' noise, 6.6 σ / t_k for the evaluations' round-off σ,
+  next (else the one that moves least; `test/support/settled_rung.h`, which
+  every NEVPT2 Hessian-product ladder now shares, #1157), bar 1e-7 of each
+  field's largest element. Not the least-moving one over every rung, the
+  rule before: the extrapolants' noise, 6.6 σ / t_k for the evaluations' round-off σ,
   doubles each rung, and two noisy fine ones can agree by chance; on
   h2co weighted along rot_01, whose evaluations repeat in-process to
   1e-13 to 9e-13, that took rung 4 (off 1.1e-7) and rung 6 (5.9e-7) where
