@@ -16,8 +16,9 @@ add_subdirectory(gradient)
 # and its nuclear gradient, which runs the same ket phase with the bra raised by
 # one and then gjab. DeviceResources, CoulombPairClass (pair_class,
 # re-exported), BasisSet, PrimitivePairClass, CartesianMatrixAO and
-# SphericalMatrixAO are in its signatures, so core::resources, pair_class,
-# basis, mmd and recipes::matrix_ao are PUBLIC. The per-class launch and the
+# SphericalMatrixAO are in its signatures, and MemoryFootprint in the
+# footprint's, so core::resources, pair_class, basis, mmd, recipes::matrix_ao
+# and core::footprint are PUBLIC. The per-class launch and the
 # pre-launch checks are the one-electron builds' own (one_electron::launch), the
 # three steps are modules of their own, and the device libraries are PRIVATE:
 # the ket sort's, e_hermite's (the raised [p|q]) and gjab's, whose bridge
@@ -39,8 +40,10 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::mmd
   free_breakfast::integrals::eri::integral_direct::coulomb::pair_class
   free_breakfast::recipes::matrix_ao
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::types
+  free_breakfast::core::primitives
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::one_electron::launch

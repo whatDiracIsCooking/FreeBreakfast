@@ -103,8 +103,8 @@ struct CisStep {
   ///         error of the first call that failed: `cis::diagonal`'s,
   ///         `cis::guess`'s, `cis::Sigma::create`'s or
   ///         `cis::DfSigma::create`'s (Unsupported for MO blocks past the
-  ///         device's free memory), TDA-ris's fits' (Unsupported for a B
-  ///         past it; else ris_basis's, metric's, three_center's,
+  ///         device's memory budget, `DeviceResources::memory_budget()`),
+  ///         TDA-ris's fits' (Unsupported for a B past it; else ris_basis's, metric's, three_center's,
   ///         density_fit's or b_mo's), `cis::Preconditioner::cluster`'s,
   ///         `cis::RisPreconditioner::create`'s or its correction's, or
   ///         `davidson_solve`'s

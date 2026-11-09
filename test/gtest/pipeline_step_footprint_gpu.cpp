@@ -1,5 +1,5 @@
-// The step footprints of the RHF chain (#1140), of CASCI and FCI (#1049) and
-// of CASSCF (#1151), and mcscf::solve's own, each held to the pool peak of one
+// The step footprints of the RHF chain (#1140), of CASCI and FCI (#1049), of
+// CASSCF (#1151) and of the RHF gradient (#1050), and mcscf::solve's own, each held to the pool peak of one
 // run of its step by test/support/pool_footprint.h's two bars, sound and
 // tight. The dimensions are plan_shape's over a parsed water config, so the
 // dims pass is exercised end to end, and each step is the one the config
@@ -15,7 +15,8 @@
 // CASCI over an explicit space, over AVAS's pick (the footprint at the space
 // it picked) and over a carried orbitals file; FCI under a pool cap that
 // leaves its sigma the least scratch it runs with, and unbounded; and
-// CASSCF's loop and step, integral-direct and density-fitted.
+// CASSCF's loop and step, integral-direct and density-fitted; and the RHF
+// gradient, integral-direct and density-fitted.
 
 #include <gtest/gtest.h>
 
@@ -705,6 +706,42 @@ TEST(StepFootprint, CasscfDensityFitted) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_casscf_footprint(fb::EriMode::DensityFitting);
+}
+
+// What the Gradient step reads.
+fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput, fb::EriOutput,
+         fb::ScfOutput>
+gradient_view(const Plan &plan) {
+  return fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput,
+                  fb::EriOutput, fb::ScfOutput>{*plan.molecule, *plan.basis, *plan.pairs, *plan.eri,
+                                                *plan.scf};
+}
+
+// The Gradient step over water's RHF: at the integral-direct one's peak, D
+// and the J gradient's U, pair, J classes and their prune's scratch; at the
+// fitted one's, D, -W, gmmwich's diagonal and work and a one-electron
+// derivative call's seven.
+void expect_gradient_footprint(const fb::EriMode mode, const std::size_t live) {
+  Plan plan(System{.mode = mode, .tables = "[gradient]\n"});
+  plan.run_through_scf();
+  const fb::FootprintDimensions &dims = plan.dims();
+  ASSERT_EQ(dims.aux != nullptr, mode == fb::EriMode::DensityFitting);
+  const auto gradient = planned<fb::GradientStep>(*plan.calc);
+  const fb::MemoryFootprint fp = gradient.footprint(dims);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  expect_step_footprint(fp, live, [&](fb::DeviceResources &res) {
+    expect_ran(gradient.run(gradient_view(plan), res));
+  });
+}
+
+TEST(StepFootprint, GradientDirect) {
+  FBF_REQUIRE_GPU();
+  expect_gradient_footprint(fb::EriMode::IntegralDirect, 1 + 4 + (6 * 31) + 8);
+}
+
+TEST(StepFootprint, GradientDensityFitted) {
+  FBF_REQUIRE_GPU();
+  expect_gradient_footprint(fb::EriMode::DensityFitting, 4 + 7);
 }
 
 } // namespace

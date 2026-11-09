@@ -551,9 +551,10 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::core::kernel_headers
 )
 
-# The module. DeviceResources, OrderedPairClass, BasisSet, CartesianMatrixAO and
-# SphericalMatrixAO are in its signatures, so core::resources, exchange::pairs
-# (re-exported), basis and recipes::matrix_ao are PUBLIC. The per-class launch
+# The module. DeviceResources, OrderedPairClass, BasisSet, CartesianMatrixAO,
+# SphericalMatrixAO and MemoryFootprint are in its signatures, so
+# core::resources, exchange::pairs (re-exported), basis, recipes::matrix_ao and
+# core::footprint are PUBLIC. The per-class launch
 # is the one-electron builds' (one_electron::launch), and the two device
 # libraries are PRIVATE: the implementation unit includes their bridge headers
 # in its GMF and calls the launchers, and a static library's private link
@@ -572,6 +573,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::eri::integral_direct::exchange::pairs
   free_breakfast::basis
   free_breakfast::recipes::matrix_ao
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::core::wwr

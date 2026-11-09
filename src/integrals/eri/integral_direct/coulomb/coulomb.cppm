@@ -14,6 +14,7 @@ export module free_breakfast.integrals.eri.integral_direct.coulomb;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 export import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
@@ -112,5 +113,12 @@ export namespace free_breakfast {
 coulomb_gradient(DeviceResources &res, const BasisSet &basis,
                  std::span<const PrimitivePairClass> classes, const SphericalMatrixAO &density,
                  double tau = 0.0);
+
+/// @brief What @ref coulomb_gradient holds over @p basis: U and the
+/// @c MatrixAOPair the density is carried through, and J's classes over every
+/// mmd record with their prune's scratch, all scratch; the raised J_p, the
+/// device gradient, the records' atoms and each Cartesian AO's atom, the device
+/// workspace; the prune's pinned workspace. Empty for a basis without shells.
+[[nodiscard]] MemoryFootprint coulomb_gradient_footprint(const BasisSet &basis);
 
 } // namespace free_breakfast

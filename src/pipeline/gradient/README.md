@@ -78,6 +78,16 @@ struct GradientStep {
   product, as ROHF is the molecule's multiplicity.
 - **`Device`-shaped**: B, L, the K classes and C live on the device.
 
+```cpp
+MemoryFootprint footprint(const FootprintDimensions &dims) const;
+```
+
+The step's footprint is `gradient::df_rhf_footprint` over `dims.aux` when the
+plan fits, else `gradient::rhf_footprint`, at n_alpha occupied orbitals
+(`../../gradient/README.md`, "Memory"). The product is on the host, so
+nothing is persistent: the step's peak is its scratch and the device
+workspace.
+
 ## Config
 
 ```toml
@@ -96,6 +106,10 @@ struct GradientStep {
   `df.grad.rhf` (`df_rhf`'s `h2o_ccpvdz`) and integral-direct against
   `scf.grad.rhf` (`rhf`'s `h2o_ccpvdz`). A config with H₂O⁺ (ROHF) is
   `Unsupported`, naming the reason, with no `gradient.json` written.
+- `test/gtest/pipeline_step_footprint_gpu.cpp`'s `StepFootprint.Gradient*`:
+  the step's footprint, at `plan_shape`'s dimensions over a parsed water
+  config, against the pool peak of one run, integral-direct and
+  density-fitted.
 
 ## Files
 

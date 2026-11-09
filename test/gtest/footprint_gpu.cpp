@@ -5,7 +5,10 @@
 // FCI call (#1049): the mixed classes and overlap AVAS builds, the active-space
 // Hamiltonian, and the CI's strings, sigma and solve; and those CASSCF's loop
 // calls (#1151): its integrals, the RDMs, the Fock, the orbital Hessian and the
-// CI-relaxed one, and the packed pairs' copies. Each is held to the
+// CI-relaxed one, and the packed pairs' copies; and those the RHF gradient
+// calls (#1050): the one-electron, J's and K's derivative contractions, the
+// fitted metric's and three-center tensor's, and the two gradients. Each is
+// held to the
 // pool peak of one call by test/support/pool_footprint.h's two bars, sound
 // (the measured peak is no more than the footprint's) and tight (within
 // G x A), so an undercount fails at the routine that owns the allocation.
@@ -28,6 +31,7 @@ import free_breakfast.integrals;
 import free_breakfast.recipes.diagonalize; // syevd_lwork
 import free_breakfast.ci;
 import free_breakfast.response;
+import free_breakfast.gradient;
 
 #include "pool_footprint.h"
 
@@ -774,6 +778,82 @@ TEST(LibraryFootprint, RelaxedHessian) {
       }
     });
   }
+}
+
+// The gradients' derivative contractions over a density whose values do not
+// matter: the one-electron three, J's (over J's classes at tau = 0, every
+// record) and K's (over the ordered classes), and the fitted metric's and
+// three-center tensor's, which take only the device workspace.
+TEST(LibraryFootprint, GradientIntegrals) {
+  FBF_REQUIRE_GPU();
+  Water w;
+  ASSERT_NE(w.basis.nao_cart(), w.basis.nao_sphe());
+  const fb::BasisSet aux = placed("cc-pvdz-jkfit", w.molecule);
+  auto k_classes = fb::ordered_pair_classes(w.inputs, w.basis, w.classes);
+  ASSERT_TRUE(k_classes);
+  ASSERT_TRUE(w.inputs.sync());
+  fb::DeviceResources res{0};
+  const fb::SphericalMatrixAO m(res, w.basis);
+  // U, the pair's three matrices, each Cartesian AO's atom, the records'
+  // atoms and the device gradient.
+  const fb::MemoryFootprint one = fb::one_electron_gradient_footprint(w.basis);
+  expect_routine_footprint(res, one, 7,
+                           [&] { EXPECT_TRUE(fb::overlap_gradient(res, w.basis, w.classes, m)); });
+  expect_routine_footprint(res, one, 7,
+                           [&] { EXPECT_TRUE(fb::kinetic_gradient(res, w.basis, w.classes, m)); });
+  expect_routine_footprint(res, one, 7, [&] {
+    EXPECT_TRUE(fb::potential_gradient(res, w.basis, w.classes, w.molecule, m));
+  });
+  // U and the pair's three, and J's classes' 31 fields each, the maxima, the
+  // counts and a destination per class; the rest in the workspace.
+  expect_routine_footprint(res, fb::coulomb_gradient_footprint(w.basis), 4 + (6 * 31) + 2 + 6,
+                           [&] { EXPECT_TRUE(fb::coulomb_gradient(res, w.basis, w.classes, m)); });
+  expect_routine_footprint(res, fb::exchange_gradient_footprint(w.basis), 7, [&] {
+    EXPECT_TRUE(fb::exchange_gradient(res, w.basis, *k_classes, m));
+  });
+  const std::size_t naux = aux.nao_sphe();
+  const fb::Buffers::device<double> wpq(naux * naux, res.device());
+  expect_routine_footprint(res, fb::metric_gradient_footprint(aux), 0,
+                           [&] { EXPECT_TRUE(fb::metric_gradient(res, aux, wpq.data())); });
+  const fb::Buffers::device<double> gamma(naux * w.basis.nao_sphe() * w.basis.nao_sphe(),
+                                          res.device());
+  expect_routine_footprint(res, fb::three_center_gradient_footprint(w.basis, aux), 0, [&] {
+    EXPECT_TRUE(fb::three_center_gradient(res, w.basis, w.classes, aux, gamma.data()));
+  });
+}
+
+// The RHF gradients over water's five occupied orbitals, over a C, B and L
+// whose values do not matter: the allocation does not depend on them. D, -W, gmmwich's
+// diagonal and work and a derivative call's seven are live at the fitted
+// one's peak; D and the J gradient's at the integral-direct one's.
+TEST(LibraryFootprint, RhfGradient) {
+  FBF_REQUIRE_GPU();
+  Water w;
+  const fb::BasisSet aux = placed("cc-pvdz-jkfit", w.molecule);
+  auto k_classes = fb::ordered_pair_classes(w.inputs, w.basis, w.classes);
+  ASSERT_TRUE(k_classes);
+  ASSERT_TRUE(w.inputs.sync());
+  constexpr std::int32_t kOcc = 5;
+  const std::size_t nao = w.basis.nao_sphe();
+  const std::size_t naux = aux.nao_sphe();
+  const std::vector<double> energies(nao, -1.0);
+  {
+    fb::DeviceResources res{0};
+    const fb::SphericalMatrixAO c(res, w.basis);
+    const fb::Buffers::device<double> b(naux * nao * nao, res.device());
+    const fb::Buffers::device<double> l(naux * naux, res.device());
+    expect_routine_footprint(res, fb::gradient::df_rhf_footprint(w.basis, aux, kOcc), 4 + 7, [&] {
+      EXPECT_TRUE(fb::gradient::df_rhf(res, w.molecule, w.basis, w.classes, aux, b.data(), l.data(),
+                                       c, energies, kOcc));
+    });
+  }
+  fb::DeviceResources res{0};
+  const fb::SphericalMatrixAO c(res, w.basis);
+  expect_routine_footprint(res, fb::gradient::rhf_footprint(w.basis, kOcc), 1 + 4 + (6 * 31) + 8,
+                           [&] {
+                             EXPECT_TRUE(fb::gradient::rhf(res, w.molecule, w.basis, w.classes,
+                                                           *k_classes, c, energies, kOcc));
+                           });
 }
 
 } // namespace

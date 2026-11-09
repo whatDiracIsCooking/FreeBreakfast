@@ -20,6 +20,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 
@@ -86,6 +87,20 @@ export namespace free_breakfast {
 three_center_gradient(DeviceResources &res, const BasisSet &basis,
                       std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                       const double *gamma);
+
+/// @brief What @ref metric_gradient holds over @p aux, all of it the device
+/// workspace: the staged records with U_aux, the pairs with their atoms,
+/// U_aux^T W's intermediate, the Cartesian W and the device G. Empty for an
+/// empty @p aux.
+[[nodiscard]] MemoryFootprint metric_gradient_footprint(const BasisSet &aux);
+
+/// @brief What @ref three_center_gradient holds over @p basis and @p aux, all
+/// of it the device workspace: the staging (mmd's records, every one, with
+/// their exponents; the aux records; U and U_aux), the cells with their
+/// atoms, the Cartesian Gam, its transform's intermediate and the device G.
+/// Empty if either basis is.
+[[nodiscard]] MemoryFootprint three_center_gradient_footprint(const BasisSet &basis,
+                                                              const BasisSet &aux);
 
 /// @brief The derivative of the Coulomb metric of the auxiliary basis @p aux
 /// on the centre of its first function, spherical, on the device:

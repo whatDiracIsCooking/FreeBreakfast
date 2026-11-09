@@ -228,11 +228,12 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::integrals::shared::headers
 )
 
-# The module. DeviceResources, BasisSet, PrimitivePairClass and Result are in
-# its signature, so core::resources, core::error_handling, basis and mmd are
-# PUBLIC. The device library is PRIVATE: the implementation unit includes the
-# bridge header in its GMF and calls the launchers, and a static library's
-# private link dependencies still reach the final link. So is staging (the
+# The module. DeviceResources, BasisSet, PrimitivePairClass, Result and
+# MemoryFootprint are in its signature, so core::resources,
+# core::error_handling, basis, mmd and core::footprint are PUBLIC. The device
+# library is PRIVATE: the implementation unit includes the bridge header in its
+# GMF and calls the launchers, and a static library's private link
+# dependencies still reach the final link. So is staging (the
 # launch staging the gradient and the Hessian share), which only the
 # implementation unit imports.
 free_breakfast_add_cxx_module_library(
@@ -249,6 +250,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::basis
   free_breakfast::integrals::mmd
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::constants
   free_breakfast::core::primitives

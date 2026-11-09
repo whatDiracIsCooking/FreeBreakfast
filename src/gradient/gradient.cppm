@@ -14,6 +14,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -69,8 +70,10 @@ struct RhfTerms {
 /// **Gam is held in full**, naux nao^2 doubles beside B (and the derivative
 /// call's Cartesian copy of it); with the fitted pairs and their half
 /// back-transform, the call's own device memory is about
-/// 8 naux (nao^2 + nocc^2 + nocc nao + naux) bytes. Past the device's free
-/// memory it is Unsupported, naming the bytes, before anything is allocated.
+/// 8 naux (nao^2 + nocc^2 + nocc nao + naux) bytes (@ref df_rhf_footprint has
+/// all of it). Past the device's memory budget
+/// (`DeviceResources::memory_budget()`) it is Unsupported, naming the bytes,
+/// before anything is allocated.
 ///
 /// Queued on res.stream(); each derivative call synchronizes it to return its
 /// rows, so the call returns with everything done. Scratch for @c b_mo and the
@@ -82,8 +85,8 @@ struct RhfTerms {
 ///         basis.nao_sphe() square or not on @p res's device, if
 ///         @p mo_energies does not hold one energy per column, if @p nocc is
 ///         outside [0, nao], or for any input the derivative calls refuse;
-///         Unsupported for memory past the device's free bytes or naux nao^2
-///         past int32_t; or the GpuRuntime error of the first copy, BLAS call
+///         Unsupported for memory past the device's memory budget or naux
+///         nao^2 past int32_t; or the GpuRuntime error of the first copy, BLAS call
 ///         or launch that failed.
 [[nodiscard]] Result<RhfTerms> df_rhf(DeviceResources &res, const Molecule &molecule,
                                       const BasisSet &basis,
@@ -122,6 +125,22 @@ struct RhfTerms {
 rhf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
     std::span<const PrimitivePairClass> classes, std::span<OrderedPairClass> k_classes,
     const SphericalMatrixAO &c, std::span<const double> mo_energies, int32_t nocc);
+
+/// @brief What @ref df_rhf holds over @p basis and @p aux with @p nocc
+/// occupied orbitals, all of it scratch or the device workspace: D, -W,
+/// gmmwich's diagonal and work, and the one-electron derivative calls'
+/// scratch; then, beside D, Gam, the fitted pairs, their back-transform, the
+/// metric weights and the fitted density, with the device workspace the
+/// largest of @c three_center_gradient's, @c metric_gradient's and
+/// @c b_mo's over the occupied block. B, L and C are the caller's.
+[[nodiscard]] MemoryFootprint df_rhf_footprint(const BasisSet &basis, const BasisSet &aux,
+                                               int32_t nocc);
+
+/// @brief What @ref rhf holds over @p basis with @p nocc occupied orbitals,
+/// all of it scratch or a workspace: @ref df_rhf_footprint's one-electron
+/// part, then, beside D, @c coulomb_gradient's and @c exchange_gradient's
+/// scratch and workspaces in turn. The K classes and C are the caller's.
+[[nodiscard]] MemoryFootprint rhf_footprint(const BasisSet &basis, int32_t nocc);
 
 /// @brief The one-electron terms of any nuclear gradient at its AO density
 /// @p d and energy-weighted density W, given as @p minus_w = -W: the
@@ -164,6 +183,11 @@ namespace free_breakfast::gradient {
 one_electron_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                    std::span<const PrimitivePairClass> classes, const SphericalMatrixAO &c,
                    std::span<const double> mo_energies, int32_t nocc, RhfTerms &g);
+
+// What the unexported one_electron_terms holds over @p basis with @p nocc
+// occupied orbitals: D, returned, persistent; -W, gmmwich's diagonal and
+// work, and the derivative calls' scratch, scratch.
+[[nodiscard]] MemoryFootprint rhf_one_electron_footprint(const BasisSet &basis, int32_t nocc);
 
 // a + b, element by element: defined in df_rhf.cpp, and rhf's too.
 std::vector<double> sum_of(std::vector<double> a, const std::vector<double> &b);

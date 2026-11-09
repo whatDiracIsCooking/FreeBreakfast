@@ -19,6 +19,10 @@ two-electron half of an RHF Hessian's skeleton Fock derivatives:
     df_jk_derivative(res, basis, classes, aux, B, L, C, nocc, Jx, Kx, g)
                                                             J^(x), K^(x), u^x − M^x d
 
+`metric_gradient_footprint(aux)` and `three_center_gradient_footprint(basis,
+aux)` are what the two gradients hold, all of it the device workspace (their
+carves; `three_center_gradient`'s refusal sizes the same carve).
+
 Also re-exported by
 `free_breakfast.integrals.eri.density_fitting` and `free_breakfast.integrals`.
 Link `free_breakfast::integrals::eri::density_fitting::gradient`.

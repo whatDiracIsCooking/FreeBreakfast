@@ -2,7 +2,8 @@
 # product holds gradient::RhfTerms, and run's View names the ScfOutput and the
 # products it re-exports (the EriOutput among them); primitive_pair_classes is
 # named too, as run's View takes its classes. core::resources and
-# pipeline::step are in run's signature. run is defined in the implementation
+# pipeline::step are in run's signature, and pipeline::footprint in the
+# footprint's. run is defined in the implementation
 # unit, so io::json (gradient.json) and diagnostics_macros (FBF_TRY) are
 # PRIVATE.
 free_breakfast_add_cxx_module_library(
@@ -19,6 +20,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::gradient
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   free_breakfast::pipeline::scf
   free_breakfast::pipeline::primitive_pair_classes
   LINK_PRIVATE

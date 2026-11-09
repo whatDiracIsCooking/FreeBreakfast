@@ -135,6 +135,7 @@ against it.
 | `overlap_derivative(res, basis, classes)` | `Result<Buffers::device<double>>`: S^x, dS_mn/dR_{A,k}, `natoms × 3` spherical matrices, matrix 3A + k at `(3A + k) n²` |
 | `kinetic_derivative(res, basis, classes)` | The same for T |
 | `potential_derivative(res, basis, classes, molecule)` | The same for V, its operator term on every nucleus included |
+| `one_electron_gradient_footprint(basis)` | `MemoryFootprint`: what each of the three `*_gradient` contractions holds, all scratch: U, the `MatrixAOPair`, each Cartesian AO's atom, two atoms per mmd record and the device gradient |
 
 ## Usage
 

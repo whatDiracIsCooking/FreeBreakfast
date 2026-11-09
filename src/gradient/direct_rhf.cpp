@@ -8,6 +8,7 @@ import std;
 import free_breakfast.core.constants; // kNegHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -38,6 +39,11 @@ Result<RhfTerms> rhf(DeviceResources &res, const Molecule &molecule, const Basis
     g.total = sum_of(std::move(g.total), *term);
   }
   return g;
+}
+
+MemoryFootprint rhf_footprint(const BasisSet &basis, const int32_t nocc) {
+  return drop(then(then(rhf_one_electron_footprint(basis, nocc), coulomb_gradient_footprint(basis)),
+                   exchange_gradient_footprint(basis)));
 }
 
 } // namespace free_breakfast::gradient

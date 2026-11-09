@@ -15,6 +15,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 import free_breakfast.integrals.one_electron.launch;
@@ -405,6 +406,23 @@ Result<std::vector<double>> exchange_gradient(DeviceResources &res, const BasisS
   // Also what keeps ao_atom, pageable, alive until its upload has read it.
   FBF_TRY(res.sync());
   return g;
+}
+
+MemoryFootprint exchange_gradient_footprint(const BasisSet &basis) {
+  if (basis.nshells() == 0) {
+    return {};
+  }
+  // The ordered classes' records: class (la, lb) holds P(la) P(lb), so all of
+  // them P^2.
+  size_t p = 0;
+  for (const Shell &shell : basis.shells()) {
+    p += shell.nprimitives();
+  }
+  MemoryFootprint out = drop(
+      then(upload_spherical_transform_matrix_footprint(basis), matrix_ao_pair_footprint(basis)));
+  out.device.scratch += (sizeof(int32_t) * basis.nao_cart()) + (sizeof(int32_t) * 2 * p * p) +
+                        (sizeof(double) * 3 * static_cast<size_t>(basis.natoms()));
+  return out;
 }
 
 } // namespace free_breakfast
