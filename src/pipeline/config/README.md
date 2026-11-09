@@ -80,6 +80,8 @@ MINAO AO labels, and refuses any of the three, and `orbitals`, beside it:
 [casci]
 avas = ["O 2p", "H 1s"]   # "<symbol> <n><l>"; every m, every atom of the element
 avas_threshold = 0.2      # default 0.2; needs avas
+avas_max_ncas = 12        # optional, at least 1; needs avas. A pick past it is
+                          # refused (InvalidConfig), never truncated
 ```
 
 `[eri]` picks the two-electron integrals for the **whole pipeline**: the
@@ -117,7 +119,7 @@ take the same options. `livvo` adds the localized valence virtual orbitals
 (`pipeline/localization`'s README) in either mode.
 
 `[casci]`'s keys are read for their types only. The active-space keys
-(`ncas`, `nelecas`, `active`, `avas`, `avas_threshold`) and their refusals are
+(`ncas`, `nelecas`, `active`, `avas`, `avas_threshold`, `avas_max_ncas`) and their refusals are
 `read_active_space`'s, one reader for every step whose config derives from
 `ActiveSpaceSelection`. Whether the active space fits needs the molecule's
 electrons and the basis's orbitals, so `ActiveSpaceSelection::orbital_order`

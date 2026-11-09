@@ -28,6 +28,7 @@ struct ActiveSpaceSelection {
   std::vector<int32_t> active;       // 0-based MO indices; empty: the frontier orbitals
   std::vector<std::string> avas;     // MINAO AO labels; not empty: AVAS picks the above
   double avas_threshold = 0.2;
+  int32_t avas_max_ncas = 0;         // > 0: a pick past it is refused; needs avas
   std::filesystem::path orbitals{};  // a .npy start in place of the ScfOutput's; not with avas
 
   Result<std::vector<int32_t>> orbital_order(int32_t n_electrons, int32_t nmo) const;
@@ -166,6 +167,12 @@ multiplicity checks refuse that (2S above nelecas).
   occupied one below it core, a virtual one below it the rest. So nelecas =
   N − 2 ncore. The weights are invariant to rotations within the occupied and
   within the virtual orbitals, so a degenerate set of the ScfOutput's is never split.
+- **The cap.** `avas_max_ncas`, when above 0, is the most active orbitals
+  the pick may hold, a cost limit (and the worst-case ncas a pre-flight can
+  size from). A pick past it is `InvalidConfig` — `AVAS picked 14 orbitals
+  at threshold 0.2, avas_max_ncas is 12` — and never truncated: AVAS stays
+  defined by its threshold alone, and a cut by weight could split a
+  degenerate set.
 - **Canonical spaces.** Core, active and the rest are each rotated to
   diagonalize the ScfOutput's Fock matrix within them, diag(ε) in the MO basis, as
   PySCF's `canonicalize` does (its `symmetrize` is a no-op without point
@@ -185,7 +192,8 @@ What it settled:
   first. A config reads only types: `ncas` and `nelecas` required, integers;
   `active` an array of integers. Or, in their place, `avas` a non-empty array
   of strings, refused beside `ncas`, `nelecas` or `active`, with
-  `avas_threshold` a number. The labels are parsed, and the threshold's range
+  `avas_threshold` a number and `avas_max_ncas` an integer of at least 1,
+  each refused without `avas`. The labels are parsed, and the threshold's range
   checked, when `select` runs, against the molecule's MINAO.
 - **The orbitals are published,** not only their order: AVAS rotates the
   ScfOutput's orbitals rather than picking them, and an RDM needs the orbitals it
@@ -197,8 +205,8 @@ What it settled:
 Errors, each message prefixed `active space:`: under `orbitals`, the file's
 (above), and InvalidConfig beside `avas`; under `avas`, InvalidConfig
 for a label not of the form, a label naming no MINAO AO of the molecule, a
-threshold outside (0, 1), `ncas`, `nelecas` or `active` set beside it, or no
-orbital selected; Numerical for an S2 not positive definite. Otherwise
+threshold outside (0, 1), `ncas`, `nelecas` or `active` set beside it, no
+orbital selected, or more selected than `avas_max_ncas`; Numerical for an S2 not positive definite. Otherwise
 `orbital_order`'s InvalidConfig (ncas below 1; nelecas negative, above 2 ncas
 or above N; an odd core electron count; ncore + ncas above nmo; `active` not
 ncas distinct indices in [0, nmo)), and for an open shell by index

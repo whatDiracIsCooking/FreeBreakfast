@@ -455,6 +455,12 @@ carried_orbitals(DeviceResources &res, const BasisSet &basis, const ScfOutput &s
           "active space: ncas, nelecas and active are avas's to pick, so are not set");
     }
     space = FBF_TRY(avas_space(res, molecule, basis, scf, avas, avas_threshold));
+    // Refused, not truncated: a cut could split a degenerate set.
+    if (avas_max_ncas > 0 && space.ncas > avas_max_ncas) {
+      return err_config(
+          "active space: AVAS picked {} orbitals at threshold {}, avas_max_ncas is {}", space.ncas,
+          avas_threshold, avas_max_ncas);
+    }
   }
 
   // C R. Each element of a permutation's product is one C element times 1
