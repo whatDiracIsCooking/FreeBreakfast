@@ -29,7 +29,7 @@ whole registry.
   normalized. They come from the top-level steps, or else from the copy an
   `[optimize]`'s or `[hessian]`'s chain holds (the config reads those from
   the same tables). An empty `aux_basis` falls back to the orbital set's
-  carried `-acCD-6-6`, by the Eri step's rule.
+  carried `-acCD-6-6`, through the Eri step's own `default_aux_basis`.
 - **mmd's records**: for each class (la, lb), the sum of nprim_i * nprim_j over
   the shell pairs i <= j. mmd screens nothing, so this is exactly what
   `primitive_pair_classes` builds (`test/gtest/pipeline_shape_gpu.cpp` checks
@@ -39,13 +39,11 @@ whole registry.
   to `diagonalize_footprint`'s workspace.
 - **The active space** at its largest. An explicit `ncas` / `nelecas` is used
   as written. Under AVAS it is `avas_max_ncas` when set, and otherwise twice
-  the labelled MINAO AOs: the occupied projector and the virtual one each have
+  the MINAO AOs the labels name (`pipeline/active_space`'s own
+  `avas_minao_aos`): the occupied projector and the virtual one each have
   at most that rank. That count is held to nao, and nelecas is set to ncas
   (half filling, the most determinants for that many orbitals), capped at the
   electron count. FCI's space is nao orbitals and every electron. When
   several steps plan one, the space with the most orbitals wins, and a tie
   goes to the nelecas nearest half filling. Chain copies count only where
   their chain runs a CASSCF.
-
-AVAS's label rule is copied from `pipeline/active_space`'s `avas_minao_aos`,
-which is private to that module. Keep the two in step.

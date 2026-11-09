@@ -17,6 +17,11 @@ export import free_breakfast.pipeline.scf; // Molecule, BasisSet, ScfOutput, Sph
 
 export namespace free_breakfast {
 
+/// @brief Which of MINAO's spherical AOs the AVAS @p labels name (select's rule, for its bound).
+[[nodiscard]] Result<std::vector<bool>> avas_minao_aos(const Molecule &molecule,
+                                                       const BasisSet &minao,
+                                                       std::span<const std::string> labels);
+
 /// @brief An active space as a rotation of the @ref ScfOutput's orbitals.
 struct ActiveSpace {
   /// @brief The doubly occupied core orbitals: columns [0, ncore) of @ref c.

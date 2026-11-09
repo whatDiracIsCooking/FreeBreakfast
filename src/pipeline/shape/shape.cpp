@@ -9,7 +9,6 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // syevd_bufferSize, gpu_status, ScopedDeviceIndex
 import free_breakfast.core.resources;
-import free_breakfast.atom;
 import free_breakfast.io.basis;
 import free_breakfast.pipeline.step; // View
 
@@ -49,86 +48,24 @@ template <class S>
   return nullptr;
 }
 
-// The aux basis an [eri] places, by EriStep's rule: its aux_basis, or empty,
-// the orbital set's carried acCD-6-6 (pipeline/eri's default_aux_basis).
+// The aux basis an [eri] places: its aux_basis, or empty, the Eri step's
+// default.
 [[nodiscard]] Result<BasisSet> shape_aux_basis(const EriStep &eri, const BasisSet &basis,
                                                const Molecule &molecule) {
-  std::string spec = eri.aux_basis;
-  if (spec.empty()) {
-    spec = basis.name() + "-acCD-6-6";
-    if (basis.name().empty() || !is_builtin_aux_basis(spec)) {
-      return err_config("[eri] mode = 'density_fitting' has no default aux_basis for this basis: "
-                        "set aux_basis");
-    }
-  }
+  const std::string spec =
+      eri.aux_basis.empty() ? FBF_TRY(default_aux_basis(basis)) : eri.aux_basis;
   const BasisStamp stamp = FBF_TRY(resolve_aux_basis(spec));
   return FBF_TRY(place(stamp.primitive_normalized(), molecule));
 }
 
 // How many of MINAO's spherical AOs over @p molecule the AVAS @p labels name,
-// each AO once, by ActiveSpaceSelection::select's rule (pipeline/active_space's
-// avas_minao_aos): "<symbol> <n><l>" is every component of the shell of that n
-// and l on every atom of that element, n counted from l + 1 over the atom's
-// shells of that l in file order.
+// by the active-space selection's own rule.
 [[nodiscard]] Result<size_t> avas_labelled_ao_count(const Molecule &molecule,
                                                     std::span<const std::string> labels) {
-  constexpr std::string_view kMomenta = "spdfghi";
-  struct Label {
-    Element element;
-    int32_t n;
-    int32_t l;
-  };
-  std::vector<Label> parsed;
-  for (const std::string &label : labels) {
-    std::istringstream fields(label);
-    std::string symbol;
-    std::string shell;
-    std::string extra;
-    fields >> symbol >> shell;
-    const Element element = element_from_symbol(symbol);
-    int32_t n = 0;
-    const auto [end, ec] = std::from_chars(shell.data(), shell.data() + shell.size(), n);
-    const auto letter = static_cast<size_t>(end - shell.data());
-    const size_t l_at = letter + 1 == shell.size() ? kMomenta.find(shell[letter]) : kMomenta.npos;
-    const auto l = static_cast<int32_t>(l_at);
-    if (fields >> extra || element == Element::Sentinel || ec != std::errc{} ||
-        l_at == kMomenta.npos || n <= l) {
-      return err_config("active space: avas label '{}' is not '<symbol> <n><l>', as 'O 2p'", label);
-    }
-    parsed.push_back({element, n, l});
-  }
   const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
   const BasisSet minao = FBF_TRY(place(stamp, molecule));
-  std::vector<bool> matched(parsed.size(), false);
-  size_t count = 0;
-  for (uint32_t atom = 0; atom < minao.natoms(); ++atom) {
-    const Element element = molecule.atoms()[atom].element;
-    std::array<int32_t, kMomenta.size()> seen{};
-    const uint32_t first = minao.atom_shell_offset(atom);
-    for (uint32_t s = first; s < first + minao.atom_shell_count(atom); ++s) {
-      const int32_t l = minao.shells()[s].angular_momentum();
-      if (std::cmp_greater_equal(l, seen.size())) {
-        continue; // no label can name it
-      }
-      const int32_t n = l + 1 + seen[static_cast<size_t>(l)]++;
-      bool named = false;
-      for (size_t k = 0; k < parsed.size(); ++k) {
-        if (parsed[k].element == element && parsed[k].n == n && parsed[k].l == l) {
-          matched[k] = named = true;
-        }
-      }
-      if (named) {
-        count += static_cast<size_t>((2 * l) + 1);
-      }
-    }
-  }
-  for (size_t k = 0; k < parsed.size(); ++k) {
-    if (!matched[k]) {
-      return err_config("active space: avas label '{}' names no MINAO AO of the molecule",
-                        labels[k]);
-    }
-  }
-  return count;
+  const std::vector<bool> chosen = FBF_TRY(avas_minao_aos(molecule, minao, labels));
+  return static_cast<size_t>(std::ranges::count(chosen, true));
 }
 
 // The active space @p selection may take, at its largest, over @p nao
