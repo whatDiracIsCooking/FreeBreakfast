@@ -25,6 +25,16 @@ using MemPool =
     wwr::extension::MemPoolWrapper<CreatePolicy<wwr::wwrError_t>, DestroyPolicy<wwr::wwrError_t>,
                                    CreatePolicy<wwr::wwrError_t>>;
 
+/// @brief A memory pool's usage, in bytes: what its live allocations hold
+/// (`used_*`) and what it holds from the driver (`reserved_*`, the used bytes
+/// plus freed memory it has cached), now and at their high-water marks.
+struct PoolUsage {
+  uint64_t used_current = 0;
+  uint64_t used_high = 0;
+  uint64_t reserved_current = 0;
+  uint64_t reserved_high = 0;
+};
+
 /// @brief One device's context: its properties, an owned ForkStream as the work
 /// stream, and an owned memory pool.
 ///
@@ -50,15 +60,24 @@ public:
   /// makes the following allocation pay the driver round trip again.
   static constexpr uint64_t kDefaultPoolReleaseThreshold = uint64_t{1} << 30;
 
-  /// @brief Query `dev_idx`'s properties, create its memory pool with a release
-  /// threshold of `pool_release_threshold` bytes, and a ForkStream on it with
-  /// the default configuration (non-blocking, sync-only events). A failure
-  /// aborts (CreatePolicy).
+  /// @brief Query `dev_idx`'s properties, create its memory pool, and a
+  /// ForkStream on it with the default configuration (non-blocking, sync-only
+  /// events). A failure aborts (CreatePolicy).
+  ///
+  /// `pool_cap` is the pool's hard limit in bytes (`maxSize`): an allocation
+  /// that would take the pool past it fails. A nonzero cap is also the pool's
+  /// release threshold, in place of `pool_release_threshold`, so memory one
+  /// step frees stays in the pool for the next instead of going back to the
+  /// driver, where another process could take it mid-run. 0, the default, is
+  /// no cap and a release threshold of `pool_release_threshold` bytes.
   explicit Device(int32_t dev_idx = 0,
                   uint64_t pool_release_threshold = kDefaultPoolReleaseThreshold,
+                  uint64_t pool_cap = 0,
                   std::source_location location = std::source_location::current())
       : props_(query_props(dev_idx, location)),
-        pool_(pool_props(dev_idx), pool_release_threshold, location), fork_(dev_idx, location) {}
+        pool_(pool_props(dev_idx, pool_cap), pool_cap != 0 ? pool_cap : pool_release_threshold,
+              location),
+        fork_(dev_idx, location) {}
 
   /// @brief Index of the device the stream and pool live on (-1 once moved from).
   int32_t dev_idx() const noexcept { return fork_.dev_idx(); }
@@ -76,6 +95,37 @@ public:
   /// @copydoc pool()
   const MemPool &pool() const noexcept { return pool_; }
 
+  /// @brief The pool's used and reserved bytes, current and high-water. A
+  /// failed query aborts (CreatePolicy).
+  ///
+  /// A read, not a sync: it counts the allocations and frees that have been
+  /// queued so far, and memory a free returns to the driver leaves
+  /// `reserved_current` only once the stream has synchronized past it.
+  PoolUsage pool_usage(std::source_location location = std::source_location::current()) const {
+    const uint64_t used = pool_attribute(wwr::wwrMemPoolAttrUsedMemCurrent, location);
+    const uint64_t reserved = pool_attribute(wwr::wwrMemPoolAttrReservedMemCurrent, location);
+    // A high-water mark is never below the current value. CUDA keeps it so;
+    // ROCm (7.2.4) resets it to 0 rather than to the current value, so after
+    // a reset it can read below the current value; it is floored here.
+    return {.used_current = used,
+            .used_high = std::max(used, pool_attribute(wwr::wwrMemPoolAttrUsedMemHigh, location)),
+            .reserved_current = reserved,
+            .reserved_high =
+                std::max(reserved, pool_attribute(wwr::wwrMemPoolAttrReservedMemHigh, location))};
+  }
+
+  /// @brief Reset both high-water marks (`used_high`, `reserved_high`) to
+  /// their current values. A failure aborts (CreatePolicy).
+  void reset_pool_high_water(std::source_location location = std::source_location::current()) {
+    // CUDA accepts only 0 here, and reads it as "reset to current"; ROCm
+    // stores the 0, which pool_usage() floors to the current value.
+    for (const auto attr : {wwr::wwrMemPoolAttrUsedMemHigh, wwr::wwrMemPoolAttrReservedMemHigh}) {
+      uint64_t zero = 0;
+      CreatePolicy<wwr::wwrError_t>{}.handle_error(wwr::wwrMemPoolSetAttribute(pool_, attr, &zero),
+                                                   location);
+    }
+  }
+
   /// @brief The ForkStream that owns stream(), for forking it from, and joining
   /// it back into, a parent stream.
   ForkStream &fork_stream() noexcept { return fork_; }
@@ -83,7 +133,8 @@ public:
   const ForkStream &fork_stream() const noexcept { return fork_; }
 
 private:
-  // wwr's default pool properties, except that under HIP the pool is created
+  // wwr's default pool properties with a maxSize of `cap` (0: none), except
+  // that under HIP the pool is created
   // exportable (a POSIX file descriptor handle type), which it never uses.
   //
   // A workaround for a ROCm defect, seen on 7.2.4 (#300). ROCm backs a
@@ -96,7 +147,7 @@ private:
   // exportable pool is never given the heap. ROCm/rocm-systems 944b5d3c6d
   // (#12671) stops registering the chunks; no release carries it yet. Drop
   // this once the image's ROCm does.
-  static wwr::wwrMemPoolProps pool_props(int32_t dev_idx) {
+  static wwr::wwrMemPoolProps pool_props(int32_t dev_idx, uint64_t cap) {
     wwr::wwrMemPoolProps props{};
     props.allocType = wwr::wwrMemAllocationTypePinned;
 #if defined(WWR_SELECTED_HIP)
@@ -106,7 +157,17 @@ private:
 #endif
     props.location.type = wwr::wwrMemLocationTypeDevice;
     props.location.id = dev_idx;
+    props.maxSize = static_cast<std::size_t>(cap);
     return props;
+  }
+
+  // One 64-bit pool attribute. uint64_t, not size_t: the usage attributes are
+  // 64-bit on both backends (cuuint64_t / uint64_t).
+  uint64_t pool_attribute(wwr::wwrMemPoolAttr attr, std::source_location location) const {
+    uint64_t value = 0;
+    CreatePolicy<wwr::wwrError_t>{}.handle_error(wwr::wwrMemPoolGetAttribute(pool_, attr, &value),
+                                                 location);
+    return value;
   }
 
   static wwr::wwrDeviceProp query_props(int32_t dev_idx, std::source_location location) {

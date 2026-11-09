@@ -3,7 +3,8 @@
 # ---------------------------------------------------------------------------
 # The headers every gtest tree #includes by bare name: gpu_requirement.h
 # (FBF_REQUIRE_GPU), slow_test.h (FBF_SKIP_IF_FAST_TESTS), scratch_dir.h
-# (ScratchDir), and io_basis_json.h -- the BSE fixture test/io's host cases and
+# (ScratchDir), pool_footprint.h (measure_pool_peak, expect_footprint), and
+# io_basis_json.h -- the BSE fixture test/io's host cases and
 # test/gtest's GPU ones both read, so neither tree reaches into the other.
 # Header-only, so an INTERFACE target that puts this directory on a consumer's
 # include path. GTest::gtest is linked because the two macros expand to
