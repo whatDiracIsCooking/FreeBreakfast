@@ -133,34 +133,75 @@ maximum before the first step and held through every one.
 A plan whose footprint peak fits under a cap can still be refused by the pool:
 the pool takes memory from the driver in chunks, and what it has reserved, not
 what is in use, is what `maxSize` bounds. Pre-flight (#1051) therefore leaves
-**32 MiB** (one pool chunk) between a plan's device peak and the device's
+**64 MiB** (two pool chunks) between a plan's device peak and the device's
 budget, and an adaptive routine sizes its adaptive part to the budget less its
 own allocations still to come and this headroom (`core/footprint`).
+
+**How the pool reserves.** Measured on the RTX 3080 (CUDA 13.0, driver
+580.126.20, the default 1 GiB release threshold, no cap), with a probe of
+bare `cudaMallocFromPoolAsync` calls and with the chain's own allocations
+logged one by one:
+
+- It reserves in **32 MiB chunks**. A small request is carved from a chunk
+  already held; a request no free extent holds is placed at the top of the
+  pool's address range, its first bytes in the free top of the last chunk and
+  the rest in new chunks, so a large allocation's reservation is its size
+  rounded up to the chunk.
+- A chunk whose free has completed and that holds nothing live is remapped
+  into such a request (a 100 MiB request after 96 MiB of freed chunks grew the
+  reservation by one chunk). A chunk whose free is **still pending** on the
+  stream, the kernels that read it not yet done, is not: the request takes
+  new chunks instead. Nor is the free part of a chunk that also holds a live
+  allocation.
+
+**The bound.** The reserved high-water mark is set when the reservation
+grows. What the pool then holds past its use is the free part of every chunk
+it holds: the top of the last chunk, under one chunk; and below it, each chunk
+that holds both live and free bytes, and each held free chunk. A plan whose
+allocations **pack** -- nothing live above a freed extent at the peak, and a
+large allocation made only once the frees before it have completed -- leaves
+below the top only the holes its small frees leave in the chunk its small
+allocations share (the RHF chain's setup steps allocate 18 MB of them, under
+one chunk) and the 512 B alignment of each allocation. So a packed plan's
+gap is under **two chunks**, and the headroom is two chunks, not the largest
+gap measured, because each part can be nearly a whole chunk in another run.
+Each break in the packing costs more and is the allocation pattern's to fix,
+not the headroom's to cover: a hole, a freed extent under a live allocation,
+strands the free part of the two chunks at its edges, and a large allocation
+made while frees are pending strands the whole freed extent (a probe that
+frees 117 MiB under a running kernel and then allocates 868 MiB holds the
+117 MiB, and at the peak, 2.7 GB later, still 35 MiB of it; with the frees
+complete, 3 MiB).
 
 **The measurement.** `test/gtest/pipeline_footprint_gpu.cpp` runs the RHF
 chain, every step from the Molecule to the Scf, by hand on a fresh
 `DeviceResources`, and reads its pool's `ReservedMemHigh` against its
-`UsedMemHigh`. On the RTX 3080 (CUDA 13.0, driver 580.126.20, the default
-1 GiB release threshold, no cap):
+`UsedMemHigh`, held to the headroom:
 
 | Chain | UsedMemHigh | ReservedMemHigh | Reserved past used |
 |---|---|---|---|
 | water, cc-pVDZ, integral-direct | 1,724,192 | 33,554,432 | 31,830,240 |
-| water, cc-pVDZ, density-fitted | 2,778,052 | 33,554,432 | 30,776,380 |
+| water, cc-pVDZ, density-fitted | 2,419,948 | 33,554,432 | 31,134,484 |
 | water, cc-pVTZ, integral-direct | 6,863,968 | 33,554,432 | 26,690,464 |
-| water, cc-pVTZ, density-fitted | 46,946,660 | 67,108,864 | 20,162,204 |
-| benzene, cc-pVTZ, density-fitted | 3,957,730,548 | 3,959,422,976 | 1,692,428 |
+| water, cc-pVTZ, density-fitted | 42,317,820 | 67,108,864 | 24,791,044 |
+| benzene, cc-pVTZ, density-fitted | 3,856,607,988 | 3,858,759,680 | 2,151,692 |
 
-**The derivation.** Every gap is under one 32 MiB chunk (33,554,432 bytes),
-however large the run: the pool sub-allocates small requests from 32 MiB
-chunks and reserves a large one at its own size (benzene's B and three-center
-scratch, each past a chunk, leave 1.7 MB), so what it holds past its peak use
-is the unfilled part of the chunk its last small allocations opened. The
-chain's per-class streams (mmd's, J's and K's classes), which allocate beside
-`res.stream()`, leave no more. The
-headroom is that one chunk, not the largest gap measured, because the gap is
-the chunk's remainder and any run can leave nearly all of it. The test holds
-each chain's gap to it.
+Water's gaps are its one partly used chunk. Benzene's 2,151,692 bytes are
+the small allocations' holes in the first chunk (1,458,428), the top of the
+last (692,736) and two allocations' alignment (528). The chain's per-class
+streams (mmd's, J's and K's classes), which allocate beside `res.stream()`,
+leave no more.
+
+**#1153: the DF Eri broke the packing.** Once #1148 freed the metric's pair
+and the aux U before B, benzene's gap was 35,706,124 bytes, past the one
+chunk then taken as the headroom: the device workspace, grown to metric's
+staging inside the block, sat above the pair and outlived it, and B was
+allocated while the block's frees were still pending. B went above both,
+the three-center scratch refilled 85 MiB of the block's 117, and the 31.5 MiB
+left straddled two chunks (4,602,624 and 28,446,208 bytes free) beside the
+first chunk's and the top's. The Eri now grows the workspace before the
+block and synchronizes before B (`pipeline/eri`'s README); B takes the
+block's place, and the chain packs.
 
 **Reuse rounding (HIP).** ROCm's pool also serves a request whole from a
 block an earlier allocation freed, when the block is at most 9/8 of the
@@ -172,9 +213,9 @@ CI, can then peak a few bytes past its footprint on the gfx1200 (12 B and
 footprint tests' sound bar allows the pool its rounding there: at most 1/8
 of the footprint, the sum of the requests live at the peak
 (`test/support/pool_footprint.h`), logged when used, and nothing on CUDA. At
-run time pre-flight's 32 MiB headroom covers the overcounts measured, as it
+run time pre-flight's 64 MiB headroom covers the overcounts measured, as it
 covers the chunk rounding above. The bound itself, 1/8 of a footprint, is
-larger than 32 MiB for a step past 256 MiB, so a HIP plan whose peak sits
+larger than 64 MiB for a step past 512 MiB, so a HIP plan whose peak sits
 within that of its cap could still be refused by the pool: pre-flight's to
 weigh (#1051).
 

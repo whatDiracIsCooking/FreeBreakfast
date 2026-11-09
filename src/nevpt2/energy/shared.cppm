@@ -109,9 +109,9 @@ Result<int32_t> walk_step(DeviceResources &res, const MoBlocks &blocks,
 // to the walk's widest slab before the walk), zeroed on res.stream().
 Result<double *> zeroed_prefix(DeviceResources &res, Buffers::device<double> &buffer,
                                int64_t count);
-// What a walk sized from the budget leaves of it: one pool chunk, the
+// What a walk sized from the budget leaves of it: two pool chunks, the
 // fragmentation headroom (pipeline/footprint's README).
-constexpr size_t kPoolHeadroomBytes = size_t{32} << 20;
+constexpr size_t kPoolHeadroomBytes = size_t{64} << 20;
 std::vector<int64_t> slab_dims(const MoBlocks &blocks, ExtBlock block, int32_t b0, int32_t b1);
 Buffers::device<double> slab_buffer(DeviceResources &res, const MoBlocks &blocks, ExtBlock block,
                                     int32_t step);

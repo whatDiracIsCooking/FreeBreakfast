@@ -75,10 +75,16 @@ constexpr double kDuality = 1e-10;
 // in Sr, Si and Sir, whose norm and H are three einsums of mixed RDM order
 // that cancel: one unit round-off of their O(1) terms (measured: at most
 // 4e-17); and kSinglePrecision |x| in the others (measured: at most 3 ε |x|).
-// It is a worst-case sum, printed for every case; h2co_skew_ccpvdz_sa3's bar
-// is it (never under kDuality), since root 2's Si tuples (N 2e-7 to 7e-7,
-// |Ṅ| / N up to 5e5 along its own c) put it at 1e-8 to 1e-7 of the largest
-// summand, where its misses run; the other cases are held to kDuality.
+// It is a worst-case sum, printed for every case, and every SC case's bar is
+// it where it passes kDuality: kDuality of the largest summand bounds the
+// round-off only while the column's summands are as large as the tables the
+// walks reassociate, and nothing holds them there. h2co_ccpvdz_sa2's orbital
+// and root signs are the eigensolvers' and change run to run (#1153), so each
+// run draws its seeded MO-basis columns and W in another gauge; in one, h's
+// summands summed to 1.9e-4 and the miss, 7.3e-14, was 3.8e-10 of them but
+// 0.014 of the floor (5.3e-12). h2co_skew_ccpvdz_sa3's floor sits at 1e-8 to
+// 1e-7 of its largest summand in every gauge, since root 2's Si tuples (N 2e-7
+// to 7e-7, |Ṅ| / N up to 5e5 along its own c) carry it.
 constexpr double kMixedPrecision = 0.5 * std::numeric_limits<double>::epsilon();
 constexpr double kSinglePrecision = 4.0 * std::numeric_limits<double>::epsilon();
 // PC's conditioning floor (src/nevpt2/energy/README.md, "PC-QD" under "The
@@ -771,8 +777,7 @@ void expect_duality(const std::string &name, const std::int32_t batch, const boo
   }
 }
 
-class Nevpt2QdTangent
-    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t, bool>> {};
+class Nevpt2QdTangent : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
 
 // h8_sto3g_sa3 and h2co_skew_ccpvdz_sa3 whole; h2co_ccpvdz_sa2, the case
 // with guarded tuples, in batches of four (29 virtuals: a partial last
@@ -781,19 +786,18 @@ class Nevpt2QdTangent
 TEST_P(Nevpt2QdTangent, DualToQdScAdjoint) {
   FBF_REQUIRE_GPU();
   FBF_FAMILY_REPRESENTATIVE("h8_sto3g_sa3");
-  const auto [name, batch, floored] = GetParam();
+  const auto [name, batch] = GetParam();
   if (name == "h2co_skew_ccpvdz_sa3") {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  expect_duality(name, batch, floored);
+  expect_duality(name, batch, true);
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdTangent,
-                         ::testing::Values(std::tuple{std::string{"h8_sto3g_sa3"}, 0, false},
-                                           std::tuple{std::string{"h2co_ccpvdz_sa2"}, 4, false},
-                                           std::tuple{std::string{"h2co_skew_ccpvdz_sa3"}, 0, true},
-                                           std::tuple{std::string{"h2nb_sto3g_cas23_sa2"}, 0,
-                                                      false}),
+                         ::testing::Values(std::tuple{std::string{"h8_sto3g_sa3"}, 0},
+                                           std::tuple{std::string{"h2co_ccpvdz_sa2"}, 4},
+                                           std::tuple{std::string{"h2co_skew_ccpvdz_sa3"}, 0},
+                                           std::tuple{std::string{"h2nb_sto3g_cas23_sa2"}, 0}),
                          [](const auto &info) { return std::get<0>(info.param); });
 
 // A conditioning floor that cuts real metric modes, where the kept span's

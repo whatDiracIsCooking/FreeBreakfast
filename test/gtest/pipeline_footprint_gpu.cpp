@@ -22,11 +22,11 @@ namespace {
 
 namespace fb = free_breakfast;
 
-// The README's headroom, one 32 MiB chunk: the pool reserves small
-// allocations in chunks of that size and a large one at its own size, so what
-// it holds past its peak use is at most the chunk its last small allocations
-// opened.
-constexpr std::size_t kHeadroom = std::size_t{32} << 20;
+// The README's headroom, two 32 MiB chunks: what a pool whose allocations
+// pack holds past its peak use is the free top of its last chunk and the
+// holes small frees leave in the chunk its small allocations share, each
+// under a chunk.
+constexpr std::size_t kHeadroom = std::size_t{64} << 20;
 
 // Water, in bohr.
 std::vector<fb::Atom> water() {

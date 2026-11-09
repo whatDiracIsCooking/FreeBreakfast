@@ -134,11 +134,11 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   for (size_t order = 0; order <= max_order; ++order) {
     dims.syevd_lwork[order] = FBF_TRY(syevd_lwork<double>(res, static_cast<int32_t>(order)));
   }
-  // The budget less one pool chunk of fragmentation headroom, as
+  // The budget less two pool chunks of fragmentation headroom, as
   // core/footprint has an adaptive routine leave (pipeline/footprint's
   // README): the pool reserves in chunks, and what it reserves is what the
   // cap bounds.
-  constexpr size_t kHeadroom = size_t{32} << 20U;
+  constexpr size_t kHeadroom = size_t{64} << 20U;
   const size_t whole_budget = FBF_TRY(res.memory_budget());
   const size_t budget = whole_budget > kHeadroom ? whole_budget - kHeadroom : 0;
   const size_t workspace = res.device_workspace(0).num_elements();

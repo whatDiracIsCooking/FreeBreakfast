@@ -75,10 +75,11 @@ On `res.stream()`:
 2. B's and L's bytes, `naux · (nao² + naux)` doubles, against the device's
    memory budget (`DeviceResources::memory_budget()`): past it, `Unsupported` naming the bytes, since the allocation would
    otherwise abort (`CreatePolicy`).
-3. `metric` into a `MatrixAOPair` made for the aux basis, over its own
-   `upload_spherical_transform_matrix`, and the spherical metric copied into
-   `l`, its own `naux²` buffer. The pair and the aux U are freed there, before
-   B is allocated.
+3. The device workspace grown to `metric`'s staging, then `l`, its own
+   `naux²` buffer, then `metric` into a `MatrixAOPair` made for the aux
+   basis, over its own `upload_spherical_transform_matrix`, and the spherical
+   metric copied into `l`. The pair and the aux U are freed there, and the
+   stream synchronized, before B is allocated.
 4. `three_center` into B, `[m][n][P]` with P fastest.
 5. `density_fit` of B over `l`, in place: `l` is then L, and B `[Q][n][m]`,
    what `df_coulomb` and `df_exchange` read
@@ -116,7 +117,10 @@ basis.
 - **The transients are freed stream-ordered.** The metric pair and the aux U
   are released before B is allocated, after the copy into `l` that reads them
   was queued on the same stream, so B and three_center's scratch never share
-  the device with them; and `three_center`'s scratch (about three B's) at its own return,
+  the device with them. The stream is synchronized before B, and the
+  workspace grown before the pair, so that B takes the pair's place rather
+  than new chunks above it (`pipeline/footprint`'s README, "Fragmentation
+  headroom"); and `three_center`'s scratch (about three B's) at its own return,
   so after the step the device holds B, L and the stack reservation, and not
   the 29 GB of scratch the grow-only workspace once kept at aug-cc-pVTZ pHBI
   (#905). `three_center` and `density_fit` each synchronize the stream

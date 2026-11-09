@@ -62,6 +62,15 @@ density_fitted(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput> 
   // factors in place and the product keeps. The pair and the aux U are freed
   // at the block's end, stream-ordered after the copy, so B and the
   // three-center scratch never share the device with them.
+  //
+  // So that B can take the block's place, nothing the block allocates
+  // outlives it, and its frees complete before B is allocated
+  // (pipeline/footprint's README, "Fragmentation headroom"): the device
+  // workspace is grown to metric's staging here, not inside the block, where
+  // it would land above the pair and pin the pair's space under B as a hole;
+  // and a chunk whose free is still pending on the stream is not remapped
+  // into a new allocation, so B would take new chunks above them.
+  res.device_workspace(metric_footprint(aux).device.workspace);
   Buffers::device<double> l(naux * naux, res.device());
   {
     MatrixAOPair m(res, aux, FBF_TRY(upload_spherical_transform_matrix(res, aux)));
@@ -70,6 +79,7 @@ density_fitted(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput> 
         gpu_status(wwr::wwrMemcpyAsync(l.data(), m.spherical().data(), sizeof(double) * naux * naux,
                                        wwr::wwrMemcpyDeviceToDevice, res.stream())));
   }
+  FBF_TRY(res.sync());
   Buffers::device<double> b(naux * nao * nao, res.device());
   FBF_TRY(three_center(res, basis, in.get<PrimitivePairClassesOutput>().classes, aux, b.data()));
   FBF_TRY(

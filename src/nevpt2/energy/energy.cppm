@@ -79,7 +79,7 @@ struct ClassEnergies {
 
 /// @brief A walk's @p batch that sizes each class's slab batch from the memory
 /// budget: the widest whose walk fits res.memory_budget() less the pool's
-/// 32 MiB fragmentation headroom, up to the class's whole extent. The walk's
+/// 64 MiB fragmentation headroom, up to the class's whole extent. The walk's
 /// buffers are a class's last allocations, so they may take the rest.
 inline constexpr int32_t kBatchFromBudget = -1;
 

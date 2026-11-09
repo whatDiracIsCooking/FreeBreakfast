@@ -2437,9 +2437,15 @@ a negative entry, each asserted), z^c its own `zc_multipliers` at W.
   ỹ_r = e^{−tK/2} ȳ_r(t) and c̃_r = e^{tK/2} c_r: by the symmetric splitting
   e^{tK/2} e^{εK_t} e^{tK/2} = e^{tK + εK_t + O(εt²)}, G is the K-gradient
   at tK to first order in t, so its derivative is the Hessian in K,
-  curvature included. The ladder is `nevpt2_qd_hvp_gpu.cpp`'s (t = 1e-3 /
-  2^k, k < 10, two-level Richardson, the extrapolant that moves least), bar
-  1e-7 of each field's largest element. The paths are where SC-QD's adjoint
+  curvature included. The ladder is t = 1e-3 / 2^k, k < 10, two-level
+  Richardson, the coarsest extrapolant that moves under half a bar to the
+  next (else the one that moves least), bar 1e-7 of each field's largest
+  element. Not `nevpt2_qd_hvp_gpu.cpp`'s least-moving one over every rung:
+  the extrapolants' noise, 6.6 σ / t_k for the evaluations' round-off σ,
+  doubles each rung, and two noisy fine ones can agree by chance; on
+  h2co weighted along rot_01, whose evaluations repeat in-process to
+  1e-13 to 9e-13, that took rung 4 (off 1.1e-7) and rung 6 (5.9e-7) where
+  rung 0 had settled (#1153). The paths are where SC-QD's adjoint
   ladders (kQdSmooth): `h8_sto3g_sa3` (equal weights) along h, B, each c_r
   (raw, uniform over every determinant, so with components along the
   other roots) and each pure rotation rot_rs (ċ_r = c_s, ċ_s = −c_r), its
