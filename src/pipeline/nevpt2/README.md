@@ -242,7 +242,7 @@ the C and N 1s frozen reproduces his absolute energies to 0.5 µEh
 ## Memory
 
 The step's two adaptive parts size themselves when they run, from
-`DeviceResources::memory_budget()` less the pool's 32 MiB fragmentation
+`DeviceResources::memory_budget()` less the pool's 64 MiB fragmentation
 headroom (`pipeline/footprint`'s README); each is scratch of its call's own,
 freed before the step allocates again, so neither leaves less for what
 follows, and neither touches the workspace, which holds fixed sizes only:

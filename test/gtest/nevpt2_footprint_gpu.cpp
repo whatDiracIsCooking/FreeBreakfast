@@ -187,13 +187,14 @@ TEST(Nevpt2Footprint, RdmsAdjointAtOneDeterminant) {
   }
 }
 
-// Under a 64 MiB pool cap with no max_bytes, the build sizes its tile from
-// the budget: wider than one determinant, narrower than all 4900 of
-// CAS(8,8) (165 MB of scratch whole), and the pool's peak under the cap.
+// Under a 96 MiB pool cap with no max_bytes, the build sizes its tile from
+// the budget less the 64 MiB headroom: wider than one determinant, narrower
+// than all 4900 of CAS(8,8) (165 MB of scratch whole), and the pool's peak
+// under the cap.
 TEST(Nevpt2Footprint, RdmsTileFromTheBudgetUnderACap) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kN = 8;
-  constexpr std::uint64_t kCap = std::uint64_t{64} << 20;
+  constexpr std::uint64_t kCap = std::uint64_t{96} << 20;
   fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
   RdmInputs in = rdm_inputs(res, kN);
   const auto n6 = static_cast<std::size_t>(kN) * kN * kN * kN * kN * kN;
@@ -480,9 +481,9 @@ TEST(Nevpt2Footprint, ClassEnergiesBatchFromTheBudgetUnderACap) {
   const fb::MemoryFootprint whole =
       nevpt2::class_energies_footprint(b.ncore, b.ncas, b.nvirt, g.nelecas, 0);
   ASSERT_LT(least.device.scratch, whole.device.scratch);
-  // A cap halfway between the least and the whole, above the 32 MiB of
+  // A cap halfway between the least and the whole, above the 64 MiB of
   // headroom the walk leaves and the workspace the first call grows.
-  const std::uint64_t cap = (std::uint64_t{32} << 20) + least.device.workspace +
+  const std::uint64_t cap = (std::uint64_t{64} << 20) + least.device.workspace +
                             ((least.device.scratch + whole.device.scratch) / 2);
   fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   ASSERT_TRUE(nevpt2::class_energies(res, b, g.in, nevpt2::kBatchFromBudget));

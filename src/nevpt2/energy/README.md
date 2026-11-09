@@ -113,7 +113,7 @@ the workspace), and the slab's norm and H tables (PC: its y rows), all
 allocated once before the walk at the batch's width. 0 is each class's whole
 extent; `kBatchFromBudget` (any negative batch) sizes each class's batch
 when its walk starts, its intermediates built and its PC solve done: the
-widest whose walk fits `res.memory_budget()` less the pool's 32 MiB
+widest whose walk fits `res.memory_budget()` less the pool's 64 MiB
 fragmentation headroom (`pipeline/footprint`'s README), up to the whole
 extent, and `Unsupported` when a batch of one does not fit. The walk is the
 class's last allocation, so it may take the rest. The adjoints, tangents and
@@ -1227,7 +1227,7 @@ the same perturbed tables. The bound is first-order: the duality misses by
 at most 2 Σ_IJ |W_IJ| Σ_t Σ_x |∂Ċ^t_IJ / ∂x| σ_x over x = N, H, T, Ṅ, Ḣ of
 the finish's (N, d) form, with σ_x one unit round-off (ε/2) absolute in Sr,
 Si and Sir and 4 ε |x| in the others. `Nevpt2QdTangent` computes it from the
-tangent's own tables and holds skew to it (never under 1e-10). At the saved
+tangent's own tables and holds every case to it (never under 1e-10). At the saved
 point it is 1.5e-7 along c_2 (misses up to 3.7e-8 RTX 3080 and 1.7e-8
 gfx1200), 1.4e-8 along all (4.2e-9, 1.9e-9), 5.6e-9 along B (1.3e-9,
 1.4e-9) and 1.6e-9 along h (3.7e-10, 3.9e-10). Along c_1 it is
@@ -2087,12 +2087,17 @@ three `data/qd_nevpt2/` cases: the chain from (h, B, c) built as
 root's c alone, then all), each column's Σ W_MN Ċ_MN against
 `qd_sc_adjoint`'s ⟨h̄, ḣ⟩ + ⟨Λ, Ḃ⟩ + Σ_r ⟨y_r, ċ_r⟩ at a general symmetric W
 (off-diagonal, trace ≠ 1, a negative entry), relative to the largest
-summand: 1e-10 on `h8_sto3g_sa3` (fast-tier representative),
-`h2co_ccpvdz_sa2` (C₂ᵥ, 4364 guarded tuples, walked in fours) and
-`h2nb_sto3g_cas23_sa2`. On `h2co_skew_ccpvdz_sa3` (slow tier) each column is
-held to its conditioning floor where that is larger, computed from the
-tangent's tables (Conditioning, above, #1055); the floor is printed for
-every case. Each part (the transitions' ket side, their bra
+summand, 1e-10, or the column's conditioning floor where that is larger,
+computed from the tangent's tables (Conditioning, above, #1055) and printed:
+`h8_sto3g_sa3` (fast-tier representative), `h2co_ccpvdz_sa2` (C₂ᵥ, 4364
+guarded tuples, walked in fours), `h2nb_sto3g_cas23_sa2` and
+`h2co_skew_ccpvdz_sa3` (slow tier), whose floor passes 1e-10 in every gauge.
+The floor bounds the round-off whatever the column's summands, and 1e-10 of
+them only while they are as large as the tables: the orbitals' and roots'
+signs are the eigensolvers' and change run to run, so the seeded MO-basis
+columns and W are a new gauge each run, and in one `h2co_ccpvdz_sa2`'s h
+summands summed to 1.9e-4, its miss 7.3e-14 against a floor of 5.3e-12
+(#1153). Each part (the transitions' ket side, their bra
 side, the diagonal's digests at the dotted (tu|vw)) is a direction of its
 own and must exceed ten bars in some column. Measured on the gfx1200: ≤ 7.6e-15,
 ≤ 4.1e-12 and ≤ 1.1e-10 (skew, along c_2); every part ≥ 5e8 bars. Skew's

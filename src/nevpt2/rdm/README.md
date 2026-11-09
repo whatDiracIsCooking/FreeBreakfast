@@ -134,7 +134,7 @@ ket's L2 (n⁴ more per determinant), `rdms_footprint(n, width, true)`. The
 width is the widest whose bytes fit the budget, at most every determinant;
 the tiles are that wide but for the last, which takes the remainder. The
 budget is `max_bytes`, capped at what the device can give:
-`res.memory_budget()` less 32 MiB, the pool's fragmentation headroom
+`res.memory_budget()` less 64 MiB, the pool's fragmentation headroom
 (`pipeline/footprint`'s README). The block is the call's last allocation, so
 it may take the rest. It is never the workspace: the workspace is held at the
 plan's maximum through every step, so a budget-sized carve there would hold

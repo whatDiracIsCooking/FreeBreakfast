@@ -343,7 +343,7 @@ constexpr std::array kChainCases{
     ChainCase{"n2_ccpvdz_cas88_df", 8, 4}, ChainCase{"n2_ccpvdz_cas1010_df", 10, 5},
     ChainCase{"n2_ccpvtz_cas1010_df", 10, 5}};
 
-// rdms' budget. Its default is the device's memory budget less 32 MiB, which at
+// rdms' budget. Its default is the device's memory budget less 64 MiB, which at
 // CAS(10,10) one case takes nearly all of, and a case running beside it on
 // the same card under parallel ctest then gets none. 256 MiB is about 800
 // determinants a tile there, so the CAS(10,10) builds are tiled.

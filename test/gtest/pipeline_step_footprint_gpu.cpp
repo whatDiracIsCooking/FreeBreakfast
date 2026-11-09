@@ -510,7 +510,7 @@ N 0.0 0.0 -0.55
 // ci::solve's 8, the Davidson's 11 and the sigma's scratch.
 constexpr std::size_t kFciLive = 1 + 3 + 1 + 8 + 11 + 1;
 
-// Under a pool cap of the footprint's peak, the 32 MiB of fragmentation
+// Under a pool cap of the footprint's peak, the 64 MiB of fragmentation
 // headroom the step leaves (the pool reserves in chunks, and the cap bounds
 // what it reserves), and the pool's rounding of every allocation live at its
 // peak, the sigma takes the least scratch it runs with and the run is held to
@@ -526,7 +526,7 @@ TEST(StepFootprint, FciAtTheLeast) {
   }
   const std::size_t rounding = granularity * (kFciLive + 16);
   ASSERT_LT(rounding, std::size_t{120} * 56 * sizeof(double));
-  const std::uint64_t cap = f.fp.device.peak() + (std::size_t{32} << 20U) + rounding;
+  const std::uint64_t cap = f.fp.device.peak() + (std::size_t{64} << 20U) + rounding;
   fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   expect_ran(f.fci.run(f.plan.ci_view(), res));

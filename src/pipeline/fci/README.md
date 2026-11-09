@@ -43,7 +43,7 @@ struct FciStep {
 1. **The refusal.** The step's own footprint (`footprint(dims)`, below), from
    dimensions it builds out of its inputs (the basis, mmd's record counts
    from `PrimitivePairClassesOutput`, syevd's work through the CI's orders),
-   against `DeviceResources::memory_budget()` less one pool chunk (32 MiB)
+   against `DeviceResources::memory_budget()` less two pool chunks (64 MiB)
    of fragmentation headroom, the pipeline's, with what the device
    workspace has still to grow by. Past that, at the least sigma
    scratch, the step returns `Allocation` before anything is allocated;

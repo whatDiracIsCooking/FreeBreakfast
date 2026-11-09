@@ -58,7 +58,7 @@ export namespace free_breakfast::nevpt2 {
 ///
 /// **The tile width is the widest whose rdms_footprint fits the budget**, at
 /// most every determinant: the budget is @p max_bytes, or less if the device
-/// has less: res.memory_budget() less 32 MiB, the pool's fragmentation
+/// has less: res.memory_budget() less 64 MiB, the pool's fragmentation
 /// headroom (pipeline/footprint's README). The tiles are that wide but for
 /// the last, which takes the remainder. There is no knob for the count.
 ///
