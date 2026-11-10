@@ -27,6 +27,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.geometry; // geometry::Vibrations, in the product
 // Every step the three chains rerun, and MoleculeOutput among the products
 // they re-export.
@@ -257,6 +258,23 @@ struct HessianStep {
   ///         over the RHF chain. Last, Numerical naming every pair that is
   ///         not bilinear, the frequencies withheld.
   [[nodiscard]] Result<HessianOutput> run(View<MoleculeOutput> in, NodeResources &node) const;
+
+  /// @brief What @ref run holds at @p dims under HessianMethod::Numerical
+  /// over the RHF chain: at each of the 6N displacements the chain's plan to
+  /// `[gradient]`, folded as pre-flight folds a plan (plan_footprint over its
+  /// steps' footprints, in the order the displacement runs them) and freed
+  /// whole before the next; then @c geometry::harmonic_analysis's
+  /// (@c geometry::harmonic_analysis_footprint at the plan's atoms). The
+  /// chain's steps share @p node's DeviceResources, so its workspace is this
+  /// step's. Every displacement has the same dimensions, so one fold holds
+  /// for all of them. The 6N gradients and the product are pageable host
+  /// memory, not modelled.
+  ///
+  /// None under HessianMethod::Analytic (#1053) and over a CASSCF chain
+  /// (@ref casscf_gradient, @ref nevpt2_gradient), whose library calls are
+  /// not all footprinted yet: pre-flight refuses it under a cap.
+  /// Transitional, as step_footprint's optional is (#1122).
+  [[nodiscard]] std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 };
 
 /// @brief The numerical CASSCF Hessian's guard on one displaced solve: that

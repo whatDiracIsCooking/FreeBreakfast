@@ -3,7 +3,8 @@
 # geometry::Vibrations, and the three gradient steps' modules re-export every
 # step the three chains rerun, each a member, and MoleculeOutput, which run
 # reads. core::resources and
-# pipeline::step are in run's signature.
+# pipeline::step are in run's signature, pipeline::footprint in the
+# footprint's.
 # run is defined in the implementation unit, so the analytic Hessian
 # and the dipole derivative (hessian), the dipole integrals' limit
 # (one_electron::dipole) and the basis's shells it is checked against (basis),
@@ -26,6 +27,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::geometry
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   free_breakfast::pipeline::gradient
   free_breakfast::pipeline::casscf_gradient
   free_breakfast::pipeline::nevpt2_gradient

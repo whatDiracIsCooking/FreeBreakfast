@@ -103,6 +103,19 @@ constexpr bool kHasFootprintMember = requires {
                             MemoryFootprint (S::*)(const FootprintDimensions &) const noexcept>;
 };
 
+// The transitional form, until #1122: a step that reruns a nested plan
+// ([optimize], the semi-numerical [hessian]) has a footprint for the
+// configurations whose every library call has one, and returns none for the
+// rest, which pre-flight then refuses under a cap.
+template <class S>
+constexpr bool kHasOptionalFootprintMember = requires {
+  requires std::same_as<decltype(&S::footprint),
+                        std::optional<MemoryFootprint> (S::*)(const FootprintDimensions &) const> ||
+               std::same_as<decltype(&S::footprint),
+                            std::optional<MemoryFootprint> (S::*)(const FootprintDimensions &)
+                                const noexcept>;
+};
+
 // The same for the optional `size_t adaptive_unit(const FootprintDimensions &)
 // const`: the bytes one more unit of an adaptive step's adaptive part takes.
 template <class S>
@@ -120,13 +133,16 @@ export namespace free_breakfast {
 /// @brief Step @p step's footprint at @p dims, or none for a step without a
 ///        `MemoryFootprint footprint(const FootprintDimensions &) const`
 ///        member (non-const, static, overloaded or of another signature).
+///        A member returning `std::optional<MemoryFootprint>` instead is
+///        passed through: a nested step's, none where its chain is not
+///        footprinted yet.
 ///
 /// The optional is transitional: once every step carries a footprint (#1122),
 /// the fold's caller reads the member directly.
 template <class S>
 [[nodiscard]] constexpr std::optional<MemoryFootprint>
 step_footprint(const S &step, const FootprintDimensions &dims) {
-  if constexpr (kHasFootprintMember<S>) {
+  if constexpr (kHasFootprintMember<S> || kHasOptionalFootprintMember<S>) {
     return step.footprint(dims);
   } else {
     return std::nullopt;

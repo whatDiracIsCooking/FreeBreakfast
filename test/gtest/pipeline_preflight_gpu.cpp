@@ -3,8 +3,9 @@
 // step, and one above it, run with the pool inside the cap and the
 // workspaces never grown past the pre-grow; the pre-warm refusing a cap the
 // card cannot supply; and a CASCI under AVAS narrowed to the active space
-// the cap fits. Every cap is set from the plan's own fold, so the cases hold
-// on any card.
+// the cap fits. Then the nested steps, an RHF [optimize] and a
+// semi-numerical [hessian], refused below their peak and run at it. Every
+// cap is set from the plan's own fold, so the cases hold on any card.
 
 #include <gtest/gtest.h>
 
@@ -214,6 +215,110 @@ TEST(Preflight, AvasIsNarrowedToTheSpaceTheCapFits) {
   ASSERT_TRUE(checked.has_value()) << checked.error().message;
   EXPECT_EQ(calc.step<fb::CasciStep>()->avas_max_ncas, static_cast<std::int32_t>(fits));
   EXPECT_GE(fb::log::warning_count(), 1U);
+}
+
+// The nested steps (#1054): an RHF [optimize] and a semi-numerical [hessian]
+// over water in STO-3G, integral-direct, each the plan's peak step. A cap
+// one byte below the peak's room is refused naming the step before the first
+// step runs; a cap whose room is the peak exactly runs every geometry inside
+// it, the pool's UsedMemHigh read over the whole run, and held to the peak
+// itself too (beside a rounding pool's reuse bound), since water's peak is
+// far under the cap's 64 MiB of headroom.
+constexpr std::string_view kNestedOptimize = R"(
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "sto-3g"
+[optimize]
+)";
+
+constexpr std::string_view kNestedHessian = R"(
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "sto-3g"
+[hessian]
+method = "numerical"
+)";
+
+// @p tables' plan peak, and the step reaching it, on @p node's device 0.
+std::pair<std::size_t, std::string> nested_peak(const fb::test::ScratchDir &dir,
+                                                fb::NodeResources &node, std::string_view tables) {
+  const fb::Calculation uncapped = parse(dir, tables);
+  const fb::PlanShape shape = fb::plan_shape(uncapped, node.device(0)).value();
+  const fb::PlanFootprint plan = fold(uncapped, shape.dims);
+  return {plan.footprint.device.peak(),
+          std::string(uncapped.footprints(shape.dims)[plan.device_peak_step].name)};
+}
+
+void expect_nested_refused_below(std::string_view tables, std::string_view step) {
+  const fb::test::ScratchDir dir("pipeline_preflight_nested_below");
+  fb::NodeResources node;
+  const auto [peak, peak_step] = nested_peak(dir, node, tables);
+  EXPECT_EQ(peak_step, step);
+  fb::Calculation calc =
+      parse(dir, std::string(tables) + memory(kReserve + fb::kPoolHeadroomBytes + peak - 1));
+  const fb::Status checked = fb::preflight(calc, node);
+  ASSERT_FALSE(checked.has_value());
+  EXPECT_EQ(checked.error().kind, fb::ErrorKind::InvalidConfig);
+  const std::string &message = checked.error().message;
+  EXPECT_NE(
+      message.find(std::format("[{}] reaches the plan's device peak of {} bytes", step, peak)),
+      std::string::npos)
+      << message;
+  EXPECT_FALSE(calc.get<fb::MoleculeOutput>().has_value());
+}
+
+template <class Product>
+void expect_nested_runs_at_the_peak(std::string_view tables) {
+  const fb::test::ScratchDir dir("pipeline_preflight_nested_at");
+  fb::NodeResources node;
+  const bool rounds_reuse = fbt::pool_rounds_reuse(node.device(0).dev_idx());
+  const std::size_t peak = nested_peak(dir, node, tables).first;
+  const std::uint64_t device_cap = cap_for(peak, rounds_reuse);
+  fb::Calculation calc = parse(dir, std::string(tables) + memory(device_cap));
+  const fb::Status checked = fb::preflight(calc, node);
+  ASSERT_TRUE(checked.has_value()) << checked.error().message;
+
+  fb::DeviceResources &res = node.device(0);
+  const std::uint64_t pool_cap = device_cap - kReserve;
+  const std::size_t device_workspace = res.device_workspace(0).num_elements();
+  res.device()->reset_pool_high_water();
+  const fb::Status ran = calc.run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  EXPECT_TRUE(calc.get<Product>().has_value());
+  const fb::PoolUsage usage = res.device()->pool_usage();
+  std::cout << std::format("[ preflight ] peak {} bytes, pool cap {}, UsedMemHigh {}, "
+                           "ReservedMemHigh {}\n",
+                           peak, pool_cap, usage.used_high, usage.reserved_high);
+  EXPECT_LE(usage.used_high, pool_cap);
+  EXPECT_LE(usage.reserved_high, pool_cap);
+  // And the fold is sound over every geometry: the most the run held is the
+  // peak, beside the pool's reuse rounding where it rounds (pool_footprint.h).
+  EXPECT_LE(usage.used_high,
+            peak + (rounds_reuse ? fb::math::idivup(peak, fbt::kPoolReuseDivisor) : 0));
+  // Every geometry's chain ran in the workspace pre-flight grew.
+  EXPECT_EQ(res.device_workspace(0).num_elements(), device_workspace);
+}
+
+TEST(Preflight, NestedOptimizeBelowThePeakIsRefusedBeforeTheFirstStep) {
+  FBF_REQUIRE_GPU();
+  expect_nested_refused_below(kNestedOptimize, "optimize");
+}
+
+TEST(Preflight, NestedOptimizeAtThePeakRunsInsideIt) {
+  FBF_REQUIRE_GPU();
+  expect_nested_runs_at_the_peak<fb::OptimizeOutput>(kNestedOptimize);
+}
+
+TEST(Preflight, NestedHessianBelowThePeakIsRefusedBeforeTheFirstStep) {
+  FBF_REQUIRE_GPU();
+  expect_nested_refused_below(kNestedHessian, "hessian");
+}
+
+TEST(Preflight, NestedHessianAtThePeakRunsInsideIt) {
+  FBF_REQUIRE_GPU();
+  expect_nested_runs_at_the_peak<fb::HessianOutput>(kNestedHessian);
 }
 
 } // namespace

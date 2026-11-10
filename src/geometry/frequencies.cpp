@@ -10,6 +10,8 @@ import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.atom;
 import free_breakfast.recipes.blas;
 import free_breakfast.recipes.diagonalize;
@@ -163,6 +165,32 @@ Result<Vibrations> harmonic_analysis(DeviceResources &res, std::span<const Atom>
     }
   }
   return vibrations;
+}
+
+MemoryFootprint harmonic_analysis_footprint(std::span<const Atom> atoms,
+                                            std::span<const size_t> syevd_lwork) {
+  const size_t n = 3 * atoms.size();
+  if (n == 0) {
+    return {};
+  }
+  std::vector<double> x(n);
+  for (size_t i = 0; i < atoms.size(); ++i) {
+    x[3 * i] = atoms[i].position.x;
+    x[3 * i + 1] = atoms[i].position.y;
+    x[3 * i + 2] = atoms[i].position.z;
+  }
+  // The rigid motions' count does not depend on the masses: unweighted.
+  const size_t m = n - rigid_body_basis(x, {}).size();
+  if (m == 0) {
+    return {};
+  }
+  constexpr size_t kAlignment = DeviceResources::kWorkspaceAlignment;
+  MemoryFootprint out = diagonalize_footprint<double>(syevd_lwork[n]);
+  out.device.workspace = std::max({out.device.workspace,
+                                   diagonalize_footprint<double>(syevd_lwork[m]).device.workspace,
+                                   math::align_up(n * m * sizeof(double), kAlignment)});
+  out.device.scratch = sizeof(double) * ((2 * n * n) + (m * m) + n + m);
+  return out;
 }
 
 } // namespace free_breakfast::geometry

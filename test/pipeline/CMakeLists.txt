@@ -7,7 +7,7 @@
 # Nevpt2Nac steps' contracts and configs, and the Optimize step's QD state
 # following and the files its walk keeps over a stub evaluation, the
 # footprint fold over made-up steps, and pre-flight's check of it against the
-# [memory] caps.
+# [memory] caps, and the nested steps' footprints over the RHF chain.
 # None constructs a DeviceResources, so a green run here is meaningful on a
 # device-less box.
 #
@@ -39,6 +39,7 @@ add_executable(
   optimize_host.cpp
   footprint_host.cpp
   preflight_host.cpp
+  nested_footprint_host.cpp
 )
 
 set_target_properties(

@@ -46,7 +46,9 @@ whole registry.
   min(max_subspace, n_ov)), n_ov = nocc (nao - nocc), which passes nao with
   the default 40 columns on water in cc-pVDZ (nao 24, n_ov 95). The RHF chain
   reads `syevd_lwork[nao]`; the CI steps' small eigensolves (AVAS's, the
-  subspace's) read their own orders.
+  subspace's) read their own orders. A planned `[hessian]` takes the table
+  through 3 natoms, where its harmonic analysis diagonalizes (and at its
+  internal modes below).
 - **getrf's lwork** at the RIS basis's order, `recipes/lu`'s own
   `getrf_lwork` query, when a CIS step's `ris` preconditioner is planned: its
   capacitance matrix is solved by `lu_solve`. The RIS basis is `cis::ris_basis`

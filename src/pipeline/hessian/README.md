@@ -73,6 +73,8 @@ struct HessianStep {
   std::filesystem::path json_path{};  // hessian.json
 
   Result<HessianOutput> run(View<MoleculeOutput> in, NodeResources &node) const;
+  // The numerical RHF chain's; none otherwise, for now (below, "Memory caps")
+  std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 };
 
 // The CASSCF chain's guard on one displaced solve (below); host only.
@@ -743,6 +745,33 @@ does not see that; this does. It follows #803's fixture,
   `"predicted"`, `"residual"`, `"allowed"` and `"fails"`; and
   `"failing_pairs"`. With `coordinates`, `"coordinates"` too.
 
+## Memory caps
+
+Under a `[memory]` cap, pre-flight holds the step to it like any other
+(`../shape/README.md`). Under the numerical method over the RHF chain its
+`footprint(dims)` is the peak of one displacement's chain to `[gradient]`,
+then `geometry::harmonic_analysis`'s
+(`geometry::harmonic_analysis_footprint` at the plan's atoms):
+
+```
+then(drop(chain), harmonic_analysis_footprint(atoms, syevd_lwork))
+```
+
+`chain` is `plan_footprint` over the chain's own steps' footprints, listed
+by the same `Pipeline` a displacement runs (`footprints(dims)`), so in its
+order; it is freed whole before the next, and every displacement has the
+same dimensions, so one fold holds for all 6N. The chain's root is this
+module's displaced-molecule step, whose footprint is the Molecule's. It
+shares the node's `DeviceResources`, so its workspace is this step's. The
+product and the 6N gradients are pageable host memory, not modelled. The
+harmonic analysis diagonalizes at 3N, so `plan_shape` takes syevd's work
+through 3 natoms when a `[hessian]` is planned.
+
+Under the analytic method (#1053) and over a CASSCF chain (`casscf_gradient`,
+`nevpt2_gradient`) the footprint is none, so a capped plan is refused naming
+`[hessian]`: their library calls are not all footprinted yet. That optional
+is transitional (`../footprint/README.md`, #1122).
+
 ## Config
 
 [`examples/hessian.toml`](../../../examples/hessian.toml) is a whole config:
@@ -865,6 +894,13 @@ integral-direct `[eri]` -- the default one -- is refused there too
 
 ## Tests
 
+- The footprint: `test/pipeline/nested_footprint_host.cpp`, the numerical
+  RHF one, the chain's peak against the harmonic analysis's worked out by
+  hand over water in STO-3G, and none for the analytic method and the CASSCF
+  chain (host-only); `test/gtest/pipeline_preflight_gpu.cpp`, a numerical
+  `[hessian]` of water in STO-3G refused, naming it, under a cap one byte
+  below its peak's room before the first step, and run at the peak, the
+  pool's `UsedMemHigh` over every displacement within the cap.
 - The step's contract and its config: `test/pipeline/hessian_host.cpp`
   (`static_assert`s on the run shape, the View and the product; `method`
   read, analytic by default, and refused; `displacement` read and refused;

@@ -26,6 +26,7 @@ import free_breakfast.basis;
 import free_breakfast.hessian;
 import free_breakfast.integrals.one_electron.dipole; // kDipoleMaxL
 import free_breakfast.pipeline.pipeline;
+import free_breakfast.pipeline.footprint;
 import free_breakfast.pipeline.casci; // the QD ensemble's edge, E_{n+1} - E_n
 import free_breakfast.recipes.blas;   // gemm, gemmwich
 import free_breakfast.recipes.orthogonalize;
@@ -46,7 +47,35 @@ struct DisplacedMoleculeStep {
   [[nodiscard]] Result<MoleculeOutput> run(View<> /*in*/, DeviceResources &res) const {
     return MoleculeOutput{Molecule(res, atoms, charge, multiplicity)};
   }
+
+  // The Molecule, as MoleculeStep's.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const {
+    return molecule_footprint(dims.natoms);
+  }
 };
+
+// The Pipeline of @p step's chain to [scf], @p scf for it, rooted at
+// @p molecule, then @p last: what each method runs, and what
+// HessianStep::footprint folds.
+template <class... Last>
+[[nodiscard]] auto scf_chain(const HessianStep &step, DisplacedMoleculeStep molecule, ScfStep scf,
+                             Last... last) {
+  return Pipeline<DisplacedMoleculeStep, BasisSetStep, SphericalTransformStep,
+                  PrimitivePairClassesStep, EriStep, OverlapStep, OrthogonalizerStep,
+                  CoreHamiltonianStep, GuessStep, ScfStep, Last...>::create({
+      std::move(molecule),
+      step.basis_set,
+      SphericalTransformStep{},
+      PrimitivePairClassesStep{},
+      step.eri,
+      OverlapStep{},
+      step.orthogonalizer,
+      CoreHamiltonianStep{},
+      step.guess,
+      std::move(scf),
+      std::move(last)...,
+  });
+}
 
 // The CASSCF chain's ScfOutput at a displaced geometry: the reference
 // CASSCF's orbitals, core, active, virtual, Loewdin-orthonormalized in this
@@ -473,6 +502,26 @@ Status check_displaced_casscf(size_t nao, std::span<const double> s,
   return {};
 }
 
+std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions &dims) const {
+  if (method != HessianMethod::Numerical || casscf_gradient || nevpt2_gradient) {
+    return std::nullopt;
+  }
+  // The chain is fixed, so it always plans; none were it ever not to.
+  const auto chain = scf_chain(*this, DisplacedMoleculeStep{}, scf, GradientStep{});
+  if (!chain) {
+    return std::nullopt;
+  }
+  std::vector<MemoryFootprint> steps;
+  for (const StepFootprint &step : chain->footprints(dims)) {
+    if (!step.footprint) {
+      return std::nullopt;
+    }
+    steps.push_back(*step.footprint);
+  }
+  return then(drop(plan_footprint(steps).footprint),
+              geometry::harmonic_analysis_footprint(dims.atoms, dims.syevd_lwork));
+}
+
 Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &node) const {
   if (node.device_count() == 0) {
     return err_gpu("[{}] needs a GPU device, and none is visible", kName);
@@ -643,21 +692,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   };
   // The Pipeline of the chain to [scf], then @p last, at displaced(shift).
   const auto chain_at = [&]<class... Last>(std::span<const double> shift, Last... last) {
-    return Pipeline<DisplacedMoleculeStep, BasisSetStep, SphericalTransformStep,
-                    PrimitivePairClassesStep, EriStep, OverlapStep, OrthogonalizerStep,
-                    CoreHamiltonianStep, GuessStep, ScfStep, Last...>::create({
-        displaced(shift),
-        basis_set,
-        SphericalTransformStep{},
-        PrimitivePairClassesStep{},
-        eri,
-        OverlapStep{},
-        orthogonalizer,
-        CoreHamiltonianStep{},
-        guess,
-        chain_scf,
-        std::move(last)...,
-    });
+    return scf_chain(*this, displaced(shift), chain_scf, std::move(last)...);
   };
 
   // H before symmetrizing, row-major (the analytic terms' sum is symmetric

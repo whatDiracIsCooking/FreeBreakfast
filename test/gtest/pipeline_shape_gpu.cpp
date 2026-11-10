@@ -266,4 +266,32 @@ TEST(PipelineShape, OptimizeReadsTheChainsStart) {
   EXPECT_EQ(shape.dims.nocc, std::size_t{5});
 }
 
+// A [hessian]'s harmonic analysis diagonalizes at 3 natoms: water in STO-3G
+// has 7 AOs, under its 9 coordinates, so the table runs through order 9 with
+// the Hessian planned, and through nao, 7, without it.
+TEST(PipelineShape, HessianOrderIsThreeAtoms) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::test::ScratchDir dir("pipeline_shape_hessian");
+  ASSERT_TRUE(fb::write_file(dir / "water.xyz", kWaterXyz).has_value());
+  const auto shape = [&](std::string_view tables) {
+    auto calc = fb::parse_config(
+        std::string("[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n") +
+            std::string(tables),
+        dir.path(), dir / "out");
+    EXPECT_TRUE(calc.has_value()) << calc.error().message;
+    auto out = fb::plan_shape(*calc, res);
+    EXPECT_TRUE(out.has_value()) << out.error().message;
+    return std::move(*out);
+  };
+  const fb::PlanShape without = shape("[scf]\n");
+  EXPECT_EQ(without.dims.nao, std::size_t{7});
+  EXPECT_EQ(without.dims.syevd_lwork.size(), std::size_t{8});
+  const fb::PlanShape with = shape("[hessian]\nmethod = \"numerical\"\n");
+  EXPECT_EQ(with.dims.syevd_lwork.size(), std::size_t{10});
+  auto lwork = fb::syevd_lwork<double>(res, 9);
+  ASSERT_TRUE(lwork.has_value()) << lwork.error().message;
+  EXPECT_EQ(with.dims.syevd_lwork.back(), *lwork);
+}
+
 } // namespace

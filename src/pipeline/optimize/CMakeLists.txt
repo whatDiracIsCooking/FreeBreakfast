@@ -3,7 +3,8 @@
 # is an option, and the three gradient steps' modules re-export every step the
 # three chains rerun, each a member, and the products OptimizeOutput and
 # MoleculeOutput. core::resources
-# and pipeline::step are in run's signature, and io::json in
+# and pipeline::step are in run's signature, pipeline::footprint in the
+# footprint's, and io::json in
 # recorded_optimize's. run is defined in the
 # implementation unit, so the planner it nests (pipeline::pipeline), the files
 # it writes (io::base) and reads (io::xyz), atom (element_symbol),
@@ -27,6 +28,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::geometry
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   free_breakfast::pipeline::gradient
   free_breakfast::pipeline::casscf_gradient
   free_breakfast::pipeline::nevpt2_gradient

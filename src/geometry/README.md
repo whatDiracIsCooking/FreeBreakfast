@@ -99,22 +99,24 @@ if (vib) {
 }
 ```
 
+`harmonic_analysis_footprint(atoms, syevd_lwork)` is what it takes (#1044's model): the projector, H_mw, the m × m projected Hessian and the two spectra as scratch (m the internal modes), and the device workspace, the largest of syevd's work at 3N and at m and the two n × m products carved from it. `syevd_lwork` is syevd's work by order through at least 3N, as `FootprintDimensions::syevd_lwork` holds it; the rigid motions are counted unweighted, since their number does not depend on the masses. The semi-numerical `[hessian]` step composes it (`pipeline/hessian`).
+
 ## Tests
 
 `test/gtest/geometry_host.cpp`: a quadratic well reached exactly in one step when the starting Hessian is the well's, and to 1e-10 by the BFGS updates when it is anisotropic; the extended Rosenbrock function; a four-point Lennard-Jones cluster converging to the regular tetrahedron at E = −6, with its centroid fixed to 1e-12 and every step free of rotation, and again at the default thresholds; an uphill step rejected with the trust radius cut to a quarter and the retry taken from the accepted geometry; a start at a minimum converging in one evaluation; and the refusals, the step cap and a failing callback.
 
 The same file holds `optimize_meci`'s cases, on analytic two-state models: a 2 × 2 diabatic Hamiltonian over the six distances of four points, so every rigid motion is an exact zero mode, with linear and quadratic couplings and a known crossing (the reference arrangement, up to a rigid motion). The thresholds are explicit (gap 1e-12 Eh, max and rms force 1e-10 Eh/bohr, max and rms displacement 1e-9 bohr), and each model states its least seam curvature (≥ 0.37 Eh/bohr²) and its plane's slopes (≥ 0.138 Eh/bohr), so the converged point is within force/curvature + gap/slope ≈ 3e-10 bohr of the crossing; the bar is 1e-8 bohr after alignment. A peaked cone and one tilted in its plane each reach it from a start off the seam and from one on the seam away from its minimum; an uncoupled crossing (h ≡ 0, its seam 3N − 7) reaches it with y dropped at every evaluation; a starting Hessian 20 times too soft shrinks the trust radius after the first step, and still reaches it. Every run holds the centroid to 1e-12 and every step free of rotation. Plus energies handed upper-first, the refusals, the step cap, a failing callback, a non-finite coupling and a vanishing gradient difference. And a carried plane (#902): on the peaked cone, a callback giving the mean gradient alone under a gap of 1e-9 Eh (under `max_gap` 1e-8, as #902's walk is) reaches the crossing to 1e-7 bohr (force/curvature + max_gap/slope = 7.3e-8; measured 7.6e-10 in 37 evaluations, 11 carried), with `plane_carried` exactly where the gap is under that floor and never at the start; from a start on the seam it is refused.
 
-`test/gtest/geometry_frequencies_gpu.cpp`: PySCF RHF/cc-pVDZ Hessians of bent water, CO₂ along z, HCN off every axis and linear water (a saddle point, its degenerate bend imaginary), against `pyscf.hessian.thermo.harmonic_analysis` of the same matrix (`test/gtest/data/frequencies/`, `tools/emit/frequencies_reference.py`): the mode count (3N − 6, or 3N − 5), the frequencies to 1e-3 cm⁻¹, and the modes up to sign as each degenerate set's mass-weighted projector to 1e-7; the negated water Hessian, every frequency imaginary; a spring between two hydrogens against √(k/μ) and its mode along the bond; a single atom with no modes; and the refusals.
+`test/gtest/geometry_frequencies_gpu.cpp`: PySCF RHF/cc-pVDZ Hessians of bent water, CO₂ along z, HCN off every axis and linear water (a saddle point, its degenerate bend imaginary), against `pyscf.hessian.thermo.harmonic_analysis` of the same matrix (`test/gtest/data/frequencies/`, `tools/emit/frequencies_reference.py`): the mode count (3N − 6, or 3N − 5), the frequencies to 1e-3 cm⁻¹, and the modes up to sign as each degenerate set's mass-weighted projector to 1e-7; the negated water Hessian, every frequency imaginary; a spring between two hydrogens against √(k/μ) and its mode along the bond; a single atom with no modes; and the refusals. Last `harmonic_analysis_footprint` over bent water and linear CO₂, held to one call's pool peak by `test/support/pool_footprint.h`'s two bars (sound and tight), and a single atom's, empty.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `geometry.cppm` | Module interface: `Options`, `Iteration`, `Solution`, `optimize`; `MECISolution`, `optimize_meci`; `Vibrations`, `harmonic_analysis` |
+| `geometry.cppm` | Module interface: `Options`, `Iteration`, `Solution`, `optimize`; `MECISolution`, `optimize_meci`; `Vibrations`, `harmonic_analysis`, `harmonic_analysis_footprint` |
 | `geometry.cpp` | `optimize`'s loop |
 | `meci.cpp` | `optimize_meci`: the branching plane, the composite step and its trust radius |
 | `quasi_newton.cppm` | Internal partition: the projection off an orthonormal basis, the max and rms norms and the Cholesky step both optimizers share |
 | `rigid_body.cppm` | Internal partition: the orthonormal rigid-body basis, optionally mass-weighted, both units project with |
-| `frequencies.cpp` | `harmonic_analysis`, the mass table and the two unit conversions |
+| `frequencies.cpp` | `harmonic_analysis` and `harmonic_analysis_footprint`, the mass table and the two unit conversions |
 | `CMakeLists.txt` | The module library |

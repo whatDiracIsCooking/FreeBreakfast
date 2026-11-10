@@ -17,6 +17,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.atom;
 
 export namespace free_breakfast::geometry {
@@ -248,5 +249,15 @@ struct Vibrations {
 [[nodiscard]] Result<Vibrations> harmonic_analysis(DeviceResources &res,
                                                    std::span<const Atom> atoms,
                                                    std::span<const double> hessian);
+
+/// @brief What @ref harmonic_analysis takes for @p atoms, @p syevd_lwork
+/// being syevd's work by order (@ref syevd_lwork at order k its element k),
+/// through at least 3N: the projector, H_mw, the m x m projected Hessian and
+/// the two spectra, scratch, m the internal modes (3N - 6, 3N - 5 linear);
+/// the device workspace, the largest of syevd's work at 3N and at m and the
+/// n x m products carved from it. Empty with no atoms or no internal mode,
+/// where it allocates nothing.
+[[nodiscard]] MemoryFootprint harmonic_analysis_footprint(std::span<const Atom> atoms,
+                                                          std::span<const size_t> syevd_lwork);
 
 } // namespace free_breakfast::geometry
