@@ -1,6 +1,6 @@
 // The footprints (#1044) of the NEVPT2 library routines (#1052): nevpt2::rdms
 // and rdms_adjoint, mo_blocks, h2e, slab and class_energies, their reverse
-// passes, and the SC forward tangents (#1182). Each is held to
+// passes, and the SC and PC forward tangents (#1182, #1183). Each is held to
 // the pool peak of one call by test/support/pool_footprint.h's two bars,
 // sound (the measured peak is no more than the footprint's) and tight
 // (within G x A). The adaptive routines, rdms' tile and the classes' slab
@@ -866,6 +866,137 @@ TEST_P(Nevpt2ScEffectiveHamiltonianTangentFootprint, SoundAndTight) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2ScEffectiveHamiltonianTangentFootprint,
+                         ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                                              std::string{"n2_ccpvdz_cas88_df"}),
+                                            ::testing::Values(1, 0)),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param));
+                         });
+
+// ---------------------------------------------------------------------------
+// The PC forward tangents (#1183): pc_class_energies_tangent and
+// pc_effective_hamiltonian_tangent, along the SC tangents' directions
+// ---------------------------------------------------------------------------
+
+// The allocations live at a PC tangent's peak, at most, at two states and
+// two directions: the identities and B + s Ḃ's five blocks; per ket U, T,
+// T₁, V, V_nᵀ K U and the two leaks, and per transition T, T₁ and its two
+// leaks; every entry's four walk bars; per ket and direction Ṫ, ṫ1, K̇' and
+// Ṡ', and per transition and direction Ṫ and ṫ1; V_kᵀ U and the Θ's; the
+// slab buffers and bars, their tangents' buffers, plus and dd; a slab's
+// eight rows; and a polarization's three matrices, shifted inputs and
+// builder.
+constexpr std::size_t kPcTangentLive = 120;
+
+class Nevpt2PcClassEnergiesTangentFootprint
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
+
+// pc_class_energies_tangent along two directions at a batch of one and at
+// the whole extent, its modes dropped as the run drops them; and the
+// footprint at the rank that holds the most, no less.
+TEST_P(Nevpt2PcClassEnergiesTangentFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  const auto [name, batch] = GetParam();
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  const Directions d = two_directions(inputs, b);
+  const auto pc = nevpt2::pc_class_energies(inputs, b, g.in, batch);
+  ASSERT_TRUE(pc) << pc.error().message;
+  const std::vector<std::size_t> lwork = lworks(inputs, b.ncas * b.ncas * b.ncas);
+  const fb::MemoryFootprint fp = nevpt2::pc_class_energies_tangent_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, batch, lwork, d.along, pc->dropped);
+  const fb::MemoryFootprint most = nevpt2::pc_effective_hamiltonian_tangent_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, 1, batch, lwork, d.along);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  EXPECT_GE(most.device.scratch, fp.device.scratch);
+  EXPECT_GE(most.device.workspace, fp.device.workspace);
+  fb::DeviceResources res{0};
+  expect_routine_footprint(res, fp, kPcTangentLive, [&] {
+    const auto t = nevpt2::pc_class_energies_tangent(res, b, g.in, batch, d.along);
+    ASSERT_TRUE(t) << t.error().message;
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcClassEnergiesTangentFootprint,
+                         ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                                              std::string{"n2_ccpvdz_cas88_df"}),
+                                            ::testing::Values(1, 0)),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param));
+                         });
+
+class Nevpt2PcEffectiveHamiltonianTangentFootprint
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
+
+// pc_effective_hamiltonian_tangent over two states at a batch of one and at
+// the whole extent, each ket's modes dropped as the energy drops them: the
+// case's inputs on the diagonal, random transition RDMs off it (no f3ca or
+// f3ac, which only the diagonal reads), and per direction its shared
+// tangents once, the diagonal's RDM tangents with f3 and the transitions'
+// without.
+TEST_P(Nevpt2PcEffectiveHamiltonianTangentFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  constexpr std::int32_t kStates = 2;
+  const auto [name, batch] = GetParam();
+  // Under slow_test.h: CAS(8,8), 1.7 s on the RTX 3080 at either batch.
+  if (name == "n2_ccpvdz_cas88_df") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  Directions d;
+  d.held.reserve(128);
+  d.blocks.reserve(1);
+  std::vector<nevpt2::EnergyInputs> pairs(kStates * kStates, g.in);
+  for (std::int32_t i = 0; i < kStates; ++i) {
+    for (std::int32_t j = 0; j < kStates; ++j) {
+      if (i != j) {
+        nevpt2::EnergyInputs &p = pairs[static_cast<std::size_t>((i * kStates) + j)];
+        random_rdms(inputs, d, p, b.ncas, false, 500 + (10 * ((i * kStates) + j)));
+        p.f3ca = nullptr;
+        p.f3ac = nullptr;
+      }
+    }
+  }
+  // Direction 0 moves every field and B, direction 1 the RDMs alone.
+  nevpt2::EnergyDirection shared;
+  random_shared(inputs, d, shared.in, b, 600);
+  shared.blocks = random_blocks(inputs, d, b, 700);
+  std::vector<nevpt2::EnergyDirection> along;
+  for (std::int32_t u = 0; u < 2; ++u) {
+    for (std::int32_t p = 0; p < kStates * kStates; ++p) {
+      nevpt2::EnergyDirection e = u == 0 ? shared : nevpt2::EnergyDirection{};
+      random_rdms(inputs, d, e.in, b.ncas, p % (kStates + 1) == 0, 800 + (10 * ((u * 4) + p)));
+      along.push_back(e);
+    }
+  }
+  const auto h = nevpt2::pc_effective_hamiltonian(inputs, b, pairs, batch);
+  ASSERT_TRUE(h) << h.error().message;
+  std::vector<std::array<std::int64_t, 8>> dropped;
+  for (std::int32_t j = 0; j < kStates; ++j) {
+    dropped.push_back((*h)[static_cast<std::size_t>((j * kStates) + j)].dropped);
+  }
+  const std::vector<std::size_t> lwork = lworks(inputs, b.ncas * b.ncas * b.ncas);
+  const fb::MemoryFootprint fp = nevpt2::pc_effective_hamiltonian_tangent_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, kStates, batch, lwork, along, dropped);
+  const fb::MemoryFootprint most = nevpt2::pc_effective_hamiltonian_tangent_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, kStates, batch, lwork, along);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  EXPECT_GE(most.device.scratch, fp.device.scratch);
+  fb::DeviceResources res{0};
+  expect_routine_footprint(res, fp, kPcTangentLive, [&] {
+    const auto t = nevpt2::pc_effective_hamiltonian_tangent(res, b, pairs, batch, along);
+    ASSERT_TRUE(t) << t.error().message;
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcEffectiveHamiltonianTangentFootprint,
                          ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
                                                               std::string{"n2_ccpvdz_cas88_df"}),
                                             ::testing::Values(1, 0)),

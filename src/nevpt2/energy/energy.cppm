@@ -1273,4 +1273,37 @@ pc_effective_hamiltonian_hvp(DeviceResources &res, const MoBlocks &blocks,
                                                         const EnergyBars &transition)> &transition,
                              bool span = true);
 
+/// @brief What @ref pc_class_energies_tangent holds:
+/// pc_effective_hamiltonian_tangent_footprint at one state, its modes
+/// dropped as @p dropped says (PcClassEnergies::dropped; all zero, every
+/// class at its whole basis).
+[[nodiscard]] MemoryFootprint
+pc_class_energies_tangent_footprint(int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt,
+                                    int32_t batch, std::span<const size_t> syevd_lwork,
+                                    std::span<const EnergyDirection> directions,
+                                    const std::array<int64_t, 8> &dropped = {});
+
+/// @brief What @ref pc_effective_hamiltonian_tangent holds over @p nstates
+/// states on @p naux fitting functions and @p ncore, @p ncas and @p nvirt
+/// orbitals at @p batch, along its m n² @p directions, of which it reads
+/// only which fields are given (a field given counts as moving), with the
+/// kept span's rotation (span true; false holds no more): every entry's
+/// identity and B + s Ḃ (when a direction moves B); then a class at a time,
+/// its kets as pc_effective_hamiltonian_adjoint_footprint has them, M and
+/// M_Δ on every entry beside T̄ and t̄₁'s, each solve's and transition's
+/// tangents per direction (the polarized matrices, Θ' where modes drop),
+/// its slabs, and at its widest slab the rows, their tangents and each
+/// slab's tangent buffer; slab_tangent's plus and dd, held from then on at
+/// the widest slab yet; then Sijrs's. Nothing persists. Its workspace is
+/// make_a22's and diagonalize's at each solve's two orders (@p syevd_lwork
+/// as pc_effective_hamiltonian_footprint's).
+///
+/// @p dropped is pc_effective_hamiltonian_adjoint_footprint's: d - m_J per
+/// state and class, the data's; empty, every class at the rank that holds
+/// the most.
+[[nodiscard]] MemoryFootprint pc_effective_hamiltonian_tangent_footprint(
+    int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt, int32_t nstates, int32_t batch,
+    std::span<const size_t> syevd_lwork, std::span<const EnergyDirection> directions,
+    std::span<const std::array<int64_t, 8>> dropped = {});
+
 } // namespace free_breakfast::nevpt2

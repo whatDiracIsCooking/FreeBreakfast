@@ -6870,58 +6870,76 @@ MemoryFootprint pc_class_energies_adjoint_footprint(const int32_t naux, const in
                                                     {&dropped, 1});
 }
 
-MemoryFootprint pc_effective_hamiltonian_adjoint_footprint(
-    const int32_t naux, const int32_t ncore, const int32_t ncas, const int32_t nvirt,
-    const int32_t nstates, const int32_t batch, const std::span<const size_t> syevd_lwork,
-    const std::span<const std::array<int64_t, 8>> dropped, const MemoryFootprint &transition) {
-  // pc_couplings_adjoint, every allocation in its order (pc_reverse_kets'
-  // pc_kets with its modes kept, pc_walk_bars, pc_slab_reverse,
-  // pc_reverse_finish's span bar and matrix bars, each pc_back_*), in bytes.
-  constexpr size_t kD = sizeof(double);
-  const auto n = static_cast<size_t>(ncas);
-  const size_t n2 = kD * n * n;
-  const size_t n4 = n2 * n * n;
-  const size_t n6 = n4 * n * n;
-  const auto nc = static_cast<size_t>(ncore);
-  const auto nv = static_cast<size_t>(nvirt);
-  const auto states = static_cast<size_t>(nstates);
-  const size_t entries = states * states;
-  const auto extent = [&](const ExtBlock block) {
+// One PC class as the PC footprints walk it: @p d its basis, @p n1 its S₁'s
+// columns, @p tuples a slab's tuples at its widest, @p exchange whether its
+// rows carry exchange rows; @p own_build and @p pair_build its matrices'
+// allocations, (take, bytes) in order, and what they hold through the solve;
+// @p own_back and @p pair_back its pc_back_*'s; @p uploads what the walk
+// uploads beside its kets (Sir's two selectors). @p walks is false for a
+// class with no tuple, which allocates nothing.
+struct PcClassBytes {
+  size_t k = 0;
+  bool walks = false;
+  std::vector<ExtBlock> slabs;
+  size_t d = 0;
+  size_t n1 = 0;
+  size_t tuples = 0;
+  bool exchange = false;
+  std::vector<std::pair<bool, size_t>> own_build;
+  size_t own_held = 0;
+  std::vector<std::pair<bool, size_t>> pair_build;
+  size_t pair_held = 0;
+  size_t own_back = 0;
+  size_t pair_back = 0;
+  size_t uploads = 0;
+};
+
+// The PC footprints' mirror of pc_couplings_adjoint's class walks (#1052)
+// and, with @p adjoint false, of pc_couplings_tangent's: each class's
+// allocations in their order onto @p h, the workspace raised as they ask.
+// A tangent's walk reads @p moves, [p][u] pair p's direction u
+// (tangent_moves'), and grows
+// slab_tangent's plus and dd, @p pd each, held across the classes.
+struct PcWalkBytes {
+  int32_t naux = 0;
+  int32_t ncore = 0;
+  int32_t ncas = 0;
+  int32_t nvirt = 0;
+  int32_t nstates = 1;
+  int32_t batch = 0;
+  std::span<const size_t> syevd_lwork;
+  std::span<const std::array<int64_t, 8>> dropped;
+  bool adjoint = true;
+  std::vector<std::vector<TangentMoves>> moves;
+  HeldBytes h;
+  size_t workspace = 0;
+  size_t pd = 0;
+
+  [[nodiscard]] int32_t extent(const ExtBlock block) const {
     return block_shape(ncore, ncas, nvirt, block)[static_cast<size_t>(batch_axis(block))];
-  };
-  const auto width = [&](const ExtBlock block) {
+  }
+  [[nodiscard]] int32_t width(const ExtBlock block) const {
     return std::min(batch_step(extent(block), batch), extent(block));
-  };
-  const auto slab_bytes = [&](const ExtBlock block) {
+  }
+  [[nodiscard]] size_t slab_bytes(const ExtBlock block) const {
     std::array<int32_t, 4> shape = block_shape(ncore, ncas, nvirt, block);
     shape[static_cast<size_t>(batch_axis(block))] = width(block);
-    return kD * static_cast<size_t>(
-                    std::ranges::fold_left(shape, int64_t{1}, [](const int64_t a, const int32_t b) {
-                      return a * std::max(b, 0);
-                    }));
-  };
-  const size_t region = math::align_up(n4, DeviceResources::kWorkspaceAlignment);
-  const auto doubles = [](const size_t count) {
-    return math::align_up(kD * count, DeviceResources::kWorkspaceAlignment);
-  };
-  // make_a22's fdm2s (make_a16's one), the sweeps' einsum_adjoint scatters
-  // over n², and the walk's run of h1e_v's rows when a batch is not whole.
-  size_t workspace = std::max(2 * region, doubles(n * n));
-  if (width(ExtBlock::Sr) < extent(ExtBlock::Sr)) {
-    workspace = std::max({workspace, doubles(static_cast<size_t>(width(ExtBlock::Sr)) * n),
-                          doubles(static_cast<size_t>(width(ExtBlock::Sir1)) * nc)});
+    return sizeof(double) * static_cast<size_t>(std::ranges::fold_left(
+                                shape, int64_t{1}, [](const int64_t a, const int32_t b) {
+                                  return a * std::max(b, 0);
+                                }));
   }
-  const auto diagonalized = [&](const size_t order) {
+  [[nodiscard]] size_t product(const ExtBlock block) const {
+    return slab_footprint(ncore, ncas, nvirt, block, width(block)).device.scratch;
+  }
+  [[nodiscard]] size_t directions() const { return moves.empty() ? 0 : moves.front().size(); }
+  void diagonalized(const size_t order) {
     if (order > 0 && order < syevd_lwork.size()) {
       workspace =
           std::max(workspace, diagonalize_footprint<double>(syevd_lwork[order]).device.workspace);
     }
-  };
-  HeldBytes h;
-  using Steps = std::vector<std::pair<bool, size_t>>; // (take, bytes) in order
-  const auto take = [](const size_t bytes) { return std::pair{true, bytes}; };
-  const auto give = [](const size_t bytes) { return std::pair{false, bytes}; };
-  const auto replay = [](HeldBytes &into, const Steps &steps) {
+  }
+  static void replay(HeldBytes &into, const std::vector<std::pair<bool, size_t>> &steps) {
     for (const auto &[taken, bytes] : steps) {
       if (taken) {
         into.take(bytes);
@@ -6929,30 +6947,167 @@ MemoryFootprint pc_effective_hamiltonian_adjoint_footprint(
         into.give(bytes);
       }
     }
-  };
+  }
 
-  // One class: @p d its basis, @p n1 its S₁'s columns, @p tuples a slab's
-  // tuples at its widest, @p exchange whether its rows carry exchange rows;
-  // @p own_build and @p pair_build its matrices' allocations and what they
-  // hold through the solve; @p own_back and @p pair_back its pc_back_*'s;
-  // @p uploads what the walk uploads beside its kets (Sir's two selectors).
-  struct Class {
-    size_t k;
-    std::vector<ExtBlock> slabs;
-    size_t d;
-    size_t n1;
-    size_t tuples;
-    bool exchange;
-    Steps own_build;
-    size_t own_held;
-    Steps pair_build;
-    size_t pair_held;
-    size_t own_back;
-    size_t pair_back;
-    size_t uploads;
-  };
-  // The class at every state's kept modes @p m (one per state), on @p into.
-  const auto walk = [&](HeldBytes &into, const Class &cl, const std::vector<size_t> &m) {
+  // The seven classes in walk order, Sijrs (SC's) left to the caller.
+  [[nodiscard]] std::array<PcClassBytes, 7> classes() const {
+    constexpr size_t kD = sizeof(double);
+    const auto n = static_cast<size_t>(ncas);
+    const size_t n2 = kD * n * n;
+    const size_t n4 = n2 * n * n;
+    const size_t n6 = n4 * n * n;
+    const auto nc = static_cast<size_t>(ncore);
+    const auto nv = static_cast<size_t>(nvirt);
+    const size_t n3 = n * n * n;
+    const auto take = [](const size_t bytes) { return std::pair{true, bytes}; };
+    const auto give = [](const size_t bytes) { return std::pair{false, bytes}; };
+    const size_t sir_d = 2 * n * n;
+    const size_t uploads = kD * (4 + 4 + 2);
+    const size_t s = kD * sir_d * sir_d;
+    const size_t s1 = kD * sir_d;
+    return {{
+        {.k = 0,
+         .walks = extent(ExtBlock::Sr) > 0,
+         .slabs = {ExtBlock::Sr},
+         .d = n3,
+         .n1 = n,
+         .tuples = static_cast<size_t>(width(ExtBlock::Sr)),
+         .exchange = false,
+         .own_build = {take(n6), take(n6), take(n4)},
+         .own_held = n6 + n6 + n4,
+         .pair_build = {take(n6), take(n4)},
+         .pair_held = n6 + n4,
+         .own_back = n6,
+         .pair_back = 0,
+         .uploads = 0},
+        {.k = 1,
+         .walks = extent(ExtBlock::Si) > 0,
+         .slabs = {ExtBlock::Si},
+         .d = n3,
+         .n1 = n,
+         .tuples = static_cast<size_t>(width(ExtBlock::Si)),
+         .exchange = false,
+         .own_build = {take(n6), take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)},
+         .own_held = n6 + n6 + n4,
+         .pair_build = {take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)},
+         .pair_held = n6 + n4,
+         .own_back = n6 + n4 + n6,
+         .pair_back = n6 + n4,
+         .uploads = 0},
+        {.k = 3,
+         .walks = extent(ExtBlock::Sijr) > 0 && ncore > 0,
+         .slabs = {ExtBlock::Sijr},
+         .d = n,
+         .n1 = 0,
+         .tuples = static_cast<size_t>(width(ExtBlock::Sijr)) * nc * nc,
+         .exchange = true,
+         .own_build = {take(n2), take(n2)},
+         .own_held = 2 * n2,
+         .pair_build = {take(n2)},
+         .pair_held = n2,
+         .own_back = 2 * n2,
+         .pair_back = n2,
+         .uploads = 0},
+        {.k = 4,
+         .walks = extent(ExtBlock::Srsi) > 0 && ncore > 0,
+         .slabs = {ExtBlock::Srsi, ExtBlock::SrsiT},
+         .d = n,
+         .n1 = 0,
+         .tuples = static_cast<size_t>(width(ExtBlock::Srsi)) * nv * nc,
+         .exchange = true,
+         .own_build = {take(n2), take(n2)},
+         .own_held = 2 * n2,
+         .pair_build = {take(n2)},
+         .pair_held = n2,
+         .own_back = n2,
+         .pair_back = 0,
+         .uploads = 0},
+        {.k = 5,
+         .walks = extent(ExtBlock::Srs) > 0,
+         .slabs = {ExtBlock::Srs},
+         .d = n * n,
+         .n1 = 0,
+         .tuples = static_cast<size_t>(width(ExtBlock::Srs)) * nv,
+         .exchange = false,
+         .own_build = {take(n4), take(n6), take(n4), give(n6), take(n4), give(n4)},
+         .own_held = 2 * n4,
+         .pair_build = {take(n4), take(n4), give(n4)},
+         .pair_held = n4,
+         .own_back = (2 * n4) + n6,
+         .pair_back = n4,
+         .uploads = 0},
+        {.k = 6,
+         .walks = extent(ExtBlock::Sij) > 0,
+         .slabs = {ExtBlock::Sij},
+         .d = n * n,
+         .n1 = 0,
+         .tuples = static_cast<size_t>(width(ExtBlock::Sij)) * nc,
+         .exchange = false,
+         .own_build = {take(n4), take(n4), give(n4), take(n6), take(n4), give(n6)},
+         .own_held = 2 * n4,
+         .pair_build = {take(n4), take(n4), give(n4)},
+         .pair_held = n4,
+         .own_back = (2 * n4) + n6,
+         .pair_back = 2 * n4,
+         .uploads = 0},
+        {.k = 7,
+         .walks = extent(ExtBlock::Sir1) > 0 && ncore > 0,
+         .slabs = {ExtBlock::Sir1, ExtBlock::Sir2},
+         .d = sir_d,
+         .n1 = 1,
+         .tuples = static_cast<size_t>(width(ExtBlock::Sir1)) * nc,
+         .exchange = false,
+         .own_build = {take(uploads), take(s), take(n4), give(n4), take(s), take(n4), take(n4),
+                       give(2 * n4), take(s1), give(uploads)},
+         .own_held = s + s + s1,
+         .pair_build = {take(uploads), take(s), take(n4), give(n4), take(s1), give(uploads)},
+         .pair_held = s + s1,
+         .own_back = uploads + (3 * n4),
+         .pair_back = uploads + n4,
+         .uploads = kD * (2 + 2)},
+    }};
+  }
+
+  // slab_tangent's plus and dd grown to @p bytes on @p into, each freed
+  // before it is reallocated (at_least).
+  static void grow(HeldBytes &into, size_t &pd, const size_t bytes) {
+    if (bytes <= pd) {
+      return;
+    }
+    for (int32_t buffer = 0; buffer < 2; ++buffer) {
+      into.give(pd);
+      into.take(bytes);
+    }
+    pd = bytes;
+  }
+  // A walk's slab tangents at its first slab, the widest, per direction of
+  // the first pair (whose B every pair's is): each slab's region at the
+  // first (held to the class's end; returned), and with B moving plus and dd
+  // grown to it and its two builds' products.
+  size_t tangent_slabs(HeldBytes &into, size_t &grown, std::span<const ExtBlock> slabs) const {
+    size_t regions = 0;
+    for (size_t u = 0; u < directions(); ++u) {
+      for (const ExtBlock block : slabs) {
+        if (u == 0) {
+          into.take(slab_bytes(block));
+          regions += slab_bytes(block);
+        }
+        if (moves.front()[u].slabs) {
+          grow(into, grown, slab_bytes(block));
+          into.walk(product(block));
+        }
+      }
+    }
+    return regions;
+  }
+
+  // Class @p cl at every state's kept modes @p m (one per state), on
+  // @p into, plus and dd at @p grown.
+  void walk(HeldBytes &into, const PcClassBytes &cl, const std::vector<size_t> &m, size_t &grown) {
+    constexpr size_t kD = sizeof(double);
+    const auto states = static_cast<size_t>(nstates);
+    const size_t entries = states * states;
+    const size_t dirs = directions();
     const size_t d = cl.d;
     const size_t n1 = cl.n1;
     size_t held = 0;
@@ -6998,28 +7153,48 @@ MemoryFootprint pc_effective_hamiltonian_adjoint_footprint(
         into.give(cl.pair_held);
       }
     }
-    // The walk bars: M and M_Δ on the own entries, T̄ and t̄₁ on every one.
+    // The walk bars: M and M_Δ on the own entries (a tangent's on every
+    // one), T̄ and t̄₁ on every one.
     size_t rows = 0;
     for (size_t p = 0; p < entries; ++p) {
       const size_t mj = m[p % states];
-      keep(kD * ((p / states == p % states ? 2 * mj * mj : 0) + (d * mj) + (n1 * mj)));
+      const bool weights = !adjoint || p / states == p % states;
+      keep(kD * ((weights ? 2 * mj * mj : 0) + (d * mj) + (n1 * mj)));
       rows += mj;
     }
+    if (!adjoint) {
+      solve_tangent(into, cl, m, held);
+    }
     keep(cl.uploads);
-    size_t product = 0;
+    size_t most = 0;
     for (const ExtBlock block : cl.slabs) {
       keep(2 * slab_bytes(block));
-      product =
-          std::max(product, slab_footprint(ncore, ncas, nvirt, block, width(block)).device.scratch);
-      workspace = std::max(
-          workspace,
-          slab_adjoint_footprint(naux, ncore, ncas, nvirt, block, width(block)).device.workspace);
+      most = std::max(most, product(block));
+      if (adjoint) {
+        workspace = std::max(
+            workspace,
+            slab_adjoint_footprint(naux, ncore, ncas, nvirt, block, width(block)).device.workspace);
+      }
+    }
+    const size_t count = kD * cl.tuples * rows;
+    const size_t exchange = cl.exchange ? 2 : 1;
+    into.walk(most);
+    if (!adjoint) {
+      // A slab: y (and x), the sums, the weights and Δ; ẏ (and ẋ); each
+      // direction's slab tangents; then g_I, the weights and Δ uploaded for
+      // M and M_Δ. The finish: Ċ's last part, a sum per direction and entry.
+      const size_t slab_rows = (2 * exchange * count) + (2 * count) + (kD * cl.tuples);
+      into.take(slab_rows);
+      held += tangent_slabs(into, grown, cl.slabs);
+      into.walk((2 * count) + (kD * cl.tuples));
+      into.give(slab_rows);
+      into.walk(kD * dirs * entries);
+      into.give(held);
+      return;
     }
     // A slab: its products, then y (and x), the multipliers' sums and
     // weights, Δ, and ȳ (and x̄).
-    const size_t count = kD * cl.tuples * rows;
-    into.walk(product);
-    into.walk(((cl.exchange ? 6 : 4) * count) + (kD * cl.tuples));
+    into.walk((2 * (exchange + 1) * count) + (kD * cl.tuples));
     // The finish: per state that drops modes its span bar, X kept; Eq. 40's
     // scalar; per entry its matrix bars and their way back.
     for (size_t j = 0; j < states; ++j) {
@@ -7052,26 +7227,133 @@ MemoryFootprint pc_effective_hamiltonian_adjoint_footprint(
       }
     }
     into.give(held);
-  };
-  // The class at the given modes, or at the rank that holds the most.
-  const auto run = [&](const Class &cl) {
+  }
+
+  // pc_solve_tangent's: per ket J, V_kᵀ U where it drops modes; per
+  // direction Ṫ, ṫ1, K̇' and Ṡ' (@p held to the class's end), and where the
+  // direction moves a builder input, S, K and S₁ polarized (each sign's
+  // shifted inputs beside its builder), S and K symmetrized and the
+  // gemmwich work, and where modes drop Θ' (held to the ket's end) beside Θ
+  // and X; then per transition onto J and direction its Ṫ and ṫ1 (held),
+  // and S and S₁ polarized along pair (J, I)'s direction.
+  void solve_tangent(HeldBytes &into, const PcClassBytes &cl, const std::vector<size_t> &m,
+                     size_t &held) const {
+    constexpr size_t kD = sizeof(double);
+    const auto states = static_cast<size_t>(nstates);
+    const size_t d = cl.d;
+    const size_t n1 = cl.n1;
+    const auto polarized = [&](const TangentMoves &mv, const size_t raw,
+                               const std::vector<std::pair<bool, size_t>> &build,
+                               const size_t built) {
+      into.take(raw);
+      for (int32_t sign = 0; sign < 2; ++sign) {
+        into.take(mv.shifted);
+        replay(into, build);
+        into.give(built + mv.shifted);
+      }
+    };
+    for (size_t j = 0; j < states; ++j) {
+      const size_t mj = m[j];
+      const size_t nd = d - mj;
+      size_t ket = nd > 0 ? kD * mj * mj : 0;
+      into.take(ket);
+      for (const TangentMoves &mv : moves[(j * states) + j]) {
+        into.take(kD * ((d * mj) + (n1 * mj) + (2 * mj * mj)));
+        held += kD * ((d * mj) + (n1 * mj) + (2 * mj * mj));
+        if (mv.shifted == 0) {
+          continue;
+        }
+        const size_t raw = kD * ((2 * d * d) + (d * n1));
+        polarized(mv, raw, cl.own_build, cl.own_held);
+        const size_t sym = kD * ((2 * d * d) + (d * mj));
+        into.take(sym);
+        if (nd > 0) {
+          into.take(kD * nd * mj);
+          ket += kD * nd * mj;
+          into.walk(kD * ((nd * mj) + (mj * mj)));
+        }
+        into.give(sym + raw);
+      }
+      for (size_t i = 0; i < states; ++i) {
+        if (i == j) {
+          continue;
+        }
+        for (const TangentMoves &mv : moves[(j * states) + i]) {
+          into.take(kD * ((d * mj) + (n1 * mj)));
+          held += kD * ((d * mj) + (n1 * mj));
+          if (mv.shifted != 0) {
+            const size_t raw = kD * ((d * d) + (d * n1));
+            polarized(mv, raw, cl.pair_build, cl.pair_held);
+            into.give(raw);
+          }
+        }
+      }
+      into.give(ket);
+    }
+  }
+
+  // Class @p cl at the given modes, or at the rank that holds the most.
+  void run(const PcClassBytes &cl) {
+    const auto states = static_cast<size_t>(nstates);
     if (!dropped.empty()) {
       std::vector<size_t> m;
       for (size_t j = 0; j < states; ++j) {
         const int64_t cut = j < dropped.size() ? dropped[j][cl.k] : 0;
         m.push_back(cl.d - static_cast<size_t>(cut));
       }
-      walk(h, cl, m);
+      walk(h, cl, m, pd);
       return;
     }
     size_t most = h.peak;
+    size_t grown = pd;
     for (size_t rank = 1; rank <= cl.d; ++rank) {
       HeldBytes trial = h;
-      walk(trial, cl, std::vector<size_t>(states, rank));
+      grown = pd;
+      walk(trial, cl, std::vector<size_t>(states, rank), grown);
       most = std::max(most, trial.peak);
     }
+    // plus and dd grow alike at every rank, and stay grown.
+    grow(h, pd, grown);
     h.peak = most;
+  }
+};
+
+MemoryFootprint pc_effective_hamiltonian_adjoint_footprint(
+    const int32_t naux, const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+    const int32_t nstates, const int32_t batch, const std::span<const size_t> syevd_lwork,
+    const std::span<const std::array<int64_t, 8>> dropped, const MemoryFootprint &transition) {
+  // pc_couplings_adjoint, every allocation in its order (pc_reverse_kets'
+  // pc_kets with its modes kept, pc_walk_bars, pc_slab_reverse,
+  // pc_reverse_finish's span bar and matrix bars, each pc_back_*), in bytes.
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = kD * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  const auto nc = static_cast<size_t>(ncore);
+  const auto nv = static_cast<size_t>(nvirt);
+  const auto states = static_cast<size_t>(nstates);
+  const size_t entries = states * states;
+  PcWalkBytes w{.naux = naux,
+                .ncore = ncore,
+                .ncas = ncas,
+                .nvirt = nvirt,
+                .nstates = nstates,
+                .batch = batch,
+                .syevd_lwork = syevd_lwork,
+                .dropped = dropped};
+  HeldBytes &h = w.h;
+  const size_t region = math::align_up(n4, DeviceResources::kWorkspaceAlignment);
+  const auto doubles = [](const size_t count) {
+    return math::align_up(kD * count, DeviceResources::kWorkspaceAlignment);
   };
+  // make_a22's fdm2s (make_a16's one), the sweeps' einsum_adjoint scatters
+  // over n², and the walk's run of h1e_v's rows when a batch is not whole.
+  w.workspace = std::max(2 * region, doubles(n * n));
+  if (w.width(ExtBlock::Sr) < w.extent(ExtBlock::Sr)) {
+    w.workspace = std::max({w.workspace, doubles(static_cast<size_t>(w.width(ExtBlock::Sr)) * n),
+                            doubles(static_cast<size_t>(w.width(ExtBlock::Sir1)) * nc)});
+  }
 
   h.take(entries * n2); // every entry's active_operands delta
   // SC's block bars, every entry's metrics and each own entry's Dyall blocks.
@@ -7079,123 +7361,19 @@ MemoryFootprint pc_effective_hamiltonian_adjoint_footprint(
   const size_t dyall_bars = (2 * n6) + (6 * n4) + (4 * n2);
   h.take((entries * metric_bars) + (states * dyall_bars));
 
-  const size_t n3 = n * n * n;
-  if (extent(ExtBlock::Sr) > 0) {
-    run({.k = 0,
-         .slabs = {ExtBlock::Sr},
-         .d = n3,
-         .n1 = n,
-         .tuples = static_cast<size_t>(width(ExtBlock::Sr)),
-         .exchange = false,
-         .own_build = {take(n6), take(n6), take(n4)},
-         .own_held = n6 + n6 + n4,
-         .pair_build = {take(n6), take(n4)},
-         .pair_held = n6 + n4,
-         .own_back = n6,
-         .pair_back = 0,
-         .uploads = 0});
-  }
-  if (extent(ExtBlock::Si) > 0) {
-    run({.k = 1,
-         .slabs = {ExtBlock::Si},
-         .d = n3,
-         .n1 = n,
-         .tuples = static_cast<size_t>(width(ExtBlock::Si)),
-         .exchange = false,
-         .own_build = {take(n6), take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)},
-         .own_held = n6 + n6 + n4,
-         .pair_build = {take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)},
-         .pair_held = n6 + n4,
-         .own_back = n6 + n4 + n6,
-         .pair_back = n6 + n4,
-         .uploads = 0});
-  }
-  // Sijrs: SC's, its accumulators and its slab with its bar.
-  if (ncore > 0 && nvirt > 0) {
-    h.walk((3 * kD) + (2 * slab_bytes(ExtBlock::Sijrs)));
-    workspace = std::max(workspace, slab_adjoint_footprint(naux, ncore, ncas, nvirt,
-                                                           ExtBlock::Sijrs, width(ExtBlock::Sijrs))
-                                        .device.workspace);
-  }
-  if (extent(ExtBlock::Sijr) > 0 && ncore > 0) {
-    run({.k = 3,
-         .slabs = {ExtBlock::Sijr},
-         .d = n,
-         .n1 = 0,
-         .tuples = static_cast<size_t>(width(ExtBlock::Sijr)) * nc * nc,
-         .exchange = true,
-         .own_build = {take(n2), take(n2)},
-         .own_held = 2 * n2,
-         .pair_build = {take(n2)},
-         .pair_held = n2,
-         .own_back = 2 * n2,
-         .pair_back = n2,
-         .uploads = 0});
-  }
-  if (extent(ExtBlock::Srsi) > 0 && ncore > 0) {
-    run({.k = 4,
-         .slabs = {ExtBlock::Srsi, ExtBlock::SrsiT},
-         .d = n,
-         .n1 = 0,
-         .tuples = static_cast<size_t>(width(ExtBlock::Srsi)) * nv * nc,
-         .exchange = true,
-         .own_build = {take(n2), take(n2)},
-         .own_held = 2 * n2,
-         .pair_build = {take(n2)},
-         .pair_held = n2,
-         .own_back = n2,
-         .pair_back = 0,
-         .uploads = 0});
-  }
-  if (extent(ExtBlock::Srs) > 0) {
-    run({.k = 5,
-         .slabs = {ExtBlock::Srs},
-         .d = n * n,
-         .n1 = 0,
-         .tuples = static_cast<size_t>(width(ExtBlock::Srs)) * nv,
-         .exchange = false,
-         .own_build = {take(n4), take(n6), take(n4), give(n6), take(n4), give(n4)},
-         .own_held = 2 * n4,
-         .pair_build = {take(n4), take(n4), give(n4)},
-         .pair_held = n4,
-         .own_back = (2 * n4) + n6,
-         .pair_back = n4,
-         .uploads = 0});
-  }
-  if (extent(ExtBlock::Sij) > 0) {
-    run({.k = 6,
-         .slabs = {ExtBlock::Sij},
-         .d = n * n,
-         .n1 = 0,
-         .tuples = static_cast<size_t>(width(ExtBlock::Sij)) * nc,
-         .exchange = false,
-         .own_build = {take(n4), take(n4), give(n4), take(n6), take(n4), give(n6)},
-         .own_held = 2 * n4,
-         .pair_build = {take(n4), take(n4), give(n4)},
-         .pair_held = n4,
-         .own_back = (2 * n4) + n6,
-         .pair_back = 2 * n4,
-         .uploads = 0});
-  }
-  if (extent(ExtBlock::Sir1) > 0 && ncore > 0) {
-    const size_t d = 2 * n * n;
-    const size_t uploads = kD * (4 + 4 + 2);
-    const size_t s = kD * d * d;
-    const size_t s1 = kD * d;
-    run({.k = 7,
-         .slabs = {ExtBlock::Sir1, ExtBlock::Sir2},
-         .d = d,
-         .n1 = 1,
-         .tuples = static_cast<size_t>(width(ExtBlock::Sir1)) * nc,
-         .exchange = false,
-         .own_build = {take(uploads), take(s), take(n4), give(n4), take(s), take(n4), take(n4),
-                       give(2 * n4), take(s1), give(uploads)},
-         .own_held = s + s + s1,
-         .pair_build = {take(uploads), take(s), take(n4), give(n4), take(s1), give(uploads)},
-         .pair_held = s + s1,
-         .own_back = uploads + (3 * n4),
-         .pair_back = uploads + n4,
-         .uploads = kD * (2 + 2)});
+  for (const PcClassBytes &cl : w.classes()) {
+    // Sijrs, between Si and Sijr: SC's, its accumulators and its slab with
+    // its bar.
+    if (cl.k == 3 && ncore > 0 && nvirt > 0) {
+      h.walk((3 * kD) + (2 * w.slab_bytes(ExtBlock::Sijrs)));
+      w.workspace =
+          std::max(w.workspace, slab_adjoint_footprint(naux, ncore, ncas, nvirt, ExtBlock::Sijrs,
+                                                       w.width(ExtBlock::Sijrs))
+                                    .device.workspace);
+    }
+    if (cl.walks) {
+      w.run(cl);
+    }
   }
   // The orbital energies' host sums, one upload at a time.
   h.walk(kD * std::max(nc, nv));
@@ -7212,10 +7390,10 @@ MemoryFootprint pc_effective_hamiltonian_adjoint_footprint(
     h.take(n2 + n4 + n6);
     h.walk(n4);
     h.walk(transition.device.persistent + transition.device.scratch);
-    workspace = std::max(workspace, transition.device.workspace);
+    w.workspace = std::max(w.workspace, transition.device.workspace);
     h.give(n2 + n4 + n6);
   }
-  return {.device = {.scratch = h.peak, .workspace = workspace},
+  return {.device = {.scratch = h.peak, .workspace = w.workspace},
           .pinned = {.workspace = transition.pinned.workspace}};
 }
 
@@ -7341,6 +7519,76 @@ pc_class_energies_tangent(DeviceResources &res, const MoBlocks &blocks, const En
     out.total_dot.push_back(got.total_dot[u].front());
   }
   return out;
+}
+
+MemoryFootprint pc_class_energies_tangent_footprint(const int32_t naux, const int32_t ncore,
+                                                    const int32_t ncas, const int32_t nvirt,
+                                                    const int32_t batch,
+                                                    const std::span<const size_t> syevd_lwork,
+                                                    std::span<const EnergyDirection> directions,
+                                                    const std::array<int64_t, 8> &dropped) {
+  return pc_effective_hamiltonian_tangent_footprint(naux, ncore, ncas, nvirt, 1, batch, syevd_lwork,
+                                                    directions, {&dropped, 1});
+}
+
+MemoryFootprint pc_effective_hamiltonian_tangent_footprint(
+    const int32_t naux, const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+    const int32_t nstates, const int32_t batch, const std::span<const size_t> syevd_lwork,
+    std::span<const EnergyDirection> directions,
+    const std::span<const std::array<int64_t, 8>> dropped) {
+  // pc_couplings_tangent, every allocation in its order (input_tangent, each
+  // class's walk with pc_solve_tangent and pc_tangent_slab, then Sijrs's
+  // sijrs_tangent_walk), in bytes.
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const auto entries = static_cast<size_t>(nstates) * static_cast<size_t>(nstates);
+  const size_t dirs = entries == 0 ? 0 : directions.size() / entries;
+  PcWalkBytes w{.naux = naux,
+                .ncore = ncore,
+                .ncas = ncas,
+                .nvirt = nvirt,
+                .nstates = nstates,
+                .batch = batch,
+                .syevd_lwork = syevd_lwork,
+                .dropped = dropped,
+                .adjoint = false,
+                .moves = {}};
+  for (size_t p = 0; p < entries; ++p) {
+    std::vector<EnergyDirection> along;
+    for (size_t u = 0; u < dirs; ++u) {
+      along.push_back(directions[(u * entries) + p]);
+    }
+    w.moves.push_back(tangent_moves(ncas, along));
+  }
+  HeldBytes &h = w.h;
+  // make_a22's two fdm2 regions, make_a16's one; diagonalize's, raised by
+  // the walks.
+  w.workspace = 2 * math::align_up(kD * n * n * n * n, DeviceResources::kWorkspaceAlignment);
+  const size_t steps = kD * ((3 * dirs) + 3); // tangent_steps' sums
+  h.take(entries * kD * n * n);               // every entry's active_operands delta
+  // input_tangent over the first pair: its steps, and B + s Ḃ's five blocks
+  // when a direction moves B.
+  h.walk(steps);
+  if (entries > 0 && std::ranges::any_of(w.moves.front(), &TangentMoves::slabs)) {
+    h.take(shifted_blocks_bytes(naux, ncore, ncas, nvirt));
+  }
+  for (size_t p = 0; p < entries; ++p) {
+    h.walk(steps); // each pair's polarization steps
+  }
+  for (const PcClassBytes &cl : w.classes()) {
+    if (cl.walks) {
+      w.run(cl);
+    }
+  }
+  // sijrs_tangent_walk: its sums and slab, the slab's product, and its
+  // tangents along the first pair's directions.
+  if (ncore > 0 && nvirt > 0) {
+    h.take(kD * (2 + dirs));
+    h.take(w.slab_bytes(ExtBlock::Sijrs));
+    h.walk(w.product(ExtBlock::Sijrs));
+    w.tangent_slabs(h, w.pd, std::array{ExtBlock::Sijrs});
+  }
+  return {.device = {.scratch = h.peak, .workspace = w.workspace}};
 }
 
 // ---------------------------------------------------------------------------
