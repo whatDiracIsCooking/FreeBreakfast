@@ -196,13 +196,27 @@ allocation taken and given back in its order:
   and each slab's tangent buffer; B + s Ḃ and slab_tangent's two builds held
   across classes at the widest slab yet; then Sijrs's walk. `dropped` reads
   as the adjoint's, and a direction is read as the SC tangents read it.
+- `class_energies_hvp_footprint(..., nelecas, batch, directions, partners)`
+  and `sc_effective_hamiltonian_hvp_footprint(..., nelecas, n, batch, hbar,
+  directions, partners, transition)` (#1180): the SC Hessian-vector
+  products over those tangents and the adjoints' walk. Per direction the
+  empty perturbers' second tables (each rung's shifted inputs beside a
+  tangent, and over n states once per pair beside `pair_tables`), the fixed
+  walk at the multipliers' tangent, the bars at fixed multipliers
+  differenced (`line_derivative`'s scratch, each rung's shifted inputs beside
+  a fixed walk, each pair's with its transition bars), and Sijrs's
+  (`sijrs_hvp`, its scaled buffers where Σ H̄_JJ is not 1). **At the most**:
+  the second tables are counted as though every ket has an empty tuple a
+  direction populates, empty for every bra too, which N₂'s symmetry gives;
+  without one the footprint is sound and over by them.
 
 `test/gtest/nevpt2_footprint_gpu.cpp` holds `pc_class_energies`, both
-reverse passes and the SC and PC tangents sound and tight at CAS(4,4) and
-CAS(8,8), at a batch of one and whole, at the run's own ranks (the tangents
-along a direction moving every field and B beside one moving the RDMs alone,
-the effective Hamiltonians' over two states, and SC's one-function classes
-at CAS(4,4)); the effective Hamiltonians' call shapes are in
+reverse passes, the SC and PC tangents and the SC products sound and tight
+at CAS(4,4) and CAS(8,8), at a batch of one and whole, at the run's own
+ranks (the tangents along a direction moving every field and B beside one
+moving the RDMs alone, the effective Hamiltonians' over two states, SC's
+one-function classes at CAS(4,4), and the products with and without
+partners); the effective Hamiltonians' call shapes are in
 `test/gtest/pipeline_step_footprint_gpu.cpp`'s
 `Nevpt2ReaderFootprint.EffectiveHamiltonians`.
 

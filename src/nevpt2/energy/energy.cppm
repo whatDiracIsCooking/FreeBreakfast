@@ -507,6 +507,27 @@ class_energies_hvp(DeviceResources &res, const MoBlocks &blocks, const EnergyInp
                    std::span<const EnergyBars> bars,
                    std::span<const EnergyDirection> partners = {});
 
+/// @brief What @ref class_energies_hvp holds over @p naux fitting functions,
+/// @p ncore, @p ncas and @p nvirt orbitals and @p nelecas active electrons at
+/// @p batch, along @p directions with @p partners (none, or one per
+/// direction), of which it reads only which fields are given (a field given
+/// counts as moving, and as the tangent of a given input), every bar wanted:
+/// class_energies_tangent's; the state's identity, its steps and a
+/// one-function class's blocks and their tangents; then per direction the
+/// empty perturbers' second tables (each rung's shifted inputs beside
+/// class_energies_tangent at them, along the direction and its partner and
+/// along the partner alone), the fixed walk at the multipliers' tangent
+/// (fixed_adjoint), the bars at fixed multipliers differenced
+/// (line_derivative's scratch, each rung's shifted inputs beside
+/// fixed_adjoint), and Sijrs's (sijrs_hvp). **At the most:** the second
+/// tables are counted as though the tables have an empty perturber, which
+/// is the data's (N₂'s symmetry empties some in every class); without one,
+/// the footprint is sound and over by them. Nothing persists; the workspace
+/// is class_energies_adjoint's.
+[[nodiscard]] MemoryFootprint class_energies_hvp_footprint(
+    int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt, int32_t nelecas, int32_t batch,
+    std::span<const EnergyDirection> directions, std::span<const EnergyDirection> partners = {});
+
 /// @brief sc_effective_hamiltonian_adjoint's result: the matrix it walked,
 /// and each class's Eq. 40 assembled from its bars.
 struct ScEffectiveHamiltonianAdjoint {
@@ -750,6 +771,24 @@ sc_effective_hamiltonian_hvp(DeviceResources &res, const MoBlocks &blocks,
                              const std::function<Status(int64_t direction, int64_t bra, int64_t ket,
                                                         const EnergyBars &transition)> &transition,
                              std::span<const EnergyDirection> partners = {});
+
+/// @brief What @ref sc_effective_hamiltonian_hvp holds over @p nstates
+/// states, as class_energies_hvp_footprint over one, @p hbar its H̄ (only its
+/// trace is read: Sijrs's weight) and @p transition the footprint of one call
+/// of its @p transition (none for an empty one): sc_effective_hamiltonian_tangent's
+/// along the directions and the partners; each ket's identity, steps and
+/// one-function blocks; then per direction each ket's second tables and,
+/// once per pair, the pair's (each rung's two sides' shifted inputs beside
+/// pair_tables), each state's fixed walk and its differenced bars, each
+/// pair's fixed walk (with @p transition its transition RDMs' bars held and
+/// swept) and its differenced bars, and Sijrs's. **At the most:** every ket
+/// has an empty tuple the direction populates, empty for every bra as well;
+/// otherwise the footprint is sound and over by the second tables.
+[[nodiscard]] MemoryFootprint sc_effective_hamiltonian_hvp_footprint(
+    int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt, int32_t nelecas, int32_t nstates,
+    int32_t batch, std::span<const double> hbar, std::span<const EnergyDirection> directions,
+    std::span<const EnergyDirection> partners = {},
+    const std::optional<MemoryFootprint> &transition = std::nullopt);
 
 /// @brief One perturber function of a PC class, mode k of tuple t in its
 /// ket's eigenbasis: its denominator λ_k + Δ_t and its first-order amplitude
