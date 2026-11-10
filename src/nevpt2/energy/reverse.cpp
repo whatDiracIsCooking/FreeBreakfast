@@ -2613,7 +2613,9 @@ MemoryFootprint sc_effective_hamiltonian_adjoint_footprint(const int32_t naux, c
       for (int32_t order = 0; order < 2; ++order) {
         h.take(n2 + n4 + n6);
         h.walk(n4);
-        h.walk(transition.device.persistent + transition.device.scratch);
+        // The callback's product (a kept copy of its bars) stays to the end.
+        h.take(transition.device.persistent);
+        h.walk(transition.device.scratch);
         w.workspace = std::max(w.workspace, transition.device.workspace);
         h.give(n2 + n4 + n6);
       }
@@ -2634,7 +2636,9 @@ MemoryFootprint sc_effective_hamiltonian_adjoint_footprint(const int32_t naux, c
   }
   // The orbital energies' host sums, one upload at a time.
   h.walk(kD * std::max(nc, nv));
-  return {.device = {.scratch = h.peak, .workspace = w.workspace},
+  // Every transition's product, kept: one per ordered off-diagonal pair.
+  const size_t kept = states * (states - 1) * transition.device.persistent;
+  return {.device = {.persistent = kept, .scratch = h.peak - kept, .workspace = w.workspace},
           .pinned = {.workspace = transition.pinned.workspace}};
 }
 
@@ -7923,11 +7927,14 @@ MemoryFootprint pc_effective_hamiltonian_adjoint_footprint(
     }
     h.take(n2 + n4 + n6);
     h.walk(n4);
-    h.walk(transition.device.persistent + transition.device.scratch);
+    // The callback's product (a kept copy of its bars) stays to the end.
+    h.take(transition.device.persistent);
+    h.walk(transition.device.scratch);
     w.workspace = std::max(w.workspace, transition.device.workspace);
     h.give(n2 + n4 + n6);
   }
-  return {.device = {.scratch = h.peak, .workspace = w.workspace},
+  const size_t kept = (entries - states) * transition.device.persistent;
+  return {.device = {.persistent = kept, .scratch = h.peak - kept, .workspace = w.workspace},
           .pinned = {.workspace = transition.pinned.workspace}};
 }
 

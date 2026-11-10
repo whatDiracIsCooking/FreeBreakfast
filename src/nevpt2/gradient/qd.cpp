@@ -440,7 +440,8 @@ MemoryFootprint qd_arrays_footprint(const int32_t naux, const int32_t nao, const
 MemoryFootprint qd_adjoint_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
                                      const int32_t ncore, const int32_t ncas, const int32_t n_alpha,
                                      const int32_t n_beta, const int32_t nroots,
-                                     const int32_t nfrozen, const MemoryFootprint &walk) {
+                                     const int32_t nfrozen, const MemoryFootprint &walk,
+                                     const bool fixed) {
   const int32_t nvirt = nmo - ncore - ncas;
   const auto n = static_cast<size_t>(ncas);
   const size_t n2 = sizeof(double) * n * n;
@@ -471,8 +472,24 @@ MemoryFootprint qd_adjoint_footprint(const int32_t naux, const int32_t nao, cons
   h.give(correlated);
   h.call(rdms_adjoint_footprint(ncas));
   builders_adjoint_tail(h, naux, nao, nmo, ncore, ncas);
-  h.give(own + bars + (2 * ndet) + n4 + arrays.device.persistent);
+  // rdms_adjoint's outputs go; with fixed, the arrays, the bars and each
+  // root's own stay in the QdFixedBars, beside the walk's folded copies.
+  h.give((2 * ndet) + n4);
+  if (!fixed) {
+    h.give(own + bars + arrays.device.persistent);
+  }
   return h.footprint(h.live);
+}
+
+MemoryFootprint qd_adjoint_transition_footprint(const int32_t ncas, const bool fixed) {
+  const auto n = static_cast<size_t>(ncas);
+  // The traces' adjoint allocates nothing; with fixed, dm3's folded bar
+  // copied and kept; the bra/ket rdms_adjoint without f3 bars.
+  MemoryFootprint f = rdms_adjoint_footprint(ncas, 1, true, false);
+  if (fixed) {
+    f.device.persistent = sizeof(double) * n * n * n * n * n * n;
+  }
+  return f;
 }
 
 MemoryFootprint qd_sc_adjoint_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
@@ -483,7 +500,7 @@ MemoryFootprint qd_sc_adjoint_footprint(const int32_t naux, const int32_t nao, c
   return qd_adjoint_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, nroots, nfrozen,
                               sc_effective_hamiltonian_adjoint_footprint(
                                   naux, ncore - nfrozen, ncas, nmo - ncore - ncas, n_alpha + n_beta,
-                                  nroots, batch, rdms_adjoint_footprint(ncas, 1, true, false)));
+                                  nroots, batch, qd_adjoint_transition_footprint(ncas, false)));
 }
 
 MemoryFootprint qd_pc_adjoint_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
@@ -497,7 +514,7 @@ MemoryFootprint qd_pc_adjoint_footprint(const int32_t naux, const int32_t nao, c
       naux, nao, nmo, ncore, ncas, n_alpha, n_beta, nroots, nfrozen,
       pc_effective_hamiltonian_adjoint_footprint(naux, ncore - nfrozen, ncas, nmo - ncore - ncas,
                                                  nroots, batch, syevd_lwork, dropped,
-                                                 rdms_adjoint_footprint(ncas, 1, true, false)));
+                                                 qd_adjoint_transition_footprint(ncas, false)));
 }
 
 } // namespace free_breakfast::nevpt2
