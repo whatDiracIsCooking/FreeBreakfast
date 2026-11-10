@@ -36,13 +36,13 @@ free_breakfast_add_gpu_device_library(
   felizjueves::headers
 )
 
-# The module. DeviceResources, BasisSet, PrimitivePairClass, SphericalMatrixAO
-# and Result are in its signature, so core::resources, basis, mmd,
-# recipes::matrix_ao and core::error_handling are PUBLIC. The device library is
-# PRIVATE: the implementation unit includes the bridge header in its GMF and
-# calls the launcher, and a static library's private link dependencies still
-# reach the final link. one_electron::launch is PRIVATE too: only the
-# implementation runs its checks and launch_each.
+# The module. DeviceResources, BasisSet, PrimitivePairClass, SphericalMatrixAO,
+# Result and MemoryFootprint are in its signatures, so core::resources, basis,
+# mmd, recipes::matrix_ao, core::error_handling and core::footprint are PUBLIC.
+# The device library is PRIVATE: the implementation unit includes the bridge
+# header in its GMF and calls the launcher, and a static library's private link
+# dependencies still reach the final link. one_electron::launch is PRIVATE too:
+# only the implementation runs its checks and launch_each.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.one_electron.dipole_gradient
@@ -57,6 +57,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::basis
   free_breakfast::integrals::mmd
   free_breakfast::recipes::matrix_ao
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::core::wwr

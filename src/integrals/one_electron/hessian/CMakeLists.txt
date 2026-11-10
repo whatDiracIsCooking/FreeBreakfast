@@ -57,9 +57,10 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::integrals::shared::headers
 )
 
-# The module. DeviceResources, BasisSet, PrimitivePairClass, Molecule and
-# SphericalMatrixAO are in its signatures, so core::resources, basis, mmd,
-# molecule and recipes::matrix_ao are PUBLIC. The device library is PRIVATE: the
+# The module. DeviceResources, BasisSet, PrimitivePairClass, Molecule,
+# SphericalMatrixAO and MemoryFootprint are in its signatures, so
+# core::resources, basis, mmd, molecule, recipes::matrix_ao and core::footprint
+# are PUBLIC. The device library is PRIVATE: the
 # implementation unit includes the bridge header in its GMF and calls the
 # launchers, and a static library's private link dependencies still reach the
 # final link. one_electron::launch is PRIVATE too: only the implementation
@@ -79,6 +80,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::mmd
   free_breakfast::molecule
   free_breakfast::recipes::matrix_ao
+  free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::core::wwr

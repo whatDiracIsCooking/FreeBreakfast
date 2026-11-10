@@ -20,6 +20,7 @@ import free_breakfast.core.primitives;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // wwrMemsetAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.density_fitting.staging;
@@ -195,6 +196,74 @@ Result<std::vector<double>> three_center_hessian(DeviceResources &res, const Bas
   // Also what lets the host staging go (the metric's comment).
   FBF_TRY(res.sync());
   return h;
+}
+
+MemoryFootprint metric_hessian_footprint(const BasisSet &aux) {
+  if (aux.nshells() == 0) {
+    return {};
+  }
+  const size_t n = aux.nao_cart();
+  const size_t n_sph = aux.nao_sphe();
+  size_t n_rec = 0;
+  for (const Shell &shell : aux.shells()) {
+    n_rec += shell.nprimitives();
+  }
+  const size_t n_pairs = aux.nshells() * (aux.nshells() + size_t{1}) / 2;
+  const size_t n_h = 9 * static_cast<size_t>(aux.natoms()) * aux.natoms();
+  const auto region = [](const size_t bytes) {
+    return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
+  };
+  // metric_hessian's carve: the records and U_aux, the pairs with their atoms,
+  // U_aux^T W's intermediate, the Cartesian W and H.
+  MemoryFootprint out;
+  out.device.workspace =
+      region(sizeof(double) *
+             ((static_cast<size_t>(device::kMetricRecordFields) * n_rec) + (n * n_sph))) +
+      region(sizeof(int32_t) * static_cast<size_t>(device::kMetricHessianPairFields) * n_pairs) +
+      region(sizeof(double) * n * n_sph) + region(sizeof(double) * n * n) +
+      region(sizeof(double) * n_h);
+  return out;
+}
+
+MemoryFootprint three_center_hessian_footprint(const BasisSet &basis, const BasisSet &aux) {
+  if (basis.nshells() == 0 || aux.nshells() == 0) {
+    return {};
+  }
+  const size_t n = basis.nao_cart();
+  const size_t n_sph = basis.nao_sphe();
+  const size_t n_aux = aux.nao_cart();
+  const size_t n_aux_sph = aux.nao_sphe();
+  // mmd's records over every shell pair i <= j: (P^2 + sum_i p_i^2) / 2, P the
+  // primitives in all; and the aux records, one per aux primitive.
+  size_t p = 0;
+  size_t p_sq = 0;
+  for (const Shell &shell : basis.shells()) {
+    p += shell.nprimitives();
+    p_sq += static_cast<size_t>(shell.nprimitives()) * shell.nprimitives();
+  }
+  const size_t n_bra_rec = ((p * p) + p_sq) / 2;
+  size_t n_aux_rec = 0;
+  for (const Shell &shell : aux.shells()) {
+    n_aux_rec += shell.nprimitives();
+  }
+  const size_t n_pairs = basis.nshells() * (basis.nshells() + size_t{1}) / 2;
+  const size_t n_staging = (static_cast<size_t>(device::kThreeCenterHessianBraFields) * n_bra_rec) +
+                           (static_cast<size_t>(device::kMetricRecordFields) * n_aux_rec) +
+                           (n * n_sph) + (n_aux * n_aux_sph);
+  const size_t n_cell_fields =
+      static_cast<size_t>(device::kThreeCenterHessianCellFields) * n_pairs * aux.nshells();
+  const size_t n_h = 9 * static_cast<size_t>(basis.natoms()) * basis.natoms();
+  const auto region = [](const size_t bytes) {
+    return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
+  };
+  // three_center_hessian's carve: the staging, the cells, the Cartesian Gam,
+  // its transform's intermediate and H.
+  MemoryFootprint out;
+  out.device.workspace = region(sizeof(double) * n_staging) +
+                         region(sizeof(int32_t) * n_cell_fields) +
+                         region(sizeof(double) * n * n * n_aux) +
+                         region(sizeof(double) * n_aux * n * n_sph) + region(sizeof(double) * n_h);
+  return out;
 }
 
 } // namespace free_breakfast

@@ -15,6 +15,7 @@ export module free_breakfast.integrals.one_electron.hessian;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.molecule;
@@ -75,5 +76,13 @@ kinetic_hessian(DeviceResources &res, const BasisSet &basis,
 potential_hessian(DeviceResources &res, const BasisSet &basis,
                   std::span<const PrimitivePairClass> classes, const Molecule &molecule,
                   const SphericalMatrixAO &m);
+
+/// @brief What @ref overlap_hessian, @ref kinetic_hessian or
+/// @ref potential_hessian holds over @p basis, all of it device scratch: U and
+/// the @c MatrixAOPair @p m is carried through, each Cartesian AO's atom, two
+/// atoms for each of mmd's records (a class's i <= j primitive pairs), and the
+/// [3 natoms, 3 natoms] device Hessian. No workspace and nothing pinned. Empty
+/// for a basis without shells.
+[[nodiscard]] MemoryFootprint one_electron_hessian_footprint(const BasisSet &basis);
 
 } // namespace free_breakfast

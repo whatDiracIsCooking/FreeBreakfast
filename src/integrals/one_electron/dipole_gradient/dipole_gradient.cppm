@@ -14,6 +14,7 @@ export module free_breakfast.integrals.one_electron.dipole_gradient;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.matrix_ao;
@@ -48,5 +49,13 @@ export namespace free_breakfast {
 [[nodiscard]] Result<std::vector<double>>
 dipole_gradient(DeviceResources &res, const BasisSet &basis,
                 std::span<const PrimitivePairClass> classes, const SphericalMatrixAO &m);
+
+/// @brief What @ref dipole_gradient holds over @p basis, all of it device
+/// scratch: U and the @c MatrixAOPair @p m is carried through, each Cartesian
+/// AO's atom, two atoms for each of mmd's records (a class's i <= j primitive
+/// pairs), and the [3, natoms, 3] device gradient. No workspace and nothing
+/// pinned. Empty for a basis without shells. A caller that builds the dipole
+/// matrices too composes this with @c dipole_footprint.
+[[nodiscard]] MemoryFootprint dipole_gradient_footprint(const BasisSet &basis);
 
 } // namespace free_breakfast
