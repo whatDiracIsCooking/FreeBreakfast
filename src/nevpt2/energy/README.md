@@ -27,7 +27,8 @@ Hamiltonians also hand over their amplitudes
     footprints of the other calls, below: sc_effective_hamiltonian_footprint,
     pc_class_energies_footprint, pc_effective_hamiltonian_footprint,
     class_energies_adjoint_footprint, sc_effective_hamiltonian_adjoint_footprint,
-    pc_class_energies_adjoint_footprint, pc_effective_hamiltonian_adjoint_footprint
+    pc_class_energies_adjoint_footprint, pc_effective_hamiltonian_adjoint_footprint,
+    class_energies_tangent_footprint, sc_effective_hamiltonian_tangent_footprint
 
 ## The port
 
@@ -170,11 +171,25 @@ allocation taken and given back in its order:
   each pair's matrix bars and their way back). A solve that drops modes keeps
   their V (d²) and leaks, so the most is not always at m = d: with `dropped`
   empty each class is at the rank, m from 1 to d, that holds the most.
+- `class_energies_tangent_footprint(naux, ncore, ncas, nvirt, nelecas, batch,
+  directions)` and `sc_effective_hamiltonian_tangent_footprint(..., nelecas,
+  n, batch, directions)` (#1182): the SC forward tangents, the reverse walks'
+  mirror (one `ScWalkBytes` in `reverse.cpp`, the adjoints' too) in tangent
+  mode. Per class its blocks and each direction's tangent of each, held to
+  the class's end, each built beside the shifted inputs and its builder's own
+  peak; at the widest slab the tables and their tangents and each slab's
+  tangent buffer; B + s Ḃ and slab_tangent's two builds, held across classes
+  at the widest slab yet; a one-function class's η̇; Sijrs's walk. Over n
+  states, each state's own tangent and each pair's walk along both sides'
+  directions. Only which fields a direction gives is read: a field given
+  counts as moving (a step of zero is a direction that is zero).
 
-`test/gtest/nevpt2_footprint_gpu.cpp` holds `pc_class_energies` and both
-reverse passes sound and tight at CAS(4,4) and CAS(8,8), at a batch of one and
-whole, at the run's own ranks; the effective Hamiltonians' call shapes are in
-`test/gtest/pipeline_step_footprint_gpu.cpp`'s
+`test/gtest/nevpt2_footprint_gpu.cpp` holds `pc_class_energies`, both
+reverse passes and both SC tangents sound and tight at CAS(4,4) and CAS(8,8),
+at a batch of one and whole, at the run's own ranks (the tangents along a
+direction moving every field and B beside one moving the RDMs alone, and
+the one-function classes at CAS(4,4)); the effective Hamiltonians' call shapes
+are in `test/gtest/pipeline_step_footprint_gpu.cpp`'s
 `Nevpt2ReaderFootprint.EffectiveHamiltonians`.
 
 ## One-function classes (#949)
