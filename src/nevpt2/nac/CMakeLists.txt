@@ -3,7 +3,8 @@
 # d_PQ over it, the interstate coupling and mcscf::df_nac's combination.
 # DeviceResources, MoBlocks, EnergyInputs, Buffers, Result and df_nac's
 # Molecule, BasisSet, PrimitivePairClass, SphericalMatrixAO, Solution and
-# NacOptions are in its signatures, so core::resources, core::wwr,
+# NacOptions are in its signatures, with the footprints' MemoryFootprint, so
+# core::resources, core::footprint, core::wwr,
 # nevpt2::density_fitting, nevpt2::energy, core::error_handling, molecule,
 # basis, mmd, recipes::matrix_ao, mcscf::solve and mcscf::nac are PUBLIC.
 # The einsum, nevpt2::gradient (the coupling and qd_inputs) and the FBF_TRY
@@ -22,6 +23,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::basis
   free_breakfast::molecule
   free_breakfast::integrals::mmd

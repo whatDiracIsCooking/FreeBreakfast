@@ -269,6 +269,15 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
       dims.nelecas = nelecas;
     }
   }
+  // PC-NEVPT2 diagonalizes each class's metric at its basis size, up to
+  // ncas^3 (Sr's and Si's): diagonalize's query through it too, when an
+  // NEVPT2 step is planned.
+  if (calc.step<Nevpt2Step>() || calc.step<Nevpt2GradientStep>() || calc.step<Nevpt2NacStep>()) {
+    const size_t pc_order = dims.ncas * dims.ncas * dims.ncas;
+    for (size_t order = dims.syevd_lwork.size(); order <= pc_order; ++order) {
+      dims.syevd_lwork.push_back(FBF_TRY(syevd_lwork<double>(res, static_cast<int32_t>(order))));
+    }
+  }
   return shape;
 }
 

@@ -167,6 +167,10 @@ struct MoBlocks {
 [[nodiscard]] Status h2e_adjoint(DeviceResources &res, const MoBlocks &blocks,
                                  const double *h2e_bar, double *lambda);
 
+/// @brief What @ref h2e_adjoint takes: the bar permuted back, ncas^4
+/// doubles, the device workspace.
+[[nodiscard]] MemoryFootprint h2e_adjoint_footprint(int32_t ncas);
+
 /// @brief The adjoint of @ref slab at @p blocks' B: @p lambda +=
 /// d<slab_bar, slab(B)>/dB, for @p block's slab over [@p b0, @p b1).
 ///
@@ -186,6 +190,14 @@ struct MoBlocks {
 ///         which leaves @p lambda unspecified.
 [[nodiscard]] Status slab_adjoint(DeviceResources &res, const MoBlocks &blocks, ExtBlock block,
                                   int32_t b0, int32_t b1, const double *slab_bar, double *lambda);
+
+/// @brief What @ref slab_adjoint takes for @p block over a batch of
+/// @p width, from the three orbital counts and @p naux: C-bar, the slab's
+/// count, but for Sijrs (C's layout), and the batch's columns of X, naux
+/// width ny doubles, when the batch is not X's whole extent; the device
+/// workspace, two regions.
+[[nodiscard]] MemoryFootprint slab_adjoint_footprint(int32_t naux, int32_t ncore, int32_t ncas,
+                                                     int32_t nvirt, ExtBlock block, int32_t width);
 
 /// @brief The adjoint of @ref mo_blocks in the MO basis: each bar in @p bar
 /// added at its block's place in @p lambda (B_vc's swapped back onto B_cv's),
@@ -208,5 +220,10 @@ struct MoBlocks {
 [[nodiscard]] Status mo_blocks_adjoint(DeviceResources &res, const MoBlocks &bar,
                                        const double *core_diagonal_bar,
                                        const double *virt_diagonal_bar, double *lambda);
+
+/// @brief What @ref mo_blocks_adjoint takes when its B_vc bar is given:
+/// that bar swapped, naux nvirt ncore doubles, the device workspace.
+[[nodiscard]] MemoryFootprint mo_blocks_adjoint_footprint(int32_t naux, int32_t ncore,
+                                                          int32_t nvirt);
 
 } // namespace free_breakfast::nevpt2

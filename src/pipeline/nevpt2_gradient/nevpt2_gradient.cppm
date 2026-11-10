@@ -19,6 +19,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.nevpt2.gradient; // nevpt2::ScGradient and PcGradient, in the product
 export import free_breakfast.pipeline.casscf;
 
@@ -131,6 +132,20 @@ struct Nevpt2GradientStep {
   run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput, EriOutput,
            CoreHamiltonianOutput, ScfOutput, CasscfOutput> in,
       DeviceResources &res) const;
+
+  /// @brief What @ref run holds at @p dims: the CASSCF's orbitals and CI
+  /// vectors back on the device as the gradient's mcscf::Solution, freed on
+  /// return, and the gradient's own footprint (@c nevpt2::sc_gradient_footprint,
+  /// @c pc_gradient_footprint, or with @ref quasi_degenerate @c
+  /// qd_sc_gradient_footprint or @c qd_pc_gradient_footprint over the planned
+  /// CASSCF's roots and weights, dims.casscf_nroots and
+  /// dims.casscf_unequal_weights), its tiles the least they run with and PC's
+  /// classes at the rank that holds the most. Persistent: the gradient's
+  /// device arrays, which the product keeps (z^c and the Z-vector, and QD's
+  /// Lagrangian). Sized over the active space at @p dims, ncore from the
+  /// electrons, and @ref frozen_core over dims.atoms. Empty for what @ref run
+  /// refuses before allocating.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast

@@ -10,6 +10,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.io.json;
 import free_breakfast.nevpt2.gradient;
 import free_breakfast.pipeline.nevpt2; // Nevpt2Step::resolve_frozen_core
@@ -245,6 +246,48 @@ Nevpt2GradientStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClasse
                                       },
                                       out.gradient)));
   }
+  return out;
+}
+
+MemoryFootprint Nevpt2GradientStep::footprint(const FootprintDimensions &dims) const {
+  const auto nroots = static_cast<int32_t>(dims.casscf_nroots);
+  if (dims.basis == nullptr || dims.aux == nullptr || nroots == 0 || dims.n_alpha != dims.n_beta ||
+      (quasi_degenerate && (nroots < 2 || state < 0 || state >= nroots)) ||
+      (!quasi_degenerate && (nroots != 1 || root != 0 || state != 0))) {
+    return {};
+  }
+  const auto ncas = static_cast<int32_t>(dims.ncas);
+  const auto nelecas = static_cast<int32_t>(dims.nelecas);
+  const int32_t ncore = (static_cast<int32_t>(dims.n_alpha + dims.n_beta) - nelecas) / 2;
+  const Result<int32_t> nfrozen =
+      Nevpt2Step::resolve_frozen_core(kName, frozen_core, dims.atoms, ncore);
+  if (!nfrozen) {
+    return {};
+  }
+  // The Solution: C and the CI vectors back on the device.
+  const auto strings = static_cast<size_t>(std::round(math::binomial(ncas, nelecas / 2)));
+  const MemoryFootprint upload{
+      .device = {.persistent = sizeof(double) *
+                               ((dims.nao * dims.nao) + (strings * strings * dims.casscf_nroots))}};
+  const BasisSet &basis = *dims.basis;
+  const BasisSet &aux = *dims.aux;
+  const bool pc = variant == Nevpt2Variant::Pc;
+  const bool rotating = dims.casscf_unequal_weights;
+  MemoryFootprint gradient;
+  if (quasi_degenerate) {
+    gradient = pc ? nevpt2::qd_pc_gradient_footprint(basis, aux, ncore, ncas, nelecas, 1, nroots,
+                                                     rotating, 0, dims.syevd_lwork, *nfrozen)
+                  : nevpt2::qd_sc_gradient_footprint(basis, aux, ncore, ncas, nelecas, 1, nroots,
+                                                     rotating, 0, dims.syevd_lwork, *nfrozen);
+  } else {
+    gradient = pc ? nevpt2::pc_gradient_footprint(basis, aux, ncore, ncas, nelecas, 1, 0,
+                                                  dims.syevd_lwork, *nfrozen)
+                  : nevpt2::sc_gradient_footprint(basis, aux, ncore, ncas, nelecas, 1, 0, *nfrozen);
+  }
+  // The gradient's device arrays are the product's; the Solution is freed.
+  MemoryFootprint out = then(upload, gradient);
+  out.device.scratch += upload.device.persistent;
+  out.device.persistent -= upload.device.persistent;
   return out;
 }
 

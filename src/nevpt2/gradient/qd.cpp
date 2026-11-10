@@ -13,6 +13,8 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
+import free_breakfast.core.footprint;
 import free_breakfast.ci.strings;
 import free_breakfast.nevpt2.rdm;
 import free_breakfast.nevpt2.density_fitting; // MoBlocks
@@ -412,6 +414,90 @@ Result<QdPcAdjoint> qd_pc_adjoint(DeviceResources &res, const ci::DeviceStringSe
                      .x = std::move(a.x),
                      .a = std::move(a.a),
                      .epsilon = std::move(a.epsilon)};
+}
+
+MemoryFootprint qd_arrays_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
+                                    const int32_t ncore, const int32_t ncas, const int32_t nroots,
+                                    const int32_t nfrozen) {
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = sizeof(double) * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  Held h;
+  h.call(shared_arrays_footprint(naux, nao, nmo, ncore, ncas, nfrozen));
+  h.take(2 * n6); // the transition f3s' scratch
+  for (int32_t bra = 0; bra < nroots; ++bra) {
+    for (int32_t ket = 0; ket < nroots; ++ket) {
+      const bool own = bra == ket;
+      h.take(n2 + n4 + n6 + (own ? 2 * n6 : 0));
+      h.call(rdms_footprint(ncas, 1, !own, true));
+    }
+  }
+  h.give(2 * n6);
+  return h.footprint(h.live);
+}
+
+MemoryFootprint qd_adjoint_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
+                                     const int32_t ncore, const int32_t ncas, const int32_t n_alpha,
+                                     const int32_t n_beta, const int32_t nroots,
+                                     const int32_t nfrozen, const MemoryFootprint &walk) {
+  const int32_t nvirt = nmo - ncore - ncas;
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = sizeof(double) * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  const auto q = static_cast<size_t>(naux);
+  const auto mo = static_cast<size_t>(nmo);
+  const size_t nn = sizeof(double) * mo * mo;
+  const auto walked = static_cast<size_t>(nmo - nfrozen);
+  const size_t correlated = nfrozen > 0 ? sizeof(double) * q * walked * walked : 0;
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const size_t ndet = sizeof(double) * strings(n_alpha) * strings(n_beta);
+  const auto roots = static_cast<size_t>(nroots);
+  Held h;
+  // The arrays and pair RDMs; rdms_adjoint's outputs; the bars, Λ's raw bar,
+  // each root's own RDMs' bars and y; the walk.
+  const MemoryFootprint arrays = qd_arrays_footprint(naux, nao, nmo, ncore, ncas, nroots, nfrozen);
+  h.call(arrays);
+  h.take((2 * ndet) + n4);
+  const size_t bars = zeroed_arrays_bytes(naux, ncore, ncas, nvirt);
+  const size_t own = roots * (n2 + n4 + (3 * n6));
+  h.take(bars + (q * nn) + correlated + own + (roots * ndet));
+  h.call(walk);
+  // builders_adjoint: the correlated Λ given back; each root's rdms_adjoint
+  // at one determinant; the folds.
+  h.give(correlated);
+  h.call(rdms_adjoint_footprint(ncas));
+  builders_adjoint_tail(h, naux, nao, nmo, ncore, ncas);
+  h.give(own + bars + (2 * ndet) + n4 + arrays.device.persistent);
+  return h.footprint(h.live);
+}
+
+MemoryFootprint qd_sc_adjoint_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
+                                        const int32_t ncore, const int32_t ncas,
+                                        const int32_t n_alpha, const int32_t n_beta,
+                                        const int32_t nroots, const int32_t batch,
+                                        const int32_t nfrozen) {
+  return qd_adjoint_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, nroots, nfrozen,
+                              sc_effective_hamiltonian_adjoint_footprint(
+                                  naux, ncore - nfrozen, ncas, nmo - ncore - ncas, n_alpha + n_beta,
+                                  nroots, batch, rdms_adjoint_footprint(ncas, 1, true, false)));
+}
+
+MemoryFootprint qd_pc_adjoint_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
+                                        const int32_t ncore, const int32_t ncas,
+                                        const int32_t n_alpha, const int32_t n_beta,
+                                        const int32_t nroots, const int32_t batch,
+                                        const std::span<const size_t> syevd_lwork,
+                                        const int32_t nfrozen,
+                                        const std::span<const std::array<int64_t, 8>> dropped) {
+  return qd_adjoint_footprint(
+      naux, nao, nmo, ncore, ncas, n_alpha, n_beta, nroots, nfrozen,
+      pc_effective_hamiltonian_adjoint_footprint(naux, ncore - nfrozen, ncas, nmo - ncore - ncas,
+                                                 nroots, batch, syevd_lwork, dropped,
+                                                 rdms_adjoint_footprint(ncas, 1, true, false)));
 }
 
 } // namespace free_breakfast::nevpt2

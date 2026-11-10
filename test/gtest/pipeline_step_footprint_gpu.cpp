@@ -42,6 +42,7 @@ import free_breakfast.response;
 import free_breakfast.gradient;   // one_electron_terms
 import free_breakfast.integrals;  // casscf_integrals, overlap_half_gradient
 import free_breakfast.recipes.lu; // getrf_lwork
+import free_breakfast.nevpt2;     // the NEVPT2 routines the NEVPT2 steps call
 
 #include "pool_footprint.h"
 #include "scratch_dir.h"
@@ -1418,6 +1419,634 @@ TEST(StepFootprint, LocalizationIboLivvo) {
       localization.footprint(plan.dims()), 1 + 3 + 2 + 4 + (20 * n_classes) + 11,
       [&](fb::DeviceResources &res) { expect_ran(localization.run(localization_view(plan), res)); },
       {}, true);
+}
+
+// The NEVPT2 steps (#1052) and the routines their footprints compose, over
+// water's CAS(4, 4), every build fitted: the SA-2 CASSCF the Nevpt2 step,
+// the QD gradient and the couplings read, and the single-state one the
+// state-specific gradients read, each converged once for its suite. Every
+// step runs on a pool capped at its footprint, the headroom and the pool's
+// rounding, so each adaptive part (nevpt2::rdms' and rdms_adjoint's tiles,
+// the classes' slab batch) takes the least it runs with, as its footprint
+// counts it. PC's kept ranks are the data's: a step footprint counts each
+// class at the rank that holds the most, and the test's slack is the
+// difference the run's ranks make, from the library footprints at them.
+
+// A CASSCF the NEVPT2 steps read, and its mcscf::Solution on the plan's
+// DeviceResources.
+struct Nevpt2Reference {
+  Plan plan;
+  std::optional<fb::CasscfOutput> cas;
+  std::optional<fb::mcscf::Solution> solution;
+
+  explicit Nevpt2Reference(const std::string_view tables)
+      : plan(System{.mode = fb::EriMode::DensityFitting, .tables = tables}) {
+    plan.run_through_scf();
+    auto ran = planned<fb::CasscfStep>(*plan.calc).run(casscf_view(plan), plan.inputs);
+    EXPECT_TRUE(ran) << ran.error().message;
+    cas.emplace(std::move(*ran));
+    solution.emplace(solution_of(plan.inputs, plan.basis->basis, *cas));
+  }
+
+  [[nodiscard]] const fb::FootprintDimensions &dims() const { return plan.dims(); }
+  [[nodiscard]] const fb::DensityFitted &fit() const {
+    return std::get<fb::DensityFitted>(plan.eri->eri);
+  }
+  [[nodiscard]] std::int32_t nmo() const { return static_cast<std::int32_t>(plan.dims().nao); }
+  [[nodiscard]] std::int32_t nvirt() const { return nmo() - cas->ncore - cas->ncas; }
+  [[nodiscard]] std::int32_t nroots() const {
+    return static_cast<std::int32_t>(cas->energies.size());
+  }
+  [[nodiscard]] fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::EriOutput,
+                         fb::CoreHamiltonianOutput, fb::ScfOutput, fb::CasscfOutput>
+  nevpt2_view() const {
+    return fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::EriOutput,
+                    fb::CoreHamiltonianOutput, fb::ScfOutput, fb::CasscfOutput>{
+        *plan.molecule, *plan.basis, *plan.eri, *plan.h, *plan.scf, *cas};
+  }
+  [[nodiscard]] fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput,
+                         fb::EriOutput, fb::CoreHamiltonianOutput, fb::ScfOutput, fb::CasscfOutput>
+  reader_view() const {
+    return fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput,
+                    fb::EriOutput, fb::CoreHamiltonianOutput, fb::ScfOutput, fb::CasscfOutput>{
+        *plan.molecule, *plan.basis, *plan.pairs, *plan.eri, *plan.h, *plan.scf, *cas};
+  }
+  // Every state's PC class counts, as qd_pc_energy drops them on the
+  // solution's own orbitals: what the effective Hamiltonians' kets keep.
+  [[nodiscard]] std::vector<std::array<std::int64_t, 8>> qd_dropped() {
+    fb::DeviceResources &res = plan.inputs;
+    auto alpha = fb::ci::DeviceStringSet::create(res, cas->ncas, cas->nelecas / 2).value();
+    auto beta = fb::ci::DeviceStringSet::create(res, cas->ncas, cas->nelecas / 2).value();
+    const auto e =
+        fb::nevpt2::qd_pc_energy(res, alpha, beta, fit().naux, nmo(), nmo(), fit().b.data(),
+                                 solution->c.data(), plan.h->h.data(), cas->ncore, cas->ncas,
+                                 solution->weights, solution->roots.vectors.data(), 0);
+    EXPECT_TRUE(e) << e.error().message;
+    std::vector<std::array<std::int64_t, 8>> out;
+    for (std::int32_t j = 0; j < nroots() && e; ++j) {
+      out.push_back((*e)[static_cast<std::size_t>((j * nroots()) + j)].dropped);
+    }
+    return out;
+  }
+};
+
+// The SA-2 CASSCF, every NEVPT2 step configured over it, and the
+// single-state one, converged at the suite's first case that asks for each.
+class Nevpt2ReaderFootprint : public ::testing::Test {
+protected:
+  static void TearDownTestSuite() {
+    sa_.reset();
+    ss_.reset();
+  }
+  static Nevpt2Reference &sa() {
+    if (!sa_) {
+      sa_ = std::make_unique<Nevpt2Reference>(
+          "[casscf]\nncas = 4\nnelecas = 4\nnroots = 2\nconv_tol = 1e-8\nconv_tol_grad = 1e-6\n"
+          "[nevpt2]\nquasi_degenerate = true\n[nevpt2_gradient]\nquasi_degenerate = true\n"
+          "[nevpt2_nac]\n");
+    }
+    return *sa_;
+  }
+  static Nevpt2Reference &ss() {
+    if (!ss_) {
+      ss_ = std::make_unique<Nevpt2Reference>(
+          "[casscf]\nncas = 4\nnelecas = 4\nconv_tol = 1e-8\nconv_tol_grad = 1e-6\n"
+          "[nevpt2_gradient]\n");
+    }
+    return *ss_;
+  }
+
+private:
+  static inline std::unique_ptr<Nevpt2Reference> sa_;
+  static inline std::unique_ptr<Nevpt2Reference> ss_;
+};
+
+// @p run, a step's or a routine's, held to @p fp with every adaptive part at
+// its least: on a fresh DeviceResources whose pool is capped at the
+// footprint's peak, the 64 MiB of fragmentation headroom an adaptive part
+// leaves of the budget, and the pool's rounding of the allocations live at
+// the peak (FciAtTheLeast's cap); once to grow the workspaces to exactly the
+// footprint's, then measured, with @p live allocations live at its peak.
+template <typename Run>
+void expect_least_footprint(const fb::MemoryFootprint &fp, const std::size_t live, Run &&run,
+                            std::optional<fbt::FootprintSlack> slack = {},
+                            std::source_location location = std::source_location::current()) {
+  std::size_t granularity = 0;
+  {
+    fb::DeviceResources probe{0};
+    granularity = fbt::pool_granularity(*probe.device());
+  }
+  const std::uint64_t cap = fp.device.peak() + fb::kPoolHeadroomBytes + (granularity * (live + 16));
+  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  run(res);
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace)
+      << "the device workspace, from line " << location.line();
+  EXPECT_EQ(res.pinned_bytes(), fp.pinned.peak())
+      << "the pinned memory, from line " << location.line();
+  const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { run(res); });
+  std::cout << std::format(
+      "[ footprint ] line {}: capped at {}: measured {} (G {}), footprint {} + workspace {}\n",
+      location.line(), cap, peak.used, peak.granularity, fp.device.persistent + fp.device.scratch,
+      fp.device.workspace);
+  fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
+                        live, slack, location);
+  EXPECT_LE(res.device()->pool_usage().used_high, cap) << "from line " << location.line();
+}
+
+// The difference @p most - @p at (their device peaks) as a footprint slack:
+// PC's kept ranks are the data's, and @p most counts each class at the rank
+// that holds the most.
+fbt::FootprintSlack rank_slack(const std::size_t bytes) {
+  return {.bytes = bytes,
+          .reason = "PC's kept ranks are the data's: the footprint counts each class at the rank "
+                    "that holds the most, the run keeps fewer (the library footprints' difference "
+                    "at the run's ranks)"};
+}
+
+std::size_t peak_gap(const fb::MemoryFootprint &most, const fb::MemoryFootprint &at) {
+  return most.device.peak() > at.device.peak() ? most.device.peak() - at.device.peak() : 0;
+}
+
+// Live at the peak of each case's measured run (test/support/pool_footprint.h's
+// A), counted off a trace of its pool allocations. The Nevpt2 step's, at a
+// root's PC Sr solve: the integrals, the strings, the CI vectors, the
+// per-root arrays, the Fock, the MO blocks, the identity, Sr's matrices,
+// its solve and U, T and T₁; with QD, at the diagonal walk's.
+constexpr std::size_t kNevpt2StepLive = 51;
+constexpr std::size_t kNevpt2QdStepLive = 62;
+// The effective Hamiltonians and the PT2 densities alone.
+constexpr std::size_t kScDiagonalLive = 19;
+constexpr std::size_t kScPairLive = 8;
+constexpr std::size_t kPcDiagonalLive = 24;
+constexpr std::size_t kPcPairLive = 9;
+constexpr std::size_t kScDensityLive = 25;
+constexpr std::size_t kPcDensityLive = 20;
+// The gradient's routines: sc_adjoint's and pc_adjoint's at the bars beside
+// the forward's arrays, zc_adjoint's every buffer, the QD adjoints' at the
+// walk beside every pair's RDMs.
+constexpr std::size_t kScAdjointLive = 55;
+constexpr std::size_t kPcAdjointLive = 55;
+constexpr std::size_t kZcAdjointLive = 18;
+constexpr std::size_t kQdScAdjointLive = 84;
+constexpr std::size_t kQdPcAdjointLive = 182;
+// The couplings', SC's at the df_gradient pass beside the Lagrangian, PC's
+// at its adjoint's walk.
+constexpr std::size_t kCouplingLive = 49;
+constexpr std::size_t kPcCouplingLive = 186;
+
+// The Nevpt2 step over the SA-2 CASSCF, SC and PC per root, at the least:
+// its footprint, the PC classes counted at their whole bases, past the run
+// by the ranks it keeps, the unconstrained run's (the same data). And the SC
+// and PC energies at the least equal the unconstrained run's to 1e-10 Eh:
+// the tile and the batch reorder sums only.
+TEST_F(Nevpt2ReaderFootprint, Nevpt2Step) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  Nevpt2Reference &s = sa();
+  ASSERT_EQ(s.dims().casscf_nroots, 2U);
+  auto step = planned<fb::Nevpt2Step>(*s.plan.calc);
+  step.quasi_degenerate = false;
+  const fb::MemoryFootprint fp = step.footprint(s.dims());
+  EXPECT_EQ(fp.device.persistent, 0U);
+
+  // Unconstrained: the budget whole.
+  fb::Result<fb::Nevpt2Output> whole = fb::err_config("not run");
+  {
+    fb::DeviceResources res{0};
+    whole = step.run(s.nevpt2_view(), res);
+    ASSERT_TRUE(whole) << whole.error().message;
+  }
+  const std::int32_t ncore = s.cas->ncore;
+  const std::int32_t ncas = s.cas->ncas;
+  const auto &lwork = s.dims().syevd_lwork;
+  const fb::MemoryFootprint most =
+      fb::nevpt2::pc_class_energies_footprint(ncore, ncas, s.nvirt(), -1, lwork);
+  std::size_t slack = 0;
+  for (const auto &pc : whole->pc_roots) {
+    ASSERT_TRUE(pc.has_value());
+    slack = std::max(slack, peak_gap(most, fb::nevpt2::pc_class_energies_footprint(
+                                               ncore, ncas, s.nvirt(), -1, lwork, pc->dropped)));
+  }
+
+  std::optional<fb::Nevpt2Output> least;
+  expect_least_footprint(
+      fp, kNevpt2StepLive,
+      [&](fb::DeviceResources &res) {
+        auto out = step.run(s.nevpt2_view(), res);
+        ASSERT_TRUE(out) << out.error().message;
+        least.emplace(std::move(*out));
+      },
+      rank_slack(slack));
+  ASSERT_TRUE(least.has_value());
+  for (std::size_t r = 0; r < whole->roots.size(); ++r) {
+    EXPECT_NEAR(least->roots[r].total, whole->roots[r].total, 1e-10) << "SC root " << r;
+    ASSERT_TRUE(least->pc_roots[r].has_value());
+    EXPECT_NEAR(least->pc_roots[r]->total, whole->pc_roots[r]->total, 1e-10) << "PC root " << r;
+  }
+}
+
+// With quasi_degenerate: the roots' walks, then the state-averaged inputs,
+// both effective Hamiltonians' diagonal walk with PC's kets kept, a pair's
+// transition RDMs and couplings, and the two eigensolves. The slack is the
+// largest of the ranks' differences over the PC calls the step makes: each
+// root's classes, the diagonal walk, and a pair's walk beside the kets kept.
+// The QD energies at the least equal the unconstrained run's to 1e-10 Eh.
+TEST_F(Nevpt2ReaderFootprint, Nevpt2StepQuasiDegenerate) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  Nevpt2Reference &s = sa();
+  const auto step = planned<fb::Nevpt2Step>(*s.plan.calc);
+  ASSERT_TRUE(step.quasi_degenerate);
+  const fb::MemoryFootprint fp = step.footprint(s.dims());
+  EXPECT_EQ(fp.device.persistent, 0U);
+  fb::Result<fb::Nevpt2Output> whole = fb::err_config("not run");
+  {
+    fb::DeviceResources res{0};
+    whole = step.run(s.nevpt2_view(), res);
+    ASSERT_TRUE(whole) << whole.error().message;
+  }
+  const std::int32_t ncore = s.cas->ncore;
+  const std::int32_t ncas = s.cas->ncas;
+  const std::int32_t n = s.nroots();
+  const auto &lwork = s.dims().syevd_lwork;
+  std::size_t slack = 0;
+  const fb::MemoryFootprint most =
+      fb::nevpt2::pc_class_energies_footprint(ncore, ncas, s.nvirt(), -1, lwork);
+  for (const auto &pc : whole->pc_roots) {
+    ASSERT_TRUE(pc.has_value());
+    slack = std::max(slack, peak_gap(most, fb::nevpt2::pc_class_energies_footprint(
+                                               ncore, ncas, s.nvirt(), -1, lwork, pc->dropped)));
+  }
+  std::vector<std::array<std::int64_t, 8>> dropped;
+  for (std::int32_t j = 0; j < n; ++j) {
+    dropped.push_back(whole->pc_qd_couplings[static_cast<std::size_t>((j * n) + j)].dropped);
+  }
+  const auto diagonal = [&](const std::span<const std::array<std::int64_t, 8>> d) {
+    return fb::nevpt2::pc_effective_hamiltonian_footprint(ncore, ncas, s.nvirt(), n, true, 0, -1,
+                                                          lwork, true, d);
+  };
+  const auto pair = [&](const std::span<const std::array<std::int64_t, 8>> d) {
+    return fb::nevpt2::pc_effective_hamiltonian_footprint(ncore, ncas, s.nvirt(), n, false, 2, -1,
+                                                          lwork, true, d);
+  };
+  slack = std::max({slack, peak_gap(diagonal({}), diagonal(dropped)),
+                    diagonal({}).device.persistent - diagonal(dropped).device.persistent +
+                        peak_gap(pair({}), pair(dropped))});
+
+  std::optional<fb::Nevpt2Output> least;
+  expect_least_footprint(
+      fp, kNevpt2QdStepLive,
+      [&](fb::DeviceResources &res) {
+        auto out = step.run(s.nevpt2_view(), res);
+        ASSERT_TRUE(out) << out.error().message;
+        least.emplace(std::move(*out));
+      },
+      rank_slack(slack));
+  ASSERT_TRUE(least.has_value());
+  ASSERT_EQ(least->qd_energies.size(), whole->qd_energies.size());
+  for (std::size_t k = 0; k < whole->qd_energies.size(); ++k) {
+    EXPECT_NEAR(least->qd_energies[k], whole->qd_energies[k], 1e-10) << "SC-QD state " << k;
+    EXPECT_NEAR(least->pc_qd_energies[k], whole->pc_qd_energies[k], 1e-10) << "PC-QD state " << k;
+  }
+}
+
+// The Nevpt2Gradient step, @p variant, state-specific over the single-state
+// CASSCF or with @p quasi_degenerate state 0 of the SA-2 one, at the least:
+// the gradient's footprint and the Solution's upload, its device arrays the
+// product's. A PC footprint counts its classes at the rank that holds the
+// most: the slack is the library gradient footprint's difference at the
+// run's ranks.
+void expect_nevpt2_gradient_step(Nevpt2Reference &s, const fb::Nevpt2Variant variant,
+                                 const bool quasi_degenerate, const std::size_t live) {
+  auto step = planned<fb::Nevpt2GradientStep>(*s.plan.calc);
+  step.variant = variant;
+  step.quasi_degenerate = quasi_degenerate;
+  step.state = 0;
+  const fb::MemoryFootprint fp = step.footprint(s.dims());
+  EXPECT_GT(fp.device.persistent, 0U);
+  std::size_t slack = 0;
+  if (variant == fb::Nevpt2Variant::Pc) {
+    const fb::BasisSet &basis = s.plan.basis->basis;
+    const fb::BasisSet &aux = s.fit().aux;
+    const std::int32_t ncore = s.cas->ncore;
+    const std::int32_t ncas = s.cas->ncas;
+    const auto nelecas = s.cas->nelecas;
+    const auto &lwork = s.dims().syevd_lwork;
+    if (quasi_degenerate) {
+      const auto at = [&](const std::span<const std::array<std::int64_t, 8>> d) {
+        return fb::nevpt2::qd_pc_gradient_footprint(basis, aux, ncore, ncas, nelecas, 1, s.nroots(),
+                                                    false, 0, lwork, 0, d);
+      };
+      slack = peak_gap(at({}), at(s.qd_dropped()));
+    } else {
+      fb::DeviceResources &in = s.plan.inputs;
+      auto strings = fb::ci::DeviceStringSet::create(in, ncas, nelecas / 2).value();
+      const auto e =
+          fb::nevpt2::pc_energy(in, strings, strings, s.fit().naux, s.nmo(), s.nmo(),
+                                s.fit().b.data(), s.solution->c.data(), s.plan.h->h.data(), ncore,
+                                ncas, s.solution->roots.vectors.data(), 0);
+      ASSERT_TRUE(e) << e.error().message;
+      const std::array<std::array<std::int64_t, 8>, 1> dropped{e->dropped};
+      const auto at = [&](const std::span<const std::array<std::int64_t, 8>> d) {
+        return fb::nevpt2::pc_gradient_footprint(basis, aux, ncore, ncas, nelecas, 1, 0, lwork, 0,
+                                                 d);
+      };
+      slack = peak_gap(at({}), at(dropped));
+    }
+  }
+  expect_least_footprint(
+      fp, live, [&](fb::DeviceResources &res) { expect_ran(step.run(s.reader_view(), res)); },
+      slack > 0 ? std::optional{rank_slack(slack)} : std::nullopt);
+}
+
+// The gradient steps': the state-specific ones at df_gradient's pass beside
+// the Lagrangian's arrays, the QD SC one there too, the QD PC one at its
+// adjoint's walk.
+constexpr std::size_t kNevpt2GradientLive = 75;
+constexpr std::size_t kNevpt2QdGradientLive = 51;
+constexpr std::size_t kNevpt2QdPcGradientLive = 188;
+
+TEST_F(Nevpt2ReaderFootprint, Nevpt2GradientStep) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_nevpt2_gradient_step(ss(), fb::Nevpt2Variant::Sc, false, kNevpt2GradientLive);
+}
+
+TEST_F(Nevpt2ReaderFootprint, Nevpt2GradientStepPc) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_nevpt2_gradient_step(ss(), fb::Nevpt2Variant::Pc, false, kNevpt2GradientLive);
+}
+
+TEST_F(Nevpt2ReaderFootprint, Nevpt2GradientStepQuasiDegenerate) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_nevpt2_gradient_step(sa(), fb::Nevpt2Variant::Sc, true, kNevpt2QdGradientLive);
+}
+
+TEST_F(Nevpt2ReaderFootprint, Nevpt2GradientStepQuasiDegeneratePc) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_nevpt2_gradient_step(sa(), fb::Nevpt2Variant::Pc, true, kNevpt2QdPcGradientLive);
+}
+
+// The Nevpt2Nac step, @p variant, over the SA-2 CASSCF's one pair: the
+// upload, H_eff, then the pair's coupling. PC's slack, as the gradient's:
+// the step's two PC phases, H_eff's walk and the coupling, at the
+// rank that holds the most and at the run's.
+void expect_nevpt2_nac_step(Nevpt2Reference &s, const fb::Nevpt2Variant variant,
+                            const std::size_t live) {
+  auto step = planned<fb::Nevpt2NacStep>(*s.plan.calc);
+  step.variant = variant;
+  const fb::MemoryFootprint fp = step.footprint(s.dims());
+  EXPECT_EQ(fp.device.persistent, 0U);
+  std::size_t slack = 0;
+  if (variant == fb::Nevpt2Variant::Pc) {
+    const fb::BasisSet &basis = s.plan.basis->basis;
+    const fb::BasisSet &aux = s.fit().aux;
+    const std::int32_t ncore = s.cas->ncore;
+    const std::int32_t ncas = s.cas->ncas;
+    const auto nelecas = s.cas->nelecas;
+    const std::int32_t n = s.nroots();
+    const auto &lwork = s.dims().syevd_lwork;
+    const std::vector<std::array<std::int64_t, 8>> dropped = s.qd_dropped();
+    const auto phases = [&](const std::span<const std::array<std::int64_t, 8>> d) {
+      const fb::MemoryFootprint heff = fb::nevpt2::qd_inputs_footprint(
+          s.fit().naux, s.nmo(), ncore, ncas, nelecas, 1, n,
+          drop(fb::nevpt2::pc_effective_hamiltonian_footprint(ncore, ncas, s.nvirt(), n, true,
+                                                              n * (n - 1), 0, lwork, false, d)));
+      const fb::MemoryFootprint pair = fb::nevpt2::qd_pc_nac_footprint(
+          basis, aux, ncore, ncas, nelecas, 1, n, false, 0, lwork, d);
+      return std::max(heff.device.peak(), pair.device.peak());
+    };
+    slack = phases({}) - phases(dropped);
+  }
+  expect_least_footprint(
+      fp, live, [&](fb::DeviceResources &res) { expect_ran(step.run(s.reader_view(), res)); },
+      slack > 0 ? std::optional{rank_slack(slack)} : std::nullopt);
+}
+
+// The coupling steps', at their pair's coupling's peak.
+constexpr std::size_t kNevpt2NacLive = 51;
+constexpr std::size_t kNevpt2PcNacLive = 188;
+
+TEST_F(Nevpt2ReaderFootprint, Nevpt2NacStep) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_nevpt2_nac_step(sa(), fb::Nevpt2Variant::Sc, kNevpt2NacLive);
+}
+
+TEST_F(Nevpt2ReaderFootprint, Nevpt2NacStepPc) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_nevpt2_nac_step(sa(), fb::Nevpt2Variant::Pc, kNevpt2PcNacLive);
+}
+
+// The routines the NEVPT2 steps' footprints compose, each held alone at the
+// run's PC ranks (so exactly, no slack): over the SA-2 CASSCF's
+// qd_inputs, the effective Hamiltonians' diagonal walk with the kets kept
+// and a pair's walk over them, SC's and PC's, and the PT2 transition
+// densities over every pair.
+TEST_F(Nevpt2ReaderFootprint, EffectiveHamiltonians) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  Nevpt2Reference &s = sa();
+  const std::int32_t ncore = s.cas->ncore;
+  const std::int32_t ncas = s.cas->ncas;
+  const std::int32_t n = s.nroots();
+  const auto &lwork = s.dims().syevd_lwork;
+  const std::vector<std::array<std::int64_t, 8>> dropped = s.qd_dropped();
+  const std::vector<double> t{0.0, 0.5, -0.5, 0.0};
+  ASSERT_TRUE(fb::nevpt2::qd_inputs(
+      s.plan.inputs, s.plan.molecule->molecule, s.plan.basis->basis, s.fit().aux, s.plan.h->h,
+      s.fit().b, *s.solution, ncore, ncas,
+      [&](const fb::nevpt2::MoBlocks &blocks,
+          const std::span<const fb::nevpt2::EnergyInputs> pairs) -> fb::Status {
+        // The diagonal alone, and the pair (0, 1) beside its transpose.
+        std::vector<fb::nevpt2::EnergyInputs> diagonal(pairs.begin(), pairs.end());
+        std::vector<fb::nevpt2::EnergyInputs> off(pairs.begin(), pairs.end());
+        for (std::int32_t p = 0; p < n * n; ++p) {
+          fb::nevpt2::EnergyInputs &omit = p / n == p % n ? off[p] : diagonal[p];
+          omit.dm1 = omit.dm2 = omit.dm3 = omit.f3ca = omit.f3ac = nullptr;
+        }
+        fb::nevpt2::ScAmplitudes sc_kets;
+        fb::nevpt2::PcAmplitudes pc_kets;
+        // The integrals' identities, the classes' blocks, slabs and tables.
+        expect_step_footprint(
+            fb::nevpt2::sc_effective_hamiltonian_footprint(ncore, ncas, s.nvirt(), s.cas->nelecas,
+                                                           n, true, 0, 0),
+            kScDiagonalLive, [&](fb::DeviceResources &res) {
+              EXPECT_TRUE(fb::nevpt2::sc_effective_hamiltonian(res, blocks, diagonal, 0, &sc_kets));
+            });
+        expect_step_footprint(
+            fb::nevpt2::sc_effective_hamiltonian_footprint(ncore, ncas, s.nvirt(), s.cas->nelecas,
+                                                           n, false, 2, 0),
+            kScPairLive, [&](fb::DeviceResources &res) {
+              EXPECT_TRUE(fb::nevpt2::sc_effective_hamiltonian(res, blocks, off, 0, &sc_kets));
+            });
+        // Each class's solves and kets, the kept U's the call's product.
+        const fb::MemoryFootprint kept = fb::nevpt2::pc_effective_hamiltonian_footprint(
+            ncore, ncas, s.nvirt(), n, true, 0, 0, lwork, true, dropped);
+        EXPECT_GT(kept.device.persistent, 0U);
+        expect_step_footprint(kept, kPcDiagonalLive, [&](fb::DeviceResources &res) {
+          fb::nevpt2::PcAmplitudes local;
+          EXPECT_TRUE(fb::nevpt2::pc_effective_hamiltonian(res, blocks, diagonal, 0, &local));
+        });
+        EXPECT_TRUE(
+            fb::nevpt2::pc_effective_hamiltonian(s.plan.inputs, blocks, diagonal, 0, &pc_kets));
+        expect_step_footprint(
+            fb::nevpt2::pc_effective_hamiltonian_footprint(ncore, ncas, s.nvirt(), n, false, 2, 0,
+                                                           lwork, true, dropped),
+            kPcPairLive, [&](fb::DeviceResources &res) {
+              EXPECT_TRUE(fb::nevpt2::pc_effective_hamiltonian(res, blocks, off, 0, &pc_kets));
+            });
+        // The walk over every pair, then the weighted RDMs, the blocks and a
+        // class's coefficients (or amplitudes) and slabs; the density.
+        expect_step_footprint(
+            fb::nevpt2::sc_pt2_transition_density_footprint(ncore, ncas, s.nvirt(), s.cas->nelecas,
+                                                            n, 0),
+            kScDensityLive, [&](fb::DeviceResources &res) {
+              EXPECT_TRUE(fb::nevpt2::sc_pt2_transition_density(res, blocks, pairs, t, 0));
+            });
+        expect_step_footprint(
+            fb::nevpt2::pc_pt2_transition_density_footprint(ncore, ncas, s.nvirt(), n, 0, lwork,
+                                                            dropped),
+            kPcDensityLive, [&](fb::DeviceResources &res) {
+              EXPECT_TRUE(fb::nevpt2::pc_pt2_transition_density(res, blocks, pairs, t, 0));
+            });
+        return {};
+      }));
+}
+
+// The gradient's routines, each alone at its least (rdms' and rdms_adjoint's
+// tiles at one determinant): over the single-state CASSCF, sc_adjoint,
+// pc_adjoint and zc_adjoint; over the SA-2 one, qd_sc_adjoint and
+// qd_pc_adjoint at a W.
+TEST_F(Nevpt2ReaderFootprint, GradientRoutines) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  for (Nevpt2Reference *ref : {&ss(), &sa()}) {
+    Nevpt2Reference &s = *ref;
+    fb::DeviceResources &in = s.plan.inputs;
+    const std::int32_t ncore = s.cas->ncore;
+    const std::int32_t ncas = s.cas->ncas;
+    const std::int32_t nmo = s.nmo();
+    const std::int32_t naux = s.fit().naux;
+    const auto &lwork = s.dims().syevd_lwork;
+    const fb::mcscf::Solution &sol = *s.solution;
+    const double *const b = s.fit().b.data();
+    const double *const c = sol.c.data();
+    const double *const h = s.plan.h->h.data();
+    auto alpha = fb::ci::DeviceStringSet::create(in, ncas, s.cas->nelecas / 2).value();
+    auto beta = fb::ci::DeviceStringSet::create(in, ncas, s.cas->nelecas / 2).value();
+    if (s.nroots() == 1) {
+      const auto e = fb::nevpt2::pc_energy(in, alpha, beta, naux, nmo, nmo, b, c, h, ncore, ncas,
+                                           sol.roots.vectors.data(), 0);
+      ASSERT_TRUE(e) << e.error().message;
+      const std::array<std::array<std::int64_t, 8>, 1> dropped{e->dropped};
+      // The forward's arrays and their bars, the walk, the builders' reverse.
+      expect_least_footprint(fb::nevpt2::sc_adjoint_footprint(naux, nmo, nmo, ncore, ncas, 2, 2, 0),
+                             kScAdjointLive, [&](fb::DeviceResources &res) {
+                               EXPECT_TRUE(fb::nevpt2::sc_adjoint(res, alpha, beta, naux, nmo, nmo,
+                                                                  b, c, h, ncore, ncas,
+                                                                  sol.roots.vectors.data(), 0));
+                             });
+      expect_least_footprint(
+          fb::nevpt2::pc_adjoint_footprint(naux, nmo, nmo, ncore, ncas, 2, 2, 0, lwork, 0, dropped),
+          kPcAdjointLive, [&](fb::DeviceResources &res) {
+            EXPECT_TRUE(fb::nevpt2::pc_adjoint(res, alpha, beta, naux, nmo, nmo, b, c, h, ncore,
+                                               ncas, sol.roots.vectors.data(), 0));
+          });
+      const fb::nevpt2::ScAdjoint corr =
+          fb::nevpt2::sc_adjoint(in, alpha, beta, naux, nmo, nmo, b, c, h, ncore, ncas,
+                                 sol.roots.vectors.data(), 0)
+              .value();
+      const fb::nevpt2::ZcMultipliers zc =
+          fb::nevpt2::zc_multipliers(in, nmo, ncore, ncas, corr.a.data(), corr.epsilon.data())
+              .value();
+      // The sigma's tables and apply scratch, D, h, B and Φ's arrays.
+      expect_least_footprint(fb::nevpt2::zc_adjoint_footprint(naux, nmo, nmo, ncas, 2, 2, 1),
+                             kZcAdjointLive, [&](fb::DeviceResources &res) {
+                               EXPECT_TRUE(fb::nevpt2::zc_adjoint(
+                                   res, alpha, beta, naux, nmo, nmo, b, c, h, ncore, ncas,
+                                   std::array{1.0}, sol.roots.vectors.data(), zc.z.data()));
+                             });
+      continue;
+    }
+    const std::vector<double> w{0.6, 0.2, 0.2, 0.4};
+    const std::vector<std::array<std::int64_t, 8>> dropped = s.qd_dropped();
+    // The arrays and pair RDMs, the bars, the walk with its transitions, the
+    // builders' reverse.
+    expect_least_footprint(
+        fb::nevpt2::qd_sc_adjoint_footprint(naux, nmo, nmo, ncore, ncas, 2, 2, 2, 0),
+        kQdScAdjointLive, [&](fb::DeviceResources &res) {
+          EXPECT_TRUE(fb::nevpt2::qd_sc_adjoint(res, alpha, beta, naux, nmo, nmo, b, c, h, ncore,
+                                                ncas, sol.weights, sol.roots.vectors.data(), w, 0));
+        });
+    expect_least_footprint(
+        fb::nevpt2::qd_pc_adjoint_footprint(naux, nmo, nmo, ncore, ncas, 2, 2, 2, 0, lwork, 0,
+                                            dropped),
+        kQdPcAdjointLive, [&](fb::DeviceResources &res) {
+          EXPECT_TRUE(fb::nevpt2::qd_pc_adjoint(res, alpha, beta, naux, nmo, nmo, b, c, h, ncore,
+                                                ncas, sol.weights, sol.roots.vectors.data(), w, 0));
+        });
+  }
+}
+
+// The couplings between the SA-2 CASSCF's two QD states, each alone at its
+// least: the interstate coupling (the state form's Lagrangian at W^PQ, the
+// core's Fock held, the passes at a mix summing to 0), SC's and PC's; and
+// the derivative coupling qd_sc_nac and qd_pc_nac, the coupling, D^PT2 and
+// the two combinations one at a time.
+TEST_F(Nevpt2ReaderFootprint, Couplings) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  Nevpt2Reference &s = sa();
+  const fb::BasisSet &basis = s.plan.basis->basis;
+  const fb::BasisSet &aux = s.fit().aux;
+  const std::int32_t ncore = s.cas->ncore;
+  const std::int32_t ncas = s.cas->ncas;
+  const std::int32_t nelecas = s.cas->nelecas;
+  const std::int32_t n = s.nroots();
+  const auto &lwork = s.dims().syevd_lwork;
+  const std::vector<std::array<std::int64_t, 8>> dropped = s.qd_dropped();
+  const auto call = [&](auto &&routine) {
+    return [&, routine](fb::DeviceResources &res) {
+      const auto out = routine(res);
+      EXPECT_TRUE(out) << out.error().message;
+    };
+  };
+  const fb::Molecule &molecule = s.plan.molecule->molecule;
+  const auto &classes = s.plan.pairs->classes;
+  const fb::SphericalMatrixAO &h = s.plan.h->h;
+  const fb::DensityFitted &fit = s.fit();
+  expect_least_footprint(
+      fb::nevpt2::qd_sc_coupling_footprint(basis, aux, ncore, ncas, nelecas, 1, n, false, 0, lwork),
+      kCouplingLive, call([&](fb::DeviceResources &res) {
+        return fb::nevpt2::qd_sc_coupling(res, molecule, basis, classes, aux, h, fit.b,
+                                          fit.l.data(), *s.solution, ncore, ncas, 0, 1, 0);
+      }));
+  expect_least_footprint(fb::nevpt2::qd_pc_coupling_footprint(basis, aux, ncore, ncas, nelecas, 1,
+                                                              n, false, 0, lwork, dropped),
+                         kPcCouplingLive, call([&](fb::DeviceResources &res) {
+                           return fb::nevpt2::qd_pc_coupling(res, molecule, basis, classes, aux, h,
+                                                             fit.b, fit.l.data(), *s.solution,
+                                                             ncore, ncas, 0, 1, 0);
+                         }));
+  expect_least_footprint(
+      fb::nevpt2::qd_sc_nac_footprint(basis, aux, ncore, ncas, nelecas, 1, n, false, 0, lwork),
+      kCouplingLive, call([&](fb::DeviceResources &res) {
+        return fb::nevpt2::qd_sc_nac(res, molecule, basis, classes, aux, h, fit.b, fit.l.data(),
+                                     *s.solution, ncore, ncas, 0, 1, 0);
+      }));
+  expect_least_footprint(fb::nevpt2::qd_pc_nac_footprint(basis, aux, ncore, ncas, nelecas, 1, n,
+                                                         false, 0, lwork, dropped),
+                         kPcCouplingLive, call([&](fb::DeviceResources &res) {
+                           return fb::nevpt2::qd_pc_nac(res, molecule, basis, classes, aux, h,
+                                                        fit.b, fit.l.data(), *s.solution, ncore,
+                                                        ncas, 0, 1, 0);
+                         }));
 }
 
 } // namespace

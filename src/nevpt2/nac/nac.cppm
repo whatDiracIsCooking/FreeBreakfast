@@ -19,6 +19,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -62,6 +63,15 @@ sc_pt2_transition_density(DeviceResources &res, const MoBlocks &blocks,
                           std::span<const EnergyInputs> pairs, std::span<const double> t,
                           int32_t batch);
 
+/// @brief What @ref sc_pt2_transition_density holds over @p nstates states on
+/// @p ncore, @p ncas and @p nvirt orbitals (the blocks') of @p nelecas
+/// electrons at @p batch, every pair given: the effective Hamiltonian's walk
+/// (sc_effective_hamiltonian_footprint); the T-weighted RDMs, the blocks,
+/// each class's coefficients and slabs; the density, nmo^2, persistent.
+[[nodiscard]] MemoryFootprint sc_pt2_transition_density_footprint(int32_t ncore, int32_t ncas,
+                                                                  int32_t nvirt, int32_t nelecas,
+                                                                  int32_t nstates, int32_t batch);
+
 /// @brief The PC-QD-NEVPT2 PT2 transition density: sc_pt2_transition_density
 /// with Ψ_M⁽¹⁾ state M's PC first-order wave function, as
 /// pc_effective_hamiltonian solves it (its cut modes cut, PcAmplitudes).
@@ -77,6 +87,15 @@ sc_pt2_transition_density(DeviceResources &res, const MoBlocks &blocks,
 pc_pt2_transition_density(DeviceResources &res, const MoBlocks &blocks,
                           std::span<const EnergyInputs> pairs, std::span<const double> t,
                           int32_t batch);
+
+/// @brief What @ref pc_pt2_transition_density holds:
+/// pc_effective_hamiltonian_footprint with its kets kept, @p syevd_lwork and
+/// @p dropped its, held to the end; the T-weighted RDMs and the blocks; per
+/// state and class its amplitudes and S₁ᵀ U; the density, nmo^2, persistent.
+[[nodiscard]] MemoryFootprint
+pc_pt2_transition_density_footprint(int32_t ncore, int32_t ncas, int32_t nvirt, int32_t nstates,
+                                    int32_t batch, std::span<const size_t> syevd_lwork,
+                                    std::span<const std::array<int64_t, 8>> dropped = {});
 
 /// @brief A QD-NEVPT2 coupling between two QD states and its pieces, each
 /// flat and row-major as @c (n_atom, 3), as mcscf::Nac's: element 3 A + k is
@@ -155,6 +174,18 @@ qd_sc_nac(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
           const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p, int32_t q,
           int32_t batch, const mcscf::NacOptions &options = {}, bool fold = false);
 
+/// @brief What @ref qd_sc_nac holds without the fold over @p basis and @p aux
+/// with @p ncore core and @p ncas active orbitals holding @p nelecas
+/// electrons at @p multiplicity, @p nroots roots (@p rotating: unequal
+/// weights), at @p batch: one phase at a time, each freed before the next,
+/// the interstate coupling (nevpt2::qd_sc_coupling_footprint), D^PT2 over
+/// nevpt2::qd_inputs, and mcscf::df_nac's combination at T^PQ and at D^PT2.
+[[nodiscard]] MemoryFootprint qd_sc_nac_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                  int32_t ncore, int32_t ncas, int32_t nelecas,
+                                                  int32_t multiplicity, int32_t nroots,
+                                                  bool rotating, int32_t batch,
+                                                  std::span<const size_t> syevd_lwork);
+
 /// @brief The PC-QD-NEVPT2 derivative coupling: qd_sc_nac with
 /// qd_pc_coupling and pc_pt2_transition_density, R PC's H_eff's
 /// eigenvectors signed as SC's. The arguments are qd_sc_nac's.
@@ -168,5 +199,13 @@ qd_pc_nac(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
           const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
           const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p, int32_t q,
           int32_t batch, const mcscf::NacOptions &options = {}, bool fold = false);
+
+/// @brief What @ref qd_pc_nac holds without the fold: qd_sc_nac_footprint
+/// with PC's coupling and density, @p dropped theirs.
+[[nodiscard]] MemoryFootprint
+qd_pc_nac_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                    int32_t nelecas, int32_t multiplicity, int32_t nroots, bool rotating,
+                    int32_t batch, std::span<const size_t> syevd_lwork,
+                    std::span<const std::array<int64_t, 8>> dropped = {});
 
 } // namespace free_breakfast::nevpt2

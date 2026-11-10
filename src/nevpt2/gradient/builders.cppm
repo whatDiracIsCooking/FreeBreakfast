@@ -19,11 +19,13 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.einsum;
 import free_breakfast.ci.strings;
 import free_breakfast.nevpt2.density_fitting; // MoBlocks
 import free_breakfast.nevpt2.energy;          // EnergyInputs, EnergyBars
 import free_breakfast.nevpt2.gradient;        // ScAdjoint, QdScAdjoint
+import :operands;                             // Held
 
 namespace free_breakfast::nevpt2 {
 
@@ -174,6 +176,15 @@ Result<LambdaBars> lambda_bars(DeviceResources &res, const ScArrays &x, int32_t 
 Result<ScArrays> zeroed_arrays(DeviceResources &res, int32_t naux, int32_t ncore, int32_t ncas,
                                int32_t nvirt);
 
+/// @brief The bytes zeroed_arrays allocates at those sizes, every buffer held
+/// until the ScArrays goes: the footprints' count of a forward's arrays or
+/// their bars; and of shared_arrays (@p nfrozen past it, the correlated
+/// core's MO blocks), with what its builds borrow, the MO blocks' replacing
+/// the zeroed ones, h2e's product and the workspace, beside it.
+size_t zeroed_arrays_bytes(int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt);
+MemoryFootprint shared_arrays_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore,
+                                        int32_t ncas, int32_t nfrozen);
+
 /// @brief The inputs that no RDM reaches, built from (h, B, c): the counts
 /// checked (InvalidConfig naming @p who, @p nfrozen past the core among
 /// them), the MO blocks (and the correlated core's, with @p nfrozen), B_cc
@@ -224,6 +235,25 @@ Result<QdArrays> qd_arrays(DeviceResources &res, std::string_view who,
                            int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c,
                            const double *h, int32_t ncore, int32_t ncas,
                            std::span<const double> weights, const double *vectors, int32_t nfrozen);
+
+/// @brief What qd_arrays holds over @p nroots roots: shared_arrays', every
+/// ordered pair's RDMs (f3 on the diagonal), and nevpt2::rdms at one
+/// determinant, a root's own or a pair's bra/ket into the transition f3s'
+/// scratch. Persistent: the QdArrays.
+MemoryFootprint qd_arrays_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore,
+                                    int32_t ncas, int32_t nroots, int32_t nfrozen);
+
+/// @brief What qd_adjoint holds at one W, @p walk the effective
+/// Hamiltonian's reverse pass's (its transition the bra/ket rdms_adjoint).
+MemoryFootprint qd_adjoint_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore,
+                                     int32_t ncas, int32_t n_alpha, int32_t n_beta, int32_t nroots,
+                                     int32_t nfrozen, const MemoryFootprint &walk);
+
+/// @brief What builders_adjoint holds once the RDMs' adjoint has run, onto
+/// @p h: the folded bars, Λ's raw bar given back, X, the half transform, A
+/// and ε, and the workspace of h2e's, the MO blocks' and D's (gradient.cpp's).
+void builders_adjoint_tail(Held &h, int32_t naux, int32_t nao, int32_t nmo, int32_t ncore,
+                           int32_t ncas);
 
 /// @brief A zeroed PairRdms over @p ncas active orbitals, with f3ca and f3ac
 /// if @p f3. qd.cpp's.

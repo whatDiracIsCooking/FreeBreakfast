@@ -35,6 +35,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -125,6 +126,19 @@ struct ScAdjoint {
                                            int32_t ncas, const double *vector, int32_t batch,
                                            int32_t nfrozen = 0);
 
+/// @brief What @ref sc_adjoint holds over @p naux fitting functions, @p nao
+/// AOs and @p nmo orbitals with @p ncore core and @p ncas active orbitals
+/// holding @p n_alpha and @p n_beta electrons, at @p batch and @p nfrozen:
+/// the forward's arrays and their bars, held; nevpt2::rdms at one
+/// determinant; Λ's raw bar; class_energies_adjoint's walk; the builders'
+/// reverse with rdms_adjoint at one determinant (both tiles the least they
+/// run with); the folded bars, the source term's half transform. Persistent:
+/// the ScAdjoint's arrays.
+[[nodiscard]] MemoryFootprint sc_adjoint_footprint(int32_t naux, int32_t nao, int32_t nmo,
+                                                   int32_t ncore, int32_t ncas, int32_t n_alpha,
+                                                   int32_t n_beta, int32_t batch,
+                                                   int32_t nfrozen = 0);
+
 /// @brief The PC-NEVPT2 class energies of the root @p vector over the
 /// orbitals @p c: sc_energy's inputs, built the same way from the same
 /// arguments, through pc_class_energies instead of class_energies.
@@ -179,6 +193,16 @@ struct PcAdjoint {
                                            const double *c, const double *h, int32_t ncore,
                                            int32_t ncas, const double *vector, int32_t batch,
                                            int32_t nfrozen = 0, double pc_floor = 0.0);
+
+/// @brief What @ref pc_adjoint holds: sc_adjoint_footprint with
+/// pc_class_energies_adjoint's walk in place of class_energies_adjoint's,
+/// @p syevd_lwork and @p dropped as pc_effective_hamiltonian_adjoint_footprint
+/// takes them (one state's; empty, the rank that holds the most).
+[[nodiscard]] MemoryFootprint
+pc_adjoint_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore, int32_t ncas,
+                     int32_t n_alpha, int32_t n_beta, int32_t batch,
+                     std::span<const size_t> syevd_lwork, int32_t nfrozen = 0,
+                     std::span<const std::array<int64_t, 8>> dropped = {});
 
 /// @brief What the per-root builders make of (h, B, c) at one point, or their
 /// forward tangent along one direction: every EnergyInputs field, the MO
@@ -610,6 +634,19 @@ qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
               int32_t batch, int32_t nfrozen = 0,
               std::optional<QdBuilderBars> *builder_bars = nullptr);
 
+/// @brief What @ref qd_sc_adjoint holds at one W over @p nroots roots, the
+/// counts as sc_adjoint_footprint's: the forward's arrays and every ordered
+/// pair's RDMs (qd_sc_energy's, nevpt2::rdms at one determinant), the
+/// rdms_adjoint outputs, the bars, each root's own RDMs' bars and y;
+/// sc_effective_hamiltonian_adjoint's walk, each transition handed to the
+/// bra/ket rdms_adjoint at one determinant; the builders' reverse, each
+/// root's rdms_adjoint at one determinant. Persistent: the arrays of the
+/// QdScAdjoint.
+[[nodiscard]] MemoryFootprint qd_sc_adjoint_footprint(int32_t naux, int32_t nao, int32_t nmo,
+                                                      int32_t ncore, int32_t ncas, int32_t n_alpha,
+                                                      int32_t n_beta, int32_t nroots, int32_t batch,
+                                                      int32_t nfrozen = 0);
+
 /// @brief qd_sc_hessian_product's result.
 struct QdScHessianProduct {
   /// @brief The n^2 elements, as qd_sc_energy computes them.
@@ -756,6 +793,14 @@ qd_pc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
               std::span<const double> weights, const double *vectors, std::span<const double> w,
               int32_t batch, int32_t nfrozen = 0, double pc_floor = 0.0);
 
+/// @brief What @ref qd_pc_adjoint holds: qd_sc_adjoint_footprint with
+/// pc_effective_hamiltonian_adjoint's walk, @p syevd_lwork and @p dropped its.
+[[nodiscard]] MemoryFootprint
+qd_pc_adjoint_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore, int32_t ncas,
+                        int32_t n_alpha, int32_t n_beta, int32_t nroots, int32_t batch,
+                        std::span<const size_t> syevd_lwork, int32_t nfrozen = 0,
+                        std::span<const std::array<int64_t, 8>> dropped = {});
+
 /// @brief qd_pc_hessian_product's result.
 struct QdPcHessianProduct {
   /// @brief The n^2 elements, as qd_pc_energy computes them.
@@ -847,6 +892,10 @@ struct ZcMultipliers {
                                                    int32_t ncas, const double *a,
                                                    const double *epsilon);
 
+/// @brief What @ref zc_multipliers holds over @p nmo orbitals: z, nmo^2
+/// doubles, persistent.
+[[nodiscard]] MemoryFootprint zc_multipliers_footprint(int32_t nmo);
+
 /// @brief zc_adjoint's result, every array on res's device. Each adjoint is
 /// in sc_adjoint's convention, so the caller adds them field by field.
 struct ZcAdjoint {
@@ -901,6 +950,16 @@ struct ZcAdjoint {
                                            const double *c, const double *h, int32_t ncore,
                                            int32_t ncas, std::span<const double> weights,
                                            const double *vectors, const double *z);
+
+/// @brief What @ref zc_adjoint holds over @p naux fitting functions, @p nao
+/// AOs, @p nmo orbitals, @p ncas active orbitals holding @p n_alpha and
+/// @p n_beta electrons, and @p nroots roots: the ZcAdjoint's arrays,
+/// persistent; the CI sigma's tables and its apply scratch, D, h, B in the MO
+/// basis whole, g, w, f, W's active block and Φ, scratch; the half transform,
+/// b_mo's X, the two naux nmo^2 regions and the sigma's rdm1, the workspace.
+[[nodiscard]] MemoryFootprint zc_adjoint_footprint(int32_t naux, int32_t nao, int32_t nmo,
+                                                   int32_t ncas, int32_t n_alpha, int32_t n_beta,
+                                                   int32_t nroots);
 
 /// @brief lagrangian_gradient's and sc_gradient's result.
 struct ScGradient {
@@ -961,6 +1020,19 @@ lagrangian_gradient(DeviceResources &res, const Molecule &molecule, const BasisS
                     const mcscf::Solution &solution, int32_t ncore, int32_t ncas, ScAdjoint corr,
                     ZcMultipliers zc, const ZcAdjoint &phi, double zvector_tolerance = 1e-10);
 
+/// @brief What @ref lagrangian_gradient holds over @p basis and @p aux with
+/// @p ncore core and @p ncas active orbitals holding @p nelecas electrons at
+/// @p multiplicity, beside its corr, zc and phi (the caller's; corr freed on
+/// return): the active strings, the integrals and the root's Fock, the two
+/// right-hand sides; the Z-vector's sigma, Hessian, CI-relaxed Hessian, the
+/// sigma's apply scratch and response::zvector's, the ZVector kept; the
+/// gate's RDMs and Focks; mcscf::df_gradient with the multipliers and the
+/// extra adjoint. Persistent: the ZVector.
+[[nodiscard]] MemoryFootprint lagrangian_gradient_footprint(const BasisSet &basis,
+                                                            const BasisSet &aux, int32_t ncore,
+                                                            int32_t ncas, int32_t nelecas,
+                                                            int32_t multiplicity);
+
 /// @brief The SC-NEVPT2 nuclear gradient of the single-state DF-CASSCF
 /// @p solution: sc_adjoint at its orbitals and root, zc_multipliers and
 /// zc_adjoint over its A and epsilon, then lagrangian_gradient. The
@@ -979,6 +1051,17 @@ sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch,
             int32_t nfrozen = 0, double zvector_tolerance = 1e-10);
+
+/// @brief What @ref sc_gradient holds over @p basis and @p aux with @p ncore
+/// core and @p ncas active orbitals holding @p nelecas electrons at
+/// @p multiplicity, at @p batch and @p nfrozen: the root's strings, then
+/// sc_adjoint_footprint's, zc_multipliers', zc_adjoint's and
+/// lagrangian_gradient's calls in turn, each beside what the earlier ones
+/// keep. Persistent: z^c and the ZVector, the ScGradient's device arrays.
+[[nodiscard]] MemoryFootprint sc_gradient_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                    int32_t ncore, int32_t ncas, int32_t nelecas,
+                                                    int32_t multiplicity, int32_t batch,
+                                                    int32_t nfrozen = 0);
 
 /// @brief pc_gradient's result: ScGradient's fields, with PC's class
 /// energies.
@@ -1013,6 +1096,15 @@ pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch,
             int32_t nfrozen = 0, double pc_floor = 0.0, double zvector_tolerance = 1e-10);
+
+/// @brief What @ref pc_gradient holds: sc_gradient_footprint with
+/// pc_adjoint_footprint in place of sc_adjoint_footprint, @p syevd_lwork and
+/// @p dropped its.
+[[nodiscard]] MemoryFootprint
+pc_gradient_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                      int32_t nelecas, int32_t multiplicity, int32_t batch,
+                      std::span<const size_t> syevd_lwork, int32_t nfrozen = 0,
+                      std::span<const std::array<int64_t, 8>> dropped = {});
 
 /// @brief qd_sc_lagrangian's result: what the SC-QD-NEVPT2 gradient's
 /// derivative passes take, and what it reports. Every device array is on
@@ -1165,6 +1257,23 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t state,
                int32_t batch, int32_t nfrozen = 0);
 
+/// @brief What the state form of @ref qd_sc_gradient holds over @p basis
+/// and @p aux with @p ncore core and @p ncas active orbitals holding
+/// @p nelecas electrons at @p multiplicity, a state average of @p nroots
+/// roots (@p rotating: two of their weights differ), at @p batch and
+/// @p nfrozen: the active strings; qd_sc_energy and H_eff's eigensolve; the
+/// Lagrangian (qd_sc_adjoint_footprint's, the integrals and the averaged
+/// Fock, z^c, Φ^SA's adjoint, the root pairs' multipliers and ζ's terms, the
+/// RDMs at ρ and their Fock, the Z-vector's solve and the gate); then the
+/// two derivative passes, df_gradient with the multipliers and the extra
+/// adjoint and df_transition_gradient at ζ's RDMs. @p syevd_lwork is
+/// diagonalize's work by order, read at nroots for H_eff. Persistent: the
+/// QdScLagrangian's device arrays.
+[[nodiscard]] MemoryFootprint
+qd_sc_gradient_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                         int32_t nelecas, int32_t multiplicity, int32_t nroots, bool rotating,
+                         int32_t batch, std::span<const size_t> syevd_lwork, int32_t nfrozen = 0);
+
 /// @brief The nuclear gradient G(W) of E[W] at any symmetric weight matrix
 /// @p w: the W form of qd_sc_lagrangian, then the state form's two
 /// derivative passes. The first is one mcscf::df_gradient at the mix rho
@@ -1269,6 +1378,16 @@ struct QdFold {
     const std::function<Result<QdFold>(std::span<const double>, std::span<const double>)> &fold =
         {});
 
+/// @brief What @ref qd_sc_coupling holds without a fold, its arguments as
+/// qd_sc_gradient_footprint's: the state form's, with W^PQ's trace 0 the
+/// core's Fock held from its column to the solve's end and the gate's
+/// Fock at no RDMs, and the first pass at a mix summing to 0.
+[[nodiscard]] MemoryFootprint qd_sc_coupling_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                       int32_t ncore, int32_t ncas, int32_t nelecas,
+                                                       int32_t multiplicity, int32_t nroots,
+                                                       bool rotating, int32_t batch,
+                                                       std::span<const size_t> syevd_lwork);
+
 /// @brief qd_pc_gradient's result: QdScGradient's fields, with PC's
 /// elements.
 struct QdPcGradient {
@@ -1314,6 +1433,15 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t state,
                int32_t batch, int32_t nfrozen = 0, double pc_floor = 0.0);
+
+/// @brief What the state form of @ref qd_pc_gradient holds:
+/// qd_sc_gradient_footprint with qd_pc_energy and qd_pc_adjoint, @p syevd_lwork
+/// and @p dropped theirs (the states' kept modes, the same in both).
+[[nodiscard]] MemoryFootprint
+qd_pc_gradient_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                         int32_t nelecas, int32_t multiplicity, int32_t nroots, bool rotating,
+                         int32_t batch, std::span<const size_t> syevd_lwork, int32_t nfrozen = 0,
+                         std::span<const std::array<int64_t, 8>> dropped = {});
 
 /// @brief The PC-QD-NEVPT2 nuclear gradient G(W) of E[W] at any symmetric
 /// weight matrix @p w: qd_sc_gradient's W form with qd_pc_adjoint in place
@@ -1376,6 +1504,14 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
         {},
     double pc_floor = 0.0);
 
+/// @brief What @ref qd_pc_coupling holds without a fold: qd_sc_coupling_footprint
+/// with PC's energy and adjoint, @p dropped theirs.
+[[nodiscard]] MemoryFootprint
+qd_pc_coupling_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                         int32_t nelecas, int32_t multiplicity, int32_t nroots, bool rotating,
+                         int32_t batch, std::span<const size_t> syevd_lwork,
+                         std::span<const std::array<int64_t, 8>> dropped = {});
+
 /// @brief qd_sc_energy's inputs on the DF-SA-CASSCF @p solution, handed to
 /// @p use: the MO blocks, and the n x n pairs [M n + N] (bra M, ket N) of
 /// shared integrals and orbital energies over the state-averaged Fock at
@@ -1399,5 +1535,16 @@ qd_inputs(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
           const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
           const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>)> &use,
           int32_t nfrozen = 0);
+
+/// @brief What @ref qd_inputs holds over @p naux fitting functions and
+/// @p nmo orbitals with @p ncore core and @p ncas active orbitals holding
+/// @p nelecas electrons at @p multiplicity, @p nroots roots, and @p nfrozen,
+/// @p use the footprint of its @p use: the strings, then qd_sc_energy's
+/// arrays (every ordered pair's RDMs, nevpt2::rdms at one determinant) and
+/// @p use beside them, all freed on return.
+[[nodiscard]] MemoryFootprint qd_inputs_footprint(int32_t naux, int32_t nmo, int32_t ncore,
+                                                  int32_t ncas, int32_t nelecas,
+                                                  int32_t multiplicity, int32_t nroots,
+                                                  const MemoryFootprint &use, int32_t nfrozen = 0);
 
 } // namespace free_breakfast::nevpt2

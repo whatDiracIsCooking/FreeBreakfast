@@ -1597,29 +1597,21 @@ Result<ClassEnergies> class_energies(DeviceResources &res, const MoBlocks &block
   return out.front();
 }
 
-// The device bytes live at once, and their most: a footprint's mirror of a
-// call's allocations, taken and given back in its order.
-struct HeldBytes {
-  size_t live = 0;
-  size_t peak = 0;
-  void take(const size_t bytes) {
-    live += bytes;
-    peak = std::max(peak, live);
-  }
-  void give(const size_t bytes) { live -= bytes; }
-  // A walk's buffers, at their widest at once, and given back.
-  void walk(const size_t bytes) {
-    take(bytes);
-    give(bytes);
-  }
-};
-
 MemoryFootprint class_energies_footprint(const int32_t ncore, const int32_t ncas,
                                          const int32_t nvirt, const int32_t nelecas,
                                          const int32_t batch) {
-  // sc_couplings over one state, every allocation in its order (each make_*
-  // and class above): its intermediates n², n⁴ and n⁶ doubles, and each walk
-  // at its step, the least (one) for a batch from the budget.
+  return sc_effective_hamiltonian_footprint(ncore, ncas, nvirt, nelecas, 1, true, 0, batch);
+}
+
+MemoryFootprint sc_effective_hamiltonian_footprint(const int32_t ncore, const int32_t ncas,
+                                                   const int32_t nvirt, const int32_t nelecas,
+                                                   const int32_t nstates, const bool diagonal,
+                                                   const int32_t transitions, const int32_t batch) {
+  // sc_couplings, every allocation in its order (each make_* and class
+  // above): its intermediates n², n⁴ and n⁶ doubles, per state with its own
+  // entry given (own) or per given entry (given), and each walk at its step,
+  // the least (one) for a batch from the budget, over its tables, one per
+  // given entry and one per own state.
   const auto n = static_cast<size_t>(ncas);
   const size_t n2 = sizeof(double) * n * n;
   const size_t n4 = n2 * n * n;
@@ -1634,82 +1626,117 @@ MemoryFootprint class_energies_footprint(const int32_t ncore, const int32_t ncas
   };
   const auto nc = static_cast<int64_t>(ncore);
   const auto nv = static_cast<int64_t>(nvirt);
-  constexpr int64_t kTables = 2; // ns = 1: its norm table and its H table
+  const auto states = static_cast<size_t>(nstates);
+  const size_t own = diagonal ? states : 0;
+  const size_t given = own + static_cast<size_t>(transitions);
+  const auto tables = static_cast<int64_t>(given + own);
   HeldBytes h;
-  h.take(n2); // active_operands' delta, held through every class
+  h.take(states * states * n2); // every entry's active_operands delta, held through every class
 
-  // Sr: a16; a17 beside make_a17's h1e copy; a19 beside make_a19's.
-  h.take(n6);
-  h.take(n2);
-  h.take(n4);
-  h.give(n2);
-  h.take(n2);
-  h.take(n2);
-  h.give(n2);
-  h.walk(walk(std::array{ExtBlock::Sr}, kTables));
-  h.give(n6 + n4 + n2);
+  // Sr: per own state a16; a17 beside make_a17's h1e copy; a19 beside make_a19's.
+  for (size_t j = 0; j < own; ++j) {
+    h.take(n6);
+    h.take(n2);
+    h.take(n4);
+    h.give(n2);
+    h.take(n2);
+    h.take(n2);
+    h.give(n2);
+  }
+  h.walk(walk(std::array{ExtBlock::Sr}, tables));
+  h.give(own * (n6 + n4 + n2));
 
-  // Si: a22, a23, a25, then dm3_h, dm2_h and dm1_h.
-  h.take(n6 + n4 + n2 + n6 + n4 + n2);
-  h.walk(walk(std::array{ExtBlock::Si}, kTables));
-  h.give(n6 + n4 + n2 + n6 + n4 + n2);
+  // Si: per own state a22, a23 and a25; then per given entry dm3_h, dm2_h
+  // and dm1_h.
+  h.take((own + given) * (n6 + n4 + n2));
+  h.walk(walk(std::array{ExtBlock::Si}, tables));
+  h.give((own + given) * (n6 + n4 + n2));
 
-  // Sijrs: its two accumulators, then the walk, no tables.
-  if (ncore > 0 && nvirt > 0) {
+  // Sijrs, with the diagonal alone: its two accumulators, then the walk, no
+  // tables.
+  if (diagonal && ncore > 0 && nvirt > 0) {
     h.take(2 * sizeof(double));
     h.walk(walk(std::array{ExtBlock::Sijrs}, 0));
     h.give(2 * sizeof(double));
   }
 
-  // Sijr: hdm1 and a3.
-  h.take(2 * n2);
-  h.walk(walk(std::array{ExtBlock::Sijr}, kTables * nc * nc));
-  h.give(2 * n2);
+  // Sijr: per given entry hdm1, per own state a3.
+  h.take((given + own) * n2);
+  h.walk(walk(std::array{ExtBlock::Sijr}, tables * nc * nc));
+  h.give((given + own) * n2);
 
-  // Srsi: k27 and its whole (v, v, c) tables.
-  const size_t srsi_tables = sizeof(double) * static_cast<size_t>(kTables * nv * nv * nc);
-  h.take(n2 + srsi_tables);
+  // Srsi: per own state k27, and the whole (v, v, c) tables.
+  const size_t srsi_tables = sizeof(double) * static_cast<size_t>(tables * nv * nv * nc);
+  h.take((own * n2) + srsi_tables);
   h.walk(walk(std::array{ExtBlock::Srsi, ExtBlock::SrsiT}, 0));
-  h.give(n2 + srsi_tables);
+  h.give((own * n2) + srsi_tables);
 
-  // Srs: make_a7's rm2, rm3 and a7, rm3 given back; at two active electrons
-  // make_a7 again for η, all three given back; then the walk.
+  // Srs: per own state make_a7's rm2, rm3 and a7, rm3 given back; per other
+  // given entry make_rm2's rm2; at two active electrons make_a7 again per own
+  // state for η, all three given back; then the walk.
+  // The entries in pair order: a state's own where the diagonal is given,
+  // and the first @p transitions off the diagonal.
+  const auto entry = [&](const size_t p) {
+    const bool on = p / states == p % states;
+    // Off the diagonal, the entries before p less the diagonal's.
+    const size_t off = on ? 0 : p - (p / (states + 1)) - 1;
+    return std::pair{on && diagonal, !on && std::cmp_less(off, transitions)};
+  };
   if (nvirt > 0) {
-    h.take(n4 + n6 + n4);
-    h.give(n6);
-    if (nelecas == 2) {
-      h.take(n4 + n6 + n4);
-      h.give(n4 + n6 + n4);
+    for (size_t p = 0; p < states * states; ++p) {
+      const auto [mine, transition] = entry(p);
+      if (mine) {
+        h.take(n4 + n6 + n4);
+        h.give(n6);
+      } else if (transition) {
+        h.take(n4);
+      }
     }
-    h.walk(walk(std::array{ExtBlock::Srs}, kTables * nv));
-    h.give(2 * n4);
+    if (diagonal && nelecas == 2) {
+      for (size_t j = 0; j < own; ++j) {
+        h.take(n4 + n6 + n4);
+        h.give(n4 + n6 + n4);
+      }
+    }
+    h.walk(walk(std::array{ExtBlock::Srs}, tables * nv));
+    h.give((given + own) * n4);
   }
 
-  // Sij: make_hdm2's two (its dm2b given back), hdm3, a9, hdm3 given back;
-  // at two active holes the three again for η, all given back.
+  // Sij: per given entry make_hdm2's two (its dm2b given back), and per own
+  // state hdm3 and a9, hdm3 given back; at two active holes the three again
+  // per own state for η, all given back.
   if (ncore > 0) {
-    h.take(2 * n4);
-    h.give(n4);
-    h.take(n6 + n4);
-    h.give(n6);
-    if ((2 * ncas) - nelecas == 2) {
-      h.take(2 * n4);
-      h.give(n4);
-      h.take(n6 + n4);
-      h.give(n4 + n6 + n4);
+    for (size_t p = 0; p < states * states; ++p) {
+      const auto [mine, transition] = entry(p);
+      if (mine || transition) {
+        h.take(2 * n4);
+        h.give(n4);
+      }
+      if (mine) {
+        h.take(n6 + n4);
+        h.give(n6);
+      }
     }
-    h.walk(walk(std::array{ExtBlock::Sij}, kTables * nc));
-    h.give(2 * n4);
+    if (diagonal && (2 * ncas) - nelecas == 2) {
+      for (size_t j = 0; j < own; ++j) {
+        h.take(2 * n4);
+        h.give(n4);
+        h.take(n6 + n4);
+        h.give(n4 + n6 + n4);
+      }
+    }
+    h.walk(walk(std::array{ExtBlock::Sij}, tables * nc));
+    h.give((given + own) * n4);
   }
 
-  // Sir: a12 and a13.
-  h.take(2 * n4);
-  h.walk(walk(std::array{ExtBlock::Sir1, ExtBlock::Sir2}, kTables * nc));
-  h.give(2 * n4);
+  // Sir: per own state a12 and a13.
+  h.take(own * 2 * n4);
+  h.walk(walk(std::array{ExtBlock::Sir1, ExtBlock::Sir2}, tables * nc));
+  h.give(own * 2 * n4);
 
-  // make_a16's fdm2 and make_a22's two, the workspace.
+  // make_a16's fdm2 and make_a22's two, the workspace, with the diagonal.
   const size_t region = math::align_up(n4, DeviceResources::kWorkspaceAlignment);
-  return {.device = {.scratch = h.peak, .workspace = 2 * region}};
+  return {.device = {.scratch = h.peak, .workspace = diagonal ? 2 * region : 0}};
 }
 
 } // namespace free_breakfast::nevpt2

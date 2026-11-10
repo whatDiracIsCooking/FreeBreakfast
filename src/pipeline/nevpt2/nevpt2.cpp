@@ -13,7 +13,8 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
-import free_breakfast.recipes.blas; // gemm
+import free_breakfast.core.primitives; // math::binomial
+import free_breakfast.recipes.blas;    // gemm
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.integrals.active_space;
 import free_breakfast.response.fock;
@@ -58,11 +59,18 @@ namespace free_breakfast {
 Result<int32_t> Nevpt2Step::resolve_frozen_core(const std::string_view step,
                                                 const int32_t frozen_core, const Molecule &molecule,
                                                 const int32_t ncore) {
+  return resolve_frozen_core(step, frozen_core, molecule.atoms(), ncore);
+}
+
+Result<int32_t> Nevpt2Step::resolve_frozen_core(const std::string_view step,
+                                                const int32_t frozen_core,
+                                                const std::span<const Atom> atoms,
+                                                const int32_t ncore) {
   // A count, or each atom's chemical core.
   int32_t frozen = frozen_core;
   if (frozen == kFrozenCoreAuto) {
     frozen = 0;
-    for (const Atom &atom : molecule.atoms()) {
+    for (const Atom &atom : atoms) {
       frozen += nevpt2_chemical_core(nuclear_charge(atom));
     }
   }
@@ -514,6 +522,109 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
     log::info(std::format("PC-QD-NEVPT2 energies {::.12f}", out.pc_qd_energies));
   }
   return out;
+}
+
+MemoryFootprint Nevpt2Step::footprint(const FootprintDimensions &dims) const {
+  const auto nroots = static_cast<size_t>(dims.casscf_nroots);
+  if (dims.basis == nullptr || dims.aux == nullptr || nroots == 0 || dims.n_alpha != dims.n_beta ||
+      (quasi_degenerate && nroots < 2)) {
+    return {};
+  }
+  const auto ncas = static_cast<int32_t>(dims.ncas);
+  const auto nelecas = static_cast<int32_t>(dims.nelecas);
+  const int32_t ncore = (static_cast<int32_t>(dims.n_alpha + dims.n_beta) - nelecas) / 2;
+  const Result<int32_t> resolved = resolve_frozen_core(kName, frozen_core, dims.atoms, ncore);
+  if (!resolved) {
+    return {};
+  }
+  const int32_t nfrozen = *resolved;
+  const auto nmo = static_cast<int32_t>(dims.nao);
+  const auto naux = static_cast<int32_t>(dims.naux);
+  const int32_t nvirt = nmo - ncore - ncas;
+  const int32_t ncorr = ncore - nfrozen;
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = n * n;
+  const size_t n4 = n2 * n2;
+  const size_t n6 = n4 * n2;
+  const auto mo = static_cast<size_t>(nmo);
+  const auto nv = static_cast<size_t>(nvirt);
+  const auto nk = static_cast<size_t>(ncorr);
+  const auto strings = static_cast<size_t>(std::round(math::binomial(ncas, nelecas / 2)));
+  const size_t dim = strings * strings;
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  // casscf_eigh at order k: its matrix and eigenvalues beside diagonalize's
+  // work; nothing at order 0. The core's and the virtuals' run one after the
+  // other.
+  const auto eigh = [&](const size_t k) {
+    MemoryFootprint out;
+    if (k > 0 && k < dims.syevd_lwork.size()) {
+      out = diagonalize_footprint<double>(dims.syevd_lwork[k]);
+      out.device.scratch = sizeof(double) * ((k * k) + k);
+    }
+    return out;
+  };
+  const auto widest = [](MemoryFootprint a, const MemoryFootprint &b) {
+    a.device.scratch = std::max(a.device.scratch, b.device.scratch);
+    a.device.workspace = std::max(a.device.workspace, b.device.workspace);
+    a.pinned.workspace = std::max(a.pinned.workspace, b.pinned.workspace);
+    return a;
+  };
+  const auto blocks = [&] {
+    return then(nevpt2::mo_blocks_footprint(naux, nmo, nmo - nfrozen, ncorr, ncas),
+                nevpt2::h2e_footprint(ncas));
+  };
+  constexpr int32_t kLeast = nevpt2::kBatchFromBudget;
+
+  // The integrals and strings; the CI vectors and the per-root arrays: the
+  // RDM slots, Γ, h2e, h1e and the h1e_v_* blocks, the orbital energies, R,
+  // F^I_r, the gemm's product and C_r.
+  const size_t slots = quasi_degenerate ? nroots : 1;
+  const MemoryFootprint setup =
+      then(casscf_integrals_footprint(nmo, naux, ncore, ncas),
+           then(ci::device_string_set_footprint(ncas, nelecas / 2),
+                held((nroots * dim) + (slots * n2) + n4 + (slots * n4) + (3 * slots * n6) + n4 +
+                     n2 + (nv * n) + (n * nk) + (nv * nk) + nk + nv + (3 * mo * mo) +
+                     (static_cast<size_t>(dims.basis->nao_sphe()) * mo))));
+  // Per root, freed before the next: γ and Γ; the Fock; the canonical core
+  // and virtuals; the MO blocks and h2e; dm3, f3ca and f3ac at one
+  // determinant; the SC and PC classes at a batch of one.
+  const MemoryFootprint root = drop(then(
+      ci::rdm12_footprint(ncas, static_cast<int32_t>(dim)),
+      then(response::fock_footprint(nmo, naux, ncore, ncas),
+           then(drop(widest(eigh(static_cast<size_t>(ncore)), eigh(nv))),
+                then(blocks(), then(nevpt2::rdms_footprint(ncas),
+                                    then(nevpt2::class_energies_footprint(ncorr, ncas, nvirt,
+                                                                          nelecas, kLeast),
+                                         nevpt2::pc_class_energies_footprint(
+                                             ncorr, ncas, nvirt, kLeast, dims.syevd_lwork))))))));
+  MemoryFootprint whole = then(setup, root);
+  if (quasi_degenerate) {
+    // The state average's Fock and MO blocks, held; a pair's transition
+    // RDMs; the diagonal walk of both, PC's kets kept; then per pair the two
+    // transition builds and its couplings; then H_eff's eigenpairs, twice.
+    const auto states = static_cast<int32_t>(nroots);
+    const MemoryFootprint pair =
+        widest(nevpt2::rdms_footprint(ncas, 1, true, false),
+               widest(nevpt2::sc_effective_hamiltonian_footprint(ncorr, ncas, nvirt, nelecas,
+                                                                 states, false, 2, kLeast),
+                      nevpt2::pc_effective_hamiltonian_footprint(
+                          ncorr, ncas, nvirt, states, false, 2, kLeast, dims.syevd_lwork, true)));
+    const MemoryFootprint eigenpairs = eigh(nroots);
+    const MemoryFootprint qd = drop(
+        then(response::fock_footprint(nmo, naux, ncore, ncas),
+             then(blocks(), then(held(2 * (n2 + n4 + n6)),
+                                 then(nevpt2::sc_effective_hamiltonian_footprint(
+                                          ncorr, ncas, nvirt, nelecas, states, true, 0, kLeast),
+                                      then(nevpt2::pc_effective_hamiltonian_footprint(
+                                               ncorr, ncas, nvirt, states, true, 0, kLeast,
+                                               dims.syevd_lwork, true),
+                                           then(drop(pair), drop(eigenpairs))))))));
+    whole = then(whole, qd);
+  }
+  // Nothing is the product's: every buffer is freed on return.
+  return drop(whole);
 }
 
 } // namespace free_breakfast

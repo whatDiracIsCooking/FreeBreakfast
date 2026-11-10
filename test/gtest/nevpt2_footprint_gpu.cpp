@@ -19,6 +19,7 @@ import free_breakfast.core.resources;
 import free_breakfast.io.npy;
 import free_breakfast.ci;
 import free_breakfast.nevpt2;
+import free_breakfast.recipes.diagonalize; // syevd_lwork
 
 #include "pool_footprint.h"
 
@@ -46,6 +47,9 @@ void expect_routine_footprint(fb::DeviceResources &res, const fb::MemoryFootprin
   call();
   EXPECT_EQ(res.device_workspace(0).num_elements(), std::max(device_before, fp.device.workspace));
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), call);
+  std::cout << std::format("[ footprint ] measured {} (G {}), footprint {} + workspace {}\n",
+                           peak.used, peak.granularity, fp.device.persistent + fp.device.scratch,
+                           fp.device.workspace);
   fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
                         live);
 }
@@ -384,6 +388,167 @@ TEST_P(Nevpt2ClassEnergiesFootprint, SoundAndTight) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2ClassEnergiesFootprint,
+                         ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                                              std::string{"n2_ccpvdz_cas88_df"}),
+                                            ::testing::Values(1, 0)),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param));
+                         });
+
+// syevd's work at every order through @p max, diagonalize's own query: what
+// a PC footprint's workspace is sized from.
+std::vector<std::size_t> lworks(fb::DeviceResources &res, const std::int32_t max) {
+  std::vector<std::size_t> out;
+  for (std::int32_t order = 0; order <= max; ++order) {
+    out.push_back(fb::syevd_lwork<double>(res, order).value());
+  }
+  return out;
+}
+
+class Nevpt2PcClassEnergiesFootprint
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
+
+// pc_class_energies at a batch of one and at the whole extent, its modes
+// dropped as the run drops them (PcClassEnergies::dropped, the data's).
+TEST_P(Nevpt2PcClassEnergiesFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  const auto [name, batch] = GetParam();
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  const auto pc = nevpt2::pc_class_energies(inputs, b, g.in, batch);
+  ASSERT_TRUE(pc) << pc.error().message;
+  const std::vector<std::size_t> lwork = lworks(inputs, b.ncas * b.ncas * b.ncas);
+  const fb::MemoryFootprint fp =
+      nevpt2::pc_class_energies_footprint(b.ncore, b.ncas, b.nvirt, batch, lwork, pc->dropped);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  std::cout << std::format("dropped {}\n", pc->dropped);
+  fb::DeviceResources res{0};
+  expect_routine_footprint(res, fp, 10, [&] {
+    if (std::getenv("TRACE_PC") != nullptr) {
+      setenv("FBF_TRACE", "1", 1);
+    }
+    const auto e = nevpt2::pc_class_energies(res, b, g.in, batch);
+    unsetenv("FBF_TRACE");
+    ASSERT_TRUE(e) << e.error().message;
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcClassEnergiesFootprint,
+                         ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                                              std::string{"n2_ccpvdz_cas88_df"}),
+                                            ::testing::Values(1, 0)),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param));
+                         });
+
+// Every bar class_energies_adjoint takes, zeroed, over @p b's counts: the
+// gradient's, Λ over the blocks' nmo among them.
+struct Bars {
+  std::vector<fb::Buffers::device<double>> held;
+  nevpt2::EnergyBars bars;
+};
+
+Bars every_bar(fb::DeviceResources &res, const nevpt2::MoBlocks &b) {
+  const auto n = static_cast<std::size_t>(b.ncas);
+  const auto nc = static_cast<std::size_t>(b.ncore);
+  const auto nv = static_cast<std::size_t>(b.nvirt);
+  const std::size_t nmo = nc + n + nv;
+  Bars out;
+  out.held.reserve(13);
+  const auto zero = [&](const std::size_t count) {
+    out.held.emplace_back(count, res.device());
+    return out.held.back().data();
+  };
+  out.bars = {.h1e = zero(n * n),
+              .h2e = zero(n * n * n * n),
+              .dm1 = zero(n * n),
+              .dm2 = zero(n * n * n * n),
+              .dm3 = zero(n * n * n * n * n * n),
+              .f3ca = zero(n * n * n * n * n * n),
+              .f3ac = zero(n * n * n * n * n * n),
+              .h1e_v_sr = zero(nv * n),
+              .h1e_v_si = zero(n * nc),
+              .h1e_v_sir = zero(nv * nc),
+              .e_core = zero(nc),
+              .e_virt = zero(nv),
+              .lambda = zero(static_cast<std::size_t>(b.naux) * nmo * nmo)};
+  return out;
+}
+
+class Nevpt2ClassEnergiesAdjointFootprint
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
+
+// class_energies_adjoint at a batch of one and at the whole extent.
+TEST_P(Nevpt2ClassEnergiesAdjointFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  const auto [name, batch] = GetParam();
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  const Bars bars = every_bar(inputs, b);
+  const fb::MemoryFootprint fp =
+      nevpt2::class_energies_adjoint_footprint(b.naux, b.ncore, b.ncas, b.nvirt, g.nelecas, batch);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  fb::DeviceResources res{0};
+  expect_routine_footprint(res, fp, 10, [&] {
+    if (std::getenv("TRACE_ADJ") != nullptr) {
+      setenv("FBF_TRACE", "1", 1);
+    }
+    const auto e = nevpt2::class_energies_adjoint(res, b, g.in, batch, bars.bars);
+    unsetenv("FBF_TRACE");
+    ASSERT_TRUE(e) << e.error().message;
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2ClassEnergiesAdjointFootprint,
+                         ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                                              std::string{"n2_ccpvdz_cas88_df"}),
+                                            ::testing::Values(1, 0)),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param));
+                         });
+
+class Nevpt2PcClassEnergiesAdjointFootprint
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
+
+// pc_class_energies_adjoint at a batch of one and at the whole extent, its
+// modes dropped as the run drops them; and the footprint at the rank that
+// holds the most, no less.
+TEST_P(Nevpt2PcClassEnergiesAdjointFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  const auto [name, batch] = GetParam();
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  const Bars bars = every_bar(inputs, b);
+  const auto pc = nevpt2::pc_class_energies(inputs, b, g.in, batch);
+  ASSERT_TRUE(pc) << pc.error().message;
+  const std::vector<std::size_t> lwork = lworks(inputs, b.ncas * b.ncas * b.ncas);
+  const fb::MemoryFootprint fp = nevpt2::pc_class_energies_adjoint_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, batch, lwork, pc->dropped);
+  const fb::MemoryFootprint most = nevpt2::pc_effective_hamiltonian_adjoint_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, 1, batch, lwork);
+  EXPECT_GE(most.device.scratch, fp.device.scratch);
+  EXPECT_GE(most.device.workspace, fp.device.workspace);
+  fb::DeviceResources res{0};
+  expect_routine_footprint(res, fp, 10, [&] {
+    if (std::getenv("TRACE_ADJ") != nullptr) {
+      setenv("FBF_TRACE", "1", 1);
+    }
+    const auto e = nevpt2::pc_class_energies_adjoint(res, b, g.in, batch, bars.bars);
+    unsetenv("FBF_TRACE");
+    ASSERT_TRUE(e) << e.error().message;
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcClassEnergiesAdjointFootprint,
                          ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
                                                               std::string{"n2_ccpvdz_cas88_df"}),
                                             ::testing::Values(1, 0)),

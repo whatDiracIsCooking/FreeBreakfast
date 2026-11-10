@@ -9,7 +9,7 @@
 /// free_breakfast.nevpt2.energy. It only declares; every definition is
 /// energy.cpp's, except upload and the PC solve's (pc.cpp's) and
 /// einsum_adjoint (reverse.cpp's), so no bridge header reaches a partition's
-/// global module fragment. PcKets' accessors are its one inline code. See
+/// global module fragment. PcKets' accessors and HeldBytes are its inline code. See
 /// docs/style.md, "Module-private code".
 
 module free_breakfast.nevpt2.energy:shared;
@@ -92,6 +92,24 @@ Result<Buffers::device<double>> device_zeros(DeviceResources &res, int64_t count
 Result<std::vector<double>> download(DeviceResources &res, const double *d, int64_t count);
 Result<Buffers::device<double>> upload(DeviceResources &res, const std::vector<double> &host);
 int32_t batch_step(int32_t extent, int32_t batch);
+// The device bytes live at once, and their most: a footprint's mirror of a
+// call's allocations, taken and given back in its order: the SC and PC
+// footprints'.
+struct HeldBytes {
+  size_t live = 0;
+  size_t peak = 0;
+  void take(const size_t bytes) {
+    live += bytes;
+    peak = std::max(peak, live);
+  }
+  void give(const size_t bytes) { live -= bytes; }
+  // A walk's buffers, at their widest at once, and given back.
+  void walk(const size_t bytes) {
+    take(bytes);
+    give(bytes);
+  }
+};
+
 // What a forward walk over @p slabs holds at @p step beyond its fixed
 // buffers: each slab's buffer (every slab walks the first one's extent, at
 // most @p step of it), the largest slab's gemm product (slab builds them one

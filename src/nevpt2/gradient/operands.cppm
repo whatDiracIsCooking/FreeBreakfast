@@ -1,8 +1,8 @@
 /// @file
 /// @brief The array plumbing the implementation units of
 /// free_breakfast.nevpt2.gradient share: column-major einsum operands and
-/// contractions, zeroed buffers, an in-place block add, the host copies, and
-/// the entry points' count and weight checks.
+/// contractions, zeroed buffers, an in-place block add, the host copies, the
+/// entry points' count and weight checks, and the footprints' mirror.
 ///
 /// An internal partition (`module`, not `export module`): only this module's
 /// implementation units import it, so nothing here reaches an importer. See
@@ -16,12 +16,45 @@ import free_breakfast.core.constants; // kOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, geam, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.einsum;
 import free_breakfast.ci.strings;
 
 #include "diagnostics.h"
 
 namespace free_breakfast::nevpt2 {
+
+// The device bytes a footprint's mirror of a call holds at once and their
+// most, and the most of the workspaces its callees borrow: the call's
+// allocations taken and given back in its order, each callee's footprint
+// beside them (nevpt2.energy's class walks keep their own, the same way).
+struct Held {
+  size_t live = 0;
+  size_t peak = 0;
+  size_t workspace = 0;
+  size_t pinned = 0;
+  void take(const size_t bytes) {
+    live += bytes;
+    peak = std::max(peak, live);
+  }
+  void give(const size_t bytes) { live -= bytes; }
+  // A callee: its peak beside what is held, then its product kept.
+  void call(const MemoryFootprint &f) {
+    take(f.device.persistent + f.device.scratch);
+    give(f.device.scratch);
+    borrow(f);
+  }
+  // A callee's workspaces alone.
+  void borrow(const MemoryFootprint &f) {
+    workspace = std::max(workspace, f.device.workspace);
+    pinned = std::max(pinned, f.pinned.workspace);
+  }
+  // The call's footprint, @p kept of what is still held its product.
+  [[nodiscard]] MemoryFootprint footprint(const size_t kept) const {
+    return {.device = {.persistent = kept, .scratch = peak - kept, .workspace = workspace},
+            .pinned = {.workspace = pinned}};
+  }
+};
 
 // A packed column-major einsum operand, its first index fastest: every array
 // here but the RDMs, which are row-major and so enter with their labels

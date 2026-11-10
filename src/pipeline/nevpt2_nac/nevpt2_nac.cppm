@@ -16,6 +16,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 import free_breakfast.mcscf.nac;                // mcscf::NacOptions, in the step
 import free_breakfast.pipeline.nevpt2_gradient; // Nevpt2Variant, in the step
 export import free_breakfast.nevpt2.nac;        // nevpt2::QdNac, in the product
@@ -88,6 +89,17 @@ struct Nevpt2NacStep {
   run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput, EriOutput,
            CoreHamiltonianOutput, ScfOutput, CasscfOutput> in,
       DeviceResources &res) const;
+
+  /// @brief What @ref run holds at @p dims, all of it freed on return (the
+  /// couplings are on the host): the CASSCF's orbitals and CI vectors back on
+  /// the device; H_eff over @c nevpt2::qd_inputs (the effective
+  /// Hamiltonian's walk over every pair) and its eigensolve; then one pair's
+  /// @c nevpt2::qd_sc_nac_footprint or @c qd_pc_nac_footprint (each pair's
+  /// is freed before the next), over the planned CASSCF's roots and weights
+  /// (dims.casscf_nroots and dims.casscf_unequal_weights), PC's classes at
+  /// the rank that holds the most. Empty for what @ref run refuses before
+  /// allocating: an open shell, no density fitting, or under two roots.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast
