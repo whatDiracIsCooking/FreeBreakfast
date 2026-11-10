@@ -20,6 +20,9 @@ on the device. Link `free_breakfast::nevpt2::density_fitting`.
     slab_adjoint(res, blocks, block, b0, b1, slab_bar, lambda) lambda +=
     mo_blocks_adjoint(res, bar, core_diag_bar, virt_diag_bar, lambda)
 
+    h2e_adjoint_footprint(ncas), mo_blocks_adjoint_footprint(naux, ncore, nvirt)
+    slab_adjoint_footprint(naux, ncore, ncas, nvirt, block, width)
+
 (pq|rs) = Σ_Q B_Q,pq B_Q,rs, the metric already folded into B
 ([`density_fitting.mo`](../../integrals/eri/density_fitting/mo/README.md)).
 **No (Q|vv) block**: no SC class has two virtuals in one charge distribution,
@@ -80,7 +83,11 @@ same build over B_aa × B_aa, axes 0 2 1 3.
 the largest of its four `b_mo` calls' X, the workspace (`b_mo_footprint`'s);
 `h2e_footprint` C, n_act⁴ doubles of scratch; `slab_footprint` C at a batch
 of `width`, scratch, and nothing for Sijrs. They take the counts, not the
-blocks, so a step can size them before any block exists.
+blocks, so a step can size them before any block exists. The adjoints'
+are workspace alone: `h2e_adjoint_footprint` the bar permuted back,
+`slab_adjoint_footprint` C-bar (none for Sijrs) and, for a batch short of
+X's whole extent, the batch's columns of X, two regions; and
+`mo_blocks_adjoint_footprint` B_vc's bar swapped, when it is given.
 
 **No `IntegralSource` interface.** The demo's virtual base let an
 integral-direct source hand out views into whole blocks; a future

@@ -1880,6 +1880,47 @@ would need a multi-density derivative kernel: #773 (PR #776) measured one
 pass that still launches that kernel per density set buys nothing. A
 multi-density FelizJueves kernel is out of scope here.
 
+## Footprints
+
+Each entry point that allocates exports its `MemoryFootprint`
+(`../../core/footprint/`), a mirror of its allocations in their order over
+the counts its arguments carry, composed from the footprints of what it
+calls (`../energy/`, `../density_fitting/`, `../rdm/`, `../../mcscf/`,
+`../../response/`, `../../ci/`):
+
+    sc_adjoint_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, batch, nfrozen)
+    pc_adjoint_footprint(..., batch, syevd_lwork, nfrozen, dropped)
+    zc_multipliers_footprint(nmo)
+    zc_adjoint_footprint(naux, nao, nmo, ncas, n_alpha, n_beta, nroots)
+    lagrangian_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity)
+    sc_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, batch, nfrozen)
+    pc_gradient_footprint(..., batch, syevd_lwork, nfrozen, dropped)
+    qd_sc_adjoint_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, nroots, batch,
+                            nfrozen)
+    qd_pc_adjoint_footprint(..., batch, syevd_lwork, nfrozen, dropped)
+    qd_sc_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots,
+                             rotating, batch, syevd_lwork, nfrozen)    the state form
+    qd_pc_gradient_footprint(..., syevd_lwork, nfrozen, dropped)
+    qd_sc_coupling_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots,
+                             rotating, batch, syevd_lwork)             no fold
+    qd_pc_coupling_footprint(..., syevd_lwork, dropped)
+    qd_inputs_footprint(naux, nmo, ncore, ncas, nelecas, multiplicity, nroots, use,
+                        nfrozen)
+
+`nevpt2::rdms` and `rdms_adjoint` size their tiles from the memory budget
+(`../rdm/`): each footprint counts them at one determinant, the least they
+run with. Persistent is what the result keeps on the device: the adjoints'
+arrays, z^c, the ZVector (`lagrangian_gradient`, the gradients), and a QD
+gradient's whole `QdScLagrangian`. `rotating` says two of the SA weights
+differ (`response::rotating_pairs`), and `dropped` is PC's kept ranks, as
+`../energy/`'s PC footprints take them: per state, `PcClassEnergies::dropped`,
+or empty for the rank that holds the most. A coupling's W^PQ has trace 0, so
+its Lagrangian holds the core's Fock from its column to the solve's end and
+its first pass is `df_gradient`'s at a mix summing to 0. The tests are
+`test/gtest/pipeline_step_footprint_gpu.cpp`'s
+`Nevpt2ReaderFootprint.GradientRoutines` and `.Couplings`, and the
+Nevpt2Gradient step's, each held to its pool peak at the least.
+
 ## Not done
 
 - The per-root canonicalization's own derivative: the caller passes

@@ -24,6 +24,11 @@ Hamiltonians also hand over their amplitudes
     class_energies_footprint(ncore, ncas, nvirt, nelecas, batch)
     kBatchFromBudget            batch: each class's widest that the budget holds
 
+    footprints of the other calls, below: sc_effective_hamiltonian_footprint,
+    pc_class_energies_footprint, pc_effective_hamiltonian_footprint,
+    class_energies_adjoint_footprint, sc_effective_hamiltonian_adjoint_footprint,
+    pc_class_energies_adjoint_footprint, pc_effective_hamiltonian_adjoint_footprint
+
 ## The port
 
 A transcription of the NEVPT2 demo's `src/energy/energy.cpp` and
@@ -130,6 +135,47 @@ sound and tight at CAS(4,4) and CAS(8,8), at a batch of one and whole; has
 the batch from the budget take more than one and stay under a pool cap; and
 the SC and PC energies at the least (rdms at one determinant, a batch of one)
 equal the unconstrained ones to 1e-10 Eh.
+
+**The other footprints** are mirrors of their calls the same way, each
+allocation taken and given back in its order:
+
+- `sc_effective_hamiltonian_footprint(ncore, ncas, nvirt, nelecas, n,
+  diagonal, transitions, batch)`: n states, the diagonal given or not and the
+  first `transitions` off-diagonal entries (the call shapes the step and the
+  gradient make: the diagonal alone, a pair beside its transpose, every
+  entry); each entry's identity, then a class at a time. `class_energies`'
+  is one state's.
+- `pc_effective_hamiltonian_footprint(ncore, ncas, nvirt, n, diagonal,
+  transitions, batch, syevd_lwork, amplitudes, dropped)`: per own state its
+  matrices and solve, per transition its T and T₁, then the walk; with
+  `amplitudes` every class's U_J is the call's product, the kets handed over.
+  Its workspace is the fdm2s and diagonalize's at each solve's two orders, d
+  and m, read from `syevd_lwork` (the pipeline's `FootprintDimensions::
+  syevd_lwork`). **The kept rank m is the data's**: `dropped[J][k]` is d - m
+  of state J's class k, `PcClassEnergies::dropped`; empty, every class is at
+  its whole basis, the most the forward holds. `pc_class_energies_footprint`
+  is one state's, no kets kept.
+- `sc_effective_hamiltonian_adjoint_footprint(naux, ncore, ncas, nvirt,
+  nelecas, n, batch, transition)` and `class_energies_adjoint_footprint`
+  (one state): the block bars, each class's reverse walk (its blocks, slabs
+  and their bars, each slab's tables and multipliers), the sweeps, Sijrs and
+  the orbital energies' upload; over n > 1 the states' evaluation walks and
+  each pair's metric bars and transition RDM bars, `transition` the footprint
+  of what the caller's transition does. Every bar is wanted, as the
+  gradient's; the workspace adds the slabs' adjoints'.
+- `pc_effective_hamiltonian_adjoint_footprint(naux, ncore, ncas, nvirt, n,
+  batch, syevd_lwork, dropped, transition)` and
+  `pc_class_energies_adjoint_footprint`: the kets with their dropped modes
+  kept, the walk bars, the slabs and their rows, the finish (the span's bar,
+  each pair's matrix bars and their way back). A solve that drops modes keeps
+  their V (d²) and leaks, so the most is not always at m = d: with `dropped`
+  empty each class is at the rank, m from 1 to d, that holds the most.
+
+`test/gtest/nevpt2_footprint_gpu.cpp` holds `pc_class_energies` and both
+reverse passes sound and tight at CAS(4,4) and CAS(8,8), at a batch of one and
+whole, at the run's own ranks; the effective Hamiltonians' call shapes are in
+`test/gtest/pipeline_step_footprint_gpu.cpp`'s
+`Nevpt2ReaderFootprint.EffectiveHamiltonians`.
 
 ## One-function classes (#949)
 

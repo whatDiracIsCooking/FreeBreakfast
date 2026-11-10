@@ -48,7 +48,9 @@ whole registry.
   reads `syevd_lwork[nao]`; the CI steps' small eigensolves (AVAS's, the
   subspace's) read their own orders. A planned `[hessian]` takes the table
   through 3 natoms, where its harmonic analysis diagonalizes (and at its
-  internal modes below).
+  internal modes below). With an NEVPT2 step planned (`[nevpt2]`,
+  `[nevpt2_gradient]` or `[nevpt2_nac]`) it runs on through n_act³: PC
+  diagonalizes each class's metric at its basis size, n_act³ for Sr and Si.
 - **getrf's lwork** at the RIS basis's order, `recipes/lu`'s own
   `getrf_lwork` query, when a CIS step's `ris` preconditioner is planned: its
   capacitance matrix is solved by `lu_solve`. The RIS basis is `cis::ris_basis`

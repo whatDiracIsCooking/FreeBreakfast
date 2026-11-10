@@ -135,6 +135,14 @@ struct Nevpt2NacStep {
   does).
 - **`Device`-shaped**: B, L, C and the CI vectors live on the device.
 
+**The footprint**, `footprint(dims)`: C and the CASSCF's CI vectors back on
+the device; H_eff over `nevpt2::qd_inputs` (the effective Hamiltonian's walk
+over every pair at batch 0) and its eigensolve; then one pair's
+`nevpt2::qd_sc_nac_footprint` or `qd_pc_nac_footprint` (each pair's is freed
+before the next), over `dims.casscf_nroots` and `dims.casscf_unequal_weights`,
+PC's classes at the rank that holds the most. The couplings are on the host:
+nothing is persistent. It is empty for what `run` refuses before allocating.
+
 ## Config
 
 [`examples/qd_nevpt2_nac.toml`](../../../examples/qd_nevpt2_nac.toml) is a
@@ -173,6 +181,10 @@ direct call.
 
 ## Tests
 
+- `test/gtest/pipeline_step_footprint_gpu.cpp`'s
+  `Nevpt2ReaderFootprint.Nevpt2NacStep` and `.Nevpt2NacStepPc`: the
+  footprint at `plan_shape`'s dimensions over water's SA-2 CAS(4,4) against
+  the pool peak of a run capped at it.
 - The step's contract is checked by `static_assert`, and `[nevpt2_nac]`'s
   parsing, its output path and every refusal at config read (a malformed
   table, an unknown `variant`, an integral-direct `[eri]` written or filled
