@@ -13,6 +13,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -221,6 +222,51 @@ df_qd_eigenvector_response(DeviceResources &res, const Molecule &molecule, const
     out.sum_rule = std::max(out.sum_rule, std::abs(e));
   }
   return out;
+}
+
+MemoryFootprint qd_response_eigen_footprint(const int32_t nroots,
+                                            const std::span<const size_t> syevd_lwork) {
+  const auto n = static_cast<size_t>(nroots);
+  const MemoryFootprint held{.device = {.persistent = sizeof(double) * ((n * n) + n)}};
+  return drop(n < syevd_lwork.size() ? then(held, diagonalize_footprint<double>(syevd_lwork[n]))
+                                     : held);
+}
+
+MemoryFootprint qd_eigenvector_response_footprint(
+    const BasisSet &basis, const BasisSet &aux, const int32_t ncore, const int32_t ncas,
+    const int32_t nalpha, const int32_t nbeta, const int32_t nroots, const bool rotating,
+    const int32_t batch, const std::span<const size_t> syevd_lwork, const bool pc,
+    const int32_t n_w, const std::span<const std::array<int64_t, 8>> dropped) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const int32_t nelecas = nalpha + nbeta;
+  const int32_t multiplicity = nalpha - nbeta + 1;
+  const int32_t nvirt = nmo - ncore - ncas;
+  const int32_t transitions = nroots * (nroots - 1);
+  Ledger l;
+  // H_eff's elements over qd_inputs, and its eigenpairs.
+  const MemoryFootprint energy =
+      pc ? nevpt2::pc_effective_hamiltonian_footprint(ncore, ncas, nvirt, nroots, true, transitions,
+                                                      batch, syevd_lwork, false, dropped)
+         : nevpt2::sc_effective_hamiltonian_footprint(ncore, ncas, nvirt, nelecas, nroots, true,
+                                                      transitions, batch);
+  l.run(nevpt2::qd_inputs_footprint(naux, nmo, ncore, ncas, nelecas, multiplicity, nroots, energy,
+                                    0));
+  l.run(qd_response_eigen_footprint(nroots, syevd_lwork));
+  // The couplings' several-W gradient: at most n_w times one trace-zero W's.
+  if (n_w > 0) {
+    MemoryFootprint one =
+        pc ? nevpt2::qd_pc_w_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity,
+                                                nroots, rotating, batch, syevd_lwork, true, true,
+                                                dropped)
+           : nevpt2::qd_sc_w_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity,
+                                                nroots, rotating, batch, syevd_lwork, true, true);
+    const auto w = static_cast<size_t>(n_w);
+    one.device.persistent *= w;
+    one.device.scratch *= w;
+    l.run(one);
+  }
+  return l.footprint(0);
 }
 
 } // namespace free_breakfast::hessian

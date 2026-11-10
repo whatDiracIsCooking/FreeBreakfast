@@ -13,8 +13,9 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, axpy, geam, gemmStridedBatched, wwrMemcpyAsync,
-                                // wwrMemGetInfo, ScopedDeviceIndex, gpu_status
+                                // ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -27,7 +28,8 @@ import free_breakfast.mcscf.solve;
 import free_breakfast.response.zvector;
 import free_breakfast.mcscf.third_derivative; // df_integral_derivatives
 import free_breakfast.nevpt2.gradient;        // builders_tangent
-import :state_specific;                       // state_specific_electrons
+import :state_specific;                       // state_specific_electrons, Ledger
+import :atom_block;                           // atom_function_range
 
 #include "diagnostics.h"
 
@@ -92,6 +94,10 @@ Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
         kWho, cp.orbital.num_elements(), cp.ci.num_elements(), n_x, pairs, ndet);
   }
   const wwr::wwrblasHandle_t blas = res.blas().get();
+  // The workspace grown first to every call's, so that the budget each part
+  // reads is not taken again by a workspace's growth.
+  (void)res.device_workspace(
+      df_nevpt2_tangents_footprint(basis, aux, ncore, ncas, nalpha, nbeta).device.workspace);
 
   // h_MO = C^T h C and the MO factor B_Q,pq = (C^T B_Q C)_pq at
   // Q + naux (p + nmo q), held across the calls below that take the
@@ -135,8 +141,9 @@ Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
 
   std::vector<DegeneratePair> recorded;
   std::vector<double> eps;
-  const auto chunk = [&](const int32_t x0, const int32_t count, const double *const h1,
-                         const double * /*tau*/, const double *const w1) -> Status {
+  // One chunk of @p count coordinates from x0, as wide as the budget holds.
+  const auto part = [&](const int32_t x0, const int32_t count, const double *const h1,
+                        const double *const w1) -> Status {
     const auto k = static_cast<size_t>(count);
     Buffers::device<double> h_dot(k * nn, res.device());
     Buffers::device<double> b_dot(k * naux * nn, res.device());
@@ -238,16 +245,124 @@ Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
     // The launches above read this chunk's buffers, which go with this frame.
     return res.sync();
   };
+  // Each chunk of the derivative integrals in parts as wide as the memory
+  // budget holds at its call, at least one coordinate.
+  const auto chunk_bytes = [&](const size_t width) {
+    return nevpt2_tangent_chunk_footprint(naux32, nmo32, ncore, ncas, static_cast<int32_t>(width))
+        .device.scratch;
+  };
+  const auto chunk = [&](const int32_t x0, const int32_t count, const double *const h1,
+                         const double * /*tau*/, const double *const w1) -> Status {
+    const size_t width =
+        FBF_TRY(widest_fitting(res, kWho, static_cast<size_t>(count), chunk_bytes));
+    for (size_t j0 = 0; j0 < static_cast<size_t>(count); j0 += width) {
+      const size_t part_count = std::min(width, static_cast<size_t>(count) - j0);
+      FBF_TRY(part(x0 + static_cast<int32_t>(j0), static_cast<int32_t>(part_count), h1 + (j0 * nn),
+                   w1 + (j0 * nn * naux)));
+    }
+    return {};
+  };
 
-  // A third of the budget to W^x's chunk; B_dot and the builders' tangents
-  // take the rest.
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  const size_t budget = max_bytes > 0 ? std::min(max_bytes, free_bytes) : free_bytes;
+  // W^x's chunk takes a third of the budget, never what one coordinate's
+  // part needs; the parts take the rest.
+  const size_t w_bytes =
+      FBF_TRY(integral_derivatives_bytes(res, basis, aux, chunk_bytes(1), max_bytes));
   FBF_TRY(mcscf::df_integral_derivatives(res, molecule, basis, classes, aux, h, b, l, solution.c,
-                                         chunk, std::max<size_t>(budget / 3, 1)));
+                                         chunk, w_bytes));
   return recorded;
+}
+
+MemoryFootprint nevpt2_tangent_chunk_footprint(const int32_t naux, const int32_t nmo,
+                                               const int32_t ncore, const int32_t ncas,
+                                               const int32_t count) {
+  const auto nn = static_cast<size_t>(nmo) * static_cast<size_t>(nmo);
+  const auto k = static_cast<size_t>(count);
+  Ledger l;
+  // h_dot, B_dot and kappa; the builders' tangent beside them; kappa_oo.
+  l.take(sizeof(double) * k * (nn + (static_cast<size_t>(naux) * nn) + nn));
+  l.call(nevpt2::builders_tangent_footprint(naux, nmo, nmo, ncore, ncas, count));
+  l.take(sizeof(double) * k * nn);
+  return drop(l.footprint(l.live));
+}
+
+size_t integral_derivatives_held_bytes(const BasisSet &basis, const BasisSet &aux,
+                                       const size_t count) {
+  const size_t nn = basis.nao_sphe() * basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  const size_t factor = nn * naux;
+  const size_t stack = 3 * static_cast<size_t>(basis.natoms()) * nn;
+  size_t max_blk = 0;
+  for (uint32_t a = 0; a < aux.natoms(); ++a) {
+    const auto [first, last] = atom_function_range(aux, a);
+    max_blk = std::max(max_blk, last - first);
+  }
+  return sizeof(double) *
+         (factor + nn + (2 * stack) + (3 * naux * naux) + (count * factor) + (3 * nn * max_blk));
+}
+
+Result<size_t> integral_derivatives_bytes(const DeviceResources &res, const BasisSet &basis,
+                                          const BasisSet &aux, const size_t reserve,
+                                          const size_t max_bytes) {
+  const size_t memory = FBF_TRY(res.memory_budget());
+  if (max_bytes > 0) {
+    return std::max<size_t>(std::min(max_bytes, memory) / 3, 1);
+  }
+  const size_t usable = memory > kPoolHeadroomBytes ? memory - kPoolHeadroomBytes : 0;
+  const size_t spare = usable > reserve ? usable - reserve : 0;
+  return std::max(mcscf::df_integral_derivatives_footprint(basis, aux).device.scratch,
+                  std::min(usable / 3, spare));
+}
+
+Result<size_t> widest_fitting(const DeviceResources &res, const std::string_view who,
+                              const size_t count, const std::function<size_t(size_t)> &bytes) {
+  const size_t memory = FBF_TRY(res.memory_budget());
+  const size_t room = memory > kPoolHeadroomBytes ? memory - kPoolHeadroomBytes : 0;
+  if (bytes(1) > room) {
+    return err_unsupported("{}: one coordinate's part needs {} bytes of device memory, and device "
+                           "{} has {} to give",
+                           who, bytes(1), res.dev_idx(), room);
+  }
+  // The widest in [1, count] that fits: the bytes grow with it.
+  size_t lo = 1;
+  size_t hi = std::max<size_t>(count, 1);
+  while (lo < hi) {
+    const size_t mid = lo + ((hi - lo + 1) / 2);
+    if (bytes(mid) <= room) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo;
+}
+
+MemoryFootprint df_nevpt2_tangents_footprint(const BasisSet &basis, const BasisSet &aux,
+                                             const int32_t ncore, const int32_t ncas,
+                                             const int32_t nalpha, const int32_t nbeta) {
+  const size_t nao = basis.nao_sphe();
+  if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || aux.nao_sphe() == 0 || ncore < 0 ||
+      ncas < 1 || static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao) {
+    return {};
+  }
+  const auto nmo = static_cast<int32_t>(nao);
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const size_t nn = nao * nao;
+  const OrbitalRange all{.first = 0, .count = nmo};
+  Ledger l;
+  // The strings; h_MO and the MO factor, held, beside the gemmwich's work.
+  l.call(ci::device_string_set_footprint(ncas, nalpha));
+  l.call(ci::device_string_set_footprint(ncas, nbeta));
+  l.take(sizeof(double) * (nn + (aux.nao_sphe() * nn)));
+  l.run(MemoryFootprint{.device = {.persistent = sizeof(double) * nn}});
+  l.borrow(b_mo_footprint(naux, nmo, all, all));
+  // The derivative integrals at their least, and beside what they hold at
+  // their first chunk, one coordinate's part.
+  l.run(mcscf::df_integral_derivatives_footprint(basis, aux));
+  const size_t held = integral_derivatives_held_bytes(basis, aux, 1);
+  l.take(held);
+  l.run(nevpt2_tangent_chunk_footprint(naux, nmo, ncore, ncas, 1));
+  l.give(held);
+  return l.footprint(0);
 }
 
 } // namespace free_breakfast::hessian

@@ -15,8 +15,10 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kTwo, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, axpy, gemm, gemv, gemmStridedBatched, wwrMemcpyAsync,
-                                // wwrMemsetAsync, wwrMemGetInfo, ScopedDeviceIndex, gpu_status
+                                // wwrMemsetAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -282,9 +284,8 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
   // 4. Sum <t_i, HVP t_j>: the product along every coordinate, then each
   // pair of coordinates that both populate an empty perturber again with
   // the other as its partner (K6 at the pair's mean eta, and its rho_tau
-  // check). The directions are chunked by an estimate of the product's
-  // per-direction memory (its builders' tangent, seven reverse passes'
-  // copies of the moved fields and the tangent bars).
+  // check). The directions are chunked as widely as the memory budget
+  // holds the product's footprint.
   std::vector<double> hvp(k * k, 0.0);
   double defect = 0.0;
   double rounding = 0.0;
@@ -309,13 +310,12 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
                                         h.data(), ncore, ncas, vector, gradient.zc.z.data(), batch,
                                         {.count = count, .h = dh, .b = db, .c = dc}, partners);
     };
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    const size_t act6 = n_act * n_act * n_act * n_act * n_act * n_act;
-    const size_t per_direction =
-        sizeof(double) * ((16 * naux * nn) + (8 * act6) + (8 * ndet) + (16 * nn));
-    const size_t chunk = std::clamp<size_t>(free_bytes / 2 / per_direction, 1, k);
+    // As many directions at once as the memory budget holds the product of.
+    const size_t chunk = FBF_TRY(widest_fitting(res, kWho, k, [&](const size_t count) {
+      const MemoryFootprint f = nevpt2::sc_hessian_product_footprint(
+          naux32, nmo32, nmo32, ncore, ncas, nalpha, nbeta, batch, static_cast<int32_t>(count));
+      return f.device.persistent + f.device.scratch;
+    }));
     std::vector<double> population(k, 0.0);
     double scale = 0.0;
     for (size_t j0 = 0; j0 < k; j0 += chunk) {
@@ -580,6 +580,122 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
                        .defect = defect,
                        .mix_step = mix_step,
                        .rounding = rounding};
+}
+
+MemoryFootprint without_strings(const MemoryFootprint &gradient, const int32_t ncas,
+                                const int32_t nalpha, const int32_t nbeta) {
+  const size_t strings = ci::device_string_set_footprint(ncas, nalpha).device.peak() +
+                         ci::device_string_set_footprint(ncas, nbeta).device.peak();
+  MemoryFootprint out = gradient;
+  out.device.scratch -= std::min(strings, out.device.scratch);
+  return out;
+}
+
+MemoryFootprint
+nevpt2_hessian_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                         const int32_t ncas, const int32_t nalpha, const int32_t nbeta,
+                         const int32_t k, const std::span<const size_t> syevd_lwork,
+                         const MemoryFootprint &gradient,
+                         const std::function<MemoryFootprint(int32_t, int32_t)> &product,
+                         const bool copies, const bool pairs) {
+  const size_t nmo = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  const size_t nn = nmo * nmo;
+  const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const auto ks = static_cast<size_t>(k);
+  const size_t pairs_count = (n_core * (nmo - n_core)) + (n_act * (nmo - n_core - n_act));
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const size_t ndet = strings(nalpha) * strings(nbeta);
+  const size_t size = pairs_count + ndet;
+  constexpr size_t kD = sizeof(double);
+  Ledger l;
+  // 1. The strings; E_cas, lambda^x kept (CasscfTerms::cp, returned).
+  l.call(ci::device_string_set_footprint(ncas, nalpha));
+  l.call(ci::device_string_set_footprint(ncas, nbeta));
+  const MemoryFootprint casscf =
+      df_casscf_footprint(basis, aux, ncore, ncas, nalpha, nbeta, syevd_lwork[n_act]);
+  l.call(casscf);
+  // 2. Q^T and t_i's (h, B, c, kappa), held; the tangents; kappa_nr in the
+  // coordinates, held, beside the Cartesian one.
+  l.take(kD * ((n_x * ks) + (ks * nn) + (ks * naux * nn) + (ks * ndet) + (ks * nn)));
+  l.run(df_nevpt2_tangents_footprint(basis, aux, ncore, ncas, nalpha, nbeta));
+  l.take(kD * ks * nn);
+  l.run(MemoryFootprint{.device = {.persistent = kD * nn * n_x}});
+  // 3. h_bar and Lambda, held; the Lagrangian's calls, z^c and the
+  // multipliers kept.
+  l.take(kD * (nn + (naux * nn)));
+  l.call(gradient);
+  // 4. The pairing's columns; the products along one coordinate; with
+  // pairs, a pair's directions and partners and its product.
+  l.take(kD * ks * ks);
+  l.run(product(1, 0));
+  if (copies) {
+    const size_t two = kD * 2 * (nn + (naux * nn) + ndet);
+    l.take(2 * two);
+    if (pairs) {
+      l.run(product(2, 2));
+    }
+    l.give(2 * two);
+  }
+  l.give(kD * ks * ks);
+  // 5. z and x^x beside the Z terms, L_xlambda kept to the end; their
+  // n_x x n_x product.
+  l.take(kD * (size + (size * n_x)));
+  const MemoryFootprint z_terms =
+      casscf_z_terms_footprint(basis, aux, ncore, ncas, nalpha, nbeta, 1, 0, false,
+                               static_cast<int32_t>(n_x), syevd_lwork[n_act]);
+  l.call(z_terms);
+  l.run(MemoryFootprint{.device = {.persistent = kD * n_x * n_x}});
+  l.give(kD * (size + (size * n_x)));
+  // 6. The skeleton.
+  l.run(df_adjoint_xy_footprint(basis, aux));
+  // 7. h_MO and the MO factor beside the gemmwich's work; X_N, X(t), Y, V,
+  // the work and kappa Lambda; kappa_oo; each Gram matrix in turn.
+  const auto n = static_cast<int32_t>(nmo);
+  const OrbitalRange all{.first = 0, .count = n};
+  const size_t rotation =
+      kD * (nn + (naux * nn) + nn + (3 * ks * nn) + nn + (naux * nn) + (ks * nn));
+  l.take(kD * (nn + (naux * nn)));
+  l.run(MemoryFootprint{.device = {.persistent = kD * nn}});
+  l.borrow(b_mo_footprint(static_cast<int32_t>(naux), n, all, all));
+  l.take(rotation - (kD * (nn + (naux * nn))));
+  l.run(MemoryFootprint{.device = {.persistent = kD * ks * ks}});
+  l.give(rotation);
+  // The strings, t_i's, kappa_nr, h_bar, Lambda, the gradient and L_xlambda
+  // freed; CasscfTerms::cp returned.
+  return l.footprint(casscf.device.persistent);
+}
+
+MemoryFootprint df_sc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux,
+                                       const int32_t ncore, const int32_t ncas,
+                                       const int32_t nalpha, const int32_t nbeta, const int32_t k,
+                                       const int32_t batch,
+                                       const std::span<const size_t> syevd_lwork,
+                                       const bool pairs) {
+  const size_t nao = basis.nao_sphe();
+  if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || aux.nao_sphe() == 0 || ncore < 0 ||
+      ncas < 1 || static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao || nalpha < 0 ||
+      nbeta < 0 || nalpha > ncas || nbeta > ncas || k < 1 ||
+      syevd_lwork.size() <= static_cast<size_t>(ncas)) {
+    return {};
+  }
+  const auto nmo = static_cast<int32_t>(nao);
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const MemoryFootprint gradient =
+      without_strings(nevpt2::sc_gradient_footprint(basis, aux, ncore, ncas, nalpha + nbeta,
+                                                    nalpha - nbeta + 1, batch),
+                      ncas, nalpha, nbeta);
+  return nevpt2_hessian_footprint(
+      basis, aux, ncore, ncas, nalpha, nbeta, k, syevd_lwork, gradient,
+      [&](const int32_t count, const int32_t partners) {
+        return nevpt2::sc_hessian_product_footprint(naux, nmo, nmo, ncore, ncas, nalpha, nbeta,
+                                                    batch, count, partners);
+      },
+      true, pairs);
 }
 
 Status sc_rounding_refusal(const std::string_view who, const double rounding,

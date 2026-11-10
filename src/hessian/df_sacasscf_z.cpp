@@ -335,11 +335,23 @@ MemoryFootprint df_sacasscf_z_footprint(const BasisSet &basis, const BasisSet &a
       nalpha < 1 || nbeta < 1 || nalpha > ncas || nbeta > ncas) {
     return {}; // refused before anything is allocated
   }
+  const auto roots = static_cast<size_t>(nroots);
+  return casscf_z_terms_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots,
+                                  rotating ? roots * (roots - 1) / 2 : 0, true, 0, syevd_lwork);
+}
+
+MemoryFootprint casscf_z_terms_footprint(const BasisSet &basis, const BasisSet &aux,
+                                         const int32_t ncore, const int32_t ncas,
+                                         const int32_t nalpha, const int32_t nbeta,
+                                         const int32_t nroots, const size_t n_theta, const bool rhs,
+                                         const int32_t k, const size_t syevd_lwork) {
+  const size_t nao = basis.nao_sphe();
   const auto nmo = static_cast<int32_t>(nao);
   const auto naux = static_cast<int32_t>(aux.nao_sphe());
   const auto n_core = static_cast<size_t>(ncore);
   const auto n_act = static_cast<size_t>(ncas);
   const auto roots = static_cast<size_t>(nroots);
+  const auto ks = static_cast<size_t>(k);
   const size_t na2 = n_act * n_act;
   const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
   const size_t mm = nao * nao;
@@ -351,7 +363,7 @@ MemoryFootprint df_sacasscf_z_footprint(const BasisSet &basis, const BasisSet &a
   const int32_t beta_strings = strings(nbeta);
   const size_t dim = static_cast<size_t>(alpha_strings) * static_cast<size_t>(beta_strings);
   const size_t n_ci = dim * roots;
-  const size_t size = pairs + n_ci + (rotating ? roots * (roots - 1) / 2 : 0);
+  const size_t size = pairs + n_ci + n_theta;
   const auto held = [](const size_t doubles) {
     return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
   };
@@ -373,7 +385,9 @@ MemoryFootprint df_sacasscf_z_footprint(const BasisSet &basis, const BasisSet &a
   chain = then(chain, held(mm));
   chain = then(chain, held(size * n_x));
   // The right-hand side's df_derivatives.
-  chain = then(chain, drop(derivatives(false)));
+  if (rhs) {
+    chain = then(chain, drop(derivatives(false)));
+  }
   // L_xy's z_o part: K, the averaged RDMs, F^[x] at the rotated densities and
   // E_xy along K.
   chain = then(chain, drop(then(held(mm), then(rdms, then(derivatives(true),
@@ -382,17 +396,22 @@ MemoryFootprint df_sacasscf_z_footprint(const BasisSet &basis, const BasisSet &a
   // Its z_c part: c + dc, c - dc and dc; the roots' overlaps, then Theta's
   // square; the RDMs of each; E_xy at each.
   MemoryFootprint z_c = then(held(3 * n_ci), drop(held(roots * roots)));
-  if (rotating) {
+  if (n_theta != 0) {
     z_c = then(z_c, drop(held(roots * roots)));
   }
   z_c = then(z_c, then(rdms, then(rdms, then(polarized, polarized))));
   chain = then(chain, drop(z_c));
   // I^x z: the operator, and the integral derivatives at their least chunk
-  // into y.
-  chain = then(chain, drop(then(mcscf::third_derivative_footprint(
-                                    nmo, naux, ncore, ncas, alpha_strings, beta_strings, nroots),
-                                drop(then(held(size * n_x),
-                                          mcscf::df_integral_derivatives_footprint(basis, aux))))));
+  // (into y beside L_xlambda with a right-hand side); then the action's Y
+  // and its k x k product.
+  const MemoryFootprint integrals = mcscf::df_integral_derivatives_footprint(basis, aux);
+  MemoryFootprint op = then(mcscf::third_derivative_footprint(nmo, naux, ncore, ncas, alpha_strings,
+                                                              beta_strings, nroots),
+                            drop(rhs ? then(held(size * n_x), integrals) : integrals));
+  if (k > 0) {
+    op = then(op, drop(then(held(size * ks), held(ks * ks))));
+  }
+  chain = then(chain, drop(op));
   // The strings and C's copy freed; L_xlambda returned.
   return keeping(chain, sizeof(double) * size * n_x);
 }

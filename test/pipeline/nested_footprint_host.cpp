@@ -8,7 +8,8 @@
 // the analysis; over an integral-direct ERI, empty. The analytic DF-CASSCF
 // [hessian] is the chain to [casscf] held under the solution's C and CI
 // vectors and hessian::df_casscf's (one root) or df_sacasscf's (a state
-// average), then the analysis. A chain whose library calls are not all
+// average), then the analysis; the analytic NEVPT2 [hessian] the same over
+// the variant's Hessian. A chain whose library calls are not all
 // footprinted has none. The dimensions are filled by hand,
 // the basis placed on the host and syevd's work made up (only its order is
 // read), so nothing touches a device.
@@ -260,21 +261,17 @@ TEST(NestedFootprint, AnalyticCasscfHessianIsTheChainThenDfCasscf) {
   }
 }
 
-// The chains not footprinted yet (#1176): the semi-numerical CASSCF
-// Hessian, the NEVPT2 Hessians by either method, and the CASSCF and NEVPT2
-// chains of the [optimize] step.
+// The chains not footprinted yet: the semi-numerical CASSCF and NEVPT2
+// Hessians, and the CASSCF and NEVPT2 chains of the [optimize] step.
 TEST(NestedFootprint, UnfootprintedChainsHaveNone) {
   const fb::BasisSet basis = water_basis();
   const fb::FootprintDimensions dims = water_dims(basis);
   fb::HessianStep casscf_hessian{.method = fb::HessianMethod::Numerical};
   casscf_hessian.casscf_gradient.emplace();
   EXPECT_FALSE(casscf_hessian.footprint(dims).has_value());
-  for (const fb::HessianMethod method :
-       {fb::HessianMethod::Analytic, fb::HessianMethod::Numerical}) {
-    fb::HessianStep nevpt2_hessian{.method = method};
-    nevpt2_hessian.nevpt2_gradient.emplace();
-    EXPECT_FALSE(nevpt2_hessian.footprint(dims).has_value());
-  }
+  fb::HessianStep nevpt2_hessian{.method = fb::HessianMethod::Numerical};
+  nevpt2_hessian.nevpt2_gradient.emplace();
+  EXPECT_FALSE(nevpt2_hessian.footprint(dims).has_value());
   fb::OptimizeStep casscf_optimize;
   casscf_optimize.casscf_gradient.emplace();
   EXPECT_FALSE(casscf_optimize.footprint(dims).has_value());
@@ -293,9 +290,83 @@ TEST(NestedFootprint, StepFootprintPassesTheOptionalThrough) {
   const fb::FootprintDimensions dims = water_dims(basis);
   EXPECT_EQ(fb::step_footprint(fb::OptimizeStep{}, dims), fb::OptimizeStep{}.footprint(dims));
   EXPECT_EQ(fb::step_footprint(fb::HessianStep{}, dims), fb::HessianStep{}.footprint(dims));
-  fb::HessianStep nevpt2_hessian;
+  fb::HessianStep nevpt2_hessian{.method = fb::HessianMethod::Numerical};
   nevpt2_hessian.nevpt2_gradient.emplace();
   EXPECT_FALSE(fb::step_footprint(nevpt2_hessian, dims).has_value());
+}
+
+// The analytic NEVPT2 [hessian] (#1186): the chain to [casscf] held under the
+// solution's C and CI vectors and the variant's Hessian, SC's or PC's for one
+// root, or one QD state's of the two-root average, in 3 n_atom coordinates;
+// then the analysis. A frozen core, a QD state outside the average and a
+// state average without QD are refused before anything runs: empty.
+TEST(NestedFootprint, AnalyticNevpt2HessianIsTheChainThenItsTerms) {
+  const fb::BasisSet basis = water_basis();
+  const fb::BasisSet aux =
+      place_on_water(fb::resolve_aux_basis("cc-pvdz-jkfit").value().primitive_normalized());
+  fb::FootprintDimensions dims = water_dims(basis);
+  dims.aux = &aux;
+  dims.naux = aux.nao_sphe();
+  dims.ncas = 4;
+  dims.nelecas = 4;
+  for (std::size_t order = dims.syevd_lwork.size(); order <= 64; ++order) {
+    dims.syevd_lwork.push_back(1000 + (64 * order));
+  }
+  const fb::EriStep eri{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvdz-jkfit"};
+  const fb::MemoryFootprint analysis =
+      fb::geometry::harmonic_analysis_footprint(dims.atoms, dims.syevd_lwork);
+  constexpr std::int32_t kK = 9;
+  for (const bool qd : {false, true}) {
+    for (const fb::Nevpt2Variant variant : {fb::Nevpt2Variant::Sc, fb::Nevpt2Variant::Pc}) {
+      SCOPED_TRACE(std::format("qd {}, pc {}", qd, variant == fb::Nevpt2Variant::Pc));
+      const std::int32_t nroots = qd ? 2 : 1;
+      fb::HessianStep step{.method = fb::HessianMethod::Analytic, .eri = eri};
+      step.casscf.nroots = nroots;
+      step.nevpt2_gradient.emplace();
+      step.nevpt2_gradient->variant = variant;
+      step.nevpt2_gradient->quasi_degenerate = qd;
+      step.nevpt2_gradient->state = qd ? 1 : 0;
+      std::vector<fb::MemoryFootprint> chain = rhf_chain(dims);
+      chain.back() = step.casscf.footprint(dims);
+      chain[4] = eri.footprint(dims);
+      const auto [chain_scratch, chain_workspace] = chain_peak(chain);
+      std::size_t held = 0;
+      for (const fb::MemoryFootprint &one : chain) {
+        held += one.device.persistent;
+      }
+      const std::size_t solution =
+          sizeof(double) * ((dims.nao * dims.nao) + (36 * static_cast<std::size_t>(nroots)));
+      const bool pc = variant == fb::Nevpt2Variant::Pc;
+      const fb::MemoryFootprint terms =
+          qd ? (pc ? fb::hessian::df_qd_pc_nevpt2_footprint(basis, aux, 3, 4, 2, 2, 2, false, kK, 0,
+                                                            dims.syevd_lwork)
+                   : fb::hessian::df_qd_sc_nevpt2_footprint(basis, aux, 3, 4, 2, 2, 2, false, kK, 0,
+                                                            dims.syevd_lwork))
+             : (pc ? fb::hessian::df_pc_nevpt2_footprint(basis, aux, 3, 4, 2, 2, kK, 0,
+                                                         dims.syevd_lwork)
+                   : fb::hessian::df_sc_nevpt2_footprint(basis, aux, 3, 4, 2, 2, kK, 0,
+                                                         dims.syevd_lwork));
+      ASSERT_GT(terms.device.scratch, 0U);
+
+      const std::optional<fb::MemoryFootprint> fp = step.footprint(dims);
+      ASSERT_TRUE(fp.has_value());
+      EXPECT_EQ(fp->device.persistent, 0U);
+      EXPECT_EQ(fp->device.workspace,
+                std::max({chain_workspace, terms.device.workspace, analysis.device.workspace}));
+      EXPECT_EQ(
+          fp->device.peak() - fp->device.workspace,
+          std::max({chain_scratch, held + solution + terms.device.persistent + terms.device.scratch,
+                    analysis.device.scratch}));
+
+      // Refused before anything runs.
+      fb::HessianStep frozen = step;
+      frozen.nevpt2_gradient->frozen_core = 1;
+      EXPECT_EQ(frozen.footprint(dims), fb::MemoryFootprint{});
+      fb::HessianStep outside = step;
+      outside.casscf.nroots = qd ? 1 : 2;
+      EXPECT_EQ(outside.footprint(dims), fb::MemoryFootprint{});
+    }
+  }
 }
 
 } // namespace

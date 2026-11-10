@@ -35,6 +35,7 @@ import free_breakfast.core.resources;
 import free_breakfast.core.nontransferrable;
 import free_breakfast.io.base;
 import free_breakfast.io.npy;
+import free_breakfast.io.json; // symmetric_water.h
 import free_breakfast.ci;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.shape;
@@ -45,9 +46,11 @@ import free_breakfast.gradient;   // one_electron_terms
 import free_breakfast.integrals;  // casscf_integrals, overlap_half_gradient
 import free_breakfast.recipes.lu; // getrf_lwork
 import free_breakfast.nevpt2;     // the NEVPT2 routines the NEVPT2 steps call
+import free_breakfast.hessian;    // the NEVPT2 Hessians' footprints (#1186)
 
 #include "pool_footprint.h"
 #include "scratch_dir.h"
+#include "symmetric_water.h"
 
 namespace {
 
@@ -2655,6 +2658,444 @@ TEST_F(Nevpt2ReaderFootprint, QdPcHessianProductLifts) {
           }
           EXPECT_GT(most, 0.0) << "no Schur lift along the direction";
         });
+  }
+}
+
+// The room a pool that rounds a reused block whole (ROCm's,
+// test/support/pool_footprint.h) needs past the footprint for every
+// adaptive part to run at its least: the part reads the budget as the pool
+// counts it, rounded blocks and all, and on the gfx1200 that left the
+// products' chunk, the tangents' part and nevpt2::rdms' tile up to 15 KB
+// short of one unit under a cap at the footprint alone. 64 KiB covers that
+// and is under one unit of the products or the tangents (MBs), so neither
+// widens; a few more rdms tiles fit, within the pool's reuse allowance.
+// Zero on CUDA's, which counts requests.
+std::size_t reuse_room(const std::size_t /*peak*/) {
+  return fbt::pool_rounds_reuse(0) ? std::size_t{64} << 10 : 0;
+}
+
+// expect_least_footprint's run, its cap widened by reuse_room: the NEVPT2
+// Hessians' long allocation sequences reuse freed blocks, which ROCm's pool
+// counts whole.
+template <typename Run>
+void expect_nevpt2_least_footprint(
+    const fb::MemoryFootprint &fp, const std::size_t live, Run &&run,
+    std::source_location location = std::source_location::current()) {
+  std::size_t granularity = 0;
+  {
+    fb::DeviceResources probe{0};
+    granularity = fbt::pool_granularity(*probe.device());
+  }
+  const std::uint64_t cap = fp.device.peak() + fb::kPoolHeadroomBytes +
+                            (granularity * (live + 16)) + reuse_room(fp.device.peak());
+  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  run(res);
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace)
+      << "the device workspace, from line " << location.line();
+  EXPECT_EQ(res.pinned_bytes(), fp.pinned.peak())
+      << "the pinned memory, from line " << location.line();
+  const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { run(res); });
+  std::cout << std::format(
+      "[ footprint ] line {}: capped at {}: measured {} (G {}), footprint {} + workspace {}\n",
+      location.line(), cap, peak.used, peak.granularity, fp.device.persistent + fp.device.scratch,
+      fp.device.workspace);
+  fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
+                        live, {}, location);
+  EXPECT_LE(res.device()->pool_usage().used_high, cap) << "from line " << location.line();
+}
+
+// Live at the peak of the NEVPT2 Hessians' runs, counted off a trace of
+// their pool allocations.
+constexpr std::size_t kTangentsLive = 64;
+constexpr std::size_t kAdjointXyLive = 64;
+constexpr std::size_t kNevpt2HessianLive = 128;
+
+// The water's symmetry-adapted coordinates but its B2 vibration, along which
+// SC mixes an inactive pair (df_sc_nevpt2_hessian_gpu.cpp's
+// SymmetricWaterRefusesOnlyItsB2Vibration): SC's Hessian there.
+std::vector<double> water_sc_coordinates() {
+  const std::vector<std::size_t> keep{0, 1, 2, 3, 4, 6, 7, 8};
+  return fb::test::symmetric_water_rows(keep);
+}
+
+// df_nevpt2_tangents and df_adjoint_xy over the single-state water CAS(4,4),
+// then df_sc_nevpt2 in water_sc_coordinates and df_pc_nevpt2 in the
+// Cartesian ones, each at its least (W^x's chunk, the tangents' parts, the
+// products' chunk, the class walks' and RDMs' tiles at their least): held to
+// their footprints, PC's at the run's kept ranks. No pair of SC's
+// coordinates populates an empty perturber in both, so none is taken again:
+// SC's is held to its footprint without the pair (pairs false), and the
+// footprint with it is past that. Slow-gated: the Hessians take a few
+// seconds a run.
+TEST_F(Nevpt2ReaderFootprint, ScPcNevpt2Hessians) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  Nevpt2Reference &s = ss();
+  ASSERT_EQ(s.dims().casscf_nroots, 1U);
+  fb::DeviceResources &inputs = s.plan.inputs;
+  const fb::mcscf::Solution &sol = *s.solution;
+  const fb::BasisSet &basis = s.plan.basis->basis;
+  const fb::BasisSet &aux = s.fit().aux;
+  const auto &classes = s.plan.pairs->classes;
+  const fb::SphericalMatrixAO &h = s.plan.h->h;
+  const double *const l = s.fit().l.data();
+  const std::int32_t ncore = s.cas->ncore;
+  const std::int32_t ncas = s.cas->ncas;
+  const std::int32_t nalpha = s.cas->nelecas / 2;
+  const std::span<const std::size_t> lwork = s.dims().syevd_lwork;
+  const fb::Molecule &molecule = s.plan.molecule->molecule;
+
+  // lambda^x, which the tangents read.
+  auto casscf = fb::hessian::df_casscf(inputs, molecule, basis, classes, aux, h, s.fit().b, l, sol,
+                                       ncore, ncas);
+  ASSERT_TRUE(casscf) << casscf.error().message;
+  expect_nevpt2_least_footprint(
+      fb::hessian::df_nevpt2_tangents_footprint(basis, aux, ncore, ncas, nalpha, nalpha),
+      kTangentsLive, [&](fb::DeviceResources &res) {
+        auto t = fb::hessian::df_nevpt2_tangents(res, molecule, basis, classes, aux, h, s.fit().b,
+                                                 l, sol, ncore, ncas, casscf->cp, false,
+                                                 [](std::int32_t, std::int32_t, const double *,
+                                                    const double *, const double *,
+                                                    const double *) -> fb::Status { return {}; });
+        ASSERT_TRUE(t) << t.error().message;
+      });
+  // Any symmetric adjoint: the footprint reads none of it.
+  const std::size_t nn = basis.nao_sphe() * basis.nao_sphe();
+  fb::Buffers::device<double> h_bar(nn, inputs.device());
+  fb::Buffers::device<double> lambda(aux.nao_sphe() * nn, inputs.device());
+  ASSERT_EQ(wwr::wwrMemsetAsync(h_bar.data(), 0, nn * sizeof(double), inputs.stream()),
+            wwr::wwrSuccess);
+  ASSERT_EQ(wwr::wwrMemsetAsync(lambda.data(), 0, lambda.num_elements() * sizeof(double),
+                                inputs.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(inputs.sync());
+  expect_nevpt2_least_footprint(fb::hessian::df_adjoint_xy_footprint(basis, aux), kAdjointXyLive,
+                                [&](fb::DeviceResources &res) {
+                                  auto xy = fb::hessian::df_adjoint_xy(
+                                      res, molecule, basis, classes, aux, h, s.fit().b, l, sol.c,
+                                      h_bar.data(), lambda.data());
+                                  ASSERT_TRUE(xy) << xy.error().message;
+                                });
+
+  const std::vector<double> q = water_sc_coordinates();
+  const fb::MemoryFootprint sc =
+      fb::hessian::df_sc_nevpt2_footprint(basis, aux, ncore, ncas, nalpha, nalpha, 8, 0, lwork);
+  const fb::MemoryFootprint sc_alone = fb::hessian::df_sc_nevpt2_footprint(
+      basis, aux, ncore, ncas, nalpha, nalpha, 8, 0, lwork, false);
+  EXPECT_GT(sc.device.peak(), sc_alone.device.peak());
+  expect_nevpt2_least_footprint(sc_alone, kNevpt2HessianLive, [&](fb::DeviceResources &res) {
+    auto got = fb::hessian::df_sc_nevpt2(res, molecule, basis, classes, aux, h, s.fit().b, l, sol,
+                                         ncore, ncas, 0, q);
+    ASSERT_TRUE(got) << got.error().message;
+    EXPECT_EQ(got->defect, 0.0); // no pair taken again
+  });
+
+  // PC at the run's kept ranks, pc_energy's at the solution.
+  std::array<std::int64_t, 8> dropped{};
+  {
+    auto alpha = fb::ci::DeviceStringSet::create(inputs, ncas, nalpha).value();
+    auto e = fb::nevpt2::pc_energy(inputs, alpha, alpha, s.fit().naux, s.nmo(), s.nmo(),
+                                   s.fit().b.data(), sol.c.data(), h.data(), ncore, ncas,
+                                   sol.roots.vectors.data(), 0);
+    ASSERT_TRUE(e) << e.error().message;
+    dropped = e->dropped;
+  }
+  const std::array<std::array<std::int64_t, 8>, 1> ranks{dropped};
+  const std::int32_t n_x = 3 * static_cast<std::int32_t>(basis.natoms());
+  expect_nevpt2_least_footprint(fb::hessian::df_pc_nevpt2_footprint(basis, aux, ncore, ncas, nalpha,
+                                                                    nalpha, n_x, 0, lwork, ranks),
+                                kNevpt2HessianLive, [&](fb::DeviceResources &res) {
+                                  auto got =
+                                      fb::hessian::df_pc_nevpt2(res, molecule, basis, classes, aux,
+                                                                h, s.fit().b, l, sol, ncore, ncas);
+                                  ASSERT_TRUE(got) << got.error().message;
+                                });
+}
+
+// df_qd_nevpt2_tangents over the water's SA-2 CAS(4,4), then the SC- and
+// PC-QD-NEVPT2 Hessians of state 1, SC's in water_sc_coordinates and PC's in
+// the Cartesian ones, each at its least and held to its footprint, PC's at
+// the run's kept ranks. No pair is taken again, so each is held to its
+// footprint without one, and the footprint with it is past that.
+// Slow-gated: the Hessians take seconds a run.
+TEST_F(Nevpt2ReaderFootprint, QdNevpt2Hessians) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  Nevpt2Reference &s = sa();
+  ASSERT_EQ(s.dims().casscf_nroots, 2U);
+  fb::DeviceResources &inputs = s.plan.inputs;
+  const fb::mcscf::Solution &sol = *s.solution;
+  const fb::BasisSet &basis = s.plan.basis->basis;
+  const fb::BasisSet &aux = s.fit().aux;
+  const auto &classes = s.plan.pairs->classes;
+  const fb::SphericalMatrixAO &h = s.plan.h->h;
+  const double *const l = s.fit().l.data();
+  const std::int32_t ncore = s.cas->ncore;
+  const std::int32_t ncas = s.cas->ncas;
+  const std::int32_t nalpha = s.cas->nelecas / 2;
+  const std::int32_t nroots = s.nroots();
+  const std::span<const std::size_t> lwork = s.dims().syevd_lwork;
+  const fb::Molecule &molecule = s.plan.molecule->molecule;
+  constexpr std::int32_t kState = 1;
+  const std::vector<double> weights =
+      fb::mcscf::sa_gradient_weights(sol, static_cast<std::size_t>(ncas)).value();
+  const bool rotating = std::ranges::contains(fb::response::rotating_pairs(weights), true);
+
+  auto cp = fb::hessian::df_sacasscf_cp(inputs, molecule, basis, classes, aux, h, s.fit().b, l, sol,
+                                        weights, ncore, ncas);
+  ASSERT_TRUE(cp) << cp.error().message;
+  expect_nevpt2_least_footprint(
+      fb::hessian::df_qd_nevpt2_tangents_footprint(basis, aux, ncore, ncas, nalpha, nalpha, nroots),
+      kTangentsLive, [&](fb::DeviceResources &res) {
+        auto t = fb::hessian::df_qd_nevpt2_tangents(
+            res, molecule, basis, classes, aux, h, s.fit().b, l, sol, weights, ncore, ncas, cp->cp,
+            false,
+            [](std::int32_t, std::int32_t, const double *, const double *, const double *,
+               const double *) -> fb::Status { return {}; });
+        ASSERT_TRUE(t) << t.error().message;
+      });
+
+  const std::vector<double> q = water_sc_coordinates();
+  const auto sc = [&](const bool pairs) {
+    return fb::hessian::df_qd_sc_nevpt2_footprint(basis, aux, ncore, ncas, nalpha, nalpha, nroots,
+                                                  rotating, 8, 0, lwork,
+                                                  fb::hessian::QdNevpt2Form::state, pairs);
+  };
+  EXPECT_GT(sc(true).device.peak(), sc(false).device.peak());
+  const auto qd_sc = [&](fb::DeviceResources &res) {
+    auto got = fb::hessian::df_qd_sc_nevpt2(res, molecule, basis, classes, aux, h, s.fit().b, l,
+                                            sol, ncore, ncas, kState, 0, q);
+    EXPECT_TRUE(got) << got.error().message;
+    return got ? std::move(got->hessian) : std::vector<double>{};
+  };
+  std::vector<double> least;
+  expect_nevpt2_least_footprint(sc(false), kNevpt2HessianLive, [&](fb::DeviceResources &res) {
+    least = qd_sc(res);
+    ASSERT_FALSE(least.empty());
+  });
+  // Under a cap with 64 MiB of room: the pool stays under it, and the high
+  // water rises past the least's (the products' chunk, W^x's and the
+  // tangents' parts widened).
+  {
+    std::size_t granularity = 0;
+    {
+      fb::DeviceResources probe{0};
+      granularity = fbt::pool_granularity(*probe.device());
+    }
+    const fb::MemoryFootprint fp = sc(false);
+    const std::uint64_t least_cap = fp.device.peak() + fb::kPoolHeadroomBytes +
+                                    (granularity * (kNevpt2HessianLive + 16)) +
+                                    reuse_room(fp.device.peak());
+    const std::uint64_t cap = least_cap + (std::uint64_t{64} << 20);
+    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    const fb::ScopedDeviceIndex on{res.dev_idx()};
+    ASSERT_FALSE(qd_sc(res).empty());
+    const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { (void)qd_sc(res); });
+    std::cout << std::format("[ footprint ] QD SC with 64 MiB of room, capped at {}: measured {}, "
+                             "the least's footprint {}\n",
+                             cap, peak.used, fp.device.persistent + fp.device.scratch);
+    EXPECT_GT(peak.used, fp.device.persistent + fp.device.scratch);
+    EXPECT_LE(res.device()->pool_usage().used_high, cap);
+  }
+  // Unconstrained, every adaptive part as wide as the device holds: the
+  // state's Hessian is the least's to 1e-10 relative (the widths regroup
+  // sums only).
+  {
+    fb::DeviceResources res{0};
+    const std::vector<double> whole = qd_sc(res);
+    ASSERT_EQ(whole.size(), least.size());
+    double largest = 0.0;
+    double worst = 0.0;
+    for (std::size_t i = 0; i < whole.size(); ++i) {
+      largest = std::max(largest, std::abs(whole[i]));
+      worst = std::max(worst, std::abs(whole[i] - least[i]));
+    }
+    std::cout << std::format("[ footprint ] QD SC state {}: at the least vs unconstrained, max "
+                             "|dH| {:.2e} of the largest {:.3e}\n",
+                             kState, worst, largest);
+    EXPECT_LE(worst, 1e-10 * largest);
+  }
+
+  const std::vector<std::array<std::int64_t, 8>> dropped = s.qd_dropped();
+  const std::int32_t n_x = 3 * static_cast<std::int32_t>(basis.natoms());
+  expect_nevpt2_least_footprint(
+      fb::hessian::df_qd_pc_nevpt2_footprint(basis, aux, ncore, ncas, nalpha, nalpha, nroots,
+                                             rotating, n_x, 0, lwork,
+                                             fb::hessian::QdNevpt2Form::state, dropped, false),
+      kNevpt2HessianLive, [&](fb::DeviceResources &res) {
+        auto got = fb::hessian::df_qd_pc_nevpt2(res, molecule, basis, classes, aux, h, s.fit().b, l,
+                                                sol, ncore, ncas, kState);
+        ASSERT_TRUE(got) << got.error().message;
+      });
+}
+
+// The analytic NEVPT2 [hessian] steps (#1186) at their least, each over its
+// own chain from the molecule (expect_analytic_hessian_footprint's), with
+// @p without bytes of the footprint the run never takes, for @p reason: the
+// pool is capped at the footprint less those, so every adaptive part is at
+// its least (widened by reuse_room on a pool that rounds reuse), and the
+// measured peak is held to the footprint with them as its slack. The workspace is held to at most the footprint's (PC's is at
+// the rank that holds the most).
+void expect_nevpt2_hessian_step_footprint(const std::string_view xyz, const std::string_view basis,
+                                          const std::string_view tables, const std::size_t live,
+                                          const std::size_t without,
+                                          const std::string_view reason) {
+  Plan plan(
+      System{.xyz = xyz, .basis = basis, .mode = fb::EriMode::DensityFitting, .tables = tables});
+  plan.molecule.emplace(
+      planned<fb::MoleculeStep>(*plan.calc).run(fb::View<>{}, plan.inputs).value());
+  const auto hessian = planned<fb::HessianStep>(*plan.calc);
+  ASSERT_EQ(hessian.method, fb::HessianMethod::Analytic);
+  ASSERT_TRUE(hessian.nevpt2_gradient.has_value());
+  const std::optional<fb::MemoryFootprint> fp = hessian.footprint(plan.dims());
+  ASSERT_TRUE(fp.has_value());
+  EXPECT_EQ(fp->device.persistent, 0U);
+  ASSERT_GT(fp->device.peak(), without);
+  std::size_t granularity = 0;
+  {
+    fb::DeviceResources probe{0};
+    granularity = fbt::pool_granularity(*probe.device());
+  }
+  const std::uint64_t cap = fp->device.peak() - without + fb::kPoolHeadroomBytes +
+                            (granularity * (live + 16)) + reuse_room(fp->device.peak() - without);
+  fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  res = fb::DeviceResources{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  const auto run = [&] {
+    expect_ran(hessian.run(fb::View<fb::MoleculeOutput>{*plan.molecule}, node));
+  };
+  run();
+  EXPECT_LE(res.device_workspace(0).num_elements(), fp->device.workspace);
+  EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
+  const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), run);
+  std::cout << std::format(
+      "[ footprint ] analytic NEVPT2 [hessian]: capped at {}: measured {} (G {}), footprint {} "
+      "less {} + workspace {} (grown to {})\n",
+      cap, peak.used, peak.granularity, fp->device.persistent + fp->device.scratch, without,
+      fp->device.workspace, res.device_workspace(0).num_elements());
+  std::optional<fbt::FootprintSlack> slack;
+  if (without > 0) {
+    slack = fbt::FootprintSlack{.bytes = without, .reason = reason};
+  }
+  fbt::expect_footprint(peak, {.persistent = fp->device.persistent, .scratch = fp->device.scratch},
+                        live, slack);
+  EXPECT_LE(res.device()->pool_usage().used_high, cap);
+}
+
+// The skew formaldehyde of data/nevpt2_hessian/h2co_skew_sto3g.json (bohr
+// there, Angstrom here): no symmetry, so no SC perturber is empty and no
+// pair of coordinates is taken again.
+std::string skew_formaldehyde_xyz() {
+  auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "nevpt2_hessian" /
+                            "h2co_skew_sto3g.json");
+  EXPECT_TRUE(read.has_value()) << read.error().message;
+  std::string xyz = std::format("{}\nskew formaldehyde\n", read->at("atoms").size());
+  for (const fb::json &atom : read->at("atoms")) {
+    const auto coord = atom.at("coord").get<std::vector<double>>();
+    xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
+                       coord[0] * fb::kAngstromPerBohr<double>,
+                       coord[1] * fb::kAngstromPerBohr<double>,
+                       coord[2] * fb::kAngstromPerBohr<double>);
+  }
+  return xyz;
+}
+
+// The skew formaldehyde's CAS(4,4) over the fixture's active orbitals, with
+// @p nroots roots, and an analytic [hessian] over a [nevpt2_gradient]
+// @p gradient table's body.
+std::string skew_nevpt2_tables(const std::int32_t nroots, const std::string_view gradient) {
+  return std::format("[casscf]\nncas = 4\nnelecas = 4\nactive = [6, 7, 8, 9]\nnroots = {}\n"
+                     "conv_tol = 1e-12\nconv_tol_grad = 1e-9\n[nevpt2_gradient]\n{}"
+                     "[hessian]\nmethod = \"analytic\"\n",
+                     nroots, gradient);
+}
+
+constexpr std::string_view kPairReason =
+    "no pair of the coordinates populates an empty perturber in both, so the pair the footprint "
+    "counts (its product, two directions with their partners, beside their copies) is never "
+    "taken: the run is capped at the footprint without it";
+
+// The SC and SC-QD-NEVPT2 [hessian] steps over the skew formaldehyde in
+// STO-3G, the single state and state 1 of the two-root average: the chain to
+// [casscf], the solution and df_sc_nevpt2 / df_qd_sc_nevpt2 in every
+// coordinate. Two runs of the chain and the Hessian each, so slow-gated.
+TEST(StepFootprint, AnalyticScNevpt2Hessians) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const std::string xyz = skew_formaldehyde_xyz();
+  for (const bool qd : {false, true}) {
+    SCOPED_TRACE(qd);
+    const std::string tables =
+        skew_nevpt2_tables(qd ? 2 : 1, qd ? "quasi_degenerate = true\nstate = 1\n" : "");
+    // The pair's share, from the library footprints at the plan's dimensions.
+    Plan plan(System{
+        .xyz = xyz, .basis = "sto-3g", .mode = fb::EriMode::DensityFitting, .tables = tables});
+    const fb::FootprintDimensions &dims = plan.dims();
+    const auto ncas = static_cast<std::int32_t>(dims.ncas);
+    const auto ncore = static_cast<std::int32_t>((dims.n_alpha + dims.n_beta - dims.nelecas) / 2);
+    const std::int32_t k = 3 * static_cast<std::int32_t>(dims.natoms);
+    const auto at = [&](const bool pairs) {
+      return qd ? fb::hessian::df_qd_sc_nevpt2_footprint(*dims.basis, *dims.aux, ncore, ncas, 2, 2,
+                                                         2, false, k, 0, dims.syevd_lwork,
+                                                         fb::hessian::QdNevpt2Form::state, pairs)
+                : fb::hessian::df_sc_nevpt2_footprint(*dims.basis, *dims.aux, ncore, ncas, 2, 2, k,
+                                                      0, dims.syevd_lwork, pairs);
+    };
+    expect_nevpt2_hessian_step_footprint(xyz, "sto-3g", tables, kCasscfChainLive + 2 + 128,
+                                         at(true).device.peak() - at(false).device.peak(),
+                                         kPairReason);
+  }
+}
+
+// The PC and PC-QD-NEVPT2 [hessian] steps over the water in cc-pVDZ, the
+// single state and state 1 of the two-root average (the Nevpt2ReaderFootprint
+// references' CASSCFs): PC's classes are counted at the rank that holds the
+// most, so the run keeps fewer, and QD's product a refused direction takes
+// with its partner never runs; the slack is the library footprints'
+// difference at the run's ranks (the references' own) without that product.
+// Slow-gated.
+TEST_F(Nevpt2ReaderFootprint, AnalyticPcNevpt2HessianSteps) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  for (const bool qd : {false, true}) {
+    SCOPED_TRACE(qd);
+    Nevpt2Reference &s = qd ? sa() : ss();
+    const fb::FootprintDimensions &dims = s.dims();
+    const std::int32_t ncore = s.cas->ncore;
+    const std::int32_t ncas = s.cas->ncas;
+    const std::int32_t k = 3 * static_cast<std::int32_t>(dims.natoms);
+    std::vector<std::array<std::int64_t, 8>> ranks;
+    if (qd) {
+      ranks = s.qd_dropped();
+    } else {
+      auto alpha = fb::ci::DeviceStringSet::create(s.plan.inputs, ncas, 2).value();
+      auto e = fb::nevpt2::pc_energy(s.plan.inputs, alpha, alpha, s.fit().naux, s.nmo(), s.nmo(),
+                                     s.fit().b.data(), s.solution->c.data(), s.plan.h->h.data(),
+                                     ncore, ncas, s.solution->roots.vectors.data(), 0);
+      ASSERT_TRUE(e) << e.error().message;
+      ranks.push_back(e->dropped);
+    }
+    const auto at = [&](std::span<const std::array<std::int64_t, 8>> dropped, const bool pairs) {
+      return qd ? fb::hessian::df_qd_pc_nevpt2_footprint(
+                      *dims.basis, *dims.aux, ncore, ncas, 2, 2, 2, false, k, 0, dims.syevd_lwork,
+                      fb::hessian::QdNevpt2Form::state, dropped, pairs)
+                : fb::hessian::df_pc_nevpt2_footprint(*dims.basis, *dims.aux, ncore, ncas, 2, 2, k,
+                                                      0, dims.syevd_lwork, dropped);
+    };
+    const std::string tables =
+        std::format("[casscf]\nncas = 4\nnelecas = 4\nnroots = {}\nconv_tol = 1e-8\n"
+                    "conv_tol_grad = 1e-6\n[nevpt2_gradient]\nvariant = \"pc\"\n{}"
+                    "[hessian]\nmethod = \"analytic\"\n",
+                    qd ? 2 : 1, qd ? "quasi_degenerate = true\nstate = 1\n" : "");
+    expect_nevpt2_hessian_step_footprint(
+        kWaterXyz, "cc-pvdz", tables, kCasscfChainLive + 2 + 128,
+        peak_gap(at({}, true), at(ranks, false)),
+        "PC's kept ranks are the data's: the footprint counts each class at the rank that holds "
+        "the most, the run keeps fewer; and with QD no direction is refused, so none is taken "
+        "again with its partner (the library footprints' difference at the run's ranks, without "
+        "that product)");
   }
 }
 

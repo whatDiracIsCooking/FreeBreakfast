@@ -1904,6 +1904,10 @@ calls (`../energy/`, `../density_fitting/`, `../rdm/`, `../../mcscf/`,
     qd_sc_coupling_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots,
                              rotating, batch, syevd_lwork)             no fold
     qd_pc_coupling_footprint(..., syevd_lwork, dropped)
+    qd_sc_w_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots,
+                               rotating, batch, syevd_lwork, trace_zero, passes)
+                                                                      the W form (#1186)
+    qd_pc_w_gradient_footprint(..., trace_zero, passes, dropped)
     qd_inputs_footprint(naux, nmo, ncore, ncas, nelecas, multiplicity, nroots, use,
                         nfrozen)
     builders_tangent_footprint(naux, nao, nmo, ncore, ncas, count)
@@ -1915,6 +1919,13 @@ calls (`../energy/`, `../density_fitting/`, `../rdm/`, `../../mcscf/`,
                                     batch, w, count, partners, parts)
     qd_pc_hessian_product_footprint(..., batch, syevd_lwork, count, partners, parts,
                                     dropped)
+
+The W forms' (#1186, for the QD Hessians) are the state form's without the
+energy and H_eff's eigensolve: `passes` false is `qd_sc_lagrangian`'s W
+form, true the W form of `qd_sc_gradient` (or `qd_pc_gradient`) with its
+two derivative passes; `trace_zero` a W of trace 0, a coupling's or a
+seam's, which holds the core's Fock as `qd_sc_coupling` does. The
+several-W form over k matrices holds at most k times one W's.
 
 `nevpt2::rdms` and `rdms_adjoint` size their tiles from the memory budget
 (`../rdm/`): each footprint counts them at one determinant, the least they

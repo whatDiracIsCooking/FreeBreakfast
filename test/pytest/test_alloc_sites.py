@@ -163,7 +163,14 @@ def test_allowlist_entries_name_their_owner(tmp_path: Path) -> None:
     bad.write_text("src/a.cpp 2\n")
     with pytest.raises(ValueError, match="#<issue>"):
         sites.read_allowlist(bad)
-    assert sites.read_allowlist()  # the checked-in one parses
+    # The checked-in one parses, and every entry it has names its owner. The
+    # "Pipeline memory caps" milestone migrated its last sites (#1186), so it
+    # holds comments only: a re-added line fails here.
+    checked = sites.read_allowlist()
+    assert isinstance(checked, dict)
+    for path, (_, owner) in checked.items():
+        assert owner.startswith("#"), path
+    assert checked == {}
 
 
 def test_main_check_reports_and_fails(tmp_path: Path, capsys) -> None:

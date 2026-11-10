@@ -1020,13 +1020,25 @@ inputs.
 ### Memory
 
 Held throughout: h_MO and B_MO (naux nmo²). W^x's chunk takes a third of
-the budget (the device's free memory at the call, or `max_bytes` when that
-is less): `df_integral_derivatives` refuses one coordinate past it,
-Unsupported, naming the bytes. Per chunk of k coordinates this call holds
-B_dot (k naux nmo², as large as the chunk's W^x), h_dot and κ (k nmo² each),
-and `builders_tangent`'s arrays, one set of `BuilderOutputs` per coordinate
-(the MO blocks, three n_act⁶ RDM tangents) beside its own point: what the
-other two thirds are for. naux nmo past `int32_t` is Unsupported.
+the memory budget (`res.memory_budget()` less the pool's 64 MiB
+fragmentation headroom), never what one coordinate's part needs (below) and
+never less than one coordinate's own; with a caller's `max_bytes`, a third
+of that, `df_integral_derivatives` refusing one coordinate past it
+(Unsupported, naming the bytes). Each chunk is then taken in parts as wide
+as the memory budget at its call holds: per part of k coordinates B_dot
+(k naux nmo², as large as the W^x it reads), h_dot and κ (k nmo² each),
+`builders_tangent`'s arrays, one set of `BuilderOutputs` per coordinate (the
+MO blocks, three n_act⁶ RDM tangents) beside its own point, then κ_oo. One
+coordinate's part past the budget is Unsupported. The workspace is grown to
+the footprint's first, so the parts' budget is never the workspace's. naux
+nmo past `int32_t` is Unsupported.
+
+`df_nevpt2_tangents_footprint(basis, aux, ncore, ncas, nalpha, nbeta)` is
+the call at its least (#1186), all of it scratch: the strings, h_MO and the
+MO factor held; beside them `mcscf::df_integral_derivatives_footprint`, and
+beside what that holds at its first chunk one coordinate's part
+(`builders_tangent_footprint` at one direction). The consumer's memory is
+its own.
 
 ### Tests
 
@@ -1148,7 +1160,9 @@ residuals.
 `df_nevpt2_tangents`', with `qd_builders_tangent`'s arrays per coordinate
 (the shared outputs and every ordered pair's RDM tangents, n² of them, three
 n_act⁶ on the diagonal and dm3's off it) in place of `builders_tangent`'s,
-and c_dot k n n_det for a chunk of k.
+c_dot k n n_det for a part of k, and beside the first part's tangent the
+roots' transition RDMs. `df_qd_nevpt2_tangents_footprint` is
+`df_nevpt2_tangents_footprint`'s over them (#1186).
 
 ### Tests
 
@@ -1312,11 +1326,15 @@ pair, Λ in W's layout and one more naux nmo² scratch (3 naux nmo²), the τ^x
 stack and one more (2 · 3 n_atom nmo²), M¹ (3 naux²), G and two naux²
 scratches, four nmo² matrices and the AO matrix, and the five Gram matrices.
 W^x is `df_integral_derivatives`' chunks, as many coordinates as the rest of
-the budget (the device's free memory at the call, or `max_bytes` when that
-is less) holds. When this call's buffers and `df_integral_derivatives`' own
-beside one coordinate's W^x (its count, in `integral_derivative.cpp`) pass
-the budget, the call is Unsupported, naming the bytes, before anything is
-allocated.
+the budget holds: the memory budget (`res.memory_budget()`), which the
+derivative call reads past the held buffers, or `max_bytes` when that is
+less. When this call's buffers and `df_integral_derivatives`' own beside one
+coordinate's W^x (its count, in `integral_derivative.cpp`) pass the budget,
+the call is Unsupported, naming the bytes, before anything is allocated.
+`df_adjoint_xy_footprint(basis, aux)` is the call at its least (#1186): the
+held buffers and the AO matrix, beside them in turn `metric_derivative`'s,
+`df_integral_derivatives_footprint`, the three one-electron second
+derivatives', `metric_hessian`'s and `three_center_hessian`'s.
 
 The fitting set enters as naux² only through M¹ and the scratches, six
 naux² in all at any n_atom: the products' atom blocks (above) replaced a
@@ -1436,7 +1454,7 @@ allocates.
 
 `df_sacasscf_z_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots,
 rotating, syevd_lwork)` is the call as `df_sacasscf` makes it (a right-hand
-side's weights, k = 0): L_xλ persistent; the strings and C's copy held, and
+side's weights, k = 0; `casscf_z_terms_footprint` has every form): L_xλ persistent; the strings and C's copy held, and
 beside them in turn the right-hand side's `df_derivatives_footprint`, the
 z_o part (K, the RDMs, `df_derivatives_footprint` with a rotation and
 `df_casscf_exy_footprint` along K), the z_c part (c ± dc and dc, their RDMs,
@@ -1444,8 +1462,8 @@ F^[x] beside E_xy at each), and the operator
 (`mcscf::third_derivative_footprint`) with y beside
 `mcscf::df_integral_derivatives_footprint`, the chunk at its least (one
 coordinate; it widens with the memory budget at run time, #1175). The QD
-Lagrangian's forms (k > 0, an equal-weight z with every rotation) are the
-NEVPT2 Hessians' to footprint.
+Lagrangian's forms (k > 0, an equal-weight z with every rotation) are
+`casscf_z_terms_footprint`'s too (#1186).
 
 ### Tests
 
@@ -1529,7 +1547,9 @@ among one root. `df_casscf_z` passes no right-hand side weights.
 ### Memory
 
 `df_sacasscf_z`'s, less its one-hot `df_derivatives` call, plus Y
-(size × k) while Λᵀ Y is formed.
+(size × k) while Λᵀ Y is formed. Its footprint is the body's
+(`casscf_z_terms_footprint`, `:state_specific`), which `df_sacasscf_z_footprint`
+and the NEVPT2 Hessians' footprints share (#1186).
 
 ### Tests
 
@@ -1647,7 +1667,9 @@ The parts run one after another, each freeing what it held: three
 Hessians, and one `transition_orbital_gradient` per column. Held throughout
 are L_xλ (size × 3 n_atom) and a copy of C. For xx, κ, the stacks X, H X
 and P (n_det × n k each) and the gradients (pairs × k) are held too. Each
-part refuses its own memory, Unsupported, before it allocates.
+part refuses its own memory, Unsupported, before it allocates. The QD
+Hessians' footprints count it as `qd_zeta_footprint` (`:state_specific`,
+#1186), L_xλ persistent.
 
 ### Tests
 
@@ -1977,11 +1999,27 @@ under the SC-QD Hessian).
 The parts run one after another, each freeing what it held. Held
 throughout: t_i's h, B and c and κ and κ_nr (k (naux nmo² + 3 nmo² + n_det)),
 E_cas's terms, and E_corr + Φ's (h̄, Λ) (naux nmo²). The HVP's directions
-are chunked by an estimate of its per-direction memory (16 naux nmo² +
-8 n_act⁶ + 8 n_det + 16 nmo² doubles) against half the device's free
-memory; a pair takes two more directions and their partners' copies. The
-rotation step adds B_MO and one naux nmo² scratch, and four k nmo² stacks.
-naux nmo² past `int32_t` is Unsupported.
+are chunked as widely as the memory budget (`res.memory_budget()` less the
+pool's 64 MiB) holds the product of, by its own footprint
+(`nevpt2::sc_hessian_product_footprint`; PC's
+`pc_hessian_product_footprint` at the classes' kept ranks); one direction
+past it is Unsupported. A pair takes two more directions and their
+partners' copies. The rotation step adds B_MO and one naux nmo² scratch,
+and four k nmo² stacks. naux nmo² past `int32_t` is Unsupported.
+
+`df_sc_nevpt2_footprint(basis, aux, ncore, ncas, nalpha, nbeta, k, batch,
+syevd_lwork, pairs)` is the call at its least (#1186): CasscfTerms::cp
+persistent; the strings and `df_casscf_footprint`'s; then, held to the end,
+t_i's stacks and κ_nr, beside which in turn `df_nevpt2_tangents_footprint`;
+h̄ and Λ with `nevpt2::sc_gradient_footprint`'s calls (its strings the
+call's own), z^c and the multipliers kept; the products along one
+coordinate, then a pair's beside its directions and partners; the Z terms
+beside x^x; `df_adjoint_xy_footprint`; the rotation step. A pair is taken
+again only when both coordinates populate an empty perturber, which the
+dimensions do not say, so it is counted; `pairs = false` leaves it out, for
+a test that knows none is. `df_pc_nevpt2_footprint` is the same over
+`pc_gradient_footprint` and `pc_hessian_product_footprint`, no pair, its
+classes at `dropped` (empty: the rank that holds the most).
 
 ### Tests
 
@@ -2366,6 +2404,27 @@ and 21 to skew. A case between them is accepted on that measurement alone.
 coordinates (size × k) and E_ρ's step: `RelaxedHessian` over k columns,
 `casscf_integrals` and one `df_derivatives`. Then `df_sacasscf_z`,
 `df_qd_zeta` and `df_qd_eigenvector_response`, each freeing what it held.
+The products' chunk is sized from the memory budget by
+`qd_sc_hessian_product_footprint` (PC's at the kets' kept ranks), as
+`df_sc_nevpt2`'s is.
+
+`df_qd_sc_nevpt2_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots,
+rotating, k, batch, syevd_lwork, form, pairs)` is the call at its least
+(#1186), `form` a state's (`QdNevpt2Form::state`), a weight matrix's or a
+crossing's: nothing persistent; beside the strings, Q^T and, from the CP
+solve on, λ^x, t_i's and x in the coordinates, in turn the ensemble's edge
+(`ci::solve_footprint` over one more root), H_eff's elements over
+`qd_inputs` and its eigenpairs, at a crossing the couplings, the CP solve
+(`df_sacasscf_cp`'s, `sacasscf_footprint`), `df_qd_nevpt2_tangents_footprint`,
+the Lagrangian at W kept to the end (`nevpt2::qd_sc_w_gradient_footprint`,
+PC's `qd_pc_w_gradient_footprint` with its passes; a weight matrix's or a
+crossing's W counted at trace 0, which holds the core's Fock too), the
+products, E_ρ's share, the z terms, `qd_zeta_footprint`,
+`df_adjoint_xy_footprint`, the rotation step, and for a state term (ii).
+Term (ii)'s several-W gradient is bounded by n (n − 1) / 2 times one
+trace-zero W's, exact at two roots. `df_qd_pc_nevpt2_footprint` is the same
+over PC's pieces at `dropped`, `pairs` a refused direction taken again with
+its partner.
 
 ### Tests
 

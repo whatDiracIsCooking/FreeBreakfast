@@ -16,6 +16,8 @@ import free_breakfast.core.constants; // kZero, kOne, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // axpy, geam, wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -438,6 +440,106 @@ df_qd_zeta(DeviceResources &res, const Molecule &molecule, const BasisSet &basis
     }
   }
   return QdZetaTerms{.lxy = std::move(lxy), .lxlambda = std::move(lxlambda), .lxx = std::move(lxx)};
+}
+
+MemoryFootprint qd_zeta_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                                  const int32_t ncas, const int32_t nalpha, const int32_t nbeta,
+                                  const int32_t nroots, const int32_t k, const size_t syevd_lwork) {
+  const size_t nao = basis.nao_sphe();
+  const auto nmo = static_cast<int32_t>(nao);
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const auto n_act = static_cast<size_t>(ncas);
+  const auto roots = static_cast<size_t>(nroots);
+  const auto ks = static_cast<size_t>(k);
+  const size_t na2 = n_act * n_act;
+  const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
+  const size_t mm = nao * nao;
+  const size_t nocc = static_cast<size_t>(ncore) + n_act;
+  const size_t pairs = (n_act * static_cast<size_t>(ncore)) + ((nao - nocc) * nocc);
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha_strings = strings(nalpha);
+  const int32_t beta_strings = strings(nbeta);
+  const size_t dim = static_cast<size_t>(alpha_strings) * static_cast<size_t>(beta_strings);
+  const size_t n_ci = dim * roots;
+  const size_t size = pairs + n_ci + (roots * (roots - 1) / 2);
+  const size_t nk = roots * ks;
+  constexpr size_t kD = sizeof(double);
+  const auto held = [](const size_t bytes) {
+    return MemoryFootprint{.device = {.persistent = bytes}};
+  };
+  const MemoryFootprint derivatives =
+      mcscf::df_derivatives_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots, syevd_lwork);
+  MemoryFootprint rdms = held(kD * (na2 + (na2 * na2)));
+  rdms.device.workspace = ci::rdm12_footprint(ncas, static_cast<int32_t>(dim)).device.workspace;
+  const MemoryFootprint square = held(kD * roots * roots);
+  Ledger l;
+  // The strings; C's copy, held; the roots' derivatives; L_xlambda, returned.
+  l.call(ci::device_string_set_footprint(ncas, nalpha));
+  l.call(ci::device_string_set_footprint(ncas, nbeta));
+  l.take(kD * mm);
+  l.run(derivatives);
+  l.take(kD * size * n_x);
+  // L_xy and the right-hand side: S, c +- C S and the packed column; each
+  // side's RDMs, then F^[x] beside E_xy; the columns' rotations off the
+  // roots.
+  const size_t sides = (kD * ((roots * roots) + (2 * n_ci) + pairs));
+  l.take(sides);
+  for (int32_t side = 0; side < 2; ++side) {
+    l.run(rdms);
+    l.call(derivatives);
+    l.run(df_casscf_exy_footprint(basis, aux, ncore, ncas));
+    l.give(derivatives.device.persistent);
+  }
+  l.run(square);
+  l.give(sides);
+  if (k > 0) {
+    // The integrals; the sigma's tables, H C and its apply scratch; M,
+    // kappa, X and P; per column d, its overlaps and the rotation.
+    const MemoryFootprint ints = casscf_integrals_footprint(nmo, naux, ncore, ncas);
+    l.call(ints);
+    const size_t sigma = ci::sigma_footprint(ncas, alpha_strings, beta_strings).device.persistent +
+                         ci::sigma_apply_bytes(ncas, alpha_strings, beta_strings, ci::Layout::full);
+    const size_t block = kD * (n_ci + (roots * roots) + (pairs * ks) + (2 * dim * nk));
+    l.take(sigma + block);
+    l.take(kD * (n_ci + (2 * roots * roots)));
+    l.run(square);
+    l.run(square);
+    l.give(kD * (n_ci + (2 * roots * roots)));
+    // H X and the Gram matrices.
+    l.run(held(kD * ((dim * nk) + (nk * nk))));
+    // The orbital gradients at the transition RDMs: Z, c Z, and the RDMs'
+    // two buffers beside one column's gradient.
+    l.take(kD * pairs * ks);
+    MemoryFootprint transition = held(kD * ((roots * roots) + n_ci + (2 * (na2 + (na2 * na2)))));
+    transition.device.workspace =
+        ci::trans_rdm12_footprint(ncas, static_cast<int32_t>(dim)).device.workspace;
+    l.call(transition);
+    l.run(mcscf::transition_orbital_gradient_footprint(nmo, naux, ncore, ncas));
+    l.give(transition.device.persistent);
+    // y; the folded RDMs and the Focks at them and at none, y0, and each
+    // Hessian with its product.
+    l.take(kD * pairs * ks);
+    const MemoryFootprint zeta =
+        mcscf::zeta_terms_footprint(nmo, naux, ncore, ncas, static_cast<int32_t>(dim));
+    const MemoryFootprint fock = response::fock_footprint(nmo, naux, ncore, ncas);
+    l.call(zeta);
+    l.call(fock);
+    l.call(fock);
+    l.take(kD * pairs * ks);
+    const MemoryFootprint hessian = response::hessian_footprint(nmo, naux, ncore, ncas);
+    for (int32_t pass = 0; pass < 2; ++pass) {
+      l.call(hessian);
+      l.run(response::hessian_apply_footprint(nmo, naux, ncore, ncas));
+      l.give(hessian.device.persistent);
+    }
+    l.give(zeta.device.persistent + (2 * fock.device.persistent) + (kD * pairs * ks));
+    // The k x k product.
+    l.run(held(kD * ks * ks));
+    l.give(ints.device.persistent + sigma + block + (2 * kD * pairs * ks));
+  }
+  return l.footprint(kD * size * n_x);
 }
 
 } // namespace free_breakfast::hessian

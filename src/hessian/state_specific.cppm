@@ -9,14 +9,18 @@
 /// end on; H_eff's eigenpairs, which
 /// df_qd_eigenvector_response and the QD Hessians (df_qd_nevpt2.cpp) share;
 /// and SC's conditioning refusal, which df_sc_nevpt2 and df_qd_sc_nevpt2
-/// share.
+/// share. And the NEVPT2 Hessians' footprints' shared pieces (#1186): a
+/// Ledger to walk a body with, and the footprints of the routines they
+/// compose that export none.
 ///
 /// An internal partition (`module`, not `export module`): only this module's
 /// implementation units import it, so nothing here reaches an importer of
 /// free_breakfast.hessian. It declares the functions; df_casscf.cpp defines
-/// them, but state_averaged_electrons, which df_sacasscf.cpp does,
-/// qd_response_eigen, which df_qd_eigenvector_response.cpp does, and
-/// sc_rounding_refusal, which df_sc_nevpt2.cpp does. See
+/// them, but state_averaged_electrons and sacasscf_footprint, which
+/// df_sacasscf.cpp does, qd_response_eigen and its footprints, which
+/// df_qd_eigenvector_response.cpp does, sc_rounding_refusal and the SC/PC
+/// assembly's footprint, which df_sc_nevpt2.cpp does, and the others in the
+/// file of the routine each is of. See
 /// docs/style.md, "Module-private code".
 
 module free_breakfast.hessian:state_specific;
@@ -101,6 +105,145 @@ MemoryFootprint probed_zvectors_footprint(size_t pairs, size_t dim, int32_t nroo
 /// @brief @p chain with only @p kept bytes of its persistent ones kept: the
 /// rest freed when it returns, its peak unchanged.
 MemoryFootprint keeping(const MemoryFootprint &chain, size_t kept);
+
+/// @brief df_sacasscf_footprint's body, or with @p cp_only df_sacasscf_cp's
+/// (its CP step, lambda^x returned), its arguments df_sacasscf_footprint's.
+MemoryFootprint sacasscf_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore,
+                                   int32_t ncas, int32_t nalpha, int32_t nbeta, int32_t nroots,
+                                   bool rotating, size_t syevd_lwork, bool cp_only);
+
+/// @brief What df_qd_zeta holds over @p basis and @p aux with @p ncore core
+/// and @p ncas active orbitals, @p nroots roots over the determinants of
+/// @p nalpha and @p nbeta electrons and @p k columns; @p syevd_lwork at order
+/// ncas. Its L_xlambda persistent.
+MemoryFootprint qd_zeta_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore,
+                                  int32_t ncas, int32_t nalpha, int32_t nbeta, int32_t nroots,
+                                  int32_t k, size_t syevd_lwork);
+
+/// @brief What qd_response_eigen holds over @p nroots roots: H_eff and its
+/// eigenvalues, scratch; diagonalize's work at order nroots (@p syevd_lwork
+/// by order), the workspace.
+MemoryFootprint qd_response_eigen_footprint(int32_t nroots, std::span<const size_t> syevd_lwork);
+
+/// @brief What df_qd_eigenvector_response holds, SC's or with @p pc PC's at
+/// @p dropped (PcClassEnergies' per state, or empty for the most): the
+/// effective Hamiltonian over nevpt2::qd_inputs, its eigenpairs, then
+/// @p n_w couplings' several-W gradient, bounded by n_w times one trace-zero
+/// W's (nevpt2::qd_sc_w_gradient_footprint, exact at one W). The counts as
+/// the QD Hessians'.
+MemoryFootprint qd_eigenvector_response_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                  int32_t ncore, int32_t ncas, int32_t nalpha,
+                                                  int32_t nbeta, int32_t nroots, bool rotating,
+                                                  int32_t batch,
+                                                  std::span<const size_t> syevd_lwork, bool pc,
+                                                  int32_t n_w,
+                                                  std::span<const std::array<int64_t, 8>> dropped);
+
+/// @brief A routine's footprint, built in its allocations' order: what is
+/// live, the most that ever was, and the largest workspace a callee borrows.
+/// The NEVPT2 Hessians' footprints walk their bodies with it.
+struct Ledger {
+  size_t live = 0;
+  size_t peak = 0;
+  size_t workspace = 0;
+  size_t pinned = 0;
+  void take(const size_t bytes) {
+    live += bytes;
+    peak = std::max(peak, live);
+  }
+  void give(const size_t bytes) { live -= bytes; }
+  /// @brief A callee: its peak beside what is live, then its persistent
+  /// bytes kept.
+  void call(const MemoryFootprint &f) {
+    take(f.device.persistent + f.device.scratch);
+    give(f.device.scratch);
+    borrow(f);
+  }
+  /// @brief A callee whose product is freed as soon as it returns.
+  void run(const MemoryFootprint &f) {
+    call(f);
+    give(f.device.persistent);
+  }
+  /// @brief A callee's workspaces alone.
+  void borrow(const MemoryFootprint &f) {
+    workspace = std::max(workspace, f.device.workspace);
+    pinned = std::max(pinned, f.pinned.peak());
+  }
+  /// @brief The routine's footprint, @p kept of what is still live its
+  /// product.
+  [[nodiscard]] MemoryFootprint footprint(const size_t kept) const {
+    return {.device = {.persistent = kept, .scratch = peak - kept, .workspace = workspace},
+            .pinned = {.workspace = pinned}};
+  }
+};
+
+/// @brief What casscf_z_terms holds over @p basis and @p aux with @p ncore
+/// core and @p ncas active orbitals, @p nroots roots over the determinants of
+/// @p nalpha and @p nbeta electrons and @p n_theta rotations among them in
+/// ThirdDerivative's layout, with a right-hand side (@p rhs) or without, and
+/// the third derivative's action over @p k columns; @p syevd_lwork at order
+/// ncas. L_xlambda persistent; the rest df_sacasscf_z_footprint describes,
+/// the action's Y (size k) and its k x k product last.
+MemoryFootprint casscf_z_terms_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore,
+                                         int32_t ncas, int32_t nalpha, int32_t nbeta,
+                                         int32_t nroots, size_t n_theta, bool rhs, int32_t k,
+                                         size_t syevd_lwork);
+
+/// @brief One chunk of @p count coordinates of df_nevpt2_tangents' consumer
+/// over @p naux fitting functions and @p nmo orbitals with @p ncore core and
+/// @p ncas active ones, all of it scratch: h_dot, B_dot and kappa,
+/// nevpt2::builders_tangent's, then kappa_oo. Its peak is what the chunk
+/// takes of the memory budget.
+MemoryFootprint nevpt2_tangent_chunk_footprint(int32_t naux, int32_t nmo, int32_t ncore,
+                                               int32_t ncas, int32_t count);
+
+/// @brief One chunk of @p count coordinates of df_qd_nevpt2_tangents'
+/// consumer over @p nroots roots of @p nalpha and @p nbeta electrons, as
+/// nevpt2_tangent_chunk_footprint's: h_dot, B_dot, kappa and c_dot,
+/// nevpt2::qd_builders_tangent's, the first chunk's transition RDMs, then
+/// kappa_oo.
+MemoryFootprint qd_nevpt2_tangent_chunk_footprint(int32_t naux, int32_t nmo, int32_t ncore,
+                                                  int32_t ncas, int32_t nalpha, int32_t nbeta,
+                                                  int32_t nroots, int32_t count);
+
+/// @brief What mcscf::df_integral_derivatives holds when it hands its first
+/// chunk of @p count coordinates over @p basis and @p aux to a consumer: the
+/// MO factor, h_MO, tau^x and h1^x, the metric derivative, the chunk's W^x
+/// and one aux atom's block (integral_derivative.cpp's held buffers).
+size_t integral_derivatives_held_bytes(const BasisSet &basis, const BasisSet &aux, size_t count);
+
+/// @brief The NEVPT2 Hessians' derivative-integral sizing, df_nevpt2_tangents'
+/// and df_qd_nevpt2_tangents': the max_bytes mcscf::df_integral_derivatives
+/// takes when the caller gives @p max_bytes (a third of it, at least one
+/// byte, as before), or else a third of the memory budget less
+/// kPoolHeadroomBytes, never past what leaves the consumer @p reserve bytes
+/// (one coordinate's chunk) and never below one coordinate's own need.
+Result<size_t> integral_derivatives_bytes(const DeviceResources &res, const BasisSet &basis,
+                                          const BasisSet &aux, size_t reserve, size_t max_bytes);
+
+/// @brief What df_sc_nevpt2's and df_pc_nevpt2's one assembly holds (their
+/// footprints' body): @p gradient the Lagrangian's calls with their strings
+/// taken off (z^c and the multipliers persistent), @p product(count,
+/// partners) the Hessian-vector product's; with @p copies a pair's
+/// directions and partners (SC's), and with @p pairs its product too. The
+/// counts as df_sc_nevpt2_footprint's.
+MemoryFootprint nevpt2_hessian_footprint(
+    const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas, int32_t nalpha,
+    int32_t nbeta, int32_t k, std::span<const size_t> syevd_lwork, const MemoryFootprint &gradient,
+    const std::function<MemoryFootprint(int32_t, int32_t)> &product, bool copies, bool pairs);
+
+/// @brief @p gradient, a nevpt2 gradient's footprint over @p ncas active
+/// orbitals of @p nalpha and @p nbeta electrons, less the strings it makes
+/// first and holds throughout: what its calls hold beside a caller's own.
+MemoryFootprint without_strings(const MemoryFootprint &gradient, int32_t ncas, int32_t nalpha,
+                                int32_t nbeta);
+
+/// @brief The widest of @p count coordinates whose chunk @p bytes (a
+/// count's bytes, rising with it) fits the memory budget less
+/// kPoolHeadroomBytes; Unsupported, naming @p who and the bytes, when one
+/// does not.
+Result<size_t> widest_fitting(const DeviceResources &res, std::string_view who, size_t count,
+                              const std::function<size_t(size_t)> &bytes);
 
 // SC's conditioning refusal (README.md "The SC conditioning refusal",
 // #1102): a kept perturber's relative rounding bound on its N

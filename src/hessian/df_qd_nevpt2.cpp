@@ -23,8 +23,9 @@ import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.core.constants;  // kZero, kOne, kTwo, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, axpy, gemm, gemv, gemmStridedBatched, wwrMemcpyAsync,
-                                // wwrMemsetAsync, wwrMemGetInfo, ScopedDeviceIndex, gpu_status
+                                // wwrMemsetAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -370,6 +371,8 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
   // kept below kQdPcNevpt2Kept refused) with the QD gap.
   QdPcNevpt2Terms result;
   QdScNevpt2Terms &out = result.terms;
+  // PC's kets' ranks, each state's diagonal element's: the products' sizing.
+  std::vector<std::array<int64_t, 8>> pc_dropped;
   for (size_t r = 0; r < nroots; ++r) {
     for (size_t s = r + 1; s < nroots; ++s) {
       out.root_gap =
@@ -395,6 +398,7 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
       std::string thin;
       for (size_t n = 0; n < nroots; ++n) {
         const std::array<double, 8> &kept = elements[n * (nroots + 1)].kept;
+        pc_dropped.push_back(elements[n * (nroots + 1)].dropped);
         result.kept.push_back(kept);
         for (size_t cls = 0; cls < kept.size(); ++cls) {
           // kept is 0 for Sijrs and a class with no tuple: no solve.
@@ -678,8 +682,8 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
   // 4. Sum <t_i, HVP t_j>: the product along every coordinate, then each pair
   // of coordinates that both populate an empty tuple of some model state
   // again, each as the other's partner (K6 at the pair's mean eta, and the
-  // per-block refusal on every ket). Chunked by an estimate of the product's
-  // per-direction memory.
+  // per-block refusal on every ket). Chunked as widely as the memory budget
+  // holds the product's footprint.
   out.hvp.assign(k * k, 0.0);
   std::vector<std::string> refused;
   {
@@ -703,13 +707,18 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
                                            lagrangian.zc.z.data(), batch,
                                            {.count = count, .h = dh, .b = db, .c = dc}, partners);
     };
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    const size_t act6 = n_act * n_act * n_act * n_act * n_act * n_act;
-    const size_t per_direction =
-        sizeof(double) * ((16 * naux * nn) + (8 * nroots * nroots * act6) + (8 * n_ci) + (16 * nn));
-    const size_t chunk = std::clamp<size_t>(free_bytes / 2 / per_direction, 1, k);
+    // As many directions at once as the memory budget holds the product of
+    // (PC's at the kets' kept ranks; syevd's lwork is the workspace's alone).
+    const size_t chunk = FBF_TRY(widest_fitting(res, kWho, k, [&](const size_t count) {
+      const MemoryFootprint f =
+          pc ? nevpt2::qd_pc_hessian_product_footprint(
+                   naux32, nmo32, nmo32, ncore, ncas, nalpha, nbeta, static_cast<int32_t>(nroots),
+                   batch, {}, static_cast<int32_t>(count), 0, false, pc_dropped)
+             : nevpt2::qd_sc_hessian_product_footprint(naux32, nmo32, nmo32, ncore, ncas, nalpha,
+                                                       nbeta, static_cast<int32_t>(nroots), batch,
+                                                       out.w, static_cast<int32_t>(count));
+      return f.device.persistent + f.device.scratch;
+    }));
     if (pc) {
       // PC has no empty tuples and its product no partners: the product along
       // every coordinate at the floor, with each direction's Schur lift on
@@ -1340,6 +1349,229 @@ Result<QdPcNevpt2Terms> df_qd_pc_nevpt2_crossing(
   return qd_nevpt2_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
                          std::nullopt, {}, std::array{p, q}, c, batch, coordinates, nfrozen,
                          pc_floor);
+}
+
+// The footprint of qd_nevpt2_terms in @p form, SC's or with @p pc PC's at
+// @p dropped (per state, or empty for the most), @p pairs counting the
+// products a pair of coordinates takes again (SC's pair, PC's refused
+// direction with its partner).
+MemoryFootprint qd_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                                    const int32_t ncas, const int32_t nalpha, const int32_t nbeta,
+                                    const int32_t nroots, const bool rotating, const int32_t k,
+                                    const int32_t batch, const std::span<const size_t> syevd_lwork,
+                                    const QdNevpt2Form form, const bool pc,
+                                    const std::span<const std::array<int64_t, 8>> dropped,
+                                    const bool pairs) {
+  const size_t nao = basis.nao_sphe();
+  if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || aux.nao_sphe() == 0 || ncore < 0 ||
+      ncas < 1 || static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao || nalpha < 1 ||
+      nbeta < 1 || nalpha > ncas || nbeta > ncas || nroots < 2 || k < 1 ||
+      syevd_lwork.size() <= static_cast<size_t>(std::max(ncas, nroots))) {
+    return {};
+  }
+  const auto nmo = static_cast<int32_t>(nao);
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const size_t nn = nao * nao;
+  const size_t nx = 3 * static_cast<size_t>(basis.natoms());
+  const auto ks = static_cast<size_t>(k);
+  const auto roots = static_cast<size_t>(nroots);
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const size_t na2 = n_act * n_act;
+  const size_t pair_count = (n_core * (nao - n_core)) + (n_act * (nao - n_core - n_act));
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha_strings = strings(nalpha);
+  const int32_t beta_strings = strings(nbeta);
+  const size_t dim = static_cast<size_t>(alpha_strings) * static_cast<size_t>(beta_strings);
+  const size_t n_ci = dim * roots;
+  const size_t all_pairs = roots * (roots - 1) / 2;
+  const size_t size = pair_count + n_ci + all_pairs;
+  const int32_t nelecas = nalpha + nbeta;
+  const int32_t multiplicity = nalpha - nbeta + 1;
+  const int32_t nvirt = nmo - ncore - ncas;
+  const size_t lwork = syevd_lwork[n_act];
+  constexpr size_t kD = sizeof(double);
+  const auto held = [](const size_t bytes) {
+    return MemoryFootprint{.device = {.persistent = bytes}};
+  };
+  const size_t sigma_tables =
+      ci::sigma_footprint(ncas, alpha_strings, beta_strings).device.persistent;
+  const size_t sigma_growth =
+      ci::sigma_apply_bytes(ncas, alpha_strings, beta_strings, ci::Layout::full);
+  const MemoryFootprint ints = casscf_integrals_footprint(nmo, naux, ncore, ncas);
+  const MemoryFootprint fock = response::fock_footprint(nmo, naux, ncore, ncas);
+  const MemoryFootprint hessian = response::hessian_footprint(nmo, naux, ncore, ncas);
+  const MemoryFootprint apply = response::hessian_apply_footprint(nmo, naux, ncore, ncas);
+  // The product's W is read for its trace alone: a state's.
+  std::vector<double> w(roots * roots, 0.0);
+  w[0] = 1.0;
+  const auto product = [&](const int32_t count, const int32_t partners) {
+    return pc ? nevpt2::qd_pc_hessian_product_footprint(naux, nmo, nmo, ncore, ncas, nalpha, nbeta,
+                                                        nroots, batch, syevd_lwork, count, partners,
+                                                        false, dropped)
+              : nevpt2::qd_sc_hessian_product_footprint(naux, nmo, nmo, ncore, ncas, nalpha, nbeta,
+                                                        nroots, batch, w, count, partners);
+  };
+  const auto response_terms = [&](const int32_t n_w) {
+    return qd_eigenvector_response_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots,
+                                             rotating, batch, syevd_lwork, pc, n_w, dropped);
+  };
+  Ledger l;
+  // The strings and Q^T, held to the end.
+  l.call(ci::device_string_set_footprint(ncas, nalpha));
+  l.call(ci::device_string_set_footprint(ncas, nbeta));
+  l.take(kD * nx * ks);
+  // 1. The ensemble's edge (the integrals, the sigma, its diagonal and the
+  // solve over one more root), where the CI space has another root.
+  if (roots + 1 <= dim) {
+    Ledger edge;
+    edge.call(ints);
+    edge.take(sigma_tables + (kD * dim));
+    edge.call(ci::solve_footprint(ncas, nalpha, nbeta, nroots + 1, ci::SolverOptions{}, false,
+                                  syevd_lwork));
+    l.run(edge.footprint(0));
+  }
+  // H_eff's elements and its eigenpairs.
+  const int32_t transitions = nroots * (nroots - 1);
+  if (pc) {
+    l.run(without_strings(
+        nevpt2::qd_inputs_footprint(
+            naux, nmo, ncore, ncas, nelecas, multiplicity, nroots,
+            nevpt2::pc_effective_hamiltonian_footprint(
+                ncore, ncas, nvirt, nroots, true, transitions, batch, syevd_lwork, false, dropped),
+            0),
+        ncas, nalpha, nbeta));
+  } else {
+    l.run(nevpt2::qd_inputs_footprint(
+        naux, nmo, ncore, ncas, nelecas, multiplicity, nroots,
+        nevpt2::sc_effective_hamiltonian_footprint(ncore, ncas, nvirt, nelecas, nroots, true,
+                                                   transitions, batch),
+        0));
+  }
+  l.run(qd_response_eigen_footprint(nroots, syevd_lwork));
+  // At a crossing, the couplings first, the pair's own excluded.
+  if (form == QdNevpt2Form::crossing) {
+    l.run(response_terms(static_cast<int32_t>(all_pairs) - 1));
+  }
+  // 2. lambda^x, held; t_i's (h, B, {c_r}, kappa), held; the tangents;
+  // kappa_nr and x_A in the coordinates, held, beside the Cartesian ones.
+  const MemoryFootprint cp =
+      sacasscf_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots, rotating, lwork, true);
+  l.call(cp);
+  l.take(kD * ks * (nn + (static_cast<size_t>(naux) * nn) + n_ci + nn));
+  l.run(df_qd_nevpt2_tangents_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots));
+  l.take(kD * ks * (nn + size));
+  l.run(held(kD * nx * (nn + size)));
+  // 3. The Lagrangian at W, kept: SC's qd_sc_lagrangian, PC's qd_pc_gradient
+  // with its passes. A W of trace 0 (a seam's) holds the core's Fock too.
+  const bool trace_zero = form != QdNevpt2Form::state;
+  l.call(pc ? nevpt2::qd_pc_w_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity,
+                                                 nroots, rotating, batch, syevd_lwork, trace_zero,
+                                                 true, dropped)
+            : nevpt2::qd_sc_w_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity,
+                                                 nroots, rotating, batch, syevd_lwork, trace_zero,
+                                                 false));
+  // 4. The pairing's columns; the products along one coordinate; SC's pair
+  // beside its directions and partners, PC's refused direction with its
+  // partner.
+  l.take(kD * ks * ks);
+  l.run(product(1, 0));
+  if (!pc) {
+    const size_t two = kD * 2 * (nn + (static_cast<size_t>(naux) * nn) + n_ci);
+    l.take(2 * two);
+    if (pairs) {
+      l.run(product(2, 2));
+    }
+    l.give(2 * two);
+  } else if (pairs) {
+    l.run(product(1, 1));
+  }
+  l.give(kD * ks * ks);
+  // 5. E_rho's share (each pass alike): the RDMs; F^[x] at rho beside its
+  // right-hand side, its pairing with x_B, and C's copy beside E_xy; the
+  // integrals, the Fock, the sigma, H and H~ at rho over k columns, x and
+  // y's blocks, the sigma's apply scratch beside a product, Y and its Gram.
+  {
+    MemoryFootprint rdms = held(kD * (na2 + (na2 * na2)));
+    rdms.device.workspace = ci::rdm12_footprint(ncas, static_cast<int32_t>(dim)).device.workspace;
+    const MemoryFootprint derivatives =
+        mcscf::df_derivatives_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots, lwork);
+    Ledger e;
+    e.run(rdms);
+    e.call(derivatives);
+    e.take(kD * size * nx);
+    e.run(held(kD * ((size * ks) + (ks * ks))));
+    e.take(kD * nn);
+    e.run(df_casscf_exy_footprint(basis, aux, ncore, ncas));
+    e.give(derivatives.device.persistent + (kD * ((size * nx) + nn)));
+    e.call(ints);
+    e.call(fock);
+    e.take(sigma_tables);
+    e.call(hessian);
+    e.call(response::relaxed_hessian_footprint(ncas, nalpha, nbeta, nroots, nmo, ncore, ks));
+    e.take(kD * 2 * ks * (pair_count + n_ci));
+    e.take(sigma_growth);
+    e.run(apply);
+    e.take(kD * size * ks);
+    e.run(held(kD * ks * ks));
+    l.run(e.footprint(0));
+  }
+  // 6. The multipliers' z terms, every rotation a parameter: z beside them,
+  // L_xlambda kept, then its pairing with x_B.
+  l.take(kD * size);
+  const MemoryFootprint z_terms = casscf_z_terms_footprint(basis, aux, ncore, ncas, nalpha, nbeta,
+                                                           nroots, all_pairs, false, k, lwork);
+  l.call(z_terms);
+  l.run(held(kD * ((size * ks) + (ks * ks))));
+  l.give(z_terms.device.persistent + (kD * size));
+  // 7. The zeta term's shares, its L_xlambda's pairing with x_B.
+  const MemoryFootprint zeta =
+      qd_zeta_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots, k, lwork);
+  l.call(zeta);
+  l.run(held(kD * ((size * ks) + (ks * ks))));
+  l.give(zeta.device.persistent);
+  // 8. The skeleton.
+  l.run(df_adjoint_xy_footprint(basis, aux));
+  // 9. h_MO and the MO factor beside the gemmwich's work; X_N, X(t), Y, V,
+  // the work and kappa Lambda; kappa_oo; each Gram matrix in turn.
+  const OrbitalRange all{.first = 0, .count = nmo};
+  const size_t rotation = kD * (nn + (static_cast<size_t>(naux) * nn) + nn + (3 * ks * nn) + nn +
+                                (static_cast<size_t>(naux) * nn) + (ks * nn));
+  l.take(kD * (nn + (static_cast<size_t>(naux) * nn)));
+  l.run(held(kD * nn));
+  l.borrow(b_mo_footprint(naux, nmo, all, all));
+  l.take(rotation - (kD * (nn + (static_cast<size_t>(naux) * nn))));
+  l.run(held(kD * ks * ks));
+  l.give(rotation);
+  // 10. A state's term (ii).
+  if (form == QdNevpt2Form::state) {
+    l.run(response_terms(static_cast<int32_t>(all_pairs)));
+  }
+  return l.footprint(0);
+}
+
+MemoryFootprint df_qd_sc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux,
+                                          const int32_t ncore, const int32_t ncas,
+                                          const int32_t nalpha, const int32_t nbeta,
+                                          const int32_t nroots, const bool rotating,
+                                          const int32_t k, const int32_t batch,
+                                          const std::span<const size_t> syevd_lwork,
+                                          const QdNevpt2Form form, const bool pairs) {
+  return qd_nevpt2_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots, rotating, k, batch,
+                             syevd_lwork, form, false, {}, pairs);
+}
+
+MemoryFootprint
+df_qd_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                          const int32_t ncas, const int32_t nalpha, const int32_t nbeta,
+                          const int32_t nroots, const bool rotating, const int32_t k,
+                          const int32_t batch, const std::span<const size_t> syevd_lwork,
+                          const QdNevpt2Form form,
+                          const std::span<const std::array<int64_t, 8>> dropped, const bool pairs) {
+  return qd_nevpt2_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots, rotating, k, batch,
+                             syevd_lwork, form, true, dropped, pairs);
 }
 
 } // namespace free_breakfast::hessian
