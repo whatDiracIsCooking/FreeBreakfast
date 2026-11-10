@@ -258,6 +258,26 @@ each), one class's slab buffers (SC), the handed-over amplitudes (PC: U_M,
 d x m per state and class, and g, tuples x m on the host) and the three
 blocks. Every launch is on res.stream(); the call synchronizes.
 
+## Footprints
+
+    sc_pt2_transition_density_footprint(ncore, ncas, nvirt, nelecas, nstates, batch)
+    pc_pt2_transition_density_footprint(ncore, ncas, nvirt, nstates, batch, syevd_lwork,
+                                        dropped)
+    qd_sc_nac_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating,
+                        batch, syevd_lwork)
+    qd_pc_nac_footprint(..., syevd_lwork, dropped)
+
+The densities' are the effective Hamiltonian's walk over every pair (PC's
+with its kets kept to the end), then ρ's RDMs, the three blocks and one class
+at a time, and the density, nmo², persistent. The couplings' are without the
+fold, the default: the interstate coupling (`../gradient/`'s
+`qd_sc_coupling_footprint`), D^PT2 over `qd_inputs`, and `mcscf::df_nac`'s
+combination at T^PQ and at D^PT2, each freed before the next. PC's
+`dropped` is the states' kept ranks, as `../energy/`'s footprints take them.
+`test/gtest/pipeline_step_footprint_gpu.cpp`'s
+`Nevpt2ReaderFootprint.EffectiveHamiltonians` and `.Couplings` hold them to
+their pool peaks.
+
 ## Tests
 
 ### The derivative coupling

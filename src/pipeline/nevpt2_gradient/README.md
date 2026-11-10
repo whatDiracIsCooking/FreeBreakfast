@@ -106,6 +106,17 @@ struct Nevpt2GradientStep {
    has no such key. `main` prints the variant, the energy, the diagnostics
    and the total per atom.
 
+**The footprint**, `footprint(dims)`: C and the CASSCF's CI vectors back on
+the device as the gradient's `mcscf::Solution`, then the gradient's own
+(`nevpt2::sc_gradient_footprint`, `pc_gradient_footprint`, or with
+`quasi_degenerate` `qd_sc_gradient_footprint` or `qd_pc_gradient_footprint`
+over `dims.casscf_nroots` and `dims.casscf_unequal_weights`;
+`../../nevpt2/gradient/README.md` "Footprints"), `nevpt2::rdms`' and
+`rdms_adjoint`'s tiles at one determinant and PC's classes at the rank that
+holds the most. Its persistent part is the product's: the gradient keeps z^c
+and the Z-vector on the device, and a QD gradient its whole Lagrangian. It is
+empty for what `run` refuses before allocating.
+
 ## Quasi-degenerate
 
 `quasi_degenerate = true` differentiates QD state K = `state` (an index into
@@ -243,6 +254,11 @@ frozen_core = "auto"   # the C 1s of ethylene; 0, the default, correlates every 
 
 ## Tests
 
+- `test/gtest/pipeline_step_footprint_gpu.cpp`'s
+  `Nevpt2ReaderFootprint.Nevpt2GradientStep`, `.Nevpt2GradientStepPc`,
+  `.Nevpt2GradientStepQuasiDegenerate` and `...QuasiDegeneratePc`: the
+  footprint at `plan_shape`'s dimensions over water's CAS(4,4), single-state
+  and SA-2, against the pool peak of a run capped at it.
 - `[nevpt2_gradient]`'s parsing, its output path and each refusal at config
   read in `test/pipeline/config_host.cpp`.
 - `test/gtest/pipeline_nevpt2_gradient_gpu.cpp`, SC: a TOML config run by

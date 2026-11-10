@@ -275,6 +275,24 @@ m_J per class and root, at most n_act⁶ for Sr and Si, as a dm3) and the
 amplitudes on the host (`nevpt2/energy/README.md` "The amplitude
 hand-over"). The slab batch is sized as per root.
 
+**The footprint**, `footprint(dims)` (`pipeline/footprint`), is run's peak at
+the least its adaptive parts run with, in run's order: the fitted integrals,
+the strings, the CI vectors of `dims.casscf_nroots` roots and the per-root
+arrays (every root's RDM slots with `quasi_degenerate`), held; per root its
+γ and Γ (`ci::rdm12_footprint`), its Fock, its canonical core and virtuals
+(two `diagonalize` calls in turn), its MO blocks and h2e, `nevpt2::rdms` at
+one determinant and the SC and PC classes at a batch of one, freed before the
+next; with `quasi_degenerate` the state-averaged Fock and MO blocks, a pair's
+transition RDMs, both effective Hamiltonians' diagonal walk (PC's kets, the
+U_J, kept to the end), a pair's walk over them, and the two eigensolves. The
+product is on the host, so nothing is persistent. **PC's kept ranks are the
+data's**: every class is counted at its whole basis, the most the walk
+holds, and a run that cuts modes holds less (water's CAS(4,4) Sr and Si keep
+20 of 64). It is sized over the active space at `dims`, ncore from the
+electrons, `frozen_core` over `dims.atoms`, and diagonalize's work at the PC
+classes' orders, which `plan_shape` queries through n_act³ when an NEVPT2
+step is planned.
+
 ## Errors
 
 `InvalidConfig` for `quasi_degenerate` over fewer than two roots, and for
@@ -328,6 +346,14 @@ answer is as arbitrary as the eigenvectors `diagonalize` returns.
 `[nevpt2]` with an integral-direct `[eri]`, written or filled in, refused
 `Unsupported` naming `[eri]` when the config is read, is
 `test/pipeline/config_host.cpp`'s.
+
+`test/gtest/pipeline_step_footprint_gpu.cpp`'s
+`Nevpt2ReaderFootprint.Nevpt2Step` and `.Nevpt2StepQuasiDegenerate` hold the
+footprint at `plan_shape`'s dimensions over water's SA-2 CAS(4,4) to the pool
+peak of a run on a pool capped at it (the adaptive parts at their least):
+sound, and tight but for PC's ranks, slacked by the PC footprints'
+difference at the run's own; and the SC, PC and QD energies at the least
+equal the unconstrained run's to 1e-10 Eh.
 
 PC against block2's, the same file's `pc_class_energies` and `e_pc_total`
 (`nevpt2_reference.py`, on the reference's state with the active orbitals
