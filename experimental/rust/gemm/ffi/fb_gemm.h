@@ -34,6 +34,8 @@ enum {
   FB_GPU_ERROR = 2,
   /// The BLAS call returned a status other than success.
   FB_BLAS_ERROR = 3,
+  /// A free_breakfast routine refused or failed; fb_last_error() says why.
+  FB_FAILED = 4,
 };
 
 typedef int32_t fb_op;
@@ -44,6 +46,10 @@ enum {
 
 typedef struct fb_resources fb_resources;
 typedef struct fb_buffer fb_buffer;
+
+/// The message of the last FB_FAILED on this thread, or "" if there has been
+/// none. Valid until the next call on this thread that fails.
+const char *fb_last_error(void) FB_NOEXCEPT;
 
 /// A DeviceResources on device `dev_idx`: a stream, its memory pool and a
 /// BLAS handle bound to the stream.

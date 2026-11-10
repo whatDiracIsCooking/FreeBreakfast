@@ -12,9 +12,10 @@ only thing Rust can link against is a C ABI:
 
 | Layer | File | What |
 |---|---|---|
-| C ABI | `ffi/fb_gemm.h`, `ffi/fb_gemm.cpp` | Opaque `fb_resources` / `fb_buffer` handles, upload / download, `fb_dgemm`; `int32_t` status codes. Every function is `noexcept`: an exception unwinding into Rust is undefined behaviour, so one that escapes (only `bad_alloc` in practice) terminates, as a failed GPU create or alloc aborts (`CreatePolicy`) |
-| Raw Rust | `src/ffi.rs` | The same functions declared by hand. **Nothing checks it against the header**; keep them in step |
-| Safe Rust | `src/lib.rs` | `Gpu` (owns a `DeviceResources`; `!Send`, `!Sync`, its one-driving-thread rule), `DeviceBuffer<'g>` (borrows its `Gpu`, freed on drop), column-major `Matrix<'g>`, and `gemm(gpu, alpha, op_a, a, op_b, b, beta, c)` with shapes checked in Rust and again in C |
+| C ABI | `ffi/fb_gemm.h`, `ffi/fb_gemm.cpp` | Opaque `fb_resources` / `fb_buffer` handles, upload / download, `fb_dgemm`; `int32_t` status codes, and `FB_FAILED` with `fb_last_error()`'s per-thread message for a free_breakfast routine's refusal. Every function is `noexcept`: an exception unwinding into Rust is undefined behaviour, so one that escapes (only `bad_alloc` in practice) terminates, as a failed GPU create or alloc aborts (`CreatePolicy`) |
+| Shared C++ | `ffi/fb_handles.hpp` | What the handles hold, and `fb_fail()`: for another C ABI built on these handles (`../s_overlap`). Internal; include it after the module imports |
+| Raw Rust | `src/ffi.rs` | The same functions declared by hand, `pub` so a crate on these handles can name them. **Nothing checks it against the header**; keep them in step |
+| Safe Rust | `src/lib.rs` | `Gpu` (owns a `DeviceResources`; `!Send`, `!Sync`, its one-driving-thread rule), `DeviceBuffer<'g>` (borrows its `Gpu`, freed on drop), column-major `Matrix<'g>`, and `gemm(gpu, alpha, op_a, a, op_b, b, beta, c)` with shapes checked in Rust and again in C. For a crate on these handles: `check`, `Gpu::as_raw`, `DeviceBuffer::from_raw` (unsafe) and `Matrix::from_buffer` |
 | Demo | `src/main.rs` | `gemm-demo [M [N [K [REPS]]]]`: C = A B^T, checked against a host loop (bar 1e-12 relative to max \|C\|), then timed |
 
 ## How it links: a recorded link line, not a shared library
@@ -31,7 +32,8 @@ do-nothing C++ executable, links the archive through `ffi/record_link.sh` as its
 build directory and then runs it. `build.rs` reads that file back and passes every
 argument except the probe's own to rustc, plus `-lc++` (rustc links with
 `-nodefaultlibs`). The recorded rpath comes along with it, so nothing needs
-`LD_LIBRARY_PATH`.
+`LD_LIBRARY_PATH`. The replay itself is `link_record.rs`, which `build.rs`
+`include!`s, as `../s_overlap/build.rs` does for its own record.
 
 Rebuilding spdlog with `-fPIC` in `docker/Dockerfile.base` would allow a plain
 `.so`, but that changes the image for every build.
@@ -50,7 +52,7 @@ cargo run --release           # gemm-demo 512 512 512 20
 ```
 
 `build.rs` looks for `build-experimental/experimental/rust/gemm/fb_gemm.link`.
-Set `FB_RUST_GEMM_FFI_DIR` to use a different build directory, such as
+Set `FB_RUST_BUILD_DIR` to the CMake build directory to use another one, such as
 `build-hip-experimental` (untried).
 
 Nothing in ctest or either gate runs cargo. This directory is checked by hand only.

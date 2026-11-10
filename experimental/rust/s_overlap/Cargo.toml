@@ -1,0 +1,17 @@
+[package]
+name = "fb-s-overlap"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "The spherical AO overlap S of a molecule, from Rust, through free_breakfast's pipeline steps"
+
+[lib]
+name = "fb_s_overlap"
+path = "src/lib.rs"
+
+[[bin]]
+name = "overlap-demo"
+path = "src/main.rs"
+
+[dependencies]
+fb-gemm = { path = "../gemm" }
