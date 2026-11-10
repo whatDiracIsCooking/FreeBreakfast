@@ -213,6 +213,11 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
   if (cis_step) {
     max_order = std::max(max_order, cis_eigensolve_order(*cis_step, dims.nocc, dims.nao));
   }
+  // A Hessian's harmonic analysis diagonalizes at 3 natoms, and at its
+  // internal modes below it.
+  if (calc.step<HessianStep>()) {
+    max_order = std::max(max_order, 3 * dims.natoms);
+  }
 
   // MINAO, placed as AVAS and the Localization step place it, when a
   // selection is AVAS's or a localization builds IAOs.

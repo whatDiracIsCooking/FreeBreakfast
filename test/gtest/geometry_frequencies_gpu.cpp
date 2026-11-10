@@ -8,6 +8,8 @@
 // degenerate bend's arbitrary basis does not matter. Then the negated Hessian
 // (every frequency imaginary, the order reversed), a spring between two
 // hydrogens against sqrt(k / mu), a single atom (no modes), and the refusals.
+// Last its footprint, held to one call's pool peak by
+// test/support/pool_footprint.h's two bars, bent and linear.
 
 #include <gtest/gtest.h>
 
@@ -19,6 +21,9 @@ import free_breakfast.core.resources;
 import free_breakfast.atom;
 import free_breakfast.io.json;
 import free_breakfast.geometry;
+import free_breakfast.recipes.diagonalize;
+
+#include "pool_footprint.h"
 
 namespace {
 
@@ -212,6 +217,36 @@ TEST(HarmonicAnalysisRefusal, RefusesBadInput) {
   auto nan_hessian = hessian;
   nan_hessian[40] = std::numeric_limits<double>::infinity();
   EXPECT_TRUE(refused(geo::harmonic_analysis(res, water, nan_hessian)));
+}
+
+// harmonic_analysis_footprint over bent water (3 internal modes) and linear
+// CO2 (4): run once on a fresh DeviceResources, which grows the workspace to
+// the footprint's, then again, measured, against its scratch, the projector,
+// H_mw, the projected Hessian and the two spectra live at the peak. A
+// single atom has no modes and allocates nothing.
+TEST(HarmonicAnalysisFootprint, BentAndLinear) {
+  FBF_REQUIRE_GPU();
+  for (const std::string name : {"h2o", "co2"}) {
+    SCOPED_TRACE(name);
+    const Case c = read_case(name);
+    ASSERT_FALSE(c.atoms.empty());
+    fb::DeviceResources res{0};
+    std::vector<std::size_t> lwork;
+    for (std::size_t order = 0; order <= 3 * c.atoms.size(); ++order) {
+      lwork.push_back(fb::syevd_lwork<double>(res, static_cast<std::int32_t>(order)).value());
+    }
+    const fb::MemoryFootprint fp = geo::harmonic_analysis_footprint(c.atoms, lwork);
+    const auto call = [&] { EXPECT_TRUE(geo::harmonic_analysis(res, c.atoms, c.hessian)); };
+    call();
+    EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+    EXPECT_EQ(fp.pinned, fb::Footprint<wwr::extension::MemoryKind::Pinned>{});
+    const fb::test::PoolPeak peak = fb::test::measure_pool_peak(*res.device(), call);
+    fb::test::expect_footprint(
+        peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch}, 5);
+  }
+  const std::vector<fb::Atom> atom{fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, fb::Element::H}};
+  EXPECT_EQ(geo::harmonic_analysis_footprint(atom, std::vector<std::size_t>(4, 0)),
+            fb::MemoryFootprint{});
 }
 
 } // namespace

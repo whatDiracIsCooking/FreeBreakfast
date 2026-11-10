@@ -26,6 +26,7 @@ import free_breakfast.mcscf.overlap;       // state_overlaps
 import free_breakfast.nevpt2.intersection; // qd_sc_intersection, qd_pc_intersection
 import free_breakfast.pipeline.nevpt2;     // Nevpt2Step::resolve_frozen_core
 import free_breakfast.pipeline.pipeline;
+import free_breakfast.pipeline.footprint;
 import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.orthogonalize;
 
@@ -45,6 +46,11 @@ struct TrialGeometryStep {
 
   [[nodiscard]] Result<MoleculeOutput> run(View<> /*in*/, DeviceResources &res) const {
     return MoleculeOutput{Molecule(res, atoms, charge, multiplicity)};
+  }
+
+  // The Molecule, as MoleculeStep's.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const {
+    return molecule_footprint(dims.natoms);
   }
 };
 
@@ -590,6 +596,49 @@ recorded_optimize_meci(const OptimizeStep &step, std::span<const Atom> start,
   return record.finish(std::move(walk), std::move(head), final_comment);
 }
 
+// The RHF chain at @p trial, as @p step configures it, with @p scf for its
+// [scf]: what each evaluation runs, and what OptimizeStep::footprint folds.
+[[nodiscard]] auto rhf_chain(const OptimizeStep &step, TrialGeometryStep trial, ScfStep scf) {
+  return Pipeline<TrialGeometryStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep,
+                  EriStep, OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
+                  GradientStep>::create({
+      std::move(trial),
+      step.basis_set,
+      SphericalTransformStep{},
+      PrimitivePairClassesStep{},
+      step.eri,
+      OverlapStep{},
+      step.orthogonalizer,
+      CoreHamiltonianStep{},
+      step.guess,
+      std::move(scf),
+      GradientStep{},
+  });
+}
+
+std::optional<MemoryFootprint> OptimizeStep::footprint(const FootprintDimensions &dims) const {
+  if (meci || casscf_gradient || nevpt2_gradient) {
+    return std::nullopt;
+  }
+  // The chain is fixed, so it always plans; none were it ever not to.
+  const auto chain = rhf_chain(*this, TrialGeometryStep{}, scf);
+  if (!chain) {
+    return std::nullopt;
+  }
+  std::vector<MemoryFootprint> steps;
+  for (const StepFootprint &step : chain->footprints(dims)) {
+    if (!step.footprint) {
+      return std::nullopt;
+    }
+    steps.push_back(*step.footprint);
+  }
+  // The start, then each evaluation's chain freed, then the optimum's
+  // Molecule while the start is still held: the chain holds a Molecule of
+  // the same atoms, so the two Molecules together are under its peak.
+  const MemoryFootprint molecule = molecule_footprint(dims.natoms);
+  return then(drop(then(molecule, drop(plan_footprint(steps).footprint))), molecule);
+}
+
 Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) const {
   if (node.device_count() == 0) {
     return err_gpu("[{}] needs a GPU device, and none is visible", kName);
@@ -817,22 +866,7 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
     } else if (nevpt2_gradient) {
       energy = FBF_TRY(casscf_chain(trial, nevpt2_result, gradient, chain_nevpt2_gradient));
     } else {
-      auto chain =
-          FBF_TRY((Pipeline<TrialGeometryStep, BasisSetStep, SphericalTransformStep,
-                            PrimitivePairClassesStep, EriStep, OverlapStep, OrthogonalizerStep,
-                            CoreHamiltonianStep, GuessStep, ScfStep, GradientStep>::create({
-              trial,
-              basis_set,
-              SphericalTransformStep{},
-              PrimitivePairClassesStep{},
-              eri,
-              OverlapStep{},
-              orthogonalizer,
-              CoreHamiltonianStep{},
-              guess,
-              chain_scf,
-              GradientStep{},
-          })));
+      auto chain = FBF_TRY(rhf_chain(*this, trial, chain_scf));
       FBF_TRY(chain.run(node));
       std::ranges::copy(chain.get<GradientOutput>()->gradient.total, gradient.begin());
       energy = chain.get<ScfOutput>()->energy;

@@ -72,6 +72,8 @@ struct OptimizeStep {
 
   Result<OptimizeOutput> run(View<> in, NodeResources &node) const;
   Status check_meci() const;  // meci's refusals, here and in pipeline/config
+  // The RHF chain's; none over a CASSCF chain, for now (below, "Memory caps")
+  std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 };
 ```
 
@@ -500,6 +502,34 @@ The outer `[scf]` (and every table the chain also reads) then runs once more
 at the optimum, one SCF more than the optimization: its products, the
 optimized orbitals among them, are the outer pipeline's.
 
+## Memory caps
+
+Under a `[memory]` cap, pre-flight holds the step to it like any other
+(`../shape/README.md`). Over the RHF chain its `footprint(dims)` is the
+start's Molecule, held through the walk, plus the peak of one evaluation's
+chain, then the optimum's Molecule, the product:
+
+```
+then(drop(then(molecule, drop(chain))), molecule)
+```
+
+`chain` is `plan_footprint` over the chain's own steps' footprints, listed
+by the same `Pipeline` an evaluation runs (`footprints(dims)`), so in its
+order; it is freed whole before the next evaluation, and every geometry has
+the same dimensions, so one fold holds for all of them. The chain's root is
+this module's trial-geometry step, whose footprint is the Molecule's. The
+chain shares the node's `DeviceResources`, so its workspace is this step's
+and pre-flight's pre-grow covers every evaluation. The optimum's Molecule is
+made while the start is still held; the chain holds a Molecule of the same
+atoms, so the two together are under its peak. The history and the
+trajectory are pageable host memory, not modelled.
+
+Over a CASSCF chain (`casscf_gradient`, `nevpt2_gradient`, `meci`) the
+footprint is none, so a capped plan is refused naming `[optimize]`: the
+carried orbitals and the NEVPT2 gradient's and the intersections' library
+calls are not all footprinted yet. That optional is transitional
+(`../footprint/README.md`, #1122).
+
 ## Config
 
 ```toml
@@ -531,6 +561,13 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
 - `test/pipeline/config_host.cpp` also: the CASSCF chain copied in, and its
   refusals (no `[casscf]` space, `[gradient]` beside it, an integral-direct
   `[eri]`).
+- `test/pipeline/nested_footprint_host.cpp`: the RHF footprint, the start's
+  Molecule plus the chain's peak worked out by hand over water in STO-3G,
+  and none over the CASSCF, NEVPT2 and MECI chains. Host-only.
+- `test/gtest/pipeline_preflight_gpu.cpp`: an RHF `[optimize]` of water in
+  STO-3G refused, naming it, under a cap one byte below its peak's room,
+  before the first step; and run at the peak, the pool's `UsedMemHigh` over
+  every geometry within the cap and the workspace never grown.
 - `test/pipeline/optimize_host.cpp`: the following functions, and the files a
   walk keeps, over a stub evaluation through `recorded_optimize` and
   `recorded_optimize_meci`: a walk failed at evaluation 3 leaves

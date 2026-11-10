@@ -95,6 +95,19 @@ planned, and each runs on a fresh `DeviceResources`, once to grow the
 workspaces to exactly the footprint's, then again, measured, against the rest
 by `expect_footprint`'s two bars.
 
+**A nested step's footprint is optional, for now.** `OptimizeStep` and
+`HessianStep` rerun a chain whose shape their configuration picks, and only
+some of those chains are footprinted: the RHF chain under `[optimize]` and
+the semi-numerical `[hessian]` (#1054). The analytic Hessian (#1053) and the
+CASSCF, NEVPT2 and MECI chains call library routines with no footprint yet.
+So their member is
+`std::optional<MemoryFootprint> footprint(const FootprintDimensions &) const`,
+none for a chain not footprinted, which pre-flight then refuses under a cap
+as it refuses a step with no member. `step_footprint` passes it through.
+This is transitional: once those chains are footprinted, the member returns
+a `MemoryFootprint` like every other step's, and #1122 deletes the optional
+form with the detection.
+
 **No public trait.** Every step will carry a footprint, and #1122 makes it a
 requirement of `PipelineStep`, so a "has a footprint" trait like
 `LoadableStep` would have nothing to sort. Until then an unexported detection
@@ -167,8 +180,17 @@ maximum before the first step and held through every one.
   the footprint counts it.
 - **Nested pipelines** (`[optimize]`, semi-numerical `[hessian]`): the outer
   step's footprint is the outer persistent plus the inner plan's peak. The
-  inner steps share the outer's `DeviceResources`, so their workspace is in
-  the outer maximum.
+  inner plan is folded by `plan_footprint` over its own steps' footprints,
+  listed by the very `Pipeline` the step runs (`footprints(dims)`), so its
+  order is the run's; it is freed whole before the next geometry, so it is
+  `drop`ped, and every geometry has the same dimensions, so one fold holds
+  for all of them. The inner steps share the outer's `DeviceResources`, so
+  their workspace is in the outer maximum, and pre-flight's pre-grow covers
+  every geometry. `OptimizeStep` holds the start's Molecule beside the chain
+  and keeps the optimum's; `HessianStep` keeps nothing on the device, and
+  runs `geometry::harmonic_analysis` after the last displacement. The
+  optimizer's history and trajectory and the Hessian's 6N gradients are
+  pageable host memory, not modelled.
 - **No step is exempt**, test-only ones included. A trivial step writes its
   exact small footprint, and a host fake writes `return {};`. "Negligible"
   has no threshold, and a step that grows would go unseen.

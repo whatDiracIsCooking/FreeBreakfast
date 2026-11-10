@@ -25,6 +25,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 import free_breakfast.io.json;         // json, recorded_optimize's entries
 export import free_breakfast.geometry; // geometry::Options, an option
 // Every step the three chains rerun, MoleculeOutput and OptimizeOutput among
@@ -162,6 +163,22 @@ struct OptimizeStep {
   ///         writing an output file. Every error after the walk starts
   ///         leaves the trajectory and history @ref recorded_optimize keeps.
   [[nodiscard]] Result<OptimizeOutput> run(View<> in, NodeResources &node) const;
+
+  /// @brief What @ref run holds at @p dims, over the RHF chain: the start's
+  /// Molecule, held through the walk; at each evaluation the chain's plan,
+  /// folded as pre-flight folds a plan (plan_footprint over its steps'
+  /// footprints, in the order the evaluation runs them) and freed whole
+  /// before the next; then the optimum's Molecule, the product. The
+  /// chain's steps share @p node's DeviceResources, so its workspace is
+  /// this step's. Every geometry has the same dimensions, so one fold holds
+  /// for all of them. The history and the trajectory are pageable host
+  /// memory, not modelled.
+  ///
+  /// None over a CASSCF chain (@ref casscf_gradient, @ref nevpt2_gradient,
+  /// @ref meci), whose carried orbitals and library calls are not all
+  /// footprinted yet: pre-flight refuses it under a cap. Transitional, as
+  /// step_footprint's optional is (#1122).
+  [[nodiscard]] std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 
   /// @brief Under @ref meci, what @ref run refuses before anything runs, and
   /// pipeline/config before it plans: @ref casscf_gradient set beside it, or
