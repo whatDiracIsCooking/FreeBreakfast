@@ -2549,4 +2549,113 @@ TEST_F(Nevpt2ReaderFootprint, QdHessianProducts) {
   }
 }
 
+// #1201: qd_pc_hessian_product_footprint along CI directions whose Schur
+// lifts are nonzero. PC refuses a coupling when a ket's null modes lift
+// with a first-order overlap onto the other state along both a direction
+// and its partner (Eq. qd-pcfail). On the SA-2 water point any CI part
+// that moves a root out of the span lifts that root's ket onto the other
+// (ket 0's Sir, ket 1's Srs), and the roots' in-span rotation lifts both,
+// so every pairing in which one ket lifts along both sides is refused: a
+// random CI part on both, a random one beside the rotation, a random one
+// beside a move of root 1 alone, and a move of root 0 alone with itself as
+// partner. Two pairings are accepted with nonzero lifts, and are held here:
+// the random direction beside a partner with no CI part, and a move of
+// root 0 alone beside a move of root 1 alone (orthogonal to both roots),
+// where each side lifts only its own ket. Each asserts the direction's
+// lifts are nonzero, at the run's kept ranks.
+TEST_F(Nevpt2ReaderFootprint, QdPcHessianProductLifts) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  Nevpt2Reference &s = sa();
+  fb::DeviceResources &in = s.plan.inputs;
+  const std::int32_t ncore = s.cas->ncore;
+  const std::int32_t ncas = s.cas->ncas;
+  const std::int32_t nmo = s.nmo();
+  const std::int32_t naux = s.fit().naux;
+  const std::int32_t nroots = s.nroots();
+  const auto &lwork = s.dims().syevd_lwork;
+  const fb::mcscf::Solution &sol = *s.solution;
+  const double *const b = s.fit().b.data();
+  const double *const c = sol.c.data();
+  const double *const h = s.plan.h->h.data();
+  const double *const vectors = sol.roots.vectors.data();
+  auto alpha = fb::ci::DeviceStringSet::create(in, ncas, s.cas->nelecas / 2).value();
+  auto beta = fb::ci::DeviceStringSet::create(in, ncas, s.cas->nelecas / 2).value();
+  const auto ndet = static_cast<std::size_t>(alpha.size()) * beta.size();
+  const std::size_t ny = ndet * static_cast<std::size_t>(nroots);
+  const auto nmo2 = static_cast<std::size_t>(nmo) * static_cast<std::size_t>(nmo);
+  const std::vector<double> w{0.6, 0.2, 0.2, 0.4};
+  const std::vector<std::array<std::int64_t, 8>> dropped = s.qd_dropped();
+  std::vector<fb::Buffers::device<double>> held;
+  const auto upload = [&](const std::vector<double> &host) {
+    held.emplace_back(host.size(), in.device());
+    EXPECT_EQ(wwr::wwrMemcpyAsync(held.back().data(), host.data(), sizeof(double) * host.size(),
+                                  wwr::wwrMemcpyHostToDevice, in.stream()),
+              wwr::wwrSuccess);
+    EXPECT_TRUE(in.sync());
+    return held.back().data();
+  };
+  std::vector<double> roots(ny);
+  ASSERT_EQ(wwr::wwrMemcpyAsync(roots.data(), vectors, sizeof(double) * ny,
+                                wwr::wwrMemcpyDeviceToHost, in.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(in.sync());
+  const double *const h_dot = random_on_device(in, held, nmo2, 31);
+  const double *const b_dot = random_on_device(in, held, naux * nmo2, 32);
+  // A random move of @p root alone, orthogonal to every root.
+  const auto only = [&](const std::size_t root, const std::uint64_t seed) {
+    std::vector<double> out(ny, 0.0);
+    std::mt19937_64 engine(seed);
+    std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+    const std::span<double> v = std::span(out).subspan(root * ndet, ndet);
+    for (double &x : v) {
+      x = uniform(engine);
+    }
+    for (std::size_t r = 0; r < static_cast<std::size_t>(nroots); ++r) {
+      const std::span<const double> cr = std::span<const double>(roots).subspan(r * ndet, ndet);
+      const double d = std::inner_product(v.begin(), v.end(), cr.begin(), 0.0);
+      for (std::size_t e = 0; e < ndet; ++e) {
+        v[e] -= d * cr[e];
+      }
+    }
+    return out;
+  };
+  const auto along = [&](const double *ci) {
+    return fb::nevpt2::MoDirections{.count = 1, .h = h_dot, .b = b_dot, .c = ci};
+  };
+  const fb::nevpt2::MoDirections random = along(random_on_device(in, held, ny, 33));
+  const fb::nevpt2::MoDirections still = along(upload(std::vector<double>(ny, 0.0)));
+  const fb::nevpt2::MoDirections first = along(upload(only(0, 35)));
+  const fb::nevpt2::MoDirections second = along(upload(only(1, 34)));
+  const fb::nevpt2::QdScAdjoint corr =
+      fb::nevpt2::qd_sc_adjoint(in, alpha, beta, naux, nmo, nmo, b, c, h, ncore, ncas, sol.weights,
+                                vectors, w, 0)
+          .value();
+  const fb::nevpt2::ZcMultipliers zc =
+      fb::nevpt2::zc_multipliers(in, nmo, ncore, ncas, corr.a.data(), corr.epsilon.data()).value();
+  const double *const z = zc.z.data();
+  for (const auto &[name, dir, partner] :
+       {std::tuple{"random beside no CI part", random, still},
+        std::tuple{"root 0 alone beside root 1 alone", first, second}}) {
+    SCOPED_TRACE(name);
+    expect_least_footprint(
+        fb::nevpt2::qd_pc_hessian_product_footprint(naux, nmo, nmo, ncore, ncas, 2, 2, nroots, 0,
+                                                    lwork, 1, 1, false, dropped),
+        kQdPcProductLive + (2 * kQdTangentLive) + kQdBarsLive, [&](fb::DeviceResources &res) {
+          const auto p = fb::nevpt2::qd_pc_hessian_product(res, alpha, beta, naux, nmo, nmo, b, c,
+                                                           h, ncore, ncas, sol.weights, vectors, w,
+                                                           z, 0, dir, partner, false);
+          ASSERT_TRUE(p) << p.error().message;
+          ASSERT_EQ(p->lifts.size(), 1U);
+          double most = 0.0;
+          for (const std::array<double, 8> &ket : p->lifts.front()) {
+            for (const double l : ket) {
+              most = std::max(most, std::abs(l));
+            }
+          }
+          EXPECT_GT(most, 0.0) << "no Schur lift along the direction";
+        });
+  }
+}
+
 } // namespace
