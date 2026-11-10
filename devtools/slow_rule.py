@@ -275,11 +275,14 @@ def summary_field(findings: dict | None) -> str:
 
 def families_of(build: Path, source: Path, text: str, host: str) -> dict:
     """test_families' families of a built build dir, their representatives
-    by the same records' times."""
+    by the same records' times and `slow`, as test.py pr's are: a member the
+    records call slow is never the cheapest."""
     tf = _families_tool()
     cases, _ = tf.build_cases(build, source)
     markers = tf.markers_in(source, {c.file for c in cases})
-    fams, _, _ = tf.families(cases, markers, tf.parse_metrics(text, host))
+    fams, _, _ = tf.families(
+        cases, markers, tf.parse_metrics(text, host), tf.parse_slow(text, host)
+    )
     return fams
 
 

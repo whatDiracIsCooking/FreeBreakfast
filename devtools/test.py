@@ -725,7 +725,8 @@ def gtest_name(test: dict) -> str | None:
 def list_families(build_dir: Path) -> dict:
     """devtools/test_families.py's --json over a built build dir: the one
     source of the representative set. Raises SelectionError when it could
-    not list, or a marker is wrong (exit 1: the set would be incomplete)."""
+    not list, or reports an error (exit 1: a marker is wrong or missing, so
+    the set would be incomplete)."""
     proc = subprocess.run(
         [
             sys.executable,
@@ -751,8 +752,8 @@ def list_families(build_dir: Path) -> dict:
         )
     if doc.get("errors"):
         raise SelectionError(
-            "devtools/test_families.py: a marker is wrong, so the representative"
-            " set is incomplete -- " + "; ".join(doc["errors"])
+            "devtools/test_families.py: a marker is wrong or missing, so the"
+            " representative set is incomplete -- " + "; ".join(doc["errors"])
         )
     return doc
 
@@ -1029,9 +1030,10 @@ def push_filters(tag: str, build_dir: Path, log: Path) -> list[str | None]:
     ctest's listing of the build dir, joined on gtest's names. "" means the
     binary has nothing selected; None means it runs whole.
 
-    Where the set cannot be had (the lister fails, a marker is wrong, ctest
-    cannot list), every binary runs whole, with a line saying so: unlike pr,
-    push must not block, a fresh VM's missing `metrics` branch included."""
+    Where the set cannot be had (the lister fails, a marker is wrong or
+    missing, ctest cannot list), every binary runs whole, with a line saying
+    so: unlike pr, push must not block, a fresh VM's missing `metrics` branch
+    included."""
     gpu_bins = [(build_dir / rel).resolve() for rel in GPU_BINS]
     try:
         families = list_families(build_dir)
@@ -1536,8 +1538,8 @@ def cmd_pr(
                     except SelectionError as e:
                         say(f"{tag}: {e}", err=True, log=log)
                         say(
-                            f"{tag}: fix the marker, or run the whole fast set"
-                            " with --all",
+                            f"{tag}: fix or add the marker it names, or run"
+                            " the whole fast set with --all",
                             err=True,
                             log=log,
                         )

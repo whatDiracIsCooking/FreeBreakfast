@@ -460,6 +460,12 @@ def test_list_families_reads_the_listers_json(
     ("doc", "code", "message"),
     [
         (dict(FAMILIES, errors=["x.cpp:3: bad"]), 1, "x.cpp:3: bad"),
+        # #1125's error: a family with no fast member is a missing marker.
+        (
+            dict(FAMILIES, errors=["Foo: every timed member reaches it"]),
+            1,
+            "a marker is wrong or missing.*Foo: every timed member",
+        ),
         ("", 2, "exited 2"),
         ("not json", 0, "exited 0"),
     ],

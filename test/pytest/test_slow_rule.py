@@ -13,6 +13,8 @@ import statistics
 import sys
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parents[2]
 _TOOL = _ROOT / "devtools" / "slow_rule.py"
 _spec = importlib.util.spec_from_file_location("devtools_slow_rule", _TOOL)
@@ -173,6 +175,31 @@ def test_the_report_names_each_finding() -> None:
         assert name not in text
     assert sr.summary_field(f) == "slow-rule=1/1"
     assert sr.summary_field(None) == "slow-rule=none"
+
+
+def test_a_gated_cheapest_member_is_not_the_representative(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Gated.Small is the family's cheapest by time, but its record says it
+    # reaches FBF_SKIP_IF_FAST_TESTS(): the representative is the cheapest
+    # fast member, as test.py pr's is (#1125, #1225), so Gated.Mid over the
+    # line is allowed and Gated.Big, also fast, is flagged.
+    def case(name: str, line: int) -> tf.Case:
+        return tf.Case(name, "x_gpu.cpp", line, name, None, None, "x_gpu")
+
+    cases = [case("Gated.Small", 1), case("Gated.Mid", 2), case("Gated.Big", 3)]
+    monkeypatch.setattr(tf, "build_cases", lambda build, source: (cases, []))
+    monkeypatch.setattr(tf, "markers_in", lambda source, files: [])
+    tonight = [
+        _case("Gated.Small", 0.5, slow=True),
+        _case("Gated.Mid", 2.0),
+        _case("Gated.Big", 3.0),
+    ]
+    text = json.dumps(_record(0, tonight)) + "\n"
+    fams = sr.families_of(tmp_path, tmp_path, text, HOST)
+    assert (fams["Gated"].representative, fams["Gated"].by) == ("Gated.Mid", "cheapest")
+    over = sr.check(text, HOST, fams)["over_line"]
+    assert [r["name"] for r in over] == ["Gated.Big"]
 
 
 def test_the_line_is_slow_test_hs() -> None:
