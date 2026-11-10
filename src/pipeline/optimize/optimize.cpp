@@ -627,21 +627,15 @@ template <class... Last>
   return casscf;
 }
 
-std::optional<MemoryFootprint> OptimizeStep::footprint(const FootprintDimensions &dims) const {
-  // A chain's plan folded as pre-flight folds one, at @p at; none were a step
-  // of it ever without a footprint. The chains are fixed, so they always
-  // plan.
-  const auto fold = [](const auto &chain,
-                       const FootprintDimensions &at) -> std::optional<MemoryFootprint> {
-    if (!chain) {
-      return std::nullopt;
-    }
+MemoryFootprint OptimizeStep::footprint(const FootprintDimensions &dims) const {
+  // A chain's plan folded as pre-flight folds one, at @p at. The chains are
+  // fixed, so they always plan: a chain that did not would leave no
+  // footprint to hold to the caps, and aborts here.
+  const auto fold = [](const auto &chain, const FootprintDimensions &at) -> MemoryFootprint {
+    check_or_abort(chain.has_value() ? Status{} : Status{std::unexpected(chain.error())});
     std::vector<MemoryFootprint> steps;
     for (const StepFootprint &step : chain->footprints(at)) {
-      if (!step.footprint) {
-        return std::nullopt;
-      }
-      steps.push_back(*step.footprint);
+      steps.push_back(step.footprint);
     }
     return plan_footprint(steps).footprint;
   };
@@ -652,12 +646,8 @@ std::optional<MemoryFootprint> OptimizeStep::footprint(const FootprintDimensions
     // The start, then each evaluation's chain freed, then the optimum's
     // Molecule while the start is still held: the chain holds a Molecule of
     // the same atoms, so the two Molecules together are under its peak.
-    const std::optional<MemoryFootprint> chain =
-        fold(rhf_chain(*this, TrialGeometryStep{}, chain_scf), dims);
-    if (!chain) {
-      return std::nullopt;
-    }
-    return then(drop(then(molecule, drop(*chain))), molecule);
+    const MemoryFootprint chain = fold(rhf_chain(*this, TrialGeometryStep{}, chain_scf), dims);
+    return then(drop(then(molecule, drop(chain))), molecule);
   }
   // Refused before anything runs: both gradients, check_meci's refusals, a
   // CASSCF chain over an integral-direct ERI.
@@ -690,8 +680,8 @@ std::optional<MemoryFootprint> OptimizeStep::footprint(const FootprintDimensions
   // orbitals (CarriedOrbitalsStep's footprint reads only the dimensions).
   const CasscfStep chain_casscf = chain_casscf_step(casscf);
   const CasscfStep carried = carried_casscf_step(chain_casscf, ncas, nelecas);
-  std::optional<MemoryFootprint> first;
-  std::optional<MemoryFootprint> later;
+  MemoryFootprint first;
+  MemoryFootprint later;
   if (nevpt2_gradient && !meci) {
     first = fold(
         casscf_first_chain(*this, TrialGeometryStep{}, chain_scf, chain_casscf, *nevpt2_gradient),
@@ -703,9 +693,6 @@ std::optional<MemoryFootprint> OptimizeStep::footprint(const FootprintDimensions
     first = fold(casscf_first_chain(*this, TrialGeometryStep{}, chain_scf, chain_casscf), at);
     later =
         fold(casscf_carried_chain(*this, TrialGeometryStep{}, CarriedOrbitalsStep{}, carried), at);
-  }
-  if (!first || !later) {
-    return std::nullopt;
   }
   // What each evaluation runs past its chain, beside the chain's products: a
   // CASSCF root's gradient; under meci the intersection, the CASSCF's or
@@ -744,11 +731,11 @@ std::optional<MemoryFootprint> OptimizeStep::footprint(const FootprintDimensions
     overlaps = drop(mcscf::state_overlaps_footprint(basis, basis, ncore, ncas, nelecas, two_s + 1,
                                                     nroots, nroots));
   }
-  const MemoryFootprint at_first = then(*first, then(solution, finish));
+  const MemoryFootprint at_first = then(first, then(solution, finish));
   const MemoryFootprint at_later =
-      casscf_gradient ? then(drop(then(solution, then(*later, then(solution, overlaps)))),
-                             drop(then(*later, then(solution, finish))))
-                      : then(solution, then(*later, then(solution, then(overlaps, finish))));
+      casscf_gradient ? then(drop(then(solution, then(later, then(solution, overlaps)))),
+                             drop(then(later, then(solution, finish))))
+                      : then(solution, then(later, then(solution, then(overlaps, finish))));
   // The start, held through the walk; each evaluation's chain freed whole;
   // then the optimum's Molecule beside the last followed state.
   return then(drop(then(molecule, then(drop(at_first), drop(at_later)))),

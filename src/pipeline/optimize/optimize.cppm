@@ -191,9 +191,8 @@ struct OptimizeStep {
   /// intersection's (a root's gradient follows the match, the last state
   /// freed). Empty where the run refuses
   /// before anything runs (both gradients, @ref check_meci, an
-  /// integral-direct @ref eri). The optional is transitional, as
-  /// step_footprint's is (#1122): every configuration has a value.
-  [[nodiscard]] std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
+  /// integral-direct @ref eri).
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 
   /// @brief Under @ref meci, what @ref run refuses before anything runs, and
   /// pipeline/config before it plans: @ref casscf_gradient set beside it, or

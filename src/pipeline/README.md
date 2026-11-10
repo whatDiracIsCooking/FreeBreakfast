@@ -32,7 +32,7 @@ optimize/   free_breakfast.pipeline.optimize: OptimizeStep -- an RHF geometry op
 hessian/    free_breakfast.pipeline.hessian: HessianStep -- the RHF's or, beside a [casscf_gradient], that DF-CASSCF root's, or beside a [nevpt2_gradient] that SC- or PC-NEVPT2 energy's (or with quasi_degenerate one QD state's) Cartesian Hessian at the pipeline's molecule, analytic by default (hessian::df_rhf at the SCF of one nested Pipeline run of the chain to [scf], or hessian::df_casscf / df_sacasscf, df_sc_nevpt2 / df_pc_nevpt2 or df_qd_sc_nevpt2 / df_qd_pc_nevpt2 at the CASSCF of one to [casscf]; density-fitted only) or by central differences of the analytic gradient, the chain to the gradient rerun at each of the 6N displaced geometries (a QD state tracked by its eigenvector); symmetrized, its asymmetry and translational sum reported, its harmonic frequencies and normal modes logged, written as hessian.json
 config/     free_breakfast.pipeline.config: the TOML front end and the registry, Calculation -- a config file read into the pipeline it asks for
 shape/      free_breakfast.pipeline.shape: plan_shape and preflight -- not steps: a planned Calculation's bases placed and its FootprintDimensions filled, and the plan's footprint held to the [memory] caps, before the first step runs
-footprint/  free_breakfast.pipeline.footprint: FootprintDimensions, step_footprint and the plan fold, and check_plan, the fold held to the caps
+footprint/  free_breakfast.pipeline.footprint: FootprintDimensions, step_adaptive_unit and the plan fold, and check_plan, the fold held to the caps
 ```
 
 `src/main.cpp` reads a config into a `Calculation`, holds it to its

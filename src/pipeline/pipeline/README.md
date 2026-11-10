@@ -129,8 +129,8 @@ caps fit (`shape/README.md`).
 
 `footprints(dims)` lists each planned step's `StepFootprint` in plan order,
 every step (host ones included, which hold nothing of either kind): its
-`kName`, its footprint at `dims` (`step_footprint`, none for a step without
-one yet) and its adaptive unit (`step_adaptive_unit`). It is what pre-flight
+`kName`, its footprint at `dims` (the `footprint` member `PipelineStep`
+requires) and its adaptive unit (`step_adaptive_unit`). It is what pre-flight
 folds and holds to the caps (`check_plan`, `footprint/README.md`). A loaded
 step holds no step value, so it reports a default-constructed one's
 footprint: its product is as resident as a computed one, and a loadable

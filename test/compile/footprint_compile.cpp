@@ -1,16 +1,17 @@
 // Compile-time checks of the footprint vocabulary: core.footprint's kinds are
-// distinct types that do not compose with each other, and pipeline.footprint's
-// step_footprint recognises a well-formed footprint member and nothing else.
-//
-// The detection itself is unexported (#1122 deletes it), so it is checked
-// through step_footprint, the one exported template that uses it, evaluated
-// at compile time: a model with a well-formed member gives its footprint, and
-// each model that misses it in one way gives none. Only the well-formed
-// models' members are defined, since only they are called.
+// distinct types that do not compose with each other, and the footprint is a
+// requirement of pipeline.step's PipelineStep (#1122): a made-up step with a
+// well-formed `MemoryFootprint footprint(const FootprintDimensions &) const`
+// is a PipelineStep, and the same step without one, or with one malformed in
+// any one way (non-const, static, overloaded, a template, another return or
+// parameter type, a data member), is not. No member is defined: the concept
+// never calls one.
 
 import std;
 import free_breakfast.core;
+import free_breakfast.core.resources;
 import free_breakfast.pipeline.footprint;
+import free_breakfast.pipeline.step;
 
 namespace {
 
@@ -38,72 +39,75 @@ static_assert(!Thenable<Pinned, Device>);
 static_assert(std::same_as<decltype(fb::drop(Pinned{})), Pinned>);
 
 // ---------------------------------------------------------------------------
-// The footprint member, as step_footprint detects it
+// The footprint member, as PipelineStep requires it
 // ---------------------------------------------------------------------------
 
-constexpr fb::MemoryFootprint kWellFormed{
-    .device = {.persistent = 1, .scratch = 2, .workspace = 3},
-    .pinned = {.persistent = 4, .scratch = 5, .workspace = 6}};
+struct Made {};
 
-struct WellFormed {
-  constexpr fb::MemoryFootprint footprint(const fb::FootprintDimensions &) const {
-    return kWellFormed;
-  }
+// A made-up step, but for its footprint: a non-empty kName and one const run
+// over the device. Each model below adds the footprint member, or misses it
+// in one way.
+struct StepBase {
+  static constexpr std::string_view kName = "made";
+  fb::Result<Made> run(fb::View<> in, fb::DeviceResources &res) const;
 };
 
-struct WellFormedNoexcept {
-  constexpr fb::MemoryFootprint footprint(const fb::FootprintDimensions &) const noexcept {
-    return kWellFormed;
-  }
+struct WellFormed : StepBase {
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions &) const;
 };
 
-struct NoFootprint {};
+struct WellFormedNoexcept : StepBase {
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions &) const noexcept;
+};
 
-struct NonConst {
+struct NoFootprint : StepBase {};
+
+struct NonConst : StepBase {
   fb::MemoryFootprint footprint(const fb::FootprintDimensions &);
 };
 
-struct Static {
+struct Static : StepBase {
   static fb::MemoryFootprint footprint(const fb::FootprintDimensions &);
 };
 
-struct Overloaded {
+struct Overloaded : StepBase {
   fb::MemoryFootprint footprint(const fb::FootprintDimensions &) const;
   fb::MemoryFootprint footprint(const fb::FootprintDimensions &, std::size_t nroots) const;
 };
 
-struct Template {
+struct Template : StepBase {
   template <class D>
   fb::MemoryFootprint footprint(const D &) const;
 };
 
-struct WrongReturn {
+struct WrongReturn : StepBase {
   Device footprint(const fb::FootprintDimensions &) const;
 };
 
-struct WrongParameter {
+struct OptionalReturn : StepBase {
+  std::optional<fb::MemoryFootprint> footprint(const fb::FootprintDimensions &) const;
+};
+
+struct WrongParameter : StepBase {
   fb::MemoryFootprint footprint(fb::FootprintDimensions) const;
 };
 
-struct DataMember {
+struct DataMember : StepBase {
   fb::MemoryFootprint footprint;
 };
 
-template <class S>
-constexpr bool kDetected = fb::step_footprint(S{}, fb::FootprintDimensions{}).has_value();
+static_assert(fb::PipelineStep<WellFormed>);
+static_assert(fb::PipelineStep<WellFormedNoexcept>);
 
-static_assert(kDetected<WellFormed>);
-static_assert(kDetected<WellFormedNoexcept>);
-static_assert(*fb::step_footprint(WellFormed{}, fb::FootprintDimensions{}) == kWellFormed);
-
-static_assert(!kDetected<NoFootprint>);
-static_assert(!kDetected<NonConst>);
-static_assert(!kDetected<Static>);
-static_assert(!kDetected<Overloaded>);
-static_assert(!kDetected<Template>);
-static_assert(!kDetected<WrongReturn>);
-static_assert(!kDetected<WrongParameter>);
-static_assert(!kDetected<DataMember>);
+static_assert(!fb::PipelineStep<NoFootprint>);
+static_assert(!fb::PipelineStep<NonConst>);
+static_assert(!fb::PipelineStep<Static>);
+static_assert(!fb::PipelineStep<Overloaded>);
+static_assert(!fb::PipelineStep<Template>);
+static_assert(!fb::PipelineStep<WrongReturn>);
+static_assert(!fb::PipelineStep<OptionalReturn>);
+static_assert(!fb::PipelineStep<WrongParameter>);
+static_assert(!fb::PipelineStep<DataMember>);
 
 // ---------------------------------------------------------------------------
 // The plan fold is a constant expression too

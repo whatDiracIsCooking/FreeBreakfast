@@ -9,6 +9,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.pipeline.footprint;
 import :view;
 import :run_shape;
 
@@ -82,6 +83,18 @@ struct ResultValue<Result<T>> {
   using type = T;
 };
 
+// The footprint member, exactly `MemoryFootprint footprint(const
+// FootprintDimensions &) const`, and may be noexcept. Taking &S::footprint is
+// what rejects an overloaded or template member and a data member, and its
+// type what rejects a static, non-const or wrong-signature one.
+template <class S>
+concept FootprintMember = requires {
+  requires std::same_as<decltype(&S::footprint),
+                        MemoryFootprint (S::*)(const FootprintDimensions &) const> ||
+               std::same_as<decltype(&S::footprint),
+                            MemoryFootprint (S::*)(const FootprintDimensions &) const noexcept>;
+};
+
 // kName is the step's TOML table name, so it must be a non-empty constant: the
 // pipeline checks names unique across its steps at compile time.
 template <class S>
@@ -100,14 +113,15 @@ using StepInput = typename RunSignatureOf<S>::InputView;
 template <class S>
 using StepOutput = typename ResultValue<typename RunSignatureOf<S>::ReturnType>::type;
 
-/// @brief A pipeline step: a non-empty `kName` and one `const` `run`, whose
-///        signature declares everything else.
+/// @brief A pipeline step: a non-empty `kName`, one `const` `run`, whose
+///        signature declares everything else, and its footprint.
 ///
 /// ```cpp
 /// struct OrthogonalizerStep {
 ///   static constexpr std::string_view kName = "orthogonalizer";
 ///   double eigenvalue_floor = kOrthogonalizeEigenvalueFloor<double>;  // an option
 ///   Result<OrthogonalizerOutput> run(View<BasisSetOutput, OverlapOutput> in, DeviceResources &res) const;
+///   MemoryFootprint footprint(const FootprintDimensions &dims) const;
 /// };
 /// ```
 ///
@@ -119,6 +133,12 @@ using StepOutput = typename ResultValue<typename RunSignatureOf<S>::ReturnType>:
 ///   resource lists.
 /// - `run` is `const` (a step is configuration, not changed by running),
 ///   neither overloaded nor a template, and may be `noexcept`.
+/// - `footprint` is exactly `MemoryFootprint footprint(const
+///   FootprintDimensions &) const`, neither overloaded, a template nor
+///   static, and may be `noexcept`: what `run` holds at the plan's
+///   dimensions, which pre-flight folds and holds to the `[memory]` caps
+///   (pipeline/footprint's README). Every step has one, test-only ones
+///   included; a step that allocates nothing returns `{}`.
 ///
 /// Options are the step's own data members. Contracts the types cannot check
 /// are in README.md: a device `run` only enqueues on `res.stream()`, a host
@@ -131,7 +151,7 @@ concept PipelineStep =
       typename StepOutput<S>;
     } && kIsView<StepInput<S>> && Product<StepOutput<S>> &&
     !kViewContains<StepOutput<S>, StepInput<S>> && RunSignatureOf<S>::kShape.has_value() &&
-    StepName<S>;
+    StepName<S> && FootprintMember<S>;
 
 /// @brief The `RunShape` of step `S`'s `run`.
 template <PipelineStep S>

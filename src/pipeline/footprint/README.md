@@ -14,18 +14,18 @@ the peak a plan reaches and the step that reaches it. The vocabulary itself —
 module importing it has `MemoryFootprint`, `then` and `drop`, and can read
 the bases the dimensions carry. `basis` is host data; nothing GPU-side,
 nothing from `pipeline.step` and no method layer: every step module imports
-it. The implementation unit is `check_plan`'s and `check_pinned_node`'s, for
+it, and so does `pipeline.step`, whose `PipelineStep` requires the footprint
+member. The implementation unit is `check_plan`'s and `check_pinned_node`'s, for
 their messages and log lines.
 
 | Export | What |
 |---|---|
 | `FootprintDimensions` | The plan's dimensions, before the first step: the placed orbital basis and, under density fitting, the aux basis, and under AVAS MINAO (const pointers), the molecule's atoms, nao, naux, nocc / n_alpha / n_beta, natoms, mmd's record counts per (la, lb), syevd's lwork at every order through the plan's largest eigensolve, skew_eig's at nao for a planned CASSCF, and worst-case ncas / nelecas (0 when no active space is planned). [`pipeline/shape`](../shape/README.md)'s `plan_shape` fills it |
-| `step_footprint(step, dims)` | A step's footprint, or none for a step that has no footprint member yet |
 | `PlanFootprint`, `plan_footprint(steps)` | The plan fold: `then` over one device's step footprints in plan order, with the step at which each kind's peak is reached |
 | `step_adaptive_unit(step, dims)` | An adaptive step's bytes for one more unit of its adaptive part, or none for a step that is not adaptive |
 | `StepFootprint` | One planned step as pre-flight sees it: its name, footprint and adaptive unit. `Pipeline::footprints(dims)` lists them in plan order |
 | `PlanCaps` | The `[memory]` caps as the fold is held to them: `device_room`, the most the device peak may reach, and the two caps |
-| `check_plan(steps, caps)` | The fold held to the caps: refused naming the step with no footprint, or the step reaching a peak past its cap; logs the peaks, the workspace gap and each adaptive step's room |
+| `check_plan(steps, caps)` | The fold held to the caps: refused naming the step reaching a peak past its cap; logs the peaks, the workspace gap and each adaptive step's room |
 | `check_pinned_node(cap, devices, mem_available)` | The machine check: the devices times the pinned cap within MemAvailable |
 
 ## The dimensions
@@ -96,32 +96,28 @@ footprint's, once, its largest borrows (`workspace_high_water()`) then
 exactly the footprint's, then again, measured, against the rest by
 `expect_footprint`'s two bars.
 
-**A nested step's footprint is optional, for now.** `OptimizeStep` and
-`HessianStep` rerun a chain whose shape their configuration picks, and every
-configuration of both is footprinted: the RHF and the CASSCF, NEVPT2 and
-MECI chains under `[optimize]` (#1054, #1212: each evaluation's chain, what
-it runs past it, and a followed state's C and CI between evaluations), and
-every `[hessian]` -- the semi-numerical RHF one (#1054), the analytic
-DF-RHF (#1053), DF-CASSCF (#1176) and SC-, PC- and QD-NEVPT2 (#1186) ones,
-and the semi-numerical CASSCF and NEVPT2 / QD-NEVPT2 ones (#1204: the
-reference's chain, then each displacement's from its carried orbitals, and
-under QD the state's gradient and the ensemble's edge beside each). Their
-member is still
-`std::optional<MemoryFootprint> footprint(const FootprintDimensions &) const`,
-which always has a value; #1122 makes it a plain `MemoryFootprint`.
-`step_footprint` passes it through.
-This is transitional: once those chains are footprinted, the member returns
-a `MemoryFootprint` like every other step's, and #1122 deletes the optional
-form with the detection.
+**Every step carries a footprint, as a requirement of the concept.**
+`PipelineStep` (`pipeline/step`) requires exactly
+`MemoryFootprint footprint(const FootprintDimensions &) const`, which may be
+`noexcept` (#1122): a step without one, or with one that is non-const,
+static, overloaded, a template or of another signature, is not a
+`PipelineStep`, so a new step without a footprint is a build error naming
+the concept every step satisfies, and `Pipeline::footprints` reads the
+member directly. There is no separate trait and no detection: a "has a
+footprint" trait would have nothing to sort. `test/compile/footprint_compile.cpp`
+holds the concept to that, by `static_assert`.
 
-**No public trait.** Every step will carry a footprint, and #1122 makes it a
-requirement of `PipelineStep`, so a "has a footprint" trait like
-`LoadableStep` would have nothing to sort. Until then an unexported detection
-recognises the member, and only `step_footprint` uses it (and its twin
-`step_adaptive_unit`, the optional adaptive unit): a member that is
-non-const, static, overloaded, a template or of another signature is not a
-footprint, and `step_footprint` returns `std::nullopt`, so the fold's caller
-can name the step rather than count it as zero. #1122 deletes both.
+The nested steps are no exception. `OptimizeStep` and `HessianStep` rerun a
+chain whose shape their configuration picks, and every configuration of
+both is footprinted: the RHF and the CASSCF, NEVPT2 and MECI chains under
+`[optimize]` (#1054, #1212: each evaluation's chain, what it runs past it,
+and a followed state's C and CI between evaluations), and every `[hessian]`
+-- the semi-numerical RHF one (#1054), the analytic DF-RHF (#1053),
+DF-CASSCF (#1176) and SC-, PC- and QD-NEVPT2 (#1186) ones, and the
+semi-numerical CASSCF and NEVPT2 / QD-NEVPT2 ones (#1204: the reference's
+chain, then each displacement's from its carried orbitals, and under QD the
+state's gradient and the ensemble's edge beside each). A configuration
+refused before anything runs has an empty footprint.
 
 ## An adaptive step's unit
 
@@ -137,7 +133,9 @@ size_t adaptive_unit(const FootprintDimensions &dims) const;
 gets a line from pre-flight: what the cap leaves it above its least at its
 point in the fold, at warn level when that is under one unit, so "fits, but
 runs at width 1" shows before the run starts. The member is optional, and
-recognised as `footprint` is (`step_adaptive_unit`); no step carries one
+recognised by an unexported detection (`step_adaptive_unit`): a member that
+is non-const, static, overloaded, a template or of another signature is no
+adaptive unit. No step carries one
 yet, so the warning is exercised by the made-up steps of
 `test/pipeline/preflight_host.cpp`. FCI's sigma blocks and the NEVPT2 tiles
 are the first that should.
@@ -149,10 +147,9 @@ kind's peak to its cap: the device peak to `caps.device_room` (the pool's
 cap less the headroom and any reuse rounding; `pipeline/shape` computes it),
 the pinned peak to `max_pinned_mem_per_gpu` exactly, since pinned memory is
 not pooled. Past either it is `InvalidConfig` naming the step that reaches
-the peak, the peak and the cap. **A step with no footprint is refused** under
-any cap, naming it, rather than counted as zero, which could pass a plan that
-does not fit: until every step has one (#1122), a capped plan is one of
-footprinted steps. Without a cap it is not called at all. Its log lines are
+the peak, the peak and the cap. Every step has a footprint (the concept
+requires it), so every plan can be held to the caps. Without a cap it is not
+called at all. Its log lines are
 each kind's peak and step, the workspace gap (the plan's maximum workspace,
 held throughout, against what the peak step uses of it) and each adaptive
 step's room. `pipeline/README.md`'s "Memory caps" has the whole of

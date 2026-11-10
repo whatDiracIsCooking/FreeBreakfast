@@ -1,5 +1,5 @@
-// The plan fold over made-up steps: each step's footprint is read through
-// step_footprint from the plan's dimensions and its own options, the plan is
+// The plan fold over made-up steps: each step's footprint is read from its
+// member at the plan's dimensions and its own options, the plan is
 // folded in plan order, and the peak and the step reaching it are held to the
 // values worked out beside each case, exactly. No step runs, so nothing
 // touches a device.
@@ -56,19 +56,14 @@ struct HostStep {
   fb::MemoryFootprint footprint(const fb::FootprintDimensions &) const { return {}; }
 };
 
-// A step with no footprint yet: step_footprint reports none.
-struct UnfootprintedStep {
-  static constexpr std::string_view kName = "unfootprinted";
-};
-
 const fb::FootprintDimensions kDims{.nao = 10, .naux = 30, .natoms = 3};
 
 TEST(PipelineFootprint, FoldMatchesHandComputedPeak) {
   const std::array<std::string_view, 4> names{SetupStep::kName, TensorStep::kName,
                                               OffloadStep::kName, HostStep::kName};
   const std::array<fb::MemoryFootprint, 4> plan{
-      *fb::step_footprint(SetupStep{}, kDims), *fb::step_footprint(TensorStep{.nroots = 3}, kDims),
-      *fb::step_footprint(OffloadStep{}, kDims), *fb::step_footprint(HostStep{}, kDims)};
+      SetupStep{}.footprint(kDims), TensorStep{.nroots = 3}.footprint(kDims),
+      OffloadStep{}.footprint(kDims), HostStep{}.footprint(kDims)};
   const fb::PlanFootprint folded = fb::plan_footprint(plan);
 
   // Device, persistent: setup 800, tensor 24000, offload 80, host 0.
@@ -105,11 +100,6 @@ TEST(PipelineFootprint, EmptyPlanHoldsNothing) {
   EXPECT_EQ(folded.footprint, fb::MemoryFootprint{});
   EXPECT_EQ(folded.device_peak_step, std::size_t{0});
   EXPECT_EQ(folded.pinned_peak_step, std::size_t{0});
-}
-
-TEST(PipelineFootprint, StepWithoutFootprintHasNone) {
-  EXPECT_FALSE(fb::step_footprint(UnfootprintedStep{}, kDims).has_value());
-  EXPECT_EQ(fb::step_footprint(HostStep{}, kDims), std::optional{fb::MemoryFootprint{}});
 }
 
 } // namespace

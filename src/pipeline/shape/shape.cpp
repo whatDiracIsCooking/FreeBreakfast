@@ -377,8 +377,8 @@ constexpr size_t kReuseRoundingDivisor = 8;
 // The planned steps' active-space selections, when every active space the
 // plan holds is AVAS's: the top-level CASCI and CASSCF, and no FCI (every
 // orbital) and no space by index, which the shared worst case also sizes.
-// Empty when there is none, or any other. A chain's copies need no look: the
-// steps holding them ([optimize], [hessian]) have no footprint yet.
+// Empty when there is none, or any other. A chain's copies ([optimize]'s,
+// [hessian]'s) are not narrowed.
 [[nodiscard]] std::vector<ActiveSpaceSelection *> avas_only_selections(Calculation &calc) {
   std::vector<ActiveSpaceSelection *> selections;
   if (std::optional<CasciStep> &casci = calc.step<CasciStep>()) {
@@ -395,15 +395,11 @@ constexpr size_t kReuseRoundingDivisor = 8;
   return selections;
 }
 
-// Whether @p steps, every one footprinted, fit @p caps: check_plan's test,
-// without its log lines.
+// Whether @p steps fit @p caps: check_plan's test, without its log lines.
 [[nodiscard]] bool plan_fits(std::span<const StepFootprint> steps, const PlanCaps &caps) {
   std::vector<MemoryFootprint> footprints;
   for (const StepFootprint &step : steps) {
-    if (!step.footprint) {
-      return false;
-    }
-    footprints.push_back(*step.footprint);
+    footprints.push_back(step.footprint);
   }
   const MemoryFootprint peak = plan_footprint(footprints).footprint;
   return (caps.device_room == 0 || peak.device.peak() <= caps.device_room) &&
@@ -416,14 +412,11 @@ constexpr size_t kReuseRoundingDivisor = 8;
 // shaped at it. The fold grows with the active space, so the largest fitting
 // one is found by bisection. Returns the orbitals the plan now fits for any
 // pick up to, 0 when not even one does (@p dims unchanged), and none when
-// there is nothing to narrow: no AVAS-only plan, or a step with no footprint,
-// which check_plan refuses on its own.
+// there is nothing to narrow: no AVAS-only plan.
 [[nodiscard]] std::optional<size_t> narrow_avas(Calculation &calc, FootprintDimensions &dims,
                                                 const PlanCaps &caps) {
   const std::vector<ActiveSpaceSelection *> selections = avas_only_selections(calc);
-  if (selections.empty() || dims.ncas == 0 ||
-      !std::ranges::all_of(calc.footprints(dims),
-                           [](const StepFootprint &step) { return step.footprint.has_value(); })) {
+  if (selections.empty() || dims.ncas == 0) {
     return std::nullopt;
   }
   const size_t worst = dims.ncas;
@@ -485,9 +478,7 @@ uncapped_workspaces(Calculation &calc, FootprintDimensions &dims, DeviceResource
   }
   MemoryFootprint out;
   for (const StepFootprint &step : calc.footprints(dims)) {
-    if (step.footprint) {
-      widen_workspaces(out, *step.footprint);
-    }
+    widen_workspaces(out, step.footprint);
   }
   if (out.device.workspace > budget) {
     return err_allocation("pre-flight: the plan's device workspace is {} bytes, and device {}'s "

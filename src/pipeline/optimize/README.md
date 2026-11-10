@@ -72,8 +72,8 @@ struct OptimizeStep {
 
   Result<OptimizeOutput> run(View<> in, NodeResources &node) const;
   Status check_meci() const;  // meci's refusals, here and in pipeline/config
-  // The RHF chain's; none over a CASSCF chain, for now (below, "Memory caps")
-  std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
+  // Every configuration's (below, "Memory caps")
+  MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 ```
 
@@ -553,9 +553,7 @@ so under `casscf_gradient` `later` is the larger of the match (the last `S`
 beside the chain, the new `S` and the overlaps) and the gradient (the chain,
 the new `S` and `finish`). Unfollowed (one root, or a NEVPT2 gradient that is
 not quasi-degenerate), `S` and `overlaps` are empty. Refused before anything
-runs (both gradients, `check_meci`, an integral-direct `[eri]`): empty. The
-member's optional is transitional (`../footprint/README.md`, #1122): every
-configuration has a value.
+runs (both gradients, `check_meci`, an integral-direct `[eri]`): empty.
 
 ## Config
 

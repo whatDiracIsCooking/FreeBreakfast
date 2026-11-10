@@ -22,14 +22,7 @@ Result<PlanFootprint> check_plan(std::span<const StepFootprint> steps, const Pla
   std::vector<MemoryFootprint> footprints;
   footprints.reserve(steps.size());
   for (const StepFootprint &step : steps) {
-    // Counting it as zero would pass a plan its step may not fit, so a step
-    // with no footprint yet is refused under a cap, never skipped.
-    if (!step.footprint) {
-      return err_config("pre-flight: [{}] has no footprint yet, so the plan cannot be held to "
-                        "its [memory] caps; drop the [memory] table to run it uncapped",
-                        step.name);
-    }
-    footprints.push_back(*step.footprint);
+    footprints.push_back(step.footprint);
   }
   const PlanFootprint plan = plan_footprint(footprints);
   if (steps.empty()) {

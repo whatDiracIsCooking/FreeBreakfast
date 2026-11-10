@@ -19,7 +19,7 @@
 #
 #   * recipes_compile.cpp -- the concepts src/recipes exports.
 #   * footprint_compile.cpp -- the footprint kinds (src/core/footprint) and
-#     the footprint member's detection (src/pipeline/footprint).
+#     the footprint member PipelineStep requires (src/pipeline/step).
 #   * resources_compile.cpp -- DeviceResources' workspaces, sized at
 #     construction and only borrowed (src/core/resources).
 add_library(
@@ -37,4 +37,5 @@ target_link_libraries(
   PRIVATE free_breakfast::core free_breakfast::core::resources
           free_breakfast::recipes
           free_breakfast::pipeline::footprint
+          free_breakfast::pipeline::step
 )

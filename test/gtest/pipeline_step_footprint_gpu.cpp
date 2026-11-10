@@ -2159,33 +2159,31 @@ void expect_analytic_hessian_footprint(const std::string_view basis, const std::
       planned<fb::MoleculeStep>(*plan.calc).run(fb::View<>{}, plan.inputs).value());
   const auto hessian = planned<fb::HessianStep>(*plan.calc);
   ASSERT_EQ(hessian.method, fb::HessianMethod::Analytic);
-  const std::optional<fb::MemoryFootprint> fp = hessian.footprint(plan.dims());
-  ASSERT_TRUE(fp.has_value());
-  EXPECT_EQ(fp->device.persistent, 0U);
+  const fb::MemoryFootprint fp = hessian.footprint(plan.dims());
+  EXPECT_EQ(fp.device.persistent, 0U);
   std::size_t granularity = 0;
   {
     fb::DeviceResources probe{0, {}};
     granularity = fbt::pool_granularity(*probe.device());
   }
-  const std::uint64_t cap =
-      fp->device.peak() + fb::kPoolHeadroomBytes + (granularity * (live + 16));
+  const std::uint64_t cap = fp.device.peak() + fb::kPoolHeadroomBytes + (granularity * (live + 16));
   fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
-  res = fb::DeviceResources{0, *fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  res = fb::DeviceResources{0, fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const auto run = [&] {
     expect_ran(hessian.run(fb::View<fb::MoleculeOutput>{*plan.molecule}, node));
   };
   run();
-  EXPECT_EQ(res.workspace_high_water().device.workspace, fp->device.workspace);
-  EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
+  EXPECT_EQ(res.pinned_bytes(), fp.pinned.peak());
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), run);
   std::cout << std::format(
       "[ footprint ] analytic [hessian] in {}: capped at {}: measured {} (G {}), footprint {} + "
       "workspace {}\n",
-      basis, cap, peak.used, peak.granularity, fp->device.persistent + fp->device.scratch,
-      fp->device.workspace);
-  fbt::expect_footprint(peak, {.persistent = fp->device.persistent, .scratch = fp->device.scratch},
+      basis, cap, peak.used, peak.granularity, fp.device.persistent + fp.device.scratch,
+      fp.device.workspace);
+  fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
                         live);
   EXPECT_LE(res.device()->pool_usage().used_high, cap);
 }
@@ -3032,38 +3030,37 @@ void expect_nevpt2_hessian_step_footprint(const std::string_view xyz, const std:
   const auto hessian = planned<fb::HessianStep>(*plan.calc);
   ASSERT_EQ(hessian.method, fb::HessianMethod::Analytic);
   ASSERT_TRUE(hessian.nevpt2_gradient.has_value());
-  const std::optional<fb::MemoryFootprint> fp = hessian.footprint(plan.dims());
-  ASSERT_TRUE(fp.has_value());
-  EXPECT_EQ(fp->device.persistent, 0U);
-  ASSERT_GT(fp->device.peak(), without);
+  const fb::MemoryFootprint fp = hessian.footprint(plan.dims());
+  EXPECT_EQ(fp.device.persistent, 0U);
+  ASSERT_GT(fp.device.peak(), without);
   std::size_t granularity = 0;
   {
     fb::DeviceResources probe{0, {}};
     granularity = fbt::pool_granularity(*probe.device());
   }
-  const std::uint64_t cap = fp->device.peak() - without + fb::kPoolHeadroomBytes +
-                            (granularity * (live + 16)) + reuse_room(fp->device.peak() - without);
+  const std::uint64_t cap = fp.device.peak() - without + fb::kPoolHeadroomBytes +
+                            (granularity * (live + 16)) + reuse_room(fp.device.peak() - without);
   fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
-  res = fb::DeviceResources{0, *fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  res = fb::DeviceResources{0, fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const auto run = [&] {
     expect_ran(hessian.run(fb::View<fb::MoleculeOutput>{*plan.molecule}, node));
   };
   run();
-  EXPECT_LE(res.workspace_high_water().device.workspace, fp->device.workspace);
-  EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
+  EXPECT_LE(res.workspace_high_water().device.workspace, fp.device.workspace);
+  EXPECT_EQ(res.pinned_bytes(), fp.pinned.peak());
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), run);
   std::cout << std::format(
       "[ footprint ] analytic NEVPT2 [hessian]: capped at {}: measured {} (G {}), footprint {} "
       "less {} + workspace {} (grown to {})\n",
-      cap, peak.used, peak.granularity, fp->device.persistent + fp->device.scratch, without,
-      fp->device.workspace, res.workspace_high_water().device.workspace);
+      cap, peak.used, peak.granularity, fp.device.persistent + fp.device.scratch, without,
+      fp.device.workspace, res.workspace_high_water().device.workspace);
   std::optional<fbt::FootprintSlack> slack;
   if (without > 0) {
     slack = fbt::FootprintSlack{.bytes = without, .reason = reason};
   }
-  fbt::expect_footprint(peak, {.persistent = fp->device.persistent, .scratch = fp->device.scratch},
+  fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
                         live, slack);
   EXPECT_LE(res.device()->pool_usage().used_high, cap);
 }
@@ -3209,9 +3206,8 @@ void expect_seminumerical_hessian_footprint(const std::string_view tables, const
   const auto hessian = planned<fb::HessianStep>(*plan.calc);
   ASSERT_EQ(hessian.method, fb::HessianMethod::Numerical);
   ASSERT_FALSE(hessian.ladder);
-  const std::optional<fb::MemoryFootprint> fp = hessian.footprint(plan.dims());
-  ASSERT_TRUE(fp.has_value());
-  EXPECT_EQ(fp->device.persistent, 0U);
+  const fb::MemoryFootprint fp = hessian.footprint(plan.dims());
+  EXPECT_EQ(fp.device.persistent, 0U);
 
   fb::FootprintDimensions at = plan.dims();
   at.casscf_nroots = static_cast<std::size_t>(std::max(hessian.casscf.nroots, 1));
@@ -3262,7 +3258,7 @@ void expect_seminumerical_hessian_footprint(const std::string_view tables, const
   const auto whole = [&](const fb::MemoryFootprint &at_a_point) {
     return fb::then(fb::then(fb::drop(reference), fb::drop(at_a_point)), analysis);
   };
-  EXPECT_EQ(*fp, whole(retaken));
+  EXPECT_EQ(fp, whole(retaken));
   const std::size_t without = peak_gap(whole(retaken), whole(point));
 
   std::size_t granularity = 0;
@@ -3270,30 +3266,30 @@ void expect_seminumerical_hessian_footprint(const std::string_view tables, const
     fb::DeviceResources probe{0, {}};
     granularity = fbt::pool_granularity(*probe.device());
   }
-  const std::uint64_t cap = fp->device.peak() - without + fb::kPoolHeadroomBytes +
-                            (granularity * (live + 16)) + reuse_room(fp->device.peak() - without);
+  const std::uint64_t cap = fp.device.peak() - without + fb::kPoolHeadroomBytes +
+                            (granularity * (live + 16)) + reuse_room(fp.device.peak() - without);
   fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
-  res = fb::DeviceResources{0, *fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  res = fb::DeviceResources{0, fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const auto start = std::chrono::steady_clock::now();
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] {
     expect_ran(hessian.run(fb::View<fb::MoleculeOutput>{*plan.molecule}, node));
   });
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-  EXPECT_EQ(res.workspace_high_water().device.workspace, fp->device.workspace);
-  EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
+  EXPECT_EQ(res.pinned_bytes(), fp.pinned.peak());
   std::cout << std::format(
       "[ footprint ] semi-numerical [hessian]: capped at {}: measured {} (G {}), footprint {} "
       "less {} + workspace {}, in {:.1f} s\n",
-      cap, peak.used, peak.granularity, fp->device.persistent + fp->device.scratch, without,
-      fp->device.workspace, seconds);
+      cap, peak.used, peak.granularity, fp.device.persistent + fp.device.scratch, without,
+      fp.device.workspace, seconds);
   std::optional<fbt::FootprintSlack> slack;
   if (without > 0) {
     slack = fbt::FootprintSlack{.bytes = without, .reason = reason};
   }
-  fbt::expect_footprint(peak, {.persistent = fp->device.persistent, .scratch = fp->device.scratch},
+  fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
                         live, slack);
   EXPECT_LE(res.device()->pool_usage().used_high, cap);
 }
@@ -3351,20 +3347,19 @@ void expect_optimize_footprint(const std::string_view tables, const std::size_t 
       System{.xyz = xyz, .basis = "sto-3g", .mode = fb::EriMode::DensityFitting, .tables = tables});
   const auto optimize = planned<fb::OptimizeStep>(*plan.calc);
   ASSERT_EQ(optimize.options.max_steps, 1);
-  const std::optional<fb::MemoryFootprint> fp = optimize.footprint(plan.dims());
-  ASSERT_TRUE(fp.has_value());
-  EXPECT_EQ(fp->device.persistent, fb::molecule_footprint(plan.dims().natoms).device.persistent);
+  const fb::MemoryFootprint fp = optimize.footprint(plan.dims());
+  EXPECT_EQ(fp.device.persistent, fb::molecule_footprint(plan.dims().natoms).device.persistent);
   std::size_t granularity = 0;
   {
     fb::DeviceResources probe{0, {}};
     granularity = fbt::pool_granularity(*probe.device());
   }
-  const std::uint64_t cap = fp->device.peak() + fb::kPoolHeadroomBytes +
-                            (granularity * (live + 16)) + reuse_room(fp->device.peak());
+  const std::uint64_t cap = fp.device.peak() + fb::kPoolHeadroomBytes +
+                            (granularity * (live + 16)) + reuse_room(fp.device.peak());
   fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
-  res = fb::DeviceResources{0, *fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  res = fb::DeviceResources{0, fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const auto start = std::chrono::steady_clock::now();
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] {
     const auto ran = optimize.run(fb::View<>{}, node);
@@ -3373,17 +3368,16 @@ void expect_optimize_footprint(const std::string_view tables, const std::size_t 
   });
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-  EXPECT_EQ(res.workspace_high_water().device.workspace, fp->device.workspace);
-  EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
+  EXPECT_EQ(res.pinned_bytes(), fp.pinned.peak());
   std::cout << std::format("[ footprint ] [optimize]: capped at {}: measured {} (G {}), footprint "
                            "{} + workspace {}, in {:.1f} s\n",
                            cap, peak.used, peak.granularity,
-                           fp->device.persistent + fp->device.scratch, fp->device.workspace,
-                           seconds);
+                           fp.device.persistent + fp.device.scratch, fp.device.workspace, seconds);
   // The optimum's Molecule, the footprint's product, is never built (the
   // walk stops at max_steps), but its share of the peak is the start's,
   // held through every evaluation.
-  fbt::expect_footprint(peak, {.persistent = fp->device.persistent, .scratch = fp->device.scratch},
+  fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
                         live);
   EXPECT_LE(res.device()->pool_usage().used_high, cap);
 }
