@@ -14,6 +14,10 @@ branch, and the series of the ones before it, and reports two things:
   it, and a case run by ctest (a host binary, a RUN_SERIAL case) gets it
   from its entry's own gtest XML (#1016). A case with neither has no
   membership recorded; one over the line is listed apart, as unknown.
+- **A representative over its line:** a family's representative that took
+  more than REPRESENTATIVE_LINE_SECONDS, twice the line (#1243). The gates
+  run every representative, so one that grows is the gate's budget drifting
+  back; it needs a smaller input, as #1207 gave the slowest families.
 - **A step:** a case whose time stepped up against its own recent history,
   past a bar set by the series' spread: the median of its passes over the
   last WINDOW records, plus K robust standard deviations. The deviation is
@@ -44,6 +48,9 @@ from pathlib import Path
 
 SCHEMA = 1
 LINE_SECONDS = 1.5  # test/support/slow_test.h
+# A representative's line (#1243): two fast cases' worth. docs/testing.md
+# "The slow-test rule, enforced" has where the factor comes from.
+REPRESENTATIVE_LINE_SECONDS = 2 * LINE_SECONDS
 WINDOW = 14  # records: two weeks of nights, one weekly among them
 MIN_HISTORY = 7  # passes in the window; half of it, the median's breakdown point
 K = 5.0  # robust standard deviations above the median
@@ -131,6 +138,28 @@ def over_line(record: dict, fams: dict) -> tuple[list[dict], list[dict]]:
     return sorted(over, key=key), sorted(unknown, key=key)
 
 
+def representatives_over(record: dict, fams: dict) -> list[dict]:
+    """Family representatives that passed in more than
+    REPRESENTATIVE_LINE_SECONDS. An exempt family has none, and a
+    representative the record calls slow is not one the gates run."""
+    rep_of = {
+        f.representative: f
+        for f in fams.values()
+        if f.by != "exempt" and f.representative
+    }
+    over = []
+    for c in record.get("cases", []):
+        fam = rep_of.get(c.get("name"))
+        seconds = c.get("seconds")
+        if fam is None or c.get("status") != "pass" or c.get("slow") is True:
+            continue
+        if isinstance(seconds, int | float) and seconds > REPRESENTATIVE_LINE_SECONDS:
+            over.append(
+                {"name": c["name"], "family": fam.name, "seconds": float(seconds)}
+            )
+    return sorted(over, key=lambda r: (-r["seconds"], r["name"]))
+
+
 def _centre(window: list[float]) -> tuple[float, float]:
     median = statistics.median(window)
     return median, statistics.median(abs(x - median) for x in window)
@@ -214,12 +243,14 @@ def check(text: str, host: str, fams: dict) -> dict | None:
         "kind": current.get("kind"),
         "started": current.get("started"),
         "line_seconds": LINE_SECONDS,
+        "representative_line_seconds": REPRESENTATIVE_LINE_SECONDS,
         "window": WINDOW,
         "min_history": MIN_HISTORY,
         "k": K,
         "pooled_relative_sigma": pooled,
         "over_line": over,
         "over_line_unrecorded": unknown,
+        "representatives_over_line": representatives_over(current, fams),
         "steps": stepped,
         "judged": judged,
         "too_short": short,
@@ -251,6 +282,15 @@ def render(findings: dict) -> list[str]:
             f"  {r['seconds']:9.3f} s  {r['name']}  (family {r['family']})"
             for r in f["over_line_unrecorded"]
         ]
+    reps = f.get("representatives_over_line", [])
+    out.append(
+        f"slow-rule: {len(reps)} family representative(s) over"
+        f" {f.get('representative_line_seconds', REPRESENTATIVE_LINE_SECONDS)} s"
+        + (":" if reps else "")
+    )
+    out += [
+        f"  {r['seconds']:9.3f} s  {r['name']}  (family {r['family']})" for r in reps
+    ]
     out.append(
         f"slow-rule: {len(f['steps'])} step(s) past median + {f['k']:g} sigma"
         f" over the last {f['window']} nights (the box's relative sigma"

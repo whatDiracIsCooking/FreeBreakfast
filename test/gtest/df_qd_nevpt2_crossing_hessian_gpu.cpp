@@ -6,9 +6,10 @@
 // - the pair's sum d^2 (E_0 + E_1), c = 1, at the ethylene SA3 MECIs against
 //   #953's G(W^0 + W^1) ladders within 2x their bars, SC and PC, with the
 //   outside-state sum (the third state's) above 10 bars; and away from any
-//   crossing on h2co_skew_ccpvdz_sa3's pair (0, 1), SC and PC, and on the
-//   A1/B2 case h2nb_sto3g_sa2_hessian's, PC along its a1 vibrations (the
-//   fast tier's);
+//   crossing on h2co_skew_ccpvdz_sa3's pair (0, 1), SC and PC, on the
+//   A1/B2 case h2nb_sto3g_sa2_hessian's, PC along its a1 vibrations, and on
+//   h4_631g_sa2's (#1243), SC and PC, and PC over the Cartesian block
+//   kH4Block alone (the fast tier's);
 // - the seam's 2 x 2 (Eq. qd-lowdin) at the MECIs, on its own: each element
 //   symmetric to the solves, the sum of its diagonal the pair's ladder, and
 //   in a basis of the eigenspace turned by 0.3 rad its elements the turn of
@@ -67,6 +68,9 @@ constexpr double kVisibleBars = 10.0;
 constexpr double kSolveTolerance = 1e-10;
 // The angle (rad) the eigenspace's basis is turned by for the invariance.
 constexpr double kTurn = 0.3;
+// h4_631g_sa2's block the fast tier takes (#1243): the Cartesian z of
+// atoms 0, 1 and 2, in its coordinates' order.
+constexpr std::array<std::size_t, 3> kH4Block{2, 5, 8};
 
 double max_abs(std::span<const double> v) {
   return std::ranges::fold_left(
@@ -450,13 +454,13 @@ TEST(HessianDfQdNevpt2Crossing, PcPairSumAwayFromACrossing) {
   expect_pair_sum("h2co_skew_ccpvdz_sa3", true, 0, 1, false);
 }
 
-// The family's representative (#1207), the cheapest pair sum with a ladder:
-// the C2v A1/B2 case, H2N-B STO-3G SA2 (h2nb_sto3g_sa2_hessian, #1093), PC's
+// The C2v A1/B2 case, H2N-B STO-3G SA2 (h2nb_sto3g_sa2_hessian, #1093), PC's
 // pair (0, 1), an ensemble with no outside state, along its three totally
-// symmetric vibrations, against that block of its PC ladders.
+// symmetric vibrations, against that block of its PC ladders (#1207's
+// representative, until #1243's smaller case).
 TEST(HessianDfQdNevpt2Crossing, PcPairSumOfTheA1B2CaseAlongTheA1Vibrations) {
   FBF_REQUIRE_GPU();
-  FBF_FAMILY_REPRESENTATIVE();
+  FBF_SKIP_IF_FAST_TESTS();
   const std::string name = "h2nb_sto3g_sa2_hessian";
   const fb::json &doc = fixture(name);
   const auto vectors = matrix(doc.at("coordinates").at("vectors"));
@@ -471,6 +475,29 @@ TEST(HessianDfQdNevpt2Crossing, PcPairSumOfTheA1B2CaseAlongTheA1Vibrations) {
     q.insert(q.end(), vectors[at].begin(), vectors[at].end());
   }
   expect_pair_sum(name, true, 0, 1, false, q, block);
+}
+
+// The smallest C1 case (#1243), h4_631g_sa2 (two H2 units, 6-31G, CAS(2,2),
+// SA2 at equal weights), pair (0, 1) over every coordinate, SC and PC.
+TEST(HessianDfQdNevpt2Crossing, PairSumsOfTheH4Case) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_pair_sum("h4_631g_sa2", false, 0, 1, false);
+  expect_pair_sum("h4_631g_sa2", true, 0, 1, false);
+}
+
+// The family's representative (#1243): h4_631g_sa2's PC pair (0, 1) over
+// the Cartesian coordinates kH4Block, against that block of its ladder.
+TEST(HessianDfQdNevpt2Crossing, PcPairSumOfTheH4CaseOnABlock) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  const fb::json &doc = fixture("h4_631g_sa2");
+  std::vector<double> q;
+  for (const std::size_t i : kH4Block) {
+    const auto row = doc.at("coordinates").at("vectors").at(i).get<std::vector<double>>();
+    q.insert(q.end(), row.begin(), row.end());
+  }
+  expect_pair_sum("h4_631g_sa2", true, 0, 1, false, q, kH4Block);
 }
 
 // c for element (X, Y) of the 2 x 2 in the basis (cos t R_P + sin t R_Q,

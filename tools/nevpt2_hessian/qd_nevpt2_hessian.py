@@ -146,7 +146,11 @@ ROOT_GAP_FLOOR = 1e-8
 BINARY = (
     ROOT / "build" / "tools" / "qd_nevpt2_hessian" / "free-breakfast-qd-nevpt2-hessian"
 )
-BASIS_FILES = {"cc-pvdz": "data/basis/cc-pVDZ.json", "sto-3g": "data/basis/sto-3g.json"}
+BASIS_FILES = {
+    "cc-pvdz": "data/basis/cc-pVDZ.json",
+    "sto-3g": "data/basis/sto-3g.json",
+    "6-31g": "data/basis/6-31g.json",
+}
 AUX = ("cc-pVDZ-JKFIT", "data/aux_basis/cc-pVDZ-JKFIT.json")
 
 # The ladder's verdicts, #803's: the window about 16 a judged ratio must lie
@@ -207,6 +211,35 @@ CASES = [
         },
         "h": {"sc": 0.0003125},
         "pairs": [[0, 1], [0, 2], [1, 2]],
+    },
+    # The fast tier's case (#1243): the smallest C1 SA2 whose analytic QD
+    # Hessian has every part (#1207 timed the cc-pVDZ and H2N-B cases at 6 to
+    # 50 s, their cost the steps run over every Cartesian coordinate). Two
+    # stretched, twisted H2 units, no symmetry (bohr), 6-31G: a core of one,
+    # CAS(2,2) over the frontier sigma and sigma*, five virtuals, so the
+    # virtual rotations give kappa_oo its rows (STO-3G's one virtual has
+    # none). PC at twice the C1 cases' step: at 2.5e-3 its pair's column
+    # along H1 y missed on the finest rung alone, noise past the restarts'
+    # (README). Its reference point is held to PySCF's, qd_pyscf_point.py's
+    # `<name>.pyscf.json`, written first.
+    {
+        "name": "h4_631g_sa2",
+        "system": {
+            "atoms": [
+                ["H", [0.0, 0.0, -0.85]],
+                ["H", [0.05, 0.1, 0.85]],
+                ["H", [2.9, 0.4, -0.3]],
+                ["H", [3.1, 1.6, 0.6]],
+            ],
+            "basis": "6-31g",
+            "ncas": 2,
+            "nelecas": 2,
+            "active": None,
+            "weights": [0.5, 0.5],
+        },
+        "pyscf": True,
+        "h": {"sc": 0.0003125, "pc": 0.005},
+        "pairs": [[0, 1]],
     },
 ]
 
@@ -618,7 +651,10 @@ def guard(runs: list[tuple[dict, list[str]]]) -> dict:
         "gradient_norm": max(p["gradient_norm"] for p in pts),
         "rerun_gradient_norm": max(p["rerun"]["gradient_norm"] for p in pts),
         "rerun_energy": max(p["rerun"]["energy"] for p in pts),
-        "core_gap": min(p["core_gap"] for p in pts),
+        # None on a core of one (h4_631g_sa2): no pair to be apart.
+        "core_gap": min(
+            (p["core_gap"] for p in pts if p["core_gap"] is not None), default=None
+        ),
         "virtual_gap": min(p["virtual_gap"] for p in pts),
         "points": len(pts),
     }
@@ -728,11 +764,13 @@ def agreement(case: dict, runs: list[tuple[dict, list[str]]]) -> dict:
     """The reference point's energies against qd_nevpt2.json's goldens (the
     CASSCF roots, SC's and PC's H_eff eigenvalues), or, for a case with its
     own `system`, against qd_weight_search.py's PySCF point at its weights
-    (the CASSCF roots and SC's): a different CASSCF solution misses by
-    millihartree. A crossing case's is the pair's QD energies against its
-    MECI's last evaluation, qd_meci.py's record of the [optimize] run (which
-    records no CASSCF energies). A symmetric case's is its coupling record's
-    reference point, the same driver's (the CASSCF roots, SC's and PC's)."""
+    (the CASSCF roots and SC's), or, for one marked `pyscf`, against
+    qd_pyscf_point.py's (the CASSCF roots, SC's and PC's): a different CASSCF
+    solution misses by millihartree. A crossing case's is the pair's QD
+    energies against its MECI's last evaluation, qd_meci.py's record of the
+    [optimize] run (which records no CASSCF energies). A symmetric case's is
+    its coupling record's reference point, the same driver's (the CASSCF
+    roots, SC's and PC's)."""
     if "meci" in case:
         final = meci_entry(case)["final"]
         out = {}
@@ -752,6 +790,10 @@ def agreement(case: dict, runs: list[tuple[dict, list[str]]]) -> dict:
         doc = json.loads((OUT / f"{case['coupling']}.json").read_text())
         entry = doc["reference"]
         golden = {scheme: sorted(entry[scheme]["energies"]) for scheme in ("sc", "pc")}
+    elif case.get("pyscf"):
+        # qd_pyscf_point.py's PySCF point: the CASSCF roots, SC's and PC's.
+        entry = json.loads((OUT / f"{case['name']}.pyscf.json").read_text())
+        golden = {scheme: entry[f"{scheme}_energies"] for scheme in ("sc", "pc")}
     elif "system" in case:
         doc = json.loads(SEARCH.read_text())
         (entry,) = [
@@ -814,6 +856,9 @@ def record(
             "source": (
                 f"{case['coupling']}.json (the coupling case's system)"
                 if "coupling" in case
+                else f"{case['name']}.pyscf.json (tools/nevpt2_hessian/"
+                "qd_pyscf_point.py)"
+                if case.get("pyscf")
                 else "tools/nevpt2_hessian/qd_weight_search.py"
                 if "system" in case
                 else f"{MECI.name} {case['meci']} (tools/nevpt2_hessian/qd_meci.py)"
@@ -1245,7 +1290,10 @@ def coupling_guard(result: dict, schemes: list[str]) -> dict:
         "subspace": max(p["subspace"] for p in pts),
         "ci": max(p["ci"] for p in pts),
         "gradient_norm": max(p["gradient_norm"] for p in pts),
-        "core_gap": min(p["core_gap"] for p in pts),
+        # None on a core of one (h4_631g_sa2): no pair to be apart.
+        "core_gap": min(
+            (p["core_gap"] for p in pts if p["core_gap"] is not None), default=None
+        ),
         "virtual_gap": min(p["virtual_gap"] for p in pts),
         "points": len(pts),
     }

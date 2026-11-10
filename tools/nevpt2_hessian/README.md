@@ -131,3 +131,17 @@ tools/nevpt2_hessian/qd_meci.py [--binary build/src/free-breakfast]
 tools/nevpt2_hessian/qd_nevpt2_hessian.py \
     --only ethylene_ccpvdz_sa3_sc_meci ethylene_ccpvdz_sa3_pc_meci
 ```
+
+## The fast tier's case (#1243)
+
+`qd_pyscf_point.py` writes the PySCF reference point of each `CASES` entry
+marked `"pyscf"` (`h4_631g_sa2`):
+`test/gtest/data/qd_nevpt2_hessian/<case>.pyscf.json`, which that case's
+`reference.agreement` is held to, so it runs first. Needs the `tools` group
+(PySCF); seconds, no GPU.
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    tools/nevpt2_hessian/qd_pyscf_point.py
+tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h4_631g_sa2
+```

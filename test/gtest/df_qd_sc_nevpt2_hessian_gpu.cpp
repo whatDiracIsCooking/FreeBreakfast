@@ -8,6 +8,9 @@
 //   #1055), and h2co_skew_ccpvdz_sa3_w424 (0.4/0.2/0.4), state K = 1: every
 //   element within 2x the fixture's bar; each part's largest element in bars
 //   (the visibility rule), theta's share at equal weights, and the reports;
+// - h4_631g_sa2 (C1, SA2 at equal weights, #1243), the same, both states
+//   over every coordinate, and state 0 over the Cartesian block kH4Block
+//   alone (the fast tier's);
 // - h2nb_sto3g_sa2 (C2v A1/B2, its symmetry-adapted coordinates): #953's SC
 //   expected-refusal set is empty, so no block is refused on state 0 (the
 //   rigid translations, round-off directions, break no symmetry); no element
@@ -16,7 +19,7 @@
 //   within 2x the bar of h2nb_sto3g_sa2_hessian's state 0 (#1093: every
 //   coordinate but B1 1, B2 1 and B2 2, along which SC's surface crosses
 //   over and its reference does not ladder), and its a1 vibrations' block on
-//   its own (the fast tier's); and term (ii)'s h_01 along the b2 vibrations
+//   its own; and term (ii)'s h_01 along the b2 vibrations
 //   is held to the fixture's C_01 ladders.
 //   State 1 is refused by SC's conditioning rule (#1102): root 1's Si
 //   tuples keep N of 1e-10 and 3e-11, whose Hessian spreads run to run past
@@ -64,6 +67,9 @@ constexpr double kConvTol = 1e-12;
 constexpr double kBars = 2.0;
 // The visibility rule: each part has an element above this many bars.
 constexpr double kVisibleBars = 10.0;
+// h4_631g_sa2's block the fast tier takes (#1243): the Cartesian z of
+// atoms 0, 1 and 2, in its coordinates' order.
+constexpr std::array<std::size_t, 3> kH4Block{2, 5, 8};
 // The CP solve's unreduced residual (df_sacasscf_cp's columns sit near 1e-10).
 constexpr double kCpResidual = 1e-9;
 // What no part determines, the asymmetry and an element C2v forbids, is the
@@ -380,6 +386,22 @@ std::vector<std::vector<double>> matrix(const fb::json &m) {
   return m.get<std::vector<std::vector<double>>>();
 }
 
+// The block of @p m at the places @p block (both ways), all of it when empty.
+std::vector<std::vector<double>> matrix(const fb::json &m, std::span<const std::size_t> block) {
+  auto whole = matrix(m);
+  if (block.empty()) {
+    return whole;
+  }
+  std::vector<std::vector<double>> out;
+  for (const std::size_t i : block) {
+    auto &row = out.emplace_back();
+    for (const std::size_t j : block) {
+      row.push_back(whole.at(i).at(j));
+    }
+  }
+  return out;
+}
+
 // The largest |part| in bars of the fixture's elements (k x k column-major).
 double in_bars(std::span<const double> part, const std::vector<std::vector<double>> &bar) {
   double worst = 0.0;
@@ -395,9 +417,11 @@ double in_bars(std::span<const double> part, const std::vector<std::vector<doubl
 // theta^A's contribution at equal weights, where it is Eq. qd-theta's closed
 // form and in no solve: E_rho's curvature along the rotations alone,
 // sum_{r<s} 2 (rho_r - rho_s) (E_s - E_r) theta^A_sr theta^B_sr, one block
-// of e_sa that exists only through theta, in the fixture's bars.
+// of e_sa that exists only through theta, in the fixture's bars; over the
+// Cartesian coordinates @p block (@p bar's), every one when empty.
 void expect_theta_visible(const Reference &ref, const fb::hessian::QdScNevpt2Terms &h,
-                          const std::vector<std::vector<double>> &bar, const std::string &label) {
+                          const std::vector<std::vector<double>> &bar, const std::string &label,
+                          std::span<const std::size_t> block = {}) {
   const std::vector<double> &weights = ref.solution->weights;
   const auto cp = fb::hessian::df_sacasscf_cp(
       ref.res(), ref.molecule(), ref.basis(), ref.classes(), ref.fit().aux, ref.h(), ref.fit().b,
@@ -411,22 +435,23 @@ void expect_theta_visible(const Reference &ref, const fb::hessian::QdScNevpt2Ter
   ASSERT_TRUE(tangents.has_value()) << tangents.error().message;
   const std::size_t n = weights.size();
   const std::size_t pairs = n * (n - 1) / 2;
-  const std::size_t k = 3 * ref.basis().natoms();
+  const std::size_t k = block.empty() ? 3 * ref.basis().natoms() : block.size();
+  const auto x = [&](const std::size_t a) { return block.empty() ? a : block[a]; };
   const std::vector<double> &e = ref.solution->roots.energies;
-  std::vector<double> block(k * k, 0.0);
+  std::vector<double> part(k * k, 0.0);
   for (std::size_t b = 0; b < k; ++b) {
     for (std::size_t a = 0; a < k; ++a) {
       std::size_t at = 0;
       for (std::size_t r = 0; r < n; ++r) {
         for (std::size_t s = r + 1; s < n; ++s, ++at) {
-          block[a + (k * b)] += 2.0 * (h.rho[r] - h.rho[s]) * (e[s] - e[r]) *
-                                tangents->theta[at + (pairs * a)] *
-                                tangents->theta[at + (pairs * b)];
+          part[a + (k * b)] += 2.0 * (h.rho[r] - h.rho[s]) * (e[s] - e[r]) *
+                               tangents->theta[at + (pairs * x(a))] *
+                               tangents->theta[at + (pairs * x(b))];
         }
       }
     }
   }
-  const double bars = in_bars(block, bar);
+  const double bars = in_bars(part, bar);
   std::cout << std::format("[ visible  ] {} theta (E_rho's theta-theta block) {:.3e} bars (rule "
                            "{:g}), max |theta| {:.3f}\n",
                            label, bars, kVisibleBars, tangents->max_theta);
@@ -435,7 +460,8 @@ void expect_theta_visible(const Reference &ref, const fb::hessian::QdScNevpt2Ter
 
 // State @p state's analytic Hessian of fixture @p name against its SC
 // reference: every element within kBars, each part visible, the reports.
-void expect_matches(const std::string &name, const std::int32_t state) {
+void expect_matches(const std::string &name, const std::int32_t state,
+                    std::span<const std::size_t> block = {}) {
   const fb::json &doc = fixture(name);
   const Reference &ref = reference(start_of(doc, name));
   ASSERT_TRUE(ref.solution.has_value());
@@ -447,12 +473,18 @@ void expect_matches(const std::string &name, const std::int32_t state) {
   }
   ASSERT_NE(want, nullptr) << name << " has no state " << state;
   const auto start = std::chrono::steady_clock::now();
-  const auto h = ref.hessian(*ref.solution, state);
+  // The block's rows of the fixture's (Cartesian) coordinates.
+  std::vector<double> q;
+  for (const std::size_t i : block) {
+    const auto row = doc.at("coordinates").at("vectors").at(i).get<std::vector<double>>();
+    q.insert(q.end(), row.begin(), row.end());
+  }
+  const auto h = ref.hessian(*ref.solution, state, q);
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
   ASSERT_TRUE(h.has_value()) << h.error().message;
-  const auto hessian = matrix(want->at("hessian"));
-  const auto bar = matrix(want->at("bar"));
+  const auto hessian = matrix(want->at("hessian"), block);
+  const auto bar = matrix(want->at("bar"), block);
   const std::size_t k = hessian.size();
   ASSERT_EQ(h->hessian.size(), k * k);
   const std::string label = std::format("{} K={}", name, state);
@@ -505,7 +537,7 @@ void expect_matches(const std::string &name, const std::int32_t state) {
   EXPECT_LE(h->asymmetry, solve_bar(*h)) << label;
   EXPECT_GT(h->term_ii_share, 0.0) << label;
   if (equal) {
-    expect_theta_visible(ref, *h, bar, label);
+    expect_theta_visible(ref, *h, bar, label, block);
   }
 }
 
@@ -702,14 +734,13 @@ TEST(HessianDfQdScNevpt2, CoupledA1B2RefusesStateOne) {
   }
 }
 
-// The family's representative (#1207): the cheapest state Hessian with a
-// ladder, the A1/B2 case's state 0 along its three totally symmetric
-// vibrations alone (in CoupledA1B2RefusesStateOne's laddered block, without
-// the rest of that case), every element within kBars of
-// h2nb_sto3g_sa2_hessian's SC ladders.
+// The A1/B2 case's state 0 along its three totally symmetric vibrations
+// alone (in CoupledA1B2RefusesStateOne's laddered block, without the rest of
+// that case), every element within kBars of h2nb_sto3g_sa2_hessian's SC
+// ladders: #1207's representative, until #1243's smaller case.
 TEST(HessianDfQdScNevpt2, CoupledA1B2StateZeroMatchesAlongTheA1Vibrations) {
   FBF_REQUIRE_GPU();
-  FBF_FAMILY_REPRESENTATIVE();
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &doc = fixture("h2nb_sto3g_sa2_hessian");
   const Reference &ref = reference(start_of(doc, "h2nb_sto3g_sa2"));
   ASSERT_TRUE(ref.solution.has_value());
@@ -756,6 +787,24 @@ TEST(HessianDfQdScNevpt2, CoupledA1B2StateZeroMatchesAlongTheA1Vibrations) {
                            worst, kBars, rows, h->asymmetry, solve_bar(*h), seconds);
   EXPECT_LE(h->cp_residual, kCpResidual);
   EXPECT_LE(h->asymmetry, solve_bar(*h));
+}
+
+// The smallest C1 case (#1243), h4_631g_sa2 (two H2 units, 6-31G,
+// CAS(2,2), SA2 at equal weights): both states over every coordinate.
+TEST(HessianDfQdScNevpt2, MatchesTheH4Fixture) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_matches("h4_631g_sa2", 0);
+  expect_matches("h4_631g_sa2", 1);
+}
+
+// The family's representative (#1243): h4_631g_sa2's state 0 over the
+// Cartesian coordinates kH4Block, against that block of its ladder, with
+// every part visible and theta's share in it.
+TEST(HessianDfQdScNevpt2, MatchesTheH4FixtureStateZeroOnABlock) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  expect_matches("h4_631g_sa2", 0, kH4Block);
 }
 
 // The refusals before anything runs, each on a constructed input.

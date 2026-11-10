@@ -110,6 +110,60 @@ written for this case; PC's unequal-weight reference is
 | `chosen` | the case laddered |
 | `candidates` | per weighting: `weights`, `casscf_energies`, `casscf_gaps`, `next_root_gap`, `inactive_gaps` (`core`, `virtual`: the smallest SA-canonical spacing), `sc_energies` (H_eff's eigenvalues), `smallest_kept` (per class but Sijrs, per root, the smallest kept `norm` and the `small` count) |
 
+## The fast tier's case (#1243)
+
+`h4_631g_sa2.json`: the smallest C1 case with every part of the analytic QD
+Hessian, for the representatives of the three QD Hessian families
+(`df_qd_sc_nevpt2_hessian_gpu`, `df_qd_pc_nevpt2_hessian_gpu`,
+`df_qd_nevpt2_crossing_hessian_gpu`). #1207 timed the analytic QD Hessian at
+6 to 50 s on the cases above, most of it in steps that run over every
+Cartesian coordinate whatever block is asked for, so the
+cost is the atoms', and four atoms is the floor for a C1 case. Two stretched,
+twisted H₂ units (bonds 1.70 and 1.51 bohr), no symmetry, 6-31G /
+cc-pVDZ-JKFIT, CAS(2,2) over the RHF's frontier σ and σ*, SA2 at equal
+weights: a core of one and five virtuals. In STO-3G the one virtual leaves
+κ_oo no rows; in 6-31G each part of the Hessian is visible, theta's share
+too, on the block the tests take. The roots are 0.368 Eh apart (H_eff 0.379
+SC and PC), the third root 0.374 above the second, and the closest
+virtuals 0.084 Eh apart (0.082 over every point).
+
+| scheme, h (bohr) | quantities | σ_g | floor (every bar) | worst asymmetry |
+|---|---|---|---|---|
+| SC, 3.125e-4 | states 0, 1; pair (0, 1) | 5.9e-14 to 1.9e-13 | 2.2e-8 to 7.0e-8 | 8.4e-10 |
+| PC, 5e-3 | states 0, 1; pair (0, 1) | 5.7e-14 to 1.9e-13 | 1.3e-9 to 4.4e-9 | 1.4e-10 |
+
+Every element of every ladder settles inside its floor on the run written:
+the largest finer difference is 0.12 floors, the largest coarser one 0.46
+(the PC pair). No ratio is judged and every bar is its floor. Guard, worst
+over the 212 points: prediction 0.081 |dR|², active space 1.6e-5, CI 3.0e-5.
+A core of one has no core pair, so `inactive_gaps.core` and
+`guard.core_gap` are null.
+
+**PC's step is 5e-3, twice the C1 cases'.** At 2.5e-3 the PC pair's column
+along H1 y missed on its finest rung only: D(h/2) − D(h/4) of 3.4e-9 to
+4.6e-9 against a floor of 2.6e-9 (ratios 0.004 to 0.006, and those four
+elements asymmetric by up to 1.004 bars), with D(h) − D(h/2) at 2e-11.
+That is noise at the ±h/4 points past what the restarts measured, which a
+step twice as long halves; both states settled at 2.5e-3 too. The guard
+holds at 5e-3 (the CI overlap's worst miss is 3.0e-5 of its 1e-3).
+
+**The reference point** is held to PySCF's: `h4_631g_sa2.pyscf.json`,
+written by `tools/nevpt2_hessian/qd_pyscf_point.py` over
+`tools/emit/qd_nevpt2_reference.py`'s polished SA-CASSCF and SC- and
+PC-QD-NEVPT2 (`casscf_energies`, `sc_energies`, `pc_energies`, the
+`inactive_gaps` and `next_root_gap`). The tree's matches it to 1.4e-13
+(CASSCF), 1.6e-13 (SC) and 1.6e-13 (PC) (`reference.agreement`).
+
+The keys are the Keys table's.
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    tools/nevpt2_hessian/qd_pyscf_point.py          # seconds, no GPU
+tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h4_631g_sa2   # GPU
+```
+
+About 75 s on the gfx1200 (HIP), both schemes.
+
 ## The noise floor
 
 σ_g per quantity is measured: the reference geometry re-converged from the
