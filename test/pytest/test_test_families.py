@@ -342,7 +342,7 @@ def test_parse_metrics_filters_host_kind_and_status():
         ),
         record(host="vm", cases=[{"name": "A.b", "status": "pass", "seconds": 9.0}]),
         record(
-            kind="shadow", cases=[{"name": "A.b", "status": "pass", "seconds": 9.0}]
+            kind="hourly", cases=[{"name": "A.b", "status": "pass", "seconds": 9.0}]
         ),
         record(schema=2, cases=[{"name": "A.b", "status": "pass", "seconds": 9.0}]),
         "not json",
@@ -360,7 +360,7 @@ def test_parse_slow_takes_the_latest_record_on_this_host():
         record(cases=[case("A.gated", True), case("A.ungated", True)]),
         record(cases=[case("A.ungated", False), case("A.unknown")]),
         record(host="vm", cases=[case("A.gated", False)]),
-        record(kind="shadow", cases=[case("A.gated", False)]),
+        record(kind="hourly", cases=[case("A.gated", False)]),
         "not json",
     ]
     assert tf.parse_slow("\n".join(lines), "box") == {
