@@ -1,6 +1,7 @@
 // The footprints (#1044) of the NEVPT2 library routines (#1052): nevpt2::rdms
 // and rdms_adjoint, mo_blocks, h2e, slab and class_energies, their reverse
-// passes, and the SC and PC forward tangents (#1182, #1183). Each is held to
+// passes, the SC and PC forward tangents (#1182, #1183) and the SC
+// Hessian-vector products (#1180). Each is held to
 // the pool peak of one call by test/support/pool_footprint.h's two bars,
 // sound (the measured peak is no more than the footprint's) and tight
 // (within G x A). The adaptive routines, rdms' tile and the classes' slab
@@ -997,6 +998,157 @@ TEST_P(Nevpt2PcEffectiveHamiltonianTangentFootprint, SoundAndTight) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcEffectiveHamiltonianTangentFootprint,
+                         ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                                              std::string{"n2_ccpvdz_cas88_df"}),
+                                            ::testing::Values(1, 0)),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param));
+                         });
+
+// ---------------------------------------------------------------------------
+// The SC Hessian-vector products (#1180): class_energies_hvp and
+// sc_effective_hamiltonian_hvp
+// ---------------------------------------------------------------------------
+
+// The allocations live at a product's peak, at most: the state's identity,
+// one rung's shifted inputs (twelve fields and B's five blocks) beside a
+// tangent's peak (kTangentLive), or line_derivative's eleven scratch bars
+// and the shifted inputs beside a fixed walk's (block bars, a class's
+// blocks and slabs).
+constexpr std::size_t kHvpLive = kTangentLive + 18;
+
+class Nevpt2ClassEnergiesHvpFootprint
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t, bool>> {};
+
+// class_energies_hvp along two directions (every field and B; the RDMs
+// alone), with or without partners (the two swapped, so the RDMs' direction,
+// which populates no empty perturber, partners the other: no refusal), at a
+// batch of one and whole. N₂'s symmetry empties perturbers in every case,
+// so the second tables run, as the footprint counts them.
+TEST_P(Nevpt2ClassEnergiesHvpFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  const auto [name, batch, partnered] = GetParam();
+  // CAS(4,4) is the family's representative; its partnered batch of one
+  // (2.2 s on the 3080) and CAS(8,8) (7-14 s) are past slow_test.h's rule.
+  if (name != "n2_ccpvdz_cas44_df" || (batch == 1 && partnered)) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  const Directions d = two_directions(inputs, b);
+  const std::vector<nevpt2::EnergyDirection> partners =
+      partnered ? std::vector{d.along[1], d.along[0]} : std::vector<nevpt2::EnergyDirection>{};
+  const std::array<Bars, 2> bars{every_bar(inputs, b), every_bar(inputs, b)};
+  const std::array<nevpt2::EnergyBars, 2> each{bars[0].bars, bars[1].bars};
+  const fb::MemoryFootprint fp = nevpt2::class_energies_hvp_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, g.nelecas, batch, d.along, partners);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  fb::DeviceResources res{0};
+  expect_routine_footprint(res, fp, kHvpLive, [&] {
+    const auto p = nevpt2::class_energies_hvp(res, b, g.in, batch, d.along, each, partners);
+    ASSERT_TRUE(p) << p.error().message;
+    std::size_t populated = 0;
+    for (const auto &u : p->populated) {
+      populated += static_cast<std::size_t>(std::ranges::fold_left(u, 0, std::plus{}));
+    }
+    EXPECT_GT(populated, 0U) << "no empty perturber populated";
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2ClassEnergiesHvpFootprint,
+                         ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                                              std::string{"n2_ccpvdz_cas88_df"}),
+                                            ::testing::Values(1, 0), ::testing::Bool()),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param)) +
+                                  (std::get<2>(info.param) ? "_partnered" : "");
+                         });
+
+class Nevpt2ScEffectiveHamiltonianHvpFootprint
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
+
+// sc_effective_hamiltonian_hvp over two states, the tangent test's pairs and
+// directions, at a batch of one and whole: every bar wanted, a transition
+// that allocates nothing (its footprint empty), and H̄ of trace 1.2, so
+// Sijrs's bars go through its scaled buffers. Both kets are the case's
+// state, so every empty tuple is empty for the other bra too, and the pair
+// second tables run, as the footprint counts them at the most.
+TEST_P(Nevpt2ScEffectiveHamiltonianHvpFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  constexpr std::int32_t kStates = 2;
+  const auto [name, batch] = GetParam();
+  // CAS(4,4) whole is the family's representative (0.9 s on the 3080); its
+  // batch of one (3.5 s) and CAS(8,8) (15-17 s) are past slow_test.h's rule.
+  if (name != "n2_ccpvdz_cas44_df" || batch == 1) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  Directions d;
+  d.blocks.reserve(1);
+  std::vector<nevpt2::EnergyInputs> pairs(kStates * kStates, g.in);
+  for (std::int32_t i = 0; i < kStates; ++i) {
+    for (std::int32_t j = 0; j < kStates; ++j) {
+      if (i != j) {
+        nevpt2::EnergyInputs &p = pairs[static_cast<std::size_t>((i * kStates) + j)];
+        random_rdms(inputs, d, p, b.ncas, false, 500 + (10 * ((i * kStates) + j)));
+        p.f3ca = nullptr;
+        p.f3ac = nullptr;
+      }
+    }
+  }
+  nevpt2::EnergyDirection shared;
+  random_shared(inputs, d, shared.in, b, 600);
+  shared.blocks = random_blocks(inputs, d, b, 700);
+  std::vector<nevpt2::EnergyDirection> along;
+  for (std::int32_t u = 0; u < 2; ++u) {
+    for (std::int32_t p = 0; p < kStates * kStates; ++p) {
+      nevpt2::EnergyDirection e = u == 0 ? shared : nevpt2::EnergyDirection{};
+      random_rdms(inputs, d, e.in, b.ncas, p % (kStates + 1) == 0, 800 + (10 * ((u * 4) + p)));
+      along.push_back(e);
+    }
+  }
+  // Per direction, the first state's every bar and the second's own RDM
+  // bars beside the first's shared ones.
+  std::vector<Bars> held;
+  std::vector<nevpt2::EnergyBars> bars;
+  for (std::int32_t u = 0; u < 2; ++u) {
+    held.push_back(every_bar(inputs, b));
+    held.push_back(every_bar(inputs, b));
+    nevpt2::EnergyBars first = held[held.size() - 2].bars;
+    nevpt2::EnergyBars second = first;
+    const nevpt2::EnergyBars &own = held.back().bars;
+    second.dm1 = own.dm1;
+    second.dm2 = own.dm2;
+    second.dm3 = own.dm3;
+    second.f3ca = own.f3ca;
+    second.f3ac = own.f3ac;
+    bars.push_back(first);
+    bars.push_back(second);
+  }
+  const std::vector<double> hbar{0.7, 0.2, 0.2, 0.5};
+  const fb::MemoryFootprint fp = nevpt2::sc_effective_hamiltonian_hvp_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, g.nelecas, kStates, batch, hbar, along, {},
+      fb::MemoryFootprint{});
+  EXPECT_EQ(fp.device.persistent, 0U);
+  fb::DeviceResources res{0};
+  expect_routine_footprint(res, fp, kHvpLive, [&] {
+    const auto p = nevpt2::sc_effective_hamiltonian_hvp(
+        res, b, pairs, hbar, batch, along, bars,
+        [](std::int64_t, std::int64_t, std::int64_t, const nevpt2::EnergyBars &) -> fb::Status {
+          return {};
+        });
+    ASSERT_TRUE(p) << p.error().message;
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2ScEffectiveHamiltonianHvpFootprint,
                          ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
                                                               std::string{"n2_ccpvdz_cas88_df"}),
                                             ::testing::Values(1, 0)),

@@ -2521,6 +2521,26 @@ struct ScWalkBytes {
   }
 };
 
+// A state's own adjoint walk over its block bars, as sc_couplings_adjoint's
+// part 3 and fixed_adjoint take it: every class's walk, a one-function
+// class's bars uploaded (Srs's when @p srs, Sij's when @p sij), and the
+// sweep (every bar wanted): sweep_dyall's scoped buffers, then
+// sweep_metrics' dm2b bar.
+void own_adjoint_walks(ScWalkBytes &w, const bool srs, const bool sij) {
+  const auto n = static_cast<size_t>(w.ncas);
+  const size_t n2 = sizeof(double) * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  for (const auto &[k, walk] : kScWalks) {
+    w.walk(k, true, true);
+    if ((k == 5 && srs) || (k == 6 && sij)) {
+      w.h->walk(2 * n4);
+    }
+  }
+  w.h->walk(std::max({n4, 2 * n2, 2 * n4, n2, n4 + (2 * n6), (2 * n4), n4 + (2 * n6)}));
+  w.h->walk(n4);
+}
+
 MemoryFootprint sc_effective_hamiltonian_adjoint_footprint(const int32_t naux, const int32_t ncore,
                                                            const int32_t ncas, const int32_t nvirt,
                                                            const int32_t nelecas,
@@ -2604,15 +2624,7 @@ MemoryFootprint sc_effective_hamiltonian_adjoint_footprint(const int32_t naux, c
   //    classes' bars uploaded; the sweep.
   for (size_t j = 0; j < states; ++j) {
     h.take(metric_bars + dyall_bars);
-    for (const size_t k : kWalks) {
-      w.walk(k, true, true);
-      if ((k == 5 && srs_one) || (k == 6 && sij_one)) {
-        h.walk(2 * n4);
-      }
-    }
-    // sweep_dyall's scoped buffers, then sweep_metrics' dm2b bar.
-    h.walk(std::max({n4, 2 * n2, 2 * n4, n2, n4 + (2 * n6), (2 * n4), n4 + (2 * n6)}));
-    h.walk(n4);
+    own_adjoint_walks(w, srs_one, sij_one);
     h.give(metric_bars + dyall_bars);
   }
   // Sijrs: its accumulators and its slab with its bar.
@@ -3252,6 +3264,34 @@ MemoryFootprint class_energies_tangent_footprint(const int32_t naux, const int32
   return {.device = {.scratch = h.peak, .workspace = 2 * region}};
 }
 
+// pair_tables' peak along @p da and @p db's moves: both entries' identity,
+// the tangent over (M, N) with its steps and B + s Ḃ, (N, M)'s steps, and
+// every class's pair walk along both sides' directions.
+size_t pair_tables_bytes(const int32_t naux, const int32_t ncore, const int32_t ncas,
+                         const int32_t nvirt, const int32_t batch,
+                         const std::vector<TangentMoves> &da, const std::vector<TangentMoves> &db) {
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  HeldBytes p;
+  ScWalkBytes w{.naux = naux,
+                .ncore = ncore,
+                .ncas = ncas,
+                .nvirt = nvirt,
+                .batch = batch,
+                .h = &p,
+                .moves = {&da, &db}};
+  p.take(2 * kD * n * n);
+  p.walk(kD * ((3 * da.size()) + 3));
+  if (std::ranges::any_of(da, &TangentMoves::slabs)) {
+    p.take(shifted_blocks_bytes(naux, ncore, ncas, nvirt));
+  }
+  p.walk(kD * ((3 * db.size()) + 3));
+  for (const auto &[k, walk] : kScWalks) {
+    w.walk(k, false, false);
+  }
+  return p.peak;
+}
+
 MemoryFootprint sc_effective_hamiltonian_tangent_footprint(
     const int32_t naux, const int32_t ncore, const int32_t ncas, const int32_t nvirt,
     const int32_t nelecas, const int32_t nstates, const int32_t batch,
@@ -3294,26 +3334,9 @@ MemoryFootprint sc_effective_hamiltonian_tangent_footprint(
   //    class's pair walk along both sides' directions.
   for (size_t mi = 0; mi < ns; ++mi) {
     for (size_t ni = mi + 1; ni < ns; ++ni) {
-      const std::vector<TangentMoves> da = tangent_moves(ncas, along((mi * ns) + ni));
-      const std::vector<TangentMoves> db = tangent_moves(ncas, along((ni * ns) + mi));
-      HeldBytes p;
-      ScWalkBytes w{.naux = naux,
-                    .ncore = ncore,
-                    .ncas = ncas,
-                    .nvirt = nvirt,
-                    .batch = batch,
-                    .h = &p,
-                    .moves = {&da, &db}};
-      p.take(2 * kD * n * n);
-      p.walk(kD * ((3 * m) + 3));
-      if (std::ranges::any_of(da, &TangentMoves::slabs)) {
-        p.take(shifted_blocks_bytes(naux, ncore, ncas, nvirt));
-      }
-      p.walk(kD * ((3 * m) + 3));
-      for (const auto &[k, walk] : kScWalks) {
-        w.walk(k, false, false);
-      }
-      h.walk(p.peak);
+      h.walk(pair_tables_bytes(naux, ncore, ncas, nvirt, batch,
+                               tangent_moves(ncas, along((mi * ns) + ni)),
+                               tangent_moves(ncas, along((ni * ns) + mi))));
     }
   }
   return {.device = {.scratch = h.peak, .workspace = workspace}};
@@ -4645,6 +4668,358 @@ Result<ScEffectiveHamiltonianHvp> sc_couplings_hvp(
     FBF_TRY(sijrs_hvp(res, blocks, pairs.front(), batch, dir(u, 0), shared, trace));
   }
   return out;
+}
+
+// The SC Hessian-vector products' footprints: class_energies_hvp's, and
+// sc_couplings_hvp's over the tangent, the pair walk and Sijrs.
+
+// shifted_inputs' buffers for @p d, in bytes: each input field it moves (a
+// direction's field is the tangent of a given input field, so the input is
+// taken as given wherever the direction's is), and B + s Ḃ when it moves B.
+size_t shifted_inputs_bytes(const int32_t naux, const int32_t ncore, const int32_t ncas,
+                            const int32_t nvirt, const EnergyDirection &d) {
+  const auto n = static_cast<size_t>(ncas);
+  const auto nc = static_cast<size_t>(ncore);
+  const auto nv = static_cast<size_t>(nvirt);
+  const size_t n2 = n * n;
+  size_t doubles = 0;
+  for (const auto &[field, count] :
+       {std::pair{d.in.h1e, n2}, std::pair{d.in.h2e, n2 * n2}, std::pair{d.in.e_core, nc},
+        std::pair{d.in.e_virt, nv}, std::pair{d.in.h1e_v_sr, nv * n},
+        std::pair{d.in.h1e_v_si, n * nc}, std::pair{d.in.h1e_v_sir, nv * nc},
+        std::pair{d.in.dm1, n2}, std::pair{d.in.dm2, n2 * n2}, std::pair{d.in.dm3, n2 * n2 * n2},
+        std::pair{d.in.f3ca, n2 * n2 * n2}, std::pair{d.in.f3ac, n2 * n2 * n2}}) {
+    doubles += field == nullptr ? 0 : count;
+  }
+  return (sizeof(double) * doubles) +
+         (d.blocks == nullptr ? 0 : shifted_blocks_bytes(naux, ncore, ncas, nvirt));
+}
+
+// Whether line_step differences along @p d at all: it moves B, the RDMs or
+// the integrals (h1e, h2e and h1e_v's rows), not the orbital energies alone.
+bool moves_line(const EnergyDirection &d) {
+  return d.blocks != nullptr ||
+         std::ranges::any_of(std::array{d.in.h1e, d.in.h2e, d.in.h1e_v_sr, d.in.h1e_v_si,
+                                        d.in.h1e_v_sir, d.in.dm1, d.in.dm2, d.in.dm3, d.in.f3ca,
+                                        d.in.f3ac},
+                             [](const double *x) { return x != nullptr; });
+}
+
+// line_step's sums.
+constexpr size_t kLineStepBytes = 6 * sizeof(double);
+
+// Every EnergyBars field but the orbital energies', in bytes: what
+// line_derivative's scratch holds over one state's bars, every bar wanted.
+size_t line_scratch_bytes(const int32_t naux, const int32_t ncore, const int32_t ncas,
+                          const int32_t nvirt) {
+  const auto n = static_cast<size_t>(ncas);
+  const auto nc = static_cast<size_t>(ncore);
+  const auto nv = static_cast<size_t>(nvirt);
+  const size_t nmo = nc + n + nv;
+  const size_t n2 = n * n;
+  return sizeof(double) * ((2 * n2) + (n2 * n2) + (nv * n) + (n * nc) + (nv * nc) + (n2 * n2) +
+                           (3 * n2 * n2 * n2) + (static_cast<size_t>(naux) * nmo * nmo));
+}
+
+// The block bars block_bars allocates: the metrics' alone, and the Dyall
+// blocks' beside them.
+size_t metric_bars_bytes(const int32_t ncas) {
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = sizeof(double) * n * n;
+  return (2 * n2 * n * n * n * n) + (5 * n2 * n * n) + (5 * n2);
+}
+
+size_t dyall_bars_bytes(const int32_t ncas) {
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = sizeof(double) * n * n;
+  return (2 * n2 * n * n * n * n) + (6 * n2 * n * n) + (4 * n2);
+}
+
+// fixed_adjoint onto @p w's held bytes: its identity, every block bar, the
+// own adjoint walks (a one-function class's block bars uploaded, @p one its
+// two flags), and with @p orbital the orbital energies' upload, all held to
+// its end.
+void fixed_adjoint_bytes(ScWalkBytes &w, const std::array<bool, 2> one, const bool orbital) {
+  const auto n = static_cast<size_t>(w.ncas);
+  const size_t identity = sizeof(double) * n * n;
+  const size_t bars = metric_bars_bytes(w.ncas) + dyall_bars_bytes(w.ncas);
+  w.h->take(identity + bars);
+  own_adjoint_walks(w, one[0], one[1]);
+  if (orbital) {
+    w.h->walk(sizeof(double) * static_cast<size_t>(std::max(w.ncore, w.nvirt)));
+  }
+  w.h->give(identity + bars);
+}
+
+// fixed_adjoint_tangent along @p d: line_derivative's scratch, and per rung
+// and sign the shifted inputs beside fixed_adjoint without R.
+void fixed_adjoint_tangent_bytes(ScWalkBytes &w, const std::array<bool, 2> one,
+                                 const EnergyDirection &d) {
+  const size_t scratch = line_scratch_bytes(w.naux, w.ncore, w.ncas, w.nvirt);
+  const size_t shifted = shifted_inputs_bytes(w.naux, w.ncore, w.ncas, w.nvirt, d);
+  w.h->take(scratch + shifted);
+  fixed_adjoint_bytes(w, one, false);
+  w.h->give(scratch + shifted);
+}
+
+// pair_fixed_adjoint: both entries' identity, both sides' metric bars, every
+// class's pair walk with its adjoint, and with @p sweep each side's metric
+// sweep (sweep_metrics' dm2b bar).
+void pair_fixed_adjoint_bytes(ScWalkBytes &w, const bool sweep) {
+  const auto n = static_cast<size_t>(w.ncas);
+  const size_t held = (2 * sizeof(double) * n * n) + (2 * metric_bars_bytes(w.ncas));
+  w.h->take(held);
+  for (const auto &[k, walk] : kScWalks) {
+    w.walk(k, false, true);
+  }
+  if (sweep) {
+    for (int32_t side = 0; side < 2; ++side) {
+      w.h->walk(sizeof(double) * n * n * n * n);
+    }
+  }
+  w.h->give(held);
+}
+
+// sijrs_hvp along @p d at a weight away from 1 when @p scaled: the scaled
+// orbital-energy bars, its five slab buffers, B + s Ḃ (its sums first) when
+// d moves B, and the slab's builds' products.
+void sijrs_hvp_bytes(ScWalkBytes &w, const EnergyDirection &d, const bool scaled) {
+  if (w.ncore == 0 || w.nvirt == 0) {
+    return;
+  }
+  const size_t orbital =
+      scaled ? sizeof(double) * static_cast<size_t>(w.ncore + w.nvirt) : size_t{0};
+  const size_t slabs = 5 * w.slab_bytes(ExtBlock::Sijrs);
+  w.h->take(orbital + slabs);
+  size_t shifted = 0;
+  if (d.blocks != nullptr) {
+    w.h->walk(2 * sizeof(double));
+    shifted = shifted_blocks_bytes(w.naux, w.ncore, w.ncas, w.nvirt);
+    w.h->take(shifted);
+  }
+  w.h->walk(w.product(ExtBlock::Sijrs));
+  w.h->give(orbital + slabs + shifted);
+}
+
+// second_tables along @p line: per rung and sign, the shifted inputs beside
+// class_energies_tangent along @p along at them.
+void second_tables_bytes(ScWalkBytes &w, const int32_t nelecas, const EnergyDirection &line,
+                         std::span<const EnergyDirection> along) {
+  w.h->walk(
+      shifted_inputs_bytes(w.naux, w.ncore, w.ncas, w.nvirt, line) +
+      class_energies_tangent_footprint(w.naux, w.ncore, w.ncas, w.nvirt, nelecas, w.batch, along)
+          .device.scratch);
+}
+
+// A one-function class's flags, Srs's and Sij's, as single_function_class
+// reads @p nelecas.
+std::array<bool, 2> one_function_classes(const int32_t ncas, const int32_t nelecas) {
+  return {nelecas == 2, (2 * ncas) - nelecas == 2};
+}
+
+MemoryFootprint class_energies_hvp_footprint(const int32_t naux, const int32_t ncore,
+                                             const int32_t ncas, const int32_t nvirt,
+                                             const int32_t nelecas, const int32_t batch,
+                                             std::span<const EnergyDirection> directions,
+                                             std::span<const EnergyDirection> partners) {
+  // class_energies_hvp, every allocation in its order, in bytes.
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const size_t m = directions.size();
+  const std::array<bool, 2> one = one_function_classes(ncas, nelecas);
+  HeldBytes h;
+  ScWalkBytes w{
+      .naux = naux, .ncore = ncore, .ncas = ncas, .nvirt = nvirt, .batch = batch, .h = &h};
+  const MemoryFootprint tangent =
+      class_energies_tangent_footprint(naux, ncore, ncas, nvirt, nelecas, batch, directions);
+  h.walk(tangent.device.scratch);
+  // The state's identity, held to the end; the steps' sums; a one-function
+  // class's blocks and their tangents.
+  h.take(kD * n * n);
+  h.walk(kD * ((3 * m) + 3));
+  const std::vector<TangentMoves> moves = tangent_moves(ncas, directions);
+  for (size_t k = 0; k < 2; ++k) {
+    if (one[k]) {
+      one_function_walk(h, ncas, moves);
+    }
+  }
+  for (size_t u = 0; u < m; ++u) {
+    const EnergyDirection &du = directions[u];
+    h.walk(kLineStepBytes);
+    // The empty perturbers' second tables, along u (with its partner) and
+    // along the partner alone: at the most, a perturber empty.
+    if (moves_line(du)) {
+      std::vector<EnergyDirection> along{du};
+      if (!partners.empty()) {
+        along.push_back(partners[u]);
+      }
+      second_tables_bytes(w, nelecas, du, along);
+      if (!partners.empty()) {
+        h.walk(kLineStepBytes);
+        if (moves_line(partners[u])) {
+          second_tables_bytes(w, nelecas, partners[u], {&partners[u], 1});
+        }
+      }
+    }
+    fixed_adjoint_bytes(w, one, true);
+    if (moves_line(du)) {
+      fixed_adjoint_tangent_bytes(w, one, du);
+    }
+    sijrs_hvp_bytes(w, du, false);
+  }
+  const MemoryFootprint adjoint =
+      class_energies_adjoint_footprint(naux, ncore, ncas, nvirt, nelecas, batch);
+  return {.device = {.scratch = h.peak,
+                     .workspace = std::max(adjoint.device.workspace, tangent.device.workspace)}};
+}
+
+MemoryFootprint sc_effective_hamiltonian_hvp_footprint(
+    const int32_t naux, const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+    const int32_t nelecas, const int32_t nstates, const int32_t batch, std::span<const double> hbar,
+    std::span<const EnergyDirection> directions, std::span<const EnergyDirection> partners,
+    const std::optional<MemoryFootprint> &transition) {
+  // sc_couplings_hvp, every allocation in its order, in bytes.
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const auto ns = static_cast<size_t>(nstates);
+  const size_t n2 = ns * ns;
+  const size_t m = n2 == 0 ? 0 : directions.size() / n2;
+  const std::array<bool, 2> one = one_function_classes(ncas, nelecas);
+  const auto at = [ns](const size_t i, const size_t j) { return (i * ns) + j; };
+  const auto dir = [&](const size_t u, const size_t p) -> const EnergyDirection & {
+    return u < m ? directions[(u * n2) + p] : partners[((u - m) * n2) + p];
+  };
+  HeldBytes h;
+  ScWalkBytes w{
+      .naux = naux, .ncore = ncore, .ncas = ncas, .nvirt = nvirt, .batch = batch, .h = &h};
+  size_t workspace =
+      class_energies_adjoint_footprint(naux, ncore, ncas, nvirt, nelecas, batch).device.workspace;
+
+  // The tangent along the directions and the partners after them.
+  std::vector<EnergyDirection> all(directions.begin(), directions.end());
+  all.insert(all.end(), partners.begin(), partners.end());
+  const MemoryFootprint tangent = sc_effective_hamiltonian_tangent_footprint(
+      naux, ncore, ncas, nvirt, nelecas, nstates, batch, all);
+  h.walk(tangent.device.scratch);
+  workspace = std::max(workspace, tangent.device.workspace);
+  // Per ket: its identity, its steps and its one-function classes' blocks
+  // and their tangents, along the directions alone.
+  for (size_t j = 0; j < ns; ++j) {
+    std::vector<EnergyDirection> own;
+    for (size_t u = 0; u < m; ++u) {
+      own.push_back(dir(u, at(j, j)));
+    }
+    h.take(kD * n * n);
+    h.walk(kD * ((3 * m) + 3));
+    const std::vector<TangentMoves> moves = tangent_moves(ncas, own);
+    for (size_t k = 0; k < 2; ++k) {
+      if (one[k]) {
+        one_function_walk(h, ncas, moves);
+      }
+    }
+    h.give(kD * n * n);
+  }
+  double trace = 0.0;
+  for (size_t j = 0; j < ns && at(j, j) < hbar.size(); ++j) {
+    trace += hbar[at(j, j)];
+  }
+
+  for (size_t u = 0; u < m; ++u) {
+    // The empty tuples' second tables, at the most: every ket has one
+    // that u populates and every bra's same tuple is empty too, so each
+    // ket's second tables and each pair's pair_second_tables, once.
+    std::vector<bool> second_t(n2, false);
+    for (size_t j = 0; j < ns; ++j) {
+      const EnergyDirection &du = dir(u, at(j, j));
+      h.walk(kLineStepBytes);
+      if (!moves_line(du)) {
+        continue;
+      }
+      std::vector<EnergyDirection> along{du};
+      if (!partners.empty()) {
+        along.push_back(dir(m + u, at(j, j)));
+      }
+      second_tables_bytes(w, nelecas, du, along);
+      if (!partners.empty()) {
+        const EnergyDirection &dv = dir(m + u, at(j, j));
+        h.walk(kLineStepBytes);
+        if (moves_line(dv)) {
+          second_tables_bytes(w, nelecas, dv, {&dv, 1});
+        }
+      }
+      for (size_t i = 0; i < ns; ++i) {
+        const size_t mn = at(std::min(i, j), std::max(i, j));
+        if (i == j || second_t[mn]) {
+          continue;
+        }
+        second_t[mn] = true;
+        const size_t nm = at(std::max(i, j), std::min(i, j));
+        const EnergyDirection &da = dir(u, mn);
+        const EnergyDirection &db = dir(u, nm);
+        h.walk(kLineStepBytes);
+        h.walk(kLineStepBytes);
+        if (moves_line(da) || moves_line(db)) {
+          h.walk(shifted_inputs_bytes(naux, ncore, ncas, nvirt, da) +
+                 shifted_inputs_bytes(naux, ncore, ncas, nvirt, db) +
+                 pair_tables_bytes(naux, ncore, ncas, nvirt, batch, tangent_moves(ncas, {&da, 1}),
+                                   tangent_moves(ncas, {&db, 1})));
+        }
+      }
+    }
+    // Each state's own walk: the multipliers' tangent through one fixed
+    // walk, and the bars at fixed multipliers differenced.
+    for (size_t j = 0; j < ns; ++j) {
+      const EnergyDirection &du = dir(u, at(j, j));
+      fixed_adjoint_bytes(w, one, true);
+      h.walk(kLineStepBytes);
+      if (moves_line(du)) {
+        fixed_adjoint_tangent_bytes(w, one, du);
+      }
+    }
+    // Each pair's walk the same way, its transition bars held and handed
+    // over.
+    const size_t rdms = kD * ((n * n) + (n * n * n * n) + (n * n * n * n * n * n));
+    for (size_t mi = 0; mi < ns; ++mi) {
+      for (size_t ni = mi + 1; ni < ns; ++ni) {
+        const EnergyDirection &da = dir(u, at(mi, ni));
+        const EnergyDirection &db = dir(u, at(ni, mi));
+        const size_t bars = transition ? 2 * rdms : 0;
+        h.take(bars);
+        pair_fixed_adjoint_bytes(w, transition.has_value());
+        h.walk(kLineStepBytes);
+        h.walk(kLineStepBytes);
+        if (moves_line(da) || moves_line(db)) {
+          // line_derivative's scratch over the shared bars (h1e_v's rows
+          // and Λ) and the two transitions' RDMs, then per rung and sign
+          // both sides' shifted inputs beside the pair walk.
+          const auto nc = static_cast<size_t>(ncore);
+          const auto nv = static_cast<size_t>(nvirt);
+          const size_t nmo = nc + n + nv;
+          const size_t scratch =
+              (kD * ((nv * n) + (n * nc) + (nv * nc) + (static_cast<size_t>(naux) * nmo * nmo))) +
+              bars;
+          const size_t shifted = shifted_inputs_bytes(naux, ncore, ncas, nvirt, da) +
+                                 shifted_inputs_bytes(naux, ncore, ncas, nvirt, db);
+          h.take(scratch + shifted);
+          pair_fixed_adjoint_bytes(w, transition.has_value());
+          h.give(scratch + shifted);
+        }
+        if (transition) {
+          for (int32_t order = 0; order < 2; ++order) {
+            h.walk(transition->device.persistent + transition->device.scratch);
+          }
+          workspace = std::max(workspace, transition->device.workspace);
+        }
+        h.give(bars);
+      }
+    }
+    // Sijrs: Σ_J H̄_JJ times its one state's product, scaled away from 1.
+    if (trace != 0.0) {
+      sijrs_hvp_bytes(w, dir(u, 0), trace != 1.0);
+    }
+  }
+  return {.device = {.scratch = h.peak, .workspace = workspace},
+          .pinned = {.workspace = transition ? transition->pinned.workspace : 0}};
 }
 
 // ---------------------------------------------------------------------------
