@@ -486,4 +486,35 @@ Status pc_intruder_check(const char *name, const PcDenominators &modes, int64_t 
 void pc_report_modes(std::span<const PcDenominators> modes, size_t j, size_t k,
                      PcClassEnergies &out);
 
+/// @brief One PC class as the PC footprints walk it: @p d its basis, @p n1 its S₁'s
+/// columns, @p tuples a slab's tuples at its widest, @p exchange whether its
+/// rows carry exchange rows; @p own_build and @p pair_build its matrices'
+/// allocations, (take, bytes) in order, and what they hold through the solve;
+/// @p own_back and @p pair_back its pc_back_*'s; @p uploads what the walk
+/// uploads beside its kets (Sir's two selectors). @p walks is false for a
+/// class with no tuple, which allocates nothing.
+struct PcClassBytes {
+  size_t k = 0;
+  bool walks = false;
+  std::vector<ExtBlock> slabs;
+  size_t d = 0;
+  size_t n1 = 0;
+  size_t tuples = 0;
+  bool exchange = false;
+  std::vector<std::pair<bool, size_t>> own_build;
+  size_t own_held = 0;
+  std::vector<std::pair<bool, size_t>> pair_build;
+  size_t pair_held = 0;
+  size_t own_back = 0;
+  size_t pair_back = 0;
+  size_t uploads = 0;
+};
+
+/// @brief The seven PC classes with a solve, in walk order (Sijrs, SC's, is
+/// not among them), over @p ncore, @p ncas and @p nvirt orbitals at
+/// @p batch: what reverse.cpp's walk mirror and pc_metric_lifts_footprint
+/// (pc.cpp) read.
+std::array<PcClassBytes, 7> pc_class_bytes(int32_t ncore, int32_t ncas, int32_t nvirt,
+                                           int32_t batch);
+
 } // namespace free_breakfast::nevpt2

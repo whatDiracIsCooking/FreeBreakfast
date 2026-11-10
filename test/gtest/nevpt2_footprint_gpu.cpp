@@ -1,7 +1,8 @@
 // The footprints (#1044) of the NEVPT2 library routines (#1052): nevpt2::rdms
 // and rdms_adjoint, mo_blocks, h2e, slab and class_energies, their reverse
-// passes, the SC and PC forward tangents (#1182, #1183) and the SC
-// Hessian-vector products (#1180). Each is held to
+// passes, the SC and PC forward tangents (#1182, #1183), the SC and PC
+// Hessian-vector products (#1180, #1184) and the PC metric lifts. Each is
+// held to
 // the pool peak of one call by test/support/pool_footprint.h's two bars,
 // sound (the measured peak is no more than the footprint's) and tight
 // (within G x A). The adaptive routines, rdms' tile and the classes' slab
@@ -930,18 +931,72 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcClassEnergiesTangentFootprint,
                                   std::to_string(std::get<1>(info.param));
                          });
 
+// Two states over a case, as the PC-QD footprints walk them: the case's
+// inputs on the diagonal, random transition RDMs off it (no f3ca or f3ac,
+// which only the diagonal reads), every pair's metric cut at @p floor; and
+// two directions, [u n² + p]: direction 0 moves every field and B, its
+// shared tangents once, direction 1 the RDMs alone, the diagonal's RDM
+// tangents with f3 and the transitions' without.
+constexpr std::int32_t kQdStates = 2;
+
+struct TwoStates {
+  Directions d;
+  std::vector<nevpt2::EnergyInputs> pairs;
+  std::vector<nevpt2::EnergyDirection> along;
+};
+
+TwoStates two_states(fb::DeviceResources &res, const EnergyCase &g, const double floor = 0.0) {
+  const nevpt2::MoBlocks &b = *g.blocks;
+  TwoStates out;
+  out.d.held.reserve(128);
+  out.d.blocks.reserve(1);
+  out.pairs.assign(kQdStates * kQdStates, g.in);
+  for (std::int32_t i = 0; i < kQdStates; ++i) {
+    for (std::int32_t j = 0; j < kQdStates; ++j) {
+      nevpt2::EnergyInputs &p = out.pairs[static_cast<std::size_t>((i * kQdStates) + j)];
+      p.pc_floor = floor;
+      if (i != j) {
+        random_rdms(res, out.d, p, b.ncas, false, 500 + (10 * ((i * kQdStates) + j)));
+        p.f3ca = nullptr;
+        p.f3ac = nullptr;
+      }
+    }
+  }
+  nevpt2::EnergyDirection shared;
+  random_shared(res, out.d, shared.in, b, 600);
+  shared.blocks = random_blocks(res, out.d, b, 700);
+  for (std::int32_t u = 0; u < 2; ++u) {
+    for (std::int32_t p = 0; p < kQdStates * kQdStates; ++p) {
+      nevpt2::EnergyDirection e = u == 0 ? shared : nevpt2::EnergyDirection{};
+      random_rdms(res, out.d, e.in, b.ncas, p % (kQdStates + 1) == 0, 800 + (10 * ((u * 4) + p)));
+      out.along.push_back(e);
+    }
+  }
+  return out;
+}
+
+// Each ket's dropped counts over @p pairs, as pc_effective_hamiltonian drops
+// them (element [J n + J]'s).
+std::vector<std::array<std::int64_t, 8>> ket_dropped(fb::DeviceResources &res,
+                                                     const nevpt2::MoBlocks &b,
+                                                     std::span<const nevpt2::EnergyInputs> pairs,
+                                                     const std::int32_t batch) {
+  const auto h = nevpt2::pc_effective_hamiltonian(res, b, pairs, batch);
+  EXPECT_TRUE(h) << h.error().message;
+  std::vector<std::array<std::int64_t, 8>> out;
+  for (std::int32_t j = 0; j < kQdStates && h; ++j) {
+    out.push_back((*h)[static_cast<std::size_t>((j * kQdStates) + j)].dropped);
+  }
+  return out;
+}
+
 class Nevpt2PcEffectiveHamiltonianTangentFootprint
     : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
 
-// pc_effective_hamiltonian_tangent over two states at a batch of one and at
-// the whole extent, each ket's modes dropped as the energy drops them: the
-// case's inputs on the diagonal, random transition RDMs off it (no f3ca or
-// f3ac, which only the diagonal reads), and per direction its shared
-// tangents once, the diagonal's RDM tangents with f3 and the transitions'
-// without.
+// pc_effective_hamiltonian_tangent over two_states at a batch of one and at
+// the whole extent, each ket's modes dropped as the energy drops them.
 TEST_P(Nevpt2PcEffectiveHamiltonianTangentFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
-  constexpr std::int32_t kStates = 2;
   const auto [name, batch] = GetParam();
   // Under slow_test.h: CAS(8,8), 1.7 s on the RTX 3080 at either batch.
   if (name == "n2_ccpvdz_cas88_df") {
@@ -951,43 +1006,16 @@ TEST_P(Nevpt2PcEffectiveHamiltonianTangentFootprint, SoundAndTight) {
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
-  Directions d;
-  d.held.reserve(128);
-  d.blocks.reserve(1);
-  std::vector<nevpt2::EnergyInputs> pairs(kStates * kStates, g.in);
-  for (std::int32_t i = 0; i < kStates; ++i) {
-    for (std::int32_t j = 0; j < kStates; ++j) {
-      if (i != j) {
-        nevpt2::EnergyInputs &p = pairs[static_cast<std::size_t>((i * kStates) + j)];
-        random_rdms(inputs, d, p, b.ncas, false, 500 + (10 * ((i * kStates) + j)));
-        p.f3ca = nullptr;
-        p.f3ac = nullptr;
-      }
-    }
-  }
-  // Direction 0 moves every field and B, direction 1 the RDMs alone.
-  nevpt2::EnergyDirection shared;
-  random_shared(inputs, d, shared.in, b, 600);
-  shared.blocks = random_blocks(inputs, d, b, 700);
-  std::vector<nevpt2::EnergyDirection> along;
-  for (std::int32_t u = 0; u < 2; ++u) {
-    for (std::int32_t p = 0; p < kStates * kStates; ++p) {
-      nevpt2::EnergyDirection e = u == 0 ? shared : nevpt2::EnergyDirection{};
-      random_rdms(inputs, d, e.in, b.ncas, p % (kStates + 1) == 0, 800 + (10 * ((u * 4) + p)));
-      along.push_back(e);
-    }
-  }
-  const auto h = nevpt2::pc_effective_hamiltonian(inputs, b, pairs, batch);
-  ASSERT_TRUE(h) << h.error().message;
-  std::vector<std::array<std::int64_t, 8>> dropped;
-  for (std::int32_t j = 0; j < kStates; ++j) {
-    dropped.push_back((*h)[static_cast<std::size_t>((j * kStates) + j)].dropped);
-  }
+  const TwoStates q = two_states(inputs, g);
+  const std::vector<nevpt2::EnergyInputs> &pairs = q.pairs;
+  const std::vector<nevpt2::EnergyDirection> &along = q.along;
+  const std::vector<std::array<std::int64_t, 8>> dropped = ket_dropped(inputs, b, pairs, batch);
+  ASSERT_EQ(dropped.size(), static_cast<std::size_t>(kQdStates));
   const std::vector<std::size_t> lwork = lworks(inputs, b.ncas * b.ncas * b.ncas);
   const fb::MemoryFootprint fp = nevpt2::pc_effective_hamiltonian_tangent_footprint(
-      b.naux, b.ncore, b.ncas, b.nvirt, kStates, batch, lwork, along, dropped);
+      b.naux, b.ncore, b.ncas, b.nvirt, kQdStates, batch, lwork, along, dropped);
   const fb::MemoryFootprint most = nevpt2::pc_effective_hamiltonian_tangent_footprint(
-      b.naux, b.ncore, b.ncas, b.nvirt, kStates, batch, lwork, along);
+      b.naux, b.ncore, b.ncas, b.nvirt, kQdStates, batch, lwork, along);
   EXPECT_EQ(fp.device.persistent, 0U);
   EXPECT_GE(most.device.scratch, fp.device.scratch);
   fb::DeviceResources res{0};
@@ -1156,5 +1184,223 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2ScEffectiveHamiltonianHvpFootprint,
                            return std::get<0>(info.param) + "_batch" +
                                   std::to_string(std::get<1>(info.param));
                          });
+
+// ---------------------------------------------------------------------------
+// The PC Hessian-vector products (#1184): pc_class_energies_hvp and
+// pc_effective_hamiltonian_hvp; and pc_metric_lifts
+// ---------------------------------------------------------------------------
+
+// The PC Hessian's conditioning floor (nevpt2_energy_gpu.cpp's kPcHvpFloor):
+// the cut raised past the modes the product refuses to differentiate twice.
+constexpr double kPcHvpFloor = 1e-3;
+
+// The allocations live at a PC Hessian-vector product's peak, at most, at
+// two states and two directions: the tangent's (kPcTangentLive) or a fixed
+// walk's, beside every class's record (per ket U, S's four modes, M, M_Δ
+// and two tangents of each, U̇ and the span bar's derivative per direction),
+// the bars' scratch (eleven a state, three a transition), the transitions'
+// bars and every pair's shifted inputs.
+constexpr std::size_t kPcHvpLive = 400;
+
+class Nevpt2PcClassEnergiesHvpFootprint
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
+
+// pc_class_energies_hvp along two directions, every bar wanted, at a batch
+// of one and at the whole extent, at the Hessian's floor and its modes
+// dropped as the run drops them; and the footprint at the rank that holds
+// the most, no less.
+TEST_P(Nevpt2PcClassEnergiesHvpFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  const auto [name, batch] = GetParam();
+  // Under slow_test.h: CAS(8,8), past 1.5 s on the RTX 3080 at either batch.
+  if (name == "n2_ccpvdz_cas88_df") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  nevpt2::EnergyInputs in = g.in;
+  in.pc_floor = kPcHvpFloor;
+  const Directions d = two_directions(inputs, b);
+  std::vector<Bars> held;
+  std::vector<nevpt2::EnergyBars> bars;
+  for (std::size_t u = 0; u < d.along.size(); ++u) {
+    held.push_back(every_bar(inputs, b));
+    bars.push_back(held.back().bars);
+  }
+  const auto pc = nevpt2::pc_class_energies(inputs, b, in, batch);
+  ASSERT_TRUE(pc) << pc.error().message;
+  const std::vector<std::size_t> lwork = lworks(inputs, b.ncas * b.ncas * b.ncas);
+  const fb::MemoryFootprint fp = nevpt2::pc_class_energies_hvp_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, batch, lwork, d.along, pc->dropped);
+  const fb::MemoryFootprint most = nevpt2::pc_effective_hamiltonian_hvp_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, 1, batch, lwork, d.along);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  EXPECT_GE(most.device.scratch, fp.device.scratch);
+  EXPECT_GE(most.device.workspace, fp.device.workspace);
+  std::cout << std::format("dropped {}\n", pc->dropped);
+  fb::DeviceResources res{0};
+  expect_routine_footprint(res, fp, kPcHvpLive, [&] {
+    const auto t = nevpt2::pc_class_energies_hvp(res, b, in, batch, d.along, bars);
+    ASSERT_TRUE(t) << t.error().message;
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcClassEnergiesHvpFootprint,
+                         ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                                              std::string{"n2_ccpvdz_cas88_df"}),
+                                            ::testing::Values(1, 0)),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param));
+                         });
+
+// Per direction and state, the bars pc_effective_hamiltonian_hvp adds onto,
+// [u n + J], every field wanted: each state's own RDMs' bars, and the shared
+// fields' one set per direction.
+struct StateBars {
+  std::vector<fb::Buffers::device<double>> held;
+  std::vector<nevpt2::EnergyBars> bars;
+};
+
+StateBars state_bars(fb::DeviceResources &res, const nevpt2::MoBlocks &b, const std::size_t dirs) {
+  StateBars out;
+  out.held.reserve(dirs * (8 + (5 * kQdStates)));
+  const auto zero = [&](const std::size_t count) {
+    out.held.emplace_back(count, res.device());
+    return out.held.back().data();
+  };
+  const auto n = static_cast<std::size_t>(b.ncas);
+  const auto nc = static_cast<std::size_t>(b.ncore);
+  const auto nv = static_cast<std::size_t>(b.nvirt);
+  const std::size_t nmo = nc + n + nv;
+  const std::size_t n6 = n * n * n * n * n * n;
+  for (std::size_t u = 0; u < dirs; ++u) {
+    const nevpt2::EnergyBars shared{.h1e = zero(n * n),
+                                    .h2e = zero(n * n * n * n),
+                                    .h1e_v_sr = zero(nv * n),
+                                    .h1e_v_si = zero(n * nc),
+                                    .h1e_v_sir = zero(nv * nc),
+                                    .e_core = zero(nc),
+                                    .e_virt = zero(nv),
+                                    .lambda = zero(static_cast<std::size_t>(b.naux) * nmo * nmo)};
+    for (std::int32_t j = 0; j < kQdStates; ++j) {
+      nevpt2::EnergyBars e = shared;
+      e.dm1 = zero(n * n);
+      e.dm2 = zero(n * n * n * n);
+      e.dm3 = zero(n6);
+      e.f3ca = zero(n6);
+      e.f3ac = zero(n6);
+      out.bars.push_back(e);
+    }
+  }
+  return out;
+}
+
+class Nevpt2PcEffectiveHamiltonianHvpFootprint
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
+
+// pc_effective_hamiltonian_hvp over two_states at the Hessian's floor, at a
+// batch of one and at the whole extent, each ket's modes dropped as the
+// energy drops them, every bar wanted and each transition's handed to a
+// callback that holds nothing; H̄'s trace is not one, as a coupling's
+// weights.
+TEST_P(Nevpt2PcEffectiveHamiltonianHvpFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  const auto [name, batch] = GetParam();
+  // Under slow_test.h: CAS(8,8), past 1.5 s on the RTX 3080 at either batch.
+  if (name == "n2_ccpvdz_cas88_df") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  const TwoStates q = two_states(inputs, g, kPcHvpFloor);
+  const std::size_t dirs = q.along.size() / (kQdStates * kQdStates);
+  const StateBars sb = state_bars(inputs, b, dirs);
+  const std::vector<double> hbar{0.6, 0.3, 0.2, 0.7};
+  const std::vector<std::array<std::int64_t, 8>> dropped = ket_dropped(inputs, b, q.pairs, batch);
+  ASSERT_EQ(dropped.size(), static_cast<std::size_t>(kQdStates));
+  const std::vector<std::size_t> lwork = lworks(inputs, b.ncas * b.ncas * b.ncas);
+  const fb::MemoryFootprint fp = nevpt2::pc_effective_hamiltonian_hvp_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, kQdStates, batch, lwork, q.along, dropped);
+  const fb::MemoryFootprint most = nevpt2::pc_effective_hamiltonian_hvp_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, kQdStates, batch, lwork, q.along);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  EXPECT_GE(most.device.scratch, fp.device.scratch);
+  std::cout << std::format("dropped {}\n", dropped);
+  fb::DeviceResources res{0};
+  expect_routine_footprint(res, fp, kPcHvpLive, [&] {
+    const auto t = nevpt2::pc_effective_hamiltonian_hvp(
+        res, b, q.pairs, hbar, batch, q.along, sb.bars,
+        [](std::int64_t, std::int64_t, std::int64_t, const nevpt2::EnergyBars &) -> fb::Status {
+          return {};
+        });
+    ASSERT_TRUE(t) << t.error().message;
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcEffectiveHamiltonianHvpFootprint,
+                         ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                                              std::string{"n2_ccpvdz_cas88_df"}),
+                                            ::testing::Values(1, 0)),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param));
+                         });
+
+class Nevpt2PcMetricLiftsFootprint : public ::testing::TestWithParam<std::string> {};
+
+// Both pc_metric_lifts at the default cut, the ket's modes dropped as the
+// energy drops them: one state along random first and second RDM
+// derivatives, and two_states' ket 0 with random first derivatives per pair.
+TEST_P(Nevpt2PcMetricLiftsFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  const std::string name = GetParam();
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  const std::vector<std::size_t> lwork = lworks(inputs, b.ncas * b.ncas * b.ncas);
+  TwoStates q = two_states(inputs, g);
+  std::vector<nevpt2::EnergyInputs> first(kQdStates * kQdStates);
+  for (std::size_t p = 0; p < first.size(); ++p) {
+    random_rdms(inputs, q.d, first[p], b.ncas, false, 900 + (10 * p));
+  }
+  nevpt2::EnergyInputs second;
+  random_rdms(inputs, q.d, second, b.ncas, false, 990);
+  const std::vector<std::array<std::int64_t, 8>> dropped = ket_dropped(inputs, b, q.pairs, 0);
+  ASSERT_EQ(dropped.size(), static_cast<std::size_t>(kQdStates));
+  std::cout << std::format("dropped {}\n", dropped.front());
+  {
+    SCOPED_TRACE("one state");
+    const fb::MemoryFootprint fp = nevpt2::pc_metric_lifts_footprint(
+        b.ncore, b.ncas, b.nvirt, 1, lwork, std::span{dropped}.first(1));
+    EXPECT_GE(nevpt2::pc_metric_lifts_footprint(b.ncore, b.ncas, b.nvirt, 1, lwork).device.scratch,
+              fp.device.scratch);
+    fb::DeviceResources res{0};
+    expect_routine_footprint(res, fp, kPcTangentLive, [&] {
+      const auto l = nevpt2::pc_metric_lifts(res, b, g.in, first.front(), second);
+      ASSERT_TRUE(l) << l.error().message;
+    });
+  }
+  {
+    SCOPED_TRACE("two states");
+    const fb::MemoryFootprint fp = nevpt2::pc_metric_lifts_footprint(
+        b.ncore, b.ncas, b.nvirt, kQdStates, lwork, std::span{dropped}.first(1));
+    fb::DeviceResources res{0};
+    expect_routine_footprint(res, fp, kPcTangentLive, [&] {
+      const auto l = nevpt2::pc_metric_lifts(res, b, q.pairs, first, second, 0,
+                                             std::numeric_limits<double>::infinity());
+      ASSERT_TRUE(l) << l.error().message;
+    });
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcMetricLiftsFootprint,
+                         ::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                           std::string{"n2_ccpvdz_cas88_df"}));
 
 } // namespace

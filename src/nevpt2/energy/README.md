@@ -29,7 +29,10 @@ Hamiltonians also hand over their amplitudes
     class_energies_adjoint_footprint, sc_effective_hamiltonian_adjoint_footprint,
     pc_class_energies_adjoint_footprint, pc_effective_hamiltonian_adjoint_footprint,
     class_energies_tangent_footprint, sc_effective_hamiltonian_tangent_footprint,
-    pc_class_energies_tangent_footprint, pc_effective_hamiltonian_tangent_footprint
+    pc_class_energies_tangent_footprint, pc_effective_hamiltonian_tangent_footprint,
+    pc_class_energies_hvp_footprint, pc_effective_hamiltonian_hvp_footprint,
+    pc_metric_lifts_footprint, class_energies_hvp_footprint,
+    sc_effective_hamiltonian_hvp_footprint
 
 ## The port
 
@@ -210,13 +213,33 @@ allocation taken and given back in its order:
   direction populates, empty for every bra too, which N₂'s symmetry gives;
   without one the footprint is sound and over by them.
 
+- `pc_effective_hamiltonian_hvp_footprint(naux, ncore, ncas, nvirt, n,
+  batch, syevd_lwork, directions, dropped, transition)` and
+  `pc_class_energies_hvp_footprint` (#1184): the same mirror's other two
+  passes. The base walk is the tangent's with `pc_hvp_slab`'s rows and each
+  ket's record kept to the call's end (U, S's modes, M and M_Δ and their
+  tangents, and where the span rotates U̇ and the span bar's derivative,
+  `pc_hvp_keep`'s); each fixed walk is the adjoint's with the kets rebuilt
+  (`pc_fixed_kets`). Per direction: the transitions' bars, the multipliers'
+  fixed walk, U's difference and the inputs' (each beside
+  `line_derivative`'s scratch bars, the latter beside every pair's shifted
+  inputs), and `sijrs_hvp`. Every bar is wanted, as the gradient's; at more
+  than one state Sijrs's weight Σ H̄_JJ is taken as not one.
+- `pc_metric_lifts_footprint(ncore, ncas, nvirt, n, syevd_lwork, dropped)`,
+  both `pc_metric_lifts` (n = 1 the one-state overload): per class the solve
+  with its modes kept, the path's metrics, L and its eigensolve, and per bra
+  the rows' parts. The null modes are a prefix of the dropped ones; every
+  dropped mode is counted null, the most.
+
+
 `test/gtest/nevpt2_footprint_gpu.cpp` holds `pc_class_energies`, both
-reverse passes, the SC and PC tangents and the SC products sound and tight
-at CAS(4,4) and CAS(8,8), at a batch of one and whole, at the run's own
-ranks (the tangents along a direction moving every field and B beside one
-moving the RDMs alone, the effective Hamiltonians' over two states, SC's
-one-function classes at CAS(4,4), and the products with and without
-partners); the effective Hamiltonians' call shapes are in
+reverse passes, the SC and PC tangents, the SC and PC products (PC's at the
+Hessian's floor, 1e-3) and the PC metric lifts sound and tight at CAS(4,4)
+and CAS(8,8), at a batch of one and whole, at the run's own ranks (the
+tangents along a direction moving every field and B beside one moving the
+RDMs alone, the effective Hamiltonians' over two states, SC's one-function
+classes at CAS(4,4), and SC's products with and without partners); the
+effective Hamiltonians' call shapes are in
 `test/gtest/pipeline_step_footprint_gpu.cpp`'s
 `Nevpt2ReaderFootprint.EffectiveHamiltonians`.
 
