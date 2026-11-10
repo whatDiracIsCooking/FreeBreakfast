@@ -57,6 +57,7 @@ target_link_libraries(
           free_breakfast::pipeline::pipeline
           free_breakfast::pipeline::guess
           free_breakfast::pipeline::config
+          free_breakfast::hessian
           free_breakfast::test::support
           GTest::gtest
           GTest::gtest_main

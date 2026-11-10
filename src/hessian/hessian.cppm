@@ -19,6 +19,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -76,8 +77,9 @@ struct RhfResponse {
 /// Holds three MO stacks (nmo nocc 3 n_atom doubles each), the right-hand
 /// sides, and while the skeleton Fock derivatives are built three 3 n_atom
 /// nao^2 stacks of AO matrices (F^(x), J^(x), K^(x)) besides
-/// @c df_jk_derivative's own scratch; past the device's free memory that is
-/// Unsupported, naming the bytes, before anything is allocated.
+/// @c df_jk_derivative's own scratch (@ref df_rhf_response_footprint has all
+/// of it); past the memory budget (res.memory_budget()) that is Unsupported,
+/// naming the bytes, before anything is allocated.
 ///
 /// Queued on res.stream(); the derivative calls and the CPHF synchronize it,
 /// and the call returns with everything done. Scratch for the J and K builds
@@ -89,7 +91,7 @@ struct RhfResponse {
 ///         basis.natoms() atoms, if @p nocc is not in [1, nmo), if @p c is not
 ///         nao nmo or @p b not naux nao^2 long, or for any input the
 ///         derivative calls or the CPHF refuse; Unsupported for memory past
-///         the device's free bytes or a stack past int32_t; the CPHF's
+///         the memory budget or a stack past int32_t; the CPHF's
 ///         MaxIterationsExceeded or Divergence; or the GpuRuntime error of the
 ///         first copy, BLAS call or launch that failed.
 [[nodiscard]] Result<RhfResponse>
@@ -98,6 +100,23 @@ df_rhf_response(DeviceResources &res, const Molecule &molecule, const BasisSet &
                 const Buffers::device<double> &b, const double *l, const Buffers::device<double> &c,
                 std::span<const double> mo_energies, int32_t nocc, double tolerance = 1e-10,
                 int32_t max_iterations = 100);
+
+/// @brief What @ref df_rhf_response holds over @p basis and @p aux with @p nmo
+/// orbitals, @p nocc of them occupied:
+///
+/// - persistent: U^x, @c response::cphf's solution, returned;
+/// - scratch: the three MO stacks with one coordinate's J/K buffers, held
+///   throughout; beside them, in turn, S^x (@c overlap_derivative), then
+///   T^x and V^x and J^(x), K^(x), and the right-hand sides beside the
+///   CPHF's own;
+/// - workspace: the largest of the MO carry's X C_o, @c df_jk_derivative's,
+///   one coordinate's @c df_coulomb and two-factor @c df_exchange, the
+///   CPHF's and the closing products' carves.
+///
+/// Nothing pinned. Empty for nocc not in [1, nmo), or no AOs or fitting
+/// functions.
+[[nodiscard]] MemoryFootprint df_rhf_response_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                        int32_t nmo, int32_t nocc);
 
 /// @brief The two-electron explicit part of a closed-shell DF-RHF nuclear
 /// Hessian: the fitted Coulomb and exchange energies differentiated twice at
@@ -146,12 +165,14 @@ struct RhfTwoElectron {
 /// atom's derivative block (3 nao^2 nblk), two 3 n_atom x 3 n_atom products
 /// and at least two atom blocks with their Coulomb vectors (3 naux
 /// (nocc^2 + 1) each); before that, the fitted densities of the explicit
-/// part (naux nao^2, like @c gradient::df_rhf's). The budget is the device's
-/// free memory, or @p max_bytes when that is less (0: no cap); past it, at
-/// two atom blocks, the call is Unsupported, naming the bytes, before
-/// anything is allocated. The batch takes what the budget leaves after the
-/// explicit part, less room for the derivative calls' scratch and 512 MiB of
-/// headroom; batching changes the result only by rounding.
+/// part (naux nao^2, like @c gradient::df_rhf's). The budget is the memory
+/// budget (res.memory_budget()), or @p max_bytes when that is less (0: no
+/// cap); past it, at two atom blocks, the call is Unsupported, naming the
+/// bytes, before anything is allocated. The batch, the call's last
+/// allocation, takes what the memory budget leaves after the explicit part
+/// (never past @p max_bytes), less the workspace's growth still to come and
+/// @c kPoolHeadroomBytes, up to every atom; batching changes the result only
+/// by rounding.
 ///
 /// Queued on res.stream() and synchronized; the call returns with everything
 /// done. None of @p b, @p l and @p c may point into res.device_workspace().
@@ -169,6 +190,23 @@ df_rhf_two_electron(DeviceResources &res, const BasisSet &basis,
                     std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                     const Buffers::device<double> &b, const double *l,
                     const Buffers::device<double> &c, int32_t nocc, size_t max_bytes = 0);
+
+/// @brief What @ref df_rhf_two_electron holds over @p basis and @p aux with
+/// @p nocc occupied orbitals, its batch at its least (two atom blocks, one
+/// for a single atom):
+///
+/// - scratch: the fitted pairs and the twos, beside the explicit part's
+///   buffer and then the cross terms' (M1, one aux atom's derivative block,
+///   the two products and the batch), the larger;
+/// - workspace: the largest of @c b_mo's, @c three_center_hessian's,
+///   @c metric_hessian's, @c metric_derivative's and, over the aux atoms,
+///   @c three_center_derivative's and its half-transform's carves.
+///
+/// The batch grows with the memory budget, so this is the least the call runs
+/// with. Nothing persistent (the parts are on the host) and nothing pinned.
+/// Empty if the bases do not share their atoms or @p nocc is not in [1, nao].
+[[nodiscard]] MemoryFootprint df_rhf_two_electron_footprint(const BasisSet &basis,
+                                                            const BasisSet &aux, int32_t nocc);
 
 /// @brief The two-electron explicit part of a DF-CASSCF nuclear Hessian
 /// (docs/hessian/hessian.tex eq. df2) and its pieces, each 3 n_atom x
@@ -1720,6 +1758,15 @@ struct RhfTerms {
                                       std::span<const double> mo_energies, int32_t nocc,
                                       double tolerance = 1e-10, int32_t max_iterations = 100);
 
+/// @brief What @ref df_rhf holds over @p basis and @p aux with @p nmo orbitals,
+/// @p nocc of them occupied: D, -W, gmmwich's diagonal and work beside
+/// @c one_electron_hessian_footprint's scratch, freed; then
+/// @ref df_rhf_two_electron_footprint, at its least; then
+/// @ref df_rhf_response_footprint, whose U^x (response.cphf.solution) is
+/// returned and so persistent. Empty for nocc not in [1, nmo) or no AOs.
+[[nodiscard]] MemoryFootprint df_rhf_footprint(const BasisSet &basis, const BasisSet &aux,
+                                               int32_t nmo, int32_t nocc);
+
 /// @brief The closed-shell RHF dipole derivative, dmu_c/dR_{A,k}, from the
 /// orbitals' first-order response: for every coordinate x = 3 A + k,
 ///
@@ -1743,8 +1790,9 @@ struct RhfTerms {
 /// (@c kDipoleMaxL), so a basis with an f shell is refused.
 ///
 /// Holds S^x (3 n_atom nao^2 doubles) and the three dipole matrices with their
-/// MO blocks; past the device's free memory that is Unsupported, naming the
-/// bytes, before anything is allocated. Queued on res.stream() and
+/// MO blocks (@ref rhf_dipole_derivative_footprint has all of it); past the
+/// memory budget (res.memory_budget()) that is Unsupported, naming the bytes,
+/// before anything is allocated. Queued on res.stream() and
 /// synchronized: the call returns with everything done. The device
 /// res.dev_idx() names is made current for the call and the previous one
 /// restored.
@@ -1754,13 +1802,23 @@ struct RhfTerms {
 ///         basis.natoms() atoms, if @p c is not a whole number of nao columns,
 ///         if @p nocc is not in [1, nmo), if @p u is not (nmo - nocc) nocc
 ///         3 n_atom long, or for any input the integral calls refuse (an f
-///         shell among them); Unsupported for memory past the device's free
-///         bytes or 3 n_atom nao^2 past int32_t; or the GpuRuntime error of the
-///         first copy, BLAS call or launch that failed.
+///         shell among them); Unsupported for memory past the memory budget
+///         or 3 n_atom nao^2 past int32_t; or the GpuRuntime error of the first
+///         copy, BLAS call or launch that failed.
 [[nodiscard]] Result<std::vector<double>>
 rhf_dipole_derivative(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                       std::span<const PrimitivePairClass> classes, const Buffers::device<double> &c,
                       int32_t nocc, const Buffers::device<double> &u);
+
+/// @brief What @ref rhf_dipole_derivative holds over @p basis with @p nmo
+/// orbitals, @p nocc of them occupied, all of it scratch or the workspace: D
+/// beside @c dipole_gradient_footprint's scratch, freed; then the MO blocks,
+/// the three P^c, C_o's half product and the device result, held to the end,
+/// beside in turn U and the three dipole @c MatrixAOPair with
+/// @c dipole_footprint's workspace, and S^x (@c overlap_derivative). Nothing
+/// pinned. Empty for nocc not in [1, nmo) or no AOs.
+[[nodiscard]] MemoryFootprint rhf_dipole_derivative_footprint(const BasisSet &basis, int32_t nmo,
+                                                              int32_t nocc);
 
 /// @brief The harmonic IR intensities, I_q = K |Sum_x L_qx dmu/dx|^2 in km/mol,
 /// K = N_A / (12 eps_0 c^2) e^2 / u = 974.88 km/mol per e^2 / amu.

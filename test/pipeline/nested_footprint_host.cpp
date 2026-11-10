@@ -2,7 +2,10 @@
 // start's Molecule plus the chain's peak, and a semi-numerical [hessian] the
 // larger of the chain's peak and its harmonic analysis's, each held to the
 // value worked out by hand here, exactly, from the chain's own steps'
-// footprints over water in STO-3G, integral-direct. A chain whose library
+// footprints over water in STO-3G, integral-direct. The analytic DF-RHF
+// [hessian], over cc-pVDZ-JKFIT placed the same way, is the chain to [scf]
+// held under C's buffer, hessian::df_rhf's and the dipole derivative's, then
+// the analysis; over an integral-direct ERI, empty. A chain whose library
 // calls are not all footprinted has none. The dimensions are filled by hand,
 // the basis placed on the host and syevd's work made up (only its order is
 // read), so nothing touches a device.
@@ -13,6 +16,7 @@ import std;
 import free_breakfast.core;
 import free_breakfast.io.basis;
 import free_breakfast.pipeline.config;
+import free_breakfast.hessian;
 
 namespace {
 
@@ -25,9 +29,8 @@ const std::vector<fb::Atom> kWater{
     fb::Atom{fb::Vec<double, 3>{0.0, -1.4309, -0.8867}, fb::Element::H},
 };
 
-// STO-3G placed on kWater, as the BasisSet step places it.
-fb::BasisSet water_basis() {
-  const fb::BasisStamp stamp = fb::resolve_basis("sto-3g").value().primitive_normalized();
+// @p stamp placed on kWater, as the BasisSet and Eri steps place it.
+fb::BasisSet place_on_water(const fb::BasisStamp &stamp) {
   std::vector<fb::Shell> shells;
   std::vector<std::uint32_t> offsets{0};
   for (const fb::Atom &atom : kWater) {
@@ -37,6 +40,11 @@ fb::BasisSet water_basis() {
     offsets.push_back(static_cast<std::uint32_t>(shells.size()));
   }
   return fb::BasisSet{std::move(shells), std::move(offsets), stamp.name()};
+}
+
+// STO-3G placed on kWater.
+fb::BasisSet water_basis() {
+  return place_on_water(fb::resolve_basis("sto-3g").value().primitive_normalized());
 }
 
 // The dimensions plan_shape fills for water in @p basis, with syevd's work at
@@ -136,12 +144,62 @@ TEST(NestedFootprint, NumericalHessianIsTheChainThenTheAnalysis) {
                                    std::max(workspace, analysis.device.workspace));
 }
 
-// The chains not footprinted yet: the analytic Hessian (#1053), and the
-// CASSCF chains of both steps.
+// The analytic DF-RHF Hessian: the chain to [scf] (water_dims' syevd work
+// and no gradient), its products held through hessian::df_rhf, C's buffer
+// beside them, and the dipole derivative beside df_rhf's U^x (STO-3G has no
+// shell past the dipole integrals' d); all freed before the analysis.
+TEST(NestedFootprint, AnalyticRhfHessianIsTheChainThenDfRhf) {
+  const fb::BasisSet basis = water_basis();
+  const fb::BasisSet aux =
+      place_on_water(fb::resolve_aux_basis("cc-pvdz-jkfit").value().primitive_normalized());
+  fb::FootprintDimensions dims = water_dims(basis);
+  dims.aux = &aux;
+  dims.naux = aux.nao_sphe();
+  const fb::EriStep eri{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvdz-jkfit"};
+  std::vector<fb::MemoryFootprint> chain = rhf_chain(dims);
+  chain.pop_back();
+  chain[4] = eri.footprint(dims);
+  const auto [chain_scratch, chain_workspace] = chain_peak(chain);
+  std::size_t held = 0;
+  for (const fb::MemoryFootprint &step : chain) {
+    held += step.device.persistent;
+  }
+  const auto nmo = static_cast<std::int32_t>(dims.nao);
+  const fb::MemoryFootprint rhf = fb::hessian::df_rhf_footprint(basis, aux, nmo, 5);
+  const fb::MemoryFootprint dipole = fb::hessian::rhf_dipole_derivative_footprint(basis, nmo, 5);
+  const fb::MemoryFootprint analysis =
+      fb::geometry::harmonic_analysis_footprint(dims.atoms, dims.syevd_lwork);
+  ASSERT_GT(rhf.device.persistent, 0U);
+  ASSERT_GT(rhf.device.scratch, 0U);
+  ASSERT_GT(dipole.device.scratch, 0U);
+  EXPECT_EQ(dipole.device.persistent, 0U);
+
+  const std::optional<fb::MemoryFootprint> fp =
+      fb::HessianStep{.method = fb::HessianMethod::Analytic, .eri = eri}.footprint(dims);
+  ASSERT_TRUE(fp.has_value());
+  const std::size_t c = sizeof(double) * dims.nao * dims.nao;
+  EXPECT_EQ(fp->device.persistent, 0U);
+  EXPECT_EQ(fp->device.workspace, std::max({chain_workspace, rhf.device.workspace,
+                                            dipole.device.workspace, analysis.device.workspace}));
+  EXPECT_EQ(fp->device.peak() - fp->device.workspace,
+            std::max({chain_scratch, held + c + rhf.device.persistent + rhf.device.scratch,
+                      held + c + rhf.device.persistent + dipole.device.scratch,
+                      analysis.device.scratch}));
+}
+
+// Over an integral-direct ERI the analytic method is refused before anything
+// runs: nothing held.
+TEST(NestedFootprint, AnalyticHessianOverIntegralDirectIsEmpty) {
+  const fb::BasisSet basis = water_basis();
+  const std::optional<fb::MemoryFootprint> fp = fb::HessianStep{}.footprint(water_dims(basis));
+  ASSERT_TRUE(fp.has_value());
+  EXPECT_EQ(*fp, fb::MemoryFootprint{});
+}
+
+// The chains not footprinted yet: the CASSCF chains of both steps (#1176).
 TEST(NestedFootprint, UnfootprintedChainsHaveNone) {
   const fb::BasisSet basis = water_basis();
   const fb::FootprintDimensions dims = water_dims(basis);
-  EXPECT_FALSE(fb::HessianStep{}.footprint(dims).has_value());
   fb::HessianStep casscf_hessian{.method = fb::HessianMethod::Numerical};
   casscf_hessian.casscf_gradient.emplace();
   EXPECT_FALSE(casscf_hessian.footprint(dims).has_value());
@@ -162,7 +220,10 @@ TEST(NestedFootprint, StepFootprintPassesTheOptionalThrough) {
   const fb::BasisSet basis = water_basis();
   const fb::FootprintDimensions dims = water_dims(basis);
   EXPECT_EQ(fb::step_footprint(fb::OptimizeStep{}, dims), fb::OptimizeStep{}.footprint(dims));
-  EXPECT_FALSE(fb::step_footprint(fb::HessianStep{}, dims).has_value());
+  EXPECT_EQ(fb::step_footprint(fb::HessianStep{}, dims), fb::HessianStep{}.footprint(dims));
+  fb::HessianStep casscf_hessian;
+  casscf_hessian.casscf_gradient.emplace();
+  EXPECT_FALSE(fb::step_footprint(casscf_hessian, dims).has_value());
 }
 
 } // namespace

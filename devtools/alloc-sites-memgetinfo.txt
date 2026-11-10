@@ -13,9 +13,6 @@
 # <path>                                                     <calls> <owner>
 
 # #1053: the analytic Hessians' column widths and batches.
-src/hessian/df_rhf_two_electron.cpp                                2 #1053
-src/hessian/df_rhf_response.cpp                                    1 #1053
-src/hessian/infrared.cpp                                           1 #1053
 src/hessian/df_adjoint_xy.cpp                                      1 #1053
 src/hessian/df_casscf_exy.cpp                                      1 #1053
 src/hessian/df_casscf_two_electron.cpp                             1 #1053

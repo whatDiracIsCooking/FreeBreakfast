@@ -10,8 +10,8 @@
 // - the analytic [hessian] at that minimum, run by Calculation from a TOML
 //   config: its dipole derivative, frequencies and IR intensities against
 //   PySCF's, and hessian.json holding the same;
-// - the refusals. The intensity of a hand-made mode, host arithmetic, is
-//   infrared_host.cpp's.
+// - the refusals, and rhf_dipole_derivative_footprint (#1053). The intensity
+//   of a hand-made mode, host arithmetic, is infrared_host.cpp's.
 
 #include <gtest/gtest.h>
 
@@ -32,7 +32,9 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
-// After the imports: it names std::filesystem from this unit's `import std;`.
+// After the imports: they name std::filesystem, wwr and Device from this
+// unit's imports.
+#include "pool_footprint.h"
 #include "scratch_dir.h"
 
 namespace {
@@ -258,6 +260,34 @@ TEST_F(HessianDipoleDerivative, Refusals) {
       fb::hessian::rhf_dipole_derivative(*res_, *molecule_, *tz, *tz_classes, tz_c, nocc_, tz_u);
   ASSERT_FALSE(f);
   EXPECT_EQ(f.error().kind, fb::ErrorKind::InvalidConfig) << f.error().message;
+}
+
+// rhf_dipole_derivative's own allocations held to its footprint on a fresh
+// DeviceResources, the inputs the fixture's: once to grow the workspace, then
+// measured. At the peak, the held MO blocks, P^c, the half product and the
+// result beside U and the three dipole pairs.
+TEST_F(HessianDipoleDerivative, FootprintIsSoundAndTight) {
+  FBF_REQUIRE_GPU();
+  load("h2o_ccpvdz");
+  ASSERT_FALSE(HasFatalFailure());
+  const auto nmo = static_cast<std::int32_t>(c_->num_elements() / nao_);
+  const fb::MemoryFootprint fp = fb::hessian::rhf_dipole_derivative_footprint(*basis_, nmo, nocc_);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  EXPECT_EQ(fp.pinned, fb::Footprint<wwr::extension::MemoryKind::Pinned>{});
+  fb::DeviceResources res{0};
+  const auto run = [&] {
+    const auto got =
+        fb::hessian::rhf_dipole_derivative(res, *molecule_, *basis_, classes_, *c_, nocc_, *u_);
+    EXPECT_TRUE(got) << got.error().message;
+  };
+  run();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  const free_breakfast::test::PoolPeak peak =
+      free_breakfast::test::measure_pool_peak(*res.device(), run);
+  std::cout << std::format("[ footprint ] rhf_dipole_derivative: measured {}, footprint {} + "
+                           "workspace {}\n",
+                           peak.used, fp.device.scratch, fp.device.workspace);
+  free_breakfast::test::expect_footprint(peak, {.scratch = fp.device.scratch}, 5 + 1 + 9);
 }
 
 // The analytic [hessian] at PySCF's DF-RHF minimum of water: its dipole

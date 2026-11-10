@@ -10,8 +10,10 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kTwo, kNegOne, kNegTwo, kNegHalf
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, gemv, trsm, gemmStridedBatched, wwrMemGetInfo
+import free_breakfast.core.primitives; // align_up
+import free_breakfast.core.wwr;        // gemm, gemv, trsm, gemmStridedBatched
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint; // MemoryFootprint, kPoolHeadroomBytes
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.density_fitting.gradient;
@@ -24,9 +26,66 @@ import :atom_block;
 
 namespace free_breakfast::hessian {
 
-// Left free when the cross terms size their batch of atom blocks to the
-// device's memory: the BLAS libraries' own workspaces and the pool's.
-constexpr size_t kCrossBatchHeadroomBytes = size_t{512} << 20;
+// What df_rhf_two_electron and its footprint share: its own buffers' counts,
+// in doubles, and the workspace its calls carve, in bytes.
+struct RhfTwoElectronSizes {
+  // Held for the whole call: the fitted pairs and a vector of twos.
+  size_t held = 0;
+  // The explicit part's: Gam, its half back-transform Y, W, d and D.
+  size_t explicit_part = 0;
+  // One aux atom's derivative block X, 3 nao^2 nblk at the largest atom's
+  // nblk.
+  size_t derivative_block = 0;
+  // The cross terms' besides their slots: M1, X and the two 3 n_atom x
+  // 3 n_atom products.
+  size_t cross_fixed = 0;
+  // One slot of the cross terms' batches: an atom block and its Coulomb
+  // vectors.
+  size_t slot = 0;
+  // The fewest slots the call runs with, min(2, n_atom).
+  size_t least_slots = 0;
+  // The largest workspace carve of b_mo, the second-derivative integrals,
+  // metric_derivative, and each aux atom's three_center_derivative and its
+  // half-transform W.
+  size_t workspace = 0;
+};
+
+RhfTwoElectronSizes rhf_two_electron_sizes(const BasisSet &basis, const BasisSet &aux,
+                                           const int32_t nocc) {
+  const size_t nao = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  const uint32_t n_atom = basis.natoms();
+  const auto occ = static_cast<size_t>(nocc);
+  const size_t oo = occ * occ;
+  const size_t n_x = 3 * static_cast<size_t>(n_atom);
+  const OrbitalRange occupied{.first = 0, .count = nocc};
+  RhfTwoElectronSizes s;
+  s.workspace = std::max(
+      {b_mo_footprint(static_cast<int32_t>(naux), static_cast<int32_t>(nao), occupied, occupied)
+           .device.workspace,
+       three_center_hessian_footprint(basis, aux).device.workspace,
+       metric_hessian_footprint(aux).device.workspace,
+       metric_derivative_footprint(aux).device.workspace});
+  size_t nblk_max = 0;
+  for (uint32_t a = 0; a < n_atom; ++a) {
+    const auto [p0, p1] = atom_function_range(aux, a);
+    const size_t nblk = p1 - p0;
+    nblk_max = std::max(nblk_max, nblk);
+    if (nblk > 0) {
+      s.workspace =
+          std::max({s.workspace, three_center_derivative_footprint(basis, aux, a).device.workspace,
+                    math::align_up(sizeof(double) * 3 * nao * nblk * occ,
+                                   DeviceResources::kWorkspaceAlignment)});
+    }
+  }
+  s.held = (naux * oo) + occ;
+  s.explicit_part = (naux * nao * nao) + (naux * occ * nao) + (naux * naux) + naux + (nao * nao);
+  s.derivative_block = 3 * nao * nao * nblk_max;
+  s.cross_fixed = (3 * naux * naux) + s.derivative_block + (2 * n_x * n_x);
+  s.slot = (3 * naux * oo) + (3 * naux);
+  s.least_slots = std::min<size_t>(2, n_atom);
+  return s;
+}
 
 Result<RhfTwoElectron> df_rhf_two_electron(DeviceResources &res, const BasisSet &basis,
                                            const std::span<const PrimitivePairClass> classes,
@@ -47,22 +106,8 @@ Result<RhfTwoElectron> df_rhf_two_electron(DeviceResources &res, const BasisSet 
   const size_t oo = occ * occ;
   const size_t nn = nao * nao;
   const size_t n_x = 3 * static_cast<size_t>(n_atom);
-  size_t nblk_max = 0;
-  size_t nblk_cart_max = 0;
-  for (uint32_t a = 0; a < n_atom; ++a) {
-    const auto [p0, p1] = atom_function_range(aux, a);
-    nblk_max = std::max(nblk_max, p1 - p0);
-    size_t cart = 0;
-    for (uint32_t sh = aux.atom_shell_offset(a);
-         sh < aux.atom_shell_offset(a) + aux.atom_shell_count(a); ++sh) {
-      cart += aux.shells()[sh].function_count_cart();
-    }
-    nblk_cart_max = std::max(nblk_cart_max, cart);
-  }
   // R^x for one atom's three coordinates, naux x nocc^2 each: one atom block.
   const size_t block = 3 * naux * oo;
-  // An atom block and its Coulomb vectors: one slot of the cross terms' batches.
-  const size_t slot = block + (3 * naux);
   constexpr auto kInt32Max = static_cast<size_t>(std::numeric_limits<int32_t>::max());
   if (naux * nn > kInt32Max || block > kInt32Max || naux * occ * nao > kInt32Max) {
     return err_unsupported("hessian::df_rhf_two_electron: naux nao^2 = {}, an atom block 3 naux "
@@ -70,22 +115,21 @@ Result<RhfTwoElectron> df_rhf_two_electron(DeviceResources &res, const BasisSet 
                            naux * nn, block, naux * occ * nao);
   }
   // Held for the whole call: the fitted pairs c and a vector of twos. The
-  // explicit part's: Gam, its half back-transform Y, W, d and D. The cross
-  // terms': M1, one aux atom's derivative block X, the two 3 n_atom x 3 n_atom
-  // products and at least two slots. All are held across calls that take the
-  // workspace (b_mo, the Hessian and derivative integrals), so they are the
-  // call's own (docs/style.md "Scratch memory"); past the device's memory an
-  // allocation would abort (CreatePolicy), not return.
-  const size_t held_count = (naux * oo) + occ;
-  const size_t explicit_count = (naux * nn) + (naux * occ * nao) + (naux * naux) + naux + nn;
-  const size_t cross_fixed = (3 * naux * naux) + (3 * nn * nblk_max) + (2 * n_x * n_x);
-  const size_t cross_least = cross_fixed + (std::min<size_t>(2, n_atom) * slot);
+  // explicit part's buffer, then the cross terms' fixed part and at least two
+  // slots. All are held across calls that take the workspace (b_mo, the
+  // Hessian and derivative integrals), so they are the call's own
+  // (docs/style.md "Scratch memory"); past the memory budget an allocation
+  // would abort (CreatePolicy), not return.
+  const RhfTwoElectronSizes sizes = rhf_two_electron_sizes(basis, aux, nocc);
+  const size_t held_count = sizes.held;
+  const size_t explicit_count = sizes.explicit_part;
+  const size_t cross_fixed = sizes.cross_fixed;
+  const size_t slot = sizes.slot;
+  const size_t cross_least = cross_fixed + (sizes.least_slots * slot);
   const size_t bytes = sizeof(double) * (held_count + std::max(explicit_count, cross_least));
   const ScopedDeviceIndex on{res.dev_idx()};
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  const size_t budget = max_bytes == 0 ? free_bytes : std::min(free_bytes, max_bytes);
+  const size_t memory = FBF_TRY(res.memory_budget());
+  const size_t budget = max_bytes == 0 ? memory : std::min(memory, max_bytes);
   if (bytes > budget) {
     return err_unsupported("hessian::df_rhf_two_electron: the fitted densities and a pair of "
                            "atom blocks of the cross term over {} orbital and {} fitting "
@@ -159,24 +203,23 @@ Result<RhfTwoElectron> df_rhf_two_electron(DeviceResources &res, const BasisSet 
     std::ranges::transform(out.exchange, exchange_metric, out.exchange.begin(), std::plus{});
   }
 
-  // The batch: as many slots as the budget holds past the call's other
-  // buffers, all n_atom when they fit (one walk), else two batches of half
-  // as many, A's and B's, so (n_b + 1) n_b / 2 walks for n_b batches. Sized
-  // now, after the explicit part has grown the workspace, and leaving room
-  // for three_center_derivative's scratch past what the workspace holds
-  // (its Cartesian block, its two half-transforms and staging) and the
-  // headroom; never fewer than the two slots the refusal above counted.
-  size_t slots = std::min<size_t>(2, n_atom);
+  // The batch: as many slots as the memory budget holds, all n_atom when
+  // they fit (one walk), else two batches of half as many, A's and B's, so
+  // (n_b + 1) n_b / 2 walks for n_b batches; never fewer than the least the
+  // refusal above counted, df_rhf_two_electron_footprint's scratch. Sized
+  // now, the explicit part freed, from the budget less what the call has
+  // still to allocate besides the batch, its last buffer: the workspace's
+  // growth to the walk's carves, if it must grow (the new block is allocated
+  // before the old one is freed), and the pool's fragmentation headroom.
+  size_t slots = sizes.least_slots;
   {
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    const size_t n_cart = basis.nao_cart();
-    const size_t walk_scratch =
-        sizeof(double) * ((3 * n_cart * n_cart * nblk_cart_max) + (nblk_max * n_cart * n_cart) +
-                          (nblk_max * nao * n_cart) + (n_cart * nao) + (aux.nao_cart() * naux));
-    const size_t held_scratch = res.device_workspace(0).num_elements();
-    const size_t reserve =
-        kCrossBatchHeadroomBytes + (walk_scratch > held_scratch ? walk_scratch - held_scratch : 0);
-    size_t room = free_bytes > reserve ? free_bytes - reserve : 0;
+    const size_t growth =
+        sizes.workspace > res.device_workspace(0).num_elements()
+            ? math::align_up(sizes.workspace, DeviceResources::kWorkspaceAlignment)
+            : 0;
+    const size_t reserve = kPoolHeadroomBytes + growth;
+    const size_t available = FBF_TRY(res.memory_budget());
+    size_t room = available > reserve ? available - reserve : 0;
     if (max_bytes != 0) {
       room = std::min(room, max_bytes - (sizeof(double) * held_count));
     }
@@ -194,7 +237,7 @@ Result<RhfTwoElectron> df_rhf_two_electron(DeviceResources &res, const BasisSet 
   Buffers::device<double> walk(cross_fixed + (batched * slot), res.device());
   double *const m1 = walk.data();
   double *const x = m1 + (3 * naux * naux);
-  double *const h_k = x + (3 * nn * nblk_max);
+  double *const h_k = x + sizes.derivative_block;
   double *const h_j = h_k + (n_x * n_x);
   double *const r_a = h_j + (n_x * n_x);
   double *const r_b = r_a + (per_batch * block);
@@ -267,6 +310,23 @@ Result<RhfTwoElectron> df_rhf_two_electron(DeviceResources &res, const BasisSet 
       FBF_TRY(contract(first_a, count_a, first_b, step, r_b, t_b));
     }
   }
+  return out;
+}
+
+MemoryFootprint df_rhf_two_electron_footprint(const BasisSet &basis, const BasisSet &aux,
+                                              const int32_t nocc) {
+  MemoryFootprint out;
+  if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || nocc < 1 ||
+      static_cast<size_t>(nocc) > basis.nao_sphe()) {
+    return out;
+  }
+  // The held buffer beside the explicit part's, then beside the batch at its
+  // least; the Coulomb and exchange parts are the caller's, on the host.
+  const RhfTwoElectronSizes s = rhf_two_electron_sizes(basis, aux, nocc);
+  out.device.scratch =
+      sizeof(double) *
+      (s.held + std::max(s.explicit_part, s.cross_fixed + (s.least_slots * s.slot)));
+  out.device.workspace = s.workspace;
   return out;
 }
 
