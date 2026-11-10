@@ -15,8 +15,9 @@
 //   v^T L G from the state's own G; every element of its laddered block
 //   within 2x the bar of h2nb_sto3g_sa2_hessian's state 0 (#1093: every
 //   coordinate but B1 1, B2 1 and B2 2, along which SC's surface crosses
-//   over and its reference does not ladder); and term (ii)'s h_01 along the
-//   b2 vibrations is held to the fixture's C_01 ladders.
+//   over and its reference does not ladder), and its a1 vibrations' block on
+//   its own (the fast tier's); and term (ii)'s h_01 along the b2 vibrations
+//   is held to the fixture's C_01 ladders.
 //   State 1 is refused by SC's conditioning rule (#1102): root 1's Si
 //   tuples keep N of 1e-10 and 3e-11, whose Hessian spreads run to run past
 //   every bar;
@@ -510,7 +511,7 @@ void expect_matches(const std::string &name, const std::int32_t state) {
 
 TEST(HessianDfQdScNevpt2, MatchesTheSkewFixtureStateOne) {
   FBF_REQUIRE_GPU();
-  FBF_FAMILY_REPRESENTATIVE();
+  FBF_SKIP_IF_FAST_TESTS();
   expect_matches("h2co_skew_ccpvdz_sa3", 1);
 }
 
@@ -699,6 +700,62 @@ TEST(HessianDfQdScNevpt2, CoupledA1B2RefusesStateOne) {
     EXPECT_LE(std::abs(std::abs(got) - std::abs(want)), kCouplingBars * bar)
         << direction.at("direction").get<std::string>();
   }
+}
+
+// The family's representative (#1207): the cheapest state Hessian with a
+// ladder, the A1/B2 case's state 0 along its three totally symmetric
+// vibrations alone (in CoupledA1B2RefusesStateOne's laddered block, without
+// the rest of that case), every element within kBars of
+// h2nb_sto3g_sa2_hessian's SC ladders.
+TEST(HessianDfQdScNevpt2, CoupledA1B2StateZeroMatchesAlongTheA1Vibrations) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  const fb::json &doc = fixture("h2nb_sto3g_sa2_hessian");
+  const Reference &ref = reference(start_of(doc, "h2nb_sto3g_sa2"));
+  ASSERT_TRUE(ref.solution.has_value());
+  const auto vectors = matrix(doc.at("coordinates").at("vectors"));
+  const auto labels = doc.at("coordinates").at("labels").get<std::vector<std::string>>();
+  const auto laddered = doc.at("steps").at("sc").at("coordinates").get<std::vector<std::string>>();
+  const std::vector<std::string> rows{"A1 1", "A1 2", "A1 3"};
+  // Each row's place among the laddered ones.
+  std::vector<std::size_t> in_ladder;
+  std::vector<double> q;
+  for (const std::string &row : rows) {
+    in_ladder.push_back(
+        static_cast<std::size_t>(std::ranges::find(laddered, row) - laddered.begin()));
+    ASSERT_LT(in_ladder.back(), laddered.size()) << row;
+    const auto at = std::ranges::find(labels, row) - labels.begin();
+    q.insert(q.end(), vectors[at].begin(), vectors[at].end());
+  }
+  const std::size_t k = rows.size();
+  const fb::json &want = doc.at("sc").at("states").at(0);
+  ASSERT_EQ(want.at("state").get<std::int32_t>(), 0);
+  const auto start = std::chrono::steady_clock::now();
+  const auto h = ref.hessian(*ref.solution, 0, q);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  ASSERT_TRUE(h.has_value()) << "state 0: " << h.error().message;
+  const auto hessian = matrix(want.at("hessian"));
+  const auto bar = matrix(want.at("bar"));
+  ASSERT_EQ(hessian.size(), laddered.size());
+  ASSERT_EQ(h->hessian.size(), k * k);
+  double worst = 0.0;
+  for (std::size_t j = 0; j < k; ++j) {
+    for (std::size_t i = 0; i < k; ++i) {
+      const double got = h->hessian[i + (k * j)];
+      const double expected = hessian[in_ladder[i]][in_ladder[j]];
+      const double b = bar[in_ladder[i]][in_ladder[j]];
+      const double miss = std::abs(got - expected) / b;
+      worst = std::max(worst, miss);
+      EXPECT_LE(miss, kBars) << "(" << rows[i] << ", " << rows[j] << ") " << got << " against "
+                             << expected << ", bar " << b;
+    }
+  }
+  std::cout << std::format("[ qd a1b2  ] state 0: worst element {:.3f} bars (allowed {:g}) over "
+                           "{}; asymmetry {:.1e} (bar {:.1e}); {:.1f} s\n",
+                           worst, kBars, rows, h->asymmetry, solve_bar(*h), seconds);
+  EXPECT_LE(h->cp_residual, kCpResidual);
+  EXPECT_LE(h->asymmetry, solve_bar(*h));
 }
 
 // The refusals before anything runs, each on a constructed input.
