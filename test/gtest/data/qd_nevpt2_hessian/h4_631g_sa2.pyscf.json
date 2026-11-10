@@ -1,0 +1,30 @@
+{
+ "description": "PySCF reference point of a qd_nevpt2_hessian.py case (tools/emit/qd_nevpt2_reference.py's polished SA-CASSCF, SC- and PC-QD-NEVPT2). Hartree. tools/nevpt2_hessian/qd_pyscf_point.py",
+ "provenance": {
+  "command": "tools/nevpt2_hessian/qd_pyscf_point.py",
+  "arithmetic": "tools/emit/qd_nevpt2_reference.py"
+ },
+ "name": "h4_631g_sa2",
+ "atoms": [["H",[0.0,0.0,-0.85]],["H",[0.05,0.1,0.85]],["H",[2.9,0.4,-0.3]],["H",[3.1,1.6,0.6]]],
+ "basis": "6-31g",
+ "aux_basis": {
+  "name": "cc-pVDZ-JKFIT",
+  "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+  "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+  "naux": 92
+ },
+ "ncas": 2,
+ "nelecas": 2,
+ "weights": [0.5,0.5],
+ "ncore": 1,
+ "nvirt": 5,
+ "casscf_energies": [-2.193584911464903,-1.8255247765204896],
+ "casscf_gaps": [0.3680601349444135],
+ "next_root_gap": 0.37444808171535837,
+ "inactive_gaps": {
+  "core": null,
+  "virtual": 0.08402020027908019
+ },
+ "sc_energies": [-2.234204379123633,-1.8555893505286516],
+ "pc_energies": [-2.234216767689487,-1.8557589986528353]
+}

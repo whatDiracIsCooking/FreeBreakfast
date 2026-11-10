@@ -5,8 +5,9 @@
 // qd-curv). On data/qd_nevpt2/'s h2co_skew_ccpvdz_sa3 (C1, three roots at
 // equal weights) and h2co_skew_ccpvdz_sa3_weighted (0.4, 0.4, 0.2: Theta on
 // the pairs with root 2, and every pair's rotation a parameter), and the
-// STO-3G H8 chain h8_sto3g_sa3 (three roots at equal weights, the fast
-// tier's), from this tree's own DF-SA-CASSCF through the registry.
+// STO-3G H8 chain h8_sto3g_sa3 at equal weights and at 0.4, 0.4, 0.2 (the
+// fast tier's, #1243), from this tree's own DF-SA-CASSCF through the
+// registry.
 //
 // Each term against a Richardson ladder of
 //
@@ -278,7 +279,8 @@ protected:
 
   // The case through the registry, then lambda^x, the multipliers and the
   // analytic terms.
-  void load(const std::string &name) {
+  // qd_nevpt2.json's case @p name, at its own weights or at @p weights.
+  void load(const std::string &name, std::vector<double> weights = {}) {
     const auto doc =
         fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "qd_nevpt2" / "qd_nevpt2.json");
     ASSERT_TRUE(doc.has_value()) << doc.error().message;
@@ -290,7 +292,8 @@ protected:
     }
     ASSERT_FALSE(entry.is_null()) << "no case " << name;
     name_ = name;
-    weights_ = entry.at("weights").get<std::vector<double>>();
+    weights_ =
+        weights.empty() ? entry.at("weights").get<std::vector<double>>() : std::move(weights);
     nroots_ = weights_.size();
     const std::vector<bool> rotates = fb::response::rotating_pairs(weights_);
     rotations_ = std::ranges::contains(rotates, true);
@@ -306,9 +309,9 @@ protected:
                          coord[2] * fb::kAngstromPerBohr<double>);
     }
     ASSERT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
-    std::string weights;
+    std::string listed;
     for (const double w : weights_) {
-      weights += std::format("{}{:.17g}", weights.empty() ? "" : ", ", w);
+      listed += std::format("{}{:.17g}", listed.empty() ? "" : ", ", w);
     }
     const std::string toml = std::format(
         "[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
@@ -317,7 +320,7 @@ protected:
         "conv_tol_grad = {:g}\n",
         entry.at("basis").get<std::string>(), entry.at("aux_basis").at("name").get<std::string>(),
         entry.at("ncas").get<std::int32_t>(), entry.at("nelecas").get<std::int32_t>(), nroots_,
-        weights, kConvTol, kConvTolGrad);
+        listed, kConvTol, kConvTolGrad);
     ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
     auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
     ASSERT_TRUE(calc.has_value()) << calc.error().message;
@@ -1001,13 +1004,26 @@ TEST_F(HessianDfSaCasscfZQd, EqualWeightsMatchLadders) {
   check();
 }
 
-// The family's representative (#1207): the same checks on the STO-3G H8
-// chain, three roots at equal weights, whose analytic terms are a ninth of
-// the cc-pVDZ cases' (no Theta there, which the unequal case alone holds).
+// The same checks on the STO-3G H8 chain, three roots at equal weights,
+// whose analytic terms are a ninth of the cc-pVDZ cases' (no Theta there):
+// #1207's representative, until #1243's unequal-weight one below.
 TEST_F(HessianDfSaCasscfZQd, EqualWeightsMatchLaddersOnH8Sto3g) {
   FBF_REQUIRE_GPU();
-  FBF_FAMILY_REPRESENTATIVE();
+  FBF_SKIP_IF_FAST_TESTS();
   load("h8_sto3g_sa3");
+  ASSERT_FALSE(HasFatalFailure());
+  check();
+}
+
+// The family's representative (#1243): the H8 chain at
+// h2co_skew_ccpvdz_sa3_weighted's 0.4/0.4/0.2, so Theta's share is checked
+// in the fast tier too: the pairs with root 2 rotate, and (0, 1) is an
+// equal-weight pair, out of the solve. The ladders are this test's own, so
+// no other reference is needed at these weights.
+TEST_F(HessianDfSaCasscfZQd, UnequalWeightsMatchLaddersOnH8Sto3g) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  load("h8_sto3g_sa3", {0.4, 0.4, 0.2});
   ASSERT_FALSE(HasFatalFailure());
   check();
 }

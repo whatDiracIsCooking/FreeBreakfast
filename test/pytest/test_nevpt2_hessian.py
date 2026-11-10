@@ -382,7 +382,11 @@ QD_CASES = (
     "h2co_skew_ccpvdz_sa3",
     "h2co_skew_ccpvdz_sa3_weighted",
     "h2co_skew_ccpvdz_sa3_w424",
+    "h4_631g_sa2",
 )
+# The cases held to qd_pyscf_point.py's PySCF point (#1243), with their
+# `<name>.pyscf.json`.
+PYSCF_CASES = ("h4_631g_sa2",)
 # qd_weight_search.py's screening of SC's unequal-weight candidates (#1060).
 SEARCH = "qd_weight_search"
 # The C2v A1/B2 coupling cases (#1058): C_MN's ladders, and their analysis.
@@ -427,6 +431,7 @@ def test_the_qd_cases_are_there():
         + list(COUPLING_CASES)
         + [f"{name}.analysis" for name in COUPLING_CASES]
         + [SEARCH]
+        + [f"{name}.pyscf" for name in PYSCF_CASES]
         + list(CROSSING_CASES)
         + [MECI]
         + list(SYMMETRIC_CASES)
@@ -441,7 +446,7 @@ def test_the_qd_cases_are_there():
                 hashlib.sha256(path.read_bytes()).hexdigest() == record[key]["sha256"]
             )
         n = len(record["weights"])
-        assert n == 3
+        assert n == (2 if name in PYSCF_CASES else 3)
         for scheme in record["schemes"]:
             assert [p["state"] for p in record[scheme]["states"]] == list(range(n))
             assert [p["pair"] for p in record[scheme]["pairs"]] == record["pairs"]
@@ -672,6 +677,47 @@ def test_the_qd_guard_and_the_gaps():
         # The reference point is qd_nevpt2/'s: another CASSCF solution misses
         # by millihartree.
         assert max(record["reference"]["agreement"].values()) < 1e-10
+
+
+def test_a_pyscf_case_is_held_to_its_pyscf_point():
+    # The fast tier's case (#1243): its own system, its reference point's
+    # CASSCF roots and both schemes' H_eff eigenvalues PySCF's.
+    assert [c["name"] for c in qd_tool.CASES if c.get("pyscf")] == list(PYSCF_CASES)
+    for name in PYSCF_CASES:
+        record = qd_fixture(name)
+        point = qd_fixture(f"{name}.pyscf")
+        (case,) = [c for c in qd_tool.CASES if c["name"] == name]
+        for key in ("atoms", "basis", "ncas", "nelecas", "weights"):
+            assert point[key] == case["system"][key]
+        for key in ("atoms", "ncas", "nelecas", "weights"):
+            assert record[key] == point[key]
+        assert record["basis"]["name"] == point["basis"]
+        assert record["schemes"] == ["sc", "pc"]
+        ref = record["reference"]
+        want = {
+            "casscf": max(
+                abs(a - b)
+                for a, b in zip(
+                    ref["casscf_energies"], point["casscf_energies"], strict=True
+                )
+            ),
+            **{
+                scheme: max(
+                    abs(a - b)
+                    for a, b in zip(
+                        ref[scheme]["energies"],
+                        point[f"{scheme}_energies"],
+                        strict=True,
+                    )
+                )
+                for scheme in ("sc", "pc")
+            },
+        }
+        # The agreement is the worst over the record's driver runs (one per
+        # step), the first of which wrote `reference`.
+        assert ref["agreement"].keys() == want.keys()
+        for key, value in want.items():
+            assert value <= ref["agreement"][key] < 1e-10, key
 
 
 # ------------------------------------------ the SA3 crossing (#1059)

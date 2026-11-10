@@ -94,7 +94,8 @@ TONIGHT = {
     "Big.Case": 10.3,
 }
 OVER = [
-    _case("Fast.Rep", 4.0),  # its family's representative: allowed
+    _case("Fast.Rep", 4.0),  # its family's representative: over its own line
+    _case("Host.Small", 2.5, slow=None),  # a representative under its line
     _case("Fast.Over", 2.0),  # over the line, fast set: flagged
     _case("Exempt.Timing", 30.0),  # an exempt family
     _case("Slow.Big", 20.0, slow=True),  # under FBF_SKIP_IF_FAST_TESTS
@@ -116,6 +117,20 @@ def test_a_fast_set_case_over_the_line_is_flagged() -> None:
     assert [r["name"] for r in f["over_line_unrecorded"]] == ["Host.Big"]
 
 
+def test_a_representative_over_its_line_is_flagged() -> None:
+    # Fast.Rep, 4.0 s, is over the representatives' line (#1243) though the
+    # fast-set line allows it. Host.Small at 2.5 s is under it; Big.Case, a
+    # representative at 10.3 s, is one the record calls slow, which no gate
+    # runs; Exempt.Timing's family has no representative.
+    f = _findings()
+    assert sr.REPRESENTATIVE_LINE_SECONDS == 2 * sr.LINE_SECONDS
+    assert f["representative_line_seconds"] == sr.REPRESENTATIVE_LINE_SECONDS
+    assert f["representatives_over_line"] == [
+        {"name": "Fast.Rep", "family": "Fast", "seconds": 4.0}
+    ]
+    assert f["over_line"][0]["name"] == "Fast.Over"
+
+
 def test_a_step_is_flagged_and_steady_noise_is_not() -> None:
     f = _findings()
     # Steady.Stepped: 2.0 s for two weeks, 2.6 s tonight, a 30% step against
@@ -126,9 +141,9 @@ def test_a_step_is_flagged_and_steady_noise_is_not() -> None:
     assert stepped["median"] == 2.0
     assert stepped["nights"] == len(NOISE)
     assert stepped["median"] < stepped["bar"] < stepped["seconds"]
-    # Steady.New has three nights; OVER's six passes have none.
+    # Steady.New has three nights; OVER's seven passes have none.
     assert f["judged"] == 4
-    assert f["too_short"] == 1 + 6
+    assert f["too_short"] == 1 + 7
 
 
 def test_the_bar_takes_the_largest_of_three_spreads() -> None:
@@ -169,9 +184,9 @@ def test_only_this_hosts_nightly_and_weekly_records_form_the_series() -> None:
 def test_the_report_names_each_finding() -> None:
     f = _findings()
     text = "\n".join(sr.render(f))
-    for name in ("Fast.Over", "Host.Big", "Steady.Stepped"):
+    for name in ("Fast.Over", "Host.Big", "Steady.Stepped", "Fast.Rep"):
         assert name in text
-    for name in ("Fast.Rep", "Exempt.Timing", "Slow.Big", "Steady.Noise"):
+    for name in ("Host.Small", "Exempt.Timing", "Slow.Big", "Steady.Noise"):
         assert name not in text
     assert sr.summary_field(f) == "slow-rule=1/1"
     assert sr.summary_field(None) == "slow-rule=none"

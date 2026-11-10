@@ -516,6 +516,14 @@ reading a log. It reports two things, and neither fails the night:
   build directory, the cheapest by the same records' times among the members
   they do not mark `slow`, as `pr`'s are ("Test selection"). pytest cases and
   the `example_*` entries are outside `slow_test.h`'s rule.
+- **A representative over its line:** a family's representative that took
+  more than **3 s** (`REPRESENTATIVE_LINE_SECONDS`, twice `LINE_SECONDS`;
+  #1243). The line above exempts representatives, but the gates run every
+  one, so a representative that grows is the budget drifting back over five
+  minutes: the gate's main GPU batch has about 360 entries, at about 0.55 s
+  each on the 3080 (200.8 s, #1207), so one representative at 3 s costs five
+  of them, and a family past it needs a smaller input, as #1207 and #1243
+  gave the slowest ones. One the record calls slow is not one a gate runs.
 - **A step:** a case, in either set and either language, whose time stepped up
   against its own recent history past the bar below.
 
@@ -574,9 +582,9 @@ nightly's log and output; `slow-rule=<over>/<steps>` on its `summary.log`
 line (`slow-rule=none` when the series has no record of this host, and
 `slow-rule=FAILED`, which fails the night, when the report could not run); and
 the findings as JSON in `<log>.results/slow-rule.json`, which a failed night's
-issue (#986) carries in its body. It holds `over_line`, `over_line_unrecorded`
-and `steps`, each case with its numbers, and the constants they were judged
-by.
+issue (#986) carries in its body. It holds `over_line`, `over_line_unrecorded`,
+`representatives_over_line` and `steps`, each case with its numbers, and the
+constants they were judged by.
 
 ```bash
 python3 devtools/slow_rule.py build                # the latest nightly's report
