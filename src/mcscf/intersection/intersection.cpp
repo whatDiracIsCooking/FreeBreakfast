@@ -14,6 +14,8 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // wwrMemcpyAsync
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -324,6 +326,83 @@ df_intersection(DeviceResources &res, const Molecule &molecule, const BasisSet &
     out.h_ij[k] = (cos_2phi * g_h.total[k]) - (sin_2phi * g_x.total[k]);
   }
   return out;
+}
+
+MemoryFootprint df_intersection_footprint(const BasisSet &basis, const BasisSet &aux,
+                                          const int32_t ncore, const int32_t ncas,
+                                          const int32_t nelecas, const int32_t multiplicity,
+                                          const int32_t nroots, const bool rotating) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const int32_t two_s = multiplicity - 1;
+  if (nroots < 2 || ncore < 0 || ncas < 1 || ncore + ncas > nmo || naux < 1 || two_s < 0 ||
+      nelecas < two_s || (nelecas - two_s) % 2 != 0 || nelecas - ((nelecas - two_s) / 2) > ncas) {
+    return {}; // refused before anything is allocated
+  }
+  const int32_t n_beta = (nelecas - two_s) / 2;
+  const int32_t n_alpha = nelecas - n_beta;
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha_strings = strings(n_alpha);
+  const int32_t beta_strings = strings(n_beta);
+  const auto dim = static_cast<size_t>(alpha_strings) * static_cast<size_t>(beta_strings);
+  const auto n = static_cast<size_t>(ncas);
+  const size_t m = n * n;
+  const auto roots = static_cast<size_t>(nroots);
+  const int32_t n_pairs = (ncore * (nmo - ncore)) + (ncas * (nmo - ncore - ncas));
+  const auto pairs = static_cast<size_t>(n_pairs);
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  const MemoryFootprint fock = response::fock_footprint(nmo, naux, ncore, ncas);
+  MemoryFootprint tables;
+  tables.device.persistent =
+      ci::sigma_footprint(ncas, alpha_strings, beta_strings).device.persistent;
+  MemoryFootprint growth;
+  growth.device.persistent =
+      ci::sigma_apply_bytes(ncas, alpha_strings, beta_strings, ci::Layout::full);
+  const auto rows = static_cast<int32_t>(dim);
+
+  // The setup, kept.
+  MemoryFootprint chain = then(ci::device_string_set_footprint(ncas, n_alpha),
+                               ci::device_string_set_footprint(ncas, n_beta));
+  chain = then(chain, casscf_integrals_footprint(nmo, naux, ncore, ncas));
+  chain = then(chain, fock);
+  chain = then(chain, tables);
+  chain = then(chain, response::hessian_footprint(nmo, naux, ncore, ncas));
+  chain =
+      then(chain, response::relaxed_hessian_footprint(ncas, n_alpha, n_beta, nroots, nmo, ncore,
+                                                      static_cast<size_t>(kIntersectionColumns)));
+  // The pair's RDMs, by rdm12 and trans_rdm12; the right-hand sides; the
+  // mean's Fock, at rdm12's RDMs; the two transition orbital gradients.
+  MemoryFootprint rdms = held(m + (m * m));
+  rdms.device.workspace = std::max(ci::rdm12_footprint(ncas, rows).device.workspace,
+                                   ci::trans_rdm12_footprint(ncas, rows).device.workspace);
+  chain = then(chain, rdms);
+  chain = then(chain, held(kIntersectionColumns * pairs));
+  chain = then(chain, drop(fock));
+  const MemoryFootprint transition =
+      drop(transition_orbital_gradient_footprint(nmo, naux, ncore, ncas));
+  chain = then(chain, transition);
+  chain = then(chain, transition);
+  // The block solve, its ZVectors kept; each column copied out, kept.
+  chain = then(chain, growth);
+  chain = then(chain, response::zvectors_footprint(
+                          n_pairs, rows, nroots, static_cast<int32_t>(kIntersectionColumns),
+                          response::hessian_apply_footprint(nmo, naux, ncore, ncas), rotating));
+  for (size_t col = 0; col < kIntersectionColumns; ++col) {
+    chain = then(chain, held(pairs + (dim * roots)));
+  }
+  // The three derivative calls, each with its multipliers.
+  for (const GradientForm form :
+       {GradientForm::Mix, GradientForm::ZeroMix, GradientForm::Transition}) {
+    chain = then(chain, df_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity,
+                                              nroots, rotating, form, true));
+  }
+  // The two sigma products.
+  chain = then(chain, held(2 * dim));
+  return drop(chain);
 }
 
 } // namespace free_breakfast::mcscf

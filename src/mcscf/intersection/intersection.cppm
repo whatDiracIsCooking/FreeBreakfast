@@ -12,6 +12,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -98,5 +99,29 @@ df_intersection(DeviceResources &res, const Molecule &molecule, const BasisSet &
                 const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                 const Solution &solution, int32_t ncore, int32_t ncas, int32_t i, int32_t j,
                 const IntersectionOptions &options = {});
+
+/// @brief What @ref df_intersection holds over @p basis and @p aux, with
+/// @p ncore core and @p ncas active orbitals holding @p nelecas electrons at
+/// @p multiplicity, over a solution of @p nroots roots, all of it freed on
+/// return (the three vectors are on the host): scratch and the device
+/// workspace.
+///
+/// In the call's order, each beside what is held before it: the setup (the
+/// CI strings, the fitted integrals, the averaged Fock, the CI sigma's
+/// tables, the Hessian and the CI-relaxed Hessian over three block
+/// columns), kept to the end; the pair's RDMs; the three right-hand sides,
+/// the mean's Fock and the two transition orbital gradients each freed once
+/// placed; the sigma's apply scratch, grown to Layout::full by the products,
+/// and @c response::zvectors' over the three columns, the ZVectors kept;
+/// each column copied out, kept; the three derivative calls
+/// (@c df_gradient_footprint at the mean's mix, the half difference's mix
+/// summing to 0 and the coupling's transition RDMs, each with its
+/// multipliers); the two sigma products. @p rotating says two of the
+/// weights differ (the Z-vector carries rotations among the roots). Empty
+/// where the call refuses before allocating.
+[[nodiscard]] MemoryFootprint df_intersection_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                        int32_t ncore, int32_t ncas,
+                                                        int32_t nelecas, int32_t multiplicity,
+                                                        int32_t nroots, bool rotating);
 
 } // namespace free_breakfast::mcscf

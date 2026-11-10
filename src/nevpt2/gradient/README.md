@@ -1920,6 +1920,10 @@ calls (`../energy/`, `../density_fitting/`, `../rdm/`, `../../mcscf/`,
                                rotating, batch, syevd_lwork, trace_zero, passes)
                                                                       the W form (#1186)
     qd_pc_w_gradient_footprint(..., trace_zero, passes, dropped)
+    qd_sc_w_gradients_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots,
+                                rotating, batch, trace_zero, nfrozen)
+                                                                      several W's (#1212)
+    qd_pc_w_gradients_footprint(..., batch, syevd_lwork, trace_zero, nfrozen, dropped)
     qd_inputs_footprint(naux, nmo, ncore, ncas, nelecas, multiplicity, nroots, use,
                         nfrozen)
     builders_tangent_footprint(naux, nao, nmo, ncore, ncas, count)
@@ -1937,7 +1941,12 @@ energy and H_eff's eigensolve: `passes` false is `qd_sc_lagrangian`'s W
 form, true the W form of `qd_sc_gradient` (or `qd_pc_gradient`) with its
 two derivative passes; `trace_zero` a W of trace 0, a coupling's or a
 seam's, which holds the core's Fock as `qd_sc_coupling` does. The
-several-W form over k matrices holds at most k times one W's.
+several-W form's (#1212, for the QD intersections) is exact at one W per
+entry of its `trace_zero` span: one set of the adjoints' forward arrays, each
+W's adjoint kept; per column its z^c, Phi^SA, root-pair multipliers, zeta's
+terms and RDMs at rho (the core's Fock once, at the first W of trace 0); one
+block Z-vector over every column, each copied out; then each W's passes in
+turn, every Lagrangian kept, and qd_setup's strings to the end.
 
 `nevpt2::rdms` and `rdms_adjoint` size their tiles from the memory budget
 (`../rdm/`): each footprint counts them at one determinant, the least they

@@ -1230,6 +1230,41 @@ TEST_F(CasscfReaderFootprint, DfNacCombination) {
                         });
 }
 
+// df_intersection of the pair (0, 1) at the solution, the MECI search's call
+// (#1212): its setup, the pair's RDMs, the three right-hand sides, the block
+// Z-vector over them and its columns, and the three derivative calls. Live
+// at the peak, a derivative call's terms beside the setup, the ZVectors and
+// the columns.
+TEST_F(CasscfReaderFootprint, DfIntersection) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  SaCasscf &s = sa();
+  const fb::DensityFitted &fit = s.fit();
+  expect_step_footprint(fb::mcscf::df_intersection_footprint(s.basis(), fit.aux, s.ncore(),
+                                                             s.ncas(), s.nelecas(), 1, 2, false),
+                        80, [&](fb::DeviceResources &res) {
+                          EXPECT_TRUE(fb::mcscf::df_intersection(
+                              res, s.molecule(), s.basis(), s.classes(), fit.aux, s.h(), fit.b,
+                              fit.l.data(), *s.solution, s.ncore(), s.ncas(), 0, 1));
+                        });
+}
+
+// state_overlaps between the solution and itself, in the same basis, as an
+// [optimize] follows its roots (#1212): the mixed AO overlap beside
+// overlap_mixed_spherical's own, then the workspace's two carvings. Live at
+// the peak, the overlap and overlap_mixed_spherical's own.
+TEST_F(CasscfReaderFootprint, StateOverlaps) {
+  FBF_REQUIRE_GPU();
+  SaCasscf &s = sa();
+  expect_step_footprint(fb::mcscf::state_overlaps_footprint(s.basis(), s.basis(), s.ncore(),
+                                                            s.ncas(), s.nelecas(), 1, 2, 2),
+                        8, [&](fb::DeviceResources &res) {
+                          EXPECT_TRUE(fb::mcscf::state_overlaps(res, s.basis(), *s.solution,
+                                                                s.basis(), *s.solution, s.ncore(),
+                                                                s.ncas(), s.nelecas(), 1));
+                        });
+}
+
 // The steps at plan_shape's dimensions: the CASSCF's two roots, its explicit
 // space; over the CASSCF at its own equal weights, and at the skewed ones
 // with the dimensions' flag set as plan_shape sets it for them
@@ -1606,6 +1641,9 @@ constexpr std::size_t kQdPcAdjointLive = 182;
 // at its adjoint's walk.
 constexpr std::size_t kCouplingLive = 49;
 constexpr std::size_t kPcCouplingLive = 186;
+// The intersections', at a df_gradient pass beside the three Lagrangians.
+constexpr std::size_t kIntersectionLive = 80;
+constexpr std::size_t kPcIntersectionLive = 200;
 
 // The Nevpt2 step over the SA-2 CASSCF, SC and PC per root, at the least:
 // its footprint, the PC classes counted at their whole bases, past the run
@@ -2059,6 +2097,44 @@ TEST_F(Nevpt2ReaderFootprint, Couplings) {
                                                         fit.b, fit.l.data(), *s.solution, ncore,
                                                         ncas, 0, 1, 0);
                          }));
+}
+
+// The QD-NEVPT2 MECI search's call between the SA-2 CASSCF's two QD states
+// (#1212), SC's and PC's, each alone at its least: qd_inputs and the
+// effective Hamiltonian, H_eff's eigensolve, then the several-W gradient at
+// the pair's three W's, every Lagrangian kept through the passes.
+TEST_F(Nevpt2ReaderFootprint, Intersections) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  Nevpt2Reference &s = sa();
+  const fb::BasisSet &basis = s.plan.basis->basis;
+  const fb::BasisSet &aux = s.fit().aux;
+  const std::int32_t ncore = s.cas->ncore;
+  const std::int32_t ncas = s.cas->ncas;
+  const std::int32_t nelecas = s.cas->nelecas;
+  const std::int32_t n = s.nroots();
+  const auto &lwork = s.dims().syevd_lwork;
+  const std::vector<std::array<std::int64_t, 8>> dropped = s.qd_dropped();
+  const fb::Molecule &molecule = s.plan.molecule->molecule;
+  const auto &classes = s.plan.pairs->classes;
+  const fb::SphericalMatrixAO &h = s.plan.h->h;
+  const fb::DensityFitted &fit = s.fit();
+  expect_least_footprint(fb::nevpt2::qd_sc_intersection_footprint(basis, aux, ncore, ncas, nelecas,
+                                                                  1, n, false, 0, lwork),
+                         kIntersectionLive, [&](fb::DeviceResources &res) {
+                           const auto out = fb::nevpt2::qd_sc_intersection(
+                               res, molecule, basis, classes, aux, h, fit.b, fit.l.data(),
+                               *s.solution, ncore, ncas, 0, 1, 0);
+                           EXPECT_TRUE(out) << out.error().message;
+                         });
+  expect_least_footprint(fb::nevpt2::qd_pc_intersection_footprint(
+                             basis, aux, ncore, ncas, nelecas, 1, n, false, 0, lwork, 0, dropped),
+                         kPcIntersectionLive, [&](fb::DeviceResources &res) {
+                           const auto out = fb::nevpt2::qd_pc_intersection(
+                               res, molecule, basis, classes, aux, h, fit.b, fit.l.data(),
+                               *s.solution, ncore, ncas, 0, 1, 0);
+                           EXPECT_TRUE(out) << out.error().message;
+                         });
 }
 
 // The analytic [hessian] over @p xyz in @p basis, the step's tables
@@ -3256,6 +3332,95 @@ TEST(StepFootprint, SemiNumericalQdScNevpt2Hessian) {
       "no displacement tracks the reference's QD state to another rank, so the gradient the "
       "footprint counts retaken at the tracked state, beside the chain's own, is never taken: the "
       "run is capped at the footprint without it");
+}
+
+// The [optimize] over a CASSCF chain (#1212), the skew formaldehyde's CAS(4,4)
+// in STO-3G under @p tables: two evaluations (max_steps 1: the first, from
+// the SCF, then one step, from the carried orbitals, then
+// MaxIterationsExceeded), each beside what it runs past its chain and a
+// followed state's C and CI vectors. The step's footprint on a
+// NodeResources capped at its peak, as expect_seminumerical_hessian_footprint
+// caps one, with @p live allocations live at its peak.
+void expect_optimize_footprint(const std::string_view tables, const std::size_t live) {
+  const std::string xyz = skew_formaldehyde_xyz();
+  Plan plan(
+      System{.xyz = xyz, .basis = "sto-3g", .mode = fb::EriMode::DensityFitting, .tables = tables});
+  const auto optimize = planned<fb::OptimizeStep>(*plan.calc);
+  ASSERT_EQ(optimize.options.max_steps, 1);
+  const std::optional<fb::MemoryFootprint> fp = optimize.footprint(plan.dims());
+  ASSERT_TRUE(fp.has_value());
+  EXPECT_EQ(fp->device.persistent, fb::molecule_footprint(plan.dims().natoms).device.persistent);
+  std::size_t granularity = 0;
+  {
+    fb::DeviceResources probe{0};
+    granularity = fbt::pool_granularity(*probe.device());
+  }
+  const std::uint64_t cap = fp->device.peak() + fb::kPoolHeadroomBytes +
+                            (granularity * (live + 16)) + reuse_room(fp->device.peak());
+  fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  res = fb::DeviceResources{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  (void)res.device_workspace(fp->device.workspace);
+  const auto start = std::chrono::steady_clock::now();
+  const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] {
+    const auto ran = optimize.run(fb::View<>{}, node);
+    ASSERT_FALSE(ran.has_value());
+    EXPECT_EQ(ran.error().kind, fb::ErrorKind::MaxIterationsExceeded) << ran.error().message;
+  });
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp->device.workspace);
+  EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
+  std::cout << std::format("[ footprint ] [optimize]: capped at {}: measured {} (G {}), footprint "
+                           "{} + workspace {}, in {:.1f} s\n",
+                           cap, peak.used, peak.granularity,
+                           fp->device.persistent + fp->device.scratch, fp->device.workspace,
+                           seconds);
+  // The optimum's Molecule, the footprint's product, is never built (the
+  // walk stops at max_steps), but its share of the peak is the start's,
+  // held through every evaluation.
+  fbt::expect_footprint(peak, {.persistent = fp->device.persistent, .scratch = fp->device.scratch},
+                        live);
+  EXPECT_LE(res.device()->pool_usage().used_high, cap);
+}
+
+// The [optimize] tables of the skew formaldehyde's CAS(4,4) over @p nroots
+// roots, the chain ending in @p gradient's tables, then @p optimize's, one
+// step at most.
+std::string optimize_tables(const std::int32_t nroots, const std::string_view gradient,
+                            const std::string_view optimize = {}) {
+  return std::format("[casscf]\nncas = 4\nnelecas = 4\nactive = [6, 7, 8, 9]\nnroots = {}\n"
+                     "conv_tol = 1e-12\nconv_tol_grad = 1e-9\n{}[optimize]\nmax_steps = 1\n{}",
+                     nroots, gradient, optimize);
+}
+
+// Root 1 of the SA-2 CASSCF, followed: at the peak, a chain's products, the
+// two Solutions and the CASSCF gradient's own. Slow-gated.
+TEST(StepFootprint, OptimizeCasscfGradient) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_optimize_footprint(optimize_tables(2, "[casscf_gradient]\nroot = 1\n"),
+                            kCasscfChainLive + 4 + 64);
+}
+
+// QD-SC-NEVPT2 state 1 of the SA-2 CASSCF, followed: at the peak, a chain's
+// products, the NEVPT2 gradient's own in it, and the Solutions. Slow-gated.
+TEST(StepFootprint, OptimizeQdScNevpt2Gradient) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_optimize_footprint(
+      optimize_tables(2, "[nevpt2_gradient]\nquasi_degenerate = true\nstate = 1\n"),
+      kCasscfChainLive + kNevpt2QdGradientLive + 4);
+}
+
+// The MECI of the SA-2 CASSCF's roots 0 and 1, the pair followed: at the
+// peak, a chain's products, the Solutions and df_intersection's own.
+// Slow-gated.
+TEST(StepFootprint, OptimizeMeci) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_optimize_footprint(optimize_tables(2, "", "meci = [0, 1]\n"), kCasscfChainLive + 4 + 80);
 }
 
 } // namespace

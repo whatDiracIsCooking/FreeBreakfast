@@ -525,12 +525,37 @@ made while the start is still held; the chain holds a Molecule of the same
 atoms, so the two together are under its peak. The history and the
 trajectory are pageable host memory, not modelled.
 
-Over a CASSCF chain (`casscf_gradient`, `nevpt2_gradient`, `meci`) the
-footprint is none, so a capped plan is refused naming `[optimize]`: the
-NEVPT2 gradient's and the intersections' library calls are not all
-footprinted yet, and the CASSCF chain's fold is not written (the carried
-orbitals step has its footprint). That optional is transitional
-(`../footprint/README.md`, #1122).
+Over a CASSCF chain (`casscf_gradient`, `nevpt2_gradient`, `meci`, #1212)
+the chain's readers are sized over this step's own `[casscf]` (its roots and
+whether two weights differ), at the plan's largest active space. Each
+evaluation is its chain, folded the same way: the first's from the SCF to
+`[casscf]`, every later one's from the carried orbitals (the carried
+orbitals step's footprint reads only the dimensions), each ending in the
+NEVPT2 gradient under `nevpt2_gradient`. Beside a chain's products comes
+what the evaluation runs past it, `finish`: the CASSCF root's gradient
+(`CasscfGradientStep`'s footprint), or under `meci`
+`mcscf::df_intersection_footprint` (over QD states
+`nevpt2::qd_sc_intersection_footprint` or its PC twin, at the frozen core
+`[nevpt2_gradient]` resolves). A followed state (a state-averaged root, a
+QD state, a pair) holds the CASSCF's `mcscf::Solution`, C and the CI vectors
+on the device (`S`), from its match to the next evaluation's:
+
+```
+first = then(chain_first, then(S, finish))
+later = then(S, then(chain_later, then(S, then(overlaps, finish))))
+then(drop(then(molecule, then(drop(first), drop(later)))),
+     then(drop(then(molecule, S)), molecule))
+```
+
+`overlaps` is `mcscf::state_overlaps_footprint` between the two, dropped.
+A root's gradient is taken once the root is matched and the last state freed,
+so under `casscf_gradient` `later` is the larger of the match (the last `S`
+beside the chain, the new `S` and the overlaps) and the gradient (the chain,
+the new `S` and `finish`). Unfollowed (one root, or a NEVPT2 gradient that is
+not quasi-degenerate), `S` and `overlaps` are empty. Refused before anything
+runs (both gradients, `check_meci`, an integral-direct `[eri]`): empty. The
+member's optional is transitional (`../footprint/README.md`, #1122): every
+configuration has a value.
 
 ## Config
 
@@ -564,12 +589,20 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
   refusals (no `[casscf]` space, `[gradient]` beside it, an integral-direct
   `[eri]`).
 - `test/pipeline/nested_footprint_host.cpp`: the RHF footprint, the start's
-  Molecule plus the chain's peak worked out by hand over water in STO-3G,
-  and none over the CASSCF, NEVPT2 and MECI chains. Host-only.
+  Molecule plus the chain's peak worked out by hand over water in STO-3G;
+  and over a CAS(4,4) of it the CASSCF (one root, SA-2), SC, PC, QD-SC,
+  QD-PC and MECI (CASSCF roots, QD-SC and QD-PC states) folds the same way,
+  and their refusals. Host-only.
+- `test/gtest/pipeline_step_footprint_gpu.cpp`'s `StepFootprint.Optimize*`:
+  a followed SA-2 root's CASSCF gradient, a QD-SC-NEVPT2 state's gradient and
+  the MECI of two CASSCF roots, over the skew formaldehyde's CAS(4,4) in
+  STO-3G, two evaluations each (the first, one step, then
+  `MaxIterationsExceeded`), held to the footprint on a pool capped at it.
 - `test/gtest/pipeline_preflight_gpu.cpp`: an RHF `[optimize]` of water in
-  STO-3G refused, naming it, under a cap one byte below its peak's room,
-  before the first step; and run at the peak, the pool's `UsedMemHigh` over
-  every geometry within the cap and the workspace never grown.
+  STO-3G, and one over a CAS(2,2)'s gradient, each refused, naming it, under
+  a cap one byte below its peak's room, before the first step; and run at
+  the peak, the pool's `UsedMemHigh` over every geometry within the cap and
+  the workspace never grown.
 - `test/pipeline/optimize_host.cpp`: the following functions, and the files a
   walk keeps, over a stub evaluation through `recorded_optimize` and
   `recorded_optimize_meci`: a walk failed at evaluation 3 leaves

@@ -96,19 +96,18 @@ workspaces to exactly the footprint's, then again, measured, against the rest
 by `expect_footprint`'s two bars.
 
 **A nested step's footprint is optional, for now.** `OptimizeStep` and
-`HessianStep` rerun a chain whose shape their configuration picks, and only
-some of those chains are footprinted: the RHF chain under `[optimize]`, and
-every `[hessian]` configuration -- the semi-numerical RHF one (#1054), the
-analytic DF-RHF (#1053), DF-CASSCF (#1176) and SC-, PC- and QD-NEVPT2
-(#1186) ones, and the semi-numerical CASSCF and NEVPT2 / QD-NEVPT2 ones
-(#1204: the reference's chain, then each displacement's from its carried
-orbitals, and under QD the state's gradient and the ensemble's edge beside
-each). The CASSCF, NEVPT2 and MECI chains under `[optimize]` have no
-footprint yet.
-So their member is
+`HessianStep` rerun a chain whose shape their configuration picks, and every
+configuration of both is footprinted: the RHF and the CASSCF, NEVPT2 and
+MECI chains under `[optimize]` (#1054, #1212: each evaluation's chain, what
+it runs past it, and a followed state's C and CI between evaluations), and
+every `[hessian]` -- the semi-numerical RHF one (#1054), the analytic
+DF-RHF (#1053), DF-CASSCF (#1176) and SC-, PC- and QD-NEVPT2 (#1186) ones,
+and the semi-numerical CASSCF and NEVPT2 / QD-NEVPT2 ones (#1204: the
+reference's chain, then each displacement's from its carried orbitals, and
+under QD the state's gradient and the ensemble's edge beside each). Their
+member is still
 `std::optional<MemoryFootprint> footprint(const FootprintDimensions &) const`,
-none for a chain not footprinted, which pre-flight then refuses under a cap
-as it refuses a step with no member; `HessianStep`'s always has a value.
+which always has a value; #1122 makes it a plain `MemoryFootprint`.
 `step_footprint` passes it through.
 This is transitional: once those chains are footprinted, the member returns
 a `MemoryFootprint` like every other step's, and #1122 deletes the optional

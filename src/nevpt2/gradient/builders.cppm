@@ -243,16 +243,17 @@ Result<QdArrays> qd_arrays(DeviceResources &res, std::string_view who,
 MemoryFootprint qd_arrays_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore,
                                     int32_t ncas, int32_t nroots, int32_t nfrozen);
 
-/// @brief What qd_adjoint holds at one W, @p walk the effective
-/// Hamiltonian's reverse pass's (its transition
-/// qd_adjoint_transition_footprint's at the same @p fixed). With @p fixed
-/// (qd_adjoints' QdFixedBars, all-electron), the arrays, the shared bars
-/// and each root's own stay, persistent beside the result and the walk's
-/// kept copies.
+/// @brief What qd_adjoint holds at @p count W's over one set of forward
+/// arrays, @p walk one W's effective Hamiltonian's reverse pass (its
+/// transition qd_adjoint_transition_footprint's at the same @p fixed): each
+/// W's bars and own RDMs' bars freed before the next, its result kept. With
+/// @p fixed (qd_adjoints' QdFixedBars, one W, all-electron), the arrays, the
+/// shared bars and each root's own stay, persistent beside the result and
+/// the walk's kept copies.
 MemoryFootprint qd_adjoint_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore,
                                      int32_t ncas, int32_t n_alpha, int32_t n_beta, int32_t nroots,
                                      int32_t nfrozen, const MemoryFootprint &walk,
-                                     bool fixed = false);
+                                     bool fixed = false, int32_t count = 1);
 
 /// @brief One call of qd_adjoint's transition callback: the traces' adjoint
 /// and the bra/ket rdms_adjoint without f3 bars at one determinant; with

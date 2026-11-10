@@ -314,6 +314,27 @@ option.
 held beside them. Queued on `res.stream()`; every call it makes synchronizes,
 so it returns with everything done.
 
+```cpp
+MemoryFootprint mcscf::df_intersection_footprint(
+    const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+    int32_t nelecas, int32_t multiplicity, int32_t nroots, bool rotating);
+```
+
+is what the call holds, all of it freed on return (#1212), in its order:
+`df_nac_footprint`'s setup (the strings, the integrals, the averaged Fock,
+the sigma's tables, H and H̃, here over three block columns), kept; the
+pair's RDMs; the three right-hand sides, with the mean's Fock and the two
+transition orbital gradients each freed once placed; the sigma's apply
+scratch and `zvectors_footprint` over the three columns, the ZVectors kept;
+each column copied out, kept; the three derivative calls'
+`df_gradient_footprint` (the mean's mix, the half difference's mix summing
+to 0, the coupling's transition RDMs, each with its multipliers); the two
+sigma products. `rotating` says two weights differ. `[optimize]`'s MECI
+footprint reads it (`../../pipeline/optimize/`).
+`CasscfReaderFootprint.DfIntersection`
+(`test/gtest/pipeline_step_footprint_gpu.cpp`) holds it to the pool's peak
+over water's SA-2 CAS(4,4).
+
 ## Tests
 
 `test/gtest/mcscf_intersection_gpu.cpp`.

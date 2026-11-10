@@ -58,6 +58,9 @@ target_link_libraries(
           free_breakfast::pipeline::guess
           free_breakfast::pipeline::config
           free_breakfast::hessian
+          free_breakfast::mcscf::intersection
+          free_breakfast::mcscf::overlap
+          free_breakfast::nevpt2::intersection
           free_breakfast::test::support
           GTest::gtest
           GTest::gtest_main

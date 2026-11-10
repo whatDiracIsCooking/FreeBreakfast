@@ -11,6 +11,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.mcscf.solve;
 
@@ -55,5 +56,18 @@ export namespace free_breakfast::mcscf {
 state_overlaps(DeviceResources &res, const BasisSet &bra_basis, const Solution &bra,
                const BasisSet &ket_basis, const Solution &ket, int32_t ncore, int32_t ncas,
                int32_t nelecas, int32_t multiplicity);
+
+/// @brief What @ref state_overlaps holds over @p bra_basis and @p ket_basis
+/// with @p ncore core and @p ncas active orbitals holding @p nelecas
+/// electrons at @p multiplicity, @p n_bra and @p n_ket roots, all of it freed
+/// on return (S is on the host): the mixed AO overlap, beside
+/// @c overlap_mixed_spherical_footprint's own, then the device workspace,
+/// the larger of the MO overlap's two regions and the contraction's five.
+/// Empty where the call refuses before allocating.
+[[nodiscard]] MemoryFootprint state_overlaps_footprint(const BasisSet &bra_basis,
+                                                       const BasisSet &ket_basis, int32_t ncore,
+                                                       int32_t ncas, int32_t nelecas,
+                                                       int32_t multiplicity, int32_t n_bra,
+                                                       int32_t n_ket);
 
 } // namespace free_breakfast::mcscf

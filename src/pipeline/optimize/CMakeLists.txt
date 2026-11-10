@@ -11,8 +11,10 @@
 # the carried orbitals' copy to the host (core::wwr), a QD state's root matching
 # (mcscf::overlap), the MECI's g_I, g_J and h_IJ (mcscf::intersection) and
 # a QD MECI's g_P, g_Q and h_PQ (nevpt2::intersection) over its frozen core
-# (pipeline::nevpt2's resolution), core::constants,
-# core::log and diagnostics_macros (FBF_TRY, FBF_LOG_INFO) are PRIVATE.
+# (pipeline::nevpt2's resolution), the footprint's determinant count
+# (core::primitives) and weights (response::zvector's rotating_pairs),
+# core::constants, core::log and diagnostics_macros (FBF_TRY, FBF_LOG_INFO)
+# are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.optimize
@@ -36,6 +38,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::atom
   free_breakfast::core::constants
   free_breakfast::core::log
+  free_breakfast::core::primitives
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::io::base
@@ -45,4 +48,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::nevpt2::intersection
   free_breakfast::pipeline::nevpt2
   free_breakfast::pipeline::pipeline
+  free_breakfast::response::zvector
 )

@@ -441,7 +441,7 @@ MemoryFootprint qd_adjoint_footprint(const int32_t naux, const int32_t nao, cons
                                      const int32_t ncore, const int32_t ncas, const int32_t n_alpha,
                                      const int32_t n_beta, const int32_t nroots,
                                      const int32_t nfrozen, const MemoryFootprint &walk,
-                                     const bool fixed) {
+                                     const bool fixed, const int32_t count) {
   const int32_t nvirt = nmo - ncore - ncas;
   const auto n = static_cast<size_t>(ncas);
   const size_t n2 = sizeof(double) * n * n;
@@ -465,18 +465,24 @@ MemoryFootprint qd_adjoint_footprint(const int32_t naux, const int32_t nao, cons
   h.take((2 * ndet) + n4);
   const size_t bars = zeroed_arrays_bytes(naux, ncore, ncas, nvirt);
   const size_t own = roots * (n2 + n4 + (3 * n6));
-  h.take(bars + (q * nn) + correlated + own + (roots * ndet));
-  h.call(walk);
-  // builders_adjoint: the correlated Λ given back; each root's rdms_adjoint
-  // at one determinant; the folds.
-  h.give(correlated);
-  h.call(rdms_adjoint_footprint(ncas));
-  builders_adjoint_tail(h, naux, nao, nmo, ncore, ncas);
-  // rdms_adjoint's outputs go; with fixed, the arrays, the bars and each
-  // root's own stay in the QdFixedBars, beside the walk's folded copies.
+  for (int32_t k = 0; k < count; ++k) {
+    h.take(bars + (q * nn) + correlated + own + (roots * ndet));
+    h.call(walk);
+    // builders_adjoint: the correlated Λ given back; each root's
+    // rdms_adjoint at one determinant; the folds.
+    h.give(correlated);
+    h.call(rdms_adjoint_footprint(ncas));
+    builders_adjoint_tail(h, naux, nao, nmo, ncore, ncas);
+    // This W's bars and own RDMs' bars go, but with fixed, where they stay
+    // in the QdFixedBars beside the walk's folded copies.
+    if (!fixed) {
+      h.give(own + bars);
+    }
+  }
+  // rdms_adjoint's outputs go; with fixed, the arrays stay too.
   h.give((2 * ndet) + n4);
   if (!fixed) {
-    h.give(own + bars + arrays.device.persistent);
+    h.give(arrays.device.persistent);
   }
   return h.footprint(h.live);
 }

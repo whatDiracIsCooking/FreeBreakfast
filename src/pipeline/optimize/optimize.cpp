@@ -17,7 +17,8 @@ import free_breakfast.core.constants; // kAngstromPerBohr
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
-import free_breakfast.atom; // element_symbol
+import free_breakfast.core.primitives; // math::binomial
+import free_breakfast.atom;            // element_symbol
 import free_breakfast.io.base;
 import free_breakfast.io.json;
 import free_breakfast.io.xyz;
@@ -27,6 +28,7 @@ import free_breakfast.nevpt2.intersection; // qd_sc_intersection, qd_pc_intersec
 import free_breakfast.pipeline.nevpt2;     // Nevpt2Step::resolve_frozen_core
 import free_breakfast.pipeline.pipeline;
 import free_breakfast.pipeline.footprint;
+import free_breakfast.response.zvector; // rotating_pairs
 
 #include "diagnostics.h"
 
@@ -556,27 +558,201 @@ recorded_optimize_meci(const OptimizeStep &step, std::span<const Atom> start,
   });
 }
 
+// The CASSCF chain at the first geometry, at @p trial, as @p step
+// configures it, with @p scf and @p casscf for its [scf] and [casscf], then
+// @p last: the SCF, and the active space picked from it.
+template <class... Last>
+[[nodiscard]] auto casscf_first_chain(const OptimizeStep &step, TrialGeometryStep trial,
+                                      ScfStep scf, CasscfStep casscf, Last... last) {
+  return Pipeline<TrialGeometryStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep,
+                  EriStep, OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
+                  CasscfStep, Last...>::create({
+      std::move(trial),
+      step.basis_set,
+      SphericalTransformStep{},
+      PrimitivePairClassesStep{},
+      step.eri,
+      OverlapStep{},
+      step.orthogonalizer,
+      CoreHamiltonianStep{},
+      step.guess,
+      std::move(scf),
+      std::move(casscf),
+      std::move(last)...,
+  });
+}
+
+// The CASSCF chain at every later geometry, at @p trial: no SCF, the last
+// orbitals carried over by @p carried into @p casscf, then @p last.
+template <class... Last>
+[[nodiscard]] auto casscf_carried_chain(const OptimizeStep &step, TrialGeometryStep trial,
+                                        CarriedOrbitalsStep carried, CasscfStep casscf,
+                                        Last... last) {
+  return Pipeline<TrialGeometryStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep,
+                  EriStep, OverlapStep, CoreHamiltonianStep, CarriedOrbitalsStep, CasscfStep,
+                  Last...>::create({
+      std::move(trial),
+      step.basis_set,
+      SphericalTransformStep{},
+      PrimitivePairClassesStep{},
+      step.eri,
+      OverlapStep{},
+      CoreHamiltonianStep{},
+      std::move(carried),
+      std::move(casscf),
+      std::move(last)...,
+  });
+}
+
+// @p casscf as the chain runs it: writing nothing, its outputs the outer
+// pipeline's.
+[[nodiscard]] CasscfStep chain_casscf_step(CasscfStep casscf) {
+  casscf.molden.clear();
+  casscf.orbitals_npy.clear();
+  casscf.ci_npy.clear();
+  return casscf;
+}
+
+// @p casscf, the chain's, as every evaluation after the first runs it: the
+// carried @p ncas orbitals and @p nelecas electrons by index, as they come
+// (core, active, virtual), with no pick and no start from files.
+[[nodiscard]] CasscfStep carried_casscf_step(CasscfStep casscf, const int32_t ncas,
+                                             const int32_t nelecas) {
+  casscf.active.clear();
+  casscf.avas.clear();
+  casscf.orbitals.clear(); // a start from files is the first geometry's only
+  casscf.ci.clear();
+  casscf.ncas = ncas;
+  casscf.nelecas = nelecas;
+  return casscf;
+}
+
 std::optional<MemoryFootprint> OptimizeStep::footprint(const FootprintDimensions &dims) const {
-  if (meci || casscf_gradient || nevpt2_gradient) {
-    return std::nullopt;
-  }
-  // The chain is fixed, so it always plans; none were it ever not to.
-  const auto chain = rhf_chain(*this, TrialGeometryStep{}, scf);
-  if (!chain) {
-    return std::nullopt;
-  }
-  std::vector<MemoryFootprint> steps;
-  for (const StepFootprint &step : chain->footprints(dims)) {
-    if (!step.footprint) {
+  // A chain's plan folded as pre-flight folds one, at @p at; none were a step
+  // of it ever without a footprint. The chains are fixed, so they always
+  // plan.
+  const auto fold = [](const auto &chain,
+                       const FootprintDimensions &at) -> std::optional<MemoryFootprint> {
+    if (!chain) {
       return std::nullopt;
     }
-    steps.push_back(*step.footprint);
-  }
-  // The start, then each evaluation's chain freed, then the optimum's
-  // Molecule while the start is still held: the chain holds a Molecule of
-  // the same atoms, so the two Molecules together are under its peak.
+    std::vector<MemoryFootprint> steps;
+    for (const StepFootprint &step : chain->footprints(at)) {
+      if (!step.footprint) {
+        return std::nullopt;
+      }
+      steps.push_back(*step.footprint);
+    }
+    return plan_footprint(steps).footprint;
+  };
   const MemoryFootprint molecule = molecule_footprint(dims.natoms);
-  return then(drop(then(molecule, drop(plan_footprint(steps).footprint))), molecule);
+  ScfStep chain_scf = scf;
+  chain_scf.molden.clear();
+  if (!meci && !casscf_gradient && !nevpt2_gradient) {
+    // The start, then each evaluation's chain freed, then the optimum's
+    // Molecule while the start is still held: the chain holds a Molecule of
+    // the same atoms, so the two Molecules together are under its peak.
+    const std::optional<MemoryFootprint> chain =
+        fold(rhf_chain(*this, TrialGeometryStep{}, chain_scf), dims);
+    if (!chain) {
+      return std::nullopt;
+    }
+    return then(drop(then(molecule, drop(*chain))), molecule);
+  }
+  // Refused before anything runs: both gradients, check_meci's refusals, a
+  // CASSCF chain over an integral-direct ERI.
+  if ((casscf_gradient && nevpt2_gradient) || !check_meci() ||
+      eri.mode != EriMode::DensityFitting || dims.basis == nullptr || dims.aux == nullptr) {
+    return MemoryFootprint{};
+  }
+  // The chain's readers of the CASSCF's product are sized over this step's
+  // own CASSCF, which the plan's dimensions do not carry when no top-level
+  // [casscf] is planned.
+  const int32_t nroots = std::max(casscf.nroots, 1);
+  const bool rotating = std::ranges::contains(response::rotating_pairs(casscf.weights), true);
+  FootprintDimensions at = dims;
+  at.casscf_nroots = static_cast<size_t>(nroots);
+  at.casscf_unequal_weights = rotating;
+  const BasisSet &basis = *dims.basis;
+  const BasisSet &aux = *dims.aux;
+  const auto ncas = static_cast<int32_t>(dims.ncas);
+  const auto nelecas = static_cast<int32_t>(dims.nelecas);
+  const auto two_s = static_cast<int32_t>(dims.n_alpha - dims.n_beta);
+  const int32_t ncore = (static_cast<int32_t>(dims.n_alpha + dims.n_beta) - nelecas) / 2;
+  const int32_t n_beta = (nelecas - two_s) / 2;
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const size_t dim = strings(nelecas - n_beta) * strings(n_beta);
+
+  // Each evaluation's chain, to its CasscfStep and, under a NEVPT2 gradient,
+  // that gradient: the first from the SCF, every later one from the carried
+  // orbitals (CarriedOrbitalsStep's footprint reads only the dimensions).
+  const CasscfStep chain_casscf = chain_casscf_step(casscf);
+  const CasscfStep carried = carried_casscf_step(chain_casscf, ncas, nelecas);
+  std::optional<MemoryFootprint> first;
+  std::optional<MemoryFootprint> later;
+  if (nevpt2_gradient && !meci) {
+    first = fold(
+        casscf_first_chain(*this, TrialGeometryStep{}, chain_scf, chain_casscf, *nevpt2_gradient),
+        at);
+    later = fold(casscf_carried_chain(*this, TrialGeometryStep{}, CarriedOrbitalsStep{}, carried,
+                                      *nevpt2_gradient),
+                 at);
+  } else {
+    first = fold(casscf_first_chain(*this, TrialGeometryStep{}, chain_scf, chain_casscf), at);
+    later =
+        fold(casscf_carried_chain(*this, TrialGeometryStep{}, CarriedOrbitalsStep{}, carried), at);
+  }
+  if (!first || !later) {
+    return std::nullopt;
+  }
+  // What each evaluation runs past its chain, beside the chain's products: a
+  // CASSCF root's gradient; under meci the intersection, the CASSCF's or
+  // the QD-NEVPT2's.
+  MemoryFootprint finish;
+  if (casscf_gradient) {
+    finish = casscf_gradient->footprint(at);
+  } else if (meci && nevpt2_gradient) {
+    const Result<int32_t> nfrozen = Nevpt2Step::resolve_frozen_core(
+        Nevpt2GradientStep::kName, nevpt2_gradient->frozen_core, dims.atoms, ncore);
+    if (!nfrozen) {
+      return MemoryFootprint{};
+    }
+    finish =
+        nevpt2_gradient->variant == Nevpt2Variant::Pc
+            ? nevpt2::qd_pc_intersection_footprint(basis, aux, ncore, ncas, nelecas, two_s + 1,
+                                                   nroots, rotating, 0, dims.syevd_lwork, *nfrozen)
+            : nevpt2::qd_sc_intersection_footprint(basis, aux, ncore, ncas, nelecas, two_s + 1,
+                                                   nroots, rotating, 0, dims.syevd_lwork, *nfrozen);
+  } else if (meci) {
+    finish = mcscf::df_intersection_footprint(basis, aux, ncore, ncas, nelecas, two_s + 1, nroots,
+                                              rotating);
+  }
+  // A followed state (a state-averaged root, a QD state, a pair): this
+  // CASSCF's mcscf::Solution, C and the CI vectors on the device, kept as
+  // the next evaluation's last; at every evaluation after the first, the
+  // last one's held beside the chain and state_overlaps between the two,
+  // and under meci beside the intersection too. A root's gradient is taken
+  // once the root is matched, the last one's freed.
+  const bool followed = meci || (casscf_gradient && nroots > 1) ||
+                        (nevpt2_gradient && nevpt2_gradient->quasi_degenerate);
+  MemoryFootprint solution;
+  MemoryFootprint overlaps;
+  if (followed) {
+    solution.device.persistent = sizeof(double) * ((dims.nao * dims.nao) + (dim * nroots));
+    overlaps = drop(mcscf::state_overlaps_footprint(basis, basis, ncore, ncas, nelecas, two_s + 1,
+                                                    nroots, nroots));
+  }
+  const MemoryFootprint at_first = then(*first, then(solution, finish));
+  const MemoryFootprint at_later =
+      casscf_gradient ? then(drop(then(solution, then(*later, then(solution, overlaps)))),
+                             drop(then(*later, then(solution, finish))))
+                      : then(solution, then(*later, then(solution, then(overlaps, finish))));
+  // The start, held through the walk; each evaluation's chain freed whole;
+  // then the optimum's Molecule beside the last followed state.
+  return then(drop(then(molecule, then(drop(at_first), drop(at_later)))),
+              then(drop(then(molecule, solution)), molecule));
 }
 
 Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) const {
@@ -605,10 +781,7 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
   // The chain writes nothing: its steps' outputs are the outer pipeline's.
   ScfStep chain_scf = scf;
   chain_scf.molden.clear();
-  CasscfStep chain_casscf = casscf;
-  chain_casscf.molden.clear();
-  chain_casscf.orbitals_npy.clear();
-  chain_casscf.ci_npy.clear();
+  const CasscfStep chain_casscf = chain_casscf_step(casscf);
   CasscfGradientStep chain_casscf_gradient = casscf_gradient.value_or(CasscfGradientStep{});
   chain_casscf_gradient.json_path.clear();
   Nevpt2GradientStep chain_nevpt2_gradient = nevpt2_gradient.value_or(Nevpt2GradientStep{});
@@ -634,12 +807,7 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
                                        wwr::wwrMemcpyDeviceToHost, res.stream())));
     FBF_TRY(res.sync());
     carried = std::move(next);
-    carried_casscf.active.clear();
-    carried_casscf.avas.clear();
-    carried_casscf.orbitals.clear(); // a start from files is the first geometry's only
-    carried_casscf.ci.clear();
-    carried_casscf.ncas = cas.ncas;
-    carried_casscf.nelecas = cas.nelecas;
+    carried_casscf = carried_casscf_step(chain_casscf, cas.ncas, cas.nelecas);
     return {};
   };
   // @p cas's roots over @p basis as the Solution state_overlaps reads, and
@@ -753,43 +921,13 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
                                             std::span<double> gradient,
                                             const G &...last) -> Result<double> {
     if (!carried) {
-      auto chain =
-          FBF_TRY((Pipeline<TrialGeometryStep, BasisSetStep, SphericalTransformStep,
-                            PrimitivePairClassesStep, EriStep, OverlapStep, OrthogonalizerStep,
-                            CoreHamiltonianStep, GuessStep, ScfStep, CasscfStep, G...>::create({
-              trial,
-              basis_set,
-              SphericalTransformStep{},
-              PrimitivePairClassesStep{},
-              eri,
-              OverlapStep{},
-              orthogonalizer,
-              CoreHamiltonianStep{},
-              guess,
-              chain_scf,
-              chain_casscf,
-              last...,
-          })));
+      auto chain = FBF_TRY(casscf_first_chain(*this, trial, chain_scf, chain_casscf, last...));
       FBF_TRY(chain.run(node));
       const ScfOutput &rhf = *chain.template get<ScfOutput>();
       FBF_TRY(carry(*chain.template get<CasscfOutput>(), rhf.n_alpha, rhf.n_beta));
       return finish(chain, gradient);
     }
-    auto chain =
-        FBF_TRY((Pipeline<TrialGeometryStep, BasisSetStep, SphericalTransformStep,
-                          PrimitivePairClassesStep, EriStep, OverlapStep, CoreHamiltonianStep,
-                          CarriedOrbitalsStep, CasscfStep, G...>::create({
-            trial,
-            basis_set,
-            SphericalTransformStep{},
-            PrimitivePairClassesStep{},
-            eri,
-            OverlapStep{},
-            CoreHamiltonianStep{},
-            *carried,
-            carried_casscf,
-            last...,
-        })));
+    auto chain = FBF_TRY(casscf_carried_chain(*this, trial, *carried, carried_casscf, last...));
     FBF_TRY(chain.run(node));
     FBF_TRY(carry(*chain.template get<CasscfOutput>(), carried->n_alpha, carried->n_beta));
     return finish(chain, gradient);

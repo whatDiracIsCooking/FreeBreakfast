@@ -14,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -319,6 +320,74 @@ qd_pc_intersection(DeviceResources &res, const Molecule &molecule, const BasisSe
                    const QdIntersectionOptions &options) {
   return qd_intersection(res, "nevpt2::qd_pc_intersection", true, molecule, basis, classes, aux, h,
                          b, l, solution, ncore, ncas, p, q, batch, options);
+}
+
+// The two intersections' footprint, @p energy the effective Hamiltonian's
+// over every pair and @p gradients the several-W form's at the pair's three
+// W's.
+MemoryFootprint qd_intersection_footprint(const BasisSet &basis, const BasisSet &aux,
+                                          const int32_t ncore, const int32_t ncas,
+                                          const int32_t nelecas, const int32_t multiplicity,
+                                          const int32_t nroots,
+                                          const std::span<const size_t> syevd_lwork,
+                                          const int32_t nfrozen, const MemoryFootprint &energy,
+                                          const MemoryFootprint &gradients) {
+  const auto roots = static_cast<size_t>(nroots);
+  const MemoryFootprint inputs = qd_inputs_footprint(
+      static_cast<int32_t>(aux.nao_sphe()), static_cast<int32_t>(basis.nao_sphe()), ncore, ncas,
+      nelecas, multiplicity, nroots, energy, nfrozen);
+  // H_eff and its eigenvalues on the device, diagonalized.
+  MemoryFootprint heff{.device = {.persistent = sizeof(double) * ((roots * roots) + roots)}};
+  if (roots < syevd_lwork.size()) {
+    heff = then(heff, diagonalize_footprint<double>(syevd_lwork[roots]));
+  }
+  return drop(then(then(inputs, drop(heff)), gradients));
+}
+
+// Whether the intersection refuses @p nroots roots of this space before
+// allocating: no pair of states, or no space.
+bool qd_intersection_refused(const BasisSet &basis, const int32_t ncore, const int32_t ncas,
+                             const int32_t nroots, const int32_t nfrozen) {
+  return nroots < 2 || ncore < 0 || ncas < 1 || nfrozen < 0 || nfrozen > ncore ||
+         std::cmp_greater(ncore + ncas, basis.nao_sphe());
+}
+
+// The pair's three W's: u_P u_P^T and u_Q u_Q^T of trace 1, W^PQ of trace 0.
+constexpr std::array<bool, 3> kIntersectionTraceZero{false, false, true};
+
+MemoryFootprint
+qd_sc_intersection_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                             const int32_t ncas, const int32_t nelecas, const int32_t multiplicity,
+                             const int32_t nroots, const bool rotating, const int32_t batch,
+                             const std::span<const size_t> syevd_lwork, const int32_t nfrozen) {
+  if (qd_intersection_refused(basis, ncore, ncas, nroots, nfrozen)) {
+    return {};
+  }
+  const auto nvirt = static_cast<int32_t>(basis.nao_sphe()) - ncore - ncas;
+  return qd_intersection_footprint(
+      basis, aux, ncore, ncas, nelecas, multiplicity, nroots, syevd_lwork, nfrozen,
+      sc_effective_hamiltonian_footprint(ncore - nfrozen, ncas, nvirt, nelecas, nroots, true,
+                                         nroots * (nroots - 1), batch),
+      qd_sc_w_gradients_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating,
+                                  batch, kIntersectionTraceZero, nfrozen));
+}
+
+MemoryFootprint
+qd_pc_intersection_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                             const int32_t ncas, const int32_t nelecas, const int32_t multiplicity,
+                             const int32_t nroots, const bool rotating, const int32_t batch,
+                             const std::span<const size_t> syevd_lwork, const int32_t nfrozen,
+                             const std::span<const std::array<int64_t, 8>> dropped) {
+  if (qd_intersection_refused(basis, ncore, ncas, nroots, nfrozen)) {
+    return {};
+  }
+  const auto nvirt = static_cast<int32_t>(basis.nao_sphe()) - ncore - ncas;
+  return qd_intersection_footprint(
+      basis, aux, ncore, ncas, nelecas, multiplicity, nroots, syevd_lwork, nfrozen,
+      pc_effective_hamiltonian_footprint(ncore - nfrozen, ncas, nvirt, nroots, true,
+                                         nroots * (nroots - 1), batch, syevd_lwork, false, dropped),
+      qd_pc_w_gradients_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating,
+                                  batch, syevd_lwork, kIntersectionTraceZero, nfrozen, dropped));
 }
 
 } // namespace free_breakfast::nevpt2

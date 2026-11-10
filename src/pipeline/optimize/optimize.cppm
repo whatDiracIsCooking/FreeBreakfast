@@ -174,10 +174,25 @@ struct OptimizeStep {
   /// for all of them. The history and the trajectory are pageable host
   /// memory, not modelled.
   ///
-  /// None over a CASSCF chain (@ref casscf_gradient, @ref nevpt2_gradient,
-  /// @ref meci), whose library calls are not all footprinted yet and whose
-  /// fold is not written: pre-flight refuses it under a cap. Transitional, as
-  /// step_footprint's optional is (#1122).
+  /// Over a CASSCF chain (@ref casscf_gradient, @ref nevpt2_gradient,
+  /// @ref meci), sized over this step's own @ref casscf at the plan's
+  /// largest active space: the start's Molecule; the first evaluation's
+  /// chain to the CasscfStep from the SCF, and every later one's from the
+  /// carried orbitals (CarriedOrbitalsStep's reads only the dimensions), each
+  /// with the NEVPT2 gradient in it under @ref nevpt2_gradient, folded and
+  /// freed whole; beside a chain's products, what the evaluation runs past
+  /// it: the CASSCF root's gradient, or under @ref meci
+  /// @c mcscf::df_intersection_footprint (over QD states
+  /// @c nevpt2::qd_sc_intersection_footprint or its PC twin). A followed
+  /// state (a state-averaged root, a QD state, a pair) holds the CASSCF's
+  /// mcscf::Solution (C and the CI vectors) beside that, kept to the next
+  /// evaluation, which holds its own beside it and
+  /// @c mcscf::state_overlaps_footprint's, and under @ref meci the
+  /// intersection's (a root's gradient follows the match, the last state
+  /// freed). Empty where the run refuses
+  /// before anything runs (both gradients, @ref check_meci, an
+  /// integral-direct @ref eri). The optional is transitional, as
+  /// step_footprint's is (#1122): every configuration has a value.
   [[nodiscard]] std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 
   /// @brief Under @ref meci, what @ref run refuses before anything runs, and
