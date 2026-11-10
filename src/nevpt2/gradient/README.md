@@ -1906,6 +1906,8 @@ calls (`../energy/`, `../density_fitting/`, `../rdm/`, `../../mcscf/`,
     qd_pc_coupling_footprint(..., syevd_lwork, dropped)
     qd_inputs_footprint(naux, nmo, ncore, ncas, nelecas, multiplicity, nroots, use,
                         nfrozen)
+    builders_tangent_footprint(naux, nao, nmo, ncore, ncas, count)
+    qd_builders_tangent_footprint(naux, nao, nmo, ncore, ncas, nroots, count)
 
 `nevpt2::rdms` and `rdms_adjoint` size their tiles from the memory budget
 (`../rdm/`): each footprint counts them at one determinant, the least they
@@ -1920,6 +1922,17 @@ its first pass is `df_gradient`'s at a mix summing to 0. The tests are
 `test/gtest/pipeline_step_footprint_gpu.cpp`'s
 `Nevpt2ReaderFootprint.GradientRoutines` and `.Couplings`, and the
 Nevpt2Gradient step's, each held to its pool peak at the least.
+
+The builders' forward tangents (#1185) keep their results: the point's
+`BuilderOutputs` (or `QdBuilderOutputs`) and one per direction, what an
+`ScArrays` holds beyond them (C^T h C, B_cc, B_vv's diagonal, d, g and the
+two identities, and on the QD point the shared dm2, dm3, f3ca and f3ac)
+given back as each goes. Each direction's arrays are
+`direction_arrays_footprint` and `qd_direction_arrays_footprint` (`:builders`,
+for the Hessian products too): the tangent arrays, B_vv's tangent and every
+pair's RDM tangent kept, each pair's scratch n⁶ beside its `nevpt2::rdms` at
+one determinant. Their test, `Nevpt2GradientLayerFootprint`, runs them over
+random (h, B, C), roots and directions, which is all the builders read.
 
 ## Not done
 

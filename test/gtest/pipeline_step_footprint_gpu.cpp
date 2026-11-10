@@ -2168,4 +2168,120 @@ TEST(StepFootprint, AnalyticSaCasscfHessian) {
                                     casscf_hessian_tables("0.5, 0.5", 1));
 }
 
+// The NEVPT2 builders' forward tangents (#1185), over random (h, B, C), roots
+// and directions: what the builders read, which their footprints do not
+// depend on (no stationarity is used), CAS(4, 4) with two core and four
+// virtual orbitals. Each runs at the least, as the steps do, so nevpt2::rdms'
+// tiles are at one determinant.
+struct BuildersPoint {
+  static constexpr std::int32_t kNaux = 24;
+  static constexpr std::int32_t kNmo = 10;
+  static constexpr std::int32_t kNcore = 2;
+  static constexpr std::int32_t kNcas = 4;
+  static constexpr std::int32_t kCount = 2;
+  fb::DeviceResources &res;
+  fb::ci::DeviceStringSet alpha;
+  std::int64_t ndet;
+  std::vector<fb::Buffers::device<double>> held;
+
+  explicit BuildersPoint(fb::DeviceResources &r)
+      : res(r), alpha(fb::ci::DeviceStringSet::create(r, kNcas, kNcas / 2).value()),
+        ndet(static_cast<std::int64_t>(alpha.size()) * static_cast<std::int64_t>(alpha.size())) {}
+
+  // @p count random doubles from @p seed, on the device, kept; scaled to a
+  // unit vector per @p unit doubles when @p unit is given.
+  const double *random(const std::size_t count, const std::uint64_t seed,
+                       const std::size_t unit = 0) {
+    std::mt19937_64 engine(seed);
+    std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+    std::vector<double> host(count);
+    for (double &x : host) {
+      x = uniform(engine);
+    }
+    for (std::size_t at = 0; unit != 0 && at < count; at += unit) {
+      const std::span<double> v = std::span(host).subspan(at, unit);
+      const double norm = std::sqrt(std::inner_product(v.begin(), v.end(), v.begin(), 0.0));
+      for (double &x : v) {
+        x /= norm;
+      }
+    }
+    held.emplace_back(count, res.device());
+    EXPECT_EQ(wwr::wwrMemcpyAsync(held.back().data(), host.data(), sizeof(double) * count,
+                                  wwr::wwrMemcpyHostToDevice, res.stream()),
+              wwr::wwrSuccess);
+    EXPECT_TRUE(res.sync());
+    return held.back().data();
+  }
+};
+
+// Live at the peak, the last direction's bra/ket rdms: an ScArrays is 27
+// buffers, a BuilderOutputs 20 of them and f's two, and a pair's RDMs three
+// (five on the diagonal). builders_tangent: the point's arrays, B_vv and f
+// (30), the first direction's outputs (22), the second's arrays, B_vv's
+// tangent, the three scratch n⁶ and rdms' block (32). qd_builders_tangent at
+// three roots: the point's arrays and its 33 pairs' RDMs, B_vv and f (63),
+// the first direction's outputs (16 shared beside f's two, and 33 pairs),
+// the second's arrays, B_vv's tangent, its pairs and the diagonal's scratch
+// (65).
+constexpr std::size_t kBuildersTangentLive = 30 + 22 + 32;
+constexpr std::size_t kQdBuildersTangentLive = 63 + 51 + 65;
+
+// builders_tangent along two directions.
+TEST(Nevpt2GradientLayerFootprint, BuildersTangent) {
+  FBF_REQUIRE_GPU();
+  using P = BuildersPoint;
+  fb::DeviceResources inputs{0};
+  P p{inputs};
+  const auto nmo2 = static_cast<std::size_t>(P::kNmo) * P::kNmo;
+  const auto ndet = static_cast<std::size_t>(p.ndet);
+  const double *const b = p.random(P::kNaux * nmo2, 1);
+  const double *const c = p.random(nmo2, 2);
+  const double *const h = p.random(nmo2, 3);
+  const double *const vector = p.random(ndet, 4, ndet);
+  const double *const h_dot = p.random(P::kCount * nmo2, 5);
+  const double *const b_dot = p.random(P::kCount * P::kNaux * nmo2, 6);
+  const double *const c_dot = p.random(P::kCount * ndet, 7);
+  expect_least_footprint(fb::nevpt2::builders_tangent_footprint(P::kNaux, P::kNmo, P::kNmo,
+                                                                P::kNcore, P::kNcas, P::kCount),
+                         kBuildersTangentLive, [&](fb::DeviceResources &res) {
+                           const auto t = fb::nevpt2::builders_tangent(
+                               res, p.alpha, p.alpha, P::kNaux, P::kNmo, P::kNmo, b, c, h,
+                               P::kNcore, P::kNcas, vector, P::kCount, h_dot, b_dot, c_dot);
+                           ASSERT_TRUE(t) << t.error().message;
+                           EXPECT_EQ(t->tangents.size(), static_cast<std::size_t>(P::kCount));
+                         });
+}
+
+// qd_builders_tangent over two and three roots along two directions.
+TEST(Nevpt2GradientLayerFootprint, QdBuildersTangent) {
+  FBF_REQUIRE_GPU();
+  using P = BuildersPoint;
+  for (const std::int32_t nroots : {2, 3}) {
+    SCOPED_TRACE(std::format("{} roots", nroots));
+    fb::DeviceResources inputs{0};
+    P p{inputs};
+    const auto nmo2 = static_cast<std::size_t>(P::kNmo) * P::kNmo;
+    const auto ndet = static_cast<std::size_t>(p.ndet);
+    const auto roots = static_cast<std::size_t>(nroots);
+    const double *const b = p.random(P::kNaux * nmo2, 11);
+    const double *const c = p.random(nmo2, 12);
+    const double *const h = p.random(nmo2, 13);
+    const double *const vectors = p.random(roots * ndet, 14, ndet);
+    const double *const h_dot = p.random(P::kCount * nmo2, 15);
+    const double *const b_dot = p.random(P::kCount * P::kNaux * nmo2, 16);
+    const double *const c_dot = p.random(P::kCount * roots * ndet, 17);
+    const std::vector<double> weights(roots, 1.0 / static_cast<double>(nroots));
+    expect_least_footprint(fb::nevpt2::qd_builders_tangent_footprint(
+                               P::kNaux, P::kNmo, P::kNmo, P::kNcore, P::kNcas, nroots, P::kCount),
+                           kQdBuildersTangentLive, [&](fb::DeviceResources &res) {
+                             const auto t = fb::nevpt2::qd_builders_tangent(
+                                 res, p.alpha, p.alpha, P::kNaux, P::kNmo, P::kNmo, b, c, h,
+                                 P::kNcore, P::kNcas, weights, vectors, P::kCount, h_dot, b_dot,
+                                 c_dot);
+                             ASSERT_TRUE(t) << t.error().message;
+                             EXPECT_EQ(t->tangents.size(), static_cast<std::size_t>(P::kCount));
+                           });
+  }
+}
+
 } // namespace
