@@ -42,7 +42,9 @@ Result<PlanFootprint> check_plan(std::span<const StepFootprint> steps, const Pla
     return err_config("pre-flight: [{}] reaches the plan's device peak of {} bytes ({:.3f} GiB), "
                       "past the {} bytes ({:.3f} GiB) max_device_mem_per_gpu = {} leaves the "
                       "plan: the cap less the reserve outside the pool, the fragmentation "
-                      "headroom and, on a pool that rounds reuse, its rounding",
+                      "headroom, what the device's resources hold in the pool themselves "
+                      "(DeviceResources::kOwnPoolBytes) and, on a pool that rounds reuse, its "
+                      "rounding",
                       device_step, device_peak, plan_gib(device_peak), caps.device_room,
                       plan_gib(caps.device_room), caps.max_device_mem_per_gpu);
   }
