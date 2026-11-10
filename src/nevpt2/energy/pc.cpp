@@ -1658,4 +1658,103 @@ Result<PcMetricLifts> pc_metric_lifts(DeviceResources &res, const MoBlocks &bloc
   return out;
 }
 
+MemoryFootprint pc_metric_lifts_footprint(const int32_t ncore, const int32_t ncas,
+                                          const int32_t nvirt, const int32_t nstates,
+                                          const std::span<const size_t> syevd_lwork,
+                                          const std::span<const std::array<int64_t, 8>> dropped) {
+  // pc_metric_lifts, every allocation in its order (the ket's operands and
+  // its path's two, then per class its solve with its modes kept, the
+  // path's metrics, L and its eigensolve, and per bra the rows' parts), in
+  // bytes.
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = kD * n * n;
+  const auto states = static_cast<size_t>(nstates);
+  size_t workspace = 2 * math::align_up(n2 * n * n, DeviceResources::kWorkspaceAlignment);
+  const auto diagonalized = [&](const size_t order) {
+    if (order > 0 && order < syevd_lwork.size()) {
+      workspace =
+          std::max(workspace, diagonalize_footprint<double>(syevd_lwork[order]).device.workspace);
+    }
+  };
+  const auto replay = [](HeldBytes &into, const std::vector<std::pair<bool, size_t>> &steps) {
+    for (const auto &[taken, bytes] : steps) {
+      if (taken) {
+        into.take(bytes);
+      } else {
+        into.give(bytes);
+      }
+    }
+  };
+  // Class @p cl with @p m modes kept, every dropped one counted null.
+  const auto run = [&](HeldBytes &into, const PcClassBytes &cl, const size_t m) {
+    const size_t d = cl.d;
+    const size_t n1 = cl.n1;
+    const size_t nd = d - m;
+    // solve_class with its modes kept: S and K symmetrized, V and σ; σ^-1/2,
+    // X, K X's work, W and λ; U, T and T₁ kept, and where modes drop V kept
+    // beside V_nᵀ K U and the two leaks.
+    replay(into, cl.own_build);
+    into.take(kD * ((3 * d * d) + d));
+    diagonalized(d);
+    into.take(kD * (m + (2 * d * m) + (m * m) + m));
+    diagonalized(m);
+    size_t held = kD * ((2 * d * m) + (n1 * m));
+    into.take(held);
+    size_t v = kD * d * d;
+    if (nd > 0) {
+      into.take(kD * d * nd);
+      into.take(kD * ((nd * m) + (nd * d) + (nd * n1)));
+      into.give(kD * d * nd);
+      held += v + (kD * ((nd * m) + (nd * d) + (nd * n1)));
+      v = 0;
+    }
+    into.give(kD * ((2 * d * d) + d + m + (2 * d * m) + (m * m) + m) + v);
+    into.give(cl.own_held);
+    if (nd > 0) {
+      // The path's two metrics, raw and symmetrized; S' V_n, W, L and its
+      // eigenvalues.
+      replay(into, cl.pair_build);
+      replay(into, cl.pair_build);
+      const size_t lift = kD * ((2 * d * d) + (d * nd) + (nd * m) + (nd * nd) + nd);
+      into.take(lift);
+      diagonalized(nd);
+      // Per bra: its pair's operands and their path's, both metrics, and per
+      // part (S's d columns, S₁'s n1) V_nᵀ A', (A U)ᵀ, W (A U)ᵀ and ρ.
+      for (size_t bra = 1; bra < states; ++bra) {
+        into.take(2 * n2);
+        replay(into, cl.pair_build);
+        replay(into, cl.pair_build);
+        for (const size_t cols : {d, n1}) {
+          if (cols > 0) {
+            into.walk(kD * ((3 * nd * cols) + (m * cols)));
+          }
+        }
+        into.give((2 * n2) + (2 * cl.pair_held));
+      }
+      into.give(lift + (2 * cl.pair_held));
+    }
+    into.give(held);
+  };
+  HeldBytes h;
+  h.take(3 * n2); // the ket's operands, and its path's first and second
+  for (const PcClassBytes &cl : pc_class_bytes(ncore, ncas, nvirt, 0)) {
+    if (!cl.walks) {
+      continue;
+    }
+    if (!dropped.empty()) {
+      run(h, cl, cl.d - static_cast<size_t>(dropped.front()[cl.k]));
+      continue;
+    }
+    size_t most = h.peak;
+    for (size_t rank = 1; rank <= cl.d; ++rank) {
+      HeldBytes trial = h;
+      run(trial, cl, rank);
+      most = std::max(most, trial.peak);
+    }
+    h.peak = most;
+  }
+  return {.device = {.scratch = h.peak, .workspace = workspace}};
+}
+
 } // namespace free_breakfast::nevpt2

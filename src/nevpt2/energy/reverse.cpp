@@ -7245,36 +7245,142 @@ MemoryFootprint pc_class_energies_adjoint_footprint(const int32_t naux, const in
                                                     {&dropped, 1});
 }
 
-// One PC class as the PC footprints walk it: @p d its basis, @p n1 its S₁'s
-// columns, @p tuples a slab's tuples at its widest, @p exchange whether its
-// rows carry exchange rows; @p own_build and @p pair_build its matrices'
-// allocations, (take, bytes) in order, and what they hold through the solve;
-// @p own_back and @p pair_back its pc_back_*'s; @p uploads what the walk
-// uploads beside its kets (Sir's two selectors). @p walks is false for a
-// class with no tuple, which allocates nothing.
-struct PcClassBytes {
-  size_t k = 0;
-  bool walks = false;
-  std::vector<ExtBlock> slabs;
-  size_t d = 0;
-  size_t n1 = 0;
-  size_t tuples = 0;
-  bool exchange = false;
-  std::vector<std::pair<bool, size_t>> own_build;
-  size_t own_held = 0;
-  std::vector<std::pair<bool, size_t>> pair_build;
-  size_t pair_held = 0;
-  size_t own_back = 0;
-  size_t pair_back = 0;
-  size_t uploads = 0;
-};
+std::array<PcClassBytes, 7> pc_class_bytes(const int32_t ncore, const int32_t ncas,
+                                           const int32_t nvirt, const int32_t batch) {
+  const auto extent = [&](const ExtBlock block) {
+    return block_shape(ncore, ncas, nvirt, block)[static_cast<size_t>(batch_axis(block))];
+  };
+  const auto width = [&](const ExtBlock block) {
+    return std::min(batch_step(extent(block), batch), extent(block));
+  };
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = kD * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  const auto nc = static_cast<size_t>(ncore);
+  const auto nv = static_cast<size_t>(nvirt);
+  const size_t n3 = n * n * n;
+  const auto take = [](const size_t bytes) { return std::pair{true, bytes}; };
+  const auto give = [](const size_t bytes) { return std::pair{false, bytes}; };
+  const size_t sir_d = 2 * n * n;
+  const size_t uploads = kD * (4 + 4 + 2);
+  const size_t s = kD * sir_d * sir_d;
+  const size_t s1 = kD * sir_d;
+  return {{
+      {.k = 0,
+       .walks = extent(ExtBlock::Sr) > 0,
+       .slabs = {ExtBlock::Sr},
+       .d = n3,
+       .n1 = n,
+       .tuples = static_cast<size_t>(width(ExtBlock::Sr)),
+       .exchange = false,
+       .own_build = {take(n6), take(n6), take(n4)},
+       .own_held = n6 + n6 + n4,
+       .pair_build = {take(n6), take(n4)},
+       .pair_held = n6 + n4,
+       .own_back = n6,
+       .pair_back = 0,
+       .uploads = 0},
+      {.k = 1,
+       .walks = extent(ExtBlock::Si) > 0,
+       .slabs = {ExtBlock::Si},
+       .d = n3,
+       .n1 = n,
+       .tuples = static_cast<size_t>(width(ExtBlock::Si)),
+       .exchange = false,
+       .own_build = {take(n6), take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)},
+       .own_held = n6 + n6 + n4,
+       .pair_build = {take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)},
+       .pair_held = n6 + n4,
+       .own_back = n6 + n4 + n6,
+       .pair_back = n6 + n4,
+       .uploads = 0},
+      {.k = 3,
+       .walks = extent(ExtBlock::Sijr) > 0 && ncore > 0,
+       .slabs = {ExtBlock::Sijr},
+       .d = n,
+       .n1 = 0,
+       .tuples = static_cast<size_t>(width(ExtBlock::Sijr)) * nc * nc,
+       .exchange = true,
+       .own_build = {take(n2), take(n2)},
+       .own_held = 2 * n2,
+       .pair_build = {take(n2)},
+       .pair_held = n2,
+       .own_back = 2 * n2,
+       .pair_back = n2,
+       .uploads = 0},
+      {.k = 4,
+       .walks = extent(ExtBlock::Srsi) > 0 && ncore > 0,
+       .slabs = {ExtBlock::Srsi, ExtBlock::SrsiT},
+       .d = n,
+       .n1 = 0,
+       .tuples = static_cast<size_t>(width(ExtBlock::Srsi)) * nv * nc,
+       .exchange = true,
+       .own_build = {take(n2), take(n2)},
+       .own_held = 2 * n2,
+       .pair_build = {take(n2)},
+       .pair_held = n2,
+       .own_back = n2,
+       .pair_back = 0,
+       .uploads = 0},
+      {.k = 5,
+       .walks = extent(ExtBlock::Srs) > 0,
+       .slabs = {ExtBlock::Srs},
+       .d = n * n,
+       .n1 = 0,
+       .tuples = static_cast<size_t>(width(ExtBlock::Srs)) * nv,
+       .exchange = false,
+       .own_build = {take(n4), take(n6), take(n4), give(n6), take(n4), give(n4)},
+       .own_held = 2 * n4,
+       .pair_build = {take(n4), take(n4), give(n4)},
+       .pair_held = n4,
+       .own_back = (2 * n4) + n6,
+       .pair_back = n4,
+       .uploads = 0},
+      {.k = 6,
+       .walks = extent(ExtBlock::Sij) > 0,
+       .slabs = {ExtBlock::Sij},
+       .d = n * n,
+       .n1 = 0,
+       .tuples = static_cast<size_t>(width(ExtBlock::Sij)) * nc,
+       .exchange = false,
+       .own_build = {take(n4), take(n4), give(n4), take(n6), take(n4), give(n6)},
+       .own_held = 2 * n4,
+       .pair_build = {take(n4), take(n4), give(n4)},
+       .pair_held = n4,
+       .own_back = (2 * n4) + n6,
+       .pair_back = 2 * n4,
+       .uploads = 0},
+      {.k = 7,
+       .walks = extent(ExtBlock::Sir1) > 0 && ncore > 0,
+       .slabs = {ExtBlock::Sir1, ExtBlock::Sir2},
+       .d = sir_d,
+       .n1 = 1,
+       .tuples = static_cast<size_t>(width(ExtBlock::Sir1)) * nc,
+       .exchange = false,
+       .own_build = {take(uploads), take(s), take(n4), give(n4), take(s), take(n4), take(n4),
+                     give(2 * n4), take(s1), give(uploads)},
+       .own_held = s + s + s1,
+       .pair_build = {take(uploads), take(s), take(n4), give(n4), take(s1), give(uploads)},
+       .pair_held = s + s1,
+       .own_back = uploads + (3 * n4),
+       .pair_back = uploads + n4,
+       .uploads = kD * (2 + 2)},
+  }};
+}
 
-// The PC footprints' mirror of pc_couplings_adjoint's class walks (#1052)
-// and, with @p adjoint false, of pc_couplings_tangent's: each class's
-// allocations in their order onto @p h, the workspace raised as they ask.
-// A tangent's walk reads @p moves, [p][u] pair p's direction u
-// (tangent_moves'), and grows
-// slab_tangent's plus and dd, @p pd each, held across the classes.
+// Which PC walk PcWalkBytes mirrors: pc_couplings_adjoint's, the
+// tangent's (pc_couplings_tangent), and pc_couplings_hvp's base walk (a
+// tangent's that keeps its multipliers) and fixed walks (the reverse pass at
+// them).
+enum class PcPass { Adjoint, Tangent, HvpBase, HvpFixed };
+
+// The PC footprints' mirror of the PC class walks (#1052), @p pass's: each
+// class's allocations in their order onto @p h, the workspace raised as they
+// ask. A tangent's walk (and the HVP's) reads @p moves, [p][u] pair p's
+// direction u (tangent_moves'), and grows slab_tangent's plus and dd, @p pd
+// each, held across the classes.
 struct PcWalkBytes {
   int32_t naux = 0;
   int32_t ncore = 0;
@@ -7284,7 +7390,7 @@ struct PcWalkBytes {
   int32_t batch = 0;
   std::span<const size_t> syevd_lwork;
   std::span<const std::array<int64_t, 8>> dropped;
-  bool adjoint = true;
+  PcPass pass = PcPass::Adjoint;
   std::vector<std::vector<TangentMoves>> moves;
   HeldBytes h;
   size_t workspace = 0;
@@ -7326,121 +7432,7 @@ struct PcWalkBytes {
 
   // The seven classes in walk order, Sijrs (SC's) left to the caller.
   [[nodiscard]] std::array<PcClassBytes, 7> classes() const {
-    constexpr size_t kD = sizeof(double);
-    const auto n = static_cast<size_t>(ncas);
-    const size_t n2 = kD * n * n;
-    const size_t n4 = n2 * n * n;
-    const size_t n6 = n4 * n * n;
-    const auto nc = static_cast<size_t>(ncore);
-    const auto nv = static_cast<size_t>(nvirt);
-    const size_t n3 = n * n * n;
-    const auto take = [](const size_t bytes) { return std::pair{true, bytes}; };
-    const auto give = [](const size_t bytes) { return std::pair{false, bytes}; };
-    const size_t sir_d = 2 * n * n;
-    const size_t uploads = kD * (4 + 4 + 2);
-    const size_t s = kD * sir_d * sir_d;
-    const size_t s1 = kD * sir_d;
-    return {{
-        {.k = 0,
-         .walks = extent(ExtBlock::Sr) > 0,
-         .slabs = {ExtBlock::Sr},
-         .d = n3,
-         .n1 = n,
-         .tuples = static_cast<size_t>(width(ExtBlock::Sr)),
-         .exchange = false,
-         .own_build = {take(n6), take(n6), take(n4)},
-         .own_held = n6 + n6 + n4,
-         .pair_build = {take(n6), take(n4)},
-         .pair_held = n6 + n4,
-         .own_back = n6,
-         .pair_back = 0,
-         .uploads = 0},
-        {.k = 1,
-         .walks = extent(ExtBlock::Si) > 0,
-         .slabs = {ExtBlock::Si},
-         .d = n3,
-         .n1 = n,
-         .tuples = static_cast<size_t>(width(ExtBlock::Si)),
-         .exchange = false,
-         .own_build = {take(n6), take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)},
-         .own_held = n6 + n6 + n4,
-         .pair_build = {take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)},
-         .pair_held = n6 + n4,
-         .own_back = n6 + n4 + n6,
-         .pair_back = n6 + n4,
-         .uploads = 0},
-        {.k = 3,
-         .walks = extent(ExtBlock::Sijr) > 0 && ncore > 0,
-         .slabs = {ExtBlock::Sijr},
-         .d = n,
-         .n1 = 0,
-         .tuples = static_cast<size_t>(width(ExtBlock::Sijr)) * nc * nc,
-         .exchange = true,
-         .own_build = {take(n2), take(n2)},
-         .own_held = 2 * n2,
-         .pair_build = {take(n2)},
-         .pair_held = n2,
-         .own_back = 2 * n2,
-         .pair_back = n2,
-         .uploads = 0},
-        {.k = 4,
-         .walks = extent(ExtBlock::Srsi) > 0 && ncore > 0,
-         .slabs = {ExtBlock::Srsi, ExtBlock::SrsiT},
-         .d = n,
-         .n1 = 0,
-         .tuples = static_cast<size_t>(width(ExtBlock::Srsi)) * nv * nc,
-         .exchange = true,
-         .own_build = {take(n2), take(n2)},
-         .own_held = 2 * n2,
-         .pair_build = {take(n2)},
-         .pair_held = n2,
-         .own_back = n2,
-         .pair_back = 0,
-         .uploads = 0},
-        {.k = 5,
-         .walks = extent(ExtBlock::Srs) > 0,
-         .slabs = {ExtBlock::Srs},
-         .d = n * n,
-         .n1 = 0,
-         .tuples = static_cast<size_t>(width(ExtBlock::Srs)) * nv,
-         .exchange = false,
-         .own_build = {take(n4), take(n6), take(n4), give(n6), take(n4), give(n4)},
-         .own_held = 2 * n4,
-         .pair_build = {take(n4), take(n4), give(n4)},
-         .pair_held = n4,
-         .own_back = (2 * n4) + n6,
-         .pair_back = n4,
-         .uploads = 0},
-        {.k = 6,
-         .walks = extent(ExtBlock::Sij) > 0,
-         .slabs = {ExtBlock::Sij},
-         .d = n * n,
-         .n1 = 0,
-         .tuples = static_cast<size_t>(width(ExtBlock::Sij)) * nc,
-         .exchange = false,
-         .own_build = {take(n4), take(n4), give(n4), take(n6), take(n4), give(n6)},
-         .own_held = 2 * n4,
-         .pair_build = {take(n4), take(n4), give(n4)},
-         .pair_held = n4,
-         .own_back = (2 * n4) + n6,
-         .pair_back = 2 * n4,
-         .uploads = 0},
-        {.k = 7,
-         .walks = extent(ExtBlock::Sir1) > 0 && ncore > 0,
-         .slabs = {ExtBlock::Sir1, ExtBlock::Sir2},
-         .d = sir_d,
-         .n1 = 1,
-         .tuples = static_cast<size_t>(width(ExtBlock::Sir1)) * nc,
-         .exchange = false,
-         .own_build = {take(uploads), take(s), take(n4), give(n4), take(s), take(n4), take(n4),
-                       give(2 * n4), take(s1), give(uploads)},
-         .own_held = s + s + s1,
-         .pair_build = {take(uploads), take(s), take(n4), give(n4), take(s1), give(uploads)},
-         .pair_held = s + s1,
-         .own_back = uploads + (3 * n4),
-         .pair_back = uploads + n4,
-         .uploads = kD * (2 + 2)},
-    }};
+    return pc_class_bytes(ncore, ncas, nvirt, batch);
   }
 
   // slab_tangent's plus and dd grown to @p bytes on @p into, each freed
@@ -7477,55 +7469,67 @@ struct PcWalkBytes {
   }
 
   // Class @p cl at every state's kept modes @p m (one per state), on
-  // @p into, plus and dd at @p grown.
-  void walk(HeldBytes &into, const PcClassBytes &cl, const std::vector<size_t> &m, size_t &grown) {
+  // @p into, plus and dd at @p grown. Returns what an HVP's base walk hands
+  // its record (PcHvpKet), still taken on @p into: per ket M, M_Δ and their
+  // tangents, U, S's modes, and per direction its span rotates along U̇ and
+  // the span bar's derivative; 0 for every other pass.
+  size_t walk(HeldBytes &into, const PcClassBytes &cl, const std::vector<size_t> &m,
+              size_t &grown) {
     constexpr size_t kD = sizeof(double);
     const auto states = static_cast<size_t>(nstates);
     const size_t entries = states * states;
     const size_t dirs = directions();
     const size_t d = cl.d;
     const size_t n1 = cl.n1;
+    const bool adjoint = pass == PcPass::Adjoint || pass == PcPass::HvpFixed;
+    const bool tangent = pass == PcPass::Tangent || pass == PcPass::HvpBase;
     size_t held = 0;
+    size_t record = 0;
     const auto keep = [&](const size_t bytes) {
       into.take(bytes);
       held += bytes;
     };
-    // Each own solve: S and K symmetrized, V and σ; σ^-1/2, X, K X's work,
-    // W and λ; U, T and T₁ kept, and where modes drop, V kept beside
-    // V_nᵀ K U and the two leaks (K V_n given back).
-    for (size_t j = 0; j < states; ++j) {
-      const size_t mj = m[j];
-      const size_t nd = d - mj;
-      replay(into, cl.own_build);
-      into.take(kD * ((3 * d * d) + d));
-      diagonalized(d);
-      into.take(kD * (mj + (2 * d * mj) + (mj * mj) + mj));
-      diagonalized(mj);
-      keep(kD * ((2 * d * mj) + (n1 * mj)));
-      size_t v = kD * d * d; // V, freed with the solve unless its modes keep it
-      if (nd > 0) {
-        into.take(kD * d * nd);
-        keep(kD * ((nd * mj) + (nd * d) + (nd * n1)));
-        into.give(kD * d * nd);
-        held += v;
-        v = 0;
-      }
-      into.give(kD * ((2 * d * d) + d + mj + (2 * d * mj) + (mj * mj) + mj) + v);
-      into.give(cl.own_held);
-    }
-    // Each transition (I, J): its T and T₁, and where J drops modes its leaks.
-    for (size_t i = 0; i < states; ++i) {
+    if (pass == PcPass::HvpFixed) {
+      fixed_kets(into, cl, m, held);
+    } else {
+      // Each own solve: S and K symmetrized, V and σ; σ^-1/2, X, K X's work,
+      // W and λ; U, T and T₁ kept, and where modes drop, V kept beside
+      // V_nᵀ K U and the two leaks (K V_n given back).
       for (size_t j = 0; j < states; ++j) {
-        if (i == j) {
-          continue;
-        }
-        const size_t nd = d - m[j];
-        replay(into, cl.pair_build);
-        keep(kD * ((d * m[j]) + (n1 * m[j])));
+        const size_t mj = m[j];
+        const size_t nd = d - mj;
+        replay(into, cl.own_build);
+        into.take(kD * ((3 * d * d) + d));
+        diagonalized(d);
+        into.take(kD * (mj + (2 * d * mj) + (mj * mj) + mj));
+        diagonalized(mj);
+        keep(kD * ((2 * d * mj) + (n1 * mj)));
+        size_t v = kD * d * d; // V, freed with the solve unless its modes keep it
         if (nd > 0) {
-          keep(kD * ((nd * d) + (nd * n1)));
+          into.take(kD * d * nd);
+          keep(kD * ((nd * mj) + (nd * d) + (nd * n1)));
+          into.give(kD * d * nd);
+          held += v;
+          v = 0;
         }
-        into.give(cl.pair_held);
+        into.give(kD * ((2 * d * d) + d + mj + (2 * d * mj) + (mj * mj) + mj) + v);
+        into.give(cl.own_held);
+      }
+      // Each transition (I, J): its T and T₁, and where J drops modes its
+      // leaks.
+      for (size_t i = 0; i < states; ++i) {
+        for (size_t j = 0; j < states; ++j) {
+          if (i == j) {
+            continue;
+          }
+          const size_t nd = d - m[j];
+          replay(into, cl.pair_build);
+          keep(kD * ((d * m[j]) + (n1 * m[j])));
+          if (nd > 0) {
+            keep(kD * ((nd * d) + (nd * n1)));
+          }
+          into.give(cl.pair_held);
+        }
       }
     }
     // The walk bars: M and M_Δ on the own entries (a tangent's on every
@@ -7533,12 +7537,20 @@ struct PcWalkBytes {
     size_t rows = 0;
     for (size_t p = 0; p < entries; ++p) {
       const size_t mj = m[p % states];
-      const bool weights = !adjoint || p / states == p % states;
+      const bool weights = tangent || p / states == p % states;
       keep(kD * ((weights ? 2 * mj * mj : 0) + (d * mj) + (n1 * mj)));
       rows += mj;
     }
-    if (!adjoint) {
+    if (tangent) {
       solve_tangent(into, cl, m, held);
+    }
+    if (pass == PcPass::HvpBase) {
+      // The base walk's record: per ket M and M_Δ, and per direction their
+      // tangents.
+      for (size_t j = 0; j < states; ++j) {
+        into.take(kD * 2 * (dirs + 1) * m[j] * m[j]);
+        record += kD * 2 * (dirs + 1) * m[j] * m[j];
+      }
     }
     keep(cl.uploads);
     size_t most = 0;
@@ -7554,22 +7566,43 @@ struct PcWalkBytes {
     const size_t count = kD * cl.tuples * rows;
     const size_t exchange = cl.exchange ? 2 : 1;
     into.walk(most);
-    if (!adjoint) {
+    if (tangent) {
       // A slab: y (and x), the sums, the weights and Δ; ẏ (and ẋ); each
       // direction's slab tangents; then g_I, the weights and Δ uploaded for
       // M and M_Δ. The finish: Ċ's last part, a sum per direction and entry.
-      const size_t slab_rows = (2 * exchange * count) + (2 * count) + (kD * cl.tuples);
-      into.take(slab_rows);
+      const size_t slab_rows = (exchange * count) + (2 * count) + (kD * cl.tuples);
+      into.take(slab_rows + (exchange * count));
       held += tangent_slabs(into, grown, cl.slabs);
       into.walk((2 * count) + (kD * cl.tuples));
+      into.give(exchange * count);
+      if (pass == PcPass::HvpBase) {
+        // pc_hvp_slab: g (and g_x), gs, w, Δ and the gemm's work; per
+        // direction the tangents of gs, w and Δ; then ȳ (and x̄) uploaded
+        // for the adjoint.
+        const size_t hvp_rows = (exchange * count) + (3 * count) + (kD * cl.tuples) + kD;
+        into.take(hvp_rows);
+        if (dirs > 0) {
+          into.walk((2 * count) + (kD * cl.tuples));
+        }
+        into.give(hvp_rows);
+        into.walk(exchange * count);
+      }
       into.give(slab_rows);
       into.walk(kD * dirs * entries);
+      if (pass == PcPass::HvpBase) {
+        record += hvp_keep(into, cl, m, held);
+      }
       into.give(held);
-      return;
+      return record;
     }
-    // A slab: its products, then y (and x), the multipliers' sums and
-    // weights, Δ, and ȳ (and x̄).
-    into.walk((2 * (exchange + 1) * count) + (kD * cl.tuples));
+    if (pass == PcPass::HvpFixed) {
+      // A slab: the base walk's ȳ (and x̄) uploaded.
+      into.walk(exchange * count);
+    } else {
+      // A slab: its products, then y (and x), the multipliers' sums and
+      // weights, Δ, and ȳ (and x̄).
+      into.walk((2 * (exchange + 1) * count) + (kD * cl.tuples));
+    }
     // The finish: per state that drops modes its span bar, X kept; Eq. 40's
     // scalar; per entry its matrix bars and their way back.
     for (size_t j = 0; j < states; ++j) {
@@ -7602,6 +7635,59 @@ struct PcWalkBytes {
       }
     }
     into.give(held);
+    return 0;
+  }
+
+  // pc_fixed_kets': per ket its matrices, S symmetrized, U copied and moved,
+  // T and T₁ over it, and where modes drop K symmetrized and S's modes
+  // formed anew over the base walk's V (copied); then per transition its T
+  // and T₁, and its leaks where the ket drops modes. All but the scratch
+  // @p held to the class's end.
+  void fixed_kets(HeldBytes &into, const PcClassBytes &cl, const std::vector<size_t> &m,
+                  size_t &held) const {
+    constexpr size_t kD = sizeof(double);
+    const auto states = static_cast<size_t>(nstates);
+    const size_t d = cl.d;
+    const size_t n1 = cl.n1;
+    const auto keep = [&](const size_t bytes) {
+      into.take(bytes);
+      held += bytes;
+    };
+    for (size_t j = 0; j < states; ++j) {
+      const size_t mj = m[j];
+      const size_t nd = d - mj;
+      replay(into, cl.own_build);
+      into.take(kD * d * d);
+      keep(kD * ((2 * d * mj) + (n1 * mj)));
+      if (nd > 0) {
+        into.take(kD * d * d);
+        keep(kD * d * d);
+        into.take(kD * d * nd);
+        keep(kD * ((nd * mj) + (nd * d) + (nd * n1)));
+        into.give(kD * ((d * nd) + (d * d)));
+      }
+      into.give((kD * d * d) + cl.own_held);
+    }
+    for (size_t i = 0; i < states; ++i) {
+      for (size_t j = 0; j < states; ++j) {
+        if (i == j) {
+          continue;
+        }
+        const size_t nd = d - m[j];
+        replay(into, cl.pair_build);
+        keep(kD * ((d * m[j]) + (n1 * m[j])));
+        if (nd > 0) {
+          keep(kD * ((nd * d) + (nd * n1)));
+        }
+        into.give(cl.pair_held);
+      }
+    }
+  }
+
+  // Whether ket J of pair @p jj's solve rotates its span along direction
+  // @p u: it drops modes and the direction moves a builder input.
+  [[nodiscard]] bool rotates(const size_t jj, const size_t u, const size_t nd) const {
+    return nd > 0 && moves[jj][u].shifted != 0;
   }
 
   // pc_solve_tangent's: per ket J, V_kᵀ U where it drops modes; per
@@ -7609,8 +7695,9 @@ struct PcWalkBytes {
   // direction moves a builder input, S, K and S₁ polarized (each sign's
   // shifted inputs beside its builder), S and K symmetrized and the
   // gemmwich work, and where modes drop Θ' (held to the ket's end) beside Θ
-  // and X; then per transition onto J and direction its Ṫ and ṫ1 (held),
-  // and S and S₁ polarized along pair (J, I)'s direction.
+  // and X; an HVP's base walk holds Θ, Θ' and Vᵀ Ṡ V's two blocks to the
+  // class's end instead. Then per transition onto J and direction its Ṫ and
+  // ṫ1 (held), and S and S₁ polarized along pair (J, I)'s direction.
   void solve_tangent(HeldBytes &into, const PcClassBytes &cl, const std::vector<size_t> &m,
                      size_t &held) const {
     constexpr size_t kD = sizeof(double);
@@ -7630,9 +7717,11 @@ struct PcWalkBytes {
     for (size_t j = 0; j < states; ++j) {
       const size_t mj = m[j];
       const size_t nd = d - mj;
+      const size_t jj = (j * states) + j;
       size_t ket = nd > 0 ? kD * mj * mj : 0;
       into.take(ket);
-      for (const TangentMoves &mv : moves[(j * states) + j]) {
+      for (size_t u = 0; u < directions(); ++u) {
+        const TangentMoves &mv = moves[jj][u];
         into.take(kD * ((d * mj) + (n1 * mj) + (2 * mj * mj)));
         held += kD * ((d * mj) + (n1 * mj) + (2 * mj * mj));
         if (mv.shifted == 0) {
@@ -7642,7 +7731,15 @@ struct PcWalkBytes {
         polarized(mv, raw, cl.own_build, cl.own_held);
         const size_t sym = kD * ((2 * d * d) + (d * mj));
         into.take(sym);
-        if (nd > 0) {
+        if (rotates(jj, u, nd) && pass == PcPass::HvpBase) {
+          // Θ' and Vᵀ Ṡ V's kept block, S V_n beside its dropped block;
+          // then Θ, all four held, beside X.
+          into.take(kD * ((nd * mj) + (mj * mj) + (d * nd) + (nd * nd)));
+          into.give(kD * d * nd);
+          into.take(kD * nd * mj);
+          held += kD * ((2 * nd * mj) + (mj * mj) + (nd * nd));
+          into.walk(kD * mj * mj);
+        } else if (rotates(jj, u, nd)) {
           into.take(kD * nd * mj);
           ket += kD * nd * mj;
           into.walk(kD * ((nd * mj) + (mj * mj)));
@@ -7667,7 +7764,66 @@ struct PcWalkBytes {
     }
   }
 
-  // Class @p cl at the given modes, or at the rank that holds the most.
+  // pc_hvp_keep's, per ket J: where its span rotates along some direction,
+  // the span coefficients Ψ, V_kᵀ Ū, each bra's matrices rebuilt (S
+  // symmetrized or copied, V_kᵀ S, V_kᵀ S₁) and the own K symmetrized, the
+  // gemms' blocks, and per direction it rotates along U̇ and the span bar's
+  // derivative (both handed over) beside Ψ's divided block. U and S's modes
+  // are handed over too, out of @p held. Returns what is handed over.
+  size_t hvp_keep(HeldBytes &into, const PcClassBytes &cl, const std::vector<size_t> &m,
+                  size_t &held) const {
+    constexpr size_t kD = sizeof(double);
+    const auto states = static_cast<size_t>(nstates);
+    const size_t d = cl.d;
+    const size_t n1 = cl.n1;
+    size_t handed = 0;
+    for (size_t j = 0; j < states; ++j) {
+      const size_t mj = m[j];
+      const size_t nd = d - mj;
+      const size_t jj = (j * states) + j;
+      bool any = false;
+      for (size_t u = 0; u < directions(); ++u) {
+        any = any || rotates(jj, u, nd);
+      }
+      if (any) {
+        into.walk(kD * ((3 * nd * mj) + (mj * mj)));
+        size_t ket = kD * ((nd * mj) + (mj * mj)); // Ψ, V_kᵀ Ū
+        into.take(ket);
+        for (size_t i = 0; i < states; ++i) {
+          const bool own = i == j;
+          replay(into, own ? cl.own_build : cl.pair_build);
+          into.take(kD * ((d * d) + (mj * d)));
+          into.walk(kD * mj * n1);
+          if (own) {
+            into.take(kD * d * d);
+            ket += kD * d * d;
+          }
+          into.give((kD * ((d * d) + (mj * d))) + (own ? cl.own_held : cl.pair_held));
+        }
+        const size_t blocks =
+            kD * ((d * mj) + (4 * mj * mj) + (nd * mj) + (nd * nd) + (d * std::max(mj, nd)));
+        into.take(blocks);
+        for (size_t u = 0; u < directions(); ++u) {
+          if (!rotates(jj, u, nd)) {
+            continue;
+          }
+          into.take(kD * ((d * mj) + (nd * mj) + (d * d)));
+          into.give(kD * nd * mj);
+          handed += kD * ((d * mj) + (d * d));
+        }
+        into.give(blocks + ket);
+      }
+      // U, and S's modes where it drops any: V, V_nᵀ K U and the leaks.
+      const size_t moved =
+          kD * ((d * mj) + (nd > 0 ? (d * d) + (nd * mj) + (nd * d) + (nd * n1) : 0));
+      held -= moved;
+      handed += moved;
+    }
+    return handed;
+  }
+
+  // Class @p cl at the given modes, or at the rank that holds the most; an
+  // HVP's base walk's record (walk's) stays taken on @p h.
   void run(const PcClassBytes &cl) {
     const auto states = static_cast<size_t>(nstates);
     if (!dropped.empty()) {
@@ -7681,15 +7837,18 @@ struct PcWalkBytes {
     }
     size_t most = h.peak;
     size_t grown = pd;
+    size_t record = 0;
     for (size_t rank = 1; rank <= cl.d; ++rank) {
       HeldBytes trial = h;
       grown = pd;
-      walk(trial, cl, std::vector<size_t>(states, rank), grown);
+      record = std::max(record, walk(trial, cl, std::vector<size_t>(states, rank), grown));
       most = std::max(most, trial.peak);
     }
-    // plus and dd grow alike at every rank, and stay grown.
+    // plus and dd grow alike at every rank, and stay grown; the record is
+    // the most any rank hands over.
     grow(h, pd, grown);
-    h.peak = most;
+    h.take(record);
+    h.peak = std::max(most, h.peak);
   }
 };
 
@@ -7926,7 +8085,7 @@ MemoryFootprint pc_effective_hamiltonian_tangent_footprint(
                 .batch = batch,
                 .syevd_lwork = syevd_lwork,
                 .dropped = dropped,
-                .adjoint = false,
+                .pass = PcPass::Tangent,
                 .moves = {}};
   for (size_t p = 0; p < entries; ++p) {
     std::vector<EnergyDirection> along;
@@ -8274,6 +8433,183 @@ Result<PcClassEnergiesHvp> pc_class_energies_hvp(DeviceResources &res, const MoB
       FBF_TRY(pc_couplings_hvp(res, blocks, {&in, 1}, 1, {&one, 1}, batch, directions, bars, {},
                                span, "pc_class_energies_hvp"));
   return PcClassEnergiesHvp{.energies = std::move(got.front())};
+}
+
+MemoryFootprint pc_class_energies_hvp_footprint(const int32_t naux, const int32_t ncore,
+                                                const int32_t ncas, const int32_t nvirt,
+                                                const int32_t batch,
+                                                const std::span<const size_t> syevd_lwork,
+                                                std::span<const EnergyDirection> directions,
+                                                const std::array<int64_t, 8> &dropped) {
+  return pc_effective_hamiltonian_hvp_footprint(naux, ncore, ncas, nvirt, 1, batch, syevd_lwork,
+                                                directions, {&dropped, 1});
+}
+
+MemoryFootprint pc_effective_hamiltonian_hvp_footprint(
+    const int32_t naux, const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+    const int32_t nstates, const int32_t batch, const std::span<const size_t> syevd_lwork,
+    std::span<const EnergyDirection> directions,
+    const std::span<const std::array<int64_t, 8>> dropped, const MemoryFootprint &transition) {
+  // pc_couplings_hvp, every allocation in its order (the tangent's set-up,
+  // the base walk with its record kept, energy_sijrs, then per direction
+  // the fixed walks, pc_u_step and line_step's sums, line_derivative's
+  // scratch and shifted inputs, and sijrs_hvp), in bytes.
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = kD * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  const auto nc = static_cast<size_t>(ncore);
+  const auto nv = static_cast<size_t>(nvirt);
+  const auto states = static_cast<size_t>(nstates);
+  const size_t entries = states * states;
+  const size_t dirs = entries == 0 ? 0 : directions.size() / entries;
+  PcWalkBytes w{.naux = naux,
+                .ncore = ncore,
+                .ncas = ncas,
+                .nvirt = nvirt,
+                .nstates = nstates,
+                .batch = batch,
+                .syevd_lwork = syevd_lwork,
+                .dropped = dropped,
+                .pass = PcPass::HvpBase,
+                .moves = {}};
+  for (size_t p = 0; p < entries; ++p) {
+    std::vector<EnergyDirection> along;
+    for (size_t u = 0; u < dirs; ++u) {
+      along.push_back(directions[(u * entries) + p]);
+    }
+    w.moves.push_back(tangent_moves(ncas, along));
+  }
+  HeldBytes &h = w.h;
+  const size_t region = math::align_up(n4, DeviceResources::kWorkspaceAlignment);
+  const auto doubles = [](const size_t count) {
+    return math::align_up(kD * count, DeviceResources::kWorkspaceAlignment);
+  };
+  // As the reverse pass's: make_a22's fdm2s, the einsum_adjoint scatters
+  // over n², and the walk's run of h1e_v's rows when a batch is not whole.
+  w.workspace = std::max(2 * region, doubles(n * n));
+  if (w.width(ExtBlock::Sr) < w.extent(ExtBlock::Sr)) {
+    w.workspace = std::max({w.workspace, doubles(static_cast<size_t>(w.width(ExtBlock::Sr)) * n),
+                            doubles(static_cast<size_t>(w.width(ExtBlock::Sir1)) * nc)});
+  }
+  const size_t blocks = shifted_blocks_bytes(naux, ncore, ncas, nvirt);
+  const size_t steps = kD * ((3 * dirs) + 3); // tangent_steps' sums
+  h.take(entries * n2);                       // every entry's active_operands delta
+  h.walk(steps);
+  if (entries > 0 && std::ranges::any_of(w.moves.front(), &TangentMoves::slabs)) {
+    h.take(blocks); // B + s Ḃ
+  }
+  for (size_t p = 0; p < entries && states > 1; ++p) {
+    h.walk(steps); // each pair's polarization steps
+  }
+  // The base walk: every class's solves and tangents, its record kept.
+  for (const PcClassBytes &cl : w.classes()) {
+    if (cl.walks) {
+      w.run(cl);
+    }
+  }
+  // energy_sijrs: its sums, its slab and the slab's product.
+  if (ncore > 0 && nvirt > 0) {
+    h.walk((2 * kD) + w.slab_bytes(ExtBlock::Sijrs) + w.product(ExtBlock::Sijrs));
+  }
+
+  // One fixed walk (pc_fixed_adjoint): every entry's identity and block
+  // bars, each class's fixed walk, then the sweeps.
+  const size_t fixed_bars =
+      (entries * (n2 + metric_bars_bytes(ncas))) + (states * dyall_bars_bytes(ncas));
+  w.pass = PcPass::HvpFixed;
+  const auto fixed = [&] {
+    h.take(fixed_bars);
+    for (const PcClassBytes &cl : w.classes()) {
+      if (cl.walks) {
+        w.run(cl);
+      }
+    }
+    for (size_t j = 0; j < states; ++j) {
+      h.walk(n4 + (2 * n6));
+      h.walk(n4);
+    }
+    for (size_t p = 0; p < entries - states; ++p) {
+      h.walk(n4);
+    }
+    h.give(fixed_bars);
+  };
+  // Every bar is wanted: each state's EnergyBars has every field (the
+  // shared ones one pointer), and each transition's its RDMs'.
+  const size_t rdm_bars = n2 + n4 + n6;
+  const size_t transitions = (entries - states) * rdm_bars;
+  // line_derivative's scratch, every wanted field but the orbital energies'.
+  const size_t scratch = (states * line_scratch_bytes(naux, ncore, ncas, nvirt)) + transitions;
+  // Whether a ket of a walked class drops modes, so its span rotates along
+  // a direction that moves its builders' inputs.
+  const auto drops = [&](const size_t j, const size_t k) {
+    return dropped.empty() || (j < dropped.size() && dropped[j][k] > 0);
+  };
+  for (size_t u = 0; u < dirs; ++u) {
+    h.take(transitions);
+    // The multipliers' tangent, and R's onto the orbital energies.
+    fixed();
+    h.walk(kD * std::max(nc, nv));
+    // U's tangent: pc_u_step's sums, then one symmetric difference.
+    bool rotating = false;
+    for (const PcClassBytes &cl : w.classes()) {
+      for (size_t j = 0; j < states && cl.walks; ++j) {
+        rotating = rotating || (drops(j, cl.k) && w.moves[(j * states) + j][u].shifted != 0);
+      }
+    }
+    if (rotating) {
+      h.walk(2 * kD);
+      h.take(scratch);
+      fixed();
+      h.give(scratch);
+    }
+    // The inputs' tangent at fixed multipliers: line_step's sums per pair,
+    // then per rung every pair's shifted inputs beside a fixed walk. Its
+    // direction there moves neither orbital energy, nor f3 off the diagonal
+    // (no transition carries one), nor B but the first pair's.
+    size_t shifted = 0;
+    bool moves = false;
+    for (size_t p = 0; p < entries; ++p) {
+      h.walk(kLineStepBytes);
+      EnergyDirection d = directions[(u * entries) + p];
+      moves = moves || moves_line(d);
+      d.in.e_core = nullptr;
+      d.in.e_virt = nullptr;
+      if (p / states != p % states) {
+        d.in.f3ca = nullptr;
+        d.in.f3ac = nullptr;
+      }
+      if (p > 0) {
+        d.blocks = nullptr;
+      }
+      shifted += shifted_inputs_bytes(naux, ncore, ncas, nvirt, d);
+    }
+    if (moves) {
+      h.take(scratch + shifted);
+      fixed();
+      h.give(scratch + shifted);
+    }
+    // sijrs_hvp along the first pair's direction: at more than one state its
+    // weight, Σ_J H̄_JJ, is taken as not one.
+    ScWalkBytes sijrs{
+        .naux = naux, .ncore = ncore, .ncas = ncas, .nvirt = nvirt, .batch = batch, .h = &h};
+    sijrs_hvp_bytes(sijrs, directions[u * entries], states > 1);
+    if (ncore > 0 && nvirt > 0) {
+      w.workspace =
+          std::max(w.workspace, slab_adjoint_footprint(naux, ncore, ncas, nvirt, ExtBlock::Sijrs,
+                                                       w.width(ExtBlock::Sijrs))
+                                    .device.workspace);
+    }
+    // Each transition's bars' tangent handed over.
+    for (size_t p = 0; p < entries - states; ++p) {
+      h.walk(transition.device.persistent + transition.device.scratch);
+      w.workspace = std::max(w.workspace, transition.device.workspace);
+    }
+    h.give(transitions);
+  }
+  return {.device = {.scratch = h.peak, .workspace = w.workspace},
+          .pinned = {.workspace = transition.pinned.workspace}};
 }
 
 } // namespace free_breakfast::nevpt2

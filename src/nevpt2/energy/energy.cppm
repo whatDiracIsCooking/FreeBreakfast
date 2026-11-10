@@ -1345,4 +1345,55 @@ pc_class_energies_tangent_footprint(int32_t naux, int32_t ncore, int32_t ncas, i
     std::span<const size_t> syevd_lwork, std::span<const EnergyDirection> directions,
     std::span<const std::array<int64_t, 8>> dropped = {});
 
+/// @brief What @ref pc_class_energies_hvp holds:
+/// pc_effective_hamiltonian_hvp_footprint at one state, its modes dropped as
+/// @p dropped says (PcClassEnergies::dropped; all zero, every class at its
+/// whole basis).
+[[nodiscard]] MemoryFootprint
+pc_class_energies_hvp_footprint(int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt,
+                                int32_t batch, std::span<const size_t> syevd_lwork,
+                                std::span<const EnergyDirection> directions,
+                                const std::array<int64_t, 8> &dropped = {});
+
+/// @brief What @ref pc_effective_hamiltonian_hvp holds over @p nstates states
+/// on @p naux fitting functions and @p ncore, @p ncas and @p nvirt orbitals at
+/// @p batch, along its m n² @p directions, with the kept span's rotation
+/// (span true; false holds no more), every bar wanted (each state's every
+/// field, each transition's RDMs') and @p transition the footprint of one
+/// call of its @p transition: the tangent's set-up; its base walk, as
+/// pc_effective_hamiltonian_tangent_footprint's with each slab's rows'
+/// multipliers and their tangents, and with each ket's record kept to the
+/// end (U, S's modes, M and M_Δ and per direction their tangents, and where
+/// the span rotates U̇ and the span bar's derivative); Sijrs's energy; then
+/// per direction the transitions' bars beside each fixed walk (the reverse
+/// pass at the kept multipliers, pc_effective_hamiltonian_adjoint_footprint's
+/// with the kets rebuilt), U's difference and the inputs' (each with
+/// line_derivative's scratch bars, the latter beside every pair's shifted
+/// inputs), and Sijrs's product. At more than one state Sijrs's weight
+/// Σ_J H̄_JJ is taken as not one. Nothing persists.
+///
+/// @p dropped is pc_effective_hamiltonian_adjoint_footprint's: d - m_J per
+/// state and class, the data's; empty, every class at the rank that holds
+/// the most, its record at the rank that keeps the most.
+[[nodiscard]] MemoryFootprint pc_effective_hamiltonian_hvp_footprint(
+    int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt, int32_t nstates, int32_t batch,
+    std::span<const size_t> syevd_lwork, std::span<const EnergyDirection> directions,
+    std::span<const std::array<int64_t, 8>> dropped = {}, const MemoryFootprint &transition = {});
+
+/// @brief What either @ref pc_metric_lifts holds over @p nstates states (1:
+/// the one-state overload) on @p ncore, @p ncas and @p nvirt orbitals: the
+/// ket's operands and its path's two; then per class its solve with its
+/// modes kept, and where it drops modes the path's two metrics, L and its
+/// eigensolve, and per bra its pair's two metrics and the rows' parts.
+/// Every dropped mode is counted null (the null modes are a prefix of the
+/// dropped ones), the most. Its workspace is make_a22's and diagonalize's
+/// (@p syevd_lwork as pc_effective_hamiltonian_footprint's).
+///
+/// @p dropped holds the ket's d - m per class (PcClassEnergies::dropped);
+/// empty, every class at the rank that holds the most.
+[[nodiscard]] MemoryFootprint
+pc_metric_lifts_footprint(int32_t ncore, int32_t ncas, int32_t nvirt, int32_t nstates,
+                          std::span<const size_t> syevd_lwork,
+                          std::span<const std::array<int64_t, 8>> dropped = {});
+
 } // namespace free_breakfast::nevpt2
