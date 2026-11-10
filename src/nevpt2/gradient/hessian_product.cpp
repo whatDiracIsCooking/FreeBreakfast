@@ -1207,6 +1207,47 @@ qd_rdms_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
   return y;
 }
 
+// The bytes of @p ncas active orbitals' CI vectors over @p n_alpha and
+// @p n_beta electrons.
+size_t ndet_bytes(const int32_t ncas, const int32_t n_alpha, const int32_t n_beta) {
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  return sizeof(double) * strings(n_alpha) * strings(n_beta);
+}
+
+// qd_rdms_tangent_footprint (declared in :builders).
+MemoryFootprint qd_rdms_tangent_footprint(const int32_t ncas, const int32_t n_alpha,
+                                          const int32_t n_beta, const int32_t nroots,
+                                          const bool one_slot) {
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n4 = sizeof(double) * n * n * n * n;
+  const size_t n6 = n4 * n * n;
+  const size_t ndet = ndet_bytes(ncas, n_alpha, n_beta);
+  const size_t y = static_cast<size_t>(nroots) * ndet;
+  Held h;
+  // y; y_part, spare and eri_part; with one_slot, the zero dm3 bar.
+  h.take(y);
+  const size_t scratch = (2 * ndet) + n4 + (one_slot ? n6 : 0);
+  h.take(scratch);
+  for (int32_t r = 0; r < nroots; ++r) {
+    // The root's own bars' tangent at c_r; with one_slot, its fixed bars at
+    // (c_r, u_r) and (u_r, c_r), and its f3 bars at (tu|vw)'s tangent.
+    h.call(rdms_adjoint_footprint(ncas, 1, false, true));
+    if (one_slot) {
+      h.call(rdms_adjoint_footprint(ncas, 1, true, true));
+      h.call(rdms_adjoint_footprint(ncas, 1, true, true));
+      h.call(rdms_adjoint_footprint(ncas, 1, false, true));
+    }
+  }
+  if (one_slot && nroots > 1) {
+    // Each transition's fixed dm3 bar at (u_M, u_N).
+    h.call(rdms_adjoint_footprint(ncas, 1, true, false));
+  }
+  h.give(scratch);
+  return h.footprint(y);
+}
+
 // What qd_hessian_product's body asks of its pair walk: @p adjoint runs
 // qd_sc_adjoint's or qd_pc_adjoint's reverse pass at W, its arrays and
 // folded bars kept into the given QdFixedBars; @p check reads every
@@ -1601,6 +1642,37 @@ constexpr double kPcLiftStep = 1e-3;
 // The eight classes, in the energies' order, for the refusal's message.
 constexpr std::array<std::string_view, 8> kPcClassNames{"Sr",   "Si",  "Sijrs", "Sijr",
                                                         "Srsi", "Srs", "Sij",   "Sir"};
+
+// qd_pc_lifts_footprint (declared in :builders).
+MemoryFootprint qd_pc_lifts_footprint(const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+                                      const int32_t n_alpha, const int32_t n_beta,
+                                      const int32_t nroots,
+                                      const std::span<const size_t> syevd_lwork,
+                                      const std::span<const std::array<int64_t, 8>> dropped) {
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = sizeof(double) * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  const size_t ndet = ndet_bytes(ncas, n_alpha, n_beta);
+  Held h;
+  h.take(n6); // part
+  for (int32_t r = 0; r < nroots; ++r) {
+    // K u_r and the second derivative's dm3; the two bra/ket rdms and the
+    // one-vector one, no f3; its traces; the lifts.
+    const size_t held = ndet + n6;
+    h.take(held);
+    h.call(rdms_footprint(ncas, 1, true, false));
+    h.call(rdms_footprint(ncas, 1, true, false));
+    h.call(rdms_footprint(ncas, 1, false, false));
+    h.take(n4 + n2);
+    h.call(pc_metric_lifts_footprint(ncore, ncas, nvirt, nroots, syevd_lwork,
+                                     dropped.empty() ? dropped
+                                                     : dropped.subspan(static_cast<size_t>(r), 1)));
+    h.give(held + n4 + n2);
+  }
+  h.give(n6);
+  return h.footprint(0);
+}
 
 Result<QdPcHessianProduct> qd_pc_hessian_product(
     DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,

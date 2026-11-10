@@ -244,10 +244,22 @@ MemoryFootprint qd_arrays_footprint(int32_t naux, int32_t nao, int32_t nmo, int3
                                     int32_t ncas, int32_t nroots, int32_t nfrozen);
 
 /// @brief What qd_adjoint holds at one W, @p walk the effective
-/// Hamiltonian's reverse pass's (its transition the bra/ket rdms_adjoint).
+/// Hamiltonian's reverse pass's (its transition
+/// qd_adjoint_transition_footprint's at the same @p fixed). With @p fixed
+/// (qd_adjoints' QdFixedBars, all-electron), the arrays, the shared bars
+/// and each root's own stay, persistent beside the result and the walk's
+/// kept copies.
 MemoryFootprint qd_adjoint_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore,
                                      int32_t ncas, int32_t n_alpha, int32_t n_beta, int32_t nroots,
-                                     int32_t nfrozen, const MemoryFootprint &walk);
+                                     int32_t nfrozen, const MemoryFootprint &walk,
+                                     bool fixed = false);
+
+/// @brief One call of qd_adjoint's transition callback: the traces' adjoint
+/// and the bra/ket rdms_adjoint without f3 bars at one determinant; with
+/// @p fixed, dm3's folded bar copied into QdFixedBars::transitions, kept
+/// (persistent). Without, qd_hessian_product's transition callback too (its
+/// bra/ket and (tu|vw) outputs are the caller's, held around the walk).
+MemoryFootprint qd_adjoint_transition_footprint(int32_t ncas, bool fixed);
 
 /// @brief What builders_adjoint holds once the RDMs' adjoint has run, onto
 /// @p h: the folded bars, Λ's raw bar given back, X, the half transform, A
@@ -405,5 +417,24 @@ builders_adjoint(DeviceResources &res, int32_t naux, int32_t nao, int32_t nmo, c
                  const double *c, int32_t ncore, int32_t ncas, ScArrays &x, ScArrays &bar,
                  LambdaBars lambda,
                  const std::function<Result<Buffers::device<double>>()> &rdm_adjoint);
+
+/// @brief What qd_hessian_product's QD RDM step (qd_rdms_tangent,
+/// hessian_product.cpp's) holds over @p nroots roots of @p n_alpha and
+/// @p n_beta electrons in @p ncas orbitals: y, kept (persistent), beside its
+/// three scratch outputs and each rdms_adjoint at one determinant; with
+/// @p one_slot, the zero dm3 bar and the fixed bars' calls too.
+MemoryFootprint qd_rdms_tangent_footprint(int32_t ncas, int32_t n_alpha, int32_t n_beta,
+                                          int32_t nroots, bool one_slot);
+
+/// @brief What qd_pc_hessian_product's Schur lifts along one direction hold
+/// (hessian_product.cpp's lifts_along): per ket, K u, its RDMs' second
+/// derivative (two bra/ket nevpt2::rdms and one of u, no f3, and the
+/// traces) and pc_metric_lifts_footprint over the @p nroots states, ket r's
+/// modes dropped as @p dropped[r] says (empty: every class at the rank that
+/// holds the most). Nothing persists.
+MemoryFootprint qd_pc_lifts_footprint(int32_t ncore, int32_t ncas, int32_t nvirt, int32_t n_alpha,
+                                      int32_t n_beta, int32_t nroots,
+                                      std::span<const size_t> syevd_lwork,
+                                      std::span<const std::array<int64_t, 8>> dropped);
 
 } // namespace free_breakfast::nevpt2

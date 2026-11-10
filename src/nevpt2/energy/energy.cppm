@@ -589,7 +589,9 @@ struct ScEffectiveHamiltonianAdjoint {
 /// entry's identity; the states' own walks' evaluation (n > 1); per pair its
 /// metrics' bars, both orders' walks, and per order the transition RDMs'
 /// bars swept and handed to @p transition; then each state's own walk and
-/// sweep; Sijrs; the orbital energies.
+/// sweep; Sijrs; the orbital energies. What a call of @p transition keeps
+/// (its persistent) is held to the end, one per ordered pair: the result's
+/// persistent.
 [[nodiscard]] MemoryFootprint
 sc_effective_hamiltonian_adjoint_footprint(int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt,
                                            int32_t nelecas, int32_t nstates, int32_t batch,
@@ -1206,7 +1208,9 @@ struct PcEffectiveHamiltonianAdjoint {
 /// its finish (the span's bar per state, each pair's matrix bars and their
 /// way back); the orbital energies; each state's sweep; each transition's
 /// RDM bars swept and handed over. Its workspace adds to the forward's
-/// the slabs' adjoints'.
+/// the slabs' adjoints'. What a call of @p transition keeps (its
+/// persistent) is held to the end, one per ordered pair: the result's
+/// persistent.
 ///
 /// A class's peak depends on the modes its solves keep: @p dropped[J][k] is
 /// d - m_J of class k (PcClassEnergies::dropped). Empty, every class is at
