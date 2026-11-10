@@ -93,6 +93,8 @@ import free_breakfast.mcscf.overlap;
 import free_breakfast.nevpt2.gradient;
 import free_breakfast.pipeline.pipeline;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint; // FootprintDimensions
+import free_breakfast.molecule;           // molecule_footprint
 import free_breakfast.pipeline.overlap;
 import free_breakfast.pipeline.nevpt2;
 // The H_eff eigenstates' match, the step's own (tracked_qd_state,
@@ -133,46 +135,20 @@ struct GeometryStep {
                                                    fb::DeviceResources &res) const {
     return fb::MoleculeOutput{fb::Molecule(res, atoms, 0, 1)};
   }
-};
 
-// The rerun's ScfOutput: the sampler's converged orbitals at this geometry,
-// already orthonormal in its overlap, as they are. Only the CasscfStep reads
-// it.
-struct ConvergedOrbitalsStep {
-  static constexpr std::string_view kName = "scf";
-
-  std::vector<double> c; // AO by MO, column-major
-  std::vector<double> mo_energies;
-  std::int32_t n_alpha = 0;
-  std::int32_t n_beta = 0;
-
-  [[nodiscard]] fb::Result<fb::ScfOutput> run(fb::View<fb::BasisSetOutput> in,
-                                              fb::DeviceResources &res) const {
-    const fb::BasisSet &basis = in.get<fb::BasisSetOutput>().basis;
-    fb::ScfOutput out{
-        .energy = std::numeric_limits<double>::quiet_NaN(),
-        .iterations = 0,
-        .n_alpha = n_alpha,
-        .n_beta = n_beta,
-        .mo_energies = mo_energies,
-        .c = fb::SphericalMatrixAO(res, basis),
-        .d = fb::SphericalMatrixAO(res, basis),
-    };
-    if (c.size() != out.c.num_elements() || mo_energies.size() != out.c.n()) {
-      return fb::err_config("carried {} orbital coefficients and {} energies into a basis of {}",
-                            c.size(), mo_energies.size(), out.c.n());
-    }
-    const fb::ScopedDeviceIndex on{res.dev_idx()};
-    FBF_TRY(fb::gpu_status(wwr::wwrMemcpyAsync(out.c.data(), c.data(), c.size() * sizeof(double),
-                                               wwr::wwrMemcpyHostToDevice, res.stream())));
-    FBF_TRY(res.sync());
-    return out;
+  // The Molecule's, as MoleculeStep's.
+  [[nodiscard]] fb::MemoryFootprint footprint(const fb::FootprintDimensions &dims) const {
+    return fb::molecule_footprint(dims.natoms);
   }
 };
 
+// The rerun's ScfOutput is the sampler's converged orbitals at this
+// geometry (fb::CarriedOrbitalsStep): already orthonormal in its overlap, so
+// the Loewdin step moves them by round-off alone. Only the CasscfStep reads
+// it.
 using RerunChain = fb::Pipeline<GeometryStep, fb::BasisSetStep, fb::SphericalTransformStep,
                                 fb::PrimitivePairClassesStep, fb::EriStep, fb::OverlapStep,
-                                fb::CoreHamiltonianStep, ConvergedOrbitalsStep, fb::CasscfStep>;
+                                fb::CoreHamiltonianStep, fb::CarriedOrbitalsStep, fb::CasscfStep>;
 
 // The mcscf::Solution a CasscfOutput is (pipeline/nevpt2_gradient's): its
 // orbitals and CI vectors on the device, gamma the weighted average of the
@@ -676,7 +652,7 @@ fb::Status run(std::span<char *const> args) {
           eri,
           fb::OverlapStep{},
           fb::CoreHamiltonianStep{},
-          ConvergedOrbitalsStep{
+          fb::CarriedOrbitalsStep{
               .c = p.c,
               .mo_energies = p.mo_energies,
               .n_alpha = electrons / 2,

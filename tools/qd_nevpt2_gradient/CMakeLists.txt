@@ -26,16 +26,15 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::atom
   free_breakfast::pipeline::nevpt2
   LINK_PRIVATE
-  free_breakfast::core::constants
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::one_electron::overlap_mixed
   free_breakfast::mcscf::overlap
-  free_breakfast::recipes::blas
   free_breakfast::recipes::diagonalize
-  free_breakfast::recipes::orthogonalize
+  free_breakfast::molecule
   free_breakfast::pipeline::pipeline
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   free_breakfast::pipeline::overlap
 )
 
