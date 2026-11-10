@@ -98,8 +98,9 @@ by `expect_footprint`'s two bars.
 **A nested step's footprint is optional, for now.** `OptimizeStep` and
 `HessianStep` rerun a chain whose shape their configuration picks, and only
 some of those chains are footprinted: the RHF chain under `[optimize]` and
-the semi-numerical `[hessian]` (#1054). The analytic Hessian (#1053) and the
-CASSCF, NEVPT2 and MECI chains call library routines with no footprint yet.
+the semi-numerical `[hessian]` (#1054), and the analytic DF-RHF `[hessian]`
+(#1053). The analytic multireference Hessians (#1176) and the CASSCF, NEVPT2
+and MECI chains call library routines with no footprint yet.
 So their member is
 `std::optional<MemoryFootprint> footprint(const FootprintDimensions &) const`,
 none for a chain not footprinted, which pre-flight then refuses under a cap
