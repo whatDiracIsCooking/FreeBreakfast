@@ -532,6 +532,19 @@ under the rotation about the bond and smooth: 6 macro iterations in each of
 the same 10 runs, the same energy to the last printed digit. Nothing here
 detects the split: `ci::solve` finds only `nroots` roots.
 
+The same average came back as `HessianDfSaCasscf.ContinuousFamilyIsRefused`
+at `conv_tol_grad` 1e-10 (#1188): 12 to 50 macro iterations over 40 runs on
+the RTX 3080, and not converged in 50 in 2, one of them at ‖g‖ 7.621e-6, as
+#716's. Its trace shows the mode: from ‖g‖ 1.3e-9 the step along a curvature
+of −1.8e-8 per unit length², 7.8e-3 long, predicted −5.6e-13, and the energy
+rose 4.0e-6, then 2.9e-7, 1.9e-8, 1.2e-9 and 7.5e-11 as each rejection
+halved it. A factor of ~16 per halving is a quartic: along the mixing of the
+two components H̃'s curvature vanishes, so the model sees only its noise and
+the radius, not the model, sets the step. Each such excursion costs five to
+eight rejected iterations, and whether one happens turns on the sign of that
+noise, so no `max_cycle` bounds it. That test now averages a space that
+splits no pair.
+
 ## Defaults, and what each settles
 
 | Option | Default | Settles |

@@ -857,6 +857,14 @@ products. z is solved first, over the same A, on root I's gradient. It met
 nothing, because its right-hand side is axially symmetric, as the
 coordinates' are.
 
+The test now takes HF CAS(4,3) at two roots instead (#1188; "One caveat"
+below has its probe). The CAS(10,7) average splits the ¹Π pair, and its
+CASSCF converged erratically: 12 to 50 macro iterations, and none in 2 of 40
+runs (`../mcscf/solve/README.md`, "A state average that splits a degenerate
+pair"). In CAS(4,3) the other component's 1π is core, the CASSCF takes 6
+macro iterations, and the probe refused it in each of 10 runs, its column meeting
+p·H̃p < 0 after 10 to 27 products or not converging in 200 sweeps.
+
 On the existing state averages ρ is 4.9e-3 to 0.30 against a bar of 8.6e-7,
 four orders and more above it (water SA-CAS(4,4)/6-31G, the four
 `HessianDfSaCasscf` cases and the three analytic SA `PipelineCasscfHessian`
@@ -2625,9 +2633,10 @@ against `rot` (equal weights; zero at unequal) and the total against
 asymmetry to 1e-8, the sum rule to 1e-7. At equal weights the total less
 eq. rot must miss `relaxed_fd` by more than 1e-2. `Refusals`: a root out of
 range, one weight, a zero weight, the solution's weights swapped, one root,
-and a degenerate pair (Numerical). `ContinuousFamilyIsRefused` (slow-gated,
-11 to 19 s on the gfx1200): HF CAS(10,7), one orbital of the 2π pair active, at
-two roots and equal weights. It is this tree's own DF-CASSCF through the
+and a degenerate pair (Numerical). `ContinuousFamilyIsRefused` (0.4 to 1 s on
+the RTX 3080): HF CAS(4,3), 3σ, one orbital of the 1π pair and σ* active, at
+two roots and equal weights, its CASSCF in at most 20 macro iterations
+(#1188). It is this tree's own DF-CASSCF through the
 registry, and it must be a Divergence from `df_sacasscf` that calls A
 singular, with ρ under its bar when the message names one ("A singular H̃").
 
