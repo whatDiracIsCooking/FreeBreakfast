@@ -193,7 +193,7 @@ TEST(PipelineShape, EigensolveOrdersAndMinao) {
 // A CIS step's Davidson subspace, max(2 n_states, min(max_subspace, n_ov)):
 // at the default 40 columns past water's nao of 24 (n_ov 95), at 8 under it.
 // getrf's work at the RIS basis's order (water's Sp one: six functions) with
-// ris, 0 without. And MINAO for a localization that builds IAOs (IBO, or the
+// ris (0 on a solver that takes none, as rocSOLVER's getrf), 0 without. And MINAO for a localization that builds IAOs (IBO, or the
 // LIVVOs in either mode), not for Pipek-Mezey alone.
 TEST(PipelineShape, CisAndLocalization) {
   FBF_REQUIRE_GPU();
@@ -207,7 +207,6 @@ TEST(PipelineShape, CisAndLocalization) {
   const fb::PlanShape ris = water_shape(res, "[cis]\nris = true\n");
   auto lwork = fb::getrf_lwork(res, 6);
   ASSERT_TRUE(lwork.has_value()) << lwork.error().message;
-  EXPECT_GT(*lwork, 0U);
   EXPECT_EQ(ris.dims.getrf_lwork, *lwork);
 
   EXPECT_EQ(water_shape(res, "[scf]\n[localization]\n").dims.minao, nullptr);
