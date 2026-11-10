@@ -292,15 +292,18 @@ constexpr size_t kReuseRoundingDivisor = 8;
 }
 
 // The most a plan's device peak may reach in a pool capped at @p pool_cap:
-// the cap less the fragmentation headroom, and on a pool that rounds a reused
-// block, less the rounding of every allocation live at the peak. Those
+// the cap less the fragmentation headroom and what the DeviceResources holds
+// in the pool from construction (its info flag, which no step's footprint
+// counts), and on a pool that rounds a reused block, less the rounding of
+// every allocation live at the peak. Those
 // allocations' requests sum to at most the peak P, each is counted at most
 // an eighth past its request, so the largest P with P + ceil(P / 8) within
 // what the headroom leaves. Both terms are left: the rounding fills the
 // blocks it reuses, and the headroom covers the chunks' free parts beside
 // them.
 [[nodiscard]] size_t preflight_device_room(const uint64_t pool_cap, const bool rounds_reuse) {
-  const auto limit = static_cast<size_t>(pool_cap - kPoolHeadroomBytes);
+  const auto limit =
+      static_cast<size_t>(pool_cap - kPoolHeadroomBytes - DeviceResources::kOwnPoolBytes);
   if (!rounds_reuse) {
     return limit;
   }
@@ -427,10 +430,12 @@ Status preflight(Calculation &calc, NodeResources &node) {
     return {};
   }
   constexpr uint64_t kReserve = DeviceResources::kDeviceReserve;
-  if (device_cap != 0 && device_cap <= kReserve + kPoolHeadroomBytes) {
+  constexpr uint64_t kOwn = DeviceResources::kOwnPoolBytes;
+  if (device_cap != 0 && device_cap <= kReserve + kPoolHeadroomBytes + kOwn) {
     return err_config("pre-flight: max_device_mem_per_gpu = {} bytes leaves no pool: {} bytes of "
-                      "it are the reserve outside the pool, and {} the fragmentation headroom",
-                      device_cap, kReserve, kPoolHeadroomBytes);
+                      "it are the reserve outside the pool, {} the fragmentation headroom, and "
+                      "{} what the device's resources hold in the pool themselves",
+                      device_cap, kReserve, kPoolHeadroomBytes, kOwn);
   }
   if (pinned_cap != 0) {
     FBF_TRY(check_pinned_node(pinned_cap, node.device_count(), FBF_TRY(read_mem_available())));

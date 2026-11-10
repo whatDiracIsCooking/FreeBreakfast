@@ -95,8 +95,11 @@ What it does that only this module can:
   would build them once; that belongs with #1123, which sizes the
   workspaces at construction too.
 - **The device room.** The fold's device peak P must fit the pool's cap
-  less `kPoolHeadroomBytes`, and on a pool that rounds a reused block,
-  P + ⌈P/8⌉ must. Whether it does is probed on the pool itself (a 1024-byte
+  less `kPoolHeadroomBytes` and less `DeviceResources::kOwnPoolBytes`, and
+  on a pool that rounds a reused block, P + ⌈P/8⌉ must. `kOwnPoolBytes` is
+  what the `DeviceResources` holds in its pool from construction, before
+  pre-flight and outside every step: its solver `info` flag, one `int32_t`.
+  No footprint can count it, so the room does. Whether it does is probed on the pool itself (a 1024-byte
   block freed, then 1000 bytes asked for: ROCm's counts 1024, CUDA's 1000),
   not read off the backend. Below, "The HIP margin".
 - **AVAS.** `narrow_avas`: when every planned active space is AVAS's (a
@@ -116,8 +119,11 @@ What it does that only this module can:
 cap below the fold's peak refused and one above it run inside the pool's cap
 with the workspaces never grown; to a pre-warm refused with half the card
 held outside the pool; and to a CASCI under AVAS narrowed to the space its
-cap fits. `test/examples/`'s `example_memory` runs `examples/memory.toml`
-through the binary.
+cap fits. The nested `[optimize]` and `[hessian]` cases pin the room to the
+byte: a cap whose room is the peak exactly runs, one byte less is refused,
+and the pool holds exactly the pre-grown workspace plus `kOwnPoolBytes`
+before the first step. `test/examples/`'s `example_memory` runs
+`examples/memory.toml` through the binary.
 
 ### The HIP margin
 

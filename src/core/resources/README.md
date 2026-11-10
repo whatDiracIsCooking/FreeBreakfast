@@ -223,6 +223,7 @@ if (const size_t budget = FBF_TRY(res.memory_budget()); need > budget) {
 | `memory_budget()` | `Result<size_t>`: the limit less the pool's `UsedMemCurrent`, at least 0 |
 | `pool_cap()` | the `Device` pool's cap, in bytes, the constructor's fourth argument; 0 for none |
 | `kDeviceReserve` | 256 MiB: what the process holds on the device outside any pool |
+| `kOwnPoolBytes` | 4 B: what a `DeviceResources` holds in its own pool from construction, the `info()` flag; pre-flight's device room takes it off the cap |
 
 **The limit** is `pool_cap()` under a cap. With none it is the device's total
 less `kDeviceReserve`: the context and the BLAS and solver handles, which no

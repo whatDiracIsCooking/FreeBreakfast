@@ -84,8 +84,9 @@ struct PlanShape {
 /// Otherwise, in order:
 ///
 /// - a `max_device_mem_per_gpu` that leaves no pool past the reserve outside
-///   it (DeviceResources::kDeviceReserve) and the fragmentation headroom
-///   (kPoolHeadroomBytes) is refused;
+///   it (DeviceResources::kDeviceReserve), the fragmentation headroom
+///   (kPoolHeadroomBytes) and what the DeviceResources holds in the pool
+///   itself (DeviceResources::kOwnPoolBytes) is refused;
 /// - under a pinned cap, the node's devices times it must fit MemAvailable
 ///   (check_pinned_node);
 /// - each of @p node's DeviceResources is rebuilt with the pool capped at
@@ -93,8 +94,9 @@ struct PlanShape {
 ///   `max_pinned_mem_per_gpu`;
 /// - the plan is shaped on device 0 (plan_shape) and its footprints folded
 ///   and checked (check_plan), the device peak against the pool's cap less
-///   the headroom and, on a pool that rounds a reused block, an eighth of
-///   the peak. A step with no footprint yet is refused under a cap. When the
+///   the headroom, what the DeviceResources itself holds in the pool
+///   (DeviceResources::kOwnPoolBytes) and, on a pool that rounds a reused
+///   block, an eighth of the peak. A step with no footprint yet is refused under a cap. When the
 ///   only active spaces planned are AVAS's and their worst case does not
 ///   fit, each AVAS step's `avas_max_ncas` is narrowed to the most orbitals
 ///   that do, so a larger pick is refused at the step;
