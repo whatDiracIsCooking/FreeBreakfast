@@ -912,6 +912,7 @@ TEST(Nevpt2QdHvpEmpty, CouplingK6MatchesTheEnergysSecondDifference) {
 // tuple, in a class of three functions.
 TEST(Nevpt2QdHvpEmpty, OneSidedTupleIsRefusedOnANonProportionalPair) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
   const Point base = sa_casscf("h8_sto3g_sa3");
   ASSERT_FALSE(base.b.empty());
   fb::DeviceResources res(0);

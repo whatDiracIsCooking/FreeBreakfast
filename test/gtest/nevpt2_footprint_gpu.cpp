@@ -1056,6 +1056,7 @@ class Nevpt2ClassEnergiesHvpFootprint
 // so the second tables run, as the footprint counts them.
 TEST_P(Nevpt2ClassEnergiesHvpFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE("n2_ccpvdz_cas44_df_batch0");
   const auto [name, batch, partnered] = GetParam();
   // CAS(4,4) is the family's representative; its partnered batch of one
   // (2.2 s on the 3080) and CAS(8,8) (7-14 s) are past slow_test.h's rule.
@@ -1107,6 +1108,7 @@ class Nevpt2ScEffectiveHamiltonianHvpFootprint
 // second tables run, as the footprint counts them at the most.
 TEST_P(Nevpt2ScEffectiveHamiltonianHvpFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE("n2_ccpvdz_cas44_df_batch0");
   constexpr std::int32_t kStates = 2;
   const auto [name, batch] = GetParam();
   // CAS(4,4) whole is the family's representative (0.9 s on the 3080); its
@@ -1211,6 +1213,7 @@ class Nevpt2PcClassEnergiesHvpFootprint
 // the most, no less.
 TEST_P(Nevpt2PcClassEnergiesHvpFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE("n2_ccpvdz_cas44_df_batch0");
   const auto [name, batch] = GetParam();
   // Under slow_test.h: CAS(8,8), past 1.5 s on the RTX 3080 at either batch.
   if (name == "n2_ccpvdz_cas88_df") {
@@ -1308,6 +1311,7 @@ class Nevpt2PcEffectiveHamiltonianHvpFootprint
 // weights.
 TEST_P(Nevpt2PcEffectiveHamiltonianHvpFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE("n2_ccpvdz_cas44_df_batch0");
   const auto [name, batch] = GetParam();
   // Under slow_test.h: CAS(8,8), past 1.5 s on the RTX 3080 at either batch.
   if (name == "n2_ccpvdz_cas88_df") {
@@ -1358,6 +1362,7 @@ class Nevpt2PcMetricLiftsFootprint : public ::testing::TestWithParam<std::string
 // derivatives, and two_states' ket 0 with random first derivatives per pair.
 TEST_P(Nevpt2PcMetricLiftsFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE("0");
   const std::string name = GetParam();
   fb::DeviceResources inputs{0};
   const EnergyCase g = energy_case(inputs, name);

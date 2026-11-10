@@ -1260,6 +1260,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST(Nevpt2QdPcHessianProductLift, A1B2FixtureRefusesTheExpectedBlocks) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
+  FBF_FAMILY_EXEMPT("its one case, the A1/B2 fixture's tangent sweep, is past slow_test.h's rule");
   auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "qd_nevpt2_hessian" /
                             "h2nb_sto3g_sa2.json");
   ASSERT_TRUE(read.has_value()) << read.error().message;
