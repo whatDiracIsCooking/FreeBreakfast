@@ -33,7 +33,9 @@ target_link_libraries(
           free_breakfast::mcscf::overlap
           free_breakfast::nevpt2::gradient
           free_breakfast::pipeline::pipeline
+          free_breakfast::molecule
           free_breakfast::pipeline::step
+          free_breakfast::pipeline::footprint
           free_breakfast::pipeline::overlap
           free_breakfast::pipeline::nevpt2
           free_breakfast::pipeline::hessian

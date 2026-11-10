@@ -6,16 +6,15 @@ module free_breakfast.tools.qd_nevpt2_gradient;
 
 import std;
 import free_breakfast.core.error_handling;
-import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.integrals.one_electron.overlap_mixed;
 import free_breakfast.mcscf.overlap;
-import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.diagonalize;
-import free_breakfast.recipes.orthogonalize;
 import free_breakfast.pipeline.pipeline;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint; // FootprintDimensions
+import free_breakfast.molecule;           // molecule_footprint
 import free_breakfast.pipeline.overlap;
 import free_breakfast.pipeline.nevpt2;
 
@@ -51,60 +50,20 @@ struct ChainGeometryStep {
   [[nodiscard]] Result<MoleculeOutput> run(View<> /*in*/, DeviceResources &res) const {
     return MoleculeOutput{Molecule(res, atoms, 0, 1)};
   }
-};
 
-// Every displaced point's ScfOutput: the reference CASSCF's orbitals,
-// Loewdin-orthonormalized in this geometry's overlap, C (C^T S C)^-1/2
-// (pipeline/optimize's CarriedOrbitalsStep), so the CasscfStep starts from the
-// active space the reference converged. Only the CasscfStep reads it, by index.
-struct ChainOrbitalsStep {
-  static constexpr std::string_view kName = "scf";
-
-  std::vector<double> c; // AO by MO, column-major
-  std::vector<double> mo_energies;
-  int32_t n_alpha = 0;
-  int32_t n_beta = 0;
-
-  [[nodiscard]] Result<ScfOutput> run(View<BasisSetOutput, OverlapOutput> in,
-                                      DeviceResources &res) const {
-    const BasisSet &basis = in.get<BasisSetOutput>().basis;
-    const SphericalMatrixAO &s = in.get<OverlapOutput>().s;
-    if (c.size() != s.num_elements() || mo_energies.size() != s.n()) {
-      return err_config("carried {} orbital coefficients and {} energies into a basis of {}",
-                        c.size(), mo_energies.size(), s.n());
-    }
-    const ScopedDeviceIndex on{res.dev_idx()};
-    const auto n = static_cast<int32_t>(s.n());
-    const size_t n2 = s.num_elements();
-    SphericalMatrixAO previous(res, basis);
-    Buffers::device<double> m(n2, res.device());
-    Buffers::device<double> m_inv_sqrt(n2, res.device());
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(previous.data(), c.data(), n2 * sizeof(double),
-                                           wwr::wwrMemcpyHostToDevice, res.stream())));
-    {
-      const auto [work] = res.device_regions<double>(n2);
-      FBF_TRY(gpu_status(gemmwich(res.blas(), n, previous.data(), s.data(), work, m.data())));
-    }
-    FBF_TRY(orthogonalize<double>(res, n, m.data(), m_inv_sqrt.data()));
-    ScfOutput out{
-        .energy = std::numeric_limits<double>::quiet_NaN(),
-        .iterations = 0,
-        .n_alpha = n_alpha,
-        .n_beta = n_beta,
-        .mo_energies = mo_energies,
-        .c = SphericalMatrixAO(res, basis),
-        .d = SphericalMatrixAO(res, basis),
-    };
-    FBF_TRY(gpu_status(gemm(res.blas(), n, &kOne<double>, previous.data(), m_inv_sqrt.data(),
-                            &kZero<double>, out.c.data())));
-    FBF_TRY(res.sync());
-    return out;
+  // The Molecule's, as MoleculeStep's.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const {
+    return molecule_footprint(dims.natoms);
   }
 };
 
-using DisplacedChain =
-    Pipeline<ChainGeometryStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep,
-             EriStep, OverlapStep, CoreHamiltonianStep, ChainOrbitalsStep, CasscfStep, Nevpt2Step>;
+// Every displaced point's ScfOutput is the reference CASSCF's orbitals,
+// Loewdin-orthonormalized in this geometry's overlap (CarriedOrbitalsStep),
+// so the CasscfStep starts from the active space the reference converged.
+
+using DisplacedChain = Pipeline<ChainGeometryStep, BasisSetStep, SphericalTransformStep,
+                                PrimitivePairClassesStep, EriStep, OverlapStep, CoreHamiltonianStep,
+                                CarriedOrbitalsStep, CasscfStep, Nevpt2Step>;
 using ReferenceChain = Pipeline<ChainGeometryStep, BasisSetStep, SphericalTransformStep,
                                 PrimitivePairClassesStep, EriStep, OverlapStep, OrthogonalizerStep,
                                 CoreHamiltonianStep, GuessStep, ScfStep, CasscfStep, Nevpt2Step>;
@@ -256,7 +215,7 @@ struct ChainSampler::State {
   const SphericalMatrixAO *h0 = nullptr;
   std::optional<mcscf::Solution> solution0;
   std::vector<std::array<int64_t, 8>> dropped0;
-  ChainOrbitalsStep carried;
+  CarriedOrbitalsStep carried;
   ChainPoint at0;
   size_t polish_passes = 0;
 
@@ -266,9 +225,9 @@ struct ChainSampler::State {
   // off the diagonal moves by ~4e-10 hartree on skew H2CO; a point whose
   // polish ran out at ~9e-12 moved it by 2.5e-11, enough to fail
   // nevpt2_numerical_heff_gpu.cpp's PC h_PQ (#869, before #867's CI floor).
-  Status converge(const std::vector<Atom> &atoms, const ChainOrbitalsStep &start,
+  Status converge(const std::vector<Atom> &atoms, const CarriedOrbitalsStep &start,
                   std::optional<DisplacedChain> &out) {
-    const auto once = [&](const ChainOrbitalsStep &from,
+    const auto once = [&](const CarriedOrbitalsStep &from,
                           const CasscfStep &solve) -> Result<DisplacedChain> {
       auto run = FBF_TRY(DisplacedChain::create({
           ChainGeometryStep{atoms},
@@ -291,7 +250,7 @@ struct ChainSampler::State {
          polish && pass < kPolishPasses && out->get<CasscfOutput>()->gradient_norm >= kPolishTarget;
          ++pass) {
       const CasscfOutput &now = *out->get<CasscfOutput>();
-      const ChainOrbitalsStep from{
+      const CarriedOrbitalsStep from{
           .c = FBF_TRY(chain_download(res, now.c.data(), now.c.num_elements())),
           .mo_energies = now.mo_energies,
           .n_alpha = start.n_alpha,
@@ -309,7 +268,7 @@ struct ChainSampler::State {
     return {};
   }
 
-  Result<ChainPoint> point(std::span<const double> displacement, const ChainOrbitalsStep &start) {
+  Result<ChainPoint> point(std::span<const double> displacement, const CarriedOrbitalsStep &start) {
     DeviceResources &res = node->device(0);
     const std::string_view name = "nevpt2::ChainSampler";
     if (displacement.size() != 3 * chain.atoms.size()) {
@@ -487,7 +446,7 @@ Result<ChainSampler> ChainSampler::create(NodeResources &node, const NumericalCh
   const ScfOutput &rhf = *st.reference->get<ScfOutput>();
   if (polish) {
     const CasscfOutput &first = *st.reference->get<CasscfOutput>();
-    const ChainOrbitalsStep from{
+    const CarriedOrbitalsStep from{
         .c = FBF_TRY(chain_download(res, first.c.data(), first.c.num_elements())),
         .mo_energies = first.mo_energies,
         .n_alpha = rhf.n_alpha,
@@ -548,7 +507,7 @@ Result<ChainSampler> ChainSampler::create(NodeResources &node, const NumericalCh
   at0.core_gap = smallest_gap(std::span{cas0.mo_energies}.subspan(0, ncore));
   at0.virtual_gap = smallest_gap(std::span{cas0.mo_energies}.subspan(nocc));
   // What every displaced point starts from.
-  st.carried = ChainOrbitalsStep{
+  st.carried = CarriedOrbitalsStep{
       .c = FBF_TRY(chain_download(res, cas0.c.data(), cas0.c.num_elements())),
       .mo_energies = cas0.mo_energies,
       .n_alpha = rhf.n_alpha,
@@ -569,7 +528,7 @@ Result<ChainPoint> ChainSampler::at(std::span<const double> displacement) {
 }
 
 Result<ChainPoint> ChainSampler::at(std::span<const double> displacement, const ChainPoint &from) {
-  return state_->point(displacement, ChainOrbitalsStep{
+  return state_->point(displacement, CarriedOrbitalsStep{
                                          .c = from.c,
                                          .mo_energies = from.mo_energies,
                                          .n_alpha = state_->carried.n_alpha,
