@@ -130,6 +130,11 @@ CPP_FILES = re.compile(
 )
 PY_FILES = re.compile(r"\.py$")
 EXCLUDED = re.compile(r"^(vendor/|third_party/|deps/WarpWraps/|deps/FelizJueves/)")
+# C++ the push smoke's preset never configures: experimental/ and its tests
+# sit behind FREE_BREAKFAST_BUILD_EXPERIMENTAL (root CMakeLists.txt), so a
+# change there fires no C++ half -- building the tree would check none of it.
+# The root CMakeLists.txt line that adds them is outside, and still fires it.
+NOT_IN_CPP_SMOKE = re.compile(r"^(experimental/|test/experimental/)")
 
 # The test binaries, relative to a build directory. The GPU ones, one batch
 # each, in this order.
@@ -852,9 +857,9 @@ def halves(files: list[str] | None) -> tuple[bool, bool]:
     if files is None:
         return True, True
     files = [f for f in files if not EXCLUDED.match(f)]
-    return any(CPP_FILES.search(f) for f in files), any(
-        PY_FILES.search(f) for f in files
-    )
+    return any(
+        CPP_FILES.search(f) and not NOT_IN_CPP_SMOKE.match(f) for f in files
+    ), any(PY_FILES.search(f) for f in files)
 
 
 def cmake_floor() -> str | None:
