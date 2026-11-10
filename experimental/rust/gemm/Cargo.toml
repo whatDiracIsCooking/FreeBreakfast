@@ -1,0 +1,14 @@
+[package]
+name = "fb-gemm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "fp64 GEMM on free_breakfast's DeviceResources, from Rust, through a C ABI"
+
+[lib]
+name = "fb_gemm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gemm-demo"
+path = "src/main.rs"

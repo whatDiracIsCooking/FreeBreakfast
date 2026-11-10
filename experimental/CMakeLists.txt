@@ -52,3 +52,8 @@ add_subdirectory(split_gemm)
 # memory through a ring of device slots: what each batch costs on top of the
 # one-call build. Benchmark only, like blas_lt.
 add_subdirectory(gemm_host_offload)
+
+# fp64 gemm driven from Rust: a C ABI over DeviceResources and device buffers
+# as a shared library, and the cargo crate beside it that binds it. Cargo is
+# not driven from here; the README has the two-step build.
+add_subdirectory(rust/gemm)
