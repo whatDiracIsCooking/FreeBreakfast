@@ -513,7 +513,8 @@ reading a log. It reports two things, and neither fails the night:
   (`LINE_SECONDS`, `slow_test.h`'s line, which a pytest holds it to) and is
   not its family's representative, nor in an exempt family. The families and
   representatives are `devtools/test_families.py`'s, read from the night's
-  build directory, the cheapest by the same records' times. pytest cases and
+  build directory, the cheapest by the same records' times among the members
+  they do not mark `slow`, as `pr`'s are ("Test selection"). pytest cases and
   the `example_*` entries are outside `slow_test.h`'s rule.
 - **A step:** a case, in either set and either language, whose time stepped up
   against its own recent history past the bar below.
@@ -741,17 +742,22 @@ replay, below, which found diff-based selection too expensive to be worth it.
 
 - **The set is the lister's.** After the build, `pr` runs
   `devtools/test_families.py <build dir> --json` ("Families" above) and takes
-  each family's `representative`, the marked case or else the cheapest by the
-  metrics series. Nothing in `test.py` re-derives it.
+  each family's `representative`: the marked case, else the cheapest member by
+  the recorded times among those its latest record does not mark `slow`
+  (gated by `FBF_SKIP_IF_FAST_TESTS()`; #1125). A member no record calls
+  `slow` counts as fast. Nothing in `test.py` re-derives it.
 - **An exempt family runs nothing**; that is what `FBF_FAMILY_EXEMPT` says.
 - **A flagged family runs whole**, every member of it in the fast set: with no
   representative to stand in for it, selection runs more, never fewer. Each
   one is named on a `pr:   flagged, run whole:` line.
 - **A ctest entry that is not one gtest case** (the examples, which run
   `free-breakfast` through a cmake script) is in no family, and runs.
-- **A wrong marker fails the gate** (the lister's exit 1), before the card is
-  taken: the set would be missing a family. So does a lister that cannot list.
-  Fix the marker, or run the whole fast set with `--all`.
+- **A wrong or missing marker fails the gate** (the lister's exit 1), before
+  the card is taken: the set would be missing a family. A missing one is a
+  family whose every timed member is gated: it is an error until it gets a
+  marker on a case that runs in the fast set, or `FBF_FAMILY_EXEMPT`. So does
+  a lister that cannot list. Fix or add the marker, or run the whole fast set
+  with `--all`.
 - **The join is on gtest's names.** The lister names a case as gtest's own
   `--gtest_list_tests` does, and so does each ctest entry's `--gtest_filter`,
   so `pr` reads the case from the filter and never from ctest's entry name,
@@ -773,7 +779,8 @@ replay, below, which found diff-based selection too expensive to be worth it.
   different representative marked. #989 found nine families whose cheapest
   case by the nightly's (unskipped) times is one `FBF_SKIP_IF_FAST_TESTS()`
   gates, and marked each one's single fast instance: cheapest by time is not
-  cheapest in the fast set.
+  cheapest in the fast set. Since #1125 the lister leaves a gated member out
+  of the cheapest itself (above), so such a family needs no marker for it.
 - **Python is not selected.** `pr`'s Python half is the fast pytest set, as
   before.
 - **What the gate gives up** is a regression that only a non-representative
