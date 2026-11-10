@@ -2232,6 +2232,7 @@ constexpr std::size_t kQdBuildersTangentLive = 63 + 51 + 65;
 // builders_tangent along two directions.
 TEST(Nevpt2GradientLayerFootprint, BuildersTangent) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
   using P = BuildersPoint;
   fb::DeviceResources inputs{0};
   P p{inputs};
