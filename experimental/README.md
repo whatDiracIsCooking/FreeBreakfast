@@ -35,6 +35,7 @@ Two things still apply:
 | [`compress_rdm3/`](compress_rdm3/README.md) | A complete SC-NEVPT2 case with no symmetry, C1 glycolaldehyde DF-CASSCF(10,10), dm3/f3ca/f3ac included: data and its generator for 3-RDM compression experiments; nothing built |
 | [`split_gemm/`](split_gemm/README.md) | fp64 GEMM composed from vendor `Sgemm` calls on a hi/lo fp32 split, on the same digest shapes: each card's own fp64 ceiling, and the speed-against-accuracy curve of spending fp32 throughput to buy fp64 accuracy |
 | [`gemm_host_offload/`](gemm_host_offload/README.md) | The DF exchange build K = X^T X cut into batches, over m slabs or aux blocks, with B resident or streamed from pinned memory through a ring of device slots: the per-batch cost delta on top of the one-call build, and whether it is launch overhead, event waits or the GEMMs' tail |
+| [`rust/gemm/`](rust/gemm/README.md) | fp64 GEMM driven from Rust: a C ABI over `DeviceResources` and device buffers, and a cargo crate wrapping it in safe, lifetime-checked types, with a demo checked against a host loop. Cargo is run by hand, not by CMake |
 | [`cope_rearrangement/`](cope_rearrangement/README.md) | A PySCF study of the chair Cope rearrangement of 1,5-hexadiene (CASSCF(6,6) vs NEVPT2). Step 1 is done: the relaxed C2h CASSCF scan of R16 = R34. Step 2 is partial: NEVPT2 E(R) along it, and the a_u curvature at two points. Nothing built |
 
 Promote something by moving it under `src/` (its tests into `test/gtest/`),
