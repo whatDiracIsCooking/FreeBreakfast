@@ -14,8 +14,9 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kHalf, kNegHalf, kTwo, kNegTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, gemv, geam, trsm, gemmStridedBatched, wwrMemGetInfo
+import free_breakfast.core.wwr; // gemm, gemv, geam, trsm, gemmStridedBatched
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -27,6 +28,7 @@ import free_breakfast.mcscf.third_derivative;
 import free_breakfast.recipes.blas;
 import free_breakfast.recipes.matrix_ao;
 import :atom_block;
+import :state_specific; // Ledger
 
 #include "diagnostics.h"
 
@@ -85,13 +87,8 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
   const size_t own = (3 * factor) + (2 * n_x * nn) + (6 * sq) + (4 * nn) + (5 * n_x * n_x);
   const size_t derivative_one = (2 * factor) + nn + (4 * n_x * nn) + (3 * sq) + (3 * nn * max_blk);
   const ScopedDeviceIndex on{res.dev_idx()};
-  size_t budget = 0;
-  {
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    budget = max_bytes > 0 ? std::min(max_bytes, free_bytes) : free_bytes;
-  }
+  const size_t memory = FBF_TRY(res.memory_budget());
+  const size_t budget = max_bytes > 0 ? std::min(max_bytes, memory) : memory;
   // The AO matrix beside them is one more nmo^2.
   const size_t need = sizeof(double) * (own + nn + derivative_one);
   if (need > budget) {
@@ -246,8 +243,11 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
     }
     return {};
   };
-  FBF_TRY(mcscf::df_integral_derivatives(res, molecule, basis, classes, aux, h, b, l, c, consume,
-                                         budget - (sizeof(double) * (own + nn))));
+  // The derivative integrals read the budget at their call, past the held
+  // buffers; a caller's max_bytes bounds them to what it leaves.
+  FBF_TRY(
+      mcscf::df_integral_derivatives(res, molecule, basis, classes, aux, h, b, l, c, consume,
+                                     max_bytes > 0 ? budget - (sizeof(double) * (own + nn)) : 0));
 
   // <tau^x, N^y>; then V^y = Sum_Q Lambda_Q tau^y B_Q + h_bar tau^y h_MO
   // (Y' = tau^y B_Q at Q + naux (r + nmo q), one strided-batched gemm over
@@ -328,6 +328,35 @@ Result<std::vector<double>> df_adjoint_xy(DeviceResources &res, const Molecule &
     }
   }
   return out;
+}
+
+MemoryFootprint df_adjoint_xy_footprint(const BasisSet &basis, const BasisSet &aux) {
+  const size_t nmo = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  const uint32_t n_atom = basis.natoms();
+  if (n_atom == 0 || aux.natoms() != n_atom || nmo == 0 || naux == 0) {
+    return {};
+  }
+  const size_t nn = nmo * nmo;
+  const size_t n_x = 3 * static_cast<size_t>(n_atom);
+  const size_t factor = naux * nn;
+  const size_t sq = naux * naux;
+  const auto n = static_cast<int32_t>(nmo);
+  const OrbitalRange all{.first = 0, .count = n};
+  const MemoryFootprint one = one_electron_hessian_footprint(basis);
+  Ledger l;
+  // The held buffers and the AO matrix, then each call in turn beside them.
+  l.take(sizeof(double) * ((3 * factor) + (2 * n_x * nn) + (6 * sq) + (4 * nn) + (5 * n_x * n_x)));
+  l.take(sizeof(double) * nn);
+  l.borrow(b_mo_footprint(static_cast<int32_t>(naux), n, all, all));
+  l.run(metric_derivative_footprint(aux));
+  l.run(mcscf::df_integral_derivatives_footprint(basis, aux));
+  l.run(one);
+  l.run(one);
+  l.run(one);
+  l.run(metric_hessian_footprint(aux));
+  l.run(three_center_hessian_footprint(basis, aux));
+  return l.footprint(0);
 }
 
 } // namespace free_breakfast::hessian

@@ -1626,6 +1626,30 @@ qd_inputs(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
           const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>)> &use,
           int32_t nfrozen = 0);
 
+/// @brief What the W form of @ref qd_sc_lagrangian holds (@p passes
+/// false), or the W form of @ref qd_sc_gradient with its two derivative
+/// passes (@p passes true), over @p basis and @p aux with @p ncore core and
+/// @p ncas active orbitals holding @p nelecas electrons at @p multiplicity,
+/// a state average of @p nroots roots (@p rotating: two weights differ), at
+/// @p batch, all-electron: qd_sc_gradient_footprint's without the energy
+/// and H_eff's eigensolve, a W of trace 0 (@p trace_zero) holding the
+/// core's Fock as a coupling's does. Persistent: the QdScLagrangian's device
+/// arrays. The several-W form at k matrices holds at most k times this.
+[[nodiscard]] MemoryFootprint
+qd_sc_w_gradient_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                           int32_t nelecas, int32_t multiplicity, int32_t nroots, bool rotating,
+                           int32_t batch, std::span<const size_t> syevd_lwork, bool trace_zero,
+                           bool passes);
+
+/// @brief qd_sc_w_gradient_footprint over qd_pc_adjoint's reverse pass: the
+/// W form of @ref qd_pc_gradient (@p passes true), @p syevd_lwork and
+/// @p dropped as qd_pc_adjoint_footprint takes them.
+[[nodiscard]] MemoryFootprint
+qd_pc_w_gradient_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                           int32_t nelecas, int32_t multiplicity, int32_t nroots, bool rotating,
+                           int32_t batch, std::span<const size_t> syevd_lwork, bool trace_zero,
+                           bool passes, std::span<const std::array<int64_t, 8>> dropped = {});
+
 /// @brief What @ref qd_inputs holds over @p naux fitting functions and
 /// @p nmo orbitals with @p ncore core and @p ncas active orbitals holding
 /// @p nelecas electrons at @p multiplicity, @p nroots roots, and @p nfrozen,

@@ -516,6 +516,14 @@ MemoryFootprint df_sacasscf_footprint(const BasisSet &basis, const BasisSet &aux
                                       const int32_t ncore, const int32_t ncas, const int32_t nalpha,
                                       const int32_t nbeta, const int32_t nroots,
                                       const bool rotating, const size_t syevd_lwork) {
+  return sacasscf_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots, rotating, syevd_lwork,
+                            false);
+}
+
+MemoryFootprint sacasscf_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                                   const int32_t ncas, const int32_t nalpha, const int32_t nbeta,
+                                   const int32_t nroots, const bool rotating,
+                                   const size_t syevd_lwork, const bool cp_only) {
   const size_t nao = basis.nao_sphe();
   if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || aux.nao_sphe() == 0 || ncore < 0 ||
       ncas < 1 || static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao || nroots < 2 ||
@@ -580,6 +588,10 @@ MemoryFootprint df_sacasscf_footprint(const BasisSet &basis, const BasisSet &aux
       probed_zvectors_footprint(pairs, dim, nroots, n_x, product, rotating);
   chain = then(chain, probed);
   chain = then(chain, drop(then(held((pairs + n_ci) * n_x), drop(product))));
+  if (cp_only) {
+    // df_sacasscf_cp: lambda^x is returned, the rest freed.
+    return keeping(chain, probed.device.persistent);
+  }
   // z: root I's RDMs and Fock, then zvector, z returned.
   chain = then(chain, rdms);
   chain = then(chain, fock);

@@ -627,11 +627,15 @@ struct DegeneratePair {
 /// whole one.
 ///
 /// W^x is built for as many coordinates at once as a third of the budget
-/// (the device's free memory at the call, or @p max_bytes when that is
-/// less) holds, @c mcscf::df_integral_derivatives' own refusal past it; the
-/// other two thirds are this call's: B_dot (as large as W^x), and
-/// @c nevpt2::builders_tangent's arrays per coordinate. Held throughout:
-/// h_MO and B_MO (naux nmo^2). Queued on res.stream() with res.blas() (host
+/// holds: of the memory budget (res.memory_budget()) less the pool's
+/// fragmentation headroom, never what one coordinate's part needs (below),
+/// never less than one coordinate's own; or of @p max_bytes when given, with
+/// @c mcscf::df_integral_derivatives' own refusal past it. Each chunk is then
+/// taken in parts as wide as the memory budget at its call holds (B_dot, as
+/// large as W^x, and @c nevpt2::builders_tangent's arrays per coordinate),
+/// Unsupported when one coordinate's does not fit. Held throughout: h_MO and
+/// B_MO (naux nmo^2). The workspace is first grown to
+/// @ref df_nevpt2_tangents_footprint's. Queued on res.stream() with res.blas() (host
 /// pointer mode); it synchronizes many times. None of @p b and @p l may
 /// point into res.device_workspace(). The device res.dev_idx() names is
 /// made current for the call and the previous one restored.
@@ -651,6 +655,20 @@ struct DegeneratePair {
     const std::function<Status(int32_t x0, int32_t count, const double *h_dot, const double *b_dot,
                                const double *c_dot, const double *kappa)> &consume,
     size_t max_bytes = 0);
+
+/// @brief What @ref df_nevpt2_tangents holds over @p basis and @p aux with
+/// @p ncore core and @p ncas active orbitals over the determinants of
+/// @p nalpha and @p nbeta electrons, at its least, all of it scratch beside
+/// the workspace: the strings, h_MO and the MO factor, held throughout;
+/// beside them @c mcscf::df_integral_derivatives_footprint, and beside what
+/// that holds at its first chunk one coordinate's part (h_dot, B_dot and
+/// kappa, @c nevpt2::builders_tangent_footprint's, kappa_oo). The parts and
+/// W^x's chunk grow with the budget past this. The consumer's memory is its
+/// own. Empty for bases that are not one placement or counts it refuses.
+[[nodiscard]] MemoryFootprint df_nevpt2_tangents_footprint(const BasisSet &basis,
+                                                           const BasisSet &aux, int32_t ncore,
+                                                           int32_t ncas, int32_t nalpha,
+                                                           int32_t nbeta);
 
 /// @brief Sum_pq h_bar_pq h^xy_pq + Sum_L,pq Lambda_L,pq B^xy_L,pq for every
 /// pair of nuclear coordinates x = 3 A + k, y: the second derivative of the
@@ -685,8 +703,8 @@ struct DegeneratePair {
 /// scratch (3 naux nmo^2), two 3 n_atom nmo^2 stacks and a few naux^2 and
 /// nmo^2 matrices (none per coordinate);
 /// W^x is df_integral_derivatives' chunks, as many coordinates at once as
-/// the rest of the budget holds (the device's free memory at the call, or
-/// @p max_bytes when that is less). Past the budget with one coordinate's
+/// the rest of the budget holds (the memory budget, res.memory_budget(), at
+/// the call, or @p max_bytes when that is less). Past the budget with one coordinate's
 /// W^x and df_integral_derivatives' own buffers the call is Unsupported,
 /// naming the bytes, before anything is allocated. Queued on res.stream()
 /// with res.blas(); the derivative calls synchronize it. None of @p b,
@@ -707,6 +725,15 @@ df_adjoint_xy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
               const SphericalMatrixAO &c, const double *h_bar, const double *lambda,
               size_t max_bytes = 0);
+
+/// @brief What @ref df_adjoint_xy holds over @p basis and @p aux at its least,
+/// all of it scratch beside the workspace: the held buffers and the AO
+/// matrix throughout; beside them in turn @c metric_derivative_footprint's,
+/// @c mcscf::df_integral_derivatives_footprint, three
+/// @c one_electron_hessian_footprint's, @c metric_hessian_footprint's and
+/// @c three_center_hessian_footprint's. W^x's chunk grows with the budget
+/// past this. Empty for bases that are not one placement.
+[[nodiscard]] MemoryFootprint df_adjoint_xy_footprint(const BasisSet &basis, const BasisSet &aux);
 
 /// @brief The z terms of a state-averaged DF-CASSCF Lagrangian's Hessian at
 /// its multipliers z (docs/hessian/hessian.tex eq. sa, bullets 3 and 4; for
@@ -1002,6 +1029,34 @@ df_sc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
              const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch = 0,
              std::span<const double> coordinates = {});
 
+/// @brief What @ref df_sc_nevpt2 holds over @p basis and @p aux with @p ncore
+/// core and @p ncas active orbitals over the determinants of @p nalpha and
+/// @p nbeta electrons, in @p k coordinates at @p batch, at its least;
+/// @p syevd_lwork per order (at order ncas the CP solve's):
+///
+/// - persistent: CasscfTerms::cp, returned;
+/// - scratch: the strings and @ref df_casscf_footprint's; then, held to the
+///   end, t_i's (h, B, c, kappa) and kappa_nr; beside them in turn
+///   @ref df_nevpt2_tangents_footprint; h_bar and Lambda, held, with
+///   @c nevpt2::sc_gradient_footprint's calls (its strings the call's own),
+///   z^c and the multipliers kept; the products along one coordinate
+///   (@c nevpt2::sc_hessian_product_footprint), then a pair's beside its
+///   directions and partners; the Z terms (L_xlambda kept) beside x^x;
+///   @ref df_adjoint_xy_footprint; the rotation terms' stacks;
+/// - workspace: the largest of the calls'.
+///
+/// The products' chunk, W^x's and the tangents' parts grow with the memory
+/// budget past this. Nothing pinned. Empty for the counts it refuses.
+///
+/// A pair is taken again only when both its coordinates populate an empty
+/// perturber, which the dimensions do not say, so it is counted; @p pairs
+/// false leaves it out, for a caller that knows none is (a test's bar).
+[[nodiscard]] MemoryFootprint df_sc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                     int32_t ncore, int32_t ncas, int32_t nalpha,
+                                                     int32_t nbeta, int32_t k, int32_t batch,
+                                                     std::span<const size_t> syevd_lwork,
+                                                     bool pairs = true);
+
 /// @brief The PC-NEVPT2 analytic nuclear Hessian and its parts, each k x k
 /// in the call's k coordinates (hartree / bohr^2), column-major: @ref
 /// ScNevpt2Terms' parts over PC's adjoint and product.
@@ -1084,6 +1139,17 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
              const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
              const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch = 0,
              std::span<const double> coordinates = {}, double pc_floor = 0.0);
+
+/// @brief What @ref df_pc_nevpt2 holds: @ref df_sc_nevpt2_footprint over PC's
+/// gradient (@c nevpt2::pc_gradient_footprint) and product
+/// (@c nevpt2::pc_hessian_product_footprint), no pair taken again.
+/// @p dropped is theirs: the state's PcClassEnergies::dropped, or empty for
+/// the rank that holds the most.
+[[nodiscard]] MemoryFootprint
+df_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                       int32_t nalpha, int32_t nbeta, int32_t k, int32_t batch,
+                       std::span<const size_t> syevd_lwork,
+                       std::span<const std::array<int64_t, 8>> dropped = {});
 
 /// @brief A state-averaged DF-CASSCF root's analytic nuclear Hessian and its
 /// terms (docs/hessian/hessian.tex eq. sa), each 3 n_atom x 3 n_atom,
@@ -1346,6 +1412,16 @@ struct QdNevpt2Tangents {
     const std::function<Status(int32_t x0, int32_t count, const double *h_dot, const double *b_dot,
                                const double *c_dot, const double *kappa)> &consume,
     size_t max_bytes = 0);
+
+/// @brief What @ref df_qd_nevpt2_tangents holds, as
+/// @ref df_nevpt2_tangents_footprint's over @p nroots roots: a part's
+/// QD builders' tangent (@c nevpt2::qd_builders_tangent_footprint) and c_dot
+/// over every root, and beside the first part's tangent the roots'
+/// transition RDMs.
+[[nodiscard]] MemoryFootprint df_qd_nevpt2_tangents_footprint(const BasisSet &basis,
+                                                              const BasisSet &aux, int32_t ncore,
+                                                              int32_t ncas, int32_t nalpha,
+                                                              int32_t nbeta, int32_t nroots);
 
 /// @brief The zeta term of a QD-NEVPT2 Lagrangian's Hessian, T = Sum_{r<s}
 /// zeta_sr <c_s|H|c_r> (docs/nevpt2/nevpt2.tex Eq. qd-Lxx's last-but-one
@@ -1805,6 +1881,50 @@ df_qd_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &
     const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
     int32_t ncore, int32_t ncas, int32_t p, int32_t q, std::span<const double> c, int32_t batch = 0,
     std::span<const double> coordinates = {}, double pc_floor = 0.0, int32_t nfrozen = 0);
+
+/// @brief Which of the QD Hessians' forms a footprint is of: one state's
+/// (term (i) at W^P, then term (ii)), a weight matrix's (term (i) at W) or a
+/// crossing's (the couplings first, then term (i) at the pair's W).
+enum class QdNevpt2Form : int32_t { state, weights, crossing };
+
+/// @brief What @ref df_qd_sc_nevpt2 (and @ref df_qd_sc_nevpt2_crossing, by
+/// @p form) holds over @p basis and @p aux with @p ncore core and @p ncas
+/// active orbitals, @p nroots roots over the determinants of @p nalpha and
+/// @p nbeta electrons (@p rotating: two weights differ), in @p k coordinates
+/// at @p batch, at its least; @p syevd_lwork per order (at ncas the CP
+/// solve's, at nroots H_eff's). Nothing persistent; in turn, beside the
+/// strings, Q^T and from the CP solve on lambda^x, t_i's and x_A in the
+/// coordinates: the ensemble's edge (the CI solve over one more root);
+/// H_eff's elements and eigenpairs; at a crossing the couplings; the CP
+/// solve; @ref df_qd_nevpt2_tangents_footprint; the Lagrangian at W, kept to
+/// the end (@c nevpt2::qd_sc_w_gradient_footprint); the products along one
+/// coordinate, then a pair's beside its directions and partners (unless
+/// @p pairs is false, for a caller that knows none is taken again); E_rho's
+/// share; the multipliers' z terms; the zeta term; @ref
+/// df_adjoint_xy_footprint; the rotation terms; for a state, term (ii)
+/// (@ref df_qd_eigenvector_response's, its several-W gradient bounded by
+/// n (n - 1) / 2 trace-zero W's, exact at two roots). The workspace is the
+/// largest of the calls'. The products' chunk, W^x's and the tangents'
+/// parts grow with the memory budget past this. Empty for the counts it
+/// refuses.
+[[nodiscard]] MemoryFootprint
+df_qd_sc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                          int32_t nalpha, int32_t nbeta, int32_t nroots, bool rotating, int32_t k,
+                          int32_t batch, std::span<const size_t> syevd_lwork,
+                          QdNevpt2Form form = QdNevpt2Form::state, bool pairs = true);
+
+/// @brief @ref df_qd_sc_nevpt2_footprint over PC's pieces (@ref df_qd_pc_nevpt2
+/// and @ref df_qd_pc_nevpt2_crossing): qd_pc_energy's H_eff, qd_pc_gradient's
+/// W form with its passes, qd_pc_hessian_product, PC's term (ii); @p pairs a
+/// direction the product refuses taken again with its partner. @p dropped as
+/// theirs: per state, its diagonal PcClassEnergies::dropped, or empty for
+/// the rank that holds the most.
+[[nodiscard]] MemoryFootprint
+df_qd_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                          int32_t nalpha, int32_t nbeta, int32_t nroots, bool rotating, int32_t k,
+                          int32_t batch, std::span<const size_t> syevd_lwork,
+                          QdNevpt2Form form = QdNevpt2Form::state,
+                          std::span<const std::array<int64_t, 8>> dropped = {}, bool pairs = true);
 
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}

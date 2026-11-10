@@ -73,8 +73,8 @@ struct HessianStep {
   std::filesystem::path json_path{};  // hessian.json
 
   Result<HessianOutput> run(View<MoleculeOutput> in, NodeResources &node) const;
-  // The RHF chain's and the analytic CASSCF's; none otherwise, for now
-  // (below, "Memory caps")
+  // The RHF chain's, and every analytic one's; none for the semi-numerical
+  // CASSCF and NEVPT2 chains, for now (below, "Memory caps")
   std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 };
 
@@ -806,10 +806,25 @@ at their least: H̃'s block products build their J and K one column at a
 time, and the state average's derivative integrals take one coordinate a
 chunk; each widens with the memory budget at run time.
 
-Over a NEVPT2 chain (`nevpt2_gradient`), by either method, and under the
-numerical method over the CASSCF chain, the footprint is none, so a capped
-plan is refused naming `[hessian]`: their library calls are not all
-footprinted yet (#1176). That optional is transitional
+Under the analytic method over a NEVPT2 chain (`nevpt2_gradient`, #1186)
+the same, `terms` the variant's Hessian in 3 n_atom coordinates (the
+step's are a full set): `hessian::df_sc_nevpt2_footprint` or
+`df_pc_nevpt2_footprint` for one root, and under `quasi_degenerate` one
+state's `hessian::df_qd_sc_nevpt2_footprint` or `df_qd_pc_nevpt2_footprint`.
+Each is at its least (the products' chunk, W^x's chunk and the tangents'
+parts, the class walks' and RDMs' tiles), and counts what the data may or
+may not take: PC's classes at the rank that holds the most, and the
+products a pair of coordinates takes again (SC's two directions with their
+partners, PC-QD's refused direction with its own). A configuration the
+step refuses before anything runs (a QD state outside the average, a state
+average without QD, a frozen core) has an empty footprint.
+
+Under the numerical method over the CASSCF chain or a NEVPT2 chain the
+footprint is none, so a capped plan is refused naming `[hessian]`: every
+step those displacements run has a footprint, but the driver holds the
+reference CASSCF's products beside each displaced chain and runs the QD
+tracking, the ensemble's edge and the noise restarts outside the chains,
+which no fold here counts yet. That optional is transitional
 (`../footprint/README.md`, #1122).
 
 ## Config

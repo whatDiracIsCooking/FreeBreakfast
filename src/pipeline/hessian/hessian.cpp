@@ -445,8 +445,10 @@ Status check_displaced_casscf(size_t nao, std::span<const double> s,
 }
 
 std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions &dims) const {
-  // The semi-numerical CASSCF and every NEVPT2 chain have none yet (#1176).
-  if (nevpt2_gradient || (casscf_gradient && method == HessianMethod::Numerical)) {
+  // The semi-numerical CASSCF and NEVPT2 chains have none yet: their
+  // displaced CASSCFs start from the reference's carried orbitals, a chain
+  // step without one.
+  if ((nevpt2_gradient || casscf_gradient) && method == HessianMethod::Numerical) {
     return std::nullopt;
   }
   // A chain's plan folded as pre-flight folds one; none were a step of it
@@ -477,11 +479,13 @@ std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions 
   if (eri.mode != EriMode::DensityFitting || dims.basis == nullptr || dims.aux == nullptr) {
     return MemoryFootprint{};
   }
-  if (casscf_gradient) {
+  if (casscf_gradient || nevpt2_gradient) {
     // The chain to [casscf], its products held through the branch; the
     // solution's C and CI vectors; then hessian::df_casscf for one root or
-    // hessian::df_sacasscf for one of a state average. The active space is
-    // the plan's worst case, as CasscfStep::footprint takes it.
+    // hessian::df_sacasscf for one of a state average; under a NEVPT2 chain
+    // hessian::df_sc_nevpt2 or df_pc_nevpt2, or one QD state's
+    // df_qd_sc_nevpt2 or df_qd_pc_nevpt2, in every coordinate. The active
+    // space is the plan's worst case, as CasscfStep::footprint takes it.
     const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf, casscf));
     if (!chain) {
       return std::nullopt;
@@ -501,13 +505,37 @@ std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions 
         .device = {.persistent = sizeof(double) *
                                  ((dims.nao * dims.nao) + (dim * static_cast<size_t>(nroots)))}};
     const size_t lwork = dims.syevd_lwork[static_cast<size_t>(ncas)];
-    const MemoryFootprint terms =
-        nroots == 1
-            ? hessian::df_casscf_footprint(*dims.basis, *dims.aux, ncore, ncas, nalpha, nbeta,
-                                           lwork)
-            : hessian::df_sacasscf_footprint(
-                  *dims.basis, *dims.aux, ncore, ncas, nalpha, nbeta, nroots,
-                  std::ranges::contains(response::rotating_pairs(casscf.weights), true), lwork);
+    const bool rotating = std::ranges::contains(response::rotating_pairs(casscf.weights), true);
+    MemoryFootprint terms;
+    if (nevpt2_gradient) {
+      // Refused before anything runs: a QD state outside the average, a
+      // state average without QD, a frozen core.
+      const bool qd = nevpt2_gradient->quasi_degenerate;
+      if ((qd && (nroots < 2 || nevpt2_gradient->state < 0 || nevpt2_gradient->state >= nroots)) ||
+          (!qd && nroots != 1) || nevpt2_gradient->frozen_core != 0) {
+        return MemoryFootprint{};
+      }
+      const auto k = static_cast<int32_t>(3 * dims.natoms);
+      const bool pc = nevpt2_gradient->variant == Nevpt2Variant::Pc;
+      if (qd) {
+        terms =
+            pc ? hessian::df_qd_pc_nevpt2_footprint(*dims.basis, *dims.aux, ncore, ncas, nalpha,
+                                                    nbeta, nroots, rotating, k, 0, dims.syevd_lwork)
+               : hessian::df_qd_sc_nevpt2_footprint(*dims.basis, *dims.aux, ncore, ncas, nalpha,
+                                                    nbeta, nroots, rotating, k, 0,
+                                                    dims.syevd_lwork);
+      } else {
+        terms = pc ? hessian::df_pc_nevpt2_footprint(*dims.basis, *dims.aux, ncore, ncas, nalpha,
+                                                     nbeta, k, 0, dims.syevd_lwork)
+                   : hessian::df_sc_nevpt2_footprint(*dims.basis, *dims.aux, ncore, ncas, nalpha,
+                                                     nbeta, k, 0, dims.syevd_lwork);
+      }
+    } else {
+      terms = nroots == 1 ? hessian::df_casscf_footprint(*dims.basis, *dims.aux, ncore, ncas,
+                                                         nalpha, nbeta, lwork)
+                          : hessian::df_sacasscf_footprint(*dims.basis, *dims.aux, ncore, ncas,
+                                                           nalpha, nbeta, nroots, rotating, lwork);
+    }
     return then(drop(then(then(*chain, solution), terms)), analysis);
   }
   const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf));

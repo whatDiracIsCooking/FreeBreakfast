@@ -14,8 +14,9 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kTwo, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, axpy, gemm, gemv, gemmStridedBatched, wwrMemcpyAsync,
-                                // wwrMemsetAsync, wwrMemGetInfo, ScopedDeviceIndex, gpu_status
+                                // wwrMemsetAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -225,12 +226,14 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
   Buffers::device<double> lambda(naux * nn, res.device());
   std::optional<nevpt2::ScGradient> lagrangian;
   std::array<double, 8> kept{};
+  std::array<int64_t, 8> dropped{};
   double e_corr = 0.0;
   {
     nevpt2::PcAdjoint corr =
         FBF_TRY(nevpt2::pc_adjoint(res, alpha, beta, naux32, nmo32, nmo32, b.data(), c, h.data(),
                                    ncore, ncas, vector, batch, 0, pc_floor));
     kept = corr.energies.kept;
+    dropped = corr.energies.dropped;
     e_corr = corr.energies.total;
     std::string thin;
     for (size_t cls = 0; cls < kept.size(); ++cls) {
@@ -273,9 +276,8 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
 
   // 4. Sum <t_i, HVP t_j>: the product along every coordinate's t (PC has no
   // empty perturbers and no partners), with each direction's Schur lift and
-  // its step t*. The directions are chunked by an estimate of the product's
-  // per-direction memory (its builders' tangent, the reverse passes' copies
-  // of the moved fields and the tangent bars, the lift's RDMs).
+  // its step t*. The directions are chunked as widely as the memory budget
+  // holds the product's footprint.
   std::vector<double> hvp(k * k, 0.0);
   std::vector<std::array<double, 8>> lift_steps;
   lift_steps.reserve(k);
@@ -293,13 +295,15 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
                                                    &kOne<double>, t_c.data(), ndet32, p.y.data(), 1,
                                                    &kOne<double>, into, 1));
     };
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    const size_t act6 = n_act * n_act * n_act * n_act * n_act * n_act;
-    const size_t per_direction =
-        sizeof(double) * ((16 * naux * nn) + (10 * act6) + (8 * ndet) + (16 * nn));
-    const size_t chunk = std::clamp<size_t>(free_bytes / 2 / per_direction, 1, k);
+    // As many directions at once as the memory budget holds the product of,
+    // at the classes' kept ranks (syevd's lwork is the workspace's alone).
+    const std::array<std::array<int64_t, 8>, 1> ranks{dropped};
+    const size_t chunk = FBF_TRY(widest_fitting(res, kWho, k, [&](const size_t count) {
+      const MemoryFootprint f = nevpt2::pc_hessian_product_footprint(
+          naux32, nmo32, nmo32, ncore, ncas, nalpha, nbeta, batch, {}, static_cast<int32_t>(count),
+          false, ranks);
+      return f.device.persistent + f.device.scratch;
+    }));
     for (size_t j0 = 0; j0 < k; j0 += chunk) {
       const size_t count = std::min(chunk, k - j0);
       const nevpt2::PcHessianProduct p = FBF_TRY(
@@ -522,6 +526,34 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
                        .min_gap = gradient.zc.min_gap,
                        .zvector_residual = gradient.multipliers.residual,
                        .lift_steps = std::move(lift_steps)};
+}
+
+MemoryFootprint df_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux,
+                                       const int32_t ncore, const int32_t ncas,
+                                       const int32_t nalpha, const int32_t nbeta, const int32_t k,
+                                       const int32_t batch,
+                                       const std::span<const size_t> syevd_lwork,
+                                       const std::span<const std::array<int64_t, 8>> dropped) {
+  const size_t nao = basis.nao_sphe();
+  if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || aux.nao_sphe() == 0 || ncore < 0 ||
+      ncas < 1 || static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao || nalpha < 0 ||
+      nbeta < 0 || nalpha > ncas || nbeta > ncas || k < 1 ||
+      syevd_lwork.size() <= static_cast<size_t>(ncas)) {
+    return {};
+  }
+  const auto nmo = static_cast<int32_t>(nao);
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const MemoryFootprint gradient = without_strings(
+      nevpt2::pc_gradient_footprint(basis, aux, ncore, ncas, nalpha + nbeta, nalpha - nbeta + 1,
+                                    batch, syevd_lwork, 0, dropped),
+      ncas, nalpha, nbeta);
+  return nevpt2_hessian_footprint(
+      basis, aux, ncore, ncas, nalpha, nbeta, k, syevd_lwork, gradient,
+      [&](const int32_t count, const int32_t /*partners*/) {
+        return nevpt2::pc_hessian_product_footprint(naux, nmo, nmo, ncore, ncas, nalpha, nbeta,
+                                                    batch, syevd_lwork, count, false, dropped);
+      },
+      false, false);
 }
 
 } // namespace free_breakfast::hessian

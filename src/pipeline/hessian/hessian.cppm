@@ -287,10 +287,21 @@ struct HessianStep {
   /// average, at the plan's worst-case active space and their least widths;
   /// all freed before @c geometry::harmonic_analysis's.
   ///
-  /// None over a NEVPT2 chain (@ref nevpt2_gradient), by either method, and
-  /// under HessianMethod::Numerical over the CASSCF chain, whose library
-  /// calls are not all footprinted yet (#1176): pre-flight refuses it under a
-  /// cap. Transitional, as step_footprint's optional is (#1122).
+  /// Under HessianMethod::Analytic over a NEVPT2 chain (@ref nevpt2_gradient):
+  /// the same, with @c hessian::df_sc_nevpt2_footprint or
+  /// @c df_pc_nevpt2_footprint by the variant, or under quasi_degenerate one
+  /// state's @c hessian::df_qd_sc_nevpt2_footprint or
+  /// @c df_qd_pc_nevpt2_footprint, in 3 n_atom coordinates (the step's are a
+  /// full set), PC's classes at the rank that holds the most. Empty for a
+  /// configuration refused before anything runs (a QD state outside the
+  /// average, a state average without QD, a frozen core).
+  ///
+  /// None under HessianMethod::Numerical over the CASSCF or a NEVPT2 chain:
+  /// every step it runs has a footprint, but the driver holds the reference
+  /// CASSCF's products beside each displaced chain and runs the QD tracking,
+  /// the ensemble's edge and the noise restarts outside the chains, which no
+  /// fold here counts yet. Pre-flight refuses it under a cap. Transitional,
+  /// as step_footprint's optional is (#1122).
   [[nodiscard]] std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 };
 

@@ -99,11 +99,14 @@ by `expect_footprint`'s two bars.
 `HessianStep` rerun a chain whose shape their configuration picks, and only
 some of those chains are footprinted: the RHF chain under `[optimize]` and
 the semi-numerical `[hessian]` (#1054), the analytic DF-RHF `[hessian]`
-(#1053), and the analytic DF-CASSCF `[hessian]`, state-specific and one root
-of a state average (#1176). The analytic NEVPT2 and QD-NEVPT2 Hessians
-(#1176), the semi-numerical `[hessian]` over a CASSCF or NEVPT2 gradient,
-and the CASSCF, NEVPT2 and MECI chains under `[optimize]` call library
-routines with no footprint yet.
+(#1053), the analytic DF-CASSCF `[hessian]`, state-specific and one root
+of a state average (#1176), and the analytic SC- and PC-NEVPT2 and one
+QD-NEVPT2 state's `[hessian]` (#1186), so every analytic configuration. The
+semi-numerical `[hessian]` over a CASSCF or NEVPT2 gradient (its steps are
+footprinted, but the driver holds the reference CASSCF beside each
+displaced chain and runs the QD tracking, the ensemble's edge and the noise
+restarts outside the chains), and the CASSCF, NEVPT2 and MECI chains under
+`[optimize]`, have no footprint yet.
 So their member is
 `std::optional<MemoryFootprint> footprint(const FootprintDimensions &) const`,
 none for a chain not footprinted, which pre-flight then refuses under a cap
