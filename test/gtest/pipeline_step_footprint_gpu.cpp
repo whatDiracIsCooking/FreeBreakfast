@@ -22,7 +22,9 @@
 // SA-2 CASSCF, the routines its gradient and couplings call and the
 // CasscfGradient and Nac steps, at equal and unequal weights; and the
 // analytic Hessian step at its least: DF-RHF (#1053), with and without IR,
-// and DF-CASSCF (#1176), state-specific and one root of a state average.
+// and DF-CASSCF (#1176), state-specific and one root of a state average;
+// and the semi-numerical CASSCF, SC-NEVPT2 and QD-SC-NEVPT2 Hessian steps
+// over every displaced chain (#1204).
 
 #include <gtest/gtest.h>
 
@@ -3097,6 +3099,162 @@ TEST_F(Nevpt2ReaderFootprint, AnalyticPcNevpt2HessianSteps) {
         "again with its partner (the library footprints' difference at the run's ranks, without "
         "that product)");
   }
+}
+
+// The semi-numerical CASSCF and NEVPT2 [hessian] steps (#1204) over the
+// skew formaldehyde in STO-3G, the CAS(4,4) of skew_nevpt2_tables, by central
+// differences (no ladder): the reference's chain, then 24 displaced chains
+// from its carried orbitals. At its least, as
+// expect_nevpt2_hessian_step_footprint runs a step, with @p without bytes of
+// the footprint the run never takes, for @p reason; but run once, measured,
+// over the footprint's workspace grown first, as pre-flight grows it, which
+// no displacement may grow past.
+//
+// The footprint is first rebuilt here from the chains' own steps, in the
+// order the step runs them: the reference to [casscf] (its outputs cleared,
+// as the step's chain writes nothing), freed; a point's from the carried
+// orbitals and a carried CI to the gradient, freed; under QD the state's
+// gradient beside each, and the ensemble's edge beside that; the analysis.
+// Under QD the slack is the retaken gradient's share: no displacement here
+// tracks the state to another rank, so none is retaken.
+void expect_seminumerical_hessian_footprint(const std::string_view tables, const std::size_t live,
+                                            const std::string_view reason = {}) {
+  const std::string xyz = skew_formaldehyde_xyz();
+  Plan plan(
+      System{.xyz = xyz, .basis = "sto-3g", .mode = fb::EriMode::DensityFitting, .tables = tables});
+  plan.molecule.emplace(
+      planned<fb::MoleculeStep>(*plan.calc).run(fb::View<>{}, plan.inputs).value());
+  const auto hessian = planned<fb::HessianStep>(*plan.calc);
+  ASSERT_EQ(hessian.method, fb::HessianMethod::Numerical);
+  ASSERT_FALSE(hessian.ladder);
+  const std::optional<fb::MemoryFootprint> fp = hessian.footprint(plan.dims());
+  ASSERT_TRUE(fp.has_value());
+  EXPECT_EQ(fp->device.persistent, 0U);
+
+  fb::FootprintDimensions at = plan.dims();
+  at.casscf_nroots = static_cast<std::size_t>(std::max(hessian.casscf.nroots, 1));
+  at.casscf_unequal_weights = false;
+  const bool qd = hessian.nevpt2_gradient && hessian.nevpt2_gradient->quasi_degenerate;
+  fb::CasscfStep casscf = hessian.casscf;
+  casscf.molden.clear();
+  casscf.orbitals_npy.clear();
+  casscf.ci_npy.clear();
+  fb::CasscfStep displaced = casscf;
+  displaced.active.clear();
+  displaced.ncas = static_cast<std::int32_t>(at.ncas);
+  displaced.nelecas = static_cast<std::int32_t>(at.nelecas);
+  displaced.ci_guess = {0.0};
+  const fb::MemoryFootprint gradient = hessian.nevpt2_gradient
+                                           ? hessian.nevpt2_gradient->footprint(at)
+                                           : hessian.casscf_gradient->footprint(at);
+  const auto folded = [](const std::vector<fb::MemoryFootprint> &steps) {
+    return fb::plan_footprint(steps).footprint;
+  };
+  const fb::MemoryFootprint molecule = fb::molecule_footprint(at.natoms);
+  fb::MemoryFootprint reference =
+      folded({molecule, hessian.basis_set.footprint(at), fb::SphericalTransformStep{}.footprint(at),
+              fb::PrimitivePairClassesStep{}.footprint(at), hessian.eri.footprint(at),
+              fb::OverlapStep{}.footprint(at), hessian.orthogonalizer.footprint(at),
+              fb::CoreHamiltonianStep{}.footprint(at), hessian.guess.footprint(at),
+              hessian.scf.footprint(at), casscf.footprint(at)});
+  fb::MemoryFootprint point =
+      folded({molecule, hessian.basis_set.footprint(at), fb::SphericalTransformStep{}.footprint(at),
+              fb::PrimitivePairClassesStep{}.footprint(at), hessian.eri.footprint(at),
+              fb::OverlapStep{}.footprint(at), fb::CoreHamiltonianStep{}.footprint(at),
+              fb::CarriedOrbitalsStep{}.footprint(at), displaced.footprint(at), gradient});
+  fb::MemoryFootprint retaken = point;
+  if (qd) {
+    fb::CasciStep casci;
+    casci.ncas = displaced.ncas;
+    casci.nelecas = displaced.nelecas;
+    casci.nroots = hessian.casscf.nroots + 1;
+    const fb::MemoryFootprint orbitals{
+        .device = {.persistent = 2 * sizeof(double) * at.nao * at.nao}};
+    const fb::MemoryFootprint edge = fb::drop(fb::then(orbitals, casci.footprint(at)));
+    reference = fb::then(fb::then(reference, gradient), edge);
+    retaken = fb::then(fb::then(point, gradient), edge);
+    point = fb::then(point, edge);
+  }
+  const fb::MemoryFootprint analysis =
+      fb::geometry::harmonic_analysis_footprint(at.atoms, at.syevd_lwork);
+  const auto whole = [&](const fb::MemoryFootprint &at_a_point) {
+    return fb::then(fb::then(fb::drop(reference), fb::drop(at_a_point)), analysis);
+  };
+  EXPECT_EQ(*fp, whole(retaken));
+  const std::size_t without = peak_gap(whole(retaken), whole(point));
+
+  std::size_t granularity = 0;
+  {
+    fb::DeviceResources probe{0};
+    granularity = fbt::pool_granularity(*probe.device());
+  }
+  const std::uint64_t cap = fp->device.peak() - without + fb::kPoolHeadroomBytes +
+                            (granularity * (live + 16)) + reuse_room(fp->device.peak() - without);
+  fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  res = fb::DeviceResources{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  (void)res.device_workspace(fp->device.workspace);
+  const auto start = std::chrono::steady_clock::now();
+  const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] {
+    expect_ran(hessian.run(fb::View<fb::MoleculeOutput>{*plan.molecule}, node));
+  });
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp->device.workspace);
+  EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
+  std::cout << std::format(
+      "[ footprint ] semi-numerical [hessian]: capped at {}: measured {} (G {}), footprint {} "
+      "less {} + workspace {}, in {:.1f} s\n",
+      cap, peak.used, peak.granularity, fp->device.persistent + fp->device.scratch, without,
+      fp->device.workspace, seconds);
+  std::optional<fbt::FootprintSlack> slack;
+  if (without > 0) {
+    slack = fbt::FootprintSlack{.bytes = without, .reason = reason};
+  }
+  fbt::expect_footprint(peak, {.persistent = fp->device.persistent, .scratch = fp->device.scratch},
+                        live, slack);
+  EXPECT_LE(res.device()->pool_usage().used_high, cap);
+}
+
+// The [hessian] tables of the skew formaldehyde's CAS(4,4) over @p nroots
+// roots, by central differences of the @p gradient table's gradient.
+std::string seminumerical_tables(const std::int32_t nroots, const std::string_view gradient) {
+  return std::format("[casscf]\nncas = 4\nnelecas = 4\nactive = [6, 7, 8, 9]\nnroots = {}\n"
+                     "conv_tol = 1e-12\nconv_tol_grad = 1e-9\n{}"
+                     "[hessian]\nmethod = \"numerical\"\nladder = false\n",
+                     nroots, gradient);
+}
+
+// The CASSCF chain: at the peak, a point's chain's products and the CASSCF
+// gradient's own. 25 chain runs, so slow-gated.
+TEST(StepFootprint, SemiNumericalCasscfHessian) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_seminumerical_hessian_footprint(seminumerical_tables(1, "[casscf_gradient]\n"),
+                                         kCasscfChainLive + 64);
+}
+
+// The SC-NEVPT2 chain: at the peak, a point's chain's products and the
+// NEVPT2 gradient's own. Slow-gated.
+TEST(StepFootprint, SemiNumericalScNevpt2Hessian) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_seminumerical_hessian_footprint(seminumerical_tables(1, "[nevpt2_gradient]\n"),
+                                         kCasscfChainLive + kNevpt2GradientLive + 16);
+}
+
+// QD-SC-NEVPT2 state 1 of the two-root average: beside a chain's products,
+// the state's gradient and the ensemble's edge. Slow-gated.
+TEST(StepFootprint, SemiNumericalQdScNevpt2Hessian) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_seminumerical_hessian_footprint(
+      seminumerical_tables(2, "[nevpt2_gradient]\nquasi_degenerate = true\nstate = 1\n"),
+      kCasscfChainLive + (2 * kNevpt2QdGradientLive) + 64,
+      "no displacement tracks the reference's QD state to another rank, so the gradient the "
+      "footprint counts retaken at the tracked state, beside the chain's own, is never taken: the "
+      "run is capped at the footprint without it");
 }
 
 } // namespace

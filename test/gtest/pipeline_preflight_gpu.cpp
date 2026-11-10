@@ -4,7 +4,8 @@
 // workspaces never grown past the pre-grow; the pre-warm refusing a cap the
 // card cannot supply; and a CASCI under AVAS narrowed to the active space
 // the cap fits. Then the nested steps, an RHF [optimize] and a
-// semi-numerical [hessian], refused below their peak and run at it. Every
+// semi-numerical [hessian], over the RHF and over a CASSCF gradient,
+// refused below their peak and run at it. Every
 // cap is set from the plan's own fold, so the cases hold on any card.
 
 #include <gtest/gtest.h>
@@ -249,6 +250,25 @@ basis = "sto-3g"
 method = "numerical"
 )";
 
+// A semi-numerical [hessian] over a CASSCF gradient (#1204): a CAS(2,2) of
+// the fitted water in STO-3G, its reference chain to [casscf] then 18
+// displaced chains from the reference's carried orbitals.
+constexpr std::string_view kNestedCasscfHessian = R"(
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "sto-3g"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[casscf]
+ncas = 2
+nelecas = 2
+[casscf_gradient]
+[hessian]
+method = "numerical"
+)";
+
 // @p tables' folded plan, and the step reaching its device peak, on @p node's
 // device 0.
 std::pair<fb::PlanFootprint, std::string>
@@ -347,6 +367,19 @@ TEST(Preflight, NestedHessianBelowThePeakIsRefusedBeforeTheFirstStep) {
 TEST(Preflight, NestedHessianAtThePeakRunsInsideIt) {
   FBF_REQUIRE_GPU();
   expect_nested_runs_at_the_peak<fb::HessianOutput>(kNestedHessian);
+}
+
+// The semi-numerical CASSCF [hessian] (#1204), its displaced chains and the
+// reference held to the fold. The run at the peak is 19 CAS(2,2) chains,
+// about 1.0 s on the RTX 3080.
+TEST(Preflight, NestedCasscfHessianBelowThePeakIsRefusedBeforeTheFirstStep) {
+  FBF_REQUIRE_GPU();
+  expect_nested_refused_below(kNestedCasscfHessian, "hessian");
+}
+
+TEST(Preflight, NestedCasscfHessianAtThePeakRunsInsideIt) {
+  FBF_REQUIRE_GPU();
+  expect_nested_runs_at_the_peak<fb::HessianOutput>(kNestedCasscfHessian);
 }
 
 } // namespace
