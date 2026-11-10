@@ -19,6 +19,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.constants; // kOne, kZero, kInvSqrt2
 import free_breakfast.core.log;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.core.resources;
 import free_breakfast.core.wwr;
 import free_breakfast.io.json;
@@ -30,6 +31,7 @@ import free_breakfast.pipeline.footprint;
 import free_breakfast.pipeline.casci; // the QD ensemble's edge, E_{n+1} - E_n
 import free_breakfast.recipes.blas;   // gemm, gemmwich
 import free_breakfast.recipes.orthogonalize;
+import free_breakfast.response.zvector; // rotating_pairs
 
 #include "diagnostics.h"
 
@@ -503,7 +505,8 @@ Status check_displaced_casscf(size_t nao, std::span<const double> s,
 }
 
 std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions &dims) const {
-  if (casscf_gradient || nevpt2_gradient) {
+  // The semi-numerical CASSCF and every NEVPT2 chain have none yet (#1176).
+  if (nevpt2_gradient || (casscf_gradient && method == HessianMethod::Numerical)) {
     return std::nullopt;
   }
   // A chain's plan folded as pre-flight folds one; none were a step of it
@@ -533,6 +536,39 @@ std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions 
   // Analytic: an integral-direct ERI is refused before anything runs.
   if (eri.mode != EriMode::DensityFitting || dims.basis == nullptr || dims.aux == nullptr) {
     return MemoryFootprint{};
+  }
+  if (casscf_gradient) {
+    // The chain to [casscf], its products held through the branch; the
+    // solution's C and CI vectors; then hessian::df_casscf for one root or
+    // hessian::df_sacasscf for one of a state average. The active space is
+    // the plan's worst case, as CasscfStep::footprint takes it.
+    const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf, casscf));
+    if (!chain) {
+      return std::nullopt;
+    }
+    const auto ncas = static_cast<int32_t>(dims.ncas);
+    const auto nelecas = static_cast<int32_t>(dims.nelecas);
+    const int32_t ncore = (static_cast<int32_t>(dims.n_alpha + dims.n_beta) - nelecas) / 2;
+    const auto two_s = static_cast<int32_t>(dims.n_alpha - dims.n_beta);
+    const int32_t nbeta = (nelecas - two_s) / 2;
+    const int32_t nalpha = nelecas - nbeta;
+    const int32_t nroots = std::max(casscf.nroots, 1);
+    const auto strings = [ncas](const int32_t electrons) {
+      return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
+    };
+    const size_t dim = strings(nalpha) * strings(nbeta);
+    const MemoryFootprint solution{
+        .device = {.persistent = sizeof(double) *
+                                 ((dims.nao * dims.nao) + (dim * static_cast<size_t>(nroots)))}};
+    const size_t lwork = dims.syevd_lwork[static_cast<size_t>(ncas)];
+    const MemoryFootprint terms =
+        nroots == 1
+            ? hessian::df_casscf_footprint(*dims.basis, *dims.aux, ncore, ncas, nalpha, nbeta,
+                                           lwork)
+            : hessian::df_sacasscf_footprint(
+                  *dims.basis, *dims.aux, ncore, ncas, nalpha, nbeta, nroots,
+                  std::ranges::contains(response::rotating_pairs(casscf.weights), true), lwork);
+    return then(drop(then(then(*chain, solution), terms)), analysis);
   }
   const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf));
   if (!chain) {

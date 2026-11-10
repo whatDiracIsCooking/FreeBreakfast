@@ -21,7 +21,8 @@
 // gradient, integral-direct and density-fitted; and, over a density-fitted
 // SA-2 CASSCF, the routines its gradient and couplings call and the
 // CasscfGradient and Nac steps, at equal and unequal weights; and the
-// analytic DF-RHF Hessian step (#1053), with and without IR, at its least.
+// analytic Hessian step at its least: DF-RHF (#1053), with and without IR,
+// and DF-CASSCF (#1176), state-specific and one root of a state average.
 
 #include <gtest/gtest.h>
 
@@ -2055,14 +2056,19 @@ TEST_F(Nevpt2ReaderFootprint, Couplings) {
                          }));
 }
 
-// The analytic DF-RHF [hessian] over water (#1053), at its least: its
-// footprint, on a NodeResources whose one device's pool is capped as
-// expect_least_footprint caps a step's, so hessian::df_rhf_two_electron's
-// batch is its least; run once to grow the workspaces to exactly the
+// The analytic [hessian] over @p xyz in @p basis, the step's tables
+// @p tables (DF-RHF's by default, #1053), at its least: its footprint, on a
+// NodeResources whose one device's pool is capped as expect_least_footprint
+// caps a step's, so its adaptive parts (hessian::df_rhf_two_electron's
+// batch, H~'s block products' J and K width, the derivative integrals'
+// chunk) are at their least; run once to grow the workspaces to exactly the
 // footprint's, then measured, with @p live allocations live at its peak.
 // The molecule is on the plan's own DeviceResources.
-void expect_analytic_hessian_footprint(const std::string_view basis, const std::size_t live) {
-  Plan plan(System{.basis = basis, .mode = fb::EriMode::DensityFitting, .tables = "[hessian]\n"});
+void expect_analytic_hessian_footprint(const std::string_view basis, const std::size_t live,
+                                       const std::string_view xyz = kWaterXyz,
+                                       const std::string_view tables = "[hessian]\n") {
+  Plan plan(
+      System{.xyz = xyz, .basis = basis, .mode = fb::EriMode::DensityFitting, .tables = tables});
   plan.molecule.emplace(
       planned<fb::MoleculeStep>(*plan.calc).run(fb::View<>{}, plan.inputs).value());
   const auto hessian = planned<fb::HessianStep>(*plan.calc);
@@ -2113,6 +2119,53 @@ TEST(StepFootprint, AnalyticHessianWithoutIr) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_analytic_hessian_footprint("cc-pvtz", kRhfChainLive + 1 + 2);
+}
+
+// The stretched water of data/casscf_hessian/ (bohr there, Angstrom here),
+// whose CAS(4,4) over its two O-H sigma/sigma* pairs, the RHF orbitals 2, 3,
+// 5 and 6, is a minimum in the parameters, so the analytic CASSCF Hessian
+// does not refuse it as a saddle.
+constexpr std::string_view kStretchedWaterXyz = R"(3
+stretched water
+O  0.0                     0.0                    0.099999999996787
+H  0.0                     1.249999999959843     -0.749999999975906
+H  0.099999999996787      -1.149999999963056     -0.699999999977512
+)";
+
+// The tables of an analytic [hessian] of root @p root of a CAS(4,4) over
+// kStretchedWaterXyz's sigma pairs at @p weights.
+std::string casscf_hessian_tables(const std::string_view weights, const std::int32_t root) {
+  return std::format("[casscf]\nncas = 4\nnelecas = 4\nactive = [2, 3, 5, 6]\nnroots = {}\n"
+                     "weights = [{}]\nconv_tol = 1e-12\nconv_tol_grad = 1e-9\n"
+                     "[casscf_gradient]\nroot = {}\n[hessian]\nmethod = \"analytic\"\n",
+                     std::ranges::count(weights, ',') + 1, weights, root);
+}
+
+// The CASSCF chain's products to [casscf], fitted, live under a step that
+// holds them: the RHF chain's, and the CASSCF's orbitals and CI vectors.
+constexpr std::size_t kCasscfChainLive = kRhfChainLive + 2;
+
+// The analytic DF-CASSCF [hessian] (#1176) of the state-specific CAS(4,4) in
+// 6-31G: the chain to [casscf], the solution's C and CI vectors, and
+// hessian::df_casscf, H~'s block products at one column's J and K. At the
+// peak, the chain's products, the solution's two and the CP step's own.
+// Two runs of the chain and the Hessian, 2.3 s on the RTX 3080, so
+// slow-gated: the family's representative stands for it in the fast tier.
+TEST(StepFootprint, AnalyticCasscfHessian) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_analytic_hessian_footprint("6-31g", kCasscfChainLive + 2 + 16, kStretchedWaterXyz,
+                                    casscf_hessian_tables("1.0", 0));
+}
+
+// Root 1 of the two-root average at equal weights, eq. rot's root_rotation
+// run, through hessian::df_sacasscf, its derivative integrals at one
+// coordinate a chunk too. Two runs of about 5 s each, so slow-gated.
+TEST(StepFootprint, AnalyticSaCasscfHessian) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_analytic_hessian_footprint("6-31g", kCasscfChainLive + 2 + 64, kStretchedWaterXyz,
+                                    casscf_hessian_tables("0.5, 0.5", 1));
 }
 
 } // namespace

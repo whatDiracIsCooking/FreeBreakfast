@@ -31,6 +31,10 @@ Result<mcscf::RootRotation> mcscf::root_rotation(
     const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nalpha, int32_t nbeta,
     const double *roots, std::span<const double> weights, std::span<const double> energies,
     const Derivatives &derivatives, const double *kappa, double max_rotation = 10.0);
+
+MemoryFootprint mcscf::root_rotation_footprint(
+    const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+    int32_t nalpha, int32_t nbeta, int32_t nroots);
 ```
 
 The orbitals, roots and integrals are [`../derivative/`](../derivative/README.md)'s
@@ -104,6 +108,16 @@ cases sit at |θ| ≤ 1.9 per bohr (three roots, gap 0.066 hartree). The
 threshold is far above the 1e-8 hartree floor: a coupling of 0.05
 hartree/bohr is refused under a gap of 5e-3 hartree.
 
+## Memory
+
+`root_rotation_footprint` (#1176) is all of it, freed on return: the CI
+strings; c_r ± c_s, their RDMs, the gradient's nmo² matrix, its packed pairs
+and the contraction with κ, held throughout; beside them the averaged RDMs
+(`ci::rdm12_footprint`, the workspace), then the density-fitted
+`casscf_integrals` and `response::fock` (nmo = nao). One root allocates
+nothing. `hessian::df_sacasscf_footprint` takes it at equal weights, and
+`HessianDfSaCasscf.FootprintIsSoundAndTight` holds the whole to the pool.
+
 ## Tests
 
 `test/gtest/mcscf_root_rotation_gpu.cpp` (suite `McscfRootRotation`),
@@ -136,6 +150,6 @@ count are InvalidConfig. One root gives zeros.
 
 | File | Role |
 |------|------|
-| `root_rotation.cppm` | Module interface: `RootRotation`, `root_rotation` |
+| `root_rotation.cppm` | Module interface: `RootRotation`, `root_rotation`, `root_rotation_footprint` |
 | `root_rotation.cpp` | Its implementation: the transition RDMs, the coupling's orbital part, eqs. (theta) and (rot) and the refusal; host code over the RDMs, `response_gradient` and one gemv per pair, no kernels |
 | `CMakeLists.txt` | The `free_breakfast.mcscf.root_rotation` target |

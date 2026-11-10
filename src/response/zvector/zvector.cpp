@@ -349,6 +349,40 @@ MemoryFootprint zvector_footprint(const int32_t n_pairs, const int32_t dim, cons
   return then(out, drop(then(held(std::max<size_t>(3 * pairs, 1) + roots), phases)));
 }
 
+MemoryFootprint zvectors_footprint(const int32_t n_pairs, const int32_t dim, const int32_t nroots,
+                                   const int32_t ncol, const MemoryFootprint &product,
+                                   const bool rotating, const bool theta_rhs) {
+  if (ncol < 1 || nroots < 1) {
+    return {}; // refused before anything is allocated
+  }
+  const auto pairs = static_cast<size_t>(std::max(n_pairs, 0));
+  const auto ci_block = static_cast<size_t>(std::max(dim, 0)) * static_cast<size_t>(nroots);
+  const auto roots = static_cast<size_t>(nroots);
+  const auto columns = static_cast<size_t>(ncol);
+  const size_t block = pairs * columns;
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  // z_o and z_c of every column, returned.
+  const MemoryFootprint out = held((std::max<size_t>(pairs, 1) * columns) + (ci_block * columns));
+  // couple_rotations over every column: their CI blocks along the roots, and
+  // add_rotations' matrices.
+  const MemoryFootprint couple =
+      rotating && theta_rhs
+          ? drop(then(held(ci_block * columns), drop(held(roots * roots * columns))))
+          : MemoryFootprint{};
+  // pcg_solve's one allocation at k = ncol, held across its block products.
+  const MemoryFootprint pcg =
+      pairs > 0 ? drop(then(held((4 * block) + (2 * columns)), product)) : MemoryFootprint{};
+  const MemoryFootprint rotations =
+      rotating ? drop(held(roots * roots * columns)) : MemoryFootprint{};
+  const MemoryFootprint phases = then(couple, then(pcg, then(drop(product), rotations)));
+  // -B, H~ Z + B and diag(H)^-1, and the roots' overlaps, around every phase.
+  return then(out,
+              drop(then(held(std::max<size_t>((2 * block) + pairs, 1) + (roots * roots * columns)),
+                        phases)));
+}
+
 // The count vectors of @p v (dim x count) off every root: v <- v - C C^T v,
 // through the nroots x count @p overlaps.
 Status project_off_roots(DeviceResources &res, const ci::Roots &roots, const size_t dim,

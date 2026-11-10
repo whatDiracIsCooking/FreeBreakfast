@@ -277,8 +277,9 @@ struct CasscfTwoElectron {
 /// (ncas^4); then the explicit part's Gam (naux nao^2, like
 /// @c mcscf::df_gradient's), or the cross term's M1 (3 naux^2), one aux
 /// atom's derivative block (3 nao^2 nblk), two atom blocks and K's
-/// half-transform. Past the device's free memory that is Unsupported, naming
-/// the bytes, before anything is allocated.
+/// half-transform (@ref df_casscf_two_electron_footprint has all of it). Past
+/// the memory budget (res.memory_budget()) that is Unsupported, naming the
+/// bytes, before anything is allocated.
 ///
 /// Queued on res.stream() and synchronized; the call returns with everything
 /// done. None of @p b, @p l and @p c may point into res.device_workspace().
@@ -290,14 +291,34 @@ struct CasscfTwoElectron {
 ///         is shorter than nao (ncore + ncas) (with a rotation, not nao nmo
 ///         with nmo >= ncore + ncas) or @p b not naux nao^2 long, if
 ///         the RDMs are not ncas^2 and ncas^4 long, or for any input the
-///         integral calls refuse; Unsupported for memory past the device's
-///         free bytes or an index past int32_t; or the GpuRuntime error of the
+///         integral calls refuse; Unsupported for memory past the memory
+///         budget or an index past int32_t; or the GpuRuntime error of the
 ///         first copy, BLAS call or launch that failed.
 [[nodiscard]] Result<CasscfTwoElectron> df_casscf_two_electron(
     DeviceResources &res, const BasisSet &basis, std::span<const PrimitivePairClass> classes,
     const BasisSet &aux, const Buffers::device<double> &b, const double *l,
     const Buffers::device<double> &c, int32_t ncore, int32_t ncas, std::span<const double> gamma,
     std::span<const double> gamma2, const double *rotation = nullptr);
+
+/// @brief What @ref df_casscf_two_electron holds over @p basis and @p aux with
+/// @p ncore core and @p ncas active orbitals, with a rotation (@p rotated) or
+/// without, all of it scratch or the workspace:
+///
+/// - scratch: the fitted occupied pairs, the weights and Gamma (with a
+///   rotation [C_o | C~_o] and its fitted pairs too; one double without),
+///   beside the explicit part's buffer and then the cross terms' (M1, one aux
+///   atom's derivative block, two atom blocks, K's half-transform, the active
+///   blocks, the Coulomb vectors and the products), the larger;
+/// - workspace: the largest of @c b_mo's (over 2 nocc orbitals with a
+///   rotation), @c three_center_hessian's, @c metric_hessian's,
+///   @c metric_derivative's and, over the aux atoms,
+///   @c three_center_derivative's and its half-transform's carves.
+///
+/// Nothing persistent (the pieces are on the host) and nothing pinned. Empty
+/// for the counts it refuses.
+[[nodiscard]] MemoryFootprint df_casscf_two_electron_footprint(const BasisSet &basis,
+                                                               const BasisSet &aux, int32_t ncore,
+                                                               int32_t ncas, bool rotated = false);
 
 /// @brief E_xy, the fixed-parameter second derivative of a DF-CASSCF energy
 /// along the symmetric (Lowdin) connection (docs/hessian/hessian.tex eq.
@@ -379,8 +400,9 @@ struct CasscfExy {
 ///
 /// Memory: held for the connection terms, two stacks of 3 n_atom nmo^2
 /// doubles, B (naux nmo^2), two of 3 n_atom naux nocc^2 and one of 3 n_atom
-/// nmo nocc, beside nocc^4 and the calls' own; past the device's free memory
-/// that is Unsupported, before it is allocated. The explicit parts run first
+/// nmo nocc, beside nocc^4 and the calls' own (@ref df_casscf_exy_footprint
+/// has all of it); past the memory budget (res.memory_budget()) that is
+/// Unsupported, before it is allocated. The explicit parts run first
 /// and free theirs (@ref df_casscf_two_electron refuses its own).
 ///
 /// Queued on res.stream() and synchronized; the call returns with everything
@@ -393,8 +415,8 @@ struct CasscfExy {
 ///         nao nmo long or ncore + ncas > nmo, if @p h is not nao x nao or
 ///         @p b not naux nao^2 long, if the RDMs are not ncas^2 and ncas^4
 ///         long or @p fock_x not 3 n_atom nmo^2, or for any input the integral
-///         calls refuse; Unsupported for memory past the device's free bytes or
-///         an index past int32_t; or the GpuRuntime error of the first copy,
+///         calls refuse; Unsupported for memory past the memory budget or an
+///         index past int32_t; or the GpuRuntime error of the first copy,
 ///         BLAS call or launch that failed.
 [[nodiscard]] Result<CasscfExy>
 df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
@@ -403,6 +425,20 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               const Buffers::device<double> &c, int32_t ncore, int32_t ncas,
               std::span<const double> gamma, std::span<const double> gamma2,
               const Buffers::device<double> &fock_x, const double *rotation = nullptr);
+
+/// @brief What @ref df_casscf_exy holds over @p basis and @p aux with @p ncore
+/// core and @p ncas active orbitals, nmo = nao, with a rotation (@p rotated)
+/// or without, all of it scratch or the workspace: the occupied D and Gamma,
+/// held throughout; beside them in turn D^AO with
+/// @c one_electron_hessian_footprint's scratch, then
+/// @ref df_casscf_two_electron_footprint, then the connection terms' held
+/// buffers (with S^x, @c one_electron_derivative_footprint, until tau is
+/// made, and then -C sym(F) C^T with @c overlap_hessian's); the workspace the
+/// largest of their carves and @c b_mo's over every pair. Nothing pinned.
+/// Empty for the counts it refuses.
+[[nodiscard]] MemoryFootprint df_casscf_exy_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                      int32_t ncore, int32_t ncas,
+                                                      bool rotated = false);
 
 /// @brief The state-specific DF-CASSCF nuclear Hessian and its terms, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
@@ -465,7 +501,8 @@ struct CasscfTerms {
 /// The parts run one after another; the peak is the largest of
 /// @c df_derivatives' stacks, @ref df_casscf_exy's and the CP solve's
 /// (H~'s scratch over 3 n_atom columns), each refused on its own as
-/// Unsupported past the device's free memory.
+/// Unsupported past the memory budget (@ref df_casscf_footprint has the
+/// whole).
 ///
 /// Queued on res.stream() with res.blas() (host pointer mode); it
 /// synchronizes many times. None of @p b and @p l may point into
@@ -488,6 +525,28 @@ df_casscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
           const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
           const mcscf::Solution &solution, int32_t ncore, int32_t ncas, double tolerance = 1e-10,
           int32_t max_iterations = 200);
+
+/// @brief What @ref df_casscf holds over @p basis and @p aux with @p ncore
+/// core and @p ncas active orbitals over the determinants of @p nalpha and
+/// @p nbeta active electrons, nmo = nao; @p syevd_lwork is @c syevd_lwork at
+/// order ncas (@c mcscf::df_derivatives_footprint's):
+///
+/// - persistent: lambda^x, CasscfTerms::cp, returned;
+/// - scratch: the CP step's (the strings, @c mcscf::df_derivatives_footprint's
+///   F^[x] and right-hand sides held to the end, the integrals and the Fock,
+///   the sigma with its apply scratch grown to Layout::full, H and H~ over
+///   3 n_atom + 1 block columns, the right-hand sides, the probed
+///   @c response::zvectors and the check's block product), then C's copy
+///   beside @ref df_casscf_exy_footprint, then the response's n_x^2;
+/// - workspace: the largest of the calls'.
+///
+/// H~'s block products build their J and K at the least width
+/// (@c response::hessian_apply_footprint); the width grows with the memory
+/// budget, so this is the least the call runs with. Nothing pinned. Empty for
+/// the counts it refuses.
+[[nodiscard]] MemoryFootprint df_casscf_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                  int32_t ncore, int32_t ncas, int32_t nalpha,
+                                                  int32_t nbeta, size_t syevd_lwork);
 
 /// @brief lambda^x alone: @ref df_casscf's CP-CASSCF step, E_lambda lambda
 /// lambda^x = -E_lambda x for every coordinate, the same solve and the same
@@ -716,8 +775,8 @@ struct SaCasscfZTerms {
 /// The parts run one after another, each freeing what it held: four
 /// @c df_derivatives calls, three @c df_casscf_exy calls, then the derivative
 /// integrals (nmo^2 naux doubles per coordinate, for as many coordinates at
-/// once as the device's free memory holds) and the operator. Each part
-/// refuses its own memory, Unsupported, before it allocates.
+/// once as the memory budget holds) and the operator. Each part refuses its
+/// own memory, Unsupported, before it allocates.
 ///
 /// Queued on res.stream() with res.blas() (host pointer mode); it
 /// synchronizes many times. None of @p b and @p l may point into
@@ -740,6 +799,31 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               int32_t nbeta, const Buffers::device<double> &roots, std::span<const double> weights,
               std::span<const double> rhs_weights, const Buffers::device<double> &z, int32_t k = 0,
               const double *lambda = nullptr);
+
+/// @brief What @ref df_sacasscf_z holds as @ref df_sacasscf calls it, with a
+/// right-hand side's weights and k = 0, over @p basis and @p aux with
+/// @p ncore core and @p ncas active orbitals and @p nroots roots over the
+/// determinants of @p nalpha and @p nbeta electrons, nmo = nao; @p rotating
+/// whether the weights rotate (z then carries every rotation), @p syevd_lwork
+/// as @ref df_casscf_footprint's:
+///
+/// - persistent: L_xlambda, returned;
+/// - scratch: the strings and C's copy, held throughout; beside them in turn
+///   the right-hand side's @c mcscf::df_derivatives_footprint, L_xy's z_o
+///   part (K, the RDMs, F^[x] at the rotated densities and
+///   @ref df_casscf_exy_footprint along K), its z_c part (c +- dc and dc, the
+///   RDMs and E_xy at each, F^[x] beside it), and the third-derivative
+///   operator (@c mcscf::third_derivative_footprint) with Y beside
+///   @c mcscf::df_integral_derivatives_footprint;
+/// - workspace: the largest of the calls'.
+///
+/// The derivative integrals' chunk grows with the memory budget, so this is
+/// the least the call runs with. Nothing pinned. Empty for the counts it
+/// refuses.
+[[nodiscard]] MemoryFootprint df_sacasscf_z_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                      int32_t ncore, int32_t ncas, int32_t nalpha,
+                                                      int32_t nbeta, int32_t nroots, bool rotating,
+                                                      size_t syevd_lwork);
 
 /// @brief The multiplier terms of a single-state Lagrangian's Hessian at
 /// given multipliers (Z, z) (docs/nevpt2/nevpt2.tex eq. hess): the three places
@@ -1078,7 +1162,8 @@ struct SaCasscfTerms {
 /// The parts run one after another, each freeing what it held; the peak is
 /// @ref df_sacasscf_z's derivative integrals (as many coordinates' nmo^2 naux
 /// at once as fit) or the CP solve's scratch, each refused on its own as
-/// Unsupported past the device's free memory.
+/// Unsupported past the memory budget (@ref df_sacasscf_footprint has the
+/// whole).
 ///
 /// Queued on res.stream() with res.blas() (host pointer mode); it
 /// synchronizes many times. None of @p b and @p l may point into
@@ -1103,6 +1188,33 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const mcscf::Solution &solution, std::span<const double> weights, int32_t root,
             int32_t ncore, int32_t ncas, double tolerance = 1e-10, int32_t max_iterations = 200);
+
+/// @brief What @ref df_sacasscf holds over @p basis and @p aux with @p ncore
+/// core and @p ncas active orbitals and @p nroots roots over the determinants
+/// of @p nalpha and @p nbeta electrons, nmo = nao; @p rotating whether two of
+/// the weights differ (@c response::rotating_pairs), @p syevd_lwork as
+/// @ref df_casscf_footprint's:
+///
+/// - persistent: z, lambda^x and the z terms' L_xlambda, returned;
+/// - scratch: the strings, the integrals, the SA Fock, the sigma with its
+///   apply scratch, the SA H and H~ (3 n_atom + 1 block columns) and
+///   @c mcscf::df_derivatives_footprint's SA right-hand sides, held to the
+///   end; beside them in turn the probed @c response::zvectors and its check,
+///   root I's Fock with @c response::zvector_footprint's z, z packed, the
+///   third-derivative operator (@c mcscf::third_derivative_footprint), z cut
+///   and Lambda, held to the end; then the third derivative's action, root
+///   I's H and H~ with their block product, @ref df_sacasscf_z_footprint,
+///   F^[x] at one-hot weights beside @ref df_casscf_exy_footprint, and at
+///   equal weights @c mcscf::root_rotation_footprint;
+/// - workspace: the largest of the calls'.
+///
+/// The block products' J and K width and the derivative integrals' chunk
+/// grow with the memory budget, so this is the least the call runs with.
+/// Nothing pinned. Empty for the counts it refuses.
+[[nodiscard]] MemoryFootprint df_sacasscf_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                    int32_t ncore, int32_t ncas, int32_t nalpha,
+                                                    int32_t nbeta, int32_t nroots, bool rotating,
+                                                    size_t syevd_lwork);
 
 /// @brief @ref df_sacasscf_cp's lambda^x and the check it passed.
 struct SaCasscfCp {

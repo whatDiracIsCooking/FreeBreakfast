@@ -12,6 +12,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.recipes.matrix_ao;
@@ -90,5 +91,18 @@ root_rotation(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               int32_t nbeta, const double *roots, std::span<const double> weights,
               std::span<const double> energies, const Derivatives &derivatives, const double *kappa,
               double max_rotation = 10.0);
+
+/// @brief What @ref root_rotation holds over @p basis and @p aux with @p ncore
+/// core and @p ncas active orbitals and @p nroots roots over the determinants
+/// of @p nalpha and @p nbeta electrons, all of it freed on return: the CI
+/// strings; c_r +- c_s, their RDMs, the gradient's matrix, its packed pairs
+/// and the contraction with kappa, held throughout; beside them the averaged
+/// RDMs (@c ci::rdm12_footprint, the workspace), then the integrals and the
+/// Fock (@c casscf_integrals_footprint, @c response::fock_footprint, density
+/// fitted, nmo = nao). Empty for one root, which allocates nothing, and for
+/// the counts it refuses.
+[[nodiscard]] MemoryFootprint root_rotation_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                      int32_t ncore, int32_t ncas, int32_t nalpha,
+                                                      int32_t nbeta, int32_t nroots);
 
 } // namespace free_breakfast::mcscf

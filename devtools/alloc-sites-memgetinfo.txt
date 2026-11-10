@@ -14,8 +14,6 @@
 
 # #1053: the analytic Hessians' column widths and batches.
 src/hessian/df_adjoint_xy.cpp                                      1 #1053
-src/hessian/df_casscf_exy.cpp                                      1 #1053
-src/hessian/df_casscf_two_electron.cpp                             1 #1053
 src/hessian/df_sc_nevpt2.cpp                                       1 #1053
 src/hessian/df_pc_nevpt2.cpp                                       1 #1053
 src/hessian/df_nevpt2_tangents.cpp                                 1 #1053

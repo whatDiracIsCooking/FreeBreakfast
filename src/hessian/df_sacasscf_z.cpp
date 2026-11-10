@@ -7,7 +7,8 @@
 /// any, plus I^x z from mcscf::ThirdDerivative::apply_integrals), assembled
 /// from the merged parts. Beside it df_casscf_z, the same at one root of
 /// weight 1 and given (Z, z), without a right-hand side, and the third
-/// derivative's action over a block of response vectors.
+/// derivative's action over a block of response vectors; and
+/// df_sacasscf_z's footprint.
 
 module free_breakfast.hessian;
 
@@ -17,6 +18,8 @@ import free_breakfast.core.constants; // kZero, kOne, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // axpy, wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -319,6 +322,79 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
                               .lxlambda = std::move(t.lxlambda),
                               .third = std::move(t.third)};
       });
+}
+
+MemoryFootprint df_sacasscf_z_footprint(const BasisSet &basis, const BasisSet &aux,
+                                        const int32_t ncore, const int32_t ncas,
+                                        const int32_t nalpha, const int32_t nbeta,
+                                        const int32_t nroots, const bool rotating,
+                                        const size_t syevd_lwork) {
+  const size_t nao = basis.nao_sphe();
+  if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || aux.nao_sphe() == 0 || ncore < 0 ||
+      ncas < 1 || static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao || nroots < 2 ||
+      nalpha < 1 || nbeta < 1 || nalpha > ncas || nbeta > ncas) {
+    return {}; // refused before anything is allocated
+  }
+  const auto nmo = static_cast<int32_t>(nao);
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const auto roots = static_cast<size_t>(nroots);
+  const size_t na2 = n_act * n_act;
+  const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
+  const size_t mm = nao * nao;
+  const size_t pairs = (n_core * (nao - n_core)) + (n_act * (nao - n_core - n_act));
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha_strings = strings(nalpha);
+  const int32_t beta_strings = strings(nbeta);
+  const size_t dim = static_cast<size_t>(alpha_strings) * static_cast<size_t>(beta_strings);
+  const size_t n_ci = dim * roots;
+  const size_t size = pairs + n_ci + (rotating ? roots * (roots - 1) / 2 : 0);
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  const auto derivatives = [&](const bool rotation) {
+    return mcscf::df_derivatives_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots,
+                                           syevd_lwork, rotation);
+  };
+  // gamma and Gamma on the device, made by rdm12, freed once downloaded.
+  MemoryFootprint rdms = held(na2 + (na2 * na2));
+  rdms.device.workspace = ci::rdm12_footprint(ncas, static_cast<int32_t>(dim)).device.workspace;
+  rdms = drop(rdms);
+  // E_xy at the RDMs of c +- dc, F^[x] there beside it.
+  const MemoryFootprint polarized =
+      drop(then(derivatives(false), df_casscf_exy_footprint(basis, aux, ncore, ncas)));
+
+  // The strings; C's copy, held throughout; L_xlambda, returned.
+  MemoryFootprint chain = then(ci::device_string_set_footprint(ncas, nalpha),
+                               ci::device_string_set_footprint(ncas, nbeta));
+  chain = then(chain, held(mm));
+  chain = then(chain, held(size * n_x));
+  // The right-hand side's df_derivatives.
+  chain = then(chain, drop(derivatives(false)));
+  // L_xy's z_o part: K, the averaged RDMs, F^[x] at the rotated densities and
+  // E_xy along K.
+  chain = then(chain, drop(then(held(mm), then(rdms, then(derivatives(true),
+                                                          df_casscf_exy_footprint(basis, aux, ncore,
+                                                                                  ncas, true))))));
+  // Its z_c part: c + dc, c - dc and dc; the roots' overlaps, then Theta's
+  // square; the RDMs of each; E_xy at each.
+  MemoryFootprint z_c = then(held(3 * n_ci), drop(held(roots * roots)));
+  if (rotating) {
+    z_c = then(z_c, drop(held(roots * roots)));
+  }
+  z_c = then(z_c, then(rdms, then(rdms, then(polarized, polarized))));
+  chain = then(chain, drop(z_c));
+  // I^x z: the operator, and the integral derivatives at their least chunk
+  // into y.
+  chain = then(chain, drop(then(mcscf::third_derivative_footprint(
+                                    nmo, naux, ncore, ncas, alpha_strings, beta_strings, nroots),
+                                drop(then(held(size * n_x),
+                                          mcscf::df_integral_derivatives_footprint(basis, aux))))));
+  // The strings and C's copy freed; L_xlambda returned.
+  return keeping(chain, sizeof(double) * size * n_x);
 }
 
 Result<CasscfZTerms>

@@ -280,10 +280,17 @@ struct HessianStep {
   /// ERI, which is refused before anything runs, and the chain alone for an
   /// open shell, refused once it has run.
   ///
-  /// None over a CASSCF chain (@ref casscf_gradient, @ref nevpt2_gradient),
-  /// whose library calls are not all footprinted yet (#1176): pre-flight
-  /// refuses it under a cap. Transitional, as step_footprint's optional is
-  /// (#1122).
+  /// Under HessianMethod::Analytic over the CASSCF chain (@ref casscf_gradient):
+  /// the chain's plan to `[casscf]`, folded the same way and held through the
+  /// Hessian; the solution's C and CI vectors; @c hessian::df_casscf_footprint
+  /// for one root or @c hessian::df_sacasscf_footprint for one of a state
+  /// average, at the plan's worst-case active space and their least widths;
+  /// all freed before @c geometry::harmonic_analysis's.
+  ///
+  /// None over a NEVPT2 chain (@ref nevpt2_gradient), by either method, and
+  /// under HessianMethod::Numerical over the CASSCF chain, whose library
+  /// calls are not all footprinted yet (#1176): pre-flight refuses it under a
+  /// cap. Transitional, as step_footprint's optional is (#1122).
   [[nodiscard]] std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 };
 

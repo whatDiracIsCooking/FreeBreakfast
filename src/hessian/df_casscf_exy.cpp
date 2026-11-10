@@ -13,8 +13,10 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kNegOne, kTwo, kNegHalf
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, geam, gemmStridedBatched, wwrMemGetInfo, gpu_status
+import free_breakfast.core.primitives; // align_up
+import free_breakfast.core.wwr;        // gemm, geam, gemmStridedBatched, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -27,6 +29,26 @@ import free_breakfast.recipes.matrix_ao;
 #include "diagnostics.h"
 
 namespace free_breakfast::hessian {
+
+// What the connection terms hold across calls that take the workspace
+// (overlap_derivative, b_mo, overlap_hessian), so their own, in doubles:
+// tau^x for every x, B over every MO pair and over the occupied ones,
+// G = B_oo Gamma, h_MO, F, -sym(F), (-sym F) tau^x for every x, and E^(2)'s
+// stacks: R^x (naux nocc^2) and R^x Gamma, V^x (nmo nocc) for every x, and the
+// four n_x^2 products. A rotation adds B's derivative over every pair and the
+// occupied ones, G' and G~, h K and h', F_L, and tau'^x, V'^x and R'^x for
+// every x; without one that buffer is one double, still allocated.
+std::pair<size_t, size_t> casscf_exy_held(const size_t nmo, const size_t naux, const size_t occ,
+                                          const size_t n_x, const bool rotated) {
+  const size_t mm = nmo * nmo;
+  const size_t oo = occ * occ;
+  const size_t held = (2 * mm * n_x) + (naux * mm) + (2 * naux * oo) + (3 * mm) +
+                      (2 * n_x * naux * oo) + (n_x * nmo * occ) + (4 * n_x * n_x);
+  const size_t rot = rotated ? (naux * mm) + (2 * naux * oo) + (naux * nmo * occ) + (3 * mm) +
+                                   (mm * n_x) + (n_x * nmo * occ) + (n_x * naux * oo)
+                             : 1;
+  return {held, rot};
+}
 
 Result<CasscfExy>
 df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
@@ -200,39 +222,23 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   out.two_electron = FBF_TRY(df_casscf_two_electron(res, basis, classes, aux, b, l, c, ncore, ncas,
                                                     gamma, gamma2, rotation));
 
-  // What the connection terms hold across calls that take the workspace
-  // (overlap_derivative, b_mo, overlap_hessian), so their own: tau^x for
-  // every x, B over every MO pair and over the occupied ones, G = B_oo Gamma,
-  // h_MO, F, -sym(F), (-sym F) tau^x for every x, and E^(2)'s stacks: R^x
-  // (naux nocc^2) and R^x Gamma, V^x (nmo nocc) for every x, and the four
-  // n_x^2 products. Past the device's free memory an allocation would abort
-  // (CreatePolicy), so the total is checked first, with S^x's AO stack, which
-  // is freed once tau is made, and the larger of its MO transform's and
-  // E^(2)'s per-coordinate workspace beside it.
-  const size_t held_count = (2 * mm * n_x) + (naux * mm) + (2 * naux * oo) + (3 * mm) +
-                            (2 * n_x * naux * oo) + (n_x * nmo * occ) + (4 * n_x * n_x);
-  // A rotation adds B's derivative over every pair and the occupied ones,
-  // G' and G~, h K and h', F_L, and tau'^x, V'^x and R'^x for every x; and
-  // per coordinate Y' and tau^x K.
-  const size_t rot_count = rotated ? (naux * mm) + (2 * naux * oo) + (naux * nmo * occ) + (3 * mm) +
-                                         (mm * n_x) + (n_x * nmo * occ) + (n_x * naux * oo)
-                                   : 0;
+  // The connection terms' held buffers (casscf_exy_held). Past the memory
+  // budget an allocation would abort (CreatePolicy), so the total is checked
+  // first, with S^x's AO stack, which is freed once tau is made, and the
+  // larger of its MO transform's and E^(2)'s per-coordinate workspace beside
+  // it.
+  const auto [held_count, rot_count] = casscf_exy_held(nmo, naux, occ, n_x, rotated);
   const size_t transient = std::max(2 * n_x * nao * nao + nmo * nao * n_x,
                                     (naux * occ * nmo) + (nmo * occ) + (nao * nmo) +
                                         (rotated ? (naux * occ * nmo) + mm : 0));
   const size_t bytes = sizeof(double) * (held_count + rot_count + transient);
-  {
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    if (bytes > free_bytes) {
-      return err_unsupported("hessian::df_casscf_exy: the connection terms over {} orbitals, {} "
-                             "fitting functions, {} occupied orbitals and {} coordinates (B over "
-                             "every MO pair, naux nmo^2 = {} doubles, and every coordinate's "
-                             "tau^x and R^x at once) need {} bytes of device memory, and device "
-                             "{} has {} free",
-                             nmo, naux, occ, n_x, naux * mm, bytes, res.dev_idx(), free_bytes);
-    }
+  if (const size_t budget = FBF_TRY(res.memory_budget()); bytes > budget) {
+    return err_unsupported("hessian::df_casscf_exy: the connection terms over {} orbitals, {} "
+                           "fitting functions, {} occupied orbitals and {} coordinates (B over "
+                           "every MO pair, naux nmo^2 = {} doubles, and every coordinate's "
+                           "tau^x and R^x at once) need {} bytes of device memory, and device "
+                           "{} has {} to give",
+                           nmo, naux, occ, n_x, naux * mm, bytes, res.dev_idx(), budget);
   }
   Buffers::device<double> held(held_count, res.device());
   double *const tau = held.data();
@@ -251,7 +257,7 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   double *const p_fock = p_square + (n_x * n_x);
   double *const p_twice = p_fock + (n_x * n_x);
   double *const p_twice_r = p_twice + (n_x * n_x);
-  Buffers::device<double> rot_held(std::max<size_t>(rot_count, 1), res.device());
+  Buffers::device<double> rot_held(rot_count, res.device());
   double *const b_dot = rot_held.data();
   double *const b_dot_oo = b_dot + (naux * mm);
   double *const g_dot = b_dot_oo + (naux * oo);
@@ -505,6 +511,61 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
                  out.connection_second[i] + out.connection_fock[i] + out.connection_twice[i];
   }
   return out;
+}
+
+MemoryFootprint df_casscf_exy_footprint(const BasisSet &basis, const BasisSet &aux,
+                                        const int32_t ncore, const int32_t ncas,
+                                        const bool rotated) {
+  const size_t nao = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || ncore < 0 || ncas < 1 ||
+      static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao) {
+    return {};
+  }
+  const size_t nmo = nao;
+  const size_t occ = static_cast<size_t>(ncore) + static_cast<size_t>(ncas);
+  const size_t oo = occ * occ;
+  const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  const auto region = [](const size_t doubles) {
+    return math::align_up(sizeof(double) * doubles, DeviceResources::kWorkspaceAlignment);
+  };
+  const MemoryFootprint one = one_electron_hessian_footprint(basis);
+
+  // The occupied D and Gamma, held throughout.
+  MemoryFootprint chain = held(oo + (oo * oo));
+  // D^AO, made through a carve, beside the T and V second derivatives in turn.
+  MemoryFootprint d_ao = held(nao * nao);
+  d_ao.device.workspace = rotated ? (2 * region(nao * occ)) + region(nao * nao) : region(oo * nao);
+  chain = then(chain, drop(then(d_ao, one)));
+  chain = then(chain, df_casscf_two_electron_footprint(basis, aux, ncore, ncas, rotated));
+  // The connection terms' held buffers; S^x beside them until tau is made
+  // (C^T S^x through a carve).
+  const auto [held_count, rot_count] = casscf_exy_held(nmo, naux, occ, n_x, rotated);
+  chain = then(chain, held(held_count + rot_count));
+  MemoryFootprint s_x = one_electron_derivative_footprint(basis);
+  s_x.device.workspace = std::max(s_x.device.workspace, region(nmo * nao * n_x));
+  chain = then(chain, drop(s_x));
+  // b_mo over every pair and over the occupied ones, h_MO's gemmwich, tau^x K
+  // (a rotation's) and E^(2)'s per-coordinate carve.
+  const OrbitalRange all{.first = 0, .count = static_cast<int32_t>(nmo)};
+  const OrbitalRange occupied{.first = 0, .count = static_cast<int32_t>(occ)};
+  const auto q = static_cast<int32_t>(naux);
+  const auto n = static_cast<int32_t>(nao);
+  MemoryFootprint carves;
+  carves.device.workspace = std::max(
+      {b_mo_footprint(q, n, all, all).device.workspace,
+       b_mo_footprint(q, n, occupied, occupied).device.workspace, region(nao * nmo),
+       rotated ? region(nmo * nmo) : 0,
+       region(naux * occ * nmo) + region(nmo * occ) + region(rotated ? naux * occ * nmo : 1)});
+  chain = then(chain, carves);
+  // -C sym(F) C^T, made through a carve, beside overlap_hessian's.
+  MemoryFootprint m_ao = held(nao * nao);
+  m_ao.device.workspace = region(nmo * nao);
+  chain = then(chain, drop(then(m_ao, one)));
+  return drop(chain);
 }
 
 } // namespace free_breakfast::hessian

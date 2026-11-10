@@ -12,7 +12,8 @@
 // before symmetrizing and the translational sum rule. At equal weights the
 // total without eq. rot misses relaxed_fd; and the refusals, among them a
 // state average on a continuous family of solutions, HF CAS(10,7) at two
-// roots, this tree's own DF-CASSCF through the registry (#997).
+// roots, this tree's own DF-CASSCF through the registry (#997). And
+// df_sacasscf_footprint (#1176), at equal and unequal weights.
 
 #include <gtest/gtest.h>
 
@@ -34,16 +35,19 @@ import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
+import free_breakfast.recipes.diagonalize;
 import free_breakfast.hessian;
 import free_breakfast.io.base;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "pool_footprint.h"
 #include "scratch_dir.h"
 
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 
 // E_xy against the emitter's, absolute: df_casscf_exy's own test's bar.
 constexpr double kExyTol = 1e-8;
@@ -475,6 +479,62 @@ TEST_F(HessianDfSaCasscf, ThreeRootsEqualWeightsMatchReference) {
 TEST_F(HessianDfSaCasscf, ThreeRootsUnequalWeightsMatchReference) {
   FBF_SKIP_IF_FAST_TESTS();
   check("h2o_631g_sa3_unequal");
+}
+
+// df_sacasscf's own allocations held to df_sacasscf_footprint at its least
+// (H~'s block products at one column's J and K, the derivative integrals at
+// one coordinate a chunk): on a fresh DeviceResources whose pool is capped at
+// what a probe run leaves held (the workspace), the fragmentation headroom an
+// adaptive part leaves of the budget, and the footprint's peak; run once to
+// grow the workspace, then measured, the pool never past the cap. Root 1 of
+// the two-root average at equal weights (eq. rot's root_rotation runs) and at
+// unequal ones (the rotations are parameters); four runs of 2.5 s each, so
+// slow-gated: the analytic CASSCF [hessian]'s footprint
+// (pipeline_step_footprint_gpu.cpp) stands for this in the fast tier.
+TEST_F(HessianDfSaCasscf, FootprintIsSoundAndTight) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  for (const std::string name : {"h2o_631g_sa2", "h2o_631g_sa2_unequal"}) {
+    SCOPED_TRACE(name);
+    load(name);
+    ASSERT_FALSE(HasFatalFailure());
+    const fb::mcscf::Solution s = solution();
+    ASSERT_FALSE(HasFailure());
+    const bool rotating = std::ranges::contains(fb::response::rotating_pairs(weights_), true);
+    ASSERT_EQ(rotating, name.ends_with("unequal"));
+    const std::size_t lwork = fb::syevd_lwork<double>(*res_, ncas_).value();
+    const fb::MemoryFootprint fp =
+        fb::hessian::df_sacasscf_footprint(*basis_, *aux_, ncore_, ncas_, nalpha_, nbeta_,
+                                           static_cast<std::int32_t>(nroots_), rotating, lwork);
+    const auto call = [&](fb::DeviceResources &res) {
+      auto got =
+          fb::hessian::df_sacasscf(res, *molecule_, *basis_, classes_, *aux_, h_->spherical(), *b_,
+                                   metric_->spherical().data(), s, weights_, 1, ncore_, ncas_);
+      ASSERT_TRUE(got) << got.error().message;
+    };
+    std::size_t held = 0;
+    {
+      fb::DeviceResources probe{0};
+      call(probe);
+      ASSERT_TRUE(probe.sync());
+      EXPECT_EQ(probe.device_workspace(0).num_elements(), fp.device.workspace);
+      held = probe.device()->pool_usage().used_current;
+    }
+    const std::uint64_t cap =
+        held + fb::kPoolHeadroomBytes + fp.device.persistent + fp.device.scratch;
+    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    call(res);
+    const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { call(res); });
+    std::cout << std::format("[ footprint ] {} root 1 at the least, capped at {}: measured {}, "
+                             "footprint {} + workspace {}\n",
+                             name, cap, peak.used, fp.device.persistent + fp.device.scratch,
+                             fp.device.workspace);
+    // At the peak: the strings' four, the integrals', the Fock's, the
+    // sigma's, H's and H~'s members, and a phase's own.
+    fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
+                          64);
+    EXPECT_LE(res.device()->pool_usage().used_high, cap);
+  }
 }
 
 TEST_F(HessianDfSaCasscf, Refusals) {

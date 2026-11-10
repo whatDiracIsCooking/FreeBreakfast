@@ -8,7 +8,7 @@
 /// (mcscf::root_rotation); the solution checked, the sum symmetrized.
 /// df_sacasscf_cp, its lambda^x alone (the same body, stopped after the CP
 /// step), and state_averaged_electrons, the inputs' check both share with
-/// df_qd_nevpt2_tangents.
+/// df_qd_nevpt2_tangents; and df_sacasscf's footprint.
 
 module free_breakfast.hessian;
 
@@ -18,6 +18,8 @@ import free_breakfast.core.constants; // kZero, kOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // axpy, nrm2, scal, wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -36,7 +38,7 @@ import free_breakfast.response.relaxed_hessian;
 import free_breakfast.mcscf.root_rotation;
 import free_breakfast.mcscf.third_derivative;
 import free_breakfast.response.zvector;
-import :state_specific; // probed_zvectors, kCasscfCpResponseTolerance
+import :state_specific; // probed_zvectors(_footprint), keeping, kCasscfCpResponseTolerance
 
 #include "diagnostics.h"
 
@@ -508,6 +510,113 @@ df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
       FBF_TRY(sacasscf_terms(res, "hessian::df_sacasscf", molecule, basis, classes, aux, h, b, l,
                              solution, weights, root, ncore, ncas, tolerance, max_iterations));
   return std::get<SaCasscfTerms>(std::move(terms));
+}
+
+MemoryFootprint df_sacasscf_footprint(const BasisSet &basis, const BasisSet &aux,
+                                      const int32_t ncore, const int32_t ncas, const int32_t nalpha,
+                                      const int32_t nbeta, const int32_t nroots,
+                                      const bool rotating, const size_t syevd_lwork) {
+  const size_t nao = basis.nao_sphe();
+  if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || aux.nao_sphe() == 0 || ncore < 0 ||
+      ncas < 1 || static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao || nroots < 2 ||
+      nalpha < 1 || nbeta < 1 || nalpha > ncas || nbeta > ncas) {
+    return {}; // refused before anything is allocated
+  }
+  const auto nmo = static_cast<int32_t>(nao);
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const auto roots = static_cast<size_t>(nroots);
+  const size_t na2 = n_act * n_act;
+  const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
+  const size_t mm = nao * nao;
+  const size_t pairs = (n_core * (nao - n_core)) + (n_act * (nao - n_core - n_act));
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha_strings = strings(nalpha);
+  const int32_t beta_strings = strings(nbeta);
+  const size_t dim = static_cast<size_t>(alpha_strings) * static_cast<size_t>(beta_strings);
+  const size_t n_ci = dim * roots;
+  const size_t all_pairs = roots * (roots - 1) / 2;
+  const size_t size = pairs + n_ci + (rotating ? all_pairs : 0);
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  const MemoryFootprint product = response::hessian_apply_footprint(nmo, naux, ncore, ncas);
+  const MemoryFootprint fock = response::fock_footprint(nmo, naux, ncore, ncas);
+  const MemoryFootprint hessian = response::hessian_footprint(nmo, naux, ncore, ncas);
+  const MemoryFootprint derivatives =
+      mcscf::df_derivatives_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots, syevd_lwork);
+  // gamma and Gamma on the device, made by rdm12, freed once downloaded.
+  MemoryFootprint rdms = held(na2 + (na2 * na2));
+  rdms.device.workspace = ci::rdm12_footprint(ncas, static_cast<int32_t>(dim)).device.workspace;
+  rdms = drop(rdms);
+  // The sigma's tables, and the apply scratch the products grow it to.
+  MemoryFootprint tables;
+  tables.device.persistent =
+      ci::sigma_footprint(ncas, alpha_strings, beta_strings).device.persistent;
+  MemoryFootprint growth;
+  growth.device.persistent =
+      ci::sigma_apply_bytes(ncas, alpha_strings, beta_strings, ci::Layout::full);
+
+  // The strings; the integrals; the averaged RDMs; the SA Fock; the sigma; A
+  // as H and H~ (over 3 n_atom + 1 block columns); the SA right-hand sides.
+  MemoryFootprint chain = then(ci::device_string_set_footprint(ncas, nalpha),
+                               ci::device_string_set_footprint(ncas, nbeta));
+  chain = then(chain, casscf_integrals_footprint(nmo, naux, ncore, ncas));
+  chain = then(chain, rdms);
+  chain = then(chain, fock);
+  chain = then(chain, tables);
+  chain = then(chain, hessian);
+  chain = then(
+      chain, response::relaxed_hessian_footprint(ncas, nalpha, nbeta, nroots, nmo, ncore, n_x + 1));
+  chain = then(chain, derivatives);
+  // lambda^x: its right-hand sides, the probed solve, and the check's r and
+  // r_c beside one block product.
+  chain = then(chain, held((pairs + n_ci) * n_x));
+  chain = then(chain, growth);
+  const MemoryFootprint probed =
+      probed_zvectors_footprint(pairs, dim, nroots, n_x, product, rotating);
+  chain = then(chain, probed);
+  chain = then(chain, drop(then(held((pairs + n_ci) * n_x), drop(product))));
+  // z: root I's RDMs and Fock, then zvector, z returned.
+  chain = then(chain, rdms);
+  chain = then(chain, fock);
+  const MemoryFootprint z = response::zvector_footprint(
+      static_cast<int32_t>(pairs), static_cast<int32_t>(dim), nroots, product, rotating);
+  chain = then(chain, z);
+  // z packed with every rotation; the third-derivative operator; z cut to
+  // its size; Lambda in its layout.
+  chain = then(chain, held(pairs + n_ci + all_pairs));
+  chain = then(chain, mcscf::third_derivative_footprint(nmo, naux, ncore, ncas, alpha_strings,
+                                                        beta_strings, nroots));
+  chain = then(chain, held(size + (size * n_x)));
+  // The third-derivative action: Y, then the n_x^2 product.
+  chain = then(chain, drop(held((size * n_x) + (n_x * n_x))));
+  // Root I's parameter Hessian: H and H~ at one-hot weights, Y_o and Y_c
+  // beside one block product, Y and the n_x^2 product.
+  chain =
+      then(chain,
+           drop(then(hessian, then(response::relaxed_hessian_footprint(ncas, nalpha, nbeta, nroots,
+                                                                       nmo, ncore, n_x),
+                                   then(held((pairs + n_ci) * n_x),
+                                        then(drop(product), held((size * n_x) + (n_x * n_x))))))));
+  // The z terms, L_xlambda returned; L_xlambda lambda^y's n_x^2.
+  const MemoryFootprint z_terms = df_sacasscf_z_footprint(basis, aux, ncore, ncas, nalpha, nbeta,
+                                                          nroots, rotating, syevd_lwork);
+  chain = then(chain, z_terms);
+  chain = then(chain, drop(held(n_x * n_x)));
+  // E_I,xy: F^[x] at one-hot weights, C's copy and df_casscf_exy.
+  chain = then(chain, drop(then(derivatives,
+                                then(held(mm), df_casscf_exy_footprint(basis, aux, ncore, ncas)))));
+  // Eq. rot at equal weights.
+  if (!rotating) {
+    chain =
+        then(chain, mcscf::root_rotation_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots));
+  }
+  // z, lambda^x and L_xlambda are returned; the rest is freed.
+  return keeping(chain, z.device.persistent + probed.device.persistent + z_terms.device.persistent);
 }
 
 Result<SaCasscfCp>

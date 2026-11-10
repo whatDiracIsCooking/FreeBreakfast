@@ -5,7 +5,8 @@
 /// average, which df_sacasscf and df_qd_nevpt2_tangents share, and the
 /// mixing-rate bound they put on its roots. Beside them, the CP solve
 /// df_casscf and df_sacasscf share: zvectors with the probe column that
-/// refuses a singular H~; H_eff's eigenpairs, which
+/// refuses a singular H~, and its footprint with the helper both footprints
+/// end on; H_eff's eigenpairs, which
 /// df_qd_eigenvector_response and the QD Hessians (df_qd_nevpt2.cpp) share;
 /// and SC's conditioning refusal, which df_sc_nevpt2 and df_qd_sc_nevpt2
 /// share.
@@ -25,6 +26,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.response.hessian;
@@ -85,6 +87,20 @@ probed_zvectors(DeviceResources &res, std::string_view who, response::RelaxedHes
                 const response::Hessian &hessian, const ci::Roots &roots, size_t n_x,
                 const Buffers::device<double> &gradients, const Buffers::device<double> &ci_rhs,
                 std::span<const double> theta_rhs, double tolerance, int32_t max_iterations);
+
+/// @brief What probed_zvectors holds over @p pairs orbital pairs, @p nroots CI
+/// vectors of @p dim determinants and @p n_x coordinates, past the
+/// RelaxedHessian's own: the coordinates' columns returned, persistent; the
+/// right-hand sides with the probe's column, and response::zvectors_footprint
+/// over n_x + 1 columns with @p product a block product's, scratch.
+/// @p rotating whether the weights rotate (and so a rotation right-hand side
+/// is given).
+MemoryFootprint probed_zvectors_footprint(size_t pairs, size_t dim, int32_t nroots, size_t n_x,
+                                          const MemoryFootprint &product, bool rotating);
+
+/// @brief @p chain with only @p kept bytes of its persistent ones kept: the
+/// rest freed when it returns, its peak unchanged.
+MemoryFootprint keeping(const MemoryFootprint &chain, size_t kept);
 
 // SC's conditioning refusal (README.md "The SC conditioning refusal",
 // #1102): a kept perturber's relative rounding bound on its N

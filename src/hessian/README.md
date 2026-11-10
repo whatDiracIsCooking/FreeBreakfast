@@ -473,8 +473,13 @@ cross term's M1 (3 naux²), one aux atom's X (3 nao² nblk), two atom blocks
 (3 naux n_occ² each), K's s (3 naux n_core n_occ), three active blocks
 (3 naux n_cas² each), the Coulomb vectors and the products. The call refuses
 (Unsupported, naming the bytes and the atom block's size) when the held part
-plus the larger phase would not fit the device's free memory; naux nao²,
-3 naux n_occ², naux max(n_core, n_cas) nao and n_cas⁴ must fit `int32_t`.
+plus the larger phase would not fit the memory budget (`res.memory_budget()`);
+naux nao², 3 naux n_occ², naux max(n_core, n_cas) nao and n_cas⁴ must fit
+`int32_t`. `df_casscf_two_electron_footprint(basis, aux, ncore, ncas,
+rotated)` is all of it, scratch, the call and the footprint sizing their
+buffers from one helper; the workspace is the largest carve of `b_mo`, the
+second-derivative integrals, `metric_derivative`, and over the aux atoms
+`three_center_derivative` and its half-transform W. Nothing in it adapts.
 
 ### Tests
 
@@ -593,10 +598,17 @@ terms: τ^x and sym(F) τ^x for every x (2 · 3 n_atom nmo²), B over every MO
 pair (naux nmo²) and the occupied ones, G (naux nocc² each), h_MO and two
 Fock matrices, R^x and R^x Γ for every x (2 · 3 n_atom naux nocc²), V^x
 (3 n_atom nmo nocc) and Γ (nocc⁴); beside the AO S^x stack while τ is made,
-or one coordinate's Y (naux nocc nmo) from the workspace. Past the device's
-free memory that is Unsupported before it is allocated. Nothing batches the
-coordinates yet; B over every MO pair is what `response::Hessian`'s
-density-fitted operator reads too.
+or one coordinate's Y (naux nocc nmo) from the workspace. Past the memory
+budget (`res.memory_budget()`) that is Unsupported before it is allocated.
+Nothing batches the coordinates yet; B over every MO pair is what
+`response::Hessian`'s density-fitted operator reads too.
+`df_casscf_exy_footprint(basis, aux, ncore, ncas, rotated)` composes it: the
+occupied D and Γ held throughout, beside D^AO with
+`one_electron_hessian_footprint`'s scratch, then
+`df_casscf_two_electron_footprint`, then the connection terms' held buffers
+with S^x (`one_electron_derivative_footprint`) until τ is made and then
+−C sym(F) Cᵀ with `overlap_hessian`'s; all scratch (the pieces are on the
+host), the workspace the largest carve.
 
 ### Tests
 
@@ -700,7 +712,8 @@ phase the extended atom block (4 × 3 naux nocc²) and r′, t′ and act′ for
 both atoms. In `df_casscf_exy`, B′ over every MO pair (naux nmo²) and the
 occupied ones, G′ and G̃ (naux nmo nocc), h K, h′, F_L, and τ′^x, V′^x and
 R′^x for every x; per coordinate Y′. Each is in its call's estimate, refused
-(Unsupported) past the device's free memory before anything is allocated.
+(Unsupported) past the memory budget before anything is allocated, and in its
+call's footprint (`rotated = true`).
 
 ### Tests
 
@@ -891,6 +904,21 @@ n_det)) and λ. Each part refuses its own memory, Unsupported, before it
 allocates. `df_derivatives`' F^[x] and right-hand sides stay held across
 the whole call (3 n_atom (2 nmo² + n_det)).
 
+`df_casscf_footprint(basis, aux, ncore, ncas, nalpha, nbeta, syevd_lwork)`
+is the call in `core/footprint`'s terms (#1176): λ^x persistent, returned;
+the rest scratch. The CP step holds the strings, `df_derivatives_footprint`'s
+outputs, the integrals and the Fock, the sigma's tables and the apply
+scratch the products grow it to (`Layout::full`), H
+(`response::hessian_footprint`) and H̃ (`relaxed_hessian_footprint` over
+3 n_atom + 1 block columns), and the right-hand sides; beside them the probed
+solve (the right-hand sides with the probe column and
+`response::zvectors_footprint` over 3 n_atom + 1 columns), then the check's
+r and r_c beside one block product. Then C's copy beside
+`df_casscf_exy_footprint`, then the response's n_x². The block products'
+J and K are `hessian_apply_footprint`'s, one column at a time: the least
+`response::Hessian::apply` runs with, its width sized at run time from the
+memory budget (#1174), so this is the least the call runs with.
+
 ### Tests
 
 `test/gtest/df_casscf_hessian_gpu.cpp` (suite `HessianDfCasscf`), against
@@ -909,7 +937,14 @@ gradient reaches 0.074 hartree/bohr), so the six near-zero mass-weighted
 eigenvalues of a minimum do not apply to it, and no fixture here is at one.
 `ExcitedRootIsRefused` builds a saddle: the second CASCI root at the 6-31G
 fixture's orbitals, one root of a `Solution`, which must be a Divergence;
-and the refusals.
+and the refusals. `FootprintsAreSoundAndTight` (#1176, slow-gated): on the
+6-31G case, `df_casscf_two_electron` and `df_casscf_exy`, each without a
+rotation and with one, held to their footprints, the workspace equal to the
+footprint's; then `df_casscf` under a pool cap at the workspace,
+`kPoolHeadroomBytes` and `df_casscf_footprint`'s peak, held to it
+(`test/support/pool_footprint.h`'s sound and tight bars, byte-exact on the
+RTX 3080), and under a cap with 64 MiB of room the pool under the cap and the
+Hessian the least's to 1e-7.
 
 Measured on the RTX 3080 (CUDA), of max |H| 0.065 (6-31G) and 0.064
 (cc-pVDZ): E_xy ≤ 6.0e-12 from the reference, the response ≤ 2.2e-10 (of
@@ -1394,10 +1429,23 @@ The parts run one after another, each freeing what it held: four
 `df_derivatives` calls (the right-hand side's, rotated, c + dc, c − dc), three
 `df_casscf_exy` calls, then the operator, then h1^x and W^x (W^x the
 largest, 3 GB per coordinate at 500 functions over 1500 fitting functions,
-so built for as many coordinates at once as the device's free memory holds
-and applied a chunk at a time). Held throughout: L_xλ (size × 3 n_atom)
+so built for as many coordinates at once as the memory budget holds and
+applied a chunk at a time). Held throughout: L_xλ (size × 3 n_atom)
 and a copy of C. Each part refuses its own memory, Unsupported, before it
 allocates.
+
+`df_sacasscf_z_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots,
+rotating, syevd_lwork)` is the call as `df_sacasscf` makes it (a right-hand
+side's weights, k = 0): L_xλ persistent; the strings and C's copy held, and
+beside them in turn the right-hand side's `df_derivatives_footprint`, the
+z_o part (K, the RDMs, `df_derivatives_footprint` with a rotation and
+`df_casscf_exy_footprint` along K), the z_c part (c ± dc and dc, their RDMs,
+F^[x] beside E_xy at each), and the operator
+(`mcscf::third_derivative_footprint`) with y beside
+`mcscf::df_integral_derivatives_footprint`, the chunk at its least (one
+coordinate; it widens with the memory budget at run time, #1175). The QD
+Lagrangian's forms (k > 0, an equal-weight z with every rotation) are the
+NEVPT2 Hessians' to footprint.
 
 ### Tests
 
@@ -2617,6 +2665,20 @@ and `df_casscf_exy`'s. Held throughout: Λ, z and the
 right-hand sides (3 n_atom (size + pairs + n_det nroots) doubles). Each part
 refuses its own memory, Unsupported, before it allocates.
 
+`df_sacasscf_footprint(basis, aux, ncore, ncas, nalpha, nbeta, nroots,
+rotating, syevd_lwork)` is the call in `core/footprint`'s terms (#1176): z,
+λ^x and the z terms' L_xλ persistent, returned; the rest scratch. Held to
+the end: the strings, the integrals, the SA Fock, the sigma with its apply
+scratch, the SA H and H̃ (3 n_atom + 1 block columns) and
+`df_derivatives_footprint`'s SA outputs; beside them in turn the probed
+solve and its check (as `df_casscf_footprint`'s), root I's RDMs and Fock,
+`response::zvector_footprint`'s z, z packed, the operator, z cut and Λ, held
+too; then the third derivative's action, root I's H and H̃ (3 n_atom block
+columns) with their block product, `df_sacasscf_z_footprint`, F^[x] at
+one-hot weights beside `df_casscf_exy_footprint`, and at equal weights
+`mcscf::root_rotation_footprint`. The block products' width and the
+derivative integrals' chunk are at their least.
+
 ### Tests
 
 `test/gtest/df_sacasscf_hessian_gpu.cpp` (suite `HessianDfSaCasscf`), every
@@ -2639,6 +2701,10 @@ two roots and equal weights, its CASSCF in at most 20 macro iterations
 (#1188). It is this tree's own DF-CASSCF through the
 registry, and it must be a Divergence from `df_sacasscf` that calls A
 singular, with ρ under its bar when the message names one ("A singular H̃").
+`FootprintIsSoundAndTight` (#1176, slow-gated): root 1 of the two-root
+averages at equal and unequal weights, `df_sacasscf` under a pool cap at the
+workspace, `kPoolHeadroomBytes` and `df_sacasscf_footprint`'s peak, held to
+it (byte-exact on the RTX 3080), the workspace equal to the footprint's.
 
 Measured on the RTX 3080 (CUDA), worst over the ten roots, of max |H| 0.05
 to 0.48: E_I,xy ≤ 6.1e-12 from `exy`, L_xy's z part ≤ 1.1e-11 from `exy_z`,
