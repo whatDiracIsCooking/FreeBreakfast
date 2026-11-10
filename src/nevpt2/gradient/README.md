@@ -1911,6 +1911,10 @@ calls (`../energy/`, `../density_fitting/`, `../rdm/`, `../../mcscf/`,
     sc_hessian_product_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, batch,
                                  count, partners, parts)
     pc_hessian_product_footprint(..., batch, syevd_lwork, count, parts, dropped)
+    qd_sc_hessian_product_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, nroots,
+                                    batch, w, count, partners, parts)
+    qd_pc_hessian_product_footprint(..., batch, syevd_lwork, count, partners, parts,
+                                    dropped)
 
 `nevpt2::rdms` and `rdms_adjoint` size their tiles from the memory budget
 (`../rdm/`): each footprint counts them at one determinant, the least they
@@ -1947,6 +1951,26 @@ first apply), `adjoint_tangent_bytes`, and the products' `ProductSizes`.
 `../energy/`'s README says. Their test, `Nevpt2ReaderFootprint.HessianProducts`,
 holds both along a random direction, SC with its partner and with the parts,
 PC with and without them at the run's kept ranks.
+
+The QD Hessian products (#1195) keep the same, over n stacked CI vectors.
+Their mirror, beside the single-root one, adds what only the QD body
+holds, each declared in `:builders` next to its code:
+`qd_adjoint_footprint` with `fixed` (qd_adjoints' pass with its
+`QdFixedBars` kept: the arrays, the shared bars, each root's own and,
+through `qd_adjoint_transition_footprint`, every transition's folded dm3
+bar, which `../energy/`'s adjoint walk footprints hold to their end as a
+callback's persistent), `qd_rdms_tangent_footprint` (the QD RDM step, with
+and without the one-slot terms) and `qd_pc_lifts_footprint` (the Schur
+lifts per ket along one direction). Their test,
+`Nevpt2ReaderFootprint.QdHessianProducts`, runs the SA-2 point at a general
+W in shapes that bring these in one at a time: no direction (the kept
+pass and Phi^SA's set-up), one with itself as partner (the pair walk's
+Hessian-vector product, its transition outputs and the one-slot RDM step),
+one with the parts (the RDM step without the one-slot terms, the zeroed
+bars, every part); PC along a CI-less direction alone, then a random one
+with it as partner and the parts. A random CI part on both a direction and
+its partner lifts a null mode onto the other state on that symmetric point,
+which PC refuses (Eq. qd-pcfail).
 
 ## Not done
 

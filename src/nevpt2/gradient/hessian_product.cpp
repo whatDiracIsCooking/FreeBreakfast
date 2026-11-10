@@ -1207,15 +1207,6 @@ qd_rdms_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
   return y;
 }
 
-// The bytes of @p ncas active orbitals' CI vectors over @p n_alpha and
-// @p n_beta electrons.
-size_t ndet_bytes(const int32_t ncas, const int32_t n_alpha, const int32_t n_beta) {
-  const auto strings = [ncas](const int32_t electrons) {
-    return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
-  };
-  return sizeof(double) * strings(n_alpha) * strings(n_beta);
-}
-
 // qd_rdms_tangent_footprint (declared in :builders).
 MemoryFootprint qd_rdms_tangent_footprint(const int32_t ncas, const int32_t n_alpha,
                                           const int32_t n_beta, const int32_t nroots,
@@ -1223,7 +1214,7 @@ MemoryFootprint qd_rdms_tangent_footprint(const int32_t ncas, const int32_t n_al
   const auto n = static_cast<size_t>(ncas);
   const size_t n4 = sizeof(double) * n * n * n * n;
   const size_t n6 = n4 * n * n;
-  const size_t ndet = ndet_bytes(ncas, n_alpha, n_beta);
+  const size_t ndet = product_sizes(0, 0, ncas, n_alpha, n_beta).ndet;
   const size_t y = static_cast<size_t>(nroots) * ndet;
   Held h;
   // y; y_part, spare and eri_part; with one_slot, the zero dm3 bar.
@@ -1653,7 +1644,7 @@ MemoryFootprint qd_pc_lifts_footprint(const int32_t ncore, const int32_t ncas, c
   const size_t n2 = sizeof(double) * n * n;
   const size_t n4 = n2 * n * n;
   const size_t n6 = n4 * n * n;
-  const size_t ndet = ndet_bytes(ncas, n_alpha, n_beta);
+  const size_t ndet = product_sizes(0, 0, ncas, n_alpha, n_beta).ndet;
   Held h;
   h.take(n6); // part
   for (int32_t r = 0; r < nroots; ++r) {
@@ -1830,6 +1821,229 @@ Result<QdPcHessianProduct> qd_pc_hessian_product(
   out.products = std::move(p.products);
   out.parts = std::move(p.parts);
   return out;
+}
+
+// ---- The QD products' footprints --------------------------------------------
+
+// The n² EnergyDirections of one QD direction, as QdDirectionArrays::
+// directions() gives them and the footprints read them: every field given,
+// f3ca and f3ac on the diagonal alone.
+std::vector<EnergyDirection> qd_given_directions(const size_t nroots) {
+  std::vector<EnergyDirection> out;
+  for (size_t p = 0; p < nroots * nroots; ++p) {
+    EnergyInputs in = given_inputs();
+    if (p % (nroots + 1) != 0) {
+      in.f3ca = nullptr;
+      in.f3ac = nullptr;
+    }
+    out.push_back({.in = in, .blocks = given_blocks()});
+  }
+  return out;
+}
+
+// What a QD product's pair walk asks of the footprint: its reverse pass's
+// with the QdFixedBars kept (qd_adjoint_footprint's, fixed), its
+// Hessian-vector product's along the directions and the partners, its
+// transition handed every pair, and before the walk its check.
+struct QdProductWalkBytes {
+  MemoryFootprint adjoint;
+  std::function<MemoryFootprint(std::span<const EnergyDirection>, std::span<const EnergyDirection>,
+                                const MemoryFootprint &)>
+      hvp;
+  std::function<void(Held &)> check;
+};
+
+// qd_hessian_product, every allocation in its order onto a Held, in bytes:
+// qd_sc_hessian_product_footprint's and qd_pc_hessian_product_footprint's
+// one body.
+MemoryFootprint qd_hessian_product_footprint(const int32_t naux, const int32_t nao,
+                                             const int32_t nmo, const int32_t ncore,
+                                             const int32_t ncas, const int32_t n_alpha,
+                                             const int32_t n_beta, const int32_t nroots,
+                                             const int32_t count, const int32_t partners,
+                                             const bool parts, const QdProductWalkBytes &walk) {
+  constexpr size_t kD = sizeof(double);
+  const int32_t nvirt = nmo - ncore - ncas;
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = kD * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  const ProductSizes z = product_sizes(naux, nmo, ncas, n_alpha, n_beta);
+  const auto roots = static_cast<size_t>(nroots);
+  const size_t ny = roots * z.ndet;
+  const size_t arrays = zeroed_arrays_bytes(naux, ncore, ncas, nvirt);
+  const size_t own = roots * (n2 + n4 + (3 * n6));
+  const auto m = static_cast<size_t>(count);
+  const size_t product = adjoint_tangent_bytes(z, ny);
+  Held h;
+  // The pair walk's reverse pass: the QdScAdjoint and the QdFixedBars kept.
+  h.call(walk.adjoint);
+  // Phi^SA's adjoint at the weights; B whole; D, W, and the summed h_bar
+  // and Λ; the Sigma.
+  h.call(zc_adjoint_footprint(naux, nao, nmo, ncas, n_alpha, n_beta, nroots));
+  h.take(z.lambda);
+  if (naux > 0) {
+    h.borrow(b_mo_footprint(naux, nao, {.first = 0, .count = nmo}, {.first = 0, .count = nmo}));
+  }
+  h.take(z.nn + n2);
+  h.take(phi_w_bytes(naux, nmo, ncas));
+  h.give(phi_w_bytes(naux, nmo, ncas));
+  h.take(z.nn + z.lambda);
+  SigmaBytes sigma = sigma_bytes(ncas, n_alpha, n_beta);
+  sigma.create(h);
+  // u over the directions and the partners; the QD builders' tangent along
+  // each, kept; the check.
+  h.take((m + static_cast<size_t>(partners)) * ny);
+  const MemoryFootprint dot =
+      qd_direction_arrays_footprint(naux, ncore, ncas, nvirt, nroots, false);
+  for (int32_t k = 0; k < count + partners; ++k) {
+    h.call(dot);
+  }
+  if (walk.check) {
+    walk.check(h);
+  }
+  // Per direction its fresh bars: the shared ones, Λ, each root's own and
+  // y_walk, kept; the transition's outputs beside the pair walk.
+  h.take(m * (arrays + z.lambda + own + ny));
+  if (count > 0) {
+    h.take((2 * z.ndet) + n4);
+    std::vector<EnergyDirection> dirs;
+    std::vector<EnergyDirection> others;
+    for (size_t k = 0; k < m; ++k) {
+      std::ranges::copy(qd_given_directions(roots), std::back_inserter(dirs));
+    }
+    for (int32_t k = 0; k < partners; ++k) {
+      std::ranges::copy(qd_given_directions(roots), std::back_inserter(others));
+    }
+    h.call(walk.hvp(dirs, others, qd_adjoint_transition_footprint(ncas, false)));
+    h.give((2 * z.ndet) + n4);
+  }
+
+  // The reverse pass's tangent along one direction: qd_rdms_tangent's y
+  // (kept) and the folds' h_bar and Λ; then finish: y projected and X, the
+  // raw y given back.
+  const auto finished = [&](const bool one_slot) {
+    bars_tangent_bytes(h, naux, ncore, ncas, nvirt, z, ny, [&](Held &held) {
+      held.call(qd_rdms_tangent_footprint(ncas, n_alpha, n_beta, nroots, one_slot));
+    });
+    h.take(ny + z.nn);
+    h.give(ny);
+  };
+  // Phi^SA's share: a zero h_bar, then finish over its Λ̇ and ẏ.
+  const auto phi_share = [&] {
+    h.take(z.nn);
+    h.take(ny + z.nn);
+    h.give(ny);
+  };
+  size_t kept = 0;
+  for (size_t k = 0; k < m; ++k) {
+    // Phi^SA's tangent: Ḋ, Λ̇ (two phi_lambda), Ẇ (two phi_w), ẏ (two
+    // phi_sigma over the roots).
+    h.take(z.nn + z.lambda);
+    for (int32_t side = 0; side < 2; ++side) {
+      h.take(phi_lambda_bytes(naux, z));
+      h.give(phi_lambda_bytes(naux, z));
+    }
+    h.take(n2);
+    for (int32_t side = 0; side < 2; ++side) {
+      h.take(phi_w_bytes(naux, nmo, ncas));
+      h.give(phi_w_bytes(naux, nmo, ncas));
+    }
+    h.take(ny);
+    for (int32_t side = 0; side < 2; ++side) {
+      sigma.call(h, ny);
+    }
+    // The curvature: zero h_bar, Λ and X beside its y.
+    const size_t curvature = (2 * z.nn) + z.lambda + ny;
+    h.take(curvature);
+    if (!parts) {
+      // The product in one sweep, Phi^SA's share added and given back, then A.
+      finished(true);
+      phi_share();
+      h.give(adjoint_tangent_bytes(z, ny) - z.nn); // Phi's share: no A
+      h.take(z.nn);
+      kept += product;
+      // The iteration's own: Ḋ, Ẇ and the curvature.
+      h.give(z.nn + n2 + curvature);
+      continue;
+    }
+    // The walk's part, the one-slot part over zeroed bars, Λ and own bars,
+    // Phi's; the product, zeroed; every part's A and the product's.
+    finished(false);
+    const size_t none = arrays + z.lambda + own;
+    h.take(none);
+    finished(true);
+    phi_share();
+    h.take((2 * z.nn) + z.lambda + ny);
+    h.take(5 * z.nn);
+    kept += 5 * product;
+    // The iteration's own: Ḋ, Ẇ and the zeroed bars.
+    h.give(z.nn + n2 + none);
+  }
+  // Everything but the products and their parts goes.
+  h.give(h.live - kept);
+  return h.footprint(kept);
+}
+
+MemoryFootprint
+qd_sc_hessian_product_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
+                                const int32_t ncore, const int32_t ncas, const int32_t n_alpha,
+                                const int32_t n_beta, const int32_t nroots, const int32_t batch,
+                                const std::span<const double> w, const int32_t count,
+                                const int32_t partners, const bool parts) {
+  const int32_t nvirt = nmo - ncore - ncas;
+  const int32_t nelecas = n_alpha + n_beta;
+  const QdProductWalkBytes walk{
+      .adjoint = qd_adjoint_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, nroots, 0,
+                                      sc_effective_hamiltonian_adjoint_footprint(
+                                          naux, ncore, ncas, nvirt, nelecas, nroots, batch,
+                                          qd_adjoint_transition_footprint(ncas, true)),
+                                      true),
+      .hvp =
+          [&](std::span<const EnergyDirection> dirs, std::span<const EnergyDirection> with,
+              const MemoryFootprint &transition) {
+            return sc_effective_hamiltonian_hvp_footprint(naux, ncore, ncas, nvirt, nelecas, nroots,
+                                                          batch, w, dirs, with, transition);
+          },
+      .check = {}};
+  return qd_hessian_product_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, nroots, count,
+                                      partners, parts, walk);
+}
+
+MemoryFootprint
+qd_pc_hessian_product_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
+                                const int32_t ncore, const int32_t ncas, const int32_t n_alpha,
+                                const int32_t n_beta, const int32_t nroots, const int32_t batch,
+                                const std::span<const size_t> syevd_lwork, const int32_t count,
+                                const int32_t partners, const bool parts,
+                                const std::span<const std::array<int64_t, 8>> dropped) {
+  const int32_t nvirt = nmo - ncore - ncas;
+  const QdProductWalkBytes walk{
+      .adjoint = qd_adjoint_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, nroots, 0,
+                                      pc_effective_hamiltonian_adjoint_footprint(
+                                          naux, ncore, ncas, nvirt, nroots, batch, syevd_lwork,
+                                          dropped, qd_adjoint_transition_footprint(ncas, true)),
+                                      true),
+      .hvp =
+          [&](std::span<const EnergyDirection> dirs, std::span<const EnergyDirection>,
+              const MemoryFootprint &transition) {
+            return pc_effective_hamiltonian_hvp_footprint(naux, ncore, ncas, nvirt, nroots, batch,
+                                                          syevd_lwork, dirs, dropped, transition);
+          },
+      // The Schur lifts along every direction, and its partner's.
+      .check =
+          [&](Held &h) {
+            const MemoryFootprint lifts = qd_pc_lifts_footprint(ncore, ncas, nvirt, n_alpha, n_beta,
+                                                                nroots, syevd_lwork, dropped);
+            for (int32_t k = 0; k < count; ++k) {
+              h.call(lifts);
+              if (partners > 0) {
+                h.call(lifts);
+              }
+            }
+          }};
+  return qd_hessian_product_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, nroots, count,
+                                      partners, parts, walk);
 }
 
 } // namespace free_breakfast::nevpt2
