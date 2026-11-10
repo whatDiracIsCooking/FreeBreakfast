@@ -506,24 +506,30 @@ TEST_F(HessianDfSaCasscf, Refusals) {
   refused(run(degenerate, weights_, 0), fb::ErrorKind::Numerical, "degenerate roots");
 }
 
-// A state average on a continuous family of solutions (#997):
-// HessianDfPcNevpt2.ContinuousFamilyIsRefused's HF in cc-pVDZ with CAS(10,7),
-// one orbital of the 2pi pair active and the other not, averaged over two
-// roots at equal weights. Rotating every orbital about the bond, each root
-// following, leaves every root's energy and so E_SA unchanged, and with one
-// 2pi orbital active it is no rotation inside the active space: A has a null
-// direction, which the average does not lift. df_sacasscf's probe column
-// refuses it.
+// A state average on a continuous family of solutions (#997): HF in cc-pVDZ
+// with CAS(4,3), 3sigma, one orbital of the 1pi pair and sigma* active and
+// the other 1pi orbital core, averaged over two roots at equal weights.
+// Rotating every orbital about the bond, each root following, leaves every
+// root's energy and so E_SA unchanged, and with one 1pi orbital active it is
+// no rotation inside the active space: A has a null direction, which the
+// average does not lift. df_sacasscf's probe column refuses it.
+//
+// Not CAS(10,7), one orbital of the 2pi pair active (#1188): its second root
+// is one component of the 1Pi pair, the average splits the pair, and its
+// CASSCF converged erratically, in 12 to 50 macro iterations and in none in
+// 2 of 40 runs (src/mcscf/solve/README.md, "A state average that splits a
+// degenerate pair"). Over three roots that pair is degenerate, which
+// df_sacasscf refuses before its probe. In CAS(4,3) the other component's
+// 1pi is core, so no pair is split, and the CASSCF takes 6.
 TEST_F(HessianDfSaCasscf, ContinuousFamilyIsRefused) {
   FBF_REQUIRE_GPU();
-  FBF_SKIP_IF_FAST_TESTS();
   const fb::test::ScratchDir dir("df_sacasscf_hessian_family");
   ASSERT_TRUE(fb::write_file(dir / "molecule.xyz", "2\nhf\nH 0 0 0\nF 0 0 0.917\n").has_value());
   ASSERT_TRUE(fb::write_file(dir / "run.toml",
                              "[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = "
                              "\"cc-pvdz\"\n[eri]\nmode = \"density_fitting\"\naux_basis = "
-                             "\"cc-pVDZ-JKFIT\"\n[casscf]\nncas = 7\nnelecas = 10\nactive = "
-                             "[0, 1, 2, 3, 4, 5, 6]\nnroots = 2\nconv_tol = 1e-12\n"
+                             "\"cc-pVDZ-JKFIT\"\n[casscf]\nncas = 3\nnelecas = 4\nactive = "
+                             "[2, 3, 5]\nnroots = 2\nconv_tol = 1e-12\n"
                              "conv_tol_grad = 1e-10\n")
                   .has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
@@ -535,6 +541,7 @@ TEST_F(HessianDfSaCasscf, ContinuousFamilyIsRefused) {
   const auto &cas = calc->get<fb::CasscfOutput>();
   ASSERT_TRUE(cas.has_value()) << cas.error().message;
   ASSERT_EQ(cas->weights.size(), 2U);
+  EXPECT_LE(cas->iterations.size(), 20U);
   const fb::BasisSet &basis = calc->get<fb::BasisSetOutput>()->basis;
   const auto &fit = std::get<fb::DensityFitted>(calc->get<fb::EriOutput>()->eri);
   // The Solution as the [hessian] step builds it: gamma the weighted average
@@ -565,8 +572,10 @@ TEST_F(HessianDfSaCasscf, ContinuousFamilyIsRefused) {
                                 wwr::wwrMemcpyDeviceToDevice, res.stream()),
             wwr::wwrSuccess);
   ASSERT_TRUE(res.sync().has_value());
-  std::cout << std::format("[ casscf   ] hf CAS(10,7) SA-2: E {:.10f} and {:.10f}, ||g|| {:.1e}\n",
-                           cas->energies[0], cas->energies[1], cas->gradient_norm);
+  std::cout << std::format(
+      "[ casscf   ] hf CAS(4,3) SA-2: E {:.10f} and {:.10f}, ||g|| {:.1e} in {} macro "
+      "iterations\n",
+      cas->energies[0], cas->energies[1], cas->gradient_norm, cas->iterations.size());
 
   const auto h = fb::hessian::df_sacasscf(res, calc->get<fb::MoleculeOutput>()->molecule, basis,
                                           calc->get<fb::PrimitivePairClassesOutput>()->classes,
