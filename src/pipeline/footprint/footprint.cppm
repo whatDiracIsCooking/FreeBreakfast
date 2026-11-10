@@ -181,8 +181,9 @@ struct StepFootprint {
 ///
 /// @ref device_room is what the fold's device peak may reach: the pool's cap
 /// (max_device_mem_per_gpu less the reserve outside the pool) less the
-/// fragmentation headroom and, on a pool that rounds a reused block, its
-/// rounding; pipeline.shape's preflight computes it. The caps themselves are
+/// fragmentation headroom, what the DeviceResources holds in the pool itself
+/// (DeviceResources::kOwnPoolBytes) and, on a pool that rounds a reused block,
+/// its rounding; pipeline.shape's preflight computes it. The caps themselves are
 /// carried for the messages. 0 is no cap, for either kind.
 struct PlanCaps {
   /// @brief `[memory] max_device_mem_per_gpu`; 0 for none.

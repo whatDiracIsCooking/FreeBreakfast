@@ -107,8 +107,11 @@ the uncapped one it always was. With either, `main` calls `preflight`
    footprint folded in plan order (`footprint/README.md`, "The peak model"):
    at step k, every persistent byte up to k, step k's scratch and the plan's
    maximum workspace. The device peak must fit the pool's cap less the
-   fragmentation headroom (`kPoolHeadroomBytes`, 64 MiB) and, on a pool that
-   rounds a reused block (ROCm's), an eighth of the peak; the pinned peak
+   fragmentation headroom (`kPoolHeadroomBytes`, 64 MiB), less what the
+   `DeviceResources` holds in the pool itself from construction
+   (`DeviceResources::kOwnPoolBytes`, its 4-byte solver `info` flag, which no
+   step counts) and, on a pool that rounds a reused block (ROCm's), an eighth
+   of the peak; the pinned peak
    must fit the pinned cap. A plan past either is refused, `InvalidConfig`
    naming the step that reaches the peak, the peak and the cap, before any
    step runs.
