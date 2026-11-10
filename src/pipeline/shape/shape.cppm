@@ -94,9 +94,8 @@ struct PlanShape {
 ///   are folded and checked (check_plan), the device peak against the pool's
 ///   cap less the headroom, what the DeviceResources itself holds in the
 ///   pool (DeviceResources::kOwnPoolBytes) and, on a pool that rounds a
-///   reused block, an eighth of the peak. A step with no footprint yet is
-///   refused under a cap. When the only active spaces planned are AVAS's and
-///   their worst case does not fit, each AVAS step's `avas_max_ncas` is
+///   reused block, an eighth of the peak. When the only active spaces
+///   planned are AVAS's and their worst case does not fit, each AVAS step's `avas_max_ncas` is
 ///   narrowed to the most orbitals that do, so a larger pick is refused at
 ///   the step. Uncapped, nothing is refused but a device workspace past the
 ///   device's budget, and the narrowing is against that budget less the

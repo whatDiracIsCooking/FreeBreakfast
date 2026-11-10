@@ -129,11 +129,10 @@ TEST(NestedFootprint, OptimizeIsTheStartPlusTheChain) {
   ASSERT_GT(molecule.device.persistent, 0U);
   ASSERT_GT(chain, molecule.device.persistent);
 
-  const std::optional<fb::MemoryFootprint> fp = fb::OptimizeStep{}.footprint(dims);
-  ASSERT_TRUE(fp.has_value());
-  EXPECT_EQ(fp->device.persistent, molecule.device.persistent);
-  EXPECT_EQ(fp->device.workspace, workspace);
-  EXPECT_EQ(fp->device.peak(), molecule.device.persistent + chain + workspace);
+  const fb::MemoryFootprint fp = fb::OptimizeStep{}.footprint(dims);
+  EXPECT_EQ(fp.device.persistent, molecule.device.persistent);
+  EXPECT_EQ(fp.device.workspace, workspace);
+  EXPECT_EQ(fp.device.peak(), molecule.device.persistent + chain + workspace);
 }
 
 // No product on the device: the chain's peak at every displacement, then the
@@ -146,13 +145,12 @@ TEST(NestedFootprint, NumericalHessianIsTheChainThenTheAnalysis) {
       fb::geometry::harmonic_analysis_footprint(dims.atoms, dims.syevd_lwork);
   ASSERT_GT(analysis.device.scratch, 0U);
 
-  const std::optional<fb::MemoryFootprint> fp =
+  const fb::MemoryFootprint fp =
       fb::HessianStep{.method = fb::HessianMethod::Numerical}.footprint(dims);
-  ASSERT_TRUE(fp.has_value());
-  EXPECT_EQ(fp->device.persistent, 0U);
-  EXPECT_EQ(fp->device.workspace, std::max(workspace, analysis.device.workspace));
-  EXPECT_EQ(fp->device.peak(), std::max(chain, analysis.device.scratch) +
-                                   std::max(workspace, analysis.device.workspace));
+  EXPECT_EQ(fp.device.persistent, 0U);
+  EXPECT_EQ(fp.device.workspace, std::max(workspace, analysis.device.workspace));
+  EXPECT_EQ(fp.device.peak(), std::max(chain, analysis.device.scratch) +
+                                  std::max(workspace, analysis.device.workspace));
 }
 
 // The analytic DF-RHF Hessian: the chain to [scf] (water_dims' syevd work
@@ -185,14 +183,13 @@ TEST(NestedFootprint, AnalyticRhfHessianIsTheChainThenDfRhf) {
   ASSERT_GT(dipole.device.scratch, 0U);
   EXPECT_EQ(dipole.device.persistent, 0U);
 
-  const std::optional<fb::MemoryFootprint> fp =
+  const fb::MemoryFootprint fp =
       fb::HessianStep{.method = fb::HessianMethod::Analytic, .eri = eri}.footprint(dims);
-  ASSERT_TRUE(fp.has_value());
   const std::size_t c = sizeof(double) * dims.nao * dims.nao;
-  EXPECT_EQ(fp->device.persistent, 0U);
-  EXPECT_EQ(fp->device.workspace, std::max({chain_workspace, rhf.device.workspace,
-                                            dipole.device.workspace, analysis.device.workspace}));
-  EXPECT_EQ(fp->device.peak() - fp->device.workspace,
+  EXPECT_EQ(fp.device.persistent, 0U);
+  EXPECT_EQ(fp.device.workspace, std::max({chain_workspace, rhf.device.workspace,
+                                           dipole.device.workspace, analysis.device.workspace}));
+  EXPECT_EQ(fp.device.peak() - fp.device.workspace,
             std::max({chain_scratch, held + c + rhf.device.persistent + rhf.device.scratch,
                       held + c + rhf.device.persistent + dipole.device.scratch,
                       analysis.device.scratch}));
@@ -202,9 +199,8 @@ TEST(NestedFootprint, AnalyticRhfHessianIsTheChainThenDfRhf) {
 // runs: nothing held.
 TEST(NestedFootprint, AnalyticHessianOverIntegralDirectIsEmpty) {
   const fb::BasisSet basis = water_basis();
-  const std::optional<fb::MemoryFootprint> fp = fb::HessianStep{}.footprint(water_dims(basis));
-  ASSERT_TRUE(fp.has_value());
-  EXPECT_EQ(*fp, fb::MemoryFootprint{});
+  const fb::MemoryFootprint fp = fb::HessianStep{}.footprint(water_dims(basis));
+  EXPECT_EQ(fp, fb::MemoryFootprint{});
 }
 
 // The analytic DF-CASSCF Hessian of a CAS(4,4) over water in STO-3G (three
@@ -256,13 +252,12 @@ TEST(NestedFootprint, AnalyticCasscfHessianIsTheChainThenDfCasscf) {
     ASSERT_GT(terms.device.persistent, 0U);
     ASSERT_GT(terms.device.scratch, 0U);
 
-    const std::optional<fb::MemoryFootprint> fp = step.footprint(dims);
-    ASSERT_TRUE(fp.has_value());
-    EXPECT_EQ(fp->device.persistent, 0U);
-    EXPECT_EQ(fp->device.workspace,
+    const fb::MemoryFootprint fp = step.footprint(dims);
+    EXPECT_EQ(fp.device.persistent, 0U);
+    EXPECT_EQ(fp.device.workspace,
               std::max({chain_workspace, terms.device.workspace, analysis.device.workspace}));
     EXPECT_EQ(
-        fp->device.peak() - fp->device.workspace,
+        fp.device.peak() - fp.device.workspace,
         std::max({chain_scratch, held + solution + terms.device.persistent + terms.device.scratch,
                   analysis.device.scratch}));
   }
@@ -290,18 +285,6 @@ TEST(NestedFootprint, IntegralDirectMultireferenceChainsAreEmpty) {
   meci.meci = std::array<std::int32_t, 2>{0, 1};
   meci.casscf.nroots = 2;
   EXPECT_EQ(meci.footprint(dims), fb::MemoryFootprint{});
-}
-
-// Through the planner: step_footprint passes a nested step's optional
-// through, a value or none.
-TEST(NestedFootprint, StepFootprintPassesTheOptionalThrough) {
-  const fb::BasisSet basis = water_basis();
-  const fb::FootprintDimensions dims = water_dims(basis);
-  EXPECT_EQ(fb::step_footprint(fb::OptimizeStep{}, dims), fb::OptimizeStep{}.footprint(dims));
-  EXPECT_EQ(fb::step_footprint(fb::HessianStep{}, dims), fb::HessianStep{}.footprint(dims));
-  fb::OptimizeStep nevpt2_optimize;
-  nevpt2_optimize.nevpt2_gradient.emplace();
-  EXPECT_EQ(fb::step_footprint(nevpt2_optimize, dims), std::optional{fb::MemoryFootprint{}});
 }
 
 // The analytic NEVPT2 [hessian] (#1186): the chain to [casscf] held under the
@@ -357,13 +340,12 @@ TEST(NestedFootprint, AnalyticNevpt2HessianIsTheChainThenItsTerms) {
                                                          dims.syevd_lwork));
       ASSERT_GT(terms.device.scratch, 0U);
 
-      const std::optional<fb::MemoryFootprint> fp = step.footprint(dims);
-      ASSERT_TRUE(fp.has_value());
-      EXPECT_EQ(fp->device.persistent, 0U);
-      EXPECT_EQ(fp->device.workspace,
+      const fb::MemoryFootprint fp = step.footprint(dims);
+      EXPECT_EQ(fp.device.persistent, 0U);
+      EXPECT_EQ(fp.device.workspace,
                 std::max({chain_workspace, terms.device.workspace, analysis.device.workspace}));
       EXPECT_EQ(
-          fp->device.peak() - fp->device.workspace,
+          fp.device.peak() - fp.device.workspace,
           std::max({chain_scratch, held + solution + terms.device.persistent + terms.device.scratch,
                     analysis.device.scratch}));
 
@@ -492,11 +474,10 @@ TEST(NestedFootprint, SemiNumericalMultireferenceHessianIsTheReferenceThenEachPo
       workspace = std::max({workspace, edge.device.workspace});
     }
 
-    const std::optional<fb::MemoryFootprint> fp = step.footprint(dims);
-    ASSERT_TRUE(fp.has_value());
-    EXPECT_EQ(fp->device.persistent, 0U);
-    EXPECT_EQ(fp->device.workspace, workspace);
-    EXPECT_EQ(fp->device.peak() - fp->device.workspace, scratch);
+    const fb::MemoryFootprint fp = step.footprint(dims);
+    EXPECT_EQ(fp.device.persistent, 0U);
+    EXPECT_EQ(fp.device.workspace, workspace);
+    EXPECT_EQ(fp.device.peak() - fp.device.workspace, scratch);
 
     // Refused before anything runs: both gradients, an integral-direct ERI.
     fb::HessianStep both = step;
@@ -653,11 +634,10 @@ TEST(NestedFootprint, MultireferenceOptimizeIsTheStartThenEachEvaluation) {
     const std::size_t workspace = std::max(
         {first_workspace, later_workspace, finish.device.workspace, overlaps.device.workspace});
 
-    const std::optional<fb::MemoryFootprint> fp = step.footprint(dims);
-    ASSERT_TRUE(fp.has_value());
-    EXPECT_EQ(fp->device.persistent, m);
-    EXPECT_EQ(fp->device.workspace, workspace);
-    EXPECT_EQ(fp->device.peak() - fp->device.workspace, scratch);
+    const fb::MemoryFootprint fp = step.footprint(dims);
+    EXPECT_EQ(fp.device.persistent, m);
+    EXPECT_EQ(fp.device.workspace, workspace);
+    EXPECT_EQ(fp.device.peak() - fp.device.workspace, scratch);
 
     // Refused before anything runs: both gradients, an integral-direct ERI,
     // meci beside [casscf_gradient].

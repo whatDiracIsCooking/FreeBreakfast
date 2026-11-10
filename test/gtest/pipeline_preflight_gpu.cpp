@@ -70,8 +70,7 @@ fb::Calculation parse(const fb::test::ScratchDir &dir, std::string_view tables) 
 fb::PlanFootprint fold(const fb::Calculation &calc, const fb::FootprintDimensions &dims) {
   std::vector<fb::MemoryFootprint> footprints;
   for (const fb::StepFootprint &step : calc.footprints(dims)) {
-    EXPECT_TRUE(step.footprint.has_value()) << step.name;
-    footprints.push_back(step.footprint.value_or(fb::MemoryFootprint{}));
+    footprints.push_back(step.footprint);
   }
   return fb::plan_footprint(footprints);
 }

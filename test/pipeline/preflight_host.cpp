@@ -21,7 +21,6 @@ struct A {};
 struct B {};
 struct C {};
 struct D {};
-struct E {};
 
 // The root: a small product, built with a little scratch, and pinned
 // staging. Loadable, with the same footprint on its load.
@@ -67,13 +66,7 @@ struct HostStep {
   fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
 };
 
-// A step with no footprint yet.
-struct UnfootprintedStep {
-  static constexpr std::string_view kName = "unfootprinted";
-  fb::Result<E> run(fb::View<A> /*in*/, fb::DeviceResources & /*res*/) const { return E{}; }
-};
-
-using Calc = fb::Pipeline<RootStep, BigStep, AdaptiveStep, HostStep, UnfootprintedStep>;
+using Calc = fb::Pipeline<RootStep, BigStep, AdaptiveStep, HostStep>;
 
 const fb::FootprintDimensions kDims{};
 
@@ -158,20 +151,6 @@ TEST(Preflight, AdaptiveStepAtItsLeastWarns) {
   fb::log::reset_warning_count();
   ASSERT_TRUE(fb::check_plan(chain(), {.device_room = kDevicePeak + 300}).has_value());
   EXPECT_EQ(fb::log::warning_count(), 0U);
-}
-
-// Counted as zero it would pass a plan that may not fit, so it is refused.
-TEST(Preflight, StepWithoutFootprintIsRefusedUnderACap) {
-  auto calc = Calc::create({RootStep{}, UnfootprintedStep{}});
-  ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  const std::vector<fb::StepFootprint> steps = calc->footprints(kDims);
-  ASSERT_EQ(steps.size(), 2U);
-  EXPECT_FALSE(steps[1].footprint.has_value());
-  const auto plan = fb::check_plan(steps, {.max_pinned_mem_per_gpu = 1 << 30});
-  ASSERT_FALSE(plan.has_value());
-  EXPECT_EQ(plan.error().kind, fb::ErrorKind::InvalidConfig);
-  EXPECT_NE(plan.error().message.find("[unfootprinted] has no footprint"), std::string::npos)
-      << plan.error().message;
 }
 
 // A loaded product is as resident as a computed one: the loaded step reports

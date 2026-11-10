@@ -311,10 +311,7 @@ struct HessianStep {
   /// and a CasciStep of one more root, where the CI space has one. Empty for
   /// a configuration refused before anything runs (both gradients, an
   /// integral-direct ERI, and the NEVPT2 refusals above).
-  ///
-  /// The optional is transitional, as step_footprint's is (#1122): every
-  /// configuration has a value.
-  [[nodiscard]] std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 /// @brief The numerical CASSCF Hessian's guard on one displaced solve: that

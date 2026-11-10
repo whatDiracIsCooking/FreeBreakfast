@@ -73,9 +73,8 @@ struct HessianStep {
   std::filesystem::path json_path{};  // hessian.json
 
   Result<HessianOutput> run(View<MoleculeOutput> in, NodeResources &node) const;
-  // The RHF chain's, and every analytic one's; none for the semi-numerical
-  // CASSCF and NEVPT2 chains, for now (below, "Memory caps")
-  std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
+  // Every configuration's (below, "Memory caps")
+  MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 // The CASSCF chain's guard on one displaced solve (below); host only.
@@ -853,9 +852,7 @@ tracking finds P at another rank. Beside it, the ensemble's edge: the
 solve's orbitals as an `ScfOutput` (C and d) and a `CasciStep` of one more
 root, where the CI space has one. A configuration refused before anything
 runs (both gradients, an integral-direct `[eri]`, and the NEVPT2 refusals
-above) has an empty footprint. Every configuration now has a footprint;
-the optional in the signature is #1122's to delete
-(`../footprint/README.md`).
+above) has an empty footprint.
 
 ## Config
 

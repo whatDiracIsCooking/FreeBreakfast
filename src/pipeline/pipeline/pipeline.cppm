@@ -326,11 +326,11 @@ public:
       (void)with_index(i, [&]<size_t I>() -> Status {
         StepFootprint fp{.name = kNames[I]};
         if (const auto &planned = std::get<I>(steps_)) {
-          fp.footprint = step_footprint(*planned, dims);
+          fp.footprint = planned->footprint(dims);
           fp.adaptive_unit = step_adaptive_unit(*planned, dims);
         } else {
           const StepAt<I> loaded{};
-          fp.footprint = step_footprint(loaded, dims);
+          fp.footprint = loaded.footprint(dims);
           fp.adaptive_unit = step_adaptive_unit(loaded, dims);
         }
         out.push_back(std::move(fp));

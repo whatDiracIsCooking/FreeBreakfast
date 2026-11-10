@@ -5,8 +5,8 @@
 ///
 /// A step's footprint is the member
 /// `MemoryFootprint footprint(const FootprintDimensions &) const`, which
-/// unpacks the dimensions into its routines' arguments and composes their
-/// footprints with `then` / `drop`. See README.md for the peak model, and for
+/// pipeline.step's PipelineStep requires: it unpacks the dimensions into its
+/// routines' arguments and composes their footprints with `then` / `drop`. See README.md for the peak model, and for
 /// check_plan, the fold held to the `[memory]` caps.
 
 export module free_breakfast.pipeline.footprint;
@@ -89,35 +89,13 @@ struct FootprintDimensions {
 } // namespace free_breakfast
 
 // Unexported, which in a module is the privacy; in the interface so the
-// exported template below can reach it from an importer's TU. Taking
-// &S::footprint is what rejects an overloaded or template member, and its type
-// what rejects a static, non-const or wrong-signature one. #1122 deletes it,
-// when the footprint becomes a requirement of PipelineStep.
+// exported template below can reach it from an importer's TU. The optional
+// `size_t adaptive_unit(const FootprintDimensions &) const`: the bytes one more
+// unit of an adaptive step's adaptive part takes. Taking &S::adaptive_unit is
+// what rejects an overloaded or template member, and its type what rejects a
+// static, non-const or wrong-signature one.
 namespace free_breakfast {
 
-template <class S>
-constexpr bool kHasFootprintMember = requires {
-  requires std::same_as<decltype(&S::footprint),
-                        MemoryFootprint (S::*)(const FootprintDimensions &) const> ||
-               std::same_as<decltype(&S::footprint),
-                            MemoryFootprint (S::*)(const FootprintDimensions &) const noexcept>;
-};
-
-// The transitional form, until #1122: a step that reruns a nested plan
-// ([optimize], the semi-numerical [hessian]) has a footprint for the
-// configurations whose every library call has one, and returns none for the
-// rest, which pre-flight then refuses under a cap.
-template <class S>
-constexpr bool kHasOptionalFootprintMember = requires {
-  requires std::same_as<decltype(&S::footprint),
-                        std::optional<MemoryFootprint> (S::*)(const FootprintDimensions &) const> ||
-               std::same_as<decltype(&S::footprint),
-                            std::optional<MemoryFootprint> (S::*)(const FootprintDimensions &)
-                                const noexcept>;
-};
-
-// The same for the optional `size_t adaptive_unit(const FootprintDimensions &)
-// const`: the bytes one more unit of an adaptive step's adaptive part takes.
 template <class S>
 constexpr bool kHasAdaptiveUnitMember = requires {
   requires std::same_as<decltype(&S::adaptive_unit),
@@ -129,25 +107,6 @@ constexpr bool kHasAdaptiveUnitMember = requires {
 } // namespace free_breakfast
 
 export namespace free_breakfast {
-
-/// @brief Step @p step's footprint at @p dims, or none for a step without a
-///        `MemoryFootprint footprint(const FootprintDimensions &) const`
-///        member (non-const, static, overloaded or of another signature).
-///        A member returning `std::optional<MemoryFootprint>` instead is
-///        passed through: a nested step's, none where its chain is not
-///        footprinted yet.
-///
-/// The optional is transitional: once every step carries a footprint (#1122),
-/// the fold's caller reads the member directly.
-template <class S>
-[[nodiscard]] constexpr std::optional<MemoryFootprint>
-step_footprint(const S &step, const FootprintDimensions &dims) {
-  if constexpr (kHasFootprintMember<S> || kHasOptionalFootprintMember<S>) {
-    return step.footprint(dims);
-  } else {
-    return std::nullopt;
-  }
-}
 
 /// @brief For an adaptive step, whose footprint's scratch is the least it
 ///        runs with: the bytes one more unit of its adaptive part takes at
@@ -168,12 +127,12 @@ template <class S>
 }
 
 /// @brief One planned step as pre-flight sees it: its name, its footprint
-///        (none for a step without one yet), and its adaptive unit (none for
-///        a step that is not adaptive). Pipeline::footprints lists them in
-///        plan order.
+///        (every step has one: PipelineStep requires it), and its adaptive
+///        unit (none for a step that is not adaptive). Pipeline::footprints
+///        lists them in plan order.
 struct StepFootprint {
   std::string_view name;
-  std::optional<MemoryFootprint> footprint;
+  MemoryFootprint footprint;
   std::optional<size_t> adaptive_unit;
 };
 
@@ -248,10 +207,8 @@ struct PlanFootprint {
 /// cap leaves it above its least scratch at its point in the fold, at warn
 /// level when that is under one more unit.
 ///
-/// @return The folded plan; ErrorKind::InvalidConfig naming the first step
-///         with no footprint, which no cap can be checked against, or the
-///         step that reaches a kind's peak past its cap, with the peak and
-///         the cap.
+/// @return The folded plan; ErrorKind::InvalidConfig naming the step that
+///         reaches a kind's peak past its cap, with the peak and the cap.
 [[nodiscard]] Result<PlanFootprint> check_plan(std::span<const StepFootprint> steps,
                                                const PlanCaps &caps);
 

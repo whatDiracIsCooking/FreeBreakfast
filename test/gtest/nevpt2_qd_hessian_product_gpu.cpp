@@ -1490,6 +1490,7 @@ constexpr double kGaugeMoved = 1e-6;
 
 TEST(Nevpt2QdPcHessianProductGauge, FollowsTheRootSigns) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
   const Point &p = point("h2co_ccpvdz_sa2_weighted");
   ASSERT_FALSE(p.b.empty());
   fb::DeviceResources res(0, fb::test::kWorkspaces);

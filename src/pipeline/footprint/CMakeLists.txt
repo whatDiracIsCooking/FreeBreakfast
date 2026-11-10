@@ -3,8 +3,9 @@
 # its messages and log lines). core.footprint is re-exported, so a step module
 # that imports this one has MemoryFootprint and then / drop, and basis is, so
 # it can read the bases FootprintDimensions carries. Light on purpose: every
-# step module imports it, so nothing from pipeline.step (which will require
-# the footprint, #1122) or any method layer.
+# step module imports it, and pipeline.step, whose concept requires the
+# footprint member (#1122), imports it too: so nothing from pipeline.step or
+# any method layer.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.footprint
