@@ -38,7 +38,19 @@ Status mcscf::df_integral_derivatives(
 Status mcscf::df_integral_derivatives(
     ..., const SphericalMatrixAO &c, ThirdDerivative &op, double *y,
     std::size_t max_bytes = 0); // Y = I^x z: the consumer that applies op
+
+MemoryFootprint mcscf::third_derivative_footprint(int32_t nmo, int32_t naux, int32_t ncore,
+                                                  int32_t ncas, int32_t n_alpha, int32_t n_beta,
+                                                  int32_t nroots);
+MemoryFootprint mcscf::df_integral_derivatives_footprint(const BasisSet &basis,
+                                                         const BasisSet &aux); // a chunk of one
 ```
+
+The footprints (#1044, #1175): an operator holds its buffers and three sigmas
+with their apply scratch, persistent, and borrows the larger of L's
+transforms and the transition RDMs' chunk; `df_integral_derivatives` holds
+everything as scratch, its footprint at a chunk of one coordinate, the least
+it runs with.
 
 `h` is the AO core Hamiltonian and `b` the fitted factor, naux × nao² as
 `DensityFitted::b` lays it out (the same arguments as the density-fitted
@@ -203,8 +215,10 @@ by a trsm; M^x from `metric_derivative` through two trsms per coordinate.
 W^x is nmo² naux doubles per coordinate: about 0.15 MB for the water in
 6-31G, but 3 GB at 500 functions over 1500 fitting functions. So
 `df_integral_derivatives` holds W^x for a chunk of coordinates, as many as
-its budget takes (the device's memory budget (`DeviceResources::memory_budget()`) beside
-its own buffers, or `max_bytes`), hands the chunk to its consumer and moves on: I^x itself is
+its budget takes (`DeviceResources::memory_budget()` less `kPoolHeadroomBytes`, or
+`max_bytes` when less, against every allocation the call makes at that chunk, its
+footprint's scratch, read with the workspace first grown to its fixed size), hands the
+chunk to its consumer and moves on: I^x itself is
 never whole. h1^x and τ^x (nmo² each) are built for every coordinate once
 and handed over beside each chunk's W^x.
 

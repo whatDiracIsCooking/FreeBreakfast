@@ -19,7 +19,15 @@ Result<mcscf::Derivatives> mcscf::df_derivatives(
     const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
     const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nalpha, int32_t nbeta,
     const double *roots, std::span<const double> weights, const double *rotation = nullptr);
+MemoryFootprint mcscf::df_derivatives_footprint(
+    const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas, int32_t nalpha,
+    int32_t nbeta, int32_t nroots, size_t syevd_lwork, bool rotation = false);
 ```
+
+`df_derivatives_footprint` (#1044, #1175) is the call's allocations in their
+order: the outputs persistent, everything else scratch at its peak, and the
+largest workspace carve of the call and its callees. `syevd_lwork` is
+`syevd_lwork` at order ncas.
 
 The inputs are explicit, not pipeline types, as `mcscf::df_gradient` takes
 them: the molecule both bases were placed on, `primitive_pair_classes` of the

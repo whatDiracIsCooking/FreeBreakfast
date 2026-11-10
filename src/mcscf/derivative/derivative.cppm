@@ -12,6 +12,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -125,5 +126,28 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nalpha,
                int32_t nbeta, const double *roots, std::span<const double> weights,
                const double *rotation = nullptr);
+
+/// @brief What @ref df_derivatives holds over @p basis and @p aux with
+/// @p ncore core and @p ncas active orbitals, @p nroots roots over the
+/// determinants of @p nalpha and @p nbeta electrons, with a @p rotation or
+/// without; @p syevd_lwork is @c syevd_lwork at order ncas (the natural
+/// orbitals' diagonalization):
+///
+/// - persistent: what it returns, F^[x], G^x and the CI right-hand side,
+///   with a rotation F^[x] at the rotated densities too;
+/// - scratch: everything else, at its peak: the strings, the integrals and
+///   the Fock, the four MO stacks held throughout, and in turn the
+///   derivative calls' (@c one_electron_derivative_footprint,
+///   @c df_jk_derivative_footprint, @c metric_derivative_footprint), the
+///   2-RDM term's walk, the rotated J^x and K^x, the response densities'
+///   block J and K (@c df_coulomb_footprint, @c df_exchange_footprint) and
+///   the sigma with its apply scratch;
+/// - workspace: the largest of its carves and of the calls it makes.
+///
+/// Empty for the counts it refuses.
+[[nodiscard]] MemoryFootprint df_derivatives_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                       int32_t ncore, int32_t ncas, int32_t nalpha,
+                                                       int32_t nbeta, int32_t nroots,
+                                                       size_t syevd_lwork, bool rotation = false);
 
 } // namespace free_breakfast::mcscf

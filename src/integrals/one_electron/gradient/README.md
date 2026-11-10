@@ -136,6 +136,7 @@ against it.
 | `kinetic_derivative(res, basis, classes)` | The same for T |
 | `potential_derivative(res, basis, classes, molecule)` | The same for V, its operator term on every nucleus included |
 | `one_electron_gradient_footprint(basis)` | `MemoryFootprint`: what each of the three `*_gradient` contractions holds, all scratch: U, the `MatrixAOPair`, each Cartesian AO's atom, two atoms per mmd record and the device gradient |
+| `one_electron_derivative_footprint(basis)` | `MemoryFootprint`: what each of the three `*_derivative` calls holds: the matrices returned, persistent; U, the `MatrixAOPair`, each spherical AO's atom, the Cartesian [3, n_cart, n_cart] and the spherical [3, n, n], scratch |
 | `overlap_half_gradient_footprint(basis)` | `MemoryFootprint`: what `overlap_half_gradient` holds, all scratch: U, the `MatrixAOPair`, the three Cartesian ip1 slabs, their spherical copies and the three rows' sums |
 
 ## Usage

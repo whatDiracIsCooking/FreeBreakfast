@@ -13,6 +13,8 @@ import free_breakfast.core.constants; // kOne, kZero, kNegOne, kHalf, kNegHalf, 
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemmStridedBatched, geam, dgmm, trsm, scal, axpy, memcpys
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;  // MemoryFootprint, then, drop, kPoolHeadroomBytes
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -35,6 +37,55 @@ std::pair<size_t, size_t> integral_atom_functions(const BasisSet &basis, const u
   };
   const uint32_t first = basis.atom_shell_offset(atom);
   return {start_of(first), start_of(first + basis.atom_shell_count(atom))};
+}
+
+// What df_integral_derivatives holds with W^x built @p chunk coordinates at
+// a time, in its allocations' order: the MO factor, h_MO, tau^x and h1^x,
+// held throughout; S^x, then T^x with V^x beside it, each freed once in the
+// MO basis; the metric derivative; the chunk's W^x and one aux atom's block.
+// The workspace, its own carves' and the derivative calls', is the largest
+// of them. The consumer's memory is its own.
+MemoryFootprint integral_derivatives_footprint(const BasisSet &basis, const BasisSet &aux,
+                                               const size_t chunk) {
+  const size_t nao = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  const size_t n_atom = basis.natoms();
+  const size_t nn = nao * nao;
+  const size_t stack = 3 * n_atom * nn;
+  const size_t factor = nn * naux;
+  size_t max_blk = 0;
+  for (uint32_t a = 0; a < n_atom; ++a) {
+    const auto [first, last] = integral_atom_functions(aux, a);
+    max_blk = std::max(max_blk, last - first);
+  }
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  const auto region = [](const size_t doubles) {
+    return math::align_up(sizeof(double) * doubles, DeviceResources::kWorkspaceAlignment);
+  };
+  MemoryFootprint chain = held(factor + nn + (2 * stack));
+  // L and h_MO's half and full transforms; to_mo's X C; one aux atom's H and
+  // G; S's copy and the identity; the metric's E and G.
+  chain.device.workspace = std::max({2 * region(factor), region(stack), 2 * region(max_blk * nn),
+                                     region(factor) + region(nn), 2 * region(naux * naux)});
+  const MemoryFootprint one = one_electron_derivative_footprint(basis);
+  chain = then(chain, drop(one));
+  chain = then(chain, drop(then(one, drop(one))));
+  chain = then(chain, held(3 * naux * naux));
+  chain = then(chain, metric_derivative_footprint(aux));
+  chain = then(chain, held((chunk * factor) + (3 * nn * max_blk)));
+  for (uint32_t a = 0; a < n_atom; ++a) {
+    chain = then(chain, three_center_derivative_footprint(basis, aux, a));
+  }
+  return drop(chain);
+}
+
+MemoryFootprint df_integral_derivatives_footprint(const BasisSet &basis, const BasisSet &aux) {
+  if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || aux.nao_sphe() == 0) {
+    return {};
+  }
+  return integral_derivatives_footprint(basis, aux, 1);
 }
 
 Status df_integral_derivatives(
@@ -81,26 +132,43 @@ Status df_integral_derivatives(
                            "over {} coordinates pass the BLAS calls' 32-bit indices",
                            nao, naux, n_x);
   }
-  // The call's own buffers at their peak (the MO factor, h_MO, tau, h1, the
-  // metric derivative, one aux atom's block, and the one-electron derivative
-  // stacks at their two), past which an allocation would abort
-  // (CreatePolicy) rather than return; then W^x, nmo^2 naux doubles per
-  // coordinate, for as many coordinates at once as the rest of the budget
-  // holds.
-  const size_t held = factor + nn + (4 * stack) + (3 * naux * naux) + (3 * nn * max_blk);
+  // W^x, nmo^2 naux doubles per coordinate, is built for as many coordinates
+  // at once as the budget holds: res.memory_budget() less the pool's
+  // fragmentation headroom, or max_bytes when that is less, against every
+  // allocation the call makes at that chunk (integral_derivatives_footprint's
+  // scratch), read with the workspace first grown to its fixed size, the same
+  // at any chunk. Past an allocation the pool would abort (CreatePolicy)
+  // rather than return, so a budget below one coordinate is refused before
+  // anything is allocated.
   const ScopedDeviceIndex on{res.dev_idx()};
   size_t chunk = 0;
   {
-    const size_t available = FBF_TRY(res.memory_budget());
-    const size_t budget = max_bytes == 0 ? available : std::min(available, max_bytes);
-    const size_t one = sizeof(double) * (held + factor);
+    const auto scratch = [&](const size_t width) {
+      return integral_derivatives_footprint(basis, aux, width).device.scratch;
+    };
+    (void)res.device_workspace(integral_derivatives_footprint(basis, aux, 1).device.workspace);
+    const size_t memory = FBF_TRY(res.memory_budget());
+    const size_t usable = memory > kPoolHeadroomBytes ? memory - kPoolHeadroomBytes : 0;
+    const size_t budget = max_bytes == 0 ? usable : std::min(usable, max_bytes);
+    const size_t one = scratch(1);
     if (one > budget) {
       return err_unsupported("mcscf::df_integral_derivatives: one coordinate over {} orbital and "
                              "{} fitting functions needs {} bytes of device memory, and device {} "
                              "has {} to give",
                              nao, naux, one, res.dev_idx(), budget);
     }
-    chunk = std::min(n_x, ((budget / sizeof(double)) - held) / factor);
+    // The widest chunk in [1, n_x] that fits: the bytes grow with it.
+    size_t lo = 1;
+    size_t hi = n_x;
+    while (lo < hi) {
+      const size_t mid = lo + ((hi - lo + 1) / 2);
+      if (scratch(mid) <= budget) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    chunk = lo;
   }
 
   const wwr::wwrblasHandle_t blas = res.blas().get();

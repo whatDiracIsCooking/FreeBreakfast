@@ -14,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -202,6 +203,25 @@ private:
   Buffers::device<double> act_;   // transition gamma and Gamma: summed, one root's
 };
 
+/// @brief What a @ref ThirdDerivative over @p nmo orbitals, @p naux fitting
+/// functions, @p ncore core and @p ncas active orbitals and @p nroots roots
+/// of @p n_alpha x @p n_beta determinants holds, from create through its
+/// applies:
+///
+/// - persistent: its buffers (L, nmo^2 naux; its occupied blocks and pair
+///   tensors; the z-fixed matrices, RDMs and CI vectors; one column's
+///   scratch) and three @c ci::Sigma, each with its apply scratch
+///   (@c ci::sigma_apply_bytes), H_0's and H'[K_z]'s from create on and the
+///   per-column one's from the first apply or apply_integrals;
+/// - workspace: the larger of create's half and full transforms of L,
+///   2 naux nmo^2 doubles, and the transition RDMs' chunk
+///   (@c ci::trans_rdm12_footprint).
+///
+/// Empty for the counts create refuses.
+[[nodiscard]] MemoryFootprint third_derivative_footprint(int32_t nmo, int32_t naux, int32_t ncore,
+                                                         int32_t ncas, int32_t n_alpha,
+                                                         int32_t n_beta, int32_t nroots);
+
 /// @brief The derivative of the MO integrals a DF-CASSCF energy sees at fixed
 /// parameters, for every nuclear coordinate x = 3 A + k, handed to
 /// @p consume a chunk of coordinates at a time: the core Hamiltonian's h1^x
@@ -237,16 +257,17 @@ private:
 /// as it stands, and no further chunk is built.
 ///
 /// W^x is nmo^2 naux doubles per coordinate, so it is built for a chunk of
-/// coordinates at a time, as many as the budget holds (the device's free
-/// memory, or @p max_bytes when that is less); the consumer's own memory is
-/// its own, outside the budget. A slab is built by the same operations in
-/// the same order whatever the chunk, so the chunks change it only by
-/// rounding, and a chunk repeats the three-center walk. The call's own memory
-/// beside the chunk is the MO factor (nmo^2 naux), one aux atom's derivative
-/// block (3 nao^2 nblk), the metric derivative (3 naux^2) and four
-/// 3 n_atom nao^2 stacks; when that and one coordinate's W^x pass the budget
-/// it is Unsupported, naming the bytes, before anything is allocated. Queued
-/// on res.stream() with res.blas(); the derivative calls synchronize it.
+/// coordinates at a time, as many as the budget holds: res.memory_budget()
+/// less @c kPoolHeadroomBytes, or @p max_bytes when that is less, against
+/// every allocation the call makes at that chunk (the workspace first grown
+/// to @ref df_integral_derivatives_footprint's, the same at any chunk); the
+/// consumer's own memory is its own, outside the budget. A slab is built by
+/// the same operations in the same order whatever the chunk, so the chunks
+/// change it only by rounding, and a chunk repeats the three-center walk.
+/// When one coordinate's chunk passes the budget it is Unsupported, naming
+/// the bytes (the footprint's scratch), before anything is allocated.
+/// Queued on res.stream() with res.blas(); the derivative calls synchronize
+/// it.
 ///
 /// @return Success; InvalidConfig if the molecule and the bases are not one
 ///         placement, @p c or @p h is not nao x nao, @p b not naux nao^2, or
@@ -261,6 +282,29 @@ df_integral_derivatives(DeviceResources &res, const Molecule &molecule, const Ba
                         const std::function<Status(int32_t x0, int32_t count, const double *h1,
                                                    const double *tau, const double *w1)> &consume,
                         std::size_t max_bytes = 0);
+
+/// @brief What @ref df_integral_derivatives holds over @p basis and @p aux at
+/// its least, a chunk of one coordinate, all of it scratch beside the
+/// workspace:
+///
+/// - scratch: the MO factor, h_MO, tau^x and h1^x (nmo^2 naux + nmo^2 +
+///   2 x 3 n_atom nmo^2 doubles), held throughout; beside them, in turn,
+///   @c overlap_derivative's, then @c kinetic_derivative's matrices with
+///   @c potential_derivative's (@c one_electron_derivative_footprint each);
+///   then the metric derivative (3 naux^2), one coordinate's W^x
+///   (nmo^2 naux) and one aux atom's derivative block (3 nmo^2 nblk, the
+///   largest atom's);
+/// - workspace: the largest of its own carves (L's half and full
+///   transforms, a stack's X C, an aux atom's two products, a slab's copy
+///   with the identity, the metric's two naux^2) and
+///   @c metric_derivative_footprint's and every aux atom's
+///   @c three_center_derivative_footprint.
+///
+/// The chunk grows with the budget, each coordinate one more nmo^2 naux
+/// doubles of scratch, past this. The consumer's memory is its own. Empty
+/// for bases that are not one placement or an empty @p aux.
+[[nodiscard]] MemoryFootprint df_integral_derivatives_footprint(const BasisSet &basis,
+                                                                const BasisSet &aux);
 
 /// @brief I^x z for every nuclear coordinate: the consumer above that applies
 /// @p op's @c ThirdDerivative::apply_integrals to each chunk's (h1^x, W^x),

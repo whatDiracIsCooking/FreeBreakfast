@@ -403,4 +403,21 @@ MemoryFootprint overlap_half_gradient_footprint(const BasisSet &basis) {
       slabs));
 }
 
+MemoryFootprint one_electron_derivative_footprint(const BasisSet &basis) {
+  const size_t n_cart = basis.nao_cart();
+  const size_t n = basis.nao_sphe();
+  // derivative_matrices': U and the pair, then the matrices it returns, then
+  // each AO's atom, the Cartesian slabs and their spherical copies.
+  MemoryFootprint out =
+      then(upload_spherical_transform_matrix_footprint(basis), matrix_ao_pair_footprint(basis));
+  out.device.scratch += out.device.persistent;
+  out.device.persistent =
+      sizeof(double) * std::max<size_t>(3 * static_cast<size_t>(basis.natoms()) * n * n, 1);
+  if (n > 0) {
+    out.device.scratch += (sizeof(int32_t) * n) + (sizeof(double) * 3 * n_cart * n_cart) +
+                          (sizeof(double) * 3 * n * n);
+  }
+  return out;
+}
+
 } // namespace free_breakfast

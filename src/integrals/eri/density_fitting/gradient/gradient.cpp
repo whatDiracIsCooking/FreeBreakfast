@@ -144,6 +144,26 @@ Status metric_derivative_device(DeviceResources &res, const size_t n, const size
   return {};
 }
 
+// metric_derivative's carve over @p aux, in bytes, the device workspace's:
+// the records with U_aux, the pairs, the Cartesian M1 and the transform's
+// intermediate, one aligned region each.
+size_t metric_derivative_bytes(const BasisSet &aux) {
+  const size_t n = aux.nao_cart();
+  const size_t n_sph = aux.nao_sphe();
+  size_t n_rec = 0;
+  for (const Shell &shell : aux.shells()) {
+    n_rec += shell.nprimitives();
+  }
+  const size_t n_staging = (static_cast<size_t>(device::kMetricRecordFields) * n_rec) + (n * n_sph);
+  const size_t n_pair_fields = static_cast<size_t>(device::kMetricGradientPairFields) *
+                               aux.nshells() * (aux.nshells() + size_t{1}) / 2;
+  const auto region = [](const size_t bytes) {
+    return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
+  };
+  return region(sizeof(double) * n_staging) + region(sizeof(int32_t) * n_pair_fields) +
+         region(sizeof(double) * 3 * n * n) + region(sizeof(double) * n * n_sph);
+}
+
 Status metric_derivative(DeviceResources &res, const BasisSet &aux, double *m1) {
   FBF_TRY(check_metric_basis(aux, "metric_derivative"));
   const size_t n = aux.nao_cart();
@@ -162,13 +182,7 @@ Status metric_derivative(DeviceResources &res, const BasisSet &aux, double *m1) 
   const auto n_rec = static_cast<size_t>(rec_begin.back());
   const size_t n_records = static_cast<size_t>(device::kMetricRecordFields) * n_rec;
   const size_t n_staging = n_records + (n * n_sph);
-  const size_t n_pair_fields = static_cast<size_t>(device::kMetricGradientPairFields) *
-                               aux.nshells() * (aux.nshells() + size_t{1}) / 2;
-  const auto region = [](const size_t bytes) {
-    return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
-  };
-  const size_t need = region(sizeof(double) * n_staging) + region(sizeof(int32_t) * n_pair_fields) +
-                      region(sizeof(double) * 3 * n * n) + region(sizeof(double) * n * n_sph);
+  const size_t need = metric_derivative_bytes(aux);
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
   // The carve's size is the shape's alone: compared against the larger of the
@@ -418,6 +432,53 @@ Status three_center_derivative_block(
   return {};
 }
 
+// mmd's records over every shell pair i <= j of @p basis: (P^2 + sum_i
+// p_i^2) / 2, P the primitives in all; bra_record_count's, from the basis.
+size_t mmd_record_count(const BasisSet &basis) {
+  size_t p = 0;
+  size_t p_sq = 0;
+  for (const Shell &shell : basis.shells()) {
+    p += shell.nprimitives();
+    p_sq += static_cast<size_t>(shell.nprimitives()) * shell.nprimitives();
+  }
+  return ((p * p) + p_sq) / 2;
+}
+
+// three_center_derivative's carve over aux atom @p atom and @p n_bra_rec of
+// mmd's records, in bytes, the device workspace's: the staging (the bra
+// records, the aux records, U and U_aux), the atom's cells, the Cartesian
+// block and its transform's two intermediates, one aligned region each. 0
+// when the atom has no aux function.
+size_t three_center_derivative_bytes(const BasisSet &basis, const BasisSet &aux,
+                                     const uint32_t atom, const size_t n_bra_rec) {
+  const auto [cart0, cart1] = atom_aos(aux, atom, false);
+  const auto [sph0, sph1] = atom_aos(aux, atom, true);
+  if (basis.shells().empty() || cart1 == cart0) {
+    return 0;
+  }
+  const size_t n_cart = basis.nao_cart();
+  const size_t nao = basis.nao_sphe();
+  const size_t nblk = sph1 - sph0;
+  size_t n_aux_rec = 0;
+  for (const Shell &shell : aux.shells()) {
+    n_aux_rec += shell.nprimitives();
+  }
+  const size_t n_pairs = basis.nshells() * (basis.nshells() + size_t{1}) / 2;
+  const size_t n_cell_fields = static_cast<size_t>(device::kThreeCenterGradientCellFields) *
+                               n_pairs * aux.atom_shell_count(atom);
+  const size_t n_staging =
+      (static_cast<size_t>(device::kThreeCenterGradientBraFields) * n_bra_rec) +
+      (static_cast<size_t>(device::kMetricRecordFields) * n_aux_rec) + (n_cart * nao) +
+      (aux.nao_cart() * aux.nao_sphe());
+  const auto region = [](const size_t bytes) {
+    return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
+  };
+  return region(sizeof(double) * n_staging) + region(sizeof(int32_t) * n_cell_fields) +
+         region(sizeof(double) * 3 * n_cart * n_cart * (cart1 - cart0)) +
+         region(sizeof(double) * nblk * n_cart * n_cart) +
+         region(sizeof(double) * nblk * nao * n_cart);
+}
+
 Status three_center_derivative(DeviceResources &res, const BasisSet &basis,
                                const std::span<const PrimitivePairClass> classes,
                                const BasisSet &aux, const uint32_t atom, double *x) {
@@ -448,20 +509,12 @@ Status three_center_derivative(DeviceResources &res, const BasisSet &basis,
   const size_t n_bra_rec = FBF_TRY(bra_record_count(classes, kWho));
   const std::vector<int32_t> aux_rec_begin = record_begins(aux);
   const auto n_aux_rec = static_cast<size_t>(aux_rec_begin.back());
-  const size_t n_pairs = basis.nshells() * (basis.nshells() + size_t{1}) / 2;
-  const size_t n_cell_fields = static_cast<size_t>(device::kThreeCenterGradientCellFields) *
-                               n_pairs * aux.atom_shell_count(atom);
   const size_t n_bra = static_cast<size_t>(device::kThreeCenterGradientBraFields) * n_bra_rec;
   const size_t n_aux_fields = static_cast<size_t>(device::kMetricRecordFields) * n_aux_rec;
   const size_t n_staging = n_bra + n_aux_fields + (n_cart * nao) + (naux_cart * aux.nao_sphe());
   const size_t n_t1 = nblk * n_cart * n_cart;
   const size_t n_t2 = nblk * nao * n_cart;
-  const auto region = [](const size_t bytes) {
-    return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
-  };
-  const size_t need = region(sizeof(double) * n_staging) + region(sizeof(int32_t) * n_cell_fields) +
-                      region(sizeof(double) * n_xc) + region(sizeof(double) * n_t1) +
-                      region(sizeof(double) * n_t2);
+  const size_t need = three_center_derivative_bytes(basis, aux, atom, n_bra_rec);
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
@@ -486,7 +539,6 @@ Status three_center_derivative(DeviceResources &res, const BasisSet &basis,
   std::array<size_t, kThreeCenterClasses> n_cell{};
   std::array<size_t, kThreeCenterClasses> cell_begin{};
   std::vector<int32_t> cells;
-  cells.reserve(n_cell_fields);
   stage_three_center_cells(bra, aux, aux_rec_begin, aux.atom_shell_offset(atom),
                            aux.atom_shell_count(atom), cells, n_cell, cell_begin);
 
@@ -504,6 +556,69 @@ Status three_center_derivative(DeviceResources &res, const BasisSet &basis,
       d_aux, d_cells, n_cell, cell_begin, d_u, d_u + (n_cart * nao), xc, t1, t2, x, nullptr));
   // Also what lets the host staging go (the metric's comment).
   return res.sync();
+}
+
+// df_jk_derivative's carve over @p n_bra_rec of mmd's records and @p occ
+// occupied orbitals, as (count, element size) in device_regions' order: the
+// staging, the metric's pairs, the cells; D, d, the fitted half-transformed
+// pairs c; the Cartesian M1, its transform's intermediate, M1; u^x - M^x d;
+// the accumulated Y and V1, one symmetrization's slab; then one aux atom's
+// blocks, at the largest atom's: the Cartesian derivative, t1, t2, X and its
+// swap, Z, c's rows on the atom and F.
+std::array<std::pair<size_t, size_t>, 21> df_jk_derivative_regions(const BasisSet &basis,
+                                                                   const BasisSet &aux,
+                                                                   const size_t n_bra_rec,
+                                                                   const size_t occ) {
+  const size_t nao = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  const size_t n_cart = basis.nao_cart();
+  const size_t naux_cart = aux.nao_cart();
+  const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
+  size_t max_blk = 0;
+  size_t max_blk_cart = 0;
+  for (uint32_t a = 0; a < basis.natoms(); ++a) {
+    const auto [cart0, cart1] = atom_aos(aux, a, false);
+    const auto [sph0, sph1] = atom_aos(aux, a, true);
+    max_blk = std::max(max_blk, sph1 - sph0);
+    max_blk_cart = std::max(max_blk_cart, cart1 - cart0);
+  }
+  size_t n_aux_rec = 0;
+  for (const Shell &shell : aux.shells()) {
+    n_aux_rec += shell.nprimitives();
+  }
+  const size_t n_pairs = basis.nshells() * (basis.nshells() + size_t{1}) / 2;
+  const size_t n_cell_fields =
+      static_cast<size_t>(device::kThreeCenterGradientCellFields) * n_pairs * aux.nshells();
+  const size_t n_metric_pair_fields = static_cast<size_t>(device::kMetricGradientPairFields) *
+                                      aux.nshells() * (aux.nshells() + size_t{1}) / 2;
+  const size_t n_staging =
+      (static_cast<size_t>(device::kThreeCenterGradientBraFields) * n_bra_rec) +
+      (static_cast<size_t>(device::kMetricRecordFields) * n_aux_rec) + (n_cart * nao) +
+      (naux_cart * naux);
+  const size_t nn = nao * nao;
+  return {{
+      {n_staging, sizeof(double)},
+      {n_metric_pair_fields, sizeof(int32_t)},
+      {n_cell_fields, sizeof(int32_t)},
+      {nn, sizeof(double)},
+      {naux, sizeof(double)},
+      {naux * occ * nao, sizeof(double)},
+      {3 * naux_cart * naux_cart, sizeof(double)},
+      {naux_cart * naux, sizeof(double)},
+      {3 * naux * naux, sizeof(double)},
+      {naux * n_x, sizeof(double)},
+      {3 * nn, sizeof(double)},
+      {3 * nn, sizeof(double)},
+      {nn, sizeof(double)},
+      {3 * n_cart * n_cart * max_blk_cart, sizeof(double)},
+      {max_blk * n_cart * n_cart, sizeof(double)},
+      {max_blk * nao * n_cart, sizeof(double)},
+      {3 * max_blk * nn, sizeof(double)},
+      {3 * max_blk * nn, sizeof(double)},
+      {max_blk * nn, sizeof(double)},
+      {max_blk * occ * nao, sizeof(double)},
+      {max_blk * occ * nao, sizeof(double)},
+  }};
 }
 
 Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
@@ -563,43 +678,12 @@ Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
   const size_t n_bra_rec = FBF_TRY(bra_record_count(classes, kWho));
   const std::vector<int32_t> aux_rec_begin = record_begins(aux);
   const auto n_aux_rec = static_cast<size_t>(aux_rec_begin.back());
-  const size_t n_pairs = basis.nshells() * (basis.nshells() + size_t{1}) / 2;
-  const size_t n_cell_fields =
-      static_cast<size_t>(device::kThreeCenterGradientCellFields) * n_pairs * aux.nshells();
-  const size_t n_metric_pair_fields = static_cast<size_t>(device::kMetricGradientPairFields) *
-                                      aux.nshells() * (aux.nshells() + size_t{1}) / 2;
   const size_t n_bra = static_cast<size_t>(device::kThreeCenterGradientBraFields) * n_bra_rec;
   const size_t n_aux_fields = static_cast<size_t>(device::kMetricRecordFields) * n_aux_rec;
-  const size_t n_staging = n_bra + n_aux_fields + (n_cart * nao) + (naux_cart * naux);
+  const std::array<std::pair<size_t, size_t>, 21> regions =
+      df_jk_derivative_regions(basis, aux, n_bra_rec, occ);
+  const size_t n_staging = regions[0].first;
   const size_t nn = nao * nao;
-  // The regions, in device_regions' order below: the staging, the metric's
-  // pairs, the cells; D, d, the fitted half-transformed pairs c; the Cartesian
-  // M1, its transform's intermediate, M1; u^x - M^x d; the accumulated Y and
-  // V1, one symmetrization's slab; then one aux atom's blocks: the Cartesian
-  // derivative, t1, t2, X and its swap, Z, c's rows on the atom and F.
-  const std::array<std::pair<size_t, size_t>, 21> regions{{
-      {n_staging, sizeof(double)},
-      {n_metric_pair_fields, sizeof(int32_t)},
-      {n_cell_fields, sizeof(int32_t)},
-      {nn, sizeof(double)},
-      {naux, sizeof(double)},
-      {naux * occ * nao, sizeof(double)},
-      {3 * naux_cart * naux_cart, sizeof(double)},
-      {naux_cart * naux, sizeof(double)},
-      {3 * naux * naux, sizeof(double)},
-      {naux * n_x, sizeof(double)},
-      {3 * nn, sizeof(double)},
-      {3 * nn, sizeof(double)},
-      {nn, sizeof(double)},
-      {3 * n_cart * n_cart * max_blk_cart, sizeof(double)},
-      {max_blk * n_cart * n_cart, sizeof(double)},
-      {max_blk * nao * n_cart, sizeof(double)},
-      {3 * max_blk * nn, sizeof(double)},
-      {3 * max_blk * nn, sizeof(double)},
-      {max_blk * nn, sizeof(double)},
-      {max_blk * occ * nao, sizeof(double)},
-      {max_blk * occ * nao, sizeof(double)},
-  }};
   size_t need = 0;
   for (const auto &[count, size] : regions) {
     need += math::align_up(count * size, DeviceResources::kWorkspaceAlignment);
@@ -627,7 +711,7 @@ Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
   std::vector<std::array<size_t, kThreeCenterClasses>> n_cell(n_atom);
   std::vector<std::array<size_t, kThreeCenterClasses>> cell_begin(n_atom);
   std::vector<int32_t> cells;
-  cells.reserve(n_cell_fields);
+  cells.reserve(regions[2].first);
   for (uint32_t a = 0; a < n_atom; ++a) {
     stage_three_center_cells(bra, aux, aux_rec_begin, aux.atom_shell_offset(a),
                              aux.atom_shell_count(a), cells, n_cell[a], cell_begin[a]);
@@ -864,16 +948,38 @@ MemoryFootprint three_center_gradient_footprint(const BasisSet &basis, const Bas
   if (basis.nshells() == 0 || aux.nshells() == 0) {
     return {};
   }
-  // mmd's records over every shell pair i <= j: (P^2 + sum_i p_i^2) / 2, P the
-  // primitives in all.
-  size_t p = 0;
-  size_t p_sq = 0;
-  for (const Shell &shell : basis.shells()) {
-    p += shell.nprimitives();
-    p_sq += static_cast<size_t>(shell.nprimitives()) * shell.nprimitives();
-  }
   MemoryFootprint out;
-  out.device.workspace = three_center_gradient_counts(basis, aux, ((p * p) + p_sq) / 2).bytes();
+  out.device.workspace = three_center_gradient_counts(basis, aux, mmd_record_count(basis)).bytes();
+  return out;
+}
+
+MemoryFootprint metric_derivative_footprint(const BasisSet &aux) {
+  MemoryFootprint out;
+  if (aux.nshells() > 0) {
+    out.device.workspace = metric_derivative_bytes(aux);
+  }
+  return out;
+}
+
+MemoryFootprint three_center_derivative_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                  const uint32_t atom) {
+  MemoryFootprint out;
+  if (atom < aux.natoms()) {
+    out.device.workspace = three_center_derivative_bytes(basis, aux, atom, mmd_record_count(basis));
+  }
+  return out;
+}
+
+MemoryFootprint df_jk_derivative_footprint(const BasisSet &basis, const BasisSet &aux,
+                                           const int32_t nocc) {
+  MemoryFootprint out;
+  if (nocc <= 0 || basis.nshells() == 0 || aux.nshells() == 0) {
+    return out;
+  }
+  for (const auto &[count, size] :
+       df_jk_derivative_regions(basis, aux, mmd_record_count(basis), static_cast<size_t>(nocc))) {
+    out.device.workspace += math::align_up(count * size, DeviceResources::kWorkspaceAlignment);
+  }
   return out;
 }
 

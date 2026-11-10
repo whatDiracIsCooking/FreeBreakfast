@@ -11,6 +11,8 @@ import free_breakfast.core.constants; // kOne, kZero, kNegOne, kHalf, kNegHalf, 
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemmStridedBatched, geam, dgmm, dot, nrm2, memcpys
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.ci.strings;
@@ -845,6 +847,50 @@ Status ThirdDerivative::apply(DeviceResources &res, const int32_t k, const doubl
     FBF_TRY(res.sync());
   }
   return {};
+}
+
+MemoryFootprint third_derivative_footprint(const int32_t nmo, const int32_t naux,
+                                           const int32_t ncore, const int32_t ncas,
+                                           const int32_t n_alpha, const int32_t n_beta,
+                                           const int32_t nroots) {
+  if (ncas < 1 || ncore < 0 || ncore + ncas > nmo || naux < 1 || nroots < 1 || n_alpha < 1 ||
+      n_beta < 1) {
+    return {};
+  }
+  const auto mo = static_cast<size_t>(nmo);
+  const auto occ = static_cast<size_t>(ncore + ncas);
+  const auto n = static_cast<size_t>(ncas);
+  const auto q = static_cast<size_t>(naux);
+  const auto roots = static_cast<size_t>(nroots);
+  const size_t dim = static_cast<size_t>(n_alpha) * static_cast<size_t>(n_beta);
+  const size_t mo2 = mo * mo;
+  const size_t occ2 = occ * occ;
+  const size_t occ4 = occ2 * occ2;
+  const size_t lmo = mo * occ * q;
+  const size_t pair = occ2 * q;
+  const size_t block = dim * roots;
+  const size_t nr2 = roots * roots;
+  // The operator's buffers, in the members' order: 2 w, C, h_MO, L, Lo, P_0,
+  // Gamma_0 and Gamma_z, D_0 and D_z, K_z and h K_z, d_z, Theta_z, A_z c,
+  // L K_z, P(K_z), Y_0, Y_b, M_1 and M_z, c_1 and c_z; then one column's
+  // scratch.
+  const size_t members = roots + block + mo2 + (mo2 * q) + lmo + pair + (2 * occ4) + (2 * occ2) +
+                         (2 * mo2) + block + nr2 + block + lmo + (3 * pair) + (2 * mo2) +
+                         (2 * block) + (kThirdMatrices * mo2) + (kThirdMoBlocks * lmo) +
+                         (kThirdPairBlocks * pair) + (kThirdOcc4 * occ4) + (kThirdOcc2 * occ2) +
+                         (kThirdCiBlocks * block) + (kThirdSmall * nr2) + (2 * n * n) +
+                         (2 * n * n * n * n);
+  // Three sigmas, each with its apply scratch: H_0's and H'[K_z]'s from
+  // create on, the per-column one's from the first apply.
+  const size_t sigma = ci::sigma_footprint(ncas, n_alpha, n_beta).device.persistent +
+                       ci::sigma_apply_bytes(ncas, n_alpha, n_beta, ci::Layout::full);
+  MemoryFootprint out;
+  out.device.persistent = (sizeof(double) * members) + (3 * sigma);
+  // L's half and full transforms in create; the transition RDMs' chunk.
+  out.device.workspace =
+      std::max(2 * math::align_up(sizeof(double) * mo2 * q, DeviceResources::kWorkspaceAlignment),
+               ci::trans_rdm12_footprint(ncas, static_cast<int32_t>(dim)).device.workspace);
+  return out;
 }
 
 } // namespace free_breakfast::mcscf

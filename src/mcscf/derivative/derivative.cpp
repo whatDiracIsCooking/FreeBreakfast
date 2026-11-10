@@ -17,6 +17,8 @@ import free_breakfast.core.constants; // kZero, kOne, kNegOne, kTwo, kNegTwo, kH
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemm, gemmStridedBatched, gemv, geam, axpy, scal, dgmm, trsm, nrm2
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up, math::binomial
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -918,6 +920,155 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
       }
     }
   }
+  return out;
+}
+
+MemoryFootprint df_derivatives_footprint(const BasisSet &basis, const BasisSet &aux,
+                                         const int32_t ncore, const int32_t ncas,
+                                         const int32_t nalpha, const int32_t nbeta,
+                                         const int32_t nroots, const size_t syevd_lwork,
+                                         const bool rotation) {
+  const size_t nao = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  const size_t n_atom = basis.natoms();
+  if (n_atom == 0 || aux.natoms() != basis.natoms() || naux == 0 || ncore < 0 || ncas < 1 ||
+      static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao || nroots < 1 || nalpha < 0 ||
+      nbeta < 0 || nalpha > ncas || nbeta > ncas) {
+    return {}; // refused before anything is allocated
+  }
+  const auto nmo = static_cast<int32_t>(nao);
+  const auto q = static_cast<int32_t>(naux);
+  const auto nx = static_cast<int32_t>(3 * n_atom);
+  const size_t n_x = 3 * n_atom;
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const size_t na2 = n_act * n_act;
+  const size_t na3 = na2 * n_act;
+  const size_t na4 = na2 * na2;
+  const size_t nn = nao * nao;
+  const size_t stack = n_x * nn;
+  const auto roots = static_cast<size_t>(nroots);
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha_strings = strings(nalpha);
+  const int32_t beta_strings = strings(nbeta);
+  const size_t n_det = static_cast<size_t>(alpha_strings) * static_cast<size_t>(beta_strings);
+  size_t max_blk = 0;
+  for (uint32_t a = 0; a < n_atom; ++a) {
+    const auto [first, last] = derivative_atom_functions(aux, a);
+    max_blk = std::max(max_blk, last - first);
+  }
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  const auto region = [](const size_t doubles) {
+    return math::align_up(sizeof(double) * doubles, DeviceResources::kWorkspaceAlignment);
+  };
+  const auto rot_len = [rotation](const size_t len) { return rotation ? len : size_t{1}; };
+  const MemoryFootprint one = one_electron_derivative_footprint(basis);
+  const auto jk = [&](const int32_t nocc) {
+    return drop(then(held(2 * stack), df_jk_derivative_footprint(basis, aux, nocc)));
+  };
+  MemoryFootprint walks;
+  for (uint32_t a = 0; a < n_atom; ++a) {
+    walks = then(walks, three_center_derivative_footprint(basis, aux, a));
+  }
+
+  // The strings; the weighted RDMs' device copy and rdm12; the integrals and
+  // the Fock, kept.
+  MemoryFootprint chain = then(ci::device_string_set_footprint(ncas, nalpha),
+                               ci::device_string_set_footprint(ncas, nbeta));
+  chain = then(chain, drop(then(held(na2 + na4), ci::rdm12_footprint(ncas, n_det))));
+  chain = then(chain, casscf_integrals_footprint(nmo, q, ncore, ncas));
+  chain = then(chain, response::fock_footprint(nmo, q, ncore, ncas));
+  // tau, h^x, F^I^x and F^A^x; C K, the rotated factor and A_L. The
+  // workspace carves: to_mo's X C; the walk's Yt, Q1, O, H and E_X; the tau
+  // part's Gamma pair, Q0, R and T23; gemmwich's two; the Hamiltonian's.
+  MemoryFootprint stacks =
+      held((4 * stack) + rot_len(nn) + rot_len(2 * nao * n_act) + rot_len(nao * n_act * n_x));
+  stacks.device.workspace = std::max(
+      {region(stack),
+       region(max_blk * nao * n_act) + region(nao * n_act) + region(nn * n_act) +
+           region(max_blk * n_act * nao) + region(max_blk * na2),
+       region(2 * na4) + region(nao * n_act) + region(nao * na3 * n_x) + region(nao * n_act * n_x),
+       2 * region(nn), region(roots * roots)});
+  chain = then(chain, stacks);
+  // S^x; T^x with V^x beside it, then the core's J^x and K^x.
+  chain = then(chain, drop(one));
+  MemoryFootprint fi = then(one, drop(one));
+  if (ncore > 0) {
+    fi = then(fi, jk(ncore));
+  }
+  chain = then(chain, drop(fi));
+  // The natural orbitals, the active factor, its J^x and K^x.
+  chain = then(chain, drop(then(then(held(na2 + n_act), diagonalize_footprint<double>(syevd_lwork)),
+                                then(held(nao * n_act), jk(ncas)))));
+  // A^x and (tu|vw)^x, kept; the active 2-RDM term's walk.
+  chain = then(chain, held((nao * n_act * n_x) + (na4 * n_x)));
+  {
+    const OrbitalRange active{.first = ncore, .count = ncas};
+    const OrbitalRange all{.first = 0, .count = nmo};
+    MemoryFootprint term = then(held(naux * n_act * nao), b_mo_footprint(q, nmo, active, all));
+    term = then(term, held(naux * na2));
+    term = then(term, held(3 * naux * naux));
+    term = then(term, metric_derivative_footprint(aux));
+    term = then(term, held((nao * n_act * n_x) + (naux * na2 * n_x) + (3 * nao * n_act) +
+                           (3 * nn * n_act) + nao + (3 * nn * max_blk)));
+    term = then(term, walks);
+    term = then(term, held(naux * na2 * n_x));
+    if (rotation) {
+      const OrbitalRange rotated{.first = nmo, .count = ncas};
+      term = then(term, held(nao * (nao + n_act)));
+      term = then(term, then(held(naux * n_act * nao), b_mo_footprint(q, nmo, rotated, all)));
+      term = then(term, then(held(naux * na2), b_mo_footprint(q, nmo, active, rotated)));
+      term = then(term, held((naux * na2) + (naux * na2 * n_x)));
+      term = then(term, walks);
+    }
+    chain = then(chain, drop(term));
+  }
+  // F^[x], G^x and the CI right-hand side, returned; F~^x and F^I~^x.
+  MemoryFootprint outputs = held((2 * stack) + (n_det * roots * n_x));
+  chain = then(chain, outputs);
+  chain = then(chain, held(2 * stack));
+  if (rotation) {
+    // F^I_L and F^A_L beside G^x's three stacks, each rank's factor and its
+    // J^x and K^x in turn; then F^[x] at the rotated densities, returned,
+    // beside F^I_L and F^A_L.
+    MemoryFootprint g = held(3 * stack);
+    if (ncore > 0) {
+      g = then(g, drop(then(held(nao * n_core), df_jk_derivative_footprint(basis, aux, ncore))));
+    }
+    g = then(g, drop(then(held(nao * n_act), df_jk_derivative_footprint(basis, aux, ncas))));
+    chain = then(chain, drop(then(held(2 * stack), drop(g))));
+    MemoryFootprint rotated = held(stack);
+    rotated.device.scratch = sizeof(double) * 2 * stack;
+    chain = then(chain, rotated);
+  }
+  // The response densities' factors, D, J and K, then the block J and K.
+  {
+    MemoryFootprint response =
+        held((2 * std::max<size_t>(nao * n_core * n_x, 1)) + (2 * nao * n_act * n_x) + (6 * stack));
+    response = then(response, df_coulomb_footprint(nmo, q, 2 * nx));
+    if (ncore > 0) {
+      response = then(response, df_exchange_footprint(nmo, q, ncore, nx));
+    }
+    response = then(response, df_exchange_footprint(nmo, q, ncas, nx));
+    chain = then(chain, drop(response));
+  }
+  // T1, the sigma, its scale and its apply scratch.
+  chain = then(chain, held(na4 * n_x));
+  MemoryFootprint sigma;
+  sigma.device.persistent =
+      ci::sigma_footprint(ncas, alpha_strings, beta_strings).device.persistent +
+      (sizeof(double) * roots) +
+      ci::sigma_apply_bytes(ncas, alpha_strings, beta_strings, ci::Layout::full);
+  chain = then(chain, sigma);
+  // Only the outputs are returned.
+  const size_t returned = outputs.device.persistent + (rotation ? sizeof(double) * stack : 0);
+  MemoryFootprint out = drop(chain);
+  out.device.persistent = returned;
+  out.device.scratch -= returned;
   return out;
 }
 

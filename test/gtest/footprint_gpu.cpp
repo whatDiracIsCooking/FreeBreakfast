@@ -7,7 +7,10 @@
 // calls (#1151): its integrals, the RDMs, the Fock, the orbital Hessian and the
 // CI-relaxed one, and the packed pairs' copies; and those the RHF gradient
 // calls (#1050): the one-electron, J's and K's derivative contractions, the
-// fitted metric's and three-center tensor's, and the two gradients. Each is
+// fitted metric's and three-center tensor's, and the two gradients; and those
+// the CASSCF Hessians call (#1175): the derivative integrals, the fixed-
+// parameter derivatives, the third derivative and the integral derivatives
+// chunked over the coordinates. Each is
 // held to the
 // pool peak of one call by test/support/pool_footprint.h's two bars, sound
 // (the measured peak is no more than the footprint's) and tight (within
@@ -18,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -32,6 +36,7 @@ import free_breakfast.recipes.diagonalize; // syevd_lwork
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.gradient;
+import free_breakfast.mcscf;
 
 #include "pool_footprint.h"
 
@@ -917,6 +922,168 @@ TEST(LibraryFootprint, RelaxedHessian) {
   }
 }
 
+// An identity metric factor over @p n fitting functions on @p res's device:
+// the derivative integrals' allocations do not depend on its values.
+fb::Buffers::device<double> identity_factor(fb::DeviceResources &res, const std::size_t n) {
+  std::vector<double> host(n * n, 0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    host[i * (n + 1)] = 1.0;
+  }
+  fb::Buffers::device<double> out(n * n, res.device());
+  EXPECT_EQ(wwr::wwrMemcpyAsync(out.data(), host.data(), sizeof(double) * host.size(),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync());
+  return out;
+}
+
+// mcscf::df_integral_derivatives (#1175), whose chunk of coordinates is sized
+// from the memory budget, with a consumer that allocates nothing: under a
+// pool cap leaving exactly the footprint's scratch, a chunk of one
+// coordinate, held to df_integral_derivatives_footprint; under a cap with
+// room to spare, a wider chunk, under the cap. (McscfIntegralDerivative
+// holds a chunk of one, by max_bytes, to the unchunked Y.)
+TEST(LibraryFootprint, IntegralDerivatives) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  CasscfInputs in;
+  const fb::BasisSet aux = placed("cc-pvdz-jkfit", in.fit.w.molecule);
+  const fb::Buffers::device<double> l =
+      identity_factor(in.inputs, static_cast<std::size_t>(in.fit.naux));
+  const fb::MemoryFootprint least = fb::mcscf::df_integral_derivatives_footprint(in.basis, aux);
+  std::int32_t widest = 0;
+  const auto run = [&](fb::DeviceResources &res, const std::size_t max_bytes) {
+    widest = 0;
+    EXPECT_TRUE(fb::mcscf::df_integral_derivatives(
+        res, in.fit.w.molecule, in.basis, in.fit.w.classes, aux, in.h, in.fit.b, l.data(), in.c,
+        [&](std::int32_t, const std::int32_t count, const double *, const double *,
+            const double *) -> fb::Status {
+          widest = std::max(widest, count);
+          return {};
+        },
+        max_bytes));
+  };
+  // The MO factor, h_MO, tau^x, h1^x, M^x, one W^x and one aux atom's block.
+  constexpr std::size_t kLive = 7;
+  {
+    fb::DeviceResources res{
+        0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0,
+        cap_leaving(least.device.scratch, [&](fb::DeviceResources &on) { run(on, 0); })};
+    expect_routine_footprint(res, least, kLive, [&] { run(res, 0); });
+    EXPECT_EQ(widest, 1);
+  }
+  {
+    const std::uint64_t cap = cap_leaving(least.device.scratch + (std::size_t{16} << 20),
+                                          [&](fb::DeviceResources &on) { run(on, 0); });
+    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    run(res, 0);
+    const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { run(res, 0); });
+    std::cout << std::format("[ footprint ] chunk of {}: measured {}, the least {}\n", widest,
+                             peak.used, least.device.scratch);
+    EXPECT_GT(widest, 1);
+    EXPECT_LE(res.device()->pool_usage().used_high, cap);
+  }
+}
+
+// mcscf::ThirdDerivative (#1175) over CAS(2,4) and two roots at unequal
+// weights, created, then one column of apply and one of apply_integrals,
+// over vectors whose values do not matter: held to third_derivative_footprint.
+TEST(LibraryFootprint, ThirdDerivative) {
+  FBF_REQUIRE_GPU();
+  CasscfInputs in;
+  constexpr std::int32_t kRoots = 2;
+  const auto alpha = fb::ci::DeviceStringSet::create(in.inputs, kActive, 1);
+  ASSERT_TRUE(alpha);
+  const auto dim = static_cast<std::size_t>(alpha->size()) * alpha->size();
+  std::vector<double> roots_host(kRoots * dim, 0.0);
+  roots_host[0] = 1.0;
+  roots_host[dim + 1] = 1.0;
+  const std::vector<double> weights{0.6, 0.4};
+  const std::size_t size = static_cast<std::size_t>(in.pairs()) + (kRoots * dim) + 1;
+  const auto nmo = static_cast<std::size_t>(in.nmo());
+  const auto naux = static_cast<std::size_t>(in.fit.naux);
+  const auto upload = [&](const std::vector<double> &host) {
+    fb::Buffers::device<double> out(host.size(), in.inputs.device());
+    EXPECT_EQ(wwr::wwrMemcpyAsync(out.data(), host.data(), sizeof(double) * host.size(),
+                                  wwr::wwrMemcpyHostToDevice, in.inputs.stream()),
+              wwr::wwrSuccess);
+    EXPECT_TRUE(in.inputs.sync());
+    return out;
+  };
+  const fb::Buffers::device<double> roots = upload(roots_host);
+  const fb::Buffers::device<double> z = upload(std::vector<double>(size, 1e-2));
+  const fb::Buffers::device<double> v = upload(std::vector<double>(size, 2e-2));
+  const fb::Buffers::device<double> h1 = upload(std::vector<double>(nmo * nmo, 1e-3));
+  const fb::Buffers::device<double> w1 = upload(std::vector<double>(nmo * nmo * naux, 1e-3));
+  fb::Buffers::device<double> y(size, in.inputs.device());
+  const fb::MemoryFootprint fp = fb::mcscf::third_derivative_footprint(
+      in.nmo(), in.fit.naux, kCore, kActive, alpha->size(), alpha->size(), kRoots);
+  fb::DeviceResources res{0};
+  // The operator's 31 buffers and its three sigmas' three tables and scratch.
+  expect_routine_footprint(res, fp, 31 + (3 * 4), [&] {
+    auto op =
+        fb::mcscf::ThirdDerivative::create(res, in.h, in.fit.b, in.fit.naux, in.c, kCore, kActive,
+                                           *alpha, *alpha, roots.data(), weights, z.data());
+    ASSERT_TRUE(op) << op.error().message;
+    ASSERT_EQ(static_cast<std::size_t>(op->size()), size);
+    EXPECT_TRUE(op->apply(res, 1, v.data(), y.data()));
+    EXPECT_TRUE(op->apply_integrals(res, 1, h1.data(), w1.data(), y.data()));
+  });
+}
+
+// mcscf::df_derivatives (#1175) over CAS(2,4) and two roots, without a
+// rotation and with one, over roots and a rotation whose values do not
+// matter (unit roots give an RDM with no negative occupation): held to
+// df_derivatives_footprint.
+TEST(LibraryFootprint, Derivatives) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  CasscfInputs in;
+  const fb::BasisSet aux = placed("cc-pvdz-jkfit", in.fit.w.molecule);
+  const fb::Buffers::device<double> l =
+      identity_factor(in.inputs, static_cast<std::size_t>(in.fit.naux));
+  constexpr std::int32_t kRoots = 2;
+  constexpr std::size_t kDim = 16; // C(4, 1)^2
+  std::vector<double> roots_host(kRoots * kDim, 0.0);
+  roots_host[0] = 1.0;
+  roots_host[kDim + 5] = 1.0;
+  const std::vector<double> weights{0.5, 0.5};
+  const auto nmo = static_cast<std::size_t>(in.nmo());
+  std::vector<double> rotation_host(nmo * nmo, 0.0);
+  for (std::size_t p = 0; p < nmo; ++p) {
+    for (std::size_t q = 0; q < p; ++q) {
+      rotation_host[p + (nmo * q)] = 1e-2 / static_cast<double>(1 + p + q);
+      rotation_host[q + (nmo * p)] = -rotation_host[p + (nmo * q)];
+    }
+  }
+  const auto upload = [&](const std::vector<double> &host) {
+    fb::Buffers::device<double> out(host.size(), in.inputs.device());
+    EXPECT_EQ(wwr::wwrMemcpyAsync(out.data(), host.data(), sizeof(double) * host.size(),
+                                  wwr::wwrMemcpyHostToDevice, in.inputs.stream()),
+              wwr::wwrSuccess);
+    EXPECT_TRUE(in.inputs.sync());
+    return out;
+  };
+  const fb::Buffers::device<double> roots = upload(roots_host);
+  const fb::Buffers::device<double> rotation = upload(rotation_host);
+  for (const bool rotated : {false, true}) {
+    SCOPED_TRACE(rotated);
+    fb::DeviceResources res{0};
+    const std::size_t lwork = fb::syevd_lwork<double>(res, kActive).value();
+    const fb::MemoryFootprint fp = fb::mcscf::df_derivatives_footprint(
+        in.basis, aux, kCore, kActive, 1, 1, kRoots, lwork, rotated);
+    // At most 30 allocations live at the peak (40 with a rotation): the
+    // strings, the integrals and the Fock, the held stacks, the outputs and
+    // a phase's own.
+    expect_routine_footprint(res, fp, rotated ? 40 : 30, [&] {
+      const auto out = fb::mcscf::df_derivatives(
+          res, in.fit.w.molecule, in.basis, in.fit.w.classes, aux, in.h, in.fit.b, l.data(), in.c,
+          kCore, kActive, 1, 1, roots.data(), weights, rotated ? rotation.data() : nullptr);
+      ASSERT_TRUE(out) << out.error().message;
+    });
+  }
+}
+
 // The gradients' derivative contractions over a density whose values do not
 // matter: the one-electron three, J's (over J's classes at tau = 0, every
 // record) and K's (over the ordered classes), and the fitted metric's and
@@ -956,6 +1123,59 @@ TEST(LibraryFootprint, GradientIntegrals) {
                                           res.device());
   expect_routine_footprint(res, fb::three_center_gradient_footprint(w.basis, aux), 0, [&] {
     EXPECT_TRUE(fb::three_center_gradient(res, w.basis, w.classes, aux, gamma.data()));
+  });
+}
+
+// The derivative integrals a Hessian takes (#1175), over inputs whose values
+// do not matter: the one-electron three's matrices, and the fitted metric's,
+// one aux atom's three-center block and the DF J and K derivative, which take
+// only the device workspace.
+TEST(LibraryFootprint, DerivativeIntegrals) {
+  FBF_REQUIRE_GPU();
+  Water w;
+  ASSERT_NE(w.basis.nao_cart(), w.basis.nao_sphe());
+  const fb::BasisSet aux = placed("cc-pvdz-jkfit", w.molecule);
+  fb::DeviceResources res{0};
+  // U, the pair's three matrices, the matrices returned, each spherical AO's
+  // atom, the Cartesian slabs and their spherical copies.
+  const fb::MemoryFootprint one = fb::one_electron_derivative_footprint(w.basis);
+  expect_routine_footprint(res, one, 8,
+                           [&] { EXPECT_TRUE(fb::overlap_derivative(res, w.basis, w.classes)); });
+  expect_routine_footprint(res, one, 8,
+                           [&] { EXPECT_TRUE(fb::kinetic_derivative(res, w.basis, w.classes)); });
+  expect_routine_footprint(res, one, 8, [&] {
+    EXPECT_TRUE(fb::potential_derivative(res, w.basis, w.classes, w.molecule));
+  });
+  // Each workspace routine on a fresh res, so its workspace grows to exactly
+  // the footprint's; its inputs and outputs on the inputs' pool.
+  const std::size_t nao = w.basis.nao_sphe();
+  const std::size_t naux = aux.nao_sphe();
+  fb::Buffers::device<double> m1(3 * naux * naux, w.inputs.device());
+  {
+    fb::DeviceResources own{0};
+    expect_routine_footprint(own, fb::metric_derivative_footprint(aux), 0,
+                             [&] { EXPECT_TRUE(fb::metric_derivative(own, aux, m1.data())); });
+  }
+  // Oxygen's block, the largest.
+  fb::Buffers::device<double> x(3 * nao * nao * naux, w.inputs.device());
+  {
+    fb::DeviceResources own{0};
+    expect_routine_footprint(own, fb::three_center_derivative_footprint(w.basis, aux, 0), 0, [&] {
+      EXPECT_TRUE(fb::three_center_derivative(own, w.basis, w.classes, aux, 0, x.data()));
+    });
+  }
+  constexpr std::int32_t kOcc = 5;
+  const std::size_t stack = 3 * w.basis.natoms() * nao * nao;
+  const fb::Buffers::device<double> b(naux * nao * nao, w.inputs.device());
+  const fb::Buffers::device<double> l(naux * naux, w.inputs.device());
+  const fb::Buffers::device<double> c(nao * nao, w.inputs.device());
+  fb::Buffers::device<double> jx(stack, w.inputs.device());
+  fb::Buffers::device<double> kx(stack, w.inputs.device());
+  fb::Buffers::device<double> g(naux * 3 * w.basis.natoms(), w.inputs.device());
+  fb::DeviceResources own{0};
+  expect_routine_footprint(own, fb::df_jk_derivative_footprint(w.basis, aux, kOcc), 0, [&] {
+    EXPECT_TRUE(fb::df_jk_derivative(own, w.basis, w.classes, aux, b.data(), l.data(), c.data(),
+                                     kOcc, jx.data(), kx.data(), g.data()));
   });
 }
 
