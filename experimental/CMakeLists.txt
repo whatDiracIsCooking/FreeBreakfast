@@ -57,3 +57,8 @@ add_subdirectory(gemm_host_offload)
 # as a shared library, and the cargo crate beside it that binds it. Cargo is
 # not driven from here; the README has the two-step build.
 add_subdirectory(rust/gemm)
+
+# The spherical AO overlap S of a molecule in a basis, from Rust: a C ABI over
+# the pipeline's setup and overlap steps, on rust/gemm's handles, so it comes
+# after it. Checked against PySCF; cargo is run by hand, as for rust/gemm.
+add_subdirectory(rust/s_overlap)

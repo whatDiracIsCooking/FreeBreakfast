@@ -13,7 +13,9 @@
 //! A failed GPU creation or allocation aborts the process, as it does
 //! everywhere in free_breakfast; every other failure is an [`Error`].
 
-mod ffi;
+/// The raw C ABI, public so a crate binding a C ABI built on fb_gemm.h's
+/// handles (rust/s_overlap) can name them.
+pub mod ffi;
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -31,6 +33,8 @@ pub enum Error {
     Blas,
     /// The shapes passed to [`gemm`] do not line up; caught on the Rust side.
     Shape(String),
+    /// A free_breakfast routine refused or failed, with its message.
+    Failed(String),
     /// A status the C side does not document.
     Unknown(i32),
 }
@@ -42,6 +46,7 @@ impl fmt::Display for Error {
             Error::Gpu => write!(f, "GPU runtime error"),
             Error::Blas => write!(f, "BLAS error"),
             Error::Shape(what) => write!(f, "shape mismatch: {what}"),
+            Error::Failed(why) => write!(f, "{why}"),
             Error::Unknown(code) => write!(f, "unknown status {code}"),
         }
     }
@@ -51,12 +56,19 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-fn check(status: ffi::Status) -> Result<()> {
+/// A C status as a [`Result`]; FB_FAILED carries fb_last_error()'s message.
+pub fn check(status: ffi::Status) -> Result<()> {
     match status {
         ffi::FB_OK => Ok(()),
         ffi::FB_INVALID_ARGUMENT => Err(Error::InvalidArgument),
         ffi::FB_GPU_ERROR => Err(Error::Gpu),
         ffi::FB_BLAS_ERROR => Err(Error::Blas),
+        ffi::FB_FAILED => {
+            // SAFETY: fb_last_error returns a NUL-terminated string that
+            // stays valid until this thread's next failing call.
+            let why = unsafe { std::ffi::CStr::from_ptr(ffi::fb_last_error()) };
+            Err(Error::Failed(why.to_string_lossy().into_owned()))
+        }
         other => Err(Error::Unknown(other)),
     }
 }
@@ -87,11 +99,14 @@ impl Gpu {
         let mut raw = ptr::null_mut();
         // SAFETY: `self.raw` is live; `raw` is a valid out-pointer.
         check(unsafe { ffi::fb_buffer_new(self.raw, len, &mut raw) })?;
-        Ok(DeviceBuffer {
-            gpu: self,
-            raw,
-            _not_send: PhantomData,
-        })
+        // SAFETY: `raw` was just allocated from this Gpu's handle.
+        Ok(unsafe { DeviceBuffer::from_raw(self, raw) })
+    }
+
+    /// The DeviceResources handle, for a C ABI built on fb_gemm.h's handles.
+    /// It stays owned by `self`.
+    pub fn as_raw(&self) -> *mut ffi::Resources {
+        self.raw
     }
 
     /// A device copy of `host`.
@@ -116,7 +131,20 @@ pub struct DeviceBuffer<'g> {
     _not_send: PhantomData<*mut ()>,
 }
 
-impl DeviceBuffer<'_> {
+impl<'g> DeviceBuffer<'g> {
+    /// Take ownership of a buffer a C ABI made on `gpu`.
+    ///
+    /// # Safety
+    /// `raw` must be a live fb_buffer allocated from `gpu`'s handle, owned by
+    /// nothing else: it is freed when the result drops.
+    pub unsafe fn from_raw(gpu: &'g Gpu, raw: *mut ffi::Buffer) -> Self {
+        DeviceBuffer {
+            gpu,
+            raw,
+            _not_send: PhantomData,
+        }
+    }
+
     pub fn len(&self) -> usize {
         // SAFETY: `self.raw` is live for as long as `self` is.
         unsafe { ffi::fb_buffer_len(self.raw) }
@@ -178,6 +206,18 @@ impl<'g> Matrix<'g> {
             cols,
             data: gpu.upload(host)?,
         })
+    }
+
+    /// A `rows x cols` matrix over `data`, which must hold exactly that many
+    /// values, column-major.
+    pub fn from_buffer(rows: usize, cols: usize, data: DeviceBuffer<'g>) -> Result<Self> {
+        if data.len() != rows * cols {
+            return Err(Error::Shape(format!(
+                "a buffer of {} for a {rows} x {cols} matrix",
+                data.len()
+            )));
+        }
+        Ok(Matrix { rows, cols, data })
     }
 
     /// A `rows x cols` matrix of zeros.

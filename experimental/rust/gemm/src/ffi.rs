@@ -6,6 +6,7 @@ pub const FB_OK: Status = 0;
 pub const FB_INVALID_ARGUMENT: Status = 1;
 pub const FB_GPU_ERROR: Status = 2;
 pub const FB_BLAS_ERROR: Status = 3;
+pub const FB_FAILED: Status = 4;
 
 pub type Op = i32;
 pub const FB_OP_N: Op = 0;
@@ -24,6 +25,8 @@ pub struct Buffer {
 }
 
 unsafe extern "C" {
+    pub fn fb_last_error() -> *const std::ffi::c_char;
+
     pub fn fb_resources_new(dev_idx: i32, out: *mut *mut Resources) -> Status;
     pub fn fb_resources_free(res: *mut Resources);
     pub fn fb_resources_sync(res: *mut Resources) -> Status;

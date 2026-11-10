@@ -14,15 +14,17 @@ import free_breakfast.core.types;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 
+#include "fb_handles.hpp"
+
 namespace fb = free_breakfast;
 
-struct fb_resources {
-  fb::DeviceResources res;
-};
+/// fb_last_error()'s message, per thread, as errno is.
+static thread_local std::string last_error;
 
-struct fb_buffer {
-  fb::Buffers::device<double> data;
-};
+fb_status fb_fail(std::string message) noexcept {
+  last_error = std::move(message);
+  return FB_FAILED;
+}
 
 static fb_status from_gpu(const wwr::wwrError_t err) noexcept {
   return err == wwr::wwrSuccess ? FB_OK : FB_GPU_ERROR;
@@ -62,6 +64,10 @@ static fb_status copy_and_wait(fb_resources *const res, void *const dst, const v
 }
 
 extern "C" {
+
+const char *fb_last_error(void) noexcept {
+  return last_error.c_str();
+}
 
 fb_status fb_resources_new(const int32_t dev_idx, fb_resources **const out) noexcept {
   if (out == nullptr || dev_idx < 0) {
