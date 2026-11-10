@@ -9,9 +9,11 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kTwo, kZero, kNegOne
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemmStridedBatched, dgmm, axpy, wwrMemGetInfo
+import free_breakfast.core.wwr; // gemmStridedBatched, dgmm, axpy
 import free_breakfast.core.resources;
-import free_breakfast.recipes.blas; // gemm
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;  // MemoryFootprint, kPoolHeadroomBytes
+import free_breakfast.recipes.blas;    // gemm
 import free_breakfast.recipes.pcg;
 import free_breakfast.integrals.eri.density_fitting.jk;
 
@@ -22,6 +24,106 @@ namespace free_breakfast::response {
 // A pair whose eps_a - eps_i is below this is left unscaled by the
 // preconditioner. Above an aufbau RHF's gap it guards only a non-aufbau one.
 constexpr double kCphfDenominatorFloor = 1e-8;
+
+// One column's product, in doubles: its [T C_o T] (T = C_v U), D_U, J and K.
+size_t cphf_single(const size_t nao, const size_t occ) {
+  return (3 * nao * occ) + (3 * nao * nao);
+}
+
+// A batched product's, per column, in doubles: L = [T C_o] and R = [C_o T]
+// (so D_U = 2 L R^T), D_U, J, K and G C_o.
+size_t cphf_per_column(const size_t nao, const size_t occ) {
+  return (4 * nao * occ) + (3 * nao * nao) + (nao * occ);
+}
+
+// The device workspace one column's unbatched J and K take: df_coulomb's
+// gamma, or the two-factor df_exchange's X and Y at rank 2 nocc, each a
+// region.
+size_t cphf_workspace(const int32_t nao, const int32_t naux, const int32_t nocc) {
+  if (nao < 1 || naux < 1) {
+    return 0;
+  }
+  const size_t xy = math::align_up(sizeof(double) * static_cast<size_t>(naux) * 2 *
+                                       static_cast<size_t>(nocc) * static_cast<size_t>(nao),
+                                   DeviceResources::kWorkspaceAlignment);
+  return std::max(df_coulomb_footprint(nao, naux).device.workspace, 2 * xy);
+}
+
+// The scratch a batched product's J and K take, @p width columns at a time,
+// in bytes: the block df_coulomb's Gamma or the block df_exchange's X and Y
+// at rank 2 nocc, allocated and freed in turn.
+size_t cphf_batch_jk(const int32_t nao, const int32_t naux, const int32_t nocc,
+                     const size_t width) {
+  const auto w = static_cast<int32_t>(width);
+  return std::max(df_coulomb_footprint(nao, naux, w).device.scratch,
+                  df_exchange_footprint(nao, naux, 2 * nocc, w).device.scratch);
+}
+
+// Everything cphf allocates from the solution on, in bytes, with a batched
+// product of @p width columns (0: unbatched): the solution; the held buffer,
+// eps_a - eps_i, the preconditioner and the product's own; pcg_solve's
+// vectors (recipes/pcg/pcg.cppm), 4 n ncol + 2 ncol doubles; and, batched,
+// the J and K scratch. The unbatched J and K take the workspace instead.
+size_t cphf_bytes(const int32_t nao, const int32_t naux, const int32_t nocc, const size_t pairs,
+                  const size_t ncol, const size_t width) {
+  const auto n_ao = static_cast<size_t>(nao);
+  const auto occ = static_cast<size_t>(nocc);
+  const size_t block = pairs * ncol;
+  const size_t own = width > 0 ? width * cphf_per_column(n_ao, occ) : cphf_single(n_ao, occ);
+  return (sizeof(double) * (block + (2 * pairs) + own + (4 * block) + (2 * ncol))) +
+         (width > 0 ? cphf_batch_jk(nao, naux, nocc, width) : 0);
+}
+
+// How many columns one batched build takes: the most, up to @p ncol, whose
+// cphf_bytes (every allocation the call has still to make, read before the
+// first) fits the memory budget less the pool's fragmentation headroom, and
+// that the int32_t BLAS dispatch allows. At least one: cphf_footprint's.
+Result<size_t> cphf_width(DeviceResources &res, const int32_t nao, const int32_t naux,
+                          const int32_t nocc, const size_t pairs, const size_t ncol) {
+  const size_t memory = FBF_TRY(res.memory_budget());
+  const size_t usable = memory > kPoolHeadroomBytes ? memory - kPoolHeadroomBytes : 0;
+  const size_t int32_max = std::numeric_limits<int32_t>::max();
+  const auto n_ao = static_cast<size_t>(nao);
+  const size_t widest =
+      std::min({ncol, int32_max / (n_ao * n_ao),
+                naux > 0 ? int32_max / (static_cast<size_t>(naux) * 2 * nocc) : ncol});
+  const auto fits = [&](const size_t width) {
+    return cphf_bytes(nao, naux, nocc, pairs, ncol, width) <= usable;
+  };
+  if (widest < 2 || !fits(2)) {
+    return size_t{1};
+  }
+  // The widest in [2, widest] that fits: the bytes grow with the width.
+  size_t lo = 2;
+  size_t hi = widest;
+  while (lo < hi) {
+    const size_t mid = lo + ((hi - lo + 1) / 2);
+    if (fits(mid)) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo;
+}
+
+MemoryFootprint cphf_footprint(const int32_t nao, const int32_t naux, const int32_t nmo,
+                               const int32_t nocc, const int32_t ncol, const bool batched) {
+  MemoryFootprint out;
+  if (nocc < 1 || nmo <= nocc || ncol < 1 || nao < 1 || naux < 0) {
+    return out;
+  }
+  const size_t pairs = static_cast<size_t>(nmo - nocc) * static_cast<size_t>(nocc);
+  const size_t block = pairs * static_cast<size_t>(ncol);
+  // The solution, returned; the rest, held together at the peak, scratch,
+  // with a batched product at its least, one column.
+  out.device.persistent = sizeof(double) * block;
+  out.device.scratch =
+      cphf_bytes(nao, naux, nocc, pairs, static_cast<size_t>(ncol), batched ? 1 : 0) -
+      out.device.persistent;
+  out.device.workspace = batched ? 0 : cphf_workspace(nao, naux, nocc);
+  return out;
+}
 
 Result<Cphf> cphf(DeviceResources &res, const Buffers::device<double> &b, const int32_t naux,
                   const Buffers::device<double> &c, const std::span<const double> energies,
@@ -55,41 +157,22 @@ Result<Cphf> cphf(DeviceResources &res, const Buffers::device<double> &b, const 
   const size_t block = pairs * ncol;
   const size_t nn = nao * nao;
   const size_t occ_size = nao * static_cast<size_t>(nocc);
-  // One column's product: its [T C_o T] (T = C_v U), D_U, J and K.
+  // One column's product (cphf_single), or a batched one's per column
+  // (cphf_per_column). pcg_solve gathers the columns it applies M to into a
+  // block of its own.
   const size_t factors_size = 3 * occ_size;
-  const size_t single = factors_size + (3 * nn);
-  // A batched product's, per column: L = [T C_o] and R = [C_o T] (so
-  // D_U = 2 L R^T), D_U, J, K and G C_o. pcg_solve gathers the columns it
-  // applies M to into a block of its own.
+  const size_t single = cphf_single(nao, static_cast<size_t>(nocc));
   const size_t factor_size = 2 * occ_size;
-  const size_t per_column = (2 * factor_size) + (3 * nn) + occ_size;
+  const size_t per_column = cphf_per_column(nao, static_cast<size_t>(nocc));
 
-  // How many columns one batched build takes: as many as half the free
-  // memory holds, its own buffers and the J/K scratch (X and Y,
-  // 2 naux (2 n_occ) nao doubles, and Gamma, naux) together beside
-  // pcg_solve's 4 n ncol and the 2 n here, and the int32_t BLAS dispatch
-  // allows; at least one.
-  size_t width = 0;
-  if (batched) {
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    const size_t scratch_per_column =
-        (2 * static_cast<size_t>(naux) * 2 * occ_size) + static_cast<size_t>(naux);
-    const size_t fixed = (4 * block) + (2 * pairs);
-    const size_t budget = free_bytes / (2 * sizeof(double));
-    const size_t int32_max = std::numeric_limits<int32_t>::max();
-    width = std::max<size_t>(
-        1,
-        std::min({ncol, budget > fixed ? (budget - fixed) / (per_column + scratch_per_column) : 0,
-                  int32_max / nn,
-                  naux > 0 ? int32_max / (static_cast<size_t>(naux) * 2 * nocc) : ncol}));
-  }
+  // How many columns one batched build takes: cphf_width's, read before the
+  // first allocation.
+  const size_t width = batched ? FBF_TRY(cphf_width(res, n_ao, naux, nocc, pairs, ncol)) : 0;
 
   Buffers::device<double> solution(block, res.device());
   // eps_a - eps_i and the preconditioner, and one column's product or a
   // batch of width columns'. Held across df_coulomb and df_exchange, which
-  // take the workspace, so its own (docs/style.md "Scratch memory").
+  // take the workspace unbatched, so its own (docs/style.md "Scratch memory").
   Buffers::device<double> held((2 * pairs) + (batched ? width * per_column : single), res.device());
   double *const delta = held.data();
   double *const inverse_delta = delta + pairs;

@@ -10,10 +10,10 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, gemv, geam, gemmStridedBatched, gpu_status, wwrMemGetInfo
+import free_breakfast.core.wwr; // gemm, gemv, geam, gemmStridedBatched, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.core.primitives; // math::align_up
-import free_breakfast.core.footprint;
+import free_breakfast.core.footprint;  // MemoryFootprint, kPoolHeadroomBytes
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.matrix_ao;
@@ -87,6 +87,60 @@ size_t hessian_regions(const std::array<size_t, N> &counts) {
     bytes += math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
   }
   return bytes;
+}
+
+// The scratch a density-fitted batch of @p width columns takes over @p n_all
+// orbitals, in bytes: its carve, one allocation, and past it the larger of
+// the block df_coulomb's Gamma over the 2 width densities and the
+// df_exchange_symmetrized Y at rank nocc (D''s, the larger of its two ranks),
+// each allocated and freed in turn while the carve is held.
+size_t hessian_batch_bytes(const size_t n_all, const size_t core, const size_t na,
+                           const size_t naux, const size_t width) {
+  const std::array<size_t, 13> counts = hessian_apply_counts(n_all, core, na, n_all, width, true);
+  const auto nmo = static_cast<int32_t>(n_all);
+  const auto q = static_cast<int32_t>(naux);
+  const auto w = static_cast<int32_t>(width);
+  return (sizeof(double) * std::reduce(counts.begin(), counts.end())) +
+         std::max(df_coulomb_footprint(nmo, q, 2 * w).device.scratch,
+                  df_exchange_symmetrized_footprint(nmo, q, static_cast<int32_t>(core + na), w)
+                      .device.scratch);
+}
+
+// How many columns Hessian::apply builds a density-fitted block's J and K
+// together over: the most, up to @p columns, whose scratch (hessian_batch_bytes,
+// every allocation the call has still to make) fits the memory budget less the
+// pool's fragmentation headroom, and that the int32_t BLAS dispatch allows.
+// The workspace is grown first to hessian_apply_footprint's, which is the same
+// at any width, so the budget is read with it in place. 1 when two columns do
+// not fit: the one-column path, whose scratch is hessian_apply_footprint's.
+Result<size_t> hessian_batch_width(DeviceResources &res, const size_t n_all, const size_t core,
+                                   const size_t na, const size_t naux, const size_t columns) {
+  (void)res.device_workspace(
+      hessian_apply_footprint(static_cast<int32_t>(n_all), static_cast<int32_t>(naux),
+                              static_cast<int32_t>(core), static_cast<int32_t>(na))
+          .device.workspace);
+  const size_t memory = FBF_TRY(res.memory_budget());
+  const size_t usable = memory > kPoolHeadroomBytes ? memory - kPoolHeadroomBytes : 0;
+  const size_t int32_max = std::numeric_limits<int32_t>::max();
+  const size_t widest = std::min(columns, naux > 0 ? int32_max / (naux * (core + na)) : columns);
+  const auto fits = [&](const size_t width) {
+    return hessian_batch_bytes(n_all, core, na, naux, width) <= usable;
+  };
+  if (widest < 2 || !fits(2)) {
+    return size_t{1};
+  }
+  // The widest in [2, widest] that fits: the bytes grow with the width.
+  size_t lo = 2;
+  size_t hi = widest;
+  while (lo < hi) {
+    const size_t mid = lo + ((hi - lo + 1) / 2);
+    if (fits(mid)) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return lo;
 }
 
 // Whether the Hessian has pairs to apply over.
@@ -615,28 +669,13 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
   // Density-fitted, a block's columns build their J and K together: one
   // df_coulomb of every D3 and D', and one df_exchange_symmetrized of every
   // D3's and one of every D''s right factor against the left one they share.
-  // As many columns at a time as half the free memory holds, their own
-  // scratch below and the J and K scratch together (X and Y, naux nocc n_cart
-  // doubles each per column at D''s rank, and Gamma, naux per density), and
-  // the int32_t BLAS dispatch allows. One column, or integral-direct, is built
-  // as one column always was.
-  size_t width = 1;
-  if (fitted != nullptr && core_jk && k > 1) {
-    const auto naux = static_cast<size_t>(fitted->naux);
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    const size_t factor = naux * occ * n_cart;
-    const size_t per_column =
-        (2 * nn) + (na * n_all) + (6 * square) + (n_cart * (core + occ)) + factor + (2 * naux);
-    const size_t fixed = (n_all * occ) + (na * n_all) + (std::max(core, na) * n_cart) + square +
-                         (n_cart * n_all) + factor;
-    const size_t budget = free_bytes / (2 * sizeof(double));
-    const size_t int32_max = std::numeric_limits<int32_t>::max();
-    width =
-        std::max<size_t>(1, std::min({columns, budget > fixed ? (budget - fixed) / per_column : 0,
-                                      naux > 0 ? int32_max / (naux * occ) : columns}));
-  }
+  // As many columns at a time as hessian_batch_width finds room for in the
+  // memory budget. One column, or integral-direct, is built as one column
+  // always was.
+  const size_t width = fitted != nullptr && core_jk && k > 1
+                           ? FBF_TRY(hessian_batch_width(
+                                 res, n_all, core, na, static_cast<size_t>(fitted->naux), columns))
+                           : 1;
   const bool batched = width > 1;
 
   // Scratch, carved once for the block: kappa, X2 and the ncas x nmo block

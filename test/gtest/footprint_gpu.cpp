@@ -299,6 +299,48 @@ TEST(LibraryFootprint, DfJkAndMo) {
   }
 }
 
+// The block forms (#1174): what grows with the count of densities is one
+// scratch allocation, and the symmetrized K's X, the same at any count, the
+// workspace. Three densities of rank five.
+TEST(LibraryFootprint, DfJkBlocks) {
+  FBF_REQUIRE_GPU();
+  const FitInputs in;
+  constexpr std::int32_t kRank = 5;
+  constexpr std::int32_t kCount = 3;
+  const std::size_t nn = static_cast<std::size_t>(in.nao) * static_cast<std::size_t>(in.nao);
+  const std::size_t factors = static_cast<std::size_t>(in.nao) * kRank * kCount;
+  {
+    fb::DeviceResources res{0};
+    fb::Buffers::device<double> d(kCount * nn, res.device());
+    fb::Buffers::device<double> j(kCount * nn, res.device());
+    expect_routine_footprint(res, fb::df_coulomb_footprint(in.nao, in.naux, kCount), 1, [&] {
+      EXPECT_TRUE(fb::df_coulomb(res, in.nao, in.naux, kCount, in.b.data(), d.data(), j.data()));
+    });
+  }
+  {
+    fb::DeviceResources res{0};
+    fb::Buffers::device<double> left(factors, res.device());
+    fb::Buffers::device<double> right(factors, res.device());
+    fb::Buffers::device<double> k(kCount * nn, res.device());
+    expect_routine_footprint(
+        res, fb::df_exchange_footprint(in.nao, in.naux, kRank, kCount), 1, [&] {
+          EXPECT_TRUE(fb::df_exchange(res, in.nao, in.naux, kRank, kCount, in.b.data(), left.data(),
+                                      right.data(), k.data()));
+        });
+  }
+  {
+    fb::DeviceResources res{0};
+    fb::Buffers::device<double> left(factors / kCount, res.device());
+    fb::Buffers::device<double> right(factors, res.device());
+    fb::Buffers::device<double> k(kCount * nn, res.device());
+    expect_routine_footprint(
+        res, fb::df_exchange_symmetrized_footprint(in.nao, in.naux, kRank, kCount), 1, [&] {
+          EXPECT_TRUE(fb::df_exchange_symmetrized(res, in.nao, in.naux, kRank, kCount, in.b.data(),
+                                                  left.data(), right.data(), k.data()));
+        });
+  }
+}
+
 // MINAO against cc-pVDZ, as AVAS builds <MINAO AO | basis AO>, and MINAO
 // against itself.
 TEST(LibraryFootprint, MixedClassesAndOverlap) {
@@ -706,6 +748,101 @@ TEST(LibraryFootprint, Hessian) {
                : fb::response::hessian_apply_footprint(in.basis, kCore, kActive),
         fitted ? 1 : 0, [&] { EXPECT_TRUE(hessian.apply(res, 1, x.data(), y.data())); });
   }
+}
+
+// The pool cap that leaves @p room bytes of memory budget past the headroom
+// once @p warm has run: what a fresh uncapped pool holds after the same call
+// (its workspace, grown, and DeviceResources' own bytes), plus the headroom and
+// @p room. The call allocates the same on either pool, so a capped one warmed
+// by it holds the same, and its budget less the headroom is @p room.
+template <typename Warm>
+std::uint64_t cap_leaving(const std::size_t room, Warm &&warm) {
+  fb::DeviceResources probe{0};
+  warm(probe);
+  EXPECT_TRUE(probe.sync());
+  return probe.device()->pool_usage().used_current + fb::kPoolHeadroomBytes + room;
+}
+
+std::vector<double> download(fb::DeviceResources &res, const fb::Buffers::device<double> &d) {
+  std::vector<double> host(d.num_elements());
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), d.data(), sizeof(double) * host.size(),
+                                wwr::wwrMemcpyDeviceToHost, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync());
+  return host;
+}
+
+// The width only regroups the products' gemms, so Y and U at one column a
+// time against the unconstrained width are a few roundings apart: 1e-10 of
+// the largest element is a rounding bound, not a fit.
+constexpr double kWidthTol = 1e-10;
+
+// The density-fitted Hessian::apply of a block of three columns (#1174),
+// whose width is sized from the memory budget: under a cap leaving exactly
+// hessian_apply_footprint's scratch, one column at a time, held to it; under
+// a cap with room to spare, wider than that and under the cap; and Y at one
+// column a time equal to Y uncapped, to kWidthTol of max |Y|.
+TEST(LibraryFootprint, HessianBlockWidthFromTheBudget) {
+  FBF_REQUIRE_GPU();
+  CasscfInputs in;
+  const fb::CasscfIntegrals ints = in.fitted_integrals(in.inputs);
+  const fb::response::Fock f = in.fock(in.inputs, ints, true);
+  fb::response::Hessian hessian = in.hessian(in.inputs, ints, f, true);
+  constexpr std::int32_t kBlock = 3;
+  const std::size_t count = kBlock * static_cast<std::size_t>(in.pairs());
+  std::vector<double> host_x(count);
+  for (std::size_t i = 0; i < count; ++i) {
+    host_x[i] = 1e-2 * std::sin(static_cast<double>(i + 1));
+  }
+  fb::Buffers::device<double> x(count, in.inputs.device());
+  EXPECT_EQ(wwr::wwrMemcpyAsync(x.data(), host_x.data(), sizeof(double) * count,
+                                wwr::wwrMemcpyHostToDevice, in.inputs.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(in.inputs.sync());
+  // Y lives on the inputs' pool, so the pool measured holds only the call's.
+  fb::Buffers::device<double> y_least(count, in.inputs.device());
+  fb::Buffers::device<double> y_spare(count, in.inputs.device());
+  fb::Buffers::device<double> y_whole(count, in.inputs.device());
+  const auto apply = [&](fb::DeviceResources &res, fb::Buffers::device<double> &y) {
+    EXPECT_TRUE(hessian.apply(res, kBlock, x.data(), y.data()));
+  };
+  const fb::MemoryFootprint least =
+      fb::response::hessian_apply_footprint(in.nmo(), in.fit.naux, kCore, kActive);
+  {
+    fb::DeviceResources res{
+        0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0,
+        cap_leaving(least.device.scratch, [&](fb::DeviceResources &on) { apply(on, y_least); })};
+    // One column's carve, the one allocation.
+    expect_routine_footprint(res, least, 1, [&] { apply(res, y_least); });
+  }
+  {
+    const std::uint64_t cap =
+        cap_leaving(std::size_t{64} << 20, [&](fb::DeviceResources &on) { apply(on, y_spare); });
+    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    apply(res, y_spare);
+    const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { apply(res, y_spare); });
+    std::cout << std::format("[ footprint ] block of {}: measured {}, the least {}\n", kBlock,
+                             peak.used, least.device.scratch);
+    EXPECT_GT(peak.used, least.device.scratch);
+    EXPECT_LE(res.device()->pool_usage().used_high, cap);
+  }
+  {
+    fb::DeviceResources res{0};
+    apply(res, y_whole);
+    ASSERT_TRUE(res.sync());
+  }
+  const std::vector<double> narrow = download(in.inputs, y_least);
+  const std::vector<double> whole = download(in.inputs, y_whole);
+  double top = 0.0;
+  double worst = 0.0;
+  for (std::size_t i = 0; i < count; ++i) {
+    top = std::max(top, std::abs(whole[i]));
+    worst = std::max(worst, std::abs(narrow[i] - whole[i]));
+  }
+  std::cout << std::format("[ footprint ] max |Y_1 - Y| / max |Y| = {:.2e} (max |Y| {:.3e})\n",
+                           worst / top, top);
+  ASSERT_GT(top, 0.0);
+  EXPECT_LE(worst, kWidthTol * top);
 }
 
 // H~ over two singlet roots of CAS(4, 4)'s model H (the CI's integrals are

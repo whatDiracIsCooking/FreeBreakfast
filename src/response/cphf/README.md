@@ -79,13 +79,17 @@ All columns share M, so with `batched` a sweep's products are one batched
 build over the active columns' densities: their P, which `pcg_solve` hands
 the operator gathered side by side, the gemms above batched over the block,
 and J and K by the block forms of `df_coulomb` and `df_exchange`
-(`density_fitting/jk/`). A batch is as wide as half the device's free
-memory holds at the call, its own L, R, D_U, J, K and G C_o and the J/K scratch (X and Y,
-2 · naux · 2 n_occ · nao doubles a column) together, and the int32_t BLAS
-dispatch allows; a sweep wider than that runs in batches of it. **The batch
-takes half the free VRAM, and the workspace is left grown to its X and Y**
-after the call. Off, each column's product is its own `df_coulomb` and
-`df_exchange`, as before the option existed, bit for bit.
+(`density_fitting/jk/`). A batch is as wide as fits
+`res.memory_budget()` less `kPoolHeadroomBytes` (#1048), counting everything
+the call allocates, read before the first allocation: the solution, its own
+eps_a − eps_i, preconditioner, L, R, D_U, J, K and G C_o, `pcg_solve`'s
+vectors, and the block forms' J/K scratch (X and Y, 2 · naux · 2 n_occ · nao
+doubles a column, or Gamma), and the int32_t BLAS dispatch allows; a sweep
+wider than that runs in batches of it. All of it is scratch: the block forms
+allocate their X, Y and Gamma, which grow with the width, and never touch
+the workspace, which a pipeline holds at a fixed size (`core/footprint`).
+Off, each column's product is its own `df_coulomb` and `df_exchange`, as
+before the option existed, bit for bit.
 
 It is off because it is not faster on both cards. The CPHF wall clock of 3
 N_atom random right-hand sides (`bench/cphf_batched.cpp`,
@@ -105,7 +109,22 @@ is larger than the difference, and a process outside the card lock held
 1.8e-15 (3080), max |U| 0.27–0.28. The flops are the same: the batch buys
 wider gemms and fewer launches (by the arithmetic about 20 columns a build
 on the gfx1200's 16 GB, X and Y's batched gemms about 20 · 82 columns wide
-where one column's are 82).
+where one column's are 82). Those widths were taken from half the free
+memory; the budget gives the same full width on a card this size.
+
+## Memory
+
+```cpp
+MemoryFootprint response::cphf_footprint(int32_t nao, int32_t naux, int32_t nmo,
+                                         int32_t nocc, int32_t ncol, bool batched = false);
+```
+
+The solution persistent; eps_a − eps_i, the preconditioner and one column's
+product, with `pcg_solve`'s vectors beside them, scratch; unbatched, one
+column's J and K, the workspace. Batched, the scratch is the block's at one
+column, with the block J and K's scratch, and there is no workspace: that is
+its least, and the scratch grows with the width the budget allows
+(`response_cphf_gpu.cpp`'s `ResponseCphf.Footprint*`).
 
 ## Tests
 
@@ -121,6 +140,6 @@ on the nuclear and dipole columns.
 
 | File | Role |
 |------|------|
-| `cphf.cppm` | Module interface: `response::Cphf`, `response::cphf` |
+| `cphf.cppm` | Module interface: `response::Cphf`, `response::cphf`, `response::cphf_footprint` |
 | `cphf.cpp` | The product and the preconditioner as `LinearOperator`s, handed to `pcg_solve` |
 | `CMakeLists.txt` | Build configuration |

@@ -108,6 +108,37 @@ MemoryFootprint df_exchange_footprint(const int32_t nao, const int32_t naux, con
   return out;
 }
 
+MemoryFootprint df_coulomb_footprint(const int32_t nao, const int32_t naux, const int32_t count) {
+  MemoryFootprint out;
+  if (nao > 0 && naux > 0 && count > 0) {
+    out.device.scratch = sizeof(double) * static_cast<size_t>(naux) * static_cast<size_t>(count);
+  }
+  return out;
+}
+
+MemoryFootprint df_exchange_footprint(const int32_t nao, const int32_t naux, const int32_t rank,
+                                      const int32_t count) {
+  MemoryFootprint out;
+  if (nao > 0 && naux > 0 && rank > 0 && count > 0) {
+    out.device.scratch = 2 * sizeof(double) * static_cast<size_t>(naux) *
+                         static_cast<size_t>(rank) * static_cast<size_t>(count) *
+                         static_cast<size_t>(nao);
+  }
+  return out;
+}
+
+MemoryFootprint df_exchange_symmetrized_footprint(const int32_t nao, const int32_t naux,
+                                                  const int32_t rank, const int32_t count) {
+  MemoryFootprint out;
+  if (nao > 0 && naux > 0 && rank > 0 && count > 0) {
+    const size_t x =
+        static_cast<size_t>(naux) * static_cast<size_t>(rank) * static_cast<size_t>(nao);
+    out.device.workspace = math::align_up(sizeof(double) * x, DeviceResources::kWorkspaceAlignment);
+    out.device.scratch = sizeof(double) * x * static_cast<size_t>(count);
+  }
+  return out;
+}
+
 Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, const int32_t rank,
                    const double *b, const double *left, const double *right, double *k) {
   if (nao < 0 || naux < 0 || rank < 0) {
@@ -171,8 +202,11 @@ Status df_coulomb(DeviceResources &res, const int32_t nao, const int32_t naux, c
         res.stream()));
   }
   const auto pairs32 = static_cast<int32_t>(pairs);
-  const auto [gamma] =
-      res.device_regions<double>(static_cast<size_t>(naux) * static_cast<size_t>(count));
+  // Gamma grows with count, so it is scratch, never the workspace, which is
+  // held at a fixed size (core/footprint).
+  Buffers::device<double> gamma_buffer(static_cast<size_t>(naux) * static_cast<size_t>(count),
+                                       res.device());
+  double *const gamma = gamma_buffer.data();
   const wwr::wwrblasHandle_t blas = res.blas().get();
   // Gamma = B [vec(D_d)], naux x count, then [vec(J_d)] = B^T Gamma.
   FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, naux,
@@ -212,8 +246,12 @@ Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, 
   const int32_t density_rows = naux * rank; // X_d's rows; it divides rows
   const int32_t width = rank * count;       // the factors' columns, side by side
   const auto block = int64_t{naux} * nao;   // B_m's stride
+  // X and Y grow with count, so they are scratch, one allocation, never the
+  // workspace, which is held at a fixed size (core/footprint).
   const auto scratch = static_cast<size_t>(rows) * nao;
-  const auto [x, y] = res.device_regions<double>(scratch, scratch);
+  Buffers::device<double> xy(2 * scratch, res.device());
+  double *const x = xy.data();
+  double *const y = x + scratch;
   const wwr::wwrblasHandle_t blas = res.blas().get();
 
   // X_m = B_m [L_d] and Y_m = B_m [R_d] for every m: naux x (count rank) from
@@ -262,8 +300,12 @@ Status df_exchange_symmetrized(DeviceResources &res, const int32_t nao, const in
   const int32_t density_rows = naux * rank; // X's rows and Y_d's
   const int32_t width = rank * count;       // the right factors' columns, side by side
   const auto block = int64_t{naux} * nao;   // B_m's stride
-  const auto [x, y] = res.device_regions<double>(static_cast<size_t>(density_rows) * nao,
-                                                 static_cast<size_t>(rows) * nao);
+  // X, of the shared L, is the same size at any count: the workspace. Y grows
+  // with count, so it is scratch, never the workspace, which is held at a
+  // fixed size (core/footprint).
+  const auto [x] = res.device_regions<double>(static_cast<size_t>(density_rows) * nao);
+  Buffers::device<double> y_buffer(static_cast<size_t>(rows) * nao, res.device());
+  double *const y = y_buffer.data();
   const wwr::wwrblasHandle_t blas = res.blas().get();
 
   // X_m = B_m L and Y_m = B_m [R_d] for every m, the factors shared by the

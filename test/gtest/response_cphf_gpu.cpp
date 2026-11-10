@@ -5,8 +5,9 @@
 // columns against pyscf.df.hessian.rhf's solve_mo1 over the same fitting
 // set; the three dipole columns' static polarizability against PySCF's; one
 // column solved alone against the same column of the lockstep block; the
-// batched product against one column at a time; and the refusals and an
-// exhausted budget.
+// batched product against one column at a time; the refusals and an
+// exhausted budget; and cphf_footprint, both paths, with the batched width
+// sized from the memory budget (#1174).
 
 #include <gtest/gtest.h>
 
@@ -19,6 +20,8 @@ import free_breakfast.io.json;
 import free_breakfast.io.npy;
 import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.response;
+
+#include "pool_footprint.h"
 
 namespace {
 
@@ -38,6 +41,10 @@ constexpr double kTolerance = 1e-10;
 // products in other gemm shapes, through the same sweeps (1.8e-15 measured
 // on decane's 96 columns).
 constexpr double kBatchedTol = 1e-12;
+// The batched solution at one column a time against the unconstrained width,
+// of max |U|: the width only regroups the products' gemms, so this is a
+// rounding bound through the same sweeps, not a fit.
+constexpr double kWidthTol = 1e-10;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR};
 
@@ -276,6 +283,95 @@ TEST_F(ResponseCphf, BatchedMatchesOneColumnAtATime) {
       EXPECT_LE(max_diff(u_batched, g_.nuclear_solution), kSolutionTol);
     }
   }
+}
+
+// cphf's own allocations held to cphf_footprint on a fresh DeviceResources:
+// once to grow the workspace, then measured. Unbatched, the solution, the held
+// buffer and pcg_solve's vectors are live at the peak, J and K the workspace;
+// batched, under a pool cap whose budget past the headroom is the footprint
+// at its least, the block is one column wide and the J and K scratch is the
+// fourth live allocation.
+TEST_F(ResponseCphf, FootprintIsSoundAndTight) {
+  const auto rhs = device(g_.nuclear_rhs);
+  const auto ncol = static_cast<std::int32_t>(
+      g_.nuclear_rhs.size() / ((g_.nao - g_.nocc) * static_cast<std::size_t>(g_.nocc)));
+  const auto run = [&](fb::DeviceResources &on, const bool batched) {
+    auto solved = fb::response::cphf(on, *b_, g_.naux, *c_, g_.energies, g_.nocc, rhs, kTolerance,
+                                     100, batched);
+    EXPECT_TRUE(solved) << solved.error().message;
+  };
+  for (const bool batched : {false, true}) {
+    SCOPED_TRACE(batched);
+    const fb::MemoryFootprint fp =
+        fb::response::cphf_footprint(g_.nao, g_.naux, g_.nao, g_.nocc, ncol, batched);
+    ASSERT_GT(fp.device.persistent, 0U);
+    std::uint64_t cap = 0;
+    if (batched) {
+      EXPECT_EQ(fp.device.workspace, 0U);
+      fb::DeviceResources probe{0};
+      run(probe, true);
+      ASSERT_TRUE(probe.sync());
+      cap = probe.device()->pool_usage().used_current + fb::kPoolHeadroomBytes + fp.device.peak();
+    }
+    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    run(res, batched);
+    EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+    const fb::test::PoolPeak peak =
+        fb::test::measure_pool_peak(*res.device(), [&] { run(res, batched); });
+    std::cout << std::format("[ footprint ] cphf batched {}: measured {}, footprint {}\n", batched,
+                             peak.used, fp.device.persistent + fp.device.scratch);
+    fb::test::expect_footprint(
+        peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch}, batched ? 4 : 3);
+  }
+}
+
+// Batched, under a pool cap with room to spare, the block is wider than one
+// column and the pool stays under the cap; and the solution at one column a
+// time (the cap at the footprint) equals the one at the unconstrained width,
+// to kWidthTol of max |U|.
+TEST_F(ResponseCphf, BatchedWidthFromTheBudget) {
+  const auto rhs = device(g_.nuclear_rhs);
+  const auto ncol = static_cast<std::int32_t>(
+      g_.nuclear_rhs.size() / ((g_.nao - g_.nocc) * static_cast<std::size_t>(g_.nocc)));
+  const fb::MemoryFootprint least =
+      fb::response::cphf_footprint(g_.nao, g_.naux, g_.nao, g_.nocc, ncol, true);
+  const auto run = [&](fb::DeviceResources &on) {
+    auto solved =
+        fb::response::cphf(on, *b_, g_.naux, *c_, g_.energies, g_.nocc, rhs, kTolerance, 100, true);
+    EXPECT_TRUE(solved) << solved.error().message;
+    return solved ? download(on, solved->solution) : std::vector<double>{};
+  };
+  const auto cap_leaving = [&](const std::size_t room) {
+    fb::DeviceResources probe{0};
+    (void)run(probe);
+    EXPECT_TRUE(probe.sync());
+    return probe.device()->pool_usage().used_current + fb::kPoolHeadroomBytes + room;
+  };
+  std::vector<double> narrow;
+  {
+    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0,
+                            cap_leaving(least.device.peak())};
+    narrow = run(res);
+  }
+  {
+    const std::uint64_t cap = cap_leaving(std::size_t{64} << 20);
+    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    (void)run(res);
+    const fb::test::PoolPeak peak =
+        fb::test::measure_pool_peak(*res.device(), [&] { (void)run(res); });
+    std::cout << std::format("[ footprint ] cphf batched with room: measured {}, the least {}\n",
+                             peak.used, least.device.peak());
+    EXPECT_GT(peak.used, least.device.peak());
+    EXPECT_LE(res.device()->pool_usage().used_high, cap);
+  }
+  fb::DeviceResources res{0};
+  const std::vector<double> whole = run(res);
+  ASSERT_EQ(narrow.size(), whole.size());
+  const double top = max_abs(whole);
+  ASSERT_GT(top, 0.0);
+  const double worst = max_diff(narrow, whole);
+  std::cout << std::format("[ cphf     ] max |U_1 - U| / max |U| = {:.2e}\n", worst / top);
+  EXPECT_LE(worst, kWidthTol * top);
 }
 
 TEST_F(ResponseCphf, ExhaustedBudgetIsReported) {

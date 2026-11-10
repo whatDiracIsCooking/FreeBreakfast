@@ -13,6 +13,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 
 export namespace free_breakfast::response {
 
@@ -43,8 +44,11 @@ struct Cphf {
 /// D_U = 2 L R^T with L = [C_v U, C_o] and R = [C_o, C_v U]: one
 /// @c df_coulomb and one two-factor @c df_exchange of D_U per column, or with
 /// @p batched J and K of a block of columns' D_U by the block forms of both,
-/// as many columns at once as half the device's free memory holds. The two
-/// give the same U to rounding. The preconditioner is (eps_a - eps_i)^-1, a
+/// as many columns at once as res.memory_budget() holds less
+/// @c kPoolHeadroomBytes: the solution, the block's own buffer, pcg_solve's
+/// vectors and the block forms' J and K scratch, every allocation the call
+/// makes, read before the first; one column at the least. The two give the
+/// same U to rounding. The preconditioner is (eps_a - eps_i)^-1, a
 /// pair whose difference is below 1e-8 left unscaled. Both are
 /// LinearOperators handed to recipes::pcg_solve.
 ///
@@ -58,8 +62,10 @@ struct Cphf {
 /// Queued on res.stream() with res.blas() (host pointer mode); each column's
 /// step synchronizes. Its scratch is its own and pcg_solve's, allocated per
 /// call:
-/// @c df_coulomb and @c df_exchange take res.device_workspace(), which grows
-/// to one column's X and Y, or with @p batched a batch's, and stays grown.
+/// unbatched, @c df_coulomb and @c df_exchange take res.device_workspace(),
+/// which grows to one column's X and Y if it is smaller, and stays grown;
+/// batched, their block forms allocate their J and K scratch, and the
+/// workspace is not used.
 /// The device res.dev_idx() names is made current for the call and the
 /// previous one restored.
 ///
@@ -80,5 +86,24 @@ struct Cphf {
                                 std::span<const double> energies, int32_t nocc,
                                 const Buffers::device<double> &rhs, double tolerance = 1e-10,
                                 int32_t max_iterations = 100, bool batched = false);
+
+/// @brief What @ref cphf holds over @p nao AOs, @p naux fitting functions,
+/// @p nmo orbitals of which @p nocc are occupied, and @p ncol right-hand
+/// sides, @p batched or not:
+///
+/// - persistent: the solution, (nmo - nocc) nocc ncol doubles;
+/// - scratch: eps_a - eps_i, the preconditioner and one column's product,
+///   and beside them pcg_solve's vectors (recipes/pcg, 4 n ncol + 2 ncol
+///   doubles over n = (nmo - nocc) nocc); with @p batched, a block of one
+///   column and its J and K scratch, the block @c df_coulomb's or the block
+///   @c df_exchange's at rank 2 nocc, whichever is larger;
+/// - workspace: unbatched, one column's J and K, @c df_coulomb's gamma or
+///   the two-factor @c df_exchange's X and Y at rank 2 nocc; batched, none.
+///
+/// Batched, the block is as wide as the memory budget holds, so this is its
+/// least, the scratch at width 1. Empty for nocc not in [1, nmo), no AOs, a
+/// negative naux or no right-hand side.
+[[nodiscard]] MemoryFootprint cphf_footprint(int32_t nao, int32_t naux, int32_t nmo, int32_t nocc,
+                                             int32_t ncol, bool batched = false);
 
 } // namespace free_breakfast::response

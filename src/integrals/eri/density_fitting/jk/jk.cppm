@@ -87,6 +87,23 @@ export namespace free_breakfast {
 /// naux nocc nao doubles, the device workspace. Empty for nao or naux nocc 0.
 [[nodiscard]] MemoryFootprint df_exchange_footprint(int32_t nao, int32_t naux, int32_t nocc);
 
+/// @brief What the block @ref df_coulomb takes for @p count densities: Gamma,
+/// naux count doubles, scratch. Empty for nao, naux or count 0.
+[[nodiscard]] MemoryFootprint df_coulomb_footprint(int32_t nao, int32_t naux, int32_t count);
+
+/// @brief What the block two-factor @ref df_exchange takes for @p count
+/// densities of @p rank: X and Y, 2 naux count rank nao doubles, one scratch
+/// allocation. Empty for nao, naux, rank or count 0.
+[[nodiscard]] MemoryFootprint df_exchange_footprint(int32_t nao, int32_t naux, int32_t rank,
+                                                    int32_t count);
+
+/// @brief What @ref df_exchange_symmetrized takes for @p count densities of
+/// @p rank: X, naux rank nao doubles, the device workspace, the same at any
+/// count; and Y, naux count rank nao doubles, scratch. Empty for nao, naux,
+/// rank or count 0.
+[[nodiscard]] MemoryFootprint df_exchange_symmetrized_footprint(int32_t nao, int32_t naux,
+                                                                int32_t rank, int32_t count);
+
 /// @brief The density-fitted exchange matrix K_mn = sum_ls (ml|ns) D_ls of the
 /// two-factor density D = L R^T, from @p left and @p right and never from D,
 /// into @p k: X_m = B_m L and Y_m = B_m R, two batched gemms over m, then
@@ -136,9 +153,8 @@ export namespace free_breakfast {
 /// @p density and @p j are @p count packed nao x nao matrices one after
 /// another, D_d at density + nao^2 d, J_d at j + nao^2 d, read and written as
 /// df_coulomb reads and writes one; @p j is overwritten. Gamma, naux count
-/// doubles, comes from res.device_workspace(), which grows if it is smaller;
-/// none of @p b, @p density and @p j may point into it, and @p j must not
-/// overlap @p b or @p density.
+/// doubles, is scratch the call allocates and frees, not the workspace: it
+/// grows with count. @p j must not overlap @p b or @p density.
 ///
 /// Queued on res.stream() with res.blas() in host pointer mode (its default),
 /// with no host synchronization. The device res.dev_idx() names is made
@@ -176,10 +192,9 @@ export namespace free_breakfast {
 /// naux count rank. @p k is @p count packed nao x nao matrices, K_d at
 /// k + nao^2 d, overwritten.
 ///
-/// The scratch is X and Y, naux count rank nao doubles each, from
-/// res.device_workspace(), which grows if it is smaller; none of @p b,
-/// @p left, @p right and @p k may point into it, and @p k must not overlap
-/// @p b, @p left or @p right.
+/// The scratch is X and Y, naux count rank nao doubles each, one allocation
+/// the call makes and frees, not the workspace: they grow with count. @p k
+/// must not overlap @p b, @p left or @p right.
 ///
 /// Queued on res.stream() with res.blas() in host pointer mode (its default),
 /// with no host synchronization. The device res.dev_idx() names is made
@@ -221,10 +236,11 @@ export namespace free_breakfast {
 /// @p count packed nao x nao matrices, K_d at k + nao^2 d, overwritten, each
 /// exactly symmetric.
 ///
-/// The scratch is X, naux rank nao doubles, and Y, naux count rank nao, from
+/// X, naux rank nao doubles, is the same at any count, so it comes from
 /// res.device_workspace(), which grows if it is smaller; none of @p b,
-/// @p left, @p right and @p k may point into it, and @p k must not overlap
-/// @p b, @p left or @p right.
+/// @p left, @p right and @p k may point into it. Y, naux count rank nao
+/// doubles, grows with count, so it is scratch the call allocates and frees.
+/// @p k must not overlap @p b, @p left or @p right.
 ///
 /// Queued on res.stream() with res.blas() in host pointer mode (its default),
 /// with no host synchronization. The device res.dev_idx() names is made
