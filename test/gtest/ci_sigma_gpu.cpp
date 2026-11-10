@@ -20,6 +20,8 @@ import free_breakfast.recipes;
 import free_breakfast.ci;
 import free_breakfast.test.ci_oracles;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 
 namespace {
@@ -394,7 +396,7 @@ constexpr std::array<std::array<std::int32_t, 3>, 7> kSymmetricShapes{{
 TEST(CiSigmaGpu, SymmetricLayoutMatchesHost) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto doc =
       fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
   ASSERT_TRUE(doc.has_value()) << doc.error().message;
@@ -434,7 +436,7 @@ TEST(CiSigmaGpu, SymmetricLayoutMatchesHost) {
 TEST(CiSigmaGpu, SymmetricLayoutMatchesHostAtCas1212) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const Integrals ints = random_integrals(12, 412);
   check_symmetric(res, 6, ints, 1, 13, false);
   check_symmetric(res, 6, ints, 1, 13, true);
@@ -442,7 +444,7 @@ TEST(CiSigmaGpu, SymmetricLayoutMatchesHostAtCas1212) {
 
 TEST(CiSigmaGpu, MatchesHostOnDirectSpin1Cases) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto doc =
       fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
   ASSERT_TRUE(doc.has_value()) << doc.error().message;
@@ -460,7 +462,7 @@ TEST(CiSigmaGpu, MatchesHostOnDirectSpin1Cases) {
 TEST(CiSigmaGpu, MatchesHostOnRandomIntegrals) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const auto &[n, n_alpha, n_beta, k] : kRandomShapes) {
     SCOPED_TRACE(std::format("n = {}, N_alpha = {}, N_beta = {}, k = {}", n, n_alpha, n_beta, k));
     check_against_host(res, n_alpha, n_beta,
@@ -471,7 +473,7 @@ TEST(CiSigmaGpu, MatchesHostOnRandomIntegrals) {
 TEST(CiSigmaGpu, MatchesHostAtCas1212) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   check_against_host(res, 6, 6, random_integrals(12, 412), 1, 13);
 }
 
@@ -481,7 +483,7 @@ TEST(CiSigmaGpu, MatchesHostAtCas1212) {
 TEST(CiSigmaGpu, Fp32MatchesHostToFloatRounding) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto doc =
       fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
   ASSERT_TRUE(doc.has_value()) << doc.error().message;
@@ -504,7 +506,7 @@ TEST(CiSigmaGpu, Fp32MatchesHostToFloatRounding) {
 TEST(CiSigmaGpu, Fp32MatchesHostAtCas1212) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   check_fp32_against_host(res, 6, 6, random_integrals(12, 412), 1, 13);
 }
 
@@ -512,7 +514,7 @@ TEST(CiSigmaGpu, Fp32MatchesHostAtCas1212) {
 // gemv's sum across them is exercised. Needs no integrals.
 TEST(CiSigmaGpu, Rdm1MatchesHostAtCas1212) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto set = fb::ci::DeviceStringSet::create(res, 12, 6);
   ASSERT_TRUE(set.has_value());
   auto sigma = fb::ci::Sigma::create(res, *set, *set);
@@ -533,7 +535,7 @@ void check_blocked(std::int32_t n_alpha, std::int32_t n_beta, const Integrals &i
                    std::uint64_t seed, fb::ci::Layout layout, bool fp32) {
   const bool symmetric = layout == fb::ci::Layout::symmetric;
   // The sets on device 0 for every run, each run's own DeviceResources there.
-  fb::DeviceResources strings_res{0};
+  fb::DeviceResources strings_res{0, fb::test::kWorkspaces};
   const auto alpha = fb::ci::DeviceStringSet::create(strings_res, ints.n, n_alpha);
   const auto beta = fb::ci::DeviceStringSet::create(strings_res, ints.n, n_beta);
   ASSERT_TRUE(alpha.has_value() && beta.has_value());
@@ -548,7 +550,7 @@ void check_blocked(std::int32_t n_alpha, std::int32_t n_beta, const Integrals &i
   // pool's growth across the call, held to sigma_apply_bytes to the pool's
   // rounding of one allocation.
   const auto run = [&](std::optional<std::size_t> limit) {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
     EXPECT_TRUE(sigma.has_value());
     EXPECT_TRUE(sigma->set_integrals(res, ints.e_core, ints.h1, ints.eri).has_value());
@@ -570,7 +572,7 @@ void check_blocked(std::int32_t n_alpha, std::int32_t n_beta, const Integrals &i
                                   limit.value_or(std::numeric_limits<std::size_t>::max()));
     EXPECT_GE(grown, bytes);
     EXPECT_LT(grown, bytes + granularity) << "the pool's rounding of the one allocation";
-    EXPECT_EQ(res.device_workspace(0).num_elements(), 0U) << "apply takes no workspace";
+    EXPECT_EQ(res.workspace_high_water().device.workspace, 0U) << "apply takes no workspace";
     return std::pair{to_host(res, y), bytes};
   };
   const auto [want, unbounded] = run(std::nullopt);
@@ -674,7 +676,7 @@ TEST(CiSigmaGpu, BlockedMatchesUnblockedAtCas1212) {
 // ci::unpack's adjoint. m = 924 is CAS(12,12)'s singlet set.
 TEST(CiSigmaGpu, CiPackInvertsCiUnpack) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t k = 3;
   for (const std::int32_t m : {1, 4, 6, 20, 70, 924}) {
     SCOPED_TRACE(std::format("m = {}", m));
@@ -720,7 +722,7 @@ TEST(CiSigmaGpu, CiPackInvertsCiUnpack) {
 
 TEST(CiSigmaGpu, Refuses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto four = fb::ci::DeviceStringSet::create(res, 4, 2);
   const auto five = fb::ci::DeviceStringSet::create(res, 5, 2);
   const auto none = fb::ci::DeviceStringSet::create(res, 0, 0);

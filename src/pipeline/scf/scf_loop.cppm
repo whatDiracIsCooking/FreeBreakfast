@@ -116,7 +116,8 @@ constexpr double kOpenBlockBetaWeight = 0.75;
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const auto n = static_cast<int32_t>(s.n());
   const size_t nn = s.num_elements();
-  const auto [fc, fo_half, pc, po, pv, a] = res.device_regions<double>(nn, nn, nn, nn, nn, nn);
+  const auto [fc, fo_half, pc, po, pv, a] =
+      FBF_TRY(res.device_regions<double>("roothaan_fock", nn, nn, nn, nn, nn, nn));
   double *const work = st.work.data();
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n,
                                                 &kHalf<double>, open.fa.data(), n, &kHalf<double>,

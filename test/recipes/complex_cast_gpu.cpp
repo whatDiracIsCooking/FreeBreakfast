@@ -12,6 +12,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -82,7 +84,7 @@ TYPED_TEST(ComplexCast, SplitWritesEachComponentAndLeavesPaddingAlone) {
   using Z = TypeParam;
   using R = Real<Z>;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto a = complex_matrix<Z>(plane<R>(kLdc, R{1}), plane<R>(kLdc, R{-100}));
   const std::vector<R> sentinels(static_cast<std::size_t>(kLdp) * kCols, kSentinel<R>);
   fb::Buffers::device<Z> da(a.size(), res.device());
@@ -105,7 +107,7 @@ TYPED_TEST(ComplexCast, MergeBuildsEachElementAndLeavesPaddingAlone) {
   using Z = TypeParam;
   using R = Real<Z>;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto re = plane<R>(kLdp, R{1});
   const auto im = plane<R>(kLdp, R{-100});
   const std::vector<Z> sentinels(static_cast<std::size_t>(kLdc) * kCols,
@@ -141,7 +143,7 @@ TYPED_TEST(ComplexCast, SplitThenMergeRoundTripsExactly) {
     z = Z{dist(gen), dist(gen)};
   }
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<Z> da(a.size(), res.device());
   fb::Buffers::device<R> dre(a.size(), res.device());
   fb::Buffers::device<R> dim(a.size(), res.device());
@@ -165,7 +167,7 @@ TYPED_TEST(ComplexCast, EmptyBlockLaunchesNothing) {
   FBF_REQUIRE_GPU();
   using Z = TypeParam;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   EXPECT_TRUE(fb::split_planes<Z>(res, 0, kCols, nullptr, 1, nullptr, nullptr, 1));
   EXPECT_TRUE(fb::merge_planes<Z>(res, kRows, 0, nullptr, nullptr, 1, nullptr, 1));
   EXPECT_EQ(wwr::wwrStreamSynchronize(res.stream()), wwr::wwrSuccess);

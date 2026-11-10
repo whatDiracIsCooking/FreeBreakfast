@@ -49,7 +49,7 @@ namespace free_breakfast {
   devices.reserve(indices.size());
   const ScopedDeviceIndex restore{indices.front()};
   for (const int32_t idx : indices) {
-    devices.emplace_back(idx, cfg.pool_release_threshold);
+    devices.emplace_back(idx, cfg.workspaces, cfg.pool_release_threshold);
   }
   return devices;
 }

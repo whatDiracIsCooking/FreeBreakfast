@@ -14,6 +14,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes.sort;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -53,7 +55,7 @@ class MergeSortSizes : public ::testing::TestWithParam<std::size_t> {};
 
 TEST_P(MergeSortSizes, MatchesStableSort) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const std::size_t n = GetParam();
   const std::vector<double> keys = tied_keys(n, static_cast<std::uint32_t>(n));
   std::vector<std::uint32_t> order(n);
@@ -75,7 +77,7 @@ INSTANTIATE_TEST_SUITE_P(AroundOneTile, MergeSortSizes, ::testing::Values(1, 37,
 
 TEST(GatherColumns, AppliesASortsPermutation) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   constexpr std::int32_t kRows = 41;
   constexpr std::int32_t kCols = 13;
   const std::vector<double> keys = tied_keys(kCols, 7);
@@ -103,7 +105,7 @@ TEST(GatherColumns, AppliesASortsPermutation) {
 
 TEST(GatherColumns, RejectsBadArguments) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   EXPECT_TRUE(fb::gather_columns(res, 0, 5, nullptr, nullptr, nullptr));
   EXPECT_TRUE(fb::gather_columns(res, 5, 0, nullptr, nullptr, nullptr));
   for (const auto &[rows, cols] : {std::pair{-1, 5}, std::pair{5, -1}, std::pair{5, 5}}) {

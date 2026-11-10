@@ -14,6 +14,8 @@ import free_breakfast.io.base;
 import free_breakfast.io.xyz;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -29,7 +31,7 @@ constexpr std::string_view kWater = "3\n"
 
 TEST(IoXyz, ParsesAtomsAndConvertsAngstromToBohr) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto molecule = fb::parse_xyz(res, kWater);
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
   ASSERT_EQ(molecule->natoms(), 3U);
@@ -48,7 +50,7 @@ TEST(IoXyz, ParsesAtomsAndConvertsAngstromToBohr) {
 
 TEST(IoXyz, AttachesChargeAndMultiplicity) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto molecule = fb::parse_xyz(res, kWater, 1, 2);
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
   EXPECT_EQ(molecule->charge(), 1);
@@ -58,7 +60,7 @@ TEST(IoXyz, AttachesChargeAndMultiplicity) {
 
 TEST(IoXyz, ToleratesCrlfTrailingBlanksAndSymbolCase) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto molecule = fb::parse_xyz(res, "2\r\ncomment\r\nCL 0 0 0\r\nna 0 0 2.5\r\n\r\n   \n");
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
   ASSERT_EQ(molecule->natoms(), 2U);
@@ -68,7 +70,7 @@ TEST(IoXyz, ToleratesCrlfTrailingBlanksAndSymbolCase) {
 
 TEST(IoXyz, EmptyGeometryIsIoError) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // A Molecule needs at least one atom, so the reader refuses before building one.
   auto molecule = fb::parse_xyz(res, "0\nnothing here\n");
   ASSERT_FALSE(molecule.has_value());
@@ -77,7 +79,7 @@ TEST(IoXyz, EmptyGeometryIsIoError) {
 
 TEST(IoXyz, MalformedInputIsIoError) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const std::string_view text : {
            std::string_view{"3\n"},                            // no comment line
            std::string_view{"three\ncomment\n"},               // count not a number
@@ -97,7 +99,7 @@ TEST(IoXyz, MalformedInputIsIoError) {
 
 TEST(IoXyz, ReadsFromDisk) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("io_xyz");
   const auto path = dir / "water.xyz";
   ASSERT_TRUE(fb::write_file(path, kWater).has_value());
@@ -109,7 +111,7 @@ TEST(IoXyz, ReadsFromDisk) {
 
 TEST(IoXyz, ReadOfMissingFileIsIoError) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("io_xyz");
   auto molecule = fb::read_xyz(res, dir / "absent.xyz");
   ASSERT_FALSE(molecule.has_value());

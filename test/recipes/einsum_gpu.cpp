@@ -22,6 +22,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -106,7 +108,7 @@ void expect_near_all(const std::vector<double> &got, const std::vector<double> &
 
 TEST(Einsum, Matmul) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::size_t m = 7;
   constexpr std::size_t k = 33;
   constexpr std::size_t n = 5;
@@ -125,7 +127,7 @@ TEST(Einsum, Matmul) {
 
 TEST(Einsum, DiagonalAndTrace) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::size_t n = 9;
   const auto a = random_values(n * n, 3);
   std::vector<double> diagonal(n);
@@ -140,7 +142,7 @@ TEST(Einsum, DiagonalAndTrace) {
 
 TEST(Einsum, FullReductionToAScalar) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::size_t m = 40;
   constexpr std::size_t n = 31;
   const auto a = random_values(m * n, 4);
@@ -154,7 +156,7 @@ TEST(Einsum, FullReductionToAScalar) {
 
 TEST(Einsum, ReadsAStridedViewInPlace) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // Columns [c0, c0 + k) of an m x wide row-major matrix, times a k-vector.
   constexpr std::size_t m = 6;
   constexpr std::size_t wide = 11;
@@ -180,7 +182,7 @@ TEST(Einsum, ReadsAStridedViewInPlace) {
 
 TEST(Einsum, TransposeIsNumpysAxesConvention) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // The rank-6 permutation SC-NEVPT2's a16 is built with, on unequal extents
   // so a wrong reading of `axes` cannot pass.
   const std::vector<std::int64_t> dims{2, 3, 4, 2, 3, 2};
@@ -256,7 +258,7 @@ std::vector<double> host_transpose(const std::vector<double> &x,
 // for bit whatever order the atomics land in.
 void expect_transpose_bitwise(const std::vector<std::int64_t> &dims,
                               const std::vector<std::int32_t> &axes, const std::uint32_t seed) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto x = random_values(element_count(dims), seed);
   const auto want = host_transpose(x, dims, axes);
   Uploaded d_x{res, x};
@@ -287,7 +289,7 @@ TEST(Einsum, TransposeRankThreeIsExact) {
 
 TEST(Einsum, ThreeOperandContraction) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // SC-NEVPT2's "ap,lbkl,qk->pqab": a diagonal on the middle operand too.
   constexpr std::size_t na = 5;
   constexpr std::size_t np = 4;
@@ -320,7 +322,7 @@ TEST(Einsum, ThreeOperandContraction) {
 
 TEST(Einsum, SmallOutputLargeSum) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // Sr's "ipqr,pqrabc,iabc->i": an output of ni summed over six labels.
   constexpr std::size_t ni = 4;
   constexpr std::size_t no = 6;
@@ -348,7 +350,7 @@ TEST(Einsum, SmallOutputLargeSum) {
 
 TEST(Einsum, DiagonalWithEightDistinctLabels) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // energy.cpp's "jbij,rpqiac->pqrabc": every limit but the operand count at
   // once -- eight distinct labels, a rank-6 operand and output, and j
   // repeated on the first operand. One extent n throughout, as there.
@@ -387,7 +389,7 @@ TEST(Einsum, DiagonalWithEightDistinctLabels) {
 
 TEST(Einsum, AccumulatesAndScales) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::size_t m = 6;
   constexpr std::size_t k = 9;
   const auto a = random_values(m * k, 18);
@@ -425,7 +427,7 @@ TEST(Einsum, AccumulatesAndScales) {
 // row count. A length-1 row has nothing summed and is checked bit for bit.
 TEST(Einsum, RowSumAtEveryRunLength) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::size_t rows = 11;
   for (const std::size_t len : {1U, 2U, 3U, 5U, 31U, 32U, 33U, 37U, 63U, 64U, 65U, 129U}) {
     SCOPED_TRACE(std::format("row length {}", len));

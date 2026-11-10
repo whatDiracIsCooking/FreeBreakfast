@@ -70,6 +70,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
 
+#include "test_workspaces.h"
+
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
 
@@ -400,7 +402,7 @@ TEST_P(McscfOverlap, FiniteDifferenceMatchesNac) {
       own_weights ? entry.at("weights").get<std::vector<double>>() : param.weights;
   const auto start_time = std::chrono::steady_clock::now();
 
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const std::vector<double> coords = reference_coords(entry);
@@ -702,7 +704,7 @@ void expect_density_ladder(const fb::json &entry, std::span<const std::size_t> c
   const auto weights = entry.at("weights").get<std::vector<double>>();
   const auto start_time = std::chrono::steady_clock::now();
 
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const std::vector<double> coords = reference_coords(entry);

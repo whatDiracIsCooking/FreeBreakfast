@@ -31,6 +31,8 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -125,7 +127,7 @@ TEST_P(OverlapMixedCross, MatchesLibcintBothWays) {
   // largest element is a fair stand-in at this size.
   const double scale = max_abs(want);
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_matches(device_overlap_mixed(res, rows, cols), want, nr, nc, scale, "rows_cols");
 
   // Swapped: S_{cols,rows} is the transpose, so column-major cols x rows is
@@ -168,7 +170,7 @@ TEST_P(OverlapMixedCross, SphericalIsTheCartesianCarriedOver) {
     }
   }
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<double> s(sr * sc, res.device());
   ASSERT_EQ(wwr::wwrMemsetAsync(s.data(), 0xFF, sizeof(double) * s.num_elements(), res.stream()),
             wwr::wwrSuccess);
@@ -196,7 +198,7 @@ TEST_P(OverlapMixedSquare, MatchesLibcintAndOverlap) {
   const auto want = doc["arrays"]["int1e_ovlp"]["values"].get<std::vector<double>>();
   const double scale = max_abs(want);
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::vector<double> got = device_overlap_mixed(res, basis, basis);
   expect_matches(got, want, n, n, scale, "libcint");
 
@@ -315,7 +317,7 @@ TEST(OverlapMixed, SameBasisAnotherGeometryMatchesTheClosedForm) {
   const fb::BasisSet rows = sp_basis({0.0, 0.0, 0.0});
   const fb::BasisSet cols = sp_basis({0.31, -0.22, 0.47});
   const std::vector<double> want = host_overlap(rows, cols);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_matches(device_overlap_mixed(res, rows, cols), want, rows.nao_cart(), cols.nao_cart(),
                  max_abs(want), "closed_form");
 }
@@ -326,7 +328,7 @@ TEST(OverlapMixed, SameBasisAnotherGeometryMatchesTheClosedForm) {
 
 TEST(OverlapMixed, RefusesABufferOfTheWrongSize) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis = sp_basis({0.0, 0.0, 0.0});
   fb::Buffers::device<double> s(static_cast<std::size_t>(basis.nao_cart()) * basis.nao_cart() - 1,
                                 res.device());
@@ -345,7 +347,7 @@ TEST(OverlapMixed, RefusesABufferOfTheWrongSize) {
 
 TEST(OverlapMixed, RefusesAShellAboveF) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet rows = sp_basis({0.0, 0.0, 0.0});
   const fb::BasisSet cols({fb::Shell(fb::kOneElectronMaxL + 1, {{1.0, 1.0}}, Vec3{0.0, 0.0, 0.0})});
   fb::Buffers::device<double> s(static_cast<std::size_t>(rows.nao_cart()) * cols.nao_cart(),
@@ -357,7 +359,7 @@ TEST(OverlapMixed, RefusesAShellAboveF) {
 
 TEST(OverlapMixed, AnEmptyBasisBuildsNothing) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<double> s(0, res.device());
   EXPECT_TRUE(fb::overlap_mixed(res, sp_basis({0.0, 0.0, 0.0}), fb::BasisSet{}, s));
 }

@@ -65,8 +65,9 @@ upload) and not after the launches.
 
 **Not the workspace, on purpose.** The scratch is about three B's
 (`nao_cart² · (naux_cart + naux)` doubles and the staging, 29.1 GB at pHBI
-in aug-cc-pVTZ / aug-cc-pVTZ-JKFIT), used once. `res.device_workspace()` only grows, so carved
-from it the scratch stayed held for the rest of the process: B plus it filled
+in aug-cc-pVTZ / aug-cc-pVTZ-JKFIT), used once. The workspace holds its size
+for the whole run, so carved from it (when it still grew to fit) the scratch
+stayed held for the rest of the process: B plus it filled
 a 40 GB card after the Eri step, and the CASSCF step's free-memory check,
 which counts only free memory, refused a loop that fits beside B alone
 (#905). As its own buffers it goes back to the pool at return, and the pool

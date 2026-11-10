@@ -179,8 +179,8 @@ Result<std::vector<double>> state_overlaps(DeviceResources &res, const BasisSet 
   FBF_TRY(overlap_mixed_spherical(res, bra_basis, ket_basis, s_ao));
   std::vector<double> s_mo(occ * occ);
   {
-    const auto [half, mo] =
-        res.device_regions<double>(static_cast<size_t>(nao_bra) * occ, occ * occ);
+    const auto [half, mo] = FBF_TRY(res.device_regions<double>(
+        "mcscf::state_overlaps", static_cast<size_t>(nao_bra) * occ, occ * occ));
     FBF_TRY(gpu_status(gemm(blas, nao_bra, nocc, nao_ket, &kOne<double>, s_ao.data(), ket.c.data(),
                             &kZero<double>, half)));
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, nocc, nocc, nao_bra, &kOne<double>,
@@ -235,9 +235,9 @@ Result<std::vector<double>> state_overlaps(DeviceResources &res, const BasisSet 
   const auto ket_roots = static_cast<size_t>(n_ket);
   const auto na = static_cast<int32_t>(n_alpha_strings);
   const auto nb = static_cast<int32_t>(n_beta_strings);
-  const auto [a_device, b_device, y, w, s_device] = res.device_regions<double>(
-      n_alpha_strings * n_alpha_strings, n_beta_strings * n_beta_strings, dim * ket_roots,
-      dim * ket_roots, static_cast<size_t>(n_bra) * ket_roots);
+  const auto [a_device, b_device, y, w, s_device] = FBF_TRY(res.device_regions<double>(
+      "mcscf::state_overlaps", n_alpha_strings * n_alpha_strings, n_beta_strings * n_beta_strings,
+      dim * ket_roots, dim * ket_roots, static_cast<size_t>(n_bra) * ket_roots));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(a_device, alpha_overlap.data(),
                                          alpha_overlap.size() * sizeof(double),
                                          wwr::wwrMemcpyHostToDevice, res.stream())));

@@ -29,6 +29,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -114,7 +116,7 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
 // HessianOutput, checked against what hessian.json holds, @p method's. The
 // node outlives the Calculation, whose products are on its device.
 struct Ran {
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   std::optional<fb::Calculation> calc;
   double seconds{0.0};
 };

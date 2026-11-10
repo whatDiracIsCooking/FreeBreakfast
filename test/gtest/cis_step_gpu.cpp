@@ -38,6 +38,8 @@ import free_breakfast.io.json;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -225,7 +227,7 @@ TEST_P(CisStepReference, MatchesPyscf) {
       dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   ASSERT_EQ(calc->step<fb::CisStep>()->options.n_states, n_states);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &chain = calc->get<fb::CisOutput>();
@@ -270,7 +272,7 @@ TEST(CisStep, PastTheDipolesDTheEnergiesStillReturn) {
   auto calc =
       fb::read_config(write_config(dir, entry, "[cis]\nn_states = 3\n"), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &out = calc->get<fb::CisOutput>();
@@ -297,7 +299,7 @@ TEST(CisStep, TheSubspaceIsClamped) {
   const fb::test::ScratchDir dir("cis_step");
   auto calc = fb::read_config(write_config(dir, entry, ""), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   fb::DeviceResources &res = node.device(0);
@@ -339,7 +341,7 @@ TEST(CisStep, ClusteredMatchesPyscf) {
         dir.path(), dir / "out");
     ASSERT_TRUE(calc.has_value()) << calc.error().message;
     ASSERT_EQ(calc->step<fb::CisStep>()->options.cluster_gap, kGap);
-    fb::NodeResources node;
+    fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
     const fb::Status ran = calc->run(node);
     ASSERT_TRUE(ran.has_value()) << name << ": " << ran.error().message;
 
@@ -407,7 +409,7 @@ TEST(CisStep, RisMatchesPyscf) {
         dir.path(), dir / "out");
     ASSERT_TRUE(calc.has_value()) << calc.error().message;
     ASSERT_TRUE(calc->step<fb::CisStep>()->options.ris.has_value());
-    fb::NodeResources node;
+    fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
     const fb::Status ran = calc->run(node);
     ASSERT_TRUE(ran.has_value()) << name << ": " << ran.error().message;
 
@@ -458,7 +460,7 @@ TEST(CisStep, RisExchangeMatchesPyscf) {
     const auto &ris = calc->step<fb::CisStep>()->options.ris;
     ASSERT_TRUE(ris.has_value());
     ASSERT_TRUE(ris->exchange);
-    fb::NodeResources node;
+    fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
     const fb::Status ran = calc->run(node);
     ASSERT_TRUE(ran.has_value()) << name << ": " << ran.error().message;
 
@@ -507,7 +509,7 @@ TEST(CisStep, TdaRisMatchesReference) {
       dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   ASSERT_EQ(calc->step<fb::CisStep>()->options.method, cis::Method::Ris);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   ASSERT_TRUE(std::holds_alternative<fb::IntegralDirect>(calc->get<fb::EriOutput>()->eri));
@@ -547,7 +549,7 @@ TEST(CisStep, BenzeneTdaRisMatchesReference) {
   const fb::test::ScratchDir dir("cis_step");
   auto calc = fb::read_config(write_config(dir, entry, ""), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   ASSERT_TRUE(std::holds_alternative<fb::DensityFitted>(calc->get<fb::EriOutput>()->eri));
@@ -610,7 +612,7 @@ TEST(CisStep, Refusals) {
   const fb::test::ScratchDir dir("cis_step");
   auto calc = fb::read_config(write_config(dir, entry, ""), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   fb::DeviceResources &res = node.device(0);

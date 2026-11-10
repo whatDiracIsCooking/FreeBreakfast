@@ -35,6 +35,8 @@ import free_breakfast.io.npy;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -253,7 +255,7 @@ TEST_P(PipelineNevpt2, MatchesPyscf) {
                                    kDfAuxBasis)),
       dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &casscf = calc->get<fb::CasscfOutput>();
@@ -325,7 +327,7 @@ TEST_P(PipelineNevpt2FrozenCore, MatchesReference) {
                                    kDfAuxBasis, c.frozen_core)),
       dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &casscf = calc->get<fb::CasscfOutput>();
@@ -380,7 +382,7 @@ TEST(PipelineNevpt2, PcAcceptedThroughAContinuum) {
   ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
@@ -431,7 +433,7 @@ TEST(PipelineNevpt2, PcRefusalKeepsSc) {
   ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
@@ -477,7 +479,7 @@ TEST(PipelineNevpt2, AnOpenShellOrANonSingletIsUnsupported) {
   ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
 
@@ -673,7 +675,7 @@ TEST_P(PipelineQdNevpt2, MatchesGoldens) {
                               dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   ASSERT_TRUE(calc->step<fb::Nevpt2Step>()->quasi_degenerate);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &casscf = calc->get<fb::CasscfOutput>();
@@ -777,7 +779,7 @@ TEST_P(PipelineQdNevpt2FrozenCore, MatchesReference) {
           std::format("[nevpt2]\nquasi_degenerate = true\nfrozen_core = {}\n", c.frozen_core)),
       dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &casscf = calc->get<fb::CasscfOutput>();
@@ -872,7 +874,7 @@ TEST(PipelineQdNevpt2, PcQdAcceptedThroughAContinuum) {
   ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &casscf = calc->get<fb::CasscfOutput>();

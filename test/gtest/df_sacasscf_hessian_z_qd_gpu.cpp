@@ -58,6 +58,8 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -290,7 +292,8 @@ protected:
     nroots_ = weights_.size();
     const std::vector<bool> rotates = fb::response::rotating_pairs(weights_);
     rotations_ = std::ranges::contains(rotates, true);
-    node_ = std::make_unique<fb::NodeResources>();
+    node_ = std::make_unique<fb::NodeResources>(
+        fb::NodeResourcesConfig{.workspaces = fb::test::kWorkspaces});
     const fb::test::ScratchDir dir("df_sacasscf_hessian_z_qd");
     std::string xyz = std::format("{}\n{}\n", entry.at("atoms").size(), name);
     for (const fb::json &atom : entry.at("atoms")) {

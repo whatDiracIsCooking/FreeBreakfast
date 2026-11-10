@@ -29,6 +29,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -125,7 +127,7 @@ const fb::ScfStep kExactScf{.energy_tolerance = 1e-13,
 // Everything active_space_hamiltonian reads, from one converged SCF, and the
 // ScfOutput's orbitals reordered to the reference's core, active, rest.
 struct Setup {
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   std::optional<fb::Calculation> calc;
   const fb::Molecule *molecule = nullptr;
   const fb::BasisSet *basis = nullptr;

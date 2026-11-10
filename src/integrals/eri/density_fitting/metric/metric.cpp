@@ -134,7 +134,7 @@ Status metric(DeviceResources &res, const BasisSet &aux, MatrixAOPair &m) {
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
   const auto [d_records, d_pairs] =
-      res.device_regions<double, int32_t>(records.size(), pairs.size());
+      FBF_TRY((res.device_regions<double, int32_t>("metric", records.size(), pairs.size())));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_records, records.data(), sizeof(double) * records.size(),
                                          wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_pairs, pairs.data(), sizeof(int32_t) * pairs.size(),

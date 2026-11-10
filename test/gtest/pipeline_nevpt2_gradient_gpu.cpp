@@ -34,6 +34,8 @@ import free_breakfast.nevpt2;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -177,7 +179,7 @@ TEST(PipelineNevpt2Gradient, JsonMatchesScGradientAndTheNumericalGradient) {
   const fb::test::ScratchDir dir("pipeline_nevpt2_gradient");
   auto calc = fb::read_config(write_config(dir, entry, "sc"), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
@@ -258,7 +260,7 @@ TEST(PipelineNevpt2Gradient, PcJsonMatchesPcGradientAndTheNumericalGradient) {
   const fb::test::ScratchDir dir("pipeline_nevpt2_gradient_pc");
   auto calc = fb::read_config(write_config(dir, entry, "pc"), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
@@ -404,7 +406,7 @@ void expect_qd_state(std::string_view name, std::int32_t state, std::string_view
   const fb::test::ScratchDir dir(std::format("pipeline_nevpt2_gradient_qd_{}", variant));
   auto calc = fb::read_config(write_qd_config(dir, data, state, variant), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
@@ -509,7 +511,7 @@ TEST(PipelineNevpt2Gradient, QdPcThroughAContinuumRefusesOnlyTheDegeneratePair) 
   ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::Numerical) << ran.error().message;
@@ -552,7 +554,7 @@ TEST(PipelineNevpt2Gradient, PcRefusalIsTheEnergyStepsRefusal) {
   ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::Numerical) << ran.error().message;
@@ -650,7 +652,7 @@ void expect_frozen_qd_state(std::string_view variant) {
       x0.push_back(c);
     }
   }
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   // E_1 (and the file) at @p x; the [nevpt2] step's QD energies too with
   // @p energy_step.
   const auto run = [&](std::span<const double> x, const bool energy_step,

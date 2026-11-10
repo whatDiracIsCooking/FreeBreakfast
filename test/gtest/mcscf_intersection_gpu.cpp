@@ -61,6 +61,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
 
+#include "test_workspaces.h"
+
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
 
@@ -128,7 +130,7 @@ std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeRe
 // A reference case's converged DF-SA-CASSCF, kept together because the
 // outputs refer into the calculation.
 struct Converged {
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   std::optional<fb::Calculation> calc;
   std::optional<fb::EriOutput> fitted;
   std::optional<fb::ActiveSpace> space;
@@ -158,7 +160,7 @@ std::optional<fb::SphericalMatrixAO> carried_orbitals(fb::DeviceResources &res,
                                                  wwr::wwrMemcpyHostToDevice, res.stream()))
                   .has_value());
   {
-    const auto [work] = res.device_regions<double>(n2);
+    const auto [work] = res.device_regions<double>("carry", n2).value();
     EXPECT_TRUE(
         fb::gpu_status(fb::gemmwich(res.blas(), n, previous.data(), s.data(), work, m.data()))
             .has_value());

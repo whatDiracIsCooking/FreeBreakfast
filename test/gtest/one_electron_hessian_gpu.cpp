@@ -31,6 +31,8 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 
 namespace {
@@ -139,7 +141,7 @@ TEST_P(OneElectronHessianGolden, MatchesPySCF) {
   const std::string name = GetParam();
   const fb::json c = read_case(name);
   ASSERT_FALSE(c.is_null());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule(res, case_atoms(c));
   const auto stamp = fb::resolve_basis(c["basis"].get<std::string>());
   ASSERT_TRUE(stamp) << stamp.error().message;
@@ -199,7 +201,7 @@ INSTANTIATE_TEST_SUITE_P(H2O, OneElectronHessianGolden,
 // and zero for a lone atom.
 TEST(NuclearRepulsionHessian, SymmetricAndZeroForOneAtom) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule lone(
       res, {fb::Atom{fb::Vec<double, 3>{0.3, 0.0, -1.0}, static_cast<fb::Element>(8)}});
   EXPECT_EQ(fb::nuclear_repulsion_hessian(lone), std::vector<double>(9, 0.0));
@@ -219,7 +221,7 @@ TEST(NuclearRepulsionHessian, SymmetricAndZeroForOneAtom) {
 // Each refusal before anything is launched, naming the input refused.
 TEST(OneElectronHessian, Refusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule(
       res, {fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, static_cast<fb::Element>(1)},
             fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 1.4}, static_cast<fb::Element>(1)}});
@@ -264,7 +266,7 @@ TEST(OneElectronHessian, Footprint) {
   FBF_REQUIRE_GPU();
   const fb::json c = read_case("h2o_ccpvdz");
   ASSERT_FALSE(c.is_null());
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const fb::Molecule molecule(inputs, case_atoms(c));
   const auto stamp = fb::resolve_basis(c["basis"].get<std::string>());
   ASSERT_TRUE(stamp) << stamp.error().message;
@@ -275,7 +277,7 @@ TEST(OneElectronHessian, Footprint) {
   ASSERT_TRUE(classes) << classes.error().message;
   ASSERT_TRUE(inputs.sync());
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::SphericalMatrixAO m(res, *basis);
   const fb::MemoryFootprint fp = fb::one_electron_hessian_footprint(*basis);
   EXPECT_EQ(fp.device.persistent, 0U);
@@ -284,7 +286,7 @@ TEST(OneElectronHessian, Footprint) {
   const std::size_t pinned_before = res.pinned_bytes();
   const auto held = [&](const auto &call) {
     call();
-    EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
+    EXPECT_EQ(res.workspace_high_water().device.workspace, 0U);
     EXPECT_EQ(res.pinned_bytes(), pinned_before);
     fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), call), fp.device, 7);
   };

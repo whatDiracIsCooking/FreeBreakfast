@@ -19,6 +19,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.experimental.sort.radix;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -132,7 +134,7 @@ void expect_same(const Values &got, const Values &want) {
 
 TEST(RadixSortGpu, MatchesTotalOrderOnRandomBits) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const std::int32_t n : sizes()) {
     SCOPED_TRACE(std::format("n = {}", n));
     const Keys in = random_bit_keys(static_cast<std::size_t>(n), 1234U + n);
@@ -147,7 +149,7 @@ TEST(RadixSortGpu, MatchesTotalOrderOnRandomBits) {
 // decades, where total order and operator< agree.
 TEST(RadixSortGpu, MatchesStdSortOnFiniteValues) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::int32_t n = 50'000;
   std::mt19937_64 gen{77};
   std::uniform_real_distribution<double> mantissa{-1.0, 1.0};
@@ -165,7 +167,7 @@ TEST(RadixSortGpu, MatchesStdSortOnFiniteValues) {
 // Every special value, shuffled, against the order written out by hand.
 TEST(RadixSortGpu, SpecialValuesInTotalOrder) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr double kMax = std::numeric_limits<double>::max();
   constexpr double kMinNormal = std::numeric_limits<double>::min();
   constexpr double kMinSubnormal = std::numeric_limits<double>::denorm_min();
@@ -182,7 +184,7 @@ TEST(RadixSortGpu, SpecialValuesInTotalOrder) {
 // Already sorted, reversed, and all equal.
 TEST(RadixSortGpu, OrderedInputs) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::int32_t n = 5000;
   Keys ascending(static_cast<std::size_t>(n));
   for (std::size_t i = 0; i < ascending.size(); ++i) {
@@ -201,7 +203,7 @@ TEST(RadixSortGpu, OrderedInputs) {
 // values must be exactly std::stable_sort's permutation.
 TEST(RadixSortGpu, CarriesValuesStably) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::array<double, 7> kDistinct{-kInf, -2.5, -0.0, 0.0, 1e-300, 7.0, kNaN};
   for (const std::int32_t n : sizes()) {
     SCOPED_TRACE(std::format("n = {}", n));
@@ -235,7 +237,7 @@ TEST(RadixSortGpu, CarriesValuesStably) {
 // n <= 0 touches nothing and succeeds; null keys prove nothing is read.
 TEST(RadixSortGpu, EmptyIsANoOp) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   EXPECT_TRUE(fb::radix_sort(res, 0, nullptr));
   EXPECT_TRUE(fb::radix_sort(res, -3, nullptr, nullptr));
   EXPECT_TRUE(fb::cub_radix_sort(res, 0, nullptr));
@@ -246,7 +248,7 @@ TEST(RadixSortGpu, EmptyIsANoOp) {
 // appears -- the two sorts must agree on every key bit and every index.
 TEST(RadixSortGpu, AgreesWithVendorSort) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const std::int32_t n : sizes()) {
     SCOPED_TRACE(std::format("n = {}", n));
     const Keys in = random_bit_keys(static_cast<std::size_t>(n), 4321U + n);
@@ -263,7 +265,7 @@ TEST(RadixSortGpu, AgreesWithVendorSort) {
 // input order. Pinned so the README's claim is checked, not remembered.
 TEST(RadixSortGpu, VendorTreatsSignedZerosAsEqual) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const Keys in{0.0, -0.0, 1.0, -1.0, 0.0, -0.0};
   DeviceSort sort{res, static_cast<std::int32_t>(in.size())};
 

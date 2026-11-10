@@ -51,7 +51,7 @@ it; it stays until events replace those waits, as for `Molecule`'s nuclei.
 
 Its scratch is never part of a product: U and the eigenvalues are pool buffers
 freed when it returns, and syevd's work and the scaled U come from
-`res.device_workspace()`, which grows if it has to.
+`res.device_workspace()`, held from its construction.
 
 ## Tests
 

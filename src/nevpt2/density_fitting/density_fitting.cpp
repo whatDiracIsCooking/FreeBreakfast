@@ -411,9 +411,9 @@ Status build_slab_adjoint(DeviceResources &res, const int32_t naux, const SlabOp
   const ScopedDeviceIndex on{res.dev_idx()};
   const bool identity = op.axes == std::array<int32_t, 4>{0, 1, 2, 3};
   const bool whole = nb == op.x.nx;
-  const auto [c_scratch, x_scratch] =
-      res.device_regions<double>(identity ? size_t{0} : static_cast<size_t>(count),
-                                 whole ? size_t{0} : static_cast<size_t>(int64_t{naux} * rows));
+  const auto [c_scratch, x_scratch] = FBF_TRY(res.device_regions<double>(
+      "nevpt2::build_slab_adjoint", identity ? size_t{0} : static_cast<size_t>(count),
+      whole ? size_t{0} : static_cast<size_t>(int64_t{naux} * rows)));
 
   // C-bar: the slab bar permuted back, out axis axes[k] = slab axis k.
   const double *c_bar = bar;
@@ -538,7 +538,8 @@ Status mo_blocks_adjoint(DeviceResources &res, const MoBlocks &bar, const double
   }
   if (bar.vc.num_elements() != 0) {
     // B_vc's bar, swapped back into B_cv's layout, then added at B_cv's place.
-    double *const cv = std::get<0>(res.device_regions<double>(bar.vc.num_elements()));
+    double *const cv = std::get<0>(
+        FBF_TRY(res.device_regions<double>("nevpt2::mo_blocks_adjoint", bar.vc.num_elements())));
     FBF_TRY(permute_slab(res, {naux, bar.nvirt, bar.ncore, 1}, {0, 2, 1, 3}, bar.vc.data(), cv));
     FBF_TRY(add_plain(block_operand(bar, MoBlock::Cv), cv));
   }

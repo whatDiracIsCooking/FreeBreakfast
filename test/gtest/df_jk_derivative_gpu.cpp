@@ -27,6 +27,8 @@ import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.density_fitting;
 import free_breakfast.gradient;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -143,7 +145,7 @@ void check_case(const std::string &name) {
   const fb::json *c = find_case(*doc, name);
   ASSERT_NE(c, nullptr) << "no case " << name;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule = molecule_of(res, *c);
   const auto stamp = fb::resolve_basis((*c)["basis"].get<std::string>());
   ASSERT_TRUE(stamp) << stamp.error().message;
@@ -285,7 +287,7 @@ TEST(DfJkDerivative, BuildingBlocksMatchTheGradients) {
   ASSERT_TRUE(doc) << doc.error().message;
   const fb::json *c = find_case(*doc, "h2o_ccpvtz");
   ASSERT_NE(c, nullptr);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule = molecule_of(res, *c);
   const auto stamp = fb::resolve_basis((*c)["basis"].get<std::string>());
   ASSERT_TRUE(stamp) << stamp.error().message;
@@ -389,11 +391,10 @@ TEST(DfJkDerivative, BuildingBlocksMatchTheGradients) {
 
 // Bases not made by place(), an occupation past the orbitals, an atom past
 // the bases, a shell past the ladders, an index past the kernels' 32 bits and
-// scratch past the device's memory: each refused before anything is launched.
-// The last only where the card's free memory is small enough to be passed.
+// scratch past the device workspace: each refused before anything is launched.
 TEST(DfJkDerivative, Refusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto placed = [](std::vector<fb::Shell> shells) {
     const auto count = static_cast<std::uint32_t>(shells.size());
     return fb::BasisSet{std::move(shells), {0, count}};
@@ -413,23 +414,11 @@ TEST(DfJkDerivative, Refusals) {
   const fb::BasisSet too_wide_aux = d_shells(4600);         // 27600 Cartesian
   fb::Buffers::device<double> scratch(64, res.device());
   double *const p = scratch.data();
-  // The scratch refusals hold only on a card with less free memory than
-  // huge_aux's Cartesian metric derivative alone, 3 n_cart^2 doubles (13.8 GB),
-  // which both calls count. No bigger aux set reaches them on a bigger card:
-  // past ~26,750 Cartesian functions the 32-bit index refusal fires first. So
-  // on an A10, A100 or H100 the calls would be ACCEPTED -- minutes of work
-  // written through the 64-double p -- and they are not made there (#790).
-  std::size_t free_bytes = 0;
-  std::size_t total_bytes = 0;
-  ASSERT_EQ(wwr::wwrMemGetInfo(&free_bytes, &total_bytes), wwr::wwrSuccess);
-  const std::size_t huge_floor = sizeof(double) * 3 * kHugeAuxCart * kHugeAuxCart;
-  const bool scratch_refusable = free_bytes < huge_floor;
-  if (!scratch_refusable) {
-    std::cout << "[ refusal  ] scratch refusals not run: " << free_bytes
-              << " bytes free, and huge_aux needs at least " << huge_floor << "\n";
-    RecordProperty("scratch_refusals", "not run: the card has the memory");
-  }
-
+  // The scratch refusals: huge_aux's carve (3 n_cart^2 doubles of Cartesian
+  // metric derivative alone, 13.8 GB) is past the workspace on every card,
+  // and the borrow refuses it before anything is staged (#1123). It used to
+  // be refused against the card's free memory, and so only on a card with
+  // less than that (#790).
   const auto classes = fb::primitive_pair_classes(res, one_s);
   ASSERT_TRUE(classes) << classes.error().message;
   const auto refusal = [](const fb::Status &st, const fb::ErrorKind kind, const std::string &says) {
@@ -446,18 +435,14 @@ TEST(DfJkDerivative, Refusals) {
   refusal(jk(one_s, 2), fb::ErrorKind::InvalidConfig, "df_jk_derivative: nocc 2 is outside [0, 1]");
   refusal(jk(one_s, -1), fb::ErrorKind::InvalidConfig, "nocc -1 is outside");
   refusal(jk(too_wide_aux, 1), fb::ErrorKind::Unsupported, "32-bit indices");
-  if (scratch_refusable) {
-    refusal(jk(huge_aux, 1), fb::ErrorKind::Unsupported, "bytes of device scratch");
-  }
+  refusal(jk(huge_aux, 1), fb::ErrorKind::Unsupported, "df_jk_derivative: borrows");
 
   refusal(fb::metric_derivative(res, unplaced, p), fb::ErrorKind::InvalidConfig,
           "metric_derivative: the aux basis has no atoms");
   refusal(fb::metric_derivative(res, k_aux, p), fb::ErrorKind::InvalidConfig,
           "no kernel for an aux shell of momentum 7");
-  if (scratch_refusable) {
-    refusal(fb::metric_derivative(res, huge_aux, p), fb::ErrorKind::Unsupported,
-            "bytes of device scratch");
-  }
+  refusal(fb::metric_derivative(res, huge_aux, p), fb::ErrorKind::Unsupported,
+          "metric_derivative: borrows");
   refusal(fb::three_center_derivative(res, one_s, *classes, one_s, 1, p),
           fb::ErrorKind::InvalidConfig, "three_center_derivative: atom 1 is not one of");
   refusal(fb::three_center_derivative(res, one_s, *classes, unplaced, 0, p),

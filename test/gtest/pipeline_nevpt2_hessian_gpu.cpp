@@ -39,6 +39,8 @@ import free_breakfast.nevpt2;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -169,7 +171,7 @@ std::pair<fb::Status, fb::json> run_ladder(std::string_view name, std::string_vi
     return {fb::Status{}, fb::json{}};
   }
   fb::Calculation calc = std::move(*read);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto t0 = std::chrono::steady_clock::now();
   fb::Status ran = calc.run(node);
   const double seconds =
@@ -351,7 +353,7 @@ TEST(PipelineNevpt2Hessian, StepRefusesBeforeAnyDisplacedSolve) {
   ASSERT_TRUE(read.has_value()) << read.error().message;
   fb::HessianStep planned = *read->step<fb::HessianStep>();
   planned.json_path.clear();
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
   auto molecule = fb::MoleculeStep{.xyz = dir / "molecule.xyz"}.run(fb::View<>{}, res);
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;

@@ -143,7 +143,8 @@ Result<ZcAdjoint> zc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
 
   Buffers::device<double> h_mo = FBF_TRY(zeroed(res, nmo2));
   {
-    double *const work = std::get<0>(res.device_regions<double>(static_cast<size_t>(nao) * nmo));
+    double *const work = std::get<0>(
+        FBF_TRY(res.device_regions<double>("nevpt2::zc_adjoint", static_cast<size_t>(nao) * nmo)));
     FBF_TRY(gpu_status(gemmwich(res.blas(), nmo, nao, c, h, work, h_mo.data())));
   }
   Buffers::device<double> bmo(static_cast<size_t>(lb * nmo), res.device());
@@ -182,8 +183,8 @@ Result<ZcAdjoint> zc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
   if (naux > 0) {
     // Two naux nmo^2 regions, held across nothing that takes the workspace:
     // gemm, gemmStridedBatched and einsum take none.
-    const auto [left, prod] =
-        res.device_regions<double>(static_cast<size_t>(lb * nmo), static_cast<size_t>(lb * nmo));
+    const auto [left, prod] = FBF_TRY(res.device_regions<double>(
+        "nevpt2::zc_adjoint", static_cast<size_t>(lb * nmo), static_cast<size_t>(lb * nmo)));
     // M (L, r, q) = sum_s M_s B_L,sq for a symmetric M_s: per q, the naux x
     // nmo block B(., ., q) times M, so a left product per L is one
     // strided-batched gemm over q.

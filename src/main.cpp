@@ -11,8 +11,8 @@
 /// config's paths are relative to the input directory (default `.`), and every
 /// file the run writes lands in the output directory (default `fbf_output`),
 /// named after the step that wrote it. `read_config` plans the pipeline,
-/// `preflight` holds it to the config's `[memory]` caps and sets the node up
-/// under them, `run` runs it, and main prints each product the pipeline built.
+/// `preflight` sizes the node's workspaces to its maximum and holds it to the
+/// config's `[memory]` caps, `run` runs it, and main prints each product the pipeline built.
 
 #include "diagnostics.h"
 
@@ -237,9 +237,10 @@ fb::Status run(std::span<char *const> args) {
 
   fb::NodeResources node;
   node.log();
-  // Under a [memory] cap: refused here if the plan cannot fit, before any
-  // step runs; the devices rebuilt with the caps, their workspaces grown to
-  // the plan's maximum and the pool pre-warmed. Without one, nothing.
+  // The devices rebuilt with their workspaces at the plan's maximum, held for
+  // the run; under a [memory] cap the plan refused here if it cannot fit,
+  // before any step runs, and the devices built with the caps and the pool
+  // pre-warmed.
   FBF_TRY(fb::preflight(calc, node));
   FBF_TRY(calc.run(node));
   print_products(calc);

@@ -82,10 +82,10 @@ whole block at once.
 `nonsymmetric_jk`, which takes the device workspace, so they are the sigma's
 own (`docs/style.md` "Scratch memory"): two `MatrixAOPair`s (D and R, each
 with its own conversion scratch), one `CartesianMatrixAO` and the
-n_ao × n_occ `half`, about 3 n_cart² + 3 n_sph² + n_sph · n_occ doubles. `create`
-also grows the workspace to `nonsymmetric_jk`'s one n_cart² block, so no
-`apply`, not even the first, allocates anything of the sigma's or grows the
-workspace. `coulomb`'s and `exchange`'s own scratch is their classes',
+n_ao × n_occ `half`, about 3 n_cart² + 3 n_sph² + n_sph · n_occ doubles.
+`nonsymmetric_jk`'s one n_cart² block is the workspace's, held from its
+construction, so no `apply`, not even the first, allocates anything of the
+sigma's. `coulomb`'s and `exchange`'s own scratch is their classes',
 allocated once per basis, so an `apply` takes nothing from the device's pool:
 the test holds a second `apply` of four columns to exactly that, and to
 leaving the workspace where it was.
@@ -167,11 +167,11 @@ second.
 **The memory.** B_vo, B_oo and B_vv are the sigma's own, naux (n_ov + n_occ² +
 n_virt²) doubles, with B_vv the dominant one (benzene / cc-pVDZ over
 cc-pVDZ-JKFIT, naux 558: 39 MB of B_vv in 49 MB in all). T and W are scratch from the device workspace,
-which `create` grows for blocks of `max_block` columns, so no `apply`
-allocates or grows anything. `create` adds up the blocks and the workspace's
-growth, which is the larger of `b_mo`'s half transform and `apply`'s regions,
-and returns `Unsupported` naming the bytes when they are past
-the device's memory budget (`DeviceResources::memory_budget()`). It does that before it allocates
+held from its construction; `create` borrows them once for blocks of
+`max_block` columns, so a workspace too small is refused there, and no
+`apply` allocates anything. `create` adds up the blocks and returns
+`Unsupported` naming the bytes when they are past the device's memory budget
+(`DeviceResources::memory_budget()`). It does that before it allocates
 anything, since an allocation past the budget aborts under `CreatePolicy`. A wider block is run in
 slices of `max_block`. `CisStep` creates it at the guess's column count, the
 widest block `davidson_solve` applies. Chunking the exchange term over Q, so

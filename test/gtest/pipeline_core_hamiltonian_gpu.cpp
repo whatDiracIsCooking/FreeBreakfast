@@ -16,6 +16,8 @@ import free_breakfast.integrals.one_electron.launch; // kOneElectronMaxL
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.core_hamiltonian;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -62,7 +64,7 @@ fb::Result<fb::CoreHamiltonianOutput> step_core_hamiltonian(fb::DeviceResources 
 
 TEST(PipelineCoreHamiltonian, MatchesCoreHamiltonianThenCartesianToSpherical) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::MoleculeOutput molecule = water(res);
   const fb::Vec<double, 3> o = molecule.molecule.atoms()[0].position;
   const fb::Vec<double, 3> h1 = molecule.molecule.atoms()[1].position;
@@ -92,7 +94,7 @@ TEST(PipelineCoreHamiltonian, MatchesCoreHamiltonianThenCartesianToSpherical) {
 
 TEST(PipelineCoreHamiltonian, ClassAboveFIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::MoleculeOutput molecule = water(res);
   const fb::BasisSetOutput basis{
       fb::BasisSet({shell(fb::kOneElectronMaxL + 1, 1.0, molecule.molecule.atoms()[0].position)})};

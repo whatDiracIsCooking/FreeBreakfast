@@ -31,6 +31,8 @@ import free_breakfast.io.json;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -166,7 +168,7 @@ TEST(E2eCis, BenzeneCcpvdzDensityFitted) {
       dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   ASSERT_TRUE(calc->step<fb::CisStep>()->options.ris.has_value());
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << kName << ": " << ran.error().message;
   const auto &ris_j = calc->get<fb::CisOutput>();

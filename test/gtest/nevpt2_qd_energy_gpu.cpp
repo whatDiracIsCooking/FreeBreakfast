@@ -24,6 +24,8 @@ import free_breakfast.io.npy;
 import free_breakfast.ci;
 import free_breakfast.nevpt2;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -252,7 +254,7 @@ TEST_P(Nevpt2QdEnergy, MatchesGoldenDiagonalAndBatches) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const std::filesystem::path dir = kDataDir / name;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Case c = load_case(res, dir);
   ASSERT_TRUE(c.blocks.has_value());
   golden_rdms(res, dir, c);
@@ -290,7 +292,7 @@ TEST_P(Nevpt2PcQdEnergy, MatchesGoldenDiagonalAndBatches) {
   FBF_REQUIRE_GPU();
   const std::string name = GetParam();
   const std::filesystem::path dir = kDataDir / name;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Case c = load_case(res, dir);
   ASSERT_TRUE(c.blocks.has_value());
   golden_rdms(res, dir, c);
@@ -377,7 +379,7 @@ TEST_P(Nevpt2QdEnergyPairs, DiagonalOnceMatchesPerPairPath) {
   // Every case walks whole (batch 0): the six-orbital one is 0.7 s on an RTX
   // 3080, so all stay in the fast tier.
   const std::filesystem::path dir = kDataDir / name;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Case c = load_case(res, dir);
   ASSERT_TRUE(c.blocks.has_value());
   golden_rdms(res, dir, c);
@@ -456,7 +458,7 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdEnergyPairs, ::testing::ValuesIn(kCases)
 TEST(Nevpt2PcQdEnergyRefusals, RefusesWhatPcClassEnergiesRefuses) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / "h8_sto3g_sa3";
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Case c = load_case(res, dir);
   ASSERT_TRUE(c.blocks.has_value());
   golden_rdms(res, dir, c);
@@ -496,7 +498,7 @@ TEST_P(Nevpt2QdEnergyDeviceRdms, MatchesGolden) {
   FBF_REQUIRE_GPU();
   const auto [name, per_spin] = GetParam();
   const std::filesystem::path dir = kDataDir / name;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Case c = load_case(res, dir);
   ASSERT_TRUE(c.blocks.has_value());
   const std::size_t na = c.ncas;
@@ -566,7 +568,7 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdEnergyDeviceRdms,
 TEST(Nevpt2QdEnergyRefusals, MalformedPairsAreInvalidConfig) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / "h6_631g_sa2";
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Case c = load_case(res, dir);
   ASSERT_TRUE(c.blocks.has_value());
   golden_rdms(res, dir, c);

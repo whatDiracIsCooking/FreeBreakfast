@@ -13,6 +13,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -76,7 +78,7 @@ TEST_P(Symmetrize, AveragesWithTheTransposeBitwise) {
   const auto ld = static_cast<std::size_t>(lda);
   const std::vector<double> a = random_block(n, lda);
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::vector<double> got =
       run(res, a, [&](double *d) { return fb::symmetrize(res, n, d, lda); });
   for (std::int32_t j = 0; j < n; ++j) {
@@ -103,7 +105,7 @@ TEST_P(Symmetrize, LeavesASymmetricMatrixUnchanged) {
     }
   }
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::vector<double> got =
       run(res, a, [&](double *d) { return fb::symmetrize(res, n, d, lda); });
   ASSERT_TRUE(std::ranges::equal(got, a, same_bits));
@@ -119,7 +121,7 @@ TEST_P(Symmetrize, MirrorsEitherTriangleBitwise) {
   const auto ld = static_cast<std::size_t>(lda);
   constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const bool from_lower : {true, false}) {
     std::vector<double> a = random_block(n, lda);
     for (std::int32_t j = 0; j < n; ++j) {
@@ -152,7 +154,7 @@ INSTANTIATE_TEST_SUITE_P(Orders, Symmetrize,
 
 TEST(SymmetrizeArguments, EmptySucceedsAndBadShapesAreInvalid) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // Packed and empty, lda = n = 0, as a caller passing its order twice has it.
   EXPECT_TRUE(fb::symmetrize(res, 0, nullptr, 0).has_value());
   EXPECT_TRUE(fb::symmetrize(res, wwr::WWRBLAS_FILL_MODE_LOWER, 0, nullptr, 0).has_value());

@@ -34,6 +34,8 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 // After the imports: they name std::filesystem, wwr and Device from this
 // unit's imports.
 #include "pool_footprint.h"
@@ -175,7 +177,7 @@ protected:
       }
     }
     ASSERT_FALSE(case_.is_null()) << "no case " << name;
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     for (const auto &atom : case_["atoms"]) {
       const auto xyz = atom["coord"].get<std::vector<double>>();
       atoms_.push_back(fb::Atom{fb::Vec<double, 3>{xyz[0], xyz[1], xyz[2]},
@@ -354,7 +356,7 @@ TEST_F(HessianDfRhf, WaterMatchesCentralDifference) {
   ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &numerical = calc->get<fb::HessianOutput>();
@@ -443,14 +445,14 @@ TEST_F(HessianDfRhf, FootprintAndBatchFromTheBudget) {
   };
   std::size_t held = 0;
   {
-    fb::DeviceResources probe{0};
+    fb::DeviceResources probe{0, fp};
     (void)run(probe);
     ASSERT_TRUE(probe.sync());
-    EXPECT_EQ(probe.device_workspace(0).num_elements(), fp.device.workspace);
+    EXPECT_EQ(probe.workspace_high_water().device.workspace, fp.device.workspace);
     held = probe.device()->pool_usage().used_current;
   }
   const auto measured = [&](const std::uint64_t cap, std::vector<double> &h) {
-    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    fb::DeviceResources res{0, fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
     h = run(res);
     const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { (void)run(res); });
     EXPECT_LE(res.device()->pool_usage().used_high, cap);

@@ -23,6 +23,8 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "test_workspaces.h"
+
 #include "mmd_records.h"
 
 namespace {
@@ -84,7 +86,7 @@ void upload(fb::DeviceResources &res, const std::vector<double> &host, fb::Carte
 // J of g's density at tau from every record (J's classes pruned at 0),
 // downloaded.
 std::vector<double> golden_j(const Golden &g, const double tau) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto classes = fb::primitive_pair_classes(res, g.basis);
   EXPECT_TRUE(classes);
   if (!classes) {
@@ -179,7 +181,7 @@ struct PrunedJ {
 };
 
 PrunedJ pruned_j(const Golden &g, const double tau, const double prune = 1e-13) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto classes = fb::primitive_pair_classes(res, g.basis);
   EXPECT_TRUE(classes);
   if (!classes) {
@@ -304,7 +306,7 @@ TEST_P(CoulombPairClassesPrune, KeepsTheHostPrunesRecords) {
   FBF_REQUIRE_GPU();
   const Golden g = read_golden(GetParam());
   ASSERT_FALSE(g.vj.empty());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto classes = fb::primitive_pair_classes(res, g.basis);
   ASSERT_TRUE(classes);
   // mmd's records exist on the device only: copy back what the host prune and
@@ -374,7 +376,7 @@ INSTANTIATE_TEST_SUITE_P(Molecules, CoulombPairClassesPrune,
 
 TEST(CoulombPairClasses, RefusesANegativeOrNaNTauAndAClassAboveF) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet s_shell({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const auto classes = fb::primitive_pair_classes(res, s_shell);
   ASSERT_TRUE(classes);
@@ -404,7 +406,7 @@ TEST(Coulomb, ReusedClassesGiveEachDensitysJ) {
   for (const double v : g.vj) {
     scale = std::max(scale, std::abs(v));
   }
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto mmd = fb::primitive_pair_classes(res, g.basis);
   ASSERT_TRUE(mmd);
   auto classes = fb::coulomb_pair_classes(res, *mmd, 0.0);
@@ -434,7 +436,7 @@ TEST(Coulomb, ReusedClassesGiveEachDensitysJ) {
 
 TEST(Coulomb, ZeroesTheMatrixFirst) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const fb::CartesianMatrixAO density(res, basis);
   fb::CartesianMatrixAO j(res, basis);
@@ -460,7 +462,7 @@ TEST(Coulomb, ATauAboveEveryBoundScreensEverything) {
 
 TEST(Coulomb, RefusesANegativeOrNaNTau) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const auto mmd = fb::primitive_pair_classes(res, basis);
   ASSERT_TRUE(mmd);
@@ -477,7 +479,7 @@ TEST(Coulomb, RefusesANegativeOrNaNTau) {
 
 TEST(Coulomb, RefusesADensityOfAnotherOrder) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet one({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const fb::BasisSet two({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0}),
                           fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 1.0})});
@@ -496,7 +498,7 @@ TEST(Coulomb, RefusesADensityOfAnotherOrder) {
 // is an s class relabelled, which coulomb must still refuse.
 TEST(Coulomb, RefusesAClassAboveF) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const auto mmd = fb::primitive_pair_classes(res, basis);
   ASSERT_TRUE(mmd);

@@ -92,8 +92,8 @@ The vectors are the device's; the Hessenberg column comes back each step
 (two Gram-Schmidt passes' coefficients and the new vector's norm), and the
 Givens rotations and the back substitution run on the host, over at most
 `k_max_inner_iters` entries. The Krylov basis and the rest of the GMRES's
-scratch are the workspace's, carved after `lu_solve` returns and grown to
-size by `create`; ½ C⁻¹, which `lu_solve` writes, is the preconditioner's own.
+scratch are the workspace's, carved after `lu_solve` returns and borrowed
+once by `create`, so a workspace too small is refused there; ½ C⁻¹, which `lu_solve` writes, is the preconditioner's own.
 
 ## Public API
 

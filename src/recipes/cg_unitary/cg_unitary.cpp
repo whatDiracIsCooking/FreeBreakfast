@@ -45,7 +45,7 @@ polynomial_step(DeviceResources &res, const T *const dots, const int32_t order,
   static_assert(kSlot % DeviceResources::kWorkspaceAlignment == 0);
 
   // coeffs | roots | iters | the root.
-  std::byte *const base = res.device_workspace(4 * kSlot).data();
+  std::byte *const base = FBF_TRY(res.device_workspace("polynomial_step", 4 * kSlot)).data();
   auto *const coeffs = reinterpret_cast<R *>(base);
   auto *const roots = reinterpret_cast<Z *>(base + kSlot);
   auto *const iters = reinterpret_cast<int32_t *>(base + (2 * kSlot));
@@ -76,7 +76,7 @@ dft_step(DeviceResources &res, const T *const dots, const T *const cost_dots,
   static_assert(kSlot % DeviceResources::kWorkspaceAlignment == 0);
 
   // coeffs | roots | iters | args | num_args | the step.
-  std::byte *const base = res.device_workspace(6 * kSlot).data();
+  std::byte *const base = FBF_TRY(res.device_workspace("dft_step", 6 * kSlot)).data();
   auto *const coeffs = reinterpret_cast<Z *>(base);
   auto *const roots = reinterpret_cast<Z *>(base + kSlot);
   auto *const iters = reinterpret_cast<int32_t *>(base + (2 * kSlot));

@@ -12,6 +12,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.molecule;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -42,7 +44,7 @@ std::vector<double> download(const fb::Molecule &molecule, const double *data, s
 
 TEST(Molecule, ElectronCountSubtractsCharge) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   EXPECT_EQ(water(res).total_nuclear_charge(), 10);
   EXPECT_EQ(water(res).electron_count(), 10);
   EXPECT_EQ(water(res, +1, 2).electron_count(), 9); // cation: one fewer electron
@@ -52,7 +54,7 @@ TEST(Molecule, ElectronCountSubtractsCharge) {
 
 TEST(Molecule, AtomsKeepSuppliedOrder) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule mol = water(res);
   ASSERT_EQ(mol.natoms(), 3U);
   EXPECT_EQ(mol.atoms()[0].element, Element::O);
@@ -62,7 +64,7 @@ TEST(Molecule, AtomsKeepSuppliedOrder) {
 
 TEST(Molecule, SingleAtomHasNoRepulsion) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule he(res, {Atom{{1.0, 2.0, 3.0}, Element::He}});
   EXPECT_EQ(fb::nuclear_repulsion_energy(he), 0.0);
   EXPECT_EQ(fb::nuclear_repulsion_gradient(he), (std::vector<double>{0.0, 0.0, 0.0}));
@@ -70,7 +72,7 @@ TEST(Molecule, SingleAtomHasNoRepulsion) {
 
 TEST(Molecule, HydrogenMoleculeRepulsion) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule h2(res,
                         {Atom{{0.0, 0.0, 0.0}, Element::H}, Atom{{0.0, 0.0, 1.4}, Element::H}});
   EXPECT_DOUBLE_EQ(fb::nuclear_repulsion_energy(h2), 1.0 / 1.4);
@@ -78,7 +80,7 @@ TEST(Molecule, HydrogenMoleculeRepulsion) {
 
 TEST(Molecule, WaterRepulsionSumsEveryPairOnce) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // O-H twice (Z=8*1) plus H-H once (Z=1*1), each over its own distance.
   const double r_oh = std::hypot(1.4309, 0.2217 + 0.8867);
   const double r_hh = 2.0 * 1.4309;
@@ -91,7 +93,7 @@ TEST(Molecule, WaterRepulsionSumsEveryPairOnce) {
 
 TEST(Molecule, GradientMatchesCentralFiniteDifference) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // A non-symmetric geometry so no component vanishes by symmetry.
   const std::vector<Atom> atoms{
       Atom{{0.1, -0.2, 0.3}, Element::N}, Atom{{1.9, 0.4, -0.1}, Element::C},
@@ -117,7 +119,7 @@ TEST(Molecule, GradientMatchesCentralFiniteDifference) {
 
 TEST(Molecule, GradientIsTranslationallyInvariant) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::vector<double> grad = fb::nuclear_repulsion_gradient(water(res));
   for (std::int32_t axis = 0; axis < 3; ++axis) {
     double sum = 0.0;
@@ -130,7 +132,7 @@ TEST(Molecule, GradientIsTranslationallyInvariant) {
 
 TEST(Molecule, NucleiOnTheDeviceAreChargesAndPositionsInAtomOrder) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule(res, {Atom{fb::Vec<double, 3>{0.0, 0.0, 0.25}, Element::O},
                                     Atom{fb::Vec<double, 3>{1.5, -0.5, 0.0}, Element::H}});
   const fb::NucleiView view = molecule.view();
@@ -141,14 +143,14 @@ TEST(Molecule, NucleiOnTheDeviceAreChargesAndPositionsInAtomOrder) {
 
 TEST(Molecule, NucleiAreOnTheConstructingCallsDevice) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule(res, {Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, Element::H}});
   EXPECT_EQ(molecule.device_stream()->dev_idx(), res.dev_idx());
 }
 
 TEST(Molecule, MovedToMoleculeKeepsItsNuclei) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Molecule from = water(res);
   const double *z = from.view().z;
   const fb::Molecule to = std::move(from);
@@ -163,7 +165,8 @@ TEST(MoleculeDeathTest, AbortsWithNoAtoms) {
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   EXPECT_DEATH(
       {
-        fb::DeviceResources res{0};
+        // Parenthesized: the braces' comma would split EXPECT_DEATH's argument.
+        fb::DeviceResources res(0, fb::test::kWorkspaces);
         const fb::Molecule molecule(res, {});
       },
       "");

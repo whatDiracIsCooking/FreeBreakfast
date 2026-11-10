@@ -39,6 +39,8 @@ import free_breakfast.io.json;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -83,7 +85,7 @@ TEST(Nevpt2Psb3, PcQdGradientMatchesNumerical) {
   ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto written = fb::read_json(dir / "out" / "nevpt2_gradient.json");
@@ -203,7 +205,7 @@ TEST(Nevpt2Psb3, PcQdActiveActiveGateAtTheTwist) {
                               .pc_floor = kTwistPcFloor}},
       []<class S>() -> fb::Result<S> { return S{}; });
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &out = calc->get<fb::Nevpt2GradientOutput>();

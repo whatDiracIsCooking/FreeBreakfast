@@ -27,6 +27,12 @@ import free_breakfast.experimental.blas_lt;
 
 namespace fb = free_breakfast;
 
+// The workspaces this benchmark's DeviceResources hold, sized at
+// construction (src/core/resources/README.md): 1 GiB on the device and 64 MiB
+// pinned, past what any of its runs borrows.
+constexpr fb::MemoryFootprint kWorkspaces{.device = {.workspace = std::size_t{1} << 30},
+                                          .pinned = {.workspace = std::size_t{64} << 20}};
+
 namespace {
 
 void check(const bool ok, const std::string_view what) {
@@ -125,7 +131,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
       Shape{12, 10673, true},  Shape{12, 21345, false}, Shape{12, 21345, true},
   };
 
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, kWorkspaces};
   fb::BlasLtHandle lt{};
 
   std::println("reps={} budget={} GiB   (m = n_act^2, or 3 n_act^2 fused;"

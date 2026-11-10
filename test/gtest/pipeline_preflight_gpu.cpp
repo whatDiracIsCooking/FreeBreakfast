@@ -1,12 +1,13 @@
 // Pre-flight over parsed configs: water's RHF chain in cc-pVDZ held to a
 // max_device_mem_per_gpu below its footprint's peak, refused before the first
-// step, and one above it, run with the pool inside the cap and the
-// workspaces never grown past the pre-grow; the pre-warm refusing a cap the
-// card cannot supply; and a CASCI under AVAS narrowed to the active space
-// the cap fits. Then the nested steps, an RHF [optimize] and a
-// semi-numerical [hessian], over the RHF and over a CASSCF gradient, and a
-// CASSCF [optimize], refused below their peak and run at it. Every
-// cap is set from the plan's own fold, so the cases hold on any card.
+// step, and one above it, run with the pool inside the cap in workspaces
+// sized at the plan's maximum; a capped RHF -> CASSCF the same; the pre-warm
+// refusing a cap the card cannot supply; and a CASCI under AVAS narrowed to
+// the active space the cap fits. Then the nested steps, an RHF [optimize] and
+// a semi-numerical [hessian], over the RHF and over a CASSCF gradient, and a
+// CASSCF [optimize], refused below their peak and run at it. Every cap is set
+// from the plan's own fold, so the cases hold on any card. Uncapped,
+// pre-flight sizes the workspaces alone.
 
 #include <gtest/gtest.h>
 
@@ -96,7 +97,7 @@ std::uint64_t cap_for(std::size_t peak, bool rounds_reuse) {
 TEST(Preflight, CapBelowThePeakIsRefusedBeforeTheFirstStep) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_preflight_below");
-  fb::NodeResources node;
+  fb::NodeResources node; // as main builds it: pre-flight sizes the workspaces
   const bool rounds_reuse = fbt::pool_rounds_reuse(node.device(0).dev_idx());
   fb::PlanFootprint plan;
   std::string peak_step;
@@ -121,21 +122,25 @@ TEST(Preflight, CapBelowThePeakIsRefusedBeforeTheFirstStep) {
   EXPECT_FALSE(calc.get<fb::MoleculeOutput>().has_value());
 }
 
-// Above the peak, with a pinned cap too: the devices carry the caps, the
-// workspaces are pre-grown to the plan's maximum and never grow in the run,
-// and the pool stays inside its cap.
-TEST(Preflight, CapAboveThePeakRunsInsideIt) {
-  FBF_REQUIRE_GPU();
-  const fb::test::ScratchDir dir("pipeline_preflight_above");
-  fb::NodeResources node;
+// @p tables under a device cap at twice its fold's peak and a pinned cap of
+// 64 MiB, run after pre-flight: the devices carry the caps and workspaces at
+// the plan's maximum, rounded up, held for the run, so nothing in it grows
+// them (a borrow past them would be refused) and the run's largest borrows
+// are within them; the pool stays inside its cap. @p Product is what the run
+// builds last.
+template <class Product>
+void expect_capped_run_inside(std::string_view name, std::string_view tables) {
+  const fb::test::ScratchDir dir(name);
+  fb::NodeResources node; // as main builds it: pre-flight sizes the workspaces
+  EXPECT_EQ(node.device(0).workspaces(), fb::MemoryFootprint{});
   fb::PlanFootprint plan;
   {
-    const fb::Calculation uncapped = parse(dir, kRhf);
+    const fb::Calculation uncapped = parse(dir, tables);
     plan = fold(uncapped, fb::plan_shape(uncapped, node.device(0)).value().dims);
   }
   const std::uint64_t device_cap = cap_for(2 * plan.footprint.device.peak(), true);
   constexpr std::size_t kPinnedCap = std::size_t{64} << 20;
-  fb::Calculation calc = parse(dir, std::string(kRhf) + memory(device_cap) +
+  fb::Calculation calc = parse(dir, std::string(tables) + memory(device_cap) +
                                         std::format("max_pinned_mem_per_gpu = {}\n", kPinnedCap));
   const fb::Status checked = fb::preflight(calc, node);
   ASSERT_TRUE(checked.has_value()) << checked.error().message;
@@ -144,20 +149,84 @@ TEST(Preflight, CapAboveThePeakRunsInsideIt) {
   const std::uint64_t pool_cap = device_cap - kReserve;
   EXPECT_EQ(res.pool_cap(), pool_cap);
   EXPECT_EQ(res.pinned_cap(), kPinnedCap);
-  const std::size_t device_workspace = res.device_workspace(0).num_elements();
-  const std::size_t pinned_workspace = res.pinned_workspace("test", 0).value().size();
-  EXPECT_GE(device_workspace, plan.footprint.device.workspace);
-  EXPECT_GE(pinned_workspace, plan.footprint.pinned.workspace);
+  constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
+  const fb::MemoryFootprint workspaces = res.workspaces();
+  EXPECT_EQ(workspaces.device.workspace,
+            fb::math::align_up(plan.footprint.device.workspace, kAlign));
+  EXPECT_EQ(workspaces.pinned.workspace,
+            fb::math::align_up(plan.footprint.pinned.workspace, kAlign));
+  EXPECT_EQ(res.pinned_bytes(), workspaces.pinned.workspace);
 
   res.device()->reset_pool_high_water();
   const fb::Status ran = calc.run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
-  EXPECT_TRUE(calc.get<fb::ScfOutput>().has_value());
+  EXPECT_TRUE(calc.get<Product>().has_value());
   const fb::PoolUsage usage = res.device()->pool_usage();
+  std::cout << std::format("[ preflight ] {}: workspaces {} and {} bytes, largest borrows {} and "
+                           "{}, pool cap {}, UsedMemHigh {}\n",
+                           name, workspaces.device.workspace, workspaces.pinned.workspace,
+                           res.workspace_high_water().device.workspace,
+                           res.workspace_high_water().pinned.workspace, pool_cap, usage.used_high);
   EXPECT_LE(usage.used_high, pool_cap);
   EXPECT_LE(usage.reserved_high, pool_cap);
-  EXPECT_EQ(res.device_workspace(0).num_elements(), device_workspace);
-  EXPECT_EQ(res.pinned_workspace("test", 0).value().size(), pinned_workspace);
+  EXPECT_EQ(res.workspaces(), workspaces);
+  EXPECT_LE(res.workspace_high_water().device.workspace, workspaces.device.workspace);
+  EXPECT_LE(res.workspace_high_water().pinned.workspace, workspaces.pinned.workspace);
+}
+
+// Above the peak, with a pinned cap too: water's RHF.
+TEST(Preflight, CapAboveThePeakRunsInsideIt) {
+  FBF_REQUIRE_GPU();
+  expect_capped_run_inside<fb::ScfOutput>("pipeline_preflight_above", kRhf);
+}
+
+// The fitted water's RHF -> CAS(4,4) in STO-3G, the same (#1123): the
+// workspaces sized for the CASSCF from the first step.
+constexpr std::string_view kCasscf = R"(
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "sto-3g"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[casscf]
+ncas = 4
+nelecas = 4
+)";
+
+TEST(Preflight, CappedCasscfRunsInsideIt) {
+  FBF_REQUIRE_GPU();
+  expect_capped_run_inside<fb::CasscfOutput>("pipeline_preflight_casscf", kCasscf);
+}
+
+// Uncapped, pre-flight checks nothing against a cap but still builds the
+// devices with workspaces at the plan's maximum, uncapped, and the run borrows
+// within them.
+TEST(Preflight, UncappedSizesTheWorkspaces) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_preflight_uncapped");
+  fb::NodeResources node; // as main builds it
+  fb::PlanFootprint plan;
+  {
+    const fb::Calculation uncapped = parse(dir, kCasscf);
+    plan = fold(uncapped, fb::plan_shape(uncapped, node.device(0)).value().dims);
+  }
+  fb::Calculation calc = parse(dir, kCasscf);
+  const fb::Status checked = fb::preflight(calc, node);
+  ASSERT_TRUE(checked.has_value()) << checked.error().message;
+  fb::DeviceResources &res = node.device(0);
+  EXPECT_EQ(res.pool_cap(), 0U);
+  EXPECT_EQ(res.pinned_cap(), 0U);
+  constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
+  EXPECT_EQ(res.workspaces().device.workspace,
+            fb::math::align_up(plan.footprint.device.workspace, kAlign));
+  EXPECT_EQ(res.workspaces().pinned.workspace,
+            fb::math::align_up(plan.footprint.pinned.workspace, kAlign));
+  const fb::Status ran = calc.run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  EXPECT_TRUE(calc.get<fb::CasscfOutput>().has_value());
+  EXPECT_LE(res.workspace_high_water().device.workspace, res.workspaces().device.workspace);
 }
 
 // Half the card held outside the capped pool, by a Device of its own: a cap
@@ -166,7 +235,7 @@ TEST(Preflight, CapAboveThePeakRunsInsideIt) {
 TEST(Preflight, PreWarmRefusesACapTheCardCannotSupply) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_preflight_prewarm");
-  fb::NodeResources node;
+  fb::NodeResources node; // as main builds it: pre-flight sizes the workspaces
   const std::int32_t dev_idx = node.device(0).dev_idx();
   const std::size_t total = node.device(0).device()->props().totalGlobalMem;
   const auto other = std::make_shared<fb::Device>(dev_idx);
@@ -191,7 +260,7 @@ TEST(Preflight, PreWarmRefusesACapTheCardCannotSupply) {
 TEST(Preflight, AvasIsNarrowedToTheSpaceTheCapFits) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_preflight_avas");
-  fb::NodeResources node;
+  fb::NodeResources node; // as main builds it: pre-flight sizes the workspaces
   const bool rounds_reuse = fbt::pool_rounds_reuse(node.device(0).dev_idx());
   std::vector<std::size_t> peaks;
   {
@@ -335,7 +404,7 @@ nested_plan(const fb::test::ScratchDir &dir, fb::NodeResources &node, std::strin
 
 void expect_nested_refused_below(std::string_view tables, std::string_view step) {
   const fb::test::ScratchDir dir("pipeline_preflight_nested_below");
-  fb::NodeResources node;
+  fb::NodeResources node; // as main builds it: pre-flight sizes the workspaces
   const bool rounds_reuse = fbt::pool_rounds_reuse(node.device(0).dev_idx());
   const auto [plan, peak_step] = nested_plan(dir, node, tables);
   const std::size_t peak = plan.footprint.device.peak();
@@ -356,7 +425,7 @@ void expect_nested_refused_below(std::string_view tables, std::string_view step)
 template <class Product>
 void expect_nested_runs_at_the_peak(std::string_view tables) {
   const fb::test::ScratchDir dir("pipeline_preflight_nested_at");
-  fb::NodeResources node;
+  fb::NodeResources node; // as main builds it: pre-flight sizes the workspaces
   const bool rounds_reuse = fbt::pool_rounds_reuse(node.device(0).dev_idx());
   const fb::PlanFootprint plan = nested_plan(dir, node, tables).first;
   const std::size_t peak = plan.footprint.device.peak();
@@ -367,9 +436,9 @@ void expect_nested_runs_at_the_peak(std::string_view tables) {
 
   fb::DeviceResources &res = node.device(0);
   const std::uint64_t pool_cap = device_cap - kReserve;
-  const std::size_t device_workspace = res.device_workspace(0).num_elements();
+  const std::size_t device_workspace = res.workspaces().device.workspace;
   EXPECT_EQ(device_workspace, plan.footprint.device.workspace);
-  // Before the first step the pool holds the pre-grown workspace and
+  // Before the first step the pool holds the workspace and
   // DeviceResources' own pool bytes, its syevd flag made with it: nothing of
   // the plan's but the workspace, which its peak counts.
   const std::uint64_t held = res.device()->pool_usage().used_current;
@@ -390,8 +459,8 @@ void expect_nested_runs_at_the_peak(std::string_view tables) {
   // rounds (pool_footprint.h).
   EXPECT_LE(usage.used_high - kOwnPool,
             peak + (rounds_reuse ? fb::math::idivup(peak, fbt::kPoolReuseDivisor) : 0));
-  // Every geometry's chain ran in the workspace pre-flight grew.
-  EXPECT_EQ(res.device_workspace(0).num_elements(), device_workspace);
+  // Every geometry's chain ran in the workspace pre-flight sized.
+  EXPECT_LE(res.workspace_high_water().device.workspace, device_workspace);
 }
 
 TEST(Preflight, NestedOptimizeBelowThePeakIsRefusedBeforeTheFirstStep) {

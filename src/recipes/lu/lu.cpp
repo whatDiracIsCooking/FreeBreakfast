@@ -28,7 +28,8 @@ Result<int32_t> lu_solve(DeviceResources &res, const int32_t n, const int32_t nr
 
   // getrf's work for n, queried per call: a host computation.
   const size_t lwork = FBF_TRY(getrf_lwork(res, n));
-  const auto [work, pivots] = res.device_regions<double, int32_t>(lwork, static_cast<size_t>(n));
+  const auto [work, pivots] =
+      FBF_TRY((res.device_regions<double, int32_t>("lu_solve", lwork, static_cast<size_t>(n))));
   FBF_TRY(gpu_status(wwr::getrf<double>(solver, n, n, a, n, work, pivots, res.info().data())));
   const int32_t factored = FBF_TRY(res.fetch_info());
   // info < 0 names a bad argument (a bug here, not in A); info > 0 is an

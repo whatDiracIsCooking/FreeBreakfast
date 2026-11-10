@@ -195,13 +195,14 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
     // D^AO = C_o D C_o^T. S^xy is not here: it is the connection's.
     SphericalMatrixAO d_ao(res, basis);
     if (!rotated) {
-      const auto [work] = res.device_regions<double>(oo * nao);
+      const auto [work] = FBF_TRY(res.device_regions<double>("hessian::df_casscf_exy", oo * nao));
       FBF_TRY(gpu_status(
           gemmwich<wwr::WWRBLAS_OP_T>(blas, n, nocc, c.data(), d_occ, work, d_ao.data())));
     } else {
       // Rotated: D^AO's derivative along C -> C (1 + e K), C~_o D C_o^T +
       // C_o D C~_o^T with C~_o = C K's occupied columns.
-      const auto [c_rot, half, a_ao] = res.device_regions<double>(nao * occ, nao * occ, nao * nao);
+      const auto [c_rot, half, a_ao] = FBF_TRY(
+          res.device_regions<double>("hessian::df_casscf_exy", nao * occ, nao * occ, nao * nao));
       FBF_TRY(gpu_status(
           gemm(blas, n, nocc, n_mo, &kOne<double>, c.data(), rotation, &kZero<double>, c_rot)));
       FBF_TRY(
@@ -273,7 +274,8 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
     // tau^x = -1/2 C^T S^x C for every x: C^T [S^0 S^1 ...] as one gemm,
     // then each slab times C, one strided-batched gemm.
     const Buffers::device<double> s_ao = FBF_TRY(overlap_derivative(res, basis, classes));
-    const auto [half] = res.device_regions<double>(nmo * nao * n_x);
+    const auto [half] =
+        FBF_TRY(res.device_regions<double>("hessian::df_casscf_exy", nmo * nao * n_x));
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n_mo, n * nx, n, &kNegHalf<double>, c.data(),
                                                s_ao.data(), &kZero<double>, half)));
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
@@ -293,7 +295,7 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   FBF_TRY(gpu_status(
       gemm(blas, q, n_oo, n_oo, &kOne<double>, b_oo, rdm2_device, &kZero<double>, g_fit)));
   {
-    const auto [work] = res.device_regions<double>(nao * nmo);
+    const auto [work] = FBF_TRY(res.device_regions<double>("hessian::df_casscf_exy", nao * nmo));
     FBF_TRY(gpu_status(gemmwich(blas, n_mo, n, c.data(), h.data(), work, h_mo)));
   }
 
@@ -352,7 +354,7 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
                                                   g_dot, q * nocc, &kOne<double>, fock_rot, n_mo)));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(fock, fock_rot, sizeof(double) * mm,
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
-    const auto [tk] = res.device_regions<double>(mm);
+    const auto [tk] = FBF_TRY(res.device_regions<double>("hessian::df_casscf_exy", mm));
     for (size_t x = 0; x < n_x; ++x) {
       FBF_TRY(gpu_status(gemm(blas, n_mo, n_mo, n_mo, &kOne<double>, tau + (x * mm), rotation,
                               &kZero<double>, tk)));
@@ -375,7 +377,7 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   {
     SphericalMatrixAO m_ao(res, basis);
     {
-      const auto [work] = res.device_regions<double>(nmo * nao);
+      const auto [work] = FBF_TRY(res.device_regions<double>("hessian::df_casscf_exy", nmo * nao));
       FBF_TRY(gpu_status(
           gemmwich<wwr::WWRBLAS_OP_T>(blas, n, n_mo, c.data(), neg_fock_sym, work, m_ao.data())));
     }
@@ -408,8 +410,8 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   // V^x = 2 h tau^x_occ D + 2 W^x. E^(2) is <V^x, tau^y_occ> + 4 <R^x, R^y
   // Gamma>, two Gram matrices.
   {
-    const auto [y_half, h_tau, y_dot] =
-        res.device_regions<double>(naux * occ * nmo, nmo * occ, rotated ? naux * occ * nmo : 1);
+    const auto [y_half, h_tau, y_dot] = FBF_TRY(res.device_regions<double>(
+        "hessian::df_casscf_exy", naux * occ * nmo, nmo * occ, rotated ? naux * occ * nmo : 1));
     for (size_t x = 0; x < n_x; ++x) {
       const double *const tau_x = tau + (x * mm);
       double *const v_x = v + (x * nmo * occ);

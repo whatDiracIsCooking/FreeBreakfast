@@ -22,6 +22,12 @@ namespace {
 
 namespace fb = free_breakfast;
 
+// The workspaces this benchmark's DeviceResources hold, sized at
+// construction (src/core/resources/README.md): 1 GiB on the device and 64 MiB
+// pinned, past what any of its runs borrows.
+constexpr fb::MemoryFootprint kWorkspaces{.device = {.workspace = std::size_t{1} << 30},
+                                          .pinned = {.workspace = std::size_t{64} << 20}};
+
 using Clock = std::chrono::steady_clock;
 
 [[noreturn]] void fail(std::string_view what, const fb::Error &error) {
@@ -146,7 +152,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
     shapes = {{24, 116, 7, 9},    {58, 260, 9, 9},     {120, 540, 15, 27},
               {200, 900, 25, 24}, {250, 1100, 41, 12}, {300, 1350, 40, 8}};
   }
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, kWorkspaces};
   for (const Shape &s : shapes) {
     run(res, s, reps);
   }

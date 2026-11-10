@@ -136,8 +136,8 @@ Status df_integral_derivatives(
   // at once as the budget holds: res.memory_budget() less the pool's
   // fragmentation headroom, or max_bytes when that is less, against every
   // allocation the call makes at that chunk (integral_derivatives_footprint's
-  // scratch), read with the workspace first grown to its fixed size, the same
-  // at any chunk. Past an allocation the pool would abort (CreatePolicy)
+  // scratch; its workspace, the same at any chunk, is DeviceResources' own,
+  // held from construction). Past an allocation the pool would abort (CreatePolicy)
   // rather than return, so a budget below one coordinate is refused before
   // anything is allocated.
   const ScopedDeviceIndex on{res.dev_idx()};
@@ -146,7 +146,6 @@ Status df_integral_derivatives(
     const auto scratch = [&](const size_t width) {
       return integral_derivatives_footprint(basis, aux, width).device.scratch;
     };
-    (void)res.device_workspace(integral_derivatives_footprint(basis, aux, 1).device.workspace);
     const size_t memory = FBF_TRY(res.memory_budget());
     const size_t usable = memory > kPoolHeadroomBytes ? memory - kPoolHeadroomBytes : 0;
     const size_t budget = max_bytes == 0 ? usable : std::min(usable, max_bytes);
@@ -188,7 +187,8 @@ Status df_integral_derivatives(
   {
     // As ThirdDerivative::create: B C over m, then C over n per q, then Q
     // slowest; and C^T h C.
-    const auto [half, full] = res.device_regions<double>(factor, factor);
+    const auto [half, full] =
+        FBF_TRY(res.device_regions<double>("mcscf::df_integral_derivatives", factor, factor));
     FBF_TRY(gpu_status(gemm(blas, q * n, n, n, &kOne<double>, b.data(), cm, &kZero<double>, half)));
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
         blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, q, n, n, &kOne<double>, half, q,
@@ -205,7 +205,7 @@ Status df_integral_derivatives(
   // out_x = C^T X_x C for every slab of a stack: X_x C, one batched gemm into
   // the workspace, then C^T over all of them side by side.
   const auto to_mo = [&](const double *x, double *out) -> Status {
-    auto [xc] = res.device_regions<double>(stack);
+    auto [xc] = FBF_TRY(res.device_regions<double>("mcscf::df_integral_derivatives", stack));
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
         blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, x, n, s_nn, cm, n, 0,
         &kZero<double>, xc, n, s_nn, nx)));
@@ -268,7 +268,8 @@ Status df_integral_derivatives(
       const auto rows = static_cast<int32_t>(nblk * nao);
       // H[P', n, p] = Sum_{m on A} X[m][n][P'] C_mp, then G[P', q, p] =
       // Sum_n H[P', n, p] C_nq = E_A[p][q].
-      const auto [hh, gg] = res.device_regions<double>(nblk * nn, nblk * nn);
+      const auto [hh, gg] = FBF_TRY(
+          res.device_regions<double>("mcscf::df_integral_derivatives", nblk * nn, nblk * nn));
       for (size_t k = 0; k < 3; ++k) {
         const double *const xk = block.data() + (k * nn * nblk);
         for (uint32_t atom = 0; atom < n_atom; ++atom) {
@@ -303,7 +304,8 @@ Status df_integral_derivatives(
     // S + S^T over each pair (I S_Q^T added to S_Q, a batched gemm against a
     // copy), then the fit: U^x = (S + S^T) L_M^-T.
     {
-      const auto [copy, ident] = res.device_regions<double>(factor, nn);
+      const auto [copy, ident] =
+          FBF_TRY(res.device_regions<double>("mcscf::df_integral_derivatives", factor, nn));
       std::vector<double> ident_host(nn, 0.0);
       for (size_t i = 0; i < nao; ++i) {
         ident_host[i * (nao + 1)] = 1.0;
@@ -326,7 +328,8 @@ Status df_integral_derivatives(
     // metric_derivative's M1[k] (column P = M1[k][P][.]) on A's columns only,
     // x = 3 A + k.
     {
-      const auto [e, g] = res.device_regions<double>(naux * naux, naux * naux);
+      const auto [e, g] = FBF_TRY(
+          res.device_regions<double>("mcscf::df_integral_derivatives", naux * naux, naux * naux));
       for (size_t x = x0; x < x0 + count; ++x) {
         const auto [q0, q1] = integral_atom_functions(aux, static_cast<uint32_t>(x / 3));
         const size_t k = x % 3;

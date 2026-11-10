@@ -69,16 +69,13 @@ Result<RhfResponse> df_rhf_response(DeviceResources &res, const Molecule &molecu
                            "exceeds int32_t",
                            n_x * nn, stack);
   }
-  // Everything the call allocates, df_rhf_response_footprint's, and the
-  // workspace's growth to its carves if it must grow (the new block is
-  // allocated before the old one is freed): past the memory budget an
-  // allocation would abort (CreatePolicy), not return.
+  // Everything the call allocates, df_rhf_response_footprint's persistent and
+  // scratch (its workspace is DeviceResources', held from construction): past
+  // the memory budget an allocation would abort (CreatePolicy), not return.
   const size_t held_count = (3 * stack) + (nao * occ) + (3 * nn);
   const ScopedDeviceIndex on{res.dev_idx()};
   const MemoryFootprint fp = df_rhf_response_footprint(basis, aux, static_cast<int32_t>(nmo), nocc);
-  const size_t bytes =
-      fp.device.persistent + fp.device.scratch +
-      (fp.device.workspace > res.device_workspace(0).num_elements() ? fp.device.workspace : 0);
+  const size_t bytes = fp.device.persistent + fp.device.scratch;
   if (const size_t budget = FBF_TRY(res.memory_budget()); bytes > budget) {
     return err_unsupported("hessian::df_rhf_response: the derivative matrices and MO blocks of "
                            "{} coordinates over {} orbital functions need {} bytes of device "
@@ -112,7 +109,7 @@ Result<RhfResponse> df_rhf_response(DeviceResources &res, const Molecule &molecu
   // into the workspace, then C^T over all of them at once, the products
   // standing side by side as one nao x (nocc 3 n_atom) matrix.
   const auto to_mo = [&](const double *x, double *out) -> Status {
-    auto [y] = res.device_regions<double>(nao * occ * n_x);
+    auto [y] = FBF_TRY(res.device_regions<double>("hessian::df_rhf_response", nao * occ * n_x));
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
         blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n_ao, nocc, n_ao, &kOne<double>, x, n_ao,
         static_cast<int64_t>(nn), c_occ, n_ao, 0, &kZero<double>, y, n_ao,
@@ -180,7 +177,8 @@ Result<RhfResponse> df_rhf_response(DeviceResources &res, const Molecule &molecu
                       eps_tiled.begin() + static_cast<std::ptrdiff_t>(occ * x));
   }
   {
-    auto [eps, scaled] = res.device_regions<double>(occ * n_x, pairs * n_x);
+    auto [eps, scaled] =
+        FBF_TRY(res.device_regions<double>("hessian::df_rhf_response", occ * n_x, pairs * n_x));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(eps, eps_tiled.data(), sizeof(double) * occ * n_x,
                                            wwr::wwrMemcpyHostToDevice, stream)));
     FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
@@ -209,8 +207,8 @@ Result<RhfResponse> df_rhf_response(DeviceResources &res, const Molecule &molecu
     }
   }
   const size_t oo = occ * occ * n_x;
-  auto [s_oo, f_oo, q, e, p, h] =
-      res.device_regions<double>(oo, oo, oo, occ * occ, n_x * n_x, n_x * n_x);
+  auto [s_oo, f_oo, q, e, p, h] = FBF_TRY(res.device_regions<double>(
+      "hessian::df_rhf_response", oo, oo, oo, occ * occ, n_x * n_x, n_x * n_x));
   const auto n_oo = static_cast<int32_t>(occ * occ);
   const auto n_pairs = static_cast<int32_t>(pairs);
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(e, weights.data(), sizeof(double) * occ * occ,

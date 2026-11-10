@@ -43,14 +43,14 @@ def test_every_spelling_is_one_row() -> None:
         (34, "StreamBuffers::device", "double", "n", "every_spelling"),
         (35, "device_workspace", "std::byte", "n * sizeof(double)", "every_spelling"),
         (
-            36,
+            37,
             "device_regions",
             "double, int32_t",
             "static_cast<size_t>(n) * static_cast<size_t>(m) * sizeof(double), "
             "static_cast<size_t>(m)",
             "every_spelling",
         ),
-        (38, "counted_pinned", "double", "n * m", "every_spelling"),
+        (41, "counted_pinned", "double", "n * m", "every_spelling"),
     ]
 
 

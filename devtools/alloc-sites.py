@@ -337,10 +337,10 @@ def find_sites(text: str, path: str = "", siblings: Names | None = None) -> list
     def row(offset: int, kind: str, elem: str, size: str) -> None:
         found.append((offset, kind, elem, size))
 
-    def sizes(space: str, args: str) -> str:
-        # The pinned spellings take the caller's name first: not a size.
+    def sizes(args: str) -> str:
+        # Every workspace spelling takes the caller's name first: not a size.
         parts = _split_top_level(args, keep_empty=True)
-        return ", ".join(map(_squash, parts[1:] if space == "pinned" else parts))
+        return ", ".join(map(_squash, parts[1:]))
 
     def first_arg(args: str) -> str:
         parts = _split_top_level(args)
@@ -406,7 +406,7 @@ def find_sites(text: str, path: str = "", siblings: Names | None = None) -> list
         args = code[m.end() : _balanced(code, m.end() - 1) - 1]
         if _looks_like_parameters(args):
             continue  # its definition
-        row(m.start(), f"{m.group(1)}_workspace", "std::byte", sizes(m.group(1), args))
+        row(m.start(), f"{m.group(1)}_workspace", "std::byte", sizes(args))
 
     for m in _REGIONS.finditer(code):
         end = _balanced(code, m.end() - 1)
@@ -417,7 +417,7 @@ def find_sites(text: str, path: str = "", siblings: Names | None = None) -> list
         if _looks_like_parameters(args):
             continue
         elem = _squash(code[m.end() : end - 1])
-        row(m.start(), f"{m.group(1)}_regions", elem, sizes(m.group(1), args))
+        row(m.start(), f"{m.group(1)}_regions", elem, sizes(args))
 
     for m in _COUNTED.finditer(code):
         end = _balanced(code, m.end() - 1)

@@ -25,6 +25,8 @@ import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.integrals.eri.density_fitting.jk;
 import free_breakfast.integrals.eri.density_fitting.mo;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -195,7 +197,7 @@ protected:
     g_ = read_golden();
     ASSERT_GT(g_.naux, 0);
     ASSERT_GT(g_.nocc, 0);
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     metric_.emplace(g_.metric.size(), res_->device());
     b_.emplace(g_.b.size(), res_->device());
     c_.emplace(g_.c.size(), res_->device());
@@ -475,7 +477,7 @@ TEST_F(DfMo, EmptyRangesWriteNothingAndOutOfRangeIsRefused) {
 // 2^46 doubles, 512 TiB.
 TEST(DfMoRefusals, HalfTransformPastFreeMemoryIsUnsupported) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   constexpr std::int32_t kNaux = 1 << 16;
   constexpr std::int32_t kNao = 1 << 16;
   constexpr std::int32_t kRows = 1 << 14;
@@ -491,7 +493,7 @@ TEST(DfMoRefusals, HalfTransformPastFreeMemoryIsUnsupported) {
 // naux |rows| past int32_t is InvalidConfig, as is a negative count.
 TEST(DfMoRefusals, RowsPastInt32AndNegativeCountsAreInvalid) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   constexpr std::int32_t kNaux = 1 << 16;
   constexpr std::int32_t kNmo = 1 << 16;
   const fb::Status wide =

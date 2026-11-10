@@ -62,6 +62,12 @@ import free_breakfast.core.resources;
 
 namespace fb = free_breakfast;
 
+// The workspaces this benchmark's DeviceResources hold, sized at
+// construction (src/core/resources/README.md): 1 GiB on the device and 64 MiB
+// pinned, past what any of its runs borrows.
+constexpr fb::MemoryFootprint kWorkspaces{.device = {.workspace = std::size_t{1} << 30},
+                                          .pinned = {.workspace = std::size_t{64} << 20}};
+
 namespace {
 
 constexpr double kOne = 1.0;
@@ -865,7 +871,7 @@ constexpr std::int32_t kPipelineNao = 640;
 
 int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   const Settings settings = parse(std::span<char *const>{argv, static_cast<std::size_t>(argc)});
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, kWorkspaces};
   Ring ring{res};
   Timer timer{res};
   std::ofstream csv{settings.csv};

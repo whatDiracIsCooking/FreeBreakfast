@@ -20,9 +20,11 @@
 #   * recipes_compile.cpp -- the concepts src/recipes exports.
 #   * footprint_compile.cpp -- the footprint kinds (src/core/footprint) and
 #     the footprint member's detection (src/pipeline/footprint).
+#   * resources_compile.cpp -- DeviceResources' workspaces, sized at
+#     construction and only borrowed (src/core/resources).
 add_library(
-  free_breakfast_compile_checks OBJECT recipes_compile.cpp
-                                       footprint_compile.cpp
+  free_breakfast_compile_checks OBJECT
+  recipes_compile.cpp footprint_compile.cpp resources_compile.cpp
 )
 
 set_target_properties(

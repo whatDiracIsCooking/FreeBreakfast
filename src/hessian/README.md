@@ -172,8 +172,8 @@ integrals stop at d (`kDipoleMaxL`), so a basis with an f shell is refused
 beside `dipole_gradient`'s scratch, then the MO blocks, the three P^c and the
 result held beside, in turn, U and three dipole pairs (`dipole`'s carve the
 workspace's), and S^x (3 n_atom nao²) with `overlap_derivative`'s scratch;
-past the memory budget (`res.memory_budget()`), the workspace's growth
-counted, that is Unsupported before anything is allocated.
+past the memory budget (`res.memory_budget()`) that is Unsupported before
+anything is allocated; the workspace is held from construction.
 
 `infrared_intensities` projects it onto the normal modes,
 I_q = K |Σ_x L_qx dμ/dx|², L as `geometry::harmonic_analysis` returns them
@@ -356,9 +356,8 @@ largest carve of `b_mo`, the second-derivative integrals,
 `metric_derivative`, and each aux atom's `three_center_derivative` and its
 half-transform W. The batch is the adaptive part, the call's own buffer and
 its last allocation, never the workspace: sized after the explicit part,
-from the memory budget less the workspace's growth still to come (the whole
-new block when it must grow, which is allocated before the old one is freed)
-and `kPoolHeadroomBytes`, every atom's when they fit, else as many as fit,
+from the memory budget less `kPoolHeadroomBytes` (the walk's carves are the
+workspace's, held from construction), every atom's when they fit, else as many as fit,
 two at the least. So the call takes **more memory than its least when it has
 it**: all n_atom blocks, 3 n_atom naux n_occ² doubles, the whole exchange
 cross term, against two.
@@ -1029,8 +1028,8 @@ as the memory budget at its call holds: per part of k coordinates B_dot
 (k naux nmo², as large as the W^x it reads), h_dot and κ (k nmo² each),
 `builders_tangent`'s arrays, one set of `BuilderOutputs` per coordinate (the
 MO blocks, three n_act⁶ RDM tangents) beside its own point, then κ_oo. One
-coordinate's part past the budget is Unsupported. The workspace is grown to
-the footprint's first, so the parts' budget is never the workspace's. naux
+coordinate's part past the budget is Unsupported. The workspace is held from
+construction, so the parts' budget is never the workspace's. naux
 nmo past `int32_t` is Unsupported.
 
 `df_nevpt2_tangents_footprint(basis, aux, ncore, ncas, nalpha, nbeta)` is

@@ -53,6 +53,8 @@ import free_breakfast.nevpt2;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 #include "stable_part.h"
 
@@ -289,7 +291,7 @@ State host_state(fb::Calculation &calc, fb::DeviceResources &res, const std::siz
 // Our DF-CASSCF from casscf_df.json's start, run once per process.
 const State &state() {
   static const State kState = [] {
-    fb::NodeResources node;
+    fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
     std::optional<fb::Calculation> calc =
         run_casscf(reference_case("casscf", "casscf_df.json", kCase), node);
     return calc.has_value() ? host_state(*calc, node.device(0)) : State{};
@@ -567,7 +569,7 @@ TEST(Nevpt2Gradient, EnergyMatchesPyscf) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const fb::json &want = reference_case("nevpt2", "nevpt2_df.json", kCase);
   const double e_corr = want.at("roots").at(0).at("e_corr").get<double>();
   const double got = energy(res, s);
@@ -671,7 +673,7 @@ TEST(Nevpt2Gradient, CiAdjointMatchesLadder) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const std::vector<double> u = ci_direction(res, s);
   ASSERT_EQ(u.size(), s.vector.size());
@@ -757,7 +759,7 @@ TEST_P(Nevpt2GradientRotation, OrbitalSourceMatchesLadder) {
   const Block &block = GetParam();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const std::vector<double> kappa = block_kappa(s, block);
 
@@ -841,7 +843,7 @@ TEST_P(Nevpt2GradientIntegrals, IntegralAdjointMatchesLadder) {
   const std::string &which = GetParam();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const IntegralDirection dir = integral_direction(s, which);
 
@@ -865,7 +867,7 @@ TEST(Nevpt2Gradient, SourceTermShapes) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const auto nmo = static_cast<std::size_t>(s.nao);
   const auto naux = static_cast<std::size_t>(s.naux);
@@ -981,7 +983,7 @@ TEST_P(Nevpt2ZcStationarity, LagrangianIsFlat) {
   const Block &block = GetParam();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const std::vector<double> z = zc_of(res, s, adj);
   ASSERT_FALSE(z.empty());
@@ -1018,7 +1020,7 @@ TEST_P(Nevpt2ZcRotation, OrbitalSourceMatchesLadder) {
   const Block &block = GetParam();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const std::vector<double> z = zc_of(res, s, adj);
   ASSERT_FALSE(z.empty());
@@ -1043,7 +1045,7 @@ TEST(Nevpt2Zc, CiSourceMatchesLadder) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const std::vector<double> z = zc_of(res, s, adj);
   ASSERT_FALSE(z.empty());
@@ -1075,7 +1077,7 @@ TEST_P(Nevpt2ZcIntegrals, IntegralAdjointMatchesLadder) {
   const std::string &which = GetParam();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const std::vector<double> z = zc_of(res, s, adj);
   ASSERT_FALSE(z.empty());
@@ -1107,7 +1109,7 @@ TEST(Nevpt2Zc, DegeneratePairRule) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const auto nmo = static_cast<std::size_t>(s.nao);
   const auto q = static_cast<std::size_t>(s.ncore + s.ncas);
@@ -1189,7 +1191,7 @@ TEST(Nevpt2PcZc, DegeneratePairKeepsItsDivision) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const auto nmo = static_cast<std::size_t>(s.nao);
   const HostAdjoint sc = adjoint(res, s);
   const auto pc = pc_adjoint_of(res, s);
@@ -1261,7 +1263,7 @@ TEST(Nevpt2Zc, Shapes) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const std::vector<double> z = zc_of(res, s, adj);
   ASSERT_FALSE(z.empty());
@@ -1336,7 +1338,7 @@ TEST_P(Nevpt2ZcStateAverage, AdjointsMatchLadders) {
   const SaWeights &weights = GetParam();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const std::vector<double> z = zc_of(res, s, adj);
   ASSERT_FALSE(z.empty());
@@ -1427,7 +1429,7 @@ TEST(Nevpt2Zc, OneRootIsTheSingleStatePhi) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint adj = adjoint(res, s);
   const std::vector<double> z = zc_of(res, s, adj);
   ASSERT_FALSE(z.empty());
@@ -1480,7 +1482,7 @@ TEST(Nevpt2Zc, RefusesBadWeights) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const auto nmo = static_cast<std::size_t>(s.nao);
   const std::vector<double> z(nmo * nmo, 0.0);
   const DeviceState d = upload_state(res, s);
@@ -1549,7 +1551,8 @@ struct NuclearRun {
 };
 
 NuclearRun nuclear_run(const fb::json &entry) {
-  NuclearRun run{.node = std::make_unique<fb::NodeResources>(),
+  NuclearRun run{.node = std::make_unique<fb::NodeResources>(
+                     fb::NodeResourcesConfig{.workspaces = fb::test::kWorkspaces}),
                  .calc = std::nullopt,
                  .state = {},
                  .solution = std::nullopt};
@@ -2202,7 +2205,7 @@ const QdState &qd_state(const std::string &name) {
   }
   const fb::json &entry = reference_case("qd_nevpt2", "qd_nevpt2.json", name);
   QdState q{.weights = entry.at("weights").get<std::vector<double>>()};
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   std::optional<fb::Calculation> calc = run_qd_casscf(entry, node);
   if (calc.has_value()) {
     q.s = host_state(*calc, node.device(0), q.weights.size());
@@ -2454,7 +2457,7 @@ void expect_qd_ladders(const std::string &name,
   const QdState &q = qd_state(name);
   const State &s = q.s;
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const std::size_t n = q.weights.size();
   const std::size_t ndet = s.vector.size() / n;
   const auto nmo = static_cast<std::size_t>(s.nao);
@@ -2604,7 +2607,7 @@ TEST(Nevpt2Qd, OneRootIsScAdjoint) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostAdjoint sc = adjoint(res, s);
   const HostAdjoint again = adjoint(res, s);
   const std::array<double, 1> w{1.0};
@@ -2643,7 +2646,7 @@ TEST(Nevpt2Qd, RefusesBadInputs) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   State two = s;
   two.vector.insert(two.vector.end(), s.vector.begin(), s.vector.end());
   const DeviceState d = upload_state(res, two);
@@ -2760,7 +2763,7 @@ TEST(Nevpt2QdPc, OneRootIsPcAdjoint) {
   FBF_REQUIRE_GPU();
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const auto pc = pc_adjoint_of(res, s);
   ASSERT_TRUE(pc.has_value()) << pc.error().message;
   const auto again = pc_adjoint_of(res, s);
@@ -2811,7 +2814,7 @@ TEST(Nevpt2QdPc, RefusesWhatTheEnergyRefuses) {
   const QdState &q = qd_state("h8_ring_sto3g_sa3");
   const State &s = q.s;
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const std::size_t n = q.weights.size();
   const std::vector<double> w = random_seed(n);
   const auto refused = [&](const State &at, const std::string_view what,
@@ -2887,7 +2890,8 @@ TEST(Nevpt2QdPc, RefusesWhatTheEnergyRefuses) {
 // #696's bars.
 NuclearRun qd_run(const std::string &name, std::span<const double> weights_in = {},
                   const bool tight = false) {
-  NuclearRun run{.node = std::make_unique<fb::NodeResources>(),
+  NuclearRun run{.node = std::make_unique<fb::NodeResources>(
+                     fb::NodeResourcesConfig{.workspaces = fb::test::kWorkspaces}),
                  .calc = std::nullopt,
                  .state = {},
                  .solution = std::nullopt};
@@ -4499,7 +4503,7 @@ constexpr double kFrozenEigenvalueTolerance = 1e-8;
 
 TEST(Nevpt2QdFrozenCore, EnergyMatchesReference) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   for (const fb::json &entry : reference("qd_nevpt2", "qd_nevpt2_frozen_core.json").at("cases")) {
     const std::string name = entry.at("name").get<std::string>();
     const QdState &q = qd_state(name);
@@ -4591,7 +4595,7 @@ void expect_frozen_ladders(const FrozenLadderCase &c) {
   const QdState &q = qd_state(std::string{c.name});
   const State &s = q.s;
   ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const std::size_t n = q.weights.size();
   const std::size_t ndet = s.vector.size() / n;
   const auto nmo = static_cast<std::size_t>(s.nao);

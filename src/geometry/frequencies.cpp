@@ -131,13 +131,13 @@ Result<Vibrations> harmonic_analysis(DeviceResources &res, std::span<const Atom>
   // 2. B^T H_mw B (m x m), and its eigendecomposition V diag(lambda) V^T.
   const wwr::wwrblasHandle_t blas = res.blas().get();
   {
-    const auto [work] = res.device_regions<double>(n * m);
+    const auto [work] = FBF_TRY(res.device_regions<double>("geometry::harmonic_analysis", n * m));
     FBF_TRY(gpu_status(gemmwich(blas, m32, n32, internal, h_mw.data(), work, h_internal.data())));
   }
   FBF_TRY(diagonalize<double>(res, m32, h_internal.data(), spectrum.data()));
 
   // 3. The mass-weighted modes B V (n x m), each column one mode.
-  const auto [modes] = res.device_regions<double>(n * m);
+  const auto [modes] = FBF_TRY(res.device_regions<double>("geometry::harmonic_analysis", n * m));
   {
     const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t,
                                             CreatePolicy<wwr::wwrblasStatus_t>>

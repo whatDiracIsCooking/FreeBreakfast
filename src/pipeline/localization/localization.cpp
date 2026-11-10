@@ -39,7 +39,8 @@ namespace free_breakfast {
   Buffers::device<double> keys(occ, res.device());
   Buffers::device<uint32_t> perm(occ, res.device());
   {
-    const auto [eps, work, fock] = res.device_regions<double>(occ, occ * occ, occ * occ);
+    const auto [eps, work, fock] =
+        FBF_TRY(res.device_regions<double>("sort_localized_orbitals", occ, occ * occ, occ * occ));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(eps, scf.mo_energies.data(), occ * sizeof(double),
                                            wwr::wwrMemcpyHostToDevice, res.stream())));
     FBF_TRY(gpu_status(gmmwich(res.blas(), n, out.u.data(), eps, work, fock)));
@@ -155,7 +156,8 @@ namespace free_breakfast {
     const double one = 1.0;
     const double zero = 0.0;
     const double *c_vir = scf.c.data() + (static_cast<size_t>(n_ao) * out.n_occ);
-    const auto [sl, o_dev] = res.device_regions<double>(l.size(), o.size());
+    const auto [sl, o_dev] =
+        FBF_TRY(res.device_regions<double>("write_livvo_molden", l.size(), o.size()));
     FBF_TRY(
         gpu_status(gemm(res.blas(), n_ao, out.n_vvo, n_ao, &one, s, out.livvo.data(), &zero, sl)));
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), n_vir, out.n_vvo, n_ao, &one, c_vir, sl,

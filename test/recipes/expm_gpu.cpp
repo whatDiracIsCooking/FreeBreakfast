@@ -16,6 +16,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -263,7 +265,7 @@ TYPED_TEST(SkewExpm, EigenvaluesAreTheClosedFormSpectrum) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   SkewProblem<T> p{res, kN};
   p.stage();
   ASSERT_TRUE(fb::skew_eig<T>(res, p.n, p.h.data(), p.u.data(), p.w.data()));
@@ -288,7 +290,7 @@ TYPED_TEST(SkewExpm, ExponentialMatchesTheClosedFormAtEveryStep) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   SkewProblem<T> p{res, kN};
   p.stage();
   ASSERT_TRUE(fb::skew_eig<T>(res, p.n, p.h.data(), p.u.data(), p.w.data()));
@@ -308,7 +310,7 @@ TYPED_TEST(SkewExpm, ZeroOperandIsExactlyTheIdentity) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto nn = static_cast<std::size_t>(kZeroN) * kZeroN;
   fb::Buffers::device<T> h{nn, res.device()};
   fb::Buffers::device<Eigvec<T>> u{nn, res.device()};
@@ -399,7 +401,7 @@ TYPED_TEST(SkewExpm, SplitTridiagonalOperandsDecomposeToRounding) {
   const auto nn = static_cast<std::size_t>(n) * n;
   const double eps = std::numeric_limits<Real<T>>::epsilon();
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<T> h{nn, res.device()};
   fb::Buffers::device<Eigvec<T>> u{nn, res.device()};
   fb::Buffers::device<Real<T>> w{static_cast<std::size_t>(n), res.device()};
@@ -458,10 +460,10 @@ TYPED_TEST(SkewExpm, EmptyOperandSucceedsWithoutTouchingAnything) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   EXPECT_TRUE(fb::skew_eig<T>(res, 0, nullptr, nullptr, nullptr));
   EXPECT_TRUE(fb::skew_expm<T>(res, 0, nullptr, nullptr, Real<T>{1}, nullptr));
-  EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, 0U);
 }
 
 } // namespace

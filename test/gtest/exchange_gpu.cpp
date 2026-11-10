@@ -28,6 +28,8 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -100,7 +102,7 @@ fb::Result<std::vector<fb::OrderedPairClass>> ordered(fb::DeviceResources &res,
 std::vector<double> golden_k(const Golden &g, const double tau,
                              const fb::DensitySymmetry symmetry = fb::DensitySymmetry::Symmetric,
                              const std::vector<double> *d = nullptr) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto classes = ordered(res, g.basis);
   EXPECT_TRUE(classes);
   if (!classes) {
@@ -292,7 +294,7 @@ TEST(Exchange, TheChainsBlockFactorsFallBelowTheDensityMaximum) {
   FBF_REQUIRE_GPU();
   const Golden g = read_golden("h10_chain_ccpvdz");
   ASSERT_FALSE(g.vk.empty());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto classes = ordered(res, g.basis);
   ASSERT_TRUE(classes);
   fb::CartesianMatrixAO density(res, g.basis);
@@ -321,7 +323,7 @@ TEST(Exchange, TheChainsBlockFactorsFallBelowTheDensityMaximum) {
 
 TEST(Exchange, ZeroesTheMatrixFirst) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const fb::CartesianMatrixAO density(res, basis);
   fb::CartesianMatrixAO k(res, basis);
@@ -347,7 +349,7 @@ TEST(Exchange, ATauAboveEveryBoundScreensEverything) {
 
 TEST(Exchange, RefusesANegativeOrNaNTau) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   auto classes = ordered(res, basis);
   ASSERT_TRUE(classes);
@@ -362,7 +364,7 @@ TEST(Exchange, RefusesANegativeOrNaNTau) {
 
 TEST(Exchange, RefusesADensityOfAnotherOrder) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet one({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const fb::BasisSet two({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0}),
                           fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 1.0})});
@@ -379,7 +381,7 @@ TEST(Exchange, RefusesADensityOfAnotherOrder) {
 // before anything is launched, not written out of bounds.
 TEST(Exchange, RefusesClassesOfALargerBasis) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet one({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const fb::BasisSet two({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0}),
                           fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 1.0})});
@@ -400,7 +402,7 @@ TEST(Exchange, RefusesASubsetOrAReorderingOfTheClasses) {
   FBF_REQUIRE_GPU();
   const Golden g = read_golden("h2o_sto3g");
   ASSERT_FALSE(g.vk.empty());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto classes = ordered(res, g.basis);
   ASSERT_TRUE(classes);
   ASSERT_EQ(classes->size(), std::size_t{4});
@@ -429,7 +431,7 @@ TEST(Exchange, RefusesASubsetOrAReorderingOfTheClasses) {
 // and the build refuses them before it queues anything.
 TEST(Exchange, RefusesAClassAboveF) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis({fb::Shell(4, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   auto classes = ordered(res, basis);
   ASSERT_TRUE(classes);

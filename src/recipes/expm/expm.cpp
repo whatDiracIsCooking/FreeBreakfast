@@ -147,15 +147,13 @@ Status skew_eig(DeviceResources &res, const int32_t n, const T *h,
   const int32_t lwork = FBF_TRY(skew_eig_query<Z>(solver, n, u, w));
 #if defined(WWR_SELECTED_HIP)
   int32_t found = 0;
-  auto work = wwr::extension::reinterpret_buffer_view<Z>(
-      res.device_workspace(static_cast<size_t>(lwork) * sizeof(Z)));
+  const auto [work] = FBF_TRY(res.device_regions<Z>("skew_eig", static_cast<size_t>(lwork)));
   FBF_TRY(gpu_status(wwr::heevdx<Z>(solver, kSkewEigMode, kSkewRange, kSkewFillMode, n, u, n, R{0},
-                                    R{0}, 0, 0, &found, w, work.data(), lwork, res.info().data())));
+                                    R{0}, 0, 0, &found, w, work, lwork, res.info().data())));
 #else
-  auto work = wwr::extension::reinterpret_buffer_view<Z>(
-      res.device_workspace(static_cast<size_t>(lwork) * sizeof(Z)));
-  FBF_TRY(gpu_status(wwr::heevd<Z>(solver, kSkewEigMode, kSkewFillMode, n, u, n, w, work.data(),
-                                   lwork, res.info().data())));
+  const auto [work] = FBF_TRY(res.device_regions<Z>("skew_eig", static_cast<size_t>(lwork)));
+  FBF_TRY(gpu_status(wwr::heevd<Z>(solver, kSkewEigMode, kSkewFillMode, n, u, n, w, work, lwork,
+                                   res.info().data())));
 #endif
 
   const int32_t info = FBF_TRY(res.fetch_info());
@@ -192,9 +190,8 @@ Status skew_expm(DeviceResources &res, const int32_t n,
 
   // v = U diag(e^{-i t w}), then a real T's complex product after it.
   constexpr int64_t kBlocks = wwr::real_fp<T> ? 2 : 1;
-  auto work = wwr::extension::reinterpret_buffer_view<Z>(
-      res.device_workspace(static_cast<size_t>(kBlocks * nn) * sizeof(Z)));
-  Z *v = work.data();
+  Z *const v =
+      std::get<0>(FBF_TRY(res.device_regions<Z>("skew_expm", static_cast<size_t>(kBlocks * nn))));
   FBF_TRY(gpu_status(device::phase_scale(res.stream(), n, u, w, t, v)));
 
   // e = v U^H: straight into e for a complex T; for a real T into the second

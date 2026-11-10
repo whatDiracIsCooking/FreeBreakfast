@@ -17,6 +17,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "io_basis_json.h"
 #include "scratch_dir.h"
 
@@ -74,7 +76,7 @@ TEST(PipelineCalculation, MatchesTheStepsCalledByHand) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_calculation");
   write_inputs(dir, kConfig);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
@@ -127,7 +129,7 @@ TEST(PipelineCalculation, TheGuessHoldsEveryElectronAgainstThePipelinesOverlap) 
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_calculation");
   write_inputs(dir, kConfig);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
@@ -154,7 +156,7 @@ TEST(PipelineCalculation, AnScfFromALoadedGuessMatchesOneFromItsOwn) {
   const fb::test::ScratchDir dir("pipeline_calculation");
   write_inputs(dir,
                "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"basis.json\"\n[scf]\n");
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto made = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(made.has_value()) << made.error().message;
   const fb::Status made_ran = made->run(node);
@@ -190,7 +192,7 @@ TEST(PipelineCalculation, ACasciConfigRunsEndToEnd) {
   const fb::test::ScratchDir dir("pipeline_calculation");
   write_inputs(dir, "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n"
                     "[casci]\nncas = 4\nnelecas = 4\nnroots = 2\n");
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
@@ -231,7 +233,7 @@ TEST(PipelineCalculation, ACasscfConfigRunsEndToEnd) {
   write_inputs(dir, "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n"
                     "[casci]\nncas = 4\nnelecas = 4\n"
                     "[casscf]\nncas = 4\nnelecas = 4\n");
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
@@ -266,7 +268,7 @@ TEST(PipelineCalculation, AConfigWithNoEriRunsIntegralDirect) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_calculation");
   write_inputs(dir, "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n[scf]\n");
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   ASSERT_TRUE(calc->step<fb::EriStep>().has_value());
@@ -299,7 +301,7 @@ TEST_P(PipelineCalculationEri, AnScfAndACasscfShareOneEriOutput) {
                                 "\"{}\"\n[eri]\nmode = \"{}\"\n[scf]\n"
                                 "[casscf]\nncas = 4\nnelecas = 4\n",
                                 fitted ? "cc-pvdz" : "6-31g", GetParam()));
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   // The planner holds one step per kind: one EriStep, so one EriOutput.
@@ -335,7 +337,7 @@ TEST(PipelineCalculation, AFailedRootFailsEveryProductAfterIt) {
   const fb::test::ScratchDir dir("pipeline_calculation");
   write_inputs(dir, kConfig);
   std::filesystem::remove(dir / "water.xyz");
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
 

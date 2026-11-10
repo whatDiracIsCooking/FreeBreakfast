@@ -103,5 +103,5 @@ metric, held to 1e-9, as the gradient's is: there libcint's `int2c2e_ipip1`
 contractions, while this tree's matches a 40-digit reference of the same
 contraction to about 3e-13 (#593's PR has the numbers). `Footprint` holds
 each call to its footprint by `test/support/pool_footprint.h`: the
-workspace grown to exactly the carve, and nothing taken from the pool. Every case is in the fast
+largest borrow exactly the carve, and nothing taken from the pool. Every case is in the fast
 tier; the acCD one, the slowest, takes about 3.5 s on either card.

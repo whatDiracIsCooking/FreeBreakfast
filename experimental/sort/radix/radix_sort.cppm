@@ -29,8 +29,8 @@ export namespace free_breakfast {
 ///
 /// The scratch -- a second copy of the keys (and of the values, when given)
 /// plus one digit count per (bucket, tile) -- is carved from
-/// res.device_workspace(), which grows to fit if it is smaller: the one
-/// allocation this can make.
+/// res.device_workspace(), held from its construction: Unsupported when it is
+/// smaller. Nothing is allocated.
 ///
 /// Everything is queued on res.stream(), and nothing synchronizes it. The
 /// device res.dev_idx() names is made current for the call and the previous

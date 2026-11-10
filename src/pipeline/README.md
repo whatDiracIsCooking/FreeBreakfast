@@ -86,17 +86,24 @@ max_device_mem_per_gpu = "10GiB"   # the device: context, libraries and pool
 max_pinned_mem_per_gpu = "16GiB"   # the pinned host memory one device owns
 ```
 
-[`examples/memory.toml`](../../examples/memory.toml) is a capped RHF. With
-neither key, nothing below happens: the plan is not checked, and the run is
-the uncapped one it always was. With either, `main` calls `preflight`
-(`shape/`) after it builds the node and before the first step:
+[`examples/memory.toml`](../../examples/memory.toml) is a capped RHF. `main`
+calls `preflight` (`shape/`) after it builds the node and before the first
+step, capped or not, since it sizes every device's workspaces: each
+`DeviceResources` holds a device and a pinned workspace sized at construction
+and never resized (`core/resources/README.md`), so the node is rebuilt with
+them at the plan's maximum. With neither key the plan is not checked against
+anything but the device: the workspaces are the most any planned step
+borrows, an AVAS worst case past the device's budget is narrowed as below
+against that budget, and a device workspace past it is refused. With either
+key, in order:
 
-1. **The caps reach the devices.** Each `DeviceResources` is rebuilt with its
+1. **The caps reach the devices.** Each `DeviceResources` is rebuilt (once the
+   plan is checked, with the workspaces of step 4) with its
    pool capped at `max_device_mem_per_gpu` less the 256 MiB reserve the
    context and the library handles hold outside the pool
    (`DeviceResources::kDeviceReserve`), the cap also the pool's release
    threshold, and its pinned total capped at `max_pinned_mem_per_gpu`
-   (#1130's cap, which refuses a pinned growth past it at run time). A
+   (#1130's cap, which refuses a counted pinned buffer past it at run time). A
    device cap that leaves no pool past the reserve and the headroom is
    refused.
 2. **The machine check.** Pinned memory is not pageable, so the node's
@@ -115,8 +122,9 @@ the uncapped one it always was. With either, `main` calls `preflight`
    must fit the pinned cap. A plan past either is refused, `InvalidConfig`
    naming the step that reaches the peak, the peak and the cap, before any
    step runs.
-4. **The workspaces are pre-grown** to the plan's maximum, so a footprinted
-   step never grows them (#1123 sizes them at construction instead).
+4. **The workspaces are sized** at the plan's maximum: the devices of step 1
+   are built with them, held for the run. Nothing grows them, so a borrow
+   past them, a footprint that undercounted, is refused at the step.
 5. **The pre-warm.** Under a device cap, the pool's cap less the headroom is
    allocated and freed once. The pool keeps it, its release threshold being
    the cap, and a card that cannot supply it, because another process holds

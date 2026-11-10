@@ -319,7 +319,8 @@ Status form_classes(DeviceResources &res, std::vector<PrimitivePairClass> &class
     n_max = std::max(n_max, static_cast<size_t>(cls.n_rec));
   }
   const auto [key, key_alt, perm, perm_alt] =
-      res.device_regions<double, double, uint32_t, uint32_t>(n_max, n_max, n_max, n_max);
+      FBF_TRY((res.device_regions<double, double, uint32_t, uint32_t>("form_classes", n_max, n_max,
+                                                                      n_max, n_max)));
   for (size_t c = 0; c < classes.size(); ++c) {
     PrimitivePairClass &cls = classes[c];
     FBF_TRY(gpu_status(cls.handle->fork_stream().fork_from(

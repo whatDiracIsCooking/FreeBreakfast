@@ -19,6 +19,8 @@ import free_breakfast.io.json;
 import free_breakfast.ci;
 import free_breakfast.test.ci_oracles;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -215,7 +217,7 @@ void check_diagonal(fb::DeviceResources &res, fb::ci::Rdm &rdm, std::size_t n,
 
 TEST(CiTransRdmGpu, MatchesPyscf) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto doc = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "trans_rdm.json");
   ASSERT_TRUE(doc.has_value()) << doc.error().message;
   std::int32_t pairs = 0;
@@ -299,7 +301,7 @@ void expect_polarization(const Transition &got, std::span<const double> plus,
 // orbital and N_α < N_β, in the full layout.
 TEST(CiTransRdmGpu, MatchesHostPolarization) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   struct Sector {
     std::int32_t n, n_alpha, n_beta;
   };
@@ -352,7 +354,7 @@ TEST(CiTransRdmGpu, MatchesHostPolarization) {
 // holds to host_rdm12), and bra = ket against rdm12, in each layout.
 TEST(CiTransRdmGpu, MatchesPolarizationAcrossChunks) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const auto [electrons, layout] :
        {std::pair{4, fb::ci::Layout::full}, std::pair{5, fb::ci::Layout::symmetric}}) {
     SCOPED_TRACE(std::format("N {} per spin", electrons));
@@ -382,7 +384,7 @@ TEST(CiTransRdmGpu, MatchesPolarizationAcrossChunks) {
 
 TEST(CiTransRdmGpu, Refuses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // The symmetric layout wants one set for both spins: (4, 1) and (4, 3)
   // have the same number of strings, and are still two sets.
   const auto one = fb::ci::DeviceStringSet::create(res, 4, 1);

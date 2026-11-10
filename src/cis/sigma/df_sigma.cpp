@@ -61,24 +61,19 @@ Result<DfSigma> DfSigma::create(DeviceResources &res, const Buffers::device<doub
 
   const ScopedDeviceIndex on{res.dev_idx()};
   // Past the memory budget an allocation aborts (CreatePolicy) rather than
-  // returns, so the total is refused here, before any: the three MO blocks,
-  // and the workspace's growth to the larger of b_mo's half transform (naux
-  // n_virt nao, over the virtual rows) and apply's two regions.
+  // returns, so the three MO blocks are refused here, before any. b_mo's half
+  // transform and apply's two regions are the workspace's, held from
+  // construction, which refuses them itself.
   const auto aux = static_cast<size_t>(naux);
   const auto occ = static_cast<size_t>(n_occ);
   const auto virt = static_cast<size_t>(n_virt);
   const MemoryFootprint fp = df_sigma_footprint(naux, static_cast<int32_t>(nao), n_occ, max_block);
   const size_t blocks_bytes = fp.device.persistent;
-  const size_t scratch_bytes = fp.device.workspace;
-  const size_t growth_bytes =
-      scratch_bytes > res.device_workspace(0).num_elements() ? scratch_bytes : 0;
-  if (const size_t budget = FBF_TRY(res.memory_budget()); blocks_bytes + growth_bytes > budget) {
+  if (const size_t budget = FBF_TRY(res.memory_budget()); blocks_bytes > budget) {
     return err_unsupported("cis::DfSigma::create: the MO blocks of B over {} fitting functions, "
-                           "{} occupied and {} virtual orbitals ({} bytes) and {} bytes of "
-                           "workspace growth for a block of {} need {} bytes of device memory, "
+                           "{} occupied and {} virtual orbitals need {} bytes of device memory, "
                            "and device {}'s budget is {}",
-                           naux, n_occ, n_virt, blocks_bytes, growth_bytes, max_block,
-                           blocks_bytes + growth_bytes, res.dev_idx(), budget);
+                           naux, n_occ, n_virt, blocks_bytes, res.dev_idx(), budget);
   }
 
   Buffers::device<double> b_vo(aux * occ * virt, res.device());
@@ -135,20 +130,11 @@ Result<DfSigma> DfSigma::create(DeviceResources &res, Buffers::device<double> b_
 
   const ScopedDeviceIndex on{res.dev_idx()};
   // apply's two regions, T (naux_j per column) and W (naux_k n_ov per
-  // column), refused past the memory budget before the workspace grows.
+  // column), borrowed once here so that a workspace too small for them is
+  // refused at create rather than at the first apply.
   const auto block = static_cast<size_t>(max_block);
-  const size_t scratch_bytes =
-      df_sigma_apply_footprint(naux_j, naux_k, n_occ, n_virt, max_block).device.workspace;
-  const size_t growth_bytes =
-      scratch_bytes > res.device_workspace(0).num_elements() ? scratch_bytes : 0;
-  if (const size_t budget = FBF_TRY(res.memory_budget()); growth_bytes > budget) {
-    return err_unsupported("cis::DfSigma::create: {} bytes of workspace growth for a block of {} "
-                           "over {} and {} fitting functions, and device {}'s budget is {}",
-                           growth_bytes, max_block, naux_j, naux_k, res.dev_idx(), budget);
-  }
-  // apply's regions, grown to here so that no apply allocates them. The
-  // workspace only grows, so a later, larger user leaves it big enough.
-  static_cast<void>(res.device_regions<double>(aux_j * block, aux_k * occ * virt * block));
+  std::ignore = FBF_TRY(res.device_regions<double>("cis::DfSigma::create", aux_j * block,
+                                                   aux_k * occ * virt * block));
   return DfSigma{res,    std::move(b_vo), naux_j, std::move(b_oo), std::move(b_vv), naux_k, n_occ,
                  n_virt, delta,           spin,   max_block};
 }
@@ -177,9 +163,9 @@ Status DfSigma::apply(DeviceResources &res, const int32_t k, const double *const
   const auto block = static_cast<size_t>(max_block_);
   // T = B_vo X, naux_j x k, and the exchange's intermediate W, naux_k n_ov k:
   // the sizes create grew the workspace to, so this allocates nothing.
-  const auto [t, w] =
-      res.device_regions<double>(static_cast<size_t>(naux_j_) * block,
-                                 static_cast<size_t>(naux_k_) * static_cast<size_t>(n_ov) * block);
+  const auto [t, w] = FBF_TRY(
+      res.device_regions<double>("cis::DfSigma::apply", static_cast<size_t>(naux_j_) * block,
+                                 static_cast<size_t>(naux_k_) * static_cast<size_t>(n_ov) * block));
 
   // σ = Δε ∘ X, over the whole block; every term after accumulates into it.
   FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, n_ov, k, x, n_ov,

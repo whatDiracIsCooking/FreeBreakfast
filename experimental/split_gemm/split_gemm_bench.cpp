@@ -31,6 +31,12 @@ import free_breakfast.experimental.split_gemm;
 
 namespace fb = free_breakfast;
 
+// The workspaces this benchmark's DeviceResources hold, sized at
+// construction (src/core/resources/README.md): 1 GiB on the device and 64 MiB
+// pinned, past what any of its runs borrows.
+constexpr fb::MemoryFootprint kWorkspaces{.device = {.workspace = std::size_t{1} << 30},
+                                          .pinned = {.workspace = std::size_t{64} << 20}};
+
 namespace {
 
 void check(const bool ok, const std::string_view what) {
@@ -274,7 +280,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   check(budget_gib > 0, "budget_gib > 0");
   const auto budget = static_cast<std::size_t>(budget_gib) * (1UZ << 30);
 
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, kWorkspaces};
   std::println("reps={} budget={} GiB", reps, budget_gib);
   ceiling_probe(res, reps, budget);
   split_probe(res, reps, budget);

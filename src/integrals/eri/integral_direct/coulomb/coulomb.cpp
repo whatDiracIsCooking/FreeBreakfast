@@ -269,8 +269,9 @@ Result<std::vector<double>> coulomb_gradient(DeviceResources &res, const BasisSe
     }
   }
   // The call's scratch, the workspace's: nothing below takes it again.
-  const auto [jp, g_d, atoms, ao_atom_d] = res.device_regions<double, double, int32_t, int32_t>(
-      at.jp.back(), g.size(), at.atoms.back(), ao_atom.size());
+  const auto [jp, g_d, atoms, ao_atom_d] =
+      FBF_TRY((res.device_regions<double, double, int32_t, int32_t>(
+          "coulomb_gradient", at.jp.back(), g.size(), at.atoms.back(), ao_atom.size())));
   FBF_TRY(
       gpu_status(wwr::wwrMemcpyAsync(ao_atom_d, ao_atom.data(), sizeof(int32_t) * ao_atom.size(),
                                      wwr::wwrMemcpyHostToDevice, stream)));

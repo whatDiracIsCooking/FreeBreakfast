@@ -39,6 +39,8 @@ import free_breakfast.ci;
 import free_breakfast.mcscf;
 import free_breakfast.hessian;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -343,7 +345,7 @@ protected:
     const auto nelecas = entry.at("nelecas").get<std::vector<std::int32_t>>();
     ASSERT_EQ(nelecas[0], nelecas[1]);
     nocc_ = static_cast<std::size_t>(ncore_ + ncas_);
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     fb::DeviceResources &res = *res_;
     for (const fb::json &atom : entry.at("atoms")) {
       const auto xyz = atom.at("coord").get<std::vector<double>>();

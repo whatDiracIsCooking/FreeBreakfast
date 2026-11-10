@@ -78,10 +78,11 @@ struct PlanShape {
 [[nodiscard]] Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res);
 
 /// @brief Pre-flight: hold @p calc's plan to its `[memory]` caps on @p node,
-///        and set the node up to run it under them, before the first step.
+///        and set the node up to run it, before the first step: each
+///        device's workspaces sized to the plan's maximum, and under a cap
+///        the caps set.
 ///
-/// With neither cap set it does nothing: an uncapped plan is not checked.
-/// Otherwise, in order:
+/// In order:
 ///
 /// - a `max_device_mem_per_gpu` that leaves no pool past the reserve outside
 ///   it (DeviceResources::kDeviceReserve), the fragmentation headroom
@@ -89,19 +90,21 @@ struct PlanShape {
 ///   itself (DeviceResources::kOwnPoolBytes) is refused;
 /// - under a pinned cap, the node's devices times it must fit MemAvailable
 ///   (check_pinned_node);
-/// - each of @p node's DeviceResources is rebuilt with the pool capped at
-///   `max_device_mem_per_gpu` less the reserve and the pinned total at
-///   `max_pinned_mem_per_gpu`;
-/// - the plan is shaped on device 0 (plan_shape) and its footprints folded
-///   and checked (check_plan), the device peak against the pool's cap less
-///   the headroom, what the DeviceResources itself holds in the pool
-///   (DeviceResources::kOwnPoolBytes) and, on a pool that rounds a reused
-///   block, an eighth of the peak. A step with no footprint yet is refused under a cap. When the
-///   only active spaces planned are AVAS's and their worst case does not
-///   fit, each AVAS step's `avas_max_ncas` is narrowed to the most orbitals
-///   that do, so a larger pick is refused at the step;
-/// - the device and pinned workspaces are grown to the plan's maximum, so a
-///   footprinted step never grows them;
+/// - the plan is shaped on device 0 (plan_shape). Under a cap its footprints
+///   are folded and checked (check_plan), the device peak against the pool's
+///   cap less the headroom, what the DeviceResources itself holds in the
+///   pool (DeviceResources::kOwnPoolBytes) and, on a pool that rounds a
+///   reused block, an eighth of the peak. A step with no footprint yet is
+///   refused under a cap. When the only active spaces planned are AVAS's and
+///   their worst case does not fit, each AVAS step's `avas_max_ncas` is
+///   narrowed to the most orbitals that do, so a larger pick is refused at
+///   the step. Uncapped, nothing is refused but a device workspace past the
+///   device's budget, and the narrowing is against that budget less the
+///   headroom;
+/// - each of @p node's DeviceResources is rebuilt with its workspaces at the
+///   plan's maximum, the pool capped at `max_device_mem_per_gpu` less the
+///   reserve and the pinned total at `max_pinned_mem_per_gpu`; nothing
+///   resizes the workspaces after;
 /// - under a device cap, the pool's cap less the headroom is allocated and
 ///   freed once, so memory another process holds is reported now, not at a
 ///   later step; the pool keeps it, its release threshold being the cap.
@@ -110,8 +113,9 @@ struct PlanShape {
 ///
 /// @return InvalidConfig for a cap leaving no pool, the machine check, or
 ///         check_plan's refusal; Allocation when the device cannot supply
-///         the pool's cap, naming its free memory and the cap; plan_shape's
-///         error, or a pinned workspace's; GpuRuntime for a failed sync.
+///         the pool's cap, naming its free memory and the cap, or uncapped a
+///         device workspace past its budget; plan_shape's error; GpuRuntime
+///         for a failed sync or budget read.
 [[nodiscard]] Status preflight(Calculation &calc, NodeResources &node);
 
 } // namespace free_breakfast

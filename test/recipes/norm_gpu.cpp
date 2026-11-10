@@ -13,6 +13,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -84,7 +86,7 @@ void expect_norm(const T got, const T want) {
 
 template <Norm which, typename T>
 void check_host_mode(const std::int32_t incx) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto x = vector_of<T>(incx);
   fb::Buffers::device<T> dx(x.size(), res.device());
   upload(res, dx, x);
@@ -96,7 +98,7 @@ void check_host_mode(const std::int32_t incx) {
 
 template <Norm which, typename T>
 void check_device_mode(const std::int32_t incx) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto x = vector_of<T>(incx);
   fb::Buffers::device<T> dx(x.size(), res.device());
   fb::Buffers::device<T> dresult(1, res.device());
@@ -151,7 +153,7 @@ TYPED_TEST(NormGpu, EmptyIsZeroInBothModes) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   T got{-7};
   ASSERT_TRUE(fb::norm<Norm::inf>(res, 0, static_cast<const T *>(nullptr), 1, &got));
   EXPECT_EQ(got, T{0});

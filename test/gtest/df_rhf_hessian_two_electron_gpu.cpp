@@ -26,6 +26,8 @@ import free_breakfast.integrals.eri.density_fitting;
 import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.hessian;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -156,7 +158,7 @@ protected:
       }
     }
     ASSERT_NE(c, nullptr) << "no case " << name;
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     molecule_.emplace(molecule_of(*res_, *c));
     const auto stamp = fb::resolve_basis((*c)["basis"].get<std::string>());
     ASSERT_TRUE(stamp) << stamp.error().message;
@@ -221,8 +223,8 @@ protected:
     ASSERT_EQ(got->coulomb.size(), n_x_ * n_x_);
     ASSERT_EQ(got->exchange.size(), n_x_ * n_x_);
     // The call's own buffers are freed on return; what stays is the
-    // workspace, grown to the largest scratch any of its calls took.
-    const std::size_t workspace = res_->device_workspace(0).num_elements();
+    // workspace; its high-water mark is the largest scratch any call took.
+    const std::size_t workspace = res_->workspace_high_water().device.workspace;
 
     std::string report;
     for (const auto &[term, mine, ref] : {std::tuple{"coulomb", &got->coulomb, &ref_coulomb_},

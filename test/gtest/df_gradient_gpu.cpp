@@ -21,6 +21,8 @@ import free_breakfast.io.json;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.density_fitting.gradient;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -119,7 +121,7 @@ void check_gradient(const std::string &name, const std::int32_t orbital_l,
   }
   ASSERT_NE(c, nullptr) << "no density_fitting case " << name;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   std::vector<fb::Atom> atoms;
   for (const auto &atom : (*c)["atoms"]) {
     const auto xyz = atom["coord"].get<std::vector<double>>();
@@ -222,7 +224,7 @@ TEST(DfGradient, TzAcCdThroughFfIMatchesPyscf) {
 // past the ladders has no kernel; each refused before anything is launched.
 TEST(DfGradient, Refusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto placed = [](std::vector<fb::Shell> shells) {
     const auto count = static_cast<std::uint32_t>(shells.size());
     return fb::BasisSet{std::move(shells), {0, count}};

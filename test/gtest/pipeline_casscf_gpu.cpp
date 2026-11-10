@@ -27,6 +27,8 @@ import free_breakfast.io.npy;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -222,7 +224,7 @@ void expect_matches(const fb::json &entry, const std::string &casscf_toml) {
   const std::filesystem::path molden = dir / "out/casscf.molden";
   auto calc = fb::read_config(write_config(dir, entry, casscf_toml), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &casscf = calc->get<fb::CasscfOutput>();
@@ -379,7 +381,7 @@ TEST(PipelineCasscf, OutOfMacroIterationsIsMaxIterationsExceeded) {
       fb::read_config(write_config(dir, entry, "[casscf]\nncas = 4\nnelecas = 4\nmax_cycle = 1\n"),
                       dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::MaxIterationsExceeded) << ran.error().message;
@@ -401,7 +403,7 @@ fb::Result<fb::Calculation> run_in(const fb::test::ScratchDir &dir, const fb::js
   if (!calc.has_value()) {
     return calc;
   }
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   if (const fb::Status ran = calc->run(node); !ran.has_value()) {
     return std::unexpected(ran.error());
   }

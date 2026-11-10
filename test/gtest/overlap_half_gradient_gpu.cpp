@@ -29,6 +29,8 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -91,7 +93,7 @@ TEST_P(OverlapHalfGradientGolden, MatchesLibcint) {
   const std::string name = GetParam();
   const fb::json c = read_case(name);
   ASSERT_FALSE(c.is_null());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule(res, case_atoms(c));
   const auto stamp = fb::resolve_basis(c["basis"].get<std::string>());
   ASSERT_TRUE(stamp) << stamp.error().message;
@@ -179,7 +181,7 @@ INSTANTIATE_TEST_SUITE_P(H2O, OverlapHalfGradientGolden,
 // Each refusal before anything is launched, naming the input refused.
 TEST(OverlapHalfGradient, Refusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule(
       res, {fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, static_cast<fb::Element>(1)},
             fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 1.4}, static_cast<fb::Element>(1)}});

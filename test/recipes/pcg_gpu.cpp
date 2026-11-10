@@ -14,6 +14,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -48,8 +50,8 @@ std::vector<T> to_host(fb::DeviceResources &res, const T *d, std::size_t count) 
 
 // A dense device matrix as a LinearOperator: one gemm per apply, recording
 // each apply's column count and whether it ran in host pointer mode. With
-// scribble set, each apply first grows the device workspace and fills it with
-// NaN bytes, as an operator taking it for its own scratch would.
+// scribble set, each apply first fills the whole device workspace with NaN
+// bytes, as an operator taking it for its own scratch would.
 struct Dense {
   std::int32_t n;
   const double *a;
@@ -65,10 +67,14 @@ struct Dense {
                 wwr::wwrblasGetPointerMode(blas, &mode) == wwr::WWRBLAS_STATUS_SUCCESS &&
                 mode == wwr::WWRBLAS_POINTER_MODE_HOST;
     if (scribble) {
-      const std::size_t bytes = counts.size() << 16U;
-      auto &work = res.device_workspace(bytes);
-      if (auto status = fb::gpu_status(
-              wwr::wwrMemsetAsync(work.data(), 0xFF, work.num_elements(), res.stream()));
+      // The whole workspace, overwritten: whatever pcg_solve held in it is
+      // garbage after.
+      const auto work = res.device_workspace("Dense::apply", res.workspaces().device.workspace);
+      if (!work) {
+        return std::unexpected(work.error());
+      }
+      if (auto status =
+              fb::gpu_status(wwr::wwrMemsetAsync(work->data(), 0xFF, work->size(), res.stream()));
           !status) {
         return status;
       }
@@ -229,7 +235,7 @@ TEST(RecipesPcg, NoPreconditionerSolvesDenseSpdAgainstHostSolve) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kCols = 3;
   constexpr double kTolerance = 1e-10;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto a = spd(0.0, true);
   const auto b = random_columns(kCols, 1U);
   auto d_a = to_device(res, a);
@@ -268,7 +274,7 @@ TEST(RecipesPcg, ColumnsStopAtTheirOwnTolerance) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kCols = 3;
   const std::array<double, kCols> tolerances{1e-2, 1e-6, 1e-10};
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto a = spd(0.0, true);
   const auto b = random_columns(kCols, 2U);
   auto d_a = to_device(res, a);
@@ -326,7 +332,7 @@ TEST(RecipesPcg, ColumnFormNamesEachBlocksColumns) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kCols = 3;
   const std::array<double, kCols> tolerances{1e-2, 1e-6, 1e-10};
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto a = spd(0.0, true);
   const auto b = random_columns(kCols, 6U);
   auto d_a = to_device(res, a);
@@ -373,7 +379,7 @@ TEST(RecipesPcg, ColumnFormNamesEachBlocksColumns) {
 TEST(RecipesPcg, CallersNormsReplaceTheCallsOwn) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kCols = 2;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto a = spd(0.0, true);
   const auto b = random_columns(kCols, 7U);
   auto d_a = to_device(res, a);
@@ -417,7 +423,7 @@ TEST(RecipesPcg, JacobiCutsSweepsOnIllConditionedDiagonal) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kCols = 2;
   constexpr std::int32_t kJacobiBound = 24;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto a = spd(6.0, false);
   const auto b = random_columns(kCols, 3U);
   auto d_a = to_device(res, a);
@@ -464,7 +470,7 @@ TEST(RecipesPcg, JacobiCutsSweepsOnIllConditionedDiagonal) {
 TEST(RecipesPcg, CurvatureCheck) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kCols = 2;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   std::vector<double> a(static_cast<std::size_t>(kN) * kN, 0.0);
   for (std::int32_t i = 0; i < kN; ++i) {
     a[i + i * kN] = i == 0 ? -1.0 : static_cast<double>(i);
@@ -502,7 +508,7 @@ TEST(RecipesPcg, CurvatureCheck) {
 TEST(RecipesPcg, MaxIterations) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kCols = 2;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto a = spd(0.0, true);
   const auto b = random_columns(kCols, 4U);
   auto d_a = to_device(res, a);
@@ -537,7 +543,7 @@ TEST(RecipesPcg, MaxIterations) {
 TEST(RecipesPcg, StartFromX) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kCols = 2;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto a = spd(0.0, true);
   const auto b = random_columns(kCols, 5U);
   auto d_a = to_device(res, a);
@@ -561,7 +567,7 @@ TEST(RecipesPcg, StartFromX) {
 
 TEST(RecipesPcg, Refusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<double> d_b(kN, res.device());
   fb::Buffers::device<double> d_x(kN, res.device());
   Dense op{kN, nullptr};

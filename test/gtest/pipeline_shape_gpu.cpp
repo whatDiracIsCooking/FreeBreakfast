@@ -18,6 +18,8 @@ import free_breakfast.recipes.diagonalize;
 import free_breakfast.recipes.lu; // getrf_lwork
 import free_breakfast.pipeline.shape;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -67,7 +69,7 @@ fb::PlanShape water_shape(fb::DeviceResources &res, std::string_view tables) {
 // singlet: five doubly occupied.
 TEST(PipelineShape, WaterDensityFittedMatchesHandCount) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::PlanShape shape = water_shape(res, kDensityFitted);
   const fb::FootprintDimensions &dims = shape.dims;
 
@@ -127,7 +129,7 @@ TEST(PipelineShape, WaterDensityFittedMatchesHandCount) {
 // record counts the shape gives, class for class.
 TEST(PipelineShape, RecordCountsMatchThePrimitivePairClasses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::PlanShape shape = water_shape(res, "");
   const fb::FootprintDimensions &dims = shape.dims;
   ASSERT_NE(dims.basis, nullptr);
@@ -155,7 +157,7 @@ TEST(PipelineShape, RecordCountsMatchThePrimitivePairClasses) {
 // bound. nelecas at half filling, ncas.
 TEST(PipelineShape, AvasBoundIsTheCapOrTheLabelledAos) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto active = [&](std::string_view casscf) {
     const fb::PlanShape shape =
         water_shape(res, std::string(kDensityFitted) + "[casscf]\n" + std::string(casscf));
@@ -174,7 +176,7 @@ TEST(PipelineShape, AvasBoundIsTheCapOrTheLabelledAos) {
 // under AVAS MINAO, placed, with its 7 AOs on water.
 TEST(PipelineShape, EigensolveOrdersAndMinao) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::PlanShape casci = water_shape(res, "[casci]\nncas = 4\nnelecas = 4\nnroots = 3\n");
   EXPECT_EQ(casci.dims.syevd_lwork.size(), std::size_t{49});
   EXPECT_EQ(casci.dims.minao, nullptr);
@@ -197,7 +199,7 @@ TEST(PipelineShape, EigensolveOrdersAndMinao) {
 // LIVVOs in either mode), not for Pipek-Mezey alone.
 TEST(PipelineShape, CisAndLocalization) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::PlanShape cis = water_shape(res, "[cis]\n");
   EXPECT_EQ(cis.dims.syevd_lwork.size(), std::size_t{41});
   EXPECT_EQ(cis.dims.getrf_lwork, 0U);
@@ -226,7 +228,7 @@ TEST(PipelineShape, CisAndLocalization) {
 // the CASSCF's.
 TEST(PipelineShape, CasscfRootsAndWeights) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::PlanShape none = water_shape(res, "[casci]\nncas = 4\nnelecas = 4\nnroots = 3\n");
   EXPECT_EQ(none.dims.casscf_nroots, 0U);
   EXPECT_FALSE(none.dims.casscf_unequal_weights);
@@ -249,7 +251,7 @@ TEST(PipelineShape, CasscfRootsAndWeights) {
 // larger.
 TEST(PipelineShape, FciIsTheLargestActiveSpace) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::PlanShape shape = water_shape(res, "[casci]\nncas = 4\nnelecas = 4\n[fci]\n");
   EXPECT_EQ(shape.dims.ncas, std::size_t{24});
   EXPECT_EQ(shape.dims.nelecas, std::size_t{10});
@@ -259,7 +261,7 @@ TEST(PipelineShape, FciIsTheLargestActiveSpace) {
 // which does not exist yet: the shape reads the chain's start, the same atoms.
 TEST(PipelineShape, OptimizeReadsTheChainsStart) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::PlanShape shape = water_shape(res, "[optimize]\n");
   EXPECT_EQ(shape.dims.natoms, std::size_t{3});
   EXPECT_EQ(shape.dims.nao, std::size_t{24});
@@ -271,7 +273,7 @@ TEST(PipelineShape, OptimizeReadsTheChainsStart) {
 // the Hessian planned, and through nao, 7, without it.
 TEST(PipelineShape, HessianOrderIsThreeAtoms) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("pipeline_shape_hessian");
   ASSERT_TRUE(fb::write_file(dir / "water.xyz", kWaterXyz).has_value());
   const auto shape = [&](std::string_view tables) {
@@ -302,7 +304,7 @@ TEST(PipelineShape, HessianOrderIsThreeAtoms) {
 // CASSCF's.
 TEST(PipelineShape, QdHessianOrderIsTheEdgesSubspace) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::string casscf =
       std::string(kDensityFitted) + "[casscf]\nncas = 7\nnelecas = 6\nnroots = 21\n";
   const fb::PlanShape qd =

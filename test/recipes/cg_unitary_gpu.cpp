@@ -18,6 +18,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -145,8 +147,8 @@ HostMatrix download(fb::DeviceResources &res, const fb::Buffers::device<T> &d) {
 
 // J(W) = tr(W^H R W N) as a cg_unitary cost: Psi = R W N, J = Re dotc(W, Psi).
 // The R W product takes the device workspace. With scribble set, each call
-// first grows the workspace and fills it with NaN bytes, as a cost taking it
-// for scratch of its own would. Notes any call made outside host pointer mode.
+// first fills the whole workspace with NaN bytes, as a cost taking it for
+// scratch of its own would. Notes any call made outside host pointer mode.
 template <typename T>
 struct Brockett {
   static constexpr std::int32_t kOrder = 2;
@@ -167,9 +169,13 @@ struct Brockett {
     if (!scribble) {
       return {};
     }
-    auto &work = res.device_workspace(static_cast<std::size_t>(calls) << 12U);
-    return fb::gpu_status(
-        wwr::wwrMemsetAsync(work.data(), 0xFF, work.num_elements(), res.stream()));
+    // The whole workspace, overwritten: whatever the solver held in it is
+    // garbage after.
+    const auto work = res.device_workspace("prologue", res.workspaces().device.workspace);
+    if (!work) {
+      return std::unexpected(work.error());
+    }
+    return fb::gpu_status(wwr::wwrMemsetAsync(work->data(), 0xFF, work->size(), res.stream()));
   }
 
   fb::Status euclidean_gradient(fb::DeviceResources &res, std::int32_t n, const T *w,
@@ -178,16 +184,20 @@ struct Brockett {
       return status;
     }
     const wwr::wwrblasHandle_t blas = res.blas().get();
-    auto rw = wwr::extension::reinterpret_buffer_view<T>(
-        res.device_workspace(static_cast<std::size_t>(n) * n * sizeof(T)));
+    const auto regions =
+        res.device_regions<T>("euclidean_gradient", static_cast<std::size_t>(n) * n);
+    if (!regions) {
+      return std::unexpected(regions.error());
+    }
+    T *const rw = std::get<0>(*regions);
     if (auto status = fb::gpu_status(
             wwr::gemm<T, std::int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n,
-                                       &fb::kOne<T>, r, n, w, n, &fb::kZero<T>, rw.data(), n));
+                                       &fb::kOne<T>, r, n, w, n, &fb::kZero<T>, rw, n));
         !status) {
       return status;
     }
-    return fb::gpu_status(wwr::dgmm<T, std::int32_t>(blas, wwr::WWRBLAS_SIDE_RIGHT, n, n, rw.data(),
-                                                     n, weights, 1, psi, n));
+    return fb::gpu_status(
+        wwr::dgmm<T, std::int32_t>(blas, wwr::WWRBLAS_SIDE_RIGHT, n, n, rw, n, weights, 1, psi, n));
   }
 
   fb::Status value(fb::DeviceResources &res, std::int32_t n, const T *w, const T *psi,
@@ -303,7 +313,7 @@ TYPED_TEST(CgUnitary, PolynomialSearchMaximizesBrockett) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   BrockettProblem<T> p{res, kN};
   const auto info = p.solve(fb::CgDirection::Maximize, {});
   ASSERT_TRUE(info) << info.error().message;
@@ -319,7 +329,7 @@ TYPED_TEST(CgUnitary, PolynomialSearchMinimizesBrockett) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   BrockettProblem<T> p{res, kN};
   const auto info = p.solve(fb::CgDirection::Minimize, {});
   ASSERT_TRUE(info) << info.error().message;
@@ -332,7 +342,7 @@ TYPED_TEST(CgUnitary, DftSearchMaximizesBrockett) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   BrockettProblem<T> p{res, kN};
   fb::CgOptions<Real<T>> options;
   options.method = fb::LineSearchMethod::Dft;
@@ -350,7 +360,7 @@ TYPED_TEST(CgUnitary, OrderOneIsConvergedAtTheStart) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   BrockettProblem<T> p{res, 1};
   const auto info = p.solve(fb::CgDirection::Maximize, {});
   ASSERT_TRUE(info) << info.error().message;
@@ -362,7 +372,7 @@ TYPED_TEST(CgUnitary, OrderOneIsConvergedAtTheStart) {
 // steepest descent, which turns 90 degrees each step and so takes longer.
 template <typename T>
 void expect_conjugacy_beats_steepest_descent(std::int32_t n) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   BrockettProblem<T> cg{res, n};
   const auto conjugate = cg.solve(fb::CgDirection::Maximize, {});
   ASSERT_TRUE(conjugate) << conjugate.error().message;
@@ -393,12 +403,12 @@ TEST(CgUnitaryConjugacy, BeatsSteepestDescentAtOrderThree) {
 }
 
 // The iterate and the samples live in the call's own buffers: a cost that
-// grows and overwrites the device workspace on every call changes nothing.
+// overwrites the whole device workspace on every call changes nothing.
 TEST(CgUnitaryWorkspace, CostMayTakeTheDeviceWorkspace) {
   FBF_REQUIRE_GPU();
   using T = wwr::wwrDoubleComplex;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const auto method : {fb::LineSearchMethod::Polynomial, fb::LineSearchMethod::Dft}) {
     BrockettProblem<T> p{res, kN};
     p.cost.scribble = true;
@@ -416,7 +426,7 @@ TEST(CgUnitaryWorkspace, CostMayTakeTheDeviceWorkspace) {
 TEST(CgUnitaryErrors, OutOfIterations) {
   FBF_REQUIRE_GPU();
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   BrockettProblem<double> p{res, kN};
   fb::CgOptions<double> options;
   options.max_iterations = 2;
@@ -431,7 +441,7 @@ TEST(CgUnitaryErrors, OutOfIterations) {
 TEST(CgUnitaryErrors, RejectsBadArguments) {
   FBF_REQUIRE_GPU();
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   BrockettProblem<double> p{res, kN};
   const auto rejected = [&](std::int32_t n, double *w, const fb::CgOptions<double> &options) {
     const auto info = fb::cg_unitary<double>(res, n, w, p.cost, fb::CgDirection::Maximize, options);

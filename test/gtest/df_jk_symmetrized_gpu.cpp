@@ -27,6 +27,8 @@ import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.integrals.eri.density_fitting.jk;
 import free_breakfast.ci;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -195,7 +197,7 @@ protected:
           }
         }
       }
-      res_.emplace(0);
+      res_.emplace(0, fb::test::kWorkspaces);
       fb::Buffers::device<double> d_metric(metric->data.size(), res_->device());
       b_.emplace(b.size(), res_->device());
       upload(*res_, metric->data, d_metric.data());
@@ -247,7 +249,7 @@ TEST(DfJkSymmetrizedCasscf, ResponseDensitiesMatchTheSymmetrizedDensity) {
     }
   }
   ASSERT_FALSE(case_.is_null()) << "no case h2o_ccpvdz";
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   std::vector<fb::Atom> atoms;
   for (const auto &atom : case_["atoms"]) {
     const auto xyz = atom["coord"].get<std::vector<double>>();
@@ -401,7 +403,7 @@ TEST(DfJkSymmetrizedCasscf, ResponseDensitiesMatchTheSymmetrizedDensity) {
 // rank or nao^2 past int32_t, is InvalidConfig.
 TEST(DfJkSymmetrizedEmpty, EmptyCountsAndNegativeCounts) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kNao = 3;
   constexpr std::int32_t kCount = 2;
   const std::vector<double> ones(kCount * kNao * kNao, 1.0);

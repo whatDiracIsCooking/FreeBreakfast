@@ -14,6 +14,8 @@ import free_breakfast.recipes.orthogonalize;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.orthogonalizer;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -56,7 +58,7 @@ fb::OverlapOutput overlap_of(fb::DeviceResources &res, const fb::BasisSetOutput 
 
 TEST(PipelineOrthogonalizer, MatchesOrthogonalize) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSetOutput basis = two_centre_basis();
   const fb::OverlapOutput s = overlap_of(res, basis);
 
@@ -72,7 +74,7 @@ TEST(PipelineOrthogonalizer, MatchesOrthogonalize) {
 
 TEST(PipelineOrthogonalizer, OrthonormalizesTheOverlap) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSetOutput basis = two_centre_basis();
   const fb::OverlapOutput s = overlap_of(res, basis);
 
@@ -97,7 +99,7 @@ TEST(PipelineOrthogonalizer, OrthonormalizesTheOverlap) {
 
 TEST(PipelineOrthogonalizer, FloorAboveEveryEigenvalueDropsEveryMode) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSetOutput basis = two_centre_basis();
   const fb::OverlapOutput s = overlap_of(res, basis);
 

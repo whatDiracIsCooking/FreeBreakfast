@@ -31,15 +31,18 @@ taskflow into every unit that does. Import and link it explicitly.
 
 One device's working set: a shared `Device` (its `ForkStream` work stream and
 memory pool) plus a `BlasHandle` and a `SolverHandle` bound to that stream, the
-solver scratch they share (see "Solver scratch" below), and the device's pinned
-host memory (see "Pinned memory").
+workspaces they share, sized at construction (see "The workspaces" below),
+and the device's pinned host memory (see "Pinned memory").
 
 ```cpp
 import free_breakfast.core;
 import free_breakfast.core.resources;
 namespace fb = free_breakfast;
 
-fb::DeviceResources res{0};                      // Device + BLAS + solver on device 0
+// Device + BLAS + solver on device 0, with a 64 MiB device workspace and a
+// 1 MiB pinned one, held until res is destroyed.
+fb::DeviceResources res{0, {.device = {.workspace = std::size_t{64} << 20},
+                            .pinned = {.workspace = std::size_t{1} << 20}}};
 fb::Buffers::device<double> a(n, res.device());  // allocated from the Device's pool
 // ... BLAS / solver calls on res.blas() / res.solver(), all on res.stream()
 
@@ -80,7 +83,7 @@ splitting allocation off.
 the whole working set can be forked from and joined into a parent stream —
 including inside a graph capture — without a second stream or handle.
 
-**The pool keeps 1 GiB cached by default.** The constructor passes its second
+**The pool keeps 1 GiB cached by default.** The constructor passes its third
 argument, `kDefaultPoolReleaseThreshold` (1 GiB, `Device`'s own default) unless
 given, to the `Device` as its pool's release threshold. That is how much freed
 memory the pool holds across stream syncs instead of returning to the driver —
@@ -109,94 +112,113 @@ and free select their own. So the driver either
 `DeviceResources` leaves its device current on the calling thread: wwr's handle
 creation selects the device and does not restore it.
 
-### Solver scratch
+### The workspaces
 
-A dense-solver call wants a workspace and reports through an `info` flag.
-`DeviceResources` holds one of each, so a routine that runs a solver takes
-them from `res` instead of from its caller:
+A dense-solver call wants a workspace and reports through an `info` flag, and
+most routines want device scratch of their own. `DeviceResources` holds a
+device workspace, a pinned one and the flag, so a routine takes them from
+`res` instead of from its caller:
 
-| Member | What | Kind |
-|---|---|---|
-| `device_workspace(bytes)` | `Buffers::device<std::byte>&`, grown to hold `bytes` | from the `Device`'s pool, on `stream()` |
-| `info()` | `Buffers::device<int32_t>&`, one element, for `devInfo` | from the pool |
-| `fetch_info()` | `Result<int32_t>`: copies `info()` to a pinned slot on `stream()`, syncs, returns it | |
+| Member | What |
+|---|---|
+| `DeviceResources(dev_idx, workspaces, ...)` | the workspaces' sizes, `workspaces.device.workspace` and `workspaces.pinned.workspace` (a `MemoryFootprint`'s; its other fields are unread), each rounded up to `kWorkspaceAlignment` and allocated here |
+| `device_workspace(caller, bytes)` | `Result<std::span<std::byte>>`: the first `bytes` of the device workspace, a span of device memory |
+| `device_regions<Ts...>(caller, counts...)` | `Result<std::tuple<Ts *...>>`: the device workspace carved into one region per count |
+| `pinned_workspace(caller, bytes)`, `pinned_regions<Ts...>(caller, counts...)` | the same over the pinned workspace (see "Pinned memory") |
+| `workspaces()` | the sizes held, as a `MemoryFootprint` with only its two workspace fields set |
+| `workspace_high_water()` | the largest borrow of each since construction, the same way: what a routine's footprint states as its workspace, so a test holds the footprint tight against it |
+| `info()` | `Buffers::device<int32_t>&`, one element, for `devInfo`, from the pool |
+| `fetch_info()` | `Result<int32_t>`: copies `info()` to a pinned slot on `stream()`, syncs, returns it |
 
 ```cpp
 int32_t lwork = 0;
 FBF_TRY(gpu_status(wwr::syevd_bufferSize<double>(res.solver().get(), ..., &lwork)));
-auto work = wwr::extension::reinterpret_buffer_view<double>(
-    res.device_workspace(static_cast<size_t>(lwork) * sizeof(double)));
-FBF_TRY(gpu_status(wwr::syevd<double>(res.solver().get(), ..., work.data(), lwork,
-                                      res.info().data())));
+const auto [work] = FBF_TRY(res.device_regions<double>("diagonalize", lwork));
+FBF_TRY(gpu_status(wwr::syevd<double>(res.solver().get(), ..., work, lwork, res.info().data())));
 const int32_t info = FBF_TRY(res.fetch_info());  // < 0: bad argument; > 0: numerical
 ```
 
+**Sized at construction, held for the run.** The constructor allocates both
+workspaces (the device one from the pool, so it counts against a pool cap;
+the pinned one in the pinned total, so against the pinned cap), and nothing
+resizes them: every member above borrows or carves, none grows. Inside a
+pipeline the sizes are pre-flight's plan maximum (`src/pipeline/shape/`),
+`main` building the node with them before the first step; a test sizes them
+for the routine under test (`test/support/test_workspaces.h`).
+
+**A borrow past the size is refused.** `Unsupported`, naming the caller, the
+request rounded up and the workspace's size, and nothing is allocated, so a
+borrow at the size or past it leaves the pool's `UsedMemCurrent` as it was.
+Inside a pipeline that is a footprint that undercounted: pre-flight sized the
+workspace from the steps' footprints, and the borrow asked for more. A site
+need not check the memory budget before a borrow, since a borrow allocates
+nothing.
+
+**Fixed-size uses only.** What goes in a workspace may depend on the
+dimensions and the step's options, never on a memory budget: the size is set
+before the first step, from footprints evaluated at the plan's dimensions. An
+adaptive step's adaptive part, a tile or a batch sized from what the budget
+holds, is the step's own scratch (`core/footprint`'s README), which it
+allocates and frees.
+
+**What goes in it.** The workspace holds its maximum through every step, so it
+is for what many steps use at similar sizes: a library call's `lwork`, a
+solver's work, the regions a routine carves for its own scratch. An
+intermediate only one step needs, at a size no other step comes near, is that
+step's named scratch, freed when it returns, not the workspace's: in the
+workspace it would be held for the whole run.
+
 **Bytes, not a solver type.** The legacy API sizes workspace in elements of
 `T`, the generic API in bytes, and one routine's `T` is not the next one's, so
-the workspaces hold `std::byte` and a caller views them as its own type with
-wwr's `reinterpret_buffer_view<T>`.
+the workspaces hold `std::byte` and a caller carves them as its own type.
 
-**Grow-only, in `kWorkspaceAlignment` (256 B) steps.** A request larger than
-the current block replaces it with `align_up(bytes, 256)`; a smaller one hands
-back the block as it is. The rounding is load-bearing:
-`reinterpret_buffer_view` refuses a source whose size is not a whole multiple
-of `sizeof(T)`, and refuses through the buffer's allocation policy, which here
-aborts. Without it, a 1004-byte request followed by a `complex<double>` view
-would abort. 256 is a multiple of every solver element type and the pool's own
-alignment. `kWorkspaceAlignmentIn<T>` is the same step in elements of `T`, for
-a routine carving the workspace into typed regions; it is constrained to a `T`
-whose size divides 256, so the step can neither truncate nor be 0.
+**Rounded to `kWorkspaceAlignment` (256 B).** The sizes and every region are
+rounded up to it: a multiple of every solver element type and the pool's own
+alignment, so each region starts aligned for its type. `kWorkspaceAlignmentIn<T>`
+is the same step in elements of `T`, for a routine carving regions by hand; it
+is constrained to a `T` whose size divides 256, so the step can neither
+truncate nor be 0.
 
-**Carve it with `device_regions<Ts...>(counts...)`.** One `T` per count, or one
-`T` for all of them; each region is rounded up to 256 B, the total is asked for
-in one `device_workspace` request, and the regions' starts come back as a
+**Carve it with `device_regions<Ts...>(caller, counts...)`.** One `T` per
+count, or one `T` for all of them; each region is rounded up to 256 B, the
+total is borrowed at once, and the regions' starts come back as a
 `std::tuple<Ts *...>` for a structured binding or a `std::tie`:
 
 ```cpp
-const auto [work, block] = res.device_regions<double>(n_cart * nmo, nmo * nmo);
+const auto [work, block] = FBF_TRY(res.device_regions<double>("df_gradient", n_cart * nmo, nmo * nmo));
 ```
 
-The regions are the workspace's, so the rule below holds for them too.
+Two `Ts` put a comma in the template argument list, which would split
+`FBF_TRY`'s one argument, so that form takes a second pair of parentheses:
+`FBF_TRY((res.device_regions<double, int32_t>(who, n, m)))`.
 
-**Fetch the buffer just before the call; never keep its pointer.** A growth
-frees the old block — on `stream()` for the device workspace, so work already
-queued against it is safe, but a pointer or view held across another request
-dangles. Pass the routine its own `lwork`, not the buffer's size, which may be
+**Pass a routine its own `lwork`**, not the workspace's size, which may be
 larger.
 
 **One routine owns the device workspace at a time.** It is not only for the
 solver's own work: a routine can carve all of its device scratch from it,
 asking once for the total and splitting the result, so its caller lends
-nothing. Ask for the total in one request, since a second could grow it and
-free the first's region. And nothing nests: a routine holds no region of the
-workspace across a call to another that uses it, and no argument to one may
-point into it. Using it again after that call returns is fine.
-`orthogonalize` is the example: U and the eigenvalues must outlive
+nothing. Nothing nests: a routine holds no region of the workspace across a
+call to another that uses it, and no argument to one may point into it, since
+both carve from the workspace's start. Using it again after that call returns
+is fine. `orthogonalize` is the example: U and the eigenvalues must outlive
 `diagonalize`, which takes the workspace for syevd's work, so they are its
 own pool buffers; M is written only after `diagonalize` returns, so it is
 the workspace's.
 
 **A callback is a nested user, whether or not it runs concurrently.** Nothing
-here runs two routines at once, so the hazard is not a race. It is
-*lifetime*. A routine that calls back into caller-supplied code, such as an
-iterative solver's operator or preconditioner, cannot know whether that code
-takes the workspace, so it must assume the callback does. Any of the routine's
-own scratch still live when the callback returns is then lost, in one of two
-ways:
-
-- the callback asks for more bytes than the routine took, the workspace grows,
-  and the old block is freed under the routine's pointers;
-- the callback asks for fewer bytes, gets the same block, and writes its
-  scratch over the routine's.
-
-Either way, no error is reported, and the routine reads garbage on its next
+here runs two routines at once, so the hazard is not a race. A routine that
+calls back into caller-supplied code, such as an iterative solver's operator
+or preconditioner, cannot know whether that code takes the workspace, so it
+must assume the callback does, and that it writes its scratch over the
+routine's. No error is reported, and the routine reads garbage on its next
 step. So state an iterative routine keeps across its callbacks is its own
 pool buffer. Scratch that is dead before the next callback may still come from
 the workspace. `davidson_solve` (`src/recipes/davidson/`) is the example: its
 subspace and residual blocks are its own buffers, while syevd's work, taken by
 `diagonalize` between two operator applies, is the workspace's.
-`test/recipes/davidson_gpu.cpp` pins this with an operator that grows and
-overwrites the workspace on every apply.
+`test/recipes/davidson_gpu.cpp` pins this with an operator that overwrites the
+whole workspace on every apply.
 
 **`info` is on the work stream.** The solver handle writes `info()` on
 `stream()`, and `fetch_info()` copies on that same stream, so the read is
@@ -221,9 +243,9 @@ if (const size_t budget = FBF_TRY(res.memory_budget()); need > budget) {
 | Member | What |
 |---|---|
 | `memory_budget()` | `Result<size_t>`: the limit less the pool's `UsedMemCurrent`, at least 0 |
-| `pool_cap()` | the `Device` pool's cap, in bytes, the constructor's fourth argument; 0 for none |
+| `pool_cap()` | the `Device` pool's cap, in bytes, the constructor's fifth argument; 0 for none |
 | `kDeviceReserve` | 256 MiB: what the process holds on the device outside any pool |
-| `kOwnPoolBytes` | 4 B: what a `DeviceResources` holds in its own pool from construction, the `info()` flag; pre-flight's device room takes it off the cap |
+| `kOwnPoolBytes` | 4 B: what a `DeviceResources` holds in its own pool from construction besides the device workspace, the `info()` flag; pre-flight's device room takes it off the cap |
 
 **The limit** is `pool_cap()` under a cap. With none it is the device's total
 less `kDeviceReserve`: the context and the BLAS and solver handles, which no
@@ -253,19 +275,18 @@ can be held under one cap.
 
 | Member | What |
 |---|---|
-| `pinned_workspace(caller, bytes)` | `Result<std::span<std::byte>>`: the pinned workspace, grown to hold `bytes`, the whole block |
+| `pinned_workspace(caller, bytes)` | `Result<std::span<std::byte>>`: the first `bytes` of the pinned workspace |
 | `pinned_regions<Ts...>(caller, counts...)` | `Result<std::tuple<Ts *...>>`: it carved as `device_regions` carves the device one |
 | `counted_pinned<T>(caller, count)` | `Result<CountedPinned<T>>`: a pinned buffer counted while it lives |
-| `pinned_bytes()` | the pinned total: the workspace plus every live `CountedPinned` |
-| `pinned_cap()` | the cap on it, in bytes, the constructor's third argument; 0 for none |
+| `pinned_bytes()` | the pinned total: the workspace, from construction, plus every live `CountedPinned` |
+| `pinned_cap()` | the cap on it, in bytes, the constructor's fourth argument; 0 for none |
 
 **The workspace is for fixed-size uses**: an upload's staging, a small
 readback, the bounce buffer of a load from disk, the slots of an offload ring.
-It grows as the device workspace does, in 256 B steps, and never shrinks. A
-growth synchronizes `stream()` and frees the old block before it allocates the
-new one, since a pinned free is not stream-ordered; the two are never held at
-once. Carve it with `pinned_regions`, which lays the regions out exactly as
-`device_regions` does:
+It is sized at construction as the device workspace is, and borrowed and
+carved the same way, a request past it refused. Carve it with
+`pinned_regions`, which lays the regions out exactly as `device_regions`
+does:
 
 ```cpp
 const auto [z, c] = FBF_TRY(res.pinned_regions<double>("Molecule", n, 3 * n));
@@ -280,9 +301,11 @@ to. It shares the count with `DeviceResources`, so it may outlive it. It hands
 out `data()` and `num_elements()` only. Its free is immediate: drain the copies
 that use it first.
 
-**The cap.** A workspace growth or a counted allocation that would take
-`pinned_bytes()` past `pinned_cap()` returns `Unsupported`, naming the caller,
-the request, the total and the cap, and allocates nothing. With no cap (0, the
+**The cap.** The pinned workspace counts against it from construction, and a
+pinned workspace past the cap aborts there, as a failed creation does:
+pre-flight sizes it from a plan it has held to the cap. A counted allocation
+that would take `pinned_bytes()` past `pinned_cap()` returns `Unsupported`,
+naming the caller, the request, the total and the cap, and allocates nothing. With no cap (0, the
 default) nothing is refused. The caller names itself because the refusal is
 the run-time end of a configured limit, and the message has to say which step
 asked.

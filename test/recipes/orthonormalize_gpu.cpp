@@ -12,6 +12,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -52,7 +54,7 @@ void normalize(T *x, std::int32_t n) {
 // and the kept columns.
 template <typename T>
 std::pair<std::int32_t, Block<T>> run(std::int32_t n, std::int32_t k, const Block<T> &v, T floor) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::size_t elements = static_cast<std::size_t>(n) * static_cast<std::size_t>(k);
   fb::Buffers::device<T> d(std::max<std::size_t>(elements, 1), res.device());
   EXPECT_EQ(wwr::wwrMemcpyAsync(d.data(), v.data(), elements * sizeof(T),
@@ -219,7 +221,7 @@ TEST(Orthonormalize, ShortColumnBesideALongOneKeepsItsDirectionFloat) {
 
 TEST(Orthonormalize, NoColumnsKeepsNothing) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Result<std::int32_t> kept = fb::orthonormalize<double>(res, 10, 0, nullptr, 1e-12);
   ASSERT_TRUE(kept.has_value());
   EXPECT_EQ(*kept, 0);
@@ -255,7 +257,7 @@ TEST(Orthonormalize, OneColumnFloat) {
 
 TEST(Orthonormalize, RejectsANegativeColumnCount) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Result<std::int32_t> kept = fb::orthonormalize<double>(res, 10, -1, nullptr, 0.0);
   ASSERT_FALSE(kept.has_value());
   EXPECT_EQ(kept.error().kind, fb::ErrorKind::InvalidConfig);

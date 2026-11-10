@@ -24,6 +24,8 @@ import free_breakfast.pipeline.basis_set;
 import free_breakfast.pipeline.primitive_pair_classes;
 import free_breakfast.pipeline.eri;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -166,7 +168,7 @@ void check_b(const std::string &name) {
   const fb::json *c = find_case(*doc, name);
   ASSERT_NE(c, nullptr) << "no integrals case " << name;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::MoleculeOutput molecule = molecule_of(res, *c);
   auto basis = fb::BasisSetStep{.basis = (*c)["basis"].get<std::string>()}.run(
       fb::View<fb::MoleculeOutput>{molecule});
@@ -284,7 +286,7 @@ std::optional<Water> water(fb::DeviceResources &res, const std::string &basis_na
 // need, and no B.
 TEST(PipelineEri, IntegralDirectHoldsJsAndKsClasses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto in = water(res, "cc-pvdz");
   ASSERT_TRUE(in);
   auto eri = fb::EriStep{}.run(in->view(), res);
@@ -302,7 +304,7 @@ TEST(PipelineEri, IntegralDirectHoldsJsAndKsClasses) {
 
 TEST(PipelineEri, AnAuxBasisUnderIntegralDirectIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto in = water(res, "cc-pvdz");
   ASSERT_TRUE(in);
   auto eri = fb::EriStep{.aux_basis = "cc-pvdz-jkfit"}.run(in->view(), res);
@@ -313,7 +315,7 @@ TEST(PipelineEri, AnAuxBasisUnderIntegralDirectIsInvalidConfig) {
 // No aux_basis: the orbital set's acCD-6-6, the same B as naming it.
 TEST(PipelineEri, DensityFittingDefaultsToTheBasissAcCdSet) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto in = water(res, "cc-pvdz");
   ASSERT_TRUE(in);
   auto by_default = fb::EriStep{.mode = fb::EriMode::DensityFitting}.run(in->view(), res);
@@ -345,7 +347,7 @@ TEST(PipelineEri, DensityFittingDefaultsToTheBasissAcCdSet) {
 // all, has no default: the step asks for aux_basis.
 TEST(PipelineEri, DensityFittingWithNoDefaultAuxBasisIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto in = water(res, "sto-3g");
   ASSERT_TRUE(in);
   auto eri = fb::EriStep{.mode = fb::EriMode::DensityFitting}.run(in->view(), res);
@@ -370,7 +372,7 @@ TEST(PipelineEri, DensityFittingWithNoDefaultAuxBasisIsInvalidConfig) {
 // the step's error, before anything is built.
 TEST(PipelineEri, AnAuxBasisItCannotResolveOrPlaceIsItsError) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // cc-pVDZ carries helium; neither fitting set does.
   const fb::MoleculeOutput helium{
       fb::Molecule(res, {fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, fb::Element::He}})};
@@ -404,7 +406,7 @@ TEST(PipelineEri, AnAuxBasisItCannotResolveOrPlaceIsItsError) {
 // refusal.
 TEST(PipelineEri, ABPastTheMemoryBudgetIsUnsupported) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources setup{0};
+  fb::DeviceResources setup{0, fb::test::kWorkspaces};
   std::vector<fb::Atom> atoms;
   for (std::int32_t k = 0; k < 6; ++k) {
     const double angle = std::numbers::pi * k / 3.0;
@@ -420,7 +422,7 @@ TEST(PipelineEri, ABPastTheMemoryBudgetIsUnsupported) {
   ASSERT_TRUE(classes) << classes.error().message;
 
   constexpr std::uint64_t kCap = std::uint64_t{64} << 20;
-  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
+  fb::DeviceResources res{0, {}, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
   const std::size_t budget = res.memory_budget().value();
   ASSERT_LE(budget, kCap);
   auto eri = fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvtz-jkfit"}.run(

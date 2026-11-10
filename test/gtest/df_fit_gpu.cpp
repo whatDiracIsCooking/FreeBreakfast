@@ -15,6 +15,8 @@ import free_breakfast.io.json;
 import free_breakfast.io.npy;
 import free_breakfast.integrals.eri.density_fitting.fit;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -156,7 +158,7 @@ void expect_fit_matches_host(const std::string &name) {
   const auto naux = static_cast<std::size_t>(g.naux);
   const std::size_t pairs = g.b.size() / naux;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<double> metric(g.metric.size(), res.device());
   fb::Buffers::device<double> b(g.b.size(), res.device());
   upload(res, g.metric, metric);
@@ -210,7 +212,7 @@ TEST(DfFit, NonPositiveDefiniteMetricIsNumericalNamingThePivot) {
   constexpr std::size_t kBroken = 40; // 0-based; the 1-based pivot 41
   g.metric[kBroken + naux * kBroken] = -g.metric[kBroken + naux * kBroken];
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<double> metric(g.metric.size(), res.device());
   fb::Buffers::device<double> b(g.b.size(), res.device());
   upload(res, g.metric, metric);
@@ -224,7 +226,7 @@ TEST(DfFit, NonPositiveDefiniteMetricIsNumericalNamingThePivot) {
 
 TEST(DfFit, EmptyFitSucceedsAndNegativeCountsAreInvalid) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   EXPECT_TRUE(fb::density_fit(res, 0, 5, nullptr, nullptr));
   EXPECT_TRUE(fb::density_fit(res, 5, 0, nullptr, nullptr));
   const fb::Status negative = fb::density_fit(res, -1, 5, nullptr, nullptr);

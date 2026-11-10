@@ -15,6 +15,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.basis_set;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "io_basis_json.h"
 #include "scratch_dir.h"
 
@@ -33,7 +35,7 @@ fb::MoleculeOutput water(fb::DeviceResources &res) {
 
 TEST(PipelineBasisSet, MatchesReadBasisThenPlace) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("pipeline_basis_set");
   const auto path = dir / "basis.json";
   ASSERT_TRUE(fb::write_file(path, kBasis).has_value());
@@ -71,7 +73,7 @@ TEST(PipelineBasisSet, MatchesReadBasisThenPlace) {
 
 TEST(PipelineBasisSet, MissingFileIsIoError) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("pipeline_basis_set");
   const fb::MoleculeOutput molecule = water(res);
 
@@ -83,7 +85,7 @@ TEST(PipelineBasisSet, MissingFileIsIoError) {
 
 TEST(PipelineBasisSet, UncoveredElementIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("pipeline_basis_set");
   const auto path = dir / "basis.json";
   ASSERT_TRUE(fb::write_file(path, kBasis).has_value());

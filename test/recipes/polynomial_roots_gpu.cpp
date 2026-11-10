@@ -20,6 +20,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -111,7 +113,7 @@ Solved solve(const std::vector<std::vector<T>> &polys, const typename Elem<T>::R
     flat.insert(flat.end(), p.begin(), p.end());
   }
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<T> d_coeffs(flat.size(), res.device());
   fb::Buffers::device<CT> d_roots(static_cast<std::size_t>(batch) * n, res.device());
   fb::Buffers::device<std::int32_t> d_iters(static_cast<std::size_t>(batch), res.device());
@@ -312,7 +314,7 @@ TYPED_TEST(PolynomialRoots, ReportsNonConvergencePerPolynomial) {
 // n == 0 or batch == 0 launches nothing: null pointers would fault otherwise.
 TEST(PolynomialRootsArguments, EmptyLaunchesNothing) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const double *coeffs = nullptr;
   wwr::wwrDoubleComplex *roots = nullptr;
   EXPECT_TRUE(fb::polynomial_roots(res, 0, 4, coeffs, roots, nullptr, 1e-14, 10));
@@ -322,7 +324,7 @@ TEST(PolynomialRootsArguments, EmptyLaunchesNothing) {
 
 TEST(PolynomialRootsArguments, RejectsInvalidArguments) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<double> d_c(8, res.device());
   fb::Buffers::device<wwr::wwrDoubleComplex> d_r(8, res.device());
   fb::Buffers::device<std::int32_t> d_i(1, res.device());

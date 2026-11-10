@@ -20,6 +20,12 @@ import free_breakfast.experimental.output_ring;
 
 namespace fb = free_breakfast;
 
+// The workspaces this benchmark's DeviceResources hold, sized at
+// construction (src/core/resources/README.md): 1 GiB on the device and 64 MiB
+// pinned, past what any of its runs borrows.
+constexpr fb::MemoryFootprint kWorkspaces{.device = {.workspace = std::size_t{1} << 30},
+                                          .pinned = {.workspace = std::size_t{64} << 20}};
+
 namespace {
 
 // Aborts on a failed call: a benchmark has nothing to recover to.
@@ -60,7 +66,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   const std::int32_t k = parse_arg(argc > 2 ? argv[2] : nullptr, 3);
   const std::int32_t reps = parse_arg(argc > 3 ? argv[3] : nullptr, 5);
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, kWorkspaces};
   fb::tf::Executor executor{static_cast<std::size_t>(std::max(k, 1))};
   fb::OutputRing ring{res.dev_idx(), executor};
   const auto dir = std::filesystem::temp_directory_path() /

@@ -30,6 +30,8 @@ import free_breakfast.nevpt2;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -180,7 +182,7 @@ void expect_step_matches_direct(std::string_view variant) {
   const fb::test::ScratchDir dir(std::format("pipeline_nevpt2_nac_{}", variant));
   auto calc = fb::read_config(write_config(dir, entry, variant), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const std::chrono::duration<double> step_seconds = std::chrono::steady_clock::now() - start;

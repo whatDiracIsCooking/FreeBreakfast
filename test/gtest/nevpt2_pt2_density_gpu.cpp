@@ -23,6 +23,8 @@ import free_breakfast.core.resources;
 import free_breakfast.io.npy;
 import free_breakfast.nevpt2;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -242,7 +244,7 @@ class Nevpt2Pt2Density : public ::testing::TestWithParam<std::string> {};
 TEST_P(Nevpt2Pt2Density, MatchesBruteForce) {
   FBF_REQUIRE_GPU();
   const std::string name = GetParam();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Case c = load_case(res, kDataDir / "qd_nevpt2" / name);
   ASSERT_TRUE(c.blocks.has_value());
   const std::size_t n = c.nroots;
@@ -313,7 +315,7 @@ TEST_P(Nevpt2Pt2Density, MatchesBruteForce) {
 TEST_P(Nevpt2Pt2Density, AmplitudeOutputLeavesHeffUnchanged) {
   FBF_REQUIRE_GPU();
   const std::string name = GetParam();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Case c = load_case(res, kDataDir / "qd_nevpt2" / name);
   ASSERT_TRUE(c.blocks.has_value());
   const std::size_t n = c.nroots;
@@ -378,7 +380,7 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2Pt2Density, ::testing::ValuesIn(kCases),
 // no such refusal, still runs.
 TEST(Nevpt2Pt2DensityRefusals, PcRefusalRefuses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Case c = load_case(res, kDataDir / "qd_nevpt2" / "h8_sto3g_sa3");
   ASSERT_TRUE(c.blocks.has_value());
   const std::size_t n = c.nroots;
@@ -407,7 +409,7 @@ TEST(Nevpt2Pt2DensityRefusals, PcRefusalRefuses) {
 // T not n x n, or not antisymmetric, is InvalidConfig, SC and PC.
 TEST(Nevpt2Pt2DensityRefusals, MalformedTIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Case c = load_case(res, kDataDir / "qd_nevpt2" / "h6_631g_sa2");
   ASSERT_TRUE(c.blocks.has_value());
   ASSERT_EQ(c.pairs.size(), 4U);

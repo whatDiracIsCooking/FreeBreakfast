@@ -53,8 +53,8 @@ is adaptive: it builds as many columns' J and K together as fit
 `res.memory_budget()` less `kPoolHeadroomBytes` (#1048), counting every
 allocation it still has to make: its carve and the block J and K's scratch
 (Gamma, and `df_exchange_symmetrized`'s Y). All of that is scratch. The
-workspace is grown first to the footprint's, the same at any width, so the
-budget is read with it in place. The footprint is the block's least, width 1
+workspace, the footprint's at any width, is held from the `DeviceResources`'
+construction, so the budget is read with it in place. The footprint is the block's least, width 1
 (the one-column path): its scratch grows with the width, its workspace does
 not (`test/gtest/footprint_gpu.cpp`'s `LibraryFootprint.HessianBlock*`).
 

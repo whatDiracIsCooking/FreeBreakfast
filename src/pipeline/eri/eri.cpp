@@ -65,12 +65,10 @@ density_fitted(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput> 
   //
   // So that B can take the block's place, nothing the block allocates
   // outlives it, and its frees complete before B is allocated
-  // (pipeline/footprint's README, "Fragmentation headroom"): the device
-  // workspace is grown to metric's staging here, not inside the block, where
-  // it would land above the pair and pin the pair's space under B as a hole;
-  // and a chunk whose free is still pending on the stream is not remapped
-  // into a new allocation, so B would take new chunks above them.
-  res.device_workspace(metric_footprint(aux).device.workspace);
+  // (pipeline/footprint's README, "Fragmentation headroom"): metric's staging
+  // is the device workspace's, held from construction, never a block above
+  // the pair; and a chunk whose free is still pending on the stream is not
+  // remapped into a new allocation, so B would take new chunks above them.
   Buffers::device<double> l(naux * naux, res.device());
   {
     MatrixAOPair m(res, aux, FBF_TRY(upload_spherical_transform_matrix(res, aux)));

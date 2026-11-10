@@ -40,6 +40,8 @@ import free_breakfast.nevpt2;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -133,7 +135,8 @@ struct QdRun {
 };
 
 QdRun qd_run(const std::string &name) {
-  QdRun run{.node = std::make_unique<fb::NodeResources>()};
+  QdRun run{.node = std::make_unique<fb::NodeResources>(
+                fb::NodeResourcesConfig{.workspaces = fb::test::kWorkspaces})};
   const fb::json &entry = qd_case(name);
   EXPECT_EQ(entry.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
   const fb::test::ScratchDir dir("nevpt2_nac");

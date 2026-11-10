@@ -62,7 +62,8 @@ Result<Buffers::device<double>> device_zeros(DeviceResources &res, const int64_t
 
 // @p count doubles of workspace, zeroed.
 Result<double *> workspace_zeros(DeviceResources &res, const int64_t count) {
-  double *const out = std::get<0>(res.device_regions<double>(static_cast<size_t>(count)));
+  double *const out = std::get<0>(
+      FBF_TRY(res.device_regions<double>("nevpt2::workspace_zeros", static_cast<size_t>(count))));
   FBF_TRY(gpu_status(
       wwr::wwrMemsetAsync(out, 0, sizeof(double) * static_cast<size_t>(count), res.stream())));
   return out;
@@ -473,8 +474,8 @@ Result<Buffers::device<double>> make_a22(DeviceResources &res, const EinsumOpera
   // fdm2a is dead once diag_a22a has read it, but the stream has not run that
   // yet when fdm2b is zeroed: two regions, not one.
   const int64_t n4 = n * n * n * n;
-  const auto [fdm2a, fdm2b] =
-      res.device_regions<double>(static_cast<size_t>(n4), static_cast<size_t>(n4));
+  const auto [fdm2a, fdm2b] = FBF_TRY(res.device_regions<double>(
+      "nevpt2::make_a22", static_cast<size_t>(n4), static_cast<size_t>(n4)));
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(fdm2a, 0, sizeof(double) * static_cast<size_t>(n4), s)));
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(fdm2b, 0, sizeof(double) * static_cast<size_t>(n4), s)));
   FBF_TRY(einsum(s, "pqrb,kiqcpr->ikbc", {h2e, dm3}, fdm2a, d4, 1.0));

@@ -21,6 +21,8 @@ import free_breakfast.io.npy;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.density_fitting;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -66,7 +68,7 @@ void check_metric(const std::string &name) {
   }
   ASSERT_NE(c, nullptr) << "no integrals case " << name;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   std::vector<fb::Atom> atoms;
   for (const auto &atom : (*c)["atoms"]) {
     const auto xyz = atom["coord"].get<std::vector<double>>();
@@ -152,7 +154,7 @@ TEST(DfMetric, TzAuxThroughGMatchesInt2c2e) {
 // the aux h and i classes that do are run by df_high_aux_gpu.cpp.
 TEST(DfMetric, Refusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet k_shell(std::vector<fb::Shell>{fb::Shell{7, {{1.0, 1.0}}, {0.0, 0.0, 0.0}}});
   {
     const auto u = fb::upload_spherical_transform_matrix(res, k_shell);

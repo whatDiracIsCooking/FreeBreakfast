@@ -29,6 +29,12 @@ namespace {
 
 namespace fb = free_breakfast;
 
+// The workspaces this benchmark's DeviceResources hold, sized at
+// construction (src/core/resources/README.md): 1 GiB on the device and 64 MiB
+// pinned, past what any of its runs borrows.
+constexpr fb::MemoryFootprint kWorkspaces{.device = {.workspace = std::size_t{1} << 30},
+                                          .pinned = {.workspace = std::size_t{64} << 20}};
+
 using Clock = std::chrono::steady_clock;
 
 double seconds_since(const Clock::time_point start) {
@@ -67,14 +73,14 @@ struct FullLayout {
   [[nodiscard]] const double *contraction() const noexcept { return sigma.contraction(); }
 };
 
-// The MiB of device workspace one column of @p apply grows a fresh
-// DeviceResources to.
+// The MiB of device workspace one column of @p apply borrows from a fresh
+// DeviceResources at most.
 template <typename Apply>
 double workspace_mib(std::int32_t device, Apply &&apply) {
-  fb::DeviceResources fresh{device};
+  fb::DeviceResources fresh{device, kWorkspaces};
   (void)apply(fresh);
   (void)fresh.sync();
-  return static_cast<double>(fresh.device_workspace(0).num_elements()) / (1024.0 * 1024.0);
+  return static_cast<double>(fresh.workspace_high_water().device.workspace) / (1024.0 * 1024.0);
 }
 
 // ‖apply_fp32 c − apply c‖ / ‖apply c − E_core c‖ for the device vector @p c.
@@ -126,7 +132,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
     std::println(std::cerr, "{}", doc.error().message);
     return 1;
   }
-  fb::DeviceResources res{device};
+  fb::DeviceResources res{device, kWorkspaces};
 
   for (const auto &entry : (*doc)["cases"]) {
     const auto n = entry["n_orbitals"].get<std::int32_t>();

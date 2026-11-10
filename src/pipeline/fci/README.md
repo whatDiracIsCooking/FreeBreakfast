@@ -44,8 +44,8 @@ struct FciStep {
    dimensions it builds out of its inputs (the basis, mmd's record counts
    from `PrimitivePairClassesOutput`, syevd's work through the CI's orders),
    against `DeviceResources::memory_budget()` less two pool chunks (64 MiB)
-   of fragmentation headroom, the pipeline's, with what the device
-   workspace has still to grow by. Past that, at the least sigma
+   of fragmentation headroom, the pipeline's (the device workspace is held
+   from construction, so already out of the budget). Past that, at the least sigma
    scratch, the step returns `Allocation` before anything is allocated;
    without this, the first allocation to fail would abort the process
    (`CreatePolicy`), not return an error. A space of more determinants than

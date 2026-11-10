@@ -32,6 +32,8 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 // After the imports: they name std::filesystem, wwr and Device from this
 // unit's imports.
 #include "pool_footprint.h"
@@ -150,7 +152,7 @@ protected:
     hessian_case_ = find_case("rhf_hessian/rhf_hessian.json", "cases", name);
     want_ = find_case("dipole_derivative/dipole_derivative.json", "rhf", name);
     ASSERT_FALSE(hessian_case_.is_null() || want_.is_null());
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     molecule_.emplace(*res_, case_atoms(hessian_case_));
     const auto stamp = fb::resolve_basis(hessian_case_["basis"].get<std::string>());
     ASSERT_TRUE(stamp) << stamp.error().message;
@@ -274,14 +276,14 @@ TEST_F(HessianDipoleDerivative, FootprintIsSoundAndTight) {
   const fb::MemoryFootprint fp = fb::hessian::rhf_dipole_derivative_footprint(*basis_, nmo, nocc_);
   EXPECT_EQ(fp.device.persistent, 0U);
   EXPECT_EQ(fp.pinned, fb::Footprint<wwr::extension::MemoryKind::Pinned>{});
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto run = [&] {
     const auto got =
         fb::hessian::rhf_dipole_derivative(res, *molecule_, *basis_, classes_, *c_, nocc_, *u_);
     EXPECT_TRUE(got) << got.error().message;
   };
   run();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
   const free_breakfast::test::PoolPeak peak =
       free_breakfast::test::measure_pool_peak(*res.device(), run);
   std::cout << std::format("[ footprint ] rhf_dipole_derivative: measured {}, footprint {} + "
@@ -316,7 +318,7 @@ TEST(PipelineInfrared, AnalyticHessianReportsIntensities) {
   ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto start = std::chrono::steady_clock::now();
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;

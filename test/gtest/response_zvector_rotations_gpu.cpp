@@ -33,6 +33,8 @@ import free_breakfast.response;
 import free_breakfast.mcscf;
 import free_breakfast.test.ci_oracles;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -178,7 +180,7 @@ protected:
       }
     }
     ASSERT_FALSE(case_.is_null()) << "no case " << name;
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     fb::DeviceResources &res = *res_;
     std::vector<fb::Atom> atoms;
     for (const auto &atom : case_["atoms"]) {

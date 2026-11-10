@@ -31,7 +31,12 @@ Status merge_sort(DeviceResources &res, const int32_t n, double *keys, uint32_t 
   const size_t keys_bytes =
       math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
   const size_t values_bytes = values != nullptr ? count * sizeof(uint32_t) : 0;
-  std::byte *const base = res.device_workspace(keys_bytes + values_bytes).data();
+  const Result<std::span<std::byte>> block =
+      res.device_workspace("merge_sort", keys_bytes + values_bytes);
+  if (!block) {
+    return std::unexpected(block.error());
+  }
+  std::byte *const base = block->data();
   return gpu_status(device::merge_sort_passes(res.stream(), static_cast<uint32_t>(n), keys,
                                               reinterpret_cast<double *>(base), values,
                                               reinterpret_cast<uint32_t *>(base + keys_bytes)));

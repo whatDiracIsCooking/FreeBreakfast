@@ -152,7 +152,8 @@ Status einsum_adjoint(DeviceResources &res, const std::string_view subscripts,
 
     if (repeated && axes) {
       const int64_t count = std::ranges::fold_left(kept_dims, int64_t{1}, std::multiplies{});
-      double *const tmp = std::get<0>(res.device_regions<double>(static_cast<size_t>(count)));
+      double *const tmp = std::get<0>(FBF_TRY(
+          res.device_regions<double>("nevpt2::einsum_adjoint", static_cast<size_t>(count))));
       FBF_TRY(
           gpu_status(wwr::wwrMemsetAsync(tmp, 0, sizeof(double) * static_cast<size_t>(count), s)));
       FBF_TRY(einsum(s, others + "->" + kept, ops, tmp, kept_dims, alpha));
@@ -194,7 +195,8 @@ Status einsum_adjoint(DeviceResources &res, const std::string_view subscripts,
       if (m * n == 0) {
         continue;
       }
-      double *const tmp = std::get<0>(res.device_regions<double>(static_cast<size_t>(m * n)));
+      double *const tmp = std::get<0>(FBF_TRY(
+          res.device_regions<double>("nevpt2::einsum_adjoint", static_cast<size_t>(m * n))));
       FBF_TRY(
           gpu_status(wwr::wwrMemsetAsync(tmp, 0, sizeof(double) * static_cast<size_t>(m * n), s)));
       FBF_TRY(einsum(s, others + "->" + labels[1] + labels[0], ops, tmp, {n, m}, alpha));

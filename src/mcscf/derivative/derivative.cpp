@@ -199,7 +199,7 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
   // out_x = C^T X_x C for every slab of a stack: X_x C, one batched gemm into
   // the workspace, then C^T over all of them side by side.
   const auto to_mo = [&](const double *x, double *out) -> Status {
-    auto [y] = res.device_regions<double>(stack);
+    auto [y] = FBF_TRY(res.device_regions<double>("mcscf::df_derivatives", stack));
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
         blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, x, n, s_nn, cm, n, 0,
         &kZero<double>, y, n, s_nn, nx)));
@@ -370,8 +370,9 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
         // X[k][m][n][P'] = (nabla_k m n|P) for P on this atom.
         FBF_TRY(three_center_derivative(res, basis, classes, aux, atom, block.data()));
         const auto nbs = static_cast<size_t>(nb);
-        auto [yt, q1, o, hh, ex] = res.device_regions<double>(
-            nbs * nao * n_act, nao * n_act, nn * n_act, nbs * n_act * nao, nbs * na2);
+        auto [yt, q1, o, hh, ex] = FBF_TRY(
+            res.device_regions<double>("mcscf::df_derivatives", nbs * nao * n_act, nao * n_act,
+                                       nn * n_act, nbs * n_act * nao, nbs * na2));
         // Yt_A[P' + nb (n + nao t)] = Sum_u C_nu Y[(p0 + P') + naux (t + ncas u)].
         for (size_t term = 0; term < yt_terms.size(); ++term) {
           const auto [y_term, c_term] = yt_terms[term];
@@ -762,8 +763,8 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
         }
       }
     }
-    auto [g12_d, q0, r, t23] =
-        res.device_regions<double>(2 * na4, nao * n_act, nao * na3 * n_x, nao * n_act * n_x);
+    auto [g12_d, q0, r, t23] = FBF_TRY(res.device_regions<double>(
+        "mcscf::df_derivatives", 2 * na4, nao * n_act, nao * na3 * n_x, nao * n_act * n_x));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(g12_d, g12.data(), sizeof(double) * g12.size(),
                                            wwr::wwrMemcpyHostToDevice, stream)));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(q0, f0.fock.data() + (nao * n_core),
@@ -832,7 +833,7 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
   }
   std::vector<double> h_mo(nn);
   {
-    auto [work, mo] = res.device_regions<double>(nn, nn);
+    auto [work, mo] = FBF_TRY(res.device_regions<double>("mcscf::df_derivatives", nn, nn));
     FBF_TRY(gpu_status(gemmwich(blas, n, cm, h.data(), work, mo)));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(h_mo.data(), mo, sizeof(double) * nn,
                                            wwr::wwrMemcpyDeviceToHost, stream)));
@@ -901,7 +902,7 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
     FBF_TRY(sigma.set_integrals(res, e_core, h_eff, g_act));
     double *const y = out.rhs_ci.data() + (x * n_det * nroots);
     FBF_TRY(sigma.apply(res, nr, roots, y));
-    auto [ham_d] = res.device_regions<double>(nroots * nroots);
+    auto [ham_d] = FBF_TRY(res.device_regions<double>("mcscf::df_derivatives", nroots * nroots));
     FBF_TRY(gpu_status(
         gemm<wwr::WWRBLAS_OP_T>(blas, nr, nr, nd, &kOne<double>, roots, y, &kZero<double>, ham_d)));
     FBF_TRY(gpu_status(gemm(blas, nd, nr, nr, &kNegOne<double>, roots, ham_d, &kOne<double>, y)));

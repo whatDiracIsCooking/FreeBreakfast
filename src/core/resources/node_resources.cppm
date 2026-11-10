@@ -26,6 +26,11 @@ struct NodeResourcesConfig {
   std::optional<int32_t> num_threads;
   /// @brief Release threshold of every device's memory pool.
   uint64_t pool_release_threshold = DeviceResources::kDefaultPoolReleaseThreshold;
+  /// @brief Every device's workspaces, sized at construction: the device and
+  /// pinned workspace fields of a MemoryFootprint, its others unread (see
+  /// DeviceResources). None by default; pre-flight rebuilds the devices with
+  /// the plan's maximum before the first step.
+  MemoryFootprint workspaces{};
 };
 
 /// @brief One node's working set: a DeviceResources per device, and a taskflow

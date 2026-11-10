@@ -27,6 +27,8 @@ import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.density_fitting;
 
+#include "test_workspaces.h"
+
 #include "df_high_aux_fixture.h"
 
 namespace {
@@ -97,7 +99,7 @@ TEST(DfHighAux, MetricThroughIiMatchesInt2c2e) {
   const auto doc = fb::read_json(kDataDir / "df_high_aux.json");
   ASSERT_TRUE(doc) << doc.error().message;
   const Fixture f = fixture(*doc);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
 
   const auto golden = fb::read_npy(kDataDir / (*doc)["int2c2e"].get<std::string>());
   ASSERT_TRUE(golden) << golden.error().message;
@@ -143,7 +145,7 @@ TEST(DfHighAux, ThreeCenterThroughFfIMatchesInt3c2e) {
   const auto doc = fb::read_json(kDataDir / "df_high_aux.json");
   ASSERT_TRUE(doc) << doc.error().message;
   const Fixture f = fixture(*doc);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
 
   const std::vector<double> golden = golden_eri3(*doc, f.nao, f.naux);
   const double scale = max_abs(golden);

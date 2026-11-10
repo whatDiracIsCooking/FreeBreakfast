@@ -26,6 +26,8 @@ import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.integrals.eri.density_fitting.jk;
 import free_breakfast.hessian;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -170,7 +172,7 @@ protected:
       }
     }
     ASSERT_NE(c, nullptr) << "no case " << name;
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     molecule_.emplace(molecule_of(*res_, *c));
     const auto stamp = fb::resolve_basis((*c)["basis"].get<std::string>());
     ASSERT_TRUE(stamp) << stamp.error().message;

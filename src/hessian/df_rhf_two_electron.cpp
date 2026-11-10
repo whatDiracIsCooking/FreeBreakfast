@@ -207,19 +207,13 @@ Result<RhfTwoElectron> df_rhf_two_electron(DeviceResources &res, const BasisSet 
   // they fit (one walk), else two batches of half as many, A's and B's, so
   // (n_b + 1) n_b / 2 walks for n_b batches; never fewer than the least the
   // refusal above counted, df_rhf_two_electron_footprint's scratch. Sized
-  // now, the explicit part freed, from the budget less what the call has
-  // still to allocate besides the batch, its last buffer: the workspace's
-  // growth to the walk's carves, if it must grow (the new block is allocated
-  // before the old one is freed), and the pool's fragmentation headroom.
+  // now, the explicit part freed, from the budget less the pool's
+  // fragmentation headroom: the batch is the call's last buffer, and the
+  // walk's carves are the workspace's, held from construction.
   size_t slots = sizes.least_slots;
   {
-    const size_t growth =
-        sizes.workspace > res.device_workspace(0).num_elements()
-            ? math::align_up(sizes.workspace, DeviceResources::kWorkspaceAlignment)
-            : 0;
-    const size_t reserve = kPoolHeadroomBytes + growth;
     const size_t available = FBF_TRY(res.memory_budget());
-    size_t room = available > reserve ? available - reserve : 0;
+    size_t room = available > kPoolHeadroomBytes ? available - kPoolHeadroomBytes : 0;
     if (max_bytes != 0) {
       room = std::min(room, max_bytes - (sizeof(double) * held_count));
     }

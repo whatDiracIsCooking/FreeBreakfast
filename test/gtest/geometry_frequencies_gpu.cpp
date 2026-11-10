@@ -23,6 +23,8 @@ import free_breakfast.io.json;
 import free_breakfast.geometry;
 import free_breakfast.recipes.diagonalize;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 
 namespace {
@@ -96,7 +98,7 @@ TEST_P(HarmonicAnalysis, MatchesPyscf) {
   ASSERT_FALSE(c.atoms.empty());
   const std::size_t n = 3 * c.atoms.size();
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto vib = geo::harmonic_analysis(res, c.atoms, c.hessian);
   ASSERT_TRUE(vib) << vib.error().message;
 
@@ -135,7 +137,7 @@ TEST(HarmonicAnalysisSign, NegatedHessianIsImaginary) {
   for (double &value : c.hessian) {
     value = -value;
   }
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto vib = geo::harmonic_analysis(res, c.atoms, c.hessian);
   ASSERT_TRUE(vib) << vib.error().message;
   ASSERT_EQ(vib->frequencies.size(), c.frequencies.size());
@@ -167,7 +169,7 @@ TEST(HarmonicAnalysisSpring, DiatomicHasOneMode) {
       }
     }
   }
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto vib = geo::harmonic_analysis(res, atoms, hessian);
   ASSERT_TRUE(vib) << vib.error().message;
   ASSERT_EQ(vib->frequencies.size(), 1U);
@@ -188,7 +190,7 @@ TEST(HarmonicAnalysisSpring, AtomHasNoModes) {
   FBF_REQUIRE_GPU();
   const std::vector<fb::Atom> atoms{fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, fb::Element::He}};
   const std::vector<double> hessian(9, 0.0);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto vib = geo::harmonic_analysis(res, atoms, hessian);
   ASSERT_TRUE(vib) << vib.error().message;
   EXPECT_TRUE(vib->frequencies.empty());
@@ -197,7 +199,7 @@ TEST(HarmonicAnalysisSpring, AtomHasNoModes) {
 
 TEST(HarmonicAnalysisRefusal, RefusesBadInput) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::vector<fb::Atom> water{fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, fb::Element::O},
                                     fb::Atom{fb::Vec<double, 3>{0.0, 1.43, -1.1}, fb::Element::H},
                                     fb::Atom{fb::Vec<double, 3>{0.0, -1.43, -1.1}, fb::Element::H}};
@@ -230,7 +232,7 @@ TEST(HarmonicAnalysisFootprint, BentAndLinear) {
     SCOPED_TRACE(name);
     const Case c = read_case(name);
     ASSERT_FALSE(c.atoms.empty());
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     std::vector<std::size_t> lwork;
     for (std::size_t order = 0; order <= 3 * c.atoms.size(); ++order) {
       lwork.push_back(fb::syevd_lwork<double>(res, static_cast<std::int32_t>(order)).value());
@@ -238,7 +240,7 @@ TEST(HarmonicAnalysisFootprint, BentAndLinear) {
     const fb::MemoryFootprint fp = geo::harmonic_analysis_footprint(c.atoms, lwork);
     const auto call = [&] { EXPECT_TRUE(geo::harmonic_analysis(res, c.atoms, c.hessian)); };
     call();
-    EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+    EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
     EXPECT_EQ(fp.pinned, fb::Footprint<wwr::extension::MemoryKind::Pinned>{});
     const fb::test::PoolPeak peak = fb::test::measure_pool_peak(*res.device(), call);
     fb::test::expect_footprint(

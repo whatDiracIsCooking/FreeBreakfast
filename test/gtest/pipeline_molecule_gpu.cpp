@@ -15,6 +15,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.molecule;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -29,7 +31,7 @@ constexpr std::string_view kWater = "3\n"
 
 TEST(PipelineMolecule, MatchesReadXyz) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("pipeline_molecule");
   const auto path = dir / "water.xyz";
   ASSERT_TRUE(fb::write_file(path, kWater).has_value());
@@ -55,7 +57,7 @@ TEST(PipelineMolecule, MatchesReadXyz) {
 
 TEST(PipelineMolecule, MissingFileIsIoError) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("pipeline_molecule");
 
   const fb::MoleculeStep step{.xyz = dir / "absent.xyz"};

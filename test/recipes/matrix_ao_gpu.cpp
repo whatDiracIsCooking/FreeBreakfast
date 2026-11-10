@@ -13,6 +13,8 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -118,7 +120,7 @@ void expect_near_all(const std::vector<double> &got, const std::vector<double> &
 
 // upload_spherical_transform_matrix for one basis, for pairs over it to share.
 struct Fixture {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::BasisSet basis;
   std::shared_ptr<const fb::Buffers::device<double>> u;
 
@@ -255,7 +257,8 @@ TEST(MatrixAODeathTest, PairAbortsOnAUThatDoesNotFitTheBasis) {
   // A d shell needs a U.
   EXPECT_DEATH(
       {
-        fb::DeviceResources res{0};
+        // Parenthesized: the braces' comma would split EXPECT_DEATH's argument.
+        fb::DeviceResources res(0, fb::test::kWorkspaces);
         const fb::MatrixAOPair pair(res, spd_basis(), nullptr);
       },
       "");

@@ -107,6 +107,12 @@ namespace {
 
 namespace fb = free_breakfast;
 
+// The workspaces this tool's DeviceResources hold, sized at
+// construction (src/core/resources/README.md): 1 GiB on the device and 64 MiB
+// pinned, past what any of its runs borrows.
+constexpr fb::MemoryFootprint kWorkspaces{.device = {.workspace = std::size_t{1} << 30},
+                                          .pinned = {.workspace = std::size_t{64} << 20}};
+
 using fb::nevpt2::kCiTol;
 using fb::nevpt2::kPredictionBound;
 
@@ -496,7 +502,7 @@ fb::Status run(std::span<char *const> args) {
   // The CASSCF logs every macro iteration at info; this tool prints its own
   // progress.
   fb::log::set_level(fb::log::LogLevel::Warn);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = kWorkspaces}};
   if (node.device_count() == 0) {
     return fb::err_gpu("no GPU device is visible");
   }

@@ -20,6 +20,8 @@ import free_breakfast.core.nontransferrable;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.guess;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -65,7 +67,7 @@ fb::Result<fb::GuessOutput> run_step(const fb::GuessStep &step, const GuessInput
 
 TEST(PipelineGuess, SadMatchesSadDensityBitwise) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::MoleculeOutput molecule = water(res);
   auto basis = placed(water_stamp(), molecule);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
@@ -83,7 +85,7 @@ TEST(PipelineGuess, SadMatchesSadDensityBitwise) {
 // test/io/sad_host.cpp holds each stamp to the SCF it stands in for.
 TEST(PipelineGuess, ACompiledInBasisTakesTheBakedStamps) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::MoleculeOutput molecule = water(res);
   auto stamp = fb::resolve_basis("cc-pvdz");
   ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
@@ -100,7 +102,7 @@ TEST(PipelineGuess, ACompiledInBasisTakesTheBakedStamps) {
 
 TEST(PipelineGuess, ABasisPlacedOverOtherAtomsIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::MoleculeOutput molecule = water(res);
   const fb::MoleculeOutput hydrogen{fb::Molecule(res, {Atom{{0.0, 0.0, 0.0}, Element::H}})};
   auto basis = placed(water_stamp(), hydrogen);
@@ -115,7 +117,7 @@ TEST(PipelineGuess, ABasisPlacedOverOtherAtomsIsInvalidConfig) {
 
 TEST(PipelineGuess, ALoadedGuessIsTheSavedDensityBitwise) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::MoleculeOutput molecule = water(res);
   auto basis = placed(water_stamp(), molecule);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;

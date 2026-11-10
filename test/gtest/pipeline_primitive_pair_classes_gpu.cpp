@@ -13,6 +13,8 @@ import free_breakfast.basis;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.primitive_pair_classes;
 
+#include "test_workspaces.h"
+
 #include "mmd_records.h"
 
 namespace {
@@ -33,7 +35,7 @@ fb::BasisSetOutput spd_basis() {
 
 TEST(PipelinePrimitivePairClasses, MatchesPrimitivePairClasses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSetOutput basis = spd_basis();
 
   auto step = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{basis}, res);
@@ -56,7 +58,7 @@ TEST(PipelinePrimitivePairClasses, MatchesPrimitivePairClasses) {
 
 TEST(PipelinePrimitivePairClasses, EmptyBasisHasNoClasses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSetOutput basis{};
 
   auto step = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{basis}, res);

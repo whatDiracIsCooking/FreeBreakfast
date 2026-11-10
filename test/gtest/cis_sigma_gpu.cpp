@@ -35,6 +35,8 @@ import free_breakfast.cis.sigma;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "mcscf_setup.h"
 #include "pool_footprint.h"
 #include "scratch_dir.h"
@@ -125,7 +127,7 @@ double dot(const std::vector<double> &a, const std::vector<double> &b) {
 // The reference's molecule through the setup steps, the J and K classes, and,
 // when with_scf, the engine's RHF.
 struct Setup {
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   std::optional<fb::Calculation> calc;
   const fb::BasisSet *basis = nullptr;
   const fb::SphericalTransformOutput *transform = nullptr;
@@ -421,14 +423,14 @@ TEST(CisSigma, SecondApplyAllocatesNothing) {
   fb::Buffers::device<double> d_s(kColumns * n, res.device());
   ASSERT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value());
 
-  const std::byte *const workspace = res.device_workspace(0).data();
-  const std::size_t workspace_bytes = res.device_workspace(0).num_elements();
+  const std::byte *const workspace = res.device_workspace("test", 0).value().data();
+  const std::size_t workspace_bytes = res.workspace_high_water().device.workspace;
   const std::uint64_t second = pool_peak(
       res, [&] { EXPECT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value()); });
   std::cout << "pool peak: second apply " << second << " B\n";
   EXPECT_EQ(second, 0U);
-  EXPECT_EQ(res.device_workspace(0).data(), workspace);
-  EXPECT_EQ(res.device_workspace(0).num_elements(), workspace_bytes);
+  EXPECT_EQ(res.device_workspace("test", 0).value().data(), workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, workspace_bytes);
 }
 
 // A create and an apply of 4 columns on a fresh DeviceResources, the inputs
@@ -446,7 +448,7 @@ TEST(CisSigma, Footprint) {
   const auto d_b = to_device(setup->res(), random_vector(kColumns * n, 41, -1.0, 1.0));
   fb::Buffers::device<double> d_s(kColumns * n, setup->res().device());
   const fb::MemoryFootprint fp = cis::sigma_footprint(*setup->basis, syn.n_occ);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto run = [&] {
     auto sigma = cis::Sigma::create(res, *setup->basis, setup->transform->u, setup->j_classes,
                                     setup->k_classes, syn.c, syn.n_occ, syn.delta.data(),
@@ -455,7 +457,7 @@ TEST(CisSigma, Footprint) {
     EXPECT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value());
   };
   run();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
   fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), run),
                         {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
                         (2 * 3) + 2);
@@ -566,14 +568,14 @@ TEST(CisSigma, DfSecondApplyAllocatesNothing) {
   fb::Buffers::device<double> d_s(kColumns * n, res.device());
   ASSERT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value());
 
-  const std::byte *const workspace = res.device_workspace(0).data();
-  const std::size_t workspace_bytes = res.device_workspace(0).num_elements();
+  const std::byte *const workspace = res.device_workspace("test", 0).value().data();
+  const std::size_t workspace_bytes = res.workspace_high_water().device.workspace;
   const std::uint64_t second = pool_peak(
       res, [&] { EXPECT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value()); });
   std::cout << "pool peak: second DF apply " << second << " B\n";
   EXPECT_EQ(second, 0U);
-  EXPECT_EQ(res.device_workspace(0).data(), workspace);
-  EXPECT_EQ(res.device_workspace(0).num_elements(), workspace_bytes);
+  EXPECT_EQ(res.device_workspace("test", 0).value().data(), workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, workspace_bytes);
 }
 
 // The first create, from the fit's B, and an apply of its 4-column block on a
@@ -592,7 +594,7 @@ TEST(CisSigma, DfFootprint) {
   const fb::MemoryFootprint fp = cis::df_sigma_footprint(
       setup->fit->naux, static_cast<std::int32_t>(setup->basis->nao_sphe()), syn.n_occ, kColumns);
   ASSERT_GT(fp.device.persistent, 0U);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto run = [&] {
     auto sigma = cis::DfSigma::create(res, setup->fit->b, setup->fit->naux, syn.c, syn.n_occ,
                                       syn.delta.data(), cis::Spin::Singlet, kColumns);
@@ -600,7 +602,7 @@ TEST(CisSigma, DfFootprint) {
     EXPECT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value());
   };
   run();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
   fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), run),
                         {.persistent = fp.device.persistent, .scratch = fp.device.scratch}, 3);
 }

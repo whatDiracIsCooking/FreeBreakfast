@@ -60,6 +60,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
 
+#include "test_workspaces.h"
+
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
 #include "slow_test.h"
@@ -138,7 +140,7 @@ std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeRe
 // and the fitted integrals over its orbitals, kept together because the
 // outputs refer into the calculation.
 struct Converged {
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   std::optional<fb::Calculation> calc;
   std::optional<fb::EriOutput> fitted;
   std::optional<fb::ActiveSpace> space;

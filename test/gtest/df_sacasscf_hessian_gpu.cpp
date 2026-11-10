@@ -41,6 +41,8 @@ import free_breakfast.io.base;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 #include "scratch_dir.h"
 
@@ -159,7 +161,7 @@ protected:
       }
     }
     ASSERT_FALSE(case_.is_null()) << "no case " << name;
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     fb::DeviceResources &res = *res_;
     std::vector<fb::Atom> atoms;
     for (const auto &atom : case_["atoms"]) {
@@ -514,15 +516,15 @@ TEST_F(HessianDfSaCasscf, FootprintIsSoundAndTight) {
     };
     std::size_t held = 0;
     {
-      fb::DeviceResources probe{0};
+      fb::DeviceResources probe{0, fp};
       call(probe);
       ASSERT_TRUE(probe.sync());
-      EXPECT_EQ(probe.device_workspace(0).num_elements(), fp.device.workspace);
+      EXPECT_EQ(probe.workspace_high_water().device.workspace, fp.device.workspace);
       held = probe.device()->pool_usage().used_current;
     }
     const std::uint64_t cap =
         held + fb::kPoolHeadroomBytes + fp.device.persistent + fp.device.scratch;
-    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    fb::DeviceResources res{0, fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
     call(res);
     const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { call(res); });
     std::cout << std::format("[ footprint ] {} root 1 at the least, capped at {}: measured {}, "
@@ -594,7 +596,7 @@ TEST_F(HessianDfSaCasscf, ContinuousFamilyIsRefused) {
                   .has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   fb::DeviceResources &res = node.device(0);

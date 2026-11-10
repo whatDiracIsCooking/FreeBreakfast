@@ -19,6 +19,12 @@ import wwr.fp16;
 
 namespace fb = free_breakfast;
 
+// The workspaces this benchmark's DeviceResources hold, sized at
+// construction (src/core/resources/README.md): 1 GiB on the device and 64 MiB
+// pinned, past what any of its runs borrows.
+constexpr fb::MemoryFootprint kWorkspaces{.device = {.workspace = std::size_t{1} << 30},
+                                          .pinned = {.workspace = std::size_t{64} << 20}};
+
 namespace {
 
 // Aborts on a failed call: a benchmark has nothing to recover to, and a
@@ -74,7 +80,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   const std::int32_t reps = parse_arg(argc > 2 ? argv[2] : nullptr, 10);
   check(reps > 0, "reps > 0");
 
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, kWorkspaces};
   std::println("{:>6} {:>12} {:>12} {:>12}   TFLOP/s", "n", "hgemm", "gemmex-f32", "sgemm");
   for (std::int32_t n = 512; n <= max_n; n *= 2) {
     const auto count = static_cast<std::size_t>(n) * static_cast<std::size_t>(n);
