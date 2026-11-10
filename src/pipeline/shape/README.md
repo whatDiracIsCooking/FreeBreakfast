@@ -41,7 +41,9 @@ whole registry.
   `res.solver()`, one host call an order. The largest is nao, or a planned
   CI's subspace past it: ci::solve's Davidson diagonalizes at up to 16 nroots
   columns (CASCI, FCI and CASSCF, the chain copies included) and a CASSCF's
-  augmented Hessian at ah_max_subspace + 1. A CIS step's Davidson
+  augmented Hessian at ah_max_subspace + 1. Under a `quasi_degenerate`
+  `[nevpt2_gradient]` a `[hessian]` also solves the ensemble's edge, a CI
+  over one more root than its `[casscf]`, so through 16 (nroots + 1). A CIS step's Davidson
   diagonalizes at up to its clamped subspace, max(2 n_states,
   min(max_subspace, n_ov)), n_ov = nocc (nao - nocc), which passes nao with
   the default 40 columns on water in cc-pVDZ (nao 24, n_ov 95). The RHF chain

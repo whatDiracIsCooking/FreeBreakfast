@@ -51,7 +51,7 @@ struct PlanShape {
 ///   class (mmd screens nothing, so this is every class's record count);
 /// - syevd_lwork at every order through the plan's largest eigensolve, nao
 ///   or a planned CI's subspace (16 nroots, and for a CASSCF
-///   ah_max_subspace + 1), a CIS step's clamped Davidson subspace, or
+///   ah_max_subspace + 1; a QD [hessian]'s edge, 16 (nroots + 1)), a CIS step's clamped Davidson subspace, or
 ///   MINAO's AO count, queried through res.solver() (host computations);
 /// - getrf_lwork at a CIS step's RIS basis's order, when its RIS
 ///   preconditioner is planned;
