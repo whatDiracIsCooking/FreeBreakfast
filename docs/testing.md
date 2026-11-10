@@ -24,8 +24,11 @@ The plan has three parts, and each leans on the one before:
    gate no longer has to be the only thing that would catch a regression.
 2. **Recorded build and test times**, so the cost of a test and the trend of a
    build are data rather than memory.
-3. **Test selection** for PRs: run the tests that the diff can affect, using
-   the build's own dependency graph, and leave the rest to the nightly.
+3. **Test selection** for PRs: run less than the whole fast set, and leave
+   the rest to the nightly. The drafted contract selected by the diff, over
+   the build's own dependency graph; #988's replay found that it would save
+   too little (a no-go), so `pr` runs each family's representative instead,
+   the same set for every PR (#989; "Test selection" below).
 
 ## Gates
 
@@ -165,11 +168,12 @@ concept expresses is `static_assert(!Concept<…>)`).
 replaced the three gate scripts, and `devtools/test.py nightly` (#985), which
 replaced the two full-run scripts.
 
-**Planned:** selection for `pr`.
+`pr` runs each family's representative of the C++ cases (#989; `--all`, the
+whole fast set): "Test selection" below.
 
 ```bash
 devtools/test.py push       # what the pre-push hook calls
-devtools/test.py pr         # before a PR; --affected arrives in #989
+devtools/test.py pr         # before a PR; --all for the whole fast set
 devtools/test.py nightly    # what the timer calls (#985)
 ```
 
@@ -615,7 +619,7 @@ A record, schema version 1:
 | Field | Meaning |
 | --- | --- |
 | `schema` | `1` |
-| `kind` | `nightly`, `weekly` (the clean-build night), `manual`, or `shadow` (see "Test selection") |
+| `kind` | `nightly`, `weekly` (the clean-build night), or `manual` (`test.py pr --record`) |
 | `started`, `finished` | UTC, ISO 8601 |
 | `host` | the machine (`METRICS_HOST`, else its board from DMI); comparisons only ever use one host's records |
 | `commit` | the full SHA that was tested |
@@ -624,13 +628,12 @@ A record, schema version 1:
 | `toolchain` | `clang`, `cmake`, and `nvcc` or `hipcc`: versions, the compilers' read from the build directory's own configure |
 | `build` | `mode` (`warm` or `clean`), `launcher` (`on` or `off`: whether the configure found sccache), `jobs` (`BUILD_JOBS`), `seconds` (configure and build wall time), and for a clean build `files`, each output's `file` and `seconds` from `.ninja_log`; `null` when the run built nothing |
 | `cases` | per test case: `name` (`Suite.Case`, or the pytest node id), `binary` (the gtest binary's name, or `pytest`), `status` (`pass`, `fail`, `skip`), `seconds`, and for a gtest case `slow` (whether it reached `FBF_SKIP_IF_FAST_TESTS()`, which a fast run skips; #987, absent before it, and for a ctest-run case before #1016). From gtest's `--gtest_output=json`, ctest's `--output-junit` with each entry's gtest XML, and pytest's JUnit XML |
-| `selection` | `shadow` records only, and absent from the rest: what was selected and any misses |
+| `selection` | reserved for a shadow mode that was never built: nothing writes it, and #1223 removes it with the code |
 | `result` | `pass` or `fail` |
 
 **Only this box's nightly and weekly records form the timing series.** Times
 from different hardware are not comparable, so every record carries its host,
-and anything that reads the series filters on it. A VM may write `shadow`
-records, which count PRs and misses, not seconds.
+and anything that reads the series filters on it.
 
 Recording the toolchain, the driver and `BUILD_JOBS` means a step in a series is
 either a code change or a recorded environment change, never a mystery.
