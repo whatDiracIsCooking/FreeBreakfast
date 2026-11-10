@@ -33,7 +33,7 @@ A gate is named by **when it runs**, not by what it contains.
 
 | Gate | When | Runs | Budget |
 | --- | --- | --- | --- |
-| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++, the Python half when it touches `.py`; the fast set of each | under 5 min on a busy card |
+| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`; the fast set of each | under 5 min on a busy card |
 | `pr` | by hand before opening a PR; `milestone-run` requires it | the fast set, both languages; later, only the selected part of it | under 5 min on a busy card |
 | `nightly` | a timer on this box | everything, unskipped, both languages, plus the cross-backend compile check | none; it has the night |
 
@@ -43,6 +43,13 @@ The nightly is **CUDA**, because production numbers are CUDA and because an
 unattended HIP run on the gfx1200 can wedge the card (#477). It covers HIP with
 `devtools/cross-backend-check.sh`: a seconds-long compile of every `.cu` through
 clang `-x hip`, which is the one portability hole a single-backend run cannot see.
+
+**C++ under `experimental/` or `test/experimental/` fires no C++ half.** The
+smoke builds the `default` preset, which never configures either one: they
+sit behind `FREE_BREAKFAST_BUILD_EXPERIMENTAL`. A cold build there would check
+nothing in the push. Build the `experimental` preset by hand instead. The root
+`CMakeLists.txt` line that adds them is outside both, so it still fires the
+half (`NOT_IN_CPP_SMOKE` in `devtools/test.py`).
 
 **The push gate's test set does not change in this milestone.** It is already a
 fixed set, and its job is "is this obviously broken". Selection applies to `pr`.
