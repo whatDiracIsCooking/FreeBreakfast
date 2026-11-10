@@ -61,9 +61,10 @@ through H̃ tightens it too.
    has two active indices.
 2. b_r = H′ c_r, the second sigma applied to the roots.
 3. δ_r = −(H₀ − E_r)⁻¹ (1 − Σ_s c_s c_sᵀ) b_r by conjugate gradients over
-   H₀'s sigma, to `response_tolerance` of the right-hand side (at most
-   `response_max_iterations`, 200, sigmas per root;
-   none when the roots span b_r, below), and the other roots' part exactly,
+   H₀'s sigma, to `response_tolerance` of the right-hand side or to
+   round-off, 1e-12 of the whole b_r, whichever is larger (at most
+   `response_max_iterations`, 200, sigmas per root; none when the roots
+   span b_r, and "A residual at round-off", below), and the other roots' part exactly,
    −(c_s · b_r) / (E_s − E_r) c_s (left out for a gap under 1e-8 hartree).
 4. γ_T and Γ_T: Σ_r w_r 2 `ci::Rdm::trans_rdm12(c_r, δ_r)`, the
    symmetrized transition RDMs root by root (Γ_T's halved, for the ½ of the
@@ -153,7 +154,8 @@ projected off every root (`project`'s gemv pair). The operator takes
 block calls make **one** `pcg_solve` over all k · nroots vectors, each at its
 own root's E_r, straight into `delta()` (#1032; #831 made one per root, since
 an operator told only a count could not shift per column). The stopping rule
-is passed to it unchanged: `response_tolerance` · ‖(1 − Σ_s c_s c_sᵀ) b_r‖ as
+is passed to it unchanged: `response_tolerance` · ‖(1 − Σ_s c_s c_sᵀ) b_r‖,
+or 1e-12 ‖b_r‖ where that is larger ("A residual at round-off"), as
 each vector's absolute tolerance (infinite for a right-hand side the roots
 span, below, so no sigma runs), `response_max_iterations` under
 `stop_silently`, and `check_curvature` off, so a direction with p·Ap ≤ 0
@@ -226,6 +228,45 @@ and `mcscf::solve` ran 200 macro iterations at ‖g‖ ≈ 0.2 at both of
 `test/gtest/data/casscf_meci/`'s geometries (#820). With the skip each
 converges in 6 macro iterations, every step accepted. An SA2 of the same
 molecule keeps 1e-3 to 6e-2 of b_r off its roots, far above the test.
+
+### A residual at round-off
+
+The test above is made once, on the right-hand side. **The conjugate
+gradients make it at every iterate too**: a vector stops at
+`response_tolerance` · ‖P b_r‖ or at 1e-12 ‖b_r‖, whichever is larger
+(`response_stop`), in the one-column loop, the block one and
+`pcg_ci_response`'s tolerances alike. A residual at 1e-12 ‖b_r‖ is past
+what the gradients can resolve, for the reason the start's test gives: b_r's
+part along the roots, which the projection takes off, leaves its rounding,
+~1e-16 ‖b_r‖, in every direction. The bar sits about 1e4 above it. Without it
+a b_r the roots nearly span had a tolerance below its own rounding, and the
+gradients chased that rounding.
+
+**What it did (#1215).** Water's DF-SA2-CASSCF(2,2) in STO-3G (14 pairs)
+averages the ground state and the open-shell singlet, of different symmetry.
+Each root carries ~1e-12 of the other symmetry, so along a pair that couples
+the two, b_r is all but spanned by the roots: ‖P b_r‖ / ‖b_r‖ 1e-12 to 1e-11
+(4.8e-13 of 6.25e-2, for one). That is just above the start's test, so the
+gradients ran to 1e-8 of it, ~5e-21, which they never reach. After one step
+the residual was ~1e-17, rounding. The next directions lay wholly along a
+root (|c_s · p| / ‖p‖ = 1.000), where the projected H₀ − E_r is null:
+p·Ap 1e-55 against r·r 1e-34, a step of 1e21, and |δ_r| went from 4e-13 to
+1.8e4 and up.
+
+- H̃ built from unit columns was asymmetric by 10 to 1e14, against 2e-14 with
+  the stop. The block product's H̃ was indefinite, with a least eigenvalue of
+  −2.4e3; the true one is 6.5e-2.
+- The Z-vector of root 1's gradient took 57 products over the 14 pairs, or
+  stopped on "A is not positive definite". So did `mcscf::solve`'s steps: it
+  hit negative curvature of −2.9e8, then took 12 rejected macro iterations.
+- Which pairs went wrong, and by how much, depended on the CI's last digits.
+  The SA2 root-1 `[optimize]` failed about one run in two. With the stop
+  every product is symmetric, the Z-vector takes 4 products, and the
+  CASSCFs take 4 or 5 macro iterations at every evaluation.
+
+`test/gtest/response_zvector_gpu.cpp`'s `ResponseRelaxedHessianRoundoff`
+builds that H̃ from all three paths. Each must be symmetric to 1e-6 and
+positive definite.
 
 ### Leaving a pair's mixing out
 
