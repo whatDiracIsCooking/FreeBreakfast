@@ -1908,6 +1908,9 @@ calls (`../energy/`, `../density_fitting/`, `../rdm/`, `../../mcscf/`,
                         nfrozen)
     builders_tangent_footprint(naux, nao, nmo, ncore, ncas, count)
     qd_builders_tangent_footprint(naux, nao, nmo, ncore, ncas, nroots, count)
+    sc_hessian_product_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, batch,
+                                 count, partners, parts)
+    pc_hessian_product_footprint(..., batch, syevd_lwork, count, parts, dropped)
 
 `nevpt2::rdms` and `rdms_adjoint` size their tiles from the memory budget
 (`../rdm/`): each footprint counts them at one determinant, the least they
@@ -1933,6 +1936,17 @@ for the Hessian products too): the tangent arrays, B_vv's tangent and every
 pair's RDM tangent kept, each pair's scratch n⁶ beside its `nevpt2::rdms` at
 one determinant. Their test, `Nevpt2GradientLayerFootprint`, runs them over
 random (h, B, C), roots and directions, which is all the builders read.
+
+The single-root Hessian products (#1194) keep their products (and parts),
+five arrays each. Their mirror is `hessian_product.cpp`'s, over helpers the
+QD products share: `bars_tangent_bytes` (an RDM step's y, h2e's and the
+folds' workspaces, the folded h_bar and Λ), `phi_lambda_bytes`,
+`phi_w_bytes`, `SigmaBytes` (the tables, and the apply scratch from the
+first apply), `adjoint_tangent_bytes`, and the products' `ProductSizes`.
+`class_energies_hvp_footprint`'s second tables are counted at the most, as
+`../energy/`'s README says. Their test, `Nevpt2ReaderFootprint.HessianProducts`,
+holds both along a random direction, SC with its partner and with the parts,
+PC with and without them at the run's kept ranks.
 
 ## Not done
 
