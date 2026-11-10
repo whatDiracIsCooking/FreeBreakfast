@@ -49,9 +49,14 @@ MemoryFootprint response::hessian_apply_footprint(int32_t nmo, int32_t naux, int
 
 `hessian_apply_footprint` is exact for every integral-direct call and every
 density-fitted one with k = 1. A density-fitted block with k > 1 and a core
-builds its columns' J and K together, as many as half the free memory holds
-(`wwrMemGetInfo`, which #1053 moves to the memory budget), so its scratch and
-J and K workspace grow with that width past the footprint.
+is adaptive: it builds as many columns' J and K together as fit
+`res.memory_budget()` less `kPoolHeadroomBytes` (#1048), counting every
+allocation it still has to make: its carve and the block J and K's scratch
+(Gamma, and `df_exchange_symmetrized`'s Y). All of that is scratch. The
+workspace is grown first to the footprint's, the same at any width, so the
+budget is read with it in place. The footprint is the block's least, width 1
+(the one-column path): its scratch grows with the width, its workspace does
+not (`test/gtest/footprint_gpu.cpp`'s `LibraryFootprint.HessianBlock*`).
 
 The integral-direct overload's arguments through `k_classes` are
 `response::fock`'s; the density-fitted one takes B in place of the basis, U
@@ -204,9 +209,10 @@ every column's R against the L the columns share (C_core, or C's first nocc
 columns), so X = B L is built once per call, not once per column. That form
 gives K of the symmetrized L Rᵀ, K[D] / 2, so 2 J − K[D] = 2 (J − K_sym), one
 `geam` over the whole block. Then each column's gemms go on as before. As many
-columns go together as half the free memory holds: per column its κ, X₂,
+columns go together as the memory budget holds (above): per column its κ, X₂,
 densities, factors, J and K, and the K scratch Y (naux · nocc · nmo at D′'s
-rank), past X; `cphf`'s `batched` sizes its batches the same way. One column,
+rank); X, of the shared L, is the workspace's. `cphf`'s `batched` sizes its
+batches the same way. One column,
 and the integral-direct path, build their J and K one density at a time as
 before. The two paths agree to 1e-10 of each column's largest summand
 max |H_ij x_j| (`test/gtest/response_hessian_gpu.cpp`).

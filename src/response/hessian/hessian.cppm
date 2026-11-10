@@ -128,11 +128,15 @@ public:
   /// the density and one two-factor @c df_exchange of its factors, with no
   /// prune cap and no synchronize; those take the workspace, so the scratch
   /// is allocated per call. Density-fitted with @p k > 1 and ncore > 0, the
-  /// columns' J and K are built together instead, as many columns at a time
-  /// as half the free memory holds (read by wwrMemGetInfo): one block
-  /// @c df_coulomb of every column's two densities, and for each of the two
-  /// one @c df_exchange_symmetrized of every column's right factor against
-  /// the left one they share. The two give the same Y to rounding. Queued on
+  /// columns' J and K are built together instead: one block @c df_coulomb of
+  /// every column's two densities, and for each of the two one
+  /// @c df_exchange_symmetrized of every column's right factor against the
+  /// left one they share. As many columns at a time, up to @p k, as
+  /// res.memory_budget() holds less @c kPoolHeadroomBytes: the batch's carve
+  /// and its J and K scratch, every allocation still to come, allocated as
+  /// scratch (the workspace is first grown to @ref hessian_apply_footprint's,
+  /// the same at any width); one column at a time when two do not fit. The
+  /// two give the same Y to rounding. Queued on
   /// res.stream() with res.blas(), whose
   /// pointer mode must be host (its default, and what davidson_solve holds).
   /// The device res.dev_idx() names is made current for the call and the
@@ -238,11 +242,11 @@ private:
 /// integral-direct carve's counts allocated as scratch (df_coulomb and
 /// df_exchange take the workspace), and the device workspace, the larger of
 /// the one-density @c df_coulomb's and the two-factor @c df_exchange's at
-/// rank nocc (none for ncore = 0). That is every call with k = 1. A block
-/// with k > 1 and a core builds its columns' J and K together, as many as
-/// half the free memory holds (#1053 moves that to the memory budget): its
-/// scratch and workspace grow with that width, past this. Empty for no
-/// pairs.
+/// rank nocc (none for ncore = 0). That is every call with k = 1, and the
+/// least a block with k > 1 runs with: one with a core builds as many
+/// columns' J and K together as the memory budget holds, so its scratch is
+/// this at width 1 and grows with the width, and its workspace is this at
+/// any width. Empty for no pairs.
 [[nodiscard]] MemoryFootprint hessian_apply_footprint(int32_t nmo, int32_t naux, int32_t ncore,
                                                       int32_t ncas);
 

@@ -70,7 +70,8 @@ factors side by side, width `count · rank`, and its product is one gemm
 batched over the densities, each X_d and Y_d a band of `naux · rank` rows of
 the `(naux · count · rank)` x nao X and Y. Each J_d and K_d is the
 one-density call's to rounding (`df_jk_batched_gpu`); the scratch is
-`count` times the one-density call's. There is no block form of the
+`count` times the one-density call's, and is allocated, not the workspace's
+("Footprint"). There is no block form of the
 one-factor K: an SCF builds one K per iteration.
 
 **The symmetrized form is the block K at half the rank.** The CP-CASSCF
@@ -132,15 +133,31 @@ Every matrix is column-major and packed.
 B, at `naux · nao²` doubles, is still the largest thing DF holds; X is B's
 size times `nocc / nao`, so below it whenever the occupied space is smaller
 than the basis (H₂O in cc-pVTZ / cc-pVTZ-JKFIT: B 139 x 58² is 3.7 MB, X
-139 · 5 · 58 is 0.32 MB). The scratch is `res.device_workspace()`'s, carved by
-`device_regions`, so none of the operands may live there.
+139 · 5 · 58 is 0.32 MB). The one-density forms' scratch, and the
+symmetrized K's X, is `res.device_workspace()`'s, carved by `device_regions`,
+so none of the operands may live there. What grows with `count` (Gamma, the
+block K's X and Y, the symmetrized K's Y) is allocated by the call and freed
+before it returns.
 
 ## Footprint
 
-`df_coulomb_footprint(nao, naux)` and `df_exchange_footprint(nao, naux, nocc)`
-(`core/footprint`'s `MemoryFootprint`) are the one-density J's gamma and the
-one-factor K's X, each the device workspace; nothing else is allocated. The
-other forms have none yet.
+`core/footprint`'s `MemoryFootprint`, next to the code:
+
+| Footprint | Form | Workspace | Scratch |
+| --- | --- | --- | --- |
+| `df_coulomb_footprint(nao, naux)` | one-density J | gamma, `naux` | |
+| `df_exchange_footprint(nao, naux, nocc)` | one-factor K | X, `naux · nocc · nao` | |
+| `df_coulomb_footprint(nao, naux, count)` | block J | | Gamma, `naux · count` |
+| `df_exchange_footprint(nao, naux, rank, count)` | block K | | X and Y, `2 · naux · count · rank · nao`, one allocation |
+| `df_exchange_symmetrized_footprint(nao, naux, rank, count)` | symmetrized K | X, `naux · rank · nao` | Y, `naux · count · rank · nao` |
+
+(doubles; a workspace region is rounded up to `kWorkspaceAlignment`.) **What
+grows with `count` is scratch, never the workspace** (#1174): a pipeline holds
+the workspace at its plan's maximum for the whole run (`core/footprint`), and
+a caller sizing `count` at run time from `res.memory_budget()` (the orbital
+Hessian's block, `cphf`'s `batched`) must see that memory come and go. The
+two-factor one-density K has no footprint; its callers count its X and Y
+by hand. `test/gtest/footprint_gpu.cpp` holds each to one call's pool peak.
 
 ## Limits
 
