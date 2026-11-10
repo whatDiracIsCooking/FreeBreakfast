@@ -16,6 +16,8 @@ import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives;     // math::align_up
 import free_breakfast.recipes.blas;        // gemm
 import free_breakfast.recipes.davidson;    // DavidsonPreconditioner
 import free_breakfast.recipes.diagonalize; // diagonalize
@@ -276,6 +278,33 @@ Status Preconditioner::solve_blocks(DeviceResources &res, const double *const ap
   std::ignore = res.device_regions<double>(scratch, scratch);
   covered_ = covered;
   return {};
+}
+
+MemoryFootprint preconditioner_footprint(const int32_t max_columns) {
+  return {.device = {.persistent = sizeof(double) * static_cast<size_t>(std::max(max_columns, 0))}};
+}
+
+MemoryFootprint cluster_footprint(const int32_t n_ov, const int32_t scope,
+                                  const int32_t max_columns, const size_t syevd_lwork) {
+  if (n_ov < 1 || scope < 2) {
+    return {};
+  }
+  const auto n = static_cast<size_t>(n_ov);
+  const auto covered = static_cast<size_t>(std::min(scope, n_ov));
+  const auto columns = static_cast<size_t>(std::max(max_columns, 0));
+  // group's index_ and unit vectors, cluster's sigma of them; solve_blocks'
+  // A_cc, then each block and its eigenvalues (one block of every covered
+  // entry at the most), freed before lambda_ and vectors_, which are as large.
+  // The peak is at those two, beside the units and their sigma.
+  MemoryFootprint out = diagonalize_footprint<double>(syevd_lwork);
+  out.device.persistent = (sizeof(int32_t) * covered) + (sizeof(double) * covered) +
+                          (sizeof(double) * covered * covered);
+  out.device.scratch = 2 * sizeof(double) * n * covered;
+  // The correction's gathered and projected blocks, device_regions' carve.
+  const size_t region =
+      math::align_up(sizeof(double) * covered * columns, DeviceResources::kWorkspaceAlignment);
+  out.device.workspace = std::max(out.device.workspace, 2 * region);
+  return out;
 }
 
 } // namespace free_breakfast::cis

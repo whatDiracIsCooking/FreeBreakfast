@@ -20,11 +20,12 @@ free_breakfast_add_gpu_device_library(
 # takes DeviceResources and returns Status, Preconditioner holds
 # Buffers::device, and its cluster template is constrained by LinearOperator,
 # so core::resources, core::error_handling, core::wwr and
-# recipes::linear_operator are PUBLIC. The implementation unit alone
-# GMF-includes the bridge, copies kOne, runs the clusters' gemms and
-# diagonalize and checks the DavidsonPreconditioner concept, so the device
-# library, core::constants, recipes::blas, recipes::diagonalize,
-# recipes::davidson and the FBF_TRY header are PRIVATE.
+# recipes::linear_operator are PUBLIC, as is core::footprint, in the
+# footprints' signatures; core::primitives, their align_up, is PRIVATE. The
+# implementation unit alone GMF-includes the bridge, copies kOne, runs the
+# clusters' gemms and diagonalize and checks the DavidsonPreconditioner
+# concept, so the device library, core::constants, recipes::blas,
+# recipes::diagonalize, recipes::davidson and the FBF_TRY header are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.cis.precondition
@@ -38,9 +39,11 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::recipes::linear_operator
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
   free_breakfast::recipes::davidson

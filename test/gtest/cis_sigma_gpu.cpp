@@ -3,7 +3,9 @@
 // spherical bridge is exercised); a block equal to its columns applied one at
 // a time; a second apply that allocates nothing of its own; the same three
 // for the density-fitted cis::DfSigma over a cc-pVDZ-JKFIT fit, and its
-// refusals (its physics, DF against PySCF's DF, is cis_step_gpu.cpp's); and
+// refusals (its physics, DF against PySCF's DF, is cis_step_gpu.cpp's); the
+// footprints of both, a create and an apply against sigma_footprint and
+// df_sigma_footprint (#1159); and
 // the physics
 // over the engine's own RHF, against data/cis/cis.json
 // (tools/emit/cis_reference.py) to the issue's 1e-5 hartree: H2O / STO-3G's
@@ -34,11 +36,13 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
 #include "mcscf_setup.h"
+#include "pool_footprint.h"
 #include "scratch_dir.h"
 
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 namespace cis = free_breakfast::cis;
 
 // The issue's bar against cis.json's PySCF roots, which are good to ~1e-14.
@@ -427,6 +431,36 @@ TEST(CisSigma, SecondApplyAllocatesNothing) {
   EXPECT_EQ(res.device_workspace(0).num_elements(), workspace_bytes);
 }
 
+// A create and an apply of 4 columns on a fresh DeviceResources, the inputs
+// on the setup's: the first pass grows the workspace to exactly
+// nonsymmetric_jk's block, sigma_footprint's, and the second, measured, holds
+// the sigma's buffers: D's and R's pairs (three each, U not the identity),
+// the other matrix and the half transform.
+TEST(CisSigma, Footprint) {
+  FBF_REQUIRE_GPU();
+  auto setup = make_setup(reference_case("h2o_ccpvdz"), false);
+  ASSERT_NE(setup, nullptr);
+  auto syn = synthetic(*setup, 5);
+  constexpr std::int32_t kColumns = 4;
+  const auto n = static_cast<std::size_t>(syn.n_ov);
+  const auto d_b = to_device(setup->res(), random_vector(kColumns * n, 41, -1.0, 1.0));
+  fb::Buffers::device<double> d_s(kColumns * n, setup->res().device());
+  const fb::MemoryFootprint fp = cis::sigma_footprint(*setup->basis, syn.n_occ);
+  fb::DeviceResources res{0};
+  const auto run = [&] {
+    auto sigma = cis::Sigma::create(res, *setup->basis, setup->transform->u, setup->j_classes,
+                                    setup->k_classes, syn.c, syn.n_occ, syn.delta.data(),
+                                    cis::Spin::Singlet);
+    ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+    EXPECT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value());
+  };
+  run();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), run),
+                        {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
+                        (2 * 3) + 2);
+}
+
 TEST(CisSigma, Refusals) {
   FBF_REQUIRE_GPU();
   auto setup = make_setup(reference_case("h2o_sto3g"), false);
@@ -540,6 +574,35 @@ TEST(CisSigma, DfSecondApplyAllocatesNothing) {
   EXPECT_EQ(second, 0U);
   EXPECT_EQ(res.device_workspace(0).data(), workspace);
   EXPECT_EQ(res.device_workspace(0).num_elements(), workspace_bytes);
+}
+
+// The first create, from the fit's B, and an apply of its 4-column block on a
+// fresh DeviceResources: the workspace grows to the larger of b_mo's half
+// transform and apply's regions, df_sigma_footprint's, and the measured pass
+// holds the three MO blocks.
+TEST(CisSigma, DfFootprint) {
+  FBF_REQUIRE_GPU();
+  auto setup = make_setup(reference_case("h2o_ccpvdz"), false, true);
+  ASSERT_NE(setup, nullptr);
+  auto syn = synthetic(*setup, 5);
+  constexpr std::int32_t kColumns = 4;
+  const auto n = static_cast<std::size_t>(syn.n_ov);
+  const auto d_b = to_device(setup->res(), random_vector(kColumns * n, 41, -1.0, 1.0));
+  fb::Buffers::device<double> d_s(kColumns * n, setup->res().device());
+  const fb::MemoryFootprint fp = cis::df_sigma_footprint(
+      setup->fit->naux, static_cast<std::int32_t>(setup->basis->nao_sphe()), syn.n_occ, kColumns);
+  ASSERT_GT(fp.device.persistent, 0U);
+  fb::DeviceResources res{0};
+  const auto run = [&] {
+    auto sigma = cis::DfSigma::create(res, setup->fit->b, setup->fit->naux, syn.c, syn.n_occ,
+                                      syn.delta.data(), cis::Spin::Singlet, kColumns);
+    ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+    EXPECT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value());
+  };
+  run();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), run),
+                        {.persistent = fp.device.persistent, .scratch = fp.device.scratch}, 3);
 }
 
 TEST(CisSigma, DfRefusals) {

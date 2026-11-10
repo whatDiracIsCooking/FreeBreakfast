@@ -3,8 +3,12 @@
 // occupied orbitals and inside the canonical virtual space, and a span that a
 // rotation of the occupied orbitals does not move. Then localization::livvo_localize on
 // water, two mirror-image sigma*_OH LIVVOs, and localization::valence_character over the
-// canonical virtuals. The SCF is the pipeline's, from a config naming only
-// [scf]. Runs the device chain, so needs a GPU.
+// canonical virtuals. Then the footprints of the localization routines
+// (#1159), each held to its pool peak on water: pm_localize,
+// intrinsic_atomic_orbitals, iao_localize, valence_virtual_orbitals,
+// livvo_localize, valence_character and orbital_weights. The SCF is the
+// pipeline's, from a config naming only [scf]. Runs the device chain, so
+// needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -22,12 +26,16 @@ import free_breakfast.analysis.population;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
+import free_breakfast.recipes.diagonalize; // syevd_lwork
+import free_breakfast.integrals.mmd;       // mixed_primitive_pair_classes
 
+#include "pool_footprint.h"
 #include "scratch_dir.h"
 
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 
 // Every check is an orthonormality or a projector built from orbitals the SCF
 // and the IAOs give to rounding; nothing here carries the SCF's tolerance.
@@ -422,6 +430,123 @@ TEST(Livvo, LocalizeAndValenceCharacterRefuseBadArguments) {
   EXPECT_TRUE(character(1, 2, nullptr, p, p));
   EXPECT_TRUE(character(1, 2, p, nullptr, p));
   EXPECT_TRUE(character(1, 2, p, p, nullptr));
+}
+
+// @p call held to @p fp on a fresh DeviceResources, the inputs on another:
+// run once to grow the workspace, then measured, with @p live allocations
+// live at its peak. With @p workspace_bound the workspace is held to at most
+// the footprint's, the gap logged: intrinsic_atomic_orbitals counts the
+// near-singular S1's fallback, which water's S1 does not take.
+template <typename Call>
+void expect_localization_footprint(const fb::MemoryFootprint &fp, const std::size_t live,
+                                   Call &&call, const bool workspace_bound = false) {
+  fb::DeviceResources res{0};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  call(res);
+  const std::size_t grown = res.device_workspace(0).num_elements();
+  if (workspace_bound) {
+    EXPECT_LE(grown, fp.device.workspace);
+    std::cout << std::format("[ footprint ] workspace {} of the bound {}\n", grown,
+                             fp.device.workspace);
+  } else {
+    EXPECT_EQ(grown, fp.device.workspace);
+  }
+  fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), [&] { call(res); }),
+                        {.persistent = fp.device.persistent, .scratch = fp.device.scratch}, live);
+}
+
+// Water in cc-pVDZ over MINAO, 5 occupied orbitals (odd: the sweep's schedule
+// is padded) and 2 VVOs; the routines' inputs are built once, on the SCF's
+// device, and each routine runs on its own DeviceResources.
+TEST(LocalizationFootprint, WaterRoutines) {
+  FBF_REQUIRE_GPU();
+  auto calc = run_scf(kWater);
+  ASSERT_TRUE(calc.has_value());
+  const auto &molecule = calc->get<fb::MoleculeOutput>();
+  const auto &basis_out = calc->get<fb::BasisSetOutput>();
+  const auto &overlap = calc->get<fb::OverlapOutput>();
+  const auto &scf = calc->get<fb::ScfOutput>();
+  ASSERT_TRUE(molecule.has_value() && basis_out.has_value() && overlap.has_value() &&
+              scf.has_value());
+  const fb::BasisSet &basis = basis_out->basis;
+  auto stamp = fb::resolve_basis("minao");
+  ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
+  auto minao = fb::place(stamp->primitive_normalized(), molecule->molecule);
+  ASSERT_TRUE(minao.has_value()) << minao.error().message;
+  const std::size_t n = basis.nao_sphe();
+  const std::size_t m = minao->nao_sphe();
+  constexpr std::int32_t kOcc = 5;
+  const auto n_vvo = static_cast<std::int32_t>(m) - kOcc;
+  ASSERT_EQ(n_vvo, 2);
+  const auto n_vir = static_cast<std::int32_t>(n) - kOcc;
+  const double *s = overlap->s.data();
+  const double *c = scf->c.data();
+
+  fb::DeviceResources inputs{0};
+  std::vector<std::size_t> lwork(n + 1);
+  for (std::size_t order = 0; order <= n; ++order) {
+    lwork[order] = fb::syevd_lwork<double>(inputs, static_cast<std::int32_t>(order)).value();
+  }
+  fb::Buffers::device<double> iao(n * m, inputs.device());
+  fb::Buffers::device<double> vvo(n * static_cast<std::size_t>(n_vvo), inputs.device());
+  fb::Buffers::device<double> out(n * n, inputs.device());
+  fb::Buffers::device<double> u(n * n, inputs.device());
+  ASSERT_TRUE(
+      fb::localization::intrinsic_atomic_orbitals(inputs, basis, *minao, kOcc, s, c, iao.data()));
+  ASSERT_TRUE(fb::localization::valence_virtual_orbitals(inputs, basis, *minao, kOcc, s, c,
+                                                         iao.data(), vvo.data()));
+  ASSERT_TRUE(inputs.sync());
+
+  // The sweep's scratch is the workspace alone.
+  expect_localization_footprint(
+      fb::localization::pm_localize_footprint(basis, kOcc), 0, [&](fb::DeviceResources &res) {
+        EXPECT_TRUE(fb::localization::pm_localize(res, basis, kOcc, s, c, out.data(), u.data()));
+      });
+  // At the peak, the first overlap, cc-pVDZ against MINAO: S12 and S2, and
+  // overlap_mixed_spherical's four buffers beside its records' fields (20 a
+  // class) and 11 tables.
+  const std::size_t n_classes =
+      fb::mixed_primitive_pair_classes(inputs, basis, *minao).value().size();
+  expect_localization_footprint(
+      fb::localization::intrinsic_atomic_orbitals_footprint(basis, *minao, kOcc, lwork),
+      2 + 4 + (20 * n_classes) + 11,
+      [&](fb::DeviceResources &res) {
+        EXPECT_TRUE(fb::localization::intrinsic_atomic_orbitals(res, basis, *minao, kOcc, s, c,
+                                                                out.data()));
+      },
+      true);
+  // S C, C_IAO, its localized copy, the rotation and the identity.
+  expect_localization_footprint(fb::localization::iao_localize_footprint(basis, *minao, kOcc), 5,
+                                [&](fb::DeviceResources &res) {
+                                  EXPECT_TRUE(fb::localization::iao_localize(res, basis, *minao,
+                                                                             kOcc, s, iao.data(), c,
+                                                                             out.data(), u.data()));
+                                });
+  // P and its eigenvalues, one buffer.
+  expect_localization_footprint(
+      fb::localization::valence_virtual_orbitals_footprint(basis, *minao, kOcc, lwork[m]), 1,
+      [&](fb::DeviceResources &res) {
+        EXPECT_TRUE(fb::localization::valence_virtual_orbitals(res, basis, *minao, kOcc, s, c,
+                                                               iao.data(), out.data()));
+      });
+  // V_IAO, its localized copy, the rotation and the identity.
+  expect_localization_footprint(
+      fb::localization::livvo_localize_footprint(basis, *minao, kOcc), 4,
+      [&](fb::DeviceResources &res) {
+        EXPECT_TRUE(fb::localization::livvo_localize(res, basis, *minao, kOcc, s, iao.data(),
+                                                     vvo.data(), out.data(), u.data()));
+      });
+  // The workspace alone.
+  expect_localization_footprint(fb::localization::valence_character_footprint(basis, n_vir, n_vvo),
+                                0, [&](fb::DeviceResources &res) {
+                                  EXPECT_TRUE(fb::localization::valence_character(
+                                      res, basis, n_vir, n_vvo, s, c + (n * kOcc), vvo.data()));
+                                });
+  // S C and A^T S C.
+  expect_localization_footprint(
+      fb::orbital_weights_footprint(basis, *minao, kOcc), 2, [&](fb::DeviceResources &res) {
+        EXPECT_TRUE(fb::orbital_weights(res, basis, *minao, kOcc, s, c, iao.data()));
+      });
 }
 
 } // namespace

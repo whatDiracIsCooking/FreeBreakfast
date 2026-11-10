@@ -12,6 +12,8 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
 import free_breakfast.recipes.matrix_ao;
@@ -52,5 +54,10 @@ inline constexpr int32_t kDipoleMaxL = 2;
 [[nodiscard]] Status dipole(DeviceResources &res, std::span<const PrimitivePairClass> classes,
                             CartesianMatrixAO &mu_x, CartesianMatrixAO &mu_y,
                             CartesianMatrixAO &mu_z);
+
+/// @brief What @ref dipole takes over matrices of @p basis: the 3 n^2 region
+/// the kernels write, n = basis.nao_cart(), the device workspace. The matrices
+/// are the caller's. Empty for a basis with no AOs.
+[[nodiscard]] MemoryFootprint dipole_footprint(const BasisSet &basis);
 
 } // namespace free_breakfast

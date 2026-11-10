@@ -17,6 +17,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.atom;
 import free_breakfast.basis;
 
@@ -45,6 +46,12 @@ export namespace free_breakfast {
 [[nodiscard]] Result<std::vector<double>>
 orbital_weights(DeviceResources &res, const BasisSet &basis, const BasisSet &minimal, int32_t n_orb,
                 const double *s, const double *c, const double *iao);
+
+/// @brief What @ref orbital_weights holds over @p basis, @p minimal and
+/// @p n_orb orbitals, all of it scratch: S C and A^T S C. Empty for
+/// @p n_orb <= 0. The populations after it allocate nothing on the device.
+[[nodiscard]] MemoryFootprint orbital_weights_footprint(const BasisSet &basis,
+                                                        const BasisSet &minimal, int32_t n_orb);
 
 /// @brief The populations of @p n_orb orbitals on each atom: their
 /// orbital_weights summed over each atom's functions of @p minimal.

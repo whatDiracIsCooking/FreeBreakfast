@@ -65,6 +65,42 @@ namespace free_breakfast {
                                             &kSqrt2<double>, ov.data(), x, &kZero<double>, d));
 }
 
+// What cis_transition_dipoles holds over @p basis, @p n_occ occupied orbitals
+// and @p n_states roots, all of it scratch: the three dipole pairs, the
+// dipole's region in the workspace, the half transform and the ov blocks.
+[[nodiscard]] MemoryFootprint cis_transition_dipoles_footprint(const BasisSet &basis,
+                                                               const int32_t n_occ) {
+  const MemoryFootprint pair = matrix_ao_pair_footprint(basis);
+  const auto nao = static_cast<size_t>(basis.nao_sphe());
+  const auto occ = static_cast<size_t>(n_occ);
+  const size_t n_ov = occ * (nao - occ);
+  const MemoryFootprint own{.device = {.persistent = sizeof(double) * ((nao * occ) + (3 * n_ov))}};
+  return drop(then(then(then(then(pair, pair), pair), dipole_footprint(basis)), own));
+}
+
+// The density-fitting chain over @p aux into MO blocks, as cis_ris_sigma's fit
+// runs it and frees it: the aux U and the metric's pair, the metric into
+// them, B, the three-centre tensor and the Cholesky fit, then b_mo over each
+// of @p blocks' (rows, cols).
+[[nodiscard]] MemoryFootprint
+cis_ris_fit_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t nao,
+                      const std::initializer_list<std::pair<OrbitalRange, OrbitalRange>> blocks) {
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const auto nn = static_cast<size_t>(nao) * static_cast<size_t>(nao);
+  const MemoryFootprint b{
+      .device = {.persistent = sizeof(double) * static_cast<size_t>(naux) * nn}};
+  MemoryFootprint fit = then(then(then(then(then(upload_spherical_transform_matrix_footprint(aux),
+                                                 matrix_ao_pair_footprint(aux)),
+                                            metric_footprint(aux)),
+                                       b),
+                                  three_center_footprint(basis, aux)),
+                             density_fit_footprint(nao, naux, 0));
+  for (const auto &[rows, cols] : blocks) {
+    fit = then(fit, b_mo_footprint(naux, nao, rows, cols));
+  }
+  return drop(fit);
+}
+
 // TDA-ris's operator: the RIS bases over the molecule's atoms at options'
 // θs, the J fit's RisShells::Sp and the K fit's RisShells::S (gpu4pyscf's
 // J_fit and K_fit defaults), each fitted as pipeline.eri fits its own and
@@ -128,6 +164,31 @@ cis_ris_sigma(DeviceResources &res, const BasisSet &basis,
   FBF_TRY(fit(aux_k, {{occupied, occupied, b_oo.data()}, {virtuals, virtuals, b_vv.data()}}));
   return cis::DfSigma::create(res, std::move(b_vo), naux_j, std::move(b_oo), std::move(b_vv),
                               naux_k, n_occ, n_virt, delta, options.spin, max_block);
+}
+
+// What cis_ris_sigma holds over @p basis and the RIS bases @p aux_j and
+// @p aux_k at @p n_occ occupied orbitals and @p max_block columns: the three
+// MO blocks, persistent (the sigma takes them over), the two fits one after
+// the other, scratch, and the sigma's apply regions, the device workspace.
+[[nodiscard]] MemoryFootprint cis_ris_sigma_footprint(const BasisSet &basis, const BasisSet &aux_j,
+                                                      const BasisSet &aux_k, const int32_t n_occ,
+                                                      const int32_t max_block) {
+  const auto nao = static_cast<int32_t>(basis.nao_sphe());
+  const int32_t n_virt = nao - n_occ;
+  const auto naux_j = static_cast<int32_t>(aux_j.nao_sphe());
+  const auto naux_k = static_cast<int32_t>(aux_k.nao_sphe());
+  const auto occ = static_cast<size_t>(n_occ);
+  const auto virt = static_cast<size_t>(n_virt);
+  const OrbitalRange occupied{.first = 0, .count = n_occ};
+  const OrbitalRange virtuals{.first = n_occ, .count = n_virt};
+  const MemoryFootprint blocks{
+      .device = {.persistent = sizeof(double) * ((static_cast<size_t>(naux_j) * occ * virt) +
+                                                 (static_cast<size_t>(naux_k) * occ * occ) +
+                                                 (static_cast<size_t>(naux_k) * virt * virt))}};
+  return then(
+      then(then(blocks, cis_ris_fit_footprint(basis, aux_j, nao, {{virtuals, occupied}})),
+           cis_ris_fit_footprint(basis, aux_k, nao, {{occupied, occupied}, {virtuals, virtuals}})),
+      cis::df_sigma_apply_footprint(naux_j, naux_k, n_occ, n_virt, max_block));
 }
 
 [[nodiscard]] Result<CisOutput>
@@ -302,6 +363,75 @@ CisStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
     });
   }
   return out;
+}
+
+MemoryFootprint CisStep::footprint(const FootprintDimensions &dims) const {
+  if (dims.basis == nullptr || dims.nocc < 1 || dims.nao <= dims.nocc) {
+    return {};
+  }
+  const BasisSet &basis = *dims.basis;
+  const auto n_occ = static_cast<int32_t>(dims.nocc);
+  const auto n_ov = static_cast<int32_t>(dims.nocc * (dims.nao - dims.nocc));
+  const int32_t n_states = std::max(options.n_states, 1);
+  const auto n = static_cast<size_t>(n_ov);
+  const auto roots = static_cast<size_t>(n_states);
+  const int32_t subspace = std::max(2 * n_states, std::min(max_subspace, n_ov));
+  const int32_t guess_count = std::min(n_ov, 2 * n_states);
+  // syevd's largest work over the orders up to @p order.
+  const auto largest_lwork = [&dims](const int32_t order) {
+    const size_t through = std::min(static_cast<size_t>(order) + 1, dims.syevd_lwork.size());
+    return std::ranges::fold_left(std::span(dims.syevd_lwork).first(through), size_t{0},
+                                  [](const size_t a, const size_t b) { return std::max(a, b); });
+  };
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+
+  // run's order: the orbital energies (nmo of them, nao at the most), Δε and
+  // the guess; the preconditioner, and RIS's beside it; the roots.
+  MemoryFootprint fp = then(held(dims.nao + n + (n * static_cast<size_t>(guess_count))),
+                            cis::preconditioner_footprint(n_states));
+  if (options.ris) {
+    if (const auto aux = cis::ris_basis(dims.atoms, options.ris->theta, options.ris->shells)) {
+      fp = then(fp, cis::ris_preconditioner_footprint(basis, *aux, n_occ, n_states, *options.ris,
+                                                      dims.getrf_lwork));
+    }
+  }
+  fp = then(fp, held(roots + (n * roots)));
+
+  // The sigma, then the clusters over it and the Davidson; the sigma is freed
+  // when its branch ends, and the clusters' buffers are held on.
+  MemoryFootprint sigma;
+  if (options.method == cis::Method::Ris) {
+    const auto aux_j = cis::ris_basis(dims.atoms, options.theta_j, cis::RisShells::Sp);
+    const auto aux_k = cis::ris_basis(dims.atoms, options.theta_k, cis::RisShells::S);
+    if (aux_j && aux_k) {
+      sigma = cis_ris_sigma_footprint(basis, *aux_j, *aux_k, n_occ, guess_count);
+    }
+  } else if (dims.aux != nullptr) {
+    sigma = cis::df_sigma_footprint(static_cast<int32_t>(dims.naux), static_cast<int32_t>(dims.nao),
+                                    n_occ, guess_count);
+  } else {
+    sigma = cis::sigma_footprint(basis, n_occ);
+  }
+  MemoryFootprint clusters;
+  if (!options.ris && options.cluster_gap > 0.0) {
+    clusters = cis::cluster_footprint(n_ov, guess_count, n_states, largest_lwork(guess_count));
+  }
+  const MemoryFootprint davidson = davidson_footprint<double>(
+      n_ov, n_states, subspace, options.davidson, largest_lwork(subspace));
+  fp = then(then(fp, drop(then(then(sigma, clusters), davidson))),
+            MemoryFootprint{.device = {.persistent = clusters.device.persistent}});
+
+  // A singlet's dipoles, and their buffer either way.
+  fp = then(fp, held(3 * roots));
+  const bool past_dipole = std::ranges::any_of(
+      basis.shells(), [](const Shell &shell) { return shell.angular_momentum() > kDipoleMaxL; });
+  if (options.spin == cis::Spin::Singlet && !past_dipole) {
+    fp = then(fp, cis_transition_dipoles_footprint(basis, n_occ));
+  }
+  // The product is the host's.
+  return drop(fp);
 }
 
 } // namespace free_breakfast

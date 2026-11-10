@@ -12,6 +12,7 @@ import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // dgmm, gemmStridedBatched, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.recipes.linear_operator;
@@ -66,13 +67,9 @@ Result<DfSigma> DfSigma::create(DeviceResources &res, const Buffers::device<doub
   const auto aux = static_cast<size_t>(naux);
   const auto occ = static_cast<size_t>(n_occ);
   const auto virt = static_cast<size_t>(n_virt);
-  const auto block = static_cast<size_t>(max_block);
-  const size_t blocks_bytes = sizeof(double) * aux * ((occ * virt) + (occ * occ) + (virt * virt));
-  const auto aligned = [](const size_t count) {
-    return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
-  };
-  const size_t scratch_bytes = std::max(aligned(aux * virt * static_cast<size_t>(nao)),
-                                        aligned(aux * block) + aligned(aux * occ * virt * block));
+  const MemoryFootprint fp = df_sigma_footprint(naux, static_cast<int32_t>(nao), n_occ, max_block);
+  const size_t blocks_bytes = fp.device.persistent;
+  const size_t scratch_bytes = fp.device.workspace;
   const size_t growth_bytes =
       scratch_bytes > res.device_workspace(0).num_elements() ? scratch_bytes : 0;
   if (const size_t budget = FBF_TRY(res.memory_budget()); blocks_bytes + growth_bytes > budget) {
@@ -140,10 +137,8 @@ Result<DfSigma> DfSigma::create(DeviceResources &res, Buffers::device<double> b_
   // apply's two regions, T (naux_j per column) and W (naux_k n_ov per
   // column), refused past the memory budget before the workspace grows.
   const auto block = static_cast<size_t>(max_block);
-  const auto aligned = [](const size_t count) {
-    return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
-  };
-  const size_t scratch_bytes = aligned(aux_j * block) + aligned(aux_k * occ * virt * block);
+  const size_t scratch_bytes =
+      df_sigma_apply_footprint(naux_j, naux_k, n_occ, n_virt, max_block).device.workspace;
   const size_t growth_bytes =
       scratch_bytes > res.device_workspace(0).num_elements() ? scratch_bytes : 0;
   if (const size_t budget = FBF_TRY(res.memory_budget()); growth_bytes > budget) {
@@ -225,6 +220,46 @@ Status DfSigma::apply(DeviceResources &res, const int32_t k, const double *const
         w_lead, w_rows, b_oo_.data(), w_rows, 0, &kOne<double>, ys, n_virt_, n_ov, cols)));
   }
   return {};
+}
+
+MemoryFootprint df_sigma_footprint(const int32_t naux, const int32_t nao, const int32_t n_occ,
+                                   const int32_t max_block) {
+  const int32_t n_virt = nao - n_occ;
+  if (naux < 1 || n_occ < 1 || n_virt < 1 || max_block < 1) {
+    return {};
+  }
+  const auto occ = static_cast<size_t>(n_occ);
+  const auto virt = static_cast<size_t>(n_virt);
+  const OrbitalRange occupied{.first = 0, .count = n_occ};
+  const OrbitalRange virtuals{.first = n_occ, .count = n_virt};
+  // B_vo, B_oo and B_vv, then the three transforms into them, then the
+  // second create's regions.
+  const MemoryFootprint blocks{
+      .device = {.persistent = sizeof(double) * static_cast<size_t>(naux) *
+                               ((occ * virt) + (occ * occ) + (virt * virt))}};
+  return then(then(then(then(blocks, b_mo_footprint(naux, nao, virtuals, occupied)),
+                        b_mo_footprint(naux, nao, occupied, occupied)),
+                   b_mo_footprint(naux, nao, virtuals, virtuals)),
+              df_sigma_apply_footprint(naux, naux, n_occ, n_virt, max_block));
+}
+
+MemoryFootprint df_sigma_apply_footprint(const int32_t naux_j, const int32_t naux_k,
+                                         const int32_t n_occ, const int32_t n_virt,
+                                         const int32_t max_block) {
+  if (naux_j < 1 || naux_k < 1 || n_occ < 1 || n_virt < 1 || max_block < 1) {
+    return {};
+  }
+  // device_regions' carve of T, naux_j per column, and W, naux_k n_ov per
+  // column, each rounded up to the alignment.
+  const auto block = static_cast<size_t>(max_block);
+  const auto aligned = [](const size_t count) {
+    return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
+  };
+  MemoryFootprint out;
+  out.device.workspace = aligned(static_cast<size_t>(naux_j) * block) +
+                         aligned(static_cast<size_t>(naux_k) * static_cast<size_t>(n_occ) *
+                                 static_cast<size_t>(n_virt) * block);
+  return out;
 }
 
 } // namespace free_breakfast::cis

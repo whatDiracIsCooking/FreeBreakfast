@@ -157,6 +157,27 @@ basis's, its fit's, or a RIS-JK GMRES budget it refuses), the RIS correction's
 MaxIterationsExceeded or Divergence, and GpuRuntime for a failed copy,
 dipole launch or gemm.
 
+```cpp
+MemoryFootprint footprint(const FootprintDimensions &dims) const;
+```
+
+The step's footprint follows `run`'s order at n_occ = `dims.nocc` of
+`dims.nao` orbitals (the orbital energies counted at nao, nmo's bound): the
+orbital energies, Δε, the guess and θ (`cis::preconditioner_footprint`), the
+RIS preconditioner with `ris` (`cis::ris_preconditioner_footprint` over its
+RIS basis, at `dims.getrf_lwork`), the roots; then the sigma the method and
+`dims.aux` select (`cis::sigma_footprint`, `cis::df_sigma_footprint`, or
+TDA-ris's two fits and `cis::df_sigma_apply_footprint`), the clusters at a
+positive `cluster_gap` (`cis::cluster_footprint`, every guess entry covered)
+and `davidson_footprint` at the clamped subspace, its syevd the largest of
+`dims.syevd_lwork` through it, freed with the sigma but for the clusters'
+buffers; then a singlet's transition dipoles (three `MatrixAOPair`s,
+`dipole_footprint`, the half transform and the ov blocks). The product is on
+the host, so nothing is persistent. `pipeline/shape` sizes syevd's table
+through the subspace, which passes nao at the default `max_subspace = 40`
+(water in cc-pVDZ: nao 24, n_ov 95), and queries getrf's work at the RIS
+basis's order.
+
 ## Tests
 
 `test/gtest/cis_step_gpu.cpp`, against PySCF's RHF + TDA in this tree's basis
@@ -195,6 +216,14 @@ refusals above. The `[cis]` parsing, and `[cis]` under a density-fitted
 `[eri]` planned when the config is read with nothing refused, are in
 `test/pipeline/config_host.cpp`; the step's contract is in
 `test/pipeline/steps_host.cpp`.
+
+`test/gtest/pipeline_step_footprint_gpu.cpp`'s `StepFootprint.Cis*`: the
+step's footprint at `plan_shape`'s dimensions over a parsed water config,
+against the pool peak of one run: integral-direct singlets, density-fitted
+with clusters, and TDA-ris with RIS-JK's preconditioner. The library
+footprints are held to their own peaks in `cis_sigma_gpu.cpp`,
+`cis_precondition_gpu.cpp`, `cis_ris_precondition_gpu.cpp`, `dipole_gpu.cpp`,
+`nonsymmetric_jk_gpu.cpp` and `test/recipes/lu_gpu.cpp`.
 
 `test/gtest/e2e_cis_gpu.cpp` is the production-scale run, slow and
 `RUN_SERIAL`: benzene in cc-pVDZ from a TOML, fitted over cc-pVDZ-JKFIT

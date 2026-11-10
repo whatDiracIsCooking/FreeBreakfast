@@ -15,6 +15,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.cis.sigma; // cis::Options and cis::Spin, in the step
 export import free_breakfast.pipeline.scf;
 
@@ -103,7 +104,7 @@ struct CisStep {
   ///         error of the first call that failed: `cis::diagonal`'s,
   ///         `cis::guess`'s, `cis::Sigma::create`'s or
   ///         `cis::DfSigma::create`'s (Unsupported for MO blocks past the
-  ///         device's memory budget, `DeviceResources::memory_budget()`),
+  ///         device's memory budget (`DeviceResources::memory_budget()`)),
   ///         TDA-ris's fits' (Unsupported for a B past it; else ris_basis's, metric's, three_center's,
   ///         density_fit's or b_mo's), `cis::Preconditioner::cluster`'s,
   ///         `cis::RisPreconditioner::create`'s or its correction's, or
@@ -113,6 +114,20 @@ struct CisStep {
   [[nodiscard]] Result<CisOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
                                            PrimitivePairClassesOutput, EriOutput, ScfOutput> in,
                                       DeviceResources &res) const;
+
+  /// @brief What @ref run holds at @p dims, n_occ = nocc of nao orbitals:
+  /// Δε and the orbital energies, the guess and the roots' buffers; the
+  /// preconditioner (`cis::preconditioner_footprint`, and
+  /// `cis::cluster_footprint` at a positive cluster_gap, or
+  /// `cis::ris_preconditioner_footprint` with ris, at dims.getrf_lwork); the
+  /// sigma (`cis::sigma_footprint`, `cis::df_sigma_footprint` over dims.aux,
+  /// or TDA-ris's two fits and `cis::df_sigma_apply_footprint`), freed before
+  /// the dipoles; `davidson_footprint` at its subspace, its syevd at the
+  /// largest of dims.syevd_lwork through it; and a singlet's transition
+  /// dipoles (three `MatrixAOPair`s, `dipole_footprint`, the half transform
+  /// and the ov blocks). The product is on the host: nothing is persistent.
+  /// Empty without a basis or a virtual orbital.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast

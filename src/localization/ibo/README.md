@@ -22,6 +22,8 @@ it takes and returns.
 | `intrinsic_atomic_orbitals(res, basis, minimal, n_occ, s, c, iao)` | The orthonormal IAOs, n_ao x n_minimal; `Status` |
 | `localization::ibo_localize(res, basis, minimal, n_occ, s, c, c_local, u, iao, options)` | The IBOs, and the IAOs if `iao` is not null; returns `Result<localization::Info>`, exponent 4 by default |
 | `localization::iao_localize(res, basis, minimal, n_orb, s, iao, c, c_local, u, options)` | The same sweep over IAOs the caller built, for orbitals in their span: what `ibo_localize` runs after building them |
+| `localization::intrinsic_atomic_orbitals_footprint(basis, minimal, n_occ, syevd_lwork)` | `MemoryFootprint`: the IAO construction's pool buffers, scratch, and the solvers' work, the device workspace; `syevd_lwork` is syevd's work by order through nao. The bound for any S1: it counts the near-singular S1's fallback (S1^-1/2 by `orthogonalize`) |
+| `localization::iao_localize_footprint(basis, minimal, n_orb)` | `MemoryFootprint`: S C, C_IAO, its localized copy, the rotation and the identity, scratch, beside `pm_localize_footprint` over the minimal basis |
 
 Double precision only. Every matrix is a column-major device `double *`,
 packed, over the spherical AOs: `s` (n x n) and `c` (n x n_occ) as for
@@ -166,6 +168,6 @@ NH4+ in cc-pVDZ:
 
 | File | Role |
 |---|---|
-| `ibo.cppm` | Module interface: `intrinsic_atomic_orbitals`, `localization::ibo_localize` and `localization::iao_localize` |
+| `ibo.cppm` | Module interface: `intrinsic_atomic_orbitals`, `localization::ibo_localize` and `localization::iao_localize`, and the footprints of the first and the last |
 | `ibo.cpp` | The overlaps, the IAO construction and the IBO driver |
 | `CMakeLists.txt` | The module |

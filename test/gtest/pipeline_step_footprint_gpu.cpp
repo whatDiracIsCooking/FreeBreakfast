@@ -1287,4 +1287,129 @@ TEST_F(CasscfReaderFootprint, UnequalWeights) {
   expect_reader_step_footprint<fb::NacStep>(s, true, kNacStepLive);
 }
 
+// The CIS and Localization steps (#1159), each run on the Scf of its parsed
+// water config, at plan_shape's dimensions: CIS's Davidson subspace (40
+// columns, past nao) is in syevd's table, and MINAO is placed for IBO and the
+// LIVVOs. CIS's workspace is held to at most the footprint's: its Davidson's
+// syevd is counted at the subspace's largest order, which a solve that
+// converges first never reaches. Each step's product is on the host (CIS) or
+// its C, U and LIVVOs (Localization).
+
+// What a CIS step reads.
+fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+         fb::PrimitivePairClassesOutput, fb::EriOutput, fb::ScfOutput>
+cis_view(const Plan &plan) {
+  return fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+                  fb::PrimitivePairClassesOutput, fb::EriOutput, fb::ScfOutput>{
+      *plan.molecule, *plan.basis, *plan.transform, *plan.pairs, *plan.eri, *plan.scf};
+}
+
+// What a Localization step reads.
+fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::OverlapOutput, fb::ScfOutput>
+localization_view(const Plan &plan) {
+  return fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::OverlapOutput, fb::ScfOutput>{
+      *plan.molecule, *plan.basis, *plan.overlap, *plan.scf};
+}
+
+// Integral-direct singlets: at the Davidson's peak, the orbital energies, Δε,
+// the guess, θ, the roots' values and vectors; the sigma's two pairs (three
+// each), its other matrix and half transform; and the Davidson's 11. Under
+// slow_test.h: the integral-direct sigma's columns run one at a time, past
+// 1.5 s; the density-fitted and TDA-ris cases stay in the fast set.
+TEST(StepFootprint, CisDirect) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  Plan plan(System{.tables = "[cis]\nn_states = 3\n"});
+  plan.run_through_scf();
+  const auto cis = planned<fb::CisStep>(*plan.calc);
+  const fb::FootprintDimensions &dims = plan.dims();
+  ASSERT_GT(dims.syevd_lwork.size(), static_cast<std::size_t>(cis.max_subspace));
+  expect_step_footprint(
+      cis.footprint(dims), 6 + 8 + 11,
+      [&](fb::DeviceResources &res) { expect_ran(cis.run(cis_view(plan), res)); }, {}, true);
+}
+
+// Density-fitted, with clusters at a gap wide enough that the guess's six
+// entries are one (cluster_footprint's most): at the Davidson's peak the six,
+// the three MO blocks, the clusters' indices, eigenvalues and eigenvectors,
+// and the Davidson's 11.
+TEST(StepFootprint, CisDensityFittedClustered) {
+  FBF_REQUIRE_GPU();
+  Plan plan(System{.mode = fb::EriMode::DensityFitting,
+                   .tables = "[cis]\nn_states = 3\ncluster_gap = 100.0\n"});
+  plan.run_through_scf();
+  const auto cis = planned<fb::CisStep>(*plan.calc);
+  expect_step_footprint(
+      cis.footprint(plan.dims()), 6 + 3 + 3 + 11,
+      [&](fb::DeviceResources &res) { expect_ran(cis.run(cis_view(plan), res)); }, {}, true);
+}
+
+// TDA-ris with RIS-JK's preconditioner, over the integral-direct Eri: getrf's
+// work at the RIS basis's order is plan_shape's. The peak is the sigma's J
+// fit's three-centre tensor: the four before the preconditioner, its 11
+// buffers, the roots' two, the three MO blocks, the fit's metric pair (U is
+// the identity over s and p) and B, and three_center's four.
+TEST(StepFootprint, CisRis) {
+  FBF_REQUIRE_GPU();
+  Plan plan(System{.tables = "[cis]\nn_states = 3\nmethod = \"ris\"\nris = true\n"
+                             "ris_exchange = true\n"});
+  plan.run_through_scf();
+  const auto cis = planned<fb::CisStep>(*plan.calc);
+  ASSERT_GT(plan.dims().getrf_lwork, 0U);
+  expect_step_footprint(
+      cis.footprint(plan.dims()), 4 + 11 + 2 + 3 + 2 + 1 + 4,
+      [&](fb::DeviceResources &res) { expect_ran(cis.run(cis_view(plan), res)); }, {}, true);
+}
+
+// Pipek-Mezey, closed shell: at the sort, the product's C and U, and the
+// keys, the permutation and the permuted C and U.
+TEST(StepFootprint, LocalizationPipekMezey) {
+  FBF_REQUIRE_GPU();
+  Plan plan(System{.tables = "[localization]\n"});
+  plan.run_through_scf();
+  const auto localization = planned<fb::LocalizationStep>(*plan.calc);
+  EXPECT_EQ(plan.dims().minao, nullptr);
+  expect_step_footprint(localization.footprint(plan.dims()), 2 + 4, [&](fb::DeviceResources &res) {
+    expect_ran(localization.run(localization_view(plan), res));
+  });
+}
+
+// The cation's doublet: the doubly and singly occupied spaces each swept on
+// their own, an open shell's U block held beside them.
+TEST(StepFootprint, LocalizationOpenShell) {
+  FBF_REQUIRE_GPU();
+  Plan plan(System{.cation = true, .tables = "[localization]\n"});
+  plan.run_through_scf();
+  const auto localization = planned<fb::LocalizationStep>(*plan.calc);
+  ASSERT_NE(plan.dims().n_alpha, plan.dims().n_beta);
+  expect_step_footprint(localization.footprint(plan.dims()), 2 + 1 + 4,
+                        [&](fb::DeviceResources &res) {
+                          expect_ran(localization.run(localization_view(plan), res));
+                        });
+}
+
+// IBO with the LIVVOs and both Molden files: MINAO is plan_shape's, and
+// syevd's table reaches its order. The peak is the IAOs' first overlap,
+// cc-pVDZ against MINAO: the IAOs and the product's three, S12 and S2, and
+// overlap_mixed_spherical's four buffers beside its records' fields (20 a
+// class) and 11 tables. The workspace is held
+// to at most the footprint's, which counts the near-singular S1's fallback
+// (orthogonalize at nao), which water's S1 does not take.
+TEST(StepFootprint, LocalizationIboLivvo) {
+  FBF_REQUIRE_GPU();
+  Plan plan(System{.tables = "[localization]\nmode = \"ibo\"\nlivvo = true\n"});
+  plan.run_through_scf();
+  const auto localization = planned<fb::LocalizationStep>(*plan.calc);
+  ASSERT_NE(plan.dims().minao, nullptr);
+  ASSERT_GT(plan.dims().syevd_lwork.size(), plan.dims().minao->nao_sphe());
+  const std::size_t n_classes =
+      fb::mixed_primitive_pair_classes(plan.inputs, *plan.dims().basis, *plan.dims().minao)
+          .value()
+          .size();
+  expect_step_footprint(
+      localization.footprint(plan.dims()), 1 + 3 + 2 + 4 + (20 * n_classes) + 11,
+      [&](fb::DeviceResources &res) { expect_ran(localization.run(localization_view(plan), res)); },
+      {}, true);
+}
+
 } // namespace

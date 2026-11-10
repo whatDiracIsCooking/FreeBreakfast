@@ -14,6 +14,7 @@ import free_breakfast.core.primitives; // math::idivup
 import free_breakfast.io.basis;
 import free_breakfast.recipes.diagonalize; // syevd_lwork
 import free_breakfast.recipes.expm;        // skew_eig_lwork
+import free_breakfast.recipes.lu;          // getrf_lwork
 import free_breakfast.response.zvector;    // rotating_pairs
 import free_breakfast.pipeline.step;       // View
 
@@ -83,6 +84,17 @@ template <class S>
     order = std::max(order, static_cast<size_t>(mcscf::Options{}.ah_max_subspace) + 1);
   }
   return order;
+}
+
+// The largest order a planned @p cis diagonalizes at over @p nocc of @p nao
+// orbitals: its Davidson's Rayleigh-Ritz problem, at every subspace size up to
+// the step's clamped subspace, max(2 n_states, min(max_subspace, n_ov)). The
+// clustered preconditioner's blocks are of at most the guess's columns,
+// min(n_ov, 2 n_states), which that never falls below.
+[[nodiscard]] size_t cis_eigensolve_order(const CisStep &cis, const size_t nocc, const size_t nao) {
+  const size_t n_ov = nocc * (nao > nocc ? nao - nocc : 0);
+  const auto n_states = static_cast<size_t>(std::max(cis.options.n_states, 1));
+  return std::max(2 * n_states, std::min(static_cast<size_t>(std::max(cis.max_subspace, 0)), n_ov));
 }
 
 // The active space @p selection may take, at its largest, over @p nao
@@ -197,16 +209,26 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
   if (const std::optional<FciStep> &fci = calc.step<FciStep>()) {
     max_order = std::max(max_order, ci_eigensolve_order(fci->nroots, false));
   }
+  const std::optional<CisStep> &cis_step = calc.step<CisStep>();
+  if (cis_step) {
+    max_order = std::max(max_order, cis_eigensolve_order(*cis_step, dims.nocc, dims.nao));
+  }
 
-  // MINAO, placed as AVAS places it, when a selection is AVAS's.
-  if (std::ranges::any_of(selections, [](const ActiveSpaceSelection *selection) {
+  // MINAO, placed as AVAS and the Localization step place it, when a
+  // selection is AVAS's or a localization builds IAOs.
+  const std::optional<LocalizationStep> &localization = calc.step<LocalizationStep>();
+  const bool localization_iaos =
+      localization && (localization->mode == LocalizationMode::Ibo || localization->livvo);
+  if (localization_iaos ||
+      std::ranges::any_of(selections, [](const ActiveSpaceSelection *selection) {
         return !selection->avas.empty();
       })) {
     const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
     shape.minao =
         std::make_unique<const BasisSet>(FBF_TRY(place(stamp.primitive_normalized(), molecule)));
     dims.minao = shape.minao.get();
-    // AVAS diagonalizes the labelled MINAO AOs' overlap.
+    // AVAS diagonalizes the labelled MINAO AOs' overlap; the IAOs
+    // orthonormalize at MINAO's order, and the LIVVOs diagonalize there.
     max_order = std::max(max_order, static_cast<size_t>(shape.minao->nao_sphe()));
   }
 
@@ -218,6 +240,13 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
   // A CASSCF's orbital step diagonalizes kappa through skew_eig at nmo = nao.
   if (casscf_planned) {
     dims.skew_eig_lwork = FBF_TRY(skew_eig_lwork<double>(res, static_cast<int32_t>(dims.nao)));
+  }
+  // A CIS step's RIS preconditioner solves its capacitance matrix by LU, at
+  // the RIS basis's order.
+  if (cis_step && cis_step->options.ris) {
+    const BasisSet ris = FBF_TRY(
+        cis::ris_basis(dims.atoms, cis_step->options.ris->theta, cis_step->options.ris->shells));
+    dims.getrf_lwork = FBF_TRY(getrf_lwork(res, static_cast<int32_t>(ris.nao_sphe())));
   }
 
   std::vector<std::pair<size_t, size_t>> spaces;

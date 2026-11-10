@@ -18,7 +18,8 @@ free_breakfast_add_gpu_device_library(
 
 # The module. localization::pm_localize is declared in the interface and
 # defined in the implementation unit, which alone GMF-includes the bridge. So
-# the device library and what only the driver uses are PRIVATE.
+# the device library and what only the driver uses are PRIVATE;
+# core::footprint, in pm_localize_footprint's signature, is PUBLIC.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.localization.pipek_mezey
@@ -31,9 +32,11 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::basis
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas

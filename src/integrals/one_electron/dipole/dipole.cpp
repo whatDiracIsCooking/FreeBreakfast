@@ -14,6 +14,9 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
 import free_breakfast.recipes.matrix_ao;
@@ -70,6 +73,14 @@ Status dipole(DeviceResources &res, const std::span<const PrimitivePairClass> cl
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
   }
   return {};
+}
+
+MemoryFootprint dipole_footprint(const BasisSet &basis) {
+  const auto n = static_cast<size_t>(basis.nao_cart());
+  MemoryFootprint out;
+  out.device.workspace =
+      math::align_up(sizeof(double) * 3 * n * n, DeviceResources::kWorkspaceAlignment);
+  return out;
 }
 
 } // namespace free_breakfast

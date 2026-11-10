@@ -2,7 +2,8 @@
 # exchange and BLAS, so no device library. DeviceResources, the two kinds of
 # pair class and CartesianMatrixAO are in its signature, so core::resources,
 # coulomb, exchange (which carry the classes) and recipes::matrix_ao are
-# PUBLIC.
+# PUBLIC, as are basis and core::footprint, in the footprint's;
+# core::primitives (its align_up) is PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.nonsymmetric_jk
@@ -17,7 +18,10 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::matrix_ao
   free_breakfast::integrals::eri::integral_direct::coulomb
   free_breakfast::integrals::eri::integral_direct::exchange
+  free_breakfast::basis
+  free_breakfast::core::footprint
   LINK_PRIVATE
+  free_breakfast::core::primitives
   free_breakfast::core::types
   free_breakfast::core::constants
   free_breakfast::core::wwr

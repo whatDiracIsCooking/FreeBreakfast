@@ -14,6 +14,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::basis
   free_breakfast::localization::pipek_mezey
   LINK_PRIVATE

@@ -6,7 +6,8 @@
 // and screened (K at its default, J at 3e-12: below), all to FelizJueves's
 // 1e-12 bar; K[D^T] = K[D]^T and
 // G[D^T] = G[D]^T on the device's own results; that a second build, of each of
-// nonsymmetric_jk, coulomb and exchange, allocates nothing; and the refusals.
+// nonsymmetric_jk, coulomb and exchange, allocates nothing; that the workspace
+// it grows is nonsymmetric_jk_footprint's; and the refusals.
 
 #include <gtest/gtest.h>
 
@@ -20,9 +21,12 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "pool_footprint.h"
+
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 
 // exchange_gpu.cpp's and coulomb_gpu.cpp's bar, FelizJueves's against
 // libcint: 1e-12 of the result's largest element.
@@ -275,6 +279,32 @@ TEST(NonsymmetricJk, SecondBuildsAllocateNothing) {
   EXPECT_EQ(k_peak, 0U);
   EXPECT_EQ(res.device_workspace(0).data(), workspace);
   EXPECT_EQ(res.device_workspace(0).num_elements(), workspace_bytes);
+}
+
+// nonsymmetric_jk_footprint: the one nao_cart^2 block, the device workspace,
+// which a first call on a fresh DeviceResources grows to exactly the
+// footprint's; the second, measured, takes nothing from the pool. The classes
+// are built on their own DeviceResources, whose sorts grow that one's.
+TEST(NonsymmetricJk, Footprint) {
+  FBF_REQUIRE_GPU();
+  const Golden golden = read_golden("h2o_ccpvdz");
+  ASSERT_FALSE(golden.density.empty());
+  fb::DeviceResources inputs{0};
+  Classes classes = classes_of(inputs, golden.basis, 1e-13);
+  ASSERT_TRUE(inputs.sync());
+  const fb::MemoryFootprint fp = fb::nonsymmetric_jk_footprint(golden.basis);
+  EXPECT_EQ(fp.device.persistent + fp.device.scratch, 0U);
+  fb::DeviceResources res{0};
+  fb::CartesianMatrixAO density(res, golden.basis);
+  upload_rows(res, golden.density, density);
+  fb::CartesianMatrixAO g(res, golden.basis);
+  fb::CartesianMatrixAO k(res, golden.basis);
+  const auto build = [&] {
+    EXPECT_TRUE(fb::nonsymmetric_jk(res, classes.j, classes.k, density, g, k).has_value());
+  };
+  build();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), build), {}, 0);
 }
 
 // Every refusal comes before anything is queued, so G and K keep what they

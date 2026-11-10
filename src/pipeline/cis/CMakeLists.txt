@@ -2,7 +2,8 @@
 # step holds cis::Options (cis::Spin and DavidsonOptions in it), and run's View
 # names the ScfOutput and the products it re-exports (the EriOutput among
 # them); primitive_pair_classes is named too, as run's View takes its classes.
-# core::resources and pipeline::step are in run's signature. What run calls --
+# core::resources and pipeline::step are in run's signature, and
+# pipeline::footprint in the footprint's. What run calls --
 # the orbital-energy diagonal, the guess and the preconditioners,
 # davidson_solve, the dipole matrices and the gemms over them, core::wwr for
 # the copies and core::log for the f-shell warning, and TDA-ris's two RIS fits
@@ -22,6 +23,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::cis::sigma
   free_breakfast::pipeline::step
+  free_breakfast::pipeline::footprint
   free_breakfast::pipeline::scf
   free_breakfast::pipeline::primitive_pair_classes
   LINK_PRIVATE

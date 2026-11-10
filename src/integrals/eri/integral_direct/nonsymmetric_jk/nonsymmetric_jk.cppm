@@ -8,6 +8,8 @@ export module free_breakfast.integrals.eri.integral_direct.nonsymmetric_jk;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
@@ -56,5 +58,11 @@ export namespace free_breakfast {
                                      const CartesianMatrixAO &density, CartesianMatrixAO &g,
                                      CartesianMatrixAO &k, double tau_j = 1e-10,
                                      double tau_k = 1e-13);
+
+/// @brief What @ref nonsymmetric_jk takes over a density of @p basis: its one
+/// nao_cart^2 block, the device workspace. @c coulomb and @c exchange allocate
+/// nothing (their classes' scratch is the classes'), and the matrices are the
+/// caller's. Empty for a basis with no AOs.
+[[nodiscard]] MemoryFootprint nonsymmetric_jk_footprint(const BasisSet &basis);
 
 } // namespace free_breakfast

@@ -41,9 +41,17 @@ whole registry.
   `res.solver()`, one host call an order. The largest is nao, or a planned
   CI's subspace past it: ci::solve's Davidson diagonalizes at up to 16 nroots
   columns (CASCI, FCI and CASSCF, the chain copies included) and a CASSCF's
-  augmented Hessian at ah_max_subspace + 1. The RHF chain reads
-  `syevd_lwork[nao]`; the CI steps' small eigensolves (AVAS's, the subspace's)
-  read their own orders.
+  augmented Hessian at ah_max_subspace + 1. A CIS step's Davidson
+  diagonalizes at up to its clamped subspace, max(2 n_states,
+  min(max_subspace, n_ov)), n_ov = nocc (nao - nocc), which passes nao with
+  the default 40 columns on water in cc-pVDZ (nao 24, n_ov 95). The RHF chain
+  reads `syevd_lwork[nao]`; the CI steps' small eigensolves (AVAS's, the
+  subspace's) read their own orders.
+- **getrf's lwork** at the RIS basis's order, `recipes/lu`'s own
+  `getrf_lwork` query, when a CIS step's `ris` preconditioner is planned: its
+  capacitance matrix is solved by `lu_solve`. The RIS basis is `cis::ris_basis`
+  over the atoms at the step's `ris` θ and shells, whose error `plan_shape`
+  returns. 0 otherwise.
 - **skew_eig's lwork** at nao, `recipes/expm`'s own `skew_eig_lwork` query,
   when a CASSCF is planned (the step's, or a chain copy's): its orbital step
   diagonalizes κ through `skew_eig` at nmo = nao. 0 otherwise.
@@ -52,9 +60,12 @@ whole registry.
   equal). These are what the CasscfGradient and Nac steps' footprints are
   sized over. They are 0 and false without a CASSCF step.
 - **MINAO**, placed and primitive-normalized as AVAS places it, when any
-  planned active space is AVAS's, and the molecule's **atoms**, which AVAS's
-  labels are matched against: what the selection's footprint sizes MINAO's
-  overlaps and the labelled count from.
+  planned active space is AVAS's, or a `[localization]` builds IAOs over it
+  (`mode = "ibo"` or `livvo = true`), and the molecule's **atoms**, which
+  AVAS's labels are matched against: what the selection's footprint sizes
+  MINAO's overlaps and the labelled count from, and the Localization step's
+  its IAOs and LIVVOs. syevd's table then reaches MINAO's AO count, where the
+  IAOs orthonormalize and the LIVVOs diagonalize.
 - **The active space** at its largest. An explicit `ncas` / `nelecas` is used
   as written. Under AVAS it is `avas_max_ncas` when set, and otherwise twice
   the MINAO AOs the labels name (`pipeline/active_space`'s own

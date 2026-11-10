@@ -16,6 +16,7 @@ and two wwr `gemm`s.
 | `localization::PmOptions` | Sweep cap, tolerances, exponent |
 | `localization::PmExponent` | `Two` (Pipek-Mezey) or `Four` (Knizia's IBO exponent) |
 | `localization::Info` | Sweeps taken, the functional before and after |
+| `localization::pm_localize_footprint(basis, n_occ)` | `MemoryFootprint`: the sweep's scratch, all of it carved from the device workspace |
 
 Double precision only. Every matrix is a column-major device `double *` with a
 packed leading dimension, over the spherical AOs of `basis`: `s` is n_ao x
@@ -170,7 +171,7 @@ Every test needs a GPU.
 
 | File | Role |
 |---|---|
-| `pipek_mezey.cppm` | Module interface: the options, the info and `localization::pm_localize` |
+| `pipek_mezey.cppm` | Module interface: the options, the info, `localization::pm_localize` and its footprint |
 | `pipek_mezey.cpp` | The sweep driver and the round-robin schedule |
 | `pipek_mezey_bridge.h` | The launchers, declared for the module and the `.cu` |
 | `pipek_mezey_kernels.cu` | The arithmetic, the kernels and their launchers |

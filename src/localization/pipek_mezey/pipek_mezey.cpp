@@ -15,6 +15,8 @@ import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm
 
@@ -68,6 +70,23 @@ void pm_fill_round_robin(const int32_t m, int32_t *const pairs) {
   }
 }
 
+// The schedule's entries: an odd occupied count is padded to m with one
+// dummy index, which becomes the pivot, and the m - 1 rounds hold m each.
+[[nodiscard]] size_t pm_schedule_size(const int32_t n_occ) {
+  const auto m = static_cast<size_t>((n_occ % 2 == 0) ? n_occ : n_occ + 1);
+  return (m - 1) * m;
+}
+
+// The scratch's region counts, in PmScratch's order: eight regions of doubles,
+// then three of int32_t. The call and its footprint both size from these.
+[[nodiscard]] std::array<size_t, 11> pm_scratch_counts(const size_t n_ao, const size_t n_occ,
+                                                       const size_t n_atoms,
+                                                       const size_t schedule_size) {
+  const size_t pops = n_atoms * n_occ * n_occ;
+  return {n_ao * n_occ, pops, pops,  n_occ * n_occ, n_occ * n_occ, n_occ,
+          n_occ,        1,    n_occ, schedule_size, n_atoms + 1};
+}
+
 // The call's device scratch, one region per buffer, carved from one
 // workspace request. Nothing here calls another workspace user while these
 // are live.
@@ -86,12 +105,14 @@ struct PmScratch {
 
   PmScratch(DeviceResources &res, const size_t n_ao, const size_t n_occ, const size_t n_atoms,
             const size_t schedule_size) {
-    const size_t pops = n_atoms * n_occ * n_occ;
     std::tie(w, pops_a, pops_b, u_a, u_b, cos, sin, functional, partner, schedule,
-             atom_ao_offsets) = res.device_regions<double, double, double, double, double, double,
-                                                   double, double, int32_t, int32_t, int32_t>(
-        n_ao * n_occ, pops, pops, n_occ * n_occ, n_occ * n_occ, n_occ, n_occ, size_t{1}, n_occ,
-        schedule_size, n_atoms + 1);
+             atom_ao_offsets) =
+        std::apply(
+            [&res](const auto... counts) {
+              return res.device_regions<double, double, double, double, double, double, double,
+                                        double, int32_t, int32_t, int32_t>(counts...);
+            },
+            pm_scratch_counts(n_ao, n_occ, n_atoms, schedule_size));
   }
 };
 
@@ -136,7 +157,7 @@ Result<Info> pm_localize(DeviceResources &res, const BasisSet &basis, const int3
   // which becomes the pivot, so each round one real orbital sits out.
   const int32_t m = (n_occ % 2 == 0) ? n_occ : n_occ + 1;
   const int32_t rounds = m - 1;
-  std::vector<int32_t> schedule(static_cast<size_t>(rounds) * static_cast<size_t>(m));
+  std::vector<int32_t> schedule(pm_schedule_size(n_occ));
   pm_fill_round_robin(m, schedule.data());
 
   PmScratch scratch(res, static_cast<size_t>(n_ao), static_cast<size_t>(n_occ), n_atoms,
@@ -216,6 +237,22 @@ Result<Info> pm_localize(DeviceResources &res, const BasisSet &basis, const int3
                                        change, options.max_sweeps);
   }
   return info;
+}
+
+MemoryFootprint pm_localize_footprint(const BasisSet &basis, const int32_t n_occ) {
+  if (n_occ <= 0) {
+    return {};
+  }
+  const std::array<size_t, 11> counts = pm_scratch_counts(
+      basis.nao_sphe(), static_cast<size_t>(n_occ), basis.natoms(), pm_schedule_size(n_occ));
+  // device_regions' carve: each region rounded up to the alignment.
+  MemoryFootprint out;
+  for (size_t r = 0; r < counts.size(); ++r) {
+    const size_t element = r < 8 ? sizeof(double) : sizeof(int32_t);
+    out.device.workspace +=
+        math::align_up(element * counts[r], DeviceResources::kWorkspaceAlignment);
+  }
+  return out;
 }
 
 } // namespace free_breakfast::localization
