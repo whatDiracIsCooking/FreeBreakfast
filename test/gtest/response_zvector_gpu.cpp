@@ -864,4 +864,162 @@ TEST(ResponseZvectorTuning, ResponseCapAndCoupledFloorTakeEffect) {
                            at_hundred->iterations[0], z_difference);
 }
 
+// --- A residual at round-off (#1215) -----------------------------------------
+
+// Water's DF-SA2-CASSCF(2,2) in STO-3G over cc-pVDZ-JKFIT, at pre-flight's
+// geometry (Angstrom): a followed root 1 [optimize] of it failed about one run
+// in two in this Z-vector. Its roots carry ~1e-12 of the other symmetry, so
+// along some pairs b_r is all but spanned by the roots, ~1e-11 of it off
+// them: above the round-off test, and the CI response's gradients, held to
+// 1e-8 of that, chased the rounding into the roots' span, where the projected
+// H_0 - E_r is null. Steps of 1e4 and up left H~ asymmetric by 10 to 1e14 and
+// indefinite (relaxed_hessian's README, "A residual at round-off").
+constexpr std::string_view kSaWaterToml = R"([molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "sto-3g"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[casscf]
+ncas = 2
+nelecas = 2
+nroots = 2
+)";
+// H~'s elements are good to the CI response's tolerance (1e-8 of a right-hand
+// side of order 1, over gaps of order 1), and H~ is ~80 at its largest: its
+// asymmetry is held 100 times above that, and a step along the roots' span
+// lands it at 10 and up. Measured with the fix, 1.9e-14 to 3.5e-14.
+constexpr double kSymmetryTolerance = 1e-6;
+// The roots' energies against their Rayleigh quotients over the sigma H~ is
+// built on: the shift E_r the CI response takes.
+constexpr double kRayleighTolerance = 1e-9;
+
+// H~ over the unit columns, each product checked, column-major.
+std::vector<double> relaxed_matrix(fb::DeviceResources &res, fb::response::RelaxedHessian &relaxed,
+                                   bool block) {
+  const auto pairs = static_cast<std::size_t>(relaxed.size());
+  std::vector<double> identity(pairs * pairs, 0.0);
+  for (std::size_t i = 0; i < pairs; ++i) {
+    identity[i + (pairs * i)] = 1.0;
+  }
+  fb::Buffers::device<double> x(pairs * pairs, res.device());
+  fb::Buffers::device<double> y(pairs * pairs, res.device());
+  upload(res, identity, x.data());
+  if (block) {
+    EXPECT_TRUE(
+        relaxed.apply(res, static_cast<std::int32_t>(pairs), x.data(), y.data()).has_value());
+  } else {
+    for (std::size_t i = 0; i < pairs; ++i) {
+      EXPECT_TRUE(relaxed.apply(res, x.data() + (i * pairs), y.data() + (i * pairs)).has_value());
+    }
+  }
+  return download(res, y.data(), pairs * pairs);
+}
+
+// H~ at the state average, through the one-column product (its loop and
+// pcg_ci_response's) and the block one: symmetric to the CI response's
+// tolerance and positive definite, the SA-CASSCF a minimum.
+TEST(ResponseRelaxedHessianRoundoff, WaterSa2IsSymmetricPositiveDefinite) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  const fb::test::ScratchDir dir("response_relaxed_roundoff");
+  ASSERT_TRUE(fb::write_file(dir / "water.xyz", "3\nwater\nO 0.0 0.0 0.1173\n"
+                                                "H 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n")
+                  .has_value());
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", kSaWaterToml).has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  ASSERT_TRUE(calc->run(node).has_value());
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const auto &molecule = calc->get<fb::MoleculeOutput>();
+  const auto &h = calc->get<fb::CoreHamiltonianOutput>();
+  const auto &eri = calc->get<fb::EriOutput>();
+  const auto &cas = calc->get<fb::CasscfOutput>();
+  ASSERT_TRUE(molecule.has_value() && h.has_value() && eri.has_value() && cas.has_value());
+  const auto &df = std::get<fb::DensityFitted>(eri->eri);
+  const fb::BasisSet &basis = calc->get<fb::BasisSetOutput>()->basis;
+  const std::int32_t ncore = cas->ncore;
+  const std::int32_t ncas = cas->ncas;
+  const auto mo = static_cast<std::size_t>(basis.nao_sphe());
+  const auto n = static_cast<std::size_t>(ncas);
+  const std::size_t nroots = cas->energies.size();
+  ASSERT_EQ(nroots, 2U);
+
+  auto ints = fb::casscf_integrals(res, basis, molecule->molecule, h->h, df.b, df.naux, cas->c,
+                                   ncore, ncas);
+  ASSERT_TRUE(ints.has_value()) << ints.error().message;
+  auto alpha = fb::ci::DeviceStringSet::create(res, ncas, cas->nelecas / 2);
+  auto beta = fb::ci::DeviceStringSet::create(res, ncas, cas->nelecas / 2);
+  ASSERT_TRUE(alpha.has_value() && beta.has_value());
+  auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
+  auto rdm = fb::ci::Rdm::create(res, *alpha, *beta);
+  ASSERT_TRUE(sigma.has_value() && rdm.has_value());
+  set_sigma_integrals(res, *ints, n, *sigma);
+  const std::size_t dim = cas->vectors.size() / nroots;
+  fb::ci::Roots roots{cas->energies,
+                      cas->spin_squares,
+                      fb::Buffers::device<double>(cas->vectors.size(), res.device()),
+                      {}};
+  upload(res, cas->vectors, roots.vectors.data());
+  {
+    fb::Buffers::device<double> product(cas->vectors.size(), res.device());
+    ASSERT_TRUE(
+        sigma->apply(res, static_cast<std::int32_t>(nroots), roots.vectors.data(), product.data())
+            .has_value());
+    const std::vector<double> hc = download(res, product.data(), cas->vectors.size());
+    for (std::size_t r = 0; r < nroots; ++r) {
+      double quotient = 0.0;
+      for (std::size_t i = 0; i < dim; ++i) {
+        quotient += cas->vectors[(r * dim) + i] * hc[(r * dim) + i];
+      }
+      EXPECT_NEAR(quotient, cas->energies[r], kRayleighTolerance) << "root " << r;
+    }
+  }
+  std::vector<double> gamma(n * n, 0.0);
+  for (std::size_t r = 0; r < nroots; ++r) {
+    for (std::size_t i = 0; i < n * n; ++i) {
+      gamma[i] += cas->weights[r] * cas->rdm1[(r * n * n) + i];
+    }
+  }
+  auto sa_fock = fb::response::fock(res, molecule->molecule, h->h, df.b, df.naux, cas->c, ncore,
+                                    ncas, ints->ppaa, ints->papa, gamma, cas->rdm2);
+  ASSERT_TRUE(sa_fock.has_value()) << sa_fock.error().message;
+  auto hessian = fb::response::Hessian::create(res, h->h, df.b, df.naux, cas->c, ncore, ncas,
+                                               ints->ppaa, ints->papa, *sa_fock);
+  ASSERT_TRUE(hessian.has_value()) << hessian.error().message;
+  const fb::response::ResponseIntegrals response_ints{
+      mo,
+      static_cast<std::size_t>(ncore),
+      n,
+      download(res, sa_fock->fock_inactive.data(), mo * mo),
+      download(res, ints->ppaa.data(), mo * mo * n * n),
+      download(res, ints->papa.data(), mo * mo * n * n)};
+
+  for (const auto [pcg, block] : {std::pair{false, false}, {true, false}, {false, true}}) {
+    auto relaxed =
+        fb::response::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta, roots,
+                                             cas->weights, response_ints, 1e-8, {}, 200, pcg);
+    ASSERT_TRUE(relaxed.has_value()) << relaxed.error().message;
+    const auto pairs = static_cast<std::size_t>(relaxed->size());
+    std::vector<double> m = relaxed_matrix(res, *relaxed, block);
+    double asymmetry = 0.0;
+    for (std::size_t i = 0; i < pairs; ++i) {
+      for (std::size_t j = 0; j < i; ++j) {
+        asymmetry = std::max(asymmetry, std::abs(m[i + (pairs * j)] - m[j + (pairs * i)]));
+        m[i + (pairs * j)] = m[j + (pairs * i)] = 0.5 * (m[i + (pairs * j)] + m[j + (pairs * i)]);
+      }
+    }
+    const std::vector<double> values = eigenvectors(res, m, static_cast<std::int32_t>(pairs));
+    const std::string what = std::format("pcg_ci_response {}, block {}", pcg, block);
+    EXPECT_LE(asymmetry, kSymmetryTolerance) << what;
+    EXPECT_GT(values.front(), 0.0) << what;
+    std::cout << std::format("[ relaxed ] h2o sto-3g SA2-CAS(2,2), {}: {} pairs, asymmetry "
+                             "{:.2e}, least eigenvalue {:.6e}\n",
+                             what, pairs, asymmetry, values.front());
+  }
+}
+
 } // namespace

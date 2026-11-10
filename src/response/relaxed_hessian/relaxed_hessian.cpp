@@ -28,13 +28,25 @@ namespace free_breakfast::response {
 
 // The CI response's conjugate gradients stop after create's
 // response_max_iterations sigmas per root (200 by default), or at its
-// response_tolerance of the right-hand side. Two roots
+// response_tolerance of the right-hand side, or at round-off (response_stop).
+// Two roots
 // closer than kResponseGapFloor (hartree) leave their mixing out. A
 // right-hand side whose part off every root is at most kResponseRoundoff of
 // its whole is round-off, its response zero, and no gradient runs on it
 // (README.md "A right-hand side the roots span").
 constexpr double kResponseGapFloor = 1e-8;
 constexpr double kResponseRoundoff = 1e-12;
+
+// Where a vector's conjugate gradients stop: its residual at the response
+// tolerance of its right-hand side off the roots, @p rhs_norm, or at
+// kResponseRoundoff of the whole one, @p whole_norm, whichever is larger. The
+// second is the start's round-off test held at every iterate: past it the
+// residual is the rounding of b's part along the roots, and a gradient that
+// chases it steps along the roots' span, where the projected H_0 - E_r is
+// null (README.md "A residual at round-off").
+double response_stop(const double tolerance, const double rhs_norm, const double whole_norm) {
+  return std::max(tolerance * rhs_norm, kResponseRoundoff * whole_norm);
+}
 
 void response_integrals(const ResponseIntegrals &ints, std::span<const double> kappa,
                         std::span<double> h1, std::span<double> eri1) {
@@ -333,11 +345,11 @@ Status RelaxedHessian::solve_response(DeviceResources &res, std::span<double> ga
     // The roots span b_r: what the projection left is round-off, and the
     // response off the roots is zero.
     double rr = rhs_norm <= kResponseRoundoff * whole_norm ? 0.0 : rhs_norm * rhs_norm;
+    const double stop = response_stop(response_tolerance_, rhs_norm, whole_norm);
     if (pcg_ci_response_) {
       // create's pcg_ci_response: an infinite tolerance runs no sigma on a
       // right-hand side the roots span.
-      const double tolerance =
-          rr > 0.0 ? response_tolerance_ * rhs_norm : std::numeric_limits<double>::infinity();
+      const double tolerance = rr > 0.0 ? stop : std::numeric_limits<double>::infinity();
       FBF_TRY(solve_shifted(res, 1, std::span{&e_r, 1}, cg_r, delta, std::span{&tolerance, 1},
                             std::span{&rhs_norm, 1}));
     } else {
@@ -363,7 +375,7 @@ Status RelaxedHessian::solve_response(DeviceResources &res, std::span<double> ga
         double r_norm = 0.0;
         FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, dim32, cg_r, 1, &r_norm)));
         const double rr_new = r_norm * r_norm;
-        if (r_norm <= response_tolerance_ * rhs_norm) {
+        if (r_norm <= stop) {
           break;
         }
         const double beta_step = rr_new / rr;
@@ -667,8 +679,9 @@ Status RelaxedHessian::solve_responses(DeviceResources &res, const size_t k) {
     std::vector<double> tolerances(count);
     for (size_t v = 0; v < count; ++v) {
       shifts[v] = roots_->energies[v % roots_count];
-      tolerances[v] =
-          active[v] ? response_tolerance_ * rhs_norm[v] : std::numeric_limits<double>::infinity();
+      tolerances[v] = active[v]
+                          ? response_stop(response_tolerance_, rhs_norm[v], std::sqrt(whole[v]))
+                          : std::numeric_limits<double>::infinity();
     }
     FBF_TRY(solve_shifted(res, n, shifts, r, delta, tolerances, {}));
   } else {
@@ -687,7 +700,8 @@ Status RelaxedHessian::solve_responses(DeviceResources &res, const size_t k) {
       FBF_TRY(scaled_add(r, ap, &kNegOne<double>));
       FBF_TRY(column_dots(r, r));
       for (size_t v = 0; v < count; ++v) {
-        if (active[v] && std::sqrt(host[v]) <= response_tolerance_ * rhs_norm[v]) {
+        if (active[v] && std::sqrt(host[v]) <=
+                             response_stop(response_tolerance_, rhs_norm[v], std::sqrt(whole[v]))) {
           active[v] = false;
         }
         step_host[v] = active[v] ? host[v] / rr[v] : 0.0;
