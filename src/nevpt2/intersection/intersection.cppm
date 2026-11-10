@@ -20,6 +20,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -147,5 +148,33 @@ qd_pc_intersection(DeviceResources &res, const Molecule &molecule, const BasisSe
                    const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                    const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p,
                    int32_t q, int32_t batch, const QdIntersectionOptions &options = {});
+
+/// @brief What @ref qd_sc_intersection holds over @p basis and @p aux with
+/// @p ncore core and @p ncas active orbitals holding @p nelecas electrons at
+/// @p multiplicity, a state average of @p nroots roots (@p rotating: two of
+/// their weights differ), at @p batch and @p nfrozen, shared (the default
+/// QdIntersectionOptions), all of it freed on return (the branching space is
+/// on the host): qd_inputs with sc_effective_hamiltonian over every pair,
+/// freed; H_eff's eigensolve, @p syevd_lwork read at nroots; then the
+/// several-W qd_sc_gradient at u_P u_P^T, u_Q u_Q^T and W^PQ (trace 0)
+/// (@c qd_sc_w_gradients_footprint). Empty where the call refuses before
+/// allocating.
+[[nodiscard]] MemoryFootprint
+qd_sc_intersection_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore,
+                             int32_t ncas, int32_t nelecas, int32_t multiplicity, int32_t nroots,
+                             bool rotating, int32_t batch, std::span<const size_t> syevd_lwork,
+                             int32_t nfrozen = 0);
+
+/// @brief What @ref qd_pc_intersection holds: qd_sc_intersection_footprint
+/// over pc_effective_hamiltonian and the several-W qd_pc_gradient, @p dropped
+/// the classes' kept ranks as PC's footprints take them. Inside a degenerate
+/// CASSCF pair the call takes one W form instead (the mean gradient), which
+/// holds one W's share of the three's.
+[[nodiscard]] MemoryFootprint
+qd_pc_intersection_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore,
+                             int32_t ncas, int32_t nelecas, int32_t multiplicity, int32_t nroots,
+                             bool rotating, int32_t batch, std::span<const size_t> syevd_lwork,
+                             int32_t nfrozen = 0,
+                             std::span<const std::array<int64_t, 8>> dropped = {});
 
 } // namespace free_breakfast::nevpt2

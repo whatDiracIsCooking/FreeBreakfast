@@ -12,10 +12,11 @@
 // the variant's Hessian. The semi-numerical CASSCF and NEVPT2 [hessian] is
 // the reference's chain to [casscf], then each point's chain from the
 // carried orbitals to the gradient, then the analysis, under QD with the
-// state's gradient and the ensemble's edge beside each chain. A chain whose
-// library calls are not all footprinted has none. The dimensions are filled by hand,
-// the basis placed on the host and syevd's work made up (only its order is
-// read), so nothing touches a device.
+// state's gradient and the ensemble's edge beside each chain. An [optimize]
+// over a CASSCF chain is the start, then each evaluation's chain and what it
+// runs past it, a followed state's C and CI held between evaluations. The
+// dimensions are filled by hand, the basis placed on the host and syevd's
+// work made up (only its order is read), so nothing touches a device.
 
 #include <gtest/gtest.h>
 
@@ -24,6 +25,9 @@ import free_breakfast.core;
 import free_breakfast.io.basis;
 import free_breakfast.pipeline.config;
 import free_breakfast.hessian;
+import free_breakfast.mcscf.intersection;  // df_intersection_footprint
+import free_breakfast.mcscf.overlap;       // state_overlaps_footprint
+import free_breakfast.nevpt2.intersection; // qd_*_intersection_footprint
 
 namespace {
 
@@ -264,11 +268,10 @@ TEST(NestedFootprint, AnalyticCasscfHessianIsTheChainThenDfCasscf) {
   }
 }
 
-// The chains not footprinted yet: the CASSCF and NEVPT2 chains of the
-// [optimize] step. Every [hessian] has one (#1204): over an integral-direct
-// ERI the semi-numerical CASSCF and NEVPT2 ones are refused before anything
-// runs, so empty.
-TEST(NestedFootprint, UnfootprintedChainsHaveNone) {
+// Over an integral-direct ERI the CASSCF and NEVPT2 chains of the nested
+// steps are refused before anything runs, so empty (the plan's dimensions
+// carry no aux basis).
+TEST(NestedFootprint, IntegralDirectMultireferenceChainsAreEmpty) {
   const fb::BasisSet basis = water_basis();
   const fb::FootprintDimensions dims = water_dims(basis);
   fb::HessianStep casscf_hessian{.method = fb::HessianMethod::Numerical};
@@ -279,13 +282,14 @@ TEST(NestedFootprint, UnfootprintedChainsHaveNone) {
   EXPECT_EQ(nevpt2_hessian.footprint(dims), fb::MemoryFootprint{});
   fb::OptimizeStep casscf_optimize;
   casscf_optimize.casscf_gradient.emplace();
-  EXPECT_FALSE(casscf_optimize.footprint(dims).has_value());
+  EXPECT_EQ(casscf_optimize.footprint(dims), fb::MemoryFootprint{});
   fb::OptimizeStep nevpt2_optimize;
   nevpt2_optimize.nevpt2_gradient.emplace();
-  EXPECT_FALSE(nevpt2_optimize.footprint(dims).has_value());
+  EXPECT_EQ(nevpt2_optimize.footprint(dims), fb::MemoryFootprint{});
   fb::OptimizeStep meci;
   meci.meci = std::array<std::int32_t, 2>{0, 1};
-  EXPECT_FALSE(meci.footprint(dims).has_value());
+  meci.casscf.nroots = 2;
+  EXPECT_EQ(meci.footprint(dims), fb::MemoryFootprint{});
 }
 
 // Through the planner: step_footprint passes a nested step's optional
@@ -297,7 +301,7 @@ TEST(NestedFootprint, StepFootprintPassesTheOptionalThrough) {
   EXPECT_EQ(fb::step_footprint(fb::HessianStep{}, dims), fb::HessianStep{}.footprint(dims));
   fb::OptimizeStep nevpt2_optimize;
   nevpt2_optimize.nevpt2_gradient.emplace();
-  EXPECT_FALSE(fb::step_footprint(nevpt2_optimize, dims).has_value());
+  EXPECT_EQ(fb::step_footprint(nevpt2_optimize, dims), std::optional{fb::MemoryFootprint{}});
 }
 
 // The analytic NEVPT2 [hessian] (#1186): the chain to [casscf] held under the
@@ -502,6 +506,174 @@ TEST(NestedFootprint, SemiNumericalMultireferenceHessianIsTheReferenceThenEachPo
     fb::HessianStep direct = step;
     direct.eri.mode = fb::EriMode::IntegralDirect;
     EXPECT_EQ(direct.footprint(dims), fb::MemoryFootprint{});
+  }
+}
+
+// The [optimize] over a CAS(4,4) of water in STO-3G (#1212): the start's
+// Molecule; the first evaluation's chain to [casscf] from the SCF, then every
+// later one's from the carried orbitals, each to the NEVPT2 gradient under a
+// [nevpt2_gradient], freed whole; beside a chain's products, a CASSCF
+// root's gradient or under meci the intersection. A followed state (an SA
+// root, a QD state, a pair) holds the CASSCF's C and CI vectors beside that,
+// kept to the next evaluation, which holds its own beside it and
+// state_overlaps'. The dimensions carry no [casscf]'s roots: the step sizes
+// its chain's readers over its own CASSCF's.
+TEST(NestedFootprint, MultireferenceOptimizeIsTheStartThenEachEvaluation) {
+  const fb::BasisSet basis = water_basis();
+  const fb::BasisSet aux =
+      place_on_water(fb::resolve_aux_basis("cc-pvdz-jkfit").value().primitive_normalized());
+  fb::FootprintDimensions dims = water_dims(basis);
+  dims.aux = &aux;
+  dims.naux = aux.nao_sphe();
+  dims.ncas = 4;
+  dims.nelecas = 4;
+  for (std::size_t order = dims.syevd_lwork.size(); order <= 64; ++order) {
+    dims.syevd_lwork.push_back(1000 + (64 * order));
+  }
+  const fb::EriStep eri{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvdz-jkfit"};
+  const fb::MemoryFootprint molecule = fb::molecule_footprint(dims.natoms);
+  enum class Kind : std::uint8_t { Casscf, Nevpt2, Meci };
+  struct Case {
+    std::string_view name;
+    Kind kind = Kind::Casscf;
+    std::vector<double> weights;
+    bool qd = false;
+    fb::Nevpt2Variant variant = fb::Nevpt2Variant::Sc;
+  };
+  const std::vector<Case> cases{
+      {.name = "casscf"},
+      {.name = "sa-casscf", .weights = {0.7, 0.3}},
+      {.name = "sc", .kind = Kind::Nevpt2},
+      {.name = "pc", .kind = Kind::Nevpt2, .variant = fb::Nevpt2Variant::Pc},
+      {.name = "qd-sc", .kind = Kind::Nevpt2, .weights = {0.5, 0.5}, .qd = true},
+      {.name = "qd-pc",
+       .kind = Kind::Nevpt2,
+       .weights = {0.5, 0.5},
+       .qd = true,
+       .variant = fb::Nevpt2Variant::Pc},
+      {.name = "meci", .kind = Kind::Meci, .weights = {0.5, 0.5}},
+      {.name = "qd-meci-sc", .kind = Kind::Meci, .weights = {0.6, 0.4}, .qd = true},
+      {.name = "qd-meci-pc",
+       .kind = Kind::Meci,
+       .weights = {0.6, 0.4},
+       .qd = true,
+       .variant = fb::Nevpt2Variant::Pc},
+  };
+  for (const Case &c : cases) {
+    SCOPED_TRACE(c.name);
+    const auto nroots = static_cast<std::int32_t>(std::max<std::size_t>(c.weights.size(), 1));
+    const bool rotating = !c.weights.empty() && c.weights[0] != c.weights[1];
+    fb::OptimizeStep step{.eri = eri};
+    step.casscf.ncas = 4;
+    step.casscf.nelecas = 4;
+    step.casscf.nroots = nroots;
+    step.casscf.weights = c.weights;
+    if (c.kind == Kind::Casscf) {
+      step.casscf_gradient.emplace();
+    } else if (c.kind == Kind::Nevpt2 || c.qd) {
+      step.nevpt2_gradient.emplace();
+      step.nevpt2_gradient->variant = c.variant;
+      step.nevpt2_gradient->quasi_degenerate = c.qd;
+    }
+    if (c.kind == Kind::Meci) {
+      step.meci = std::array<std::int32_t, 2>{0, 1};
+    }
+    fb::FootprintDimensions at = dims;
+    at.casscf_nroots = static_cast<std::size_t>(nroots);
+    at.casscf_unequal_weights = rotating;
+    // The first chain: the RHF chain to [scf], then [casscf]; a later one: no
+    // orthogonalizer, guess or SCF, the carried orbitals and the CASSCF over
+    // them. Each ends in the NEVPT2 gradient under a [nevpt2_gradient]
+    // without meci.
+    std::vector<fb::MemoryFootprint> first = rhf_chain(at);
+    first.back() = step.casscf.footprint(at);
+    first[4] = eri.footprint(at);
+    std::vector<fb::MemoryFootprint> later{fb::molecule_footprint(at.natoms),
+                                           fb::BasisSetStep{}.footprint(at),
+                                           fb::SphericalTransformStep{}.footprint(at),
+                                           fb::PrimitivePairClassesStep{}.footprint(at),
+                                           eri.footprint(at),
+                                           fb::OverlapStep{}.footprint(at),
+                                           fb::CoreHamiltonianStep{}.footprint(at),
+                                           fb::CarriedOrbitalsStep{}.footprint(at),
+                                           step.casscf.footprint(at)};
+    if (c.kind == Kind::Nevpt2) {
+      first.push_back(step.nevpt2_gradient->footprint(at));
+      later.push_back(step.nevpt2_gradient->footprint(at));
+      ASSERT_GT(first.back().device.peak(), 0U);
+    }
+    // Past the chain: the root's gradient, or the intersection.
+    fb::MemoryFootprint finish;
+    if (c.kind == Kind::Casscf) {
+      finish = step.casscf_gradient->footprint(at);
+    } else if (c.kind == Kind::Meci && c.qd) {
+      finish = c.variant == fb::Nevpt2Variant::Pc
+                   ? fb::nevpt2::qd_pc_intersection_footprint(basis, aux, 3, 4, 4, 1, 2, rotating,
+                                                              0, dims.syevd_lwork)
+                   : fb::nevpt2::qd_sc_intersection_footprint(basis, aux, 3, 4, 4, 1, 2, rotating,
+                                                              0, dims.syevd_lwork);
+    } else if (c.kind == Kind::Meci) {
+      finish = fb::mcscf::df_intersection_footprint(basis, aux, 3, 4, 4, 1, 2, rotating);
+    }
+    if (c.kind != Kind::Nevpt2) {
+      ASSERT_GT(finish.device.peak(), 0U);
+    }
+    const bool followed = c.kind == Kind::Meci || c.qd || nroots > 1;
+    // C and two roots' (or one's) 36 determinants; state_overlaps', freed.
+    const std::size_t solution =
+        followed
+            ? sizeof(double) * ((dims.nao * dims.nao) + (36 * static_cast<std::size_t>(nroots)))
+            : 0;
+    const fb::MemoryFootprint overlaps =
+        followed ? fb::mcscf::state_overlaps_footprint(basis, basis, 3, 4, 4, 1, nroots, nroots)
+                 : fb::MemoryFootprint{};
+    const auto held = [](const std::vector<fb::MemoryFootprint> &chain) {
+      std::size_t sum = 0;
+      for (const fb::MemoryFootprint &one : chain) {
+        sum += one.device.persistent;
+      }
+      return sum;
+    };
+    const auto [first_scratch, first_workspace] = chain_peak(first);
+    const auto [later_scratch, later_workspace] = chain_peak(later);
+    const std::size_t m = molecule.device.persistent;
+    const std::size_t past = finish.device.persistent + finish.device.scratch;
+    const std::size_t at_first = std::max(first_scratch, held(first) + solution + past);
+    // The last state's freed before a root's gradient, which follows the
+    // match; kept through the intersection.
+    const std::size_t at_later =
+        c.kind == Kind::Casscf
+            ? std::max(solution + std::max(later_scratch,
+                                           held(later) + solution + overlaps.device.scratch),
+                       std::max(later_scratch, held(later) + solution + past))
+            : solution + std::max(later_scratch,
+                                  held(later) + solution + finish.device.persistent +
+                                      std::max(overlaps.device.scratch, finish.device.scratch));
+    const std::size_t scratch = std::max({m + at_first, m + at_later, m + solution + m});
+    const std::size_t workspace = std::max(
+        {first_workspace, later_workspace, finish.device.workspace, overlaps.device.workspace});
+
+    const std::optional<fb::MemoryFootprint> fp = step.footprint(dims);
+    ASSERT_TRUE(fp.has_value());
+    EXPECT_EQ(fp->device.persistent, m);
+    EXPECT_EQ(fp->device.workspace, workspace);
+    EXPECT_EQ(fp->device.peak() - fp->device.workspace, scratch);
+
+    // Refused before anything runs: both gradients, an integral-direct ERI,
+    // meci beside [casscf_gradient].
+    fb::OptimizeStep both = step;
+    both.casscf_gradient.emplace();
+    both.nevpt2_gradient.emplace();
+    EXPECT_EQ(both.footprint(dims), fb::MemoryFootprint{});
+    fb::OptimizeStep direct = step;
+    direct.eri.mode = fb::EriMode::IntegralDirect;
+    EXPECT_EQ(direct.footprint(dims), fb::MemoryFootprint{});
+    if (c.kind == Kind::Meci) {
+      fb::OptimizeStep beside = step;
+      beside.casscf_gradient.emplace();
+      beside.nevpt2_gradient.reset();
+      EXPECT_EQ(beside.footprint(dims), fb::MemoryFootprint{});
+    }
   }
 }
 

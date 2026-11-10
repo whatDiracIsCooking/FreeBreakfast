@@ -642,6 +642,26 @@ control's quadratic, extrapolated from 1e-4 to 3e-4 Å back to 0, lands
 2.9e-9 under the exact point's ḡ · random1 (before #974; that
 extrapolation is too long to call a discontinuity).
 
+
+## Memory
+
+    qd_sc_intersection_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots,
+                                 rotating, batch, syevd_lwork, nfrozen = 0)
+    qd_pc_intersection_footprint(..., syevd_lwork, nfrozen = 0, dropped = {})
+
+What the shared call holds (#1212), all of it freed on return: `qd_inputs`
+with the effective Hamiltonian over every pair, freed; H_eff and its
+eigenvalues with the eigensolve, `syevd_lwork` read at nroots; then the
+several-W gradient at u_P u_Pᵀ, u_Q u_Qᵀ and W^PQ (trace 0),
+`qd_sc_w_gradients_footprint` (`../gradient/`), each W's Lagrangian kept
+through the passes. `dropped` is PC's kept ranks, as `../energy/`'s PC
+footprints take them. Inside a degenerate CASSCF pair the PC call takes one
+W form instead, which holds one W's share of the three's. `[optimize]`'s
+QD MECI footprint reads them (`../../pipeline/optimize/`).
+`Nevpt2ReaderFootprint.Intersections`
+(`test/gtest/pipeline_step_footprint_gpu.cpp`) holds both to the pool's peak
+at the least over water's SA-2 CAS(4,4).
+
 ## Tests
 
 `test/gtest/nevpt2_qd_intersection_gpu.cpp`, SC and PC, on this tree's own

@@ -99,6 +99,21 @@ intermediates are `res`'s workspace. Queued on `res.stream()`, synchronized
 twice (the MO overlap's download, the result's); the call returns with
 everything done.
 
+```cpp
+MemoryFootprint mcscf::state_overlaps_footprint(
+    const BasisSet &bra_basis, const BasisSet &ket_basis, int32_t ncore, int32_t ncas,
+    int32_t nelecas, int32_t multiplicity, int32_t n_bra, int32_t n_ket);
+```
+
+is what the call holds, all of it freed on return (#1212): the mixed AO
+overlap beside `overlap_mixed_spherical_footprint`'s own, then the workspace,
+the larger of the MO overlap's two regions and the contraction's five, each
+rounded to the workspace's alignment. Empty where the call refuses before
+allocating. `[optimize]`'s footprint reads it for each followed state
+(`../../pipeline/optimize/`). `CasscfReaderFootprint.StateOverlaps`
+(`test/gtest/pipeline_step_footprint_gpu.cpp`) holds it to the pool's peak
+of a solution against itself.
+
 ## Tests
 
 `test/gtest/mcscf_overlap_gpu.cpp`, on `test/gtest/data/casscf_nac/`'s

@@ -11,6 +11,8 @@ import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gpu_status, wwrMemcpyAsync
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::align_up, math::binomial
 import free_breakfast.basis;
 import free_breakfast.recipes.blas;
 import free_breakfast.recipes.matrix_ao; // SphericalMatrixAO, Solution::c
@@ -267,6 +269,42 @@ Result<std::vector<double>> state_overlaps(DeviceResources &res, const BasisSet 
     }
   }
   return s;
+}
+
+MemoryFootprint state_overlaps_footprint(const BasisSet &bra_basis, const BasisSet &ket_basis,
+                                         const int32_t ncore, const int32_t ncas,
+                                         const int32_t nelecas, const int32_t multiplicity,
+                                         const int32_t n_bra, const int32_t n_ket) {
+  const int32_t two_s = multiplicity - 1;
+  const auto nao_bra = static_cast<size_t>(bra_basis.nao_sphe());
+  const auto nao_ket = static_cast<size_t>(ket_basis.nao_sphe());
+  if (two_s < 0 || nelecas < two_s || (nelecas - two_s) % 2 != 0 || ncas < 1 ||
+      nelecas - ((nelecas - two_s) / 2) > ncas || ncore < 0 || n_bra < 1 || n_ket < 1 ||
+      static_cast<size_t>(ncore + ncas) > std::min(nao_bra, nao_ket)) {
+    return {}; // refused before anything is allocated
+  }
+  const int32_t n_beta = (nelecas - two_s) / 2;
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const size_t na = strings(nelecas - n_beta);
+  const size_t nb = strings(n_beta);
+  const size_t dim = na * nb;
+  const auto occ = static_cast<size_t>(ncore + ncas);
+  const auto kets = static_cast<size_t>(n_ket);
+  const auto region = [](const size_t doubles) {
+    return math::align_up(sizeof(double) * doubles, DeviceResources::kWorkspaceAlignment);
+  };
+  // The mixed AO overlap, then overlap_mixed_spherical beside it.
+  const MemoryFootprint s_ao{.device = {.persistent = sizeof(double) * nao_bra * nao_ket}};
+  MemoryFootprint out = then(s_ao, overlap_mixed_spherical_footprint(bra_basis, ket_basis));
+  // The MO overlap's half transform and S_mo; the contraction's two string
+  // overlaps, Y, W and S.
+  MemoryFootprint carved;
+  carved.device.workspace = std::max(region(nao_bra * occ) + region(occ * occ),
+                                     region(na * na) + region(nb * nb) + (2 * region(dim * kets)) +
+                                         region(static_cast<size_t>(n_bra) * kets));
+  return drop(then(out, carved));
 }
 
 } // namespace free_breakfast::mcscf

@@ -1650,6 +1650,32 @@ qd_pc_w_gradient_footprint(const BasisSet &basis, const BasisSet &aux, int32_t n
                            int32_t batch, std::span<const size_t> syevd_lwork, bool trace_zero,
                            bool passes, std::span<const std::array<int64_t, 8>> dropped = {});
 
+/// @brief What the several-W form of @ref qd_sc_gradient holds at one W per
+/// entry of @p trace_zero (whether that W has trace 0, a coupling's), the
+/// other arguments qd_sc_gradient_footprint's: the strings, held to the
+/// end; the adjoints over one set of forward arrays,
+/// each W's kept; the integrals, the averaged Fock and every column's
+/// right-hand sides; per column z^c, Phi^SA, the root pairs' multipliers,
+/// zeta's terms, the RDMs at rho and their Fock (and at the first W of
+/// trace 0 the core's, kept to the solve's end); the block Z-vector over
+/// every column, each copied out; each column's gate; then each W's two
+/// derivative passes, the strings freed last. Persistent: every
+/// QdScLagrangian's device arrays.
+[[nodiscard]] MemoryFootprint
+qd_sc_w_gradients_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                            int32_t nelecas, int32_t multiplicity, int32_t nroots, bool rotating,
+                            int32_t batch, std::span<const bool> trace_zero, int32_t nfrozen = 0);
+
+/// @brief qd_sc_w_gradients_footprint over qd_pc_adjoint's reverse pass:
+/// the several-W form of @ref qd_pc_gradient, @p syevd_lwork and
+/// @p dropped as qd_pc_adjoint_footprint takes them.
+[[nodiscard]] MemoryFootprint
+qd_pc_w_gradients_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                            int32_t nelecas, int32_t multiplicity, int32_t nroots, bool rotating,
+                            int32_t batch, std::span<const size_t> syevd_lwork,
+                            std::span<const bool> trace_zero, int32_t nfrozen = 0,
+                            std::span<const std::array<int64_t, 8>> dropped = {});
+
 /// @brief What @ref qd_inputs holds over @p naux fitting functions and
 /// @p nmo orbitals with @p ncore core and @p ncas active orbitals holding
 /// @p nelecas electrons at @p multiplicity, @p nroots roots, and @p nfrozen,

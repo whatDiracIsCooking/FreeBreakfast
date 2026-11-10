@@ -4,8 +4,8 @@
 // workspaces never grown past the pre-grow; the pre-warm refusing a cap the
 // card cannot supply; and a CASCI under AVAS narrowed to the active space
 // the cap fits. Then the nested steps, an RHF [optimize] and a
-// semi-numerical [hessian], over the RHF and over a CASSCF gradient,
-// refused below their peak and run at it. Every
+// semi-numerical [hessian], over the RHF and over a CASSCF gradient, and a
+// CASSCF [optimize], refused below their peak and run at it. Every
 // cap is set from the plan's own fold, so the cases hold on any card.
 
 #include <gtest/gtest.h>
@@ -294,6 +294,26 @@ state = 1
 [hessian]
 )";
 
+// An [optimize] over a CASSCF gradient (#1212): a CAS(2,2) of the fitted
+// water in STO-3G, the first chain from the SCF and every later one from the
+// carried orbitals. (A followed SA-2 root's walk here stops in the CASSCF
+// gradient's Z-vector, whose Hessian is not positive there; the followed
+// forms are StepFootprint.Optimize*'s.)
+constexpr std::string_view kNestedCasscfOptimize = R"(
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "sto-3g"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[casscf]
+ncas = 2
+nelecas = 2
+[casscf_gradient]
+[optimize]
+)";
+
 // @p tables' folded plan, and the step reaching its device peak, on @p node's
 // device 0.
 std::pair<fb::PlanFootprint, std::string>
@@ -414,6 +434,17 @@ TEST(Preflight, NestedCasscfHessianAtThePeakRunsInsideIt) {
 TEST(Preflight, NestedQdHessianBelowThePeakIsRefusedBeforeTheFirstStep) {
   FBF_REQUIRE_GPU();
   expect_nested_refused_below(kNestedQdHessian, "hessian");
+}
+
+// The CASSCF [optimize] (#1212), its evaluations held to the fold.
+TEST(Preflight, NestedCasscfOptimizeBelowThePeakIsRefusedBeforeTheFirstStep) {
+  FBF_REQUIRE_GPU();
+  expect_nested_refused_below(kNestedCasscfOptimize, "optimize");
+}
+
+TEST(Preflight, NestedCasscfOptimizeAtThePeakRunsInsideIt) {
+  FBF_REQUIRE_GPU();
+  expect_nested_runs_at_the_peak<fb::OptimizeOutput>(kNestedCasscfOptimize);
 }
 
 } // namespace
