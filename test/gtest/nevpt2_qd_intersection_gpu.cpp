@@ -7,7 +7,7 @@
 // - against the W forms: g_P, g_Q and h_PQ each against its own
 //   qd_*_gradient W-form call at u_P u_P^T, u_Q u_Q^T and W^PQ, the u's the
 //   result's own eigenvectors, every pair of h2co_skew_ccpvdz_sa3 and its
-//   unequal-weight twin; and s_o, s_c against their formulas on those calls'
+//   unequal-weight twin, and PC's one pair of h6_631g_sa2; and s_o, s_c against their formulas on those calls'
 //   multipliers. Independently converged Z-vector solves, so 1e-9 of the
 //   largest summand (#784's bar amendment, the #767 ruling), PC's s_c 1e-7
 //   (kPcCiTolerance);
@@ -492,11 +492,11 @@ class Nevpt2QdIntersectionWForms : public ::testing::TestWithParam<WFormCase> {}
 TEST_P(Nevpt2QdIntersectionWForms, MatchesWForms) {
   FBF_REQUIRE_GPU();
   // Under slow_test.h: 6.3 to 6.5 s each on the RTX 3080 but 20.9 to 24.3 s
-  // on the gfx1200 (#793), so every case but the weighted PC one, the
-  // cheapest.
+  // on the gfx1200 (#793), so every case but PC's on the 6-31G H6 pair, one
+  // pair of two roots (#1207: 1.3 s on the gfx1200, the weighted PC one 8 s).
   const WFormCase &c = GetParam();
-  FBF_FAMILY_REPRESENTATIVE("h2co_skew_ccpvdz_sa3_weighted_pc");
-  if (c.name != "h2co_skew_ccpvdz_sa3_weighted" || !c.pc) {
+  FBF_FAMILY_REPRESENTATIVE("h6_631g_sa2_pc");
+  if (c.name != "h6_631g_sa2" || !c.pc) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   QdRun run = qd_run(c.name);
@@ -547,7 +547,8 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdIntersectionWForms,
                          ::testing::Values(WFormCase{"h2co_skew_ccpvdz_sa3", false},
                                            WFormCase{"h2co_skew_ccpvdz_sa3", true},
                                            WFormCase{"h2co_skew_ccpvdz_sa3_weighted", false},
-                                           WFormCase{"h2co_skew_ccpvdz_sa3_weighted", true}),
+                                           WFormCase{"h2co_skew_ccpvdz_sa3_weighted", true},
+                                           WFormCase{"h6_631g_sa2", true}),
                          [](const auto &info) {
                            return std::format("{}_{}", info.param.name,
                                               info.param.pc ? "pc" : "sc");

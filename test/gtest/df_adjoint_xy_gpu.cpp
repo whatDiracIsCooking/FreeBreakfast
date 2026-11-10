@@ -1,7 +1,7 @@
 // GPU cases for hessian::df_adjoint_xy, Sum h_bar h^xy + Sum Lambda B^xy at
 // a general symmetric MO adjoint along the orthonormal path and the fitted
-// index's symmetric gauge. On a skew water in cc-pVDZ over cc-pVDZ-JKFIT, at
-// random orthonormal orbitals and a random symmetric (h_bar, Lambda): every
+// index's symmetric gauge. On a skew water in cc-pVDZ (and in STO-3G, the
+// fast tier's) over cc-pVDZ-JKFIT, at random orthonormal orbitals and a random symmetric (h_bar, Lambda): every
 // coordinate pair against a fourth-order ladder of mcscf::df_gradient's
 // extra-adjoint pass (df_transition_gradient at zero RDMs, so the pass alone)
 // at the adjoint held fixed, the orbitals and the factor carried to each
@@ -191,14 +191,16 @@ std::vector<fb::Atom> skew_water() {
           fb::Atom{fb::Vec<double, 3>{-1.38, 0.21, -1.02}, static_cast<fb::Element>(1)}};
 }
 
-// The integrals at one geometry as the DF steps would build them: the bases
-// placed, h, the fit B and its L on the device, and S, h, the metric and L
-// on the host (L's strict upper triangle zeroed).
+// The integrals at one geometry as the DF steps would build them: @p basis_name
+// and cc-pVDZ-JKFIT placed, h, the fit B and its L on the device, and S, h,
+// the metric and L on the host (L's strict upper triangle zeroed).
 class Geometry {
 public:
-  Geometry(fb::DeviceResources &res, const std::vector<fb::Atom> &atoms) : res_(res) {
+  Geometry(fb::DeviceResources &res, const std::vector<fb::Atom> &atoms,
+           const std::string &basis_name)
+      : res_(res) {
     molecule_.emplace(res, atoms);
-    const auto stamp = fb::resolve_basis("cc-pvdz");
+    const auto stamp = fb::resolve_basis(basis_name);
     const auto aux_stamp = fb::resolve_aux_basis("cc-pvdz-jkfit");
     EXPECT_TRUE(stamp && aux_stamp);
     if (!stamp || !aux_stamp) {
@@ -274,16 +276,16 @@ public:
   std::size_t naux_ = 0;
 };
 
-// The reference: its integrals, random orthonormal orbitals C0 = S^-1/2 U
-// (U the eigenvectors of a random symmetric matrix), and a random
+// The reference in @p basis: its integrals, random orthonormal orbitals C0 =
+// S^-1/2 U (U the eigenvectors of a random symmetric matrix), and a random
 // symmetric adjoint, elements uniform in [-1, 1], on the host and device.
 class HessianDfAdjointXy : public ::testing::Test {
 protected:
-  void SetUp() override {
-    FBF_REQUIRE_GPU();
+  void load(const std::string &basis) {
+    basis_ = basis;
     res_.emplace(0, fb::test::kWorkspaces);
     atoms_ = skew_water();
-    ref_.emplace(*res_, atoms_);
+    ref_.emplace(*res_, atoms_, basis_);
     ASSERT_TRUE(ref_->ok());
     nmo_ = ref_->nao_;
     naux_ = ref_->naux_;
@@ -346,7 +348,7 @@ protected:
     std::vector<fb::Atom> atoms = atoms_;
     fb::Vec<double, 3> &moved = atoms[y / 3].position;
     (y % 3 == 0 ? moved.x : y % 3 == 1 ? moved.y : moved.z) += step;
-    const Geometry at(*res_, atoms);
+    const Geometry at(*res_, atoms, basis_);
     EXPECT_TRUE(at.ok());
     if (!at.ok()) {
       return {};
@@ -434,7 +436,11 @@ protected:
     return j;
   }
 
+  // MatchesTheLadder's checks, after load().
+  void expect_ladder();
+
   std::optional<fb::DeviceResources> res_;
+  std::string basis_;
   std::vector<fb::Atom> atoms_;
   std::optional<Geometry> ref_;
   std::optional<fb::SphericalMatrixAO> c_;
@@ -458,8 +464,7 @@ protected:
 // against (J + J^T) / 2, which also checks its own symmetry. The analytic
 // run is the budget's smallest that takes two coordinates a chunk, after
 // the refusal below one.
-TEST_F(HessianDfAdjointXy, MatchesTheLadder) {
-  FBF_FAMILY_REPRESENTATIVE();
+void HessianDfAdjointXy::expect_ladder() {
   ASSERT_FALSE(HasFatalFailure());
   const auto tiny = run(*ref_->aux_, *c_, h_bar_dev_->data(), lambda_dev_->data(), 1);
   ASSERT_FALSE(tiny.has_value());
@@ -514,15 +519,33 @@ TEST_F(HessianDfAdjointXy, MatchesTheLadder) {
   EXPECT_LE(worst, kLadderTol * scale)
       << "at (" << worst_at % n_x_ << ", " << worst_at / n_x_ << ")";
   std::cout << std::format(
-      "[ adjoint  ] skew water cc-pVDZ/cc-pVDZ-JKFIT, {} orbitals, {} fitting functions: max "
+      "[ adjoint  ] skew water {}/cc-pVDZ-JKFIT, {} orbitals, {} fitting functions: max "
       "|H| {:.3e}, |H - ladder| {:.2e} ({:.2e} relative) at step {:g}, {:.2e} at {:g}; the "
       "ladder's antisymmetric part {:.2e}; chunked vs whole {:.1e}; {:.2f} s ({} bytes, two "
       "coordinates a chunk), ladder {:.1f} s\n",
-      nmo_, naux_, scale, worst, worst / scale, kStep, worst_coarse, 2.0 * kStep, curvature,
+      basis_, nmo_, naux_, scale, worst, worst / scale, kStep, worst_coarse, 2.0 * kStep, curvature,
       chunk_drift, elapsed, need + (sizeof(double) * naux_ * nn_), ladder_elapsed);
 }
 
+TEST_F(HessianDfAdjointXy, MatchesTheLadder) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  load("cc-pvdz");
+  expect_ladder();
+}
+
+// The family's representative (#1207): the same checks in STO-3G, over the
+// same fitting set.
+TEST_F(HessianDfAdjointXy, MatchesTheLadderInSto3g) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  load("sto-3g");
+  expect_ladder();
+}
+
 TEST_F(HessianDfAdjointXy, Refusals) {
+  FBF_REQUIRE_GPU();
+  load("cc-pvdz");
   ASSERT_FALSE(HasFatalFailure());
   const auto expect_refused = [](const fb::Result<std::vector<double>> &r, const char *what) {
     ASSERT_FALSE(r) << what;

@@ -6,7 +6,9 @@
 // - the pair's sum d^2 (E_0 + E_1), c = 1, at the ethylene SA3 MECIs against
 //   #953's G(W^0 + W^1) ladders within 2x their bars, SC and PC, with the
 //   outside-state sum (the third state's) above 10 bars; and away from any
-//   crossing on h2co_skew_ccpvdz_sa3's pair (0, 1), SC and PC;
+//   crossing on h2co_skew_ccpvdz_sa3's pair (0, 1), SC and PC, and on the
+//   A1/B2 case h2nb_sto3g_sa2_hessian's, PC along its a1 vibrations (the
+//   fast tier's);
 // - the seam's 2 x 2 (Eq. qd-lowdin) at the MECIs, on its own: each element
 //   symmetric to the solves, the sum of its diagonal the pair's ladder, and
 //   in a basis of the eigenspace turned by 0.3 rad its elements the turn of
@@ -100,6 +102,22 @@ std::vector<std::vector<double>> matrix(const fb::json &m) {
   return m.get<std::vector<std::vector<double>>>();
 }
 
+// The block of @p m at the places @p block (both ways), all of it when empty.
+std::vector<std::vector<double>> matrix(const fb::json &m, std::span<const std::size_t> block) {
+  auto whole = matrix(m);
+  if (block.empty()) {
+    return whole;
+  }
+  std::vector<std::vector<double>> out;
+  for (const std::size_t i : block) {
+    auto &row = out.emplace_back();
+    for (const std::size_t j : block) {
+      row.push_back(whole.at(i).at(j));
+    }
+  }
+  return out;
+}
+
 // One case: the registry's products and the Solution of its SA-CASSCF.
 struct Reference {
   std::unique_ptr<fb::NodeResources> node;
@@ -124,13 +142,15 @@ struct Reference {
   }
 
   // The crossing form of pair (p, q) at c, SC's or PC's, as SC's terms.
+  // In @p coordinates (orthonormal rows of 3 n_atom), the Cartesian ones when
+  // empty.
   [[nodiscard]] fb::Result<fb::hessian::QdScNevpt2Terms>
   crossing(const fb::mcscf::Solution &s, const bool pc, const std::int32_t p, const std::int32_t q,
-           std::span<const double> c) const {
+           std::span<const double> c, std::span<const double> coordinates = {}) const {
     if (pc) {
       auto t = fb::hessian::df_qd_pc_nevpt2_crossing(res(), molecule(), basis(), classes(),
                                                      fit().aux, h(), fit().b, fit().l.data(), s,
-                                                     ncore, ncas, p, q, c);
+                                                     ncore, ncas, p, q, c, 0, coordinates);
       if (!t) {
         return std::unexpected(std::move(t.error()));
       }
@@ -138,7 +158,7 @@ struct Reference {
     }
     return fb::hessian::df_qd_sc_nevpt2_crossing(res(), molecule(), basis(), classes(), fit().aux,
                                                  h(), fit().b, fit().l.data(), s, ncore, ncas, p, q,
-                                                 c);
+                                                 c, 0, coordinates);
   }
 
   // The W form at @p w, SC's or PC's.
@@ -345,10 +365,12 @@ double in_bars(std::span<const double> part, const std::vector<std::vector<doubl
   return worst;
 }
 
-// Every element of @p got within kBars of @p want's hessian; the worst miss.
-double expect_within(std::span<const double> got, const fb::json &want, const std::string &label) {
-  const auto hessian = matrix(want.at("hessian"));
-  const auto bar = matrix(want.at("bar"));
+// Every element of @p got within kBars of @p want's hessian, its block at
+// @p block when given; the worst miss.
+double expect_within(std::span<const double> got, const fb::json &want, const std::string &label,
+                     std::span<const std::size_t> block = {}) {
+  const auto hessian = matrix(want.at("hessian"), block);
+  const auto bar = matrix(want.at("bar"), block);
   const std::size_t k = hessian.size();
   EXPECT_EQ(got.size(), k * k) << label;
   if (got.size() != k * k) {
@@ -370,9 +392,13 @@ double expect_within(std::span<const double> got, const fb::json &want, const st
 const std::vector<double> kIdentity{1.0, 0.0, 0.0, 1.0};
 
 // The pair's sum d^2 (E_P + E_Q) of fixture @p name's pair (p, q) against its
-// G(W^P + W^Q) ladder; at a crossing, the outside-state sum visible.
+// G(W^P + W^Q) ladder, in @p coordinates (the Cartesian ones when empty),
+// against the ladder's block at @p block (the whole of it when empty); at a
+// crossing, the outside-state sum visible.
 void expect_pair_sum(const std::string &name, const bool pc, const std::int32_t p,
-                     const std::int32_t q, const bool at_crossing) {
+                     const std::int32_t q, const bool at_crossing,
+                     std::span<const double> coordinates = {},
+                     std::span<const std::size_t> block = {}) {
   const fb::json &doc = fixture(name);
   const Reference &ref = reference(name);
   ASSERT_TRUE(ref.solution.has_value());
@@ -381,12 +407,12 @@ void expect_pair_sum(const std::string &name, const bool pc, const std::int32_t 
   ASSERT_NE(want, nullptr) << name << " has no " << scheme << " pair (" << p << ", " << q << ")";
   const std::string label = std::format("{} {} pair ({}, {})", name, scheme, p, q);
   const auto start = std::chrono::steady_clock::now();
-  const auto got = ref.crossing(*ref.solution, pc, p, q, kIdentity);
+  const auto got = ref.crossing(*ref.solution, pc, p, q, kIdentity, coordinates);
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
   ASSERT_TRUE(got.has_value()) << label << ": " << got.error().message;
-  const double worst = expect_within(got->hessian, *want, label);
-  const auto bar = matrix(want->at("bar"));
+  const double worst = expect_within(got->hessian, *want, label, block);
+  const auto bar = matrix(want->at("bar"), block);
   const double outside = in_bars(got->term_ii, bar);
   std::cout << std::format(
       "[ qd pair  ] {}: worst element {:.3f} bars (allowed {:g}), largest |H| {:.3e}; outside "
@@ -402,7 +428,7 @@ void expect_pair_sum(const std::string &name, const bool pc, const std::int32_t 
 
 TEST(HessianDfQdNevpt2Crossing, ScPairSumAtTheMeci) {
   FBF_REQUIRE_GPU();
-  FBF_FAMILY_REPRESENTATIVE();
+  FBF_SKIP_IF_FAST_TESTS();
   expect_pair_sum("ethylene_ccpvdz_sa3_sc_meci", false, 0, 1, true);
 }
 
@@ -422,6 +448,29 @@ TEST(HessianDfQdNevpt2Crossing, PcPairSumAwayFromACrossing) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_pair_sum("h2co_skew_ccpvdz_sa3", true, 0, 1, false);
+}
+
+// The family's representative (#1207), the cheapest pair sum with a ladder:
+// the C2v A1/B2 case, H2N-B STO-3G SA2 (h2nb_sto3g_sa2_hessian, #1093), PC's
+// pair (0, 1), an ensemble with no outside state, along its three totally
+// symmetric vibrations, against that block of its PC ladders.
+TEST(HessianDfQdNevpt2Crossing, PcPairSumOfTheA1B2CaseAlongTheA1Vibrations) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  const std::string name = "h2nb_sto3g_sa2_hessian";
+  const fb::json &doc = fixture(name);
+  const auto vectors = matrix(doc.at("coordinates").at("vectors"));
+  const auto labels = doc.at("coordinates").at("labels").get<std::vector<std::string>>();
+  const auto laddered = doc.at("steps").at("pc").at("coordinates").get<std::vector<std::string>>();
+  std::vector<double> q;
+  std::vector<std::size_t> block;
+  for (const std::string row : {"A1 1", "A1 2", "A1 3"}) {
+    block.push_back(static_cast<std::size_t>(std::ranges::find(laddered, row) - laddered.begin()));
+    ASSERT_LT(block.back(), laddered.size()) << row;
+    const auto at = std::ranges::find(labels, row) - labels.begin();
+    q.insert(q.end(), vectors[at].begin(), vectors[at].end());
+  }
+  expect_pair_sum(name, true, 0, 1, false, q, block);
 }
 
 // c for element (X, Y) of the 2 x 2 in the basis (cos t R_P + sin t R_Q,

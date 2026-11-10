@@ -1,8 +1,9 @@
 // GPU cases for hessian::df_qd_zeta: the zeta term T = Sum_{r<s} zeta_sr
 // <c_s|H|c_r> of a QD-NEVPT2 Lagrangian's Hessian (docs/nevpt2/nevpt2.tex
 // Eq. qd-Lxx and the mixed and skeleton terms), on data/qd_nevpt2/'s
-// h2co_skew_ccpvdz_sa3 (C1, three roots at equal weights) from this tree's
-// own DF-SA-CASSCF through the registry, at the zeta of
+// h2co_skew_ccpvdz_sa3 (C1, three roots at equal weights) and STO-3G H8
+// chain h8_sto3g_sa3 (three roots at equal weights, the fast tier's) from
+// this tree's own DF-SA-CASSCF through the registry, at the zeta of
 // nevpt2::qd_sc_lagrangian's state K = 1.
 //
 // Each share against a Richardson ladder of T itself, evaluated on the host
@@ -73,8 +74,8 @@ constexpr std::int32_t kSeriesTerms = 30;
 // The reference SA-CASSCF's ||g|| and |Delta E|.
 constexpr double kConvTolGrad = 1e-10;
 constexpr double kConvTol = 1e-12;
-// The QD state whose zeta is taken, and the two coordinates (O's z, the
-// first H's y).
+// The QD state whose zeta is taken, and the two coordinates (O's z and the
+// first H's y on H2CO; the second atom's z and the third's y on H8).
 constexpr std::int32_t kState = 1;
 constexpr std::size_t kCoordA = 5;
 constexpr std::size_t kCoordB = 7;
@@ -1117,8 +1118,18 @@ protected:
 
 TEST_F(HessianDfQdZeta, EqualWeightsMatchLadders) {
   FBF_REQUIRE_GPU();
-  FBF_FAMILY_REPRESENTATIVE();
+  FBF_SKIP_IF_FAST_TESTS();
   load("h2co_skew_ccpvdz_sa3");
+  ASSERT_FALSE(HasFatalFailure());
+  check();
+}
+
+// The family's representative (#1207): the same checks on the STO-3G H8
+// chain, three roots at equal weights.
+TEST_F(HessianDfQdZeta, EqualWeightsMatchLaddersOnH8Sto3g) {
+  FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE();
+  load("h8_sto3g_sa3");
   ASSERT_FALSE(HasFatalFailure());
   check();
 }

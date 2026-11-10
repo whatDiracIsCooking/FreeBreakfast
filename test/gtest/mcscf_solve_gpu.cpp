@@ -431,7 +431,8 @@ double orthonormality_error(fb::DeviceResources &res, const fb::SphericalMatrixA
 
 struct Case {
   std::string_view name;
-  // Under slow_test.h: every case but H2O cc-pVDZ, the cheapest.
+  // Under slow_test.h: every case but H2O 6-31G, the cheapest, which stands
+  // in for the family (#1207: H2O cc-pVDZ integral-direct took 15-19 s).
   bool slow;
 };
 
@@ -528,6 +529,7 @@ void expect_polished(Setup &setup, const fb::mcscf::Solution &sol, const fb::jso
 
 TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE("h2o_631g");
   if (GetParam().slow) {
     FBF_SKIP_IF_FAST_TESTS();
   }
@@ -564,6 +566,7 @@ TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
 // fitting set.
 TEST_P(McscfSolve, FullDensityFittingConvergesToThePolishedDfCasscf) {
   FBF_REQUIRE_GPU();
+  FBF_FAMILY_REPRESENTATIVE("h2o_631g");
   if (GetParam().slow) {
     FBF_SKIP_IF_FAST_TESTS();
   }
@@ -592,7 +595,8 @@ TEST_P(McscfSolve, FullDensityFittingConvergesToThePolishedDfCasscf) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, McscfSolve,
-                         ::testing::Values(Case{.name = "h2o_ccpvdz", .slow = false},
+                         ::testing::Values(Case{.name = "h2o_631g", .slow = false},
+                                           Case{.name = "h2o_ccpvdz", .slow = true},
                                            Case{.name = "n2_ccpvdz", .slow = true},
                                            Case{.name = "h2co_ccpvdz_sa2", .slow = true},
                                            Case{.name = "h2co_ccpvdz_sa2_weighted", .slow = true},
