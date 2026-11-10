@@ -14,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, wwrMemcpyAsync, wwrMemsetAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.einsum;
 import free_breakfast.nevpt2.density_fitting;
 import free_breakfast.nevpt2.energy;
@@ -456,6 +457,110 @@ Result<Buffers::device<double>> pc_pt2_transition_density(DeviceResources &res,
   Pt2Blocks b = FBF_TRY(pt2_blocks(res, blocks));
   FBF_TRY(pc_blocks(res, blocks, amps, w, b));
   return assemble(res, blocks, b);
+}
+
+// What weighted_rdms, pt2_blocks and assemble hold for @p ns states beside
+// the walk (@p classes, each class's coefficients and slabs or amplitudes,
+// one at a time, beside the RDMs and blocks): the density kept.
+MemoryFootprint pt2_tail_footprint(const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+                                   const int64_t ns, const size_t classes) {
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const auto nc = static_cast<size_t>(ncore);
+  const auto nv = static_cast<size_t>(nvirt);
+  const size_t nmo = nc + n + nv;
+  const auto states = static_cast<size_t>(ns);
+  const size_t rdms = states * kD * ((n * n) + (2 * n * n * n * n));
+  const size_t blocks = kD * ((nv * n) + (nc * n) + (nv * nc));
+  // The identity beside the RDMs as they are built; then the blocks and a
+  // class at a time; then the density.
+  const size_t peak = std::max(rdms + (kD * n * n), rdms + blocks + classes);
+  const size_t density = kD * nmo * nmo;
+  const size_t held = rdms + blocks;
+  return {.device = {.persistent = density, .scratch = std::max(peak, held + density) - density}};
+}
+
+MemoryFootprint sc_pt2_transition_density_footprint(const int32_t ncore, const int32_t ncas,
+                                                    const int32_t nvirt, const int32_t nelecas,
+                                                    const int32_t nstates, const int32_t batch) {
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const auto nc = static_cast<size_t>(ncore);
+  const auto nv = static_cast<size_t>(nvirt);
+  const auto states = static_cast<size_t>(nstates);
+  const auto width = [&](const ExtBlock block) {
+    const int32_t extent =
+        block_shape(ncore, ncas, nvirt, block)[static_cast<size_t>(batch_axis(block))];
+    return std::min(batch > 0 ? batch : std::max(extent, 1), extent);
+  };
+  const auto slab_bytes = [&](const ExtBlock block) {
+    std::array<int32_t, 4> shape = block_shape(ncore, ncas, nvirt, block);
+    shape[static_cast<size_t>(batch_axis(block))] = width(block);
+    return kD * static_cast<size_t>(
+                    std::ranges::fold_left(shape, int64_t{1}, [](const int64_t a, const int32_t b) {
+                      return a * std::max(b, 0);
+                    }));
+  };
+  const auto product = [&](const ExtBlock block) {
+    return slab_footprint(ncore, ncas, nvirt, block, width(block)).device.scratch;
+  };
+  // sc_blocks' classes: every state's coefficients, the slabs, a product.
+  size_t classes = 0;
+  if (nvirt > 0 && ncas > 0) {
+    classes =
+        std::max(classes, (states * kD * nv) + slab_bytes(ExtBlock::Sr) + product(ExtBlock::Sr));
+  }
+  if (ncore > 0 && ncas > 0) {
+    classes =
+        std::max(classes, (states * kD * nc) + slab_bytes(ExtBlock::Si) + product(ExtBlock::Si));
+  }
+  if (nvirt > 0 && ncore > 0 && ncas > 0) {
+    classes = std::max(classes, (states * kD * nv * nc) + slab_bytes(ExtBlock::Sir1) +
+                                    slab_bytes(ExtBlock::Sir2) +
+                                    std::max(product(ExtBlock::Sir1), product(ExtBlock::Sir2)));
+  }
+  return then(sc_effective_hamiltonian_footprint(ncore, ncas, nvirt, nelecas, nstates, true,
+                                                 nstates * (nstates - 1), batch),
+              pt2_tail_footprint(ncore, ncas, nvirt, nstates, classes));
+}
+
+MemoryFootprint
+pc_pt2_transition_density_footprint(const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+                                    const int32_t nstates, const int32_t batch,
+                                    const std::span<const size_t> syevd_lwork,
+                                    const std::span<const std::array<int64_t, 8>> dropped) {
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const auto nc = static_cast<size_t>(ncore);
+  const auto nv = static_cast<size_t>(nvirt);
+  // pc_blocks: one_body beside each state's class's amplitudes g and S₁ᵀ U,
+  // one class at a time, at its kept modes.
+  const auto m = [&](const int32_t j, const size_t k, const size_t d) {
+    const int64_t cut = std::cmp_less(j, dropped.size()) ? dropped[static_cast<size_t>(j)][k] : 0;
+    return d - static_cast<size_t>(cut);
+  };
+  size_t classes = 0;
+  const size_t n3 = n * n * n;
+  for (int32_t j = 0; j < nstates; ++j) {
+    if (nvirt > 0) {
+      classes = std::max(classes, kD * ((nv * m(j, 0, n3)) + (n * m(j, 0, n3))));
+    }
+    if (ncore > 0) {
+      classes = std::max(classes, kD * ((nc * m(j, 1, n3)) + (n * m(j, 1, n3))));
+    }
+    if (nvirt > 0 && ncore > 0) {
+      classes = std::max(classes, kD * ((nv * nc * m(j, 7, 2 * n * n)) + m(j, 7, 2 * n * n)));
+    }
+  }
+  const MemoryFootprint kets =
+      pc_effective_hamiltonian_footprint(ncore, ncas, nvirt, nstates, true, nstates * (nstates - 1),
+                                         batch, syevd_lwork, true, dropped);
+  // The kets are held to the end, then freed; the density stays.
+  MemoryFootprint out =
+      then(kets, pt2_tail_footprint(ncore, ncas, nvirt, nstates, (2 * kD) + classes));
+  out.device.scratch += out.device.persistent - kD * (nc + n + nv) * (nc + n + nv);
+  out.device.persistent = kD * (nc + n + nv) * (nc + n + nv);
+  return out;
 }
 
 } // namespace free_breakfast::nevpt2

@@ -16,6 +16,7 @@ import free_breakfast.core.constants; // kZero, kOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemmStridedBatched, geam, wwrMemsetAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.core.footprint;
 import free_breakfast.integrals.eri.density_fitting.mo;
 
@@ -300,6 +301,43 @@ MemoryFootprint slab_footprint(const int32_t ncore, const int32_t ncas, const in
     count *= static_cast<size_t>(std::max(extent, 0));
   }
   return {.device = {.scratch = sizeof(double) * count}};
+}
+
+MemoryFootprint slab_adjoint_footprint(const int32_t naux, const int32_t ncore, const int32_t ncas,
+                                       const int32_t nvirt, const ExtBlock block,
+                                       const int32_t width) {
+  // build_slab_adjoint's two regions: C-bar, the slab's count, unless the
+  // layout is C's; X_b, naux nb ny, unless the batch is X's whole extent.
+  const std::array<int32_t, 2> x = pair_extents(ncore, ncas, nvirt, slab_pair(block)[0]);
+  const std::array<int32_t, 2> y = pair_extents(ncore, ncas, nvirt, slab_pair(block)[1]);
+  const auto nb = static_cast<size_t>(std::max(width, 0));
+  const size_t rows = nb * static_cast<size_t>(std::max(x[1], 0));
+  const size_t count = rows * static_cast<size_t>(std::max(y[0], 0) * std::max(y[1], 0));
+  if (count == 0 || naux <= 0) {
+    return {};
+  }
+  const bool identity = slab_axes(block) == std::array<int32_t, 4>{0, 1, 2, 3};
+  const bool whole = std::cmp_equal(nb, x[0]);
+  const auto region = [](const size_t doubles) {
+    return math::align_up(sizeof(double) * doubles, DeviceResources::kWorkspaceAlignment);
+  };
+  return {.device = {.workspace = (identity ? 0 : region(count)) +
+                                  (whole ? 0 : region(static_cast<size_t>(naux) * rows))}};
+}
+
+MemoryFootprint h2e_adjoint_footprint(const int32_t ncas) {
+  const auto n = static_cast<size_t>(std::max(ncas, 0));
+  return {.device = {.workspace = math::align_up(sizeof(double) * n * n * n * n,
+                                                 DeviceResources::kWorkspaceAlignment)}};
+}
+
+MemoryFootprint mo_blocks_adjoint_footprint(const int32_t naux, const int32_t ncore,
+                                            const int32_t nvirt) {
+  const size_t count = static_cast<size_t>(std::max(naux, 0)) *
+                       static_cast<size_t>(std::max(ncore, 0)) *
+                       static_cast<size_t>(std::max(nvirt, 0));
+  return {.device = {.workspace = math::align_up(sizeof(double) * count,
+                                                 DeviceResources::kWorkspaceAlignment)}};
 }
 
 MemoryFootprint h2e_footprint(const int32_t ncas) {

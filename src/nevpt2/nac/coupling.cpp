@@ -14,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -240,6 +241,52 @@ Result<QdNac> qd_pc_nac(DeviceResources &res, const Molecule &molecule, const Ba
                         const mcscf::NacOptions &options, const bool fold) {
   return qd_nac(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, p, q, batch,
                 options, true, fold);
+}
+
+// qd_sc_nac's and qd_pc_nac's footprint without the fold: the coupling, D^PT2
+// over qd_inputs, the two combinations, each freed before the next.
+MemoryFootprint qd_nac_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                                 const int32_t ncas, const int32_t nelecas,
+                                 const int32_t multiplicity, const int32_t nroots,
+                                 const bool rotating, const MemoryFootprint &coupling,
+                                 const MemoryFootprint &density) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  return drop(
+      then(drop(coupling),
+           then(qd_inputs_footprint(naux, nmo, ncore, ncas, nelecas, multiplicity, nroots,
+                                    drop(density)),
+                then(mcscf::df_nac_combination_footprint(basis, aux, ncore, ncas, nelecas,
+                                                         multiplicity, nroots, rotating, false),
+                     mcscf::df_nac_combination_footprint(basis, aux, ncore, ncas, nelecas,
+                                                         multiplicity, nroots, rotating, true)))));
+}
+
+MemoryFootprint qd_sc_nac_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                                    const int32_t ncas, const int32_t nelecas,
+                                    const int32_t multiplicity, const int32_t nroots,
+                                    const bool rotating, const int32_t batch,
+                                    const std::span<const size_t> syevd_lwork) {
+  const auto nvirt = static_cast<int32_t>(basis.nao_sphe()) - ncore - ncas;
+  return qd_nac_footprint(
+      basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating,
+      qd_sc_coupling_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating,
+                               batch, syevd_lwork),
+      sc_pt2_transition_density_footprint(ncore, ncas, nvirt, nelecas, nroots, batch));
+}
+
+MemoryFootprint qd_pc_nac_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                                    const int32_t ncas, const int32_t nelecas,
+                                    const int32_t multiplicity, const int32_t nroots,
+                                    const bool rotating, const int32_t batch,
+                                    const std::span<const size_t> syevd_lwork,
+                                    const std::span<const std::array<int64_t, 8>> dropped) {
+  const auto nvirt = static_cast<int32_t>(basis.nao_sphe()) - ncore - ncas;
+  return qd_nac_footprint(
+      basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating,
+      qd_pc_coupling_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating,
+                               batch, syevd_lwork, dropped),
+      pc_pt2_transition_density_footprint(ncore, ncas, nvirt, nroots, batch, syevd_lwork, dropped));
 }
 
 } // namespace free_breakfast::nevpt2

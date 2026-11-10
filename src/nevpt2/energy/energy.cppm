@@ -235,6 +235,21 @@ sc_effective_hamiltonian(DeviceResources &res, const MoBlocks &blocks,
                          std::span<const EnergyInputs> pairs, int32_t batch,
                          ScAmplitudes *amplitudes = nullptr);
 
+/// @brief What @ref sc_effective_hamiltonian holds over @p nstates states of
+/// @p nelecas active electrons on @p ncore, @p ncas and @p nvirt orbitals (the
+/// blocks' counts) at @p batch, with every diagonal entry given (@p diagonal)
+/// or none, and @p transitions off-diagonal entries given: each entry's
+/// identity, held throughout; then a class at a time, its per-state and
+/// per-pair intermediates and its walk over the given entries' tables. Its
+/// workspace is make_a16's and make_a22's fdm2s, taken only with the diagonal.
+/// For @ref kBatchFromBudget it is at a batch of one, the least the call runs
+/// with. class_energies_footprint is one state, its diagonal given.
+[[nodiscard]] MemoryFootprint sc_effective_hamiltonian_footprint(int32_t ncore, int32_t ncas,
+                                                                 int32_t nvirt, int32_t nelecas,
+                                                                 int32_t nstates, bool diagonal,
+                                                                 int32_t transitions,
+                                                                 int32_t batch);
+
 /// @brief Where class_energies_adjoint adds the bars dE/dx of the class-level
 /// inputs, all on the device, each in its EnergyInputs field's layout (or,
 /// for @ref lambda, nevpt2::slab_adjoint's). Every bar is added onto, so the
@@ -307,6 +322,17 @@ struct ClassEnergiesAdjoint {
 [[nodiscard]] Result<ClassEnergiesAdjoint>
 class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                        int32_t batch, const EnergyBars &bars);
+
+/// @brief What @ref class_energies_adjoint holds over @p naux fitting
+/// functions, @p ncore, @p ncas and @p nvirt orbitals and @p nelecas active
+/// electrons at @p batch, every bar wanted (Λ, h1e_v's rows, the RDMs'): the
+/// state's identity; the block bars; a class at a time, its blocks, its slabs
+/// and their bars, and each slab's tables and multipliers; the blocks' sweep;
+/// Sijrs's walk and the orbital energies' upload.
+/// sc_effective_hamiltonian_adjoint_footprint at one state.
+[[nodiscard]] MemoryFootprint class_energies_adjoint_footprint(int32_t naux, int32_t ncore,
+                                                               int32_t ncas, int32_t nvirt,
+                                                               int32_t nelecas, int32_t batch);
 
 /// @brief One direction class_energies_tangent (and pc_class_energies_tangent)
 /// differentiates along: a tangent of every EnergyInputs field and of B. A
@@ -520,6 +546,18 @@ struct ScEffectiveHamiltonianAdjoint {
     std::span<const double> hbar, int32_t batch, std::span<const EnergyBars> bars,
     const std::function<Status(int64_t bra, int64_t ket, const EnergyBars &transition)>
         &transition);
+
+/// @brief What @ref sc_effective_hamiltonian_adjoint holds over @p nstates
+/// states, as class_energies_adjoint_footprint over one, @p transition the
+/// footprint of one call of its @p transition (none for an empty one): each
+/// entry's identity; the states' own walks' evaluation (n > 1); per pair its
+/// metrics' bars, both orders' walks, and per order the transition RDMs'
+/// bars swept and handed to @p transition; then each state's own walk and
+/// sweep; Sijrs; the orbital energies.
+[[nodiscard]] MemoryFootprint
+sc_effective_hamiltonian_adjoint_footprint(int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt,
+                                           int32_t nelecas, int32_t nstates, int32_t batch,
+                                           const MemoryFootprint &transition = {});
 
 /// @brief sc_effective_hamiltonian_tangent's result: the matrix it walked,
 /// every pair's transition tables and their tangents, and Ċ per element.
@@ -750,6 +788,14 @@ struct PcClassEnergies {
                                                         const MoBlocks &blocks,
                                                         const EnergyInputs &in, int32_t batch);
 
+/// @brief What @ref pc_class_energies holds: pc_effective_hamiltonian_footprint
+/// of one state, its diagonal given and no kets kept, its modes dropped as
+/// @p dropped says (PcClassEnergies::dropped; none when empty, the most).
+[[nodiscard]] MemoryFootprint
+pc_class_energies_footprint(int32_t ncore, int32_t ncas, int32_t nvirt, int32_t batch,
+                            std::span<const size_t> syevd_lwork,
+                            const std::array<int64_t, 8> &dropped = {});
+
 /// @brief The PC-QD-NEVPT2 second-order effective Hamiltonian of n states that
 /// share orbitals: element [I n + J] holds, per class, ⟨I|V|Ψ_J⁽¹⁾⟩, the
 /// unsymmetrized correction with I the bra (row) and J the ket (column).
@@ -798,6 +844,30 @@ pc_effective_hamiltonian(DeviceResources &res, const MoBlocks &blocks,
                          std::span<const EnergyInputs> pairs, int32_t batch,
                          PcAmplitudes *amplitudes = nullptr);
 
+/// @brief What @ref pc_effective_hamiltonian holds over @p nstates states on
+/// @p ncore, @p ncas and @p nvirt orbitals at @p batch, with every diagonal
+/// entry given (@p diagonal) or none (the kets then @p amplitudes' of an
+/// earlier call), and @p transitions off-diagonal entries given: each
+/// entry's identity, held throughout; then a class at a time, its matrices
+/// and solve per state (S and K symmetrized, S's eigenvectors, X, K', U and
+/// T, and T₁ where the class has an S₁) and per transition (its T and T₁),
+/// and its walk. With @p amplitudes and the diagonal, every class's U_J,
+/// d x m_J per state, is the persistent part: the kets handed over. Its
+/// workspace is make_a16's and make_a22's fdm2s and diagonalize's work at
+/// each solve's two orders, d and m_J (@p syevd_lwork indexed by order, as
+/// recipes::syevd_lwork gives it, through 2 ncas² and ncas³).
+///
+/// m_J, the modes state J's solve keeps, is the data's: @p dropped[J][k] is
+/// d - m_J of class k in PcClassEnergies' order (Sijrs's unread), each 0
+/// when @p dropped is empty, which is the most a call holds. For
+/// @ref kBatchFromBudget it is at a batch of one, the least the call runs
+/// with.
+[[nodiscard]] MemoryFootprint
+pc_effective_hamiltonian_footprint(int32_t ncore, int32_t ncas, int32_t nvirt, int32_t nstates,
+                                   bool diagonal, int32_t transitions, int32_t batch,
+                                   std::span<const size_t> syevd_lwork, bool amplitudes,
+                                   std::span<const std::array<int64_t, 8>> dropped = {});
+
 /// @brief pc_class_energies_adjoint's result: the energies it walked, and each
 /// class's degree-one homogeneity assembled from its bars.
 struct PcClassEnergiesAdjoint {
@@ -841,6 +911,13 @@ struct PcClassEnergiesAdjoint {
 [[nodiscard]] Result<PcClassEnergiesAdjoint>
 pc_class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                           int32_t batch, const EnergyBars &bars);
+
+/// @brief What @ref pc_class_energies_adjoint holds:
+/// pc_effective_hamiltonian_adjoint_footprint at one state.
+[[nodiscard]] MemoryFootprint
+pc_class_energies_adjoint_footprint(int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt,
+                                    int32_t batch, std::span<const size_t> syevd_lwork,
+                                    const std::array<int64_t, 8> &dropped = {});
 
 /// @brief pc_class_energies_tangent's result: the energies it walked, and Ė
 /// per class along each direction.
@@ -1051,6 +1128,29 @@ struct PcEffectiveHamiltonianAdjoint {
     std::span<const double> hbar, int32_t batch, std::span<const EnergyBars> bars,
     const std::function<Status(int64_t bra, int64_t ket, const EnergyBars &transition)>
         &transition);
+
+/// @brief What @ref pc_effective_hamiltonian_adjoint holds over @p nstates
+/// states on @p naux fitting functions and @p ncore, @p ncas and @p nvirt
+/// orbitals at @p batch, every bar wanted, @p transition the footprint of one
+/// call of its @p transition: each entry's identity and block bars, held
+/// throughout; then a class at a time, its kets with their dropped modes
+/// kept (pc_effective_hamiltonian_footprint's solves, and each solve's V,
+/// V_nᵀ K U and leaks where it drops modes), each pair's walk bars, its
+/// slabs and their bars, each slab's rows, multipliers and their bars, and
+/// its finish (the span's bar per state, each pair's matrix bars and their
+/// way back); the orbital energies; each state's sweep; each transition's
+/// RDM bars swept and handed over. Its workspace adds to the forward's
+/// the slabs' adjoints'.
+///
+/// A class's peak depends on the modes its solves keep: @p dropped[J][k] is
+/// d - m_J of class k (PcClassEnergies::dropped). Empty, every class is at
+/// the rank, m from 1 to d and every state's the same, that holds the most:
+/// a solve that drops modes keeps their V and leaks, so the most is not
+/// always at m = d.
+[[nodiscard]] MemoryFootprint pc_effective_hamiltonian_adjoint_footprint(
+    int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt, int32_t nstates, int32_t batch,
+    std::span<const size_t> syevd_lwork, std::span<const std::array<int64_t, 8>> dropped = {},
+    const MemoryFootprint &transition = {});
 
 /// @brief pc_effective_hamiltonian_tangent's result: the matrix it walked,
 /// and Ċ per element and class.

@@ -20,6 +20,8 @@ import free_breakfast.core.constants; // kOne, kHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, axpy, scal, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -1355,6 +1357,321 @@ Result<PcGradient> pc_gradient(DeviceResources &res, const Molecule &molecule,
                     .zc = std::move(g.zc),
                     .multipliers = std::move(g.multipliers),
                     .asymmetry = g.asymmetry};
+}
+
+// The active space's strings and CI dimension at @p nelecas electrons and
+// @p multiplicity in @p ncas orbitals, as active_strings and root_strings
+// take them.
+struct ActiveShape {
+  int32_t n_alpha = 0;
+  int32_t n_beta = 0;
+  int32_t alpha_strings = 0;
+  int32_t beta_strings = 0;
+  size_t dim = 0;
+};
+
+ActiveShape active_shape(const int32_t ncas, const int32_t nelecas, const int32_t multiplicity) {
+  ActiveShape out;
+  out.n_beta = (nelecas - (multiplicity - 1)) / 2;
+  out.n_alpha = nelecas - out.n_beta;
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  out.alpha_strings = strings(out.n_alpha);
+  out.beta_strings = strings(out.n_beta);
+  out.dim = static_cast<size_t>(out.alpha_strings) * static_cast<size_t>(out.beta_strings);
+  return out;
+}
+
+// What lagrangian_fock holds, freed on its return: the integrals and the Fock.
+MemoryFootprint lagrangian_fock_footprint(const int32_t nmo, const int32_t naux,
+                                          const int32_t ncore, const int32_t ncas) {
+  return drop(then(casscf_integrals_footprint(nmo, naux, ncore, ncas),
+                   response::fock_footprint(nmo, naux, ncore, ncas)));
+}
+
+// What lagrangian_zvector holds for @p nroots roots over one column, beside
+// the caller's: the sigma's tables, the Hessian, the CI-relaxed Hessian, the
+// sigma's apply scratch its products grow to Layout::full and zvector's; the
+// ZVector kept, the rest freed on return.
+MemoryFootprint lagrangian_zvector_footprint(const int32_t nmo, const int32_t naux,
+                                             const int32_t ncore, const int32_t ncas,
+                                             const ActiveShape &ci, const int32_t nroots,
+                                             const bool rotating, const bool theta_rhs) {
+  const int32_t n_pairs = (ncore * (nmo - ncore)) + (ncas * (nmo - ncore - ncas));
+  Held h;
+  h.take(ci::sigma_footprint(ncas, ci.alpha_strings, ci.beta_strings).device.persistent);
+  h.call(response::hessian_footprint(nmo, naux, ncore, ncas));
+  h.call(response::relaxed_hessian_footprint(ncas, ci.n_alpha, ci.n_beta, nroots, nmo, ncore));
+  h.take(ci::sigma_apply_bytes(ncas, ci.alpha_strings, ci.beta_strings, ci::Layout::full));
+  const size_t before = h.live;
+  const MemoryFootprint z = response::zvector_footprint(
+      n_pairs, static_cast<int32_t>(ci.dim), nroots,
+      response::hessian_apply_footprint(nmo, naux, ncore, ncas), rotating, theta_rhs);
+  h.call(z);
+  h.give(before);
+  return h.footprint(h.live);
+}
+
+// What lagrangian_asymmetry holds at @p nroots roots, freed on its return:
+// γ and Γ; per sign the shifted vectors and the RDMs' build; the Lagrangian's
+// Fock (twice with @p core_shift); κ and the moved orbitals, and the
+// stencil's four Focks.
+MemoryFootprint lagrangian_asymmetry_footprint(const int32_t nmo, const int32_t naux,
+                                               const int32_t ncore, const int32_t ncas,
+                                               const ActiveShape &ci, const int32_t nroots,
+                                               const bool core_shift) {
+  const auto n = static_cast<size_t>(ncas);
+  const auto mo = static_cast<size_t>(nmo);
+  const size_t block = sizeof(double) * ci.dim * static_cast<size_t>(nroots);
+  const MemoryFootprint fock = lagrangian_fock_footprint(nmo, naux, ncore, ncas);
+  Held h;
+  h.take(sizeof(double) * ((n * n) + (n * n * n * n)));
+  h.take(block);
+  h.call(ci::rdm12_footprint(ncas, static_cast<int32_t>(ci.dim)));
+  h.give(block);
+  h.call(fock);
+  if (core_shift) {
+    h.call(fock);
+  }
+  h.take(2 * sizeof(double) * mo * mo);
+  h.call(fock);
+  return drop(h.footprint(h.live));
+}
+
+MemoryFootprint lagrangian_gradient_footprint(const BasisSet &basis, const BasisSet &aux,
+                                              const int32_t ncore, const int32_t ncas,
+                                              const int32_t nelecas, const int32_t multiplicity) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const ActiveShape ci = active_shape(ncas, nelecas, multiplicity);
+  const auto n_pairs = static_cast<size_t>((ncore * (nmo - ncore)) + (ncas * (nmo - ncore - ncas)));
+  Held h;
+  // The active strings; the integrals, the root's Fock and the two
+  // right-hand sides.
+  h.call(ci::device_string_set_footprint(ncas, ci.n_alpha));
+  h.call(ci::device_string_set_footprint(ncas, ci.n_beta));
+  h.call(casscf_integrals_footprint(nmo, naux, ncore, ncas));
+  h.call(response::fock_footprint(nmo, naux, ncore, ncas));
+  h.take(sizeof(double) * (n_pairs + ci.dim));
+  const size_t held = h.live;
+  // The Z-vector, kept; the gate; the gradient.
+  const MemoryFootprint z =
+      lagrangian_zvector_footprint(nmo, naux, ncore, ncas, ci, 1, false, false);
+  h.call(z);
+  h.call(lagrangian_asymmetry_footprint(nmo, naux, ncore, ncas, ci, 1, false));
+  h.call(mcscf::df_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, 1, false,
+                                      mcscf::GradientForm::Mix, true, true));
+  h.give(held);
+  return h.footprint(h.live);
+}
+
+// sc_gradient's and pc_gradient's footprint, @p adjoint the correlation
+// energy's adjoint's.
+MemoryFootprint state_gradient_footprint(const BasisSet &basis, const BasisSet &aux,
+                                         const int32_t ncore, const int32_t ncas,
+                                         const int32_t nelecas, const int32_t multiplicity,
+                                         const MemoryFootprint &adjoint) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const ActiveShape ci = active_shape(ncas, nelecas, multiplicity);
+  Held h;
+  // The root's strings; the adjoint, z^c and Φ's adjoint, kept; the
+  // Lagrangian's gradient, which frees the adjoint; then Φ's and the strings.
+  h.call(ci::device_string_set_footprint(ncas, ci.n_alpha));
+  h.call(ci::device_string_set_footprint(ncas, ci.n_beta));
+  const size_t strings = h.live;
+  h.call(adjoint);
+  const MemoryFootprint zc = zc_multipliers_footprint(nmo);
+  h.call(zc);
+  const MemoryFootprint phi = zc_adjoint_footprint(naux, nmo, nmo, ncas, ci.n_alpha, ci.n_beta, 1);
+  h.call(phi);
+  const MemoryFootprint lagrangian =
+      lagrangian_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity);
+  h.call(lagrangian);
+  h.give(adjoint.device.persistent + phi.device.persistent + strings);
+  return h.footprint(zc.device.persistent + lagrangian.device.persistent);
+}
+
+MemoryFootprint sc_gradient_footprint(const BasisSet &basis, const BasisSet &aux,
+                                      const int32_t ncore, const int32_t ncas,
+                                      const int32_t nelecas, const int32_t multiplicity,
+                                      const int32_t batch, const int32_t nfrozen) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const ActiveShape ci = active_shape(ncas, nelecas, multiplicity);
+  return state_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity,
+                                  sc_adjoint_footprint(static_cast<int32_t>(aux.nao_sphe()), nmo,
+                                                       nmo, ncore, ncas, ci.n_alpha, ci.n_beta,
+                                                       batch, nfrozen));
+}
+
+MemoryFootprint pc_gradient_footprint(const BasisSet &basis, const BasisSet &aux,
+                                      const int32_t ncore, const int32_t ncas,
+                                      const int32_t nelecas, const int32_t multiplicity,
+                                      const int32_t batch,
+                                      const std::span<const size_t> syevd_lwork,
+                                      const int32_t nfrozen,
+                                      const std::span<const std::array<int64_t, 8>> dropped) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const ActiveShape ci = active_shape(ncas, nelecas, multiplicity);
+  return state_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity,
+                                  pc_adjoint_footprint(static_cast<int32_t>(aux.nao_sphe()), nmo,
+                                                       nmo, ncore, ncas, ci.n_alpha, ci.n_beta,
+                                                       batch, syevd_lwork, nfrozen, dropped));
+}
+
+// qd_sc_gradient's and qd_pc_gradient's state forms' footprint, @p energy and
+// @p adjoint the effective Hamiltonian's forward over every pair (over
+// qd_arrays) and the QD adjoint's.
+MemoryFootprint qd_state_gradient_footprint(
+    const BasisSet &basis, const BasisSet &aux, const int32_t ncore, const int32_t ncas,
+    const int32_t nelecas, const int32_t multiplicity, const int32_t nroots, const bool rotating,
+    const int32_t nfrozen, const MemoryFootprint &energy, const MemoryFootprint &adjoint,
+    const std::span<const size_t> syevd_lwork, const bool coupling = false) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const ActiveShape ci = active_shape(ncas, nelecas, multiplicity);
+  const auto roots = static_cast<size_t>(nroots);
+  const auto n = static_cast<size_t>(ncas);
+  const auto n_pairs = static_cast<size_t>((ncore * (nmo - ncore)) + (ncas * (nmo - ncore - ncas)));
+  Held h;
+  // qd_setup's strings; the energy over qd_arrays; H_eff's eigensolve.
+  h.call(ci::device_string_set_footprint(ncas, ci.n_alpha));
+  h.call(ci::device_string_set_footprint(ncas, ci.n_beta));
+  const size_t strings = h.live;
+  h.call(drop(then(qd_arrays_footprint(naux, nmo, nmo, ncore, ncas, nroots, nfrozen), energy)));
+  h.take(sizeof(double) * ((roots * roots) + roots));
+  if (roots < syevd_lwork.size()) {
+    h.borrow(diagonalize_footprint<double>(syevd_lwork[roots]));
+  }
+  h.give(sizeof(double) * ((roots * roots) + roots));
+  // qd_lagrangian at the state's W: the adjoint, the integrals and the
+  // averaged Fock, the right-hand sides; z^c, Φ^SA (freed after the column),
+  // the root pairs' multipliers and ζ's terms, the RDMs at ρ, their Fock
+  // (freed after the column); the Z-vector; the gate.
+  h.call(adjoint);
+  const MemoryFootprint zc = zc_multipliers_footprint(nmo);
+  const MemoryFootprint zeta =
+      mcscf::zeta_terms_footprint(nmo, naux, ncore, ncas, static_cast<int32_t>(ci.dim));
+  const MemoryFootprint ints = casscf_integrals_footprint(nmo, naux, ncore, ncas);
+  const MemoryFootprint fock = response::fock_footprint(nmo, naux, ncore, ncas);
+  h.call(ints);
+  h.call(fock);
+  const size_t rhs = sizeof(double) * (n_pairs + (ci.dim * roots));
+  h.take(rhs);
+  h.call(zc);
+  const MemoryFootprint phi =
+      zc_adjoint_footprint(naux, nmo, nmo, ncas, ci.n_alpha, ci.n_beta, nroots);
+  h.call(phi);
+  h.call(mcscf::root_pair_multipliers_footprint(nroots));
+  h.call(zeta);
+  const size_t rdms = sizeof(double) * ((n * n) + (n * n * n * n));
+  h.take(rdms);
+  h.call(ci::rdm12_footprint(ncas, static_cast<int32_t>(ci.dim)));
+  h.give(rdms);
+  h.call(fock);
+  // A coupling's W has trace 0: the core's Fock, kept to the solve's end.
+  if (coupling) {
+    h.call(fock);
+  }
+  h.give(fock.device.persistent + phi.device.persistent);
+  const MemoryFootprint z =
+      lagrangian_zvector_footprint(nmo, naux, ncore, ncas, ci, nroots, rotating, nroots > 1);
+  h.call(z);
+  h.call(lagrangian_asymmetry_footprint(nmo, naux, ncore, ncas, ci, nroots, coupling));
+  h.give(ints.device.persistent + ((coupling ? 2 : 1) * fock.device.persistent) + rhs + strings);
+  // The two derivative passes.
+  h.call(mcscf::df_gradient_footprint(
+      basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating,
+      coupling ? mcscf::GradientForm::ZeroMix : mcscf::GradientForm::Mix, true, true));
+  h.call(mcscf::df_gradient_footprint(basis, aux, ncore, ncas, nelecas, multiplicity, nroots,
+                                      rotating, mcscf::GradientForm::Transition));
+  return h.footprint(adjoint.device.persistent + zc.device.persistent + zeta.device.persistent +
+                     z.device.persistent);
+}
+
+MemoryFootprint
+qd_sc_gradient_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                         const int32_t ncas, const int32_t nelecas, const int32_t multiplicity,
+                         const int32_t nroots, const bool rotating, const int32_t batch,
+                         const std::span<const size_t> syevd_lwork, const int32_t nfrozen) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const ActiveShape ci = active_shape(ncas, nelecas, multiplicity);
+  const int32_t nvirt = nmo - ncore - ncas;
+  return qd_state_gradient_footprint(
+      basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating, nfrozen,
+      sc_effective_hamiltonian_footprint(ncore - nfrozen, ncas, nvirt, nelecas, nroots, true,
+                                         nroots * (nroots - 1), batch),
+      qd_sc_adjoint_footprint(naux, nmo, nmo, ncore, ncas, ci.n_alpha, ci.n_beta, nroots, batch,
+                              nfrozen),
+      syevd_lwork);
+}
+
+MemoryFootprint
+qd_pc_gradient_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                         const int32_t ncas, const int32_t nelecas, const int32_t multiplicity,
+                         const int32_t nroots, const bool rotating, const int32_t batch,
+                         const std::span<const size_t> syevd_lwork, const int32_t nfrozen,
+                         const std::span<const std::array<int64_t, 8>> dropped) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const ActiveShape ci = active_shape(ncas, nelecas, multiplicity);
+  const int32_t nvirt = nmo - ncore - ncas;
+  return qd_state_gradient_footprint(
+      basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating, nfrozen,
+      pc_effective_hamiltonian_footprint(ncore - nfrozen, ncas, nvirt, nroots, true,
+                                         nroots * (nroots - 1), batch, syevd_lwork, false, dropped),
+      qd_pc_adjoint_footprint(naux, nmo, nmo, ncore, ncas, ci.n_alpha, ci.n_beta, nroots, batch,
+                              syevd_lwork, nfrozen, dropped),
+      syevd_lwork);
+}
+
+MemoryFootprint qd_inputs_footprint(const int32_t naux, const int32_t nmo, const int32_t ncore,
+                                    const int32_t ncas, const int32_t nelecas,
+                                    const int32_t multiplicity, const int32_t nroots,
+                                    const MemoryFootprint &use, const int32_t nfrozen) {
+  const ActiveShape ci = active_shape(ncas, nelecas, multiplicity);
+  return drop(
+      then(ci::device_string_set_footprint(ncas, ci.n_alpha),
+           then(ci::device_string_set_footprint(ncas, ci.n_beta),
+                then(qd_arrays_footprint(naux, nmo, nmo, ncore, ncas, nroots, nfrozen), use))));
+}
+
+MemoryFootprint qd_sc_coupling_footprint(const BasisSet &basis, const BasisSet &aux,
+                                         const int32_t ncore, const int32_t ncas,
+                                         const int32_t nelecas, const int32_t multiplicity,
+                                         const int32_t nroots, const bool rotating,
+                                         const int32_t batch,
+                                         const std::span<const size_t> syevd_lwork) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const ActiveShape ci = active_shape(ncas, nelecas, multiplicity);
+  return qd_state_gradient_footprint(
+      basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating, 0,
+      sc_effective_hamiltonian_footprint(ncore, ncas, nmo - ncore - ncas, nelecas, nroots, true,
+                                         nroots * (nroots - 1), batch),
+      qd_sc_adjoint_footprint(naux, nmo, nmo, ncore, ncas, ci.n_alpha, ci.n_beta, nroots, batch),
+      syevd_lwork, true);
+}
+
+MemoryFootprint qd_pc_coupling_footprint(const BasisSet &basis, const BasisSet &aux,
+                                         const int32_t ncore, const int32_t ncas,
+                                         const int32_t nelecas, const int32_t multiplicity,
+                                         const int32_t nroots, const bool rotating,
+                                         const int32_t batch,
+                                         const std::span<const size_t> syevd_lwork,
+                                         const std::span<const std::array<int64_t, 8>> dropped) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const ActiveShape ci = active_shape(ncas, nelecas, multiplicity);
+  return qd_state_gradient_footprint(
+      basis, aux, ncore, ncas, nelecas, multiplicity, nroots, rotating, 0,
+      pc_effective_hamiltonian_footprint(ncore, ncas, nmo - ncore - ncas, nroots, true,
+                                         nroots * (nroots - 1), batch, syevd_lwork, false, dropped),
+      qd_pc_adjoint_footprint(naux, nmo, nmo, ncore, ncas, ci.n_alpha, ci.n_beta, nroots, batch,
+                              syevd_lwork, 0, dropped),
+      syevd_lwork, true);
 }
 
 } // namespace free_breakfast::nevpt2

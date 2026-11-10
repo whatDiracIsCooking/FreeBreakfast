@@ -18,8 +18,9 @@ free_breakfast_add_gpu_device_library(
 # The module: nevpt2's MO blocks, h2e and slabs. DeviceResources, Buffers and
 # Result are in its signatures, so core::resources, core::wwr and
 # core::error_handling are PUBLIC, as is core::footprint for its
-# MemoryFootprints. b_mo, the gemm's constants, the FBF_TRY
-# header and the device library are the implementation unit's alone.
+# MemoryFootprints. b_mo, the gemm's constants, math::align_up (the
+# workspace regions), the FBF_TRY header and the device library are the
+# implementation unit's alone.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.nevpt2.density_fitting
@@ -36,6 +37,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::footprint
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::eri::density_fitting::mo
   free_breakfast::nevpt2::density_fitting::device

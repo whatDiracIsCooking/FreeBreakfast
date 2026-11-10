@@ -12,6 +12,8 @@ import free_breakfast.core.constants; // kOne, kTwo, kZero, kNegHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, gemmStridedBatched, geam, scal, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up, math::binomial
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.einsum;
 import free_breakfast.integrals.eri.density_fitting.mo; // b_mo
@@ -262,6 +264,50 @@ Result<ZcAdjoint> zc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
                    .y = std::move(y),
                    .x = std::move(x),
                    .a = std::move(a)};
+}
+
+MemoryFootprint zc_multipliers_footprint(const int32_t nmo) {
+  const auto n = static_cast<size_t>(std::max(nmo, 0));
+  return {.device = {.persistent = sizeof(double) * n * n}};
+}
+
+MemoryFootprint zc_adjoint_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
+                                     const int32_t ncas, const int32_t n_alpha,
+                                     const int32_t n_beta, const int32_t nroots) {
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha = strings(n_alpha);
+  const int32_t beta = strings(n_beta);
+  const size_t ndet = static_cast<size_t>(alpha) * static_cast<size_t>(beta);
+  const auto q = static_cast<size_t>(naux);
+  const auto mo = static_cast<size_t>(nmo);
+  const auto n = static_cast<size_t>(ncas);
+  const size_t nn = sizeof(double) * mo * mo;
+  const auto region = [](const size_t doubles) {
+    return math::align_up(sizeof(double) * doubles, DeviceResources::kWorkspaceAlignment);
+  };
+  // In zc_adjoint's order, every buffer held to its return: the sigma's
+  // tables (its rdm1 the workspace), γ, D, h, B, g, w, f, Λ, W's block, Φ,
+  // X, A, h̄, y and the sigma's apply scratch, grown by its one apply.
+  const MemoryFootprint sigma = ci::sigma_footprint(ncas, alpha, beta);
+  const size_t persistent =
+      (q * nn) + (3 * nn) + (sizeof(double) * ndet * static_cast<size_t>(nroots));
+  const size_t total = sigma.device.persistent + (sizeof(double) * n * n) + (2 * nn) + (q * nn) +
+                       (sizeof(double) * 2 * q) + nn + (q * nn) + (sizeof(double) * n * n) +
+                       sizeof(double) + (3 * nn) +
+                       (sizeof(double) * ndet * static_cast<size_t>(nroots)) +
+                       ci::sigma_apply_bytes(ncas, alpha, beta, ci::Layout::full);
+  size_t workspace = std::max(sigma.device.workspace, region(static_cast<size_t>(nao) * mo));
+  if (naux > 0) {
+    workspace =
+        std::max({workspace,
+                  b_mo_footprint(naux, nao, {.first = 0, .count = nmo}, {.first = 0, .count = nmo})
+                      .device.workspace,
+                  2 * region(q * mo * mo)});
+  }
+  return {
+      .device = {.persistent = persistent, .scratch = total - persistent, .workspace = workspace}};
 }
 
 } // namespace free_breakfast::nevpt2

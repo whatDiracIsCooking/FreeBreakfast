@@ -16,6 +16,7 @@ import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.nevpt2.energy; // nevpt2::{Pc,}ClassEnergies, in the product
 export import free_breakfast.pipeline.casscf;
 
@@ -115,6 +116,12 @@ struct Nevpt2Step {
   [[nodiscard]] static Result<int32_t> resolve_frozen_core(std::string_view step,
                                                            int32_t frozen_core,
                                                            const Molecule &molecule, int32_t ncore);
+  /// @brief The same over the molecule's @p atoms alone, as a footprint has
+  /// them (FootprintDimensions::atoms).
+  [[nodiscard]] static Result<int32_t> resolve_frozen_core(std::string_view step,
+                                                           int32_t frozen_core,
+                                                           std::span<const Atom> atoms,
+                                                           int32_t ncore);
 
   /// @brief Each root's SC-NEVPT2, PySCF's `mrpt.NEVPT(mc, root=r)` over
   /// density fitting, and its PC-NEVPT2. Per root, on res.stream():
@@ -167,6 +174,23 @@ struct Nevpt2Step {
   [[nodiscard]] Result<Nevpt2Output> run(View<MoleculeOutput, BasisSetOutput, EriOutput,
                                               CoreHamiltonianOutput, ScfOutput, CasscfOutput> in,
                                          DeviceResources &res) const;
+
+  /// @brief What @ref run holds at @p dims, all of it freed on return (the
+  /// product is on the host): the fitted (pq|uv), (pu|qv) and Hamiltonian,
+  /// the strings, the CI vectors of the planned CASSCF's roots
+  /// (dims.casscf_nroots) and the per-root arrays (every root's RDM slots
+  /// with @ref quasi_degenerate); then per root, its γ and Γ, its Fock and
+  /// canonical orbitals, its MO blocks and h2e, nevpt2::rdms at one
+  /// determinant, and the SC and PC classes at a batch of one (the adaptive
+  /// parts at the least they run with); with @ref quasi_degenerate, the
+  /// state-averaged inputs, both effective Hamiltonians' diagonal walk with
+  /// PC's kets kept, a pair's transition RDMs and couplings, and the two
+  /// eigensolves. PC's every class is counted at its whole basis, no mode
+  /// cut, the most it holds. Sized over the active space at @p dims, ncore
+  /// from the electrons, and @ref frozen_core over dims.atoms. Empty for what
+  /// @ref run refuses before allocating: an open shell, no density fitting,
+  /// @ref quasi_degenerate under two roots, or a frozen core past the core.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast

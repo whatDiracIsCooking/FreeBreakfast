@@ -24,7 +24,10 @@ import free_breakfast.core.constants; // kOne, kZero, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, geam, wwrMemsetAsync, gpu_status
 import free_breakfast.core.resources;
-import free_breakfast.recipes.blas; // gemm
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;
+import free_breakfast.recipes.blas;        // gemm
+import free_breakfast.recipes.diagonalize; // diagonalize_footprint
 import free_breakfast.recipes.einsum;
 import free_breakfast.nevpt2.density_fitting;
 import :shared;
@@ -2216,6 +2219,262 @@ Result<ClassEnergiesAdjoint> class_energies_adjoint(DeviceResources &res, const 
   ScEffectiveHamiltonianAdjoint got =
       FBF_TRY(sc_couplings_adjoint(res, blocks, {&in, 1}, 1, {&one, 1}, batch, {&bars, 1}, {}));
   return ClassEnergiesAdjoint{.energies = got.elements.front(), .eq40 = got.eq40};
+}
+
+MemoryFootprint class_energies_adjoint_footprint(const int32_t naux, const int32_t ncore,
+                                                 const int32_t ncas, const int32_t nvirt,
+                                                 const int32_t nelecas, const int32_t batch) {
+  return sc_effective_hamiltonian_adjoint_footprint(naux, ncore, ncas, nvirt, nelecas, 1, batch);
+}
+
+MemoryFootprint sc_effective_hamiltonian_adjoint_footprint(const int32_t naux, const int32_t ncore,
+                                                           const int32_t ncas, const int32_t nvirt,
+                                                           const int32_t nelecas,
+                                                           const int32_t nstates,
+                                                           const int32_t batch,
+                                                           const MemoryFootprint &transition) {
+  // sc_couplings_adjoint, every allocation in its order (each reverse_*
+  // walk, block_bars, the sweeps and Sijrs above), in bytes.
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = kD * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  const auto nc = static_cast<size_t>(ncore);
+  const auto nv = static_cast<size_t>(nvirt);
+  const auto states = static_cast<size_t>(nstates);
+  const auto extent = [&](const ExtBlock block) {
+    return block_shape(ncore, ncas, nvirt, block)[static_cast<size_t>(batch_axis(block))];
+  };
+  const auto width = [&](const ExtBlock block) {
+    return std::min(batch_step(extent(block), batch), extent(block));
+  };
+  const auto slab_bytes = [&](const ExtBlock block) {
+    std::array<int32_t, 4> shape = block_shape(ncore, ncas, nvirt, block);
+    shape[static_cast<size_t>(batch_axis(block))] = width(block);
+    return kD * static_cast<size_t>(
+                    std::ranges::fold_left(shape, int64_t{1}, [](const int64_t a, const int32_t b) {
+                      return a * std::max(b, 0);
+                    }));
+  };
+  const size_t region = math::align_up(n4, DeviceResources::kWorkspaceAlignment);
+  const auto doubles = [](const size_t count) {
+    return math::align_up(kD * count, DeviceResources::kWorkspaceAlignment);
+  };
+  // make_a22's fdm2s (make_a16's one); einsum_adjoint's scatter of a
+  // repeated label, Sir's raai over (r, i) and the sweeps' h2e traces over
+  // n², and its run of h1e_v's rows when a batch is not the whole extent.
+  size_t workspace = std::max(
+      {2 * region, doubles(n * n), doubles(static_cast<size_t>(width(ExtBlock::Sir1)) * nc)});
+  if (width(ExtBlock::Sr) < extent(ExtBlock::Sr)) {
+    workspace = std::max({workspace, doubles(static_cast<size_t>(width(ExtBlock::Sr)) * n),
+                          doubles(static_cast<size_t>(width(ExtBlock::Sir1)) * nc)});
+  }
+  const auto adjoint_workspace = [&](const ExtBlock block) {
+    workspace = std::max(
+        workspace,
+        slab_adjoint_footprint(naux, ncore, ncas, nvirt, block, width(block)).device.workspace);
+  };
+  HeldBytes h;
+
+  // One class's walk: its blocks (an own walk's Dyall blocks, each side's
+  // metrics), Eq. 40's scalar, every slab's buffer and bar, and per slab the
+  // products and the two tables, with the adjoint the two multipliers too.
+  const auto walk = [&](const size_t k, const bool own, const bool adjoint) {
+    const size_t sides = own ? 1 : 2;
+    size_t built = 0;
+    const auto take = [&](const size_t bytes) {
+      h.take(bytes);
+      built += bytes;
+    };
+    const auto give = [&](const size_t bytes) {
+      h.give(bytes);
+      built -= bytes;
+    };
+    std::vector<ExtBlock> slabs;
+    size_t rows = 0; // one slab's table entries
+    switch (k) {
+    case 0: // Sr
+      if (own) {
+        take(n6);
+        take(n2);
+        take(n4);
+        give(n2);
+        take(n2);
+        take(n2);
+        give(n2);
+      }
+      slabs = {ExtBlock::Sr};
+      rows = static_cast<size_t>(width(ExtBlock::Sr));
+      break;
+    case 1: // Si
+      if (own) {
+        take(n6 + n4 + n2);
+      }
+      take(sides * (n6 + n4 + n2));
+      slabs = {ExtBlock::Si};
+      rows = static_cast<size_t>(width(ExtBlock::Si));
+      break;
+    case 3: // Sijr
+      take(sides * n2);
+      if (own) {
+        take(n2);
+      }
+      slabs = {ExtBlock::Sijr};
+      rows = static_cast<size_t>(width(ExtBlock::Sijr)) * nc * nc;
+      break;
+    case 4: // Srsi: its tables over the whole (v, v, c), below
+      if (own) {
+        take(n2);
+      }
+      slabs = {ExtBlock::Srsi, ExtBlock::SrsiT};
+      break;
+    case 5: // Srs
+      if (nvirt == 0) {
+        return;
+      }
+      if (own) {
+        take(n4);
+        take(n6);
+        take(n4);
+        give(n6);
+      } else {
+        take(sides * n4);
+      }
+      slabs = {ExtBlock::Srs};
+      rows = static_cast<size_t>(width(ExtBlock::Srs)) * nv;
+      break;
+    case 6: // Sij
+      if (ncore == 0) {
+        return;
+      }
+      for (size_t side = 0; side < sides; ++side) {
+        take(n4);
+        take(n4);
+        give(n4);
+      }
+      if (own) {
+        take(n6);
+        take(n4);
+        give(n6);
+      }
+      slabs = {ExtBlock::Sij};
+      rows = static_cast<size_t>(width(ExtBlock::Sij)) * nc;
+      break;
+    case 7: // Sir
+      if (own) {
+        take(2 * n4);
+      }
+      slabs = {ExtBlock::Sir1, ExtBlock::Sir2};
+      rows = static_cast<size_t>(width(ExtBlock::Sir1)) * nc;
+      break;
+    default:
+      return;
+    }
+    take(kD); // Eq. 40's scalar
+    size_t buffers = 0;
+    size_t product = 0;
+    for (const ExtBlock block : slabs) {
+      buffers += 2 * slab_bytes(block);
+      product =
+          std::max(product, slab_footprint(ncore, ncas, nvirt, block, width(block)).device.scratch);
+      if (adjoint) {
+        adjoint_workspace(block);
+      }
+    }
+    take(buffers);
+    const size_t tables = adjoint ? 4 : 2;
+    if (k == 4) {
+      // Srsi: the two whole tables, the slabs' products, then with the
+      // adjoint the two multipliers and the products again.
+      const size_t table = kD * nv * nv * nc;
+      take(2 * table);
+      if (extent(ExtBlock::Srsi) > 0) {
+        h.walk(product);
+      }
+      if (adjoint) {
+        take(2 * table);
+        if (extent(ExtBlock::Srsi) > 0) {
+          h.walk(product);
+        }
+      }
+    } else if (extent(slabs.front()) > 0) {
+      h.walk(product);
+      h.walk(tables * kD * rows);
+    }
+    give(built);
+  };
+  constexpr std::array<size_t, 7> kWalks{0, 1, 3, 4, 5, 6, 7};
+
+  h.take(states * states * n2); // every entry's active_operands delta
+  // A one-function class's blocks, per state: make_a7's three (rm3 given
+  // back) or make_hdm2's two and make_hdm3's and make_a9's, all given back.
+  const bool srs_one = nelecas == 2 && nvirt > 0;
+  const bool sij_one = (2 * ncas) - nelecas == 2 && ncore > 0;
+  for (size_t j = 0; j < states; ++j) {
+    if (srs_one) {
+      h.take(n4 + n6 + n4);
+      h.give(n4 + n6 + n4);
+    }
+    if (sij_one) {
+      h.take(2 * n4);
+      h.give(n4);
+      h.take(n6 + n4);
+      h.give(n4 + n6 + n4);
+    }
+  }
+  // The metrics' bars and the Dyall blocks' bars, as block_bars allocates
+  // them.
+  const size_t metric_bars = (2 * n6) + (5 * n4) + (5 * n2);
+  const size_t dyall_bars = (2 * n6) + (6 * n4) + (4 * n2);
+  if (states > 1) {
+    // 1. Each state's own walks, evaluated alone.
+    for (size_t j = 0; j < states; ++j) {
+      for (const size_t k : kWalks) {
+        walk(k, true, false);
+      }
+    }
+    // 2. Each pair: its two sides' metric bars, the walks, then per order
+    //    the transition RDMs' bars swept (dm2b's bar) and handed over.
+    for (size_t pair = 0; pair < states * (states - 1) / 2; ++pair) {
+      h.take(2 * metric_bars);
+      for (const size_t k : kWalks) {
+        walk(k, false, true);
+      }
+      for (int32_t order = 0; order < 2; ++order) {
+        h.take(n2 + n4 + n6);
+        h.walk(n4);
+        h.walk(transition.device.persistent + transition.device.scratch);
+        workspace = std::max(workspace, transition.device.workspace);
+        h.give(n2 + n4 + n6);
+      }
+      h.give(2 * metric_bars);
+    }
+  }
+  // 3. Each state's own walk, with every block bar; the one-function
+  //    classes' bars uploaded; the sweep.
+  for (size_t j = 0; j < states; ++j) {
+    h.take(metric_bars + dyall_bars);
+    for (const size_t k : kWalks) {
+      walk(k, true, true);
+      if ((k == 5 && srs_one) || (k == 6 && sij_one)) {
+        h.walk(2 * n4);
+      }
+    }
+    // sweep_dyall's scoped buffers, then sweep_metrics' dm2b bar.
+    h.walk(std::max({n4, 2 * n2, 2 * n4, n2, n4 + (2 * n6), (2 * n4), n4 + (2 * n6)}));
+    h.walk(n4);
+    h.give(metric_bars + dyall_bars);
+  }
+  // Sijrs: its accumulators and its slab with its bar.
+  if (ncore > 0 && nvirt > 0) {
+    h.walk((3 * kD) + (2 * slab_bytes(ExtBlock::Sijrs)));
+    adjoint_workspace(ExtBlock::Sijrs);
+  }
+  // The orbital energies' host sums, one upload at a time.
+  h.walk(kD * std::max(nc, nv));
+  return {.device = {.scratch = h.peak, .workspace = workspace},
+          .pinned = {.workspace = transition.pinned.workspace}};
 }
 
 // ---------------------------------------------------------------------------
@@ -6310,6 +6569,364 @@ pc_class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const En
   PcEffectiveHamiltonianAdjoint got =
       FBF_TRY(pc_couplings_adjoint(res, blocks, {&in, 1}, 1, {&one, 1}, batch, {&bars, 1}, {}));
   return PcClassEnergiesAdjoint{.energies = got.elements.front(), .homogeneity = got.homogeneity};
+}
+
+MemoryFootprint pc_class_energies_adjoint_footprint(const int32_t naux, const int32_t ncore,
+                                                    const int32_t ncas, const int32_t nvirt,
+                                                    const int32_t batch,
+                                                    const std::span<const size_t> syevd_lwork,
+                                                    const std::array<int64_t, 8> &dropped) {
+  return pc_effective_hamiltonian_adjoint_footprint(naux, ncore, ncas, nvirt, 1, batch, syevd_lwork,
+                                                    {&dropped, 1});
+}
+
+MemoryFootprint pc_effective_hamiltonian_adjoint_footprint(
+    const int32_t naux, const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+    const int32_t nstates, const int32_t batch, const std::span<const size_t> syevd_lwork,
+    const std::span<const std::array<int64_t, 8>> dropped, const MemoryFootprint &transition) {
+  // pc_couplings_adjoint, every allocation in its order (pc_reverse_kets'
+  // pc_kets with its modes kept, pc_walk_bars, pc_slab_reverse,
+  // pc_reverse_finish's span bar and matrix bars, each pc_back_*), in bytes.
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = kD * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  const auto nc = static_cast<size_t>(ncore);
+  const auto nv = static_cast<size_t>(nvirt);
+  const auto states = static_cast<size_t>(nstates);
+  const size_t entries = states * states;
+  const auto extent = [&](const ExtBlock block) {
+    return block_shape(ncore, ncas, nvirt, block)[static_cast<size_t>(batch_axis(block))];
+  };
+  const auto width = [&](const ExtBlock block) {
+    return std::min(batch_step(extent(block), batch), extent(block));
+  };
+  const auto slab_bytes = [&](const ExtBlock block) {
+    std::array<int32_t, 4> shape = block_shape(ncore, ncas, nvirt, block);
+    shape[static_cast<size_t>(batch_axis(block))] = width(block);
+    return kD * static_cast<size_t>(
+                    std::ranges::fold_left(shape, int64_t{1}, [](const int64_t a, const int32_t b) {
+                      return a * std::max(b, 0);
+                    }));
+  };
+  const size_t region = math::align_up(n4, DeviceResources::kWorkspaceAlignment);
+  const auto doubles = [](const size_t count) {
+    return math::align_up(kD * count, DeviceResources::kWorkspaceAlignment);
+  };
+  // make_a22's fdm2s (make_a16's one), the sweeps' einsum_adjoint scatters
+  // over n², and the walk's run of h1e_v's rows when a batch is not whole.
+  size_t workspace = std::max(2 * region, doubles(n * n));
+  if (width(ExtBlock::Sr) < extent(ExtBlock::Sr)) {
+    workspace = std::max({workspace, doubles(static_cast<size_t>(width(ExtBlock::Sr)) * n),
+                          doubles(static_cast<size_t>(width(ExtBlock::Sir1)) * nc)});
+  }
+  const auto diagonalized = [&](const size_t order) {
+    if (order > 0 && order < syevd_lwork.size()) {
+      workspace =
+          std::max(workspace, diagonalize_footprint<double>(syevd_lwork[order]).device.workspace);
+    }
+  };
+  HeldBytes h;
+  using Steps = std::vector<std::pair<bool, size_t>>; // (take, bytes) in order
+  const auto take = [](const size_t bytes) { return std::pair{true, bytes}; };
+  const auto give = [](const size_t bytes) { return std::pair{false, bytes}; };
+  const auto replay = [](HeldBytes &into, const Steps &steps) {
+    for (const auto &[taken, bytes] : steps) {
+      if (taken) {
+        into.take(bytes);
+      } else {
+        into.give(bytes);
+      }
+    }
+  };
+
+  // One class: @p d its basis, @p n1 its S₁'s columns, @p tuples a slab's
+  // tuples at its widest, @p exchange whether its rows carry exchange rows;
+  // @p own_build and @p pair_build its matrices' allocations and what they
+  // hold through the solve; @p own_back and @p pair_back its pc_back_*'s;
+  // @p uploads what the walk uploads beside its kets (Sir's two selectors).
+  struct Class {
+    size_t k;
+    std::vector<ExtBlock> slabs;
+    size_t d;
+    size_t n1;
+    size_t tuples;
+    bool exchange;
+    Steps own_build;
+    size_t own_held;
+    Steps pair_build;
+    size_t pair_held;
+    size_t own_back;
+    size_t pair_back;
+    size_t uploads;
+  };
+  // The class at every state's kept modes @p m (one per state), on @p into.
+  const auto walk = [&](HeldBytes &into, const Class &cl, const std::vector<size_t> &m) {
+    const size_t d = cl.d;
+    const size_t n1 = cl.n1;
+    size_t held = 0;
+    const auto keep = [&](const size_t bytes) {
+      into.take(bytes);
+      held += bytes;
+    };
+    // Each own solve: S and K symmetrized, V and σ; σ^-1/2, X, K X's work,
+    // W and λ; U, T and T₁ kept, and where modes drop, V kept beside
+    // V_nᵀ K U and the two leaks (K V_n given back).
+    for (size_t j = 0; j < states; ++j) {
+      const size_t mj = m[j];
+      const size_t nd = d - mj;
+      replay(into, cl.own_build);
+      into.take(kD * ((3 * d * d) + d));
+      diagonalized(d);
+      into.take(kD * (mj + (2 * d * mj) + (mj * mj) + mj));
+      diagonalized(mj);
+      keep(kD * ((2 * d * mj) + (n1 * mj)));
+      size_t v = kD * d * d; // V, freed with the solve unless its modes keep it
+      if (nd > 0) {
+        into.take(kD * d * nd);
+        keep(kD * ((nd * mj) + (nd * d) + (nd * n1)));
+        into.give(kD * d * nd);
+        held += v;
+        v = 0;
+      }
+      into.give(kD * ((2 * d * d) + d + mj + (2 * d * mj) + (mj * mj) + mj) + v);
+      into.give(cl.own_held);
+    }
+    // Each transition (I, J): its T and T₁, and where J drops modes its leaks.
+    for (size_t i = 0; i < states; ++i) {
+      for (size_t j = 0; j < states; ++j) {
+        if (i == j) {
+          continue;
+        }
+        const size_t nd = d - m[j];
+        replay(into, cl.pair_build);
+        keep(kD * ((d * m[j]) + (n1 * m[j])));
+        if (nd > 0) {
+          keep(kD * ((nd * d) + (nd * n1)));
+        }
+        into.give(cl.pair_held);
+      }
+    }
+    // The walk bars: M and M_Δ on the own entries, T̄ and t̄₁ on every one.
+    size_t rows = 0;
+    for (size_t p = 0; p < entries; ++p) {
+      const size_t mj = m[p % states];
+      keep(kD * ((p / states == p % states ? 2 * mj * mj : 0) + (d * mj) + (n1 * mj)));
+      rows += mj;
+    }
+    keep(cl.uploads);
+    size_t product = 0;
+    for (const ExtBlock block : cl.slabs) {
+      keep(2 * slab_bytes(block));
+      product =
+          std::max(product, slab_footprint(ncore, ncas, nvirt, block, width(block)).device.scratch);
+      workspace = std::max(
+          workspace,
+          slab_adjoint_footprint(naux, ncore, ncas, nvirt, block, width(block)).device.workspace);
+    }
+    // A slab: its products, then y (and x), the multipliers' sums and
+    // weights, Δ, and ȳ (and x̄).
+    const size_t count = kD * cl.tuples * rows;
+    into.walk(product);
+    into.walk(((cl.exchange ? 6 : 4) * count) + (kD * cl.tuples));
+    // The finish: per state that drops modes its span bar, X kept; Eq. 40's
+    // scalar; per entry its matrix bars and their way back.
+    for (size_t j = 0; j < states; ++j) {
+      const size_t mj = m[j];
+      const size_t nd = d - mj;
+      if (nd == 0) {
+        continue;
+      }
+      into.walk(kD * ((3 * nd * mj) + (mj * mj)));
+      into.take(kD * nd * mj);
+      into.walk(kD * ((d * mj) + (d * d)));
+      into.give(kD * nd * mj);
+      keep(kD * d * d);
+    }
+    keep(kD);
+    for (size_t i = 0; i < states; ++i) {
+      for (size_t j = 0; j < states; ++j) {
+        const size_t mj = m[j];
+        if (i == j) {
+          into.take(kD * ((d * n1) + (d * mj) + (2 * d * d)));
+          into.take(kD * 2 * d * d);
+          into.give(kD * ((d * mj) + (2 * d * d)));
+          into.walk(cl.own_back);
+          into.give(kD * ((d * n1) + (2 * d * d)));
+        } else {
+          into.take(kD * ((d * n1) + (d * d)));
+          into.walk(cl.pair_back);
+          into.give(kD * ((d * n1) + (d * d)));
+        }
+      }
+    }
+    into.give(held);
+  };
+  // The class at the given modes, or at the rank that holds the most.
+  const auto run = [&](const Class &cl) {
+    if (!dropped.empty()) {
+      std::vector<size_t> m;
+      for (size_t j = 0; j < states; ++j) {
+        const int64_t cut = j < dropped.size() ? dropped[j][cl.k] : 0;
+        m.push_back(cl.d - static_cast<size_t>(cut));
+      }
+      walk(h, cl, m);
+      return;
+    }
+    size_t most = h.peak;
+    for (size_t rank = 1; rank <= cl.d; ++rank) {
+      HeldBytes trial = h;
+      walk(trial, cl, std::vector<size_t>(states, rank));
+      most = std::max(most, trial.peak);
+    }
+    h.peak = most;
+  };
+
+  h.take(entries * n2); // every entry's active_operands delta
+  // SC's block bars, every entry's metrics and each own entry's Dyall blocks.
+  const size_t metric_bars = (2 * n6) + (5 * n4) + (5 * n2);
+  const size_t dyall_bars = (2 * n6) + (6 * n4) + (4 * n2);
+  h.take((entries * metric_bars) + (states * dyall_bars));
+
+  const size_t n3 = n * n * n;
+  if (extent(ExtBlock::Sr) > 0) {
+    run({.k = 0,
+         .slabs = {ExtBlock::Sr},
+         .d = n3,
+         .n1 = n,
+         .tuples = static_cast<size_t>(width(ExtBlock::Sr)),
+         .exchange = false,
+         .own_build = {take(n6), take(n6), take(n4)},
+         .own_held = n6 + n6 + n4,
+         .pair_build = {take(n6), take(n4)},
+         .pair_held = n6 + n4,
+         .own_back = n6,
+         .pair_back = 0,
+         .uploads = 0});
+  }
+  if (extent(ExtBlock::Si) > 0) {
+    run({.k = 1,
+         .slabs = {ExtBlock::Si},
+         .d = n3,
+         .n1 = n,
+         .tuples = static_cast<size_t>(width(ExtBlock::Si)),
+         .exchange = false,
+         .own_build = {take(n6), take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)},
+         .own_held = n6 + n6 + n4,
+         .pair_build = {take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)},
+         .pair_held = n6 + n4,
+         .own_back = n6 + n4 + n6,
+         .pair_back = n6 + n4,
+         .uploads = 0});
+  }
+  // Sijrs: SC's, its accumulators and its slab with its bar.
+  if (ncore > 0 && nvirt > 0) {
+    h.walk((3 * kD) + (2 * slab_bytes(ExtBlock::Sijrs)));
+    workspace = std::max(workspace, slab_adjoint_footprint(naux, ncore, ncas, nvirt,
+                                                           ExtBlock::Sijrs, width(ExtBlock::Sijrs))
+                                        .device.workspace);
+  }
+  if (extent(ExtBlock::Sijr) > 0 && ncore > 0) {
+    run({.k = 3,
+         .slabs = {ExtBlock::Sijr},
+         .d = n,
+         .n1 = 0,
+         .tuples = static_cast<size_t>(width(ExtBlock::Sijr)) * nc * nc,
+         .exchange = true,
+         .own_build = {take(n2), take(n2)},
+         .own_held = 2 * n2,
+         .pair_build = {take(n2)},
+         .pair_held = n2,
+         .own_back = 2 * n2,
+         .pair_back = n2,
+         .uploads = 0});
+  }
+  if (extent(ExtBlock::Srsi) > 0 && ncore > 0) {
+    run({.k = 4,
+         .slabs = {ExtBlock::Srsi, ExtBlock::SrsiT},
+         .d = n,
+         .n1 = 0,
+         .tuples = static_cast<size_t>(width(ExtBlock::Srsi)) * nv * nc,
+         .exchange = true,
+         .own_build = {take(n2), take(n2)},
+         .own_held = 2 * n2,
+         .pair_build = {take(n2)},
+         .pair_held = n2,
+         .own_back = n2,
+         .pair_back = 0,
+         .uploads = 0});
+  }
+  if (extent(ExtBlock::Srs) > 0) {
+    run({.k = 5,
+         .slabs = {ExtBlock::Srs},
+         .d = n * n,
+         .n1 = 0,
+         .tuples = static_cast<size_t>(width(ExtBlock::Srs)) * nv,
+         .exchange = false,
+         .own_build = {take(n4), take(n6), take(n4), give(n6), take(n4), give(n4)},
+         .own_held = 2 * n4,
+         .pair_build = {take(n4), take(n4), give(n4)},
+         .pair_held = n4,
+         .own_back = (2 * n4) + n6,
+         .pair_back = n4,
+         .uploads = 0});
+  }
+  if (extent(ExtBlock::Sij) > 0) {
+    run({.k = 6,
+         .slabs = {ExtBlock::Sij},
+         .d = n * n,
+         .n1 = 0,
+         .tuples = static_cast<size_t>(width(ExtBlock::Sij)) * nc,
+         .exchange = false,
+         .own_build = {take(n4), take(n4), give(n4), take(n6), take(n4), give(n6)},
+         .own_held = 2 * n4,
+         .pair_build = {take(n4), take(n4), give(n4)},
+         .pair_held = n4,
+         .own_back = (2 * n4) + n6,
+         .pair_back = 2 * n4,
+         .uploads = 0});
+  }
+  if (extent(ExtBlock::Sir1) > 0 && ncore > 0) {
+    const size_t d = 2 * n * n;
+    const size_t uploads = kD * (4 + 4 + 2);
+    const size_t s = kD * d * d;
+    const size_t s1 = kD * d;
+    run({.k = 7,
+         .slabs = {ExtBlock::Sir1, ExtBlock::Sir2},
+         .d = d,
+         .n1 = 1,
+         .tuples = static_cast<size_t>(width(ExtBlock::Sir1)) * nc,
+         .exchange = false,
+         .own_build = {take(uploads), take(s), take(n4), give(n4), take(s), take(n4), take(n4),
+                       give(2 * n4), take(s1), give(uploads)},
+         .own_held = s + s + s1,
+         .pair_build = {take(uploads), take(s), take(n4), give(n4), take(s1), give(uploads)},
+         .pair_held = s + s1,
+         .own_back = uploads + (3 * n4),
+         .pair_back = uploads + n4,
+         .uploads = kD * (2 + 2)});
+  }
+  // The orbital energies' host sums, one upload at a time.
+  h.walk(kD * std::max(nc, nv));
+  // Each state's sweep (sweep_dyall's scoped buffers, then sweep_metrics'
+  // dm2b bar); then each transition's RDM bars swept and handed over.
+  for (size_t j = 0; j < states; ++j) {
+    h.walk(n4 + (2 * n6));
+    h.walk(n4);
+  }
+  for (size_t p = 0; p < entries; ++p) {
+    if (p / states == p % states) {
+      continue;
+    }
+    h.take(n2 + n4 + n6);
+    h.walk(n4);
+    h.walk(transition.device.persistent + transition.device.scratch);
+    workspace = std::max(workspace, transition.device.workspace);
+    h.give(n2 + n4 + n6);
+  }
+  return {.device = {.scratch = h.peak, .workspace = workspace},
+          .pinned = {.workspace = transition.pinned.workspace}};
 }
 
 // ---------------------------------------------------------------------------

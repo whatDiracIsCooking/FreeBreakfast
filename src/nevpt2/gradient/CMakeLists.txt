@@ -10,7 +10,8 @@
 # nevpt2::energy (ClassEnergies), core::wwr (Buffers), and the molecule,
 # bases, pair classes, SphericalMatrixAO, mcscf::Solution, ZVector and
 # GradientTerms of mcscf::df_gradient's signature are in its signatures, so
-# they are PUBLIC with core::resources and core::error_handling: zvector too, in
+# they are PUBLIC with core::resources, core::error_handling and
+# core::footprint (the MemoryFootprints): zvector too, in
 # ScGradient as it is in df_gradient's signature. The builders' einsums, the
 # BLAS calls, b_mo, rdms, the density-fitted adjoints, ci::Sigma and ci::Rdm,
 # the CASSCF's integrals, Fock and Hessian, H_eff's diagonalize, response's
@@ -37,6 +38,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::basis
   free_breakfast::molecule
   free_breakfast::integrals::mmd
@@ -48,6 +50,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::nevpt2::energy
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
   free_breakfast::recipes::diagonalize

@@ -14,6 +14,8 @@ import free_breakfast.core.constants; // kOne, kZero, kNegTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.blas;        // gemm, gemmwich
 import free_breakfast.recipes.diagonalize; // diagonalize
 import free_breakfast.recipes.einsum;
@@ -1277,6 +1279,182 @@ Result<PcClassEnergies> pc_class_energies(DeviceResources &res, const MoBlocks &
                                           const EnergyInputs &in, const int32_t batch) {
   std::vector<PcClassEnergies> out = FBF_TRY(pc_couplings(res, blocks, {&in, 1}, 1, batch));
   return out.front();
+}
+
+MemoryFootprint pc_class_energies_footprint(const int32_t ncore, const int32_t ncas,
+                                            const int32_t nvirt, const int32_t batch,
+                                            const std::span<const size_t> syevd_lwork,
+                                            const std::array<int64_t, 8> &dropped) {
+  return pc_effective_hamiltonian_footprint(ncore, ncas, nvirt, 1, true, 0, batch, syevd_lwork,
+                                            false, {&dropped, 1});
+}
+
+MemoryFootprint
+pc_effective_hamiltonian_footprint(const int32_t ncore, const int32_t ncas, const int32_t nvirt,
+                                   const int32_t nstates, const bool diagonal,
+                                   const int32_t transitions, const int32_t batch,
+                                   const std::span<const size_t> syevd_lwork, const bool amplitudes,
+                                   const std::span<const std::array<int64_t, 8>> dropped) {
+  // pc_couplings, every allocation in its order (each class, its matrices
+  // and solve_class above), in bytes: per own state (its diagonal given) its
+  // matrices and solve, per transition its matrices and T, then the walk.
+  constexpr size_t kD = sizeof(double);
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = kD * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  const auto nc = static_cast<int64_t>(ncore);
+  const auto nv = static_cast<int64_t>(nvirt);
+  const auto states = static_cast<size_t>(nstates);
+  const size_t own = diagonal ? states : 0;
+  const auto extent = [&](const ExtBlock block) {
+    return block_shape(ncore, ncas, nvirt, block)[static_cast<size_t>(batch_axis(block))];
+  };
+  const size_t region = math::align_up(n4, DeviceResources::kWorkspaceAlignment);
+  size_t workspace = 0;
+  const auto diagonalized = [&](const int64_t order) {
+    if (order > 0 && std::cmp_less(order, syevd_lwork.size())) {
+      workspace = std::max(
+          workspace,
+          diagonalize_footprint<double>(syevd_lwork[static_cast<size_t>(order)]).device.workspace);
+    }
+  };
+  HeldBytes h;
+  h.take(states * states * n2); // every entry's active_operands delta, held through every class
+  size_t kept = 0;              // the kets handed over, held past the call
+
+  // One class of basis size @p d with an S₁ of @p n1 columns (0: none), its
+  // tuples per unit of its walk @p rows, its y over @p halves (Srsi's two
+  // with the diagonal given); @p own_build and @p pair_build its matrices'
+  // allocations in order, the bytes still held when the solve runs.
+  struct Built {
+    std::vector<std::pair<bool, size_t>> steps; // (take, bytes) in order
+    size_t held = 0;                            // what is held through the solve
+  };
+  const auto run = [&](const size_t k, const std::span<const ExtBlock> slabs, const int64_t d,
+                       const int64_t n1, const int64_t rows, const int64_t halves,
+                       const Built &own_build, const Built &pair_build) {
+    const auto m = [&](const size_t j) {
+      const int64_t cut = j < dropped.size() ? dropped[j][k] : 0;
+      return d - cut;
+    };
+    const auto replay = [&](const Built &b) {
+      for (const auto &[take, bytes] : b.steps) {
+        if (take) {
+          h.take(bytes);
+        } else {
+          h.give(bytes);
+        }
+      }
+    };
+    const auto dd = static_cast<size_t>(d);
+    size_t kets = 0;  // each state's U, T and T₁, and each transition's T and T₁
+    size_t bases = 0; // the U among them
+    int64_t y_per_unit = 0;
+    for (size_t j = 0; j < own; ++j) {
+      const auto mj = static_cast<size_t>(m(j));
+      replay(own_build);
+      // solve_class: S and K symmetrized, V and σ; then σ^-1/2, X, K X's work,
+      // W and λ; U, T and T₁, kept.
+      h.take(kD * ((3 * dd * dd) + dd));
+      diagonalized(d);
+      h.take(kD * (mj + (2 * dd * mj) + (mj * mj) + mj));
+      diagonalized(static_cast<int64_t>(mj));
+      const size_t solve = kD * ((2 * dd * mj) + (static_cast<size_t>(n1) * mj));
+      h.take(solve);
+      h.give(kD * ((3 * dd * dd) + dd + mj + (2 * dd * mj) + (mj * mj) + mj));
+      h.give(own_build.held);
+      kets += solve;
+      bases += kD * dd * mj;
+      y_per_unit += m(j);
+    }
+    // Each transition's T and T₁ over its ket's modes; a call over the
+    // diagonal alone has none.
+    for (int32_t t = 0; t < transitions; ++t) {
+      const auto mj = static_cast<size_t>(m(static_cast<size_t>(t) % std::max<size_t>(states, 1)));
+      replay(pair_build);
+      const size_t pair = kD * ((dd * mj) + (static_cast<size_t>(n1) * mj));
+      h.take(pair);
+      h.give(pair_build.held);
+      kets += pair;
+      y_per_unit += static_cast<int64_t>(mj);
+    }
+    // The walk, y over every given entry's rows; then the kets go, but the
+    // bases when they are handed over.
+    const int32_t step = batch < 0 ? 1 : batch_step(extent(slabs.front()), batch);
+    h.walk(walk_bytes(ncore, ncas, nvirt, slabs, step, halves * rows * y_per_unit));
+    const size_t handed = amplitudes && diagonal ? bases : 0;
+    h.give(kets - handed);
+    kept += handed;
+  };
+  const auto take = [](const size_t bytes) { return std::pair{true, bytes}; };
+  const auto give = [](const size_t bytes) { return std::pair{false, bytes}; };
+
+  // Sr: K = a16, S, S₁ = dm2's (d n).
+  if (extent(ExtBlock::Sr) > 0) {
+    const auto d = static_cast<int64_t>(n * n * n);
+    run(0, std::array{ExtBlock::Sr}, d, ncas, 1, 1,
+        {.steps = {take(n6), take(n6), take(n4)}, .held = n6 + n6 + n4},
+        {.steps = {take(n6), take(n4)}, .held = n6 + n4});
+  }
+  // Si: K = a22, S beside dm3_h, S₁ beside dm2_h.
+  if (extent(ExtBlock::Si) > 0) {
+    const auto d = static_cast<int64_t>(n * n * n);
+    run(1, std::array{ExtBlock::Si}, d, ncas, 1, 1,
+        {.steps = {take(n6), take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)},
+         .held = n6 + n6 + n4},
+        {.steps = {take(n6), take(n6), give(n6), take(n4), take(n4), give(n4)}, .held = n6 + n4});
+  }
+  // Sijrs, with the diagonal: SC's, its two accumulators and walk.
+  if (diagonal && ncore > 0 && nvirt > 0) {
+    h.take(2 * kD);
+    h.walk(walk_bytes(ncore, ncas, nvirt, std::array{ExtBlock::Sijrs},
+                      batch < 0 ? 1 : batch_step(extent(ExtBlock::Sijrs), batch), 0));
+    h.give(2 * kD);
+  }
+  // Sijr: S = hdm1, K = a3.
+  if (extent(ExtBlock::Sijr) > 0 && ncore > 0) {
+    run(3, std::array{ExtBlock::Sijr}, ncas, 0, nc * nc, 1,
+        {.steps = {take(n2), take(n2)}, .held = 2 * n2}, {.steps = {take(n2)}, .held = n2});
+  }
+  // Srsi: K = k27, S = dm1's; y and, with the diagonal, its exchange rows.
+  if (extent(ExtBlock::Srsi) > 0 && ncore > 0) {
+    run(4, std::array{ExtBlock::Srsi, ExtBlock::SrsiT}, ncas, 0, nv * nc, diagonal ? 2 : 1,
+        {.steps = {take(n2), take(n2)}, .held = 2 * n2}, {.steps = {take(n2)}, .held = n2});
+  }
+  // Srs: make_a7's rm2, rm3 and K = a7 (rm3 given back), or make_rm2's rm2;
+  // then S, and rm2 given back.
+  if (extent(ExtBlock::Srs) > 0) {
+    run(5, std::array{ExtBlock::Srs}, static_cast<int64_t>(n * n), 0, nv, 1,
+        {.steps = {take(n4), take(n6), take(n4), give(n6), take(n4), give(n4)}, .held = 2 * n4},
+        {.steps = {take(n4), take(n4), give(n4)}, .held = n4});
+  }
+  // Sij: make_hdm2's two (dm2b given back), S = hdm2; K = a9 beside hdm3.
+  if (extent(ExtBlock::Sij) > 0) {
+    run(6, std::array{ExtBlock::Sij}, static_cast<int64_t>(n * n), 0, nc, 1,
+        {.steps = {take(n4), take(n4), give(n4), take(n6), take(n4), give(n6)}, .held = 2 * n4},
+        {.steps = {take(n4), take(n4), give(n4)}, .held = n4});
+  }
+  // Sir: the blocks' three coefficient uploads (4, 4 and 2 doubles), S
+  // beside s22, K beside a12 and a13, S₁ (d); the uploads given back.
+  if (extent(ExtBlock::Sir1) > 0 && ncore > 0) {
+    const size_t d = 2 * n * n;
+    const size_t uploads = kD * (4 + 4 + 2);
+    const size_t s = kD * d * d;
+    const size_t s1 = kD * d;
+    run(7, std::array{ExtBlock::Sir1, ExtBlock::Sir2}, static_cast<int64_t>(d), 1, nc, 1,
+        {.steps = {take(uploads), take(s), take(n4), give(n4), take(s), take(n4), take(n4),
+                   give(2 * n4), take(s1), give(uploads)},
+         .held = s + s + s1},
+        {.steps = {take(uploads), take(s), take(n4), give(n4), take(s1), give(uploads)},
+         .held = s + s1});
+  }
+  if (diagonal) {
+    workspace = std::max(workspace, 2 * region);
+  }
+  // The kets handed over are the call's product; the rest, and the identities,
+  // are freed on return.
+  return {.device = {.persistent = kept, .scratch = h.peak - kept, .workspace = workspace}};
 }
 
 // ---------------------------------------------------------------------------

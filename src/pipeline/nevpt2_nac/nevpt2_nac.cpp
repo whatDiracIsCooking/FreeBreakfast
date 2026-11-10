@@ -11,6 +11,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.io.json;
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.mcscf.nac;
@@ -250,6 +251,51 @@ Nevpt2NacStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutp
                                   }));
   }
   return out;
+}
+
+MemoryFootprint Nevpt2NacStep::footprint(const FootprintDimensions &dims) const {
+  const auto nroots = static_cast<int32_t>(dims.casscf_nroots);
+  if (dims.basis == nullptr || dims.aux == nullptr || nroots < 2 || dims.n_alpha != dims.n_beta) {
+    return {};
+  }
+  const auto ncas = static_cast<int32_t>(dims.ncas);
+  const auto nelecas = static_cast<int32_t>(dims.nelecas);
+  const int32_t ncore = (static_cast<int32_t>(dims.n_alpha + dims.n_beta) - nelecas) / 2;
+  const auto nmo = static_cast<int32_t>(dims.nao);
+  const int32_t nvirt = nmo - ncore - ncas;
+  const BasisSet &basis = *dims.basis;
+  const BasisSet &aux = *dims.aux;
+  const bool pc = variant == Nevpt2Variant::Pc;
+  const bool rotating = dims.casscf_unequal_weights;
+  const auto roots = static_cast<size_t>(nroots);
+  // The Solution: C and the CI vectors back on the device.
+  const auto strings = static_cast<size_t>(std::round(math::binomial(ncas, nelecas / 2)));
+  const MemoryFootprint upload{
+      .device = {.persistent =
+                     sizeof(double) * ((dims.nao * dims.nao) + (strings * strings * roots))}};
+  // H_eff: the effective Hamiltonian over every pair, at batch 0; then its
+  // matrix and eigenvalues beside diagonalize's work.
+  const int32_t transitions = nroots * (nroots - 1);
+  const MemoryFootprint walk =
+      pc ? nevpt2::pc_effective_hamiltonian_footprint(ncore, ncas, nvirt, nroots, true, transitions,
+                                                      0, dims.syevd_lwork, false)
+         : nevpt2::sc_effective_hamiltonian_footprint(ncore, ncas, nvirt, nelecas, nroots, true,
+                                                      transitions, 0);
+  MemoryFootprint eigh{.device = {.scratch = sizeof(double) * ((roots * roots) + roots)}};
+  if (roots < dims.syevd_lwork.size()) {
+    eigh.device.workspace = diagonalize_footprint<double>(dims.syevd_lwork[roots]).device.workspace;
+  }
+  const MemoryFootprint heff =
+      then(nevpt2::qd_inputs_footprint(static_cast<int32_t>(dims.naux), nmo, ncore, ncas, nelecas,
+                                       1, nroots, drop(walk)),
+           eigh);
+  // One pair's coupling at batch 0, freed before the next.
+  const MemoryFootprint pair =
+      pc ? nevpt2::qd_pc_nac_footprint(basis, aux, ncore, ncas, nelecas, 1, nroots, rotating, 0,
+                                       dims.syevd_lwork)
+         : nevpt2::qd_sc_nac_footprint(basis, aux, ncore, ncas, nelecas, 1, nroots, rotating, 0,
+                                       dims.syevd_lwork);
+  return drop(then(upload, then(heff, pair)));
 }
 
 } // namespace free_breakfast
