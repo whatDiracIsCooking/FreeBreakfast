@@ -222,8 +222,9 @@ TEST(Preflight, AvasIsNarrowedToTheSpaceTheCapFits) {
 // one byte below the peak's room is refused naming the step before the first
 // step runs; a cap whose room is the peak exactly runs every geometry inside
 // it, the pool's UsedMemHigh read over the whole run, and held to the peak
-// itself too (beside a rounding pool's reuse bound), since water's peak is
-// far under the cap's 64 MiB of headroom.
+// itself too (beside a rounding pool's reuse bound; above DeviceResources'
+// own syevd flag, the one pool allocation no step makes), since water's peak
+// is far under the cap's 64 MiB of headroom.
 constexpr std::string_view kNestedOptimize = R"(
 [molecule]
 xyz = "water.xyz"
@@ -241,20 +242,30 @@ basis = "sto-3g"
 method = "numerical"
 )";
 
-// @p tables' plan peak, and the step reaching it, on @p node's device 0.
-std::pair<std::size_t, std::string> nested_peak(const fb::test::ScratchDir &dir,
-                                                fb::NodeResources &node, std::string_view tables) {
+// @p tables' folded plan, and the step reaching its device peak, on @p node's
+// device 0.
+std::pair<fb::PlanFootprint, std::string>
+nested_plan(const fb::test::ScratchDir &dir, fb::NodeResources &node, std::string_view tables) {
   const fb::Calculation uncapped = parse(dir, tables);
   const fb::PlanShape shape = fb::plan_shape(uncapped, node.device(0)).value();
   const fb::PlanFootprint plan = fold(uncapped, shape.dims);
-  return {plan.footprint.device.peak(),
-          std::string(uncapped.footprints(shape.dims)[plan.device_peak_step].name)};
+  // The workspace, which differs most between the backends: syevd's own
+  // query is the solver's to say.
+  std::cout << std::format("[ preflight ] syevd's work at nao = {}: {} bytes, at 3 natoms = {}: "
+                           "{} bytes\n",
+                           shape.dims.nao, sizeof(double) * shape.dims.syevd_lwork[shape.dims.nao],
+                           3 * shape.dims.natoms,
+                           3 * shape.dims.natoms < shape.dims.syevd_lwork.size()
+                               ? sizeof(double) * shape.dims.syevd_lwork[3 * shape.dims.natoms]
+                               : 0);
+  return {plan, std::string(uncapped.footprints(shape.dims)[plan.device_peak_step].name)};
 }
 
 void expect_nested_refused_below(std::string_view tables, std::string_view step) {
   const fb::test::ScratchDir dir("pipeline_preflight_nested_below");
   fb::NodeResources node;
-  const auto [peak, peak_step] = nested_peak(dir, node, tables);
+  const auto [plan, peak_step] = nested_plan(dir, node, tables);
+  const std::size_t peak = plan.footprint.device.peak();
   EXPECT_EQ(peak_step, step);
   fb::Calculation calc =
       parse(dir, std::string(tables) + memory(kReserve + fb::kPoolHeadroomBytes + peak - 1));
@@ -274,7 +285,8 @@ void expect_nested_runs_at_the_peak(std::string_view tables) {
   const fb::test::ScratchDir dir("pipeline_preflight_nested_at");
   fb::NodeResources node;
   const bool rounds_reuse = fbt::pool_rounds_reuse(node.device(0).dev_idx());
-  const std::size_t peak = nested_peak(dir, node, tables).first;
+  const fb::PlanFootprint plan = nested_plan(dir, node, tables).first;
+  const std::size_t peak = plan.footprint.device.peak();
   const std::uint64_t device_cap = cap_for(peak, rounds_reuse);
   fb::Calculation calc = parse(dir, std::string(tables) + memory(device_cap));
   const fb::Status checked = fb::preflight(calc, node);
@@ -283,19 +295,27 @@ void expect_nested_runs_at_the_peak(std::string_view tables) {
   fb::DeviceResources &res = node.device(0);
   const std::uint64_t pool_cap = device_cap - kReserve;
   const std::size_t device_workspace = res.device_workspace(0).num_elements();
+  EXPECT_EQ(device_workspace, plan.footprint.device.workspace);
+  // Before the first step the pool holds the pre-grown workspace and
+  // DeviceResources' own syevd flag, one int32 made with it: nothing of the
+  // plan's but the workspace, which its peak counts.
+  const std::uint64_t held = res.device()->pool_usage().used_current;
+  EXPECT_EQ(held, device_workspace + sizeof(std::int32_t));
   res.device()->reset_pool_high_water();
   const fb::Status ran = calc.run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   EXPECT_TRUE(calc.get<Product>().has_value());
   const fb::PoolUsage usage = res.device()->pool_usage();
-  std::cout << std::format("[ preflight ] peak {} bytes, pool cap {}, UsedMemHigh {}, "
-                           "ReservedMemHigh {}\n",
-                           peak, pool_cap, usage.used_high, usage.reserved_high);
+  std::cout << std::format("[ preflight ] peak {} bytes (workspace {}), pool cap {}, held before "
+                           "the run {}, UsedMemHigh {}, ReservedMemHigh {}\n",
+                           peak, plan.footprint.device.workspace, pool_cap, held, usage.used_high,
+                           usage.reserved_high);
   EXPECT_LE(usage.used_high, pool_cap);
   EXPECT_LE(usage.reserved_high, pool_cap);
-  // And the fold is sound over every geometry: the most the run held is the
-  // peak, beside the pool's reuse rounding where it rounds (pool_footprint.h).
-  EXPECT_LE(usage.used_high,
+  // And the fold is sound over every geometry: what the run held above the
+  // flag is at most the peak, beside the pool's reuse rounding where it
+  // rounds (pool_footprint.h).
+  EXPECT_LE(usage.used_high - (held - device_workspace),
             peak + (rounds_reuse ? fb::math::idivup(peak, fbt::kPoolReuseDivisor) : 0));
   // Every geometry's chain ran in the workspace pre-flight grew.
   EXPECT_EQ(res.device_workspace(0).num_elements(), device_workspace);
