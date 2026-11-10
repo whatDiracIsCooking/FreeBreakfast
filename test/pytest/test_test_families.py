@@ -87,11 +87,11 @@ def tree(tmp_path):
     return tmp_path
 
 
-def run(tree, source=SOURCE, times=None):
+def run(tree, source=SOURCE, times=None, slow=None):
     (tree / "test" / "a_test.cpp").write_text(source)
     cases = tf.cases_from_listing(listing(str(tree / "test" / "a_test.cpp")), tree)
     markers = tf.markers_in(tree, {c.file for c in cases})
-    return tf.families(cases, markers, times)
+    return tf.families(cases, markers, times, slow)
 
 
 def test_default_families(tree):
@@ -149,6 +149,53 @@ def test_no_times_flags_every_unmarked_family(tree):
     assert errors == []
     flagged = sorted(f.name for f in fams.values() if f.by is None)
     assert flagged == ["Other", "Param.Matches", "Param.Other", "Typed.Works"]
+
+
+def test_a_gated_cheapest_member_is_passed_over(tree):
+    # #1125: the nightly's times are unskipped, so the cheapest member can be
+    # one FBF_SKIP_IF_FAST_TESTS() gates; the fast set would then run nothing.
+    times = {
+        "Other.Cheap": [0.5],
+        "Other.Dear": [3.0],
+        "Cases/Param.Matches/small_batch3": [0.1],
+        "Cases/Param.Matches/small_batch0": [0.35],
+        "More/Param.Matches/small_batch0": [0.9],
+    }
+    slow = {
+        "Other.Cheap": True,
+        "Other.Dear": False,
+        # A TEST_P gated by its param: one instance gated, the next not.
+        "Cases/Param.Matches/small_batch3": True,
+        "Cases/Param.Matches/small_batch0": False,
+        # No record says More/... either way: it counts as fast.
+    }
+    fams, errors, _ = run(tree, times=times, slow=slow)
+    assert errors == []
+    assert fams["Other"].representative == "Other.Dear"
+    assert fams["Other"].by == "cheapest"
+    assert fams["Other"].seconds == 3.0
+    rest = fams["Param.Matches"]
+    assert rest.representative == "Cases/Param.Matches/small_batch0"
+    assert rest.seconds == 0.35
+    # A marked representative is the marker's, gated or not: the gate's
+    # `representative(s) skipped` line is what catches that.
+    assert fams["Plain"].representative == "Plain.Validates"
+
+
+def test_a_family_with_no_fast_member_is_an_error(tree):
+    times = {"Other.Cheap": [0.5], "Other.Dear": [3.0]}
+    slow = {"Other.Cheap": True, "Other.Dear": True}
+    fams, errors, _ = run(tree, times=times, slow=slow)
+    assert fams["Other"].representative is None
+    assert len(errors) == 1
+    assert errors[0].startswith("Other: every timed member reaches")
+    assert "FBF_FAMILY_REPRESENTATIVE" in errors[0]
+    assert "FBF_FAMILY_EXEMPT" in errors[0]
+    # A marker, or an exemption, settles it: the lister takes the marker
+    # as given (here on a gated case, which the gate would report skipped).
+    for fix in ("FBF_FAMILY_REPRESENTATIVE();", 'FBF_FAMILY_EXEMPT("why");'):
+        source = SOURCE.replace("TEST(Other, Dear) {\n", "TEST(Other, Dear) {\n" + fix)
+        assert run(tree, source, times, slow)[1] == [], fix
 
 
 @pytest.mark.parametrize(
@@ -304,6 +351,24 @@ def test_parse_metrics_filters_host_kind_and_status():
     assert tf.parse_metrics("\n".join(lines), "box") == {"A.b": [2.0, 4.0]}
 
 
+def test_parse_slow_takes_the_latest_record_on_this_host():
+    def case(name, slow=None):
+        c = {"name": name, "status": "pass", "seconds": 1.0}
+        return c if slow is None else dict(c, slow=slow)
+
+    lines = [
+        record(cases=[case("A.gated", True), case("A.ungated", True)]),
+        record(cases=[case("A.ungated", False), case("A.unknown")]),
+        record(host="vm", cases=[case("A.gated", False)]),
+        record(kind="shadow", cases=[case("A.gated", False)]),
+        "not json",
+    ]
+    assert tf.parse_slow("\n".join(lines), "box") == {
+        "A.gated": True,
+        "A.ungated": False,
+    }
+
+
 def test_metrics_branch(tmp_path, monkeypatch):
     # The pre-push hook exports GIT_DIR; a toy repository must not see it.
     for k in [k for k in os.environ if k.startswith("GIT_")]:
@@ -368,6 +433,36 @@ def test_cli(tree, tmp_path):
     bad = subprocess.run(cmd, capture_output=True, text=True, check=False)
     assert bad.returncode == 1
     assert "not inside any listed test" in bad.stderr
+
+
+def test_cli_reads_slow_from_the_metrics(tree, tmp_path):
+    saved = tmp_path / "list.json"
+    saved.write_text(json.dumps(listing(str(tree / "test" / "a_test.cpp"))))
+
+    def lister(*slow):
+        cases = [
+            {"name": n, "status": "pass", "seconds": t, "slow": g}
+            for (n, t), g in zip(
+                (("Other.Cheap", 0.5), ("Other.Dear", 3.0)), slow, strict=True
+            )
+        ]
+        metrics = tmp_path / "runs.jsonl"
+        metrics.write_text(record(cases=cases) + "\n")
+        cmd = [sys.executable, str(_TOOL), "--gtest-json", str(saved)]
+        cmd += ["--source", str(tree), "--metrics", str(metrics), "--host", "box"]
+        return subprocess.run(
+            [*cmd, "--json"], capture_output=True, text=True, check=False
+        )
+
+    one = lister(True, False)
+    assert one.returncode == 0, one.stderr
+    assert json.loads(one.stdout)["families"]["Other"]["representative"] == (
+        "Other.Dear"
+    )
+    both = lister(True, True)
+    assert both.returncode == 1
+    assert json.loads(both.stdout)["errors"][0].startswith("Other: every timed")
+    assert "error: Other: every timed member" in both.stderr
 
 
 GPU_SOURCE = """\

@@ -849,7 +849,6 @@ upload_ppaa_papa(fb::DeviceResources &res, const std::vector<double> &eri, std::
 // tightly, and against the integral-direct fock within the fit's error.
 TEST_P(ResponseFock, DensityFittedMatchesItsHostReferenceAndTheDirectOne) {
   FBF_REQUIRE_GPU();
-  FBF_FAMILY_REPRESENTATIVE("h2o_ccpvdz");
   if (GetParam().slow) {
     FBF_SKIP_IF_FAST_TESTS();
   }

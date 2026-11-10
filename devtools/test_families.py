@@ -10,10 +10,16 @@ docs/testing.md "Families" is the contract. A family is
 - or a part of one TEST_P, split off by a marker (below).
 
 Its representative is the case marked with `FBF_FAMILY_REPRESENTATIVE` (from
-test/support/slow_test.h), else the cheapest member by recorded times, else
-none, and the family is flagged. The marker compiles to nothing; this script
-reads it from the source, and places it in the test whose definition line
-(from gtest's own listing) is the nearest one above it:
+test/support/slow_test.h), else the cheapest member by recorded times that
+runs in the fast set, else none, and the family is flagged. A member does not
+run there when its latest record says it reached `FBF_SKIP_IF_FAST_TESTS()`
+(the record's `slow`; a member no record says that of counts as fast), and a
+family whose every timed member is gated so is an error (#1125): it needs a
+marker on a case that runs, or the exempt marker below.
+
+The marker compiles to nothing; this script reads it from the source, and
+places it in the test whose definition line (from gtest's own listing) is the
+nearest one above it:
 
     FBF_FAMILY_REPRESENTATIVE();             in a TEST or TEST_F body
     FBF_FAMILY_REPRESENTATIVE("p");          in a TEST_P body: the instance p
@@ -36,6 +42,7 @@ Times come from the metrics branch's records (docs/testing.md "Metrics"):
 has one, filtered to this host and to the `nightly`, `weekly` and `manual`
 kinds. `--log FILE` adds a gate's log: gtest's `[       OK ] Case (N ms)` and
 ctest's `Passed  N sec` lines. A member's time is the median of its passes.
+Whether it is gated comes from the same records, never from a log.
 
 A case in a GPU binary (one whose file name ends `_gpu`) that never reaches
 `FBF_REQUIRE_GPU()` is unguarded (#1037): docs/testing.md "Which tier a check
@@ -48,7 +55,8 @@ blanked first. A `--gtest-json` listing's binary is the file's stem.
 `--unguarded` prints only those cases, one per test definition.
 
 Exit status: 0 when every family has a representative, is exempt or is
-flagged, 1 when a marker cannot be placed or contradicts another, or under
+flagged, 1 when a marker cannot be placed or contradicts another, or a
+family's every timed member is gated, or under
 `--unguarded` when a case is unguarded, 2 when nothing could be read.
 
 Standard library only: it must run under a bare `python3`.
@@ -313,6 +321,29 @@ def parse_metrics(text: str, host: str | None) -> dict[str, list[float]]:
     return out
 
 
+def parse_slow(text: str, host: str | None) -> dict[str, bool]:
+    """Each case's `slow` from the same records parse_metrics reads: whether
+    it reached FBF_SKIP_IF_FAST_TESTS(), so a fast run skips it. The latest
+    record that carries the field wins, so a case ungated since counts as
+    fast again."""
+    out: dict[str, bool] = {}
+    for line in text.splitlines():
+        try:
+            rec = json.loads(line) if line.strip() else None
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rec, dict) or rec.get("schema") != SCHEMA:
+            continue
+        if rec.get("kind") not in TIMED_KINDS:
+            continue
+        if host is not None and rec.get("host") != host:
+            continue
+        for c in rec.get("cases", []):
+            if isinstance(c.get("slow"), bool):
+                out[c.get("name", "")] = c["slow"]
+    return out
+
+
 def metrics_branch_text(source: Path) -> str | None:
     """The `metrics` branch's records, when the checkout has the branch."""
 
@@ -501,8 +532,10 @@ def families(
     cases: list[Case],
     markers: list[Marker],
     times: dict[str, list[float]] | None = None,
+    slow: dict[str, bool] | None = None,
 ) -> tuple[dict[str, Family], list[str], list[str]]:
-    """(families by name, errors, notes)."""
+    """(families by name, errors, notes). `slow` is parse_slow's: a member
+    it calls slow is never picked as the cheapest."""
     errors: list[str] = []
     notes: list[str] = []
     by_file: dict[str, list[Case]] = defaultdict(list)
@@ -593,6 +626,7 @@ def families(
         out.setdefault(name, Family(name)).members.append(c.name)
 
     times = times or {}
+    slow = slow or {}
     for fam in out.values():
         if fam.name in exempt:
             mk, fam.reason = exempt[fam.name]
@@ -620,9 +654,16 @@ def families(
                 )
             continue
         timed = [(statistics.median(times[m]), m) for m in fam.members if times.get(m)]
-        if timed:
-            fam.seconds, fam.representative = min(timed)
+        fast = [(t, m) for t, m in timed if not slow.get(m)]
+        if fast:
+            fam.seconds, fam.representative = min(fast)
             fam.by = "cheapest"
+        elif timed:
+            errors.append(
+                f"{fam.name}: every timed member reaches FBF_SKIP_IF_FAST_TESTS(),"
+                f" so none runs in the fast set: mark one that does with {MARKER},"
+                f" or exempt the family with {EXEMPT}"
+            )
     return out, errors, notes
 
 
@@ -755,6 +796,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.host is None:
         args.host = this_host()
     times: dict[str, list[float]] = defaultdict(list)
+    slow: dict[str, bool] = {}
     sources = []
     texts = [p.read_text() for p in args.metrics]
     if args.metrics:
@@ -767,13 +809,14 @@ def main(argv: list[str] | None = None) -> int:
     for text in texts:
         for k, v in parse_metrics(text, args.host).items():
             times[k] += v
+        slow.update(parse_slow(text, args.host))
     for path in args.log:
         for k, v in parse_log(path.read_text(errors="replace")).items():
             times[k] += v
         sources.append(str(path))
 
     markers = markers_in(source, {c.file for c in cases})
-    fams, errors, notes = families(cases, markers, times)
+    fams, errors, notes = families(cases, markers, times, slow)
     times_from = ", ".join(sources) if sources else "none (no metrics records yet)"
 
     if args.json:

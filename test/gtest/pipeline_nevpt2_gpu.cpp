@@ -237,7 +237,6 @@ class PipelineNevpt2 : public ::testing::TestWithParam<Case> {};
 TEST_P(PipelineNevpt2, MatchesPyscf) {
   FBF_REQUIRE_GPU();
   const Case &c = GetParam();
-  FBF_FAMILY_REPRESENTATIVE("h2o_ccpvdz");
   if (c.slow) {
     FBF_SKIP_IF_FAST_TESTS();
   }
@@ -301,7 +300,6 @@ class PipelineNevpt2FrozenCore : public ::testing::TestWithParam<FrozenCase> {};
 TEST_P(PipelineNevpt2FrozenCore, MatchesReference) {
   FBF_REQUIRE_GPU();
   const FrozenCase &c = GetParam();
-  FBF_FAMILY_REPRESENTATIVE("h2o_ccpvdz_auto");
   if (c.slow) {
     FBF_SKIP_IF_FAST_TESTS();
   }
