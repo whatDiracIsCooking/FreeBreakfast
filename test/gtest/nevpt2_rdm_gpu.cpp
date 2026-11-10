@@ -32,6 +32,8 @@ import free_breakfast.io.npy;
 import free_breakfast.ci;
 import free_breakfast.nevpt2;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -228,7 +230,7 @@ void expect_matches(const Built &got, const Golden &want, double tol) {
 
 TEST(NevptRdm, MatchesPyscf) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const Case &c : kCases) {
     SCOPED_TRACE(c.name);
     const auto golden = read_golden(c);
@@ -249,7 +251,7 @@ TEST(NevptRdm, MatchesPyscf) {
 // one, and every tile one determinant (on the 36-determinant cases).
 TEST(NevptRdm, TinyBudgetsMatchOneTile) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const Case &c : kCases) {
     SCOPED_TRACE(c.name);
     const auto golden = read_golden(c);
@@ -279,7 +281,7 @@ TEST(NevptRdm, TinyBudgetsMatchOneTile) {
 // queued: the outputs keep what they held and the workspace is not grown.
 TEST(NevptRdm, BudgetBelowOneDeterminantIsUnsupported) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const Case &c = kCases.back();
   const auto golden = read_golden(c);
   ASSERT_TRUE(golden);
@@ -292,7 +294,7 @@ TEST(NevptRdm, BudgetBelowOneDeterminantIsUnsupported) {
               wwr::wwrSuccess);
   }
   ASSERT_TRUE(res.sync().has_value());
-  const std::size_t held = res.device_workspace(0).num_elements();
+  const std::size_t held = res.workspace_high_water().device.workspace;
   for (const std::size_t budget :
        {std::size_t{0}, fb::nevpt2::rdms_footprint(c.n, 1).device.scratch - 1}) {
     const auto got = fb::nevpt2::rdms(res, s->strings, s->strings, s->ci.data(), s->eri.data(),
@@ -301,7 +303,7 @@ TEST(NevptRdm, BudgetBelowOneDeterminantIsUnsupported) {
     EXPECT_EQ(got.error().kind, fb::ErrorKind::Unsupported) << got.error().message;
     EXPECT_NE(got.error().message.find("nevpt2::rdms:"), std::string::npos);
   }
-  EXPECT_EQ(res.device_workspace(0).num_elements(), held);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, held);
   for (const auto *out : {&s->dm3, &s->f3ca, &s->f3ac}) {
     EXPECT_EQ(on_host(res, *out), sentinel);
   }
@@ -309,7 +311,7 @@ TEST(NevptRdm, BudgetBelowOneDeterminantIsUnsupported) {
 
 TEST(NevptRdm, Refusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto four = fb::ci::DeviceStringSet::create(res, 4, 2);
   auto five = fb::ci::DeviceStringSet::create(res, 5, 2);
   auto none = fb::ci::DeviceStringSet::create(res, 0, 0);
@@ -405,7 +407,7 @@ std::optional<Adjoint> adjoint(fb::DeviceResources &res, Setup &s,
 // agree with each other.
 TEST(NevptRdm, AdjointMatchesPolarization) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   struct Space {
     std::int32_t n;
     std::int32_t per_spin;
@@ -477,7 +479,7 @@ TEST(NevptRdm, AdjointMatchesPolarization) {
 // grown), and the sets rdms refuses.
 TEST(NevptRdm, AdjointRefusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kN = 4;
   auto four = fb::ci::DeviceStringSet::create(res, kN, 2);
   auto five = fb::ci::DeviceStringSet::create(res, 5, 2);
@@ -486,7 +488,7 @@ TEST(NevptRdm, AdjointRefusals) {
   const std::vector<double> sentinel(std::size_t{1} << 12, 0.25);
   auto scratch = on_device(res, sentinel);
   double *const p = scratch.data();
-  const std::size_t held = res.device_workspace(0).num_elements();
+  const std::size_t held = res.workspace_high_water().device.workspace;
   for (const std::size_t budget :
        {std::size_t{0}, fb::nevpt2::rdms_adjoint_footprint(kN, 1).device.scratch - 1}) {
     const auto got = fb::nevpt2::rdms_adjoint(res, *four, *four, p, p, p, p, p, p, p, budget);
@@ -494,7 +496,7 @@ TEST(NevptRdm, AdjointRefusals) {
     EXPECT_EQ(got.error().kind, fb::ErrorKind::Unsupported) << got.error().message;
     EXPECT_NE(got.error().message.find("nevpt2::rdms_adjoint:"), std::string::npos);
   }
-  EXPECT_EQ(res.device_workspace(0).num_elements(), held);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, held);
   EXPECT_EQ(on_host(res, scratch), sentinel);
   const auto mixed = fb::nevpt2::rdms_adjoint(res, *four, *five, p, p, p, p, p, p, p);
   ASSERT_FALSE(mixed);
@@ -619,7 +621,7 @@ void expect_matches(const TransitionBuilt &got, const TransitionGolden &want, do
 
 TEST(NevptRdm, TransitionMatchesPyscf) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const TransitionCase &c : kTransitionCases) {
     SCOPED_TRACE(c.name);
     const auto golden = read_transition(c);
@@ -639,7 +641,7 @@ TEST(NevptRdm, TransitionMatchesPyscf) {
 // though the one-vector build at that budget is not.
 TEST(NevptRdm, TransitionTinyBudgetsMatchOneTile) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const TransitionCase &c : kTransitionCases) {
     SCOPED_TRACE(c.name);
     const auto golden = read_transition(c);
@@ -667,14 +669,14 @@ TEST(NevptRdm, TransitionTinyBudgetsMatchOneTile) {
       expect_matches(*got, *golden, kRelTol);
     }
 
-    const std::size_t held = res.device_workspace(0).num_elements();
+    const std::size_t held = res.workspace_high_water().device.workspace;
     const std::size_t below = fb::nevpt2::rdms_footprint(c.n, 1, true).device.scratch - 1;
     const auto refused = fb::nevpt2::rdms(res, s->alpha, s->beta, s->bra.data(), s->ket.data(),
                                           s->eri.data(), s->dm1.data(), s->dm2.data(),
                                           s->dm3.data(), s->f3ca.data(), s->f3ac.data(), below);
     ASSERT_FALSE(refused);
     EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported) << refused.error().message;
-    EXPECT_EQ(res.device_workspace(0).num_elements(), held);
+    EXPECT_EQ(res.workspace_high_water().device.workspace, held);
     const auto single = fb::nevpt2::rdms(res, s->alpha, s->beta, s->bra.data(), s->eri.data(),
                                          s->dm3.data(), s->f3ca.data(), s->f3ac.data(), below);
     EXPECT_TRUE(single) << (single ? "" : single.error().message);
@@ -687,7 +689,7 @@ TEST(NevptRdm, TransitionTinyBudgetsMatchOneTile) {
 // to round-off.
 TEST(NevptRdm, BraEqualKetIsTheOneVectorBuild) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const Case &c : kCases) {
     SCOPED_TRACE(c.name);
     const auto golden = read_golden(c);
@@ -742,7 +744,7 @@ TEST(NevptRdm, BraEqualKetIsTheOneVectorBuild) {
 // passed null, since it is not read.
 TEST(NevptRdm, NullF3IsTheF3BuildsDms) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const Case &c : kCases) {
     SCOPED_TRACE(c.name);
     const auto golden = read_golden(c);
@@ -804,7 +806,7 @@ TEST(NevptRdm, NullF3IsTheF3BuildsDms) {
 // queued (the outputs keep what they held, the workspace is not grown).
 TEST(NevptRdm, NullF3PlanAndRefusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kN = 4;
   const auto align = [](std::size_t bytes) {
     return fb::math::align_up(bytes, fb::DeviceResources::kWorkspaceAlignment);
@@ -822,7 +824,7 @@ TEST(NevptRdm, NullF3PlanAndRefusals) {
   ASSERT_TRUE(four);
   {
     // A fresh DeviceResources, whose workspace nothing has grown.
-    fb::DeviceResources fresh{0};
+    fb::DeviceResources fresh{0, fb::test::kWorkspaces};
     std::mt19937_64 rng{719};
     const auto bra = on_device(fresh, random_vector(rng, 36));
     const auto ket = on_device(fresh, random_vector(rng, 36));
@@ -834,13 +836,13 @@ TEST(NevptRdm, NullF3PlanAndRefusals) {
     ASSERT_TRUE(got) << (got ? "" : got.error().message);
     EXPECT_EQ(*got, 1);
     // Its scratch is its own block, so the workspace is not grown.
-    EXPECT_EQ(fresh.device_workspace(0).num_elements(), 0U);
+    EXPECT_EQ(fresh.workspace_high_water().device.workspace, 0U);
   }
 
   const std::vector<double> sentinel(std::size_t{1} << 12, 0.25);
   auto scratch = on_device(res, sentinel);
   double *const p = scratch.data();
-  const std::size_t held = res.device_workspace(0).num_elements();
+  const std::size_t held = res.workspace_high_water().device.workspace;
   for (const std::size_t budget :
        {std::size_t{0}, fb::nevpt2::rdms_footprint(kN, 1, true, false).device.scratch - 1}) {
     const auto got =
@@ -863,7 +865,7 @@ TEST(NevptRdm, NullF3PlanAndRefusals) {
     ASSERT_FALSE(one);
     EXPECT_EQ(one.error().kind, fb::ErrorKind::InvalidConfig) << one.error().message;
   }
-  EXPECT_EQ(res.device_workspace(0).num_elements(), held);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, held);
   EXPECT_EQ(on_host(res, scratch), sentinel);
 }
 
@@ -934,7 +936,7 @@ std::optional<Built> build_pair(fb::DeviceResources &res, const fb::ci::DeviceSt
 // one determinant), which agree with the one tile.
 TEST(NevptRdm, TransitionAdjointMatchesPolarization) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   struct Space {
     std::int32_t n;
     std::int32_t n_alpha;
@@ -1044,7 +1046,7 @@ TEST(NevptRdm, TransitionAdjointMatchesPolarization) {
 // zero. On CAS(4,4) and CAS(6,6), at one tile.
 TEST(NevptRdm, TransitionAdjointAtBraEqualKetSumsToTheOneVector) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const auto [n32, per_spin] : {std::pair{4, 2}, std::pair{6, 3}}) {
     SCOPED_TRACE("CAS(" + std::to_string(n32) + "," + std::to_string(n32) + ")");
     auto probe = fb::ci::DeviceStringSet::create(res, n32, per_spin);
@@ -1113,7 +1115,7 @@ TEST(NevptRdm, TransitionAdjointAtBraEqualKetSumsToTheOneVector) {
 // refuses.
 TEST(NevptRdm, TransitionAdjointPlanAndRefusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kN = 4;
   const auto align = [](std::size_t bytes) {
     return fb::math::align_up(bytes, fb::DeviceResources::kWorkspaceAlignment);
@@ -1133,7 +1135,7 @@ TEST(NevptRdm, TransitionAdjointPlanAndRefusals) {
   ASSERT_TRUE(four && five && none);
   {
     // A fresh DeviceResources, whose workspace nothing has grown.
-    fb::DeviceResources fresh{0};
+    fb::DeviceResources fresh{0, fb::test::kWorkspaces};
     std::mt19937_64 rng{697};
     const auto bra = on_device(fresh, random_vector(rng, 36));
     const auto ket = on_device(fresh, random_vector(rng, 36));
@@ -1143,13 +1145,13 @@ TEST(NevptRdm, TransitionAdjointPlanAndRefusals) {
     ASSERT_TRUE(got);
     EXPECT_EQ(got->tiles, 1);
     // Its scratch is its own block, so the workspace is not grown.
-    EXPECT_EQ(fresh.device_workspace(0).num_elements(), 0U);
+    EXPECT_EQ(fresh.workspace_high_water().device.workspace, 0U);
   }
 
   const std::vector<double> sentinel(std::size_t{1} << 12, 0.25);
   auto scratch = on_device(res, sentinel);
   double *const p = scratch.data();
-  const std::size_t held = res.device_workspace(0).num_elements();
+  const std::size_t held = res.workspace_high_water().device.workspace;
   for (const bool f3 : {true, false}) {
     SCOPED_TRACE(f3 ? "with f3 bars" : "null f3 bars");
     double *const f3_bar = f3 ? p : nullptr;
@@ -1171,7 +1173,7 @@ TEST(NevptRdm, TransitionAdjointPlanAndRefusals) {
     ASSERT_FALSE(single);
     EXPECT_EQ(single.error().kind, fb::ErrorKind::InvalidConfig) << single.error().message;
   }
-  EXPECT_EQ(res.device_workspace(0).num_elements(), held);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, held);
   EXPECT_EQ(on_host(res, scratch), sentinel);
   const auto mixed = fb::nevpt2::rdms_adjoint(res, *four, *five, p, p, p, p, p, p, p, p, p);
   ASSERT_FALSE(mixed);
@@ -1192,7 +1194,7 @@ TEST(NevptRdm, Cas1212TilesAtTheDefaultBudget) {
   constexpr std::int32_t kPerSpin = 6;
   constexpr std::size_t kAux = 20;
   constexpr std::size_t n = kN;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::size_t strings = 924;
   std::mt19937_64 rng{1212};
   std::uniform_real_distribution<double> uniform{-1.0, 1.0};
@@ -1242,7 +1244,7 @@ TEST(NevptRdm, Cas1212TilesAtTheDefaultBudget) {
   std::size_t free_bytes = 0;
   std::size_t total_bytes = 0;
   ASSERT_EQ(wwr::wwrMemGetInfo(&free_bytes, &total_bytes), wwr::wwrSuccess);
-  const std::size_t workspace = res.device_workspace(0).num_elements();
+  const std::size_t workspace = res.workspace_high_water().device.workspace;
   std::cout << "CAS(12,12): " << got->tiles << " tiles over " << strings * strings
             << " determinants; workspace " << workspace << " bytes; pool peak " << high
             << " bytes (" << before << " held before the build: inputs, outputs, strings); card "

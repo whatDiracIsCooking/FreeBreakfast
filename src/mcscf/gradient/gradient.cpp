@@ -729,7 +729,8 @@ df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet
   SphericalMatrixAO minus_w(res, basis);
   Buffers::device<double> d_core(transition ? pairs : 1, res.device());
   {
-    const auto [work, cfc] = res.device_regions<double>(pairs, pairs);
+    const auto [work, cfc] =
+        FBF_TRY(res.device_regions<double>("mcscf::df_gradient_terms", pairs, pairs));
     std::vector<std::tuple<const double *, std::pair<double *, double *>, bool>> densities{
         {f.gamma.data(), {d.data(), d_active.data()}, !transition}};
     if (responds) {

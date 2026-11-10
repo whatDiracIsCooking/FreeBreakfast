@@ -47,6 +47,8 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -282,7 +284,8 @@ struct Reference {
 
 std::unique_ptr<Reference> make_reference(const Start &start) {
   auto ref = std::make_unique<Reference>();
-  ref->node = std::make_unique<fb::NodeResources>();
+  ref->node = std::make_unique<fb::NodeResources>(
+      fb::NodeResourcesConfig{.workspaces = fb::test::kWorkspaces});
   const fb::test::ScratchDir dir("df_qd_sc_nevpt2_hessian");
   std::string xyz = std::format("{}\n{}\n", start.atoms.size(), start.name);
   for (const auto &[symbol, coord] : start.atoms) {

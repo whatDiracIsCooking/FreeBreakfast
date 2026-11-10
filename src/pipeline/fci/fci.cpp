@@ -136,14 +136,13 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   }
   // The budget less the fragmentation headroom, as core/footprint has an
   // adaptive routine leave: the pool reserves in chunks, and what it reserves
-  // is what the cap bounds.
+  // is what the cap bounds. The workspace is DeviceResources', held from
+  // construction, so is already out of the budget.
   const size_t whole_budget = FBF_TRY(res.memory_budget());
   const size_t budget = whole_budget > kPoolHeadroomBytes ? whole_budget - kPoolHeadroomBytes : 0;
-  const size_t workspace = res.device_workspace(0).num_elements();
   const auto need = [&](const size_t limit) {
     const MemoryFootprint fp = fci_footprint(dims, nroots, limit);
-    return fp.device.persistent + fp.device.scratch +
-           (fp.device.workspace > workspace ? fp.device.workspace - workspace : 0);
+    return fp.device.persistent + fp.device.scratch;
   };
   constexpr size_t kUnbounded = std::numeric_limits<size_t>::max();
   std::optional<size_t> limit;

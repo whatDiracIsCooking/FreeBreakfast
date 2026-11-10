@@ -91,9 +91,10 @@ The RHF chain's steps carry theirs, from the Molecule to the Scf, and the CI
 steps CASCI, FCI and CASSCF theirs (#1049, #1151).
 `test/gtest/pipeline_step_footprint_gpu.cpp` is the step test's pattern: the
 dimensions are `plan_shape`'s over a parsed config, the step is the one it
-planned, and each runs on a fresh `DeviceResources`, once to grow the
-workspaces to exactly the footprint's, then again, measured, against the rest
-by `expect_footprint`'s two bars.
+planned, and each runs on a fresh `DeviceResources` whose workspaces are the
+footprint's, once, its largest borrows (`workspace_high_water()`) then
+exactly the footprint's, then again, measured, against the rest by
+`expect_footprint`'s two bars.
 
 **A nested step's footprint is optional, for now.** `OptimizeStep` and
 `HessianStep` rerun a chain whose shape their configuration picks, and every
@@ -169,8 +170,9 @@ peak(k) = Σ_{j ≤ k} persistent(j) + scratch(k) + max_j workspace(j)
 
 `footprint.device.peak()` is the largest `peak(k)` and `device_peak_step` the
 first k that reaches it; pinned alike. The workspace term is the maximum at
-every step because the workspace is one block per device, grown to the plan's
-maximum before the first step and held through every one.
+every step because the workspace is one block per device, sized at the
+plan's maximum before the first step (pre-flight builds the devices with it)
+and held through every one.
 
 - **Device and pinned fold alike.** Device-shaped steps run on one serial
   chain (`Pipeline::run`), so device scratch is one step's at a time. Pinned
@@ -190,8 +192,8 @@ maximum before the first step and held through every one.
   order is the run's; it is freed whole before the next geometry, so it is
   `drop`ped, and every geometry has the same dimensions, so one fold holds
   for all of them. The inner steps share the outer's `DeviceResources`, so
-  their workspace is in the outer maximum, and pre-flight's pre-grow covers
-  every geometry. `OptimizeStep` holds the start's Molecule beside the chain
+  their workspace is in the outer maximum, and the workspace pre-flight sizes
+  covers every geometry. `OptimizeStep` holds the start's Molecule beside the chain
   and keeps the optimum's; `HessianStep` keeps nothing on the device, and
   runs `geometry::harmonic_analysis` after the last displacement. The
   optimizer's history and trajectory and the Hessian's 6N gradients are
@@ -279,8 +281,9 @@ staging inside the block, sat above the pair and outlived it, and B was
 allocated while the block's frees were still pending. B went above both,
 the three-center scratch refilled 85 MiB of the block's 117, and the 31.5 MiB
 left straddled two chunks (4,602,624 and 28,446,208 bytes free) beside the
-first chunk's and the top's. The Eri now grows the workspace before the
-block and synchronizes before B (`pipeline/eri`'s README); B takes the
+first chunk's and the top's. The Eri then grew the workspace before the
+block, and since #1123 it is held from construction, below every step's
+allocations; the Eri synchronizes before B (`pipeline/eri`'s README); B takes the
 block's place, and the chain packs.
 
 **Reuse rounding (HIP).** ROCm's pool also serves a request whole from a

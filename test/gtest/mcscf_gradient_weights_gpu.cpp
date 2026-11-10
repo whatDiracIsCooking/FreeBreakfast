@@ -28,6 +28,8 @@ import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.ci;
 import free_breakfast.mcscf;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -113,7 +115,7 @@ protected:
       }
     }
     ASSERT_FALSE(case_.is_null()) << "no case " << name;
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     std::vector<fb::Atom> atoms;
     for (const auto &atom : case_["atoms"]) {
       const auto xyz = atom["coord"].get<std::vector<double>>();

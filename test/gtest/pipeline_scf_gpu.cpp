@@ -19,6 +19,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -189,7 +191,7 @@ TEST_P(PipelineScf, MatchesPyscf) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const fb::json &expected = reference_case(GetParam());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
                             expected.at("charge").get<std::int32_t>());
@@ -241,7 +243,7 @@ INSTANTIATE_TEST_SUITE_P(Rhf, PipelineScf,
 TEST(PipelineScfIncremental, MatchesFullBuilds) {
   FBF_REQUIRE_GPU();
   const fb::json &expected = reference_case("h2o_ccpvdz");
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
                             expected.at("charge").get<std::int32_t>());
@@ -282,7 +284,7 @@ TEST_P(PipelineScfRohf, MatchesPyscf) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const fb::json &expected = rohf_case(GetParam());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
                             expected.at("charge").get<std::int32_t>(),
@@ -363,7 +365,7 @@ INSTANTIATE_TEST_SUITE_P(Rohf, PipelineScfRohf,
 TEST(PipelineScfIncremental, RohfMatchesFullBuilds) {
   FBF_REQUIRE_GPU();
   const fb::json &expected = rohf_case("oh_ccpvdz");
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
                             expected.at("charge").get<std::int32_t>(),
@@ -383,7 +385,7 @@ TEST(PipelineScfIncremental, RohfMatchesFullBuilds) {
 TEST(PipelineScfMolden, WritesTheConvergedOrbitals) {
   FBF_REQUIRE_GPU();
   const fb::json &expected = reference_case("h2o_sto3g");
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
                             expected.at("charge").get<std::int32_t>());
@@ -411,7 +413,7 @@ TEST(PipelineScfMolden, WritesTheConvergedOrbitals) {
 // n_beta = multiplicity - 1 has N's parity.
 TEST(PipelineScfErrors, AMultiplicityOfTheWrongParityIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   for (const auto [charge, multiplicity] :
        {std::pair{0, 2}, std::pair{1, 1}, std::pair{0, 0}, std::pair{0, 13}}) {
@@ -426,7 +428,7 @@ TEST(PipelineScfErrors, AMultiplicityOfTheWrongParityIsInvalidConfig) {
 
 TEST(PipelineScfErrors, TooFewIterationsIsMaxIterationsExceeded) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto inputs = make_inputs(res, atoms_of(reference_case("h2o_sto3g")), "sto-3g", 0);
   ASSERT_TRUE(inputs.has_value());
@@ -437,7 +439,7 @@ TEST(PipelineScfErrors, TooFewIterationsIsMaxIterationsExceeded) {
 
 TEST(PipelineScfErrors, AnOptionOutOfRangeIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto inputs = make_inputs(res, atoms_of(reference_case("h2o_sto3g")), "sto-3g", 0);
   ASSERT_TRUE(inputs.has_value());
@@ -481,7 +483,7 @@ TEST_P(PipelineScfCalculation, AConfigNamingOnlyScfPlansAndRunsTheWholeChain) {
                                          expected.at("basis").get<std::string>()))
                   .has_value());
 
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);

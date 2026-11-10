@@ -26,6 +26,8 @@ import free_breakfast.analysis.population;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
+#include "test_workspaces.h"
+
 import free_breakfast.recipes.diagonalize; // syevd_lwork
 import free_breakfast.integrals.mmd;       // mixed_primitive_pair_classes
 
@@ -78,7 +80,7 @@ std::optional<fb::Calculation> run_scf(std::string_view xyz) {
     ADD_FAILURE() << calc.error().message;
     return std::nullopt;
   }
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   if (const fb::Status ran = calc->run(node); !ran.has_value()) {
     ADD_FAILURE() << ran.error().message;
     return std::nullopt;
@@ -176,7 +178,7 @@ TEST_P(Livvo, AreTheOrthonormalVirtualHalfOfTheIaoSpan) {
   ASSERT_EQ(n_vvo, GetParam().n_vvo);
   const auto k = static_cast<std::int32_t>(occ);
 
-  fb::DeviceResources res(scf->c.dev_idx());
+  fb::DeviceResources res(scf->c.dev_idx(), fb::test::kWorkspaces);
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
   const std::vector<double> v =
       build_vvos(res, basis->basis, *minao, k, overlap->s.data(), scf->c.data());
@@ -269,7 +271,7 @@ TEST(Livvo, WaterLocalizesIntoTwoMirrorImageSigmaStarOh) {
   ASSERT_EQ(n_vvo, 2U);
   const auto k = static_cast<std::int32_t>(occ);
 
-  fb::DeviceResources res(scf->c.dev_idx());
+  fb::DeviceResources res(scf->c.dev_idx(), fb::test::kWorkspaces);
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
   const double *s_dev = overlap->s.data();
   const double *c_dev = scf->c.data();
@@ -352,7 +354,7 @@ TEST(Livvo, WaterLocalizesIntoTwoMirrorImageSigmaStarOh) {
 // pointer serves for the matrices.
 TEST(Livvo, RefusesAnOutOfRangeNOccMismatchedAtomsAndNullPointers) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule water(res, {fb::Atom{{0.0, 0.0, 0.2}, fb::Element::O},
                                  fb::Atom{{0.0, 1.4, -0.9}, fb::Element::H},
                                  fb::Atom{{0.0, -1.4, -0.9}, fb::Element::H}});
@@ -386,7 +388,7 @@ TEST(Livvo, RefusesAnOutOfRangeNOccMismatchedAtomsAndNullPointers) {
 
 TEST(Livvo, LocalizeAndValenceCharacterRefuseBadArguments) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule water(res, {fb::Atom{{0.0, 0.0, 0.2}, fb::Element::O},
                                  fb::Atom{{0.0, 1.4, -0.9}, fb::Element::H},
                                  fb::Atom{{0.0, -1.4, -0.9}, fb::Element::H}});
@@ -440,10 +442,10 @@ TEST(Livvo, LocalizeAndValenceCharacterRefuseBadArguments) {
 template <typename Call>
 void expect_localization_footprint(const fb::MemoryFootprint &fp, const std::size_t live,
                                    Call &&call, const bool workspace_bound = false) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   call(res);
-  const std::size_t grown = res.device_workspace(0).num_elements();
+  const std::size_t grown = res.workspace_high_water().device.workspace;
   if (workspace_bound) {
     EXPECT_LE(grown, fp.device.workspace);
     std::cout << std::format("[ footprint ] workspace {} of the bound {}\n", grown,
@@ -482,7 +484,7 @@ TEST(LocalizationFootprint, WaterRoutines) {
   const double *s = overlap->s.data();
   const double *c = scf->c.data();
 
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   std::vector<std::size_t> lwork(n + 1);
   for (std::size_t order = 0; order <= n; ++order) {
     lwork[order] = fb::syevd_lwork<double>(inputs, static_cast<std::int32_t>(order)).value();

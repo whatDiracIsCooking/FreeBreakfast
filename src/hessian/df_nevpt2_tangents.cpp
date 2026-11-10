@@ -94,10 +94,6 @@ Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
         kWho, cp.orbital.num_elements(), cp.ci.num_elements(), n_x, pairs, ndet);
   }
   const wwr::wwrblasHandle_t blas = res.blas().get();
-  // The workspace grown first to every call's, so that the budget each part
-  // reads is not taken again by a workspace's growth.
-  (void)res.device_workspace(
-      df_nevpt2_tangents_footprint(basis, aux, ncore, ncas, nalpha, nbeta).device.workspace);
 
   // h_MO = C^T h C and the MO factor B_Q,pq = (C^T B_Q C)_pq at
   // Q + naux (p + nmo q), held across the calls below that take the

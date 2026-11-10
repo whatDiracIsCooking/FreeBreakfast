@@ -326,8 +326,8 @@ What it settled:
   takes it per call and drops it when it returns, since nothing reads it after.
   Everything else the loop holds lives across calls (DIIS writes into `tmp`,
   `eps` is read at convergence), so it stays in the step's own buffers. The
-  the Orthogonalizer step has already grown the workspace to `syevd`'s size for the
-  same n, so in a pipeline the SCF adds no allocation for it.
+  workspace is held from construction at the plan's maximum, which counts
+  `syevd`'s size for the same n, so the SCF adds no allocation for it.
 - **The first device consumer of `GuessOutput`**, so the host-to-device upload is
   here. The planner syncs after every device step and a host step has finished
   when its task does, so the Taskflow edge the `View` gives is all the ordering

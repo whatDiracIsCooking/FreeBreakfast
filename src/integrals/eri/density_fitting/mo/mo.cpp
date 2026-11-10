@@ -76,23 +76,13 @@ Status b_mo(DeviceResources &res, const int32_t naux, const int32_t nao, const i
     return gpu_status(wwr::wwrMemsetAsync(out, 0, sizeof(double) * count, res.stream()));
   }
 
-  // X past the memory budget would abort in device_workspace (CreatePolicy),
-  // not return. A workspace already that large is not grown, so is not
-  // checked. X's doubles are below 2^62, but its bytes need not fit size_t.
+  // X is the workspace's, held from construction, which refuses a borrow past
+  // it. Its doubles are below 2^62, but its bytes need not fit size_t.
   const size_t x_count = static_cast<size_t>(x_rows) * static_cast<size_t>(nao);
   if (x_count > std::numeric_limits<size_t>::max() / sizeof(double)) {
     return err_unsupported("b_mo: the half transform's {} doubles overflow size_t bytes", x_count);
   }
-  const size_t x_bytes = sizeof(double) * x_count;
-  if (x_bytes > res.device_workspace(0).num_elements()) {
-    if (const size_t budget = FBF_TRY(res.memory_budget()); x_bytes > budget) {
-      return err_unsupported("b_mo: the half transform over {} fitting functions, {} orbital "
-                             "functions and {} rows needs {} bytes of device memory, and device "
-                             "{}'s budget is {}",
-                             naux, nao, rows.count, x_bytes, res.dev_idx(), budget);
-    }
-  }
-  const auto [x] = res.device_regions<double>(x_count);
+  const auto [x] = FBF_TRY(res.device_regions<double>("b_mo", x_count));
   FBF_TRY(half_transform(res, naux, nao, b, c, rows, x));
 
   // B_Q,pq = sum_m X_Q,pm C_m,q: X as the (naux |rows|) x nao matrix, times

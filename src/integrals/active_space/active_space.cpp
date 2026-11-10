@@ -38,10 +38,13 @@ struct ActiveSpaceScratch {
   double *block;  // one projected matrix, at most cols x cols
   double *p_sphe; // C_core C_core^T over the spherical AOs, for E_core
 
-  ActiveSpaceScratch(DeviceResources &res, const size_t n_cart, const size_t n_sphe,
-                     const size_t cols) {
-    std::tie(c_cart, work, block, p_sphe) =
-        res.device_regions<double>(n_cart * cols, n_cart * cols, cols * cols, n_sphe * n_sphe);
+  // Carved from res's workspace for caller, or the borrow's refusal.
+  static Result<ActiveSpaceScratch> carve(DeviceResources &res, const std::string_view caller,
+                                          const size_t n_cart, const size_t n_sphe,
+                                          const size_t cols) {
+    const auto [c_cart, work, block, p_sphe] = FBF_TRY(res.device_regions<double>(
+        caller, n_cart * cols, n_cart * cols, cols * cols, n_sphe * n_sphe));
+    return ActiveSpaceScratch{.c_cart = c_cart, .work = work, .block = block, .p_sphe = p_sphe};
   }
 
   // The workspace bytes the constructor's regions take.
@@ -117,7 +120,8 @@ Result<ActiveSpaceHamiltonian> build_active_space(
   CartesianMatrixAO density(res, basis);
   CartesianMatrixAO j(res, basis);
   CartesianMatrixAO k(res, basis);
-  const ActiveSpaceScratch scratch(res, n_cart, n_sphe, static_cast<size_t>(m));
+  const ActiveSpaceScratch scratch = FBF_TRY(
+      ActiveSpaceScratch::carve(res, "build_active_space", n_cart, n_sphe, static_cast<size_t>(m)));
 
   // The orbitals over the Cartesian AOs the kernels evaluate, U C: J[U P U^T]
   // projected by U C is J's spherical matrix projected by C.
@@ -423,7 +427,8 @@ Result<CasscfIntegrals> casscf_integrals(DeviceResources &res, const BasisSet &b
   // The scratch, carved once the core's df_coulomb and df_exchange are done
   // with the workspace: X, the first half of L; L; and the C^T J C batch's
   // intermediate, which is also h_eff's gemmwich work.
-  const auto [x, l, work] = res.device_regions<double>(rows * n_all, rows * n_all, count);
+  const auto [x, l, work] =
+      FBF_TRY(res.device_regions<double>("casscf_integrals", rows * n_all, rows * n_all, count));
   FBF_TRY(gpu_status(gemmwich(blas, ncas, n, c_act, fock, work, out.hamiltonian.h_eff.data())));
 
   // X_m = B_m C_act for every m, [Q][u][m]; then L = X C, [Q][u][p]: the

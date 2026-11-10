@@ -22,6 +22,8 @@ import free_breakfast.core.resources;
 import free_breakfast.io.npy;
 import free_breakfast.ci;
 import free_breakfast.nevpt2;
+#include "test_workspaces.h"
+
 import free_breakfast.recipes.diagonalize; // syevd_lwork
 
 #include "pool_footprint.h"
@@ -46,9 +48,10 @@ constexpr double kReorderTol = 1e-10;
 template <typename Call>
 void expect_routine_footprint(fb::DeviceResources &res, const fb::MemoryFootprint &fp,
                               const std::size_t live, Call &&call) {
-  const std::size_t device_before = res.device_workspace(0).num_elements();
+  const std::size_t device_before = res.workspace_high_water().device.workspace;
   call();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), std::max(device_before, fp.device.workspace));
+  EXPECT_EQ(res.workspace_high_water().device.workspace,
+            std::max(device_before, fp.device.workspace));
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), call);
   std::cout << std::format("[ footprint ] measured {} (G {}), footprint {} + workspace {}\n",
                            peak.used, peak.granularity, fp.device.persistent + fp.device.scratch,
@@ -130,7 +133,7 @@ RdmInputs rdm_inputs(fb::DeviceResources &res, const std::int32_t n) {
 TEST(Nevpt2Footprint, RdmsAtOneDeterminant) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kN = 6;
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   RdmInputs in = rdm_inputs(inputs, kN);
   const auto n6 = static_cast<std::size_t>(kN) * kN * kN * kN * kN * kN;
   const auto n4 = static_cast<std::size_t>(kN) * kN * kN * kN;
@@ -144,7 +147,7 @@ TEST(Nevpt2Footprint, RdmsAtOneDeterminant) {
       SCOPED_TRACE(std::format("transition {} f3 {}", transition, f3));
       const fb::MemoryFootprint fp = nevpt2::rdms_footprint(kN, 1, transition, f3);
       EXPECT_EQ(fp.device.persistent + fp.device.workspace, 0U);
-      fb::DeviceResources res{0};
+      fb::DeviceResources res{0, fb::test::kWorkspaces};
       // The one scratch block, budgeted at its footprint: a tile of one.
       expect_routine_footprint(res, fp, 1, [&] {
         const auto tiles = nevpt2::rdms(
@@ -161,7 +164,7 @@ TEST(Nevpt2Footprint, RdmsAtOneDeterminant) {
 TEST(Nevpt2Footprint, RdmsAdjointAtOneDeterminant) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kN = 6;
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   RdmInputs in = rdm_inputs(inputs, kN);
   const auto n6 = static_cast<std::size_t>(kN) * kN * kN * kN * kN * kN;
   const auto n4 = static_cast<std::size_t>(kN) * kN * kN * kN;
@@ -175,7 +178,7 @@ TEST(Nevpt2Footprint, RdmsAdjointAtOneDeterminant) {
     for (const bool f3 : {true, false}) {
       SCOPED_TRACE(std::format("transition {} f3 {}", transition, f3));
       const fb::MemoryFootprint fp = nevpt2::rdms_adjoint_footprint(kN, 1, transition, f3);
-      fb::DeviceResources res{0};
+      fb::DeviceResources res{0, fb::test::kWorkspaces};
       expect_routine_footprint(res, fp, 1, [&] {
         const double *const f3ca = f3 ? f3ca_bar.data() : nullptr;
         const double *const f3ac = f3 ? f3ac_bar.data() : nullptr;
@@ -202,7 +205,7 @@ TEST(Nevpt2Footprint, RdmsTileFromTheBudgetUnderACap) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kN = 8;
   constexpr std::uint64_t kCap = std::uint64_t{96} << 20;
-  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
+  fb::DeviceResources res{0, {}, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
   RdmInputs in = rdm_inputs(res, kN);
   const auto n6 = static_cast<std::size_t>(kN) * kN * kN * kN * kN * kN;
   fb::Buffers::device<double> dm3(n6, res.device());
@@ -245,11 +248,11 @@ BlockInputs block_inputs(fb::DeviceResources &res) {
 TEST(Nevpt2Footprint, MoBlocks) {
   FBF_REQUIRE_GPU();
   using I = BlockInputs;
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const BlockInputs in = block_inputs(inputs);
   const fb::MemoryFootprint fp =
       nevpt2::mo_blocks_footprint(I::kNaux, I::kNao, I::kNao, I::kNcore, I::kNcas);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // The five blocks; each b_mo's X is the workspace.
   expect_routine_footprint(res, fp, 5, [&] {
     const auto blocks = nevpt2::mo_blocks(res, I::kNaux, I::kNao, I::kNao, in.b.data(), in.c.data(),
@@ -261,7 +264,7 @@ TEST(Nevpt2Footprint, MoBlocks) {
 TEST(Nevpt2Footprint, H2eAndSlabs) {
   FBF_REQUIRE_GPU();
   using I = BlockInputs;
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const BlockInputs in = block_inputs(inputs);
   const auto blocks = nevpt2::mo_blocks(inputs, I::kNaux, I::kNao, I::kNao, in.b.data(),
                                         in.c.data(), I::kNcore, I::kNcas);
@@ -270,7 +273,7 @@ TEST(Nevpt2Footprint, H2eAndSlabs) {
   {
     fb::Buffers::device<double> out(
         static_cast<std::size_t>(I::kNcas) * I::kNcas * I::kNcas * I::kNcas, inputs.device());
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     // The gemm's product.
     expect_routine_footprint(res, nevpt2::h2e_footprint(I::kNcas), 1,
                              [&] { ASSERT_TRUE(nevpt2::h2e(res, *blocks, out.data())); });
@@ -289,7 +292,7 @@ TEST(Nevpt2Footprint, H2eAndSlabs) {
         static_cast<std::size_t>(shape[0]) * shape[1] * shape[2] * shape[3], inputs.device());
     const fb::MemoryFootprint fp =
         nevpt2::slab_footprint(I::kNcore, I::kNcas, I::kNvirt, block, kWidth);
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     // The gemm's product, but for Sijrs, which writes out directly.
     expect_routine_footprint(res, fp, block == nevpt2::ExtBlock::Sijrs ? 0 : 1, [&] {
       ASSERT_TRUE(nevpt2::slab(res, *blocks, block, 1, 1 + kWidth, out.data()));
@@ -374,14 +377,14 @@ class Nevpt2ClassEnergiesFootprint
 TEST_P(Nevpt2ClassEnergiesFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
   const auto [name, batch] = GetParam();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
   const fb::MemoryFootprint fp =
       nevpt2::class_energies_footprint(b.ncore, b.ncas, b.nvirt, g.nelecas, batch);
   EXPECT_EQ(fp.device.persistent, 0U);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // At Si's walk, the peak class here: delta, its six intermediates, the
   // slab, its product and the tables.
   expect_routine_footprint(res, fp, 10, [&] {
@@ -417,7 +420,7 @@ class Nevpt2PcClassEnergiesFootprint
 TEST_P(Nevpt2PcClassEnergiesFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
   const auto [name, batch] = GetParam();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -428,7 +431,7 @@ TEST_P(Nevpt2PcClassEnergiesFootprint, SoundAndTight) {
       nevpt2::pc_class_energies_footprint(b.ncore, b.ncas, b.nvirt, batch, lwork, pc->dropped);
   EXPECT_EQ(fp.device.persistent, 0U);
   std::cout << std::format("dropped {}\n", pc->dropped);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_routine_footprint(res, fp, 10, [&] {
     if (std::getenv("TRACE_PC") != nullptr) {
       setenv("FBF_TRACE", "1", 1);
@@ -489,7 +492,7 @@ class Nevpt2ClassEnergiesAdjointFootprint
 TEST_P(Nevpt2ClassEnergiesAdjointFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
   const auto [name, batch] = GetParam();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -497,7 +500,7 @@ TEST_P(Nevpt2ClassEnergiesAdjointFootprint, SoundAndTight) {
   const fb::MemoryFootprint fp =
       nevpt2::class_energies_adjoint_footprint(b.naux, b.ncore, b.ncas, b.nvirt, g.nelecas, batch);
   EXPECT_EQ(fp.device.persistent, 0U);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_routine_footprint(res, fp, 10, [&] {
     if (std::getenv("TRACE_ADJ") != nullptr) {
       setenv("FBF_TRACE", "1", 1);
@@ -526,7 +529,7 @@ class Nevpt2PcClassEnergiesAdjointFootprint
 TEST_P(Nevpt2PcClassEnergiesAdjointFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
   const auto [name, batch] = GetParam();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -540,7 +543,7 @@ TEST_P(Nevpt2PcClassEnergiesAdjointFootprint, SoundAndTight) {
       b.naux, b.ncore, b.ncas, b.nvirt, 1, batch, lwork);
   EXPECT_GE(most.device.scratch, fp.device.scratch);
   EXPECT_GE(most.device.workspace, fp.device.workspace);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_routine_footprint(res, fp, 10, [&] {
     if (std::getenv("TRACE_ADJ") != nullptr) {
       setenv("FBF_TRACE", "1", 1);
@@ -567,7 +570,7 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcClassEnergiesAdjointFootprint,
 // pool stays under the cap.
 TEST(Nevpt2Footprint, EnergiesAtTheLeastMatchUnconstrained) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   EnergyCase g = energy_case(res, "n2_ccpvdz_cas44_df");
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -640,7 +643,7 @@ TEST(Nevpt2Footprint, EnergiesAtTheLeastMatchUnconstrained) {
 // walk part of its extent.
 TEST(Nevpt2Footprint, ClassEnergiesBatchFromTheBudgetUnderACap) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, "n2_ccpvdz_cas44_df");
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -653,7 +656,7 @@ TEST(Nevpt2Footprint, ClassEnergiesBatchFromTheBudgetUnderACap) {
   // headroom the walk leaves and the workspace the first call grows.
   const std::uint64_t cap = fb::kPoolHeadroomBytes + least.device.workspace +
                             ((least.device.scratch + whole.device.scratch) / 2);
-  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  fb::DeviceResources res{0, least, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   ASSERT_TRUE(nevpt2::class_energies(res, b, g.in, nevpt2::kBatchFromBudget));
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] {
     const auto e = nevpt2::class_energies(res, b, g.in, nevpt2::kBatchFromBudget);
@@ -759,7 +762,7 @@ class Nevpt2ClassEnergiesTangentFootprint
 TEST_P(Nevpt2ClassEnergiesTangentFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
   const auto [name, batch] = GetParam();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -767,7 +770,7 @@ TEST_P(Nevpt2ClassEnergiesTangentFootprint, SoundAndTight) {
   const fb::MemoryFootprint fp = nevpt2::class_energies_tangent_footprint(
       b.naux, b.ncore, b.ncas, b.nvirt, g.nelecas, batch, d.along);
   EXPECT_EQ(fp.device.persistent, 0U);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_routine_footprint(res, fp, kTangentLive, [&] {
     const auto t = nevpt2::class_energies_tangent(res, b, g.in, batch, d.along);
     ASSERT_TRUE(t) << t.error().message;
@@ -789,7 +792,7 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2ClassEnergiesTangentFootprint,
 // as good as any for the footprint.
 TEST(Nevpt2Footprint, ClassEnergiesTangentOneFunctionClasses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, "n2_ccpvdz_cas44_df");
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -807,7 +810,7 @@ TEST(Nevpt2Footprint, ClassEnergiesTangentOneFunctionClasses) {
     in.dm1 = dm1_d.data();
     const fb::MemoryFootprint fp = nevpt2::class_energies_tangent_footprint(
         b.naux, b.ncore, b.ncas, b.nvirt, nelecas, 0, d.along);
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     expect_routine_footprint(res, fp, kTangentLive, [&] {
       const auto t = nevpt2::class_energies_tangent(res, b, in, 0, d.along);
       ASSERT_TRUE(t) << t.error().message;
@@ -827,7 +830,7 @@ TEST_P(Nevpt2ScEffectiveHamiltonianTangentFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kStates = 2;
   const auto [name, batch] = GetParam();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -860,7 +863,7 @@ TEST_P(Nevpt2ScEffectiveHamiltonianTangentFootprint, SoundAndTight) {
   const fb::MemoryFootprint fp = nevpt2::sc_effective_hamiltonian_tangent_footprint(
       b.naux, b.ncore, b.ncas, b.nvirt, g.nelecas, kStates, batch, along);
   EXPECT_EQ(fp.device.persistent, 0U);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_routine_footprint(res, fp, kTangentLive, [&] {
     const auto t = nevpt2::sc_effective_hamiltonian_tangent(res, b, pairs, batch, along);
     ASSERT_TRUE(t) << t.error().message;
@@ -900,7 +903,7 @@ class Nevpt2PcClassEnergiesTangentFootprint
 TEST_P(Nevpt2PcClassEnergiesTangentFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
   const auto [name, batch] = GetParam();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -915,7 +918,7 @@ TEST_P(Nevpt2PcClassEnergiesTangentFootprint, SoundAndTight) {
   EXPECT_EQ(fp.device.persistent, 0U);
   EXPECT_GE(most.device.scratch, fp.device.scratch);
   EXPECT_GE(most.device.workspace, fp.device.workspace);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_routine_footprint(res, fp, kPcTangentLive, [&] {
     const auto t = nevpt2::pc_class_energies_tangent(res, b, g.in, batch, d.along);
     ASSERT_TRUE(t) << t.error().message;
@@ -1002,7 +1005,7 @@ TEST_P(Nevpt2PcEffectiveHamiltonianTangentFootprint, SoundAndTight) {
   if (name == "n2_ccpvdz_cas88_df") {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -1018,7 +1021,7 @@ TEST_P(Nevpt2PcEffectiveHamiltonianTangentFootprint, SoundAndTight) {
       b.naux, b.ncore, b.ncas, b.nvirt, kQdStates, batch, lwork, along);
   EXPECT_EQ(fp.device.persistent, 0U);
   EXPECT_GE(most.device.scratch, fp.device.scratch);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_routine_footprint(res, fp, kPcTangentLive, [&] {
     const auto t = nevpt2::pc_effective_hamiltonian_tangent(res, b, pairs, batch, along);
     ASSERT_TRUE(t) << t.error().message;
@@ -1063,7 +1066,7 @@ TEST_P(Nevpt2ClassEnergiesHvpFootprint, SoundAndTight) {
   if (name != "n2_ccpvdz_cas44_df" || (batch == 1 && partnered)) {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -1075,7 +1078,7 @@ TEST_P(Nevpt2ClassEnergiesHvpFootprint, SoundAndTight) {
   const fb::MemoryFootprint fp = nevpt2::class_energies_hvp_footprint(
       b.naux, b.ncore, b.ncas, b.nvirt, g.nelecas, batch, d.along, partners);
   EXPECT_EQ(fp.device.persistent, 0U);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_routine_footprint(res, fp, kHvpLive, [&] {
     const auto p = nevpt2::class_energies_hvp(res, b, g.in, batch, d.along, each, partners);
     ASSERT_TRUE(p) << p.error().message;
@@ -1116,7 +1119,7 @@ TEST_P(Nevpt2ScEffectiveHamiltonianHvpFootprint, SoundAndTight) {
   if (name != "n2_ccpvdz_cas44_df" || batch == 1) {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -1167,7 +1170,7 @@ TEST_P(Nevpt2ScEffectiveHamiltonianHvpFootprint, SoundAndTight) {
       b.naux, b.ncore, b.ncas, b.nvirt, g.nelecas, kStates, batch, hbar, along, {},
       fb::MemoryFootprint{});
   EXPECT_EQ(fp.device.persistent, 0U);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_routine_footprint(res, fp, kHvpLive, [&] {
     const auto p = nevpt2::sc_effective_hamiltonian_hvp(
         res, b, pairs, hbar, batch, along, bars,
@@ -1219,7 +1222,7 @@ TEST_P(Nevpt2PcClassEnergiesHvpFootprint, SoundAndTight) {
   if (name == "n2_ccpvdz_cas88_df") {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -1243,7 +1246,7 @@ TEST_P(Nevpt2PcClassEnergiesHvpFootprint, SoundAndTight) {
   EXPECT_GE(most.device.scratch, fp.device.scratch);
   EXPECT_GE(most.device.workspace, fp.device.workspace);
   std::cout << std::format("dropped {}\n", pc->dropped);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_routine_footprint(res, fp, kPcHvpLive, [&] {
     const auto t = nevpt2::pc_class_energies_hvp(res, b, in, batch, d.along, bars);
     ASSERT_TRUE(t) << t.error().message;
@@ -1317,7 +1320,7 @@ TEST_P(Nevpt2PcEffectiveHamiltonianHvpFootprint, SoundAndTight) {
   if (name == "n2_ccpvdz_cas88_df") {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -1335,7 +1338,7 @@ TEST_P(Nevpt2PcEffectiveHamiltonianHvpFootprint, SoundAndTight) {
   EXPECT_EQ(fp.device.persistent, 0U);
   EXPECT_GE(most.device.scratch, fp.device.scratch);
   std::cout << std::format("dropped {}\n", dropped);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_routine_footprint(res, fp, kPcHvpLive, [&] {
     const auto t = nevpt2::pc_effective_hamiltonian_hvp(
         res, b, q.pairs, hbar, batch, q.along, sb.bars,
@@ -1364,7 +1367,7 @@ TEST_P(Nevpt2PcMetricLiftsFootprint, SoundAndTight) {
   FBF_REQUIRE_GPU();
   FBF_FAMILY_REPRESENTATIVE("0");
   const std::string name = GetParam();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const EnergyCase g = energy_case(inputs, name);
   ASSERT_TRUE(g.blocks.has_value());
   const nevpt2::MoBlocks &b = *g.blocks;
@@ -1385,7 +1388,7 @@ TEST_P(Nevpt2PcMetricLiftsFootprint, SoundAndTight) {
         b.ncore, b.ncas, b.nvirt, 1, lwork, std::span{dropped}.first(1));
     EXPECT_GE(nevpt2::pc_metric_lifts_footprint(b.ncore, b.ncas, b.nvirt, 1, lwork).device.scratch,
               fp.device.scratch);
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     expect_routine_footprint(res, fp, kPcTangentLive, [&] {
       const auto l = nevpt2::pc_metric_lifts(res, b, g.in, first.front(), second);
       ASSERT_TRUE(l) << l.error().message;
@@ -1395,7 +1398,7 @@ TEST_P(Nevpt2PcMetricLiftsFootprint, SoundAndTight) {
     SCOPED_TRACE("two states");
     const fb::MemoryFootprint fp = nevpt2::pc_metric_lifts_footprint(
         b.ncore, b.ncas, b.nvirt, kQdStates, lwork, std::span{dropped}.first(1));
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     expect_routine_footprint(res, fp, kPcTangentLive, [&] {
       const auto l = nevpt2::pc_metric_lifts(res, b, q.pairs, first, second, 0,
                                              std::numeric_limits<double>::infinity());

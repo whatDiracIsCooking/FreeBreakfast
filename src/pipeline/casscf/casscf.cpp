@@ -388,7 +388,7 @@ Result<ScfOutput> CarriedOrbitalsStep::run(View<BasisSetOutput, OverlapOutput> i
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(carried.data(), c.data(), n2 * sizeof(double),
                                          wwr::wwrMemcpyHostToDevice, res.stream())));
   {
-    const auto [work] = res.device_regions<double>(n2);
+    const auto [work] = FBF_TRY(res.device_regions<double>("CarriedOrbitalsStep::run", n2));
     FBF_TRY(gpu_status(gemmwich(res.blas(), n, carried.data(), s.data(), work, m.data())));
   }
   FBF_TRY(orthogonalize<double>(res, n, m.data(), m_inv_sqrt.data()));

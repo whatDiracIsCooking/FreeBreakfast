@@ -217,7 +217,7 @@ W^x is nmo² naux doubles per coordinate: about 0.15 MB for the water in
 `df_integral_derivatives` holds W^x for a chunk of coordinates, as many as
 its budget takes (`DeviceResources::memory_budget()` less `kPoolHeadroomBytes`, or
 `max_bytes` when less, against every allocation the call makes at that chunk, its
-footprint's scratch, read with the workspace first grown to its fixed size), hands the
+footprint's scratch, read with the workspace held at its fixed size), hands the
 chunk to its consumer and moves on: I^x itself is
 never whole. h1^x and τ^x (nmo² each) are built for every coordinate once
 and handed over beside each chunk's W^x.

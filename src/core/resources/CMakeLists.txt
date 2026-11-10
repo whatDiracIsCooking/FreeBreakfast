@@ -19,6 +19,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::nontransferrable
   free_breakfast::core::primitives
   free_breakfast::core::error_handling
+  free_breakfast::core::footprint
   free_breakfast::core::wwr
   free_breakfast::third_party::taskflow
   LINK_PRIVATE

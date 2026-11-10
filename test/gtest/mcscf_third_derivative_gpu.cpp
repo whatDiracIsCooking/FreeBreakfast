@@ -32,6 +32,8 @@ import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.ci;
 import free_breakfast.mcscf;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -280,7 +282,7 @@ TEST_P(McscfThirdDerivative, MatchesTheFixture) {
   const std::size_t dim = na * nb;
   const auto arrays = entry.at("arrays");
 
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   std::vector<fb::Atom> atoms;
   for (const fb::json &atom : entry.at("atoms")) {
@@ -501,7 +503,7 @@ TEST(McscfThirdDerivativeChunks, MatchALadder) {
   const std::size_t nn = nmo * nmo;
   const std::size_t factor = nn * naux;
 
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   std::vector<fb::Atom> atoms;
   for (const fb::json &atom : entry.at("atoms")) {

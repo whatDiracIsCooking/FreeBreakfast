@@ -40,6 +40,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
 
+#include "test_workspaces.h"
+
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
 #include "slow_test.h"
@@ -278,7 +280,7 @@ TEST_P(McscfGradient, DfCasscfMatchesPyscf) {
   const auto nroots = static_cast<std::int32_t>(weights.size());
   const auto start = std::chrono::steady_clock::now();
 
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = run_setup_steps(entry, node);
   ASSERT_TRUE(calc.has_value());
   fb::DeviceResources &res = node.device(0);
@@ -543,7 +545,7 @@ TEST(McscfGradientMix, SumZeroIsMixOfRoots) {
   const auto weights = qd.at("weights").get<std::vector<double>>();
   const auto nroots = static_cast<std::int32_t>(weights.size());
 
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = run_setup_steps(entry, node);
   ASSERT_TRUE(calc.has_value());
   fb::DeviceResources &res = node.device(0);

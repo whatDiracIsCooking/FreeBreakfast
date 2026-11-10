@@ -12,6 +12,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -72,8 +74,8 @@ std::vector<T> leading_spectrum(fb::DeviceResources &res, const std::vector<T> &
 
 // A dense device A as a LinearOperator: one gemm per apply, counting the
 // applies and the columns they covered, and noting any made outside host
-// pointer mode. With scribble set, each apply first grows the device workspace
-// and fills it with NaN bytes, as a sigma build taking it for its own scratch
+// pointer mode. With scribble set, each apply first fills the whole device
+// workspace with NaN bytes, as a sigma build taking it for its own scratch
 // would.
 template <typename T>
 struct Dense {
@@ -93,10 +95,15 @@ struct Dense {
                 wwr::wwrblasGetPointerMode(blas, &mode) == wwr::WWRBLAS_STATUS_SUCCESS &&
                 mode == wwr::WWRBLAS_POINTER_MODE_HOST;
     if (scribble) {
-      const std::size_t bytes = (static_cast<std::size_t>(applies) << 20U);
-      auto &work = res.device_workspace(bytes);
-      if (auto status = fb::gpu_status(
-              wwr::wwrMemsetAsync(work.data(), 0xFF, work.num_elements(), res.stream()));
+      // The whole workspace, overwritten: whatever davidson_solve held in it
+      // is garbage after.
+      const auto work =
+          res.device_workspace("ShiftedDense::apply", res.workspaces().device.workspace);
+      if (!work) {
+        return std::unexpected(work.error());
+      }
+      if (auto status =
+              fb::gpu_status(wwr::wwrMemsetAsync(work->data(), 0xFF, work->size(), res.stream()));
           !status) {
         return status;
       }
@@ -231,7 +238,7 @@ template <typename T>
 void check_converges(std::int32_t max_subspace) {
   for (const bool canonical : {false, true}) {
     SCOPED_TRACE(std::format("canonical_orthonormalization {}", canonical));
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     Problem<T> p{res};
     auto options = Problem<T>::converging_options();
     options.canonical_orthonormalization = canonical;
@@ -275,7 +282,7 @@ template <typename T>
 void check_collapse_keeps_previous(bool canonical) {
   SCOPED_TRACE(std::format("canonical_orthonormalization {}", canonical));
   const auto iterations = [canonical](std::int32_t max_subspace) {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     Problem<T> p{res};
     p.precondition.identity = true;
     auto options = Problem<T>::converging_options();
@@ -324,7 +331,7 @@ TEST(Davidson, LinearDependenceFloorIsRelative) {
   for (const bool canonical : {false, true}) {
     SCOPED_TRACE(std::format("canonical_orthonormalization {}", canonical));
     const auto solve = [canonical](double factor) {
-      fb::DeviceResources res{0};
+      fb::DeviceResources res{0, fb::test::kWorkspaces};
       Problem<double> p{res};
       for (double &element : p.a) {
         element *= factor;
@@ -359,7 +366,7 @@ TEST(Davidson, WritesThePreviousRitzVectors) {
   constexpr std::size_t kBlock = static_cast<std::size_t>(kN) * kRoots;
   for (const std::int32_t max_subspace : {kN, 3 * kRoots, 2 * kRoots}) {
     SCOPED_TRACE(std::format("max_subspace {}", max_subspace));
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     Problem<double> p{res};
     fb::Buffers::device<double> previous(kBlock, res.device());
     auto options = Problem<double>::converging_options();
@@ -391,17 +398,17 @@ TEST(Davidson, WritesThePreviousRitzVectors) {
   }
 }
 
-// The subspace lives in the call's own buffers: an operator that grows and
-// overwrites the device workspace on every apply changes nothing.
+// The subspace lives in the call's own buffers: an operator that overwrites
+// the whole device workspace on every apply changes nothing.
 TEST(Davidson, OperatorMayTakeTheDeviceWorkspace) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   Problem<double> p{res};
   p.op.scribble = true;
   const auto options = Problem<double>::converging_options();
   const auto info = p.solve(20, options);
   ASSERT_TRUE(info) << info.error().message;
-  EXPECT_GT(res.device_workspace(0).num_elements(), std::size_t{1} << 20U);
+  EXPECT_GT(res.workspace_high_water().device.workspace, std::size_t{1} << 20U);
   p.expect_lowest_pairs(options);
 }
 
@@ -409,7 +416,7 @@ TEST(Davidson, OperatorMayTakeTheDeviceWorkspace) {
 // values, the guess's span being the first 4 coordinates, written out.
 TEST(Davidson, MaxIterationsIsAnErrorWithTheLastRitzValues) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   Problem<double> p{res};
   fb::DavidsonOptions options;
   options.max_iterations = 1;
@@ -428,7 +435,7 @@ TEST(Davidson, ZeroCorrectionsAreDivergence) {
   FBF_REQUIRE_GPU();
   for (const bool canonical : {false, true}) {
     SCOPED_TRACE(std::format("canonical_orthonormalization {}", canonical));
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     Problem<double> p{res};
     p.precondition.zero = true;
     fb::DavidsonOptions options;
@@ -442,7 +449,7 @@ TEST(Davidson, ZeroCorrectionsAreDivergence) {
 
 TEST(Davidson, RejectsABadShape) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   Problem<double> p{res};
   const auto bad = [&](std::int32_t n_roots, std::int32_t max_subspace, std::int32_t guess_count,
                        std::int32_t max_iterations) {

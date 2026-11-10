@@ -24,6 +24,8 @@ import free_breakfast.io.json;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -148,7 +150,7 @@ TEST_P(PipelineFci, MatchesPyscf) {
                                            std::format("[fci]\nnroots = {}\n", roots.size())),
                               dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &chain = calc->get<fb::FciOutput>();
@@ -226,7 +228,7 @@ TEST(PipelineFci, ASpacePastTheDeviceMemoryIsRefusedUpFront) {
   auto calc =
       fb::read_config(write_config(dir, entry, "cc-pvdz", "[fci]\n"), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::Allocation);
@@ -247,7 +249,7 @@ TEST(PipelineFci, AnOpenShellScfOutputIsUnsupported) {
   auto calc =
       fb::read_config(write_config(dir, entry, "sto-3g", "[fci]\n"), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
 
@@ -284,7 +286,7 @@ TEST(PipelineFci, AMultiplicityThatDoesNotFitIsInvalidConfig) {
   auto calc =
       fb::read_config(write_config(dir, entry, "sto-3g", "[fci]\n"), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
 

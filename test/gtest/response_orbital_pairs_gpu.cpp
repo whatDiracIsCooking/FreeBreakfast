@@ -12,6 +12,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.response;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -55,7 +57,7 @@ std::vector<std::pair<std::size_t, std::size_t>> packed_pairs(std::size_t nmo, s
 // inverse, over every combination of empty and non-empty spaces.
 TEST(ResponseOrbitalPairs, PacksAndUnpacksTheNonRedundantPairs) {
   FBF_REQUIRE_GPU();
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   constexpr std::size_t kNmo = 7;

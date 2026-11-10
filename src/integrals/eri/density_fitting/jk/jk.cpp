@@ -40,7 +40,7 @@ Status df_coulomb(DeviceResources &res, const int32_t nao, const int32_t naux, c
         wwr::wwrMemsetAsync(j, 0, sizeof(double) * static_cast<size_t>(pairs), res.stream()));
   }
   const auto pairs32 = static_cast<int32_t>(pairs);
-  const auto [gamma] = res.device_regions<double>(static_cast<size_t>(naux));
+  const auto [gamma] = FBF_TRY(res.device_regions<double>("df_coulomb", static_cast<size_t>(naux)));
   // gamma = B vec(D), then vec(J) = B^T gamma.
   FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(res.blas().get(), wwr::WWRBLAS_OP_N, naux, pairs32,
                                                 &kOne<double>, b, naux, density, 1, &kZero<double>,
@@ -72,7 +72,8 @@ Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, 
   }
   const auto rows32 = static_cast<int32_t>(rows);
   const auto block = int64_t{naux} * nao; // B_m's stride
-  const auto [x] = res.device_regions<double>(static_cast<size_t>(rows) * nao);
+  const auto [x] =
+      FBF_TRY(res.device_regions<double>("df_exchange", static_cast<size_t>(rows) * nao));
   const wwr::wwrblasHandle_t blas = res.blas().get();
 
   // X_m = B_m C for every m: naux x nocc from naux x nao times nao x nocc, C
@@ -163,7 +164,7 @@ Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, 
   const auto rows32 = static_cast<int32_t>(rows);
   const auto block = int64_t{naux} * nao; // B_m's stride
   const auto scratch = static_cast<size_t>(rows) * nao;
-  const auto [x, y] = res.device_regions<double>(scratch, scratch);
+  const auto [x, y] = FBF_TRY(res.device_regions<double>("df_exchange", scratch, scratch));
   const wwr::wwrblasHandle_t blas = res.blas().get();
 
   // X_m = B_m L and Y_m = B_m R for every m: naux x rank from naux x nao times
@@ -303,7 +304,8 @@ Status df_exchange_symmetrized(DeviceResources &res, const int32_t nao, const in
   // X, of the shared L, is the same size at any count: the workspace. Y grows
   // with count, so it is scratch, never the workspace, which is held at a
   // fixed size (core/footprint).
-  const auto [x] = res.device_regions<double>(static_cast<size_t>(density_rows) * nao);
+  const auto [x] = FBF_TRY(res.device_regions<double>("df_exchange_symmetrized",
+                                                      static_cast<size_t>(density_rows) * nao));
   Buffers::device<double> y_buffer(static_cast<size_t>(rows) * nao, res.device());
   double *const y = y_buffer.data();
   const wwr::wwrblasHandle_t blas = res.blas().get();

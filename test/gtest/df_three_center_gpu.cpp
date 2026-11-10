@@ -21,6 +21,8 @@ import free_breakfast.io.npy;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.density_fitting.three_center;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -85,7 +87,7 @@ void check_three_center(const std::string &name) {
   }
   ASSERT_NE(c, nullptr) << "no integrals case " << name;
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   std::vector<fb::Atom> atoms;
   for (const auto &atom : (*c)["atoms"]) {
     const auto xyz = atom["coord"].get<std::vector<double>>();
@@ -198,7 +200,7 @@ TEST(DfThreeCenter, TzThroughFfGMatchesInt3c2e) {
 // refusal is k and not h; df_high_aux_gpu.cpp runs the h and i classes.
 TEST(DfThreeCenter, Refusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet s(std::vector<fb::Shell>{fb::Shell{0, {{1.0, 1.0}}, {0.0, 0.0, 0.0}}});
   const fb::BasisSet sg(std::vector<fb::Shell>{fb::Shell{0, {{1.0, 1.0}}, {0.0, 0.0, 0.0}},
                                                fb::Shell{4, {{1.0, 1.0}}, {0.0, 0.0, 1.0}}});
@@ -239,7 +241,7 @@ TEST(DfThreeCenter, Refusals) {
 // uncapped DeviceResources; b is not touched before the refusal.
 TEST(DfThreeCenter, ScratchPastTheMemoryBudgetIsUnsupported) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources setup{0};
+  fb::DeviceResources setup{0, fb::test::kWorkspaces};
   std::vector<fb::Atom> atoms;
   for (std::int32_t k = 0; k < 6; ++k) {
     const double angle = std::numbers::pi * k / 3.0;
@@ -261,7 +263,7 @@ TEST(DfThreeCenter, ScratchPastTheMemoryBudgetIsUnsupported) {
   ASSERT_TRUE(classes) << classes.error().message;
 
   constexpr std::uint64_t kCap = std::uint64_t{64} << 20;
-  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
+  fb::DeviceResources res{0, {}, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
   const std::size_t budget = res.memory_budget().value();
   ASSERT_LE(budget, kCap);
   const fb::Status status = fb::three_center(res, *basis, *classes, *aux, nullptr);

@@ -73,7 +73,11 @@ fb_status fb_resources_new(const int32_t dev_idx, fb_resources **const out) noex
   if (out == nullptr || dev_idx < 0) {
     return FB_INVALID_ARGUMENT;
   }
-  *out = new fb_resources{fb::DeviceResources(dev_idx)};
+  // Workspaces sized at construction (src/core/resources/README.md): gemm
+  // borrows none, and s_overlap's overlap at most a few cc-pVTZ AO squares.
+  *out = new fb_resources{
+      fb::DeviceResources(dev_idx, {.device = {.workspace = std::size_t{64} << 20},
+                                    .pinned = {.workspace = std::size_t{1} << 20}})};
   return FB_OK;
 }
 

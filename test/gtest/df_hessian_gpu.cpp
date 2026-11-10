@@ -23,6 +23,8 @@ import free_breakfast.io.json;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.density_fitting.hessian;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 
 namespace {
@@ -146,7 +148,7 @@ void compare(const std::string &what, const std::vector<double> &ours, const fb:
 // recipe's W and Gam over this tree's functions, on the device.
 struct Case {
   fb::json ref;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   std::optional<fb::Molecule> molecule;
   std::optional<fb::BasisSet> basis;
   std::optional<fb::BasisSet> aux;
@@ -287,7 +289,7 @@ TEST(DfHessian, TzAcCdThroughFfIMatchesPyscf) {
 // check.
 TEST(DfHessian, EveryClassKeepsTheSumRule) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::array<fb::Vec<double, 3>, 3> centre{fb::Vec<double, 3>{0.0, 0.0, 0.0},
                                                  fb::Vec<double, 3>{1.43, 0.21, -1.07},
                                                  fb::Vec<double, 3>{-1.38, 0.35, -1.12}};
@@ -372,7 +374,7 @@ TEST(DfHessian, EveryClassKeepsTheSumRule) {
 // past the ladders has no kernel; each refused before anything is launched.
 TEST(DfHessian, Refusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto placed = [](std::vector<fb::Shell> shells) {
     const auto count = static_cast<std::uint32_t>(shells.size());
     return fb::BasisSet{std::move(shells), {0, count}};
@@ -429,11 +431,11 @@ TEST(DfHessian, Footprint) {
   const auto held = [](const fb::MemoryFootprint &fp, const auto &call) {
     EXPECT_NE(fp.device.workspace, 0U);
     EXPECT_EQ(fp.pinned, fb::Footprint<wwr::extension::MemoryKind::Pinned>{});
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     const std::size_t pinned_before = res.pinned_bytes();
     const auto run = [&] { EXPECT_TRUE(call(res)); };
     run();
-    EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+    EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
     EXPECT_EQ(res.pinned_bytes(), pinned_before);
     fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), run),
                           {.persistent = fp.device.persistent, .scratch = fp.device.scratch}, 0);

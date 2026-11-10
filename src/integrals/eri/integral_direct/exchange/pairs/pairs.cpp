@@ -382,7 +382,8 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
   // and count the block's size, not the request's, so the call's peak would
   // pass its footprint (#1143).
   const auto [key, key_alt, perm, perm_alt] =
-      res.device_regions<double, double, uint32_t, uint32_t>(n_slots, n_slots, n_slots, n_slots);
+      FBF_TRY((res.device_regions<double, double, uint32_t, uint32_t>(
+          "ordered_pair_classes", n_slots, n_slots, n_slots, n_slots)));
   std::vector<OrderedPairClass> out;
   out.reserve(plan.size());
   for (size_t c = 0; c < plan.size(); ++c) {

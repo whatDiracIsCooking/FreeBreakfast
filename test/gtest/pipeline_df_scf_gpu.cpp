@@ -21,6 +21,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -196,7 +198,7 @@ class PipelineDfScf : public ::testing::TestWithParam<std::string_view> {};
 TEST_P(PipelineDfScf, MatchesPyscf) {
   FBF_REQUIRE_GPU();
   const fb::json &expected = reference_case(GetParam());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
                             expected.at("aux_basis").get<std::string>(),
@@ -261,7 +263,7 @@ std::vector<double> spin_density(const std::vector<double> &c, std::size_t n, st
 TEST_P(PipelineDfRohf, MatchesPyscf) {
   FBF_REQUIRE_GPU();
   const fb::json &expected = rohf_case(GetParam());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
                             expected.at("aux_basis").get<std::string>(),
@@ -346,7 +348,7 @@ class PipelineDfScfSoftMode : public ::testing::TestWithParam<SoftModeCase> {};
 TEST_P(PipelineDfScfSoftMode, ConvergesAtTheDefaultsToTheMinimum) {
   FBF_REQUIRE_GPU();
   const SoftModeCase &param = GetParam();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto inputs =
       make_inputs(res, {param.atoms.begin(), param.atoms.end()}, param.basis, param.aux_basis, 0);
@@ -417,7 +419,7 @@ TEST(PipelineDfScfCalculation, AConfigWhoseEriSelectsDensityFittingPlansAndRunsT
                                          expected.at("aux_basis").get<std::string>()))
                   .has_value());
 
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   ASSERT_TRUE(calc->step<fb::EriStep>().has_value());
@@ -450,7 +452,7 @@ TEST(PipelineDfScfCalculation, AConfigAtMultiplicityTwoPlansAndRunsDfRohf) {
                                          expected.at("aux_basis").get<std::string>()))
                   .has_value());
 
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   ASSERT_TRUE(calc->step<fb::MoleculeStep>().has_value());

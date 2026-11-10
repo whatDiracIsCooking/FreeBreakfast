@@ -24,6 +24,8 @@ import free_breakfast.core.resources;
 import free_breakfast.ci;
 import free_breakfast.nevpt2;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -347,7 +349,7 @@ FieldLadder field_ladder(const std::vector<std::vector<double>> &d,
 
 TEST(Nevpt2BuildersTangent, MatchesLadder) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   auto strings = fb::ci::DeviceStringSet::create(res, kNcas, kElectronsPerSpin);
   ASSERT_TRUE(strings.has_value()) << strings.error().message;
   const auto ndet = static_cast<std::size_t>(strings->size()) * strings->size();
@@ -418,7 +420,7 @@ TEST(Nevpt2BuildersTangent, MatchesLadder) {
 // energies class_energies reads.
 TEST(Nevpt2BuildersTangent, FockBlocksAreZcAdjointsFock) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   auto strings = fb::ci::DeviceStringSet::create(res, kNcas, kElectronsPerSpin);
   ASSERT_TRUE(strings.has_value()) << strings.error().message;
   const auto ndet = static_cast<std::size_t>(strings->size()) * strings->size();

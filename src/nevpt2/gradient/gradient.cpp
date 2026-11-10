@@ -305,7 +305,8 @@ Result<ScArrays> shared_arrays(DeviceResources &res, const std::string_view who,
                                            c + (int64_t{nao} * nfrozen), ncore - nfrozen, ncas)));
   }
   {
-    double *const work = std::get<0>(res.device_regions<double>(static_cast<size_t>(nao) * nmo));
+    double *const work = std::get<0>(FBF_TRY(
+        res.device_regions<double>("nevpt2::shared_arrays", static_cast<size_t>(nao) * nmo)));
     FBF_TRY(gpu_status(gemmwich(res.blas(), nmo, nao, c, h, work, x.h_mo.data())));
   }
   if (naux > 0 && nc > 0) {
@@ -315,8 +316,8 @@ Result<ScArrays> shared_arrays(DeviceResources &res, const std::string_view who,
   // B_Q,aa = Σ_m X_Q,am C_m,a over b_half's X, the virtual rows' half
   // transform, which is scratch: einsum takes no workspace.
   if (naux > 0 && nv > 0) {
-    double *const half =
-        std::get<0>(res.device_regions<double>(static_cast<size_t>(naux * nv) * nao));
+    double *const half = std::get<0>(FBF_TRY(
+        res.device_regions<double>("nevpt2::shared_arrays", static_cast<size_t>(naux * nv) * nao)));
     FBF_TRY(b_half(res, naux, nao, nmo, b, c,
                    {.first = static_cast<int32_t>(nocc), .count = static_cast<int32_t>(nv)}, half));
     FBF_TRY(contract(res, "Lam,ma->La",
@@ -484,7 +485,8 @@ builders_adjoint(DeviceResources &res, const int32_t naux, const int32_t nao, co
         res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, naux, nao, nmo, &kOne<double>,
         lambda.data(), naux, ld_lambda, c, nao, 0, &kZero<double>, half.data(), naux,
         int64_t{naux} * nao, nmo)));
-    double *const dmat = std::get<0>(res.device_regions<double>(static_cast<size_t>(nao) * nmo));
+    double *const dmat = std::get<0>(FBF_TRY(
+        res.device_regions<double>("nevpt2::builders_adjoint", static_cast<size_t>(nao) * nmo)));
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), nao, nmo, naux * nao, &kOne<double>, b,
                                                half.data(), &kZero<double>, dmat)));
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), nmo, nmo, nao, &kTwo<double>, c, dmat,

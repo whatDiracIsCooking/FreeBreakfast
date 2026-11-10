@@ -44,6 +44,8 @@ import free_breakfast.pipeline.shape;
 import free_breakfast.mcscf;
 import free_breakfast.integrals.eri.density_fitting.jk; // df_exchange_footprint
 import free_breakfast.response;
+#include "test_workspaces.h"
+
 import free_breakfast.gradient;   // one_electron_terms
 import free_breakfast.integrals;  // casscf_integrals, overlap_half_gradient
 import free_breakfast.recipes.lu; // getrf_lwork
@@ -104,7 +106,7 @@ S planned(const fb::Calculation &calc) {
 // on their own DeviceResources.
 struct Plan {
   fbt::ScratchDir dir{"pipeline_step_footprint"};
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   std::optional<fb::Calculation> calc;
   std::optional<fb::PlanShape> shape;
   std::optional<fb::MoleculeOutput> molecule;
@@ -221,9 +223,9 @@ struct Plan {
   }
 };
 
-// @p run, a step's, held to @p fp on a fresh DeviceResources, with @p live
-// allocations live at its peak: run once to grow the workspaces to exactly
-// the footprint's, then measured.
+// @p run, a step's, held to @p fp on a fresh DeviceResources whose workspaces
+// are the footprint's, with @p live allocations live at its peak: run once,
+// its largest borrows then exactly the footprint's, then measured.
 // With @p workspace_bound the device workspace is held to at most the
 // footprint's, and the gap logged: a Davidson's or the augmented Hessian's
 // syevd is counted at its subspace's largest order, which a solve that
@@ -233,12 +235,13 @@ void expect_step_footprint(const fb::MemoryFootprint &fp, const std::size_t live
                            std::optional<fbt::FootprintSlack> slack = {},
                            bool workspace_bound = false,
                            std::source_location location = std::source_location::current()) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fp};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
-  const std::size_t device_before = res.device_workspace(0).num_elements();
-  const std::size_t pinned_before = res.pinned_bytes();
+  const std::size_t device_before = res.workspace_high_water().device.workspace;
+  const std::size_t pinned_before = res.workspace_high_water().pinned.workspace;
+  const std::size_t pinned_total = res.pinned_bytes();
   run(res);
-  const std::size_t grown = res.device_workspace(0).num_elements();
+  const std::size_t grown = res.workspace_high_water().device.workspace;
   if (workspace_bound) {
     EXPECT_LE(grown, std::max(device_before, fp.device.workspace))
         << "the device workspace, from line " << location.line();
@@ -248,8 +251,10 @@ void expect_step_footprint(const fb::MemoryFootprint &fp, const std::size_t live
     EXPECT_EQ(grown, std::max(device_before, fp.device.workspace))
         << "the device workspace, from line " << location.line();
   }
-  EXPECT_EQ(res.pinned_bytes(), std::max(pinned_before, fp.pinned.peak()))
-      << "the pinned memory, from line " << location.line();
+  EXPECT_EQ(res.workspace_high_water().pinned.workspace,
+            std::max(pinned_before, fp.pinned.workspace))
+      << "the pinned workspace, from line " << location.line();
+  EXPECT_EQ(res.pinned_bytes(), pinned_total) << "the pinned memory, from line " << location.line();
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { run(res); });
   std::cout << std::format(
       "[ footprint ] line {}: measured {} (G {}), footprint {} + workspace {}\n", location.line(),
@@ -421,7 +426,7 @@ INSTANTIATE_TEST_SUITE_P(
 // coulomb_pair_classes' default tau over @p plan's classes: what a step's
 // J classes hold, where its footprint counts every record.
 fb::FootprintDimensions with_kept_records(const Plan &plan, fb::FootprintDimensions dims) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto j_classes = fb::coulomb_pair_classes(res, plan.pairs->classes);
   EXPECT_TRUE(j_classes);
   for (std::vector<std::size_t> &row : dims.mmd_records) {
@@ -553,16 +558,16 @@ TEST(StepFootprint, FciAtTheLeast) {
   const FciPlan f;
   std::size_t granularity = 0;
   {
-    fb::DeviceResources probe{0};
+    fb::DeviceResources probe{0, {}};
     granularity = fbt::pool_granularity(*probe.device());
   }
   const std::size_t rounding = granularity * (kFciLive + 16);
   ASSERT_LT(rounding, std::size_t{120} * 56 * sizeof(double));
   const std::uint64_t cap = f.fp.device.peak() + fb::kPoolHeadroomBytes + rounding;
-  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  fb::DeviceResources res{0, f.fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   expect_ran(f.fci.run(f.plan.ci_view(), res));
-  EXPECT_EQ(res.device_workspace(0).num_elements(), f.fp.device.workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, f.fp.device.workspace);
   const fbt::PoolPeak peak =
       fbt::measure_pool_peak(*res.device(), [&] { expect_ran(f.fci.run(f.plan.ci_view(), res)); });
   std::cout << std::format("[ footprint ] capped at {}: measured {} (G {}), footprint {} + "
@@ -1575,14 +1580,14 @@ void expect_least_footprint(const fb::MemoryFootprint &fp, const std::size_t liv
                             std::source_location location = std::source_location::current()) {
   std::size_t granularity = 0;
   {
-    fb::DeviceResources probe{0};
+    fb::DeviceResources probe{0, {}};
     granularity = fbt::pool_granularity(*probe.device());
   }
   const std::uint64_t cap = fp.device.peak() + fb::kPoolHeadroomBytes + (granularity * (live + 16));
-  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  fb::DeviceResources res{0, fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   run(res);
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace)
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace)
       << "the device workspace, from line " << location.line();
   EXPECT_EQ(res.pinned_bytes(), fp.pinned.peak())
       << "the pinned memory, from line " << location.line();
@@ -1663,7 +1668,7 @@ TEST_F(Nevpt2ReaderFootprint, Nevpt2Step) {
   // Unconstrained: the budget whole.
   fb::Result<fb::Nevpt2Output> whole = fb::err_config("not run");
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     whole = step.run(s.nevpt2_view(), res);
     ASSERT_TRUE(whole) << whole.error().message;
   }
@@ -1712,7 +1717,7 @@ TEST_F(Nevpt2ReaderFootprint, Nevpt2StepQuasiDegenerate) {
   EXPECT_EQ(fp.device.persistent, 0U);
   fb::Result<fb::Nevpt2Output> whole = fb::err_config("not run");
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     whole = step.run(s.nevpt2_view(), res);
     ASSERT_TRUE(whole) << whole.error().message;
   }
@@ -2159,7 +2164,7 @@ void expect_analytic_hessian_footprint(const std::string_view basis, const std::
   EXPECT_EQ(fp->device.persistent, 0U);
   std::size_t granularity = 0;
   {
-    fb::DeviceResources probe{0};
+    fb::DeviceResources probe{0, {}};
     granularity = fbt::pool_granularity(*probe.device());
   }
   const std::uint64_t cap =
@@ -2167,12 +2172,12 @@ void expect_analytic_hessian_footprint(const std::string_view basis, const std::
   fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
-  res = fb::DeviceResources{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  res = fb::DeviceResources{0, *fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const auto run = [&] {
     expect_ran(hessian.run(fb::View<fb::MoleculeOutput>{*plan.molecule}, node));
   };
   run();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp->device.workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp->device.workspace);
   EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), run);
   std::cout << std::format(
@@ -2312,7 +2317,7 @@ TEST(Nevpt2GradientLayerFootprint, BuildersTangent) {
   FBF_REQUIRE_GPU();
   FBF_FAMILY_REPRESENTATIVE();
   using P = BuildersPoint;
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   P p{inputs};
   const auto nmo2 = static_cast<std::size_t>(P::kNmo) * P::kNmo;
   const auto ndet = static_cast<std::size_t>(p.ndet);
@@ -2340,7 +2345,7 @@ TEST(Nevpt2GradientLayerFootprint, QdBuildersTangent) {
   using P = BuildersPoint;
   for (const std::int32_t nroots : {2, 3}) {
     SCOPED_TRACE(std::format("{} roots", nroots));
-    fb::DeviceResources inputs{0};
+    fb::DeviceResources inputs{0, fb::test::kWorkspaces};
     P p{inputs};
     const auto nmo2 = static_cast<std::size_t>(P::kNmo) * P::kNmo;
     const auto ndet = static_cast<std::size_t>(p.ndet);
@@ -2762,15 +2767,15 @@ void expect_nevpt2_least_footprint(
     std::source_location location = std::source_location::current()) {
   std::size_t granularity = 0;
   {
-    fb::DeviceResources probe{0};
+    fb::DeviceResources probe{0, {}};
     granularity = fbt::pool_granularity(*probe.device());
   }
   const std::uint64_t cap = fp.device.peak() + fb::kPoolHeadroomBytes +
                             (granularity * (live + 16)) + reuse_room(fp.device.peak());
-  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  fb::DeviceResources res{0, fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   run(res);
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace)
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace)
       << "the device workspace, from line " << location.line();
   EXPECT_EQ(res.pinned_bytes(), fp.pinned.peak())
       << "the pinned memory, from line " << location.line();
@@ -2959,7 +2964,7 @@ TEST_F(Nevpt2ReaderFootprint, QdNevpt2Hessians) {
   {
     std::size_t granularity = 0;
     {
-      fb::DeviceResources probe{0};
+      fb::DeviceResources probe{0, {}};
       granularity = fbt::pool_granularity(*probe.device());
     }
     const fb::MemoryFootprint fp = sc(false);
@@ -2967,7 +2972,7 @@ TEST_F(Nevpt2ReaderFootprint, QdNevpt2Hessians) {
                                     (granularity * (kNevpt2HessianLive + 16)) +
                                     reuse_room(fp.device.peak());
     const std::uint64_t cap = least_cap + (std::uint64_t{64} << 20);
-    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    fb::DeviceResources res{0, fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
     const fb::ScopedDeviceIndex on{res.dev_idx()};
     ASSERT_FALSE(qd_sc(res).empty());
     const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { (void)qd_sc(res); });
@@ -2981,7 +2986,7 @@ TEST_F(Nevpt2ReaderFootprint, QdNevpt2Hessians) {
   // state's Hessian is the least's to 1e-10 relative (the widths regroup
   // sums only).
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     const std::vector<double> whole = qd_sc(res);
     ASSERT_EQ(whole.size(), least.size());
     double largest = 0.0;
@@ -3033,7 +3038,7 @@ void expect_nevpt2_hessian_step_footprint(const std::string_view xyz, const std:
   ASSERT_GT(fp->device.peak(), without);
   std::size_t granularity = 0;
   {
-    fb::DeviceResources probe{0};
+    fb::DeviceResources probe{0, {}};
     granularity = fbt::pool_granularity(*probe.device());
   }
   const std::uint64_t cap = fp->device.peak() - without + fb::kPoolHeadroomBytes +
@@ -3041,19 +3046,19 @@ void expect_nevpt2_hessian_step_footprint(const std::string_view xyz, const std:
   fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
-  res = fb::DeviceResources{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  res = fb::DeviceResources{0, *fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const auto run = [&] {
     expect_ran(hessian.run(fb::View<fb::MoleculeOutput>{*plan.molecule}, node));
   };
   run();
-  EXPECT_LE(res.device_workspace(0).num_elements(), fp->device.workspace);
+  EXPECT_LE(res.workspace_high_water().device.workspace, fp->device.workspace);
   EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), run);
   std::cout << std::format(
       "[ footprint ] analytic NEVPT2 [hessian]: capped at {}: measured {} (G {}), footprint {} "
       "less {} + workspace {} (grown to {})\n",
       cap, peak.used, peak.granularity, fp->device.persistent + fp->device.scratch, without,
-      fp->device.workspace, res.device_workspace(0).num_elements());
+      fp->device.workspace, res.workspace_high_water().device.workspace);
   std::optional<fbt::FootprintSlack> slack;
   if (without > 0) {
     slack = fbt::FootprintSlack{.bytes = without, .reason = reason};
@@ -3262,7 +3267,7 @@ void expect_seminumerical_hessian_footprint(const std::string_view tables, const
 
   std::size_t granularity = 0;
   {
-    fb::DeviceResources probe{0};
+    fb::DeviceResources probe{0, {}};
     granularity = fbt::pool_granularity(*probe.device());
   }
   const std::uint64_t cap = fp->device.peak() - without + fb::kPoolHeadroomBytes +
@@ -3270,15 +3275,14 @@ void expect_seminumerical_hessian_footprint(const std::string_view tables, const
   fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
-  res = fb::DeviceResources{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
-  (void)res.device_workspace(fp->device.workspace);
+  res = fb::DeviceResources{0, *fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const auto start = std::chrono::steady_clock::now();
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] {
     expect_ran(hessian.run(fb::View<fb::MoleculeOutput>{*plan.molecule}, node));
   });
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp->device.workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp->device.workspace);
   EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
   std::cout << std::format(
       "[ footprint ] semi-numerical [hessian]: capped at {}: measured {} (G {}), footprint {} "
@@ -3352,7 +3356,7 @@ void expect_optimize_footprint(const std::string_view tables, const std::size_t 
   EXPECT_EQ(fp->device.persistent, fb::molecule_footprint(plan.dims().natoms).device.persistent);
   std::size_t granularity = 0;
   {
-    fb::DeviceResources probe{0};
+    fb::DeviceResources probe{0, {}};
     granularity = fbt::pool_granularity(*probe.device());
   }
   const std::uint64_t cap = fp->device.peak() + fb::kPoolHeadroomBytes +
@@ -3360,8 +3364,7 @@ void expect_optimize_footprint(const std::string_view tables, const std::size_t 
   fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
-  res = fb::DeviceResources{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
-  (void)res.device_workspace(fp->device.workspace);
+  res = fb::DeviceResources{0, *fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
   const auto start = std::chrono::steady_clock::now();
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] {
     const auto ran = optimize.run(fb::View<>{}, node);
@@ -3370,7 +3373,7 @@ void expect_optimize_footprint(const std::string_view tables, const std::size_t 
   });
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp->device.workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp->device.workspace);
   EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
   std::cout << std::format("[ footprint ] [optimize]: capped at {}: measured {} (G {}), footprint "
                            "{} + workspace {}, in {:.1f} s\n",

@@ -53,8 +53,8 @@ Result<std::vector<double>> metric_hessian(DeviceResources &res, const BasisSet 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
   const auto [d_staging, d_pairs, t, w_cart, d_h] =
-      res.device_regions<double, int32_t, double, double, double>(
-          staging.size(), pairs.fields.size(), n * n_sph, n * n, n_h);
+      FBF_TRY((res.device_regions<double, int32_t, double, double, double>(
+          "metric_hessian", staging.size(), pairs.fields.size(), n * n_sph, n * n, n_h)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_staging, staging.data(), sizeof(double) * staging.size(),
                                          wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_pairs, pairs.fields.data(),
@@ -111,8 +111,7 @@ Result<std::vector<double>> three_center_hessian(DeviceResources &res, const Bas
                            n, n, n_aux, n_cart, sizeof(double) * n_cart);
   }
 
-  // The counts, from the classes' sizes and the bases alone, so the refusal
-  // below comes before anything is downloaded or allocated.
+  // The counts, from the classes' sizes and the bases alone.
   const size_t n_bra_rec = FBF_TRY(bra_record_count(classes, kWho));
   const std::vector<int32_t> aux_rec_begin = record_begins(aux);
   const auto n_aux_rec = static_cast<size_t>(aux_rec_begin.back());
@@ -125,29 +124,21 @@ Result<std::vector<double>> three_center_hessian(DeviceResources &res, const Bas
   // Gam's aux index made Cartesian lands in cart, its n index in work, its m
   // index back in cart.
   const size_t n_work = n_aux * n * n_sph;
-  const auto region = [](const size_t bytes) {
-    return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
-  };
-  const size_t need = region(sizeof(double) * n_staging) + region(sizeof(int32_t) * n_cell_fields) +
-                      region(sizeof(double) * n_cart) + region(sizeof(double) * n_work) +
-                      region(sizeof(double) * n_h);
+  // The carve borrowed first, so a workspace too small for it is refused
+  // before anything is staged.
+  {
+    const auto region = [](const size_t bytes) {
+      return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
+    };
+    std::ignore = FBF_TRY(res.device_workspace(
+        "three_center_hessian",
+        region(sizeof(double) * n_staging) + region(sizeof(int32_t) * n_cell_fields) +
+            region(sizeof(double) * n_cart) + region(sizeof(double) * n_work) +
+            region(sizeof(double) * n_h)));
+  }
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  // The carve's size is the shape's alone: compared against the larger of the
-  // workspace and the budget, since growing the workspace past the budget
-  // aborts (CreatePolicy). #1123 drops the check: a fixed workspace refuses an
-  // oversized borrow itself.
-  const size_t workspace = res.device_workspace(0).num_elements();
-  const size_t budget = FBF_TRY(res.memory_budget());
-  if (const size_t available = std::max(workspace, budget); need > available) {
-    return err_unsupported("three_center_hessian: over {} Cartesian orbital and {} Cartesian "
-                           "fitting functions it needs {} bytes of device scratch (the Cartesian "
-                           "Gam alone {} bytes), and {} bytes are available (the larger of the "
-                           "workspace's {} and device {}'s budget {})",
-                           n, n_aux, need, sizeof(double) * n_cart, available, workspace,
-                           res.dev_idx(), budget);
-  }
 
   ThreeCenterBra bra = FBF_TRY(stage_three_center_bra(res, basis, classes, n_bra_rec, kWho));
   const std::vector<double> staging =
@@ -159,8 +150,8 @@ Result<std::vector<double>> three_center_hessian(DeviceResources &res, const Bas
   stage_three_center_cells(bra, aux, aux_rec_begin, 0, aux.nshells(), cells, n_cell, cell_begin);
 
   const auto [d_staging, d_cells, cart, work, d_h] =
-      res.device_regions<double, int32_t, double, double, double>(n_staging, n_cell_fields, n_cart,
-                                                                  n_work, n_h);
+      FBF_TRY((res.device_regions<double, int32_t, double, double, double>(
+          "three_center_hessian", n_staging, n_cell_fields, n_cart, n_work, n_h)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_staging, staging.data(), sizeof(double) * n_staging,
                                          wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_cells, cells.data(), sizeof(int32_t) * n_cell_fields,

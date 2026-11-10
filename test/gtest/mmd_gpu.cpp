@@ -24,6 +24,8 @@ import free_breakfast.io.json;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
+#include "test_workspaces.h"
+
 #include "mmd_records.h"
 
 namespace {
@@ -63,7 +65,7 @@ fb::BasisSet p_then_s() {
 
 TEST(Mmd, ClassesAreReachedOnlyAndAscending) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto classes = classes_of(res, p_then_s());
   ASSERT_EQ(classes.size(), 3U);
   const std::vector<std::pair<std::int32_t, std::int32_t>> want{{0, 0}, {0, 1}, {1, 1}};
@@ -85,7 +87,7 @@ TEST(Mmd, ClassesAreReachedOnlyAndAscending) {
 
 TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis = p_then_s();
   const auto classes = classes_of(res, basis);
   ASSERT_EQ(classes.size(), 3U);
@@ -133,7 +135,7 @@ TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
 
 TEST(Mmd, DiagonalShellPairCarriesEqualOffsets) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto classes = classes_of(res, p_then_s());
   ASSERT_EQ(classes.size(), 3U);
   for (const Records *cls : {&classes[0], &classes[2]}) {
@@ -152,13 +154,13 @@ TEST(Mmd, DiagonalShellPairCarriesEqualOffsets) {
 
 TEST(Mmd, EmptyBasisHasNoClasses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   EXPECT_TRUE(classes_of(res, fb::BasisSet{}).empty());
 }
 
 TEST(Mmd, EachClassHasItsOwnStream) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto classes = fb::primitive_pair_classes(res, p_then_s());
   ASSERT_TRUE(classes);
   std::set<wwr::wwrStream_t> streams{res.stream()};
@@ -220,7 +222,7 @@ std::vector<SRecord> want_s_records(const fb::BasisSet &basis) {
 }
 
 void expect_s_records(const fb::BasisSet &basis) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto classes = classes_of(res, basis);
   ASSERT_EQ(classes.size(), 1U);
   const Records &ss = classes[0];
@@ -270,7 +272,7 @@ TEST(Mmd, RecordsAreInDescendingZetaOrderPastOneSortTile) {
 // product would round differently are in play.
 TEST(Mmd, DiagonalMirrorsAreBitwiseMirrored) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Vec<double, 3> c{0.37, -1.29, 2.71};
   const auto classes =
       classes_of(res, fb::BasisSet({fb::Shell(2, {{3.3, 0.2}, {1.17, 0.5}, {0.29, 0.7}}, c)}));
@@ -366,7 +368,7 @@ class MmdBound : public ::testing::TestWithParam<BoundCase> {};
 
 TEST_P(MmdBound, MatchesTheClosedFormAndFollowsTheZetaOrder) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto [stem, n_classes] = GetParam();
   const auto classes = classes_of(res, coulomb_basis(stem));
   ASSERT_EQ(classes.size(), n_classes);
@@ -394,7 +396,7 @@ INSTANTIATE_TEST_SUITE_P(Basis, MmdBound,
 // rank the shell's index among the basis's shells of its momentum.
 TEST(Mmd, ExponentsAndRanksMatchTheBasis) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis = h2o_ccpvdz();
   const auto classes = classes_of(res, basis);
   ASSERT_EQ(classes.size(), 6U);
@@ -442,7 +444,7 @@ using OrderedKey = std::tuple<std::int32_t, std::int32_t, double, double, double
 // primitives the other way round), so it is found all the same.
 TEST(Mmd, DressedBoundsMatchTheOrderedClasses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis = h2o_ccpvdz();
   const auto mmd = fb::primitive_pair_classes(res, basis);
   ASSERT_TRUE(mmd);

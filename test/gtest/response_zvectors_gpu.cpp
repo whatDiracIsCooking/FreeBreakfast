@@ -28,6 +28,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
 
+#include "test_workspaces.h"
+
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
 #include "slow_test.h"
@@ -191,7 +193,7 @@ TEST_P(ResponseZvectors, EachColumnIsZvectorsAlone) {
   const auto nroots = static_cast<std::int32_t>(weights.size());
   const std::size_t roots_count = weights.size();
 
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
 

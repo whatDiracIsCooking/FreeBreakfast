@@ -34,6 +34,8 @@ import free_breakfast.io.json;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -140,7 +142,7 @@ TEST(PipelineNac, JsonMatchesPyscf) {
   const fb::test::ScratchDir dir("pipeline_nac");
   auto calc = fb::read_config(write_config(dir, entry, "[nac]\n"), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
 
@@ -219,7 +221,7 @@ TEST(PipelineNac, UnequalWeightsRun) {
   auto calc = fb::read_config(write_config(dir, entry, "[nac]\n", "weights = [0.6, 0.4]\n"),
                               dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   EXPECT_EQ(calc->get<fb::CasscfOutput>()->weights, (std::vector<double>{0.6, 0.4}));

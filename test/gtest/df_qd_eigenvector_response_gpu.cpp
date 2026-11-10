@@ -35,6 +35,8 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -148,7 +150,8 @@ void load(QdCase &c, const std::string &name) {
   }
   ASSERT_FALSE(entry.is_null()) << "no case " << name;
   const auto weights = entry.at("weights").get<std::vector<double>>();
-  c.node = std::make_unique<fb::NodeResources>();
+  c.node = std::make_unique<fb::NodeResources>(
+      fb::NodeResourcesConfig{.workspaces = fb::test::kWorkspaces});
   const fb::test::ScratchDir dir("df_qd_eigenvector_response");
   std::string xyz = std::format("{}\n{}\n", entry.at("atoms").size(), name);
   for (const fb::json &atom : entry.at("atoms")) {

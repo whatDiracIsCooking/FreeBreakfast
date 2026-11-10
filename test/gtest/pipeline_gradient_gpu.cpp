@@ -18,6 +18,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -107,7 +109,7 @@ void expect_gradient_json(const fb::test::ScratchDir &dir, const std::filesystem
                           const fb::json &expected, std::string_view tag) {
   auto calc = fb::read_config(config, dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
 
@@ -159,7 +161,7 @@ void expect_refused(std::string_view tag, std::string_view molecule_extra, std::
   const auto config = write_config(dir, expected, molecule_extra, eri, "");
   auto calc = fb::read_config(config, dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::Unsupported) << ran.error().message;

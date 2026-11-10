@@ -74,8 +74,8 @@ Result<std::vector<double>> metric_gradient(DeviceResources &res, const BasisSet
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
   const auto [d_staging, d_pairs, t, w_cart, d_g] =
-      res.device_regions<double, int32_t, double, double, double>(
-          staging.size(), pairs.fields.size(), n * n_sph, n * n, n_g);
+      FBF_TRY((res.device_regions<double, int32_t, double, double, double>(
+          "metric_gradient", staging.size(), pairs.fields.size(), n * n_sph, n * n, n_g)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_staging, staging.data(), sizeof(double) * staging.size(),
                                          wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_pairs, pairs.fields.data(),
@@ -177,31 +177,21 @@ Status metric_derivative(DeviceResources &res, const BasisSet &aux, double *m1) 
   if (aux.shells().empty()) {
     return {};
   }
-  // The counts first, so the refusal below comes before anything is staged.
   const std::vector<int32_t> rec_begin = record_begins(aux);
   const auto n_rec = static_cast<size_t>(rec_begin.back());
   const size_t n_records = static_cast<size_t>(device::kMetricRecordFields) * n_rec;
   const size_t n_staging = n_records + (n * n_sph);
-  const size_t need = metric_derivative_bytes(aux);
+  // The carve borrowed first, so a workspace too small for it is refused
+  // before anything is staged.
+  std::ignore = FBF_TRY(res.device_workspace("metric_derivative", metric_derivative_bytes(aux)));
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  // The carve's size is the shape's alone: compared against the larger of the
-  // workspace and the budget, since growing the workspace past the budget
-  // aborts (CreatePolicy). #1123 drops the check: a fixed workspace refuses an
-  // oversized borrow itself.
-  const size_t workspace = res.device_workspace(0).num_elements();
-  const size_t budget = FBF_TRY(res.memory_budget());
-  if (const size_t available = std::max(workspace, budget); need > available) {
-    return err_unsupported("metric_derivative: over {} Cartesian fitting functions it needs {} "
-                           "bytes of device scratch, and {} bytes are available (the larger of the "
-                           "workspace's {} and device {}'s budget {})",
-                           n, need, available, workspace, res.dev_idx(), budget);
-  }
 
   const MetricPairs pairs = stage_metric_pairs(aux, rec_begin);
   const std::vector<double> staging = stage_metric_records(aux, rec_begin);
-  const auto [d_staging, d_pairs, m1c, t] = res.device_regions<double, int32_t, double, double>(
-      n_staging, pairs.fields.size(), 3 * n * n, n * n_sph);
+  const auto [d_staging, d_pairs, m1c, t] =
+      FBF_TRY((res.device_regions<double, int32_t, double, double>(
+          "metric_derivative", n_staging, pairs.fields.size(), 3 * n * n, n * n_sph)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_staging, staging.data(), sizeof(double) * staging.size(),
                                          wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_pairs, pairs.fields.data(),
@@ -284,8 +274,7 @@ Result<std::vector<double>> three_center_gradient(DeviceResources &res, const Ba
                            n, n, n_aux, n * n * n_aux, sizeof(double) * n * n * n_aux);
   }
 
-  // The counts, from the classes' sizes and the bases alone, so the refusal
-  // below comes before anything is downloaded or allocated.
+  // The counts, from the classes' sizes and the bases alone.
   const size_t n_bra_rec = FBF_TRY(bra_record_count(classes, kWho));
   const std::vector<int32_t> aux_rec_begin = record_begins(aux);
   const auto n_aux_rec = static_cast<size_t>(aux_rec_begin.back());
@@ -296,24 +285,12 @@ Result<std::vector<double>> three_center_gradient(DeviceResources &res, const Ba
   const size_t n_bra = z.n_bra;
   const size_t n_aux_fields = z.n_aux_fields;
   const size_t n_work = z.n_work;
-  const size_t need = z.bytes();
+  // The carve borrowed first, so a workspace too small for it is refused
+  // before anything is staged.
+  std::ignore = FBF_TRY(res.device_workspace("three_center_gradient", z.bytes()));
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  // The carve's size is the shape's alone: compared against the larger of the
-  // workspace and the budget, since growing the workspace past the budget
-  // aborts (CreatePolicy). #1123 drops the check: a fixed workspace refuses an
-  // oversized borrow itself.
-  const size_t workspace = res.device_workspace(0).num_elements();
-  const size_t budget = FBF_TRY(res.memory_budget());
-  if (const size_t available = std::max(workspace, budget); need > available) {
-    return err_unsupported("three_center_gradient: over {} Cartesian orbital and {} Cartesian "
-                           "fitting functions it needs {} bytes of device scratch (the Cartesian "
-                           "Gam alone {} bytes), and {} bytes are available (the larger of the "
-                           "workspace's {} and device {}'s budget {})",
-                           n, n_aux, need, sizeof(double) * n_cart, available, workspace,
-                           res.dev_idx(), budget);
-  }
 
   ThreeCenterBra bra = FBF_TRY(stage_three_center_bra(res, basis, classes, n_bra_rec, kWho));
 
@@ -326,8 +303,8 @@ Result<std::vector<double>> three_center_gradient(DeviceResources &res, const Ba
   stage_three_center_cells(bra, aux, aux_rec_begin, 0, aux.nshells(), cells, n_cell, cell_begin);
 
   const auto [d_staging, d_cells, cart, work, d_g] =
-      res.device_regions<double, int32_t, double, double, double>(n_staging, n_cell_fields, n_cart,
-                                                                  n_work, n_g);
+      FBF_TRY((res.device_regions<double, int32_t, double, double, double>(
+          "three_center_gradient", n_staging, n_cell_fields, n_cart, n_work, n_g)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_staging, staging.data(), sizeof(double) * n_staging,
                                          wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_cells, cells.data(), sizeof(int32_t) * n_cell_fields,
@@ -514,24 +491,13 @@ Status three_center_derivative(DeviceResources &res, const BasisSet &basis,
   const size_t n_staging = n_bra + n_aux_fields + (n_cart * nao) + (naux_cart * aux.nao_sphe());
   const size_t n_t1 = nblk * n_cart * n_cart;
   const size_t n_t2 = nblk * nao * n_cart;
-  const size_t need = three_center_derivative_bytes(basis, aux, atom, n_bra_rec);
+  // The carve borrowed first, so a workspace too small for it is refused
+  // before anything is staged.
+  std::ignore = FBF_TRY(res.device_workspace(
+      "three_center_derivative", three_center_derivative_bytes(basis, aux, atom, n_bra_rec)));
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  // The carve's size is the shape's alone: compared against the larger of the
-  // workspace and the budget, since growing the workspace past the budget
-  // aborts (CreatePolicy). #1123 drops the check: a fixed workspace refuses an
-  // oversized borrow itself.
-  const size_t workspace = res.device_workspace(0).num_elements();
-  const size_t budget = FBF_TRY(res.memory_budget());
-  if (const size_t available = std::max(workspace, budget); need > available) {
-    return err_unsupported("three_center_derivative: over {} Cartesian orbital functions and "
-                           "atom {}'s {} Cartesian fitting functions it needs {} bytes of device "
-                           "scratch, and {} bytes are available (the larger of the workspace's {} "
-                           "and device {}'s budget {})",
-                           n_cart, atom, nblk_cart, need, available, workspace, res.dev_idx(),
-                           budget);
-  }
 
   ThreeCenterBra bra = FBF_TRY(stage_three_center_bra(res, basis, classes, n_bra_rec, kWho));
   const std::vector<double> staging =
@@ -543,8 +509,8 @@ Status three_center_derivative(DeviceResources &res, const BasisSet &basis,
                            aux.atom_shell_count(atom), cells, n_cell, cell_begin);
 
   const auto [d_staging, d_cells, xc, t1, t2] =
-      res.device_regions<double, int32_t, double, double, double>(n_staging, cells.size(), n_xc,
-                                                                  n_t1, n_t2);
+      FBF_TRY((res.device_regions<double, int32_t, double, double, double>(
+          "stage_three_center_cells", n_staging, cells.size(), n_xc, n_t1, n_t2)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_staging, staging.data(), sizeof(double) * n_staging,
                                          wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_cells, cells.data(), sizeof(int32_t) * cells.size(),
@@ -673,8 +639,7 @@ Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
                            nao, naux, n_cart, naux_cart, max_blk_cart);
   }
 
-  // The counts, from the classes' sizes and the bases alone, so the refusal
-  // below comes before anything is downloaded or allocated.
+  // The counts, from the classes' sizes and the bases alone.
   const size_t n_bra_rec = FBF_TRY(bra_record_count(classes, kWho));
   const std::vector<int32_t> aux_rec_begin = record_begins(aux);
   const auto n_aux_rec = static_cast<size_t>(aux_rec_begin.back());
@@ -682,26 +647,17 @@ Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
   const size_t n_aux_fields = static_cast<size_t>(device::kMetricRecordFields) * n_aux_rec;
   const std::array<std::pair<size_t, size_t>, 21> regions =
       df_jk_derivative_regions(basis, aux, n_bra_rec, occ);
+  // The carve borrowed first, so a workspace too small for it is refused
+  // before anything is staged.
+  {
+    size_t need = 0;
+    for (const auto &[count, size] : regions) {
+      need += math::align_up(count * size, DeviceResources::kWorkspaceAlignment);
+    }
+    std::ignore = FBF_TRY(res.device_workspace("df_jk_derivative", need));
+  }
   const size_t n_staging = regions[0].first;
   const size_t nn = nao * nao;
-  size_t need = 0;
-  for (const auto &[count, size] : regions) {
-    need += math::align_up(count * size, DeviceResources::kWorkspaceAlignment);
-  }
-  // The carve's size is the shape's alone: compared against the larger of the
-  // workspace and the budget, since growing the workspace past the budget
-  // aborts (CreatePolicy). #1123 drops the check: a fixed workspace refuses an
-  // oversized borrow itself.
-  const size_t workspace = res.device_workspace(0).num_elements();
-  const size_t budget = FBF_TRY(res.memory_budget());
-  if (const size_t available = std::max(workspace, budget); need > available) {
-    return err_unsupported("df_jk_derivative: over {} orbital and {} fitting functions ({} on "
-                           "the largest aux atom) with {} occupied orbitals it needs {} bytes of "
-                           "device scratch, and {} bytes are available (the larger of the "
-                           "workspace's {} and device {}'s budget {})",
-                           nao, naux, max_blk, occ, need, available, workspace, res.dev_idx(),
-                           budget);
-  }
 
   ThreeCenterBra bra = FBF_TRY(stage_three_center_bra(res, basis, classes, n_bra_rec, kWho));
   const std::vector<double> staging =
@@ -719,14 +675,15 @@ Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
 
   const auto [d_staging, d_pairs, d_cells, dd, fit, cf, m1c, mt, m1, gx, y_acc, v1_acc, sym, xc, t1,
               t2, xs, xts, zb, cfb, fb] =
-      res.device_regions<double, int32_t, int32_t, double, double, double, double, double, double,
-                         double, double, double, double, double, double, double, double, double,
-                         double, double, double>(
-          regions[0].first, regions[1].first, regions[2].first, regions[3].first, regions[4].first,
-          regions[5].first, regions[6].first, regions[7].first, regions[8].first, regions[9].first,
-          regions[10].first, regions[11].first, regions[12].first, regions[13].first,
-          regions[14].first, regions[15].first, regions[16].first, regions[17].first,
-          regions[18].first, regions[19].first, regions[20].first);
+      FBF_TRY((res.device_regions<double, int32_t, int32_t, double, double, double, double, double,
+                                  double, double, double, double, double, double, double, double,
+                                  double, double, double, double, double>(
+          "df_jk_derivative", regions[0].first, regions[1].first, regions[2].first,
+          regions[3].first, regions[4].first, regions[5].first, regions[6].first, regions[7].first,
+          regions[8].first, regions[9].first, regions[10].first, regions[11].first,
+          regions[12].first, regions[13].first, regions[14].first, regions[15].first,
+          regions[16].first, regions[17].first, regions[18].first, regions[19].first,
+          regions[20].first)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_staging, staging.data(), sizeof(double) * n_staging,
                                          wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_pairs, metric_pairs.fields.data(),

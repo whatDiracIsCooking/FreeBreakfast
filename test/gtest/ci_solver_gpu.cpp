@@ -21,6 +21,8 @@ import free_breakfast.io.json;
 import free_breakfast.ci;
 import free_breakfast.test.ci_oracles;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -258,7 +260,7 @@ void expect_roots(fb::DeviceResources &res, const Case &c, const fb::ci::Roots &
 TEST(CiSolver, LowestSingletsMatchDirectSpin1) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
@@ -299,7 +301,7 @@ TEST(CiSolver, LowestSingletsMatchDirectSpin1) {
 // partners of direct_spin1's M_s = 0 ones.
 TEST(CiSolver, LowestTripletsFromTheMsOneSector) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
@@ -333,7 +335,7 @@ TEST(CiSolver, LowestTripletsFromTheMsOneSector) {
 // direct_spin1's lowest three, the triplet among them.
 TEST(CiSolver, NoPenaltyKeepsEverySpin) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   // 36 determinants in the full layout, so a P-space of 24 leaves a Davidson.
@@ -401,7 +403,7 @@ struct RecordingSigma {
 TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
@@ -477,7 +479,7 @@ TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
 TEST(CiSolver, WarmStartFromConvergedRootsOverCiSigma) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
@@ -578,7 +580,7 @@ TEST(CiSolver, WarmStartFromConvergedRootsOverCiSigma) {
 // symmetric layout holds even S alone, and λ = 0 asks for every spin.
 TEST(CiSolver, NoPenaltyOverCiSigmaKeepsEverySpin) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   const Case c = make_case(res, cases[0]);
@@ -620,7 +622,7 @@ TEST(CiSolver, NoPenaltyOverCiSigmaKeepsEverySpin) {
 // case in the singlet (full and symmetric layouts) and M_s = 1 sectors.
 TEST(CiSolver, PspaceHamiltonianMatchesDense) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr double lambda = 0.7;
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
@@ -717,7 +719,7 @@ TEST(CiSolver, PspaceHamiltonianMatchesDense) {
 // and over the host sigma in the full layout.
 TEST(CiSolver, PspaceCoveringTheSpaceIsExact) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
@@ -758,7 +760,7 @@ TEST(CiSolver, PspaceCoveringTheSpaceIsExact) {
 // exact solve. Singlets and M_s = 1 triplets of the 400-determinant cases.
 TEST(CiSolver, PspaceJustBelowTheSpaceConverges) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   for (const std::size_t index : {std::size_t{1}, std::size_t{2}}) {
@@ -801,7 +803,7 @@ TEST(CiSolver, PspaceJustBelowTheSpaceConverges) {
 // P-space, as it did before there was one.
 TEST(CiSolver, PspaceDefaultRunsWithoutAContraction) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   const Case c = make_case(res, cases[2]);
@@ -815,7 +817,7 @@ TEST(CiSolver, PspaceDefaultRunsWithoutAContraction) {
 
 TEST(CiSolver, TooFewIterationsIsMaxIterationsExceeded) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   const Case c = make_case(res, cases[1]);
@@ -835,7 +837,7 @@ TEST(CiSolver, TooFewIterationsIsMaxIterationsExceeded) {
 
 TEST(CiSolver, RejectsBadShapes) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   const Case c = make_case(res, cases[0]);
@@ -898,7 +900,7 @@ TEST(CiSolver, RejectsBadShapes) {
 // orbital and N_alpha < N_beta.
 TEST(CiSpinSquareGpu, MatchesHost) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   struct Sector {
     std::int32_t n, n_alpha, n_beta;
   };
@@ -1006,7 +1008,7 @@ TEST(CiSpinSquareGpu, MatchesHost) {
 // layout's restricted to the triangle.
 TEST(CiSpinSquareGpu, SymmetricLayoutMatchesHost) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t k = 3;
   constexpr double lambda = 0.7;
   constexpr double target = 0.0;
@@ -1111,7 +1113,7 @@ TEST(CiSpinSquareGpu, SymmetricLayoutMatchesHost) {
 // the singlet sector in the symmetric layout too, on the triangle.
 TEST(CiSpinSquareGpu, SpinAveragedDiagonalMatchesHost) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr double lambda = 0.7;
   constexpr double target = 0.5;
   const fb::json cases = load_cases();
@@ -1188,7 +1190,7 @@ TEST(CiSpinSquareGpu, SpinAveragedDiagonalMatchesHost) {
 
 TEST(CiSpinSquareGpu, Refuses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto four = fb::ci::DeviceStringSet::create(res, 4, 2);
   const auto five = fb::ci::DeviceStringSet::create(res, 5, 2);
   ASSERT_TRUE(four.has_value() && five.has_value());

@@ -46,8 +46,8 @@ In order, all on `res.stream()`:
 **The scratch.** Each build zeroes its own output and reads its density from a
 matrix of its own type, `CartesianMatrixAO`, so `g` and `k` take turns as the
 density and the output, and `K[A]`, then `K[D]`, waits in `w` across the
-builds. `w` is one `nao_cart²` block of `res.device_workspace()`, which grows
-only, so after the first call nothing is allocated; neither `coulomb` nor
+builds. `w` is one `nao_cart²` block of `res.device_workspace()`, held from
+its construction, so no call allocates it; neither `coulomb` nor
 `exchange` takes the workspace, so holding it across them is allowed
 (`docs/style.md`, "Scratch memory"). The builds' own scratch is their classes',
 allocated once per basis, which is why calls run **one at a time per set of

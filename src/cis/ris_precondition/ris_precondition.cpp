@@ -101,26 +101,19 @@ Result<RisPreconditioner> RisPreconditioner::create(
   const auto aux_count = static_cast<size_t>(naux);
   const size_t b_bytes = sizeof(double) * aux_count * static_cast<size_t>(nao * nao);
   const size_t factor_bytes = 2 * sizeof(double) * aux_count * static_cast<size_t>(n_ov);
-  // With exchange, T_oo, T_vv and ½ C⁻¹, and the workspace's growth to the
-  // GMRES's scratch.
+  // With exchange, T_oo, T_vv and ½ C⁻¹; the GMRES's scratch is the
+  // workspace's, held from construction.
   size_t exchange_bytes = 0;
   if (ris.exchange) {
     const auto occ = static_cast<size_t>(n_occ);
     const auto virt = static_cast<size_t>(n_virt);
     exchange_bytes = sizeof(double) * aux_count * ((occ * occ) + (virt * virt) + aux_count);
-    size_t scratch_bytes = 0;
-    for (const size_t count : gmres_regions(n_ov, naux, ris.k_max_inner_iters)) {
-      scratch_bytes += math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
-    }
-    if (scratch_bytes > res.device_workspace(0).num_elements()) {
-      exchange_bytes += scratch_bytes;
-    }
   }
   const size_t need_bytes = b_bytes + factor_bytes + exchange_bytes;
   if (const size_t budget = FBF_TRY(res.memory_budget()); need_bytes > budget) {
     return err_unsupported("cis::RisPreconditioner::create: B over {} RIS and {} orbital "
                            "functions ({} bytes), L twice over {} excitations ({} bytes) and the "
-                           "exchange's blocks and scratch ({} bytes) need {} bytes of device "
+                           "exchange's blocks ({} bytes) need {} bytes of device "
                            "memory, and device {}'s budget is {}",
                            naux, nao, b_bytes, n_ov, factor_bytes, exchange_bytes, need_bytes,
                            res.dev_idx(), budget);
@@ -150,13 +143,14 @@ Result<RisPreconditioner> RisPreconditioner::create(
           b_mo(res, naux, nmo, nmo, b.data(), c.data(), virtuals, virtuals, p.factor_vv_.data()));
     }
   }
-  // The GMRES's regions, grown to here, once B is freed, so that no call
-  // allocates them. The workspace only grows, so a later, larger user leaves
-  // it big enough.
+  // The GMRES's regions, borrowed once here so that a workspace too small for
+  // them is refused at create rather than at the first call.
   if (ris.exchange) {
-    static_cast<void>(
-        std::apply([&res](const auto... counts) { return res.device_regions<double>(counts...); },
-                   gmres_regions(n_ov, naux, ris.k_max_inner_iters)));
+    std::ignore = FBF_TRY(std::apply(
+        [&res](const auto... counts) {
+          return res.device_regions<double>("cis::RisPreconditioner::create", counts...);
+        },
+        gmres_regions(n_ov, naux, ris.k_max_inner_iters)));
   }
 
   // The ones and ½ I, uploaded once; the host copies go after the sync.
@@ -242,8 +236,11 @@ Status RisPreconditioner::refine(DeviceResources &res, const int32_t col, double
   // The workspace is free once lu_solve has returned, and nothing below
   // calls another of its users.
   const auto regions = gmres_regions(n_ov_, naux_, m);
-  const auto [basis, w, kv, t, u, coef] = std::apply(
-      [&res](const auto... counts) { return res.device_regions<double>(counts...); }, regions);
+  const auto [basis, w, kv, t, u, coef] = FBF_TRY(std::apply(
+      [&res](const auto... counts) {
+        return res.device_regions<double>("cis::RisPreconditioner::refine", counts...);
+      },
+      regions));
 
   // out = M⁻¹ K_RI in. K_RI in is DfSigma's exchange over one column: per a,
   // W_a = T_vv(:, a, :) in, naux x n_occ, then W's (naux n_occ) x n_virt

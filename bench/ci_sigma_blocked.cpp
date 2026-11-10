@@ -22,6 +22,12 @@ namespace {
 
 namespace fb = free_breakfast;
 
+// The workspaces this benchmark's DeviceResources hold, sized at
+// construction (src/core/resources/README.md): 1 GiB on the device and 64 MiB
+// pinned, past what any of its runs borrows.
+constexpr fb::MemoryFootprint kWorkspaces{.device = {.workspace = std::size_t{1} << 30},
+                                          .pinned = {.workspace = std::size_t{64} << 20}};
+
 using Clock = std::chrono::steady_clock;
 
 double seconds_since(const Clock::time_point start) {
@@ -40,7 +46,7 @@ std::pair<double, double> time_column(std::int32_t device, std::int32_t reps,
                                       const std::vector<double> &h1, const std::vector<double> &eri,
                                       std::size_t bound, fb::ci::Layout layout, bool fp32,
                                       const double *x, double *y) {
-  fb::DeviceResources res{device};
+  fb::DeviceResources res{device, kWorkspaces};
   auto sigma = fb::ci::Sigma::create(res, alpha, beta);
   if (!sigma || !sigma->set_integrals(res, e_core, h1, eri)) {
     std::println(std::cerr, "CiSigma setup failed");
@@ -91,7 +97,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   }
 
   for (const auto &entry : (*doc)["cases"]) {
-    fb::DeviceResources res{device};
+    fb::DeviceResources res{device, kWorkspaces};
     const auto n = entry["n_orbitals"].get<std::int32_t>();
     const auto alpha =
         fb::ci::DeviceStringSet::create(res, n, entry["n_alpha"].get<std::int32_t>());

@@ -60,16 +60,14 @@ Result<std::vector<double>> rhf_dipole_derivative(DeviceResources &res, const Mo
     return err_unsupported("hessian::rhf_dipole_derivative: 3 n_atom nao^2 = {} exceeds int32_t",
                            n_x * nn);
   }
-  // Everything the call allocates, rhf_dipole_derivative_footprint's, and the
-  // workspace's growth to dipole's carve if it must grow (the new block is
-  // allocated before the old one is freed): past the memory budget an
-  // allocation would abort (CreatePolicy), not return.
+  // Everything the call allocates, rhf_dipole_derivative_footprint's
+  // persistent and scratch (its workspace is DeviceResources', held from
+  // construction): past the memory budget an allocation would abort
+  // (CreatePolicy), not return.
   const ScopedDeviceIndex on{res.dev_idx()};
   const MemoryFootprint fp =
       rhf_dipole_derivative_footprint(basis, static_cast<int32_t>(nmo), nocc);
-  const size_t bytes =
-      fp.device.persistent + fp.device.scratch +
-      (fp.device.workspace > res.device_workspace(0).num_elements() ? fp.device.workspace : 0);
+  const size_t bytes = fp.device.persistent + fp.device.scratch;
   if (const size_t budget = FBF_TRY(res.memory_budget()); bytes > budget) {
     return err_unsupported("hessian::rhf_dipole_derivative: the overlap derivative and dipole "
                            "blocks of {} coordinates over {} orbital functions need {} bytes of "

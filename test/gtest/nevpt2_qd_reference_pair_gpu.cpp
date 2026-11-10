@@ -58,6 +58,8 @@ import free_breakfast.pipeline.casscf;
 import free_breakfast.pipeline.nevpt2;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -468,7 +470,7 @@ std::vector<double> expect_mean_gradient(const Point &point, std::string_view wh
 
 TEST(Nevpt2QdReferencePair, MeanGradientAtTheExactC3vPoint) {
   FBF_REQUIRE_GPU();
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const Coords exact = average(park_in_frame());
   const Point point = point_at(node, exact, true);
   const std::vector<double> g = expect_mean_gradient(point, "exact C3v");
@@ -524,7 +526,7 @@ Lines lines() {
 TEST(Nevpt2QdReferencePair, MeanGradientMatchesDifferences) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const Lines l = lines();
   const Coords &exact = l.exact;
   const Coords &random0 = l.random0;
@@ -648,7 +650,7 @@ TEST(Nevpt2QdReferencePair, MeanGradientMatchesDifferences) {
 TEST(Nevpt2QdReferencePair, MeanGradientIsContinuousAcrossTheFloor) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const Lines l = lines();
   const Point center = point_at(node, l.exact, true);
   const std::vector<double> g0 = expect_mean_gradient(center, "exact C3v");
@@ -792,7 +794,7 @@ fb::Status walk(fb::NodeResources &node, const fb::test::ScratchDir &dir, const 
 // history keeps the error and no iteration.
 TEST(PipelineOptimizeReferencePair, RefusesAStartInsideThePair) {
   FBF_REQUIRE_GPU();
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::test::ScratchDir dir("pipeline_optimize_reference_pair_start");
   const fb::Status ran = walk(node, dir, average(park_in_frame()));
   ASSERT_FALSE(ran.has_value());
@@ -822,7 +824,7 @@ TEST(PipelineOptimizeReferencePair, C3vWalkCarriesThePlaneThroughTheFloor) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   constexpr double kTowardM = 10.0;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::test::ScratchDir dir("pipeline_optimize_reference_pair_walk");
   Coords start{};
   for (std::size_t k = 0; k < kCoords; ++k) {

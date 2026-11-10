@@ -27,6 +27,8 @@ import free_breakfast.pipeline.overlap;
 import free_breakfast.pipeline.scf;
 import free_breakfast.gradient;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -178,7 +180,7 @@ double compare(const std::string &what, const std::vector<double> &ours, const f
 void check_case(const std::string &name) {
   const fb::json &expected = reference_case(name);
   const auto start = std::chrono::steady_clock::now();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const auto calc = run_rhf(res, atoms_of(expected), expected.at("basis").get<std::string>(),
                             expected.at("charge").get<std::int32_t>());
@@ -244,7 +246,7 @@ TEST(RhfGradientFiniteDifference, MatchesACentralDifferenceOfTheEnergy) {
   const fb::json &expected = reference_case("h2o_ccpvdz");
   constexpr std::size_t kAtom = 1;
   constexpr std::size_t kAxis = 1; // y
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const auto basis = expected.at("basis").get<std::string>();
   const auto calc = run_rhf(res, atoms_of(expected), basis, 0);

@@ -110,15 +110,12 @@ size_t hessian_batch_bytes(const size_t n_all, const size_t core, const size_t n
 // together over: the most, up to @p columns, whose scratch (hessian_batch_bytes,
 // every allocation the call has still to make) fits the memory budget less the
 // pool's fragmentation headroom, and that the int32_t BLAS dispatch allows.
-// The workspace is grown first to hessian_apply_footprint's, which is the same
-// at any width, so the budget is read with it in place. 1 when two columns do
-// not fit: the one-column path, whose scratch is hessian_apply_footprint's.
+// The workspace, hessian_apply_footprint's at any width, is DeviceResources',
+// held from construction, so the budget is read with it in place. 1 when two
+// columns do not fit: the one-column path, whose scratch is
+// hessian_apply_footprint's.
 Result<size_t> hessian_batch_width(DeviceResources &res, const size_t n_all, const size_t core,
                                    const size_t na, const size_t naux, const size_t columns) {
-  (void)res.device_workspace(
-      hessian_apply_footprint(static_cast<int32_t>(n_all), static_cast<int32_t>(naux),
-                              static_cast<int32_t>(core), static_cast<int32_t>(na))
-          .device.workspace);
   const size_t memory = FBF_TRY(res.memory_budget());
   const size_t usable = memory > kPoolHeadroomBytes ? memory - kPoolHeadroomBytes : 0;
   const size_t int32_max = std::numeric_limits<int32_t>::max();
@@ -378,9 +375,9 @@ Result<Hessian> Hessian::build(DeviceResources &res, const SphericalMatrixAO &h,
   // not take the workspace; df_coulomb and df_exchange are not called here.
   const size_t naux = fitted != nullptr ? static_cast<size_t>(fitted->naux) : 0;
   const std::array<size_t, 8> counts = hessian_build_counts(n_all, core, na, n_cart, naux);
-  const auto [work, block, gamma2_exchange, half, l_core, q_pp, j_core, k_core] =
-      res.device_regions<double>(counts[0], counts[1], counts[2], counts[3], counts[4], counts[5],
-                                 counts[6], counts[7]);
+  const auto [work, block, gamma2_exchange, half, l_core, q_pp, j_core, k_core] = FBF_TRY(
+      res.device_regions<double>("response::Hessian::build", counts[0], counts[1], counts[2],
+                                 counts[3], counts[4], counts[5], counts[6], counts[7]));
 
   // U C, then C^T h C, and the MO matrices the product reads.
   if (u != nullptr) {
@@ -689,7 +686,10 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
       hessian_apply_counts(n_all, core, na, n_cart, width, batched);
   const size_t total = std::reduce(counts.begin(), counts.end());
   Buffers::device<double> owned(fitted != nullptr ? total : 0, res.device());
-  double *at = fitted != nullptr ? owned.data() : std::get<0>(res.device_regions<double>(total));
+  double *at =
+      fitted != nullptr
+          ? owned.data()
+          : std::get<0>(FBF_TRY(res.device_regions<double>("response::Hessian::apply", total)));
   std::array<double *, counts.size()> regions{};
   for (size_t r = 0; r < counts.size(); ++r) {
     regions[r] = std::exchange(at, at + counts[r]);

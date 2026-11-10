@@ -15,6 +15,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 
 namespace {
@@ -121,7 +123,7 @@ std::vector<double> device_solve(fb::DeviceResources &res, const std::vector<dou
 
 TEST(Lu, MatchesHostOnIndefiniteAndGeneralMatrices) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kRhs = 3;
   for (const std::int32_t n : {1, 2, 6, 17, 64, 65, 130}) {
     for (const bool symmetric : {true, false}) {
@@ -154,7 +156,7 @@ TEST(Lu, MatchesHostOnIndefiniteAndGeneralMatrices) {
 // supplies that.
 TEST(Lu, IsBitwiseRepeatable) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const std::int32_t n : {6, 64, 127}) {
     const auto a = random_indefinite(n, 77U + static_cast<std::uint32_t>(n));
     const auto b = random_matrix(n, 2, 99U);
@@ -169,7 +171,7 @@ TEST(Lu, IsBitwiseRepeatable) {
 // to the first two: the flag is 3, 1-based, and B is untouched.
 TEST(Lu, ASingularMatrixIsFlaggedAndBLeftAsItWas) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kN = 5;
   auto a = random_indefinite(kN, 5U);
   for (std::size_t i = 0; i < kN; ++i) {
@@ -186,7 +188,7 @@ TEST(Lu, ASingularMatrixIsFlaggedAndBLeftAsItWas) {
 
 TEST(Lu, EmptyAndNegativeShapes) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto empty = fb::lu_solve(res, 0, 1, nullptr, nullptr);
   ASSERT_TRUE(empty.has_value()) << empty.error().message;
   EXPECT_EQ(*empty, 0);
@@ -206,7 +208,7 @@ TEST(Lu, Footprint) {
   FBF_REQUIRE_GPU();
   for (const std::int32_t n : {7, 130}) {
     SCOPED_TRACE(n);
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     const auto lwork = fb::getrf_lwork(res, n);
     ASSERT_TRUE(lwork) << lwork.error().message;
     const fb::MemoryFootprint fp = fb::lu_solve_footprint(n, *lwork);
@@ -225,7 +227,7 @@ TEST(Lu, Footprint) {
       EXPECT_EQ(*flag, 0);
     };
     solve();
-    EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+    EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
     fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), solve), {}, 0);
   }
   EXPECT_EQ(fb::lu_solve_footprint(0, 0), fb::MemoryFootprint{});

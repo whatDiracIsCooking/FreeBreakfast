@@ -45,6 +45,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
 
+#include "test_workspaces.h"
+
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
 #include "slow_test.h"
@@ -206,7 +208,7 @@ TEST_P(McscfTransitionGradient, MatchesPyscfGradElecActive) {
   const auto energies = entry.at("energies").get<std::vector<double>>();
   const auto start_time = std::chrono::steady_clock::now();
 
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   std::optional<fb::Calculation> calc = run_setup_steps(entry, node);

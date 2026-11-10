@@ -13,6 +13,8 @@ import free_breakfast.molecule;
 import free_breakfast.basis;
 import free_breakfast.io.basis;
 
+#include "test_workspaces.h"
+
 #include "io_basis_json.h"
 
 namespace {
@@ -30,7 +32,7 @@ fb::Molecule water(fb::DeviceResources &res) {
 
 TEST(IoBasis, ParseAndAssignLaysTheBasisOverTheMolecule) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto basis = fb::parse_and_assign_basis(kBasis, water(res));
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
   // O: 6 shells (s, s, p, s, s, d), then one s per H.
@@ -46,7 +48,7 @@ TEST(IoBasis, ParseAndAssignLaysTheBasisOverTheMolecule) {
 
 TEST(IoBasis, UncoveredElementIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule co(res,
                         {Atom{{0.0, 0.0, 0.0}, Element::C}, Atom{{0.0, 0.0, 2.1}, Element::O}});
   auto basis = fb::parse_and_assign_basis(kBasis, co);
@@ -60,7 +62,7 @@ TEST(IoBasis, UncoveredElementIsInvalidConfig) {
 // PySCF's tables), and match PySCF's naux for H2O, 116 and 139.
 TEST(IoBasisAux, AJkfitSetPlacesOverWater) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule h2o = water(res);
   struct Expected {
     std::string_view name;
@@ -89,7 +91,7 @@ TEST(IoBasisAux, AJkfitSetPlacesOverWater) {
 
 TEST(IoBasisAux, AnElementTheSetLacksIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // Li: the JKFIT sets have H, then B onward.
   const fb::Molecule lih(res,
                          {Atom{{0.0, 0.0, 0.0}, Element::Li}, Atom{{0.0, 0.0, 3.0}, Element::H}});

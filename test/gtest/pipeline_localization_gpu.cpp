@@ -27,6 +27,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -138,7 +140,7 @@ std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t expo
     ADD_FAILURE() << calc.error().message;
     return std::nullopt;
   }
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   if (const fb::Status ran = calc->run(node); !ran.has_value()) {
     ADD_FAILURE() << ran.error().message;
     return std::nullopt;
@@ -289,7 +291,7 @@ void expect_matches(const fb::json &entry, const fb::json &expected, const fb::C
   ASSERT_EQ(occ * 2, entry.at("electrons").get<std::size_t>());
   EXPECT_EQ(local->n_doubly, local->n_occ);
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
-  fb::DeviceResources res(scf->c.dev_idx());
+  fb::DeviceResources res(scf->c.dev_idx(), fb::test::kWorkspaces);
   const std::vector<double> c = download(res, local->c, n * occ);
   const std::vector<double> s = download(res, overlap->s, n * n);
   const std::vector<double> d = download(res, scf->d, n * n);
@@ -440,7 +442,7 @@ void expect_iaos(const fb::json &entry, const fb::json *basis_document = nullptr
   const std::size_t n = basis->basis.nao_sphe();
   const std::size_t m = minao->nao_sphe();
   const auto occ = static_cast<std::size_t>(molecule->molecule.electron_count() / 2);
-  fb::DeviceResources res(scf->c.dev_idx());
+  fb::DeviceResources res(scf->c.dev_idx(), fb::test::kWorkspaces);
   fb::Buffers::device<double> iao(n * m, res.device());
   const fb::Status built = fb::localization::intrinsic_atomic_orbitals(
       res, basis->basis, *minao, static_cast<std::int32_t>(occ), overlap->s.data(), scf->c.data(),
@@ -732,7 +734,7 @@ TEST_P(PipelineLocalizationOrder, AscendsInFockEnergy) {
   const std::size_t n = calc->get<fb::BasisSetOutput>()->basis.nao_sphe();
   const auto occ = static_cast<std::size_t>(local->n_occ);
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
-  fb::DeviceResources res(scf->c.dev_idx());
+  fb::DeviceResources res(scf->c.dev_idx(), fb::test::kWorkspaces);
   const std::vector<double> c = download(res, local->c, n * occ);
   const std::vector<double> u = download(res, local->u, occ * occ);
   const std::vector<double> c_occ = download(res, scf->c, n * occ);
@@ -812,7 +814,7 @@ TEST(PipelineLocalization, ALivvoMoldenWithoutLivvoIsInvalidConfig) {
                                        fb::LocalizationStep{.livvo_molden = dir / "livvo.molden"}},
                                       []<class S>() -> fb::Result<S> { return S{}; });
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::InvalidConfig);
@@ -866,7 +868,7 @@ TEST_P(PipelineLocalizationOpenShell, EachSpaceMatchesPyscfAndKeepsTheDensity) {
   const auto occ = static_cast<std::size_t>(local->n_occ);
   const auto doubly = static_cast<std::size_t>(local->n_doubly);
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
-  fb::DeviceResources res(scf->c.dev_idx());
+  fb::DeviceResources res(scf->c.dev_idx(), fb::test::kWorkspaces);
   const std::vector<double> c = download(res, local->c, n * occ);
   const std::vector<double> u = download(res, local->u, occ * occ);
   const std::vector<double> c_occ = download(res, scf->c, n * occ);

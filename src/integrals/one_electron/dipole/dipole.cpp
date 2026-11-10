@@ -60,7 +60,7 @@ Status dipole(DeviceResources &res, const std::span<const PrimitivePairClass> cl
   // The kernels write x, y and z one after the other into one array, which three
   // separately allocated matrices are not, so they write into scratch.
   const size_t count = mu_x.num_elements();
-  const auto [mu] = res.device_regions<double>(3 * count);
+  const auto [mu] = FBF_TRY(res.device_regions<double>("dipole", 3 * count));
   // The kernels only add, so the build starts from zero.
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(mu, 0, sizeof(double) * 3 * count, stream)));
   const auto n_ao = static_cast<int32_t>(n);

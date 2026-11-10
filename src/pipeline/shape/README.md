@@ -18,7 +18,7 @@ whole registry.
 |---|---|
 | `PlanShape` | The placed bases, owned (`basis`, `aux`, `minao`), and `dims`, whose `basis`, `aux` and `minao` point at them. The bases sit behind `unique_ptr`, so a move leaves the pointers valid |
 | `plan_shape(calc, res)` | The shape of `calc`, on `res`'s device |
-| `preflight(calc, node)` | Under a `[memory]` cap, `calc` held to it on `node` before the first step, and the node set up to run under it; nothing without one |
+| `preflight(calc, node)` | `node`'s devices rebuilt with their workspaces at `calc`'s plan maximum before the first step; under a `[memory]` cap, `calc` held to it first, and the devices built under it |
 
 ## What it reads
 
@@ -91,13 +91,18 @@ running the plan. Its steps, and what is and is not capped, are
 lines are `check_plan`'s ([`footprint/README.md`](../footprint/README.md)).
 What it does that only this module can:
 
-- **It rebuilds the node's devices with the caps.** `NodeResources` builds
-  its `DeviceResources` uncapped, and a pool's cap is set at its creation,
-  so each is move-assigned a new one: the pool capped at
+- **It rebuilds the node's devices with the workspaces and the caps.**
+  `main` builds the node with no workspaces and uncapped, since neither is
+  known before the plan is shaped on a device, and both are set at a
+  `DeviceResources`' creation, so each is move-assigned a new one: its
+  workspaces at the plan's maximum (`check_plan`'s fold under a cap; the
+  most any step borrows without one), the pool capped at
   `max_device_mem_per_gpu` less `DeviceResources::kDeviceReserve`, the
-  pinned total at `max_pinned_mem_per_gpu`. A cap on `NodeResourcesConfig`
-  would build them once; that belongs with #1123, which sizes the
-  workspaces at construction too.
+  pinned total at `max_pinned_mem_per_gpu`.
+- **Uncapped**, nothing is checked but the device: an AVAS worst case past
+  its budget less the headroom is narrowed as under a cap, and a device
+  workspace past its budget is refused (`Allocation`) rather than aborting
+  in the constructor.
 - **The device room.** The fold's device peak P must fit the pool's cap
   less `kPoolHeadroomBytes` and less `DeviceResources::kOwnPoolBytes`, and
   on a pool that rounds a reused block, P + ⌈P/8⌉ must. `kOwnPoolBytes` is
@@ -121,11 +126,11 @@ What it does that only this module can:
 
 `test/gtest/pipeline_preflight_gpu.cpp` holds it to water's RHF chain, a
 cap below the fold's peak refused and one above it run inside the pool's cap
-with the workspaces never grown; to a pre-warm refused with half the card
+in workspaces held at the plan's maximum; to a pre-warm refused with half the card
 held outside the pool; and to a CASCI under AVAS narrowed to the space its
 cap fits. The nested `[optimize]` and `[hessian]` cases pin the room to the
 byte: a cap whose room is the peak exactly runs, one byte less is refused,
-and the pool holds exactly the pre-grown workspace plus `kOwnPoolBytes`
+and the pool holds exactly the workspace plus `kOwnPoolBytes`
 before the first step. `test/examples/`'s `example_memory` runs
 `examples/memory.toml` through the binary.
 

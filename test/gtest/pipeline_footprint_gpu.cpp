@@ -18,6 +18,8 @@ import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.scf;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -103,7 +105,7 @@ TEST_P(RhfChainHeadroom, ReservedPastUsedIsInsideTheHeadroom) {
   if (GetParam().name == "WaterTzDirect" || GetParam().name == "BenzeneTzDf") {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   fb::Device &dev = *res.device();
   dev.reset_pool_high_water();

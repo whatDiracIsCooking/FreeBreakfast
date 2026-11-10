@@ -146,7 +146,7 @@ Status precondition(DeviceResources &res, const int32_t n, const std::span<const
     }
     // x^T M⁻¹ x and x^T M⁻¹ r per column, written and read on the device: ε
     // never comes back to the host.
-    const auto [dots] = res.device_regions<double>(2 * theta.size());
+    const auto [dots] = FBF_TRY(res.device_regions<double>("ci::precondition", 2 * theta.size()));
     const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t,
                                             CreatePolicy<wwr::wwrblasStatus_t>>
         device_results{blas, wwr::WWRBLAS_POINTER_MODE_DEVICE};
@@ -174,7 +174,7 @@ Status precondition(DeviceResources &res, const int32_t n, const std::span<const
   // since M is no longer diagonal and r − ε x goes through M⁻¹ whole.
   const auto pz = static_cast<size_t>(p);
   const auto [dots, gathered, rotated, inverse_x] =
-      res.device_regions<double>(2 * theta.size(), pz, pz, nz);
+      FBF_TRY(res.device_regions<double>("ci::precondition", 2 * theta.size(), pz, pz, nz));
   const auto apply_inverse = [&](const double t, const double *const in,
                                  double *const out) -> Status {
     FBF_TRY(gpu_status(device::gather(stream, n, 1, p, picks, in, gathered)));
@@ -211,8 +211,9 @@ Status precondition(DeviceResources &res, const int32_t n, const std::span<const
 Status pick_lowest(DeviceResources &res, const int32_t n, const double *const values,
                    const int32_t count, int32_t *const picks) {
   const ScopedDeviceIndex on{res.dev_idx()};
-  const auto [scratch, survivors] = res.device_regions<uint64_t, int32_t>(
-      static_cast<size_t>(device::kCiLowestScratch), static_cast<size_t>(count));
+  const auto [scratch, survivors] = FBF_TRY((res.device_regions<uint64_t, int32_t>(
+      "ci::pick_lowest", static_cast<size_t>(device::kCiLowestScratch),
+      static_cast<size_t>(count))));
   return gpu_status(device::pick_lowest(res.stream(), n, values, count, scratch, survivors, picks));
 }
 
@@ -294,8 +295,8 @@ Status pspace_hamiltonian(DeviceResources &res, const StringSet &alpha, const St
       (0.25 * two_sz * (two_sz + 2)) + beta.n_electrons() - (0.25 * two_s * (two_s + 2));
   const std::span<const uint64_t> alpha_strings = alpha.strings();
   const std::span<const uint64_t> beta_strings = beta.strings();
-  const auto [strings_a, strings_b] =
-      res.device_regions<uint64_t>(alpha_strings.size(), symmetric ? 0 : beta_strings.size());
+  const auto [strings_a, strings_b] = FBF_TRY(res.device_regions<uint64_t>(
+      "ci::pspace_hamiltonian", alpha_strings.size(), symmetric ? 0 : beta_strings.size()));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(strings_a, alpha_strings.data(),
                                          alpha_strings.size() * sizeof(uint64_t),
                                          wwr::wwrMemcpyHostToDevice, stream)));

@@ -18,6 +18,8 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 
 namespace {
@@ -28,19 +30,20 @@ namespace fbt = free_breakfast::test;
 // An order past syevd's smallest workspaces, and an SCF's for a small basis.
 constexpr std::int32_t kN = 50;
 
-// @p call held to @p fp on @p res, a DeviceResources whose workspaces nothing
-// has grown. It runs once first, which grows each workspace to the most the
-// call asks of it: the footprint's. Then again, measured, its workspaces
-// already grown, as the pipeline grows them before the first step: the pool's
-// peak is then the call's persistent and scratch, with @p live allocations
-// live at it. Nothing here keeps a CountedPinned or takes the pinned
-// workspace.
+// @p call held to @p fp on @p res, a DeviceResources nothing has borrowed
+// from. It runs once first, its largest borrow of each workspace then the
+// footprint's (the high-water mark). Then again, measured: the workspaces are
+// held from construction, so the pool's peak is the call's persistent and
+// scratch, with @p live allocations live at it. Nothing here keeps a
+// CountedPinned or takes the pinned workspace.
 template <typename Call>
 void expect_routine_footprint(fb::DeviceResources &res, const fb::MemoryFootprint &fp,
                               const std::size_t live, Call &&call) {
+  const std::size_t pinned_total = res.pinned_bytes();
   call();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
-  EXPECT_EQ(res.pinned_bytes(), fp.pinned.peak());
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
+  EXPECT_EQ(res.workspace_high_water().pinned.workspace, fp.pinned.workspace);
+  EXPECT_EQ(res.pinned_bytes(), pinned_total);
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), call);
   fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
                         live);
@@ -63,7 +66,7 @@ fb::Buffers::device<double> identity(fb::DeviceResources &res) {
 
 TEST(RecipesFootprint, Diagonalize) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto lwork = fb::syevd_lwork<double>(res, kN);
   ASSERT_TRUE(lwork);
   const fb::MemoryFootprint fp = fb::diagonalize_footprint<double>(*lwork);
@@ -81,7 +84,7 @@ TEST(RecipesFootprint, Diagonalize) {
 
 TEST(RecipesFootprint, Orthogonalize) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto lwork = fb::syevd_lwork<double>(res, kN);
   ASSERT_TRUE(lwork);
   const fb::MemoryFootprint fp = fb::orthogonalize_footprint<double>(kN, *lwork);
@@ -109,7 +112,7 @@ std::size_t lwork_through(fb::DeviceResources &res, std::int32_t k) {
 TEST(RecipesFootprint, Orthonormalize) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kK = 6;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::MemoryFootprint fp =
       fb::orthonormalize_footprint<double>(kN, kK, lwork_through(res, kK));
   std::mt19937 gen{20261109U};
@@ -159,7 +162,7 @@ TEST(RecipesFootprint, Davidson) {
   };
   for (const bool canonical : {false, true}) {
     SCOPED_TRACE(canonical);
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     fb::Buffers::device<double> a_device(a.size(), res.device());
     EXPECT_EQ(wwr::wwrMemcpyAsync(a_device.data(), a.data(), sizeof(double) * a.size(),
                                   wwr::wwrMemcpyHostToDevice, res.stream()),
@@ -230,7 +233,7 @@ TEST(RecipesFootprint, SkewEigAndExpm) {
     }
   }
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     const auto lwork = fb::skew_eig_lwork<double>(res, kN);
     ASSERT_TRUE(lwork);
     const fb::MemoryFootprint fp = fb::skew_eig_footprint<double>(*lwork);
@@ -246,7 +249,7 @@ TEST(RecipesFootprint, SkewEigAndExpm) {
     });
   }
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     const fb::MemoryFootprint fp = fb::skew_expm_footprint<double>(kN);
     // Two complex blocks, rounded to the workspace's alignment.
     EXPECT_EQ(fp.device.workspace, fb::math::align_up(2 * n * n * sizeof(wwr::wwrDoubleComplex),
@@ -268,7 +271,7 @@ TEST(RecipesFootprint, Diis) {
   constexpr std::size_t kLen = static_cast<std::size_t>(kN) * kN;
   constexpr std::size_t kCap = 3;
   const fb::MemoryFootprint fp = fb::diis_footprint(kLen, kCap);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Buffers::device<double> f = identity(res);
   fb::Buffers::device<double> e(kLen, res.device());
   fb::Buffers::device<double> out(kLen, res.device());
@@ -292,7 +295,7 @@ TEST(RecipesFootprint, MatrixAo) {
   for (const fb::BasisSet &basis : bases) {
     const bool identity_u = basis.nao_cart() == basis.nao_sphe();
     SCOPED_TRACE(identity_u);
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     expect_routine_footprint(
         res, fb::upload_spherical_transform_matrix_footprint(basis), identity_u ? 0 : 1,
         [&] { EXPECT_TRUE(fb::upload_spherical_transform_matrix(res, basis)); });

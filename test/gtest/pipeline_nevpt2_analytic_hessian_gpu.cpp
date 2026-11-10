@@ -36,6 +36,8 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -151,7 +153,7 @@ void expect_skew(std::string_view variant) {
   ASSERT_TRUE(read.has_value()) << read.error().message;
   fb::Calculation calc = std::move(*read);
   ASSERT_EQ(calc.step<fb::HessianStep>()->method, fb::HessianMethod::Analytic);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto t0 = std::chrono::steady_clock::now();
   const fb::Status ran = calc.run(node);
   const double seconds =
@@ -242,7 +244,7 @@ TEST(PipelineNevpt2AnalyticHessian, ScSymmetricRefusalNamesTheAPrimePrimeBlock) 
   auto read = fb::read_config(write_config(dir, doc, "sc", table), dir.path(), dir / "out");
   ASSERT_TRUE(read.has_value()) << read.error().message;
   fb::Calculation calc = std::move(*read);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc.run(node);
   ASSERT_FALSE(ran.has_value()) << "no pair refused";
   ASSERT_EQ(ran.error().kind, fb::ErrorKind::Numerical) << ran.error().message;

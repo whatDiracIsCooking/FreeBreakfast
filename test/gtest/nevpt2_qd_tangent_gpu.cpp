@@ -57,6 +57,8 @@ import free_breakfast.nevpt2;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -236,7 +238,7 @@ Point sa_casscf(const std::string &name) {
   if (!calc.has_value()) {
     return p;
   }
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   EXPECT_TRUE(ran.has_value()) << ran.error().message;
   if (!ran.has_value()) {
@@ -383,7 +385,7 @@ void expect_duality(const std::string &name, const std::int32_t batch, const boo
   const std::array<std::string_view, 4> &parts = pc ? kPcParts : kScParts;
   const Point p = sa_casscf(name);
   ASSERT_FALSE(p.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const std::size_t nroots = p.weights.size();
   const std::size_t n2 = nroots * nroots;
   const std::size_t ndet = p.vectors.size() / nroots;

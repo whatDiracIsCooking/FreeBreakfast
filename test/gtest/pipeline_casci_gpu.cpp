@@ -28,6 +28,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -206,7 +208,7 @@ TEST_P(PipelineCasci, MatchesPyscf) {
   auto calc = fb::read_config(write_config(dir, entry, casci_tables(entry, roots.size())),
                               dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &chain = calc->get<fb::CasciOutput>();
@@ -316,7 +318,7 @@ TEST_P(PipelineCasci, MatchesPyscf) {
   ASSERT_TRUE(order.has_value()) << order.error().message;
   const std::size_t nao = basis->basis.nao_sphe();
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
-  fb::DeviceResources res(scf->c.dev_idx());
+  fb::DeviceResources res(scf->c.dev_idx(), fb::test::kWorkspaces);
   const std::vector<double> c = download(res, casci.c.data(), nao * nao);
   const std::vector<double> scf_c = download(res, scf->c.data(), nao * nao);
   for (std::size_t col = 0; col < nao; ++col) {
@@ -346,7 +348,7 @@ TEST(PipelineCasci, AnActiveSpacePastTheOrbitalsIsInvalidConfig) {
   auto calc = fb::read_config(write_config(dir, entry, "[casci]\nncas = 5\nnelecas = 4\n"),
                               dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::InvalidConfig);
@@ -368,7 +370,7 @@ TEST(PipelineCasciMolden, WritesTheNaturalOrbitals) {
   auto calc =
       fb::read_config(write_config(dir, entry, casci_tables(entry, 1)), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &casci = calc->get<fb::CasciOutput>();
@@ -418,7 +420,7 @@ TEST(PipelineCasci, AnAvasLabelNamingNoMinaoAoIsInvalidConfig) {
   auto calc = fb::read_config(write_config(dir, entry, "[casci]\navas = [\"O 2p\", \"O 3d\"]\n"),
                               dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::InvalidConfig);
@@ -441,7 +443,7 @@ TEST(PipelineCasci, AnAvasPickPastTheCapIsInvalidConfig) {
                    casci_tables(entry, 1) + std::format("avas_max_ncas = {}\n", pick - 1)),
       dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::InvalidConfig);
@@ -478,7 +480,7 @@ TEST(PipelineCasci, AnOpenShellSelectionKeepsItsOccupations) {
   auto calc = fb::read_config(write_config(dir, entry, "[casci]\nncas = 4\nnelecas = 4\n"),
                               dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
 
@@ -530,7 +532,7 @@ TEST(PipelineCasci, AMultiplicityThatDoesNotFitIsInvalidConfig) {
   auto calc = fb::read_config(write_config(dir, entry, "[casci]\nncas = 4\nnelecas = 4\n"),
                               dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
 

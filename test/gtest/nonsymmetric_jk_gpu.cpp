@@ -21,6 +21,8 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 
 namespace {
@@ -180,7 +182,7 @@ TEST_P(NonsymmetricJkGolden, MatchesLibcint) {
   ASSERT_GT(asymmetry, 1e-3 * scale_k);
   const std::vector<double> d_t = transposed(golden.density, n);
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const bool screened : {false, true}) {
     const std::string label = screened ? "screened" : "tau 0";
     Classes classes = classes_of(res, golden.basis, screened ? 1e-13 : 0.0);
@@ -253,7 +255,7 @@ TEST(NonsymmetricJk, SecondBuildsAllocateNothing) {
   FBF_REQUIRE_GPU();
   const Golden golden = read_golden("h2o_ccpvdz");
   ASSERT_FALSE(golden.density.empty());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   Classes classes = classes_of(res, golden.basis, 1e-13);
   ASSERT_FALSE(classes.j.empty());
   ASSERT_FALSE(classes.k.empty());
@@ -263,8 +265,8 @@ TEST(NonsymmetricJk, SecondBuildsAllocateNothing) {
   fb::CartesianMatrixAO k(res, golden.basis);
   ASSERT_TRUE(fb::nonsymmetric_jk(res, classes.j, classes.k, density, g, k).has_value());
 
-  const std::byte *const workspace = res.device_workspace(0).data();
-  const std::size_t workspace_bytes = res.device_workspace(0).num_elements();
+  const std::byte *const workspace = res.device_workspace("test", 0).value().data();
+  const std::size_t workspace_bytes = res.workspace_high_water().device.workspace;
   const std::uint64_t jk_peak = pool_peak(res, [&] {
     EXPECT_TRUE(fb::nonsymmetric_jk(res, classes.j, classes.k, density, g, k).has_value());
   });
@@ -277,8 +279,8 @@ TEST(NonsymmetricJk, SecondBuildsAllocateNothing) {
   EXPECT_EQ(jk_peak, 0U);
   EXPECT_EQ(j_peak, 0U);
   EXPECT_EQ(k_peak, 0U);
-  EXPECT_EQ(res.device_workspace(0).data(), workspace);
-  EXPECT_EQ(res.device_workspace(0).num_elements(), workspace_bytes);
+  EXPECT_EQ(res.device_workspace("test", 0).value().data(), workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, workspace_bytes);
 }
 
 // nonsymmetric_jk_footprint: the one nao_cart^2 block, the device workspace,
@@ -289,12 +291,12 @@ TEST(NonsymmetricJk, Footprint) {
   FBF_REQUIRE_GPU();
   const Golden golden = read_golden("h2o_ccpvdz");
   ASSERT_FALSE(golden.density.empty());
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   Classes classes = classes_of(inputs, golden.basis, 1e-13);
   ASSERT_TRUE(inputs.sync());
   const fb::MemoryFootprint fp = fb::nonsymmetric_jk_footprint(golden.basis);
   EXPECT_EQ(fp.device.persistent + fp.device.scratch, 0U);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::CartesianMatrixAO density(res, golden.basis);
   upload_rows(res, golden.density, density);
   fb::CartesianMatrixAO g(res, golden.basis);
@@ -303,7 +305,7 @@ TEST(NonsymmetricJk, Footprint) {
     EXPECT_TRUE(fb::nonsymmetric_jk(res, classes.j, classes.k, density, g, k).has_value());
   };
   build();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
   fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), build), {}, 0);
 }
 
@@ -313,7 +315,7 @@ class NonsymmetricJkRefusals : public ::testing::Test {
 protected:
   void SetUp() override {
     FBF_REQUIRE_GPU();
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     classes_ = classes_of(*res_, one_, 0.0);
   }
 

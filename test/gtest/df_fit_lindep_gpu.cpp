@@ -28,6 +28,8 @@ import free_breakfast.pipeline.primitive_pair_classes;
 import free_breakfast.pipeline.overlap;
 import free_breakfast.pipeline.scf;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -206,7 +208,7 @@ std::optional<double> df_rhf_energy(fb::DeviceResources &res, const Setup &s, co
 
 TEST(DfFitLindep, ZeroIsTheCholeskyPathBitwise) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const auto s = set_up(res);
   ASSERT_TRUE(s.has_value());
@@ -222,7 +224,7 @@ TEST(DfFitLindep, ZeroIsTheCholeskyPathBitwise) {
 
 TEST(DfFitLindep, WellConditionedMetricFitsAsCholeskyDoes) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const auto s = set_up(res);
   ASSERT_TRUE(s.has_value());
@@ -269,7 +271,7 @@ TEST(DfFitLindep, WellConditionedMetricFitsAsCholeskyDoes) {
 
 TEST(DfFitLindep, DuplicatedAuxShellsAreRefusedByDefaultAndFittedWithLindep) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const auto s = set_up(res);
   ASSERT_TRUE(s.has_value());
@@ -297,7 +299,7 @@ TEST(DfFitLindep, DuplicatedAuxShellsAreRefusedByDefaultAndFittedWithLindep) {
 
 TEST(DfFitLindep, NegativeOrNanLindepIsInvalid) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const double lindep : {-1e-7, std::numeric_limits<double>::quiet_NaN()}) {
     const fb::Status st = fb::density_fit(res, 5, 5, nullptr, nullptr, lindep);
     ASSERT_FALSE(st);

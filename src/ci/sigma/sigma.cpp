@@ -403,7 +403,8 @@ Status Sigma::rdm1(DeviceResources &res, const double *const c, double *const ga
       static_cast<int32_t>(ci_sigma_chunk(sizeof(double), pairs, static_cast<size_t>(rows)));
 
   // The packed sums, then D for one chunk.
-  const auto [packed, d] = res.device_regions<double>(pairs, static_cast<size_t>(chunk) * pairs);
+  const auto [packed, d] = FBF_TRY(
+      res.device_regions<double>("ci::Sigma::rdm1", pairs, static_cast<size_t>(chunk) * pairs));
 
   // The first chunk's gemv overwrites the sums, every later one adds to them.
   for (int32_t begin = 0; begin < rows; begin += chunk) {

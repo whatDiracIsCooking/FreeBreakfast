@@ -25,6 +25,8 @@ import free_breakfast.pipeline.basis_set;
 import free_breakfast.pipeline.primitive_pair_classes;
 import free_breakfast.pipeline.eri;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -355,7 +357,7 @@ protected:
     g_ = read_golden();
     ASSERT_GT(g_.naux, 0);
     ASSERT_GT(g_.occupied, 0);
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     metric_.emplace(g_.metric.size(), res_->device());
     b_.emplace(g_.b.size(), res_->device());
     upload(*res_, g_.metric, metric_->data());
@@ -512,7 +514,7 @@ TEST(DfJkDirect, ExchangeOfTwoFactorsMatchesIntegralDirectWithinTheFittingError)
   }
   ASSERT_NE(c, nullptr);
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   std::vector<fb::Atom> atoms;
   for (const auto &atom : (*c)["atoms"]) {
     const auto xyz = atom["coord"].get<std::vector<double>>();
@@ -594,7 +596,7 @@ TEST(DfJkDirect, ExchangeOfTwoFactorsMatchesIntegralDirectWithinTheFittingError)
 // is InvalidConfig. Both K forms alike.
 TEST(DfJkEmpty, EmptyCountsAndNegativeCounts) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kNao = 3;
   const std::vector<double> ones(kNao * kNao, 1.0);
   fb::Buffers::device<double> out(ones.size(), res.device());

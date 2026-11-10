@@ -43,6 +43,8 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 #include "symmetric_water.h"
 
@@ -152,7 +154,8 @@ struct Reference {
 };
 
 Reference reference(const fb::json &start) {
-  Reference ref{.node = std::make_unique<fb::NodeResources>(),
+  Reference ref{.node = std::make_unique<fb::NodeResources>(
+                    fb::NodeResourcesConfig{.workspaces = fb::test::kWorkspaces}),
                 .calc = std::nullopt,
                 .solution = std::nullopt};
   std::optional<fb::Calculation> calc = run_casscf(start, *ref.node);

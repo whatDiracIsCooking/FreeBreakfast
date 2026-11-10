@@ -107,8 +107,9 @@ apart. `cluster` adds that coupling back where it matters:
    residual.
 
 It costs one sigma apply per covered entry, once, and two gemms on a
-covered-sized block per call, whose scratch is the workspace, grown by
-`cluster` so a call still allocates nothing. `gap = 0`, `cis::Options`'
+covered-sized block per call, whose scratch is the workspace, held from its
+construction and borrowed once when the blocks are built, so a workspace too
+small is refused there and a call allocates nothing. `gap = 0`, `cis::Options`'
 default, builds nothing and leaves every call byte for byte the diagonal
 correction; a second `cluster` replaces the first. A cluster that covers the
 whole of a root's support makes its correction (θ − A)⁻¹ r ≈ −x, which the

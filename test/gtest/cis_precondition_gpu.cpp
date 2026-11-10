@@ -20,6 +20,8 @@ import free_breakfast.core.resources;
 import free_breakfast.recipes;
 import free_breakfast.cis.precondition;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 
 namespace {
@@ -91,7 +93,7 @@ double host_correction(double r, double theta, double delta) {
 
 TEST(CisPrecondition, DiagonalMatchesHost) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kOcc = 7;
   constexpr std::int32_t kVirt = 23;
   const auto eps = orbital_energies(kOcc, kVirt, 20261029U);
@@ -107,7 +109,7 @@ TEST(CisPrecondition, DiagonalMatchesHost) {
 
 TEST(CisPrecondition, DiagonalRejectsEmptySpaces) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<double> eps(4, res.device());
   fb::Buffers::device<double> delta(4, res.device());
   for (const auto [n_occ, n_virt] : {std::pair{0, 4}, std::pair{4, 0}, std::pair{-1, 2}}) {
@@ -123,7 +125,7 @@ TEST(CisPrecondition, DiagonalRejectsEmptySpaces) {
 // only the index decides which is taken.
 TEST(CisPrecondition, GuessIsLowestUnitVectorsTiesToLowerIndex) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kN = 97;
   constexpr std::int32_t kCount = 6;
   auto delta = random_vector(kN, 7U, 0.5, 3.0);
@@ -172,7 +174,7 @@ TEST(CisPrecondition, GuessIsLowestUnitVectorsTiesToLowerIndex) {
 
 TEST(CisPrecondition, GuessRejectsCountOutsideTheSpace) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<double> delta(4, res.device());
   fb::Buffers::device<double> vectors(20, res.device());
   for (const std::int32_t count : {0, 5}) {
@@ -188,7 +190,7 @@ TEST(CisPrecondition, GuessRejectsCountOutsideTheSpace) {
 // another (a small negative one, clamped to −1e-3, its sign kept).
 TEST(CisPrecondition, CorrectionMatchesHostAndStaysFinite) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kN = 131;
   constexpr std::int32_t kColumns = 4;
   const auto delta = random_vector(kN, 11U, 0.2, 4.0);
@@ -222,7 +224,7 @@ TEST(CisPrecondition, CorrectionMatchesHostAndStaysFinite) {
 
 TEST(CisPrecondition, CorrectionRejectsMoreColumnsThanBuiltFor) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<double> delta(8, res.device());
   fb::Buffers::device<double> block(24, res.device());
   const cis::Preconditioner precondition{res, 8, delta.data(), 2};
@@ -253,7 +255,7 @@ struct Dense {
 // the orbital-energy gaps. Against diagonalize's full spectrum of the same A.
 TEST(CisPrecondition, DavidsonConvergesToTheLowestRoots) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kOcc = 6;
   constexpr std::int32_t kVirt = 21;
   constexpr std::int32_t kN = kOcc * kVirt;
@@ -339,7 +341,7 @@ std::vector<double> pair_matrix() {
 // and −1e-3, its sign kept.
 TEST(CisPrecondition, ClusteredPairMatchesTheHandSolveAndItsClamp) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kN = 4;
   constexpr std::int32_t kColumns = 3;
   constexpr double kC = kPairCoupling;
@@ -395,7 +397,7 @@ TEST(CisPrecondition, ClusteredPairMatchesTheHandSolveAndItsClamp) {
 // run, which any positive gap here would cluster.
 TEST(CisPrecondition, ClusterGapZeroLeavesTheCorrectionUnchanged) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kN = 53;
   constexpr std::int32_t kColumns = 3;
   auto delta = random_vector(kN, 41U, 0.3, 4.0);
@@ -448,7 +450,7 @@ struct FailingSigma {
 // anything runs; a failing sigma's error is passed up, leaving no cluster.
 TEST(CisPrecondition, ClusterRejectsBadArguments) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   DenseOnDevice dense{res, pair_matrix(), 4};
   const auto d_delta = to_device(res, kPairDelta);
   cis::Preconditioner precondition{res, 4, d_delta.data(), 1};
@@ -485,7 +487,7 @@ TEST(CisPrecondition, ClusterRejectsBadArguments) {
 // Both converge to diagonalize's lowest four.
 TEST(CisPrecondition, DavidsonConvergesWithAndWithoutClusters) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kN = 60;
   constexpr std::int32_t kBlock = 8;
   constexpr std::int32_t kRoots = 4;
@@ -540,7 +542,7 @@ TEST(CisPrecondition, DavidsonConvergesWithAndWithoutClusters) {
 // workspace.
 TEST(CisPrecondition, DiagonalAndGuessAllocateNothing) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr std::int32_t kOcc = 5;
   constexpr std::int32_t kVirt = 19;
   constexpr std::int32_t kOv = kOcc * kVirt;
@@ -553,7 +555,7 @@ TEST(CisPrecondition, DiagonalAndGuessAllocateNothing) {
     EXPECT_TRUE(cis::guess(res, kOv, delta.data(), kGuess, start.data()));
   };
   both();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, 0U);
   fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), both), {}, 0);
 }
 
@@ -566,7 +568,7 @@ TEST(CisPrecondition, DiagonalAndGuessAllocateNothing) {
 // sigma live at its peak.
 TEST(CisPrecondition, Footprint) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   constexpr std::int32_t kN = 53;
   constexpr std::int32_t kScope = 6;
   constexpr std::int32_t kColumns = 3;
@@ -586,7 +588,7 @@ TEST(CisPrecondition, Footprint) {
   fb::Buffers::device<double> correction(d_residual.num_elements(), inputs.device());
   const std::vector<double> theta{0.1, 0.2, 0.3};
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   std::size_t lwork = 0;
   for (std::int32_t order = 0; order <= kScope; ++order) {
     lwork = std::max(lwork, fb::syevd_lwork<double>(res, order).value());
@@ -599,7 +601,7 @@ TEST(CisPrecondition, Footprint) {
     EXPECT_TRUE(precondition(res, theta, nullptr, d_residual.data(), correction.data()));
   };
   run();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
   fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), run),
                         {.persistent = fp.device.persistent, .scratch = fp.device.scratch}, 6);
   EXPECT_EQ(cis::cluster_footprint(kN, 1, kColumns, lwork), fb::MemoryFootprint{});

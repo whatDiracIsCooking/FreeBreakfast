@@ -49,10 +49,6 @@ Result<Sigma> Sigma::create(DeviceResources &res, const BasisSet &basis,
     return err_config("cis::Sigma::create: delta is null");
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  // nonsymmetric_jk's own scratch, one nao_cart^2 block of the workspace,
-  // grown here so that no apply allocates it. The workspace only grows, so a
-  // later, larger user leaves it big enough.
-  static_cast<void>(res.device_workspace(nonsymmetric_jk_footprint(basis).device.workspace));
   return Sigma{res, basis, std::move(u), j_classes, k_classes, c, n_occ, delta, spin};
 }
 

@@ -175,7 +175,7 @@ full spin, one orbital, N_α < N_β) match the polarization
 packed, (5, 5)'s 106 953 triangle rows match `rdm12`'s. The symmetric layout
 over two sets is refused with γ and Γ untouched.
 
-The footprints are held to the pool by `LibraryFootprint.RdmAndOrbitalPairs` (`test/gtest/footprint_gpu.cpp`): `create` allocates nothing, and `rdm12` and `trans_rdm12` grow the workspace to exactly theirs; `CasscfReaderFootprint.SharedRoutines` (`test/gtest/pipeline_step_footprint_gpu.cpp`) holds `trans_rdm1`'s.
+The footprints are held to the pool by `LibraryFootprint.RdmAndOrbitalPairs` (`test/gtest/footprint_gpu.cpp`): `create` allocates nothing, and `rdm12`'s and `trans_rdm12`'s largest borrows are exactly theirs; `CasscfReaderFootprint.SharedRoutines` (`test/gtest/pipeline_step_footprint_gpu.cpp`) holds `trans_rdm1`'s.
 
 ## Files
 

@@ -35,7 +35,7 @@ Block Davidson for the lowest eigenpairs of a symmetric operator known only as a
 
 After `MaxIterationsExceeded` or `Divergence`, `eigenvalues` and `eigenvectors` hold the last iteration's Ritz pairs, for a caller that wants to log or restart from them.
 
-**None of the subspace is the device workspace.** V, A V, H, the Ritz values and the residual, correction and projection blocks are held across `op.apply`, `precondition` and `diagonalize`, and each of those may take `res.device_workspace()`. A CIS sigma build will want it for J/K scratch. A workspace growth frees the old block, and even without one, the callee's scratch lands on the same bytes. So these are the call's own pool buffers, allocated on entry, and the GD+k collapse borrows two of them, the residual and projection blocks, rather than adding any (`docs/style.md` "Scratch memory", "Scratch held across a call to another workspace user"). syevd's work is still the workspace's: `diagonalize` takes it and is finished with it before the next callback.
+**None of the subspace is the device workspace.** V, A V, H, the Ritz values and the residual, correction and projection blocks are held across `op.apply`, `precondition` and `diagonalize`, and each of those may take `res.device_workspace()`. A CIS sigma build will want it for J/K scratch. The callee's scratch lands on the same bytes. So these are the call's own pool buffers, allocated on entry, and the GD+k collapse borrows two of them, the residual and projection blocks, rather than adding any (`docs/style.md` "Scratch memory", "Scratch held across a call to another workspace user"). syevd's work is still the workspace's: `diagonalize` takes it and is finished with it before the next callback.
 
 **Host pointer mode for the whole call.** The kept corrections' `nrm2`s write host results and every scalar is a host value, so `res.blas()` is held in host pointer mode by `ScopedPointerMode` and restored on return; only the residual norms and Vᵀ A V's new diagonal elements are taken in a scoped device mode. `op` and `precondition` are called in that mode too, which is also the handle's default; `ci::solve`'s preconditioner takes its dots in a scoped device mode of its own.
 
@@ -95,7 +95,7 @@ const auto info = fb::davidson_solve<double>(res, op, precondition, n, n_roots, 
 - convergence at the smallest subspace, `2 · n_roots`, which collapses every iteration onto X alone;
 - the collapse keeping X_prev: with the residual as the correction, iterations at `3 · n_roots` under half those at `2 · n_roots` and within three times an unrestarted run's, in `double` and `float`;
 - one apply per iteration, every apply made in host pointer mode;
-- an operator that grows and overwrites the device workspace on every apply;
+- an operator that overwrites the whole device workspace on every apply;
 - `MaxIterationsExceeded` with the first step's Ritz values written, and `Divergence` from zero corrections;
 - `linear_dependence_floor` relative to each correction: the problem scaled by 2⁻⁴⁰, with the residual as the correction, converging in the iterations and to the values (relative 1e-12) of the unscaled one;
 - `previous_eigenvectors` against the Ritz vectors of a run one iteration shorter, unrestarted, collapsing onto [X, X_prev] and onto X alone, on the converging return and out of iterations, and X itself after one iteration;

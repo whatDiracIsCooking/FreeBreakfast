@@ -26,6 +26,12 @@ import free_breakfast.experimental.sort.radix;
 
 namespace fb = free_breakfast;
 
+// The workspaces this benchmark's DeviceResources hold, sized at
+// construction (src/core/resources/README.md): 1 GiB on the device and 64 MiB
+// pinned, past what any of its runs borrows.
+constexpr fb::MemoryFootprint kWorkspaces{.device = {.workspace = std::size_t{1} << 30},
+                                          .pinned = {.workspace = std::size_t{64} << 20}};
+
 namespace {
 
 // Aborts on a failed call: a benchmark has nothing to recover to, and a
@@ -131,7 +137,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
     return 1;
   }
 
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, kWorkspaces};
   const auto max_count = std::size_t{1} << max_log2;
 
   // One input, generated once at the largest size; each size sorts a prefix.

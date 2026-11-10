@@ -33,6 +33,8 @@ import free_breakfast.atom;
 import free_breakfast.io.json;
 import free_breakfast.tools.qd_nevpt2_gradient;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -222,7 +224,7 @@ void run_case(std::string_view name, bool coupling_file) {
   const std::optional<Case> grad =
       read_case(kDataDir / "qd_nevpt2_gradient" / std::format("{}.json", name));
   ASSERT_TRUE(grad.has_value());
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto started = std::chrono::steady_clock::now();
   const fb::Result<nevpt2::NumericalHeff> heff =
       nevpt2::numerical_heff(node, grad->chain, grad->directions, grad->steps, grad->noise);

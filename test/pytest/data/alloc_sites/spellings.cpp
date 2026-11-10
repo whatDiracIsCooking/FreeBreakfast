@@ -32,9 +32,12 @@ Status every_spelling(DeviceResources &res, const Buffers::device<double> &in, s
   std::optional<Buffers::device<uint64_t>> maybe;
   maybe.emplace(m, res.device());
   auto shared = std::make_shared<StreamBuffers::device<double>>(n, res.device_stream());
-  std::byte *base = res.device_workspace(n * sizeof(double)).data();
-  const auto [work, block] = res.device_regions<double, int32_t>(
-      static_cast<size_t>(n) * static_cast<size_t>(m) * sizeof(double), static_cast<size_t>(m));
+  std::byte *base = res.device_workspace("every_spelling", n * sizeof(double)).value().data();
+  const auto [work, block] =
+      res.device_regions<double, int32_t>(
+             "every_spelling", static_cast<size_t>(n) * static_cast<size_t>(m) * sizeof(double),
+             static_cast<size_t>(m))
+          .value();
   auto counted = res.counted_pinned<double>("every_spelling", n * m);
   // Buffers::device<double> commented(n, res.device());
   /* Buffers::device<double> blocked(n, res.device()); */

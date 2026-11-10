@@ -21,6 +21,8 @@ import free_breakfast.io.npy;
 import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.response;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 
 namespace {
@@ -170,7 +172,7 @@ protected:
     FBF_REQUIRE_GPU();
     g_ = read_golden();
     ASSERT_GT(g_.nocc, 0);
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     fb::Buffers::device<double> metric(g_.metric.size(), res_->device());
     b_.emplace(g_.b.size(), res_->device());
     c_.emplace(g_.c.size(), res_->device());
@@ -308,14 +310,14 @@ TEST_F(ResponseCphf, FootprintIsSoundAndTight) {
     std::uint64_t cap = 0;
     if (batched) {
       EXPECT_EQ(fp.device.workspace, 0U);
-      fb::DeviceResources probe{0};
+      fb::DeviceResources probe{0, fp};
       run(probe, true);
       ASSERT_TRUE(probe.sync());
       cap = probe.device()->pool_usage().used_current + fb::kPoolHeadroomBytes + fp.device.peak();
     }
-    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    fb::DeviceResources res{0, fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
     run(res, batched);
-    EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+    EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
     const fb::test::PoolPeak peak =
         fb::test::measure_pool_peak(*res.device(), [&] { run(res, batched); });
     std::cout << std::format("[ footprint ] cphf batched {}: measured {}, footprint {}\n", batched,
@@ -342,20 +344,20 @@ TEST_F(ResponseCphf, BatchedWidthFromTheBudget) {
     return solved ? download(on, solved->solution) : std::vector<double>{};
   };
   const auto cap_leaving = [&](const std::size_t room) {
-    fb::DeviceResources probe{0};
+    fb::DeviceResources probe{0, least};
     (void)run(probe);
     EXPECT_TRUE(probe.sync());
     return probe.device()->pool_usage().used_current + fb::kPoolHeadroomBytes + room;
   };
   std::vector<double> narrow;
   {
-    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0,
+    fb::DeviceResources res{0, least, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0,
                             cap_leaving(least.device.peak())};
     narrow = run(res);
   }
   {
     const std::uint64_t cap = cap_leaving(std::size_t{64} << 20);
-    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    fb::DeviceResources res{0, least, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
     (void)run(res);
     const fb::test::PoolPeak peak =
         fb::test::measure_pool_peak(*res.device(), [&] { (void)run(res); });
@@ -364,7 +366,7 @@ TEST_F(ResponseCphf, BatchedWidthFromTheBudget) {
     EXPECT_GT(peak.used, least.device.peak());
     EXPECT_LE(res.device()->pool_usage().used_high, cap);
   }
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::vector<double> whole = run(res);
   ASSERT_EQ(narrow.size(), whole.size());
   const double top = max_abs(whole);

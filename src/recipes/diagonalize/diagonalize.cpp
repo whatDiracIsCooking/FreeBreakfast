@@ -41,10 +41,9 @@ Status diagonalize(DeviceResources &res, const int32_t n, T *a, T *w) {
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const size_t lwork = FBF_TRY(syevd_lwork<T>(res, n));
-  auto work = wwr::extension::reinterpret_buffer_view<T>(res.device_workspace(lwork * sizeof(T)));
-  FBF_TRY(
-      gpu_status(wwr::syevd<T>(res.solver().get(), kDiagonalizeEigMode, kDiagonalizeFillMode, n, a,
-                               n, w, work.data(), static_cast<int32_t>(lwork), res.info().data())));
+  const auto [work] = FBF_TRY(res.device_regions<T>("diagonalize", lwork));
+  FBF_TRY(gpu_status(wwr::syevd<T>(res.solver().get(), kDiagonalizeEigMode, kDiagonalizeFillMode, n,
+                                   a, n, w, work, static_cast<int32_t>(lwork), res.info().data())));
 
   const int32_t info = FBF_TRY(res.fetch_info());
   // info < 0 names a bad argument (a bug in the caller, not in A); info > 0 is

@@ -38,6 +38,8 @@ import free_breakfast.response;
 import free_breakfast.gradient;
 import free_breakfast.mcscf;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 
 namespace {
@@ -62,23 +64,24 @@ fb::BasisSet placed(const std::string &name, const fb::Molecule &molecule) {
   return std::move(*basis);
 }
 
-// @p call held to @p fp on @p res. It runs once first, which grows each
-// workspace to the most the call asks of it: on a DeviceResources whose
-// workspaces nothing has grown yet, exactly the footprint's, and otherwise no
-// further than it. Then again, measured, its workspaces already grown, as the
-// pipeline grows them before the first step: the pool's peak is then the
-// call's persistent and scratch, with @p live allocations live at it. No
-// routine here keeps a CountedPinned, so the pinned total is the workspace.
+// @p call held to @p fp on @p res. It runs once first, which takes the most
+// of each workspace the call borrows: on a DeviceResources nothing has
+// borrowed from yet, exactly the footprint's (the high-water mark), and
+// otherwise no further than it. Then again, measured: the workspaces are
+// held from construction, so the pool's peak is the call's persistent and
+// scratch, with @p live allocations live at it. No routine here keeps a
+// CountedPinned, so the pinned total is unchanged.
 // With @p workspace_bound the device workspace is held to at most the
 // footprint's, and the gap logged: a Davidson's syevd is counted at its
 // subspace's largest order, which a solve that converges first never reaches.
 template <typename Call>
 void expect_routine_footprint(fb::DeviceResources &res, const fb::MemoryFootprint &fp,
                               const std::size_t live, Call &&call, bool workspace_bound = false) {
-  const std::size_t device_before = res.device_workspace(0).num_elements();
-  const std::size_t pinned_before = res.pinned_bytes();
+  const std::size_t device_before = res.workspace_high_water().device.workspace;
+  const std::size_t pinned_before = res.workspace_high_water().pinned.workspace;
+  const std::size_t pinned_total = res.pinned_bytes();
   call();
-  const std::size_t grown = res.device_workspace(0).num_elements();
+  const std::size_t grown = res.workspace_high_water().device.workspace;
   if (workspace_bound) {
     EXPECT_LE(grown, std::max(device_before, fp.device.workspace));
     std::cout << std::format("[ footprint ] workspace {} of the bound {}\n", grown,
@@ -86,7 +89,9 @@ void expect_routine_footprint(fb::DeviceResources &res, const fb::MemoryFootprin
   } else {
     EXPECT_EQ(grown, std::max(device_before, fp.device.workspace));
   }
-  EXPECT_EQ(res.pinned_bytes(), std::max(pinned_before, fp.pinned.peak()));
+  EXPECT_EQ(res.workspace_high_water().pinned.workspace,
+            std::max(pinned_before, fp.pinned.workspace));
+  EXPECT_EQ(res.pinned_bytes(), pinned_total);
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), call);
   fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
                         live);
@@ -108,7 +113,7 @@ record_counts(const std::vector<fb::PrimitivePairClass> &classes) {
 // Water's molecule, orbital basis and mmd classes, on their own
 // DeviceResources, so a routine's res starts with nothing allocated or grown.
 struct Water {
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   fb::Molecule molecule{inputs, water()};
   fb::BasisSet basis = placed("cc-pvdz", molecule);
   std::vector<fb::PrimitivePairClass> classes = fb::primitive_pair_classes(inputs, basis).value();
@@ -117,7 +122,7 @@ struct Water {
 TEST(LibraryFootprint, Molecule) {
   FBF_REQUIRE_GPU();
   const fb::MemoryFootprint fp = fb::molecule_footprint(3);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // Z and the positions.
   expect_routine_footprint(res, fp, 2, [&] { const fb::Molecule molecule(res, water()); });
 }
@@ -127,7 +132,7 @@ TEST(LibraryFootprint, PrimitivePairClasses) {
   const Water w;
   const fb::MemoryFootprint fp = fb::primitive_pair_classes_footprint(w.basis);
   ASSERT_EQ(w.classes.size(), 6U);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // At the peak: the classes' 20 fields each and the 11 tables; the classes
   // sort in the device workspace.
   expect_routine_footprint(res, fp, (6 * 20) + 11, [&] {
@@ -141,7 +146,7 @@ TEST(LibraryFootprint, CoulombPairClasses) {
   FBF_REQUIRE_GPU();
   const Water w;
   const fb::MemoryFootprint fp = fb::coulomb_pair_classes_footprint(record_counts(w.classes));
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // J's classes' 31 fields each, the maxima, the counts and a destination per
   // class.
   expect_routine_footprint(res, fp, (6 * 31) + 2 + 6, [&] {
@@ -155,7 +160,7 @@ TEST(LibraryFootprint, OrderedPairClasses) {
   FBF_REQUIRE_GPU();
   const Water w;
   const fb::MemoryFootprint fp = fb::ordered_pair_classes_footprint(w.basis);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // At most the 9 ordered classes' 30 fields each (an empty field allocates
   // nothing); the gathers sort in the device workspace.
   expect_routine_footprint(res, fp, 9 * 30, [&] {
@@ -169,7 +174,7 @@ TEST(LibraryFootprint, OrderedPairClasses) {
 // and their classes' own scratch: each allocates nothing.
 TEST(LibraryFootprint, OneElectronAndDirectJkAllocateNothing) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule(res, water());
   const fb::BasisSet basis = placed("cc-pvdz", molecule);
   const auto classes = fb::primitive_pair_classes(res, basis);
@@ -196,7 +201,7 @@ TEST(LibraryFootprint, Metric) {
   const fb::BasisSet aux = placed("cc-pvdz-jkfit", w.molecule);
   const fb::MemoryFootprint fp = fb::metric_footprint(aux);
   ASSERT_GT(fp.device.workspace, 0U);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto u = fb::upload_spherical_transform_matrix(res, aux);
   ASSERT_TRUE(u);
   fb::MatrixAOPair m(res, aux, *u);
@@ -208,7 +213,7 @@ TEST(LibraryFootprint, ThreeCenter) {
   const Water w;
   const fb::BasisSet aux = placed("cc-pvdz-jkfit", w.molecule);
   const fb::MemoryFootprint fp = fb::three_center_footprint(w.basis, aux);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Buffers::device<double> b(
       std::size_t{aux.nao_sphe()} * w.basis.nao_sphe() * w.basis.nao_sphe(), res.device());
   // The staging, the cells, the Cartesian tensor and the work.
@@ -246,7 +251,7 @@ TEST(LibraryFootprint, DensityFit) {
   const FitInputs in;
   for (const double lindep : {0.0, 1e-10}) {
     SCOPED_TRACE(lindep);
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     const auto lwork = fb::syevd_lwork<double>(res, in.naux);
     ASSERT_TRUE(lwork);
     const fb::MemoryFootprint fp = fb::density_fit_footprint(in.nao, in.naux, *lwork, lindep);
@@ -275,7 +280,7 @@ TEST(LibraryFootprint, DfJkAndMo) {
   const std::int32_t nocc = 5;
   const std::size_t nn = static_cast<std::size_t>(in.nao) * static_cast<std::size_t>(in.nao);
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     fb::Buffers::device<double> d(nn, res.device());
     fb::Buffers::device<double> j(nn, res.device());
     expect_routine_footprint(res, fb::df_coulomb_footprint(in.nao, in.naux), 0, [&] {
@@ -283,7 +288,7 @@ TEST(LibraryFootprint, DfJkAndMo) {
     });
   }
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     fb::Buffers::device<double> c(nn, res.device());
     fb::Buffers::device<double> k(nn, res.device());
     expect_routine_footprint(res, fb::df_exchange_footprint(in.nao, in.naux, nocc), 0, [&] {
@@ -293,7 +298,7 @@ TEST(LibraryFootprint, DfJkAndMo) {
   {
     const fb::OrbitalRange rows{.first = 0, .count = nocc};
     const fb::OrbitalRange cols{.first = nocc, .count = in.nao - nocc};
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     fb::Buffers::device<double> c(nn, res.device());
     fb::Buffers::device<double> out(static_cast<std::size_t>(in.naux) * nocc * (in.nao - nocc),
                                     res.device());
@@ -315,7 +320,7 @@ TEST(LibraryFootprint, DfJkBlocks) {
   const std::size_t nn = static_cast<std::size_t>(in.nao) * static_cast<std::size_t>(in.nao);
   const std::size_t factors = static_cast<std::size_t>(in.nao) * kRank * kCount;
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     fb::Buffers::device<double> d(kCount * nn, res.device());
     fb::Buffers::device<double> j(kCount * nn, res.device());
     expect_routine_footprint(res, fb::df_coulomb_footprint(in.nao, in.naux, kCount), 1, [&] {
@@ -323,7 +328,7 @@ TEST(LibraryFootprint, DfJkBlocks) {
     });
   }
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     fb::Buffers::device<double> left(factors, res.device());
     fb::Buffers::device<double> right(factors, res.device());
     fb::Buffers::device<double> k(kCount * nn, res.device());
@@ -334,7 +339,7 @@ TEST(LibraryFootprint, DfJkBlocks) {
         });
   }
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     fb::Buffers::device<double> left(factors / kCount, res.device());
     fb::Buffers::device<double> right(factors, res.device());
     fb::Buffers::device<double> k(kCount * nn, res.device());
@@ -357,7 +362,7 @@ TEST(LibraryFootprint, MixedClassesAndOverlap) {
     const std::size_t n_classes =
         fb::mixed_primitive_pair_classes(w.inputs, minao, *cols).value().size();
     {
-      fb::DeviceResources res{0};
+      fb::DeviceResources res{0, fb::test::kWorkspaces};
       // The classes' 20 fields each and the 11 tables.
       expect_routine_footprint(res, fb::mixed_primitive_pair_classes_footprint(minao, *cols),
                                (n_classes * 20) + 11, [&] {
@@ -366,7 +371,7 @@ TEST(LibraryFootprint, MixedClassesAndOverlap) {
                                  ASSERT_TRUE(classes);
                                });
     }
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     fb::Buffers::device<double> s(std::size_t{minao.nao_sphe()} * cols->nao_sphe(), res.device());
     // The Cartesian block beside the records' build: their fields and tables.
     expect_routine_footprint(
@@ -380,7 +385,7 @@ TEST(LibraryFootprint, MixedClassesAndOverlap) {
 TEST(LibraryFootprint, ActiveSpaceHamiltonian) {
   FBF_REQUIRE_GPU();
   const Water w;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto u = fb::upload_spherical_transform_matrix(res, w.basis);
   ASSERT_TRUE(u);
   auto j_classes = fb::coulomb_pair_classes(res, w.classes);
@@ -399,7 +404,7 @@ TEST(LibraryFootprint, ActiveSpaceHamiltonian) {
             wwr::wwrSuccess);
   ASSERT_TRUE(res.sync());
   // A fresh workspace: the classes' sorts grew it.
-  fb::DeviceResources own{0};
+  fb::DeviceResources own{0, fb::test::kWorkspaces};
   const fb::MemoryFootprint fp = fb::active_space_hamiltonian_footprint(w.basis, 2, 4);
   ASSERT_GT(fp.device.workspace, 0U);
   // h_eff, (tu|vw), the density, J and K.
@@ -412,7 +417,7 @@ TEST(LibraryFootprint, ActiveSpaceHamiltonian) {
 
 TEST(LibraryFootprint, DeviceStringSet) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // The strings and their links.
   expect_routine_footprint(res, fb::ci::device_string_set_footprint(8, 3), 2,
                            [&] { EXPECT_TRUE(fb::ci::DeviceStringSet::create(res, 8, 3)); });
@@ -480,7 +485,7 @@ TEST(LibraryFootprint, SigmaAndSolve) {
     const fb::ci::Layout layout = one_set ? fb::ci::Layout::symmetric : fb::ci::Layout::full;
     for (const std::size_t limit : {std::numeric_limits<std::size_t>::max(), std::size_t{1}}) {
       SCOPED_TRACE(limit);
-      fb::DeviceResources res{0};
+      fb::DeviceResources res{0, fb::test::kWorkspaces};
       const auto alpha = fb::ci::DeviceStringSet::create(res, kOrbitals, sector.n_alpha);
       const auto beta = fb::ci::DeviceStringSet::create(res, kOrbitals, sector.n_beta);
       ASSERT_TRUE(alpha && beta);
@@ -532,7 +537,7 @@ TEST(LibraryFootprint, SigmaAndSolve) {
       // diagonal, values, vectors, picks, P-space U and values (empty) and
       // S^2's table; the Davidson's 11; the sigma's scratch; the unpacked
       // roots.
-      fb::DeviceResources own{0};
+      fb::DeviceResources own{0, fb::test::kWorkspaces};
       expect_routine_footprint(
           own, then(then(held(tables.device.persistent), held(sizeof(double) * dim)), solve),
           3 + 1 + 8 + 11 + 1 + 1,
@@ -633,13 +638,13 @@ TEST(LibraryFootprint, CasscfIntegrals) {
   FBF_REQUIRE_GPU();
   CasscfInputs in;
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     // ppaa, papa, h_eff, (tu|vw), and the density, J and K.
     expect_routine_footprint(res, fb::casscf_integrals_footprint(in.basis, kCore, kActive), 7,
                              [&] { (void)in.direct_integrals(res); });
   }
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     // The four, and the core's P, J and K in one allocation.
     expect_routine_footprint(res,
                              fb::casscf_integrals_footprint(in.nmo(), in.fit.naux, kCore, kActive),
@@ -651,7 +656,7 @@ TEST(LibraryFootprint, CasscfIntegrals) {
 // workspace alone; so do the packed pairs' copies.
 TEST(LibraryFootprint, RdmAndOrbitalPairs) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const auto strings = fb::ci::DeviceStringSet::create(inputs, kActive, 2);
   ASSERT_TRUE(strings);
   const auto dim = static_cast<std::size_t>(strings->size()) * strings->size();
@@ -663,12 +668,12 @@ TEST(LibraryFootprint, RdmAndOrbitalPairs) {
   ASSERT_TRUE(inputs.sync());
   const std::vector<double> weights{0.5, 0.5};
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     expect_routine_footprint(res, {}, 0,
                              [&] { EXPECT_TRUE(fb::ci::Rdm::create(res, *strings, *strings)); });
   }
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     auto rdm = fb::ci::Rdm::create(res, *strings, *strings);
     ASSERT_TRUE(rdm);
     expect_routine_footprint(
@@ -677,7 +682,7 @@ TEST(LibraryFootprint, RdmAndOrbitalPairs) {
         });
   }
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     auto rdm = fb::ci::Rdm::create(res, *strings, *strings);
     ASSERT_TRUE(rdm);
     expect_routine_footprint(
@@ -690,7 +695,7 @@ TEST(LibraryFootprint, RdmAndOrbitalPairs) {
     constexpr std::int32_t kOrbitals = 10;
     const std::int32_t pairs =
         (kCore * (kOrbitals - kCore)) + (kActive * (kOrbitals - kCore - kActive));
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     fb::Buffers::device<double> square(kOrbitals * kOrbitals, res.device());
     fb::Buffers::device<double> packed(static_cast<std::size_t>(pairs), res.device());
     expect_routine_footprint(res, {}, 0, [&] {
@@ -709,7 +714,7 @@ TEST(LibraryFootprint, Fock) {
     SCOPED_TRACE(fitted);
     const fb::CasscfIntegrals ints =
         fitted ? in.fitted_integrals(in.inputs) : in.direct_integrals(in.inputs);
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     // F^I, F^A, F, the gradient, gamma and Gamma; and P_c, J and K.
     expect_routine_footprint(
         res,
@@ -730,7 +735,7 @@ TEST(LibraryFootprint, Hessian) {
         fitted ? in.fitted_integrals(in.inputs) : in.direct_integrals(in.inputs);
     const fb::response::Fock f = in.fock(in.inputs, ints, fitted);
     {
-      fb::DeviceResources res{0};
+      fb::DeviceResources res{0, fb::test::kWorkspaces};
       // Its nine buffers, and J and K's two (fitted) or the Cartesian three.
       expect_routine_footprint(
           res,
@@ -745,7 +750,7 @@ TEST(LibraryFootprint, Hessian) {
     EXPECT_EQ(wwr::wwrMemsetAsync(x.data(), 0, sizeof(double) * pairs, in.inputs.stream()),
               wwr::wwrSuccess);
     ASSERT_TRUE(in.inputs.sync());
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     // The fitted product's one scratch allocation.
     expect_routine_footprint(
         res,
@@ -757,12 +762,14 @@ TEST(LibraryFootprint, Hessian) {
 
 // The pool cap that leaves @p room bytes of memory budget past the headroom
 // once @p warm has run: what a fresh uncapped pool holds after the same call
-// (its workspace, grown, and DeviceResources' own bytes), plus the headroom and
-// @p room. The call allocates the same on either pool, so a capped one warmed
-// by it holds the same, and its budget less the headroom is @p room.
+// (the workspaces of @p workspaces, and DeviceResources' own bytes), plus the
+// headroom and @p room. The call allocates the same on either pool, so a
+// capped one with the same workspaces warmed by it holds the same, and its
+// budget less the headroom is @p room.
 template <typename Warm>
-std::uint64_t cap_leaving(const std::size_t room, Warm &&warm) {
-  fb::DeviceResources probe{0};
+std::uint64_t cap_leaving(const fb::MemoryFootprint &workspaces, const std::size_t room,
+                          Warm &&warm) {
+  fb::DeviceResources probe{0, workspaces};
   warm(probe);
   EXPECT_TRUE(probe.sync());
   return probe.device()->pool_usage().used_current + fb::kPoolHeadroomBytes + room;
@@ -814,16 +821,16 @@ TEST(LibraryFootprint, HessianBlockWidthFromTheBudget) {
   const fb::MemoryFootprint least =
       fb::response::hessian_apply_footprint(in.nmo(), in.fit.naux, kCore, kActive);
   {
-    fb::DeviceResources res{
-        0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0,
-        cap_leaving(least.device.scratch, [&](fb::DeviceResources &on) { apply(on, y_least); })};
+    fb::DeviceResources res{0, least, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0,
+                            cap_leaving(least, least.device.scratch,
+                                        [&](fb::DeviceResources &on) { apply(on, y_least); })};
     // One column's carve, the one allocation.
     expect_routine_footprint(res, least, 1, [&] { apply(res, y_least); });
   }
   {
-    const std::uint64_t cap =
-        cap_leaving(std::size_t{64} << 20, [&](fb::DeviceResources &on) { apply(on, y_spare); });
-    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    const std::uint64_t cap = cap_leaving(least, std::size_t{64} << 20,
+                                          [&](fb::DeviceResources &on) { apply(on, y_spare); });
+    fb::DeviceResources res{0, least, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
     apply(res, y_spare);
     const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { apply(res, y_spare); });
     std::cout << std::format("[ footprint ] block of {}: measured {}, the least {}\n", kBlock,
@@ -832,7 +839,7 @@ TEST(LibraryFootprint, HessianBlockWidthFromTheBudget) {
     EXPECT_LE(res.device()->pool_usage().used_high, cap);
   }
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     apply(res, y_whole);
     ASSERT_TRUE(res.sync());
   }
@@ -904,7 +911,7 @@ TEST(LibraryFootprint, RelaxedHessian) {
     const fb::MemoryFootprint product =
         fitted ? fb::response::hessian_apply_footprint(in.nmo(), in.fit.naux, kCore, kActive)
                : fb::response::hessian_apply_footprint(in.basis, kCore, kActive);
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     // H'(x)'s sigma's three tables and its scratch, the relaxed Hessian's nine
     // buffers, and the fitted product's scratch.
     expect_routine_footprint(res, then(relaxed, product), 3 + 1 + 9 + (fitted ? 1 : 0), [&] {
@@ -967,15 +974,15 @@ TEST(LibraryFootprint, IntegralDerivatives) {
   constexpr std::size_t kLive = 7;
   {
     fb::DeviceResources res{
-        0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0,
-        cap_leaving(least.device.scratch, [&](fb::DeviceResources &on) { run(on, 0); })};
+        0, least, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0,
+        cap_leaving(least, least.device.scratch, [&](fb::DeviceResources &on) { run(on, 0); })};
     expect_routine_footprint(res, least, kLive, [&] { run(res, 0); });
     EXPECT_EQ(widest, 1);
   }
   {
-    const std::uint64_t cap = cap_leaving(least.device.scratch + (std::size_t{16} << 20),
+    const std::uint64_t cap = cap_leaving(least, least.device.scratch + (std::size_t{16} << 20),
                                           [&](fb::DeviceResources &on) { run(on, 0); });
-    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    fb::DeviceResources res{0, least, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
     run(res, 0);
     const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { run(res, 0); });
     std::cout << std::format("[ footprint ] chunk of {}: measured {}, the least {}\n", widest,
@@ -1018,7 +1025,7 @@ TEST(LibraryFootprint, ThirdDerivative) {
   fb::Buffers::device<double> y(size, in.inputs.device());
   const fb::MemoryFootprint fp = fb::mcscf::third_derivative_footprint(
       in.nmo(), in.fit.naux, kCore, kActive, alpha->size(), alpha->size(), kRoots);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // The operator's 31 buffers and its three sigmas' three tables and scratch.
   expect_routine_footprint(res, fp, 31 + (3 * 4), [&] {
     auto op =
@@ -1068,7 +1075,7 @@ TEST(LibraryFootprint, Derivatives) {
   const fb::Buffers::device<double> rotation = upload(rotation_host);
   for (const bool rotated : {false, true}) {
     SCOPED_TRACE(rotated);
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     const std::size_t lwork = fb::syevd_lwork<double>(res, kActive).value();
     const fb::MemoryFootprint fp = fb::mcscf::df_derivatives_footprint(
         in.basis, aux, kCore, kActive, 1, 1, kRoots, lwork, rotated);
@@ -1096,7 +1103,7 @@ TEST(LibraryFootprint, GradientIntegrals) {
   auto k_classes = fb::ordered_pair_classes(w.inputs, w.basis, w.classes);
   ASSERT_TRUE(k_classes);
   ASSERT_TRUE(w.inputs.sync());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::SphericalMatrixAO m(res, w.basis);
   // U, the pair's three matrices, each Cartesian AO's atom, the records'
   // atoms and the device gradient.
@@ -1135,7 +1142,7 @@ TEST(LibraryFootprint, DerivativeIntegrals) {
   Water w;
   ASSERT_NE(w.basis.nao_cart(), w.basis.nao_sphe());
   const fb::BasisSet aux = placed("cc-pvdz-jkfit", w.molecule);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // U, the pair's three matrices, the matrices returned, each spherical AO's
   // atom, the Cartesian slabs and their spherical copies.
   const fb::MemoryFootprint one = fb::one_electron_derivative_footprint(w.basis);
@@ -1152,14 +1159,14 @@ TEST(LibraryFootprint, DerivativeIntegrals) {
   const std::size_t naux = aux.nao_sphe();
   fb::Buffers::device<double> m1(3 * naux * naux, w.inputs.device());
   {
-    fb::DeviceResources own{0};
+    fb::DeviceResources own{0, fb::test::kWorkspaces};
     expect_routine_footprint(own, fb::metric_derivative_footprint(aux), 0,
                              [&] { EXPECT_TRUE(fb::metric_derivative(own, aux, m1.data())); });
   }
   // Oxygen's block, the largest.
   fb::Buffers::device<double> x(3 * nao * nao * naux, w.inputs.device());
   {
-    fb::DeviceResources own{0};
+    fb::DeviceResources own{0, fb::test::kWorkspaces};
     expect_routine_footprint(own, fb::three_center_derivative_footprint(w.basis, aux, 0), 0, [&] {
       EXPECT_TRUE(fb::three_center_derivative(own, w.basis, w.classes, aux, 0, x.data()));
     });
@@ -1172,7 +1179,7 @@ TEST(LibraryFootprint, DerivativeIntegrals) {
   fb::Buffers::device<double> jx(stack, w.inputs.device());
   fb::Buffers::device<double> kx(stack, w.inputs.device());
   fb::Buffers::device<double> g(naux * 3 * w.basis.natoms(), w.inputs.device());
-  fb::DeviceResources own{0};
+  fb::DeviceResources own{0, fb::test::kWorkspaces};
   expect_routine_footprint(own, fb::df_jk_derivative_footprint(w.basis, aux, kOcc), 0, [&] {
     EXPECT_TRUE(fb::df_jk_derivative(own, w.basis, w.classes, aux, b.data(), l.data(), c.data(),
                                      kOcc, jx.data(), kx.data(), g.data()));
@@ -1195,7 +1202,7 @@ TEST(LibraryFootprint, RhfGradient) {
   const std::size_t naux = aux.nao_sphe();
   const std::vector<double> energies(nao, -1.0);
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     const fb::SphericalMatrixAO c(res, w.basis);
     const fb::Buffers::device<double> b(naux * nao * nao, res.device());
     const fb::Buffers::device<double> l(naux * naux, res.device());
@@ -1204,7 +1211,7 @@ TEST(LibraryFootprint, RhfGradient) {
                                        c, energies, kOcc));
     });
   }
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::SphericalMatrixAO c(res, w.basis);
   expect_routine_footprint(res, fb::gradient::rhf_footprint(w.basis, kOcc), 1 + 4 + (6 * 31) + 8,
                            [&] {

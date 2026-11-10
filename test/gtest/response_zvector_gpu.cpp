@@ -37,6 +37,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
 
+#include "test_workspaces.h"
+
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
 #include "slow_test.h"
@@ -263,7 +265,7 @@ TEST_P(ResponseZvector, MatchesPyscfSaCasscfMultipliers) {
   const auto weights = entry.at("weights").get<std::vector<double>>();
   const auto nroots = static_cast<std::int32_t>(weights.size());
 
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   std::optional<Solved> solved;
@@ -499,7 +501,7 @@ TEST_P(ResponseZvectorCiRhs, SolvesTheCoupledEquations) {
   const auto nroots = static_cast<std::int32_t>(weights.size());
   const std::size_t roots_count = weights.size();
 
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   std::optional<Solved> solved;
@@ -755,7 +757,7 @@ TEST(ResponseZvectorTuning, ResponseCapAndCoupledFloorTakeEffect) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case("h2o_ccpvdz");
   const auto weights = entry.at("weights").get<std::vector<double>>();
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   std::optional<Solved> solved;
@@ -930,7 +932,7 @@ TEST(ResponseRelaxedHessianRoundoff, WaterSa2IsSymmetricPositiveDefinite) {
   ASSERT_TRUE(fb::write_file(dir / "run.toml", kSaWaterToml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   ASSERT_TRUE(calc->run(node).has_value());
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};

@@ -27,6 +27,8 @@ import free_breakfast.integrals;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.basis_set;
 
+#include "test_workspaces.h"
+
 #include "pool_footprint.h"
 
 namespace {
@@ -84,7 +86,7 @@ class DipoleGolden : public ::testing::TestWithParam<const char *> {};
 
 TEST_P(DipoleGolden, SphericalMatchesLibcint) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::string name = GetParam();
   const fb::BasisSet basis = case_basis(res, name);
   const std::size_t n = basis.nao_sphe();
@@ -136,7 +138,7 @@ INSTANTIATE_TEST_SUITE_P(H2O, DipoleGolden, ::testing::Values("h2o_sto3g", "h2o_
 
 TEST(Dipole, ZeroesTheMatricesFirst) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   std::array<fb::CartesianMatrixAO, 3> mu{fb::CartesianMatrixAO(res, basis),
                                           fb::CartesianMatrixAO(res, basis),
@@ -156,7 +158,7 @@ TEST(Dipole, ZeroesTheMatricesFirst) {
 
 TEST(Dipole, RefusesAnFShell) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Vec<double, 3> origin{0.0, 0.0, 0.0};
   const fb::BasisSet basis(
       {fb::Shell(0, {{1.0, 1.0}}, origin), fb::Shell(fb::kDipoleMaxL + 1, {{1.0, 1.0}}, origin)});
@@ -173,7 +175,7 @@ TEST(Dipole, RefusesAnFShell) {
 
 TEST(Dipole, RefusesMatricesOfDifferentOrders) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Vec<double, 3> origin{0.0, 0.0, 0.0};
   const fb::BasisSet one({fb::Shell(0, {{1.0, 1.0}}, origin)});
   const fb::BasisSet two({fb::Shell(0, {{1.0, 1.0}}, origin), fb::Shell(0, {{0.5, 1.0}}, origin)});
@@ -191,20 +193,20 @@ TEST(Dipole, RefusesMatricesOfDifferentOrders) {
 // their own DeviceResources, whose sort grows that one's workspace.
 TEST(Dipole, Footprint) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources inputs{0};
+  fb::DeviceResources inputs{0, fb::test::kWorkspaces};
   const fb::BasisSet basis = case_basis(inputs, "h2o_ccpvdz");
   const auto classes = fb::primitive_pair_classes(inputs, basis);
   ASSERT_TRUE(classes) << classes.error().message;
   ASSERT_TRUE(inputs.sync());
   const fb::MemoryFootprint fp = fb::dipole_footprint(basis);
   EXPECT_EQ(fp.device.persistent + fp.device.scratch, 0U);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   std::array<fb::CartesianMatrixAO, 3> mu{fb::CartesianMatrixAO(res, basis),
                                           fb::CartesianMatrixAO(res, basis),
                                           fb::CartesianMatrixAO(res, basis)};
   const auto build = [&] { EXPECT_TRUE(fb::dipole(res, *classes, mu[0], mu[1], mu[2])); };
   build();
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
   fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), build), {}, 0);
 }
 

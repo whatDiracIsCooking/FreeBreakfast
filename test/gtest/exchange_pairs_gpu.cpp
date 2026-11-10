@@ -27,6 +27,8 @@ import free_breakfast.io.json;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
+#include "test_workspaces.h"
+
 #include "mmd_records.h"
 
 namespace {
@@ -178,7 +180,7 @@ class ExchangePairs : public ::testing::TestWithParam<std::string> {};
 
 TEST_P(ExchangePairs, RecordCountsAreTheOrderedPrimitivePairs) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis = h2o(GetParam());
   const Ordered o = ordered_of(res, basis);
   const std::map<ClassKey, std::int64_t> want = host_counts(basis);
@@ -198,7 +200,7 @@ TEST_P(ExchangePairs, RecordCountsAreTheOrderedPrimitivePairs) {
 
 TEST_P(ExchangePairs, GroupsAreContiguousOneFirstShellAndDescendingInBound) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis = h2o(GetParam());
   const Ordered o = ordered_of(res, basis);
   const std::map<std::int32_t, ShellAt> by_offset = shells_by_offset(basis);
@@ -264,7 +266,7 @@ TEST_P(ExchangePairs, GroupsAreContiguousOneFirstShellAndDescendingInBound) {
 // at a different place for each bra group.
 TEST_P(ExchangePairs, BraTablesAreTheBasissABlocks) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis = h2o(GetParam());
   const Ordered o = ordered_of(res, basis);
   ASSERT_FALSE(o.ordered.empty());
@@ -353,7 +355,7 @@ TEST_P(ExchangePairs, BraTablesAreTheBasissABlocks) {
 
 TEST_P(ExchangePairs, SwappedClassesHoldTheSameRecordsWithPaAndPbSwapped) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const Ordered o = ordered_of(res, h2o(GetParam()));
   std::map<ClassKey, const fb::OrderedPairClass *> by_key;
   for (const fb::OrderedPairClass &cls : o.ordered) {
@@ -375,7 +377,7 @@ TEST_P(ExchangePairs, SwappedClassesHoldTheSameRecordsWithPaAndPbSwapped) {
 // wrote.
 TEST_P(ExchangePairs, MatchesAHostGatherOfMmd) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   Ordered o = ordered_of(res, h2o(GetParam()));
   ASSERT_FALSE(o.ordered.empty());
   // mmd's records exist on the device only: copy back every field read below.
@@ -431,7 +433,7 @@ TEST_P(ExchangePairs, MatchesAHostGatherOfMmd) {
 
 TEST_P(ExchangePairs, ViewNamesTheDeviceFields) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const Ordered o = ordered_of(res, h2o(GetParam()));
   ASSERT_FALSE(o.ordered.empty());
   for (const fb::OrderedPairClass &cls : o.ordered) {
@@ -487,7 +489,7 @@ constexpr double kBoundAbs = 1e-13;
 
 TEST_P(ExchangeRecordBound, MatchesFelizJuevesRecordBounds) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis = h2o(GetParam());
   const auto doc = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "record_bound" /
                                  (GetParam() + ".json"));
@@ -573,7 +575,7 @@ INSTANTIATE_TEST_SUITE_P(Golden, ExchangeRecordBound,
 // basis's, is an InvalidConfig error, not a garbage gather.
 TEST(ExchangePairsMismatch, ClassesOfAnotherBasisAreRefused) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet big = h2o("h2o_ccpvdz");
   const fb::BasisSet small = h2o("h2o_sto3g");
   auto mmd = fb::primitive_pair_classes(res, big);

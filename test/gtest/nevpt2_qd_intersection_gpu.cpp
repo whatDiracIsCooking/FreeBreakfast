@@ -41,6 +41,8 @@ import free_breakfast.pipeline.casscf;
 import free_breakfast.pipeline.overlap;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -150,7 +152,8 @@ struct QdRun {
 // ([symbol, [x, y, z]] in bohr), basis, aux_basis.name, ncas, nelecas and
 // weights, and an optional charge (0 when absent).
 QdRun qd_run_of(const fb::json &entry) {
-  QdRun run{.node = std::make_unique<fb::NodeResources>()};
+  QdRun run{.node = std::make_unique<fb::NodeResources>(
+                fb::NodeResourcesConfig{.workspaces = fb::test::kWorkspaces})};
   EXPECT_EQ(entry.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
   const fb::test::ScratchDir dir("nevpt2_qd_intersection");
   std::string xyz =

@@ -111,7 +111,8 @@ Status Preconditioner::operator()(DeviceResources &res, const std::span<const do
     // the covered rows replaced by V clamp(θ − λ)⁻¹ Vᵀ r, V block-diagonal.
     // cluster grew the workspace to these two blocks.
     const auto block = static_cast<size_t>(covered_) * theta.size();
-    const auto [gathered, projected] = res.device_regions<double>(block, block);
+    const auto [gathered, projected] =
+        FBF_TRY(res.device_regions<double>("cis::Preconditioner::operator()", block, block));
     const wwr::wwrblasHandle_t blas = res.blas().get();
     FBF_TRY(gpu_status(
         device::gather_rows(stream, n_ov_, covered_, columns, index_.data(), residual, gathered)));
@@ -272,10 +273,11 @@ Status Preconditioner::solve_blocks(DeviceResources &res, const double *const ap
   FBF_TRY(res.sync());
   lambda_ = std::move(lambda_d);
   vectors_ = std::move(vectors_d);
-  // A call's two scratch blocks, so the workspace is grown here and a call
-  // allocates nothing.
+  // A call's two scratch blocks, borrowed once here so that a workspace too
+  // small for them is refused here rather than at the first call.
   const size_t scratch = k_all * theta_.num_elements();
-  std::ignore = res.device_regions<double>(scratch, scratch);
+  std::ignore =
+      FBF_TRY(res.device_regions<double>("cis::Preconditioner::solve_blocks", scratch, scratch));
   covered_ = covered;
   return {};
 }

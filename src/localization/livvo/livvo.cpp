@@ -64,7 +64,8 @@ Status valence_virtual_orbitals(DeviceResources &res, const BasisSet &basis,
   // with orthonormal columns, since the IAOs span them. Both products are
   // dead before diagonalize, so they are the workspace's.
   {
-    const auto [sc, c_iao] = res.device_regions<double>(nk, mk);
+    const auto [sc, c_iao] =
+        FBF_TRY(res.device_regions<double>("localization::valence_virtual_orbitals", nk, mk));
     FBF_TRY(gpu_status(gemm(res.blas(), n, k, n, &kOne<double>, s, c, &kZero<double>, sc)));
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), m, k, n, &kOne<double>, iao, sc,
                                                &kZero<double>, c_iao)));
@@ -122,7 +123,8 @@ Result<Info> livvo_localize(DeviceResources &res, const BasisSet &basis, const B
   Buffers::device<double> rotation(static_cast<size_t>(k) * k, res.device());
   Buffers::device<double> identity(static_cast<size_t>(m) * m, res.device());
   {
-    const auto [sv] = res.device_regions<double>(static_cast<size_t>(n) * k);
+    const auto [sv] = FBF_TRY(
+        res.device_regions<double>("localization::livvo_localize", static_cast<size_t>(n) * k));
     FBF_TRY(gpu_status(gemm(res.blas(), n, k, n, &kOne<double>, s, vvo, &kZero<double>, sv)));
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), m, k, n, &kOne<double>, iao, sv,
                                                &kZero<double>, v_iao.data())));
@@ -181,7 +183,8 @@ Result<std::vector<double>> valence_character(DeviceResources &res, const BasisS
   // LIVVO, and t_val its squared norm (eqs 11-12).
   std::vector<double> o_host(lc);
   {
-    const auto [sc, o] = res.device_regions<double>(n_c, lc);
+    const auto [sc, o] =
+        FBF_TRY(res.device_regions<double>("localization::valence_character", n_c, lc));
     FBF_TRY(gpu_status(gemm(res.blas(), n, n_orb, n, &kOne<double>, s, c, &kZero<double>, sc)));
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), n_vvo, n_orb, n, &kOne<double>, livvo,
                                                sc, &kZero<double>, o)));

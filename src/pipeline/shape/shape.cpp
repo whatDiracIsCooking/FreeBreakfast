@@ -12,6 +12,7 @@ import free_breakfast.core.wwr; // Buffers, ScopedDeviceIndex, PoolUsage
 import free_breakfast.core.log;
 import free_breakfast.core.primitives; // math::idivup
 import free_breakfast.io.basis;
+import free_breakfast.molecule;            // molecule_footprint
 import free_breakfast.recipes.diagonalize; // syevd_lwork
 import free_breakfast.recipes.expm;        // skew_eig_lwork
 import free_breakfast.recipes.lu;          // getrf_lwork
@@ -22,18 +23,39 @@ import free_breakfast.pipeline.step;       // View
 
 namespace free_breakfast {
 
+// The atoms the XYZ file at @p path says it holds, its first line; 0 when it
+// cannot be read or that line is not a count, which the Molecule step then
+// refuses as the file's error before it stages anything.
+[[nodiscard]] size_t xyz_atom_count(const std::filesystem::path &path) {
+  std::ifstream file(path);
+  size_t count = 0;
+  if (!(file >> count)) {
+    return 0;
+  }
+  return count;
+}
+
 // The geometry the plan's molecule is read from: the Molecule step's, or, when
 // an [optimize] loads it, the start the optimization's chain reads. The loaded
 // final.xyz does not exist before the run, and must hold the same atoms.
+//
+// Read on a DeviceResources of its own on @p res's device, whose workspaces are
+// the Molecule's footprint at the file's atom count: pre-flight shapes the
+// plan before it knows what the node's workspaces will be, and the Molecule
+// stages its upload in the pinned workspace.
 [[nodiscard]] Result<std::optional<MoleculeOutput>> shape_molecule(const Calculation &calc,
                                                                    DeviceResources &res) {
-  if (const std::optional<MoleculeStep> &step = calc.step<MoleculeStep>()) {
-    return std::optional{FBF_TRY(step->run(View<>{}, res))};
+  const MoleculeStep *step = nullptr;
+  if (const std::optional<MoleculeStep> &own = calc.step<MoleculeStep>()) {
+    step = &*own;
+  } else if (const std::optional<OptimizeStep> &optimize = calc.step<OptimizeStep>()) {
+    step = &optimize->molecule;
   }
-  if (const std::optional<OptimizeStep> &optimize = calc.step<OptimizeStep>()) {
-    return std::optional{FBF_TRY(optimize->molecule.run(View<>{}, res))};
+  if (step == nullptr) {
+    return std::optional<MoleculeOutput>{};
   }
-  return std::optional<MoleculeOutput>{};
+  DeviceResources reader{res.dev_idx(), molecule_footprint(xyz_atom_count(step->xyz))};
+  return std::optional{FBF_TRY(step->run(View<>{}, reader))};
 }
 
 // The step of type S the plan configures: its own, else the copy an
@@ -436,12 +458,49 @@ constexpr size_t kReuseRoundingDivisor = 8;
   return fits;
 }
 
+// The workspaces of @p fp, a MemoryFootprint with only its two workspace
+// fields set: what a DeviceResources is built with.
+[[nodiscard]] MemoryFootprint workspaces_of(const MemoryFootprint &fp) {
+  return {.device = {.workspace = fp.device.workspace},
+          .pinned = {.workspace = fp.pinned.workspace}};
+}
+
+// @p a's workspaces widened to hold @p b's.
+void widen_workspaces(MemoryFootprint &a, const MemoryFootprint &b) {
+  a.device.workspace = std::max(a.device.workspace, b.device.workspace);
+  a.pinned.workspace = std::max(a.pinned.workspace, b.pinned.workspace);
+}
+
+// An uncapped plan's workspaces: the most any planned step borrows, at
+// @p dims, which an AVAS worst case past what the device can give narrows
+// first, as narrow_avas narrows it under a cap, against the device's budget
+// less the headroom. Allocation when the device workspace alone is past the
+// budget: holding it would abort (CreatePolicy).
+[[nodiscard]] Result<MemoryFootprint>
+uncapped_workspaces(Calculation &calc, FootprintDimensions &dims, DeviceResources &res) {
+  const size_t budget = FBF_TRY(res.memory_budget());
+  const size_t room = budget > kPoolHeadroomBytes ? budget - kPoolHeadroomBytes : 0;
+  if (room != 0) {
+    (void)narrow_avas(calc, dims, PlanCaps{.device_room = room});
+  }
+  MemoryFootprint out;
+  for (const StepFootprint &step : calc.footprints(dims)) {
+    if (step.footprint) {
+      widen_workspaces(out, *step.footprint);
+    }
+  }
+  if (out.device.workspace > budget) {
+    return err_allocation("pre-flight: the plan's device workspace is {} bytes, and device {}'s "
+                          "budget is {}",
+                          out.device.workspace, res.dev_idx(), budget);
+  }
+  return out;
+}
+
 Status preflight(Calculation &calc, NodeResources &node) {
   const size_t device_cap = calc.max_device_mem_per_gpu;
   const size_t pinned_cap = calc.max_pinned_mem_per_gpu;
-  if (device_cap == 0 && pinned_cap == 0) {
-    return {};
-  }
+  const bool capped = device_cap != 0 || pinned_cap != 0;
   constexpr uint64_t kReserve = DeviceResources::kDeviceReserve;
   constexpr uint64_t kOwn = DeviceResources::kOwnPoolBytes;
   if (device_cap != 0 && device_cap <= kReserve + kPoolHeadroomBytes + kOwn) {
@@ -457,43 +516,49 @@ Status preflight(Calculation &calc, NodeResources &node) {
     return {};
   }
 
-  // The caps are set when a DeviceResources is built, so the node's are
-  // rebuilt with them: the pool's maxSize, and its release threshold, are
-  // the device cap less the reserve outside the pool.
+  // Shaped and folded on device 0 as main built it, with no workspaces yet.
   const uint64_t pool_cap = device_cap != 0 ? device_cap - kReserve : 0;
+  MemoryFootprint workspaces;
+  {
+    DeviceResources &res = node.device(0);
+    const ScopedDeviceIndex on{res.dev_idx()};
+    PlanShape shape = FBF_TRY(plan_shape(calc, res));
+    if (!capped) {
+      workspaces = FBF_TRY(uncapped_workspaces(calc, shape.dims, res));
+    } else {
+      const bool rounds_reuse = device_cap != 0 && FBF_TRY(pool_rounds_reused_blocks(res));
+      const PlanCaps caps{.max_device_mem_per_gpu = device_cap,
+                          .device_room =
+                              device_cap != 0 ? preflight_device_room(pool_cap, rounds_reuse) : 0,
+                          .max_pinned_mem_per_gpu = pinned_cap};
+      const std::optional<size_t> avas_fits = narrow_avas(calc, shape.dims, caps);
+      auto plan = check_plan(calc.footprints(shape.dims), caps);
+      if (!plan) {
+        if (avas_fits == 0U) {
+          plan.error().message += "; no AVAS pick fits, not even of 1 orbital: raise the cap";
+        }
+        return std::unexpected(std::move(plan).error());
+      }
+      workspaces = workspaces_of(plan->footprint);
+    }
+  }
+
+  // The caps and the workspaces are set when a DeviceResources is built, so
+  // the node's are rebuilt with them: the pool's maxSize and release
+  // threshold the device cap less the reserve outside the pool, the pinned
+  // total's cap, and each workspace the plan's maximum, held to the end.
   for (DeviceResources &res : node.devices()) {
     const ScopedDeviceIndex on{res.dev_idx()};
-    res = DeviceResources{res.dev_idx(), DeviceResources::kDefaultPoolReleaseThreshold, pinned_cap,
-                          pool_cap};
+    res = DeviceResources{res.dev_idx(), workspaces, DeviceResources::kDefaultPoolReleaseThreshold,
+                          pinned_cap, pool_cap};
   }
-
-  DeviceResources &res = node.device(0);
-  const ScopedDeviceIndex on{res.dev_idx()};
-  PlanShape shape = FBF_TRY(plan_shape(calc, res));
-  const bool rounds_reuse = device_cap != 0 && FBF_TRY(pool_rounds_reused_blocks(res));
-  const PlanCaps caps{.max_device_mem_per_gpu = device_cap,
-                      .device_room =
-                          device_cap != 0 ? preflight_device_room(pool_cap, rounds_reuse) : 0,
-                      .max_pinned_mem_per_gpu = pinned_cap};
-  const std::optional<size_t> avas_fits = narrow_avas(calc, shape.dims, caps);
-  auto plan = check_plan(calc.footprints(shape.dims), caps);
-  if (!plan) {
-    if (avas_fits == 0U) {
-      plan.error().message += "; no AVAS pick fits, not even of 1 orbital: raise the cap";
-    }
-    return std::unexpected(std::move(plan).error());
-  }
-
-  // Grown once to the plan's maximum, so no footprinted step grows them and
-  // the fold needs no old-plus-new term for a growth (#1123 sizes them at
-  // construction instead).
-  (void)res.device_workspace(plan->footprint.device.workspace);
-  FBF_TRY(res.pinned_workspace("pre-flight", plan->footprint.pinned.workspace));
 
   // The pre-warm: what the plan may use of the pool, taken once and freed.
   // The cap is the pool's release threshold, so the pool keeps it, and
   // memory another process holds is reported here rather than at a step.
   if (device_cap != 0) {
+    DeviceResources &res = node.device(0);
+    const ScopedDeviceIndex on{res.dev_idx()};
     const PoolUsage usage = res.device()->pool_usage();
     // min(pool_cap, free + reserved) - used: below pool_cap - used only when
     // the driver cannot supply the cap.

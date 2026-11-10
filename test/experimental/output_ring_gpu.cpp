@@ -19,6 +19,8 @@ import free_breakfast.io.base;
 import free_breakfast.io.npy;
 import free_breakfast.experimental.output_ring;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -60,7 +62,7 @@ void expect_file_is(const std::filesystem::path &path, const fb::NpyArray &expec
 
 TEST(OutputRing, StreamsSeveralFilesThroughSharedSlots) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::tf::Executor executor{4};
   const fb::test::ScratchDir dir("output_ring");
 
@@ -87,7 +89,7 @@ TEST(OutputRing, StreamsSeveralFilesThroughSharedSlots) {
 // worker: taking a slot must run the writer tasks rather than block on them.
 TEST(OutputRing, ProgressesFromInsideASingleWorkerExecutor) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::tf::Executor executor{1};
   const fb::test::ScratchDir dir("output_ring");
   const Array a = upload(res, {50, 40}, 0.5);
@@ -111,7 +113,7 @@ TEST(OutputRing, ProgressesFromInsideASingleWorkerExecutor) {
 
 TEST(OutputRing, WritesAnEmptyArrayAsItsHeader) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::tf::Executor executor{2};
   const fb::test::ScratchDir dir("output_ring");
   const Array a = upload(res, {0, 3}, 0.0);
@@ -124,7 +126,7 @@ TEST(OutputRing, WritesAnEmptyArrayAsItsHeader) {
 
 TEST(OutputRing, RejectsAShapeThatDisagreesWithTheBuffer) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::tf::Executor executor{2};
   const fb::test::ScratchDir dir("output_ring");
   const Array a = upload(res, {6, 6}, 0.0);
@@ -140,7 +142,7 @@ TEST(OutputRing, RejectsAShapeThatDisagreesWithTheBuffer) {
 
 TEST(OutputRing, ReportsAnUnwritablePathAsIO) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::tf::Executor executor{2};
   const fb::test::ScratchDir dir("output_ring");
   const Array a = upload(res, {4}, 0.0);

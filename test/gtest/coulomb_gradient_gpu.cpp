@@ -28,6 +28,8 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -186,7 +188,7 @@ class CoulombGradientGolden : public ::testing::TestWithParam<const char *> {};
 TEST_P(CoulombGradientGolden, MatchesLibcint) {
   FBF_REQUIRE_GPU();
   const std::string name = GetParam();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto k = make_case(res, name);
   ASSERT_TRUE(k.has_value());
   std::int32_t lmax = 0;
@@ -218,7 +220,7 @@ INSTANTIATE_TEST_SUITE_P(H2O, CoulombGradientGolden, ::testing::Values("h2o_ccpv
 // Each refusal before anything is launched, naming the input refused.
 TEST(CoulombGradient, Refusals) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule(
       res, {fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, static_cast<fb::Element>(1)},
             fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 1.4}, static_cast<fb::Element>(1)}});

@@ -103,16 +103,22 @@ struct PmScratch {
   int32_t *schedule;        // every round's pairs
   int32_t *atom_ao_offsets; // n_atoms + 1
 
-  PmScratch(DeviceResources &res, const size_t n_ao, const size_t n_occ, const size_t n_atoms,
-            const size_t schedule_size) {
-    std::tie(w, pops_a, pops_b, u_a, u_b, cos, sin, functional, partner, schedule,
-             atom_ao_offsets) =
-        std::apply(
-            [&res](const auto... counts) {
-              return res.device_regions<double, double, double, double, double, double, double,
-                                        double, int32_t, int32_t, int32_t>(counts...);
-            },
-            pm_scratch_counts(n_ao, n_occ, n_atoms, schedule_size));
+  // Carved from res's workspace, or the borrow's refusal.
+  static Result<PmScratch> carve(DeviceResources &res, const size_t n_ao, const size_t n_occ,
+                                 const size_t n_atoms, const size_t schedule_size) {
+    const auto regions = std::apply(
+        [&res](const auto... counts) {
+          return res.device_regions<double, double, double, double, double, double, double, double,
+                                    int32_t, int32_t, int32_t>("pm_localize", counts...);
+        },
+        pm_scratch_counts(n_ao, n_occ, n_atoms, schedule_size));
+    if (!regions) {
+      return std::unexpected(regions.error());
+    }
+    PmScratch out{};
+    std::tie(out.w, out.pops_a, out.pops_b, out.u_a, out.u_b, out.cos, out.sin, out.functional,
+             out.partner, out.schedule, out.atom_ao_offsets) = *regions;
+    return out;
   }
 };
 
@@ -160,8 +166,8 @@ Result<Info> pm_localize(DeviceResources &res, const BasisSet &basis, const int3
   std::vector<int32_t> schedule(pm_schedule_size(n_occ));
   pm_fill_round_robin(m, schedule.data());
 
-  PmScratch scratch(res, static_cast<size_t>(n_ao), static_cast<size_t>(n_occ), n_atoms,
-                    schedule.size());
+  PmScratch scratch = FBF_TRY(PmScratch::carve(
+      res, static_cast<size_t>(n_ao), static_cast<size_t>(n_occ), n_atoms, schedule.size()));
   // Pageable sources: they live to the end of the call, and the first read of
   // L below synchronizes the stream before either is touched again.
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(scratch.schedule, schedule.data(),

@@ -19,6 +19,8 @@ import free_breakfast.core.resources;
 import free_breakfast.experimental.sort.merge;
 import free_breakfast.experimental.sort.radix;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -151,7 +153,7 @@ void expect_same(const Values &got, const Values &want) {
 
 TEST(MergeSortGpu, MatchesTotalOrderOnRandomBits) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const std::int32_t n : sizes()) {
     SCOPED_TRACE(std::format("n = {}", n));
     const Keys in = random_bit_keys(static_cast<std::size_t>(n), 5678U + n);
@@ -164,7 +166,7 @@ TEST(MergeSortGpu, MatchesTotalOrderOnRandomBits) {
 
 TEST(MergeSortGpu, MatchesStdSortOnFiniteValues) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::int32_t n = 50'000;
   std::mt19937_64 gen{78};
   std::uniform_real_distribution<double> mantissa{-1.0, 1.0};
@@ -183,7 +185,7 @@ TEST(MergeSortGpu, MatchesStdSortOnFiniteValues) {
 // NaNs of largest payload at either end, then radix_sort's list.
 TEST(MergeSortGpu, SpecialValuesInTotalOrder) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   constexpr double kMax = std::numeric_limits<double>::max();
   constexpr double kMinNormal = std::numeric_limits<double>::min();
   constexpr double kMinSubnormal = std::numeric_limits<double>::denorm_min();
@@ -200,7 +202,7 @@ TEST(MergeSortGpu, SpecialValuesInTotalOrder) {
 // Already sorted, reversed, and all equal.
 TEST(MergeSortGpu, OrderedInputs) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::int32_t n = 20'000;
   Keys ascending(static_cast<std::size_t>(n));
   for (std::size_t i = 0; i < ascending.size(); ++i) {
@@ -219,7 +221,7 @@ TEST(MergeSortGpu, OrderedInputs) {
 // values must be exactly std::stable_sort's permutation.
 TEST(MergeSortGpu, CarriesValuesStably) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::array<double, 8> kDistinct{-kInf, -2.5, -0.0, 0.0, 1e-300, 7.0, kNaN, kHighestNaN};
   for (const std::int32_t n : sizes()) {
     SCOPED_TRACE(std::format("n = {}", n));
@@ -250,7 +252,7 @@ TEST(MergeSortGpu, CarriesValuesStably) {
 
 TEST(MergeSortGpu, EmptyIsANoOp) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   EXPECT_TRUE(fb::merge_sort(res, 0, nullptr));
   EXPECT_TRUE(fb::merge_sort(res, -3, nullptr, nullptr));
   EXPECT_TRUE(fb::cub_merge_sort(res, 0, nullptr));
@@ -261,7 +263,7 @@ TEST(MergeSortGpu, EmptyIsANoOp) {
 // comparator.
 TEST(MergeSortGpu, AgreesWithRadixAndVendorMergeSorts) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const std::int32_t n : sizes()) {
     SCOPED_TRACE(std::format("n = {}", n));
     Keys in = random_bit_keys(static_cast<std::size_t>(n), 8765U + n);

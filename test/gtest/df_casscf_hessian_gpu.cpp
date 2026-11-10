@@ -38,6 +38,8 @@ import free_breakfast.mcscf;
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.hessian;
 
+#include "test_workspaces.h"
+
 // After the imports: it names std, wwr and Device from this unit's imports.
 #include "pool_footprint.h"
 
@@ -153,7 +155,7 @@ protected:
       }
     }
     ASSERT_FALSE(case_.is_null()) << "no case " << name;
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     fb::DeviceResources &res = *res_;
     std::vector<fb::Atom> atoms;
     for (const auto &atom : case_["atoms"]) {
@@ -432,9 +434,9 @@ TEST_F(HessianDfCasscf, ExcitedRootIsRefused) {
 // measured, with @p live allocations live at its peak.
 template <class Call>
 void expect_fixed_footprint(const fb::MemoryFootprint &fp, const std::size_t live, Call &&call) {
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   call(res);
-  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
   const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { call(res); });
   std::cout << std::format("[ footprint ] measured {}, footprint {} + workspace {}\n", peak.used,
                            fp.device.persistent + fp.device.scratch, fp.device.workspace);
@@ -454,17 +456,17 @@ void expect_least_footprint(const fb::MemoryFootprint &fp, const std::size_t liv
                             const std::size_t room, Call &&call) {
   std::size_t held = 0;
   {
-    fb::DeviceResources probe{0};
+    fb::DeviceResources probe{0, fp};
     call(probe, 0);
     ASSERT_TRUE(probe.sync());
-    EXPECT_EQ(probe.device_workspace(0).num_elements(), fp.device.workspace);
+    EXPECT_EQ(probe.workspace_high_water().device.workspace, fp.device.workspace);
     held = probe.device()->pool_usage().used_current;
   }
   std::size_t least = 0;
   for (const std::size_t run : {0, 1}) {
     const std::uint64_t cap = held + fb::kPoolHeadroomBytes + fp.device.persistent +
                               fp.device.scratch + (run == 0 ? 0 : room);
-    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    fb::DeviceResources res{0, fp, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
     call(res, run);
     if (run == 0) {
       const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { call(res, 0); });

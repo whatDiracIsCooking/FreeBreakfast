@@ -16,6 +16,8 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.localization.pipek_mezey;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -199,7 +201,7 @@ class PipekMezeyGpu : public ::testing::TestWithParam<fb::localization::PmExpone
 
 TEST_P(PipekMezeyGpu, RotatesWithinTheSpanAndReportsTheHostFunctional) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = mixed_model();
   const auto p = static_cast<std::int32_t>(GetParam());
@@ -223,7 +225,7 @@ TEST(PipekMezeyGpuEdges, SeparatedCentresLocalizeOntoSingleAtoms) {
   // S ~ I and as many orbitals as atoms: the maximum puts each orbital wholly
   // on one atom, L = n_occ.
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = make_model({{0}, {0}, {0}, {0}, {0}}, 5, 40.0);
   const Localized run = localize(res, m);
@@ -303,7 +305,7 @@ localize_ring(fb::DeviceResources &res, fb::localization::PmExponent exponent) {
 
 TEST(PipekMezeyGpuDegeneracy, P2ReachesOneValueByManyLocalizations) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const auto [values, fingerprints] = localize_ring(res, fb::localization::PmExponent::Two);
   ASSERT_FALSE(values.empty());
@@ -316,7 +318,7 @@ TEST(PipekMezeyGpuDegeneracy, P2ReachesOneValueByManyLocalizations) {
 
 TEST(PipekMezeyGpuDegeneracy, P4PicksOneLocalization) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const auto [values, fingerprints] = localize_ring(res, fb::localization::PmExponent::Four);
   ASSERT_FALSE(values.empty());
@@ -328,7 +330,7 @@ TEST(PipekMezeyGpuDegeneracy, P4PicksOneLocalization) {
 
 TEST(PipekMezeyGpuEdges, OneOrbitalPassesThrough) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = make_model({{0, 1}, {0}}, 1, 0.6);
   const Localized run = localize(res, m);
@@ -341,7 +343,7 @@ TEST(PipekMezeyGpuEdges, OneOrbitalPassesThrough) {
 
 TEST(PipekMezeyGpuEdges, NoOrbitalsIsANoOp) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = make_model({{0}, {0}}, 0, 0.6);
   const Localized run = localize(res, m);
@@ -352,7 +354,7 @@ TEST(PipekMezeyGpuEdges, NoOrbitalsIsANoOp) {
 
 TEST(PipekMezeyGpuEdges, TheSweepCapIsMaxIterationsExceededWithTheLastSweepWritten) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = mixed_model();
   // A tolerance of 0 cannot be met: |change| < 0 is never true.
@@ -364,7 +366,7 @@ TEST(PipekMezeyGpuEdges, TheSweepCapIsMaxIterationsExceededWithTheLastSweepWritt
 
 TEST(PipekMezeyGpuEdges, RefusesMalformedRequests) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = mixed_model();
   const auto occ = static_cast<std::size_t>(m.n_occ);

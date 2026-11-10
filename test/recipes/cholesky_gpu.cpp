@@ -12,6 +12,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -85,7 +87,7 @@ TEST_P(Cholesky, MatchesTheHostFactorAndLeavesTheUpperTriangle) {
   const std::vector<double> a = random_spd(n);
   const std::vector<double> want = host_cholesky(a, m);
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto [info, got] = factor(res, n, a);
   ASSERT_EQ(info, 0);
   double worst = 0.0;
@@ -118,7 +120,7 @@ TEST(CholeskyRepeat, IsBitwiseRepeatable) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kN = 116;
   const std::vector<double> a = random_spd(kN);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto [info0, first] = factor(res, kN, a);
   ASSERT_EQ(info0, 0);
   for (std::int32_t rep = 0; rep < 50; ++rep) {
@@ -141,7 +143,7 @@ TEST(CholeskyFlag, NamesTheFirstMinorThatIsNotPositive) {
   FBF_REQUIRE_GPU();
   constexpr std::int32_t kN = 150;
   const auto m = static_cast<std::size_t>(kN);
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const std::size_t broken : {std::size_t{10}, std::size_t{64}, std::size_t{100}}) {
     std::vector<double> a = random_spd(kN);
     a[broken + (m * broken)] = -a[broken + (m * broken)];
@@ -152,7 +154,7 @@ TEST(CholeskyFlag, NamesTheFirstMinorThatIsNotPositive) {
 
 TEST(CholeskyFlag, EmptyIsZeroAndNegativeIsInvalid) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Result<std::int32_t> empty = fb::cholesky(res, 0, nullptr);
   ASSERT_TRUE(empty.has_value());
   EXPECT_EQ(*empty, 0);

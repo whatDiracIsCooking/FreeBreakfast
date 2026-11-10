@@ -21,6 +21,8 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -146,7 +148,7 @@ TEST_P(OneElectronGolden, KineticMatchesLibcint) {
   FBF_REQUIRE_GPU();
   const Golden g = read_golden(GetParam());
   ASSERT_FALSE(g.kin.empty());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_matches(device_build(res, g, Build::Kinetic), g.kin, g.basis.nao_cart(), "T");
 }
 
@@ -154,7 +156,7 @@ TEST_P(OneElectronGolden, NuclearAttractionMatchesLibcint) {
   FBF_REQUIRE_GPU();
   const Golden g = read_golden(GetParam());
   ASSERT_FALSE(g.nuc.empty());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_matches(device_build(res, g, Build::Nuclear), g.nuc, g.basis.nao_cart(), "V");
 }
 
@@ -162,7 +164,7 @@ TEST_P(OneElectronGolden, CoreHamiltonianMatchesPyscf) {
   FBF_REQUIRE_GPU();
   const Golden g = read_golden(GetParam());
   ASSERT_FALSE(g.hcore.empty());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   expect_matches(device_build(res, g, Build::Core), g.hcore, g.basis.nao_cart(), "H");
 }
 
@@ -186,7 +188,7 @@ class OneElectronBuild : public ::testing::TestWithParam<Build> {};
 
 TEST_P(OneElectronBuild, ZeroesTheMatrixFirst) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis = one_shell(0);
   const fb::Molecule molecule = one_hydrogen(res);
   fb::CartesianMatrixAO m(res, basis);
@@ -213,7 +215,7 @@ TEST_P(OneElectronBuild, ZeroesTheMatrixFirst) {
 
 TEST_P(OneElectronBuild, RefusesAClassAboveF) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis = one_shell(fb::kOneElectronMaxL + 1);
   const auto device = fb::primitive_pair_classes(res, basis);
   ASSERT_TRUE(device);

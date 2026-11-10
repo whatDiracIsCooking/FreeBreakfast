@@ -18,6 +18,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.basis_set;
 import free_breakfast.pipeline.overlap;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -53,7 +55,7 @@ fb::Result<fb::OverlapOutput> step_overlap(fb::DeviceResources &res,
 
 TEST(PipelineOverlap, MatchesOverlapThenCartesianToSpherical) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Vec<double, 3> a{0.0, 0.0, 0.0};
   const fb::Vec<double, 3> b{0.0, 0.3, 1.4};
   // s + p on one centre, d + s on another: nao_cart = 11, nao_sphe = 10.
@@ -78,7 +80,7 @@ TEST(PipelineOverlap, MatchesOverlapThenCartesianToSpherical) {
 
 TEST(PipelineOverlap, NpyHoldsTheStepsS) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("pipeline_overlap");
   const fb::Vec<double, 3> a{0.0, 0.0, 0.0};
   const fb::Vec<double, 3> b{0.0, 0.3, 1.4};
@@ -120,7 +122,7 @@ constexpr std::string_view kSinglePrimitiveBasis = R"({
 
 TEST(PipelineOverlap, NormalizedBasisHasUnitDiagonal) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("pipeline_overlap");
   const auto path = dir / "basis.json";
   ASSERT_TRUE(fb::write_file(path, kSinglePrimitiveBasis).has_value());

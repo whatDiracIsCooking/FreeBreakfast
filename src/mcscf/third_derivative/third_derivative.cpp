@@ -175,7 +175,8 @@ Result<ThirdDerivative> ThirdDerivative::create(
   {
     const auto nx = static_cast<size_t>(naux);
     // Only BLAS runs while they live, which takes no workspace.
-    const auto [half, full] = res.device_regions<double>(nx * mo * mo, nx * mo * mo);
+    const auto [half, full] =
+        FBF_TRY(res.device_regions<double>("mcscf::add_occupied_rdms", nx * mo * mo, nx * mo * mo));
     FBF_TRY(gpu_status(gemm(res.blas(), naux * nmo, nmo, nmo, &kOne<double>, b.data(), c.data(),
                             &kZero<double>, half)));
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(

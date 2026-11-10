@@ -147,7 +147,8 @@ Status Rdm::rdm12(DeviceResources &res, const std::span<const double> weights,
   // The workspace: M, then one chunk of D.
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  const auto [m, d] = res.device_regions<double>(nn * nn, static_cast<size_t>(chunk) * nn);
+  const auto [m, d] = FBF_TRY(
+      res.device_regions<double>("ci::Rdm::rdm12", nn * nn, static_cast<size_t>(chunk) * nn));
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(m, 0, sizeof(double) * nn * nn, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(gamma, 0, sizeof(double) * nn, stream)));
 
@@ -183,7 +184,8 @@ Status Rdm::trans_rdm1(DeviceResources &res, const double *const bra, const doub
   const auto chunk = static_cast<int32_t>(rdm_chunk_rows(nn, static_cast<size_t>(rows), 1));
 
   const ScopedDeviceIndex on{res.dev_idx()};
-  const auto [d] = res.device_regions<double>(static_cast<size_t>(chunk) * nn);
+  const auto [d] =
+      FBF_TRY(res.device_regions<double>("ci::Rdm::trans_rdm1", static_cast<size_t>(chunk) * nn));
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(gamma, 0, sizeof(double) * nn, res.stream())));
   // γ^IJ_tu = Σ_K ⟨bra| E_tu |K⟩ ket_K = (D_braᵀ ket)_tu, chunk by chunk; in
   // the symmetric layout the √2 of each off-diagonal row of D meets the
@@ -210,8 +212,9 @@ Status Rdm::trans_rdm12(DeviceResources &res, const double *const bra, const dou
   // The workspace: M, then a chunk of D_bra and one of D_ket.
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  const auto [m, d_bra, d_ket] = res.device_regions<double>(
-      nn * nn, static_cast<size_t>(chunk) * nn, static_cast<size_t>(chunk) * nn);
+  const auto [m, d_bra, d_ket] = FBF_TRY(
+      res.device_regions<double>("ci::Rdm::trans_rdm12", nn * nn, static_cast<size_t>(chunk) * nn,
+                                 static_cast<size_t>(chunk) * nn));
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(m, 0, sizeof(double) * nn * nn, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(gamma, 0, sizeof(double) * nn, stream)));
 

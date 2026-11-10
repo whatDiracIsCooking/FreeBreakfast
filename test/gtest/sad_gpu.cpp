@@ -13,6 +13,8 @@ import free_breakfast.molecule;
 import free_breakfast.basis;
 import free_breakfast.sad;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -36,7 +38,7 @@ fb::Molecule water(fb::DeviceResources &res) {
 
 TEST(Sad, DensityOverPlacedWaterIsBlockDiagonalInTheSphericalLayout) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule = water(res);
   auto basis = fb::place(water_stamp(), molecule);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
@@ -67,7 +69,7 @@ TEST(Sad, DensityOverPlacedWaterIsBlockDiagonalInTheSphericalLayout) {
 
 TEST(Sad, BasisPlacedOverAnotherMoleculeIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule = water(res);
   const fb::Molecule oh(res,
                         {Atom{{0.0, 0.0, 0.0}, Element::O}, Atom{{0.0, 0.0, 1.8}, Element::H}});

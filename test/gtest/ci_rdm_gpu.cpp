@@ -17,6 +17,8 @@ import free_breakfast.io.json;
 import free_breakfast.ci;
 import free_breakfast.test.ci_oracles;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -278,7 +280,7 @@ void check_symmetric(fb::DeviceResources &res, const fb::ci::DeviceStringSet &se
 
 TEST(CiRdm12Gpu, MatchesDirectSpin1) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto doc = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
   ASSERT_TRUE(doc.has_value()) << doc.error().message;
   const fb::json &cases = (*doc)["cases"];
@@ -320,7 +322,7 @@ TEST(CiRdm12Gpu, MatchesDirectSpin1) {
 // closed shells, an empty spin, a full one, a single orbital and N_α < N_β.
 TEST(CiRdm12Gpu, MatchesHostOnRandomSectors) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   struct Sector {
     std::int32_t n, n_alpha, n_beta;
   };
@@ -342,7 +344,7 @@ TEST(CiRdm12Gpu, MatchesHostOnRandomSectors) {
 // one or two roots stored, symmetric to roundoff.
 TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullOnDirectSpin1) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   auto doc = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
   ASSERT_TRUE(doc.has_value()) << doc.error().message;
   std::int32_t golden = 0;
@@ -381,7 +383,7 @@ TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullOnDirectSpin1) {
 // orbital.
 TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullOnRandomVectors) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::array<double, 3> weights{0.5, 0.3, 0.2};
   for (const auto [n, electrons] :
        {std::pair{6, 3}, std::pair{7, 2}, std::pair{8, 4}, std::pair{5, 0}, std::pair{5, 5},
@@ -399,7 +401,7 @@ TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullOnRandomVectors) {
 TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullAcrossChunks) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto set = fb::ci::DeviceStringSet::create(res, 11, 5);
   ASSERT_TRUE(set.has_value());
   const auto m = static_cast<std::size_t>(set->size());
@@ -413,7 +415,7 @@ TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullAcrossChunks) {
 TEST(CiRdm12Gpu, MatchesHostAcrossChunks) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto set = fb::ci::DeviceStringSet::create(res, 11, 4);
   ASSERT_TRUE(set.has_value());
   const std::size_t dim =
@@ -425,7 +427,7 @@ TEST(CiRdm12Gpu, MatchesHostAcrossChunks) {
 
 TEST(CiRdm12Gpu, Refuses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const auto four = fb::ci::DeviceStringSet::create(res, 4, 2);
   const auto five = fb::ci::DeviceStringSet::create(res, 5, 2);
   const auto none = fb::ci::DeviceStringSet::create(res, 0, 0);

@@ -28,6 +28,8 @@ import free_breakfast.integrals.active_space;
 import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.nevpt2;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -175,7 +177,7 @@ protected:
       }
     }
 
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     const auto &dev = res_->device();
     blocks_.emplace(nevpt2::MoBlocks{.naux = static_cast<std::int32_t>(naux),
                                      .ncore = static_cast<std::int32_t>(nc),
@@ -328,7 +330,7 @@ TEST(Nevpt2DensityFitting, MoBlocksMatchCasscfIntegrals) {
   FBF_REQUIRE_GPU();
   const DfCase g = read_df_case();
   ASSERT_GT(g.naux, 0);
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
 
   std::vector<fb::Atom> atoms;
   for (const auto &atom : g.entry["atoms"]) {
@@ -501,7 +503,7 @@ class Nevpt2DensityFittingAdjoint : public ::testing::Test {
 protected:
   void SetUp() override {
     FBF_REQUIRE_GPU();
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     const std::size_t n = kAdjNaux * std::size_t{kAdjNmo} * kAdjNmo;
     b_ = random_vector(n, 556);
     b_dot_ = random_vector(n, 557);
@@ -750,7 +752,7 @@ TEST_F(Nevpt2DensityFittingAdjoint, AdjointsAccumulateOntoOneLambda) {
 
 TEST(Nevpt2DensityFittingRefusals, BatchOutsideTheExtentAndTooManyOrbitalsAreInvalid) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const auto &dev = res.device();
   constexpr std::int32_t kNaux = 3;
   constexpr std::int32_t kNcore = 2;

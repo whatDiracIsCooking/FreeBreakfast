@@ -26,6 +26,8 @@ import free_breakfast.cis.precondition;
 import free_breakfast.cis.ris_precondition;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
+#include "test_workspaces.h"
+
 import free_breakfast.recipes.lu; // getrf_lwork
 
 #include "pool_footprint.h"
@@ -55,7 +57,7 @@ constexpr double kClamp = 1e-3;
 // cis_step_gpu.cpp's), nothing past it.
 struct Setup {
   fb::test::ScratchDir dir{"cis_ris_precondition"};
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   std::optional<fb::Calculation> calc;
 };
 
@@ -465,7 +467,7 @@ TEST(CisRisPrecondition, Footprint) {
     const auto aux =
         cis::ris_basis(calc.get<fb::MoleculeOutput>()->molecule.atoms(), ris.theta, ris.shells);
     ASSERT_TRUE(aux) << aux.error().message;
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
     const auto lwork = fb::getrf_lwork(res, static_cast<std::int32_t>(aux->nao_sphe()));
     ASSERT_TRUE(lwork) << lwork.error().message;
     const fb::MemoryFootprint fp =
@@ -476,7 +478,7 @@ TEST(CisRisPrecondition, Footprint) {
       EXPECT_TRUE((*precondition)(res, theta, nullptr, d_r.data(), d_z.data()));
     };
     run();
-    EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+    EXPECT_EQ(res.workspace_high_water().device.workspace, fp.device.workspace);
     fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), run),
                           {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
                           (ris.exchange ? 11 : 8) + 2 + 1 + 4);

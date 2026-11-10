@@ -57,7 +57,7 @@ Status nonsymmetric_jk(DeviceResources &res, const std::span<CoulombPairClass> j
   const size_t bytes = sizeof(double) * density.num_elements();
   const double *const d = density.data();
   // K[A], then K[D]. Neither build takes the workspace.
-  const auto [w] = res.device_regions<double>(density.num_elements());
+  const auto [w] = FBF_TRY(res.device_regions<double>("nonsymmetric_jk", density.num_elements()));
 
   // g = A = (D - D^T)/2; k = K[A], held in w.
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, n,

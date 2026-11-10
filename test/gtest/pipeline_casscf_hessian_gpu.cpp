@@ -45,6 +45,8 @@ import free_breakfast.io.npy;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
+#include "test_workspaces.h"
+
 import free_breakfast.recipes; // gemmwich, orthogonalize, gemm
 
 #include "scratch_dir.h"
@@ -211,7 +213,7 @@ void expect_relaxed_fd(std::string_view name, std::string_view active,
   auto read =
       fb::read_config(write_config(dir, entry, active, method, root), dir.path(), dir / "out");
   ASSERT_TRUE(read.has_value()) << read.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::Calculation calc = std::move(*read);
   const auto t0 = std::chrono::steady_clock::now();
   const fb::Status status = calc.run(node);
@@ -318,7 +320,7 @@ TEST(PipelineCasscfHessian, StateAveragedRootAnalyticMatchesNumerical) {
   ASSERT_TRUE(calc.has_value());
   const auto &analytic = calc->get<fb::HessianOutput>();
   ASSERT_TRUE(analytic.has_value()) << analytic.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto numerical = rerun_hessian(*calc, fb::HessianMethod::Numerical, node);
   ASSERT_TRUE(numerical.has_value()) << numerical.error().message;
   const std::size_t n = 3 * reference_case("h2o_631g_sa2").at("atoms").size();
@@ -367,7 +369,7 @@ TEST(PipelineCasscfHessian, OptimizedWaterAnalyticFrequenciesMatchNumerical) {
   ASSERT_TRUE(read.has_value()) << read.error().message;
   fb::Calculation calc = std::move(*read);
   ASSERT_EQ(calc.step<fb::HessianStep>()->method, fb::HessianMethod::Analytic);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto t0 = std::chrono::steady_clock::now();
   const fb::Status ran = calc.run(node);
   const double seconds =
@@ -459,7 +461,7 @@ void expect_ci_guess_matches(std::string_view name, std::string_view active) {
   const fb::test::ScratchDir dir(std::format("pipeline_casscf_hessian_ci_guess_{}", name));
   auto read = fb::read_config(write_config(dir, entry, active, ""), dir.path(), dir / "out");
   ASSERT_TRUE(read.has_value()) << read.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
   fb::Calculation calc = std::move(*read);
   const fb::Status status = calc.run(node);
@@ -637,7 +639,7 @@ TEST(PipelineCasscfHessian, AnUnconvergedCasscfIsRefused) {
   fb::HessianStep step = *read->step<fb::HessianStep>();
   step.casscf.max_cycle = 2;
   step.json_path.clear();
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::DeviceResources &res = node.device(0);
   auto molecule = fb::MoleculeStep{.xyz = dir / "molecule.xyz"}.run(fb::View<>{}, res);
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;

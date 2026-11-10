@@ -30,6 +30,8 @@ import free_breakfast.nevpt2;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -176,7 +178,7 @@ State build_state(const StateSpec &spec) {
   if (!calc.has_value()) {
     return State{};
   }
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   EXPECT_TRUE(ran.has_value()) << ran.error().message;
   if (!ran.has_value()) {
@@ -553,7 +555,7 @@ ProductCase make_case(fb::DeviceResources &res) {
 // parts' sum against the product.
 TEST(Nevpt2HessianProduct, MatchesLadder) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const ProductCase u = make_case(res);
   ASSERT_FALSE(u.z.empty());
   const State &s = *u.s;
@@ -646,7 +648,7 @@ TEST(Nevpt2HessianProduct, MatchesLadder) {
 // empty perturber: on this case, none, so the product is the one without.
 TEST(Nevpt2HessianProduct, PartnersChangeNothingWithoutEmptyPerturbers) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const ProductCase u = make_case(res);
   ASSERT_FALSE(u.z.empty());
   auto alone = u.product(res);
@@ -682,7 +684,7 @@ TEST(Nevpt2HessianProduct, PartnersChangeNothingWithoutEmptyPerturbers) {
 
 TEST(Nevpt2HessianProduct, Refuses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const ProductCase u = make_case(res);
   ASSERT_FALSE(u.z.empty());
   const auto refused = [](const fb::Result<nevpt2::ScHessianProduct> &got,
@@ -1017,7 +1019,7 @@ TEST_P(Nevpt2PcHessianProduct, MatchesLadder) {
     // A CASSCF(6,6) and sixty PC adjoints (README), past slow_test.h's rule.
     FBF_SKIP_IF_FAST_TESTS();
   }
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const bool twist = which == "psb3_twist_sto3g";
   const State &s = twist ? psb3_state() : state();
   ASSERT_FALSE(s.b.empty());
@@ -1204,7 +1206,7 @@ constexpr double kHcnLadderFloor = 1e-6;
 TEST(Nevpt2PcHessianProduct, SymmetricLiftReported) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const State &s = symmetric_state();
   ASSERT_FALSE(s.b.empty());
   const fb::ci::DeviceStringSet strings = strings_of(res, s);
@@ -1322,7 +1324,7 @@ std::vector<double> shifted_h(const State &s, std::span<const std::size_t> orbit
 // (#974); the product passes the same ladder.
 TEST(Nevpt2PcHessianProduct, DegenerateInactivePair) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const State &s = state();
   ASSERT_FALSE(s.b.empty());
   const auto nmo = static_cast<std::size_t>(s.nao);

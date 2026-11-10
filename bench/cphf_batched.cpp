@@ -28,6 +28,12 @@ namespace {
 
 namespace fb = free_breakfast;
 
+// The workspaces this benchmark's DeviceResources hold, sized at
+// construction (src/core/resources/README.md): 1 GiB on the device and 64 MiB
+// pinned, past what any of its runs borrows.
+constexpr fb::MemoryFootprint kWorkspaces{.device = {.workspace = std::size_t{1} << 30},
+                                          .pinned = {.workspace = std::size_t{64} << 20}};
+
 using Clock = std::chrono::steady_clock;
 
 constexpr std::int32_t kCarbons = 10;
@@ -97,7 +103,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   if (!calc) {
     fail("config", calc.error());
   }
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = kWorkspaces}};
   if (const fb::Status ran = calc->run(node); !ran) {
     fail("scf", ran.error());
   }

@@ -77,7 +77,8 @@ Status occupied_atom_block(DeviceResources &res, const BasisSet &basis,
     // W[k][m][P][j] = Sum_n X[k][m][n][P] C_nj, at P + nblk (j + nocc (m +
     // nao k)): one gemm per (k, m), each X block nblk x nao.
     const auto blk = static_cast<int32_t>(nblk);
-    auto [w] = res.device_regions<double>(3 * nao * nblk * occ);
+    auto [w] =
+        FBF_TRY(res.device_regions<double>("hessian::occupied_atom_block", 3 * nao * nblk * occ));
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
         blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, blk, nocc, n, &kOne<double>, x, blk,
         static_cast<int64_t>(nblk * nao), c_occ, n, 0, &kZero<double>, w, blk,

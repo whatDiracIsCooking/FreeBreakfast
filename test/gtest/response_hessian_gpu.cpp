@@ -34,6 +34,8 @@ import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
 import free_breakfast.core.nontransferrable;
 
+#include "test_workspaces.h"
+
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
 
@@ -196,7 +198,7 @@ fb::CasciStep casci_step(const fb::json &entry) {
 // Everything response::fock and response::Hessian read, from one converged SCF,
 // and with a CASCI, its orbitals and the weighted RDMs of its roots.
 struct Setup {
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   std::optional<fb::Calculation> calc;
   const fb::Molecule *molecule = nullptr;
   const fb::BasisSet *basis = nullptr;

@@ -22,6 +22,8 @@ import free_breakfast.core.resources;
 import free_breakfast.experimental.fp16_gemm;
 import wwr.fp16;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -117,7 +119,7 @@ void expect_within_bound(const Shape s, const std::vector<Half> &a, const std::v
 
 void check_shapes(const fb::Fp16Accumulate accumulate, const double unit) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res;
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const Shape s : shapes()) {
     SCOPED_TRACE(std::format("m = {}, n = {}, k = {}", s.m, s.n, s.k));
     const auto a = random_half(static_cast<std::size_t>(s.m) * static_cast<std::size_t>(s.k),

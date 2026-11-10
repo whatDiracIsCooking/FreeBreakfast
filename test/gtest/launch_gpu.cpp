@@ -11,13 +11,15 @@ import free_breakfast.core.resources;
 import free_breakfast.molecule;
 import free_breakfast.integrals;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
 
 TEST(CheckNuclei, AcceptsNucleiOnTheCallsDevice) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule molecule(res, {fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, fb::Element::H}});
   EXPECT_TRUE(fb::check_nuclei(res, molecule, "test"));
 }

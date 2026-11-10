@@ -40,6 +40,8 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
 
+#include "test_workspaces.h"
+
 #include "mcscf_setup.h"
 #include "scratch_dir.h"
 
@@ -155,7 +157,7 @@ fb::CasciStep casci_step(const fb::json &entry) {
 
 // Everything mcscf::solve reads, from one converged SCF, and the start.
 struct Setup {
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   std::optional<fb::Calculation> calc;
   const fb::Molecule *molecule = nullptr;
   const fb::BasisSet *basis = nullptr;

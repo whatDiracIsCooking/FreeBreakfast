@@ -15,6 +15,8 @@ import free_breakfast.io.npy;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.spherical_transform;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -34,7 +36,7 @@ std::vector<double> download(fb::DeviceResources &res, const fb::Buffers::device
 
 TEST(PipelineSphericalTransform, MatchesUploadSphericalTransformMatrix) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   // s + p + d: nao_cart = 10, nao_sphe = 9.
   const fb::BasisSetOutput basis{
       fb::BasisSet({fb::Shell(0, {{3.42, 0.15}}, kOrigin), fb::Shell(1, {{0.62, 1.0}}, kOrigin),
@@ -53,7 +55,7 @@ TEST(PipelineSphericalTransform, MatchesUploadSphericalTransformMatrix) {
 
 TEST(PipelineSphericalTransform, NoTransformBelowD) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSetOutput basis{
       fb::BasisSet({fb::Shell(0, {{1.0, 1.0}}, kOrigin), fb::Shell(1, {{1.0, 1.0}}, kOrigin)})};
 
@@ -64,7 +66,7 @@ TEST(PipelineSphericalTransform, NoTransformBelowD) {
 
 TEST(PipelineSphericalTransform, NpyHoldsTheStepsU) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("pipeline_spherical_transform");
   // s + p + d + f: nao_cart = 20, nao_sphe = 16.
   const fb::BasisSetOutput basis{
@@ -83,7 +85,7 @@ TEST(PipelineSphericalTransform, NpyHoldsTheStepsU) {
 
 TEST(PipelineSphericalTransform, NpyIsTheIdentityBelowD) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::test::ScratchDir dir("pipeline_spherical_transform_identity");
   const fb::BasisSetOutput basis{
       fb::BasisSet({fb::Shell(0, {{1.0, 1.0}}, kOrigin), fb::Shell(1, {{1.0, 1.0}}, kOrigin)})};

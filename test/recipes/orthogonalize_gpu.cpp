@@ -12,6 +12,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -91,9 +93,9 @@ struct Orthogonalizer {
 TEST(Orthogonalize, EmptyOperandSucceedsWithoutTouchingAnything) {
   FBF_REQUIRE_GPU();
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   EXPECT_TRUE(fb::orthogonalize<double>(res, 0, nullptr, nullptr));
-  EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, 0U);
 }
 
 // syevd's work and M come from res's workspace, which grows with n: one DeviceResources serves
@@ -101,18 +103,18 @@ TEST(Orthogonalize, EmptyOperandSucceedsWithoutTouchingAnything) {
 TEST(Orthogonalize, GrowsTheResourcesWorkspaceWithTheOperand) {
   FBF_REQUIRE_GPU();
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
 
   Orthogonalizer<float> small{res, 4};
   small.upload(well_conditioned_spd<float>(4));
   ASSERT_TRUE(small());
-  const std::size_t small_bytes = res.device_workspace(0).num_elements();
+  const std::size_t small_bytes = res.workspace_high_water().device.workspace;
   EXPECT_GT(small_bytes, 0U);
 
   Orthogonalizer<double> large{res, 64};
   large.upload(well_conditioned_spd<double>(64));
   ASSERT_TRUE(large());
-  EXPECT_GT(res.device_workspace(0).num_elements(), small_bytes);
+  EXPECT_GT(res.workspace_high_water().device.workspace, small_bytes);
 }
 
 // A diagonal S's eigenvectors are the unit vectors, so X = diag(d^{-1/2}).
@@ -126,7 +128,7 @@ TEST(Orthogonalize, DiagonalOperandGivesTheInverseRootOfEachEntry) {
     s[i + i * kN] = d[static_cast<std::size_t>(i)];
   }
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   Orthogonalizer<double> run{res, kN};
   run.upload(s);
   ASSERT_TRUE(run());
@@ -145,7 +147,7 @@ void check_dense_orthogonalizer(T tolerance) {
   constexpr std::int32_t kN = 37; // not a multiple of any block size
   const auto s = well_conditioned_spd<T>(kN);
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   Orthogonalizer<T> run{res, kN};
   run.upload(s);
   ASSERT_TRUE(run());
@@ -193,7 +195,7 @@ TEST(Orthogonalize, SingularOperandDropsTheNullModeAndStaysFinite) {
     }
   }
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   Orthogonalizer<double> run{res, kN};
   run.upload(s);
   // A floor well above the rounding-level eigenvalue syevd returns for the

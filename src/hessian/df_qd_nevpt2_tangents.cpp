@@ -104,11 +104,6 @@ Result<QdNevpt2Tangents> df_qd_nevpt2_tangents(
   const std::vector<bool> rotates = response::rotating_pairs(weights);
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const auto ndet32 = static_cast<int32_t>(ndet);
-  // The workspace grown first to every call's, so that the budget each part
-  // reads is not taken again by a workspace's growth.
-  (void)res.device_workspace(df_qd_nevpt2_tangents_footprint(basis, aux, ncore, ncas, nalpha, nbeta,
-                                                             static_cast<int32_t>(nroots))
-                                 .device.workspace);
   const double *const vectors = solution.roots.vectors.data();
 
   // h_MO = C^T h C and the MO factor B_Q,pq = (C^T B_Q C)_pq at

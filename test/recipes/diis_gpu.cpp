@@ -12,6 +12,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -120,7 +122,7 @@ HostVector random_vector(std::mt19937 &gen, std::size_t len) {
 TEST(Diis, CapacityIsClampedToOneThroughTheLimit) {
   FBF_REQUIRE_GPU();
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   EXPECT_EQ(fb::Diis(res, 4, 0).capacity(), 1U);
   EXPECT_EQ(fb::Diis(res, 4, 6).capacity(), 6U);
   EXPECT_EQ(fb::Diis(res, 4, 1000).capacity(), fb::kDiisMaxHistoryLimit);
@@ -130,7 +132,7 @@ TEST(Diis, FirstPushLeavesTheOutputUntouched) {
   FBF_REQUIRE_GPU();
 
   constexpr std::size_t kLen = 9;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Diis diis{res, kLen, 4};
   Staging io{res, kLen};
   const HostVector sentinel(kLen, 42.0);
@@ -151,7 +153,7 @@ TEST(Diis, ExtrapolationMatchesAHostSolveThroughTheRingWrap) {
 
   constexpr std::size_t kLen = 37;
   constexpr std::size_t kCap = 4;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Diis diis{res, kLen, kCap};
   Staging io{res, kLen};
 
@@ -187,7 +189,7 @@ TEST(Diis, SingularSubspaceFallsBackToTheNewestFock) {
   FBF_REQUIRE_GPU();
 
   constexpr std::size_t kLen = 16;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Diis diis{res, kLen, 4};
   Staging io{res, kLen};
 
@@ -204,7 +206,7 @@ TEST(Diis, ResetDropsTheSubspace) {
   FBF_REQUIRE_GPU();
 
   constexpr std::size_t kLen = 8;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Diis diis{res, kLen, 3};
   Staging io{res, kLen};
 
@@ -269,7 +271,7 @@ TEST(Diis, LinearFixedPointConvergesWithinLenPlusOneSteps) {
     return y;
   };
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Diis diis{res, kLen, kLen + 2};
   Staging io{res, kLen};
 
@@ -296,7 +298,7 @@ TEST(Diis, OutputMayAliasTheCurrentFock) {
   FBF_REQUIRE_GPU();
 
   constexpr std::size_t kLen = 12;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   fb::Diis diis{res, kLen, 3};
   Staging io{res, kLen};
 

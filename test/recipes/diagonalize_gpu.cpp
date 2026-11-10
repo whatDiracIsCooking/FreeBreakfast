@@ -11,6 +11,8 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -64,20 +66,20 @@ struct Diagonalizer {
 TEST(Diagonalize, EmptyOperandSucceedsWithoutTouchingAnything) {
   FBF_REQUIRE_GPU();
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   EXPECT_TRUE(fb::diagonalize<double>(res, 0, nullptr, nullptr));
-  EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, 0U);
 }
 
 // syevd's work is res's workspace: the call grows it from empty.
 TEST(Diagonalize, TakesSyevdsWorkFromTheResourcesWorkspace) {
   FBF_REQUIRE_GPU();
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   Diagonalizer<float> run{res, 16};
   run.upload(random_symmetric<float>(16));
   ASSERT_TRUE(run());
-  EXPECT_GT(res.device_workspace(0).num_elements(), 0U);
+  EXPECT_GT(res.workspace_high_water().device.workspace, 0U);
 }
 
 // A diagonal A's eigenvalues are its diagonal, sorted, and its eigenvectors
@@ -92,7 +94,7 @@ TEST(Diagonalize, DiagonalOperandGivesItsSortedDiagonal) {
     a[i + i * kN] = d[static_cast<std::size_t>(i)];
   }
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   Diagonalizer<double> run{res, kN};
   run.upload(a);
   ASSERT_TRUE(run());
@@ -118,7 +120,7 @@ void check_dense_decomposition(T tolerance) {
   constexpr std::int32_t kN = 37; // not a multiple of any block size
   const auto a = random_symmetric<T>(kN);
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   Diagonalizer<T> run{res, kN};
   run.upload(a);
   ASSERT_TRUE(run());

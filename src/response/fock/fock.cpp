@@ -235,10 +235,12 @@ struct CasscfFockScratch {
   double *block;  // one projected nmo x nmo matrix, then 2 (F - F^T)
   double *paaa;   // (pu|vw) at p + nmo (u + ncas (v + ncas w)), nmo ncas^3
 
-  CasscfFockScratch(DeviceResources &res, const size_t n_cart, const size_t nmo,
-                    const size_t ncas) {
-    std::tie(c_cart, work, block, paaa) =
-        res.device_regions<double>(n_cart * nmo, n_cart * nmo, nmo * nmo, nmo * ncas * ncas * ncas);
+  // Carved from res's workspace, or the borrow's refusal.
+  static Result<CasscfFockScratch> carve(DeviceResources &res, const size_t n_cart,
+                                         const size_t nmo, const size_t ncas) {
+    const auto [c_cart, work, block, paaa] = FBF_TRY(res.device_regions<double>(
+        "response::fock", n_cart * nmo, n_cart * nmo, nmo * nmo, nmo * ncas * ncas * ncas));
+    return CasscfFockScratch{.c_cart = c_cart, .work = work, .block = block, .paaa = paaa};
   }
 };
 
@@ -282,7 +284,8 @@ Result<Fock> fock(DeviceResources &res, const BasisSet &basis, const Molecule &m
   CartesianMatrixAO density(res, basis);
   CartesianMatrixAO j(res, basis);
   CartesianMatrixAO k(res, basis);
-  const CasscfFockScratch scratch(res, n_cart, n_all, static_cast<size_t>(ncas));
+  const CasscfFockScratch scratch =
+      FBF_TRY(CasscfFockScratch::carve(res, n_cart, n_all, static_cast<size_t>(ncas)));
   const auto len_cart = static_cast<int32_t>(j.num_elements());
 
   FockBuild build =
@@ -368,9 +371,9 @@ Result<Fock> fock(DeviceResources &res, const Molecule &molecule, const Spherica
     FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, len_block, &kOne<double>, k.data(), 1,
                                                   build.out.fock_inactive.data(), 1)));
   }
-  const auto [block, paaa] =
-      res.device_regions<double>(nn, n_all * static_cast<size_t>(ncas) * static_cast<size_t>(ncas) *
-                                         static_cast<size_t>(ncas));
+  const auto [block, paaa] = FBF_TRY(res.device_regions<double>(
+      "response::fock", nn,
+      n_all * static_cast<size_t>(ncas) * static_cast<size_t>(ncas) * static_cast<size_t>(ncas)));
   return finish_fock(res, build, ncore, ncas, ppaa, papa, block, paaa);
 }
 

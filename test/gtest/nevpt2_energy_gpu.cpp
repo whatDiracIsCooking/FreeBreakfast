@@ -52,6 +52,8 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 #include "settled_rung.h"
 #include "stable_part.h"
@@ -290,7 +292,7 @@ TEST_P(Nevpt2EnergyPyscfRdms, ClassEnergiesMatchGolden) {
   FBF_REQUIRE_GPU();
   const auto [name, batch] = GetParam();
   const std::filesystem::path dir = kDataDir / name;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Integrals g = load_integrals(res, dir);
   ASSERT_TRUE(g.blocks.has_value());
   const auto rdm = [&](const char *array) {
@@ -365,7 +367,7 @@ TEST_P(Nevpt2EnergyDeviceRdms, ClassEnergiesMatchGolden) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const std::filesystem::path dir = kDataDir / c.name;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Integrals g = load_integrals(res, dir);
   ASSERT_TRUE(g.blocks.has_value());
   ASSERT_EQ(g.blocks->ncas, c.n);
@@ -445,7 +447,7 @@ TEST_P(Nevpt2PcInvariance, ActiveRotationLeavesEnergiesUnchanged) {
   FBF_REQUIRE_GPU();
   const std::string name = GetParam();
   const std::filesystem::path dir = kDataDir / name;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const auto run = [&](const std::vector<double> &u)
       -> std::optional<std::pair<nevpt2::ClassEnergies, nevpt2::PcClassEnergies>> {
     Integrals g = load_integrals(res, dir, u);
@@ -517,7 +519,7 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcInvariance,
 TEST(Nevpt2PcEnergy, ZeroMetricIsRefused) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / "n2_ccpvdz_cas44_df";
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   Integrals g = load_integrals(res, dir);
   ASSERT_TRUE(g.blocks.has_value());
   const auto n = static_cast<std::size_t>(g.blocks->ncas);
@@ -841,7 +843,7 @@ const std::string kAdjointCase = "n2_ccpvdz_cas88_df";
 TEST(Nevpt2EnergyAdjoint, Eq40AndEulerFromTheBars) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / kAdjointCase;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(dir);
   const auto got = run_adjoint(res, h, 0);
   ASSERT_TRUE(got.has_value());
@@ -929,7 +931,7 @@ TEST_P(Nevpt2EnergyAdjointLadder, BarsMatchRichardsonLadder) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const std::filesystem::path dir = kDataDir / kAdjointCase;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(dir);
   const HostCase dx = random_direction(h, group, 560);
   const auto got = run_adjoint(res, h, 0);
@@ -1007,7 +1009,7 @@ constexpr double kBatchedBarsTolerance = 1e-10;
 TEST(Nevpt2EnergyAdjoint, BatchedBarsMatchWhole) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / kAdjointCase;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(dir);
   const auto whole = run_adjoint(res, h, 0);
   const auto batched = run_adjoint(res, h, 3);
@@ -1085,7 +1087,7 @@ TEST_P(Nevpt2EnergyTangent, DualToTheBars) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const std::filesystem::path dir = kDataDir / name;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(dir);
   const auto adj = run_adjoint(res, h, 0);
   ASSERT_TRUE(adj.has_value());
@@ -1229,7 +1231,7 @@ TEST_P(Nevpt2EnergyHvp, BarsMatchRichardsonLadder) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const std::filesystem::path dir = kDataDir / kHvpCase;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(dir);
   const HostCase dx = random_direction(h, group, 811);
   const auto got = run_hvp(res, h, {dx}, {});
@@ -1356,7 +1358,7 @@ TEST(Nevpt2EnergyHvpEmpty, K6MatchesMixedLadderAndNonProportionalIsRefused) {
   // ~5 s on the RTX 3080 and ~12 s on the gfx1200, its family's one case:
   // 32 energies and two products.
   const std::filesystem::path dir = kDataDir / kHvpCase;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(dir);
   const HostCase u = random_direction(h, "all", 894);
   const HostCase v = displaced(symmetric_direction(h, 895), u, 0.5);
@@ -1449,7 +1451,7 @@ fb::Result<nevpt2::PcClassEnergies> pc_energies(fb::DeviceResources &res, const 
 TEST(Nevpt2PcEnergyAdjoint, HomogeneityAndEulerFromTheBars) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / kAdjointCase;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(dir);
   const auto got = run_pc_adjoint(res, h, 0);
   ASSERT_TRUE(got.has_value());
@@ -1582,7 +1584,7 @@ TEST_P(Nevpt2PcEnergyAdjointLadder, BarsMatchRichardsonLadder) {
   }
   const auto [name, group] = GetParam();
   const std::filesystem::path dir = kDataDir / name;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(dir);
   HostCase straight = random_direction(h, group, 561);
   const bool rotate_rdms = group == "rdm" || group == "all";
@@ -1661,7 +1663,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST(Nevpt2PcEnergyAdjoint, InactiveRotationsAreRoundOff) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / kAdjointCase;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   HostCase h = load_host_case(dir);
   for (std::vector<double> *e : {&h.e_core, &h.e_virt}) {
     const double mean = std::accumulate(e->begin(), e->end(), 0.0) / static_cast<double>(e->size());
@@ -1736,7 +1738,7 @@ TEST(Nevpt2PcEnergyAdjoint, InactiveRotationsAreRoundOff) {
 TEST(Nevpt2PcEnergyAdjoint, BatchedBarsMatchWhole) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / kAdjointCase;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(dir);
   const auto whole = run_pc_adjoint(res, h, 0);
   const auto batched = run_pc_adjoint(res, h, 3);
@@ -1766,7 +1768,7 @@ double intruder_shift(const nevpt2::PcMode &mode) {
 TEST(Nevpt2PcEnergyAdjoint, RefusesWhatTheEnergyRefuses) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / kAdjointCase;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase golden = load_host_case(dir);
   HostCase zero_rdms = golden;
   for (std::vector<double> *rdm :
@@ -1809,7 +1811,7 @@ TEST(Nevpt2PcEnergyAdjoint, RefusesWhatTheEnergyRefuses) {
 // shifted to put that mode at λ + Δ = -1e-6.
 TEST(Nevpt2PcEnergy, NegativeAndUncoupledNearPoleAccepted) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase golden = load_host_case(kDataDir / "n2_ccpvdz_cas44_df");
   const auto base = pc_energies(res, golden);
   ASSERT_TRUE(base.has_value());
@@ -2110,7 +2112,7 @@ class Nevpt2QdEnergyAdjointCases : public ::testing::TestWithParam<std::string> 
 
 TEST_P(Nevpt2QdEnergyAdjointCases, Eq40AndEulerFromTheBars) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase q = load_qd_case(kQdDataDir / GetParam());
   const std::vector<double> hbar = random_hbar(q.n, 698);
   const auto got = run_qd_adjoint(res, q, hbar, 0);
@@ -2162,7 +2164,7 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdEnergyAdjointCases,
 // bar, to the atomics' round-off (kBatchedBarsTolerance's floor), at H̄ = 1.
 TEST(Nevpt2QdEnergyAdjoint, OneStateIsClassEnergiesAdjoint) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase all = load_qd_case(kQdDataDir / kQdAdjointCase);
   const QdHostCase one{.n = 1, .shared = all.shared, .rdms = {all.rdms[0]}};
   const auto qd = run_qd_adjoint(res, one, {1.0}, 0);
@@ -2185,7 +2187,7 @@ TEST(Nevpt2QdEnergyAdjoint, OneStateIsClassEnergiesAdjoint) {
 // is the whole walk's to round-off.
 TEST(Nevpt2QdEnergyAdjoint, BatchedBarsMatchWhole) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase q = load_qd_case(kQdDataDir / kQdAdjointCase);
   const std::vector<double> hbar = random_hbar(q.n, 698);
   const auto whole = run_qd_adjoint(res, q, hbar, 0);
@@ -2247,7 +2249,7 @@ class Nevpt2QdEnergyAdjointLadder
 TEST_P(Nevpt2QdEnergyAdjointLadder, BarsMatchRichardsonLadder) {
   FBF_REQUIRE_GPU();
   const auto &[name, group] = GetParam();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase q = load_qd_case(kQdDataDir / name);
   const std::vector<double> hbar = random_hbar(q.n, 698);
   const QdHostCase dx = random_direction(q, group, 560);
@@ -2286,7 +2288,7 @@ INSTANTIATE_TEST_SUITE_P(
 // launched; malformed pairs are sc_effective_hamiltonian's refusals.
 TEST(Nevpt2QdEnergyAdjoint, MalformedInputsAreInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase q = load_qd_case(kQdDataDir / "h6_631g_sa2");
   ASSERT_EQ(q.n, 2U);
   QdDeviceCase g = upload_qd(res, q);
@@ -2325,7 +2327,7 @@ TEST(Nevpt2QdEnergyAdjoint, MalformedInputsAreInvalidConfig) {
 // (the forward's round-off at 1e-8 is ~2e-17 absolute, 1e-5 of it).
 TEST(Nevpt2EnergyOneFunction, CouplingIsLinearThroughAZeroAmplitude) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase q = load_qd_case(kQdDataDir / "h2co_ccpvdz_sa2");
   ASSERT_EQ(q.n, 2U);
   const QdHostCase dx = random_direction(q, "B", 949);
@@ -2361,7 +2363,7 @@ TEST(Nevpt2EnergyOneFunction, CouplingIsLinearThroughAZeroAmplitude) {
 // the Hessian-vector product symmetric, <v, HVP u> = <u, HVP v>.
 TEST(Nevpt2EnergyOneFunction, TangentAndHessianProductMatchTheBars) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   for (const auto &[name, state] : {std::pair{std::string{"h6_631g_sa2"}, std::size_t{0}},
                                     std::pair{std::string{"h2co_ccpvdz_sa2"}, std::size_t{1}}}) {
     const QdHostCase q = load_qd_case(kQdDataDir / name);
@@ -2449,7 +2451,7 @@ class Nevpt2PcQdEnergyAdjointCases : public ::testing::TestWithParam<std::string
 
 TEST_P(Nevpt2PcQdEnergyAdjointCases, HomogeneityAndEulerFromTheBars) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase q = load_qd_case(kQdDataDir / GetParam());
   const std::vector<double> hbar = random_hbar(q.n, 703);
   const auto got = run_pc_qd_adjoint(res, q, hbar, 0);
@@ -2514,7 +2516,7 @@ const std::string kPcQdAdjointCase = "h8_ring_sto3g_sa3";
 // 2.2e-11 (above).
 TEST(Nevpt2PcQdEnergyAdjoint, OneStateIsPcClassEnergiesAdjoint) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase all = load_qd_case(kQdDataDir / kPcQdAdjointCase);
   for (const std::size_t j : {std::size_t{0}, std::size_t{2}}) {
     const QdHostCase one{.n = 1, .shared = all.shared, .rdms = {all.rdms[(j * all.n) + j]}};
@@ -2544,7 +2546,7 @@ TEST(Nevpt2PcQdEnergyAdjoint, OneStateIsPcClassEnergiesAdjoint) {
 // them to its homogeneity sums.
 TEST(Nevpt2PcQdEnergyAdjoint, BatchedBarsMatchWhole) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase q = load_qd_case(kQdDataDir / kPcQdAdjointCase);
   const std::vector<double> hbar = random_hbar(q.n, 703);
   const auto whole = run_pc_qd_adjoint(res, q, hbar, 0);
@@ -2618,7 +2620,7 @@ class Nevpt2PcQdEnergyAdjointLadder
 TEST_P(Nevpt2PcQdEnergyAdjointLadder, BarsMatchRichardsonLadder) {
   FBF_REQUIRE_GPU();
   const auto &[name, group] = GetParam();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase q = load_qd_case(kQdDataDir / name);
   const std::size_t n = q.n;
   const std::size_t na = q.shared.na;
@@ -2702,7 +2704,7 @@ INSTANTIATE_TEST_SUITE_P(
 // state 0's strongest Sr mode an intruder (|y / (λ + Δ)| = 4).
 TEST(Nevpt2PcQdEnergyAdjoint, RefusesWhatTheEnergyRefuses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase golden = load_qd_case(kQdDataDir / "h8_sto3g_sa3");
   ASSERT_EQ(golden.n, 3U);
   QdHostCase zero_own = golden;
@@ -2743,7 +2745,7 @@ TEST(Nevpt2PcQdEnergyAdjoint, RefusesWhatTheEnergyRefuses) {
 // bars, or malformed pairs are InvalidConfig before anything is launched.
 TEST(Nevpt2PcQdEnergyAdjoint, MalformedInputsAreInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const QdHostCase q = load_qd_case(kQdDataDir / "h6_631g_sa2");
   ASSERT_EQ(q.n, 2U);
   QdDeviceCase g = upload_qd(res, q);
@@ -2874,7 +2876,7 @@ TEST_P(Nevpt2PcEnergyTangentNullModes, DualToTheBars) {
   FBF_REQUIRE_GPU();
   const std::int32_t batch = GetParam();
   const std::string name = "n2_ccpvdz_cas44_df";
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(kDataDir / name);
   const auto adj = run_pc_adjoint(res, h, 0);
   ASSERT_TRUE(adj.has_value());
@@ -2954,7 +2956,7 @@ HostCase superposition_case() {
 // smallest mode far from the cut.
 TEST(Nevpt2PcEnergyTangent, DualToTheBarsWithRealModesDropped) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = superposition_case();
   const auto adj = run_pc_adjoint(res, h, 0);
   ASSERT_TRUE(adj.has_value());
@@ -2997,7 +2999,7 @@ constexpr double kFloor = 1e-3;
 TEST(Nevpt2PcEnergyTangent, ConditioningFloorReadByEveryPass) {
   FBF_REQUIRE_GPU();
   const std::string name = "n2_ccpvdz_cas44_df";
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(kDataDir / name);
   const auto base = pc_energies(res, h);
   ASSERT_TRUE(base) << base.error().message;
@@ -3116,7 +3118,7 @@ const HostCase &psb3_twist() {
     if (!calc.has_value()) {
       return HostCase{};
     }
-    fb::NodeResources node;
+    fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
     const fb::Status ran = calc->run(node);
     EXPECT_TRUE(ran.has_value()) << ran.error().message;
     if (!ran.has_value()) {
@@ -3184,7 +3186,7 @@ TEST(Nevpt2PcEnergyTangent, SpanTermVisibleAtPsb3Twist) {
   FBF_SKIP_IF_FAST_TESTS();
   const HostCase &h = psb3_twist();
   ASSERT_GT(h.na, 0U);
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const std::vector<std::string> groups{"h", "rdm", "all"};
   std::vector<HostCase> dx;
   for (const std::string &group : groups) {
@@ -3258,7 +3260,7 @@ TEST(Nevpt2PcEnergyTangent, SpanTermVisibleAtPsb3Twist) {
 // nearest mode at λ + Δ = 0.
 TEST(Nevpt2PcEnergyTangent, RefusesWhatTheEnergyRefuses) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase golden = load_host_case(kDataDir / kAdjointCase);
   HostCase zero_rdms = golden;
   for (std::vector<double> *rdm :
@@ -3319,7 +3321,7 @@ TEST(Nevpt2EnergyHvpEmpty, SmallRealPerturberIsContinuousThroughTheGuard) {
   // family's fast case.
   FBF_SKIP_IF_FAST_TESTS();
   const std::filesystem::path dir = kDataDir / kHvpCase;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h0 = load_host_case(dir);
   const HostCase u = random_direction(h0, "all", 894);
   const HostCase v = random_direction(h0, "B", 896);
@@ -3410,7 +3412,7 @@ H 6.942742884553 0.165533359482 -0.0
       return std::unexpected(read.error());
     }
     fb::Calculation &calc = *read;
-    fb::NodeResources node;
+    fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
     if (auto ran = calc.run(node); !ran) {
       return std::unexpected(ran.error());
     }
@@ -3497,7 +3499,7 @@ TEST(Nevpt2EnergyHvpEmpty, Psb3ProportionalPairAcceptedNonProportionalRefused) {
   const auto &got = psb3_fc_tangents({0, 2, 17, 35, 5});
   ASSERT_TRUE(got.has_value()) << got.error().message;
   const auto &[h, tx] = *got;
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   DeviceCase g = upload_case(res, h);
   std::vector<DeviceCase> held;
   held.reserve(8);
@@ -3702,7 +3704,7 @@ TEST_P(Nevpt2PcEnergyHvp, BarsMatchRichardsonLadder) {
   if (group != "all") {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(kDataDir / kPcHvpCase);
   const HostCase dx = random_direction(h, group, 815);
   const auto got = run_pc_hvp(res, h, {dx}, kPcHvpFloor);
@@ -3746,7 +3748,7 @@ INSTANTIATE_TEST_SUITE_P(Groups, Nevpt2PcEnergyHvp,
 // Two directions walked at once are each the product of one alone.
 TEST(Nevpt2PcEnergyHvp, BatchedDirectionsMatchSingle) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase h = load_host_case(kDataDir / kPcHvpCase);
   const std::vector<HostCase> dx{random_direction(h, "all", 8151),
                                  random_direction(h, "rdm", 8152)};
@@ -3779,7 +3781,7 @@ TEST(Nevpt2PcEnergyHvp, RefusesAnIllConditionedSolve) {
   FBF_SKIP_IF_FAST_TESTS();
   const HostCase &h = psb3_twist();
   ASSERT_GT(h.na, 0U);
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const HostCase dx = random_direction(h, "all", 8153);
   const auto refused = run_pc_hvp(res, h, {dx}, 0.0);
   ASSERT_FALSE(refused);

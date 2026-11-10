@@ -1,9 +1,10 @@
 // GPU smoke cases for resources:device_resources: DeviceResources constructed on a
 // real device, its handles bound to the Device's stream, the one-way
 // ownership that lets a buffer outlive the bundle that handed out its Device,
-// the solver scratch (grow-only workspaces and the info flag), and the pinned
-// memory: the pinned workspace's carve, counted buffers and the pinned cap;
-// and the memory budget under a pool cap.
+// the workspaces sized at construction (a borrow at the size succeeds, one past
+// it is refused, neither allocates) and the info flag, and the pinned memory:
+// the pinned workspace's carve, counted buffers and the pinned cap; and the
+// memory budget under a pool cap.
 
 #include <gtest/gtest.h>
 
@@ -14,6 +15,7 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 
 #include "pool_footprint.h"
+#include "test_workspaces.h"
 
 namespace {
 
@@ -42,7 +44,7 @@ static_assert(!HasWorkspaceAlignmentIn<std::array<char, 512>>);
 TEST(DeviceResources, HandlesShareTheDeviceStream) {
   FBF_REQUIRE_GPU();
 
-  const fb::DeviceResources res{0};
+  const fb::DeviceResources res{0, fb::test::kWorkspaces};
 
   ASSERT_NE(res.device(), nullptr);
   EXPECT_EQ(res.dev_idx(), 0);
@@ -61,7 +63,7 @@ TEST(DeviceResources, HandlesShareTheDeviceStream) {
 TEST(DeviceResources, WorkStreamIsTheForkStream) {
   FBF_REQUIRE_GPU();
 
-  const fb::DeviceResources res{0};
+  const fb::DeviceResources res{0, fb::test::kWorkspaces};
 
   EXPECT_EQ(res.fork_stream().dev_idx(), res.dev_idx());
   EXPECT_EQ(static_cast<wwr::wwrStream_t>(res.fork_stream().stream()), res.stream());
@@ -78,7 +80,7 @@ TEST(DeviceResources, ForksIntoAParentCapture) {
 
   {
     fb::Stream parent{0};
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, fb::test::kWorkspaces};
 
     fb::Buffers::device<float> d(kCount, res.device());
     fb::Buffers::pinned<float> in(kCount);
@@ -128,11 +130,11 @@ TEST(DeviceResources, PoolReleaseThreshold) {
     return value;
   };
 
-  EXPECT_EQ(threshold(fb::DeviceResources{0}), std::uint64_t{1} << 30);
+  EXPECT_EQ(threshold(fb::DeviceResources{0, fb::test::kWorkspaces}), std::uint64_t{1} << 30);
   EXPECT_EQ(fb::DeviceResources::kDefaultPoolReleaseThreshold, std::uint64_t{1} << 30);
 
   constexpr std::uint64_t kCustom = std::uint64_t{256} << 20;
-  EXPECT_EQ(threshold(fb::DeviceResources{0, kCustom}), kCustom);
+  EXPECT_EQ(threshold(fb::DeviceResources{0, fb::test::kWorkspaces, kCustom}), kCustom);
 }
 
 // A buffer drawn from device() retains the Device, so it stays usable -- its
@@ -143,7 +145,7 @@ TEST(DeviceResources, BufferOutlivesResources) {
   std::shared_ptr<fb::Device> dev;
   std::optional<fb::Buffers::device<float>> d;
   {
-    const fb::DeviceResources res{0};
+    const fb::DeviceResources res{0, fb::test::kWorkspaces};
     dev = res.device();
     d.emplace(kCount, res.device());
   }
@@ -164,75 +166,101 @@ TEST(DeviceResources, BufferOutlivesResources) {
     ASSERT_EQ(out.data()[i], static_cast<float>(i)) << "at " << i;
 }
 
-// Both workspaces start empty, grow in kWorkspaceAlignment steps, and never
-// shrink: a smaller request hands back the same block.
-TEST(DeviceResources, WorkspacesGrowAlignedAndNeverShrink) {
+// Both workspaces are allocated at construction, at the sizes given rounded
+// up to kWorkspaceAlignment: the device one from the pool, the pinned one
+// counted in the pinned total.
+TEST(DeviceResources, WorkspacesAreSizedAtConstruction) {
   FBF_REQUIRE_GPU();
 
   constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
-  fb::DeviceResources res{0};
+  const fb::DeviceResources empty{0, {}};
+  EXPECT_EQ(empty.workspaces(), fb::MemoryFootprint{});
+  EXPECT_EQ(empty.pinned_bytes(), 0U);
+  const std::size_t own = empty.device()->pool_usage().used_current;
 
-  EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
-  EXPECT_EQ(res.device_workspace(1).num_elements(), kAlign);
-  EXPECT_EQ(res.device_workspace(kAlign + 1).num_elements(), 2 * kAlign);
-  const std::byte *grown = res.device_workspace(0).data();
-  EXPECT_EQ(res.device_workspace(kAlign).data(), grown);
-  EXPECT_EQ(res.device_workspace(kAlign).num_elements(), 2 * kAlign);
-
-  EXPECT_EQ(res.pinned_workspace("test", 0).value().size(), 0U);
-  EXPECT_EQ(res.pinned_workspace("test", (3 * kAlign) - 1).value().size(), 3 * kAlign);
-  const std::byte *pinned = res.pinned_workspace("test", 0).value().data();
-  EXPECT_EQ(res.pinned_workspace("test", 1).value().data(), pinned);
-  EXPECT_EQ(res.pinned_bytes(), 3 * kAlign);
+  const fb::DeviceResources res{
+      0, {.device = {.workspace = (5 * kAlign) - 1}, .pinned = {.workspace = (3 * kAlign) + 1}}};
+  EXPECT_EQ(res.workspaces(), (fb::MemoryFootprint{.device = {.workspace = 5 * kAlign},
+                                                   .pinned = {.workspace = 4 * kAlign}}));
+  EXPECT_EQ(res.pinned_bytes(), 4 * kAlign);
+  EXPECT_GE(res.device()->pool_usage().used_current, own + (5 * kAlign));
+  EXPECT_EQ(res.workspace_high_water(), fb::MemoryFootprint{});
 }
 
-// The rounding is what lets one byte workspace serve every solver element type:
-// a request that is no multiple of 16 still views whole as complex<double>.
-TEST(DeviceResources, WorkspaceViewsAsAnyElementType) {
+// A borrow at the workspace's size succeeds and one byte past it is refused as
+// Unsupported, naming the caller and both sizes; neither allocates, so the
+// pool's UsedMemCurrent is unchanged by either, and the workspace keeps its
+// block. The high-water mark keeps the largest borrow, rounded as it is.
+TEST(DeviceResources, BorrowAtTheSizeAndOnePast) {
   FBF_REQUIRE_GPU();
 
-  fb::DeviceResources res{0};
-  auto &ws = res.device_workspace(1004);
+  constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
+  constexpr std::size_t kSize = 8 * kAlign;
+  fb::DeviceResources res{0, {.device = {.workspace = kSize}, .pinned = {.workspace = kSize}}};
+  ASSERT_TRUE(res.sync().has_value());
+  const std::uint64_t used = res.device()->pool_usage().used_current;
+  const auto refused = [&](const auto &result, const std::string_view kind) {
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().kind, fb::ErrorKind::Unsupported);
+    const std::string &msg = result.error().message;
+    EXPECT_NE(msg.find("caller-x"), std::string::npos) << msg;
+    EXPECT_NE(msg.find(std::to_string(kSize + kAlign)), std::string::npos) << msg;
+    EXPECT_NE(msg.find(std::format("{} workspace, which holds {}", kind, kSize)), std::string::npos)
+        << msg;
+  };
 
-  EXPECT_EQ(ext::reinterpret_buffer_view<std::complex<double>>(ws).num_elements(),
-            ws.num_elements() / sizeof(std::complex<double>));
-  EXPECT_EQ(ext::reinterpret_buffer_view<float>(ws).num_elements(),
-            ws.num_elements() / sizeof(float));
-  EXPECT_GE(ext::reinterpret_buffer_view<double>(ws).num_elements() * sizeof(double), 1004U);
+  const auto device = res.device_workspace("caller-x", kSize);
+  ASSERT_TRUE(device.has_value());
+  EXPECT_EQ(device->size(), kSize);
+  refused(res.device_workspace("caller-x", kSize + 1), "device");
+  refused(res.device_regions<double>("caller-x", (kSize / sizeof(double)) + 1), "device");
+  EXPECT_EQ(res.device_workspace("caller-x", 1).value().data(), device->data());
+
+  const auto pinned = res.pinned_workspace("caller-x", kSize);
+  ASSERT_TRUE(pinned.has_value());
+  EXPECT_EQ(pinned->size(), kSize);
+  refused(res.pinned_workspace("caller-x", kSize + 1), "pinned");
+  refused(res.pinned_regions<double>("caller-x", (kSize / sizeof(double)) + 1), "pinned");
+  EXPECT_EQ(res.pinned_bytes(), kSize);
+
+  ASSERT_TRUE(res.sync().has_value());
+  EXPECT_EQ(res.device()->pool_usage().used_current, used);
+  EXPECT_EQ(res.workspace_high_water(),
+            (fb::MemoryFootprint{.device = {.workspace = kSize}, .pinned = {.workspace = kSize}}));
 }
 
 // device_regions lays its regions out in order, each a whole number of
-// alignment steps from the workspace's start, in one request for the total;
-// a single T is every region's.
+// alignment steps from the workspace's start, in one borrow of the total; a
+// single T is every region's.
 TEST(DeviceResources, DeviceRegionsCarveAlignedInOrder) {
   FBF_REQUIRE_GPU();
 
   constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, {.device = {.workspace = 3 * kAlign}}};
 
   const auto [a, b, c] = res.device_regions<double, std::int32_t, std::complex<double>>(
-      std::size_t{33}, std::size_t{1}, std::size_t{0});
+                                "test", std::size_t{33}, std::size_t{1}, std::size_t{0})
+                             .value();
   static_assert(std::is_same_v<decltype(b), std::int32_t *const>);
-  const auto *const base = res.device_workspace(0).data();
+  const auto *const base = res.device_workspace("test", 0).value().data();
   EXPECT_EQ(reinterpret_cast<const std::byte *>(a), base);
   EXPECT_EQ(reinterpret_cast<const std::byte *>(b), base + (2 * kAlign));
   EXPECT_EQ(reinterpret_cast<const std::byte *>(c), base + (3 * kAlign));
-  EXPECT_EQ(res.device_workspace(0).num_elements(), 3 * kAlign);
+  EXPECT_EQ(res.workspace_high_water().device.workspace, 3 * kAlign);
 
-  const auto [x, y] = res.device_regions<float>(std::size_t{64}, std::size_t{65});
+  const auto [x, y] = res.device_regions<float>("test", std::size_t{64}, std::size_t{65}).value();
   EXPECT_EQ(reinterpret_cast<const std::byte *>(y) - reinterpret_cast<const std::byte *>(x),
             static_cast<std::ptrdiff_t>(kAlign));
-  EXPECT_EQ(res.device_workspace(0).num_elements(), 3 * kAlign);
 }
 
 // pinned_regions carves the pinned workspace as device_regions carves the
 // device one: each region aligned for its type, in order, none overlapping
-// the next, in one request for the total.
+// the next, in one borrow of the total.
 TEST(DeviceResources, PinnedRegionsCarveAlignedInOrder) {
   FBF_REQUIRE_GPU();
 
   constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, {.pinned = {.workspace = 4 * kAlign}}};
 
   const auto [a, b, c] = res.pinned_regions<double, std::int32_t, std::complex<double>>(
                                 "test", std::size_t{33}, std::size_t{1}, std::size_t{5})
@@ -246,7 +274,7 @@ TEST(DeviceResources, PinnedRegionsCarveAlignedInOrder) {
   EXPECT_EQ(reinterpret_cast<std::uintptr_t>(c) % alignof(std::complex<double>), 0U);
   EXPECT_LE(reinterpret_cast<const std::byte *>(a + 33), reinterpret_cast<const std::byte *>(b));
   EXPECT_LE(reinterpret_cast<const std::byte *>(b + 1), reinterpret_cast<const std::byte *>(c));
-  EXPECT_EQ(res.pinned_workspace("test", 0).value().size(), 4 * kAlign);
+  EXPECT_EQ(res.workspace_high_water().pinned.workspace, 4 * kAlign);
 
   // Every region is the host's to write, end to end.
   std::fill_n(a, 33, 1.0);
@@ -259,22 +287,23 @@ TEST(DeviceResources, PinnedRegionsCarveAlignedInOrder) {
   const auto [x, y] = res.pinned_regions<float>("test", std::size_t{64}, std::size_t{65}).value();
   EXPECT_EQ(reinterpret_cast<const std::byte *>(y) - reinterpret_cast<const std::byte *>(x),
             static_cast<std::ptrdiff_t>(kAlign));
-  EXPECT_EQ(res.pinned_workspace("test", 0).value().size(), 4 * kAlign);
 }
 
-// Under a pinned cap of C, a counted allocation of C/2 fits; a workspace
-// growth or a second allocation that would pass C is refused as Unsupported,
-// naming the caller and the sizes, and allocates nothing; freeing the counted
-// buffer gives its bytes back.
+// Under a pinned cap of C, the pinned workspace counts from construction: one
+// of C/2 leaves C/2 for counted buffers, of which a second that would pass C
+// is refused as Unsupported, naming the caller and the sizes, and allocates
+// nothing; freeing a counted buffer gives its bytes back.
 TEST(DeviceResources, PinnedCapRefusesWhatWouldPassIt) {
   FBF_REQUIRE_GPU();
 
   constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
   constexpr std::size_t kCap = 64 * kAlign;
-  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, kCap};
+  fb::DeviceResources res{0,
+                          {.pinned = {.workspace = kCap / 2}},
+                          fb::DeviceResources::kDefaultPoolReleaseThreshold,
+                          kCap};
   EXPECT_EQ(res.pinned_cap(), kCap);
-  const std::size_t start = res.pinned_bytes();
-  EXPECT_EQ(start, 0U);
+  EXPECT_EQ(res.pinned_bytes(), kCap / 2);
 
   const auto refused = [](const auto &result, const std::string &request) {
     ASSERT_FALSE(result.has_value());
@@ -286,32 +315,22 @@ TEST(DeviceResources, PinnedCapRefusesWhatWouldPassIt) {
   };
 
   {
+    // Exactly what is left fits.
     auto half = res.counted_pinned<double>("caller-x", kCap / 2 / sizeof(double));
     ASSERT_TRUE(half.has_value());
     EXPECT_EQ(half->num_elements(), kCap / 2 / sizeof(double));
-    EXPECT_EQ(res.pinned_bytes(), start + (kCap / 2));
+    EXPECT_EQ(res.pinned_bytes(), kCap);
     half->data()[0] = 1.0; // the host's to write
 
-    // A growth past what is left: refused, and the workspace is unchanged.
-    refused(res.pinned_workspace("caller-x", (kCap / 2) + 1), std::to_string((kCap / 2) + kAlign));
-    EXPECT_EQ(res.pinned_workspace("caller-x", 0).value().size(), 0U);
-    refused(res.pinned_regions<double>("caller-x", (kCap / 2 / sizeof(double)) + 1),
-            std::to_string((kCap / 2) + kAlign));
-    EXPECT_EQ(res.pinned_bytes(), start + (kCap / 2));
-
     // A second allocation past it: refused, and nothing is counted.
-    refused(res.counted_pinned<std::byte>("caller-x", (kCap / 2) + 1),
-            std::to_string((kCap / 2) + 1));
-    EXPECT_EQ(res.pinned_bytes(), start + (kCap / 2));
-
-    // Exactly what is left fits.
-    EXPECT_EQ(res.pinned_workspace("caller-x", kCap / 2).value().size(), kCap / 2);
-    EXPECT_EQ(res.pinned_bytes(), kCap);
     refused(res.counted_pinned<std::byte>("caller-x", 1), "1");
+    EXPECT_EQ(res.pinned_bytes(), kCap);
   }
 
   // half is freed: only the workspace is left.
-  EXPECT_EQ(res.pinned_bytes(), start + (kCap / 2));
+  EXPECT_EQ(res.pinned_bytes(), kCap / 2);
+  refused(res.counted_pinned<std::byte>("caller-x", (kCap / 2) + 1),
+          std::to_string((kCap / 2) + 1));
   auto again = res.counted_pinned<std::byte>("caller-x", kCap / 2);
   ASSERT_TRUE(again.has_value());
   EXPECT_EQ(res.pinned_bytes(), kCap);
@@ -326,7 +345,7 @@ TEST(DeviceResources, MemoryBudgetFollowsALiveAllocation) {
   FBF_REQUIRE_GPU();
 
   constexpr std::uint64_t kCap = std::uint64_t{64} << 20;
-  fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
+  fb::DeviceResources res{0, {}, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, kCap};
   EXPECT_EQ(res.pool_cap(), kCap);
   const std::size_t granularity = fb::test::pool_granularity(*res.device());
   ASSERT_GT(granularity, 0U);
@@ -351,7 +370,7 @@ TEST(DeviceResources, CountedPinnedMovesItsCount) {
 
   std::optional<fb::CountedPinned<float>> kept;
   {
-    fb::DeviceResources res{0};
+    fb::DeviceResources res{0, {}};
     auto a = res.counted_pinned<float>("test", kCount).value();
     EXPECT_EQ(res.pinned_bytes(), kCount * sizeof(float));
     fb::CountedPinned<float> b{std::move(a)};
@@ -370,7 +389,7 @@ TEST(DeviceResources, CountedPinnedMovesItsCount) {
 TEST(DeviceResources, FetchInfoReadsTheDeviceFlag) {
   FBF_REQUIRE_GPU();
 
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   ASSERT_EQ(res.info().num_elements(), 1U);
   EXPECT_EQ(res.fetch_info().value(), 0);
 
@@ -385,7 +404,7 @@ TEST(DeviceResources, FetchInfoReadsTheDeviceFlag) {
 TEST(DeviceResources, MoveTransfersOwnership) {
   FBF_REQUIRE_GPU();
 
-  fb::DeviceResources src{0};
+  fb::DeviceResources src{0, fb::test::kWorkspaces};
   const fb::Device *device = src.device().get();
   const wwr::wwrStream_t stream = src.stream();
 

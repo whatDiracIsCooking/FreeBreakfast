@@ -27,6 +27,8 @@ import free_breakfast.ci;
 import free_breakfast.mcscf;
 import free_breakfast.hessian;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -279,7 +281,7 @@ class HessianDfAdjointXy : public ::testing::Test {
 protected:
   void SetUp() override {
     FBF_REQUIRE_GPU();
-    res_.emplace(0);
+    res_.emplace(0, fb::test::kWorkspaces);
     atoms_ = skew_water();
     ref_.emplace(*res_, atoms_);
     ASSERT_TRUE(ref_->ok());

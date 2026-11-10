@@ -51,6 +51,8 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -301,7 +303,8 @@ protected:
     weights_ = entry.at("weights").get<std::vector<double>>();
     nroots_ = weights_.size();
     equal_.assign(nroots_, 1.0 / static_cast<double>(nroots_));
-    node_ = std::make_unique<fb::NodeResources>();
+    node_ = std::make_unique<fb::NodeResources>(
+        fb::NodeResourcesConfig{.workspaces = fb::test::kWorkspaces});
     const fb::test::ScratchDir dir("df_qd_zeta_hessian");
     std::string xyz = std::format("{}\n{}\n", entry.at("atoms").size(), name);
     for (const fb::json &atom : entry.at("atoms")) {

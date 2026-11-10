@@ -99,11 +99,9 @@ Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x,
   //    OpX = T form, a dgmm (M = U diag(Lambda^{-1/2}), in O(n^2) rather than a
   //    gemm against a dense diagonal) into M, then X = M U^T. M is the
   //    workspace's: diagonalize is done with it, and nothing else is called
-  //    while M is live. syevd's work is usually larger than n*n, so this
-  //    request rarely grows it.
-  auto m = wwr::extension::reinterpret_buffer_view<T>(res.device_workspace(nn * sizeof(T)));
-  return gpu_status(
-      gmmwich<wwr::WWRBLAS_OP_T>(res.blas(), n, u.data(), eigenvalues.data(), m.data(), x));
+  //    while M is live.
+  const auto [m] = FBF_TRY(res.device_regions<T>("orthogonalize", nn));
+  return gpu_status(gmmwich<wwr::WWRBLAS_OP_T>(res.blas(), n, u.data(), eigenvalues.data(), m, x));
 }
 
 template <real_fp T>
@@ -182,7 +180,8 @@ Result<int32_t> orthonormalize(DeviceResources &res, const int32_t n, const int3
         wwr::dgmm<T, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, m, kept, u_kept, m, d, 1, u_kept, m)));
     FBF_TRY(gpu_status(wwr::dgmm<T, int32_t>(blas, wwr::WWRBLAS_SIDE_RIGHT, m, kept, u_kept, m,
                                              lambda_kept, 1, u_kept, m)));
-    const auto [product] = res.device_regions<T>(nz * static_cast<size_t>(kept));
+    const auto [product] =
+        FBF_TRY(res.device_regions<T>("orthonormalize", nz * static_cast<size_t>(kept)));
     FBF_TRY(gpu_status(gemm(blas, n, kept, m, &kOne<T>, v, u_kept, &kZero<T>, product)));
     const size_t kept_bytes = nz * static_cast<size_t>(kept) * sizeof(T);
     FBF_TRY(gpu_status(

@@ -72,6 +72,8 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 #include "settled_rung.h"
 
@@ -188,7 +190,7 @@ Point sa_casscf(const std::string &name) {
   if (!calc.has_value()) {
     return p;
   }
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   EXPECT_TRUE(ran.has_value()) << ran.error().message;
   if (!ran.has_value()) {
@@ -486,7 +488,7 @@ double max_abs(std::span<const double> v) {
 void expect_ladder(const std::string &name, const std::string &path) {
   const Point p = sa_casscf(name);
   ASSERT_FALSE(p.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const std::size_t nroots = p.weights.size();
   const std::size_t n2 = nroots * nroots;
   auto strings = fb::ci::DeviceStringSet::create(res, p.ncas, p.nelecas / 2);
@@ -771,7 +773,7 @@ TEST(Nevpt2QdHvpEmpty, CouplingK6MatchesTheEnergysSecondDifference) {
   const std::string name = "h2co_ccpvdz_sa2";
   Point p = sa_casscf(name);
   ASSERT_FALSE(p.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   const std::size_t nroots = p.weights.size();
   auto strings = fb::ci::DeviceStringSet::create(res, p.ncas, p.nelecas / 2);
   ASSERT_TRUE(strings) << strings.error().message;
@@ -915,7 +917,7 @@ TEST(Nevpt2QdHvpEmpty, OneSidedTupleIsRefusedOnANonProportionalPair) {
   FBF_FAMILY_REPRESENTATIVE();
   const Point base = sa_casscf("h8_sto3g_sa3");
   ASSERT_FALSE(base.b.empty());
-  fb::DeviceResources res(0);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
   constexpr std::int32_t kNcore = 3;
   constexpr std::int32_t kNcas = 3;
   constexpr std::int32_t kNelecas = 2;
@@ -1113,7 +1115,7 @@ TEST(Nevpt2QdHvpEmpty, A1B2FixtureRefusesTheExpectedBlocks) {
                   .has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   fb::DeviceResources &res = node.device(0);

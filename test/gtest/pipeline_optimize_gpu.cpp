@@ -50,6 +50,8 @@ import free_breakfast.core.nontransferrable;
 import free_breakfast.nevpt2;
 import free_breakfast.tools.qd_nevpt2_gradient;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -232,7 +234,7 @@ void expect_reference_minimum(std::string_view name, std::string_view extra, std
   const auto config = write_config(dir, expected, extra);
   auto calc = fb::read_config(config, dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto t0 = std::chrono::steady_clock::now();
   const fb::Status ran = calc->run(node);
   const double seconds =
@@ -311,7 +313,7 @@ TEST(PipelineOptimize, WaterConvergesOverIntegralDirectEris) {
   const auto config = write_config(dir, start, "", /*integral_direct=*/true);
   auto calc = fb::read_config(config, dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto t0 = std::chrono::steady_clock::now();
   const fb::Status ran = calc->run(node);
   const double seconds =
@@ -392,7 +394,7 @@ TEST(PipelineOptimize, WaterCasscfReachesThePyscfMinimum) {
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   ASSERT_TRUE(calc->step<fb::OptimizeStep>()->casscf_gradient.has_value());
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto t0 = std::chrono::steady_clock::now();
   const fb::Status ran = calc->run(node);
   const double seconds =
@@ -439,7 +441,7 @@ TEST(PipelineOptimize, ACasscfChainOverIntegralDirectErisIsUnsupported) {
   fb::OptimizeStep step;
   step.casscf_gradient.emplace();
   step.eri.mode = fb::EriMode::IntegralDirect;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto out = step.run(fb::View<>{}, node);
   ASSERT_FALSE(out.has_value());
   EXPECT_EQ(out.error().kind, fb::ErrorKind::Unsupported) << out.error().message;
@@ -527,7 +529,7 @@ TEST(PipelineOptimize, SkewFormaldehydeSaRootOneReachesThePyscfMinimum) {
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   ASSERT_TRUE(calc->step<fb::OptimizeStep>()->casscf_gradient.has_value());
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto t0 = std::chrono::steady_clock::now();
   const fb::Status ran = calc->run(node);
   const double seconds =
@@ -679,7 +681,7 @@ TEST(PipelineOptimize, WaterNevpt2ReachesAStationaryPointAtPyscfsEnergy) {
   auto calc = fb::read_config(write_nevpt2_config(dir, ""), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   ASSERT_TRUE(calc->step<fb::OptimizeStep>()->nevpt2_gradient.has_value());
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto t0 = std::chrono::steady_clock::now();
   const fb::Status ran = calc->run(node);
   const double seconds =
@@ -744,7 +746,7 @@ TEST(PipelineOptimize, ARefusedNevpt2GradientEndsTheOptimizationWithItsMessage) 
   fb::OptimizeStep step = *calc->step<fb::OptimizeStep>();
   ASSERT_TRUE(step.nevpt2_gradient.has_value());
   step.casscf.nroots = 2;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto out = step.run(fb::View<>{}, node);
   ASSERT_FALSE(out.has_value());
   EXPECT_EQ(out.error().kind, fb::ErrorKind::Unsupported) << out.error().message;
@@ -763,7 +765,7 @@ TEST(PipelineOptimize, ARefusedNevpt2GradientEndsTheOptimizationWithItsMessage) 
 // over integral-direct ERIs.
 TEST(PipelineOptimize, AHandBuiltNevpt2ChainIsRefusedBeforeItRuns) {
   FBF_REQUIRE_GPU();
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   fb::OptimizeStep both;
   both.casscf_gradient.emplace();
   both.nevpt2_gradient.emplace();
@@ -857,7 +859,7 @@ QdPath optimize_qd_state(std::string_view name, std::int32_t state, std::string_
   }
   EXPECT_TRUE(calc->step<fb::OptimizeStep>()->nevpt2_gradient.has_value() &&
               calc->step<fb::OptimizeStep>()->nevpt2_gradient->quasi_degenerate);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto t0 = std::chrono::steady_clock::now();
   const fb::Status ran = calc->run(node);
   const double seconds =
@@ -1234,7 +1236,7 @@ TEST(PipelineOptimize, EthyleneMeciReachesTheReferenceMeci) {
       reference.at("aux_basis").at("name").get<std::string>(),
       reference.at("ncas").get<std::int32_t>(), reference.at("nelecas").get<std::int32_t>(),
       reference.at("weights").size(), kCasscf);
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
 
   // The start's diagnostics: a single point of its own.
   ASSERT_TRUE(
@@ -1618,7 +1620,7 @@ void expect_qd_meci(bool pc) {
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   ASSERT_TRUE(calc->step<fb::OptimizeStep>()->meci.has_value());
   ASSERT_TRUE(calc->step<fb::OptimizeStep>()->nevpt2_gradient.has_value());
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const auto t0 = std::chrono::steady_clock::now();
   const fb::Status ran = calc->run(node);
   const double seconds =
@@ -1806,7 +1808,7 @@ TEST(PipelineOptimize, SkewFormaldehydeQdMeciWritesItsBranchingSpace) {
   ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
 

@@ -473,30 +473,38 @@ don't make the caller lend one. Ask the workspace once, for the total, and carve
 it.
 A generic solver's host scratch comes from `pinned_workspace()` the same way.
 
-**Carve it with `device_regions`**, which takes one count per region and
-returns the regions' starts:
+**Carve it with `device_regions`**, which takes the caller's name and one
+count per region, and returns the regions' starts:
 
 ```cpp
-const auto [work, block] = res.device_regions<double>(n_cart * nmo, nmo * nmo);
-std::tie(w, partner) = res.device_regions<double, int32_t>(n_ao * n_occ, n_occ);
+const auto [work, block] = FBF_TRY(res.device_regions<double>("who", n_cart * nmo, nmo * nmo));
+std::tie(w, partner) = FBF_TRY((res.device_regions<double, int32_t>("who", n_ao * n_occ, n_occ)));
 ```
 
 It rounds each region up to `kWorkspaceAlignment`, so every one starts aligned
-for its type, and makes the single request for the total. Don't add up offsets
-and `reinterpret_cast` by hand. Five units used to carry their own copy of that
-lambda, and three more a two-region version of it.
+for its type, and borrows the total at once. Don't add up offsets and
+`reinterpret_cast` by hand. Five units used to carry their own copy of that
+lambda, and three more a two-region version of it. A borrow past the
+workspace's size is `Unsupported`, naming the caller, which is why the caller
+names itself.
 
-The reasons are memory and allocation count. The workspace only grows, so every
-routine on one device shares a single block sized for the largest of them, and
-once it has grown a later request allocates nothing. A buffer per routine holds
-the sum of their needs instead, and allocates again each time its owner runs.
+The reasons are memory and allocation count. The workspace is sized once, at
+construction, for the largest of the routines on its device, so they share a
+single block and no request allocates. A buffer per routine holds the sum of
+their needs instead, and allocates again each time its owner runs.
+
+**Fixed sizes only.** What a routine borrows may depend on its dimensions and
+options, never on a memory budget: the workspace is sized before the first
+step, from the footprints. An adaptive routine's adaptive part is its own
+scratch. And the workspace holds its maximum through every step, so it is for
+what many steps use at similar sizes (a library `lwork`, solver work); an
+intermediate only one step needs is that step's named scratch.
 
 The rules for using it are in
-[`src/core/resources/README.md`](../src/core/resources/README.md) "Solver
-scratch": fetch it just before the call and never keep the pointer, and hold
-no region of it across a call to another routine that uses it. Those rules
-define the
-exceptions, which get their own buffers:
+[`src/core/resources/README.md`](../src/core/resources/README.md) "The
+workspaces": hold no region of it across a call to another routine that uses
+it, and treat a callback as such a call. Those rules define the exceptions,
+which get their own buffers:
 
 - **State that lives across calls.** The SCF's density, Fock matrix and DIIS
   history are read from one iteration to the next, with other routines called

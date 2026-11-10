@@ -24,6 +24,8 @@ import free_breakfast.io.json;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
+#include "test_workspaces.h"
+
 #include "scratch_dir.h"
 
 namespace {
@@ -117,7 +119,7 @@ void expect_matches(std::string_view name) {
   auto calc =
       fb::read_config(write_config(dir, entry, "[casscf_gradient]\n"), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
 
@@ -164,7 +166,7 @@ TEST(PipelineCasscfGradient, ARootTheCasscfLacksIsInvalidConfig) {
       write_config(dir, reference_case("h2o_ccpvdz"), "[casscf_gradient]\nroot = 1\n"), dir.path(),
       dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::InvalidConfig) << ran.error().message;

@@ -12,6 +12,8 @@ import free_breakfast.core.resources;
 import free_breakfast.molecule;
 import free_breakfast.basis;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -29,7 +31,7 @@ fb::BasisStamp water_stamp() {
 
 TEST(Basis, PlaceFollowsAtomOrderThenStampOrder) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule water(res,
                            {Atom{{0.0, 0.0, 0.2}, Element::O}, Atom{{0.0, 1.4, -0.9}, Element::H},
                             Atom{{0.0, -1.4, -0.9}, Element::H}});
@@ -58,7 +60,7 @@ TEST(Basis, PlaceFollowsAtomOrderThenStampOrder) {
 
 TEST(Basis, PlaceOntoUncoveredElementIsInvalidConfig) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::Molecule nh(res,
                         {Atom{{0.0, 0.0, 0.0}, Element::N}, Atom{{0.0, 0.0, 1.9}, Element::H}});
   auto basis = fb::place(water_stamp(), nh);
@@ -69,7 +71,7 @@ TEST(Basis, PlaceOntoUncoveredElementIsInvalidConfig) {
 
 TEST(Basis, PlacingOneStampAtTwoGeometriesAgreesOnLayout) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisStamp stamp = water_stamp().primitive_normalized();
   const fb::Molecule a(res, {Atom{{0.0, 0.0, 0.0}, Element::O}, Atom{{0.0, 0.0, 1.8}, Element::H}});
   const fb::Molecule b(res, {Atom{{0.5, 0.0, 0.0}, Element::O}, Atom{{0.5, 0.0, 2.1}, Element::H}});

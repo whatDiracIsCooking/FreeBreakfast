@@ -18,6 +18,8 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "test_workspaces.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -76,7 +78,7 @@ TEST_P(OverlapGolden, MatchesLibcint) {
   FBF_REQUIRE_GPU();
   const Golden g = read_golden(GetParam());
   ASSERT_FALSE(g.ovlp.empty());
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const std::vector<double> got = device_overlap(res, g.basis);
   ASSERT_EQ(got.size(), g.ovlp.size());
 
@@ -107,7 +109,7 @@ INSTANTIATE_TEST_SUITE_P(CO, OverlapGolden, ::testing::Values("co_ccpvtz"));
 
 TEST(Overlap, ZeroesTheMatrixFirst) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   fb::CartesianMatrixAO s(res, basis);
   const double stale = 42.0;
@@ -121,7 +123,7 @@ TEST(Overlap, ZeroesTheMatrixFirst) {
 
 TEST(LaunchEach, StopsAtTheFirstFailure) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const Golden g = read_golden("h2o_sto3g");
   const auto classes = fb::primitive_pair_classes(res, g.basis);
   ASSERT_TRUE(classes);
@@ -138,7 +140,7 @@ TEST(LaunchEach, StopsAtTheFirstFailure) {
 
 TEST(Overlap, RefusesAClassAboveF) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
+  fb::DeviceResources res{0, fb::test::kWorkspaces};
   const fb::BasisSet basis(
       {fb::Shell(fb::kOneElectronMaxL + 1, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const auto device = fb::primitive_pair_classes(res, basis);

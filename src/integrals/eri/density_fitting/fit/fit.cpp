@@ -52,7 +52,7 @@ Status density_fit(DeviceResources &res, const int32_t nao, const int32_t naux, 
     // B = X (P|mn), one naux x nao slab (one m) at a time: a gemm into the
     // workspace and a copy back, since a gemm cannot write over its operand.
     const size_t slab = static_cast<size_t>(naux) * static_cast<size_t>(nao);
-    const auto [product] = res.device_regions<double>(slab);
+    const auto [product] = FBF_TRY(res.device_regions<double>("density_fit", slab));
     for (int32_t k = 0; k < nao; ++k) {
       double *const b_k = b + (slab * static_cast<size_t>(k));
       FBF_TRY(gpu_status(
