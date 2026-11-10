@@ -36,7 +36,7 @@ A gate is named by **when it runs**, not by what it contains.
 
 | Gate | When | Runs | Budget |
 | --- | --- | --- | --- |
-| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`; the fast set of each | under 5 min on a busy card |
+| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`. C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set | under 5 min on a busy card |
 | `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set | under 5 min on a busy card |
 | `nightly` | a timer on this box | everything, unskipped, both languages, plus the cross-backend compile check | none; it has the night |
 
@@ -54,10 +54,13 @@ nothing in the push. Build the `experimental` preset by hand instead. The root
 `CMakeLists.txt` line that adds them is outside both, so it still fires the
 half (`NOT_IN_CPP_SMOKE` in `devtools/test.py`).
 
-**The push gate's test set does not change in this milestone.** It is already a
-fixed set, and its job is "is this obviously broken". Selection applies to `pr`,
-and only to its C++ half ("Test selection" below). **The nightly is what makes
-that safe:** it runs every case the `pr` gate leaves out, within a day.
+**The push gate runs `pr`'s selection on its GPU binaries** (#1126). Its job is
+"is this obviously broken", and before it, its GPU smoke ran every fast case
+of each GPU binary: about six minutes a C++ push, more than the `pr` gate it
+precedes. Selection applies only to the C++ half of either gate ("Test
+selection" below), and in `push` only to the GPU binaries: the host binaries
+still run whole. **The nightly is what makes that safe:** it runs every case
+both gates leave out, within a day.
 
 ## Acceptance criteria: one run, a bar from analysis
 
@@ -169,10 +172,11 @@ replaced the three gate scripts, and `devtools/test.py nightly` (#985), which
 replaced the two full-run scripts.
 
 `pr` runs each family's representative of the C++ cases (#989; `--all`, the
-whole fast set): "Test selection" below.
+whole fast set): "Test selection" below. `push` runs the same set on its GPU
+binaries (#1126; `--all`, every fast case of them).
 
 ```bash
-devtools/test.py push       # what the pre-push hook calls
+devtools/test.py push       # what the pre-push hook calls; --all for the old smoke
 devtools/test.py pr         # before a PR; --all for the whole fast set
 devtools/test.py nightly    # what the timer calls (#985)
 ```
@@ -201,6 +205,22 @@ devtools/test.py pr --record                 # and append it to `metrics`
   missing, `cmake` is below the tree's floor, or the chosen backend has no
   device node: the toolchain lives in the GPU container, and a host-side push
   should not be forced onto `--no-verify`.
+- **`push`'s GPU smoke runs `pr`'s representative set.** After the build it
+  calls the same `list_families` (`devtools/test_families.py <build dir>
+  --json`) and `representative_set`, joins on gtest's names over
+  `ctest --test-dir <build dir> --show-only=json-v1` with `select_listing`,
+  and hands each GPU binary its cases as a `GTEST_FILTER`, still one process
+  per binary. An exempt family runs nothing, a flagged one runs whole, and a
+  binary with nothing selected is not run. It prints
+  `push: representatives only: N of M GPU-binary cases selected, against the
+  lister's K representatives (…)`, then `push: GPU smoke took Ns`. The host
+  binaries, the diff dispatch and the Python half are unchanged.
+- **Where the set cannot be had, `push` runs the whole fast set**, the
+  opposite of `pr`, which fails: a lister that cannot list, a wrong marker, a
+  missing or stale `metrics` branch (a fresh VM), or a ctest that cannot list
+  the build dir. It says `push: cannot select the representatives: <why>` and
+  `push: the GPU smoke runs the whole fast set`, and goes on. A push must stay
+  usable everywhere `test.py` runs; `pr` is where a wrong marker is fixed.
 - **`pr` runs both languages:** configure, build, ctest and the GPU batches,
   then the fast pytest set (`FAST_TEST_ARGS` over `PREPUSH_PATHS`, the same set
   `push` runs). It logs to `.slow-tier-reports/pr-<stamp>-<rev>-<preset>.log`

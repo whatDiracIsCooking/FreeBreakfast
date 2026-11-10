@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The test gates, one subcommand per gate (docs/testing.md "Gates").
 
-  devtools/test.py push [--preset NAME] [-j N] [--dry-run]
+  devtools/test.py push [--preset NAME] [--all] [-j N] [--dry-run]
   devtools/test.py pr   [--preset NAME] [--fresh] [--clean] [--no-test]
                         [--all] [--tidy] [--only cpp|python] [-j N] [--report DIR]
                         [--record] [-- <ctest args>]
@@ -14,11 +14,14 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   exports; by hand, origin/main...HEAD) and runs the Python half when a .py
   changed and the C++ half when C++ or a build file did. Python: the fast
   pytest set (FAST_TEST_ARGS over PREPUSH_PATHS). C++: an incremental build,
-  the host binaries, then each GPU binary as one process under the card lock.
+  the host binaries, then each GPU binary as one process under the card lock,
+  running only pr's representative set (below) as a GTEST_FILTER; where the
+  lister cannot give it, the whole fast set, with a line saying so.
   The C++ half skips itself, exit 0, where the toolchain or a GPU is absent.
   Under CMAKE_PRESET=auto it prefers a preset whose tree is already built:
   where only some are, the least-loaded live card among those, so a worktree
   whose `pr` gate built one backend never cold-builds the other on push.
+  --all runs every fast case of the GPU binaries, the old smoke.
   --dry-run prints the changed files and which halves would run.
 
 pr: the gate before opening a PR (milestone-run requires it). Configure,
@@ -1020,10 +1023,72 @@ def cpp_unavailable(backend: str) -> str | None:
     return None
 
 
-def cpp_push(cfg: dict[str, str], preset: str, jobs: str) -> tuple[int, str]:
+def push_filters(tag: str, build_dir: Path, log: Path) -> list[str | None]:
+    """Per GPU binary, the GTEST_FILTER of pr's representative set: pr's
+    selection (list_families, representative_set, select_listing) over
+    ctest's listing of the build dir, joined on gtest's names. "" means the
+    binary has nothing selected; None means it runs whole.
+
+    Where the set cannot be had (the lister fails, a marker is wrong, ctest
+    cannot list), every binary runs whole, with a line saying so: unlike pr,
+    push must not block, a fresh VM's missing `metrics` branch included."""
+    gpu_bins = [(build_dir / rel).resolve() for rel in GPU_BINS]
+    try:
+        families = list_families(build_dir)
+        listing = subprocess.run(
+            ["ctest", "--test-dir", str(build_dir), "--show-only=json-v1"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if listing.returncode != 0:
+            raise SelectionError(f"ctest --show-only exited {listing.returncode}")
+        tests = json.loads(listing.stdout[listing.stdout.index("{") :])["tests"]
+        # Each entry's GPU binary, wherever it is in the command: a launcher
+        # (compute-sanitizer) puts itself first.
+        binary_of = {}
+        for test in tests:
+            for arg in test.get("command") or []:
+                if (path := Path(arg).resolve()) in gpu_bins:
+                    binary_of[test["name"]] = gpu_bins.index(path)
+        on_gpu = [t for t in tests if t["name"] in binary_of]
+        keep, reps, flagged = representative_set(families)
+        cut, _, counts = select_listing(json.dumps({"tests": on_gpu}), keep)
+    except (SelectionError, ValueError, KeyError, TypeError) as e:
+        say(f"{tag}: cannot select the representatives: {e}", err=True, log=log)
+        say(f"{tag}: the GPU smoke runs the whole fast set", log=log)
+        return [None] * len(gpu_bins)
+    cases: list[list[str]] = [[] for _ in gpu_bins]
+    for test in json.loads(cut)["tests"]:
+        if (case := gtest_name(test)) is not None:
+            cases[binary_of[test["name"]]].append(case)
+    say(
+        f"{tag}: representatives only: {counts['selected']} of"
+        f" {counts['entries']} GPU-binary cases selected, against the lister's"
+        f" {len(reps)} representatives ({len(families.get('exempt', []))} exempt"
+        f" families left out, {len(flagged)} flagged run whole); the nightly"
+        " runs the rest (--all runs the whole fast set)",
+        log=log,
+    )
+    filters: list[str | None] = []
+    for gpu_bin, names in zip(gpu_bins, cases, strict=True):
+        joined = ":".join(names)
+        if len(joined) > MAX_FILTER:
+            say(f"{tag}: {gpu_bin.name}'s selection is too long a filter -- run whole")
+            filters.append(None)
+        else:
+            filters.append(joined)
+    return filters
+
+
+def cpp_push(
+    cfg: dict[str, str], preset: str, jobs: str, run_all: bool = False
+) -> tuple[int, str]:
     """The C++ half of the push gate: an incremental build of every test
     binary, the host binaries unlocked, then the GPU binaries in turn, each
-    one process, under one hold of the card. (status, preset)."""
+    one process, under one hold of the card: of their cases only pr's
+    representative set (push_filters), or with `run_all` every fast one.
+    (status, preset)."""
     tag = "push"
     if preset == "auto":
         preset = push_auto_preset(cfg)
@@ -1078,18 +1143,33 @@ def cpp_push(cfg: dict[str, str], preset: str, jobs: str) -> tuple[int, str]:
                 say(f"{tag}:   {line}")
         rc = rc or proc.returncode
 
+    # Before the card: the lister only walks gtest's registry.
+    filters = [None] * len(GPU_BINS) if run_all else push_filters(tag, build_dir, log)
     say(
         f"{tag}: GPU smoke"
         " (heavy reference cases skipped via FREE_BREAKFAST_FAST_TESTS) ..."
     )
     with Card(backend, cfg):
-        for rel in GPU_BINS:
+        start = time.monotonic()
+        for rel, gtest_filter in zip(GPU_BINS, filters, strict=True):
             say(f"{tag}:   --- {Path(rel).name} ---")
+            if gtest_filter == "":
+                say(f"{tag}:   nothing selected -- not run")
+                continue
+            batch_env = env
+            if gtest_filter is not None:
+                # pr's batch: the ctest entries also run disabled cases.
+                batch_env = dict(
+                    env, GTEST_FILTER=gtest_filter, GTEST_ALSO_RUN_DISABLED_TESTS="1"
+                )
             if (
-                run_gpu_batch(tag, build_dir / rel, cfg, log, env=env, cwd=REPO_ROOT)
+                run_gpu_batch(
+                    tag, build_dir / rel, cfg, log, env=batch_env, cwd=REPO_ROOT
+                )
                 != 0
             ):
                 rc = rc or 1
+        say(f"{tag}: GPU smoke took {time.monotonic() - start:.0f}s", log=log)
     return rc, preset
 
 
@@ -1116,12 +1196,17 @@ def cmd_push(args: argparse.Namespace, cfg: dict[str, str]) -> int:
     preset = None
     if cpp:
         crc, preset = cpp_push(
-            cfg, args.preset or cfg["CMAKE_PRESET"], args.jobs or cfg["BUILD_JOBS"]
+            cfg,
+            args.preset or cfg["CMAKE_PRESET"],
+            args.jobs or cfg["BUILD_JOBS"],
+            args.all,
         )
         rc = rc or crc
     rev, _ = tree_rev()
     ran = ",".join(h for h, on in (("cpp", cpp), ("python", py)) if on) or "none"
     fields = f"rev={rev}  ran={ran}" + (f"  preset={preset}" if preset else "")
+    if args.all and cpp:
+        fields += "  all"
     if rc != 0:
         say(
             f"test.py push FAIL(rc={rc})  {fields}  (bypass one push with --no-verify)",
@@ -2015,11 +2100,12 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         "--clean", action="store_true", help="rebuild every object, keeping the cache"
     )
     pr.add_argument("--no-test", action="store_true", help="configure and build only")
-    pr.add_argument(
-        "--all",
-        action="store_true",
-        help="run the whole fast set, not only the family representatives",
-    )
+    for p in (push, pr):
+        p.add_argument(
+            "--all",
+            action="store_true",
+            help="run the whole fast set, not only the family representatives",
+        )
     pr.add_argument(
         "--tidy", action="store_true", help="advisory clang-tidy after the build"
     )

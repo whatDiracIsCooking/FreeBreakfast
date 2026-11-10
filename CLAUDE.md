@@ -256,13 +256,15 @@ module hierarchy to satisfy it.
 There are two gates, both `devtools/test.py` (`docs/testing.md` "Gates").
 `git push` runs `test.py push`, by pre-commit's pre-push stage: the fast pytest
 tier when the push touches a `.py`, the C++ smoke (an incremental build, the
-host binaries, each GPU binary as one process) when it touches C++ or a build
-file outside `experimental/` and `test/experimental/` (the smoke's preset
-never configures them, so it would check none of it). `test.py pr` is the gate
+host binaries, each GPU binary as one process running `pr`'s representatives,
+or its whole fast set with `--all` or when the lister cannot list) when it
+touches C++ or a build file outside `experimental/` and `test/experimental/`
+(the smoke's preset never configures them, so it would check none of it).
+`test.py pr` is the gate
 before a PR: configure, build, then each C++ family's representative and
 nothing else (`devtools/test_families.py`'s set; `--all` runs the whole fast
 set), split into ctest and the GPU batches, then the fast pytest tier. The
-nightly runs every case `pr` leaves out (`docs/testing.md` "Test selection").
+nightly runs every case the gates leave out (`docs/testing.md` "Test selection").
 CI runs lint + the fast pytest tier per PR.
 
 **The `cpp` job in `.github/workflows/ci.yml` is `if: false`** — both matrix

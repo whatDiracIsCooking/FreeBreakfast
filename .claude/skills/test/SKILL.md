@@ -46,6 +46,13 @@ for its whole fast set, which is what a targeted rerun wants. Read the
 lister's K representatives` line, and the `skipped representative:` lines:
 a family whose representative skipped ran nothing.
 
+**`push` runs the same set on its GPU binaries** (#1126): the
+`push: representatives only: N of M GPU-binary cases selected` line, then
+`push: GPU smoke took Ns`. The host binaries still run whole. Where the
+lister cannot list (a wrong marker, no `metrics` branch), push says
+`push: the GPU smoke runs the whole fast set` and goes on rather than fail;
+`push --all` is that smoke on purpose.
+
 ```bash
 devtools/test.py pr                        # configure + build + ctest + pytest, `auto` preset
 devtools/test.py pr --preset default       # pin the CUDA card
@@ -62,6 +69,7 @@ devtools/test.py pr --all                  # the whole fast set, not only repres
 devtools/test.py pr -- -R Constants        # everything after -- goes to ctest
 devtools/test.py pr --all -- -R MemoryBuffer  # a suite's whole fast set
 devtools/test.py push --dry-run            # which halves a push would run
+devtools/test.py push --all                # the GPU smoke's whole fast set
 ```
 
 **`test.py` always skips the reference-grade/end-to-end validation cases**
@@ -114,7 +122,7 @@ another run holds the card, and then while the card's VRAM is at or above
 such as a binary run by hand. That second wait has no timeout. Compute load
 never makes a run wait. The two cards never block each other. Inside its card
 `pr` runs ctest at `-j CTEST_JOBS` (3) and then the GPU batch as one gtest
-process per GPU binary; `push` runs only the batches. The batch's summary lines are tagged
+process per GPU binary; `push` runs only the batches, each cut to the representatives. The batch's summary lines are tagged
 `[gpu]`, and a crash prints the case it died in. One process, not shards:
 processes on one card time-slice it and gained nothing (`docs/testing.md`, "One
 process, not shards"), so a `[gpu]` log's per-case times are real. A silent or

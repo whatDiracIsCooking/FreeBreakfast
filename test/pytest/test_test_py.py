@@ -77,6 +77,7 @@ def test_pr_defaults() -> None:
 def test_push_flags() -> None:
     args, _ = gates.parse(["push", "--dry-run", "-j", "8", "--preset", "default"])
     assert args.dry_run and args.jobs == "8" and args.preset == "default"
+    assert not args.all and gates.parse(["push", "--all"])[0].all
 
 
 def test_push_refuses_passthrough() -> None:
@@ -557,6 +558,112 @@ def test_tier_tests_without_families_runs_the_listing(
     )
     assert gates.tier_tests({"CTEST_JOBS": "1"}, "p", build, [], tmp_path / "l") == 0
     assert filters[0].count(":") == 8
+
+
+# --- push's representative set ----------------------------------------------
+
+
+def test_push_filters_select_pr_s_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    build = tmp_path / "build"
+    gpu = build / gates.GPU_BINS[2]
+    core = build / gates.GPU_BINS[0]
+    listing = _listing(gpu, build / gates.HOST_BINS[-1])
+    # Behind a launcher, the binary is still found.
+    listing["tests"].append(
+        _entry("Core.Wrapped", ["compute-sanitizer", str(core), "--gtest_filter=C.W"])
+    )
+    families = json.loads(json.dumps(FAMILIES))
+    families["families"]["Core"] = {
+        "members": ["C.W"],
+        "representative": "C.W",
+        "by": "cheapest",
+    }
+    monkeypatch.setattr(gates, "list_families", lambda build_dir: families)
+    monkeypatch.setattr(
+        gates.subprocess,
+        "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 0, "chatter\n" + json.dumps(listing), ""
+        ),
+    )
+    log = tmp_path / "push.log"
+    assert gates.push_filters("push", build, log) == [
+        "C.W",
+        "",
+        "Plain.Validates:Cases/Spin.Matches/Singlet:Typed/1.Works:New.A:New.B",
+    ]
+    # The host and non-gtest entries are not the GPU smoke's.
+    assert "6 of 10 GPU-binary cases selected, against the lister's 5" in (
+        log.read_text()
+    )
+
+
+@pytest.mark.parametrize("fails", ["lister", "marker", "ctest"])
+def test_push_filters_fall_back_to_the_whole_fast_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fails: str
+) -> None:
+    doc = dict(FAMILIES, errors=["x.cpp:3: bad"]) if fails == "marker" else FAMILIES
+    _stub_lister(
+        tmp_path, "" if fails == "lister" else doc, 2 if fails == "lister" else 0
+    )
+    monkeypatch.setattr(gates, "REPO_ROOT", tmp_path)
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kw):
+        if cmd[0] == "ctest":
+            return subprocess.CompletedProcess(cmd, 1, "", "no tests")
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(gates.subprocess, "run", fake_run)
+    log = tmp_path / "push.log"
+    assert gates.push_filters("push", tmp_path / "build", log) == [None] * len(
+        gates.GPU_BINS
+    )
+    assert "push: the GPU smoke runs the whole fast set" in log.read_text()
+
+
+@pytest.mark.parametrize("run_all", [False, True])
+def test_cpp_push_runs_the_filters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run_all: bool
+) -> None:
+    class NoCard:
+        def __init__(self, *a) -> None:
+            pass
+
+        def __enter__(self) -> NoCard:
+            return self
+
+        def __exit__(self, *exc) -> None:
+            pass
+
+    batches = []
+    monkeypatch.setattr(gates, "cpp_unavailable", lambda backend: None)
+    monkeypatch.setattr(gates, "cpp_build", lambda *a, **kw: 0)
+    monkeypatch.setattr(gates, "tree_rev", lambda: ("abc", ""))
+    monkeypatch.setattr(gates, "tree_rev_header", lambda tag, log: None)
+    monkeypatch.setattr(gates, "build_dir_of", lambda preset: tmp_path)
+    monkeypatch.setattr(gates, "HOST_BINS", ())
+    monkeypatch.setattr(gates, "Card", NoCard)
+    monkeypatch.setattr(
+        gates, "push_filters", lambda tag, build_dir, log: ["C.W", "", None]
+    )
+    monkeypatch.setattr(
+        gates,
+        "run_gpu_batch",
+        lambda tag, binary, cfg, log, *, env, cwd: (
+            batches.append((binary.name, env.get("GTEST_FILTER"))) or 0
+        ),
+    )
+    cfg = {"SLOW_TIER_REPORTS": str(tmp_path), "GPU_HIP_PRESETS": "hip"}
+    assert gates.cpp_push(cfg, "default", "8", run_all) == (0, "default")
+    names = [Path(rel).name for rel in gates.GPU_BINS]
+    if run_all:
+        assert batches == [(n, None) for n in names]
+    else:
+        # A binary with nothing selected is not run.
+        assert batches == [(names[0], "C.W"), (names[2], None)]
 
 
 # --- config.sh ---------------------------------------------------------------
