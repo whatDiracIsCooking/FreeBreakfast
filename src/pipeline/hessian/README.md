@@ -819,13 +819,43 @@ partners, PC-QD's refused direction with its own). A configuration the
 step refuses before anything runs (a QD state outside the average, a state
 average without QD, a frozen core) has an empty footprint.
 
-Under the numerical method over the CASSCF chain or a NEVPT2 chain the
-footprint is none, so a capped plan is refused naming `[hessian]`: every
-step those displacements run has a footprint, but the driver holds the
-reference CASSCF's products beside each displaced chain and runs the QD
-tracking, the ensemble's edge and the noise restarts outside the chains,
-which no fold here counts yet. That optional is transitional
-(`../footprint/README.md`, #1122).
+Under the numerical method over the CASSCF chain or a NEVPT2 chain (#1204)
+the reference's chain runs once and is freed, then each displacement's:
+
+```
+then(then(drop(reference), drop(point)),
+     harmonic_analysis_footprint(atoms, syevd_lwork))
+```
+
+`reference` is the chain to `[casscf]` at R, folded as above, writing
+nothing: its orbitals and CI are taken to the host (`CarriedOrbitalsStep`'s
+C, the CI guess) and the chain is freed before the first displacement.
+`point` is a displacement's chain, the same `Pipeline` the run builds
+(molecule, basis, spherical transform, pair classes, `[eri]`, overlap, core
+Hamiltonian, `CarriedOrbitalsStep`, `[casscf]` over the reference's space by
+index from its CI, then `[casscf_gradient]` or `[nevpt2_gradient]`); it is
+freed whole before the next, and the noise restarts, the ladder's tightened
+re-solves and the pairs' points run the same chain from other starts, so
+one fold holds for every point. The chain's readers of the CASSCF's product
+are sized over `[casscf]`'s own roots and weights, which the plan's
+dimensions carry only for a top-level `[casscf]`. Under `quasi_degenerate`
+the driver allocates beside the chains too:
+
+```
+reference = then(then(reference_chain, gradient), edge)
+point     = then(then(point_chain, gradient), edge)
+edge      = drop(then(c_and_d, casci_footprint(nroots + 1)))
+```
+
+At the reference, state P's gradient over the chain's products, for R_P;
+at a point, the tracked state's, retaken beside the chain's own when the
+tracking finds P at another rank. Beside it, the ensemble's edge: the
+solve's orbitals as an `ScfOutput` (C and d) and a `CasciStep` of one more
+root, where the CI space has one. A configuration refused before anything
+runs (both gradients, an integral-direct `[eri]`, and the NEVPT2 refusals
+above) has an empty footprint. Every configuration now has a footprint;
+the optional in the signature is #1122's to delete
+(`../footprint/README.md`).
 
 ## Config
 
@@ -951,11 +981,16 @@ integral-direct `[eri]` -- the default one -- is refused there too
 
 - The footprint: `test/pipeline/nested_footprint_host.cpp`, the numerical
   RHF one, the chain's peak against the harmonic analysis's worked out by
-  hand over water in STO-3G, and none for the analytic method and the CASSCF
-  chain (host-only); `test/gtest/pipeline_preflight_gpu.cpp`, a numerical
-  `[hessian]` of water in STO-3G refused, naming it, under a cap one byte
-  below its peak's room before the first step, and run at the peak, the
-  pool's `UsedMemHigh` over every displacement within the cap.
+  hand over water in STO-3G, the analytic ones, and the semi-numerical
+  CASSCF, SC/PC-NEVPT2 and QD-NEVPT2 ones, the reference's chain and a
+  point's worked out from their steps (host-only);
+  `test/gtest/pipeline_step_footprint_gpu.cpp`, the semi-numerical CASSCF,
+  SC-NEVPT2 and QD-SC-NEVPT2 steps over the skew formaldehyde in STO-3G held
+  to their measured pool peak; `test/gtest/pipeline_preflight_gpu.cpp`, a
+  numerical `[hessian]` of water in STO-3G, over the RHF and over a
+  CAS(2,2)'s gradient, refused, naming it, under a cap one byte below its
+  peak's room before the first step, and run at the peak, the pool's
+  `UsedMemHigh` over every displacement within the cap.
 - The step's contract and its config: `test/pipeline/hessian_host.cpp`
   (`static_assert`s on the run shape, the View and the product; `method`
   read, analytic by default, and refused; `displacement` read and refused;

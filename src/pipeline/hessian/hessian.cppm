@@ -296,12 +296,24 @@ struct HessianStep {
   /// configuration refused before anything runs (a QD state outside the
   /// average, a state average without QD, a frozen core).
   ///
-  /// None under HessianMethod::Numerical over the CASSCF or a NEVPT2 chain:
-  /// every step it runs has a footprint, but the driver holds the reference
-  /// CASSCF's products beside each displaced chain and runs the QD tracking,
-  /// the ensemble's edge and the noise restarts outside the chains, which no
-  /// fold here counts yet. Pre-flight refuses it under a cap. Transitional,
-  /// as step_footprint's optional is (#1122).
+  /// Under HessianMethod::Numerical over the CASSCF or a NEVPT2 chain: the
+  /// reference's chain to `[casscf]`, folded the same way and freed once its
+  /// orbitals and CI are on the host; then each displacement's chain from the
+  /// carried orbitals to the gradient (CarriedOrbitalsStep, @ref casscf from
+  /// the carried CI, then @ref casscf_gradient or @ref nevpt2_gradient),
+  /// freed whole before the next, the restarts, the ladder's re-solves and
+  /// the pairs' points running the same chain; then the harmonic analysis's.
+  /// Every chain step reading the CASSCF's product is sized over
+  /// @ref casscf's roots and weights. Under quasi_degenerate, beside a
+  /// chain's products: QD state P's gradient at the reference, or at a
+  /// displacement the tracked state's retaken beside the chain's own; and
+  /// beside that the ensemble's edge, the solve's orbitals as an ScfOutput
+  /// and a CasciStep of one more root, where the CI space has one. Empty for
+  /// a configuration refused before anything runs (both gradients, an
+  /// integral-direct ERI, and the NEVPT2 refusals above).
+  ///
+  /// The optional is transitional, as step_footprint's is (#1122): every
+  /// configuration has a value.
   [[nodiscard]] std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 };
 

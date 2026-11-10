@@ -9,8 +9,11 @@
 // [hessian] is the chain to [casscf] held under the solution's C and CI
 // vectors and hessian::df_casscf's (one root) or df_sacasscf's (a state
 // average), then the analysis; the analytic NEVPT2 [hessian] the same over
-// the variant's Hessian. A chain whose library calls are not all
-// footprinted has none. The dimensions are filled by hand,
+// the variant's Hessian. The semi-numerical CASSCF and NEVPT2 [hessian] is
+// the reference's chain to [casscf], then each point's chain from the
+// carried orbitals to the gradient, then the analysis, under QD with the
+// state's gradient and the ensemble's edge beside each chain. A chain whose
+// library calls are not all footprinted has none. The dimensions are filled by hand,
 // the basis placed on the host and syevd's work made up (only its order is
 // read), so nothing touches a device.
 
@@ -261,17 +264,19 @@ TEST(NestedFootprint, AnalyticCasscfHessianIsTheChainThenDfCasscf) {
   }
 }
 
-// The chains not footprinted yet: the semi-numerical CASSCF and NEVPT2
-// Hessians, and the CASSCF and NEVPT2 chains of the [optimize] step.
+// The chains not footprinted yet: the CASSCF and NEVPT2 chains of the
+// [optimize] step. Every [hessian] has one (#1204): over an integral-direct
+// ERI the semi-numerical CASSCF and NEVPT2 ones are refused before anything
+// runs, so empty.
 TEST(NestedFootprint, UnfootprintedChainsHaveNone) {
   const fb::BasisSet basis = water_basis();
   const fb::FootprintDimensions dims = water_dims(basis);
   fb::HessianStep casscf_hessian{.method = fb::HessianMethod::Numerical};
   casscf_hessian.casscf_gradient.emplace();
-  EXPECT_FALSE(casscf_hessian.footprint(dims).has_value());
+  EXPECT_EQ(casscf_hessian.footprint(dims), fb::MemoryFootprint{});
   fb::HessianStep nevpt2_hessian{.method = fb::HessianMethod::Numerical};
   nevpt2_hessian.nevpt2_gradient.emplace();
-  EXPECT_FALSE(nevpt2_hessian.footprint(dims).has_value());
+  EXPECT_EQ(nevpt2_hessian.footprint(dims), fb::MemoryFootprint{});
   fb::OptimizeStep casscf_optimize;
   casscf_optimize.casscf_gradient.emplace();
   EXPECT_FALSE(casscf_optimize.footprint(dims).has_value());
@@ -290,9 +295,9 @@ TEST(NestedFootprint, StepFootprintPassesTheOptionalThrough) {
   const fb::FootprintDimensions dims = water_dims(basis);
   EXPECT_EQ(fb::step_footprint(fb::OptimizeStep{}, dims), fb::OptimizeStep{}.footprint(dims));
   EXPECT_EQ(fb::step_footprint(fb::HessianStep{}, dims), fb::HessianStep{}.footprint(dims));
-  fb::HessianStep nevpt2_hessian{.method = fb::HessianMethod::Numerical};
-  nevpt2_hessian.nevpt2_gradient.emplace();
-  EXPECT_FALSE(fb::step_footprint(nevpt2_hessian, dims).has_value());
+  fb::OptimizeStep nevpt2_optimize;
+  nevpt2_optimize.nevpt2_gradient.emplace();
+  EXPECT_FALSE(fb::step_footprint(nevpt2_optimize, dims).has_value());
 }
 
 // The analytic NEVPT2 [hessian] (#1186): the chain to [casscf] held under the
@@ -366,6 +371,137 @@ TEST(NestedFootprint, AnalyticNevpt2HessianIsTheChainThenItsTerms) {
       outside.casscf.nroots = qd ? 1 : 2;
       EXPECT_EQ(outside.footprint(dims), fb::MemoryFootprint{});
     }
+  }
+}
+
+// The semi-numerical CASSCF and NEVPT2 Hessians (#1204) of a CAS(4,4) over
+// water in STO-3G: the reference's chain to [casscf], freed; each point's
+// chain from the carried orbitals (and a carried CI guess) to the gradient,
+// freed; then the analysis. Under QD, beside a chain's products, the state's
+// gradient (P's at the reference, the tracked state's retaken at a point,
+// beside the chain's own) and beside that the ensemble's edge: C and d, and
+// a CASCI of one more root. The dimensions carry no [casscf]'s roots (none is
+// planned at the top level): the step sizes its chain's readers over its
+// own CASSCF's.
+TEST(NestedFootprint, SemiNumericalMultireferenceHessianIsTheReferenceThenEachPoint) {
+  const fb::BasisSet basis = water_basis();
+  const fb::BasisSet aux =
+      place_on_water(fb::resolve_aux_basis("cc-pvdz-jkfit").value().primitive_normalized());
+  fb::FootprintDimensions dims = water_dims(basis);
+  dims.aux = &aux;
+  dims.naux = aux.nao_sphe();
+  dims.ncas = 4;
+  dims.nelecas = 4;
+  for (std::size_t order = dims.syevd_lwork.size(); order <= 64; ++order) {
+    dims.syevd_lwork.push_back(1000 + (64 * order));
+  }
+  const fb::EriStep eri{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvdz-jkfit"};
+  const fb::MemoryFootprint analysis =
+      fb::geometry::harmonic_analysis_footprint(dims.atoms, dims.syevd_lwork);
+  struct Case {
+    std::string_view name;
+    std::vector<double> weights;
+    bool nevpt2 = false;
+    bool qd = false;
+    fb::Nevpt2Variant variant = fb::Nevpt2Variant::Sc;
+  };
+  const std::vector<Case> cases{
+      {.name = "casscf"},
+      {.name = "sa-casscf", .weights = {0.7, 0.3}},
+      {.name = "sc", .nevpt2 = true},
+      {.name = "pc", .nevpt2 = true, .variant = fb::Nevpt2Variant::Pc},
+      {.name = "qd-sc", .weights = {0.5, 0.5}, .nevpt2 = true, .qd = true},
+      {.name = "qd-pc",
+       .weights = {0.5, 0.5},
+       .nevpt2 = true,
+       .qd = true,
+       .variant = fb::Nevpt2Variant::Pc},
+  };
+  for (const Case &c : cases) {
+    SCOPED_TRACE(c.name);
+    const auto nroots = static_cast<std::int32_t>(std::max<std::size_t>(c.weights.size(), 1));
+    fb::HessianStep step{.method = fb::HessianMethod::Numerical, .eri = eri};
+    step.casscf.nroots = nroots;
+    step.casscf.weights = c.weights;
+    if (c.nevpt2) {
+      step.nevpt2_gradient.emplace();
+      step.nevpt2_gradient->variant = c.variant;
+      step.nevpt2_gradient->quasi_degenerate = c.qd;
+      step.nevpt2_gradient->state = c.qd ? 1 : 0;
+    } else {
+      step.casscf_gradient.emplace();
+    }
+    fb::FootprintDimensions at = dims;
+    at.casscf_nroots = static_cast<std::size_t>(nroots);
+    at.casscf_unequal_weights = !c.weights.empty() && c.weights[0] != c.weights[1];
+    const fb::MemoryFootprint last =
+        c.nevpt2 ? step.nevpt2_gradient->footprint(at) : step.casscf_gradient->footprint(at);
+    ASSERT_GT(last.device.peak(), 0U);
+    // The reference: the RHF chain to [scf], then [casscf].
+    std::vector<fb::MemoryFootprint> reference = rhf_chain(at);
+    reference.back() = step.casscf.footprint(at);
+    reference[4] = eri.footprint(at);
+    // A point: no orthogonalizer, guess or SCF; the carried orbitals, the
+    // CASSCF over the reference's space from its CI, then the gradient.
+    fb::CasscfStep displaced = step.casscf;
+    displaced.ncas = 4;
+    displaced.nelecas = 4;
+    displaced.ci_guess = {0.0};
+    const std::vector<fb::MemoryFootprint> point{fb::molecule_footprint(at.natoms),
+                                                 fb::BasisSetStep{}.footprint(at),
+                                                 fb::SphericalTransformStep{}.footprint(at),
+                                                 fb::PrimitivePairClassesStep{}.footprint(at),
+                                                 eri.footprint(at),
+                                                 fb::OverlapStep{}.footprint(at),
+                                                 fb::CoreHamiltonianStep{}.footprint(at),
+                                                 fb::CarriedOrbitalsStep{}.footprint(at),
+                                                 displaced.footprint(at),
+                                                 last};
+    // The carried CI guess is counted: one root's 36 determinants or two's.
+    EXPECT_EQ(displaced.footprint(at).device.peak() - step.casscf.footprint(at).device.peak(),
+              sizeof(double) * 36 * static_cast<std::size_t>(nroots));
+    const auto [reference_scratch, reference_workspace] = chain_peak(reference);
+    const auto [point_scratch, point_workspace] = chain_peak(point);
+    std::size_t reference_held = 0;
+    for (const fb::MemoryFootprint &one : reference) {
+      reference_held += one.device.persistent;
+    }
+    std::size_t point_held = 0;
+    for (const fb::MemoryFootprint &one : point) {
+      point_held += one.device.persistent;
+    }
+    std::size_t scratch = std::max({reference_scratch, point_scratch, analysis.device.scratch});
+    std::size_t workspace =
+        std::max({reference_workspace, point_workspace, analysis.device.workspace});
+    if (c.qd) {
+      fb::CasciStep casci;
+      casci.ncas = 4;
+      casci.nelecas = 4;
+      casci.nroots = 3;
+      const fb::MemoryFootprint edge = casci.footprint(at);
+      const std::size_t orbitals = 2 * sizeof(double) * dims.nao * dims.nao;
+      const std::size_t g = last.device.persistent;
+      for (const std::size_t held : {reference_held, point_held}) {
+        scratch = std::max({scratch, held + g + last.device.scratch,
+                            held + g + orbitals + edge.device.persistent + edge.device.scratch});
+      }
+      workspace = std::max({workspace, edge.device.workspace});
+    }
+
+    const std::optional<fb::MemoryFootprint> fp = step.footprint(dims);
+    ASSERT_TRUE(fp.has_value());
+    EXPECT_EQ(fp->device.persistent, 0U);
+    EXPECT_EQ(fp->device.workspace, workspace);
+    EXPECT_EQ(fp->device.peak() - fp->device.workspace, scratch);
+
+    // Refused before anything runs: both gradients, an integral-direct ERI.
+    fb::HessianStep both = step;
+    both.casscf_gradient.emplace();
+    both.nevpt2_gradient.emplace();
+    EXPECT_EQ(both.footprint(dims), fb::MemoryFootprint{});
+    fb::HessianStep direct = step;
+    direct.eri.mode = fb::EriMode::IntegralDirect;
+    EXPECT_EQ(direct.footprint(dims), fb::MemoryFootprint{});
   }
 }
 

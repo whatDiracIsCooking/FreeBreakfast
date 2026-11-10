@@ -77,6 +77,55 @@ template <class... Last>
   });
 }
 
+// @p casscf as a chain runs it: writing nothing, its outputs the outer
+// pipeline's.
+[[nodiscard]] CasscfStep chain_casscf_step(CasscfStep casscf) {
+  casscf.molden.clear();
+  casscf.orbitals_npy.clear();
+  casscf.ci_npy.clear();
+  return casscf;
+}
+
+// @p casscf, a chain's, as every displaced solve runs it: the reference's
+// @p ncas orbitals and @p nelecas electrons by index, as they come (core,
+// active, virtual), with no pick and no start from files, and the CI from
+// @p ci_guess, the reference's roots.
+[[nodiscard]] CasscfStep displaced_casscf_step(CasscfStep casscf, int32_t ncas, int32_t nelecas,
+                                               std::vector<double> ci_guess) {
+  casscf.active.clear();
+  casscf.avas.clear();
+  casscf.orbitals.clear(); // a start from files is the reference's only
+  casscf.ci.clear();
+  casscf.ncas = ncas;
+  casscf.nelecas = nelecas;
+  casscf.ci_guess = std::move(ci_guess);
+  return casscf;
+}
+
+// The Pipeline of a displaced CASSCF chain, @p casscf over @p start's
+// orbitals carried into @p molecule's overlap, then @p last
+// (CasscfGradientStep or Nevpt2GradientStep): what the semi-numerical
+// CASSCF and NEVPT2 Hessians run at each displacement, and what
+// HessianStep::footprint folds.
+template <class Last>
+[[nodiscard]] auto carried_chain(const HessianStep &step, DisplacedMoleculeStep molecule,
+                                 CarriedOrbitalsStep start, CasscfStep casscf, Last last) {
+  return Pipeline<DisplacedMoleculeStep, BasisSetStep, SphericalTransformStep,
+                  PrimitivePairClassesStep, EriStep, OverlapStep, CoreHamiltonianStep,
+                  CarriedOrbitalsStep, CasscfStep, Last>::create({
+      std::move(molecule),
+      step.basis_set,
+      SphericalTransformStep{},
+      PrimitivePairClassesStep{},
+      step.eri,
+      OverlapStep{},
+      CoreHamiltonianStep{},
+      std::move(start),
+      std::move(casscf),
+      std::move(last),
+  });
+}
+
 // The @p count doubles at @p d, on the host.
 [[nodiscard]] Result<std::vector<double>> download(DeviceResources &res, const double *d,
                                                    size_t count) {
@@ -445,20 +494,16 @@ Status check_displaced_casscf(size_t nao, std::span<const double> s,
 }
 
 std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions &dims) const {
-  // The semi-numerical CASSCF and NEVPT2 chains have none yet: their
-  // displaced CASSCFs start from the reference's carried orbitals, a chain
-  // step without one.
-  if ((nevpt2_gradient || casscf_gradient) && method == HessianMethod::Numerical) {
-    return std::nullopt;
-  }
-  // A chain's plan folded as pre-flight folds one; none were a step of it
-  // ever without a footprint. The chains are fixed, so they always plan.
-  const auto fold = [&dims](const auto &chain) -> std::optional<MemoryFootprint> {
+  // A chain's plan folded as pre-flight folds one, at @p at; none were a step
+  // of it ever without a footprint. The chains are fixed, so they always
+  // plan.
+  const auto fold = [](const auto &chain,
+                       const FootprintDimensions &at) -> std::optional<MemoryFootprint> {
     if (!chain) {
       return std::nullopt;
     }
     std::vector<MemoryFootprint> steps;
-    for (const StepFootprint &step : chain->footprints(dims)) {
+    for (const StepFootprint &step : chain->footprints(at)) {
       if (!step.footprint) {
         return std::nullopt;
       }
@@ -468,8 +513,80 @@ std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions 
   };
   const MemoryFootprint analysis =
       geometry::harmonic_analysis_footprint(dims.atoms, dims.syevd_lwork);
+  // Refused before anything runs: both gradients, a CASSCF chain over an
+  // integral-direct ERI, and under a NEVPT2 one a QD state outside the
+  // average, a state average without QD, or a frozen core.
+  const int32_t nroots = std::max(casscf.nroots, 1);
+  if (casscf_gradient || nevpt2_gradient) {
+    const bool qd = nevpt2_gradient && nevpt2_gradient->quasi_degenerate;
+    if ((casscf_gradient && nevpt2_gradient) || eri.mode != EriMode::DensityFitting ||
+        dims.basis == nullptr || dims.aux == nullptr ||
+        (nevpt2_gradient &&
+         ((qd && (nroots < 2 || nevpt2_gradient->state < 0 || nevpt2_gradient->state >= nroots)) ||
+          (!qd && nroots != 1) || nevpt2_gradient->frozen_core != 0))) {
+      return MemoryFootprint{};
+    }
+  }
+  if (method == HessianMethod::Numerical && (casscf_gradient || nevpt2_gradient)) {
+    // The CASSCF chain's: the steps reading its product are sized over this
+    // step's own CASSCF, which the plan's dimensions do not carry when no
+    // top-level [casscf] is planned.
+    FootprintDimensions at = dims;
+    at.casscf_nroots = static_cast<size_t>(nroots);
+    at.casscf_unequal_weights =
+        std::ranges::contains(response::rotating_pairs(casscf.weights), true);
+    const CasscfStep chain_casscf = chain_casscf_step(casscf);
+    // The reference: the chain to [casscf] at R, freed once its orbitals and
+    // CI are on the host. Then each displacement's chain, from the carried
+    // orbitals (CarriedOrbitalsStep's footprint reads only the dimensions)
+    // and a carried CI guess (CasscfStep's reads only that there is one),
+    // to the gradient, freed whole before the next; the restarts, the
+    // tightened re-solves and the pairs' points run the same chain.
+    std::optional<MemoryFootprint> reference =
+        fold(scf_chain(*this, DisplacedMoleculeStep{}, scf, chain_casscf), at);
+    const CasscfStep displaced = displaced_casscf_step(
+        chain_casscf, static_cast<int32_t>(dims.ncas), static_cast<int32_t>(dims.nelecas), {0.0});
+    std::optional<MemoryFootprint> point =
+        casscf_gradient ? fold(carried_chain(*this, DisplacedMoleculeStep{}, CarriedOrbitalsStep{},
+                                             displaced, *casscf_gradient),
+                               at)
+                        : fold(carried_chain(*this, DisplacedMoleculeStep{}, CarriedOrbitalsStep{},
+                                             displaced, *nevpt2_gradient),
+                               at);
+    if (!reference || !point) {
+      return std::nullopt;
+    }
+    if (nevpt2_gradient && nevpt2_gradient->quasi_degenerate) {
+      // Beside a chain's products, outside it: at the reference, state P's
+      // gradient, for R_P; at a displacement, the tracked state's, retaken
+      // beside the chain's own when the state is not of P's rank. Then,
+      // beside them, the ensemble's edge: the solve's orbitals as an
+      // ScfOutput (C and d), and a CASCI of one more root over them, where
+      // the CI space has a root past the average.
+      const MemoryFootprint gradient = nevpt2_gradient->footprint(at);
+      MemoryFootprint edge;
+      const auto ncas = static_cast<int32_t>(dims.ncas);
+      const auto nelecas = static_cast<int32_t>(dims.nelecas);
+      const int32_t nbeta = (nelecas - static_cast<int32_t>(dims.n_alpha - dims.n_beta)) / 2;
+      const auto strings = [ncas](const int32_t electrons) {
+        return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
+      };
+      if (strings(nelecas - nbeta) * strings(nbeta) > static_cast<size_t>(nroots)) {
+        CasciStep casci;
+        casci.ncas = ncas;
+        casci.nelecas = nelecas;
+        casci.nroots = nroots + 1;
+        const MemoryFootprint orbitals{
+            .device = {.persistent = 2 * sizeof(double) * dims.nao * dims.nao}};
+        edge = drop(then(orbitals, casci.footprint(at)));
+      }
+      reference = then(then(*reference, gradient), edge);
+      point = then(then(*point, gradient), edge);
+    }
+    return then(then(drop(*reference), drop(*point)), analysis);
+  }
   if (method == HessianMethod::Numerical) {
-    const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf, GradientStep{}));
+    const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf, GradientStep{}), dims);
     if (!chain) {
       return std::nullopt;
     }
@@ -486,7 +603,7 @@ std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions 
     // hessian::df_sc_nevpt2 or df_pc_nevpt2, or one QD state's
     // df_qd_sc_nevpt2 or df_qd_pc_nevpt2, in every coordinate. The active
     // space is the plan's worst case, as CasscfStep::footprint takes it.
-    const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf, casscf));
+    const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf, casscf), dims);
     if (!chain) {
       return std::nullopt;
     }
@@ -496,7 +613,6 @@ std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions 
     const auto two_s = static_cast<int32_t>(dims.n_alpha - dims.n_beta);
     const int32_t nbeta = (nelecas - two_s) / 2;
     const int32_t nalpha = nelecas - nbeta;
-    const int32_t nroots = std::max(casscf.nroots, 1);
     const auto strings = [ncas](const int32_t electrons) {
       return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
     };
@@ -508,13 +624,7 @@ std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions 
     const bool rotating = std::ranges::contains(response::rotating_pairs(casscf.weights), true);
     MemoryFootprint terms;
     if (nevpt2_gradient) {
-      // Refused before anything runs: a QD state outside the average, a
-      // state average without QD, a frozen core.
       const bool qd = nevpt2_gradient->quasi_degenerate;
-      if ((qd && (nroots < 2 || nevpt2_gradient->state < 0 || nevpt2_gradient->state >= nroots)) ||
-          (!qd && nroots != 1) || nevpt2_gradient->frozen_core != 0) {
-        return MemoryFootprint{};
-      }
       const auto k = static_cast<int32_t>(3 * dims.natoms);
       const bool pc = nevpt2_gradient->variant == Nevpt2Variant::Pc;
       if (qd) {
@@ -538,7 +648,7 @@ std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions 
     }
     return then(drop(then(then(*chain, solution), terms)), analysis);
   }
-  const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf));
+  const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf), dims);
   if (!chain) {
     return std::nullopt;
   }
@@ -710,10 +820,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   // The chain writes nothing: its steps' outputs are the outer pipeline's.
   ScfStep chain_scf = scf;
   chain_scf.molden.clear();
-  CasscfStep chain_casscf = casscf;
-  chain_casscf.molden.clear();
-  chain_casscf.orbitals_npy.clear();
-  chain_casscf.ci_npy.clear();
+  const CasscfStep chain_casscf = chain_casscf_step(casscf);
   CasscfGradientStep chain_casscf_gradient = casscf_gradient.value_or(CasscfGradientStep{});
   chain_casscf_gradient.json_path.clear();
   Nevpt2GradientStep chain_nevpt2_gradient = nevpt2_gradient.value_or(Nevpt2GradientStep{});
@@ -1096,13 +1203,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       reference_ncore = static_cast<size_t>(cas.ncore);
       // By index, as they come: core, active, virtual; and the CI from the
       // reference's roots, over those active orbitals moved.
-      displaced_casscf.active.clear();
-      displaced_casscf.avas.clear();
-      displaced_casscf.orbitals.clear(); // a start from files is the reference's only
-      displaced_casscf.ci.clear();
-      displaced_casscf.ncas = cas.ncas;
-      displaced_casscf.nelecas = cas.nelecas;
-      displaced_casscf.ci_guess = cas.vectors;
+      displaced_casscf = displaced_casscf_step(chain_casscf, cas.ncas, cas.nelecas, cas.vectors);
       FBF_LOG_INFO("hessian: reference DF-CASSCF({}, {}) over {} root(s), E = {:.10f}", cas.nelecas,
                    cas.ncas, cas.energies.size(), cas.energy);
       if (qd) {
@@ -1176,21 +1277,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                             nullptr) -> Result<std::vector<double>> {
       // The production solves' diagnostics, not a tightened re-solve's.
       const bool production = &casscf_step == &displaced_casscf;
-      auto chain =
-          FBF_TRY((Pipeline<DisplacedMoleculeStep, BasisSetStep, SphericalTransformStep,
-                            PrimitivePairClassesStep, EriStep, OverlapStep, CoreHamiltonianStep,
-                            CarriedOrbitalsStep, CasscfStep, Last>::create({
-              displaced(shift),
-              basis_set,
-              SphericalTransformStep{},
-              PrimitivePairClassesStep{},
-              eri,
-              OverlapStep{},
-              CoreHamiltonianStep{},
-              start,
-              casscf_step,
-              last,
-          })));
+      auto chain = FBF_TRY(carried_chain(*this, displaced(shift), start, casscf_step, last));
       FBF_TRY(at_geometry(chain.run(node), where));
       const CasscfOutput &cas = *chain.template get<CasscfOutput>();
       FBF_LOG_DEBUG("hessian: {}: CASSCF in {} macro iterations", where, cas.iterations.size());
