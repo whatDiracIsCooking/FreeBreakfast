@@ -2433,4 +2433,120 @@ TEST_F(Nevpt2ReaderFootprint, HessianProducts) {
   }
 }
 
+// The QD Hessian products (#1195) over the SA-2 CASSCF at a general W, each
+// alone at its least, along a random (h_dot, B_dot, every root's c_dot) in
+// the MO basis, z^c the zc_multipliers of the summed reverse pass. The
+// shapes bring the QD-only pieces in one at a time: no direction is
+// qd_adjoints' kept-QdFixedBars pass and Phi's set-up; one direction with
+// itself as partner adds the pair walk's Hessian-vector product, its
+// transition callback and qd_rdms_tangent with the one-slot terms; one
+// with the parts adds qd_rdms_tangent without them, the zeroed bars and
+// every part. PC adds lifts_along before the walk, along the direction
+// alone and with its partner, its classes at the run's own kept ranks.
+//
+// Live at the peak, at most, inside the pair walk's Hessian-vector product:
+// the QD forward's arrays (27) and its four pairs' RDMs (16), the bars (27)
+// and the roots' own (10), the transitions' folded dm3 (2), the
+// QdScAdjoint's six, Phi's five, B whole, D, W, the summed h_bar and Λ, the
+// Sigma's four, u, each direction's and partner's QD tangent (27 + 16),
+// each direction's bars, Λ, own and y_walk (28 + 10 + 1), the transition's
+// three outputs, and the walk's own (as kQdScAdjointLive's).
+constexpr std::size_t kQdProductBase = 27 + 16 + 27 + 10 + 2 + 6 + 5 + 5 + 4 + 1;
+constexpr std::size_t kQdTangentLive = 27 + 16;
+constexpr std::size_t kQdBarsLive = 28 + 10 + 1 + 3;
+constexpr std::size_t kQdScProductLive = kQdProductBase + 58;
+constexpr std::size_t kQdPcProductLive = kQdProductBase + 120;
+
+TEST_F(Nevpt2ReaderFootprint, QdHessianProducts) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  Nevpt2Reference &s = sa();
+  fb::DeviceResources &in = s.plan.inputs;
+  const std::int32_t ncore = s.cas->ncore;
+  const std::int32_t ncas = s.cas->ncas;
+  const std::int32_t nmo = s.nmo();
+  const std::int32_t naux = s.fit().naux;
+  const std::int32_t nroots = s.nroots();
+  const auto &lwork = s.dims().syevd_lwork;
+  const fb::mcscf::Solution &sol = *s.solution;
+  const double *const b = s.fit().b.data();
+  const double *const c = sol.c.data();
+  const double *const h = s.plan.h->h.data();
+  const double *const vectors = sol.roots.vectors.data();
+  auto alpha = fb::ci::DeviceStringSet::create(in, ncas, s.cas->nelecas / 2).value();
+  auto beta = fb::ci::DeviceStringSet::create(in, ncas, s.cas->nelecas / 2).value();
+  const auto ny =
+      static_cast<std::size_t>(alpha.size()) * beta.size() * static_cast<std::size_t>(nroots);
+  const auto nmo2 = static_cast<std::size_t>(nmo) * static_cast<std::size_t>(nmo);
+  const std::vector<double> w{0.6, 0.2, 0.2, 0.4};
+  const std::vector<std::array<std::int64_t, 8>> dropped = s.qd_dropped();
+  std::vector<fb::Buffers::device<double>> held;
+  const fb::nevpt2::MoDirections one{.count = 1,
+                                     .h = random_on_device(in, held, nmo2, 31),
+                                     .b = random_on_device(in, held, naux * nmo2, 32),
+                                     .c = random_on_device(in, held, ny, 33)};
+  // The same (h_dot, B_dot) with no CI part: no root moves, so PC's lifts
+  // are zero along it, and as the random direction's partner it keeps the
+  // Schur-lift check from refusing the coupling (Eq. qd-pcfail), which a
+  // random CI direction lifts on water's symmetric point.
+  held.emplace_back(ny, in.device());
+  ASSERT_EQ(wwr::wwrMemsetAsync(held.back().data(), 0, sizeof(double) * ny, in.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(in.sync());
+  const fb::nevpt2::MoDirections still{.count = 1, .h = one.h, .b = one.b, .c = held.back().data()};
+  const fb::nevpt2::QdScAdjoint corr =
+      fb::nevpt2::qd_sc_adjoint(in, alpha, beta, naux, nmo, nmo, b, c, h, ncore, ncas, sol.weights,
+                                vectors, w, 0)
+          .value();
+  const fb::nevpt2::ZcMultipliers zc =
+      fb::nevpt2::zc_multipliers(in, nmo, ncore, ncas, corr.a.data(), corr.epsilon.data()).value();
+  const double *const z = zc.z.data();
+  struct Shape {
+    std::int32_t count;
+    bool partner;
+    bool parts;
+    std::size_t live;
+  };
+  for (const Shape &sh :
+       {Shape{0, false, false, kQdProductBase},
+        Shape{1, true, false, kQdScProductLive + (2 * kQdTangentLive) + kQdBarsLive},
+        Shape{1, false, true, kQdScProductLive + kQdTangentLive + kQdBarsLive}}) {
+    SCOPED_TRACE(
+        std::format("SC: {} directions, partner {}, parts {}", sh.count, sh.partner, sh.parts));
+    const fb::nevpt2::MoDirections dirs = sh.count > 0 ? one : fb::nevpt2::MoDirections{};
+    const fb::nevpt2::MoDirections partners = sh.partner ? one : fb::nevpt2::MoDirections{};
+    expect_least_footprint(
+        fb::nevpt2::qd_sc_hessian_product_footprint(naux, nmo, nmo, ncore, ncas, 2, 2, nroots, 0, w,
+                                                    dirs.count, partners.count, sh.parts),
+        sh.live, [&](fb::DeviceResources &res) {
+          const auto p = fb::nevpt2::qd_sc_hessian_product(res, alpha, beta, naux, nmo, nmo, b, c,
+                                                           h, ncore, ncas, sol.weights, vectors, w,
+                                                           z, 0, dirs, partners, sh.parts);
+          ASSERT_TRUE(p) << p.error().message;
+          EXPECT_EQ(p->products.size(), static_cast<std::size_t>(dirs.count));
+        });
+  }
+  // PC: the CI-less direction alone (the lifts at u = 0), then the random
+  // one with it as partner and the parts (the lifts along both).
+  for (const Shape &sh :
+       {Shape{1, false, false, kQdPcProductLive + kQdTangentLive + kQdBarsLive},
+        Shape{1, true, true, kQdPcProductLive + (2 * kQdTangentLive) + kQdBarsLive}}) {
+    SCOPED_TRACE(std::format("PC: partner {}, parts {}", sh.partner, sh.parts));
+    const fb::nevpt2::MoDirections dirs = sh.partner ? one : still;
+    const fb::nevpt2::MoDirections partners = sh.partner ? still : fb::nevpt2::MoDirections{};
+    const auto at = [&](std::span<const std::array<std::int64_t, 8>> ranks) {
+      return fb::nevpt2::qd_pc_hessian_product_footprint(
+          naux, nmo, nmo, ncore, ncas, 2, 2, nroots, 0, lwork, 1, partners.count, sh.parts, ranks);
+    };
+    expect_least_footprint(at(dropped), sh.live, [&](fb::DeviceResources &res) {
+      const auto p = fb::nevpt2::qd_pc_hessian_product(res, alpha, beta, naux, nmo, nmo, b, c, h,
+                                                       ncore, ncas, sol.weights, vectors, w, z, 0,
+                                                       dirs, partners, sh.parts);
+      ASSERT_TRUE(p) << p.error().message;
+      EXPECT_EQ(p->products.size(), 1U);
+    });
+    EXPECT_GE(at({}).device.peak(), at(dropped).device.peak());
+  }
+}
+
 } // namespace

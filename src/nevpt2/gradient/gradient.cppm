@@ -780,6 +780,28 @@ struct QdScHessianProduct {
     std::span<const double> w, const double *z, int32_t batch, const MoDirections &directions,
     const MoDirections &partners = {}, bool parts = false);
 
+/// @brief What @ref qd_sc_hessian_product holds over @p naux fitting
+/// functions, @p nao AOs and @p nmo orbitals with @p ncore core and @p ncas
+/// active orbitals holding @p n_alpha and @p n_beta electrons, @p nroots
+/// roots at @p batch and W @p w (sc_effective_hamiltonian_hvp_footprint's
+/// hbar: only its trace is read), along @p count directions with
+/// @p partners (0, or one per direction), with or without the @p parts:
+/// qd_sc_adjoint's reverse pass with its arrays and folded bars kept (the
+/// transitions' dm3 bars among them), the QdScAdjoint, Phi^SA's ZcAdjoint, B
+/// whole, D, W, the summed h_bar and Λ, the Sigma; u and the QD builders'
+/// tangent along every direction and partner (qd_direction_arrays'); per
+/// direction its fresh bars, Λ, each root's own and y_walk, beside the pair
+/// walk's Hessian-vector product and its transitions' outputs; then per
+/// direction Phi^SA's tangent, the curvature, the reverse pass's tangent
+/// (bars_tangent with every root's and transition's RDM step at one
+/// determinant), the product and its parts. Persistent: the products and
+/// their parts.
+[[nodiscard]] MemoryFootprint
+qd_sc_hessian_product_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore, int32_t ncas,
+                                int32_t n_alpha, int32_t n_beta, int32_t nroots, int32_t batch,
+                                std::span<const double> w, int32_t count, int32_t partners = 0,
+                                bool parts = false);
+
 /// @brief The PC-QD-NEVPT2 effective Hamiltonian's correlation elements of
 /// the roots @p vectors over the shared orbitals @p c: qd_sc_energy's inputs,
 /// built the same way from the same arguments, through
@@ -908,6 +930,21 @@ struct QdPcHessianProduct {
     int32_t ncore, int32_t ncas, std::span<const double> weights, const double *vectors,
     std::span<const double> w, const double *z, int32_t batch, const MoDirections &directions,
     const MoDirections &partners = {}, bool parts = false, double pc_floor = 0.0, bool span = true);
+
+/// @brief What @ref qd_pc_hessian_product holds:
+/// qd_sc_hessian_product_footprint with qd_pc_adjoint's reverse pass and
+/// pc_effective_hamiltonian_hvp's walk (@p syevd_lwork and @p dropped as
+/// qd_pc_adjoint_footprint's: per state its diagonal PcClassEnergies::
+/// dropped, or empty for the rank that holds the most), and before the walk
+/// the Schur lifts on every ket along each direction and its partner (K u,
+/// the RDMs' second derivative by nevpt2::rdms at one determinant, and
+/// pc_metric_lifts).
+[[nodiscard]] MemoryFootprint
+qd_pc_hessian_product_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore, int32_t ncas,
+                                int32_t n_alpha, int32_t n_beta, int32_t nroots, int32_t batch,
+                                std::span<const size_t> syevd_lwork, int32_t count,
+                                int32_t partners = 0, bool parts = false,
+                                std::span<const std::array<int64_t, 8>> dropped = {});
 
 /// @brief zc_multipliers' result.
 struct ZcMultipliers {
