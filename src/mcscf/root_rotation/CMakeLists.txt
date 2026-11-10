@@ -1,9 +1,9 @@
 # The module: mcscf::root_rotation, host code over the fitted integrals, the
 # Fock, the CI RDMs, relaxed_hessian's response_gradient and wwr's BLAS, with
 # no kernels of its own. DeviceResources, Buffers, Molecule, BasisSet,
-# SphericalMatrixAO, Derivatives and Result are in its signature, so those
-# targets are PUBLIC. The calls it makes are PRIVATE, response's
-# relaxed_hessian among them.
+# SphericalMatrixAO, Derivatives, Result and its footprint's MemoryFootprint
+# are in its signature, so those targets are PUBLIC. The calls it makes are
+# PRIVATE, response's relaxed_hessian among them.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.mcscf.root_rotation
@@ -17,12 +17,14 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::basis
   free_breakfast::molecule
   free_breakfast::recipes::matrix_ao
   free_breakfast::mcscf::derivative
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::active_space
   free_breakfast::ci::strings

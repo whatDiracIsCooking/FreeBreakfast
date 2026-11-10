@@ -12,6 +12,8 @@ import free_breakfast.core.constants; // kOne, kZero, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemv, geam
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.active_space;
@@ -238,6 +240,39 @@ Result<RootRotation> root_rotation(DeviceResources &res, const Molecule &molecul
     }
   }
   return out;
+}
+
+MemoryFootprint root_rotation_footprint(const BasisSet &basis, const BasisSet &aux,
+                                        const int32_t ncore, const int32_t ncas,
+                                        const int32_t nalpha, const int32_t nbeta,
+                                        const int32_t nroots) {
+  const size_t nao = basis.nao_sphe();
+  if (nroots < 2 || ncore < 0 || ncas < 1 ||
+      static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao || aux.nao_sphe() == 0) {
+    return {};
+  }
+  const auto nmo = static_cast<int32_t>(nao);
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const size_t na2 = n_act * n_act;
+  const size_t na4 = na2 * na2;
+  const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
+  const size_t n_pairs = (n_core * (nao - n_core)) + (n_act * (nao - n_core - n_act));
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const size_t dim = strings(nalpha) * strings(nbeta);
+  MemoryFootprint own{
+      .device = {.persistent = sizeof(double) * ((2 * dim) + (2 * (na2 + na4)) + (nao * nao) +
+                                                 std::max<size_t>(n_pairs, 1) + n_x)}};
+  own.device.workspace = ci::rdm12_footprint(ncas, static_cast<int32_t>(dim)).device.workspace;
+  const MemoryFootprint chain =
+      then(then(ci::device_string_set_footprint(ncas, nalpha),
+                ci::device_string_set_footprint(ncas, nbeta)),
+           then(own, then(casscf_integrals_footprint(nmo, naux, ncore, ncas),
+                          response::fock_footprint(nmo, naux, ncore, ncas))));
+  return drop(chain);
 }
 
 } // namespace free_breakfast::mcscf

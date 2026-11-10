@@ -5,8 +5,11 @@
 // footprints over water in STO-3G, integral-direct. The analytic DF-RHF
 // [hessian], over cc-pVDZ-JKFIT placed the same way, is the chain to [scf]
 // held under C's buffer, hessian::df_rhf's and the dipole derivative's, then
-// the analysis; over an integral-direct ERI, empty. A chain whose library
-// calls are not all footprinted has none. The dimensions are filled by hand,
+// the analysis; over an integral-direct ERI, empty. The analytic DF-CASSCF
+// [hessian] is the chain to [casscf] held under the solution's C and CI
+// vectors and hessian::df_casscf's (one root) or df_sacasscf's (a state
+// average), then the analysis. A chain whose library calls are not all
+// footprinted has none. The dimensions are filled by hand,
 // the basis placed on the host and syevd's work made up (only its order is
 // read), so nothing touches a device.
 
@@ -196,13 +199,82 @@ TEST(NestedFootprint, AnalyticHessianOverIntegralDirectIsEmpty) {
   EXPECT_EQ(*fp, fb::MemoryFootprint{});
 }
 
-// The chains not footprinted yet: the CASSCF chains of both steps (#1176).
+// The analytic DF-CASSCF Hessian of a CAS(4,4) over water in STO-3G (three
+// core orbitals), one root and one of two at equal weights and at unequal
+// ones: the chain to [casscf], its products held through the branch, the
+// solution's C and CI vectors beside them and hessian::df_casscf's or
+// df_sacasscf's; all freed before the analysis.
+TEST(NestedFootprint, AnalyticCasscfHessianIsTheChainThenDfCasscf) {
+  const fb::BasisSet basis = water_basis();
+  const fb::BasisSet aux =
+      place_on_water(fb::resolve_aux_basis("cc-pvdz-jkfit").value().primitive_normalized());
+  fb::FootprintDimensions dims = water_dims(basis);
+  dims.aux = &aux;
+  dims.naux = aux.nao_sphe();
+  dims.ncas = 4;
+  dims.nelecas = 4;
+  // Through the orders a CASSCF diagonalizes at: its CI subspace and its
+  // augmented Hessian's, past nao.
+  for (std::size_t order = dims.syevd_lwork.size(); order <= 64; ++order) {
+    dims.syevd_lwork.push_back(1000 + (64 * order));
+  }
+  const fb::EriStep eri{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvdz-jkfit"};
+  const fb::MemoryFootprint analysis =
+      fb::geometry::harmonic_analysis_footprint(dims.atoms, dims.syevd_lwork);
+  for (const std::vector<double> &weights :
+       {std::vector<double>{}, std::vector<double>{0.5, 0.5}, std::vector<double>{0.7, 0.3}}) {
+    SCOPED_TRACE(weights.size());
+    const auto nroots = static_cast<std::int32_t>(std::max<std::size_t>(weights.size(), 1));
+    fb::HessianStep step{.method = fb::HessianMethod::Analytic, .eri = eri};
+    step.casscf.nroots = nroots;
+    step.casscf.weights = weights;
+    step.casscf_gradient.emplace();
+    std::vector<fb::MemoryFootprint> chain = rhf_chain(dims);
+    chain.back() = step.casscf.footprint(dims);
+    chain[4] = eri.footprint(dims);
+    const auto [chain_scratch, chain_workspace] = chain_peak(chain);
+    std::size_t held = 0;
+    for (const fb::MemoryFootprint &one : chain) {
+      held += one.device.persistent;
+    }
+    // CAS(4,4) at two alpha and two beta electrons: 36 determinants.
+    const std::size_t solution =
+        sizeof(double) * ((dims.nao * dims.nao) + (36 * static_cast<std::size_t>(nroots)));
+    const fb::MemoryFootprint terms =
+        nroots == 1
+            ? fb::hessian::df_casscf_footprint(basis, aux, 3, 4, 2, 2, dims.syevd_lwork[4])
+            : fb::hessian::df_sacasscf_footprint(basis, aux, 3, 4, 2, 2, nroots,
+                                                 weights[0] != weights[1], dims.syevd_lwork[4]);
+    ASSERT_GT(terms.device.persistent, 0U);
+    ASSERT_GT(terms.device.scratch, 0U);
+
+    const std::optional<fb::MemoryFootprint> fp = step.footprint(dims);
+    ASSERT_TRUE(fp.has_value());
+    EXPECT_EQ(fp->device.persistent, 0U);
+    EXPECT_EQ(fp->device.workspace,
+              std::max({chain_workspace, terms.device.workspace, analysis.device.workspace}));
+    EXPECT_EQ(
+        fp->device.peak() - fp->device.workspace,
+        std::max({chain_scratch, held + solution + terms.device.persistent + terms.device.scratch,
+                  analysis.device.scratch}));
+  }
+}
+
+// The chains not footprinted yet (#1176): the semi-numerical CASSCF
+// Hessian, the NEVPT2 Hessians by either method, and the CASSCF and NEVPT2
+// chains of the [optimize] step.
 TEST(NestedFootprint, UnfootprintedChainsHaveNone) {
   const fb::BasisSet basis = water_basis();
   const fb::FootprintDimensions dims = water_dims(basis);
   fb::HessianStep casscf_hessian{.method = fb::HessianMethod::Numerical};
   casscf_hessian.casscf_gradient.emplace();
   EXPECT_FALSE(casscf_hessian.footprint(dims).has_value());
+  for (const fb::HessianMethod method :
+       {fb::HessianMethod::Analytic, fb::HessianMethod::Numerical}) {
+    fb::HessianStep nevpt2_hessian{.method = method};
+    nevpt2_hessian.nevpt2_gradient.emplace();
+    EXPECT_FALSE(nevpt2_hessian.footprint(dims).has_value());
+  }
   fb::OptimizeStep casscf_optimize;
   casscf_optimize.casscf_gradient.emplace();
   EXPECT_FALSE(casscf_optimize.footprint(dims).has_value());
@@ -221,9 +293,9 @@ TEST(NestedFootprint, StepFootprintPassesTheOptionalThrough) {
   const fb::FootprintDimensions dims = water_dims(basis);
   EXPECT_EQ(fb::step_footprint(fb::OptimizeStep{}, dims), fb::OptimizeStep{}.footprint(dims));
   EXPECT_EQ(fb::step_footprint(fb::HessianStep{}, dims), fb::HessianStep{}.footprint(dims));
-  fb::HessianStep casscf_hessian;
-  casscf_hessian.casscf_gradient.emplace();
-  EXPECT_FALSE(fb::step_footprint(casscf_hessian, dims).has_value());
+  fb::HessianStep nevpt2_hessian;
+  nevpt2_hessian.nevpt2_gradient.emplace();
+  EXPECT_FALSE(fb::step_footprint(nevpt2_hessian, dims).has_value());
 }
 
 } // namespace

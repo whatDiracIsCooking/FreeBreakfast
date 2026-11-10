@@ -224,4 +224,28 @@ zvectors(DeviceResources &res, RelaxedHessian &relaxed, const Hessian &hessian,
          double tolerance = 1e-10, int32_t max_iterations = 200,
          std::span<const double> theta_rhs = {}, double ci_diagonal_floor = 1e-2);
 
+/// @brief What @ref zvectors holds with CpSolver::Schur over @p ncol columns,
+/// @p n_pairs orbital pairs and @p nroots CI vectors of @p dim determinants,
+/// past the RelaxedHessian's own (@c relaxed_hessian_footprint, its
+/// block_columns at least @p ncol):
+///
+/// - persistent: the ZVectors' z_o and z_c, every column's;
+/// - scratch: -B, H~ Z + B and diag(H)^-1, and the roots' overlaps of every
+///   column, held throughout; beside them, one phase at a time: with
+///   @p rotating and @p theta_rhs, the rotations' CI blocks and their
+///   matrices; pcg_solve's buffer at ncol columns (4 n_pairs ncol + 2 ncol
+///   doubles) with one block product; the true residuals' block product;
+///   with @p rotating, read_rotations' overlaps;
+/// - workspace: @p product's.
+///
+/// @p product is one block product's own beyond the RelaxedHessian's members:
+/// @c hessian_apply_footprint of the Hessian @p relaxed was created over, the
+/// least a density-fitted block runs with (its J and K batch grows with the
+/// memory budget). @p rotating and @p theta_rhs as @ref zvector_footprint's.
+/// Not counted: the borrowed CI sigma's apply scratch, which its owner keeps.
+/// Empty for @p ncol or @p nroots below 1.
+[[nodiscard]] MemoryFootprint zvectors_footprint(int32_t n_pairs, int32_t dim, int32_t nroots,
+                                                 int32_t ncol, const MemoryFootprint &product,
+                                                 bool rotating, bool theta_rhs = false);
+
 } // namespace free_breakfast::response

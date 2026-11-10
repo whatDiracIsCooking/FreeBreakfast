@@ -11,8 +11,10 @@
 # the copy of C it takes (core::wwr), the reference orbitals'
 # orthonormalization (recipes::blas, recipes::orthogonalize, core::constants),
 # the QD ensemble's edge (pipeline::casci), the planner it nests
-# (pipeline::pipeline), the file it writes (io::json), core::log and
-# diagnostics_macros (FBF_TRY, FBF_LOG_INFO) are PRIVATE.
+# (pipeline::pipeline), the file it writes (io::json), the CASSCF footprint's
+# determinant count (core::primitives) and weights (response::zvector's
+# rotating_pairs), core::log and diagnostics_macros (FBF_TRY, FBF_LOG_INFO)
+# are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.hessian
@@ -34,6 +36,7 @@ free_breakfast_add_cxx_module_library(
   LINK_PRIVATE
   free_breakfast::core::constants
   free_breakfast::core::log
+  free_breakfast::core::primitives
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::basis
@@ -44,4 +47,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::pipeline
   free_breakfast::recipes::blas
   free_breakfast::recipes::orthogonalize
+  free_breakfast::response::zvector
 )

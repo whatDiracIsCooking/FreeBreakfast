@@ -11,11 +11,14 @@
 // stationary point (|dE/dx| up to 0.074), so the six near-zero mass-weighted
 // eigenvalues of a minimum are not checked here. Beside them: an excited root
 // (the second CASCI root at the fixture's orbitals, a saddle in the parameters)
-// refused, and the input refusals.
+// refused, the input refusals, and the footprints (#1176) of df_casscf and of
+// the two parts it calls that hold the most, df_casscf_exy and
+// df_casscf_two_electron, each with a rotation and without.
 
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -32,11 +35,16 @@ import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.ci;
 import free_breakfast.response;
 import free_breakfast.mcscf;
+import free_breakfast.recipes.diagonalize;
 import free_breakfast.hessian;
+
+// After the imports: it names std, wwr and Device from this unit's imports.
+#include "pool_footprint.h"
 
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 
 // E_xy against the emitter's, absolute: df_casscf_exy's own test's bar.
 constexpr double kExyTol = 1e-8;
@@ -417,6 +425,146 @@ TEST_F(HessianDfCasscf, ExcitedRootIsRefused) {
   EXPECT_EQ(got.error().kind, fb::ErrorKind::Divergence) << got.error().message;
   std::cout << std::format("[ ss       ] excited root ({:.6f} over {:.6f}): {}\n", s.energy,
                            casci->energies[0], got.error().message);
+}
+
+// A fixed-size routine's own allocations held to @p fp: run once on a fresh
+// DeviceResources to grow the workspace to exactly the footprint's, then
+// measured, with @p live allocations live at its peak.
+template <class Call>
+void expect_fixed_footprint(const fb::MemoryFootprint &fp, const std::size_t live, Call &&call) {
+  fb::DeviceResources res{0};
+  call(res);
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { call(res); });
+  std::cout << std::format("[ footprint ] measured {}, footprint {} + workspace {}\n", peak.used,
+                           fp.device.persistent + fp.device.scratch, fp.device.workspace);
+  fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
+                        live);
+}
+
+// An adaptive routine's at its least: on a fresh DeviceResources whose pool
+// is capped at what a probe run leaves held (the workspace), the
+// fragmentation headroom an adaptive part leaves of the budget, and the
+// footprint's peak; run once to grow the workspace, then measured, and the
+// pool never past the cap. Then under a cap with @p room past the least, the
+// pool never past that cap either. @p call takes the run's index, 0 for the
+// least and 1 with room.
+template <class Call>
+void expect_least_footprint(const fb::MemoryFootprint &fp, const std::size_t live,
+                            const std::size_t room, Call &&call) {
+  std::size_t held = 0;
+  {
+    fb::DeviceResources probe{0};
+    call(probe, 0);
+    ASSERT_TRUE(probe.sync());
+    EXPECT_EQ(probe.device_workspace(0).num_elements(), fp.device.workspace);
+    held = probe.device()->pool_usage().used_current;
+  }
+  std::size_t least = 0;
+  for (const std::size_t run : {0, 1}) {
+    const std::uint64_t cap = held + fb::kPoolHeadroomBytes + fp.device.persistent +
+                              fp.device.scratch + (run == 0 ? 0 : room);
+    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    call(res, run);
+    if (run == 0) {
+      const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { call(res, 0); });
+      std::cout << std::format("[ footprint ] at the least, capped at {}: measured {}, footprint "
+                               "{} + workspace {}\n",
+                               cap, peak.used, fp.device.persistent + fp.device.scratch,
+                               fp.device.workspace);
+      fbt::expect_footprint(
+          peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch}, live);
+      least = peak.used;
+    } else {
+      std::cout << std::format("[ footprint ] with {} of room, capped at {}: high water {} past "
+                               "the workspace, the least {}\n",
+                               room, cap, res.device()->pool_usage().used_high - held, least);
+    }
+    EXPECT_LE(res.device()->pool_usage().used_high, cap);
+  }
+}
+
+// df_casscf_two_electron's and df_casscf_exy's footprints, without a rotation
+// and with one (a fixed antisymmetric K, whose values do not matter), each
+// held to the pool; then df_casscf's at its least (H~'s block products at
+// one column's J and K), whose lambda^x is returned, and under a cap with
+// 64 MiB of room (the block products' J and K as wide as it holds) the pool
+// under the cap and the Hessian the least's to kHessianTol: the width
+// regroups the products' gemms, and the CI response's tolerance, which
+// bounds each against the reference, bounds this. The water in 6-31G, 14
+// runs of 0.2 to 0.6 s, so slow-gated: the families' representatives stand
+// for these in the fast tier.
+TEST_F(HessianDfCasscf, FootprintsAreSoundAndTight) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  load("h2o_631g");
+  ASSERT_FALSE(HasFatalFailure());
+  const fb::mcscf::Solution s = solution(ci_host_);
+  ASSERT_FALSE(HasFailure());
+  fb::DeviceResources &inputs = *res_;
+  const double *const l = metric_->spherical().data();
+  std::vector<double> k_host(nao_ * nao_, 0.0);
+  for (std::size_t p = 0; p < nao_; ++p) {
+    for (std::size_t q = 0; q < p; ++q) {
+      k_host[p + (nao_ * q)] = 1e-2 / static_cast<double>(1 + p + q);
+      k_host[q + (nao_ * p)] = -k_host[p + (nao_ * q)];
+    }
+  }
+  fb::Buffers::device<double> k(nao_ * nao_, inputs.device());
+  upload(inputs, k_host, k.data());
+  fb::Buffers::device<double> c(nao_ * nao_, inputs.device());
+  upload(inputs, c_host_, c.data());
+  const std::vector<double> one{1.0};
+  const auto derivatives = [&](const double *rotation) {
+    auto d = fb::mcscf::df_derivatives(inputs, *molecule_, *basis_, classes_, *aux_,
+                                       h_->spherical(), *b_, l, s.c, ncore_, ncas_, nalpha_, nbeta_,
+                                       s.roots.vectors.data(), one, rotation);
+    EXPECT_TRUE(d) << d.error().message;
+    return std::move(*d);
+  };
+  const fb::mcscf::Derivatives plain = derivatives(nullptr);
+  const fb::mcscf::Derivatives rotated = derivatives(k.data());
+  for (const bool rotate : {false, true}) {
+    SCOPED_TRACE(rotate);
+    const double *const rotation = rotate ? k.data() : nullptr;
+    // At the peak: the held buffers, the rotation's and the cross terms'.
+    expect_fixed_footprint(
+        fb::hessian::df_casscf_two_electron_footprint(*basis_, *aux_, ncore_, ncas_, rotate), 3,
+        [&](fb::DeviceResources &res) {
+          auto got = fb::hessian::df_casscf_two_electron(
+              res, *basis_, classes_, *aux_, *b_, l, c, ncore_, ncas_, s.gamma, s.gamma2, rotation);
+          ASSERT_TRUE(got) << got.error().message;
+        });
+    // At the peak: D and Gamma, the two-electron part's three.
+    expect_fixed_footprint(
+        fb::hessian::df_casscf_exy_footprint(*basis_, *aux_, ncore_, ncas_, rotate), 4,
+        [&](fb::DeviceResources &res) {
+          auto got = fb::hessian::df_casscf_exy(
+              res, *molecule_, *basis_, classes_, *aux_, h_->spherical(), *b_, l, c, ncore_, ncas_,
+              s.gamma, s.gamma2, rotate ? *rotated.fock_rotated : plain.fock, rotation);
+          ASSERT_TRUE(got) << got.error().message;
+        });
+  }
+  const std::size_t lwork = fb::syevd_lwork<double>(inputs, ncas_).value();
+  const fb::MemoryFootprint fp =
+      fb::hessian::df_casscf_footprint(*basis_, *aux_, ncore_, ncas_, nalpha_, nbeta_, lwork);
+  const std::size_t pairs = (static_cast<std::size_t>(ncore_) * (nao_ - ncore_)) +
+                            (static_cast<std::size_t>(ncas_) * (nao_ - ncore_ - ncas_));
+  EXPECT_EQ(fp.device.persistent, sizeof(double) * (pairs + n_det_) * n_x_);
+  // At the peak: the strings' four, the derivatives' three and a phase's own.
+  std::array<std::vector<double>, 2> hessians;
+  expect_least_footprint(
+      fp, 16, std::size_t{64} << 20, [&](fb::DeviceResources &res, const std::size_t run) {
+        auto got = fb::hessian::df_casscf(res, *molecule_, *basis_, classes_, *aux_,
+                                          h_->spherical(), *b_, l, s, ncore_, ncas_);
+        ASSERT_TRUE(got) << got.error().message;
+        hessians[run] = std::move(got->hessian);
+      });
+  ASSERT_EQ(hessians[0].size(), n_x_ * n_x_);
+  const double worst = max_diff(hessians[0], hessians[1]);
+  std::cout << std::format("[ footprint ] df_casscf at the least vs with room: max |dH| {:.2e}\n",
+                           worst);
+  EXPECT_LE(worst, kHessianTol);
 }
 
 TEST_F(HessianDfCasscf, Refusals) {

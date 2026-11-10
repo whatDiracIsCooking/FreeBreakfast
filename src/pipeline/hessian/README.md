@@ -73,7 +73,8 @@ struct HessianStep {
   std::filesystem::path json_path{};  // hessian.json
 
   Result<HessianOutput> run(View<MoleculeOutput> in, NodeResources &node) const;
-  // The numerical RHF chain's; none otherwise, for now (below, "Memory caps")
+  // The RHF chain's and the analytic CASSCF's; none otherwise, for now
+  // (below, "Memory caps")
   std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 };
 
@@ -786,9 +787,29 @@ dipole integrals reach (no shell past `kDipoleMaxL`). An integral-direct
 `[eri]` is refused before anything runs, so its footprint is empty; an open
 shell is refused once the chain has run, so its footprint is the chain's.
 
-Over a CASSCF chain (`casscf_gradient`, `nevpt2_gradient`) the footprint is
-none, so a capped plan is refused naming `[hessian]`: their library calls are
-not all footprinted yet (#1176). That optional is transitional
+Under the analytic method over the CASSCF chain (`casscf_gradient`, #1176)
+the chain runs once, to `[casscf]`, and its products are held through the
+Hessian:
+
+```
+then(drop(then(then(chain, solution), terms)),
+     harmonic_analysis_footprint(atoms, syevd_lwork))
+```
+
+`chain` is folded as above, ending at `[casscf]`; `solution` is the
+`mcscf::Solution` the Hessian takes, C (nao²) and the roots' CI vectors;
+`terms` is `hessian::df_casscf_footprint` for one root and
+`hessian::df_sacasscf_footprint` for one of a state average (rotating when
+two of `[casscf]`'s weights differ), at the plan's worst-case active space,
+as `CasscfStep::footprint` takes it, and syevd's work at order ncas. Both are
+at their least: H̃'s block products build their J and K one column at a
+time, and the state average's derivative integrals take one coordinate a
+chunk; each widens with the memory budget at run time.
+
+Over a NEVPT2 chain (`nevpt2_gradient`), by either method, and under the
+numerical method over the CASSCF chain, the footprint is none, so a capped
+plan is refused naming `[hessian]`: their library calls are not all
+footprinted yet (#1176). That optional is transitional
 (`../footprint/README.md`, #1122).
 
 ## Config

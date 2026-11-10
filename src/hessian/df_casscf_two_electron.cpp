@@ -13,8 +13,10 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kNegOne, kHalf, kNegHalf, kNegTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, gemv, geam, trsm, gemmStridedBatched, wwrMemGetInfo
+import free_breakfast.core.primitives; // align_up
+import free_breakfast.core.wwr;        // gemm, gemv, geam, trsm, gemmStridedBatched
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.density_fitting.gradient;
@@ -26,6 +28,82 @@ import :atom_block;
 #include "diagnostics.h"
 
 namespace free_breakfast::hessian {
+
+// What df_casscf_two_electron and its footprint share: its own buffers'
+// counts, in doubles, and the workspace its calls carve, in bytes.
+struct CasscfTwoElectronSizes {
+  // Held for the whole call: the fitted occupied pairs c, the three occupied
+  // weights (G_J = diag(2_core, gamma), G_a = diag(0_core, gamma) and
+  // G_K = diag(1_core, gamma)) and Gamma.
+  size_t held = 0;
+  // A rotation's, held too: [C_o | C~_o], the fitted pairs over it and their
+  // derivative c'. One double without a rotation, which still allocates it.
+  size_t held_rot = 0;
+  // The explicit part's: Gam, W, Y, V, c's core rows, the active pairs and Z,
+  // d, d_a, D and D_a; with a rotation also the product rule's dotted
+  // intermediates (a second Y, V', c'_core, c'_act, Z', d', d_a', D', D_a').
+  size_t explicit_part = 0;
+  // The cross terms': M1, one aux atom's derivative block X, two atom blocks,
+  // the K half-transform, three active blocks, the Coulomb vectors and the
+  // products; with a rotation also each atom block's derivative r', t' and
+  // act', beside the extended block it is cut from (four blocks).
+  size_t cross = 0;
+  // The largest workspace carve of b_mo (over [C_o | C~_o] with a rotation),
+  // the second-derivative integrals, metric_derivative, and each aux atom's
+  // three_center_derivative and its half-transform W.
+  size_t workspace = 0;
+};
+
+CasscfTwoElectronSizes casscf_two_electron_sizes(const BasisSet &basis, const BasisSet &aux,
+                                                 const int32_t ncore, const int32_t ncas,
+                                                 const bool rotated) {
+  const size_t nao = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const size_t aa = n_act * n_act;
+  const size_t occ = n_core + n_act;
+  const size_t oo = occ * occ;
+  const size_t nn = nao * nao;
+  // The atom blocks' orbitals: the occupied ones, or [C_o | C~_o].
+  const size_t walked = (rotated ? 2 : 1) * occ;
+  const OrbitalRange pairs{.first = 0, .count = static_cast<int32_t>(walked)};
+  CasscfTwoElectronSizes s;
+  s.workspace =
+      std::max({b_mo_footprint(static_cast<int32_t>(naux), static_cast<int32_t>(nao), pairs, pairs)
+                    .device.workspace,
+                three_center_hessian_footprint(basis, aux).device.workspace,
+                metric_hessian_footprint(aux).device.workspace,
+                metric_derivative_footprint(aux).device.workspace});
+  size_t nblk_max = 0;
+  for (uint32_t a = 0; a < basis.natoms(); ++a) {
+    const auto [p0, p1] = atom_function_range(aux, a);
+    const size_t nblk = p1 - p0;
+    nblk_max = std::max(nblk_max, nblk);
+    if (nblk > 0) {
+      s.workspace =
+          std::max({s.workspace, three_center_derivative_footprint(basis, aux, a).device.workspace,
+                    math::align_up(sizeof(double) * 3 * nao * nblk * walked,
+                                   DeviceResources::kWorkspaceAlignment)});
+    }
+  }
+  const size_t block = 3 * naux * oo;
+  const size_t k_half = 3 * naux * n_core * occ;
+  const size_t act_block = 3 * naux * aa;
+  const size_t y_count = std::max(naux * std::max(n_core, n_act) * nao, nao * occ);
+  const size_t products = (9 * oo) + 36 + 9;
+  const size_t explicit_once =
+      y_count + (2 * naux * n_core * occ) + (2 * naux * aa) + (2 * naux) + (2 * nn);
+  s.held = (naux * oo) + (3 * oo) + (aa * aa);
+  s.held_rot = rotated ? (2 * nao * occ) + (5 * naux * oo) : 1;
+  s.explicit_part = (naux * nn) + (naux * naux) + ((rotated ? 2 : 1) * explicit_once);
+  s.cross = (3 * naux * naux) + (3 * nn * nblk_max) + (2 * block) + k_half + (3 * act_block) +
+            (2 * 6 * naux) + products;
+  if (rotated) {
+    s.cross += (6 * block) + (2 * 6 * naux) + (2 * act_block);
+  }
+  return s;
+}
 
 Result<CasscfTwoElectron>
 df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
@@ -92,45 +170,23 @@ df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
         "int32_t",
         naux * nn, widest_block, y_count, aa * aa);
   }
-  // Held for the whole call: the fitted occupied pairs c, the three occupied
-  // weights (G_J = diag(2_core, gamma), G_a = diag(0_core, gamma) and
-  // G_K = diag(1_core, gamma)) and Gamma. The explicit part's: Gam, W, Y, V,
-  // c's core rows, the active pairs and Z, d, d_a, D and D_a. The cross terms':
-  // M1, one aux atom's derivative block X, two atom blocks, the K half-
-  // transform, three active blocks, the Coulomb vectors and the products. All
-  // are held across calls that take the workspace (b_mo, the Hessian and
-  // derivative integrals), so they are the call's own (docs/style.md "Scratch
-  // memory"); past the device's memory an allocation would abort
+  // The held buffers, then the explicit part's, then the cross terms' (their
+  // sizes above), all held across calls that take the workspace (b_mo, the
+  // Hessian and derivative integrals), so the call's own (docs/style.md
+  // "Scratch memory"); past the memory budget an allocation would abort
   // (CreatePolicy), not return.
-  const size_t held_count = (naux * oo) + (3 * oo) + (aa * aa);
-  const size_t explicit_count = (naux * nn) + (naux * naux) + y_count + (2 * naux * n_core * occ) +
-                                (2 * naux * aa) + (2 * naux) + (2 * nn);
-  const size_t products = (9 * oo) + 36 + 9;
-  const size_t cross_count = (3 * naux * naux) + (3 * nn * nblk_max) + (2 * block) + k_half +
-                             (3 * act_block) + (2 * 6 * naux) + products;
-  // A rotation adds [C_o | C~_o], the fitted pairs over it and their
-  // derivative c'; the product rule's dotted explicit intermediates (a second
-  // Y, V', c'_core, c'_act, Z', d', d_a', D', D_a'); and per atom block its
-  // derivative r', t' and act', beside the extended block it is cut from
-  // (four blocks).
   const bool rotated = rotation != nullptr;
-  const size_t held_rot = rotated ? (2 * nao * occ) + (5 * naux * oo) : 0;
-  const size_t explicit_rot =
-      rotated ? y_count + (2 * naux * n_core * occ) + (2 * naux * aa) + (2 * naux) + (2 * nn) : 0;
-  const size_t cross_rot = rotated ? (6 * block) + (2 * 6 * naux) + (2 * act_block) : 0;
+  const CasscfTwoElectronSizes sizes = casscf_two_electron_sizes(basis, aux, ncore, ncas, rotated);
+  const size_t held_count = sizes.held;
   const size_t bytes =
-      sizeof(double) *
-      (held_count + held_rot + std::max(explicit_count + explicit_rot, cross_count + cross_rot));
+      sizeof(double) * (sizes.held + sizes.held_rot + std::max(sizes.explicit_part, sizes.cross));
   const ScopedDeviceIndex on{res.dev_idx()};
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (bytes > free_bytes) {
+  if (const size_t budget = FBF_TRY(res.memory_budget()); bytes > budget) {
     return err_unsupported("hessian::df_casscf_two_electron: the fitted densities and a pair of "
                            "atom blocks of the cross term (each 3 naux nocc^2 = {} doubles) over "
                            "{} orbital and {} fitting functions and {} occupied orbitals need {} "
-                           "bytes of device memory, and device {} has {} free",
-                           block, nao, naux, occ, bytes, res.dev_idx(), free_bytes);
+                           "bytes of device memory, and device {} has {} to give",
+                           block, nao, naux, occ, bytes, res.dev_idx(), budget);
   }
 
   const wwr::wwrblasHandle_t blas = res.blas().get();
@@ -180,7 +236,7 @@ df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
   // (the derivative of C_o along C -> C (1 + e K)); the fitted pairs over it,
   // naux x (2 nocc)^2 at P + naux (a + 2 nocc b); and their derivative
   // c' = c_o~o + c_oo~, in fitted's layout.
-  Buffers::device<double> rot_held(std::max<size_t>(held_rot, 1), res.device());
+  Buffers::device<double> rot_held(sizes.held_rot, res.device());
   double *const c_ext = rot_held.data();
   double *const fitted_ext = c_ext + (2 * nao * occ);
   double *const fitted_dot = fitted_ext + (4 * naux * oo);
@@ -219,7 +275,7 @@ df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
     // (P + naux (i + ncore q)), W += V c_core^T and Gam += -2 Sum_i C_mi
     // Sum_q V_P,iq C_nq. Active: Z = c_act Gamma, W += -1/2 Z c_act^T and
     // Gam += Sum_tu C_mt C_nu Z_P,tu.
-    Buffers::device<double> scratch(explicit_count, res.device());
+    Buffers::device<double> scratch(sizes.explicit_part, res.device());
     double *const gam = scratch.data();
     double *const w = gam + (naux * nn);
     double *const y = w + (naux * naux);
@@ -291,7 +347,7 @@ df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
     //      Gam' += -2 Sum_i [C_mi (V' C_o^T + V C~_o^T)_P,in + C~_mi (V C_o^T)_P,in];
     //   active: Z' = c'_act Gamma, W' += -1/2 (Z' c_act^T + Z c'_act^T),
     //      Gam' += Sum_t [C_mt (Z' C_a^T + Z C~_a^T)_P,tn + C~_mt (Z C_a^T)_P,tn].
-    Buffers::device<double> scratch(explicit_count + explicit_rot, res.device());
+    Buffers::device<double> scratch(sizes.explicit_part, res.device());
     double *const gam = scratch.data();
     double *const w = gam + (naux * nn);
     double *const y = w + (naux * naux);
@@ -411,7 +467,7 @@ df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
     out.metric = FBF_TRY(metric_hessian(res, aux, w));
   }
 
-  Buffers::device<double> walk(cross_count + cross_rot, res.device());
+  Buffers::device<double> walk(sizes.cross, res.device());
   double *const m1 = walk.data();
   double *const x = m1 + (3 * naux * naux);
   double *const r_a = x + (3 * nn * nblk_max);
@@ -575,6 +631,22 @@ df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
        {&out.metric, &out.cross_coulomb, &out.cross_exchange, &out.cross_active}) {
     std::ranges::transform(out.total, *term, out.total.begin(), std::plus{});
   }
+  return out;
+}
+
+MemoryFootprint df_casscf_two_electron_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                 const int32_t ncore, const int32_t ncas,
+                                                 const bool rotated) {
+  MemoryFootprint out;
+  if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || ncore < 0 || ncas < 1 ||
+      static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > basis.nao_sphe()) {
+    return out;
+  }
+  // The held buffers beside the explicit part's, then beside the cross
+  // terms'; the pieces are the caller's, on the host.
+  const CasscfTwoElectronSizes s = casscf_two_electron_sizes(basis, aux, ncore, ncas, rotated);
+  out.device.scratch = sizeof(double) * (s.held + s.held_rot + std::max(s.explicit_part, s.cross));
+  out.device.workspace = s.workspace;
   return out;
 }
 

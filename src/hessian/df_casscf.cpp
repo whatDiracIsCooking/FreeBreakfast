@@ -3,8 +3,8 @@
 /// (df_casscf_exy over mcscf::df_derivatives' F^[x]) plus the response term,
 /// lambda^x by response::zvectors on df_derivatives' right-hand sides, assembled
 /// as Lambda^T E_lambda. by two gemms; the solution checked by one product of
-/// the unreduced operator; the sum symmetrized. The CP step on its own,
-/// df_casscf_cp, and state_specific_electrons, the inputs' check
+/// the unreduced operator; the sum symmetrized; and its footprint. The CP step
+/// on its own, df_casscf_cp, and state_specific_electrons, the inputs' check
 /// df_nevpt2_tangents shares.
 
 module free_breakfast.hessian;
@@ -15,6 +15,8 @@ import free_breakfast.core.constants; // kZero, kOne, kHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // axpy, dot, nrm2, scal, wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -347,6 +349,117 @@ Result<CasscfCp> casscf_cp(DeviceResources &res, const std::string_view who,
                   .gradients = std::move(gradients),
                   .cp = std::move(cp),
                   .residuals = std::move(residuals)};
+}
+
+MemoryFootprint probed_zvectors_footprint(const size_t pairs, const size_t dim,
+                                          const int32_t nroots, const size_t n_x,
+                                          const MemoryFootprint &product, const bool rotating) {
+  const size_t ci_block = dim * static_cast<size_t>(nroots);
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  // The right-hand sides with the probe's column; zvectors over them; the
+  // coordinates' columns copied out, returned, the rest freed.
+  const MemoryFootprint chain =
+      then(held((pairs + ci_block) * (n_x + 1)),
+           then(response::zvectors_footprint(static_cast<int32_t>(pairs), static_cast<int32_t>(dim),
+                                             nroots, static_cast<int32_t>(n_x + 1), product,
+                                             rotating, rotating),
+                held((pairs + ci_block) * n_x)));
+  return keeping(chain, sizeof(double) * (pairs + ci_block) * n_x);
+}
+
+MemoryFootprint keeping(const MemoryFootprint &chain, const size_t kept) {
+  MemoryFootprint out = chain;
+  out.device.persistent = kept;
+  out.device.scratch = chain.device.persistent + chain.device.scratch - kept;
+  return out;
+}
+
+// What casscf_cp holds over @p basis and @p aux with @p ncore core and @p ncas
+// active orbitals over the determinants of @p nalpha and @p nbeta electrons:
+// F^[x] and the right-hand sides (df_derivatives'), the packed orbital ones
+// and lambda^x returned, persistent; the strings, the integrals, the Fock,
+// the sigma with its apply scratch, H and H~ (over 3 n_atom + 1 block
+// columns), the CI right-hand sides, the probed solve and the check's
+// product, scratch. @p syevd_lwork is syevd_lwork at order ncas.
+MemoryFootprint casscf_cp_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                                    const int32_t ncas, const int32_t nalpha, const int32_t nbeta,
+                                    const size_t syevd_lwork) {
+  const auto nmo = static_cast<int32_t>(basis.nao_sphe());
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const auto mo = static_cast<size_t>(nmo);
+  const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
+  const size_t pairs = (n_core * (mo - n_core)) + (n_act * (mo - n_core - n_act));
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha_strings = strings(nalpha);
+  const int32_t beta_strings = strings(nbeta);
+  const size_t dim = static_cast<size_t>(alpha_strings) * static_cast<size_t>(beta_strings);
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  const MemoryFootprint product = response::hessian_apply_footprint(nmo, naux, ncore, ncas);
+  const MemoryFootprint derivatives =
+      mcscf::df_derivatives_footprint(basis, aux, ncore, ncas, nalpha, nbeta, 1, syevd_lwork);
+  // The sigma's tables, and the apply scratch the products grow it to.
+  MemoryFootprint tables;
+  tables.device.persistent =
+      ci::sigma_footprint(ncas, alpha_strings, beta_strings).device.persistent;
+  MemoryFootprint growth;
+  growth.device.persistent =
+      ci::sigma_apply_bytes(ncas, alpha_strings, beta_strings, ci::Layout::full);
+  const MemoryFootprint probed = probed_zvectors_footprint(pairs, dim, 1, n_x, product, false);
+
+  MemoryFootprint chain = then(ci::device_string_set_footprint(ncas, nalpha),
+                               ci::device_string_set_footprint(ncas, nbeta));
+  chain = then(chain, derivatives);
+  chain = then(chain, casscf_integrals_footprint(nmo, naux, ncore, ncas));
+  chain = then(chain, response::fock_footprint(nmo, naux, ncore, ncas));
+  chain = then(chain, tables);
+  chain = then(chain, response::hessian_footprint(nmo, naux, ncore, ncas));
+  chain =
+      then(chain, response::relaxed_hessian_footprint(ncas, nalpha, nbeta, 1, nmo, ncore, n_x + 1));
+  // The packed orbital right-hand sides, kept, and the halved CI ones.
+  chain = then(chain, held((pairs + dim) * n_x));
+  chain = then(chain, growth);
+  chain = then(chain, probed);
+  // The check: r and r_c beside one block product.
+  chain = then(chain, drop(then(held((pairs + dim) * n_x), drop(product))));
+  return keeping(chain, derivatives.device.persistent + (sizeof(double) * pairs * n_x) +
+                            probed.device.persistent);
+}
+
+MemoryFootprint df_casscf_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t ncore,
+                                    const int32_t ncas, const int32_t nalpha, const int32_t nbeta,
+                                    const size_t syevd_lwork) {
+  const size_t nao = basis.nao_sphe();
+  if (basis.natoms() == 0 || aux.natoms() != basis.natoms() || aux.nao_sphe() == 0 || ncore < 0 ||
+      ncas < 1 || static_cast<size_t>(ncore) + static_cast<size_t>(ncas) > nao || nalpha < 0 ||
+      nbeta < 0 || nalpha > ncas || nbeta > ncas) {
+    return {}; // refused before anything is allocated
+  }
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
+  const size_t pairs = (n_core * (nao - n_core)) + (n_act * (nao - n_core - n_act));
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const size_t dim = strings(nalpha) * strings(nbeta);
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  // The CP step; C's copy beside E_xy; the response's n_x^2 on the device.
+  MemoryFootprint chain = casscf_cp_footprint(basis, aux, ncore, ncas, nalpha, nbeta, syevd_lwork);
+  chain =
+      then(chain, drop(then(held(nao * nao), df_casscf_exy_footprint(basis, aux, ncore, ncas))));
+  chain = then(chain, drop(held(n_x * n_x)));
+  // lambda^x is returned; F^[x] and the right-hand sides are freed.
+  return keeping(chain, sizeof(double) * (pairs + dim) * n_x);
 }
 
 Result<response::ZVectors>
