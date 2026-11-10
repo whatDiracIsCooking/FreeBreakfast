@@ -5,7 +5,8 @@
 // against PySCF's int2c2e_ipip1 / ip1ip2 and int3c2e_ipip1 / ipvip1 / ip1ip2
 // contracted with the same recipe matrices, which have no symmetry
 // (data/hessian/df_hessian.json, test/gtest/data/README.md); the translational
-// sum rule of every class on its own; and the refusals.
+// sum rule of every class on its own; the refusals; and metric_hessian_footprint
+// and three_center_hessian_footprint (#1173), each held to one call.
 
 #include <gtest/gtest.h>
 
@@ -22,9 +23,12 @@ import free_breakfast.io.json;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.density_fitting.hessian;
 
+#include "pool_footprint.h"
+
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 
 // The issue's bars: 1e-10 of max|H| against PySCF, and the sum over atoms of
 // each column below 1e-10 of max|H|, per class.
@@ -403,6 +407,42 @@ TEST(DfHessian, Refusals) {
   three_center_refusal(g_orbital, one_s, fb::ErrorKind::Unsupported,
                        "orbital shell 1 has momentum 4");
   three_center_refusal(one_s, k_aux, fb::ErrorKind::Unsupported, "aux shell 0 has momentum 7");
+}
+
+// Each call over the cc-pVDZ / cc-pVDZ-JKFIT case on its own fresh
+// DeviceResources, W, Gam and the classes on the case's: the first grows the
+// workspace to exactly the footprint's carve, and the second, measured, takes
+// nothing from the pool past it. Nothing is pinned.
+TEST(DfHessian, Footprint) {
+  FBF_REQUIRE_GPU();
+  Case c;
+  load(c, "h2o_ccpvdz", 2, 3);
+  if (::testing::Test::HasFatalFailure()) {
+    return;
+  }
+  const fb::Buffers::device<double> d_w = upload(c.res, c.w);
+  const fb::Buffers::device<double> d_gamma = upload(c.res, c.gamma);
+  const auto classes = fb::primitive_pair_classes(c.res, *c.basis);
+  ASSERT_TRUE(classes) << classes.error().message;
+  ASSERT_TRUE(c.res.sync());
+
+  const auto held = [](const fb::MemoryFootprint &fp, const auto &call) {
+    EXPECT_NE(fp.device.workspace, 0U);
+    EXPECT_EQ(fp.pinned, fb::Footprint<wwr::extension::MemoryKind::Pinned>{});
+    fb::DeviceResources res{0};
+    const std::size_t pinned_before = res.pinned_bytes();
+    const auto run = [&] { EXPECT_TRUE(call(res)); };
+    run();
+    EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+    EXPECT_EQ(res.pinned_bytes(), pinned_before);
+    fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), run),
+                          {.persistent = fp.device.persistent, .scratch = fp.device.scratch}, 0);
+  };
+  held(fb::metric_hessian_footprint(*c.aux),
+       [&](fb::DeviceResources &res) { return fb::metric_hessian(res, *c.aux, d_w.data()); });
+  held(fb::three_center_hessian_footprint(*c.basis, *c.aux), [&](fb::DeviceResources &res) {
+    return fb::three_center_hessian(res, *c.basis, *classes, *c.aux, d_gamma.data());
+  });
 }
 
 } // namespace

@@ -5,7 +5,8 @@
 // int1e_irp contracted by PySCF (test/gtest/data/dipole_derivative/,
 // tools/emit/dipole_derivative_reference.py); each component's sum over atoms
 // against delta_ck Sum_mn M_mn S_mn; and the refusals: a matrix of the wrong
-// order and a basis with no per-atom map.
+// order and a basis with no per-atom map. And dipole_gradient_footprint
+// (#1173), held to the pool peak of one call.
 //
 // PySCF unit-normalises each contracted function; this tree normalises only the
 // primitives, so its spherical function i is N_i = sqrt(S_ii) times PySCF's
@@ -26,9 +27,12 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "pool_footprint.h"
+
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 
 // Against libcint, of max |G|, per element; FelizJueves holds its host
 // reference to int1e_irp at 1.7e-15 of max |G|.
@@ -190,6 +194,40 @@ TEST(DipoleGradient, Refusals) {
   ASSERT_TRUE(one_classes) << one_classes.error().message;
   expect_refused(fb::dipole_gradient(res, one, *one_classes, wrong),
                  "dipole_gradient: the basis carries no per-atom shell map");
+}
+
+// One call over water's cc-pVDZ (U is not the identity) on a fresh
+// DeviceResources, the molecule, basis and classes on their own: run once,
+// then measured. U, the pair's three matrices, each Cartesian AO's atom, the
+// records' atoms and the device gradient are live at the peak, all of them
+// scratch; the workspace and the pinned bytes are untouched.
+TEST(DipoleGradient, Footprint) {
+  FBF_REQUIRE_GPU();
+  const fb::json c = read_case("h2o_ccpvdz");
+  ASSERT_FALSE(c.is_null());
+  fb::DeviceResources inputs{0};
+  const fb::Molecule molecule(inputs, case_atoms(c));
+  const auto stamp = fb::resolve_basis(c["basis"].get<std::string>());
+  ASSERT_TRUE(stamp) << stamp.error().message;
+  const auto basis = fb::place(stamp->primitive_normalized(), molecule);
+  ASSERT_TRUE(basis) << basis.error().message;
+  ASSERT_NE(basis->nao_cart(), basis->nao_sphe());
+  const auto classes = fb::primitive_pair_classes(inputs, *basis);
+  ASSERT_TRUE(classes) << classes.error().message;
+  ASSERT_TRUE(inputs.sync());
+
+  fb::DeviceResources res{0};
+  const fb::SphericalMatrixAO m(res, *basis);
+  const fb::MemoryFootprint fp = fb::dipole_gradient_footprint(*basis);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  EXPECT_EQ(fp.device.workspace, 0U);
+  EXPECT_EQ(fp.pinned, fb::Footprint<wwr::extension::MemoryKind::Pinned>{});
+  const std::size_t pinned_before = res.pinned_bytes();
+  const auto call = [&] { EXPECT_TRUE(fb::dipole_gradient(res, *basis, *classes, m)); };
+  call();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
+  EXPECT_EQ(res.pinned_bytes(), pinned_before);
+  fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), call), fp.device, 7);
 }
 
 } // namespace

@@ -77,6 +77,17 @@ time), both bases made by `place` over one molecule, and the Cartesian Γ held
 in full within the kernels' 32-bit index, refused before anything is
 allocated past the device's memory budget (`DeviceResources::memory_budget()`).
 
+## Footprints
+
+Both calls take everything from `res.device_workspace()`, carved by
+`device_regions`, and nothing from the pool or the pinned workspace, so each
+footprint is all workspace: `metric_hessian_footprint(aux)` the staged
+records with U_aux, the pairs with their atoms, U_aux^T W's intermediate, the
+Cartesian W and H; `three_center_hessian_footprint(basis, aux)` the staging,
+the cells with their atoms, the Cartesian Γ, its transform's intermediate and
+H, the bytes `three_center_hessian` refuses past the budget. Each region is
+rounded to `DeviceResources::kWorkspaceAlignment`, as the carve rounds it.
+
 ## Tests
 
 `test/gtest/df_hessian_gpu.cpp`, against `test/gtest/data/hessian/`: PySCF's
@@ -90,5 +101,7 @@ class's max|H|; and the refusals. The one exception is the acCD-6-6
 metric, held to 1e-9, as the gradient's is: there libcint's `int2c2e_ipip1`
 / `ip1ip2` are themselves off by up to 4e-11 on the set's tight O s and p
 contractions, while this tree's matches a 40-digit reference of the same
-contraction to about 3e-13 (#593's PR has the numbers). Every case is in the fast
+contraction to about 3e-13 (#593's PR has the numbers). `Footprint` holds
+each call to its footprint by `test/support/pool_footprint.h`: the
+workspace grown to exactly the carve, and nothing taken from the pool. Every case is in the fast
 tier; the acCD one, the slowest, takes about 3.5 s on either card.

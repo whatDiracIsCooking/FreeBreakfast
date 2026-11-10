@@ -16,6 +16,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
@@ -90,6 +91,28 @@ Result<std::vector<double>> dipole_gradient(DeviceResources &res, const BasisSet
   // Also what keeps ao_atom, pageable, alive until its upload has read it.
   FBF_TRY(res.sync());
   return g;
+}
+
+MemoryFootprint dipole_gradient_footprint(const BasisSet &basis) {
+  if (basis.nshells() == 0) {
+    return {};
+  }
+  // mmd's records over every shell pair i <= j: (P^2 + sum_i p_i^2) / 2, P the
+  // primitives in all.
+  size_t p = 0;
+  size_t p_sq = 0;
+  for (const Shell &shell : basis.shells()) {
+    p += shell.nprimitives();
+    p_sq += static_cast<size_t>(shell.nprimitives()) * shell.nprimitives();
+  }
+  const size_t n_rec = ((p * p) + p_sq) / 2;
+  // U and the pair, then ao_atom, atoms and g_d.
+  MemoryFootprint out = drop(
+      then(upload_spherical_transform_matrix_footprint(basis), matrix_ao_pair_footprint(basis)));
+  out.device.scratch += (sizeof(int32_t) * basis.nao_cart()) +
+                        (sizeof(int32_t) * std::max<size_t>(2 * n_rec, 1)) +
+                        (sizeof(double) * 9 * static_cast<size_t>(basis.natoms()));
+  return out;
 }
 
 } // namespace free_breakfast

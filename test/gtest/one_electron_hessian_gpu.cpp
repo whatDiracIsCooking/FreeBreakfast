@@ -8,7 +8,8 @@
 // tools/emit/one_electron_hessian_reference.py); each one's translational sum
 // rule over the column atom; nuclear_repulsion_hessian against PySCF's hess_nuc; and the refusals: a
 // matrix of the wrong order, a basis with no per-atom map, and a molecule of
-// another atom count.
+// another atom count. And one_electron_hessian_footprint (#1173), held to the
+// pool peak of each of the three contractions.
 //
 // PySCF unit-normalises each contracted function; this tree normalises only the
 // primitives, so its spherical function i is N_i = sqrt(S_ii) times PySCF's
@@ -30,9 +31,12 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "pool_footprint.h"
+
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 
 // The issue's bar: 1e-11 of max|H|, per element; and each sum over one atom
 // index below 1e-11 of max|H| too.
@@ -249,6 +253,44 @@ TEST(OneElectronHessian, Refusals) {
   const fb::SphericalMatrixAO m(res, *basis);
   expect_refused(fb::potential_hessian(res, *basis, *classes, lone, m),
                  "potential_hessian: the molecule has 1 atoms, but the basis 2");
+}
+
+// Each contraction over water's cc-pVDZ (U is not the identity) on a fresh
+// DeviceResources, the molecule, basis and classes on their own: run once,
+// then measured. U, the pair's three matrices, each Cartesian AO's atom, the
+// records' atoms and the device Hessian are live at the peak, all of them
+// scratch; the workspace and the pinned bytes are untouched.
+TEST(OneElectronHessian, Footprint) {
+  FBF_REQUIRE_GPU();
+  const fb::json c = read_case("h2o_ccpvdz");
+  ASSERT_FALSE(c.is_null());
+  fb::DeviceResources inputs{0};
+  const fb::Molecule molecule(inputs, case_atoms(c));
+  const auto stamp = fb::resolve_basis(c["basis"].get<std::string>());
+  ASSERT_TRUE(stamp) << stamp.error().message;
+  const auto basis = fb::place(stamp->primitive_normalized(), molecule);
+  ASSERT_TRUE(basis) << basis.error().message;
+  ASSERT_NE(basis->nao_cart(), basis->nao_sphe());
+  const auto classes = fb::primitive_pair_classes(inputs, *basis);
+  ASSERT_TRUE(classes) << classes.error().message;
+  ASSERT_TRUE(inputs.sync());
+
+  fb::DeviceResources res{0};
+  const fb::SphericalMatrixAO m(res, *basis);
+  const fb::MemoryFootprint fp = fb::one_electron_hessian_footprint(*basis);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  EXPECT_EQ(fp.device.workspace, 0U);
+  EXPECT_EQ(fp.pinned, fb::Footprint<wwr::extension::MemoryKind::Pinned>{});
+  const std::size_t pinned_before = res.pinned_bytes();
+  const auto held = [&](const auto &call) {
+    call();
+    EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
+    EXPECT_EQ(res.pinned_bytes(), pinned_before);
+    fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), call), fp.device, 7);
+  };
+  held([&] { EXPECT_TRUE(fb::overlap_hessian(res, *basis, *classes, m)); });
+  held([&] { EXPECT_TRUE(fb::kinetic_hessian(res, *basis, *classes, m)); });
+  held([&] { EXPECT_TRUE(fb::potential_hessian(res, *basis, *classes, molecule, m)); });
 }
 
 } // namespace

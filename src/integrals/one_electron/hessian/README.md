@@ -93,6 +93,7 @@ serial inside it, as `gradient/`'s is.
 | `overlap_hessian(res, basis, classes, m)` | `Result<std::vector<double>>`: Σ M d²S/dR dR, `(3 natoms, 3 natoms)` row-major |
 | `kinetic_hessian(res, basis, classes, m)` | The same for T |
 | `potential_hessian(res, basis, classes, molecule, m)` | The same for V, its operator terms on every nucleus included |
+| `one_electron_hessian_footprint(basis)` | `MemoryFootprint`: what each of the three contractions holds, all device scratch: U, the `MatrixAOPair`, each Cartesian AO's atom, two atoms per mmd record and the device Hessian |
 
 ## Usage
 
@@ -122,7 +123,9 @@ translational sum rule over the column atom, Σ_B H[·, B, l] below 1e-11 of
 max|H|;
 `nuclear_repulsion_hessian` against PySCF's `hess_nuc` at 1e-13 of its
 max, and bitwise symmetric; plus the refusals of a matrix of the wrong order,
-a basis with no per-atom map and a molecule of another atom count. The
+a basis with no per-atom map and a molecule of another atom count; and
+`Footprint`, each contraction held to `one_electron_hessian_footprint` by
+`test/support/pool_footprint.h`'s two bars. The
 reference script, `tools/emit/one_electron_hessian_reference.py`, holds each
 reference Hessian to a fourth-order central difference of the matching
 libcint gradient.
@@ -131,7 +134,7 @@ libcint gradient.
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `overlap_hessian`, `kinetic_hessian`, `potential_hessian` |
+| `hessian.cppm` | Module interface: `overlap_hessian`, `kinetic_hessian`, `potential_hessian`, `one_electron_hessian_footprint` |
 | `hessian.cpp` | Implementation: the checks, the Cartesian M, the AO atoms, the launches, the diagonal blocks |
 | `hessian_launch.cu` | The launchers over the generated kernels' tables, and the record-atom gather |
 | `hessian_bridge.h` | The launchers' declarations, shared by the `.cu` and the implementation unit's GMF |

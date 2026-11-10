@@ -56,6 +56,7 @@ over Cartesian AOs, and every input on the call's device; each is
 | Symbol | Role |
 |---|---|
 | `dipole_gradient(res, basis, classes, m)` | `Result<std::vector<double>>`: Σ M dμ^c/dR, `(3, natoms, 3)` row-major, G[c, A, k] at `3 (natoms c + A) + k` |
+| `dipole_gradient_footprint(basis)` | `MemoryFootprint`: what `dipole_gradient` holds, all device scratch: U, the `MatrixAOPair`, each Cartesian AO's atom, two atoms per mmd record and the device gradient; a caller that builds the dipole matrices too composes it with `dipole_footprint` |
 
 ## Usage
 
@@ -77,7 +78,9 @@ water in cc-pVDZ and cc-pVTZ (every class through (ff)) against libcint's
 `tools/emit/dipole_derivative_reference.py`, which checks it against central
 differences of `int1e_r`), at 1e-10 of max |G|, and the sum rule above at
 1e-12 of max |G|; plus (`DipoleGradient`) the refusals of a matrix of the
-wrong order and a basis with no per-atom map. These are the kernels' first
+wrong order and a basis with no per-atom map, and `Footprint`, one call held
+to `dipole_gradient_footprint` by `test/support/pool_footprint.h`'s two bars.
+These are the kernels' first
 run on a card: FelizJueves compiles them but has no device harness. Measured
 on the RTX 3080 (CUDA): 2.2e-16 (cc-pVDZ) and 1.9e-15 (cc-pVTZ) of max |G|
 from libcint, the sum rule to 2.1e-15 and 1.7e-14.
@@ -86,7 +89,7 @@ from libcint, the sum rule to 2.1e-15 and 1.7e-14.
 
 | File | Role |
 |------|------|
-| `dipole_gradient.cppm` | Module interface: `dipole_gradient` |
+| `dipole_gradient.cppm` | Module interface: `dipole_gradient`, `dipole_gradient_footprint` |
 | `dipole_gradient.cpp` | Implementation: the checks, the Cartesian M, the AO atoms, the launches |
 | `dipole_gradient_launch.cu` | The launcher over the generated kernels' table, and the record-atom gather |
 | `dipole_gradient_bridge.h` | The launcher's declaration, shared by the `.cu` and the implementation unit's GMF |
