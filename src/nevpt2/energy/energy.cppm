@@ -399,6 +399,21 @@ struct ClassEnergiesTangent {
 class_energies_tangent(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                        int32_t batch, std::span<const EnergyDirection> directions);
 
+/// @brief What @ref class_energies_tangent holds over @p naux fitting
+/// functions, @p ncore, @p ncas and @p nvirt orbitals and @p nelecas active
+/// electrons at @p batch, along @p directions, of which it reads only which
+/// fields are given (a field given counts as moving): the state's identity,
+/// the steps' sums and B + s Ḃ (when a direction moves B); a class at a time,
+/// a one-function class's blocks and their polarizations, its blocks with
+/// each direction's tangent of each, its slabs and their bars, and at its
+/// widest slab the tables and their tangents, each slab's tangent buffer,
+/// and the two builds of B + s Ḃ's slab (held from then on, at the widest
+/// slab yet); then Sijrs's. Nothing persists; the workspace is make_a22's.
+[[nodiscard]] MemoryFootprint
+class_energies_tangent_footprint(int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt,
+                                 int32_t nelecas, int32_t batch,
+                                 std::span<const EnergyDirection> directions);
+
 /// @brief An empty perturber (|N| <= 1e-14) is populated by a direction w
 /// when its N^{ww} is above this fraction of w's population scale: between
 /// the round-off a direction that keeps the symmetry leaves on it and the
@@ -627,6 +642,18 @@ struct ScEffectiveHamiltonianTangent {
 sc_effective_hamiltonian_tangent(DeviceResources &res, const MoBlocks &blocks,
                                  std::span<const EnergyInputs> pairs, int32_t batch,
                                  std::span<const EnergyDirection> directions);
+
+/// @brief What @ref sc_effective_hamiltonian_tangent holds over @p nstates
+/// states, as class_energies_tangent_footprint over one, along its m n²
+/// @p directions, of which it reads only which fields are given: every
+/// entry's identity; per state its own class_energies_tangent, its steps and
+/// its one-function classes' η̇; per unordered pair both entries' identities,
+/// both sides' steps, B + s Ḃ, and every class's pair walk with the blocks'
+/// tangents along each side's directions and the slabs' along the first's.
+[[nodiscard]] MemoryFootprint
+sc_effective_hamiltonian_tangent_footprint(int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt,
+                                           int32_t nelecas, int32_t nstates, int32_t batch,
+                                           std::span<const EnergyDirection> directions);
 
 /// @brief sc_effective_hamiltonian_hvp's result: the matrix it walked, and
 /// per direction what the kets' empty tuples took.

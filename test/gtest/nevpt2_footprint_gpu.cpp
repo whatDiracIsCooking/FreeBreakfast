@@ -1,5 +1,6 @@
 // The footprints (#1044) of the NEVPT2 library routines (#1052): nevpt2::rdms
-// and rdms_adjoint, mo_blocks, h2e, slab and class_energies. Each is held to
+// and rdms_adjoint, mo_blocks, h2e, slab and class_energies, their reverse
+// passes, and the SC forward tangents (#1182). Each is held to
 // the pool peak of one call by test/support/pool_footprint.h's two bars,
 // sound (the measured peak is no more than the footprint's) and tight
 // (within G x A). The adaptive routines, rdms' tile and the classes' slab
@@ -660,5 +661,217 @@ TEST(Nevpt2Footprint, ClassEnergiesBatchFromTheBudgetUnderACap) {
   EXPECT_LT(peak.used, whole.device.scratch);
   EXPECT_LE(res.device()->pool_usage().used_high, cap);
 }
+
+// ---------------------------------------------------------------------------
+// The SC forward tangents (#1182): class_energies_tangent and
+// sc_effective_hamiltonian_tangent
+// ---------------------------------------------------------------------------
+
+// Random tangents over @p b's shapes, on the device: what a direction reads,
+// which the footprints do not depend on, only which fields are given.
+struct Directions {
+  std::vector<fb::Buffers::device<double>> held;
+  std::vector<nevpt2::MoBlocks> blocks;
+  std::vector<nevpt2::EnergyDirection> along;
+};
+
+// @p count random doubles from @p seed, on the device, kept in @p d.
+const double *random_on_device(fb::DeviceResources &res, Directions &d, const std::size_t count,
+                               const std::uint64_t seed) {
+  d.held.push_back(on_device(res, random_vector(count, seed)));
+  return d.held.back().data();
+}
+
+// Random B tangents shaped as @p b, kept in @p d (reserved by the caller).
+const nevpt2::MoBlocks *random_blocks(fb::DeviceResources &res, Directions &d,
+                                      const nevpt2::MoBlocks &b, const std::uint64_t seed) {
+  d.blocks.push_back(
+      nevpt2::MoBlocks{.naux = b.naux,
+                       .ncore = b.ncore,
+                       .ncas = b.ncas,
+                       .nvirt = b.nvirt,
+                       .aa = on_device(res, random_vector(b.aa.num_elements(), seed)),
+                       .ca = on_device(res, random_vector(b.ca.num_elements(), seed + 1)),
+                       .va = on_device(res, random_vector(b.va.num_elements(), seed + 2)),
+                       .cv = on_device(res, random_vector(b.cv.num_elements(), seed + 3)),
+                       .vc = on_device(res, random_vector(b.vc.num_elements(), seed + 4))});
+  return &d.blocks.back();
+}
+
+// The integral and orbital-energy tangents of @p e over @p b's shapes.
+void random_shared(fb::DeviceResources &res, Directions &d, nevpt2::EnergyInputs &e,
+                   const nevpt2::MoBlocks &b, const std::uint64_t seed) {
+  const auto n = static_cast<std::size_t>(b.ncas);
+  const auto nc = static_cast<std::size_t>(b.ncore);
+  const auto nv = static_cast<std::size_t>(b.nvirt);
+  e.h1e = random_on_device(res, d, n * n, seed);
+  e.h2e = random_on_device(res, d, n * n * n * n, seed + 1);
+  e.e_core = random_on_device(res, d, nc, seed + 2);
+  e.e_virt = random_on_device(res, d, nv, seed + 3);
+  e.h1e_v_sr = random_on_device(res, d, nv * n, seed + 4);
+  e.h1e_v_si = random_on_device(res, d, n * nc, seed + 5);
+  e.h1e_v_sir = random_on_device(res, d, nv * nc, seed + 6);
+}
+
+// The RDM tangents of @p e, f3ca's and f3ac's when @p f3.
+void random_rdms(fb::DeviceResources &res, Directions &d, nevpt2::EnergyInputs &e,
+                 const std::int32_t ncas, const bool f3, const std::uint64_t seed) {
+  const auto n = static_cast<std::size_t>(ncas);
+  const std::size_t n6 = n * n * n * n * n * n;
+  e.dm1 = random_on_device(res, d, n * n, seed);
+  e.dm2 = random_on_device(res, d, n * n * n * n, seed + 1);
+  e.dm3 = random_on_device(res, d, n6, seed + 2);
+  if (f3) {
+    e.f3ca = random_on_device(res, d, n6, seed + 3);
+    e.f3ac = random_on_device(res, d, n6, seed + 4);
+  }
+}
+
+// Two directions over @p b: every field and B, and the RDMs alone, so the
+// footprint sees a direction that moves no slab beside one that does.
+Directions two_directions(fb::DeviceResources &res, const nevpt2::MoBlocks &b) {
+  Directions d;
+  d.held.reserve(64);
+  d.blocks.reserve(1);
+  nevpt2::EnergyDirection all;
+  random_shared(res, d, all.in, b, 100);
+  random_rdms(res, d, all.in, b.ncas, true, 200);
+  all.blocks = random_blocks(res, d, b, 300);
+  nevpt2::EnergyDirection rdms_only;
+  random_rdms(res, d, rdms_only.in, b.ncas, true, 400);
+  d.along = {all, rdms_only};
+  return d;
+}
+
+// The allocations live at a tangent's peak, at most: delta, B + s Ḃ's five
+// blocks, plus and dd, a class's blocks and each direction's tangent of
+// each, Eq. 40's scalar, the slab buffers and bars, the four tables and the
+// slab tangents' buffers, and a builder's shifted inputs and its own.
+constexpr std::size_t kTangentLive = 40;
+
+class Nevpt2ClassEnergiesTangentFootprint
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
+
+// class_energies_tangent along two directions at a batch of one and at the
+// whole extent.
+TEST_P(Nevpt2ClassEnergiesTangentFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  const auto [name, batch] = GetParam();
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  const Directions d = two_directions(inputs, b);
+  const fb::MemoryFootprint fp = nevpt2::class_energies_tangent_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, g.nelecas, batch, d.along);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  fb::DeviceResources res{0};
+  expect_routine_footprint(res, fp, kTangentLive, [&] {
+    const auto t = nevpt2::class_energies_tangent(res, b, g.in, batch, d.along);
+    ASSERT_TRUE(t) << t.error().message;
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2ClassEnergiesTangentFootprint,
+                         ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                                              std::string{"n2_ccpvdz_cas88_df"}),
+                                            ::testing::Values(1, 0)),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param));
+                         });
+
+// The one-function classes' η̇ (Srs at two active electrons, Sij at two
+// holes): CAS(4,4)'s inputs with dm1 rescaled to the trace that makes the
+// class one-function. Only the trace is read for that, so the values are
+// as good as any for the footprint.
+TEST(Nevpt2Footprint, ClassEnergiesTangentOneFunctionClasses) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, "n2_ccpvdz_cas44_df");
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  const Directions d = two_directions(inputs, b);
+  const std::vector<double> dm1 =
+      row_major(read_array(kDataDir / "n2_ccpvdz_cas44_df" / "dm1.npy"));
+  for (const std::int32_t nelecas : {2, (2 * b.ncas) - 2}) {
+    SCOPED_TRACE(std::format("nelecas {}", nelecas));
+    std::vector<double> scaled = dm1;
+    for (double &x : scaled) {
+      x *= static_cast<double>(nelecas) / static_cast<double>(g.nelecas);
+    }
+    const fb::Buffers::device<double> dm1_d = on_device(inputs, scaled);
+    nevpt2::EnergyInputs in = g.in;
+    in.dm1 = dm1_d.data();
+    const fb::MemoryFootprint fp = nevpt2::class_energies_tangent_footprint(
+        b.naux, b.ncore, b.ncas, b.nvirt, nelecas, 0, d.along);
+    fb::DeviceResources res{0};
+    expect_routine_footprint(res, fp, kTangentLive, [&] {
+      const auto t = nevpt2::class_energies_tangent(res, b, in, 0, d.along);
+      ASSERT_TRUE(t) << t.error().message;
+    });
+  }
+}
+
+class Nevpt2ScEffectiveHamiltonianTangentFootprint
+    : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
+
+// sc_effective_hamiltonian_tangent over two states at a batch of one and at
+// the whole extent: the case's inputs on the diagonal, random transition
+// RDMs off it (no f3ca or f3ac, which only the diagonal reads), and per
+// direction its shared tangents once, the diagonal's RDM tangents with f3
+// and the transitions' without.
+TEST_P(Nevpt2ScEffectiveHamiltonianTangentFootprint, SoundAndTight) {
+  FBF_REQUIRE_GPU();
+  constexpr std::int32_t kStates = 2;
+  const auto [name, batch] = GetParam();
+  fb::DeviceResources inputs{0};
+  const EnergyCase g = energy_case(inputs, name);
+  ASSERT_TRUE(g.blocks.has_value());
+  const nevpt2::MoBlocks &b = *g.blocks;
+  Directions d;
+  d.held.reserve(128);
+  d.blocks.reserve(1);
+  std::vector<nevpt2::EnergyInputs> pairs(kStates * kStates, g.in);
+  for (std::int32_t i = 0; i < kStates; ++i) {
+    for (std::int32_t j = 0; j < kStates; ++j) {
+      if (i != j) {
+        nevpt2::EnergyInputs &p = pairs[static_cast<std::size_t>((i * kStates) + j)];
+        random_rdms(inputs, d, p, b.ncas, false, 500 + (10 * ((i * kStates) + j)));
+        p.f3ca = nullptr;
+        p.f3ac = nullptr;
+      }
+    }
+  }
+  // Direction 0 moves every field and B, direction 1 the RDMs alone.
+  nevpt2::EnergyDirection shared;
+  random_shared(inputs, d, shared.in, b, 600);
+  shared.blocks = random_blocks(inputs, d, b, 700);
+  std::vector<nevpt2::EnergyDirection> along;
+  for (std::int32_t u = 0; u < 2; ++u) {
+    for (std::int32_t p = 0; p < kStates * kStates; ++p) {
+      nevpt2::EnergyDirection e = u == 0 ? shared : nevpt2::EnergyDirection{};
+      random_rdms(inputs, d, e.in, b.ncas, p % (kStates + 1) == 0, 800 + (10 * ((u * 4) + p)));
+      along.push_back(e);
+    }
+  }
+  const fb::MemoryFootprint fp = nevpt2::sc_effective_hamiltonian_tangent_footprint(
+      b.naux, b.ncore, b.ncas, b.nvirt, g.nelecas, kStates, batch, along);
+  EXPECT_EQ(fp.device.persistent, 0U);
+  fb::DeviceResources res{0};
+  expect_routine_footprint(res, fp, kTangentLive, [&] {
+    const auto t = nevpt2::sc_effective_hamiltonian_tangent(res, b, pairs, batch, along);
+    ASSERT_TRUE(t) << t.error().message;
+  });
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2ScEffectiveHamiltonianTangentFootprint,
+                         ::testing::Combine(::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                                              std::string{"n2_ccpvdz_cas88_df"}),
+                                            ::testing::Values(1, 0)),
+                         [](const auto &info) {
+                           return std::get<0>(info.param) + "_batch" +
+                                  std::to_string(std::get<1>(info.param));
+                         });
 
 } // namespace
