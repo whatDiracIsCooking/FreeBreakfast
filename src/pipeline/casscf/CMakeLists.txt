@@ -1,12 +1,14 @@
-# The Casscf step. mcscf::solve, pipeline::scf and pipeline::active_space are
-# PUBLIC and re-exported: the product holds mcscf::Iteration and a
-# SphericalMatrixAO, run's View names the ScfOutput and the products it
-# re-exports (the EriOutput among them), and CasscfStep derives from
-# ActiveSpaceSelection. core::resources and pipeline::step are in run's
-# signature, pipeline::footprint in footprint's. Everything else run uses --
-# the integrals and Fock at the solution, the eigensolver for the canonical
-# and natural orbitals, the Molden writer and the .npy reader and writer -- is
-# PRIVATE: run is defined in the implementation unit.
+# The Casscf step, and the CarriedOrbitals step that stands for [scf] when a
+# CASSCF chain is rerun at another geometry. mcscf::solve, pipeline::scf and
+# pipeline::active_space are PUBLIC and re-exported: the product holds
+# mcscf::Iteration and a SphericalMatrixAO, run's View names the ScfOutput and
+# the products it re-exports (the EriOutput among them), and CasscfStep
+# derives from ActiveSpaceSelection. core::resources and pipeline::step are in
+# run's signature, pipeline::footprint in footprint's. Everything else run
+# uses -- the integrals and Fock at the solution, the eigensolver for the
+# canonical and natural orbitals, the Molden writer and the .npy reader and
+# writer, and the carried orbitals' orthogonalize -- is PRIVATE: run is
+# defined in the implementation unit.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.casscf
@@ -36,4 +38,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::io::npy
   free_breakfast::recipes::blas
   free_breakfast::recipes::diagonalize
+  free_breakfast::recipes::orthogonalize
 )

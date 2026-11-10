@@ -7,7 +7,10 @@
 /// Device-shaped. The selection is `pipeline.active_space`'s, which
 /// `CasscfStep` derives from, as `CasciStep` does. `mcscf.solve`'s
 /// `mcscf::solve` does the optimization; the canonicalization, the Fock it
-/// reads and the Molden and .npy writers are private to `run`. See README.md.
+/// reads and the Molden and .npy writers are private to `run`.
+///
+/// Beside it, `CarriedOrbitalsStep`: the [scf] a CASSCF chain rerun at
+/// another geometry starts from. See README.md.
 
 export module free_breakfast.pipeline.casscf;
 
@@ -172,6 +175,44 @@ struct CasscfStep : ActiveSpaceSelection {
   /// `response::fock`, kept to the end, the canonicalization's two
   /// eigenproblems, its rotation and C R, and, with @ref molden, the natural
   /// orbitals' eigenproblem.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
+};
+
+/// @brief The [scf] of a CASSCF chain rerun at another geometry, standing
+/// where ScfStep would: another geometry's CASSCF orbitals, core, active,
+/// virtual, Loewdin-orthonormalized in this geometry's overlap,
+/// C (C^T S C)^-1/2, the orthonormal set nearest them. So the CasscfStep
+/// starts from the active space it converged there, not from a fresh pick
+/// that could swap orbitals, and a start that is not orthonormal does not
+/// converge O(h) off.
+///
+/// [optimize] carries the last evaluation's orbitals to the next geometry,
+/// and the semi-numerical [hessian] the reference's to each displaced one.
+/// Only the CasscfStep reads its product, by index over its first columns:
+/// the energy is NaN, no SCF ran, and d is left zero.
+struct CarriedOrbitalsStep {
+  /// @brief As ScfStep's, whose product this is.
+  static constexpr std::string_view kName = "scf";
+
+  /// @brief AO by MO, column-major, on the host: the other geometry's
+  /// CasscfOutput::c.
+  std::vector<double> c;
+  /// @brief One per column: the other geometry's CasscfOutput::mo_energies.
+  std::vector<double> mo_energies;
+  /// @brief The first geometry's ScfOutput's.
+  int32_t n_alpha{0};
+  /// @brief The first geometry's ScfOutput's.
+  int32_t n_beta{0};
+
+  /// @brief C (C^T S C)^-1/2 at this geometry's S. ErrorKind::InvalidConfig
+  /// when @ref c and @ref mo_energies do not fit the basis; `orthogonalize`'s
+  /// error, or GpuRuntime for a failed copy or BLAS call.
+  [[nodiscard]] Result<ScfOutput> run(View<BasisSetOutput, OverlapOutput> in,
+                                      DeviceResources &res) const;
+
+  /// @brief ScfOutput's C and d, persistent; C, C^T S C and its inverse
+  /// square root, scratch held to the end, with `orthogonalize_footprint`'s
+  /// at nao, and gemmwich's nao x nao in the device workspace.
   [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 

@@ -167,8 +167,9 @@ each evaluation returning the `CasscfOutput`'s energy of the root and the
 
 - **The active space is picked once.** At the first geometry the CASSCF
   starts from the SCF's orbitals and `[casscf]`'s selection (by index or
-  AVAS). At every later one there is no SCF: a private step of this module,
-  standing where the `ScfStep` stood, hands the CASSCF the last evaluation's
+  AVAS). At every later one there is no SCF: `CarriedOrbitalsStep`
+  (`../casscf/README.md`), standing where the `ScfStep` stood, hands the
+  CASSCF the last evaluation's
   converged orbitals, core, active and virtual, Loewdin-orthonormalized in the
   new overlap, C (CᵀSC)^-1/2 -- the orthonormal set nearest them -- and the
   CasscfStep takes them by index as they come (its `ncas` and `nelecas` the
@@ -526,8 +527,9 @@ trajectory are pageable host memory, not modelled.
 
 Over a CASSCF chain (`casscf_gradient`, `nevpt2_gradient`, `meci`) the
 footprint is none, so a capped plan is refused naming `[optimize]`: the
-carried orbitals and the NEVPT2 gradient's and the intersections' library
-calls are not all footprinted yet. That optional is transitional
+NEVPT2 gradient's and the intersections' library calls are not all
+footprinted yet, and the CASSCF chain's fold is not written (the carried
+orbitals step has its footprint). That optional is transitional
 (`../footprint/README.md`, #1122).
 
 ## Config

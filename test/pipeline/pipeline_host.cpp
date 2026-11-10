@@ -1,6 +1,7 @@
 // Pipeline<Steps...> over made-up steps: the registry checks (static_asserts),
 // planning, and running on a node with no devices. The device-shaped steps
-// here are planned but never run, so nothing touches a device.
+// here are planned but never run, so nothing touches a device. None
+// allocates, so each step's footprint is a host fake's `return {};`.
 
 #include <gtest/gtest.h>
 
@@ -9,6 +10,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.pipeline;
+import free_breakfast.pipeline.footprint;
 
 namespace {
 
@@ -38,6 +40,7 @@ struct Q {};
 // A root step: a, or a failure.
 struct RootStep {
   static constexpr std::string_view kName = "root";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   std::int32_t value = 1;
   bool fail = false;
   fb::Result<A> run(fb::View<> /*in*/) const {
@@ -62,6 +65,7 @@ fb::Result<std::int32_t> read_value(const std::filesystem::path &from) {
 // Loadable from nothing, so loading it drops RootStep from the plan.
 struct DoubleStep {
   static constexpr std::string_view kName = "double";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in) const { return B{.value = 2 * in.get<A>().value}; }
   static fb::Result<B> load(const std::filesystem::path &from, fb::View<> /*in*/) {
     const fb::Result<std::int32_t> value = read_value(from);
@@ -74,6 +78,7 @@ struct DoubleStep {
 
 struct SumStep {
   static constexpr std::string_view kName = "sum";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<C> run(fb::View<A, B> in) const {
     return C{.value = in.get<A>().value + in.get<B>().value};
   }
@@ -82,6 +87,7 @@ struct SumStep {
 // Host-parallel inside: c + 1 + 2, from two subtasks.
 struct SubflowStep {
   static constexpr std::string_view kName = "subflow";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<D> run(fb::View<C> in, fb::tf::Subflow &subflow) const {
     std::int32_t one = 0;
     std::int32_t two = 0;
@@ -94,6 +100,7 @@ struct SubflowStep {
 
 struct DeviceStep {
   static constexpr std::string_view kName = "device";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<E> run(fb::View<A> in, fb::DeviceResources & /*res*/) const {
     return E{.value = in.get<A>().value};
   }
@@ -109,6 +116,7 @@ struct DeviceStep {
 
 struct NodeStep {
   static constexpr std::string_view kName = "node";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<F> run(fb::View<A> /*in*/, fb::NodeResources &node) const {
     return F{.devices = node.device_count()};
   }
@@ -124,10 +132,12 @@ concept FormsPipeline = requires { typename fb::Pipeline<Steps...>; };
 // A second producer of A, and a second step named "root".
 struct OtherRootStep {
   static constexpr std::string_view kName = "other_root";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<A> run(fb::View<> /*in*/) const { return A{}; }
 };
 struct SameNameStep {
   static constexpr std::string_view kName = "root";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<> /*in*/) const { return B{}; }
 };
 
@@ -154,6 +164,7 @@ static_assert(std::constructible_from<Calc::Step, fb::Load<DeviceStep>>);
 // What a load reads needs a producer in the registry too.
 struct LoadsQStep {
   static constexpr std::string_view kName = "loads_q";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<P> run(fb::View<> /*in*/) const { return P{}; }
   static fb::Result<P> load(const std::filesystem::path & /*from*/, fb::View<Q> /*in*/) {
     return P{};
@@ -165,10 +176,12 @@ static_assert(!FormsPipeline<LoadsQStep>);
 // cycle create refuses.
 struct PStep {
   static constexpr std::string_view kName = "p";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<P> run(fb::View<Q> /*in*/) const { return P{}; }
 };
 struct QStep {
   static constexpr std::string_view kName = "q";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<Q> run(fb::View<P> /*in*/) const { return Q{}; }
 };
 

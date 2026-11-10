@@ -17,7 +17,7 @@ module free_breakfast.pipeline.hessian;
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
-import free_breakfast.core.constants; // kOne, kZero, kInvSqrt2
+import free_breakfast.core.constants; // kInvSqrt2
 import free_breakfast.core.log;
 import free_breakfast.core.primitives; // math::binomial
 import free_breakfast.core.resources;
@@ -28,9 +28,7 @@ import free_breakfast.hessian;
 import free_breakfast.integrals.one_electron.dipole; // kDipoleMaxL
 import free_breakfast.pipeline.pipeline;
 import free_breakfast.pipeline.footprint;
-import free_breakfast.pipeline.casci; // the QD ensemble's edge, E_{n+1} - E_n
-import free_breakfast.recipes.blas;   // gemm, gemmwich
-import free_breakfast.recipes.orthogonalize;
+import free_breakfast.pipeline.casci;   // the QD ensemble's edge, E_{n+1} - E_n
 import free_breakfast.response.zvector; // rotating_pairs
 
 #include "diagnostics.h"
@@ -78,64 +76,6 @@ template <class... Last>
       std::move(last)...,
   });
 }
-
-// The CASSCF chain's ScfOutput at a displaced geometry: the reference
-// CASSCF's orbitals, core, active, virtual, Loewdin-orthonormalized in this
-// geometry's overlap, C (C^T S C)^-1/2, the orthonormal set nearest them, so
-// the displaced CASSCF starts from the reference's solution moved and not
-// from a fresh pick, and a start that is not orthonormal does not converge
-// O(h) off. Only the CasscfStep reads it, by index over its first columns:
-// the energy is NaN, no SCF ran, and d is left zero.
-struct ReferenceOrbitalsStep {
-  static constexpr std::string_view kName = "scf";
-
-  // AO by MO, column-major, on the host: the reference CasscfOutput's c.
-  std::vector<double> c;
-  // One per column: the reference CasscfOutput's mo_energies.
-  std::vector<double> mo_energies;
-  // The reference geometry's ScfOutput's.
-  int32_t n_alpha{0};
-  int32_t n_beta{0};
-
-  [[nodiscard]] Result<ScfOutput> run(View<BasisSetOutput, OverlapOutput> in,
-                                      DeviceResources &res) const {
-    const BasisSet &basis = in.get<BasisSetOutput>().basis;
-    const SphericalMatrixAO &s = in.get<OverlapOutput>().s;
-    if (c.size() != s.num_elements() || mo_energies.size() != s.n()) {
-      return err_config("[{}] carries {} orbital coefficients and {} energies into a basis of {} "
-                        "functions",
-                        HessianStep::kName, c.size(), mo_energies.size(), s.n());
-    }
-    const ScopedDeviceIndex on{res.dev_idx()};
-    const auto n = static_cast<int32_t>(s.n());
-    const size_t n2 = s.num_elements();
-    // C, M = C^T S C and M^-1/2: held across orthogonalize, which takes the
-    // workspace, so each is its own buffer.
-    SphericalMatrixAO reference(res, basis);
-    Buffers::device<double> m(n2, res.device());
-    Buffers::device<double> m_inv_sqrt(n2, res.device());
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(reference.data(), c.data(), n2 * sizeof(double),
-                                           wwr::wwrMemcpyHostToDevice, res.stream())));
-    {
-      const auto [work] = res.device_regions<double>(n2);
-      FBF_TRY(gpu_status(gemmwich(res.blas(), n, reference.data(), s.data(), work, m.data())));
-    }
-    FBF_TRY(orthogonalize<double>(res, n, m.data(), m_inv_sqrt.data()));
-    ScfOutput out{
-        .energy = std::numeric_limits<double>::quiet_NaN(),
-        .iterations = 0,
-        .n_alpha = n_alpha,
-        .n_beta = n_beta,
-        .mo_energies = mo_energies,
-        .c = SphericalMatrixAO(res, basis),
-        .d = SphericalMatrixAO(res, basis),
-    };
-    FBF_TRY(gpu_status(gemm(res.blas(), n, &kOne<double>, reference.data(), m_inv_sqrt.data(),
-                            &kZero<double>, out.c.data())));
-    FBF_TRY(res.sync());
-    return out;
-  }
-};
 
 // The @p count doubles at @p d, on the host.
 [[nodiscard]] Result<std::vector<double>> download(DeviceResources &res, const double *d,
@@ -288,16 +228,16 @@ struct LadderVerdict {
 
 // @p reference's orbitals rotated by a random angle within +-kNoiseKick in
 // every non-redundant pair (core-active, core-virtual, active-virtual), to
-// first order, C (1 + A) with A antisymmetric; ReferenceOrbitalsStep
+// first order, C (1 + A) with A antisymmetric; CarriedOrbitalsStep
 // orthonormalizes it. A start the CASSCF reconverges from, so the spread of
 // its gradients is the chain's noise.
-[[nodiscard]] ReferenceOrbitalsStep kicked_start(const ReferenceOrbitalsStep &reference,
-                                                 size_t ncore, size_t ncas, std::mt19937_64 &rng) {
+[[nodiscard]] CarriedOrbitalsStep kicked_start(const CarriedOrbitalsStep &reference, size_t ncore,
+                                               size_t ncas, std::mt19937_64 &rng) {
   const size_t nmo = reference.mo_energies.size();
   const size_t nao = nmo == 0 ? 0 : reference.c.size() / nmo;
   std::uniform_real_distribution<double> angle(-kNoiseKick, kNoiseKick);
   const auto space = [&](size_t p) { return p < ncore ? 0 : (p < ncore + ncas ? 1 : 2); };
-  ReferenceOrbitalsStep out = reference;
+  CarriedOrbitalsStep out = reference;
   for (size_t p = 0; p < nmo; ++p) {
     for (size_t r = p + 1; r < nmo; ++r) {
       if (space(p) == space(r)) {
@@ -1037,7 +977,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     // Under the CASSCF chain, the reference at R: the SCF, the configured
     // pick and its CASSCF, whose orbitals every displaced solve starts from
     // and whose roots each is held to. The active space is picked here only.
-    std::optional<ReferenceOrbitalsStep> reference;
+    std::optional<CarriedOrbitalsStep> reference;
     std::vector<double> reference_ci;
     size_t reference_ncore = 0;
     // Under a QD [nevpt2_gradient]: the state differenced, P, and its H_eff
@@ -1118,7 +1058,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       FBF_TRY(at_geometry(chain.run(node), "the reference geometry"));
       const ScfOutput &rhf = *chain.get<ScfOutput>();
       const CasscfOutput &cas = *chain.get<CasscfOutput>();
-      reference.emplace(ReferenceOrbitalsStep{
+      reference.emplace(CarriedOrbitalsStep{
           .c = FBF_TRY(download(res, cas.c.data(), cas.c.num_elements())),
           .mo_energies = cas.mo_energies,
           .n_alpha = rhf.n_alpha,
@@ -1202,16 +1142,16 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     // orbitals and CI vectors are left there, for a re-solve to start from.
     const auto casscf_chain_gradient_at =
         [&]<class Last>(std::span<const double> shift, const std::string &where,
-                        const ReferenceOrbitalsStep &start, const CasscfStep &casscf_step,
+                        const CarriedOrbitalsStep &start, const CasscfStep &casscf_step,
                         const Last &last,
-                        std::pair<ReferenceOrbitalsStep, std::vector<double>> *solved =
+                        std::pair<CarriedOrbitalsStep, std::vector<double>> *solved =
                             nullptr) -> Result<std::vector<double>> {
       // The production solves' diagnostics, not a tightened re-solve's.
       const bool production = &casscf_step == &displaced_casscf;
       auto chain =
           FBF_TRY((Pipeline<DisplacedMoleculeStep, BasisSetStep, SphericalTransformStep,
                             PrimitivePairClassesStep, EriStep, OverlapStep, CoreHamiltonianStep,
-                            ReferenceOrbitalsStep, CasscfStep, Last>::create({
+                            CarriedOrbitalsStep, CasscfStep, Last>::create({
               displaced(shift),
               basis_set,
               SphericalTransformStep{},
@@ -1256,7 +1196,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
             std::max(worst_solve_residual, cas.gradient_norm + cas.ci_residual_norm);
       }
       if (solved != nullptr) {
-        solved->first = ReferenceOrbitalsStep{
+        solved->first = CarriedOrbitalsStep{
             .c = FBF_TRY(download(res, cas.c.data(), cas.c.num_elements())),
             .mo_energies = cas.mo_energies,
             .n_alpha = start.n_alpha,
@@ -1348,7 +1288,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     // The gradient at R + @p shift, from @p start under the CASSCF chain
     // (the reference's orbitals when null).
     const auto gradient_at = [&](std::span<const double> shift, const std::string &where,
-                                 const ReferenceOrbitalsStep *start =
+                                 const CarriedOrbitalsStep *start =
                                      nullptr) -> Result<std::vector<double>> {
       ++gradients;
       if (casscf_gradient) {
@@ -1372,7 +1312,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                                               const std::string &where)
         -> Result<std::pair<std::vector<double>, std::vector<double>>> {
       gradients += 2;
-      std::pair<ReferenceOrbitalsStep, std::vector<double>> solved;
+      std::pair<CarriedOrbitalsStep, std::vector<double>> solved;
       CasscfStep tight = displaced_casscf;
       std::tie(tight.conv_tol, tight.conv_tol_grad) = tight_tolerances;
       const std::string tightened =
@@ -1457,7 +1397,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       for (size_t j = 0; j < noise_points; ++j) {
         std::vector<std::vector<double>> samples{points[j][kLadderPointH]};
         for (size_t r = 0; r < kNoiseStarts; ++r) {
-          const ReferenceOrbitalsStep start = kicked_start(
+          const CarriedOrbitalsStep start = kicked_start(
               *reference, reference_ncore, static_cast<size_t>(displaced_casscf.ncas), rng);
           samples.push_back(in_coordinates(FBF_TRY(gradient_at(
               scaled(coordinate(j), h),

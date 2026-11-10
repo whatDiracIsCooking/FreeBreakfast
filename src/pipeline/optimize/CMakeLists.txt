@@ -8,8 +8,7 @@
 # recorded_optimize's. run is defined in the
 # implementation unit, so the planner it nests (pipeline::pipeline), the files
 # it writes (io::base) and reads (io::xyz), atom (element_symbol),
-# the carried orbitals' orthonormalization (recipes::blas,
-# recipes::orthogonalize, core::wwr), a QD state's root matching
+# the carried orbitals' copy to the host (core::wwr), a QD state's root matching
 # (mcscf::overlap), the MECI's g_I, g_J and h_IJ (mcscf::intersection) and
 # a QD MECI's g_P, g_Q and h_PQ (nevpt2::intersection) over its frozen core
 # (pipeline::nevpt2's resolution), core::constants,
@@ -46,6 +45,4 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::nevpt2::intersection
   free_breakfast::pipeline::nevpt2
   free_breakfast::pipeline::pipeline
-  free_breakfast::recipes::blas
-  free_breakfast::recipes::orthogonalize
 )
