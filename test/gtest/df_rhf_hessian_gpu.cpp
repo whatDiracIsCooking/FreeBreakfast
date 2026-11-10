@@ -6,7 +6,8 @@
 // translational sum rule; against a central difference of the tree's own
 // gradient::df_rhf (the [hessian] step, run here on the same water); at
 // PySCF's minimum, six near-zero mass-weighted eigenvalues and the harmonic
-// frequencies; and the refusals.
+// frequencies; the refusals; and df_rhf_footprint (#1053), the two-electron
+// batch sized from the memory budget.
 
 #include <gtest/gtest.h>
 
@@ -33,12 +34,15 @@ import free_breakfast.hessian;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
-// After the imports: it names std::filesystem from this unit's `import std;`.
+// After the imports: they name std::filesystem, wwr and Device from this
+// unit's imports.
+#include "pool_footprint.h"
 #include "scratch_dir.h"
 
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 
 // The issue's bar against PySCF, absolute, for the total and each term (max
 // |H| is 0.7 to 1.0). The parts measured on their own are 1e-11 to 1e-10 from
@@ -64,6 +68,10 @@ constexpr double kRigidEigenvalueTol = 1e-6;
 // The harmonic frequencies against PySCF's of its own Hessian (cm^-1), as
 // geometry_frequencies_gpu.cpp holds harmonic_analysis.
 constexpr double kFrequencyTol = 1e-3;
+// The Hessian with the two-electron batch at one atom a batch against every
+// atom in one walk, of max |H|: the batch only regroups the cross terms'
+// gemms and their sums, so this is a rounding bound, not a fit.
+constexpr double kBatchTol = 1e-10;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "rhf_hessian";
 
@@ -218,8 +226,11 @@ protected:
     c_.emplace(upload(*res_, c));
   }
 
-  fb::Result<fb::hessian::RhfTerms> run() {
-    return fb::hessian::df_rhf(*res_, *molecule_, *basis_, classes_, *aux_, *b_,
+  fb::Result<fb::hessian::RhfTerms> run() { return run_on(*res_); }
+
+  // df_rhf on @p res, the inputs the fixture's own.
+  fb::Result<fb::hessian::RhfTerms> run_on(fb::DeviceResources &res) {
+    return fb::hessian::df_rhf(res, *molecule_, *basis_, classes_, *aux_, *b_,
                                metric_->spherical().data(), *c_, energies_, nocc_, kCphfTolerance);
   }
 
@@ -396,6 +407,78 @@ TEST_F(HessianDfRhf, MinimumHasSixRigidModes) {
                            "|nu - PySCF| {:.2e}\n",
                            rigid, eigenvalues[kRigid], vib->frequencies[0], vib->frequencies[1],
                            vib->frequencies[2], worst);
+}
+
+// df_rhf's own allocations held to df_rhf_footprint, its two-electron batch
+// at the least: on a fresh DeviceResources whose pool is capped at the
+// workspace a probe run grows, the fragmentation headroom an adaptive part
+// leaves of the budget and the footprint's peak; once to grow the workspace,
+// then measured. The formaldehyde, whose two-electron cross terms at two
+// atom blocks outgrow its explicit part (the water's do not, so its batch
+// takes every atom under any cap the explicit part fits): at the peak, the
+// two-electron part's held buffer and the batch. Then under a cap with room,
+// the batch takes every atom in one walk, so the peak is higher, the pool
+// stays under the cap, and the least ran batched (two or three slots of four
+// atoms: one atom a batch); and the Hessian there equals the least's to
+// kBatchTol of max |H|. Five calls of 0.7 to 2.9 s, so slow-gated: the
+// analytic [hessian]'s footprint (pipeline_step_footprint_gpu.cpp) stands
+// for df_rhf's in the fast tier.
+TEST_F(HessianDfRhf, FootprintAndBatchFromTheBudget) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  load("h2co_ccpvdz");
+  ASSERT_FALSE(HasFatalFailure());
+  ASSERT_EQ(n_x_, 12U);
+  const auto nmo = static_cast<std::int32_t>(energies_.size());
+  const fb::MemoryFootprint fp = fb::hessian::df_rhf_footprint(*basis_, *aux_, nmo, nocc_);
+  const fb::MemoryFootprint two = fb::hessian::df_rhf_two_electron_footprint(*basis_, *aux_, nocc_);
+  // U^x, returned; the two-electron part's least is the call's peak.
+  const auto occ = static_cast<std::size_t>(nocc_);
+  EXPECT_EQ(fp.device.persistent, sizeof(double) * (energies_.size() - occ) * occ * n_x_);
+  EXPECT_EQ(fp.device.persistent + fp.device.scratch, two.device.scratch);
+  const auto run = [&](fb::DeviceResources &on) {
+    auto got = run_on(on);
+    EXPECT_TRUE(got) << got.error().message;
+    return got ? std::move(got->hessian) : std::vector<double>{};
+  };
+  std::size_t held = 0;
+  {
+    fb::DeviceResources probe{0};
+    (void)run(probe);
+    ASSERT_TRUE(probe.sync());
+    EXPECT_EQ(probe.device_workspace(0).num_elements(), fp.device.workspace);
+    held = probe.device()->pool_usage().used_current;
+  }
+  const auto measured = [&](const std::uint64_t cap, std::vector<double> &h) {
+    fb::DeviceResources res{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+    h = run(res);
+    const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), [&] { (void)run(res); });
+    EXPECT_LE(res.device()->pool_usage().used_high, cap);
+    return peak;
+  };
+  std::vector<double> narrow;
+  const fbt::PoolPeak least =
+      measured(held + fb::kPoolHeadroomBytes + fp.device.persistent + fp.device.scratch, narrow);
+  std::cout << std::format("[ footprint ] df_rhf at the least: measured {}, footprint {} + "
+                           "workspace {}\n",
+                           least.used, fp.device.persistent + fp.device.scratch,
+                           fp.device.workspace);
+  fbt::expect_footprint(least, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
+                        2);
+  std::vector<double> whole;
+  const fbt::PoolPeak room =
+      measured(held + fb::kPoolHeadroomBytes + (std::size_t{64} << 20), whole);
+  std::cout << std::format("[ footprint ] df_rhf with room: measured {}, the least {}\n", room.used,
+                           least.used);
+  EXPECT_GT(room.used, least.used);
+  ASSERT_EQ(narrow.size(), whole.size());
+  const double top = max_abs(whole);
+  ASSERT_GT(top, 0.0);
+  const double worst = max_diff(narrow, whole);
+  std::cout << std::format("[ hess     ] h2co_ccpvdz one atom a batch vs one walk: max |dH| / "
+                           "max |H| = {:.2e}\n",
+                           worst / top);
+  EXPECT_LE(worst, kBatchTol * top);
 }
 
 TEST_F(HessianDfRhf, Refusals) {

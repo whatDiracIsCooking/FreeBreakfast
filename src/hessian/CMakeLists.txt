@@ -1,18 +1,17 @@
-# The module: host code over the derivative and second-derivative integrals,
-# the density-fitted J and K, the CPHF and wwr's BLAS, with no kernels of its
-# own. DeviceResources,
-# Buffers, Molecule, BasisSet, PrimitivePairClass, SphericalMatrixAO, Result,
-# response::Cphf, mcscf::Solution and response::ZVectors are in its signatures,
-# so core::resources, core::wwr, molecule, basis, mmd, recipes::matrix_ao,
-# core::error_handling, response::cphf, mcscf::solve and response::zvector are
+# The module: host code over the derivative and second-derivative integrals, the
+# density-fitted J and K, the CPHF and wwr's BLAS, with no kernels of its own.
+# DeviceResources, Buffers, Molecule, BasisSet, PrimitivePairClass,
+# SphericalMatrixAO, Result, MemoryFootprint, response::Cphf, mcscf::Solution
+# and response::ZVectors are in its signatures, so core::resources, core::wwr,
+# molecule, basis, mmd, recipes::matrix_ao, core::error_handling,
+# core::footprint, response::cphf, mcscf::solve and response::zvector are
 # PUBLIC. The derivative calls, the J and K builds, the second-derivative
 # integrals, the MO-basis fit, the dipole integrals and their derivative, the
-# CASSCF's integrals, CI (and its solver), Fock, orbital and relaxed
-# Hessians, derivatives, root rotation, transition gradient, zeta terms and
-# third derivative, the
-# NEVPT2 builders' tangent, H_eff's MO blocks, diagonalization and QD
-# gradients, the gemms and the FBF_TRY header are the implementation units'
-# own, so PRIVATE.
+# CASSCF's integrals, CI (and its solver), Fock, orbital and relaxed Hessians,
+# derivatives, root rotation, transition gradient, zeta terms and third
+# derivative, the NEVPT2 builders' tangent, H_eff's MO blocks, diagonalization
+# and QD gradients, the gemms and the FBF_TRY header are the implementation
+# units' own, so PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.hessian
@@ -45,6 +44,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::basis
   free_breakfast::molecule
   free_breakfast::integrals::mmd

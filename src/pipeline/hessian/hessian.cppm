@@ -259,7 +259,7 @@ struct HessianStep {
   ///         not bilinear, the frequencies withheld.
   [[nodiscard]] Result<HessianOutput> run(View<MoleculeOutput> in, NodeResources &node) const;
 
-  /// @brief What @ref run holds at @p dims under HessianMethod::Numerical
+  /// @brief What @ref run holds at @p dims. Under HessianMethod::Numerical
   /// over the RHF chain: at each of the 6N displacements the chain's plan to
   /// `[gradient]`, folded as pre-flight folds a plan (plan_footprint over its
   /// steps' footprints, in the order the displacement runs them) and freed
@@ -270,10 +270,20 @@ struct HessianStep {
   /// for all of them. The 6N gradients and the product are pageable host
   /// memory, not modelled.
   ///
-  /// None under HessianMethod::Analytic (#1053) and over a CASSCF chain
-  /// (@ref casscf_gradient, @ref nevpt2_gradient), whose library calls are
-  /// not all footprinted yet: pre-flight refuses it under a cap.
-  /// Transitional, as step_footprint's optional is (#1122).
+  /// Under HessianMethod::Analytic over the RHF chain: the chain's plan to
+  /// `[scf]`, folded the same way and held through the Hessian; C's buffer
+  /// (nao^2 doubles, nmo counted as nao); @c hessian::df_rhf_footprint,
+  /// its two-electron batch at the least; @c
+  /// hessian::rhf_dipole_derivative_footprint where the dipole integrals
+  /// reach (no shell past @c kDipoleMaxL), beside df_rhf's U^x; all freed
+  /// before @c geometry::harmonic_analysis's. Empty for an integral-direct
+  /// ERI, which is refused before anything runs, and the chain alone for an
+  /// open shell, refused once it has run.
+  ///
+  /// None over a CASSCF chain (@ref casscf_gradient, @ref nevpt2_gradient),
+  /// whose library calls are not all footprinted yet (#1176): pre-flight
+  /// refuses it under a cap. Transitional, as step_footprint's optional is
+  /// (#1122).
   [[nodiscard]] std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 };
 

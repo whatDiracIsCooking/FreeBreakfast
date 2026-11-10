@@ -767,10 +767,29 @@ product and the 6N gradients are pageable host memory, not modelled. The
 harmonic analysis diagonalizes at 3N, so `plan_shape` takes syevd's work
 through 3 natoms when a `[hessian]` is planned.
 
-Under the analytic method (#1053) and over a CASSCF chain (`casscf_gradient`,
-`nevpt2_gradient`) the footprint is none, so a capped plan is refused naming
-`[hessian]`: their library calls are not all footprinted yet. That optional
-is transitional (`../footprint/README.md`, #1122).
+Under the analytic method over the RHF chain (#1053) the chain runs once,
+to `[scf]`, and its products are held through the Hessian:
+
+```
+then(drop(then(then(then(chain, c), df_rhf_footprint), dipole)),
+     harmonic_analysis_footprint(atoms, syevd_lwork))
+```
+
+`chain` is folded as above, without the gradient; `c` is the nao × nmo copy
+of C `hessian::df_rhf` takes (nmo counted as nao, the most the
+orthogonalizer keeps); `hessian::df_rhf_footprint` has the one-electron,
+two-electron and response parts in turn, the two-electron batch at its
+least (the batch is the only adaptive part, sized at run time from the
+memory budget), and U^x persistent; `dipole` is
+`hessian::rhf_dipole_derivative_footprint`, beside U^x, only where the
+dipole integrals reach (no shell past `kDipoleMaxL`). An integral-direct
+`[eri]` is refused before anything runs, so its footprint is empty; an open
+shell is refused once the chain has run, so its footprint is the chain's.
+
+Over a CASSCF chain (`casscf_gradient`, `nevpt2_gradient`) the footprint is
+none, so a capped plan is refused naming `[hessian]`: their library calls are
+not all footprinted yet (#1176). That optional is transitional
+(`../footprint/README.md`, #1122).
 
 ## Config
 

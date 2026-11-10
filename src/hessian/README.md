@@ -88,7 +88,12 @@ reports. PySCF's `pyscf.df.hessian.rhf` total, over the same fitting set,
 with auxbasis response 2.
 
 Its inputs are checked as `df_rhf_response` checks them, before anything
-runs. The memory and the `int32_t` bounds are the parts'.
+runs. The memory and the `int32_t` bounds are the parts'. `df_rhf_footprint`
+composes them in that order: D, −W, the diagonal and gmmwich's work beside
+`one_electron_hessian_footprint`'s scratch, freed; then
+`df_rhf_two_electron_footprint`, its batch at the least; then
+`df_rhf_response_footprint`, whose U^x is returned (`response.cphf`), so
+persistent. The two-electron batch is the only adaptive part.
 
 ### Tests
 
@@ -110,7 +115,15 @@ cc-pVTZ-JKFIT (f orbital shells, g fitting shells):
   1.5e-12), six mass-weighted eigenvalues under 1e-6 (hartree / bohr² / amu,
   against the bend's 0.1) and `geometry::harmonic_analysis`'s frequencies
   against PySCF's `thermo.harmonic_analysis` of its own Hessian to 1e-3 cm⁻¹;
-- the refusals.
+- the refusals;
+- `FootprintAndBatchFromTheBudget` (#1053, slow-gated): on the
+  formaldehyde (the water's explicit part outgrows its cross terms, so its
+  batch is never short), `df_rhf` under a pool cap at the workspace,
+  `kPoolHeadroomBytes` and `df_rhf_footprint`'s peak held to the footprint
+  (`test/support/pool_footprint.h`'s sound and tight bars), then under a cap
+  with room the peak higher (every atom in one walk where the least took one
+  a batch) and the pool under the cap, and the two Hessians equal to 1e-10
+  of max |H|, a rounding bound.
 
 Measured on the RTX 3080 (CUDA): |H − PySCF| 4.4e-11 (water), 9.4e-11
 (formaldehyde) and 1.3e-10 (cc-pVTZ water) of max |H| 0.72, 0.97 and 0.70,
@@ -155,9 +168,12 @@ For a neutral molecule dμ/dx does not depend on the origin, and its sum over
 the atoms vanishes to the CPHF's tolerance (a translation does not change the
 dipole); for a charged one it is the origin-0 derivative. The dipole
 integrals stop at d (`kDipoleMaxL`), so a basis with an f shell is refused
-(`dipole`'s InvalidConfig). Memory: S^x (3 n_atom nao²) and
-`overlap_derivative`'s own scratch, beside three dipole pairs and the MO
-blocks; past the device's free memory that is Unsupported.
+(`dipole`'s InvalidConfig). Memory, `rhf_dipole_derivative_footprint`: D
+beside `dipole_gradient`'s scratch, then the MO blocks, the three P^c and the
+result held beside, in turn, U and three dipole pairs (`dipole`'s carve the
+workspace's), and S^x (3 n_atom nao²) with `overlap_derivative`'s scratch;
+past the memory budget (`res.memory_budget()`), the workspace's growth
+counted, that is Unsupported before anything is allocated.
 
 `infrared_intensities` projects it onto the normal modes,
 I_q = K |Σ_x L_qx dμ/dx|², L as `geometry::harmonic_analysis` returns them
@@ -178,6 +194,9 @@ differences of its DF-RHF dipole to 1e-5 and measured 1e-7 to 6e-7):
   call fed PySCF's C and U (`data/rhf_hessian/`), to 1e-8 absolute, and the
   sum over the atoms to 1e-8;
 - `HessianDipoleDerivative.Refusals`, including an f shell;
+- `HessianDipoleDerivative.FootprintIsSoundAndTight` (#1053): the water's
+  call held to `rhf_dipole_derivative_footprint` by
+  `test/support/pool_footprint.h`'s two bars;
 - `HessianInfraredIntensities`: a hand-made mode's intensity, a mode's sign
   not mattering, and the shape refusals;
 - `PipelineInfrared`: the `[hessian]` step end to end (`pipeline/hessian`).
@@ -235,10 +254,14 @@ The call holds three MO stacks (nmo n_occ 3 n_atom doubles each), the
 right-hand sides (n_vir n_occ 3 n_atom), and one coordinate's J/K build
 (three nao² and nao n_occ). While F^(x) is built it holds three AO stacks of
 3 n_atom nao² beside them (F^(x), J^(x), K^(x)), plus `df_jk_derivative`'s
-own scratch: at 500 AOs and 30 atoms that is 540 MB. The call refuses
-(Unsupported, naming the bytes) when its own peak would not fit the device's
-free memory; `df_jk_derivative` refuses its own scratch the same way. The
-`response::cphf` solve allocates its own. 3 n_atom nao² must fit `int32_t`.
+own scratch: at 500 AOs and 30 atoms that is 540 MB. Then the
+`response::cphf` solve's own beside the right-hand sides; its solution U^x is
+returned. `df_rhf_response_footprint` has all of it, the workspace the
+largest of the carves (the MO carry, `df_jk_derivative`'s, one coordinate's
+J and two-factor K, the CPHF's and the closing products'). The call refuses
+(Unsupported, naming the bytes) when that footprint, and the workspace's
+growth to it, would not fit the memory budget (`res.memory_budget()`).
+Nothing in it is adaptive. 3 n_atom nao² must fit `int32_t`.
 
 The J/K builds are one density per call (3 n_atom for G(D_S^x), and 3 n_atom
 per CPHF sweep): the batched multi-density build the design suggests does
@@ -322,18 +345,23 @@ and the cross terms' M1 (3 naux²), one aux atom's X (3 nao² nblk, nblk the
 largest atom's aux count), the two (3 n_atom)² products and the batches'
 **slots**, each an atom block and its Coulomb vectors (3 naux (n_occ² + 1)).
 The integral calls' scratch (the Cartesian Γ, X's Cartesian block) is the
-workspace's. The budget is the device's free memory, or the call's
-`max_bytes` when that is less. The call refuses (Unsupported, naming the
-bytes) when c plus the larger of the two phases at two slots would not fit
-it; naux nao², 3 naux n_occ² and naux n_occ nao must fit `int32_t`.
+workspace's. The budget is the memory budget (`res.memory_budget()`), or the
+call's `max_bytes` when that is less. The call refuses (Unsupported, naming
+the bytes) when c plus the larger of the two phases at two slots would not
+fit it; naux nao², 3 naux n_occ² and naux n_occ nao must fit `int32_t`.
 
-The slots are sized after the explicit part, from the budget less c, M1, X
-and the products, less room for `three_center_derivative`'s own scratch past
-what the workspace already holds (its Cartesian block, half-transforms and
-staging) and 512 MiB of headroom for the BLAS libraries and the pool: every
-atom's when they fit, else as many as fit, two at the least. So the call
-takes **more memory than before when it has it**: all n_atom blocks,
-3 n_atom naux n_occ² doubles, the whole exchange cross term, against two.
+`df_rhf_two_electron_footprint` is the call at two slots (one for a single
+atom), its least: c beside the larger phase as scratch, and the workspace the
+largest carve of `b_mo`, the second-derivative integrals,
+`metric_derivative`, and each aux atom's `three_center_derivative` and its
+half-transform W. The batch is the adaptive part, the call's own buffer and
+its last allocation, never the workspace: sized after the explicit part,
+from the memory budget less the workspace's growth still to come (the whole
+new block when it must grow, which is allocated before the old one is freed)
+and `kPoolHeadroomBytes`, every atom's when they fit, else as many as fit,
+two at the least. So the call takes **more memory than its least when it has
+it**: all n_atom blocks, 3 n_atom naux n_occ² doubles, the whole exchange
+cross term, against two.
 At 500 AOs, 1500 fitting functions and 60 occupied orbitals an atom block
 is 130 MB and Γ is 3 GB; for 50 atoms the whole batch would be 6.5 GB, so
 on a 10 GB card it is split.

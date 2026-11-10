@@ -10,8 +10,9 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kTwo, kAvogadro, kEpsilon0, kElementaryCharge
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, geam, wwrMemcpyAsync, wwrMemGetInfo
+import free_breakfast.core.wwr; // gemm, geam, wwrMemcpyAsync
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -59,19 +60,21 @@ Result<std::vector<double>> rhf_dipole_derivative(DeviceResources &res, const Mo
     return err_unsupported("hessian::rhf_dipole_derivative: 3 n_atom nao^2 = {} exceeds int32_t",
                            n_x * nn);
   }
-  // Held at the peak: S^x, the three P^c and the MO blocks of mu, beside
-  // overlap_derivative's own scratch (counted as one more S^x).
-  const size_t held = (3 * nn) + (3 * nmo * occ) + (3 * nvir * occ) + (nao * occ) + (n_x * 3);
-  const size_t bytes = sizeof(double) * (held + (2 * n_x * nn));
+  // Everything the call allocates, rhf_dipole_derivative_footprint's, and the
+  // workspace's growth to dipole's carve if it must grow (the new block is
+  // allocated before the old one is freed): past the memory budget an
+  // allocation would abort (CreatePolicy), not return.
   const ScopedDeviceIndex on{res.dev_idx()};
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (bytes > free_bytes) {
+  const MemoryFootprint fp =
+      rhf_dipole_derivative_footprint(basis, static_cast<int32_t>(nmo), nocc);
+  const size_t bytes =
+      fp.device.persistent + fp.device.scratch +
+      (fp.device.workspace > res.device_workspace(0).num_elements() ? fp.device.workspace : 0);
+  if (const size_t budget = FBF_TRY(res.memory_budget()); bytes > budget) {
     return err_unsupported("hessian::rhf_dipole_derivative: the overlap derivative and dipole "
                            "blocks of {} coordinates over {} orbital functions need {} bytes of "
-                           "device memory, and device {} has {} free",
-                           n_x, nao, bytes, res.dev_idx(), free_bytes);
+                           "device memory, and device {} has {} to give",
+                           n_x, nao, bytes, res.dev_idx(), budget);
   }
 
   const wwr::wwrblasHandle_t blas = res.blas().get();
@@ -160,6 +163,34 @@ Result<std::vector<double>> rhf_dipole_derivative(DeviceResources &res, const Mo
     }
     return derivative;
   }
+}
+
+MemoryFootprint rhf_dipole_derivative_footprint(const BasisSet &basis, const int32_t nmo,
+                                                const int32_t nocc) {
+  const size_t nao = basis.nao_sphe();
+  if (nao == 0 || nocc < 1 || nmo <= nocc) {
+    return {};
+  }
+  const auto occ = static_cast<size_t>(nocc);
+  const size_t nvir = static_cast<size_t>(nmo) - occ;
+  const size_t nn = nao * nao;
+  const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
+  const auto held = [](const size_t count) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * count}};
+  };
+  // D for dipole_gradient, freed; then the MO blocks, P^c, C_o's half
+  // product and the device result, held to the end; beside them U and the
+  // three dipole pairs for dipole, freed; then S^x, freed. The derivative is
+  // the caller's, on the host.
+  MemoryFootprint out = drop(then(held(nn), dipole_gradient_footprint(basis)));
+  out = then(out, held((3 * static_cast<size_t>(nmo) * occ) + (3 * nvir * occ) + (3 * nn) +
+                       (nao * occ) + (n_x * 3)));
+  const MemoryFootprint pair = matrix_ao_pair_footprint(basis);
+  out = then(out, drop(then(then(upload_spherical_transform_matrix_footprint(basis),
+                                 then(then(pair, pair), pair)),
+                            dipole_footprint(basis))));
+  out = then(out, drop(one_electron_derivative_footprint(basis)));
+  return drop(out);
 }
 
 Result<std::vector<double>> infrared_intensities(const std::span<const double> modes,

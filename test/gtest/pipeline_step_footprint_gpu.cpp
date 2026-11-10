@@ -20,7 +20,8 @@
 // CASSCF's loop and step, integral-direct and density-fitted; the RHF
 // gradient, integral-direct and density-fitted; and, over a density-fitted
 // SA-2 CASSCF, the routines its gradient and couplings call and the
-// CasscfGradient and Nac steps, at equal and unequal weights.
+// CasscfGradient and Nac steps, at equal and unequal weights; and the
+// analytic DF-RHF Hessian step (#1053), with and without IR, at its least.
 
 #include <gtest/gtest.h>
 
@@ -1568,6 +1569,11 @@ std::size_t peak_gap(const fb::MemoryFootprint &most, const fb::MemoryFootprint 
   return most.device.peak() > at.device.peak() ? most.device.peak() - at.device.peak() : 0;
 }
 
+// The RHF chain's products to [scf], fitted, live under a step that holds
+// them: the Molecule's nuclei, U, the classes, B and L, S, X, H, the guess
+// density and the Scf's orbitals, energies, density and Fock.
+constexpr std::size_t kRhfChainLive = 14;
+
 // Live at the peak of each case's measured run (test/support/pool_footprint.h's
 // A), counted off a trace of its pool allocations. The Nevpt2 step's, at a
 // root's PC Sr solve: the integrals, the strings, the CI vectors, the
@@ -2047,6 +2053,66 @@ TEST_F(Nevpt2ReaderFootprint, Couplings) {
                                                         fit.b, fit.l.data(), *s.solution, ncore,
                                                         ncas, 0, 1, 0);
                          }));
+}
+
+// The analytic DF-RHF [hessian] over water (#1053), at its least: its
+// footprint, on a NodeResources whose one device's pool is capped as
+// expect_least_footprint caps a step's, so hessian::df_rhf_two_electron's
+// batch is its least; run once to grow the workspaces to exactly the
+// footprint's, then measured, with @p live allocations live at its peak.
+// The molecule is on the plan's own DeviceResources.
+void expect_analytic_hessian_footprint(const std::string_view basis, const std::size_t live) {
+  Plan plan(System{.basis = basis, .mode = fb::EriMode::DensityFitting, .tables = "[hessian]\n"});
+  plan.molecule.emplace(
+      planned<fb::MoleculeStep>(*plan.calc).run(fb::View<>{}, plan.inputs).value());
+  const auto hessian = planned<fb::HessianStep>(*plan.calc);
+  ASSERT_EQ(hessian.method, fb::HessianMethod::Analytic);
+  const std::optional<fb::MemoryFootprint> fp = hessian.footprint(plan.dims());
+  ASSERT_TRUE(fp.has_value());
+  EXPECT_EQ(fp->device.persistent, 0U);
+  std::size_t granularity = 0;
+  {
+    fb::DeviceResources probe{0};
+    granularity = fbt::pool_granularity(*probe.device());
+  }
+  const std::uint64_t cap =
+      fp->device.peak() + fb::kPoolHeadroomBytes + (granularity * (live + 16));
+  fb::NodeResources node{{.devices = std::vector<std::int32_t>{0}}};
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  res = fb::DeviceResources{0, fb::DeviceResources::kDefaultPoolReleaseThreshold, 0, cap};
+  const auto run = [&] {
+    expect_ran(hessian.run(fb::View<fb::MoleculeOutput>{*plan.molecule}, node));
+  };
+  run();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp->device.workspace);
+  EXPECT_EQ(res.pinned_bytes(), fp->pinned.peak());
+  const fbt::PoolPeak peak = fbt::measure_pool_peak(*res.device(), run);
+  std::cout << std::format(
+      "[ footprint ] analytic [hessian] in {}: capped at {}: measured {} (G {}), footprint {} + "
+      "workspace {}\n",
+      basis, cap, peak.used, peak.granularity, fp->device.persistent + fp->device.scratch,
+      fp->device.workspace);
+  fbt::expect_footprint(peak, {.persistent = fp->device.persistent, .scratch = fp->device.scratch},
+                        live);
+  EXPECT_LE(res.device()->pool_usage().used_high, cap);
+}
+
+// With the IR intensities: cc-pVDZ stops at d, where the dipole integrals
+// reach. At the peak, the chain's products (kRhfChainLive), C's buffer and
+// the two-electron part's held buffer and batch.
+TEST(StepFootprint, AnalyticHessianWithIr) {
+  FBF_REQUIRE_GPU();
+  expect_analytic_hessian_footprint("cc-pvdz", kRhfChainLive + 1 + 2);
+}
+
+// Without them: cc-pVTZ's f shells are past the dipole integrals. Its f-shell
+// second-derivative integrals take seconds a run, so slow-gated: the cc-pVDZ
+// case stands for the step.
+TEST(StepFootprint, AnalyticHessianWithoutIr) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_analytic_hessian_footprint("cc-pvtz", kRhfChainLive + 1 + 2);
 }
 
 } // namespace

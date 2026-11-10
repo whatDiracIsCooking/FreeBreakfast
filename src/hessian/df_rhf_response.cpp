@@ -9,8 +9,10 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kTwo, kNegOne, kNegTwo, kNegHalf
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, gemmStridedBatched, geam, dgmm, axpy, wwrMemGetInfo
+import free_breakfast.core.primitives; // align_up
+import free_breakfast.core.wwr;        // gemm, gemmStridedBatched, geam, dgmm, axpy
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -23,6 +25,17 @@ import free_breakfast.response.cphf;
 #include "diagnostics.h"
 
 namespace free_breakfast::hessian {
+
+// The workspace the call's own carves take, in bytes: each count of doubles
+// a device_regions region, aligned as it aligns them.
+MemoryFootprint rhf_response_carve(const std::initializer_list<size_t> counts) {
+  MemoryFootprint out;
+  for (const size_t count : counts) {
+    out.device.workspace +=
+        math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
+  }
+  return out;
+}
 
 Result<RhfResponse> df_rhf_response(DeviceResources &res, const Molecule &molecule,
                                     const BasisSet &basis,
@@ -56,21 +69,21 @@ Result<RhfResponse> df_rhf_response(DeviceResources &res, const Molecule &molecu
                            "exceeds int32_t",
                            n_x * nn, stack);
   }
-  // The call's own buffers at their peak (the MO stacks, the right-hand sides,
-  // one coordinate's J/K build) beside the three AO stacks F^(x), J^(x) and
-  // K^(x): past the device's memory an allocation would abort (CreatePolicy),
-  // not return.
+  // Everything the call allocates, df_rhf_response_footprint's, and the
+  // workspace's growth to its carves if it must grow (the new block is
+  // allocated before the old one is freed): past the memory budget an
+  // allocation would abort (CreatePolicy), not return.
   const size_t held_count = (3 * stack) + (nao * occ) + (3 * nn);
-  const size_t bytes = sizeof(double) * (held_count + (pairs * n_x) + (3 * n_x * nn));
   const ScopedDeviceIndex on{res.dev_idx()};
-  size_t free_bytes = 0;
-  size_t total_bytes = 0;
-  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-  if (bytes > free_bytes) {
+  const MemoryFootprint fp = df_rhf_response_footprint(basis, aux, static_cast<int32_t>(nmo), nocc);
+  const size_t bytes =
+      fp.device.persistent + fp.device.scratch +
+      (fp.device.workspace > res.device_workspace(0).num_elements() ? fp.device.workspace : 0);
+  if (const size_t budget = FBF_TRY(res.memory_budget()); bytes > budget) {
     return err_unsupported("hessian::df_rhf_response: the derivative matrices and MO blocks of "
                            "{} coordinates over {} orbital functions need {} bytes of device "
-                           "memory, and device {} has {} free",
-                           n_x, nao, bytes, res.dev_idx(), free_bytes);
+                           "memory, and device {} has {} to give",
+                           n_x, nao, bytes, res.dev_idx(), budget);
   }
 
   const wwr::wwrblasHandle_t blas = res.blas().get();
@@ -230,6 +243,57 @@ Result<RhfResponse> df_rhf_response(DeviceResources &res, const Molecule &molecu
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.hessian.data(), h, sizeof(double) * n_x * n_x,
                                          wwr::wwrMemcpyDeviceToHost, stream)));
   FBF_TRY(res.sync());
+  return out;
+}
+
+MemoryFootprint df_rhf_response_footprint(const BasisSet &basis, const BasisSet &aux,
+                                          const int32_t nmo, const int32_t nocc) {
+  const size_t nao = basis.nao_sphe();
+  const size_t naux = aux.nao_sphe();
+  if (nocc < 1 || nmo <= nocc || nao == 0 || naux == 0) {
+    return {};
+  }
+  const auto occ = static_cast<size_t>(nocc);
+  const size_t n_x = 3 * static_cast<size_t>(basis.natoms());
+  const size_t nn = nao * nao;
+  const size_t pairs = (static_cast<size_t>(nmo) - occ) * occ;
+  const size_t oo = occ * occ * n_x;
+  const auto n_ao = static_cast<int32_t>(nao);
+  const auto n_aux = static_cast<int32_t>(naux);
+  const auto held = [](const size_t count) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * count}};
+  };
+  // The three MO stacks, C_o S^x_oo, D_S, J and K, held to the end.
+  MemoryFootprint out = held((3 * static_cast<size_t>(nmo) * occ * n_x) + (nao * occ) + (3 * nn));
+  const MemoryFootprint derivative = one_electron_derivative_footprint(basis);
+  const MemoryFootprint to_mo = rhf_response_carve({nao * occ * n_x});
+  // S^x, carried to its MO stack and freed.
+  out = then(out, drop(then(derivative, to_mo)));
+  // F^(x): T^x kept, V^x added and freed, J^(x) and K^(x) beside T^x for
+  // df_jk_derivative, the sum carried to its MO stack and all of it freed.
+  out = then(out, drop(then(then(then(then(derivative, drop(derivative)), held(2 * n_x * nn)),
+                                 df_jk_derivative_footprint(basis, aux, nocc)),
+                            to_mo)));
+  // One J/K build per coordinate: the two-factor df_exchange's X and Y at
+  // rank nocc, two regions.
+  MemoryFootprint exchange;
+  exchange.device.workspace =
+      2 * math::align_up(sizeof(double) * naux * occ * nao, DeviceResources::kWorkspaceAlignment);
+  out = then(out, then(df_coulomb_footprint(n_ao, n_aux), exchange));
+  // The right-hand sides, held to the end; the tiled energies and S_vo
+  // scaled; the CPHF, its solution returned; the packed oo blocks and the
+  // products.
+  out = then(out, held(pairs * n_x));
+  out = then(out, rhf_response_carve({occ * n_x, pairs * n_x}));
+  const MemoryFootprint cphf =
+      response::cphf_footprint(n_ao, n_aux, nmo, nocc, static_cast<int32_t>(n_x));
+  out = then(out, cphf);
+  out = then(out, rhf_response_carve({oo, oo, oo, occ * occ, n_x * n_x, n_x * n_x}));
+  // Only the solution is returned: the rest of what was held is scratch.
+  const size_t returned = cphf.device.persistent;
+  out.device.scratch += out.device.persistent - returned;
+  out.device.persistent = returned;
+  out.pinned = drop(out.pinned);
   return out;
 }
 

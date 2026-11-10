@@ -503,23 +503,62 @@ Status check_displaced_casscf(size_t nao, std::span<const double> s,
 }
 
 std::optional<MemoryFootprint> HessianStep::footprint(const FootprintDimensions &dims) const {
-  if (method != HessianMethod::Numerical || casscf_gradient || nevpt2_gradient) {
+  if (casscf_gradient || nevpt2_gradient) {
     return std::nullopt;
   }
-  // The chain is fixed, so it always plans; none were it ever not to.
-  const auto chain = scf_chain(*this, DisplacedMoleculeStep{}, scf, GradientStep{});
+  // A chain's plan folded as pre-flight folds one; none were a step of it
+  // ever without a footprint. The chains are fixed, so they always plan.
+  const auto fold = [&dims](const auto &chain) -> std::optional<MemoryFootprint> {
+    if (!chain) {
+      return std::nullopt;
+    }
+    std::vector<MemoryFootprint> steps;
+    for (const StepFootprint &step : chain->footprints(dims)) {
+      if (!step.footprint) {
+        return std::nullopt;
+      }
+      steps.push_back(*step.footprint);
+    }
+    return plan_footprint(steps).footprint;
+  };
+  const MemoryFootprint analysis =
+      geometry::harmonic_analysis_footprint(dims.atoms, dims.syevd_lwork);
+  if (method == HessianMethod::Numerical) {
+    const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf, GradientStep{}));
+    if (!chain) {
+      return std::nullopt;
+    }
+    return then(drop(*chain), analysis);
+  }
+  // Analytic: an integral-direct ERI is refused before anything runs.
+  if (eri.mode != EriMode::DensityFitting || dims.basis == nullptr || dims.aux == nullptr) {
+    return MemoryFootprint{};
+  }
+  const auto chain = fold(scf_chain(*this, DisplacedMoleculeStep{}, scf));
   if (!chain) {
     return std::nullopt;
   }
-  std::vector<MemoryFootprint> steps;
-  for (const StepFootprint &step : chain->footprints(dims)) {
-    if (!step.footprint) {
-      return std::nullopt;
-    }
-    steps.push_back(*step.footprint);
+  // An open shell is refused once the chain has run.
+  if (dims.n_alpha != dims.n_beta) {
+    return drop(*chain);
   }
-  return then(drop(plan_footprint(steps).footprint),
-              geometry::harmonic_analysis_footprint(dims.atoms, dims.syevd_lwork));
+  // The chain's products, held through the branch, with C's buffer, then
+  // hessian::df_rhf's, its U^x held for the dipole derivative where the
+  // dipole integrals reach. nmo is counted as nao, the most the
+  // orthogonalizer keeps.
+  const auto nmo = static_cast<int32_t>(dims.nao);
+  const auto nocc = static_cast<int32_t>(dims.n_alpha);
+  const MemoryFootprint c{.device = {.persistent = sizeof(double) * dims.nao * dims.nao}};
+  MemoryFootprint analytic =
+      then(then(*chain, c), hessian::df_rhf_footprint(*dims.basis, *dims.aux, nmo, nocc));
+  int32_t max_l = 0;
+  for (const Shell &shell : dims.basis->shells()) {
+    max_l = std::max(max_l, shell.angular_momentum());
+  }
+  if (max_l <= kDipoleMaxL) {
+    analytic = then(analytic, hessian::rhf_dipole_derivative_footprint(*dims.basis, nmo, nocc));
+  }
+  return then(drop(analytic), analysis);
 }
 
 Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &node) const {

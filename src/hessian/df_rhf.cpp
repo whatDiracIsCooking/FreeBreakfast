@@ -11,6 +11,7 @@ import free_breakfast.core.constants; // kZero, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // wwrMemcpyAsync, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
@@ -97,6 +98,23 @@ Result<RhfTerms> df_rhf(DeviceResources &res, const Molecule &molecule, const Ba
     }
   }
   return out;
+}
+
+MemoryFootprint df_rhf_footprint(const BasisSet &basis, const BasisSet &aux, const int32_t nmo,
+                                 const int32_t nocc) {
+  const size_t nao = basis.nao_sphe();
+  if (nocc < 1 || nmo <= nocc || nao == 0) {
+    return {};
+  }
+  const auto occ = static_cast<size_t>(nocc);
+  // D, -W, the diagonal and gmmwich's work, held while the three
+  // second-derivative calls run in turn, and freed; then the two-electron
+  // part, and the response part, whose U^x is returned.
+  const MemoryFootprint own{
+      .device = {.persistent = sizeof(double) * ((2 * nao * nao) + occ + (nao * occ))}};
+  const MemoryFootprint one_electron = drop(then(own, one_electron_hessian_footprint(basis)));
+  return then(then(one_electron, df_rhf_two_electron_footprint(basis, aux, nocc)),
+              df_rhf_response_footprint(basis, aux, nmo, nocc));
 }
 
 } // namespace free_breakfast::hessian
