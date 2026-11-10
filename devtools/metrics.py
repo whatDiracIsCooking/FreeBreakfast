@@ -37,7 +37,7 @@ from pathlib import Path
 
 SCHEMA = 1
 BRANCH = "metrics"
-KINDS = ("nightly", "weekly", "manual", "shadow")
+KINDS = ("nightly", "weekly", "manual")
 STATUSES = ("pass", "fail", "skip")
 
 # The record's fields, in docs/testing.md's order. A test holds the table
@@ -55,7 +55,6 @@ FIELDS = (
     "toolchain",
     "build",
     "cases",
-    "selection",
     "result",
 )
 
@@ -455,24 +454,21 @@ def make_record(
     build: dict | None,
     cases: list[dict],
     result: str,
-    selection: dict | None = None,
     host: str | None = None,
 ) -> dict:
     """One record, schema 1, with docs/testing.md's fields in its order.
-    `build` is None for a run that built nothing; `selection` belongs to
-    shadow records only; `host` defaults to host_name()."""
+    `build` is None for a run that built nothing; `host` defaults to
+    host_name()."""
     if kind not in KINDS:
         raise MetricsError(f"kind {kind!r} is not one of {', '.join(KINDS)}")
     if result not in ("pass", "fail"):
         raise MetricsError(f"result {result!r} is neither pass nor fail")
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise MetricsError(f"commit {commit!r} is not a full SHA")
-    if (selection is not None) != (kind == "shadow"):
-        raise MetricsError("`selection` is for shadow records, and only those")
     for case in cases:
         if case.get("status") not in STATUSES:
             raise MetricsError(f"case {case.get('name')!r} has no valid status")
-    record = {
+    return {
         "schema": SCHEMA,
         "kind": kind,
         "started": started,
@@ -485,12 +481,8 @@ def make_record(
         "toolchain": toolchain,
         "build": build,
         "cases": cases,
-        "selection": selection,
         "result": result,
     }
-    if selection is None:
-        del record["selection"]
-    return record
 
 
 # --- the metrics branch -----------------------------------------------------

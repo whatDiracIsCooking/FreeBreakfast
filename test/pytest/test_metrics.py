@@ -383,7 +383,7 @@ def test_fixture_reports_make_the_documented_record() -> None:
     record = _fixture_record()
     expected = json.loads((_DATA / "expected_record.json").read_text())
     assert record == expected
-    assert list(record) == [f for f in metrics.FIELDS if f != "selection"]
+    assert list(record) == list(metrics.FIELDS)
 
 
 def test_run_cases_collects_every_report() -> None:
@@ -410,8 +410,6 @@ def test_a_warm_build_carries_no_files() -> None:
         ({"kind": "hourly"}, "kind"),
         ({"result": "ok"}, "result"),
         ({"commit": "0123abc"}, "full SHA"),
-        ({"selection": {"selected": []}}, "shadow"),
-        ({"kind": "shadow"}, "shadow"),
         ({"cases": [{"name": "X.Y", "status": "flaky"}]}, "status"),
     ],
 )
@@ -432,24 +430,6 @@ def test_make_record_refuses(change: dict, why: str) -> None:
     kw.update(change)
     with pytest.raises(metrics.MetricsError, match=why):
         metrics.make_record(**kw)
-
-
-def test_a_shadow_record_carries_its_selection() -> None:
-    record = metrics.make_record(
-        kind="shadow",
-        started="2026-11-01T03:00:00Z",
-        finished="2026-11-01T03:01:00Z",
-        commit=_SHA,
-        backend="cuda",
-        preset="default",
-        gpu={},
-        toolchain={},
-        build=None,
-        cases=[],
-        result="pass",
-        selection={"selected": ["Overlap"], "misses": []},
-    )
-    assert list(record) == list(metrics.FIELDS)
 
 
 # --- the metrics branch -------------------------------------------------------
