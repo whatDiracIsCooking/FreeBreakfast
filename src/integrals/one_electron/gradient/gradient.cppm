@@ -179,4 +179,15 @@ kinetic_derivative(DeviceResources &res, const BasisSet &basis,
 potential_derivative(DeviceResources &res, const BasisSet &basis,
                      std::span<const PrimitivePairClass> classes, const Molecule &molecule);
 
+/// @brief What @ref overlap_derivative, @ref kinetic_derivative and
+/// @ref potential_derivative each hold over @p basis (the nuclei add
+/// launches, not bytes):
+///
+/// - persistent: the matrices returned, 3 n_atom n^2 doubles (one at the
+///   least);
+/// - scratch: U and the @c MatrixAOPair the slabs are carried through, each
+///   spherical AO's atom, the Cartesian [3, n_cart, n_cart] and the spherical
+///   [3, n, n].
+[[nodiscard]] MemoryFootprint one_electron_derivative_footprint(const BasisSet &basis);
+
 } // namespace free_breakfast

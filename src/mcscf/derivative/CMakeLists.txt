@@ -2,8 +2,9 @@
 # the density-fitted J and K, the fitted integrals, the generalized Fock, the
 # CI sigma and RDMs and wwr's BLAS, with no kernels of its own. DeviceResources,
 # Buffers, Molecule, BasisSet, PrimitivePairClass, SphericalMatrixAO and
-# Result are in its signature, so core::resources, core::wwr, molecule, basis,
-# mmd, recipes::matrix_ao and core::error_handling are PUBLIC. The calls it
+# Result are in its signature, and MemoryFootprint in its footprint's, so
+# core::resources, core::wwr, core::footprint, molecule, basis, mmd,
+# recipes::matrix_ao and core::error_handling are PUBLIC. The calls it
 # makes are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
@@ -18,12 +19,14 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::basis
   free_breakfast::molecule
   free_breakfast::integrals::mmd
   free_breakfast::recipes::matrix_ao
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
   free_breakfast::recipes::diagonalize

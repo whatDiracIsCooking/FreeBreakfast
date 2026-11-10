@@ -222,4 +222,25 @@ three_center_gradient(DeviceResources &res, const BasisSet &basis,
                                       const double *c, int32_t nocc, double *jx, double *kx,
                                       double *g);
 
+/// @brief What @ref metric_derivative holds over @p aux, all of it the device
+/// workspace: the staged records with U_aux, the pairs, the Cartesian M1 and
+/// its transform's intermediate. Empty for an empty @p aux.
+[[nodiscard]] MemoryFootprint metric_derivative_footprint(const BasisSet &aux);
+
+/// @brief What @ref three_center_derivative holds over aux atom @p atom, all of
+/// it the device workspace: the staging (mmd's records, every one, with their
+/// exponents; the aux records; U and U_aux), the atom's cells, the Cartesian
+/// block and its transform's two intermediates. A caller walking the atoms
+/// holds the largest atom's. Empty if @p basis is empty, @p atom is not one of
+/// the bases' or has no aux function.
+[[nodiscard]] MemoryFootprint three_center_derivative_footprint(const BasisSet &basis,
+                                                                const BasisSet &aux, uint32_t atom);
+
+/// @brief What @ref df_jk_derivative holds with @p nocc occupied orbitals, all
+/// of it the device workspace: the carve its refusal checks, the staging, the
+/// metric derivative, the fitted pairs and the largest aux atom's blocks.
+/// Empty for nocc <= 0 or an empty basis.
+[[nodiscard]] MemoryFootprint df_jk_derivative_footprint(const BasisSet &basis, const BasisSet &aux,
+                                                         int32_t nocc);
+
 } // namespace free_breakfast

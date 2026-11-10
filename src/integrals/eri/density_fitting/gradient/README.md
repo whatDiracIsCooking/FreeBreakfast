@@ -22,6 +22,10 @@ two-electron half of an RHF Hessian's skeleton Fock derivatives:
 `metric_gradient_footprint(aux)` and `three_center_gradient_footprint(basis,
 aux)` are what the two gradients hold, all of it the device workspace (their
 carves; `three_center_gradient`'s refusal sizes the same carve).
+`metric_derivative_footprint(aux)`, `three_center_derivative_footprint(basis,
+aux, atom)` and `df_jk_derivative_footprint(basis, aux, nocc)` are the same for
+the three derivative calls: each its carve, the device workspace, the bytes
+its refusal checks (a caller walking the atoms holds the largest atom's).
 
 Also re-exported by
 `free_breakfast.integrals.eri.density_fitting` and `free_breakfast.integrals`.
