@@ -204,6 +204,10 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
       hessian && (hessian->casscf_gradient || hessian->nevpt2_gradient)) {
     selections.push_back(&hessian->casscf);
     max_order = std::max(max_order, ci_eigensolve_order(hessian->casscf.nroots, true));
+    // Under QD, the ensemble's edge: a CI solve over one more root.
+    if (hessian->nevpt2_gradient && hessian->nevpt2_gradient->quasi_degenerate) {
+      max_order = std::max(max_order, ci_eigensolve_order(hessian->casscf.nroots + 1, false));
+    }
     casscf_planned = true;
   }
   if (const std::optional<FciStep> &fci = calc.step<FciStep>()) {

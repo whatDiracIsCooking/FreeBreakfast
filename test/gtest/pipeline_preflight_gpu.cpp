@@ -269,6 +269,31 @@ nelecas = 2
 method = "numerical"
 )";
 
+// A QD [hessian] (#1209): an analytic SC-QD-NEVPT2 Hessian over the fitted
+// water's CAS(6,7) in cc-pVDZ, 21 roots. Its ensemble's edge solves a CI over
+// 22 roots, so syevd's work is counted through 16 * 22 = 352 of the CI's
+// 630 packed singlet strings, past the CASSCF's 16 * 21 = 336 and PC's
+// n_act^3 = 343: the least active space and roots whose edge reaches past
+// both.
+constexpr std::string_view kNestedQdHessian = R"(
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"
+[casscf]
+ncas = 7
+nelecas = 6
+nroots = 21
+[nevpt2_gradient]
+variant = "sc"
+quasi_degenerate = true
+state = 1
+[hessian]
+)";
+
 // @p tables' folded plan, and the step reaching its device peak, on @p node's
 // device 0.
 std::pair<fb::PlanFootprint, std::string>
@@ -380,6 +405,15 @@ TEST(Preflight, NestedCasscfHessianBelowThePeakIsRefusedBeforeTheFirstStep) {
 TEST(Preflight, NestedCasscfHessianAtThePeakRunsInsideIt) {
   FBF_REQUIRE_GPU();
   expect_nested_runs_at_the_peak<fb::HessianOutput>(kNestedCasscfHessian);
+}
+
+// Pre-flight folds the QD [hessian]'s footprint, which counts its edge's CI
+// solve, over a syevd table that reaches that solve's subspace: refused
+// cleanly below the peak, where a table through the CASSCF's order alone
+// aborted in the footprint (#1209). Nothing runs.
+TEST(Preflight, NestedQdHessianBelowThePeakIsRefusedBeforeTheFirstStep) {
+  FBF_REQUIRE_GPU();
+  expect_nested_refused_below(kNestedQdHessian, "hessian");
 }
 
 } // namespace

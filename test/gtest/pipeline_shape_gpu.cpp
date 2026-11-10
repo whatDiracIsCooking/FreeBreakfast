@@ -294,4 +294,28 @@ TEST(PipelineShape, HessianOrderIsThreeAtoms) {
   EXPECT_EQ(with.dims.syevd_lwork.back(), *lwork);
 }
 
+// Under a quasi_degenerate [nevpt2_gradient] a [hessian] solves the
+// ensemble's edge, a CI over one more root than [casscf]'s (#1209): 21 roots
+// of a CAS(6,7), 630 packed singlet strings, shape through 16 * 22 = 352,
+// past the CASSCF's 16 * 21 = 336 and PC's n_act^3 = 343. A state-averaged
+// [casscf_gradient]'s [hessian], with no edge and no NEVPT2, stops at the
+// CASSCF's.
+TEST(PipelineShape, QdHessianOrderIsTheEdgesSubspace) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const std::string casscf =
+      std::string(kDensityFitted) + "[casscf]\nncas = 7\nnelecas = 6\nnroots = 21\n";
+  const fb::PlanShape qd =
+      water_shape(res, casscf + "[nevpt2_gradient]\nvariant = \"sc\"\n"
+                                "quasi_degenerate = true\nstate = 1\n[hessian]\n");
+  EXPECT_EQ(qd.dims.ncas, std::size_t{7});
+  ASSERT_EQ(qd.dims.syevd_lwork.size(), std::size_t{353});
+  auto lwork = fb::syevd_lwork<double>(res, 352);
+  ASSERT_TRUE(lwork.has_value()) << lwork.error().message;
+  EXPECT_EQ(qd.dims.syevd_lwork.back(), *lwork);
+  const fb::PlanShape sa =
+      water_shape(res, casscf + "[casscf_gradient]\n[hessian]\nmethod = \"numerical\"\n");
+  EXPECT_EQ(sa.dims.syevd_lwork.size(), std::size_t{337});
+}
+
 } // namespace
