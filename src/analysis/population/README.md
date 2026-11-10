@@ -16,6 +16,7 @@ matrix.
 | Name | Role |
 |---|---|
 | `orbital_weights(res, basis, minimal, n_orb, s, c, iao)` | Each orbital's weight on each minimal-basis function, (A^T S C)_ri^2, m x n_orb on the host; `Result` |
+| `orbital_weights_footprint(basis, minimal, n_orb)` | `MemoryFootprint`: S C and Aᵀ S C, scratch; the populations and charges after it are host work |
 | `orbital_populations(minimal, n_orb, weights)` | Those weights summed over each atom's functions, natoms x n_orb; host only; `Result` |
 | `orbital_populations(res, basis, minimal, n_orb, s, c, iao)` | The two above in one call; `Result` |
 | `partial_charges(atoms, populations, occupation = 2)` | q_A = Z_A − occupation · Σ_i populations[A, i]; `Result` |
@@ -78,6 +79,6 @@ refusal of a ragged population array are checked on the host.
 
 | File | Role |
 |---|---|
-| `population.cppm` | Module interface: `orbital_populations` and `partial_charges` |
+| `population.cppm` | Module interface: `orbital_weights` and its footprint, `orbital_populations` and `partial_charges` |
 | `population.cpp` | A^T S C on the device, the per-atom sums and charges on the host |
 | `CMakeLists.txt` | The module |

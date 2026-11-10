@@ -15,6 +15,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 export import free_breakfast.pipeline.basis_set;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 export import free_breakfast.core.wwr;         // Buffers, in the product
 export import free_breakfast.localization.ibo; // and pipek_mezey
 export import free_breakfast.analysis.population;
@@ -133,6 +134,21 @@ struct LocalizationStep {
   [[nodiscard]] Result<LocalizationOutput>
   run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOutput> in,
       DeviceResources &res) const;
+
+  /// @brief What @ref run holds at @p dims, over n_alpha occupied orbitals
+  /// (n_beta doubly) of nao: the product's C, U and LIVVOs, persistent; the
+  /// rest scratch, in run's order: the IAOs and
+  /// `localization::intrinsic_atomic_orbitals_footprint` over dims.minao
+  /// (IBO or LIVVO), an open shell's U block, each space's sweep
+  /// (`localization::pm_localize_footprint` or
+  /// `localization::iao_localize_footprint`), the energy sort's keys,
+  /// permutation and permuted C and U, IBO's `orbital_weights_footprint`,
+  /// and the LIVVOs' VVOs, `valence_virtual_orbitals_footprint`,
+  /// `livvo_localize_footprint`, their weights and `valence_character`'s;
+  /// the device workspace, the largest of theirs, the sort's regions and the
+  /// LIVVO Molden file's. Empty without a basis, or without dims.minao where
+  /// the mode needs MINAO.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
 };
 
 } // namespace free_breakfast

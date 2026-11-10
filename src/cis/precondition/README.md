@@ -18,6 +18,8 @@ The launchers are `free_breakfast::cis::device`'s, in
 | `cis::guess(res, n_ov, delta, guess_count, vectors)` | The `guess_count` lowest Δε as unit vectors, ascending, ties to the lower index, into the n_ov × guess_count column-major device block `vectors`: orthonormal by construction; `Status` |
 | `cis::Preconditioner(res, n_ov, delta, max_columns)` | r / (θ − Δε) over the borrowed device `delta`, for calls of up to `max_columns` columns: a `DavidsonPreconditioner<…, double>` |
 | `Preconditioner::cluster(res, sigma, scope, gap)` | The clustered exact-block correction, built once before the solve from any `LinearOperator<…, double>` sigma: the `scope` lowest Δε grouped by single linkage at `gap`, each cluster's block of A diagonalized; `gap = 0` builds nothing; `Status` |
+| `cis::preconditioner_footprint(max_columns)` | `MemoryFootprint`: θ's buffer, persistent from the constructor; a call allocates nothing |
+| `cis::cluster_footprint(n_ov, scope, max_columns, syevd_lwork)` | `MemoryFootprint`: `cluster` at its most, every one of the `scope` entries covered: the indices, eigenvalues and eigenvectors, persistent; the unit vectors and their sigma, scratch; the device workspace, the larger of the blocks' syevd and the correction's two regions. `cis::diagonal` and `cis::guess` allocate nothing |
 
 ```cpp
 import free_breakfast.core.resources;
@@ -141,7 +143,7 @@ manifolds, not the whole spectrum.
 
 | File | Role |
 |------|------|
-| `precondition.cppm` | Module interface: `cis::diagonal`, `cis::guess`, `cis::Preconditioner` and its `cluster` template |
+| `precondition.cppm` | Module interface: `cis::diagonal`, `cis::guess`, `cis::Preconditioner` and its `cluster` template, and the two footprints |
 | `precondition.cpp` | Implementation: argument checks, the launches, the guess's select, the clusters' grouping and blocks |
 | `cis_precondition_bridge.h` | The launchers' declarations, shared by the `.cpp`'s GMF and the `.cu` |
 | `cis_precondition.cu` | The diagonal and correction kernels, and the row gather and scatter |

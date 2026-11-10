@@ -15,6 +15,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 export import free_breakfast.localization.pipek_mezey;
 
@@ -45,6 +46,15 @@ export namespace free_breakfast::localization {
                                               const double *s, const double *c, const double *iao,
                                               double *vvo);
 
+/// @brief What @ref valence_virtual_orbitals holds over @p basis, @p minimal
+/// and @p n_occ orbitals: P and its eigenvalues, scratch; the device
+/// workspace, the larger of S C and C_iao's regions and diagonalize's at m,
+/// @p syevd_lwork being syevd's work there (@ref syevd_lwork). Empty when it
+/// computes nothing (no VVO, or no occupied orbital, a copy).
+[[nodiscard]] MemoryFootprint valence_virtual_orbitals_footprint(const BasisSet &basis,
+                                                                 const BasisSet &minimal,
+                                                                 int32_t n_occ, size_t syevd_lwork);
+
 /// @brief Localize the m - @p n_occ valence virtual orbitals into LIVVOs:
 /// Pipek-Mezey over the populations of the intrinsic atomic orbitals.
 ///
@@ -69,6 +79,14 @@ livvo_localize(DeviceResources &res, const BasisSet &basis, const BasisSet &mini
                const double *s, const double *iao, const double *vvo, double *livvo,
                double *u = nullptr, const PmOptions &options = {.exponent = PmExponent::Four});
 
+/// @brief What @ref livvo_localize holds over @p basis, @p minimal and
+/// @p n_occ occupied orbitals, all of it scratch: V_IAO, its localized copy,
+/// the rotation and the identity, beside @ref pm_localize_footprint over
+/// @p minimal; the device workspace, the larger of S V's region and the
+/// sweep's. Empty with no VVO.
+[[nodiscard]] MemoryFootprint livvo_localize_footprint(const BasisSet &basis,
+                                                       const BasisSet &minimal, int32_t n_occ);
+
 /// @brief The valence character t_val of each of @p n_orb orbitals: its
 /// squared overlap summed over the @p n_vvo LIVVOs (the paper's eqs 11-12).
 ///
@@ -88,5 +106,11 @@ livvo_localize(DeviceResources &res, const BasisSet &basis, const BasisSet &mini
                                                             const BasisSet &basis, int32_t n_orb,
                                                             int32_t n_vvo, const double *s,
                                                             const double *c, const double *livvo);
+
+/// @brief What @ref valence_character takes over @p basis, @p n_orb orbitals
+/// and @p n_vvo LIVVOs: S C and L^T S C, the device workspace. Empty when
+/// either count is 0.
+[[nodiscard]] MemoryFootprint valence_character_footprint(const BasisSet &basis, int32_t n_orb,
+                                                          int32_t n_vvo);
 
 } // namespace free_breakfast::localization

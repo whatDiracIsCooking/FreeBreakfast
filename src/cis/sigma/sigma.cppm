@@ -14,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.recipes.davidson;     // DavidsonOptions
@@ -94,7 +95,7 @@ struct Options {
 /// Columns run one after another: J's and K's classes hold one build's scratch.
 /// Every buffer apply writes is allocated by create, which also grows
 /// res.device_workspace() to the one block nonsymmetric_jk takes, so apply
-/// allocates nothing.
+/// allocates nothing (@ref sigma_footprint).
 ///
 /// Borrows the MO coefficients, the Δε vector and the J and K classes: the
 /// caller keeps them alive and unchanged while the sigma is in use, and runs
@@ -187,7 +188,8 @@ private:
 ///
 /// Every buffer is allocated, and the device workspace grown to the exchange
 /// term's scratch for @p max_block columns, by create; apply allocates nothing,
-/// and runs a block wider than that in slices of @p max_block.
+/// and runs a block wider than that in slices of @p max_block
+/// (@ref df_sigma_footprint, @ref df_sigma_apply_footprint).
 ///
 /// Borrows only the Δε vector, which the caller keeps alive and unchanged
 /// while the sigma is in use; C and B are read only by the transforms create
@@ -276,5 +278,28 @@ private:
   Buffers::device<double> b_oo_;
   Buffers::device<double> b_vv_;
 };
+
+/// @brief What a @ref Sigma over @p basis and @p n_occ occupied orbitals holds,
+/// from create through every apply: D and R as @c MatrixAOPair s, the other of
+/// G and K, and the nao_sphe × n_occ half-transform, persistent; and
+/// nonsymmetric_jk's block, the device workspace, which apply borrows. U, C,
+/// Δε and the classes are the caller's.
+[[nodiscard]] MemoryFootprint sigma_footprint(const BasisSet &basis, int32_t n_occ);
+
+/// @brief What the first @ref DfSigma::create, from B over @p naux functions,
+/// and its applies hold at @p n_occ of @p nao orbitals and @p max_block
+/// columns: the three MO blocks, persistent; the device workspace, the larger
+/// of b_mo's half transform and @ref df_sigma_apply_footprint's regions. B, C
+/// and Δε are the caller's.
+[[nodiscard]] MemoryFootprint df_sigma_footprint(int32_t naux, int32_t nao, int32_t n_occ,
+                                                 int32_t max_block);
+
+/// @brief What the second @ref DfSigma::create, over the blocks as built, and
+/// its applies take at @p max_block columns: apply's two regions, T over
+/// @p naux_j and W over @p naux_k, @p n_occ and @p n_virt, the device
+/// workspace. The blocks, taken over, are the caller's allocation.
+[[nodiscard]] MemoryFootprint df_sigma_apply_footprint(int32_t naux_j, int32_t naux_k,
+                                                       int32_t n_occ, int32_t n_virt,
+                                                       int32_t max_block);
 
 } // namespace free_breakfast::cis

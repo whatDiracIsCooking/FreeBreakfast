@@ -14,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.linear_operator; // LinearOperator
 
 export namespace free_breakfast::cis {
@@ -137,5 +138,22 @@ private:
   Buffers::device<double> lambda_;
   Buffers::device<double> vectors_;
 };
+
+/// @brief What a @ref Preconditioner for calls of at most @p max_columns
+/// columns holds from its construction: θ's buffer, persistent. Without
+/// @ref Preconditioner::cluster, a call allocates nothing.
+[[nodiscard]] MemoryFootprint preconditioner_footprint(int32_t max_columns);
+
+/// @brief What @ref Preconditioner::cluster over the @p scope lowest of
+/// @p n_ov entries holds at its most, every one of them covered (a cluster of
+/// one is dropped, so a gap covering fewer holds less), for a preconditioner
+/// of @p max_columns columns: the clusters' indices, eigenvalues and
+/// block-diagonal eigenvectors, persistent; the covered entries' unit vectors
+/// and their sigma, scratch; and the device workspace, the larger of the
+/// blocks' diagonalize, @p syevd_lwork being syevd's largest work over the
+/// orders up to @p scope, and the correction's two regions, which every call
+/// after borrows. The sigma's own apply is the caller's to count.
+[[nodiscard]] MemoryFootprint cluster_footprint(int32_t n_ov, int32_t scope, int32_t max_columns,
+                                                size_t syevd_lwork);
 
 } // namespace free_breakfast::cis

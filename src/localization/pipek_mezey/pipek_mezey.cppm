@@ -16,6 +16,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 
 export namespace free_breakfast::localization {
@@ -87,5 +88,12 @@ struct Info {
 [[nodiscard]] Result<Info> pm_localize(DeviceResources &res, const BasisSet &basis, int32_t n_occ,
                                        const double *s, const double *c, double *c_local, double *u,
                                        const PmOptions &options = {});
+
+/// @brief What @ref pm_localize takes over @p basis and @p n_occ orbitals:
+/// its scratch (S C, the two population tensors and the two U's, a round's
+/// rotations and partners, L, the schedule and the atoms' AO offsets), all
+/// carved from the device workspace. C, S, C_local and U are the caller's.
+/// Empty for @p n_occ <= 0.
+[[nodiscard]] MemoryFootprint pm_localize_footprint(const BasisSet &basis, int32_t n_occ);
 
 } // namespace free_breakfast::localization

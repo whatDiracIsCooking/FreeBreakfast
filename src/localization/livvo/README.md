@@ -22,6 +22,9 @@ No kernels of its own: `recipes/blas`'s `gemm`, `recipes/diagonalize` and
 | `valence_virtual_orbitals(res, basis, minimal, n_occ, s, c, iao, vvo)` | The n x (m - n_occ) VVOs; `Status` |
 | `localization::livvo_localize(res, basis, minimal, n_occ, s, iao, vvo, livvo, u = nullptr, options = {.exponent = Four})` | The n x n_vvo LIVVOs and the n_vvo x n_vvo rotation; `Result<localization::Info>` |
 | `valence_character(res, basis, n_orb, n_vvo, s, c, livvo)` | t_val of each of n_orb orbitals; `Result<std::vector<double>>` |
+| `localization::valence_virtual_orbitals_footprint(basis, minimal, n_occ, syevd_lwork)` | `MemoryFootprint`: P and its eigenvalues, scratch; the device workspace, the larger of the two products' regions and syevd's at m |
+| `localization::livvo_localize_footprint(basis, minimal, n_occ)` | `MemoryFootprint`: V_IAO, its localized copy, the rotation and the identity, scratch, beside `pm_localize_footprint`; S V's region, the device workspace |
+| `localization::valence_character_footprint(basis, n_orb, n_vvo)` | `MemoryFootprint`: S C and Lᵀ S C, the device workspace |
 
 The module re-exports `free_breakfast.localization.pipek_mezey`, for
 `localization::PmOptions` and `localization::Info`.
@@ -161,6 +164,6 @@ pipeline SCF:
 
 | File | Role |
 |---|---|
-| `livvo.cppm` | Module interface: `valence_virtual_orbitals`, `localization::livvo_localize`, `valence_character` |
+| `livvo.cppm` | Module interface: `valence_virtual_orbitals`, `localization::livvo_localize`, `valence_character`, and their footprints |
 | `livvo.cpp` | The null-space construction, the localization over the IAOs, t_val |
 | `CMakeLists.txt` | The module |

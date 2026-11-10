@@ -17,6 +17,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 export import free_breakfast.localization.pipek_mezey;
 
@@ -55,6 +56,21 @@ export namespace free_breakfast::localization {
 [[nodiscard]] Status intrinsic_atomic_orbitals(DeviceResources &res, const BasisSet &basis,
                                                const BasisSet &minimal, int32_t n_occ,
                                                const double *s, const double *c, double *iao);
+
+/// @brief What @ref intrinsic_atomic_orbitals holds over @p basis, @p minimal
+/// and @p n_occ orbitals, all of it scratch: the overlaps S12 and S2 (and
+/// overlap_mixed_spherical's own), S1's factor, P12, the projections and A,
+/// each Löwdin orthonormalization's metric and root (and orthogonalize's);
+/// the device workspace, the solvers' work. @p syevd_lwork is syevd's work by
+/// order (@ref syevd_lwork), through basis.nao_sphe().
+///
+/// The bound for any S1: it counts the fallback for an S1 too near singular
+/// for a Cholesky solve (S1^-1/2 by orthogonalize, and the solve's X B
+/// buffers), which a well-conditioned S1 does not reach. @p iao is the
+/// caller's.
+[[nodiscard]] MemoryFootprint
+intrinsic_atomic_orbitals_footprint(const BasisSet &basis, const BasisSet &minimal, int32_t n_occ,
+                                    std::span<const size_t> syevd_lwork);
 
 /// @brief Localize @p n_occ orbitals into intrinsic bond orbitals: Pipek-Mezey
 /// over the populations of the intrinsic atomic orbitals.
@@ -96,5 +112,12 @@ export namespace free_breakfast::localization {
                                         const double *iao, const double *c, double *c_local,
                                         double *u,
                                         const PmOptions &options = {.exponent = PmExponent::Four});
+
+/// @brief What @ref iao_localize holds over @p basis, @p minimal and @p n_orb
+/// orbitals, all of it scratch: S C, C_IAO, its localized copy, the rotation
+/// and the identity, beside @ref pm_localize_footprint over @p minimal, whose
+/// workspace is the device workspace. Empty for @p n_orb <= 0.
+[[nodiscard]] MemoryFootprint iao_localize_footprint(const BasisSet &basis, const BasisSet &minimal,
+                                                     int32_t n_orb);
 
 } // namespace free_breakfast::localization

@@ -36,8 +36,10 @@ struct FootprintDimensions {
   /// @brief The density-fitting aux basis, placed as the Eri step places it;
   ///        null without density fitting.
   const BasisSet *aux = nullptr;
-  /// @brief MINAO, placed and primitive-normalized as AVAS places it; null
-  ///        when no planned active space is picked by AVAS.
+  /// @brief MINAO, placed and primitive-normalized as AVAS and the
+  ///        Localization step place it; null when neither a planned active
+  ///        space is picked by AVAS nor a planned localization builds IAOs
+  ///        (IBO, or the LIVVOs).
   const BasisSet *minao = nullptr;
   /// @brief The molecule's atoms, in order: what AVAS's labels are matched
   ///        against (avas_minao_aos).
@@ -67,6 +69,11 @@ struct FootprintDimensions {
   ///        sizes it (skew_eig_lwork): the CASSCF orbital step's
   ///        exponential. 0 when no CASSCF is planned.
   size_t skew_eig_lwork = 0;
+  /// @brief getrf's work at the order of the plan's LU solve, in doubles, as
+  ///        the solver sizes it (getrf_lwork): a CIS step's RIS
+  ///        preconditioner's capacitance matrix, at its RIS basis's function
+  ///        count. 0 when no RIS preconditioner is planned.
+  size_t getrf_lwork = 0;
   /// @brief Worst-case active orbitals and electrons; 0 when no active space
   ///        is planned.
   size_t ncas = 0;

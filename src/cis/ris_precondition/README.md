@@ -104,6 +104,7 @@ size by `create`; ½ C⁻¹, which `lu_solve` writes, is the preconditioner's ow
 | `RisPreconditioner::naux()` | The RIS basis's function count |
 | `RisPreconditioner::factor()` | Lᵀ on the device, naux × n_ov, for a check that rebuilds the operator |
 | `RisPreconditioner::factor_oo()`, `factor_vv()` | T_oo (naux × n_occ²) and T_vv (naux × n_virt²) on the device, empty without exchange, for the same check |
+| `cis::ris_preconditioner_footprint(basis, aux, n_occ, max_columns, ris, getrf_lwork)` | `MemoryFootprint`: `create` and every call over the RIS basis `aux`: the preconditioner's buffers, persistent; the fit, scratch; the device workspace, the largest of the metric's, b_mo's, `lu_solve`'s at naux and, with exchange, the GMRES's regions |
 
 `pipeline.cis`'s `CisStep` builds it when `cis::Options::ris` is set (`[cis]
 ris = true`, and `ris_exchange = true` for RIS-JK, with
@@ -131,6 +132,6 @@ reference's roots, and `test/recipes/lu_gpu.cpp` the LU.
 
 | File | Role |
 |------|------|
-| `ris_precondition.cppm` | Module interface: `cis::RisPreconditioner` |
+| `ris_precondition.cppm` | Module interface: `cis::RisPreconditioner`, `cis::ris_preconditioner_footprint` |
 | `ris_precondition.cpp` | `create` (the fit, L, and T_oo and T_vv) and the per-call Woodbury solve and GMRES |
 | `CMakeLists.txt` | The module `free_breakfast.cis.ris_precondition` |

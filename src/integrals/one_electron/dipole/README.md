@@ -54,6 +54,7 @@ each one explicit specialization of the kernel template `dipole`;
 |---|---|
 | `dipole(res, classes, mu_x, mu_y, mu_z)` | `Status`: the three Cartesian dipole matrices |
 | `kDipoleMaxL` | The largest momentum the kernels cover: d |
+| `dipole_footprint(basis)` | `MemoryFootprint`: the 3 n² region the kernels write, n = `basis.nao_cart()`, the device workspace |
 
 ## Usage
 
@@ -88,7 +89,7 @@ of different orders.
 
 | File | Role |
 |------|------|
-| `dipole.cppm` | Module interface: `dipole`, `kDipoleMaxL` |
+| `dipole.cppm` | Module interface: `dipole`, `kDipoleMaxL`, `dipole_footprint` |
 | `dipole.cpp` | Implementation |
 | `dipole_launch.cu` | The launcher over the generated kernels |
 | `dipole_bridge.h` | The launcher's declaration, shared by the `.cu` and the implementation unit's GMF |

@@ -8,6 +8,8 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // getrf, getrs, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::align_up
 
 #include "diagnostics.h"
 
@@ -25,10 +27,8 @@ Result<int32_t> lu_solve(DeviceResources &res, const int32_t n, const int32_t nr
   wwr::wwrsolverDnHandle_t solver = res.solver().get();
 
   // getrf's work for n, queried per call: a host computation.
-  int32_t lwork = 0;
-  FBF_TRY(gpu_status(wwr::getrf_bufferSize<double>(solver, n, n, a, n, &lwork)));
-  const auto [work, pivots] =
-      res.device_regions<double, int32_t>(static_cast<size_t>(lwork), static_cast<size_t>(n));
+  const size_t lwork = FBF_TRY(getrf_lwork(res, n));
+  const auto [work, pivots] = res.device_regions<double, int32_t>(lwork, static_cast<size_t>(n));
   FBF_TRY(gpu_status(wwr::getrf<double>(solver, n, n, a, n, work, pivots, res.info().data())));
   const int32_t factored = FBF_TRY(res.fetch_info());
   // info < 0 names a bad argument (a bug here, not in A); info > 0 is an
@@ -45,6 +45,28 @@ Result<int32_t> lu_solve(DeviceResources &res, const int32_t n, const int32_t nr
     return err_gpu("lu_solve: getrs rejected argument {}", -solved);
   }
   return 0;
+}
+
+Result<size_t> getrf_lwork(DeviceResources &res, const int32_t n) {
+  if (n <= 0) {
+    return size_t{0};
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  int32_t lwork = 0;
+  FBF_TRY(gpu_status(wwr::getrf_bufferSize<double>(res.solver().get(), n, n, nullptr, n, &lwork)));
+  return static_cast<size_t>(lwork);
+}
+
+MemoryFootprint lu_solve_footprint(const int32_t n, const size_t lwork) {
+  if (n <= 0) {
+    return {};
+  }
+  // device_regions' carve: each region rounded up to the alignment.
+  constexpr size_t kAlign = DeviceResources::kWorkspaceAlignment;
+  MemoryFootprint out;
+  out.device.workspace = math::align_up(lwork * sizeof(double), kAlign) +
+                         math::align_up(static_cast<size_t>(n) * sizeof(int32_t), kAlign);
+  return out;
 }
 
 } // namespace free_breakfast

@@ -174,6 +174,25 @@ refused, `InvalidConfig`, before anything runs.
 Like `OrthogonalizerStep`, it synchronizes `res.stream()` inside `run`: once a
 sweep, to read the functional for the convergence test.
 
+```cpp
+MemoryFootprint footprint(const FootprintDimensions &dims) const;
+```
+
+The step's footprint follows `run`'s order over `dims.n_alpha` occupied
+orbitals, `dims.n_beta` of them doubly: the product's C, U and LIVVOs are
+persistent; the IAOs over `dims.minao` and
+`localization::intrinsic_atomic_orbitals_footprint` (IBO or LIVVO), an open
+shell's U block, each space's sweep (`pm_localize_footprint` or
+`iao_localize_footprint`), the energy sort's keys, permutation and permuted
+C and U, IBO's `orbital_weights_footprint`, and the LIVVOs' VVOs with
+`valence_virtual_orbitals_footprint`, `livvo_localize_footprint`, their
+weights and `valence_character_footprint`, are scratch; the device workspace
+is the largest of theirs, the sort's regions and the LIVVO Molden file's.
+`pipeline/shape` places MINAO for `mode = "ibo"` or `livvo = true`, and
+sizes syevd's table through its order. The IAOs' footprint counts the
+near-singular S1's fallback, `orthogonalize` at nao, so it is a bound that
+a well-conditioned basis does not reach.
+
 ## Tests
 
 The step's contract is checked by `static_assert`, in `test/pipeline/steps_host.cpp`.
@@ -207,6 +226,12 @@ the orbitals S-orthonormal and giving back the SCF's density,
 `2 C_d C_dᵀ + C_s C_sᵀ`; `u` block-diagonal, `c = C_occ u`, each space
 ascending in `<i|F|i>`; for IBO the populations reproducing L and the charges
 PySCF's to 1e-7; and the Molden file at occupations 2, 1 and 0.
+
+`test/gtest/pipeline_step_footprint_gpu.cpp`'s `StepFootprint.Localization*`:
+the step's footprint at `plan_shape`'s dimensions over a parsed water config,
+against the pool peak of one run: Pipek-Mezey closed and open shell, and IBO
+with the LIVVOs. The routines' footprints are held to their own peaks in
+`livvo_gpu.cpp`'s `LocalizationFootprint.WaterRoutines`.
 
 ## Files
 

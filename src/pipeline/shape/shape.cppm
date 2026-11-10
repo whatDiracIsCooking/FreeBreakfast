@@ -51,10 +51,14 @@ struct PlanShape {
 ///   class (mmd screens nothing, so this is every class's record count);
 /// - syevd_lwork at every order through the plan's largest eigensolve, nao
 ///   or a planned CI's subspace (16 nroots, and for a CASSCF
-///   ah_max_subspace + 1), queried through res.solver() (host computations);
+///   ah_max_subspace + 1), a CIS step's clamped Davidson subspace, or
+///   MINAO's AO count, queried through res.solver() (host computations);
+/// - getrf_lwork at a CIS step's RIS basis's order, when its RIS
+///   preconditioner is planned;
 /// - casscf_nroots and casscf_unequal_weights, the CASSCF step's roots and
 ///   whether two of its weights differ;
-/// - MINAO, placed, when a planned active space is AVAS's;
+/// - MINAO, placed, when a planned active space is AVAS's or a planned
+///   localization builds IAOs (mode Ibo, or livvo);
 /// - ncas and nelecas, the largest active space a planned step may take:
 ///   an explicit ncas and nelecas; under AVAS, avas_max_ncas when set, else
 ///   twice the labelled MINAO AOs (each of the occupied and the virtual
@@ -69,7 +73,8 @@ struct PlanShape {
 ///         or BasisSet step's error, or the aux basis's as the Eri step
 ///         reports it; InvalidConfig for electrons that cannot be at the
 ///         molecule's multiplicity, or a malformed AVAS label or one naming no
-///         MINAO AO; or the GpuRuntime error of the size query.
+///         MINAO AO; a CIS step's RIS basis's error (ris_basis); or the
+///         GpuRuntime error of a size query.
 [[nodiscard]] Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res);
 
 /// @brief Pre-flight: hold @p calc's plan to its `[memory]` caps on @p node,

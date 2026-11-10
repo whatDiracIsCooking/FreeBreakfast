@@ -15,6 +15,7 @@ import free_breakfast.core.nontransferrable;
 import free_breakfast.io.base;
 import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.diagonalize;
+import free_breakfast.recipes.lu; // getrf_lwork
 import free_breakfast.pipeline.shape;
 
 #include "scratch_dir.h"
@@ -187,6 +188,38 @@ TEST(PipelineShape, EigensolveOrdersAndMinao) {
   ASSERT_NE(casscf.dims.minao, nullptr);
   EXPECT_EQ(casscf.dims.minao, casscf.minao.get());
   EXPECT_EQ(casscf.dims.minao->nao_sphe(), 7U);
+}
+
+// A CIS step's Davidson subspace, max(2 n_states, min(max_subspace, n_ov)):
+// at the default 40 columns past water's nao of 24 (n_ov 95), at 8 under it.
+// getrf's work at the RIS basis's order (water's Sp one: six functions) with
+// ris, 0 without. And MINAO for a localization that builds IAOs (IBO, or the
+// LIVVOs in either mode), not for Pipek-Mezey alone.
+TEST(PipelineShape, CisAndLocalization) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::PlanShape cis = water_shape(res, "[cis]\n");
+  EXPECT_EQ(cis.dims.syevd_lwork.size(), std::size_t{41});
+  EXPECT_EQ(cis.dims.getrf_lwork, 0U);
+  EXPECT_EQ(cis.dims.minao, nullptr);
+  const fb::PlanShape narrow = water_shape(res, "[cis]\nn_states = 3\nmax_subspace = 8\n");
+  EXPECT_EQ(narrow.dims.syevd_lwork.size(), std::size_t{25});
+  const fb::PlanShape ris = water_shape(res, "[cis]\nris = true\n");
+  auto lwork = fb::getrf_lwork(res, 6);
+  ASSERT_TRUE(lwork.has_value()) << lwork.error().message;
+  EXPECT_GT(*lwork, 0U);
+  EXPECT_EQ(ris.dims.getrf_lwork, *lwork);
+
+  EXPECT_EQ(water_shape(res, "[scf]\n[localization]\n").dims.minao, nullptr);
+  for (const std::string_view table :
+       {"[scf]\n[localization]\nmode = \"ibo\"\n", "[scf]\n[localization]\nlivvo = true\n"}) {
+    SCOPED_TRACE(table);
+    const fb::PlanShape localization = water_shape(res, table);
+    ASSERT_NE(localization.dims.minao, nullptr);
+    EXPECT_EQ(localization.dims.minao, localization.minao.get());
+    EXPECT_EQ(localization.dims.minao->nao_sphe(), 7U);
+    EXPECT_EQ(localization.dims.syevd_lwork.size(), std::size_t{25});
+  }
 }
 
 // The CASSCF step's roots, and whether two of its weights differ: none planned,

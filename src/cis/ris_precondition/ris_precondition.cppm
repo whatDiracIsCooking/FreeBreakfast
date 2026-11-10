@@ -17,6 +17,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.atom;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd; // PrimitivePairClass
@@ -161,5 +162,19 @@ private:
   // right-hand side, so not the workspace's. Empty without.
   mutable Buffers::device<double> half_inverse_;
 };
+
+/// @brief What @ref RisPreconditioner::create over @p basis's orbitals, the
+/// RIS basis @p aux (@ref ris_basis at @p ris's θ and shells), @p n_occ
+/// occupied orbitals and @p max_columns columns, and every call after, hold:
+/// the preconditioner's buffers (L and its scaled copy, the ones, ½ I, θ,
+/// Dt⁻¹, the capacitance matrix and the right-hand sides; with exchange T_oo,
+/// T_vv and ½ C⁻¹), persistent; the fit, scratch (U, the metric's pair and
+/// B, with the metric's, three_center's and the Cholesky fit's own); and the
+/// device workspace, the largest of the metric's, b_mo's, lu_solve's at
+/// naux, @p getrf_lwork being getrf's work there (@ref getrf_lwork), and with
+/// exchange the GMRES's regions. C and Δε are the caller's.
+[[nodiscard]] MemoryFootprint
+ris_preconditioner_footprint(const BasisSet &basis, const BasisSet &aux, int32_t n_occ,
+                             int32_t max_columns, const RisOptions &ris, size_t getrf_lwork);
 
 } // namespace free_breakfast::cis

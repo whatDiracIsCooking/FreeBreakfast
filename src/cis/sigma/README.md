@@ -26,6 +26,9 @@ device library.
 | `cis::DfSigma::create(res, b_vo, naux_j, b_oo, b_vv, naux_k, n_occ, n_virt, delta, spin, max_block)` | `Result<DfSigma>` over the three MO blocks as built, taken by value (moved in): B_vo over naux_j functions for the Coulomb term, B_oo and B_vv over naux_k for the exchange term; grows the workspace for blocks of `max_block` columns |
 | `DfSigma::apply(res, k, x, y)` | `Status`: Y = A X for the whole block, `max_block` columns per pass |
 | `DfSigma::size()` | n_ov |
+| `cis::sigma_footprint(basis, n_occ)` | `MemoryFootprint`: a `Sigma`'s buffers, persistent (D's and R's pairs, the other matrix, the half transform), and `nonsymmetric_jk_footprint`'s block, the device workspace its applies borrow |
+| `cis::df_sigma_footprint(naux, nao, n_occ, max_block)` | `MemoryFootprint`: the first `create`'s three MO blocks, persistent, and the device workspace, the larger of b_mo's and its applies' regions |
+| `cis::df_sigma_apply_footprint(naux_j, naux_k, n_occ, n_virt, max_block)` | `MemoryFootprint`: the second `create`'s and its applies' regions, T and W, the device workspace; the blocks taken over are the caller's |
 
 ```cpp
 const auto &direct = std::get<fb::IntegralDirect>(eri.eri);     // pipeline.eri
@@ -245,7 +248,7 @@ whatever k is.
 
 | File | Role |
 |------|------|
-| `sigma.cppm` | Module interface: `cis::Spin`, `cis::Method`, `cis::Options`, `cis::Sigma`, `cis::DfSigma` |
+| `sigma.cppm` | Module interface: `cis::Spin`, `cis::Method`, `cis::Options`, `cis::Sigma`, `cis::DfSigma`, and their footprints |
 | `sigma.cpp` | `Sigma`: the checks, the buffers, and the five steps of a column |
 | `df_sigma.cpp` | `DfSigma`: the two creates (from B: the checks, the memory check and the MO blocks; from the blocks: their checks and the workspace), and the block's products |
 | `CMakeLists.txt` | The module library |

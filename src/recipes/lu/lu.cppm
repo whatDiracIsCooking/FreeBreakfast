@@ -12,6 +12,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 
 export namespace free_breakfast {
 
@@ -44,5 +45,20 @@ export namespace free_breakfast {
 ///         getrf or getrs rejected.
 [[nodiscard]] Result<int32_t> lu_solve(DeviceResources &res, int32_t n, int32_t nrhs, double *a,
                                        double *b);
+
+/// @brief getrf's work for order @p n, in doubles, as @ref lu_solve sizes it:
+/// the solver's own query through res.solver(), a host computation. 0 for
+/// n <= 0.
+///
+/// @return The size, or the GpuRuntime error of the query.
+[[nodiscard]] Result<size_t> getrf_lwork(DeviceResources &res, int32_t n);
+
+/// @brief What @ref lu_solve takes at order @p n, whose @ref getrf_lwork is
+/// @p lwork: getrf's work and the n pivots, the device workspace. Empty for
+/// n <= 0.
+///
+/// It takes the size rather than a handle so that a footprint computed before
+/// the run (the pipeline's FootprintDimensions::getrf_lwork) holds none.
+[[nodiscard]] MemoryFootprint lu_solve_footprint(int32_t n, size_t lwork);
 
 } // namespace free_breakfast

@@ -2,7 +2,8 @@
 // STO-3G (s, p) and cc-pVDZ (s, p, d), built Cartesian and carried to the
 // spherical layout, against libcint's int1e_r_sph at origin 0, recorded by
 // PySCF (test/gtest/data/cis/, tools/emit/cis_reference.py); plus the zeroing,
-// the refusal of an f shell, and of three matrices that differ in order.
+// the refusal of an f shell, and of three matrices that differ in order; and
+// dipole_footprint, held to the workspace a build grows and its pool peak.
 //
 // PySCF unit-normalises each contracted function; this tree normalises only the
 // primitives, so its spherical function i is N_i = sqrt(S_ii) times PySCF's
@@ -26,9 +27,12 @@ import free_breakfast.integrals;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.basis_set;
 
+#include "pool_footprint.h"
+
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 
 // The one-electron families' bar against libcint (overlap_gpu.cpp), here
 // absolute: H2O's |mu| is below 2 bohr, so it is the tighter of the two.
@@ -179,6 +183,29 @@ TEST(Dipole, RefusesMatricesOfDifferentOrders) {
   const fb::Status status = fb::dipole(res, {}, mu_x, mu_y, mu_z);
   ASSERT_FALSE(status);
   EXPECT_EQ(status.error().kind, fb::ErrorKind::InvalidConfig);
+}
+
+// H2O in cc-pVDZ (25 Cartesian AOs): the build's 3 n^2 region is the device
+// workspace, which its first call grows to exactly the footprint's, and the
+// second, measured, takes nothing from the pool. The classes are built on
+// their own DeviceResources, whose sort grows that one's workspace.
+TEST(Dipole, Footprint) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources inputs{0};
+  const fb::BasisSet basis = case_basis(inputs, "h2o_ccpvdz");
+  const auto classes = fb::primitive_pair_classes(inputs, basis);
+  ASSERT_TRUE(classes) << classes.error().message;
+  ASSERT_TRUE(inputs.sync());
+  const fb::MemoryFootprint fp = fb::dipole_footprint(basis);
+  EXPECT_EQ(fp.device.persistent + fp.device.scratch, 0U);
+  fb::DeviceResources res{0};
+  std::array<fb::CartesianMatrixAO, 3> mu{fb::CartesianMatrixAO(res, basis),
+                                          fb::CartesianMatrixAO(res, basis),
+                                          fb::CartesianMatrixAO(res, basis)};
+  const auto build = [&] { EXPECT_TRUE(fb::dipole(res, *classes, mu[0], mu[1], mu[2])); };
+  build();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), build), {}, 0);
 }
 
 } // namespace

@@ -10,6 +10,9 @@ import free_breakfast.core.constants; // kOne, kHalf, kNegHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // geam, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
@@ -79,6 +82,14 @@ Status nonsymmetric_jk(DeviceResources &res, const std::span<CoulombPairClass> j
                                                 g.data(), n)));
   return gpu_status(
       wwr::wwrMemcpyAsync(k.data(), w, bytes, wwr::wwrMemcpyDeviceToDevice, res.stream()));
+}
+
+MemoryFootprint nonsymmetric_jk_footprint(const BasisSet &basis) {
+  const auto n = static_cast<size_t>(basis.nao_cart());
+  MemoryFootprint out;
+  out.device.workspace =
+      math::align_up(sizeof(double) * n * n, DeviceResources::kWorkspaceAlignment);
+  return out;
 }
 
 } // namespace free_breakfast

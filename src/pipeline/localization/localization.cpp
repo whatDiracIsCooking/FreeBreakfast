@@ -11,6 +11,7 @@ import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.atom; // element_symbol
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.io.basis;
 import free_breakfast.io.molden;
 import free_breakfast.localization.livvo;
@@ -319,6 +320,82 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
     FBF_TRY(write_livvo_molden(res, livvo_molden, molecule, basis, scf, s, out));
   }
   return out;
+}
+
+MemoryFootprint LocalizationStep::footprint(const FootprintDimensions &dims) const {
+  const bool iaos = mode == LocalizationMode::Ibo || livvo;
+  if (dims.basis == nullptr || (iaos && dims.minao == nullptr)) {
+    return {};
+  }
+  const BasisSet &basis = *dims.basis;
+  const size_t n_ao = dims.nao;
+  const size_t occ = dims.n_alpha;
+  const auto n_occ = static_cast<int32_t>(dims.n_alpha);
+  const auto n_doubly = static_cast<int32_t>(dims.n_beta);
+  const size_t n_iao = iaos ? dims.minao->nao_sphe() : 0;
+  const size_t n_vvo = livvo && n_iao > occ ? n_iao - occ : 0;
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  const auto aligned = [](const size_t doubles) {
+    return math::align_up(sizeof(double) * doubles, DeviceResources::kWorkspaceAlignment);
+  };
+
+  // run's order: the IAOs, then the product's C, U and LIVVOs, then the IAOs
+  // built.
+  const size_t product = sizeof(double) * ((n_ao * occ) + (occ * occ) + (n_ao * n_vvo));
+  MemoryFootprint fp = then(held(n_ao * n_iao), MemoryFootprint{.device = {.persistent = product}});
+  if (iaos) {
+    fp = then(fp, localization::intrinsic_atomic_orbitals_footprint(basis, *dims.minao, n_occ,
+                                                                    dims.syevd_lwork));
+  }
+  // An open shell's U block, held to the end; each space's sweep.
+  if (n_doubly < n_occ) {
+    fp = then(fp, held(occ * occ));
+  }
+  for (const int32_t count : {n_doubly, n_occ - n_doubly}) {
+    if (count > 0) {
+      fp = then(fp, drop(mode == LocalizationMode::PipekMezey
+                             ? localization::pm_localize_footprint(basis, count)
+                             : localization::iao_localize_footprint(basis, *dims.minao, count)));
+    }
+  }
+  // sort_localized_orbitals: the keys and the permutation, and C and U
+  // permuted beside the ones they replace; eps, the work and U^T eps U in the
+  // workspace. merge_sort's own carve, the keys' and values' copies, is
+  // under those regions at every n_occ >= 2.
+  if (n_occ >= 2) {
+    fp = then(
+        fp, MemoryFootprint{
+                .device = {.scratch = (sizeof(double) * occ) + (sizeof(uint32_t) * occ) +
+                                      (sizeof(double) * n_ao * occ) + (sizeof(double) * occ * occ),
+                           .workspace = aligned(occ) + (2 * aligned(occ * occ))}});
+  }
+  if (mode == LocalizationMode::Ibo) {
+    fp = then(fp, orbital_weights_footprint(basis, *dims.minao, n_occ));
+  }
+  if (livvo) {
+    const auto vvo = static_cast<int32_t>(n_vvo);
+    const auto n_vir = static_cast<int32_t>(n_ao - occ);
+    const size_t at_minao = dims.syevd_lwork[n_iao];
+    fp = then(
+        fp, drop(then(
+                then(then(then(held(n_ao * n_vvo), localization::valence_virtual_orbitals_footprint(
+                                                       basis, *dims.minao, n_occ, at_minao)),
+                          localization::livvo_localize_footprint(basis, *dims.minao, n_occ)),
+                     orbital_weights_footprint(basis, *dims.minao, vvo)),
+                localization::valence_character_footprint(basis, n_vir, vvo))));
+    // write_livvo_molden's S L and C_vir^T S L.
+    if (!livvo_molden.empty() && n_vvo > 0) {
+      fp.device.workspace =
+          std::max(fp.device.workspace, aligned(n_ao * n_vvo) + aligned((n_ao - occ) * n_vvo));
+    }
+  }
+  // The product persists; everything else is freed by the return.
+  return {.device = {.persistent = product,
+                     .scratch = fp.device.persistent + fp.device.scratch - product,
+                     .workspace = fp.device.workspace},
+          .pinned = fp.pinned};
 }
 
 } // namespace free_breakfast

@@ -9,6 +9,7 @@ import free_breakfast.core.constants; // kOne, kZero, kTwo, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // dgmm, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.matrix_ao;
@@ -51,8 +52,7 @@ Result<Sigma> Sigma::create(DeviceResources &res, const BasisSet &basis,
   // nonsymmetric_jk's own scratch, one nao_cart^2 block of the workspace,
   // grown here so that no apply allocates it. The workspace only grows, so a
   // later, larger user leaves it big enough.
-  const auto nao_cart = static_cast<size_t>(basis.nao_cart());
-  static_cast<void>(res.device_workspace(nao_cart * nao_cart * sizeof(double)));
+  static_cast<void>(res.device_workspace(nonsymmetric_jk_footprint(basis).device.workspace));
   return Sigma{res, basis, std::move(u), j_classes, k_classes, c, n_occ, delta, spin};
 }
 
@@ -113,6 +113,17 @@ Status Sigma::apply(DeviceResources &res, const int32_t k, const double *const x
                                                half_.data(), &kOne<double>, s)));
   }
   return {};
+}
+
+MemoryFootprint sigma_footprint(const BasisSet &basis, const int32_t n_occ) {
+  // The members in declaration order: density_, response_, other_, half_.
+  const MemoryFootprint pair = matrix_ao_pair_footprint(basis);
+  const auto nao_cart = static_cast<size_t>(basis.nao_cart());
+  const MemoryFootprint own{
+      .device = {.persistent = sizeof(double) * ((nao_cart * nao_cart) +
+                                                 (static_cast<size_t>(basis.nao_sphe()) *
+                                                  static_cast<size_t>(std::max(n_occ, 0))))}};
+  return then(then(then(pair, pair), own), nonsymmetric_jk_footprint(basis));
 }
 
 } // namespace free_breakfast::cis

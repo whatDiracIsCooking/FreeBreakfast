@@ -3,7 +3,8 @@
 // past a hundred, with several right-hand sides; bitwise repeatable over
 // repeated runs (what a race in the factorization, as rocSOLVER's potf2 had,
 // would break); an exactly singular U flagged at its first zero pivot with B
-// left as it was; and the empty and negative shapes.
+// left as it was; the empty and negative shapes; and lu_solve_footprint,
+// held to the workspace a solve grows and to its pool peak (#1159).
 
 #include <gtest/gtest.h>
 
@@ -14,9 +15,12 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.recipes;
 
+#include "pool_footprint.h"
+
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 
 // Entries in [-1, 1], column-major n x m.
 std::vector<double> random_matrix(const std::int32_t n, const std::int32_t m,
@@ -192,6 +196,39 @@ TEST(Lu, EmptyAndNegativeShapes) {
     EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
     EXPECT_NE(refused.error().message.find("lu_solve"), std::string::npos);
   }
+}
+
+// getrf's work and the pivots, the device workspace alone, at the RIS
+// capacitance matrix's order (water's RIS-J basis, 7 functions) and past a
+// hundred: the first solve grows the workspace to exactly the footprint's,
+// and the second, measured, allocates nothing.
+TEST(Lu, Footprint) {
+  FBF_REQUIRE_GPU();
+  for (const std::int32_t n : {7, 130}) {
+    SCOPED_TRACE(n);
+    fb::DeviceResources res{0};
+    const auto lwork = fb::getrf_lwork(res, n);
+    ASSERT_TRUE(lwork) << lwork.error().message;
+    const fb::MemoryFootprint fp = fb::lu_solve_footprint(n, *lwork);
+    ASSERT_GT(fp.device.workspace, 0U);
+    EXPECT_EQ(fp.device.persistent + fp.device.scratch, 0U);
+    const auto a = random_indefinite(n, 7U);
+    const auto b = random_matrix(n, 3, 8U);
+    auto d_a = to_device(res, a);
+    auto d_b = to_device(res, b);
+    const auto solve = [&] {
+      EXPECT_EQ(wwr::wwrMemcpyAsync(d_a.data(), a.data(), sizeof(double) * a.size(),
+                                    wwr::wwrMemcpyHostToDevice, res.stream()),
+                wwr::wwrSuccess);
+      const auto flag = fb::lu_solve(res, n, 3, d_a.data(), d_b.data());
+      ASSERT_TRUE(flag.has_value()) << flag.error().message;
+      EXPECT_EQ(*flag, 0);
+    };
+    solve();
+    EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+    fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), solve), {}, 0);
+  }
+  EXPECT_EQ(fb::lu_solve_footprint(0, 0), fb::MemoryFootprint{});
 }
 
 } // namespace

@@ -87,6 +87,7 @@ transition density of normalised amplitudes is far inside it.
 | Symbol | Role |
 |---|---|
 | `nonsymmetric_jk(res, j_classes, k_classes, density, g, k, tau_j = 1e-10, tau_k = 1e-13)` | `Status`: `g = J[D] - K[D]/2` and `k = K[D]` of the Cartesian `density`, from J's and K's classes of its basis, `coulomb` screened at `tau_j` and `exchange` at `tau_k` (their own defaults). Writes the classes' scratch, so one call at a time per set. InvalidConfig, before anything is queued, for a negative or NaN `tau_j` or `tau_k`, a matrix on another device or of another order, or `g` and `k` one matrix or either the density; else `coulomb`'s and `exchange`'s own refusals |
+| `nonsymmetric_jk_footprint(basis)` | `MemoryFootprint`: the one nao_cart² block of the device workspace that carries K[A], then K[D], across the builds |
 
 ## Tests
 
@@ -106,6 +107,6 @@ and `K` as they were.
 
 | File | Role |
 |------|------|
-| `nonsymmetric_jk.cppm` | Module interface: `nonsymmetric_jk` |
+| `nonsymmetric_jk.cppm` | Module interface: `nonsymmetric_jk`, `nonsymmetric_jk_footprint` |
 | `nonsymmetric_jk.cpp` | The checks, the two splits, the three builds and the combination |
 | `CMakeLists.txt` | The module library |

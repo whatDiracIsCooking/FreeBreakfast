@@ -11,6 +11,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr; // potrs, dgmm, wwrMemcpy{,2D}Async, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.cholesky;
@@ -354,6 +355,67 @@ Result<Info> iao_localize(DeviceResources &res, const BasisSet &basis, const Bas
     FBF_TRY(ibo_copy(res, u, rotation.data(), static_cast<size_t>(k) * k));
   }
   return info;
+}
+
+MemoryFootprint intrinsic_atomic_orbitals_footprint(const BasisSet &basis, const BasisSet &minimal,
+                                                    const int32_t n_occ,
+                                                    const std::span<const size_t> syevd_lwork) {
+  const auto n = static_cast<int32_t>(basis.nao_sphe());
+  const auto m = static_cast<int32_t>(minimal.nao_sphe());
+  const int32_t k = n_occ;
+  if (n == 0 || m == 0 || m > n || k < 0 || k > m) {
+    return {};
+  }
+  const auto nz = static_cast<size_t>(n);
+  const auto mz = static_cast<size_t>(m);
+  const auto kz = static_cast<size_t>(k);
+  const size_t nm = nz * mz;
+  const size_t nk = nz * kz;
+  const size_t mk = mz * kz;
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  // ibo_orthonormalize over r columns: the metric and the root, then
+  // orthogonalize at r.
+  const auto orthonormalize = [&](const int32_t r) {
+    const auto rz = static_cast<size_t>(r);
+    return drop(then(held(2 * rz * rz),
+                     orthogonalize_footprint<double>(r, syevd_lwork[static_cast<size_t>(r)])));
+  };
+  // The call's buffers in its order, each freed where the call frees it.
+  MemoryFootprint f = held(nm + (mz * mz)); // S12, S2
+  f = then(f, drop(overlap_mixed_spherical_footprint(basis, minimal)));
+  f = then(f, drop(overlap_mixed_spherical_footprint(minimal, minimal)));
+  f = then(f, drop(held(mz))); // the minimal basis's scale
+  f = then(f, held(nz * nz));  // S1's factor
+  f = then(f, drop(orthogonalize_footprint<double>(n, syevd_lwork[nz]))); // its fallback
+  f = then(f, held(nm));                                                  // P12
+  f = then(f, drop(held(nm))); // the fallback's X B over P12
+  f = then(f, held(std::max(mk, size_t{1}) + (2 * std::max(nk, size_t{1})) +
+                   std::max(nm, size_t{1}) + nm)); // x, C~, S C, the scratch and A
+  if (k > 0) {
+    f = then(f, drop(held(nk)));                   // the fallback's X B over C~
+    f = then(f, orthonormalize(k));                // C~
+    f = then(f, drop(held((3 * mk) + (kz * kz)))); // E, F, O and O F
+  }
+  f = then(f, held(nm)); // S A
+  f = then(f, orthonormalize(m));
+  return drop(f);
+}
+
+MemoryFootprint iao_localize_footprint(const BasisSet &basis, const BasisSet &minimal,
+                                       const int32_t n_orb) {
+  if (n_orb <= 0) {
+    return {};
+  }
+  const auto nz = static_cast<size_t>(basis.nao_sphe());
+  const auto mz = static_cast<size_t>(minimal.nao_sphe());
+  const auto kz = static_cast<size_t>(n_orb);
+  // S C, C_IAO, its localized copy, the rotation and the identity, then the
+  // sweep over them.
+  const MemoryFootprint own{.device = {.persistent = sizeof(double) * ((nz * kz) + (2 * mz * kz) +
+                                                                       (kz * kz) + (mz * mz))}};
+  return drop(then(own, pm_localize_footprint(minimal, n_orb)));
 }
 
 } // namespace free_breakfast::localization

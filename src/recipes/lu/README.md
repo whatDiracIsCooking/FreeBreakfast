@@ -36,18 +36,26 @@ may point into it; growing it is the one allocation the call can make.
 `res.info()` takes both flags, and reading each synchronizes `res.stream()`.
 An `info < 0` (a rejected argument, so a bug here) is `GpuRuntime`.
 
+`getrf_lwork(res, n)` is that query on its own, and `lu_solve_footprint(n,
+lwork)` what a solve at order n takes of the workspace: getrf's work and the
+pivots, each region rounded up to `DeviceResources::kWorkspaceAlignment`. The
+footprint takes the size, not a handle, so a plan's footprint is computed
+before the run (`FootprintDimensions::getrf_lwork`, `pipeline/shape`'s query
+at the RIS basis's order).
+
 ## Tests
 
 `test/recipes/lu_gpu.cpp`: against a host pivoted elimination on random
 symmetric indefinite and general matrices at orders 1 to 130 with three
 right-hand sides, to 1e-12 relative; bitwise repeatable over 20 repeats; a
 zero column flagged at its pivot with B untouched; the empty and negative
-shapes.
+shapes; and `Lu.Footprint`, the workspace a solve grows held to
+`lu_solve_footprint`'s, and its pool peak to nothing.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `lu.cppm` | Module interface: `lu_solve` |
+| `lu.cppm` | Module interface: `lu_solve`, `getrf_lwork`, `lu_solve_footprint` |
 | `lu.cpp` | Implementation |
 | `CMakeLists.txt` | The module `free_breakfast.recipes.lu` |

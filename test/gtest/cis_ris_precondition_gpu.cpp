@@ -9,8 +9,9 @@
 // operator rebuilt from Δε, L, T_oo and T_vv: at a tight tolerance and a
 // Krylov cap above n_ov, z satisfies (θ − Δε − 2 L Lᵀ + K_RI) z = r to 1e-6;
 // zero inner iterations is the RIS-J answer to 1e-12; and θ on a Δε still
-// gives a finite z. CisStep's use of both, against the reference's roots, is
-// cis_step_gpu.cpp's.
+// gives a finite z. And ris_preconditioner_footprint (#1159), RIS-J and
+// RIS-JK, against a create and a call. CisStep's use of both, against the
+// reference's roots, is cis_step_gpu.cpp's.
 
 #include <gtest/gtest.h>
 
@@ -25,12 +26,15 @@ import free_breakfast.cis.precondition;
 import free_breakfast.cis.ris_precondition;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
+import free_breakfast.recipes.lu; // getrf_lwork
 
+#include "pool_footprint.h"
 #include "scratch_dir.h"
 
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 namespace cis = free_breakfast::cis;
 
 // The issue's bar on the system's residual, relative to r's largest entry.
@@ -435,6 +439,48 @@ TEST(CisRisPrecondition, ExchangeTheClampKeepsZFinite) {
       .vv = to_host(res, jk->factor_vv().data(), jk->factor_vv().num_elements()),
   };
   EXPECT_LE(worst_residual(delta, factor, jk->naux(), theta, r, z, blocks), kExchangeTolerance);
+}
+
+// A create and a call of 3 columns on a fresh DeviceResources, the inputs on
+// the setup's, RIS-J and RIS-JK (whose call runs the GMRES): the first pass
+// grows the workspace to exactly the footprint's, and the second, measured,
+// peaks in the fit's three-centre tensor, beside the preconditioner's own
+// buffers (8, and with exchange T_oo, T_vv and ½ C⁻¹), the metric's pair (U
+// is the identity over s and p) and B, and three_center's four.
+TEST(CisRisPrecondition, Footprint) {
+  FBF_REQUIRE_GPU();
+  auto setup = h2o_sto3g();
+  ASSERT_NE(setup, nullptr);
+  const fb::Calculation &calc = *setup->calc;
+  fb::DeviceResources &inputs = setup->node.device(0);
+  const Problem p = problem(inputs, calc);
+  constexpr std::int32_t kColumns = 3;
+  const auto n = static_cast<std::size_t>(p.n_ov);
+  const auto d_r = to_device(inputs, random_block(n * kColumns, 71U));
+  fb::Buffers::device<double> d_z(n * kColumns, inputs.device());
+  const std::vector<double> theta{0.3, 0.6, 0.9};
+  const fb::BasisSet &basis = calc.get<fb::BasisSetOutput>()->basis;
+  for (const cis::RisOptions ris : {cis::RisOptions{}, kTightExchange}) {
+    SCOPED_TRACE(ris.exchange);
+    const auto aux =
+        cis::ris_basis(calc.get<fb::MoleculeOutput>()->molecule.atoms(), ris.theta, ris.shells);
+    ASSERT_TRUE(aux) << aux.error().message;
+    fb::DeviceResources res{0};
+    const auto lwork = fb::getrf_lwork(res, static_cast<std::int32_t>(aux->nao_sphe()));
+    ASSERT_TRUE(lwork) << lwork.error().message;
+    const fb::MemoryFootprint fp =
+        cis::ris_preconditioner_footprint(basis, *aux, p.n_occ, kColumns, ris, *lwork);
+    const auto run = [&] {
+      auto precondition = make_ris(res, calc, p, kColumns, ris);
+      ASSERT_TRUE(precondition.has_value()) << precondition.error().message;
+      EXPECT_TRUE((*precondition)(res, theta, nullptr, d_r.data(), d_z.data()));
+    };
+    run();
+    EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+    fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), run),
+                          {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
+                          (ris.exchange ? 11 : 8) + 2 + 1 + 4);
+  }
 }
 
 TEST(CisRisPrecondition, Refusals) {

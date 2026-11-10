@@ -2,7 +2,8 @@
 # lu_solve and cis.precondition's diagonal-correction launcher, so no device
 # library of its own. Its interface takes DeviceResources, a BasisSet, the
 # pair classes, the atoms, a SphericalMatrixAO and RisOptions, holds Buffers
-# and returns Status, hence everything named there PUBLIC. The implementation
+# and returns Status, and its footprint a MemoryFootprint, hence everything
+# named there PUBLIC. The implementation
 # unit alone GMF-includes the precondition bridge, fits B, builds L (and the
 # exchange's T_oo and T_vv), runs the gemms, lu_solve and the GMRES, aligns
 # the workspace's regions, copies the scalars and checks the
@@ -20,6 +21,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::atom
   free_breakfast::basis
   free_breakfast::integrals::mmd

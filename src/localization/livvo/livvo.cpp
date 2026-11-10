@@ -11,6 +11,8 @@ import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // WWRBLAS_OP_*, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
+import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.diagonalize;
@@ -194,6 +196,57 @@ Result<std::vector<double>> valence_character(DeviceResources &res, const BasisS
     }
   }
   return t_val;
+}
+
+MemoryFootprint valence_virtual_orbitals_footprint(const BasisSet &basis, const BasisSet &minimal,
+                                                   const int32_t n_occ, const size_t syevd_lwork) {
+  const auto n = static_cast<size_t>(basis.nao_sphe());
+  const auto m = static_cast<size_t>(minimal.nao_sphe());
+  if (n_occ <= 0 || static_cast<size_t>(n_occ) >= m) {
+    return {};
+  }
+  const auto k = static_cast<size_t>(n_occ);
+  // device_regions' carve of S C and C_iao, each rounded up to the alignment.
+  const auto aligned = [](const size_t count) {
+    return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
+  };
+  MemoryFootprint out = diagonalize_footprint<double>(syevd_lwork);
+  out.device.scratch = sizeof(double) * ((m * m) + m);
+  out.device.workspace = std::max(out.device.workspace, aligned(n * k) + aligned(m * k));
+  return out;
+}
+
+MemoryFootprint livvo_localize_footprint(const BasisSet &basis, const BasisSet &minimal,
+                                         const int32_t n_occ) {
+  const auto n = static_cast<size_t>(basis.nao_sphe());
+  const auto m = static_cast<size_t>(minimal.nao_sphe());
+  if (n_occ < 0 || static_cast<size_t>(n_occ) >= m) {
+    return {};
+  }
+  const size_t k = m - static_cast<size_t>(n_occ);
+  // V_IAO, its localized copy, the rotation and the identity; S V in the
+  // workspace, then the sweep over them.
+  MemoryFootprint own{
+      .device = {.persistent = sizeof(double) * ((2 * m * k) + (k * k) + (m * m)),
+                 .workspace =
+                     math::align_up(sizeof(double) * n * k, DeviceResources::kWorkspaceAlignment)}};
+  return drop(then(own, pm_localize_footprint(minimal, static_cast<int32_t>(k))));
+}
+
+MemoryFootprint valence_character_footprint(const BasisSet &basis, const int32_t n_orb,
+                                            const int32_t n_vvo) {
+  if (n_orb <= 0 || n_vvo <= 0) {
+    return {};
+  }
+  const auto n = static_cast<size_t>(basis.nao_sphe());
+  const auto orb = static_cast<size_t>(n_orb);
+  // device_regions' carve of S C and O, each rounded up to the alignment.
+  const auto aligned = [](const size_t count) {
+    return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
+  };
+  MemoryFootprint out;
+  out.device.workspace = aligned(n * orb) + aligned(static_cast<size_t>(n_vvo) * orb);
+  return out;
 }
 
 } // namespace free_breakfast::localization

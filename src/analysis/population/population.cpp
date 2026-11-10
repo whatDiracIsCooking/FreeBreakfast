@@ -10,6 +10,7 @@ import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.atom;
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm
@@ -76,6 +77,16 @@ Result<std::vector<double>> orbital_weights(DeviceResources &res, const BasisSet
     w *= w;
   }
   return weights_host;
+}
+
+MemoryFootprint orbital_weights_footprint(const BasisSet &basis, const BasisSet &minimal,
+                                          const int32_t n_orb) {
+  if (n_orb <= 0) {
+    return {};
+  }
+  const auto k = static_cast<size_t>(n_orb);
+  return {.device = {.scratch = sizeof(double) * k *
+                                (static_cast<size_t>(basis.nao_sphe()) + minimal.nao_sphe())}};
 }
 
 Result<std::vector<double>> orbital_populations(const BasisSet &minimal, const int32_t n_orb,

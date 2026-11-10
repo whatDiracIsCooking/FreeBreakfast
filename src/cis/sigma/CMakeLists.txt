@@ -3,10 +3,11 @@
 # interface takes DeviceResources, a BasisSet, J's and K's classes, a
 # SphericalMatrixAO and the fitted B's Buffers, holds MatrixAOPairs and
 # Buffers, returns Status and carries DavidsonOptions and RisOptions (the
-# latter re-exported, so a caller can name it), hence everything named there
-# PUBLIC. The implementation units alone call the gemms, nonsymmetric_jk and
-# b_mo, round the workspace, copy the scalars and check the LinearOperator
-# concept, so those and the FBF_TRY header are PRIVATE.
+# latter re-exported, so a caller can name it), and the footprints return a
+# MemoryFootprint, hence everything named there PUBLIC. The implementation
+# units alone call the gemms, nonsymmetric_jk and b_mo, round the workspace,
+# copy the scalars and check the LinearOperator concept, so those and the
+# FBF_TRY header are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.cis.sigma
@@ -21,6 +22,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
   free_breakfast::core::resources
+  free_breakfast::core::footprint
   free_breakfast::basis
   free_breakfast::recipes::matrix_ao
   free_breakfast::recipes::davidson

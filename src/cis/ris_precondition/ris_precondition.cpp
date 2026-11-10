@@ -18,6 +18,7 @@ import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // dgmm, gemmStridedBatched, nrm2, scal, axpy
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.atom;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
@@ -442,6 +443,56 @@ Status RisPreconditioner::operator()(DeviceResources &res, const std::span<const
     }
   }
   return {};
+}
+
+MemoryFootprint ris_preconditioner_footprint(const BasisSet &basis, const BasisSet &aux,
+                                             const int32_t n_occ, const int32_t max_columns,
+                                             const RisOptions &ris, const size_t getrf_lwork) {
+  const auto nao = static_cast<int32_t>(basis.nao_sphe());
+  const int32_t n_virt = nao - n_occ;
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  if (n_occ < 1 || n_virt < 1 || naux < 1 || max_columns < 1) {
+    return {};
+  }
+  const auto occ = static_cast<size_t>(n_occ);
+  const auto virt = static_cast<size_t>(n_virt);
+  const size_t n = occ * virt;
+  const auto q = static_cast<size_t>(naux);
+  const auto columns = static_cast<size_t>(max_columns);
+  const auto held = [](const size_t doubles) {
+    return MemoryFootprint{.device = {.persistent = sizeof(double) * doubles}};
+  };
+  // The constructor's buffers, in declaration order: L, T_oo, T_vv, the
+  // ones, ½ I, θ, Dt⁻¹, Lᵀ Dt⁻¹, the capacitance matrix, y and ½ C⁻¹.
+  const size_t exchange_doubles = ris.exchange ? (q * occ * occ) + (q * virt * virt) + (q * q) : 0;
+  const MemoryFootprint own = held((q * n) + n + (q * q) + columns + n + (q * n) + (q * q) +
+                                   (q * columns) + exchange_doubles);
+  // create's fit, freed at its scope's end: U and the metric's pair, the
+  // metric into them, B, the three-centre tensor and the Cholesky fit, then
+  // b_mo over it into L (and T_oo and T_vv).
+  const OrbitalRange occupied{.first = 0, .count = n_occ};
+  const OrbitalRange virtuals{.first = n_occ, .count = n_virt};
+  MemoryFootprint fit =
+      then(then(then(then(then(upload_spherical_transform_matrix_footprint(aux),
+                               matrix_ao_pair_footprint(aux)),
+                          metric_footprint(aux)),
+                     held(q * static_cast<size_t>(nao) * static_cast<size_t>(nao))),
+                three_center_footprint(basis, aux)),
+           density_fit_footprint(nao, naux, 0));
+  fit = then(fit, b_mo_footprint(naux, nao, virtuals, occupied));
+  if (ris.exchange) {
+    fit = then(then(fit, b_mo_footprint(naux, nao, occupied, occupied)),
+               b_mo_footprint(naux, nao, virtuals, virtuals));
+  }
+  MemoryFootprint out = then(then(own, drop(fit)), lu_solve_footprint(naux, getrf_lwork));
+  if (ris.exchange) {
+    size_t regions = 0;
+    for (const size_t count : gmres_regions(static_cast<int32_t>(n), naux, ris.k_max_inner_iters)) {
+      regions += math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
+    }
+    out.device.workspace = std::max(out.device.workspace, regions);
+  }
+  return out;
 }
 
 } // namespace free_breakfast::cis

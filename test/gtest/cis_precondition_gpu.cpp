@@ -5,7 +5,10 @@
 // correction: a 2 × 2 block solved by hand, with θ clamped on either side of
 // one of its eigenvalues; a gap of zero leaving every byte of the diagonal
 // correction; its refusals; and davidson_solve on a near-degenerate operator
-// against diagonalize's spectrum, with and without the clusters.
+// against diagonalize's spectrum, with and without the clusters. And the
+// footprints (#1159): the diagonal and the guess allocate nothing, and the
+// preconditioner, its clusters and a correction hold
+// preconditioner_footprint's and cluster_footprint's.
 
 #include <gtest/gtest.h>
 
@@ -17,9 +20,12 @@ import free_breakfast.core.resources;
 import free_breakfast.recipes;
 import free_breakfast.cis.precondition;
 
+#include "pool_footprint.h"
+
 namespace {
 
 namespace fb = free_breakfast;
+namespace fbt = free_breakfast::test;
 namespace cis = free_breakfast::cis;
 
 std::vector<double> random_vector(std::size_t n, std::uint32_t seed, double lo, double hi) {
@@ -527,6 +533,76 @@ TEST(CisPrecondition, DavidsonConvergesWithAndWithoutClusters) {
           << gap << " " << r;
     }
   }
+}
+
+// cis::diagonal and cis::guess write their caller's buffers, and the guess's
+// select is the host's: neither takes anything from the pool or the
+// workspace.
+TEST(CisPrecondition, DiagonalAndGuessAllocateNothing) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  constexpr std::int32_t kOcc = 5;
+  constexpr std::int32_t kVirt = 19;
+  constexpr std::int32_t kOv = kOcc * kVirt;
+  constexpr std::int32_t kGuess = 10;
+  const auto eps = to_device(res, orbital_energies(kOcc, kVirt, 51U));
+  fb::Buffers::device<double> delta(kOv, res.device());
+  fb::Buffers::device<double> start(static_cast<std::size_t>(kOv) * kGuess, res.device());
+  const auto both = [&] {
+    EXPECT_TRUE(cis::diagonal(res, kOcc, kVirt, eps.data(), delta.data()));
+    EXPECT_TRUE(cis::guess(res, kOv, delta.data(), kGuess, start.data()));
+  };
+  both();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
+  fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), both), {}, 0);
+}
+
+// The preconditioner, its clusters over the guess's 6 entries at a gap that
+// joins all 6 into one (cluster_footprint's most), and one correction of 3
+// columns, on a fresh DeviceResources, the operator and Δε on their own. The
+// first pass grows the workspace to exactly the footprint's, the larger of
+// syevd's at 6 and the correction's regions; the second is measured, with θ,
+// the indices, eigenvalues and eigenvectors, and the unit vectors and their
+// sigma live at its peak.
+TEST(CisPrecondition, Footprint) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources inputs{0};
+  constexpr std::int32_t kN = 53;
+  constexpr std::int32_t kScope = 6;
+  constexpr std::int32_t kColumns = 3;
+  const auto delta = random_vector(kN, 61U, 0.3, 4.0);
+  std::vector<double> a(static_cast<std::size_t>(kN) * kN, 0.0);
+  std::mt19937 gen{63U};
+  std::uniform_real_distribution<double> dist{-1e-2, 1e-2};
+  for (std::int32_t j = 0; j < kN; ++j) {
+    for (std::int32_t i = j; i < kN; ++i) {
+      a[i + (j * kN)] = a[j + (i * kN)] = i == j ? delta[static_cast<std::size_t>(j)] : dist(gen);
+    }
+  }
+  DenseOnDevice dense{inputs, a, kN};
+  const auto d_delta = to_device(inputs, delta);
+  const auto d_residual =
+      to_device(inputs, random_vector(static_cast<std::size_t>(kN) * kColumns, 65U, -1.0, 1.0));
+  fb::Buffers::device<double> correction(d_residual.num_elements(), inputs.device());
+  const std::vector<double> theta{0.1, 0.2, 0.3};
+
+  fb::DeviceResources res{0};
+  std::size_t lwork = 0;
+  for (std::int32_t order = 0; order <= kScope; ++order) {
+    lwork = std::max(lwork, fb::syevd_lwork<double>(res, order).value());
+  }
+  const fb::MemoryFootprint fp = fb::then(cis::preconditioner_footprint(kColumns),
+                                          cis::cluster_footprint(kN, kScope, kColumns, lwork));
+  const auto run = [&] {
+    cis::Preconditioner precondition{res, kN, d_delta.data(), kColumns};
+    EXPECT_TRUE(precondition.cluster(res, dense.op, kScope, 1e9));
+    EXPECT_TRUE(precondition(res, theta, nullptr, d_residual.data(), correction.data()));
+  };
+  run();
+  EXPECT_EQ(res.device_workspace(0).num_elements(), fp.device.workspace);
+  fbt::expect_footprint(fbt::measure_pool_peak(*res.device(), run),
+                        {.persistent = fp.device.persistent, .scratch = fp.device.scratch}, 6);
+  EXPECT_EQ(cis::cluster_footprint(kN, 1, kColumns, lwork), fb::MemoryFootprint{});
 }
 
 } // namespace
