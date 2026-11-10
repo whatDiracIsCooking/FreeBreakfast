@@ -371,6 +371,23 @@ qd_direction_arrays(DeviceResources &res, const ci::DeviceStringSet &alpha,
                     const double *vectors, const double *h_dot, const double *b_dot,
                     const double *c_dot, Buffers::device<double> *vv_dot);
 
+/// @brief What direction_arrays holds over an ncore, ncas, nvirt split over
+/// @p naux fitting functions, with @p vv_dot B_vv's tangent: the tangent
+/// arrays (zeroed_arrays') and B_vv's, kept (persistent); the RDMs'
+/// tangent's three scratch n⁶ beside each nevpt2::rdms at one determinant
+/// (two bra/ket, one at (tu|vw)'s tangent). tangent.cpp's, and the Hessian
+/// products'.
+MemoryFootprint direction_arrays_footprint(int32_t naux, int32_t ncore, int32_t ncas, int32_t nvirt,
+                                           bool vv_dot);
+
+/// @brief What qd_direction_arrays holds over @p nroots roots: the shared
+/// tangent arrays and B_vv's (with @p vv_dot), and every ordered pair's RDM
+/// tangent, kept; each pair's scratch beside its nevpt2::rdms at one
+/// determinant (the diagonal's as direction_arrays', the transitions' two
+/// bra/ket without f3). tangent.cpp's, and the QD Hessian products'.
+MemoryFootprint qd_direction_arrays_footprint(int32_t naux, int32_t ncore, int32_t ncas,
+                                              int32_t nvirt, int32_t nroots, bool vv_dot);
+
 /// @brief Where a class walk adds its bars: @p bar's fields, the
 /// core-indexed ones past the frozen core as ScArrays::inputs reads them, and
 /// Λ at @p lambda.walk().

@@ -14,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.einsum;
 import free_breakfast.integrals.eri.density_fitting.mo; // b_mo
 import free_breakfast.ci.strings;
@@ -406,6 +407,135 @@ qd_builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
       .value = {.shared = qd_shared_outputs(res, x, std::move(f_core), std::move(f_virt)),
                 .pairs = std::move(q.pairs)},
       .tangents = std::move(tangents)};
+}
+
+// ---------------------------------------------------------------------------
+// The footprints
+// ---------------------------------------------------------------------------
+
+// The bytes of an ScArrays that no BuilderOutputs holds, given back when the
+// arrays go: C^T h C, B_cc, B_vv's diagonal, d and g, and the two identities.
+size_t unheld_arrays_bytes(const int32_t naux, const int32_t ncore, const int32_t ncas,
+                           const int32_t nvirt) {
+  const auto q = static_cast<size_t>(naux);
+  const auto nc = static_cast<size_t>(ncore);
+  const auto n = static_cast<size_t>(ncas);
+  const auto nv = static_cast<size_t>(nvirt);
+  const size_t nmo = nc + n + nv;
+  return sizeof(double) * ((nmo * nmo) + (q * nc * nc) + (q * nv) + (2 * q) + (nc * nc) + (n * n));
+}
+
+// One pair's RDM tangent onto @p h (pair_rdms_tangent): its scratch n⁶ (dm3's,
+// and with @p f3 f3ca's and f3ac's) beside each nevpt2::rdms at one
+// determinant, the bra/ket two and, with f3, the one-vector one at (tu|vw)'s
+// tangent.
+void pair_rdms_tangent_bytes(Held &h, const int32_t ncas, const bool f3) {
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n6 = sizeof(double) * n * n * n * n * n * n;
+  const size_t more = (f3 ? 3 : 1) * n6;
+  h.take(more);
+  for (int32_t side = 0; side < 2; ++side) {
+    h.call(rdms_footprint(ncas, 1, true, f3));
+  }
+  if (f3) {
+    h.call(rdms_footprint(ncas));
+  }
+  h.give(more);
+}
+
+MemoryFootprint direction_arrays_footprint(const int32_t naux, const int32_t ncore,
+                                           const int32_t ncas, const int32_t nvirt,
+                                           const bool vv_dot) {
+  Held h;
+  h.take(zeroed_arrays_bytes(naux, ncore, ncas, nvirt));
+  if (vv_dot) {
+    h.take(sizeof(double) * static_cast<size_t>(naux) * static_cast<size_t>(nvirt) *
+           static_cast<size_t>(nvirt));
+  }
+  pair_rdms_tangent_bytes(h, ncas, true);
+  return h.footprint(h.live);
+}
+
+MemoryFootprint qd_direction_arrays_footprint(const int32_t naux, const int32_t ncore,
+                                              const int32_t ncas, const int32_t nvirt,
+                                              const int32_t nroots, const bool vv_dot) {
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = sizeof(double) * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  Held h;
+  h.take(zeroed_arrays_bytes(naux, ncore, ncas, nvirt));
+  if (vv_dot) {
+    h.take(sizeof(double) * static_cast<size_t>(naux) * static_cast<size_t>(nvirt) *
+           static_cast<size_t>(nvirt));
+  }
+  // Every ordered pair's RDM tangent, kept, f3 on the diagonal alone.
+  for (int32_t bra = 0; bra < nroots; ++bra) {
+    for (int32_t ket = 0; ket < nroots; ++ket) {
+      const bool diagonal = bra == ket;
+      h.take(n2 + n4 + n6 + (diagonal ? 2 * n6 : 0));
+      pair_rdms_tangent_bytes(h, ncas, diagonal);
+    }
+  }
+  return h.footprint(h.live);
+}
+
+// builders_tangent's and qd_builders_tangent's common frame onto @p h, the
+// point's arrays (@p point, kept) already held: B_vv, borrowing b_mo's
+// workspace, and f's two blocks; per direction @p direction (its arrays
+// and B_vv's tangent, kept), f's two blocks' tangents, and @p dropped of its
+// arrays given back with the arrays no output holds and B_vv's tangent; at
+// the end, the point's @p dropped and unheld arrays and B_vv given back.
+MemoryFootprint builders_frame_footprint(Held &h, const int32_t naux, const int32_t nao,
+                                         const int32_t nmo, const int32_t ncore, const int32_t ncas,
+                                         const int32_t count, const MemoryFootprint &direction,
+                                         const size_t dropped) {
+  const int32_t nvirt = nmo - ncore - ncas;
+  const auto nc = static_cast<size_t>(ncore);
+  const auto nv = static_cast<size_t>(nvirt);
+  const size_t vv = sizeof(double) * static_cast<size_t>(naux) * nv * nv;
+  const size_t f = sizeof(double) * ((nc * nc) + (nv * nv));
+  const size_t unheld = unheld_arrays_bytes(naux, ncore, ncas, nvirt);
+  h.take(vv);
+  if (naux > 0 && nvirt > 0) {
+    const OrbitalRange virt{.first = ncore + ncas, .count = nvirt};
+    h.borrow(b_mo_footprint(naux, nao, virt, virt));
+  }
+  h.take(f);
+  for (int32_t k = 0; k < count; ++k) {
+    h.call(direction);
+    h.take(f);
+    h.give(dropped + unheld + vv);
+  }
+  h.give(dropped + unheld + vv);
+  return h.footprint(h.live);
+}
+
+MemoryFootprint builders_tangent_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
+                                           const int32_t ncore, const int32_t ncas,
+                                           const int32_t count) {
+  const int32_t nvirt = nmo - ncore - ncas;
+  Held h;
+  // sc_arrays: the shared arrays, then nevpt2::rdms at one determinant.
+  h.call(shared_arrays_footprint(naux, nao, nmo, ncore, ncas, 0));
+  h.call(rdms_footprint(ncas));
+  return builders_frame_footprint(h, naux, nao, nmo, ncore, ncas, count,
+                                  direction_arrays_footprint(naux, ncore, ncas, nvirt, true), 0);
+}
+
+MemoryFootprint qd_builders_tangent_footprint(const int32_t naux, const int32_t nao,
+                                              const int32_t nmo, const int32_t ncore,
+                                              const int32_t ncas, const int32_t nroots,
+                                              const int32_t count) {
+  const int32_t nvirt = nmo - ncore - ncas;
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n4 = sizeof(double) * n * n * n * n;
+  Held h;
+  h.call(qd_arrays_footprint(naux, nao, nmo, ncore, ncas, nroots, 0));
+  // qd_shared_outputs empties the shared dm2, dm3, f3ca and f3ac.
+  return builders_frame_footprint(
+      h, naux, nao, nmo, ncore, ncas, count,
+      qd_direction_arrays_footprint(naux, ncore, ncas, nvirt, nroots, true), n4 + (3 * n4 * n * n));
 }
 
 } // namespace free_breakfast::nevpt2

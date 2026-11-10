@@ -299,6 +299,17 @@ builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
                  const double *vector, int32_t count, const double *h_dot, const double *b_dot,
                  const double *c_dot);
 
+/// @brief What @ref builders_tangent holds over @p naux fitting functions,
+/// @p nao AOs and @p nmo orbitals with @p ncore core and @p ncas active
+/// orbitals, along @p count directions: sc_energy's forward arrays with
+/// nevpt2::rdms at one determinant; B_vv and f's two blocks; then per
+/// direction its tangent arrays (direction_arrays', the RDMs' rdms at one
+/// determinant) and f's two blocks' tangents, the arrays no BuilderOutputs
+/// holds given back. Persistent: the BuildersTangent.
+[[nodiscard]] MemoryFootprint builders_tangent_footprint(int32_t naux, int32_t nao, int32_t nmo,
+                                                         int32_t ncore, int32_t ncas,
+                                                         int32_t count);
+
 /// @brief One ordered pair's RDMs (bra M, ket N), or their tangent or bars,
 /// on res's device in nevpt2::rdms' row-major layout: dm1 and dm2 the traces
 /// of dm3, as the forward takes them; f3ca and f3ac on the diagonal (M = N)
@@ -384,6 +395,16 @@ qd_builders_tangent(DeviceResources &res, const ci::DeviceStringSet &alpha,
                     const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
                     std::span<const double> weights, const double *vectors, int32_t count,
                     const double *h_dot, const double *b_dot, const double *c_dot);
+
+/// @brief What @ref qd_builders_tangent holds over @p nroots roots, as
+/// builders_tangent_footprint: qd_sc_energy's arrays and every ordered
+/// pair's RDMs; B_vv and f's two blocks; per direction its shared tangent
+/// arrays and every pair's RDM tangent (qd_direction_arrays'), f's two
+/// blocks' tangents, the shared dm2, dm3, f3ca and f3ac and the arrays no
+/// QdBuilderOutputs holds given back. Persistent: the QdBuildersTangent.
+[[nodiscard]] MemoryFootprint qd_builders_tangent_footprint(int32_t naux, int32_t nao, int32_t nmo,
+                                                            int32_t ncore, int32_t ncas,
+                                                            int32_t nroots, int32_t count);
 
 /// @brief A block of directions (h_dot, B_dot, c_dot) in the MO basis of the
 /// orbitals, laid out as builders_tangent reads them: direction k's h_dot
