@@ -155,6 +155,13 @@ public:
   /// the cap.
   static constexpr uint64_t kDeviceReserve = uint64_t{256} << 20;
 
+  /// @brief What a DeviceResources itself holds in its pool from
+  /// construction on, in bytes: the info() flag, one int32_t. The device
+  /// workspace starts empty and is not counted. No step's footprint can count
+  /// this, so a refusal check that takes a pool's whole cap (pre-flight's
+  /// device room) takes this off it too.
+  static constexpr size_t kOwnPoolBytes = sizeof(int32_t);
+
   /// @brief Create a Device on `dev_idx` whose pool keeps up to
   /// `pool_release_threshold` bytes cached and is capped at `pool_cap` bytes
   /// (0: no cap; a cap is also the release threshold, see Device), bind a
@@ -164,9 +171,10 @@ public:
                            uint64_t pool_release_threshold = kDefaultPoolReleaseThreshold,
                            size_t pinned_cap = 0, uint64_t pool_cap = 0)
       : device_(std::make_shared<Device>(dev_idx, pool_release_threshold, pool_cap)),
-        blas_(device_), solver_(device_), device_workspace_(0, device_), info_(1, device_),
-        info_host_(1), pinned_workspace_(0), pinned_counted_(std::make_shared<size_t>(0)),
-        pinned_cap_(pinned_cap), pool_cap_(pool_cap) {}
+        blas_(device_), solver_(device_), device_workspace_(0, device_),
+        info_(kOwnPoolBytes / sizeof(int32_t), device_), info_host_(1), pinned_workspace_(0),
+        pinned_counted_(std::make_shared<size_t>(0)), pinned_cap_(pinned_cap), pool_cap_(pool_cap) {
+  }
 
   /// @brief The shared Device; pass it to Buffers to allocate from its pool.
   const std::shared_ptr<Device> &device() const noexcept { return device_; }
