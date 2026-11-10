@@ -768,6 +768,18 @@ and Sir lift along both as well. Every other block, the totally symmetric
 one included, is accepted: no null mode reaches the cut within 1e-3 along
 an A1 or the B1 vibration (the smallest t* 31), and their overlaps are 0.
 
+**The sign gauge** (#1203). The lifts, like the product, are the
+direction's in the point's sign gauge: the roots' and the active MOs'
+signs, which the SA-CASSCF sets anew each run. A seeded raw c_dot is then
+another direction from one process to the next. On the footprint test's
+SA-2 water, six processes gave ket 0's Sr lift 0.33842 (three times),
+0.33585, 0.35837 and 0.36020, one value per sign pattern. Within one
+process the lifts repeat to 1e-10, and the kept ranks and null modes do
+not move. Negating root 0 alone gives 0.33585. Negating its part of the
+direction and W's row and column with it gives the same lifts, and the
+product but for root 0's y, negated, to 3e-12 of each field
+(`Nevpt2QdPcHessianProductGauge`).
+
 ### Where it ladders, and the conditioning floor
 
 The acceptance case is `h2co_skew_ccpvdz_sa3` (C1, SA3, CAS(4,3)). At the

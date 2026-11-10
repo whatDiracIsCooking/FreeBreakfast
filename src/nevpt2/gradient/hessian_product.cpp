@@ -1682,6 +1682,17 @@ Result<QdPcHessianProduct> qd_pc_hessian_product(
   // Γ(K u_N, c_N) + Γ(c_N, K u_N) + 2 Γ(u_N, u_N) (dm3's from nevpt2::rdms,
   // dm2 and dm1 its traces; at n = 1, 2 γ(u, u) - 2 |u|² γ(c, c)), and each
   // transition (N, M)'s first derivative the tangent's own.
+  //
+  // The lifts are the direction's in the point's sign gauge, the roots' and
+  // the active MOs' signs, which the SA-CASSCF sets anew each run (#1203):
+  // a fixed raw u is another direction once a sign comes back flipped. On
+  // the footprint test's SA-2 water, six processes gave ket 0's Sr lift
+  // 0.33842 (three times), 0.33585, 0.35837 and 0.36020, each value a sign
+  // pattern of the roots and the active MOs; within one process they repeat
+  // to 1e-10 and the kept ranks and null modes do not move (σ ≤ 1e-16 of
+  // the largest, the kept ≥ 5e-8). Negating root 0 alone moves 0.33842 to
+  // 0.33585; negating its u and W's row and column with it gives the same
+  // lifts, and the product but for root 0's y negated, to 3e-12.
   const auto lifts_along = [&](QdFixedBars &fixed, const QdDirectionArrays &dot, const double *u,
                                std::vector<PcMetricLifts> &into,
                                std::vector<double> &uu) -> Status {

@@ -47,6 +47,10 @@
 //   C2v vibrations as direction and partner, the product refuses exactly the
 //   fixture's PC expected-refusal blocks, naming the coupling and t*, and
 //   nothing in the totally symmetric block.
+// - The sign gauge (#1203): on h2co_ccpvdz_sa2_weighted, root 0 negated
+//   with its part of a seeded direction and W's row and column gives the
+//   same lifts and the product but for root 0's y, negated; the same raw
+//   direction at the negated roots lifts differently.
 
 #include <gtest/gtest.h>
 
@@ -978,7 +982,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 TEST(Nevpt2QdHessianProductRefusal, RefusesBadInputs) {
   FBF_REQUIRE_GPU();
-  const Point &p = point("h8_sto3g_sa3");
+  const Point &p = point("h2co_ccpvdz_sa2_weighted");
   ASSERT_FALSE(p.b.empty());
   fb::DeviceResources res(0);
   const std::size_t nroots = p.weights.size();
@@ -1465,6 +1469,134 @@ TEST(Nevpt2QdPcHessianProductLift, A1B2FixtureRefusesTheExpectedBlocks) {
     };
     EXPECT_FALSE(irrep(u) == "A1" && irrep(v) == "A1") << u << ", " << v;
   }
+}
+
+// The Schur lifts and the product are functions of a direction written in
+// the point's sign gauge, which the SA-CASSCF fixes run to run (#1203): a
+// seeded raw c_dot is a different direction once a root (or an active MO)
+// comes back with the other sign, and its lifts differ by a few percent
+// (0.338 against 0.360 on the footprint test's water), while one process
+// repeats them to the walk's rounding. So the check is covariance: root 0
+// negated together with its part of the direction and W's row and column 0
+// off the diagonal gives the same lifts, and the same product but for root
+// 0's y, negated. The bar is the walk's rounding, ~3e-12 of each field's
+// largest element measured, with the margin of #1203's other repeats.
+constexpr double kGaugeTolerance = 1e-10;
+// What the raw c_dot at the flipped roots must move a lift by, of the
+// largest: the gauge's own effect, far past the tolerance.
+constexpr double kGaugeMoved = 1e-6;
+
+TEST(Nevpt2QdPcHessianProductGauge, FollowsTheRootSigns) {
+  FBF_REQUIRE_GPU();
+  const Point &p = point("h2co_ccpvdz_sa2_weighted");
+  ASSERT_FALSE(p.b.empty());
+  fb::DeviceResources res(0);
+  const std::size_t nroots = p.weights.size();
+  const std::size_t ndet = p.vectors.size() / nroots;
+  const auto nmo = static_cast<std::size_t>(p.nao);
+  auto strings = fb::ci::DeviceStringSet::create(res, p.ncas, p.nelecas / 2);
+  ASSERT_TRUE(strings) << strings.error().message;
+  const fb::Buffers::device<double> b = upload(res, p.b);
+  const fb::Buffers::device<double> c = upload(res, p.c);
+  const fb::Buffers::device<double> h = upload(res, p.h);
+  // The direction: every root's raw c_dot, seeded; h and B still, and a
+  // partner with no CI part, so no ket lifts on both sides.
+  std::vector<double> c_dot(p.vectors.size());
+  std::mt19937_64 engine(1203);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  for (double &x : c_dot) {
+    x = uniform(engine);
+  }
+  const std::vector<double> zeros(p.vectors.size(), 0.0);
+  const fb::Buffers::device<double> h_dot = upload(res, std::vector<double>(nmo * nmo, 0.0));
+  const fb::Buffers::device<double> b_dot =
+      upload(res, std::vector<double>(static_cast<std::size_t>(p.naux) * nmo * nmo, 0.0));
+  const fb::Buffers::device<double> still = upload(res, zeros);
+  // Root 0 negated: in the roots, the direction and W.
+  const auto flip = [&](std::vector<double> v) {
+    for (std::size_t e = 0; e < ndet; ++e) {
+      v[e] = -v[e];
+    }
+    return v;
+  };
+  std::vector<double> w_flip = general_w(nroots);
+  for (std::size_t s = 1; s < nroots; ++s) {
+    w_flip[s] = -w_flip[s];
+    w_flip[s * nroots] = -w_flip[s * nroots];
+  }
+  struct Got {
+    std::vector<std::array<double, 8>> lifts;
+    Fields product;
+  };
+  const auto run = [&](const std::vector<double> &roots, const std::vector<double> &dir,
+                       const std::vector<double> &w) -> Got {
+    const fb::Buffers::device<double> vectors = upload(res, roots);
+    const fb::Buffers::device<double> c_d = upload(res, dir);
+    const auto adj = qd_adjoint(res, *strings, p, b.data(), c.data(), h.data(), vectors.data(), w,
+                                Method{.pc = true});
+    EXPECT_TRUE(adj) << adj.error().message;
+    if (!adj) {
+      return {};
+    }
+    const auto zc =
+        nevpt2::zc_multipliers(res, p.nao, p.ncore, p.ncas, adj->a.data(), adj->epsilon.data());
+    EXPECT_TRUE(zc) << zc.error().message;
+    if (!zc) {
+      return {};
+    }
+    const nevpt2::MoDirections along{
+        .count = 1, .h = h_dot.data(), .b = b_dot.data(), .c = c_d.data()};
+    const nevpt2::MoDirections partner{
+        .count = 1, .h = h_dot.data(), .b = b_dot.data(), .c = still.data()};
+    const auto got = nevpt2::qd_pc_hessian_product(
+        res, *strings, *strings, p.naux, p.nao, p.nao, b.data(), c.data(), h.data(), p.ncore,
+        p.ncas, p.weights, vectors.data(), w, zc->z.data(), 0, along, partner);
+    EXPECT_TRUE(got) << got.error().message;
+    if (!got) {
+      return {};
+    }
+    return {.lifts = got->lifts.front(), .product = fields_of(res, p, got->products.front())};
+  };
+  const Got at = run(p.vectors, c_dot, general_w(nroots));
+  const Got flipped = run(flip(p.vectors), flip(c_dot), w_flip);
+  // And the same raw c_dot at the flipped roots: a different direction.
+  const Got other = run(flip(p.vectors), c_dot, w_flip);
+  ASSERT_FALSE(HasFailure());
+  ASSERT_EQ(at.lifts.size(), nroots);
+  ASSERT_EQ(flipped.lifts.size(), nroots);
+  double most = 0.0;
+  for (const std::array<double, 8> &ket : at.lifts) {
+    most = std::max(most, std::ranges::max(ket));
+  }
+  ASSERT_GT(most, 0.0) << "no Schur lift along the direction";
+  for (std::size_t ket = 0; ket < nroots; ++ket) {
+    for (std::size_t k = 0; k < 8; ++k) {
+      EXPECT_NEAR(flipped.lifts[ket][k], at.lifts[ket][k], kGaugeTolerance * most)
+          << "ket " << ket << " class " << k;
+    }
+  }
+  double moved = 0.0;
+  for (std::size_t ket = 0; ket < nroots; ++ket) {
+    for (std::size_t k = 0; k < 8; ++k) {
+      moved = std::max(moved, std::abs(other.lifts[ket][k] - at.lifts[ket][k]));
+    }
+  }
+  EXPECT_GT(moved, kGaugeMoved * most) << "the raw c_dot at the flipped roots lifts the same";
+  for (const auto &[name, field] : at.product) {
+    const std::vector<double> &other = flipped.product.at(name);
+    const double sign = name == "y_0" ? -1.0 : 1.0;
+    const double largest = max_abs(field);
+    double off = 0.0;
+    for (std::size_t e = 0; e < field.size(); ++e) {
+      off = std::max(off, std::abs(other[e] - (sign * field[e])));
+    }
+    EXPECT_LE(off, kGaugeTolerance * largest) << name;
+    std::cout << std::format("[ nevpt2   ] qd pc product root-sign gauge {}: {:.2e} of {:.3e}\n",
+                             name, off / largest, largest);
+  }
+  std::cout << std::format("[ nevpt2   ] qd pc product root-sign gauge: largest lift {:.6e}, "
+                           "moved {:.2e} of it at the raw c_dot\n",
+                           most, moved / most);
 }
 
 } // namespace
