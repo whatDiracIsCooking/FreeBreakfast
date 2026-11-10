@@ -443,6 +443,11 @@ struct AtomsStep {
                                                    fb::DeviceResources &res) const {
     return fb::MoleculeOutput{fb::Molecule(res, atoms, charge, multiplicity)};
   }
+
+  // The Molecule, as MoleculeStep's.
+  [[nodiscard]] fb::MemoryFootprint footprint(const fb::FootprintDimensions &dims) const {
+    return fb::molecule_footprint(dims.natoms);
+  }
 };
 
 // The case @p name, its CASSCF picked from the RHF orbitals @p active: each

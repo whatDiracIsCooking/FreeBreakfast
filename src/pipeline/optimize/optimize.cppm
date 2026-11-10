@@ -175,8 +175,8 @@ struct OptimizeStep {
   /// memory, not modelled.
   ///
   /// None over a CASSCF chain (@ref casscf_gradient, @ref nevpt2_gradient,
-  /// @ref meci), whose carried orbitals and library calls are not all
-  /// footprinted yet: pre-flight refuses it under a cap. Transitional, as
+  /// @ref meci), whose library calls are not all footprinted yet and whose
+  /// fold is not written: pre-flight refuses it under a cap. Transitional, as
   /// step_footprint's optional is (#1122).
   [[nodiscard]] std::optional<MemoryFootprint> footprint(const FootprintDimensions &dims) const;
 

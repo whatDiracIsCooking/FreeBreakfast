@@ -1,7 +1,10 @@
 // The pipeline step contract over made-up steps. Almost everything here is a
 // static_assert, verified by compiling this file; only the last cases run.
 // Device-shaped steps name the DeviceResources and NodeResources types and
-// never construct one, so nothing touches a device.
+// never construct one, so nothing touches a device. Every step carries a
+// footprint, a host fake's `return {};` (none allocates), so a rejected one
+// is rejected for its own flaw alone once the footprint is a requirement of
+// the concept (#1122).
 
 #include <gtest/gtest.h>
 
@@ -9,6 +12,7 @@ import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.footprint;
 
 namespace {
 
@@ -54,6 +58,7 @@ static_assert(std::same_as<decltype(std::declval<const fb::View<A> &>().get<A>()
 
 struct HostStep {
   static constexpr std::string_view kName = "host";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
 
   double scale = 2.0;
 
@@ -62,27 +67,32 @@ struct HostStep {
 
 struct HostSubflowStep {
   static constexpr std::string_view kName = "host_subflow";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in, fb::tf::Subflow &subflow) const;
 };
 
 struct DeviceStep {
   static constexpr std::string_view kName = "device";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<MoveOnly> run(fb::View<A, B> in, fb::DeviceResources &res) const;
 };
 
 struct DeviceSubflowStep {
   static constexpr std::string_view kName = "device_subflow";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in, fb::DeviceResources &res, fb::tf::Subflow &subflow) const;
 };
 
 struct NodeStep {
   static constexpr std::string_view kName = "node";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in, fb::NodeResources &node) const;
 };
 
 // A root step reads nothing; its options are its inputs.
 struct RootStep {
   static constexpr std::string_view kName = "root";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
 
   std::int32_t value = 7;
 
@@ -92,6 +102,7 @@ struct RootStep {
 // noexcept and a view taken by const reference read the same.
 struct NoexceptByReferenceStep {
   static constexpr std::string_view kName = "noexcept_by_reference";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(const fb::View<A> &in) const noexcept;
 };
 
@@ -119,12 +130,14 @@ static_assert(std::same_as<fb::StepInput<NoexceptByReferenceStep>, fb::View<A>>)
 // --- Rejected steps ---------------------------------------------------------
 
 struct NoName {
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in) const;
 };
 static_assert(!fb::PipelineStep<NoName>);
 
 struct EmptyName {
   static constexpr std::string_view kName = "";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in) const;
 };
 static_assert(!fb::PipelineStep<EmptyName>);
@@ -132,47 +145,55 @@ static_assert(!fb::PipelineStep<EmptyName>);
 // A name that is not a constant cannot be checked unique at compile time.
 struct RuntimeName {
   static inline std::string_view kName = "runtime";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in) const;
 };
 static_assert(!fb::PipelineStep<RuntimeName>);
 
 struct NoRun {
   static constexpr std::string_view kName = "no_run";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
 };
 static_assert(!fb::PipelineStep<NoRun>);
 
 struct InputNotAView {
   static constexpr std::string_view kName = "input_not_a_view";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(std::tuple<A> in) const;
 };
 static_assert(!fb::PipelineStep<InputNotAView>);
 
 struct ReadsOwnOutput {
   static constexpr std::string_view kName = "reads_own_output";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A, B> in) const;
 };
 static_assert(!fb::PipelineStep<ReadsOwnOutput>);
 
 struct OutputNotAProduct {
   static constexpr std::string_view kName = "output_not_a_product";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<const B> run(fb::View<A> in) const;
 };
 static_assert(!fb::PipelineStep<OutputNotAProduct>);
 
 struct ReturnsBareOutput {
   static constexpr std::string_view kName = "returns_bare_output";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   B run(fb::View<A> in) const;
 };
 static_assert(!fb::PipelineStep<ReturnsBareOutput>);
 
 struct NonConstRun {
   static constexpr std::string_view kName = "non_const_run";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in);
 };
 static_assert(!fb::PipelineStep<NonConstRun>);
 
 struct NoShape {
   static constexpr std::string_view kName = "no_shape";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in, std::int32_t &unknown) const;
 };
 static_assert(!fb::PipelineStep<NoShape>);
@@ -180,6 +201,7 @@ static_assert(!fb::PipelineStep<NoShape>);
 // Exact resource types only: a const DeviceResources& is not a shape.
 struct ConstDeviceResources {
   static constexpr std::string_view kName = "const_device_resources";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in, const fb::DeviceResources &res) const;
 };
 static_assert(!fb::PipelineStep<ConstDeviceResources>);
@@ -187,6 +209,7 @@ static_assert(!fb::PipelineStep<ConstDeviceResources>);
 // An overload set has no one signature to read.
 struct OverloadedRun {
   static constexpr std::string_view kName = "overloaded_run";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in) const;
   fb::Result<B> run(fb::View<A> in, fb::DeviceResources &res) const;
 };
@@ -194,6 +217,7 @@ static_assert(!fb::PipelineStep<OverloadedRun>);
 
 struct TemplateRun {
   static constexpr std::string_view kName = "template_run";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   template <class V>
   fb::Result<B> run(V in) const;
 };
@@ -204,6 +228,7 @@ static_assert(!fb::PipelineStep<TemplateRun>);
 // Made on the device, read back on the host from fewer inputs.
 struct HostLoadStep {
   static constexpr std::string_view kName = "host_load";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in, fb::DeviceResources &res) const;
   static fb::Result<B> load(const std::filesystem::path &from, fb::View<> in);
 };
@@ -211,6 +236,7 @@ struct HostLoadStep {
 // A load of its own shape, noexcept, its view by const reference.
 struct DeviceLoadStep {
   static constexpr std::string_view kName = "device_load";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<MoveOnly> run(fb::View<A, B> in) const;
   static fb::Result<MoveOnly> load(const std::filesystem::path &from, const fb::View<A> &in,
                                    fb::DeviceResources &res) noexcept;
@@ -236,6 +262,7 @@ static_assert(!FormsLoad<HostStep>);
 // A loaded product never ran, so the step's options cannot reach load.
 struct NonStaticLoad {
   static constexpr std::string_view kName = "non_static_load";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in) const;
   fb::Result<B> load(const std::filesystem::path &from, fb::View<> in) const;
 };
@@ -245,6 +272,7 @@ static_assert(!fb::LoadableStep<NonStaticLoad>);
 // One product, made either way.
 struct LoadsAnotherProduct {
   static constexpr std::string_view kName = "loads_another_product";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in) const;
   static fb::Result<A> load(const std::filesystem::path &from, fb::View<> in);
 };
@@ -252,6 +280,7 @@ static_assert(!fb::LoadableStep<LoadsAnotherProduct>);
 
 struct LoadReadsOwnOutput {
   static constexpr std::string_view kName = "load_reads_own_output";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in) const;
   static fb::Result<B> load(const std::filesystem::path &from, fb::View<B> in);
 };
@@ -261,6 +290,7 @@ static_assert(!fb::LoadableStep<LoadReadsOwnOutput>);
 // are exact.
 struct LoadPathByValue {
   static constexpr std::string_view kName = "load_path_by_value";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in) const;
   static fb::Result<B> load(std::filesystem::path from, fb::View<> in);
 };
@@ -268,6 +298,7 @@ static_assert(!fb::LoadableStep<LoadPathByValue>);
 
 struct LoadNoShape {
   static constexpr std::string_view kName = "load_no_shape";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in) const;
   static fb::Result<B> load(const std::filesystem::path &from, fb::View<> in,
                             std::int32_t &unknown);
@@ -276,6 +307,7 @@ static_assert(!fb::LoadableStep<LoadNoShape>);
 
 struct OverloadedLoad {
   static constexpr std::string_view kName = "overloaded_load";
+  fb::MemoryFootprint footprint(const fb::FootprintDimensions & /*dims*/) const { return {}; }
   fb::Result<B> run(fb::View<A> in) const;
   static fb::Result<B> load(const std::filesystem::path &from, fb::View<> in);
   static fb::Result<B> load(const std::filesystem::path &from, fb::View<A> in);

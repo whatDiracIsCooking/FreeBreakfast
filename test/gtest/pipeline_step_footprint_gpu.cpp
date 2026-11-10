@@ -2284,4 +2284,49 @@ TEST(Nevpt2GradientLayerFootprint, QdBuildersTangent) {
   }
 }
 
+// The carried orbitals' step (#1122), [optimize]'s and the semi-numerical
+// [hessian]'s [scf] when a CASSCF chain is rerun: water's RHF orbitals in
+// cc-pVDZ carried into its own overlap. At the peak, C, M and M^-1/2 and
+// either orthogonalize's U and eigenvalues or the product's C and d. The
+// RHF's C is S-orthonormal already, so M is the identity and the product
+// is C to rounding; orbitals that do not fit the basis are refused.
+TEST(StepFootprint, CarriedOrbitals) {
+  FBF_REQUIRE_GPU();
+  Plan plan(System{});
+  plan.run_through_scf();
+  const std::size_t n2 = plan.scf->c.num_elements();
+  std::vector<double> c(n2);
+  ASSERT_EQ(wwr::wwrMemcpyAsync(c.data(), plan.scf->c.data(), sizeof(double) * n2,
+                                wwr::wwrMemcpyDeviceToHost, plan.inputs.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(plan.inputs.sync());
+  const fb::CarriedOrbitalsStep carried{.c = c,
+                                        .mo_energies = plan.scf->mo_energies,
+                                        .n_alpha = plan.scf->n_alpha,
+                                        .n_beta = plan.scf->n_beta};
+  const fb::View<fb::BasisSetOutput, fb::OverlapOutput> view{*plan.basis, *plan.overlap};
+  expect_step_footprint(carried.footprint(plan.dims()), 5,
+                        [&](fb::DeviceResources &res) { expect_ran(carried.run(view, res)); });
+
+  auto out = carried.run(view, plan.inputs);
+  ASSERT_TRUE(out) << out.error().message;
+  std::vector<double> back(n2);
+  ASSERT_EQ(wwr::wwrMemcpyAsync(back.data(), out->c.data(), sizeof(double) * n2,
+                                wwr::wwrMemcpyDeviceToHost, plan.inputs.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(plan.inputs.sync());
+  double worst = 0.0;
+  for (std::size_t i = 0; i < n2; ++i) {
+    worst = std::max(worst, std::abs(back[i] - c[i]));
+  }
+  EXPECT_LT(worst, 1e-10);
+  EXPECT_TRUE(std::isnan(out->energy));
+
+  fb::CarriedOrbitalsStep short_c = carried;
+  short_c.c.pop_back();
+  const auto refused = short_c.run(view, plan.inputs);
+  ASSERT_FALSE(refused);
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
+}
+
 } // namespace

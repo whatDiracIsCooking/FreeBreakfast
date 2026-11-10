@@ -12,11 +12,12 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
-import free_breakfast.core.primitives; // math::binomial
+import free_breakfast.core.primitives; // math::binomial, math::align_up
 import free_breakfast.io.molden;
 import free_breakfast.io.npy;
-import free_breakfast.recipes.blas; // gemm
+import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.diagonalize;
+import free_breakfast.recipes.orthogonalize;
 import free_breakfast.integrals.active_space;
 import free_breakfast.response.fock;
 
@@ -364,6 +365,62 @@ MemoryFootprint CasscfStep::footprint(const FootprintDimensions &dims) const {
   MemoryFootprint out = whole;
   out.device.persistent = sizeof(double) * nn;
   out.device.scratch = whole.device.persistent + whole.device.scratch - out.device.persistent;
+  return out;
+}
+
+Result<ScfOutput> CarriedOrbitalsStep::run(View<BasisSetOutput, OverlapOutput> in,
+                                           DeviceResources &res) const {
+  const BasisSet &basis = in.get<BasisSetOutput>().basis;
+  const SphericalMatrixAO &s = in.get<OverlapOutput>().s;
+  if (c.size() != s.num_elements() || mo_energies.size() != s.n()) {
+    return err_config("the carried orbitals: {} coefficients and {} energies into a basis of {} "
+                      "functions",
+                      c.size(), mo_energies.size(), s.n());
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const auto n = static_cast<int32_t>(s.n());
+  const size_t n2 = s.num_elements();
+  // C, M = C^T S C and M^-1/2: held across orthogonalize, which takes the
+  // workspace, so each is its own buffer.
+  SphericalMatrixAO carried(res, basis);
+  Buffers::device<double> m(n2, res.device());
+  Buffers::device<double> m_inv_sqrt(n2, res.device());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(carried.data(), c.data(), n2 * sizeof(double),
+                                         wwr::wwrMemcpyHostToDevice, res.stream())));
+  {
+    const auto [work] = res.device_regions<double>(n2);
+    FBF_TRY(gpu_status(gemmwich(res.blas(), n, carried.data(), s.data(), work, m.data())));
+  }
+  FBF_TRY(orthogonalize<double>(res, n, m.data(), m_inv_sqrt.data()));
+  ScfOutput out{
+      .energy = std::numeric_limits<double>::quiet_NaN(),
+      .iterations = 0,
+      .n_alpha = n_alpha,
+      .n_beta = n_beta,
+      .mo_energies = mo_energies,
+      .c = SphericalMatrixAO(res, basis),
+      .d = SphericalMatrixAO(res, basis),
+  };
+  FBF_TRY(gpu_status(gemm(res.blas(), n, &kOne<double>, carried.data(), m_inv_sqrt.data(),
+                          &kZero<double>, out.c.data())));
+  FBF_TRY(res.sync());
+  return out;
+}
+
+MemoryFootprint CarriedOrbitalsStep::footprint(const FootprintDimensions &dims) const {
+  const size_t matrix = sizeof(double) * dims.nao * dims.nao;
+  // C, M and M^-1/2 are allocated first and held until run returns, past the
+  // product's C and d: the three are folded as kept, then moved to scratch.
+  const MemoryFootprint held{.device = {.persistent = 3 * matrix}};
+  const MemoryFootprint gemmwich_work{
+      .device = {.workspace = math::align_up(matrix, DeviceResources::kWorkspaceAlignment)}};
+  const MemoryFootprint product{.device = {.persistent = 2 * matrix}};
+  MemoryFootprint out = then(then(then(held, gemmwich_work),
+                                  orthogonalize_footprint<double>(static_cast<int32_t>(dims.nao),
+                                                                  dims.syevd_lwork[dims.nao])),
+                             product);
+  out.device.persistent -= held.device.persistent;
+  out.device.scratch += held.device.persistent;
   return out;
 }
 

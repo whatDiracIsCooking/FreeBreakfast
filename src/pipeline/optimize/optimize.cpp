@@ -13,7 +13,7 @@ module free_breakfast.pipeline.optimize;
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
-import free_breakfast.core.constants; // kAngstromPerBohr, kOne, kZero
+import free_breakfast.core.constants; // kAngstromPerBohr
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
@@ -27,8 +27,6 @@ import free_breakfast.nevpt2.intersection; // qd_sc_intersection, qd_pc_intersec
 import free_breakfast.pipeline.nevpt2;     // Nevpt2Step::resolve_frozen_core
 import free_breakfast.pipeline.pipeline;
 import free_breakfast.pipeline.footprint;
-import free_breakfast.recipes.blas; // gemm, gemmwich
-import free_breakfast.recipes.orthogonalize;
 
 #include "diagnostics.h"
 
@@ -51,64 +49,6 @@ struct TrialGeometryStep {
   // The Molecule, as MoleculeStep's.
   [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const {
     return molecule_footprint(dims.natoms);
-  }
-};
-
-// The CASSCF chain's ScfOutput at every geometry after the first: the last
-// evaluation's CASSCF orbitals, core, active, virtual, Loewdin-orthonormalized
-// in this geometry's overlap, C (C^T S C)^-1/2, the orthonormal set nearest
-// them, so the active space the CasscfStep starts from is the one it
-// converged last time and not a fresh pick that could swap orbitals. Only
-// the CasscfStep reads it, by index over its first columns: the energy is
-// NaN, no SCF ran, and d is left zero.
-struct CarriedOrbitalsStep {
-  static constexpr std::string_view kName = "scf";
-
-  // AO by MO, column-major, on the host: the last CasscfOutput's c.
-  std::vector<double> c;
-  // One per column: the last CasscfOutput's mo_energies.
-  std::vector<double> mo_energies;
-  // The first geometry's ScfOutput's.
-  int32_t n_alpha{0};
-  int32_t n_beta{0};
-
-  [[nodiscard]] Result<ScfOutput> run(View<BasisSetOutput, OverlapOutput> in,
-                                      DeviceResources &res) const {
-    const BasisSet &basis = in.get<BasisSetOutput>().basis;
-    const SphericalMatrixAO &s = in.get<OverlapOutput>().s;
-    if (c.size() != s.num_elements() || mo_energies.size() != s.n()) {
-      return err_config("[{}] carries {} orbital coefficients and {} energies into a basis of {} "
-                        "functions",
-                        OptimizeStep::kName, c.size(), mo_energies.size(), s.n());
-    }
-    const ScopedDeviceIndex on{res.dev_idx()};
-    const auto n = static_cast<int32_t>(s.n());
-    const size_t n2 = s.num_elements();
-    // C, M = C^T S C and M^-1/2: held across orthogonalize, which takes the
-    // workspace, so each is its own buffer.
-    SphericalMatrixAO previous(res, basis);
-    Buffers::device<double> m(n2, res.device());
-    Buffers::device<double> m_inv_sqrt(n2, res.device());
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(previous.data(), c.data(), n2 * sizeof(double),
-                                           wwr::wwrMemcpyHostToDevice, res.stream())));
-    {
-      const auto [work] = res.device_regions<double>(n2);
-      FBF_TRY(gpu_status(gemmwich(res.blas(), n, previous.data(), s.data(), work, m.data())));
-    }
-    FBF_TRY(orthogonalize<double>(res, n, m.data(), m_inv_sqrt.data()));
-    ScfOutput out{
-        .energy = std::numeric_limits<double>::quiet_NaN(),
-        .iterations = 0,
-        .n_alpha = n_alpha,
-        .n_beta = n_beta,
-        .mo_energies = mo_energies,
-        .c = SphericalMatrixAO(res, basis),
-        .d = SphericalMatrixAO(res, basis),
-    };
-    FBF_TRY(gpu_status(gemm(res.blas(), n, &kOne<double>, previous.data(), m_inv_sqrt.data(),
-                            &kZero<double>, out.c.data())));
-    FBF_TRY(res.sync());
-    return out;
   }
 };
 

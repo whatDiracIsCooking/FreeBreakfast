@@ -19,7 +19,8 @@ It re-exports `free_breakfast.pipeline.scf` (which re-exports every product in
 and `free_breakfast.mcscf.solve` (`mcscf::Iteration`, in the product, and
 `mcscf::Options`, whose defaults the step's are). `run` is defined in the
 implementation unit, so `integrals.active_space`, `response.fock`,
-`diagonalize`, `io.molden` and `io.npy` are PRIVATE links.
+`diagonalize`, `io.molden` and `io.npy` are PRIVATE links, and so are
+`blas` and `orthogonalize`, for `CarriedOrbitalsStep` (below).
 
 The selection -- `ncas`, `nelecas`, `active`, `avas`, `avas_threshold`,
 `avas_max_ncas` -- is
@@ -155,6 +156,38 @@ nmo (`InvalidConfig`, both shapes), a CI whose columns are not `nroots`
 (`mcscf::solve`'s `InvalidConfig`), a file not float64 or not there
 (`read_npy`'s `IO`).
 
+## The carried orbitals' step
+
+```cpp
+struct CarriedOrbitalsStep {
+  static constexpr std::string_view kName = "scf";
+
+  std::vector<double> c;           // AO x MO, column-major, on the host
+  std::vector<double> mo_energies; // one per column
+  int32_t n_alpha{0}, n_beta{0};   // the first geometry's ScfOutput's
+
+  Result<ScfOutput> run(View<BasisSetOutput, OverlapOutput> in, DeviceResources &res) const;
+  MemoryFootprint footprint(const FootprintDimensions &dims) const;
+};
+```
+
+When `[optimize]` or the semi-numerical `[hessian]` reruns a CASSCF chain at
+another geometry, this step stands where the `ScfStep` stood: it hands the
+CasscfStep another geometry's CASSCF orbitals, core, active and virtual,
+Löwdin-orthonormalized in this geometry's overlap, C (CᵀSC)^-1/2, the
+orthonormal set nearest them, which the CasscfStep takes by index as they
+come. `[optimize]` carries the last evaluation's; `[hessian]` the
+reference's to every displaced point (`../optimize/README.md`,
+`../hessian/README.md`). Its ScfOutput is not an SCF's: the energy is NaN,
+`d` is zero, and only the CasscfStep reads it. It is here, beside its one
+reader, rather than in either nesting module, because both use it.
+
+Its footprint is `ScfOutput`'s C and `d`, persistent; C, M = CᵀSC and
+M^-1/2, three nao x nao buffers allocated first and held to the end, past
+the product, so scratch; `orthogonalize_footprint` at nao, whose syevd work
+is `dims.syevd_lwork[nao]`; and gemmwich's nao x nao in the device
+workspace.
+
 ## Density fitting
 
 `[eri]` chooses it for the whole pipeline (`eri/README.md`), so the SCF the
@@ -283,10 +316,12 @@ over one `EriOutput` in each mode.
 
 The footprint (`StepFootprint.Casscf`, `test/gtest/pipeline_step_footprint_gpu.cpp`): water's SA-2 CAS(4, 4) in cc-pVDZ, integral-direct and density-fitted over cc-pVDZ-JKFIT, the run held to the footprint on a fresh `DeviceResources`, its workspace to at most the bound.
 
+`CarriedOrbitalsStep`'s (`StepFootprint.CarriedOrbitals`, same file): water's RHF orbitals in cc-pVDZ carried into its own overlap, the run held to the footprint, workspace exactly; and C^T S C of the product the identity.
+
 ## Files
 
 | File | Role |
 |------|------|
 | `casscf.cppm` | Module interface: `CasscfOutput`, `CasscfStep`, `canonicalize_core_virtual` |
-| `casscf.cpp` | `run`: the selection, the CI start file, the fitted scratch's memory check, `mcscf::solve`, the Fock at the solution, the canonicalization, the Molden and `.npy` files; and `footprint` |
+| `casscf.cpp` | `run`: the selection, the CI start file, the fitted scratch's memory check, `mcscf::solve`, the Fock at the solution, the canonicalization, the Molden and `.npy` files; and `footprint`; and `CarriedOrbitalsStep`'s `run` and `footprint` |
 | `CMakeLists.txt` | The module library |

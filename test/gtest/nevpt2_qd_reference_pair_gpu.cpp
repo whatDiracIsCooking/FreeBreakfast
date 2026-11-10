@@ -238,20 +238,16 @@ Coords in_frame(const Coords &angstrom) {
   return out;
 }
 
-// Where a displaced point starts: the base's CASSCF orbitals (AO by MO,
-// column-major) and energies, and the RHF's electron counts.
-struct Start {
-  std::vector<double> c;
-  std::vector<double> mo_energies;
-  std::int32_t n_alpha = 0;
-  std::int32_t n_beta = 0;
-};
-
 // The molecule from an xyz file: MoleculeStep's run without its load, which
 // reads an [optimize]'s product and so needs OptimizeStep in the registry.
 struct GeometryStep {
   static constexpr std::string_view kName = "molecule";
   std::filesystem::path xyz;
+
+  // The Molecule, as MoleculeStep's.
+  [[nodiscard]] fb::MemoryFootprint footprint(const fb::FootprintDimensions &dims) const {
+    return fb::molecule_footprint(dims.natoms);
+  }
 
   [[nodiscard]] fb::Result<fb::MoleculeOutput> run(fb::View<> /*in*/,
                                                    fb::DeviceResources &res) const {
@@ -260,66 +256,6 @@ struct GeometryStep {
       return std::unexpected(molecule.error());
     }
     return fb::MoleculeOutput{std::move(*molecule)};
-  }
-};
-
-// The RHF's stand-in at a displaced point: @ref Start's orbitals
-// Loewdin-orthonormalized in this geometry's overlap, C (C^T S C)^-1/2, as
-// pipeline/optimize's carried orbitals and #696's displaced points start
-// (the RHF is only the CASSCF's start, and near C3v its HOMO and LUMO are
-// the e pair, which it splits: from the SAD guess one point of the ladder,
-// random1 at 2e-3 bohr, oscillated past 1000 iterations).
-struct StartStep {
-  static constexpr std::string_view kName = "scf";
-  Start start;
-
-  [[nodiscard]] fb::Result<fb::ScfOutput> run(fb::View<fb::BasisSetOutput, fb::OverlapOutput> in,
-                                              fb::DeviceResources &res) const {
-    const fb::BasisSet &basis = in.get<fb::BasisSetOutput>().basis;
-    const fb::SphericalMatrixAO &s = in.get<fb::OverlapOutput>().s;
-    const fb::ScopedDeviceIndex on{res.dev_idx()};
-    const auto n = static_cast<std::int32_t>(s.n());
-    const std::size_t n2 = s.num_elements();
-    fb::SphericalMatrixAO previous(res, basis);
-    fb::Buffers::device<double> m(n2, res.device());
-    fb::Buffers::device<double> m_inv_sqrt(n2, res.device());
-    fb::ScfOutput out{.energy = std::numeric_limits<double>::quiet_NaN(),
-                      .iterations = 0,
-                      .n_alpha = start.n_alpha,
-                      .n_beta = start.n_beta,
-                      .mo_energies = start.mo_energies,
-                      .c = fb::SphericalMatrixAO(res, basis),
-                      .d = fb::SphericalMatrixAO(res, basis)};
-    // Each call in order, the first error returned.
-    const fb::Status done = [&]() -> fb::Status {
-      if (auto st = fb::gpu_status(wwr::wwrMemcpyAsync(previous.data(), start.c.data(),
-                                                       n2 * sizeof(double),
-                                                       wwr::wwrMemcpyHostToDevice, res.stream()));
-          !st) {
-        return st;
-      }
-      {
-        const auto [work] = res.device_regions<double>(n2);
-        if (auto st = fb::gpu_status(
-                fb::gemmwich(res.blas(), n, previous.data(), s.data(), work, m.data()));
-            !st) {
-          return st;
-        }
-      }
-      if (auto st = fb::orthogonalize<double>(res, n, m.data(), m_inv_sqrt.data()); !st) {
-        return st;
-      }
-      if (auto st = fb::gpu_status(fb::gemm(res.blas(), n, &fb::kOne<double>, previous.data(),
-                                            m_inv_sqrt.data(), &fb::kZero<double>, out.c.data()));
-          !st) {
-        return st;
-      }
-      return res.sync();
-    }();
-    if (!done) {
-      return std::unexpected(done.error());
-    }
-    return out;
   }
 };
 
@@ -420,11 +356,16 @@ struct Tolerances {
 };
 
 // The single point at @p x (bohr): from the SAD guess's RHF with no
-// @p start; from @p start's orbitals otherwise. Its Start into *@p keep
-// when asked.
+// @p start; from @p start's orbitals otherwise, its CASSCF orbitals
+// Loewdin-orthonormalized in this geometry's overlap by the
+// CarriedOrbitalsStep standing for the RHF, as pipeline/optimize's carried
+// orbitals and #696's displaced points start (the RHF is only the CASSCF's
+// start, and near C3v its HOMO and LUMO are the e pair, which it splits:
+// from the SAD guess one point of the ladder, random1 at 2e-3 bohr,
+// oscillated past 1000 iterations). Its own start into *@p keep when asked.
 Point point_at(fb::NodeResources &node, const Coords &x, bool intersect,
-               const Start *start = nullptr, Start *keep = nullptr,
-               const Tolerances &tolerances = {}) {
+               const fb::CarriedOrbitalsStep *start = nullptr,
+               fb::CarriedOrbitalsStep *keep = nullptr, const Tolerances &tolerances = {}) {
   const fb::test::ScratchDir dir("nevpt2_qd_reference_pair");
   write_xyz(dir / "molecule.xyz", x);
   if (start != nullptr) {
@@ -439,12 +380,12 @@ Point point_at(fb::NodeResources &node, const Coords &x, bool intersect,
     fb::Nevpt2Step nevpt2{.quasi_degenerate = true};
     auto chain = fb::Pipeline<GeometryStep, fb::BasisSetStep, fb::SphericalTransformStep,
                               fb::PrimitivePairClassesStep, fb::EriStep, fb::OverlapStep,
-                              fb::CoreHamiltonianStep, StartStep, fb::CasscfStep,
+                              fb::CoreHamiltonianStep, fb::CarriedOrbitalsStep, fb::CasscfStep,
                               fb::Nevpt2Step>::create({GeometryStep{dir / "molecule.xyz"}, basis,
                                                        fb::SphericalTransformStep{},
                                                        fb::PrimitivePairClassesStep{}, eri,
                                                        fb::OverlapStep{}, fb::CoreHamiltonianStep{},
-                                                       StartStep{*start}, casscf, nevpt2});
+                                                       *start, casscf, nevpt2});
     EXPECT_TRUE(chain.has_value()) << chain.error().message;
     if (!chain.has_value()) {
       return {};
@@ -602,8 +543,8 @@ TEST(Nevpt2QdReferencePair, MeanGradientMatchesDifferences) {
   const double h_min = kSteps.back();
   for (const auto &[where, base] : {std::pair{std::string_view{"exact C3v"}, exact}}) {
     SCOPED_TRACE(where);
-    // Every other point starts from this one's CASSCF orbitals (StartStep).
-    Start start;
+    // Every other point starts from this one's CASSCF orbitals.
+    fb::CarriedOrbitalsStep start;
     const Point center = point_at(node, base, true, nullptr, &start);
     const std::vector<double> g = expect_mean_gradient(center, where);
     ASSERT_EQ(g.size(), kCoords);
@@ -740,7 +681,7 @@ TEST(Nevpt2QdReferencePair, MeanGradientIsContinuousAcrossTheFloor) {
     for (std::size_t k = 0; k < kCoords; ++k) {
       x[k] += kAlong[i] / fb::kAngstromPerBohr<double> * l.d1[k];
     }
-    Start start;
+    fb::CarriedOrbitalsStep start;
     for (std::int32_t r = 0; r < kRuns; ++r) {
       const auto g =
           mean_gradient(point_at(node, x, true, nullptr, r == 0 ? &start : nullptr), kAlong[i]);

@@ -237,8 +237,8 @@ error. So:
   geometry first, from the SCF and `[casscf]`'s selection (by index or
   AVAS). Its orbitals and CI vectors are the reference.
 - **Each displaced solve starts from the reference's orbitals,
-  orthonormalized in the displaced metric**: a private step of this module,
-  standing where the `ScfStep` stood, hands the CASSCF C (Cᵀ S(x) C)^-1/2,
+  orthonormalized in the displaced metric**: `CarriedOrbitalsStep`
+  (`../casscf/README.md`), standing where the `ScfStep` stood, hands the CASSCF C (Cᵀ S(x) C)^-1/2,
   the orthonormal set nearest the reference's orbitals in the displaced
   overlap, which the CasscfStep takes by index as they come (its `ncas` and
   `nelecas` the reference's, no `active`, no `avas`): `[optimize]`'s carried

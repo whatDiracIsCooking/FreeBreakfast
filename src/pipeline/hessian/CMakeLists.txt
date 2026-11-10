@@ -8,13 +8,12 @@
 # run is defined in the implementation unit, so the analytic Hessian
 # and the dipole derivative (hessian), the dipole integrals' limit
 # (one_electron::dipole) and the basis's shells it is checked against (basis),
-# the copy of C it takes (core::wwr), the reference orbitals'
-# orthonormalization (recipes::blas, recipes::orthogonalize, core::constants),
-# the QD ensemble's edge (pipeline::casci), the planner it nests
-# (pipeline::pipeline), the file it writes (io::json), the CASSCF footprint's
-# determinant count (core::primitives) and weights (response::zvector's
-# rotating_pairs), core::log and diagnostics_macros (FBF_TRY, FBF_LOG_INFO)
-# are PRIVATE.
+# the copy of C it takes (core::wwr), the pair's coordinates
+# (core::constants), the QD ensemble's edge (pipeline::casci), the planner it
+# nests (pipeline::pipeline), the file it writes (io::json), the CASSCF
+# footprint's determinant count (core::primitives) and weights
+# (response::zvector's rotating_pairs), core::log and diagnostics_macros
+# (FBF_TRY, FBF_LOG_INFO) are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.hessian
@@ -45,7 +44,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::io::json
   free_breakfast::pipeline::casci
   free_breakfast::pipeline::pipeline
-  free_breakfast::recipes::blas
-  free_breakfast::recipes::orthogonalize
   free_breakfast::response::zvector
 )
