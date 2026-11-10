@@ -2329,4 +2329,108 @@ TEST(StepFootprint, CarriedOrbitals) {
   EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
+// The single-root Hessian products (#1194) over the single-state CASSCF:
+// sc_hessian_product along one direction with itself as its partner (so the
+// empty perturbers both populate are proportional, never refused), and
+// with the parts; pc_hessian_product along one direction, with and without
+// the parts, its classes at the run's own kept ranks. The directions are
+// random (h_dot, B_dot, c_dot) in the MO basis, z^c the zc_multipliers.
+// Water's C2v symmetry empties perturbers, so class_energies_hvp's second
+// tables run, as its footprint counts them at the most.
+//
+// Live at the peak, at most, inside the class walk's Hessian-vector
+// product: the forward's arrays and the bars (27 each), the ScAdjoint's
+// six, Phi's five, B whole, D, W, the summed h_bar and Λ, the Sigma's four,
+// u, each direction's and partner's tangent arrays (27 each), each walk's
+// bars and Λ (28 per direction), and the walk's own (kTangentLive + 18 in
+// class_energies_hvp's, as nevpt2_footprint_gpu.cpp counts it: 58).
+constexpr std::size_t kProductBase = 27 + 27 + 6 + 5 + 5 + 4 + 1 + 58;
+constexpr std::size_t kScProductLive = kProductBase + (2 * 27) + 28;
+constexpr std::size_t kScProductPartsLive = kProductBase + 27 + (3 * 28);
+// PC's walk holds the kets' records beside the solves (as kPcAdjointLive).
+constexpr std::size_t kPcProductLive = kProductBase + 27 + (3 * 28) + 120;
+
+// @p count random doubles from @p seed on @p res's device, kept in @p held.
+const double *random_on_device(fb::DeviceResources &res,
+                               std::vector<fb::Buffers::device<double>> &held,
+                               const std::size_t count, const std::uint64_t seed) {
+  std::mt19937_64 engine(seed);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  std::vector<double> host(count);
+  for (double &x : host) {
+    x = uniform(engine);
+  }
+  held.emplace_back(count, res.device());
+  EXPECT_EQ(wwr::wwrMemcpyAsync(held.back().data(), host.data(), sizeof(double) * count,
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync());
+  return held.back().data();
+}
+
+TEST_F(Nevpt2ReaderFootprint, HessianProducts) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  Nevpt2Reference &s = ss();
+  fb::DeviceResources &in = s.plan.inputs;
+  const std::int32_t ncore = s.cas->ncore;
+  const std::int32_t ncas = s.cas->ncas;
+  const std::int32_t nmo = s.nmo();
+  const std::int32_t naux = s.fit().naux;
+  const auto &lwork = s.dims().syevd_lwork;
+  const fb::mcscf::Solution &sol = *s.solution;
+  const double *const b = s.fit().b.data();
+  const double *const c = sol.c.data();
+  const double *const h = s.plan.h->h.data();
+  const double *const vector = sol.roots.vectors.data();
+  auto alpha = fb::ci::DeviceStringSet::create(in, ncas, s.cas->nelecas / 2).value();
+  auto beta = fb::ci::DeviceStringSet::create(in, ncas, s.cas->nelecas / 2).value();
+  const auto ndet = static_cast<std::size_t>(alpha.size()) * beta.size();
+  const auto nmo2 = static_cast<std::size_t>(nmo) * static_cast<std::size_t>(nmo);
+  std::vector<fb::Buffers::device<double>> held;
+  const fb::nevpt2::MoDirections one{.count = 1,
+                                     .h = random_on_device(in, held, nmo2, 21),
+                                     .b = random_on_device(in, held, naux * nmo2, 22),
+                                     .c = random_on_device(in, held, ndet, 23)};
+  const fb::nevpt2::ScAdjoint corr =
+      fb::nevpt2::sc_adjoint(in, alpha, beta, naux, nmo, nmo, b, c, h, ncore, ncas, vector, 0)
+          .value();
+  const fb::nevpt2::ZcMultipliers zc =
+      fb::nevpt2::zc_multipliers(in, nmo, ncore, ncas, corr.a.data(), corr.epsilon.data()).value();
+  const double *const z = zc.z.data();
+  for (const bool parts : {false, true}) {
+    SCOPED_TRACE(std::format("parts {}", parts));
+    const fb::nevpt2::MoDirections partners = parts ? fb::nevpt2::MoDirections{} : one;
+    expect_least_footprint(
+        fb::nevpt2::sc_hessian_product_footprint(naux, nmo, nmo, ncore, ncas, 2, 2, 0, 1,
+                                                 partners.count, parts),
+        parts ? kScProductPartsLive : kScProductLive, [&](fb::DeviceResources &res) {
+          const auto p =
+              fb::nevpt2::sc_hessian_product(res, alpha, beta, naux, nmo, nmo, b, c, h, ncore, ncas,
+                                             vector, z, 0, one, partners, parts);
+          ASSERT_TRUE(p) << p.error().message;
+          std::int64_t populated = 0;
+          for (const auto &u : p->populated) {
+            populated += std::ranges::fold_left(u, std::int64_t{0}, std::plus{});
+          }
+          EXPECT_GT(populated, 0) << "no empty perturber populated";
+        });
+  }
+  const auto e =
+      fb::nevpt2::pc_energy(in, alpha, beta, naux, nmo, nmo, b, c, h, ncore, ncas, vector, 0);
+  ASSERT_TRUE(e) << e.error().message;
+  const std::array<std::array<std::int64_t, 8>, 1> dropped{e->dropped};
+  for (const bool parts : {false, true}) {
+    SCOPED_TRACE(std::format("PC parts {}", parts));
+    expect_least_footprint(fb::nevpt2::pc_hessian_product_footprint(naux, nmo, nmo, ncore, ncas, 2,
+                                                                    2, 0, lwork, 1, parts, dropped),
+                           kPcProductLive, [&](fb::DeviceResources &res) {
+                             const auto p = fb::nevpt2::pc_hessian_product(
+                                 res, alpha, beta, naux, nmo, nmo, b, c, h, ncore, ncas, vector, z,
+                                 0, one, parts);
+                             ASSERT_TRUE(p) << p.error().message;
+                           });
+  }
+}
+
 } // namespace

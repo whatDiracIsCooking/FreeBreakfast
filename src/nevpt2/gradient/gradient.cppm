@@ -506,6 +506,25 @@ struct ScHessianProduct {
     int32_t ncore, int32_t ncas, const double *vector, const double *z, int32_t batch,
     const MoDirections &directions, const MoDirections &partners = {}, bool parts = false);
 
+/// @brief What @ref sc_hessian_product holds over @p naux fitting functions,
+/// @p nao AOs and @p nmo orbitals with @p ncore core and @p ncas active
+/// orbitals holding @p n_alpha and @p n_beta electrons, at @p batch, along
+/// @p count directions with @p partners (0, or one per direction), with or
+/// without the @p parts: the forward's arrays, the bars and the class walk's
+/// reverse pass, the ScAdjoint (builders_adjoint's), Phi's ZcAdjoint, B
+/// whole, D, W, the summed h_bar and Λ, the Sigma (its apply scratch from
+/// the first phi_sigma); u and the builders' tangent along every direction
+/// and partner (direction_arrays_footprint); class_energies_hvp onto fresh
+/// bars along both (and with the parts along the slabs and the builders);
+/// then per direction Phi's tangent and the reverse pass's tangent
+/// (bars_tangent with root_rdms_tangent, rdms_adjoint at one determinant),
+/// the product and its parts. class_energies_hvp_footprint's second tables
+/// are at the most. Persistent: the products and their parts.
+[[nodiscard]] MemoryFootprint
+sc_hessian_product_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore, int32_t ncas,
+                             int32_t n_alpha, int32_t n_beta, int32_t batch, int32_t count,
+                             int32_t partners = 0, bool parts = false);
+
 /// @brief pc_hessian_product's result.
 struct PcHessianProduct {
   /// @brief The class energies, as pc_energy computes them.
@@ -552,6 +571,19 @@ struct PcHessianProduct {
     int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c, const double *h,
     int32_t ncore, int32_t ncas, const double *vector, const double *z, int32_t batch,
     const MoDirections &directions, bool parts = false, double pc_floor = 0.0, bool span = true);
+
+/// @brief What @ref pc_hessian_product holds: sc_hessian_product_footprint
+/// with pc_class_energies_adjoint's and pc_class_energies_hvp's walks
+/// (@p syevd_lwork and @p dropped as pc_adjoint_footprint's: the one
+/// state's PcClassEnergies::dropped, or empty for the rank that holds the
+/// most), no partners, and each
+/// direction's Schur lift before the walk (nevpt2::rdms of u at one
+/// determinant, the path's RDMs, pc_metric_lifts).
+[[nodiscard]] MemoryFootprint
+pc_hessian_product_footprint(int32_t naux, int32_t nao, int32_t nmo, int32_t ncore, int32_t ncas,
+                             int32_t n_alpha, int32_t n_beta, int32_t batch,
+                             std::span<const size_t> syevd_lwork, int32_t count, bool parts = false,
+                             std::span<const std::array<int64_t, 8>> dropped = {});
 
 /// @brief The SC-QD-NEVPT2 effective Hamiltonian's correlation elements of
 /// the roots @p vectors over the shared orbitals @p c, every input built

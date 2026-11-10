@@ -18,6 +18,8 @@ import free_breakfast.core.constants; // kOne, kTwo, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, geam, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.core.primitives; // math::binomial
+import free_breakfast.core.footprint;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.einsum;
 import free_breakfast.integrals.eri.density_fitting.mo; // b_mo
@@ -710,6 +712,320 @@ Result<PcHessianProduct> pc_hessian_product(DeviceResources &res, const ci::Devi
   out.products = std::move(p.products);
   out.parts = std::move(p.parts);
   return out;
+}
+
+// ---- The footprints: the helpers' mirrors, shared with the QD products ----
+
+// Every EnergyInputs field given, a direction's along the builders, as the
+// footprints read one: only whether a field is null.
+const double kGiven = 0.0;
+EnergyInputs given_inputs() {
+  return {.h1e = &kGiven,
+          .h2e = &kGiven,
+          .e_core = &kGiven,
+          .e_virt = &kGiven,
+          .h1e_v_sr = &kGiven,
+          .h1e_v_si = &kGiven,
+          .h1e_v_sir = &kGiven,
+          .dm1 = &kGiven,
+          .dm2 = &kGiven,
+          .dm3 = &kGiven,
+          .f3ca = &kGiven,
+          .f3ac = &kGiven};
+}
+// A B tangent given: the footprints read its nullness alone, never what it
+// points to.
+const MoBlocks *given_blocks() {
+  return reinterpret_cast<const MoBlocks *>(&kGiven);
+}
+
+// The sizes the products' mirrors read, in bytes: nmo², Λ's naux nmo², and
+// one CI vector.
+struct ProductSizes {
+  size_t nn = 0;
+  size_t lambda = 0;
+  size_t ndet = 0;
+};
+
+ProductSizes product_sizes(const int32_t naux, const int32_t nmo, const int32_t ncas,
+                           const int32_t n_alpha, const int32_t n_beta) {
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const size_t nn = sizeof(double) * static_cast<size_t>(nmo) * static_cast<size_t>(nmo);
+  return {.nn = nn,
+          .lambda = static_cast<size_t>(naux) * nn,
+          .ndet = sizeof(double) * strings(n_alpha) * strings(n_beta)};
+}
+
+// One AdjointTangent over @p y bytes of y: h_bar, Λ, y, X and A.
+size_t adjoint_tangent_bytes(const ProductSizes &z, const size_t y) {
+  return (3 * z.nn) + z.lambda + y;
+}
+
+// phi_lambda's scratch: g and w, then B D and B z.
+size_t phi_lambda_bytes(const int32_t naux, const ProductSizes &z) {
+  return (2 * sizeof(double) * static_cast<size_t>(naux)) + (2 * z.lambda);
+}
+
+// phi_w's scratch: w, then B z over the active rows.
+size_t phi_w_bytes(const int32_t naux, const int32_t nmo, const int32_t ncas) {
+  const auto q = static_cast<size_t>(naux);
+  return sizeof(double) * (q + (q * static_cast<size_t>(ncas) * static_cast<size_t>(nmo)));
+}
+
+// The products' ci::Sigma: its tables at create, and its apply scratch, kept
+// from its first apply (phi_sigma's, beside that call's out).
+struct SigmaBytes {
+  size_t tables = 0;
+  size_t apply = 0;
+  bool applied = false;
+  void create(Held &h) const { h.take(tables); }
+  // One phi_sigma over @p out bytes of output.
+  void call(Held &h, const size_t out) {
+    h.take(out);
+    if (!applied) {
+      h.take(apply);
+      applied = true;
+    }
+    h.give(out);
+  }
+  // The Sigma goes: its tables and the scratch.
+  void release(Held &h) const { h.give(tables + (applied ? apply : 0)); }
+};
+
+SigmaBytes sigma_bytes(const int32_t ncas, const int32_t n_alpha, const int32_t n_beta) {
+  const auto strings = [ncas](const int32_t electrons) {
+    return static_cast<int32_t>(std::round(math::binomial(ncas, electrons)));
+  };
+  const int32_t alpha = strings(n_alpha);
+  const int32_t beta = strings(n_beta);
+  return {.tables = ci::sigma_footprint(ncas, alpha, beta).device.persistent,
+          .apply = ci::sigma_apply_bytes(ncas, alpha, beta, ci::Layout::full)};
+}
+
+// bars_tangent onto @p h, its RDM step @p rdm_step's (which leaves y held):
+// h2e's adjoint at B's tangent (with the one-slot terms) and fold_bars'
+// workspaces, and the folded h_bar and Λ. Leaves the BarsTangent held:
+// returns its bytes, y's @p y among them.
+size_t bars_tangent_bytes(Held &h, const int32_t naux, const int32_t ncore, const int32_t ncas,
+                          const int32_t nvirt, const ProductSizes &z, const size_t y,
+                          const std::function<void(Held &)> &rdm_step) {
+  rdm_step(h);
+  h.borrow(h2e_adjoint_footprint(ncas));
+  h.borrow(mo_blocks_adjoint_footprint(naux, ncore, nvirt));
+  h.take(z.nn + z.lambda);
+  return y + z.nn + z.lambda;
+}
+
+// root_rdms_tangent onto @p h: y, held; y's two parts and (tu|vw)'s bar's;
+// rdms_adjoint at the root, and with @p one_slot at (c, u) and (u, c) and,
+// beside dm3's zero bar, at (tu|vw)'s tangent; all at one determinant.
+void root_rdms_tangent_bytes(Held &h, const int32_t ncas, const ProductSizes &z,
+                             const bool one_slot) {
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n4 = sizeof(double) * n * n * n * n;
+  const size_t n6 = n4 * n * n;
+  h.take(z.ndet);
+  const size_t scratch = (2 * z.ndet) + n4;
+  h.take(scratch);
+  h.call(rdms_adjoint_footprint(ncas));
+  if (one_slot) {
+    h.call(rdms_adjoint_footprint(ncas, 1, true));
+    h.call(rdms_adjoint_footprint(ncas, 1, true));
+    h.take(n6);
+    h.call(rdms_adjoint_footprint(ncas));
+    h.give(n6);
+  }
+  h.give(scratch);
+}
+
+// What a single-root product's class walk asks of the footprint: its
+// reverse pass's, its Hessian-vector product's along the directions (with
+// partners, empty for none), and before the walk, per direction, its check.
+struct ProductWalkBytes {
+  MemoryFootprint adjoint;
+  std::function<MemoryFootprint(std::span<const EnergyDirection>, std::span<const EnergyDirection>)>
+      hvp;
+  std::function<void(Held &)> check;
+};
+
+// hessian_product, every allocation in its order onto a Held, in bytes:
+// sc_product_footprint's and pc_product_footprint's one body.
+MemoryFootprint hessian_product_footprint(const int32_t naux, const int32_t nao, const int32_t nmo,
+                                          const int32_t ncore, const int32_t ncas,
+                                          const int32_t n_alpha, const int32_t n_beta,
+                                          const int32_t count, const int32_t partners,
+                                          const bool parts, const ProductWalkBytes &walk) {
+  constexpr size_t kD = sizeof(double);
+  const int32_t nvirt = nmo - ncore - ncas;
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = kD * n * n;
+  const ProductSizes z = product_sizes(naux, nmo, ncas, n_alpha, n_beta);
+  const size_t arrays = zeroed_arrays_bytes(naux, ncore, ncas, nvirt);
+  const auto m = static_cast<size_t>(count);
+  const size_t product = adjoint_tangent_bytes(z, z.ndet);
+  Held h;
+  // sc_arrays; the bars and Λ's raw bar; the class walk's reverse pass;
+  // builders_adjoint (y, rdms_adjoint, the tail: the ScAdjoint kept).
+  const MemoryFootprint shared = shared_arrays_footprint(naux, nao, nmo, ncore, ncas, 0);
+  h.call(shared);
+  h.call(rdms_footprint(ncas));
+  h.take(arrays + z.lambda);
+  h.call(walk.adjoint);
+  h.take(z.ndet);
+  h.call(rdms_adjoint_footprint(ncas));
+  builders_adjoint_tail(h, naux, nao, nmo, ncore, ncas);
+  // Phi's adjoint at the root; B whole; D, W, and the summed h_bar and Λ.
+  const MemoryFootprint phi = zc_adjoint_footprint(naux, nao, nmo, ncas, n_alpha, n_beta, 1);
+  h.call(phi);
+  h.take(z.lambda);
+  if (naux > 0) {
+    h.borrow(b_mo_footprint(naux, nao, {.first = 0, .count = nmo}, {.first = 0, .count = nmo}));
+  }
+  h.take(z.nn + n2);
+  h.take(phi_w_bytes(naux, nmo, ncas));
+  h.give(phi_w_bytes(naux, nmo, ncas));
+  h.take(z.nn + z.lambda);
+  SigmaBytes sigma = sigma_bytes(ncas, n_alpha, n_beta);
+  sigma.create(h);
+  // u over the directions and the partners; the builders' tangent along
+  // each, kept; the check.
+  h.take((m + static_cast<size_t>(partners)) * z.ndet);
+  const MemoryFootprint dot = direction_arrays_footprint(naux, ncore, ncas, nvirt, false);
+  for (int32_t k = 0; k < count + partners; ++k) {
+    h.call(dot);
+  }
+  if (walk.check) {
+    walk.check(h);
+  }
+  // The class walk along every direction onto fresh bars, kept: along both,
+  // and with the parts along the slabs alone and the builders alone.
+  const auto walked = [&](const EnergyInputs &in, const MoBlocks *blocks, const bool with) {
+    h.take(m * (arrays + z.lambda));
+    const std::vector<EnergyDirection> dirs(m, EnergyDirection{.in = in, .blocks = blocks});
+    const std::vector<EnergyDirection> others(
+        with ? static_cast<size_t>(partners) : 0,
+        EnergyDirection{.in = given_inputs(), .blocks = given_blocks()});
+    h.call(walk.hvp(dirs, others));
+  };
+  walked(given_inputs(), given_blocks(), true);
+  if (parts) {
+    walked({}, given_blocks(), false);
+    walked(given_inputs(), nullptr, false);
+  }
+
+  size_t kept = 0;
+  for (size_t k = 0; k < m; ++k) {
+    // Phi's tangent: Ḋ, Λ̇ (two phi_lambda), Ẇ (two phi_w), ẏ (two
+    // phi_sigma).
+    h.take(z.nn + z.lambda);
+    for (int32_t side = 0; side < 2; ++side) {
+      h.take(phi_lambda_bytes(naux, z));
+      h.give(phi_lambda_bytes(naux, z));
+    }
+    h.take(n2);
+    for (int32_t side = 0; side < 2; ++side) {
+      h.take(phi_w_bytes(naux, nmo, ncas));
+      h.give(phi_w_bytes(naux, nmo, ncas));
+    }
+    h.take(z.ndet);
+    for (int32_t side = 0; side < 2; ++side) {
+      sigma.call(h, z.ndet);
+    }
+    // The product: the reverse pass's tangent (its h_bar and Λ moved in, y
+    // left behind), y, X and A, y replaced by the projected one.
+    const auto step = [&](const bool one_slot) {
+      return [&, one_slot](Held &held) { root_rdms_tangent_bytes(held, ncas, z, one_slot); };
+    };
+    bars_tangent_bytes(h, naux, ncore, ncas, nvirt, z, z.ndet, step(true));
+    h.take(z.ndet + z.nn);
+    h.take(z.nn);
+    h.take(z.ndet);
+    h.give(z.ndet);
+    kept += product;
+    size_t local = z.ndet; // the tangent's y
+    if (parts) {
+      // The slabs' and the builders' parts, the one-slot part over zeroed
+      // bars and Λ, Phi's (its Λ̇ and ẏ moved in) and the normalization's.
+      for (int32_t part = 0; part < 2; ++part) {
+        bars_tangent_bytes(h, naux, ncore, ncas, nvirt, z, z.ndet, step(false));
+        h.take(z.nn);
+        h.take(z.nn);
+      }
+      h.take(arrays + z.lambda);
+      local += arrays + z.lambda;
+      bars_tangent_bytes(h, naux, ncore, ncas, nvirt, z, z.ndet, step(true));
+      h.take(z.nn);
+      h.take(z.nn);
+      h.take(3 * z.nn);
+      h.take(product);
+      kept += 5 * product;
+    } else {
+      local += z.lambda + z.ndet; // Phi's Λ̇ and ẏ
+    }
+    // The iteration's own: Ḋ, Ẇ, the tangent's y, and without the parts
+    // Phi's Λ̇ and ẏ; with them, the one-slot part's bars and Λ.
+    h.give(z.nn + n2 + local);
+  }
+  // Everything but the products goes.
+  h.give(h.live - kept);
+  return h.footprint(kept);
+}
+
+MemoryFootprint sc_hessian_product_footprint(const int32_t naux, const int32_t nao,
+                                             const int32_t nmo, const int32_t ncore,
+                                             const int32_t ncas, const int32_t n_alpha,
+                                             const int32_t n_beta, const int32_t batch,
+                                             const int32_t count, const int32_t partners,
+                                             const bool parts) {
+  const int32_t nvirt = nmo - ncore - ncas;
+  const int32_t nelecas = n_alpha + n_beta;
+  const ProductWalkBytes walk{
+      .adjoint = class_energies_adjoint_footprint(naux, ncore, ncas, nvirt, nelecas, batch),
+      .hvp =
+          [&](std::span<const EnergyDirection> dirs, std::span<const EnergyDirection> with) {
+            return class_energies_hvp_footprint(naux, ncore, ncas, nvirt, nelecas, batch, dirs,
+                                                with);
+          },
+      .check = {}};
+  return hessian_product_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, count, partners,
+                                   parts, walk);
+}
+
+MemoryFootprint pc_hessian_product_footprint(
+    const int32_t naux, const int32_t nao, const int32_t nmo, const int32_t ncore,
+    const int32_t ncas, const int32_t n_alpha, const int32_t n_beta, const int32_t batch,
+    const std::span<const size_t> syevd_lwork, const int32_t count, const bool parts,
+    const std::span<const std::array<int64_t, 8>> dropped) {
+  const int32_t nvirt = nmo - ncore - ncas;
+  const auto n = static_cast<size_t>(ncas);
+  const size_t n2 = sizeof(double) * n * n;
+  const size_t n4 = n2 * n * n;
+  const size_t n6 = n4 * n * n;
+  const ProductWalkBytes walk{
+      .adjoint = pc_effective_hamiltonian_adjoint_footprint(naux, ncore, ncas, nvirt, 1, batch,
+                                                            syevd_lwork, dropped),
+      .hvp =
+          [&](std::span<const EnergyDirection> dirs, std::span<const EnergyDirection>) {
+            return pc_effective_hamiltonian_hvp_footprint(naux, ncore, ncas, nvirt, 1, batch,
+                                                          syevd_lwork, dirs, dropped);
+          },
+      // The Schur lift per direction: the RDMs' second derivative (dm3 by
+      // nevpt2::rdms of u at one determinant, f3 off; dm3, dm2 and dm1 of
+      // the path) beside pc_metric_lifts.
+      .check =
+          [&](Held &h) {
+            for (int32_t k = 0; k < count; ++k) {
+              h.take(n6);
+              h.call(rdms_footprint(ncas, 1, false, false));
+              h.take(n6 + n4 + n2);
+              h.call(pc_metric_lifts_footprint(ncore, ncas, nvirt, 1, syevd_lwork, dropped));
+              h.give((2 * n6) + n4 + n2);
+            }
+          }};
+  return hessian_product_footprint(naux, nao, nmo, ncore, ncas, n_alpha, n_beta, count, 0, parts,
+                                   walk);
 }
 
 // ---- SC-QD: qd_sc_hessian_product ----------------------------------------
