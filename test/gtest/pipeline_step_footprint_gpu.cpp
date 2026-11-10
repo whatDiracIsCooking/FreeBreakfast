@@ -39,8 +39,9 @@ import free_breakfast.pipeline.shape;
 import free_breakfast.mcscf;
 import free_breakfast.integrals.eri.density_fitting.jk; // df_exchange_footprint
 import free_breakfast.response;
-import free_breakfast.gradient;  // one_electron_terms
-import free_breakfast.integrals; // casscf_integrals, overlap_half_gradient
+import free_breakfast.gradient;   // one_electron_terms
+import free_breakfast.integrals;  // casscf_integrals, overlap_half_gradient
+import free_breakfast.recipes.lu; // getrf_lwork
 
 #include "pool_footprint.h"
 #include "scratch_dir.h"
@@ -1345,7 +1346,8 @@ TEST(StepFootprint, CisDensityFittedClustered) {
 }
 
 // TDA-ris with RIS-JK's preconditioner, over the integral-direct Eri: getrf's
-// work at the RIS basis's order is plan_shape's. The peak is the sigma's J
+// work at the RIS basis's order is plan_shape's, the solver's own query there
+// (0 on HIP, whose getrf takes no work). The peak is the sigma's J
 // fit's three-centre tensor: the four before the preconditioner, its 11
 // buffers, the roots' two, the three MO blocks, the fit's metric pair (U is
 // the identity over s and p) and B, and three_center's four.
@@ -1355,7 +1357,13 @@ TEST(StepFootprint, CisRis) {
                              "ris_exchange = true\n"});
   plan.run_through_scf();
   const auto cis = planned<fb::CisStep>(*plan.calc);
-  ASSERT_GT(plan.dims().getrf_lwork, 0U);
+  ASSERT_TRUE(cis.options.ris.has_value());
+  const auto ris_aux =
+      fb::cis::ris_basis(plan.dims().atoms, cis.options.ris->theta, cis.options.ris->shells);
+  ASSERT_TRUE(ris_aux) << ris_aux.error().message;
+  const auto lwork = fb::getrf_lwork(plan.inputs, static_cast<std::int32_t>(ris_aux->nao_sphe()));
+  ASSERT_TRUE(lwork) << lwork.error().message;
+  ASSERT_EQ(plan.dims().getrf_lwork, *lwork);
   expect_step_footprint(
       cis.footprint(plan.dims()), 4 + 11 + 2 + 3 + 2 + 1 + 4,
       [&](fb::DeviceResources &res) { expect_ran(cis.run(cis_view(plan), res)); }, {}, true);
