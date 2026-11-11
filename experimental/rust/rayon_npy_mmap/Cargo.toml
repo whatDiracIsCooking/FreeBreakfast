@@ -1,0 +1,20 @@
+[package]
+name = "fb-rayon-npy-mmap"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "One column-major float64 .npy filled in place through a shared mapping by many rayon threads"
+
+[lib]
+name = "fb_rayon_npy_mmap"
+path = "src/lib.rs"
+
+[[bin]]
+name = "npy-mmap-demo"
+path = "src/main.rs"
+
+[dependencies]
+fb-rayon-npy = { path = "../rayon_npy" }
+libc = "0.2"
+memmap2 = "0.9"
+rayon = "1"

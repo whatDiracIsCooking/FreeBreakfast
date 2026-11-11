@@ -1,0 +1,21 @@
+[package]
+name = "fb-rayon-npy-direct"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "One column-major float64 .npy written with O_DIRECT by many rayon threads, page cache bypassed"
+
+[lib]
+name = "fb_rayon_npy_direct"
+path = "src/lib.rs"
+
+[[bin]]
+name = "npy-direct-demo"
+path = "src/main.rs"
+
+[dependencies]
+fb-rayon-npy = { path = "../rayon_npy" }
+# Only for npy-direct-demo's comparison (a [[bin]] cannot use dev-dependencies).
+fb-rayon-npy-mmap = { path = "../rayon_npy_mmap" }
+libc = "0.2"
+rayon = "1"
