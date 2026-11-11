@@ -27,7 +27,18 @@
 #   git submodule update --init --recursive
 #   devtools/test.py pr --preset ci-cuda      # or ci-hip
 #
-# Versions are the image's (docker/Dockerfile.*); bump them together.
+# Versions are the image's (docker/Dockerfile.*); bump them together -- WITH
+# ONE DELIBERATE EXCEPTION, the toolchain pair. docker/Dockerfile.base is on
+# clang 23 + ROCm 10.0.0 and this script is still on clang 20 + ROCm 7.2.4.
+# Those two pairings are each valid and the halves are NOT interchangeable
+# (Dockerfile.base, "LLVM_VERSION AND ROCM_VERSION ARE ONE DECISION"): clang 23
+# needs ROCm >= 7.9, clang <= 22 needs ROCm <= 7.2.4. Moving this script to the
+# image's pair means moving to TheRock, which renames every ROCm package --
+# `hipcc`/`rocm-llvm`/`hipblas-dev` below become `amdrocm-*${MAJOR.MINOR}` --
+# and this file installs individual -dev packages rather than the metapackages
+# docker/install-rocm.sh uses, so the right subset is a guess until someone can
+# run it on a cloud box. Until then it stays on the pair it is known to work
+# with. Bump BOTH halves or neither.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 

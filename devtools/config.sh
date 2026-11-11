@@ -36,7 +36,7 @@ PROJECT_NAME=${PROJECT_NAME:-free-breakfast}
 # There is one per GPU file of docker/ (Dockerfile.cuda / .hip / .combined):
 #
 #   .devcontainer/cuda/devcontainer.json     THE development container:
-#                                            clang-20 + libc++, CMake 4.2,
+#                                            clang-23 + libc++, CMake 4.2,
 #                                            CUDA 13. Needs an NVIDIA GPU and
 #                                            nvidia-container-toolkit.
 #   .devcontainer/hip/devcontainer.json      the same toolchain with ROCm and

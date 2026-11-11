@@ -11,7 +11,7 @@
 # ---------------------------------------------------------------------------
 # The C++ tree is NOT built here by default -- the two `cpp` legs below are
 # `if: false`. What stops a GitHub-hosted runner is the TOOLCHAIN, not the
-# device: clang-20 with libc++'s module manifest, CMake 4.2, Ninja, and either
+# device: clang-23 with libc++'s module manifest, CMake 4.2, Ninja, and either
 # the CUDA toolkit or ROCm all have to be present, which is what
 # docker/Dockerfile.* exists to provide.
 #

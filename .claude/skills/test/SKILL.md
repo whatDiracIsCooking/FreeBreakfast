@@ -23,7 +23,7 @@ whole C++ toolchain lives in the CUDA image.
 | Language | C++23, googletest | Python, pytest |
 | Runner | `ctest` via `devtools/test.py pr` | `pytest` |
 | Tests | the library's own units, including CUDA kernels | the Python-side suite — `test/pytest/`, marker and harness coverage plus the live BSE download test |
-| Needs | the CUDA image (clang-20, CMake 4.2, nvcc) | a venv |
+| Needs | the CUDA image (clang-23, CMake 4.2, nvcc) | a venv |
 | Gated by | the push gate's smoke (`devtools/test.py push`); `test.py pr` by hand | the push gate and CI |
 
 **Which one a change needs is not negotiable by convenience.** A change under

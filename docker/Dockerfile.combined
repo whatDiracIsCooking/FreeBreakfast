@@ -35,7 +35,7 @@ ARG PROJECT_NAME=free-breakfast
 ARG PARENT_IMAGE=${PROJECT_NAME}:cuda
 FROM ${PARENT_IMAGE}
 
-ARG ROCM_VERSION=7.2.4
+ARG ROCM_VERSION=10.0.0
 USER root
 
 # Re-stamped rather than merely inherited from the parent, so that the
@@ -44,12 +44,17 @@ USER root
 ARG PROJECT_NAME
 LABEL devcontainer.project="${PROJECT_NAME}"
 
+# Declared before the install and passed into it: on the TheRock channel
+# (ROCm >= 7.9) the device-library package names carry the arch, so
+# install-rocm.sh fails loudly without it. See Dockerfile.hip.
+ARG GPU_TARGETS=gfx1200
+
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     --mount=type=bind,source=docker/install-rocm.sh,target=/tmp/install-rocm.sh \
-    ROCM_VERSION="${ROCM_VERSION}" bash /tmp/install-rocm.sh
+    ROCM_VERSION="${ROCM_VERSION}" GPU_TARGETS="${GPU_TARGETS}" \
+    bash /tmp/install-rocm.sh
 
-ARG GPU_TARGETS=gfx1200
 ENV GPU_TARGETS=${GPU_TARGETS} \
     AMDGPU_TARGETS=${GPU_TARGETS} \
     ROCM_PATH=/opt/rocm \

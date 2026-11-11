@@ -1,5 +1,5 @@
 {
-  // The GPU variant, and THE DEVELOPMENT CONTAINER FOR THIS REPO: clang-20
+  // The GPU variant, and THE DEVELOPMENT CONTAINER FOR THIS REPO: clang-23
   // with libc++, CMake 4.2, Ninja, nvcc, and a uv venv for the Python tooling.
   // Nothing is prebuilt in /opt -- the project's only C++ dependency is
   // GoogleTest, which deps/CMakeLists.txt fetches and builds at configure

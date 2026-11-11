@@ -1,6 +1,6 @@
 {
   // The AMD/ROCm variant: ../../docker/Dockerfile.hip -- the
-  // same clang-20 + libc++ + CMake 4.2 + Ninja toolchain as the CUDA container,
+  // same clang-23 + libc++ + CMake 4.2 + Ninja toolchain as the CUDA container,
   // with ROCm instead of the CUDA toolkit and NO nvcc at all. A HIP build
   // needs no CUDA, which is the whole point of the split; see the header of
   // docker/Dockerfile.hip.

@@ -15,7 +15,7 @@
 # same file). find_tool, not `command -v`, resolves them: they live in .venv/bin
 # on the host and /opt/venv/bin in the image, and only the second is on PATH.
 # An image built before the wheel was locked falls back to the apt
-# clang-format-20 on PATH -- `devcontainer.sh rebuild` to get the pinned one.
+# clang-format-23 on PATH -- `devcontainer.sh rebuild` to get the pinned one.
 #
 # cmake-format is deliberately not here: cmake-lint (devtools/cmake-lint.sh)
 # covers CMake, and cmakelang's formatter is unmaintained. deps/ is never
