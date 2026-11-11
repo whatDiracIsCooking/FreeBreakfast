@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# LINKER_LAUNCHER of free_breakfast_rust_gemm_linkprobe: record the link
+# LINKER_LAUNCHER of free_breakfast_rust_s_overlap_linkprobe: record the link
 # command, then run it.
 #
 # Usage: record_link.sh <out-file> <linker> <args...>

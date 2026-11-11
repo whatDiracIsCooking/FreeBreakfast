@@ -1,53 +1,57 @@
-//! Safe Rust over free_breakfast's DeviceResources, its device buffers and an
-//! fp64 GEMM, through the C ABI in ffi/fb_gemm.h.
+//! Safe Rust over a GPU stream, device buffers and an fp64 GEMM, through
+//! WarpWraps' C ABI (the `wwr-sys` crate): no C++ of this tree's own in
+//! between, and nothing here names CUDA or HIP. The backend is whichever the
+//! linked `libwwr_capi_*.so` was built for.
 //!
-//! - [`Gpu`] owns one DeviceResources: a stream, its memory pool and a BLAS
-//!   handle. It is neither `Send` nor `Sync`, which is DeviceResources' own
-//!   rule: one driving thread at a time.
-//! - [`DeviceBuffer`] is `len` doubles on the device, borrowed from its `Gpu`
-//!   so it cannot outlive it, and freed on drop.
+//! - [`Gpu`] owns a stream on one device and a BLAS handle bound to it. It is
+//!   neither `Send` nor `Sync`: one driving thread at a time.
+//! - [`DeviceBuffer`] is `len` doubles on the device, allocated and freed in
+//!   stream order on its `Gpu`'s stream, which it borrows so it cannot
+//!   outlive it.
 //! - [`Matrix`] is a column-major `rows x cols` view of a buffer, and
 //!   [`gemm`] is `C = alpha op(A) op(B) + beta C` over three of them, shapes
 //!   checked before anything reaches the device.
 //!
-//! A failed GPU creation or allocation aborts the process, as it does
-//! everywhere in free_breakfast; every other failure is an [`Error`].
+//! Host <-> device copies go through pinned host memory and a BLAS `dcopy`
+//! on the stream, not `wwrMemcpyAsync`: the C ABI does not wrap that yet
+//! (its `wwrMemcpyKind` argument is a by-value enum wwr's generator has not
+//! registered; src/capi/README.md "Surface completeness"). Every failure is
+//! an [`Error`] naming the call that failed; nothing aborts.
 
-/// The raw C ABI, public so a crate binding a C ABI built on fb_gemm.h's
-/// handles (rust/s_overlap) can name them.
-pub mod ffi;
-
+use std::ffi::c_void;
 use std::fmt;
 use std::marker::PhantomData;
 use std::ptr;
 
+use wwr_sys::{
+    wwr_blas_handle, wwr_blas_operation, wwr_blas_pointer_mode, wwr_blas_status, wwr_status,
+    wwr_stream,
+};
+
 /// Why a call failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    /// The C side refused an argument: a null, a negative size, or a buffer
-    /// too small for its matrix.
+    /// A copy longer than the buffer it reads or writes.
     InvalidArgument,
-    /// The GPU runtime returned an error on a copy or a synchronize.
-    Gpu,
-    /// The BLAS call failed.
-    Blas,
-    /// The shapes passed to [`gemm`] do not line up; caught on the Rust side.
+    /// A GPU runtime call returned an error: which call, and its status.
+    Gpu(&'static str, wwr_status),
+    /// A BLAS call returned an error: which call, and its status.
+    Blas(&'static str, wwr_blas_status),
+    /// The shapes passed to [`gemm`] do not line up.
     Shape(String),
-    /// A free_breakfast routine refused or failed, with its message.
+    /// A free_breakfast routine refused or failed, with its message (for a
+    /// C ABI built beside this crate, such as rust/s_overlap's).
     Failed(String),
-    /// A status the C side does not document.
-    Unknown(i32),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::InvalidArgument => write!(f, "invalid argument"),
-            Error::Gpu => write!(f, "GPU runtime error"),
-            Error::Blas => write!(f, "BLAS error"),
+            Error::Gpu(call, status) => write!(f, "{call}: {status:?}"),
+            Error::Blas(call, status) => write!(f, "{call}: {status:?}"),
             Error::Shape(what) => write!(f, "shape mismatch: {what}"),
             Error::Failed(why) => write!(f, "{why}"),
-            Error::Unknown(code) => write!(f, "unknown status {code}"),
         }
     }
 }
@@ -56,57 +60,104 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// A C status as a [`Result`]; FB_FAILED carries fb_last_error()'s message.
-pub fn check(status: ffi::Status) -> Result<()> {
+fn rt(call: &'static str, status: wwr_status) -> Result<()> {
     match status {
-        ffi::FB_OK => Ok(()),
-        ffi::FB_INVALID_ARGUMENT => Err(Error::InvalidArgument),
-        ffi::FB_GPU_ERROR => Err(Error::Gpu),
-        ffi::FB_BLAS_ERROR => Err(Error::Blas),
-        ffi::FB_FAILED => {
-            // SAFETY: fb_last_error returns a NUL-terminated string that
-            // stays valid until this thread's next failing call.
-            let why = unsafe { std::ffi::CStr::from_ptr(ffi::fb_last_error()) };
-            Err(Error::Failed(why.to_string_lossy().into_owned()))
-        }
-        other => Err(Error::Unknown(other)),
+        wwr_status::WWR_STATUS_SUCCESS => Ok(()),
+        other => Err(Error::Gpu(call, other)),
     }
 }
 
-/// One device's DeviceResources. Dropping it frees the stream, pool and
-/// handle; every [`DeviceBuffer`] borrows it, so none can outlive it.
+fn blas(call: &'static str, status: wwr_blas_status) -> Result<()> {
+    match status {
+        wwr_blas_status::WWR_BLAS_STATUS_SUCCESS => Ok(()),
+        other => Err(Error::Blas(call, other)),
+    }
+}
+
+/// A stream on one device and a BLAS handle bound to it, with host pointer
+/// mode for alpha and beta. Dropping it waits for the stream, then frees
+/// both; every [`DeviceBuffer`] borrows it, so none can outlive it.
+///
+/// The device is made current on the creating thread, and not again: drive
+/// two `Gpu`s on different devices from one thread and allocations follow
+/// whichever was made last.
 pub struct Gpu {
-    raw: *mut ffi::Resources, // a raw pointer: !Send and !Sync, on purpose
+    device: i32,
+    stream: wwr_stream, // raw pointers: !Send and !Sync, on purpose
+    handle: wwr_blas_handle,
 }
 
 impl Gpu {
-    /// DeviceResources on device `dev_idx`.
+    /// A new stream and BLAS handle on device `dev_idx`.
     pub fn new(dev_idx: i32) -> Result<Self> {
-        let mut raw = ptr::null_mut();
-        // SAFETY: `raw` is a valid out-pointer; on FB_OK it holds a live handle.
-        check(unsafe { ffi::fb_resources_new(dev_idx, &mut raw) })?;
-        Ok(Gpu { raw })
+        // SAFETY: plain runtime calls; each out-pointer is a valid local, set
+        // only on success, and a partial Gpu is torn down below on failure.
+        unsafe {
+            rt("wwr_set_device", wwr_sys::wwr_set_device(dev_idx))?;
+            let mut stream = ptr::null_mut();
+            rt("wwr_stream_create", wwr_sys::wwr_stream_create(&mut stream))?;
+            let mut handle = ptr::null_mut();
+            if let Err(e) = blas("wwr_blas_create", wwr_sys::wwr_blas_create(&mut handle)) {
+                wwr_sys::wwr_stream_destroy(stream);
+                return Err(e);
+            }
+            let gpu = Gpu {
+                device: dev_idx,
+                stream,
+                handle,
+            };
+            blas(
+                "wwr_blas_set_stream",
+                wwr_sys::wwr_blas_set_stream(handle, stream),
+            )?;
+            blas(
+                "wwr_blas_set_pointer_mode",
+                wwr_sys::wwr_blas_set_pointer_mode(
+                    handle,
+                    wwr_blas_pointer_mode::WWR_BLAS_POINTER_MODE_HOST,
+                ),
+            )?;
+            Ok(gpu)
+        }
+    }
+
+    /// The device index this `Gpu` was made on.
+    pub fn device(&self) -> i32 {
+        self.device
+    }
+
+    /// The stream everything here is queued on, for a C ABI that must order
+    /// work against it. It stays owned by `self`.
+    pub fn stream(&self) -> wwr_stream {
+        self.stream
     }
 
     /// Block until everything queued on the stream has finished.
     pub fn sync(&self) -> Result<()> {
-        // SAFETY: `self.raw` is live for as long as `self` is.
-        check(unsafe { ffi::fb_resources_sync(self.raw) })
+        // SAFETY: the stream is live for as long as `self` is.
+        rt("wwr_stream_synchronize", unsafe {
+            wwr_sys::wwr_stream_synchronize(self.stream)
+        })
     }
 
-    /// `len` uninitialised doubles on this device.
+    /// `len` uninitialised doubles on this device, allocated in stream order.
     pub fn alloc(&self, len: usize) -> Result<DeviceBuffer<'_>> {
-        let mut raw = ptr::null_mut();
-        // SAFETY: `self.raw` is live; `raw` is a valid out-pointer.
-        check(unsafe { ffi::fb_buffer_new(self.raw, len, &mut raw) })?;
-        // SAFETY: `raw` was just allocated from this Gpu's handle.
-        Ok(unsafe { DeviceBuffer::from_raw(self, raw) })
-    }
-
-    /// The DeviceResources handle, for a C ABI built on fb_gemm.h's handles.
-    /// It stays owned by `self`.
-    pub fn as_raw(&self) -> *mut ffi::Resources {
-        self.raw
+        let mut raw: *mut c_void = ptr::null_mut();
+        if len != 0 {
+            let bytes = len
+                .checked_mul(size_of::<f64>())
+                .ok_or(Error::InvalidArgument)?;
+            // SAFETY: `raw` is a valid out-pointer; the stream is live.
+            rt("wwr_malloc_async", unsafe {
+                wwr_sys::wwr_malloc_async(&mut raw, bytes, self.stream)
+            })?;
+        }
+        Ok(DeviceBuffer {
+            gpu: self,
+            ptr: raw.cast(),
+            len,
+            _not_send: PhantomData,
+        })
     }
 
     /// A device copy of `host`.
@@ -115,63 +166,137 @@ impl Gpu {
         buf.copy_from(host)?;
         Ok(buf)
     }
+
+    /// `y[..n] = x[..n]` on the stream, either side device memory or a
+    /// pinned buffer's device view.
+    fn dcopy(&self, n: usize, x: *const f64, y: *mut f64) -> Result<()> {
+        let n = i64::try_from(n).map_err(|_| Error::InvalidArgument)?;
+        // SAFETY: the caller passes n valid doubles on each side.
+        blas("wwr_blas_dcopy_64", unsafe {
+            wwr_sys::wwr_blas_dcopy_64(self.handle, n, x, 1, y, 1)
+        })
+    }
 }
 
 impl Drop for Gpu {
     fn drop(&mut self) {
-        // SAFETY: the handle is live and no buffer still borrows it.
-        unsafe { ffi::fb_resources_free(self.raw) }
+        // SAFETY: both are live and no buffer still borrows them. Errors on
+        // teardown have nowhere to go.
+        unsafe {
+            wwr_sys::wwr_stream_synchronize(self.stream);
+            wwr_sys::wwr_blas_destroy(self.handle);
+            wwr_sys::wwr_stream_destroy(self.stream);
+        }
     }
 }
 
-/// `len` doubles on the device, from its [`Gpu`]'s pool.
+/// `len` doubles of pinned host memory, and the device's view of them: the
+/// staging area of one host <-> device copy.
+struct Pinned {
+    host: *mut f64,
+    device: *mut f64,
+}
+
+impl Pinned {
+    fn new(len: usize) -> Result<Self> {
+        let bytes = len
+            .checked_mul(size_of::<f64>())
+            .ok_or(Error::InvalidArgument)?;
+        let mut host: *mut c_void = ptr::null_mut();
+        // SAFETY: valid out-pointers; flags 0 is the default on both
+        // backends, and the allocation is freed on drop once it exists.
+        unsafe {
+            rt(
+                "wwr_host_alloc",
+                wwr_sys::wwr_host_alloc(&mut host, bytes, 0),
+            )?;
+            let mut pinned = Pinned {
+                host: host.cast(),
+                device: ptr::null_mut(),
+            };
+            let mut device: *mut c_void = ptr::null_mut();
+            rt(
+                "wwr_host_get_device_pointer",
+                wwr_sys::wwr_host_get_device_pointer(&mut device, host, 0),
+            )?;
+            pinned.device = device.cast();
+            Ok(pinned)
+        }
+    }
+}
+
+impl Drop for Pinned {
+    fn drop(&mut self) {
+        // SAFETY: allocated by wwr_host_alloc; any copy using it was waited for.
+        unsafe {
+            wwr_sys::wwr_free_host(self.host.cast());
+        }
+    }
+}
+
+/// `len` doubles on the device, freed in stream order on drop.
 pub struct DeviceBuffer<'g> {
     gpu: &'g Gpu,
-    raw: *mut ffi::Buffer,
+    ptr: *mut f64,
+    len: usize,
     _not_send: PhantomData<*mut ()>,
 }
 
-impl<'g> DeviceBuffer<'g> {
-    /// Take ownership of a buffer a C ABI made on `gpu`.
-    ///
-    /// # Safety
-    /// `raw` must be a live fb_buffer allocated from `gpu`'s handle, owned by
-    /// nothing else: it is freed when the result drops.
-    pub unsafe fn from_raw(gpu: &'g Gpu, raw: *mut ffi::Buffer) -> Self {
-        DeviceBuffer {
-            gpu,
-            raw,
-            _not_send: PhantomData,
-        }
-    }
-
+impl DeviceBuffer<'_> {
     pub fn len(&self) -> usize {
-        // SAFETY: `self.raw` is live for as long as `self` is.
-        unsafe { ffi::fb_buffer_len(self.raw) }
+        self.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.len == 0
+    }
+
+    /// The device address, for a C ABI that reads the buffer. Null when empty.
+    pub fn as_ptr(&self) -> *const f64 {
+        self.ptr
+    }
+
+    /// The device address, for a C ABI that writes the buffer. Work queued on
+    /// another stream must first wait for this buffer's [`Gpu::sync`].
+    pub fn as_mut_ptr(&mut self) -> *mut f64 {
+        self.ptr
     }
 
     /// Copy `host` into the buffer's start, and wait for it.
     pub fn copy_from(&mut self, host: &[f64]) -> Result<()> {
-        // SAFETY: both handles are live; `host` is valid for host.len() reads,
-        // and the C side checks host.len() against the buffer's length.
-        check(unsafe { ffi::fb_buffer_upload(self.gpu.raw, self.raw, host.as_ptr(), host.len()) })
+        if host.len() > self.len {
+            return Err(Error::InvalidArgument);
+        }
+        if host.is_empty() {
+            return Ok(());
+        }
+        let staging = Pinned::new(host.len())?;
+        // SAFETY: the staging area holds host.len() doubles and is not yet in
+        // use on the device.
+        unsafe { ptr::copy_nonoverlapping(host.as_ptr(), staging.host, host.len()) };
+        self.gpu.dcopy(host.len(), staging.device, self.ptr)?;
+        self.gpu.sync()
     }
 
     /// Copy the buffer's first `host.len()` doubles into `host`, and wait.
     pub fn copy_to(&self, host: &mut [f64]) -> Result<()> {
-        // SAFETY: as copy_from, for host.len() writes.
-        check(unsafe {
-            ffi::fb_buffer_download(self.gpu.raw, self.raw, host.as_mut_ptr(), host.len())
-        })
+        if host.len() > self.len {
+            return Err(Error::InvalidArgument);
+        }
+        if host.is_empty() {
+            return Ok(());
+        }
+        let staging = Pinned::new(host.len())?;
+        self.gpu.dcopy(host.len(), self.ptr, staging.device)?;
+        self.gpu.sync()?;
+        // SAFETY: the copy into the staging area has finished.
+        unsafe { ptr::copy_nonoverlapping(staging.host, host.as_mut_ptr(), host.len()) };
+        Ok(())
     }
 
     /// The whole buffer, on the host.
     pub fn to_vec(&self) -> Result<Vec<f64>> {
-        let mut host = vec![0.0; self.len()];
+        let mut host = vec![0.0; self.len];
         self.copy_to(&mut host)?;
         Ok(host)
     }
@@ -179,8 +304,13 @@ impl<'g> DeviceBuffer<'g> {
 
 impl Drop for DeviceBuffer<'_> {
     fn drop(&mut self) {
-        // SAFETY: the handle is live; its Gpu outlives it by the borrow.
-        unsafe { ffi::fb_buffer_free(self.raw) }
+        if !self.ptr.is_null() {
+            // SAFETY: allocated on this stream, which outlives the buffer by
+            // the borrow; the free is ordered after the work queued on it.
+            unsafe {
+                wwr_sys::wwr_free_async(self.ptr.cast(), self.gpu.stream);
+            }
+        }
     }
 }
 
@@ -247,10 +377,10 @@ pub enum Op {
 }
 
 impl Op {
-    fn raw(self) -> ffi::Op {
+    fn raw(self) -> wwr_blas_operation {
         match self {
-            Op::N => ffi::FB_OP_N,
-            Op::T => ffi::FB_OP_T,
+            Op::N => wwr_blas_operation::WWR_BLAS_OP_N,
+            Op::T => wwr_blas_operation::WWR_BLAS_OP_T,
         }
     }
 
@@ -303,23 +433,24 @@ pub fn gemm(
     }
     // BLAS wants a leading dimension of at least 1, even for an empty matrix.
     let ld = |rows: usize| dim(rows.max(1), "leading dimension");
-    // SAFETY: every handle is live and `gpu`'s; the shapes are checked above,
-    // and the C side checks each buffer holds its matrix.
-    check(unsafe {
-        ffi::fb_dgemm(
-            gpu.raw,
+    // SAFETY: the handle is live and `gpu`'s; each Matrix holds exactly
+    // rows * cols doubles with leading dimension rows, and the shapes are
+    // checked above. alpha and beta are host scalars (host pointer mode).
+    blas("wwr_blas_dgemm", unsafe {
+        wwr_sys::wwr_blas_dgemm(
+            gpu.handle,
             op_a.raw(),
             op_b.raw(),
             dim(m, "m")?,
             dim(n, "n")?,
             dim(k, "k")?,
-            alpha,
-            a.data.raw,
+            &alpha,
+            a.data.ptr,
             ld(a.rows)?,
-            b.data.raw,
+            b.data.ptr,
             ld(b.rows)?,
-            beta,
-            c.data.raw,
+            &beta,
+            c.data.ptr,
             ld(c.rows)?,
         )
     })
@@ -382,11 +513,29 @@ mod tests {
     }
 
     #[test]
+    fn copy_rejects_overlong_host() {
+        let gpu = Gpu::new(0).unwrap();
+        let mut buf = gpu.alloc(2).unwrap();
+        assert_eq!(buf.copy_from(&[0.0; 3]), Err(Error::InvalidArgument));
+        assert_eq!(buf.copy_to(&mut [0.0; 3]), Err(Error::InvalidArgument));
+    }
+
+    #[test]
     fn buffer_round_trips() {
         let gpu = Gpu::new(0).unwrap();
         let host: Vec<f64> = (0..1000).map(f64::from).collect();
         let buf = gpu.upload(&host).unwrap();
         assert_eq!(buf.len(), host.len());
         assert_eq!(buf.to_vec().unwrap(), host);
+    }
+
+    #[test]
+    fn empty_matrix_is_fine() {
+        let gpu = Gpu::new(0).unwrap();
+        let a = Matrix::zeros(&gpu, 0, 3).unwrap();
+        let b = Matrix::zeros(&gpu, 3, 0).unwrap();
+        let mut c = Matrix::zeros(&gpu, 0, 0).unwrap();
+        gemm(&gpu, 1.0, Op::N, &a, Op::N, &b, 0.0, &mut c).unwrap();
+        assert!(c.to_vec().unwrap().is_empty());
     }
 }

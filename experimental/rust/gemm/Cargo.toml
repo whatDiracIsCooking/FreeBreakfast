@@ -3,7 +3,7 @@ name = "fb-gemm"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "fp64 GEMM on free_breakfast's DeviceResources, from Rust, through a C ABI"
+description = "fp64 GEMM on the GPU from Rust, over WarpWraps' C ABI (wwr-sys)"
 
 [lib]
 name = "fb_gemm"
@@ -12,3 +12,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "gemm-demo"
 path = "src/main.rs"
+
+[dependencies]
+# Only the two surfaces used: the binary then NEEDs libwwr_capi_runtime_api.so
+# and libwwr_capi_blas.so (and cuBLAS / hipBLAS behind it), nothing else.
+wwr-sys = { path = "../../../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [
+    "runtime_api",
+    "blas",
+] }

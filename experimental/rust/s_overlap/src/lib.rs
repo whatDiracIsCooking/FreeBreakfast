@@ -5,25 +5,72 @@
 //! against.
 //!
 //! S comes back as an [`fb_gemm::Matrix`] on the caller's [`fb_gemm::Gpu`],
-//! so it feeds [`fb_gemm::gemm`] like any other matrix.
+//! so it feeds [`fb_gemm::gemm`] like any other matrix. The steps run on
+//! DeviceResources of the C ABI's own; S is then copied, device to device,
+//! into a buffer the `Gpu` allocated.
 
 pub mod npy;
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::path::Path;
 use std::ptr;
 
-use fb_gemm::ffi::{Buffer, Resources, Status};
-use fb_gemm::{DeviceBuffer, Error, Gpu, Matrix, Result, check};
+use fb_gemm::{Error, Gpu, Matrix, Result};
 
-unsafe extern "C" {
-    fn fb_overlap(
-        res: *mut Resources,
-        xyz_path: *const std::ffi::c_char,
-        basis: *const std::ffi::c_char,
-        out: *mut *mut Buffer,
-        nao: *mut usize,
-    ) -> Status;
+/// fb_overlap.h's C ABI, declared by hand: keep it in step with the header.
+mod ffi {
+    use std::ffi::c_char;
+
+    pub type Status = i32;
+    pub const FB_OK: Status = 0;
+    pub const FB_INVALID_ARGUMENT: Status = 1;
+    pub const FB_GPU_ERROR: Status = 2;
+    pub const FB_FAILED: Status = 3;
+
+    /// Opaque: only ever behind a pointer.
+    #[repr(C)]
+    pub struct Overlap {
+        _opaque: [u8; 0],
+    }
+
+    unsafe extern "C" {
+        pub fn fb_last_error() -> *const c_char;
+        pub fn fb_overlap_new(
+            dev_idx: i32,
+            xyz_path: *const c_char,
+            basis: *const c_char,
+            out: *mut *mut Overlap,
+            nao: *mut usize,
+        ) -> Status;
+        pub fn fb_overlap_copy(s: *const Overlap, dst: *mut f64, len: usize) -> Status;
+        pub fn fb_overlap_free(s: *mut Overlap);
+    }
+}
+
+/// A C status as a [`Result`]; FB_FAILED carries fb_last_error()'s message.
+fn check(call: &str, status: ffi::Status) -> Result<()> {
+    match status {
+        ffi::FB_OK => Ok(()),
+        ffi::FB_INVALID_ARGUMENT => Err(Error::InvalidArgument),
+        ffi::FB_GPU_ERROR => Err(Error::Failed(format!("{call}: GPU runtime error"))),
+        ffi::FB_FAILED => {
+            // SAFETY: fb_last_error returns a NUL-terminated string that
+            // stays valid until this thread's next failing call.
+            let why = unsafe { CStr::from_ptr(ffi::fb_last_error()) };
+            Err(Error::Failed(why.to_string_lossy().into_owned()))
+        }
+        other => Err(Error::Failed(format!("{call}: unknown status {other}"))),
+    }
+}
+
+/// Frees an fb_overlap on every way out of [`overlap`].
+struct Owned(*mut ffi::Overlap);
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        // SAFETY: a live handle from fb_overlap_new, freed once.
+        unsafe { ffi::fb_overlap_free(self.0) }
+    }
 }
 
 /// S of the molecule in XYZ file `xyz` (Angstrom) in `basis` (a carried name
@@ -38,20 +85,28 @@ pub fn overlap<'g>(gpu: &'g Gpu, xyz: &Path, basis: &str) -> Result<Matrix<'g>> 
     let (xyz, basis) = (c_string(xyz)?, c_string(basis)?);
     let mut raw = ptr::null_mut();
     let mut nao = 0usize;
-    // SAFETY: the handle is live; both strings are NUL-terminated and outlive
-    // the call; `raw` and `nao` are valid out-pointers, set only on FB_OK.
-    check(unsafe {
-        fb_overlap(
-            gpu.as_raw(),
+    // SAFETY: both strings are NUL-terminated and outlive the call; `raw` and
+    // `nao` are valid out-pointers, set only on FB_OK.
+    check("fb_overlap_new", unsafe {
+        ffi::fb_overlap_new(
+            gpu.device(),
             xyz.as_ptr(),
             basis.as_ptr(),
             &mut raw,
             &mut nao,
         )
     })?;
-    // SAFETY: on FB_OK `raw` is a fresh buffer from gpu's handle, owned by us.
-    let s = unsafe { DeviceBuffer::from_raw(gpu, raw) };
-    Matrix::from_buffer(nao, nao, s)
+    let s = Owned(raw);
+    let mut buf = gpu.alloc(nao * nao)?;
+    // The allocation is stream-ordered on gpu's stream and the copy runs on
+    // the C ABI's own, so wait for the allocation first.
+    gpu.sync()?;
+    // SAFETY: `buf` is nao * nao doubles of device memory on the same device,
+    // with nothing queued against it.
+    check("fb_overlap_copy", unsafe {
+        ffi::fb_overlap_copy(s.0, buf.as_mut_ptr(), buf.len())
+    })?;
+    Matrix::from_buffer(nao, nao, buf)
 }
 
 #[cfg(test)]

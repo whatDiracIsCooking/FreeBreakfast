@@ -53,12 +53,10 @@ add_subdirectory(split_gemm)
 # one-call build. Benchmark only, like blas_lt.
 add_subdirectory(gemm_host_offload)
 
-# fp64 gemm driven from Rust: a C ABI over DeviceResources and device buffers
-# as a shared library, and the cargo crate beside it that binds it. Cargo is
-# not driven from here; the README has the two-step build.
-add_subdirectory(rust/gemm)
+# rust/gemm (fp64 gemm from Rust) has no CMake of its own: it binds WarpWraps'
+# C ABI (wwr.capi.*, built with deps/) through the wwr-sys crate.
 
 # The spherical AO overlap S of a molecule in a basis, from Rust: a C ABI over
-# the pipeline's setup and overlap steps, on rust/gemm's handles, so it comes
-# after it. Checked against PySCF; cargo is run by hand, as for rust/gemm.
+# the pipeline's setup and overlap steps, handing S to rust/gemm's buffers.
+# Checked against PySCF; cargo is run by hand, not by CMake.
 add_subdirectory(rust/s_overlap)
