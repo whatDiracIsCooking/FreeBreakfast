@@ -335,15 +335,29 @@ std::unique_ptr<Reference> make_reference(const fb::json &doc, const std::string
   return ref;
 }
 
-// One reference per case for the whole binary: the SA-CASSCF runs once.
+// The references the suite has built, one per case. Each holds a
+// NodeResources of its own, whose pool keeps up to its release threshold
+// cached beside the workspaces and the Calculation's products, so the
+// suite drops them at its end (#1248): kept for the whole binary, they
+// filled the card under the GPU batch's one process.
+std::map<std::string, std::unique_ptr<Reference>, std::less<>> &references() {
+  static std::map<std::string, std::unique_ptr<Reference>, std::less<>> kept;
+  return kept;
+}
+
+// One reference per case for the suite: the SA-CASSCF runs once.
 const Reference &reference(const std::string &name) {
-  static std::map<std::string, std::unique_ptr<Reference>, std::less<>> cache;
-  auto &slot = cache[name];
+  auto &slot = references()[name];
   if (!slot) {
     slot = make_reference(fixture(name), name);
   }
   return *slot;
 }
+
+class HessianDfQdNevpt2Crossing : public ::testing::Test {
+protected:
+  static void TearDownTestSuite() { references().clear(); }
+};
 
 // The fixture's entry @p kind ("pairs", "seams") of @p scheme for (p, q).
 const fb::json *entry(const fb::json &doc, const std::string_view scheme,
@@ -430,25 +444,25 @@ void expect_pair_sum(const std::string &name, const bool pc, const std::int32_t 
   }
 }
 
-TEST(HessianDfQdNevpt2Crossing, ScPairSumAtTheMeci) {
+TEST_F(HessianDfQdNevpt2Crossing, ScPairSumAtTheMeci) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_pair_sum("ethylene_ccpvdz_sa3_sc_meci", false, 0, 1, true);
 }
 
-TEST(HessianDfQdNevpt2Crossing, PcPairSumAtTheMeci) {
+TEST_F(HessianDfQdNevpt2Crossing, PcPairSumAtTheMeci) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_pair_sum("ethylene_ccpvdz_sa3_pc_meci", true, 0, 1, true);
 }
 
-TEST(HessianDfQdNevpt2Crossing, ScPairSumAwayFromACrossing) {
+TEST_F(HessianDfQdNevpt2Crossing, ScPairSumAwayFromACrossing) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_pair_sum("h2co_skew_ccpvdz_sa3", false, 0, 1, false);
 }
 
-TEST(HessianDfQdNevpt2Crossing, PcPairSumAwayFromACrossing) {
+TEST_F(HessianDfQdNevpt2Crossing, PcPairSumAwayFromACrossing) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_pair_sum("h2co_skew_ccpvdz_sa3", true, 0, 1, false);
@@ -458,7 +472,7 @@ TEST(HessianDfQdNevpt2Crossing, PcPairSumAwayFromACrossing) {
 // pair (0, 1), an ensemble with no outside state, along its three totally
 // symmetric vibrations, against that block of its PC ladders (#1207's
 // representative, until #1243's smaller case).
-TEST(HessianDfQdNevpt2Crossing, PcPairSumOfTheA1B2CaseAlongTheA1Vibrations) {
+TEST_F(HessianDfQdNevpt2Crossing, PcPairSumOfTheA1B2CaseAlongTheA1Vibrations) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   const std::string name = "h2nb_sto3g_sa2_hessian";
@@ -479,7 +493,7 @@ TEST(HessianDfQdNevpt2Crossing, PcPairSumOfTheA1B2CaseAlongTheA1Vibrations) {
 
 // The smallest C1 case (#1243), h4_631g_sa2 (two H2 units, 6-31G, CAS(2,2),
 // SA2 at equal weights), pair (0, 1) over every coordinate, SC and PC.
-TEST(HessianDfQdNevpt2Crossing, PairSumsOfTheH4Case) {
+TEST_F(HessianDfQdNevpt2Crossing, PairSumsOfTheH4Case) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_pair_sum("h4_631g_sa2", false, 0, 1, false);
@@ -488,7 +502,7 @@ TEST(HessianDfQdNevpt2Crossing, PairSumsOfTheH4Case) {
 
 // The family's representative (#1243): h4_631g_sa2's PC pair (0, 1) over
 // the Cartesian coordinates kH4Block, against that block of its ladder.
-TEST(HessianDfQdNevpt2Crossing, PcPairSumOfTheH4CaseOnABlock) {
+TEST_F(HessianDfQdNevpt2Crossing, PcPairSumOfTheH4CaseOnABlock) {
   FBF_REQUIRE_GPU();
   FBF_FAMILY_REPRESENTATIVE();
   const fb::json &doc = fixture("h4_631g_sa2");
@@ -641,13 +655,13 @@ void expect_seam(const std::string &name, const bool pc) {
   EXPECT_GT(ours[5] * theirs.at(5).get<double>() * phase[1] * phase[2], 0.0) << label;
 }
 
-TEST(HessianDfQdNevpt2Crossing, ScSeamTwoByTwo) {
+TEST_F(HessianDfQdNevpt2Crossing, ScSeamTwoByTwo) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_seam("ethylene_ccpvdz_sa3_sc_meci", false);
 }
 
-TEST(HessianDfQdNevpt2Crossing, PcSeamTwoByTwo) {
+TEST_F(HessianDfQdNevpt2Crossing, PcSeamTwoByTwo) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_seam("ethylene_ccpvdz_sa3_pc_meci", true);
@@ -658,7 +672,7 @@ TEST(HessianDfQdNevpt2Crossing, PcSeamTwoByTwo) {
 // and off it (sigma v_i v_j = H_ij), rank one about lambda, so two states
 // are exactly degenerate and the third apart; the crossing then asks for a
 // pair of the third and one of the two.
-TEST(HessianDfQdNevpt2Crossing, RefusesBeforeAnythingRuns) {
+TEST_F(HessianDfQdNevpt2Crossing, RefusesBeforeAnythingRuns) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   const std::string name = "ethylene_ccpvdz_sa3_sc_meci";
