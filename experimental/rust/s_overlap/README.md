@@ -8,8 +8,9 @@ PySCF at 1e-12 relative to max |S|, and agrees to about 1e-15.
 
 | Layer | File | What |
 |---|---|---|
-| C ABI | `ffi/fb_overlap.h`, `ffi/fb_overlap.cpp` | `fb_overlap(res, xyz, basis, &buf, &nao)`: the Molecule, BasisSet, SphericalTransform, PrimitivePairClasses and Overlap steps, the same chain a TOML run walks. Built on `../gemm`'s handles (`fb_handles.hpp`), so S comes back as an ordinary `fb_buffer`. A step's refusal (missing file, unknown basis, element the basis lacks) is `FB_FAILED`, with its message in `fb_last_error()` |
-| Rust | `src/lib.rs` | `overlap(&gpu, xyz, basis) -> Result<Matrix>`: S as an `fb_gemm::Matrix` on the caller's `Gpu`, so it feeds `fb_gemm::gemm` directly. Declares `fb_overlap` by hand; keep it in step with the header |
+| C ABI | `ffi/fb_overlap.h`, `ffi/fb_overlap.cpp` | `fb_overlap_new(dev, xyz, basis, &s, &nao)`: the Molecule, BasisSet, SphericalTransform, PrimitivePairClasses and Overlap steps, the same chain a TOML run walks, on a `DeviceResources` the handle owns. `fb_overlap_copy(s, dst, nao * nao)` copies S, device to device, into memory the caller owns; `fb_overlap_free(s)` releases both. A step's refusal (missing file, unknown basis, element the basis lacks) is `FB_FAILED`, with its message in `fb_last_error()` |
+| Link | `ffi/linkprobe.cpp`, `ffi/record_link.sh`, `link_record.rs`, `build.rs` | The C ABI is a static archive (see "How it links"); CMake records its link line for `build.rs` to replay |
+| Rust | `src/lib.rs` | `overlap(&gpu, xyz, basis) -> Result<Matrix>`: S copied into an `fb_gemm::DeviceBuffer` on the caller's `Gpu`, so it comes back as an `fb_gemm::Matrix` and feeds `fb_gemm::gemm` directly. Declares the C ABI by hand; keep it in step with the header |
 | | `src/npy.rs` | Just enough .npy to read a 2-D `<f8` array, C or Fortran order, into column-major |
 | Demo | `src/main.rs` | `overlap-demo XYZ BASIS [REFERENCE.npy]`: size, symmetry and diagonal of S; with a reference, the largest difference from it, failing past the bar |
 | Reference | `data/reference.py` | PySCF's S for the same molecule and basis |
@@ -49,10 +50,45 @@ diag(S) as 1, or compares AO-basis matrices to PySCF's element by element, does.
 | H2O | cc-pVDZ | 24 | 4.4e-16 | 1.0e-6 |
 | CO | cc-pVTZ | 60 | 1.1e-15 | 1.3e-6 |
 
+## Two runtimes, one device
+
+`../gemm` reaches the GPU through WarpWraps' C ABI (`libwwr_capi_*.so`). This
+crate's C ABI reaches it through free_breakfast's modules, linked statically. So
+one process holds two separate copies of wwr, each with its own stream. The
+pipeline steps run on a `DeviceResources` that the `fb_overlap` handle owns, not
+on the `Gpu`'s stream.
+
+The two meet only at the copy. `overlap` allocates the destination on the
+`Gpu`'s stream and waits for that stream. `fb_overlap_copy` then copies S on its
+own stream and waits too, so nothing is queued on both streams at once. Both
+sides use the device's primary context, so a device address from one is valid
+in the other.
+
+## How it links: a recorded link line, not a shared library
+
+The C ABI would most simply be a `.so`, but `/opt/spdlog/lib/libspdlog.a` is not
+built `-fPIC` (its thread-local is local-exec, `R_X86_64_TPOFF32`), so no shared
+object can contain it. So the C ABI is a **static** archive, and the Rust binary
+links it together with everything behind it.
+
+Only CMake knows that set: the core, wwr and pipeline module archives, spdlog,
+taskflow, the vendor runtime and BLAS, and libc++.
+`free_breakfast_rust_s_overlap_linkprobe` is a do-nothing C++ executable that
+links the archive through `ffi/record_link.sh`, its `CXX_LINKER_LAUNCHER`. That
+script writes the command to `fb_overlap.link` in the build directory, then runs
+it. `build.rs` reads that file back (`link_record.rs`) and passes every argument
+except the probe's own to rustc, plus `-lc++`, because rustc links with
+`-nodefaultlibs`. The recorded rpath comes along with it. `build.rs` adds one
+more rpath for the capi libraries that `fb-gemm` links, since that crate's own
+rpath reaches only its own binaries.
+
+Rebuilding spdlog with `-fPIC` in `docker/Dockerfile.base` would allow a plain
+`.so`, but that changes the image for every build.
+
 ## Build and run
 
-As for `../gemm` (whose README has the Rust toolchain note and the link
-mechanics), one CMake target builds both C ABIs and both link records:
+One CMake target builds this C ABI, its link record and the WarpWraps capi
+libraries `../gemm` links:
 
 ```bash
 cmake --preset experimental

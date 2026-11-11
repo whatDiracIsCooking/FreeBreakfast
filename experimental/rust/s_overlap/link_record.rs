@@ -1,12 +1,10 @@
-// Replay a link line CMake recorded for a C ABI, into rustc's link. Shared by
-// the crates under experimental/rust/: each build.rs `include!`s this file and
-// calls `replay`. (A build-dependency crate would be the cargo way; one file is
-// less machinery for two callers.)
+// Replay a link line CMake recorded for a C ABI, into rustc's link: build.rs
+// `include!`s this file and calls `replay`.
 //
-// A C ABI here is a static archive over a stack of others (the core, wwr and
+// The C ABI is a static archive over a stack of others (the core, wwr and
 // pipeline module libraries, spdlog, taskflow) plus the vendor runtime and
-// BLAS and libc++, and only CMake knows that whole set. Each has a probe
-// executable that links the archive through gemm/ffi/record_link.sh, which
+// BLAS and libc++, and only CMake knows that whole set. A probe
+// executable links the archive through ffi/record_link.sh, which
 // writes the command to a `.link` file. `replay` reads it and hands every
 // argument but the probe's own (its object, its output, its dependency file and
 // the compile-only flags) to rustc. The recorded rpath comes with it, so

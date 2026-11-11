@@ -116,7 +116,7 @@ def test_only_is_checked() -> None:
         # experimental/ and its tests are outside the smoke's preset, so their
         # C++ fires nothing; the root line that adds them still does, and so
         # does anything outside them pushed alongside.
-        (["experimental/rust/gemm/ffi/fb_gemm.cpp"], (False, False)),
+        (["experimental/rust/s_overlap/ffi/fb_overlap.cpp"], (False, False)),
         (["experimental/CMakeLists.txt"], (False, False)),
         (["test/experimental/sort.cpp"], (False, False)),
         (["experimental/x/CMakeLists.txt", "src/a.cpp"], (True, False)),
