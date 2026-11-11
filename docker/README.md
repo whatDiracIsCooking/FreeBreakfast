@@ -402,6 +402,21 @@ Run `pdflatex` twice so the cross-references resolve. `devtools/doctor.sh`
 lists `pdflatex` and `pdftotext` as optional tools: they are missing on a bare
 host, and that is not an error.
 
+## Rust
+
+`Dockerfile.base` installs a stable Rust toolchain, pinned by `RUST_VERSION`,
+with `rustfmt`, `clippy`, `rust-src` and `rust-analyzer`. The C++ build does
+not use it. A rustup run by hand inside a container installs into `~/.cargo`
+and `~/.rustup`, which sit in the writable layer, so the next
+`devcontainer.sh rebuild` deletes them.
+
+It lives in `/opt/rust` (`RUSTUP_HOME=/opt/rust/rustup`,
+`CARGO_HOME=/opt/rust/cargo`, whose `bin` is on `PATH`) rather than a home
+directory. The tree is owned by uid 1000, so `rustup component add` and
+`cargo install` work as the container user. Anything they add is still in
+the writable layer: put a component you need every time in the Dockerfile.
+`devtools/doctor.sh` lists `cargo` as an optional tool.
+
 ## Requirements
 
 - Docker with BuildKit support
