@@ -13,7 +13,8 @@
 #
 # Everything the build needs EXCEPT a GPU SDK: clang-20 with libc++, CMake 4.2,
 # Ninja, sccache, the three prebuilt C++ dependencies in /opt, and a uv-managed
-# venv for the Python tooling. Useful on its own to check the toolchain half in
+# venv for the Python tooling -- plus a Rust toolchain in /opt/rust, which the
+# build does not use. Useful on its own to check the toolchain half in
 # isolation, and the shared parent of `cuda` and `hip` so the two cannot drift
 # apart.
 #
@@ -77,6 +78,8 @@ ARG NINJA_VERSION=1.13.1
 # measured to cache a module-interface compile (two outputs, one invocation),
 # which is the only reason this image carries a compiler cache at all.
 ARG SCCACHE_VERSION=0.18.0
+# Pinned like the C++ toolchain, so a rebuild cannot float to a new compiler.
+ARG RUST_VERSION=1.99.1
 
 # ============================================================================
 # Stage 1: base-system -- OS packages every later stage shares
@@ -259,6 +262,43 @@ RUN git clone --depth 1 --branch v3.4.0 https://github.com/marzer/tomlplusplus.g
     test -f /opt/tomlplusplus/include/toml++/toml.hpp
 
 # ============================================================================
+# Stage 4c: rust -- a pinned stable toolchain under /opt/rust
+# ============================================================================
+# Not used by the build: it is here for tooling written in Rust. Hand-running
+# rustup inside the container put it in ~/.cargo and ~/.rustup, which live in
+# the writable layer and a `devcontainer.sh rebuild` wipes -- the same reason
+# the TeX tools moved in here (docker/README.md "Rust").
+#
+# RUSTUP_HOME and CARGO_HOME are /opt paths, not $HOME, for the reason
+# UV_PYTHON_INSTALL_DIR is below: a toolchain installed into the build user's
+# home is unreachable for uid 1000. The tree is chowned to 1000 so `cargo
+# install` and `rustup component add` work as the container user.
+FROM base-system AS rust
+
+ARG RUST_VERSION
+ARG TARGETARCH
+
+ENV RUSTUP_HOME=/opt/rust/rustup \
+    CARGO_HOME=/opt/rust/cargo
+
+RUN set -e; \
+    case "$TARGETARCH" in \
+      amd64) rust_arch=x86_64-unknown-linux-gnu ;; \
+      arm64) rust_arch=aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported TARGETARCH: '$TARGETARCH'" >&2; exit 1 ;; \
+    esac; \
+    wget -q -O /tmp/rustup-init \
+      "https://static.rust-lang.org/rustup/dist/${rust_arch}/rustup-init"; \
+    chmod +x /tmp/rustup-init; \
+    /tmp/rustup-init -y --no-modify-path --profile minimal \
+      --default-toolchain "${RUST_VERSION}" \
+      --component rustfmt,clippy,rust-src,rust-analyzer; \
+    rm /tmp/rustup-init; \
+    "${CARGO_HOME}/bin/rustc" --version | grep -q "${RUST_VERSION}"; \
+    "${CARGO_HOME}/bin/cargo" --version; \
+    chown -R 1000:1000 /opt/rust
+
+# ============================================================================
 # Stage 5: base -- the complete, vendor-neutral toolchain
 # ============================================================================
 # The published stage of this file, and what Dockerfile.{cuda,hip} take as
@@ -292,6 +332,7 @@ COPY --link --from=downloads /downloads/sccache /usr/local/bin/sccache
 COPY --link --from=deps /opt/spdlog /opt/spdlog
 COPY --link --from=deps /opt/taskflow /opt/taskflow
 COPY --link --from=deps /opt/tomlplusplus /opt/tomlplusplus
+COPY --link --from=rust /opt/rust /opt/rust
 # CMake installs to share/cmake-<MAJOR>.<MINOR>, not -<MAJOR>.<MINOR>.<PATCH>.
 COPY --link --from=build-tools /usr/local/share/cmake-${CMAKE_MAJOR_MINOR} /usr/local/share/cmake-${CMAKE_MAJOR_MINOR}
 
@@ -354,7 +395,9 @@ RUN install -d -o 1000 -g 1000 \
 # directory rather than docker's storage, so it is not what builder.gc prunes.
 ENV SCCACHE_DIR=/home/ubuntu/.sccache \
     SCCACHE_CACHE_SIZE=20G \
-    PATH=/opt/venv/bin:/usr/local/bin:${PATH}
+    RUSTUP_HOME=/opt/rust/rustup \
+    CARGO_HOME=/opt/rust/cargo \
+    PATH=/opt/venv/bin:/opt/rust/cargo/bin:/usr/local/bin:${PATH}
 
 WORKDIR /workspace
 
@@ -375,6 +418,7 @@ USER ubuntu
 # import something, and run two entry points through the venv's shebang.
 RUN python3 -c "import json, sys; print(sys.version.split()[0], sys.executable)" && \
     pre-commit --version && \
-    pytest --version
+    pytest --version && \
+    cargo --version && cargo clippy --version && rustfmt --version
 
 CMD ["/bin/bash"]
