@@ -150,6 +150,7 @@ test/pytest/          Python tests over the built binaries
 bench/                Wall-clock benchmarks (opt-in, never a ctest entry)
 experimental/         Code that does not build by default
 docs/style.md         The coding style. Read it before writing C++
+docs/resources.md     The resource contract a feature answers: compute, memory, enforcement, sharing, fork/join
 docker/
   Dockerfile.base       Vendor-neutral toolchain + the three /opt deps
   Dockerfile.cuda       base + CUDA. The default backend
