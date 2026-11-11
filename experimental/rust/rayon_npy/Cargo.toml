@@ -1,0 +1,17 @@
+[package]
+name = "fb-rayon-npy"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "One column-major float64 .npy file written by many rayon threads at once"
+
+[lib]
+name = "fb_rayon_npy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "npy-demo"
+path = "src/main.rs"
+
+[dependencies]
+rayon = "1"
