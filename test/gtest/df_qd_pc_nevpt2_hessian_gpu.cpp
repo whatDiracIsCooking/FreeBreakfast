@@ -391,15 +391,29 @@ std::unique_ptr<Reference> make_reference(const Start &start) {
   return ref;
 }
 
-// One reference per case for the whole binary: the SA-CASSCF runs once.
+// The references the suite has built, one per case. Each holds a
+// NodeResources of its own, whose pool keeps up to its release threshold
+// cached beside the workspaces and the Calculation's products, so the
+// suite drops them at its end (#1248): kept for the whole binary, they
+// filled the card under the GPU batch's one process.
+std::map<std::string, std::unique_ptr<Reference>, std::less<>> &references() {
+  static std::map<std::string, std::unique_ptr<Reference>, std::less<>> kept;
+  return kept;
+}
+
+// One reference per case for the suite: the SA-CASSCF runs once.
 const Reference &reference(const Start &start) {
-  static std::map<std::string, std::unique_ptr<Reference>, std::less<>> cache;
-  auto &slot = cache[start.name];
+  auto &slot = references()[start.name];
   if (!slot) {
     slot = make_reference(start);
   }
   return *slot;
 }
+
+class HessianDfQdPcNevpt2 : public ::testing::Test {
+protected:
+  static void TearDownTestSuite() { references().clear(); }
+};
 
 std::vector<std::vector<double>> matrix(const fb::json &m) {
   return m.get<std::vector<std::vector<double>>>();
@@ -575,19 +589,19 @@ void expect_matches(const std::string &name, const std::int32_t state,
   }
 }
 
-TEST(HessianDfQdPcNevpt2, MatchesTheSkewFixtureStateOne) {
+TEST_F(HessianDfQdPcNevpt2, MatchesTheSkewFixtureStateOne) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_matches("h2co_skew_ccpvdz_sa3", 1);
 }
 
-TEST(HessianDfQdPcNevpt2, MatchesTheSkewFixtureStateTwo) {
+TEST_F(HessianDfQdPcNevpt2, MatchesTheSkewFixtureStateTwo) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_matches("h2co_skew_ccpvdz_sa3", 2);
 }
 
-TEST(HessianDfQdPcNevpt2, MatchesTheUnequalWeightFixture) {
+TEST_F(HessianDfQdPcNevpt2, MatchesTheUnequalWeightFixture) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_matches("h2co_skew_ccpvdz_sa3_weighted", 1);
@@ -596,7 +610,7 @@ TEST(HessianDfQdPcNevpt2, MatchesTheUnequalWeightFixture) {
 // The A1/B2 coupling case in its symmetry-adapted coordinates: on both
 // states the refusal names exactly #953's PC blocks, each with its coupling
 // and a t* under the step, and no Schur lift elsewhere.
-TEST(HessianDfQdPcNevpt2, CoupledA1B2RefusesTheExpectedBlocks) {
+TEST_F(HessianDfQdPcNevpt2, CoupledA1B2RefusesTheExpectedBlocks) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   const std::string name = "h2nb_sto3g_sa2";
@@ -727,7 +741,7 @@ void expect_a1b2_off_the_refused(std::span<const std::int32_t> states,
   }
 }
 
-TEST(HessianDfQdPcNevpt2, CoupledA1B2MatchesOffTheRefusedCoordinates) {
+TEST_F(HessianDfQdPcNevpt2, CoupledA1B2MatchesOffTheRefusedCoordinates) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_a1b2_off_the_refused(std::array{0, 1});
@@ -736,7 +750,7 @@ TEST(HessianDfQdPcNevpt2, CoupledA1B2MatchesOffTheRefusedCoordinates) {
 // The A1/B2 case's state 0 alone, along its three totally symmetric
 // vibrations (fewer coordinates, fewer products): #1207's representative,
 // until #1243's smaller case.
-TEST(HessianDfQdPcNevpt2, CoupledA1B2StateZeroMatchesAlongTheA1Vibrations) {
+TEST_F(HessianDfQdPcNevpt2, CoupledA1B2StateZeroMatchesAlongTheA1Vibrations) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   const std::array<std::string, 3> a1{"A1 1", "A1 2", "A1 3"};
@@ -745,7 +759,7 @@ TEST(HessianDfQdPcNevpt2, CoupledA1B2StateZeroMatchesAlongTheA1Vibrations) {
 
 // The smallest C1 case (#1243), h4_631g_sa2 (two H2 units, 6-31G,
 // CAS(2,2), SA2 at equal weights): both states over every coordinate.
-TEST(HessianDfQdPcNevpt2, MatchesTheH4Fixture) {
+TEST_F(HessianDfQdPcNevpt2, MatchesTheH4Fixture) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_matches("h4_631g_sa2", 0);
@@ -755,14 +769,14 @@ TEST(HessianDfQdPcNevpt2, MatchesTheH4Fixture) {
 // The family's representative (#1243): h4_631g_sa2's state 0 over the
 // Cartesian coordinates kH4Block, against that block of its ladder, with
 // every part visible and theta's share in it.
-TEST(HessianDfQdPcNevpt2, MatchesTheH4FixtureStateZeroOnABlock) {
+TEST_F(HessianDfQdPcNevpt2, MatchesTheH4FixtureStateZeroOnABlock) {
   FBF_REQUIRE_GPU();
   FBF_FAMILY_REPRESENTATIVE();
   expect_matches("h4_631g_sa2", 0, kH4Block);
 }
 
 // The refusals before anything runs, each on a constructed input.
-TEST(HessianDfQdPcNevpt2, RefusesBeforeAnythingRuns) {
+TEST_F(HessianDfQdPcNevpt2, RefusesBeforeAnythingRuns) {
   FBF_REQUIRE_GPU();
   const Reference &ref = reference(qd_case("h2co_ccpvdz_sa2"));
   ASSERT_TRUE(ref.solution.has_value());
@@ -834,7 +848,7 @@ TEST(HessianDfQdPcNevpt2, RefusesBeforeAnythingRuns) {
 // A class kept under 1e-10 of its metric's largest eigenvalue, at the
 // default cut: refused before anything runs, naming the state, the class,
 // its kept and the pc_floor.
-TEST(HessianDfQdPcNevpt2, RefusesAThinKeptClass) {
+TEST_F(HessianDfQdPcNevpt2, RefusesAThinKeptClass) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   const Reference &ref = reference(c2v_formaldehyde());
@@ -865,7 +879,7 @@ TEST(HessianDfQdPcNevpt2, RefusesAThinKeptClass) {
 // default cut state 0's Si keeps 3.3e-11 and the kept refusal comes first,
 // so the case runs at a pc_floor of 1e-10, the floor that refusal names.
 constexpr double kAmmoniaFloor = 1e-10;
-TEST(HessianDfQdPcNevpt2, RefusesADegenerateInactivePair) {
+TEST_F(HessianDfQdPcNevpt2, RefusesADegenerateInactivePair) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   const Reference &ref = reference(c3v_ammonia());
