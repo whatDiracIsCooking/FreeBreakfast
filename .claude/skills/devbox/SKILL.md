@@ -54,7 +54,7 @@ There are **three** configs, one per backend, each on its own Dockerfile:
 
 | Variant | Config | Image | What it has |
 | --- | --- | --- | --- |
-| `cuda` | `.devcontainer/cuda/` | `docker/Dockerfile.cuda` | clang-20 + libc++, CMake 4.2, Ninja, CUDA 13, sccache, the `/opt` deps. **The default.** |
+| `cuda` | `.devcontainer/cuda/` | `docker/Dockerfile.cuda` | clang-23 + libc++, CMake 4.2, Ninja, CUDA 13, sccache, the `/opt` deps. **The default.** |
 | `hip` | `.devcontainer/hip/` | `docker/Dockerfile.hip` | The same toolchain with ROCm and no CUDA. Pins `CMAKE_PRESET`/`CTEST_PRESET` to `hip` in `containerEnv`, so `devtools/test.py pr` needs no flag inside. |
 | `combined` | `.devcontainer/combined/` | `docker/Dockerfile.combined` | Both SDKs, ~40GB. Stays on the `default` (CUDA) preset; `--preset hip` for the other. |
 

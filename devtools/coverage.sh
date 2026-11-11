@@ -26,7 +26,7 @@
 # WITH src/ EMPTY THERE IS NOTHING TO MEASURE, and a percentage printed today is
 # noise. This tier becomes meaningful with the first module.
 #
-# THE TOOLCHAIN IS NOT ON YOUR HOST, same as test.py pr: clang-20 with libc++
+# THE TOOLCHAIN IS NOT ON YOUR HOST, same as test.py pr: clang-23 with libc++
 # and the matching llvm-cov/llvm-profdata live in the container, so the normal
 # way to call this is from inside it:
 #
@@ -83,7 +83,7 @@ for tool in cmake ninja; do
 done
 
 # The llvm pair, version-matched to the clang that built the tree. The bare
-# names are off PATH in this image (they live in /usr/lib/llvm-20/bin), so try
+# names are off PATH in this image (they live in /usr/lib/llvm-23/bin), so try
 # the versioned name and that directory before giving up.
 pick_llvm() {
   local base=$1 n
@@ -96,11 +96,11 @@ pick_llvm() {
   return 1
 }
 llvm_cov=$(pick_llvm llvm-cov) || {
-  echo "coverage: llvm-cov not found (need the one matching clang-20)." >&2
+  echo "coverage: llvm-cov not found (need the one matching clang-23)." >&2
   exit 1
 }
 llvm_profdata=$(pick_llvm llvm-profdata) || {
-  echo "coverage: llvm-profdata not found (need the one matching clang-20)." >&2
+  echo "coverage: llvm-profdata not found (need the one matching clang-23)." >&2
   exit 1
 }
 

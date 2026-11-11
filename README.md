@@ -92,7 +92,7 @@ Everything is pinned inside the container, which is the supported path:
 - `uv` on the host — the only assumed host tool, and the only thing the Python
   half needs.
 
-Building on a bare host additionally needs Clang 20 with libc++ (including
+Building on a bare host additionally needs Clang 23 with libc++ (including
 `libc++.modules.json` and `clang-scan-deps`), CMake 4.2+, Ninja, and the CUDA
 Toolkit or ROCm, plus the `workstation` preset — `default` expects the prebuilt
 `/opt` trees only the image has.
@@ -380,7 +380,7 @@ Four files under `docker/`, in a diamond:
 
 | File | What it adds |
 | ---- | ------------ |
-| `Dockerfile.base` | clang-20 + libc++, CMake 4.2, Ninja, sccache, uv/Python, and spdlog/taskflow/toml++ compiled into `/opt`. No GPU SDK. |
+| `Dockerfile.base` | clang-23 + libc++, CMake 4.2, Ninja, sccache, uv/Python, and spdlog/taskflow/toml++ compiled into `/opt`. No GPU SDK. |
 | `Dockerfile.cuda` | `base` + the CUDA toolkit. The default, and what the devcontainer and compose build. |
 | `Dockerfile.hip` | `base` + ROCm/HIP. No CUDA at all. |
 | `Dockerfile.combined` | `cuda` + ROCm, for switching backends without switching containers (~40GB). |

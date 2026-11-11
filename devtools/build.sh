@@ -5,7 +5,7 @@
 #
 #   devtools/build.sh [--preset NAME] [--fresh] [--clean] [-j N] [--report DIR]
 #
-# THE TOOLCHAIN IS NOT ON YOUR HOST. clang-20 with libc++'s module manifest,
+# THE TOOLCHAIN IS NOT ON YOUR HOST. clang-23 with libc++'s module manifest,
 # CMake 4.2 and nvcc live in docker/Dockerfile.{cuda,hip,combined}, so the
 # normal way to call this is
 # from inside that container (which DEVCONTAINER_CONFIG in config.sh already

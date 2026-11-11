@@ -116,21 +116,20 @@ macro(FREE_BREAKFAST_ADD_GPU_DEVICE_LIBRARY)
     # transitively would start compiling its plain C++ as HIP.
     target_link_libraries(${ARG_NAME} PRIVATE hip::device)
 
-    # The amdgcn-link step invokes its device linker as the bare name `lld`,
-    # which only ROCm's bundled LLVM ships -- the apt clang-20 this project
-    # builds with does not. Point the driver at ROCm's own bin directory,
-    # derived from where find_package(hip) actually resolved rather than from a
-    # hardcoded /opt/rocm.
-    get_target_property(
-      _gdl_hip_include_dir hip::amdhip64 INTERFACE_INCLUDE_DIRECTORIES
-    )
-    get_filename_component(_gdl_hip_prefix "${_gdl_hip_include_dir}" DIRECTORY)
-    target_compile_options(${ARG_NAME} PRIVATE "-B${_gdl_hip_prefix}/llvm/bin")
-
-    # Silence the benign amdgcn "different data layouts" warning, which is a
-    # clang-version skew between the apt LLVM and ROCm's bundled one rather
-    # than a defect. Drop it once the two converge.
-    target_compile_options(${ARG_NAME} PRIVATE -Wno-linker-warnings)
+    # NO `-B<rocm>/llvm/bin` HERE ANY MORE, and its absence is the fix rather
+    # than an omission. The amdgcn device link spawns its linker as the bare
+    # name `ld.lld`, which the apt LLVM did not ship, so this passed ROCm's bin
+    # directory to lend us ROCm's. That also handed ROCm's OWN
+    # clang-linker-wrapper the bitcode THIS clang produced -- an older LLVM
+    # reading a newer one's, the direction that does not work. At the 10.0.0
+    # pin it dies on `ld.lld: error: Invalid summary version 14. Version should
+    # be in the range [1-13]`. docker/Dockerfile.base now installs
+    # lld-${LLVM_VERSION} instead, which keeps every step of the link on one
+    # LLVM; reading ROCm's device bitcode is the other half, and bitcode is
+    # forward-readable, so that direction is fine.
+    #
+    # No -Wno-linker-warnings either: the "different data layouts" warning it
+    # hid was the same two-LLVM skew, and it is gone with the cause.
 
     if(ARG_GPU_OPTIONS)
       target_compile_options(${ARG_NAME} PRIVATE ${ARG_GPU_OPTIONS})
@@ -148,8 +147,6 @@ macro(FREE_BREAKFAST_ADD_GPU_DEVICE_LIBRARY)
                              "${FREE_BREAKFAST_GPU_OBJECT_CACHE}"
     )
 
-    unset(_gdl_hip_include_dir)
-    unset(_gdl_hip_prefix)
   endif()
 
   _free_breakfast_create_alias(${ARG_NAME})

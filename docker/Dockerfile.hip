@@ -26,7 +26,7 @@ ARG PROJECT_NAME=free-breakfast
 ARG PARENT_IMAGE=${PROJECT_NAME}:base
 FROM ${PARENT_IMAGE}
 
-ARG ROCM_VERSION=7.2.4
+ARG ROCM_VERSION=10.0.0
 
 # Drop the ~12.1GB of ROCm that only a RUNNING kernel needs -- the Tensile and
 # rocFFT kernel objects, composable-kernel's static archives, and rocalution.
@@ -46,12 +46,6 @@ USER root
 ARG PROJECT_NAME
 LABEL devcontainer.project="${PROJECT_NAME}"
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    --mount=type=bind,source=docker/install-rocm.sh,target=/tmp/install-rocm.sh \
-    ROCM_VERSION="${ROCM_VERSION}" ROCM_PRUNE="${ROCM_PRUNE}" \
-    bash /tmp/install-rocm.sh
-
 # The LLVM target for the AMD card this image is built for. Exported as
 # GPU_TARGETS / AMDGPU_TARGETS so a HIP CMake build has a default to read.
 # gfx1200 is RDNA4 (Radeon RX 9060 XT); override for another card:
@@ -61,7 +55,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # device code for, and the warp size it implies has to match
 # WWR_WARP_SIZE in the WarpWraps dependency -- 32 for RDNA (gfx10xx-gfx12xx),
 # 64 for CDNA (gfx90a, gfx942).
+#
+# IT IS DECLARED BEFORE THE INSTALL, not after, and passed into it: on the
+# TheRock channel (ROCm >= 7.9) the device-library package names carry the
+# arch, so install-rocm.sh cannot write its package set without this and fails
+# loudly when it is unset. The legacy channel ignores it.
 ARG GPU_TARGETS=gfx1200
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    --mount=type=bind,source=docker/install-rocm.sh,target=/tmp/install-rocm.sh \
+    ROCM_VERSION="${ROCM_VERSION}" ROCM_PRUNE="${ROCM_PRUNE}" \
+    GPU_TARGETS="${GPU_TARGETS}" \
+    bash /tmp/install-rocm.sh
+
 ENV GPU_TARGETS=${GPU_TARGETS} \
     AMDGPU_TARGETS=${GPU_TARGETS} \
     ROCM_PATH=/opt/rocm \

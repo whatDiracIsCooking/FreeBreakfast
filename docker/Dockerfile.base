@@ -11,7 +11,7 @@
 #         Dockerfile.combined ..............:
 #                                (reuses install-rocm.sh, not the hip image)
 #
-# Everything the build needs EXCEPT a GPU SDK: clang-20 with libc++, CMake 4.2,
+# Everything the build needs EXCEPT a GPU SDK: clang-23 with libc++, CMake 4.2,
 # Ninja, sccache, the three prebuilt C++ dependencies in /opt, and a uv-managed
 # venv for the Python tooling -- plus a Rust toolchain in /opt/rust, which the
 # build does not use. Useful on its own to check the toolchain half in
@@ -68,8 +68,27 @@
 # The two SDK versions are NOT here: CUDA_VERSION lives in Dockerfile.cuda and
 # ROCM_VERSION in Dockerfile.hip / Dockerfile.combined, beside the install
 # script each one drives.
+#
+# LLVM_VERSION AND ROCM_VERSION ARE ONE DECISION, which is the thing to know
+# before changing either. wwr#307 is where it was measured; this tree inherits
+# the pairing through the deps/WarpWraps pin:
+#
+#   * clang 23 goes with ROCm >= 7.9, and clang <= 22 with ROCm <= 7.2.4.
+#     Upward: ROCm >= 7.9 (TheRock) ships LLVM-23-produced device bitcode, and
+#     bitcode is not backward-readable, so clang-20 dies on ROCm's own ocml.bc
+#     ("Unknown attribute kind (106), Producer: LLVM23.0.0git, Reader: LLVM
+#     20.1.8") and not one `.cu` compiles. Downward: clang 23 trimmed
+#     `__clang_hip_libdevice_declares.h` from 258 `__ocml_*`/`__ockl_*`
+#     declarations to 169, and 89 of the casualties are what ROCm <= 7.2.4's
+#     `amd_hip_fp16.h` calls from UNCONDITIONAL inline `__device__` functions
+#     (`__hfma`, `hexp`, `hcos`, ...), which no macro avoids. So the pin moves
+#     with the compiler, in both directions.
+#   * CUDA does not object. nvcc never sees clang here -- nothing sets
+#     CMAKE_CUDA_HOST_COMPILER, so nvcc uses its own default g++ -- which is
+#     what makes CUDA 13's "clang version must be less than 21" bound in
+#     crt/host_config.h unreachable, and lets one image serve both backends.
 ARG UBUNTU_TAG=24.04
-ARG LLVM_VERSION=20
+ARG LLVM_VERSION=23
 ARG CMAKE_VERSION=4.2.3
 ARG CMAKE_MAJOR_MINOR=4.2
 ARG NINJA_VERSION=1.13.1
@@ -177,20 +196,34 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       libclang-rt-${LLVM_VERSION}-dev \
       libc++-${LLVM_VERSION}-dev \
       libc++abi-${LLVM_VERSION}-dev \
+      lld-${LLVM_VERSION} \
       cppcheck
 
+# lld IS LOAD-BEARING, and only for the HIP backend: a `-x hip` compile ends in
+# an amdgcn device link that spawns its linker as a bare name. This tree used to
+# borrow ROCm's by passing `-B<rocm>/llvm/bin`, which also routed the link
+# through ROCm's own clang-linker-wrapper -- an older LLVM being handed the
+# bitcode THIS clang produced, which at the 10.0.0 pin dies on "Invalid summary
+# version 14". Shipping our own keeps every step on one LLVM; reading ROCm's
+# device bitcode is the other half, and that direction works.
+# cmake/free_breakfast_add_gpu_device_library.cmake is where the flag went away.
+#
 # The versioned binaries live in /usr/lib/llvm-N/bin, which is not on PATH.
 # clang-scan-deps is included: CMake's module scanner, and a FATAL_ERROR in
 # CMakeLists.txt when it is missing. llvm-objdump and llvm-cxxfilt are here for
 # test/extension/build_time's blas dispatch check, which disassembles the
-# instantiations and demangles what they call.
+# instantiations and demangles what they call. `ld.lld` is the name the HIP
+# device link actually spawns (`lld` is the alias a human types), so both are
+# linked -- a missing ld.lld reads as `posix_spawn failed: No such file or
+# directory` from a step that never names the tool it wanted.
 RUN for tool in clang clang++ clang-tidy clang-format clangd clang-scan-deps \
-                llvm-objdump llvm-cxxfilt; do \
+                llvm-objdump llvm-cxxfilt lld ld.lld; do \
       update-alternatives --install /usr/bin/$tool $tool /usr/bin/${tool}-${LLVM_VERSION} 100; \
     done && \
     clang --version | grep -q "${LLVM_VERSION}\." && \
     clang-scan-deps --version && \
     llvm-objdump --version | head -1 && \
+    ld.lld --version | head -1 && \
     test -f /usr/lib/llvm-${LLVM_VERSION}/lib/libc++.modules.json
 
 # ============================================================================
@@ -235,11 +268,22 @@ COPY --link --from=build-tools /usr/local/bin/cmake /usr/local/bin/cmake
 COPY --link --from=build-tools /usr/local/bin/ninja /usr/local/bin/ninja
 COPY --link --from=build-tools /usr/local/share/cmake-${CMAKE_MAJOR_MINOR} /usr/local/share/cmake-${CMAKE_MAJOR_MINOR}
 
+# `-include cstdlib` is a WORKAROUND FOR A BUG IN THE BUNDLED fmt, not a flag
+# this build wants. fmt's format.h calls `malloc`/`free` without including
+# <cstdlib>, and libc++ 23 stopped providing it transitively, so the compile
+# dies with "use of undeclared identifier 'malloc'" in a header this project
+# does not own. fmt fixed it in 12.0.0 (fmtlib/fmt#4520) -- which spdlog 1.16.0
+# carries, with `std::malloc` -- and then REGRESSED it in 12.1.0, the fmt
+# spdlog 1.17.0 bundles: bare `malloc`, no include, broken again. So bumping
+# spdlog is not the fix, and `v1.17.0` would reintroduce this. Force-include
+# the header instead and leave the version pin alone, so clang is the only
+# thing this image's toolchain bump changes. Drop the flag when a bundled fmt
+# that includes <cstdlib> is pinned above.
 RUN git clone --depth 1 --branch v1.15.3 https://github.com/gabime/spdlog.git /tmp/spdlog && \
     cmake -G Ninja -S /tmp/spdlog -B /tmp/spdlog/build \
       -DCMAKE_CXX_COMPILER=clang++ \
       -DCMAKE_CXX_STANDARD=23 \
-      -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+      -DCMAKE_CXX_FLAGS="-stdlib=libc++ -include cstdlib" \
       -DCMAKE_EXE_LINKER_FLAGS="-lc++abi" \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/opt/spdlog \
