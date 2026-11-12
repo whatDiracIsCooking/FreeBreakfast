@@ -277,6 +277,63 @@ else()
   endif()
 
   find_package(hip CONFIG REQUIRED)
+
+  # The amdgcn device link spawns a bare `ld.lld` (clang <= 22: `lld`) from
+  # PATH, which docker/Dockerfile.base installs as lld-${LLVM_VERSION} since
+  # #1251. A container built before #1251 is clang 20 + ROCm 7.2.4 with no
+  # system lld, and its every `.cu` then dies on `Executable "lld" doesn't
+  # exist` (#1270). There, and only where ROCm's LLVM is at least as new as
+  # this clang (bitcode is forward-readable, so its linker can read ours),
+  # ROCm's bin directory is lent with -B as it was before #1251; an older
+  # ROCm LLVM than clang dies on `Invalid summary version`, so that is
+  # refused. Either way the fix is rebuilding the image.
+  find_program(FREE_BREAKFAST_LD_LLD ld.lld)
+  if(NOT FREE_BREAKFAST_LD_LLD)
+    set(_fbf_rocm_lld "${ROCM_PATH}/llvm/bin/ld.lld")
+    set(_fbf_rocm_llvm_major "")
+    if(EXISTS "${_fbf_rocm_lld}")
+      execute_process(
+        COMMAND "${_fbf_rocm_lld}" --version
+        OUTPUT_VARIABLE _fbf_rocm_lld_version
+        ERROR_QUIET
+      )
+      if(_fbf_rocm_lld_version MATCHES "LLD ([0-9]+)\\.")
+        set(_fbf_rocm_llvm_major "${CMAKE_MATCH_1}")
+      endif()
+    endif()
+    string(REGEX MATCH "^[0-9]+" _fbf_clang_major
+                 "${CMAKE_CXX_COMPILER_VERSION}"
+    )
+    if(_fbf_rocm_llvm_major AND NOT _fbf_rocm_llvm_major LESS
+                                _fbf_clang_major
+    )
+      message(
+        WARNING
+          "No ld.lld on PATH: this container's image predates #1251. Lending "
+          "ROCm's (LLVM ${_fbf_rocm_llvm_major}, clang is "
+          "${_fbf_clang_major}) to the device link with "
+          "-B${ROCM_PATH}/llvm/bin. Rebuild the image "
+          "(devtools/devcontainer.sh rebuild, on the host) to drop this."
+      )
+      add_compile_options(
+        "$<$<COMPILE_LANGUAGE:CXX>:-B${ROCM_PATH}/llvm/bin>"
+        "$<$<COMPILE_LANGUAGE:CXX>:-Wno-linker-warnings>"
+      )
+    else()
+      message(
+        FATAL_ERROR
+          "No ld.lld on PATH for the HIP device link, and ROCm's "
+          "(${_fbf_rocm_lld}, LLVM '${_fbf_rocm_llvm_major}') is not one that "
+          "can read clang ${_fbf_clang_major}'s bitcode. The image predates "
+          "#1251: rebuild it (devtools/devcontainer.sh rebuild, on the host), "
+          "which installs lld for its LLVM_VERSION."
+      )
+    endif()
+    unset(_fbf_rocm_lld)
+    unset(_fbf_rocm_lld_version)
+    unset(_fbf_rocm_llvm_major)
+    unset(_fbf_clang_major)
+  endif()
 endif()
 
 # ========================================================================
