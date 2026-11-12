@@ -20,7 +20,9 @@ Phases, as step 4b's stationary.py and step 6's experiment.py:
                         the named ones; skips one done
   names <method>        the sweep order
   analyse               (numpy) -> surface_<method>.csv, surface.json,
-                        surface_<method>.svg
+                        surface_<method>.svg, comparison.svg
+  comparison            (stdlib) comparison.svg from the committed
+                        surface_<method>.csv and surface.json alone
 
 `method` is pc or casscf.
 """
@@ -317,10 +319,32 @@ def analyse() -> None:
             HERE / f"surface_{method}.svg",
             method,
             full_grid(method, rows),
-            irc_path(),
+            contour.irc_path(STEP4 / "irc.csv"),
             result[method],
         )
     (HERE / "surface.json").write_text(json.dumps(result, indent=1) + "\n")
+    comparison()
+
+
+def comparison() -> None:
+    """comparison.svg, from what analyse wrote: each method's grid from its
+    surface_<method>.csv (energies to 1e-10 Eh, the mirrored half included)
+    and its stationary points from surface.json."""
+    import contour
+
+    summary = json.loads((HERE / "surface.json").read_text())
+    surfaces = {}
+    for method in GRID:
+        rows = csv.DictReader((HERE / f"surface_{method}.csv").open())
+        e = {
+            (float(r["r16"]), float(r["r34"])): float(r["energy"])
+            for r in rows
+            if r["status"] == "converged"
+        }
+        surfaces[method] = {"grid": grid(method), "energy": e}
+    contour.comparison(
+        HERE / "comparison.svg", surfaces, summary, contour.irc_path(STEP4 / "irc.csv")
+    )
 
 
 def full_grid(method: str, rows: list[dict]) -> dict:
@@ -331,14 +355,6 @@ def full_grid(method: str, rows: list[dict]) -> dict:
             e[(r["r16"], r["r34"])] = r["energy"]
             e[(r["r34"], r["r16"])] = r["energy"]
     return {"grid": grid(method), "energy": e}
-
-
-def irc_path() -> list[tuple[float, float]] | None:
-    p = STEP4 / "irc.csv"
-    if not p.exists():
-        return None
-    rows = list(csv.DictReader(p.open()))
-    return [(float(r["r16"]), float(r["r34"])) for r in rows]
 
 
 def stationary_points(g: list[float], e: dict) -> list[dict]:
@@ -460,7 +476,7 @@ def write_csv(method: str, rows: list[dict]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("phase", choices=["run", "names", "analyse"])
+    parser.add_argument("phase", choices=["run", "names", "analyse", "comparison"])
     parser.add_argument("method", nargs="?", choices=list(GRID))
     parser.add_argument("names", nargs="*")
     parser.add_argument(
@@ -471,6 +487,8 @@ def main() -> None:
         print(" ".join(sweep(args.method)))
     elif args.phase == "run":
         run(args.names or sweep(args.method), args.binary)
+    elif args.phase == "comparison":
+        comparison()
     else:
         analyse()
 

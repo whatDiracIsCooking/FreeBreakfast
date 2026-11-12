@@ -7,6 +7,16 @@ relaxes everything else. It is free-breakfast's `[optimize]` with
 `constraints` (#1260) over the PC-NEVPT2 or CASSCF gradient. The study
 README's "Step 3, after step 4" has why.
 
+![PC-NEVPT2 and CASSCF surfaces and their diagonal cut](comparison.svg)
+
+Left and middle: the two relaxed surfaces on one colour scale, each from its
+own lowest grid point, with contours every 1 kcal/mol: PC-NEVPT2 has a
+single saddle on the diagonal, which step 4d's IRC crosses, and CASSCF a
+diyl well ringed by two off-diagonal saddles, a maximum and the aromatic
+saddle. Right: the diagonal E(R, R), each from its own lowest diagonal grid
+point, has one minimum at PC-NEVPT2 (the TS, a maximum across the diagonal)
+and at CASSCF two, the diyl and the aromatic saddle, with a barrier between.
+
 **Result.** The two surfaces have the shapes the study predicted.
 
 - **PC-NEVPT2 has one stationary point in the whole region:** a saddle on
@@ -161,11 +171,13 @@ direct neighbour.
 | File | What |
 |---|---|
 | `surface.py` | `run METHOD [NAME ...]` (prepare and run each point in sweep order, from its neighbour; skips one done), `names METHOD` (the sweep order), `analyse` → `surface.json`, `surface_<method>.csv`, `surface_<method>.svg` |
-| `contour.py` | the contour plot, stdlib SVG (matplotlib is not in `uv.lock`; step 2's plot is the precedent) |
+| `surface.py comparison` | `comparison.svg` alone, from the committed `surface_<method>.csv`, `surface.json` and `step_4/irc.csv` (no runs needed; `analyse` also writes it) |
+| `contour.py` | the contour plots, stdlib SVG (matplotlib is not in `uv.lock`; step 2's plot is the precedent) |
 | `run.sh` | `surface.py run` holding the CUDA card, as step 4's and step 6's |
 | `surface.json` | settings; per method the run status, the points that did not converge, the grid's stationary points, the diagonal E(R), and totals |
 | `surface_<method>.csv` | every point of the full square (the mirrored half marked `mirrored = 1`): status, E, ΔE from the grid minimum (kcal/mol), evaluations, max force, wall clock, the final distances, the C2-breaking measure, the six natural occupations |
 | `surface_<method>.svg` | the contour plot, the IRC (step 4d) overlaid on the PC one |
+| `comparison.svg` | both surfaces on one colour scale and contour interval (1 kcal/mol), the IRC on the PC one, and the diagonal cut E(R, R) of both |
 
 `inputs/` and `runs/` are gitignored.
 
@@ -179,4 +191,11 @@ taskset -c 0-7 experimental/cope_rearrangement/step_3/run.sh pc
 taskset -c 0-7 experimental/cope_rearrangement/step_3/run.sh casscf
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
     python experimental/cope_rearrangement/step_3/surface.py analyse
+```
+
+`comparison.svg` alone needs only the committed files and the standard
+library:
+
+```sh
+python3 experimental/cope_rearrangement/step_3/surface.py comparison
 ```
