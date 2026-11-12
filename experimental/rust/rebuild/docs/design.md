@@ -153,8 +153,11 @@ and is never mirrored.
 
 Documentation has its own document, [`documentation.md`](documentation.md).
 In short: the API reference is rustdoc, with `missing_docs` and broken links
-denied in the manifest, and every doc example a test, `compile_fail` ones
-being the tier-1 suite; equations are KaTeX, cited by number from a published
+denied in the manifest, every doc example a test, `compile_fail` ones being
+the tier-1 suite, and no README beside a module; the C header's comments are
+the launch wrappers' documentation, carried across by bindgen; the
+configuration reference is emitted from the config type and the examples are
+run; equations are KaTeX, cited by number from a published
 paper and by label from the tree's own documents; references are one
 tree-wide BibTeX file, with derived work's license obligations as entries and
 keys checked against citations; the narrative pages are Markdown rendered by
