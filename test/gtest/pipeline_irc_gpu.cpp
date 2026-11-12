@@ -429,6 +429,10 @@ TEST(PipelineIrc, Nh3CasscfDescendsAlongTheUmbrellaToMinima) {
     }
     end_energy[s_index] = points.back().energy;
     first_cos[s_index++] = along / std::sqrt(length * mode_norm);
+    int32_t evaluations = 0;
+    for (const fb::geometry::IrcPoint &point : points) {
+      evaluations += point.sphere_iterations;
+    }
 
     // A fresh Hessian at the end: every frequency real.
     const fb::test::ScratchDir end_dir(std::format("pipeline_irc_nh3_{}_end", side));
@@ -454,10 +458,10 @@ TEST(PipelineIrc, Nh3CasscfDescendsAlongTheUmbrellaToMinima) {
     EXPECT_GT(lowest, 0.0) << side;
     h_max = std::max(h_max, curvature(end_hessian->vibrations.frequencies.back()));
     std::cout << std::format(
-        "[ irc ] nh3 CASSCF(8,7) {}: {} points ({}), E {:.10f} -> {:.10f}, first step's cosine "
-        "with the mode {:+.6f}, frequencies at the end {:.2f} to {:.2f} cm^-1\n",
-        side, points.size() - 1, fb::geometry::irc_stop_name((*path)->stop), points.front().energy,
-        points.back().energy, first_cos[s_index - 1], lowest,
+        "[ irc ] nh3 CASSCF(8,7) {}: {} points ({}), {} evaluations, E {:.10f} -> {:.10f}, first "
+        "step's cosine with the mode {:+.6f}, frequencies at the end {:.2f} to {:.2f} cm^-1\n",
+        side, points.size() - 1, fb::geometry::irc_stop_name((*path)->stop), evaluations,
+        points.front().energy, points.back().energy, first_cos[s_index - 1], lowest,
         end_hessian->vibrations.frequencies.back());
   }
   EXPECT_GT(first_cos[0], 1.0 / std::sqrt(2.0));

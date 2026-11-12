@@ -9,9 +9,11 @@
 // radius's shrink, the refusals, and a plane carried under a floor where the
 // callback gives the mean gradient alone (#902). And for geometry::irc (#1269):
 // a curved valley whose every point is held to GS2's hypersphere condition
-// and whose two sides reach the two minima, a quadratic saddle walked in one
-// evaluation per point along its straight path, two points whose centre of
-// mass and axis the projection holds, the stops and the refusals.
+// and whose two sides reach the two minima, stiff and bent valleys, a long
+// soft valley modelled on the Cope IRC's (#1294, #1295), a quadratic saddle
+// walked in one evaluation per point along its straight path, two points
+// whose centre of mass and axis the projection holds, the stops and the
+// refusals.
 
 #include <gtest/gtest.h>
 
@@ -1204,9 +1206,11 @@ bent_valley(double stiffness, double bend) {
 // valleys the model is not good over that distance: a mid-valley sphere used
 // up its 20 evaluations, and each side stopped SphereNotConverged part-way
 // (50 of 84 points at k = 200, b = 4, s = 0.05; 14 of 23 at k = 1000, b = 2,
-// s = 0.1). From the far pole turned as the last step turned, each side runs
-// to within a step of its minimum, its energy falling at every point. Each
-// side's points are the ones 200 evaluations per sphere reached before.
+// s = 0.1). From the far pole turned as the last step turned (the first
+// trial wherever the model's step lands in the hard case or behind the pivot,
+// or follows a sphere of more than 3, #1295), each side runs to within a step
+// of its minimum, its energy falling at every point. Each side's points are
+// the ones 200 evaluations per sphere reached before.
 // k = 1000, b = 4, s = 0.1 is the limit left (src/geometry/README.md): its
 // first sphere, which the fix does not change, stops at the default budget
 // with the TS alone, and runs to its minimum at 40.
@@ -1274,6 +1278,165 @@ TEST(GeometryIrc, StiffBentValleyRunsToItsMinimaAtTheDefaultBudget) {
   EXPECT_EQ(raised->stop, geo::IrcStop::MinimumWithinStep) << geo::irc_stop_name(raised->stop);
   const auto &end = raised->points.back().x;
   EXPECT_LE(sqrt_m * std::hypot(end[0] - 1.0, end[1] - limit.bend, end[2]), limit.step);
+}
+
+// #1295: a model of the Cope PC-NEVPT2 IRC's surface, for two hydrogens'
+// six coordinates (no rigid motions). A long valley bent gently on an arc of
+// radius R = 30 about (0, R) in (x0, x1), its stiff floor 0.15 (r - R)^2, and
+// the profile along the arc length sigma = R theta from the TS at the origin,
+// E_p = D (sigma^2 / sigma_m^2 - 1)^2 / (1 + sigma^2 / c^2)^(3/2), D = 0.049,
+// sigma_m = 11, c = 4.3: a stiff TS (curvature -9.6e-3, the Cope's ~500i
+// cm^-1 mass-weighted), |g| peaking at 1.2e-2 two units out and falling over
+// the next nine by ~40, as the Cope's mass-weighted |g| does, to a soft
+// basin. Four transverse coordinates x2..x5 of curvature 4e-4 to 5e-2 (the
+// Cope's soft torsions up), each with its floor rising as a_i sigma^2 / 2
+// (a = 0, 0.05, 0.02, 0.01), so the path bends through them too. Minima at
+// sigma = +-sigma_m on the arc, x_(2+i) = a_i sigma_m^2 / 2.
+fb::Result<double> long_valley(std::span<const double> x, std::span<double> gradient) {
+  constexpr double kRadius = 30.0;
+  constexpr double kDepth = 0.049;
+  constexpr double kSigmaM2 = 121.0;
+  constexpr double kC2 = 4.3 * 4.3;
+  constexpr double kFloor = 0.15;
+  constexpr std::array<double, 4> kStiffness{2e-4, 1e-3, 5e-3, 2.5e-2};
+  constexpr std::array<double, 4> kRise{0.0, 0.05, 0.02, 0.01};
+  const double dx = x[0];
+  const double dy = x[1] - kRadius;
+  const double r2 = (dx * dx) + (dy * dy);
+  const double r = std::sqrt(r2);
+  const double sigma = kRadius * std::atan2(dx, -dy);
+  const double a = (sigma * sigma / kSigmaM2) - 1.0;
+  const double b = 1.0 + (sigma * sigma / kC2);
+  double energy = kDepth * a * a / std::pow(b, 1.5);
+  double de_dsigma = kDepth * ((4.0 * a * sigma / kSigmaM2 / std::pow(b, 1.5)) -
+                               (3.0 * a * a * sigma / kC2 / std::pow(b, 2.5)));
+  for (std::size_t i = 0; i < kStiffness.size(); ++i) {
+    const double d = x[2 + i] - (0.5 * kRise[i] * sigma * sigma);
+    energy += kStiffness[i] * d * d;
+    de_dsigma -= 2.0 * kStiffness[i] * d * kRise[i] * sigma;
+    gradient[2 + i] = 2.0 * kStiffness[i] * d;
+  }
+  energy += kFloor * (r - kRadius) * (r - kRadius);
+  const double de_dr = 2.0 * kFloor * (r - kRadius);
+  gradient[0] = (de_dr * dx / r) - (de_dsigma * kRadius * dy / r2);
+  gradient[1] = (de_dr * dy / r) + (de_dsigma * kRadius * dx / r2);
+  return energy;
+}
+
+// The long valley's TS Hessian, diagonal: E_p'' = -2 D (2 / sigma_m^2 +
+// 3 / (2 c^2)) along x0, the floor's and the transverse coordinates' 2 k.
+std::array<double, 36> long_valley_hessian() {
+  std::array<double, 36> hessian{};
+  const std::array<double, 6> diagonal{
+      -2.0 * 0.049 * ((2.0 / 121.0) + (1.5 / (4.3 * 4.3))), 0.3, 4e-4, 2e-3, 1e-2, 5e-2};
+  for (std::size_t i = 0; i < 6; ++i) {
+    hessian[i * 6 + i] = diagonal[i];
+  }
+  return hessian;
+}
+
+std::vector<fb::Atom> two_hydrogens() {
+  return {fb::Atom{{0.0, 0.0, 0.0}, fb::Element::H}, fb::Atom{{0.0, 0.0, 0.0}, fb::Element::H}};
+}
+
+// #1295: on the long valley at every default but max_force (held out of the
+// way, so the walk stops by the |g| halving), the model's step from point k
+// is the sphere's minimum to its tolerance at most points, as on the Cope
+// (69% there before #1288). With #1288's far pole as every later sphere's
+// first trial, which carries each point's error on its sphere into the next
+// start, a side took 215 evaluations, 1.69x, and 24 of 117 later spheres in
+// one (the Cope's: 1.64x, 15%). kPreFarPole is a side's count before #1288,
+// the old irc.cpp built against this test: 127 over 117 points, 106 of 116
+// in one. The first trial now the model's step unless it is in the hard
+// case, behind the pivot or after a sphere of more than 3, a side walks
+// those spheres exactly as then up to point 114, and is held to the count
+// within 10%: the last few points' |g| is below sphere_gradient, where a
+// sphere's point is not resolved, and they take 2 or 3 evaluations either
+// way (132 over 118 points, 104 of 117 in one).
+TEST(GeometryIrc, SoftLongValleyTakesTheModelsStep) {
+  constexpr int32_t kPreFarPole = 127;
+  geo::IrcOptions options;
+  options.max_points = 400;
+  options.max_force = 1e-10;
+  options.project_rigid_body = false;
+  const std::array<double, 36> hessian = long_valley_hessian();
+  for (const double side : {1.0, -1.0}) {
+    const std::array<double, 6> direction{side, 0.0, 0.0, 0.0, 0.0, 0.0};
+    const auto path = geo::irc(two_hydrogens(), hessian, direction, long_valley, options);
+    ASSERT_TRUE(path.has_value()) << path.error().message;
+    const auto &points = path->points;
+    int32_t evaluations = 0;
+    int32_t first = 0;
+    for (std::size_t k = 0; k + 1 < points.size(); ++k) {
+      EXPECT_LT(points[k + 1].energy, points[k].energy) << k;
+      evaluations += points[k + 1].sphere_iterations;
+      first += k > 0 && points[k + 1].sphere_iterations == 1 ? 1 : 0;
+    }
+    std::cout << std::format("[ irc ] long valley side {:+.0f}: {} points, {}, {} evaluations, "
+                             "{} of {} later spheres in one\n",
+                             side, points.size() - 1, geo::irc_stop_name(path->stop), evaluations,
+                             first, points.size() - 2);
+    EXPECT_EQ(path->stop, geo::IrcStop::MinimumWithinStep) << geo::irc_stop_name(path->stop);
+    EXPECT_LE(evaluations, kPreFarPole + (kPreFarPole / 10));
+    // Most later spheres in one: 21% with the far pole, 91% before it.
+    EXPECT_GE(10 * first, 8 * static_cast<int32_t>(points.size() - 2));
+  }
+}
+
+// #1294: the long valley at every default. Its force falls under max_force
+// at point 92, 2.615 amu^1/2 bohr short of the minimum and 5.8e-4 above it,
+// where the Minimum stop ended the walk until #1294 (the Cope's: 2.63, 26
+// steps, +0.227 kcal/mol). A minimum is now a force under max_force and |g|
+// halved over the last step, so each side runs on, its energy falling at
+// every point, and stops Minimum within a step of the minimum (118 points,
+// 0.082 from it).
+TEST(GeometryIrc, SoftLongValleyRunsPastItsForceToItsMinimum) {
+  geo::IrcOptions options;
+  options.max_points = 400;
+  options.project_rigid_body = false;
+  const double sqrt_m = std::sqrt(kHydrogenMass);
+  const double theta = 11.0 / 30.0;
+  const std::array<double, 6> minimum{30.0 * std::sin(theta),
+                                      30.0 * (1.0 - std::cos(theta)),
+                                      0.0,
+                                      0.05 * 60.5,
+                                      0.02 * 60.5,
+                                      0.01 * 60.5};
+  const auto miss = [&](std::span<const double> x) {
+    double sum = 0.0;
+    for (std::size_t i = 0; i < 6; ++i) {
+      sum += (x[i] - minimum[i]) * (x[i] - minimum[i]);
+    }
+    return sqrt_m * std::sqrt(sum);
+  };
+  const std::array<double, 36> hessian = long_valley_hessian();
+  for (const double side : {1.0, -1.0}) {
+    const std::array<double, 6> direction{side, 0.0, 0.0, 0.0, 0.0, 0.0};
+    const auto path = geo::irc(two_hydrogens(), hessian, direction, long_valley, options);
+    ASSERT_TRUE(path.has_value()) << path.error().message;
+    const auto &points = path->points;
+    std::size_t under = 0;
+    while (under < points.size() && !(under > 0 && points[under].max_force <= options.max_force)) {
+      ++under;
+    }
+    ASSERT_LT(under, points.size());
+    std::vector<double> mirrored(points.back().x);
+    mirrored[0] *= side;
+    std::vector<double> at_under(points[under].x);
+    at_under[0] *= side;
+    std::cout << std::format("[ irc ] long valley, default max_force, side {:+.0f}: {} points, "
+                             "{}, force under max_force at point {} ({:.3f} from the minimum), "
+                             "{:.4f} from it at the end, E {:.3e} above it\n",
+                             side, points.size() - 1, geo::irc_stop_name(path->stop), under,
+                             miss(at_under), miss(mirrored), points.back().energy);
+    EXPECT_EQ(path->stop, geo::IrcStop::Minimum) << geo::irc_stop_name(path->stop);
+    for (std::size_t k = 0; k + 1 < points.size(); ++k) {
+      EXPECT_LT(points[k + 1].energy, points[k].energy) << k;
+    }
+    EXPECT_GT(points.size() - 1, under);
+    EXPECT_GT(miss(at_under), 10.0 * options.step_size);
+    EXPECT_LE(miss(mirrored), options.step_size);
+  }
 }
 
 // E = -x^2 + 3 y^2 / 2 + z^2: a quadratic saddle whose path is the x axis.
