@@ -177,6 +177,14 @@ for _label in CONFORMERS:
 # The lowest conformer (C1, its closest inactive pair 2.7e-4 Eh apart) by the
 # analytic Hessian too: the difference Hessians' check.
 RUNS_SPEC["conf_g_pm_hessian_analytic"] = ("hessian", ("final", "conf_g_pm"))
+# Since #1280 (#1268) the analytic Hessian takes a degenerate inactive pair:
+# the conformers whose closest pair is under 1e-6 Eh, against their
+# difference Hessians.
+for _label in ("a_pp", "a_cc", "g_pp", "g_mm"):
+    RUNS_SPEC[f"conf_{_label}_hessian_analytic"] = (
+        "hessian",
+        ("final", f"conf_{_label}"),
+    )
 # Part 6: the energy-only check of the TS, along its lowest mode of each
 # C2h irrep at +-0.01 and +-0.02 bohr, and the TS itself.
 FD_IRREPS = ("au", "ag", "bg", "bu")
