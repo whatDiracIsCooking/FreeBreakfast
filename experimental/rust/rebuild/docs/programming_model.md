@@ -50,8 +50,8 @@ disagreeing about the edge between them, and keeps each task's spec short.
    (`nbf`, `naux`, `nocc`, ...): each one's size, and whether it is scratch,
    freed when the task ends, or an output that outlives it. The footprint is
    derived from the layout; nobody writes it. A kernel's share comes from its
-   `*_workspace_bytes(dims)` query ([`design.md`](design.md), "C++/GPU
-   layer"), so the sizes are numbers the kernels own rather than guesses.
+   `*_workspace_bytes(dims)` query ([`gpu_layer.md`](gpu_layer.md)), so the
+   sizes are numbers the kernels own rather than guesses.
    "Memory: layouts and arenas" below has the whole of it.
 3. **Boundary.** Its inputs, its outputs, and what it promises not to touch.
 4. **Partition**, optionally. An axis along which its work can be sliced over

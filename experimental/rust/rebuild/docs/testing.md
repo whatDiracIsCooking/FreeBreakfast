@@ -331,8 +331,8 @@ shapes against the reference, with the shapes' seed printed on failure.
 
 ## The C++ boundary
 
-The layer between Rust and the kernels ([`design.md`](design.md), "C++/GPU
-layer") is tested at the cheapest tier that can see each of its promises:
+The layer between Rust and the kernels ([`gpu_layer.md`](gpu_layer.md)) is
+tested at the cheapest tier that can see each of its promises:
 
 - **Shared types match, at tier 1.** Every `#[repr(C)]` mirror of a header
   type carries `const` assertions of its `size_of`, `align_of` and each
@@ -373,7 +373,7 @@ schedule. Here they are weekly from the start.
   a Tier 2 target that lets a stable compiler use it has merged, and the
   [stabilization](https://github.com/rust-lang/rust/pull/123617) is open.
   Its reach also shrinks by design: the C++ launch wrappers never allocate
-  ([`design.md`](design.md), "C++/GPU layer"), so host-side memory errors can
+  ([`gpu_layer.md`](gpu_layer.md)), so host-side memory errors can
   only be in their argument handling, and device-side errors are
   compute-sanitizer's. `ASAN_OPTIONS=protect_shadow_gap=0` carries over,
   because the shadow gap's collision with the driver's address reservation
