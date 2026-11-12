@@ -46,108 +46,27 @@ boundaries, a failed run returns the first error in topological order, and
 `main` is the one place an error is logged. Release aborts on a panic through
 `critical!`, and test unwinds for the contract tests.
 
-## C++/GPU layer
+## GPU layer
 
-### Layering
-
-```
- Rust      orchestrator: DAG, fork, join, wait, sync; streams, events, memory
-   │
- Rust      safe wrapper: owns the arguments' types and lifetimes, checks contracts
-   │
- Rust      -sys: FFI bindings, generated from the C header
-   │  C ABI
- C++ .cpp  launch wrapper: extern "C", picks the launch shape, launches, returns a status
-   │
- C++ .cu   kernels: hand-written and FelizJueves-generated
-```
-
-**C++ wraps kernels and nothing else.** A launch wrapper takes a stream, device
-pointers, sizes and parameters. It picks the grid and block, launches, and
-returns a status. It never:
-
-- allocates,
-- syncs, waits or records events,
-- sets the current device,
-- holds state between calls.
-
-Fork, join, wait and sync belong to Rust, and so does every allocation. A
-wrapper therefore only enqueues work. It is safe to call from any thread, and
-its cost is all on the stream it was given.
-
-**The launch shape stays with the kernel.** The wrapper picks the grid and
-block from the problem's dimensions, because block sizes like `kFourWarps`
-belong next to the kernel that assumes them. Rust passes the dimensions, never
-a block size.
-
-**Scratch is sized by the wrapper and allocated by Rust.** A kernel that needs
-scratch space exposes a query, `*_workspace_bytes(dims)`. The task's layout
-calls it at planning, the arena carves that amount, and Rust passes the
-buffer in. The query is the kernel's share of the task's layout, so the
-programming model's sizes are numbers the kernels own rather than guesses.
-
-### Error codes
-
-A launch wrapper returns one status type, a C enum in the module's header:
-
-- **Success.**
-- **The backend's launch error,** from the vendor's get-last-error call, carried
-  as `wwr_status` with the vendor's code. The Rust side then reaches the same
-  `gpu_status` path as every other wwr call, and the vendor's names survive the
-  crossing.
-- **The wrapper's own refusals**, such as an angular momentum the generated
-  kernels do not cover. These map to `ErrorKind::Unsupported` or
-  `ErrorKind::InvalidConfig`.
-
-On the Rust side, the status arrives as an integer and is converted with
-`TryFrom`. It is never made into a Rust `enum` directly. A value C sends that
-Rust does not know becomes an error, not undefined behaviour. A tier-3 test
-checks that the C and Rust lists match, so neither can add a code the other
-lacks.
-
-### Shared types: the compatibility layer
-
-Some types have to cross the boundary as data: a shell's exponents and
-coefficients, a pair list, or the constants device code shares (today's
-`constants.h`). These live in a C header, which is their single source:
-
-- **The header is plain C.** No templates, no vendor types, no layouts that
-  depend on the backend. That last rule comes from the crate's experience:
-  `wwrDeviceProp` differs between CUDA and ROCm, and so it could not be
-  mirrored. `MemPoolProps` happens to match on both, and that had to be checked
-  by hand.
-- **Rust's `#[repr(C)]` mirror is generated** from the header by bindgen, not
-  written by hand.
-- **Layout is checked on both sides.** Rust gets `size_of`, `align_of` and
-  `offset_of` assertions in `const` (tier 1). C++ gets `static_assert`s.
-- **Only some modules need this.** A module whose wrappers take only pointers
-  and integers has no compatibility layer. The layer exists where a type must
-  cross, and nowhere else.
-
-A `.cuh` that is C++ only (templates, device functions) stays on the C++ side
-and is never mirrored.
-
-### Build
-
-- **The backend is chosen once.** The C++ layer is built by CMake for exactly
-  one backend, as today. `build.rs` links the result, and fails if the backend
-  is not stated, rather than defaulting to one.
-- **`devtools/cross-backend-check.sh` still applies** to every `.cu`, because
-  nvcc accepts code that `clang -x hip` rejects.
-- **Library calls (BLAS, solvers) go straight from Rust through `wwr-sys`.**
-  Only our own kernels need a C++ wrapper.
-
-### Open questions
-
-- **Granularity of the C++ libraries.** One library per module, mirroring
-  `src/`, or one for everything? One per module keeps rebuilds and links small.
-  One for everything keeps `build.rs` simple.
-- **When bindings are generated.** bindgen at build time needs libclang
-  wherever cargo runs. Committed bindings, with a check that regenerates and
-  diffs them, avoid that and make drift visible in review.
-- **Can FelizJueves emit the wrappers?** Its kernels are generated, so their
-  launch wrappers and their `*_workspace_bytes` queries could be generated
-  beside them, instead of written once per kernel family.
+The GPU layer has its own document, [`gpu_layer.md`](gpu_layer.md). In
+short: the kernels stay in C++ and CUDA behind the bridge layer the tree
+already has, 42 bridge headers and 114 launchers, none of which allocates,
+synchronizes or sets the device; the port changes the ABI the bridge is
+spoken in, not what it says. The bridge header is the port line, one module
+at a time, with the C++ pipeline green throughout, since C++ calls the same
+`extern "C"` header. A launch wrapper stays in its `.cu`, becomes `extern "C"`, takes
+the C ABI's stream, and returns one `int32_t` status in three ranges:
+success, the C ABI's `wwr_status` from its own `wwr_get_last_error()`, and
+the wrapper's refusals, kept apart from launch errors. The launch shape and
+the angular-momentum dispatch table stay with the kernel. Scratch is sized
+by a `*_workspace_bytes(dims)` query, pure in its dimensions, that the
+task's layout calls at planning. Shared types are plain-C headers, the view
+headers the bridges already have, mirrored by bindgen and layout-checked on
+both sides; the constants split into a macro header both sides read. The
+templated `recipes` bridges are monomorphised one entry per instantiation,
+as WarpWraps' C ABI does. The libraries are one shared object per module,
+bindings are committed and diffed by a test, and FelizJueves is asked to
+emit the mechanical fixed-block launchers.
 
 ## Documentation
 
