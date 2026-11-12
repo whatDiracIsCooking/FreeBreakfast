@@ -12,6 +12,10 @@ It stands alone: nothing here uses the other crates under `experimental/rust/`.
 | `core::wwr::common` | wwr's `src/extension/common`, and the `src/extension/error_handling` primitives it re-exports | `ErrorCode` (`success_code` / `error_name` / `error_string`), `ErrorPolicy` (`error_policy` and `typed_error_policy` in one trait), `PolicyMap`, `gpu_check` / `gpu_check_at`, `wwr_status` as an error code, `ScopedDeviceIndex`, `kit::AbortPolicy` |
 | `core::wwr::handle` | wwr's `src/extension/handle` | `BaseHandle` over a `HandleKind` (CRTP's `create`/`destroy` hooks), `DeviceBoundHandle`, `StreamBoundHandle` over a `StreamBoundKind`, the three views, and the `DeviceHandle` / `DeviceHandleStream` / `DeviceHandlePool` ladder |
 | `core::wwr::runtime` | wwr's `src/extension/runtime` | `Stream`, `Event`, `MemPool` (with `MemPoolProps`), `Graph`, `GraphExec`, and `kit::DeviceHandle` (a stream and a pool on one device), each a newtype over the handle it is built on; stream capture through to a launched graph |
+| `core::wwr` (`gpu_status`, the policies) | `src/core/wwr`'s `:status` and `:policy` | `gpu_status` / `gpu_status_at`; the tree's `AbortPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` and `PolicyMap`, which log through `core::log` (not wwr's stderr `kit::AbortPolicy`) |
+| `core::log` | `src/core/log` | The one backend behind the [`log`](https://crates.io/crates/log) facade: spdlog's line format (local time, OS thread id, `file:line`), the seven levels, `set_level` / `should_log` / `flush`, one file sink, the warning counter, and `log_at` for a location already held |
+| `core::error_handling` | `src/core/error_handling` | `ErrorKind` (with the pinned exit codes as `exit_code`), `Error` and its `#[track_caller]` factories, `Result<T>` / `Status`, `check_or_abort` |
+| `core::diagnostics` | `src/core/diagnostics` (`diagnostics.h`) | `gpu_must` (`FBF_GPU_MUST`), `critical!` (`FBF_LOG_CRITICAL`), and `log`'s `trace!` ... `error!` re-exported (`FBF_LOG_TRACE` ... `FBF_LOG_ERROR`); `FBF_TRY` is `?` |
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -24,6 +28,13 @@ to force:
 - The move constructors, `release()` and the moved-from state. A Rust move
   leaves nothing behind to drop.
 - Dangling views. A view borrows the handle it came from.
+
+- The `FBF_LOG_*` macros, and the rule that formatting goes only through
+  them. `log`'s macros check the level before they format.
+- `LocatedFormat` and the `err_*` helpers. A `#[track_caller]` factory
+  captures its caller even with a format string, so
+  `Err(Error::io(format!(...)))` does what `err_io(...)` does.
+- `FBF_TRY`. It is `?`, which moves the error's origin through unchanged.
 
 Two things go the other way, where Rust asks for more than the C++ does:
 
@@ -82,6 +93,12 @@ threads' stream work intermittently deadlocked inside `libamdhip64` (about
 one run in two of the unit tests); that file has the evidence. Cargo runs
 each test binary as its own process, so they never overlap.
 
+The logger is process-global, so `tests/log.rs` is a binary of its own too,
+and its in-process checks are one test. Its abort and exit cases re-run
+that binary as a child and read the child's stdout: what they check (the
+critical line flushed before `abort`, the buffered tail flushed at exit) is
+what survives the process ending.
+
 Tests run in parallel, so a capture test must not use global capture mode.
 A global capture forbids other threads' unsafe calls, and on the 3080 it
 made a neighbouring pool's create abort or its destroy segfault.
@@ -95,3 +112,11 @@ Nothing in ctest or either gate runs cargo. This directory is checked by hand on
 and 2 in release. The debug unit-test binary passed 20 runs in a row on
 each card, and the pool binary 20 on each. Clippy, rustdoc and `cargo fmt
 --check` are clean.
+
+2026-11-12, `core::log`, `core::error_handling`, `core::diagnostics` and
+`core::wwr`'s status and policies, on the RTX 3080 (CUDA) only: 39 unit
+tests, the 5 log tests and the 2 pool-allocation tests pass in a debug
+build, and 36, 5 and 2 in release. The log binary passed 20 runs in a row.
+Clippy, rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Nothing
+added calls a backend-specific path, but it has not been run on the
+gfx1200.
