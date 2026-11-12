@@ -1008,8 +1008,11 @@ geo::IrcOptions valley_options() {
 // Each side of the valley: every point k + 1 on the sphere of radius s / 2
 // about point k's pivot (to 1e-12), its gradient's part tangent to that
 // sphere under sphere_gradient (recomputed here), the energy falling at every
-// point, and the walk stopped with the side's minimum within half a step of
-// the last point by the model, so within one step (mass-weighted) of it.
+// point, and the walk stopped with |g| halved over its last step, so within
+// one step (mass-weighted) of the side's minimum. This is the case the stop
+// was added for (#1269): without it, the next sphere holds the minimum near
+// its pivot, and its iteration flips between the two sides and never
+// converges (SphereNotConverged, at both sides).
 TEST(GeometryIrc, CurvedValleyHoldsTheHypersphereAndReachesBothMinima) {
   const geo::IrcOptions options = valley_options();
   const double sqrt_m = std::sqrt(kHydrogenMass);
@@ -1057,6 +1060,65 @@ TEST(GeometryIrc, CurvedValleyHoldsTheHypersphereAndReachesBothMinima) {
     EXPECT_LE(miss, options.step_size) << "side " << side;
     // It left along the way out.
     EXPECT_GT(side * points[1].x[0], 0.0);
+  }
+}
+
+// #1278: a soft valley bending on an arc of radius R = 10 about (0, R), with
+// a stiff floor across it, E = 1e-3 u^2 + 3 (r - R)^2 + z^2 / 200, r the
+// distance from (0, R, 0), u = theta^2 / theta_m^2 - 1, theta the angle
+// along the arc from the TS at the origin, theta_m = 0.3: minima at
+// (+-R sin theta_m, R (1 - cos theta_m), 0).
+fb::Result<double> arc_valley(std::span<const double> x, std::span<double> gradient) {
+  constexpr double kRadius = 10.0;
+  constexpr double kThetaM2 = 0.09;
+  const double dx = x[0];
+  const double dy = x[1] - kRadius;
+  const double r2 = (dx * dx) + (dy * dy);
+  const double r = std::sqrt(r2);
+  const double theta = std::atan2(dx, -dy);
+  const double u = (theta * theta / kThetaM2) - 1.0;
+  const double de_dtheta = 1e-3 * 4.0 * u * theta / kThetaM2;
+  const double de_dr = 6.0 * (r - kRadius);
+  gradient[0] = (de_dr * dx / r) - (de_dtheta * dy / r2);
+  gradient[1] = (de_dr * dy / r) + (de_dtheta * dx / r2);
+  gradient[2] = 1e-2 * x[2];
+  return (1e-3 * u * u) + (3.0 * (r - kRadius) * (r - kRadius)) + (5e-3 * x[2] * x[2]);
+}
+
+// At the default sphere thresholds each point of the arc valley is off its
+// floor by up to sphere_gradient / 6, so its gradient carries a part across
+// the floor, and that puts the minimum along the steepest descent,
+// |g| / (u H u), within half a step 10 steps short of the minimum: the model's
+// line test, the stop before #1278, ended each side there (point 20 of 30).
+// |g| sees that part at second order, so the walk runs on to within a step
+// of the minimum, its energy falling at every point.
+TEST(GeometryIrc, SoftCurvedValleyRunsToItsMinimum) {
+  // d2E/dtheta2 = -4e-3 / theta_m^2 at the TS, over R^2 along x.
+  const std::array<double, 9> hessian{
+      -4e-3 / (0.09 * 100.0), 0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 1e-2};
+  geo::IrcOptions options;
+  options.max_points = 200;
+  options.max_force = 1e-10;
+  options.project_rigid_body = false;
+  const double sqrt_m = std::sqrt(kHydrogenMass);
+  for (const double side : {1.0, -1.0}) {
+    const std::array<double, 3> direction{side, 0.0, 0.0};
+    const auto path = geo::irc(one_hydrogen(), hessian, direction, arc_valley, options);
+    ASSERT_TRUE(path.has_value()) << path.error().message;
+    const auto &points = path->points;
+    EXPECT_EQ(path->stop, geo::IrcStop::MinimumWithinStep) << geo::irc_stop_name(path->stop);
+    for (std::size_t k = 0; k + 1 < points.size(); ++k) {
+      EXPECT_LT(points[k + 1].energy, points[k].energy) << k;
+    }
+    const auto &end = points.back().x;
+    const double miss = sqrt_m * std::hypot(end[0] - (side * 10.0 * std::sin(0.3)),
+                                            end[1] - (10.0 * (1.0 - std::cos(0.3))), end[2]);
+    ::testing::Test::RecordProperty(side > 0.0 ? "forward_miss" : "backward_miss",
+                                    std::format("{:.3e}", miss));
+    std::cout << std::format("[ irc ] soft arc valley side {:+.0f}: {} points, {:.4f} amu^1/2 "
+                             "bohr from the minimum (bar {})\n",
+                             side, points.size() - 1, miss, options.step_size);
+    EXPECT_LE(miss, options.step_size) << "side " << side;
   }
 }
 
