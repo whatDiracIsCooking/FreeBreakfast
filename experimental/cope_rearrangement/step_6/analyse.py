@@ -224,6 +224,32 @@ def ladder_summary(h: dict) -> dict | None:
     return out
 
 
+def same_geometry(a: dict, b: dict) -> bool:
+    """Two Hessian entries at the same Cartesian geometry (to 1e-8 bohr)."""
+    return bool(numpy.abs(a["_x"] - b["_x"]).max() < 1e-8)
+
+
+def bars(analytic: str, numerical: str) -> dict | None:
+    """|H_analytic - H_numerical| in units of the numerical ladder's own
+    per-element bar (its noise floor), where the numerical run has a
+    ladder: the worst element, where it is, and how many pass 1 and 2."""
+    h = json.loads((RUNS / numerical / "hessian.json").read_text())
+    bar = (h.get("ladder") or {}).get("bar")
+    if bar is None:
+        return None
+    a = json.loads((RUNS / analytic / "hessian.json").read_text())
+    r = numpy.abs(numpy.array(a["hessian"]) - numpy.array(h["hessian"]))
+    r = r / numpy.array(bar)
+    i, j = divmod(int(r.argmax()), r.shape[1])
+    return {
+        "max_bars": float(r.max()),
+        "at": [i, j],
+        "over_1": int((r > 1).sum()),
+        "over_2": int((r > 2).sum()),
+        "elements": int(r.size),
+    }
+
+
 def refusal(name) -> str | None:
     """The [error] line of a run that wrote no hessian.json, cut short."""
     for line in (RUNS / name / "log.txt").read_text().splitlines():
@@ -564,16 +590,42 @@ def main() -> None:
             cc = thermo.ensemble(members([ts], t))
             res["boat"][tkey] = thermo.activation(bb, cc)
     # The analytic Hessians against a difference Hessian at the same point.
+    # Since #1280 (#1268) the analytic call takes the end points and the
+    # conformers with an inactive pair under 1e-6 Eh too; g_mm's minimum is
+    # pc_plus, so its numerical partner is plus_hessian (the ladder).
+    pairs = [
+        ("boat_hessian", "boat_hessian_difference"),
+        ("conf_g_pm_hessian_analytic", "conf_g_pm_hessian"),
+        ("plus_hessian_analytic", "plus_hessian"),
+        ("minus_hessian_analytic", "minus_hessian"),
+        ("conf_a_pp_hessian_analytic", "conf_a_pp_hessian"),
+        ("conf_a_cc_hessian_analytic", "conf_a_cc_hessian"),
+        ("conf_g_pp_hessian_analytic", "conf_g_pp_hessian"),
+        ("conf_g_mm_hessian_analytic", "plus_hessian"),
+    ]
     res["analytic_vs_difference"] = {
         a: modes_compare(hess[a], hess[d])
         | {
+            "numerical": d,
             "lowest_analytic": hess[a]["frequencies"][:3],
             "lowest_difference": hess[d]["frequencies"][:3],
+            "n_imaginary_analytic": hess[a]["n_imaginary"],
+            # elements compare only at the same geometry in the same frame
+            # (g_mm's minimum is pc_plus's, in another orientation)
+            "same_geometry": same_geometry(hess[a], hess[d]),
+            "max_abs_hessian_difference": float(
+                numpy.abs(hess[a]["_hessian"] - hess[d]["_hessian"]).max()
+            )
+            if same_geometry(hess[a], hess[d])
+            else None,
+            "ladder_bars": bars(a, d) if same_geometry(hess[a], hess[d]) else None,
+            "asymmetry_analytic": hess[a]["asymmetry"],
+            "asymmetry_numerical": hess[d]["asymmetry"],
+            "min_inactive_gap": hess[a]["min_inactive_gap"],
+            "wall_s": hess[a]["wall_s"],
+            "memory": hess[a]["memory"],
         }
-        for a, d in (
-            ("boat_hessian", "boat_hessian_difference"),
-            ("conf_g_pm_hessian_analytic", "conf_g_pm_hessian"),
-        )
+        for a, d in pairs
         if a in hess and d in hess
     }
     if ts:
