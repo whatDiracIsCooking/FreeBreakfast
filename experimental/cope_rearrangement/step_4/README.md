@@ -413,6 +413,15 @@ the outside-pool memory. The uncapped OOM is a free-breakfast issue (the
 budget should leave room for the outside-pool reservation), reported, not
 worked around in code.
 
+**Since #1259** the budget leaves the kernels' stack its room, capped or
+not. The uncapped `pc_ts_hessian`, rerun at `geometries/pc_ts.xyz`, then
+completed in 749 s with a process peak of 8490 MiB. Its frequencies match
+`pc_ts_hessian_capped`'s to a median of 3e-5 cm⁻¹, and at most 0.047 cm⁻¹
+(the 3170 cm⁻¹ mode). The imaginary one is 475.1518i. Pre-flight now
+refuses the 8 GiB cap on this card, because the cap plus the 2.2 GiB the
+stack can take must fit what is free. A capped rerun needs at most about
+7 GiB.
+
 ### What is untraced
 
 - The PC Hessian's 1.4e-6 asymmetry and translational sum (above).

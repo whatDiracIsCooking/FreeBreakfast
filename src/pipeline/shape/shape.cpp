@@ -551,18 +551,22 @@ Status preflight(Calculation &calc, NodeResources &node) {
     DeviceResources &res = node.device(0);
     const ScopedDeviceIndex on{res.dev_idx()};
     const PoolUsage usage = res.device()->pool_usage();
-    // min(pool_cap, free + reserved) - used: below pool_cap - used only when
-    // the driver cannot supply the cap.
+    // min(pool_cap, free + reserved - stack) - used: below pool_cap - used
+    // only when the driver cannot supply the cap beside the kernels' stack,
+    // which it would take back from the pool's cache mid-run.
     const size_t budget = FBF_TRY(res.memory_budget());
     if (budget + usage.used_current < pool_cap) {
-      const uint64_t free_bytes = budget + usage.used_current - usage.reserved_current;
+      const uint64_t stack = res.device()->stack_growth(DeviceResources::kKernelStackBytes);
+      const uint64_t free_bytes = budget + usage.used_current + stack - usage.reserved_current;
       return err_allocation(
           "pre-flight: device {} has {} bytes free ({:.3f} GiB), and its pool "
-          "holds {} more, short of the pool's cap of {} bytes ({:.3f} GiB): "
-          "max_device_mem_per_gpu = {} less the {} reserve outside the pool; "
-          "another process holds the rest",
+          "holds {} more; less the {} bytes the kernels' stack can still take "
+          "outside the pool, that is short of the pool's cap of {} bytes "
+          "({:.3f} GiB): max_device_mem_per_gpu = {} less the {} reserve outside "
+          "the pool; another process holds the rest, or the cap leaves the "
+          "stack no room",
           res.dev_idx(), free_bytes, static_cast<double>(free_bytes) / (1024.0 * 1024.0 * 1024.0),
-          usage.reserved_current - usage.used_current, pool_cap,
+          usage.reserved_current - usage.used_current, stack, pool_cap,
           static_cast<double>(pool_cap) / (1024.0 * 1024.0 * 1024.0), device_cap, kReserve);
     }
     const uint64_t taken = usage.used_current + kPoolHeadroomBytes;

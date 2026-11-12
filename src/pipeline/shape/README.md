@@ -121,8 +121,10 @@ What it does that only this module can:
 - **The pre-warm**, which needs the plan's peak and the pool: the pool's
   cap less the headroom and less what it already holds is allocated and
   freed through the pool. Whether the device can supply the cap is read off
-  `memory_budget()`, `min(cap, free + reserved) − used`, so no runtime call
-  outside `core/wwr` is made; the refusal derives the free memory from it.
+  `memory_budget()`, `min(cap, free + reserved − stack) − used`, where
+  `stack` is what the kernels' stack can still take
+  (`Device::stack_growth`), so no runtime call outside `core/wwr` is made;
+  the refusal derives the free memory from it.
 
 `test/gtest/pipeline_preflight_gpu.cpp` holds it to water's RHF chain, a
 cap below the fold's peak refused and one above it run inside the pool's cap
