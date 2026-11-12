@@ -111,7 +111,8 @@ pub(crate) mod tests {
 
     type Abort = AbortPolicy<wwr_status>;
 
-    /// A stream owner, as the runtime module's `Stream` will be.
+    /// A stream owner standing in for `runtime::Stream`: `handle` sits below
+    /// `runtime`, so its tests do not reach up to it, as wwr's cannot.
     pub(crate) struct OwnedStream(DeviceBoundHandle<StreamKind, Abort, Abort, Abort>);
 
     impl OwnedStream {
