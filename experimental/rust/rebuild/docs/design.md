@@ -2,66 +2,22 @@
 
 ## Programming model
 
-We design a feature as a DAG of tasks before we write it as code. A node is a
-task. An edge is data that one task produces and another task consumes. The
-orchestrator places, schedules and joins the nodes. The tasks themselves only
-compute.
+The programming model has its own document,
+[`programming_model.md`](programming_model.md). In short: a feature is a DAG
+of tasks. A task declares its device, its layout (every buffer it holds, as a
+function of its dimensions), its boundary and, optionally, a partition. An
+edge declares its size, its kind (broadcast, reduce, gather, point-to-point),
+its reduction order and its lifetime. The orchestrator derives fork and sync
+points, concurrency, placement, admission and transport, and lays every
+buffer out in an arena at planning, so a run allocates nothing and the
+footprint is the plan rather than a formula beside the code. A DAG is planned
+once and run many times, and the same DAG runs unchanged on one GPU, a node
+of GPUs or many nodes. The C++ pipeline is the model's one-device, one-order
+instance.
 
-### What each task answers
-
-1. **Resources.** Does it run on the CPU or the GPU, and what shape does its
-   compute take: bandwidth-bound, FLOP-bound or latency-bound?
-2. **Memory footprint.** How much does it allocate, written as a function of
-   problem size (`nbf`, `naux`, `nocc`, ...)? Which allocations are scratch,
-   freed when the task ends, and which outlive it as outputs?
-3. **Sharing.** Which data do many workers read (shared, read-only)? Which data
-   does one worker own? Which data is reduced across workers?
-4. **Fork and sync points.** Where does the work split, and where does it join?
-5. **Communication.** What crosses between workers? How big is it, and in which
-   direction does it go (broadcast, reduce, gather, point-to-point)?
-6. **Boundary.** What are the task's inputs and outputs, and what does it
-   promise not to touch? The task is the unit of scheduling, retry, testing and
-   timing.
-7. **Orchestrator duties.** Placement, admitting memory against the budget,
-   launches, synchronization, reductions, and propagating errors.
-8. **Concurrency.** What else can run alongside it, both other DAG nodes and
-   transfers overlapped with compute?
-
-### Example: distributed Coulomb build
-
-```
-        D ──broadcast──┬──────────┬──────────┐
-                       ▼          ▼          ▼
-                   J_0 (w0)   J_1 (w1)   J_2 (w2)    shell-pair slices
-                       └────reduce┴──────────┘
-                                  ▼
-                                  J
-```
-
-- **Resources:** GPU, FLOP-bound. Each worker takes one slice of the shell-pair
-  list.
-- **Footprint per worker:** D (`nbf²`), the partial J (`nbf²`) and the integral
-  scratch.
-- **Shared:** D, which every worker reads. **Reduced:** J.
-- **Communication:** `nbf²` in per worker (the broadcast) and `nbf²` out per
-  worker (the reduce).
-- **Fork:** the shell-pair partition. **Sync:** the reduce.
-- **Concurrent:** the K build reads the same D and is independent of J. It is a
-  sibling node, not a successor.
-
-### Open questions
-
-- **Loops.** An SCF iteration is a DAG, but the SCF loop is not. Does the
-  orchestrator see one DAG per iteration, with a convergence node deciding
-  whether to emit the next one? Or is the loop a node whose body is a sub-DAG?
-- **Granularity.** A task is coarser than a kernel launch and finer than a
-  pipeline step. Where exactly is the line?
-- **Footprint: declared or measured?** A declared formula lets the orchestrator
-  admit work before it runs. A measured figure is honest. Do we want both, with
-  the measurement checking the formula?
-- **Relation to the C++ pipeline.** The C++ pipeline is already a coarse DAG of
-  steps, planned from TOML. Is the step DAG the same structure at a coarser
-  grain, or a separate layer above the task DAG?
+The sections below lean on three of its terms: the *sharing* an edge's kind
+declares, the *layout* a task declares and the *arena* the orchestrator lays
+it out in, and *workers*, which are streams, GPUs or nodes.
 
 ## Testing
 
@@ -97,8 +53,8 @@ Push each check to the cheapest tier that can express it:
 | Tier | Catches | Examples |
 |---|---|---|
 | **1. Compile time** | Misuse that should not build | A view borrows its handle, so it cannot outlive it. A host buffer and a device buffer are different types. Dimensions are newtypes (`Nbf`, `Naux`), so they cannot be swapped. `Send`/`Sync` decide which data may cross between workers (the programming model's sharing question, enforced). `const` generics fix angular momentum. |
-| **2. Contract** | Preconditions and invariants the type system cannot express | Shapes agree, an index is in range, a task's measured footprint is within its declared formula |
-| **3. CPU only** | Logic that touches no device | The DAG planner, placement, memory admission, footprint formulas, config parsing, error codes. Multi-worker orchestration runs with fake workers, as the fake `HandleKind` already does for handles. |
+| **2. Contract** | Preconditions and invariants the type system cannot express | Shapes agree, an index is in range, a task asks the arena only for a buffer its layout named |
+| **3. CPU only** | Logic that touches no device | The DAG planner, placement, memory admission, layouts and the arena's offsets, config parsing, error codes. Multi-worker orchestration runs with fake workers, as the fake `HandleKind` already does for handles. |
 | **4. Single GPU** | One task's numbers on one device | One J build against a reference. Several workers as streams on one card. |
 | **5. Multi GPU** | What only real separate devices show | Peer transfers, broadcast and reduce across cards, per-device placement |
 
@@ -127,10 +83,9 @@ planner is tier 3. A unit test of the J kernel is tier 4.
   same approximation, such as density fitting over the same auxiliary set) at
   fixed tolerances derived by analysis. Each comparison is one run, and the
   tolerance is never loosened to make a test pass.
-- **Performance.** Each task's wall time and peak memory are recorded per run
-  and compared against history. The measured peak is also checked against the
-  task's declared footprint, which keeps the formulas the orchestrator admits
-  work by honest.
+- **Performance.** Each task's wall time is recorded per run and compared
+  against history. Memory needs no measurement: a run allocates nothing, so a
+  plan's arena is its peak, and the arena's size is recorded per plan instead.
 
 ### Open questions
 
@@ -192,9 +147,9 @@ Scopes inside a task are for finer detail.
 | Level | For | Examples |
 |---|---|---|
 | `trace` | Inner-loop detail, off by default | Per batch, per kernel launch |
-| `debug` | Orchestration, for whoever is debugging the run | A task starts or ends, its placement, its declared and measured footprint, sync points |
+| `debug` | Orchestration, for whoever is debugging the run | A task starts or ends, its placement, its layout's share of the arena, sync points |
 | `info` | What someone running a calculation wants to see | A step starts, SCF iterations and energies, final results |
-| `warn` | A result is produced, but someone should look at it | Near-linear dependence, slow convergence, a task over its declared footprint. Every warning is counted. |
+| `warn` | A result is produced, but someone should look at it | Near-linear dependence, slow convergence, an adaptive task planned at width 1. Every warning is counted. |
 | `error` | An error that reached the place that handles it | Logged once, there |
 | `critical` | The process is about to abort | `check_or_abort`, a broken contract in release |
 
@@ -290,10 +245,10 @@ belong next to the kernel that assumes them. Rust passes the dimensions, never
 a block size.
 
 **Scratch is sized by the wrapper and allocated by Rust.** A kernel that needs
-scratch space exposes a query, `*_workspace_bytes(dims)`. Rust allocates that
-amount from the task's pool and passes it in. The query is also the kernel's
-share of the task's declared footprint, so the programming model's footprint
-formula is built from these numbers rather than guessed.
+scratch space exposes a query, `*_workspace_bytes(dims)`. The task's layout
+calls it at planning, the arena carves that amount, and Rust passes the
+buffer in. The query is the kernel's share of the task's layout, so the
+programming model's sizes are numbers the kernels own rather than guesses.
 
 ### Error codes
 
