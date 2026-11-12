@@ -2299,13 +2299,18 @@ Measured on the gfx1200 (`--preset hip`), against this tree's numerical
 
 | case | pairs (gap, Eh) | coordinates | bar (the ladder's floor) | worst element | the pairs' part | the call |
 |---|---|---|---|---|---|---|
-| `nh3_c3v_631g`, C3v ammonia 6-31G CAS(8,7) | virtual e (10, 9), (12, 11) (3e-14) | 12 Cartesian | 4.2e-7 | 0.043 bars | 712 bars | 18.6 s |
-| `nh3_near_631g`, H1 2e-6 bohr off C3v | the same (7.4e-8), no symmetry | 12 | 3.2e-7 | 0.058 | 948 | 18.5 s |
+| `nh3_c3v_631g`, C3v ammonia 6-31G CAS(8,7) | virtual e (10, 9), (12, 11) (3e-14) | 12 Cartesian | 4.2e-7 | 0.034, 0.043 bars | 591, 712 bars | 18.6 s |
+| `nh3_near_631g`, H1 2e-6 bohr off C3v | the same (7.4e-8), no symmetry | 12 | 3.2e-7 | 0.048, 0.058 | 948 | 18.5 s |
 | `hexatriene_sto3g`, C2h, STO-3G CAS(6,6) | C1/C6 1s (5, 4) (4.6e-7); (1, 0) at 3.7e-6 divided | 42 | 1.2e-7 | 0.330 | 2.1 | 110 s |
 
-Every ladder settled (no ratio unsettled, every element at its floor).
-Asymmetry ≤ 1.0e-10, the sum rule ≤ 3.5e-9. The ammonia's pairs' part is
-700 to 950 bars, so without it the Hessian misses by that much. On
+Two runs where two numbers are given. Every ladder settled (no ratio
+unsettled, every element at its floor). Asymmetry ≤ 1.0e-10, the sum rule
+≤ 3.5e-9. The ammonia's pairs' part is 590 to 950 bars, so without it the
+Hessian misses by that much. At the exact pairs the part moves run to run
+(591 and 712 bars) while the total does not: an exactly degenerate pair's
+canonical orientation is arbitrary, the CASSCF lands on a different one
+each run (f^(x)_pq along coordinate 0 read 7.5e-2 and 8.2e-2), and the
+part is the share of the total that orientation leaves to δ. On
 hexatriene the 1s pair's part is two bars: the core pair's off-diagonal
 f is far from the active space, so the energy barely reads it. The case
 is there for #1268's shape (a pair of distant equivalent atoms, the next
