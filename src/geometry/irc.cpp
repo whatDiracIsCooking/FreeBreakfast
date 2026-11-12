@@ -186,6 +186,47 @@ std::vector<double> irc_sphere_step(std::span<const double> hessian,
   return out;
 }
 
+// The first sphere's step, under #1285's hold, from a trial p ahead of the
+// pivot whose model step would land behind it: along the sphere's great
+// circle down the tangential gradient g_T = g - (g . p) p / radius^2, by the
+// Newton step |g_T| / kappa on E's curvature along that circle, kappa =
+// u H u - (g . p) / radius^2 (u = -g_T / |g_T|, the circle's own curvature
+// folded in), at most a quarter turn, and halved until the point is ahead of
+// the pivot (p . down >= 0). The trial itself when g_T is zero.
+std::vector<double> irc_sphere_descent(std::span<const double> hessian, std::span<const double> p,
+                                       std::span<const double> g, std::span<const double> down,
+                                       double radius) {
+  const size_t n = p.size();
+  const double along = irc_dot(g, p) / (radius * radius);
+  std::vector<double> u(n);
+  for (size_t i = 0; i < n; ++i) {
+    u[i] = (along * p[i]) - g[i];
+  }
+  const double u_norm = std::sqrt(irc_dot(u, u));
+  std::vector<double> out(p.begin(), p.end());
+  if (!(u_norm > 0.0)) {
+    return out;
+  }
+  for (double &value : u) {
+    value /= u_norm;
+  }
+  double curvature = -along;
+  for (size_t i = 0; i < n; ++i) {
+    curvature += u[i] * irc_dot(hessian.subspan(i * n, n), u);
+  }
+  const double quarter = 0.5 * std::numbers::pi;
+  double angle = curvature > 0.0 ? std::min(u_norm / (curvature * radius), quarter) : quarter;
+  for (int32_t halving = 0; halving < 60; ++halving, angle *= 0.5) {
+    for (size_t i = 0; i < n; ++i) {
+      out[i] = (std::cos(angle) * p[i]) + (radius * std::sin(angle) * u[i]);
+    }
+    if (irc_dot(out, down) >= 0.0) {
+      break;
+    }
+  }
+  return out;
+}
+
 // Bofill's update of the n x n row-major @p hessian over the step s and the
 // change in gradient y: with xi = y - H s, phi = (xi . s)^2 / (|xi|^2 |s|^2)
 // of the SR1 update H + xi xi^T / (xi . s) plus 1 - phi of Powell's
@@ -372,56 +413,89 @@ irc(std::span<const Atom> start, std::span<const double> hessian, std::span<cons
       pivot[i] = point.q[i] + (radius * down[i]);
     }
     // The hypersphere: point k is on it, so the first trial is the model's
-    // from there.
+    // from there. With hold_ahead, a trial ahead of the pivot is not followed
+    // by one behind it: the model's step is replaced by irc_sphere_descent's.
     IrcEvaluation trial = point;
     int32_t evaluations = 0;
     double tangential = 0.0;
-    bool converged = false;
-    for (;;) {
-      std::vector<double> p(n);
-      for (size_t i = 0; i < n; ++i) {
-        p[i] = trial.q[i] - pivot[i];
-      }
-      const std::vector<double> next_p =
-          irc_sphere_step(model, irc_internal_basis(trial.rigid, n), p, trial.g, radius);
-      double correction = 0.0;
-      for (size_t i = 0; i < n; ++i) {
-        correction += (next_p[i] - p[i]) * (next_p[i] - p[i]);
-      }
-      correction = std::sqrt(correction);
-      if (evaluations > 0) {
-        // The gradient's part tangent to the sphere at the trial.
-        const double along = irc_dot(trial.g, p) / irc_dot(p, p);
-        double t2 = 0.0;
+    const auto search = [&](bool hold_ahead) -> Result<bool> {
+      trial = point;
+      int32_t taken = 0;
+      for (;;) {
+        std::vector<double> p(n);
         for (size_t i = 0; i < n; ++i) {
-          const double t = trial.g[i] - along * p[i];
-          t2 += t * t;
+          p[i] = trial.q[i] - pivot[i];
         }
-        tangential = std::sqrt(t2);
-        if (tangential <= options.sphere_gradient && correction <= options.sphere_displacement) {
-          converged = true;
-          break;
+        std::vector<double> next_p =
+            irc_sphere_step(model, irc_internal_basis(trial.rigid, n), p, trial.g, radius);
+        double correction = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+          correction += (next_p[i] - p[i]) * (next_p[i] - p[i]);
         }
-        if (evaluations == options.max_sphere_iterations) {
-          break;
+        correction = std::sqrt(correction);
+        if (taken > 0) {
+          // The gradient's part tangent to the sphere at the trial.
+          const double along = irc_dot(trial.g, p) / irc_dot(p, p);
+          double t2 = 0.0;
+          for (size_t i = 0; i < n; ++i) {
+            const double t = trial.g[i] - along * p[i];
+            t2 += t * t;
+          }
+          tangential = std::sqrt(t2);
+          if (tangential <= options.sphere_gradient && correction <= options.sphere_displacement) {
+            return true;
+          }
+          if (taken == options.max_sphere_iterations) {
+            return false;
+          }
         }
+        if (hold_ahead && irc_dot(p, down) > 0.0 && irc_dot(next_p, down) < 0.0) {
+          next_p = irc_sphere_descent(model, p, trial.g, down, radius);
+        }
+        std::vector<double> x(n);
+        for (size_t i = 0; i < n; ++i) {
+          x[i] = (pivot[i] + next_p[i]) / scale[i];
+        }
+        IrcEvaluation next = FBF_TRY(evaluate(x));
+        ++taken;
+        ++evaluations;
+        std::vector<double> s(n);
+        std::vector<double> y(n);
+        for (size_t i = 0; i < n; ++i) {
+          s[i] = next.q[i] - trial.q[i];
+          y[i] = next.g[i] - trial.g[i];
+        }
+        project_out(next.rigid, s);
+        project_out(next.rigid, y);
+        irc_bofill_update(model, s, y);
+        trial = std::move(next);
       }
-      std::vector<double> x(n);
+    };
+    const auto behind_pivot = [&] {
+      double ahead = 0.0;
       for (size_t i = 0; i < n; ++i) {
-        x[i] = (pivot[i] + next_p[i]) / scale[i];
+        ahead += (trial.q[i] - pivot[i]) * down[i];
       }
-      IrcEvaluation next = FBF_TRY(evaluate(x));
-      ++evaluations;
-      std::vector<double> s(n);
-      std::vector<double> y(n);
-      for (size_t i = 0; i < n; ++i) {
-        s[i] = next.q[i] - trial.q[i];
-        y[i] = next.g[i] - trial.g[i];
-      }
-      project_out(next.rigid, s);
-      project_out(next.rigid, y);
-      irc_bofill_update(model, s, y);
-      trial = std::move(next);
+      return ahead < 0.0;
+    };
+    // The first sphere passes through the TS, whose gradient is zero, so the
+    // TS is a stationary point of E on it, and a minimum: E's curvature on
+    // the sphere there is the Hessian's over the tangent space, the positive
+    // modes. (Point k on a later sphere is stationary too, but its curvature
+    // there is lowered by |g_k| / (s / 2), the Lagrange multiplier.) On a
+    // stiff, sharply curved valley the model's step from the mode-displaced
+    // point can jump the sphere's diameter back to the TS, and the search
+    // converges there (#1285). That search is run again from the start's
+    // model, holding its trials ahead of the pivot once one is. Each search
+    // has max_sphere_iterations evaluations; the point counts both.
+    std::vector<double> start_model;
+    if (k == 0) {
+      start_model = model;
+    }
+    bool converged = FBF_TRY(search(false));
+    if (k == 0 && converged && behind_pivot()) {
+      model = std::move(start_model);
+      converged = FBF_TRY(search(true));
     }
     if (!converged) {
       path.stop = IrcStop::SphereNotConverged;
@@ -429,11 +503,8 @@ irc(std::span<const Atom> start, std::span<const double> hessian, std::span<cons
     }
     // A rise, or a point behind the pivot (the step turned back by more
     // than a right angle): past the path's minimum either way.
-    double ahead = 0.0;
-    for (size_t i = 0; i < n; ++i) {
-      ahead += (trial.q[i] - pivot[i]) * down[i];
-    }
-    if (trial.energy > point.energy || ahead < 0.0) {
+    const bool behind = behind_pivot();
+    if (trial.energy > point.energy || behind) {
       path.stop = IrcStop::EnergyRose;
       return path;
     }

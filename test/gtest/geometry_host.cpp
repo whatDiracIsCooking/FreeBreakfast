@@ -1122,6 +1122,62 @@ TEST(GeometryIrc, SoftCurvedValleyRunsToItsMinimum) {
   }
 }
 
+// #1285: a stiff valley bent sharply, E = (x^2 - 1)^2 + k (y - 2 x^2)^2 +
+// z^2 / 2, its TS at the origin (Hessian diag(-4, 2k, 1)) and minima at
+// (+-1, 2, 0). The first sphere passes through the TS, where E on it has a
+// minimum; the model's step from the mode-displaced point jumped the sphere's
+// diameter back to it, the search converged there, and each side stopped
+// EnergyRose with the TS alone, at k = 200 and s = 0.05 (the issue's case),
+// k = 400 and s = 0.05, and k = 200 and s = 0.1. The retry holding the trials
+// ahead of the pivot leaves the TS, puts point 1 on its sphere with its
+// tangential gradient under sphere_gradient, and runs each side to within a
+// step of its minimum, the energy falling at every point.
+TEST(GeometryIrc, StiffSharplyCurvedValleyLeavesTheTransitionState) {
+  const double sqrt_m = std::sqrt(kHydrogenMass);
+  for (const auto [stiffness, step] : {std::pair{200.0, 0.05}, {400.0, 0.05}, {200.0, 0.1}}) {
+    const auto surface = [stiffness](std::span<const double> x,
+                                     std::span<double> gradient) -> fb::Result<double> {
+      const double a = (x[0] * x[0]) - 1.0;
+      const double b = x[1] - (2.0 * x[0] * x[0]);
+      gradient[0] = (4.0 * x[0] * a) - (8.0 * stiffness * b * x[0]);
+      gradient[1] = 2.0 * stiffness * b;
+      gradient[2] = x[2];
+      return (a * a) + (stiffness * b * b) + (0.5 * x[2] * x[2]);
+    };
+    const std::array<double, 9> hessian{-4.0, 0.0, 0.0, 0.0, 2.0 * stiffness, 0.0, 0.0, 0.0, 1.0};
+    geo::IrcOptions options;
+    options.step_size = step;
+    options.max_points = 200;
+    options.project_rigid_body = false;
+    for (const double side : {1.0, -1.0}) {
+      const std::array<double, 3> direction{side, 0.0, 0.0};
+      const auto path = geo::irc(one_hydrogen(), hessian, direction, surface, options);
+      ASSERT_TRUE(path.has_value()) << path.error().message;
+      const auto &points = path->points;
+      ASSERT_GE(points.size(), 3U) << "k " << stiffness << " s " << step << " side " << side;
+      EXPECT_EQ(path->stop, geo::IrcStop::MinimumWithinStep) << geo::irc_stop_name(path->stop);
+      for (std::size_t k = 0; k + 1 < points.size(); ++k) {
+        EXPECT_LT(points[k + 1].energy, points[k].energy) << k;
+      }
+      // Point 1: ahead, on the sphere of radius s / 2 about the pivot s / 2
+      // along the way out, its gradient's part tangent to it converged.
+      const auto &first = points[1].x;
+      EXPECT_GT(side * first[0], 0.0);
+      const std::array<double, 3> p{(sqrt_m * first[0]) - (0.5 * step * side), sqrt_m * first[1],
+                                    sqrt_m * first[2]};
+      EXPECT_NEAR(std::hypot(p[0], p[1], p[2]), 0.5 * step, 1e-12);
+      EXPECT_LE(points[1].tangential_gradient, options.sphere_gradient);
+      const auto &end = points.back().x;
+      const double miss = sqrt_m * std::hypot(end[0] - side, end[1] - 2.0, end[2]);
+      std::cout << std::format("[ irc ] stiff valley k {} s {} side {:+.0f}: {} points, point 1 "
+                               "in {} evaluations, {:.4f} amu^1/2 bohr from the minimum\n",
+                               stiffness, step, side, points.size() - 1,
+                               points[1].sphere_iterations, miss);
+      EXPECT_LE(miss, step) << "k " << stiffness << " s " << step << " side " << side;
+    }
+  }
+}
+
 // E = -x^2 + 3 y^2 / 2 + z^2: a quadratic saddle whose path is the x axis.
 // The model is the surface, so every point takes one evaluation, stays on the
 // axis, and lies k steps out; with no minimum the walk runs to max_points.
