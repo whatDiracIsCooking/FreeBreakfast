@@ -291,9 +291,8 @@ What these numbers mean:
   energy fell monotonically; R16 rose monotonically from 2.13 Å while R34
   fell to C–C at once (1.59 Å by evaluation 5). Neither walk passes a point
   with both distances near 1.6 Å, and neither stops before the hexadiene.
-- **Converged to max force 1.6e-6 and 1.2e-6 Eh/bohr.** These end points are
-  minima only by the optimiser's convergence. No Hessian was run at them, so
-  they are not proven minima.
+- **Converged to max force 1.6e-6 and 1.2e-6 Eh/bohr.** Step 6's
+  Hessians show both are minima ([step 6](../step_6/README.md#1-the-end-points-are-minima)).
 - **The conformer.** The walks relax past the chair-like geometry the IRC
   reaches, to R16 = 4.27 Å, through 70-odd low-gradient steps. This is the
   minimum the descent found from the IRC's end, not a search for the global
@@ -425,7 +424,7 @@ stack can take must fit what is free. A capped rerun needs at most about
 ### What is untraced
 
 - The PC Hessian's 1.4e-6 asymmetry and translational sum (above).
-- Whether the hexadiene end points are minima: no Hessian there.
+- ~~Whether the hexadiene end points are minima~~: traced in [step 6](../step_6/README.md#1-the-end-points-are-minima). Both are minima (42 real frequencies, the lowest 58.1 cm⁻¹, numerical Hessians: the analytic PC Hessian refuses them, #1268), and the two spectra agree to 0.016 cm⁻¹. Neither is the lowest conformer: a C1 gauche lies 0.245 kcal/mol below.
 - The CASSCF walks' b_g overshoot factor implies a b_g direction with Cartesian curvature
   above 1 Eh/bohr² that BFGS had not learned; the direction itself was not
   identified.
