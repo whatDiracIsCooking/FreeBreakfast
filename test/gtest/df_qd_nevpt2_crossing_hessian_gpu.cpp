@@ -21,6 +21,13 @@
 //   this solve's root phases, through the W form, within 2x the seam
 //   ladder's bars, SC and PC; and that W the crossing's own W at the 2 x 2's
 //   off-diagonal times s, the two gauges one;
+// - a degenerate inactive pair under both forms (#1282), on
+//   nh3_c3v_631g_sa2_degenerate (C3v ammonia, SA-2 CAS(8,7), its virtual e
+//   pairs exactly degenerate at f^SA) at its pc_floor 1e-10: PC's pair sum,
+//   c = 1, against its G(W^0 + W^1) ladder; the seam's off-diagonal, c =
+//   [[0, 1/2], [1/2, 0]], and term (i) through the W form at the fixture's
+//   seam W, each against its fixed-W ladder; every element within 2x its bar
+//   and the pairs' own part visible;
 // - the refusals: a third state within kRootGapFloor of the pair (H_eff made
 //   rank-one degenerate by the roots' energies alone), a pair that is not
 //   two states, and a c that is not symmetric.
@@ -71,6 +78,11 @@ constexpr double kTurn = 0.3;
 // h4_631g_sa2's block the fast tier takes (#1243): the Cartesian z of
 // atoms 0, 1 and 2, in its coordinates' order.
 constexpr std::array<std::size_t, 3> kH4Block{2, 5, 8};
+// The translational sum rule on a full Cartesian set (the QD Hessian tests').
+constexpr double kSumRule = 1e-8;
+// A fixture's SA-CASSCF roots against this solve's (hartree): the same
+// solution, to the two solves' conv_tol and a GPU sum's reassociation.
+constexpr double kRootAgreement = 1e-9;
 
 double max_abs(std::span<const double> v) {
   return std::ranges::fold_left(
@@ -152,9 +164,7 @@ struct Reference {
   crossing(const fb::mcscf::Solution &s, const bool pc, const std::int32_t p, const std::int32_t q,
            std::span<const double> c, std::span<const double> coordinates = {}) const {
     if (pc) {
-      auto t = fb::hessian::df_qd_pc_nevpt2_crossing(res(), molecule(), basis(), classes(),
-                                                     fit().aux, h(), fit().b, fit().l.data(), s,
-                                                     ncore, ncas, p, q, c, 0, coordinates);
+      auto t = pc_crossing(s, p, q, c, coordinates);
       if (!t) {
         return std::unexpected(std::move(t.error()));
       }
@@ -165,12 +175,30 @@ struct Reference {
                                                  c, 0, coordinates);
   }
 
+  // PC's crossing form whole (its degenerate pairs' part among it), at
+  // @p pc_floor.
+  [[nodiscard]] fb::Result<fb::hessian::QdPcNevpt2Terms>
+  pc_crossing(const fb::mcscf::Solution &s, const std::int32_t p, const std::int32_t q,
+              std::span<const double> c, std::span<const double> coordinates = {},
+              const double pc_floor = 0.0) const {
+    return fb::hessian::df_qd_pc_nevpt2_crossing(res(), molecule(), basis(), classes(), fit().aux,
+                                                 h(), fit().b, fit().l.data(), s, ncore, ncas, p, q,
+                                                 c, 0, coordinates, pc_floor);
+  }
+
+  // PC's W form whole at @p w and @p pc_floor.
+  [[nodiscard]] fb::Result<fb::hessian::QdPcNevpt2Terms>
+  pc_w_form(std::span<const double> w, const double pc_floor = 0.0) const {
+    return fb::hessian::df_qd_pc_nevpt2(res(), molecule(), basis(), classes(), fit().aux, h(),
+                                        fit().b, fit().l.data(), *solution, ncore, ncas, w, 0, {},
+                                        pc_floor);
+  }
+
   // The W form at @p w, SC's or PC's.
   [[nodiscard]] fb::Result<fb::hessian::QdScNevpt2Terms> w_form(const bool pc,
                                                                 std::span<const double> w) const {
     if (pc) {
-      auto t = fb::hessian::df_qd_pc_nevpt2(res(), molecule(), basis(), classes(), fit().aux, h(),
-                                            fit().b, fit().l.data(), *solution, ncore, ncas, w);
+      auto t = pc_w_form(w);
       if (!t) {
         return std::unexpected(std::move(t.error()));
       }
@@ -271,14 +299,22 @@ std::unique_ptr<Reference> make_reference(const fb::json &doc, const std::string
     weights += std::format("{}{:.17g}", weights.empty() ? "" : ", ", x);
   }
   const fb::json &basis = doc.at("basis");
+  // The fixture's active orbitals, or none (the RHF's frontier ones).
+  std::string active;
+  if (doc.contains("active") && !doc.at("active").is_null()) {
+    for (const auto a : doc.at("active").get<std::vector<std::int32_t>>()) {
+      active += std::format("{}{}", active.empty() ? "" : ", ", a);
+    }
+  }
   const std::string toml = std::format(
       "[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
       "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
       "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\nweights = [{}]\nconv_tol = {:g}\n"
-      "conv_tol_grad = {:g}\n",
+      "conv_tol_grad = {:g}\n{}",
       basis.is_string() ? basis.get<std::string>() : basis.at("name").get<std::string>(),
       doc.at("aux_basis").at("name").get<std::string>(), doc.at("ncas").get<std::int32_t>(),
-      doc.at("nelecas").get<std::int32_t>(), w.size(), weights, kConvTol, kConvTolGrad);
+      doc.at("nelecas").get<std::int32_t>(), w.size(), weights, kConvTol, kConvTolGrad,
+      active.empty() ? "" : std::format("active = [{}]\n", active));
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   EXPECT_TRUE(calc.has_value()) << calc.error().message;
@@ -665,6 +701,137 @@ TEST_F(HessianDfQdNevpt2Crossing, PcSeamTwoByTwo) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_seam("ethylene_ccpvdz_sa3_pc_meci", true);
+}
+
+// #1282's case: a degenerate inactive pair under the crossing and W forms.
+// data/qd_nevpt2_hessian/nh3_c3v_631g_sa2_degenerate (C3v ammonia, 6-31G,
+// SA-2 CAS(8,7) over orbitals 1 to 7, both roots A1), whose two virtual e
+// pairs are exactly degenerate at f^SA, laddered at the analytic call's
+// pc_floor, 1e-10 (state 0's Si keeps 3.3e-11 at the round-off cut). Over
+// two roots the pair's eigenspace is the whole space, so the crossing's
+// basis V is the CASSCF roots themselves, W^0 + W^1 the identity and the
+// seam's W 1/2 s (e_0 e_1^T + e_1 e_0^T): neither reads an eigenvector.
+const std::string kDegenerate = "nh3_c3v_631g_sa2_degenerate";
+
+// The reference for kDegenerate, its roots the fixture's (no outside point
+// pins its SA-CASSCF, `agreement` null), and the fixture's pc_floor.
+double degenerate_reference(const Reference &ref, const fb::json &doc) {
+  const auto want = doc.at("reference").at("casscf_energies").get<std::vector<double>>();
+  const std::vector<double> &got = ref.solution->roots.energies;
+  EXPECT_EQ(got.size(), want.size());
+  double miss = 0.0;
+  for (std::size_t r = 0; r < std::min(got.size(), want.size()); ++r) {
+    miss = std::max(miss, std::abs(got[r] - want[r]));
+  }
+  EXPECT_LE(miss, kRootAgreement) << "a different SA-CASSCF solution from the fixture's";
+  return doc.at("pc_floor").get<double>();
+}
+
+// One degenerate-pair result against its ladder entry @p want: every element
+// within kBars, the pairs taken and their part visible, the asymmetry and the
+// sum rule; printed under @p label.
+void expect_degenerate(const fb::hessian::QdPcNevpt2Terms &t, std::span<const double> hessian,
+                       const fb::json &want, const std::string &label, const double seconds) {
+  const fb::hessian::QdScNevpt2Terms &h = t.terms;
+  const double worst = expect_within(hessian, want, label);
+  const auto bar = matrix(want.at("bar"));
+  const double part = in_bars(t.degenerate, bar);
+  std::string pairs;
+  for (const auto &[p, q] : t.degenerate_pairs) {
+    pairs += std::format("{}({}, {})", pairs.empty() ? "" : " ", p, q);
+  }
+  const auto floor = want.at("noise").at("floor").get<double>();
+  std::cout << std::format(
+      "[ qd degen ] {}: pairs {}, min gap {:.3e}; worst element {:.3f} bars (allowed {:g}), "
+      "floor {:.2e}, largest |H| {:.3e}; the pairs' part {:.3e} bars (rule {:g}), rotation "
+      "shift {:.1e}; asymmetry {:.1e} (bar {:.1e}), sum rule {:.1e}; {:.1f} s\n",
+      label, pairs, h.min_gap, worst, kBars, floor, max_abs(hessian), part, kVisibleBars,
+      t.rotation_shift, h.asymmetry, solve_bar(h), h.translation, seconds);
+  EXPECT_FALSE(t.degenerate_pairs.empty()) << label << ": no pair under the rule";
+  EXPECT_GT(part, kVisibleBars) << label;
+  EXPECT_LE(h.asymmetry, solve_bar(h)) << label;
+  EXPECT_LE(h.translation, kSumRule) << label;
+}
+
+// The pair's sum d^2 (E_0 + E_1), c = 1, at the degenerate pairs, against
+// the G(W^0 + W^1) ladder.
+TEST_F(HessianDfQdNevpt2Crossing, PcPairSumAtADegeneratePair) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const fb::json &doc = fixture(kDegenerate);
+  const Reference &ref = reference(kDegenerate);
+  ASSERT_TRUE(ref.solution.has_value());
+  const double pc_floor = degenerate_reference(ref, doc);
+  const fb::json *want = entry(doc, "pc", "pairs", 0, 1);
+  ASSERT_NE(want, nullptr) << kDegenerate << " has no pc pair (0, 1)";
+  const auto begin = std::chrono::steady_clock::now();
+  const auto got = ref.pc_crossing(*ref.solution, 0, 1, kIdentity, {}, pc_floor);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+  ASSERT_TRUE(got.has_value()) << got.error().message;
+  expect_degenerate(*got, got->terms.hessian, *want, kDegenerate + " pc pair (0, 1)", seconds);
+}
+
+// The seam's off-diagonal M_01 (c = [[0, 1/2], [1/2, 0]], W = 1/2 (V_0 V_1^T
+// + V_1 V_0^T), V this solve's CASSCF roots) times s, the sign of this
+// solve's H_eff[r_0][r_1], is the driver's seam W; and term (i) through the
+// W form at the fixture's recorded W carried into this solve's root phases
+// by H_eff's off-diagonal sign. Each against the seam's fixed-W ladder.
+TEST_F(HessianDfQdNevpt2Crossing, PcSeamAndWFormAtADegeneratePair) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const fb::json &doc = fixture(kDegenerate);
+  const Reference &ref = reference(kDegenerate);
+  ASSERT_TRUE(ref.solution.has_value());
+  const double pc_floor = degenerate_reference(ref, doc);
+  const fb::json *seam = entry(doc, "pc", "seams", 0, 1);
+  ASSERT_NE(seam, nullptr) << kDegenerate << " has no pc seam (0, 1)";
+  const std::size_t n = ref.solution->roots.energies.size();
+  ASSERT_EQ(n, 2U);
+  const std::vector<double> ours = ref.heff(true);
+  const auto theirs = doc.at("reference").at("pc").at("heff").get<std::vector<double>>();
+  const auto roots = seam->at("roots").get<std::array<std::size_t, 2>>();
+  ASSERT_EQ(roots, (std::array<std::size_t, 2>{0, 1}));
+  // This solve's root 1 against the fixture's: the sign of H_eff[0][1]'s
+  // ratio (the diagonal is phase-free).
+  const double phase = (ours[1] * theirs[1]) < 0.0 ? -1.0 : 1.0;
+  const double sign = ours[1] < 0.0 ? -1.0 : 1.0;
+  const auto recorded = seam->at("w").get<std::vector<double>>();
+  ASSERT_EQ(recorded.size(), n * n);
+  std::vector<double> w(n * n);
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      w[(i * n) + j] = (i == j ? 1.0 : phase) * recorded[(i * n) + j];
+    }
+  }
+
+  auto begin = std::chrono::steady_clock::now();
+  const auto m01 =
+      ref.pc_crossing(*ref.solution, 0, 1, std::vector{0.0, 0.5, 0.5, 0.0}, {}, pc_floor);
+  double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+  ASSERT_TRUE(m01.has_value()) << m01.error().message;
+  // The crossing's W, signed, is the fixture's: V is the roots themselves.
+  ASSERT_EQ(m01->terms.w.size(), n * n);
+  double gauge = 0.0;
+  for (std::size_t i = 0; i < n * n; ++i) {
+    gauge = std::max(gauge, std::abs(w[i] - (sign * m01->terms.w[i])));
+  }
+  std::cout << std::format("[ qd degen ] {} pc seam: the recorded W {} against the crossing's "
+                           "(sign {:g}, phase {:g}), max miss {:.1e}\n",
+                           kDegenerate, w, sign, phase, gauge);
+  EXPECT_LE(gauge, 1e-12);
+  std::vector<double> signed_m01 = m01->terms.hessian;
+  for (double &x : signed_m01) {
+    x *= sign;
+  }
+  expect_degenerate(*m01, signed_m01, *seam, kDegenerate + " pc seam M_01", seconds);
+
+  begin = std::chrono::steady_clock::now();
+  const auto fixed = ref.pc_w_form(w, pc_floor);
+  seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+  ASSERT_TRUE(fixed.has_value()) << fixed.error().message;
+  expect_degenerate(*fixed, fixed->terms.hessian, *seam, kDegenerate + " pc W form at the seam's W",
+                    seconds);
 }
 
 // The refusals. A third state within kRootGapFloor of the pair: the roots'

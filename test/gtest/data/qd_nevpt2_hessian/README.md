@@ -164,6 +164,45 @@ tools/nevpt2_hessian/qd_nevpt2_hessian.py --only h4_631g_sa2   # GPU
 
 About 75 s on the gfx1200 (HIP), both schemes.
 
+## The degenerate-pair case (#1282)
+
+`nh3_c3v_631g_sa2_degenerate.json`: the reference of the QD Hessian's
+crossing and W forms at a degenerate inactive pair, which the `[hessian]`
+step (one state's gradient) cannot ladder. The system is
+`../pc_nevpt2_degenerate/qd_nh3_c3v_631g_sa2`'s: the exact-C3v ammonia,
+6-31G / cc-pVDZ-JKFIT, SA-2 CAS(8,7) over orbitals 1 to 7 at equal
+weights, both roots A1, its virtual e pairs degenerate at f^SA (3e-14 Eh
+at the reference and over every point). PC only, h = 2.5e-3, Cartesian.
+
+- **Its `pc_floor` is the analytic call's, 1e-10** (the driver's request
+  key): at the round-off cut state 0's Si keeps 3.3e-11, which the analytic
+  Hessian refuses.
+- **No state is laddered** (`states` empty). The driver matches u_K from the
+  sampler's PC H_eff, which stays at the round-off cut, so a W^K would be
+  another floor's. Over two roots neither W laddered reads an eigenvector:
+  the pair's W^0 + W^1 is the identity, and the seam's ½ s (V_0 V_1ᵀ + V_1
+  V_0ᵀ) has V the CASSCF roots themselves (`roots` [0, 1], s = −1, the sign
+  of H_eff[0][1]). The state Hessians at the floor are
+  `../pc_nevpt2_degenerate/`'s.
+- **Its Z-vectors are solved to 1e-11** (the noise's to 1e-10): at 3e-12 a
+  column stalled at 4.5e-12 after the PCG's 20 products. The worst true
+  residuals are 9.9e-12 and 7.3e-11.
+- **No outside reference point** (`agreement` null): the analytic test holds
+  its own SA-CASSCF roots to `reference.casscf_energies` within 1e-9.
+
+| quantity | σ_g | floor (every bar) | worst finer, coarser difference (floors) | worst asymmetry |
+|---|---|---|---|---|
+| pair (0, 1) | 2.7e-12 | 1.2e-7 | 0.70, 0.065 | 8.9e-8 |
+| seam (0, 1) | 1.8e-12 | 8.2e-8 | 0.50, 0.049 | 4.9e-8 |
+
+Both settled inside their floors, so no ratio is judged. Guard, worst over
+the 106 points: prediction 0.33 |dR|², active space 4.7e-5, CI 4.5e-4.
+About 6 minutes on the gfx1200 (HIP).
+
+```sh
+tools/nevpt2_hessian/qd_nevpt2_hessian.py --only nh3_c3v_631g_sa2_degenerate
+```
+
 ## The noise floor
 
 σ_g per quantity is measured: the reference geometry re-converged from the
@@ -222,7 +261,7 @@ The reference energies match `../qd_nevpt2/`'s goldens to 1.2e-11
 | `provenance` | the generator, the driver, the source case. No date or host |
 | `basis`, `aux_basis` | file and sha256 |
 | `atoms` (bohr), `ncas`, `nelecas`, `active`, `weights` | the case; `active` null for the RHF's frontier orbitals |
-| `schemes`, `pairs` | what is differenced |
+| `schemes`, `pairs` | what is differenced; `pc_floor` PC's gradients' cut (0, the round-off cut, but for #1282's case), and a case that ladders only some states its `states` |
 | `reference` | at R0: CASSCF energies and gaps, ‖g‖, inactive gaps, PC's cut per coupling, per scheme H_eff (n × n, root basis), its eigenvalues, gaps and eigenvectors (state K at [K n, (K + 1) n)); `agreement` against `../qd_nevpt2/` |
 | `steps` | per scheme `h`, the `ladder` h, h/2, h/4, the eight `displacements` |
 | `stencil` | `offsets` and `weights` |
