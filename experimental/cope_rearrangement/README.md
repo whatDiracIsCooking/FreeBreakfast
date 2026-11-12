@@ -60,7 +60,7 @@ optimisation of the Cope before claiming that part is new.
 | [`step_2/`](step_2/README.md) | PC-NEVPT2 (block2) and SC-NEVPT2 along the scan; the a_u Hessian (CASSCF full, NEVPT2 in a 3-D subspace) | PySCF, block2 | partial: E(R) at all 23 points, one PC-NEVPT2 minimum at 1.95 Å; a_u curvature negative there (concerted), run at 1.95 and 1.65 Å only |
 | step 3 | 2D (R16, R34) surface under C2, relaxed at PC-NEVPT2 | free-breakfast | after step 4: needs distance constraints in `[optimize]` (see below) |
 | [`step_4/`](step_4/README.md) 4a | implementation check: free-breakfast DF-PC-NEVPT2 energies at step 1's geometries against step 2's block2 numbers | free-breakfast | done: CASSCF to 7e-12, PC to 1.1e-7 against step 2 (its convergence); to 4e-10 on the same orbitals and CI. ~1.5 s a point on a 3080 |
-| step 4b | PT2-level C2h stationary point, analytic Hessian, mode-displaced minimisations (the IRC check); the CASSCF contrast | free-breakfast | not started |
+| [`step_4/`](step_4/README.md) 4b | PT2-level C2h stationary point, analytic Hessian, mode-displaced minimisations (the IRC check); the CASSCF contrast | free-breakfast | done: PC-NEVPT2 has one C2h stationary point, R = 1.922 Å, one imaginary frequency (475i cm⁻¹, a_u); ± along it reaches both mirror-image 1,5-hexadiene minima; barrier 31.2 kcal/mol. CASSCF: diyl minimum at 1.642 Å, a_u saddle at 2.284 Å. The CASSCF 2.30 Å walk left C2h (negative a_u curvature amplifying round-off) |
 | step 4c | PC-NEVPT2 gradient against BAGEL or ORCA at step 4b's TS | BAGEL / ORCA | not started |
 | step 5 | CCSD(T) at the PT2 TS; cc-pVTZ single points on the barrier | PySCF | not started |
 | step 6 | comparison to experiment: ΔH‡, boat vs chair, secondary KIEs | free-breakfast frequencies | not started |
@@ -82,6 +82,14 @@ below the ~1e-5 gradient convergence, even amplified by negative a_u
 curvature over the dozen or two iterations a walk takes. **So no symmetry
 projection is used**: a plain `[optimize]` from a symmetric start converges on
 the symmetric saddle, and the Hessian decides.
+
+*Step 4b's measurement:* that held for PC-NEVPT2's walk, but not for CASSCF's
+from 2.30 Å. There the a_u departure grew about 2× a step from 2e-11, so
+20 steps took it to the threshold, and the walk left the saddle for
+1,5-hexadiene. Its saddle was reached by a restart from a symmetrised
+geometry. The optimiser's identity-started BFGS also overshoots stiff
+non-symmetric directions, which grows round-off in sign-alternating steps
+until BFGS learns them ([step 4b](step_4/README.md#step-4b-the-c2h-stationary-points-their-hessians-the-irc-stand-in)).
 
 The plan:
 1. **PC-NEVPT2.** `[optimize]` over `[nevpt2_gradient]` (PC), from step 1's

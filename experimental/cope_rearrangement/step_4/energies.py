@@ -125,29 +125,43 @@ def tree_mols(atoms: list) -> tuple:
     return builtin, tree, contraction_norms(tree, basis)
 
 
-def prepare(only: list[float]) -> None:
+def projected(r: float) -> tuple:
+    """Step 1's geometry at R (Angstrom atoms) and its orbitals projected onto
+    this tree's cc-pVDZ (the contraction, then D), with the projection's
+    orthonormality defect in this tree's overlap."""
     import numpy
     from pyscf import gto
 
+    point = json.loads((STEP1 / "points" / f"{tag(r)}.json").read_text())
+    atoms = [(s, tuple(xyz)) for s, xyz in point["geometry"]]
+    mo = numpy.load(STEP1 / "orbitals" / f"{tag(r)}.npy")
+
+    builtin, tree, d = tree_mols(atoms)
+    s_tt = tree.intor("int1e_ovlp")
+    s_tp = gto.intor_cross("int1e_ovlp", tree, builtin)
+    c_json = numpy.linalg.solve(s_tt, s_tp @ mo)  # over PySCF's normalised JSON AOs
+    c_tree = c_json / d[:, None]  # over this tree's AOs
+    s_fb = d[:, None] * s_tt * d[None, :]  # this tree's own overlap
+    defect = abs(c_tree.T @ s_fb @ c_tree - numpy.eye(mo.shape[1])).max()
+    assert defect < 1e-10, f"{tag(r)}: projected orbitals off by {defect:.2e}"
+    return atoms, c_tree, defect
+
+
+def write_xyz(path: Path, atoms: list, comment: str) -> None:
+    """`atoms` as (symbol, (x, y, z)) in Angstrom."""
+    lines = [str(len(atoms)), comment]
+    lines += [f"{s} {x:.12f} {y:.12f} {z:.12f}" for s, (x, y, z) in atoms]
+    path.write_text("\n".join(lines) + "\n")
+
+
+def prepare(only: list[float]) -> None:
+    import numpy
+
     for r in only:
-        point = json.loads((STEP1 / "points" / f"{tag(r)}.json").read_text())
-        atoms = [(s, tuple(xyz)) for s, xyz in point["geometry"]]
-        mo = numpy.load(STEP1 / "orbitals" / f"{tag(r)}.npy")
-
-        builtin, tree, d = tree_mols(atoms)
-        s_tt = tree.intor("int1e_ovlp")
-        s_tp = gto.intor_cross("int1e_ovlp", tree, builtin)
-        c_json = numpy.linalg.solve(s_tt, s_tp @ mo)  # over PySCF's normalised JSON AOs
-        c_tree = c_json / d[:, None]  # over this tree's AOs
-        s_fb = d[:, None] * s_tt * d[None, :]  # this tree's own overlap
-        defect = abs(c_tree.T @ s_fb @ c_tree - numpy.eye(mo.shape[1])).max()
-        assert defect < 1e-10, f"{tag(r)}: projected orbitals off by {defect:.2e}"
-
+        atoms, c_tree, defect = projected(r)
         out = INPUTS / tag(r)
         out.mkdir(parents=True, exist_ok=True)
-        lines = [str(len(atoms)), f"step 1 {tag(r)}, Angstrom"]
-        lines += [f"{s} {x:.12f} {y:.12f} {z:.12f}" for s, (x, y, z) in atoms]
-        (out / "geometry.xyz").write_text("\n".join(lines) + "\n")
+        write_xyz(out / "geometry.xyz", atoms, f"step 1 {tag(r)}, Angstrom")
         numpy.save(
             out / "orbitals.npy", numpy.asfortranarray(c_tree), allow_pickle=False
         )
