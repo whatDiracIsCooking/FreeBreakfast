@@ -23,19 +23,21 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
 `--jobs` is worker processes of one thread each, 8 by default and at most:
 the box's per-agent budget. About 15 minutes for all four cases.
 
-## The degenerate-pair references (#1268)
+## The degenerate-pair references (#1268, #1277)
 
 `test/gtest/data/pc_nevpt2_degenerate/`, whose README has the cases.
 `degenerate_pair_ladder.py` runs this tree's numerical `[hessian]` ladder of
-the analytic PC gradient through the `free-breakfast` binary and copies the
-Hessian and its bars beside each case's start. Standard library only;
-needs a GPU and a build:
+the analytic PC gradient (or, for the `qd_` cases, of the PC-QD-NEVPT2
+state's) through the `free-breakfast` binary and copies the Hessian and its
+bars beside each case's start. Standard library only; needs a GPU and a
+build:
 
 ```sh
 tools/nevpt2_hessian/degenerate_pair_ladder.py --binary build-hip/src/free-breakfast
 ```
 
-About eight minutes for the three on the gfx1200.
+About eight minutes for the three single-state cases on the gfx1200, and
+about fifteen minutes for each of the two QD ones.
 
 ## The QD Hessian references (#953)
 

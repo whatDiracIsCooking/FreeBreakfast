@@ -447,9 +447,10 @@ no IR intensities.
   #1102: `h2nb_sto3g_sa2`'s state 1); PC's
   class kept below 1e-10, its lifted blocks (at `h2nb_sto3g_sa2` in its
   symmetry-adapted coordinates, exactly the B2 × B2 blocks (B2 1, B2 1),
-  (B2 1, B2 2) and (B2 2, B2 2), on either state), a Schur lift within
-  1e-3 bohr and a degenerate inactive pair a coordinate splits. SC refuses
-  nothing there. No Hessian, so no `hessian.json`.
+  (B2 1, B2 2) and (B2 2, B2 2), on either state) and a Schur lift within
+  1e-3 bohr (a degenerate inactive pair is taken, #1277, and a cluster of
+  three or more is Unsupported). SC refuses nothing there. No Hessian, so
+  no `hessian.json`.
 - **Stationarity is assumed, not checked**: converge `[casscf]` tightly
   (`conv_tol_grad = 1e-10`).
 

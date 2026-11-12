@@ -8,10 +8,11 @@
 /// refuses a singular H~, and its footprint with the helper both footprints
 /// end on; H_eff's eigenpairs, which
 /// df_qd_eigenvector_response and the QD Hessians (df_qd_nevpt2.cpp) share;
-/// and SC's conditioning refusal, which df_sc_nevpt2 and df_qd_sc_nevpt2
-/// share. And the NEVPT2 Hessians' footprints' shared pieces (#1186): a
-/// Ledger to walk a body with, and the footprints of the routines they
-/// compose that export none.
+/// SC's conditioning refusal, which df_sc_nevpt2 and df_qd_sc_nevpt2
+/// share; and PC's degenerate-pair step, which df_pc_nevpt2 and
+/// df_qd_pc_nevpt2 share (#1277). And the NEVPT2 Hessians' footprints'
+/// shared pieces (#1186): a Ledger to walk a body with, and the footprints
+/// of the routines they compose that export none.
 ///
 /// An internal partition (`module`, not `export module`): only this module's
 /// implementation units import it, so nothing here reaches an importer of
@@ -274,5 +275,42 @@ Status sc_rounding_refusal(std::string_view who, double rounding, std::array<int
 Result<std::pair<std::vector<double>, std::vector<double>>>
 qd_response_eigen(DeviceResources &res, std::span<const double> energies,
                   std::span<const double> totals);
+
+/// @brief The distinct (p, q) of a PC Hessian's degenerate-pair records
+/// @p records, in first-seen order; Unsupported, its message starting with
+/// @p who and naming the orbital and two of its pairs, when an orbital is in
+/// two of them (a cluster of three or more, README "A degenerate inactive
+/// pair"). df_pc_nevpt2's and df_qd_nevpt2's (PC).
+Result<std::vector<std::array<int32_t, 2>>>
+degenerate_pair_blocks(std::string_view who, std::span<const std::array<int32_t, 2>> records);
+
+/// @brief The degenerate pairs' part of a PC Hessian (README "A degenerate
+/// inactive pair", #1268), k x k column-major, and the largest |energy|
+/// change of turning the pairs in the bases it reads them in.
+struct DegeneratePairPart {
+  std::vector<double> part;
+  double rotation_shift{0.0};
+};
+
+/// @brief df_pc_nevpt2's step 4b, which df_qd_nevpt2 (PC) shares at its W:
+/// H_ij += sum_P (phi^P_i K^P_j + phi^P_j K^P_i) + sum_PP' M_PP' phi^P_i
+/// phi^P'_j over the disjoint @p blocks (degenerate_pair_blocks'), @p phi
+/// and @p split their f^(i)_pq and (f^(i)_pp - f^(i)_qq) / 2, [P k + i],
+/// over @p k coordinates. Each term is read from @p product(c_turned,
+/// direction, consume), the energy's Hessian-vector product at orbitals
+/// c_turned (nmo x nmo on the device, C U) with z = 0 along the h direction
+/// @p direction alone, handing consume its (h_bar, Lambda, y) tangent and
+/// the energy at c_turned; @p pair_with(h_bar, Lambda, y, into) puts
+/// <t_i, them> over every i into k doubles on the device. @p c is C, and
+/// @p energy the canonical energy rotation_shift is against.
+Result<DegeneratePairPart> degenerate_pair_part(
+    DeviceResources &res, int32_t nmo, int32_t naux, size_t k, const double *c, double energy,
+    std::span<const std::array<int32_t, 2>> blocks, std::span<const double> phi,
+    std::span<const double> split,
+    const std::function<Status(const double *, const double *,
+                               const std::function<Status(const double *, const double *,
+                                                          const double *, double)> &)> &product,
+    const std::function<Status(const double *, const double *, const double *, double *)>
+        &pair_with);
 
 } // namespace free_breakfast::hessian

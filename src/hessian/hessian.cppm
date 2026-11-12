@@ -1348,8 +1348,9 @@ struct QdNevpt2Tangents {
   double max_theta{0.0};
   /// @brief max |kappa_oo^x_pq| over every coordinate and pair.
   double max_kappa_oo{0.0};
-  /// @brief The pairs PC recorded under the degenerate-pair rule, in
-  /// coordinate order (empty for SC).
+  /// @brief The pairs PC recorded under the degenerate-pair rule, every
+  /// pair under it along every coordinate, in coordinate order (empty for
+  /// SC).
   std::vector<DegeneratePair> recorded;
 };
 
@@ -1383,7 +1384,9 @@ struct QdNevpt2Tangents {
 ///    does not move it, Eq. qd-gsa), eps its diagonal, under
 ///    @ref df_nevpt2_tangents' degenerate-pair rule: for SC (@p pc false) a
 ///    pair under 1e-6 Eh with |f^(x)_pq| > 1e-8 is Numerical, naming the
-///    pair and the coordinate; for PC it is recorded, kappa_oo^x_pq left 0.
+///    pair and the coordinate; for PC every pair under 1e-6 Eh is recorded
+///    along every coordinate, kappa_oo^x_pq left 0, and @ref df_qd_pc_nevpt2
+///    takes its off-diagonal f (#1277).
 ///
 /// So t_x is (h_MO, B_MO, {c_r}) of the re-solved SA-CASSCF differentiated
 /// along x, its roots diagonalizing H, its core and virtuals canonical in
@@ -1795,6 +1798,17 @@ struct QdPcNevpt2Terms {
   /// class's Schur lift reaches the cut (nevpt2::QdPcHessianProduct's);
   /// infinite where nothing rises.
   std::vector<std::vector<std::array<double, 8>>> lift_steps;
+  /// @brief The degenerate inactive pairs' off-diagonal f terms of term (i)
+  /// at W, k x k, in the Hessian (README "The PC-QD-NEVPT2 Hessian", "At a
+  /// degenerate inactive pair", #1277); zero without such a pair, and for SC.
+  std::vector<double> degenerate;
+  /// @brief The core or virtual pairs (p, q) under the degenerate-pair rule
+  /// (1e-6 hartree, at f^SA) that @ref degenerate takes.
+  std::vector<std::array<int32_t, 2>> degenerate_pairs;
+  /// @brief The largest |E^corr[W]| change of turning those pairs' orbitals
+  /// in the bases @ref degenerate reads them in: the elements' invariance,
+  /// to O(gap).
+  double rotation_shift{0.0};
 };
 
 /// @brief The PC-QD-NEVPT2 analytic nuclear Hessian of QD state @p state
@@ -1811,9 +1825,13 @@ struct QdPcNevpt2Terms {
 /// mcscf::kRootGapFloor), and a class of any model state kept below 1e-10 of
 /// its metric's largest eigenvalue (naming the state, the class, its kept and
 /// @p pc_floor: PC's second derivative is not attainable there, #917);
-/// @p nfrozen other than 0 (Unsupported). **After the CP solve**, as
-/// @ref df_pc_nevpt2 refuses, on every model state: a degenerate inactive
-/// pair a coordinate splits (@ref df_qd_nevpt2_tangents' records); the pairs
+/// @p nfrozen other than 0 (Unsupported). **A degenerate inactive pair**
+/// (under 1e-6 hartree at f^SA, @ref df_qd_nevpt2_tangents' records) is
+/// taken as @ref df_pc_nevpt2 takes one, in term (i) at W
+/// (QdPcNevpt2Terms::degenerate): every H_eff element is invariant to the
+/// pair's rotation; an orbital under 1e-6 hartree from two others (a cluster
+/// of three or more) is Unsupported. **After the CP solve**, as
+/// @ref df_pc_nevpt2 refuses, on every model state: the pairs
 /// of coordinates (i, j) along both of which a ket's cut metric modes lift
 /// with a first-order overlap to another state (nevpt2::qd_pc_hessian_product's
 /// refusal, Eq. qd-pcfail), with each one's t*; and a coordinate along which

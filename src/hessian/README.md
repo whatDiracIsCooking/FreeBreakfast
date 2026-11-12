@@ -1130,7 +1130,8 @@ Three steps, block triangular, each closed once the one before it is done:
    both), ε f^SA's diagonal, the solution canonical in f^SA (an off-diagonal
    above 1e-8 is refused). The degenerate-pair rule is `df_nevpt2_tangents`'
    (1e-6 Eh, 1e-8): SC refuses, naming the pair and the coordinate; PC
-   records it.
+   records every pair under 1e-6 Eh along every coordinate, with its
+   split, for `df_qd_pc_nevpt2` (#1277).
 
 Then c_dot = ξ + every θ, κ the total, both one-index transforms on h_dot and
 B_dot, and the chunk is the consumer's. `theta` returns every rotation
@@ -1212,7 +1213,8 @@ Measured on the gfx1200 (`--preset hip`):
 | `df_sacasscf_cp`, the tangents | 1.0 s, 0.41 s | 0.94 s, 0.39 s |
 
 The ammonia's SC refusal is at coordinate 0 (orbitals 9 and 8, 1e-11 Eh
-apart); PC records 22 pairs.
+apart); PC records 24 (both pairs along all 12 coordinates), 22 of them
+split past round-off (#1277).
 
 ## The DF second derivative at an MO adjoint
 
@@ -2285,7 +2287,9 @@ Three products per pair, and one more per pair when there are two or more,
 each at z = 0 (Φ is the Lagrangian's, already in the parts). Exact at a
 degenerate pair. Off one, the turned basis leaves f'_p'q' = (ε_p − ε_q)/2
 unread, an O(gap) error relative to the classes' denominators.
-`degenerate` is the part, `degenerate_pairs` the pairs.
+`degenerate` is the part, `degenerate_pairs` the pairs. The step is
+`degenerate_pair_part` (the internal partition), which the PC-QD Hessian
+shares at its W (#1277, "The PC-QD-NEVPT2 Hessian").
 
 **What is not taken.** A cluster, an orbital under 1e-6 Eh from two others
 (a t2 triple; three equivalent distant atoms), is Unsupported, naming two of
@@ -2604,7 +2608,8 @@ with PC's pieces in SC's places, every one at the call's `pc_floor`
 | the Lagrangian at W | `qd_sc_lagrangian`'s W form | `qd_pc_gradient`'s W form (its two derivative passes are run and unread) |
 | ⟨t_A, HVP t_B⟩ | `qd_sc_hessian_product`, partnered pairs | `qd_pc_hessian_product`, no partners |
 | term (ii) | `df_qd_eigenvector_response(pc = false)` | `(pc = true, pc_floor)` |
-| after the CP solve | the tangents' degenerate pair, t_mix, #962's pairs | the tangents' recorded pair, the Schur lift on every model state |
+| a degenerate inactive pair | refused (the tangents) | its off-diagonal f in term (i) (#1277, below) |
+| after the CP solve | t_mix, #962's pairs | the Schur lift on every model state |
 
 ```cpp
 auto h = hessian::df_qd_pc_nevpt2(res, molecule, basis, classes, aux, h_core, b, l, solution,
@@ -2612,7 +2617,8 @@ auto h = hessian::df_qd_pc_nevpt2(res, molecule, basis, classes, aux, h_core, b,
 // h->terms: df_qd_sc_nevpt2's QdScNevpt2Terms, every part and gap (SC's
 // min_denominator, defect and mix_step left at their defaults);
 // h->kept[N]: each class's smallest kept metric eigenvalue, ket N's;
-// h->lift_steps[i][N]: t* (bohr) along coordinate i per class of ket N
+// h->lift_steps[i][N]: t* (bohr) along coordinate i per class of ket N;
+// h->degenerate (in the Hessian), h->degenerate_pairs, h->rotation_shift
 auto t = hessian::df_qd_pc_nevpt2(res, ..., solution, ncore, ncas, w, batch, coordinates, pc_floor);
 ```
 
@@ -2624,16 +2630,13 @@ do, through the Lagrangian's orbital stationarity as for SC.
 
 ### The refusals
 
-`df_pc_nevpt2`'s three, on every model state, beside the SC form's gaps
+`df_pc_nevpt2`'s two, on every model state, beside the SC form's gaps
 (a frozen core, two CASSCF roots, the ensemble's edge, a QD gap; each under
 `mcscf::kRootGapFloor`):
 
 - **A class kept below 1e-10** of its metric's largest eigenvalue, on any
   state, before anything runs (from `qd_pc_energy`'s elements, ket N's at
   [N n + N]), naming the state, the class, its kept and the `pc_floor`.
-- **A degenerate inactive pair** a coordinate splits: `df_qd_nevpt2_tangents`
-  with `pc` records it and leaves κ_oo 0; the Hessian refuses it, as
-  `df_pc_nevpt2` does.
 - **The Schur lift** (Eq. qd-pcfail). The product along every coordinate,
   in chunks; a chunk the product refuses (a ket's cut modes lift along a
   direction with a first-order overlap to another state: block (i, i)) is
@@ -2643,6 +2646,77 @@ do, through the Lagrangian's orbital stationarity as for SC.
   took, `df_pc_nevpt2`'s rule: any state's class whose lift reaches the cut
   within 1e-3 bohr (a lift with no overlap, Part I's). All of them named in
   one Numerical error, each block with its coupling, class and both t*.
+
+A degenerate inactive pair is not refused (next section). A cluster of
+three or more inactive orbitals within 1e-6 Eh of each other at f^SA is
+Unsupported, as for `df_pc_nevpt2`.
+
+### At a degenerate inactive pair (#1277)
+
+Two core (or two virtual) orbitals under the degenerate-pair rule at f^SA,
+|ε_p − ε_q| < 1e-6 Eh: `df_qd_nevpt2_tangents` with `pc` records the pair
+along every coordinate, κ_oo^x_pq left 0, with f^SA(x)_pq and the change
+of the pair's split. Until #1277 the call refused every such record.
+It now takes the pair as `df_pc_nevpt2` does ("A degenerate inactive
+pair", #1268), because **every H_eff element is invariant to the pair's
+rotation**, so the QD state's energy is smooth there:
+
+- **The elements.** H_eff[M][N] is bra M's coupling to ket N's first-order
+  function, which solves ket N's own zeroth-order Hamiltonian. Its inactive
+  part reads f^SA's two blocks, the same for every ket. Written with the
+  whole blocks, each class's element is b_Mᵀ (K_N + Δ S_N)⁺ b_N: bra M's and
+  ket N's contractions over the inactive indices and the operator Δ turn
+  together under a rotation within the core or within the virtuals, and
+  S_N, its cut and K_N's active part read the (transition) RDMs alone. So
+  each element is a resolvent in the blocks, invariant at any gap, and the
+  canonical evaluation is that function where the blocks are diagonal:
+  #1268's argument, element by element. The eigenvalue E_P of
+  H_eff = diag(E_r) + ½ (C + Cᵀ) is smooth wherever the elements are and
+  the QD gap is open.
+- **Term (i)** is ∂²E^corr[W] at fixed W = R_P R_Pᵀ, linear in the
+  elements. So its pairs' terms are #1268's for the functional E^corr[W]:
+  the same K^P, M_PP' and φ^P, each read by
+  `nevpt2::qd_pc_hessian_product` at W, z = 0, in the bases turned within
+  the pairs (π/4, π/8 and 0 per pair, and every pair by π/4 at once for two
+  or more), the turned products paired with t_j turned back. The code is
+  `df_pc_nevpt2`'s step 4b, shared (`degenerate_pair_part`, the internal
+  partition), with the QD product in place of PC's and f^SA's records in
+  place of f's. No term divides by the pair's gap.
+- **Term (ii) needs nothing new.** #1277 expected the eigenvector
+  response to carry the pair's δ as well, but this tree's term (ii) reads
+  the couplings h_PS = dH_eff[P][S]/dx alone, each the analytic QD
+  gradient over W^PS (`df_qd_eigenvector_response`), never the tangents.
+  A gradient carries the pair through z^c (z_pq = −A_pq / 2 (ε_p − ε_q),
+  A_pq = O(gap), `../nevpt2/gradient/README.md` "Degenerate pairs"), as the
+  ladder's own gradients do, so h_PS is already the total first derivative.
+- **The crossing and W forms** share term (i) and so take the pair the same
+  way; their outside-state sum reads the same couplings. Only the state
+  form is measured below.
+
+`QdPcNevpt2Terms::degenerate` is the part, `degenerate_pairs` the pairs,
+`rotation_shift` E^corr[W] in each turned basis against the canonical one.
+
+Measured on the gfx1200 (`--preset hip`), state 1 of the C3v ammonia SA-2
+CAS(8,7) in 6-31G (`df_qd_nevpt2_tangents`' case, both roots A1, its
+virtual e pairs degenerate at f^SA), against this tree's numerical
+`[hessian]` ladder of the analytic PC-QD gradient at the step's
+`pc_floor` 1e-10 (`test/gtest/data/pc_nevpt2_degenerate/qd_*`), 12
+Cartesian coordinates:
+
+| case | pairs (gap at f^SA, Eh) | bar (the ladder's floor) | worst element | the pairs' part | term (ii) | the call |
+|---|---|---|---|---|---|---|
+| `qd_nh3_c3v_631g_sa2` | virtual e (9, 8), (11, 10) (1.0e-11) | 4.1e-7 | 0.150 bars | 3.3e3 bars | 9.0e2 bars | 39 s |
+| `qd_nh3_near_631g_sa2`, H1 2e-6 bohr off C3v | the same (2.3e-7), no symmetry | 4.1e-7 | 0.086 | 5.9e3 | 9.0e2 | 39 s |
+
+Both ladders settled (no ratio unsettled, every bar the measured noise
+floor), the state tracked at overlap 1.000 with no rerank, the QD gap 0.29
+Eh. Asymmetry ≤ 6.7e-12, the sum rule ≤ 1.9e-10, `rotation_shift` ≤
+3.0e-15 Eh. Without the pairs' part the Hessian misses by thousands of
+bars; before #1277 both were refused, every coordinate that split a pair.
+A cluster (three or more orbitals within 1e-6 Eh) is Unsupported through
+the shared `degenerate_pair_blocks`; that refusal is tested on the
+single-state Hessian (`DegenerateClusterIsUnsupported`), since a QD case
+with a t2 triple and two non-degenerate A1 roots has not been built.
 
 ### Tests
 
@@ -2664,10 +2738,15 @@ at (`pc_floor` 0):
   else. The whole-Hessian check on this case waits on its references (#1093).
 - `RefusesBeforeAnythingRuns` (on `h2co_ccpvdz_sa2`, PC's H_eff diagonal made
   equal for the QD gap), `RefusesAThinKeptClass` (`df_pc_nevpt2`'s C2v
-  formaldehyde CAS(6,6), SA2: Sr and Si keep 4e-13 to 1.5e-12 on both states)
-  and `RefusesADegenerateInactivePair` (the C3v ammonia at `pc_floor` 1e-10:
-  at the default cut its state 0's Si keeps 3.3e-11 and that refusal comes
-  first).
+  formaldehyde CAS(6,6), SA2: Sr and Si keep 4e-13 to 1.5e-12 on both states).
+- `ExactlyDegeneratePairsMatchTheLadder` and
+  `NearDegeneratePairsMatchTheLadder` (#1277, slow tier): the two ammonias
+  of "At a degenerate inactive pair", state 1, Cartesian, at `pc_floor`
+  1e-10 (at the default cut state 0's Si keeps 3.3e-11 and the kept
+  refusal comes first), against `test/gtest/data/pc_nevpt2_degenerate/`'s
+  `qd_` ladders (`tools/nevpt2_hessian/degenerate_pair_ladder.py`). Every
+  element within 2× the ladder's bar, the pairs' part above 10 bars, the
+  asymmetry within the solves' error and the sum rule ≤ 1e-8.
 
 Measured on the gfx1200 (`--preset hip`), each call 27–28 s:
 

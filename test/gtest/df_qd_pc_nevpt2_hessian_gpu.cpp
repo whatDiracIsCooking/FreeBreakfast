@@ -21,9 +21,13 @@
 // - the refusals before anything runs, each on a constructed input: a QD
 //   gap, a CASSCF root gap and the ensemble's edge under kRootGapFloor, a
 //   frozen core, and a class kept under 1e-10 (df_pc_nevpt2_hessian_gpu's
-//   C2v formaldehyde CAS(6,6), here SA2), with pc_floor named; and a
-//   degenerate inactive pair a coordinate splits (df_qd_nevpt2_tangents'
-//   C3v ammonia at a pc_floor of 1e-10, PC's record of it).
+//   C2v formaldehyde CAS(6,6), here SA2), with pc_floor named;
+// - degenerate inactive pairs (#1277), against this tree's numerical ladder
+//   of the PC-QD state's analytic gradient, data/pc_nevpt2_degenerate/'s
+//   qd_ cases: df_qd_nevpt2_tangents' C3v ammonia SA-2 CAS(8,7), whose
+//   virtual e pairs are exactly degenerate at f^SA, and the same 2e-6 bohr
+//   off C3v (near-degenerate); every element within 2x the ladder's bar,
+//   the pairs' own part visible.
 
 #include <gtest/gtest.h>
 
@@ -74,6 +78,8 @@ constexpr double kCpResidual = 1e-9;
 // this times the largest element of any part (the skeleton and the HVP,
 // which cancel to the Hessian's size).
 constexpr double kSolveTolerance = 1e-10;
+// The translational sum rule on a full Cartesian set (df_pc_nevpt2_hessian_gpu's).
+constexpr double kSumRule = 1e-8;
 
 double max_abs(std::span<const double> v) {
   return std::ranges::fold_left(
@@ -149,25 +155,6 @@ Start qd_case(const std::string &name) {
   }
   ADD_FAILURE() << "no case " << name;
   return {};
-}
-
-// df_qd_nevpt2_tangents_gpu.cpp's C3v ammonia in 6-31G, SA-2 CAS(8,7) over
-// its full valence, both roots A1: its virtual e pairs stay degenerate.
-Start c3v_ammonia() {
-  const double rho = std::sqrt((1.9 * 1.9) - (0.7 * 0.7));
-  Start s{.name = "nh3_c3v_631g_sa2",
-          .atoms = {{"N", {0.0, 0.0, 0.0}}},
-          .basis = "6-31G",
-          .aux_basis = "cc-pVDZ-JKFIT",
-          .ncas = 7,
-          .nelecas = 8,
-          .weights = {0.5, 0.5},
-          .active = {1, 2, 3, 4, 5, 6, 7}};
-  for (std::int32_t k = 0; k < 3; ++k) {
-    const double phi = 2.0 * std::numbers::pi * k / 3.0;
-    s.atoms.push_back({"H", {rho * std::cos(phi), rho * std::sin(phi), -0.7}});
-  }
-  return s;
 }
 
 // df_pc_nevpt2_hessian_gpu.cpp's C2v formaldehyde in STO-3G with CAS(6,6)
@@ -874,27 +861,86 @@ TEST_F(HessianDfQdPcNevpt2, RefusesAThinKeptClass) {
   std::cout << std::format("[ kept     ] refused in {:.2f} s: {}\n", seconds, m);
 }
 
-// A degenerate inactive pair a coordinate splits: the C3v ammonia's virtual
-// e pairs, which PC's tangents record and df_qd_pc_nevpt2 refuses. At the
-// default cut state 0's Si keeps 3.3e-11 and the kept refusal comes first,
-// so the case runs at a pc_floor of 1e-10, the floor that refusal names.
-constexpr double kAmmoniaFloor = 1e-10;
-TEST_F(HessianDfQdPcNevpt2, RefusesADegenerateInactivePair) {
+// A degenerate-pair case (#1277): data/pc_nevpt2_degenerate/'s QD fixture
+// @p name, this tree's numerical [hessian] ladder of the PC-QD state's
+// analytic gradient at the step's pc_floor, Cartesian; its state's
+// Hessian against the ladder's, and the pairs' part in bars, above
+// @p visible.
+void expect_degenerate_matches_ladder(const std::string &name, const std::string_view tag,
+                                      const double visible) {
+  const fb::json &doc =
+      document(std::filesystem::path{"pc_nevpt2_degenerate"} / std::format("{}.json", name));
+  Start start{.name = name,
+              .atoms = {},
+              .basis = doc.at("basis").at("name").get<std::string>(),
+              .aux_basis = doc.at("aux_basis").at("name").get<std::string>(),
+              .ncas = doc.at("ncas").get<std::int32_t>(),
+              .nelecas = doc.at("nelecas").get<std::int32_t>(),
+              .weights = doc.at("weights").get<std::vector<double>>(),
+              .active = doc.at("active").get<std::vector<std::int32_t>>()};
+  for (const fb::json &atom : doc.at("atoms")) {
+    const auto coord = atom.at("coord").get<std::vector<double>>();
+    start.atoms.push_back({atom.at("symbol").get<std::string>(), {coord[0], coord[1], coord[2]}});
+  }
+  const Reference &ref = reference(start);
+  ASSERT_TRUE(ref.solution.has_value());
+  const auto state = doc.at("state").get<std::int32_t>();
+  const auto begin = std::chrono::steady_clock::now();
+  const auto got = ref.hessian(*ref.solution, state, {}, doc.at("pc_floor").get<double>());
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+  ASSERT_TRUE(got.has_value()) << got.error().message;
+  const fb::hessian::QdScNevpt2Terms &h = got->terms;
+  const auto hessian = matrix(doc.at("pc").at("hessian"));
+  const auto bar = matrix(doc.at("pc").at("bar"));
+  const std::size_t k = hessian.size();
+  ASSERT_EQ(h.hessian.size(), k * k);
+  EXPECT_FALSE(got->degenerate_pairs.empty()) << tag << ": no pair under the rule";
+  double worst = 0.0;
+  for (std::size_t j = 0; j < k; ++j) {
+    for (std::size_t i = 0; i < k; ++i) {
+      const double value = h.hessian[i + (k * j)];
+      const double miss = std::abs(value - hessian[i][j]) / bar[i][j];
+      worst = std::max(worst, miss);
+      EXPECT_LE(miss, kBars) << tag << ": element (" << i << ", " << j << ") " << value
+                             << " against " << hessian[i][j] << ", bar " << bar[i][j];
+    }
+  }
+  const double part = in_bars(got->degenerate, bar);
+  std::string pairs;
+  for (const auto &[p, q] : got->degenerate_pairs) {
+    pairs += std::format("{}({}, {})", pairs.empty() ? "" : " ", p, q);
+  }
+  std::cout << std::format("[ qd pc    ] {} state {}: pairs {}, min gap {:.3e}; worst element "
+                           "{:.3f} bars (allowed {:g}); the pairs' part {:.3e} bars, term (ii) "
+                           "{:.3e} bars, rotation shift {:.1e}; asymmetry {:.1e} (bar {:.1e}), "
+                           "sum rule {:.1e}; {:.1f} s\n",
+                           tag, state, pairs, h.min_gap, worst, kBars, part,
+                           in_bars(h.term_ii, bar), got->rotation_shift, h.asymmetry, solve_bar(h),
+                           h.translation, seconds);
+  EXPECT_GT(part, visible) << tag;
+  EXPECT_LE(h.asymmetry, solve_bar(h)) << tag;
+  EXPECT_LE(h.translation, kSumRule) << tag;
+}
+
+// df_qd_nevpt2_tangents' C3v ammonia in 6-31G, SA-2 CAS(8,7), both roots
+// A1: its two virtual e pairs are exactly degenerate at f^SA, and E
+// displacements split each at first order. State 0's Si keeps 3.3e-11 at
+// the default cut, so the ladder and the call run at the step's pc_floor,
+// 1e-10.
+TEST_F(HessianDfQdPcNevpt2, ExactlyDegeneratePairsMatchTheLadder) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  const Reference &ref = reference(c3v_ammonia());
-  ASSERT_TRUE(ref.solution.has_value());
-  const auto r = ref.hessian(*ref.solution, 1, {}, kAmmoniaFloor);
-  ASSERT_FALSE(r.has_value()) << "a degenerate inactive pair was taken";
-  const std::string &m = r.error().message;
-  EXPECT_EQ(r.error().kind, fb::ErrorKind::Numerical) << m;
-  EXPECT_NE(m.find("hessian::df_qd_pc_nevpt2: the canonical inactive orbitals are not "
-                   "differentiable"),
-            std::string::npos)
-      << m;
-  EXPECT_NE(m.find("(coordinate "), std::string::npos) << m;
-  EXPECT_NE(m.find(", orbitals "), std::string::npos) << m;
-  std::cout << std::format("[ qd pc    ] nh3 refuses: {}\n", m.substr(0, 400));
+  expect_degenerate_matches_ladder("qd_nh3_c3v_631g_sa2", "c3v", kVisibleBars);
+}
+
+// The same ammonia with one hydrogen 2e-6 bohr off C3v: both pairs
+// near-degenerate at f^SA, with no symmetry left to zero any of their
+// terms.
+TEST_F(HessianDfQdPcNevpt2, NearDegeneratePairsMatchTheLadder) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_degenerate_matches_ladder("qd_nh3_near_631g_sa2", "near", kVisibleBars);
 }
 
 } // namespace
