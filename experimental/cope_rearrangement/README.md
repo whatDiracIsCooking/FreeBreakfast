@@ -58,7 +58,7 @@ optimisation of the Cope before claiming that part is new.
 |---|---|---|---|
 | [`step_1/`](step_1/README.md) | C2h chair guess, symmetry-labelled CAS(6,6) (2a_g + 2b_u + a_u + b_g), relaxed C2h DF-CASSCF(6,6)/cc-pVDZ scan of R16 = R34, 1.50–2.60 Å | PySCF | done: diyl minimum at 1.65 Å, "aromatic" minimum at 2.30 Å |
 | [`step_2/`](step_2/README.md) | PC-NEVPT2 (block2) and SC-NEVPT2 along the scan; the a_u Hessian (CASSCF full, NEVPT2 in a 3-D subspace) | PySCF, block2 | partial: E(R) at all 23 points, one PC-NEVPT2 minimum at 1.95 Å; a_u curvature negative there (concerted), run at 1.95 and 1.65 Å only |
-| step 3 | 2D (R16, R34) surface under C2, relaxed at PC-NEVPT2 | free-breakfast | after step 4: needs distance constraints in `[optimize]` (see below) |
+| [`step_3/`](step_3/README.md) | 2D (R16, R34) surface under C2, relaxed at PC-NEVPT2 (1.50–2.80 Å at 0.05 Å) and at CASSCF (at 0.1 Å), with `[optimize]` distance constraints | free-breakfast | done: PC has one stationary point, a saddle on the diagonal at 1.922 Å (step 4b's TS to 1e-3 Å, 0.002 kcal/mol), and no diyl well; CASSCF has the diyl minimum (1.65 Å) flanked by two off-diagonal saddles (1.68/1.81 Å, 1.1 kcal/mol above it), a diagonal maximum (1.89 Å) and the aromatic saddle (2.27 Å). Step 4d's IRC runs down the PC valley. All 483 points converged; 5.1 h on a 3080 |
 | [`step_4/`](step_4/README.md) 4a | implementation check: free-breakfast DF-PC-NEVPT2 energies at step 1's geometries against step 2's block2 numbers | free-breakfast | done: CASSCF to 7e-12, PC to 1.1e-7 against step 2 (its convergence); to 4e-10 on the same orbitals and CI. ~1.5 s a point on a 3080 |
 | [`step_4/`](step_4/README.md) 4b | PT2-level C2h stationary point, analytic Hessian, mode-displaced minimisations (the IRC check); the CASSCF contrast | free-breakfast | done: PC-NEVPT2 has one C2h stationary point, R = 1.922 Å, one imaginary frequency (475i cm⁻¹, a_u); ± along it reaches both mirror-image 1,5-hexadiene minima; barrier 31.2 kcal/mol. CASSCF: diyl minimum at 1.642 Å, a_u saddle at 2.284 Å. The CASSCF 2.30 Å walk left C2h (negative a_u curvature amplifying round-off) |
 | step 4c | PC-NEVPT2 gradient against BAGEL or ORCA at step 4b's TS | BAGEL / ORCA | not started |
@@ -173,6 +173,9 @@ the hydrogens, and PySCF's Bohr (CODATA 2010) differs from this tree's
 
 ## Step 3, after step 4
 
+Done: [step 3](step_3/README.md) has the result. This section is the plan
+as it was written.
+
 The 2D (R16, R34) surface is the clearest figure: one saddle on the diagonal
 against a diagonal well flanked by two saddles. It is not needed for the
 verdict, since step 4's Hessian already decides it. It is still worth
@@ -180,8 +183,8 @@ doing, and free-breakfast is the right tool for it:
 - **Not done in PySCF.** PySCF has no PC-NEVPT2 gradient (step 2's PC is
   block2 energies), so a PySCF grid would be relaxed at CASSCF with PT2
   single points. That keeps the CASSCF diradical bias the study is about.
-- **Blocked on one feature.** Relaxing at fixed R16 and R34 needs distance
-  constraints in `[optimize]`, which free-breakfast does not have.
+- **Blocked on one feature**, since added (#1260). Relaxing at fixed R16
+  and R34 needs distance constraints in `[optimize]`.
   C2 needs nothing: as with C2h, a symmetric start stays symmetric.
 - **Affordable.** Half of a 1.50–2.60 Å grid at 0.05 Å is ~280 relaxed
   PC-NEVPT2 optimisations of a 134-function system. That is the throughput
