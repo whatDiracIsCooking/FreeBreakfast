@@ -127,6 +127,12 @@ where
         &self.policy_create
     }
 
+    /// The create policy, for a wrapper whose later calls report through it
+    /// as construction did (a stream's `end_capture`).
+    pub fn create_policy_mut(&mut self) -> &mut PC {
+        &mut self.policy_create
+    }
+
     /// The policy that handles destruction.
     pub fn destroy_policy(&self) -> &PD {
         &self.policy_destroy

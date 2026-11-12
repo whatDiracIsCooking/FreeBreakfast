@@ -11,6 +11,7 @@ It stands alone: nothing here uses the other crates under `experimental/rust/`.
 |---|---|---|
 | `core::wwr::common` | wwr's `src/extension/common`, and the `src/extension/error_handling` primitives it re-exports | `ErrorCode` (`success_code` / `error_name` / `error_string`), `ErrorPolicy` (`error_policy` and `typed_error_policy` in one trait), `PolicyMap`, `gpu_check` / `gpu_check_at`, `wwr_status` as an error code, `ScopedDeviceIndex`, `kit::AbortPolicy` |
 | `core::wwr::handle` | wwr's `src/extension/handle` | `BaseHandle` over a `HandleKind` (CRTP's `create`/`destroy` hooks), `DeviceBoundHandle`, `StreamBoundHandle` over a `StreamBoundKind`, the three views, and the `DeviceHandle` / `DeviceHandleStream` / `DeviceHandlePool` ladder |
+| `core::wwr::runtime` | wwr's `src/extension/runtime` | `Stream`, `Event`, `MemPool` (with `MemPoolProps`), `Graph`, `GraphExec`, and `kit::DeviceHandle` (a stream and a pool on one device), each a newtype over the handle it is built on; stream capture through to a launched graph |
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -23,6 +24,18 @@ to force:
 - The move constructors, `release()` and the moved-from state. A Rust move
   leaves nothing behind to drop.
 - Dangling views. A view borrows the handle it came from.
+
+Two things go the other way, where Rust asks for more than the C++ does:
+
+- wwr's borrow-safe operations (`sync`, `record`, `launch`, ...) are free
+  functions on a raw handle. A destroyed handle there is a use-after-free in
+  the runtime, so the raw forms are `unsafe fn`, and each owner has methods
+  that call them safely.
+- `wwrMemPoolProps` reaches the C ABI as a bare `void*`. `MemPoolProps`
+  mirrors the vendors' layout, which CUDA 13 and ROCm share (88 bytes,
+  identical offsets; checked with a C program against both headers).
+  `kit::DeviceHandle::props()` is left out: `wwrDeviceProp`'s layout differs
+  between the backends.
 
 ## Contracts
 
@@ -59,12 +72,26 @@ surface of `wwr-sys` is linked.
 
 The GPU tests use device 0 and need room on it for a context. The host-only
 tests (the fake handle kind, error codes and contracts) need no GPU but still
-link the library.
+link the library. Use a separate `CARGO_TARGET_DIR` per backend: `build.rs`
+bakes the library's path into the rpath.
+
+Allocating from a memory pool is tested in `tests/pool_allocation.rs`, a
+binary of its own. Under ROCm 7.2.4 on the gfx1200,
+`hipMallocFromPoolAsync` / `hipFreeAsync` on one thread beside other
+threads' stream work intermittently deadlocked inside `libamdhip64` (about
+one run in two of the unit tests); that file has the evidence. Cargo runs
+each test binary as its own process, so they never overlap.
+
+Tests run in parallel, so a capture test must not use global capture mode.
+A global capture forbids other threads' unsafe calls, and on the 3080 it
+made a neighbouring pool's create abort or its destroy segfault.
 
 Nothing in ctest or either gate runs cargo. This directory is checked by hand only.
 
 ## Verified
 
-2026-11-12, on the gfx1200 (HIP): 18 tests pass in a debug build and 15 in
-release, with clippy and rustdoc clean in both. Not run on CUDA: the 3080 was
-full at the time.
+2026-11-12, on both cards: on the RTX 3080 (CUDA) and on the gfx1200 (HIP),
+33 unit tests and the 2 pool-allocation tests pass in a debug build, and 30
+and 2 in release. The debug unit-test binary passed 20 runs in a row on
+each card, and the pool binary 20 on each. Clippy, rustdoc and `cargo fmt
+--check` are clean.

@@ -114,6 +114,13 @@ where
         &self.policy_device
     }
 
+    /// The base's create policy. There is no `DerefMut` to the base: a
+    /// `BaseHandle` assigned through it would carry this one's device index
+    /// without having been created there.
+    pub fn create_policy_mut(&mut self) -> &mut PC {
+        self.base.create_policy_mut()
+    }
+
     /// A copyable view carrying the device, which cannot outlive `self`;
     /// `None` when there is no live handle to view.
     pub fn view(&self) -> Option<DeviceBoundHandleView<'_, K::Raw>> {
