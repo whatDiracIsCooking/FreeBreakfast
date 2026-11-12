@@ -1,0 +1,332 @@
+{
+ "settings": {
+  "irc": {
+   "step_size": 0.1,
+   "max_points": 400,
+   "max_force": 0.00045,
+   "sphere_gradient": 0.0001,
+   "sphere_displacement": 0.001,
+   "max_sphere_iterations": 20
+  },
+  "sp_stride": 5,
+  "conv_tol": 1e-12,
+  "conv_tol_grad": 1e-09,
+  "optimize": {
+   "max_force": 1.5e-05,
+   "rms_force": 1e-05,
+   "max_displacement": 6e-05,
+   "rms_displacement": 4e-05
+  }
+ },
+ "imaginary_frequency": -475.15182327252467,
+ "imaginary_count": 1,
+ "ts_energy": -233.79196549960093,
+ "wall_s": {
+  "irc": 1059.6,
+  "sp_f_000": 1.7,
+  "sp_f_005": 2.1,
+  "sp_f_010": 2.4,
+  "sp_f_015": 2.6,
+  "sp_f_020": 2.7,
+  "sp_f_025": 2.8,
+  "sp_f_030": 2.9,
+  "sp_f_035": 3.0,
+  "sp_f_040": 3.1,
+  "sp_f_045": 3.2,
+  "sp_f_050": 3.2,
+  "sp_f_055": 3.2,
+  "sp_f_060": 3.2,
+  "sp_f_065": 3.2,
+  "sp_f_070": 3.2,
+  "sp_f_075": 3.3,
+  "sp_f_080": 3.3,
+  "sp_f_085": 3.3,
+  "sp_f_090": 3.3,
+  "sp_f_095": 3.3,
+  "sp_f_098": 3.3,
+  "sp_b_000": 1.6,
+  "sp_b_005": 2.1,
+  "sp_b_010": 2.4,
+  "sp_b_015": 2.6,
+  "sp_b_020": 2.7,
+  "sp_b_025": 2.8,
+  "sp_b_030": 2.9,
+  "sp_b_035": 3.0,
+  "sp_b_040": 3.0,
+  "sp_b_045": 3.2,
+  "sp_b_050": 3.2,
+  "sp_b_055": 3.2,
+  "sp_b_060": 3.2,
+  "sp_b_065": 3.2,
+  "sp_b_070": 3.2,
+  "sp_b_075": 3.3,
+  "sp_b_080": 3.3,
+  "sp_b_085": 3.3,
+  "sp_b_090": 3.3,
+  "sp_b_095": 3.3,
+  "sp_b_097": 3.3,
+  "opt_f": 332.9,
+  "opt_b": 338.6
+ },
+ "sides": {
+  "forward": {
+   "stop": "minimum_within_step",
+   "error": null,
+   "points": 99,
+   "s_end": 9.8,
+   "energy_end": -233.840939839006,
+   "dE_end_kcal": -30.731861962668045,
+   "r16_end": 3.665880018836957,
+   "r34_end": 1.5576413350302438,
+   "max_force_end": 0.0007890918633269327,
+   "energy_rises": [],
+   "diyl_region_points": [],
+   "gradient_interior_local_minima": [],
+   "min_gradient_norm_interior": 0.0012806530769182507,
+   "sphere_iterations": {
+    "total": 132,
+    "max": 3,
+    "histogram": {
+     "1": 68,
+     "2": 26,
+     "3": 4
+    }
+   },
+   "max_c2_breaking_bohr": 0.0001886622014314761,
+   "max_sp_minus_irc": 4.843059286940843e-11,
+   "optimum": {
+    "converged": true,
+    "evaluations": 69,
+    "energy": -233.84170817317138,
+    "max_force": 1.316821156797008e-06,
+    "r16": 4.269380086203487,
+    "r34": 1.551040897970481,
+    "dihedrals": [
+     64.58,
+     -118.41,
+     -118.41
+    ],
+    "wall_s": 332.9,
+    "dE_from_irc_end_kcal": -0.4821369680171051,
+    "vs_references": [
+     {
+      "reference": "pc_plus",
+      "energy": -233.84170817272383,
+      "dE_kcal": -2.808460433263814e-07,
+      "rmsd": 0.00012812530626514298,
+      "rmsd_mirror": 0.00012812530626514298
+     },
+     {
+      "reference": "pc_minus",
+      "energy": -233.8417081728346,
+      "dE_kcal": -2.1134346944926775e-07,
+      "rmsd": 1.7487331320077806,
+      "rmsd_mirror": 3.833984053654906e-05
+     },
+     {
+      "reference": "conf_a_cc",
+      "energy": -233.83968638233978,
+      "dE_kcal": -1.2686929014064185,
+      "rmsd": 1.896893900971702,
+      "rmsd_mirror": 1.7836289067839888
+     },
+     {
+      "reference": "conf_a_pc",
+      "energy": -233.8408831684005,
+      "dE_kcal": -0.517698309879745,
+      "rmsd": 1.6813667966337862,
+      "rmsd_mirror": 1.6813667966337862
+     },
+     {
+      "reference": "conf_a_pm",
+      "energy": -233.84180554462358,
+      "dE_kcal": 0.061101508758163066,
+      "rmsd": 1.6051518850523667,
+      "rmsd_mirror": 1.6051518850523667
+     },
+     {
+      "reference": "conf_a_pp",
+      "energy": -233.84189046002376,
+      "dE_kcal": 0.11438672686487994,
+      "rmsd": 2.006157281827324,
+      "rmsd_mirror": 1.5425044009592175
+     },
+     {
+      "reference": "conf_g_cc",
+      "energy": -233.83885761474514,
+      "dE_kcal": -1.7887524188398611,
+      "rmsd": 1.5695006782274021,
+      "rmsd_mirror": 1.2235327048842093
+     },
+     {
+      "reference": "conf_g_mc",
+      "energy": -233.8396352181816,
+      "dE_kcal": -1.3007988953965288,
+      "rmsd": 1.038644112900417,
+      "rmsd_mirror": 1.038644112900417
+     },
+     {
+      "reference": "conf_g_mm",
+      "energy": -233.84170817333458,
+      "dE_kcal": 1.0240794950022747e-07,
+      "rmsd": 5.430156278783352e-05,
+      "rmsd_mirror": 5.430156278783352e-05
+     },
+     {
+      "reference": "conf_g_pc",
+      "energy": -233.8398616427361,
+      "dE_kcal": -1.1587153422797005,
+      "rmsd": 1.4185031299813424,
+      "rmsd_mirror": 1.3872917082676217
+     },
+     {
+      "reference": "conf_g_pm",
+      "energy": -233.84209937700157,
+      "dE_kcal": 0.24548410973433232,
+      "rmsd": 1.025243681714479,
+      "rmsd_mirror": 1.025243681714479
+     },
+     {
+      "reference": "conf_g_pp",
+      "energy": -233.84128738148297,
+      "dE_kcal": -0.264050771085972,
+      "rmsd": 1.4691293740186473,
+      "rmsd_mirror": 1.4691293740186473
+     }
+    ]
+   }
+  },
+  "backward": {
+   "stop": "minimum_within_step",
+   "error": null,
+   "points": 98,
+   "s_end": -9.700000000000001,
+   "energy_end": -233.8408988024026,
+   "dE_end_kcal": -30.706111105238467,
+   "r16_end": 1.5577578027647967,
+   "r34_end": 3.6486424227906005,
+   "max_force_end": 0.0008198148599565663,
+   "energy_rises": [],
+   "diyl_region_points": [],
+   "gradient_interior_local_minima": [],
+   "min_gradient_norm_interior": 0.0013512388457844065,
+   "sphere_iterations": {
+    "total": 129,
+    "max": 3,
+    "histogram": {
+     "1": 69,
+     "2": 24,
+     "3": 4
+    }
+   },
+   "max_c2_breaking_bohr": 0.00017546317592057032,
+   "max_sp_minus_irc": 5.03348474012455e-11,
+   "optimum": {
+    "converged": true,
+    "evaluations": 69,
+    "energy": -233.84170817307546,
+    "max_force": 2.467946653723555e-06,
+    "r16": 1.5510412298869536,
+    "r34": 4.269369908242022,
+    "dihedrals": [
+     -64.58,
+     118.4,
+     118.42
+    ],
+    "wall_s": 338.6,
+    "dE_from_irc_end_kcal": -0.5078877652539234,
+    "vs_references": [
+     {
+      "reference": "pc_plus",
+      "energy": -233.84170817272383,
+      "dE_kcal": -2.2065328304019754e-07,
+      "rmsd": 1.7487288035832294,
+      "rmsd_mirror": 5.910862613876664e-05
+     },
+     {
+      "reference": "pc_minus",
+      "energy": -233.8417081728346,
+      "dE_kcal": -1.5115070916308392e-07,
+      "rmsd": 0.00011831901705585746,
+      "rmsd_mirror": 0.00011831901705585746
+     },
+     {
+      "reference": "conf_a_cc",
+      "energy": -233.83968638233978,
+      "dE_kcal": -1.2686928412136582,
+      "rmsd": 1.7836314006361993,
+      "rmsd_mirror": 1.7836314006361993
+     },
+     {
+      "reference": "conf_a_pc",
+      "energy": -233.8408831684005,
+      "dE_kcal": -0.5176982496869847,
+      "rmsd": 1.935216617219512,
+      "rmsd_mirror": 1.681390193155228
+     },
+     {
+      "reference": "conf_a_pm",
+      "energy": -233.84180554462358,
+      "dE_kcal": 0.061101568950923356,
+      "rmsd": 1.6833018936116828,
+      "rmsd_mirror": 1.605169915238812
+     },
+     {
+      "reference": "conf_a_pp",
+      "energy": -233.84189046002376,
+      "dE_kcal": 0.11438678705764023,
+      "rmsd": 1.5424992552083414,
+      "rmsd_mirror": 1.5424992552083414
+     },
+     {
+      "reference": "conf_g_cc",
+      "energy": -233.83885761474514,
+      "dE_kcal": -1.788752358647101,
+      "rmsd": 1.223532581860638,
+      "rmsd_mirror": 1.223532581860638
+     },
+     {
+      "reference": "conf_g_mc",
+      "energy": -233.8396352181816,
+      "dE_kcal": -1.3007988352037685,
+      "rmsd": 1.5345458507574237,
+      "rmsd_mirror": 1.0386708348031783
+     },
+     {
+      "reference": "conf_g_mm",
+      "energy": -233.84170817333458,
+      "dE_kcal": 1.6260070978641132e-07,
+      "rmsd": 1.7487323375178214,
+      "rmsd_mirror": 6.0150580446887954e-05
+     },
+     {
+      "reference": "conf_g_pc",
+      "energy": -233.8398616427361,
+      "dE_kcal": -1.1587152820869402,
+      "rmsd": 1.3873415707064647,
+      "rmsd_mirror": 1.3873415707064647
+     },
+     {
+      "reference": "conf_g_pm",
+      "energy": -233.84209937700157,
+      "dE_kcal": 0.2454841699270926,
+      "rmsd": 1.4801153773920315,
+      "rmsd_mirror": 1.0252939868132527
+     },
+     {
+      "reference": "conf_g_pp",
+      "energy": -233.84128738148297,
+      "dE_kcal": -0.2640507108932117,
+      "rmsd": 1.4904910877354334,
+      "rmsd_mirror": 1.4691338688927493
+     }
+    ]
+   }
+  }
+ },
+ "ends_mirror": {
+  "dE": -9.592326932761353e-11,
+  "rmsd": 1.7487323581131007,
+  "rmsd_mirror": 0.00010652549960611746
+ }
+}

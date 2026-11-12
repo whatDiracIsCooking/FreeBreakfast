@@ -19,7 +19,7 @@ The chemistry is settled: the chair Cope goes through one concerted TS
 ([Staroverov & Davidson 2001](#references), [Graulich 2011](#references)).
 This study adds no new insight into the mechanism. What it adds is a
 demonstration that PC-NEVPT2, through our GPU implementation, gets a known
-hard case right. Every geometry, frequency and IRC-like check is done at the
+hard case right. Every geometry, frequency and the IRC is done at the
 PT2 level, which most studies skipped because PT2 gradients were expensive.
 
 Two claims, each with its own evidence:
@@ -27,7 +27,7 @@ Two claims, each with its own evidence:
 | Claim | Evidence |
 |---|---|
 | **The implementation is correct** | Agreement with an independent code at fixed geometries: PC-NEVPT2 energies against step 2's block2 numbers (same DF-CASSCF(6,6)/cc-pVDZ, same cc-pVDZ-JKFIT), and the PC-NEVPT2 gradient against BAGEL or ORCA at the final TS. The Cope result itself cannot show this: a wrong but smooth surface looks just as plausible. |
-| **The method recovers the concerted mechanism** | At the PT2-optimised C2h stationary point, exactly one imaginary frequency, of a_u symmetry; displacing along it reaches reactant and product with nothing in between. Contrasted with CASSCF's two C2h stationary points. |
+| **The method recovers the concerted mechanism** | At the PT2-optimised C2h stationary point, exactly one imaginary frequency, of a_u symmetry; the IRC from it reaches reactant and product with nothing in between. Contrasted with CASSCF's two C2h stationary points. |
 
 The sentence the study is meant to support:
 
@@ -62,6 +62,7 @@ optimisation of the Cope before claiming that part is new.
 | [`step_4/`](step_4/README.md) 4a | implementation check: free-breakfast DF-PC-NEVPT2 energies at step 1's geometries against step 2's block2 numbers | free-breakfast | done: CASSCF to 7e-12, PC to 1.1e-7 against step 2 (its convergence); to 4e-10 on the same orbitals and CI. ~1.5 s a point on a 3080 |
 | [`step_4/`](step_4/README.md) 4b | PT2-level C2h stationary point, analytic Hessian, mode-displaced minimisations (the IRC check); the CASSCF contrast | free-breakfast | done: PC-NEVPT2 has one C2h stationary point, R = 1.922 Å, one imaginary frequency (475i cm⁻¹, a_u); ± along it reaches both mirror-image 1,5-hexadiene minima; barrier 31.2 kcal/mol. CASSCF: diyl minimum at 1.642 Å, a_u saddle at 2.284 Å. The CASSCF 2.30 Å walk left C2h (negative a_u curvature amplifying round-off) |
 | step 4c | PC-NEVPT2 gradient against BAGEL or ORCA at step 4b's TS | BAGEL / ORCA | not started |
+| [`step_4/`](step_4/README.md#step-4d-the-irc) 4d | the IRC from 4b's TS, both sides, at DF-PC-NEVPT2 (`[irc]`, GS2), replacing 4b's mode-displaced walks; each end then minimised | free-breakfast | done: E falls monotonically by 30.7 kcal/mol on both sides, \|g\| has a single maximum and no interior minimum, max(R16, R34) ≥ 1.922 Å throughout (no diyl region), C2 kept to 2e-4 bohr; each end minimises to 4b's `pc_plus`/`pc_minus` (RMSD 1.3e-4 Å, ΔE 3e-10 Eh). Both sides stopped early on `minimum_within_step`, 0.5 kcal/mol above the minimum (#1278) |
 | step 5 | CCSD(T) at the PT2 TS; cc-pVTZ single points on the barrier | PySCF | not started |
 | [`step_6/`](step_6/README.md) | comparison to experiment: the end points' Hessians, the reference conformer, ΔH‡/ΔS‡/ΔG‡, boat vs chair; and two checks of the TS (energy-only curvature, PC walks from the CASSCF C2h points). Secondary KIEs dropped | free-breakfast | done: end points minima (numerical Hessians; the analytic one refuses them, #1268); reference the ensemble of ten conformers, lowest 0.25 kcal/mol below step 4b's; chair ΔH‡ 29.3 kcal/mol, ΔS‡ −15.1 eu at 505 K against 33.5 and −13.8; boat C2v TS (one B1 imaginary mode) ΔΔH‡ 10.2 against 11.2 ± 2.0; one C2h stationary point at PC-NEVPT2 |
 
@@ -69,7 +70,9 @@ optimisation of the Cope before claiming that part is new.
 
 free-breakfast has a quasi-Newton minimiser (`[optimize]`), the analytic
 single-state DF-PC-NEVPT2 gradient and Hessian, and harmonic frequencies.
-It has no point-group symmetry, no constraints, no TS search and no IRC.
+It has no point-group symmetry and no TS search. When step 4 was planned it
+also had no constraints and no IRC; it now has both, `[optimize]`'s distance
+`constraints` (#1260) and `[irc]` (#1269), and step 4d's IRC uses the latter.
 **None of those is needed for the deciding test.**
 
 **Under C2h the TS is a minimum.** The reaction mode is a_u, which is not
@@ -102,7 +105,8 @@ The plan:
    - All a_u modes real: a diyl intermediate, **stepwise**.
 4. **The IRC check.** Displace ± along the imaginary mode and run `[optimize]`
    again. Reaching reactant and product, with no minimum in between, is the
-   connectivity check. It stands in for an IRC.
+   connectivity check. It stood in for an IRC, and is now replaced by one
+   ([step 4d](step_4/README.md#step-4d-the-irc)).
 
 **Two checks replace the symmetry projection.** Both are read from the
 `[optimize]` history and trajectory.

@@ -2,9 +2,10 @@
 
 Step 4 of the chair Cope study: the PT2-level work on **free-breakfast's own
 DF-PC-NEVPT2**. The plan is the [study README](../README.md)'s
-"Step 4 with free-breakfast". Done so far: **4a, the implementation check**,
-and **4b, the PT2-level stationary point, its Hessian and the mode-displaced
-walks**, with the CASSCF contrast.
+"Step 4 with free-breakfast". Done so far: **4a, the implementation check**;
+**4b, the PT2-level stationary point, its Hessian and the mode-displaced
+walks**, with the CASSCF contrast; and **4d, the IRC** that replaces 4b's
+mode-displaced walks as the connectivity check.
 
 ## Step 4a: free-breakfast against PySCF/block2
 
@@ -428,9 +429,9 @@ stack can take must fit what is free. A capped rerun needs at most about
 - The CASSCF walks' b_g overshoot factor implies a b_g direction with Cartesian curvature
   above 1 Eh/bohr² that BFGS had not learned; the direction itself was not
   identified.
-- The IRC stand-in is not an IRC. It shows that the TS's two downhill sides
-  descend without a stop to the two hexadiene mirror images. It says nothing
-  about the path's exact shape.
+- ~~The IRC stand-in is not an IRC~~: replaced by [step 4d](#step-4d-the-irc)'s
+  IRC, which descends monotonically from the TS to the same two mirror-image
+  minima (after an `[optimize]` from where it stopped, #1278).
 
 ### Files
 
@@ -470,3 +471,192 @@ Wall-clock times on the RTX 3080: the PC gradient 3 s; the walks 74 s
 evaluations); the Hessians 776 s (PC, capped), 170 s and 157 s (CASSCF);
 the uncapped PC Hessian 194 s to its OOM. 41 min in all. A walk evaluation is
 about 2.5 s at PC-NEVPT2 and 2.7 s at CASSCF.
+
+## Step 4d: the IRC
+
+**Result.** The intrinsic reaction coordinate from step 4b's PC-NEVPT2 TS
+replaces the IRC stand-in. It is free-breakfast's `[irc]`
+(Gonzalez–Schlegel GS2 in mass-weighted Cartesians) over the same
+DF-PC-NEVPT2 gradient.
+- **Both sides fall monotonically from the TS to the hexadiene basin**, each
+  by 30.7 kcal/mol over 9.7–9.8 amu^½ bohr. They are mirror images: E(+s) and
+  E(−s) agree to 3.7e-7 Eh.
+- **There is no stationary point along the way.** The gradient norm rises
+  from the TS to one maximum, 0.0412 Eh/bohr at |s| = 1.9, and then falls
+  monotonically to the end. It has no interior minimum.
+- **The diyl region is never approached.** The longer of R16 and R34 is
+  ≥ 1.922 Å everywhere on the path, and that minimum is at the TS itself. As
+  one bond forms, the other breaks, from the first step.
+- **The path keeps C2**, as the a_u mode does: its C2-breaking part is
+  ≤ 1.9e-4 bohr, against an a_u part of 0.48 bohr at the ends.
+- **Each end, minimised at Opt=Tight, is step 4b's own minimum.** The forward
+  end reaches `pc_plus`: ΔE 3e-10 Eh, RMSD 1.3e-4 Å. The backward end reaches
+  `pc_minus`: ΔE 2e-10 Eh, RMSD 1.2e-4 Å. That minimum is step 6's C2
+  `g_mm` conformer.
+
+So the PC-NEVPT2 chair Cope is **concerted** by an IRC, not only by the
+Hessian at its stationary point and a minimisation from beside it.
+
+**The walk stopped short of the minimum ([#1278](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/1278)).**
+Both sides stopped on `minimum_within_step`, the model's minimum along the
+steepest descent within half a step. It fired at max force 7.9e-4 and
+8.2e-4 Eh/bohr, 0.48 and 0.51 kcal/mol above the minimum, and 3.9 and
+4.0 amu^½ bohr from it (mass-weighted, aligned). That is about 39 steps, not
+the step the stop's description promises. At the stop, each sphere still
+converged in one evaluation and E still fell 4e-5 Eh a step.
+- **Probable cause.** The stop tests the line minimum along u. In this soft
+  valley, where R16 opens from 3.67 to 4.27 Å, that minimum is within half a
+  step while the path itself curves on.
+- **What it does to the result.** Nothing to the points kept: the Opt=Tight
+  `[optimize]` after it descends monotonically, with no rejected step, R34
+  held at 1.55–1.56 Å throughout. The descent from the stop to the minimum
+  is that optimisation, not the IRC.
+- **Filed, not worked around.**
+
+### Method
+
+| | |
+|---|---|
+| level | DF-CASSCF(6,6) and DF-PC-NEVPT2 on it, cc-pVDZ / cc-pVDZ-JKFIT, no frozen core; `conv_tol` 1e-12, `conv_tol_grad` 1e-9 (step 4b's walk settings) |
+| start | `geometries/pc_ts.xyz` (step 4b's TS); its analytic PC-NEVPT2 Hessian from step 6's `ts_hessian` (the same geometry, uncapped since #1259), loaded with `[hessian] from`; that run's CASSCF orbitals in `[casscf] orbitals`. `[irc]` carries them from point to point as `[optimize]` does |
+| `[irc]` | `step_size` 0.1 amu^½ bohr, `max_points` 400 a side, `direction` both; `max_force` 4.5e-4, `sphere_gradient` 1e-4, `sphere_displacement` 1e-3, `max_sphere_iterations` 20 (the defaults) |
+| single points | at every fifth point of each side and its last: DF-CASSCF + `[nevpt2]`, each from the orbitals of the single point before it (the TS's at s = 0). They give the natural occupations, and check that the walk stayed on one CASSCF solution |
+| the ends | `[optimize]` at Opt=Tight (step 4b's thresholds), from each side's last point with its single point's orbitals |
+| symmetry | none imposed. The path is analysed in the TS's frame (`[irc]` holds the centre of mass and takes no rotating step), by projecting the displacement from the TS onto the TS's C2h irreps (`stationary.deviation_by_irrep`) |
+
+**The step size.** The straight mass-weighted distance from the TS to step
+4b's hexadiene end is 12.4 amu^½ bohr, so 0.1 (Gaussian's and the tree's
+default) needed well over 100 points a side. Raising `max_points` to 400
+lets the walk stop on its own rather than on the cap, and it did, at 98
+and 97 points.
+
+0.1 was kept rather than raised, for three reasons:
+- **Cost was not a constraint.** The whole IRC took 18 min, about 4 s a
+  point.
+- **The spheres were easy.** 137 of the 195 points took one evaluation and
+  none took more than three, so a larger step would have saved little.
+- **The curve is resolved.** E(s) and R(s) are smooth at that spacing
+  through the TS region.
+
+The converged tangential gradient is ≤ 9.6e-5 Eh/(amu^½ bohr) at every
+point.
+
+### The path
+
+E relative to the TS (−233.7919654996 Eh), R in Å, |g| the projected
+Cartesian gradient's 2-norm (Eh/bohr), "sphere" the evaluations its
+hypersphere took. The full table is `irc.csv`; the plot is `irc.svg`.
+
+| s | ΔE / kcal mol⁻¹ | R16 | R34 | \|g\| | sphere |
+|---:|---:|---:|---:|---:|---:|
+| −9.7 (end) | −30.706 | 1.5578 | 3.6486 | 1.28e-3 | 1 |
+| −8.0 | −29.973 | 1.5606 | 3.3499 | 3.26e-3 | 1 |
+| −6.0 | −27.654 | 1.5665 | 3.0031 | 8.92e-3 | 1 |
+| −4.0 | −21.808 | 1.5830 | 2.6415 | 2.12e-2 | 1 |
+| −2.0 | −9.647 | 1.6713 | 2.2609 | 4.09e-2 | 1 |
+| −1.0 | −2.698 | 1.7823 | 2.0821 | 2.93e-2 | 1 |
+| **0 (TS)** | **0** | **1.9223** | **1.9223** | 2.3e-5 | — |
+| 1.0 | −2.698 | 2.0821 | 1.7823 | 2.93e-2 | 1 |
+| 2.0 | −9.647 | 2.2609 | 1.6713 | 4.09e-2 | 1 |
+| 4.0 | −21.808 | 2.6415 | 1.5830 | 2.12e-2 | 1 |
+| 6.0 | −27.654 | 3.0031 | 1.5665 | 8.92e-3 | 1 |
+| 8.0 | −29.973 | 3.3499 | 1.5606 | 3.26e-3 | 1 |
+| 9.8 (end) | −30.732 | 3.6659 | 1.5576 | 1.23e-3 | 1 |
+
+| side | points after the TS | stop | sphere evaluations (1 / 2 / 3 per point) | energy rises | interior \|g\| minima | max C2-breaking / bohr | max \|E_sp − E_irc\| / Eh |
+|---|---:|---|---|---:|---:|---:|---:|
+| forward (R16 opens) | 98 | `minimum_within_step` | 132 (68 / 26 / 4) | 0 | 0 | 1.9e-4 | 4.8e-11 |
+| backward (R34 opens) | 97 | `minimum_within_step` | 129 (69 / 24 / 4) | 0 | 0 | 1.8e-4 | 5.0e-11 |
+
+Reading it:
+- **Monotone, with one gradient maximum.** E falls at every point. |g|
+  peaks at |s| = 1.9 and falls steadily after, to 1.2e-3 at the end, with
+  no dip toward zero. A diyl intermediate would show as a stationary point
+  on the path, with a gradient minimum and then a rise.
+- **Bond formation and breaking are synchronous near the TS, and the formed
+  bond completes first.** By |s| = 4 the new bond is at 1.583 Å, near its
+  final 1.551; the breaking bond is at 2.64 Å. The rest of the descent opens
+  the broken bond against a soft potential: the last 6 amu^½ bohr gain
+  9 kcal/mol.
+- **The two sides are mirror images.** Over the 97 arc lengths both reach,
+  E(+s) and E(−s) agree to ≤ 3.7e-7 Eh (2.3e-4 kcal/mol), and R16(+s) and
+  R34(−s) to ≤ 8e-5 Å. That is step 4b's symmetric TS seen from both
+  sides, each side within its spheres' tolerance.
+- **The C2-breaking part grows from 1e-6 bohr at the TS to ≤ 1.9e-4 at the
+  ends**, while the a_u part grows to 0.48 bohr. That is round-off and the
+  sphere's 1e-4 tolerance, not a departure: the end minimum is itself C2
+  (`g_mm`).
+- **One CASSCF solution throughout.** Every single point, each started from
+  the one before it, reproduces the IRC's own energy to ≤ 5e-11 Eh.
+
+### Natural occupations along the path
+
+The active natural occupations from the single points, both sides
+the same to ≤ 1.4e-5:
+
+| \|s\| | R short / long, Å | n1 | n2 | n3 | n4 | n5 | n6 |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 0 (TS) | 1.922 / 1.922 | 1.9608 | 1.9329 | 1.8219 | 0.1803 | 0.0657 | 0.0385 |
+| 0.5 | 1.850 / 2.000 | 1.9622 | 1.9316 | 1.8291 | 0.1730 | 0.0671 | 0.0369 |
+| 1.0 | 1.782 / 2.082 | 1.9659 | 1.9282 | 1.8463 | 0.1555 | 0.0709 | 0.0332 |
+| 2.0 | 1.671 / 2.261 | 1.9743 | 1.9217 | 1.8767 | 0.1220 | 0.0802 | 0.0251 |
+| 3.0 | 1.608 / 2.453 | 1.9789 | 1.9186 | 1.8897 | 0.1054 | 0.0867 | 0.0207 |
+| 5.0 | 1.572 / 2.825 | 1.9813 | 1.9167 | 1.8991 | 0.0936 | 0.0909 | 0.0185 |
+| 9.8 (end) | 1.558 / 3.666 | 1.9822 | 1.9159 | 1.9073 | 0.0906 | 0.0863 | 0.0177 |
+
+**The diradical character falls smoothly from the TS.** At the TS the most
+open pair (step 4b: b_u / a_g′) is at 0.180. It closes steadily to the
+hexadiene's two π bonds and one σ bond (0.091, 0.086, 0.018). There is no
+point where a pair opens toward the CASSCF diyl's 1.44 / 0.56 (step 4b).
+
+### The ends against step 4b and step 6
+
+| | forward end | backward end |
+|---|---|---|
+| IRC's last point | E −233.8409398390, R16/R34 3.666/1.558 | E −233.8408988024, R16/R34 1.558/3.649 |
+| `[optimize]` (Opt=Tight) | 69 evaluations, max force 1.3e-6, E −233.8417081732 | 69 evaluations, max force 2.5e-6, E −233.8417081731 |
+| R16/R34 | 4.2694/1.5510 | 1.5510/4.2694 |
+| dihedrals C2C3C4C5, C1C2C3C4, C3C4C5C6 | 64.58, −118.41, −118.41 | (the mirror) |
+| against step 4b's | `pc_plus`: ΔE −2.8e-7 kcal/mol, RMSD 1.3e-4 Å | `pc_minus`: ΔE −1.5e-7 kcal/mol, RMSD 1.2e-4 Å |
+| against step 6's conformers | `g_mm` (C2) to 5e-5 Å; every other ≥ 1.0 Å | the mirror of `g_mm` to 6e-5 Å |
+
+The two optimised ends agree with each other to 1e-10 Eh, and are
+mirror images to 1.1e-4 Å RMSD (Kabsch with a reflection, after relabelling
+the C1–C6 bonded end by the TS's inversion). **So the IRC and the stand-in
+agree on what the TS connects:** the same mirror-image pair of `g_mm`
+minima, by different routes. The stand-in went from a 0.2 bohr displacement
+by BFGS; the IRC follows the steepest-descent path.
+
+The barrier is unchanged: 0.0497427 Eh, 31.21 kcal/mol, electronic, from
+this minimum (step 4b).
+
+### Files
+
+| File | What |
+|---|---|
+| `irc.py` | `prepare` (the `[irc]` input: the TS geometry, `ts_hessian`'s `hessian.json` and orbitals), `run` (the binary; a single point or end walk is prepared just before it runs, from the run before it), `names` (every run, in order), `analyse` → `irc.json`, `irc.csv`, `irc.svg`, `geometries/irc_*.xyz` |
+| `irc.json` | settings; per side the stop, the point count, the end, energy rises, points in the diyl region, interior gradient minima, the sphere histogram, max C2 breaking, max single-point difference; the optimised end with its comparison to `pc_plus`/`pc_minus` and step 6's ten conformers; the two ends' mirror check; wall clocks |
+| `irc.csv` | every point, backward end to forward end (s ascending): s, E, ΔE (kcal/mol), \|g\|, max force, sphere evaluations, tangential gradient, R16, R34, C2-breaking and a_u parts (bohr), and at single-point rows E_sp − E_irc and the six natural occupations |
+| `irc.svg` | E(s) and R16/R34(s) (stdlib SVG, as step 2's plot; matplotlib is not in `uv.lock`) |
+| `geometries/irc_forward.xyz`, `irc_backward.xyz` | the path, one frame a point, the TS first |
+| `geometries/irc_forward_optimum.xyz`, `irc_backward_optimum.xyz` | each end minimised |
+
+### Regenerating
+
+From the repo root, after step 6's `ts_hessian` has run (`py` as above):
+
+```sh
+python3 $s4/irc.py prepare irc
+$s4/run.sh irc.py irc
+$s4/run.sh irc.py $(python3 $s4/irc.py names | cut -d' ' -f2-)
+py $s4/irc.py analyse
+```
+
+The CPU side was held to 8 cores with `taskset -c 0-7` around `run.sh`.
+Wall clock on the RTX 3080:
+- the IRC, 1060 s for both sides: 261 evaluations plus the two TS
+  evaluations, ~4 s a point;
+- the 42 single points, 124 s;
+- the two end optimisations, 333 s and 339 s.
+
+31 min in all.
