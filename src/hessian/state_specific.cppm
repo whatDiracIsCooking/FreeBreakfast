@@ -225,12 +225,15 @@ Result<size_t> integral_derivatives_bytes(const DeviceResources &res, const Basi
 /// footprints' body): @p gradient the Lagrangian's calls with their strings
 /// taken off (z^c and the multipliers persistent), @p product(count,
 /// partners) the Hessian-vector product's; with @p copies a pair's
-/// directions and partners (SC's), and with @p pairs its product too. The
-/// counts as df_sc_nevpt2_footprint's.
-MemoryFootprint nevpt2_hessian_footprint(
-    const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas, int32_t nalpha,
-    int32_t nbeta, int32_t k, std::span<const size_t> syevd_lwork, const MemoryFootprint &gradient,
-    const std::function<MemoryFootprint(int32_t, int32_t)> &product, bool copies, bool pairs);
+/// directions and partners (SC's), and with @p pairs its product too; with
+/// @p degenerate PC's degenerate-pair step (a turned basis and one product).
+/// The counts as df_sc_nevpt2_footprint's.
+MemoryFootprint
+nevpt2_hessian_footprint(const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas,
+                         int32_t nalpha, int32_t nbeta, int32_t k,
+                         std::span<const size_t> syevd_lwork, const MemoryFootprint &gradient,
+                         const std::function<MemoryFootprint(int32_t, int32_t)> &product,
+                         bool copies, bool pairs, bool degenerate = false);
 
 /// @brief @p gradient, a nevpt2 gradient's footprint over @p ncas active
 /// orbitals of @p nalpha and @p nbeta electrons, less the strings it makes

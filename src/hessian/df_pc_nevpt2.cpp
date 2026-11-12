@@ -2,16 +2,18 @@
 /// @brief df_pc_nevpt2: the PC-NEVPT2 analytic nuclear Hessian on a
 /// single-state DF-CASSCF (docs/nevpt2/nevpt2.tex eq. hess), df_sc_nevpt2's
 /// assembly over PC's adjoint, gradient multipliers and Hessian-vector
-/// product. Refused where one analytic Hessian does not represent the PC
-/// surface: a class kept below the HVP's conditioning floor, a coordinate
-/// whose Schur lift reaches the cut within 1e-3 bohr, and a degenerate
-/// inactive pair the tangents could not rotate.
+/// product. A degenerate inactive pair, which the tangents leave unrotated,
+/// is taken through its off-diagonal f in rotated bases (#1268). Refused
+/// where one analytic Hessian does not represent the PC surface: a class
+/// kept below the HVP's conditioning floor, and a coordinate whose Schur
+/// lift reaches the cut within 1e-3 bohr; Unsupported for three or more
+/// inactive orbitals within 1e-6 Eh of each other.
 
 module free_breakfast.hessian;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants; // kZero, kOne, kTwo, kNegOne
+import free_breakfast.core.constants; // kZero, kOne, kTwo, kNegOne, kPi
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers, axpy, gemm, gemv, gemmStridedBatched, wwrMemcpyAsync,
                                 // wwrMemsetAsync, ScopedDeviceIndex, gpu_status
@@ -47,6 +49,11 @@ constexpr double kPcNevpt2Kept = 1e-10;
 // branch inside a vibrational or finite-difference step, and one analytic
 // Hessian does not represent it.
 constexpr double kPcNevpt2LiftStep = 1e-3;
+// The rotations that read a degenerate pair's off-diagonal f as a split
+// (README "A degenerate inactive pair"): by pi/4 the split is f_pq's change,
+// by pi/8 the sum of the two over sqrt 2.
+constexpr double kPcNevpt2PairTurn = kPi<double> / 4.0;
+constexpr double kPcNevpt2PairHalfTurn = kPi<double> / 8.0;
 // PySCF's class order, PcClassEnergies'.
 constexpr std::array<std::string_view, 8> kPcNevpt2Classes{"Sr",   "Si",  "Sijrs", "Sijr",
                                                            "Srsi", "Srs", "Sij",   "Sir"};
@@ -191,19 +198,28 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
         FBF_TRY(accumulate(ndet32, x0, count, c_dot, t_c.data()));
         return accumulate(nn32, x0, count, kappa, t_kappa.data());
       }));
-  // A degenerate pair the displacement splits: kappa_oo^x_pq is not a
-  // division the state determines, and the tangents left it 0. The canonical
-  // orbitals PC reads are not differentiable there (README "The PC-NEVPT2
-  // Hessian").
-  if (!degenerate.empty()) {
-    std::string named;
-    for (const DegeneratePair &d : degenerate) {
-      named += std::format("{}(coordinate {}, orbitals {} and {}, gap {:.2e}, f {:.2e})",
-                           named.empty() ? "" : ", ", d.coordinate, d.p, d.q, d.gap, d.f);
+  // The degenerate pairs: kappa_oo^x_pq is not a division the state
+  // determines, and the tangents left it 0. PC is invariant to the pair's
+  // rotation, so step 4b takes the pair's off-diagonal f instead (README "A
+  // degenerate inactive pair"). It handles disjoint pairs; an orbital in two
+  // of them (three or more orbitals within the floor) is not handled.
+  std::vector<std::array<int32_t, 2>> blocks;
+  for (const DegeneratePair &d : degenerate) {
+    if (std::ranges::find(blocks, std::array{d.p, d.q}) == blocks.end()) {
+      blocks.push_back({d.p, d.q});
     }
-    return err_numerical("{}: the canonical inactive orbitals are not differentiable at a "
-                         "degenerate pair the displacement splits: {}",
-                         kWho, named);
+  }
+  for (size_t a = 0; a < blocks.size(); ++a) {
+    for (size_t b2 = 0; b2 < a; ++b2) {
+      for (const int32_t o : blocks[a]) {
+        if (o == blocks[b2][0] || o == blocks[b2][1]) {
+          return err_unsupported("{}: orbital {} is within 1e-6 Eh of two others (pairs ({}, {}) "
+                                 "and ({}, {})): a cluster of three or more degenerate inactive "
+                                 "orbitals is not handled, only disjoint pairs",
+                                 kWho, o, blocks[a][0], blocks[a][1], blocks[b2][0], blocks[b2][1]);
+        }
+      }
+    }
   }
   Buffers::device<double> t_nr = FBF_TRY(zeroed(nn * k));
   {
@@ -278,23 +294,24 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
   // empty perturbers and no partners), with each direction's Schur lift and
   // its step t*. The directions are chunked as widely as the memory budget
   // holds the product's footprint.
+  // <t_i, (h_bar, Lambda, y)> over every i, into k doubles.
+  const auto pair_with = [&](const double *h_bar_dot, const double *lambda_dot, const double *y_dot,
+                             double *into) -> Status {
+    FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, nn32, k32, &kOne<double>,
+                                                  t_h.data(), nn32, h_bar_dot, 1, &kZero<double>,
+                                                  into, 1)));
+    FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, bn32, k32, &kOne<double>,
+                                                  t_b.data(), bn32, lambda_dot, 1, &kOne<double>,
+                                                  into, 1)));
+    return gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, ndet32, k32,
+                                                 &kOne<double>, t_c.data(), ndet32, y_dot, 1,
+                                                 &kOne<double>, into, 1));
+  };
   std::vector<double> hvp(k * k, 0.0);
   std::vector<std::array<double, 8>> lift_steps;
   lift_steps.reserve(k);
   {
     Buffers::device<double> paired(k * k, res.device());
-    // Column j of @p into (k long) = <t_i, P> over every i.
-    const auto pair_with = [&](const nevpt2::AdjointTangent &p, double *into) -> Status {
-      FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, nn32, k32,
-                                                    &kOne<double>, t_h.data(), nn32, p.h_bar.data(),
-                                                    1, &kZero<double>, into, 1)));
-      FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, bn32, k32,
-                                                    &kOne<double>, t_b.data(), bn32,
-                                                    p.lambda.data(), 1, &kOne<double>, into, 1)));
-      return gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, ndet32, k32,
-                                                   &kOne<double>, t_c.data(), ndet32, p.y.data(), 1,
-                                                   &kOne<double>, into, 1));
-    };
     // As many directions at once as the memory budget holds the product of,
     // at the classes' kept ranks (syevd's lwork is the workspace's alone).
     const std::array<std::array<int64_t, 8>, 1> ranks{dropped};
@@ -315,7 +332,8 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
                                       .c = t_c.data() + (j0 * ndet)},
                                      false, pc_floor));
       for (size_t u = 0; u < count; ++u) {
-        FBF_TRY(pair_with(p.products[u], paired.data() + ((j0 + u) * k)));
+        FBF_TRY(pair_with(p.products[u].h_bar.data(), p.products[u].lambda.data(),
+                          p.products[u].y.data(), paired.data() + ((j0 + u) * k)));
         lift_steps.push_back(p.lift_steps[u]);
       }
       FBF_TRY(res.sync());
@@ -338,6 +356,164 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
       return err_numerical("{}: the PC surface switches branch within {:g} bohr (a Schur lift "
                            "reaches the cut, README \"The PC-NEVPT2 Hessian\"): {}",
                            kWho, kPcNevpt2LiftStep, named);
+    }
+  }
+
+  // 4b. The degenerate pairs' off-diagonal f (README "A degenerate inactive
+  // pair"). Along the path that leaves pair P = (p, q) unrotated its f_pq =
+  // delta_P moves at first order, which the functional (f's diagonal alone)
+  // does not read; PC is invariant to the pair's rotation, so the energy is
+  // the functional plus delta's Taylor terms:
+  //
+  //   H_ij += sum_P (phi^P_i K^P_j + phi^P_j K^P_i) + sum_PP' M_PP' phi^P_i phi^P'_j,
+  //
+  // phi^P_i = delta_P's change along t_i, K^P_j the change of dE/d delta_P along
+  // t_j at fixed delta, M_PP' = d2E/d delta_P d delta_P'. Each is read in a
+  // basis C U whose turn makes delta a split of the diagonal: by pi/4 delta_P
+  // is the split d' of (p', q'), so the product along it (an h direction, +1
+  // at p'p', -1 at q'q') gives M_PP from its own split and G^P_j paired with
+  // t_j; G^P_j = K^P_j - M^dd_P d^P_j + M_PP phi^P_j, d^P_j the change of the
+  // pair's own split, which that basis does not read, and M^dd_P = d2E/d delta_P
+  // d split_P follows from the pi/8 basis (split (d + delta) / sqrt 2) and the
+  // unturned one. Exact at a degenerate pair, O(gap) off one.
+  std::vector<double> degenerate_part(k * k, 0.0);
+  double rotation_shift = 0.0;
+  if (!blocks.empty()) {
+    const size_t np = blocks.size();
+    // phi^P_i and d^P_i, [P k + i], from the Cartesian records.
+    std::vector<double> phi(np * k, 0.0);
+    std::vector<double> split(np * k, 0.0);
+    for (const DegeneratePair &d : degenerate) {
+      const auto at =
+          static_cast<size_t>(std::ranges::find(blocks, std::array{d.p, d.q}) - blocks.begin());
+      const auto x = static_cast<size_t>(d.coordinate);
+      for (size_t i = 0; i < k; ++i) {
+        phi[(at * k) + i] += q[(i * n_x) + x] * d.f;
+        split[(at * k) + i] += q[(i * n_x) + x] * d.split;
+      }
+    }
+    Buffers::device<double> z_none = FBF_TRY(zeroed(nn));
+    Buffers::device<double> b_none = FBF_TRY(zeroed(naux * nn));
+    Buffers::device<double> c_none = FBF_TRY(zeroed(ndet));
+    Buffers::device<double> direction(nn, res.device());
+    Buffers::device<double> u(nn, res.device());
+    Buffers::device<double> c_turned(nn, res.device());
+    Buffers::device<double> h_back(nn, res.device());
+    Buffers::device<double> work(naux * nn, res.device());
+    Buffers::device<double> l_back(naux * nn, res.device());
+    Buffers::device<double> column(k, res.device());
+    // The product in the basis C U, U turning each block P by @p turns[P],
+    // along block @p along's split there (U left in u).
+    const auto product_in = [&](std::span<const double> turns,
+                                const size_t along) -> Result<nevpt2::PcHessianProduct> {
+      std::vector<double> host(nn, 0.0);
+      for (size_t r = 0; r < nmo; ++r) {
+        host[r * (nmo + 1)] = 1.0;
+      }
+      for (size_t at = 0; at < np; ++at) {
+        const auto p = static_cast<size_t>(blocks[at][0]);
+        const auto qq = static_cast<size_t>(blocks[at][1]);
+        const double cs = std::cos(turns[at]);
+        const double sn = std::sin(turns[at]);
+        host[p + (nmo * p)] = cs; // column p' = cos p + sin q
+        host[qq + (nmo * p)] = sn;
+        host[p + (nmo * qq)] = -sn; // column q' = -sin p + cos q
+        host[qq + (nmo * qq)] = cs;
+      }
+      FBF_TRY(copy(u.data(), host.data(), nn, wwr::wwrMemcpyHostToDevice));
+      std::ranges::fill(host, 0.0);
+      host[static_cast<size_t>(blocks[along][0]) * (nmo + 1)] = 1.0;
+      host[static_cast<size_t>(blocks[along][1]) * (nmo + 1)] = -1.0;
+      FBF_TRY(copy(direction.data(), host.data(), nn, wwr::wwrMemcpyHostToDevice));
+      FBF_TRY(gpu_status(
+          gemm(blas, nmo32, &kOne<double>, c, u.data(), &kZero<double>, c_turned.data())));
+      FBF_TRY(res.sync());
+      nevpt2::PcHessianProduct p = FBF_TRY(nevpt2::pc_hessian_product(
+          res, alpha, beta, naux32, nmo32, nmo32, b.data(), c_turned.data(), h.data(), ncore, ncas,
+          vector, z_none.data(), batch,
+          {.count = 1, .h = direction.data(), .b = b_none.data(), .c = c_none.data()}, false,
+          pc_floor));
+      rotation_shift = std::max(rotation_shift, std::abs(p.energies.total - e_corr));
+      return p;
+    };
+    // Each block's split read off a product's h_bar, in its basis.
+    const auto splits_of = [&](const nevpt2::PcHessianProduct &p) -> Result<std::vector<double>> {
+      const std::vector<double> hb = FBF_TRY(download(p.products[0].h_bar.data(), nn));
+      std::vector<double> out(np);
+      for (size_t at = 0; at < np; ++at) {
+        out[at] = hb[static_cast<size_t>(blocks[at][0]) * (nmo + 1)] -
+                  hb[static_cast<size_t>(blocks[at][1]) * (nmo + 1)];
+      }
+      return out;
+    };
+    // <t_j, U P U^T> over every j: the product turned back to C's basis,
+    // h_bar's and each Lambda_Q's two indices, and paired.
+    const auto paired_back = [&](const nevpt2::PcHessianProduct &p) -> Result<std::vector<double>> {
+      const nevpt2::AdjointTangent &t = p.products[0];
+      FBF_TRY(gpu_status(
+          gemm(blas, nmo32, &kOne<double>, u.data(), t.h_bar.data(), &kZero<double>, work.data())));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+          blas, nmo32, nmo32, nmo32, &kOne<double>, work.data(), u.data(), &kZero<double>,
+          h_back.data())));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+          blas, naux32 * nmo32, nmo32, nmo32, &kOne<double>, t.lambda.data(), u.data(),
+          &kZero<double>, work.data())));
+      FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, naux32, nmo32, nmo32, &kOne<double>,
+          work.data(), naux32, static_cast<int64_t>(naux * nmo), u.data(), nmo32, 0, &kZero<double>,
+          l_back.data(), naux32, static_cast<int64_t>(naux * nmo), nmo32)));
+      FBF_TRY(pair_with(h_back.data(), l_back.data(), t.y.data(), column.data()));
+      return download(column.data(), k);
+    };
+    std::vector<double> m(np * np, 0.0); // M_PP', [P + np P']
+    std::vector<double> mixed(np, 0.0);  // d2E/d delta_P d split_P
+    std::vector<double> g(np * k, 0.0);  // G^P_j, [P k + j]
+    std::vector<double> turns(np, 0.0);
+    for (size_t at = 0; at < np; ++at) {
+      std::ranges::fill(turns, 0.0);
+      const double dd = FBF_TRY(splits_of(FBF_TRY(product_in(turns, at))))[at];
+      turns[at] = kPcNevpt2PairTurn;
+      {
+        const nevpt2::PcHessianProduct p = FBF_TRY(product_in(turns, at));
+        m[at * (np + 1)] = FBF_TRY(splits_of(p))[at];
+        const std::vector<double> paired = FBF_TRY(paired_back(p));
+        std::ranges::copy(paired, g.begin() + static_cast<std::ptrdiff_t>(at * k));
+      }
+      turns[at] = kPcNevpt2PairHalfTurn;
+      const double half = FBF_TRY(splits_of(FBF_TRY(product_in(turns, at))))[at];
+      mixed[at] = half - (0.5 * (dd + m[at * (np + 1)]));
+    }
+    if (np > 1) {
+      std::ranges::fill(turns, kPcNevpt2PairTurn);
+      for (size_t at = 0; at < np; ++at) {
+        const std::vector<double> s = FBF_TRY(splits_of(FBF_TRY(product_in(turns, at))));
+        for (size_t other = 0; other < np; ++other) {
+          if (other != at) {
+            m[at + (np * other)] += 0.5 * s[other];
+            m[other + (np * at)] += 0.5 * s[other];
+          }
+        }
+      }
+    }
+    // K^P_j = G^P_j + M^dd_P d^P_j - M_PP phi^P_j, then the terms.
+    std::vector<double> kk(np * k);
+    for (size_t at = 0; at < np; ++at) {
+      for (size_t j = 0; j < k; ++j) {
+        kk[(at * k) + j] = g[(at * k) + j] + (mixed[at] * split[(at * k) + j]) -
+                           (m[at * (np + 1)] * phi[(at * k) + j]);
+      }
+    }
+    for (size_t j = 0; j < k; ++j) {
+      for (size_t i = 0; i < k; ++i) {
+        double sum = 0.0;
+        for (size_t at = 0; at < np; ++at) {
+          sum += (phi[(at * k) + i] * kk[(at * k) + j]) + (phi[(at * k) + j] * kk[(at * k) + i]);
+          for (size_t other = 0; other < np; ++other) {
+            sum += m[at + (np * other)] * phi[(at * k) + i] * phi[(other * k) + j];
+          }
+        }
+        degenerate_part[i + (k * j)] = sum;
+      }
     }
   }
 
@@ -470,7 +646,7 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
   double asymmetry = 0.0;
   const auto element = [&](const size_t at) {
     return e_cas[at] + z_lxy[at] + z_lx[at] + z_third[at] + z_koo[at] + skeleton[at] + hvp[at] +
-           rotation_tau[at] + rotation_kappa[at];
+           rotation_tau[at] + rotation_kappa[at] + degenerate_part[at];
   };
   for (size_t j = 0; j < k; ++j) {
     for (size_t i = 0; i < k; ++i) {
@@ -519,13 +695,16 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
                        .hvp = std::move(hvp),
                        .rotation_tau = std::move(rotation_tau),
                        .rotation_kappa = std::move(rotation_kappa),
+                       .degenerate = std::move(degenerate_part),
                        .casscf = std::move(casscf),
                        .e_corr = e_corr,
                        .kept = kept,
                        .max_zc = gradient.zc.max_z,
                        .min_gap = gradient.zc.min_gap,
                        .zvector_residual = gradient.multipliers.residual,
-                       .lift_steps = std::move(lift_steps)};
+                       .lift_steps = std::move(lift_steps),
+                       .degenerate_pairs = std::move(blocks),
+                       .rotation_shift = rotation_shift};
 }
 
 MemoryFootprint df_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux,
@@ -553,7 +732,7 @@ MemoryFootprint df_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &au
         return nevpt2::pc_hessian_product_footprint(naux, nmo, nmo, ncore, ncas, nalpha, nbeta,
                                                     batch, syevd_lwork, count, false, dropped);
       },
-      false, false);
+      false, false, true);
 }
 
 } // namespace free_breakfast::hessian

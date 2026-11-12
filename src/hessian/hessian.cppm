@@ -568,7 +568,8 @@ df_casscf_cp(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
              int32_t max_iterations = 200);
 
 /// @brief A core or virtual pair below the NEVPT2 gradient's degenerate-pair
-/// rule along one coordinate, which @ref df_nevpt2_tangents gave kappa_oo 0.
+/// rule along one coordinate, which @ref df_nevpt2_tangents gave kappa_oo 0:
+/// the first-order change of the pair's 2 x 2 block of f along it.
 struct DegeneratePair {
   /// @brief The coordinate x = 3 A + k.
   int32_t coordinate{0};
@@ -578,9 +579,10 @@ struct DegeneratePair {
   int32_t q{0};
   /// @brief eps_p - eps_q (hartree), below 1e-6 in magnitude.
   double gap{0.0};
-  /// @brief f^(x)_pq, the change of f the rest of t_x makes, above 1e-8 in
-  /// magnitude.
+  /// @brief f^(x)_pq, the change of f the rest of t_x makes.
   double f{0.0};
+  /// @brief (f^(x)_pp - f^(x)_qq) / 2, the change of the pair's split.
+  double split{0.0};
 };
 
 /// @brief t_x, the first-order change of every input of a single-state
@@ -604,11 +606,12 @@ struct DegeneratePair {
 /// rotation. C -> C (1 + kappa), kappa antisymmetric.
 ///
 /// **A degenerate pair.** Below the gradient's degenerate-pair rule (z^c's:
-/// |eps_p - eps_q| < 1e-6) kappa_oo^x_pq is 0 when |f^(x)_pq| <= 1e-8, the
-/// pair split across irreps; past that it is not a division the state
-/// determines. For SC (@p pc false) that is Numerical, naming the pair and
-/// the coordinate; for PC it is recorded, kappa_oo^x_pq left 0, and the
-/// call goes on.
+/// |eps_p - eps_q| < 1e-6) kappa_oo^x_pq is not a division the state
+/// determines. For SC (@p pc false) it is 0 when |f^(x)_pq| <= 1e-8, the
+/// pair split across irreps, and past that Numerical, naming the pair and
+/// the coordinate. For PC, which is invariant to the pair's rotation, every
+/// such pair and coordinate is recorded, kappa_oo^x_pq left 0, and the call
+/// goes on: @ref df_pc_nevpt2 takes the pair's off-diagonal f itself.
 ///
 /// @p consume(x0, count, h_dot, b_dot, c_dot, kappa) sees the coordinates
 /// [x0, x0 + count), in order, each once, on the device and valid until it
@@ -1088,6 +1091,9 @@ struct PcNevpt2Terms {
   std::vector<double> rotation_tau;
   /// @brief The rotation's second order, as ScNevpt2Terms::rotation_kappa.
   std::vector<double> rotation_kappa;
+  /// @brief The degenerate pairs' off-diagonal f terms (README "A degenerate
+  /// inactive pair"); zero without such a pair.
+  std::vector<double> degenerate;
   /// @brief @ref df_casscf's terms, Cartesian: E_cas, lambda^x and its CP
   /// residuals.
   CasscfTerms casscf;
@@ -1108,6 +1114,12 @@ struct PcNevpt2Terms {
   /// nevpt2::PcHessianProduct::lift_steps along t_i, its CI part the CP
   /// response c^i; infinite where nothing rises.
   std::vector<std::array<double, 8>> lift_steps;
+  /// @brief The core or virtual pairs (p, q) under the degenerate-pair rule
+  /// (1e-6 hartree) that @ref degenerate takes.
+  std::vector<std::array<int32_t, 2>> degenerate_pairs;
+  /// @brief The largest |E_corr| change of turning those pairs' orbitals in
+  /// the bases @ref degenerate reads them in: PC's invariance, to O(gap).
+  double rotation_shift{0.0};
 };
 
 /// @brief The PC-NEVPT2 analytic nuclear Hessian of the single-state
@@ -1118,17 +1130,21 @@ struct PcNevpt2Terms {
 /// @ref df_sc_nevpt2's; @p pc_floor is EnergyInputs::pc_floor, the energy's
 /// and every part's.
 ///
-/// PC has no empty perturbers, so no pair is taken again. Refused, Numerical,
-/// where one analytic Hessian does not represent the PC surface:
+/// PC has no empty perturbers, so no pair is taken again. A core or virtual
+/// pair under 1e-6 hartree, which @ref df_nevpt2_tangents leaves unrotated,
+/// is taken through its off-diagonal f, read as a split of the diagonal in
+/// turned bases (PcNevpt2Terms::degenerate): PC is invariant to the pair's
+/// rotation, so its energy is smooth there. Refused, Numerical, where one
+/// analytic Hessian does not represent the PC surface:
 /// - a class whose smallest kept metric eigenvalue is below 1e-10 of its
 ///   largest (#917), named with it: @p pc_floor 1e-10 or more cuts it;
 /// - a coordinate along which a class's Schur lift reaches the cut within
 ///   t* < 1e-3 bohr (the surface switches branch inside a vibrational or
 ///   finite-difference step), every such coordinate named with its class and
-///   t*;
-/// - a degenerate core or virtual pair (below 1e-6 hartree) a coordinate
-///   splits, @ref df_nevpt2_tangents' records, named: the canonical orbitals
-///   PC reads are not differentiable there.
+///   t*.
+///
+/// Unsupported for an orbital under 1e-6 hartree from two others (a cluster
+/// of three or more): only disjoint pairs are taken.
 ///
 /// The inputs, memory and other refusals are @ref df_sc_nevpt2's, the
 /// energy's own refusals of a class (no positive metric eigenvalue, a pole)

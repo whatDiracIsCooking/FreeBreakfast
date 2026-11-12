@@ -15,8 +15,14 @@
 //   not refused, though its virtuals 17 and 18 are 1.4e-3 Eh apart and the
 //   B2 vibration mixes them within 5.6e-4 bohr (SC is refused there); the B2
 //   element against this tree's numerical ladder;
-// - a C3v ammonia whose virtual e pairs are degenerate: refused, naming the
-//   pairs;
+// - degenerate inactive pairs (#1268), against this tree's numerical
+//   ladder of PC's analytic gradient, data/pc_nevpt2_degenerate/: a
+//   C3v ammonia whose two virtual e pairs are exactly degenerate, the same
+//   ammonia 2e-6 bohr off C3v (both pairs near-degenerate), and an
+//   all-trans hexatriene whose terminal carbons' 1s pair is 4.5e-7 Eh apart;
+//   every element within 2x the ladder's bar, the pairs' own part visible;
+//   and a
+//   Td methane whose virtual t2 triple is a cluster: Unsupported;
 // - a C2v formaldehyde CAS(6,6) whose Sr and Si keep under 1e-10: refused,
 //   naming the class and its kept (#943);
 // - HCN CAS(6,6), whose x and y coordinates lift Sir's null modes within
@@ -454,40 +460,116 @@ TEST(HessianDfPcNevpt2, SymmetricWaterIsNotRefused) {
   EXPECT_LE(h->asymmetry, kAsymmetry);
 }
 
-// A C3v ammonia in 6-31G, its full valence CAS(8,7) (df_nevpt2_tangents_gpu.cpp's):
-// its virtual e pairs are degenerate, and E displacements move f within them.
-fb::json c3v_ammonia() {
-  const double rho = std::sqrt((1.9 * 1.9) - (0.7 * 0.7));
-  fb::json atoms = fb::json::array();
-  atoms.push_back({{"symbol", "N"}, {"coord", {0.0, 0.0, 0.0}}});
-  for (std::int32_t k = 0; k < 3; ++k) {
-    const double phi = 2.0 * std::numbers::pi * k / 3.0;
-    atoms.push_back({{"symbol", "H"}, {"coord", {rho * std::cos(phi), rho * std::sin(phi), -0.7}}});
+// A degenerate-pair case: the fixture's start (data/pc_nevpt2_degenerate/,
+// this tree's numerical [hessian] ladder of PC's analytic gradient at the
+// step's pc_floor, Cartesian), its Hessian against the ladder's and the
+// pairs' part in bars.
+const fb::json &degenerate_fixture(std::string_view name) {
+  static std::map<std::string, fb::json, std::less<>> docs;
+  if (const auto it = docs.find(name); it != docs.end()) {
+    return it->second;
   }
-  return {{"name", "nh3_c3v_631g"},
-          {"atoms", atoms},
-          {"charge", 0},
-          {"basis", {{"name", "6-31G"}}},
-          {"aux_basis", {{"name", "cc-pVDZ-JKFIT"}}},
-          {"ncas", 7},
-          {"nelecas", 8},
-          {"active", {1, 2, 3, 4, 5, 6, 7}}};
+  auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "pc_nevpt2_degenerate" /
+                            std::format("{}.json", name));
+  EXPECT_TRUE(read.has_value()) << read.error().message;
+  return docs.emplace(std::string{name}, read.has_value() ? std::move(*read) : fb::json{})
+      .first->second;
 }
 
-TEST(HessianDfPcNevpt2, DegenerateInactivePairIsRefused) {
+// The step's PC floor (HessianStep::kPcFloor), which the ladders ran at.
+constexpr double kStepPcFloor = 1e-10;
+
+void expect_degenerate_matches_ladder(std::string_view name, std::string_view tag, double visible) {
+  const fb::json &doc = degenerate_fixture(name);
+  const Reference ref = reference(doc);
+  ASSERT_TRUE(ref.solution.has_value());
+  const auto keep = iota(3 * ref.basis().natoms());
+  const auto start = std::chrono::steady_clock::now();
+  auto h = fb::hessian::df_pc_nevpt2(ref.res(), ref.molecule(), ref.basis(),
+                                     ref.calc->get<fb::PrimitivePairClassesOutput>()->classes,
+                                     ref.fit().aux, ref.calc->get<fb::CoreHamiltonianOutput>()->h,
+                                     ref.fit().b, ref.fit().l.data(), *ref.solution, ref.ncore,
+                                     ref.ncas, 0, {}, kStepPcFloor);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  ASSERT_TRUE(h.has_value()) << h.error().message;
+  EXPECT_FALSE(h->degenerate_pairs.empty()) << tag << ": no pair under the rule";
+  const double worst = expect_within_bars(*h, doc.at("pc"), keep, tag);
+  const auto bar = matrix(doc.at("pc").at("bar"));
+  const double part = in_bars(h->degenerate, bar, keep);
+  std::string pairs;
+  for (const auto &[p, q] : h->degenerate_pairs) {
+    pairs += std::format("{}({}, {})", pairs.empty() ? "" : " ", p, q);
+  }
+  std::cout << std::format("[ {:8} ] pairs {}, min gap {:.3e}; worst element {:.3f} bars "
+                           "(allowed {:g}); the pairs' part {:.3e} bars, rotation shift "
+                           "{:.1e}; asymmetry {:.1e}, sum rule {:.1e}; {:.1f} s\n",
+                           tag, pairs, h->min_gap, worst, kBars, part, h->rotation_shift,
+                           h->asymmetry, h->translation, seconds);
+  // The pairs' part is visible to the ladder, @p visible bars.
+  EXPECT_GT(part, visible) << tag;
+  EXPECT_LE(h->asymmetry, kAsymmetry) << tag;
+  EXPECT_LE(h->translation, kSumRule) << tag;
+}
+
+// df_nevpt2_tangents_gpu.cpp's C3v ammonia in 6-31G, CAS(8,7): its two
+// virtual e pairs are exactly degenerate, and E displacements split each at
+// first order, so two pairs are taken at once.
+TEST(HessianDfPcNevpt2, ExactlyDegeneratePairsMatchTheLadder) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  const Reference ref = reference(c3v_ammonia());
+  expect_degenerate_matches_ladder("nh3_c3v_631g", "c3v", kVisibleBars);
+}
+
+// The same ammonia with one hydrogen 2e-6 bohr off C3v: both pairs
+// near-degenerate, with no symmetry left to zero any of their terms.
+TEST(HessianDfPcNevpt2, NearDegeneratePairsMatchTheLadder) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_degenerate_matches_ladder("nh3_near_631g", "near", kVisibleBars);
+}
+
+// All-trans hexatriene (C2h) in STO-3G, CAS(6,6) over the pi space: its
+// terminal carbons' 1s orbitals are 6.2 A and 4.5e-7 Eh apart, #1268's
+// hexadiene in small; the next pair, 3.7e-6 Eh, is taken by the division.
+// The 1s pair's part is about two bars here: what it checks is that the
+// call takes the pair and lands on the ladder.
+TEST(HessianDfPcNevpt2, DistantEquivalentAtomsMatchTheLadder) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_degenerate_matches_ladder("hexatriene_sto3g", "hexatri", 1.0);
+}
+
+// A Td methane in 6-31G, CAS(8,8) over its valence: the virtual t2 triple
+// is three orbitals within the rule of each other, a cluster the pairs'
+// step does not take.
+TEST(HessianDfPcNevpt2, DegenerateClusterIsUnsupported) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const double r = 2.05 / std::sqrt(3.0);
+  fb::json atoms = fb::json::array();
+  atoms.push_back({{"symbol", "C"}, {"coord", {0.0, 0.0, 0.0}}});
+  for (const auto &[x, y, z] : {std::array{1.0, 1.0, 1.0}, std::array{1.0, -1.0, -1.0},
+                                std::array{-1.0, 1.0, -1.0}, std::array{-1.0, -1.0, 1.0}}) {
+    atoms.push_back({{"symbol", "H"}, {"coord", {r * x, r * y, r * z}}});
+  }
+  const Reference ref = reference({{"name", "ch4_td_631g"},
+                                   {"atoms", atoms},
+                                   {"charge", 0},
+                                   {"basis", {{"name", "6-31G"}}},
+                                   {"aux_basis", {{"name", "cc-pVDZ-JKFIT"}}},
+                                   {"ncas", 8},
+                                   {"nelecas", 8},
+                                   {"active", {1, 2, 3, 4, 5, 6, 7, 8}}});
   ASSERT_TRUE(ref.solution.has_value());
   const auto h = ref.hessian();
-  ASSERT_FALSE(h.has_value()) << "a degenerate pair's kappa_oo was taken";
-  EXPECT_EQ(h.error().kind, fb::ErrorKind::Numerical) << h.error().message;
-  EXPECT_NE(h.error().message.find("hessian::df_pc_nevpt2"), std::string::npos)
-      << h.error().message;
-  EXPECT_NE(h.error().message.find("(coordinate "), std::string::npos) << h.error().message;
-  EXPECT_NE(h.error().message.find(", orbitals "), std::string::npos) << h.error().message;
-  EXPECT_NE(h.error().message.find(", gap "), std::string::npos) << h.error().message;
-  std::cout << std::format("[ c3v      ] {}\n", h.error().message.substr(0, 300));
+  ASSERT_FALSE(h.has_value()) << "a cluster of three degenerate orbitals was taken";
+  const std::string &m = h.error().message;
+  EXPECT_EQ(h.error().kind, fb::ErrorKind::Unsupported) << m;
+  EXPECT_NE(m.find("hessian::df_pc_nevpt2: orbital "), std::string::npos) << m;
+  EXPECT_NE(m.find("a cluster of three or more degenerate inactive orbitals"), std::string::npos)
+      << m;
+  std::cout << std::format("[ cluster  ] {}\n", m.substr(0, 300));
 }
 
 // The kept refusal (#943): a C2v formaldehyde in STO-3G with CAS(6,6) over

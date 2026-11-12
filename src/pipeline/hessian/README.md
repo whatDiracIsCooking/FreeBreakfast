@@ -343,9 +343,9 @@ so no IR intensities.
   is not a quadratic form (at `nh3_cs_sto3g` in its symmetry-adapted
   coordinates, the whole A″ × A″ off-diagonal block, ten pairs: #894's
   kink, where that block has no second derivative); PC's class kept below
-  1e-10, its Schur lift within 1e-3 bohr, and a degenerate inactive pair a
-  coordinate splits; the CP solve's saddle (Divergence). No Hessian, so no
-  `hessian.json`.
+  1e-10 and its Schur lift within 1e-3 bohr (a degenerate inactive pair is
+  taken, #1268, and a cluster of three or more is Unsupported); the CP
+  solve's saddle (Divergence). No Hessian, so no `hessian.json`.
 - **Stationarity is assumed, not checked**, as for the CASSCF chain:
   converge `[casscf]` tightly (`conv_tol_grad = 1e-10` in the example and
   the GPU cases).
