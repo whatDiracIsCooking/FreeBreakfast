@@ -236,7 +236,14 @@ electronic.
 - The boat's Hessian asymmetry is 1.0e-5, eight times the chair TS's
   1.25e-6. Its closest inactive pair is 2.4e-6 Eh apart, past the 1e-6 rule
   but near it, where `src/hessian/README.md` warns the 1/gap terms cost
-  digits. `boat_hessian_difference`, a difference Hessian at the same point, is the check (pending at the time of writing: the card was held by the nightly).
+  digits. `boat_hessian_difference` checks it with a difference Hessian
+  at the same point (96 gradients, 252 s, 1793 MiB). That one's
+  asymmetry is 2.7e-7. It has one imaginary mode too, 493.72i against
+  493.75i. The two spectra agree to a median of 4e-4 cm⁻¹ and **at most
+  0.17 cm⁻¹** (a 3194 cm⁻¹ C–H stretch). That is a hundred times the g_pm
+  pair's 0.0017, and is the near-degenerate pair's lost digits. It is
+  2.4e-4 kcal/mol in ZPE, so the analytic Hessian stands for the
+  thermochemistry.
 
 **Boat − chair** (both TSs, unscaled RRHO, the chair at n/σ 1/2 and the
 boat C2v at 1/2):
@@ -418,5 +425,5 @@ two ladder Hessians (37 min each) and the ten conformer walks and Hessians
 | `plus_hessian` | numerical, ladder | 2261 | 1816 |
 | `minus_hessian` | numerical, ladder | 2178 | 1824 |
 | `conf_*_hessian` (9) | numerical, one difference | 553–601 | 1783–1836 |
-| `boat_hessian_difference` | numerical, one difference | pending | pending |
+| `boat_hessian_difference` | numerical, one difference | 252 | 1793 |
 | `plus_hessian_analytic`, `minus_hessian_analytic` | analytic, refused | 239, 241 | 7110, 7278 |
