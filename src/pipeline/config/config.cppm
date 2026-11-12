@@ -53,7 +53,7 @@ struct Calculation
                EriStep, OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
                LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step, CisStep, GradientStep,
                CasscfGradientStep, Nevpt2GradientStep, NacStep, Nevpt2NacStep, OptimizeStep,
-               HessianStep> {
+               HessianStep, IrcStep> {
   /// @brief `[memory] max_device_mem_per_gpu`: one device's share of its
   /// memory, in bytes, the context and the libraries' reserve included; 0
   /// for no cap.
@@ -91,7 +91,10 @@ struct Calculation
 /// past its roots, and one over a molecule of multiplicity other than 1 is
 /// ErrorKind::Unsupported. An `[optimize]` `meci` is refused as
 /// OptimizeStep::check_meci refuses it, and beside a `[nevpt2_gradient]`
-/// is ErrorKind::InvalidConfig. A `[memory]` table names no step: it sets
+/// is ErrorKind::InvalidConfig. An `[irc]` with no `[hessian]` (computed or
+/// loaded 'from' a file) to start from, or beside an `[optimize]`, is
+/// ErrorKind::InvalidConfig, and so is an option of it out of range, naming
+/// the key. A `[memory]` table names no step: it sets
 /// the Calculation's caps, and a key it does not have, or a value that is not
 /// a byte size of at least 1, is ErrorKind::InvalidConfig.
 [[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,

@@ -1811,4 +1811,107 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   return out;
 }
 
+// The finite numbers @p node holds as rows of @p width, flat, or nullopt if
+// it is not an array of such rows (an empty array is no rows).
+[[nodiscard]] std::optional<std::vector<double>> loaded_rows(const json &node, size_t width) {
+  if (!node.is_array()) {
+    return std::nullopt;
+  }
+  std::vector<double> out;
+  for (const json &row : node) {
+    if (!row.is_array() || row.size() != width) {
+      return std::nullopt;
+    }
+    for (const json &value : row) {
+      if (!value.is_number() || !std::isfinite(value.get<double>())) {
+        return std::nullopt;
+      }
+      out.push_back(value.get<double>());
+    }
+  }
+  return out;
+}
+
+// The finite numbers @p node holds, or nullopt if it is not an array of them.
+[[nodiscard]] std::optional<std::vector<double>> loaded_numbers(const json &node) {
+  if (!node.is_array()) {
+    return std::nullopt;
+  }
+  std::vector<double> out;
+  for (const json &value : node) {
+    if (!value.is_number() || !std::isfinite(value.get<double>())) {
+      return std::nullopt;
+    }
+    out.push_back(value.get<double>());
+  }
+  return out;
+}
+
+Result<HessianOutput> HessianStep::load(const std::filesystem::path &from,
+                                        View<MoleculeOutput> in) {
+  const size_t n = 3 * in.get<MoleculeOutput>().molecule.atoms().size();
+  const json doc = FBF_TRY(read_json(from));
+  const std::string file = from.string();
+  const auto key = [&](std::string_view name) -> const json * {
+    const auto it = doc.find(name);
+    return it == doc.end() ? nullptr : &*it;
+  };
+  HessianOutput out;
+  const json *hessian = key("hessian");
+  std::optional<std::vector<double>> rows;
+  if (hessian != nullptr) {
+    rows = loaded_rows(*hessian, n);
+  }
+  if (!rows || rows->size() != n * n) {
+    return err_config("[{}] {} 'hessian' is not {} rows of {} finite numbers, the molecule's 3 "
+                      "n_atom square",
+                      kName, file, n, n);
+  }
+  out.hessian = std::move(*rows);
+  for (const auto &[name, value] : {std::pair{"asymmetry", &out.asymmetry},
+                                    std::pair{"translational_sum", &out.translational_sum}}) {
+    if (const json *node = key(name); node != nullptr && node->is_number()) {
+      *value = node->get<double>();
+    }
+  }
+  const json *frequencies = key("frequencies");
+  if (frequencies == nullptr) {
+    return err_config("[{}] {} has no 'frequencies' (a [{}] whose bilinearity check failed "
+                      "writes none)",
+                      kName, file, kName);
+  }
+  std::optional<std::vector<double>> values = loaded_numbers(*frequencies);
+  if (!values || !std::ranges::is_sorted(*values)) {
+    return err_config("[{}] {} 'frequencies' is not an ascending array of finite numbers", kName,
+                      file);
+  }
+  const json *modes = key("modes");
+  std::optional<std::vector<double>> mode_rows;
+  if (modes != nullptr) {
+    mode_rows = loaded_rows(*modes, n);
+  }
+  if (!mode_rows || mode_rows->size() != values->size() * n) {
+    return err_config("[{}] {} 'modes' is not one row of {} finite numbers per frequency ({})",
+                      kName, file, n, values->size());
+  }
+  out.vibrations = {.frequencies = std::move(*values), .modes = std::move(*mode_rows)};
+  if (const json *node = key("dipole_derivative"); node != nullptr) {
+    std::optional<std::vector<double>> dipole = loaded_rows(*node, 3);
+    if (!dipole || dipole->size() != 3 * n) {
+      return err_config("[{}] {} 'dipole_derivative' is not {} rows of 3 finite numbers", kName,
+                        file, n);
+    }
+    out.dipole_derivative = std::move(*dipole);
+  }
+  if (const json *node = key("intensities"); node != nullptr) {
+    std::optional<std::vector<double>> intensities = loaded_numbers(*node);
+    if (!intensities || intensities->size() != out.vibrations.frequencies.size()) {
+      return err_config("[{}] {} 'intensities' is not one finite number per frequency", kName,
+                        file);
+    }
+    out.intensities = std::move(*intensities);
+  }
+  return out;
+}
+
 } // namespace free_breakfast

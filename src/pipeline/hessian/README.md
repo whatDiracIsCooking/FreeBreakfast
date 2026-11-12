@@ -25,6 +25,19 @@ methods:
 Either way the Hessian is symmetrized, checked, and handed to
 `geometry::harmonic_analysis` (`../../geometry/`).
 
+**Loading one back.** `[hessian] from = "hessian.json"` reads the file a
+`[hessian]` wrote instead of computing it (`HessianStep::load`, #1269), for a
+later step to start from: `[irc]`'s transition state
+(`../optimize/README.md`, "The IRC"). The load runs on the host and
+recomputes nothing: the `hessian`, its `asymmetry` and `translational_sum`,
+and the `frequencies` and `modes` as written (so a mode's phase is the
+file's), and the `dipole_derivative` and `intensities` when present. It
+checks only the size against the molecule, 3 n_atom rows of 3 n_atom and one
+mode row of 3 n_atom per frequency, ascending; a file of another size, one
+with no frequencies (a failing bilinearity check writes none) or a value
+that is not a finite number is refused, `InvalidConfig`, naming the key. That
+it is this geometry's Hessian is the config's to say.
+
 ## Module
 
 `free_breakfast.pipeline.hessian`, target `free_breakfast::pipeline::hessian`.

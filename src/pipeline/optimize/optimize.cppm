@@ -17,6 +17,12 @@
 /// `MoleculeStep::load` reads it: a config with `[optimize]` loads the
 /// molecule from the final.xyz this step writes, so every step that reads the
 /// molecule runs at the optimum. See README.md.
+///
+/// Also the `Irc` step: the intrinsic reaction coordinate from a transition
+/// state, @c geometry::irc over the same chains' energy and gradient, from
+/// the pipeline's molecule and its `[hessian]`'s imaginary mode. It is here
+/// because it reruns those chains exactly as `[optimize]` does, through the
+/// module's own (unexported) ChainEvaluator.
 
 export module free_breakfast.pipeline.optimize;
 
@@ -33,6 +39,8 @@ export import free_breakfast.geometry; // geometry::Options, an option
 export import free_breakfast.pipeline.gradient;
 export import free_breakfast.pipeline.casscf_gradient;
 export import free_breakfast.pipeline.nevpt2_gradient;
+// HessianOutput, which IrcStep reads.
+export import free_breakfast.pipeline.hessian;
 
 export namespace free_breakfast {
 
@@ -222,6 +230,83 @@ struct OptimizeStep {
   [[nodiscard]] Status check_constraint_atoms(size_t atoms) const;
 };
 
+/// @brief Which sides of the transition state an @ref IrcStep walks down.
+enum class IrcDirection : uint8_t {
+  Both,     ///< Forward, then backward: the default.
+  Forward,  ///< Along the imaginary mode's phase as `[hessian]` wrote it.
+  Backward, ///< Against it.
+};
+
+/// @brief The intrinsic reaction coordinate an @ref IrcStep walked: each
+/// side's path, the transition state its point 0, or empty for a side not
+/// walked.
+struct IrcOutput {
+  std::optional<geometry::IrcPath> forward;
+  std::optional<geometry::IrcPath> backward;
+};
+
+/// @brief Walks the intrinsic reaction coordinate from the transition state
+/// at the pipeline's molecule down both sides (or one), @c geometry::irc over
+/// the energy and gradient of the chain `[optimize]` reruns, on @p node's
+/// device 0, leaving along the `[hessian]`'s imaginary mode.
+struct IrcStep {
+  /// @brief The step's TOML table name.
+  static constexpr std::string_view kName = "irc";
+
+  /// @brief GS2's step (amu^1/2 bohr), point cap per side, minimum force,
+  /// hypersphere thresholds and evaluation cap: @c geometry::irc's.
+  geometry::IrcOptions options{};
+  /// @brief The sides walked.
+  IrcDirection direction{IrcDirection::Both};
+  /// @brief With more than one imaginary frequency in the `[hessian]`: leave
+  /// along the largest (the lowest, frequencies ascending) rather than
+  /// refuse.
+  bool allow_multiple_imaginary{false};
+  /// @brief The chain rerun at every point: an @ref OptimizeStep's chain
+  /// members, copied in from the config's tables as `[optimize]`'s are, the
+  /// energy that of `[gradient]` (RHF), `[casscf_gradient]` (a DF-CASSCF
+  /// root, followed over a state average) or `[nevpt2_gradient]` (SC or PC,
+  /// or a QD state, followed). Its molecule, options, meci and paths are not
+  /// read: the start is the pipeline's MoleculeOutput.
+  OptimizeStep chain{};
+
+  /// @brief Where each side's points are written as a multi-frame XYZ
+  /// (Angstrom), point 0 the TS, if not empty; each frame's comment line
+  /// holds its arc length and energy.
+  std::filesystem::path forward_trajectory{};
+  std::filesystem::path backward_trajectory{};
+  /// @brief Where the history is written as JSON, if not empty: the step,
+  /// the imaginary frequency left along, and per side its stop and per point
+  /// the arc length s (amu^1/2 bohr, negative on the backward side), the
+  /// energy, the gradient's 2-norm and largest component, the hypersphere's
+  /// evaluations and tangential gradient, the geometry (Angstrom), and over
+  /// a followed state its overlap. Rewritten at every point, so a walk that
+  /// fails leaves its points and the failure as the side's "error".
+  std::filesystem::path history{};
+
+  /// @brief The IRC from the MoleculeOutput's geometry: one side by
+  /// @c geometry::irc per @ref direction, each over its own ChainEvaluator
+  /// (the TS evaluated afresh, so the backward side starts from the TS's
+  /// orbitals, not the forward side's end), leaving along +-the mode of the
+  /// HessianOutput's lowest frequency.
+  ///
+  /// @return Both paths; with no device, ErrorKind::GpuRuntime; before
+  ///         anything runs, InvalidConfig for a HessianOutput that is not
+  ///         the molecule's 3N x 3N, has no imaginary frequency, or more than
+  ///         one without @ref allow_multiple_imaginary, each naming the key,
+  ///         and the chain's refusals (both CASSCF gradients, a CASSCF chain
+  ///         over integral-direct ERIs); then the first error of a point's
+  ///         Pipeline, of @c geometry::irc or of writing a file.
+  [[nodiscard]] Result<IrcOutput> run(View<MoleculeOutput, HessianOutput> in,
+                                      NodeResources &node) const;
+
+  /// @brief @ref chain's OptimizeStep::footprint: one evaluation's chain
+  /// folded and freed whole, beside a followed state, and a Molecule more
+  /// than the walk holds (the optimum's, which the IRC does not make). The
+  /// paths are pageable host memory.
+  [[nodiscard]] MemoryFootprint footprint(const FootprintDimensions &dims) const;
+};
+
 /// @brief @c geometry::optimize of @p start's atoms (their positions, bohr,
 /// are x0) over @p energy_and_gradient under @p step's options, keeping its
 /// trajectory, final_xyz and history (each skipped when empty) as the walk
@@ -359,5 +444,52 @@ normalized_overlaps(std::span<const double> root_overlaps);
 [[nodiscard]] Result<double> qd_state_overlap(std::span<const double> root_overlaps,
                                               std::span<const double> previous,
                                               std::span<const double> current);
+
+} // namespace free_breakfast
+
+// Not exported: the module's own, shared by OptimizeStep::run (optimize.cpp)
+// and IrcStep::run (irc.cpp).
+namespace free_breakfast {
+
+// The energy and gradient of an OptimizeStep's chain (not its meci) at any
+// geometry of one molecule's atoms, as OptimizeStep::run evaluates them: each
+// call one nested Pipeline run, a CASSCF chain's orbitals carried from each
+// call to the next, and a state-averaged root or a QD state followed from
+// each to the next. Copies share their state, so it can be handed to a walk
+// as its std::function.
+class ChainEvaluator {
+public:
+  struct State;
+  explicit ChainEvaluator(std::shared_ptr<State> state);
+
+  // The energy at x (bohr, 3 per atom, the molecule's order), its gradient
+  // written into gradient: geometry::optimize's callback.
+  [[nodiscard]] Result<double> operator()(std::span<const double> x,
+                                          std::span<double> gradient) const;
+  // The calls begun so far.
+  [[nodiscard]] size_t evaluations() const;
+  // What following recorded at call k, as the history writes it: over a
+  // state-averaged root "state_overlap" (null at the first) and "root", over
+  // a QD state "state_overlap" and "heff_gap"; an empty object for an
+  // unfollowed chain.
+  [[nodiscard]] json record(size_t k) const;
+
+private:
+  std::shared_ptr<State> state_;
+};
+
+// The evaluator of step's chain at start's geometries, on node's device 0;
+// with no device, ErrorKind::GpuRuntime, and InvalidConfig for meci or both
+// CASSCF gradients and Unsupported for a CASSCF chain over integral-direct
+// ERIs, each naming caller's table.
+[[nodiscard]] Result<ChainEvaluator> chain_evaluator(const OptimizeStep &step, NodeResources &node,
+                                                     const Molecule &start,
+                                                     std::string_view caller);
+
+// start with its positions replaced by x (bohr, 3 per atom).
+[[nodiscard]] std::vector<Atom> placed(std::span<const Atom> start, std::span<const double> x);
+
+// One XYZ frame of atoms (Angstrom), comment its second line.
+[[nodiscard]] std::string xyz_frame(const std::vector<Atom> &atoms, std::string_view comment);
 
 } // namespace free_breakfast

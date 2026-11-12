@@ -806,6 +806,50 @@ template <class S>
                         kStep);
     }
     step.json_path = output_dir / std::format("{}.json", kStep);
+  } else if constexpr (std::same_as<S, IrcStep>) {
+    // As [optimize]'s, the chain it reruns is copied in by plan_irc, and the
+    // Hessian it starts from is [hessian]'s, computed or loaded.
+    FBF_TRY(check_keys(table, kStep,
+                       {"step_size", "max_points", "max_force", "sphere_gradient",
+                        "sphere_displacement", "max_sphere_iterations", "direction",
+                        "allow_multiple_imaginary"}));
+    geometry::IrcOptions &options = step.options;
+    FBF_TRY(read_key(table, kStep, "step_size", base_dir, options.step_size));
+    FBF_TRY(read_key(table, kStep, "max_points", base_dir, options.max_points));
+    FBF_TRY(read_key(table, kStep, "max_force", base_dir, options.max_force));
+    FBF_TRY(read_key(table, kStep, "sphere_gradient", base_dir, options.sphere_gradient));
+    FBF_TRY(read_key(table, kStep, "sphere_displacement", base_dir, options.sphere_displacement));
+    FBF_TRY(
+        read_key(table, kStep, "max_sphere_iterations", base_dir, options.max_sphere_iterations));
+    for (const auto &[key, value] :
+         {std::pair{"step_size", options.step_size}, std::pair{"max_force", options.max_force},
+          std::pair{"sphere_gradient", options.sphere_gradient},
+          std::pair{"sphere_displacement", options.sphere_displacement}}) {
+      if (!std::isfinite(value) || !(value > 0.0)) {
+        return err_config("[{}] {} is {}, and must be finite and positive", kStep, key, value);
+      }
+    }
+    for (const auto &[key, value] :
+         {std::pair{"max_points", options.max_points},
+          std::pair{"max_sphere_iterations", options.max_sphere_iterations}}) {
+      if (value < 1) {
+        return err_config("[{}] {} is {}, below 1", kStep, key, value);
+      }
+    }
+    std::string direction = "both";
+    FBF_TRY(read_key(table, kStep, "direction", base_dir, direction));
+    if (direction != "both" && direction != "forward" && direction != "backward") {
+      return err_config("[{}] has no direction '{}' (known: 'both', 'forward', 'backward')", kStep,
+                        direction);
+    }
+    step.direction = direction == "forward"    ? IrcDirection::Forward
+                     : direction == "backward" ? IrcDirection::Backward
+                                               : IrcDirection::Both;
+    FBF_TRY(read_key(table, kStep, "allow_multiple_imaginary", base_dir,
+                     step.allow_multiple_imaginary));
+    step.forward_trajectory = output_dir / std::format("{}_forward.xyz", kStep);
+    step.backward_trajectory = output_dir / std::format("{}_backward.xyz", kStep);
+    step.history = output_dir / std::format("{}.json", kStep);
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.
@@ -1088,6 +1132,65 @@ template <class S>
   return {};
 }
 
+/// @brief With an `[irc]` among @p steps: copy into it the chain it reruns,
+/// each step by read_chain_step, as plan_optimize does for `[optimize]`
+/// (the molecule aside: the IRC starts from the pipeline's own). With a
+/// `[casscf_gradient]` or a `[nevpt2_gradient]` in @p doc the chain ends in
+/// `[casscf]` and it, both copied in too; two of those and `[gradient]` are
+/// refused, since the IRC follows one energy. Refused too: no `[hessian]`,
+/// computed or loaded, to start from, and an `[optimize]`, which would move
+/// the molecule to a minimum before the IRC read it.
+[[nodiscard]] Status plan_irc(std::vector<Calculation::Step> &steps, const toml::table &doc,
+                              const std::filesystem::path &input_dir,
+                              const std::filesystem::path &output_dir) {
+  const auto irc = std::ranges::find_if(
+      steps, [](const Calculation::Step &s) { return std::holds_alternative<IrcStep>(s); });
+  if (irc == steps.end()) {
+    return {};
+  }
+  IrcStep &step = std::get<IrcStep>(*irc);
+  constexpr std::string_view kStep = IrcStep::kName;
+  if (!doc.contains(HessianStep::kName)) {
+    return err_config("[{}] starts from the transition state's Hessian: add a [{}], computed in "
+                      "this run or loaded with from = \"hessian.json\"",
+                      kStep, HessianStep::kName);
+  }
+  if (doc.contains(OptimizeStep::kName)) {
+    return err_config("[{}] starts from a transition state at the molecule's geometry, and [{}] "
+                      "moves the molecule to a minimum first: leave one of them out",
+                      kStep, OptimizeStep::kName);
+  }
+  const auto chain = [&]<class S>(S &out) {
+    return read_chain_step(doc, kStep, input_dir, output_dir, out);
+  };
+  OptimizeStep &rerun = step.chain;
+  FBF_TRY(chain(rerun.basis_set));
+  FBF_TRY(chain(rerun.eri));
+  FBF_TRY(chain(rerun.orthogonalizer));
+  FBF_TRY(chain(rerun.guess));
+  FBF_TRY(chain(rerun.scf));
+  std::vector<std::string_view> named;
+  for (const std::string_view name :
+       {GradientStep::kName, CasscfGradientStep::kName, Nevpt2GradientStep::kName}) {
+    if (doc.contains(name)) {
+      named.push_back(name);
+    }
+  }
+  if (named.size() > 1) {
+    return err_config("[{}] follows the energy of [{}] or of [{}], and the config names both: keep "
+                      "the one to follow",
+                      kStep, named[0], named[1]);
+  }
+  if (doc.contains(CasscfGradientStep::kName)) {
+    FBF_TRY(chain(rerun.casscf));
+    FBF_TRY(chain(rerun.casscf_gradient.emplace()));
+  } else if (doc.contains(Nevpt2GradientStep::kName)) {
+    FBF_TRY(chain(rerun.casscf));
+    FBF_TRY(chain(rerun.nevpt2_gradient.emplace()));
+  }
+  return {};
+}
+
 /// @brief @p dir as the directory it names, so two spellings of one compare
 /// equal: empty is the working directory, and the part of it not yet made is
 /// normalized lexically.
@@ -1301,15 +1404,22 @@ template <class S>
     }
   }
   // A loaded molecule is [optimize]'s final.xyz, an output of this run, read
-  // after it is written; the start it optimizes from is an input.
+  // after it is written; the start it optimizes from is an input. An [irc]'s
+  // chain reads its basis and aux basis from the same tables.
+  const auto chain_inputs = [&](const OptimizeStep &chain) {
+    if (!is_builtin_basis(chain.basis_set.basis)) {
+      inputs.emplace_back(chain.basis_set.basis);
+    }
+    if (!chain.eri.aux_basis.empty() && !is_builtin_aux_basis(chain.eri.aux_basis)) {
+      inputs.emplace_back(chain.eri.aux_basis);
+    }
+  };
   if (const auto &optimize = calc.step<OptimizeStep>()) {
     inputs.push_back(optimize->molecule.xyz);
-    if (!is_builtin_basis(optimize->basis_set.basis)) {
-      inputs.emplace_back(optimize->basis_set.basis);
-    }
-    if (!optimize->eri.aux_basis.empty() && !is_builtin_aux_basis(optimize->eri.aux_basis)) {
-      inputs.emplace_back(optimize->eri.aux_basis);
-    }
+    chain_inputs(*optimize);
+  }
+  if (const auto &irc = calc.step<IrcStep>()) {
+    chain_inputs(irc->chain);
   }
   [&]<class... Ss>(const Pipeline<Ss...> &) {
     const auto add_from = [&]<class S>() {
@@ -1433,6 +1543,7 @@ template <class S>
   }
   FBF_TRY(plan_optimize(steps, doc, input_dir, output_dir));
   FBF_TRY(plan_hessian(steps, doc, input_dir, output_dir));
+  FBF_TRY(plan_irc(steps, doc, input_dir, output_dir));
   const toml::table empty;
   Calculation calc{FBF_TRY(Calculation::create(
       std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }))};

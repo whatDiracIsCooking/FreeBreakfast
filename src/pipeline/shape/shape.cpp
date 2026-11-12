@@ -59,8 +59,9 @@ namespace free_breakfast {
 }
 
 // The step of type S the plan configures: its own, else the copy an
-// [optimize]'s or a [hessian]'s chain holds (member pointer @p member), which
-// the config reads from the same table. Null if none does.
+// [optimize]'s, a [hessian]'s or an [irc]'s chain holds (member pointer
+// @p member, an [irc]'s through its OptimizeStep), which the config reads
+// from the same table. Null if none does.
 template <class S>
 [[nodiscard]] const S *shape_step(const Calculation &calc, S OptimizeStep::*in_optimize,
                                   S HessianStep::*in_hessian) {
@@ -72,6 +73,9 @@ template <class S>
   }
   if (const std::optional<HessianStep> &hessian = calc.step<HessianStep>()) {
     return &((*hessian).*in_hessian);
+  }
+  if (const std::optional<IrcStep> &irc = calc.step<IrcStep>()) {
+    return &(irc->chain.*in_optimize);
   }
   return nullptr;
 }
@@ -220,6 +224,12 @@ Result<PlanShape> plan_shape(const Calculation &calc, DeviceResources &res) {
       optimize && (optimize->meci || optimize->casscf_gradient || optimize->nevpt2_gradient)) {
     selections.push_back(&optimize->casscf);
     max_order = std::max(max_order, ci_eigensolve_order(optimize->casscf.nroots, true));
+    casscf_planned = true;
+  }
+  if (const std::optional<IrcStep> &irc = calc.step<IrcStep>();
+      irc && (irc->chain.casscf_gradient || irc->chain.nevpt2_gradient)) {
+    selections.push_back(&irc->chain.casscf);
+    max_order = std::max(max_order, ci_eigensolve_order(irc->chain.casscf.nroots, true));
     casscf_planned = true;
   }
   if (const std::optional<HessianStep> &hessian = calc.step<HessianStep>();

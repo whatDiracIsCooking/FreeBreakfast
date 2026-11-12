@@ -209,6 +209,19 @@ void print_products(const fb::Calculation &calc) {
       }
     }
   }
+  if (const auto &out = calc.get<fb::IrcOutput>()) {
+    for (const auto &[name, path] :
+         {std::pair{"forward", &out->forward}, std::pair{"backward", &out->backward}}) {
+      if (*path && !(*path)->points.empty()) {
+        const auto &points = (*path)->points;
+        std::println("IRC {:<8}         {} points to s = {:.4f} amu^1/2 bohr ({}), E {:.10f} -> "
+                     "{:.10f} Ha",
+                     name, points.size() - 1, points.back().arc_length,
+                     fb::geometry::irc_stop_name((*path)->stop), points.front().energy,
+                     points.back().energy);
+      }
+    }
+  }
 }
 
 fb::Status run(std::span<char *const> args) {

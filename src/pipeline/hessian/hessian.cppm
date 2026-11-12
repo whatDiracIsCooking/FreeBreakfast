@@ -259,6 +259,25 @@ struct HessianStep {
   ///         not bilinear, the frequencies withheld.
   [[nodiscard]] Result<HessianOutput> run(View<MoleculeOutput> in, NodeResources &node) const;
 
+  /// @brief The Hessian a `[hessian]` wrote to @p from (its json_path), in
+  /// place of @ref run, for a later step to start from (`[irc]`'s
+  /// transition state): the Hessian, its asymmetry and translational sum,
+  /// and the frequencies and normal modes as written, so a mode's phase is
+  /// the file's; the dipole derivative and IR intensities when written.
+  /// Nothing is recomputed, so the load runs on the host. The file must be
+  /// the molecule's: a "hessian" of 3 n_atom rows of 3 n_atom, and as many
+  /// "modes" rows of 3 n_atom as "frequencies", ascending. Only the size is
+  /// checked against the molecule; that it is this geometry's Hessian is the
+  /// config's to say.
+  ///
+  /// @return The product; ErrorKind::IO for a file that cannot be read or
+  ///         parsed; InvalidConfig, naming the key, for a Hessian of another
+  ///         size, frequencies withheld (a failing bilinearity check writes
+  ///         none), modes not one row of 3 n_atom per frequency, frequencies
+  ///         not ascending, or a value that is not a finite number.
+  [[nodiscard]] static Result<HessianOutput> load(const std::filesystem::path &from,
+                                                  View<MoleculeOutput> in);
+
   /// @brief What @ref run holds at @p dims. Under HessianMethod::Numerical
   /// over the RHF chain: at each of the 6N displacements the chain's plan to
   /// `[gradient]`, folded as pre-flight folds a plan (plan_footprint over its

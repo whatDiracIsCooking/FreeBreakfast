@@ -30,10 +30,12 @@ SC- and PC-QD-NEVPT2 with `quasi_degenerate`), the DF-RHF gradient step, the DF-
 DF-CASSCF, state-specific or one root of a state average, single-state SC- or
 PC-NEVPT2, or one SC- or PC-QD-NEVPT2 state of a `quasi_degenerate` `[nevpt2_gradient]`;
 or semi-numerical over any of those gradients, a QD state tracked by its eigenvector;
-with harmonic frequencies, and IR intensities when analytic RHF), and the
+with harmonic frequencies, and IR intensities when analytic RHF), the IRC
+step (GS2 from a TS down both sides over any of those gradients, from the
+run's `[hessian]` or one loaded `from` its `hessian.json`), and the
 planner that runs them from a TOML config). `src/README.md` has the one-line summary of each.
 `examples/` holds one small TOML config per step family (RHF, CASSCF, NEVPT2
-and QD-NEVPT2, `[nac]`, `[nevpt2_nac]`, `[hessian]`, and `[optimize]`'s MECI mode, over CASSCF roots or QD-NEVPT2 states) for the `free-breakfast` binary, and the
+and QD-NEVPT2, `[nac]`, `[nevpt2_nac]`, `[hessian]`, `[irc]`, and `[optimize]`'s MECI mode, over CASSCF roots or QD-NEVPT2 states) for the `free-breakfast` binary, and the
 step READMEs link to them rather than carry their own; `test/examples/` runs
 two through the binary, the only tests that go through `main.cpp`.
 The build system, containers, tooling and CI around them are real and exercised.

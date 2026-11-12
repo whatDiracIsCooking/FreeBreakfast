@@ -1,12 +1,13 @@
-# The Cartesian minimizer and the MECI optimizer, host-only over a caller's
-# energies and gradients, and the harmonic analysis of a Cartesian Hessian,
-# whose two eigensolves are recipes' on the GPU. Result, the error kinds,
-# DeviceResources and Atom are in the signatures, so their modules are PUBLIC;
-# FBF_TRY, the BLAS and the eigensolver are the implementation units' own
-# business. :rigid_body and :quasi_newton are internal partitions: the
-# rigid-body basis every unit projects with, and the projection, norms and
-# Cholesky step both optimizers share. core::footprint is PUBLIC:
-# harmonic_analysis_footprint returns a MemoryFootprint.
+# The Cartesian minimizer, the MECI optimizer and the IRC, host-only over a
+# caller's energies and gradients, and the harmonic analysis of a Cartesian
+# Hessian, whose two eigensolves are recipes' on the GPU. Result, the error
+# kinds, DeviceResources and Atom are in the signatures, so their modules are
+# PUBLIC; FBF_TRY, the BLAS and the eigensolver are the implementation units'
+# own business. :rigid_body, :quasi_newton and :masses are internal
+# partitions: the rigid-body basis every unit projects with, the projection,
+# norms, Cholesky step and Jacobi eigensolve the walks share, and the mass
+# table harmonic_analysis and irc both mass-weight with. core::footprint is
+# PUBLIC: harmonic_analysis_footprint returns a MemoryFootprint.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.geometry
@@ -15,9 +16,11 @@ free_breakfast_add_cxx_module_library(
   PARTITIONS
   rigid_body.cppm
   quasi_newton.cppm
+  masses.cppm
   IMPLEMENTATION
   geometry.cpp
   meci.cpp
+  irc.cpp
   frequencies.cpp
   IMPORT_STD
   LINK_PUBLIC
