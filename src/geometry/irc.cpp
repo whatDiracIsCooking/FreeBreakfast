@@ -341,28 +341,32 @@ irc(std::span<const Atom> start, std::span<const double> hessian, std::span<cons
   IrcEvaluation point = FBF_TRY(evaluate(x0));
   FBF_TRY(keep(point, 0, 0, 0.0));
   const double radius = 0.5 * options.step_size;
+  // The previous point's mass-weighted |g|.
+  double previous_norm = 0.0;
   for (int32_t k = 0; k < options.max_points; ++k) {
     // The pivot, half a step down: along the way out at the TS, along the
     // steepest descent after.
+    const double g_norm = std::sqrt(irc_dot(point.g, point.g));
     std::vector<double> down = leave;
     if (k > 0) {
-      const double g_norm = std::sqrt(irc_dot(point.g, point.g));
       for (size_t i = 0; i < n; ++i) {
         down[i] = -point.g[i] / g_norm;
       }
-      // The model's minimum along the steepest descent, |g| / (u H u) away:
-      // within half a step it is inside the next sphere, whose own minimum
-      // then has no continuation of the path to find (it flips between the
-      // two sides of the sphere), and the path's minimum is within a step.
-      double curvature = 0.0;
-      for (size_t i = 0; i < n; ++i) {
-        curvature += down[i] * irc_dot(std::span<const double>(model).subspan(i * n, n), down);
-      }
-      if (curvature > 0.0 && g_norm / curvature <= radius) {
+      // The path's minimum within a step, read off the walk: along the path
+      // dE/dsigma = -|g|, so |g| falling linearly from the last point to this
+      // one reaches 0 within one more step s once it has halved. The next
+      // sphere would then hold the minimum, and its own minimum has no
+      // continuation of the path to find (it flips between the sphere's two
+      // sides). Not the model's line minimum |g| / (u H u) (#1278): a point
+      // off the path by its sphere's tolerance has a gradient across a stiff
+      // valley, and that puts the line's minimum within a step while the
+      // path still runs along the valley; |g| moves only at second order.
+      if (2.0 * g_norm <= previous_norm) {
         path.stop = IrcStop::MinimumWithinStep;
         return path;
       }
     }
+    previous_norm = g_norm;
     std::vector<double> pivot(n);
     for (size_t i = 0; i < n; ++i) {
       pivot[i] = point.q[i] + (radius * down[i]);

@@ -86,15 +86,16 @@ Points to_points(std::span<const double> x) {
   return out;
 }
 
-// The largest distance (bohr) between the points of @p a and @p b, each
-// centred on its centroid, after @p b is rotated onto @p a by Horn's
-// quaternion (pipeline_optimize_gpu.cpp's).
-double aligned_max_deviation(Points a, Points b) {
+// @p a and @p b, each centred on its @p weights-weighted centroid, @p b
+// rotated onto @p a by Horn's quaternion over the weighted correlation
+// (pipeline_optimize_gpu.cpp's, weighted).
+std::pair<Points, Points> aligned(Points a, Points b, std::span<const double> weights) {
+  const double total = std::accumulate(weights.begin(), weights.end(), 0.0);
   for (Points *p : {&a, &b}) {
     std::array<double, 3> c{};
-    for (const auto &r : *p) {
+    for (std::size_t n = 0; n < p->size(); ++n) {
       for (int32_t k = 0; k < 3; ++k) {
-        c[k] += r[k] / static_cast<double>(p->size());
+        c[k] += weights[n] * (*p)[n][k] / total;
       }
     }
     for (auto &r : *p) {
@@ -107,7 +108,7 @@ double aligned_max_deviation(Points a, Points b) {
   for (std::size_t n = 0; n < a.size(); ++n) {
     for (int32_t i = 0; i < 3; ++i) {
       for (int32_t j = 0; j < 3; ++j) {
-        s[i][j] += b[n][i] * a[n][j];
+        s[i][j] += weights[n] * b[n][i] * a[n][j];
       }
     }
   }
@@ -150,28 +151,43 @@ double aligned_max_deviation(Points a, Points b) {
       {2 * ((q1 * q3) - (q0 * q2)), 2 * ((q2 * q3) + (q0 * q1)),
        (q0 * q0) - (q1 * q1) - (q2 * q2) + (q3 * q3)},
   }};
-  double worst = 0.0;
-  for (std::size_t n = 0; n < a.size(); ++n) {
-    double d2 = 0.0;
+  for (auto &point : b) {
+    std::array<double, 3> rotated{};
     for (int32_t i = 0; i < 3; ++i) {
-      double rotated = 0.0;
       for (int32_t j = 0; j < 3; ++j) {
-        rotated += r[i][j] * b[n][j];
+        rotated[i] += r[i][j] * point[j];
       }
-      d2 += (rotated - a[n][i]) * (rotated - a[n][i]);
     }
-    worst = std::max(worst, std::sqrt(d2));
+    point = rotated;
+  }
+  return {std::move(a), std::move(b)};
+}
+
+// The largest distance (bohr) between the points of @p a and @p b, aligned
+// on their centroids.
+double aligned_max_deviation(const Points &a, const Points &b) {
+  const std::vector<double> unit(a.size(), 1.0);
+  const auto [ca, cb] = aligned(a, b, unit);
+  double worst = 0.0;
+  for (std::size_t n = 0; n < ca.size(); ++n) {
+    worst =
+        std::max(worst, std::hypot(ca[n][0] - cb[n][0], ca[n][1] - cb[n][1], ca[n][2] - cb[n][2]));
   }
   return worst;
 }
 
-// The mass-weighted distance between @p a and @p b (amu^1/2 bohr), no
-// alignment: both walks keep the centre of mass and take no rotation.
+// The mass-weighted distance between @p a and @p b (amu^1/2 bohr), aligned
+// on their centres of mass. A walk keeps its centre and takes no rotation,
+// but the reference's minimum, Newton's from the walk's last point, does
+// neither, and is placed by where that Newton started.
 double mass_weighted_distance(std::span<const double> a, std::span<const double> b,
                               std::span<const double> masses) {
+  const auto [ca, cb] = aligned(to_points(a), to_points(b), masses);
   double sum = 0.0;
-  for (std::size_t i = 0; i < a.size(); ++i) {
-    sum += masses[i / 3] * (a[i] - b[i]) * (a[i] - b[i]);
+  for (std::size_t n = 0; n < ca.size(); ++n) {
+    for (int32_t k = 0; k < 3; ++k) {
+      sum += masses[n] * (ca[n][k] - cb[n][k]) * (ca[n][k] - cb[n][k]);
+    }
   }
   return std::sqrt(sum);
 }
@@ -204,9 +220,9 @@ constexpr double kEnergyAgreement = 1e-9;
 // Delta_k = sum_{j <= k} (T + T_ref + G) / kappa_j (mass-weighted), a
 // distance of Delta_k / sqrt(m_H) bohr at most for any atom. The energies
 // differ by |g_k| Delta_k (|g_k| = |lambda_k| s / 2) plus the two codes'
-// agreement. The ends: each side stops at the minimum, by the model within
-// half a step or at a point past it, so its last point is within a step s
-// of the RHF minimum (mass-weighted) and its energy within s^2 h_max / 2
+// agreement. The ends: each side stops at the minimum, by |g| halved over
+// the last step or at a point past it, so its last point is within a step s
+// of the RHF minimum (mass-weighted, aligned) and its energy within s^2 h_max / 2
 // above it, h_max that minimum's largest mass-weighted curvature.
 TEST(PipelineIrc, HcnRhfMatchesAnIndependentGs2AndReachesBothMinima) {
   FBF_REQUIRE_GPU();
@@ -252,16 +268,15 @@ TEST(PipelineIrc, HcnRhfMatchesAnIndependentGs2AndReachesBothMinima) {
     ASSERT_TRUE(path->has_value()) << side;
     const auto &points = (*path)->points;
     const fb::json &expected = ref.at(side).at("points");
-    // Either stop by the minimum: within the next step by the model, or a
-    // point past it (the reference's own last stop is the second).
-    EXPECT_TRUE((*path)->stop == fb::geometry::IrcStop::MinimumWithinStep ||
-                (*path)->stop == fb::geometry::IrcStop::EnergyRose)
-        << side << " " << fb::geometry::irc_stop_name((*path)->stop);
-    // The two stop rules read the same quantity off two Hessians (the tree's
-    // updated model, the reference's exact one), so they may part by a point.
-    EXPECT_LE(std::abs(static_cast<double>(points.size()) - static_cast<double>(expected.size())),
-              1.0)
+    // The reference stops by the tree's rules on its own points, and the
+    // walks' points agree to Delta_k, so the two stop at the same point by
+    // the same rule: |g| halved reads the two walks' |g|, which agree to
+    // h_max Delta_k (under 1e-6 of a ratio), while every ratio the rule saw
+    // stays clear of 1/2 by far more.
+    EXPECT_EQ(fb::geometry::irc_stop_name((*path)->stop),
+              ref.at(side).at("stop").get<std::string>())
         << side;
+    EXPECT_EQ(points.size(), expected.size()) << side;
     const std::size_t common = std::min(points.size(), expected.size());
     double delta = 0.0;
     double worst_energy = 0.0;

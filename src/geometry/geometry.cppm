@@ -290,9 +290,9 @@ struct IrcOptions {
 enum class IrcStop : uint8_t {
   /// The last point's force is at or below max_force.
   Minimum,
-  /// The model puts the minimum along the last point's steepest descent
-  /// within half a step, inside the next hypersphere: the path's minimum is
-  /// within a step of the last point.
+  /// The mass-weighted |g| halved over the last step: by the walk's own
+  /// slope of |g| the path's minimum is within a step of the last point,
+  /// inside the next hypersphere.
   MinimumWithinStep,
   /// The next point's energy rose over the last's, or it lies behind its
   /// pivot: the path passed its minimum, and that point is not kept.

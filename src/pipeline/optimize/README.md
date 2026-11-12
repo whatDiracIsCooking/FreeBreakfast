@@ -767,11 +767,15 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
     the two sphere thresholds, G = 1e-8 the codes' gradient agreement,
     kappa_j the reference's curvature of E on sphere j), Delta_k / sqrt(m_H)
     bohr for any atom after alignment, and in energy |g_k| Delta_k + 1e-9;
-    each end within a step s of the RHF minimum and within s^2 h_max / 2
-    above it. Measured: 43 and 34 points (the reference's 43 and 34),
-    128 and 102 evaluations, worst |dE| 4.3e-10 Eh, worst geometry
-    3.5e-7 bohr (3% of its bar), ends 0.067 and 0.059 amu^½ bohr and
-    1.5e-5 and 2.4e-5 Eh from the minima (bars 0.1, 3.4e-3).
+    the same stop at the same point as the reference, which stops by the
+    tree's rules on its own points; each end within a step s of the RHF
+    minimum (mass-weighted, aligned: the reference's minimum is Newton's from
+    its last point, which keeps neither the centre nor the orientation) and
+    within s^2 h_max / 2 above it. Measured (#1278's stop): 42 and 34 points
+    (the reference's 42 and 34), 124 and 102 evaluations, worst |dE|
+    4.3e-10 Eh, worst geometry 3.5e-7 bohr (3% of its bar), ends 0.060 and
+    0.037 amu^½ bohr and 3.3e-5 and 2.3e-5 Eh from the minima (bars 0.1,
+    3.4e-3).
   - `PipelineIrc.Nh3CasscfDescendsAlongTheUmbrellaToMinima` (slow, 18 s):
     NH₃'s inversion at DF-CASSCF(8,7)/STO-3G (the full valence space; a
     frontier CAS(2,2) has a second, lower solution off the plane that the
@@ -781,7 +785,8 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
     falling at every point, the first step along the mode (cosines ±0.99996,
     bar 1/√2), every frequency real at each end by a fresh analytic Hessian,
     and the mirror ends' energies within s^2 h_max / 2 (5.5e-10 against
-    2.5e-3). 15 points a side, 2 evaluations a point.
+    2.5e-3; 4.1e-10 under #1278's stop, the same 15 points). 15 points a side,
+    2 evaluations a point.
   - `PipelineIrc.RefusesAStartThatIsNotOneSaddle` (the family's
     representative): no imaginary frequency, two without
     `allow_multiple_imaginary`, a Hessian of another size, a CASSCF chain

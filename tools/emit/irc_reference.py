@@ -25,10 +25,11 @@ the direction, q = q* + (s/2) B v / |B v| (B the internal coordinates at the
 pivot), by SciPy's BFGS on PySCF's exact energy and gradient, until the
 gradient's part tangent to the sphere has 2-norm under REF_TANGENTIAL
 (checked afresh at the point), the BFGS polished by a root of the tangential
-gradient itself. A side stops by the tree's own rules: where the exact
-Hessian puts the minimum along the steepest descent within half a step,
-|g| / (u H u) <= s/2, at a point whose energy rose or that lies behind its
-pivot (not kept), or past MAX_POINTS.
+gradient itself. A side stops by the tree's own rules: where the walk's
+own mass-weighted gradient norm halved over the last step,
+2 |g_k| <= |g_(k-1)| (the path's minimum within a step, #1278), at a point
+whose energy rose or that lies behind its pivot (not kept), or past
+MAX_POINTS.
 
 **What a test derives its bars from**, per point: the energy, the
 coordinates, the tangential gradient, lambda = g.p / |p|^2 (the sphere's
@@ -123,11 +124,23 @@ def molecule(symbols, coords, basis_file: str) -> gto.Mole:
 
 
 def converged_rhf(mol: gto.Mole, dm0=None) -> scf.hf.SCF:
-    mf = scf.RHF(mol)
-    mf.conv_tol = 1e-13
-    mf.conv_tol_grad = 1e-10
-    mf.max_cycle = 200
-    mf.kernel(dm0)
+    def rhf() -> scf.hf.SCF:
+        mf = scf.RHF(mol)
+        mf.conv_tol = 1e-13
+        mf.conv_tol_grad = 1e-10
+        mf.max_cycle = 200
+        return mf
+
+    mf = rhf()
+    try:
+        mf.kernel(dm0)
+    except numpy.linalg.LinAlgError:
+        # Started from a density converged at a geometry next door, DIIS's
+        # error vectors are at rounding, and its matrix can be singular enough
+        # for LAPACK's eigh to fail (HCN's forward sphere 22, #1278): the SCF
+        # again from the atomic guess.
+        mf = rhf()
+        mf.kernel()
     assert mf.converged
     return mf
 
@@ -243,19 +256,20 @@ def irc_side(model: Rhf, x_ts, hessian_ts, mode, sign: float, masses) -> dict:
     )
     leave = sign * leave / numpy.linalg.norm(leave)
     stop = "max_points"
+    g_previous = 0.0
     for k in range(MAX_POINTS):
-        g_mw = g / sqrt_m
+        basis = internal_mw((q / sqrt_m).reshape(-1, 3), masses)
+        g_mw = basis @ (basis.T @ (g / sqrt_m))
+        g_norm = numpy.linalg.norm(g_mw)
         if k == 0:
             down = leave
         else:
-            basis = internal_mw((q / sqrt_m).reshape(-1, 3), masses)
-            g_mw = basis @ (basis.T @ g_mw)
-            down = -g_mw / numpy.linalg.norm(g_mw)
-            h_mw = model.hessian(q / sqrt_m) / numpy.outer(sqrt_m, sqrt_m)
-            curvature = down @ h_mw @ down
-            if curvature > 0.0 and numpy.linalg.norm(g_mw) / curvature <= radius:
+            down = -g_mw / g_norm
+            # The path's minimum within a step: |g| halved over the last one.
+            if 2.0 * g_norm <= g_previous:
                 stop = "minimum_within_step"
                 break
+        g_previous = g_norm
         pivot = q + radius * down
         basis = internal_mw((pivot / sqrt_m).reshape(-1, 3), masses)
 
