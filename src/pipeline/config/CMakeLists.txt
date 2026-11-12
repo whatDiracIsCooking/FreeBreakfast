@@ -2,7 +2,8 @@
 # are PUBLIC: Calculation, what parse_config returns, names them all. This is
 # the one library that imports every step; only it and main pay that build
 # fan-in. io::toml is PRIVATE -- only the implementation unit walks the
-# document, so no importer compiles toml++.
+# document, so no importer compiles toml++. core::constants is PRIVATE too:
+# [optimize] constraints' distances are read in Angstrom and kept in bohr.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.config
@@ -39,6 +40,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::optimize
   free_breakfast::pipeline::hessian
   LINK_PRIVATE
+  free_breakfast::core::constants
   free_breakfast::io::base
   free_breakfast::io::basis
   free_breakfast::io::toml

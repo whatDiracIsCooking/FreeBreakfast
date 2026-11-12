@@ -883,6 +883,64 @@ TEST(PipelineConfig, AMalformedOptimizeTableIsInvalidConfig) {
   expect_config_error("[basis_set]\nbasis = \"b.json\"\n[optimize]\n", "[molecule] needs 'xyz'");
 }
 
+// [optimize] constraints: each { atoms, distance } read in order, the
+// distance from Angstrom to bohr; and each malformed one refused, naming the
+// key and the constraint. Whether an atom is the molecule's is
+// OptimizeStep::run's to say (pipeline_optimize_gpu.cpp), not the config's.
+TEST(PipelineConfig, OptimizeConstraintsAreReadInBohrAndEachMalformedOneIsRefused) {
+  auto calc = fb::parse_config(
+      with_inputs("[optimize]\nconstraints = [{ atoms = [0, 5], distance = 1.95 },\n"
+                  "               { atoms = [3, 2], distance = 2 }]\n"),
+      "/in", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const auto &constraints = calc->step<fb::OptimizeStep>()->options.constraints;
+  ASSERT_EQ(constraints.size(), 2U);
+  EXPECT_EQ(constraints[0].atoms, (std::array<std::int32_t, 2>{0, 5}));
+  EXPECT_EQ(constraints[0].distance, 1.95 / 0.529177210903);
+  EXPECT_EQ(constraints[1].atoms, (std::array<std::int32_t, 2>{3, 2}));
+  EXPECT_EQ(constraints[1].distance, 2.0 / 0.529177210903);
+
+  const auto refused = [](std::string_view value, std::string_view needle) {
+    expect_config_error(with_inputs(std::format("[optimize]\nconstraints = {}\n", value)), needle);
+  };
+  refused("1.95", "[optimize] constraints is not an array");
+  refused("[]", "[optimize] constraints is empty");
+  refused("[[0, 5]]", "[optimize] constraints[0] is not a table");
+  refused("[{ atoms = [0, 5], distance = 1.0, kind = 'bond' }]",
+          "[optimize] constraints[0] has no key 'kind'");
+  refused("[{ atoms = [0], distance = 1.0 }]", "[optimize] constraints[0] atoms is not a pair");
+  refused("[{ atoms = [0, 1.5], distance = 1.0 }]",
+          "[optimize] constraints[0] atoms is not a pair of 32-bit integers");
+  refused("[{ atoms = [-1, 2], distance = 1.0 }]",
+          "[optimize] constraints[0] atoms [-1, 2] names an atom below 0");
+  refused("[{ atoms = [2, 2], distance = 1.0 }]",
+          "[optimize] constraints[0] atoms [2, 2] names one atom twice");
+  refused("[{ atoms = [0, 1], distance = 1.0 }, { atoms = [1, 0], distance = 1.1 }]",
+          "[optimize] constraints[1] atoms [1, 0] repeats constraints[0]'s pair");
+  refused("[{ atoms = [0, 1] }]", "[optimize] constraints[0] distance is missing");
+  refused("[{ atoms = [0, 1], distance = 0.0 }]",
+          "[optimize] constraints[0] distance is 0, and must be finite and positive");
+  refused("[{ atoms = [0, 1], distance = -1.2 }]",
+          "[optimize] constraints[0] distance is -1.2, and must be finite and positive");
+  refused("[{ atoms = [0, 1], distance = nan }]", "[optimize] constraints[0] distance is nan");
+  // A crossing is not a minimization: meci beside them is refused.
+  expect_config_error(
+      with_inputs(
+          "[optimize]\nmeci = [0, 1]\nconstraints = [{ atoms = [0, 1], distance = 1.0 }]\n"),
+      "[optimize] constraints hold distances in a minimization, and meci finds a crossing");
+
+  // examples/constrained_optimize.toml, as the binary reads it.
+  const std::filesystem::path examples{FBF_EXAMPLES_DIR};
+  const fb::test::ScratchDir out("config_constrained_example");
+  auto example = fb::read_config(examples / "constrained_optimize.toml", examples, out.path());
+  ASSERT_TRUE(example.has_value()) << example.error().message;
+  const fb::OptimizeStep &optimize = *example->step<fb::OptimizeStep>();
+  ASSERT_EQ(optimize.options.constraints.size(), 1U);
+  EXPECT_EQ(optimize.options.constraints[0].distance, 1.30 / 0.529177210903);
+  ASSERT_TRUE(optimize.nevpt2_gradient.has_value());
+  EXPECT_EQ(optimize.nevpt2_gradient->variant, fb::Nevpt2Variant::Pc);
+}
+
 // With a [casscf_gradient], [optimize]'s chain ends in [casscf] and it, both
 // copied in from their tables as the RHF chain's are; without one it stays
 // the RHF's, and the CASSCF members are left at their defaults.

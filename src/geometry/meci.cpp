@@ -166,6 +166,11 @@ optimize_meci(std::span<const double> x0,
                       "max_steps >= 0, got {}, {} and {}",
                       options.trust_radius, options.max_trust_radius, options.max_steps);
   }
+  if (!options.constraints.empty()) {
+    return err_config("geometry::optimize_meci: distance constraints are optimize's alone, and "
+                      "{} are set",
+                      options.constraints.size());
+  }
 
   MECISolution solution{std::vector<double>(x0.begin(), x0.end()), 0.0, 0.0, {}};
   double trust_radius = options.trust_radius;

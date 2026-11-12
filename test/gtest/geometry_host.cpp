@@ -1,7 +1,9 @@
 // Host-only cases for geometry::optimize: a quadratic well whose minimum it
 // reaches exactly, Rosenbrock, a four-point Lennard-Jones cluster whose
 // centroid and orientation the projection must hold, the rejection of an
-// uphill step, and the refusals. And for geometry::optimize_meci: two-state
+// uphill step, and the refusals; distance constraints on that cluster, held at
+// every evaluation, with the multiplier the constrained minimum's slope, and
+// their refusals. And for geometry::optimize_meci: two-state
 // model surfaces over four points' distances, a peaked and a tilted cone and
 // an uncoupled crossing, each with a known minimum-energy crossing, the trust
 // radius's shrink, the refusals, and a plane carried under a floor where the
@@ -335,6 +337,156 @@ TEST(GeometryOptimize, MaxStepsAndCallbackErrors) {
   const auto nan = geo::optimize(std::vector<double>{0.0, 0.0, 0.0}, not_finite, options);
   ASSERT_FALSE(nan.has_value());
   EXPECT_EQ(nan.error().kind, fb::ErrorKind::Numerical);
+}
+
+// --- Distance constraints (#1260) -------------------------------------------
+
+double separation(std::span<const double> x, std::size_t a, std::size_t b) {
+  double r2 = 0.0;
+  for (std::size_t k = 0; k < 3; ++k) {
+    const double d = x[3 * a + k] - x[3 * b + k];
+    r2 += d * d;
+  }
+  return std::sqrt(r2);
+}
+
+// The four-point cluster LennardJonesClusterHoldsCentroidAndOrientation starts
+// from, its 0-1 distance 1.204.
+const std::vector<double> kCluster{0.0, 0.0, 0.0, 1.2, 0.1, 0.0, 0.5, 1.0, 0.2, 0.4, 0.5, 1.1};
+
+// tight_options' thresholds, with the rigid motions projected. Near them a
+// step's energy change, f^2 / 2k, is under the energy's rounding, which is
+// what optimize's rounding floor under constraints is for.
+constexpr double kConstrainedForce = 1e-10;
+
+geo::Options constrained_options(std::vector<geo::DistanceConstraint> constraints) {
+  geo::Options options;
+  options.max_force = kConstrainedForce;
+  options.rms_force = kConstrainedForce;
+  options.max_displacement = 1e-8;
+  options.rms_displacement = 1e-8;
+  options.constraints = std::move(constraints);
+  return options;
+}
+
+// The cluster with points 0 and 1 held at 1.3, off both the start's 1.204 and
+// the free minimum's 2^(1/6): every evaluated geometry, the start's
+// included, is on the constraint to 1e-12 relative, and the centroid never
+// moves (the correction along a bond moves its two ends oppositely). At the
+// optimum the Lagrange condition holds on the raw gradient: g - lambda dd/dx
+// is under the force threshold, which is the projected gradient and the
+// multiplier checked together. And lambda is the constrained minimum's slope
+// dE*/dd, by a central difference of two more optimizations at 1.3 +- 1e-5:
+// its truncation h^2 E*''' / 6 is 7e-10 (E*''' = 44, measured as the 7.3e-8
+// such a difference is off at h = 1e-4), its rounding about an ulp of E over
+// 2h, 1e-10, and E*'s own error at these forces f^2 / 2k is far under both,
+// so the bar is 2e-9.
+TEST(GeometryOptimizeConstrained, LennardJonesHoldsTheDistanceAndItsMultiplierIsTheSlope) {
+  constexpr double kHeld = 1.3;
+  std::vector<std::vector<double>> visited;
+  const auto result = geo::optimize(
+      kCluster,
+      [&](std::span<const double> x, std::span<double> g) {
+        visited.emplace_back(x.begin(), x.end());
+        return lennard_jones(x, g);
+      },
+      constrained_options({{.atoms = {0, 1}, .distance = kHeld}}));
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  ASSERT_EQ(visited.size(), result->iterations.size());
+  for (std::size_t e = 0; e < visited.size(); ++e) {
+    EXPECT_NEAR(separation(visited[e], 0, 1), kHeld, 1e-12 * kHeld) << "evaluation " << e;
+    ASSERT_EQ(result->iterations[e].distances.size(), 1U);
+    ASSERT_EQ(result->iterations[e].multipliers.size(), 1U);
+    EXPECT_NEAR(result->iterations[e].distances[0], separation(visited[e], 0, 1), 1e-14);
+  }
+  const auto c0 = centroid(kCluster);
+  const auto c = centroid(result->x);
+  for (std::size_t k = 0; k < 3; ++k) {
+    EXPECT_NEAR(c[k], c0[k], 1e-12);
+  }
+
+  const double lambda = result->iterations.back().multipliers[0];
+  std::vector<double> g(result->x.size());
+  ASSERT_TRUE(lennard_jones(result->x, g).has_value());
+  const double r = separation(result->x, 0, 1);
+  for (std::size_t k = 0; k < 3; ++k) {
+    const double e = (result->x[k] - result->x[3 + k]) / r;
+    g[k] -= lambda * e;
+    g[3 + k] += lambda * e;
+  }
+  EXPECT_LE(std::abs(std::ranges::max(g, {}, [](double v) { return std::abs(v); })),
+            kConstrainedForce);
+
+  constexpr double kStep = 1e-5;
+  std::array<double, 2> ends{};
+  for (std::size_t i = 0; i < 2; ++i) {
+    const double held = kHeld + (i == 0 ? kStep : -kStep);
+    const auto moved =
+        geo::optimize(result->x, lennard_jones, constrained_options({{{0, 1}, held}}));
+    ASSERT_TRUE(moved.has_value()) << moved.error().message;
+    ends[i] = moved->energy;
+  }
+  const double slope = (ends[0] - ends[1]) / (2.0 * kStep);
+  EXPECT_NEAR(lambda, slope, 2e-9);
+  std::cout << std::format("[ constrained ] LJ4 r01 = {}: {} evaluations, E {:.12f}, lambda "
+                           "{:.10f}, dE*/dd {:.10f}\n",
+                           kHeld, result->iterations.size(), result->energy, lambda, slope);
+}
+
+// Two constraints sharing point 0, both off at the start (1.204 and 1.136):
+// coupled, so the correction is a 2 x 2 Newton solve. Both hold at every
+// evaluation, and the walk converges.
+TEST(GeometryOptimizeConstrained, TwoCoupledDistancesHold) {
+  std::vector<std::vector<double>> visited;
+  const auto result = geo::optimize(
+      kCluster,
+      [&](std::span<const double> x, std::span<double> g) {
+        visited.emplace_back(x.begin(), x.end());
+        return lennard_jones(x, g);
+      },
+      constrained_options({{{0, 1}, 1.3}, {{2, 0}, 1.0}}));
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  for (const std::vector<double> &x : visited) {
+    EXPECT_NEAR(separation(x, 0, 1), 1.3, 1.3e-12);
+    EXPECT_NEAR(separation(x, 2, 0), 1.0, 1e-12);
+  }
+  EXPECT_EQ(result->iterations.back().multipliers.size(), 2U);
+  EXPECT_LE(result->iterations.back().max_force, kConstrainedForce);
+}
+
+// Each malformed constraint is InvalidConfig, and so is one beside
+// optimize_meci; three points on a line held at distances 1, 1 and 2 have
+// three constraint gradients in one direction, Numerical.
+TEST(GeometryOptimizeConstrained, Refusals) {
+  const auto refused = [](std::vector<geo::DistanceConstraint> constraints) {
+    const auto result = geo::optimize(kCluster, lennard_jones, constrained_options(constraints));
+    return !result.has_value() && result.error().kind == fb::ErrorKind::InvalidConfig;
+  };
+  EXPECT_TRUE(refused({{{0, 4}, 1.0}}));
+  EXPECT_TRUE(refused({{{-1, 2}, 1.0}}));
+  EXPECT_TRUE(refused({{{1, 1}, 1.0}}));
+  EXPECT_TRUE(refused({{{0, 1}, 1.0}, {{1, 0}, 1.1}}));
+  EXPECT_TRUE(refused({{{0, 1}, 0.0}}));
+  EXPECT_TRUE(refused({{{0, 1}, std::nan("")}}));
+  geo::Options flat = tight_options();
+  flat.constraints = {{{0, 1}, 1.0}};
+  const auto unaligned = geo::optimize(std::vector<double>{0.0, 0.0, 0.0, 1.0}, rosenbrock, flat);
+  ASSERT_FALSE(unaligned.has_value());
+  EXPECT_EQ(unaligned.error().kind, fb::ErrorKind::InvalidConfig);
+
+  const auto meci = geo::optimize_meci(
+      kCluster,
+      [](std::span<const double>, std::span<double>, std::span<double>,
+         std::span<double>) -> fb::Result<std::array<double, 2>> { return std::array{0.0, 0.0}; },
+      constrained_options({{{0, 1}, 1.0}}));
+  ASSERT_FALSE(meci.has_value());
+  EXPECT_EQ(meci.error().kind, fb::ErrorKind::InvalidConfig);
+
+  const std::vector<double> line{0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0};
+  const auto dependent = geo::optimize(
+      line, lennard_jones, constrained_options({{{0, 1}, 1.0}, {{1, 2}, 1.0}, {{0, 2}, 2.0}}));
+  ASSERT_FALSE(dependent.has_value());
+  EXPECT_EQ(dependent.error().kind, fb::ErrorKind::Numerical) << dependent.error().message;
 }
 
 // ---------------------------------------------------------------------------

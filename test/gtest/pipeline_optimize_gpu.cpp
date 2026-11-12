@@ -8,7 +8,12 @@
 // and runs again over integral-direct ERIs, held to convergence. Then the
 // CASSCF chain: H2O's state-specific DF-CASSCF(4,4) from an off-symmetry
 // start to PySCF's minimum (data/casscf_gradient/casscf_optimize.json) to
-// 1e-4 bohr, and its integral-direct refusal. Then the NEVPT2 chain: the
+// 1e-4 bohr, and its integral-direct refusal. Then distance constraints
+// (#1260): skew formaldehyde's DF-RHF minimum with two coupled distances held,
+// against geomeTRIC's over PySCF (data/gradient/constrained_optimize.json)
+// within bars derived from that file, every distance to 1e-8 Angstrom; a
+// constraint on a missing atom refused; and the CASSCF chain's water with a
+// stretched O-H held, stationary off it by a fresh gradient. Then the NEVPT2 chain: the
 // same water's SC-NEVPT2 over that DF-CASSCF(4,4), from the skew start
 // (data/nevpt2_gradient/nevpt2_gradient.json) to a stationary point whose
 // energy is PySCF's DF-NEVPT2 single point there
@@ -447,6 +452,282 @@ TEST(PipelineOptimize, ACasscfChainOverIntegralDirectErisIsUnsupported) {
   EXPECT_EQ(out.error().kind, fb::ErrorKind::Unsupported) << out.error().message;
   EXPECT_NE(out.error().message.find("density fitting only"), std::string::npos)
       << out.error().message;
+}
+
+// --- Distance constraints (#1260) -------------------------------------------
+
+// The constrained RHF chain's reference: geomeTRIC's DF-RHF minimum of skew
+// formaldehyde with C-O and C-H(2) held (data/gradient/constrained_optimize.json).
+const fb::json &constrained_reference() {
+  static const fb::json kDoc = [] {
+    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "gradient" /
+                              "constrained_optimize.json");
+    EXPECT_TRUE(read.has_value()) << read.error().message;
+    return read.has_value() ? std::move(*read) : fb::json{};
+  }();
+  return kDoc;
+}
+
+// The issue's bar on every constrained distance, Angstrom.
+constexpr double kConstraintToleranceAngstrom = 1e-8;
+
+// @p constraints as [optimize]'s TOML array.
+std::string constraints_toml(const fb::json &constraints) {
+  std::string out = "constraints = [";
+  for (const fb::json &c : constraints) {
+    const auto atoms = c.at("atoms").get<std::vector<std::int32_t>>();
+    out +=
+        std::format("{}{{ atoms = [{}, {}], distance = {:.17g} }}", out.back() == '[' ? "" : ", ",
+                    atoms[0], atoms[1], c.at("distance").get<double>());
+  }
+  return out + "]\n";
+}
+
+// Points a and b of @p p apart, Angstrom.
+double separation_angstrom(const Points &p, std::size_t a, std::size_t b) {
+  return std::hypot(p[a][0] - p[b][0], p[a][1] - p[b][1], p[a][2] - p[b][2]) *
+         fb::kAngstromPerBohr<double>;
+}
+
+// @p g (3N) projected off the rigid motions of @p p and the constraint
+// gradients of @p constraints, by modified Gram-Schmidt: the force the
+// optimizer converges on, recomputed from a gradient it did not see.
+std::vector<double> projected_force(const Points &p, const fb::json &constraints,
+                                    std::vector<double> g) {
+  const std::size_t n = 3 * p.size();
+  std::array<double, 3> c{};
+  for (const auto &r : p) {
+    for (int32_t k = 0; k < 3; ++k) {
+      c[k] += r[k] / static_cast<double>(p.size());
+    }
+  }
+  std::vector<std::vector<double>> span;
+  for (int32_t k = 0; k < 3; ++k) {
+    std::vector<double> t(n, 0.0);
+    std::vector<double> rot(n, 0.0);
+    for (std::size_t a = 0; a < p.size(); ++a) {
+      t[3 * a + k] = 1.0;
+      const int32_t i = (k + 1) % 3;
+      const int32_t j = (k + 2) % 3;
+      rot[3 * a + i] = -(p[a][j] - c[j]);
+      rot[3 * a + j] = p[a][i] - c[i];
+    }
+    span.push_back(t);
+    span.push_back(rot);
+  }
+  for (const fb::json &con : constraints) {
+    const auto atoms = con.at("atoms").get<std::vector<std::size_t>>();
+    std::vector<double> row(n, 0.0);
+    const double r = separation_angstrom(p, atoms[0], atoms[1]) / fb::kAngstromPerBohr<double>;
+    for (int32_t k = 0; k < 3; ++k) {
+      const double e = (p[atoms[0]][k] - p[atoms[1]][k]) / r;
+      row[3 * atoms[0] + k] = e;
+      row[3 * atoms[1] + k] = -e;
+    }
+    span.push_back(row);
+  }
+  std::vector<std::vector<double>> basis;
+  for (std::vector<double> v : span) {
+    for (const auto &u : basis) {
+      const double o = std::inner_product(u.begin(), u.end(), v.begin(), 0.0);
+      for (std::size_t i = 0; i < n; ++i) {
+        v[i] -= o * u[i];
+      }
+    }
+    const double norm = std::sqrt(std::inner_product(v.begin(), v.end(), v.begin(), 0.0));
+    if (norm > 1e-8) {
+      for (double &x : v) {
+        x /= norm;
+      }
+      basis.push_back(std::move(v));
+    }
+  }
+  for (const auto &u : basis) {
+    const double o = std::inner_product(u.begin(), u.end(), g.begin(), 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+      g[i] -= o * u[i];
+    }
+  }
+  return g;
+}
+
+// Every history entry's constrained distances, and the optimum's, held to
+// kConstraintToleranceAngstrom; returns the worst error.
+double expect_constraints_held(const fb::json &history, const fb::json &constraints,
+                               const Points &optimum) {
+  double worst = 0.0;
+  for (const fb::json &it : history.at("iterations")) {
+    const fb::json &got = it.at("constraints");
+    EXPECT_EQ(got.size(), constraints.size());
+    for (std::size_t k = 0; k < got.size() && k < constraints.size(); ++k) {
+      worst = std::max(worst, std::abs(got[k].at("distance").get<double>() -
+                                       constraints[k].at("distance").get<double>()));
+    }
+  }
+  for (const fb::json &c : constraints) {
+    const auto atoms = c.at("atoms").get<std::vector<std::size_t>>();
+    worst = std::max(worst, std::abs(separation_angstrom(optimum, atoms[0], atoms[1]) -
+                                     c.at("distance").get<double>()));
+  }
+  EXPECT_LE(worst, kConstraintToleranceAngstrom);
+  return worst;
+}
+
+// Skew formaldehyde's DF-RHF / cc-pVDZ / cc-pVDZ-JKFIT minimum with C-O held
+// at 1.25 and C-H(2) at 1.15 Angstrom, from the C1 start, neither met there,
+// at Opt=Tight's thresholds, against geomeTRIC's over PySCF at the same
+// method, basis and constraints. Each constrained distance is held to 1e-8
+// Angstrom at every evaluation and at the optimum. The bars come from the
+// fixture by the optimizer end-point rule: each end point is within F / k_min
+// of the exact constrained minimum, F its projected force's 2-norm (this
+// run's at most sqrt(3N) times the rms threshold, the reference's its own
+// force_norm) and k_min the least curvature of the Lagrangian over the free
+// coordinates, so the two geometries are within delta = (F_test + F_ref) /
+// k_min, and their energies within (F_test + F_ref) delta (as the SA root's
+// case), plus the reference's own constraint error times its multiplier,
+// sum_k |lambda_k| |e_k|, the first-order energy of a distance off by e_k.
+TEST(PipelineOptimize, SkewFormaldehydeConstrainedReachesGeometricsMinimum) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const fb::json &expected = constrained_reference();
+  const fb::json &constraints = expected.at("constraints");
+  constexpr double kRmsForce = 1e-5;
+  const double f_test =
+      std::sqrt(3.0 * static_cast<double>(expected.at("atoms").size())) * kRmsForce;
+  const double f_ref = expected.at("force_norm").get<double>();
+  const double k_min = expected.at("k_min").get<double>();
+  const double delta = (f_test + f_ref) / k_min;
+  double constraint_energy = 0.0;
+  for (std::size_t k = 0; k < constraints.size(); ++k) {
+    constraint_energy += std::abs(expected.at("multipliers").at(k).get<double>()) *
+                         std::abs(expected.at("distance_errors").at(k).get<double>()) /
+                         fb::kAngstromPerBohr<double>;
+  }
+  const double energy_bar = (f_test + f_ref) * delta + constraint_energy;
+
+  const fb::test::ScratchDir dir("pipeline_optimize_constrained_rhf");
+  const auto config = write_config(dir, expected, constraints_toml(constraints));
+  auto calc = fb::read_config(config, dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_EQ(calc->step<fb::OptimizeStep>()->options.constraints.size(), constraints.size());
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
+  const auto t0 = std::chrono::steady_clock::now();
+  const fb::Status ran = calc->run(node);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+
+  const auto &out = calc->get<fb::OptimizeOutput>();
+  ASSERT_TRUE(out.has_value());
+  const auto history = fb::read_json(dir / "out" / "optimize.json");
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  const double constraint_error =
+      expect_constraints_held(*history, constraints, points(out->molecule));
+  const double energy_error = std::abs(out->energy - expected.at("energy").get<double>());
+  EXPECT_LE(energy_error, energy_bar);
+  const double geometry_error =
+      aligned_max_deviation(points(expected.at("atoms")), points(out->molecule));
+  EXPECT_LE(geometry_error, delta);
+  const fb::json &last = history->at("iterations").back();
+  std::cout << std::format(
+      "[ optimize ] h2co_skew constrained DF-RHF: {} steps, |dE| {:.2e} Eh (bar {:.2e}), "
+      "geometry {:.2e} bohr (delta {:.2e}), worst constraint error {:.2e} A, multipliers "
+      "{:.8f} {:.8f} (geomeTRIC {:.8f} {:.8f}), projected |g| {:.2e}; F_test {:.2e}, F_ref "
+      "{:.2e}, k_min {:.6f}; {:.1f} s\n",
+      history->at("iterations").size() - 1, energy_error, energy_bar, geometry_error, delta,
+      constraint_error, last.at("constraints").at(0).at("multiplier").get<double>(),
+      last.at("constraints").at(1).at("multiplier").get<double>(),
+      expected.at("multipliers").at(0).get<double>(),
+      expected.at("multipliers").at(1).get<double>(),
+      last.at("projected_gradient_norm").get<double>(), f_test, f_ref, k_min, seconds);
+}
+
+// A constraint naming an atom the start does not have is refused by the
+// step, naming the key, once it has read the xyz and before any SCF.
+TEST(PipelineOptimize, AConstraintOnAMissingAtomIsRefusedBeforeItRuns) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_optimize_constraint_atom");
+  ASSERT_TRUE(
+      fb::write_file(dir / "w.xyz", "3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n").has_value());
+  fb::OptimizeStep step;
+  step.molecule.xyz = dir / "w.xyz";
+  step.history = dir / "optimize.json";
+  step.options.constraints = {{.atoms = {0, 3}, .distance = 1.8}};
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
+  const auto out = step.run(fb::View<>{}, node);
+  ASSERT_FALSE(out.has_value());
+  EXPECT_EQ(out.error().kind, fb::ErrorKind::InvalidConfig) << out.error().message;
+  EXPECT_EQ(out.error().message, "[optimize] constraints[0] atoms [0, 3] names atom 3, and the "
+                                 "molecule has 3 atoms (0-based, as the xyz orders them)");
+  EXPECT_FALSE(std::filesystem::exists(step.history));
+}
+
+// The correlated chain: H2O's DF-CASSCF(4,4) (the CASSCF chain's case) with
+// O-H(1) held at 1.05 Angstrom, 0.1 past the start's and 0.08 past the free
+// minimum's, from the off-symmetry start at Opt=Tight's thresholds. The
+// distance holds to 1e-8 Angstrom at every evaluation and at the optimum;
+// and the outer [casscf_gradient], run afresh at the optimum, has a gradient
+// whose projection off the rigid motions and the constraint (recomputed here,
+// not the optimizer's) is under the optimizer's max_force threshold plus
+// 1e-8, the fresh CASSCF's gradient error at its conv_tol_grad 1e-9.
+TEST(PipelineOptimize, WaterCasscfHoldsAStretchedBondAndIsStationaryOffIt) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const fb::json &expected = casscf_reference();
+  const fb::json constraints = fb::json::parse(R"([{"atoms": [0, 1], "distance": 1.05}])");
+  const fb::test::ScratchDir dir("pipeline_optimize_constrained_casscf");
+  std::string xyz = std::format("{}\nstart\n", expected.at("start").size());
+  for (const fb::json &atom : expected.at("start")) {
+    const auto coord = atom.at("coord").get<std::vector<double>>();
+    xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
+                       coord[0] * fb::kAngstromPerBohr<double>,
+                       coord[1] * fb::kAngstromPerBohr<double>,
+                       coord[2] * fb::kAngstromPerBohr<double>);
+  }
+  ASSERT_TRUE(fb::write_file(dir / "start.xyz", xyz).has_value());
+  std::string active;
+  for (const auto t : expected.at("active").get<std::vector<std::int32_t>>()) {
+    active += std::format("{}{}", active.empty() ? "" : ", ", t);
+  }
+  const std::string toml = std::format(
+      "[molecule]\nxyz = \"start.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
+      "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n{}"
+      "[casscf]\nncas = {}\nnelecas = {}\nactive = [{}]\n{}[casscf_gradient]\n{}{}",
+      expected.at("basis").get<std::string>(),
+      expected.at("aux_basis").at("name").get<std::string>(), kScf,
+      expected.at("ncas").get<std::int32_t>(), expected.at("nelecas").get<std::int32_t>(), active,
+      kCasscf, kOptimize, constraints_toml(constraints));
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node{{.workspaces = fb::test::kWorkspaces}};
+  const auto t0 = std::chrono::steady_clock::now();
+  const fb::Status ran = calc->run(node);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+
+  const auto &out = calc->get<fb::OptimizeOutput>();
+  ASSERT_TRUE(out.has_value());
+  const Points optimum = points(out->molecule);
+  const auto history = fb::read_json(dir / "out" / "optimize.json");
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  const double constraint_error = expect_constraints_held(*history, constraints, optimum);
+
+  const auto &gradient = calc->get<fb::CasscfGradientOutput>();
+  ASSERT_TRUE(gradient.has_value()) << gradient.error().message;
+  const std::vector<double> force = projected_force(optimum, constraints, gradient->gradient.total);
+  const double worst = std::ranges::max(force, {}, [](double v) { return std::abs(v); });
+  EXPECT_LE(std::abs(worst), kMaxForce + 1e-8);
+  const fb::json &last = history->at("iterations").back();
+  std::cout << std::format(
+      "[ optimize ] h2o CASSCF(4,4) r(O-H1) = 1.05 A: {} steps, E {:.10f}, worst constraint "
+      "error {:.2e} A, fresh projected max force {:.2e} (last evaluation's {:.2e}), multiplier "
+      "{:.8f}; {:.1f} s\n",
+      history->at("iterations").size() - 1, out->energy, constraint_error, std::abs(worst),
+      last.at("max_force").get<double>(),
+      last.at("constraints").at(0).at("multiplier").get<double>(), seconds);
 }
 
 // --- A state-averaged CASSCF root -------------------------------------------

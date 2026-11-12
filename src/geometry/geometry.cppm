@@ -22,6 +22,14 @@ import free_breakfast.atom;
 
 export namespace free_breakfast::geometry {
 
+/// @brief One interatomic distance optimize holds fixed: points atoms[0] and
+/// atoms[1] (0-based, 3 coordinates each) at distance (the callback's length
+/// unit, bohr for a molecule).
+struct DistanceConstraint {
+  std::array<int32_t, 2> atoms;
+  double distance;
+};
+
 /// @brief The knobs of one optimize call. Units are the callback's: bohr and
 /// hartree for a molecule.
 struct Options {
@@ -54,6 +62,12 @@ struct Options {
   /// between the two energies is also at or below this (hartree). optimize
   /// ignores it.
   double max_gap = 1e-5;
+  /// @brief Distances optimize holds fixed while it minimizes over the rest:
+  /// the start is moved onto them, and every step is projected off their
+  /// gradients and moved back onto them, so the four force norms are of the
+  /// gradient projected off them too. Needs a coordinate count divisible by
+  /// 3. optimize_meci refuses any.
+  std::vector<DistanceConstraint> constraints{};
 };
 
 /// @brief One energy-and-gradient evaluation, for the log.
@@ -74,6 +88,14 @@ struct Iteration {
   /// this geometry was dropped and the step retried from the accepted one
   /// under a quarter of its length.
   bool accepted;
+  /// @brief One per options.constraints, in order: its distance at this
+  /// geometry, and its multiplier lambda_k, the least-squares fit of the
+  /// gradient g = sum_k lambda_k dd_k/dx + (the projected gradient). At a
+  /// converged geometry lambda_k is dE/dd_k, the energy's slope along the
+  /// constrained distance with the rest relaxed (hartree / bohr). Empty with
+  /// no constraints.
+  std::vector<double> distances{};
+  std::vector<double> multipliers{};
 };
 
 /// @brief A converged optimization.
@@ -105,11 +127,28 @@ struct Solution {
 /// are all at or below their options; the first evaluation has no step, so
 /// it converges on the forces alone.
 ///
+/// Under options.constraints (SHAKE/RATTLE-like): x0 is first moved onto
+/// them; the gradient is also projected off the constraints' gradients at x
+/// (orthonormalized after the rigid motions), and p is -(P B P)^+ g, P the
+/// projector off all of them, by a Cholesky solve of P B P + (I - P) as in
+/// optimize_meci; x + p is moved back onto them along those same gradients,
+/// by Newton's method on the distances, to 1e-12 of each (relative, and
+/// absolute under 1). The step's two norms are of that corrected step; B is
+/// updated over its projection P s and y the change in the Lagrangian's
+/// gradient g - sum_k lambda_k dd_k/dx at the new multipliers, projected by
+/// P. And an energy change under 1000 ulps of the energies, as in
+/// optimize_meci, neither rejects the step nor moves the trust radius.
+///
 /// @return The solution; InvalidConfig if @p x0 is empty or not finite, its
 ///         size is not divisible by 3 under options.project_rigid_body, a
 ///         threshold or the initial Hessian is not above 0, the trust radius
-///         is not above 0 or above max_trust_radius, or max_steps is
-///         negative; Numerical if an energy or gradient is not finite;
+///         is not above 0 or above max_trust_radius, max_steps is
+///         negative, or a constraint names a point out of range or one point
+///         twice, repeats another's pair, or has a distance not finite and
+///         above 0 (or there are constraints and the size is not divisible
+///         by 3); Numerical if an energy or gradient is not finite, the
+///         constraints' gradients are linearly dependent at a geometry, or
+///         Newton's method cannot move a point back onto them;
 ///         MaxIterationsExceeded once max_steps runs out; or the first error
 ///         of @p energy_and_gradient, or of @p on_iteration.
 ///
@@ -194,7 +233,8 @@ struct MECISolution {
 /// or below their options; the first evaluation converges on the gap and the
 /// forces alone.
 ///
-/// @return The solution; InvalidConfig as optimize, or max_gap not above 0;
+/// @return The solution; InvalidConfig as optimize, max_gap not above 0, or
+///         any options.constraints;
 ///         Numerical if an energy or vector is not finite, the gradient
 ///         difference vanishes after the projection (but for a mean gradient
 ///         alone), or the first evaluation is a mean gradient alone, with no

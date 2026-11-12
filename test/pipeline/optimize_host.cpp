@@ -15,7 +15,9 @@
 // a walk keeps, recorded_optimize's and recorded_optimize_meci's over a stub
 // evaluation: a walk failed at evaluation k leaves optimize.json with its k
 // entries and "error", optimize.xyz with its k frames, and no final.xyz (a
-// stale one removed); a converged walk, all three. Nothing is run, so
+// stale one removed); a converged walk, all three; and a constrained walk's
+// entries and head carry each constraint's distance and multiplier and the
+// projected gradient's norm. Nothing is run, so
 // nothing touches a device.
 
 #include <gtest/gtest.h>
@@ -462,6 +464,41 @@ TEST(PipelineOptimize, AConvergedWalkWritesItsHistoryTrajectoryAndFinalXyz) {
   EXPECT_EQ((*history)["iterations"].size(), walk->iterations.size());
   EXPECT_EQ(frame_count(step.trajectory), walk->iterations.size());
   EXPECT_TRUE(std::filesystem::exists(step.final_xyz));
+}
+
+// The same bond held at 2 bohr by a constraint, from 4: the start is moved
+// onto it, where the whole gradient lies along the constraint, so the walk
+// converges at its first evaluation. Its entry, and the head, carry the
+// constraint's atoms, its distance in Angstrom and its multiplier, the
+// bond's slope k (r - 1.4) = 0.6 there, and the projected gradient's norm,
+// 0 to rounding.
+TEST(PipelineOptimize, AConstrainedWalkRecordsItsDistancesMultipliersAndProjectedNorm) {
+  const fb::test::ScratchDir dir("pipeline-optimize");
+  fb::OptimizeStep step = step_in(dir);
+  step.options.constraints = {{.atoms = {1, 0}, .distance = 2.0}};
+  const auto harmonic = [](std::span<const double> x, std::span<double> g) -> fb::Result<double> {
+    const double r = bond(x, g);
+    for (double &v : g) {
+      v *= r - 1.4;
+    }
+    return 0.5 * (r - 1.4) * (r - 1.4);
+  };
+  const auto walk = fb::recorded_optimize(step, stretched_h2(4.0), harmonic);
+  ASSERT_TRUE(walk.has_value()) << walk.error().message;
+  ASSERT_EQ(walk->iterations.size(), 1U);
+  EXPECT_NEAR(walk->energy, 0.18, 1e-14);
+
+  const auto history = fb::read_json(step.history);
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  constexpr double kAngstromPerBohr = 0.529177210903;
+  for (const fb::json &record : {(*history)["iterations"][0], *history}) {
+    const fb::json &c = record.at("constraints");
+    ASSERT_EQ(c.size(), 1U);
+    EXPECT_EQ(c[0].at("atoms"), fb::json({1, 0}));
+    EXPECT_NEAR(c[0].at("distance").get<double>(), 2.0 * kAngstromPerBohr, 1e-14);
+    EXPECT_NEAR(c[0].at("multiplier").get<double>(), 0.6, 1e-13);
+  }
+  EXPECT_LE((*history)["iterations"][0].at("projected_gradient_norm").get<double>(), 1e-14);
 }
 
 // Two states whose gap is r - 2 across a bond started at 4: the MECI walk is

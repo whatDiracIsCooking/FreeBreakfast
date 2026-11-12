@@ -470,6 +470,71 @@ what this step does:
   follows two CASSCF roots, not QD states, so it is outside both functions'
   domain.
 
+## Distance constraints
+
+`constraints = [{ atoms = [a, b], distance = d }, ...]` holds each chosen
+interatomic distance at d (Angstrom; atoms 0-based as the xyz orders them)
+while the walk minimizes over every other degree of freedom (#1260). It is
+`geometry::Options::constraints` (bohr there), so it works over every chain
+`geometry::optimize` drives: the RHF one, `[casscf_gradient]` (a followed
+state-averaged root too), and `[nevpt2_gradient]`, SC or PC, single-state or
+a QD state. It is what a relaxed surface is made of: experimental/cope_rearrangement's
+step 3 is a 2D grid of (R16, R34), one config per point, written by a script
+(`examples/constrained_optimize.toml` is one such point). Not `meci`: a
+crossing search is not a minimization, and the two are refused together.
+
+**The method** is a projection over the existing Cartesian BFGS, with a
+SHAKE/RATTLE-like correction (`../../geometry/README.md` has the detail):
+
+- **The start** is moved onto the constraints first, along their gradients,
+  so it need not meet them.
+- **The gradient and the step** lose their components along each
+  constraint's gradient dd_k/dx (the unit vector of the pair, opposite on its
+  two atoms), orthonormalized after the rigid-body motions, which they are
+  already orthogonal to.
+- **After each step** x + p is moved back onto the constraints along those
+  same gradients, taken at the geometry the step left, as SHAKE moves along
+  the last step's bonds: Newton's method on the k distances, a k x k solve,
+  to 1e-12 of each distance. Every evaluated geometry, rejected ones too,
+  meets them to that.
+- **Convergence** is judged on the **projected** gradient with the four
+  thresholds as they are, and on the corrected step, which is also what the
+  BFGS update learns from.
+
+Lagrange multipliers in the step, or internal coordinates, were the
+alternatives. The projection keeps the optimizer what it is, a Cartesian
+BFGS over an n x n Hessian, and adds no coordinate system to build or
+invert; a constraint is one more vector to project off.
+
+**The multiplier** lambda_k is the least-squares fit of the gradient,
+g = sum_k lambda_k dd_k/dx + (the projected gradient). At a converged
+geometry it is dE*/dd_k, the slope of the constrained minimum's energy along
+that distance with everything else relaxed: on a relaxed surface, the
+surface's own gradient, recorded at every point for free.
+
+**Refusals.** pipeline/config refuses, each naming the key and the
+constraint: a constraint that is not a table `{ atoms, distance }`, an
+unknown key in it, `atoms` not a pair of integers, an atom below 0, one atom
+twice, a pair named twice (either order), a distance missing or not finite
+and positive, an empty array, and `constraints` beside `meci`.
+`check_constraint_atoms`, in `run` once the start is read and before the
+first SCF, refuses an atom the molecule does not have. During the walk,
+constraint gradients that become linearly dependent (three atoms held
+collinear) or a correction Newton's method cannot converge are `Numerical`.
+
+**Records.** Every `optimize.json` entry gains
+
+```json
+"projected_gradient_norm": 3.1e-6,
+"constraints": [{"atoms": [0, 1], "distance": 1.25, "multiplier": -0.0414}, ...]
+```
+
+the 2-norm of the gradient projected off the rigid motions and the
+constraints (its largest component and its rms are `max_force` and
+`rms_force`, as before), and per constraint its distance at that geometry
+(Angstrom) and its multiplier (hartree/bohr). A converged head carries the
+optimum's `constraints` too.
+
 ## Why a nested Pipeline, not a looping planner
 
 `geometry::optimize` owns its loop and calls back for each energy and
@@ -566,6 +631,7 @@ rms_displacement = 1.2e-3
 max_steps = 100           # evaluations after the first
 # meci = [0, 1]           # the MECI of these two [casscf] roots instead
 # max_gap = 1e-5          # hartree, the MECI's fifth criterion (meci only)
+# constraints = [{ atoms = [0, 5], distance = 1.95 }]  # Angstrom, 0-based (not with meci)
 ```
 
 The chain is the config's own `[molecule]`, `[basis_set]`, `[eri]`,
@@ -582,7 +648,22 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
 - The step's contract and `MoleculeStep`'s load, by `static_assert`, in
   `test/pipeline/steps_host.cpp`; `[optimize]`'s parsing, the chain copied in,
   the molecule loaded from `final.xyz` and the refusals in
-  `test/pipeline/config_host.cpp`.
+  `test/pipeline/config_host.cpp`; there too `constraints` read in bohr,
+  each malformed one refused naming the key, and
+  `examples/constrained_optimize.toml` parsed.
+- Distance constraints (#1260): `test/gtest/geometry_host.cpp`'s
+  `GeometryOptimizeConstrained.*` (a Lennard-Jones cluster held at every
+  evaluation, its multiplier the constrained minimum's slope by a central
+  difference, two coupled constraints, the refusals);
+  `test/pipeline/optimize_host.cpp`'s constrained walk's history;
+  `test/gtest/pipeline_optimize_gpu.cpp`'s
+  `PipelineOptimize.SkewFormaldehydeConstrainedReachesGeometricsMinimum`
+  (slow: DF-RHF with C-O and C-H held, against geomeTRIC over PySCF,
+  `data/gradient/constrained_optimize.json`, within bars derived from its
+  force and least curvature, each distance to 1e-8 Angstrom),
+  `WaterCasscfHoldsAStretchedBondAndIsStationaryOffIt` (slow: the CASSCF
+  chain, the bond held and a fresh gradient's projection under the
+  threshold) and `AConstraintOnAMissingAtomIsRefusedBeforeItRuns`.
 - `test/pipeline/config_host.cpp` also: the CASSCF chain copied in, and its
   refusals (no `[casscf]` space, `[gradient]` beside it, an integral-direct
   `[eri]`).

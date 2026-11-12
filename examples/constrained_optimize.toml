@@ -1,0 +1,34 @@
+# A relaxed point of a constrained surface: the PC-NEVPT2 minimum of a skew
+# formaldehyde (nevpt2_hessian.toml's) over its single-state DF-CASSCF(4,4)
+# in STO-3G with the C-O bond held at 1.30 Angstrom, every other coordinate
+# relaxed. The pattern of experimental/cope_rearrangement's step 3, a 2D
+# (R16, R34) surface: one config per grid point, written by a script, each
+# holding its two distances. Writes optimize.xyz, optimize.json (each
+# evaluation's constrained distances, their multipliers dE/dd and the
+# projected gradient's norm) and final.xyz, then the outer steps at the
+# optimum.
+[molecule]
+xyz = "h2co_skew.xyz"
+[basis_set]
+basis = "sto-3g"
+[eri]
+mode = "density_fitting"      # the CASSCF and NEVPT2 gradients need it
+aux_basis = "cc-pvdz-jkfit"
+[scf]
+energy_tolerance = 1e-12
+commutator_tolerance = 1e-10
+[casscf]                      # one root: no state average
+ncas = 4
+nelecas = 4
+active = [6, 7, 8, 9]
+conv_tol_grad = 1e-9          # the gradient is the CASSCF's only at convergence
+[nevpt2_gradient]
+variant = "pc"                # or "sc"; or quasi_degenerate = true and a state
+[optimize]
+# Atoms 0-based as the xyz orders them, distances in Angstrom. Any number,
+# each pair once; the start need not meet them.
+constraints = [{ atoms = [0, 1], distance = 1.30 }]
+max_force = 1.5e-5            # Opt=Tight's four, on the projected gradient
+rms_force = 1e-5
+max_displacement = 6e-5
+rms_displacement = 4e-5
