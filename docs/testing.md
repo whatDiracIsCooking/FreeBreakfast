@@ -369,12 +369,14 @@ timer, `devtools/systemd/free-breakfast-nightly@.timer`.
    with `-DFREE_BREAKFAST_SCCACHE=OFF`, which `find_program` leaves alone, so
    no launcher is installed, sccache or the GPU object cache. The next warm
    night configures with `-UFREE_BREAKFAST_SCCACHE`, which finds it again.
-4. **Run everything, unskipped, under the card lock** (`Card` in `test.py`, the
-   same locks as `with_gpu_card`): every C++ case with no
+4. **Run everything, unskipped**: under the card lock (`Card` in `test.py`, the
+   same locks as `with_gpu_card`), every C++ case with no
    `FREE_BREAKFAST_FAST_TESTS`, split as `pr` splits it (ctest for the host and
-   `RUN_SERIAL` entries, one watched process per GPU binary for the rest), then
-   the whole pytest suite, `slow` included. If the card is held, the run waits
-   for it rather than sharing it. The GPU batches' budget is
+   `RUN_SERIAL` entries, one watched process per GPU binary for the rest); then,
+   with the card released, the whole pytest suite, `slow` included. pytest uses
+   no GPU, and unskipped it is long enough that holding the card through it
+   kept other runs off an idle card for an hour (#1275). If the card is held,
+   the run waits for it rather than sharing it. The GPU batches' budget is
    `NIGHTLY_GPU_BATCH_BUDGET_SECONDS` (4 h), since unskipped they run far past
    the gates' 45 min; the stall watchdog is the gates' own.
 5. **Run `devtools/cross-backend-check.sh`**, outside the card, after the

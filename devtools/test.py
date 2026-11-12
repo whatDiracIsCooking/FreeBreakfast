@@ -49,8 +49,8 @@ nightly: what the timer runs (docs/testing.md "The nightly"). Fetch origin,
   check REF (default origin/main) out clean in NIGHTLY_WORKTREE, and run that
   checkout's own test.py there: a build (warm; on NIGHTLY_WEEKLY_DAY, or with
   --mode weekly, clean with the compiler launcher off), then under the card
-  lock every C++ case unskipped and the whole pytest suite, then
-  cross-backend-check.sh, and a `nightly` or `weekly` record appended to
+  lock every C++ case unskipped, then (the card released) the whole pytest
+  suite and cross-backend-check.sh, and a `nightly` or `weekly` record appended to
   `metrics`, then the slow-test report over it (devtools/slow_rule.py).
   Build and GPU run never overlap. CUDA (--preset default) by design.
   Logged to <report>/<mode>-<stamp>-<rev>-<preset>.log under the primary
@@ -1912,7 +1912,8 @@ def nightly_run(
         say(f"{tag}: BUILD FAILED (rc={rc}) -- no tests run", err=True, log=log)
         failed.append(f"build (rc={rc})")
 
-    # 2. Everything, unskipped, under the card: a held card is waited for.
+    # 2. Everything, unskipped: the C++ tier under the card (a held card is
+    # waited for), then pytest outside it.
     if rc == 0:
         say(f"{tag}: every case, unskipped (no FREE_BREAKFAST_FAST_TESTS)", log=log)
         run_cfg = dict(
@@ -1926,12 +1927,15 @@ def nightly_run(
             crc = tier_tests(
                 run_cfg, preset, build_dir, passthrough, log, results, tag=tag, env=env
             )
-            results.mkdir(parents=True, exist_ok=True)
-            if reduced:
-                say(f"{tag}: a reduced run -- pytest does not run", log=log)
-                prc = 0
-            else:
-                prc = python_half(tag, cfg, log, results / "pytest.xml", select=[])
+        # pytest uses no GPU (the `gpu` marker's one case only checks the
+        # marker is registered), so the card is released before it: the
+        # unskipped suite is long, and held it for an hour of idle card (#1275).
+        results.mkdir(parents=True, exist_ok=True)
+        if reduced:
+            say(f"{tag}: a reduced run -- pytest does not run", log=log)
+            prc = 0
+        else:
+            prc = python_half(tag, cfg, log, results / "pytest.xml", select=[])
         rc = crc or prc
         if crc:
             failed.append(f"C++ tests: ctest or a GPU batch (rc={crc})")
