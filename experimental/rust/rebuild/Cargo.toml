@@ -1,0 +1,18 @@
+[package]
+name = "fb-rebuild"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "free_breakfast's core rebuilt in Rust over WarpWraps' C ABI (wwr-sys)"
+
+[lib]
+name = "fb_rebuild"
+path = "src/lib.rs"
+
+[dependencies]
+contracts = "0.6.11"
+# runtime_api alone: the binary NEEDs libwwr_capi_runtime_api.so and nothing
+# else of wwr's.
+wwr-sys = { path = "../../../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [
+    "runtime_api",
+] }
