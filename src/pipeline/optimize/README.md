@@ -12,13 +12,19 @@ conical intersection of two roots of a DF-SA-CASSCF, `geometry::optimize_meci`
 over one `mcscf::df_intersection` per geometry (below). Every other step in the
 config then runs at the optimum.
 
+The module also holds `[irc]`, the intrinsic reaction coordinate from a
+transition state (below, "The IRC"): `geometry::irc` over the same chains,
+rerun through the same evaluator.
+
 ## Module
 
 `free_breakfast.pipeline.optimize`, target `free_breakfast::pipeline::optimize`.
-It re-exports `free_breakfast.geometry` (`geometry::Options` is an option),
-`free_breakfast.pipeline.gradient`, `free_breakfast.pipeline.casscf_gradient`
-and `free_breakfast.pipeline.nevpt2_gradient`, which re-export every step the
-three chains rerun, each a member. Its product, `OptimizeOutput`, is declared in
+It re-exports `free_breakfast.geometry` (`geometry::Options` and
+`geometry::IrcOptions` are options), `free_breakfast.pipeline.gradient`,
+`free_breakfast.pipeline.casscf_gradient` and
+`free_breakfast.pipeline.nevpt2_gradient`, which re-export every step the
+three chains rerun, each a member, and `free_breakfast.pipeline.hessian`,
+whose `HessianOutput` `IrcStep` reads. Its product, `OptimizeOutput`, is declared in
 `pipeline.molecule` (below).
 
 ## The step
@@ -535,6 +541,101 @@ constraints (its largest component and its rms are `max_force` and
 (Angstrom) and its multiplier (hartree/bohr). A converged head carries the
 optimum's `constraints` too.
 
+## The IRC
+
+`[irc]` (#1269) walks the intrinsic reaction coordinate, the steepest-descent
+path in mass-weighted Cartesians, from the transition state at the pipeline's
+molecule down both sides (or one): `geometry::irc`, Gonzalez and Schlegel's
+second-order method (GS2), over the energy and gradient of any chain
+`[optimize]` reruns: `[gradient]` (RHF), `[casscf_gradient]` (a DF-CASSCF
+root, followed over a state average) or `[nevpt2_gradient]` (SC or PC, or a
+QD state, followed). `../../geometry/README.md`, "The intrinsic reaction
+coordinate", has the method, the stops and why GS2 over LQA.
+
+```cpp
+struct IrcOutput {
+  std::optional<geometry::IrcPath> forward;   // the TS its point 0; empty if not walked
+  std::optional<geometry::IrcPath> backward;
+};
+
+struct IrcStep {
+  geometry::IrcOptions options;      // step_size, max_points, max_force, the sphere's thresholds
+  IrcDirection direction;            // Both (default), Forward, Backward
+  bool allow_multiple_imaginary;
+  OptimizeStep chain;                // the chain's members, copied in as [optimize]'s
+  std::filesystem::path forward_trajectory, backward_trajectory, history;
+  Result<IrcOutput> run(View<MoleculeOutput, HessianOutput> in, NodeResources &node) const;
+};
+```
+
+**The same evaluator as `[optimize]`.** `OptimizeStep::run`'s chain per
+evaluation lives in the module's unexported `ChainEvaluator`: one nested
+`Pipeline` per call, the RHF chain, or the CASSCF chain with the first call's
+SCF and active-space pick and every later call's orbitals carried from the
+last (re-orthonormalized in the new overlap), a state-averaged root followed
+by `match_roots` and a QD state by `qd_state_overlap`. `[optimize]`'s walk and
+`[irc]`'s both call it, so the IRC's orbitals and states are carried exactly
+as the optimization's are, and its `record(k)` gives each point's following
+for the history. `IrcStep::chain` is an `OptimizeStep` whose chain members
+pipeline/config fills from the config's tables; its molecule, options, `meci`
+and paths are never read.
+
+**The start.** The TS is the pipeline's `MoleculeOutput`, and the Hessian
+there its `HessianOutput`: a `[hessian]` computed in the same run (over the
+same tables, so the same energy), or loaded with `[hessian] from =
+"hessian.json"`, `HessianStep::load`, which reads a `[hessian]`'s file back on
+the host (the Hessian, and the frequencies and modes as written, so a mode's
+phase is the file's; only its size is checked against the molecule). The walk
+leaves along the mode of the lowest frequency: forward is its phase as
+written, backward its negative.
+
+**Both sides start afresh.** Each side has its own `ChainEvaluator`, whose
+first call, at the TS, runs the chain from the SCF: the backward side starts
+from the TS's orbitals, not from those at the forward side's end, at the cost
+of one more evaluation.
+
+**Refusals**, before anything runs, each naming its key: a `HessianOutput`
+that is not the molecule's 3N × 3N, or has no mode; no imaginary frequency
+(`[hessian]`: not a saddle point); more than one without
+`allow_multiple_imaginary`; and the chain's own (a CASSCF chain over
+integral-direct ERIs, `Unsupported`). The config refuses an `[irc]` with no
+`[hessian]` to start from, beside an `[optimize]` (which would move the
+molecule to a minimum before the IRC read it), over two of the gradient
+tables, with a chain table loaded `from` a file, and every option out of its
+range, each naming the key.
+
+**The records**, written as the walk goes, so a failed walk leaves its
+points: `irc_forward.xyz` and `irc_backward.xyz`, one frame per point (the TS
+first; Angstrom; the comment line the point's arc length and energy), and
+`irc.json`:
+
+| Key | Meaning |
+|---|---|
+| `step_size` | s, amu^½ bohr |
+| `imaginary_frequency`, `imaginary_count` | the frequency left along (cm⁻¹, negative) and how many there were |
+| `forward`, `backward` | each side walked: `stop` (`geometry::irc_stop_name`), or `error` and the failure's message; and `points` |
+| `points[k]` | `arc_length` (k s, negative on the backward side), `energy`, `gradient_norm` and `max_force` (the projected Cartesian gradient, hartree/bohr), `sphere_iterations` (the evaluations its hypersphere took), `tangential_gradient` (its converged tangential gradient), `geometry` (Angstrom, one row per atom), and over a followed state `state_overlap` with `root` or `heff_gap`, as `optimize.json`'s |
+
+**The footprint** is the chain's `OptimizeStep::footprint`: one evaluation's
+chain folded and freed whole, beside a followed state; it counts one Molecule
+more than the walk holds.
+
+```toml
+[hessian]                   # or: from = "ts/hessian.json"
+[irc]
+step_size = 0.1             # amu^1/2 bohr (default)
+max_points = 50             # per side
+max_force = 4.5e-4          # hartree / bohr: a point at or below is a minimum
+sphere_gradient = 1e-4      # the hypersphere's tangential gradient, hartree / (amu^1/2 bohr)
+sphere_displacement = 1e-3  # and its next correction, amu^1/2 bohr
+max_sphere_iterations = 20  # evaluations per point
+direction = "both"          # or "forward", "backward"
+allow_multiple_imaginary = false
+```
+
+[`examples/irc.toml`](../../../examples/irc.toml) is HCN ⇌ HNC at RHF/STO-3G,
+its Hessian computed numerically in the run.
+
 ## Why a nested Pipeline, not a looping planner
 
 `geometry::optimize` owns its loop and calls back for each energy and
@@ -651,6 +752,41 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
   `test/pipeline/config_host.cpp`; there too `constraints` read in bohr,
   each malformed one refused naming the key, and
   `examples/constrained_optimize.toml` parsed.
+- The IRC (#1269): `test/gtest/geometry_host.cpp`'s `GeometryIrc.*`
+  (`../../geometry/README.md`); `test/pipeline/irc_host.cpp`, the step's
+  contract, its keys, the chains copied in, every refusal naming its key and
+  `examples/irc.toml` parsed; `test/pipeline/hessian_host.cpp`,
+  `HessianStep`'s load contract; and `test/gtest/pipeline_irc_gpu.cpp`:
+  - `PipelineIrc.HcnRhfMatchesAnIndependentGs2AndReachesBothMinima` (slow,
+    37 s): HCN ⇌ HNC at RHF/STO-3G from `data/irc/hcn_rhf.json`'s TS, its
+    Hessian loaded by `[hessian] from`, sphere thresholds 1e-6 / 1e-5,
+    against that file's GS2 (`tools/emit/irc_reference.py`: every sphere
+    minimized by BFGS on PySCF's exact energy and polished to a tangential
+    gradient under 1e-7) at matched arc length. Bars: point k within
+    Delta_k = sum_{j<=k} (T + T_ref + G) / kappa_j (mass-weighted; T, T_ref
+    the two sphere thresholds, G = 1e-8 the codes' gradient agreement,
+    kappa_j the reference's curvature of E on sphere j), Delta_k / sqrt(m_H)
+    bohr for any atom after alignment, and in energy |g_k| Delta_k + 1e-9;
+    each end within a step s of the RHF minimum and within s^2 h_max / 2
+    above it. Measured: 43 and 34 points (the reference's 43 and 34),
+    128 and 102 evaluations, worst |dE| 4.3e-10 Eh, worst geometry
+    3.5e-7 bohr (3% of its bar), ends 0.067 and 0.059 amu^½ bohr and
+    1.5e-5 and 2.4e-5 Eh from the minima (bars 0.1, 3.4e-3).
+  - `PipelineIrc.Nh3CasscfDescendsAlongTheUmbrellaToMinima` (slow, 18 s):
+    NH₃'s inversion at DF-CASSCF(8,7)/STO-3G (the full valence space; a
+    frontier CAS(2,2) has a second, lower solution off the plane that the
+    carried orbitals fell into) from PySCF's planar TS, the analytic Hessian
+    in the run: one imaginary frequency, PySCF's within its own
+    central-difference error (1227.8i against 1225.9i, bar 10.7), the energy
+    falling at every point, the first step along the mode (cosines ±0.99996,
+    bar 1/√2), every frequency real at each end by a fresh analytic Hessian,
+    and the mirror ends' energies within s^2 h_max / 2 (5.5e-10 against
+    2.5e-3). 15 points a side, 2 evaluations a point.
+  - `PipelineIrc.RefusesAStartThatIsNotOneSaddle` (the family's
+    representative): no imaginary frequency, two without
+    `allow_multiple_imaginary`, a Hessian of another size, a CASSCF chain
+    over integral-direct ERIs, each before any evaluation and naming its key;
+    and `HessianStep::load`'s read of a file and its refusals.
 - Distance constraints (#1260): `test/gtest/geometry_host.cpp`'s
   `GeometryOptimizeConstrained.*` (a Lennard-Jones cluster held at every
   evaluation, its multiplier the constrained minimum's slope by a central
@@ -881,6 +1017,7 @@ copied in and no gradient table; `check_meci`'s refusals are made there.
 
 | File | Role |
 |------|------|
-| `optimize.cppm` | Module interface: `OptimizeStep` and the two recorded walks over its files, `kStateOverlapFloor` and the four following functions |
-| `optimize.cpp` | `run`: the chain per evaluation, its private root and carried-orbitals steps, the MECI's `df_intersection` and `pair_overlap` (and the mean gradient alone inside a degenerate CASSCF pair), `check_meci`; and `recorded_optimize(_meci)`, the three files written as the walk goes and on its exit |
+| `optimize.cppm` | Module interface: `OptimizeStep` and the two recorded walks over its files, `kStateOverlapFloor` and the four following functions; `IrcStep`, `IrcOutput`, `IrcDirection`; and, unexported, `ChainEvaluator` and the frame helpers both steps share |
+| `optimize.cpp` | `run`: the chain per evaluation (`ChainEvaluator`), its private root and carried-orbitals steps, the MECI's `df_intersection` and `pair_overlap` (and the mean gradient alone inside a degenerate CASSCF pair), `check_meci`; and `recorded_optimize(_meci)`, the three files written as the walk goes and on its exit |
+| `irc.cpp` | `IrcStep::run`: the start's refusals, one `ChainEvaluator` and `geometry::irc` per side, and the trajectories and history written at every point |
 | `CMakeLists.txt` | The module library |

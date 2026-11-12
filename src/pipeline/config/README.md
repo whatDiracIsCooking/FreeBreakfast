@@ -486,6 +486,38 @@ a `[nevpt2_gradient]` with no `[hessian]` among them, stays at 0. Two of
 `[nevpt2_gradient]` beside a `[hessian]` are refused as InvalidConfig,
 since one energy's gradient is differenced.
 
+```toml
+[hessian]                 # at the TS, computed here; or: from = "hessian.json"
+[irc]
+step_size = 0.1           # amu^1/2 bohr
+max_points = 50           # per side
+max_force = 4.5e-4        # hartree / bohr: a point at or below it is a minimum
+sphere_gradient = 1e-4    # the hypersphere's tangential gradient, hartree / (amu^1/2 bohr)
+sphere_displacement = 1e-3  # and its next correction, amu^1/2 bohr
+max_sphere_iterations = 20
+direction = "both"        # or "forward", "backward"
+allow_multiple_imaginary = false
+```
+
+`[irc]` is the intrinsic reaction coordinate from the transition state at the
+molecule (`optimize/README.md`, "The IRC"), down both sides by default. Like
+`[optimize]` it reruns a chain, and `parse_config` copies `[basis_set]`,
+`[eri]`, `[orthogonalizer]`, `[guess]` and `[scf]` into it, and `[casscf]`
+with a `[casscf_gradient]` or a `[nevpt2_gradient]`, the energy followed being
+that one's; two of `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]`
+are refused, and so is a chain table that loads `from` a file. The molecule
+is not copied: the TS is the pipeline's `MoleculeOutput`. It starts from the
+`[hessian]` there, which the config must name, computed in the run or loaded
+`from` the `hessian.json` an earlier run's `[hessian]` wrote (`HessianStep`
+has a `load` for that, `hessian/README.md`); an `[irc]` without one is
+refused, and so is one beside an `[optimize]`, which would move the molecule
+to a minimum first. `step_size`, `max_force`, `sphere_gradient` and
+`sphere_displacement` must be finite and positive, `max_points` and
+`max_sphere_iterations` at least 1, and `direction` one of `"both"`,
+`"forward"` and `"backward"`, each refused as InvalidConfig naming the key.
+That the `[hessian]` has exactly one imaginary frequency (or any, with
+`allow_multiple_imaginary`) is the step's to check, once it has run.
+
 **A table is a request, and the steps producing what it reads are filled
 in.** The file above plans all twelve steps: `[orthogonalizer]` reads the
 overlap, which reads the spherical transform and the pair classes. Each
@@ -545,6 +577,7 @@ step, so no two collide:
 | `[nac]` | `nac.json`: the options, the CASSCF's root energies, and per pair the roots, the gap, h_IJ and d^CSF (unscaled) and `total`, each one row of three per atom, and the Z-vector's products and residual |
 | `[nevpt2_nac]` | `nevpt2_nac.json`: the variant and the options, the CASSCF's root energies, H_eff's eigenvalues and R, and per pair the QD states, E_Q − E_P, h_PQ, d^CAS, d^PT2 and the CSF part (unscaled) and `total`, each one row of three per atom, and the diagnostics |
 | `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted (under `meci`: the mean energy, the lower and upper energies and the gap, and per evaluation those, the branching plane's dimension, the pair overlap and the CASSCF's `gradient_norm` and `ci_residual_norm`; over QD states also `heff_gap`, `third_state_margin` and `root_gap`) |
+| `[irc]` | `irc_forward.xyz` and `irc_backward.xyz`: each side's points, the TS first (Angstrom); `irc.json`: the step, the imaginary frequency left along, and per side its stop and per point the arc length, energy, gradient norms, the hypersphere's evaluations and tangential gradient, the geometry and the followed state's overlap (`optimize/README.md`, "The IRC") |
 | `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the CASSCF chain's root, the NEVPT2 chain's variant (and PC's `pc_floor`), under `quasi_degenerate` its `qd` report (`hessian/README.md` "The QD-NEVPT2 chain"), the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
 
 There is no `molden` key, nor a `livvo_molden`, `npy` or `json_path` one: a config names
@@ -567,7 +600,8 @@ nothing):
   two directories differ. A file in a directory *below* the output directory
   is apart, and so is an output directory below the input one, as the
   defaults are. A `[casci]` or `[casscf]` `orbitals` and a `[casscf]` `ci`
-  are inputs too. `[optimize]`'s start and its chain's basis files are inputs;
+  are inputs too. `[optimize]`'s start and its chain's basis files are inputs,
+  and so are an `[irc]`'s chain's;
   the `final.xyz` the molecule is then loaded from is this run's own output,
   read after it is written, and is not.
 
@@ -582,11 +616,12 @@ than after the SCF has converged. `parse_config` touches no disk.
 - a missing required key, in a written table or in a filled-in step's empty one;
 - a key the step has no option for (a step with no options has no keys);
 - an enumerated option naming no value it has (`[guess] type`, which knows
-  only `"sad"`; `[nevpt2_gradient] variant` and `[nevpt2_nac] variant`, which know `"sc"` and `"pc"`; `[hessian] method`, which knows `"analytic"` and `"numerical"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`;
+  only `"sad"`; `[nevpt2_gradient] variant` and `[nevpt2_nac] variant`, which know `"sc"` and `"pc"`; `[irc] direction`, which knows `"both"`, `"forward"` and `"backward"`; `[hessian] method`, which knows `"analytic"` and `"numerical"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`;
   `[localization] exponent`, 2 or 4; and `[cis] spin`, which knows
   `"singlet"` and `"triplet"`);
 - `from` beside another key, on a step with no `load`, or on `[molecule]`;
-  and under `[optimize]` or `[hessian]`, on a table of the chain it reruns;
+  and under `[optimize]`, `[hessian]` or `[irc]`, on a table of the chain it
+  reruns;
 - an `[optimize]` threshold that is not positive, or a `max_steps` below 0,
   or an `[optimize]` beside two of `[gradient]`, `[casscf_gradient]` and
   `[nevpt2_gradient]`; a `meci` that is not two distinct roots, a `max_gap`
@@ -605,6 +640,11 @@ than after the SCF has converged. `parse_config` touches no disk.
   `[nevpt2_gradient]` with a `frozen_core` other than 0; a `[hessian]`
   `pc_floor` that is negative or not finite, or one beside anything but a
   `[nevpt2_gradient]` of variant `"pc"`;
+- an `[irc]` with no `[hessian]`, or beside an `[optimize]` or two of
+  `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]`; a `step_size`,
+  `max_force`, `sphere_gradient` or `sphere_displacement` not finite and
+  positive, a `max_points` or `max_sphere_iterations` below 1, or a
+  `direction` other than `"both"`, `"forward"` and `"backward"`;
 - an option of the other ERI mode (above): `[eri] aux_basis` under
   `"integral_direct"`, or `[scf] fock_rebuild_interval` under
   `"density_fitting"`; or an empty `aux_basis`;
@@ -717,7 +757,7 @@ capped config.
 defaults kept, path resolution against the input directory, the output
 names, the inputs kept apart from the outputs, which steps are filled in and
 which are not, `from`, the `[memory]` caps in both forms and every unit, and
-each refusal above. Nothing is run.
+each refusal above; `[irc]`'s in `test/pipeline/irc_host.cpp`. Nothing is run.
 `test/gtest/pipeline_calculation_gpu.cpp` runs a config end to end, through
 the API. `test/examples/` runs `examples/rhf.toml` and `examples/hessian.toml`
 through the `free-breakfast` binary (`examples/README.md`): exit status,

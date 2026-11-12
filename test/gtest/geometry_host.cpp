@@ -7,13 +7,18 @@
 // model surfaces over four points' distances, a peaked and a tilted cone and
 // an uncoupled crossing, each with a known minimum-energy crossing, the trust
 // radius's shrink, the refusals, and a plane carried under a floor where the
-// callback gives the mean gradient alone (#902).
+// callback gives the mean gradient alone (#902). And for geometry::irc (#1269):
+// a curved valley whose every point is held to GS2's hypersphere condition
+// and whose two sides reach the two minima, a quadratic saddle walked in one
+// evaluation per point along its straight path, two points whose centre of
+// mass and axis the projection holds, the stops and the refusals.
 
 #include <gtest/gtest.h>
 
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.geometry;
+import free_breakfast.atom;
 
 namespace {
 
@@ -963,6 +968,284 @@ TEST(GeometryOptimizeMeci, CarriesThePlaneUnderAFloor) {
   EXPECT_EQ(start.error().kind, fb::ErrorKind::Numerical);
   EXPECT_NE(start.error().message.find("no earlier branching plane"), std::string::npos)
       << start.error().message;
+}
+
+// --- irc (#1269) ------------------------------------------------------------
+
+// One hydrogen at the origin, the coordinates its own (no rigid motions).
+std::vector<fb::Atom> one_hydrogen() {
+  return {fb::Atom{{0.0, 0.0, 0.0}, fb::Element::H}};
+}
+
+// The curved valley E = (x^2 - 1)^2 + 2 (y - x^2 / 2)^2 + z^2 / 2: a saddle at
+// the origin, its Hessian diag(-4, 4, 1), and minima at (+-1, 1/2, 0), the
+// path between them bending through y = x^2 / 2.
+fb::Result<double> valley(std::span<const double> x, std::span<double> gradient) {
+  const double a = (x[0] * x[0]) - 1.0;
+  const double b = x[1] - (0.5 * x[0] * x[0]);
+  gradient[0] = (4.0 * x[0] * a) - (4.0 * b * x[0]);
+  gradient[1] = 4.0 * b;
+  gradient[2] = x[2];
+  return (a * a) + (2.0 * b * b) + (0.5 * x[2] * x[2]);
+}
+
+constexpr std::array<double, 9> kValleyHessian{-4.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 1.0};
+
+// The hydrogen mass harmonic_analysis and irc weight with.
+constexpr double kHydrogenMass = 1.008;
+
+geo::IrcOptions valley_options() {
+  geo::IrcOptions options;
+  options.step_size = 0.05;
+  options.max_points = 200;
+  options.max_force = 1e-6;
+  options.sphere_gradient = 1e-10;
+  options.sphere_displacement = 1e-8;
+  options.project_rigid_body = false;
+  return options;
+}
+
+// Each side of the valley: every point k + 1 on the sphere of radius s / 2
+// about point k's pivot (to 1e-12), its gradient's part tangent to that
+// sphere under sphere_gradient (recomputed here), the energy falling at every
+// point, and the walk stopped with the side's minimum within half a step of
+// the last point by the model, so within one step (mass-weighted) of it.
+TEST(GeometryIrc, CurvedValleyHoldsTheHypersphereAndReachesBothMinima) {
+  const geo::IrcOptions options = valley_options();
+  const double sqrt_m = std::sqrt(kHydrogenMass);
+  for (const double side : {1.0, -1.0}) {
+    const std::array<double, 3> direction{side, 0.0, 0.0};
+    const auto path = geo::irc(one_hydrogen(), kValleyHessian, direction, valley, options);
+    ASSERT_TRUE(path.has_value()) << path.error().message;
+    const auto &points = path->points;
+    ASSERT_GE(points.size(), 3U);
+    EXPECT_EQ(path->stop, geo::IrcStop::MinimumWithinStep) << geo::irc_stop_name(path->stop);
+    for (std::size_t k = 0; k + 1 < points.size(); ++k) {
+      EXPECT_LT(points[k + 1].energy, points[k].energy) << k;
+      EXPECT_DOUBLE_EQ(points[k + 1].arc_length, static_cast<double>(k + 1) * options.step_size);
+      // The pivot: half a step from point k along the way out, or down.
+      std::array<double, 3> g{};
+      (void)valley(points[k].x, g);
+      std::array<double, 3> down{side, 0.0, 0.0};
+      if (k > 0) {
+        const double norm = std::hypot(g[0], g[1], g[2]) / sqrt_m;
+        for (int32_t i = 0; i < 3; ++i) {
+          down[i] = -(g[i] / sqrt_m) / norm;
+        }
+      }
+      std::array<double, 3> p{};
+      for (int32_t i = 0; i < 3; ++i) {
+        p[i] = sqrt_m * points[k + 1].x[i] -
+               (sqrt_m * points[k].x[i] + 0.5 * options.step_size * down[i]);
+      }
+      EXPECT_NEAR(std::hypot(p[0], p[1], p[2]), 0.5 * options.step_size, 1e-12) << k;
+      std::array<double, 3> g1{};
+      (void)valley(points[k + 1].x, g1);
+      for (double &v : g1) {
+        v /= sqrt_m;
+      }
+      const double along =
+          (g1[0] * p[0] + g1[1] * p[1] + g1[2] * p[2]) / (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+      const double tangential =
+          std::hypot(g1[0] - along * p[0], g1[1] - along * p[1], g1[2] - along * p[2]);
+      EXPECT_LE(tangential, options.sphere_gradient) << k;
+      // Downhill: the gradient points back at the pivot.
+      EXPECT_LT(along, 0.0) << k;
+    }
+    const auto &end = points.back().x;
+    const double miss = sqrt_m * std::hypot(end[0] - side, end[1] - 0.5, end[2]);
+    EXPECT_LE(miss, options.step_size) << "side " << side;
+    // It left along the way out.
+    EXPECT_GT(side * points[1].x[0], 0.0);
+  }
+}
+
+// E = -x^2 + 3 y^2 / 2 + z^2: a quadratic saddle whose path is the x axis.
+// The model is the surface, so every point takes one evaluation, stays on the
+// axis, and lies k steps out; with no minimum the walk runs to max_points.
+TEST(GeometryIrc, QuadraticSaddleTakesOneEvaluationPerPointAlongItsAxis) {
+  const auto saddle = [](std::span<const double> x,
+                         std::span<double> gradient) -> fb::Result<double> {
+    gradient[0] = -2.0 * x[0];
+    gradient[1] = 3.0 * x[1];
+    gradient[2] = 2.0 * x[2];
+    return -(x[0] * x[0]) + (1.5 * x[1] * x[1]) + (x[2] * x[2]);
+  };
+  const std::array<double, 9> hessian{-2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 2.0};
+  geo::IrcOptions options;
+  options.step_size = 0.2;
+  options.max_points = 8;
+  options.project_rigid_body = false;
+  const std::array<double, 3> direction{-3.0, 0.0, 0.0};
+  std::size_t kept = 0;
+  const auto path = geo::irc(one_hydrogen(), hessian, direction, saddle, options,
+                             [&](const geo::IrcPoint &) -> fb::Status {
+                               ++kept;
+                               return {};
+                             });
+  ASSERT_TRUE(path.has_value()) << path.error().message;
+  EXPECT_EQ(path->stop, geo::IrcStop::MaxPoints);
+  ASSERT_EQ(path->points.size(), 9U);
+  EXPECT_EQ(kept, 9U);
+  for (std::size_t k = 1; k < path->points.size(); ++k) {
+    const geo::IrcPoint &point = path->points[k];
+    EXPECT_EQ(point.sphere_iterations, 1) << k;
+    EXPECT_NEAR(point.x[0], -static_cast<double>(k) * 0.2 / std::sqrt(kHydrogenMass), 1e-12);
+    EXPECT_NEAR(point.x[1], 0.0, 1e-14);
+    EXPECT_NEAR(point.x[2], 0.0, 1e-14);
+  }
+}
+
+// Two hydrogens on a skew axis bound by E = ((r - 2)^2 - 1)^2: a maximum at
+// r = 2, the TS, and minima at r = 1 and 3. Under the projection the walk
+// keeps the centre of mass and the axis to 1e-12 at every point, and the two
+// sides reach r = 1 and r = 3 within a step.
+TEST(GeometryIrc, TwoPointsKeepTheirCentreAndAxis) {
+  const std::array<double, 3> e{0.48, -0.6, 0.64}; // unit
+  const std::array<double, 3> centre{0.3, -0.2, 1.1};
+  std::vector<fb::Atom> atoms(2);
+  for (std::size_t a = 0; a < 2; ++a) {
+    const double sign = a == 0 ? -1.0 : 1.0;
+    atoms[a] = fb::Atom{{centre[0] + sign * e[0], centre[1] + sign * e[1], centre[2] + sign * e[2]},
+                        fb::Element::H};
+  }
+  const auto bond = [](std::span<const double> x,
+                       std::span<double> gradient) -> fb::Result<double> {
+    std::array<double, 3> d{x[3] - x[0], x[4] - x[1], x[5] - x[2]};
+    const double r = std::hypot(d[0], d[1], d[2]);
+    const double u = ((r - 2.0) * (r - 2.0)) - 1.0;
+    const double de_dr = 4.0 * u * (r - 2.0);
+    for (int32_t k = 0; k < 3; ++k) {
+      gradient[3 + k] = de_dr * d[k] / r;
+      gradient[k] = -gradient[3 + k];
+    }
+    return u * u;
+  };
+  // d2E/dr2 = -4 at r = 2: -4 [[e e^T, -e e^T], [-e e^T, e e^T]].
+  std::array<double, 36> hessian{};
+  for (std::size_t i = 0; i < 6; ++i) {
+    for (std::size_t j = 0; j < 6; ++j) {
+      const double sign = (i < 3) == (j < 3) ? 1.0 : -1.0;
+      hessian[i * 6 + j] = -4.0 * sign * e[i % 3] * e[j % 3];
+    }
+  }
+  geo::IrcOptions options;
+  options.step_size = 0.05;
+  options.max_points = 100;
+  options.max_force = 1e-8;
+  options.sphere_gradient = 1e-10;
+  options.sphere_displacement = 1e-8;
+  for (const double side : {1.0, -1.0}) {
+    // Forward stretches the bond.
+    const std::array<double, 6> direction{-side * e[0], -side * e[1], -side * e[2],
+                                          side * e[0],  side * e[1],  side * e[2]};
+    const auto path = geo::irc(atoms, hessian, direction, bond, options);
+    ASSERT_TRUE(path.has_value()) << path.error().message;
+    for (const geo::IrcPoint &point : path->points) {
+      std::array<double, 3> d{};
+      for (int32_t k = 0; k < 3; ++k) {
+        EXPECT_NEAR(0.5 * (point.x[k] + point.x[3 + k]), centre[k], 1e-12);
+        d[k] = point.x[3 + k] - point.x[k];
+      }
+      const double r = std::hypot(d[0], d[1], d[2]);
+      for (int32_t k = 0; k < 3; ++k) {
+        EXPECT_NEAR(d[k] / r, e[k], 1e-12);
+      }
+    }
+    const auto &end = path->points.back().x;
+    const double r = std::hypot(end[3] - end[0], end[4] - end[1], end[5] - end[2]);
+    // One step s mass-weighted moves r by s / sqrt(m / 2).
+    EXPECT_NEAR(r, 2.0 + side, options.step_size / std::sqrt(0.5 * kHydrogenMass));
+    EXPECT_EQ(side > 0.0, path->points[1].x[3] - path->points[1].x[0] > 2.0 * e[0]);
+  }
+}
+
+// A start at a minimum: the sphere's minimum is the start itself, behind
+// the pivot, and the walk stops with the start alone. A sphere given one
+// evaluation and thresholds it cannot meet stops unconverged. And a callback's
+// error, and a non-finite energy, end it.
+TEST(GeometryIrc, StopsAndCallbackErrors) {
+  const auto bowl = [](std::span<const double> x,
+                       std::span<double> gradient) -> fb::Result<double> {
+    for (std::size_t i = 0; i < 3; ++i) {
+      gradient[i] = x[i];
+    }
+    return 0.5 * ((x[0] * x[0]) + (x[1] * x[1]) + (x[2] * x[2]));
+  };
+  const std::array<double, 9> identity{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+  const std::array<double, 3> direction{0.0, 1.0, 0.0};
+  geo::IrcOptions options;
+  options.project_rigid_body = false;
+  const auto rose = geo::irc(one_hydrogen(), identity, direction, bowl, options);
+  ASSERT_TRUE(rose.has_value()) << rose.error().message;
+  EXPECT_EQ(rose->stop, geo::IrcStop::EnergyRose);
+  EXPECT_EQ(rose->points.size(), 1U);
+
+  options.max_sphere_iterations = 1;
+  options.sphere_gradient = 1e-300;
+  options.sphere_displacement = 1e-300;
+  const auto unconverged =
+      geo::irc(one_hydrogen(), kValleyHessian, std::array{1.0, 0.0, 0.0}, valley, options);
+  ASSERT_TRUE(unconverged.has_value()) << unconverged.error().message;
+  EXPECT_EQ(unconverged->stop, geo::IrcStop::SphereNotConverged);
+  EXPECT_EQ(unconverged->points.size(), 1U);
+
+  const auto failing = [](std::span<const double>, std::span<double>) -> fb::Result<double> {
+    return fb::err_numerical("the SCF did not converge");
+  };
+  const auto failed = geo::irc(one_hydrogen(), identity, direction, failing, options);
+  ASSERT_FALSE(failed.has_value());
+  EXPECT_EQ(failed.error().message, "the SCF did not converge");
+
+  const auto nan = [](std::span<const double>, std::span<double> g) -> fb::Result<double> {
+    std::ranges::fill(g, 0.0);
+    return std::numeric_limits<double>::quiet_NaN();
+  };
+  const auto not_finite = geo::irc(one_hydrogen(), identity, direction, nan, options);
+  ASSERT_FALSE(not_finite.has_value());
+  EXPECT_EQ(not_finite.error().kind, fb::ErrorKind::Numerical);
+}
+
+TEST(GeometryIrc, Refusals) {
+  const std::array<double, 9> identity{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+  const std::array<double, 3> direction{1.0, 0.0, 0.0};
+  const auto expect_config = [](const fb::Result<geo::IrcPath> &out, std::string_view needle) {
+    ASSERT_FALSE(out.has_value());
+    EXPECT_EQ(out.error().kind, fb::ErrorKind::InvalidConfig) << out.error().message;
+    EXPECT_NE(out.error().message.find(needle), std::string::npos) << out.error().message;
+  };
+  geo::IrcOptions free;
+  free.project_rigid_body = false;
+  expect_config(geo::irc({}, identity, direction, valley, free), "at least one atom");
+  expect_config(geo::irc(one_hydrogen(), std::span(identity).first(8), direction, valley, free),
+                "3N x 3N");
+  expect_config(geo::irc(one_hydrogen(), identity, std::array{1.0, 0.0}, valley, free),
+                "3N direction");
+  for (const auto &tweak : std::vector<std::function<void(geo::IrcOptions &)>>{
+           [](geo::IrcOptions &o) { o.step_size = 0.0; },
+           [](geo::IrcOptions &o) { o.max_force = -1.0; },
+           [](geo::IrcOptions &o) { o.sphere_gradient = 0.0; },
+           [](geo::IrcOptions &o) { o.sphere_displacement = 0.0; }}) {
+    geo::IrcOptions options = free;
+    tweak(options);
+    expect_config(geo::irc(one_hydrogen(), identity, direction, valley, options), "positive");
+  }
+  for (const auto &tweak : std::vector<std::function<void(geo::IrcOptions &)>>{
+           [](geo::IrcOptions &o) { o.max_points = 0; },
+           [](geo::IrcOptions &o) { o.max_sphere_iterations = 0; }}) {
+    geo::IrcOptions options = free;
+    tweak(options);
+    expect_config(geo::irc(one_hydrogen(), identity, direction, valley, options), "at least 1");
+  }
+  std::array<double, 9> nan_hessian = identity;
+  nan_hessian[4] = std::numeric_limits<double>::infinity();
+  expect_config(geo::irc(one_hydrogen(), nan_hessian, direction, valley, free), "not finite");
+  std::vector<fb::Atom> ghost = one_hydrogen();
+  ghost[0].element = fb::Element{0};
+  expect_config(geo::irc(ghost, identity, direction, valley, free), "Z = 0");
+  // One atom has nothing but rigid motions, so every direction is one.
+  expect_config(geo::irc(one_hydrogen(), identity, direction, valley, geo::IrcOptions{}),
+                "rigid-body motion");
 }
 
 } // namespace

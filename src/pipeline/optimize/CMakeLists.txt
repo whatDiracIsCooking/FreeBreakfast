@@ -1,8 +1,9 @@
-# The Optimize step. geometry, pipeline::gradient, pipeline::casscf_gradient
-# and pipeline::nevpt2_gradient are PUBLIC and re-exported: geometry::Options
-# is an option, and the three gradient steps' modules re-export every step the
-# three chains rerun, each a member, and the products OptimizeOutput and
-# MoleculeOutput. core::resources
+# The Optimize and Irc steps. geometry, pipeline::gradient,
+# pipeline::casscf_gradient, pipeline::nevpt2_gradient and pipeline::hessian
+# are PUBLIC and re-exported: geometry::Options and geometry::IrcOptions are
+# options, the three gradient steps' modules re-export every step the three
+# chains rerun, each a member, and the products OptimizeOutput and
+# MoleculeOutput, and IrcStep reads HessianOutput. core::resources
 # and pipeline::step are in run's signature, pipeline::footprint in the
 # footprint's, and io::json in
 # recorded_optimize's. run is defined in the
@@ -22,6 +23,7 @@ free_breakfast_add_cxx_module_library(
   optimize.cppm
   IMPLEMENTATION
   optimize.cpp
+  irc.cpp
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::types
@@ -33,6 +35,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::gradient
   free_breakfast::pipeline::casscf_gradient
   free_breakfast::pipeline::nevpt2_gradient
+  free_breakfast::pipeline::hessian
   free_breakfast::io::json
   LINK_PRIVATE
   free_breakfast::atom

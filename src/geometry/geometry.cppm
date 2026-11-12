@@ -2,12 +2,13 @@
 /// @brief A Cartesian quasi-Newton minimizer: BFGS under a trust radius, with
 /// the rigid-body translations and rotations projected out, over a
 /// caller-supplied energy and gradient; its counterpart for the minimum-energy
-/// crossing of two states; and the harmonic vibrational analysis of a
-/// Cartesian Hessian.
+/// crossing of two states; the intrinsic reaction coordinate from a
+/// transition state; and the harmonic vibrational analysis of a Cartesian
+/// Hessian.
 ///
-/// optimize and optimize_meci are host-side: the state is a 3N vector and a
-/// 3N x 3N Hessian, and they know nothing about molecules, the SCF or the
-/// pipeline.
+/// optimize, optimize_meci and irc are host-side: the state is a 3N vector
+/// and a 3N x 3N Hessian, and they know nothing about the SCF or the
+/// pipeline (irc reads only the atoms' elements, for their masses).
 /// harmonic_analysis takes the atoms, for their masses, and diagonalizes on
 /// the GPU. See README.md for the methods and their defaults.
 
@@ -251,6 +252,153 @@ optimize_meci(std::span<const double> x0,
                   std::span<double> h_ij)> &energies_and_gradients,
               const Options &options = {},
               const std::function<Status(const MECISolution::Iteration &)> &on_iteration = {});
+
+/// @brief The knobs of one irc call. Mass-weighted units are amu^1/2 bohr for
+/// a coordinate and hartree / (amu^1/2 bohr) for a gradient.
+struct IrcOptions {
+  /// @brief The step s along the path (amu^1/2 bohr, mass-weighted): point
+  /// k + 1 is on the hypersphere of radius s / 2 about the pivot s / 2 down
+  /// the steepest descent from point k, so it is k + 1 steps of s along the
+  /// path from the start. Above 0.
+  double step_size = 0.1;
+  /// @brief The points after the start before the walk stops
+  /// (IrcStop::MaxPoints). At least 1.
+  int32_t max_points = 50;
+  /// @brief A point whose Cartesian gradient, projected off the rigid
+  /// motions, has its largest |component| at or below this (hartree / bohr;
+  /// Options::max_force's default) is a minimum, and ends the walk
+  /// (IrcStop::Minimum). Above 0.
+  double max_force = 4.5e-4;
+  /// @brief The hypersphere optimization of a point converges when the part
+  /// of the mass-weighted gradient tangent to the sphere has 2-norm at or
+  /// below this (hartree / (amu^1/2 bohr)) ... Above 0.
+  double sphere_gradient = 1e-4;
+  /// @brief ... and the next correction the quadratic model predicts on the
+  /// sphere has 2-norm at or below this (amu^1/2 bohr). Above 0.
+  double sphere_displacement = 1e-3;
+  /// @brief The energy-and-gradient evaluations one point may take before
+  /// the walk stops unconverged (IrcStop::SphereNotConverged). At least 1.
+  int32_t max_sphere_iterations = 20;
+  /// @brief Project the rigid-body motions out of the gradient, the step and
+  /// the Hessian, as Options::project_rigid_body, in mass-weighted
+  /// coordinates. Off for a function of coordinates that are not points in
+  /// space.
+  bool project_rigid_body = true;
+};
+
+/// @brief Why an irc walk stopped.
+enum class IrcStop : uint8_t {
+  /// The last point's force is at or below max_force.
+  Minimum,
+  /// The model puts the minimum along the last point's steepest descent
+  /// within half a step, inside the next hypersphere: the path's minimum is
+  /// within a step of the last point.
+  MinimumWithinStep,
+  /// The next point's energy rose over the last's, or it lies behind its
+  /// pivot: the path passed its minimum, and that point is not kept.
+  EnergyRose,
+  /// max_points points were taken.
+  MaxPoints,
+  /// A point's hypersphere optimization ran out of max_sphere_iterations;
+  /// that point is not kept.
+  SphereNotConverged,
+};
+
+/// @brief The name of @p stop as the history writes it: "minimum",
+/// "minimum_within_step", "energy_rose", "max_points" or
+/// "sphere_not_converged".
+[[nodiscard]] std::string_view irc_stop_name(IrcStop stop);
+
+/// @brief One point of the path.
+struct IrcPoint {
+  /// @brief The arc length from the start (amu^1/2 bohr): k step_size at
+  /// point k, the start's 0.
+  double arc_length;
+  /// @brief The energy here.
+  double energy;
+  /// @brief The coordinates (bohr), in the order the start gave them.
+  std::vector<double> x;
+  /// @brief The 2-norm and the largest |component| of the Cartesian gradient
+  /// projected off the rigid motions (hartree / bohr).
+  double gradient_norm;
+  double max_force;
+  /// @brief The evaluations this point's hypersphere optimization took; 0 at
+  /// the start.
+  int32_t sphere_iterations;
+  /// @brief The 2-norm of the mass-weighted gradient's part tangent to the
+  /// sphere here, at convergence; 0 at the start.
+  double tangential_gradient;
+};
+
+/// @brief One direction's walk: the start, then each point taken.
+struct IrcPath {
+  std::vector<IrcPoint> points;
+  IrcStop stop;
+};
+
+/// @brief The intrinsic reaction coordinate from the transition state
+/// @p start down one side, by Gonzalez and Schlegel's second-order method
+/// (GS2; J. Chem. Phys. 90, 2154 (1989)) in mass-weighted Cartesians, the
+/// masses harmonic_analysis's.
+///
+/// @p energy_and_gradient(x, gradient) is optimize's callback: the energy at
+/// @p x (bohr, 3 per atom) and its gradient written into @p gradient. Its
+/// first call is at @p start, the path's point 0.
+///
+/// Each step, from point k at q_k (mass-weighted) with the gradient g_k: the
+/// pivot q* = q_k + (s / 2) u, u the unit steepest descent -g_k / |g_k| (at
+/// the start, @p direction's unit mass-weighted displacement instead, the
+/// TS's gradient being 0 there); then point k + 1, the minimum of the energy
+/// on the hypersphere |q - q*| = s / 2, where the gradient is parallel to
+/// q - q*. That minimum is found by a constrained Newton iteration on a
+/// quadratic model: from the trial p = q - q* with gradient g and the model
+/// Hessian H (diagonalized over the internal coordinates, H v_i = b_i v_i),
+/// the next p' has components (b_i p_i - g_i) / (b_i - lambda), lambda below
+/// every b_i and fixed by |p'| = s / 2 (the trust-region secular equation,
+/// solved by bisection; the hard case, nothing along the lowest v, takes
+/// lambda = b_0 and makes up the length along v_0). Each trial is one
+/// evaluation, and H gets Bofill's update (SR1 and Powell's symmetric
+/// Broyden mixed by the SR1 denominator's cosine; it stays indefinite near
+/// the TS, where BFGS would not) over every two evaluations in a row. H
+/// starts as @p hessian mass-weighted. The first trial comes from the model
+/// at q_k itself, which lies on the sphere, so a quadratic surface costs one
+/// evaluation per point. Converged when the tangential gradient and the next
+/// correction are at or below options.sphere_gradient and
+/// options.sphere_displacement.
+///
+/// The walk stops at a point whose force is at or below options.max_force;
+/// before a step whose pivot would pass the model's minimum along the
+/// steepest descent, |g| / (u H u) at or under s / 2 (GS2's sphere then
+/// holds the minimum, and its own minimum flips between the sphere's two
+/// sides); at a point whose energy rose over the last's or that lies behind
+/// its pivot (not kept); at options.max_points; or when a point's sphere does
+/// not converge in options.max_sphere_iterations (not kept). The first three
+/// leave the last point within about a step of the path's minimum.
+///
+/// @param start      The transition state: its positions are x0, its
+///                   elements give the masses.
+/// @param hessian    The Cartesian Hessian at @p start (hartree / bohr^2),
+///                   3N x 3N row-major, harmonic_analysis's layout.
+/// @param direction  The Cartesian displacement the walk leaves along, 3N:
+///                   the imaginary mode as harmonic_analysis gives it, or
+///                   its negative for the other side. Only its direction is
+///                   read.
+/// @return The path; InvalidConfig if @p start is empty, an element is not 1
+///         to 118, a position, Hessian element or @p direction is not finite,
+///         the Hessian is not 3N x 3N, @p direction is not 3N or has nothing
+///         left once the rigid motions are projected off it, or an option is
+///         out of its range; Numerical if an energy or gradient is not
+///         finite; or the first error of @p energy_and_gradient, or of
+///         @p on_point.
+///
+/// @p on_point, if set, is called with each point as it is kept, the start
+/// first, so a caller keeps the walk's log on an error that loses the path;
+/// an error it returns ends the walk with that error.
+[[nodiscard]] Result<IrcPath>
+irc(std::span<const Atom> start, std::span<const double> hessian, std::span<const double> direction,
+    const std::function<Result<double>(std::span<const double> x, std::span<double> gradient)>
+        &energy_and_gradient,
+    const IrcOptions &options = {}, const std::function<Status(const IrcPoint &)> &on_point = {});
 
 /// @brief The harmonic vibrations of a molecule: the internal modes alone,
 /// the rigid-body translations and rotations removed.

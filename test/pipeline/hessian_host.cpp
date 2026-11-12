@@ -43,7 +43,11 @@ static_assert(fb::PipelineStep<fb::HessianStep>);
 static_assert(fb::kRunShape<fb::HessianStep> == fb::RunShape::Node);
 static_assert(std::same_as<fb::StepInput<fb::HessianStep>, fb::View<fb::MoleculeOutput>>);
 static_assert(std::same_as<fb::StepOutput<fb::HessianStep>, fb::HessianOutput>);
-static_assert(!fb::LoadableStep<fb::HessianStep>);
+// Loadable from the hessian.json a [hessian] wrote, on the host, reading the
+// molecule its size is checked against (#1269: [irc]'s start).
+static_assert(fb::LoadableStep<fb::HessianStep>);
+static_assert(std::same_as<fb::LoadInput<fb::HessianStep>, fb::View<fb::MoleculeOutput>>);
+static_assert(fb::kLoadShape<fb::HessianStep> == fb::RunShape::Host);
 static_assert(std::same_as<decltype(fb::HessianOutput::vibrations), fb::geometry::Vibrations>);
 
 constexpr std::string_view kInputs =

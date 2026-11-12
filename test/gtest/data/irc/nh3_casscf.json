@@ -1,0 +1,61 @@
+{
+ "description": "NH3's inversion at DF-CASSCF(8,7)/STO-3G over cc-pVDZ-JKFIT: the planar TS and its frequencies (central-difference Hessian); coordinates in bohr, energies in hartree, frequencies in cm^-1",
+ "provenance": {
+  "pyscf": "2.14.0",
+  "scipy": "1.18.1",
+  "numpy": "2.5.4",
+  "threads": 1,
+  "command": "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/irc_reference.py"
+ },
+ "basis": "sto-3g",
+ "aux_basis": "cc-pvdz-jkfit",
+ "cas": [
+  8,
+  7
+ ],
+ "charge": 0,
+ "atoms": [
+  {
+   "symbol": "N",
+   "coord": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "symbol": "H",
+   "coord": [
+    1.1863355701617247e-16,
+    1.9374330149520624,
+    0.0
+   ]
+  },
+  {
+   "symbol": "H",
+   "coord": [
+    -1.677866209079162,
+    -0.9687165074760314,
+    0.0
+   ]
+  },
+  {
+   "symbol": "H",
+   "coord": [
+    1.6778662090791616,
+    -0.9687165074760321,
+    0.0
+   ]
+  }
+ ],
+ "energy": -55.4979552503306,
+ "max_force": 4.625682221576472e-10,
+ "frequencies": [
+  -1225.914457207484,
+  1741.4741742561068,
+  1741.48853611163,
+  3737.7547132061627,
+  4051.9880052018534,
+  4051.9990792036983
+ ]
+}

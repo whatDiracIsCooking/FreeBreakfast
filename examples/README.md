@@ -28,10 +28,12 @@ step's own options its README under [`src/pipeline/`](../src/pipeline/README.md)
 | [`hessian.toml`](hessian.toml) | `[hessian]`: the analytic DF-RHF Hessian of water, its harmonic frequencies and IR intensities (logged) | `hessian.json` alone: its SCF is a nested run's |
 | [`nevpt2_hessian.toml`](nevpt2_hessian.toml) | `[hessian]` beside `[nevpt2_gradient]`: the analytic SC-NEVPT2 Hessian of a skew (C1) formaldehyde, #803's `h2co_skew_sto3g` fixture's, over its single-state DF-CASSCF(4,4) in STO-3G, its harmonic frequencies (logged) | `scf.molden`, `casscf.molden`, `nevpt2_gradient.json`, `hessian.json` |
 | [`qd_nevpt2_hessian.toml`](qd_nevpt2_hessian.toml) | `[hessian]` beside `[nevpt2_gradient] quasi_degenerate = true`: the analytic SC-QD-NEVPT2 Hessian of QD state 1 of that skew formaldehyde over its DF-SA2-CASSCF(4,4), its harmonic frequencies (logged) and `hessian.json`'s `qd` report | `scf.molden`, `casscf.molden`, `nevpt2_gradient.json`, `hessian.json` |
+| [`irc.toml`](irc.toml) | `[irc]`: the intrinsic reaction coordinate of HCN ⇌ HNC at RHF/STO-3G from its transition state down both sides, the Hessian there computed numerically first, `src/pipeline/optimize/README.md`'s | `irc.json`, `irc_forward.xyz`, `irc_backward.xyz`, `hessian.json`, `scf.molden` |
 | [`water.xyz`](water.xyz) | The water every water config reads (Angstrom) | |
 | [`ethylene.xyz`](ethylene.xyz) | `meci.toml`'s and `qd_meci.toml`'s ethylene, twisted 80° and pyramidalized (Angstrom) | |
 | [`h2co_skew.xyz`](h2co_skew.xyz) | `nevpt2_hessian.toml`'s, `qd_nevpt2_hessian.toml`'s and `constrained_optimize.toml`'s skew formaldehyde (Angstrom) | |
 | [`h2co.xyz`](h2co.xyz) | `nac.toml`'s and `qd_nevpt2_nac.toml`'s formaldehyde (Angstrom) | |
+| [`hcn_ts.xyz`](hcn_ts.xyz) | `irc.toml`'s HCN ⇌ HNC transition state, RHF/STO-3G, `tools/emit/irc_reference.py`'s (Angstrom) | |
 
 ## Tested
 
@@ -42,9 +44,10 @@ status, the closing `completed: 0 errors` line, the files in the table above,
 `memory.toml`'s pre-flight lines, and `hessian.json`'s keys. A config
 that stops parsing fails its entry on any machine, since `main` plans the
 config before it looks for a device; with no device the entry skips. The
-other ten are run by hand; `nevpt2_hessian.toml` and
+other eleven are run by hand; `nevpt2_hessian.toml` and
 `qd_nevpt2_hessian.toml` are also parsed by
-`test/pipeline/hessian_host.cpp`, and `constrained_optimize.toml` by
-`test/pipeline/config_host.cpp`. A config added here goes in the table
+`test/pipeline/hessian_host.cpp`, `constrained_optimize.toml` by
+`test/pipeline/config_host.cpp`, and `irc.toml` by
+`test/pipeline/irc_host.cpp`. A config added here goes in the table
 above, and in `test/examples/CMakeLists.txt` only if it is as cheap as
 those three.
