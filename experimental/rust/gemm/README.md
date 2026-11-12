@@ -22,23 +22,17 @@ free_breakfast's own pipeline, not wwr.
 | Link | `build.rs`, `capi_dir.rs` | Find the capi libraries in the CMake build directory; add the search path and an rpath |
 | Demo | `src/main.rs` | `gemm-demo [M [N [K [REPS]]]]`: C = A B^T, checked against a host loop (bar 1e-12 relative to max \|C\|), then timed |
 
-## Copies go through pinned memory and `dcopy`
+## Copies
 
-The C ABI does not wrap `wwrMemcpy` or `wwrMemcpyAsync` yet. Their
-`wwrMemcpyKind` argument is a by-value enum that wwr's generator has not
-registered, and it logs both functions as skipped (`src/capi/README.md`
-"Surface completeness", bucket C). BLAS `SetVector` / `GetVector` are not in
-its BLAS surface either.
+`copy_from` and `copy_to` are each one `wwr_memcpy_async` on the stream,
+straight from or to the caller's slice, which is ordinary pageable memory. The
+copy is waited for before the call returns, so the slice's borrow can end
+there. A caller that wanted copies to overlap compute would need pinned host
+buffers of its own. Nothing here needs that.
 
-So `copy_from` and `copy_to` stage through pinned host memory instead
-(`wwr_host_alloc`, and `wwr_host_get_device_pointer` for the device's view of
-it). A `wwr_blas_dcopy_64` on the stream moves the data between that view and
-the device buffer, and the copy is then waited for. That is a kernel reading or
-writing host memory over PCIe rather than a DMA copy. For the demo's sizes it
-does not matter.
-
-Once WarpWraps registers `wwrMemcpyKind`, the two copies become
-`wwr_memcpy_async` calls and `Pinned` goes away.
+Until WarpWraps #375 (2026-11-11) the C ABI did not wrap `wwrMemcpyAsync`,
+because its `wwrMemcpyKind` argument was an unregistered by-value enum. For one
+day these copies staged through pinned memory with a BLAS `dcopy`.
 
 ## Build and run
 
@@ -66,13 +60,14 @@ Nothing in ctest or either gate runs cargo. This directory is checked by hand on
 
 ## Measured (RTX 3080, CUDA)
 
-| M = N = K | max rel. error vs host | GPU, C shim (2026-11-10) | GPU, wwr-sys (2026-11-11) |
+| M = N = K | max rel. error vs host | GPU, C shim (2026-11-10) | GPU, wwr-sys (2026-11-12) |
 |---|---|---|---|
-| 512 | 6.3e-16 | 0.72 ms, 371 GFLOP/s | 0.82 ms, 327 GFLOP/s |
-| 2048 | 7.8e-16 | 82 ms, 210 GFLOP/s | 44 ms, 388 GFLOP/s |
+| 512 | 6.3e-16 | 0.72 ms, 371 GFLOP/s | 0.72 ms, 372 GFLOP/s |
+| 2048 | 7.8e-16 | 82 ms, 210 GFLOP/s | 41 ms, 418 GFLOP/s |
 
 The errors are identical, digit for digit, across the two paths. Each GPU figure
-is the mean over 20 calls, timed host-side between two syncs. Both runs were on a
-card that other worktrees share: it read 100% busy during the 2026-11-11 run.
-So the two GPU columns do not compare with each other. They show that neither
-call path adds visible overhead, and they are not a benchmark.
+is the mean over 20 calls, timed host-side between two syncs. The timed loop is
+gemm alone, so how the copies are made does not enter it. Both runs were on a
+card that other worktrees share, so the two GPU columns do not compare with each
+other. They show that neither call path adds visible overhead, and they are not
+a benchmark.

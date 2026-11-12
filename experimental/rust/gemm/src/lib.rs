@@ -12,11 +12,9 @@
 //!   [`gemm`] is `C = alpha op(A) op(B) + beta C` over three of them, shapes
 //!   checked before anything reaches the device.
 //!
-//! Host <-> device copies go through pinned host memory and a BLAS `dcopy`
-//! on the stream, not `wwrMemcpyAsync`: the C ABI does not wrap that yet
-//! (its `wwrMemcpyKind` argument is a by-value enum wwr's generator has not
-//! registered; src/capi/README.md "Surface completeness"). Every failure is
-//! an [`Error`] naming the call that failed; nothing aborts.
+//! Host <-> device copies are `wwr_memcpy_async` on the stream, from and to
+//! the caller's own (pageable) slice, each waited for before it returns.
+//! Every failure is an [`Error`] naming the call that failed; nothing aborts.
 
 use std::ffi::c_void;
 use std::fmt;
@@ -24,8 +22,8 @@ use std::marker::PhantomData;
 use std::ptr;
 
 use wwr_sys::{
-    wwr_blas_handle, wwr_blas_operation, wwr_blas_pointer_mode, wwr_blas_status, wwr_status,
-    wwr_stream,
+    wwr_blas_handle, wwr_blas_operation, wwr_blas_pointer_mode, wwr_blas_status, wwr_memcpy_kind,
+    wwr_status, wwr_stream,
 };
 
 /// Why a call failed.
@@ -167,14 +165,26 @@ impl Gpu {
         Ok(buf)
     }
 
-    /// `y[..n] = x[..n]` on the stream, either side device memory or a
-    /// pinned buffer's device view.
-    fn dcopy(&self, n: usize, x: *const f64, y: *mut f64) -> Result<()> {
-        let n = i64::try_from(n).map_err(|_| Error::InvalidArgument)?;
-        // SAFETY: the caller passes n valid doubles on each side.
-        blas("wwr_blas_dcopy_64", unsafe {
-            wwr_sys::wwr_blas_dcopy_64(self.handle, n, x, 1, y, 1)
-        })
+    /// Copy `n` doubles from `src` to `dst` on the stream, and wait for it.
+    fn copy_and_wait(
+        &self,
+        dst: *mut f64,
+        src: *const f64,
+        n: usize,
+        kind: wwr_memcpy_kind,
+    ) -> Result<()> {
+        // SAFETY: the caller passes n valid doubles on each side, on the
+        // sides `kind` names.
+        rt("wwr_memcpy_async", unsafe {
+            wwr_sys::wwr_memcpy_async(
+                dst.cast(),
+                src.cast(),
+                n * size_of::<f64>(),
+                kind,
+                self.stream,
+            )
+        })?;
+        self.sync()
     }
 }
 
@@ -186,50 +196,6 @@ impl Drop for Gpu {
             wwr_sys::wwr_stream_synchronize(self.stream);
             wwr_sys::wwr_blas_destroy(self.handle);
             wwr_sys::wwr_stream_destroy(self.stream);
-        }
-    }
-}
-
-/// `len` doubles of pinned host memory, and the device's view of them: the
-/// staging area of one host <-> device copy.
-struct Pinned {
-    host: *mut f64,
-    device: *mut f64,
-}
-
-impl Pinned {
-    fn new(len: usize) -> Result<Self> {
-        let bytes = len
-            .checked_mul(size_of::<f64>())
-            .ok_or(Error::InvalidArgument)?;
-        let mut host: *mut c_void = ptr::null_mut();
-        // SAFETY: valid out-pointers; flags 0 is the default on both
-        // backends, and the allocation is freed on drop once it exists.
-        unsafe {
-            rt(
-                "wwr_host_alloc",
-                wwr_sys::wwr_host_alloc(&mut host, bytes, 0),
-            )?;
-            let mut pinned = Pinned {
-                host: host.cast(),
-                device: ptr::null_mut(),
-            };
-            let mut device: *mut c_void = ptr::null_mut();
-            rt(
-                "wwr_host_get_device_pointer",
-                wwr_sys::wwr_host_get_device_pointer(&mut device, host, 0),
-            )?;
-            pinned.device = device.cast();
-            Ok(pinned)
-        }
-    }
-}
-
-impl Drop for Pinned {
-    fn drop(&mut self) {
-        // SAFETY: allocated by wwr_host_alloc; any copy using it was waited for.
-        unsafe {
-            wwr_sys::wwr_free_host(self.host.cast());
         }
     }
 }
@@ -270,12 +236,12 @@ impl DeviceBuffer<'_> {
         if host.is_empty() {
             return Ok(());
         }
-        let staging = Pinned::new(host.len())?;
-        // SAFETY: the staging area holds host.len() doubles and is not yet in
-        // use on the device.
-        unsafe { ptr::copy_nonoverlapping(host.as_ptr(), staging.host, host.len()) };
-        self.gpu.dcopy(host.len(), staging.device, self.ptr)?;
-        self.gpu.sync()
+        self.gpu.copy_and_wait(
+            self.ptr,
+            host.as_ptr(),
+            host.len(),
+            wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
+        )
     }
 
     /// Copy the buffer's first `host.len()` doubles into `host`, and wait.
@@ -286,12 +252,12 @@ impl DeviceBuffer<'_> {
         if host.is_empty() {
             return Ok(());
         }
-        let staging = Pinned::new(host.len())?;
-        self.gpu.dcopy(host.len(), self.ptr, staging.device)?;
-        self.gpu.sync()?;
-        // SAFETY: the copy into the staging area has finished.
-        unsafe { ptr::copy_nonoverlapping(staging.host, host.as_mut_ptr(), host.len()) };
-        Ok(())
+        self.gpu.copy_and_wait(
+            host.as_mut_ptr(),
+            self.ptr,
+            host.len(),
+            wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
+        )
     }
 
     /// The whole buffer, on the host.
