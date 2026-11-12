@@ -63,7 +63,7 @@ optimisation of the Cope before claiming that part is new.
 | [`step_4/`](step_4/README.md) 4b | PT2-level C2h stationary point, analytic Hessian, mode-displaced minimisations (the IRC check); the CASSCF contrast | free-breakfast | done: PC-NEVPT2 has one C2h stationary point, R = 1.922 Å, one imaginary frequency (475i cm⁻¹, a_u); ± along it reaches both mirror-image 1,5-hexadiene minima; barrier 31.2 kcal/mol. CASSCF: diyl minimum at 1.642 Å, a_u saddle at 2.284 Å. The CASSCF 2.30 Å walk left C2h (negative a_u curvature amplifying round-off) |
 | step 4c | PC-NEVPT2 gradient against BAGEL or ORCA at step 4b's TS | BAGEL / ORCA | not started |
 | step 5 | CCSD(T) at the PT2 TS; cc-pVTZ single points on the barrier | PySCF | not started |
-| step 6 | comparison to experiment: ΔH‡, boat vs chair, secondary KIEs | free-breakfast frequencies | not started |
+| [`step_6/`](step_6/README.md) | comparison to experiment: the end points' Hessians, the reference conformer, ΔH‡/ΔS‡/ΔG‡, boat vs chair; and two checks of the TS (energy-only curvature, PC walks from the CASSCF C2h points). Secondary KIEs dropped | free-breakfast | done: end points minima (numerical Hessians; the analytic one refuses them, #1268); reference the ensemble of ten conformers, lowest 0.25 kcal/mol below step 4b's; chair ΔH‡ 29.3 kcal/mol, ΔS‡ −15.1 eu at 505 K against 33.5 and −13.8; boat C2v TS (one B1 imaginary mode) ΔΔH‡ 10.2 against 11.2 ± 2.0; one C2h stationary point at PC-NEVPT2 |
 
 ## Step 4 with free-breakfast
 
