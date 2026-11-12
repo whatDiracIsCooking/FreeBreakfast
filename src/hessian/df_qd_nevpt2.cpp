@@ -567,7 +567,10 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
   out.max_kappa_oo = tangents.max_kappa_oo;
   // PC's degenerate pair the displacement splits (SC's the tangents refuse):
   // kappa_oo^x_pq is not a division the state determines, and the canonical
-  // orbitals PC reads are not differentiable there (df_pc_nevpt2's refusal).
+  // orbitals PC reads are not differentiable there. The energy is smooth
+  // (PC is invariant to the pair's rotation), and df_pc_nevpt2 takes the
+  // pair's off-diagonal f (#1268); carrying that to every H_eff element and
+  // term (ii) is #1277, so QD still refuses.
   if (!tangents.recorded.empty()) {
     std::string named;
     for (const DegeneratePair &d : tangents.recorded) {

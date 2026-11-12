@@ -1008,8 +1008,11 @@ displacement that does not split it). Past that the division is not one the
 state determines: **SC refuses**, Numerical, naming the pair, the gap,
 f^(x)_pq and the coordinate (SC is not invariant to the rotation, and κ_oo
 enters the Hessian quadratically, `docs/nevpt2/nevpt2.tex` eq. koo); **PC records**
-it as a `DegeneratePair` (coordinate, p > q, gap, f), κ_oo^x_pq left 0, for
-#817 to measure, and goes on.
+every pair below the floor along every coordinate as a `DegeneratePair`
+(coordinate, p > q, gap, f, and the change of the pair's split
+(f^(x)_pp − f^(x)_qq) / 2), κ_oo^x_pq left 0, and goes on: PC is invariant
+to the rotation, and `df_pc_nevpt2` takes the pair's off-diagonal f itself
+(#1268, "A degenerate inactive pair").
 
 **All-electron.** The call takes no frozen core: the NEVPT2 it feeds
 correlates the whole core (milestone 24's update refuses `frozen_core ≠ 0`
@@ -1064,8 +1067,9 @@ and virtuals, ‖g‖ < 1e-10):
   the ladder's largest element of each, the chunks two coordinates each.
 - `DegeneratePairRule`: a C3v ammonia in 6-31G, its full valence CAS(8,7),
   whose virtual e pairs (orbitals 9, 10 and 11, 12) sit 8e-14 apart: SC is
-  Numerical, naming a pair and a coordinate; PC returns the records, each a
-  pair below the floor with |f^(x)| above 1e-8, in coordinate order. (The
+  Numerical, naming a pair and a coordinate; PC returns the records, every
+  pair below the floor along every coordinate, in coordinate order, some
+  with |f^(x)| above 1e-8. (The
   `h2co_neardeg_sto3g` fixture's virtual pair is 6.0e-3 Eh apart, far above
   the rule's 1e-6, so it is not this case; a CAS(2,2) over ammonia's two a1
   orbitals breaks the symmetry in the CASSCF itself.)
@@ -2099,8 +2103,9 @@ parametrization and coordinates:
 ```cpp
 auto h = hessian::df_pc_nevpt2(res, molecule, basis, classes, aux, h_core, b, l, solution, ncore,
                                ncas, batch, coordinates, pc_floor);
-// h->hessian and its parts as df_sc_nevpt2's; h->kept (per class), h->lift_steps
-// (per coordinate and class, t* in bohr); h->e_corr, h->max_zc, h->min_gap,
+// h->hessian and its parts as df_sc_nevpt2's, and h->degenerate (the degenerate
+// pairs' part); h->kept (per class), h->lift_steps (per coordinate and class, t* in
+// bohr); h->degenerate_pairs, h->rotation_shift; h->e_corr, h->max_zc, h->min_gap,
 // h->zvector_residual
 ```
 
@@ -2115,6 +2120,8 @@ What changes is PC's own code at three steps, and nothing else:
   and no pair is taken again.
 - `pc_floor`, `EnergyInputs::pc_floor`, goes to the adjoint and the product
   alike, so every part differentiates the same energy.
+- **Step 4b**, a degenerate inactive pair's own terms (#1268, "A
+  degenerate inactive pair" below).
 
 ### The refusals
 
@@ -2134,23 +2141,18 @@ the PC surface:
   every one named with its t*. This is a stated convention: closer than
   that, the PC surface switches branch inside a vibrational or
   finite-difference step.
-- **A degenerate inactive pair** that a coordinate splits:
-  `df_nevpt2_tangents`' `DegeneratePair` records (gap below 1e-6 Eh,
-  |f^(x)_pq| above 1e-8), each named. κ_oo^x_pq is not a division the state
-  determines there. PC is invariant to the rotation only at exact
-  degeneracy, and the displacement lifts that. So the canonical orbitals PC
-  reads are not differentiable along the coordinate. The check is
-  conservative: it refuses on any Cartesian record, even when the caller's
-  coordinates combine them so that f vanishes.
-
 Its other refusals are `df_sc_nevpt2`'s, plus the energy's own refusals of
-a class (no positive metric eigenvalue, or a pole), passed on.
+a class (no positive metric eigenvalue, or a pole), passed on. A
+degenerate inactive pair is not refused (#1268, "A degenerate inactive
+pair" below). A cluster of three or more inactive orbitals within 1e-6 Eh
+of each other is Unsupported: a limit of the implementation, not of the
+surface, which is smooth there too.
 
 **Each refusal is reached by a real input (#943).** None of #803's four
 fixtures reaches the kept or the lift check: their smallest kept is 2.3e-6
 and their smallest t* is 6.5 bohr (below). t* is a lift of round-off null
 modes there, so it varies by run and by card, but it stays three or more
-orders above the bar. Three small inputs reach the three checks, at the
+orders above the bar. Two small inputs reach the two checks, at the
 default cut (gfx1200, `--preset hip`):
 
 - **kept**: a C2v formaldehyde in STO-3G with CAS(6,6) over orbitals 5 to
@@ -2172,10 +2174,6 @@ default cut (gfx1200, `--preset hip`):
   symmetry's, not round-off's, so t* repeats to the digits printed. At a
   `pc_floor` of 1e-10 the same t* are about 5e-3 to 1e-2, and nothing is
   refused.
-- **the degenerate pair**: the C3v ammonia below. PC's tangents record its
-  e pairs (gaps 1e-13, f^(x) 5e-2 to 7e-2) where SC's refuse, so the
-  branch is reached and is not shadowed by `df_nevpt2_tangents`' own
-  refusal.
 
 ### κ_oo at a near-degenerate pair
 
@@ -2199,9 +2197,120 @@ energies through a 5.6e-5 Eh gap. So at this gap the 1/gap terms cancel
 to the energy's own scale, and **the near-degenerate pair is not
 refused**. The cancellation costs digits: about nine of the parts' sixteen
 go into it. A pair much closer than this one would lose the rest before it
-reaches the 1e-6 Eh rule. That is untested, because no fixture has such a
-pair. The test asserts every element within 2× the bar. A pair below
-1e-6 Eh is the degenerate case above, and is refused.
+reaches the 1e-6 Eh rule. The test asserts every element within 2× the
+bar. A pair below 1e-6 Eh is not divided at all: the next section.
+
+### A degenerate inactive pair (#1268)
+
+Two core (or two virtual) orbitals under the degenerate-pair rule,
+|ε_p − ε_q| < 1e-6 Eh: an exactly degenerate pair of a degenerate irrep, or
+the 1s pair of two symmetry-equivalent atoms far apart (1,5-hexadiene's
+C1 and C6, 4.27 Å, 8e-7 Eh). Until #1268 the call refused every coordinate
+that split one, saying the canonical orbitals are not differentiable there.
+They are not, but **the PC energy is smooth there**, and the call now takes
+the pair.
+
+**Why it is smooth.** PC's zeroth-order Hamiltonian reads the core and the
+virtuals through f's two inactive blocks, and each class's perturber space
+is the span of its contracted functions over every inactive index, so the
+energy is a function of those blocks as matrices: written with the whole
+blocks, Σ_ij f_ij E_ij in H₀, each class energy is b_tᵀ (K + Δ S)⁺ b_t with
+Δ an operator over the class's inactive indices, a resolvent smooth in f
+where no denominator reaches zero. Call it Ẽ. It is invariant under any
+rotation within the core or within the virtuals, at any gap, and the
+canonical evaluation is Ẽ where the blocks are diagonal. The metric S and
+its cut read the active RDMs alone, so the cut does not see the rotation
+either. What the code evaluates, the functional N of `../nevpt2/gradient/`
+("The functional"), reads f's diagonal alone: it is Ẽ on canonical
+orbitals and not off them, and along κ_pq it moves by κ (ε_p − ε_q) K_pq
+(the gradient's "Why the division"). So E(R) = Ẽ(R) is smooth where two
+orbital energies meet or cross, and what is not smooth there is only the
+canonical orbitals that carry it. The evidence:
+
+- `Nevpt2PcEnergyAdjoint.InactiveRotationsAreRoundOff`: at equal orbital
+  energies PC's derivative along every inactive rotation is 4.6e-18 of its
+  terms (SC's, the control, 5.5e-7).
+- The numerical ladders below settle through the pairs: hexatriene's
+  terminal 1s pair splits from 4.7e-7 to 5.7e-5 Eh over the stencil's
+  2e-3 bohr, and #1268's hexadiene ladder (404 displaced gradients, the
+  pair at 7.9e-7) settled with every ratio below its floor.
+- `rotation_shift`, E_corr in each turned basis below against the
+  canonical one: at most 1.8e-15 Eh over the three cases below, round-off
+  of an E_corr of 0.05 to 0.26 Eh.
+
+SC is not invariant (its denominators are per orbital, Park 2019), and
+there a degenerate pair is a kink: `df_nevpt2_tangents` refuses SC's.
+
+**Where 1/gap enters.** The canonical path rotates the pair by
+κ_oo^x_pq = −f^(x)_pq / (ε_p − ε_q). The parts hold κ_oo at second order,
+so the HVP's κ_oo–κ_oo block and the κκ rotation term grow as 1/gap² and
+must cancel in the sum: nine of sixteen digits at 6.0e-3 Eh (above). At
+hexadiene's 8e-7 Eh with |f^(x)| to 3e-2, κ_oo is 4e4 and the parts would
+be some 1e15 bars, past every digit; at an exact pair κ_oo is 0/0. The
+gradient never meets this: its z^c divides A_pq, which is O(gap) itself.
+
+**The pair's own terms.** Below the rule the tangents leave the pair
+unrotated, κ_oo^x_pq = 0. Along that path the pair's δ_P = f_pq moves at
+first order, φ^P_x = f^(x)_pq, and N does not read it. Ẽ is smooth in δ at
+fixed everything else, with a radius set by the classes' denominators, not
+by the gap:
+
+    E = N + Σ_P Ẽ_δP δ_P + ½ Σ_PP' Ẽ_δPδP' δ_P δ_P' + O(δ³).
+
+The gradient's Lagrangian carries ⟨z^c, f⟩ ∋ 2 z_pq δ_P, and 2 z_pq = Ẽ_δP
+(zero by symmetry at a symmetric pair, and otherwise the gradient's own
+resolution, e_A / 2 gap). The parts of the sections above are the second
+derivative of that Lagrangian along the unrotated path, so the Hessian adds
+
+    H_ij += Σ_P (φ^P_i K^P_j + φ^P_j K^P_i) + Σ_PP' M_PP' φ^P_i φ^P'_j,
+
+K^P_j the change of Ẽ_δP along t_j at fixed δ, M_PP' = Ẽ_δPδP'. Nothing
+divides by the gap.
+
+**Reading them.** N reads f's diagonal, so a basis turned within the pair
+reads δ. With C' = C U, U turning (p, q) by θ (p' = cos θ p + sin θ q), the
+pair's split d = (f_pp − f_qq) / 2 becomes d' = d cos 2θ + δ sin 2θ. Each
+reading is one `pc_hessian_product` at C', z = 0, along the h direction
++1 at p'p', −1 at q'q' (a unit step in d'):
+
+- θ = π/4, d' = δ: its split is M_PP; paired with each t_j turned back
+  (U · Uᵀ on h̄ and on each Λ_Q), it is G^P_j = K^P_j − M^dP d^P_j +
+  M_PP φ^P_j, since that basis reads δ_P but not d_P (now off-diagonal);
+  d^P_j is the pair's own split's change, recorded with φ.
+- θ = π/8, d' = (d + δ)/√2, and θ = 0, d' = d: their splits give
+  M^dP = Ẽ_δP dP, the one cross term the π/4 basis does not read.
+- Two or more pairs: every pair turned by π/4 at once, M_PP'.
+
+Three products per pair, and one more per pair when there are two or more,
+each at z = 0 (Φ is the Lagrangian's, already in the parts). Exact at a
+degenerate pair. Off one, the turned basis leaves f'_p'q' = (ε_p − ε_q)/2
+unread, an O(gap) error relative to the classes' denominators.
+`degenerate` is the part, `degenerate_pairs` the pairs.
+
+**What is not taken.** A cluster, an orbital under 1e-6 Eh from two others
+(a t2 triple; three equivalent distant atoms), is Unsupported, naming two of
+its pairs. It is as smooth as a pair, but no one turned basis makes an
+m × m off-diagonal block a diagonal split, and a polarization over every
+pair of its directions is O(m⁴) products. Not done.
+
+Measured on the gfx1200 (`--preset hip`), against this tree's numerical
+`[hessian]` ladder of PC's analytic gradient at the step's `pc_floor`
+(`test/gtest/data/pc_nevpt2_degenerate/`):
+
+| case | pairs (gap, Eh) | coordinates | bar (the ladder's floor) | worst element | the pairs' part | the call |
+|---|---|---|---|---|---|---|
+| `nh3_c3v_631g`, C3v ammonia 6-31G CAS(8,7) | virtual e (10, 9), (12, 11) (3e-14) | 12 Cartesian | 4.2e-7 | 0.043 bars | 712 bars | 18.6 s |
+| `nh3_near_631g`, H1 2e-6 bohr off C3v | the same (7.4e-8), no symmetry | 12 | 3.2e-7 | 0.058 | 948 | 18.5 s |
+| `hexatriene_sto3g`, C2h, STO-3G CAS(6,6) | C1/C6 1s (5, 4) (4.6e-7); (1, 0) at 3.7e-6 divided | 42 | 1.2e-7 | 0.330 | 2.1 | 110 s |
+
+Every ladder settled (no ratio unsettled, every element at its floor).
+Asymmetry ≤ 1.0e-10, the sum rule ≤ 3.5e-9. The ammonia's pairs' part is
+700 to 950 bars, so without it the Hessian misses by that much. On
+hexatriene the 1s pair's part is two bars: the core pair's off-diagonal
+f is far from the active space, so the energy barely reads it. The case
+is there for #1268's shape (a pair of distant equivalent atoms, the next
+pair just above the rule and divided), not for the size of the part.
+Before #1268 all three were refused, every coordinate that split a pair.
 
 ### Tests
 
@@ -2228,9 +2337,16 @@ pair. The test asserts every element within 2× the bar. A pair below
   symmetry-adapted coordinates, where SC is refused: PC is not, and its B2
   element is within 2× the floor (2.1e-7) of the numerical ladder's
   1.2850090413.
-- `DegenerateInactivePairIsRefused`: the C3v ammonia of the SC suite is
-  Numerical, naming `hessian::df_pc_nevpt2` and each pair with its
-  coordinate, its orbitals and its gap.
+- `ExactlyDegeneratePairsMatchTheLadder`, `NearDegeneratePairsMatchTheLadder`
+  and `DistantEquivalentAtomsMatchTheLadder` (#1268, slow tier): the three
+  cases of "A degenerate inactive pair", Cartesian, at the step's
+  `pc_floor`, against `test/gtest/data/pc_nevpt2_degenerate/`'s ladders
+  (`tools/nevpt2_hessian/degenerate_pair_ladder.py`). Every element within
+  2× the ladder's bar, the pairs' part above 10 bars (ammonia) or 1 bar
+  (hexatriene), the asymmetry ≤ 1e-9 and the sum rule ≤ 1e-8.
+- `DegenerateClusterIsUnsupported` (#1268): a Td methane in 6-31G,
+  CAS(8,8) over its valence, whose virtual t2 triple is a cluster:
+  Unsupported, naming `hessian::df_pc_nevpt2`, an orbital and two pairs.
 - `ThinKeptClassIsRefused` (#943): the C2v formaldehyde above is
   Numerical, naming Sr with its kept below 1e-10 and the `pc_floor` that
   cuts it.

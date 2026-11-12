@@ -1159,8 +1159,9 @@ under $\kappa_{oo}$ and do not respond to it at a stationary point.
   $f^{(A)}$ the total first-order change of $f$ at fixed $\kappa_{oo}$.
   Below $|\eps_p - \eps_q| = 10^{-6}$, $\kappa^A_{pq} = 0$ while
   $|f^{(A)}_{pq}| \le 10^{-8}$ (a split the displacement does not lift);
-  past that SC refuses, naming the pair and the coordinate, and PC records a
-  degenerate pair, which its Hessian refuses (\S\ref{sec:hess-refusals}).
+  past that SC refuses, naming the pair and the coordinate. PC records every
+  such pair with $\kappa^A_{pq} = 0$, and its Hessian takes the pair's
+  off-diagonal $f$ instead (\S\ref{sec:hess-refusals}, \#1268).
 \end{enumerate}
 Eq.~\eqref{eq:koo} is $z^c$'s division again, now in a response that
 enters Eq.~\eqref{eq:hess} quadratically. PC does not escape it: this tree's
@@ -1388,11 +1389,28 @@ and nothing is refused.
 \paragraph{PC: thin kept spectra and degenerate pairs.} A class whose
 \code{kept} is below $10^{-10}$ of its $\sigma_{\max}$ is refused, naming
 the floor that would cut it (\#917; \#943 reaches it at a C$_{2v}$
-formaldehyde CAS(6,6)). A degenerate inactive pair that a coordinate splits
-(gap below $10^{-6}\,E_h$, $|f^{(x)}_{pq}| > 10^{-8}$) is refused, since
-$\kappa^x_{oo}$ is not a division the state determines there. The check is
-conservative: any Cartesian record refuses, even if the caller's coordinates
-combine them so that $f$ vanishes.
+formaldehyde CAS(6,6)). A degenerate inactive pair (gap below
+$10^{-6}\,E_h$) is not refused (\#1268). $\kappa^x_{oo}$ is not a division the
+state determines there, but PC is invariant to the pair's rotation: written
+with $f$'s whole inactive blocks its energy $\tilde E$ is a resolvent in
+them, smooth where two orbital energies meet, and the canonical evaluation
+is $\tilde E$ where the blocks are diagonal. So the pair is left unrotated,
+and the energy is the diagonal-only functional plus the Taylor terms of
+$\tilde E$ in the pair's off-diagonal $\delta = f_{pq}$,
+\begin{equation}
+  H_{ij} \mathrel{+}= \sum_P \bigl(\phi^P_i K^P_j + \phi^P_j K^P_i\bigr)
+    + \sum_{PP'} M_{PP'}\,\phi^P_i \phi^{P'}_j,
+\end{equation}
+$\phi^P_i = f^{(i)}_{pq}$, $K^P_j$ the change of $\partial\tilde E/\partial\delta_P$
+along $t_j$ at fixed $\delta$, $M = \partial^2\tilde E/\partial\delta\,\partial\delta$
+($2 z^c_{pq} = \partial\tilde E/\partial\delta_P$ is already in the
+Lagrangian). Each is read by the Hessian-vector product in a basis turned
+within the pair, where $\delta$ is a split of the diagonal: by $\pi/4$ it
+is $\delta$, by $\pi/8$ $(d + \delta)/\sqrt2$ with $d$ the pair's own split.
+No term divides by the gap; the turned basis is exact at a degenerate pair
+and $O(\mathrm{gap})$ off one (\code{src/hessian/README.md}, ``A
+degenerate inactive pair''). A cluster of three or more such orbitals is
+not taken (Unsupported).
 
 \paragraph{PC near a degenerate pair, measured.} \code{h2co\_neardeg\_sto3g}'s
 virtual pair is $6\times10^{-3}\,E_h$ apart, $\max|\kappa^x_{oo}| = 21.8$, and
@@ -2564,11 +2582,13 @@ totally symmetric one included, is accepted.
 at its symmetric geometry has them ($e$ and $t$ orbitals: NH$_3$,
 CH$_4$, benzene, any linear molecule's $\pi$). A coordinate that splits
 the pair leaves $\kappa^A_{oo}$ undetermined: the pseudocanonical
-orbitals of a degenerate block depend on the direction of the split. The
-tree's PC is invariant to that rotation only at exact degeneracy, and SC
-not in general. The single-state Hessians refuse this
-(\S\ref{sec:hess-refusals}: gap below $10^{-6}\,E_h$ with $|f^{(x)}_{pq}| >
-10^{-8}$), and \code{df\_qd\_nevpt2\_tangents} applies the same rule at
+orbitals of a degenerate block depend on the direction of the split. PC's
+energy is invariant to that rotation (its $f$ functional's is only at
+exact degeneracy), SC's not in general. The single-state SC Hessian
+refuses this (gap below $10^{-6}\,E_h$ with $|f^{(x)}_{pq}| > 10^{-8}$),
+the single-state PC one takes the pair's off-diagonal $f$
+(\S\ref{sec:hess-refusals}, \#1268), and the PC-QD one still refuses it
+(\#1277); \code{df\_qd\_nevpt2\_tangents} applies the same rule at
 $f^{\mathrm{SA}}$ (on C$_{3v}$ ammonia's SA-2 CAS(8,7) in 6-31G, SC refuses
 and PC records 22 pairs). A semi-numerical Hessian there is suspect for the
 same reason: the step picks the orbitals. That is \code{pipeline/hessian}'s
@@ -2591,7 +2611,7 @@ at a QD crossing & none (cone) & pair mean Eq.~\eqref{eq:qd-pair} and seam $2\ti
 symmetry-degenerate QD states & none (JT) or by Eq.~\eqref{eq:qd-lowdin} (RT) & refuse Eq.~\eqref{eq:qd-hess} \\
 near a reference-root crossing & exists, $1/\text{gap}^2$, an artefact & computable, not physical; refused at the root-gap floor and $|\theta| > 10$/bohr \\
 ensemble edge, active-space instability & degrades, then discontinuous & refuse; both routes fail \\
-degenerate inactive orbitals (non-abelian groups) & not determined & refuse, as the single-state Hessians do \\
+degenerate inactive orbitals (non-abelian groups) & exists for PC, not determined for SC & refuse (PC: \#1277; the single-state PC Hessian takes them, \#1268) \\
 higher roots, diffuse bases & exists & $1/d^3$ near-intruders; tractable only with the smallest $|d|$ reported \\
 PC, large active space & exists & on-shell residual amplified by $S^+$; tight CI convergence \\
 \bottomrule

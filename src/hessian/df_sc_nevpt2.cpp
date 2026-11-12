@@ -597,7 +597,7 @@ nevpt2_hessian_footprint(const BasisSet &basis, const BasisSet &aux, const int32
                          const int32_t k, const std::span<const size_t> syevd_lwork,
                          const MemoryFootprint &gradient,
                          const std::function<MemoryFootprint(int32_t, int32_t)> &product,
-                         const bool copies, const bool pairs) {
+                         const bool copies, const bool pairs, const bool degenerate) {
   const size_t nmo = basis.nao_sphe();
   const size_t naux = aux.nao_sphe();
   const size_t nn = nmo * nmo;
@@ -640,6 +640,15 @@ nevpt2_hessian_footprint(const BasisSet &basis, const BasisSet &aux, const int32
       l.run(product(2, 2));
     }
     l.give(2 * two);
+  }
+  if (degenerate) {
+    // PC's degenerate pairs (step 4b): z, the direction and U, the turned C,
+    // h_bar turned back; the zero B and c directions, the turn's work and
+    // Lambda turned back; the paired column; beside one product.
+    const size_t turned = kD * ((5 * nn) + (3 * naux * nn) + ndet + ks);
+    l.take(turned);
+    l.run(product(1, 0));
+    l.give(turned);
   }
   l.give(kD * ks * ks);
   // 5. z and x^x beside the Z terms, L_xlambda kept to the end; their

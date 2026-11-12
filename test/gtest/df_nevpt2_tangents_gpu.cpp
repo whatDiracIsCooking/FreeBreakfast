@@ -871,20 +871,26 @@ TEST(HessianNevpt2Tangents, DegeneratePairRule) {
   const auto pc = ref.tangents(*ref.solution, *ref.cp, true, count);
   ASSERT_TRUE(pc.has_value()) << pc.error().message;
   EXPECT_GE(calls, 1);
-  ASSERT_FALSE(pc->empty()) << "PC recorded nothing";
+  // Every pair below the floor along every coordinate (#1268: df_pc_nevpt2
+  // takes their off-diagonal f), some of them split past round-off.
+  ASSERT_EQ(pc->size(), degenerate.size() * 3 * ref.basis().natoms()) << "PC's records";
   std::int32_t last = -1;
+  std::size_t split = 0;
   for (const fb::hessian::DegeneratePair &d : *pc) {
     EXPECT_NE(std::ranges::find(degenerate, std::pair{d.p, d.q}), degenerate.end())
         << d.p << ", " << d.q;
     EXPECT_LT(std::abs(d.gap), kGapFloor);
-    EXPECT_GT(std::abs(d.f), kZeroSource);
     EXPECT_GE(d.coordinate, last);
     EXPECT_LT(d.coordinate, static_cast<std::int32_t>(3 * ref.basis().natoms()));
     last = d.coordinate;
-    std::cout << std::format("[ c3v      ] PC: coordinate {:2}, orbitals {} and {}, gap {:.1e}, "
-                             "f {:+.3e}\n",
-                             d.coordinate, d.p, d.q, d.gap, d.f);
+    if (std::abs(d.f) > kZeroSource) {
+      ++split;
+      std::cout << std::format("[ c3v      ] PC: coordinate {:2}, orbitals {} and {}, gap "
+                               "{:.1e}, f {:+.3e}, split {:+.3e}\n",
+                               d.coordinate, d.p, d.q, d.gap, d.f, d.split);
+    }
   }
+  EXPECT_GT(split, 0U) << "no coordinate splits a pair";
 }
 
 TEST(HessianNevpt2Tangents, Refusals) {
