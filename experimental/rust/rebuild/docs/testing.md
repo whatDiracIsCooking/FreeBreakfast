@@ -290,7 +290,7 @@ declared tolerance where one is not. That promise is a test here:
 ### Performance
 
 - **Time.** The orchestrator opens a stream scope around every task
-  ([`design.md`](design.md), "Timing and profiling"), so each task's device
+  ([`diagnostics.md`](diagnostics.md), "Timing and profiling"), so each task's device
   time is recorded per run with no code in the task. The nightly, built in
   release, writes them to the metrics branch keyed by host, card, task and
   dimensions. A task is flagged when it passes a fixed fraction over its

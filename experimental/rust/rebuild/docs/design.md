@@ -33,110 +33,18 @@ the sanitizers run on a schedule from the start.
 
 ## Diagnostics
 
-### Timing and profiling: scoped guards
-
-Timing uses RAII guards. A guard starts its clock when it is created and records
-when it drops, so an early return or a `?` still closes the scope. There are two
-clocks, because the host and the device disagree about when work happened:
-
-- **Host scope.** Wall time between creation and drop. For GPU work this
-  measures enqueueing, not execution, unless the scope ends in a sync.
-- **Stream scope.** An event pair recorded on a stream, resolved later, when
-  some sync happens anyway. It measures device time without adding a sync of
-  its own.
-
-Profiler ranges are a compile-time option. A cargo feature (`tx`) turns on a
-range guard over wwr's `wwrtx` layer (NVTX under CUDA, rocTX under HIP), the Rust
-counterpart of `wwr::extension::ScopedRange`. With the feature off, the guard is
-a zero-sized no-op and compiles away.
-
-One macro opens a scope that times and, when `tx` is on, also pushes a range:
-
-```rust
-let _scope = scope!("j build");   // bound to a name: lives to the end of the block
-```
-
-The macro exists for two reasons:
-
-- **The binding pitfall.** `let _ = Guard::new()` drops the guard at once and
-  times nothing. The macro always binds the guard to a name.
-- **Thread safety.** NVTX and rocTX ranges are per-thread, so the guard is
-  `!Send`. A range opened on one thread then cannot be popped on another, and
-  that rule is enforced at compile time.
-
-The orchestrator opens a scope around every task on its own. The task-level
-timing that performance regression reads therefore needs no code in the task.
-Scopes inside a task are for finer detail.
-
-### Log levels
-
-`core::log` already provides the levels. The rule for each level:
-
-| Level | For | Examples |
-|---|---|---|
-| `trace` | Inner-loop detail, off by default | Per batch, per kernel launch |
-| `debug` | Orchestration, for whoever is debugging the run | A task starts or ends, its placement, its layout's share of the arena, sync points |
-| `info` | What someone running a calculation wants to see | A step starts, SCF iterations and energies, final results |
-| `warn` | A result is produced, but someone should look at it | Near-linear dependence, slow convergence, an adaptive task planned at width 1. Every warning is counted. |
-| `error` | An error that reached the place that handles it | Logged once, there |
-| `critical` | The process is about to abort | `check_or_abort`, a broken contract in release |
-
-The rules that go with the table:
-
-- **Log an error once, where it is handled, not at every layer it passes
-  through.** Propagation is silent, and the error carries its origin with it.
-- **A log line from a task names the task and its worker**, so interleaved lines
-  from concurrent workers can be pulled apart.
-- **Formatting a message costs nothing when its level is off.** `log`'s macros
-  check the level before they format.
-
-### Error handling
-
-**Expected failures are values, never panics.** Every fallible path returns
-`Result<T>`, and `?` propagates it. A panic means a bug: a broken contract or an
-`unreachable!`. Panics are never caught for control flow.
-
-**GPU errors bubble up.** Every wwr call's status goes through `gpu_status`
-into an `Error`. The crate does this today, with the message built from the
-backend's code name and description. The design keeps the backend's code itself
-too, not just its text:
-
-- **The code's name is the vendor's own** (`cudaErrorMemoryAllocation`,
-  `hipErrorOutOfMemory`), so a message can be searched for in the vendor docs.
-- **The numeric code and the backend are kept**, so a caller can branch on them.
-- **Codes are mapped to `ErrorKind`.** Out-of-memory from either vendor becomes
-  `Allocation`, not `GpuRuntime`. That distinction matters to the orchestrator,
-  which can respond to `Allocation` by retrying with a smaller batch, but cannot
-  do anything useful with a failed launch.
-- **Exit codes are the C++ ones**, which `ErrorKind::exit_code` already pins.
-
-**Context accrues at task boundaries.** `Error::origin` stays the detection
-site. When an error crosses a task's boundary, the orchestrator attaches the
-task's name and worker. The reader then gets both the line where it happened
-and the task in the DAG that was running.
-
-**Asynchronous errors surface at sync points.** A fault in a kernel is reported
-at the next sync on its stream, not at the launch that caused it. Its origin is
-therefore the sync point. The orchestrator attributes it to the tasks that ran
-on that stream since the previous sync. That is where the DAG's sync points pay
-for themselves in diagnostics.
-
-**`Drop` cannot fail.** A failed destroy or free is logged at `error` and
-counted. This is the one place an error does not bubble, the same as the C++
-`DestroyPolicy`.
-
-### Open questions
-
-- **Abort on create.** The C++ tree aborts on a failed create or allocation,
-  and the crate ports that `CreatePolicy`. Bubbling an out-of-memory error up to
-  the orchestrator so it can retry contradicts that. Do creates return `Result`
-  now, with abort left as the top level's choice?
-- **One worker fails.** Does the orchestrator cancel its siblings and return the
-  first error, or let them finish and return all the errors?
-- **`panic = "abort"` in release?** It makes a bug fail at once, as `critical`
-  does in C++. Unwinding gives a backtrace and runs `Drop` on the way out.
-- **`tx` through `wwr-sys`.** The C++ `wwr.tx` layer exists. Whether `wwr-sys`
-  exposes it as a feature still has to be checked.
+Diagnostics has its own document, [`diagnostics.md`](diagnostics.md). In
+short: timing is RAII scopes on two clocks, host and stream, with profiler
+ranges behind a cargo feature forwarded to `wwr-sys/tx`; the orchestrator
+times every task and every sync point itself, resolves the stream scopes at
+the sync points it owns, and writes a timing record beside the run's
+products. Logging keeps the C++ levels and line, and a line from a task names
+its task and worker from a record the orchestrator sets. Errors are values
+with the C++ kinds and exit codes; a GPU error keeps the vendor's code, a
+sticky fault stops launches on its device, context accrues at task
+boundaries, a failed run returns the first error in topological order, and
+`main` is the one place an error is logged. Release aborts on a panic through
+`critical!`, and test unwinds for the contract tests.
 
 ## C++/GPU layer
 
@@ -296,7 +204,8 @@ Two rules come with the bibliography:
   can emit Mermaid or DOT, so a feature's diagram is produced from the same
   structure the orchestrator runs, and cannot drift from it.
 - **Animations are generated from real runs**, never drawn by hand. Examples:
-  a task timeline built from the diagnostics' scope timings, SCF convergence,
+  a task timeline built from a run's timing record
+  ([`diagnostics.md`](diagnostics.md)), SCF convergence,
   an IRC path, and orbitals along a reaction coordinate. Scripts make them
   while the site builds, so binary media stays out of the repo.
 
