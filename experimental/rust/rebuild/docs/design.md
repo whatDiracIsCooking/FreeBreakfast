@@ -21,87 +21,15 @@ it out in, and *workers*, which are streams, GPUs or nodes.
 
 ## Testing
 
-Testing absorbs contracts. A contract is a check the code carries with it, and
-every test that reaches the code runs that check.
-
-### Contracts are part of the spec
-
-A function's, type's or module's contract is part of its spec. It is written
-with the [`contracts`](https://crates.io/crates/contracts) crate, as the crate
-already does: `#[debug_requires]`, `#[debug_ensures]`, `#[debug_invariant]`, and
-`#[contract_trait]` on a trait, so that every implementation is held to the
-trait's contract. The attributes keep the tedious checks (shapes agree, an index
-is in range, a matrix is square) out of the function body. The body then says
-what the function does, and the attributes say what it assumes and promises.
-
-The rules already in the crate carry over:
-
-- **Contracts are debug-only.** A release build pays nothing for them.
-  `cargo test --release` skips the tests that exist only to trip a contract.
-- **An outcome a policy may report is not a contract.** If a GPU call can fail
-  and the error policy decides what happens, failure is an expected result, not
-  a broken promise. Making it a contract would turn it into a panic.
-
-A contract's reach is every caller, but its strength is only as good as the
-inputs those callers happen to pass. It complements a dedicated test; it does
-not replace one.
-
-### Tiers: where a check lives
-
-Push each check to the cheapest tier that can express it:
-
-| Tier | Catches | Examples |
-|---|---|---|
-| **1. Compile time** | Misuse that should not build | A view borrows its handle, so it cannot outlive it. A host buffer and a device buffer are different types. Dimensions are newtypes (`Nbf`, `Naux`), so they cannot be swapped. `Send`/`Sync` decide which data may cross between workers (the programming model's sharing question, enforced). `const` generics fix angular momentum. |
-| **2. Contract** | Preconditions and invariants the type system cannot express | Shapes agree, an index is in range, a task asks the arena only for a buffer its layout named |
-| **3. CPU only** | Logic that touches no device | The DAG planner, placement, memory admission, layouts and the arena's offsets, config parsing, error codes. Multi-worker orchestration runs with fake workers, as the fake `HandleKind` already does for handles. |
-| **4. Single GPU** | One task's numbers on one device | One J build against a reference. Several workers as streams on one card. |
-| **5. Multi GPU** | What only real separate devices show | Peer transfers, broadcast and reduce across cards, per-device placement |
-
-Each tier down costs more and runs less often. A check that can move up a tier
-should.
-
-Moving down a tier does not mean a host copy of every kernel. The tree is
-GPU-first. Tier 3 is for code that never needed a device in the first place,
-mainly the orchestrator, not for CPU twins of the GPU tasks.
-
-### Levels: how much of the DAG a test covers
-
-| Level | Covers | DAG terms |
-|---|---|---|
-| **Unit** | One function, type or task | One node |
-| **Integration** | Tasks wired together | A sub-DAG: the edges, the fork and the sync |
-| **End to end** | A whole calculation from its config | Traversing the whole DAG |
-
-A feature is tested in that order: its nodes first, then their wiring, then the
-whole run. The tiers and levels are independent axes. A unit test of the
-planner is tier 3. A unit test of the J kernel is tier 4.
-
-### Regression
-
-- **Correctness.** Results are compared against references (PySCF, using the
-  same approximation, such as density fitting over the same auxiliary set) at
-  fixed tolerances derived by analysis. Each comparison is one run, and the
-  tolerance is never loosened to make a test pass.
-- **Performance.** Each task's wall time is recorded per run and compared
-  against history. Memory needs no measurement: a run allocates nothing, so a
-  plan's arena is its peak, and the arena's size is recorded per plan instead.
-
-### Open questions
-
-- **Selecting GPU tiers in cargo.** How does a test declare that it needs tier
-  4 or tier 5? Options are a cargo feature, `#[ignore]` with a runner flag, or
-  a runtime skip with a reason, like `FBF_REQUIRE_GPU()`. A skip must be
-  visible, never a silent pass.
-- **Tier 5 on this box.** The two cards here run different backends, so no
-  single build sees two devices. Can several workers on one card stand in for
-  most of tier 5, with true multi-GPU tested only on a multi-GPU VM?
-- **Contracts in release.** Should any contract always be checked? A cheap
-  `requires` at an API boundary might be worth keeping in release. An `ensures`
-  that has to read back GPU output would force a sync, so it should stay
-  debug-only.
-- **The gates.** Nothing runs cargo today. When does the rebuild join
-  `test.py push` and `test.py pr`?
+Testing has its own document, [`testing.md`](testing.md). In short: testing
+absorbs contracts, a check the code carries with it. A check lives in the
+cheapest tier that can express it, from compile time down to multi-GPU, and
+covers one node, a sub-DAG or a whole run. A PR runs the device-free tiers in
+full and the GPU tier for the crates its diff affects, which is why the
+workspace graph is designed as the selection graph. Redundancy is measured by
+mutation testing, performance regression reads the orchestrator's task
+timings and each plan's arena, the planner is fuzzed as a pure function, and
+the sanitizers run on a schedule from the start.
 
 ## Diagnostics
 

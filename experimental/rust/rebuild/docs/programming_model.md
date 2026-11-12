@@ -250,7 +250,7 @@ under every placement. Where every reduce is ordered, that tolerance is zero
 and the result is bitwise. Where a reduce is unordered, its declared tolerance
 is the bar, and the test tier compares the one-worker result against a
 many-worker one at that bar
-([`design.md`](design.md), "Testing", tiers 4 and 5). Tolerances are fixed by
+([`testing.md`](testing.md), "Tiers", tiers 4 and 5). Tolerances are fixed by
 analysis and never loosened to make a comparison pass.
 
 ## Example: the Coulomb build under two placements
