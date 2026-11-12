@@ -124,6 +124,18 @@ Three rules go with the table:
   on one card. The HIP cover is the cross-backend compile check on every PR,
   and a HIP nightly when that card is up. Production numbers come from the
   CUDA run, since a bare HIP run has no stall watchdog.
+- **Format and lint are the commit hook's, as for C++ and Python.**
+  `rustfmt --check` and `clippy` with warnings denied run beside
+  clang-format, cmake-lint and ruff at commit and in CI's `lint` job.
+  rustfmt's defaults are the style; `docs/style.md` gains a Rust section the
+  first time a rule is needed that rustfmt does not hold.
+- **The cargo half of the gates starts with tiers 1 to 3, not with the first
+  tier-4 test.** Those tiers are seconds and need no card, so `test.py push`
+  and `test.py pr` run `cargo test` and `cargo doc` for a diff under the
+  crate, through the diff dispatch they already have for `.py` and C++.
+  Today `experimental/` is outside both gates, so until that lands the Rust
+  tree is checked by whoever runs `cargo test` by hand, and a PR says so
+  ([`design.md`](design.md), "Order of work").
 
 ## Running on a card: the process model
 
@@ -176,7 +188,10 @@ decision is written down here:
   crates' tier-4 tests" is then exactly the set to run. A module declaration
   lives in a `.rs`, so adding a file touches no build file. Adding a
   dependency touches one `Cargo.toml`. A `Cargo.lock` change affects
-  everything, which is honest.
+  everything, which is honest. The crate today is one package, `fb-rebuild`,
+  with `core::wwr`, `core::log` and the rest as modules of it; it becomes
+  that workspace, with `core` split as the next rule says, before the next
+  module lands ([`design.md`](design.md), "Order of work").
 - **No umbrella crate.** No prelude, no crate that re-exports the tree. `core`
   is split so that a crate which only logs does not depend on the handle
   types. An edge that exists for convenience costs every PR that touches its
@@ -342,11 +357,10 @@ tested at the cheapest tier that can see each of its promises:
   Rust's `TryFrom` are compared member by member, so neither side can add a
   code the other lacks. A value Rust does not know is an error, and that path
   has a test that sends one.
-- **Bindings do not drift.** If the bindings are committed (the design's open
-  question, which this document's needs favour, since then a reviewer sees a
-  changed signature in the diff), a tier-3 test regenerates them and fails
-  on a difference. If they are generated at build, there is nothing to drift,
-  and libclang becomes a test dependency instead.
+- **Bindings do not drift.** The bindings are committed
+  ([`gpu_layer.md`](gpu_layer.md), "Build"), so a reviewer sees a changed
+  signature in the diff, and a tier-3 test regenerates them and fails on a
+  difference.
 - **Each wrapper's workspace query is checked against its kernel.** A
   `*_workspace_bytes(dims)` that under-reports is an out-of-bounds write that
   compute-sanitizer finds weekly; a tier-4 test that hands a wrapper exactly
@@ -398,10 +412,6 @@ schedule. Here they are weekly from the start.
   `requires` at an API boundary might be worth keeping in release. An `ensures`
   that has to read back GPU output would force a sync, so it should stay
   debug-only.
-- **The gates.** Nothing runs cargo today. `test.py push` and `test.py pr`
-  gain a cargo half that runs tiers 1 to 3 and the affected crates' tier 4,
-  through the diff dispatch they already have for `.py` and C++. When it joins
-  is the open part: the first crate with a tier-4 test is the natural moment.
 - **Determinator's path rules.** The rules that map the C++ library's sources
   to the crate that wraps them are hand-written. Who regenerates them when a
   module is added, and does the graph test catch a stale one?

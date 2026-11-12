@@ -101,10 +101,10 @@ crate is, and the two paragraphs retire when the nightly covers the crate.
 
 ## The C header
 
-The design's C++/GPU layer makes a C header the single source for everything
-that crosses the boundary: the launch wrappers' signatures, their status enum
-and the shared types ([`design.md`](design.md), "C++/GPU layer"). It is the
-single source for their documentation too.
+The GPU layer makes a C header the single source for everything that crosses
+the boundary: the launch wrappers' signatures, their status enum and the
+shared types ([`gpu_layer.md`](gpu_layer.md), "From bridge to C ABI"). It is
+the single source for their documentation too.
 
 - **The header's comment is the wrapper's contract.** What a launch wrapper
   requires of its pointers and sizes, which stream it enqueues on, and which
@@ -188,9 +188,9 @@ their dozen citation formats into one over time, with no sweep.
 
 **A key is checked.** A tier-3 test reads every `[@key]` in the docs and every
 key in the bibliography, and fails on a citation with no entry or an entry
-with no citation, the way the C and Rust error-code lists are checked against
-each other ([`design.md`](design.md), "Error codes"). A reference that nothing
-cites is as stale as a comment that nothing matches.
+with no citation, the way the C and Rust launch-status lists are checked
+against each other ([`testing.md`](testing.md), "The C++ boundary"). A
+reference that nothing cites is as stale as a comment that nothing matches.
 
 ## Configuration: the reference is emitted from the type
 
@@ -231,8 +231,8 @@ mdBook renders that Markdown as a site, and is the choice because it changes
 nothing about the source:
 
 - **The source stays readable raw.** mdBook's input is CommonMark with a
-  `SUMMARY.md` table of contents. The four design documents are its first
-  chapters unchanged.
+  `SUMMARY.md` table of contents. The design documents under `docs/` are its
+  first chapters unchanged, `design.md` first.
 - **Equations are preprocessed.** `mdbook-katex` renders math before the
   Markdown pass, so a matrix survives. A derivation belongs here, not in a
   doc comment, for that reason.
@@ -253,12 +253,14 @@ them, never retyped from a terminal. A page whose numbers can be regenerated
 by a command names the command; one whose numbers cannot says so.
 
 **A section citation is checked.** These documents cite each other as a file
-and a quoted section name, seventeen times so far, and a renamed heading
-breaks the citation silently; one such reference moved when this document
-was split out. A tier-3 check reads every `` [`x.md`](x.md), "Section" `` and
-fails when `x.md` has no such heading. Links between pages and into the API
-get `mdbook-linkcheck` the same way, so a page that moves is a failed build,
-not a dead link.
+and a quoted section name, and a renamed heading breaks the citation
+silently: two such references pointed at sections of `design.md` that had
+moved to documents of their own, and were found by hand. A tier-3 check reads
+every `` [`x.md`](x.md), "Section" `` and fails when `x.md` has no such
+heading. It is the first tier-3 test to write
+([`design.md`](design.md), "Order of work"). Links between pages and into the
+API get `mdbook-linkcheck` the same way, so a page that moves is a failed
+build, not a dead link.
 
 **The two LaTeX documents stay LaTeX.** `nevpt2.tex` and `hessian.tex` are
 long derivations with TikZ figures and algorithm floats, and a conversion

@@ -7,7 +7,7 @@ shape, where the launch shape and the angular-momentum dispatch live, how
 scratch is sized, what a status means, and how the libraries are built and
 bound. It leans on the programming model's terms, *task*, *layout* and
 *arena* ([`programming_model.md`](programming_model.md)), and on the test
-tiers ([`testing.md`](testing.md), "Tiers").
+tiers ([`testing.md`](testing.md), "Tiers: where a check lives").
 
 ## The layer already exists
 
@@ -46,8 +46,10 @@ into device arrays, computes `rec_begin`, and then launches. Under this
 design all of that is Rust: the wrapper receives device pointers only, and
 the host preparation, the copies that fill them and the arena they come from
 belong to the task and the orchestrator. "Porting a module" therefore has a
-definition in files: its `.cppm` and `.cpp` go, its bridge header becomes a
-C header, and its `.cu` files are untouched but for the wrapper's linkage.
+definition in files: its bridge header becomes a C header, its `.cu` files
+are untouched but for the wrapper's linkage, and its `.cppm` and `.cpp` are
+rewritten as the Rust crate of the same name. The C++ module is not deleted
+then; the next paragraph but one says when it goes.
 
 **The wrapper lives in the `.cu`.** The layering diagram below shows the
 launch wrapper as its own layer, and that is its role, not its file. Every
@@ -63,6 +65,20 @@ calling it unchanged, and the launcher tests in `test/gtest` keep compiling
 against the same symbols. The order of the port is therefore free: one
 bridge at a time, each PR leaving both the C++ tree and the Rust tree
 building and tested. Nothing is cut over all at once.
+
+**The two trees coexist until the pipeline is Rust.** Converting a bridge
+keeps the C++ module above it building, but deleting that module would not:
+the C++ `pipeline` step imports it, and the C++ pipeline is the tree's one
+working calculation until the Rust one runs end to end. So a ported module's
+`.cppm` and `.cpp` stay, C++ and Rust both call the one C header and the one
+shared object, and each is tested by its own suite. Nothing crosses from Rust
+back into C++: the Rust tree stands alone, as its README says, and a C ABI
+over the Rust modules for the C++ pipeline to call would be a second boundary
+to keep, for a pipeline the port replaces. The C++ modules go together, at
+the cut-over, when the Rust pipeline runs every config under `examples/` that
+the C++ one does and matches it at the regression bars
+([`testing.md`](testing.md), "Regression"). Until then "done" for a module PR
+means its Rust crate passes its tiers and the C++ tree is still green.
 
 **Each shared object says what it is, and the crate checks at load.**
 Committed bindings and a separately built `.so` can drift at run time, not
@@ -82,7 +98,7 @@ inside wwr's sources with nothing naming the cause.
    │
  Rust      -sys: FFI bindings, generated from the C header
    │  C ABI
- C++ .cpp  launch wrapper: extern "C", picks the launch shape, launches, returns a status
+ C++ .cu   launch wrapper: extern "C", picks the launch shape, launches, returns a status
    │
  C++ .cu   kernels: hand-written and FelizJueves-generated
 ```
@@ -121,6 +137,14 @@ of its own; the safe wrapper's contract (tier 2) can, in debug builds.
 solvers, the collectives: WarpWraps' C ABI already covers them, and the crate
 already drives a GEMM that way (`experimental/rust/gemm`). Only this tree's
 own kernels need a C++ wrapper.
+
+**A library's workspace is part of the task's layout.** The solvers' is
+already a dimension: the pipeline treats `syevd_lwork` as one, and a layout
+calls the query at planning ([`programming_model.md`](programming_model.md),
+"Memory: layouts and arenas"). cuBLAS and hipBLAS allocate a workspace per
+handle on their own unless they are handed one (`cublasSetWorkspace` and its
+HIP twin), so the orchestrator hands every handle a buffer from the arena,
+and a run allocates nothing through a library either.
 
 **Rust never launches a kernel itself.** The C ABI exports a launch call
 (`wwr_launch_kernel_ex_c`), so Rust could take a kernel's address and launch
@@ -339,7 +363,11 @@ that nothing relocatable crosses the ABI: nvcc's separable compilation, which
 the launchers that call specializations from other units need, is resolved
 inside the `.so`. One Rust `-sys` crate per module mirrors `src/`, which is
 the workspace graph the test selection runs on: a PR touching `integrals`'
-kernels re-runs `integrals`' GPU tier and nothing else.
+kernels re-runs `integrals`' GPU tier and nothing else. The grouping is a
+change to `src/`'s CMake, position-independent device libraries and a
+per-module device link, so it is a C++-tree PR before any Rust crate is
+ported above it, verified by `devtools/test.py pr`, since only the C++ tier
+can see a broken device link.
 
 Shared rather than static, because the static route is the harder one and
 the reason for it does not apply. `experimental/rust/s_overlap` links a static

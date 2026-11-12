@@ -131,11 +131,12 @@ The rebuild makes allocation and footprint one program, in three moves.
 will hold: each with a name, a size in bytes and a lifetime (scratch or
 output), the kernel workspace queries and the solver's `lwork` queries called
 here, at planning, as the pipeline already treats `syevd_lwork` as a
-dimension. `run(bufs, stream)` computes, and reaches a buffer only through
-the layout it declared. The footprint is read off the layout by the
-orchestrator and never written by the author. The layout is what admission
-reads, what a tier-3 test checks with no device, and what the arena is
-built from.
+dimension, and a BLAS handle's workspace among them
+([`gpu_layer.md`](gpu_layer.md), "Layering"). `run(bufs, stream)` computes,
+and reaches a buffer only through the layout it declared. The footprint is
+read off the layout by the orchestrator and never written by the author. The
+layout is what admission reads, what a tier-3 test checks with no device, and
+what the arena is built from.
 
 **Allocation is a capability, held by one module.** The raw allocation
 bindings in `wwr-sys` are `unsafe`, one arena module wraps them, and a
@@ -250,8 +251,9 @@ under every placement. Where every reduce is ordered, that tolerance is zero
 and the result is bitwise. Where a reduce is unordered, its declared tolerance
 is the bar, and the test tier compares the one-worker result against a
 many-worker one at that bar
-([`testing.md`](testing.md), "Tiers", tiers 4 and 5). Tolerances are fixed by
-analysis and never loosened to make a comparison pass.
+([`testing.md`](testing.md), "Tiers: where a check lives", tiers 4 and 5).
+Tolerances are fixed by analysis and never loosened to make a comparison
+pass.
 
 ## Example: the Coulomb build under two placements
 
