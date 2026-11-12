@@ -266,8 +266,10 @@ struct IrcOptions {
   int32_t max_points = 50;
   /// @brief A point whose Cartesian gradient, projected off the rigid
   /// motions, has its largest |component| at or below this (hartree / bohr;
-  /// Options::max_force's default) is a minimum, and ends the walk
-  /// (IrcStop::Minimum). Above 0.
+  /// Options::max_force's default), and whose mass-weighted |g| halved over
+  /// the last step, is a minimum, and ends the walk (IrcStop::Minimum). The
+  /// force alone does not (#1294): in a soft valley it falls below this
+  /// steps short of the minimum. Above 0.
   double max_force = 4.5e-4;
   /// @brief The hypersphere optimization of a point converges when the part
   /// of the mass-weighted gradient tangent to the sphere has 2-norm at or
@@ -290,11 +292,12 @@ struct IrcOptions {
 
 /// @brief Why an irc walk stopped.
 enum class IrcStop : uint8_t {
-  /// The last point's force is at or below max_force.
+  /// The last point's force is at or below max_force, and its mass-weighted
+  /// |g| halved over the last step: the path's minimum is within a step.
   Minimum,
   /// The mass-weighted |g| halved over the last step: by the walk's own
   /// slope of |g| the path's minimum is within a step of the last point,
-  /// inside the next hypersphere.
+  /// inside the next hypersphere; its force is still above max_force.
   MinimumWithinStep,
   /// The next point's energy rose over the last's, or it lies behind its
   /// pivot: the path passed its minimum, and that point is not kept.
@@ -362,25 +365,27 @@ struct IrcPath {
 /// evaluation, and H gets Bofill's update (SR1 and Powell's symmetric
 /// Broyden mixed by the SR1 denominator's cosine; it stays indefinite near
 /// the TS, where BFGS would not) over every two evaluations in a row. H
-/// starts as @p hessian mass-weighted. The first sphere's first trial comes
-/// from the model at the TS, which lies on the sphere; each later sphere's is
-/// its far pole q* + (s / 2) u turned as the last step turned, by point k's
-/// displacement from its own sphere's far pole, and put back on the sphere
-/// (#1288), so a straight path costs one evaluation per point. Converged
-/// when the tangential gradient and the next correction are at or below
-/// options.sphere_gradient and options.sphere_displacement. The first
+/// starts as @p hessian mass-weighted. A sphere's first trial is the
+/// model's step from point k, which lies on the sphere (#1295); at a later
+/// sphere, when that step is in the hard case or behind the pivot, or the
+/// last sphere took more than 3 evaluations, it is instead the far pole
+/// q* + (s / 2) u turned as the last step turned, by point k's displacement
+/// from its own sphere's far pole, and put back on the sphere (#1288).
+/// Converged when the tangential gradient and the next correction are at or
+/// below options.sphere_gradient and options.sphere_displacement. The first
 /// sphere passes through the TS, a minimum of E on it; a first search that
 /// converges there (behind the pivot) is run again from @p hessian with its
 /// trials held ahead of the pivot once one is (#1285).
 ///
-/// The walk stops at a point whose force is at or below options.max_force;
-/// before a step from a point whose mass-weighted |g| halved over the last
+/// The walk stops at a point whose mass-weighted |g| halved over the last
 /// step, 2 |g_k| <= |g_(k-1)| (the path's minimum is then within a step,
 /// GS2's next sphere would hold it, and its own minimum flips between the
-/// sphere's two sides); at a point whose energy rose over the last's or that lies behind
-/// its pivot (not kept); at options.max_points; or when a point's sphere does
-/// not converge in options.max_sphere_iterations (not kept). The first three
-/// leave the last point within about a step of the path's minimum.
+/// sphere's two sides): Minimum if its force is also at or below
+/// options.max_force (#1294), MinimumWithinStep if not; at a point whose
+/// energy rose over the last's or that lies behind its pivot (not kept); at
+/// options.max_points; or when a point's sphere does not converge in
+/// options.max_sphere_iterations (not kept). The first two leave the last
+/// point within about a step of the path's minimum.
 ///
 /// @param start      The transition state: its positions are x0, its
 ///                   elements give the masses.

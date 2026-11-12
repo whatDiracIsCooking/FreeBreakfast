@@ -102,11 +102,11 @@ std::vector<std::vector<double>> irc_internal_basis(const std::vector<std::vecto
 // below b_0, where |p'| rises monotonically from 0. Bisection finds it to
 // the last bit. When even lambda at b_0 leaves |p'| short (the hard case, c
 // nothing along v_0), the shortfall is made up along v_0, on the side the
-// trial already leaned.
+// trial already leaned, and @p hard, when given, is set.
 std::vector<double> irc_sphere_step(std::span<const double> hessian,
                                     const std::vector<std::vector<double>> &basis,
                                     std::span<const double> p, std::span<const double> g,
-                                    double radius) {
+                                    double radius, bool *hard = nullptr) {
   const size_t n = p.size();
   const size_t m = basis.size();
   // H_int = B^T H B, m x m.
@@ -168,6 +168,9 @@ std::vector<double> irc_sphere_step(std::span<const double> hessian,
     step[i] = c[i] / (b[i] - lo);
   }
   const double short_by = r2 - irc_dot(step, step);
+  if (hard != nullptr) {
+    *hard = short_by > 1e-10 * r2;
+  }
   if (short_by > 1e-10 * r2) {
     const double lean = step[0] != 0.0 ? step[0] : pe[0];
     step[0] += (lean < 0.0 ? -1.0 : 1.0) * std::sqrt(short_by);
@@ -382,6 +385,9 @@ irc(std::span<const Atom> start, std::span<const double> hessian, std::span<cons
   IrcEvaluation point = FBF_TRY(evaluate(x0));
   FBF_TRY(keep(point, 0, 0, 0.0));
   const double radius = 0.5 * options.step_size;
+  // A sphere searched in at most this many evaluations, the model's step and
+  // two corrections, leaves the model's step the next sphere's first trial.
+  constexpr int32_t kModelSphereEvaluations = 3;
   // The previous point's mass-weighted |g|.
   double previous_norm = 0.0;
   // The last point's displacement on its sphere from that sphere's far pole,
@@ -416,25 +422,42 @@ irc(std::span<const Atom> start, std::span<const double> hessian, std::span<cons
     for (size_t i = 0; i < n; ++i) {
       pivot[i] = point.q[i] + (radius * down[i]);
     }
-    // The hypersphere. Point k is on it, so at the TS the first trial is the
-    // model's from there. After it, the first trial is the far pole turned as
-    // the last step turned, (s / 2) u + turn put back on the sphere (#1288):
-    // the model's step from point k crosses the sphere's diameter, and on a
-    // stiff, sharply bent valley the Bofill model is not good over that
-    // distance. Its soft curvature is a small difference of stiff elements
-    // that the valley's turning floor changes by more than it over a step, so
-    // its sphere minimum lands far from the surface's and the search wanders.
-    // With hold_ahead, a trial ahead of the pivot is not followed by one
-    // behind it: the model's step is replaced by irc_sphere_descent's.
+    // The hypersphere. Point k is on it, so the first trial is the model's
+    // step from there. On a smooth valley the Bofill model has learnt the
+    // surface over the walk, and that step is the sphere's minimum to its
+    // tolerance in one evaluation (#1295). On a stiff, sharply bent valley
+    // the model is not good over the sphere's diameter (#1288): its soft
+    // curvature is a small difference of stiff elements that the turning
+    // floor changes by more than it over a step, its sphere minimum lands in
+    // the hard case or behind the pivot, and a search from there wanders.
+    // Then, and after a sphere that took more than kModelSphereEvaluations,
+    // the first trial is the far pole turned as the last step turned,
+    // (s / 2) u + turn put back on the sphere, which asks nothing of the
+    // model. It is not the first trial throughout: it carries point k's
+    // error on its sphere into the next start, twice over (in turn, and in
+    // u, tilted by that error's gradient across the floor, which grows
+    // against |g| as |g| falls along a soft valley), where the model's step
+    // starts from point k's own gradient. With hold_ahead, a trial ahead of
+    // the pivot is not followed by one behind it: the model's step is
+    // replaced by irc_sphere_descent's.
     std::vector<double> first_p;
     if (k > 0) {
-      first_p.resize(n);
+      std::vector<double> p_k(n);
       for (size_t i = 0; i < n; ++i) {
-        first_p[i] = (radius * down[i]) + turn[i];
+        p_k[i] = -radius * down[i];
       }
-      const double first_norm = std::sqrt(irc_dot(first_p, first_p));
-      for (size_t i = 0; i < n; ++i) {
-        first_p[i] = first_norm > 0.0 ? radius * first_p[i] / first_norm : radius * down[i];
+      bool hard = false;
+      first_p =
+          irc_sphere_step(model, irc_internal_basis(point.rigid, n), p_k, point.g, radius, &hard);
+      if (hard || irc_dot(first_p, down) < 0.0 ||
+          path.points.back().sphere_iterations > kModelSphereEvaluations) {
+        for (size_t i = 0; i < n; ++i) {
+          first_p[i] = (radius * down[i]) + turn[i];
+        }
+        const double first_norm = std::sqrt(irc_dot(first_p, first_p));
+        for (size_t i = 0; i < n; ++i) {
+          first_p[i] = first_norm > 0.0 ? radius * first_p[i] / first_norm : radius * down[i];
+        }
       }
     }
     IrcEvaluation trial = point;
@@ -538,7 +561,14 @@ irc(std::span<const Atom> start, std::span<const double> hessian, std::span<cons
     }
     point = std::move(trial);
     FBF_TRY(keep(point, k + 1, evaluations, tangential));
-    if (point.max_force <= options.max_force) {
+    // A minimum: the force at or below max_force, and |g| halved over the
+    // step, so the path's minimum within one more (the test each step opens
+    // with, MinimumWithinStep). The force alone is not (#1294): in a soft
+    // valley it
+    // falls under max_force with the minimum still many steps on (the Cope
+    // PC-NEVPT2 IRC's, 26), and the walk goes on.
+    if (point.max_force <= options.max_force &&
+        2.0 * std::sqrt(irc_dot(point.g, point.g)) <= previous_norm) {
       path.stop = IrcStop::Minimum;
       return path;
     }

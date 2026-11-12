@@ -491,7 +491,7 @@ since one energy's gradient is differenced.
 [irc]
 step_size = 0.1           # amu^1/2 bohr
 max_points = 50           # per side
-max_force = 4.5e-4        # hartree / bohr: a point at or below it is a minimum
+max_force = 4.5e-4        # hartree / bohr: a point at or below it, |g| halved, is a minimum
 sphere_gradient = 1e-4    # the hypersphere's tangential gradient, hartree / (amu^1/2 bohr)
 sphere_displacement = 1e-3  # and its next correction, amu^1/2 bohr
 max_sphere_iterations = 20
