@@ -224,7 +224,8 @@ creating each piece, holding each step 4 s while `nvidia-smi
 the larger of the two): a `max_device_mem_per_gpu` leaves that much outside the
 pool cap. It is a floor, not a constant: the context grows as lazily loaded
 kernel modules are first launched, so a run that touches many of the tree's
-kernels holds more, and another driver or card will differ.
+kernels holds more, and another driver or card will differ. Most of that
+growth is the kernels' stack, which is counted apart (next section).
 
 Under HIP the pool is created exportable (a POSIX file descriptor handle type)
 though nothing exports it. That is a workaround for a ROCm 7.2.4 defect (#300):
@@ -232,8 +233,62 @@ a non-exportable pool is backed by ROCm's virtual-memory heap, whose
 `hipMemPoolDestroy` intermittently dereferences a null after a run of
 differently sized allocations, and an exportable pool never gets the heap.
 `Device::pool_props()` has the details and the upstream fix that retires it;
-it is one of the tree's two backend `#if`s in host code; the other is
-`recipes/expm`'s `heevdx` under HIP (#999).
+it is one of the tree's three backend `#if`s in host code; the others are
+`Device::stack_growth()` (below) and `recipes/expm`'s `heevdx` under HIP
+(#999).
+
+### Kernel stacks outside the pool
+
+The reserve above is measured before the tree's big kernels run. The larger
+part of what a process holds outside the pool comes later: **CUDA holds a
+kernel's per-thread stack for every thread the device can keep resident**,
+SMs × `maxThreadsPerMultiProcessor` (68 × 1536 = 104,448 on the 3080), from
+that kernel's first launch on. The driver raises the stack limit
+(`wwrLimitStackSize`, 1024 B in a fresh context) to the kernel's stack and
+keeps it, so the reservation is the largest stack launched so far times the
+thread count. The generated integral kernels' stacks reach 23,192 B
+(`kinetic_hessian<3,3>`; `cuobjdump --dump-resource-usage`), so a run that
+launches it holds 2.2 GiB more than a fresh context.
+
+Measured on the 3080 (driver 580.126.20, CUDA 13.0) by a scratch program
+reading `wwrMemGetInfo` and the limit around one-block launches of kernels
+with 1 KiB, 10,000 B and 23,192 B of stack:
+
+| Step | Device used | Stack limit |
+| --- | --- | --- |
+| context | 1096.4 MiB | 1024 |
+| 1 KiB-stack kernel | 1096.4 MiB | 1024 |
+| 10,000 B-stack kernel | +894 MiB | 10,000 |
+| 23,192 B-stack kernel | +2210 MiB in all | 23,200 |
+| 1 KiB-stack kernel again | unchanged | 23,200 |
+| `wwrDeviceSetLimit(stack, 1024)` | back to the context's | 1024 |
+
+894 MiB is (10,000 − 1024) × 104,448 B exactly, and 2210 MiB is
+(23,200 − 1024) × 104,448 B. The grid's size does not matter (a 4096 × 256
+launch reads the same), nor does `CUDA_MODULE_LOADING=EAGER`. Setting the
+limit takes or returns the memory at once. On a card full but for 256 MiB,
+the 23,192 B kernel's launch fails with `wwrErrorMemoryAllocation`; when the
+pool has already handed that memory out, the next allocation through the
+pool fails instead and aborts (`CreatePolicy`). That was #1259:
+formaldehyde's PC-NEVPT2 Hessian went +1000 MiB at its first DF kernels
+(`eri3<2,2,3>`, 10,696 B) and +706 MiB at the Hessian's
+(`potential_hessian<1,2>`, 17,784 B), both after the steps had read their
+budget.
+
+`Device::stack_growth(per_thread)` is what is still to come: the limit's
+shortfall from `per_thread` times the thread count. An uncapped
+`DeviceResources::memory_budget()` leaves `stack_growth(kKernelStackBytes)`
+of the driver's free memory out, so the pool is never handed what the stack
+will take; once the largest kernel has run it is 0, and the free memory
+already shows the stack. `kKernelStackBytes` is the binary's largest stack,
+and ctest's `core_kernel_stack_bound` reads the built binary with
+`cuobjdump` and fails naming the kernel when a regenerated one passes it.
+
+**HIP:** ROCm 7.2.4 on the gfx1200 neither raises the limit nor reserves
+scratch device-wide. The same program read no growth past the first
+launch's 180 MiB, at 1 KiB, 10,000 B or 23,200 B of scratch a lane, one block
+or 4096 × 256; and a 23,200 B launch on a card full but for 256 MiB ran.
+ROCm sizes scratch per dispatch. So `stack_growth()` is 0 under HIP.
 
 ## DeviceStream
 

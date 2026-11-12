@@ -4,8 +4,9 @@
 
 module;
 
-// WWR_SELECTED_HIP, for the one backend branch in this tree's host code: the
-// ROCm workaround in pool_props(). Macros only, so safe in an interface's GMF.
+// WWR_SELECTED_HIP, for the backend branches in this tree's host code here:
+// the ROCm workaround in pool_props(), and stack_growth(), which is 0 under
+// ROCm. Macros only, so safe in an interface's GMF.
 #include "selected_backend.h"
 
 export module free_breakfast.core.wwr:device;
@@ -124,6 +125,36 @@ public:
       CreatePolicy<wwr::wwrError_t>{}.handle_error(wwr::wwrMemPoolSetAttribute(pool_, attr, &zero),
                                                    location);
     }
+  }
+
+  /// @brief The device memory, in bytes, the runtime would still take outside
+  /// any pool to launch a kernel of `per_thread` bytes of stack: 0 when the
+  /// stack it already holds is that large. A failed query aborts
+  /// (CreatePolicy).
+  ///
+  /// CUDA holds the stack limit (`wwrLimitStackSize`) for every thread the
+  /// device can keep resident, SMs x maxThreadsPerMultiProcessor (104,448 on
+  /// the 3080), and raises the limit at the first launch of a kernel that
+  /// needs more, keeping it: so this is the limit's shortfall times that
+  /// thread count. ROCm (7.2.4, gfx1200) sizes scratch per dispatch and
+  /// neither reserves it device-wide nor raises the limit, so it is 0 there.
+  /// See README.md, "Kernel stacks outside the pool".
+  uint64_t stack_growth(size_t per_thread,
+                        std::source_location location = std::source_location::current()) const {
+#if defined(WWR_SELECTED_HIP)
+    (void)per_thread;
+    (void)location;
+    return 0;
+#else
+    // The limit is the current device's: this one's, for the call.
+    const wwr::extension::ScopedDeviceIndex<CreatePolicy<wwr::wwrError_t>> on{dev_idx()};
+    size_t limit = 0;
+    CreatePolicy<wwr::wwrError_t>{}.handle_error(
+        wwr::wwrDeviceGetLimit(&limit, wwr::wwrLimitStackSize), location);
+    const uint64_t threads = uint64_t{static_cast<uint32_t>(props_.multiProcessorCount)} *
+                             uint64_t{static_cast<uint32_t>(props_.maxThreadsPerMultiProcessor)};
+    return per_thread > limit ? uint64_t{per_thread - limit} * threads : 0;
+#endif
   }
 
   /// @brief The ForkStream that owns stream(), for forking it from, and joining

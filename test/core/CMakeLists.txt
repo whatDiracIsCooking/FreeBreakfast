@@ -92,3 +92,26 @@ gtest_discover_tests(
   DISCOVERY_MODE PRE_TEST
   PROPERTIES TIMEOUT ${_fb_test_timeout} LABELS gpu
 )
+
+# The bound memory_budget() leaves for kernel stacks, against the binary's
+# kernels (kernel_stack_bound.cmake). CUDA only: cuobjdump reads CUDA
+# binaries, and ROCm holds no device-wide stack (Device::stack_growth).
+if(FREE_BREAKFAST_GPU_BACKEND STREQUAL "CUDA")
+  find_program(
+    FREE_BREAKFAST_CUOBJDUMP
+    NAMES cuobjdump
+    HINTS "${CUDAToolkit_BIN_DIR}" /usr/local/cuda/bin
+    REQUIRED
+  )
+  add_test(
+    NAME core_kernel_stack_bound
+    COMMAND
+      ${CMAKE_COMMAND} -DCUOBJDUMP=${FREE_BREAKFAST_CUOBJDUMP}
+      -DBINARY=$<TARGET_FILE:free_breakfast_main>
+      -DSOURCE=${PROJECT_SOURCE_DIR}/src/core/resources/device_resources.cppm
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/kernel_stack_bound.cmake
+  )
+  set_tests_properties(
+    core_kernel_stack_bound PROPERTIES TIMEOUT ${_fb_test_timeout}
+  )
+endif()
