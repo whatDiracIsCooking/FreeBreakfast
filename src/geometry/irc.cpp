@@ -384,6 +384,10 @@ irc(std::span<const Atom> start, std::span<const double> hessian, std::span<cons
   const double radius = 0.5 * options.step_size;
   // The previous point's mass-weighted |g|.
   double previous_norm = 0.0;
+  // The last point's displacement on its sphere from that sphere's far pole,
+  // p_k - (s / 2) u: how far the path turned off the straight line over the
+  // last step.
+  std::vector<double> turn;
   for (int32_t k = 0; k < options.max_points; ++k) {
     // The pivot, half a step down: along the way out at the TS, along the
     // steepest descent after.
@@ -412,9 +416,27 @@ irc(std::span<const Atom> start, std::span<const double> hessian, std::span<cons
     for (size_t i = 0; i < n; ++i) {
       pivot[i] = point.q[i] + (radius * down[i]);
     }
-    // The hypersphere: point k is on it, so the first trial is the model's
-    // from there. With hold_ahead, a trial ahead of the pivot is not followed
-    // by one behind it: the model's step is replaced by irc_sphere_descent's.
+    // The hypersphere. Point k is on it, so at the TS the first trial is the
+    // model's from there. After it, the first trial is the far pole turned as
+    // the last step turned, (s / 2) u + turn put back on the sphere (#1288):
+    // the model's step from point k crosses the sphere's diameter, and on a
+    // stiff, sharply bent valley the Bofill model is not good over that
+    // distance. Its soft curvature is a small difference of stiff elements
+    // that the valley's turning floor changes by more than it over a step, so
+    // its sphere minimum lands far from the surface's and the search wanders.
+    // With hold_ahead, a trial ahead of the pivot is not followed by one
+    // behind it: the model's step is replaced by irc_sphere_descent's.
+    std::vector<double> first_p;
+    if (k > 0) {
+      first_p.resize(n);
+      for (size_t i = 0; i < n; ++i) {
+        first_p[i] = (radius * down[i]) + turn[i];
+      }
+      const double first_norm = std::sqrt(irc_dot(first_p, first_p));
+      for (size_t i = 0; i < n; ++i) {
+        first_p[i] = first_norm > 0.0 ? radius * first_p[i] / first_norm : radius * down[i];
+      }
+    }
     IrcEvaluation trial = point;
     int32_t evaluations = 0;
     double tangential = 0.0;
@@ -427,7 +449,9 @@ irc(std::span<const Atom> start, std::span<const double> hessian, std::span<cons
           p[i] = trial.q[i] - pivot[i];
         }
         std::vector<double> next_p =
-            irc_sphere_step(model, irc_internal_basis(trial.rigid, n), p, trial.g, radius);
+            taken == 0 && !first_p.empty()
+                ? first_p
+                : irc_sphere_step(model, irc_internal_basis(trial.rigid, n), p, trial.g, radius);
         double correction = 0.0;
         for (size_t i = 0; i < n; ++i) {
           correction += (next_p[i] - p[i]) * (next_p[i] - p[i]);
@@ -507,6 +531,10 @@ irc(std::span<const Atom> start, std::span<const double> hessian, std::span<cons
     if (trial.energy > point.energy || behind) {
       path.stop = IrcStop::EnergyRose;
       return path;
+    }
+    turn.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+      turn[i] = trial.q[i] - pivot[i] - (radius * down[i]);
     }
     point = std::move(trial);
     FBF_TRY(keep(point, k + 1, evaluations, tangential));

@@ -362,14 +362,16 @@ struct IrcPath {
 /// evaluation, and H gets Bofill's update (SR1 and Powell's symmetric
 /// Broyden mixed by the SR1 denominator's cosine; it stays indefinite near
 /// the TS, where BFGS would not) over every two evaluations in a row. H
-/// starts as @p hessian mass-weighted. The first trial comes from the model
-/// at q_k itself, which lies on the sphere, so a quadratic surface costs one
-/// evaluation per point. Converged when the tangential gradient and the next
-/// correction are at or below options.sphere_gradient and
-/// options.sphere_displacement. The first sphere passes through the TS, a
-/// minimum of E on it; a first search that converges there (behind the
-/// pivot) is run again from @p hessian with its trials held ahead of the
-/// pivot once one is (#1285).
+/// starts as @p hessian mass-weighted. The first sphere's first trial comes
+/// from the model at the TS, which lies on the sphere; each later sphere's is
+/// its far pole q* + (s / 2) u turned as the last step turned, by point k's
+/// displacement from its own sphere's far pole, and put back on the sphere
+/// (#1288), so a straight path costs one evaluation per point. Converged
+/// when the tangential gradient and the next correction are at or below
+/// options.sphere_gradient and options.sphere_displacement. The first
+/// sphere passes through the TS, a minimum of E on it; a first search that
+/// converges there (behind the pivot) is run again from @p hessian with its
+/// trials held ahead of the pivot once one is (#1285).
 ///
 /// The walk stops at a point whose force is at or below options.max_force;
 /// before a step from a point whose mass-weighted |g| halved over the last
