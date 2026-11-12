@@ -398,8 +398,11 @@ MECI = "ethylene_meci"
 # The A1/B2 case's whole state Hessians (#1093), in its C2v-adapted
 # coordinates.
 SYMMETRIC_CASES = ("h2nb_sto3g_sa2_hessian",)
+# The degenerate-pair case (#1282): the pair sum's and the seam's ladders
+# at a degenerate inactive pair, at the analytic call's pc_floor.
+DEGENERATE_CASES = ("nh3_c3v_631g_sa2_degenerate",)
 # Every record of whole Hessians.
-HESSIAN_CASES = QD_CASES + CROSSING_CASES + SYMMETRIC_CASES
+HESSIAN_CASES = QD_CASES + CROSSING_CASES + SYMMETRIC_CASES + DEGENERATE_CASES
 
 
 def load_module(name: str, path: Path):
@@ -435,6 +438,7 @@ def test_the_qd_cases_are_there():
         + list(CROSSING_CASES)
         + [MECI]
         + list(SYMMETRIC_CASES)
+        + list(DEGENERATE_CASES)
     )
     assert [c["name"] for c in qd_tool.CASES] == list(QD_CASES)
     for name in QD_CASES:
@@ -748,6 +752,54 @@ def test_the_crossing_cases_are_what_the_issue_asks():
         assert [p["state"] for p in part["states"]] == [2]
         assert [p["pair"] for p in part["pairs"]] == [[0, 1]]
         assert [p["seam"] for p in part["seams"]] == [[0, 1]]
+
+
+def test_the_degenerate_case_is_what_the_issue_asks():
+    # #1282: degenerate_pair_ladder.py's C3v ammonia over its SA-2, PC at the
+    # analytic call's pc_floor; the pair sum (W^0 + W^1 = 1 over two roots)
+    # and the seam (1/2 s (e_0 e_1^T + e_1 e_0^T), s the sign of H_eff[0][1]),
+    # neither reading an eigenvector, and no state.
+    assert [c["name"] for c in qd_tool.DEGENERATE_CASES] == list(DEGENERATE_CASES)
+    pipeline = json.loads(
+        (
+            ROOT / "test/gtest/data/pc_nevpt2_degenerate/qd_nh3_c3v_631g_sa2.json"
+        ).read_text()
+    )
+    for name in DEGENERATE_CASES:
+        record = qd_fixture(name)
+        assert record["schemes"] == ["pc"]
+        assert record["pc_floor"] == pipeline["pc_floor"] == 1e-10
+        assert record["states"] == [] and record["pc"]["states"] == []
+        assert record["pairs"] == [[0, 1]] and record["seams"] == [[0, 1]]
+        assert "crossing" not in record
+        assert [a[0] for a in record["atoms"]] == [
+            a["symbol"] for a in pipeline["atoms"]
+        ]
+        for a, b in zip(record["atoms"], pipeline["atoms"], strict=True):
+            assert a[1] == b["coord"]
+        assert record["active"] == pipeline["active"]
+        assert record["weights"] == pipeline["weights"]
+        for key in ("basis", "aux_basis"):
+            path = ROOT / record[key]["file"]
+            assert (
+                hashlib.sha256(path.read_bytes()).hexdigest() == record[key]["sha256"]
+            )
+        ref = record["reference"]
+        assert ref["agreement"] is None
+        assert min(ref["casscf_gaps"]) > 0.1 and min(ref["pc"]["heff_gaps"]) > 0.1
+        # The virtual e pairs are degenerate at the reference.
+        assert ref["inactive_gaps"]["virtual"] < 1e-6
+        (seam,) = record["pc"]["seams"]
+        heff = ref["pc"]["heff"]
+        sign = 1.0 if heff[1] > 0 else -1.0
+        assert seam["roots"] == [0, 1] and seam["sign"] == sign
+        want = [0.0, sign / 2, sign / 2, 0.0]
+        assert max(abs(a - b) for a, b in zip(seam["w"], want, strict=True)) < 1e-14
+        g = record["guard"]
+        assert g["subspace"] < 1e-3 and g["ci"] < 1e-3
+        assert g["gradient_norm"] < 1e-10 and g["rerun_gradient_norm"] < 1e-10
+        assert g["pc_zvector_residual"] <= record["tolerances"]["zvector"]
+        assert g["pc_loose_zvector_residual"] <= record["tolerances"]["zvector_loose"]
 
 
 def test_the_meci_is_converged_by_its_own_criteria():

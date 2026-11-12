@@ -39,6 +39,12 @@ tools/nevpt2_hessian/degenerate_pair_ladder.py --binary build-hip/src/free-break
 About eight minutes for the three single-state cases on the gfx1200, and
 about fifteen minutes for each of the two QD ones.
 
+The `[hessian]` step ladders one state's gradient, so it has no reference
+for the QD Hessian's crossing and W forms. Those are fixed-W quantities,
+laddered by `qd_nevpt2_hessian.py`'s `nh3_c3v_631g_sa2_degenerate` (#1282,
+below): the `qd_` ammonia's pair sum G(W^0 + W^1) and seam W at its
+`pc_floor`.
+
 ## The QD Hessian references (#953)
 
 `test/gtest/data/qd_nevpt2_hessian/`, whose README has the cases, the
@@ -62,7 +68,10 @@ tools/nevpt2_hessian/qd_nevpt2_hessian.py [--only CASE ...] \
 ```
 
 `--points DIR --keep` leaves the driver's raw points in `DIR`; `--points DIR`
-alone judges them again without the GPU. About 6 minutes per ladder (106
+alone judges them again without the GPU. A case may set the driver's
+`pc_floor` (PC's gradients' cut, the analytic call's), its `states` (which
+W^K are laddered; the sampler's u_K are matched at the round-off cut, so a
+case at another floor ladders none) and its `zvector_tolerance`. About 6 minutes per ladder (106
 points) on the RTX 3080, two ladders per case.
 
 ## SC's unequal-weight case (#1060)

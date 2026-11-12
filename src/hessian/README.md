@@ -2690,8 +2690,8 @@ rotation**, so the QD state's energy is smooth there:
   A_pq = O(gap), `../nevpt2/gradient/README.md` "Degenerate pairs"), as the
   ladder's own gradients do, so h_PS is already the total first derivative.
 - **The crossing and W forms** share term (i) and so take the pair the same
-  way; their outside-state sum reads the same couplings. Only the state
-  form is measured below.
+  way; their outside-state sum reads the same couplings. All three forms
+  are measured below (the crossing and W forms by #1282).
 
 `QdPcNevpt2Terms::degenerate` is the part, `degenerate_pairs` the pairs,
 `rotation_shift` E^corr[W] in each turned basis against the canonical one.
@@ -2713,10 +2713,32 @@ floor), the state tracked at overlap 1.000 with no rerank, the QD gap 0.29
 Eh. Asymmetry ≤ 6.7e-12, the sum rule ≤ 1.9e-10, `rotation_shift` ≤
 3.0e-15 Eh. Without the pairs' part the Hessian misses by thousands of
 bars; before #1277 both were refused, every coordinate that split a pair.
+
+**The crossing and W forms at the pair (#1282).** The `[hessian]` step
+ladders one state's gradient, so their reference is the QD Hessian
+references' own (`../../test/gtest/data/qd_nevpt2_hessian/`'s
+`nh3_c3v_631g_sa2_degenerate`, `tools/nevpt2_hessian/qd_nevpt2_hessian.py`):
+the same exact-C3v ammonia, its fixed-W gradients G(W^0 + W^1) and G(W_seam)
+laddered at h = 2.5e-3 and `pc_floor` 1e-10. Over two roots the pair's
+eigenspace is the whole space, so the crossing's basis V is the CASSCF roots
+themselves, W^0 + W^1 = 1 and the seam's W = ½ s (e_0 e_1ᵀ + e_1 e_0ᵀ), s
+the sign of H_eff[0][1]; neither W reads an eigenvector. Both ladders
+settled inside their floors (no ratio judged), the Z-vectors at 1e-11
+(they stall near 4.5e-12 at 3e-12):
+
+| form | ladder | bar (floor) | worst element | the pairs' part | the call |
+|---|---|---|---|---|---|
+| the pair's sum, c = 1 | G(W^0 + W^1) | 1.2e-7 | 0.503 bars | 3.3e4 bars | 39 s |
+| the seam's M_01 × s, c = [[0, ½], [½, 0]] | G(W_seam) | 8.2e-8 | 0.428 | 1.9e3 | 39 s |
+| the W form at the fixture's seam W | G(W_seam) | 8.2e-8 | 0.419 | 1.9e3 | 38 s |
+
+Asymmetry ≤ 3.9e-10, the sum rule ≤ 1.6e-9, `rotation_shift` ≤ 6.7e-15 Eh;
+the crossing's W, signed, is the fixture's to 2.2e-16.
+
 A cluster (three or more orbitals within 1e-6 Eh) is Unsupported through
-the shared `degenerate_pair_blocks`; that refusal is tested on the
-single-state Hessian (`DegenerateClusterIsUnsupported`), since a QD case
-with a t2 triple and two non-degenerate A1 roots has not been built.
+the shared `degenerate_pair_blocks`, on the single-state Hessian
+(`DegenerateClusterIsUnsupported`) and on this one (#1282: three neons
+around an H₂, below).
 
 ### Tests
 
@@ -2747,6 +2769,14 @@ at (`pc_floor` 0):
   `qd_` ladders (`tools/nevpt2_hessian/degenerate_pair_ladder.py`). Every
   element within 2× the ladder's bar, the pairs' part above 10 bars, the
   asymmetry within the solves' error and the sum rule ≤ 1e-8.
+- `DegenerateClusterIsUnsupported` (#1282, fast tier, 1.2–1.6 s with its
+  SA-CASSCF, the call 0.5 s): three neons 8 bohr from a central H₂ (D3h),
+  STO-3G, SA-2 CAS(2,2) over the H₂'s σ_g and σ_u, both roots 0.97 Eh
+  apart; each neon shell's three copies lie within 1e-6 Eh at f^SA (the 1s
+  within 6e-11), so the call is Unsupported, naming orbital 0 and the pairs
+  (2, 0) and (1, 0). Td methane's t2 triples do not serve: its Td
+  SA-CASSCF (6-31G, CAS(2,2) over 2a1 and 3a1*) is a saddle that
+  `df_sacasscf_cp` refuses first, and off it every triple splits.
 
 Measured on the gfx1200 (`--preset hip`), each call 27–28 s:
 
@@ -2835,6 +2865,17 @@ auto seam = hessian::df_qd_pc_nevpt2_crossing(res, ..., solution, ncore, ncas, 0
   off-diagonal signs, never a W from this solve's own R; and that W against
   this solve's own crossing basis signed by its H_eff[r₀][r₁], within the
   projector's first-order bar;
+- `PcPairSumAtADegeneratePair` and `PcSeamAndWFormAtADegeneratePair` (#1282,
+  slow tier, 40 s and 78 s): `nh3_c3v_631g_sa2_degenerate`, its virtual e
+  pairs degenerate at f^SA, at its `pc_floor` 1e-10: the pair's sum (c = 1)
+  against its G(W^0 + W^1) ladder; the seam's M_01 times the sign of this
+  solve's H_eff[0][1], and term (i) through the W form at the fixture's seam
+  W carried into this solve's root phases, each against the G(W_seam)
+  ladder. Every element within 2× its bar, the pairs taken and their part
+  above 10 bars, the asymmetry within the solves' error, the sum rule ≤
+  1e-8, and this solve's roots the fixture's within 1e-9 (no outside point
+  pins its SA-CASSCF). "At a degenerate inactive pair (#1277)" has the
+  numbers;
 - `RefusesBeforeAnythingRuns`: a pair of one state, a state past the roots,
   an asymmetric c, and a third state on the pair (SC's H_eff made rank-one
   degenerate about λ by the roots' energies alone).

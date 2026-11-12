@@ -50,6 +50,15 @@ must stay above mcscf::kRootGapFloor (`ROOT_GAP_FLOOR`), and is recorded.
 This tool writes the request, runs the driver (or reads its output back with
 --points), and judges every ladder; standard library only, over stencil.py.
 
+**The degenerate-pair case** (`DEGENERATE_CASES`, #1282): the QD Hessian's
+crossing and W forms at a degenerate inactive pair, which the `[hessian]`
+step's ladder of one state's gradient cannot reach. degenerate_pair_ladder.py's
+C3v ammonia over an SA-2, PC only at the analytic call's `pc_floor`: the pair
+sum G(W^0 + W^1) and the seam's fixed W, neither of which reads an
+eigenvector over two roots, and no state (the driver's u_K are matched at the
+round-off cut). Its own `zvector_tolerance`, and no outside reference point
+(`agreement` null).
+
 **The C2v coupling case** (`COUPLING_CASES`, #1058; nevpt2.tex's symmetric
 geometries): a C2v SA2 whose roots are A1 and B2. The driver runs with
 `gradients` false, and the tool ladders C_MN = H_eff[M][N] (the reference's
@@ -130,6 +139,7 @@ ROOT = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 
 # isort: split
+import degenerate_pair_ladder  # noqa: E402
 import stencil  # noqa: E402
 
 OUT = ROOT / "test" / "gtest" / "data" / "qd_nevpt2_hessian"
@@ -167,6 +177,14 @@ ZVECTOR_TOL = 3e-12
 # from a rigidly moved start re-converges to the reference's own orbitals.
 NOISE_COLUMNS = 2
 ZVECTOR_LOOSE = 10 * ZVECTOR_TOL
+
+
+def zvector_tolerances(case: dict) -> tuple[float, float]:
+    """The case's Z-vector tolerance (ZVECTOR_TOL unless it sets its own
+    `zvector_tolerance`) and its noise solves' looser one, ten times it."""
+    tol = case.get("zvector_tolerance", ZVECTOR_TOL)
+    return tol, 10 * tol
+
 
 SKEW = [
     ["C", [0.0, 0.0, 0.0]],
@@ -346,6 +364,42 @@ CROSSING_CASES = [
 ]
 
 
+# A degenerate inactive pair under the crossing and W forms (#1282):
+# degenerate_pair_ladder.py's C3v ammonia, SA-2 CAS(8,7) in 6-31G, both
+# roots A1, its virtual e pairs exactly degenerate at f^SA. PC only, at
+# the analytic call's pc_floor 1e-10 (state 0's Si keeps 3.3e-11 at the
+# round-off cut, which the analytic Hessian refuses). The pair's sum and
+# the seam, whose W are fixed in the root basis over two roots (W^0 + W^1
+# the identity; the seam's 1/2 s (e_0 e_1^T + e_1 e_0^T), s the sign of
+# H_eff[0][1]), so neither reads the sampler's round-off-cut u_K; the
+# states' W^K would, so no state is laddered (`states` empty; the state
+# Hessians are degenerate_pair_ladder.py's, at the floor). Its SA-CASSCF
+# has no outside reference point: the test holds its own roots to this
+# record's (`agreement` null).
+DEGENERATE_CASES = [
+    {
+        "name": "nh3_c3v_631g_sa2_degenerate",
+        "system": {
+            "atoms": [[s, list(xyz)] for s, xyz in degenerate_pair_ladder.nh3(0.0)],
+            "basis": "6-31g",
+            "ncas": 7,
+            "nelecas": 8,
+            "active": [1, 2, 3, 4, 5, 6, 7],
+            "weights": [0.5, 0.5],
+        },
+        "degenerate": True,
+        "pc_floor": 1e-10,
+        "states": [],
+        # Its Z-vectors stall near 4.5e-12 on the gfx1200 (the PCG's 20
+        # products), past ZVECTOR_TOL: 1e-11, the noise solves at 1e-10.
+        "zvector_tolerance": 1e-11,
+        "h": {"pc": 0.0025},
+        "pairs": [[0, 1]],
+        "seams": [[0, 1]],
+    },
+]
+
+
 def sha256(relative: str) -> str:
     return hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
 
@@ -413,7 +467,9 @@ def noise_columns(coords: dict) -> list[int]:
     return vibrations[:NOISE_COLUMNS]
 
 
-def plan(h: float, coords: dict) -> tuple[list[dict], dict]:
+def plan(
+    h: float, coords: dict, loose_tolerance: float = ZVECTOR_LOOSE
+) -> tuple[list[dict], dict]:
     """The request's points at the ladder's @p h, and where each lands: index
     0 the reference; then per column and displacement; then the noise
     restarts and the looser solves."""
@@ -442,7 +498,7 @@ def plan(h: float, coords: dict) -> tuple[list[dict], dict]:
             {
                 "displacement": points[original]["displacement"],
                 "from": None,
-                "zvector_tolerance": ZVECTOR_LOOSE,
+                "zvector_tolerance": loose_tolerance,
             }
         )
     return points, where
@@ -465,8 +521,9 @@ def quantities(case: dict, n: int) -> list[tuple[str, int]]:
     then ("pair", i) per requested pair, then ("seam", i) per requested seam,
     in the driver's order."""
     crossing = case.get("crossing") or []
+    states = case.get("states", [k for k in range(n) if k not in crossing])
     return (
-        [("state", k) for k in range(n) if k not in crossing]
+        [("state", k) for k in states]
         + [("pair", i) for i in range(len(case["pairs"]))]
         + [("seam", i) for i in range(len(case.get("seams", [])))]
     )
@@ -680,9 +737,10 @@ def guard(runs: list[tuple[dict, list[str]]]) -> dict:
                     for p in run
                 )
             # Each at its own tolerance: the noise's looser solves apart.
+            tols = sorted({p["zvector_tolerance"] for p in run})
             for key, tol in (
-                ("zvector_residual", ZVECTOR_TOL),
-                ("loose_zvector_residual", ZVECTOR_LOOSE),
+                ("zvector_residual", tols[0]),
+                ("loose_zvector_residual", tols[-1]),
             ):
                 worst[f"{scheme}_{key}"] = max(
                     max(p[scheme]["zvector_residuals"])
@@ -771,6 +829,8 @@ def agreement(case: dict, runs: list[tuple[dict, list[str]]]) -> dict:
     [optimize] run (which records no CASSCF energies). A symmetric case's is
     its coupling record's reference point, the same driver's (the CASSCF
     roots, SC's and PC's)."""
+    if case.get("degenerate"):
+        return None
     if "meci" in case:
         final = meci_entry(case)["final"]
         out = {}
@@ -859,6 +919,9 @@ def record(
                 else f"{case['name']}.pyscf.json (tools/nevpt2_hessian/"
                 "qd_pyscf_point.py)"
                 if case.get("pyscf")
+                else "tools/nevpt2_hessian/degenerate_pair_ladder.py's nh3 "
+                "(no outside reference point)"
+                if case.get("degenerate")
                 else "tools/nevpt2_hessian/qd_weight_search.py"
                 if "system" in case
                 else f"{MECI.name} {case['meci']} (tools/nevpt2_hessian/qd_meci.py)"
@@ -880,6 +943,13 @@ def record(
         "weights": sys_["weights"],
         "schemes": list(case["h"]),
         "pairs": case["pairs"],
+        "pc_floor": case.get("pc_floor", 0.0),
+        **({"states": case["states"]} if "states" in case else {}),
+        **(
+            {"seams": case["seams"]}
+            if "seams" in case and "crossing" not in case
+            else {}
+        ),
         **(
             {
                 "crossing": case["crossing"],
@@ -934,8 +1004,8 @@ def record(
         "tolerances": {
             "ratio_window": list(RATIO_WINDOW),
             "floor_factor": FLOOR_FACTOR,
-            "zvector": ZVECTOR_TOL,
-            "zvector_loose": ZVECTOR_LOOSE,
+            "zvector": zvector_tolerances(case)[0],
+            "zvector_loose": zvector_tolerances(case)[1],
             "noise_columns": NOISE_COLUMNS,
         },
         "guard": guard(runs),
@@ -1491,7 +1561,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     status = 0
-    for case in CASES + CROSSING_CASES + SYMMETRIC_CASES:
+    for case in CASES + CROSSING_CASES + SYMMETRIC_CASES + DEGENERATE_CASES:
         if args.only and case["name"] not in args.only:
             continue
         started = time.perf_counter()
@@ -1513,7 +1583,8 @@ def main() -> None:
         failures = []
         for (h, labels), schemes in by_h.items():
             columns = laddered(coords, labels)
-            points, where = plan(h, columns)
+            tight, loose = zvector_tolerances(case)
+            points, where = plan(h, columns, loose)
             file = f"{case['name']}.h{h:g}.points.json"
             if args.points and not args.keep:
                 path = args.points / file
@@ -1525,10 +1596,12 @@ def main() -> None:
                     "system": sys_,
                     "schemes": schemes,
                     "gradients": True,
-                    "zvector_tolerance": ZVECTOR_TOL,
+                    "zvector_tolerance": tight,
                     "pairs": case["pairs"],
                     "seams": case.get("seams", []),
                     "crossing": case.get("crossing"),
+                    "states": case.get("states"),
+                    "pc_floor": case.get("pc_floor", 0.0),
                     "points": points,
                 }
                 run_driver(args.binary, request, path)

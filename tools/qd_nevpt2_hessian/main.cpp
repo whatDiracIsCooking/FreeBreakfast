@@ -16,7 +16,13 @@
 /// and a list of points, each a 3N displacement (bohr, atom-major), the index
 /// of an earlier point whose orbitals start it or null, and optionally its
 /// own Z-vector tolerance (the generator's noise measurement solves some
-/// points twice). At every point:
+/// points twice). Optionally `states`, the states whose W^K is differenced
+/// (every one but a crossing pair's by default), and `pc_floor`, PC's
+/// gradients' cut (0, the library's round-off cut, by default): a case whose
+/// analytic Hessian runs at another floor is laddered at it. The sampler's
+/// own PC H_eff, which matches u_K and signs a seam's W, stays at the
+/// round-off cut, so a state's W^K at another floor is the caller's to
+/// leave out (#1282). At every point:
 ///
 /// - **The chain and its guard** are `free_breakfast.tools.qd_nevpt2_gradient`'s
 ///   `ChainSampler` (polished, every point to ||g|| < kPolishTarget), as
@@ -211,6 +217,12 @@ struct System {
   // The two states degenerate at the reference, tracked by their
   // eigenspace; none, every state by its own u_K.
   std::optional<std::array<std::size_t, 2>> crossing;
+  // The states whose own W^K is differenced; none, every one but a crossing
+  // pair's.
+  std::optional<std::vector<std::size_t>> states;
+  // PC's gradients' cut (nevpt2::qd_pc_gradient's pc_floor), the analytic
+  // Hessian's under test; 0, the library's round-off cut.
+  double pc_floor = 0.0;
 };
 
 // One requested point.
@@ -413,6 +425,12 @@ fb::Status read_request(const fb::json &doc, System &sys, std::vector<Request> &
     if (doc.contains("crossing") && !doc.at("crossing").is_null()) {
       sys.crossing = doc.at("crossing").get<std::array<std::size_t, 2>>();
     }
+    if (doc.contains("states") && !doc.at("states").is_null()) {
+      sys.states = doc.at("states").get<std::vector<std::size_t>>();
+    }
+    if (doc.contains("pc_floor")) {
+      sys.pc_floor = doc.at("pc_floor").get<double>();
+    }
     gradients = doc.at("gradients").get<bool>();
     pairs = doc.at("pairs").get<std::vector<std::array<std::size_t, 2>>>();
     seams = doc.at("seams").get<std::vector<std::array<std::size_t, 2>>>();
@@ -442,6 +460,20 @@ fb::Status read_request(const fb::json &doc, System &sys, std::vector<Request> &
     for (const auto &[p, q] : list) {
       if (p >= n || q >= n || p == q) {
         return fb::err_config("request: a pair ({}, {}) of {} states", p, q, n);
+      }
+    }
+  }
+  if (!(sys.pc_floor >= 0.0 && std::isfinite(sys.pc_floor))) {
+    return fb::err_config("request: pc_floor is {}", sys.pc_floor);
+  }
+  if (sys.states) {
+    for (std::size_t i = 0; i < sys.states->size(); ++i) {
+      const std::size_t k = (*sys.states)[i];
+      if (k >= n || std::ranges::count(*sys.states, k) != 1 ||
+          (sys.crossing && ((*sys.crossing)[0] == k || (*sys.crossing)[1] == k))) {
+        return fb::err_config("request: state {} of {} (repeated, past the roots or one of "
+                              "the crossing's)",
+                              k, n);
       }
     }
   }
@@ -491,12 +523,16 @@ fb::Status run(std::span<char *const> args) {
   FBF_TRY(read_request(request, sys, requests, pairs, seams, gradients));
   const std::size_t n = sys.weights.size();
   const std::size_t dim = 3 * sys.atoms.size();
-  // The states whose own W^K is taken: all but a crossing pair's.
+  // The states whose own W^K is taken: the request's, or all but a
+  // crossing pair's.
   std::vector<std::size_t> states;
   for (std::size_t k = 0; k < n; ++k) {
     if (!sys.crossing || ((*sys.crossing)[0] != k && (*sys.crossing)[1] != k)) {
       states.push_back(k);
     }
+  }
+  if (sys.states) {
+    states = *sys.states;
   }
 
   // The CASSCF logs every macro iteration at info; this tool prints its own
@@ -538,10 +574,13 @@ fb::Status run(std::span<char *const> args) {
     return scheme == "sc" ? nev0.qd_vectors : nev0.pc_qd_vectors;
   };
 
-  fb::json reference{
-      {"casscf_energies", cas0.energies},   {"gradient_norm", cas0.gradient_norm},
-      {"casscf_gradient", casscf_gradient}, {"core_gap", ref.core_gap},
-      {"virtual_gap", ref.virtual_gap},     {"polish_passes", sampler.polish_passes()}};
+  fb::json reference{{"casscf_energies", cas0.energies},
+                     {"gradient_norm", cas0.gradient_norm},
+                     {"casscf_gradient", casscf_gradient},
+                     {"core_gap", ref.core_gap},
+                     {"virtual_gap", ref.virtual_gap},
+                     {"polish_passes", sampler.polish_passes()},
+                     {"pc_floor", sys.pc_floor}};
   // Each scheme's seams' W, in the schemes' order.
   std::vector<std::vector<SeamWeight>> seam_weights;
   for (const std::string_view scheme : schemes) {
@@ -740,7 +779,7 @@ fb::Status run(std::span<char *const> args) {
           for (const fb::nevpt2::QdPcGradient &g : FBF_TRY(fb::nevpt2::qd_pc_gradient(
                    res, molecule, basis, classes, fit->aux, h, fit->b, fit->l.data(), solution,
                    cas.ncore, cas.ncas, std::span<const std::vector<double>>{carried}, 0,
-                   rq.zvector_tolerance))) {
+                   rq.zvector_tolerance, 0, sys.pc_floor))) {
             grads.push_back(g.total);
             residuals.push_back(g.lagrangian.multipliers.residual);
           }

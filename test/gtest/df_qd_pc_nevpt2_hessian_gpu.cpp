@@ -27,7 +27,11 @@
 //   qd_ cases: df_qd_nevpt2_tangents' C3v ammonia SA-2 CAS(8,7), whose
 //   virtual e pairs are exactly degenerate at f^SA, and the same 2e-6 bohr
 //   off C3v (near-degenerate); every element within 2x the ladder's bar,
-//   the pairs' own part visible.
+//   the pairs' own part visible;
+// - a degenerate inactive cluster (#1282): three neons around an H2 (D3h),
+//   SA-2 CAS(2,2) over the H2's sigma pair, each neon shell's three copies
+//   within 1e-6 Eh at f^SA, refused as Unsupported through the shared
+//   check, naming the cluster.
 
 #include <gtest/gtest.h>
 
@@ -932,6 +936,52 @@ TEST_F(HessianDfQdPcNevpt2, ExactlyDegeneratePairsMatchTheLadder) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_degenerate_matches_ladder("qd_nh3_c3v_631g_sa2", "c3v", kVisibleBars);
+}
+
+// Three neon atoms 8 bohr from a central H2 (D3h: H2 along the C3 axis, the
+// neons in the plane through its centre), STO-3G, SA-2 CAS(2,2) over the
+// H2's sigma_g and sigma_u (orbitals 6 and 16): both roots Sigma, 0.97 Eh
+// apart, the QD gap open, and each neon shell's three copies (the e' pair
+// and the a1' one) within 1e-6 Eh at f^SA (the 1s within 6e-11), so the
+// degenerate-pair rule records three pairs of one triple. A cluster is
+// Unsupported through the shared check (degenerate_pair_blocks), naming an
+// orbital and two of its pairs (#1282). At pc_floor 1e-10 so that no thin
+// class is refused first.
+//
+// Td methane (6-31G, CAS(2,2) over 2a1 and 3a1*) has its t2 triples, but
+// its Td SA-CASSCF is a saddle, which df_sacasscf_cp refuses before the
+// cluster check, at any weights from equal to 0.9; at 0.95 to 0.98, and in
+// STO-3G, the SA-CASSCF converges below Td and every triple splits into a
+// pair and a single. A neon atom's p shells meet the same saddle.
+TEST_F(HessianDfQdPcNevpt2, DegenerateClusterIsUnsupported) {
+  FBF_REQUIRE_GPU();
+  constexpr double kNeon = 8.0;
+  Start start{.name = "ne3_h2_d3h_sto3g_sa2",
+              .atoms = {{"H", {0.0, 0.0, 0.7}}, {"H", {0.0, 0.0, -0.7}}},
+              .basis = "sto-3g",
+              .aux_basis = "cc-pVDZ-JKFIT",
+              .ncas = 2,
+              .nelecas = 2,
+              .weights = {0.5, 0.5},
+              .active = {6, 16}};
+  for (std::int32_t k = 0; k < 3; ++k) {
+    const double phi = 2.0 * fb::kPi<double> * k / 3.0;
+    start.atoms.push_back({"Ne", {kNeon * std::cos(phi), kNeon * std::sin(phi), 0.0}});
+  }
+  const Reference &ref = reference(start);
+  ASSERT_TRUE(ref.solution.has_value());
+  const auto begin = std::chrono::steady_clock::now();
+  const auto h = ref.hessian(*ref.solution, 1, {}, kKept);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+  ASSERT_FALSE(h.has_value()) << "a cluster of three degenerate orbitals was taken";
+  const std::string &m = h.error().message;
+  EXPECT_EQ(h.error().kind, fb::ErrorKind::Unsupported) << m;
+  EXPECT_NE(m.find("hessian::df_qd_pc_nevpt2: orbital "), std::string::npos) << m;
+  EXPECT_NE(m.find("a cluster of three or more degenerate inactive orbitals"), std::string::npos)
+      << m;
+  EXPECT_NE(m.find("is within 1e-6 Eh of two others (pairs ("), std::string::npos) << m;
+  std::cout << std::format("[ cluster  ] refused in {:.2f} s: {}\n", seconds, m);
 }
 
 // The same ammonia with one hydrogen 2e-6 bohr off C3v: both pairs
