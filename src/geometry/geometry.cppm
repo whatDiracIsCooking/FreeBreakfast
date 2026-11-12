@@ -276,8 +276,10 @@ struct IrcOptions {
   /// @brief ... and the next correction the quadratic model predicts on the
   /// sphere has 2-norm at or below this (amu^1/2 bohr). Above 0.
   double sphere_displacement = 1e-3;
-  /// @brief The energy-and-gradient evaluations one point may take before
-  /// the walk stops unconverged (IrcStop::SphereNotConverged). At least 1.
+  /// @brief The energy-and-gradient evaluations one point's hypersphere
+  /// search may take before the walk stops unconverged
+  /// (IrcStop::SphereNotConverged); each of the first sphere's two
+  /// searches, when it takes a second (#1285). At least 1.
   int32_t max_sphere_iterations = 20;
   /// @brief Project the rigid-body motions out of the gradient, the step and
   /// the Hessian, as Options::project_rigid_body, in mass-weighted
@@ -322,8 +324,8 @@ struct IrcPoint {
   /// projected off the rigid motions (hartree / bohr).
   double gradient_norm;
   double max_force;
-  /// @brief The evaluations this point's hypersphere optimization took; 0 at
-  /// the start.
+  /// @brief The evaluations this point's hypersphere optimization took, both
+  /// searches' at a first sphere searched twice; 0 at the start.
   int32_t sphere_iterations;
   /// @brief The 2-norm of the mass-weighted gradient's part tangent to the
   /// sphere here, at convergence; 0 at the start.
@@ -364,13 +366,16 @@ struct IrcPath {
 /// at q_k itself, which lies on the sphere, so a quadratic surface costs one
 /// evaluation per point. Converged when the tangential gradient and the next
 /// correction are at or below options.sphere_gradient and
-/// options.sphere_displacement.
+/// options.sphere_displacement. The first sphere passes through the TS, a
+/// minimum of E on it; a first search that converges there (behind the
+/// pivot) is run again from @p hessian with its trials held ahead of the
+/// pivot once one is (#1285).
 ///
 /// The walk stops at a point whose force is at or below options.max_force;
-/// before a step whose pivot would pass the model's minimum along the
-/// steepest descent, |g| / (u H u) at or under s / 2 (GS2's sphere then
-/// holds the minimum, and its own minimum flips between the sphere's two
-/// sides); at a point whose energy rose over the last's or that lies behind
+/// before a step from a point whose mass-weighted |g| halved over the last
+/// step, 2 |g_k| <= |g_(k-1)| (the path's minimum is then within a step,
+/// GS2's next sphere would hold it, and its own minimum flips between the
+/// sphere's two sides); at a point whose energy rose over the last's or that lies behind
 /// its pivot (not kept); at options.max_points; or when a point's sphere does
 /// not converge in options.max_sphere_iterations (not kept). The first three
 /// leave the last point within about a step of the path's minimum.
