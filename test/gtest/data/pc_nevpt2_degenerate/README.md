@@ -1,9 +1,10 @@
 # pc_nevpt2_degenerate golden data
 
 The degenerate-inactive-pair references of the analytic PC-NEVPT2 Hessian
-(#1268): this tree's own numerical `[hessian]` through the `free-breakfast`
-binary, the h, h/2, h/4 ladder of fourth-order central differences of the
-analytic PC gradient (`src/pipeline/hessian/README.md`, "The ladder and the
+(#1268) and of the PC-QD-NEVPT2 state Hessian (#1277, the `qd_` cases):
+this tree's own numerical `[hessian]` through the `free-breakfast` binary,
+the h, h/2, h/4 ladder of fourth-order central differences of the analytic
+PC gradient (or the PC-QD state's, tracked by its eigenvector) (`src/pipeline/hessian/README.md`, "The ladder and the
 bilinearity check"), at the step's default `pc_floor` (1e-10), Cartesian
 coordinates. Written by `tools/nevpt2_hessian/degenerate_pair_ladder.py`,
 whose docstring is the method; never hand-edited.
@@ -19,6 +20,8 @@ every element's bar the measured noise floor.
 | `nh3_c3v_631g` | C3v ammonia, 6-31G / cc-pVDZ-JKFIT, CAS(8,7) over 1–7 | virtual e (10, 9), (12, 11), 3e-14 | 4.2e-7 |
 | `nh3_near_631g` | the same, H1 moved 2e-6 bohr along x | the same, 7.4e-8, no symmetry | 3.2e-7 |
 | `hexatriene_sto3g` | all-trans hexatriene (C2h), STO-3G / cc-pVDZ-JKFIT, CAS(6,6) over 19–24 | the terminal carbons' 1s (5, 4), 4.6e-7 | 1.2e-7 |
+| `qd_nh3_c3v_631g_sa2` | `nh3_c3v_631g` over an SA-2 CAS(8,7), equal weights, PC-QD state 1 | virtual e (9, 8), (11, 10) at f^SA, 1e-11 | 4.1e-7 |
+| `qd_nh3_near_631g_sa2` | the same, H1 moved 2e-6 bohr along x | the same, 2.3e-7, no symmetry | 4.1e-7 |
 
 ## Keys
 
@@ -27,8 +30,9 @@ unchanged: `name`, `atoms` (`symbol`, `coord` in bohr), `charge`, `basis`
 and `aux_basis` (`name`), `ncas`, `nelecas`, `active`. Then `pc_floor`,
 and `pc`: `hessian` (the finest rung's, symmetrized, [i][j] in
 Eh/bohr²), `bar` (per element, [i][j]), `noise` and `unsettled` (the
-ladder's), `asymmetry`. `provenance` has the commit, the date and the
-config the binary ran.
+ladder's), `asymmetry`. A `qd_` case adds `nroots`, `weights`, `state`
+(H_eff's eigenvalues ascending) and `qd` (the step's tracking report).
+`provenance` has the commit, the date and the config the binary ran.
 
 The ammonia ladder's noise step re-solves the Z-vector 100 times tighter
 (1e-12); on the gfx1200 that once stopped at 1.6e-12 after 20 products

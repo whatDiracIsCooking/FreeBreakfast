@@ -281,7 +281,7 @@ Result<QdNevpt2Tangents> df_qd_nevpt2_tangents(
             const double f_pq = 0.5 * (f[p + (width * q)] + f[q + (width * p)]);
             const double gap = eps[first + p] - eps[first + q];
             if (std::abs(gap) < kQdTangentGapFloor) {
-              if (std::abs(f_pq) <= kQdTangentZeroSource) {
+              if (!pc && std::abs(f_pq) <= kQdTangentZeroSource) {
                 continue;
               }
               if (!pc) {
@@ -296,7 +296,8 @@ Result<QdNevpt2Tangents> df_qd_nevpt2_tangents(
                                       .p = static_cast<int32_t>(first + p),
                                       .q = static_cast<int32_t>(first + q),
                                       .gap = gap,
-                                      .f = f_pq});
+                                      .f = f_pq,
+                                      .split = 0.5 * (f[p * (width + 1)] - f[q * (width + 1)])});
               continue;
             }
             const double value = -f_pq / gap;

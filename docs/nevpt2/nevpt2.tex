@@ -2586,13 +2586,30 @@ orbitals of a degenerate block depend on the direction of the split. PC's
 energy is invariant to that rotation (its $f$ functional's is only at
 exact degeneracy), SC's not in general. The single-state SC Hessian
 refuses this (gap below $10^{-6}\,E_h$ with $|f^{(x)}_{pq}| > 10^{-8}$),
-the single-state PC one takes the pair's off-diagonal $f$
-(\S\ref{sec:hess-refusals}, \#1268), and the PC-QD one still refuses it
-(\#1277); \code{df\_qd\_nevpt2\_tangents} applies the same rule at
-$f^{\mathrm{SA}}$ (on C$_{3v}$ ammonia's SA-2 CAS(8,7) in 6-31G, SC refuses
-and PC records 22 pairs). A semi-numerical Hessian there is suspect for the
-same reason: the step picks the orbitals. That is \code{pipeline/hessian}'s
-growing-$z^c$ warning.
+and the single-state PC one takes the pair's off-diagonal $f$
+(\S\ref{sec:hess-refusals}, \#1268). \code{df\_qd\_nevpt2\_tangents}
+applies the same rule at $f^{\mathrm{SA}}$ (on C$_{3v}$ ammonia's SA-2
+CAS(8,7) in 6-31G, SC refuses and PC records both pairs along every
+coordinate), and the PC-QD Hessian takes the pair too (\#1277). Each
+$\mathcal{H}^{\mathrm{eff}}_{MN}$ is invariant to it: ket $N$'s
+first-order function solves its own $H_0$, whose inactive part is
+$f^{\mathrm{SA}}$'s two blocks, and with the whole blocks written every
+element is $b_M^{\mathsf T}(K_N + \Delta S_N)^{+} b_N$ per class, the
+bra's and ket's contractions and $\Delta$ turning together and $S_N$, its
+cut and $K_N$'s active part reading the RDMs alone. So $E_P$, an
+eigenvalue of $\mathcal{H}^{\mathrm{eff}}$, is smooth where two inactive
+orbital energies meet, and the single-state construction carries over
+element by element. Term~(i) is $\partial^2 E[W]$ at fixed $W$, linear in
+the elements, so its pair terms are the single-state ones of $E[W]$: each
+read by \code{qd\_pc\_hessian\_product} at $W$ and $z = 0$ in the turned
+bases (\code{src/hessian/README.md}, ``At a degenerate inactive pair'':
+on the ammonia's state~1 every element within $0.15$ of the ladder's bar,
+the pairs' part $3\times10^3$ bars). Term~(ii) needs nothing new: it reads only the first derivatives
+$h_{PS} = \mathrm{d}\mathcal{H}^{\mathrm{eff}}_{PS}$, from the analytic
+gradients over $W^{PS}$, which carry the pair through $z^c$ as every
+gradient does. A semi-numerical Hessian there is suspect for the same
+reason as for SC: the step picks the orbitals. That is
+\code{pipeline/hessian}'s growing-$z^c$ warning.
 
 \subsection{Summary}
 
@@ -2611,7 +2628,7 @@ at a QD crossing & none (cone) & pair mean Eq.~\eqref{eq:qd-pair} and seam $2\ti
 symmetry-degenerate QD states & none (JT) or by Eq.~\eqref{eq:qd-lowdin} (RT) & refuse Eq.~\eqref{eq:qd-hess} \\
 near a reference-root crossing & exists, $1/\text{gap}^2$, an artefact & computable, not physical; refused at the root-gap floor and $|\theta| > 10$/bohr \\
 ensemble edge, active-space instability & degrades, then discontinuous & refuse; both routes fail \\
-degenerate inactive orbitals (non-abelian groups) & exists for PC, not determined for SC & refuse (PC: \#1277; the single-state PC Hessian takes them, \#1268) \\
+degenerate inactive orbitals (non-abelian groups) & exists for PC, not determined for SC & PC: the pair's off-diagonal $f$ in term~(i) (\#1268, \#1277); SC: refuse \\
 higher roots, diffuse bases & exists & $1/d^3$ near-intruders; tractable only with the smallest $|d|$ reported \\
 PC, large active space & exists & on-shell residual amplified by $S^+$; tight CI convergence \\
 \bottomrule

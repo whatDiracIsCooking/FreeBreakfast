@@ -373,6 +373,9 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
   QdScNevpt2Terms &out = result.terms;
   // PC's kets' ranks, each state's diagonal element's: the products' sizing.
   std::vector<std::array<int64_t, 8>> pc_dropped;
+  // PC's H_eff correlation elements [M n + N]: E^corr[W]'s, which the
+  // degenerate pairs' turned bases are checked against.
+  std::vector<double> pc_totals;
   for (size_t r = 0; r < nroots; ++r) {
     for (size_t s = r + 1; s < nroots; ++s) {
       out.root_gap =
@@ -392,8 +395,8 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
       const std::vector<nevpt2::PcClassEnergies> elements = FBF_TRY(nevpt2::qd_pc_energy(
           res, alpha, beta, naux32, nmo32, nmo32, b.data(), solution.c.data(), h.data(), ncore,
           ncas, weights, solution.roots.vectors.data(), batch, 0, floor));
-      std::vector<double> totals;
-      std::ranges::transform(elements, std::back_inserter(totals), &nevpt2::PcClassEnergies::total);
+      std::ranges::transform(elements, std::back_inserter(pc_totals),
+                             &nevpt2::PcClassEnergies::total);
       // Ket N's conditioning is the same at every [M n + N]: its diagonal's.
       std::string thin;
       for (size_t n = 0; n < nroots; ++n) {
@@ -414,7 +417,7 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
                              "a pc_floor of {:g} or more cuts it",
                              kWho, thin, floor, kQdPcNevpt2Kept, kQdPcNevpt2Kept);
       }
-      auto [values, vectors] = FBF_TRY(qd_response_eigen(res, solution.roots.energies, totals));
+      auto [values, vectors] = FBF_TRY(qd_response_eigen(res, solution.roots.energies, pc_totals));
       forward.eigenvalues = std::move(values);
       forward.eigenvectors = std::move(vectors);
     } else {
@@ -565,22 +568,16 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
       }));
   out.max_theta = tangents.max_theta;
   out.max_kappa_oo = tangents.max_kappa_oo;
-  // PC's degenerate pair the displacement splits (SC's the tangents refuse):
-  // kappa_oo^x_pq is not a division the state determines, and the canonical
-  // orbitals PC reads are not differentiable there. The energy is smooth
-  // (PC is invariant to the pair's rotation), and df_pc_nevpt2 takes the
-  // pair's off-diagonal f (#1268); carrying that to every H_eff element and
-  // term (ii) is #1277, so QD still refuses.
-  if (!tangents.recorded.empty()) {
-    std::string named;
-    for (const DegeneratePair &d : tangents.recorded) {
-      named += std::format("{}(coordinate {}, orbitals {} and {}, gap {:.2e}, f {:.2e})",
-                           named.empty() ? "" : ", ", d.coordinate, d.p, d.q, d.gap, d.f);
-    }
-    return err_numerical("{}: the canonical inactive orbitals are not differentiable at a "
-                         "degenerate pair the displacement splits: {}",
-                         kWho, named);
-  }
+  // PC's degenerate pairs (SC's the tangents refuse): kappa_oo^x_pq is not a
+  // division the state determines, and the tangents left it 0. Every H_eff
+  // element is invariant to the pair's rotation, so step 4b takes the pair's
+  // off-diagonal f in E^corr[W] as df_pc_nevpt2 does in E_corr (README "The
+  // PC-QD-NEVPT2 Hessian", "At a degenerate inactive pair", #1277);
+  // disjoint pairs only.
+  std::vector<std::array<int32_t, 2>> records;
+  std::ranges::transform(tangents.recorded, std::back_inserter(records),
+                         [](const DegeneratePair &d) { return std::array{d.p, d.q}; });
+  std::vector<std::array<int32_t, 2>> blocks = FBF_TRY(degenerate_pair_blocks(kWho, records));
   Buffers::device<double> t_nr = FBF_TRY(zeroed(nn * k));
   // x_A in the coordinates, size x k column-major: lambda_i = sum_x Q_ix x_x.
   Buffers::device<double> lambda_q = FBF_TRY(zeroed(size * k));
@@ -687,22 +684,27 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
   // again, each as the other's partner (K6 at the pair's mean eta, and the
   // per-block refusal on every ket). Chunked as widely as the memory budget
   // holds the product's footprint.
+  // <t_i, (h_bar, Lambda, y)> over every i, into k doubles.
+  const auto pair_with = [&](const double *h_bar_dot, const double *lambda_dot, const double *y_dot,
+                             double *into) -> Status {
+    FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, nn32, k32, &kOne<double>,
+                                                  t_h.data(), nn32, h_bar_dot, 1, &kZero<double>,
+                                                  into, 1)));
+    FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, bn32, k32, &kOne<double>,
+                                                  t_b.data(), bn32, lambda_dot, 1, &kOne<double>,
+                                                  into, 1)));
+    return gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, n_ci32, k32,
+                                                 &kOne<double>, t_c.data(), n_ci32, y_dot, 1,
+                                                 &kOne<double>, into, 1));
+  };
+  // Column j of @p into (k long) = <t_i, P> over every i.
+  const auto pair_product = [&](const nevpt2::AdjointTangent &p, double *into) -> Status {
+    return pair_with(p.h_bar.data(), p.lambda.data(), p.y.data(), into);
+  };
   out.hvp.assign(k * k, 0.0);
   std::vector<std::string> refused;
   {
     Buffers::device<double> paired(k * k, res.device());
-    // Column j of @p into (k long) = <t_i, P> over every i.
-    const auto pair_with = [&](const nevpt2::AdjointTangent &p, double *into) -> Status {
-      FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, nn32, k32,
-                                                    &kOne<double>, t_h.data(), nn32, p.h_bar.data(),
-                                                    1, &kZero<double>, into, 1)));
-      FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, bn32, k32,
-                                                    &kOne<double>, t_b.data(), bn32,
-                                                    p.lambda.data(), 1, &kOne<double>, into, 1)));
-      return gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, n_ci32, k32,
-                                                   &kOne<double>, t_c.data(), n_ci32, p.y.data(), 1,
-                                                   &kOne<double>, into, 1));
-    };
     const auto product = [&](const int32_t count, const double *dh, const double *db,
                              const double *dc, const nevpt2::MoDirections &partners) {
       return nevpt2::qd_sc_hessian_product(res, alpha, beta, naux32, nmo32, nmo32, b.data(), c,
@@ -744,7 +746,7 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
       result.lift_steps.assign(k, {});
       const auto take = [&](const size_t j0, const nevpt2::QdPcHessianProduct &p) -> Status {
         for (size_t u = 0; u < p.products.size(); ++u) {
-          FBF_TRY(pair_with(p.products[u], paired.data() + ((j0 + u) * k)));
+          FBF_TRY(pair_product(p.products[u], paired.data() + ((j0 + u) * k)));
           result.lift_steps[j0 + u] = p.lift_steps[u];
         }
         return res.sync();
@@ -844,7 +846,7 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
         out.rounding_at = p.rounding_at;
         FBF_TRY(sc_rounding_refusal(kWho, p.rounding, p.rounding_at, p.rounding_norm));
         for (size_t u = 0; u < count; ++u) {
-          FBF_TRY(pair_with(p.products[u], paired.data() + ((j0 + u) * k)));
+          FBF_TRY(pair_product(p.products[u], paired.data() + ((j0 + u) * k)));
           for (const std::array<int64_t, 8> &ket : p.populated[u]) {
             breaking[j0 + u] =
                 breaking[j0 + u] || std::ranges::any_of(ket, [](const int64_t n) { return n > 0; });
@@ -911,8 +913,8 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
           }
           out.defect = std::max({out.defect, p->defect[0], p->defect[1], p->coupling_defect[0],
                                  p->coupling_defect[1]});
-          FBF_TRY(pair_with(p->products[0], paired.data()));
-          FBF_TRY(pair_with(p->products[1], paired.data() + k));
+          FBF_TRY(pair_product(p->products[0], paired.data()));
+          FBF_TRY(pair_product(p->products[1], paired.data() + k));
           const std::vector<double> two_columns = FBF_TRY(download(paired.data(), 2 * k));
           out.hvp[i + (k * j)] = two_columns[i];
           out.hvp[j + (k * i)] = two_columns[k + j];
@@ -930,6 +932,55 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
     return err_numerical("{}: SC-QD-NEVPT2 has no Hessian on the coordinate pairs {}: an empty "
                          "tuple's energy is not a quadratic form on the pair{}",
                          kWho, named, why);
+  }
+
+  // 4b. PC's degenerate pairs' off-diagonal f in E^corr[W] (df_pc_nevpt2's
+  // step 4b, degenerate_pair_part's, with qd_pc_hessian_product at W and
+  // z = 0 in each turned basis). Term (ii) needs nothing of it: it reads
+  // the couplings h_PQ from the analytic QD gradients over W^PQ, which take
+  // the pair through z^c.
+  result.degenerate.assign(k * k, 0.0);
+  if (!blocks.empty()) {
+    const size_t np = blocks.size();
+    // phi^P_i and d^P_i, [P k + i], from the Cartesian records.
+    std::vector<double> phi(np * k, 0.0);
+    std::vector<double> split(np * k, 0.0);
+    for (const DegeneratePair &d : tangents.recorded) {
+      const auto at =
+          static_cast<size_t>(std::ranges::find(blocks, std::array{d.p, d.q}) - blocks.begin());
+      const auto x = static_cast<size_t>(d.coordinate);
+      for (size_t i = 0; i < k; ++i) {
+        phi[(at * k) + i] += q[(i * n_x) + x] * d.f;
+        split[(at * k) + i] += q[(i * n_x) + x] * d.split;
+      }
+    }
+    // E^corr[W] at the canonical orbitals.
+    double energy = 0.0;
+    for (size_t e = 0; e < nroots * nroots; ++e) {
+      energy += out.w[e] * pc_totals[e];
+    }
+    Buffers::device<double> z_none = FBF_TRY(zeroed(nn));
+    Buffers::device<double> b_none = FBF_TRY(zeroed(naux * nn));
+    Buffers::device<double> c_none = FBF_TRY(zeroed(n_ci));
+    DegeneratePairPart part = FBF_TRY(degenerate_pair_part(
+        res, nmo32, naux32, k, c, energy, blocks, phi, split,
+        [&](const double *c_turned, const double *direction, const auto &consume) -> Status {
+          const nevpt2::QdPcHessianProduct p = FBF_TRY(nevpt2::qd_pc_hessian_product(
+              res, alpha, beta, naux32, nmo32, nmo32, b.data(), c_turned, h.data(), ncore, ncas,
+              weights, vectors, out.w, z_none.data(), batch,
+              {.count = 1, .h = direction, .b = b_none.data(), .c = c_none.data()}, {}, false,
+              floor));
+          double turned = 0.0;
+          for (size_t e = 0; e < nroots * nroots; ++e) {
+            turned += out.w[e] * p.elements[e].total;
+          }
+          const nevpt2::AdjointTangent &t = p.products[0];
+          return consume(t.h_bar.data(), t.lambda.data(), t.y.data(), turned);
+        },
+        pair_with));
+    result.degenerate = std::move(part.part);
+    result.rotation_shift = part.rotation_shift;
+    result.degenerate_pairs = std::move(blocks);
   }
 
   // 5. E_rho's share at rho = diag W: E_xy at the rho-weighted RDMs (F^[x]
@@ -1231,7 +1282,8 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
   const auto element = [&](const size_t at) {
     return out.e_sa[at] + out.z_lxy[at] + out.z_lx[at] + out.z_third[at] + out.z_koo[at] +
            out.zeta[at] + out.skeleton[at] + out.hvp[at] + out.rotation_tau[at] +
-           out.rotation_kappa[at] + (out.term_ii.empty() ? 0.0 : out.term_ii[at]);
+           out.rotation_kappa[at] + result.degenerate[at] +
+           (out.term_ii.empty() ? 0.0 : out.term_ii[at]);
   };
   for (size_t j = 0; j < k; ++j) {
     for (size_t i = 0; i < k; ++i) {
@@ -1490,6 +1542,15 @@ MemoryFootprint qd_nevpt2_footprint(const BasisSet &basis, const BasisSet &aux, 
     l.give(2 * two);
   } else if (pairs) {
     l.run(product(1, 1));
+  }
+  if (pc) {
+    // 4b. PC's degenerate pairs: z, the direction and U, the turned C, h_bar
+    // turned back; the zero B and c directions, the turn's work and Lambda
+    // turned back; the paired column; beside one product.
+    const size_t turned = kD * ((5 * nn) + (3 * static_cast<size_t>(naux) * nn) + n_ci + ks);
+    l.take(turned);
+    l.run(product(1, 0));
+    l.give(turned);
   }
   l.give(kD * ks * ks);
   // 5. E_rho's share (each pass alike): the RDMs; F^[x] at rho beside its
