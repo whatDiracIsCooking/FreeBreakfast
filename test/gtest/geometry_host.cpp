@@ -1091,7 +1091,10 @@ fb::Result<double> arc_valley(std::span<const double> x, std::span<double> gradi
 // |g| / (u H u), within half a step 10 steps short of the minimum: the model's
 // line test, the stop before #1278, ended each side there (point 20 of 30).
 // |g| sees that part at second order, so the walk runs on to within a step
-// of the minimum, its energy falling at every point.
+// of the minimum, its energy falling at every point. Its last points' |g| is
+// below sphere_gradient, where a sphere's point is not resolved, so which of
+// the two stops that leave it within a step ends the walk is not either: the
+// |g| halving, or the next point's energy rising (since #1288's first trial).
 TEST(GeometryIrc, SoftCurvedValleyRunsToItsMinimum) {
   // d2E/dtheta2 = -4e-3 / theta_m^2 at the TS, over R^2 along x.
   const std::array<double, 9> hessian{
@@ -1106,7 +1109,9 @@ TEST(GeometryIrc, SoftCurvedValleyRunsToItsMinimum) {
     const auto path = geo::irc(one_hydrogen(), hessian, direction, arc_valley, options);
     ASSERT_TRUE(path.has_value()) << path.error().message;
     const auto &points = path->points;
-    EXPECT_EQ(path->stop, geo::IrcStop::MinimumWithinStep) << geo::irc_stop_name(path->stop);
+    EXPECT_TRUE(path->stop == geo::IrcStop::MinimumWithinStep ||
+                path->stop == geo::IrcStop::EnergyRose)
+        << geo::irc_stop_name(path->stop);
     for (std::size_t k = 0; k + 1 < points.size(); ++k) {
       EXPECT_LT(points[k + 1].energy, points[k].energy) << k;
     }
@@ -1176,6 +1181,99 @@ TEST(GeometryIrc, StiffSharplyCurvedValleyLeavesTheTransitionState) {
       EXPECT_LE(miss, step) << "k " << stiffness << " s " << step << " side " << side;
     }
   }
+}
+
+// The stiff valley bent by b, E = (x^2 - 1)^2 + k (y - b x^2)^2 + z^2 / 2,
+// minima at (+-1, b, 0), as a callback.
+std::function<fb::Result<double>(std::span<const double>, std::span<double>)>
+bent_valley(double stiffness, double bend) {
+  return [stiffness, bend](std::span<const double> x,
+                           std::span<double> gradient) -> fb::Result<double> {
+    const double a = (x[0] * x[0]) - 1.0;
+    const double b = x[1] - (bend * x[0] * x[0]);
+    gradient[0] = (4.0 * x[0] * a) - (4.0 * bend * stiffness * b * x[0]);
+    gradient[1] = 2.0 * stiffness * b;
+    gradient[2] = x[2];
+    return (a * a) + (stiffness * b * b) + (0.5 * x[2] * x[2]);
+  };
+}
+
+// #1288: the valley above stiffer or bent harder, at the default sphere
+// thresholds and max_sphere_iterations. A later sphere's first trial was the
+// Bofill model's step from point k, across the sphere's diameter, and on these
+// valleys the model is not good over that distance: a mid-valley sphere used
+// up its 20 evaluations, and each side stopped SphereNotConverged part-way
+// (50 of 84 points at k = 200, b = 4, s = 0.05; 14 of 23 at k = 1000, b = 2,
+// s = 0.1). From the far pole turned as the last step turned, each side runs
+// to within a step of its minimum, its energy falling at every point. Each
+// side's points are the ones 200 evaluations per sphere reached before.
+// k = 1000, b = 4, s = 0.1 is the limit left (src/geometry/README.md): its
+// first sphere, which the fix does not change, stops at the default budget
+// with the TS alone, and runs to its minimum at 40.
+TEST(GeometryIrc, StiffBentValleyRunsToItsMinimaAtTheDefaultBudget) {
+  const double sqrt_m = std::sqrt(kHydrogenMass);
+  struct Valley {
+    double stiffness;
+    double bend;
+    double step;
+  };
+  const auto walk = [&](const Valley &v, const geo::IrcOptions &options, double side) {
+    const std::array<double, 9> hessian{-4.0, 0.0, 0.0, 0.0, 2.0 * v.stiffness, 0.0, 0.0, 0.0, 1.0};
+    const std::array<double, 3> direction{side, 0.0, 0.0};
+    return geo::irc(one_hydrogen(), hessian, direction, bent_valley(v.stiffness, v.bend), options);
+  };
+  const auto options_for = [](const Valley &v) {
+    geo::IrcOptions options;
+    options.step_size = v.step;
+    options.max_points = 200;
+    options.project_rigid_body = false;
+    return options;
+  };
+  for (const Valley v :
+       {Valley{200.0, 4.0, 0.05}, Valley{200.0, 4.0, 0.1}, Valley{400.0, 2.0, 0.1},
+        Valley{1000.0, 2.0, 0.05}, Valley{1000.0, 2.0, 0.1}, Valley{1000.0, 1.0, 0.05},
+        Valley{1000.0, 1.0, 0.1}, Valley{1000.0, 4.0, 0.05}}) {
+    const geo::IrcOptions options = options_for(v);
+    for (const double side : {1.0, -1.0}) {
+      const auto path = walk(v, options, side);
+      ASSERT_TRUE(path.has_value()) << path.error().message;
+      const auto &points = path->points;
+      EXPECT_EQ(path->stop, geo::IrcStop::MinimumWithinStep)
+          << "k " << v.stiffness << " b " << v.bend << " s " << v.step << " side " << side << ": "
+          << geo::irc_stop_name(path->stop) << " after " << points.size() - 1;
+      int32_t evaluations = 0;
+      int32_t worst = 0;
+      for (std::size_t k = 0; k + 1 < points.size(); ++k) {
+        EXPECT_LT(points[k + 1].energy, points[k].energy) << k;
+        evaluations += points[k + 1].sphere_iterations;
+        if (k > 0) {
+          worst = std::max(worst, points[k + 1].sphere_iterations);
+        }
+      }
+      const auto &end = points.back().x;
+      const double miss = sqrt_m * std::hypot(end[0] - side, end[1] - v.bend, end[2]);
+      std::cout << std::format("[ irc ] bent valley k {} b {} s {} side {:+.0f}: {} points, {} "
+                               "evaluations, a later sphere's most {}, {:.4f} amu^1/2 bohr from "
+                               "the minimum\n",
+                               v.stiffness, v.bend, v.step, side, points.size() - 1, evaluations,
+                               worst, miss);
+      EXPECT_LE(miss, v.step) << "k " << v.stiffness << " b " << v.bend << " s " << v.step
+                              << " side " << side;
+    }
+  }
+  // The limit: the first sphere's two searches.
+  const Valley limit{1000.0, 4.0, 0.1};
+  geo::IrcOptions options = options_for(limit);
+  const auto stopped = walk(limit, options, 1.0);
+  ASSERT_TRUE(stopped.has_value()) << stopped.error().message;
+  EXPECT_EQ(stopped->stop, geo::IrcStop::SphereNotConverged) << geo::irc_stop_name(stopped->stop);
+  EXPECT_EQ(stopped->points.size(), 1U);
+  options.max_sphere_iterations = 40;
+  const auto raised = walk(limit, options, 1.0);
+  ASSERT_TRUE(raised.has_value()) << raised.error().message;
+  EXPECT_EQ(raised->stop, geo::IrcStop::MinimumWithinStep) << geo::irc_stop_name(raised->stop);
+  const auto &end = raised->points.back().x;
+  EXPECT_LE(sqrt_m * std::hypot(end[0] - 1.0, end[1] - limit.bend, end[2]), limit.step);
 }
 
 // E = -x^2 + 3 y^2 / 2 + z^2: a quadratic saddle whose path is the x axis.
