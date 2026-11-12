@@ -151,71 +151,14 @@ and is never mirrored.
 
 ## Documentation
 
-### Code: rustdoc on GitHub Pages
-
-- **The API reference is rustdoc**, built with `cargo doc --no-deps` and
-  published to GitHub Pages by a workflow on merge to main.
-- **rustdoc warnings are errors** (`-D warnings`), as the crate already
-  requires, so a broken intra-doc link fails the build.
-- **Doc examples are tests.** `cargo test` compiles and runs them, so an example
-  cannot drift from the API it shows.
-- **A module's doc comment carries its spec.** That means what it does, its
-  contracts, and, while the port lasts, its C++-to-Rust table, as the crate's
-  modules already do.
-
-### Equations
-
-rustdoc does not render math on its own. KaTeX, loaded through
-`--html-in-header` (`RUSTDOCFLAGS`), renders `$...$` and `$$...$$` in doc
-comments. It is one HTML file and adds no build dependency.
-
-An equation in a doc comment cites its source by equation number, the way the
-NEVPT2 code cites Park 2019 today. A reader can then check the code against the
-paper term by term.
-
-### References
-
-References are tracked in one bibliography file (BibTeX) in the repo, with one
-entry per source and a stable key. Docs cite by key, and the key links to a
-generated references page. There are five kinds of entry:
-
-| Kind | What the entry records |
-|---|---|
-| Article | DOI. The equations and sections the code uses. |
-| Textbook | Edition, and the chapters and sections the code uses. |
-| Other codebase | URL, the version or commit compared against, and its license. For example, PySCF as the reference for regression values. |
-| Data | Source and version, such as the BSE basis sets |
-| License obligation | Code or data derived from someone else's, and what it requires: a notice, attribution, or a compatible license |
-
-Two rules come with the bibliography:
-
-- **Consulted and derived are different.** Reading a paper or a codebase owes
-  nothing. Porting code from one carries its license. The entry says which it
-  was, so an obligation such as a BSD notice is recorded when the code arrives,
-  not discovered later.
-- **Metadata only.** The bibliography is public, so it holds no PDFs (they are
-  copyrighted) and no references to private material.
-
-### Diagrams and animations
-
-- **Diagrams are source, not pictures.** They are checked in as text, either
-  Mermaid or hand-written SVG, and rendered when the docs build.
-- **DAG diagrams are generated from the DAGs themselves.** The task DAG type
-  can emit Mermaid or DOT, so a feature's diagram is produced from the same
-  structure the orchestrator runs, and cannot drift from it.
-- **Animations are generated from real runs**, never drawn by hand. Examples:
-  a task timeline built from a run's timing record
-  ([`diagnostics.md`](diagnostics.md)), SCF convergence,
-  an IRC path, and orbitals along a reaction coordinate. Scripts make them
-  while the site builds, so binary media stays out of the repo.
-
-### Open questions
-
-- **Narrative docs.** rustdoc is for the API. Design and theory pages, this
-  document included, could go in an mdBook, published beside the rustdoc on the
-  same Pages site with the same KaTeX. Or they could stay as Markdown in the
-  repo.
-- **Publishing while experimental.** Should the Pages site go up now, or once
-  the rebuild leaves `experimental/`?
-- **Where the bibliography lives.** It could be one file for the whole tree,
-  shared with the C++ docs, or one for the rebuild alone.
+Documentation has its own document, [`documentation.md`](documentation.md).
+In short: the API reference is rustdoc, with `missing_docs` and broken links
+denied in the manifest, and every doc example a test, `compile_fail` ones
+being the tier-1 suite; equations are KaTeX, cited by number from a published
+paper and by label from the tree's own documents; references are one
+tree-wide BibTeX file, with derived work's license obligations as entries and
+keys checked against citations; the narrative pages are Markdown rendered by
+mdBook beside the rustdoc; diagrams are emitted from the plan and committed
+as tier-3 goldens; animations are made by the nightly from real runs and
+published from the metrics branch; and the Pages site goes up now, built on a
+runner once `build.rs` learns it is only documenting.
