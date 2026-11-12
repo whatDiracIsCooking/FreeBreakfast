@@ -54,7 +54,9 @@ already has, 42 bridge headers and 114 launchers, none of which allocates,
 synchronizes or sets the device; the port changes the ABI the bridge is
 spoken in, not what it says. The bridge header is the port line, one module
 at a time, with the C++ pipeline green throughout, since C++ calls the same
-`extern "C"` header. A launch wrapper stays in its `.cu`, becomes `extern "C"`, takes
+`extern "C"` header; the C++ modules stay beside their Rust crates and go
+together at the cut-over, when the Rust pipeline matches the C++ one. A
+launch wrapper stays in its `.cu`, becomes `extern "C"`, takes
 the C ABI's stream, and returns one `int32_t` status in three ranges:
 success, the C ABI's `wwr_status` from its own `wwr_get_last_error()`, and
 the wrapper's refusals, kept apart from launch errors. The launch shape and
@@ -84,3 +86,33 @@ mdBook beside the rustdoc; diagrams are emitted from the plan and committed
 as tier-3 goldens; animations are made by the nightly from real runs and
 published from the metrics branch; and the Pages site goes up now, built on a
 runner once `build.rs` learns it is only documenting.
+
+## Order of work
+
+The documents above describe the finished shape. The crate today is `core`
+alone, in one package, and nothing runs cargo in the gates. The first steps,
+in order, each one PR:
+
+1. **The section-citation check**, as the first tier-3 test
+   ([`documentation.md`](documentation.md), "Narrative: mdBook beside the
+   rustdoc"). It is a few lines, needs no card, and these documents have
+   drifted once already.
+2. **The workspace.** One crate per module and `core` split
+   ([`testing.md`](testing.md), "Selection: the workspace graph is the
+   selection graph"), done while the crate is four thousand lines rather than
+   forty.
+3. **The cargo half of the gates**, tiers 1 to 3 for a diff under the crate
+   ([`testing.md`](testing.md), "What runs when").
+4. **One task through the whole model**, before any module is ported: the
+   overlap, which `experimental/rust/s_overlap` already launches, or the
+   Coulomb build. Declared with a layout, laid out in an arena, planned once
+   and run on one stream, with its arena size committed as a golden and its
+   stream scope timed. Everything in these documents leans on the
+   orchestrator, and this is where the model meets its hard cases, an
+   adaptive width and a data-dependent size, on one task rather than twenty.
+5. **The per-module shared objects**, a C++-tree change
+   ([`gpu_layer.md`](gpu_layer.md), "Build").
+
+Then the port, bottom-up from `core`, one module per crate, with the C++
+tree green throughout ([`gpu_layer.md`](gpu_layer.md), "What the port
+changes").

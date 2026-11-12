@@ -258,8 +258,8 @@ one reason each:
   against a process that is half dead. An abort loses no backtrace: the panic
   hook prints it before the process ends.
 - **Test unwinds** because the contract-tripping tests
-  ([`testing.md`](testing.md), "Contracts") are `#[should_panic]`, and that
-  attribute needs the panic to be caught.
+  ([`testing.md`](testing.md), "Contracts are part of the spec") are
+  `#[should_panic]`, and that attribute needs the panic to be caught.
 
 **The panic hook logs at `critical`.** It routes the panic's message and
 location through `critical!`, so they reach the file sink and are flushed
