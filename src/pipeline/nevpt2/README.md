@@ -116,6 +116,14 @@ a root whose PC was refused (Errors).
       counts; and `nevpt2_reference.py` checks block2's PC on each root's
       natural orbitals against the unrotated one it records, to 1.8e-14.
 
+**The precision follows `[casscf]`'s `conv_tol_grad`.** NEVPT2 is linear in
+the CASSCF's CI error, where the CASSCF energy is quadratic in it, and the CI
+is converged to a residual scaled to `conv_tol_grad`
+(`mcscf::ci_tolerance_for`). At 1e-6 that leaves SC and PC E_corr within
+~3e-8 Eh of a fully converged CI's (C₆H₁₀ CAS(6,6)/cc-pVDZ,
+`experimental/cope_rearrangement/step_4/`). For a comparison below 1e-8,
+tighten `conv_tol_grad`, not `conv_tol`.
+
 ## QD-NEVPT2
 
 [`examples/nevpt2.toml`](../../../examples/nevpt2.toml) runs the per-root

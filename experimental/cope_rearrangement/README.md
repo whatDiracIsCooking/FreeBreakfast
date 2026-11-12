@@ -59,7 +59,7 @@ optimisation of the Cope before claiming that part is new.
 | [`step_1/`](step_1/README.md) | C2h chair guess, symmetry-labelled CAS(6,6) (2a_g + 2b_u + a_u + b_g), relaxed C2h DF-CASSCF(6,6)/cc-pVDZ scan of R16 = R34, 1.50–2.60 Å | PySCF | done: diyl minimum at 1.65 Å, "aromatic" minimum at 2.30 Å |
 | [`step_2/`](step_2/README.md) | PC-NEVPT2 (block2) and SC-NEVPT2 along the scan; the a_u Hessian (CASSCF full, NEVPT2 in a 3-D subspace) | PySCF, block2 | partial: E(R) at all 23 points, one PC-NEVPT2 minimum at 1.95 Å; a_u curvature negative there (concerted), run at 1.95 and 1.65 Å only |
 | step 3 | 2D (R16, R34) surface under C2, relaxed at PC-NEVPT2 | free-breakfast | after step 4: needs distance constraints in `[optimize]` (see below) |
-| step 4a | implementation check: free-breakfast DF-PC-NEVPT2 energies at step 1's geometries against step 2's block2 numbers | free-breakfast | not started |
+| [`step_4/`](step_4/README.md) 4a | implementation check: free-breakfast DF-PC-NEVPT2 energies at step 1's geometries against step 2's block2 numbers | free-breakfast | done: CASSCF to 7e-12, PC to 1.1e-7 against step 2 (its convergence); to 4e-10 on the same orbitals and CI. ~1.5 s a point on a 3080 |
 | step 4b | PT2-level C2h stationary point, analytic Hessian, mode-displaced minimisations (the IRC check); the CASSCF contrast | free-breakfast | not started |
 | step 4c | PC-NEVPT2 gradient against BAGEL or ORCA at step 4b's TS | BAGEL / ORCA | not started |
 | step 5 | CCSD(T) at the PT2 TS; cc-pVTZ single points on the barrier | PySCF | not started |
