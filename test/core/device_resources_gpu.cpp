@@ -363,6 +363,52 @@ TEST(DeviceResources, MemoryBudgetFollowsALiveAllocation) {
   EXPECT_EQ(res.memory_budget().value(), start);
 }
 
+// An uncapped budget leaves room for the kernels' stack (#1259): read the
+// budget with the stack limit at its default, then let the driver take the
+// largest kernel's stack outside the pool -- raising the limit takes it at
+// once on CUDA, as the first launch of such a kernel does -- and allocate what
+// hessian::widest_fitting would size from that budget, all of it less the
+// fragmentation headroom. Without the margin the budget counted the stack's
+// memory as the pool's, and that allocation aborted (CreatePolicy). Under
+// ROCm there is no device-wide stack, the margin is 0, and the case holds
+// trivially.
+TEST(DeviceResources, MemoryBudgetLeavesRoomForKernelStacks) {
+  FBF_REQUIRE_GPU();
+
+  constexpr std::size_t kDefaultStack = 1024; // CUDA's and ROCm's default
+  const fb::ScopedDeviceIndex on{0};
+  std::size_t restore = 0;
+  ASSERT_EQ(wwr::wwrDeviceGetLimit(&restore, wwr::wwrLimitStackSize), wwr::wwrSuccess);
+  // A case before this one in the process may have raised it.
+  ASSERT_EQ(wwr::wwrDeviceSetLimit(wwr::wwrLimitStackSize, kDefaultStack), wwr::wwrSuccess);
+  {
+    const fb::DeviceResources res{0, fb::test::kWorkspaces};
+    const std::uint64_t margin = res.device()->stack_growth(fb::DeviceResources::kKernelStackBytes);
+    const std::size_t budget = res.memory_budget().value();
+    ASSERT_GT(budget, fb::kPoolHeadroomBytes);
+    const std::size_t room = budget - fb::kPoolHeadroomBytes;
+
+    // The driver takes the stack outside the pool: the margin was its size.
+    ASSERT_EQ(
+        wwr::wwrDeviceSetLimit(wwr::wwrLimitStackSize, fb::DeviceResources::kKernelStackBytes),
+        wwr::wwrSuccess);
+    EXPECT_EQ(res.device()->stack_growth(fb::DeviceResources::kKernelStackBytes), 0U);
+    std::cout << "[ budget   ] " << budget << " B, stack margin " << margin << " B\n";
+    // What the budget lost to it is within the headroom: the margin held it.
+    EXPECT_GE(res.memory_budget().value() + fb::kPoolHeadroomBytes, budget);
+
+    // The step's allocation, sized before the stack was taken, still fits.
+    {
+      fb::Buffers::device<std::byte> step(room, res.device());
+      ASSERT_EQ(wwr::wwrMemsetAsync(step.data(), 0, room, res.stream()), wwr::wwrSuccess);
+      ASSERT_TRUE(res.sync().has_value());
+    }
+    ASSERT_TRUE(res.sync().has_value());
+  }
+  // Hand the stack back for the cases after this one in the process.
+  ASSERT_EQ(wwr::wwrDeviceSetLimit(wwr::wwrLimitStackSize, restore), wwr::wwrSuccess);
+}
+
 // A counted buffer carries its count when moved, and may outlive the
 // DeviceResources that allocated it.
 TEST(DeviceResources, CountedPinnedMovesItsCount) {

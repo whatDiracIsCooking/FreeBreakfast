@@ -156,10 +156,23 @@ public:
   ///
   /// The 249 MiB measured on the 3080 (src/core/wwr/README.md, "The fixed
   /// reserve outside the pool"), rounded up: it is a floor, which grows as
-  /// lazily loaded kernel modules are first launched. A pool cap is set
-  /// below the device's share by this much, so it is not taken again from
-  /// the cap.
+  /// lazily loaded kernel modules are first launched. The kernels' stack,
+  /// which grows far more, is kKernelStackBytes'. A pool cap is set below
+  /// the device's share by this much, so it is not taken again from the cap.
   static constexpr uint64_t kDeviceReserve = uint64_t{256} << 20;
+
+  /// @brief The largest per-thread stack of any kernel the tree launches, in
+  /// bytes: kinetic_hessian<3,3>'s 23,192 (`cuobjdump
+  /// --dump-resource-usage`), a generated integral kernel.
+  ///
+  /// CUDA holds a kernel's stack for every resident thread from its first
+  /// launch on, outside the pool (Device::stack_growth: 2.2 GiB on the 3080
+  /// at this size), so an uncapped memory_budget() leaves room for it before
+  /// the kernel that needs it has run. The ctest core_kernel_stack_bound
+  /// checks it against the built binary; raise it with a regenerated kernel
+  /// that needs more. src/core/wwr/README.md, "Kernel stacks outside the
+  /// pool", has the measurements.
+  static constexpr size_t kKernelStackBytes = 23192;
 
   /// @brief What a DeviceResources itself holds in its pool from
   /// construction on besides the device workspace, in bytes: the info() flag,
@@ -334,9 +347,13 @@ public:
   /// pool_cap(), or with no cap the device's total less kDeviceReserve; and
   /// never more than the driver can supply, its free memory plus what the
   /// pool holds cached (ReservedMemCurrent), since another process may hold
-  /// part of the device. 0 when the pool already uses the limit. A GpuRuntime
-  /// error if the driver's free memory cannot be read; a failed pool query
-  /// aborts (CreatePolicy).
+  /// part of the device. With no cap, the supply also leaves out what the
+  /// kernels' stack can still take (Device::stack_growth(kKernelStackBytes)),
+  /// which the driver takes outside the pool at a launch after this is read;
+  /// under a cap the pool already holds its cap (pre-flight's pre-warm), and
+  /// the stack comes from what the cap leaves of the device. 0 when the pool
+  /// already uses the limit. A GpuRuntime error if the driver's free memory
+  /// cannot be read; a failed pool or limit query aborts (CreatePolicy).
   ///
   /// Unlike the driver's free memory, it counts what the pool holds reserved
   /// but unused as available: a freed block the pool keeps cached is the next
@@ -353,7 +370,9 @@ public:
     const uint64_t total = total_bytes;
     const uint64_t uncapped = total > kDeviceReserve ? total - kDeviceReserve : 0;
     const uint64_t limit = pool_cap_ != 0 ? pool_cap_ : uncapped;
-    const uint64_t supply = uint64_t{free_bytes} + usage.reserved_current;
+    const uint64_t driver = uint64_t{free_bytes} + usage.reserved_current;
+    const uint64_t stack = pool_cap_ != 0 ? 0 : device_->stack_growth(kKernelStackBytes);
+    const uint64_t supply = driver > stack ? driver - stack : 0;
     const uint64_t bound = std::min(limit, supply);
     return static_cast<size_t>(bound > usage.used_current ? bound - usage.used_current : 0);
   }
