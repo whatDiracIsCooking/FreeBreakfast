@@ -388,6 +388,7 @@ rms_displacement = 1.2e-3
 max_steps = 100           # evaluations after the first
 # meci = [0, 1]           # the MECI of these two [casscf] roots instead
 # max_gap = 1e-5          # hartree, the MECI's fifth criterion (meci only)
+# constraints = [{ atoms = [0, 5], distance = 1.95 }]  # held fixed (not with meci)
 ```
 
 `[optimize]` is a geometry optimization (`optimize/README.md`). Each
@@ -423,6 +424,14 @@ a `[casscf]` of one root or a pair past its `nroots` (`InvalidConfig`), and
 unequal `weights` on I and J or an integral-direct `[eri]`, written or
 filled in (`Unsupported`). A `[gradient]` or `[casscf_gradient]` beside it
 is a later step, run at the MECI.
+
+**`constraints` holds interatomic distances fixed** while every other degree
+of freedom is minimized (`optimize/README.md` "Distance constraints"): an
+array of `{ atoms = [a, b], distance = d }`, atoms 0-based as the xyz orders
+them, d in Angstrom (kept in bohr in `geometry::Options::constraints`), over
+any chain but `meci`'s. Each malformed entry is refused naming the key and
+its index; an atom past the molecule's is `OptimizeStep::run`'s refusal,
+since the config never reads the xyz.
 
 **With a `[nevpt2_gradient]` beside `meci`, P and Q are QD-NEVPT2 states**
 (`optimize/README.md` "The QD-NEVPT2 MECI"): the table must be
@@ -583,7 +592,11 @@ than after the SCF has converged. `parse_config` touches no disk.
   `[nevpt2_gradient]`; a `meci` that is not two distinct roots, a `max_gap`
   without it, or `meci` beside a `[nevpt2_gradient]` that is not
   quasi-degenerate or names a `state`, over a `[casscf]` of one root, or
-  naming a root past its `nroots`;
+  naming a root past its `nroots`; `constraints` that is not a non-empty
+  array of `{ atoms, distance }` tables, an entry with another key, `atoms`
+  not two integers, an atom below 0 or named twice, a pair named twice in
+  either order, a `distance` missing or not finite and positive, or
+  `constraints` beside `meci`;
 - a `[hessian]` `displacement` that is not finite and positive, or one
   beside the analytic method; `ladder` or `pairs` beside the analytic
   method, or `coordinates` beside it without a `[nevpt2_gradient]`; a
