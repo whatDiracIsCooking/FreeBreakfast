@@ -656,10 +656,12 @@ but the kernels' stack: the CUDA or HIP context and the libraries' reserve as
 well as the pool. The stack is outside it: CUDA holds a kernel's stack for
 every resident thread from its first launch on, up to 2.2 GiB on the
 RTX 3080 for the tree's largest kernel (`DeviceResources::kKernelStackBytes`;
-`src/core/wwr/README.md`, "Kernel stacks outside the pool"). So leave that
-much of the card above the cap; a launch the card cannot give it fails with
-`wwrErrorMemoryAllocation`. Uncapped, the memory budget leaves that room
-itself.
+`src/core/wwr/README.md`, "Kernel stacks outside the pool"), and takes it
+back from the pool when the card has no free memory left. So the cap plus
+that much must fit what the card has free, and pre-flight refuses a cap
+that does not (`Allocation`, naming the free memory, the stack and the
+cap): on an otherwise idle 10 GB RTX 3080, about 7.2 GiB at most.
+Uncapped, the memory budget leaves the stack its room itself.
 `max_pinned_mem_per_gpu` is the pinned host memory one device's
 `DeviceResources` owns: its pinned workspace and the counted persistent
 pinned allocations (offloaded products), the total its `pinned_cap` bounds.

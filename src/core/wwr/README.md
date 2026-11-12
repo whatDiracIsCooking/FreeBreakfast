@@ -275,12 +275,19 @@ formaldehyde's PC-NEVPT2 Hessian went +1000 MiB at its first DF kernels
 (`potential_hessian<1,2>`, 17,784 B), both after the steps had read their
 budget.
 
+**A pool's cache does not protect the memory it holds.** The driver takes
+the stack from its free memory first and then trims pools' cached memory
+for it: a pool holding 7712 MiB cached (release threshold past it), with
+1178 MiB free on the card, held 0 B once the limit was raised to 23,192 B,
+and an allocation of the old size from it then failed. So a pre-warmed,
+capped pool can lose its cache to the stack mid-run.
+
 `Device::stack_growth(per_thread)` is what is still to come: the limit's
-shortfall from `per_thread` times the thread count. An uncapped
+shortfall from `per_thread` times the thread count.
 `DeviceResources::memory_budget()` leaves `stack_growth(kKernelStackBytes)`
-of the driver's free memory out, so the pool is never handed what the stack
-will take; once the largest kernel has run it is 0, and the free memory
-already shows the stack. `kKernelStackBytes` is the binary's largest stack,
+out of the driver's supply, capped or not, so the pool is never handed what
+the stack will take; once the largest kernel has run it is 0, and the free
+memory already shows the stack. `kKernelStackBytes` is the binary's largest stack,
 and ctest's `core_kernel_stack_bound` reads the built binary with
 `cuobjdump` and fails naming the kernel when a regenerated one passes it.
 
