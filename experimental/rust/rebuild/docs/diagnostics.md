@@ -79,8 +79,9 @@ The record has three readers, and each is already written down elsewhere:
 - **The nightly** writes the task times to the metrics branch, keyed by host,
   card, task and dimensions, and flags a task that drifts over its rolling
   median ([`testing.md`](testing.md), "Performance").
-- **The documentation build** draws a task timeline from a real run's record
-  ([`design.md`](design.md), "Diagrams and animations").
+- **The documentation site** shows a task timeline the nightly draws from its
+  own run's record and publishes with the task times
+  ([`documentation.md`](documentation.md), "Diagrams and animations").
 - **Someone reading a slow run**, who wants the task, not the kernel, that
   took the time, and whether the device or the enqueueing host was the one
   that waited.
