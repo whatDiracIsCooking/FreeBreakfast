@@ -33,7 +33,8 @@ gradient.md, "The kernels"; the `gjab_` half of its `--grad-l 3` ladder, whose
   and table, one row longer;
 - `gjab<la, lb>`, the bra derivative of E_J contracted with the density into
   a per-atom G (`kernel_gjab`), in FelizJueves's default form per class
-  (low-stack from la + lb = 5, `kernel_gjab.gjab_lowstack`), written to
+  (low-stack from la + lb = 5, `kernel_gjab.gjab_lowstack`; and `gjab<2,2>`,
+  over the stack target unrolled, tools/emit/lowstack.py, #1263), written to
   coulomb/gradient/.
 
 Every [n, 3] record vector is split into three flat arrays (`ir.passes.
@@ -89,6 +90,7 @@ from felizjueves.ir.passes import atomize, split_axes, transpose  # noqa: E402
 from felizjueves.mmd.kernel import build_pq_kernel  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
 from felizjueves.spec import Operator, Spec, Target  # noqa: E402
+from lowstack import forced  # noqa: E402
 
 # The kernels' L limit: f. It must equal kCoulombMaxMomentum
 # (coulomb/pair_class/pair_class_bridge.h), not the tree-wide
@@ -134,7 +136,7 @@ def jab(cls: tuple[int, int]):
 
 
 def gjab(cls: tuple[int, int]):
-    return split_axes(build_gjab_kernel(cls), PAIR_AXES)
+    return split_axes(build_gjab_kernel(cls, **forced("gjab", cls)), PAIR_AXES)
 
 
 def e_hermite(cls: tuple[int, int]):

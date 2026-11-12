@@ -25,8 +25,8 @@ __global__ void kinetic_hessian<2, 2>(
     const double* M,
     double* H)
 {
-    // hessian of the kinetic energy, class (la, lb) = (2, 2): H[A, k, B, l] +=
-    // SUM_mn M_mn d2X_mn/dR_{A,k}dR_{B,l} (felizjueves.hessian)
+    // hessian of the kinetic energy, class (la, lb) = (2, 2), LOW-STACK: H[A, k,
+    // B, l] += SUM_mn M_mn d2X_mn/dR_{A,k}dR_{B,l} (felizjueves.hessian)
     // PRECONDITION: H is zeroed by the caller before the first hessian launch of a
     // build; this kernel only adds
     // launch: one thread per primitive-pair record
@@ -42,12 +42,12 @@ __global__ void kinetic_hessian<2, 2>(
         int32_t aa = atom_a[rec];
         int32_t ab = atom_b[rec];
         // the undressed per-axis E^{ij}_t, i <= 4, j <= 6: one index above the class
-        // on each side, for the derivative rule
-        double Ex[385];
-        double Ey[385];
-        double Ez[385];
+        // on each side, for the derivative rule (t = 0 only)
+        double Ex[35];
+        double Ey[35];
+        double Ez[35];
         {
-            // fragment e_axis_tables_46
+            // fragment e_axis_overlap_46
             const auto PA_x = pa_x[rec];
             const auto PB_x = pb_x[rec];
             const auto PA_y = pa_y[rec];
@@ -57,8 +57,8 @@ __global__ void kinetic_hessian<2, 2>(
             // McMurchie & Davidson report UCRL-13791 (docs/references.md entry 46), eqs.
             // 2.20-2.21: E^{i+1,j}_t and E^{i,j+1}_t from E^{00}_0 = exp(zeta X_PA X_PB);
             // undressed
-            // #586's low-stack E path: the per-axis E^{ij}_t stored into Ex, Ey, Ez [(i
-            // (lb+1) + j) (la+lb+1) + t]; the E^{ab}_t block is never formed
+            // #1263's overlap tables: only the per-axis E^{ij}_0 stored into Ex, Ey, Ez [i
+            // (lb+1) + j]; the t > 0 entries stay recurrence locals
             double Ex_0_0_0 = exp(((zeta * PA_x) * PB_x));
             double Ex_0_1_0 = (PB_x * Ex_0_0_0);
             double Ex_0_1_1 = (half_inv_zeta * Ex_0_0_0);
@@ -72,21 +72,9 @@ __global__ void kinetic_hessian<2, 2>(
             double Ex_0_4_0 = ((PB_x * Ex_0_3_0) + Ex_0_3_1);
             double Ex_0_4_1 = (((half_inv_zeta * Ex_0_3_0) + (PB_x * Ex_0_3_1)) + (2.0 * Ex_0_3_2));
             double Ex_0_4_2 = (((half_inv_zeta * Ex_0_3_1) + (PB_x * Ex_0_3_2)) + (3.0 * Ex_0_3_3));
-            double Ex_0_4_3 = ((half_inv_zeta * Ex_0_3_2) + (PB_x * Ex_0_3_3));
-            double Ex_0_4_4 = (half_inv_zeta * Ex_0_3_3);
             double Ex_0_5_0 = ((PB_x * Ex_0_4_0) + Ex_0_4_1);
             double Ex_0_5_1 = (((half_inv_zeta * Ex_0_4_0) + (PB_x * Ex_0_4_1)) + (2.0 * Ex_0_4_2));
-            double Ex_0_5_2 = (((half_inv_zeta * Ex_0_4_1) + (PB_x * Ex_0_4_2)) + (3.0 * Ex_0_4_3));
-            double Ex_0_5_3 = (((half_inv_zeta * Ex_0_4_2) + (PB_x * Ex_0_4_3)) + (4.0 * Ex_0_4_4));
-            double Ex_0_5_4 = ((half_inv_zeta * Ex_0_4_3) + (PB_x * Ex_0_4_4));
-            double Ex_0_5_5 = (half_inv_zeta * Ex_0_4_4);
             double Ex_0_6_0 = ((PB_x * Ex_0_5_0) + Ex_0_5_1);
-            double Ex_0_6_1 = (((half_inv_zeta * Ex_0_5_0) + (PB_x * Ex_0_5_1)) + (2.0 * Ex_0_5_2));
-            double Ex_0_6_2 = (((half_inv_zeta * Ex_0_5_1) + (PB_x * Ex_0_5_2)) + (3.0 * Ex_0_5_3));
-            double Ex_0_6_3 = (((half_inv_zeta * Ex_0_5_2) + (PB_x * Ex_0_5_3)) + (4.0 * Ex_0_5_4));
-            double Ex_0_6_4 = (((half_inv_zeta * Ex_0_5_3) + (PB_x * Ex_0_5_4)) + (5.0 * Ex_0_5_5));
-            double Ex_0_6_5 = ((half_inv_zeta * Ex_0_5_4) + (PB_x * Ex_0_5_5));
-            double Ex_0_6_6 = (half_inv_zeta * Ex_0_5_5);
             double Ex_1_0_0 = (PA_x * Ex_0_0_0);
             double Ex_1_0_1 = (half_inv_zeta * Ex_0_0_0);
             double Ex_1_1_0 = ((PB_x * Ex_1_0_0) + Ex_1_0_1);
@@ -100,28 +88,12 @@ __global__ void kinetic_hessian<2, 2>(
             double Ex_1_3_1 = (((half_inv_zeta * Ex_1_2_0) + (PB_x * Ex_1_2_1)) + (2.0 * Ex_1_2_2));
             double Ex_1_3_2 = (((half_inv_zeta * Ex_1_2_1) + (PB_x * Ex_1_2_2)) + (3.0 * Ex_1_2_3));
             double Ex_1_3_3 = ((half_inv_zeta * Ex_1_2_2) + (PB_x * Ex_1_2_3));
-            double Ex_1_3_4 = (half_inv_zeta * Ex_1_2_3);
             double Ex_1_4_0 = ((PB_x * Ex_1_3_0) + Ex_1_3_1);
             double Ex_1_4_1 = (((half_inv_zeta * Ex_1_3_0) + (PB_x * Ex_1_3_1)) + (2.0 * Ex_1_3_2));
             double Ex_1_4_2 = (((half_inv_zeta * Ex_1_3_1) + (PB_x * Ex_1_3_2)) + (3.0 * Ex_1_3_3));
-            double Ex_1_4_3 = (((half_inv_zeta * Ex_1_3_2) + (PB_x * Ex_1_3_3)) + (4.0 * Ex_1_3_4));
-            double Ex_1_4_4 = ((half_inv_zeta * Ex_1_3_3) + (PB_x * Ex_1_3_4));
-            double Ex_1_4_5 = (half_inv_zeta * Ex_1_3_4);
             double Ex_1_5_0 = ((PB_x * Ex_1_4_0) + Ex_1_4_1);
             double Ex_1_5_1 = (((half_inv_zeta * Ex_1_4_0) + (PB_x * Ex_1_4_1)) + (2.0 * Ex_1_4_2));
-            double Ex_1_5_2 = (((half_inv_zeta * Ex_1_4_1) + (PB_x * Ex_1_4_2)) + (3.0 * Ex_1_4_3));
-            double Ex_1_5_3 = (((half_inv_zeta * Ex_1_4_2) + (PB_x * Ex_1_4_3)) + (4.0 * Ex_1_4_4));
-            double Ex_1_5_4 = (((half_inv_zeta * Ex_1_4_3) + (PB_x * Ex_1_4_4)) + (5.0 * Ex_1_4_5));
-            double Ex_1_5_5 = ((half_inv_zeta * Ex_1_4_4) + (PB_x * Ex_1_4_5));
-            double Ex_1_5_6 = (half_inv_zeta * Ex_1_4_5);
             double Ex_1_6_0 = ((PB_x * Ex_1_5_0) + Ex_1_5_1);
-            double Ex_1_6_1 = (((half_inv_zeta * Ex_1_5_0) + (PB_x * Ex_1_5_1)) + (2.0 * Ex_1_5_2));
-            double Ex_1_6_2 = (((half_inv_zeta * Ex_1_5_1) + (PB_x * Ex_1_5_2)) + (3.0 * Ex_1_5_3));
-            double Ex_1_6_3 = (((half_inv_zeta * Ex_1_5_2) + (PB_x * Ex_1_5_3)) + (4.0 * Ex_1_5_4));
-            double Ex_1_6_4 = (((half_inv_zeta * Ex_1_5_3) + (PB_x * Ex_1_5_4)) + (5.0 * Ex_1_5_5));
-            double Ex_1_6_5 = (((half_inv_zeta * Ex_1_5_4) + (PB_x * Ex_1_5_5)) + (6.0 * Ex_1_5_6));
-            double Ex_1_6_6 = ((half_inv_zeta * Ex_1_5_5) + (PB_x * Ex_1_5_6));
-            double Ex_1_6_7 = (half_inv_zeta * Ex_1_5_6);
             double Ex_2_0_0 = ((PA_x * Ex_1_0_0) + Ex_1_0_1);
             double Ex_2_0_1 = ((half_inv_zeta * Ex_1_0_0) + (PA_x * Ex_1_0_1));
             double Ex_2_0_2 = (half_inv_zeta * Ex_1_0_1);
@@ -138,32 +110,12 @@ __global__ void kinetic_hessian<2, 2>(
             double Ex_2_3_1 = (((half_inv_zeta * Ex_2_2_0) + (PB_x * Ex_2_2_1)) + (2.0 * Ex_2_2_2));
             double Ex_2_3_2 = (((half_inv_zeta * Ex_2_2_1) + (PB_x * Ex_2_2_2)) + (3.0 * Ex_2_2_3));
             double Ex_2_3_3 = (((half_inv_zeta * Ex_2_2_2) + (PB_x * Ex_2_2_3)) + (4.0 * Ex_2_2_4));
-            double Ex_2_3_4 = ((half_inv_zeta * Ex_2_2_3) + (PB_x * Ex_2_2_4));
-            double Ex_2_3_5 = (half_inv_zeta * Ex_2_2_4);
             double Ex_2_4_0 = ((PB_x * Ex_2_3_0) + Ex_2_3_1);
             double Ex_2_4_1 = (((half_inv_zeta * Ex_2_3_0) + (PB_x * Ex_2_3_1)) + (2.0 * Ex_2_3_2));
             double Ex_2_4_2 = (((half_inv_zeta * Ex_2_3_1) + (PB_x * Ex_2_3_2)) + (3.0 * Ex_2_3_3));
-            double Ex_2_4_3 = (((half_inv_zeta * Ex_2_3_2) + (PB_x * Ex_2_3_3)) + (4.0 * Ex_2_3_4));
-            double Ex_2_4_4 = (((half_inv_zeta * Ex_2_3_3) + (PB_x * Ex_2_3_4)) + (5.0 * Ex_2_3_5));
-            double Ex_2_4_5 = ((half_inv_zeta * Ex_2_3_4) + (PB_x * Ex_2_3_5));
-            double Ex_2_4_6 = (half_inv_zeta * Ex_2_3_5);
             double Ex_2_5_0 = ((PB_x * Ex_2_4_0) + Ex_2_4_1);
             double Ex_2_5_1 = (((half_inv_zeta * Ex_2_4_0) + (PB_x * Ex_2_4_1)) + (2.0 * Ex_2_4_2));
-            double Ex_2_5_2 = (((half_inv_zeta * Ex_2_4_1) + (PB_x * Ex_2_4_2)) + (3.0 * Ex_2_4_3));
-            double Ex_2_5_3 = (((half_inv_zeta * Ex_2_4_2) + (PB_x * Ex_2_4_3)) + (4.0 * Ex_2_4_4));
-            double Ex_2_5_4 = (((half_inv_zeta * Ex_2_4_3) + (PB_x * Ex_2_4_4)) + (5.0 * Ex_2_4_5));
-            double Ex_2_5_5 = (((half_inv_zeta * Ex_2_4_4) + (PB_x * Ex_2_4_5)) + (6.0 * Ex_2_4_6));
-            double Ex_2_5_6 = ((half_inv_zeta * Ex_2_4_5) + (PB_x * Ex_2_4_6));
-            double Ex_2_5_7 = (half_inv_zeta * Ex_2_4_6);
             double Ex_2_6_0 = ((PB_x * Ex_2_5_0) + Ex_2_5_1);
-            double Ex_2_6_1 = (((half_inv_zeta * Ex_2_5_0) + (PB_x * Ex_2_5_1)) + (2.0 * Ex_2_5_2));
-            double Ex_2_6_2 = (((half_inv_zeta * Ex_2_5_1) + (PB_x * Ex_2_5_2)) + (3.0 * Ex_2_5_3));
-            double Ex_2_6_3 = (((half_inv_zeta * Ex_2_5_2) + (PB_x * Ex_2_5_3)) + (4.0 * Ex_2_5_4));
-            double Ex_2_6_4 = (((half_inv_zeta * Ex_2_5_3) + (PB_x * Ex_2_5_4)) + (5.0 * Ex_2_5_5));
-            double Ex_2_6_5 = (((half_inv_zeta * Ex_2_5_4) + (PB_x * Ex_2_5_5)) + (6.0 * Ex_2_5_6));
-            double Ex_2_6_6 = (((half_inv_zeta * Ex_2_5_5) + (PB_x * Ex_2_5_6)) + (7.0 * Ex_2_5_7));
-            double Ex_2_6_7 = ((half_inv_zeta * Ex_2_5_6) + (PB_x * Ex_2_5_7));
-            double Ex_2_6_8 = (half_inv_zeta * Ex_2_5_7);
             double Ex_3_0_0 = ((PA_x * Ex_2_0_0) + Ex_2_0_1);
             double Ex_3_0_1 = (((half_inv_zeta * Ex_2_0_0) + (PA_x * Ex_2_0_1)) + (2.0 * Ex_2_0_2));
             double Ex_3_0_2 = ((half_inv_zeta * Ex_2_0_1) + (PA_x * Ex_2_0_2));
@@ -178,41 +130,16 @@ __global__ void kinetic_hessian<2, 2>(
             double Ex_3_2_2 = (((half_inv_zeta * Ex_3_1_1) + (PB_x * Ex_3_1_2)) + (3.0 * Ex_3_1_3));
             double Ex_3_2_3 = (((half_inv_zeta * Ex_3_1_2) + (PB_x * Ex_3_1_3)) + (4.0 * Ex_3_1_4));
             double Ex_3_2_4 = ((half_inv_zeta * Ex_3_1_3) + (PB_x * Ex_3_1_4));
-            double Ex_3_2_5 = (half_inv_zeta * Ex_3_1_4);
             double Ex_3_3_0 = ((PB_x * Ex_3_2_0) + Ex_3_2_1);
             double Ex_3_3_1 = (((half_inv_zeta * Ex_3_2_0) + (PB_x * Ex_3_2_1)) + (2.0 * Ex_3_2_2));
             double Ex_3_3_2 = (((half_inv_zeta * Ex_3_2_1) + (PB_x * Ex_3_2_2)) + (3.0 * Ex_3_2_3));
             double Ex_3_3_3 = (((half_inv_zeta * Ex_3_2_2) + (PB_x * Ex_3_2_3)) + (4.0 * Ex_3_2_4));
-            double Ex_3_3_4 = (((half_inv_zeta * Ex_3_2_3) + (PB_x * Ex_3_2_4)) + (5.0 * Ex_3_2_5));
-            double Ex_3_3_5 = ((half_inv_zeta * Ex_3_2_4) + (PB_x * Ex_3_2_5));
-            double Ex_3_3_6 = (half_inv_zeta * Ex_3_2_5);
             double Ex_3_4_0 = ((PB_x * Ex_3_3_0) + Ex_3_3_1);
             double Ex_3_4_1 = (((half_inv_zeta * Ex_3_3_0) + (PB_x * Ex_3_3_1)) + (2.0 * Ex_3_3_2));
             double Ex_3_4_2 = (((half_inv_zeta * Ex_3_3_1) + (PB_x * Ex_3_3_2)) + (3.0 * Ex_3_3_3));
-            double Ex_3_4_3 = (((half_inv_zeta * Ex_3_3_2) + (PB_x * Ex_3_3_3)) + (4.0 * Ex_3_3_4));
-            double Ex_3_4_4 = (((half_inv_zeta * Ex_3_3_3) + (PB_x * Ex_3_3_4)) + (5.0 * Ex_3_3_5));
-            double Ex_3_4_5 = (((half_inv_zeta * Ex_3_3_4) + (PB_x * Ex_3_3_5)) + (6.0 * Ex_3_3_6));
-            double Ex_3_4_6 = ((half_inv_zeta * Ex_3_3_5) + (PB_x * Ex_3_3_6));
-            double Ex_3_4_7 = (half_inv_zeta * Ex_3_3_6);
             double Ex_3_5_0 = ((PB_x * Ex_3_4_0) + Ex_3_4_1);
             double Ex_3_5_1 = (((half_inv_zeta * Ex_3_4_0) + (PB_x * Ex_3_4_1)) + (2.0 * Ex_3_4_2));
-            double Ex_3_5_2 = (((half_inv_zeta * Ex_3_4_1) + (PB_x * Ex_3_4_2)) + (3.0 * Ex_3_4_3));
-            double Ex_3_5_3 = (((half_inv_zeta * Ex_3_4_2) + (PB_x * Ex_3_4_3)) + (4.0 * Ex_3_4_4));
-            double Ex_3_5_4 = (((half_inv_zeta * Ex_3_4_3) + (PB_x * Ex_3_4_4)) + (5.0 * Ex_3_4_5));
-            double Ex_3_5_5 = (((half_inv_zeta * Ex_3_4_4) + (PB_x * Ex_3_4_5)) + (6.0 * Ex_3_4_6));
-            double Ex_3_5_6 = (((half_inv_zeta * Ex_3_4_5) + (PB_x * Ex_3_4_6)) + (7.0 * Ex_3_4_7));
-            double Ex_3_5_7 = ((half_inv_zeta * Ex_3_4_6) + (PB_x * Ex_3_4_7));
-            double Ex_3_5_8 = (half_inv_zeta * Ex_3_4_7);
             double Ex_3_6_0 = ((PB_x * Ex_3_5_0) + Ex_3_5_1);
-            double Ex_3_6_1 = (((half_inv_zeta * Ex_3_5_0) + (PB_x * Ex_3_5_1)) + (2.0 * Ex_3_5_2));
-            double Ex_3_6_2 = (((half_inv_zeta * Ex_3_5_1) + (PB_x * Ex_3_5_2)) + (3.0 * Ex_3_5_3));
-            double Ex_3_6_3 = (((half_inv_zeta * Ex_3_5_2) + (PB_x * Ex_3_5_3)) + (4.0 * Ex_3_5_4));
-            double Ex_3_6_4 = (((half_inv_zeta * Ex_3_5_3) + (PB_x * Ex_3_5_4)) + (5.0 * Ex_3_5_5));
-            double Ex_3_6_5 = (((half_inv_zeta * Ex_3_5_4) + (PB_x * Ex_3_5_5)) + (6.0 * Ex_3_5_6));
-            double Ex_3_6_6 = (((half_inv_zeta * Ex_3_5_5) + (PB_x * Ex_3_5_6)) + (7.0 * Ex_3_5_7));
-            double Ex_3_6_7 = (((half_inv_zeta * Ex_3_5_6) + (PB_x * Ex_3_5_7)) + (8.0 * Ex_3_5_8));
-            double Ex_3_6_8 = ((half_inv_zeta * Ex_3_5_7) + (PB_x * Ex_3_5_8));
-            double Ex_3_6_9 = (half_inv_zeta * Ex_3_5_8);
             double Ex_4_0_0 = ((PA_x * Ex_3_0_0) + Ex_3_0_1);
             double Ex_4_0_1 = (((half_inv_zeta * Ex_3_0_0) + (PA_x * Ex_3_0_1)) + (2.0 * Ex_3_0_2));
             double Ex_4_0_2 = (((half_inv_zeta * Ex_3_0_1) + (PA_x * Ex_3_0_2)) + (3.0 * Ex_3_0_3));
@@ -229,46 +156,16 @@ __global__ void kinetic_hessian<2, 2>(
             double Ex_4_2_2 = (((half_inv_zeta * Ex_4_1_1) + (PB_x * Ex_4_1_2)) + (3.0 * Ex_4_1_3));
             double Ex_4_2_3 = (((half_inv_zeta * Ex_4_1_2) + (PB_x * Ex_4_1_3)) + (4.0 * Ex_4_1_4));
             double Ex_4_2_4 = (((half_inv_zeta * Ex_4_1_3) + (PB_x * Ex_4_1_4)) + (5.0 * Ex_4_1_5));
-            double Ex_4_2_5 = ((half_inv_zeta * Ex_4_1_4) + (PB_x * Ex_4_1_5));
-            double Ex_4_2_6 = (half_inv_zeta * Ex_4_1_5);
             double Ex_4_3_0 = ((PB_x * Ex_4_2_0) + Ex_4_2_1);
             double Ex_4_3_1 = (((half_inv_zeta * Ex_4_2_0) + (PB_x * Ex_4_2_1)) + (2.0 * Ex_4_2_2));
             double Ex_4_3_2 = (((half_inv_zeta * Ex_4_2_1) + (PB_x * Ex_4_2_2)) + (3.0 * Ex_4_2_3));
             double Ex_4_3_3 = (((half_inv_zeta * Ex_4_2_2) + (PB_x * Ex_4_2_3)) + (4.0 * Ex_4_2_4));
-            double Ex_4_3_4 = (((half_inv_zeta * Ex_4_2_3) + (PB_x * Ex_4_2_4)) + (5.0 * Ex_4_2_5));
-            double Ex_4_3_5 = (((half_inv_zeta * Ex_4_2_4) + (PB_x * Ex_4_2_5)) + (6.0 * Ex_4_2_6));
-            double Ex_4_3_6 = ((half_inv_zeta * Ex_4_2_5) + (PB_x * Ex_4_2_6));
-            double Ex_4_3_7 = (half_inv_zeta * Ex_4_2_6);
             double Ex_4_4_0 = ((PB_x * Ex_4_3_0) + Ex_4_3_1);
             double Ex_4_4_1 = (((half_inv_zeta * Ex_4_3_0) + (PB_x * Ex_4_3_1)) + (2.0 * Ex_4_3_2));
             double Ex_4_4_2 = (((half_inv_zeta * Ex_4_3_1) + (PB_x * Ex_4_3_2)) + (3.0 * Ex_4_3_3));
-            double Ex_4_4_3 = (((half_inv_zeta * Ex_4_3_2) + (PB_x * Ex_4_3_3)) + (4.0 * Ex_4_3_4));
-            double Ex_4_4_4 = (((half_inv_zeta * Ex_4_3_3) + (PB_x * Ex_4_3_4)) + (5.0 * Ex_4_3_5));
-            double Ex_4_4_5 = (((half_inv_zeta * Ex_4_3_4) + (PB_x * Ex_4_3_5)) + (6.0 * Ex_4_3_6));
-            double Ex_4_4_6 = (((half_inv_zeta * Ex_4_3_5) + (PB_x * Ex_4_3_6)) + (7.0 * Ex_4_3_7));
-            double Ex_4_4_7 = ((half_inv_zeta * Ex_4_3_6) + (PB_x * Ex_4_3_7));
-            double Ex_4_4_8 = (half_inv_zeta * Ex_4_3_7);
             double Ex_4_5_0 = ((PB_x * Ex_4_4_0) + Ex_4_4_1);
             double Ex_4_5_1 = (((half_inv_zeta * Ex_4_4_0) + (PB_x * Ex_4_4_1)) + (2.0 * Ex_4_4_2));
-            double Ex_4_5_2 = (((half_inv_zeta * Ex_4_4_1) + (PB_x * Ex_4_4_2)) + (3.0 * Ex_4_4_3));
-            double Ex_4_5_3 = (((half_inv_zeta * Ex_4_4_2) + (PB_x * Ex_4_4_3)) + (4.0 * Ex_4_4_4));
-            double Ex_4_5_4 = (((half_inv_zeta * Ex_4_4_3) + (PB_x * Ex_4_4_4)) + (5.0 * Ex_4_4_5));
-            double Ex_4_5_5 = (((half_inv_zeta * Ex_4_4_4) + (PB_x * Ex_4_4_5)) + (6.0 * Ex_4_4_6));
-            double Ex_4_5_6 = (((half_inv_zeta * Ex_4_4_5) + (PB_x * Ex_4_4_6)) + (7.0 * Ex_4_4_7));
-            double Ex_4_5_7 = (((half_inv_zeta * Ex_4_4_6) + (PB_x * Ex_4_4_7)) + (8.0 * Ex_4_4_8));
-            double Ex_4_5_8 = ((half_inv_zeta * Ex_4_4_7) + (PB_x * Ex_4_4_8));
-            double Ex_4_5_9 = (half_inv_zeta * Ex_4_4_8);
             double Ex_4_6_0 = ((PB_x * Ex_4_5_0) + Ex_4_5_1);
-            double Ex_4_6_1 = (((half_inv_zeta * Ex_4_5_0) + (PB_x * Ex_4_5_1)) + (2.0 * Ex_4_5_2));
-            double Ex_4_6_2 = (((half_inv_zeta * Ex_4_5_1) + (PB_x * Ex_4_5_2)) + (3.0 * Ex_4_5_3));
-            double Ex_4_6_3 = (((half_inv_zeta * Ex_4_5_2) + (PB_x * Ex_4_5_3)) + (4.0 * Ex_4_5_4));
-            double Ex_4_6_4 = (((half_inv_zeta * Ex_4_5_3) + (PB_x * Ex_4_5_4)) + (5.0 * Ex_4_5_5));
-            double Ex_4_6_5 = (((half_inv_zeta * Ex_4_5_4) + (PB_x * Ex_4_5_5)) + (6.0 * Ex_4_5_6));
-            double Ex_4_6_6 = (((half_inv_zeta * Ex_4_5_5) + (PB_x * Ex_4_5_6)) + (7.0 * Ex_4_5_7));
-            double Ex_4_6_7 = (((half_inv_zeta * Ex_4_5_6) + (PB_x * Ex_4_5_7)) + (8.0 * Ex_4_5_8));
-            double Ex_4_6_8 = (((half_inv_zeta * Ex_4_5_7) + (PB_x * Ex_4_5_8)) + (9.0 * Ex_4_5_9));
-            double Ex_4_6_9 = ((half_inv_zeta * Ex_4_5_8) + (PB_x * Ex_4_5_9));
-            double Ex_4_6_10 = (half_inv_zeta * Ex_4_5_9);
             double Ey_0_0_0 = exp(((zeta * PA_y) * PB_y));
             double Ey_0_1_0 = (PB_y * Ey_0_0_0);
             double Ey_0_1_1 = (half_inv_zeta * Ey_0_0_0);
@@ -282,21 +179,9 @@ __global__ void kinetic_hessian<2, 2>(
             double Ey_0_4_0 = ((PB_y * Ey_0_3_0) + Ey_0_3_1);
             double Ey_0_4_1 = (((half_inv_zeta * Ey_0_3_0) + (PB_y * Ey_0_3_1)) + (2.0 * Ey_0_3_2));
             double Ey_0_4_2 = (((half_inv_zeta * Ey_0_3_1) + (PB_y * Ey_0_3_2)) + (3.0 * Ey_0_3_3));
-            double Ey_0_4_3 = ((half_inv_zeta * Ey_0_3_2) + (PB_y * Ey_0_3_3));
-            double Ey_0_4_4 = (half_inv_zeta * Ey_0_3_3);
             double Ey_0_5_0 = ((PB_y * Ey_0_4_0) + Ey_0_4_1);
             double Ey_0_5_1 = (((half_inv_zeta * Ey_0_4_0) + (PB_y * Ey_0_4_1)) + (2.0 * Ey_0_4_2));
-            double Ey_0_5_2 = (((half_inv_zeta * Ey_0_4_1) + (PB_y * Ey_0_4_2)) + (3.0 * Ey_0_4_3));
-            double Ey_0_5_3 = (((half_inv_zeta * Ey_0_4_2) + (PB_y * Ey_0_4_3)) + (4.0 * Ey_0_4_4));
-            double Ey_0_5_4 = ((half_inv_zeta * Ey_0_4_3) + (PB_y * Ey_0_4_4));
-            double Ey_0_5_5 = (half_inv_zeta * Ey_0_4_4);
             double Ey_0_6_0 = ((PB_y * Ey_0_5_0) + Ey_0_5_1);
-            double Ey_0_6_1 = (((half_inv_zeta * Ey_0_5_0) + (PB_y * Ey_0_5_1)) + (2.0 * Ey_0_5_2));
-            double Ey_0_6_2 = (((half_inv_zeta * Ey_0_5_1) + (PB_y * Ey_0_5_2)) + (3.0 * Ey_0_5_3));
-            double Ey_0_6_3 = (((half_inv_zeta * Ey_0_5_2) + (PB_y * Ey_0_5_3)) + (4.0 * Ey_0_5_4));
-            double Ey_0_6_4 = (((half_inv_zeta * Ey_0_5_3) + (PB_y * Ey_0_5_4)) + (5.0 * Ey_0_5_5));
-            double Ey_0_6_5 = ((half_inv_zeta * Ey_0_5_4) + (PB_y * Ey_0_5_5));
-            double Ey_0_6_6 = (half_inv_zeta * Ey_0_5_5);
             double Ey_1_0_0 = (PA_y * Ey_0_0_0);
             double Ey_1_0_1 = (half_inv_zeta * Ey_0_0_0);
             double Ey_1_1_0 = ((PB_y * Ey_1_0_0) + Ey_1_0_1);
@@ -310,28 +195,12 @@ __global__ void kinetic_hessian<2, 2>(
             double Ey_1_3_1 = (((half_inv_zeta * Ey_1_2_0) + (PB_y * Ey_1_2_1)) + (2.0 * Ey_1_2_2));
             double Ey_1_3_2 = (((half_inv_zeta * Ey_1_2_1) + (PB_y * Ey_1_2_2)) + (3.0 * Ey_1_2_3));
             double Ey_1_3_3 = ((half_inv_zeta * Ey_1_2_2) + (PB_y * Ey_1_2_3));
-            double Ey_1_3_4 = (half_inv_zeta * Ey_1_2_3);
             double Ey_1_4_0 = ((PB_y * Ey_1_3_0) + Ey_1_3_1);
             double Ey_1_4_1 = (((half_inv_zeta * Ey_1_3_0) + (PB_y * Ey_1_3_1)) + (2.0 * Ey_1_3_2));
             double Ey_1_4_2 = (((half_inv_zeta * Ey_1_3_1) + (PB_y * Ey_1_3_2)) + (3.0 * Ey_1_3_3));
-            double Ey_1_4_3 = (((half_inv_zeta * Ey_1_3_2) + (PB_y * Ey_1_3_3)) + (4.0 * Ey_1_3_4));
-            double Ey_1_4_4 = ((half_inv_zeta * Ey_1_3_3) + (PB_y * Ey_1_3_4));
-            double Ey_1_4_5 = (half_inv_zeta * Ey_1_3_4);
             double Ey_1_5_0 = ((PB_y * Ey_1_4_0) + Ey_1_4_1);
             double Ey_1_5_1 = (((half_inv_zeta * Ey_1_4_0) + (PB_y * Ey_1_4_1)) + (2.0 * Ey_1_4_2));
-            double Ey_1_5_2 = (((half_inv_zeta * Ey_1_4_1) + (PB_y * Ey_1_4_2)) + (3.0 * Ey_1_4_3));
-            double Ey_1_5_3 = (((half_inv_zeta * Ey_1_4_2) + (PB_y * Ey_1_4_3)) + (4.0 * Ey_1_4_4));
-            double Ey_1_5_4 = (((half_inv_zeta * Ey_1_4_3) + (PB_y * Ey_1_4_4)) + (5.0 * Ey_1_4_5));
-            double Ey_1_5_5 = ((half_inv_zeta * Ey_1_4_4) + (PB_y * Ey_1_4_5));
-            double Ey_1_5_6 = (half_inv_zeta * Ey_1_4_5);
             double Ey_1_6_0 = ((PB_y * Ey_1_5_0) + Ey_1_5_1);
-            double Ey_1_6_1 = (((half_inv_zeta * Ey_1_5_0) + (PB_y * Ey_1_5_1)) + (2.0 * Ey_1_5_2));
-            double Ey_1_6_2 = (((half_inv_zeta * Ey_1_5_1) + (PB_y * Ey_1_5_2)) + (3.0 * Ey_1_5_3));
-            double Ey_1_6_3 = (((half_inv_zeta * Ey_1_5_2) + (PB_y * Ey_1_5_3)) + (4.0 * Ey_1_5_4));
-            double Ey_1_6_4 = (((half_inv_zeta * Ey_1_5_3) + (PB_y * Ey_1_5_4)) + (5.0 * Ey_1_5_5));
-            double Ey_1_6_5 = (((half_inv_zeta * Ey_1_5_4) + (PB_y * Ey_1_5_5)) + (6.0 * Ey_1_5_6));
-            double Ey_1_6_6 = ((half_inv_zeta * Ey_1_5_5) + (PB_y * Ey_1_5_6));
-            double Ey_1_6_7 = (half_inv_zeta * Ey_1_5_6);
             double Ey_2_0_0 = ((PA_y * Ey_1_0_0) + Ey_1_0_1);
             double Ey_2_0_1 = ((half_inv_zeta * Ey_1_0_0) + (PA_y * Ey_1_0_1));
             double Ey_2_0_2 = (half_inv_zeta * Ey_1_0_1);
@@ -348,32 +217,12 @@ __global__ void kinetic_hessian<2, 2>(
             double Ey_2_3_1 = (((half_inv_zeta * Ey_2_2_0) + (PB_y * Ey_2_2_1)) + (2.0 * Ey_2_2_2));
             double Ey_2_3_2 = (((half_inv_zeta * Ey_2_2_1) + (PB_y * Ey_2_2_2)) + (3.0 * Ey_2_2_3));
             double Ey_2_3_3 = (((half_inv_zeta * Ey_2_2_2) + (PB_y * Ey_2_2_3)) + (4.0 * Ey_2_2_4));
-            double Ey_2_3_4 = ((half_inv_zeta * Ey_2_2_3) + (PB_y * Ey_2_2_4));
-            double Ey_2_3_5 = (half_inv_zeta * Ey_2_2_4);
             double Ey_2_4_0 = ((PB_y * Ey_2_3_0) + Ey_2_3_1);
             double Ey_2_4_1 = (((half_inv_zeta * Ey_2_3_0) + (PB_y * Ey_2_3_1)) + (2.0 * Ey_2_3_2));
             double Ey_2_4_2 = (((half_inv_zeta * Ey_2_3_1) + (PB_y * Ey_2_3_2)) + (3.0 * Ey_2_3_3));
-            double Ey_2_4_3 = (((half_inv_zeta * Ey_2_3_2) + (PB_y * Ey_2_3_3)) + (4.0 * Ey_2_3_4));
-            double Ey_2_4_4 = (((half_inv_zeta * Ey_2_3_3) + (PB_y * Ey_2_3_4)) + (5.0 * Ey_2_3_5));
-            double Ey_2_4_5 = ((half_inv_zeta * Ey_2_3_4) + (PB_y * Ey_2_3_5));
-            double Ey_2_4_6 = (half_inv_zeta * Ey_2_3_5);
             double Ey_2_5_0 = ((PB_y * Ey_2_4_0) + Ey_2_4_1);
             double Ey_2_5_1 = (((half_inv_zeta * Ey_2_4_0) + (PB_y * Ey_2_4_1)) + (2.0 * Ey_2_4_2));
-            double Ey_2_5_2 = (((half_inv_zeta * Ey_2_4_1) + (PB_y * Ey_2_4_2)) + (3.0 * Ey_2_4_3));
-            double Ey_2_5_3 = (((half_inv_zeta * Ey_2_4_2) + (PB_y * Ey_2_4_3)) + (4.0 * Ey_2_4_4));
-            double Ey_2_5_4 = (((half_inv_zeta * Ey_2_4_3) + (PB_y * Ey_2_4_4)) + (5.0 * Ey_2_4_5));
-            double Ey_2_5_5 = (((half_inv_zeta * Ey_2_4_4) + (PB_y * Ey_2_4_5)) + (6.0 * Ey_2_4_6));
-            double Ey_2_5_6 = ((half_inv_zeta * Ey_2_4_5) + (PB_y * Ey_2_4_6));
-            double Ey_2_5_7 = (half_inv_zeta * Ey_2_4_6);
             double Ey_2_6_0 = ((PB_y * Ey_2_5_0) + Ey_2_5_1);
-            double Ey_2_6_1 = (((half_inv_zeta * Ey_2_5_0) + (PB_y * Ey_2_5_1)) + (2.0 * Ey_2_5_2));
-            double Ey_2_6_2 = (((half_inv_zeta * Ey_2_5_1) + (PB_y * Ey_2_5_2)) + (3.0 * Ey_2_5_3));
-            double Ey_2_6_3 = (((half_inv_zeta * Ey_2_5_2) + (PB_y * Ey_2_5_3)) + (4.0 * Ey_2_5_4));
-            double Ey_2_6_4 = (((half_inv_zeta * Ey_2_5_3) + (PB_y * Ey_2_5_4)) + (5.0 * Ey_2_5_5));
-            double Ey_2_6_5 = (((half_inv_zeta * Ey_2_5_4) + (PB_y * Ey_2_5_5)) + (6.0 * Ey_2_5_6));
-            double Ey_2_6_6 = (((half_inv_zeta * Ey_2_5_5) + (PB_y * Ey_2_5_6)) + (7.0 * Ey_2_5_7));
-            double Ey_2_6_7 = ((half_inv_zeta * Ey_2_5_6) + (PB_y * Ey_2_5_7));
-            double Ey_2_6_8 = (half_inv_zeta * Ey_2_5_7);
             double Ey_3_0_0 = ((PA_y * Ey_2_0_0) + Ey_2_0_1);
             double Ey_3_0_1 = (((half_inv_zeta * Ey_2_0_0) + (PA_y * Ey_2_0_1)) + (2.0 * Ey_2_0_2));
             double Ey_3_0_2 = ((half_inv_zeta * Ey_2_0_1) + (PA_y * Ey_2_0_2));
@@ -388,41 +237,16 @@ __global__ void kinetic_hessian<2, 2>(
             double Ey_3_2_2 = (((half_inv_zeta * Ey_3_1_1) + (PB_y * Ey_3_1_2)) + (3.0 * Ey_3_1_3));
             double Ey_3_2_3 = (((half_inv_zeta * Ey_3_1_2) + (PB_y * Ey_3_1_3)) + (4.0 * Ey_3_1_4));
             double Ey_3_2_4 = ((half_inv_zeta * Ey_3_1_3) + (PB_y * Ey_3_1_4));
-            double Ey_3_2_5 = (half_inv_zeta * Ey_3_1_4);
             double Ey_3_3_0 = ((PB_y * Ey_3_2_0) + Ey_3_2_1);
             double Ey_3_3_1 = (((half_inv_zeta * Ey_3_2_0) + (PB_y * Ey_3_2_1)) + (2.0 * Ey_3_2_2));
             double Ey_3_3_2 = (((half_inv_zeta * Ey_3_2_1) + (PB_y * Ey_3_2_2)) + (3.0 * Ey_3_2_3));
             double Ey_3_3_3 = (((half_inv_zeta * Ey_3_2_2) + (PB_y * Ey_3_2_3)) + (4.0 * Ey_3_2_4));
-            double Ey_3_3_4 = (((half_inv_zeta * Ey_3_2_3) + (PB_y * Ey_3_2_4)) + (5.0 * Ey_3_2_5));
-            double Ey_3_3_5 = ((half_inv_zeta * Ey_3_2_4) + (PB_y * Ey_3_2_5));
-            double Ey_3_3_6 = (half_inv_zeta * Ey_3_2_5);
             double Ey_3_4_0 = ((PB_y * Ey_3_3_0) + Ey_3_3_1);
             double Ey_3_4_1 = (((half_inv_zeta * Ey_3_3_0) + (PB_y * Ey_3_3_1)) + (2.0 * Ey_3_3_2));
             double Ey_3_4_2 = (((half_inv_zeta * Ey_3_3_1) + (PB_y * Ey_3_3_2)) + (3.0 * Ey_3_3_3));
-            double Ey_3_4_3 = (((half_inv_zeta * Ey_3_3_2) + (PB_y * Ey_3_3_3)) + (4.0 * Ey_3_3_4));
-            double Ey_3_4_4 = (((half_inv_zeta * Ey_3_3_3) + (PB_y * Ey_3_3_4)) + (5.0 * Ey_3_3_5));
-            double Ey_3_4_5 = (((half_inv_zeta * Ey_3_3_4) + (PB_y * Ey_3_3_5)) + (6.0 * Ey_3_3_6));
-            double Ey_3_4_6 = ((half_inv_zeta * Ey_3_3_5) + (PB_y * Ey_3_3_6));
-            double Ey_3_4_7 = (half_inv_zeta * Ey_3_3_6);
             double Ey_3_5_0 = ((PB_y * Ey_3_4_0) + Ey_3_4_1);
             double Ey_3_5_1 = (((half_inv_zeta * Ey_3_4_0) + (PB_y * Ey_3_4_1)) + (2.0 * Ey_3_4_2));
-            double Ey_3_5_2 = (((half_inv_zeta * Ey_3_4_1) + (PB_y * Ey_3_4_2)) + (3.0 * Ey_3_4_3));
-            double Ey_3_5_3 = (((half_inv_zeta * Ey_3_4_2) + (PB_y * Ey_3_4_3)) + (4.0 * Ey_3_4_4));
-            double Ey_3_5_4 = (((half_inv_zeta * Ey_3_4_3) + (PB_y * Ey_3_4_4)) + (5.0 * Ey_3_4_5));
-            double Ey_3_5_5 = (((half_inv_zeta * Ey_3_4_4) + (PB_y * Ey_3_4_5)) + (6.0 * Ey_3_4_6));
-            double Ey_3_5_6 = (((half_inv_zeta * Ey_3_4_5) + (PB_y * Ey_3_4_6)) + (7.0 * Ey_3_4_7));
-            double Ey_3_5_7 = ((half_inv_zeta * Ey_3_4_6) + (PB_y * Ey_3_4_7));
-            double Ey_3_5_8 = (half_inv_zeta * Ey_3_4_7);
             double Ey_3_6_0 = ((PB_y * Ey_3_5_0) + Ey_3_5_1);
-            double Ey_3_6_1 = (((half_inv_zeta * Ey_3_5_0) + (PB_y * Ey_3_5_1)) + (2.0 * Ey_3_5_2));
-            double Ey_3_6_2 = (((half_inv_zeta * Ey_3_5_1) + (PB_y * Ey_3_5_2)) + (3.0 * Ey_3_5_3));
-            double Ey_3_6_3 = (((half_inv_zeta * Ey_3_5_2) + (PB_y * Ey_3_5_3)) + (4.0 * Ey_3_5_4));
-            double Ey_3_6_4 = (((half_inv_zeta * Ey_3_5_3) + (PB_y * Ey_3_5_4)) + (5.0 * Ey_3_5_5));
-            double Ey_3_6_5 = (((half_inv_zeta * Ey_3_5_4) + (PB_y * Ey_3_5_5)) + (6.0 * Ey_3_5_6));
-            double Ey_3_6_6 = (((half_inv_zeta * Ey_3_5_5) + (PB_y * Ey_3_5_6)) + (7.0 * Ey_3_5_7));
-            double Ey_3_6_7 = (((half_inv_zeta * Ey_3_5_6) + (PB_y * Ey_3_5_7)) + (8.0 * Ey_3_5_8));
-            double Ey_3_6_8 = ((half_inv_zeta * Ey_3_5_7) + (PB_y * Ey_3_5_8));
-            double Ey_3_6_9 = (half_inv_zeta * Ey_3_5_8);
             double Ey_4_0_0 = ((PA_y * Ey_3_0_0) + Ey_3_0_1);
             double Ey_4_0_1 = (((half_inv_zeta * Ey_3_0_0) + (PA_y * Ey_3_0_1)) + (2.0 * Ey_3_0_2));
             double Ey_4_0_2 = (((half_inv_zeta * Ey_3_0_1) + (PA_y * Ey_3_0_2)) + (3.0 * Ey_3_0_3));
@@ -439,46 +263,16 @@ __global__ void kinetic_hessian<2, 2>(
             double Ey_4_2_2 = (((half_inv_zeta * Ey_4_1_1) + (PB_y * Ey_4_1_2)) + (3.0 * Ey_4_1_3));
             double Ey_4_2_3 = (((half_inv_zeta * Ey_4_1_2) + (PB_y * Ey_4_1_3)) + (4.0 * Ey_4_1_4));
             double Ey_4_2_4 = (((half_inv_zeta * Ey_4_1_3) + (PB_y * Ey_4_1_4)) + (5.0 * Ey_4_1_5));
-            double Ey_4_2_5 = ((half_inv_zeta * Ey_4_1_4) + (PB_y * Ey_4_1_5));
-            double Ey_4_2_6 = (half_inv_zeta * Ey_4_1_5);
             double Ey_4_3_0 = ((PB_y * Ey_4_2_0) + Ey_4_2_1);
             double Ey_4_3_1 = (((half_inv_zeta * Ey_4_2_0) + (PB_y * Ey_4_2_1)) + (2.0 * Ey_4_2_2));
             double Ey_4_3_2 = (((half_inv_zeta * Ey_4_2_1) + (PB_y * Ey_4_2_2)) + (3.0 * Ey_4_2_3));
             double Ey_4_3_3 = (((half_inv_zeta * Ey_4_2_2) + (PB_y * Ey_4_2_3)) + (4.0 * Ey_4_2_4));
-            double Ey_4_3_4 = (((half_inv_zeta * Ey_4_2_3) + (PB_y * Ey_4_2_4)) + (5.0 * Ey_4_2_5));
-            double Ey_4_3_5 = (((half_inv_zeta * Ey_4_2_4) + (PB_y * Ey_4_2_5)) + (6.0 * Ey_4_2_6));
-            double Ey_4_3_6 = ((half_inv_zeta * Ey_4_2_5) + (PB_y * Ey_4_2_6));
-            double Ey_4_3_7 = (half_inv_zeta * Ey_4_2_6);
             double Ey_4_4_0 = ((PB_y * Ey_4_3_0) + Ey_4_3_1);
             double Ey_4_4_1 = (((half_inv_zeta * Ey_4_3_0) + (PB_y * Ey_4_3_1)) + (2.0 * Ey_4_3_2));
             double Ey_4_4_2 = (((half_inv_zeta * Ey_4_3_1) + (PB_y * Ey_4_3_2)) + (3.0 * Ey_4_3_3));
-            double Ey_4_4_3 = (((half_inv_zeta * Ey_4_3_2) + (PB_y * Ey_4_3_3)) + (4.0 * Ey_4_3_4));
-            double Ey_4_4_4 = (((half_inv_zeta * Ey_4_3_3) + (PB_y * Ey_4_3_4)) + (5.0 * Ey_4_3_5));
-            double Ey_4_4_5 = (((half_inv_zeta * Ey_4_3_4) + (PB_y * Ey_4_3_5)) + (6.0 * Ey_4_3_6));
-            double Ey_4_4_6 = (((half_inv_zeta * Ey_4_3_5) + (PB_y * Ey_4_3_6)) + (7.0 * Ey_4_3_7));
-            double Ey_4_4_7 = ((half_inv_zeta * Ey_4_3_6) + (PB_y * Ey_4_3_7));
-            double Ey_4_4_8 = (half_inv_zeta * Ey_4_3_7);
             double Ey_4_5_0 = ((PB_y * Ey_4_4_0) + Ey_4_4_1);
             double Ey_4_5_1 = (((half_inv_zeta * Ey_4_4_0) + (PB_y * Ey_4_4_1)) + (2.0 * Ey_4_4_2));
-            double Ey_4_5_2 = (((half_inv_zeta * Ey_4_4_1) + (PB_y * Ey_4_4_2)) + (3.0 * Ey_4_4_3));
-            double Ey_4_5_3 = (((half_inv_zeta * Ey_4_4_2) + (PB_y * Ey_4_4_3)) + (4.0 * Ey_4_4_4));
-            double Ey_4_5_4 = (((half_inv_zeta * Ey_4_4_3) + (PB_y * Ey_4_4_4)) + (5.0 * Ey_4_4_5));
-            double Ey_4_5_5 = (((half_inv_zeta * Ey_4_4_4) + (PB_y * Ey_4_4_5)) + (6.0 * Ey_4_4_6));
-            double Ey_4_5_6 = (((half_inv_zeta * Ey_4_4_5) + (PB_y * Ey_4_4_6)) + (7.0 * Ey_4_4_7));
-            double Ey_4_5_7 = (((half_inv_zeta * Ey_4_4_6) + (PB_y * Ey_4_4_7)) + (8.0 * Ey_4_4_8));
-            double Ey_4_5_8 = ((half_inv_zeta * Ey_4_4_7) + (PB_y * Ey_4_4_8));
-            double Ey_4_5_9 = (half_inv_zeta * Ey_4_4_8);
             double Ey_4_6_0 = ((PB_y * Ey_4_5_0) + Ey_4_5_1);
-            double Ey_4_6_1 = (((half_inv_zeta * Ey_4_5_0) + (PB_y * Ey_4_5_1)) + (2.0 * Ey_4_5_2));
-            double Ey_4_6_2 = (((half_inv_zeta * Ey_4_5_1) + (PB_y * Ey_4_5_2)) + (3.0 * Ey_4_5_3));
-            double Ey_4_6_3 = (((half_inv_zeta * Ey_4_5_2) + (PB_y * Ey_4_5_3)) + (4.0 * Ey_4_5_4));
-            double Ey_4_6_4 = (((half_inv_zeta * Ey_4_5_3) + (PB_y * Ey_4_5_4)) + (5.0 * Ey_4_5_5));
-            double Ey_4_6_5 = (((half_inv_zeta * Ey_4_5_4) + (PB_y * Ey_4_5_5)) + (6.0 * Ey_4_5_6));
-            double Ey_4_6_6 = (((half_inv_zeta * Ey_4_5_5) + (PB_y * Ey_4_5_6)) + (7.0 * Ey_4_5_7));
-            double Ey_4_6_7 = (((half_inv_zeta * Ey_4_5_6) + (PB_y * Ey_4_5_7)) + (8.0 * Ey_4_5_8));
-            double Ey_4_6_8 = (((half_inv_zeta * Ey_4_5_7) + (PB_y * Ey_4_5_8)) + (9.0 * Ey_4_5_9));
-            double Ey_4_6_9 = ((half_inv_zeta * Ey_4_5_8) + (PB_y * Ey_4_5_9));
-            double Ey_4_6_10 = (half_inv_zeta * Ey_4_5_9);
             double Ez_0_0_0 = exp(((zeta * PA_z) * PB_z));
             double Ez_0_1_0 = (PB_z * Ez_0_0_0);
             double Ez_0_1_1 = (half_inv_zeta * Ez_0_0_0);
@@ -492,21 +286,9 @@ __global__ void kinetic_hessian<2, 2>(
             double Ez_0_4_0 = ((PB_z * Ez_0_3_0) + Ez_0_3_1);
             double Ez_0_4_1 = (((half_inv_zeta * Ez_0_3_0) + (PB_z * Ez_0_3_1)) + (2.0 * Ez_0_3_2));
             double Ez_0_4_2 = (((half_inv_zeta * Ez_0_3_1) + (PB_z * Ez_0_3_2)) + (3.0 * Ez_0_3_3));
-            double Ez_0_4_3 = ((half_inv_zeta * Ez_0_3_2) + (PB_z * Ez_0_3_3));
-            double Ez_0_4_4 = (half_inv_zeta * Ez_0_3_3);
             double Ez_0_5_0 = ((PB_z * Ez_0_4_0) + Ez_0_4_1);
             double Ez_0_5_1 = (((half_inv_zeta * Ez_0_4_0) + (PB_z * Ez_0_4_1)) + (2.0 * Ez_0_4_2));
-            double Ez_0_5_2 = (((half_inv_zeta * Ez_0_4_1) + (PB_z * Ez_0_4_2)) + (3.0 * Ez_0_4_3));
-            double Ez_0_5_3 = (((half_inv_zeta * Ez_0_4_2) + (PB_z * Ez_0_4_3)) + (4.0 * Ez_0_4_4));
-            double Ez_0_5_4 = ((half_inv_zeta * Ez_0_4_3) + (PB_z * Ez_0_4_4));
-            double Ez_0_5_5 = (half_inv_zeta * Ez_0_4_4);
             double Ez_0_6_0 = ((PB_z * Ez_0_5_0) + Ez_0_5_1);
-            double Ez_0_6_1 = (((half_inv_zeta * Ez_0_5_0) + (PB_z * Ez_0_5_1)) + (2.0 * Ez_0_5_2));
-            double Ez_0_6_2 = (((half_inv_zeta * Ez_0_5_1) + (PB_z * Ez_0_5_2)) + (3.0 * Ez_0_5_3));
-            double Ez_0_6_3 = (((half_inv_zeta * Ez_0_5_2) + (PB_z * Ez_0_5_3)) + (4.0 * Ez_0_5_4));
-            double Ez_0_6_4 = (((half_inv_zeta * Ez_0_5_3) + (PB_z * Ez_0_5_4)) + (5.0 * Ez_0_5_5));
-            double Ez_0_6_5 = ((half_inv_zeta * Ez_0_5_4) + (PB_z * Ez_0_5_5));
-            double Ez_0_6_6 = (half_inv_zeta * Ez_0_5_5);
             double Ez_1_0_0 = (PA_z * Ez_0_0_0);
             double Ez_1_0_1 = (half_inv_zeta * Ez_0_0_0);
             double Ez_1_1_0 = ((PB_z * Ez_1_0_0) + Ez_1_0_1);
@@ -520,28 +302,12 @@ __global__ void kinetic_hessian<2, 2>(
             double Ez_1_3_1 = (((half_inv_zeta * Ez_1_2_0) + (PB_z * Ez_1_2_1)) + (2.0 * Ez_1_2_2));
             double Ez_1_3_2 = (((half_inv_zeta * Ez_1_2_1) + (PB_z * Ez_1_2_2)) + (3.0 * Ez_1_2_3));
             double Ez_1_3_3 = ((half_inv_zeta * Ez_1_2_2) + (PB_z * Ez_1_2_3));
-            double Ez_1_3_4 = (half_inv_zeta * Ez_1_2_3);
             double Ez_1_4_0 = ((PB_z * Ez_1_3_0) + Ez_1_3_1);
             double Ez_1_4_1 = (((half_inv_zeta * Ez_1_3_0) + (PB_z * Ez_1_3_1)) + (2.0 * Ez_1_3_2));
             double Ez_1_4_2 = (((half_inv_zeta * Ez_1_3_1) + (PB_z * Ez_1_3_2)) + (3.0 * Ez_1_3_3));
-            double Ez_1_4_3 = (((half_inv_zeta * Ez_1_3_2) + (PB_z * Ez_1_3_3)) + (4.0 * Ez_1_3_4));
-            double Ez_1_4_4 = ((half_inv_zeta * Ez_1_3_3) + (PB_z * Ez_1_3_4));
-            double Ez_1_4_5 = (half_inv_zeta * Ez_1_3_4);
             double Ez_1_5_0 = ((PB_z * Ez_1_4_0) + Ez_1_4_1);
             double Ez_1_5_1 = (((half_inv_zeta * Ez_1_4_0) + (PB_z * Ez_1_4_1)) + (2.0 * Ez_1_4_2));
-            double Ez_1_5_2 = (((half_inv_zeta * Ez_1_4_1) + (PB_z * Ez_1_4_2)) + (3.0 * Ez_1_4_3));
-            double Ez_1_5_3 = (((half_inv_zeta * Ez_1_4_2) + (PB_z * Ez_1_4_3)) + (4.0 * Ez_1_4_4));
-            double Ez_1_5_4 = (((half_inv_zeta * Ez_1_4_3) + (PB_z * Ez_1_4_4)) + (5.0 * Ez_1_4_5));
-            double Ez_1_5_5 = ((half_inv_zeta * Ez_1_4_4) + (PB_z * Ez_1_4_5));
-            double Ez_1_5_6 = (half_inv_zeta * Ez_1_4_5);
             double Ez_1_6_0 = ((PB_z * Ez_1_5_0) + Ez_1_5_1);
-            double Ez_1_6_1 = (((half_inv_zeta * Ez_1_5_0) + (PB_z * Ez_1_5_1)) + (2.0 * Ez_1_5_2));
-            double Ez_1_6_2 = (((half_inv_zeta * Ez_1_5_1) + (PB_z * Ez_1_5_2)) + (3.0 * Ez_1_5_3));
-            double Ez_1_6_3 = (((half_inv_zeta * Ez_1_5_2) + (PB_z * Ez_1_5_3)) + (4.0 * Ez_1_5_4));
-            double Ez_1_6_4 = (((half_inv_zeta * Ez_1_5_3) + (PB_z * Ez_1_5_4)) + (5.0 * Ez_1_5_5));
-            double Ez_1_6_5 = (((half_inv_zeta * Ez_1_5_4) + (PB_z * Ez_1_5_5)) + (6.0 * Ez_1_5_6));
-            double Ez_1_6_6 = ((half_inv_zeta * Ez_1_5_5) + (PB_z * Ez_1_5_6));
-            double Ez_1_6_7 = (half_inv_zeta * Ez_1_5_6);
             double Ez_2_0_0 = ((PA_z * Ez_1_0_0) + Ez_1_0_1);
             double Ez_2_0_1 = ((half_inv_zeta * Ez_1_0_0) + (PA_z * Ez_1_0_1));
             double Ez_2_0_2 = (half_inv_zeta * Ez_1_0_1);
@@ -558,32 +324,12 @@ __global__ void kinetic_hessian<2, 2>(
             double Ez_2_3_1 = (((half_inv_zeta * Ez_2_2_0) + (PB_z * Ez_2_2_1)) + (2.0 * Ez_2_2_2));
             double Ez_2_3_2 = (((half_inv_zeta * Ez_2_2_1) + (PB_z * Ez_2_2_2)) + (3.0 * Ez_2_2_3));
             double Ez_2_3_3 = (((half_inv_zeta * Ez_2_2_2) + (PB_z * Ez_2_2_3)) + (4.0 * Ez_2_2_4));
-            double Ez_2_3_4 = ((half_inv_zeta * Ez_2_2_3) + (PB_z * Ez_2_2_4));
-            double Ez_2_3_5 = (half_inv_zeta * Ez_2_2_4);
             double Ez_2_4_0 = ((PB_z * Ez_2_3_0) + Ez_2_3_1);
             double Ez_2_4_1 = (((half_inv_zeta * Ez_2_3_0) + (PB_z * Ez_2_3_1)) + (2.0 * Ez_2_3_2));
             double Ez_2_4_2 = (((half_inv_zeta * Ez_2_3_1) + (PB_z * Ez_2_3_2)) + (3.0 * Ez_2_3_3));
-            double Ez_2_4_3 = (((half_inv_zeta * Ez_2_3_2) + (PB_z * Ez_2_3_3)) + (4.0 * Ez_2_3_4));
-            double Ez_2_4_4 = (((half_inv_zeta * Ez_2_3_3) + (PB_z * Ez_2_3_4)) + (5.0 * Ez_2_3_5));
-            double Ez_2_4_5 = ((half_inv_zeta * Ez_2_3_4) + (PB_z * Ez_2_3_5));
-            double Ez_2_4_6 = (half_inv_zeta * Ez_2_3_5);
             double Ez_2_5_0 = ((PB_z * Ez_2_4_0) + Ez_2_4_1);
             double Ez_2_5_1 = (((half_inv_zeta * Ez_2_4_0) + (PB_z * Ez_2_4_1)) + (2.0 * Ez_2_4_2));
-            double Ez_2_5_2 = (((half_inv_zeta * Ez_2_4_1) + (PB_z * Ez_2_4_2)) + (3.0 * Ez_2_4_3));
-            double Ez_2_5_3 = (((half_inv_zeta * Ez_2_4_2) + (PB_z * Ez_2_4_3)) + (4.0 * Ez_2_4_4));
-            double Ez_2_5_4 = (((half_inv_zeta * Ez_2_4_3) + (PB_z * Ez_2_4_4)) + (5.0 * Ez_2_4_5));
-            double Ez_2_5_5 = (((half_inv_zeta * Ez_2_4_4) + (PB_z * Ez_2_4_5)) + (6.0 * Ez_2_4_6));
-            double Ez_2_5_6 = ((half_inv_zeta * Ez_2_4_5) + (PB_z * Ez_2_4_6));
-            double Ez_2_5_7 = (half_inv_zeta * Ez_2_4_6);
             double Ez_2_6_0 = ((PB_z * Ez_2_5_0) + Ez_2_5_1);
-            double Ez_2_6_1 = (((half_inv_zeta * Ez_2_5_0) + (PB_z * Ez_2_5_1)) + (2.0 * Ez_2_5_2));
-            double Ez_2_6_2 = (((half_inv_zeta * Ez_2_5_1) + (PB_z * Ez_2_5_2)) + (3.0 * Ez_2_5_3));
-            double Ez_2_6_3 = (((half_inv_zeta * Ez_2_5_2) + (PB_z * Ez_2_5_3)) + (4.0 * Ez_2_5_4));
-            double Ez_2_6_4 = (((half_inv_zeta * Ez_2_5_3) + (PB_z * Ez_2_5_4)) + (5.0 * Ez_2_5_5));
-            double Ez_2_6_5 = (((half_inv_zeta * Ez_2_5_4) + (PB_z * Ez_2_5_5)) + (6.0 * Ez_2_5_6));
-            double Ez_2_6_6 = (((half_inv_zeta * Ez_2_5_5) + (PB_z * Ez_2_5_6)) + (7.0 * Ez_2_5_7));
-            double Ez_2_6_7 = ((half_inv_zeta * Ez_2_5_6) + (PB_z * Ez_2_5_7));
-            double Ez_2_6_8 = (half_inv_zeta * Ez_2_5_7);
             double Ez_3_0_0 = ((PA_z * Ez_2_0_0) + Ez_2_0_1);
             double Ez_3_0_1 = (((half_inv_zeta * Ez_2_0_0) + (PA_z * Ez_2_0_1)) + (2.0 * Ez_2_0_2));
             double Ez_3_0_2 = ((half_inv_zeta * Ez_2_0_1) + (PA_z * Ez_2_0_2));
@@ -598,41 +344,16 @@ __global__ void kinetic_hessian<2, 2>(
             double Ez_3_2_2 = (((half_inv_zeta * Ez_3_1_1) + (PB_z * Ez_3_1_2)) + (3.0 * Ez_3_1_3));
             double Ez_3_2_3 = (((half_inv_zeta * Ez_3_1_2) + (PB_z * Ez_3_1_3)) + (4.0 * Ez_3_1_4));
             double Ez_3_2_4 = ((half_inv_zeta * Ez_3_1_3) + (PB_z * Ez_3_1_4));
-            double Ez_3_2_5 = (half_inv_zeta * Ez_3_1_4);
             double Ez_3_3_0 = ((PB_z * Ez_3_2_0) + Ez_3_2_1);
             double Ez_3_3_1 = (((half_inv_zeta * Ez_3_2_0) + (PB_z * Ez_3_2_1)) + (2.0 * Ez_3_2_2));
             double Ez_3_3_2 = (((half_inv_zeta * Ez_3_2_1) + (PB_z * Ez_3_2_2)) + (3.0 * Ez_3_2_3));
             double Ez_3_3_3 = (((half_inv_zeta * Ez_3_2_2) + (PB_z * Ez_3_2_3)) + (4.0 * Ez_3_2_4));
-            double Ez_3_3_4 = (((half_inv_zeta * Ez_3_2_3) + (PB_z * Ez_3_2_4)) + (5.0 * Ez_3_2_5));
-            double Ez_3_3_5 = ((half_inv_zeta * Ez_3_2_4) + (PB_z * Ez_3_2_5));
-            double Ez_3_3_6 = (half_inv_zeta * Ez_3_2_5);
             double Ez_3_4_0 = ((PB_z * Ez_3_3_0) + Ez_3_3_1);
             double Ez_3_4_1 = (((half_inv_zeta * Ez_3_3_0) + (PB_z * Ez_3_3_1)) + (2.0 * Ez_3_3_2));
             double Ez_3_4_2 = (((half_inv_zeta * Ez_3_3_1) + (PB_z * Ez_3_3_2)) + (3.0 * Ez_3_3_3));
-            double Ez_3_4_3 = (((half_inv_zeta * Ez_3_3_2) + (PB_z * Ez_3_3_3)) + (4.0 * Ez_3_3_4));
-            double Ez_3_4_4 = (((half_inv_zeta * Ez_3_3_3) + (PB_z * Ez_3_3_4)) + (5.0 * Ez_3_3_5));
-            double Ez_3_4_5 = (((half_inv_zeta * Ez_3_3_4) + (PB_z * Ez_3_3_5)) + (6.0 * Ez_3_3_6));
-            double Ez_3_4_6 = ((half_inv_zeta * Ez_3_3_5) + (PB_z * Ez_3_3_6));
-            double Ez_3_4_7 = (half_inv_zeta * Ez_3_3_6);
             double Ez_3_5_0 = ((PB_z * Ez_3_4_0) + Ez_3_4_1);
             double Ez_3_5_1 = (((half_inv_zeta * Ez_3_4_0) + (PB_z * Ez_3_4_1)) + (2.0 * Ez_3_4_2));
-            double Ez_3_5_2 = (((half_inv_zeta * Ez_3_4_1) + (PB_z * Ez_3_4_2)) + (3.0 * Ez_3_4_3));
-            double Ez_3_5_3 = (((half_inv_zeta * Ez_3_4_2) + (PB_z * Ez_3_4_3)) + (4.0 * Ez_3_4_4));
-            double Ez_3_5_4 = (((half_inv_zeta * Ez_3_4_3) + (PB_z * Ez_3_4_4)) + (5.0 * Ez_3_4_5));
-            double Ez_3_5_5 = (((half_inv_zeta * Ez_3_4_4) + (PB_z * Ez_3_4_5)) + (6.0 * Ez_3_4_6));
-            double Ez_3_5_6 = (((half_inv_zeta * Ez_3_4_5) + (PB_z * Ez_3_4_6)) + (7.0 * Ez_3_4_7));
-            double Ez_3_5_7 = ((half_inv_zeta * Ez_3_4_6) + (PB_z * Ez_3_4_7));
-            double Ez_3_5_8 = (half_inv_zeta * Ez_3_4_7);
             double Ez_3_6_0 = ((PB_z * Ez_3_5_0) + Ez_3_5_1);
-            double Ez_3_6_1 = (((half_inv_zeta * Ez_3_5_0) + (PB_z * Ez_3_5_1)) + (2.0 * Ez_3_5_2));
-            double Ez_3_6_2 = (((half_inv_zeta * Ez_3_5_1) + (PB_z * Ez_3_5_2)) + (3.0 * Ez_3_5_3));
-            double Ez_3_6_3 = (((half_inv_zeta * Ez_3_5_2) + (PB_z * Ez_3_5_3)) + (4.0 * Ez_3_5_4));
-            double Ez_3_6_4 = (((half_inv_zeta * Ez_3_5_3) + (PB_z * Ez_3_5_4)) + (5.0 * Ez_3_5_5));
-            double Ez_3_6_5 = (((half_inv_zeta * Ez_3_5_4) + (PB_z * Ez_3_5_5)) + (6.0 * Ez_3_5_6));
-            double Ez_3_6_6 = (((half_inv_zeta * Ez_3_5_5) + (PB_z * Ez_3_5_6)) + (7.0 * Ez_3_5_7));
-            double Ez_3_6_7 = (((half_inv_zeta * Ez_3_5_6) + (PB_z * Ez_3_5_7)) + (8.0 * Ez_3_5_8));
-            double Ez_3_6_8 = ((half_inv_zeta * Ez_3_5_7) + (PB_z * Ez_3_5_8));
-            double Ez_3_6_9 = (half_inv_zeta * Ez_3_5_8);
             double Ez_4_0_0 = ((PA_z * Ez_3_0_0) + Ez_3_0_1);
             double Ez_4_0_1 = (((half_inv_zeta * Ez_3_0_0) + (PA_z * Ez_3_0_1)) + (2.0 * Ez_3_0_2));
             double Ez_4_0_2 = (((half_inv_zeta * Ez_3_0_1) + (PA_z * Ez_3_0_2)) + (3.0 * Ez_3_0_3));
@@ -649,1203 +370,719 @@ __global__ void kinetic_hessian<2, 2>(
             double Ez_4_2_2 = (((half_inv_zeta * Ez_4_1_1) + (PB_z * Ez_4_1_2)) + (3.0 * Ez_4_1_3));
             double Ez_4_2_3 = (((half_inv_zeta * Ez_4_1_2) + (PB_z * Ez_4_1_3)) + (4.0 * Ez_4_1_4));
             double Ez_4_2_4 = (((half_inv_zeta * Ez_4_1_3) + (PB_z * Ez_4_1_4)) + (5.0 * Ez_4_1_5));
-            double Ez_4_2_5 = ((half_inv_zeta * Ez_4_1_4) + (PB_z * Ez_4_1_5));
-            double Ez_4_2_6 = (half_inv_zeta * Ez_4_1_5);
             double Ez_4_3_0 = ((PB_z * Ez_4_2_0) + Ez_4_2_1);
             double Ez_4_3_1 = (((half_inv_zeta * Ez_4_2_0) + (PB_z * Ez_4_2_1)) + (2.0 * Ez_4_2_2));
             double Ez_4_3_2 = (((half_inv_zeta * Ez_4_2_1) + (PB_z * Ez_4_2_2)) + (3.0 * Ez_4_2_3));
             double Ez_4_3_3 = (((half_inv_zeta * Ez_4_2_2) + (PB_z * Ez_4_2_3)) + (4.0 * Ez_4_2_4));
-            double Ez_4_3_4 = (((half_inv_zeta * Ez_4_2_3) + (PB_z * Ez_4_2_4)) + (5.0 * Ez_4_2_5));
-            double Ez_4_3_5 = (((half_inv_zeta * Ez_4_2_4) + (PB_z * Ez_4_2_5)) + (6.0 * Ez_4_2_6));
-            double Ez_4_3_6 = ((half_inv_zeta * Ez_4_2_5) + (PB_z * Ez_4_2_6));
-            double Ez_4_3_7 = (half_inv_zeta * Ez_4_2_6);
             double Ez_4_4_0 = ((PB_z * Ez_4_3_0) + Ez_4_3_1);
             double Ez_4_4_1 = (((half_inv_zeta * Ez_4_3_0) + (PB_z * Ez_4_3_1)) + (2.0 * Ez_4_3_2));
             double Ez_4_4_2 = (((half_inv_zeta * Ez_4_3_1) + (PB_z * Ez_4_3_2)) + (3.0 * Ez_4_3_3));
-            double Ez_4_4_3 = (((half_inv_zeta * Ez_4_3_2) + (PB_z * Ez_4_3_3)) + (4.0 * Ez_4_3_4));
-            double Ez_4_4_4 = (((half_inv_zeta * Ez_4_3_3) + (PB_z * Ez_4_3_4)) + (5.0 * Ez_4_3_5));
-            double Ez_4_4_5 = (((half_inv_zeta * Ez_4_3_4) + (PB_z * Ez_4_3_5)) + (6.0 * Ez_4_3_6));
-            double Ez_4_4_6 = (((half_inv_zeta * Ez_4_3_5) + (PB_z * Ez_4_3_6)) + (7.0 * Ez_4_3_7));
-            double Ez_4_4_7 = ((half_inv_zeta * Ez_4_3_6) + (PB_z * Ez_4_3_7));
-            double Ez_4_4_8 = (half_inv_zeta * Ez_4_3_7);
             double Ez_4_5_0 = ((PB_z * Ez_4_4_0) + Ez_4_4_1);
             double Ez_4_5_1 = (((half_inv_zeta * Ez_4_4_0) + (PB_z * Ez_4_4_1)) + (2.0 * Ez_4_4_2));
-            double Ez_4_5_2 = (((half_inv_zeta * Ez_4_4_1) + (PB_z * Ez_4_4_2)) + (3.0 * Ez_4_4_3));
-            double Ez_4_5_3 = (((half_inv_zeta * Ez_4_4_2) + (PB_z * Ez_4_4_3)) + (4.0 * Ez_4_4_4));
-            double Ez_4_5_4 = (((half_inv_zeta * Ez_4_4_3) + (PB_z * Ez_4_4_4)) + (5.0 * Ez_4_4_5));
-            double Ez_4_5_5 = (((half_inv_zeta * Ez_4_4_4) + (PB_z * Ez_4_4_5)) + (6.0 * Ez_4_4_6));
-            double Ez_4_5_6 = (((half_inv_zeta * Ez_4_4_5) + (PB_z * Ez_4_4_6)) + (7.0 * Ez_4_4_7));
-            double Ez_4_5_7 = (((half_inv_zeta * Ez_4_4_6) + (PB_z * Ez_4_4_7)) + (8.0 * Ez_4_4_8));
-            double Ez_4_5_8 = ((half_inv_zeta * Ez_4_4_7) + (PB_z * Ez_4_4_8));
-            double Ez_4_5_9 = (half_inv_zeta * Ez_4_4_8);
             double Ez_4_6_0 = ((PB_z * Ez_4_5_0) + Ez_4_5_1);
-            double Ez_4_6_1 = (((half_inv_zeta * Ez_4_5_0) + (PB_z * Ez_4_5_1)) + (2.0 * Ez_4_5_2));
-            double Ez_4_6_2 = (((half_inv_zeta * Ez_4_5_1) + (PB_z * Ez_4_5_2)) + (3.0 * Ez_4_5_3));
-            double Ez_4_6_3 = (((half_inv_zeta * Ez_4_5_2) + (PB_z * Ez_4_5_3)) + (4.0 * Ez_4_5_4));
-            double Ez_4_6_4 = (((half_inv_zeta * Ez_4_5_3) + (PB_z * Ez_4_5_4)) + (5.0 * Ez_4_5_5));
-            double Ez_4_6_5 = (((half_inv_zeta * Ez_4_5_4) + (PB_z * Ez_4_5_5)) + (6.0 * Ez_4_5_6));
-            double Ez_4_6_6 = (((half_inv_zeta * Ez_4_5_5) + (PB_z * Ez_4_5_6)) + (7.0 * Ez_4_5_7));
-            double Ez_4_6_7 = (((half_inv_zeta * Ez_4_5_6) + (PB_z * Ez_4_5_7)) + (8.0 * Ez_4_5_8));
-            double Ez_4_6_8 = (((half_inv_zeta * Ez_4_5_7) + (PB_z * Ez_4_5_8)) + (9.0 * Ez_4_5_9));
-            double Ez_4_6_9 = ((half_inv_zeta * Ez_4_5_8) + (PB_z * Ez_4_5_9));
-            double Ez_4_6_10 = (half_inv_zeta * Ez_4_5_9);
             Ex[0] = Ex_0_0_0;
-            Ex[11] = Ex_0_1_0;
-            Ex[12] = Ex_0_1_1;
-            Ex[22] = Ex_0_2_0;
-            Ex[23] = Ex_0_2_1;
-            Ex[24] = Ex_0_2_2;
-            Ex[33] = Ex_0_3_0;
-            Ex[34] = Ex_0_3_1;
-            Ex[35] = Ex_0_3_2;
-            Ex[36] = Ex_0_3_3;
-            Ex[44] = Ex_0_4_0;
-            Ex[45] = Ex_0_4_1;
-            Ex[46] = Ex_0_4_2;
-            Ex[47] = Ex_0_4_3;
-            Ex[48] = Ex_0_4_4;
-            Ex[55] = Ex_0_5_0;
-            Ex[56] = Ex_0_5_1;
-            Ex[57] = Ex_0_5_2;
-            Ex[58] = Ex_0_5_3;
-            Ex[59] = Ex_0_5_4;
-            Ex[60] = Ex_0_5_5;
-            Ex[66] = Ex_0_6_0;
-            Ex[67] = Ex_0_6_1;
-            Ex[68] = Ex_0_6_2;
-            Ex[69] = Ex_0_6_3;
-            Ex[70] = Ex_0_6_4;
-            Ex[71] = Ex_0_6_5;
-            Ex[72] = Ex_0_6_6;
-            Ex[77] = Ex_1_0_0;
-            Ex[78] = Ex_1_0_1;
-            Ex[88] = Ex_1_1_0;
-            Ex[89] = Ex_1_1_1;
-            Ex[90] = Ex_1_1_2;
-            Ex[99] = Ex_1_2_0;
-            Ex[100] = Ex_1_2_1;
-            Ex[101] = Ex_1_2_2;
-            Ex[102] = Ex_1_2_3;
-            Ex[110] = Ex_1_3_0;
-            Ex[111] = Ex_1_3_1;
-            Ex[112] = Ex_1_3_2;
-            Ex[113] = Ex_1_3_3;
-            Ex[114] = Ex_1_3_4;
-            Ex[121] = Ex_1_4_0;
-            Ex[122] = Ex_1_4_1;
-            Ex[123] = Ex_1_4_2;
-            Ex[124] = Ex_1_4_3;
-            Ex[125] = Ex_1_4_4;
-            Ex[126] = Ex_1_4_5;
-            Ex[132] = Ex_1_5_0;
-            Ex[133] = Ex_1_5_1;
-            Ex[134] = Ex_1_5_2;
-            Ex[135] = Ex_1_5_3;
-            Ex[136] = Ex_1_5_4;
-            Ex[137] = Ex_1_5_5;
-            Ex[138] = Ex_1_5_6;
-            Ex[143] = Ex_1_6_0;
-            Ex[144] = Ex_1_6_1;
-            Ex[145] = Ex_1_6_2;
-            Ex[146] = Ex_1_6_3;
-            Ex[147] = Ex_1_6_4;
-            Ex[148] = Ex_1_6_5;
-            Ex[149] = Ex_1_6_6;
-            Ex[150] = Ex_1_6_7;
-            Ex[154] = Ex_2_0_0;
-            Ex[155] = Ex_2_0_1;
-            Ex[156] = Ex_2_0_2;
-            Ex[165] = Ex_2_1_0;
-            Ex[166] = Ex_2_1_1;
-            Ex[167] = Ex_2_1_2;
-            Ex[168] = Ex_2_1_3;
-            Ex[176] = Ex_2_2_0;
-            Ex[177] = Ex_2_2_1;
-            Ex[178] = Ex_2_2_2;
-            Ex[179] = Ex_2_2_3;
-            Ex[180] = Ex_2_2_4;
-            Ex[187] = Ex_2_3_0;
-            Ex[188] = Ex_2_3_1;
-            Ex[189] = Ex_2_3_2;
-            Ex[190] = Ex_2_3_3;
-            Ex[191] = Ex_2_3_4;
-            Ex[192] = Ex_2_3_5;
-            Ex[198] = Ex_2_4_0;
-            Ex[199] = Ex_2_4_1;
-            Ex[200] = Ex_2_4_2;
-            Ex[201] = Ex_2_4_3;
-            Ex[202] = Ex_2_4_4;
-            Ex[203] = Ex_2_4_5;
-            Ex[204] = Ex_2_4_6;
-            Ex[209] = Ex_2_5_0;
-            Ex[210] = Ex_2_5_1;
-            Ex[211] = Ex_2_5_2;
-            Ex[212] = Ex_2_5_3;
-            Ex[213] = Ex_2_5_4;
-            Ex[214] = Ex_2_5_5;
-            Ex[215] = Ex_2_5_6;
-            Ex[216] = Ex_2_5_7;
-            Ex[220] = Ex_2_6_0;
-            Ex[221] = Ex_2_6_1;
-            Ex[222] = Ex_2_6_2;
-            Ex[223] = Ex_2_6_3;
-            Ex[224] = Ex_2_6_4;
-            Ex[225] = Ex_2_6_5;
-            Ex[226] = Ex_2_6_6;
-            Ex[227] = Ex_2_6_7;
-            Ex[228] = Ex_2_6_8;
-            Ex[231] = Ex_3_0_0;
-            Ex[232] = Ex_3_0_1;
-            Ex[233] = Ex_3_0_2;
-            Ex[234] = Ex_3_0_3;
-            Ex[242] = Ex_3_1_0;
-            Ex[243] = Ex_3_1_1;
-            Ex[244] = Ex_3_1_2;
-            Ex[245] = Ex_3_1_3;
-            Ex[246] = Ex_3_1_4;
-            Ex[253] = Ex_3_2_0;
-            Ex[254] = Ex_3_2_1;
-            Ex[255] = Ex_3_2_2;
-            Ex[256] = Ex_3_2_3;
-            Ex[257] = Ex_3_2_4;
-            Ex[258] = Ex_3_2_5;
-            Ex[264] = Ex_3_3_0;
-            Ex[265] = Ex_3_3_1;
-            Ex[266] = Ex_3_3_2;
-            Ex[267] = Ex_3_3_3;
-            Ex[268] = Ex_3_3_4;
-            Ex[269] = Ex_3_3_5;
-            Ex[270] = Ex_3_3_6;
-            Ex[275] = Ex_3_4_0;
-            Ex[276] = Ex_3_4_1;
-            Ex[277] = Ex_3_4_2;
-            Ex[278] = Ex_3_4_3;
-            Ex[279] = Ex_3_4_4;
-            Ex[280] = Ex_3_4_5;
-            Ex[281] = Ex_3_4_6;
-            Ex[282] = Ex_3_4_7;
-            Ex[286] = Ex_3_5_0;
-            Ex[287] = Ex_3_5_1;
-            Ex[288] = Ex_3_5_2;
-            Ex[289] = Ex_3_5_3;
-            Ex[290] = Ex_3_5_4;
-            Ex[291] = Ex_3_5_5;
-            Ex[292] = Ex_3_5_6;
-            Ex[293] = Ex_3_5_7;
-            Ex[294] = Ex_3_5_8;
-            Ex[297] = Ex_3_6_0;
-            Ex[298] = Ex_3_6_1;
-            Ex[299] = Ex_3_6_2;
-            Ex[300] = Ex_3_6_3;
-            Ex[301] = Ex_3_6_4;
-            Ex[302] = Ex_3_6_5;
-            Ex[303] = Ex_3_6_6;
-            Ex[304] = Ex_3_6_7;
-            Ex[305] = Ex_3_6_8;
-            Ex[306] = Ex_3_6_9;
-            Ex[308] = Ex_4_0_0;
-            Ex[309] = Ex_4_0_1;
-            Ex[310] = Ex_4_0_2;
-            Ex[311] = Ex_4_0_3;
-            Ex[312] = Ex_4_0_4;
-            Ex[319] = Ex_4_1_0;
-            Ex[320] = Ex_4_1_1;
-            Ex[321] = Ex_4_1_2;
-            Ex[322] = Ex_4_1_3;
-            Ex[323] = Ex_4_1_4;
-            Ex[324] = Ex_4_1_5;
-            Ex[330] = Ex_4_2_0;
-            Ex[331] = Ex_4_2_1;
-            Ex[332] = Ex_4_2_2;
-            Ex[333] = Ex_4_2_3;
-            Ex[334] = Ex_4_2_4;
-            Ex[335] = Ex_4_2_5;
-            Ex[336] = Ex_4_2_6;
-            Ex[341] = Ex_4_3_0;
-            Ex[342] = Ex_4_3_1;
-            Ex[343] = Ex_4_3_2;
-            Ex[344] = Ex_4_3_3;
-            Ex[345] = Ex_4_3_4;
-            Ex[346] = Ex_4_3_5;
-            Ex[347] = Ex_4_3_6;
-            Ex[348] = Ex_4_3_7;
-            Ex[352] = Ex_4_4_0;
-            Ex[353] = Ex_4_4_1;
-            Ex[354] = Ex_4_4_2;
-            Ex[355] = Ex_4_4_3;
-            Ex[356] = Ex_4_4_4;
-            Ex[357] = Ex_4_4_5;
-            Ex[358] = Ex_4_4_6;
-            Ex[359] = Ex_4_4_7;
-            Ex[360] = Ex_4_4_8;
-            Ex[363] = Ex_4_5_0;
-            Ex[364] = Ex_4_5_1;
-            Ex[365] = Ex_4_5_2;
-            Ex[366] = Ex_4_5_3;
-            Ex[367] = Ex_4_5_4;
-            Ex[368] = Ex_4_5_5;
-            Ex[369] = Ex_4_5_6;
-            Ex[370] = Ex_4_5_7;
-            Ex[371] = Ex_4_5_8;
-            Ex[372] = Ex_4_5_9;
-            Ex[374] = Ex_4_6_0;
-            Ex[375] = Ex_4_6_1;
-            Ex[376] = Ex_4_6_2;
-            Ex[377] = Ex_4_6_3;
-            Ex[378] = Ex_4_6_4;
-            Ex[379] = Ex_4_6_5;
-            Ex[380] = Ex_4_6_6;
-            Ex[381] = Ex_4_6_7;
-            Ex[382] = Ex_4_6_8;
-            Ex[383] = Ex_4_6_9;
-            Ex[384] = Ex_4_6_10;
+            Ex[1] = Ex_0_1_0;
+            Ex[2] = Ex_0_2_0;
+            Ex[3] = Ex_0_3_0;
+            Ex[4] = Ex_0_4_0;
+            Ex[5] = Ex_0_5_0;
+            Ex[6] = Ex_0_6_0;
+            Ex[7] = Ex_1_0_0;
+            Ex[8] = Ex_1_1_0;
+            Ex[9] = Ex_1_2_0;
+            Ex[10] = Ex_1_3_0;
+            Ex[11] = Ex_1_4_0;
+            Ex[12] = Ex_1_5_0;
+            Ex[13] = Ex_1_6_0;
+            Ex[14] = Ex_2_0_0;
+            Ex[15] = Ex_2_1_0;
+            Ex[16] = Ex_2_2_0;
+            Ex[17] = Ex_2_3_0;
+            Ex[18] = Ex_2_4_0;
+            Ex[19] = Ex_2_5_0;
+            Ex[20] = Ex_2_6_0;
+            Ex[21] = Ex_3_0_0;
+            Ex[22] = Ex_3_1_0;
+            Ex[23] = Ex_3_2_0;
+            Ex[24] = Ex_3_3_0;
+            Ex[25] = Ex_3_4_0;
+            Ex[26] = Ex_3_5_0;
+            Ex[27] = Ex_3_6_0;
+            Ex[28] = Ex_4_0_0;
+            Ex[29] = Ex_4_1_0;
+            Ex[30] = Ex_4_2_0;
+            Ex[31] = Ex_4_3_0;
+            Ex[32] = Ex_4_4_0;
+            Ex[33] = Ex_4_5_0;
+            Ex[34] = Ex_4_6_0;
             Ey[0] = Ey_0_0_0;
-            Ey[11] = Ey_0_1_0;
-            Ey[12] = Ey_0_1_1;
-            Ey[22] = Ey_0_2_0;
-            Ey[23] = Ey_0_2_1;
-            Ey[24] = Ey_0_2_2;
-            Ey[33] = Ey_0_3_0;
-            Ey[34] = Ey_0_3_1;
-            Ey[35] = Ey_0_3_2;
-            Ey[36] = Ey_0_3_3;
-            Ey[44] = Ey_0_4_0;
-            Ey[45] = Ey_0_4_1;
-            Ey[46] = Ey_0_4_2;
-            Ey[47] = Ey_0_4_3;
-            Ey[48] = Ey_0_4_4;
-            Ey[55] = Ey_0_5_0;
-            Ey[56] = Ey_0_5_1;
-            Ey[57] = Ey_0_5_2;
-            Ey[58] = Ey_0_5_3;
-            Ey[59] = Ey_0_5_4;
-            Ey[60] = Ey_0_5_5;
-            Ey[66] = Ey_0_6_0;
-            Ey[67] = Ey_0_6_1;
-            Ey[68] = Ey_0_6_2;
-            Ey[69] = Ey_0_6_3;
-            Ey[70] = Ey_0_6_4;
-            Ey[71] = Ey_0_6_5;
-            Ey[72] = Ey_0_6_6;
-            Ey[77] = Ey_1_0_0;
-            Ey[78] = Ey_1_0_1;
-            Ey[88] = Ey_1_1_0;
-            Ey[89] = Ey_1_1_1;
-            Ey[90] = Ey_1_1_2;
-            Ey[99] = Ey_1_2_0;
-            Ey[100] = Ey_1_2_1;
-            Ey[101] = Ey_1_2_2;
-            Ey[102] = Ey_1_2_3;
-            Ey[110] = Ey_1_3_0;
-            Ey[111] = Ey_1_3_1;
-            Ey[112] = Ey_1_3_2;
-            Ey[113] = Ey_1_3_3;
-            Ey[114] = Ey_1_3_4;
-            Ey[121] = Ey_1_4_0;
-            Ey[122] = Ey_1_4_1;
-            Ey[123] = Ey_1_4_2;
-            Ey[124] = Ey_1_4_3;
-            Ey[125] = Ey_1_4_4;
-            Ey[126] = Ey_1_4_5;
-            Ey[132] = Ey_1_5_0;
-            Ey[133] = Ey_1_5_1;
-            Ey[134] = Ey_1_5_2;
-            Ey[135] = Ey_1_5_3;
-            Ey[136] = Ey_1_5_4;
-            Ey[137] = Ey_1_5_5;
-            Ey[138] = Ey_1_5_6;
-            Ey[143] = Ey_1_6_0;
-            Ey[144] = Ey_1_6_1;
-            Ey[145] = Ey_1_6_2;
-            Ey[146] = Ey_1_6_3;
-            Ey[147] = Ey_1_6_4;
-            Ey[148] = Ey_1_6_5;
-            Ey[149] = Ey_1_6_6;
-            Ey[150] = Ey_1_6_7;
-            Ey[154] = Ey_2_0_0;
-            Ey[155] = Ey_2_0_1;
-            Ey[156] = Ey_2_0_2;
-            Ey[165] = Ey_2_1_0;
-            Ey[166] = Ey_2_1_1;
-            Ey[167] = Ey_2_1_2;
-            Ey[168] = Ey_2_1_3;
-            Ey[176] = Ey_2_2_0;
-            Ey[177] = Ey_2_2_1;
-            Ey[178] = Ey_2_2_2;
-            Ey[179] = Ey_2_2_3;
-            Ey[180] = Ey_2_2_4;
-            Ey[187] = Ey_2_3_0;
-            Ey[188] = Ey_2_3_1;
-            Ey[189] = Ey_2_3_2;
-            Ey[190] = Ey_2_3_3;
-            Ey[191] = Ey_2_3_4;
-            Ey[192] = Ey_2_3_5;
-            Ey[198] = Ey_2_4_0;
-            Ey[199] = Ey_2_4_1;
-            Ey[200] = Ey_2_4_2;
-            Ey[201] = Ey_2_4_3;
-            Ey[202] = Ey_2_4_4;
-            Ey[203] = Ey_2_4_5;
-            Ey[204] = Ey_2_4_6;
-            Ey[209] = Ey_2_5_0;
-            Ey[210] = Ey_2_5_1;
-            Ey[211] = Ey_2_5_2;
-            Ey[212] = Ey_2_5_3;
-            Ey[213] = Ey_2_5_4;
-            Ey[214] = Ey_2_5_5;
-            Ey[215] = Ey_2_5_6;
-            Ey[216] = Ey_2_5_7;
-            Ey[220] = Ey_2_6_0;
-            Ey[221] = Ey_2_6_1;
-            Ey[222] = Ey_2_6_2;
-            Ey[223] = Ey_2_6_3;
-            Ey[224] = Ey_2_6_4;
-            Ey[225] = Ey_2_6_5;
-            Ey[226] = Ey_2_6_6;
-            Ey[227] = Ey_2_6_7;
-            Ey[228] = Ey_2_6_8;
-            Ey[231] = Ey_3_0_0;
-            Ey[232] = Ey_3_0_1;
-            Ey[233] = Ey_3_0_2;
-            Ey[234] = Ey_3_0_3;
-            Ey[242] = Ey_3_1_0;
-            Ey[243] = Ey_3_1_1;
-            Ey[244] = Ey_3_1_2;
-            Ey[245] = Ey_3_1_3;
-            Ey[246] = Ey_3_1_4;
-            Ey[253] = Ey_3_2_0;
-            Ey[254] = Ey_3_2_1;
-            Ey[255] = Ey_3_2_2;
-            Ey[256] = Ey_3_2_3;
-            Ey[257] = Ey_3_2_4;
-            Ey[258] = Ey_3_2_5;
-            Ey[264] = Ey_3_3_0;
-            Ey[265] = Ey_3_3_1;
-            Ey[266] = Ey_3_3_2;
-            Ey[267] = Ey_3_3_3;
-            Ey[268] = Ey_3_3_4;
-            Ey[269] = Ey_3_3_5;
-            Ey[270] = Ey_3_3_6;
-            Ey[275] = Ey_3_4_0;
-            Ey[276] = Ey_3_4_1;
-            Ey[277] = Ey_3_4_2;
-            Ey[278] = Ey_3_4_3;
-            Ey[279] = Ey_3_4_4;
-            Ey[280] = Ey_3_4_5;
-            Ey[281] = Ey_3_4_6;
-            Ey[282] = Ey_3_4_7;
-            Ey[286] = Ey_3_5_0;
-            Ey[287] = Ey_3_5_1;
-            Ey[288] = Ey_3_5_2;
-            Ey[289] = Ey_3_5_3;
-            Ey[290] = Ey_3_5_4;
-            Ey[291] = Ey_3_5_5;
-            Ey[292] = Ey_3_5_6;
-            Ey[293] = Ey_3_5_7;
-            Ey[294] = Ey_3_5_8;
-            Ey[297] = Ey_3_6_0;
-            Ey[298] = Ey_3_6_1;
-            Ey[299] = Ey_3_6_2;
-            Ey[300] = Ey_3_6_3;
-            Ey[301] = Ey_3_6_4;
-            Ey[302] = Ey_3_6_5;
-            Ey[303] = Ey_3_6_6;
-            Ey[304] = Ey_3_6_7;
-            Ey[305] = Ey_3_6_8;
-            Ey[306] = Ey_3_6_9;
-            Ey[308] = Ey_4_0_0;
-            Ey[309] = Ey_4_0_1;
-            Ey[310] = Ey_4_0_2;
-            Ey[311] = Ey_4_0_3;
-            Ey[312] = Ey_4_0_4;
-            Ey[319] = Ey_4_1_0;
-            Ey[320] = Ey_4_1_1;
-            Ey[321] = Ey_4_1_2;
-            Ey[322] = Ey_4_1_3;
-            Ey[323] = Ey_4_1_4;
-            Ey[324] = Ey_4_1_5;
-            Ey[330] = Ey_4_2_0;
-            Ey[331] = Ey_4_2_1;
-            Ey[332] = Ey_4_2_2;
-            Ey[333] = Ey_4_2_3;
-            Ey[334] = Ey_4_2_4;
-            Ey[335] = Ey_4_2_5;
-            Ey[336] = Ey_4_2_6;
-            Ey[341] = Ey_4_3_0;
-            Ey[342] = Ey_4_3_1;
-            Ey[343] = Ey_4_3_2;
-            Ey[344] = Ey_4_3_3;
-            Ey[345] = Ey_4_3_4;
-            Ey[346] = Ey_4_3_5;
-            Ey[347] = Ey_4_3_6;
-            Ey[348] = Ey_4_3_7;
-            Ey[352] = Ey_4_4_0;
-            Ey[353] = Ey_4_4_1;
-            Ey[354] = Ey_4_4_2;
-            Ey[355] = Ey_4_4_3;
-            Ey[356] = Ey_4_4_4;
-            Ey[357] = Ey_4_4_5;
-            Ey[358] = Ey_4_4_6;
-            Ey[359] = Ey_4_4_7;
-            Ey[360] = Ey_4_4_8;
-            Ey[363] = Ey_4_5_0;
-            Ey[364] = Ey_4_5_1;
-            Ey[365] = Ey_4_5_2;
-            Ey[366] = Ey_4_5_3;
-            Ey[367] = Ey_4_5_4;
-            Ey[368] = Ey_4_5_5;
-            Ey[369] = Ey_4_5_6;
-            Ey[370] = Ey_4_5_7;
-            Ey[371] = Ey_4_5_8;
-            Ey[372] = Ey_4_5_9;
-            Ey[374] = Ey_4_6_0;
-            Ey[375] = Ey_4_6_1;
-            Ey[376] = Ey_4_6_2;
-            Ey[377] = Ey_4_6_3;
-            Ey[378] = Ey_4_6_4;
-            Ey[379] = Ey_4_6_5;
-            Ey[380] = Ey_4_6_6;
-            Ey[381] = Ey_4_6_7;
-            Ey[382] = Ey_4_6_8;
-            Ey[383] = Ey_4_6_9;
-            Ey[384] = Ey_4_6_10;
+            Ey[1] = Ey_0_1_0;
+            Ey[2] = Ey_0_2_0;
+            Ey[3] = Ey_0_3_0;
+            Ey[4] = Ey_0_4_0;
+            Ey[5] = Ey_0_5_0;
+            Ey[6] = Ey_0_6_0;
+            Ey[7] = Ey_1_0_0;
+            Ey[8] = Ey_1_1_0;
+            Ey[9] = Ey_1_2_0;
+            Ey[10] = Ey_1_3_0;
+            Ey[11] = Ey_1_4_0;
+            Ey[12] = Ey_1_5_0;
+            Ey[13] = Ey_1_6_0;
+            Ey[14] = Ey_2_0_0;
+            Ey[15] = Ey_2_1_0;
+            Ey[16] = Ey_2_2_0;
+            Ey[17] = Ey_2_3_0;
+            Ey[18] = Ey_2_4_0;
+            Ey[19] = Ey_2_5_0;
+            Ey[20] = Ey_2_6_0;
+            Ey[21] = Ey_3_0_0;
+            Ey[22] = Ey_3_1_0;
+            Ey[23] = Ey_3_2_0;
+            Ey[24] = Ey_3_3_0;
+            Ey[25] = Ey_3_4_0;
+            Ey[26] = Ey_3_5_0;
+            Ey[27] = Ey_3_6_0;
+            Ey[28] = Ey_4_0_0;
+            Ey[29] = Ey_4_1_0;
+            Ey[30] = Ey_4_2_0;
+            Ey[31] = Ey_4_3_0;
+            Ey[32] = Ey_4_4_0;
+            Ey[33] = Ey_4_5_0;
+            Ey[34] = Ey_4_6_0;
             Ez[0] = Ez_0_0_0;
-            Ez[11] = Ez_0_1_0;
-            Ez[12] = Ez_0_1_1;
-            Ez[22] = Ez_0_2_0;
-            Ez[23] = Ez_0_2_1;
-            Ez[24] = Ez_0_2_2;
-            Ez[33] = Ez_0_3_0;
-            Ez[34] = Ez_0_3_1;
-            Ez[35] = Ez_0_3_2;
-            Ez[36] = Ez_0_3_3;
-            Ez[44] = Ez_0_4_0;
-            Ez[45] = Ez_0_4_1;
-            Ez[46] = Ez_0_4_2;
-            Ez[47] = Ez_0_4_3;
-            Ez[48] = Ez_0_4_4;
-            Ez[55] = Ez_0_5_0;
-            Ez[56] = Ez_0_5_1;
-            Ez[57] = Ez_0_5_2;
-            Ez[58] = Ez_0_5_3;
-            Ez[59] = Ez_0_5_4;
-            Ez[60] = Ez_0_5_5;
-            Ez[66] = Ez_0_6_0;
-            Ez[67] = Ez_0_6_1;
-            Ez[68] = Ez_0_6_2;
-            Ez[69] = Ez_0_6_3;
-            Ez[70] = Ez_0_6_4;
-            Ez[71] = Ez_0_6_5;
-            Ez[72] = Ez_0_6_6;
-            Ez[77] = Ez_1_0_0;
-            Ez[78] = Ez_1_0_1;
-            Ez[88] = Ez_1_1_0;
-            Ez[89] = Ez_1_1_1;
-            Ez[90] = Ez_1_1_2;
-            Ez[99] = Ez_1_2_0;
-            Ez[100] = Ez_1_2_1;
-            Ez[101] = Ez_1_2_2;
-            Ez[102] = Ez_1_2_3;
-            Ez[110] = Ez_1_3_0;
-            Ez[111] = Ez_1_3_1;
-            Ez[112] = Ez_1_3_2;
-            Ez[113] = Ez_1_3_3;
-            Ez[114] = Ez_1_3_4;
-            Ez[121] = Ez_1_4_0;
-            Ez[122] = Ez_1_4_1;
-            Ez[123] = Ez_1_4_2;
-            Ez[124] = Ez_1_4_3;
-            Ez[125] = Ez_1_4_4;
-            Ez[126] = Ez_1_4_5;
-            Ez[132] = Ez_1_5_0;
-            Ez[133] = Ez_1_5_1;
-            Ez[134] = Ez_1_5_2;
-            Ez[135] = Ez_1_5_3;
-            Ez[136] = Ez_1_5_4;
-            Ez[137] = Ez_1_5_5;
-            Ez[138] = Ez_1_5_6;
-            Ez[143] = Ez_1_6_0;
-            Ez[144] = Ez_1_6_1;
-            Ez[145] = Ez_1_6_2;
-            Ez[146] = Ez_1_6_3;
-            Ez[147] = Ez_1_6_4;
-            Ez[148] = Ez_1_6_5;
-            Ez[149] = Ez_1_6_6;
-            Ez[150] = Ez_1_6_7;
-            Ez[154] = Ez_2_0_0;
-            Ez[155] = Ez_2_0_1;
-            Ez[156] = Ez_2_0_2;
-            Ez[165] = Ez_2_1_0;
-            Ez[166] = Ez_2_1_1;
-            Ez[167] = Ez_2_1_2;
-            Ez[168] = Ez_2_1_3;
-            Ez[176] = Ez_2_2_0;
-            Ez[177] = Ez_2_2_1;
-            Ez[178] = Ez_2_2_2;
-            Ez[179] = Ez_2_2_3;
-            Ez[180] = Ez_2_2_4;
-            Ez[187] = Ez_2_3_0;
-            Ez[188] = Ez_2_3_1;
-            Ez[189] = Ez_2_3_2;
-            Ez[190] = Ez_2_3_3;
-            Ez[191] = Ez_2_3_4;
-            Ez[192] = Ez_2_3_5;
-            Ez[198] = Ez_2_4_0;
-            Ez[199] = Ez_2_4_1;
-            Ez[200] = Ez_2_4_2;
-            Ez[201] = Ez_2_4_3;
-            Ez[202] = Ez_2_4_4;
-            Ez[203] = Ez_2_4_5;
-            Ez[204] = Ez_2_4_6;
-            Ez[209] = Ez_2_5_0;
-            Ez[210] = Ez_2_5_1;
-            Ez[211] = Ez_2_5_2;
-            Ez[212] = Ez_2_5_3;
-            Ez[213] = Ez_2_5_4;
-            Ez[214] = Ez_2_5_5;
-            Ez[215] = Ez_2_5_6;
-            Ez[216] = Ez_2_5_7;
-            Ez[220] = Ez_2_6_0;
-            Ez[221] = Ez_2_6_1;
-            Ez[222] = Ez_2_6_2;
-            Ez[223] = Ez_2_6_3;
-            Ez[224] = Ez_2_6_4;
-            Ez[225] = Ez_2_6_5;
-            Ez[226] = Ez_2_6_6;
-            Ez[227] = Ez_2_6_7;
-            Ez[228] = Ez_2_6_8;
-            Ez[231] = Ez_3_0_0;
-            Ez[232] = Ez_3_0_1;
-            Ez[233] = Ez_3_0_2;
-            Ez[234] = Ez_3_0_3;
-            Ez[242] = Ez_3_1_0;
-            Ez[243] = Ez_3_1_1;
-            Ez[244] = Ez_3_1_2;
-            Ez[245] = Ez_3_1_3;
-            Ez[246] = Ez_3_1_4;
-            Ez[253] = Ez_3_2_0;
-            Ez[254] = Ez_3_2_1;
-            Ez[255] = Ez_3_2_2;
-            Ez[256] = Ez_3_2_3;
-            Ez[257] = Ez_3_2_4;
-            Ez[258] = Ez_3_2_5;
-            Ez[264] = Ez_3_3_0;
-            Ez[265] = Ez_3_3_1;
-            Ez[266] = Ez_3_3_2;
-            Ez[267] = Ez_3_3_3;
-            Ez[268] = Ez_3_3_4;
-            Ez[269] = Ez_3_3_5;
-            Ez[270] = Ez_3_3_6;
-            Ez[275] = Ez_3_4_0;
-            Ez[276] = Ez_3_4_1;
-            Ez[277] = Ez_3_4_2;
-            Ez[278] = Ez_3_4_3;
-            Ez[279] = Ez_3_4_4;
-            Ez[280] = Ez_3_4_5;
-            Ez[281] = Ez_3_4_6;
-            Ez[282] = Ez_3_4_7;
-            Ez[286] = Ez_3_5_0;
-            Ez[287] = Ez_3_5_1;
-            Ez[288] = Ez_3_5_2;
-            Ez[289] = Ez_3_5_3;
-            Ez[290] = Ez_3_5_4;
-            Ez[291] = Ez_3_5_5;
-            Ez[292] = Ez_3_5_6;
-            Ez[293] = Ez_3_5_7;
-            Ez[294] = Ez_3_5_8;
-            Ez[297] = Ez_3_6_0;
-            Ez[298] = Ez_3_6_1;
-            Ez[299] = Ez_3_6_2;
-            Ez[300] = Ez_3_6_3;
-            Ez[301] = Ez_3_6_4;
-            Ez[302] = Ez_3_6_5;
-            Ez[303] = Ez_3_6_6;
-            Ez[304] = Ez_3_6_7;
-            Ez[305] = Ez_3_6_8;
-            Ez[306] = Ez_3_6_9;
-            Ez[308] = Ez_4_0_0;
-            Ez[309] = Ez_4_0_1;
-            Ez[310] = Ez_4_0_2;
-            Ez[311] = Ez_4_0_3;
-            Ez[312] = Ez_4_0_4;
-            Ez[319] = Ez_4_1_0;
-            Ez[320] = Ez_4_1_1;
-            Ez[321] = Ez_4_1_2;
-            Ez[322] = Ez_4_1_3;
-            Ez[323] = Ez_4_1_4;
-            Ez[324] = Ez_4_1_5;
-            Ez[330] = Ez_4_2_0;
-            Ez[331] = Ez_4_2_1;
-            Ez[332] = Ez_4_2_2;
-            Ez[333] = Ez_4_2_3;
-            Ez[334] = Ez_4_2_4;
-            Ez[335] = Ez_4_2_5;
-            Ez[336] = Ez_4_2_6;
-            Ez[341] = Ez_4_3_0;
-            Ez[342] = Ez_4_3_1;
-            Ez[343] = Ez_4_3_2;
-            Ez[344] = Ez_4_3_3;
-            Ez[345] = Ez_4_3_4;
-            Ez[346] = Ez_4_3_5;
-            Ez[347] = Ez_4_3_6;
-            Ez[348] = Ez_4_3_7;
-            Ez[352] = Ez_4_4_0;
-            Ez[353] = Ez_4_4_1;
-            Ez[354] = Ez_4_4_2;
-            Ez[355] = Ez_4_4_3;
-            Ez[356] = Ez_4_4_4;
-            Ez[357] = Ez_4_4_5;
-            Ez[358] = Ez_4_4_6;
-            Ez[359] = Ez_4_4_7;
-            Ez[360] = Ez_4_4_8;
-            Ez[363] = Ez_4_5_0;
-            Ez[364] = Ez_4_5_1;
-            Ez[365] = Ez_4_5_2;
-            Ez[366] = Ez_4_5_3;
-            Ez[367] = Ez_4_5_4;
-            Ez[368] = Ez_4_5_5;
-            Ez[369] = Ez_4_5_6;
-            Ez[370] = Ez_4_5_7;
-            Ez[371] = Ez_4_5_8;
-            Ez[372] = Ez_4_5_9;
-            Ez[374] = Ez_4_6_0;
-            Ez[375] = Ez_4_6_1;
-            Ez[376] = Ez_4_6_2;
-            Ez[377] = Ez_4_6_3;
-            Ez[378] = Ez_4_6_4;
-            Ez[379] = Ez_4_6_5;
-            Ez[380] = Ez_4_6_6;
-            Ez[381] = Ez_4_6_7;
-            Ez[382] = Ez_4_6_8;
-            Ez[383] = Ez_4_6_9;
-            Ez[384] = Ez_4_6_10;
+            Ez[1] = Ez_0_1_0;
+            Ez[2] = Ez_0_2_0;
+            Ez[3] = Ez_0_3_0;
+            Ez[4] = Ez_0_4_0;
+            Ez[5] = Ez_0_5_0;
+            Ez[6] = Ez_0_6_0;
+            Ez[7] = Ez_1_0_0;
+            Ez[8] = Ez_1_1_0;
+            Ez[9] = Ez_1_2_0;
+            Ez[10] = Ez_1_3_0;
+            Ez[11] = Ez_1_4_0;
+            Ez[12] = Ez_1_5_0;
+            Ez[13] = Ez_1_6_0;
+            Ez[14] = Ez_2_0_0;
+            Ez[15] = Ez_2_1_0;
+            Ez[16] = Ez_2_2_0;
+            Ez[17] = Ez_2_3_0;
+            Ez[18] = Ez_2_4_0;
+            Ez[19] = Ez_2_5_0;
+            Ez[20] = Ez_2_6_0;
+            Ez[21] = Ez_3_0_0;
+            Ez[22] = Ez_3_1_0;
+            Ez[23] = Ez_3_2_0;
+            Ez[24] = Ez_3_3_0;
+            Ez[25] = Ez_3_4_0;
+            Ez[26] = Ez_3_5_0;
+            Ez[27] = Ez_3_6_0;
+            Ez[28] = Ez_4_0_0;
+            Ez[29] = Ez_4_1_0;
+            Ez[30] = Ez_4_2_0;
+            Ez[31] = Ez_4_3_0;
+            Ez[32] = Ez_4_4_0;
+            Ez[33] = Ez_4_5_0;
+            Ez[34] = Ez_4_6_0;
+        }
+        // LOW-STACK (#1263): only the per-axis E^{ij}_0 held, and per block row the
+        // operated per-axis factors and the 21 components as loops
+        double W[36];
+        if ((oa < ob) + (ob < oa)) {
+            for (int32_t i = 0; i < 6; i += 1) {
+                for (int32_t j = 0; j < 6; j += 1) {
+                    W[((i * 6) + j)] = (M[((oa + i) * n_ao + (ob + j))] + M[((ob + j) * n_ao + (oa + i))]);
+                }
+            }
+        } else {
+            for (int32_t i = 0; i < 6; i += 1) {
+                for (int32_t j = 0; j < 6; j += 1) {
+                    W[((i * 6) + j)] = M[((oa + i) * n_ao + (oa + j))];
+                }
+            }
         }
         double ebk = eb_ket[rec];
-        // w_r = M[a_i, b_j] + M[b_j, a_i] off the diagonal, M[a_i, a_j] on a diagonal
-        // shell pair: SUM_mn M_mn X_mn exactly, for any M
-        double w0 = 0.0;
-        double w1 = 0.0;
-        double w2 = 0.0;
-        double w3 = 0.0;
-        double w4 = 0.0;
-        double w5 = 0.0;
-        double w6 = 0.0;
-        double w7 = 0.0;
-        double w8 = 0.0;
-        double w9 = 0.0;
-        double w10 = 0.0;
-        double w11 = 0.0;
-        double w12 = 0.0;
-        double w13 = 0.0;
-        double w14 = 0.0;
-        double w15 = 0.0;
-        double w16 = 0.0;
-        double w17 = 0.0;
-        double w18 = 0.0;
-        double w19 = 0.0;
-        double w20 = 0.0;
-        double w21 = 0.0;
-        double w22 = 0.0;
-        double w23 = 0.0;
-        double w24 = 0.0;
-        double w25 = 0.0;
-        double w26 = 0.0;
-        double w27 = 0.0;
-        double w28 = 0.0;
-        double w29 = 0.0;
-        double w30 = 0.0;
-        double w31 = 0.0;
-        double w32 = 0.0;
-        double w33 = 0.0;
-        double w34 = 0.0;
-        double w35 = 0.0;
-        if ((oa < ob) + (ob < oa)) {
-            w0 = (M[((oa + 0) * n_ao + (ob + 0))] + M[((ob + 0) * n_ao + (oa + 0))]);
-            w1 = (M[((oa + 0) * n_ao + (ob + 1))] + M[((ob + 1) * n_ao + (oa + 0))]);
-            w2 = (M[((oa + 0) * n_ao + (ob + 2))] + M[((ob + 2) * n_ao + (oa + 0))]);
-            w3 = (M[((oa + 0) * n_ao + (ob + 3))] + M[((ob + 3) * n_ao + (oa + 0))]);
-            w4 = (M[((oa + 0) * n_ao + (ob + 4))] + M[((ob + 4) * n_ao + (oa + 0))]);
-            w5 = (M[((oa + 0) * n_ao + (ob + 5))] + M[((ob + 5) * n_ao + (oa + 0))]);
-            w6 = (M[((oa + 1) * n_ao + (ob + 0))] + M[((ob + 0) * n_ao + (oa + 1))]);
-            w7 = (M[((oa + 1) * n_ao + (ob + 1))] + M[((ob + 1) * n_ao + (oa + 1))]);
-            w8 = (M[((oa + 1) * n_ao + (ob + 2))] + M[((ob + 2) * n_ao + (oa + 1))]);
-            w9 = (M[((oa + 1) * n_ao + (ob + 3))] + M[((ob + 3) * n_ao + (oa + 1))]);
-            w10 = (M[((oa + 1) * n_ao + (ob + 4))] + M[((ob + 4) * n_ao + (oa + 1))]);
-            w11 = (M[((oa + 1) * n_ao + (ob + 5))] + M[((ob + 5) * n_ao + (oa + 1))]);
-            w12 = (M[((oa + 2) * n_ao + (ob + 0))] + M[((ob + 0) * n_ao + (oa + 2))]);
-            w13 = (M[((oa + 2) * n_ao + (ob + 1))] + M[((ob + 1) * n_ao + (oa + 2))]);
-            w14 = (M[((oa + 2) * n_ao + (ob + 2))] + M[((ob + 2) * n_ao + (oa + 2))]);
-            w15 = (M[((oa + 2) * n_ao + (ob + 3))] + M[((ob + 3) * n_ao + (oa + 2))]);
-            w16 = (M[((oa + 2) * n_ao + (ob + 4))] + M[((ob + 4) * n_ao + (oa + 2))]);
-            w17 = (M[((oa + 2) * n_ao + (ob + 5))] + M[((ob + 5) * n_ao + (oa + 2))]);
-            w18 = (M[((oa + 3) * n_ao + (ob + 0))] + M[((ob + 0) * n_ao + (oa + 3))]);
-            w19 = (M[((oa + 3) * n_ao + (ob + 1))] + M[((ob + 1) * n_ao + (oa + 3))]);
-            w20 = (M[((oa + 3) * n_ao + (ob + 2))] + M[((ob + 2) * n_ao + (oa + 3))]);
-            w21 = (M[((oa + 3) * n_ao + (ob + 3))] + M[((ob + 3) * n_ao + (oa + 3))]);
-            w22 = (M[((oa + 3) * n_ao + (ob + 4))] + M[((ob + 4) * n_ao + (oa + 3))]);
-            w23 = (M[((oa + 3) * n_ao + (ob + 5))] + M[((ob + 5) * n_ao + (oa + 3))]);
-            w24 = (M[((oa + 4) * n_ao + (ob + 0))] + M[((ob + 0) * n_ao + (oa + 4))]);
-            w25 = (M[((oa + 4) * n_ao + (ob + 1))] + M[((ob + 1) * n_ao + (oa + 4))]);
-            w26 = (M[((oa + 4) * n_ao + (ob + 2))] + M[((ob + 2) * n_ao + (oa + 4))]);
-            w27 = (M[((oa + 4) * n_ao + (ob + 3))] + M[((ob + 3) * n_ao + (oa + 4))]);
-            w28 = (M[((oa + 4) * n_ao + (ob + 4))] + M[((ob + 4) * n_ao + (oa + 4))]);
-            w29 = (M[((oa + 4) * n_ao + (ob + 5))] + M[((ob + 5) * n_ao + (oa + 4))]);
-            w30 = (M[((oa + 5) * n_ao + (ob + 0))] + M[((ob + 0) * n_ao + (oa + 5))]);
-            w31 = (M[((oa + 5) * n_ao + (ob + 1))] + M[((ob + 1) * n_ao + (oa + 5))]);
-            w32 = (M[((oa + 5) * n_ao + (ob + 2))] + M[((ob + 2) * n_ao + (oa + 5))]);
-            w33 = (M[((oa + 5) * n_ao + (ob + 3))] + M[((ob + 3) * n_ao + (oa + 5))]);
-            w34 = (M[((oa + 5) * n_ao + (ob + 4))] + M[((ob + 4) * n_ao + (oa + 5))]);
-            w35 = (M[((oa + 5) * n_ao + (ob + 5))] + M[((ob + 5) * n_ao + (oa + 5))]);
-        } else {
-            w0 = M[((oa + 0) * n_ao + (oa + 0))];
-            w1 = M[((oa + 0) * n_ao + (oa + 1))];
-            w2 = M[((oa + 0) * n_ao + (oa + 2))];
-            w3 = M[((oa + 0) * n_ao + (oa + 3))];
-            w4 = M[((oa + 0) * n_ao + (oa + 4))];
-            w5 = M[((oa + 0) * n_ao + (oa + 5))];
-            w6 = M[((oa + 1) * n_ao + (oa + 0))];
-            w7 = M[((oa + 1) * n_ao + (oa + 1))];
-            w8 = M[((oa + 1) * n_ao + (oa + 2))];
-            w9 = M[((oa + 1) * n_ao + (oa + 3))];
-            w10 = M[((oa + 1) * n_ao + (oa + 4))];
-            w11 = M[((oa + 1) * n_ao + (oa + 5))];
-            w12 = M[((oa + 2) * n_ao + (oa + 0))];
-            w13 = M[((oa + 2) * n_ao + (oa + 1))];
-            w14 = M[((oa + 2) * n_ao + (oa + 2))];
-            w15 = M[((oa + 2) * n_ao + (oa + 3))];
-            w16 = M[((oa + 2) * n_ao + (oa + 4))];
-            w17 = M[((oa + 2) * n_ao + (oa + 5))];
-            w18 = M[((oa + 3) * n_ao + (oa + 0))];
-            w19 = M[((oa + 3) * n_ao + (oa + 1))];
-            w20 = M[((oa + 3) * n_ao + (oa + 2))];
-            w21 = M[((oa + 3) * n_ao + (oa + 3))];
-            w22 = M[((oa + 3) * n_ao + (oa + 4))];
-            w23 = M[((oa + 3) * n_ao + (oa + 5))];
-            w24 = M[((oa + 4) * n_ao + (oa + 0))];
-            w25 = M[((oa + 4) * n_ao + (oa + 1))];
-            w26 = M[((oa + 4) * n_ao + (oa + 2))];
-            w27 = M[((oa + 4) * n_ao + (oa + 3))];
-            w28 = M[((oa + 4) * n_ao + (oa + 4))];
-            w29 = M[((oa + 4) * n_ao + (oa + 5))];
-            w30 = M[((oa + 5) * n_ao + (oa + 0))];
-            w31 = M[((oa + 5) * n_ao + (oa + 1))];
-            w32 = M[((oa + 5) * n_ao + (oa + 2))];
-            w33 = M[((oa + 5) * n_ao + (oa + 3))];
-            w34 = M[((oa + 5) * n_ao + (oa + 4))];
-            w35 = M[((oa + 5) * n_ao + (oa + 5))];
+        double hAA_00 = 0.0;
+        double hAA_01 = 0.0;
+        double hAA_02 = 0.0;
+        double hAA_11 = 0.0;
+        double hAA_12 = 0.0;
+        double hAA_22 = 0.0;
+        double hBB_00 = 0.0;
+        double hBB_01 = 0.0;
+        double hBB_02 = 0.0;
+        double hBB_11 = 0.0;
+        double hBB_12 = 0.0;
+        double hBB_22 = 0.0;
+        double hAB_00 = 0.0;
+        double hAB_01 = 0.0;
+        double hAB_02 = 0.0;
+        double hAB_10 = 0.0;
+        double hAB_11 = 0.0;
+        double hAB_12 = 0.0;
+        double hAB_20 = 0.0;
+        double hAB_21 = 0.0;
+        double hAB_22 = 0.0;
+        // per block row (e_fragment.cartesian_loops)
+        for (int32_t a_u = 0; a_u < 3; a_u += 1) {
+            for (int32_t a_w = 0; a_w < (a_u + 1); a_w += 1) {
+                int32_t ax = (2 - a_u);
+                int32_t ay = (a_u - a_w);
+                int32_t az = a_w;
+                for (int32_t b_u = 0; b_u < 3; b_u += 1) {
+                    for (int32_t b_w = 0; b_w < (b_u + 1); b_w += 1) {
+                        int32_t bx = (2 - b_u);
+                        int32_t by = (b_u - b_w);
+                        int32_t bz = b_w;
+                        int32_t row = (((((a_u * (a_u + 1)) / 2) + a_w) * 6) + (((b_u * (b_u + 1)) / 2) + b_w));
+                        double wr = W[row];
+                        // the row's operated per-axis factors, operated's rule with the row's indices
+                        // at run time
+                        double Snx = Ex[((ax * 7) + bx)];
+                        double Sny = Ey[((ay * 7) + by)];
+                        double Snz = Ez[((az * 7) + bz)];
+                        double SAxu = Ex[(((ax + 1) * 7) + bx)];
+                        double SAx = (ea2 * SAxu);
+                        if (0 < ax) {
+                            double SAxl = Ex[(((ax - 1) * 7) + bx)];
+                            SAx = (SAx - (ax * SAxl));
+                        }
+                        double SAyu = Ey[(((ay + 1) * 7) + by)];
+                        double SAy = (ea2 * SAyu);
+                        if (0 < ay) {
+                            double SAyl = Ey[(((ay - 1) * 7) + by)];
+                            SAy = (SAy - (ay * SAyl));
+                        }
+                        double SAzu = Ez[(((az + 1) * 7) + bz)];
+                        double SAz = (ea2 * SAzu);
+                        if (0 < az) {
+                            double SAzl = Ez[(((az - 1) * 7) + bz)];
+                            SAz = (SAz - (az * SAzl));
+                        }
+                        double SBxu = Ex[((ax * 7) + (bx + 1))];
+                        double SBx = (eb2 * SBxu);
+                        if (0 < bx) {
+                            double SBxl = Ex[((ax * 7) + (bx - 1))];
+                            SBx = (SBx - (bx * SBxl));
+                        }
+                        double SByu = Ey[((ay * 7) + (by + 1))];
+                        double SBy = (eb2 * SByu);
+                        if (0 < by) {
+                            double SByl = Ey[((ay * 7) + (by - 1))];
+                            SBy = (SBy - (by * SByl));
+                        }
+                        double SBzu = Ez[((az * 7) + (bz + 1))];
+                        double SBz = (eb2 * SBzu);
+                        if (0 < bz) {
+                            double SBzl = Ez[((az * 7) + (bz - 1))];
+                            SBz = (SBz - (bz * SBzl));
+                        }
+                        double SAAxuu = Ex[((((ax + 1) + 1) * 7) + bx)];
+                        double SAAxu = (ea2 * SAAxuu);
+                        if (0 < (ax + 1)) {
+                            double SAAxul = Ex[((((ax + 1) - 1) * 7) + bx)];
+                            SAAxu = (SAAxu - ((ax + 1) * SAAxul));
+                        }
+                        double SAAx = (ea2 * SAAxu);
+                        if (0 < ax) {
+                            double SAAxlu = Ex[((((ax - 1) + 1) * 7) + bx)];
+                            double SAAxl = (ea2 * SAAxlu);
+                            if (0 < (ax - 1)) {
+                                double SAAxll = Ex[((((ax - 1) - 1) * 7) + bx)];
+                                SAAxl = (SAAxl - ((ax - 1) * SAAxll));
+                            }
+                            SAAx = (SAAx - (ax * SAAxl));
+                        }
+                        double SAAyuu = Ey[((((ay + 1) + 1) * 7) + by)];
+                        double SAAyu = (ea2 * SAAyuu);
+                        if (0 < (ay + 1)) {
+                            double SAAyul = Ey[((((ay + 1) - 1) * 7) + by)];
+                            SAAyu = (SAAyu - ((ay + 1) * SAAyul));
+                        }
+                        double SAAy = (ea2 * SAAyu);
+                        if (0 < ay) {
+                            double SAAylu = Ey[((((ay - 1) + 1) * 7) + by)];
+                            double SAAyl = (ea2 * SAAylu);
+                            if (0 < (ay - 1)) {
+                                double SAAyll = Ey[((((ay - 1) - 1) * 7) + by)];
+                                SAAyl = (SAAyl - ((ay - 1) * SAAyll));
+                            }
+                            SAAy = (SAAy - (ay * SAAyl));
+                        }
+                        double SAAzuu = Ez[((((az + 1) + 1) * 7) + bz)];
+                        double SAAzu = (ea2 * SAAzuu);
+                        if (0 < (az + 1)) {
+                            double SAAzul = Ez[((((az + 1) - 1) * 7) + bz)];
+                            SAAzu = (SAAzu - ((az + 1) * SAAzul));
+                        }
+                        double SAAz = (ea2 * SAAzu);
+                        if (0 < az) {
+                            double SAAzlu = Ez[((((az - 1) + 1) * 7) + bz)];
+                            double SAAzl = (ea2 * SAAzlu);
+                            if (0 < (az - 1)) {
+                                double SAAzll = Ez[((((az - 1) - 1) * 7) + bz)];
+                                SAAzl = (SAAzl - ((az - 1) * SAAzll));
+                            }
+                            SAAz = (SAAz - (az * SAAzl));
+                        }
+                        double SABxuu = Ex[(((ax + 1) * 7) + (bx + 1))];
+                        double SABxu = (ea2 * SABxuu);
+                        if (0 < ax) {
+                            double SABxul = Ex[(((ax - 1) * 7) + (bx + 1))];
+                            SABxu = (SABxu - (ax * SABxul));
+                        }
+                        double SABx = (eb2 * SABxu);
+                        if (0 < bx) {
+                            double SABxlu = Ex[(((ax + 1) * 7) + (bx - 1))];
+                            double SABxl = (ea2 * SABxlu);
+                            if (0 < ax) {
+                                double SABxll = Ex[(((ax - 1) * 7) + (bx - 1))];
+                                SABxl = (SABxl - (ax * SABxll));
+                            }
+                            SABx = (SABx - (bx * SABxl));
+                        }
+                        double SAByuu = Ey[(((ay + 1) * 7) + (by + 1))];
+                        double SAByu = (ea2 * SAByuu);
+                        if (0 < ay) {
+                            double SAByul = Ey[(((ay - 1) * 7) + (by + 1))];
+                            SAByu = (SAByu - (ay * SAByul));
+                        }
+                        double SABy = (eb2 * SAByu);
+                        if (0 < by) {
+                            double SABylu = Ey[(((ay + 1) * 7) + (by - 1))];
+                            double SAByl = (ea2 * SABylu);
+                            if (0 < ay) {
+                                double SAByll = Ey[(((ay - 1) * 7) + (by - 1))];
+                                SAByl = (SAByl - (ay * SAByll));
+                            }
+                            SABy = (SABy - (by * SAByl));
+                        }
+                        double SABzuu = Ez[(((az + 1) * 7) + (bz + 1))];
+                        double SABzu = (ea2 * SABzuu);
+                        if (0 < az) {
+                            double SABzul = Ez[(((az - 1) * 7) + (bz + 1))];
+                            SABzu = (SABzu - (az * SABzul));
+                        }
+                        double SABz = (eb2 * SABzu);
+                        if (0 < bz) {
+                            double SABzlu = Ez[(((az + 1) * 7) + (bz - 1))];
+                            double SABzl = (ea2 * SABzlu);
+                            if (0 < az) {
+                                double SABzll = Ez[(((az - 1) * 7) + (bz - 1))];
+                                SABzl = (SABzl - (az * SABzll));
+                            }
+                            SABz = (SABz - (bz * SABzl));
+                        }
+                        double SBBxuu = Ex[((ax * 7) + ((bx + 1) + 1))];
+                        double SBBxu = (eb2 * SBBxuu);
+                        if (0 < (bx + 1)) {
+                            double SBBxul = Ex[((ax * 7) + ((bx + 1) - 1))];
+                            SBBxu = (SBBxu - ((bx + 1) * SBBxul));
+                        }
+                        double SBBx = (eb2 * SBBxu);
+                        if (0 < bx) {
+                            double SBBxlu = Ex[((ax * 7) + ((bx - 1) + 1))];
+                            double SBBxl = (eb2 * SBBxlu);
+                            if (0 < (bx - 1)) {
+                                double SBBxll = Ex[((ax * 7) + ((bx - 1) - 1))];
+                                SBBxl = (SBBxl - ((bx - 1) * SBBxll));
+                            }
+                            SBBx = (SBBx - (bx * SBBxl));
+                        }
+                        double SBByuu = Ey[((ay * 7) + ((by + 1) + 1))];
+                        double SBByu = (eb2 * SBByuu);
+                        if (0 < (by + 1)) {
+                            double SBByul = Ey[((ay * 7) + ((by + 1) - 1))];
+                            SBByu = (SBByu - ((by + 1) * SBByul));
+                        }
+                        double SBBy = (eb2 * SBByu);
+                        if (0 < by) {
+                            double SBBylu = Ey[((ay * 7) + ((by - 1) + 1))];
+                            double SBByl = (eb2 * SBBylu);
+                            if (0 < (by - 1)) {
+                                double SBByll = Ey[((ay * 7) + ((by - 1) - 1))];
+                                SBByl = (SBByl - ((by - 1) * SBByll));
+                            }
+                            SBBy = (SBBy - (by * SBByl));
+                        }
+                        double SBBzuu = Ez[((az * 7) + ((bz + 1) + 1))];
+                        double SBBzu = (eb2 * SBBzuu);
+                        if (0 < (bz + 1)) {
+                            double SBBzul = Ez[((az * 7) + ((bz + 1) - 1))];
+                            SBBzu = (SBBzu - ((bz + 1) * SBBzul));
+                        }
+                        double SBBz = (eb2 * SBBzu);
+                        if (0 < bz) {
+                            double SBBzlu = Ez[((az * 7) + ((bz - 1) + 1))];
+                            double SBBzl = (eb2 * SBBzlu);
+                            if (0 < (bz - 1)) {
+                                double SBBzll = Ez[((az * 7) + ((bz - 1) - 1))];
+                                SBBzl = (SBBzl - ((bz - 1) * SBBzll));
+                            }
+                            SBBz = (SBBz - (bz * SBBzl));
+                        }
+                        double Knx = (((((-2.0) * ebk) * ebk) * Ex[((ax * 7) + (bx + 2))]) + ((ebk * ((2 * bx) + 1)) * Ex[((ax * 7) + bx)]));
+                        if (1 < bx) {
+                            Knx = (Knx - ((0.5 * (bx * (bx - 1))) * Ex[((ax * 7) + (bx - 2))]));
+                        }
+                        double Kny = (((((-2.0) * ebk) * ebk) * Ey[((ay * 7) + (by + 2))]) + ((ebk * ((2 * by) + 1)) * Ey[((ay * 7) + by)]));
+                        if (1 < by) {
+                            Kny = (Kny - ((0.5 * (by * (by - 1))) * Ey[((ay * 7) + (by - 2))]));
+                        }
+                        double Knz = (((((-2.0) * ebk) * ebk) * Ez[((az * 7) + (bz + 2))]) + ((ebk * ((2 * bz) + 1)) * Ez[((az * 7) + bz)]));
+                        if (1 < bz) {
+                            Knz = (Knz - ((0.5 * (bz * (bz - 1))) * Ez[((az * 7) + (bz - 2))]));
+                        }
+                        double KAxu = (((((-2.0) * ebk) * ebk) * Ex[(((ax + 1) * 7) + (bx + 2))]) + ((ebk * ((2 * bx) + 1)) * Ex[(((ax + 1) * 7) + bx)]));
+                        if (1 < bx) {
+                            KAxu = (KAxu - ((0.5 * (bx * (bx - 1))) * Ex[(((ax + 1) * 7) + (bx - 2))]));
+                        }
+                        double KAx = (ea2 * KAxu);
+                        if (0 < ax) {
+                            double KAxl = (((((-2.0) * ebk) * ebk) * Ex[(((ax - 1) * 7) + (bx + 2))]) + ((ebk * ((2 * bx) + 1)) * Ex[(((ax - 1) * 7) + bx)]));
+                            if (1 < bx) {
+                                KAxl = (KAxl - ((0.5 * (bx * (bx - 1))) * Ex[(((ax - 1) * 7) + (bx - 2))]));
+                            }
+                            KAx = (KAx - (ax * KAxl));
+                        }
+                        double KAyu = (((((-2.0) * ebk) * ebk) * Ey[(((ay + 1) * 7) + (by + 2))]) + ((ebk * ((2 * by) + 1)) * Ey[(((ay + 1) * 7) + by)]));
+                        if (1 < by) {
+                            KAyu = (KAyu - ((0.5 * (by * (by - 1))) * Ey[(((ay + 1) * 7) + (by - 2))]));
+                        }
+                        double KAy = (ea2 * KAyu);
+                        if (0 < ay) {
+                            double KAyl = (((((-2.0) * ebk) * ebk) * Ey[(((ay - 1) * 7) + (by + 2))]) + ((ebk * ((2 * by) + 1)) * Ey[(((ay - 1) * 7) + by)]));
+                            if (1 < by) {
+                                KAyl = (KAyl - ((0.5 * (by * (by - 1))) * Ey[(((ay - 1) * 7) + (by - 2))]));
+                            }
+                            KAy = (KAy - (ay * KAyl));
+                        }
+                        double KAzu = (((((-2.0) * ebk) * ebk) * Ez[(((az + 1) * 7) + (bz + 2))]) + ((ebk * ((2 * bz) + 1)) * Ez[(((az + 1) * 7) + bz)]));
+                        if (1 < bz) {
+                            KAzu = (KAzu - ((0.5 * (bz * (bz - 1))) * Ez[(((az + 1) * 7) + (bz - 2))]));
+                        }
+                        double KAz = (ea2 * KAzu);
+                        if (0 < az) {
+                            double KAzl = (((((-2.0) * ebk) * ebk) * Ez[(((az - 1) * 7) + (bz + 2))]) + ((ebk * ((2 * bz) + 1)) * Ez[(((az - 1) * 7) + bz)]));
+                            if (1 < bz) {
+                                KAzl = (KAzl - ((0.5 * (bz * (bz - 1))) * Ez[(((az - 1) * 7) + (bz - 2))]));
+                            }
+                            KAz = (KAz - (az * KAzl));
+                        }
+                        double KBxu = (((((-2.0) * ebk) * ebk) * Ex[((ax * 7) + ((bx + 1) + 2))]) + ((ebk * ((2 * (bx + 1)) + 1)) * Ex[((ax * 7) + (bx + 1))]));
+                        if (1 < (bx + 1)) {
+                            KBxu = (KBxu - ((0.5 * ((bx + 1) * ((bx + 1) - 1))) * Ex[((ax * 7) + ((bx + 1) - 2))]));
+                        }
+                        double KBx = (eb2 * KBxu);
+                        if (0 < bx) {
+                            double KBxl = (((((-2.0) * ebk) * ebk) * Ex[((ax * 7) + ((bx - 1) + 2))]) + ((ebk * ((2 * (bx - 1)) + 1)) * Ex[((ax * 7) + (bx - 1))]));
+                            if (1 < (bx - 1)) {
+                                KBxl = (KBxl - ((0.5 * ((bx - 1) * ((bx - 1) - 1))) * Ex[((ax * 7) + ((bx - 1) - 2))]));
+                            }
+                            KBx = (KBx - (bx * KBxl));
+                        }
+                        double KByu = (((((-2.0) * ebk) * ebk) * Ey[((ay * 7) + ((by + 1) + 2))]) + ((ebk * ((2 * (by + 1)) + 1)) * Ey[((ay * 7) + (by + 1))]));
+                        if (1 < (by + 1)) {
+                            KByu = (KByu - ((0.5 * ((by + 1) * ((by + 1) - 1))) * Ey[((ay * 7) + ((by + 1) - 2))]));
+                        }
+                        double KBy = (eb2 * KByu);
+                        if (0 < by) {
+                            double KByl = (((((-2.0) * ebk) * ebk) * Ey[((ay * 7) + ((by - 1) + 2))]) + ((ebk * ((2 * (by - 1)) + 1)) * Ey[((ay * 7) + (by - 1))]));
+                            if (1 < (by - 1)) {
+                                KByl = (KByl - ((0.5 * ((by - 1) * ((by - 1) - 1))) * Ey[((ay * 7) + ((by - 1) - 2))]));
+                            }
+                            KBy = (KBy - (by * KByl));
+                        }
+                        double KBzu = (((((-2.0) * ebk) * ebk) * Ez[((az * 7) + ((bz + 1) + 2))]) + ((ebk * ((2 * (bz + 1)) + 1)) * Ez[((az * 7) + (bz + 1))]));
+                        if (1 < (bz + 1)) {
+                            KBzu = (KBzu - ((0.5 * ((bz + 1) * ((bz + 1) - 1))) * Ez[((az * 7) + ((bz + 1) - 2))]));
+                        }
+                        double KBz = (eb2 * KBzu);
+                        if (0 < bz) {
+                            double KBzl = (((((-2.0) * ebk) * ebk) * Ez[((az * 7) + ((bz - 1) + 2))]) + ((ebk * ((2 * (bz - 1)) + 1)) * Ez[((az * 7) + (bz - 1))]));
+                            if (1 < (bz - 1)) {
+                                KBzl = (KBzl - ((0.5 * ((bz - 1) * ((bz - 1) - 1))) * Ez[((az * 7) + ((bz - 1) - 2))]));
+                            }
+                            KBz = (KBz - (bz * KBzl));
+                        }
+                        double KAAxuu = (((((-2.0) * ebk) * ebk) * Ex[((((ax + 1) + 1) * 7) + (bx + 2))]) + ((ebk * ((2 * bx) + 1)) * Ex[((((ax + 1) + 1) * 7) + bx)]));
+                        if (1 < bx) {
+                            KAAxuu = (KAAxuu - ((0.5 * (bx * (bx - 1))) * Ex[((((ax + 1) + 1) * 7) + (bx - 2))]));
+                        }
+                        double KAAxu = (ea2 * KAAxuu);
+                        if (0 < (ax + 1)) {
+                            double KAAxul = (((((-2.0) * ebk) * ebk) * Ex[((((ax + 1) - 1) * 7) + (bx + 2))]) + ((ebk * ((2 * bx) + 1)) * Ex[((((ax + 1) - 1) * 7) + bx)]));
+                            if (1 < bx) {
+                                KAAxul = (KAAxul - ((0.5 * (bx * (bx - 1))) * Ex[((((ax + 1) - 1) * 7) + (bx - 2))]));
+                            }
+                            KAAxu = (KAAxu - ((ax + 1) * KAAxul));
+                        }
+                        double KAAx = (ea2 * KAAxu);
+                        if (0 < ax) {
+                            double KAAxlu = (((((-2.0) * ebk) * ebk) * Ex[((((ax - 1) + 1) * 7) + (bx + 2))]) + ((ebk * ((2 * bx) + 1)) * Ex[((((ax - 1) + 1) * 7) + bx)]));
+                            if (1 < bx) {
+                                KAAxlu = (KAAxlu - ((0.5 * (bx * (bx - 1))) * Ex[((((ax - 1) + 1) * 7) + (bx - 2))]));
+                            }
+                            double KAAxl = (ea2 * KAAxlu);
+                            if (0 < (ax - 1)) {
+                                double KAAxll = (((((-2.0) * ebk) * ebk) * Ex[((((ax - 1) - 1) * 7) + (bx + 2))]) + ((ebk * ((2 * bx) + 1)) * Ex[((((ax - 1) - 1) * 7) + bx)]));
+                                if (1 < bx) {
+                                    KAAxll = (KAAxll - ((0.5 * (bx * (bx - 1))) * Ex[((((ax - 1) - 1) * 7) + (bx - 2))]));
+                                }
+                                KAAxl = (KAAxl - ((ax - 1) * KAAxll));
+                            }
+                            KAAx = (KAAx - (ax * KAAxl));
+                        }
+                        double KAAyuu = (((((-2.0) * ebk) * ebk) * Ey[((((ay + 1) + 1) * 7) + (by + 2))]) + ((ebk * ((2 * by) + 1)) * Ey[((((ay + 1) + 1) * 7) + by)]));
+                        if (1 < by) {
+                            KAAyuu = (KAAyuu - ((0.5 * (by * (by - 1))) * Ey[((((ay + 1) + 1) * 7) + (by - 2))]));
+                        }
+                        double KAAyu = (ea2 * KAAyuu);
+                        if (0 < (ay + 1)) {
+                            double KAAyul = (((((-2.0) * ebk) * ebk) * Ey[((((ay + 1) - 1) * 7) + (by + 2))]) + ((ebk * ((2 * by) + 1)) * Ey[((((ay + 1) - 1) * 7) + by)]));
+                            if (1 < by) {
+                                KAAyul = (KAAyul - ((0.5 * (by * (by - 1))) * Ey[((((ay + 1) - 1) * 7) + (by - 2))]));
+                            }
+                            KAAyu = (KAAyu - ((ay + 1) * KAAyul));
+                        }
+                        double KAAy = (ea2 * KAAyu);
+                        if (0 < ay) {
+                            double KAAylu = (((((-2.0) * ebk) * ebk) * Ey[((((ay - 1) + 1) * 7) + (by + 2))]) + ((ebk * ((2 * by) + 1)) * Ey[((((ay - 1) + 1) * 7) + by)]));
+                            if (1 < by) {
+                                KAAylu = (KAAylu - ((0.5 * (by * (by - 1))) * Ey[((((ay - 1) + 1) * 7) + (by - 2))]));
+                            }
+                            double KAAyl = (ea2 * KAAylu);
+                            if (0 < (ay - 1)) {
+                                double KAAyll = (((((-2.0) * ebk) * ebk) * Ey[((((ay - 1) - 1) * 7) + (by + 2))]) + ((ebk * ((2 * by) + 1)) * Ey[((((ay - 1) - 1) * 7) + by)]));
+                                if (1 < by) {
+                                    KAAyll = (KAAyll - ((0.5 * (by * (by - 1))) * Ey[((((ay - 1) - 1) * 7) + (by - 2))]));
+                                }
+                                KAAyl = (KAAyl - ((ay - 1) * KAAyll));
+                            }
+                            KAAy = (KAAy - (ay * KAAyl));
+                        }
+                        double KAAzuu = (((((-2.0) * ebk) * ebk) * Ez[((((az + 1) + 1) * 7) + (bz + 2))]) + ((ebk * ((2 * bz) + 1)) * Ez[((((az + 1) + 1) * 7) + bz)]));
+                        if (1 < bz) {
+                            KAAzuu = (KAAzuu - ((0.5 * (bz * (bz - 1))) * Ez[((((az + 1) + 1) * 7) + (bz - 2))]));
+                        }
+                        double KAAzu = (ea2 * KAAzuu);
+                        if (0 < (az + 1)) {
+                            double KAAzul = (((((-2.0) * ebk) * ebk) * Ez[((((az + 1) - 1) * 7) + (bz + 2))]) + ((ebk * ((2 * bz) + 1)) * Ez[((((az + 1) - 1) * 7) + bz)]));
+                            if (1 < bz) {
+                                KAAzul = (KAAzul - ((0.5 * (bz * (bz - 1))) * Ez[((((az + 1) - 1) * 7) + (bz - 2))]));
+                            }
+                            KAAzu = (KAAzu - ((az + 1) * KAAzul));
+                        }
+                        double KAAz = (ea2 * KAAzu);
+                        if (0 < az) {
+                            double KAAzlu = (((((-2.0) * ebk) * ebk) * Ez[((((az - 1) + 1) * 7) + (bz + 2))]) + ((ebk * ((2 * bz) + 1)) * Ez[((((az - 1) + 1) * 7) + bz)]));
+                            if (1 < bz) {
+                                KAAzlu = (KAAzlu - ((0.5 * (bz * (bz - 1))) * Ez[((((az - 1) + 1) * 7) + (bz - 2))]));
+                            }
+                            double KAAzl = (ea2 * KAAzlu);
+                            if (0 < (az - 1)) {
+                                double KAAzll = (((((-2.0) * ebk) * ebk) * Ez[((((az - 1) - 1) * 7) + (bz + 2))]) + ((ebk * ((2 * bz) + 1)) * Ez[((((az - 1) - 1) * 7) + bz)]));
+                                if (1 < bz) {
+                                    KAAzll = (KAAzll - ((0.5 * (bz * (bz - 1))) * Ez[((((az - 1) - 1) * 7) + (bz - 2))]));
+                                }
+                                KAAzl = (KAAzl - ((az - 1) * KAAzll));
+                            }
+                            KAAz = (KAAz - (az * KAAzl));
+                        }
+                        double KABxuu = (((((-2.0) * ebk) * ebk) * Ex[(((ax + 1) * 7) + ((bx + 1) + 2))]) + ((ebk * ((2 * (bx + 1)) + 1)) * Ex[(((ax + 1) * 7) + (bx + 1))]));
+                        if (1 < (bx + 1)) {
+                            KABxuu = (KABxuu - ((0.5 * ((bx + 1) * ((bx + 1) - 1))) * Ex[(((ax + 1) * 7) + ((bx + 1) - 2))]));
+                        }
+                        double KABxu = (ea2 * KABxuu);
+                        if (0 < ax) {
+                            double KABxul = (((((-2.0) * ebk) * ebk) * Ex[(((ax - 1) * 7) + ((bx + 1) + 2))]) + ((ebk * ((2 * (bx + 1)) + 1)) * Ex[(((ax - 1) * 7) + (bx + 1))]));
+                            if (1 < (bx + 1)) {
+                                KABxul = (KABxul - ((0.5 * ((bx + 1) * ((bx + 1) - 1))) * Ex[(((ax - 1) * 7) + ((bx + 1) - 2))]));
+                            }
+                            KABxu = (KABxu - (ax * KABxul));
+                        }
+                        double KABx = (eb2 * KABxu);
+                        if (0 < bx) {
+                            double KABxlu = (((((-2.0) * ebk) * ebk) * Ex[(((ax + 1) * 7) + ((bx - 1) + 2))]) + ((ebk * ((2 * (bx - 1)) + 1)) * Ex[(((ax + 1) * 7) + (bx - 1))]));
+                            if (1 < (bx - 1)) {
+                                KABxlu = (KABxlu - ((0.5 * ((bx - 1) * ((bx - 1) - 1))) * Ex[(((ax + 1) * 7) + ((bx - 1) - 2))]));
+                            }
+                            double KABxl = (ea2 * KABxlu);
+                            if (0 < ax) {
+                                double KABxll = (((((-2.0) * ebk) * ebk) * Ex[(((ax - 1) * 7) + ((bx - 1) + 2))]) + ((ebk * ((2 * (bx - 1)) + 1)) * Ex[(((ax - 1) * 7) + (bx - 1))]));
+                                if (1 < (bx - 1)) {
+                                    KABxll = (KABxll - ((0.5 * ((bx - 1) * ((bx - 1) - 1))) * Ex[(((ax - 1) * 7) + ((bx - 1) - 2))]));
+                                }
+                                KABxl = (KABxl - (ax * KABxll));
+                            }
+                            KABx = (KABx - (bx * KABxl));
+                        }
+                        double KAByuu = (((((-2.0) * ebk) * ebk) * Ey[(((ay + 1) * 7) + ((by + 1) + 2))]) + ((ebk * ((2 * (by + 1)) + 1)) * Ey[(((ay + 1) * 7) + (by + 1))]));
+                        if (1 < (by + 1)) {
+                            KAByuu = (KAByuu - ((0.5 * ((by + 1) * ((by + 1) - 1))) * Ey[(((ay + 1) * 7) + ((by + 1) - 2))]));
+                        }
+                        double KAByu = (ea2 * KAByuu);
+                        if (0 < ay) {
+                            double KAByul = (((((-2.0) * ebk) * ebk) * Ey[(((ay - 1) * 7) + ((by + 1) + 2))]) + ((ebk * ((2 * (by + 1)) + 1)) * Ey[(((ay - 1) * 7) + (by + 1))]));
+                            if (1 < (by + 1)) {
+                                KAByul = (KAByul - ((0.5 * ((by + 1) * ((by + 1) - 1))) * Ey[(((ay - 1) * 7) + ((by + 1) - 2))]));
+                            }
+                            KAByu = (KAByu - (ay * KAByul));
+                        }
+                        double KABy = (eb2 * KAByu);
+                        if (0 < by) {
+                            double KABylu = (((((-2.0) * ebk) * ebk) * Ey[(((ay + 1) * 7) + ((by - 1) + 2))]) + ((ebk * ((2 * (by - 1)) + 1)) * Ey[(((ay + 1) * 7) + (by - 1))]));
+                            if (1 < (by - 1)) {
+                                KABylu = (KABylu - ((0.5 * ((by - 1) * ((by - 1) - 1))) * Ey[(((ay + 1) * 7) + ((by - 1) - 2))]));
+                            }
+                            double KAByl = (ea2 * KABylu);
+                            if (0 < ay) {
+                                double KAByll = (((((-2.0) * ebk) * ebk) * Ey[(((ay - 1) * 7) + ((by - 1) + 2))]) + ((ebk * ((2 * (by - 1)) + 1)) * Ey[(((ay - 1) * 7) + (by - 1))]));
+                                if (1 < (by - 1)) {
+                                    KAByll = (KAByll - ((0.5 * ((by - 1) * ((by - 1) - 1))) * Ey[(((ay - 1) * 7) + ((by - 1) - 2))]));
+                                }
+                                KAByl = (KAByl - (ay * KAByll));
+                            }
+                            KABy = (KABy - (by * KAByl));
+                        }
+                        double KABzuu = (((((-2.0) * ebk) * ebk) * Ez[(((az + 1) * 7) + ((bz + 1) + 2))]) + ((ebk * ((2 * (bz + 1)) + 1)) * Ez[(((az + 1) * 7) + (bz + 1))]));
+                        if (1 < (bz + 1)) {
+                            KABzuu = (KABzuu - ((0.5 * ((bz + 1) * ((bz + 1) - 1))) * Ez[(((az + 1) * 7) + ((bz + 1) - 2))]));
+                        }
+                        double KABzu = (ea2 * KABzuu);
+                        if (0 < az) {
+                            double KABzul = (((((-2.0) * ebk) * ebk) * Ez[(((az - 1) * 7) + ((bz + 1) + 2))]) + ((ebk * ((2 * (bz + 1)) + 1)) * Ez[(((az - 1) * 7) + (bz + 1))]));
+                            if (1 < (bz + 1)) {
+                                KABzul = (KABzul - ((0.5 * ((bz + 1) * ((bz + 1) - 1))) * Ez[(((az - 1) * 7) + ((bz + 1) - 2))]));
+                            }
+                            KABzu = (KABzu - (az * KABzul));
+                        }
+                        double KABz = (eb2 * KABzu);
+                        if (0 < bz) {
+                            double KABzlu = (((((-2.0) * ebk) * ebk) * Ez[(((az + 1) * 7) + ((bz - 1) + 2))]) + ((ebk * ((2 * (bz - 1)) + 1)) * Ez[(((az + 1) * 7) + (bz - 1))]));
+                            if (1 < (bz - 1)) {
+                                KABzlu = (KABzlu - ((0.5 * ((bz - 1) * ((bz - 1) - 1))) * Ez[(((az + 1) * 7) + ((bz - 1) - 2))]));
+                            }
+                            double KABzl = (ea2 * KABzlu);
+                            if (0 < az) {
+                                double KABzll = (((((-2.0) * ebk) * ebk) * Ez[(((az - 1) * 7) + ((bz - 1) + 2))]) + ((ebk * ((2 * (bz - 1)) + 1)) * Ez[(((az - 1) * 7) + (bz - 1))]));
+                                if (1 < (bz - 1)) {
+                                    KABzll = (KABzll - ((0.5 * ((bz - 1) * ((bz - 1) - 1))) * Ez[(((az - 1) * 7) + ((bz - 1) - 2))]));
+                                }
+                                KABzl = (KABzl - (az * KABzll));
+                            }
+                            KABz = (KABz - (bz * KABzl));
+                        }
+                        double KBBxuu = (((((-2.0) * ebk) * ebk) * Ex[((ax * 7) + (((bx + 1) + 1) + 2))]) + ((ebk * ((2 * ((bx + 1) + 1)) + 1)) * Ex[((ax * 7) + ((bx + 1) + 1))]));
+                        if (1 < ((bx + 1) + 1)) {
+                            KBBxuu = (KBBxuu - ((0.5 * (((bx + 1) + 1) * (((bx + 1) + 1) - 1))) * Ex[((ax * 7) + (((bx + 1) + 1) - 2))]));
+                        }
+                        double KBBxu = (eb2 * KBBxuu);
+                        if (0 < (bx + 1)) {
+                            double KBBxul = (((((-2.0) * ebk) * ebk) * Ex[((ax * 7) + (((bx + 1) - 1) + 2))]) + ((ebk * ((2 * ((bx + 1) - 1)) + 1)) * Ex[((ax * 7) + ((bx + 1) - 1))]));
+                            if (1 < ((bx + 1) - 1)) {
+                                KBBxul = (KBBxul - ((0.5 * (((bx + 1) - 1) * (((bx + 1) - 1) - 1))) * Ex[((ax * 7) + (((bx + 1) - 1) - 2))]));
+                            }
+                            KBBxu = (KBBxu - ((bx + 1) * KBBxul));
+                        }
+                        double KBBx = (eb2 * KBBxu);
+                        if (0 < bx) {
+                            double KBBxlu = (((((-2.0) * ebk) * ebk) * Ex[((ax * 7) + (((bx - 1) + 1) + 2))]) + ((ebk * ((2 * ((bx - 1) + 1)) + 1)) * Ex[((ax * 7) + ((bx - 1) + 1))]));
+                            if (1 < ((bx - 1) + 1)) {
+                                KBBxlu = (KBBxlu - ((0.5 * (((bx - 1) + 1) * (((bx - 1) + 1) - 1))) * Ex[((ax * 7) + (((bx - 1) + 1) - 2))]));
+                            }
+                            double KBBxl = (eb2 * KBBxlu);
+                            if (0 < (bx - 1)) {
+                                double KBBxll = (((((-2.0) * ebk) * ebk) * Ex[((ax * 7) + (((bx - 1) - 1) + 2))]) + ((ebk * ((2 * ((bx - 1) - 1)) + 1)) * Ex[((ax * 7) + ((bx - 1) - 1))]));
+                                if (1 < ((bx - 1) - 1)) {
+                                    KBBxll = (KBBxll - ((0.5 * (((bx - 1) - 1) * (((bx - 1) - 1) - 1))) * Ex[((ax * 7) + (((bx - 1) - 1) - 2))]));
+                                }
+                                KBBxl = (KBBxl - ((bx - 1) * KBBxll));
+                            }
+                            KBBx = (KBBx - (bx * KBBxl));
+                        }
+                        double KBByuu = (((((-2.0) * ebk) * ebk) * Ey[((ay * 7) + (((by + 1) + 1) + 2))]) + ((ebk * ((2 * ((by + 1) + 1)) + 1)) * Ey[((ay * 7) + ((by + 1) + 1))]));
+                        if (1 < ((by + 1) + 1)) {
+                            KBByuu = (KBByuu - ((0.5 * (((by + 1) + 1) * (((by + 1) + 1) - 1))) * Ey[((ay * 7) + (((by + 1) + 1) - 2))]));
+                        }
+                        double KBByu = (eb2 * KBByuu);
+                        if (0 < (by + 1)) {
+                            double KBByul = (((((-2.0) * ebk) * ebk) * Ey[((ay * 7) + (((by + 1) - 1) + 2))]) + ((ebk * ((2 * ((by + 1) - 1)) + 1)) * Ey[((ay * 7) + ((by + 1) - 1))]));
+                            if (1 < ((by + 1) - 1)) {
+                                KBByul = (KBByul - ((0.5 * (((by + 1) - 1) * (((by + 1) - 1) - 1))) * Ey[((ay * 7) + (((by + 1) - 1) - 2))]));
+                            }
+                            KBByu = (KBByu - ((by + 1) * KBByul));
+                        }
+                        double KBBy = (eb2 * KBByu);
+                        if (0 < by) {
+                            double KBBylu = (((((-2.0) * ebk) * ebk) * Ey[((ay * 7) + (((by - 1) + 1) + 2))]) + ((ebk * ((2 * ((by - 1) + 1)) + 1)) * Ey[((ay * 7) + ((by - 1) + 1))]));
+                            if (1 < ((by - 1) + 1)) {
+                                KBBylu = (KBBylu - ((0.5 * (((by - 1) + 1) * (((by - 1) + 1) - 1))) * Ey[((ay * 7) + (((by - 1) + 1) - 2))]));
+                            }
+                            double KBByl = (eb2 * KBBylu);
+                            if (0 < (by - 1)) {
+                                double KBByll = (((((-2.0) * ebk) * ebk) * Ey[((ay * 7) + (((by - 1) - 1) + 2))]) + ((ebk * ((2 * ((by - 1) - 1)) + 1)) * Ey[((ay * 7) + ((by - 1) - 1))]));
+                                if (1 < ((by - 1) - 1)) {
+                                    KBByll = (KBByll - ((0.5 * (((by - 1) - 1) * (((by - 1) - 1) - 1))) * Ey[((ay * 7) + (((by - 1) - 1) - 2))]));
+                                }
+                                KBByl = (KBByl - ((by - 1) * KBByll));
+                            }
+                            KBBy = (KBBy - (by * KBByl));
+                        }
+                        double KBBzuu = (((((-2.0) * ebk) * ebk) * Ez[((az * 7) + (((bz + 1) + 1) + 2))]) + ((ebk * ((2 * ((bz + 1) + 1)) + 1)) * Ez[((az * 7) + ((bz + 1) + 1))]));
+                        if (1 < ((bz + 1) + 1)) {
+                            KBBzuu = (KBBzuu - ((0.5 * (((bz + 1) + 1) * (((bz + 1) + 1) - 1))) * Ez[((az * 7) + (((bz + 1) + 1) - 2))]));
+                        }
+                        double KBBzu = (eb2 * KBBzuu);
+                        if (0 < (bz + 1)) {
+                            double KBBzul = (((((-2.0) * ebk) * ebk) * Ez[((az * 7) + (((bz + 1) - 1) + 2))]) + ((ebk * ((2 * ((bz + 1) - 1)) + 1)) * Ez[((az * 7) + ((bz + 1) - 1))]));
+                            if (1 < ((bz + 1) - 1)) {
+                                KBBzul = (KBBzul - ((0.5 * (((bz + 1) - 1) * (((bz + 1) - 1) - 1))) * Ez[((az * 7) + (((bz + 1) - 1) - 2))]));
+                            }
+                            KBBzu = (KBBzu - ((bz + 1) * KBBzul));
+                        }
+                        double KBBz = (eb2 * KBBzu);
+                        if (0 < bz) {
+                            double KBBzlu = (((((-2.0) * ebk) * ebk) * Ez[((az * 7) + (((bz - 1) + 1) + 2))]) + ((ebk * ((2 * ((bz - 1) + 1)) + 1)) * Ez[((az * 7) + ((bz - 1) + 1))]));
+                            if (1 < ((bz - 1) + 1)) {
+                                KBBzlu = (KBBzlu - ((0.5 * (((bz - 1) + 1) * (((bz - 1) + 1) - 1))) * Ez[((az * 7) + (((bz - 1) + 1) - 2))]));
+                            }
+                            double KBBzl = (eb2 * KBBzlu);
+                            if (0 < (bz - 1)) {
+                                double KBBzll = (((((-2.0) * ebk) * ebk) * Ez[((az * 7) + (((bz - 1) - 1) + 2))]) + ((ebk * ((2 * ((bz - 1) - 1)) + 1)) * Ez[((az * 7) + ((bz - 1) - 1))]));
+                                if (1 < ((bz - 1) - 1)) {
+                                    KBBzll = (KBBzll - ((0.5 * (((bz - 1) - 1) * (((bz - 1) - 1) - 1))) * Ez[((az * 7) + (((bz - 1) - 1) - 2))]));
+                                }
+                                KBBzl = (KBBzl - ((bz - 1) * KBBzll));
+                            }
+                            KBBz = (KBBz - (bz * KBBzl));
+                        }
+                        hAA_00 = (hAA_00 + (wr * ((((KAAx * Sny) * Snz) + ((SAAx * Kny) * Snz)) + ((SAAx * Sny) * Knz))));
+                        hAA_01 = (hAA_01 + (wr * ((((KAx * SAy) * Snz) + ((SAx * KAy) * Snz)) + ((SAx * SAy) * Knz))));
+                        hAA_02 = (hAA_02 + (wr * ((((KAx * Sny) * SAz) + ((SAx * Kny) * SAz)) + ((SAx * Sny) * KAz))));
+                        hAA_11 = (hAA_11 + (wr * ((((Knx * SAAy) * Snz) + ((Snx * KAAy) * Snz)) + ((Snx * SAAy) * Knz))));
+                        hAA_12 = (hAA_12 + (wr * ((((Knx * SAy) * SAz) + ((Snx * KAy) * SAz)) + ((Snx * SAy) * KAz))));
+                        hAA_22 = (hAA_22 + (wr * ((((Knx * Sny) * SAAz) + ((Snx * Kny) * SAAz)) + ((Snx * Sny) * KAAz))));
+                        hBB_00 = (hBB_00 + (wr * ((((KBBx * Sny) * Snz) + ((SBBx * Kny) * Snz)) + ((SBBx * Sny) * Knz))));
+                        hBB_01 = (hBB_01 + (wr * ((((KBx * SBy) * Snz) + ((SBx * KBy) * Snz)) + ((SBx * SBy) * Knz))));
+                        hBB_02 = (hBB_02 + (wr * ((((KBx * Sny) * SBz) + ((SBx * Kny) * SBz)) + ((SBx * Sny) * KBz))));
+                        hBB_11 = (hBB_11 + (wr * ((((Knx * SBBy) * Snz) + ((Snx * KBBy) * Snz)) + ((Snx * SBBy) * Knz))));
+                        hBB_12 = (hBB_12 + (wr * ((((Knx * SBy) * SBz) + ((Snx * KBy) * SBz)) + ((Snx * SBy) * KBz))));
+                        hBB_22 = (hBB_22 + (wr * ((((Knx * Sny) * SBBz) + ((Snx * Kny) * SBBz)) + ((Snx * Sny) * KBBz))));
+                        hAB_00 = (hAB_00 + (wr * ((((KABx * Sny) * Snz) + ((SABx * Kny) * Snz)) + ((SABx * Sny) * Knz))));
+                        hAB_01 = (hAB_01 + (wr * ((((KAx * SBy) * Snz) + ((SAx * KBy) * Snz)) + ((SAx * SBy) * Knz))));
+                        hAB_02 = (hAB_02 + (wr * ((((KAx * Sny) * SBz) + ((SAx * Kny) * SBz)) + ((SAx * Sny) * KBz))));
+                        hAB_10 = (hAB_10 + (wr * ((((KBx * SAy) * Snz) + ((SBx * KAy) * Snz)) + ((SBx * SAy) * Knz))));
+                        hAB_11 = (hAB_11 + (wr * ((((Knx * SABy) * Snz) + ((Snx * KABy) * Snz)) + ((Snx * SABy) * Knz))));
+                        hAB_12 = (hAB_12 + (wr * ((((Knx * SAy) * SBz) + ((Snx * KAy) * SBz)) + ((Snx * SAy) * KBz))));
+                        hAB_20 = (hAB_20 + (wr * ((((KBx * Sny) * SAz) + ((SBx * Kny) * SAz)) + ((SBx * Sny) * KAz))));
+                        hAB_21 = (hAB_21 + (wr * ((((Knx * SBy) * SAz) + ((Snx * KBy) * SAz)) + ((Snx * SBy) * KAz))));
+                        hAB_22 = (hAB_22 + (wr * ((((Knx * Sny) * SABz) + ((Snx * Kny) * SABz)) + ((Snx * Sny) * KABz))));
+                    }
+                }
+            }
         }
-        // the operated factors, each declared where first read
-        double Kx_4_2 = ((((((-2.0) * ebk) * ebk) * Ex[352]) + ((ebk * 5.0) * Ex[330])) - (1.0 * Ex[308]));
-        double Kx_2_2 = ((((((-2.0) * ebk) * ebk) * Ex[198]) + ((ebk * 5.0) * Ex[176])) - (1.0 * Ex[154]));
-        double dAKx_3_2_0 = ((ea2 * Kx_4_2) - (3.0 * Kx_2_2));
-        double Kx_0_2 = ((((((-2.0) * ebk) * ebk) * Ex[44]) + ((ebk * 5.0) * Ex[22])) - (1.0 * Ex[0]));
-        double dAKx_1_2_0 = ((ea2 * Kx_2_2) - (1.0 * Kx_0_2));
-        double dAAKx_2_2_0 = ((ea2 * dAKx_3_2_0) - (2.0 * dAKx_1_2_0));
-        double dASx_3_2_0 = ((ea2 * Ex[330]) - (3.0 * Ex[176]));
-        double dASx_1_2_0 = ((ea2 * Ex[176]) - (1.0 * Ex[22]));
-        double dAASx_2_2_0 = ((ea2 * dASx_3_2_0) - (2.0 * dASx_1_2_0));
-        double Ky_0_0 = (((((-2.0) * ebk) * ebk) * Ey[22]) + ((ebk * 1.0) * Ey[0]));
-        double Kz_0_0 = (((((-2.0) * ebk) * ebk) * Ez[22]) + ((ebk * 1.0) * Ez[0]));
-        double Kx_4_1 = (((((-2.0) * ebk) * ebk) * Ex[341]) + ((ebk * 3.0) * Ex[319]));
-        double Kx_2_1 = (((((-2.0) * ebk) * ebk) * Ex[187]) + ((ebk * 3.0) * Ex[165]));
-        double dAKx_3_1_0 = ((ea2 * Kx_4_1) - (3.0 * Kx_2_1));
-        double Kx_0_1 = (((((-2.0) * ebk) * ebk) * Ex[33]) + ((ebk * 3.0) * Ex[11]));
-        double dAKx_1_1_0 = ((ea2 * Kx_2_1) - (1.0 * Kx_0_1));
-        double dAAKx_2_1_0 = ((ea2 * dAKx_3_1_0) - (2.0 * dAKx_1_1_0));
-        double dASx_3_1_0 = ((ea2 * Ex[319]) - (3.0 * Ex[165]));
-        double dASx_1_1_0 = ((ea2 * Ex[165]) - (1.0 * Ex[11]));
-        double dAASx_2_1_0 = ((ea2 * dASx_3_1_0) - (2.0 * dASx_1_1_0));
-        double Ky_0_1 = (((((-2.0) * ebk) * ebk) * Ey[33]) + ((ebk * 3.0) * Ey[11]));
-        double Kz_0_1 = (((((-2.0) * ebk) * ebk) * Ez[33]) + ((ebk * 3.0) * Ez[11]));
-        double Kx_4_0 = (((((-2.0) * ebk) * ebk) * Ex[330]) + ((ebk * 1.0) * Ex[308]));
-        double Kx_2_0 = (((((-2.0) * ebk) * ebk) * Ex[176]) + ((ebk * 1.0) * Ex[154]));
-        double dAKx_3_0_0 = ((ea2 * Kx_4_0) - (3.0 * Kx_2_0));
-        double Kx_0_0 = (((((-2.0) * ebk) * ebk) * Ex[22]) + ((ebk * 1.0) * Ex[0]));
-        double dAKx_1_0_0 = ((ea2 * Kx_2_0) - (1.0 * Kx_0_0));
-        double dAAKx_2_0_0 = ((ea2 * dAKx_3_0_0) - (2.0 * dAKx_1_0_0));
-        double dASx_3_0_0 = ((ea2 * Ex[308]) - (3.0 * Ex[154]));
-        double dASx_1_0_0 = ((ea2 * Ex[154]) - (1.0 * Ex[0]));
-        double dAASx_2_0_0 = ((ea2 * dASx_3_0_0) - (2.0 * dASx_1_0_0));
-        double Ky_0_2 = ((((((-2.0) * ebk) * ebk) * Ey[44]) + ((ebk * 5.0) * Ey[22])) - (1.0 * Ey[0]));
-        double Kz_0_2 = ((((((-2.0) * ebk) * ebk) * Ez[44]) + ((ebk * 5.0) * Ez[22])) - (1.0 * Ez[0]));
-        double Kx_3_2 = ((((((-2.0) * ebk) * ebk) * Ex[275]) + ((ebk * 5.0) * Ex[253])) - (1.0 * Ex[231]));
-        double Kx_1_2 = ((((((-2.0) * ebk) * ebk) * Ex[121]) + ((ebk * 5.0) * Ex[99])) - (1.0 * Ex[77]));
-        double dAKx_2_2_0 = ((ea2 * Kx_3_2) - (2.0 * Kx_1_2));
-        double dAKx_0_2_0 = (ea2 * Kx_1_2);
-        double dAAKx_1_2_0 = ((ea2 * dAKx_2_2_0) - (1.0 * dAKx_0_2_0));
-        double dASx_2_2_0 = ((ea2 * Ex[253]) - (2.0 * Ex[99]));
-        double dASx_0_2_0 = (ea2 * Ex[99]);
-        double dAASx_1_2_0 = ((ea2 * dASx_2_2_0) - (1.0 * dASx_0_2_0));
-        double Ky_1_0 = (((((-2.0) * ebk) * ebk) * Ey[99]) + ((ebk * 1.0) * Ey[77]));
-        double Kx_3_1 = (((((-2.0) * ebk) * ebk) * Ex[264]) + ((ebk * 3.0) * Ex[242]));
-        double Kx_1_1 = (((((-2.0) * ebk) * ebk) * Ex[110]) + ((ebk * 3.0) * Ex[88]));
-        double dAKx_2_1_0 = ((ea2 * Kx_3_1) - (2.0 * Kx_1_1));
-        double dAKx_0_1_0 = (ea2 * Kx_1_1);
-        double dAAKx_1_1_0 = ((ea2 * dAKx_2_1_0) - (1.0 * dAKx_0_1_0));
-        double dASx_2_1_0 = ((ea2 * Ex[242]) - (2.0 * Ex[88]));
-        double dASx_0_1_0 = (ea2 * Ex[88]);
-        double dAASx_1_1_0 = ((ea2 * dASx_2_1_0) - (1.0 * dASx_0_1_0));
-        double Ky_1_1 = (((((-2.0) * ebk) * ebk) * Ey[110]) + ((ebk * 3.0) * Ey[88]));
-        double Kx_3_0 = (((((-2.0) * ebk) * ebk) * Ex[253]) + ((ebk * 1.0) * Ex[231]));
-        double Kx_1_0 = (((((-2.0) * ebk) * ebk) * Ex[99]) + ((ebk * 1.0) * Ex[77]));
-        double dAKx_2_0_0 = ((ea2 * Kx_3_0) - (2.0 * Kx_1_0));
-        double dAKx_0_0_0 = (ea2 * Kx_1_0);
-        double dAAKx_1_0_0 = ((ea2 * dAKx_2_0_0) - (1.0 * dAKx_0_0_0));
-        double dASx_2_0_0 = ((ea2 * Ex[231]) - (2.0 * Ex[77]));
-        double dASx_0_0_0 = (ea2 * Ex[77]);
-        double dAASx_1_0_0 = ((ea2 * dASx_2_0_0) - (1.0 * dASx_0_0_0));
-        double Ky_1_2 = ((((((-2.0) * ebk) * ebk) * Ey[121]) + ((ebk * 5.0) * Ey[99])) - (1.0 * Ey[77]));
-        double Kz_1_0 = (((((-2.0) * ebk) * ebk) * Ez[99]) + ((ebk * 1.0) * Ez[77]));
-        double Kz_1_1 = (((((-2.0) * ebk) * ebk) * Ez[110]) + ((ebk * 3.0) * Ez[88]));
-        double Kz_1_2 = ((((((-2.0) * ebk) * ebk) * Ez[121]) + ((ebk * 5.0) * Ez[99])) - (1.0 * Ez[77]));
-        double dAAKx_0_2_0 = (ea2 * dAKx_1_2_0);
-        double dAASx_0_2_0 = (ea2 * dASx_1_2_0);
-        double Ky_2_0 = (((((-2.0) * ebk) * ebk) * Ey[176]) + ((ebk * 1.0) * Ey[154]));
-        double dAAKx_0_1_0 = (ea2 * dAKx_1_1_0);
-        double dAASx_0_1_0 = (ea2 * dASx_1_1_0);
-        double Ky_2_1 = (((((-2.0) * ebk) * ebk) * Ey[187]) + ((ebk * 3.0) * Ey[165]));
-        double dAAKx_0_0_0 = (ea2 * dAKx_1_0_0);
-        double dAASx_0_0_0 = (ea2 * dASx_1_0_0);
-        double Ky_2_2 = ((((((-2.0) * ebk) * ebk) * Ey[198]) + ((ebk * 5.0) * Ey[176])) - (1.0 * Ey[154]));
-        double Kz_2_0 = (((((-2.0) * ebk) * ebk) * Ez[176]) + ((ebk * 1.0) * Ez[154]));
-        double Kz_2_1 = (((((-2.0) * ebk) * ebk) * Ez[187]) + ((ebk * 3.0) * Ez[165]));
-        double Kz_2_2 = ((((((-2.0) * ebk) * ebk) * Ez[198]) + ((ebk * 5.0) * Ez[176])) - (1.0 * Ez[154]));
-        double dASy_0_0_0 = (ea2 * Ey[77]);
-        double dAKy_0_0_0 = (ea2 * Ky_1_0);
-        double dASy_0_1_0 = (ea2 * Ey[88]);
-        double dAKy_0_1_0 = (ea2 * Ky_1_1);
-        double dASy_0_2_0 = (ea2 * Ey[99]);
-        double dAKy_0_2_0 = (ea2 * Ky_1_2);
-        double dASy_1_0_0 = ((ea2 * Ey[154]) - (1.0 * Ey[0]));
-        double dAKy_1_0_0 = ((ea2 * Ky_2_0) - (1.0 * Ky_0_0));
-        double dASy_1_1_0 = ((ea2 * Ey[165]) - (1.0 * Ey[11]));
-        double dAKy_1_1_0 = ((ea2 * Ky_2_1) - (1.0 * Ky_0_1));
-        double dASy_1_2_0 = ((ea2 * Ey[176]) - (1.0 * Ey[22]));
-        double dAKy_1_2_0 = ((ea2 * Ky_2_2) - (1.0 * Ky_0_2));
-        double dASy_2_0_0 = ((ea2 * Ey[231]) - (2.0 * Ey[77]));
-        double Ky_3_0 = (((((-2.0) * ebk) * ebk) * Ey[253]) + ((ebk * 1.0) * Ey[231]));
-        double dAKy_2_0_0 = ((ea2 * Ky_3_0) - (2.0 * Ky_1_0));
-        double dASy_2_1_0 = ((ea2 * Ey[242]) - (2.0 * Ey[88]));
-        double Ky_3_1 = (((((-2.0) * ebk) * ebk) * Ey[264]) + ((ebk * 3.0) * Ey[242]));
-        double dAKy_2_1_0 = ((ea2 * Ky_3_1) - (2.0 * Ky_1_1));
-        double dASy_2_2_0 = ((ea2 * Ey[253]) - (2.0 * Ey[99]));
-        double Ky_3_2 = ((((((-2.0) * ebk) * ebk) * Ey[275]) + ((ebk * 5.0) * Ey[253])) - (1.0 * Ey[231]));
-        double dAKy_2_2_0 = ((ea2 * Ky_3_2) - (2.0 * Ky_1_2));
-        double dASz_0_0_0 = (ea2 * Ez[77]);
-        double dAKz_0_0_0 = (ea2 * Kz_1_0);
-        double dASz_0_1_0 = (ea2 * Ez[88]);
-        double dAKz_0_1_0 = (ea2 * Kz_1_1);
-        double dASz_0_2_0 = (ea2 * Ez[99]);
-        double dAKz_0_2_0 = (ea2 * Kz_1_2);
-        double dASz_1_0_0 = ((ea2 * Ez[154]) - (1.0 * Ez[0]));
-        double dAKz_1_0_0 = ((ea2 * Kz_2_0) - (1.0 * Kz_0_0));
-        double dASz_1_1_0 = ((ea2 * Ez[165]) - (1.0 * Ez[11]));
-        double dAKz_1_1_0 = ((ea2 * Kz_2_1) - (1.0 * Kz_0_1));
-        double dASz_1_2_0 = ((ea2 * Ez[176]) - (1.0 * Ez[22]));
-        double dAKz_1_2_0 = ((ea2 * Kz_2_2) - (1.0 * Kz_0_2));
-        double dASz_2_0_0 = ((ea2 * Ez[231]) - (2.0 * Ez[77]));
-        double Kz_3_0 = (((((-2.0) * ebk) * ebk) * Ez[253]) + ((ebk * 1.0) * Ez[231]));
-        double dAKz_2_0_0 = ((ea2 * Kz_3_0) - (2.0 * Kz_1_0));
-        double dASz_2_1_0 = ((ea2 * Ez[242]) - (2.0 * Ez[88]));
-        double Kz_3_1 = (((((-2.0) * ebk) * ebk) * Ez[264]) + ((ebk * 3.0) * Ez[242]));
-        double dAKz_2_1_0 = ((ea2 * Kz_3_1) - (2.0 * Kz_1_1));
-        double dASz_2_2_0 = ((ea2 * Ez[253]) - (2.0 * Ez[99]));
-        double Kz_3_2 = ((((((-2.0) * ebk) * ebk) * Ez[275]) + ((ebk * 5.0) * Ez[253])) - (1.0 * Ez[231]));
-        double dAKz_2_2_0 = ((ea2 * Kz_3_2) - (2.0 * Kz_1_2));
-        double dAASy_0_0_0 = (ea2 * dASy_1_0_0);
-        double dAAKy_0_0_0 = (ea2 * dAKy_1_0_0);
-        double dAASy_0_1_0 = (ea2 * dASy_1_1_0);
-        double dAAKy_0_1_0 = (ea2 * dAKy_1_1_0);
-        double dAASy_0_2_0 = (ea2 * dASy_1_2_0);
-        double dAAKy_0_2_0 = (ea2 * dAKy_1_2_0);
-        double dAASy_1_0_0 = ((ea2 * dASy_2_0_0) - (1.0 * dASy_0_0_0));
-        double dAAKy_1_0_0 = ((ea2 * dAKy_2_0_0) - (1.0 * dAKy_0_0_0));
-        double dAASy_1_1_0 = ((ea2 * dASy_2_1_0) - (1.0 * dASy_0_1_0));
-        double dAAKy_1_1_0 = ((ea2 * dAKy_2_1_0) - (1.0 * dAKy_0_1_0));
-        double dAASy_1_2_0 = ((ea2 * dASy_2_2_0) - (1.0 * dASy_0_2_0));
-        double dAAKy_1_2_0 = ((ea2 * dAKy_2_2_0) - (1.0 * dAKy_0_2_0));
-        double dASy_3_0_0 = ((ea2 * Ey[308]) - (3.0 * Ey[154]));
-        double dAASy_2_0_0 = ((ea2 * dASy_3_0_0) - (2.0 * dASy_1_0_0));
-        double Ky_4_0 = (((((-2.0) * ebk) * ebk) * Ey[330]) + ((ebk * 1.0) * Ey[308]));
-        double dAKy_3_0_0 = ((ea2 * Ky_4_0) - (3.0 * Ky_2_0));
-        double dAAKy_2_0_0 = ((ea2 * dAKy_3_0_0) - (2.0 * dAKy_1_0_0));
-        double dASy_3_1_0 = ((ea2 * Ey[319]) - (3.0 * Ey[165]));
-        double dAASy_2_1_0 = ((ea2 * dASy_3_1_0) - (2.0 * dASy_1_1_0));
-        double Ky_4_1 = (((((-2.0) * ebk) * ebk) * Ey[341]) + ((ebk * 3.0) * Ey[319]));
-        double dAKy_3_1_0 = ((ea2 * Ky_4_1) - (3.0 * Ky_2_1));
-        double dAAKy_2_1_0 = ((ea2 * dAKy_3_1_0) - (2.0 * dAKy_1_1_0));
-        double dASy_3_2_0 = ((ea2 * Ey[330]) - (3.0 * Ey[176]));
-        double dAASy_2_2_0 = ((ea2 * dASy_3_2_0) - (2.0 * dASy_1_2_0));
-        double Ky_4_2 = ((((((-2.0) * ebk) * ebk) * Ey[352]) + ((ebk * 5.0) * Ey[330])) - (1.0 * Ey[308]));
-        double dAKy_3_2_0 = ((ea2 * Ky_4_2) - (3.0 * Ky_2_2));
-        double dAAKy_2_2_0 = ((ea2 * dAKy_3_2_0) - (2.0 * dAKy_1_2_0));
-        double dAASz_0_0_0 = (ea2 * dASz_1_0_0);
-        double dAAKz_0_0_0 = (ea2 * dAKz_1_0_0);
-        double dAASz_0_1_0 = (ea2 * dASz_1_1_0);
-        double dAAKz_0_1_0 = (ea2 * dAKz_1_1_0);
-        double dAASz_0_2_0 = (ea2 * dASz_1_2_0);
-        double dAAKz_0_2_0 = (ea2 * dAKz_1_2_0);
-        double dAASz_1_0_0 = ((ea2 * dASz_2_0_0) - (1.0 * dASz_0_0_0));
-        double dAAKz_1_0_0 = ((ea2 * dAKz_2_0_0) - (1.0 * dAKz_0_0_0));
-        double dAASz_1_1_0 = ((ea2 * dASz_2_1_0) - (1.0 * dASz_0_1_0));
-        double dAAKz_1_1_0 = ((ea2 * dAKz_2_1_0) - (1.0 * dAKz_0_1_0));
-        double dAASz_1_2_0 = ((ea2 * dASz_2_2_0) - (1.0 * dASz_0_2_0));
-        double dAAKz_1_2_0 = ((ea2 * dAKz_2_2_0) - (1.0 * dAKz_0_2_0));
-        double dASz_3_0_0 = ((ea2 * Ez[308]) - (3.0 * Ez[154]));
-        double dAASz_2_0_0 = ((ea2 * dASz_3_0_0) - (2.0 * dASz_1_0_0));
-        double Kz_4_0 = (((((-2.0) * ebk) * ebk) * Ez[330]) + ((ebk * 1.0) * Ez[308]));
-        double dAKz_3_0_0 = ((ea2 * Kz_4_0) - (3.0 * Kz_2_0));
-        double dAAKz_2_0_0 = ((ea2 * dAKz_3_0_0) - (2.0 * dAKz_1_0_0));
-        double dASz_3_1_0 = ((ea2 * Ez[319]) - (3.0 * Ez[165]));
-        double dAASz_2_1_0 = ((ea2 * dASz_3_1_0) - (2.0 * dASz_1_1_0));
-        double Kz_4_1 = (((((-2.0) * ebk) * ebk) * Ez[341]) + ((ebk * 3.0) * Ez[319]));
-        double dAKz_3_1_0 = ((ea2 * Kz_4_1) - (3.0 * Kz_2_1));
-        double dAAKz_2_1_0 = ((ea2 * dAKz_3_1_0) - (2.0 * dAKz_1_1_0));
-        double dASz_3_2_0 = ((ea2 * Ez[330]) - (3.0 * Ez[176]));
-        double dAASz_2_2_0 = ((ea2 * dASz_3_2_0) - (2.0 * dASz_1_2_0));
-        double Kz_4_2 = ((((((-2.0) * ebk) * ebk) * Ez[352]) + ((ebk * 5.0) * Ez[330])) - (1.0 * Ez[308]));
-        double dAKz_3_2_0 = ((ea2 * Kz_4_2) - (3.0 * Kz_2_2));
-        double dAAKz_2_2_0 = ((ea2 * dAKz_3_2_0) - (2.0 * dAKz_1_2_0));
-        double Kx_2_4 = ((((((-2.0) * ebk) * ebk) * Ex[220]) + ((ebk * 9.0) * Ex[198])) - (6.0 * Ex[176]));
-        double dBKx_2_3_0 = ((eb2 * Kx_2_4) - (3.0 * Kx_2_2));
-        double dBKx_2_1_0 = ((eb2 * Kx_2_2) - (1.0 * Kx_2_0));
-        double dBBKx_2_2_0 = ((eb2 * dBKx_2_3_0) - (2.0 * dBKx_2_1_0));
-        double dBSx_2_3_0 = ((eb2 * Ex[198]) - (3.0 * Ex[176]));
-        double dBSx_2_1_0 = ((eb2 * Ex[176]) - (1.0 * Ex[154]));
-        double dBBSx_2_2_0 = ((eb2 * dBSx_2_3_0) - (2.0 * dBSx_2_1_0));
-        double Kx_2_3 = ((((((-2.0) * ebk) * ebk) * Ex[209]) + ((ebk * 7.0) * Ex[187])) - (3.0 * Ex[165]));
-        double dBKx_2_2_0 = ((eb2 * Kx_2_3) - (2.0 * Kx_2_1));
-        double dBKx_2_0_0 = (eb2 * Kx_2_1);
-        double dBBKx_2_1_0 = ((eb2 * dBKx_2_2_0) - (1.0 * dBKx_2_0_0));
-        double dBSx_2_2_0 = ((eb2 * Ex[187]) - (2.0 * Ex[165]));
-        double dBSx_2_0_0 = (eb2 * Ex[165]);
-        double dBBSx_2_1_0 = ((eb2 * dBSx_2_2_0) - (1.0 * dBSx_2_0_0));
-        double dBBKx_2_0_0 = (eb2 * dBKx_2_1_0);
-        double dBBSx_2_0_0 = (eb2 * dBSx_2_1_0);
-        double Kx_1_4 = ((((((-2.0) * ebk) * ebk) * Ex[143]) + ((ebk * 9.0) * Ex[121])) - (6.0 * Ex[99]));
-        double dBKx_1_3_0 = ((eb2 * Kx_1_4) - (3.0 * Kx_1_2));
-        double dBKx_1_1_0 = ((eb2 * Kx_1_2) - (1.0 * Kx_1_0));
-        double dBBKx_1_2_0 = ((eb2 * dBKx_1_3_0) - (2.0 * dBKx_1_1_0));
-        double dBSx_1_3_0 = ((eb2 * Ex[121]) - (3.0 * Ex[99]));
-        double dBSx_1_1_0 = ((eb2 * Ex[99]) - (1.0 * Ex[77]));
-        double dBBSx_1_2_0 = ((eb2 * dBSx_1_3_0) - (2.0 * dBSx_1_1_0));
-        double Kx_1_3 = ((((((-2.0) * ebk) * ebk) * Ex[132]) + ((ebk * 7.0) * Ex[110])) - (3.0 * Ex[88]));
-        double dBKx_1_2_0 = ((eb2 * Kx_1_3) - (2.0 * Kx_1_1));
-        double dBKx_1_0_0 = (eb2 * Kx_1_1);
-        double dBBKx_1_1_0 = ((eb2 * dBKx_1_2_0) - (1.0 * dBKx_1_0_0));
-        double dBSx_1_2_0 = ((eb2 * Ex[110]) - (2.0 * Ex[88]));
-        double dBSx_1_0_0 = (eb2 * Ex[88]);
-        double dBBSx_1_1_0 = ((eb2 * dBSx_1_2_0) - (1.0 * dBSx_1_0_0));
-        double dBBKx_1_0_0 = (eb2 * dBKx_1_1_0);
-        double dBBSx_1_0_0 = (eb2 * dBSx_1_1_0);
-        double Kx_0_4 = ((((((-2.0) * ebk) * ebk) * Ex[66]) + ((ebk * 9.0) * Ex[44])) - (6.0 * Ex[22]));
-        double dBKx_0_3_0 = ((eb2 * Kx_0_4) - (3.0 * Kx_0_2));
-        double dBKx_0_1_0 = ((eb2 * Kx_0_2) - (1.0 * Kx_0_0));
-        double dBBKx_0_2_0 = ((eb2 * dBKx_0_3_0) - (2.0 * dBKx_0_1_0));
-        double dBSx_0_3_0 = ((eb2 * Ex[44]) - (3.0 * Ex[22]));
-        double dBSx_0_1_0 = ((eb2 * Ex[22]) - (1.0 * Ex[0]));
-        double dBBSx_0_2_0 = ((eb2 * dBSx_0_3_0) - (2.0 * dBSx_0_1_0));
-        double Kx_0_3 = ((((((-2.0) * ebk) * ebk) * Ex[55]) + ((ebk * 7.0) * Ex[33])) - (3.0 * Ex[11]));
-        double dBKx_0_2_0 = ((eb2 * Kx_0_3) - (2.0 * Kx_0_1));
-        double dBKx_0_0_0 = (eb2 * Kx_0_1);
-        double dBBKx_0_1_0 = ((eb2 * dBKx_0_2_0) - (1.0 * dBKx_0_0_0));
-        double dBSx_0_2_0 = ((eb2 * Ex[33]) - (2.0 * Ex[11]));
-        double dBSx_0_0_0 = (eb2 * Ex[11]);
-        double dBBSx_0_1_0 = ((eb2 * dBSx_0_2_0) - (1.0 * dBSx_0_0_0));
-        double dBBKx_0_0_0 = (eb2 * dBKx_0_1_0);
-        double dBBSx_0_0_0 = (eb2 * dBSx_0_1_0);
-        double dBSy_0_0_0 = (eb2 * Ey[11]);
-        double dBKy_0_0_0 = (eb2 * Ky_0_1);
-        double dBSy_0_1_0 = ((eb2 * Ey[22]) - (1.0 * Ey[0]));
-        double dBKy_0_1_0 = ((eb2 * Ky_0_2) - (1.0 * Ky_0_0));
-        double dBSy_0_2_0 = ((eb2 * Ey[33]) - (2.0 * Ey[11]));
-        double Ky_0_3 = ((((((-2.0) * ebk) * ebk) * Ey[55]) + ((ebk * 7.0) * Ey[33])) - (3.0 * Ey[11]));
-        double dBKy_0_2_0 = ((eb2 * Ky_0_3) - (2.0 * Ky_0_1));
-        double dBSy_1_0_0 = (eb2 * Ey[88]);
-        double dBKy_1_0_0 = (eb2 * Ky_1_1);
-        double dBSy_1_1_0 = ((eb2 * Ey[99]) - (1.0 * Ey[77]));
-        double dBKy_1_1_0 = ((eb2 * Ky_1_2) - (1.0 * Ky_1_0));
-        double dBSy_1_2_0 = ((eb2 * Ey[110]) - (2.0 * Ey[88]));
-        double Ky_1_3 = ((((((-2.0) * ebk) * ebk) * Ey[132]) + ((ebk * 7.0) * Ey[110])) - (3.0 * Ey[88]));
-        double dBKy_1_2_0 = ((eb2 * Ky_1_3) - (2.0 * Ky_1_1));
-        double dBSy_2_0_0 = (eb2 * Ey[165]);
-        double dBKy_2_0_0 = (eb2 * Ky_2_1);
-        double dBSy_2_1_0 = ((eb2 * Ey[176]) - (1.0 * Ey[154]));
-        double dBKy_2_1_0 = ((eb2 * Ky_2_2) - (1.0 * Ky_2_0));
-        double dBSy_2_2_0 = ((eb2 * Ey[187]) - (2.0 * Ey[165]));
-        double Ky_2_3 = ((((((-2.0) * ebk) * ebk) * Ey[209]) + ((ebk * 7.0) * Ey[187])) - (3.0 * Ey[165]));
-        double dBKy_2_2_0 = ((eb2 * Ky_2_3) - (2.0 * Ky_2_1));
-        double dBSz_0_0_0 = (eb2 * Ez[11]);
-        double dBKz_0_0_0 = (eb2 * Kz_0_1);
-        double dBSz_0_1_0 = ((eb2 * Ez[22]) - (1.0 * Ez[0]));
-        double dBKz_0_1_0 = ((eb2 * Kz_0_2) - (1.0 * Kz_0_0));
-        double dBSz_0_2_0 = ((eb2 * Ez[33]) - (2.0 * Ez[11]));
-        double Kz_0_3 = ((((((-2.0) * ebk) * ebk) * Ez[55]) + ((ebk * 7.0) * Ez[33])) - (3.0 * Ez[11]));
-        double dBKz_0_2_0 = ((eb2 * Kz_0_3) - (2.0 * Kz_0_1));
-        double dBSz_1_0_0 = (eb2 * Ez[88]);
-        double dBKz_1_0_0 = (eb2 * Kz_1_1);
-        double dBSz_1_1_0 = ((eb2 * Ez[99]) - (1.0 * Ez[77]));
-        double dBKz_1_1_0 = ((eb2 * Kz_1_2) - (1.0 * Kz_1_0));
-        double dBSz_1_2_0 = ((eb2 * Ez[110]) - (2.0 * Ez[88]));
-        double Kz_1_3 = ((((((-2.0) * ebk) * ebk) * Ez[132]) + ((ebk * 7.0) * Ez[110])) - (3.0 * Ez[88]));
-        double dBKz_1_2_0 = ((eb2 * Kz_1_3) - (2.0 * Kz_1_1));
-        double dBSz_2_0_0 = (eb2 * Ez[165]);
-        double dBKz_2_0_0 = (eb2 * Kz_2_1);
-        double dBSz_2_1_0 = ((eb2 * Ez[176]) - (1.0 * Ez[154]));
-        double dBKz_2_1_0 = ((eb2 * Kz_2_2) - (1.0 * Kz_2_0));
-        double dBSz_2_2_0 = ((eb2 * Ez[187]) - (2.0 * Ez[165]));
-        double Kz_2_3 = ((((((-2.0) * ebk) * ebk) * Ez[209]) + ((ebk * 7.0) * Ez[187])) - (3.0 * Ez[165]));
-        double dBKz_2_2_0 = ((eb2 * Kz_2_3) - (2.0 * Kz_2_1));
-        double dBBSy_0_0_0 = (eb2 * dBSy_0_1_0);
-        double dBBKy_0_0_0 = (eb2 * dBKy_0_1_0);
-        double dBBSy_0_1_0 = ((eb2 * dBSy_0_2_0) - (1.0 * dBSy_0_0_0));
-        double dBBKy_0_1_0 = ((eb2 * dBKy_0_2_0) - (1.0 * dBKy_0_0_0));
-        double dBSy_0_3_0 = ((eb2 * Ey[44]) - (3.0 * Ey[22]));
-        double dBBSy_0_2_0 = ((eb2 * dBSy_0_3_0) - (2.0 * dBSy_0_1_0));
-        double Ky_0_4 = ((((((-2.0) * ebk) * ebk) * Ey[66]) + ((ebk * 9.0) * Ey[44])) - (6.0 * Ey[22]));
-        double dBKy_0_3_0 = ((eb2 * Ky_0_4) - (3.0 * Ky_0_2));
-        double dBBKy_0_2_0 = ((eb2 * dBKy_0_3_0) - (2.0 * dBKy_0_1_0));
-        double dBBSy_1_0_0 = (eb2 * dBSy_1_1_0);
-        double dBBKy_1_0_0 = (eb2 * dBKy_1_1_0);
-        double dBBSy_1_1_0 = ((eb2 * dBSy_1_2_0) - (1.0 * dBSy_1_0_0));
-        double dBBKy_1_1_0 = ((eb2 * dBKy_1_2_0) - (1.0 * dBKy_1_0_0));
-        double dBSy_1_3_0 = ((eb2 * Ey[121]) - (3.0 * Ey[99]));
-        double dBBSy_1_2_0 = ((eb2 * dBSy_1_3_0) - (2.0 * dBSy_1_1_0));
-        double Ky_1_4 = ((((((-2.0) * ebk) * ebk) * Ey[143]) + ((ebk * 9.0) * Ey[121])) - (6.0 * Ey[99]));
-        double dBKy_1_3_0 = ((eb2 * Ky_1_4) - (3.0 * Ky_1_2));
-        double dBBKy_1_2_0 = ((eb2 * dBKy_1_3_0) - (2.0 * dBKy_1_1_0));
-        double dBBSy_2_0_0 = (eb2 * dBSy_2_1_0);
-        double dBBKy_2_0_0 = (eb2 * dBKy_2_1_0);
-        double dBBSy_2_1_0 = ((eb2 * dBSy_2_2_0) - (1.0 * dBSy_2_0_0));
-        double dBBKy_2_1_0 = ((eb2 * dBKy_2_2_0) - (1.0 * dBKy_2_0_0));
-        double dBSy_2_3_0 = ((eb2 * Ey[198]) - (3.0 * Ey[176]));
-        double dBBSy_2_2_0 = ((eb2 * dBSy_2_3_0) - (2.0 * dBSy_2_1_0));
-        double Ky_2_4 = ((((((-2.0) * ebk) * ebk) * Ey[220]) + ((ebk * 9.0) * Ey[198])) - (6.0 * Ey[176]));
-        double dBKy_2_3_0 = ((eb2 * Ky_2_4) - (3.0 * Ky_2_2));
-        double dBBKy_2_2_0 = ((eb2 * dBKy_2_3_0) - (2.0 * dBKy_2_1_0));
-        double dBBSz_0_0_0 = (eb2 * dBSz_0_1_0);
-        double dBBKz_0_0_0 = (eb2 * dBKz_0_1_0);
-        double dBBSz_0_1_0 = ((eb2 * dBSz_0_2_0) - (1.0 * dBSz_0_0_0));
-        double dBBKz_0_1_0 = ((eb2 * dBKz_0_2_0) - (1.0 * dBKz_0_0_0));
-        double dBSz_0_3_0 = ((eb2 * Ez[44]) - (3.0 * Ez[22]));
-        double dBBSz_0_2_0 = ((eb2 * dBSz_0_3_0) - (2.0 * dBSz_0_1_0));
-        double Kz_0_4 = ((((((-2.0) * ebk) * ebk) * Ez[66]) + ((ebk * 9.0) * Ez[44])) - (6.0 * Ez[22]));
-        double dBKz_0_3_0 = ((eb2 * Kz_0_4) - (3.0 * Kz_0_2));
-        double dBBKz_0_2_0 = ((eb2 * dBKz_0_3_0) - (2.0 * dBKz_0_1_0));
-        double dBBSz_1_0_0 = (eb2 * dBSz_1_1_0);
-        double dBBKz_1_0_0 = (eb2 * dBKz_1_1_0);
-        double dBBSz_1_1_0 = ((eb2 * dBSz_1_2_0) - (1.0 * dBSz_1_0_0));
-        double dBBKz_1_1_0 = ((eb2 * dBKz_1_2_0) - (1.0 * dBKz_1_0_0));
-        double dBSz_1_3_0 = ((eb2 * Ez[121]) - (3.0 * Ez[99]));
-        double dBBSz_1_2_0 = ((eb2 * dBSz_1_3_0) - (2.0 * dBSz_1_1_0));
-        double Kz_1_4 = ((((((-2.0) * ebk) * ebk) * Ez[143]) + ((ebk * 9.0) * Ez[121])) - (6.0 * Ez[99]));
-        double dBKz_1_3_0 = ((eb2 * Kz_1_4) - (3.0 * Kz_1_2));
-        double dBBKz_1_2_0 = ((eb2 * dBKz_1_3_0) - (2.0 * dBKz_1_1_0));
-        double dBBSz_2_0_0 = (eb2 * dBSz_2_1_0);
-        double dBBKz_2_0_0 = (eb2 * dBKz_2_1_0);
-        double dBBSz_2_1_0 = ((eb2 * dBSz_2_2_0) - (1.0 * dBSz_2_0_0));
-        double dBBKz_2_1_0 = ((eb2 * dBKz_2_2_0) - (1.0 * dBKz_2_0_0));
-        double dBSz_2_3_0 = ((eb2 * Ez[198]) - (3.0 * Ez[176]));
-        double dBBSz_2_2_0 = ((eb2 * dBSz_2_3_0) - (2.0 * dBSz_2_1_0));
-        double Kz_2_4 = ((((((-2.0) * ebk) * ebk) * Ez[220]) + ((ebk * 9.0) * Ez[198])) - (6.0 * Ez[176]));
-        double dBKz_2_3_0 = ((eb2 * Kz_2_4) - (3.0 * Kz_2_2));
-        double dBBKz_2_2_0 = ((eb2 * dBKz_2_3_0) - (2.0 * dBKz_2_1_0));
-        double Kx_3_3 = ((((((-2.0) * ebk) * ebk) * Ex[286]) + ((ebk * 7.0) * Ex[264])) - (3.0 * Ex[242]));
-        double dAKx_2_3_0 = ((ea2 * Kx_3_3) - (2.0 * Kx_1_3));
-        double dABKx_2_2_0 = ((eb2 * dAKx_2_3_0) - (2.0 * dAKx_2_1_0));
-        double dASx_2_3_0 = ((ea2 * Ex[264]) - (2.0 * Ex[110]));
-        double dABSx_2_2_0 = ((eb2 * dASx_2_3_0) - (2.0 * dASx_2_1_0));
-        double dABKx_2_1_0 = ((eb2 * dAKx_2_2_0) - (1.0 * dAKx_2_0_0));
-        double dABSx_2_1_0 = ((eb2 * dASx_2_2_0) - (1.0 * dASx_2_0_0));
-        double dABKx_2_0_0 = (eb2 * dAKx_2_1_0);
-        double dABSx_2_0_0 = (eb2 * dASx_2_1_0);
-        double dAKx_1_3_0 = ((ea2 * Kx_2_3) - (1.0 * Kx_0_3));
-        double dABKx_1_2_0 = ((eb2 * dAKx_1_3_0) - (2.0 * dAKx_1_1_0));
-        double dASx_1_3_0 = ((ea2 * Ex[187]) - (1.0 * Ex[33]));
-        double dABSx_1_2_0 = ((eb2 * dASx_1_3_0) - (2.0 * dASx_1_1_0));
-        double dABKx_1_1_0 = ((eb2 * dAKx_1_2_0) - (1.0 * dAKx_1_0_0));
-        double dABSx_1_1_0 = ((eb2 * dASx_1_2_0) - (1.0 * dASx_1_0_0));
-        double dABKx_1_0_0 = (eb2 * dAKx_1_1_0);
-        double dABSx_1_0_0 = (eb2 * dASx_1_1_0);
-        double dAKx_0_3_0 = (ea2 * Kx_1_3);
-        double dABKx_0_2_0 = ((eb2 * dAKx_0_3_0) - (2.0 * dAKx_0_1_0));
-        double dASx_0_3_0 = (ea2 * Ex[110]);
-        double dABSx_0_2_0 = ((eb2 * dASx_0_3_0) - (2.0 * dASx_0_1_0));
-        double dABKx_0_1_0 = ((eb2 * dAKx_0_2_0) - (1.0 * dAKx_0_0_0));
-        double dABSx_0_1_0 = ((eb2 * dASx_0_2_0) - (1.0 * dASx_0_0_0));
-        double dABKx_0_0_0 = (eb2 * dAKx_0_1_0);
-        double dABSx_0_0_0 = (eb2 * dASx_0_1_0);
-        double dABSy_0_0_0 = (eb2 * dASy_0_1_0);
-        double dABKy_0_0_0 = (eb2 * dAKy_0_1_0);
-        double dABSy_0_1_0 = ((eb2 * dASy_0_2_0) - (1.0 * dASy_0_0_0));
-        double dABKy_0_1_0 = ((eb2 * dAKy_0_2_0) - (1.0 * dAKy_0_0_0));
-        double dASy_0_3_0 = (ea2 * Ey[110]);
-        double dABSy_0_2_0 = ((eb2 * dASy_0_3_0) - (2.0 * dASy_0_1_0));
-        double dAKy_0_3_0 = (ea2 * Ky_1_3);
-        double dABKy_0_2_0 = ((eb2 * dAKy_0_3_0) - (2.0 * dAKy_0_1_0));
-        double dABSy_1_0_0 = (eb2 * dASy_1_1_0);
-        double dABKy_1_0_0 = (eb2 * dAKy_1_1_0);
-        double dABSy_1_1_0 = ((eb2 * dASy_1_2_0) - (1.0 * dASy_1_0_0));
-        double dABKy_1_1_0 = ((eb2 * dAKy_1_2_0) - (1.0 * dAKy_1_0_0));
-        double dASy_1_3_0 = ((ea2 * Ey[187]) - (1.0 * Ey[33]));
-        double dABSy_1_2_0 = ((eb2 * dASy_1_3_0) - (2.0 * dASy_1_1_0));
-        double dAKy_1_3_0 = ((ea2 * Ky_2_3) - (1.0 * Ky_0_3));
-        double dABKy_1_2_0 = ((eb2 * dAKy_1_3_0) - (2.0 * dAKy_1_1_0));
-        double dABSy_2_0_0 = (eb2 * dASy_2_1_0);
-        double dABKy_2_0_0 = (eb2 * dAKy_2_1_0);
-        double dABSy_2_1_0 = ((eb2 * dASy_2_2_0) - (1.0 * dASy_2_0_0));
-        double dABKy_2_1_0 = ((eb2 * dAKy_2_2_0) - (1.0 * dAKy_2_0_0));
-        double dASy_2_3_0 = ((ea2 * Ey[264]) - (2.0 * Ey[110]));
-        double dABSy_2_2_0 = ((eb2 * dASy_2_3_0) - (2.0 * dASy_2_1_0));
-        double Ky_3_3 = ((((((-2.0) * ebk) * ebk) * Ey[286]) + ((ebk * 7.0) * Ey[264])) - (3.0 * Ey[242]));
-        double dAKy_2_3_0 = ((ea2 * Ky_3_3) - (2.0 * Ky_1_3));
-        double dABKy_2_2_0 = ((eb2 * dAKy_2_3_0) - (2.0 * dAKy_2_1_0));
-        double dABSz_0_0_0 = (eb2 * dASz_0_1_0);
-        double dABKz_0_0_0 = (eb2 * dAKz_0_1_0);
-        double dABSz_0_1_0 = ((eb2 * dASz_0_2_0) - (1.0 * dASz_0_0_0));
-        double dABKz_0_1_0 = ((eb2 * dAKz_0_2_0) - (1.0 * dAKz_0_0_0));
-        double dASz_0_3_0 = (ea2 * Ez[110]);
-        double dABSz_0_2_0 = ((eb2 * dASz_0_3_0) - (2.0 * dASz_0_1_0));
-        double dAKz_0_3_0 = (ea2 * Kz_1_3);
-        double dABKz_0_2_0 = ((eb2 * dAKz_0_3_0) - (2.0 * dAKz_0_1_0));
-        double dABSz_1_0_0 = (eb2 * dASz_1_1_0);
-        double dABKz_1_0_0 = (eb2 * dAKz_1_1_0);
-        double dABSz_1_1_0 = ((eb2 * dASz_1_2_0) - (1.0 * dASz_1_0_0));
-        double dABKz_1_1_0 = ((eb2 * dAKz_1_2_0) - (1.0 * dAKz_1_0_0));
-        double dASz_1_3_0 = ((ea2 * Ez[187]) - (1.0 * Ez[33]));
-        double dABSz_1_2_0 = ((eb2 * dASz_1_3_0) - (2.0 * dASz_1_1_0));
-        double dAKz_1_3_0 = ((ea2 * Kz_2_3) - (1.0 * Kz_0_3));
-        double dABKz_1_2_0 = ((eb2 * dAKz_1_3_0) - (2.0 * dAKz_1_1_0));
-        double dABSz_2_0_0 = (eb2 * dASz_2_1_0);
-        double dABKz_2_0_0 = (eb2 * dAKz_2_1_0);
-        double dABSz_2_1_0 = ((eb2 * dASz_2_2_0) - (1.0 * dASz_2_0_0));
-        double dABKz_2_1_0 = ((eb2 * dAKz_2_2_0) - (1.0 * dAKz_2_0_0));
-        double dASz_2_3_0 = ((ea2 * Ez[264]) - (2.0 * Ez[110]));
-        double dABSz_2_2_0 = ((eb2 * dASz_2_3_0) - (2.0 * dASz_2_1_0));
-        double Kz_3_3 = ((((((-2.0) * ebk) * ebk) * Ez[286]) + ((ebk * 7.0) * Ez[264])) - (3.0 * Ez[242]));
-        double dAKz_2_3_0 = ((ea2 * Kz_3_3) - (2.0 * Kz_1_3));
-        double dABKz_2_2_0 = ((eb2 * dAKz_2_3_0) - (2.0 * dAKz_2_1_0));
-        double hAA_00 = ((((((((((((((((((((((((((((((((((((w0 * ((((dAAKx_2_2_0 * Ey[0]) * Ez[0]) + ((dAASx_2_2_0 * Ky_0_0) * Ez[0])) + ((dAASx_2_2_0 * Ey[0]) * Kz_0_0))) + (w1 * ((((dAAKx_2_1_0 * Ey[11]) * Ez[0]) + ((dAASx_2_1_0 * Ky_0_1) * Ez[0])) + ((dAASx_2_1_0 * Ey[11]) * Kz_0_0)))) + (w2 * ((((dAAKx_2_1_0 * Ey[0]) * Ez[11]) + ((dAASx_2_1_0 * Ky_0_0) * Ez[11])) + ((dAASx_2_1_0 * Ey[0]) * Kz_0_1)))) + (w3 * ((((dAAKx_2_0_0 * Ey[22]) * Ez[0]) + ((dAASx_2_0_0 * Ky_0_2) * Ez[0])) + ((dAASx_2_0_0 * Ey[22]) * Kz_0_0)))) + (w4 * ((((dAAKx_2_0_0 * Ey[11]) * Ez[11]) + ((dAASx_2_0_0 * Ky_0_1) * Ez[11])) + ((dAASx_2_0_0 * Ey[11]) * Kz_0_1)))) + (w5 * ((((dAAKx_2_0_0 * Ey[0]) * Ez[22]) + ((dAASx_2_0_0 * Ky_0_0) * Ez[22])) + ((dAASx_2_0_0 * Ey[0]) * Kz_0_2)))) + (w6 * ((((dAAKx_1_2_0 * Ey[77]) * Ez[0]) + ((dAASx_1_2_0 * Ky_1_0) * Ez[0])) + ((dAASx_1_2_0 * Ey[77]) * Kz_0_0)))) + (w7 * ((((dAAKx_1_1_0 * Ey[88]) * Ez[0]) + ((dAASx_1_1_0 * Ky_1_1) * Ez[0])) + ((dAASx_1_1_0 * Ey[88]) * Kz_0_0)))) + (w8 * ((((dAAKx_1_1_0 * Ey[77]) * Ez[11]) + ((dAASx_1_1_0 * Ky_1_0) * Ez[11])) + ((dAASx_1_1_0 * Ey[77]) * Kz_0_1)))) + (w9 * ((((dAAKx_1_0_0 * Ey[99]) * Ez[0]) + ((dAASx_1_0_0 * Ky_1_2) * Ez[0])) + ((dAASx_1_0_0 * Ey[99]) * Kz_0_0)))) + (w10 * ((((dAAKx_1_0_0 * Ey[88]) * Ez[11]) + ((dAASx_1_0_0 * Ky_1_1) * Ez[11])) + ((dAASx_1_0_0 * Ey[88]) * Kz_0_1)))) + (w11 * ((((dAAKx_1_0_0 * Ey[77]) * Ez[22]) + ((dAASx_1_0_0 * Ky_1_0) * Ez[22])) + ((dAASx_1_0_0 * Ey[77]) * Kz_0_2)))) + (w12 * ((((dAAKx_1_2_0 * Ey[0]) * Ez[77]) + ((dAASx_1_2_0 * Ky_0_0) * Ez[77])) + ((dAASx_1_2_0 * Ey[0]) * Kz_1_0)))) + (w13 * ((((dAAKx_1_1_0 * Ey[11]) * Ez[77]) + ((dAASx_1_1_0 * Ky_0_1) * Ez[77])) + ((dAASx_1_1_0 * Ey[11]) * Kz_1_0)))) + (w14 * ((((dAAKx_1_1_0 * Ey[0]) * Ez[88]) + ((dAASx_1_1_0 * Ky_0_0) * Ez[88])) + ((dAASx_1_1_0 * Ey[0]) * Kz_1_1)))) + (w15 * ((((dAAKx_1_0_0 * Ey[22]) * Ez[77]) + ((dAASx_1_0_0 * Ky_0_2) * Ez[77])) + ((dAASx_1_0_0 * Ey[22]) * Kz_1_0)))) + (w16 * ((((dAAKx_1_0_0 * Ey[11]) * Ez[88]) + ((dAASx_1_0_0 * Ky_0_1) * Ez[88])) + ((dAASx_1_0_0 * Ey[11]) * Kz_1_1)))) + (w17 * ((((dAAKx_1_0_0 * Ey[0]) * Ez[99]) + ((dAASx_1_0_0 * Ky_0_0) * Ez[99])) + ((dAASx_1_0_0 * Ey[0]) * Kz_1_2)))) + (w18 * ((((dAAKx_0_2_0 * Ey[154]) * Ez[0]) + ((dAASx_0_2_0 * Ky_2_0) * Ez[0])) + ((dAASx_0_2_0 * Ey[154]) * Kz_0_0)))) + (w19 * ((((dAAKx_0_1_0 * Ey[165]) * Ez[0]) + ((dAASx_0_1_0 * Ky_2_1) * Ez[0])) + ((dAASx_0_1_0 * Ey[165]) * Kz_0_0)))) + (w20 * ((((dAAKx_0_1_0 * Ey[154]) * Ez[11]) + ((dAASx_0_1_0 * Ky_2_0) * Ez[11])) + ((dAASx_0_1_0 * Ey[154]) * Kz_0_1)))) + (w21 * ((((dAAKx_0_0_0 * Ey[176]) * Ez[0]) + ((dAASx_0_0_0 * Ky_2_2) * Ez[0])) + ((dAASx_0_0_0 * Ey[176]) * Kz_0_0)))) + (w22 * ((((dAAKx_0_0_0 * Ey[165]) * Ez[11]) + ((dAASx_0_0_0 * Ky_2_1) * Ez[11])) + ((dAASx_0_0_0 * Ey[165]) * Kz_0_1)))) + (w23 * ((((dAAKx_0_0_0 * Ey[154]) * Ez[22]) + ((dAASx_0_0_0 * Ky_2_0) * Ez[22])) + ((dAASx_0_0_0 * Ey[154]) * Kz_0_2)))) + (w24 * ((((dAAKx_0_2_0 * Ey[77]) * Ez[77]) + ((dAASx_0_2_0 * Ky_1_0) * Ez[77])) + ((dAASx_0_2_0 * Ey[77]) * Kz_1_0)))) + (w25 * ((((dAAKx_0_1_0 * Ey[88]) * Ez[77]) + ((dAASx_0_1_0 * Ky_1_1) * Ez[77])) + ((dAASx_0_1_0 * Ey[88]) * Kz_1_0)))) + (w26 * ((((dAAKx_0_1_0 * Ey[77]) * Ez[88]) + ((dAASx_0_1_0 * Ky_1_0) * Ez[88])) + ((dAASx_0_1_0 * Ey[77]) * Kz_1_1)))) + (w27 * ((((dAAKx_0_0_0 * Ey[99]) * Ez[77]) + ((dAASx_0_0_0 * Ky_1_2) * Ez[77])) + ((dAASx_0_0_0 * Ey[99]) * Kz_1_0)))) + (w28 * ((((dAAKx_0_0_0 * Ey[88]) * Ez[88]) + ((dAASx_0_0_0 * Ky_1_1) * Ez[88])) + ((dAASx_0_0_0 * Ey[88]) * Kz_1_1)))) + (w29 * ((((dAAKx_0_0_0 * Ey[77]) * Ez[99]) + ((dAASx_0_0_0 * Ky_1_0) * Ez[99])) + ((dAASx_0_0_0 * Ey[77]) * Kz_1_2)))) + (w30 * ((((dAAKx_0_2_0 * Ey[0]) * Ez[154]) + ((dAASx_0_2_0 * Ky_0_0) * Ez[154])) + ((dAASx_0_2_0 * Ey[0]) * Kz_2_0)))) + (w31 * ((((dAAKx_0_1_0 * Ey[11]) * Ez[154]) + ((dAASx_0_1_0 * Ky_0_1) * Ez[154])) + ((dAASx_0_1_0 * Ey[11]) * Kz_2_0)))) + (w32 * ((((dAAKx_0_1_0 * Ey[0]) * Ez[165]) + ((dAASx_0_1_0 * Ky_0_0) * Ez[165])) + ((dAASx_0_1_0 * Ey[0]) * Kz_2_1)))) + (w33 * ((((dAAKx_0_0_0 * Ey[22]) * Ez[154]) + ((dAASx_0_0_0 * Ky_0_2) * Ez[154])) + ((dAASx_0_0_0 * Ey[22]) * Kz_2_0)))) + (w34 * ((((dAAKx_0_0_0 * Ey[11]) * Ez[165]) + ((dAASx_0_0_0 * Ky_0_1) * Ez[165])) + ((dAASx_0_0_0 * Ey[11]) * Kz_2_1)))) + (w35 * ((((dAAKx_0_0_0 * Ey[0]) * Ez[176]) + ((dAASx_0_0_0 * Ky_0_0) * Ez[176])) + ((dAASx_0_0_0 * Ey[0]) * Kz_2_2))));
-        double hAA_01 = ((((((((((((((((((((((((((((((((((((w0 * ((((dAKx_2_2_0 * dASy_0_0_0) * Ez[0]) + ((dASx_2_2_0 * dAKy_0_0_0) * Ez[0])) + ((dASx_2_2_0 * dASy_0_0_0) * Kz_0_0))) + (w1 * ((((dAKx_2_1_0 * dASy_0_1_0) * Ez[0]) + ((dASx_2_1_0 * dAKy_0_1_0) * Ez[0])) + ((dASx_2_1_0 * dASy_0_1_0) * Kz_0_0)))) + (w2 * ((((dAKx_2_1_0 * dASy_0_0_0) * Ez[11]) + ((dASx_2_1_0 * dAKy_0_0_0) * Ez[11])) + ((dASx_2_1_0 * dASy_0_0_0) * Kz_0_1)))) + (w3 * ((((dAKx_2_0_0 * dASy_0_2_0) * Ez[0]) + ((dASx_2_0_0 * dAKy_0_2_0) * Ez[0])) + ((dASx_2_0_0 * dASy_0_2_0) * Kz_0_0)))) + (w4 * ((((dAKx_2_0_0 * dASy_0_1_0) * Ez[11]) + ((dASx_2_0_0 * dAKy_0_1_0) * Ez[11])) + ((dASx_2_0_0 * dASy_0_1_0) * Kz_0_1)))) + (w5 * ((((dAKx_2_0_0 * dASy_0_0_0) * Ez[22]) + ((dASx_2_0_0 * dAKy_0_0_0) * Ez[22])) + ((dASx_2_0_0 * dASy_0_0_0) * Kz_0_2)))) + (w6 * ((((dAKx_1_2_0 * dASy_1_0_0) * Ez[0]) + ((dASx_1_2_0 * dAKy_1_0_0) * Ez[0])) + ((dASx_1_2_0 * dASy_1_0_0) * Kz_0_0)))) + (w7 * ((((dAKx_1_1_0 * dASy_1_1_0) * Ez[0]) + ((dASx_1_1_0 * dAKy_1_1_0) * Ez[0])) + ((dASx_1_1_0 * dASy_1_1_0) * Kz_0_0)))) + (w8 * ((((dAKx_1_1_0 * dASy_1_0_0) * Ez[11]) + ((dASx_1_1_0 * dAKy_1_0_0) * Ez[11])) + ((dASx_1_1_0 * dASy_1_0_0) * Kz_0_1)))) + (w9 * ((((dAKx_1_0_0 * dASy_1_2_0) * Ez[0]) + ((dASx_1_0_0 * dAKy_1_2_0) * Ez[0])) + ((dASx_1_0_0 * dASy_1_2_0) * Kz_0_0)))) + (w10 * ((((dAKx_1_0_0 * dASy_1_1_0) * Ez[11]) + ((dASx_1_0_0 * dAKy_1_1_0) * Ez[11])) + ((dASx_1_0_0 * dASy_1_1_0) * Kz_0_1)))) + (w11 * ((((dAKx_1_0_0 * dASy_1_0_0) * Ez[22]) + ((dASx_1_0_0 * dAKy_1_0_0) * Ez[22])) + ((dASx_1_0_0 * dASy_1_0_0) * Kz_0_2)))) + (w12 * ((((dAKx_1_2_0 * dASy_0_0_0) * Ez[77]) + ((dASx_1_2_0 * dAKy_0_0_0) * Ez[77])) + ((dASx_1_2_0 * dASy_0_0_0) * Kz_1_0)))) + (w13 * ((((dAKx_1_1_0 * dASy_0_1_0) * Ez[77]) + ((dASx_1_1_0 * dAKy_0_1_0) * Ez[77])) + ((dASx_1_1_0 * dASy_0_1_0) * Kz_1_0)))) + (w14 * ((((dAKx_1_1_0 * dASy_0_0_0) * Ez[88]) + ((dASx_1_1_0 * dAKy_0_0_0) * Ez[88])) + ((dASx_1_1_0 * dASy_0_0_0) * Kz_1_1)))) + (w15 * ((((dAKx_1_0_0 * dASy_0_2_0) * Ez[77]) + ((dASx_1_0_0 * dAKy_0_2_0) * Ez[77])) + ((dASx_1_0_0 * dASy_0_2_0) * Kz_1_0)))) + (w16 * ((((dAKx_1_0_0 * dASy_0_1_0) * Ez[88]) + ((dASx_1_0_0 * dAKy_0_1_0) * Ez[88])) + ((dASx_1_0_0 * dASy_0_1_0) * Kz_1_1)))) + (w17 * ((((dAKx_1_0_0 * dASy_0_0_0) * Ez[99]) + ((dASx_1_0_0 * dAKy_0_0_0) * Ez[99])) + ((dASx_1_0_0 * dASy_0_0_0) * Kz_1_2)))) + (w18 * ((((dAKx_0_2_0 * dASy_2_0_0) * Ez[0]) + ((dASx_0_2_0 * dAKy_2_0_0) * Ez[0])) + ((dASx_0_2_0 * dASy_2_0_0) * Kz_0_0)))) + (w19 * ((((dAKx_0_1_0 * dASy_2_1_0) * Ez[0]) + ((dASx_0_1_0 * dAKy_2_1_0) * Ez[0])) + ((dASx_0_1_0 * dASy_2_1_0) * Kz_0_0)))) + (w20 * ((((dAKx_0_1_0 * dASy_2_0_0) * Ez[11]) + ((dASx_0_1_0 * dAKy_2_0_0) * Ez[11])) + ((dASx_0_1_0 * dASy_2_0_0) * Kz_0_1)))) + (w21 * ((((dAKx_0_0_0 * dASy_2_2_0) * Ez[0]) + ((dASx_0_0_0 * dAKy_2_2_0) * Ez[0])) + ((dASx_0_0_0 * dASy_2_2_0) * Kz_0_0)))) + (w22 * ((((dAKx_0_0_0 * dASy_2_1_0) * Ez[11]) + ((dASx_0_0_0 * dAKy_2_1_0) * Ez[11])) + ((dASx_0_0_0 * dASy_2_1_0) * Kz_0_1)))) + (w23 * ((((dAKx_0_0_0 * dASy_2_0_0) * Ez[22]) + ((dASx_0_0_0 * dAKy_2_0_0) * Ez[22])) + ((dASx_0_0_0 * dASy_2_0_0) * Kz_0_2)))) + (w24 * ((((dAKx_0_2_0 * dASy_1_0_0) * Ez[77]) + ((dASx_0_2_0 * dAKy_1_0_0) * Ez[77])) + ((dASx_0_2_0 * dASy_1_0_0) * Kz_1_0)))) + (w25 * ((((dAKx_0_1_0 * dASy_1_1_0) * Ez[77]) + ((dASx_0_1_0 * dAKy_1_1_0) * Ez[77])) + ((dASx_0_1_0 * dASy_1_1_0) * Kz_1_0)))) + (w26 * ((((dAKx_0_1_0 * dASy_1_0_0) * Ez[88]) + ((dASx_0_1_0 * dAKy_1_0_0) * Ez[88])) + ((dASx_0_1_0 * dASy_1_0_0) * Kz_1_1)))) + (w27 * ((((dAKx_0_0_0 * dASy_1_2_0) * Ez[77]) + ((dASx_0_0_0 * dAKy_1_2_0) * Ez[77])) + ((dASx_0_0_0 * dASy_1_2_0) * Kz_1_0)))) + (w28 * ((((dAKx_0_0_0 * dASy_1_1_0) * Ez[88]) + ((dASx_0_0_0 * dAKy_1_1_0) * Ez[88])) + ((dASx_0_0_0 * dASy_1_1_0) * Kz_1_1)))) + (w29 * ((((dAKx_0_0_0 * dASy_1_0_0) * Ez[99]) + ((dASx_0_0_0 * dAKy_1_0_0) * Ez[99])) + ((dASx_0_0_0 * dASy_1_0_0) * Kz_1_2)))) + (w30 * ((((dAKx_0_2_0 * dASy_0_0_0) * Ez[154]) + ((dASx_0_2_0 * dAKy_0_0_0) * Ez[154])) + ((dASx_0_2_0 * dASy_0_0_0) * Kz_2_0)))) + (w31 * ((((dAKx_0_1_0 * dASy_0_1_0) * Ez[154]) + ((dASx_0_1_0 * dAKy_0_1_0) * Ez[154])) + ((dASx_0_1_0 * dASy_0_1_0) * Kz_2_0)))) + (w32 * ((((dAKx_0_1_0 * dASy_0_0_0) * Ez[165]) + ((dASx_0_1_0 * dAKy_0_0_0) * Ez[165])) + ((dASx_0_1_0 * dASy_0_0_0) * Kz_2_1)))) + (w33 * ((((dAKx_0_0_0 * dASy_0_2_0) * Ez[154]) + ((dASx_0_0_0 * dAKy_0_2_0) * Ez[154])) + ((dASx_0_0_0 * dASy_0_2_0) * Kz_2_0)))) + (w34 * ((((dAKx_0_0_0 * dASy_0_1_0) * Ez[165]) + ((dASx_0_0_0 * dAKy_0_1_0) * Ez[165])) + ((dASx_0_0_0 * dASy_0_1_0) * Kz_2_1)))) + (w35 * ((((dAKx_0_0_0 * dASy_0_0_0) * Ez[176]) + ((dASx_0_0_0 * dAKy_0_0_0) * Ez[176])) + ((dASx_0_0_0 * dASy_0_0_0) * Kz_2_2))));
-        double hAA_02 = ((((((((((((((((((((((((((((((((((((w0 * ((((dAKx_2_2_0 * Ey[0]) * dASz_0_0_0) + ((dASx_2_2_0 * Ky_0_0) * dASz_0_0_0)) + ((dASx_2_2_0 * Ey[0]) * dAKz_0_0_0))) + (w1 * ((((dAKx_2_1_0 * Ey[11]) * dASz_0_0_0) + ((dASx_2_1_0 * Ky_0_1) * dASz_0_0_0)) + ((dASx_2_1_0 * Ey[11]) * dAKz_0_0_0)))) + (w2 * ((((dAKx_2_1_0 * Ey[0]) * dASz_0_1_0) + ((dASx_2_1_0 * Ky_0_0) * dASz_0_1_0)) + ((dASx_2_1_0 * Ey[0]) * dAKz_0_1_0)))) + (w3 * ((((dAKx_2_0_0 * Ey[22]) * dASz_0_0_0) + ((dASx_2_0_0 * Ky_0_2) * dASz_0_0_0)) + ((dASx_2_0_0 * Ey[22]) * dAKz_0_0_0)))) + (w4 * ((((dAKx_2_0_0 * Ey[11]) * dASz_0_1_0) + ((dASx_2_0_0 * Ky_0_1) * dASz_0_1_0)) + ((dASx_2_0_0 * Ey[11]) * dAKz_0_1_0)))) + (w5 * ((((dAKx_2_0_0 * Ey[0]) * dASz_0_2_0) + ((dASx_2_0_0 * Ky_0_0) * dASz_0_2_0)) + ((dASx_2_0_0 * Ey[0]) * dAKz_0_2_0)))) + (w6 * ((((dAKx_1_2_0 * Ey[77]) * dASz_0_0_0) + ((dASx_1_2_0 * Ky_1_0) * dASz_0_0_0)) + ((dASx_1_2_0 * Ey[77]) * dAKz_0_0_0)))) + (w7 * ((((dAKx_1_1_0 * Ey[88]) * dASz_0_0_0) + ((dASx_1_1_0 * Ky_1_1) * dASz_0_0_0)) + ((dASx_1_1_0 * Ey[88]) * dAKz_0_0_0)))) + (w8 * ((((dAKx_1_1_0 * Ey[77]) * dASz_0_1_0) + ((dASx_1_1_0 * Ky_1_0) * dASz_0_1_0)) + ((dASx_1_1_0 * Ey[77]) * dAKz_0_1_0)))) + (w9 * ((((dAKx_1_0_0 * Ey[99]) * dASz_0_0_0) + ((dASx_1_0_0 * Ky_1_2) * dASz_0_0_0)) + ((dASx_1_0_0 * Ey[99]) * dAKz_0_0_0)))) + (w10 * ((((dAKx_1_0_0 * Ey[88]) * dASz_0_1_0) + ((dASx_1_0_0 * Ky_1_1) * dASz_0_1_0)) + ((dASx_1_0_0 * Ey[88]) * dAKz_0_1_0)))) + (w11 * ((((dAKx_1_0_0 * Ey[77]) * dASz_0_2_0) + ((dASx_1_0_0 * Ky_1_0) * dASz_0_2_0)) + ((dASx_1_0_0 * Ey[77]) * dAKz_0_2_0)))) + (w12 * ((((dAKx_1_2_0 * Ey[0]) * dASz_1_0_0) + ((dASx_1_2_0 * Ky_0_0) * dASz_1_0_0)) + ((dASx_1_2_0 * Ey[0]) * dAKz_1_0_0)))) + (w13 * ((((dAKx_1_1_0 * Ey[11]) * dASz_1_0_0) + ((dASx_1_1_0 * Ky_0_1) * dASz_1_0_0)) + ((dASx_1_1_0 * Ey[11]) * dAKz_1_0_0)))) + (w14 * ((((dAKx_1_1_0 * Ey[0]) * dASz_1_1_0) + ((dASx_1_1_0 * Ky_0_0) * dASz_1_1_0)) + ((dASx_1_1_0 * Ey[0]) * dAKz_1_1_0)))) + (w15 * ((((dAKx_1_0_0 * Ey[22]) * dASz_1_0_0) + ((dASx_1_0_0 * Ky_0_2) * dASz_1_0_0)) + ((dASx_1_0_0 * Ey[22]) * dAKz_1_0_0)))) + (w16 * ((((dAKx_1_0_0 * Ey[11]) * dASz_1_1_0) + ((dASx_1_0_0 * Ky_0_1) * dASz_1_1_0)) + ((dASx_1_0_0 * Ey[11]) * dAKz_1_1_0)))) + (w17 * ((((dAKx_1_0_0 * Ey[0]) * dASz_1_2_0) + ((dASx_1_0_0 * Ky_0_0) * dASz_1_2_0)) + ((dASx_1_0_0 * Ey[0]) * dAKz_1_2_0)))) + (w18 * ((((dAKx_0_2_0 * Ey[154]) * dASz_0_0_0) + ((dASx_0_2_0 * Ky_2_0) * dASz_0_0_0)) + ((dASx_0_2_0 * Ey[154]) * dAKz_0_0_0)))) + (w19 * ((((dAKx_0_1_0 * Ey[165]) * dASz_0_0_0) + ((dASx_0_1_0 * Ky_2_1) * dASz_0_0_0)) + ((dASx_0_1_0 * Ey[165]) * dAKz_0_0_0)))) + (w20 * ((((dAKx_0_1_0 * Ey[154]) * dASz_0_1_0) + ((dASx_0_1_0 * Ky_2_0) * dASz_0_1_0)) + ((dASx_0_1_0 * Ey[154]) * dAKz_0_1_0)))) + (w21 * ((((dAKx_0_0_0 * Ey[176]) * dASz_0_0_0) + ((dASx_0_0_0 * Ky_2_2) * dASz_0_0_0)) + ((dASx_0_0_0 * Ey[176]) * dAKz_0_0_0)))) + (w22 * ((((dAKx_0_0_0 * Ey[165]) * dASz_0_1_0) + ((dASx_0_0_0 * Ky_2_1) * dASz_0_1_0)) + ((dASx_0_0_0 * Ey[165]) * dAKz_0_1_0)))) + (w23 * ((((dAKx_0_0_0 * Ey[154]) * dASz_0_2_0) + ((dASx_0_0_0 * Ky_2_0) * dASz_0_2_0)) + ((dASx_0_0_0 * Ey[154]) * dAKz_0_2_0)))) + (w24 * ((((dAKx_0_2_0 * Ey[77]) * dASz_1_0_0) + ((dASx_0_2_0 * Ky_1_0) * dASz_1_0_0)) + ((dASx_0_2_0 * Ey[77]) * dAKz_1_0_0)))) + (w25 * ((((dAKx_0_1_0 * Ey[88]) * dASz_1_0_0) + ((dASx_0_1_0 * Ky_1_1) * dASz_1_0_0)) + ((dASx_0_1_0 * Ey[88]) * dAKz_1_0_0)))) + (w26 * ((((dAKx_0_1_0 * Ey[77]) * dASz_1_1_0) + ((dASx_0_1_0 * Ky_1_0) * dASz_1_1_0)) + ((dASx_0_1_0 * Ey[77]) * dAKz_1_1_0)))) + (w27 * ((((dAKx_0_0_0 * Ey[99]) * dASz_1_0_0) + ((dASx_0_0_0 * Ky_1_2) * dASz_1_0_0)) + ((dASx_0_0_0 * Ey[99]) * dAKz_1_0_0)))) + (w28 * ((((dAKx_0_0_0 * Ey[88]) * dASz_1_1_0) + ((dASx_0_0_0 * Ky_1_1) * dASz_1_1_0)) + ((dASx_0_0_0 * Ey[88]) * dAKz_1_1_0)))) + (w29 * ((((dAKx_0_0_0 * Ey[77]) * dASz_1_2_0) + ((dASx_0_0_0 * Ky_1_0) * dASz_1_2_0)) + ((dASx_0_0_0 * Ey[77]) * dAKz_1_2_0)))) + (w30 * ((((dAKx_0_2_0 * Ey[0]) * dASz_2_0_0) + ((dASx_0_2_0 * Ky_0_0) * dASz_2_0_0)) + ((dASx_0_2_0 * Ey[0]) * dAKz_2_0_0)))) + (w31 * ((((dAKx_0_1_0 * Ey[11]) * dASz_2_0_0) + ((dASx_0_1_0 * Ky_0_1) * dASz_2_0_0)) + ((dASx_0_1_0 * Ey[11]) * dAKz_2_0_0)))) + (w32 * ((((dAKx_0_1_0 * Ey[0]) * dASz_2_1_0) + ((dASx_0_1_0 * Ky_0_0) * dASz_2_1_0)) + ((dASx_0_1_0 * Ey[0]) * dAKz_2_1_0)))) + (w33 * ((((dAKx_0_0_0 * Ey[22]) * dASz_2_0_0) + ((dASx_0_0_0 * Ky_0_2) * dASz_2_0_0)) + ((dASx_0_0_0 * Ey[22]) * dAKz_2_0_0)))) + (w34 * ((((dAKx_0_0_0 * Ey[11]) * dASz_2_1_0) + ((dASx_0_0_0 * Ky_0_1) * dASz_2_1_0)) + ((dASx_0_0_0 * Ey[11]) * dAKz_2_1_0)))) + (w35 * ((((dAKx_0_0_0 * Ey[0]) * dASz_2_2_0) + ((dASx_0_0_0 * Ky_0_0) * dASz_2_2_0)) + ((dASx_0_0_0 * Ey[0]) * dAKz_2_2_0))));
-        double hAA_11 = ((((((((((((((((((((((((((((((((((((w0 * ((((Kx_2_2 * dAASy_0_0_0) * Ez[0]) + ((Ex[176] * dAAKy_0_0_0) * Ez[0])) + ((Ex[176] * dAASy_0_0_0) * Kz_0_0))) + (w1 * ((((Kx_2_1 * dAASy_0_1_0) * Ez[0]) + ((Ex[165] * dAAKy_0_1_0) * Ez[0])) + ((Ex[165] * dAASy_0_1_0) * Kz_0_0)))) + (w2 * ((((Kx_2_1 * dAASy_0_0_0) * Ez[11]) + ((Ex[165] * dAAKy_0_0_0) * Ez[11])) + ((Ex[165] * dAASy_0_0_0) * Kz_0_1)))) + (w3 * ((((Kx_2_0 * dAASy_0_2_0) * Ez[0]) + ((Ex[154] * dAAKy_0_2_0) * Ez[0])) + ((Ex[154] * dAASy_0_2_0) * Kz_0_0)))) + (w4 * ((((Kx_2_0 * dAASy_0_1_0) * Ez[11]) + ((Ex[154] * dAAKy_0_1_0) * Ez[11])) + ((Ex[154] * dAASy_0_1_0) * Kz_0_1)))) + (w5 * ((((Kx_2_0 * dAASy_0_0_0) * Ez[22]) + ((Ex[154] * dAAKy_0_0_0) * Ez[22])) + ((Ex[154] * dAASy_0_0_0) * Kz_0_2)))) + (w6 * ((((Kx_1_2 * dAASy_1_0_0) * Ez[0]) + ((Ex[99] * dAAKy_1_0_0) * Ez[0])) + ((Ex[99] * dAASy_1_0_0) * Kz_0_0)))) + (w7 * ((((Kx_1_1 * dAASy_1_1_0) * Ez[0]) + ((Ex[88] * dAAKy_1_1_0) * Ez[0])) + ((Ex[88] * dAASy_1_1_0) * Kz_0_0)))) + (w8 * ((((Kx_1_1 * dAASy_1_0_0) * Ez[11]) + ((Ex[88] * dAAKy_1_0_0) * Ez[11])) + ((Ex[88] * dAASy_1_0_0) * Kz_0_1)))) + (w9 * ((((Kx_1_0 * dAASy_1_2_0) * Ez[0]) + ((Ex[77] * dAAKy_1_2_0) * Ez[0])) + ((Ex[77] * dAASy_1_2_0) * Kz_0_0)))) + (w10 * ((((Kx_1_0 * dAASy_1_1_0) * Ez[11]) + ((Ex[77] * dAAKy_1_1_0) * Ez[11])) + ((Ex[77] * dAASy_1_1_0) * Kz_0_1)))) + (w11 * ((((Kx_1_0 * dAASy_1_0_0) * Ez[22]) + ((Ex[77] * dAAKy_1_0_0) * Ez[22])) + ((Ex[77] * dAASy_1_0_0) * Kz_0_2)))) + (w12 * ((((Kx_1_2 * dAASy_0_0_0) * Ez[77]) + ((Ex[99] * dAAKy_0_0_0) * Ez[77])) + ((Ex[99] * dAASy_0_0_0) * Kz_1_0)))) + (w13 * ((((Kx_1_1 * dAASy_0_1_0) * Ez[77]) + ((Ex[88] * dAAKy_0_1_0) * Ez[77])) + ((Ex[88] * dAASy_0_1_0) * Kz_1_0)))) + (w14 * ((((Kx_1_1 * dAASy_0_0_0) * Ez[88]) + ((Ex[88] * dAAKy_0_0_0) * Ez[88])) + ((Ex[88] * dAASy_0_0_0) * Kz_1_1)))) + (w15 * ((((Kx_1_0 * dAASy_0_2_0) * Ez[77]) + ((Ex[77] * dAAKy_0_2_0) * Ez[77])) + ((Ex[77] * dAASy_0_2_0) * Kz_1_0)))) + (w16 * ((((Kx_1_0 * dAASy_0_1_0) * Ez[88]) + ((Ex[77] * dAAKy_0_1_0) * Ez[88])) + ((Ex[77] * dAASy_0_1_0) * Kz_1_1)))) + (w17 * ((((Kx_1_0 * dAASy_0_0_0) * Ez[99]) + ((Ex[77] * dAAKy_0_0_0) * Ez[99])) + ((Ex[77] * dAASy_0_0_0) * Kz_1_2)))) + (w18 * ((((Kx_0_2 * dAASy_2_0_0) * Ez[0]) + ((Ex[22] * dAAKy_2_0_0) * Ez[0])) + ((Ex[22] * dAASy_2_0_0) * Kz_0_0)))) + (w19 * ((((Kx_0_1 * dAASy_2_1_0) * Ez[0]) + ((Ex[11] * dAAKy_2_1_0) * Ez[0])) + ((Ex[11] * dAASy_2_1_0) * Kz_0_0)))) + (w20 * ((((Kx_0_1 * dAASy_2_0_0) * Ez[11]) + ((Ex[11] * dAAKy_2_0_0) * Ez[11])) + ((Ex[11] * dAASy_2_0_0) * Kz_0_1)))) + (w21 * ((((Kx_0_0 * dAASy_2_2_0) * Ez[0]) + ((Ex[0] * dAAKy_2_2_0) * Ez[0])) + ((Ex[0] * dAASy_2_2_0) * Kz_0_0)))) + (w22 * ((((Kx_0_0 * dAASy_2_1_0) * Ez[11]) + ((Ex[0] * dAAKy_2_1_0) * Ez[11])) + ((Ex[0] * dAASy_2_1_0) * Kz_0_1)))) + (w23 * ((((Kx_0_0 * dAASy_2_0_0) * Ez[22]) + ((Ex[0] * dAAKy_2_0_0) * Ez[22])) + ((Ex[0] * dAASy_2_0_0) * Kz_0_2)))) + (w24 * ((((Kx_0_2 * dAASy_1_0_0) * Ez[77]) + ((Ex[22] * dAAKy_1_0_0) * Ez[77])) + ((Ex[22] * dAASy_1_0_0) * Kz_1_0)))) + (w25 * ((((Kx_0_1 * dAASy_1_1_0) * Ez[77]) + ((Ex[11] * dAAKy_1_1_0) * Ez[77])) + ((Ex[11] * dAASy_1_1_0) * Kz_1_0)))) + (w26 * ((((Kx_0_1 * dAASy_1_0_0) * Ez[88]) + ((Ex[11] * dAAKy_1_0_0) * Ez[88])) + ((Ex[11] * dAASy_1_0_0) * Kz_1_1)))) + (w27 * ((((Kx_0_0 * dAASy_1_2_0) * Ez[77]) + ((Ex[0] * dAAKy_1_2_0) * Ez[77])) + ((Ex[0] * dAASy_1_2_0) * Kz_1_0)))) + (w28 * ((((Kx_0_0 * dAASy_1_1_0) * Ez[88]) + ((Ex[0] * dAAKy_1_1_0) * Ez[88])) + ((Ex[0] * dAASy_1_1_0) * Kz_1_1)))) + (w29 * ((((Kx_0_0 * dAASy_1_0_0) * Ez[99]) + ((Ex[0] * dAAKy_1_0_0) * Ez[99])) + ((Ex[0] * dAASy_1_0_0) * Kz_1_2)))) + (w30 * ((((Kx_0_2 * dAASy_0_0_0) * Ez[154]) + ((Ex[22] * dAAKy_0_0_0) * Ez[154])) + ((Ex[22] * dAASy_0_0_0) * Kz_2_0)))) + (w31 * ((((Kx_0_1 * dAASy_0_1_0) * Ez[154]) + ((Ex[11] * dAAKy_0_1_0) * Ez[154])) + ((Ex[11] * dAASy_0_1_0) * Kz_2_0)))) + (w32 * ((((Kx_0_1 * dAASy_0_0_0) * Ez[165]) + ((Ex[11] * dAAKy_0_0_0) * Ez[165])) + ((Ex[11] * dAASy_0_0_0) * Kz_2_1)))) + (w33 * ((((Kx_0_0 * dAASy_0_2_0) * Ez[154]) + ((Ex[0] * dAAKy_0_2_0) * Ez[154])) + ((Ex[0] * dAASy_0_2_0) * Kz_2_0)))) + (w34 * ((((Kx_0_0 * dAASy_0_1_0) * Ez[165]) + ((Ex[0] * dAAKy_0_1_0) * Ez[165])) + ((Ex[0] * dAASy_0_1_0) * Kz_2_1)))) + (w35 * ((((Kx_0_0 * dAASy_0_0_0) * Ez[176]) + ((Ex[0] * dAAKy_0_0_0) * Ez[176])) + ((Ex[0] * dAASy_0_0_0) * Kz_2_2))));
-        double hAA_12 = ((((((((((((((((((((((((((((((((((((w0 * ((((Kx_2_2 * dASy_0_0_0) * dASz_0_0_0) + ((Ex[176] * dAKy_0_0_0) * dASz_0_0_0)) + ((Ex[176] * dASy_0_0_0) * dAKz_0_0_0))) + (w1 * ((((Kx_2_1 * dASy_0_1_0) * dASz_0_0_0) + ((Ex[165] * dAKy_0_1_0) * dASz_0_0_0)) + ((Ex[165] * dASy_0_1_0) * dAKz_0_0_0)))) + (w2 * ((((Kx_2_1 * dASy_0_0_0) * dASz_0_1_0) + ((Ex[165] * dAKy_0_0_0) * dASz_0_1_0)) + ((Ex[165] * dASy_0_0_0) * dAKz_0_1_0)))) + (w3 * ((((Kx_2_0 * dASy_0_2_0) * dASz_0_0_0) + ((Ex[154] * dAKy_0_2_0) * dASz_0_0_0)) + ((Ex[154] * dASy_0_2_0) * dAKz_0_0_0)))) + (w4 * ((((Kx_2_0 * dASy_0_1_0) * dASz_0_1_0) + ((Ex[154] * dAKy_0_1_0) * dASz_0_1_0)) + ((Ex[154] * dASy_0_1_0) * dAKz_0_1_0)))) + (w5 * ((((Kx_2_0 * dASy_0_0_0) * dASz_0_2_0) + ((Ex[154] * dAKy_0_0_0) * dASz_0_2_0)) + ((Ex[154] * dASy_0_0_0) * dAKz_0_2_0)))) + (w6 * ((((Kx_1_2 * dASy_1_0_0) * dASz_0_0_0) + ((Ex[99] * dAKy_1_0_0) * dASz_0_0_0)) + ((Ex[99] * dASy_1_0_0) * dAKz_0_0_0)))) + (w7 * ((((Kx_1_1 * dASy_1_1_0) * dASz_0_0_0) + ((Ex[88] * dAKy_1_1_0) * dASz_0_0_0)) + ((Ex[88] * dASy_1_1_0) * dAKz_0_0_0)))) + (w8 * ((((Kx_1_1 * dASy_1_0_0) * dASz_0_1_0) + ((Ex[88] * dAKy_1_0_0) * dASz_0_1_0)) + ((Ex[88] * dASy_1_0_0) * dAKz_0_1_0)))) + (w9 * ((((Kx_1_0 * dASy_1_2_0) * dASz_0_0_0) + ((Ex[77] * dAKy_1_2_0) * dASz_0_0_0)) + ((Ex[77] * dASy_1_2_0) * dAKz_0_0_0)))) + (w10 * ((((Kx_1_0 * dASy_1_1_0) * dASz_0_1_0) + ((Ex[77] * dAKy_1_1_0) * dASz_0_1_0)) + ((Ex[77] * dASy_1_1_0) * dAKz_0_1_0)))) + (w11 * ((((Kx_1_0 * dASy_1_0_0) * dASz_0_2_0) + ((Ex[77] * dAKy_1_0_0) * dASz_0_2_0)) + ((Ex[77] * dASy_1_0_0) * dAKz_0_2_0)))) + (w12 * ((((Kx_1_2 * dASy_0_0_0) * dASz_1_0_0) + ((Ex[99] * dAKy_0_0_0) * dASz_1_0_0)) + ((Ex[99] * dASy_0_0_0) * dAKz_1_0_0)))) + (w13 * ((((Kx_1_1 * dASy_0_1_0) * dASz_1_0_0) + ((Ex[88] * dAKy_0_1_0) * dASz_1_0_0)) + ((Ex[88] * dASy_0_1_0) * dAKz_1_0_0)))) + (w14 * ((((Kx_1_1 * dASy_0_0_0) * dASz_1_1_0) + ((Ex[88] * dAKy_0_0_0) * dASz_1_1_0)) + ((Ex[88] * dASy_0_0_0) * dAKz_1_1_0)))) + (w15 * ((((Kx_1_0 * dASy_0_2_0) * dASz_1_0_0) + ((Ex[77] * dAKy_0_2_0) * dASz_1_0_0)) + ((Ex[77] * dASy_0_2_0) * dAKz_1_0_0)))) + (w16 * ((((Kx_1_0 * dASy_0_1_0) * dASz_1_1_0) + ((Ex[77] * dAKy_0_1_0) * dASz_1_1_0)) + ((Ex[77] * dASy_0_1_0) * dAKz_1_1_0)))) + (w17 * ((((Kx_1_0 * dASy_0_0_0) * dASz_1_2_0) + ((Ex[77] * dAKy_0_0_0) * dASz_1_2_0)) + ((Ex[77] * dASy_0_0_0) * dAKz_1_2_0)))) + (w18 * ((((Kx_0_2 * dASy_2_0_0) * dASz_0_0_0) + ((Ex[22] * dAKy_2_0_0) * dASz_0_0_0)) + ((Ex[22] * dASy_2_0_0) * dAKz_0_0_0)))) + (w19 * ((((Kx_0_1 * dASy_2_1_0) * dASz_0_0_0) + ((Ex[11] * dAKy_2_1_0) * dASz_0_0_0)) + ((Ex[11] * dASy_2_1_0) * dAKz_0_0_0)))) + (w20 * ((((Kx_0_1 * dASy_2_0_0) * dASz_0_1_0) + ((Ex[11] * dAKy_2_0_0) * dASz_0_1_0)) + ((Ex[11] * dASy_2_0_0) * dAKz_0_1_0)))) + (w21 * ((((Kx_0_0 * dASy_2_2_0) * dASz_0_0_0) + ((Ex[0] * dAKy_2_2_0) * dASz_0_0_0)) + ((Ex[0] * dASy_2_2_0) * dAKz_0_0_0)))) + (w22 * ((((Kx_0_0 * dASy_2_1_0) * dASz_0_1_0) + ((Ex[0] * dAKy_2_1_0) * dASz_0_1_0)) + ((Ex[0] * dASy_2_1_0) * dAKz_0_1_0)))) + (w23 * ((((Kx_0_0 * dASy_2_0_0) * dASz_0_2_0) + ((Ex[0] * dAKy_2_0_0) * dASz_0_2_0)) + ((Ex[0] * dASy_2_0_0) * dAKz_0_2_0)))) + (w24 * ((((Kx_0_2 * dASy_1_0_0) * dASz_1_0_0) + ((Ex[22] * dAKy_1_0_0) * dASz_1_0_0)) + ((Ex[22] * dASy_1_0_0) * dAKz_1_0_0)))) + (w25 * ((((Kx_0_1 * dASy_1_1_0) * dASz_1_0_0) + ((Ex[11] * dAKy_1_1_0) * dASz_1_0_0)) + ((Ex[11] * dASy_1_1_0) * dAKz_1_0_0)))) + (w26 * ((((Kx_0_1 * dASy_1_0_0) * dASz_1_1_0) + ((Ex[11] * dAKy_1_0_0) * dASz_1_1_0)) + ((Ex[11] * dASy_1_0_0) * dAKz_1_1_0)))) + (w27 * ((((Kx_0_0 * dASy_1_2_0) * dASz_1_0_0) + ((Ex[0] * dAKy_1_2_0) * dASz_1_0_0)) + ((Ex[0] * dASy_1_2_0) * dAKz_1_0_0)))) + (w28 * ((((Kx_0_0 * dASy_1_1_0) * dASz_1_1_0) + ((Ex[0] * dAKy_1_1_0) * dASz_1_1_0)) + ((Ex[0] * dASy_1_1_0) * dAKz_1_1_0)))) + (w29 * ((((Kx_0_0 * dASy_1_0_0) * dASz_1_2_0) + ((Ex[0] * dAKy_1_0_0) * dASz_1_2_0)) + ((Ex[0] * dASy_1_0_0) * dAKz_1_2_0)))) + (w30 * ((((Kx_0_2 * dASy_0_0_0) * dASz_2_0_0) + ((Ex[22] * dAKy_0_0_0) * dASz_2_0_0)) + ((Ex[22] * dASy_0_0_0) * dAKz_2_0_0)))) + (w31 * ((((Kx_0_1 * dASy_0_1_0) * dASz_2_0_0) + ((Ex[11] * dAKy_0_1_0) * dASz_2_0_0)) + ((Ex[11] * dASy_0_1_0) * dAKz_2_0_0)))) + (w32 * ((((Kx_0_1 * dASy_0_0_0) * dASz_2_1_0) + ((Ex[11] * dAKy_0_0_0) * dASz_2_1_0)) + ((Ex[11] * dASy_0_0_0) * dAKz_2_1_0)))) + (w33 * ((((Kx_0_0 * dASy_0_2_0) * dASz_2_0_0) + ((Ex[0] * dAKy_0_2_0) * dASz_2_0_0)) + ((Ex[0] * dASy_0_2_0) * dAKz_2_0_0)))) + (w34 * ((((Kx_0_0 * dASy_0_1_0) * dASz_2_1_0) + ((Ex[0] * dAKy_0_1_0) * dASz_2_1_0)) + ((Ex[0] * dASy_0_1_0) * dAKz_2_1_0)))) + (w35 * ((((Kx_0_0 * dASy_0_0_0) * dASz_2_2_0) + ((Ex[0] * dAKy_0_0_0) * dASz_2_2_0)) + ((Ex[0] * dASy_0_0_0) * dAKz_2_2_0))));
-        double hAA_22 = ((((((((((((((((((((((((((((((((((((w0 * ((((Kx_2_2 * Ey[0]) * dAASz_0_0_0) + ((Ex[176] * Ky_0_0) * dAASz_0_0_0)) + ((Ex[176] * Ey[0]) * dAAKz_0_0_0))) + (w1 * ((((Kx_2_1 * Ey[11]) * dAASz_0_0_0) + ((Ex[165] * Ky_0_1) * dAASz_0_0_0)) + ((Ex[165] * Ey[11]) * dAAKz_0_0_0)))) + (w2 * ((((Kx_2_1 * Ey[0]) * dAASz_0_1_0) + ((Ex[165] * Ky_0_0) * dAASz_0_1_0)) + ((Ex[165] * Ey[0]) * dAAKz_0_1_0)))) + (w3 * ((((Kx_2_0 * Ey[22]) * dAASz_0_0_0) + ((Ex[154] * Ky_0_2) * dAASz_0_0_0)) + ((Ex[154] * Ey[22]) * dAAKz_0_0_0)))) + (w4 * ((((Kx_2_0 * Ey[11]) * dAASz_0_1_0) + ((Ex[154] * Ky_0_1) * dAASz_0_1_0)) + ((Ex[154] * Ey[11]) * dAAKz_0_1_0)))) + (w5 * ((((Kx_2_0 * Ey[0]) * dAASz_0_2_0) + ((Ex[154] * Ky_0_0) * dAASz_0_2_0)) + ((Ex[154] * Ey[0]) * dAAKz_0_2_0)))) + (w6 * ((((Kx_1_2 * Ey[77]) * dAASz_0_0_0) + ((Ex[99] * Ky_1_0) * dAASz_0_0_0)) + ((Ex[99] * Ey[77]) * dAAKz_0_0_0)))) + (w7 * ((((Kx_1_1 * Ey[88]) * dAASz_0_0_0) + ((Ex[88] * Ky_1_1) * dAASz_0_0_0)) + ((Ex[88] * Ey[88]) * dAAKz_0_0_0)))) + (w8 * ((((Kx_1_1 * Ey[77]) * dAASz_0_1_0) + ((Ex[88] * Ky_1_0) * dAASz_0_1_0)) + ((Ex[88] * Ey[77]) * dAAKz_0_1_0)))) + (w9 * ((((Kx_1_0 * Ey[99]) * dAASz_0_0_0) + ((Ex[77] * Ky_1_2) * dAASz_0_0_0)) + ((Ex[77] * Ey[99]) * dAAKz_0_0_0)))) + (w10 * ((((Kx_1_0 * Ey[88]) * dAASz_0_1_0) + ((Ex[77] * Ky_1_1) * dAASz_0_1_0)) + ((Ex[77] * Ey[88]) * dAAKz_0_1_0)))) + (w11 * ((((Kx_1_0 * Ey[77]) * dAASz_0_2_0) + ((Ex[77] * Ky_1_0) * dAASz_0_2_0)) + ((Ex[77] * Ey[77]) * dAAKz_0_2_0)))) + (w12 * ((((Kx_1_2 * Ey[0]) * dAASz_1_0_0) + ((Ex[99] * Ky_0_0) * dAASz_1_0_0)) + ((Ex[99] * Ey[0]) * dAAKz_1_0_0)))) + (w13 * ((((Kx_1_1 * Ey[11]) * dAASz_1_0_0) + ((Ex[88] * Ky_0_1) * dAASz_1_0_0)) + ((Ex[88] * Ey[11]) * dAAKz_1_0_0)))) + (w14 * ((((Kx_1_1 * Ey[0]) * dAASz_1_1_0) + ((Ex[88] * Ky_0_0) * dAASz_1_1_0)) + ((Ex[88] * Ey[0]) * dAAKz_1_1_0)))) + (w15 * ((((Kx_1_0 * Ey[22]) * dAASz_1_0_0) + ((Ex[77] * Ky_0_2) * dAASz_1_0_0)) + ((Ex[77] * Ey[22]) * dAAKz_1_0_0)))) + (w16 * ((((Kx_1_0 * Ey[11]) * dAASz_1_1_0) + ((Ex[77] * Ky_0_1) * dAASz_1_1_0)) + ((Ex[77] * Ey[11]) * dAAKz_1_1_0)))) + (w17 * ((((Kx_1_0 * Ey[0]) * dAASz_1_2_0) + ((Ex[77] * Ky_0_0) * dAASz_1_2_0)) + ((Ex[77] * Ey[0]) * dAAKz_1_2_0)))) + (w18 * ((((Kx_0_2 * Ey[154]) * dAASz_0_0_0) + ((Ex[22] * Ky_2_0) * dAASz_0_0_0)) + ((Ex[22] * Ey[154]) * dAAKz_0_0_0)))) + (w19 * ((((Kx_0_1 * Ey[165]) * dAASz_0_0_0) + ((Ex[11] * Ky_2_1) * dAASz_0_0_0)) + ((Ex[11] * Ey[165]) * dAAKz_0_0_0)))) + (w20 * ((((Kx_0_1 * Ey[154]) * dAASz_0_1_0) + ((Ex[11] * Ky_2_0) * dAASz_0_1_0)) + ((Ex[11] * Ey[154]) * dAAKz_0_1_0)))) + (w21 * ((((Kx_0_0 * Ey[176]) * dAASz_0_0_0) + ((Ex[0] * Ky_2_2) * dAASz_0_0_0)) + ((Ex[0] * Ey[176]) * dAAKz_0_0_0)))) + (w22 * ((((Kx_0_0 * Ey[165]) * dAASz_0_1_0) + ((Ex[0] * Ky_2_1) * dAASz_0_1_0)) + ((Ex[0] * Ey[165]) * dAAKz_0_1_0)))) + (w23 * ((((Kx_0_0 * Ey[154]) * dAASz_0_2_0) + ((Ex[0] * Ky_2_0) * dAASz_0_2_0)) + ((Ex[0] * Ey[154]) * dAAKz_0_2_0)))) + (w24 * ((((Kx_0_2 * Ey[77]) * dAASz_1_0_0) + ((Ex[22] * Ky_1_0) * dAASz_1_0_0)) + ((Ex[22] * Ey[77]) * dAAKz_1_0_0)))) + (w25 * ((((Kx_0_1 * Ey[88]) * dAASz_1_0_0) + ((Ex[11] * Ky_1_1) * dAASz_1_0_0)) + ((Ex[11] * Ey[88]) * dAAKz_1_0_0)))) + (w26 * ((((Kx_0_1 * Ey[77]) * dAASz_1_1_0) + ((Ex[11] * Ky_1_0) * dAASz_1_1_0)) + ((Ex[11] * Ey[77]) * dAAKz_1_1_0)))) + (w27 * ((((Kx_0_0 * Ey[99]) * dAASz_1_0_0) + ((Ex[0] * Ky_1_2) * dAASz_1_0_0)) + ((Ex[0] * Ey[99]) * dAAKz_1_0_0)))) + (w28 * ((((Kx_0_0 * Ey[88]) * dAASz_1_1_0) + ((Ex[0] * Ky_1_1) * dAASz_1_1_0)) + ((Ex[0] * Ey[88]) * dAAKz_1_1_0)))) + (w29 * ((((Kx_0_0 * Ey[77]) * dAASz_1_2_0) + ((Ex[0] * Ky_1_0) * dAASz_1_2_0)) + ((Ex[0] * Ey[77]) * dAAKz_1_2_0)))) + (w30 * ((((Kx_0_2 * Ey[0]) * dAASz_2_0_0) + ((Ex[22] * Ky_0_0) * dAASz_2_0_0)) + ((Ex[22] * Ey[0]) * dAAKz_2_0_0)))) + (w31 * ((((Kx_0_1 * Ey[11]) * dAASz_2_0_0) + ((Ex[11] * Ky_0_1) * dAASz_2_0_0)) + ((Ex[11] * Ey[11]) * dAAKz_2_0_0)))) + (w32 * ((((Kx_0_1 * Ey[0]) * dAASz_2_1_0) + ((Ex[11] * Ky_0_0) * dAASz_2_1_0)) + ((Ex[11] * Ey[0]) * dAAKz_2_1_0)))) + (w33 * ((((Kx_0_0 * Ey[22]) * dAASz_2_0_0) + ((Ex[0] * Ky_0_2) * dAASz_2_0_0)) + ((Ex[0] * Ey[22]) * dAAKz_2_0_0)))) + (w34 * ((((Kx_0_0 * Ey[11]) * dAASz_2_1_0) + ((Ex[0] * Ky_0_1) * dAASz_2_1_0)) + ((Ex[0] * Ey[11]) * dAAKz_2_1_0)))) + (w35 * ((((Kx_0_0 * Ey[0]) * dAASz_2_2_0) + ((Ex[0] * Ky_0_0) * dAASz_2_2_0)) + ((Ex[0] * Ey[0]) * dAAKz_2_2_0))));
-        double hBB_00 = ((((((((((((((((((((((((((((((((((((w0 * ((((dBBKx_2_2_0 * Ey[0]) * Ez[0]) + ((dBBSx_2_2_0 * Ky_0_0) * Ez[0])) + ((dBBSx_2_2_0 * Ey[0]) * Kz_0_0))) + (w1 * ((((dBBKx_2_1_0 * Ey[11]) * Ez[0]) + ((dBBSx_2_1_0 * Ky_0_1) * Ez[0])) + ((dBBSx_2_1_0 * Ey[11]) * Kz_0_0)))) + (w2 * ((((dBBKx_2_1_0 * Ey[0]) * Ez[11]) + ((dBBSx_2_1_0 * Ky_0_0) * Ez[11])) + ((dBBSx_2_1_0 * Ey[0]) * Kz_0_1)))) + (w3 * ((((dBBKx_2_0_0 * Ey[22]) * Ez[0]) + ((dBBSx_2_0_0 * Ky_0_2) * Ez[0])) + ((dBBSx_2_0_0 * Ey[22]) * Kz_0_0)))) + (w4 * ((((dBBKx_2_0_0 * Ey[11]) * Ez[11]) + ((dBBSx_2_0_0 * Ky_0_1) * Ez[11])) + ((dBBSx_2_0_0 * Ey[11]) * Kz_0_1)))) + (w5 * ((((dBBKx_2_0_0 * Ey[0]) * Ez[22]) + ((dBBSx_2_0_0 * Ky_0_0) * Ez[22])) + ((dBBSx_2_0_0 * Ey[0]) * Kz_0_2)))) + (w6 * ((((dBBKx_1_2_0 * Ey[77]) * Ez[0]) + ((dBBSx_1_2_0 * Ky_1_0) * Ez[0])) + ((dBBSx_1_2_0 * Ey[77]) * Kz_0_0)))) + (w7 * ((((dBBKx_1_1_0 * Ey[88]) * Ez[0]) + ((dBBSx_1_1_0 * Ky_1_1) * Ez[0])) + ((dBBSx_1_1_0 * Ey[88]) * Kz_0_0)))) + (w8 * ((((dBBKx_1_1_0 * Ey[77]) * Ez[11]) + ((dBBSx_1_1_0 * Ky_1_0) * Ez[11])) + ((dBBSx_1_1_0 * Ey[77]) * Kz_0_1)))) + (w9 * ((((dBBKx_1_0_0 * Ey[99]) * Ez[0]) + ((dBBSx_1_0_0 * Ky_1_2) * Ez[0])) + ((dBBSx_1_0_0 * Ey[99]) * Kz_0_0)))) + (w10 * ((((dBBKx_1_0_0 * Ey[88]) * Ez[11]) + ((dBBSx_1_0_0 * Ky_1_1) * Ez[11])) + ((dBBSx_1_0_0 * Ey[88]) * Kz_0_1)))) + (w11 * ((((dBBKx_1_0_0 * Ey[77]) * Ez[22]) + ((dBBSx_1_0_0 * Ky_1_0) * Ez[22])) + ((dBBSx_1_0_0 * Ey[77]) * Kz_0_2)))) + (w12 * ((((dBBKx_1_2_0 * Ey[0]) * Ez[77]) + ((dBBSx_1_2_0 * Ky_0_0) * Ez[77])) + ((dBBSx_1_2_0 * Ey[0]) * Kz_1_0)))) + (w13 * ((((dBBKx_1_1_0 * Ey[11]) * Ez[77]) + ((dBBSx_1_1_0 * Ky_0_1) * Ez[77])) + ((dBBSx_1_1_0 * Ey[11]) * Kz_1_0)))) + (w14 * ((((dBBKx_1_1_0 * Ey[0]) * Ez[88]) + ((dBBSx_1_1_0 * Ky_0_0) * Ez[88])) + ((dBBSx_1_1_0 * Ey[0]) * Kz_1_1)))) + (w15 * ((((dBBKx_1_0_0 * Ey[22]) * Ez[77]) + ((dBBSx_1_0_0 * Ky_0_2) * Ez[77])) + ((dBBSx_1_0_0 * Ey[22]) * Kz_1_0)))) + (w16 * ((((dBBKx_1_0_0 * Ey[11]) * Ez[88]) + ((dBBSx_1_0_0 * Ky_0_1) * Ez[88])) + ((dBBSx_1_0_0 * Ey[11]) * Kz_1_1)))) + (w17 * ((((dBBKx_1_0_0 * Ey[0]) * Ez[99]) + ((dBBSx_1_0_0 * Ky_0_0) * Ez[99])) + ((dBBSx_1_0_0 * Ey[0]) * Kz_1_2)))) + (w18 * ((((dBBKx_0_2_0 * Ey[154]) * Ez[0]) + ((dBBSx_0_2_0 * Ky_2_0) * Ez[0])) + ((dBBSx_0_2_0 * Ey[154]) * Kz_0_0)))) + (w19 * ((((dBBKx_0_1_0 * Ey[165]) * Ez[0]) + ((dBBSx_0_1_0 * Ky_2_1) * Ez[0])) + ((dBBSx_0_1_0 * Ey[165]) * Kz_0_0)))) + (w20 * ((((dBBKx_0_1_0 * Ey[154]) * Ez[11]) + ((dBBSx_0_1_0 * Ky_2_0) * Ez[11])) + ((dBBSx_0_1_0 * Ey[154]) * Kz_0_1)))) + (w21 * ((((dBBKx_0_0_0 * Ey[176]) * Ez[0]) + ((dBBSx_0_0_0 * Ky_2_2) * Ez[0])) + ((dBBSx_0_0_0 * Ey[176]) * Kz_0_0)))) + (w22 * ((((dBBKx_0_0_0 * Ey[165]) * Ez[11]) + ((dBBSx_0_0_0 * Ky_2_1) * Ez[11])) + ((dBBSx_0_0_0 * Ey[165]) * Kz_0_1)))) + (w23 * ((((dBBKx_0_0_0 * Ey[154]) * Ez[22]) + ((dBBSx_0_0_0 * Ky_2_0) * Ez[22])) + ((dBBSx_0_0_0 * Ey[154]) * Kz_0_2)))) + (w24 * ((((dBBKx_0_2_0 * Ey[77]) * Ez[77]) + ((dBBSx_0_2_0 * Ky_1_0) * Ez[77])) + ((dBBSx_0_2_0 * Ey[77]) * Kz_1_0)))) + (w25 * ((((dBBKx_0_1_0 * Ey[88]) * Ez[77]) + ((dBBSx_0_1_0 * Ky_1_1) * Ez[77])) + ((dBBSx_0_1_0 * Ey[88]) * Kz_1_0)))) + (w26 * ((((dBBKx_0_1_0 * Ey[77]) * Ez[88]) + ((dBBSx_0_1_0 * Ky_1_0) * Ez[88])) + ((dBBSx_0_1_0 * Ey[77]) * Kz_1_1)))) + (w27 * ((((dBBKx_0_0_0 * Ey[99]) * Ez[77]) + ((dBBSx_0_0_0 * Ky_1_2) * Ez[77])) + ((dBBSx_0_0_0 * Ey[99]) * Kz_1_0)))) + (w28 * ((((dBBKx_0_0_0 * Ey[88]) * Ez[88]) + ((dBBSx_0_0_0 * Ky_1_1) * Ez[88])) + ((dBBSx_0_0_0 * Ey[88]) * Kz_1_1)))) + (w29 * ((((dBBKx_0_0_0 * Ey[77]) * Ez[99]) + ((dBBSx_0_0_0 * Ky_1_0) * Ez[99])) + ((dBBSx_0_0_0 * Ey[77]) * Kz_1_2)))) + (w30 * ((((dBBKx_0_2_0 * Ey[0]) * Ez[154]) + ((dBBSx_0_2_0 * Ky_0_0) * Ez[154])) + ((dBBSx_0_2_0 * Ey[0]) * Kz_2_0)))) + (w31 * ((((dBBKx_0_1_0 * Ey[11]) * Ez[154]) + ((dBBSx_0_1_0 * Ky_0_1) * Ez[154])) + ((dBBSx_0_1_0 * Ey[11]) * Kz_2_0)))) + (w32 * ((((dBBKx_0_1_0 * Ey[0]) * Ez[165]) + ((dBBSx_0_1_0 * Ky_0_0) * Ez[165])) + ((dBBSx_0_1_0 * Ey[0]) * Kz_2_1)))) + (w33 * ((((dBBKx_0_0_0 * Ey[22]) * Ez[154]) + ((dBBSx_0_0_0 * Ky_0_2) * Ez[154])) + ((dBBSx_0_0_0 * Ey[22]) * Kz_2_0)))) + (w34 * ((((dBBKx_0_0_0 * Ey[11]) * Ez[165]) + ((dBBSx_0_0_0 * Ky_0_1) * Ez[165])) + ((dBBSx_0_0_0 * Ey[11]) * Kz_2_1)))) + (w35 * ((((dBBKx_0_0_0 * Ey[0]) * Ez[176]) + ((dBBSx_0_0_0 * Ky_0_0) * Ez[176])) + ((dBBSx_0_0_0 * Ey[0]) * Kz_2_2))));
-        double hBB_01 = ((((((((((((((((((((((((((((((((((((w0 * ((((dBKx_2_2_0 * dBSy_0_0_0) * Ez[0]) + ((dBSx_2_2_0 * dBKy_0_0_0) * Ez[0])) + ((dBSx_2_2_0 * dBSy_0_0_0) * Kz_0_0))) + (w1 * ((((dBKx_2_1_0 * dBSy_0_1_0) * Ez[0]) + ((dBSx_2_1_0 * dBKy_0_1_0) * Ez[0])) + ((dBSx_2_1_0 * dBSy_0_1_0) * Kz_0_0)))) + (w2 * ((((dBKx_2_1_0 * dBSy_0_0_0) * Ez[11]) + ((dBSx_2_1_0 * dBKy_0_0_0) * Ez[11])) + ((dBSx_2_1_0 * dBSy_0_0_0) * Kz_0_1)))) + (w3 * ((((dBKx_2_0_0 * dBSy_0_2_0) * Ez[0]) + ((dBSx_2_0_0 * dBKy_0_2_0) * Ez[0])) + ((dBSx_2_0_0 * dBSy_0_2_0) * Kz_0_0)))) + (w4 * ((((dBKx_2_0_0 * dBSy_0_1_0) * Ez[11]) + ((dBSx_2_0_0 * dBKy_0_1_0) * Ez[11])) + ((dBSx_2_0_0 * dBSy_0_1_0) * Kz_0_1)))) + (w5 * ((((dBKx_2_0_0 * dBSy_0_0_0) * Ez[22]) + ((dBSx_2_0_0 * dBKy_0_0_0) * Ez[22])) + ((dBSx_2_0_0 * dBSy_0_0_0) * Kz_0_2)))) + (w6 * ((((dBKx_1_2_0 * dBSy_1_0_0) * Ez[0]) + ((dBSx_1_2_0 * dBKy_1_0_0) * Ez[0])) + ((dBSx_1_2_0 * dBSy_1_0_0) * Kz_0_0)))) + (w7 * ((((dBKx_1_1_0 * dBSy_1_1_0) * Ez[0]) + ((dBSx_1_1_0 * dBKy_1_1_0) * Ez[0])) + ((dBSx_1_1_0 * dBSy_1_1_0) * Kz_0_0)))) + (w8 * ((((dBKx_1_1_0 * dBSy_1_0_0) * Ez[11]) + ((dBSx_1_1_0 * dBKy_1_0_0) * Ez[11])) + ((dBSx_1_1_0 * dBSy_1_0_0) * Kz_0_1)))) + (w9 * ((((dBKx_1_0_0 * dBSy_1_2_0) * Ez[0]) + ((dBSx_1_0_0 * dBKy_1_2_0) * Ez[0])) + ((dBSx_1_0_0 * dBSy_1_2_0) * Kz_0_0)))) + (w10 * ((((dBKx_1_0_0 * dBSy_1_1_0) * Ez[11]) + ((dBSx_1_0_0 * dBKy_1_1_0) * Ez[11])) + ((dBSx_1_0_0 * dBSy_1_1_0) * Kz_0_1)))) + (w11 * ((((dBKx_1_0_0 * dBSy_1_0_0) * Ez[22]) + ((dBSx_1_0_0 * dBKy_1_0_0) * Ez[22])) + ((dBSx_1_0_0 * dBSy_1_0_0) * Kz_0_2)))) + (w12 * ((((dBKx_1_2_0 * dBSy_0_0_0) * Ez[77]) + ((dBSx_1_2_0 * dBKy_0_0_0) * Ez[77])) + ((dBSx_1_2_0 * dBSy_0_0_0) * Kz_1_0)))) + (w13 * ((((dBKx_1_1_0 * dBSy_0_1_0) * Ez[77]) + ((dBSx_1_1_0 * dBKy_0_1_0) * Ez[77])) + ((dBSx_1_1_0 * dBSy_0_1_0) * Kz_1_0)))) + (w14 * ((((dBKx_1_1_0 * dBSy_0_0_0) * Ez[88]) + ((dBSx_1_1_0 * dBKy_0_0_0) * Ez[88])) + ((dBSx_1_1_0 * dBSy_0_0_0) * Kz_1_1)))) + (w15 * ((((dBKx_1_0_0 * dBSy_0_2_0) * Ez[77]) + ((dBSx_1_0_0 * dBKy_0_2_0) * Ez[77])) + ((dBSx_1_0_0 * dBSy_0_2_0) * Kz_1_0)))) + (w16 * ((((dBKx_1_0_0 * dBSy_0_1_0) * Ez[88]) + ((dBSx_1_0_0 * dBKy_0_1_0) * Ez[88])) + ((dBSx_1_0_0 * dBSy_0_1_0) * Kz_1_1)))) + (w17 * ((((dBKx_1_0_0 * dBSy_0_0_0) * Ez[99]) + ((dBSx_1_0_0 * dBKy_0_0_0) * Ez[99])) + ((dBSx_1_0_0 * dBSy_0_0_0) * Kz_1_2)))) + (w18 * ((((dBKx_0_2_0 * dBSy_2_0_0) * Ez[0]) + ((dBSx_0_2_0 * dBKy_2_0_0) * Ez[0])) + ((dBSx_0_2_0 * dBSy_2_0_0) * Kz_0_0)))) + (w19 * ((((dBKx_0_1_0 * dBSy_2_1_0) * Ez[0]) + ((dBSx_0_1_0 * dBKy_2_1_0) * Ez[0])) + ((dBSx_0_1_0 * dBSy_2_1_0) * Kz_0_0)))) + (w20 * ((((dBKx_0_1_0 * dBSy_2_0_0) * Ez[11]) + ((dBSx_0_1_0 * dBKy_2_0_0) * Ez[11])) + ((dBSx_0_1_0 * dBSy_2_0_0) * Kz_0_1)))) + (w21 * ((((dBKx_0_0_0 * dBSy_2_2_0) * Ez[0]) + ((dBSx_0_0_0 * dBKy_2_2_0) * Ez[0])) + ((dBSx_0_0_0 * dBSy_2_2_0) * Kz_0_0)))) + (w22 * ((((dBKx_0_0_0 * dBSy_2_1_0) * Ez[11]) + ((dBSx_0_0_0 * dBKy_2_1_0) * Ez[11])) + ((dBSx_0_0_0 * dBSy_2_1_0) * Kz_0_1)))) + (w23 * ((((dBKx_0_0_0 * dBSy_2_0_0) * Ez[22]) + ((dBSx_0_0_0 * dBKy_2_0_0) * Ez[22])) + ((dBSx_0_0_0 * dBSy_2_0_0) * Kz_0_2)))) + (w24 * ((((dBKx_0_2_0 * dBSy_1_0_0) * Ez[77]) + ((dBSx_0_2_0 * dBKy_1_0_0) * Ez[77])) + ((dBSx_0_2_0 * dBSy_1_0_0) * Kz_1_0)))) + (w25 * ((((dBKx_0_1_0 * dBSy_1_1_0) * Ez[77]) + ((dBSx_0_1_0 * dBKy_1_1_0) * Ez[77])) + ((dBSx_0_1_0 * dBSy_1_1_0) * Kz_1_0)))) + (w26 * ((((dBKx_0_1_0 * dBSy_1_0_0) * Ez[88]) + ((dBSx_0_1_0 * dBKy_1_0_0) * Ez[88])) + ((dBSx_0_1_0 * dBSy_1_0_0) * Kz_1_1)))) + (w27 * ((((dBKx_0_0_0 * dBSy_1_2_0) * Ez[77]) + ((dBSx_0_0_0 * dBKy_1_2_0) * Ez[77])) + ((dBSx_0_0_0 * dBSy_1_2_0) * Kz_1_0)))) + (w28 * ((((dBKx_0_0_0 * dBSy_1_1_0) * Ez[88]) + ((dBSx_0_0_0 * dBKy_1_1_0) * Ez[88])) + ((dBSx_0_0_0 * dBSy_1_1_0) * Kz_1_1)))) + (w29 * ((((dBKx_0_0_0 * dBSy_1_0_0) * Ez[99]) + ((dBSx_0_0_0 * dBKy_1_0_0) * Ez[99])) + ((dBSx_0_0_0 * dBSy_1_0_0) * Kz_1_2)))) + (w30 * ((((dBKx_0_2_0 * dBSy_0_0_0) * Ez[154]) + ((dBSx_0_2_0 * dBKy_0_0_0) * Ez[154])) + ((dBSx_0_2_0 * dBSy_0_0_0) * Kz_2_0)))) + (w31 * ((((dBKx_0_1_0 * dBSy_0_1_0) * Ez[154]) + ((dBSx_0_1_0 * dBKy_0_1_0) * Ez[154])) + ((dBSx_0_1_0 * dBSy_0_1_0) * Kz_2_0)))) + (w32 * ((((dBKx_0_1_0 * dBSy_0_0_0) * Ez[165]) + ((dBSx_0_1_0 * dBKy_0_0_0) * Ez[165])) + ((dBSx_0_1_0 * dBSy_0_0_0) * Kz_2_1)))) + (w33 * ((((dBKx_0_0_0 * dBSy_0_2_0) * Ez[154]) + ((dBSx_0_0_0 * dBKy_0_2_0) * Ez[154])) + ((dBSx_0_0_0 * dBSy_0_2_0) * Kz_2_0)))) + (w34 * ((((dBKx_0_0_0 * dBSy_0_1_0) * Ez[165]) + ((dBSx_0_0_0 * dBKy_0_1_0) * Ez[165])) + ((dBSx_0_0_0 * dBSy_0_1_0) * Kz_2_1)))) + (w35 * ((((dBKx_0_0_0 * dBSy_0_0_0) * Ez[176]) + ((dBSx_0_0_0 * dBKy_0_0_0) * Ez[176])) + ((dBSx_0_0_0 * dBSy_0_0_0) * Kz_2_2))));
-        double hBB_02 = ((((((((((((((((((((((((((((((((((((w0 * ((((dBKx_2_2_0 * Ey[0]) * dBSz_0_0_0) + ((dBSx_2_2_0 * Ky_0_0) * dBSz_0_0_0)) + ((dBSx_2_2_0 * Ey[0]) * dBKz_0_0_0))) + (w1 * ((((dBKx_2_1_0 * Ey[11]) * dBSz_0_0_0) + ((dBSx_2_1_0 * Ky_0_1) * dBSz_0_0_0)) + ((dBSx_2_1_0 * Ey[11]) * dBKz_0_0_0)))) + (w2 * ((((dBKx_2_1_0 * Ey[0]) * dBSz_0_1_0) + ((dBSx_2_1_0 * Ky_0_0) * dBSz_0_1_0)) + ((dBSx_2_1_0 * Ey[0]) * dBKz_0_1_0)))) + (w3 * ((((dBKx_2_0_0 * Ey[22]) * dBSz_0_0_0) + ((dBSx_2_0_0 * Ky_0_2) * dBSz_0_0_0)) + ((dBSx_2_0_0 * Ey[22]) * dBKz_0_0_0)))) + (w4 * ((((dBKx_2_0_0 * Ey[11]) * dBSz_0_1_0) + ((dBSx_2_0_0 * Ky_0_1) * dBSz_0_1_0)) + ((dBSx_2_0_0 * Ey[11]) * dBKz_0_1_0)))) + (w5 * ((((dBKx_2_0_0 * Ey[0]) * dBSz_0_2_0) + ((dBSx_2_0_0 * Ky_0_0) * dBSz_0_2_0)) + ((dBSx_2_0_0 * Ey[0]) * dBKz_0_2_0)))) + (w6 * ((((dBKx_1_2_0 * Ey[77]) * dBSz_0_0_0) + ((dBSx_1_2_0 * Ky_1_0) * dBSz_0_0_0)) + ((dBSx_1_2_0 * Ey[77]) * dBKz_0_0_0)))) + (w7 * ((((dBKx_1_1_0 * Ey[88]) * dBSz_0_0_0) + ((dBSx_1_1_0 * Ky_1_1) * dBSz_0_0_0)) + ((dBSx_1_1_0 * Ey[88]) * dBKz_0_0_0)))) + (w8 * ((((dBKx_1_1_0 * Ey[77]) * dBSz_0_1_0) + ((dBSx_1_1_0 * Ky_1_0) * dBSz_0_1_0)) + ((dBSx_1_1_0 * Ey[77]) * dBKz_0_1_0)))) + (w9 * ((((dBKx_1_0_0 * Ey[99]) * dBSz_0_0_0) + ((dBSx_1_0_0 * Ky_1_2) * dBSz_0_0_0)) + ((dBSx_1_0_0 * Ey[99]) * dBKz_0_0_0)))) + (w10 * ((((dBKx_1_0_0 * Ey[88]) * dBSz_0_1_0) + ((dBSx_1_0_0 * Ky_1_1) * dBSz_0_1_0)) + ((dBSx_1_0_0 * Ey[88]) * dBKz_0_1_0)))) + (w11 * ((((dBKx_1_0_0 * Ey[77]) * dBSz_0_2_0) + ((dBSx_1_0_0 * Ky_1_0) * dBSz_0_2_0)) + ((dBSx_1_0_0 * Ey[77]) * dBKz_0_2_0)))) + (w12 * ((((dBKx_1_2_0 * Ey[0]) * dBSz_1_0_0) + ((dBSx_1_2_0 * Ky_0_0) * dBSz_1_0_0)) + ((dBSx_1_2_0 * Ey[0]) * dBKz_1_0_0)))) + (w13 * ((((dBKx_1_1_0 * Ey[11]) * dBSz_1_0_0) + ((dBSx_1_1_0 * Ky_0_1) * dBSz_1_0_0)) + ((dBSx_1_1_0 * Ey[11]) * dBKz_1_0_0)))) + (w14 * ((((dBKx_1_1_0 * Ey[0]) * dBSz_1_1_0) + ((dBSx_1_1_0 * Ky_0_0) * dBSz_1_1_0)) + ((dBSx_1_1_0 * Ey[0]) * dBKz_1_1_0)))) + (w15 * ((((dBKx_1_0_0 * Ey[22]) * dBSz_1_0_0) + ((dBSx_1_0_0 * Ky_0_2) * dBSz_1_0_0)) + ((dBSx_1_0_0 * Ey[22]) * dBKz_1_0_0)))) + (w16 * ((((dBKx_1_0_0 * Ey[11]) * dBSz_1_1_0) + ((dBSx_1_0_0 * Ky_0_1) * dBSz_1_1_0)) + ((dBSx_1_0_0 * Ey[11]) * dBKz_1_1_0)))) + (w17 * ((((dBKx_1_0_0 * Ey[0]) * dBSz_1_2_0) + ((dBSx_1_0_0 * Ky_0_0) * dBSz_1_2_0)) + ((dBSx_1_0_0 * Ey[0]) * dBKz_1_2_0)))) + (w18 * ((((dBKx_0_2_0 * Ey[154]) * dBSz_0_0_0) + ((dBSx_0_2_0 * Ky_2_0) * dBSz_0_0_0)) + ((dBSx_0_2_0 * Ey[154]) * dBKz_0_0_0)))) + (w19 * ((((dBKx_0_1_0 * Ey[165]) * dBSz_0_0_0) + ((dBSx_0_1_0 * Ky_2_1) * dBSz_0_0_0)) + ((dBSx_0_1_0 * Ey[165]) * dBKz_0_0_0)))) + (w20 * ((((dBKx_0_1_0 * Ey[154]) * dBSz_0_1_0) + ((dBSx_0_1_0 * Ky_2_0) * dBSz_0_1_0)) + ((dBSx_0_1_0 * Ey[154]) * dBKz_0_1_0)))) + (w21 * ((((dBKx_0_0_0 * Ey[176]) * dBSz_0_0_0) + ((dBSx_0_0_0 * Ky_2_2) * dBSz_0_0_0)) + ((dBSx_0_0_0 * Ey[176]) * dBKz_0_0_0)))) + (w22 * ((((dBKx_0_0_0 * Ey[165]) * dBSz_0_1_0) + ((dBSx_0_0_0 * Ky_2_1) * dBSz_0_1_0)) + ((dBSx_0_0_0 * Ey[165]) * dBKz_0_1_0)))) + (w23 * ((((dBKx_0_0_0 * Ey[154]) * dBSz_0_2_0) + ((dBSx_0_0_0 * Ky_2_0) * dBSz_0_2_0)) + ((dBSx_0_0_0 * Ey[154]) * dBKz_0_2_0)))) + (w24 * ((((dBKx_0_2_0 * Ey[77]) * dBSz_1_0_0) + ((dBSx_0_2_0 * Ky_1_0) * dBSz_1_0_0)) + ((dBSx_0_2_0 * Ey[77]) * dBKz_1_0_0)))) + (w25 * ((((dBKx_0_1_0 * Ey[88]) * dBSz_1_0_0) + ((dBSx_0_1_0 * Ky_1_1) * dBSz_1_0_0)) + ((dBSx_0_1_0 * Ey[88]) * dBKz_1_0_0)))) + (w26 * ((((dBKx_0_1_0 * Ey[77]) * dBSz_1_1_0) + ((dBSx_0_1_0 * Ky_1_0) * dBSz_1_1_0)) + ((dBSx_0_1_0 * Ey[77]) * dBKz_1_1_0)))) + (w27 * ((((dBKx_0_0_0 * Ey[99]) * dBSz_1_0_0) + ((dBSx_0_0_0 * Ky_1_2) * dBSz_1_0_0)) + ((dBSx_0_0_0 * Ey[99]) * dBKz_1_0_0)))) + (w28 * ((((dBKx_0_0_0 * Ey[88]) * dBSz_1_1_0) + ((dBSx_0_0_0 * Ky_1_1) * dBSz_1_1_0)) + ((dBSx_0_0_0 * Ey[88]) * dBKz_1_1_0)))) + (w29 * ((((dBKx_0_0_0 * Ey[77]) * dBSz_1_2_0) + ((dBSx_0_0_0 * Ky_1_0) * dBSz_1_2_0)) + ((dBSx_0_0_0 * Ey[77]) * dBKz_1_2_0)))) + (w30 * ((((dBKx_0_2_0 * Ey[0]) * dBSz_2_0_0) + ((dBSx_0_2_0 * Ky_0_0) * dBSz_2_0_0)) + ((dBSx_0_2_0 * Ey[0]) * dBKz_2_0_0)))) + (w31 * ((((dBKx_0_1_0 * Ey[11]) * dBSz_2_0_0) + ((dBSx_0_1_0 * Ky_0_1) * dBSz_2_0_0)) + ((dBSx_0_1_0 * Ey[11]) * dBKz_2_0_0)))) + (w32 * ((((dBKx_0_1_0 * Ey[0]) * dBSz_2_1_0) + ((dBSx_0_1_0 * Ky_0_0) * dBSz_2_1_0)) + ((dBSx_0_1_0 * Ey[0]) * dBKz_2_1_0)))) + (w33 * ((((dBKx_0_0_0 * Ey[22]) * dBSz_2_0_0) + ((dBSx_0_0_0 * Ky_0_2) * dBSz_2_0_0)) + ((dBSx_0_0_0 * Ey[22]) * dBKz_2_0_0)))) + (w34 * ((((dBKx_0_0_0 * Ey[11]) * dBSz_2_1_0) + ((dBSx_0_0_0 * Ky_0_1) * dBSz_2_1_0)) + ((dBSx_0_0_0 * Ey[11]) * dBKz_2_1_0)))) + (w35 * ((((dBKx_0_0_0 * Ey[0]) * dBSz_2_2_0) + ((dBSx_0_0_0 * Ky_0_0) * dBSz_2_2_0)) + ((dBSx_0_0_0 * Ey[0]) * dBKz_2_2_0))));
-        double hBB_11 = ((((((((((((((((((((((((((((((((((((w0 * ((((Kx_2_2 * dBBSy_0_0_0) * Ez[0]) + ((Ex[176] * dBBKy_0_0_0) * Ez[0])) + ((Ex[176] * dBBSy_0_0_0) * Kz_0_0))) + (w1 * ((((Kx_2_1 * dBBSy_0_1_0) * Ez[0]) + ((Ex[165] * dBBKy_0_1_0) * Ez[0])) + ((Ex[165] * dBBSy_0_1_0) * Kz_0_0)))) + (w2 * ((((Kx_2_1 * dBBSy_0_0_0) * Ez[11]) + ((Ex[165] * dBBKy_0_0_0) * Ez[11])) + ((Ex[165] * dBBSy_0_0_0) * Kz_0_1)))) + (w3 * ((((Kx_2_0 * dBBSy_0_2_0) * Ez[0]) + ((Ex[154] * dBBKy_0_2_0) * Ez[0])) + ((Ex[154] * dBBSy_0_2_0) * Kz_0_0)))) + (w4 * ((((Kx_2_0 * dBBSy_0_1_0) * Ez[11]) + ((Ex[154] * dBBKy_0_1_0) * Ez[11])) + ((Ex[154] * dBBSy_0_1_0) * Kz_0_1)))) + (w5 * ((((Kx_2_0 * dBBSy_0_0_0) * Ez[22]) + ((Ex[154] * dBBKy_0_0_0) * Ez[22])) + ((Ex[154] * dBBSy_0_0_0) * Kz_0_2)))) + (w6 * ((((Kx_1_2 * dBBSy_1_0_0) * Ez[0]) + ((Ex[99] * dBBKy_1_0_0) * Ez[0])) + ((Ex[99] * dBBSy_1_0_0) * Kz_0_0)))) + (w7 * ((((Kx_1_1 * dBBSy_1_1_0) * Ez[0]) + ((Ex[88] * dBBKy_1_1_0) * Ez[0])) + ((Ex[88] * dBBSy_1_1_0) * Kz_0_0)))) + (w8 * ((((Kx_1_1 * dBBSy_1_0_0) * Ez[11]) + ((Ex[88] * dBBKy_1_0_0) * Ez[11])) + ((Ex[88] * dBBSy_1_0_0) * Kz_0_1)))) + (w9 * ((((Kx_1_0 * dBBSy_1_2_0) * Ez[0]) + ((Ex[77] * dBBKy_1_2_0) * Ez[0])) + ((Ex[77] * dBBSy_1_2_0) * Kz_0_0)))) + (w10 * ((((Kx_1_0 * dBBSy_1_1_0) * Ez[11]) + ((Ex[77] * dBBKy_1_1_0) * Ez[11])) + ((Ex[77] * dBBSy_1_1_0) * Kz_0_1)))) + (w11 * ((((Kx_1_0 * dBBSy_1_0_0) * Ez[22]) + ((Ex[77] * dBBKy_1_0_0) * Ez[22])) + ((Ex[77] * dBBSy_1_0_0) * Kz_0_2)))) + (w12 * ((((Kx_1_2 * dBBSy_0_0_0) * Ez[77]) + ((Ex[99] * dBBKy_0_0_0) * Ez[77])) + ((Ex[99] * dBBSy_0_0_0) * Kz_1_0)))) + (w13 * ((((Kx_1_1 * dBBSy_0_1_0) * Ez[77]) + ((Ex[88] * dBBKy_0_1_0) * Ez[77])) + ((Ex[88] * dBBSy_0_1_0) * Kz_1_0)))) + (w14 * ((((Kx_1_1 * dBBSy_0_0_0) * Ez[88]) + ((Ex[88] * dBBKy_0_0_0) * Ez[88])) + ((Ex[88] * dBBSy_0_0_0) * Kz_1_1)))) + (w15 * ((((Kx_1_0 * dBBSy_0_2_0) * Ez[77]) + ((Ex[77] * dBBKy_0_2_0) * Ez[77])) + ((Ex[77] * dBBSy_0_2_0) * Kz_1_0)))) + (w16 * ((((Kx_1_0 * dBBSy_0_1_0) * Ez[88]) + ((Ex[77] * dBBKy_0_1_0) * Ez[88])) + ((Ex[77] * dBBSy_0_1_0) * Kz_1_1)))) + (w17 * ((((Kx_1_0 * dBBSy_0_0_0) * Ez[99]) + ((Ex[77] * dBBKy_0_0_0) * Ez[99])) + ((Ex[77] * dBBSy_0_0_0) * Kz_1_2)))) + (w18 * ((((Kx_0_2 * dBBSy_2_0_0) * Ez[0]) + ((Ex[22] * dBBKy_2_0_0) * Ez[0])) + ((Ex[22] * dBBSy_2_0_0) * Kz_0_0)))) + (w19 * ((((Kx_0_1 * dBBSy_2_1_0) * Ez[0]) + ((Ex[11] * dBBKy_2_1_0) * Ez[0])) + ((Ex[11] * dBBSy_2_1_0) * Kz_0_0)))) + (w20 * ((((Kx_0_1 * dBBSy_2_0_0) * Ez[11]) + ((Ex[11] * dBBKy_2_0_0) * Ez[11])) + ((Ex[11] * dBBSy_2_0_0) * Kz_0_1)))) + (w21 * ((((Kx_0_0 * dBBSy_2_2_0) * Ez[0]) + ((Ex[0] * dBBKy_2_2_0) * Ez[0])) + ((Ex[0] * dBBSy_2_2_0) * Kz_0_0)))) + (w22 * ((((Kx_0_0 * dBBSy_2_1_0) * Ez[11]) + ((Ex[0] * dBBKy_2_1_0) * Ez[11])) + ((Ex[0] * dBBSy_2_1_0) * Kz_0_1)))) + (w23 * ((((Kx_0_0 * dBBSy_2_0_0) * Ez[22]) + ((Ex[0] * dBBKy_2_0_0) * Ez[22])) + ((Ex[0] * dBBSy_2_0_0) * Kz_0_2)))) + (w24 * ((((Kx_0_2 * dBBSy_1_0_0) * Ez[77]) + ((Ex[22] * dBBKy_1_0_0) * Ez[77])) + ((Ex[22] * dBBSy_1_0_0) * Kz_1_0)))) + (w25 * ((((Kx_0_1 * dBBSy_1_1_0) * Ez[77]) + ((Ex[11] * dBBKy_1_1_0) * Ez[77])) + ((Ex[11] * dBBSy_1_1_0) * Kz_1_0)))) + (w26 * ((((Kx_0_1 * dBBSy_1_0_0) * Ez[88]) + ((Ex[11] * dBBKy_1_0_0) * Ez[88])) + ((Ex[11] * dBBSy_1_0_0) * Kz_1_1)))) + (w27 * ((((Kx_0_0 * dBBSy_1_2_0) * Ez[77]) + ((Ex[0] * dBBKy_1_2_0) * Ez[77])) + ((Ex[0] * dBBSy_1_2_0) * Kz_1_0)))) + (w28 * ((((Kx_0_0 * dBBSy_1_1_0) * Ez[88]) + ((Ex[0] * dBBKy_1_1_0) * Ez[88])) + ((Ex[0] * dBBSy_1_1_0) * Kz_1_1)))) + (w29 * ((((Kx_0_0 * dBBSy_1_0_0) * Ez[99]) + ((Ex[0] * dBBKy_1_0_0) * Ez[99])) + ((Ex[0] * dBBSy_1_0_0) * Kz_1_2)))) + (w30 * ((((Kx_0_2 * dBBSy_0_0_0) * Ez[154]) + ((Ex[22] * dBBKy_0_0_0) * Ez[154])) + ((Ex[22] * dBBSy_0_0_0) * Kz_2_0)))) + (w31 * ((((Kx_0_1 * dBBSy_0_1_0) * Ez[154]) + ((Ex[11] * dBBKy_0_1_0) * Ez[154])) + ((Ex[11] * dBBSy_0_1_0) * Kz_2_0)))) + (w32 * ((((Kx_0_1 * dBBSy_0_0_0) * Ez[165]) + ((Ex[11] * dBBKy_0_0_0) * Ez[165])) + ((Ex[11] * dBBSy_0_0_0) * Kz_2_1)))) + (w33 * ((((Kx_0_0 * dBBSy_0_2_0) * Ez[154]) + ((Ex[0] * dBBKy_0_2_0) * Ez[154])) + ((Ex[0] * dBBSy_0_2_0) * Kz_2_0)))) + (w34 * ((((Kx_0_0 * dBBSy_0_1_0) * Ez[165]) + ((Ex[0] * dBBKy_0_1_0) * Ez[165])) + ((Ex[0] * dBBSy_0_1_0) * Kz_2_1)))) + (w35 * ((((Kx_0_0 * dBBSy_0_0_0) * Ez[176]) + ((Ex[0] * dBBKy_0_0_0) * Ez[176])) + ((Ex[0] * dBBSy_0_0_0) * Kz_2_2))));
-        double hBB_12 = ((((((((((((((((((((((((((((((((((((w0 * ((((Kx_2_2 * dBSy_0_0_0) * dBSz_0_0_0) + ((Ex[176] * dBKy_0_0_0) * dBSz_0_0_0)) + ((Ex[176] * dBSy_0_0_0) * dBKz_0_0_0))) + (w1 * ((((Kx_2_1 * dBSy_0_1_0) * dBSz_0_0_0) + ((Ex[165] * dBKy_0_1_0) * dBSz_0_0_0)) + ((Ex[165] * dBSy_0_1_0) * dBKz_0_0_0)))) + (w2 * ((((Kx_2_1 * dBSy_0_0_0) * dBSz_0_1_0) + ((Ex[165] * dBKy_0_0_0) * dBSz_0_1_0)) + ((Ex[165] * dBSy_0_0_0) * dBKz_0_1_0)))) + (w3 * ((((Kx_2_0 * dBSy_0_2_0) * dBSz_0_0_0) + ((Ex[154] * dBKy_0_2_0) * dBSz_0_0_0)) + ((Ex[154] * dBSy_0_2_0) * dBKz_0_0_0)))) + (w4 * ((((Kx_2_0 * dBSy_0_1_0) * dBSz_0_1_0) + ((Ex[154] * dBKy_0_1_0) * dBSz_0_1_0)) + ((Ex[154] * dBSy_0_1_0) * dBKz_0_1_0)))) + (w5 * ((((Kx_2_0 * dBSy_0_0_0) * dBSz_0_2_0) + ((Ex[154] * dBKy_0_0_0) * dBSz_0_2_0)) + ((Ex[154] * dBSy_0_0_0) * dBKz_0_2_0)))) + (w6 * ((((Kx_1_2 * dBSy_1_0_0) * dBSz_0_0_0) + ((Ex[99] * dBKy_1_0_0) * dBSz_0_0_0)) + ((Ex[99] * dBSy_1_0_0) * dBKz_0_0_0)))) + (w7 * ((((Kx_1_1 * dBSy_1_1_0) * dBSz_0_0_0) + ((Ex[88] * dBKy_1_1_0) * dBSz_0_0_0)) + ((Ex[88] * dBSy_1_1_0) * dBKz_0_0_0)))) + (w8 * ((((Kx_1_1 * dBSy_1_0_0) * dBSz_0_1_0) + ((Ex[88] * dBKy_1_0_0) * dBSz_0_1_0)) + ((Ex[88] * dBSy_1_0_0) * dBKz_0_1_0)))) + (w9 * ((((Kx_1_0 * dBSy_1_2_0) * dBSz_0_0_0) + ((Ex[77] * dBKy_1_2_0) * dBSz_0_0_0)) + ((Ex[77] * dBSy_1_2_0) * dBKz_0_0_0)))) + (w10 * ((((Kx_1_0 * dBSy_1_1_0) * dBSz_0_1_0) + ((Ex[77] * dBKy_1_1_0) * dBSz_0_1_0)) + ((Ex[77] * dBSy_1_1_0) * dBKz_0_1_0)))) + (w11 * ((((Kx_1_0 * dBSy_1_0_0) * dBSz_0_2_0) + ((Ex[77] * dBKy_1_0_0) * dBSz_0_2_0)) + ((Ex[77] * dBSy_1_0_0) * dBKz_0_2_0)))) + (w12 * ((((Kx_1_2 * dBSy_0_0_0) * dBSz_1_0_0) + ((Ex[99] * dBKy_0_0_0) * dBSz_1_0_0)) + ((Ex[99] * dBSy_0_0_0) * dBKz_1_0_0)))) + (w13 * ((((Kx_1_1 * dBSy_0_1_0) * dBSz_1_0_0) + ((Ex[88] * dBKy_0_1_0) * dBSz_1_0_0)) + ((Ex[88] * dBSy_0_1_0) * dBKz_1_0_0)))) + (w14 * ((((Kx_1_1 * dBSy_0_0_0) * dBSz_1_1_0) + ((Ex[88] * dBKy_0_0_0) * dBSz_1_1_0)) + ((Ex[88] * dBSy_0_0_0) * dBKz_1_1_0)))) + (w15 * ((((Kx_1_0 * dBSy_0_2_0) * dBSz_1_0_0) + ((Ex[77] * dBKy_0_2_0) * dBSz_1_0_0)) + ((Ex[77] * dBSy_0_2_0) * dBKz_1_0_0)))) + (w16 * ((((Kx_1_0 * dBSy_0_1_0) * dBSz_1_1_0) + ((Ex[77] * dBKy_0_1_0) * dBSz_1_1_0)) + ((Ex[77] * dBSy_0_1_0) * dBKz_1_1_0)))) + (w17 * ((((Kx_1_0 * dBSy_0_0_0) * dBSz_1_2_0) + ((Ex[77] * dBKy_0_0_0) * dBSz_1_2_0)) + ((Ex[77] * dBSy_0_0_0) * dBKz_1_2_0)))) + (w18 * ((((Kx_0_2 * dBSy_2_0_0) * dBSz_0_0_0) + ((Ex[22] * dBKy_2_0_0) * dBSz_0_0_0)) + ((Ex[22] * dBSy_2_0_0) * dBKz_0_0_0)))) + (w19 * ((((Kx_0_1 * dBSy_2_1_0) * dBSz_0_0_0) + ((Ex[11] * dBKy_2_1_0) * dBSz_0_0_0)) + ((Ex[11] * dBSy_2_1_0) * dBKz_0_0_0)))) + (w20 * ((((Kx_0_1 * dBSy_2_0_0) * dBSz_0_1_0) + ((Ex[11] * dBKy_2_0_0) * dBSz_0_1_0)) + ((Ex[11] * dBSy_2_0_0) * dBKz_0_1_0)))) + (w21 * ((((Kx_0_0 * dBSy_2_2_0) * dBSz_0_0_0) + ((Ex[0] * dBKy_2_2_0) * dBSz_0_0_0)) + ((Ex[0] * dBSy_2_2_0) * dBKz_0_0_0)))) + (w22 * ((((Kx_0_0 * dBSy_2_1_0) * dBSz_0_1_0) + ((Ex[0] * dBKy_2_1_0) * dBSz_0_1_0)) + ((Ex[0] * dBSy_2_1_0) * dBKz_0_1_0)))) + (w23 * ((((Kx_0_0 * dBSy_2_0_0) * dBSz_0_2_0) + ((Ex[0] * dBKy_2_0_0) * dBSz_0_2_0)) + ((Ex[0] * dBSy_2_0_0) * dBKz_0_2_0)))) + (w24 * ((((Kx_0_2 * dBSy_1_0_0) * dBSz_1_0_0) + ((Ex[22] * dBKy_1_0_0) * dBSz_1_0_0)) + ((Ex[22] * dBSy_1_0_0) * dBKz_1_0_0)))) + (w25 * ((((Kx_0_1 * dBSy_1_1_0) * dBSz_1_0_0) + ((Ex[11] * dBKy_1_1_0) * dBSz_1_0_0)) + ((Ex[11] * dBSy_1_1_0) * dBKz_1_0_0)))) + (w26 * ((((Kx_0_1 * dBSy_1_0_0) * dBSz_1_1_0) + ((Ex[11] * dBKy_1_0_0) * dBSz_1_1_0)) + ((Ex[11] * dBSy_1_0_0) * dBKz_1_1_0)))) + (w27 * ((((Kx_0_0 * dBSy_1_2_0) * dBSz_1_0_0) + ((Ex[0] * dBKy_1_2_0) * dBSz_1_0_0)) + ((Ex[0] * dBSy_1_2_0) * dBKz_1_0_0)))) + (w28 * ((((Kx_0_0 * dBSy_1_1_0) * dBSz_1_1_0) + ((Ex[0] * dBKy_1_1_0) * dBSz_1_1_0)) + ((Ex[0] * dBSy_1_1_0) * dBKz_1_1_0)))) + (w29 * ((((Kx_0_0 * dBSy_1_0_0) * dBSz_1_2_0) + ((Ex[0] * dBKy_1_0_0) * dBSz_1_2_0)) + ((Ex[0] * dBSy_1_0_0) * dBKz_1_2_0)))) + (w30 * ((((Kx_0_2 * dBSy_0_0_0) * dBSz_2_0_0) + ((Ex[22] * dBKy_0_0_0) * dBSz_2_0_0)) + ((Ex[22] * dBSy_0_0_0) * dBKz_2_0_0)))) + (w31 * ((((Kx_0_1 * dBSy_0_1_0) * dBSz_2_0_0) + ((Ex[11] * dBKy_0_1_0) * dBSz_2_0_0)) + ((Ex[11] * dBSy_0_1_0) * dBKz_2_0_0)))) + (w32 * ((((Kx_0_1 * dBSy_0_0_0) * dBSz_2_1_0) + ((Ex[11] * dBKy_0_0_0) * dBSz_2_1_0)) + ((Ex[11] * dBSy_0_0_0) * dBKz_2_1_0)))) + (w33 * ((((Kx_0_0 * dBSy_0_2_0) * dBSz_2_0_0) + ((Ex[0] * dBKy_0_2_0) * dBSz_2_0_0)) + ((Ex[0] * dBSy_0_2_0) * dBKz_2_0_0)))) + (w34 * ((((Kx_0_0 * dBSy_0_1_0) * dBSz_2_1_0) + ((Ex[0] * dBKy_0_1_0) * dBSz_2_1_0)) + ((Ex[0] * dBSy_0_1_0) * dBKz_2_1_0)))) + (w35 * ((((Kx_0_0 * dBSy_0_0_0) * dBSz_2_2_0) + ((Ex[0] * dBKy_0_0_0) * dBSz_2_2_0)) + ((Ex[0] * dBSy_0_0_0) * dBKz_2_2_0))));
-        double hBB_22 = ((((((((((((((((((((((((((((((((((((w0 * ((((Kx_2_2 * Ey[0]) * dBBSz_0_0_0) + ((Ex[176] * Ky_0_0) * dBBSz_0_0_0)) + ((Ex[176] * Ey[0]) * dBBKz_0_0_0))) + (w1 * ((((Kx_2_1 * Ey[11]) * dBBSz_0_0_0) + ((Ex[165] * Ky_0_1) * dBBSz_0_0_0)) + ((Ex[165] * Ey[11]) * dBBKz_0_0_0)))) + (w2 * ((((Kx_2_1 * Ey[0]) * dBBSz_0_1_0) + ((Ex[165] * Ky_0_0) * dBBSz_0_1_0)) + ((Ex[165] * Ey[0]) * dBBKz_0_1_0)))) + (w3 * ((((Kx_2_0 * Ey[22]) * dBBSz_0_0_0) + ((Ex[154] * Ky_0_2) * dBBSz_0_0_0)) + ((Ex[154] * Ey[22]) * dBBKz_0_0_0)))) + (w4 * ((((Kx_2_0 * Ey[11]) * dBBSz_0_1_0) + ((Ex[154] * Ky_0_1) * dBBSz_0_1_0)) + ((Ex[154] * Ey[11]) * dBBKz_0_1_0)))) + (w5 * ((((Kx_2_0 * Ey[0]) * dBBSz_0_2_0) + ((Ex[154] * Ky_0_0) * dBBSz_0_2_0)) + ((Ex[154] * Ey[0]) * dBBKz_0_2_0)))) + (w6 * ((((Kx_1_2 * Ey[77]) * dBBSz_0_0_0) + ((Ex[99] * Ky_1_0) * dBBSz_0_0_0)) + ((Ex[99] * Ey[77]) * dBBKz_0_0_0)))) + (w7 * ((((Kx_1_1 * Ey[88]) * dBBSz_0_0_0) + ((Ex[88] * Ky_1_1) * dBBSz_0_0_0)) + ((Ex[88] * Ey[88]) * dBBKz_0_0_0)))) + (w8 * ((((Kx_1_1 * Ey[77]) * dBBSz_0_1_0) + ((Ex[88] * Ky_1_0) * dBBSz_0_1_0)) + ((Ex[88] * Ey[77]) * dBBKz_0_1_0)))) + (w9 * ((((Kx_1_0 * Ey[99]) * dBBSz_0_0_0) + ((Ex[77] * Ky_1_2) * dBBSz_0_0_0)) + ((Ex[77] * Ey[99]) * dBBKz_0_0_0)))) + (w10 * ((((Kx_1_0 * Ey[88]) * dBBSz_0_1_0) + ((Ex[77] * Ky_1_1) * dBBSz_0_1_0)) + ((Ex[77] * Ey[88]) * dBBKz_0_1_0)))) + (w11 * ((((Kx_1_0 * Ey[77]) * dBBSz_0_2_0) + ((Ex[77] * Ky_1_0) * dBBSz_0_2_0)) + ((Ex[77] * Ey[77]) * dBBKz_0_2_0)))) + (w12 * ((((Kx_1_2 * Ey[0]) * dBBSz_1_0_0) + ((Ex[99] * Ky_0_0) * dBBSz_1_0_0)) + ((Ex[99] * Ey[0]) * dBBKz_1_0_0)))) + (w13 * ((((Kx_1_1 * Ey[11]) * dBBSz_1_0_0) + ((Ex[88] * Ky_0_1) * dBBSz_1_0_0)) + ((Ex[88] * Ey[11]) * dBBKz_1_0_0)))) + (w14 * ((((Kx_1_1 * Ey[0]) * dBBSz_1_1_0) + ((Ex[88] * Ky_0_0) * dBBSz_1_1_0)) + ((Ex[88] * Ey[0]) * dBBKz_1_1_0)))) + (w15 * ((((Kx_1_0 * Ey[22]) * dBBSz_1_0_0) + ((Ex[77] * Ky_0_2) * dBBSz_1_0_0)) + ((Ex[77] * Ey[22]) * dBBKz_1_0_0)))) + (w16 * ((((Kx_1_0 * Ey[11]) * dBBSz_1_1_0) + ((Ex[77] * Ky_0_1) * dBBSz_1_1_0)) + ((Ex[77] * Ey[11]) * dBBKz_1_1_0)))) + (w17 * ((((Kx_1_0 * Ey[0]) * dBBSz_1_2_0) + ((Ex[77] * Ky_0_0) * dBBSz_1_2_0)) + ((Ex[77] * Ey[0]) * dBBKz_1_2_0)))) + (w18 * ((((Kx_0_2 * Ey[154]) * dBBSz_0_0_0) + ((Ex[22] * Ky_2_0) * dBBSz_0_0_0)) + ((Ex[22] * Ey[154]) * dBBKz_0_0_0)))) + (w19 * ((((Kx_0_1 * Ey[165]) * dBBSz_0_0_0) + ((Ex[11] * Ky_2_1) * dBBSz_0_0_0)) + ((Ex[11] * Ey[165]) * dBBKz_0_0_0)))) + (w20 * ((((Kx_0_1 * Ey[154]) * dBBSz_0_1_0) + ((Ex[11] * Ky_2_0) * dBBSz_0_1_0)) + ((Ex[11] * Ey[154]) * dBBKz_0_1_0)))) + (w21 * ((((Kx_0_0 * Ey[176]) * dBBSz_0_0_0) + ((Ex[0] * Ky_2_2) * dBBSz_0_0_0)) + ((Ex[0] * Ey[176]) * dBBKz_0_0_0)))) + (w22 * ((((Kx_0_0 * Ey[165]) * dBBSz_0_1_0) + ((Ex[0] * Ky_2_1) * dBBSz_0_1_0)) + ((Ex[0] * Ey[165]) * dBBKz_0_1_0)))) + (w23 * ((((Kx_0_0 * Ey[154]) * dBBSz_0_2_0) + ((Ex[0] * Ky_2_0) * dBBSz_0_2_0)) + ((Ex[0] * Ey[154]) * dBBKz_0_2_0)))) + (w24 * ((((Kx_0_2 * Ey[77]) * dBBSz_1_0_0) + ((Ex[22] * Ky_1_0) * dBBSz_1_0_0)) + ((Ex[22] * Ey[77]) * dBBKz_1_0_0)))) + (w25 * ((((Kx_0_1 * Ey[88]) * dBBSz_1_0_0) + ((Ex[11] * Ky_1_1) * dBBSz_1_0_0)) + ((Ex[11] * Ey[88]) * dBBKz_1_0_0)))) + (w26 * ((((Kx_0_1 * Ey[77]) * dBBSz_1_1_0) + ((Ex[11] * Ky_1_0) * dBBSz_1_1_0)) + ((Ex[11] * Ey[77]) * dBBKz_1_1_0)))) + (w27 * ((((Kx_0_0 * Ey[99]) * dBBSz_1_0_0) + ((Ex[0] * Ky_1_2) * dBBSz_1_0_0)) + ((Ex[0] * Ey[99]) * dBBKz_1_0_0)))) + (w28 * ((((Kx_0_0 * Ey[88]) * dBBSz_1_1_0) + ((Ex[0] * Ky_1_1) * dBBSz_1_1_0)) + ((Ex[0] * Ey[88]) * dBBKz_1_1_0)))) + (w29 * ((((Kx_0_0 * Ey[77]) * dBBSz_1_2_0) + ((Ex[0] * Ky_1_0) * dBBSz_1_2_0)) + ((Ex[0] * Ey[77]) * dBBKz_1_2_0)))) + (w30 * ((((Kx_0_2 * Ey[0]) * dBBSz_2_0_0) + ((Ex[22] * Ky_0_0) * dBBSz_2_0_0)) + ((Ex[22] * Ey[0]) * dBBKz_2_0_0)))) + (w31 * ((((Kx_0_1 * Ey[11]) * dBBSz_2_0_0) + ((Ex[11] * Ky_0_1) * dBBSz_2_0_0)) + ((Ex[11] * Ey[11]) * dBBKz_2_0_0)))) + (w32 * ((((Kx_0_1 * Ey[0]) * dBBSz_2_1_0) + ((Ex[11] * Ky_0_0) * dBBSz_2_1_0)) + ((Ex[11] * Ey[0]) * dBBKz_2_1_0)))) + (w33 * ((((Kx_0_0 * Ey[22]) * dBBSz_2_0_0) + ((Ex[0] * Ky_0_2) * dBBSz_2_0_0)) + ((Ex[0] * Ey[22]) * dBBKz_2_0_0)))) + (w34 * ((((Kx_0_0 * Ey[11]) * dBBSz_2_1_0) + ((Ex[0] * Ky_0_1) * dBBSz_2_1_0)) + ((Ex[0] * Ey[11]) * dBBKz_2_1_0)))) + (w35 * ((((Kx_0_0 * Ey[0]) * dBBSz_2_2_0) + ((Ex[0] * Ky_0_0) * dBBSz_2_2_0)) + ((Ex[0] * Ey[0]) * dBBKz_2_2_0))));
-        double hAB_00 = ((((((((((((((((((((((((((((((((((((w0 * ((((dABKx_2_2_0 * Ey[0]) * Ez[0]) + ((dABSx_2_2_0 * Ky_0_0) * Ez[0])) + ((dABSx_2_2_0 * Ey[0]) * Kz_0_0))) + (w1 * ((((dABKx_2_1_0 * Ey[11]) * Ez[0]) + ((dABSx_2_1_0 * Ky_0_1) * Ez[0])) + ((dABSx_2_1_0 * Ey[11]) * Kz_0_0)))) + (w2 * ((((dABKx_2_1_0 * Ey[0]) * Ez[11]) + ((dABSx_2_1_0 * Ky_0_0) * Ez[11])) + ((dABSx_2_1_0 * Ey[0]) * Kz_0_1)))) + (w3 * ((((dABKx_2_0_0 * Ey[22]) * Ez[0]) + ((dABSx_2_0_0 * Ky_0_2) * Ez[0])) + ((dABSx_2_0_0 * Ey[22]) * Kz_0_0)))) + (w4 * ((((dABKx_2_0_0 * Ey[11]) * Ez[11]) + ((dABSx_2_0_0 * Ky_0_1) * Ez[11])) + ((dABSx_2_0_0 * Ey[11]) * Kz_0_1)))) + (w5 * ((((dABKx_2_0_0 * Ey[0]) * Ez[22]) + ((dABSx_2_0_0 * Ky_0_0) * Ez[22])) + ((dABSx_2_0_0 * Ey[0]) * Kz_0_2)))) + (w6 * ((((dABKx_1_2_0 * Ey[77]) * Ez[0]) + ((dABSx_1_2_0 * Ky_1_0) * Ez[0])) + ((dABSx_1_2_0 * Ey[77]) * Kz_0_0)))) + (w7 * ((((dABKx_1_1_0 * Ey[88]) * Ez[0]) + ((dABSx_1_1_0 * Ky_1_1) * Ez[0])) + ((dABSx_1_1_0 * Ey[88]) * Kz_0_0)))) + (w8 * ((((dABKx_1_1_0 * Ey[77]) * Ez[11]) + ((dABSx_1_1_0 * Ky_1_0) * Ez[11])) + ((dABSx_1_1_0 * Ey[77]) * Kz_0_1)))) + (w9 * ((((dABKx_1_0_0 * Ey[99]) * Ez[0]) + ((dABSx_1_0_0 * Ky_1_2) * Ez[0])) + ((dABSx_1_0_0 * Ey[99]) * Kz_0_0)))) + (w10 * ((((dABKx_1_0_0 * Ey[88]) * Ez[11]) + ((dABSx_1_0_0 * Ky_1_1) * Ez[11])) + ((dABSx_1_0_0 * Ey[88]) * Kz_0_1)))) + (w11 * ((((dABKx_1_0_0 * Ey[77]) * Ez[22]) + ((dABSx_1_0_0 * Ky_1_0) * Ez[22])) + ((dABSx_1_0_0 * Ey[77]) * Kz_0_2)))) + (w12 * ((((dABKx_1_2_0 * Ey[0]) * Ez[77]) + ((dABSx_1_2_0 * Ky_0_0) * Ez[77])) + ((dABSx_1_2_0 * Ey[0]) * Kz_1_0)))) + (w13 * ((((dABKx_1_1_0 * Ey[11]) * Ez[77]) + ((dABSx_1_1_0 * Ky_0_1) * Ez[77])) + ((dABSx_1_1_0 * Ey[11]) * Kz_1_0)))) + (w14 * ((((dABKx_1_1_0 * Ey[0]) * Ez[88]) + ((dABSx_1_1_0 * Ky_0_0) * Ez[88])) + ((dABSx_1_1_0 * Ey[0]) * Kz_1_1)))) + (w15 * ((((dABKx_1_0_0 * Ey[22]) * Ez[77]) + ((dABSx_1_0_0 * Ky_0_2) * Ez[77])) + ((dABSx_1_0_0 * Ey[22]) * Kz_1_0)))) + (w16 * ((((dABKx_1_0_0 * Ey[11]) * Ez[88]) + ((dABSx_1_0_0 * Ky_0_1) * Ez[88])) + ((dABSx_1_0_0 * Ey[11]) * Kz_1_1)))) + (w17 * ((((dABKx_1_0_0 * Ey[0]) * Ez[99]) + ((dABSx_1_0_0 * Ky_0_0) * Ez[99])) + ((dABSx_1_0_0 * Ey[0]) * Kz_1_2)))) + (w18 * ((((dABKx_0_2_0 * Ey[154]) * Ez[0]) + ((dABSx_0_2_0 * Ky_2_0) * Ez[0])) + ((dABSx_0_2_0 * Ey[154]) * Kz_0_0)))) + (w19 * ((((dABKx_0_1_0 * Ey[165]) * Ez[0]) + ((dABSx_0_1_0 * Ky_2_1) * Ez[0])) + ((dABSx_0_1_0 * Ey[165]) * Kz_0_0)))) + (w20 * ((((dABKx_0_1_0 * Ey[154]) * Ez[11]) + ((dABSx_0_1_0 * Ky_2_0) * Ez[11])) + ((dABSx_0_1_0 * Ey[154]) * Kz_0_1)))) + (w21 * ((((dABKx_0_0_0 * Ey[176]) * Ez[0]) + ((dABSx_0_0_0 * Ky_2_2) * Ez[0])) + ((dABSx_0_0_0 * Ey[176]) * Kz_0_0)))) + (w22 * ((((dABKx_0_0_0 * Ey[165]) * Ez[11]) + ((dABSx_0_0_0 * Ky_2_1) * Ez[11])) + ((dABSx_0_0_0 * Ey[165]) * Kz_0_1)))) + (w23 * ((((dABKx_0_0_0 * Ey[154]) * Ez[22]) + ((dABSx_0_0_0 * Ky_2_0) * Ez[22])) + ((dABSx_0_0_0 * Ey[154]) * Kz_0_2)))) + (w24 * ((((dABKx_0_2_0 * Ey[77]) * Ez[77]) + ((dABSx_0_2_0 * Ky_1_0) * Ez[77])) + ((dABSx_0_2_0 * Ey[77]) * Kz_1_0)))) + (w25 * ((((dABKx_0_1_0 * Ey[88]) * Ez[77]) + ((dABSx_0_1_0 * Ky_1_1) * Ez[77])) + ((dABSx_0_1_0 * Ey[88]) * Kz_1_0)))) + (w26 * ((((dABKx_0_1_0 * Ey[77]) * Ez[88]) + ((dABSx_0_1_0 * Ky_1_0) * Ez[88])) + ((dABSx_0_1_0 * Ey[77]) * Kz_1_1)))) + (w27 * ((((dABKx_0_0_0 * Ey[99]) * Ez[77]) + ((dABSx_0_0_0 * Ky_1_2) * Ez[77])) + ((dABSx_0_0_0 * Ey[99]) * Kz_1_0)))) + (w28 * ((((dABKx_0_0_0 * Ey[88]) * Ez[88]) + ((dABSx_0_0_0 * Ky_1_1) * Ez[88])) + ((dABSx_0_0_0 * Ey[88]) * Kz_1_1)))) + (w29 * ((((dABKx_0_0_0 * Ey[77]) * Ez[99]) + ((dABSx_0_0_0 * Ky_1_0) * Ez[99])) + ((dABSx_0_0_0 * Ey[77]) * Kz_1_2)))) + (w30 * ((((dABKx_0_2_0 * Ey[0]) * Ez[154]) + ((dABSx_0_2_0 * Ky_0_0) * Ez[154])) + ((dABSx_0_2_0 * Ey[0]) * Kz_2_0)))) + (w31 * ((((dABKx_0_1_0 * Ey[11]) * Ez[154]) + ((dABSx_0_1_0 * Ky_0_1) * Ez[154])) + ((dABSx_0_1_0 * Ey[11]) * Kz_2_0)))) + (w32 * ((((dABKx_0_1_0 * Ey[0]) * Ez[165]) + ((dABSx_0_1_0 * Ky_0_0) * Ez[165])) + ((dABSx_0_1_0 * Ey[0]) * Kz_2_1)))) + (w33 * ((((dABKx_0_0_0 * Ey[22]) * Ez[154]) + ((dABSx_0_0_0 * Ky_0_2) * Ez[154])) + ((dABSx_0_0_0 * Ey[22]) * Kz_2_0)))) + (w34 * ((((dABKx_0_0_0 * Ey[11]) * Ez[165]) + ((dABSx_0_0_0 * Ky_0_1) * Ez[165])) + ((dABSx_0_0_0 * Ey[11]) * Kz_2_1)))) + (w35 * ((((dABKx_0_0_0 * Ey[0]) * Ez[176]) + ((dABSx_0_0_0 * Ky_0_0) * Ez[176])) + ((dABSx_0_0_0 * Ey[0]) * Kz_2_2))));
-        double hAB_01 = ((((((((((((((((((((((((((((((((((((w0 * ((((dAKx_2_2_0 * dBSy_0_0_0) * Ez[0]) + ((dASx_2_2_0 * dBKy_0_0_0) * Ez[0])) + ((dASx_2_2_0 * dBSy_0_0_0) * Kz_0_0))) + (w1 * ((((dAKx_2_1_0 * dBSy_0_1_0) * Ez[0]) + ((dASx_2_1_0 * dBKy_0_1_0) * Ez[0])) + ((dASx_2_1_0 * dBSy_0_1_0) * Kz_0_0)))) + (w2 * ((((dAKx_2_1_0 * dBSy_0_0_0) * Ez[11]) + ((dASx_2_1_0 * dBKy_0_0_0) * Ez[11])) + ((dASx_2_1_0 * dBSy_0_0_0) * Kz_0_1)))) + (w3 * ((((dAKx_2_0_0 * dBSy_0_2_0) * Ez[0]) + ((dASx_2_0_0 * dBKy_0_2_0) * Ez[0])) + ((dASx_2_0_0 * dBSy_0_2_0) * Kz_0_0)))) + (w4 * ((((dAKx_2_0_0 * dBSy_0_1_0) * Ez[11]) + ((dASx_2_0_0 * dBKy_0_1_0) * Ez[11])) + ((dASx_2_0_0 * dBSy_0_1_0) * Kz_0_1)))) + (w5 * ((((dAKx_2_0_0 * dBSy_0_0_0) * Ez[22]) + ((dASx_2_0_0 * dBKy_0_0_0) * Ez[22])) + ((dASx_2_0_0 * dBSy_0_0_0) * Kz_0_2)))) + (w6 * ((((dAKx_1_2_0 * dBSy_1_0_0) * Ez[0]) + ((dASx_1_2_0 * dBKy_1_0_0) * Ez[0])) + ((dASx_1_2_0 * dBSy_1_0_0) * Kz_0_0)))) + (w7 * ((((dAKx_1_1_0 * dBSy_1_1_0) * Ez[0]) + ((dASx_1_1_0 * dBKy_1_1_0) * Ez[0])) + ((dASx_1_1_0 * dBSy_1_1_0) * Kz_0_0)))) + (w8 * ((((dAKx_1_1_0 * dBSy_1_0_0) * Ez[11]) + ((dASx_1_1_0 * dBKy_1_0_0) * Ez[11])) + ((dASx_1_1_0 * dBSy_1_0_0) * Kz_0_1)))) + (w9 * ((((dAKx_1_0_0 * dBSy_1_2_0) * Ez[0]) + ((dASx_1_0_0 * dBKy_1_2_0) * Ez[0])) + ((dASx_1_0_0 * dBSy_1_2_0) * Kz_0_0)))) + (w10 * ((((dAKx_1_0_0 * dBSy_1_1_0) * Ez[11]) + ((dASx_1_0_0 * dBKy_1_1_0) * Ez[11])) + ((dASx_1_0_0 * dBSy_1_1_0) * Kz_0_1)))) + (w11 * ((((dAKx_1_0_0 * dBSy_1_0_0) * Ez[22]) + ((dASx_1_0_0 * dBKy_1_0_0) * Ez[22])) + ((dASx_1_0_0 * dBSy_1_0_0) * Kz_0_2)))) + (w12 * ((((dAKx_1_2_0 * dBSy_0_0_0) * Ez[77]) + ((dASx_1_2_0 * dBKy_0_0_0) * Ez[77])) + ((dASx_1_2_0 * dBSy_0_0_0) * Kz_1_0)))) + (w13 * ((((dAKx_1_1_0 * dBSy_0_1_0) * Ez[77]) + ((dASx_1_1_0 * dBKy_0_1_0) * Ez[77])) + ((dASx_1_1_0 * dBSy_0_1_0) * Kz_1_0)))) + (w14 * ((((dAKx_1_1_0 * dBSy_0_0_0) * Ez[88]) + ((dASx_1_1_0 * dBKy_0_0_0) * Ez[88])) + ((dASx_1_1_0 * dBSy_0_0_0) * Kz_1_1)))) + (w15 * ((((dAKx_1_0_0 * dBSy_0_2_0) * Ez[77]) + ((dASx_1_0_0 * dBKy_0_2_0) * Ez[77])) + ((dASx_1_0_0 * dBSy_0_2_0) * Kz_1_0)))) + (w16 * ((((dAKx_1_0_0 * dBSy_0_1_0) * Ez[88]) + ((dASx_1_0_0 * dBKy_0_1_0) * Ez[88])) + ((dASx_1_0_0 * dBSy_0_1_0) * Kz_1_1)))) + (w17 * ((((dAKx_1_0_0 * dBSy_0_0_0) * Ez[99]) + ((dASx_1_0_0 * dBKy_0_0_0) * Ez[99])) + ((dASx_1_0_0 * dBSy_0_0_0) * Kz_1_2)))) + (w18 * ((((dAKx_0_2_0 * dBSy_2_0_0) * Ez[0]) + ((dASx_0_2_0 * dBKy_2_0_0) * Ez[0])) + ((dASx_0_2_0 * dBSy_2_0_0) * Kz_0_0)))) + (w19 * ((((dAKx_0_1_0 * dBSy_2_1_0) * Ez[0]) + ((dASx_0_1_0 * dBKy_2_1_0) * Ez[0])) + ((dASx_0_1_0 * dBSy_2_1_0) * Kz_0_0)))) + (w20 * ((((dAKx_0_1_0 * dBSy_2_0_0) * Ez[11]) + ((dASx_0_1_0 * dBKy_2_0_0) * Ez[11])) + ((dASx_0_1_0 * dBSy_2_0_0) * Kz_0_1)))) + (w21 * ((((dAKx_0_0_0 * dBSy_2_2_0) * Ez[0]) + ((dASx_0_0_0 * dBKy_2_2_0) * Ez[0])) + ((dASx_0_0_0 * dBSy_2_2_0) * Kz_0_0)))) + (w22 * ((((dAKx_0_0_0 * dBSy_2_1_0) * Ez[11]) + ((dASx_0_0_0 * dBKy_2_1_0) * Ez[11])) + ((dASx_0_0_0 * dBSy_2_1_0) * Kz_0_1)))) + (w23 * ((((dAKx_0_0_0 * dBSy_2_0_0) * Ez[22]) + ((dASx_0_0_0 * dBKy_2_0_0) * Ez[22])) + ((dASx_0_0_0 * dBSy_2_0_0) * Kz_0_2)))) + (w24 * ((((dAKx_0_2_0 * dBSy_1_0_0) * Ez[77]) + ((dASx_0_2_0 * dBKy_1_0_0) * Ez[77])) + ((dASx_0_2_0 * dBSy_1_0_0) * Kz_1_0)))) + (w25 * ((((dAKx_0_1_0 * dBSy_1_1_0) * Ez[77]) + ((dASx_0_1_0 * dBKy_1_1_0) * Ez[77])) + ((dASx_0_1_0 * dBSy_1_1_0) * Kz_1_0)))) + (w26 * ((((dAKx_0_1_0 * dBSy_1_0_0) * Ez[88]) + ((dASx_0_1_0 * dBKy_1_0_0) * Ez[88])) + ((dASx_0_1_0 * dBSy_1_0_0) * Kz_1_1)))) + (w27 * ((((dAKx_0_0_0 * dBSy_1_2_0) * Ez[77]) + ((dASx_0_0_0 * dBKy_1_2_0) * Ez[77])) + ((dASx_0_0_0 * dBSy_1_2_0) * Kz_1_0)))) + (w28 * ((((dAKx_0_0_0 * dBSy_1_1_0) * Ez[88]) + ((dASx_0_0_0 * dBKy_1_1_0) * Ez[88])) + ((dASx_0_0_0 * dBSy_1_1_0) * Kz_1_1)))) + (w29 * ((((dAKx_0_0_0 * dBSy_1_0_0) * Ez[99]) + ((dASx_0_0_0 * dBKy_1_0_0) * Ez[99])) + ((dASx_0_0_0 * dBSy_1_0_0) * Kz_1_2)))) + (w30 * ((((dAKx_0_2_0 * dBSy_0_0_0) * Ez[154]) + ((dASx_0_2_0 * dBKy_0_0_0) * Ez[154])) + ((dASx_0_2_0 * dBSy_0_0_0) * Kz_2_0)))) + (w31 * ((((dAKx_0_1_0 * dBSy_0_1_0) * Ez[154]) + ((dASx_0_1_0 * dBKy_0_1_0) * Ez[154])) + ((dASx_0_1_0 * dBSy_0_1_0) * Kz_2_0)))) + (w32 * ((((dAKx_0_1_0 * dBSy_0_0_0) * Ez[165]) + ((dASx_0_1_0 * dBKy_0_0_0) * Ez[165])) + ((dASx_0_1_0 * dBSy_0_0_0) * Kz_2_1)))) + (w33 * ((((dAKx_0_0_0 * dBSy_0_2_0) * Ez[154]) + ((dASx_0_0_0 * dBKy_0_2_0) * Ez[154])) + ((dASx_0_0_0 * dBSy_0_2_0) * Kz_2_0)))) + (w34 * ((((dAKx_0_0_0 * dBSy_0_1_0) * Ez[165]) + ((dASx_0_0_0 * dBKy_0_1_0) * Ez[165])) + ((dASx_0_0_0 * dBSy_0_1_0) * Kz_2_1)))) + (w35 * ((((dAKx_0_0_0 * dBSy_0_0_0) * Ez[176]) + ((dASx_0_0_0 * dBKy_0_0_0) * Ez[176])) + ((dASx_0_0_0 * dBSy_0_0_0) * Kz_2_2))));
-        double hAB_02 = ((((((((((((((((((((((((((((((((((((w0 * ((((dAKx_2_2_0 * Ey[0]) * dBSz_0_0_0) + ((dASx_2_2_0 * Ky_0_0) * dBSz_0_0_0)) + ((dASx_2_2_0 * Ey[0]) * dBKz_0_0_0))) + (w1 * ((((dAKx_2_1_0 * Ey[11]) * dBSz_0_0_0) + ((dASx_2_1_0 * Ky_0_1) * dBSz_0_0_0)) + ((dASx_2_1_0 * Ey[11]) * dBKz_0_0_0)))) + (w2 * ((((dAKx_2_1_0 * Ey[0]) * dBSz_0_1_0) + ((dASx_2_1_0 * Ky_0_0) * dBSz_0_1_0)) + ((dASx_2_1_0 * Ey[0]) * dBKz_0_1_0)))) + (w3 * ((((dAKx_2_0_0 * Ey[22]) * dBSz_0_0_0) + ((dASx_2_0_0 * Ky_0_2) * dBSz_0_0_0)) + ((dASx_2_0_0 * Ey[22]) * dBKz_0_0_0)))) + (w4 * ((((dAKx_2_0_0 * Ey[11]) * dBSz_0_1_0) + ((dASx_2_0_0 * Ky_0_1) * dBSz_0_1_0)) + ((dASx_2_0_0 * Ey[11]) * dBKz_0_1_0)))) + (w5 * ((((dAKx_2_0_0 * Ey[0]) * dBSz_0_2_0) + ((dASx_2_0_0 * Ky_0_0) * dBSz_0_2_0)) + ((dASx_2_0_0 * Ey[0]) * dBKz_0_2_0)))) + (w6 * ((((dAKx_1_2_0 * Ey[77]) * dBSz_0_0_0) + ((dASx_1_2_0 * Ky_1_0) * dBSz_0_0_0)) + ((dASx_1_2_0 * Ey[77]) * dBKz_0_0_0)))) + (w7 * ((((dAKx_1_1_0 * Ey[88]) * dBSz_0_0_0) + ((dASx_1_1_0 * Ky_1_1) * dBSz_0_0_0)) + ((dASx_1_1_0 * Ey[88]) * dBKz_0_0_0)))) + (w8 * ((((dAKx_1_1_0 * Ey[77]) * dBSz_0_1_0) + ((dASx_1_1_0 * Ky_1_0) * dBSz_0_1_0)) + ((dASx_1_1_0 * Ey[77]) * dBKz_0_1_0)))) + (w9 * ((((dAKx_1_0_0 * Ey[99]) * dBSz_0_0_0) + ((dASx_1_0_0 * Ky_1_2) * dBSz_0_0_0)) + ((dASx_1_0_0 * Ey[99]) * dBKz_0_0_0)))) + (w10 * ((((dAKx_1_0_0 * Ey[88]) * dBSz_0_1_0) + ((dASx_1_0_0 * Ky_1_1) * dBSz_0_1_0)) + ((dASx_1_0_0 * Ey[88]) * dBKz_0_1_0)))) + (w11 * ((((dAKx_1_0_0 * Ey[77]) * dBSz_0_2_0) + ((dASx_1_0_0 * Ky_1_0) * dBSz_0_2_0)) + ((dASx_1_0_0 * Ey[77]) * dBKz_0_2_0)))) + (w12 * ((((dAKx_1_2_0 * Ey[0]) * dBSz_1_0_0) + ((dASx_1_2_0 * Ky_0_0) * dBSz_1_0_0)) + ((dASx_1_2_0 * Ey[0]) * dBKz_1_0_0)))) + (w13 * ((((dAKx_1_1_0 * Ey[11]) * dBSz_1_0_0) + ((dASx_1_1_0 * Ky_0_1) * dBSz_1_0_0)) + ((dASx_1_1_0 * Ey[11]) * dBKz_1_0_0)))) + (w14 * ((((dAKx_1_1_0 * Ey[0]) * dBSz_1_1_0) + ((dASx_1_1_0 * Ky_0_0) * dBSz_1_1_0)) + ((dASx_1_1_0 * Ey[0]) * dBKz_1_1_0)))) + (w15 * ((((dAKx_1_0_0 * Ey[22]) * dBSz_1_0_0) + ((dASx_1_0_0 * Ky_0_2) * dBSz_1_0_0)) + ((dASx_1_0_0 * Ey[22]) * dBKz_1_0_0)))) + (w16 * ((((dAKx_1_0_0 * Ey[11]) * dBSz_1_1_0) + ((dASx_1_0_0 * Ky_0_1) * dBSz_1_1_0)) + ((dASx_1_0_0 * Ey[11]) * dBKz_1_1_0)))) + (w17 * ((((dAKx_1_0_0 * Ey[0]) * dBSz_1_2_0) + ((dASx_1_0_0 * Ky_0_0) * dBSz_1_2_0)) + ((dASx_1_0_0 * Ey[0]) * dBKz_1_2_0)))) + (w18 * ((((dAKx_0_2_0 * Ey[154]) * dBSz_0_0_0) + ((dASx_0_2_0 * Ky_2_0) * dBSz_0_0_0)) + ((dASx_0_2_0 * Ey[154]) * dBKz_0_0_0)))) + (w19 * ((((dAKx_0_1_0 * Ey[165]) * dBSz_0_0_0) + ((dASx_0_1_0 * Ky_2_1) * dBSz_0_0_0)) + ((dASx_0_1_0 * Ey[165]) * dBKz_0_0_0)))) + (w20 * ((((dAKx_0_1_0 * Ey[154]) * dBSz_0_1_0) + ((dASx_0_1_0 * Ky_2_0) * dBSz_0_1_0)) + ((dASx_0_1_0 * Ey[154]) * dBKz_0_1_0)))) + (w21 * ((((dAKx_0_0_0 * Ey[176]) * dBSz_0_0_0) + ((dASx_0_0_0 * Ky_2_2) * dBSz_0_0_0)) + ((dASx_0_0_0 * Ey[176]) * dBKz_0_0_0)))) + (w22 * ((((dAKx_0_0_0 * Ey[165]) * dBSz_0_1_0) + ((dASx_0_0_0 * Ky_2_1) * dBSz_0_1_0)) + ((dASx_0_0_0 * Ey[165]) * dBKz_0_1_0)))) + (w23 * ((((dAKx_0_0_0 * Ey[154]) * dBSz_0_2_0) + ((dASx_0_0_0 * Ky_2_0) * dBSz_0_2_0)) + ((dASx_0_0_0 * Ey[154]) * dBKz_0_2_0)))) + (w24 * ((((dAKx_0_2_0 * Ey[77]) * dBSz_1_0_0) + ((dASx_0_2_0 * Ky_1_0) * dBSz_1_0_0)) + ((dASx_0_2_0 * Ey[77]) * dBKz_1_0_0)))) + (w25 * ((((dAKx_0_1_0 * Ey[88]) * dBSz_1_0_0) + ((dASx_0_1_0 * Ky_1_1) * dBSz_1_0_0)) + ((dASx_0_1_0 * Ey[88]) * dBKz_1_0_0)))) + (w26 * ((((dAKx_0_1_0 * Ey[77]) * dBSz_1_1_0) + ((dASx_0_1_0 * Ky_1_0) * dBSz_1_1_0)) + ((dASx_0_1_0 * Ey[77]) * dBKz_1_1_0)))) + (w27 * ((((dAKx_0_0_0 * Ey[99]) * dBSz_1_0_0) + ((dASx_0_0_0 * Ky_1_2) * dBSz_1_0_0)) + ((dASx_0_0_0 * Ey[99]) * dBKz_1_0_0)))) + (w28 * ((((dAKx_0_0_0 * Ey[88]) * dBSz_1_1_0) + ((dASx_0_0_0 * Ky_1_1) * dBSz_1_1_0)) + ((dASx_0_0_0 * Ey[88]) * dBKz_1_1_0)))) + (w29 * ((((dAKx_0_0_0 * Ey[77]) * dBSz_1_2_0) + ((dASx_0_0_0 * Ky_1_0) * dBSz_1_2_0)) + ((dASx_0_0_0 * Ey[77]) * dBKz_1_2_0)))) + (w30 * ((((dAKx_0_2_0 * Ey[0]) * dBSz_2_0_0) + ((dASx_0_2_0 * Ky_0_0) * dBSz_2_0_0)) + ((dASx_0_2_0 * Ey[0]) * dBKz_2_0_0)))) + (w31 * ((((dAKx_0_1_0 * Ey[11]) * dBSz_2_0_0) + ((dASx_0_1_0 * Ky_0_1) * dBSz_2_0_0)) + ((dASx_0_1_0 * Ey[11]) * dBKz_2_0_0)))) + (w32 * ((((dAKx_0_1_0 * Ey[0]) * dBSz_2_1_0) + ((dASx_0_1_0 * Ky_0_0) * dBSz_2_1_0)) + ((dASx_0_1_0 * Ey[0]) * dBKz_2_1_0)))) + (w33 * ((((dAKx_0_0_0 * Ey[22]) * dBSz_2_0_0) + ((dASx_0_0_0 * Ky_0_2) * dBSz_2_0_0)) + ((dASx_0_0_0 * Ey[22]) * dBKz_2_0_0)))) + (w34 * ((((dAKx_0_0_0 * Ey[11]) * dBSz_2_1_0) + ((dASx_0_0_0 * Ky_0_1) * dBSz_2_1_0)) + ((dASx_0_0_0 * Ey[11]) * dBKz_2_1_0)))) + (w35 * ((((dAKx_0_0_0 * Ey[0]) * dBSz_2_2_0) + ((dASx_0_0_0 * Ky_0_0) * dBSz_2_2_0)) + ((dASx_0_0_0 * Ey[0]) * dBKz_2_2_0))));
-        double hAB_10 = ((((((((((((((((((((((((((((((((((((w0 * ((((dBKx_2_2_0 * dASy_0_0_0) * Ez[0]) + ((dBSx_2_2_0 * dAKy_0_0_0) * Ez[0])) + ((dBSx_2_2_0 * dASy_0_0_0) * Kz_0_0))) + (w1 * ((((dBKx_2_1_0 * dASy_0_1_0) * Ez[0]) + ((dBSx_2_1_0 * dAKy_0_1_0) * Ez[0])) + ((dBSx_2_1_0 * dASy_0_1_0) * Kz_0_0)))) + (w2 * ((((dBKx_2_1_0 * dASy_0_0_0) * Ez[11]) + ((dBSx_2_1_0 * dAKy_0_0_0) * Ez[11])) + ((dBSx_2_1_0 * dASy_0_0_0) * Kz_0_1)))) + (w3 * ((((dBKx_2_0_0 * dASy_0_2_0) * Ez[0]) + ((dBSx_2_0_0 * dAKy_0_2_0) * Ez[0])) + ((dBSx_2_0_0 * dASy_0_2_0) * Kz_0_0)))) + (w4 * ((((dBKx_2_0_0 * dASy_0_1_0) * Ez[11]) + ((dBSx_2_0_0 * dAKy_0_1_0) * Ez[11])) + ((dBSx_2_0_0 * dASy_0_1_0) * Kz_0_1)))) + (w5 * ((((dBKx_2_0_0 * dASy_0_0_0) * Ez[22]) + ((dBSx_2_0_0 * dAKy_0_0_0) * Ez[22])) + ((dBSx_2_0_0 * dASy_0_0_0) * Kz_0_2)))) + (w6 * ((((dBKx_1_2_0 * dASy_1_0_0) * Ez[0]) + ((dBSx_1_2_0 * dAKy_1_0_0) * Ez[0])) + ((dBSx_1_2_0 * dASy_1_0_0) * Kz_0_0)))) + (w7 * ((((dBKx_1_1_0 * dASy_1_1_0) * Ez[0]) + ((dBSx_1_1_0 * dAKy_1_1_0) * Ez[0])) + ((dBSx_1_1_0 * dASy_1_1_0) * Kz_0_0)))) + (w8 * ((((dBKx_1_1_0 * dASy_1_0_0) * Ez[11]) + ((dBSx_1_1_0 * dAKy_1_0_0) * Ez[11])) + ((dBSx_1_1_0 * dASy_1_0_0) * Kz_0_1)))) + (w9 * ((((dBKx_1_0_0 * dASy_1_2_0) * Ez[0]) + ((dBSx_1_0_0 * dAKy_1_2_0) * Ez[0])) + ((dBSx_1_0_0 * dASy_1_2_0) * Kz_0_0)))) + (w10 * ((((dBKx_1_0_0 * dASy_1_1_0) * Ez[11]) + ((dBSx_1_0_0 * dAKy_1_1_0) * Ez[11])) + ((dBSx_1_0_0 * dASy_1_1_0) * Kz_0_1)))) + (w11 * ((((dBKx_1_0_0 * dASy_1_0_0) * Ez[22]) + ((dBSx_1_0_0 * dAKy_1_0_0) * Ez[22])) + ((dBSx_1_0_0 * dASy_1_0_0) * Kz_0_2)))) + (w12 * ((((dBKx_1_2_0 * dASy_0_0_0) * Ez[77]) + ((dBSx_1_2_0 * dAKy_0_0_0) * Ez[77])) + ((dBSx_1_2_0 * dASy_0_0_0) * Kz_1_0)))) + (w13 * ((((dBKx_1_1_0 * dASy_0_1_0) * Ez[77]) + ((dBSx_1_1_0 * dAKy_0_1_0) * Ez[77])) + ((dBSx_1_1_0 * dASy_0_1_0) * Kz_1_0)))) + (w14 * ((((dBKx_1_1_0 * dASy_0_0_0) * Ez[88]) + ((dBSx_1_1_0 * dAKy_0_0_0) * Ez[88])) + ((dBSx_1_1_0 * dASy_0_0_0) * Kz_1_1)))) + (w15 * ((((dBKx_1_0_0 * dASy_0_2_0) * Ez[77]) + ((dBSx_1_0_0 * dAKy_0_2_0) * Ez[77])) + ((dBSx_1_0_0 * dASy_0_2_0) * Kz_1_0)))) + (w16 * ((((dBKx_1_0_0 * dASy_0_1_0) * Ez[88]) + ((dBSx_1_0_0 * dAKy_0_1_0) * Ez[88])) + ((dBSx_1_0_0 * dASy_0_1_0) * Kz_1_1)))) + (w17 * ((((dBKx_1_0_0 * dASy_0_0_0) * Ez[99]) + ((dBSx_1_0_0 * dAKy_0_0_0) * Ez[99])) + ((dBSx_1_0_0 * dASy_0_0_0) * Kz_1_2)))) + (w18 * ((((dBKx_0_2_0 * dASy_2_0_0) * Ez[0]) + ((dBSx_0_2_0 * dAKy_2_0_0) * Ez[0])) + ((dBSx_0_2_0 * dASy_2_0_0) * Kz_0_0)))) + (w19 * ((((dBKx_0_1_0 * dASy_2_1_0) * Ez[0]) + ((dBSx_0_1_0 * dAKy_2_1_0) * Ez[0])) + ((dBSx_0_1_0 * dASy_2_1_0) * Kz_0_0)))) + (w20 * ((((dBKx_0_1_0 * dASy_2_0_0) * Ez[11]) + ((dBSx_0_1_0 * dAKy_2_0_0) * Ez[11])) + ((dBSx_0_1_0 * dASy_2_0_0) * Kz_0_1)))) + (w21 * ((((dBKx_0_0_0 * dASy_2_2_0) * Ez[0]) + ((dBSx_0_0_0 * dAKy_2_2_0) * Ez[0])) + ((dBSx_0_0_0 * dASy_2_2_0) * Kz_0_0)))) + (w22 * ((((dBKx_0_0_0 * dASy_2_1_0) * Ez[11]) + ((dBSx_0_0_0 * dAKy_2_1_0) * Ez[11])) + ((dBSx_0_0_0 * dASy_2_1_0) * Kz_0_1)))) + (w23 * ((((dBKx_0_0_0 * dASy_2_0_0) * Ez[22]) + ((dBSx_0_0_0 * dAKy_2_0_0) * Ez[22])) + ((dBSx_0_0_0 * dASy_2_0_0) * Kz_0_2)))) + (w24 * ((((dBKx_0_2_0 * dASy_1_0_0) * Ez[77]) + ((dBSx_0_2_0 * dAKy_1_0_0) * Ez[77])) + ((dBSx_0_2_0 * dASy_1_0_0) * Kz_1_0)))) + (w25 * ((((dBKx_0_1_0 * dASy_1_1_0) * Ez[77]) + ((dBSx_0_1_0 * dAKy_1_1_0) * Ez[77])) + ((dBSx_0_1_0 * dASy_1_1_0) * Kz_1_0)))) + (w26 * ((((dBKx_0_1_0 * dASy_1_0_0) * Ez[88]) + ((dBSx_0_1_0 * dAKy_1_0_0) * Ez[88])) + ((dBSx_0_1_0 * dASy_1_0_0) * Kz_1_1)))) + (w27 * ((((dBKx_0_0_0 * dASy_1_2_0) * Ez[77]) + ((dBSx_0_0_0 * dAKy_1_2_0) * Ez[77])) + ((dBSx_0_0_0 * dASy_1_2_0) * Kz_1_0)))) + (w28 * ((((dBKx_0_0_0 * dASy_1_1_0) * Ez[88]) + ((dBSx_0_0_0 * dAKy_1_1_0) * Ez[88])) + ((dBSx_0_0_0 * dASy_1_1_0) * Kz_1_1)))) + (w29 * ((((dBKx_0_0_0 * dASy_1_0_0) * Ez[99]) + ((dBSx_0_0_0 * dAKy_1_0_0) * Ez[99])) + ((dBSx_0_0_0 * dASy_1_0_0) * Kz_1_2)))) + (w30 * ((((dBKx_0_2_0 * dASy_0_0_0) * Ez[154]) + ((dBSx_0_2_0 * dAKy_0_0_0) * Ez[154])) + ((dBSx_0_2_0 * dASy_0_0_0) * Kz_2_0)))) + (w31 * ((((dBKx_0_1_0 * dASy_0_1_0) * Ez[154]) + ((dBSx_0_1_0 * dAKy_0_1_0) * Ez[154])) + ((dBSx_0_1_0 * dASy_0_1_0) * Kz_2_0)))) + (w32 * ((((dBKx_0_1_0 * dASy_0_0_0) * Ez[165]) + ((dBSx_0_1_0 * dAKy_0_0_0) * Ez[165])) + ((dBSx_0_1_0 * dASy_0_0_0) * Kz_2_1)))) + (w33 * ((((dBKx_0_0_0 * dASy_0_2_0) * Ez[154]) + ((dBSx_0_0_0 * dAKy_0_2_0) * Ez[154])) + ((dBSx_0_0_0 * dASy_0_2_0) * Kz_2_0)))) + (w34 * ((((dBKx_0_0_0 * dASy_0_1_0) * Ez[165]) + ((dBSx_0_0_0 * dAKy_0_1_0) * Ez[165])) + ((dBSx_0_0_0 * dASy_0_1_0) * Kz_2_1)))) + (w35 * ((((dBKx_0_0_0 * dASy_0_0_0) * Ez[176]) + ((dBSx_0_0_0 * dAKy_0_0_0) * Ez[176])) + ((dBSx_0_0_0 * dASy_0_0_0) * Kz_2_2))));
-        double hAB_11 = ((((((((((((((((((((((((((((((((((((w0 * ((((Kx_2_2 * dABSy_0_0_0) * Ez[0]) + ((Ex[176] * dABKy_0_0_0) * Ez[0])) + ((Ex[176] * dABSy_0_0_0) * Kz_0_0))) + (w1 * ((((Kx_2_1 * dABSy_0_1_0) * Ez[0]) + ((Ex[165] * dABKy_0_1_0) * Ez[0])) + ((Ex[165] * dABSy_0_1_0) * Kz_0_0)))) + (w2 * ((((Kx_2_1 * dABSy_0_0_0) * Ez[11]) + ((Ex[165] * dABKy_0_0_0) * Ez[11])) + ((Ex[165] * dABSy_0_0_0) * Kz_0_1)))) + (w3 * ((((Kx_2_0 * dABSy_0_2_0) * Ez[0]) + ((Ex[154] * dABKy_0_2_0) * Ez[0])) + ((Ex[154] * dABSy_0_2_0) * Kz_0_0)))) + (w4 * ((((Kx_2_0 * dABSy_0_1_0) * Ez[11]) + ((Ex[154] * dABKy_0_1_0) * Ez[11])) + ((Ex[154] * dABSy_0_1_0) * Kz_0_1)))) + (w5 * ((((Kx_2_0 * dABSy_0_0_0) * Ez[22]) + ((Ex[154] * dABKy_0_0_0) * Ez[22])) + ((Ex[154] * dABSy_0_0_0) * Kz_0_2)))) + (w6 * ((((Kx_1_2 * dABSy_1_0_0) * Ez[0]) + ((Ex[99] * dABKy_1_0_0) * Ez[0])) + ((Ex[99] * dABSy_1_0_0) * Kz_0_0)))) + (w7 * ((((Kx_1_1 * dABSy_1_1_0) * Ez[0]) + ((Ex[88] * dABKy_1_1_0) * Ez[0])) + ((Ex[88] * dABSy_1_1_0) * Kz_0_0)))) + (w8 * ((((Kx_1_1 * dABSy_1_0_0) * Ez[11]) + ((Ex[88] * dABKy_1_0_0) * Ez[11])) + ((Ex[88] * dABSy_1_0_0) * Kz_0_1)))) + (w9 * ((((Kx_1_0 * dABSy_1_2_0) * Ez[0]) + ((Ex[77] * dABKy_1_2_0) * Ez[0])) + ((Ex[77] * dABSy_1_2_0) * Kz_0_0)))) + (w10 * ((((Kx_1_0 * dABSy_1_1_0) * Ez[11]) + ((Ex[77] * dABKy_1_1_0) * Ez[11])) + ((Ex[77] * dABSy_1_1_0) * Kz_0_1)))) + (w11 * ((((Kx_1_0 * dABSy_1_0_0) * Ez[22]) + ((Ex[77] * dABKy_1_0_0) * Ez[22])) + ((Ex[77] * dABSy_1_0_0) * Kz_0_2)))) + (w12 * ((((Kx_1_2 * dABSy_0_0_0) * Ez[77]) + ((Ex[99] * dABKy_0_0_0) * Ez[77])) + ((Ex[99] * dABSy_0_0_0) * Kz_1_0)))) + (w13 * ((((Kx_1_1 * dABSy_0_1_0) * Ez[77]) + ((Ex[88] * dABKy_0_1_0) * Ez[77])) + ((Ex[88] * dABSy_0_1_0) * Kz_1_0)))) + (w14 * ((((Kx_1_1 * dABSy_0_0_0) * Ez[88]) + ((Ex[88] * dABKy_0_0_0) * Ez[88])) + ((Ex[88] * dABSy_0_0_0) * Kz_1_1)))) + (w15 * ((((Kx_1_0 * dABSy_0_2_0) * Ez[77]) + ((Ex[77] * dABKy_0_2_0) * Ez[77])) + ((Ex[77] * dABSy_0_2_0) * Kz_1_0)))) + (w16 * ((((Kx_1_0 * dABSy_0_1_0) * Ez[88]) + ((Ex[77] * dABKy_0_1_0) * Ez[88])) + ((Ex[77] * dABSy_0_1_0) * Kz_1_1)))) + (w17 * ((((Kx_1_0 * dABSy_0_0_0) * Ez[99]) + ((Ex[77] * dABKy_0_0_0) * Ez[99])) + ((Ex[77] * dABSy_0_0_0) * Kz_1_2)))) + (w18 * ((((Kx_0_2 * dABSy_2_0_0) * Ez[0]) + ((Ex[22] * dABKy_2_0_0) * Ez[0])) + ((Ex[22] * dABSy_2_0_0) * Kz_0_0)))) + (w19 * ((((Kx_0_1 * dABSy_2_1_0) * Ez[0]) + ((Ex[11] * dABKy_2_1_0) * Ez[0])) + ((Ex[11] * dABSy_2_1_0) * Kz_0_0)))) + (w20 * ((((Kx_0_1 * dABSy_2_0_0) * Ez[11]) + ((Ex[11] * dABKy_2_0_0) * Ez[11])) + ((Ex[11] * dABSy_2_0_0) * Kz_0_1)))) + (w21 * ((((Kx_0_0 * dABSy_2_2_0) * Ez[0]) + ((Ex[0] * dABKy_2_2_0) * Ez[0])) + ((Ex[0] * dABSy_2_2_0) * Kz_0_0)))) + (w22 * ((((Kx_0_0 * dABSy_2_1_0) * Ez[11]) + ((Ex[0] * dABKy_2_1_0) * Ez[11])) + ((Ex[0] * dABSy_2_1_0) * Kz_0_1)))) + (w23 * ((((Kx_0_0 * dABSy_2_0_0) * Ez[22]) + ((Ex[0] * dABKy_2_0_0) * Ez[22])) + ((Ex[0] * dABSy_2_0_0) * Kz_0_2)))) + (w24 * ((((Kx_0_2 * dABSy_1_0_0) * Ez[77]) + ((Ex[22] * dABKy_1_0_0) * Ez[77])) + ((Ex[22] * dABSy_1_0_0) * Kz_1_0)))) + (w25 * ((((Kx_0_1 * dABSy_1_1_0) * Ez[77]) + ((Ex[11] * dABKy_1_1_0) * Ez[77])) + ((Ex[11] * dABSy_1_1_0) * Kz_1_0)))) + (w26 * ((((Kx_0_1 * dABSy_1_0_0) * Ez[88]) + ((Ex[11] * dABKy_1_0_0) * Ez[88])) + ((Ex[11] * dABSy_1_0_0) * Kz_1_1)))) + (w27 * ((((Kx_0_0 * dABSy_1_2_0) * Ez[77]) + ((Ex[0] * dABKy_1_2_0) * Ez[77])) + ((Ex[0] * dABSy_1_2_0) * Kz_1_0)))) + (w28 * ((((Kx_0_0 * dABSy_1_1_0) * Ez[88]) + ((Ex[0] * dABKy_1_1_0) * Ez[88])) + ((Ex[0] * dABSy_1_1_0) * Kz_1_1)))) + (w29 * ((((Kx_0_0 * dABSy_1_0_0) * Ez[99]) + ((Ex[0] * dABKy_1_0_0) * Ez[99])) + ((Ex[0] * dABSy_1_0_0) * Kz_1_2)))) + (w30 * ((((Kx_0_2 * dABSy_0_0_0) * Ez[154]) + ((Ex[22] * dABKy_0_0_0) * Ez[154])) + ((Ex[22] * dABSy_0_0_0) * Kz_2_0)))) + (w31 * ((((Kx_0_1 * dABSy_0_1_0) * Ez[154]) + ((Ex[11] * dABKy_0_1_0) * Ez[154])) + ((Ex[11] * dABSy_0_1_0) * Kz_2_0)))) + (w32 * ((((Kx_0_1 * dABSy_0_0_0) * Ez[165]) + ((Ex[11] * dABKy_0_0_0) * Ez[165])) + ((Ex[11] * dABSy_0_0_0) * Kz_2_1)))) + (w33 * ((((Kx_0_0 * dABSy_0_2_0) * Ez[154]) + ((Ex[0] * dABKy_0_2_0) * Ez[154])) + ((Ex[0] * dABSy_0_2_0) * Kz_2_0)))) + (w34 * ((((Kx_0_0 * dABSy_0_1_0) * Ez[165]) + ((Ex[0] * dABKy_0_1_0) * Ez[165])) + ((Ex[0] * dABSy_0_1_0) * Kz_2_1)))) + (w35 * ((((Kx_0_0 * dABSy_0_0_0) * Ez[176]) + ((Ex[0] * dABKy_0_0_0) * Ez[176])) + ((Ex[0] * dABSy_0_0_0) * Kz_2_2))));
-        double hAB_12 = ((((((((((((((((((((((((((((((((((((w0 * ((((Kx_2_2 * dASy_0_0_0) * dBSz_0_0_0) + ((Ex[176] * dAKy_0_0_0) * dBSz_0_0_0)) + ((Ex[176] * dASy_0_0_0) * dBKz_0_0_0))) + (w1 * ((((Kx_2_1 * dASy_0_1_0) * dBSz_0_0_0) + ((Ex[165] * dAKy_0_1_0) * dBSz_0_0_0)) + ((Ex[165] * dASy_0_1_0) * dBKz_0_0_0)))) + (w2 * ((((Kx_2_1 * dASy_0_0_0) * dBSz_0_1_0) + ((Ex[165] * dAKy_0_0_0) * dBSz_0_1_0)) + ((Ex[165] * dASy_0_0_0) * dBKz_0_1_0)))) + (w3 * ((((Kx_2_0 * dASy_0_2_0) * dBSz_0_0_0) + ((Ex[154] * dAKy_0_2_0) * dBSz_0_0_0)) + ((Ex[154] * dASy_0_2_0) * dBKz_0_0_0)))) + (w4 * ((((Kx_2_0 * dASy_0_1_0) * dBSz_0_1_0) + ((Ex[154] * dAKy_0_1_0) * dBSz_0_1_0)) + ((Ex[154] * dASy_0_1_0) * dBKz_0_1_0)))) + (w5 * ((((Kx_2_0 * dASy_0_0_0) * dBSz_0_2_0) + ((Ex[154] * dAKy_0_0_0) * dBSz_0_2_0)) + ((Ex[154] * dASy_0_0_0) * dBKz_0_2_0)))) + (w6 * ((((Kx_1_2 * dASy_1_0_0) * dBSz_0_0_0) + ((Ex[99] * dAKy_1_0_0) * dBSz_0_0_0)) + ((Ex[99] * dASy_1_0_0) * dBKz_0_0_0)))) + (w7 * ((((Kx_1_1 * dASy_1_1_0) * dBSz_0_0_0) + ((Ex[88] * dAKy_1_1_0) * dBSz_0_0_0)) + ((Ex[88] * dASy_1_1_0) * dBKz_0_0_0)))) + (w8 * ((((Kx_1_1 * dASy_1_0_0) * dBSz_0_1_0) + ((Ex[88] * dAKy_1_0_0) * dBSz_0_1_0)) + ((Ex[88] * dASy_1_0_0) * dBKz_0_1_0)))) + (w9 * ((((Kx_1_0 * dASy_1_2_0) * dBSz_0_0_0) + ((Ex[77] * dAKy_1_2_0) * dBSz_0_0_0)) + ((Ex[77] * dASy_1_2_0) * dBKz_0_0_0)))) + (w10 * ((((Kx_1_0 * dASy_1_1_0) * dBSz_0_1_0) + ((Ex[77] * dAKy_1_1_0) * dBSz_0_1_0)) + ((Ex[77] * dASy_1_1_0) * dBKz_0_1_0)))) + (w11 * ((((Kx_1_0 * dASy_1_0_0) * dBSz_0_2_0) + ((Ex[77] * dAKy_1_0_0) * dBSz_0_2_0)) + ((Ex[77] * dASy_1_0_0) * dBKz_0_2_0)))) + (w12 * ((((Kx_1_2 * dASy_0_0_0) * dBSz_1_0_0) + ((Ex[99] * dAKy_0_0_0) * dBSz_1_0_0)) + ((Ex[99] * dASy_0_0_0) * dBKz_1_0_0)))) + (w13 * ((((Kx_1_1 * dASy_0_1_0) * dBSz_1_0_0) + ((Ex[88] * dAKy_0_1_0) * dBSz_1_0_0)) + ((Ex[88] * dASy_0_1_0) * dBKz_1_0_0)))) + (w14 * ((((Kx_1_1 * dASy_0_0_0) * dBSz_1_1_0) + ((Ex[88] * dAKy_0_0_0) * dBSz_1_1_0)) + ((Ex[88] * dASy_0_0_0) * dBKz_1_1_0)))) + (w15 * ((((Kx_1_0 * dASy_0_2_0) * dBSz_1_0_0) + ((Ex[77] * dAKy_0_2_0) * dBSz_1_0_0)) + ((Ex[77] * dASy_0_2_0) * dBKz_1_0_0)))) + (w16 * ((((Kx_1_0 * dASy_0_1_0) * dBSz_1_1_0) + ((Ex[77] * dAKy_0_1_0) * dBSz_1_1_0)) + ((Ex[77] * dASy_0_1_0) * dBKz_1_1_0)))) + (w17 * ((((Kx_1_0 * dASy_0_0_0) * dBSz_1_2_0) + ((Ex[77] * dAKy_0_0_0) * dBSz_1_2_0)) + ((Ex[77] * dASy_0_0_0) * dBKz_1_2_0)))) + (w18 * ((((Kx_0_2 * dASy_2_0_0) * dBSz_0_0_0) + ((Ex[22] * dAKy_2_0_0) * dBSz_0_0_0)) + ((Ex[22] * dASy_2_0_0) * dBKz_0_0_0)))) + (w19 * ((((Kx_0_1 * dASy_2_1_0) * dBSz_0_0_0) + ((Ex[11] * dAKy_2_1_0) * dBSz_0_0_0)) + ((Ex[11] * dASy_2_1_0) * dBKz_0_0_0)))) + (w20 * ((((Kx_0_1 * dASy_2_0_0) * dBSz_0_1_0) + ((Ex[11] * dAKy_2_0_0) * dBSz_0_1_0)) + ((Ex[11] * dASy_2_0_0) * dBKz_0_1_0)))) + (w21 * ((((Kx_0_0 * dASy_2_2_0) * dBSz_0_0_0) + ((Ex[0] * dAKy_2_2_0) * dBSz_0_0_0)) + ((Ex[0] * dASy_2_2_0) * dBKz_0_0_0)))) + (w22 * ((((Kx_0_0 * dASy_2_1_0) * dBSz_0_1_0) + ((Ex[0] * dAKy_2_1_0) * dBSz_0_1_0)) + ((Ex[0] * dASy_2_1_0) * dBKz_0_1_0)))) + (w23 * ((((Kx_0_0 * dASy_2_0_0) * dBSz_0_2_0) + ((Ex[0] * dAKy_2_0_0) * dBSz_0_2_0)) + ((Ex[0] * dASy_2_0_0) * dBKz_0_2_0)))) + (w24 * ((((Kx_0_2 * dASy_1_0_0) * dBSz_1_0_0) + ((Ex[22] * dAKy_1_0_0) * dBSz_1_0_0)) + ((Ex[22] * dASy_1_0_0) * dBKz_1_0_0)))) + (w25 * ((((Kx_0_1 * dASy_1_1_0) * dBSz_1_0_0) + ((Ex[11] * dAKy_1_1_0) * dBSz_1_0_0)) + ((Ex[11] * dASy_1_1_0) * dBKz_1_0_0)))) + (w26 * ((((Kx_0_1 * dASy_1_0_0) * dBSz_1_1_0) + ((Ex[11] * dAKy_1_0_0) * dBSz_1_1_0)) + ((Ex[11] * dASy_1_0_0) * dBKz_1_1_0)))) + (w27 * ((((Kx_0_0 * dASy_1_2_0) * dBSz_1_0_0) + ((Ex[0] * dAKy_1_2_0) * dBSz_1_0_0)) + ((Ex[0] * dASy_1_2_0) * dBKz_1_0_0)))) + (w28 * ((((Kx_0_0 * dASy_1_1_0) * dBSz_1_1_0) + ((Ex[0] * dAKy_1_1_0) * dBSz_1_1_0)) + ((Ex[0] * dASy_1_1_0) * dBKz_1_1_0)))) + (w29 * ((((Kx_0_0 * dASy_1_0_0) * dBSz_1_2_0) + ((Ex[0] * dAKy_1_0_0) * dBSz_1_2_0)) + ((Ex[0] * dASy_1_0_0) * dBKz_1_2_0)))) + (w30 * ((((Kx_0_2 * dASy_0_0_0) * dBSz_2_0_0) + ((Ex[22] * dAKy_0_0_0) * dBSz_2_0_0)) + ((Ex[22] * dASy_0_0_0) * dBKz_2_0_0)))) + (w31 * ((((Kx_0_1 * dASy_0_1_0) * dBSz_2_0_0) + ((Ex[11] * dAKy_0_1_0) * dBSz_2_0_0)) + ((Ex[11] * dASy_0_1_0) * dBKz_2_0_0)))) + (w32 * ((((Kx_0_1 * dASy_0_0_0) * dBSz_2_1_0) + ((Ex[11] * dAKy_0_0_0) * dBSz_2_1_0)) + ((Ex[11] * dASy_0_0_0) * dBKz_2_1_0)))) + (w33 * ((((Kx_0_0 * dASy_0_2_0) * dBSz_2_0_0) + ((Ex[0] * dAKy_0_2_0) * dBSz_2_0_0)) + ((Ex[0] * dASy_0_2_0) * dBKz_2_0_0)))) + (w34 * ((((Kx_0_0 * dASy_0_1_0) * dBSz_2_1_0) + ((Ex[0] * dAKy_0_1_0) * dBSz_2_1_0)) + ((Ex[0] * dASy_0_1_0) * dBKz_2_1_0)))) + (w35 * ((((Kx_0_0 * dASy_0_0_0) * dBSz_2_2_0) + ((Ex[0] * dAKy_0_0_0) * dBSz_2_2_0)) + ((Ex[0] * dASy_0_0_0) * dBKz_2_2_0))));
-        double hAB_20 = ((((((((((((((((((((((((((((((((((((w0 * ((((dBKx_2_2_0 * Ey[0]) * dASz_0_0_0) + ((dBSx_2_2_0 * Ky_0_0) * dASz_0_0_0)) + ((dBSx_2_2_0 * Ey[0]) * dAKz_0_0_0))) + (w1 * ((((dBKx_2_1_0 * Ey[11]) * dASz_0_0_0) + ((dBSx_2_1_0 * Ky_0_1) * dASz_0_0_0)) + ((dBSx_2_1_0 * Ey[11]) * dAKz_0_0_0)))) + (w2 * ((((dBKx_2_1_0 * Ey[0]) * dASz_0_1_0) + ((dBSx_2_1_0 * Ky_0_0) * dASz_0_1_0)) + ((dBSx_2_1_0 * Ey[0]) * dAKz_0_1_0)))) + (w3 * ((((dBKx_2_0_0 * Ey[22]) * dASz_0_0_0) + ((dBSx_2_0_0 * Ky_0_2) * dASz_0_0_0)) + ((dBSx_2_0_0 * Ey[22]) * dAKz_0_0_0)))) + (w4 * ((((dBKx_2_0_0 * Ey[11]) * dASz_0_1_0) + ((dBSx_2_0_0 * Ky_0_1) * dASz_0_1_0)) + ((dBSx_2_0_0 * Ey[11]) * dAKz_0_1_0)))) + (w5 * ((((dBKx_2_0_0 * Ey[0]) * dASz_0_2_0) + ((dBSx_2_0_0 * Ky_0_0) * dASz_0_2_0)) + ((dBSx_2_0_0 * Ey[0]) * dAKz_0_2_0)))) + (w6 * ((((dBKx_1_2_0 * Ey[77]) * dASz_0_0_0) + ((dBSx_1_2_0 * Ky_1_0) * dASz_0_0_0)) + ((dBSx_1_2_0 * Ey[77]) * dAKz_0_0_0)))) + (w7 * ((((dBKx_1_1_0 * Ey[88]) * dASz_0_0_0) + ((dBSx_1_1_0 * Ky_1_1) * dASz_0_0_0)) + ((dBSx_1_1_0 * Ey[88]) * dAKz_0_0_0)))) + (w8 * ((((dBKx_1_1_0 * Ey[77]) * dASz_0_1_0) + ((dBSx_1_1_0 * Ky_1_0) * dASz_0_1_0)) + ((dBSx_1_1_0 * Ey[77]) * dAKz_0_1_0)))) + (w9 * ((((dBKx_1_0_0 * Ey[99]) * dASz_0_0_0) + ((dBSx_1_0_0 * Ky_1_2) * dASz_0_0_0)) + ((dBSx_1_0_0 * Ey[99]) * dAKz_0_0_0)))) + (w10 * ((((dBKx_1_0_0 * Ey[88]) * dASz_0_1_0) + ((dBSx_1_0_0 * Ky_1_1) * dASz_0_1_0)) + ((dBSx_1_0_0 * Ey[88]) * dAKz_0_1_0)))) + (w11 * ((((dBKx_1_0_0 * Ey[77]) * dASz_0_2_0) + ((dBSx_1_0_0 * Ky_1_0) * dASz_0_2_0)) + ((dBSx_1_0_0 * Ey[77]) * dAKz_0_2_0)))) + (w12 * ((((dBKx_1_2_0 * Ey[0]) * dASz_1_0_0) + ((dBSx_1_2_0 * Ky_0_0) * dASz_1_0_0)) + ((dBSx_1_2_0 * Ey[0]) * dAKz_1_0_0)))) + (w13 * ((((dBKx_1_1_0 * Ey[11]) * dASz_1_0_0) + ((dBSx_1_1_0 * Ky_0_1) * dASz_1_0_0)) + ((dBSx_1_1_0 * Ey[11]) * dAKz_1_0_0)))) + (w14 * ((((dBKx_1_1_0 * Ey[0]) * dASz_1_1_0) + ((dBSx_1_1_0 * Ky_0_0) * dASz_1_1_0)) + ((dBSx_1_1_0 * Ey[0]) * dAKz_1_1_0)))) + (w15 * ((((dBKx_1_0_0 * Ey[22]) * dASz_1_0_0) + ((dBSx_1_0_0 * Ky_0_2) * dASz_1_0_0)) + ((dBSx_1_0_0 * Ey[22]) * dAKz_1_0_0)))) + (w16 * ((((dBKx_1_0_0 * Ey[11]) * dASz_1_1_0) + ((dBSx_1_0_0 * Ky_0_1) * dASz_1_1_0)) + ((dBSx_1_0_0 * Ey[11]) * dAKz_1_1_0)))) + (w17 * ((((dBKx_1_0_0 * Ey[0]) * dASz_1_2_0) + ((dBSx_1_0_0 * Ky_0_0) * dASz_1_2_0)) + ((dBSx_1_0_0 * Ey[0]) * dAKz_1_2_0)))) + (w18 * ((((dBKx_0_2_0 * Ey[154]) * dASz_0_0_0) + ((dBSx_0_2_0 * Ky_2_0) * dASz_0_0_0)) + ((dBSx_0_2_0 * Ey[154]) * dAKz_0_0_0)))) + (w19 * ((((dBKx_0_1_0 * Ey[165]) * dASz_0_0_0) + ((dBSx_0_1_0 * Ky_2_1) * dASz_0_0_0)) + ((dBSx_0_1_0 * Ey[165]) * dAKz_0_0_0)))) + (w20 * ((((dBKx_0_1_0 * Ey[154]) * dASz_0_1_0) + ((dBSx_0_1_0 * Ky_2_0) * dASz_0_1_0)) + ((dBSx_0_1_0 * Ey[154]) * dAKz_0_1_0)))) + (w21 * ((((dBKx_0_0_0 * Ey[176]) * dASz_0_0_0) + ((dBSx_0_0_0 * Ky_2_2) * dASz_0_0_0)) + ((dBSx_0_0_0 * Ey[176]) * dAKz_0_0_0)))) + (w22 * ((((dBKx_0_0_0 * Ey[165]) * dASz_0_1_0) + ((dBSx_0_0_0 * Ky_2_1) * dASz_0_1_0)) + ((dBSx_0_0_0 * Ey[165]) * dAKz_0_1_0)))) + (w23 * ((((dBKx_0_0_0 * Ey[154]) * dASz_0_2_0) + ((dBSx_0_0_0 * Ky_2_0) * dASz_0_2_0)) + ((dBSx_0_0_0 * Ey[154]) * dAKz_0_2_0)))) + (w24 * ((((dBKx_0_2_0 * Ey[77]) * dASz_1_0_0) + ((dBSx_0_2_0 * Ky_1_0) * dASz_1_0_0)) + ((dBSx_0_2_0 * Ey[77]) * dAKz_1_0_0)))) + (w25 * ((((dBKx_0_1_0 * Ey[88]) * dASz_1_0_0) + ((dBSx_0_1_0 * Ky_1_1) * dASz_1_0_0)) + ((dBSx_0_1_0 * Ey[88]) * dAKz_1_0_0)))) + (w26 * ((((dBKx_0_1_0 * Ey[77]) * dASz_1_1_0) + ((dBSx_0_1_0 * Ky_1_0) * dASz_1_1_0)) + ((dBSx_0_1_0 * Ey[77]) * dAKz_1_1_0)))) + (w27 * ((((dBKx_0_0_0 * Ey[99]) * dASz_1_0_0) + ((dBSx_0_0_0 * Ky_1_2) * dASz_1_0_0)) + ((dBSx_0_0_0 * Ey[99]) * dAKz_1_0_0)))) + (w28 * ((((dBKx_0_0_0 * Ey[88]) * dASz_1_1_0) + ((dBSx_0_0_0 * Ky_1_1) * dASz_1_1_0)) + ((dBSx_0_0_0 * Ey[88]) * dAKz_1_1_0)))) + (w29 * ((((dBKx_0_0_0 * Ey[77]) * dASz_1_2_0) + ((dBSx_0_0_0 * Ky_1_0) * dASz_1_2_0)) + ((dBSx_0_0_0 * Ey[77]) * dAKz_1_2_0)))) + (w30 * ((((dBKx_0_2_0 * Ey[0]) * dASz_2_0_0) + ((dBSx_0_2_0 * Ky_0_0) * dASz_2_0_0)) + ((dBSx_0_2_0 * Ey[0]) * dAKz_2_0_0)))) + (w31 * ((((dBKx_0_1_0 * Ey[11]) * dASz_2_0_0) + ((dBSx_0_1_0 * Ky_0_1) * dASz_2_0_0)) + ((dBSx_0_1_0 * Ey[11]) * dAKz_2_0_0)))) + (w32 * ((((dBKx_0_1_0 * Ey[0]) * dASz_2_1_0) + ((dBSx_0_1_0 * Ky_0_0) * dASz_2_1_0)) + ((dBSx_0_1_0 * Ey[0]) * dAKz_2_1_0)))) + (w33 * ((((dBKx_0_0_0 * Ey[22]) * dASz_2_0_0) + ((dBSx_0_0_0 * Ky_0_2) * dASz_2_0_0)) + ((dBSx_0_0_0 * Ey[22]) * dAKz_2_0_0)))) + (w34 * ((((dBKx_0_0_0 * Ey[11]) * dASz_2_1_0) + ((dBSx_0_0_0 * Ky_0_1) * dASz_2_1_0)) + ((dBSx_0_0_0 * Ey[11]) * dAKz_2_1_0)))) + (w35 * ((((dBKx_0_0_0 * Ey[0]) * dASz_2_2_0) + ((dBSx_0_0_0 * Ky_0_0) * dASz_2_2_0)) + ((dBSx_0_0_0 * Ey[0]) * dAKz_2_2_0))));
-        double hAB_21 = ((((((((((((((((((((((((((((((((((((w0 * ((((Kx_2_2 * dBSy_0_0_0) * dASz_0_0_0) + ((Ex[176] * dBKy_0_0_0) * dASz_0_0_0)) + ((Ex[176] * dBSy_0_0_0) * dAKz_0_0_0))) + (w1 * ((((Kx_2_1 * dBSy_0_1_0) * dASz_0_0_0) + ((Ex[165] * dBKy_0_1_0) * dASz_0_0_0)) + ((Ex[165] * dBSy_0_1_0) * dAKz_0_0_0)))) + (w2 * ((((Kx_2_1 * dBSy_0_0_0) * dASz_0_1_0) + ((Ex[165] * dBKy_0_0_0) * dASz_0_1_0)) + ((Ex[165] * dBSy_0_0_0) * dAKz_0_1_0)))) + (w3 * ((((Kx_2_0 * dBSy_0_2_0) * dASz_0_0_0) + ((Ex[154] * dBKy_0_2_0) * dASz_0_0_0)) + ((Ex[154] * dBSy_0_2_0) * dAKz_0_0_0)))) + (w4 * ((((Kx_2_0 * dBSy_0_1_0) * dASz_0_1_0) + ((Ex[154] * dBKy_0_1_0) * dASz_0_1_0)) + ((Ex[154] * dBSy_0_1_0) * dAKz_0_1_0)))) + (w5 * ((((Kx_2_0 * dBSy_0_0_0) * dASz_0_2_0) + ((Ex[154] * dBKy_0_0_0) * dASz_0_2_0)) + ((Ex[154] * dBSy_0_0_0) * dAKz_0_2_0)))) + (w6 * ((((Kx_1_2 * dBSy_1_0_0) * dASz_0_0_0) + ((Ex[99] * dBKy_1_0_0) * dASz_0_0_0)) + ((Ex[99] * dBSy_1_0_0) * dAKz_0_0_0)))) + (w7 * ((((Kx_1_1 * dBSy_1_1_0) * dASz_0_0_0) + ((Ex[88] * dBKy_1_1_0) * dASz_0_0_0)) + ((Ex[88] * dBSy_1_1_0) * dAKz_0_0_0)))) + (w8 * ((((Kx_1_1 * dBSy_1_0_0) * dASz_0_1_0) + ((Ex[88] * dBKy_1_0_0) * dASz_0_1_0)) + ((Ex[88] * dBSy_1_0_0) * dAKz_0_1_0)))) + (w9 * ((((Kx_1_0 * dBSy_1_2_0) * dASz_0_0_0) + ((Ex[77] * dBKy_1_2_0) * dASz_0_0_0)) + ((Ex[77] * dBSy_1_2_0) * dAKz_0_0_0)))) + (w10 * ((((Kx_1_0 * dBSy_1_1_0) * dASz_0_1_0) + ((Ex[77] * dBKy_1_1_0) * dASz_0_1_0)) + ((Ex[77] * dBSy_1_1_0) * dAKz_0_1_0)))) + (w11 * ((((Kx_1_0 * dBSy_1_0_0) * dASz_0_2_0) + ((Ex[77] * dBKy_1_0_0) * dASz_0_2_0)) + ((Ex[77] * dBSy_1_0_0) * dAKz_0_2_0)))) + (w12 * ((((Kx_1_2 * dBSy_0_0_0) * dASz_1_0_0) + ((Ex[99] * dBKy_0_0_0) * dASz_1_0_0)) + ((Ex[99] * dBSy_0_0_0) * dAKz_1_0_0)))) + (w13 * ((((Kx_1_1 * dBSy_0_1_0) * dASz_1_0_0) + ((Ex[88] * dBKy_0_1_0) * dASz_1_0_0)) + ((Ex[88] * dBSy_0_1_0) * dAKz_1_0_0)))) + (w14 * ((((Kx_1_1 * dBSy_0_0_0) * dASz_1_1_0) + ((Ex[88] * dBKy_0_0_0) * dASz_1_1_0)) + ((Ex[88] * dBSy_0_0_0) * dAKz_1_1_0)))) + (w15 * ((((Kx_1_0 * dBSy_0_2_0) * dASz_1_0_0) + ((Ex[77] * dBKy_0_2_0) * dASz_1_0_0)) + ((Ex[77] * dBSy_0_2_0) * dAKz_1_0_0)))) + (w16 * ((((Kx_1_0 * dBSy_0_1_0) * dASz_1_1_0) + ((Ex[77] * dBKy_0_1_0) * dASz_1_1_0)) + ((Ex[77] * dBSy_0_1_0) * dAKz_1_1_0)))) + (w17 * ((((Kx_1_0 * dBSy_0_0_0) * dASz_1_2_0) + ((Ex[77] * dBKy_0_0_0) * dASz_1_2_0)) + ((Ex[77] * dBSy_0_0_0) * dAKz_1_2_0)))) + (w18 * ((((Kx_0_2 * dBSy_2_0_0) * dASz_0_0_0) + ((Ex[22] * dBKy_2_0_0) * dASz_0_0_0)) + ((Ex[22] * dBSy_2_0_0) * dAKz_0_0_0)))) + (w19 * ((((Kx_0_1 * dBSy_2_1_0) * dASz_0_0_0) + ((Ex[11] * dBKy_2_1_0) * dASz_0_0_0)) + ((Ex[11] * dBSy_2_1_0) * dAKz_0_0_0)))) + (w20 * ((((Kx_0_1 * dBSy_2_0_0) * dASz_0_1_0) + ((Ex[11] * dBKy_2_0_0) * dASz_0_1_0)) + ((Ex[11] * dBSy_2_0_0) * dAKz_0_1_0)))) + (w21 * ((((Kx_0_0 * dBSy_2_2_0) * dASz_0_0_0) + ((Ex[0] * dBKy_2_2_0) * dASz_0_0_0)) + ((Ex[0] * dBSy_2_2_0) * dAKz_0_0_0)))) + (w22 * ((((Kx_0_0 * dBSy_2_1_0) * dASz_0_1_0) + ((Ex[0] * dBKy_2_1_0) * dASz_0_1_0)) + ((Ex[0] * dBSy_2_1_0) * dAKz_0_1_0)))) + (w23 * ((((Kx_0_0 * dBSy_2_0_0) * dASz_0_2_0) + ((Ex[0] * dBKy_2_0_0) * dASz_0_2_0)) + ((Ex[0] * dBSy_2_0_0) * dAKz_0_2_0)))) + (w24 * ((((Kx_0_2 * dBSy_1_0_0) * dASz_1_0_0) + ((Ex[22] * dBKy_1_0_0) * dASz_1_0_0)) + ((Ex[22] * dBSy_1_0_0) * dAKz_1_0_0)))) + (w25 * ((((Kx_0_1 * dBSy_1_1_0) * dASz_1_0_0) + ((Ex[11] * dBKy_1_1_0) * dASz_1_0_0)) + ((Ex[11] * dBSy_1_1_0) * dAKz_1_0_0)))) + (w26 * ((((Kx_0_1 * dBSy_1_0_0) * dASz_1_1_0) + ((Ex[11] * dBKy_1_0_0) * dASz_1_1_0)) + ((Ex[11] * dBSy_1_0_0) * dAKz_1_1_0)))) + (w27 * ((((Kx_0_0 * dBSy_1_2_0) * dASz_1_0_0) + ((Ex[0] * dBKy_1_2_0) * dASz_1_0_0)) + ((Ex[0] * dBSy_1_2_0) * dAKz_1_0_0)))) + (w28 * ((((Kx_0_0 * dBSy_1_1_0) * dASz_1_1_0) + ((Ex[0] * dBKy_1_1_0) * dASz_1_1_0)) + ((Ex[0] * dBSy_1_1_0) * dAKz_1_1_0)))) + (w29 * ((((Kx_0_0 * dBSy_1_0_0) * dASz_1_2_0) + ((Ex[0] * dBKy_1_0_0) * dASz_1_2_0)) + ((Ex[0] * dBSy_1_0_0) * dAKz_1_2_0)))) + (w30 * ((((Kx_0_2 * dBSy_0_0_0) * dASz_2_0_0) + ((Ex[22] * dBKy_0_0_0) * dASz_2_0_0)) + ((Ex[22] * dBSy_0_0_0) * dAKz_2_0_0)))) + (w31 * ((((Kx_0_1 * dBSy_0_1_0) * dASz_2_0_0) + ((Ex[11] * dBKy_0_1_0) * dASz_2_0_0)) + ((Ex[11] * dBSy_0_1_0) * dAKz_2_0_0)))) + (w32 * ((((Kx_0_1 * dBSy_0_0_0) * dASz_2_1_0) + ((Ex[11] * dBKy_0_0_0) * dASz_2_1_0)) + ((Ex[11] * dBSy_0_0_0) * dAKz_2_1_0)))) + (w33 * ((((Kx_0_0 * dBSy_0_2_0) * dASz_2_0_0) + ((Ex[0] * dBKy_0_2_0) * dASz_2_0_0)) + ((Ex[0] * dBSy_0_2_0) * dAKz_2_0_0)))) + (w34 * ((((Kx_0_0 * dBSy_0_1_0) * dASz_2_1_0) + ((Ex[0] * dBKy_0_1_0) * dASz_2_1_0)) + ((Ex[0] * dBSy_0_1_0) * dAKz_2_1_0)))) + (w35 * ((((Kx_0_0 * dBSy_0_0_0) * dASz_2_2_0) + ((Ex[0] * dBKy_0_0_0) * dASz_2_2_0)) + ((Ex[0] * dBSy_0_0_0) * dAKz_2_2_0))));
-        double hAB_22 = ((((((((((((((((((((((((((((((((((((w0 * ((((Kx_2_2 * Ey[0]) * dABSz_0_0_0) + ((Ex[176] * Ky_0_0) * dABSz_0_0_0)) + ((Ex[176] * Ey[0]) * dABKz_0_0_0))) + (w1 * ((((Kx_2_1 * Ey[11]) * dABSz_0_0_0) + ((Ex[165] * Ky_0_1) * dABSz_0_0_0)) + ((Ex[165] * Ey[11]) * dABKz_0_0_0)))) + (w2 * ((((Kx_2_1 * Ey[0]) * dABSz_0_1_0) + ((Ex[165] * Ky_0_0) * dABSz_0_1_0)) + ((Ex[165] * Ey[0]) * dABKz_0_1_0)))) + (w3 * ((((Kx_2_0 * Ey[22]) * dABSz_0_0_0) + ((Ex[154] * Ky_0_2) * dABSz_0_0_0)) + ((Ex[154] * Ey[22]) * dABKz_0_0_0)))) + (w4 * ((((Kx_2_0 * Ey[11]) * dABSz_0_1_0) + ((Ex[154] * Ky_0_1) * dABSz_0_1_0)) + ((Ex[154] * Ey[11]) * dABKz_0_1_0)))) + (w5 * ((((Kx_2_0 * Ey[0]) * dABSz_0_2_0) + ((Ex[154] * Ky_0_0) * dABSz_0_2_0)) + ((Ex[154] * Ey[0]) * dABKz_0_2_0)))) + (w6 * ((((Kx_1_2 * Ey[77]) * dABSz_0_0_0) + ((Ex[99] * Ky_1_0) * dABSz_0_0_0)) + ((Ex[99] * Ey[77]) * dABKz_0_0_0)))) + (w7 * ((((Kx_1_1 * Ey[88]) * dABSz_0_0_0) + ((Ex[88] * Ky_1_1) * dABSz_0_0_0)) + ((Ex[88] * Ey[88]) * dABKz_0_0_0)))) + (w8 * ((((Kx_1_1 * Ey[77]) * dABSz_0_1_0) + ((Ex[88] * Ky_1_0) * dABSz_0_1_0)) + ((Ex[88] * Ey[77]) * dABKz_0_1_0)))) + (w9 * ((((Kx_1_0 * Ey[99]) * dABSz_0_0_0) + ((Ex[77] * Ky_1_2) * dABSz_0_0_0)) + ((Ex[77] * Ey[99]) * dABKz_0_0_0)))) + (w10 * ((((Kx_1_0 * Ey[88]) * dABSz_0_1_0) + ((Ex[77] * Ky_1_1) * dABSz_0_1_0)) + ((Ex[77] * Ey[88]) * dABKz_0_1_0)))) + (w11 * ((((Kx_1_0 * Ey[77]) * dABSz_0_2_0) + ((Ex[77] * Ky_1_0) * dABSz_0_2_0)) + ((Ex[77] * Ey[77]) * dABKz_0_2_0)))) + (w12 * ((((Kx_1_2 * Ey[0]) * dABSz_1_0_0) + ((Ex[99] * Ky_0_0) * dABSz_1_0_0)) + ((Ex[99] * Ey[0]) * dABKz_1_0_0)))) + (w13 * ((((Kx_1_1 * Ey[11]) * dABSz_1_0_0) + ((Ex[88] * Ky_0_1) * dABSz_1_0_0)) + ((Ex[88] * Ey[11]) * dABKz_1_0_0)))) + (w14 * ((((Kx_1_1 * Ey[0]) * dABSz_1_1_0) + ((Ex[88] * Ky_0_0) * dABSz_1_1_0)) + ((Ex[88] * Ey[0]) * dABKz_1_1_0)))) + (w15 * ((((Kx_1_0 * Ey[22]) * dABSz_1_0_0) + ((Ex[77] * Ky_0_2) * dABSz_1_0_0)) + ((Ex[77] * Ey[22]) * dABKz_1_0_0)))) + (w16 * ((((Kx_1_0 * Ey[11]) * dABSz_1_1_0) + ((Ex[77] * Ky_0_1) * dABSz_1_1_0)) + ((Ex[77] * Ey[11]) * dABKz_1_1_0)))) + (w17 * ((((Kx_1_0 * Ey[0]) * dABSz_1_2_0) + ((Ex[77] * Ky_0_0) * dABSz_1_2_0)) + ((Ex[77] * Ey[0]) * dABKz_1_2_0)))) + (w18 * ((((Kx_0_2 * Ey[154]) * dABSz_0_0_0) + ((Ex[22] * Ky_2_0) * dABSz_0_0_0)) + ((Ex[22] * Ey[154]) * dABKz_0_0_0)))) + (w19 * ((((Kx_0_1 * Ey[165]) * dABSz_0_0_0) + ((Ex[11] * Ky_2_1) * dABSz_0_0_0)) + ((Ex[11] * Ey[165]) * dABKz_0_0_0)))) + (w20 * ((((Kx_0_1 * Ey[154]) * dABSz_0_1_0) + ((Ex[11] * Ky_2_0) * dABSz_0_1_0)) + ((Ex[11] * Ey[154]) * dABKz_0_1_0)))) + (w21 * ((((Kx_0_0 * Ey[176]) * dABSz_0_0_0) + ((Ex[0] * Ky_2_2) * dABSz_0_0_0)) + ((Ex[0] * Ey[176]) * dABKz_0_0_0)))) + (w22 * ((((Kx_0_0 * Ey[165]) * dABSz_0_1_0) + ((Ex[0] * Ky_2_1) * dABSz_0_1_0)) + ((Ex[0] * Ey[165]) * dABKz_0_1_0)))) + (w23 * ((((Kx_0_0 * Ey[154]) * dABSz_0_2_0) + ((Ex[0] * Ky_2_0) * dABSz_0_2_0)) + ((Ex[0] * Ey[154]) * dABKz_0_2_0)))) + (w24 * ((((Kx_0_2 * Ey[77]) * dABSz_1_0_0) + ((Ex[22] * Ky_1_0) * dABSz_1_0_0)) + ((Ex[22] * Ey[77]) * dABKz_1_0_0)))) + (w25 * ((((Kx_0_1 * Ey[88]) * dABSz_1_0_0) + ((Ex[11] * Ky_1_1) * dABSz_1_0_0)) + ((Ex[11] * Ey[88]) * dABKz_1_0_0)))) + (w26 * ((((Kx_0_1 * Ey[77]) * dABSz_1_1_0) + ((Ex[11] * Ky_1_0) * dABSz_1_1_0)) + ((Ex[11] * Ey[77]) * dABKz_1_1_0)))) + (w27 * ((((Kx_0_0 * Ey[99]) * dABSz_1_0_0) + ((Ex[0] * Ky_1_2) * dABSz_1_0_0)) + ((Ex[0] * Ey[99]) * dABKz_1_0_0)))) + (w28 * ((((Kx_0_0 * Ey[88]) * dABSz_1_1_0) + ((Ex[0] * Ky_1_1) * dABSz_1_1_0)) + ((Ex[0] * Ey[88]) * dABKz_1_1_0)))) + (w29 * ((((Kx_0_0 * Ey[77]) * dABSz_1_2_0) + ((Ex[0] * Ky_1_0) * dABSz_1_2_0)) + ((Ex[0] * Ey[77]) * dABKz_1_2_0)))) + (w30 * ((((Kx_0_2 * Ey[0]) * dABSz_2_0_0) + ((Ex[22] * Ky_0_0) * dABSz_2_0_0)) + ((Ex[22] * Ey[0]) * dABKz_2_0_0)))) + (w31 * ((((Kx_0_1 * Ey[11]) * dABSz_2_0_0) + ((Ex[11] * Ky_0_1) * dABSz_2_0_0)) + ((Ex[11] * Ey[11]) * dABKz_2_0_0)))) + (w32 * ((((Kx_0_1 * Ey[0]) * dABSz_2_1_0) + ((Ex[11] * Ky_0_0) * dABSz_2_1_0)) + ((Ex[11] * Ey[0]) * dABKz_2_1_0)))) + (w33 * ((((Kx_0_0 * Ey[22]) * dABSz_2_0_0) + ((Ex[0] * Ky_0_2) * dABSz_2_0_0)) + ((Ex[0] * Ey[22]) * dABKz_2_0_0)))) + (w34 * ((((Kx_0_0 * Ey[11]) * dABSz_2_1_0) + ((Ex[0] * Ky_0_1) * dABSz_2_1_0)) + ((Ex[0] * Ey[11]) * dABKz_2_1_0)))) + (w35 * ((((Kx_0_0 * Ey[0]) * dABSz_2_2_0) + ((Ex[0] * Ky_0_0) * dABSz_2_2_0)) + ((Ex[0] * Ey[0]) * dABKz_2_2_0))));
         // AtomicAdd: every record of every pair on an atom adds into that atom's
         // blocks of H
         atomicAdd(&H[(((aa * 3 + 0) * n_atom + aa) * 3 + 0)], (sk * hAA_00));

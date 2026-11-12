@@ -246,9 +246,9 @@ SMs × `maxThreadsPerMultiProcessor` (68 × 1536 = 104,448 on the 3080), from
 that kernel's first launch on. The driver raises the stack limit
 (`wwrLimitStackSize`, 1024 B in a fresh context) to the kernel's stack and
 keeps it, so the reservation is the largest stack launched so far times the
-thread count. The generated integral kernels' stacks reach 23,192 B
-(`kinetic_hessian<3,3>`; `cuobjdump --dump-resource-usage`), so a run that
-launches it holds 2.2 GiB more than a fresh context.
+thread count. The generated integral kernels' stacks reach 18,912 B
+(`d2eri3<3,3,6>`; `cuobjdump --dump-resource-usage`), so a run that
+launches it holds 1.8 GiB more than a fresh context.
 
 Measured on the 3080 (driver 580.126.20, CUDA 13.0) by a scratch program
 reading `wwrMemGetInfo` and the limit around one-block launches of kernels
@@ -281,6 +281,27 @@ for it: a pool holding 7712 MiB cached (release threshold past it), with
 1178 MiB free on the card, held 0 B once the limit was raised to 23,192 B,
 and an allocation of the old size from it then failed. So a pre-warmed,
 capped pool can lose its cache to the stack mid-run.
+
+**The tree's kernels are emitted to keep this down** (#1263). Every class
+whose FelizJueves default form needed more than 8 KiB takes the
+lowest-stack form FelizJueves offers (`tools/emit/lowstack.py`): an
+existing low-stack form the default picks only from a higher `L` floor, the
+low-stack `d2s` / `d2t`, or `d2eri3`'s compact bra tables. Read off the
+built binary (3586 kernels, sm_86):
+
+| | Before | After |
+| --- | --- | --- |
+| largest stack | 23,192 B, `kinetic_hessian<3,3>` | 18,912 B, `d2eri3<3,3,6>` |
+| reservation at that stack | 2310 MiB | 1884 MiB |
+| kernels over 8 KiB | 89 | 63 |
+| a DF cc-pVDZ/cc-pVDZ-JKFIT Hessian's largest (d orbitals, f aux) | 17,784 B, `potential_hessian<1,2>` (1771 MiB) | 9,360 B, `d2eri3<2,2,3>` (932 MiB) |
+
+The target, 8 KiB (816 MiB), is not reached at f: the compact `d2eri3`'s
+(ff|·) classes still hold a per-lane Hermite tower `R` (680 doubles at
+(ff|i), 5.4 KB alone) and `U`, and shedding them needs another mapping, not
+a layout (#1265 tracks the residue). Next below are `potential_hessian<3,3>` (16,912 B, the low-stack
+`d2v`), `e_hermite<7,6>` (15,808 B, the gradient's raised `[p|q]` row) and
+the low-stack `geri3` / `xeri3` / `gk` at f.
 
 `Device::stack_growth(per_thread)` is what is still to come: the limit's
 shortfall from `per_thread` times the thread count.

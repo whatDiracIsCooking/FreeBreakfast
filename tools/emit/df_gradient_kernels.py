@@ -24,8 +24,10 @@ specializations of two templates rather than as free kernels:
 Each builder picks its own form per class: from FelizJueves's measured `L`
 floors (`kernel_gmetric.LOWSTACK_MIN_L`, `kernel_geri3.LOWSTACK_MIN_L`) the
 low-stack one, which holds no density and keeps (ff|i) under its stack budget
-(FelizJueves's docs/implementation/gradient.md, "The low-stack form"). Nothing
-here forces either.
+(FelizJueves's docs/implementation/gradient.md, "The low-stack form").
+tools/emit/lowstack.py's classes, over the stack target in their default form,
+are emitted low-stack instead (#1263): `gmetric<3,6>`, `<4,5>`, `geri3<1,2,1>`,
+`<2,2,0>`.
 
 Every [n, 3] record vector is split into three flat arrays
 (`ir.passes.split_axes`), named as tools/emit/df_kernels.py names the energy
@@ -72,6 +74,7 @@ from felizjueves.gradient.kernel_ipmetric import (  # noqa: E402
 from felizjueves.gradient.kernel_xeri3 import build_xeri3_kernel  # noqa: E402
 from felizjueves.ir.passes import split_axes  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
+from lowstack import forced  # noqa: E402
 
 # The orbital limit, f: kThreeCenterMaxMomentum (module docstring).
 MAX_L = 3
@@ -97,11 +100,13 @@ BRA_AXES = {
 
 
 def gmetric(cls: tuple[int, int]):
-    return split_axes(build_gmetric_kernel(cls), AUX_AXES)
+    return split_axes(build_gmetric_kernel(cls, **forced("gmetric", cls)), AUX_AXES)
 
 
 def geri3(cls: tuple[int, int, int]):
-    return split_axes(build_geri3_kernel(cls), {**BRA_AXES, **AUX_AXES})
+    return split_axes(
+        build_geri3_kernel(cls, **forced("geri3", cls)), {**BRA_AXES, **AUX_AXES}
+    )
 
 
 def ipmetric(cls: tuple[int, int]):

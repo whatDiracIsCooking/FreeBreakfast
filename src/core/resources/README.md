@@ -245,7 +245,7 @@ if (const size_t budget = FBF_TRY(res.memory_budget()); need > budget) {
 | `memory_budget()` | `Result<size_t>`: the limit less the pool's `UsedMemCurrent`, at least 0 |
 | `pool_cap()` | the `Device` pool's cap, in bytes, the constructor's fifth argument; 0 for none |
 | `kDeviceReserve` | 256 MiB: what the process holds on the device outside any pool, the kernels' stack aside |
-| `kKernelStackBytes` | 23,192 B: the largest per-thread stack of any kernel the tree launches; the budget leaves room for it (below) |
+| `kKernelStackBytes` | 18,912 B: the largest per-thread stack of any kernel the tree launches; the budget leaves room for it (below) |
 | `kOwnPoolBytes` | 4 B: what a `DeviceResources` holds in its own pool from construction besides the device workspace, the `info()` flag; pre-flight's device room takes it off the cap |
 
 **The limit** is `pool_cap()` under a cap. With none it is the device's total
@@ -264,7 +264,7 @@ it.
 
 **Nor what the kernels' stack will take.** CUDA holds a kernel's stack for
 every resident thread, outside the pool, from that kernel's first launch on:
-up to `kKernelStackBytes` × 104,448 threads, 2.2 GiB, on the 3080, most of
+up to `kKernelStackBytes` × 104,448 threads, 1.8 GiB, on the 3080, most of
 it arriving mid-run, after a step has read its budget (#1259). The supply
 leaves out `Device::stack_growth(kKernelStackBytes)`, what the
 stack can still grow by, so a step that fills the budget leaves the stack
