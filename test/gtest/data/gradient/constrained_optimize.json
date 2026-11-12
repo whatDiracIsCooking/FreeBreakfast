@@ -1,0 +1,130 @@
+{
+ "description": "geomeTRIC's constrained DF-RHF minimum over PySCF, the reference [optimize]'s constraints test derives its bars from; coordinates in bohr, distances in Angstrom, energies in hartree, forces and multipliers in hartree/bohr, k_min in hartree/bohr^2",
+ "provenance": {
+  "pyscf": "2.14.0",
+  "geometric": "1.1.1",
+  "numpy": "2.5.4",
+  "threads": 1,
+  "command": "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/constrained_optimize_reference.py"
+ },
+ "name": "h2co_skew_ccpvdz_constrained",
+ "basis": "cc-pvdz",
+ "aux_basis": "cc-pvdz-jkfit",
+ "charge": 0,
+ "constraints": [
+  {
+   "atoms": [
+    0,
+    1
+   ],
+   "distance": 1.25
+  },
+  {
+   "atoms": [
+    0,
+    2
+   ],
+   "distance": 1.15
+  }
+ ],
+ "start": [
+  {
+   "symbol": "C",
+   "z": 6,
+   "coord": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "symbol": "O",
+   "z": 8,
+   "coord": [
+    0.12,
+    -0.08,
+    2.29
+   ]
+  },
+  {
+   "symbol": "H",
+   "z": 1,
+   "coord": [
+    0.45,
+    1.74,
+    -1.13
+   ]
+  },
+  {
+   "symbol": "H",
+   "z": 1,
+   "coord": [
+    -0.31,
+    -1.81,
+    -1.02
+   ]
+  }
+ ],
+ "atoms": [
+  {
+   "symbol": "C",
+   "z": 6,
+   "coord": [
+    0.059177947633218,
+    -0.061245204518652896,
+    -0.0042987183574911885
+   ]
+  },
+  {
+   "symbol": "O",
+   "z": 8,
+   "coord": [
+    0.10544905965980128,
+    -0.0462728812295644,
+    2.357358243289917
+   ]
+  },
+  {
+   "symbol": "H",
+   "z": 1,
+   "coord": [
+    0.4278112134036526,
+    1.7500685880082465,
+    -1.1470957663399448
+   ]
+  },
+  {
+   "symbol": "H",
+   "z": 1,
+   "coord": [
+    -0.3324382206967515,
+    -1.7925505022620634,
+    -1.065963758591162
+   ]
+  }
+ ],
+ "energy": -113.86769865291184,
+ "distances": [
+  1.2500000000401568,
+  1.1500000000369441
+ ],
+ "distance_errors": [
+  4.015676680069191e-11,
+  3.694422545663656e-11
+ ],
+ "multipliers": [
+  0.11284814546205088,
+  0.03286308901847326
+ ],
+ "max_force": 2.7941230668993966e-10,
+ "force_norm": 3.8795332274489525e-10,
+ "k_min": 0.13738526896573677,
+ "free_curvatures": [
+  0.13738526896573677,
+  0.1751679221428776,
+  0.24396874984727357,
+  0.6593518396282784
+ ],
+ "geometric_steps": 11,
+ "optimizer": "geomeTRIC's optimizer (pyscf.geomopt.geometric_solver) over PySCF's analytic DF-RHF gradient, the constraints a $set distance block, criteria {'convergence_energy': 1e-11, 'convergence_grms': 1e-07, 'convergence_gmax': 1.5e-07, 'convergence_drms': 1e-06, 'convergence_dmax': 1.5e-06, 'convergence_cmax': 1e-10, 'enforce': 0.1}; max_force, force_norm, multipliers and k_min from one fresh evaluation at its end point, k_min over the free coordinates of the Lagrangian's Hessian (central difference, step 0.001 bohr)"
+}

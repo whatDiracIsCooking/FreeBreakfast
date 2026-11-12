@@ -43,7 +43,9 @@ struct OptimizeStep {
   static constexpr std::string_view kName = "optimize";
 
   /// @brief The convergence thresholds (hartree / bohr, bohr) and the step
-  /// cap, and the trust radius and starting Hessian, @c geometry::optimize's.
+  /// cap, and the trust radius and starting Hessian, @c geometry::optimize's;
+  /// and its distance constraints (atoms 0-based as the xyz orders them,
+  /// distances in bohr), held fixed over any chain but @ref meci's.
   geometry::Options options{};
 
   /// @brief The chain rerun at every geometry, configured as the config's own
@@ -110,6 +112,12 @@ struct OptimizeStep {
   /// pair, the third-state margin E_{Q+1} - E_Q (Q the higher of the pair;
   /// null when there is none) and the CASSCF's smallest root gap.
   ///
+  /// Under options.constraints each entry also has "constraints", one
+  /// {"atoms", "distance" (Angstrom), "multiplier" (hartree / bohr)} per
+  /// constraint at that geometry, and "projected_gradient_norm", the 2-norm
+  /// of the gradient projected off the rigid motions and the constraints;
+  /// and a converged head has "constraints" at the optimum.
+  ///
   /// The trajectory and the history are written as the walk goes, by
   /// @ref recorded_optimize: a walk that fails leaves the evaluations before
   /// the failure in both, the history with the failure's message as "error"
@@ -149,7 +157,8 @@ struct OptimizeStep {
   ///         device, ErrorKind::GpuRuntime; with both @ref casscf_gradient
   ///         and @ref nevpt2_gradient set, InvalidConfig, and under either
   ///         with an integral-direct @ref eri, Unsupported, before anything
-  ///         runs, as are @ref check_meci's refusals; under @ref meci,
+  ///         runs, as are @ref check_meci's refusals and, once the start is
+  ///         read, @ref check_constraint_atoms'; under @ref meci,
   ///         @ref pair_overlap's Numerical error at the evaluation where the
   ///         pair is lost, or @c mcscf::df_intersection's (over QD states,
   ///         @c nevpt2::qd_sc_intersection's or qd_pc_intersection's); over a
@@ -203,8 +212,14 @@ struct OptimizeStep {
   /// (Unsupported: @c mcscf::df_intersection's rotation between them would
   /// divide by E_I - E_J); over QD states, a molecule of multiplicity other
   /// than 1 (Unsupported); an integral-direct @ref eri (Unsupported).
+  /// Under @ref meci, options.constraints set too (InvalidConfig).
   /// Without @ref meci, nothing.
   [[nodiscard]] Status check_meci() const;
+
+  /// @brief InvalidConfig, naming the constraint, when one of
+  /// options.constraints names an atom not among @p atoms, the start's
+  /// count: what pipeline/config cannot check, not having read the xyz.
+  [[nodiscard]] Status check_constraint_atoms(size_t atoms) const;
 };
 
 /// @brief @c geometry::optimize of @p start's atoms (their positions, bohr,

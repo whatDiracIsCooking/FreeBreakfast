@@ -36,7 +36,22 @@ All four must hold at an accepted geometry. The displacement is of the step just
 
 The other defaults: an initial trust radius of 0.3 (Gaussian's MaxStep), a maximum of 1.0, `initial_hessian` 0.5, and `max_steps` 100 evaluations after the first. Running out of `max_steps` is `MaxIterationsExceeded`; a non-finite energy or gradient is `Numerical`; a bad input or option is `InvalidConfig`.
 
-**The result.** `Solution` holds the final coordinates `x`, its `energy` and `iterations`: one `Iteration` per evaluation, the first at `x0`, with the energy, the two force norms at that geometry, the two displacement norms of the step that reached it (0 for the first), the trust radius the next step is taken under, and whether it was `accepted`. A rejected entry's energy is the higher one that rejected it.
+**The result.** `Solution` holds the final coordinates `x`, its `energy` and `iterations`: one `Iteration` per evaluation, the first at `x0`, with the energy, the two force norms at that geometry, the two displacement norms of the step that reached it (0 for the first), the trust radius the next step is taken under, whether it was `accepted`, and under constraints each one's distance and multiplier (below). A rejected entry's energy is the higher one that rejected it.
+
+## Distance constraints
+
+`Options::constraints`, a list of `DistanceConstraint {atoms, distance}`, holds interatomic distances fixed while `optimize` minimizes over the rest (#1260; the pipeline's `[optimize] constraints`, `../pipeline/optimize/README.md`). The method is a projection over the BFGS above, with a SHAKE/RATTLE-like correction:
+
+1. **The start** is moved onto the constraints before the first evaluation, by the correction in 4 along the constraint gradients at x0.
+2. **The projection** gains the constraint gradients a_k = dd_k/dx (the pair's unit vector at one atom, its negative at the other), Gram-Schmidted after the rigid motions. They are orthogonal to the rigid motions already: a distance does not change under one. Constraint gradients with nothing left after the ones before them (1e-8 of their length) are linearly dependent, three atoms held collinear for one, and are refused, `Numerical`.
+3. **The step** is −(PBP)⁺ g, P now the projector off the rigid motions and the a_k, by one Cholesky solve of PBP + (I − P), as `optimize_meci`'s seam step is. Projecting −B⁻¹g afterwards, as the unconstrained walk does, lets B's coupling between the free and the constrained directions turn the free step: an overshoot by the stiff curvature B has not learned, which near convergence the trust radius never recovers from.
+4. **The correction.** x + p moves back onto the constraints along the a_k of the geometry the step left, as SHAKE moves along the last step's bonds: x + Σ_j μ_j a_j(x), μ by Newton's method on the k distances, whose Jacobian is a_i(x′)·a_j(x), a k × k solve by Gaussian elimination. It stops at 1e-12 of each distance (relative, absolute under 1), or fails, `Numerical`, after 50 iterations or at a singular Jacobian. Every evaluated geometry, rejected ones too, meets the constraints to that.
+5. **The update.** B gets the BFGS update over P s, s the corrected step, and y the change in the Lagrangian's gradient at the new multipliers, g⁺_P − (g − Σ_k λ⁺_k a_k(x)), projected by the old P: SQP's choice, which carries the constraints' curvature λ_k ∂²d_k/∂x² into B. (The change in P-projected gradients, projected by the old P, is the same vector: `optimize_meci`'s seam update is this one.)
+6. **The rounding floor.** An energy change under 1000 ulps of the energies, `optimize_meci`'s floor, neither rejects a step nor moves the trust radius. Near a tight convergence a step's energy change f²/2k is under the energy's rounding, and without the floor that noise rejects steps and halves the radius until the walk stalls short of its thresholds (a Lennard-Jones cluster held at one distance stalled at forces of 4e-8 against 1e-10). The unconstrained walk is left as it was.
+
+**Convergence** is the four criteria on the projected gradient and on the corrected step. **The multipliers** λ_k, each `Iteration`'s `multipliers`, are the least-squares fit g = Σ_k λ_k a_k + (the projected gradient), one k × k solve of (A Aᵀ) λ = A g. At a converged geometry λ_k is dE*/dd_k, the slope of the constrained minimum's energy along that distance with the rest relaxed; `distances` holds each constraint's distance at that geometry.
+
+**Refusals**, `InvalidConfig`: a point out of range or named twice in one constraint, a pair named twice (either order), a distance not finite and above 0, constraints over a size not divisible by 3, and any constraints at all in `optimize_meci`.
 
 ## Minimum-energy crossings
 

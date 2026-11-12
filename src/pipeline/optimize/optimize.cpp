@@ -185,6 +185,11 @@ Status OptimizeStep::check_meci() const {
     return {};
   }
   const auto [i, j] = *meci;
+  if (!options.constraints.empty()) {
+    return err_config("[{}] constraints hold distances in a minimization, and meci finds a "
+                      "crossing: leave one of them out",
+                      kName);
+  }
   if (casscf_gradient) {
     return err_config("[{}] meci optimizes the crossing of two roots, and [{}] the energy of one: "
                       "keep one of them",
@@ -230,6 +235,18 @@ Status OptimizeStep::check_meci() const {
     return err_unsupported("[{}] meci runs over density fitting only, and [{}] mode is "
                            "'integral_direct': set [{}] mode = 'density_fitting'",
                            kName, EriStep::kName, EriStep::kName);
+  }
+  return {};
+}
+
+Status OptimizeStep::check_constraint_atoms(size_t atoms) const {
+  for (size_t k = 0; k < options.constraints.size(); ++k) {
+    const auto [a, b] = options.constraints[k].atoms;
+    if (std::cmp_greater_equal(std::max(a, b), atoms)) {
+      return err_config("[{}] constraints[{}] atoms [{}, {}] names atom {}, and the molecule has "
+                        "{} atoms (0-based, as the xyz orders them)",
+                        kName, k, a, b, std::max(a, b), atoms);
+    }
   }
   return {};
 }
@@ -437,6 +454,19 @@ struct WalkRecord {
   return {};
 }
 
+// One history entry per constraint at @p it: its atoms, its distance there
+// (Angstrom) and its multiplier (hartree / bohr).
+[[nodiscard]] json constraint_entries(std::span<const geometry::DistanceConstraint> constraints,
+                                      const geometry::Iteration &it) {
+  json out = json::array();
+  for (size_t k = 0; k < constraints.size(); ++k) {
+    out.push_back({{"atoms", {constraints[k].atoms[0], constraints[k].atoms[1]}},
+                   {"distance", it.distances.at(k) * kAngstromPerBohr<double>},
+                   {"multiplier", it.multipliers.at(k)}});
+  }
+  return out;
+}
+
 Result<geometry::Solution> recorded_optimize(
     const OptimizeStep &step, std::span<const Atom> start,
     const std::function<Result<double>(std::span<const double> x, std::span<double> gradient)>
@@ -448,6 +478,7 @@ Result<geometry::Solution> recorded_optimize(
   for (const Atom &atom : start) {
     x0.insert(x0.end(), {atom.position.x, atom.position.y, atom.position.z});
   }
+  const std::vector<geometry::DistanceConstraint> &constraints = step.options.constraints;
   const auto evaluate = [&](std::span<const double> x, std::span<double> g) -> Result<double> {
     record.frames.push_back(placed(start, x));
     return energy_and_gradient(x, g);
@@ -463,6 +494,10 @@ Result<geometry::Solution> recorded_optimize(
         {"trust_radius", it.trust_radius},
         {"accepted", it.accepted},
     };
+    if (!constraints.empty()) {
+      entry["projected_gradient_norm"] = it.rms_force * std::sqrt(static_cast<double>(x0.size()));
+      entry["constraints"] = constraint_entries(constraints, it);
+    }
     if (annotate) {
       annotate(k, entry);
     }
@@ -475,6 +510,9 @@ Result<geometry::Solution> recorded_optimize(
   std::string final_comment;
   if (walk) {
     head = {{"energy", walk->energy}};
+    if (!constraints.empty()) {
+      head["constraints"] = constraint_entries(constraints, walk->iterations.back());
+    }
     final_comment = std::format("optimized E = {:.12f}", walk->energy);
   }
   return record.finish(std::move(walk), std::move(head), final_comment);
@@ -764,6 +802,7 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
   DeviceResources &res = node.device(0);
   const Molecule start =
       FBF_TRY(read_xyz(res, molecule.xyz, molecule.charge, molecule.multiplicity));
+  FBF_TRY(check_constraint_atoms(start.atoms().size()));
 
   // The chain writes nothing: its steps' outputs are the outer pipeline's.
   ScfStep chain_scf = scf;

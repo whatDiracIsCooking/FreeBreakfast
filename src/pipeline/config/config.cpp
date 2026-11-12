@@ -6,6 +6,7 @@ module free_breakfast.pipeline.config;
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
+import free_breakfast.core.constants; // kAngstromPerBohr
 import free_breakfast.io.base;
 import free_breakfast.io.basis;
 import free_breakfast.io.toml;
@@ -157,6 +158,83 @@ template <class T>
     }
     out = base_dir / *value; // an absolute *value replaces base_dir
   }
+  return {};
+}
+
+/// @brief `[optimize]` constraints, an array of inline tables
+/// `{ atoms = [a, b], distance = d }`, each atom 0-based and d in Angstrom,
+/// into @p out in bohr. Refused, each naming the key: a constraint that is
+/// not such a table, an atom below 0 or named twice in a pair, a pair named
+/// twice (in either order), or a distance not finite and above 0.
+[[nodiscard]] Status read_constraints(const toml::table &table,
+                                      std::vector<geometry::DistanceConstraint> &out) {
+  constexpr std::string_view kStep = "optimize";
+  const auto node = table["constraints"];
+  if (!node) {
+    return {};
+  }
+  const toml::array *array = node.as_array();
+  if (array == nullptr) {
+    return err_config("[{}] constraints is not an array of {{ atoms = [a, b], distance = d }}",
+                      kStep);
+  }
+  if (array->empty()) {
+    return err_config("[{}] constraints is empty: leave it out for none", kStep);
+  }
+  std::vector<geometry::DistanceConstraint> constraints;
+  for (size_t k = 0; k < array->size(); ++k) {
+    const toml::table *entry = (*array)[k].as_table();
+    if (entry == nullptr) {
+      return err_config("[{}] constraints[{}] is not a table {{ atoms = [a, b], distance = d }}",
+                        kStep, k);
+    }
+    for (const auto &[key, value] : *entry) {
+      if (key.str() != "atoms" && key.str() != "distance") {
+        return err_config("[{}] constraints[{}] has no key '{}' (known: 'atoms', 'distance')",
+                          kStep, k, key.str());
+      }
+    }
+    const toml::array *atoms = (*entry)["atoms"].as_array();
+    if (atoms == nullptr || atoms->size() != 2) {
+      return err_config("[{}] constraints[{}] atoms is not a pair of atoms [a, b]", kStep, k);
+    }
+    std::array<int32_t, 2> pair{};
+    for (size_t i = 0; i < 2; ++i) {
+      const auto atom = (*atoms)[i].value_exact<int64_t>();
+      if (!atom || !std::in_range<int32_t>(*atom)) {
+        return err_config("[{}] constraints[{}] atoms is not a pair of 32-bit integers", kStep, k);
+      }
+      pair[i] = static_cast<int32_t>(*atom);
+    }
+    if (pair[0] < 0 || pair[1] < 0) {
+      return err_config("[{}] constraints[{}] atoms [{}, {}] names an atom below 0: atoms are "
+                        "0-based, as the xyz orders them",
+                        kStep, k, pair[0], pair[1]);
+    }
+    if (pair[0] == pair[1]) {
+      return err_config("[{}] constraints[{}] atoms [{}, {}] names one atom twice", kStep, k,
+                        pair[0], pair[1]);
+    }
+    for (size_t j = 0; j < constraints.size(); ++j) {
+      const auto [a, b] = constraints[j].atoms;
+      if ((a == pair[0] && b == pair[1]) || (a == pair[1] && b == pair[0])) {
+        return err_config("[{}] constraints[{}] atoms [{}, {}] repeats constraints[{}]'s pair",
+                          kStep, k, pair[0], pair[1], j);
+      }
+    }
+    const auto distance = (*entry)["distance"].value<double>();
+    if (!distance) {
+      return err_config("[{}] constraints[{}] distance is missing or not a number (Angstrom)",
+                        kStep, k);
+    }
+    if (!std::isfinite(*distance) || !(*distance > 0.0)) {
+      return err_config("[{}] constraints[{}] distance is {}, and must be finite and positive "
+                        "(Angstrom)",
+                        kStep, k, *distance);
+    }
+    constraints.push_back({.atoms = pair, .distance = *distance / kAngstromPerBohr<double>});
+  }
+  out = std::move(constraints);
   return {};
 }
 
@@ -625,7 +703,7 @@ template <class S>
     // which can see them; a table here holds only the optimizer's own keys.
     FBF_TRY(check_keys(table, kStep,
                        {"max_force", "rms_force", "max_displacement", "rms_displacement",
-                        "max_steps", "meci", "max_gap"}));
+                        "max_steps", "meci", "max_gap", "constraints"}));
     geometry::Options &options = step.options;
     FBF_TRY(read_key(table, kStep, "max_force", base_dir, options.max_force));
     FBF_TRY(read_key(table, kStep, "rms_force", base_dir, options.rms_force));
@@ -657,6 +735,14 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "max_gap", base_dir, options.max_gap));
     if (!(options.max_gap > 0.0)) {
       return err_config("[{}] max_gap must be positive", kStep);
+    }
+    // Whether each atom is one of the molecule's is OptimizeStep::run's to
+    // say, once it has read the xyz.
+    FBF_TRY(read_constraints(table, options.constraints));
+    if (step.meci && !options.constraints.empty()) {
+      return err_config("[{}] constraints hold distances in a minimization, and meci finds a "
+                        "crossing: leave one of them out",
+                        kStep);
     }
     step.trajectory = output_dir / std::format("{}.xyz", kStep);
     step.final_xyz = output_dir / "final.xyz";
