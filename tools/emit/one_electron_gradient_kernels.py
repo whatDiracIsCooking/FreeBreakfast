@@ -17,7 +17,8 @@ into a per-atom gradient, G[A, k] += SUM_mn M_mn dX_mn/dR_{A,k}, for the
 overlap S, the kinetic energy T and the nuclear attraction V (its
 Hellmann-Feynman term on every nucleus included). The `gv` form is
 FelizJueves's own choice per class: low-stack from la + lb = 5
-(`kernel_g1e.g1e_lowstack`), unrolled below.
+(`kernel_g1e.g1e_lowstack`), unrolled below, but for `gv_22`, over the stack
+target unrolled and so low-stack (tools/emit/lowstack.py, #1263).
 
 As tools/emit/one_electron_kernels.py does, each class is one explicit
 specialization of its family's kernel template (`overlap_gradient<la, lb>`,
@@ -66,6 +67,7 @@ from felizjueves.gradient.kernel_g1e import build_g1e_kernel  # noqa: E402
 from felizjueves.hessian.kernel_ip1e import build_ip1e_kernel  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
 from felizjueves.spec import Target  # noqa: E402
+from lowstack import forced  # noqa: E402
 
 # The kernels' L limit: f, FelizJueves's GRAD_L_MAX. kGradientMaxL is not
 # written separately: the launcher (gradient_launch.cu) reads each family's
@@ -103,7 +105,7 @@ def main() -> int:
     classes = grad_classes(MAX_L)
     for family, target in FAMILIES.items():
         for cls in classes:
-            kernel = build_g1e_kernel((target, *cls))
+            kernel = build_g1e_kernel((target, *cls), **forced(family, cls))
             spec = Specialization(family, cls)
             write(OUT / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec))
         # Any class's kernel spells the primary: one family, one parameter block.

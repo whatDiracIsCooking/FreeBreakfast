@@ -35,7 +35,9 @@ an assumption (FelizJueves's docs/implementation/hessian.md).
 
 Each builder picks its own form per class: from FelizJueves's measured `L`
 floors (`kernel_d2metric.LOWSTACK_MIN_L`, `kernel_d2eri3.LOWSTACK_MIN_L`) the
-low-stack one. Nothing here forces either.
+low-stack one. tools/emit/lowstack.py's classes, those over the stack target
+in that form, are emitted in a lower one instead (#1263): `d2metric<4,4>`
+low-stack, and every `d2eri3` class there with COMPACT bra tables.
 
 Every [n, 3] record vector is split into three flat arrays
 (`ir.passes.split_axes`), named as df_gradient_kernels.py names them. The
@@ -80,16 +82,19 @@ from felizjueves.hessian.kernel_d2metric import (  # noqa: E402
 )
 from felizjueves.ir.passes import split_axes  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
+from lowstack import forced  # noqa: E402
 
 OUT = DF / "hessian/kernels"
 
 
 def d2metric(cls: tuple[int, int]):
-    return split_axes(build_d2metric_kernel(cls), AUX_AXES)
+    return split_axes(build_d2metric_kernel(cls, **forced("d2metric", cls)), AUX_AXES)
 
 
 def d2eri3(cls: tuple[int, int, int]):
-    return split_axes(build_d2eri3_kernel(cls), {**BRA_AXES, **AUX_AXES})
+    return split_axes(
+        build_d2eri3_kernel(cls, **forced("d2eri3", cls)), {**BRA_AXES, **AUX_AXES}
+    )
 
 
 def main() -> int:

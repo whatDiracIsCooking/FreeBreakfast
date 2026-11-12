@@ -70,7 +70,8 @@ bra derivative of E_K = 1/2 SUM D_ab D_cd (ac|bd) on `kernel_k`'s mapping (one
 warp per bra record, the kets over the lanes, no screen, no shared memory),
 for every one of the 256 classes, in FelizJueves's default form (unrolled
 below L = 5, rolled from L = 5 and at every f class; `gk_lowstack` chooses,
-nothing here does). Its record vectors are `kb`'s six, split as `kb`'s are,
+but for `gk<2,2,0,0>`, over the stack target unrolled and so rolled,
+tools/emit/lowstack.py, #1263). Its record vectors are `kb`'s six, split as `kb`'s are,
 and it is emitted with `kb`'s options; its header `gk.h` holds `gk_kernels`
 and `gk_block_dim`, as `kb.h` does.
 
@@ -116,6 +117,7 @@ from felizjueves.eri.k_exchange.kernel_record_bound import (  # noqa: E402
 from felizjueves.gradient.kernel_gk import build_gk_kernel  # noqa: E402
 from felizjueves.ir.passes import split_axes  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
+from lowstack import forced  # noqa: E402
 
 # The kernels' L limit: f. It must equal kExchangeMaxMomentum
 # (exchange_helpers_bridge.h), which exchange_launch.cu and mmd_launch.cu check
@@ -183,7 +185,7 @@ def kbr(cls: tuple[int, int, int, int]):
 
 
 def gk(cls: tuple[int, int, int, int]):
-    return split_axes(build_gk_kernel(cls), AXES)
+    return split_axes(build_gk_kernel(cls, **forced("gk", cls)), AXES)
 
 
 def record_bound(cls: tuple[int, int]):

@@ -130,7 +130,7 @@ key, in order:
    the cap, and a card that cannot supply it, because another process holds
    part of it, is refused there (`Allocation`, naming the free memory and
    the cap) rather than at a later step. The card must also leave the
-   kernels' stack its room beside the cap (up to 2.2 GiB on the RTX 3080,
+   kernels' stack its room beside the cap (up to 1.8 GiB on the RTX 3080,
    `DeviceResources::kKernelStackBytes`), since the driver takes the stack
    back from the pool's cache when it has no free memory left for it.
 

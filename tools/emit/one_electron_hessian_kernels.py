@@ -15,7 +15,10 @@ matrix M into the 3N x 3N Hessian, H[A, k, B, l] += SUM_mn M_mn
 d2X_mn/dR_{A,k}dR_{B,l}, for the overlap S, the kinetic energy T and the
 nuclear attraction V (its operator's centre-nucleus and nucleus-nucleus terms
 included). The `d2v` form is FelizJueves's own choice per class: low-stack
-from la + lb = 4 (`kernel_h1e.h1e_lowstack`), unrolled below.
+from la + lb = 4 (`kernel_h1e.h1e_lowstack`), unrolled below; `d2s` and `d2t`
+are unrolled. tools/emit/lowstack.py's classes, over the stack target in that
+form, are emitted low-stack instead (#1263): `d2v_03`, `d2v_12`, `d2t_22`,
+`d2t_23`, `d2t_33` and `d2s_33`.
 
 As tools/emit/one_electron_gradient_kernels.py does, each class is one
 explicit specialization of its family's kernel template
@@ -52,6 +55,7 @@ from felizjueves.emit.gpu import Specialization  # noqa: E402
 from felizjueves.hessian.kernel_h1e import build_h1e_kernel  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
 from felizjueves.spec import Target  # noqa: E402
+from lowstack import forced  # noqa: E402
 
 # The kernels' L limit: f, FelizJueves's HESS_ONE_E_L_MAX. The launcher
 # (hessian_launch.cu) reads each family's limit from its own table and the
@@ -79,7 +83,7 @@ def main() -> int:
     classes = hess_one_e_classes(MAX_L)
     for family, target in FAMILIES.items():
         for cls in classes:
-            kernel = build_h1e_kernel((target, *cls))
+            kernel = build_h1e_kernel((target, *cls), **forced(family, cls))
             spec = Specialization(family, cls)
             write(OUT / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec))
         # Any class's kernel spells the primary: one family, one parameter block.

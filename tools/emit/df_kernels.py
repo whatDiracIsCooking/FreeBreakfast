@@ -18,7 +18,10 @@ Two families, one per FelizJueves target, each its module's own directory:
   (`eri/density_fit/kernel_eri3.py`): the three-center (mn|P), one thread per
   (AO shell pair, aux shell), written to three_center/kernels/. Every
   `la <= lb` with both at most MAX_L (f), against every `lP` at most AUX_MAX_L
-  (i), 70 classes, the top one (ff|i) at L = 12.
+  (i), 70 classes, the top one (ff|i) at L = 12. Each in FelizJueves's
+  default form, but for tools/emit/lowstack.py's `eri3<1,2,5>`, `<1,3,3>`,
+  `<1,3,4>` and `<2,2,3>`, over the stack target unrolled and so emitted
+  low-stack (#1263).
 
 Pair classes are written `la <= lb` (and `lP <= lQ`) only, for the reason
 tools/emit/one_electron_kernels.py gives: each kernel writes every element and
@@ -73,6 +76,7 @@ from felizjueves.eri.density_fit.kernel_metric import (  # noqa: E402
 )
 from felizjueves.ir.passes import split_axes  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
+from lowstack import forced  # noqa: E402
 
 # The orbital limit, f: kThreeCenterMaxMomentum (module docstring).
 MAX_L = 3
@@ -118,7 +122,9 @@ def metric(cls: tuple[int, int]):
 
 
 def eri3(cls: tuple[int, int, int]):
-    return split_axes(build_eri3_kernel(cls), {**BRA_AXES, **AUX_AXES})
+    return split_axes(
+        build_eri3_kernel(cls, **forced("eri3", cls)), {**BRA_AXES, **AUX_AXES}
+    )
 
 
 # family -> (its module's directory, its classes, its builder); the kernels go
