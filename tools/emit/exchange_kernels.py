@@ -8,6 +8,11 @@ so a build never runs Python. Run this after bumping that submodule:
 
     tools/emit/exchange_kernels.py
 
+`--out-root DIR` writes the same tree under DIR instead of src/integrals/,
+each file at its path relative to src/integrals/ (rust/README.md, "Build and
+test", copies the directory rust/integrals/kernels/ carries from one). The
+default writes src/integrals/ exactly as before.
+
 The K build's family is `kb<la, lc, lb, ld>`: FelizJueves's `Target.K` on
 opt-UM's mapping (`eri/k_exchange/kernel_kblock.py`), K_ab += SUM_cd D_cd
 (ac|bd) on the J engine's recurrence, one warp per contracted shell block
@@ -98,6 +103,7 @@ virtualenv.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -131,7 +137,9 @@ KB_MAX_L = 2
 # still takes one.
 ARCH = "sm_86"
 
-OUT = ROOT / "src/integrals/eri/integral_direct/exchange/kernels"
+# Both relative to the output root, src/integrals/ unless --out-root says
+# otherwise.
+OUT = Path("eri/integral_direct/exchange/kernels")
 FAMILY = "kb"
 ROLLED_FAMILY = "kbr"
 GRADIENT_FAMILY = "gk"
@@ -153,7 +161,7 @@ OPTIONS = {"block_dim": (1, WAVEFRONT), "any_wavefront": True}
 
 # The record bound: its own directory under mmd/kernels/ (whose
 # .clang-format is the same DisableFormat), its two record vectors split.
-PAIRS_OUT = ROOT / "src/integrals/mmd/kernels"
+PAIRS_OUT = Path("mmd/kernels")
 BOUND_FAMILY = "record_bound"
 BOUND_AXES = {"XPA": ("pa_x", "pa_y", "pa_z"), "XPB": ("pb_x", "pb_y", "pb_z")}
 
@@ -193,13 +201,22 @@ def record_bound(cls: tuple[int, int]):
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--out-root",
+        type=Path,
+        default=ROOT / "src/integrals",
+        help="the directory written in place of src/integrals/ (default: it)",
+    )
+    root = parser.parse_args().out_root.resolve()
+    out, pairs_out = root / OUT, root / PAIRS_OUT
     arch = by_name(ARCH)
-    emit_family(arch, OUT / FAMILY, FAMILY, kb_classes(), kb, OPTIONS)
-    emit_family(arch, OUT / ROLLED_FAMILY, ROLLED_FAMILY, kbr_classes(), kbr, OPTIONS)
-    write(OUT / ROLLED_FAMILY / TABLES_HEADER, kbr_tables(kbr_classes()))
-    emit_family(arch, OUT / GRADIENT_FAMILY, GRADIENT_FAMILY, classes(), gk, OPTIONS)
+    emit_family(arch, out / FAMILY, FAMILY, kb_classes(), kb, OPTIONS)
+    emit_family(arch, out / ROLLED_FAMILY, ROLLED_FAMILY, kbr_classes(), kbr, OPTIONS)
+    write(out / ROLLED_FAMILY / TABLES_HEADER, kbr_tables(kbr_classes()))
+    emit_family(arch, out / GRADIENT_FAMILY, GRADIENT_FAMILY, classes(), gk, OPTIONS)
     emit_family(
-        arch, PAIRS_OUT / BOUND_FAMILY, BOUND_FAMILY, bound_classes(), record_bound, {}
+        arch, pairs_out / BOUND_FAMILY, BOUND_FAMILY, bound_classes(), record_bound, {}
     )
     return 0
 
@@ -287,7 +304,7 @@ constexpr int32_t kbr_hpq_at[{n_s}][{n_s}] = {at(hpq_at, n_s)};
 
 def write(path: Path, text: str) -> None:
     path.write_text(text)
-    print(path.relative_to(ROOT))
+    print(path.relative_to(ROOT) if path.is_relative_to(ROOT) else path)
 
 
 if __name__ == "__main__":

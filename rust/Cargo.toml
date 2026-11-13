@@ -18,6 +18,7 @@ members = [
     "molecule",
     "basis",
     "recipes/sys",
+    "integrals/sys",
     "device_check",
     "io/xyz",
     "io/basis",
@@ -49,6 +50,7 @@ fb-basis = { path = "basis" }
 fb-recipes-sys = { path = "recipes/sys" }
 fb-io-xyz = { path = "io/xyz" }
 fb-io-basis = { path = "io/basis" }
+fb-integrals-sys = { path = "integrals/sys" }
 fb-test-support = { path = "test_support" }
 
 contracts = "0.6.11"

@@ -28,6 +28,7 @@ workspace is that rebuild. Its tree mirrors `src/`, one crate per module:
 | `fb_molecule` | `src/molecule`, its host half | `Molecule` as host data (atoms, charge, multiplicity; no atoms aborts), `distance`, `nuclear_charge`, `electron_count`, and the nuclear repulsion energy, gradient and Hessian. The nuclei on the device (`view`, `NucleiView`, `molecule_footprint`) become an upload task when nuclear attraction is ported |
 | `fb_basis` | `src/basis` | `Shell` and `Primitive`, the counts (`function_count_cart` / `function_count_sphe`) and `MAX_ANGULAR_MOMENTUM` (3, the C++ `kMaxAngularMomentum`), `cartesian_powers` and `Ao`, `solid_harmonic_block`, `BasisSet` (its Cartesian and spherical AO layouts, the per-atom shell grouping, the name) and `spherical_transform_matrix`, `ShellStamp` with `primitive_normalized` and `place`, and `BasisStamp` with `place` onto a `Molecule`. Contractions are not renormalized, as in the C++ |
 | `fb_recipes_sys` | `src/recipes/sort`'s merge sort, forked to `recipes/kernels/` (with the device headers it includes, trimmed, in `device_headers/`) | The raw FFI over `libfb_recipes_kernels.so`, built by `CMakeLists.txt` here: `fb_merge_sort`, an `extern "C"` launch wrapper that only enqueues, its `fb_merge_sort_workspace_bytes` query, `fb_launch_status` and `FB_DEVICE_ALIGNMENT` (`docs/gpu_layer.md`, "Layering"). The bindings are generated from `recipes/kernels/fb_recipes.h` by `devtools/rust-bindings.py` and committed |
+| `fb_integrals_sys` | `src/integrals/mmd`'s launchers (order, records, bound, dressed bound) and `src/integrals/one_electron/overlap`'s, forked to `integrals/kernels/` with the FelizJueves units they launch (`pair_bound`, `record_bound` and the overlap's ten classes, emitted there by `tools/emit/*.py --out-root`) | The raw FFI over `libfb_integrals_kernels.so`, which links `libfb_recipes_kernels.so` for the order's sort: `fb_mmd_order` (with `fb_mmd_order_workspace_bytes`), `fb_mmd_records`, `fb_mmd_bound`, `fb_ordered_pair_bound` and `fb_overlap_class`, each an `extern "C"` launch wrapper that only enqueues and refuses a class outside its table as `FB_LAUNCH_UNSUPPORTED`; the tables' limits (`FB_*_MAX_MOMENTUM`); and the three structs that cross by pointer, `fb_primitive_pair_class_view`, `fb_primitive_pair_source` and `fb_primitive_pair_records`, `#[repr(C)]` with their layout asserted on both sides. The bindings are generated from `integrals/kernels/fb_integrals.h` and committed |
 | `fb_device_check` | nothing: a check on the kernel libraries | Two tier-3 tests: no launch wrapper under `rust/` allocates, synchronizes, touches an event, copies, sets the device or opens a profiler range (a grep of every `.cu`), and every `-sys` crate's committed bindings are what the script generates now |
 | `fb_io_xyz` | `src/io/xyz` | `parse_xyz` / `read_xyz`: a standard XYZ geometry into a `Molecule`, Angstrom to bohr by `BOHR_PER_ANGSTROM`, every refusal (too short, a bad count, a malformed line, an unknown symbol, a count the lines disagree with, a file that cannot be read) an `Io` error. A field must parse as a whole token, where the C++'s `operator>>` reads a prefix |
 | `fb_io_basis` | `src/io/basis`, its orbital sets | `parse_basis` / `read_basis`: a BSE JSON document into a `BasisStamp` (sp blocks and general contractions split, spherical shells only: one Cartesian or ambiguous shell refuses the document), over [`serde_json`](https://crates.io/crates/serde_json); `is_builtin_basis` and `resolve_basis`, a name (spelling folded) or else a path, over the eleven sets of `data/basis/` compiled in with `include_str!`, only that branch naming the stamp. The fitting sets of `data/aux_basis/` are not ported yet |
@@ -129,7 +130,8 @@ objects, one per module from sources forked into `rust/` (nothing under
 `src/` is compiled or included): `libfb_recipes_kernels.so`, from
 `recipes/kernels/` and the trimmed device headers in `device_headers/`, at
 `<build>/recipes/kernels`, with its own device link and the shared vendor
-runtime. Its `-sys` crate's `build.rs` includes `kernel_lib.rs`, which links
+runtime, and `libfb_integrals_kernels.so`, from `integrals/kernels/`, at
+`<build>/integrals/kernels`, which links the first. Its `-sys` crate's `build.rs` includes `kernel_lib.rs`, which links
 it from the same `<build>` `capi_dir.rs` chose. After editing a kernel
 library's C header, run `devtools/rust-bindings.py` (stdlib Python, no
 bindgen: it reads the header's small plain-C grammar as text, as WarpWraps'
@@ -161,8 +163,8 @@ thread pool's `DeviceStream` is an uninhabited placeholder with no
 crates' own device tests need beyond `device`; a dependent asks for
 `device` alone, and the workspace's dependency entries for the arena and
 the thread pool turn their defaults off, so nothing turns them on by
-accident. Only `fb-core-wwr`, `fb-core-diagnostics` and `fb-recipes-sys`
-always link. Use a
+accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`
+and `fb-integrals-sys` always link. Use a
 separate `CARGO_TARGET_DIR` per backend, and another for
 `--no-default-features`: each `build.rs` bakes the library's path into the
 rpath.
@@ -204,6 +206,23 @@ keys up the sort read keys the DMA was still writing, and failed with wrong
 keys or a fault (`WWR_STATUS_UNKNOWN` at the next synchronization) that the
 kernel was not at fault for; `compute-sanitizer` serialized the two and hid
 it. A kernel library's test copies on its own stream.
+
+The overlap on a card is `integrals/sys/tests/overlap.rs`: one (s|s)
+record against the closed-form primitive overlap, within 4 ulp, and the
+refusals of every wrapper in `fb-integrals-sys`. The FelizJueves units in
+`integrals/kernels/` are emitted, not written: after bumping
+`deps/FelizJueves`, emit both tools' whole trees into a scratch directory
+and copy the three directories this library carries, byte for byte what
+the defaults write under `src/integrals/`:
+
+```bash
+# from the repository root, tmp=$(mktemp -d)
+OMP_NUM_THREADS=8 tools/emit/one_electron_kernels.py --out-root "$tmp"
+OMP_NUM_THREADS=8 tools/emit/exchange_kernels.py --out-root "$tmp"
+cp "$tmp"/mmd/kernels/pair_bound/* rust/integrals/kernels/mmd/kernels/pair_bound/
+cp "$tmp"/mmd/kernels/record_bound/* rust/integrals/kernels/mmd/kernels/record_bound/
+cp "$tmp"/one_electron/overlap/kernels/* rust/integrals/kernels/one_electron/overlap/kernels/
+```
 
 `doc_check/tests/section_citations.rs` checks that every section the
 README, `docs/` and every member's Rust sources cite by name is a heading of
@@ -454,3 +473,25 @@ other count the `io/xyz` entry's. With `--no-default-features` the tier-3
 set passes, the thread pool's 11 unit tests among them. Clippy (`-D
 warnings`) is clean in both feature sets; rustdoc (`-D warnings`) and `cargo
 fmt --check` are clean. Not run on the RTX 3080.
+
+2026-11-13, the integrals kernel library (`integrals/kernels/` built as
+`libfb_integrals_kernels.so`, `fb-integrals-sys`), on the RTX 3080 (CUDA),
+holding the card: with default features the whole workspace passes in a
+debug build and in release, the new binary 4 tests (one (s|s) record
+through `fb_overlap_class` against the closed-form primitive overlap within
+4 ulp at both mirror positions, the diagonal untouched; every wrapper's
+refusals, a class outside a table `FB_LAUNCH_UNSUPPORTED`; the order's
+workspace query), every other count unchanged. Two of the three debug
+runs of the workspace failed `arena_block`'s `declared_equals_allocated`
+(a free-memory reading, "the drop gave back 100663296 of 268435456 bytes";
+"Build and test" has why a shared card breaks it); the third passed, and
+the binary passes run alone. Nothing here touches the arena. The overlap binary is clean under `compute-sanitizer --tool
+memcheck`. With `--no-default-features` the tier-3 set passes, `bindings`
+and `launch_wrappers` covering the new library: the first fails on its
+header edited without regenerating, the second on a planted
+`wwrDeviceSynchronize` in `overlap_launch.cu` (both checked by hand). The
+emitted units are byte for byte those under `src/integrals/` (39 files,
+`cmp`). The `hip` preset builds the library and
+`devtools/cross-backend-check.sh --device-only` (HIP) passes; neither was
+run on the gfx1200. Clippy (`-D warnings`, both feature sets), rustdoc
+(`-D warnings`) and `cargo fmt --check` are clean.

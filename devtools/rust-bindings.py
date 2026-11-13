@@ -17,11 +17,15 @@ the header as text with stdlib `re`, no clang. That is sound only because the
 headers it reads are held to a small, plain-C grammar, and anything outside it
 is an error rather than a guess:
 
-- `#include "x.h"`, followed when x.h is beside the including file or in
-  rust/device_headers; any other include (the C ABI's own common.h, the
-  standard headers) is not read, and the types it supplies are EXTERNAL below.
+- `#include "x.h"`, followed when x.h is beside the including file, under
+  the library's kernels/ directory or in rust/device_headers; any other
+  include (the C ABI's own common.h, the standard headers) is not read, and
+  the types it supplies are EXTERNAL below.
 - `#define NAME ((type)literal)`: a typed integer constant.
 - `typedef <type> name;`: an integer alias.
+- `typedef struct name {` ... `} name;`: a plain struct, one `<type> field;`
+  or `<type> *field;` per line, which becomes a `#[repr(C)]` struct of the
+  same fields in the same order, so the two layouts follow one rule.
 - `<type> name(<type> arg, ...);`: a function, on one or more lines.
 - `///` comments, carried to the next item as its doc comment.
 
@@ -66,6 +70,9 @@ IDENT = r"[A-Za-z_]\w*"
 INCLUDE = re.compile(r'#include\s+"([^"]+)"')
 DEFINE = re.compile(rf"#define\s+({IDENT})\s+\(\(({IDENT})\)\s*(-?\s*\d+)\)\s*$")
 TYPEDEF = re.compile(rf"typedef\s+({IDENT})\s+({IDENT})\s*;")
+STRUCT_OPEN = re.compile(rf"typedef\s+struct\s+({IDENT})\s*\{{")
+STRUCT_CLOSE = re.compile(rf"\}}\s*({IDENT})\s*;")
+FIELD = re.compile(rf"(const\s+)?({IDENT})\s*(\*?)\s*({IDENT})\s*;")
 FUNCTION = re.compile(rf"({IDENT}(?:\s*\*)?)\s*\b({IDENT})\s*\(([^)]*)\)\s*;", re.S)
 PARAM = re.compile(rf"(const\s+)?({IDENT})\s*(\*?)\s*({IDENT})")
 
@@ -77,8 +84,11 @@ class HeaderError(Exception):
 class Module:
     """One header's items, in the order they first appear."""
 
-    def __init__(self) -> None:
+    def __init__(self, root: Path) -> None:
+        # The library's kernels/ directory, an include's second search base.
+        self.root = root
         self.aliases: dict[str, str] = {}
+        self.structs: set[str] = set()
         self.items: list[str] = []
         self.functions: list[str] = []
         self.externals: set[str] = set()
@@ -87,7 +97,7 @@ class Module:
     def rust_type(self, name: str, pointer: bool, const: bool, where: str) -> str:
         if name in SCALARS:
             base = SCALARS[name]
-        elif name in self.aliases:
+        elif name in self.aliases or name in self.structs:
             base = name
         elif name in EXTERNAL:
             self.externals.add(name)
@@ -119,9 +129,35 @@ def read_header(path: Path, module: Module) -> None:
     doc: list[str] = []
     pending = ""
     pending_line = 0
+    # The struct being read: its name, doc and fields so far.
+    struct: tuple[str, list[str], list[str]] | None = None
     for number, raw in enumerate(text.splitlines(), start=1):
         line = raw.strip()
         where = f"{where_file}:{number}"
+        if struct and line and not line.startswith("//"):
+            name, struct_doc, fields = struct
+            m = STRUCT_CLOSE.fullmatch(line)
+            if m:
+                if m.group(1) != name:
+                    raise HeaderError(f"{where}: struct {name} closed as {m.group(1)}")
+                module.items += (
+                    doc_lines(struct_doc, "")
+                    + ["#[repr(C)]", "#[derive(Debug, Clone, Copy)]"]
+                    + [f"pub struct {name} {{"]
+                    + fields
+                    + ["}"]
+                )
+                module.structs.add(name)
+                struct = None
+                continue
+            f = FIELD.fullmatch(line)
+            if not f:
+                raise HeaderError(f"{where}: a struct field must be <type> [*]name;")
+            const, ctype, star, fname = f.groups()
+            rtype = module.rust_type(ctype, bool(star), bool(const), where)
+            fields += doc_lines(doc, "    ") + [f"    pub {fname}: {rtype},"]
+            doc = []
+            continue
         if pending:
             pending += " " + line
             if ";" in line:
@@ -136,7 +172,7 @@ def read_header(path: Path, module: Module) -> None:
         if line.startswith("#include"):
             m = INCLUDE.match(line)
             if m:
-                for base in (path.parent, DEVICE_HEADERS):
+                for base in (path.parent, module.root, DEVICE_HEADERS):
                     if (base / m.group(1)).is_file():
                         read_header(base / m.group(1), module)
                         break
@@ -155,6 +191,12 @@ def read_header(path: Path, module: Module) -> None:
             continue
         if line.startswith("#") or line in ('extern "C" {', "}"):
             continue
+        if line.startswith("typedef struct"):
+            m = STRUCT_OPEN.fullmatch(line)
+            if not m:
+                raise HeaderError(f"{where}: a struct opens as typedef struct name {{")
+            struct, doc = (m.group(1), doc, []), []
+            continue
         if line.startswith("typedef"):
             m = TYPEDEF.fullmatch(line)
             if not m or m.group(1) not in SCALARS:
@@ -172,6 +214,8 @@ def read_header(path: Path, module: Module) -> None:
             doc, pending = [], ""
     if pending:
         raise HeaderError(f"{where_file}:{pending_line}: unterminated declaration")
+    if struct:
+        raise HeaderError(f"{where_file}: struct {struct[0]} is never closed")
 
 
 def add_function(decl: str, module: Module, doc: list[str], where: str) -> None:
@@ -198,7 +242,7 @@ def add_function(decl: str, module: Module, doc: list[str], where: str) -> None:
 
 
 def render(header: Path) -> str:
-    module = Module()
+    module = Module(header.parent)
     read_header(header, module)
     rel = header.relative_to(REPO)
     lines = [

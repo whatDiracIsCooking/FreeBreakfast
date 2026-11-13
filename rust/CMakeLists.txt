@@ -128,3 +128,4 @@ set(FB_RUST_DEVICE_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/device_headers")
 set(FB_RUST_CAPI_GEN "${_fb_wwr}/src/capi/gen")
 
 add_subdirectory(recipes/kernels)
+add_subdirectory(integrals/kernels)
