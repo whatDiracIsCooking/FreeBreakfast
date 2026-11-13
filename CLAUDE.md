@@ -262,14 +262,27 @@ host binaries, each GPU binary as one process running `pr`'s representatives,
 or its whole fast set with `--all` or when the lister cannot list) when it
 touches C++ or a build file outside `experimental/` and `test/experimental/`
 (the smoke's preset never configures them, so it would check none of it).
-`rust/` (the Rust rebuild, `rust/README.md`) fires neither half: no gate
-builds or tests it yet, so `cargo test` there by hand is its whole check.
+Any path under `rust/` (the Rust rebuild, `rust/README.md`) fires the
+**cargo half** and neither of the others, even its `.cu`, CMake and `.py`:
+tiers 1 to 3, `cargo test --no-default-features` over the workspace members
+whose graph declares no `links` (no `wwr-sys`, no kernel `-sys` crate; found
+by `cargo tree`, never listed), then `cargo doc -D warnings` over those
+whose defaults link nothing. No card, no library, and no tier 4 yet: the
+tests on a card are still run by hand.
 `test.py pr` is the gate
 before a PR: configure, build, then each C++ family's representative and
 nothing else (`devtools/test_families.py`'s set; `--all` runs the whole fast
-set), split into ctest and the GPU batches, then the fast pytest tier. The
+set), split into ctest and the GPU batches, the cargo half when the branch
+touches `rust/`, then the fast pytest tier. The
 nightly runs every case the gates leave out (`docs/testing.md` "Test selection").
-CI runs lint + the fast pytest tier per PR.
+CI runs lint (cargo fmt and clippy included, `devtools/test.py cargo-lint`,
+which a commit touching `rust/` also runs) + the fast pytest tier per PR.
+
+`rust/CMakeLists.txt` is a **CMake project of its own**, which the root
+`CMakeLists.txt` does not add: it configures `deps/WarpWraps` alone and
+builds the wwr C ABI library and the forked kernel libraries the crates
+link, with presets `cuda` and `hip` into `rust/build-cuda` and
+`rust/build-hip` (`rust/README.md` "Build and test"). No gate builds it.
 
 **The `cpp` job in `.github/workflows/ci.yml` is `if: false`** — both matrix
 legs, cuda and hip. A PR touching only `src/` gets its formatting and CMake lint

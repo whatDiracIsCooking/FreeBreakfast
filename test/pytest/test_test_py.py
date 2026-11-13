@@ -93,6 +93,13 @@ def test_a_gate_is_required() -> None:
 def test_only_is_checked() -> None:
     with pytest.raises(SystemExit):
         gates.parse(["pr", "--only", "rust"])
+    assert gates.parse(["pr", "--only", "cargo"])[0].only == "cargo"
+
+
+def test_cargo_lint_takes_nothing() -> None:
+    assert gates.parse(["cargo-lint"])[0].gate == "cargo-lint"
+    with pytest.raises(SystemExit):
+        gates.parse(["cargo-lint", "rust/Cargo.toml"])
 
 
 # --- push dispatch -----------------------------------------------------------
@@ -101,39 +108,49 @@ def test_only_is_checked() -> None:
 @pytest.mark.parametrize(
     ("files", "expected"),
     [
-        (["src/core/a.cppm"], (True, False)),
-        (["src/x/k.cu", "src/x/k.cuh"], (True, False)),
-        (["test/gtest/CMakeLists.txt"], (True, False)),
-        (["CMakePresets.json"], (True, False)),
-        (["cmake/Thing.cmake"], (True, False)),
-        (["test/pytest/test_x.py"], (False, True)),
-        (["devtools/test.py", "src/a.cpp"], (True, True)),
-        (["docs/testing.md", ".pre-commit-config.yaml"], (False, False)),
+        (["src/core/a.cppm"], (True, False, False)),
+        (["src/x/k.cu", "src/x/k.cuh"], (True, False, False)),
+        (["test/gtest/CMakeLists.txt"], (True, False, False)),
+        (["CMakePresets.json"], (True, False, False)),
+        (["cmake/Thing.cmake"], (True, False, False)),
+        (["test/pytest/test_x.py"], (False, True, False)),
+        (["devtools/test.py", "src/a.cpp"], (True, True, False)),
+        (["docs/testing.md", ".pre-commit-config.yaml"], (False, False, False)),
         # A submodule bump is its gitlink path, which matches nothing; files
         # inside a submodule are its own repository's business.
-        (["deps/WarpWraps"], (False, False)),
-        (["deps/FelizJueves/tools/emit/x.py"], (False, False)),
+        (["deps/WarpWraps"], (False, False, False)),
+        (["deps/FelizJueves/tools/emit/x.py"], (False, False, False)),
         # experimental/ and its tests are outside the smoke's preset, so their
         # C++ fires nothing; the root line that adds them still does, and so
         # does anything outside them pushed alongside.
-        (["experimental/rust/s_overlap/ffi/fb_overlap.cpp"], (False, False)),
-        (["experimental/CMakeLists.txt"], (False, False)),
-        (["test/experimental/sort.cpp"], (False, False)),
-        (["experimental/x/CMakeLists.txt", "src/a.cpp"], (True, False)),
-        (["CMakeLists.txt"], (True, False)),
-        (["experimental/cope_rearrangement/scan.py"], (False, True)),
-        (["src/experimental_thing.cpp"], (True, False)),
-        # rust/ fires neither half, not even its one .py; what is pushed
-        # alongside still does.
-        (["rust/core/wwr/src/lib.rs", "rust/Cargo.toml"], (False, False)),
-        (["rust/docs/md2html.py"], (False, False)),
-        (["rust/docs/md2html.py", "src/a.cpp"], (True, False)),
-        (["src/rust.cpp", "devtools/rust.py"], (True, True)),
-        ([], (False, False)),
-        (None, (True, True)),
+        (["experimental/rust/s_overlap/ffi/fb_overlap.cpp"], (False, False, False)),
+        (["experimental/CMakeLists.txt"], (False, False, False)),
+        (["test/experimental/sort.cpp"], (False, False, False)),
+        (["experimental/x/CMakeLists.txt", "src/a.cpp"], (True, False, False)),
+        (["CMakeLists.txt"], (True, False, False)),
+        (["experimental/cope_rearrangement/scan.py"], (False, True, False)),
+        (["src/experimental_thing.cpp"], (True, False, False)),
+        # Anything under rust/ fires the cargo half alone: Rust, its .cu and
+        # its own CMake project (never the C++ smoke), its docs and its one
+        # .py (never the Python half). What is pushed alongside still fires
+        # its own half.
+        (["rust/core/log/src/lib.rs"], (False, False, True)),
+        (["rust/recipes/kernels/merge_sort.cu"], (False, False, True)),
+        (["rust/CMakeLists.txt", "rust/CMakePresets.json"], (False, False, True)),
+        (["rust/cmake/x.cmake", "rust/device_headers/a.h"], (False, False, True)),
+        (["rust/README.md", "rust/Cargo.toml"], (False, False, True)),
+        (["rust/docs/md2html.py"], (False, False, True)),
+        (["rust/docs/md2html.py", "src/a.cpp"], (True, False, True)),
+        # fb-device-check runs the bindings generator.
+        (["devtools/rust-bindings.py"], (False, True, True)),
+        (["src/rust.cpp", "devtools/rust.py"], (True, True, False)),
+        (["src/core/log/log.cppm", "src/README.md"], (True, False, False)),
+        (["experimental/rust/s_overlap/src/lib.rs"], (False, False, False)),
+        ([], (False, False, False)),
+        (None, (True, True, True)),
     ],
 )
-def test_halves(files: list[str] | None, expected: tuple[bool, bool]) -> None:
+def test_halves(files: list[str] | None, expected: tuple[bool, bool, bool]) -> None:
     assert gates.halves(files) == expected
 
 
@@ -183,10 +200,10 @@ def _range(repo: Path, old: str, new: str) -> dict[str, str]:
 def test_changed_files_reads_pre_commits_refs(repo: Path) -> None:
     files = gates.changed_files(_range(repo, "HEAD~2", "HEAD~1"), repo)
     assert files == ["src/a.cppm"]
-    assert gates.halves(files) == (True, False)
+    assert gates.halves(files) == (True, False, False)
     files = gates.changed_files(_range(repo, "HEAD~1", "HEAD"), repo)
     assert files == ["tool.py"]
-    assert gates.halves(files) == (False, True)
+    assert gates.halves(files) == (False, True, False)
     assert gates.changed_files(_range(repo, "HEAD~2", "HEAD"), repo) == [
         "src/a.cppm",
         "tool.py",
@@ -243,7 +260,7 @@ def test_dry_run_dispatch(
     args, _ = gates.parse(["push", "--dry-run"])
     assert gates.cmd_push(args, {}) == 0
     out = capsys.readouterr().out
-    assert "2 changed file(s) -> C++ half: yes, Python half: yes" in out
+    assert "2 changed file(s) -> C++ half: yes, Python half: yes, cargo half: no" in out
     assert "push:   src/a.cppm" in out and "push:   tool.py" in out
 
 
@@ -257,6 +274,152 @@ def test_push_by_hand_without_a_base_exits_2(
     err = capsys.readouterr().err
     assert "push: cannot diff origin/main...HEAD" in err
     assert "Traceback" not in err
+
+
+# --- the cargo half ------------------------------------------------------------
+
+# A stand-in `cargo` on PATH: a two-member workspace, one member linking
+# wwr-sys, and a `cargo test` that exits FAKE_CARGO_TEST_RC. Each call's
+# arguments go to FAKE_CARGO_LOG.
+_FAKE_CARGO = """
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_CARGO_LOG"], "a") as f:
+    f.write(" ".join(args) + "\\n")
+if args[0] == "metadata":
+    print(json.dumps({
+        "packages": [
+            {"name": "fb-core-log", "id": "log", "links": None},
+            {"name": "fb-core-wwr", "id": "wwr", "links": None},
+            {"name": "wwr-sys", "id": "sys", "links": "wwr_capi"},
+        ],
+        "workspace_members": ["log", "wwr"],
+    }))
+elif args[0] == "tree":
+    name = args[args.index("-p") + 1]
+    print(f"{name} v0.1.0 (/x)")
+    if name == "fb-core-wwr":
+        print("wwr-sys v1.0.0 (/x)")
+elif args[0] == "test":
+    print("     Running unittests src/lib.rs (/t/deps/fb_core_log-0123abcd)")
+    print("test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out")
+    print("     Running tests/empty.rs (/t/deps/empty-89abcdef)")
+    print("test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out")
+    print("   Doc-tests fb_core_log")
+    print("test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out")
+    sys.exit(int(os.environ.get("FAKE_CARGO_TEST_RC", "0")))
+"""
+
+
+@pytest.fixture
+def fake_cargo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The stand-in cargo first on PATH; returns its argument log."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    cargo = bindir / "cargo"
+    cargo.write_text(f"#!{sys.executable}\n{_FAKE_CARGO}")
+    cargo.chmod(0o755)
+    calls = tmp_path / "cargo-calls.log"
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_CARGO_LOG", str(calls))
+    monkeypatch.setattr(gates, "tree_rev", lambda: ("abc1234", ""))
+    return calls
+
+
+def test_link_free_crates_leave_out_a_linking_graph(fake_cargo: Path) -> None:
+    assert gates.link_free_crates() == (["fb-core-log"], ["fb-core-log"])
+    trees = [c for c in fake_cargo.read_text().splitlines() if c.startswith("tree")]
+    assert sum("--no-default-features" in c for c in trees) == 2
+    assert all("-e normal,dev,build" in c for c in trees)
+
+
+def test_cargo_counts() -> None:
+    lines = [
+        "     Running unittests src/lib.rs (/t/debug/deps/fb_atom-0123abcd)",
+        "test result: ok. 14 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out",
+        "     Running tests/xyz.rs (/t/debug/deps/xyz-4567)",
+        "test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured",
+        "     Running tests/threads.rs (/t/debug/deps/threads-89ab)",
+        "threads: ok",
+        "   Doc-tests fb_atom",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+        "     Running tests/last.rs (/t/debug/deps/last-cdef)",
+    ]
+    rows, totals = gates.cargo_counts(lines)
+    assert rows == [
+        "fb_atom unittests src/lib.rs: 14 passed, 0 failed, 1 ignored",
+        "xyz tests/xyz.rs: 6 passed, 1 failed, 0 ignored",
+        "threads tests/threads.rs: no libtest counts (harness = false, or died)",
+        "last tests/last.rs: no libtest counts (harness = false, or died)",
+    ]
+    assert totals == [20, 1, 1]
+
+
+def _push_cargo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, files: list[str]
+) -> int:
+    monkeypatch.setattr(gates, "changed_files", lambda _env: files)
+
+    def other_half(*_a, **_k):
+        raise AssertionError("only the cargo half fires")
+
+    monkeypatch.setattr(gates, "python_half", other_half)
+    monkeypatch.setattr(gates, "cpp_push", other_half)
+    args, _ = gates.parse(["push"])
+    return gates.cmd_push(
+        args, {"SLOW_TIER_REPORTS": str(tmp_path / "reports"), "BUILD_JOBS": "4"}
+    )
+
+
+def test_push_runs_the_cargo_half_and_prints_its_counts(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert _push_cargo(monkeypatch, tmp_path, ["rust/core/log/src/lib.rs"]) == 0
+    out = capsys.readouterr().out
+    assert "C++ half: no, Python half: no, cargo half: yes" in out
+    assert "fb_core_log unittests src/lib.rs: 3 passed, 0 failed, 1 ignored" in out
+    assert "doc-tests fb_core_log: 2 passed, 0 failed, 0 ignored" in out
+    assert "empty" not in out
+    assert "cargo test: 5 passed, 0 failed, 1 ignored" in out
+    assert "test.py push PASS  rev=abc1234  ran=cargo" in out
+    calls = fake_cargo.read_text().splitlines()
+    test = next(c for c in calls if c.startswith("test"))
+    assert test == "test -j 4 --no-default-features -p fb-core-log"
+    assert next(c for c in calls if c.startswith("doc")).endswith(
+        "--no-deps -p fb-core-log"
+    )
+
+
+def test_a_failing_cargo_half_fails_the_push_and_is_named(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("FAKE_CARGO_TEST_RC", "101")
+    assert _push_cargo(monkeypatch, tmp_path, ["rust/Cargo.toml"]) == 101
+    err = capsys.readouterr().err
+    assert "cargo half FAILED: cargo test exited 101" in err
+    assert "test.py push FAIL(rc=101)  failed=cargo" in err
+    # Nothing documented after a failed test step.
+    assert not any(c.startswith("doc") for c in fake_cargo.read_text().splitlines())
+
+
+def test_the_cargo_half_skips_without_cargo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    real = gates.shutil.which
+    monkeypatch.setattr(
+        gates.shutil, "which", lambda n, *a, **k: None if n == "cargo" else real(n)
+    )
+    monkeypatch.setattr(gates, "tree_rev", lambda: ("abc1234", ""))
+    assert _push_cargo(monkeypatch, tmp_path, ["rust/README.md"]) == 0
+    assert "skipping the cargo half" in capsys.readouterr().out
 
 
 # --- the GPU batch split -----------------------------------------------------

@@ -3,16 +3,18 @@
 
   devtools/test.py push [--preset NAME] [--all] [-j N] [--dry-run]
   devtools/test.py pr   [--preset NAME] [--fresh] [--clean] [--no-test]
-                        [--all] [--tidy] [--only cpp|python] [-j N] [--report DIR]
-                        [--record] [-- <ctest args>]
+                        [--all] [--tidy] [--only cpp|python|cargo] [-j N]
+                        [--report DIR] [--record] [-- <ctest args>]
   devtools/test.py nightly [--mode auto|nightly|weekly] [--rev REF]
                         [--preset NAME] [-j N] [--report DIR]
                         [--issue-title TITLE] [-- <ctest args>]
+  devtools/test.py cargo-lint
 
 push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   pushed range (PRE_COMMIT_FROM_REF...PRE_COMMIT_TO_REF, which pre-commit
   exports; by hand, origin/main...HEAD) and runs the Python half when a .py
-  changed and the C++ half when C++ or a build file did. Python: the fast
+  changed, the C++ half when C++ or a build file did, and the cargo half when
+  a path under rust/ did (and then neither of the others for it). Python: the fast
   pytest set (FAST_TEST_ARGS over PREPUSH_PATHS). C++: an incremental build,
   the host binaries, then each GPU binary as one process under the card lock,
   running only pr's representative set (below) as a GTEST_FILTER; where the
@@ -23,11 +25,17 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   whose `pr` gate built one backend never cold-builds the other on push.
   --all runs every fast case of the GPU binaries, the old smoke.
   --dry-run prints the changed files and which halves would run.
+  Cargo: tiers 1 to 3 of the Rust rebuild, `cargo test --no-default-features`
+  in debug over the workspace members that build without any native library
+  (found from `cargo tree`, not named), then `cargo doc` over them with
+  warnings denied, in rust/target/nodef; it prints each test binary's counts.
+  It needs no card and skips itself, exit 0, where cargo is absent.
 
 pr: the gate before opening a PR (milestone-run requires it). Configure,
   build, ctest, then the fast pytest set. Of the C++ cases only each family's
   representative runs, as devtools/test_families.py lists them (an exempt
   family runs nothing, a flagged one runs whole); the nightly runs the rest.
+  The cargo half too, when origin/main...HEAD touches rust/ (or cannot be read).
   The GPU entries that can share a process run as one gtest process per GPU
   binary; ctest runs the rest. Logged to <report>/pr-<stamp>-<rev>-<preset>.log,
   and its result line appended to <report>/summary.log.
@@ -38,7 +46,7 @@ pr: the gate before opening a PR (milestone-run requires it). Configure,
     --no-test      configure and build only
     --all          run the whole fast set, not only the representatives
     --tidy         advisory clang-tidy over src/*.cpp after the build
-    --only LANG    run only the cpp or the python half
+    --only HALF    run only the cpp, the python or the cargo half
     -j N           compile jobs (default: BUILD_JOBS)
     --report DIR   log directory (default: SLOW_TIER_REPORTS)
     --record       append the run to the `metrics` branch as a `manual`
@@ -62,6 +70,11 @@ nightly: what the timer runs (docs/testing.md "The nightly"). Fetch origin,
     -- <args>      a reduced run: passed to ctest, and they select the GPU
                    batches; no pytest, no slow-test report, and the record
                    is `manual`, kept out of the timing series
+
+cargo-lint: what the commit hook runs for a commit touching rust/, and CI's
+  lint job: `cargo fmt --check`, and `cargo clippy --all-targets -D warnings`
+  over the link-free members in each feature set that builds without the
+  library (--no-default-features, and their defaults). Reads no config.sh.
 
 push and pr run with FREE_BREAKFAST_FAST_TESTS=1, so every case under
 FBF_SKIP_IF_FAST_TESTS() skips; nightly is the unskipped run. Each
@@ -141,11 +154,22 @@ EXCLUDED = re.compile(r"^(vendor/|third_party/|deps/WarpWraps/|deps/FelizJueves/
 # change there fires no C++ half -- building the tree would check none of it.
 # The root CMakeLists.txt line that adds them is outside, and still fires it.
 NOT_IN_CPP_SMOKE = re.compile(r"^(experimental/|test/experimental/)")
-# The Rust rebuild fires neither half: nothing in it is C++ the tree builds or
-# Python the tree tests (its docs/md2html.py is a by-hand tool). Until the
-# cargo half of the gates lands (rust/docs/testing.md), it is checked by
-# whoever runs `cargo test` by hand.
-NOT_GATED = re.compile(r"^rust/")
+# The Rust rebuild fires the cargo half and nothing else: whatever the path --
+# Rust, a .cu, its own CMake project, docs, its by-hand docs/md2html.py --
+# nothing under rust/ is C++ the tree builds or Python the tree tests.
+# devtools/rust-bindings.py fires it too, beside the Python half: fb-device-check
+# runs it and compares the committed bindings.
+CARGO_FILES = re.compile(r"^rust/|^devtools/rust-bindings\.py$")
+RUST_DIR = REPO_ROOT / "rust"
+# The cargo half's and cargo-lint's target directory. Only link-free crates
+# are built in it, so no build.rs bakes a library's path into an rpath, and a
+# backend's own target directory (rust/README.md "Build and test") is left
+# alone.
+CARGO_TARGET_DIR = RUST_DIR / "target" / "nodef"
+CARGO_RUNNING = re.compile(r"^\s*(Running|Doc-tests) (.*)$")
+CARGO_RESULT = re.compile(
+    r"^test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored"
+)
 
 # The test binaries, relative to a build directory. The GPU ones, one batch
 # each, in this order.
@@ -938,6 +962,184 @@ def python_half(
     return run_phase("pytest", cmd, log)
 
 
+# --- the cargo half --------------------------------------------------------
+
+
+class CargoError(Exception):
+    """cargo cannot list the workspace or its graph."""
+
+
+def cargo_env() -> dict[str, str]:
+    return dict(os.environ, CARGO_TARGET_DIR=str(CARGO_TARGET_DIR))
+
+
+def cargo_query(*args: str) -> str:
+    proc = subprocess.run(
+        ["cargo", *args],
+        cwd=RUST_DIR,
+        env=cargo_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        why = proc.stderr.strip().splitlines()[-1:] or ["no output"]
+        raise CargoError(f"cargo {args[0]} exited {proc.returncode}: {why[0]}")
+    return proc.stdout
+
+
+def link_free_crates() -> tuple[list[str], list[str]]:
+    """The workspace members that build without any native library: those
+    with --no-default-features (tier 3, what the cargo half tests), and
+    those with their default features (linted too). A member qualifies when
+    no package in its own graph -- normal, dev and build edges, under that
+    feature set -- declares `links`: wwr-sys does, and so does every kernel
+    library's -sys crate. Each member is resolved alone, as `cargo test -p`
+    resolves it, so another member's features do not leak in."""
+    meta = json.loads(cargo_query("metadata", "--format-version", "1"))
+    linking = {p["name"] for p in meta["packages"] if p.get("links")}
+    ids = set(meta["workspace_members"])
+    members = [p["name"] for p in meta["packages"] if p["id"] in ids]
+
+    def free(name: str, *flags: str) -> bool:
+        out = cargo_query(
+            *("tree", "-p", name, *flags, "-e", "normal,dev,build"),
+            *("--prefix", "none", "--format", "{p}"),
+        )
+        return not linking & {line.split(" ")[0] for line in out.splitlines()}
+
+    return (
+        [m for m in members if free(m, "--no-default-features")],
+        [m for m in members if free(m)],
+    )
+
+
+def cargo_counts(lines: list[str]) -> tuple[list[str], list[int]]:
+    """cargo test's output read into one line per test binary that ran a
+    case, and the [passed, failed, ignored] totals. A binary with no libtest
+    result line (`harness = false`, or one that died) gets a line saying so,
+    never a silent nothing."""
+    rows: list[str] = []
+    totals = [0, 0, 0]
+    name = None
+    for line in [*lines, "     Running (end)"]:
+        if m := CARGO_RUNNING.match(line):
+            if name is not None:
+                rows.append(f"{name}: no libtest counts (harness = false, or died)")
+            what = m.group(2)
+            # `unittests src/lib.rs (target/.../deps/fb_core_log-0123abcd)`
+            if b := re.search(r"\(.*/([^/]+?)(-[0-9a-f]+)?\)$", what):
+                what = f"{b.group(1)} {what[: b.start()].strip()}"
+            name = f"doc-tests {what}" if m.group(1) == "Doc-tests" else what
+        elif (m := CARGO_RESULT.match(line)) and name is not None:
+            counts = [int(x) for x in m.groups()]
+            totals = [t + c for t, c in zip(totals, counts, strict=True)]
+            if any(counts):
+                rows.append(
+                    f"{name}: {counts[0]} passed, {counts[1]} failed,"
+                    f" {counts[2]} ignored"
+                )
+            name = None
+    return rows, totals
+
+
+def cargo_half(tag: str, jobs: str, log: Path) -> int:
+    """The cargo half of the gates, tiers 1 to 3 (rust/docs/testing.md, "What
+    runs when"): `cargo test --no-default-features` over link_free_crates'
+    first set, in debug so every contract is on, then `cargo doc` over its
+    second with warnings denied: the members whose default features build
+    without the library, the features their docs are written for (a device
+    feature's crate links items --no-default-features compiles out, so its
+    docs need the library). Needs neither card nor library, so it never
+    takes the card lock; skips, exit 0, where cargo is absent, as the C++ half
+    does without its toolchain. Every line goes to `log`; the test counts,
+    one line per binary that ran a case, to stdout."""
+    if shutil.which("cargo") is None:
+        say(f"{tag}: cargo not found -- the Rust toolchain lives in the container")
+        say(f"{tag}: skipping the cargo half")
+        return 0
+    try:
+        tested, documented = link_free_crates()
+    except (CargoError, ValueError, KeyError) as e:
+        say(f"{tag}: cargo half: cannot list the link-free crates: {e}", err=True)
+        return 1
+    say(f"{tag}: cargo half: {len(tested)} link-free crate(s), full log -> {log}")
+    say(f"{tag}:   {' '.join(tested)}")
+    jflag = ["-j", jobs] if jobs else []
+    steps = (
+        (
+            "cargo test",
+            ["cargo", "test", *jflag, "--no-default-features"]
+            + [a for c in tested for a in ("-p", c)],
+            {},
+        ),
+        (
+            "cargo doc",
+            ["cargo", "doc", *jflag, "--no-deps"]
+            + [a for c in documented for a in ("-p", c)],
+            {"RUSTDOCFLAGS": "-D warnings"},
+        ),
+    )
+    for name, cmd, extra in steps:
+        start = time.monotonic()
+        with log.open("a") as f:
+            f.write(f"--- {name}: {' '.join(cmd)} ---\n")
+            proc = subprocess.run(
+                cmd,
+                cwd=RUST_DIR,
+                env=cargo_env() | extra,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            f.write(proc.stdout)
+        lines = proc.stdout.splitlines()
+        if name == "cargo test":
+            rows, (passed, failed, ignored) = cargo_counts(lines)
+            for row in rows:
+                say(f"{tag}:   {row}")
+            say(
+                f"{tag}:   cargo test: {passed} passed, {failed} failed,"
+                f" {ignored} ignored"
+            )
+        if proc.returncode != 0:
+            say(f"{tag}: cargo half FAILED: {name} exited {proc.returncode}", err=True)
+            for line in lines[-25:]:
+                say(f"{tag}:   {line}", err=True)
+            return proc.returncode
+        say(f"{tag}:   {name}: ok ({time.monotonic() - start:.0f}s)")
+    return 0
+
+
+def cmd_cargo_lint() -> int:
+    """The commit hook's and CI's Rust lint: `cargo fmt --check` over the
+    workspace, and `cargo clippy --all-targets -D warnings` in each feature
+    set that builds without the library (link_free_crates)."""
+    if shutil.which("cargo") is None:
+        say("cargo-lint: cargo not found -- skipped (the toolchain is the container's)")
+        return 0
+    try:
+        nodef, default = link_free_crates()
+    except (CargoError, ValueError, KeyError) as e:
+        say(f"cargo-lint: cannot list the link-free crates: {e}", err=True)
+        return 1
+
+    clippy = ["cargo", "clippy", "--all-targets"]
+    lint = "-- -D warnings".split()
+    rc = 0
+    for cmd in (
+        ["cargo", "fmt", "--all", "--check"],
+        [*clippy, "--no-default-features", *(a for c in nodef for a in ("-p", c))]
+        + lint,
+        [*clippy, *(a for c in default for a in ("-p", c))] + lint,
+    ):
+        say(f"--- {' '.join(cmd)} ---")
+        proc = subprocess.run(cmd, cwd=RUST_DIR, env=cargo_env(), check=False)
+        rc = rc or proc.returncode
+    return rc
+
+
 # --- push ------------------------------------------------------------------
 
 
@@ -996,14 +1198,19 @@ def changed_files(env: dict[str, str], root: Path = REPO_ROOT) -> list[str] | No
     )
 
 
-def halves(files: list[str] | None) -> tuple[bool, bool]:
-    """(C++, Python): which halves of the push gate a change fires."""
+def halves(files: list[str] | None) -> tuple[bool, bool, bool]:
+    """(C++, Python, cargo): which halves of the push gate a change fires.
+    A path under rust/ fires the cargo half alone."""
     if files is None:
-        return True, True
-    files = [f for f in files if not EXCLUDED.match(f) and not NOT_GATED.match(f)]
-    return any(
-        CPP_FILES.search(f) and not NOT_IN_CPP_SMOKE.match(f) for f in files
-    ), any(PY_FILES.search(f) for f in files)
+        return True, True, True
+    files = [f for f in files if not EXCLUDED.match(f)]
+    cargo = any(CARGO_FILES.match(f) for f in files)
+    files = [f for f in files if not f.startswith("rust/")]
+    return (
+        any(CPP_FILES.search(f) and not NOT_IN_CPP_SMOKE.match(f) for f in files),
+        any(PY_FILES.search(f) for f in files),
+        cargo,
+    )
 
 
 def cmake_floor() -> str | None:
@@ -1206,20 +1413,32 @@ def cmd_push(args: argparse.Namespace, cfg: dict[str, str]) -> int:
     except DiffError as e:
         say(f"push: {e}", err=True)
         return 2
-    cpp, py = halves(files)
+    cpp, py, cargo = halves(files)
     what = "the whole history" if files is None else f"{len(files)} changed file(s)"
     say(
         f"push: {what} -> C++ half: {'yes' if cpp else 'no'},"
-        f" Python half: {'yes' if py else 'no'}"
+        f" Python half: {'yes' if py else 'no'},"
+        f" cargo half: {'yes' if cargo else 'no'}"
     )
     if args.dry_run:
         for f in files or []:
             say(f"push:   {f}")
         return 0
+    failed = []
     rc = 0
     if py:
         say("push: Python half (fast pytest set) ...")
-        rc = python_half("push", cfg, None)
+        if prc := python_half("push", cfg, None):
+            failed.append("python")
+            rc = rc or prc
+    if cargo:
+        say("push: cargo half (tiers 1 to 3, link-free) ...")
+        report = report_dir_of(cfg["SLOW_TIER_REPORTS"])
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        log = report / f"push-{stamp}-{tree_rev()[0]}-cargo.log"
+        if crc := cargo_half("push", args.jobs or cfg["BUILD_JOBS"], log):
+            failed.append("cargo")
+            rc = rc or crc
     preset = None
     if cpp:
         crc, preset = cpp_push(
@@ -1228,15 +1447,21 @@ def cmd_push(args: argparse.Namespace, cfg: dict[str, str]) -> int:
             args.jobs or cfg["BUILD_JOBS"],
             args.all,
         )
-        rc = rc or crc
+        if crc:
+            failed.append("cpp")
+            rc = rc or crc
     rev, _ = tree_rev()
-    ran = ",".join(h for h, on in (("cpp", cpp), ("python", py)) if on) or "none"
+    ran = (
+        ",".join(h for h, on in (("cpp", cpp), ("python", py), ("cargo", cargo)) if on)
+        or "none"
+    )
     fields = f"rev={rev}  ran={ran}" + (f"  preset={preset}" if preset else "")
     if args.all and cpp:
         fields += "  all"
     if rc != 0:
         say(
-            f"test.py push FAIL(rc={rc})  {fields}  (bypass one push with --no-verify)",
+            f"test.py push FAIL(rc={rc})  failed={','.join(failed)}  {fields}"
+            "  (bypass one push with --no-verify)",
             err=True,
         )
         return rc
@@ -1498,6 +1723,14 @@ def cmd_pr(
     jobs = args.jobs or cfg["BUILD_JOBS"]
     do_cpp = args.only in (None, "cpp")
     do_py = args.only in (None, "python") and not args.no_test
+    do_cargo = args.only in (None, "cargo") and not args.no_test
+    if do_cargo and args.only is None:
+        # push's dispatch, over origin/main...HEAD: a diff git cannot read
+        # tests more, not less.
+        try:
+            do_cargo = halves(changed_files(dict(os.environ)))[2]
+        except DiffError:
+            do_cargo = True
 
     if (
         do_cpp
@@ -1613,6 +1846,9 @@ def cmd_pr(
                     != 0
                 ):
                     say(f"{tag}: clang-tidy reported findings (advisory)", log=log)
+    if do_cargo:
+        crc = cargo_half(tag, jobs, log)
+        rc = rc or crc
     if do_py:
         if results is not None:
             results.mkdir(parents=True, exist_ok=True)
@@ -2107,11 +2343,14 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         epilog="More in devtools/test.py's docstring and docs/testing.md.",
     )
     gates = parser.add_subparsers(
-        dest="gate", required=True, metavar="{push,pr,nightly}"
+        dest="gate", required=True, metavar="{push,pr,nightly,cargo-lint}"
     )
     push = gates.add_parser("push", help="what the pre-push hook runs")
     pr = gates.add_parser("pr", help="the gate before opening a PR")
     nightly = gates.add_parser("nightly", help="what the timer runs")
+    gates.add_parser(
+        "cargo-lint", help="cargo fmt --check and clippy (the commit hook's, CI's)"
+    )
     for p in (push, pr):
         p.add_argument(
             "--preset", help="configure/build preset (default: CMAKE_PRESET)"
@@ -2140,7 +2379,7 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     pr.add_argument(
         "--tidy", action="store_true", help="advisory clang-tidy after the build"
     )
-    pr.add_argument("--only", choices=("cpp", "python"), help="run one half")
+    pr.add_argument("--only", choices=("cpp", "python", "cargo"), help="run one half")
     pr.add_argument("--report", help="log directory (default: SLOW_TIER_REPORTS)")
     pr.add_argument(
         "--record",
@@ -2177,6 +2416,9 @@ def parse(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
 def main(argv: list[str]) -> int:
     args, passthrough = parse(argv)
     strip_git_env()
+    if args.gate == "cargo-lint":
+        # No config.sh: CI's lint job runs it with nothing but the toolchain.
+        return cmd_cargo_lint()
     os.chdir(REPO_ROOT)
     cfg = read_config()
     if args.gate == "nightly":
