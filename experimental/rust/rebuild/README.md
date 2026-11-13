@@ -16,6 +16,7 @@ It stands alone: nothing here uses the other crates under `experimental/rust/`.
 | `core::log` | `src/core/log` | The one backend behind the [`log`](https://crates.io/crates/log) facade: spdlog's line format (local time, OS thread id, `file:line`), the seven levels, `set_level` / `should_log` / `flush`, one file sink, the warning counter, and `log_at` for a location already held |
 | `core::error_handling` | `src/core/error_handling` | `ErrorKind` (with the pinned exit codes as `exit_code`), `Error` and its `#[track_caller]` factories, `Result<T>` / `Status`, `check_or_abort` |
 | `core::diagnostics` | `src/core/diagnostics` (`diagnostics.h`) | `gpu_must` (`FBF_GPU_MUST`), `critical!` (`FBF_LOG_CRITICAL`), and `log`'s `trace!` ... `error!` re-exported (`FBF_LOG_TRACE` ... `FBF_LOG_ERROR`); `FBF_TRY` is `?` |
+| `core::arena` | the peak model of `src/core/footprint` and `src/pipeline/footprint`, and `check_plan`'s fit | The plan's memory laid out once (`docs/memory.md`): `TableBuilder` (rows declared node by node as scratch, outputs and their readers, or the worker's; lifetimes derived), `assign` (the pure greedy best-fit offset assigner), `Table` (offsets, total, `peak`, and `handoffs`, the orderings reusing bytes needs; its text is the committed golden `tests/golden/arena_scf_fixture.txt`, rewritten by `FB_BLESS=1`), `admit` (the fit against a cap, refusing with the rows live at the peak). Pure; the blocks come next |
 | `core::thread_pool` | nothing: the C++ pipeline runs on one thread | The run's workers (`docs/programming_model.md`, "CPU workers"): `Plan` (nodes added in topological order, each placed on the CPU pool or one stream worker), `run` (one scope, `n_cpu` CPU workers and a thread per stream worker, readiness counts, failure skipping descendants, the lowest-ranked error returned, a panic re-raised rather than hung), and the `Backend` the edges leaving a stream wait through: `Device` (a stream per worker, an event per GPU node) or `HostOnly` for device-free tests. `core::log::TaskScope` tags each node's lines `[task@worker]`, and `Error::context` carries it out. `clippy.toml` makes it the one place that spawns |
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
@@ -168,3 +169,11 @@ gfx1200.
 and the thread-count test pass in a debug build, and 42, 5, 1 and 1 in
 release. Clippy, rustdoc (`-D warnings`) and `cargo fmt --check` are clean.
 Not run on the gfx1200.
+
+2026-11-13, `core::arena`'s tables (the assigner, the table, handoffs,
+admission), on the RTX 3080 (CUDA) only: 50 unit tests (6 of them the
+arena's, 2 of those proptest properties at 256 cases), the 5 log tests,
+the pool-allocation test, the thread-count test and 2 doctests pass in a
+debug build, and 48, 5, 1, 1 and 2 in release. Clippy (`-D warnings`),
+rustdoc (`-D warnings`) and `cargo fmt --check` are clean. The arena's
+tests touch no device.
