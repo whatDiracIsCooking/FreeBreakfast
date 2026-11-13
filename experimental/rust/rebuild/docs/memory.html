@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Memory — Rust rebuild</title>
+<!-- Generated from memory.md by md2html.py; edit the .md, not this. -->
+<style>
+:root{--bg:#fbfaf7;--fg:#1f2328;--muted:#5d6670;--rule:#e3e0d8;--accent:#8a4b16;
+--code-bg:#f1eee6;--th-bg:#f4f1ea;--link:#0b5cad;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#16181c;
+--fg:#e4e6ea;--muted:#9aa3ad;--rule:#2c3038;--accent:#e0a36a;--code-bg:#22262d;
+--th-bg:#1d2026;--link:#7fb4ff;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#16181c;--fg:#e4e6ea;--muted:#9aa3ad;--rule:#2c3038;
+--accent:#e0a36a;--code-bg:#22262d;--th-bg:#1d2026;--link:#7fb4ff;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:16px/1.65 Charter,"Bitstream Charter","Iowan Old Style",Georgia,serif;
+padding-inline:16px}
+.wrap{max-width:72rem;margin:0 auto;display:grid;grid-template-columns:15rem minmax(0,
+1fr);
+gap:3rem;padding-block:2.5rem 4rem}
+nav{position:sticky;top:1.5rem;align-self:start;max-height:calc(100vh - 3rem);
+overflow:auto;
+font:13.5px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+nav .kicker{text-transform:uppercase;letter-spacing:.08em;font-size:11px;
+color:var(--muted);
+margin-bottom:.6rem}
+nav ol{list-style:none;margin:0;padding:0}
+nav li{margin:.3rem 0}
+nav li.l3{padding-left:.9rem;font-size:12.5px}
+nav a{color:var(--muted);text-decoration:none}
+nav a:hover{color:var(--accent)}
+nav .sib{margin-top:1.4rem;padding-top:.8rem;border-top:1px solid var(--rule)}
+main{max-width:44rem}
+h1,h2,h3{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.25;
+letter-spacing:-.01em}
+h1{font-size:2rem;margin:0 0 1.5rem}
+h1 .pre{display:block;font-size:.8rem;font-weight:600;text-transform:uppercase;
+letter-spacing:.1em;color:var(--accent);margin-bottom:.4rem}
+h2{font-size:1.35rem;margin:3rem 0 .9rem;padding-top:1.2rem;
+border-top:1px solid var(--rule)}
+h3{font-size:1.08rem;margin:2.2rem 0 .7rem}
+h2 a.hl,h3 a.hl{color:inherit;text-decoration:none}
+p,li{hyphens:auto}
+strong{font-weight:650}
+a{color:var(--link);text-underline-offset:2px}
+code{font:.86em/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+background:var(--code-bg);padding:.1em .3em;border-radius:3px}
+pre{background:var(--code-bg);padding:1rem 1.1rem;border-radius:6px;overflow-x:auto;
+line-height:1.45}
+pre code{background:none;padding:0;font-size:13.5px}
+.table{overflow-x:auto;margin:1.2rem 0}
+table{border-collapse:collapse;font:14px/1.45 system-ui,-apple-system,"Segoe UI",
+sans-serif;
+min-width:100%}
+th,td{border-bottom:1px solid var(--rule);padding:.5rem .7rem;text-align:left;
+vertical-align:top}
+th{background:var(--th-bg);font-weight:600}
+td code,th code{font-size:12.5px}
+ol,ul{padding-left:1.4rem}
+@media (max-width:860px){.wrap{grid-template-columns:1fr;gap:0;
+padding-block:1.5rem 3rem}
+nav{position:static;max-height:none;margin-bottom:1rem;padding-bottom:1rem;
+border-bottom:1px solid var(--rule)}}
+:root{--acc-fill:rgba(138,75,22,.15);--row:#e9e5da}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+--acc-fill:rgba(224,163,106,.2);--row:#2a2f37}}
+:root[data-theme="dark"]{--acc-fill:rgba(224,163,106,.2);--row:#2a2f37}
+figure{margin:1.8rem 0}
+figure .scroll{overflow-x:auto}
+figure svg{display:block;width:100%;min-width:520px;height:auto;color:var(--fg)}
+figcaption{font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+color:var(--muted);
+margin-top:.6rem}
+svg text{font:12px system-ui,-apple-system,"Segoe UI",sans-serif;fill:currentColor}
+svg .t{font-weight:600}
+svg .sm{font-size:11px}
+svg .mt{fill:var(--muted)}
+svg .at{fill:var(--accent)}
+svg .ln{stroke:currentColor;fill:none;stroke-width:1.3}
+svg .ml{stroke:var(--muted);fill:none;stroke-width:1}
+svg .al{stroke:var(--accent);fill:none;stroke-width:1.6}
+svg .dash{stroke-dasharray:5 4}
+svg .box{fill:var(--code-bg);stroke:currentColor;stroke-width:1.2}
+svg .row{fill:var(--row);stroke:currentColor;stroke-width:1}
+svg .ab{fill:var(--acc-fill);stroke:var(--accent);stroke-width:1.5}
+svg .ah{fill:var(--accent)}
+svg .fh{fill:currentColor}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-table">The table</a></li><li class="l2"><a href="#lifetimes">Lifetimes</a></li><li class="l2"><a href="#admission">Admission</a></li><li class="l2"><a href="#adaptive-widths-one-planner-routine">Adaptive widths: one planner routine</a></li><li class="l2"><a href="#sizes-the-dimensions-do-not-fix">Sizes the dimensions do not fix</a></li><li class="l2"><a href="#nested-plans">Nested plans</a></li><li class="l2"><a href="#the-two-kinds">The two kinds</a></li><li class="l3"><a href="#the-rust-shape">The Rust shape</a></li><li class="l2"><a href="#what-is-checked">What is checked</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="programming_model.html">programming model</a></li></ol></div></nav>
+<main>
+<h1><span class="pre">Rust rebuild</span>Memory</h1>
+<p>The programming model fixes the principles: a task's layout is its
+footprint, the arena is a table and a block, the block is the plan's peak,
+and a run allocates nothing (<a href="programming_model.html"><code>programming_model.md</code></a>,
+&quot;Memory: layouts and arenas&quot;, &quot;The arena is a table and a block&quot;, &quot;Blocks,
+plans and the process&quot;, &quot;Memory kinds&quot;). This document is the level below,
+the one a planner is written from: what a row of the table is and who owns
+it, how a lifetime is represented and when two rows may share bytes, the
+admission arithmetic, how an adaptive width is chosen, how the two kinds are
+allocated, and what checks each rule. Every rule here is fixed by a case the
+C++ tree already has, and the cases are cited rather than invented: the
+footprint vocabulary and fold
+(<a href="../../../../src/core/footprint/README.md"><code>src/core/footprint</code></a>,
+<a href="../../../../src/pipeline/footprint/README.md"><code>src/pipeline/footprint</code></a>),
+pre-flight (<a href="../../../../src/pipeline/shape/README.md"><code>src/pipeline/shape</code></a>,
+<a href="../../../../src/pipeline/README.md"><code>src/pipeline</code></a>, &quot;Memory caps&quot;), and
+<code>DeviceResources</code> (<a href="../../../../src/core/resources/README.md"><code>src/core/resources</code></a>).</p>
+<p>The C++ footprint was a second program about allocation, held in step with
+the first by tests against a measured pool peak. The rules below exist so
+that there is one program: the table <em>is</em> the allocation, and what the C++
+measured is here read off the plan.</p>
+<h2 id="the-table">The table</h2>
+<p>The planner's output for one worker and one memory kind is a table: one row
+per buffer, with its owner, its bytes, its alignment, its lifetime and the
+offset the assigner gave it, and the block's total. A <code>run</code> touches memory
+only through a row. Four owners, and the owner is what decides the lifetime:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Owner</th>
+<th>Row</th>
+<th>Lifetime</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A task</td>
+<td>Its scratch, from <code>layout(dims)</code></td>
+<td>The task: its first launch to its last</td>
+<td>The SCF's DIIS history, a kernel's <code>*_workspace_bytes</code>, a solver's <code>lwork</code></td>
+</tr>
+<tr>
+<td>An edge</td>
+<td>Its producer's output, from the producer's <code>layout(dims)</code></td>
+<td>The edge: the producer's first write to the last consumer's last read</td>
+<td>S, H_core, the converged C, B and L</td>
+</tr>
+<tr>
+<td>A worker</td>
+<td>A buffer the worker holds for every task it runs</td>
+<td>The plan</td>
+<td>A BLAS handle's workspace, the solver's <code>info</code> flag</td>
+</tr>
+<tr>
+<td>The orchestrator</td>
+<td>A buffer placement created</td>
+<td>The edge it carries</td>
+<td>A broadcast's copy on the consumer's card, a reduce's partials on the join's card</td>
+</tr>
+</tbody>
+</table></div>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 204" role="img" aria-label="The four owners' lifetimes against one schedule: a worker row lives for the whole plan; an edge row from its producer's first write to its last consumer's last read; a task row for its task alone; a transport row from the copy's enqueue to the edge's end, and only when the ends land on different cards.">
+<line class="ml" x1="100" y1="58" x2="100" y2="184"/>
+<line class="ml" x1="600" y1="58" x2="600" y2="184"/>
+<line class="ml dash" x1="120" y1="50" x2="120" y2="184"/>
+<line class="ml dash" x1="560" y1="50" x2="560" y2="184"/>
+<text x="95" y="41" text-anchor="end">schedule</text>
+<rect class="box" x="120" y="24" width="110" height="26" rx="4"/><text x="175" y="41" text-anchor="middle">producer P</text>
+<rect class="ml dash" x="240" y="24" width="50" height="26" rx="4"/><text class="sm" x="265" y="41" text-anchor="middle">copy</text>
+<rect class="box" x="300" y="24" width="100" height="26" rx="4"/><text x="350" y="41" text-anchor="middle">consumer</text>
+<rect class="box" x="460" y="24" width="100" height="26" rx="4"/><text x="510" y="41" text-anchor="middle">last consumer</text>
+<text x="95" y="85" text-anchor="end">worker</text>
+<rect class="row" x="100" y="72" width="500" height="18"/><text class="sm" x="350" y="85" text-anchor="middle">the plan</text>
+<text x="95" y="115" text-anchor="end">edge</text>
+<rect class="ab" x="120" y="102" width="440" height="18"/><text class="sm" x="340" y="115" text-anchor="middle">producer's first write → last consumer's last read</text>
+<text x="95" y="145" text-anchor="end">task</text>
+<rect class="row" x="120" y="132" width="110" height="18"/><text class="sm" x="175" y="145" text-anchor="middle">P's scratch</text>
+<text x="95" y="175" text-anchor="end">transport</text>
+<rect class="ml dash" x="240" y="162" width="320" height="18"/><text class="sm" x="400" y="175" text-anchor="middle">copy enqueue → edge end · only across cards</text>
+<text class="sm mt" x="100" y="198" text-anchor="middle">instantiate</text>
+<text class="sm mt" x="600" y="198" text-anchor="middle">drop</text>
+</svg></div>
+<figcaption>The owner decides the lifetime, and the lifetime is all the assigner needs. On one card the transport row does not exist: the consumer reads the edge row in place.</figcaption>
+</figure>
+
+<p><strong>An output's bytes are declared once.</strong> The task's layout names the output
+and its size; the edge declares its kind, its reduce order and its consumers
+(<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;An edge declares&quot;), and
+its size is <em>read</em> from the producer's layout, never written a second time.
+Two formulas for one buffer is the drift the C++ <code>sizes</code> struct could only
+suggest against.</p>
+<p><strong>Per-worker rows exist so that nothing is uncounted.</strong> Pre-flight today
+subtracts <code>kOwnPoolBytes</code> from the room by hand, the solver <code>info</code> flag that
+<code>DeviceResources</code> holds from construction and that no step's footprint can
+see. Here it is a row with the lifetime &quot;the plan&quot;, placed by the assigner
+like any other, and the same for each library handle's workspace
+(<a href="gpu_layer.md"><code>gpu_layer.md</code></a>, &quot;Layering&quot;). A worker's rows are its own
+layout, called once at planning with the plan's dimensions, and the C++
+<code>syevd_lwork[k]</code> table, the solver's query at every order the plan
+diagonalizes at, is how those dimensions already carry a library's size.</p>
+<p><strong>Transport rows are placement's.</strong> An edge whose two ends land on different
+cards needs a destination on the consumer's card; a reduce whose slices land
+apart needs the partials beside the join. The orchestrator adds those rows
+when it places, sized by the edge, with the edge's lifetime from the copy's
+enqueue. On one card they do not exist: a broadcast is a pointer, and a
+reduce accumulates in order into the join's output
+(<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Workers are a hierarchy&quot;).
+The join owns the reduced output; each slice's partial is that slice's
+output row, and on one stream the planner may give slice 0's partial the
+join's offsets, since the ordered accumulate writes the same bytes.</p>
+<p><strong>Where the C++ lifetimes went.</strong> <code>persistent</code> is an edge row; <code>scratch</code> is a
+task row; <code>workspace</code>, the one fixed block every step borrowed from, splits
+in two. What a step carved from it for itself is a task row, which the
+assigner aliases with every other task's dead scratch, so the &quot;workspace
+gap&quot; pre-flight logs, a one-off large carve held at the plan's maximum
+through every step, cannot occur. What the handles hold is a worker row. The
+rule <code>DeviceResources</code> needed, one routine owns the workspace at a time and
+a callback is a nested user, guarded against two routines carving from the
+same start; here every node has its own offsets and the rule has nothing
+left to guard. The Davidson keeps its subspace across its operator's calls
+in rows of its own because they are edges of its sub-DAG, not because a
+rule says so.</p>
+<h2 id="lifetimes">Lifetimes</h2>
+<p>A lifetime is an interval in the schedule, and the schedule is a partial
+order over launches, so the interval's ends are positions in that order:</p>
+<ul>
+<li><strong>On one stream</strong>, the stream's order is total, and a lifetime is a pair
+of positions. Reuse is the C++ <code>then</code> / <code>drop</code> algebra with the implicit
+frees made explicit.</li>
+<li><strong>Across streams</strong>, two positions are ordered only through an event one
+stream records and the other waits on, or through a chain of edges that
+implies one. Two buffers on different streams may share bytes only when
+such a path runs from one's end to the other's start. Whether the planner
+adds an event edge to create a path is the programming model's open
+question on reuse across streams
+(<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Open questions&quot;).</li>
+<li><strong>Across a CPU node</strong>, the node's completion is a host event, not a stream
+one. A pinned row read by a file-write node ends when the write returns,
+and the next row to take those bytes is a device-to-pinned copy the
+orchestrator may not enqueue before that. The readiness count that gates a
+node on its predecessors is the mechanism; the memory rule adds that an
+offset's previous owner counts as a predecessor. This is <code>DeviceResources</code>'
+&quot;drain the copies that read a region before rewriting it&quot;, as a planning
+fact.</li>
+</ul>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 152" role="img" aria-label="Two streams. On the left, row r's last read on stream A and row s's first write on stream B have no path between them, so they need disjoint bytes even though s starts later by the clock. On the right, an event recorded on A and waited on by B orders them, and s may take r's offsets.">
+<defs>
+<marker id="mm2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text class="t" x="170" y="16" text-anchor="middle">No path between them</text>
+<text class="t" x="510" y="16" text-anchor="middle">An event makes one</text>
+<line class="ml" x1="340" y1="6" x2="340" y2="146"/>
+<text x="84" y="53" text-anchor="end">stream A</text>
+<text x="84" y="108" text-anchor="end">stream B</text>
+<line class="ml" x1="90" y1="49" x2="326" y2="49"/>
+<line class="ml" x1="90" y1="104" x2="326" y2="104"/>
+<rect class="row" x="95" y="36" width="110" height="26"/><text class="sm" x="150" y="53" text-anchor="middle">last read of r</text>
+<rect class="row" x="210" y="91" width="110" height="26"/><text class="sm" x="265" y="108" text-anchor="middle">first write of s</text>
+<text class="sm mt" x="170" y="140" text-anchor="middle">r and s need disjoint bytes</text>
+<text x="424" y="53" text-anchor="end">stream A</text>
+<text x="424" y="108" text-anchor="end">stream B</text>
+<line class="ml" x1="430" y1="49" x2="666" y2="49"/>
+<line class="ml" x1="430" y1="104" x2="666" y2="104"/>
+<rect class="row" x="435" y="36" width="110" height="26"/><text class="sm" x="490" y="53" text-anchor="middle">last read of r</text>
+<rect class="row" x="550" y="91" width="110" height="26"/><text class="sm" x="605" y="108" text-anchor="middle">first write of s</text>
+<path class="al" d="M545,62 L551,88" marker-end="url(#mm2a)"/>
+<text class="sm at" x="560" y="80">record → wait</text>
+<text class="sm at" x="510" y="140" text-anchor="middle">s may take r's offsets</text>
+</svg></div>
+<figcaption>Across streams, starting later on the clock is not an ordering. Two rows may share bytes only when a path in the schedule, an edge or an event, runs from one's end to the other's start.</figcaption>
+</figure>
+
+<p><strong>Two rows may share bytes iff one's end precedes the other's start.</strong> That
+is the assigner's one invariant, and it is what the fuzz checks
+(<a href="testing.md"><code>testing.md</code></a>, &quot;Fuzzing&quot;). The assigner is greedy in start
+order with best fit, and a schedule it cannot fit at the given order is
+re-ordered or refused by admission, never allocated past the block.</p>
+<p><strong>An alias is free of synchronization.</strong> The ERI step is the case. Issue
+1153 found the DF chain's packing broken because B was allocated while the
+metric pair's frees were still pending on the stream, and the pool took new
+chunks; the fix was a host synchronize before B. Under the table B's row
+starts after the copy into <code>l</code> that is the pair's last read, on the same
+stream, so B takes the pair's bytes with no wait at all. The step's README
+calls that sync a departure from the no-wait ideal; here it is gone.</p>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 196" role="img" aria-label="The ERI step's B and the metric pair. In the C++ tree a host synchronize sits between the pair's last read and B so the pool can reuse the pair's bytes. Under the table, B's row starts right after the copy into l on the same stream and takes the pair's offsets with no wait.">
+<text class="t" x="170" y="18" text-anchor="middle">C++: a host sync before B</text>
+<text class="t" x="510" y="18" text-anchor="middle">Table: B follows the last read</text>
+<line class="ml" x1="340" y1="8" x2="340" y2="190"/>
+<rect class="row" x="20" y="90" width="140" height="70"/><text x="90" y="129" text-anchor="middle">metric pair</text>
+<rect class="row" x="140" y="48" width="180" height="42"/><text x="230" y="73" text-anchor="middle">L</text>
+<rect class="row" x="182" y="90" width="138" height="70"/><text x="251" y="129" text-anchor="middle">B</text>
+<rect class="ab" x="160" y="34" width="22" height="126"/>
+<text class="sm at" x="171" y="178" text-anchor="middle">host sync</text>
+<line class="ml" x1="20" y1="160" x2="320" y2="160"/>
+<rect class="row" x="360" y="90" width="140" height="70"/><text x="430" y="129" text-anchor="middle">metric pair</text>
+<rect class="row" x="480" y="48" width="180" height="42"/><text x="570" y="73" text-anchor="middle">L</text>
+<rect class="row" x="500" y="90" width="160" height="70"/><text x="580" y="129" text-anchor="middle">B</text>
+<line class="ml" x1="360" y1="160" x2="660" y2="160"/>
+<text class="sm at" x="500" y="178" text-anchor="middle">no wait: same stream</text>
+</svg></div>
+<figcaption>Offset (up) against schedule (right). L starts at the copy into l, the pair's last read. Under the table, B takes the pair's bytes as soon as that read ends, because one stream already orders them. The C++ pool needed the host to drain the pair's pending frees first (issue 1153).</figcaption>
+</figure>
+
+
+<h2 id="admission">Admission</h2>
+<p>Per worker and per kind, the block must fit:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Must hold</th>
+<th>Terms</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Device</td>
+<td><code>block + reserve + stack &lt;= cap</code></td>
+<td><code>reserve</code>: the context, the handles and the loaded modules, outside any block; <code>stack</code>: the kernels' stack the driver takes back when the card has no free memory left for it (<code>kKernelStackBytes</code> per thread, up to 1.8 GiB on the RTX 3080)</td>
+</tr>
+<tr>
+<td>Pinned</td>
+<td><code>block &lt;= pinned_cap</code>, and <code>sum over the node's workers &lt;= MemAvailable - margin</code></td>
+<td>The per-GPU cap, and the C++ <code>check_pinned_node</code> carried over</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>No headroom and no eighth.</strong> The 64 MiB fragmentation headroom and the HIP
+<code>ceil(P / 8)</code> reuse rounding are properties of a pool that reserves in chunks
+and serves a request from a larger freed block. One plain allocation has
+neither, and both terms are dropped. What stays is what sits outside every
+block: the reserve, a floor measured on the 3080 and grown as modules load,
+and the stack.</p>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 138" role="img" aria-label="Device admission: the block, the measured reserve and the kernels' stack must sum to no more than the cap. The 64 MiB fragmentation headroom and the HIP one-eighth reuse rounding are dropped, since there is no pool.">
+<text class="sm" x="640" y="24" text-anchor="middle">cap</text>
+<rect class="ab" x="20" y="36" width="340" height="34"/><text x="190" y="57" text-anchor="middle">block: the plan's peak</text>
+<rect class="row" x="360" y="36" width="110" height="34"/><text x="415" y="57" text-anchor="middle">reserve</text>
+<rect class="row" x="470" y="36" width="110" height="34"/><text x="525" y="57" text-anchor="middle">stack</text>
+<rect class="ml dash" x="580" y="36" width="60" height="34"/><text class="sm mt" x="610" y="57" text-anchor="middle">free</text>
+<line x1="640" y1="30" x2="640" y2="78" stroke="currentColor" stroke-width="2"/>
+<text class="sm mt" x="364" y="88">measured, ≥ 256 MiB</text>
+<text class="sm mt" x="576" y="88" text-anchor="end">driver reclaims</text>
+<text class="sm mt" x="352" y="117" text-anchor="end">dropped, no pool to feed:</text>
+<rect class="ml dash" x="360" y="102" width="70" height="22"/><text class="sm mt" x="395" y="117" text-anchor="middle">64 MiB</text>
+<rect class="ml dash" x="438" y="102" width="70" height="22"/><text class="sm mt" x="473" y="117" text-anchor="middle">⌈P / 8⌉</text>
+<line class="ml" x1="360" y1="113" x2="430" y2="113"/>
+<line class="ml" x1="438" y1="113" x2="508" y2="113"/>
+</svg></div>
+<figcaption><code>block + reserve + stack ≤ cap</code>. The headroom and the HIP rounding priced a pool that reserves in chunks; one plain allocation has neither.</figcaption>
+</figure>
+
+
+<p><strong>The reserve is measured, with the constant as its floor.</strong> At process
+start, after the devices' handles exist and before any block, each worker
+reads its device's free memory against its total; the difference is that
+device's reserve, and the C++ <code>kDeviceReserve</code> of 256 MiB is the least it may
+be taken as. A card another process holds part of shows up here, as a
+smaller cap, rather than at the first allocation.</p>
+<p><strong>Without a cap, the cap is the card.</strong> A config with no <code>[memory]</code> table is
+admitted against the device's free memory at planning less the reserve and
+the stack, so an uncapped plan that does not fit is still refused before the
+first launch. Today an uncapped plan is checked against nothing but the
+device workspace.</p>
+<p><strong>Admission is a search over order.</strong> The orchestrator's first job on one
+GPU is an order whose peak fits (<a href="programming_model.html"><code>programming_model.md</code></a>,
+&quot;The pipeline is already an instance&quot;). The search is: the plan order from
+the config, siblings concurrent where room allows; when the peak is past the
+cap, serialize the widest concurrency first, then narrow each adaptive task
+in schedule order down to its least; refuse only when the serial plan at
+every adaptive task's least does not fit. The refusal names the worker, the
+kind, the instant of the peak and every row live at it, which is the C++
+message, the step that reaches the peak, with its rows.</p>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 172" role="img" aria-label="The admission search: start from the config's plan order with siblings concurrent; while the peak is over the cap, serialize the widest concurrency, then narrow each adaptive task in schedule order to its least; refuse only when the serial plan at every task's least still does not fit. Any step that fits admits.">
+<defs>
+<marker id="mm5a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+<marker id="mm5b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="box" x="10" y="30" width="140" height="54" rx="5"/>
+<text x="80" y="53" text-anchor="middle">plan order,</text><text x="80" y="69" text-anchor="middle">siblings concurrent</text>
+<rect class="box" x="190" y="30" width="140" height="54" rx="5"/>
+<text x="260" y="53" text-anchor="middle">serialize the</text><text x="260" y="69" text-anchor="middle">widest concurrency</text>
+<rect class="box" x="370" y="30" width="140" height="54" rx="5"/>
+<text x="440" y="53" text-anchor="middle">narrow the next</text><text x="440" y="69" text-anchor="middle">adaptive task</text>
+<rect class="ab" x="550" y="30" width="120" height="54" rx="5"/>
+<text x="610" y="53" text-anchor="middle">refuse, naming</text><text x="610" y="69" text-anchor="middle">rows at the peak</text>
+<line class="ln" x1="150" y1="57" x2="188" y2="57" marker-end="url(#mm5a)"/>
+<line class="ln" x1="330" y1="57" x2="368" y2="57" marker-end="url(#mm5a)"/>
+<line class="al" x1="510" y1="57" x2="548" y2="57" marker-end="url(#mm5b)"/>
+<text class="sm mt" x="169" y="24" text-anchor="middle">&gt; cap</text>
+<text class="sm mt" x="349" y="24" text-anchor="middle">&gt; cap</text>
+<text class="sm at" x="529" y="24" text-anchor="middle">all at least</text>
+<path class="ln" d="M395,30 C395,8 425,8 425,28" marker-end="url(#mm5a)"/>
+<text class="sm mt" x="432" y="14">each, &gt; cap</text>
+<line class="ln" x1="80" y1="84" x2="80" y2="128" marker-end="url(#mm5a)"/>
+<line class="ln" x1="260" y1="84" x2="260" y2="128" marker-end="url(#mm5a)"/>
+<line class="ln" x1="440" y1="84" x2="440" y2="128" marker-end="url(#mm5a)"/>
+<text class="sm mt" x="86" y="110">fits</text>
+<text class="sm mt" x="266" y="110">fits</text>
+<text class="sm mt" x="446" y="110">fits</text>
+<rect class="box" x="10" y="130" width="500" height="30" rx="5"/>
+<text x="260" y="149" text-anchor="middle">admit: the order, the table and every width are fixed</text>
+</svg></div>
+<figcaption>Serializing comes before narrowing: give up parallelism first, then adaptive width, one task at a time in schedule order. Refusal is the last box, reached only by the serial plan at every task's least.</figcaption>
+</figure>
+
+
+<p><strong>The block is the pre-warm.</strong> Pre-flight today allocates and frees the
+pool's cap once so that a card another process holds part of is refused
+before the first step. Here the block allocation is that probe: one call,
+and a refusal naming the bytes asked and the free memory
+(<a href="diagnostics.md"><code>diagnostics.md</code></a>, &quot;Allocation is a planning-time error&quot;).</p>
+<h2 id="adaptive-widths-one-planner-routine">Adaptive widths: one planner routine</h2>
+<p>Three C++ routines size a part of themselves from free memory at run time,
+and they are one pattern:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Routine</th>
+<th>Width</th>
+<th>Bytes it bisects</th>
+<th>Least</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>NEVPT2's <code>walk_step</code></td>
+<td>The slab batch</td>
+<td><code>walk_bytes(step)</code>, against the budget less the headroom</td>
+<td>A batch of one</td>
+</tr>
+<tr>
+<td>FCI's <code>set_scratch_limit</code></td>
+<td>The block of strings whose G and D fit</td>
+<td><code>sigma_apply_bytes(limit)</code>: the whole vector where it fits, else the largest block</td>
+<td>One string's</td>
+</tr>
+<tr>
+<td>AVAS's <code>narrow_avas</code></td>
+<td><code>ncas</code></td>
+<td>The whole fold at each count</td>
+<td>One orbital</td>
+</tr>
+</tbody>
+</table></div>
+<p>Each writes its own bisection and reads the budget through <code>memory_budget()</code>
+at run time. Here a task with an adaptive part declares it as two functions
+beside <code>layout</code>: <code>bytes(width)</code>, monotone non-decreasing, and
+<code>width_max(dims)</code>, the natural full size. The planner bisects <code>bytes</code> against
+the room the schedule leaves at the task's position, once, at planning. The
+width is then a dimension of the plan, logged at <code>debug</code> and at <code>warn</code> when
+it is 1 (<a href="diagnostics.md"><code>diagnostics.md</code></a>, &quot;Levels&quot;), and <code>run</code> never reads
+free memory. A <code>bytes</code> that is not monotone is caught by the tier-3 fuzz
+that bisects it and checks the result against a linear scan.</p>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 226" role="img" aria-label="An adaptive task's bytes as a function of width, monotone non-decreasing from 1 to width_max. The planner bisects it once against the room the schedule leaves at the task's position and takes w*, the largest width whose bytes fit.">
+<defs>
+<marker id="mm6a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<line class="ln" x1="70" y1="190" x2="640" y2="190" marker-end="url(#mm6a)"/>
+<line class="ln" x1="70" y1="190" x2="70" y2="18" marker-end="url(#mm6a)"/>
+<text class="sm mt" transform="translate(40,110) rotate(-90)" text-anchor="middle">bytes(width)</text>
+<text class="sm mt" x="70" y="206" text-anchor="middle">1</text>
+<text class="sm mt" x="620" y="206" text-anchor="middle">width_max</text>
+<text class="sm mt" x="640" y="222" text-anchor="end">width →</text>
+<polyline class="ln" points="70,182 120,176 170,168 220,158 270,148 320,136 370,124 420,110 470,96 520,80 570,62 620,44"/>
+<g class="fh">
+<circle cx="70" cy="182" r="3"/><circle cx="120" cy="176" r="3"/><circle cx="170" cy="168" r="3"/><circle cx="220" cy="158" r="3"/><circle cx="270" cy="148" r="3"/><circle cx="320" cy="136" r="3"/><circle cx="370" cy="124" r="3"/><circle cx="470" cy="96" r="3"/><circle cx="520" cy="80" r="3"/><circle cx="570" cy="62" r="3"/><circle cx="620" cy="44" r="3"/>
+</g>
+<line class="al dash" x1="70" y1="103" x2="636" y2="103"/>
+<text class="sm at" x="636" y="97" text-anchor="end">room at the task's position</text>
+<line class="al dash" x1="420" y1="110" x2="420" y2="190"/>
+<circle class="ah" cx="420" cy="110" r="5"/>
+<text class="sm at" x="426" y="182">w*</text>
+</svg></div>
+<figcaption>One routine replaces three. <code>bytes</code> must be monotone, which is what makes bisection valid; the planner runs it once, at planning, and <code>w*</code> becomes a dimension of the plan. <code>run</code> never reads free memory.</figcaption>
+</figure>
+
+
+<p><strong>AVAS is the adaptive case that changes the DAG's dimensions.</strong> Its width
+is <code>ncas</code>, and every downstream layout grows with it, so it is bisected over
+the whole fold, as <code>narrow_avas</code> does, and its result becomes the plan's
+<code>ncas</code>, with a pick of more refused at the step rather than truncated. It is
+the same routine with a different <code>bytes</code>.</p>
+<p><strong>One pass, in schedule order.</strong> The fixed layouts are placed first, then
+each adaptive task takes the remainder at its position, which is pre-flight's
+room line today. Whether the planner should iterate, since the widths change
+the peak and the peak the room, is the programming model's open question on
+adaptive layouts (<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Open
+questions&quot;); the single pass is the model until a plan shows it is not
+enough.</p>
+<h2 id="sizes-the-dimensions-do-not-fix">Sizes the dimensions do not fix</h2>
+<p>The C++ tree has both of the model's answers, so neither has to be argued
+from first principles:</p>
+<ul>
+<li><strong>A bound from the dimensions.</strong> The Davidson's subspace at 16 <code>nroots</code>
+columns, which can pass <code>nao</code>; AVAS's worst-case <code>ncas</code> when no cap
+narrows it; <code>syevd_lwork</code> at every order through the plan's largest
+eigensolve; the CASSCF's worst-case <code>ncas</code> and <code>nelecas</code>. Each is a layout
+written at the most the task can take, and the table above is sized to it.</li>
+<li><strong>A sizing node.</strong> The Coulomb pair-class prune copies the kept counts to
+pinned memory, synchronizes, and sizes J's classes to them. In the DAG that
+is a device-to-pinned copy node, a CPU node that reads the counts and fixes
+the sub-DAG's dimensions, and the sub-DAG planned inside the region its
+parent reserved at the bound. The region is the bound; what the sizing
+node saves is not memory but the launches over the pruned classes.</li>
+</ul>
+<p>The ERI's own check, B's and L's bytes against the budget before B is
+allocated, is admission's: B's row is in the table before the first launch,
+and a B that does not fit is refused at planning with its bytes named.</p>
+<h2 id="nested-plans">Nested plans</h2>
+<p>A sub-DAG has a table and no block; its rows are laid out in the region its
+parent's schedule leaves free while it runs
+(<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Blocks, plans and the
+process&quot;). The Hessian and Optimize steps are the cases, and they add one
+rule each:</p>
+<ul>
+<li><strong>A region is the max over the inner shapes.</strong> The semi-numerical Hessian
+runs the reference chain to <code>[casscf]</code> once, then each displacement's
+chain from the carried orbitals, a different sub-DAG with a different
+fold. Its region is the larger of the two peaks, and both are laid out
+inside it. <code>HessianStep::footprint</code> folds each with <code>plan_footprint</code> today
+and takes the max by hand; here each inner DAG is planned as a table inside
+the one region.</li>
+<li><strong>Replay has the same dimensions.</strong> Every geometry of an optimization and
+every displacement of a Hessian has the same <code>nbf</code>, <code>naux</code> and active
+space, so one inner table serves every run, which is why the inner plan is
+laid out once and the outer's two allocations are the calculation's only
+two. What varies with geometry takes the bound.</li>
+<li><strong>What crosses out is in the parent's table.</strong> The optimizer holds the
+start's Molecule beside the chain and keeps the optimum's; the Hessian
+keeps nothing on the device and assembles on the host. Those rows are the
+parent's, with the parent's lifetimes, and the inner table never holds a
+row that outlives it.</li>
+</ul>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 208" role="img" aria-label="A semi-numerical Hessian's region in its parent's block: the reference chain runs once with peak R, then each displacement chain with peak D reuses the same inner table; the region is the larger of R and D, and the parent's own rows sit below it.">
+<defs>
+<marker id="mm7a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="row" x="60" y="152" width="580" height="28"/><text x="350" y="170" text-anchor="middle">parent's rows: what crosses in and out</text>
+<rect class="row" x="60" y="54" width="120" height="98"/><text x="120" y="107" text-anchor="middle">earlier steps</text>
+<rect class="row" x="188" y="14" width="112" height="138"/>
+<text x="244" y="80" text-anchor="middle">reference</text><text x="244" y="96" text-anchor="middle">chain · peak R</text>
+<rect class="row" x="305" y="60" width="60" height="92"/><text x="335" y="110" text-anchor="middle">d₁</text>
+<rect class="row" x="370" y="60" width="60" height="92"/><text x="400" y="110" text-anchor="middle">d₂</text>
+<rect class="row" x="435" y="60" width="60" height="92"/><text x="465" y="110" text-anchor="middle">d₃</text>
+<rect class="row" x="500" y="60" width="60" height="92"/><text x="530" y="110" text-anchor="middle">d₄</text>
+<text x="598" y="110" text-anchor="middle">…</text>
+<rect class="al dash" x="184" y="12" width="456" height="140"/>
+<text class="sm at" x="632" y="30" text-anchor="end">region = max(R, D)</text>
+<text class="sm mt" x="432" y="52" text-anchor="middle">displacements · peak D · one table</text>
+<line class="ln" x1="60" y1="180" x2="652" y2="180" marker-end="url(#mm7a)"/>
+<text class="sm mt" x="652" y="198" text-anchor="end">schedule →</text>
+</svg></div>
+<figcaption>Offset (up) against schedule (right) inside the parent's block. Two inner shapes share one region, sized to the larger peak. Every displacement has the same dimensions, so one inner table serves them all, and nothing inside the region outlives it.</figcaption>
+</figure>
+<p>Concurrent sub-DAGs do not share a region: the width the planner admits is
+how many regions the parent holds at once, each at the sub-DAG's peak.</p>
+<h2 id="the-two-kinds">The two kinds</h2>
+<div class="table"><table>
+<thead>
+<tr>
+<th></th>
+<th>Device</th>
+<th>Pinned host</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Raw call</td>
+<td><code>wwr_malloc</code>, plain</td>
+<td><code>wwr_host_alloc</code>, portable</td>
+</tr>
+<tr>
+<td>Thread</td>
+<td>The worker's, its device current, before any stream work on it</td>
+<td>The same, so the pages are the worker's socket's</td>
+</tr>
+<tr>
+<td>Freed</td>
+<td>At the plan's drop, after the last run's final sync</td>
+<td>The same</td>
+</tr>
+<tr>
+<td>Alignment</td>
+<td><code>FB_DEVICE_ALIGNMENT</code> for every row (<a href="gpu_layer.md"><code>gpu_layer.md</code></a>, &quot;Scratch: the workspace query&quot;)</td>
+<td>The same; the copy engines need no more, and <code>kWorkspaceAlignment</code> is 256 on both sides today</td>
+</tr>
+<tr>
+<td>Debug fill</td>
+<td>Every byte <code>0xFF</code> at instantiation: a NaN in both float widths, and <code>-1</code> in every integer width</td>
+<td>The same</td>
+</tr>
+<tr>
+<td>Failure</td>
+<td>Aborts through <code>CreatePolicy</code>, naming the bytes and the free memory</td>
+<td>The same, naming <code>MemAvailable</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Plain, not stream-ordered.</strong> One allocation per plan has nothing for a
+pool to amortise, and <code>hipMallocFromPoolAsync</code> beside other threads' stream
+work has deadlocked on ROCm 7.2.4 (the crate's README). A plain allocation
+made before any stream work on the device never meets that.</p>
+<p><strong>Portable, not write-combined, not mapped.</strong> Portable so that a pinned
+block one worker owns may be read by another card's copy engine, the
+&quot;GPUs on one node&quot; row of the worker table. Not write-combined, because CPU
+nodes read pinned rows back, the prune's counts and every product written to
+disk, and write-combined memory makes those reads slow. Not mapped, because
+no kernel reads host memory directly in this tree, and a mapped pointer would
+be a third kind of buffer a task could reach.</p>
+<p><strong>The debug fill is the arena's own check.</strong> A row read before it is
+written is a bug the C++ pool, which hands back whatever a freed block held,
+cannot show. A block filled with <code>0xFF</code> makes every such read a NaN, which
+the first comparison or norm turns into a failed test. Release builds skip
+the fill.</p>
+<p><strong>What is not a kind.</strong> Managed memory is not used and not modelled, and
+nothing here should grow a <code>Managed</code> marker. Pageable host memory is <code>Vec</code>,
+owned by the plan when it is part of the DAG
+(<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Memory kinds&quot;).</p>
+<p><strong>The three pinned layouts that exist.</strong> Every pinned use in the C++ tree
+is staging sized by the dimensions: mmd's shell tables on their way up, the
+Coulomb prune's kept counts on their way down, and the Molecule's charges
+and coordinates. <code>CountedPinned</code>, the offloaded B streamed through a ring,
+has no user yet. So the first pinned rows are small upload and readback
+buffers, and the ring, when it comes, is a pinned edge row with the lifetime
+of the copies that read it.</p>
+<h3 id="the-rust-shape">The Rust shape</h3>
+<p>One module, <code>arena</code>, the only one outside the <code>-sys</code> wrappers with
+<code>unsafe_code</code> allowed (<a href="programming_model.html"><code>programming_model.md</code></a>,
+&quot;Capabilities are enforced by lints&quot;). In it:</p>
+<ul>
+<li><code>assign(rows) -&gt; Table</code>, the pure offset assigner: tier 3, fuzzed, its
+total the committed golden (<a href="testing.md"><code>testing.md</code></a>, &quot;Regression&quot;).</li>
+<li><code>Block&lt;K&gt;</code>, with <code>K</code> one of two zero-sized markers, <code>Device</code> and <code>Pinned</code>.
+It holds the raw pointer and the table, allocates in <code>new</code> and frees in
+<code>Drop</code>, and the kind is in the type so a device row cannot be handed to a
+host write.</li>
+<li><code>Block::&lt;K&gt;::partition(&amp;mut self, task) -&gt; Bufs</code>, called by the
+orchestrator once per node per run: the task's rows as disjoint slices,
+<code>split_at_mut</code> fashion, so no task ever holds the block. A device row is a
+pointer-and-length view with no <code>Deref</code>; a pinned row is a real
+<code>&amp;mut [T]</code>. The <code>debug_requires</code> that the id is in the task's layout lives
+here.</li>
+</ul>
+<p><code>run(bufs, stream)</code> receives the <code>Bufs</code> and nothing else that can allocate.</p>
+<h2 id="what-is-checked">What is checked</h2>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Rule</th>
+<th>Check</th>
+<th>Tier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No two live rows alias</td>
+<td>The assigner fuzzed as a pure function over random rows and orders</td>
+<td>3</td>
+</tr>
+<tr>
+<td>The block is the plan</td>
+<td>The arena's total, committed and compared bitwise per example config</td>
+<td>3</td>
+</tr>
+<tr>
+<td><code>bytes(width)</code> is monotone</td>
+<td>Bisection against a linear scan over random dims</td>
+<td>3</td>
+</tr>
+<tr>
+<td>Admission refuses what does not fit</td>
+<td>A cap one byte under the peak refused naming the rows live at it; one byte over admitted, as the C++ nested cases pin the room to the byte</td>
+<td>3</td>
+</tr>
+<tr>
+<td>A task reaches only its rows</td>
+<td><code>debug_requires</code> on <code>partition</code></td>
+<td>2</td>
+</tr>
+<tr>
+<td>Declared equals allocated</td>
+<td>Free memory before and after instantiation differs by the block, under the reserve's growth</td>
+<td>4</td>
+</tr>
+<tr>
+<td>No library allocates behind the arena</td>
+<td>The same measurement across a run: free memory unchanged from the first launch to the last sync</td>
+<td>4</td>
+</tr>
+<tr>
+<td>A kernel assumes no more scratch than it asked</td>
+<td>The wrapper handed exactly its query's bytes under <code>memcheck</code> (<a href="testing.md"><code>testing.md</code></a>, &quot;The C++ boundary&quot;)</td>
+<td>4</td>
+</tr>
+<tr>
+<td>A row is written before it is read</td>
+<td>The debug fill, through every tier-4 test's comparisons</td>
+<td>4</td>
+</tr>
+</tbody>
+</table></div>
+<p>What the C++ footprint tests measure, a pool peak held to a formula at two
+bars, has no counterpart: there is no second number to compare the first
+against.</p>
+<h2 id="open-questions">Open questions</h2>
+<ul>
+<li><strong>Iterating the adaptive pass.</strong> One pass in schedule order is pre-flight's
+model today. A plan whose adaptive tasks are large relative to its fixed
+rows may leave room the pass does not find.</li>
+<li><strong>The reserve's growth.</strong> Modules load as kernels are first launched, and
+the reserve grows after the block exists. The 256 MiB floor covers what the
+3080 has shown; a card with more kernels resident may need the first run
+measured.</li>
+<li><strong>The stack constant per card.</strong> <code>kKernelStackBytes</code> times the resident
+threads is the 3080's number. It belongs with the device's properties at
+process start, read rather than carried.</li>
+<li><strong>Pinned pages and NUMA.</strong> Allocating on the worker's thread places the
+pages where that thread runs; whether pinning the thread to the GPU's
+socket is worth it is a measurement on a multi-socket node, the
+programming model's own open question on it
+(<a href="programming_model.html"><code>programming_model.md</code></a>, &quot;Open questions&quot;).</li>
+<li><strong>Transport rows and the width.</strong> A broadcast to <code>w</code> cards is <code>w - 1</code>
+destination rows; a reduce from <code>w</code> cards is <code>w - 1</code> partial rows at the
+join. Both grow with the width the planner chooses, so they are part of the
+admission search, and the search described above has not been written with
+them in it.</li>
+</ul>
+</main>
+</div>
+</body>
+</html>
