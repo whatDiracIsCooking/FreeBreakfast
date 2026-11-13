@@ -1,0 +1,27 @@
+[package]
+name = "fb-integrals-one-electron-overlap"
+description = "integrals/one_electron/overlap: the AO overlap, the first whole run through the model"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-basis.workspace = true
+fb-core-arena.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-planner.workspace = true
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-core-wwr.workspace = true
+fb-integrals-mmd.workspace = true
+fb-integrals-sys.workspace = true
+fb-io-basis.workspace = true
+fb-io-xyz.workspace = true
+log.workspace = true
+# BLAS for the spherical transform's two GEMMs, beside the runtime.
+wwr-sys = { workspace = true, features = ["blas"] }
+
+[dev-dependencies]
+fb-test-support.workspace = true

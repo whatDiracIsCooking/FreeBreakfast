@@ -58,6 +58,7 @@ tree, not inputs to its build.
 | `fb_io_xyz` | `src/io/xyz` | `parse_xyz` / `read_xyz`: a standard XYZ geometry into a `Molecule`, Angstrom to bohr by `BOHR_PER_ANGSTROM`, every refusal (too short, a bad count, a malformed line, an unknown symbol, a count the lines disagree with, a file that cannot be read) an `Io` error. A field must parse as a whole token, where the C++'s `operator>>` reads a prefix |
 | `fb_io_basis` | `src/io/basis`, its orbital sets | `parse_basis` / `read_basis`: a BSE JSON document into a `BasisStamp` (sp blocks and general contractions split, spherical shells only: one Cartesian or ambiguous shell refuses the document), over [`serde_json`](https://crates.io/crates/serde_json); `is_builtin_basis` and `resolve_basis`, a name (spelling folded) or else a path, over the eleven sets of `data/basis/` compiled in with `include_str!`, only that branch naming the stamp. The fitting sets of `data/aux_basis/` are not ported yet |
 | `fb_integrals_mmd` | `src/integrals/mmd`'s `primitive_pair_classes` | `add_records`: the records of a `BasisSet` as two tasks of a `Dag`, `mmd tables` on the CPU (the shell table and each class's shell pairs with their record prefixes, formed on the host into pinned rows) and `mmd records` on the worker's stream (the tables copied into device scratch, then each class's order, records, bound and dressed bounds through `fb-integrals-sys`), and `ClassRows`, each class's record fields as device output rows. Every size is the basis's, at planning; the plan text for H2O/cc-pVDZ and CO/cc-pVTZ is the committed golden `integrals/mmd/tests/golden/plan_*.txt`. The mixed classes are not ported yet |
+| `fb_integrals_one_electron_overlap` | `src/integrals/one_electron/overlap`'s `overlap`, and the Overlap step's spherical transform (`MatrixAOPair::cartesian_to_spherical`) | The first whole run through the model. `add_overlap`: S of a `BasisSet` as three tasks after the records, `overlap` on the stream (the Cartesian matrix zeroed, one `fb_overlap_class` per class, reading `ClassRows` as an edge), `harmonics` on the CPU (U into a pinned row) and `spherical transform` on the stream (U copied into scratch, `S = Uᵀ S_cart U` as two `wwr_blas_dgemm`s, the intermediate scratch too). `Run`: an XYZ file and a basis name planned once, laid out in one arena per kind, run on one stream, returning S and the timing record. The plan text for each fixture is the committed golden `integrals/one_electron/overlap/tests/golden/plan_*.txt` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -73,7 +74,9 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `primitives` and `error_handling`; `io/xyz` on `molecule`, `atom`, `types`,
 `constants` and `error_handling`, and `io/basis` on `basis` and
 `error_handling`; `integrals/mmd` on `basis`, `planner`, `arena`,
-`thread_pool`, `wwr`, `error_handling` and `integrals/sys`.
+`thread_pool`, `wwr`, `error_handling` and `integrals/sys`; and
+`integrals/one_electron/overlap` on `integrals/mmd` and what it stands on,
+`io/xyz` and `io/basis`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -129,7 +132,7 @@ broken promise; a contract would turn it into a panic.
 ```bash
 cd rust
 cmake --preset cuda                    # or hip; the backend has no default
-cmake --build --preset cuda            # libwwr_capi_runtime_api.so and the kernel libraries
+cmake --build --preset cuda            # libwwr_capi_{runtime_api,blas}.so and the kernel libraries
 cargo test --workspace -- --include-ignored  # debug, device cases and contract tests
 cargo test --workspace --release       # the contract tests are skipped
 cargo test -p fb-core-arena            # one crate, with only its own features
@@ -155,7 +158,8 @@ cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
 
 `CMakeLists.txt` here is a CMake project of its own, which the root
 `CMakeLists.txt` does not add: it configures `deps/WarpWraps` alone (its
-tests, examples and install rules off) and builds `wwr.capi.runtime_api`,
+tests, examples and install rules off) and builds `wwr.capi.runtime_api`
+and `wwr.capi.blas`,
 so building what the crates link configures nothing of the C++ tree. Its
 presets are `cuda` and `hip`, into `build-cuda/` and `build-hip/` here,
 with the root's sm_80 floor checked. It also builds the kernel shared
@@ -176,7 +180,11 @@ includes, finds `libwwr_capi_runtime_api.so` under
 holds it. With both built it refuses to choose: set `FB_RUST_BUILD_DIR` to
 one, which also takes any other CMake build directory, the root's
 `build-experimental` among them. `devtools/doctor.sh` reports which are
-built. Only the `runtime_api` surface of `wwr-sys` is linked.
+built. Only the `runtime_api` and `blas` surfaces of `wwr-sys` are linked:
+`blas` is asked for by `fb-integrals-one-electron-overlap` alone, but a
+workspace build unifies features, so every crate linking `wwr-sys` in it
+links against `libwwr_capi_blas.so` (only a binary that calls it keeps it
+under `NEEDED`).
 
 The GPU tests (the ignored ones) use device 0 and need room on it for a
 context. The host-only
@@ -198,10 +206,11 @@ crates' own device tests need beyond `device`; a dependent asks for
 `device` alone, and the workspace's dependency entries for the arena and
 the thread pool turn their defaults off, so nothing turns them on by
 accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`,
-`fb-integrals-sys` and `fb-integrals-mmd` always link; the last's layout
-asks the kernel library for the sort's workspace at planning, so even its
-device-free tests (the host tables, the plan goldens) need the library
-built. Use a
+`fb-integrals-sys`, `fb-integrals-mmd` and
+`fb-integrals-one-electron-overlap` always link; the records' layout asks
+the kernel library for the sort's workspace at planning, so even the last
+two's device-free tests (the host tables, the plan goldens) need the
+library built. Use a
 separate `CARGO_TARGET_DIR` per backend, and another for
 `--no-default-features`: each `build.rs` bakes the library's path into the
 rpath.
@@ -273,6 +282,16 @@ module:
 # from the repository root, after cmake --preset default && cmake --build build
 build/tools/mmd_records/free-breakfast-mmd-records rust/integrals/mmd/tests/data
 ```
+
+The overlap on a card, the first whole run, is
+`integrals/one_electron/overlap/tests/overlap.rs`: H2O in STO-3G and
+cc-pVDZ and CO in cc-pVTZ, each from its XYZ file and basis name, run once
+and compared with PySCF's S at `max |S - S_ref| <= 1e-12 * max |S_ref|`, and
+the run's timing record checked for a stream scope on every stream task.
+The references are committed in `integrals/one_electron/overlap/tests/data/`
+with the script that writes them; that directory's README has the
+conventions it pins (the same JSON digits, CODATA 2018 bohr, `D S D` for the
+unrenormalized contractions).
 
 `doc_check/tests/section_citations.rs` checks that every section the
 README, `docs/` and every member's Rust sources cite by name is a heading of
@@ -555,5 +574,19 @@ and 1629 records of H2O/cc-pVDZ, 10 and 7684 of CO/cc-pVTZ) is bitwise
 equal, inside the issue's bars (integers exact; `zeta`, `ea`, `eb` bitwise;
 the rest 1e-13 relative); the lowest bit of one `s` value flipped in the
 reference fails the test, naming the field. The `--no-default-features` tier 3 passes its previous
+counts. Clippy (`-D warnings`, both feature sets), rustdoc (`-D warnings`)
+and `cargo fmt --check` are clean. Not run on the gfx1200.
+
+2026-11-13, `integrals/one_electron/overlap` (the overlap, the first whole
+run through the model), on the RTX 3080 (CUDA) only, holding the card: in a
+debug build the whole workspace passes with `--include-ignored`, the new
+crate's 2 plan tests (the three plan goldens and a refused input) and its
+tier-4 `overlap` test, and every other count unchanged. Against PySCF's S
+(`D S D`, the tree's JSON digits, CODATA 2018 bohr), `max |S - S_ref|` is
+4.4e-16 for H2O/STO-3G (7 AOs), 4.4e-16 for H2O/cc-pVDZ (24) and 1.1e-15
+for CO/cc-pVTZ (60), inside the fixed bar `1e-12 * max |S_ref|`; leaving
+out the (1,2) class's launch fails it at 0.25 and 0.34. Each run's timing
+record has an entry for each of its 7 tasks, a stream scope on each of the
+4 stream tasks'. The `--no-default-features` tier 3 passes its previous
 counts. Clippy (`-D warnings`, both feature sets), rustdoc (`-D warnings`)
 and `cargo fmt --check` are clean. Not run on the gfx1200.
