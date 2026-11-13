@@ -7,6 +7,31 @@ workspace is that rebuild. Its tree mirrors `src/`, one crate per module:
 `src/core/wwr`. It stands alone: nothing here uses the crates under
 `experimental/rust/`.
 
+## What it depends on
+
+Outside `rust/`, the tree reads four things, and nothing under `src/`:
+
+- **`deps/WarpWraps`**: `wwr-sys`, its C ABI crate, and the sources
+  `CMakeLists.txt` here builds `libwwr_capi_runtime_api.so` from.
+- **`deps/FelizJueves`' `include/`**: `felizjueves/runtime.h`, which every
+  emitted kernel unit includes.
+- **`data/basis/`**: the BSE JSON `fb-io-basis` compiles in.
+- **`tools/emit/`**: the FelizJueves generators, run by hand with
+  `--out-root` to emit the kernel units `integrals/kernels/` carries ("Build
+  and test").
+
+The device code the crates call is forked into `rust/` (`device_headers/`,
+`recipes/kernels/`, `integrals/kernels/`) and built by `CMakeLists.txt`
+here, which configures nothing of the C++ tree
+([`gpu_layer.md`](docs/gpu_layer.md), "What the port changes", "Build").
+The fork's cost: its hand-written device code, the launchers, the merge
+sort and the shared device headers, exists twice, once here and once in the
+C++ tree, and is kept in step by hand until the C++ side is retired. The
+emitted units are not a cost, since the one generator writes both trees.
+The devtools scripts that drive the gates and the bindings
+(`devtools/test.py`, `devtools/rust-bindings.py`) are tooling around the
+tree, not inputs to its build.
+
 ## What is here
 
 | Crate or module | Ports | What |
@@ -252,7 +277,8 @@ is gated without being named), then `RUSTDOCFLAGS='-D warnings' cargo doc
 `target/nodef` ([`docs/testing.md`](../docs/testing.md), "Gates", at the
 root). A commit touching `rust/` runs `devtools/test.py cargo-lint`, `cargo
 fmt --check` and clippy with warnings denied in both feature sets, and so
-does CI's `lint` job. Tier 4, on a card, is still checked by hand.
+does CI's `lint` job. Tier 4, on a card, runs in both gates for the crates
+a diff affects (above).
 
 ## Design
 
@@ -267,39 +293,27 @@ gets there in.
 
 ## Order of work
 
-The tree today is `core` alone, one crate per module, and the gates run its
-tiers 1 to 3. The first steps, in order, each one PR:
+Before this milestone: the section-citation check
+(`doc_check/tests/section_citations.rs`), the workspace split into one
+crate per module with no umbrella, and `arena`, `thread_pool` and `planner`
+building without the wwr library. Milestone 32, the overlap through the
+whole model, in waves (each one PR; done means merged):
 
-1. **The section-citation check**, as the first tier-3 test
-   ([`documentation.md`](docs/documentation.md), "Narrative: mdBook beside
-   the rustdoc"). Done: `doc_check/tests/section_citations.rs`. Its first run found
-   two citations in doc comments that named a bold paragraph lead rather
-   than a heading.
-2. **The workspace.** One crate per module and `core` split
-   ([`testing.md`](docs/testing.md), "Selection: the workspace graph is the
-   selection graph"), done while the crate is four thousand lines rather than
-   forty. Done: nine crates, no umbrella. Done after it: `arena`,
-   `thread_pool` and `planner` build without the wwr library too, behind a
-   default-on `device` feature whose only seam is the arena's raw calls and
-   the thread pool's `Device` backend ("Build and test"). Done after it:
-   step 3 builds `wwr.capi.runtime_api` from this directory's own CMake
-   project ("Build and test"), whose `cuda` and `hip` presets configure
-   neither the C++ tree nor `experimental/`.
-3. **The cargo half of the gates**, tiers 1 to 3 for a diff under the crate
-   ([`testing.md`](docs/testing.md), "What runs when"). Done: `test.py push`
-   and `pr` run it, and `cargo-lint` at commit and in CI ("Build and test").
-4. **One task through the whole model**, before any module is ported: the
-   overlap, which `experimental/rust/s_overlap` already launches, or the
-   Coulomb build. Declared with a layout, laid out in an arena, planned once
-   and run on one stream, with its arena size committed as a golden and its
-   stream scope timed. Everything in the documents leans on the
-   orchestrator, and this is where the model meets its hard cases, an
-   adaptive width and a data-dependent size, on one task rather than twenty.
-5. **The per-module shared objects**, a C++-tree change
-   ([`gpu_layer.md`](docs/gpu_layer.md), "Build").
+| Wave | Issues |
+|---|---|
+| 0 | #1362 these docs; #1363 the cargo half of the gates, done; #1364 this directory's CMake project, done; #1365 core types, primitives and constants, done; #1366 stream scopes and the timing record, done |
+| 1 | #1367 atom and molecule, done; #1368 tier-4 skips, done; #1369 the forked device layer and the merge sort, done |
+| 2 | #1370 basis, done; #1371 the forked mmd and overlap kernels, done |
+| 3 | #1372 io/xyz and io/basis, done; #1373 the primitive-pair records as tasks |
+| 4 | #1374 the overlap: declared with a layout, laid out in an arena, planned once and run on one stream, its arena size a golden and its stream scope timed |
 
-Then the port, bottom-up from `core`, one module per crate, with the C++
-tree green throughout ([`gpu_layer.md`](docs/gpu_layer.md), "What the port
+Open beside them: #1382, the kernel libraries' ABI version and backend
+check at load ([`gpu_layer.md`](docs/gpu_layer.md), "What the port
+changes"), and #1380, the basis's angular-momentum ceiling asserted against
+a forked device header.
+
+Then the port, bottom-up from `core`, one module per crate, its device code
+forked with it ([`gpu_layer.md`](docs/gpu_layer.md), "What the port
 changes").
 
 ## Verified

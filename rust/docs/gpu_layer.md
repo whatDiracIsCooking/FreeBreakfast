@@ -1,7 +1,10 @@
 # Rust rebuild: the GPU layer
 
 The kernels stay in C++ and CUDA, hand-written and FelizJueves-generated, and
-Rust owns everything above a launch. This document is the contract between
+Rust owns everything above a launch. The device code a crate needs is forked
+into `rust/`, beside the crate that calls it, and built by `rust/`'s own
+CMake project: `rust/` shares no source file and no build with the C++ tree
+("What the port changes"). This document is the contract between
 the two: what a launch wrapper may do, what crosses the C ABI and in which
 shape, where the launch shape and the angular-momentum dispatch live, how
 scratch is sized, what a status means, and how the libraries are built and
@@ -37,57 +40,87 @@ launches, and returns the launch status, documented everywhere as "launch
 errors only: the kernel's own faults surface at the next synchronization".
 The port changes the ABI the bridge is spoken in, not what it says.
 
+The C++ tree is where the layer's shape comes from, not what `rust/` builds
+on. A port copies the bridges and kernels it needs into `rust/`, and the
+copy is what the Rust tree compiles; the counts above are the C++ tree's,
+and they say how much a full port forks. Forked so far: the merge sort
+(`rust/recipes/kernels/`), and the primitive-pair records' and the
+overlap's launchers and emitted units (`rust/integrals/kernels/`), over a
+trimmed fork of the device headers they include (`rust/device_headers/`).
+
 ## What the port changes
 
 **The bridge header is the port line.** Everything above a module's bridge
-is Rust's to port; everything below it stays. Today `mmd.cpp` builds
+is Rust's to port; everything below it is forked. In the C++ tree `mmd.cpp` builds
 `PrimitivePairSource` on the host, packs the shells' exponents and centres
 into device arrays, computes `rec_begin`, and then launches. Under this
 design all of that is Rust: the wrapper receives device pointers only, and
 the host preparation, the copies that fill them and the arena they come from
 belong to the task and the orchestrator. "Porting a module" therefore has a
-definition in files: its bridge header becomes a C header, its `.cu` files
-are untouched but for the wrapper's linkage, and its `.cppm` and `.cpp` are
-rewritten as the Rust crate of the same name. The C++ module is not deleted
-then; the next paragraph but one says when it goes.
+definition in files, all of them under `rust/`:
+
+- its bridge header is copied to `rust/<module>/kernels/` and rewritten as a
+  C header ("From bridge to C ABI");
+- its launcher `.cu` files are copied beside it, the kernels unchanged and
+  the launcher rewritten as an `extern "C"` wrapper;
+- its FelizJueves units are emitted again into `rust/` ("Build");
+- the device headers they include are forked, trimmed to what is used, into
+  `rust/device_headers/`;
+- its `.cppm` and `.cpp` are rewritten as the Rust crate of the same name.
+
+Nothing in the C++ tree changes. The C++ module is not deleted then; the
+paragraph on the two trees, below, says when it goes.
 
 **The wrapper lives in the `.cu`.** The layering diagram below shows the
 launch wrapper as its own layer, and that is its role, not its file. Every
-launcher today is a `.cu` (`mmd_launch.cu`, `ci_sigma.cu`), because the
-launch syntax is compiled only by nvcc or `clang -x hip`, and the
-`extern "C"` wrapper goes into that same unit. There is no `.cpp` that
-launches, and no attempt to build one.
+launcher is a `.cu` (`mmd_launch.cu`, `merge_sort.cu`), because the launch
+syntax is compiled only by nvcc or `clang -x hip`, and the `extern "C"`
+wrapper goes into that same unit. There is no `.cpp` that launches, and no
+attempt to build one.
 
-**The conversion is incremental, and the C++ pipeline stays green
-throughout.** An `extern "C"` function is callable from C++, so one module's
-bridge can be converted to the C header while the C++ module above it keeps
-calling it unchanged, and the launcher tests in `test/gtest` keep compiling
-against the same symbols. The order of the port is therefore free: one
-bridge at a time, each PR leaving both the C++ tree and the Rust tree
-building and tested. Nothing is cut over all at once.
+**The port is incremental, and neither tree can break the other.** A Rust
+PR touches only `rust/`, and the C++ tree's sources are nothing `rust/`
+compiles, so each tree is built and tested by its own gate half and is
+green on its own. Only what the two share reaches both: the submodules, and
+the emitters, whose output each tree commits. The order of the port is therefore free: one module at a time, its
+device code forked with it. Nothing is cut over all at once.
 
-**The two trees coexist until the pipeline is Rust.** Converting a bridge
-keeps the C++ module above it building, but deleting that module would not:
-the C++ `pipeline` step imports it, and the C++ pipeline is the tree's one
-working calculation until the Rust one runs end to end. So a ported module's
-`.cppm` and `.cpp` stay, C++ and Rust both call the one C header and the one
-shared object, and each is tested by its own suite. Nothing crosses from Rust
-back into C++: the Rust tree stands alone, as its README says, and a C ABI
-over the Rust modules for the C++ pipeline to call would be a second boundary
-to keep, for a pipeline the port replaces. The C++ modules go together, at
-the cut-over, when the Rust pipeline runs every config under `examples/` that
-the C++ one does and matches it at the regression bars
-([`testing.md`](testing.md), "Regression"). Until then "done" for a module PR
-means its Rust crate passes its tiers and the C++ tree is still green.
+**The fork has a cost, and it is paid by hand.** The hand-written device
+code a port forks, the launchers, the merge sort and the shared device
+headers, exists twice, once in each tree, and nothing keeps the two copies
+in step but review: a fix to one is a fix owed to the other, and the PR that
+makes it says so. The emitted units carry no such cost. `tools/emit`'s
+`--out-root` writes the same tree under `rust/` that its default writes for
+the C++ tree, byte for byte, so after a `deps/FelizJueves` bump both are
+emitted again from the one generator. The forked headers are trimmed to
+what their users include, and a fork's launcher may differ from the C++ one
+on purpose (one workspace for two scratch arrays, refusals of its own); the
+kernels it launches do not. The cost ends with the C++ tree's copy.
 
-**Each shared object says what it is, and the crate checks at load.**
-Committed bindings and a separately built `.so` can drift at run time, not
-only in review. Each library exports two entries, `fb_<module>_abi_version()`
-and `fb_<module>_backend()`. The `-sys` crate checks the version against the
-constant in its committed bindings and the backend against the one `wwr-sys`
-was linked for, when the library loads, and refuses a mismatch by name.
-Today's nearest failure, a CUDA tree against a HIP WarpWraps, fails deep
-inside wwr's sources with nothing naming the cause.
+**The two trees coexist until the pipeline is Rust.** The C++ `pipeline`
+step imports every C++ module, and the C++ pipeline is the tree's one
+working calculation until the Rust one runs end to end, so a ported module's
+`.cppm` and `.cpp` stay. Each tree calls its own copy of the kernels, built
+by its own CMake project, and each is tested by its own suite; the two are
+compared at the regression bars ([`testing.md`](testing.md), "Regression"),
+not by sharing a binary. Nothing crosses from Rust back into C++: the Rust
+tree stands alone, as its README says, and a C ABI over the Rust modules for
+the C++ pipeline to call would be a second boundary to keep, for a pipeline
+the port replaces. The C++ modules go together, at the cut-over, when the
+Rust pipeline runs every config under `examples/` that the C++ one does and
+matches it at those bars, and the second copy of the device code goes with
+them. Until then "done" for a module PR means its Rust crate passes its
+tiers.
+
+**Each shared object says what it is, and the crate checks at load.** Not
+built yet (#1382). Committed bindings and a separately built `.so` can drift
+at run time, not only in review. Each library exports two entries,
+`fb_<module>_abi_version()` and `fb_<module>_backend()`. The `-sys` crate
+checks the version against the constant in its committed bindings and the
+backend against the one `wwr-sys` was linked for, when the library loads,
+and refuses a mismatch by name. A library built for the other backend
+otherwise fails at its first launch, or deep inside wwr, with nothing naming
+the cause.
 
 ## Layering
 
@@ -99,7 +132,7 @@ inside wwr's sources with nothing naming the cause.
  Rust      -sys: FFI bindings, generated from the C header
    │  C ABI
  C++ .cu   launch wrapper: extern "C", picks the launch shape, launches, returns a status
-   │
+   │       (forked: rust/<module>/kernels/)
  C++ .cu   kernels: hand-written and FelizJueves-generated
 ```
 
@@ -110,9 +143,10 @@ device, reads a device value back to the host, opens a profiler range, or
 holds state between calls. Fork, join, wait and sync belong to the
 orchestrator, and so does every allocation. A wrapper is therefore safe to
 call from any thread, and its whole cost is on the stream it was given. The
-rule is cheap to keep: a tier-3 test greps the launch wrappers for the
-runtime's allocation, synchronization, event, copy and device calls, the grep
-that produced the zero above.
+rule is cheap to keep: a tier-3 test, `fb-device-check`'s
+`launch_wrappers.rs`, greps every forked `.cu` and `.cuh` under `rust/` for
+the runtime's allocation, synchronization, event, copy and device calls, the
+grep that produced the zero above.
 
 **And so it is capture-safe by construction.** Plan-once-run-many leans on
 stream capture into a replayed graph ([`programming_model.md`](programming_model.md),
@@ -155,10 +189,11 @@ it. It does not, because the block and the dispatch belong with the kernel
 
 ## From bridge to C ABI
 
-What changes in a bridge header when it becomes the C header the bindings
-are generated from:
+What changes when a C++ bridge header is forked into `rust/` as the C header
+the bindings are generated from. The forked `mmd.h`, `overlap.h` and
+`merge_sort.h` follow this table:
 
-| Today's bridge | At the C ABI |
+| The C++ tree's bridge | The forked C header |
 |---|---|
 | `namespace free_breakfast::device { wwrError_t mmd_bound(...) }` | `extern "C" fb_launch_status fb_mmd_bound(...)`, the module's name as the prefix |
 | `wwr::wwrStream_t`, a vendor type behind a wwr alias | `wwr_stream`, the C ABI's `void *`, which Rust already holds for every stream |
@@ -170,15 +205,18 @@ are generated from:
 | `int32_t` counts and indices | `int32_t`, unchanged; `size_t` is the one other integer, for bytes |
 | Scratch arrays whose lengths the doc comment states | One scratch pointer, sized by a workspace query, "Scratch" below |
 
-**One C header per module.** Each module has one header that includes its
-bridges' C headers, and that is the file bindgen reads, so there is one
-bindings file per shared object and the two are versioned together. The two
-integer types are the bridges' own: every count, index and momentum is an
-`int32_t` today, and bytes, which only the workspace queries and the arena
-speak, are `size_t`.
+**One C header per module.** Each module has one header,
+`rust/<module>/kernels/fb_<module>.h` (`fb_recipes.h`, `fb_integrals.h`),
+that includes its wrappers' C headers, and that is the file
+`devtools/rust-bindings.py` reads, so there is one bindings file per shared
+object and the two are versioned together. The plain-C vocabulary every
+library shares, `fb_launch_status`, its values and `FB_DEVICE_ALIGNMENT`, is
+`rust/device_headers/fb_launch.h`. The two integer types are the bridges'
+own: every count, index and momentum is an `int32_t`, and bytes, which only
+the workspace queries and the arena speak, are `size_t`.
 
-The seven template bridges are `recipes`' element-generic kernels
-(`abs_at`, `complex_cast`, `expm`, `einsum`, `cg_unitary`, `inverse_sqrt`,
+The seven template bridges, none forked yet, are `recipes`'
+element-generic kernels (`abs_at`, `complex_cast`, `expm`, `einsum`, `cg_unitary`, `inverse_sqrt`,
 `polynomial_roots`). A C ABI cannot export a template, so each explicit
 instantiation becomes its own entry, the pattern WarpWraps' C ABI set for its
 own device templates (`extension_random_normal`, `wrappers_*`: one
@@ -186,12 +224,14 @@ monomorphised `extern "C"` thunk per instantiation, the type in a suffix).
 The instantiation list is the source: the entries are generated from it, so
 none is invented and none dropped.
 
-The views and parameter structs cross as they are. `PrimitivePairClassView`,
-`PrimitivePairSource`, `PrimitivePairRecords`, the CI `Replacement` and
-`EinsumPlan` are integers and pointers already, and `EinsumPlan` already
-carries the `static_assert` that it is trivially copyable and standard-layout
-"because it crosses the bridge by value". "Shared types" below makes that the
-rule.
+The views and parameter structs cross as they are, by pointer from host
+memory. `PrimitivePairClassView`, `PrimitivePairSource` and
+`PrimitivePairRecords` are forked as `fb_primitive_pair_class_view`,
+`fb_primitive_pair_source` and `fb_primitive_pair_records`, the same fields
+in the same order. The CI `Replacement` and `EinsumPlan` are integers and
+pointers already, and `EinsumPlan` already carries the `static_assert` that
+it is trivially copyable and standard-layout "because it crosses the bridge
+by value". "Shared types" below makes that the rule.
 
 ## Launch shape and dispatch
 
@@ -217,30 +257,33 @@ would move the emitter's table into the ABI. `const` generics still have a
 place above the wrapper: a shell type carrying its `l` at tier 1 is lowered
 to an integer at the call.
 
-**The table's limit is a constant the header exports.** Today each launcher
-`static_assert`s its table's extent against a constant in the bridge
+**The table's limit is a constant the header exports.** The C++ launchers
+`static_assert` their table's extent against a constant in the bridge
 (`kPairBoundMaxMomentum`, `kRecordBoundMaxMomentum`), because a host module
-unit cannot include the `.cu`'s table. The constant goes into the C header,
-bindgen turns it into a Rust `const`, and the safe wrapper can refuse an
+unit cannot include the `.cu`'s table. The forked C headers export it
+instead (`FB_PAIR_BOUND_MAX_MOMENTUM`, `FB_RECORD_BOUND_MAX_MOMENTUM`,
+`FB_OVERLAP_MAX_MOMENTUM`), each `.cu` asserts it against its table, the
+bindings carry it as a Rust `const`, and the safe wrapper can refuse an
 unsupported momentum before the call, at tier 2, with the same number the
 kernel was built from.
 
 ## Scratch: the workspace query
 
-**Today there is no query.** A launcher that needs scratch takes it as
+**The C++ tree has no query.** A launcher that needs scratch takes it as
 explicit arrays whose lengths live in its doc comment: the merge sort's
 `keys_alt` and `values_alt` are "n long, touched only past one tile";
 `pick_lowest`'s scratch is `kCiLowestScratch` 64-bit words; `sort_bounds`
 takes four `n_rec`-long arrays. The sizes are correct and unenforced, which is
 the footprint problem the programming model names, one level down.
 
-**Every launcher that takes scratch gets a query,
-`fb_<launcher>_workspace_bytes(dims)`.** It is a plain host function in the
+**Every forked launcher that takes scratch gets a query,
+`fb_<launcher>_workspace_bytes(dims)`,** as `fb_merge_sort` and
+`fb_mmd_order` have. It is a plain host function in the
 same header, pure in its dimensions, and it returns the bytes of one buffer
 the wrapper partitions internally, with each piece aligned as the kernel
 needs. The task's layout calls it at planning, the arena carves that amount,
 and the wrapper receives one pointer and its length. A size that is a fixed
-constant is exported as a constant instead, and bindgen carries it across.
+constant is exported as a constant instead, and the bindings carry it across.
 
 **Pure in dimensions means two things.** First, no runtime call inside: the
 query runs on the host at planning, where the tier-3 planner tests have no
@@ -250,7 +293,7 @@ it: the orchestrator knows every worker's device at planning. The query is
 checked at tier 4 by handing the wrapper exactly the bytes it asked for under
 `memcheck` ([`testing.md`](testing.md), "The C++ boundary").
 
-**Alignment is part of the kernel's contract.** Today every buffer a
+**Alignment is part of the kernel's contract.** In the C++ tree every buffer a
 launcher receives came from the pool, whose allocations are 256-byte
 aligned, and nothing had to say so. Under an arena the offset assigner decides
 where a buffer starts inside a block ([`programming_model.md`](programming_model.md),
@@ -280,7 +323,7 @@ rather than wwr's C++ `wwrGetLastError()`, which returns the vendor's enum.
 The wrapper therefore holds no mapping table, and the names Rust sees are the
 ones every other `wwr-sys` call produces.
 
-**Refusals and launch errors are separated.** Today both come back as
+**Refusals and launch errors are separated.** In the C++ tree both come back as
 `wwrErrorInvalidValue`: a launcher refusing a non-positive count returns the
 same code the runtime returns for a bad launch. The negative range splits
 them, so that an unsupported momentum reaches Rust as `Unsupported` through
@@ -307,31 +350,34 @@ a type has one source, a C header:
   `wwrDeviceProp` differs between CUDA and ROCm and could not be mirrored,
   and `MemPoolProps` happens to match and had to be checked by hand against
   both vendors' headers.
-- **The bridge's view headers are already this,** in C++ spelling.
+- **The C++ bridge's view headers are already this,** in C++ spelling.
   `primitive_pair_class_view.h` is included by the `.cu` and by the module's
-  global module fragment as "the single definition"; it gains C linkage and a
-  `typedef`, and loses nothing.
-- **Rust's `#[repr(C)]` mirror is generated** by bindgen, never written by
-  hand.
+  global module fragment as "the single definition"; its fork in
+  `rust/integrals/kernels/` is the same fields in the same order, as a C
+  `typedef struct`, and loses nothing.
+- **Rust's `#[repr(C)]` mirror is generated** by `devtools/rust-bindings.py`,
+  never written by hand.
 - **Layout is checked on both sides.** Rust gets `const` assertions of
   `size_of`, `align_of` and each field's `offset_of` (tier 1); C++ gets the
   `static_assert`s `EinsumPlan` already has.
 - **Only some modules need this.** A module whose wrappers take only pointers
   and integers has no shared type and no compatibility layer.
 
-**Constants are the one shared header that is not plain C.** `constants.h`
-is included by eleven launchers, and it is templates over the element type
-with explicit specializations for the two complex types, so it cannot be
-mirrored as it stands. The split: a plain-C `fb_constants.h` of object-like
+**Constants are the one shared header that is not plain C.** The C++
+tree's `constants.h` is included by eleven launchers, and it is templates
+over the element type with explicit specializations for the two complex
+types, so it cannot be mirrored as it stands. Its fork in
+`rust/device_headers/` holds only `kPi<T>` today, which no wrapper passes
+across, so nothing is mirrored yet. When a number must cross, the split is: a plain-C `fb_constants.h` of object-like
 macros holds the numbers that both sides need (the physical constants, the
 unit conversions, `π`), `constants.h` defines its templates from those
-macros, and bindgen turns the same macros into Rust `const`s. One source,
+macros, and the bindings script turns the same macros into Rust `const`s. One source,
 two spellings, no copy. The typed literals (`kOne<T>`, `kImaginaryUnit<T>`)
 are a convenience for passing a scalar by address to BLAS and have no Rust
 counterpart.
 
 A `.cuh` that is C++ only (templates, device functions, `block_params.h`,
-`primitives.h`) stays on the C++ side and is never mirrored.
+`primitives.h`) stays below the C ABI and is never mirrored.
 
 ## The safe wrapper
 
@@ -353,46 +399,76 @@ is one the C++ caller today makes by reading the header.
 
 ## Build
 
-**The backend is chosen once.** The C++ layer is built by CMake for exactly
-one backend, as today. `build.rs` links the result and fails if the backend
-is not stated, rather than defaulting to one. `devtools/cross-backend-check.sh`
-still applies to every `.cu`, because nvcc accepts code that `clang -x hip`
-rejects.
+**`rust/` builds its own native libraries.** `rust/CMakeLists.txt` is a
+CMake project of its own, which the root `CMakeLists.txt` does not add. It
+configures `deps/WarpWraps` alone and builds what the crates link: WarpWraps'
+C ABI library, `libwwr_capi_runtime_api.so`, and the kernel shared objects,
+from the launchers and kernels forked under `rust/` and the device headers
+in `rust/device_headers/`. It configures nothing of the C++ tree, and no
+change to the C++ tree's CMake precedes a port. Its only inputs from outside
+`rust/` are `deps/WarpWraps` and FelizJueves' `include/` from
+`deps/FelizJueves` ([`README.md`](../README.md), "What it depends on").
 
-**One shared object per module.** `src/` has 42 device libraries, one per
-bridge, each linked into the module above it. For Rust they are grouped into
-one shared object per top-level module (`libfb_integrals_kernels.so`,
-`libfb_recipes_kernels.so`, ...), built by CMake from the same device
-libraries with position-independent code, each doing its own device link so
-that nothing relocatable crosses the ABI: nvcc's separable compilation, which
-the launchers that call specializations from other units need, is resolved
-inside the `.so`. One Rust `-sys` crate per module mirrors `src/`, which is
-the workspace graph the test selection runs on: a PR touching `integrals`'
-kernels re-runs `integrals`' GPU tier and nothing else. The grouping is a
-change to `src/`'s CMake, position-independent device libraries and a
-per-module device link, so it is a C++-tree PR before any Rust crate is
-ported above it, verified by `devtools/test.py pr`, since only the C++ tier
-can see a broken device link.
+**The backend is chosen once.** The project's two presets, `cuda` and `hip`,
+build into `rust/build-cuda/` and `rust/build-hip/`, and
+`FREE_BREAKFAST_GPU_BACKEND` has no default, for the C++ tree's reason. The
+crates' `build.rs` include `rust/capi_dir.rs`, which links whichever of the
+two holds the C ABI library and refuses to choose when both do, rather than
+defaulting to one: `FB_RUST_BUILD_DIR` names the build then.
+`devtools/cross-backend-check.sh` builds this project for its backend too,
+because nvcc accepts code that `clang -x hip` rejects.
+
+**One shared object per module.** `rust/<module>/kernels/` builds
+`libfb_<module>_kernels.so` at `<build>/<module>/kernels`:
+`libfb_recipes_kernels.so` (the merge sort) and `libfb_integrals_kernels.so`
+(the primitive-pair records and the overlap) today. Under CUDA each uses
+separable compilation with the device link resolved inside the `.so`
+(`CUDA_RESOLVE_DEVICE_SYMBOLS`), so nothing relocatable crosses the ABI, and
+links the shared vendor runtime, not CMake's static default, so that the
+launches inside it and the C ABI's `wwr_get_last_error()` read the same
+last error. Under HIP the `.cu` compiles as C++ with `hip::device` private
+to the library. A library may link another for a host call:
+`libfb_integrals_kernels.so` links the recipes library for `fb_merge_sort`,
+and no device symbol crosses between them. The generated units find
+FelizJueves' runtime header with `FJ_WAVEFRONT` set to `WWR_WARP_SIZE`.
+
+One Rust `-sys` crate per library, `fb-recipes-sys` and `fb-integrals-sys`,
+which is the workspace graph the test selection runs on. Their `build.rs`
+include `rust/kernel_lib.rs` after `capi_dir.rs`: `link_kernel_lib(module)`
+finds the library in the same `<build>` the C ABI library came from, links
+it and sets the rpaths. A file under a module's `kernels/` re-runs every
+kernel `-sys` crate's tier 4, since one library links another
+([`testing.md`](testing.md), "Selecting GPU tiers in cargo"); the cargo half
+of the gates builds this project for its card's backend before it runs, so a
+broken device link fails there.
 
 Shared rather than static, because the static route is the harder one and
 the reason for it does not apply. `experimental/rust/s_overlap` links a static
 archive, and had to record CMake's whole link line with a probe executable
 and replay it from `build.rs`, because `/opt/spdlog`'s archive is not
 position-independent and nothing shared can carry it. A kernel library pulls
-in none of that: its only dependency is the vendor runtime, which
-`libwwr_capi_runtime_api.so` already needs. Its `build.rs` is the one the
-rebuild crate has now, find the `.so` under the CMake build directory or
-`FB_RUST_BUILD_DIR`, link it, set its rpath, shared across the `-sys` crates
-as one helper.
+in none of that: its dependencies are the vendor runtime and the C ABI
+library, which the crates load already.
 
-**Bindings are committed.** bindgen runs from a devtools script over each
-module's C header, the output is checked in, and a tier-3 test regenerates
-and diffs. Two precedents in the tree made the same choice: WarpWraps' C ABI
-commits its `gen/` snapshot "so the PR is reviewable without running
-anything", and FelizJueves' kernels are committed under `src/integrals/`.
-A reviewer then sees a changed signature in the diff. The devcontainer has
-`libclang-20`, so the regeneration runs where the C++ builds, and cargo is
-not needed to build the C++.
+**Bindings are committed.** `devtools/rust-bindings.py` generates each
+library's `-sys` bindings from its one C header and the output is checked
+in; `fb-device-check`'s `bindings.rs`, a tier-3 test, regenerates them and
+diffs. The script is stdlib Python with no bindgen and no libclang: it reads
+a small plain-C grammar (typed `#define`s, scalar `typedef`s, `typedef
+struct`s, prototypes and `///` comments) as text, as WarpWraps' C ABI
+generator does, and anything outside that grammar is an error, not a guess.
+Two precedents in the tree made the same choice: WarpWraps' C ABI commits
+its `gen/` snapshot "so the PR is reviewable without running anything", and
+FelizJueves' kernels are committed. A reviewer then sees a changed signature
+in the diff.
+
+**The emitted units are emitted again, not copied by hand.** The
+`tools/emit` generators take `--out-root DIR`, which writes the same tree
+under `DIR` that their default writes for the C++ tree, and `rust/` carries
+the families it has forked from such a run, each directory at the same
+relative path. From one generator at one `deps/FelizJueves` they are byte
+for byte the C++ tree's units, so after a bump both trees are emitted again
+([`README.md`](../README.md), "Build and test", has the commands).
 
 **FelizJueves can emit part of the wrappers.** Its header already names the
 block a unit was sized for and emits the dispatch table, and for a
@@ -403,7 +479,9 @@ launchers are this. The launchers that do more stay hand-written: `mmd`'s
 record formation with its own kernels, Coulomb's sort and screen, exchange's
 helper kernels. Emitting the mechanical ones is a FelizJueves change, so it
 is a request to the submodule; until it lands they are written by hand to
-the same shape, and the shape is what the request asks for.
+the same shape, and the shape is what the request asks for. Every launcher
+emitted is one fewer hand-kept copy for the fork to carry ("What the port
+changes").
 
 ## Open questions
 
