@@ -25,6 +25,8 @@
 #   --fresh         wipe the CMake cache first (`--fresh`). Needed after
 #                   changing a toolchain variable; a plain reconfigure keeps
 #                   the old value and the change appears to do nothing.
+#                   Implied, with a line saying so, when the tree's cached
+#                   C++ compiler is gone or now reports another version.
 #   --clean         rebuild every object (`--clean-first`), keeping the cache.
 #   -j N            parallel compile jobs (default: BUILD_JOBS from config.sh,
 #                   or Ninja's own choice when that is empty). Module builds
@@ -153,6 +155,15 @@ build_main() {
 
   [ "$preset" = auto ] && preset=$(gpu_auto_preset)
   cpp_require_build_tools || exit 1
+
+  # A tree configured by a compiler that has since changed cannot configure
+  # (#1333); reconfigure it fresh, as devtools/test.py does.
+  local drift
+  if [ "$fresh" -eq 0 ] &&
+       drift=$(build_tree_compiler_drift "$(cpp_build_dir "$preset")"); then
+    echo "build: compiler changed ($drift); reconfiguring with --fresh"
+    fresh=1
+  fi
 
   case "$report_dir" in /*) ;; *) report_dir="$REPO_ROOT/$report_dir";; esac
   mkdir -p "$report_dir"

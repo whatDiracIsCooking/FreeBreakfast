@@ -687,6 +687,39 @@ if [ -n "${AGY_PIN_FILES:-}" ] && [ -x "$AV" ]; then
 fi
 
 # --- nightly ----------------------------------------------------------------
+# --- build trees ------------------------------------------------------------
+# A build*/ tree configured by a C++ compiler that has since changed under it
+# -- the image's clang 20 -> 23 -- fails at configure on a missing libc++
+# module source, naming neither the compiler nor the fix (#1333). test.py and
+# build.sh reconfigure such a tree with --fresh on their own; this lists every
+# one in the checkout and its worktrees, so a long-lived worktree is not found
+# out at its next gate. Judged only where cmake is, the side that builds: on
+# a bare host the container's compiler is absent and every tree would look
+# stale.
+echo "build trees"
+if ! command -v cmake >/dev/null 2>&1; then
+  note "no cmake here: build trees are judged on the side that builds them"
+else
+  n_trees=0 n_stale=0
+  while read -r wt_path; do
+    for cache in "$wt_path"/build*/CMakeCache.txt; do
+      [ -f "$cache" ] || continue
+      tree=$(dirname "$cache")
+      n_trees=$((n_trees + 1))
+      if drift=$(build_tree_compiler_drift "$tree"); then
+        n_stale=$((n_stale + 1))
+        warn "${tree#"$PRIMARY"/}: configured by $drift"
+      fi
+    done
+  done < <(git -C "$TOP" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+  if [ "$n_stale" -gt 0 ]; then
+    note "test.py pr/push and build.sh reconfigure each with --fresh on their own;"
+    note "or now: cmake --preset <preset> --fresh, in that worktree"
+  else
+    ok "$n_trees build tree(s), none configured by a changed compiler"
+  fi
+fi
+
 # A dead man's switch: a nightly that stopped looks just like a quiet green
 # one. The check is devtools/nightly_stale.py's (test.py push/pr print the same
 # line); it reads the PRIMARY checkout's summary.log, where the nightly writes
