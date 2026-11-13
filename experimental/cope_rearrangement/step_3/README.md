@@ -17,6 +17,13 @@ saddle. Right: the diagonal E(R, R), each from its own lowest diagonal grid
 point, has one minimum at PC-NEVPT2 (the TS, a maximum across the diagonal)
 and at CASSCF two, the diyl and the aromatic saddle, with a barrier between.
 
+**`surface.html`** is the same figure made interactive: open it in a
+browser and point at either surface or the diagonal cut to see that grid
+point's converged geometry, ΔE, evaluations and active natural occupations.
+The stationary-point markers show step 4b's optimised geometry where 4b
+located that point (the PC TS, the CASSCF diyl and aromatic saddle), and the
+nearest grid point's otherwise.
+
 **Result.** The two surfaces have the shapes the study predicted.
 
 - **PC-NEVPT2 has one stationary point in the whole region:** a saddle on
@@ -170,16 +177,22 @@ direct neighbour.
 
 | File | What |
 |---|---|
-| `surface.py` | `run METHOD [NAME ...]` (prepare and run each point in sweep order, from its neighbour; skips one done), `names METHOD` (the sweep order), `analyse` → `surface.json`, `surface_<method>.csv`, `surface_<method>.svg` |
+| `surface.py` | `run METHOD [NAME ...]` (prepare and run each point in sweep order, from its neighbour; skips one done), `names METHOD` (the sweep order), `analyse` → `surface.json`, `surface_<method>.csv`, `geometries_<method>.xyz`, `surface_<method>.svg`, `comparison.svg`, `surface.html` |
 | `surface.py comparison` | `comparison.svg` alone, from the committed `surface_<method>.csv`, `surface.json` and `step_4/irc.csv` (no runs needed; `analyse` also writes it) |
+| `surface.py interactive` | `surface.html` alone, from the committed files (no runs needed; `analyse` also writes it) |
 | `contour.py` | the contour plots, stdlib SVG (matplotlib is not in `uv.lock`; step 2's plot is the precedent) |
+| `page.py`, `page.html.in` | `surface.html`'s data (from `surface_<method>.csv`, `surface.json`, `geometries_<method>.xyz`, and step 4's `irc.csv`, `stationary.json` and `geometries/`) and the page it goes into. Edit the `.in`, not the `.html` |
 | `run.sh` | `surface.py run` holding the CUDA card, as step 4's and step 6's |
 | `surface.json` | settings; per method the run status, the points that did not converge, the grid's stationary points, the diagonal E(R), and totals |
 | `surface_<method>.csv` | every point of the full square (the mirrored half marked `mirrored = 1`): status, E, ΔE from the grid minimum (kcal/mol), evaluations, max force, wall clock, the final distances, the C2-breaking measure, the six natural occupations |
 | `surface_<method>.svg` | the contour plot, the IRC (step 4d) overlaid on the PC one |
 | `comparison.svg` | both surfaces on one colour scale and contour interval (1 kcal/mol), the IRC on the PC one, and the diagonal cut E(R, R) of both |
+| `geometries_<method>.xyz` | every run point's converged geometry (378 PC, 105 CASSCF frames, R16 ≤ R34), in sweep order, the atom lines verbatim from its `final.xyz`; each comment line names the point and gives R16, R34 and E. Molden and IboView read it as a trajectory |
+| `surface.html` | the interactive page: both surfaces, the diagonal cut, and the geometry of whichever point is under the cursor. Self-contained apart from its web fonts, which fall back to system ones offline |
 
-`inputs/` and `runs/` are gitignored.
+`inputs/` and `runs/` are gitignored. `geometries_<method>.xyz` keeps each
+point's final geometry, but not its orbitals, CI vector or optimisation
+path, which only `runs/` has.
 
 ### Regenerating
 
@@ -198,4 +211,11 @@ library:
 
 ```sh
 python3 experimental/cope_rearrangement/step_3/surface.py comparison
+```
+
+`surface.html` alone needs only the committed files and numpy:
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    python experimental/cope_rearrangement/step_3/surface.py interactive
 ```

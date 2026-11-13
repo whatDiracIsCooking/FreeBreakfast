@@ -1,0 +1,808 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Written by surface.py interactive (page.py) from page.html.in; edit that, not this. -->
+<title>Chair Cope Surfaces</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a lab-notebook figure. Two surface panels and a molecule viewer in one row,
+   a shared colour key under them, then the notes. Surfaces keep the study's viridis ramp. */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --fg: #1b2129;
+  --muted: #5d6673;
+  --rule: #d9dde3;
+  --r16: #c94a12;      /* C1-C6, the bond that breaks */
+  --r34: #6741d9;      /* C3-C4, the bond that forms */
+  --carbon: #39424e;
+  --hydrogen: #e9ecef;
+  --hydrogen-edge: #a3abb5;
+  --focus: #1c7ed6;
+  --pc: #0072b2;       /* Okabe-Ito blue and vermillion, as comparison.svg */
+  --casscf: #d55e00;
+  --grid: #e6e9ed;
+  --font-display: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161c; --panel: #1a2029; --fg: #e4e8ee; --muted: #98a2af; --rule: #2d3540;
+    --r16: #ff8a4c; --r34: #a891ff; --carbon: #8d99a8; --hydrogen: #dde2e8;
+    --hydrogen-edge: #6b7582; --focus: #4dabf7; --pc: #56b4e9; --casscf: #f0884a;
+    --grid: #252c36; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161c; --panel: #1a2029; --fg: #e4e8ee; --muted: #98a2af; --rule: #2d3540;
+  --r16: #ff8a4c; --r34: #a891ff; --carbon: #8d99a8; --hydrogen: #dde2e8;
+  --hydrogen-edge: #6b7582; --focus: #4dabf7; --pc: #56b4e9; --casscf: #f0884a;
+  --grid: #252c36; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body);
+  font-size: 15px; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 48px; margin: 0;
+}
+.wrap { max-width: 1000px; margin: 0 auto; display: grid; gap: 22px; }
+header { display: grid; gap: 6px; }
+h1 {
+  font-family: var(--font-display); font-weight: 600; font-size: clamp(26px, 3.4vw, 36px);
+  line-height: 1.1; margin: 0; text-wrap: balance; letter-spacing: -0.01em;
+}
+.lede { margin: 0; color: var(--muted); max-width: 78ch; }
+.r16 { color: var(--r16); font-weight: 600; }
+.r34 { color: var(--r34); font-weight: 600; }
+/* 2 x 2: the surfaces above, the cut and the geometry below; one column on a phone */
+.panels { display: grid; gap: 16px; grid-template-columns: 1fr; }
+@media (min-width: 720px) { .panels { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 1100px) { .wrap { max-width: 1100px; } }
+.legend { display: flex; gap: 14px; font-size: 12.5px; color: var(--muted); }
+.legend svg { vertical-align: middle; margin-right: 4px; }
+canvas.cut { cursor: crosshair; touch-action: none; }
+figure {
+  margin: 0; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 14px 14px 12px; display: grid; gap: 8px; align-content: start; min-width: 0;
+}
+figcaption { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+figcaption h2 { font-family: var(--font-display); font-weight: 500; font-size: 20px; margin: 0; }
+.tag {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.06em;
+}
+.plot { position: relative; width: 100%; aspect-ratio: 1; max-width: 100%; }
+.plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+canvas.surface { cursor: crosshair; touch-action: none; border-radius: 3px; }
+canvas.mol { cursor: grab; touch-action: none; }
+canvas.mol:active { cursor: grabbing; }
+canvas:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.readout { display: grid; gap: 10px; font-size: 13.5px; }
+.where { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; }
+.where .method {
+  font-family: var(--font-mono); font-size: 11.5px; padding: 2px 7px; border-radius: 3px;
+  border: 1px solid var(--rule); text-transform: uppercase; letter-spacing: 0.05em;
+}
+.where .method.pinned { border-color: var(--fg); }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.de { font-family: var(--font-mono); font-size: 22px; font-weight: 500; }
+.de small { font-size: 12px; color: var(--muted); font-weight: 400; }
+dl.facts { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; }
+dl.facts dt { color: var(--muted); }
+dl.facts dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.occ { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; align-items: end; }
+.occ div { display: grid; gap: 3px; justify-items: center; }
+.occ .bar { width: 100%; height: 38px; background: var(--rule); border-radius: 2px; position: relative; overflow: hidden; }
+.occ .fill { position: absolute; left: 0; right: 0; bottom: 0; background: var(--muted); }
+.occ .active .fill { background: var(--fg); }
+.occ span { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.note { color: var(--muted); font-size: 12.5px; margin: 0; min-height: 1.5em; }
+.key {
+  display: flex; flex-wrap: wrap; gap: 14px 28px; align-items: center;
+  font-size: 13px; color: var(--muted);
+}
+.bar-key { display: grid; gap: 4px; flex: 1 1 320px; max-width: 520px; }
+.bar-key canvas { width: 100%; height: 34px; display: block; }
+.marks { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; }
+.marks svg { vertical-align: middle; margin-right: 5px; }
+.notes {
+  display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  border-top: 1px solid var(--rule); padding-top: 18px; font-size: 14px;
+}
+.notes h3 { font-family: var(--font-display); font-weight: 500; font-size: 17px; margin: 0 0 4px; }
+.notes p { margin: 0; color: var(--muted); max-width: 62ch; }
+kbd {
+  font-family: var(--font-mono); font-size: 11.5px; border: 1px solid var(--rule);
+  border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; color: var(--fg);
+}
+button.reset {
+  font: inherit; font-size: 12px; background: none; border: 1px solid var(--rule);
+  color: var(--muted); border-radius: 4px; padding: 2px 8px; cursor: pointer;
+}
+button.reset:hover { color: var(--fg); border-color: var(--muted); }
+button.reset:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Chair Cope rearrangement: the relaxed (R16, R34) surfaces</h1>
+    <p class="lede">
+      Each grid point holds <span class="r16">R16</span> (C1–C6, the bond that breaks) and
+      <span class="r34">R34</span> (C3–C4, the bond that forms) fixed and relaxes everything else,
+      at DF-PC-NEVPT2 and DF-CASSCF(6,6) over cc-pVDZ / cc-pVDZ-JKFIT. Point at either surface to see
+      that point's converged geometry.
+    </p>
+  </header>
+
+  <div class="key">
+    <div class="bar-key">
+      <canvas id="colourbar" aria-hidden="true"></canvas>
+      <span>ΔE / kcal mol⁻¹ from each surface's own lowest grid point · contours every 1, heavier every 5</span>
+    </div>
+    <div class="marks">
+      <span><svg width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="#fff" stroke="#000"/></svg>minimum</span>
+      <span><svg width="14" height="14" aria-hidden="true"><rect x="3" y="3" width="8" height="8" fill="#fff" stroke="#000" transform="rotate(45 7 7)"/></svg>saddle</span>
+      <span><svg width="14" height="14" aria-hidden="true"><rect x="2.5" y="2.5" width="9" height="9" fill="#fff" stroke="#000"/></svg>maximum</span>
+      <span><svg width="26" height="10" aria-hidden="true"><line x1="1" y1="5" x2="25" y2="5" stroke="#fff" stroke-width="5"/><line x1="1" y1="5" x2="25" y2="5" stroke="#000" stroke-width="2"/></svg>IRC (step 4d)</span>
+      <span><svg width="26" height="10" aria-hidden="true"><line x1="1" y1="5" x2="25" y2="5" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"/></svg>R16 = R34</span>
+    </div>
+  </div>
+
+  <div class="panels">
+    <figure>
+      <figcaption><h2>DF-PC-NEVPT2</h2><span class="tag" id="tag-pc"></span></figcaption>
+      <div class="plot"><canvas class="surface" id="surf-pc" tabindex="0" aria-label="PC-NEVPT2 surface. Arrow keys move the selected point; Enter pins it."></canvas></div>
+    </figure>
+    <figure>
+      <figcaption><h2>DF-CASSCF(6,6)</h2><span class="tag" id="tag-casscf"></span></figcaption>
+      <div class="plot"><canvas class="surface" id="surf-casscf" tabindex="0" aria-label="CASSCF surface. Arrow keys move the selected point; Enter pins it."></canvas></div>
+    </figure>
+    <figure>
+      <figcaption>
+        <h2>Relaxed diagonal cut, R16 = R34</h2>
+        <span class="legend">
+          <span><svg width="24" height="8" aria-hidden="true"><line x1="1" y1="4" x2="23" y2="4" stroke="var(--pc)" stroke-width="2.5"/></svg>PC-NEVPT2</span>
+          <span><svg width="24" height="8" aria-hidden="true"><line x1="1" y1="4" x2="23" y2="4" stroke="var(--casscf)" stroke-width="2.5" stroke-dasharray="6 4"/></svg>CASSCF</span>
+        </span>
+      </figcaption>
+      <div class="plot"><canvas class="cut" id="cut" tabindex="0" aria-label="Diagonal cut E(R, R) of both methods. Left and right arrows move along the diagonal; up and down switch method."></canvas></div>
+    </figure>
+    <figure>
+      <figcaption><h2>Geometry</h2><button class="reset" id="reset-view" type="button">Reset view</button></figcaption>
+      <div class="plot"><canvas class="mol" id="mol" tabindex="0" aria-label="Converged geometry. Drag to rotate."></canvas></div>
+      <div class="readout" id="readout" aria-live="polite"></div>
+    </figure>
+  </div>
+
+  <section class="notes">
+    <div>
+      <h3>Reading it</h3>
+      <p>Hover or tap a surface to show the nearest grid point. A stationary-point marker shows step 4b's optimised geometry where 4b located that point, and the nearest grid point's where it did not. Click to pin, and click again to unpin. With a surface focused, <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> move the point and <kbd>Enter</kbd> pins it. The diagonal cut works the same way: hover a point on either curve. Drag the molecule to rotate it. The faint crosshair in the other panel marks the same (R16, R34).</p>
+    </div>
+    <div>
+      <h3>What the shapes say</h3>
+      <p>PC-NEVPT2 has one stationary point, a saddle on the diagonal at 1.922 Å: the concerted TS. CASSCF has a diyl minimum at 1.649 Å, two off-diagonal saddles beside it, a maximum at 1.888 Å and the aromatic saddle at 2.269 Å, so its route is stepwise.</p>
+    </div>
+    <div>
+      <h3>The mirrored half</h3>
+      <p>Only R16 ≤ R34 was run. The chair's inversion swaps the two bonds, so a point above the diagonal shows its mirror's geometry with C1↔C3 and C4↔C6 relabelled. Geometries are rotated onto the TS's carbon frame so neighbouring points line up.</p>
+    </div>
+  </section>
+</div>
+
+<script>
+const DATA = /*DATA*/;
+
+const METHODS = ["pc", "casscf"];
+const NAME = { pc: "PC-NEVPT2", casscf: "CASSCF(6,6)" };
+const CAP = 45, STEP = 1;
+// the PC grid's extent, cell edges included, used by both panels
+const PC_GRID = DATA.methods.pc.grid, PC_H = PC_GRID[1] - PC_GRID[0];
+const LO = PC_GRID[0] - PC_H / 2, HI = PC_GRID[PC_GRID.length - 1] + PC_H / 2;
+const STOPS = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+
+function ramp(t) {
+  t = Math.min(Math.max(t, 0), 1) * (STOPS.length - 1);
+  const i = Math.min(Math.floor(t), STOPS.length - 2), f = t - i;
+  return STOPS[i].map((a, k) => Math.round(a + (STOPS[i + 1][k] - a) * f));
+}
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// selection state: what is shown, and what is pinned
+const state = { pinned: null, hover: null };
+// at rest: the PC-NEVPT2 TS marker, at its nearest grid point
+const TS = DATA.methods.pc.stationary.find((s) => s.kind === "saddle");
+const TS_I = Math.round((TS.r16 - PC_GRID[0]) / PC_H);
+const REST = { method: "pc", i: TS_I, j: TS_I, mark: 0 };
+function current() { return state.hover || state.pinned || REST; }
+
+// ---------- surface panels ----------
+const surf = {};
+for (const m of METHODS) {
+  const d = DATA.methods[m];
+  const n = d.grid.length;
+  // an n x n image of the cells, smoothed when scaled up: a bilinear fill between cell centres
+  const img = document.createElement("canvas");
+  img.width = n; img.height = n;
+  const ictx = img.getContext("2d");
+  const id = ictx.createImageData(n, n);
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const [r, g, b] = ramp(d.dE[i][j] / CAP);
+    const p = ((n - 1 - j) * n + i) * 4;   // row 0 is the top, the largest R34
+    id.data[p] = r; id.data[p + 1] = g; id.data[p + 2] = b; id.data[p + 3] = 255;
+  }
+  ictx.putImageData(id, 0, 0);
+  const marks = [];
+  const seen = new Set();
+  for (const s of d.stationary) for (const [a, b] of [[s.r16, s.r34], [s.r34, s.r16]]) {
+    const k = `${s.kind}${a.toFixed(3)}${b.toFixed(3)}`;
+    if (!seen.has(k)) { seen.add(k); marks.push({ kind: s.kind, a, b, dE: s.dE, opt: s.opt || null }); }
+  }
+  surf[m] = { d, n, img, marks, canvas: document.getElementById(`surf-${m}`), lines: contours(d) };
+}
+
+function contours(d) {
+  const g = d.grid, n = g.length, out = [];
+  let top = 0;
+  for (const row of d.dE) for (const v of row) top = Math.max(top, v);
+  for (let level = STEP; level < top; level += STEP) {
+    const segs = [];
+    for (let i = 0; i < n - 1; i++) for (let j = 0; j < n - 1; j++) {
+      const c = [[i, j], [i + 1, j], [i + 1, j + 1], [i, j + 1]];
+      const v = c.map(([a, b]) => d.dE[a][b]);
+      const pts = [];
+      for (let k = 0; k < 4; k++) {
+        const v0 = v[k], v1 = v[(k + 1) % 4];
+        if ((v0 - level) * (v1 - level) < 0) {
+          const t = (level - v0) / (v1 - v0);
+          const [a0, b0] = c[k], [a1, b1] = c[(k + 1) % 4];
+          pts.push([g[a0] + t * (g[a1] - g[a0]), g[b0] + t * (g[b1] - g[b0])]);
+        }
+      }
+      for (let k = 0; k + 1 < pts.length; k += 2) segs.push([pts[k], pts[k + 1]]);
+    }
+    out.push({ level, heavy: Math.round(level) % 5 === 0, segs });
+  }
+  return out;
+}
+
+function frame(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function geometry(w) {
+  const left = w < 360 ? 40 : 48, bottom = 40, top = 6, right = 8;
+  const size = Math.min(w - left - right, w - top - bottom);
+  return { x0: left, y0: top, size };
+}
+
+function drawSurface(m) {
+  const S = surf[m], { ctx, w } = frame(S.canvas), G = geometry(w);
+  const { x0, y0, size } = G;
+  const px = (v) => x0 + (v - LO) / (HI - LO) * size;
+  const py = (v) => y0 + size - (v - LO) / (HI - LO) * size;
+  S.px = px; S.py = py; S.G = G;
+  const g = S.d.grid, h = g[1] - g[0];
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x0, y0, size, size); ctx.clip();
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+  // the image's pixel centres sit on the grid points
+  ctx.drawImage(S.img, px(g[0] - h / 2), py(g[S.n - 1] + h / 2),
+    px(g[S.n - 1] + h / 2) - px(g[0] - h / 2), py(g[0] - h / 2) - py(g[S.n - 1] + h / 2));
+
+  for (const c of S.lines) {
+    ctx.strokeStyle = c.heavy ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.42)";
+    ctx.lineWidth = c.heavy ? 1.1 : 0.7;
+    ctx.beginPath();
+    for (const [p, q] of c.segs) { ctx.moveTo(px(p[0]), py(p[1])); ctx.lineTo(px(q[0]), py(q[1])); }
+    ctx.stroke();
+  }
+  ctx.setLineDash([3, 3]); ctx.strokeStyle = "rgba(0,0,0,0.7)"; ctx.lineWidth = 0.8;
+  ctx.beginPath(); ctx.moveTo(px(LO), py(LO)); ctx.lineTo(px(HI), py(HI)); ctx.stroke();
+  ctx.setLineDash([]);
+
+  if (m === "pc") {
+    const path = DATA.irc;
+    for (const [col, lw] of [["#fff", 4.5], ["#000", 1.8]]) {
+      ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineJoin = "round";
+      ctx.beginPath();
+      path.forEach(([a, b], k) => k ? ctx.lineTo(px(a), py(b)) : ctx.moveTo(px(a), py(b)));
+      ctx.stroke();
+    }
+  }
+  for (const s of S.marks) marker(ctx, s.kind, px(s.a), py(s.b), 5.5);
+
+  // the same (R16, R34) as the other panel's live point
+  const cur = current();
+  const [ca, cb] = position(cur);
+  if (cur.method === m) {
+    const x = px(ca), y = py(cb), ring = cur.mark != null ? 10 : 7;
+    ctx.strokeStyle = "rgba(255,255,255,0.75)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + size); ctx.moveTo(x0, y); ctx.lineTo(x0 + size, y); ctx.stroke();
+    if (cur.mark != null) { const s = S.marks[cur.mark]; marker(ctx, s.kind, x, y, 5.5); }
+    ctx.lineWidth = 2.5; ctx.strokeStyle = "#000";
+    ctx.beginPath(); ctx.arc(x, y, ring, 0, 2 * Math.PI); ctx.stroke();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = "#fff";
+    ctx.beginPath(); ctx.arc(x, y, ring, 0, 2 * Math.PI); ctx.stroke();
+    if (same(state.pinned, cur) && cur.mark == null) {
+      ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 2 * Math.PI); ctx.fill();
+    }
+  } else {
+    const x = px(ca), y = py(cb);
+    ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + size); ctx.moveTo(x0, y); ctx.lineTo(x0 + size, y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.restore();
+
+  // axes
+  const fg = css("--fg"), muted = css("--muted"), rule = css("--rule");
+  ctx.strokeStyle = rule; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y0 + 0.5, size - 1, size - 1);
+  ctx.fillStyle = muted; ctx.strokeStyle = muted;
+  ctx.font = `11px ${css("--font-mono")}`;
+  for (let v = 1.6; v <= 2.81; v += 0.2) {
+    const x = px(v), y = py(v);
+    ctx.beginPath(); ctx.moveTo(x, y0 + size); ctx.lineTo(x, y0 + size + 4); ctx.moveTo(x0, y); ctx.lineTo(x0 - 4, y); ctx.stroke();
+    ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.fillText(v.toFixed(1), x, y0 + size + 6);
+    ctx.textAlign = "right"; ctx.textBaseline = "middle"; ctx.fillText(v.toFixed(1), x0 - 6, y);
+  }
+  ctx.font = `600 12px ${css("--font-body")}`;
+  ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = css("--r16"); ctx.fillText("R16 / Å", x0 + size / 2, y0 + size + 34);
+  ctx.save(); ctx.translate(13, y0 + size / 2); ctx.rotate(-Math.PI / 2);
+  ctx.fillStyle = css("--r34"); ctx.fillText("R34 / Å", 0, 0); ctx.restore();
+}
+
+function marker(ctx, kind, x, y, r) {
+  ctx.fillStyle = "#fff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  if (kind === "minimum") ctx.arc(x, y, r, 0, 2 * Math.PI);
+  else if (kind === "saddle") { ctx.moveTo(x, y - r * 1.25); ctx.lineTo(x + r * 1.25, y); ctx.lineTo(x, y + r * 1.25); ctx.lineTo(x - r * 1.25, y); ctx.closePath(); }
+  else ctx.rect(x - r, y - r, 2 * r, 2 * r);
+  ctx.fill(); ctx.stroke();
+}
+
+function pick(m, ev) {
+  const S = surf[m];
+  if (!S.G) return null;
+  const rect = S.canvas.getBoundingClientRect();
+  const x = ev.clientX - rect.left, y = ev.clientY - rect.top;
+  const { x0, y0, size } = S.G;
+  if (x < x0 - 6 || x > x0 + size + 6 || y < y0 - 6 || y > y0 + size + 6) return null;
+  const a = LO + (x - x0) / size * (HI - LO), b = LO + (y0 + size - y) / size * (HI - LO);
+  const g = S.d.grid, h = g[1] - g[0];
+  const clamp = (k) => Math.min(Math.max(k, 0), S.n - 1);
+  const near = (v) => clamp(Math.round((v - g[0]) / h));
+  // a stationary-point marker wins over the grid point under it
+  let best = null, bestD = 11;
+  S.marks.forEach((s, k) => {
+    const dd = Math.hypot(S.px(s.a) - x, S.py(s.b) - y);
+    if (dd < bestD) { bestD = dd; best = k; }
+  });
+  if (best != null) {
+    const s = S.marks[best];
+    return { method: m, i: near(s.a), j: near(s.b), mark: best };
+  }
+  return { method: m, i: near(a), j: near(b) };
+}
+
+const same = (p, q) => !!(p && q && p.method === q.method && p.i === q.i && p.j === q.j && (p.mark ?? null) === (q.mark ?? null));
+function position(sel) {
+  if (sel.mark != null) { const s = surf[sel.method].marks[sel.mark]; return [s.a, s.b]; }
+  const g = DATA.methods[sel.method].grid;
+  return [g[sel.i], g[sel.j]];
+}
+
+for (const m of METHODS) {
+  const c = surf[m].canvas;
+  c.addEventListener("pointermove", (ev) => {
+    if (ev.pointerType === "touch") return;
+    const p = pick(m, ev);
+    if (!same(p, state.hover)) { state.hover = p; update(); }
+  });
+  c.addEventListener("pointerleave", (ev) => {
+    if (ev.pointerType === "touch") return;
+    state.hover = null; update();
+  });
+  c.addEventListener("pointerdown", (ev) => {
+    const p = pick(m, ev);
+    if (!p) return;
+    if (ev.pointerType === "touch") { state.pinned = p; state.hover = null; }
+    else state.pinned = same(p, state.pinned) ? null : p;
+    update();
+  });
+  c.addEventListener("keydown", (ev) => {
+    const base = current().method === m ? current() : { method: m, i: Math.floor(surf[m].n / 2), j: Math.floor(surf[m].n / 2) };
+    const n = surf[m].n, step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[ev.key];
+    if (step) {
+      ev.preventDefault();
+      // from a marker, the first step lands on the grid point the marker sits nearest
+      const p = base.mark != null ? { method: m, i: base.i, j: base.j }
+        : { method: m, i: Math.min(Math.max(base.i + step[0], 0), n - 1), j: Math.min(Math.max(base.j + step[1], 0), n - 1) };
+      state.hover = null; state.pinned = p; update();
+    } else if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      state.pinned = same(base, state.pinned) ? null : base; state.hover = null; update();
+    } else if (ev.key === "Escape") { state.pinned = null; update(); }
+  });
+}
+
+// ---------- molecule viewer ----------
+const mol = document.getElementById("mol");
+const DEFAULT_VIEW = () => {
+  // TS frame: carbons in x-z, ring normal along y. Screen x = x, screen up = z, then tilt to show the chair.
+  const t = -62 * Math.PI / 180;
+  const base = [[1, 0, 0], [0, 0, 1], [0, -1, 0]];    // rows: screen x, screen y(up), depth
+  const tilt = [[1, 0, 0], [0, Math.cos(t), -Math.sin(t)], [0, Math.sin(t), Math.cos(t)]];
+  return mul(tilt, base);
+};
+let view = DEFAULT_VIEW();
+function mul(A, B) { return A.map((r) => [0, 1, 2].map((k) => r[0] * B[0][k] + r[1] * B[1][k] + r[2] * B[2][k])); }
+function rot(axis, ang) {
+  const c = Math.cos(ang), s = Math.sin(ang);
+  return axis === "x" ? [[1, 0, 0], [0, c, -s], [0, s, c]] : [[c, 0, s], [0, 1, 0], [-s, 0, c]];
+}
+let drag = null;
+mol.addEventListener("pointerdown", (ev) => { drag = { x: ev.clientX, y: ev.clientY }; mol.setPointerCapture(ev.pointerId); });
+mol.addEventListener("pointermove", (ev) => {
+  if (!drag) return;
+  const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+  drag = { x: ev.clientX, y: ev.clientY };
+  view = mul(rot("x", -dy * 0.01), mul(rot("y", dx * 0.01), view));
+  drawMol();
+});
+mol.addEventListener("pointerup", () => { drag = null; });
+mol.addEventListener("pointercancel", () => { drag = null; });
+mol.addEventListener("keydown", (ev) => {
+  const k = { ArrowLeft: ["y", -0.12], ArrowRight: ["y", 0.12], ArrowUp: ["x", -0.12], ArrowDown: ["x", 0.12] }[ev.key];
+  if (k) { ev.preventDefault(); view = mul(rot(k[0], k[1]), view); drawMol(); }
+});
+document.getElementById("reset-view").addEventListener("click", () => { view = DEFAULT_VIEW(); drawMol(); });
+
+// the geometry on show: step 4b's optimised one on a marker that has it, else the grid point's
+function shown(cur) {
+  const d = DATA.methods[cur.method], info = d.info[cur.i][cur.j];
+  const s = cur.mark != null ? surf[cur.method].marks[cur.mark] : null;
+  if (s && s.opt) return { flat: s.opt.geom, mir: false, mark: s };
+  return { flat: d.geoms[info.src], mir: info.mir, mark: s, info };
+}
+
+function drawMol() {
+  const cur = current(), sh = shown(cur), info = { mir: sh.mir };
+  const flat = sh.flat, sym = DATA.symbols, n = sym.length;
+  const { ctx, w, h } = frame(mol);
+  const scale = Math.min(w, h) / 7.4, cx = w / 2, cy = h / 2;
+  const P = [];
+  for (let k = 0; k < n; k++) {
+    const x = flat[3 * k], y = flat[3 * k + 1], z = flat[3 * k + 2];
+    const sx = view[0][0] * x + view[0][1] * y + view[0][2] * z;
+    const sy = view[1][0] * x + view[1][1] * y + view[1][2] * z;
+    const sz = view[2][0] * x + view[2][1] * y + view[2][2] * z;
+    P.push({ X: cx + sx * scale, Y: cy - sy * scale, Z: sz, x, y, z });
+  }
+  const dist = (a, b) => Math.hypot(P[a].x - P[b].x, P[a].y - P[b].y, P[a].z - P[b].z);
+  // which carbon pair is C1-C6 here: on a mirrored point the labels swap C1<->C3, C4<->C6
+  const r16 = info.mir ? [2, 3] : [0, 5], r34 = info.mir ? [0, 5] : [2, 3];
+  const labels = info.mir ? ["C3", "C2", "C1", "C6", "C5", "C4"] : ["C1", "C2", "C3", "C4", "C5", "C6"];
+  const key = (a, b) => a < b ? `${a}-${b}` : `${b}-${a}`;
+  const special = { [key(...r16)]: "--r16", [key(...r34)]: "--r34" };
+  const items = [];
+  for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) {
+    const k = key(a, b);
+    const r = dist(a, b);
+    if (special[k]) { items.push({ t: "bond", a, b, r, tone: special[k], z: (P[a].Z + P[b].Z) / 2 }); continue; }
+    const cc = sym[a] === "C" && sym[b] === "C", ch = (sym[a] === "C") !== (sym[b] === "C");
+    if ((cc && r < 1.62) || (ch && r < 1.25)) items.push({ t: "bond", a, b, r, z: (P[a].Z + P[b].Z) / 2 });
+  }
+  for (let a = 0; a < n; a++) items.push({ t: "atom", a, z: P[a].Z });
+  items.sort((p, q) => p.z - q.z || (p.t === "bond" ? -1 : 1));
+
+  const carbon = css("--carbon"), hyd = css("--hydrogen"), hedge = css("--hydrogen-edge"), fg = css("--fg"), panel = css("--panel");
+  const rad = (s) => (s === "C" ? 0.34 : 0.21) * scale;
+  const labelsAt = [];
+  for (const it of items) {
+    if (it.t === "bond") {
+      const A = P[it.a], B = P[it.b];
+      if (it.tone) {
+        const col = css(it.tone), formed = it.r < 1.7;
+        ctx.strokeStyle = col; ctx.lineCap = "round";
+        ctx.lineWidth = formed ? 0.16 * scale : 0.09 * scale;
+        ctx.setLineDash(formed ? [] : [0.12 * scale, 0.13 * scale]);
+        ctx.beginPath(); ctx.moveTo(A.X, A.Y); ctx.lineTo(B.X, B.Y); ctx.stroke();
+        ctx.setLineDash([]);
+        labelsAt.push({ x: (A.X + B.X) / 2, y: (A.Y + B.Y) / 2, text: `${it.r.toFixed(2)} Å`, col, side: (A.X + B.X) / 2 < cx ? -1 : 1 });
+      } else {
+        ctx.strokeStyle = carbon; ctx.lineCap = "round"; ctx.lineWidth = 0.13 * scale;
+        ctx.beginPath(); ctx.moveTo(A.X, A.Y); ctx.lineTo(B.X, B.Y); ctx.stroke();
+      }
+    } else {
+      const A = P[it.a], s = sym[it.a], r = rad(s);
+      const grad = ctx.createRadialGradient(A.X - r * 0.35, A.Y - r * 0.35, r * 0.1, A.X, A.Y, r);
+      if (s === "C") { grad.addColorStop(0, shade(carbon, 0.45)); grad.addColorStop(1, carbon); }
+      else { grad.addColorStop(0, "#ffffff"); grad.addColorStop(1, hyd); }
+      ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(A.X, A.Y, r, 0, 2 * Math.PI); ctx.fill();
+      ctx.lineWidth = 1; ctx.strokeStyle = s === "C" ? shade(carbon, -0.3) : hedge; ctx.stroke();
+    }
+  }
+  ctx.font = `500 ${Math.max(11, Math.round(scale * 0.2))}px ${css("--font-mono")}`;
+  ctx.textBaseline = "middle";
+  for (const L of labelsAt) {
+    ctx.textAlign = L.side < 0 ? "right" : "left";
+    const x = L.x + L.side * 0.42 * scale;
+    ctx.lineWidth = 4; ctx.strokeStyle = panel; ctx.strokeText(L.text, x, L.y);
+    ctx.fillStyle = L.col; ctx.fillText(L.text, x, L.y);
+  }
+  ctx.font = `500 ${Math.max(10, Math.round(scale * 0.17))}px ${css("--font-mono")}`;
+  ctx.textAlign = "center";
+  for (let k = 0; k < 6; k++) {
+    const A = P[k], dx = A.X - cx, dy = A.Y - cy, l = Math.hypot(dx, dy) || 1;
+    const x = A.X + dx / l * 0.62 * scale, y = A.Y + dy / l * 0.62 * scale;
+    ctx.lineWidth = 3; ctx.strokeStyle = panel; ctx.strokeText(labels[k], x, y);
+    ctx.fillStyle = fg; ctx.fillText(labels[k], x, y);
+  }
+}
+
+function shade(hex, f) {
+  const m = hex.match(/^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return hex;
+  const c = m.slice(1).map((x) => parseInt(x, 16)).map((v) => Math.round(f > 0 ? v + (255 - v) * f : v * (1 + f)));
+  return `rgb(${c.join(",")})`;
+}
+
+// ---------- readout ----------
+const readout = document.getElementById("readout");
+function nearestStationary(m, a, b) {
+  const g = DATA.methods[m].grid, h = g[1] - g[0];
+  for (const s of surf[m].marks) {
+    if (Math.abs(s.a - a) <= h / 2 + 1e-9 && Math.abs(s.b - b) <= h / 2 + 1e-9) return s;
+  }
+  return null;
+}
+function occupations(n, where = "") {
+  const bars = n.map((v, k) => `<div class="${k === 2 || k === 3 ? "active" : ""}"><div class="bar"><div class="fill" style="height:${(v / 2 * 100).toFixed(1)}%"></div></div><span>${v.toFixed(2)}</span></div>`).join("");
+  return `<div><div class="tag" style="margin-bottom:4px">Active natural occupations n1–n6${where ? ` ${where}` : ""}</div><div class="occ">${bars}</div></div>`;
+}
+const KIND = { minimum: "Minimum", saddle: "Saddle", maximum: "Maximum" };
+const LABEL = { "pc:saddle": "the concerted TS", "casscf:minimum": "the diyl", "casscf:saddle:diag": "the aromatic saddle" };
+function renderMark(cur, s) {
+  const pinned = same(cur, state.pinned), d = DATA.methods[cur.method];
+  const name = LABEL[`${cur.method}:${s.kind}${s.kind === "saddle" && cur.method === "casscf" && s.a === s.b ? ":diag" : ""}`];
+  const head = `<div class="where">
+      <span class="method${pinned ? " pinned" : ""}">${NAME[cur.method]}${pinned ? " · pinned" : ""}</span>
+      <span>${KIND[s.kind]}${name ? `, ${name}` : ""}</span>
+    </div>`;
+  if (s.opt) {
+    const o = s.opt;
+    readout.innerHTML = `${head}
+    <div class="de">${o.dE.toFixed(2)} <small>kcal/mol above this surface's lowest grid point</small></div>
+    <dl class="facts">
+      <dt>Optimised (4b)</dt><dd><span class="r16">R16</span> ${o.r16.toFixed(4)} · <span class="r34">R34</span> ${o.r34.toFixed(4)} Å</dd>
+      <dt>Grid fit</dt><dd>(${s.a.toFixed(3)}, ${s.b.toFixed(3)}) Å, ${s.dE.toFixed(2)} kcal/mol</dd>
+      <dt>E (4b)</dt><dd>${o.e.toFixed(7)} Eh</dd>
+    </dl>
+    ${occupations(o.n)}
+    <p class="note">Step 4b's fully optimised stationary point (${o.file}), not a grid point: nothing is held fixed. The marker sits at the grid fit's location.</p>`;
+  } else {
+    const a = d.grid[cur.i], b = d.grid[cur.j];
+    readout.innerHTML = `${head}
+    <div class="de">${s.dE.toFixed(2)} <small>kcal/mol, the grid fit's</small></div>
+    <dl class="facts">
+      <dt>Grid fit</dt><dd><span class="r16">R16</span> ${s.a.toFixed(3)} · <span class="r34">R34</span> ${s.b.toFixed(3)} Å</dd>
+      <dt>Shown</dt><dd>grid point (${a.toFixed(2)}, ${b.toFixed(2)}) Å, ${d.dE[cur.i][cur.j].toFixed(2)} kcal/mol</dd>
+    </dl>
+    ${occupations(d.info[cur.i][cur.j].n, "at the grid point")}
+    <p class="note">Step 4b did not optimise this point, so the geometry is the nearest grid point's, which is up to half a grid cell from the fit.</p>`;
+  }
+}
+
+function renderReadout() {
+  const cur = current(), d = DATA.methods[cur.method], info = d.info[cur.i][cur.j];
+  if (cur.mark != null) return renderMark(cur, surf[cur.method].marks[cur.mark]);
+  const a = d.grid[cur.i], b = d.grid[cur.j];
+  const pinned = same(cur, state.pinned);
+  const occ = info.n.map((v, k) => `<div class="${k === 2 || k === 3 ? "active" : ""}"><div class="bar"><div class="fill" style="height:${(v / 2 * 100).toFixed(1)}%"></div></div><span>${v.toFixed(2)}</span></div>`).join("");
+  const s = nearestStationary(cur.method, a, b);
+  let note = "";
+  if (info.mir) {
+    const [lo, hi] = info.src.split("_");
+    note = `Mirror of the computed point (${lo}, ${hi}) Å, with C1↔C3 and C4↔C6 relabelled. `;
+  }
+  if (s) note += `Nearest grid point to the fit's ${s.kind} at (${s.a.toFixed(3)}, ${s.b.toFixed(3)}) Å, ${s.dE.toFixed(2)} kcal/mol.`;
+  readout.innerHTML = `
+    <div class="where">
+      <span class="method${pinned ? " pinned" : ""}">${NAME[cur.method]}${pinned ? " · pinned" : ""}</span>
+      <span class="num"><span class="r16">R16</span> ${a.toFixed(2)} Å · <span class="r34">R34</span> ${b.toFixed(2)} Å</span>
+    </div>
+    <div class="de">${d.dE[cur.i][cur.j].toFixed(2)} <small>kcal/mol above this surface's lowest grid point</small></div>
+    <dl class="facts">
+      <dt>E</dt><dd>${info.e.toFixed(7)} Eh</dd>
+      <dt>Converged in</dt><dd>${info.ev} evaluations, ${info.w.toFixed(0)} s</dd>
+      <dt>C2 breaking</dt><dd>${info.c2.toExponential(1)} bohr</dd>
+    </dl>
+    <div>
+      <div class="tag" style="margin-bottom:4px">Active natural occupations n1–n6</div>
+      <div class="occ">${occ}</div>
+    </div>
+    <p class="note">${note}</p>`;
+}
+
+// ---------- colour bar ----------
+function drawBar() {
+  const c = document.getElementById("colourbar"), { ctx, w } = frame(c);
+  const x0 = 8, x1 = w - 14, bh = 12;
+  const grad = ctx.createLinearGradient(x0, 0, x1, 0);
+  for (let k = 0; k <= 20; k++) { const [r, g, b] = ramp(k / 20); grad.addColorStop(k / 20, `rgb(${r},${g},${b})`); }
+  ctx.fillStyle = grad; ctx.fillRect(x0, 2, x1 - x0, bh);
+  ctx.fillStyle = css("--muted"); ctx.strokeStyle = css("--muted");
+  ctx.font = `11px ${css("--font-mono")}`; ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (let v = 0; v <= CAP; v += 5) {
+    const x = x0 + v / CAP * (x1 - x0);
+    ctx.beginPath(); ctx.moveTo(x, 2 + bh); ctx.lineTo(x, 2 + bh + 4); ctx.stroke();
+    if (v % 10 === 0 || w > 420) ctx.fillText(v === CAP ? `${v}+` : `${v}`, x, bh + 8);
+  }
+}
+
+// ---------- the diagonal cut ----------
+const CUT_TOP = 20;
+const cutCanvas = document.getElementById("cut");
+const diag = {};
+for (const m of METHODS) {
+  const d = DATA.methods[m];
+  const pts = d.grid.map((r, i) => [r, d.dE[i][i]]);
+  const ref = Math.min(...pts.map((p) => p[1]));
+  diag[m] = { ref, pts: pts.map(([r, v]) => [r, v - ref]) };
+}
+// comparison.svg's annotations: the diagonal stationary points, at the grid fit's R
+const CUT_NOTES = [["casscf", "minimum", "CASSCF diyl"], ["pc", "saddle", "PC-NEVPT2 TS"], ["casscf", "saddle", "CASSCF aromatic"]]
+  .map(([m, kind, text]) => ({ m, text, s: surf[m].marks.find((s) => s.kind === kind && s.a === s.b) }));
+let cutG = null;
+
+function drawCut() {
+  const { ctx, w } = frame(cutCanvas), G = geometry(w), { x0, y0, size } = G;
+  const px = (v) => x0 + (v - LO) / (HI - LO) * size;
+  const py = (v) => y0 + size - v / CUT_TOP * size;
+  cutG = { ...G, px, py };
+  const muted = css("--muted"), grid = css("--grid"), rule = css("--rule"), panel = css("--panel");
+  ctx.font = `11px ${css("--font-mono")}`;
+  for (let v = 0; v <= CUT_TOP; v += 2) {
+    ctx.strokeStyle = grid; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x0, py(v)); ctx.lineTo(x0 + size, py(v)); ctx.stroke();
+    ctx.fillStyle = muted; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    if (v % 4 === 0) ctx.fillText(String(v), x0 - 6, py(v));
+  }
+  ctx.font = `500 11px ${css("--font-body")}`;
+  for (const n of CUT_NOTES) {
+    const x = px(n.s.a), col = css(n.m === "pc" ? "--pc" : "--casscf");
+    ctx.strokeStyle = muted; ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + size); ctx.stroke(); ctx.setLineDash([]);
+    ctx.save(); ctx.translate(x + 4, y0 + 6); ctx.rotate(Math.PI / 2);
+    ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+    const label = `${n.text}, ${n.s.a.toFixed(3)} Å`;
+    ctx.lineWidth = 3; ctx.strokeStyle = panel; ctx.strokeText(label, 0, 0);
+    ctx.fillStyle = col; ctx.fillText(label, 0, 0);
+    ctx.restore();
+  }
+  ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, size, size); ctx.clip();
+  for (const m of METHODS) {
+    const col = css(m === "pc" ? "--pc" : "--casscf");
+    ctx.strokeStyle = col; ctx.lineWidth = 2.2; ctx.lineJoin = "round";
+    ctx.setLineDash(m === "casscf" ? [7, 4] : []);
+    ctx.beginPath();
+    diag[m].pts.forEach(([r, v], k) => k ? ctx.lineTo(px(r), py(v)) : ctx.moveTo(px(r), py(v)));
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = col;
+    for (const [r, v] of diag[m].pts) { ctx.beginPath(); ctx.arc(px(r), py(v), 2.4, 0, 2 * Math.PI); ctx.fill(); }
+  }
+  // the live point, when it is on the diagonal
+  const cur = current(), [a, b] = position(cur);
+  if (Math.abs(a - b) < 1e-9) {
+    let v;
+    if (cur.mark != null) {
+      const s = surf[cur.method].marks[cur.mark];
+      v = (s.opt ? s.opt.dE : s.dE) - diag[cur.method].ref;
+    } else v = DATA.methods[cur.method].dE[cur.i][cur.i] - diag[cur.method].ref;
+    const x = px(a), y = py(v);
+    ctx.strokeStyle = css("--fg"); ctx.lineWidth = 1; ctx.globalAlpha = 0.35;
+    ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + size); ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.lineWidth = 2; ctx.strokeStyle = css(cur.method === "pc" ? "--pc" : "--casscf");
+    ctx.fillStyle = panel;
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+  ctx.strokeStyle = rule; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y0 + 0.5, size - 1, size - 1);
+  ctx.fillStyle = muted; ctx.strokeStyle = muted; ctx.font = `11px ${css("--font-mono")}`;
+  for (let v = 1.6; v <= 2.81; v += 0.2) {
+    const x = px(v);
+    ctx.beginPath(); ctx.moveTo(x, y0 + size); ctx.lineTo(x, y0 + size + 4); ctx.stroke();
+    ctx.textAlign = "center"; ctx.textBaseline = "top"; ctx.fillText(v.toFixed(1), x, y0 + size + 6);
+  }
+  ctx.font = `600 12px ${css("--font-body")}`; ctx.fillStyle = css("--fg");
+  ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+  ctx.fillText("R = R16 = R34 / Å", x0 + size / 2, y0 + size + 34);
+  ctx.save(); ctx.translate(13, y0 + size / 2); ctx.rotate(-Math.PI / 2);
+  ctx.fillText("ΔE from own diagonal min. / kcal mol⁻¹", 0, 0); ctx.restore();
+}
+
+function pickCut(ev) {
+  if (!cutG) return null;
+  const rect = cutCanvas.getBoundingClientRect();
+  const x = ev.clientX - rect.left, y = ev.clientY - rect.top, { x0, y0, size, px, py } = cutG;
+  if (x < x0 - 6 || x > x0 + size + 6 || y < y0 - 6 || y > y0 + size + 6) return null;
+  // the nearest plotted point of either curve, by screen distance
+  let best = null, bd = Infinity;
+  for (const m of METHODS) diag[m].pts.forEach(([r, v], i) => {
+    const dd = Math.hypot(px(r) - x, py(Math.min(v, CUT_TOP + 2)) - y);
+    if (dd < bd) { bd = dd; best = { method: m, i, j: i }; }
+  });
+  return best;
+}
+cutCanvas.addEventListener("pointermove", (ev) => {
+  if (ev.pointerType === "touch") return;
+  const p = pickCut(ev);
+  if (!same(p, state.hover)) { state.hover = p; update(); }
+});
+cutCanvas.addEventListener("pointerleave", (ev) => { if (ev.pointerType !== "touch") { state.hover = null; update(); } });
+cutCanvas.addEventListener("pointerdown", (ev) => {
+  const p = pickCut(ev);
+  if (!p) return;
+  if (ev.pointerType === "touch") { state.pinned = p; state.hover = null; }
+  else state.pinned = same(p, state.pinned) ? null : p;
+  update();
+});
+cutCanvas.addEventListener("keydown", (ev) => {
+  const cur = current();
+  const onDiag = cur.mark == null && cur.i === cur.j;
+  let m = cur.method, i = onDiag ? cur.i : Math.round((position(cur)[0] - DATA.methods[m].grid[0]) / (DATA.methods[m].grid[1] - DATA.methods[m].grid[0]));
+  const n = DATA.methods[m].grid.length;
+  if (ev.key === "ArrowLeft") i = Math.max(0, (onDiag ? i - 1 : i));
+  else if (ev.key === "ArrowRight") i = Math.min(n - 1, (onDiag ? i + 1 : i));
+  else if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {
+    const r = DATA.methods[m].grid[Math.min(Math.max(i, 0), n - 1)];
+    m = m === "pc" ? "casscf" : "pc";
+    const g = DATA.methods[m].grid;
+    i = Math.min(Math.max(Math.round((r - g[0]) / (g[1] - g[0])), 0), g.length - 1);
+  } else if (ev.key === "Escape") { state.pinned = null; update(); return; }
+  else return;
+  ev.preventDefault();
+  i = Math.min(Math.max(i, 0), DATA.methods[m].grid.length - 1);
+  state.hover = null; state.pinned = { method: m, i, j: i }; update();
+});
+
+for (const m of METHODS) {
+  const g = DATA.methods[m].grid;
+  document.getElementById(`tag-${m}`).textContent = `${+(g[1] - g[0]).toFixed(2)} Å grid · ${DATA.methods[m].points_run} points run`;
+}
+
+// ---------- wiring ----------
+function update() {
+  for (const m of METHODS) drawSurface(m);
+  drawCut();
+  drawMol(); renderReadout();
+}
+function redrawAll() { update(); drawBar(); }
+new ResizeObserver(() => redrawAll()).observe(document.querySelector(".panels"));
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redrawAll);
+new MutationObserver(redrawAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(redrawAll);
+redrawAll();
+</script>
+</body>
+</html>

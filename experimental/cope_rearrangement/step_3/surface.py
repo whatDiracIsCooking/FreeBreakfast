@@ -20,9 +20,12 @@ Phases, as step 4b's stationary.py and step 6's experiment.py:
                         the named ones; skips one done
   names <method>        the sweep order
   analyse               (numpy) -> surface_<method>.csv, surface.json,
-                        surface_<method>.svg, comparison.svg
+                        geometries_<method>.xyz, surface_<method>.svg,
+                        comparison.svg, surface.html
   comparison            (stdlib) comparison.svg from the committed
                         surface_<method>.csv and surface.json alone
+  interactive           (numpy) surface.html from the committed files alone
+                        (page.py has which)
 
 `method` is pc or casscf.
 """
@@ -313,6 +316,7 @@ def analyse() -> None:
             continue
         result[method] = summarise(method, rows)
         write_csv(method, rows)
+        write_geometries(method, rows)
         import contour
 
         contour.plot(
@@ -324,6 +328,36 @@ def analyse() -> None:
         )
     (HERE / "surface.json").write_text(json.dumps(result, indent=1) + "\n")
     comparison()
+    interactive()
+
+
+def interactive() -> None:
+    """surface.html, the interactive page: page.py builds it from the
+    committed CSVs, surface.json and geometries_<method>.xyz, and step 4's
+    IRC and optimised stationary points."""
+    import page
+
+    page.build(HERE / "surface.html")
+
+
+def write_geometries(method: str, rows: list[dict]) -> None:
+    """geometries_<method>.xyz: every converged point's final.xyz, in sweep
+    order, one frame each, the atom lines verbatim. The comment line names
+    the point and carries its R16, R34 and E, so the file stands in for
+    runs/ (gitignored) wherever a geometry is wanted."""
+    frames = []
+    for r in rows:
+        if r["status"] != "converged":
+            continue
+        lines = (RUNS / r["name"] / "final.xyz").read_text().splitlines()
+        n = int(lines[0])
+        frames.append(str(n))
+        frames.append(
+            f"{r['name']} R16 = {r['r16']:.2f} R34 = {r['r34']:.2f} "
+            f"E = {r['energy']:.10f}"
+        )
+        frames += lines[2 : 2 + n]
+    (HERE / f"geometries_{method}.xyz").write_text("\n".join(frames) + "\n")
 
 
 def comparison() -> None:
@@ -476,7 +510,9 @@ def write_csv(method: str, rows: list[dict]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("phase", choices=["run", "names", "analyse", "comparison"])
+    parser.add_argument(
+        "phase", choices=["run", "names", "analyse", "comparison", "interactive"]
+    )
     parser.add_argument("method", nargs="?", choices=list(GRID))
     parser.add_argument("names", nargs="*")
     parser.add_argument(
@@ -489,6 +525,8 @@ def main() -> None:
         run(args.names or sweep(args.method), args.binary)
     elif args.phase == "comparison":
         comparison()
+    elif args.phase == "interactive":
+        interactive()
     else:
         analyse()
 
