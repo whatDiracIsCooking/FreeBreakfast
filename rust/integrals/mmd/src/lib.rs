@@ -45,4 +45,4 @@ mod tasks;
 #[cfg(test)]
 mod tests;
 
-pub use tasks::{ClassRows, add_records};
+pub use tasks::{ClassRows, add_records, launch};

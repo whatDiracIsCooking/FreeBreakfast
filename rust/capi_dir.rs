@@ -14,8 +14,14 @@ fn capi_dir() -> std::path::PathBuf {
     let build = match std::env::var_os("FB_RUST_BUILD_DIR") {
         Some(dir) => std::path::PathBuf::from(dir),
         None => {
-            let rust = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
-                .join("../..");
+            // rust/ is the nearest ancestor holding this file: a crate sits
+            // two levels below it or three (integrals/one_electron/overlap).
+            let manifest = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+            let rust = manifest
+                .ancestors()
+                .find(|d| d.join("capi_dir.rs").exists())
+                .expect("a crate under rust/")
+                .to_owned();
             let built: Vec<_> = ["build-cuda", "build-hip"]
                 .iter()
                 .map(|b| rust.join(b))

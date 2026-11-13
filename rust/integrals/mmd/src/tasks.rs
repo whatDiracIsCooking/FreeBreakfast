@@ -22,7 +22,9 @@ use super::tables::Tables;
 /// One class's records on the device: its momenta, its record count and a
 /// row per field, each `n_rec` long, all outputs of the records task. A
 /// reader declares the fields it reads with
-/// [`Layout::read`](fb_core_arena::Layout::read).
+/// [`Layout::read`](fb_core_arena::Layout::read), or all of them with
+/// [`ClassRows::read`], and then hands a launch wrapper
+/// [`ClassRows::view`].
 ///
 /// The fields are the C++ `PrimitivePairClass`'s (its README's design has
 /// each one), in descending ζ order, equal ζ
@@ -77,6 +79,71 @@ pub struct ClassRows {
     pub rank_a: RowId<Device, i32>,
     /// The ket shell's rank among those of momentum `lb`.
     pub rank_b: RowId<Device, i32>,
+}
+
+impl ClassRows {
+    /// Declare, in a reader's layout, that it reads every field: what
+    /// [`ClassRows::view`] then hands its launches.
+    pub fn read(&self, device: &mut Layout<'_, Device>) {
+        for row in [
+            self.zeta,
+            self.p_x,
+            self.p_y,
+            self.p_z,
+            self.pa_x,
+            self.pa_y,
+            self.pa_z,
+            self.pb_x,
+            self.pb_y,
+            self.pb_z,
+            self.s,
+            self.ea,
+            self.eb,
+            self.bound,
+            self.bound_ab,
+            self.bound_ba,
+        ] {
+            device.read(row);
+        }
+        for row in [self.off_a, self.off_b, self.rank_a, self.rank_b] {
+            device.read(row);
+        }
+    }
+
+    /// The class as the launch wrappers take it, every field a row of
+    /// `device`, which a reader declared with [`ClassRows::read`].
+    ///
+    /// # Panics
+    /// If a field was not declared ([`Bufs::get`]).
+    pub fn view(&self, device: &Bufs<'_, Device>) -> fb_primitive_pair_class_view {
+        let f = |row| device.get(row).as_ptr();
+        let i = |row| device.get(row).as_ptr();
+        fb_primitive_pair_class_view {
+            la: self.la,
+            lb: self.lb,
+            n_rec: self.n_rec,
+            zeta: f(self.zeta),
+            p_x: f(self.p_x),
+            p_y: f(self.p_y),
+            p_z: f(self.p_z),
+            pa_x: f(self.pa_x),
+            pa_y: f(self.pa_y),
+            pa_z: f(self.pa_z),
+            pb_x: f(self.pb_x),
+            pb_y: f(self.pb_y),
+            pb_z: f(self.pb_z),
+            s: f(self.s),
+            ea: f(self.ea),
+            eb: f(self.eb),
+            bound: f(self.bound),
+            bound_ab: f(self.bound_ab),
+            bound_ba: f(self.bound_ba),
+            off_a: i(self.off_a),
+            off_b: i(self.off_b),
+            rank_a: i(self.rank_a),
+            rank_b: i(self.rank_b),
+        }
+    }
 }
 
 /// Add the records of `basis` to `dag` on GPU worker `worker`: a CPU task,
@@ -519,9 +586,13 @@ fn zero(stream: wwr_stream, ptr: *mut f64, n: i32) -> Status {
 
 /// A launch wrapper's status as a `Status`, naming the wrapper and the
 /// class (`docs/gpu_layer.md`, "Statuses"): a refusal as `Unsupported` or
-/// `InvalidConfig`, a launch error by its `wwr_status` name.
+/// `InvalidConfig`, a launch error by its `wwr_status` name. Public for the
+/// readers of [`ClassRows`], whose wrappers return the same statuses.
+///
+/// # Errors
+/// Every status but `FB_LAUNCH_SUCCESS`, as above.
 #[track_caller]
-fn launch(what: &str, cls: &ClassRows, status: fb_launch_status) -> Status {
+pub fn launch(what: &str, cls: &ClassRows, status: fb_launch_status) -> Status {
     let class = format!("{what} ({}, {})", cls.la, cls.lb);
     const WWR: [wwr_status; 8] = [
         wwr_status::WWR_STATUS_SUCCESS,

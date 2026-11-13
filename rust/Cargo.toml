@@ -20,6 +20,7 @@ members = [
     "recipes/sys",
     "integrals/sys",
     "integrals/mmd",
+    "integrals/one_electron/overlap",
     "device_check",
     "io/xyz",
     "io/basis",
@@ -53,6 +54,7 @@ fb-io-xyz = { path = "io/xyz" }
 fb-io-basis = { path = "io/basis" }
 fb-integrals-sys = { path = "integrals/sys" }
 fb-integrals-mmd = { path = "integrals/mmd" }
+fb-integrals-one-electron-overlap = { path = "integrals/one_electron/overlap" }
 fb-test-support = { path = "test_support" }
 
 contracts = "0.6.11"
