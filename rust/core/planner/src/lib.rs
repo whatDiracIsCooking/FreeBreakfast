@@ -21,7 +21,9 @@
 //!   plan's golden.
 //! - [`Instance`] ([`Planned::instantiate`]): the blocks, and a
 //!   [`thread_pool::Plan`] whose node for each task partitions the blocks
-//!   for it and calls its `run`. Run any number of times.
+//!   for it and calls its `run`. Run any number of times; each run returns
+//!   the executor's [`Record`](fb_core_thread_pool::Record), every task
+//!   timed by the executor and none by itself.
 //!
 //! [`Table::reads`]: fb_core_arena::Table::reads
 //! [`Table::handoffs`]: fb_core_arena::Table::handoffs
@@ -91,8 +93,8 @@
 //! is the order of [`Dag::add`]: no placement or schedule search. A task
 //! reads only rows of its own worker; an edge between workers needs a
 //! transport row, which placement would add. No partition or reduce: every
-//! edge is one producer's output. No adaptive widths, nested plans,
-//! replaying a sub-DAG between host decisions, or stream scopes. Every
+//! edge is one producer's output. No adaptive widths, nested plans, or
+//! replaying a sub-DAG between host decisions. Every
 //! dependency is a row: an ordering with no buffer behind it has no way to
 //! be declared until a task needs one. That a stream task does not touch a
 //! pinned row from the host is a rule, not a type.

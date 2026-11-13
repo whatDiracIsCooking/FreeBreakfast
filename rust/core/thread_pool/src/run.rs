@@ -5,6 +5,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use super::backend::Backend;
 use super::plan::{Lane, NodeId, Placement, Plan};
@@ -23,11 +24,60 @@ pub fn default_n_cpu(n_streams: usize) -> usize {
         .max(1)
 }
 
+/// One node's times in a [`Record`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskTime {
+    /// The node.
+    pub node: NodeId,
+    /// Its name, as the plan gave it.
+    pub name: String,
+    /// The worker that ran it: `cpu<i>` or `stream<s>`, as its log lines
+    /// and errors name it.
+    pub worker: String,
+    /// Wall time of its callable alone, not the waits before it: a CPU
+    /// node's compute, a GPU node's enqueueing.
+    pub host: Duration,
+    /// A GPU node's stream scope, the device time between the events
+    /// recorded on its stream before it ran and after it returned. `None`
+    /// for a CPU node, under a backend with no device clock
+    /// ([`HostOnly`](super::HostOnly)), and for a GPU node that failed or
+    /// whose scope could not be read.
+    pub device: Option<Duration>,
+}
+
+/// What a [`run`] returns: its result and its timing record
+/// (`docs/diagnostics.md`, "The timing record").
+#[derive(Debug)]
+pub struct Record {
+    /// The run's outcome: the failure lowest in rank, with `name@worker`
+    /// and any other failures (`also: ...`) on its context.
+    pub result: Status,
+    /// One entry per node that ran, in rank order, failed nodes included;
+    /// a skipped node has none.
+    pub tasks: Vec<TaskTime>,
+    /// Wall time from the workers' start to their join, every stream
+    /// synced: what the device times of one stream sum to at most.
+    pub wall: Duration,
+}
+
+impl Record {
+    fn refused(error: Error) -> Self {
+        Record {
+            result: Err(error),
+            tasks: Vec::new(),
+            wall: Duration::ZERO,
+        }
+    }
+}
+
 /// Run every node of `plan` on `n_cpu` CPU workers and `backend`'s stream
 /// workers, and join them all before returning; see
-/// [`thread_pool`](super) for what that promises.
+/// [`thread_pool`](super) for what that promises. Every node is timed
+/// whatever the outcome, so a failed run still returns the times of the
+/// nodes that ran.
 ///
 /// # Errors
+/// In [`Record::result`]:
 /// [`InvalidConfig`](fb_core_error_handling::ErrorKind::InvalidConfig)
 /// before anything runs, if the plan places a node on a stream worker
 /// `backend` lacks, or has CPU nodes and `n_cpu` is zero. Otherwise the
@@ -36,25 +86,30 @@ pub fn default_n_cpu(n_streams: usize) -> usize {
 ///
 /// # Panics
 /// If a node panics, after every worker has stopped; see "Failure".
-pub fn run<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, n_cpu: usize) -> Status {
+pub fn run<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, n_cpu: usize) -> Record {
     let n_streams = backend.n_streams();
     if plan.n_streams() > n_streams {
-        return Err(Error::config(format!(
+        return Record::refused(Error::config(format!(
             "the plan places a node on stream worker {} of {n_streams}",
             plan.n_streams() - 1
         )));
     }
     if n_cpu == 0 && plan.nodes.iter().any(|n| n.placement == Placement::Cpu) {
-        return Err(Error::config("the plan has CPU nodes and no CPU workers"));
+        return Record::refused(Error::config("the plan has CPU nodes and no CPU workers"));
     }
     if plan.is_empty() {
-        return Ok(());
+        return Record {
+            result: Ok(()),
+            tasks: Vec::new(),
+            wall: Duration::ZERO,
+        };
     }
     debug!(
         "run: {} nodes on {n_cpu} CPU and {n_streams} stream workers",
         plan.len()
     );
     let shared = Shared::new(plan, n_streams);
+    let start = Instant::now();
     thread::scope(|scope| {
         let shared = &shared;
         let mut workers = Vec::with_capacity(n_cpu + n_streams);
@@ -75,19 +130,48 @@ pub fn run<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, n_cpu: usize) ->
             std::panic::resume_unwind(panic);
         }
     });
-    let mut failures = shared
+    let wall = start.elapsed();
+    let State {
+        mut failures,
+        mut tasks,
+        scoped,
+        ..
+    } = shared
         .state
         .into_inner()
-        .unwrap_or_else(PoisonError::into_inner)
-        .failures;
-    debug!("run: done, {} failed", failures.len());
+        .unwrap_or_else(PoisonError::into_inner);
+    // Every stream is synced, so each closed stream scope reads without a
+    // sync of its own. A read that fails after another failure is an echo
+    // of it (a sticky fault reads back as itself), so only a run that
+    // otherwise succeeded reports one, and only the first.
+    tasks.sort_by_key(|t| t.node);
+    for id in scoped {
+        let at = tasks
+            .binary_search_by_key(&NodeId(id), |t| t.node)
+            .expect("a scoped node has an entry");
+        match backend.elapsed(NodeId(id)) {
+            Ok(device) => tasks[at].device = device,
+            Err(error) if failures.is_empty() => {
+                let task = &tasks[at];
+                let context = format!("stream scope of {}@{}", task.name, task.worker);
+                failures.push((id, error.with_context(context)));
+            }
+            Err(_) => {}
+        }
+    }
+    debug!("run: done in {wall:?}, {} failed", failures.len());
     failures.sort_by_key(|(rank, _)| *rank);
     let mut failures = failures.into_iter().map(|(_, e)| e);
-    match failures.next() {
+    let result = match failures.next() {
         None => Ok(()),
         Some(first) => {
             Err(failures.fold(first, |e, other| e.with_context(format!("also: {other}"))))
         }
+    };
+    Record {
+        result,
+        tasks,
+        wall,
     }
 }
 
@@ -125,6 +209,10 @@ struct State {
     remaining: usize,
     /// Each failure with the rank it is reported at.
     failures: Vec<(usize, Error)>,
+    /// Each node that ran, in the order they finished.
+    tasks: Vec<TaskTime>,
+    /// The GPU nodes whose stream scope closed: those that succeeded.
+    scoped: Vec<usize>,
     /// A worker panicked: everyone stops.
     aborted: bool,
 }
@@ -145,6 +233,8 @@ impl Shared {
             lane_ready: (0..n_streams).map(|_| BinaryHeap::new()).collect(),
             remaining: n,
             failures: Vec::new(),
+            tasks: Vec::with_capacity(n),
+            scoped: Vec::new(),
             aborted: false,
         };
         for (id, node) in plan.nodes.iter().enumerate() {
@@ -200,12 +290,16 @@ impl Shared {
         }
     }
 
-    /// Node `id` finished with `result`: ready its successors, or skip its
-    /// descendants.
-    fn finish<S>(&self, plan: &Plan<'_, S>, id: usize, result: Status) {
+    /// Node `id` finished with `result` after running for `time`: record
+    /// it, and ready its successors or skip its descendants.
+    fn finish<S>(&self, plan: &Plan<'_, S>, id: usize, (result, time): (Status, TaskTime)) {
         let mut state = self.lock();
         state.mark[id] = Mark::Done;
         state.remaining -= 1;
+        if result.is_ok() && matches!(plan.nodes[id].placement, Placement::Stream(_)) {
+            state.scoped.push(id);
+        }
+        state.tasks.push(time);
         match result {
             Ok(()) => {
                 for &s in &plan.succs[id] {
@@ -305,18 +399,20 @@ fn stream_worker<B: Backend>(
     }
 }
 
-/// Wait for the node's GPU predecessors as its edges need, run it, and
-/// record its event if it is a GPU node.
+/// Wait for the node's GPU predecessors as its edges need, and run it inside
+/// its scopes: wall time around the callable, and for a GPU node the stream
+/// scope, whose closing event is the one its consumers wait on.
 fn execute<B: Backend>(
     plan: &Plan<'_, B::Stream>,
     backend: &B,
     id: usize,
     worker: &str,
     lane: Option<usize>,
-) -> Status {
+) -> (Status, TaskTime) {
     let node = &plan.nodes[id];
     let _task = TaskScope::enter(&node.name, worker);
     debug!("start");
+    let mut host = Duration::ZERO;
     let result = (|| {
         for &p in &node.preds {
             let Placement::Stream(from) = plan.nodes[p].placement else {
@@ -329,16 +425,38 @@ fn execute<B: Backend>(
             }
         }
         match lane {
-            None => (node.run)(Lane::Cpu),
+            None => {
+                let start = Instant::now();
+                let result = (node.run)(Lane::Cpu);
+                host = start.elapsed();
+                result
+            }
             Some(index) => {
-                (node.run)(Lane::Stream {
+                backend.begin(index, NodeId(id))?;
+                let start = Instant::now();
+                let result = (node.run)(Lane::Stream {
                     index,
                     stream: backend.stream(index),
-                })?;
+                });
+                host = start.elapsed();
+                result?;
                 backend.record(index, NodeId(id))
             }
         }
     })();
-    debug!("end{}", if result.is_ok() { "" } else { ": failed" });
-    result.map_err(|e| e.with_context(format!("{}@{worker}", node.name)))
+    debug!(
+        "end in {host:?}{}",
+        if result.is_ok() { "" } else { ": failed" }
+    );
+    let time = TaskTime {
+        node: NodeId(id),
+        name: node.name.clone(),
+        worker: worker.to_string(),
+        host,
+        device: None,
+    };
+    (
+        result.map_err(|e| e.with_context(format!("{}@{worker}", node.name))),
+        time,
+    )
 }

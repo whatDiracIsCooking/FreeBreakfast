@@ -65,6 +65,21 @@ closing event, and no scope ever adds a sync of its own. A task that has no
 internal host sync (the programming model's rule) can therefore be timed on
 the device without being slowed down.
 
+What `fb_core_thread_pool` does today is a part of this. It opens a stream
+scope around every GPU node: an event recorded on the node's stream after the
+waits its edges need and before it runs, closed by the event recorded after
+it returns, which is also the event its consumers wait on, so the closing
+half costs nothing new. It opens a host scope around every node's callable,
+which for a CPU node is its compute and for a GPU node its enqueueing, and
+one around the whole run. Every pair is read after the run, when each stream
+worker has synced its stream on the way out: that is a sync point after
+every closing event, if not always the first. The host scopes around the
+syncs inside a run (a CPU node's wait on a GPU predecessor) are not timed
+yet, and neither is `scope!` inside a task. A failed run still returns the
+times of the tasks that ran; a scope that cannot be read fails a run that
+otherwise succeeded, and is dropped from one that already failed, since it
+would only echo that failure (below, "Sticky faults").
+
 ### The timing record
 
 The numbers go to one place: a timing record the run writes beside its
@@ -74,6 +89,24 @@ time; the run's sync points and what each waited for; and the plan's arena
 size, so a run's footprint and its time are read from the same file. It also
 says which profile built the binary, because a debug build's timings are not
 comparable with a release build's.
+
+**It is a file of its own,** `timing.json` beside the products, not a
+section of a larger run report that would also carry the plan. The plan's
+text already has a home that is compared rather than measured (the
+planner's golden), it changes only when the code does, and a record that
+carried it would make every nightly diff a diff of the DAG too. The record
+names what it timed instead: each task by its name and worker, and the
+plan by its arena size and profile, which is what a reader of the times
+needs from it. The second option's gain, the plan and its measurement read
+together, comes from the task names, which are the plan's own.
+
+In memory, the record is what a run returns: `fb_core_thread_pool::Record`,
+from `thread_pool::run` and the planner's `Instance::run`. Today it holds
+the run's result, its wall time, and per task its name, its worker, its
+node's rank, its host time and its device time; the dimensions, the sync
+points, the arena size and the profile join it with the code that knows
+them, and writing it as `timing.json` waits for a binary that writes
+products.
 
 The record has three readers, and each is already written down elsewhere:
 
@@ -283,10 +316,6 @@ build pays nothing for a check and a debug build fails loudly on one.
 
 ## Open questions
 
-- **The timing record's home.** Its own file beside the products, or one
-  section of a run report that also carries the plan (its DAG, placement and
-  arena)? The second keeps the plan and its measurement together; the first
-  keeps the record small enough for the nightly to diff.
 - **Compiling `trace` out.** `log` has `release_max_level_*` features that
   remove a level's call sites from a release build entirely, which is cheaper
   than checking the level in a hot loop. Whether the trace lines in inner loops

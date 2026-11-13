@@ -1,10 +1,12 @@
 //! The planner on a real card (device 0): tasks declared once, planned,
 //! instantiated and run on a stream worker and the CPU pool.
 //!
-//! A binary of its own: its case measures the card's free memory, which
-//! another test allocating beside it would move.
+//! A binary of its own: a case measures the card's free memory, which
+//! another test allocating beside it would move, so the cases take turns.
 
 use std::ffi::c_void;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use fb_core_arena::{Bufs, DEVICE_ALIGNMENT, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
@@ -17,6 +19,9 @@ use wwr_sys::{wwr_memcpy_kind, wwr_status};
 
 const N: usize = 4096;
 const BYTES: usize = N * size_of::<f64>();
+
+/// Held by each case for its whole length.
+static TURN: Mutex<()> = Mutex::new(());
 
 /// Device 0's free memory, with it made current.
 fn free_bytes() -> usize {
@@ -164,6 +169,7 @@ impl Task for Check {
 /// card's free memory unchanged between: a run allocates nothing.
 #[test]
 fn a_round_trip_through_the_planner() {
+    let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
     let mut dag = Dag::new();
     let up = dag.add("fill", 0, Fill);
     let dev = dag.add("upload", 0, Upload(up));
@@ -179,8 +185,100 @@ fn a_round_trip_through_the_planner() {
 
     let instance = planned.instantiate(&[0]);
     let backend = thread_pool::Device::new(&[0], instance.plan());
-    instance.run(&backend, 1).unwrap();
+    instance.run(&backend, 1).result.unwrap();
     let between = free_bytes();
-    instance.run(&backend, 1).unwrap();
+    instance.run(&backend, 1).result.unwrap();
     assert_eq!(free_bytes(), between, "a run allocated device memory");
+}
+
+/// The length of a [`Stage`]'s row: big enough that its copy is real device
+/// time.
+const BIG: usize = 4 << 20;
+
+/// GPU: writes a device row, by a memset when it reads nothing, else by
+/// copying the row it reads.
+struct Stage(Option<RowId<Device, f64>>);
+
+impl Task for Stage {
+    type Rows = RowId<Device, f64>;
+    const GPU: bool = true;
+
+    fn layout(&self, d: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
+        if let Some(input) = self.0 {
+            d.read(input);
+        }
+        d.output("out", BIG)
+    }
+
+    fn run(
+        &self,
+        out: &Self::Rows,
+        d: &Bufs<'_, Device>,
+        _: &Bufs<'_, Pinned>,
+        lane: Lane<'_, DeviceStream>,
+    ) -> Status {
+        let Lane::Stream { stream, .. } = lane else {
+            unreachable!("a GPU task runs on a stream")
+        };
+        let dst = d.take_mut(*out);
+        let bytes = BIG * size_of::<f64>();
+        // SAFETY: `bytes` within one row, or between two rows of BIG, on the
+        // task's stream.
+        gpu_status(unsafe {
+            match self.0 {
+                None => {
+                    wwr_sys::wwr_memset_async(dst.as_mut_ptr().cast(), 0, bytes, stream.stream())
+                }
+                Some(input) => wwr_sys::wwr_memcpy_async(
+                    dst.as_mut_ptr().cast(),
+                    d.get(input).as_ptr().cast::<c_void>(),
+                    bytes,
+                    wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_DEVICE,
+                    stream.stream(),
+                ),
+            }
+        })
+    }
+}
+
+/// A chain of GPU tasks on one stream, timed by the executor alone: one
+/// entry per task, each with its stream scope's device time, and those
+/// sum to at most the run's wall time, since one stream runs them one
+/// after another inside the run. Every bound holds by construction.
+#[test]
+fn every_gpu_task_has_a_stream_scope() {
+    let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
+    let mut dag = Dag::new();
+    let mut row = dag.add("stage0", 0, Stage(None));
+    for i in 1..6 {
+        row = dag.add(format!("stage{i}"), 0, Stage(Some(row)));
+    }
+    let instance = dag.plan().instantiate(&[0]);
+    let backend = thread_pool::Device::new(&[0], instance.plan());
+    let record = instance.run(&backend, 1);
+    record.result.unwrap();
+    let names: Vec<_> = record
+        .tasks
+        .iter()
+        .map(|t| (t.name.as_str(), t.worker.as_str()))
+        .collect();
+    let expected: Vec<String> = (0..6).map(|i| format!("stage{i}")).collect();
+    assert_eq!(
+        names,
+        expected
+            .iter()
+            .map(|n| (n.as_str(), "stream0"))
+            .collect::<Vec<_>>()
+    );
+    let device: Vec<Duration> = record
+        .tasks
+        .iter()
+        .map(|t| t.device.expect("a GPU task's stream scope"))
+        .collect();
+    let sum: Duration = device.iter().sum();
+    assert!(
+        sum <= record.wall,
+        "stream scopes {device:?} sum past the wall {:?}",
+        record.wall
+    );
 }

@@ -109,7 +109,7 @@ fn run_shape(shape: &Shape, n_cpu: usize, fail: &[usize]) -> (Observed, Status) 
             );
             ids.lock().unwrap().push(node);
         }
-        run(&plan, &HostOnly::new(shape.n_streams), n_cpu)
+        run(&plan, &HostOnly::new(shape.n_streams), n_cpu).result
     };
     (obs, result)
 }
@@ -195,7 +195,7 @@ fn an_error_names_its_task_and_worker_and_carries_the_others() {
     plan.add("second", Placement::Stream(0), &[], |_: Lane<'_, ()>| {
         Err(Error::numerical("nan"))
     });
-    let error = run(&plan, &HostOnly::new(1), 1).unwrap_err();
+    let error = run(&plan, &HostOnly::new(1), 1).result.unwrap_err();
     assert_eq!(error.kind, ErrorKind::Io);
     assert_eq!(
         error.to_string(),
@@ -215,7 +215,7 @@ fn a_node_runs_inside_its_task_record() {
         seen.lock().unwrap().push(log::current_task());
         Ok(())
     });
-    run(&plan, &HostOnly::new(1), 1).unwrap();
+    run(&plan, &HostOnly::new(1), 1).result.unwrap();
     assert_eq!(
         *seen.lock().unwrap(),
         [Some("a@cpu0".to_string()), Some("b@stream0".to_string())]
@@ -244,7 +244,7 @@ fn a_plan_the_workers_cannot_run_is_refused_before_anything_runs() {
         ran.fetch_add(1, Ordering::SeqCst);
         Ok(())
     });
-    let error = run(&plan, &HostOnly::new(1), 1).unwrap_err();
+    let error = run(&plan, &HostOnly::new(1), 1).result.unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig);
 
     let mut plan = Plan::new();
@@ -252,7 +252,7 @@ fn a_plan_the_workers_cannot_run_is_refused_before_anything_runs() {
         ran.fetch_add(1, Ordering::SeqCst);
         Ok(())
     });
-    let error = run(&plan, &HostOnly::new(0), 0).unwrap_err();
+    let error = run(&plan, &HostOnly::new(0), 0).result.unwrap_err();
     assert_eq!(error.kind, ErrorKind::InvalidConfig);
     assert_eq!(ran.load(Ordering::SeqCst), 0);
 }
@@ -260,7 +260,7 @@ fn a_plan_the_workers_cannot_run_is_refused_before_anything_runs() {
 #[test]
 fn an_empty_plan_runs() {
     let plan: Plan<'_, ()> = Plan::new();
-    run(&plan, &HostOnly::new(2), 1).unwrap();
+    run(&plan, &HostOnly::new(2), 1).result.unwrap();
 }
 
 #[test]
@@ -270,6 +270,73 @@ fn a_predecessor_from_elsewhere_is_rejected() {
     let foreign = other.add("x", Placement::Cpu, &[], |_| Ok(()));
     let mut plan: Plan<'_, ()> = Plan::new();
     plan.add("a", Placement::Cpu, &[foreign], |_| Ok(()));
+}
+
+/// Each node sleeps a known time: one entry per node, named for its node
+/// and worker, each host time at least its sleep, the device times empty
+/// with no device, and the wall time at least the longest chain.
+#[test]
+fn every_node_is_timed_by_its_worker() {
+    fn ms(n: u64) -> std::time::Duration {
+        std::time::Duration::from_millis(n)
+    }
+    fn sleep(n: u64) -> impl Fn(Lane<'_, ()>) -> Status + Sync {
+        move |_| {
+            std::thread::sleep(ms(n));
+            Ok(())
+        }
+    }
+    let mut plan = Plan::new();
+    let a = plan.add("a", Placement::Cpu, &[], sleep(5));
+    let b = plan.add("b", Placement::Stream(0), &[a], sleep(10));
+    let c = plan.add("c", Placement::Stream(1), &[a], sleep(15));
+    plan.add("d", Placement::Cpu, &[b, c], sleep(20));
+    let record = run(&plan, &HostOnly::new(2), 1);
+    record.result.unwrap();
+    let got: Vec<_> = record
+        .tasks
+        .iter()
+        .map(|t| (t.node.index(), t.name.as_str(), t.worker.as_str(), t.device))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (0, "a", "cpu0", None),
+            (1, "b", "stream0", None),
+            (2, "c", "stream1", None),
+            (3, "d", "cpu0", None),
+        ]
+    );
+    for (t, n) in record.tasks.iter().zip([5, 10, 15, 20]) {
+        assert!(t.host >= ms(n), "{}: {:?} < {n} ms", t.name, t.host);
+    }
+    assert!(record.wall >= ms(5 + 15 + 20), "{:?}", record.wall);
+}
+
+/// A failed run returns the entries of the nodes that ran, the failed one
+/// among them, and none for the skipped.
+#[test]
+fn a_failed_run_still_returns_its_times() {
+    let ms = std::time::Duration::from_millis(5);
+    let mut plan = Plan::new();
+    let a = plan.add("a", Placement::Cpu, &[], |_: Lane<'_, ()>| {
+        std::thread::sleep(ms);
+        Ok(())
+    });
+    let b = plan.add("b", Placement::Stream(0), &[a], |_| {
+        std::thread::sleep(ms);
+        Err(Error::numerical("nan"))
+    });
+    plan.add("c", Placement::Cpu, &[b], |_| Ok(()));
+    plan.add("d", Placement::Cpu, &[a], |_| {
+        std::thread::sleep(ms);
+        Ok(())
+    });
+    let record = run(&plan, &HostOnly::new(1), 2);
+    assert_eq!(record.result.unwrap_err().message, "nan");
+    let got: Vec<_> = record.tasks.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(got, ["a", "b", "d"]);
+    assert!(record.tasks.iter().all(|t| t.host >= ms));
 }
 
 #[test]
@@ -371,7 +438,7 @@ fn device_edges_wait_for_the_work_they_consume() {
         Ok(())
     });
     let device = Device::new(&[0, 0], &plan);
-    run(&plan, &device, 1).unwrap();
+    run(&plan, &device, 1).result.unwrap();
     assert_eq!(*devices_seen.lock().unwrap(), [0]);
     assert!(
         *seen_by_cpu.lock().unwrap() == pattern,

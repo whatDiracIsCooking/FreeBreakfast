@@ -1,9 +1,13 @@
 //! The device side of a run.
 
+use std::time::Duration;
+
 use super::plan::NodeId;
 #[cfg(feature = "device")]
 use super::plan::{Placement, Plan};
-use fb_core_error_handling::Status;
+#[cfg(feature = "device")]
+use fb_core_error_handling::Error;
+use fb_core_error_handling::{Result, Status};
 #[cfg(feature = "device")]
 use fb_core_wwr::common::ScopedDeviceIndex;
 #[cfg(feature = "device")]
@@ -30,8 +34,11 @@ pub trait Backend: Sync {
     fn bind(&self, lane: usize) -> Self::Binding;
     /// Stream worker `lane`'s stream.
     fn stream(&self, lane: usize) -> &Self::Stream;
+    /// On stream worker `lane`, just before GPU node `node` runs: open its
+    /// stream scope.
+    fn begin(&self, lane: usize, node: NodeId) -> Status;
     /// On stream worker `lane`, after GPU node `node` returned: mark the
-    /// point its consumers wait for.
+    /// point its consumers wait for, which also closes its stream scope.
     fn record(&self, lane: usize, node: NodeId) -> Status;
     /// On stream worker `lane`, before a node that consumes `node`, which
     /// ran on another stream: make `lane` wait for it.
@@ -41,6 +48,11 @@ pub trait Backend: Sync {
     fn host_wait(&self, node: NodeId) -> Status;
     /// On stream worker `lane`, as it exits: wait for all its work.
     fn sync(&self, lane: usize) -> Status;
+    /// After the run, every stream synced: the device time of GPU node
+    /// `node`'s stream scope, which [`begin`](Backend::begin) and
+    /// [`record`](Backend::record) both succeeded on in this run; `None`
+    /// for a backend with no device clock.
+    fn elapsed(&self, node: NodeId) -> Result<Option<Duration>>;
 }
 
 /// No device: `n` stream workers that are plain threads, whose nodes are
@@ -69,6 +81,9 @@ impl Backend for HostOnly {
     fn stream(&self, _: usize) -> &() {
         &()
     }
+    fn begin(&self, _: usize, _: NodeId) -> Status {
+        Ok(())
+    }
     fn record(&self, _: usize, _: NodeId) -> Status {
         Ok(())
     }
@@ -80,6 +95,9 @@ impl Backend for HostOnly {
     }
     fn sync(&self, _: usize) -> Status {
         Ok(())
+    }
+    fn elapsed(&self, _: NodeId) -> Result<Option<Duration>> {
+        Ok(None)
     }
 }
 
@@ -97,29 +115,32 @@ pub enum DeviceStream {}
 
 #[cfg(feature = "device")]
 /// GPU stream workers: one non-blocking stream per worker, each on its own
-/// device, and one event per GPU node, recorded after it returns.
+/// device, and two timing events per GPU node: its stream scope, recorded
+/// before it runs and after it returns. The second is also what its
+/// consumers wait on.
 ///
 /// Built once per plan and reused every run: the streams and events are
 /// created here, never during a run.
 pub struct Device {
     devices: Vec<i32>,
     streams: Vec<DeviceStream>,
-    /// Indexed by node; `None` for a CPU node.
-    events: Vec<Option<Event>>,
+    /// Indexed by node, each GPU node's (start, end); `None` for a CPU node.
+    events: Vec<Option<(Event, Event)>>,
 }
 
 #[cfg(feature = "device")]
 // SAFETY: the stream and event handles are raw runtime pointers, which is
 // why the wrappers are neither `Send` nor `Sync`. The runtime API is
-// thread-safe for every call made on them here (record, wait, synchronize),
+// thread-safe for every call made on them here (record, wait, synchronize,
+// elapsed time),
 // and the handles are created before any run and destroyed only when the
 // `Device` drops, which a run's borrow of it rules out.
 unsafe impl Sync for Device {}
 
 #[cfg(feature = "device")]
 impl Device {
-    /// Stream worker `s` on device `devices[s]`, with an event for every GPU
-    /// node of `plan`.
+    /// Stream worker `s` on device `devices[s]`, with an event pair for
+    /// every GPU node of `plan`.
     ///
     /// # Panics
     /// If `plan` places a node on a stream worker past `devices`.
@@ -136,9 +157,10 @@ impl Device {
             .nodes
             .iter()
             .map(|n| match n.placement {
-                Placement::Stream(s) => Some(Event::with_flags(
-                    devices[s],
-                    event::DISABLE_TIMING | event::BLOCKING_SYNC,
+                // Timing-capable: `DISABLE_TIMING` left off.
+                Placement::Stream(s) => Some((
+                    Event::with_flags(devices[s], event::BLOCKING_SYNC),
+                    Event::with_flags(devices[s], event::BLOCKING_SYNC),
                 )),
                 Placement::Cpu => None,
             })
@@ -150,7 +172,7 @@ impl Device {
         }
     }
 
-    fn event(&self, node: NodeId) -> &Event {
+    fn events(&self, node: NodeId) -> &(Event, Event) {
         self.events[node.index()]
             .as_ref()
             .expect("an event is recorded only for a GPU node")
@@ -171,16 +193,28 @@ impl Backend for Device {
     fn stream(&self, lane: usize) -> &DeviceStream {
         &self.streams[lane]
     }
+    fn begin(&self, lane: usize, node: NodeId) -> Status {
+        gpu_status(self.events(node).0.record(&self.streams[lane]))
+    }
     fn record(&self, lane: usize, node: NodeId) -> Status {
-        gpu_status(self.event(node).record(&self.streams[lane]))
+        gpu_status(self.events(node).1.record(&self.streams[lane]))
     }
     fn wait(&self, lane: usize, node: NodeId) -> Status {
-        gpu_status(self.streams[lane].wait_event(self.event(node), 0))
+        gpu_status(self.streams[lane].wait_event(&self.events(node).1, 0))
     }
     fn host_wait(&self, node: NodeId) -> Status {
-        gpu_status(self.event(node).sync())
+        gpu_status(self.events(node).1.sync())
     }
     fn sync(&self, lane: usize) -> Status {
         gpu_status(self.streams[lane].sync())
+    }
+    fn elapsed(&self, node: NodeId) -> Result<Option<Duration>> {
+        let (start, end) = self.events(node);
+        let ms = end
+            .elapsed_since(start)
+            .map_err(|s| gpu_status(s).expect_err("a failed status"))?;
+        Duration::try_from_secs_f32(ms / 1e3)
+            .map(Some)
+            .map_err(|_| Error::gpu(format!("a stream scope measured {ms} ms")))
     }
 }
