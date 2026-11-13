@@ -108,10 +108,11 @@ Nothing in ctest or either gate runs cargo. This directory is checked by hand on
 ## Design
 
 `docs/` holds the design. [`design.md`](docs/design.md) is the questions a
-feature's design answers and where each answer lands; the five beside it
-hold the mechanics: the [programming model](docs/programming_model.md), the
-[GPU layer](docs/gpu_layer.md), [testing](docs/testing.md),
-[diagnostics](docs/diagnostics.md) and [documentation](docs/documentation.md).
+feature's design answers and where each answer lands; the six beside it
+hold the mechanics: the [programming model](docs/programming_model.md),
+[memory](docs/memory.md), the [GPU layer](docs/gpu_layer.md),
+[testing](docs/testing.md), [diagnostics](docs/diagnostics.md) and
+[documentation](docs/documentation.md).
 They describe the finished shape; the section below is the order the tree
 gets there in.
 

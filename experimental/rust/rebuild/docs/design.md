@@ -6,11 +6,12 @@ what it depends on, what already exists for it, what it says about itself,
 what it writes, what it documents, and how its spec is communicated. Each
 section has the same three parts: what the designer **answers**, where the
 answer is **recorded**, and what **checks** it. The mechanics behind each
-answer live in five documents of their own, cited rather than restated:
+answer live in six documents of their own, cited rather than restated:
 
 | Document | Owns |
 |---|---|
 | [`programming_model.md`](programming_model.md) | What a task and an edge declare, what the orchestrator derives, layouts and arenas, workers, plan-once-run-many |
+| [`memory.md`](memory.md) | The arena's table and its rows' owners, lifetimes and aliasing, admission, adaptive widths, nested plans, the device and pinned blocks |
 | [`gpu_layer.md`](gpu_layer.md) | The C ABI between Rust and the kernels: the launch wrapper, the workspace query, statuses, shared types, the build |
 | [`testing.md`](testing.md) | Contracts, tiers and levels, what runs when, selection, redundancy, regression, fuzzing, sanitizers |
 | [`diagnostics.md`](diagnostics.md) | Timing, logging, errors, panics |
@@ -96,7 +97,11 @@ work that would fan out is CPU nodes the planner can see, never a pool inside
 a task, and the plan's thread count is a budget admitted beside memory.
 
 **Recorded.** `layout(dims)`, the task's first function; `run(bufs, stream)`
-reaches a buffer only through it. Nobody writes a footprint.
+reaches a buffer only through it. Nobody writes a footprint. An adaptive
+part is `bytes(width)` and `width_max(dims)` beside the layout, bisected by
+the planner ([`memory.md`](memory.md), "Adaptive widths: one planner
+routine"); the rows the layout becomes, and who owns each, are
+[`memory.md`](memory.md), "The table".
 
 **Checks.** A task may ask the arena only for a buffer its layout named, a
 `debug_requires` on the arena. The plan's arena size is a tier-3 golden,
