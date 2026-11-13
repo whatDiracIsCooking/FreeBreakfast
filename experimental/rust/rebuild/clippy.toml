@@ -1,0 +1,9 @@
+# Spawning belongs to the orchestrator: src/core/thread_pool/run.rs is the
+# one module with the allow (docs/programming_model.md, "Capabilities are
+# enforced by lints").
+disallowed-methods = [
+  { path = "std::thread::spawn", reason = "workers belong to the orchestrator (core::thread_pool)" },
+  { path = "std::thread::scope", reason = "workers belong to the orchestrator (core::thread_pool)" },
+  { path = "std::thread::Builder::spawn", reason = "workers belong to the orchestrator (core::thread_pool)" },
+  { path = "std::thread::Builder::spawn_scoped", reason = "workers belong to the orchestrator (core::thread_pool)" },
+]

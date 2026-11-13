@@ -20,3 +20,12 @@ log = { version = "0.4.35", features = ["std"] }
 wwr-sys = { path = "../../../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [
     "runtime_api",
 ] }
+
+# Counts the process's threads, so no libtest harness threads beside it.
+[[test]]
+name = "thread_pool_threads"
+harness = false
+
+[lints.clippy]
+# clippy.toml's list: spawning is core::thread_pool's alone.
+disallowed_methods = "deny"

@@ -443,9 +443,13 @@ plan, not a branch inside a task.
 **The standard library, and no pool crate.** What the orchestrator needs is a
 queue, a condition variable and the scoped threads, under a hundred lines,
 most of them the loop that pops a node id and runs it. Shutdown is the
-scope's join. A panic needs no poisoning story: a release build aborts and a
-test build propagates it through the join ([`diagnostics.md`](diagnostics.md),
-"Panics and profiles"). The work that would justify a dependency is the
+scope's join. A release build aborts on a panic, and a test build propagates
+it through the join ([`diagnostics.md`](diagnostics.md), "Panics and
+profiles"), but only if the other workers exit: a worker that panics
+mid-node never marks it finished, and the rest would wait for it forever.
+So each worker holds a guard that, while unwinding, marks the run aborted
+and wakes everyone, and the join re-raises the node's own panic. The work
+that would justify a dependency is the
 scheduler, readiness counts and the choice of which ready node goes to which
 worker, and no crate has it in the DAG-with-placement shape the model wants,
 so it is written under either choice. The usual crates would each add

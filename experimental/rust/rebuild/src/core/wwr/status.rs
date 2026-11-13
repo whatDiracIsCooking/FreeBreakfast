@@ -29,6 +29,7 @@ pub fn gpu_status_at<E: ErrorCode>(code: E, location: SourceLocation) -> Status 
         kind: ErrorKind::GpuRuntime,
         message: format!("{} ({})", code.name(), code.description()),
         origin: location,
+        context: Vec::new(),
     })
 }
 
