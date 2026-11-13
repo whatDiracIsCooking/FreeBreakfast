@@ -2426,7 +2426,8 @@ the worst element is 0.775 bars before and 0.039 now.
 The ladders at s ≥ 2e-5 tighten the Z-vector to 1e-11, not 1e-12. At
 these geometries the 100-fold tightened solve stalls at 1.6e-12 to
 5.4e-12, and `[hessian]` refuses the point. The tool's committed cases do
-not reach this. For that reason the measured curve is not a committed fixture.
+not reach this. For that reason the measured curve is not a committed
+fixture (#1304).
 
 ### Tests
 
