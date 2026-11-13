@@ -2,12 +2,14 @@
 //! event operations.
 
 use std::ops::Deref;
+use std::panic::Location;
 
 use wwr_sys::{wwr_event, wwr_status, wwr_stream};
 
+use super::first_failure;
 use super::stream::Stream;
-use super::{create_with, first_failure};
-use crate::core::wwr::common::ErrorPolicy;
+use crate::core::error_handling::{Result, check_or_abort};
+use crate::core::wwr::common::SourceLocation;
 use crate::core::wwr::handle::{DeviceBoundHandle, DeviceHandle, DeviceHandleStream, HandleKind};
 
 /// `cudaEventBlockingSync` / `hipEventBlockingSync`: a host wait on the
@@ -42,122 +44,67 @@ impl HandleKind for EventKind {
     }
 }
 
-/// An owned event on one device: `EventWrapper<P_create, P_destroy,
-/// P_device>`.
-pub struct Event<PC, PD, PDev>(DeviceBoundHandle<EventKind, PC, PD, PDev>)
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-    PDev: ErrorPolicy<Error = wwr_status>;
+/// An owned event on one device: `EventWrapper`. Every constructor aborts
+/// on failure ([`super`] has why).
+pub struct Event(DeviceBoundHandle<EventKind>);
 
-impl<PC, PD, PDev> Event<PC, PD, PDev>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
+impl Event {
     /// A timing-disabled event on `dev_idx`.
     #[track_caller]
-    pub fn new(dev_idx: i32, policy_create: PC, policy_destroy: PD, policy_device: PDev) -> Self {
-        Event(DeviceBoundHandle::new(
+    pub fn new(dev_idx: i32) -> Self {
+        check_or_abort(Self::try_with_flags_at(
             dev_idx,
-            policy_create,
-            policy_destroy,
-            policy_device,
+            DISABLE_TIMING,
+            Location::caller(),
         ))
     }
 
     /// An event on `dev_idx` with `flags` (`wwrEventCreateWithFlags`); pass
     /// `0` for a timing-capable event.
     #[track_caller]
-    pub fn with_flags(
-        dev_idx: i32,
-        flags: u32,
-        policy_create: PC,
-        policy_destroy: PD,
-        policy_device: PDev,
-    ) -> Self {
-        Event(DeviceBoundHandle::new_with(
+    pub fn with_flags(dev_idx: i32, flags: u32) -> Self {
+        check_or_abort(Self::try_with_flags_at(dev_idx, flags, Location::caller()))
+    }
+
+    /// The fallible constructor every public one aborts over.
+    fn try_with_flags_at(dev_idx: i32, flags: u32, location: SourceLocation) -> Result<Self> {
+        DeviceBoundHandle::try_new_at(
             dev_idx,
-            policy_create,
-            policy_destroy,
-            policy_device,
-            |policy, location| {
-                create_with(policy, location, |raw| {
-                    // SAFETY: `raw` is valid for one write.
-                    unsafe { wwr_sys::wwr_event_create_with_flags(raw, flags) }
-                })
-            },
-        ))
+            // SAFETY: `raw` is valid for one write.
+            |raw| unsafe { wwr_sys::wwr_event_create_with_flags(raw, flags) },
+            location,
+        )
+        .map(Event)
+    }
+
+    /// [`record`] this event on `stream`.
+    pub fn record(&self, stream: &Stream) -> wwr_status {
+        self.record_with_flags(stream, 0)
+    }
+
+    /// [`record_with_flags`] this event on `stream`.
+    pub fn record_with_flags(&self, stream: &Stream, flags: u32) -> wwr_status {
+        // SAFETY: both borrows keep their handles alive.
+        unsafe { record_with_flags(self.get(), stream.stream(), flags) }
+    }
+
+    /// [`sync`] on this event.
+    pub fn sync(&self) -> wwr_status {
+        // SAFETY: the borrow keeps the event alive.
+        unsafe { sync(self.get()) }
     }
 }
 
-impl<PC, PD, PDev> Deref for Event<PC, PD, PDev>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
-    type Target = DeviceBoundHandle<EventKind, PC, PD, PDev>;
+impl Deref for Event {
+    type Target = DeviceBoundHandle<EventKind>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<PC, PD, PDev> DeviceHandle for Event<PC, PD, PDev>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
+impl DeviceHandle for Event {
     fn dev_idx(&self) -> i32 {
         self.0.dev_idx()
-    }
-}
-
-impl<PC, PD, PDev> Event<PC, PD, PDev>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
-    /// [`record`] this event on `stream`.
-    pub fn record<SC, SD, SDev>(&self, stream: &Stream<SC, SD, SDev>) -> wwr_status
-    where
-        SC: ErrorPolicy<Error = wwr_status>,
-        SD: ErrorPolicy<Error = wwr_status>,
-        SDev: ErrorPolicy<Error = wwr_status>,
-    {
-        self.record_with_flags(stream, 0)
-    }
-
-    /// [`record_with_flags`] this event on `stream`;
-    /// `WWR_STATUS_INVALID_VALUE` if the event owns nothing.
-    pub fn record_with_flags<SC, SD, SDev>(
-        &self,
-        stream: &Stream<SC, SD, SDev>,
-        flags: u32,
-    ) -> wwr_status
-    where
-        SC: ErrorPolicy<Error = wwr_status>,
-        SD: ErrorPolicy<Error = wwr_status>,
-        SDev: ErrorPolicy<Error = wwr_status>,
-    {
-        match self.get() {
-            // SAFETY: both borrows keep their handles alive.
-            Some(raw) => unsafe { record_with_flags(raw, stream.stream(), flags) },
-            None => wwr_status::WWR_STATUS_INVALID_VALUE,
-        }
-    }
-
-    /// [`sync`] on this event; `WWR_STATUS_INVALID_VALUE` if it owns
-    /// nothing.
-    pub fn sync(&self) -> wwr_status {
-        match self.get() {
-            // SAFETY: the borrow keeps the event alive.
-            Some(raw) => unsafe { sync(raw) },
-            None => wwr_status::WWR_STATUS_INVALID_VALUE,
-        }
     }
 }
 
@@ -195,18 +142,15 @@ pub unsafe fn sync(event: wwr_event) -> wwr_status {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::wwr::handle::DeviceHandleStream;
-    use crate::core::wwr::runtime::tests::{Abort, DeviceBytes, ok};
+    use crate::core::error_handling::ErrorKind;
+    use crate::core::wwr::runtime::tests::{DeviceBytes, ok};
 
     /// Needs a GPU. The default event cannot time; a `0`-flag one can.
     #[test]
     fn timing_is_off_by_default_and_on_with_zero_flags() {
-        let s = Stream::new(0, Abort::new(), Abort::new(), Abort::new());
-        let sync_only = Event::new(0, Abort::new(), Abort::new(), Abort::new());
-        let (start, end) = (
-            Event::with_flags(0, 0, Abort::new(), Abort::new(), Abort::new()),
-            Event::with_flags(0, 0, Abort::new(), Abort::new(), Abort::new()),
-        );
+        let s = Stream::new(0);
+        let sync_only = Event::new(0);
+        let (start, end) = (Event::with_flags(0, 0), Event::with_flags(0, 0));
         assert_eq!(sync_only.dev_idx(), 0);
 
         ok(start.record(&s));
@@ -216,14 +160,11 @@ mod tests {
 
         let mut ms = -1.0f32;
         // SAFETY: writes one f32 through a valid local.
-        ok(unsafe {
-            wwr_sys::wwr_event_elapsed_time(&mut ms, start.get().unwrap(), end.get().unwrap())
-        });
+        ok(unsafe { wwr_sys::wwr_event_elapsed_time(&mut ms, start.get(), end.get()) });
         assert!(ms >= 0.0);
         // SAFETY: as above.
-        let untimed = unsafe {
-            wwr_sys::wwr_event_elapsed_time(&mut ms, start.get().unwrap(), sync_only.get().unwrap())
-        };
+        let untimed =
+            unsafe { wwr_sys::wwr_event_elapsed_time(&mut ms, start.get(), sync_only.get()) };
         assert_ne!(untimed, wwr_status::WWR_STATUS_SUCCESS);
     }
 
@@ -231,11 +172,8 @@ mod tests {
     /// runs its work after the other's: the second memset wins.
     #[test]
     fn wait_event_orders_two_streams() {
-        let (a, b) = (
-            Stream::new(0, Abort::new(), Abort::new(), Abort::new()),
-            Stream::new(0, Abort::new(), Abort::new(), Abort::new()),
-        );
-        let done = Event::new(0, Abort::new(), Abort::new(), Abort::new());
+        let (a, b) = (Stream::new(0), Stream::new(0));
+        let done = Event::new(0);
         let bytes = DeviceBytes::new(1 << 20);
         // SAFETY: the allocation's length, queued on live streams.
         ok(unsafe { wwr_sys::wwr_memset_async(bytes.0, 1, 1 << 20, a.stream()) });
@@ -247,24 +185,15 @@ mod tests {
         assert!(bytes.read(b.stream()).iter().all(|&x| x == 2));
     }
 
-    /// An event that owns nothing is refused before the runtime sees it.
-    /// Needs a GPU for the stream.
+    /// Needs a GPU. Flags no backend accepts fail the create, at the
+    /// caller, and no event is made.
     #[test]
-    fn a_dead_event_is_refused() {
-        use crate::core::wwr::common::tests::Recording;
-        // Flags no backend accepts fail the create, under a policy that
-        // returns, so the event owns nothing.
-        let dead = Event::with_flags(
-            0,
-            u32::MAX,
-            Recording::default(),
-            Recording::default(),
-            Recording::default(),
-        );
-        assert_eq!(dead.get(), None);
-        let s = Stream::new(0, Abort::new(), Abort::new(), Abort::new());
-        assert_eq!(dead.record(&s), wwr_status::WWR_STATUS_INVALID_VALUE);
-        assert_eq!(dead.sync(), wwr_status::WWR_STATUS_INVALID_VALUE);
-        assert_eq!(s.wait_event(&dead, 0), wwr_status::WWR_STATUS_INVALID_VALUE);
+    fn bad_flags_are_an_error_at_the_caller() {
+        let line = line!() + 1;
+        let error = Event::try_with_flags_at(0, u32::MAX, Location::caller())
+            .err()
+            .unwrap();
+        assert_eq!(error.kind, ErrorKind::GpuRuntime);
+        assert_eq!((error.origin.file(), error.origin.line()), (file!(), line));
     }
 }

@@ -3,17 +3,21 @@
 //!
 //! | C++ (wwr) | Here |
 //! |---|---|
-//! | `:handle`, `BaseHandle<T, Derived, P_create, P_destroy>` | [`BaseHandle<K, PC, PD>`](BaseHandle), with `Derived`'s `create`/`destroy` hooks as the [`HandleKind`] `K` (`base_handle.rs`) |
+//! | `:handle`, `BaseHandle<T, Derived, P_create, P_destroy>` | [`BaseHandle<K>`](BaseHandle), with `Derived`'s `create`/`destroy` hooks as the [`HandleKind`] `K` (`base_handle.rs`) |
 //! | `:device_bound_handle`, `DeviceBoundHandle` | [`DeviceBoundHandle`], which derefs to its `BaseHandle` |
 //! | `:stream_bound_handle`, `StreamBoundHandle` | [`StreamBoundHandle`], its `set_stream` hook as [`StreamBoundKind`] |
 //! | `:handle_view`, `:device_bound_handle_view`, `:stream_bound_handle_view` | [`HandleView`], [`DeviceBoundHandleView`], [`StreamBoundHandleView`], each borrowing the handle it came from |
-//! | `:device_handle`, the `device_handle` concept ladder | [`DeviceHandle`], [`DeviceHandleStream`], [`DeviceHandlePool`] |
+//! | `:device_handle`, the `device_handle` concept ladder | [`DeviceHandle`], [`DeviceHandleStream`]; `device_handle_pool` has none (`device_handle.rs`) |
 //!
 //! CRTP's `static_cast<Derived *>(this)->create(...)` is a call to the kind's
 //! associated function, and public inheritance is a field plus `Deref`, so
-//! an outer type's `view()` hides its base's as in C++. The policy slots wwr
-//! collapses with `policy_slot` are plain fields: a zero-sized policy costs
-//! nothing however many slots share its type.
+//! an outer type's `view()` hides its base's as in C++.
+//!
+//! **No policy parameters.** wwr's `P_create`, `P_destroy` and `P_device`
+//! decide what a failed GPU call in a constructor or destructor does. Here a
+//! constructor is `try_new`, which returns `Result`, and a `Drop` logs a
+//! failed destroy at error; the wrappers above decide to abort on an `Err`
+//! ([`crate::core::wwr::common`] has the reasons).
 
 mod base_handle;
 mod device_bound_handle;
@@ -26,7 +30,7 @@ mod stream_bound_handle_view;
 pub use base_handle::{BaseHandle, HandleKind};
 pub use device_bound_handle::DeviceBoundHandle;
 pub use device_bound_handle_view::DeviceBoundHandleView;
-pub use device_handle::{DeviceHandle, DeviceHandlePool, DeviceHandleStream};
+pub use device_handle::{DeviceHandle, DeviceHandleStream};
 pub use handle_view::HandleView;
 pub use stream_bound_handle::{StreamBoundHandle, StreamBoundKind};
 pub use stream_bound_handle_view::StreamBoundHandleView;
@@ -40,7 +44,6 @@ pub(crate) mod tests {
     use wwr_sys::{wwr_event, wwr_status, wwr_stream};
 
     use super::*;
-    use crate::core::wwr::common::kit::AbortPolicy;
 
     thread_local! {
         static FAKE_DESTROYED: Cell<u32> = const { Cell::new(0) };
@@ -109,20 +112,14 @@ pub(crate) mod tests {
         }
     }
 
-    type Abort = AbortPolicy<wwr_status>;
-
     /// A stream owner standing in for `runtime::Stream`: `handle` sits below
     /// `runtime`, so its tests do not reach up to it, as wwr's cannot.
-    pub(crate) struct OwnedStream(DeviceBoundHandle<StreamKind, Abort, Abort, Abort>);
+    pub(crate) struct OwnedStream(DeviceBoundHandle<StreamKind>);
 
     impl OwnedStream {
+        #[track_caller]
         pub(crate) fn new(dev_idx: i32) -> Self {
-            OwnedStream(DeviceBoundHandle::new(
-                dev_idx,
-                Abort::new(),
-                Abort::new(),
-                Abort::new(),
-            ))
+            OwnedStream(DeviceBoundHandle::try_new(dev_idx).unwrap())
         }
     }
 
@@ -134,7 +131,7 @@ pub(crate) mod tests {
 
     impl DeviceHandleStream for OwnedStream {
         fn stream(&self) -> wwr_stream {
-            self.0.get().unwrap()
+            self.0.get()
         }
     }
 
@@ -149,12 +146,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn stateless_policies_cost_nothing() {
-        // Three same-type empty policies: what wwr's policy_slot collapses.
-        // The handle is its raw handle and its device index, and nothing more.
+    fn a_handle_is_its_raw_handle_and_device_and_nothing_more() {
+        // No liveness flag, no policy fields.
         assert_eq!(
-            std::mem::size_of::<DeviceBoundHandle<StreamKind, Abort, Abort, Abort>>(),
-            std::mem::size_of::<(Option<wwr_stream>, i32)>()
+            std::mem::size_of::<BaseHandle<StreamKind>>(),
+            std::mem::size_of::<wwr_stream>()
+        );
+        assert_eq!(
+            std::mem::size_of::<DeviceBoundHandle<StreamKind>>(),
+            std::mem::size_of::<(wwr_stream, i32)>()
         );
     }
 }

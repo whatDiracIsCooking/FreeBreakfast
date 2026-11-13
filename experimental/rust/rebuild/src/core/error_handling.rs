@@ -11,8 +11,9 @@
 //! | `:abort`: both `check_or_abort` overloads | [`check_or_abort`], one generic function |
 //!
 //! Like the C++ module it does not name WarpWraps: the bridge from a GPU
-//! status ([`gpu_status`](crate::core::wwr::gpu_status)) and the GPU error
-//! policies live in [`crate::core::wwr`], which builds on this.
+//! status ([`gpu_status`](crate::core::wwr::gpu_status)) and the log line
+//! a failed destroy gets ([`gpu_log_error_at`](crate::core::wwr::gpu_log_error_at))
+//! live in [`crate::core::wwr`], which builds on this.
 //!
 //! **The `err_*` helpers have no counterpart.** They exist because a C++
 //! defaulted `std::source_location` cannot follow a parameter pack, so the

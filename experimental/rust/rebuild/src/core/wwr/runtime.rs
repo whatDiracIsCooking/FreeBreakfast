@@ -4,18 +4,26 @@
 //!
 //! | C++ (wwr) | Here |
 //! |---|---|
-//! | `:stream`, `StreamWrapper<P_create, P_destroy, P_device>` | [`Stream<PC, PD, PDev>`](Stream) |
+//! | `:stream`, `StreamWrapper<P_create, P_destroy, P_device>` | [`Stream`] |
 //! | `:event`, `EventWrapper` | [`Event`] |
 //! | `:mem_pool`, `MemPoolWrapper`, and the `wwrMemPoolProps` it fills | [`MemPool`], [`MemPoolProps`] |
 //! | `:graph`, `GraphWrapper` | [`Graph`] |
 //! | `:graph_exec`, `GraphExecWrapper` | [`GraphExec`] |
-//! | `:device_handle`, `kit::DeviceHandle` | [`kit::DeviceHandle`] |
+//! | `:device_handle`, `kit::DeviceHandle` | nothing: see below |
 //! | `StreamView`, `EventView`, `GraphExecView` | the handle views [`view()`](super::handle::DeviceBoundHandle::view) returns |
 //!
 //! Each wrapper is a newtype over the handle it is built on, and derefs to
-//! it, so `get()`, `view()`, `dev_idx()` and the policies are the handle's.
-//! Its `HandleKind` is crate-private: the wrapper is the only way to make
-//! one.
+//! it, so `get()`, `view()` and `dev_idx()` are the handle's. Its
+//! `HandleKind` is crate-private: the wrapper is the only way to make one.
+//!
+//! **A constructor aborts on failure**, logging at critical against its
+//! caller: the tree's rule for every create (`docs/diagnostics.md`,
+//! "Allocation is a planning-time error"), which the C++ tree spells
+//! `CreatePolicy`. Each wrapper builds on one private fallible constructor
+//! that returns the `Err` instead; a site that must recover from a failed
+//! create is the reason to make that one public, and nothing else changes.
+//! A wrapper is therefore always live, and no method has a case for one
+//! that holds nothing.
 //!
 //! **The borrow-safe operations are methods on the owners**, and `unsafe`
 //! free functions on the raw handle beside them. wwr's free functions take
@@ -26,10 +34,7 @@
 //! [`event::record`], [`event::record_with_flags`], [`event::sync`],
 //! [`graph_exec::launch`], [`graph_exec::upload`]) are `unsafe`, and
 //! [`Stream::sync`], [`Event::record`], [`GraphExec::launch`] and the rest
-//! call them safely. A method on an owner that holds nothing returns
-//! `WWR_STATUS_INVALID_VALUE` without calling the runtime, except a
-//! stream's, which falls back to the legacy default stream as wwr's
-//! `stream()` does. wwr overloads `sync` on `wwrStream_t` against
+//! call them safely. wwr overloads `sync` on `wwrStream_t` against
 //! `wwrEvent_t`; the C ABI erases both to `*mut c_void`, so the raw forms
 //! are told apart by module path, and the type system cannot.
 //!
@@ -38,14 +43,16 @@
 //! [`event::DISABLE_TIMING`], [`event::BLOCKING_SYNC`]) are the vendors'
 //! values, which CUDA and HIP share.
 //!
-//! **Left out:** `kit::DeviceHandle::props()`. `wwrDeviceProp` reaches the
-//! C ABI as a bare `void*` whose layout differs between the backends, so
-//! there is nothing safe to fill.
+//! **`kit::DeviceHandle`**, an owned stream and memory pool on one device,
+//! is wwr's ready-made top rung of the device-handle ladder, for a buffer
+//! that allocates from a pool. Neither the rung nor the bundle has a
+//! counterpart: the arena allocates one plain block per plan
+//! (`docs/memory.md`, "The two kinds"), and a [`Stream`] is a
+//! [`DeviceHandleStream`](super::handle::DeviceHandleStream) on its own.
 
 pub mod event;
 pub mod graph;
 pub mod graph_exec;
-pub mod kit;
 pub mod mem_pool;
 pub mod stream;
 
@@ -56,22 +63,6 @@ pub use mem_pool::{MemPool, MemPoolProps};
 pub use stream::Stream;
 
 use wwr_sys::wwr_status;
-
-use super::common::{ErrorPolicy, SourceLocation, gpu_check_at};
-
-/// Run a runtime create that writes a raw handle, reporting through
-/// `policy`, and yield the handle if it is live: what each wrapper's
-/// non-default constructor hands [`new_with`](super::handle::BaseHandle::new_with).
-fn create_with<T, P: ErrorPolicy<Error = wwr_status>>(
-    policy: &mut P,
-    location: SourceLocation,
-    create: impl FnOnce(*mut T) -> wwr_status,
-) -> Option<T> {
-    let mut raw = std::mem::MaybeUninit::uninit();
-    let ok = gpu_check_at(create(raw.as_mut_ptr()), policy, location);
-    // SAFETY: a runtime create writes its handle when it succeeds.
-    ok.then(|| unsafe { raw.assume_init() })
-}
 
 /// The first failure of a destroy that is two runtime calls, both made:
 /// wwr synchronizes a stream or event before destroying it and reports
@@ -91,9 +82,16 @@ pub(crate) mod tests {
 
     use wwr_sys::{wwr_memcpy_kind, wwr_status, wwr_stream};
 
-    use crate::core::wwr::common::kit::AbortPolicy;
+    use crate::core::error_handling::{Error, ErrorKind};
 
-    pub(crate) type Abort = AbortPolicy<wwr_status>;
+    /// Assert that `error` is a GPU failure whose status is named `name`,
+    /// reported at `line` of `file`.
+    #[track_caller]
+    pub(crate) fn assert_gpu_error_at(error: Error, name: &str, file: &str, line: u32) {
+        assert_eq!(error.kind, ErrorKind::GpuRuntime);
+        assert!(error.message.starts_with(name), "{}", error.message);
+        assert_eq!((error.origin.file(), error.origin.line()), (file, line));
+    }
 
     #[track_caller]
     pub(crate) fn ok(status: wwr_status) {

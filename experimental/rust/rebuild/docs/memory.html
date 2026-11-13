@@ -315,7 +315,7 @@ calls that sync a departure from the no-wait ideal; here it is gone.</p>
 <tr>
 <td>Device</td>
 <td><code>block + reserve + stack &lt;= cap</code></td>
-<td><code>reserve</code>: the context, the handles and the loaded modules, outside any block; <code>stack</code>: the kernels' stack the driver takes back when the card has no free memory left for it (<code>kKernelStackBytes</code> per thread, up to 1.8 GiB on the RTX 3080)</td>
+<td><code>reserve</code>: the context, the handles and the loaded modules, outside any block; <code>stack</code>: the kernels' stack the driver takes back when the card has no free memory left for it (<code>kKernelStackBytes</code> per thread, up to 1.6 GiB on the RTX 3080)</td>
 </tr>
 <tr>
 <td>Pinned</td>
@@ -594,7 +594,7 @@ how many regions the parent holds at once, each at the sub-DAG's peak.</p>
 </tr>
 <tr>
 <td>Failure</td>
-<td>Aborts through <code>CreatePolicy</code>, naming the bytes and the free memory</td>
+<td>Aborts, as every create does (<code>check_or_abort</code>), naming the bytes and the free memory</td>
 <td>The same, naming <code>MemAvailable</code></td>
 </tr>
 </tbody>

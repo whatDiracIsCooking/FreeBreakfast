@@ -261,9 +261,10 @@ one reason each:
 
 - **Release aborts** because a panic is a bug, and the C++ `critical` fails the
   process at once for the same reason. Unwinding would run every `Drop` on the
-  way out, which during a GPU fault is exactly the knock-on failure
-  `LogPolicy` exists to keep out of the way of the root cause; a panic cannot
-  cross the C ABI into a launch wrapper in any case; and in a multi-worker
+  way out, which during a GPU fault is exactly the knock-on failure the
+  log-on-destroy rule exists to keep out of the way of the root cause; a
+  panic cannot cross the C ABI into a launch wrapper in any case; and in a
+  multi-worker
   run an unwind takes down one worker's thread and leaves the others running
   against a process that is half dead. An abort loses no backtrace: the panic
   hook prints it before the process ends.

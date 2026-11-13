@@ -13,7 +13,7 @@ use std::process::Command;
 use fb_rebuild::core::diagnostics::{critical, debug, error, gpu_must, info, trace, warn};
 use fb_rebuild::core::error_handling::{Error, check_or_abort};
 use fb_rebuild::core::log::{self, LogLevel};
-use fb_rebuild::core::wwr::{DestroyPolicy, common::ErrorPolicy};
+use fb_rebuild::core::wwr::gpu_log_error_at;
 use wwr_sys::wwr_status;
 
 /// The line `needle` is on in this file, 1-based.
@@ -44,8 +44,7 @@ fn levels_format_counter_and_file_sink() {
     warn!("first warning"); // MARK warn
     critical!("critical through the macro"); // MARK critical
     log::add_file_sink(dir.join("other.log")).unwrap(); // MARK second sink
-    DestroyPolicy::<wwr_status>::new()
-        .handle_error(wwr_status::WWR_STATUS_INVALID_VALUE, Location::caller()); // MARK policy
+    gpu_log_error_at(wwr_status::WWR_STATUS_INVALID_VALUE, Location::caller()); // MARK destroy
 
     // A filtered warning reaches no sink, so it does not count.
     log::set_level(LogLevel::Error);
@@ -86,7 +85,7 @@ fn levels_format_counter_and_file_sink() {
         ),
         (
             "error",
-            line_of("MARK policy"),
+            line_of("MARK destroy"),
             "WWR_STATUS_INVALID_VALUE (invalid argument)",
         ),
     ];

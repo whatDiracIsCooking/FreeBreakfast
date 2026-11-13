@@ -5,13 +5,13 @@
 //! stream it is launched on.
 
 use std::ops::Deref;
+use std::panic::Location;
 
 use wwr_sys::{wwr_graph_exec, wwr_status, wwr_stream};
 
-use super::create_with;
 use super::graph::Graph;
 use super::stream::Stream;
-use crate::core::wwr::common::ErrorPolicy;
+use crate::core::error_handling::check_or_abort;
 use crate::core::wwr::handle::{BaseHandle, DeviceHandleStream, HandleKind};
 
 /// An executable graph's destroy. It has no create of its own: an
@@ -34,85 +34,38 @@ impl HandleKind for GraphExecKind {
     }
 }
 
-/// An owned executable graph: `GraphExecWrapper<P_create, P_destroy>`.
-pub struct GraphExec<PC, PD>(BaseHandle<GraphExecKind, PC, PD>)
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>;
+/// An owned executable graph: `GraphExecWrapper`.
+pub struct GraphExec(BaseHandle<GraphExecKind>);
 
-impl<PC, PD> GraphExec<PC, PD>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-{
-    /// Instantiate `graph` (borrowed for this call only) with `flags`.
-    ///
-    /// A graph that owns nothing is reported to the create policy as
-    /// `WWR_STATUS_INVALID_VALUE` without reaching the runtime, where wwr
-    /// hands the runtime its null.
+impl GraphExec {
+    /// Instantiate `graph` (borrowed for this call only) with `flags`;
+    /// aborts at the caller if it cannot.
     #[track_caller]
-    pub fn new<GC, GD>(
-        graph: &Graph<GC, GD>,
-        flags: u64,
-        policy_create: PC,
-        policy_destroy: PD,
-    ) -> Self
-    where
-        GC: ErrorPolicy<Error = wwr_status>,
-        GD: ErrorPolicy<Error = wwr_status>,
-    {
+    pub fn new(graph: &Graph, flags: u64) -> Self {
         let graph = graph.get();
-        GraphExec(BaseHandle::new_with(
-            policy_create,
-            policy_destroy,
-            |policy, location| {
-                create_with(policy, location, |raw| match graph {
-                    // SAFETY: `raw` is valid for one write, and the borrow
-                    // keeps the graph alive for the call.
-                    Some(graph) => unsafe { wwr_sys::wwr_graph_instantiate(raw, graph, flags) },
-                    None => wwr_status::WWR_STATUS_INVALID_VALUE,
-                })
-            },
-        ))
+        GraphExec(check_or_abort(BaseHandle::try_new_at(
+            // SAFETY: `raw` is valid for one write, and the borrow keeps the
+            // graph alive for the call.
+            |raw| unsafe { wwr_sys::wwr_graph_instantiate(raw, graph, flags) },
+            Location::caller(),
+        )))
     }
 
-    /// [`launch`] this executable on `stream`; `WWR_STATUS_INVALID_VALUE`
-    /// if it owns nothing.
-    pub fn launch<SC, SD, SDev>(&self, stream: &Stream<SC, SD, SDev>) -> wwr_status
-    where
-        SC: ErrorPolicy<Error = wwr_status>,
-        SD: ErrorPolicy<Error = wwr_status>,
-        SDev: ErrorPolicy<Error = wwr_status>,
-    {
-        match self.get() {
-            // SAFETY: both borrows keep their handles alive.
-            Some(raw) => unsafe { launch(raw, stream.stream()) },
-            None => wwr_status::WWR_STATUS_INVALID_VALUE,
-        }
+    /// [`launch`] this executable on `stream`.
+    pub fn launch(&self, stream: &Stream) -> wwr_status {
+        // SAFETY: both borrows keep their handles alive.
+        unsafe { launch(self.get(), stream.stream()) }
     }
 
-    /// [`upload`] this executable to `stream`'s device;
-    /// `WWR_STATUS_INVALID_VALUE` if it owns nothing.
-    pub fn upload<SC, SD, SDev>(&self, stream: &Stream<SC, SD, SDev>) -> wwr_status
-    where
-        SC: ErrorPolicy<Error = wwr_status>,
-        SD: ErrorPolicy<Error = wwr_status>,
-        SDev: ErrorPolicy<Error = wwr_status>,
-    {
-        match self.get() {
-            // SAFETY: as `launch`.
-            Some(raw) => unsafe { upload(raw, stream.stream()) },
-            None => wwr_status::WWR_STATUS_INVALID_VALUE,
-        }
+    /// [`upload`] this executable to `stream`'s device.
+    pub fn upload(&self, stream: &Stream) -> wwr_status {
+        // SAFETY: as `launch`.
+        unsafe { upload(self.get(), stream.stream()) }
     }
 }
 
-impl<PC, PD> Deref for GraphExec<PC, PD>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-{
-    type Target = BaseHandle<GraphExecKind, PC, PD>;
+impl Deref for GraphExec {
+    type Target = BaseHandle<GraphExecKind>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -138,32 +91,4 @@ pub unsafe fn launch(exec: wwr_graph_exec, stream: wwr_stream) -> wwr_status {
 pub unsafe fn upload(exec: wwr_graph_exec, stream: wwr_stream) -> wwr_status {
     // SAFETY: the caller's.
     unsafe { wwr_sys::wwr_graph_upload(exec, stream) }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::wwr::common::tests::Recording;
-    use crate::core::wwr::runtime::tests::Abort;
-
-    /// Needs a GPU, for the stream. Instantiating a graph that owns nothing
-    /// is reported through the create policy at the caller, the executable
-    /// owns nothing, and launching it is refused.
-    #[test]
-    fn a_dead_graph_is_reported_and_its_executable_refused() {
-        // Ending a capture that never began leaves the graph empty-handed.
-        let mut s = Stream::new(0, Recording::default(), Recording::default(), Abort::new());
-        let dead = s.end_capture();
-        assert_eq!(dead.get(), None);
-
-        let line = line!() + 1;
-        let exec = GraphExec::new(&dead, 0, Recording::default(), Recording::default());
-        assert_eq!(exec.get(), None);
-        assert_eq!(
-            exec.create_policy().0,
-            [(wwr_status::WWR_STATUS_INVALID_VALUE, line)]
-        );
-        assert_eq!(exec.launch(&s), wwr_status::WWR_STATUS_INVALID_VALUE);
-        assert_eq!(exec.upload(&s), wwr_status::WWR_STATUS_INVALID_VALUE);
-    }
 }

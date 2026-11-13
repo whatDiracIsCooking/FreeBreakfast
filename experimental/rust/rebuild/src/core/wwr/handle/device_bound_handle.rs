@@ -3,154 +3,85 @@
 use std::ops::Deref;
 use std::panic::Location;
 
-use wwr_sys::wwr_status;
-
-use super::base_handle::create_raw;
 use super::{BaseHandle, DeviceBoundHandleView, DeviceHandle, HandleKind};
-use crate::core::wwr::common::{ErrorPolicy, SourceLocation, gpu_check_at};
+use crate::core::error_handling::Result;
+use crate::core::wwr::common::SourceLocation;
+use crate::core::wwr::gpu_status_at;
 
 /// A [`BaseHandle`] that records the device it was created on:
 /// `DeviceBoundHandle`.
 ///
-/// Every constructor names the device. It is made current through the
-/// device policy, the handle is created there, and the index recorded is
-/// then read back from the runtime, so it is the device the handle actually
-/// landed on. The device policy handles `wwr_status` whatever the kind's own
-/// status is, which is what lets a library handle (BLAS status, say) report
-/// its device calls too.
+/// Every constructor names the device. It is made current, the handle is
+/// created there, and the index recorded is then read back from the
+/// runtime, so it is the device the handle actually landed on. The select
+/// and the read-back return `wwr_status` whatever the kind's own status is,
+/// which is what lets a library handle (BLAS status, say) report its device
+/// calls too. Any of the three failing is an `Err`, and no handle is made
+/// (or, if only the read-back failed, the one made is destroyed).
 ///
 /// It derefs to its [`BaseHandle`], which is how wwr's public inheritance
-/// comes across: `get()` and the create/destroy policies are the base's,
-/// and [`DeviceBoundHandle::view`] hides the base's view as wwr's does.
+/// comes across: `get()` is the base's, and [`DeviceBoundHandle::view`]
+/// hides the base's view as wwr's does.
 ///
 /// wwr's `select_device` / `record_device`, for a wrapper that creates its
-/// own handle, are folded into [`DeviceBoundHandle::new_with`]: the select,
-/// the given create and the record, in that order.
-pub struct DeviceBoundHandle<K, PC, PD, PDev>
-where
-    K: HandleKind,
-    PC: ErrorPolicy<Error = K::Error>,
-    PD: ErrorPolicy<Error = K::Error>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
-    pub(super) base: BaseHandle<K, PC, PD>,
+/// own handle, are folded into [`DeviceBoundHandle::try_new_with`]: the
+/// select, the given create and the record, in that order.
+pub struct DeviceBoundHandle<K: HandleKind> {
+    base: BaseHandle<K>,
     dev_idx: i32,
-    policy_device: PDev,
 }
 
-impl<K, PC, PD, PDev> DeviceBoundHandle<K, PC, PD, PDev>
-where
-    K: HandleKind,
-    PC: ErrorPolicy<Error = K::Error>,
-    PD: ErrorPolicy<Error = K::Error>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
-    /// Create a handle with `K::create` on device `dev_idx`, failures
-    /// reported at the caller's location.
+impl<K: HandleKind> DeviceBoundHandle<K> {
+    /// Create a handle with `K::create` on device `dev_idx`; a failure is an
+    /// `Err` at the caller's location.
     #[track_caller]
-    pub fn new(dev_idx: i32, policy_create: PC, policy_destroy: PD, policy_device: PDev) -> Self {
-        Self::new_at(
-            dev_idx,
-            policy_create,
-            policy_destroy,
-            policy_device,
-            create_raw::<K, PC>,
-            Location::caller(),
-        )
+    pub fn try_new(dev_idx: i32) -> Result<Self> {
+        // SAFETY: `try_new_at` hands a pointer valid for one write.
+        Self::try_new_at(dev_idx, |raw| unsafe { K::create(raw) }, Location::caller())
     }
 
     /// Create a handle with `create` on device `dev_idx`, as
-    /// [`BaseHandle::new_with`].
+    /// [`BaseHandle::try_new_with`].
     #[track_caller]
-    pub fn new_with(
+    pub fn try_new_with(
         dev_idx: i32,
-        policy_create: PC,
-        policy_destroy: PD,
-        policy_device: PDev,
-        create: impl FnOnce(&mut PC, SourceLocation) -> Option<K::Raw>,
-    ) -> Self {
-        Self::new_at(
-            dev_idx,
-            policy_create,
-            policy_destroy,
-            policy_device,
-            create,
-            Location::caller(),
-        )
+        create: impl FnOnce(*mut K::Raw) -> K::Error,
+    ) -> Result<Self> {
+        Self::try_new_at(dev_idx, create, Location::caller())
     }
 
-    pub(super) fn new_at(
+    pub(crate) fn try_new_at(
         dev_idx: i32,
-        policy_create: PC,
-        policy_destroy: PD,
-        mut policy_device: PDev,
-        create: impl FnOnce(&mut PC, SourceLocation) -> Option<K::Raw>,
+        create: impl FnOnce(*mut K::Raw) -> K::Error,
         location: SourceLocation,
-    ) -> Self {
+    ) -> Result<Self> {
         // SAFETY: a plain runtime call; a bad index is a status, not UB.
-        gpu_check_at(
-            unsafe { wwr_sys::wwr_set_device(dev_idx) },
-            &mut policy_device,
-            location,
-        );
-        let base = BaseHandle::new_at(policy_create, policy_destroy, create, location);
+        gpu_status_at(unsafe { wwr_sys::wwr_set_device(dev_idx) }, location)?;
+        let base = BaseHandle::try_new_at(create, location)?;
         let mut recorded = -1;
         // SAFETY: writes one i32 through a valid local.
-        gpu_check_at(
-            unsafe { wwr_sys::wwr_get_device(&mut recorded) },
-            &mut policy_device,
-            location,
-        );
-        DeviceBoundHandle {
+        gpu_status_at(unsafe { wwr_sys::wwr_get_device(&mut recorded) }, location)?;
+        Ok(DeviceBoundHandle {
             base,
             dev_idx: recorded,
-            policy_device,
-        }
+        })
     }
 
-    /// The policy that handled the device calls, for reading back what a
-    /// stateful one recorded.
-    pub fn device_policy(&self) -> &PDev {
-        &self.policy_device
-    }
-
-    /// The base's create policy. There is no `DerefMut` to the base: a
-    /// `BaseHandle` assigned through it would carry this one's device index
-    /// without having been created there.
-    pub fn create_policy_mut(&mut self) -> &mut PC {
-        self.base.create_policy_mut()
-    }
-
-    /// A copyable view carrying the device, which cannot outlive `self`;
-    /// `None` when there is no live handle to view.
-    pub fn view(&self) -> Option<DeviceBoundHandleView<'_, K::Raw>> {
-        self.base
-            .get()
-            .map(|raw| DeviceBoundHandleView::from_raw(raw, self.dev_idx))
+    /// A copyable view carrying the device, which cannot outlive `self`.
+    pub fn view(&self) -> DeviceBoundHandleView<'_, K::Raw> {
+        DeviceBoundHandleView::from_raw(self.base.get(), self.dev_idx)
     }
 }
 
-impl<K, PC, PD, PDev> DeviceHandle for DeviceBoundHandle<K, PC, PD, PDev>
-where
-    K: HandleKind,
-    PC: ErrorPolicy<Error = K::Error>,
-    PD: ErrorPolicy<Error = K::Error>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
-    /// The device the handle was created on (-1 if it could not be read).
+impl<K: HandleKind> DeviceHandle for DeviceBoundHandle<K> {
+    /// The device the handle was created on.
     fn dev_idx(&self) -> i32 {
         self.dev_idx
     }
 }
 
-impl<K, PC, PD, PDev> Deref for DeviceBoundHandle<K, PC, PD, PDev>
-where
-    K: HandleKind,
-    PC: ErrorPolicy<Error = K::Error>,
-    PD: ErrorPolicy<Error = K::Error>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
-    type Target = BaseHandle<K, PC, PD>;
+impl<K: HandleKind> Deref for DeviceBoundHandle<K> {
+    type Target = BaseHandle<K>;
     fn deref(&self) -> &Self::Target {
         &self.base
     }
@@ -160,45 +91,29 @@ where
 mod tests {
     use super::super::tests::{StreamKind, current_device};
     use super::*;
-    use crate::core::wwr::common::tests::Recording;
+    use crate::core::error_handling::ErrorKind;
 
-    type Stream = DeviceBoundHandle<StreamKind, Recording, Recording, Recording>;
-
-    #[track_caller]
-    fn stream(dev_idx: i32) -> Stream {
-        Stream::new(
-            dev_idx,
-            Recording::default(),
-            Recording::default(),
-            Recording::default(),
-        )
-    }
+    type Stream = DeviceBoundHandle<StreamKind>;
 
     /// Needs a GPU.
     #[test]
     fn records_the_device_it_was_created_on() {
-        let s = stream(0);
-        assert!(s.get().is_some());
+        let s = Stream::try_new(0).unwrap();
         assert_eq!(s.dev_idx(), 0);
-        assert_eq!(s.device_policy().0, []);
-        assert_eq!(s.create_policy().0, []);
-        let v = s.view().unwrap();
-        assert_eq!((v.get(), v.dev_idx()), (s.get().unwrap(), 0));
+        let v = s.view();
+        assert_eq!((v.get(), v.dev_idx()), (s.get(), 0));
     }
 
-    /// Needs a GPU. A bad index fails the select through the device policy;
-    /// the handle lands on whatever device was current, and that is the one
-    /// recorded.
+    /// Needs a GPU. A bad index fails the select, at the caller; no handle
+    /// is made, and the current device is left as it was.
     #[test]
-    fn a_bad_index_is_reported_and_the_actual_device_recorded() {
+    fn a_bad_index_is_an_error_at_the_caller() {
         let current = current_device();
         let line = line!() + 1;
-        let s = stream(-1);
-        assert_eq!(
-            s.device_policy().0,
-            [(wwr_status::WWR_STATUS_INVALID_DEVICE, line)]
-        );
-        assert!(s.get().is_some());
-        assert_eq!(s.dev_idx(), current);
+        let error = Stream::try_new(-1).err().unwrap();
+        assert_eq!(error.kind, ErrorKind::GpuRuntime);
+        assert!(error.message.starts_with("WWR_STATUS_INVALID_DEVICE"));
+        assert_eq!((error.origin.file(), error.origin.line()), (file!(), line));
+        assert_eq!(current_device(), current);
     }
 }

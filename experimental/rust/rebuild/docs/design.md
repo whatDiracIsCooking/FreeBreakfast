@@ -260,9 +260,10 @@ a check lives"):
 | What a launch wrapper requires | The C header's `///` comment, carried into the `-sys` crate by bindgen, and the safe wrapper's `debug_requires` ([`gpu_layer.md`](gpu_layer.md), "The safe wrapper") |
 
 Three rules hold for all of them. Contracts are debug-only, so a release
-build pays nothing and the PR gate, a debug build, has every one on. An
-outcome a policy may report is not a contract; a GPU call that can fail is
-an expected result, and making it a contract would turn it into a panic. A
+build pays nothing and the PR gate, a debug build, has every one on. The
+outcome of a GPU call that can fail is not a contract; the call returns a
+status or a `Result`, a failure is an expected result, and making it a
+contract would turn it into a panic. A
 contract's reach is every caller, but its strength is the inputs those
 callers happen to pass, so it complements a dedicated test and never
 replaces one. The doc comment restates each contract in a line of its own
