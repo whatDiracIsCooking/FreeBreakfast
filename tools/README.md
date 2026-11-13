@@ -1,6 +1,6 @@
 # `tools/`
 
-Standalone utilities around the C++ tree: Python scripts, and two C++
+Standalone utilities around the C++ tree: Python scripts, and four C++
 generators. Not tests, not a package, not on the push gate.
 
 ```
@@ -221,6 +221,12 @@ qd_nevpt2_gradient/
                   zeroth-order overlap d^NEV + d^CAS, and the roots' own
                   overlap against mcscf::df_nac). Needs a GPU. Each
                   directory's README has when and how.
+mmd_records/      C++: free-breakfast-mmd-records, built with the tree.
+                  Write rust/integrals/mmd/tests/data/: the primitive-pair
+                  records src/integrals/mmd forms for H2O/cc-pVDZ and
+                  CO/cc-pVTZ, the reference the Rust port is tested
+                  against. Needs a GPU. That directory's README has when
+                  and how.
 ```
 
 Re-run the four `emit/*_kernels.py`, `extract_integral_golden.py` and then

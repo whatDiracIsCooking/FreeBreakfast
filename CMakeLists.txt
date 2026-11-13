@@ -594,6 +594,7 @@ add_subdirectory(src)
 add_subdirectory(tools/sad)
 add_subdirectory(tools/qd_nevpt2_gradient)
 add_subdirectory(tools/qd_nevpt2_hessian)
+add_subdirectory(tools/mmd_records)
 
 # The device kernels the core GPU tests drive. Outside the gate below on
 # purpose: they need no GoogleTest, and devtools/cross-backend-check.sh (which

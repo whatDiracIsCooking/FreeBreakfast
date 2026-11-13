@@ -32,6 +32,7 @@ workspace is that rebuild. Its tree mirrors `src/`, one crate per module:
 | `fb_device_check` | nothing: a check on the kernel libraries | Two tier-3 tests: no launch wrapper under `rust/` allocates, synchronizes, touches an event, copies, sets the device or opens a profiler range (a grep of every `.cu`), and every `-sys` crate's committed bindings are what the script generates now |
 | `fb_io_xyz` | `src/io/xyz` | `parse_xyz` / `read_xyz`: a standard XYZ geometry into a `Molecule`, Angstrom to bohr by `BOHR_PER_ANGSTROM`, every refusal (too short, a bad count, a malformed line, an unknown symbol, a count the lines disagree with, a file that cannot be read) an `Io` error. A field must parse as a whole token, where the C++'s `operator>>` reads a prefix |
 | `fb_io_basis` | `src/io/basis`, its orbital sets | `parse_basis` / `read_basis`: a BSE JSON document into a `BasisStamp` (sp blocks and general contractions split, spherical shells only: one Cartesian or ambiguous shell refuses the document), over [`serde_json`](https://crates.io/crates/serde_json); `is_builtin_basis` and `resolve_basis`, a name (spelling folded) or else a path, over the eleven sets of `data/basis/` compiled in with `include_str!`, only that branch naming the stamp. The fitting sets of `data/aux_basis/` are not ported yet |
+| `fb_integrals_mmd` | `src/integrals/mmd`'s `primitive_pair_classes` | `add_records`: the records of a `BasisSet` as two tasks of a `Dag`, `mmd tables` on the CPU (the shell table and each class's shell pairs with their record prefixes, formed on the host into pinned rows) and `mmd records` on the worker's stream (the tables copied into device scratch, then each class's order, records, bound and dressed bounds through `fb-integrals-sys`), and `ClassRows`, each class's record fields as device output rows. Every size is the basis's, at planning; the plan text for H2O/cc-pVDZ and CO/cc-pVTZ is the committed golden `integrals/mmd/tests/golden/plan_*.txt`. The mixed classes are not ported yet |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -46,7 +47,8 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `atom`, `types` and `error_handling`, and `basis` on `molecule`, `types`,
 `primitives` and `error_handling`; `io/xyz` on `molecule`, `atom`, `types`,
 `constants` and `error_handling`, and `io/basis` on `basis` and
-`error_handling`.
+`error_handling`; `integrals/mmd` on `basis`, `planner`, `arena`,
+`thread_pool`, `wwr`, `error_handling` and `integrals/sys`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -170,8 +172,11 @@ thread pool's `DeviceStream` is an uninhabited placeholder with no
 crates' own device tests need beyond `device`; a dependent asks for
 `device` alone, and the workspace's dependency entries for the arena and
 the thread pool turn their defaults off, so nothing turns them on by
-accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`
-and `fb-integrals-sys` always link. Use a
+accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`,
+`fb-integrals-sys` and `fb-integrals-mmd` always link; the last's layout
+asks the kernel library for the sort's workspace at planning, so even its
+device-free tests (the host tables, the plan goldens) need the library
+built. Use a
 separate `CARGO_TARGET_DIR` per backend, and another for
 `--no-default-features`: each `build.rs` bakes the library's path into the
 rpath.
@@ -229,6 +234,19 @@ OMP_NUM_THREADS=8 tools/emit/exchange_kernels.py --out-root "$tmp"
 cp "$tmp"/mmd/kernels/pair_bound/* rust/integrals/kernels/mmd/kernels/pair_bound/
 cp "$tmp"/mmd/kernels/record_bound/* rust/integrals/kernels/mmd/kernels/record_bound/
 cp "$tmp"/one_electron/overlap/kernels/* rust/integrals/kernels/one_electron/overlap/kernels/
+```
+
+The records on a card are `integrals/mmd/tests/records.rs`: H2O/cc-pVDZ
+and CO/cc-pVTZ planned, run once and compared with the C++ tree's records,
+committed in `integrals/mmd/tests/data/` (1.3 MB, raw little-endian; that
+directory's README has the format). They are dumped on CUDA by
+`tools/mmd_records`, a program the root build builds with the C++ tree,
+after a change to either basis file, the host normalization or the C++ mmd
+module:
+
+```bash
+# from the repository root, after cmake --preset default && cmake --build build
+build/tools/mmd_records/free-breakfast-mmd-records rust/integrals/mmd/tests/data
 ```
 
 `doc_check/tests/section_citations.rs` checks that every section the
@@ -512,3 +530,16 @@ emitted units are byte for byte those under `src/integrals/` (39 files,
 `devtools/cross-backend-check.sh --device-only` (HIP) passes; neither was
 run on the gfx1200. Clippy (`-D warnings`, both feature sets), rustdoc
 (`-D warnings`) and `cargo fmt --check` are clean.
+
+2026-11-13, `integrals/mmd` (the primitive-pair records as two tasks), on
+the RTX 3080 (CUDA) only, holding the card: in a debug build the whole
+workspace passes, the new crate's host-table unit test, its 2 plan tests
+(the two plan goldens and an empty basis) and its tier-4 `records` test, and
+every other count unchanged. Against the C++ tree's records, dumped on the
+same card by `tools/mmd_records`, every field of both molecules (6 classes
+and 1629 records of H2O/cc-pVDZ, 10 and 7684 of CO/cc-pVTZ) is bitwise
+equal, inside the issue's bars (integers exact; `zeta`, `ea`, `eb` bitwise;
+the rest 1e-13 relative); the lowest bit of one `s` value flipped in the
+reference fails the test, naming the field. The `--no-default-features` tier 3 passes its previous
+counts. Clippy (`-D warnings`, both feature sets), rustdoc (`-D warnings`)
+and `cargo fmt --check` are clean. Not run on the gfx1200.

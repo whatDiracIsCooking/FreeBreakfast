@@ -1,0 +1,26 @@
+[package]
+name = "fb-integrals-mmd"
+description = "integrals/mmd: the primitive-pair records, formed on the device as tasks"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-basis.workspace = true
+fb-core-arena.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-planner.workspace = true
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-core-wwr.workspace = true
+fb-integrals-sys.workspace = true
+wwr-sys.workspace = true
+
+[dev-dependencies]
+fb-atom.workspace = true
+fb-core-types.workspace = true
+fb-io-basis.workspace = true
+fb-molecule.workspace = true
+fb-test-support.workspace = true
