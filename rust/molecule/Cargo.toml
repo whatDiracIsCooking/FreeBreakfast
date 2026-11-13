@@ -1,0 +1,17 @@
+[package]
+name = "fb-molecule"
+description = "molecule: a geometry as host data, and its nuclear repulsion"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-atom.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-types.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
