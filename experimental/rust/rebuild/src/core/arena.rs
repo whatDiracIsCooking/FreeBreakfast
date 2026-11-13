@@ -4,14 +4,16 @@
 //!
 //! - [`TableBuilder`] declares the rows node by node: a node's scratch, its
 //!   outputs and who reads them, and the worker's own rows. Lifetimes are
-//!   derived from the users and never written.
+//!   derived from the users and never written. [`TableBuilder::node`] is
+//!   one node's [`Layout`], what a task declares through.
 //! - [`TableBuilder::build`] lays them out with [`assign`], the pure offset
 //!   assigner, into a [`Table`]: an offset per row and the block's total,
 //!   which is the plan's peak for that worker and kind. Its text is the
 //!   committed memory golden.
 //! - [`Table::handoffs`] is what reusing bytes costs the schedule: the
 //!   orderings the plan must have so that a row's previous owner is done
-//!   before the next one starts.
+//!   before the next one starts. [`Table::reads`] is what the data costs
+//!   it: each reader after its producer.
 //! - [`admit`] checks a table against its worker's cap, and refuses naming
 //!   the rows live at the peak.
 //! - [`Block::new`] makes the table's one allocation, on the device or
@@ -55,11 +57,11 @@
 //!
 //! One stream worker per table: lifetimes are positions in the plan's rank
 //! order, and reuse across streams, transport rows and nested regions wait
-//! for placement. The `Task` trait (`layout(dims)` and `run(bufs, stream)`)
-//! and the glue that turns declared tasks into a table and a
-//! [`thread_pool::Plan`](crate::core::thread_pool::Plan) with the handoffs
-//! as dependencies come next. A block is allocated on the thread that makes
-//! it, not its worker's, since the run's threads do not exist yet. Adaptive
+//! for placement. Declaring rows from tasks, and turning the table's
+//! [`reads`](Table::reads) and [`handoffs`](Table::handoffs) into a plan's
+//! dependencies, is [`planner`](crate::core::planner)'s. A block is
+//! allocated on the thread that makes it, not its worker's: a block lives
+//! for the plan, and the run's threads only for one run. Adaptive
 //! widths, the measured reserve and the node-wide pinned sum are
 //! admission's and are not here. Library handles do not take their
 //! workspace from a worker row yet: WarpWraps' C ABI has no
@@ -83,8 +85,10 @@ pub use admit::admit;
 pub use assign::{Assignment, Life, Row, assign};
 pub use block::Block;
 pub use bufs::{Bufs, DeviceMut, DeviceRef};
+#[cfg(test)]
+pub(crate) use kind::Heap;
 pub use kind::{Device, Element, HostKind, Kind, Pinned};
-pub use table::{Access, Peak, RowId, Table, TableBuilder};
+pub use table::{Access, Layout, Peak, RowId, Table, TableBuilder};
 
 /// The alignment of every row's offset, in bytes, and the least the block
 /// itself has: the C++ `kWorkspaceAlignment`, and the pool's allocation
