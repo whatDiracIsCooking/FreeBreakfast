@@ -192,4 +192,6 @@ test, the thread-count test and 3 doctests pass in a debug build, and 51,
 repeats while another process held part of the card, and its one failure
 was not caught (see "Build and test" on the free-memory cases); it is
 clean under `compute-sanitizer --tool memcheck`. Clippy (`-D warnings`),
-rustdoc (`-D warnings`) and `cargo fmt --check` are clean.
+rustdoc (`-D warnings`) and `cargo fmt --check` are clean. On the gfx1200
+(HIP), with the card to itself, the same counts pass in both profiles, and
+the arena-block binary passed 20 repeats in a row.
