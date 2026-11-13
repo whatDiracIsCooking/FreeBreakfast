@@ -133,8 +133,8 @@ Three rules go with the table:
   tier-4 test.** Those tiers are seconds and need no card, so `test.py push`
   and `test.py pr` run `cargo test` and `cargo doc` for a diff under the
   crate, through the diff dispatch they already have for `.py` and C++.
-  Today `experimental/` is outside both gates, so until that lands the Rust
-  tree is checked by whoever runs `cargo test` by hand, and a PR says so
+  Today `rust/` is outside both gates (`NOT_GATED` in `devtools/test.py`), so
+  until that lands the Rust tree is checked by whoever runs `cargo test` by hand, and a PR says so
   ([`README.md`](../README.md), "Order of work").
 
 ## Running on a card: the process model

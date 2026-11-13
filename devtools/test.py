@@ -141,6 +141,11 @@ EXCLUDED = re.compile(r"^(vendor/|third_party/|deps/WarpWraps/|deps/FelizJueves/
 # change there fires no C++ half -- building the tree would check none of it.
 # The root CMakeLists.txt line that adds them is outside, and still fires it.
 NOT_IN_CPP_SMOKE = re.compile(r"^(experimental/|test/experimental/)")
+# The Rust rebuild fires neither half: nothing in it is C++ the tree builds or
+# Python the tree tests (its docs/md2html.py is a by-hand tool). Until the
+# cargo half of the gates lands (rust/docs/testing.md), it is checked by
+# whoever runs `cargo test` by hand.
+NOT_GATED = re.compile(r"^rust/")
 
 # The test binaries, relative to a build directory. The GPU ones, one batch
 # each, in this order.
@@ -995,7 +1000,7 @@ def halves(files: list[str] | None) -> tuple[bool, bool]:
     """(C++, Python): which halves of the push gate a change fires."""
     if files is None:
         return True, True
-    files = [f for f in files if not EXCLUDED.match(f)]
+    files = [f for f in files if not EXCLUDED.match(f) and not NOT_GATED.match(f)]
     return any(
         CPP_FILES.search(f) and not NOT_IN_CPP_SMOKE.match(f) for f in files
     ), any(PY_FILES.search(f) for f in files)

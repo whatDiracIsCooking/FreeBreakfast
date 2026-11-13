@@ -123,6 +123,12 @@ def test_only_is_checked() -> None:
         (["CMakeLists.txt"], (True, False)),
         (["experimental/cope_rearrangement/scan.py"], (False, True)),
         (["src/experimental_thing.cpp"], (True, False)),
+        # rust/ fires neither half, not even its one .py; what is pushed
+        # alongside still does.
+        (["rust/src/core.rs", "rust/Cargo.toml"], (False, False)),
+        (["rust/docs/md2html.py"], (False, False)),
+        (["rust/docs/md2html.py", "src/a.cpp"], (True, False)),
+        (["src/rust.cpp", "devtools/rust.py"], (True, True)),
         ([], (False, False)),
         (None, (True, True)),
     ],

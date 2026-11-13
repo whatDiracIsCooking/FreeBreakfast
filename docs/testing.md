@@ -36,7 +36,7 @@ A gate is named by **when it runs**, not by what it contains.
 
 | Gate | When | Runs | Budget |
 | --- | --- | --- | --- |
-| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`. C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set | under 5 min on a busy card |
+| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`; nothing under `rust/` fires either. C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set | under 5 min on a busy card |
 | `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set | under 5 min on a busy card |
 | `nightly` | a timer on this box | everything, unskipped, both languages, plus the cross-backend compile check | none; it has the night |
 
@@ -53,6 +53,12 @@ sit behind `FREE_BREAKFAST_BUILD_EXPERIMENTAL`. A cold build there would check
 nothing in the push. Build the `experimental` preset by hand instead. The root
 `CMakeLists.txt` line that adds them is outside both, so it still fires the
 half (`NOT_IN_CPP_SMOKE` in `devtools/test.py`).
+
+**Nothing under `rust/` fires either half**, not even its one `.py` (a
+by-hand doc tool): the Rust rebuild is not C++ the tree builds or Python it
+tests, and its cargo half has not landed (`rust/docs/testing.md`). Until it
+does, `cargo test` by hand is its check, and a PR touching it says so
+(`NOT_GATED` in `devtools/test.py`). Lint still applies at commit.
 
 **The push gate runs `pr`'s selection on its GPU binaries** (#1126). Its job is
 "is this obviously broken", and before it, its GPU smoke ran every fast case

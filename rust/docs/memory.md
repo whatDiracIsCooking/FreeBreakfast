@@ -11,11 +11,11 @@ admission arithmetic, how an adaptive width is chosen, how the two kinds are
 allocated, and what checks each rule. Every rule here is fixed by a case the
 C++ tree already has, and the cases are cited rather than invented: the
 footprint vocabulary and fold
-([`src/core/footprint`](../../../../src/core/footprint/README.md),
-[`src/pipeline/footprint`](../../../../src/pipeline/footprint/README.md)),
-pre-flight ([`src/pipeline/shape`](../../../../src/pipeline/shape/README.md),
-[`src/pipeline`](../../../../src/pipeline/README.md), "Memory caps"), and
-`DeviceResources` ([`src/core/resources`](../../../../src/core/resources/README.md)).
+([`src/core/footprint`](../../src/core/footprint/README.md),
+[`src/pipeline/footprint`](../../src/pipeline/footprint/README.md)),
+pre-flight ([`src/pipeline/shape`](../../src/pipeline/shape/README.md),
+[`src/pipeline`](../../src/pipeline/README.md), "Memory caps"), and
+`DeviceResources` ([`src/core/resources`](../../src/core/resources/README.md)).
 
 The C++ footprint was a second program about allocation, held in step with
 the first by tests against a measured pool peak. The rules below exist so

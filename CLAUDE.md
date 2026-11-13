@@ -262,6 +262,8 @@ host binaries, each GPU binary as one process running `pr`'s representatives,
 or its whole fast set with `--all` or when the lister cannot list) when it
 touches C++ or a build file outside `experimental/` and `test/experimental/`
 (the smoke's preset never configures them, so it would check none of it).
+`rust/` (the Rust rebuild, `rust/README.md`) fires neither half: no gate
+builds or tests it yet, so `cargo test` there by hand is its whole check.
 `test.py pr` is the gate
 before a PR: configure, build, then each C++ family's representative and
 nothing else (`devtools/test_families.py`'s set; `--all` runs the whole fast

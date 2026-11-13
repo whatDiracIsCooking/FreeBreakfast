@@ -17,7 +17,7 @@ libc = "0.2"
 log = { version = "0.4.35", features = ["std"] }
 # runtime_api alone: the binary NEEDs libwwr_capi_runtime_api.so and nothing
 # else of wwr's.
-wwr-sys = { path = "../../../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [
+wwr-sys = { path = "../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [
     "runtime_api",
 ] }
 

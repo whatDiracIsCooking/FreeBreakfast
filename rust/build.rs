@@ -11,7 +11,7 @@ fn main() {
         .unwrap_or_else(|| {
             let manifest =
                 std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
-            manifest.join("../../../build-experimental")
+            manifest.join("../build-experimental")
         });
     let dir = build.join("deps/WarpWraps/src/capi");
     let lib = dir.join("libwwr_capi_runtime_api.so");
