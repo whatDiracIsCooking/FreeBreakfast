@@ -21,8 +21,9 @@
 //   ammonia 2e-6 bohr off C3v (both pairs near-degenerate), and an
 //   all-trans hexatriene whose terminal carbons' 1s pair is 4.5e-7 Eh apart;
 //   every element within 2x the ladder's bar, the pairs' own part visible;
-//   and a
-//   Td methane whose virtual t2 triple is a cluster: Unsupported;
+//   the ammonia 3e-5 bohr off C3v, its pairs past the 1e-6 Eh rule and
+//   inside PC's pair reach (#1296): taken, and the asymmetry at round-off;
+//   and a Td methane whose virtual t2 triple is a cluster: Unsupported;
 // - a C2v formaldehyde CAS(6,6) whose Sr and Si keep under 1e-10: refused,
 //   naming the class and its kept (#943);
 // - HCN CAS(6,6), whose x and y coordinates lift Sir's null modes within
@@ -531,13 +532,44 @@ TEST(HessianDfPcNevpt2, NearDegeneratePairsMatchTheLadder) {
 
 // All-trans hexatriene (C2h) in STO-3G, CAS(6,6) over the pi space: its
 // terminal carbons' 1s orbitals are 6.2 A and 4.5e-7 Eh apart, #1268's
-// hexadiene in small; the next pair, 3.7e-6 Eh, is taken by the division.
+// hexadiene in small; the next pair, 3.7e-6 Eh, is inside PC's 1e-4 Eh reach
+// and is taken too (#1296).
 // The 1s pair's part is about two bars here: what it checks is that the
 // call takes the pair and lands on the ladder.
 TEST(HessianDfPcNevpt2, DistantEquivalentAtomsMatchTheLadder) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   expect_degenerate_matches_ladder("hexatriene_sto3g", "hexatri", 1.0);
+}
+
+// The near ammonia with H1 3e-5 bohr off C3v (#1296): its virtual e pairs
+// are 1.1e-6 and 2.9e-6 Eh apart, past the 1e-6 Eh rule and inside PC's
+// pair reach (README "Where a pair is taken"). Dividing them, kappa_oo^x to
+// 7e4, left an asymmetry of 1.2e-7; taken by their off-diagonal f, the
+// Hessian is as symmetric as at the exact pairs.
+TEST(HessianDfPcNevpt2, PairsPastTheRuleAreTaken) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  constexpr double kShift = 3e-5;     // bohr, H1 along x off C3v
+  constexpr double kNearShift = 2e-6; // the near fixture's own
+  fb::json start = degenerate_fixture("nh3_near_631g");
+  start["name"] = "nh3_split_631g";
+  start["atoms"][1]["coord"][0] = start["atoms"][1]["coord"][0].get<double>() + kShift - kNearShift;
+  const Reference ref = reference(start);
+  ASSERT_TRUE(ref.solution.has_value());
+  const auto h = fb::hessian::df_pc_nevpt2(
+      ref.res(), ref.molecule(), ref.basis(),
+      ref.calc->get<fb::PrimitivePairClassesOutput>()->classes, ref.fit().aux,
+      ref.calc->get<fb::CoreHamiltonianOutput>()->h, ref.fit().b, ref.fit().l.data(), *ref.solution,
+      ref.ncore, ref.ncas, 0, {}, kStepPcFloor);
+  ASSERT_TRUE(h.has_value()) << h.error().message;
+  EXPECT_EQ(h->degenerate_pairs.size(), 2U);
+  EXPECT_GT(h->min_gap, 1e-6) << "the pairs are under the rule: not the case";
+  std::cout << std::format("[ split    ] {} pairs, min gap {:.3e}; asymmetry {:.1e}, sum rule "
+                           "{:.1e}\n",
+                           h->degenerate_pairs.size(), h->min_gap, h->asymmetry, h->translation);
+  EXPECT_LE(h->asymmetry, kAsymmetry);
+  EXPECT_LE(h->translation, kSumRule);
 }
 
 // A Td methane in 6-31G, CAS(8,8) over its valence: the virtual t2 triple

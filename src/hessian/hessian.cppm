@@ -577,7 +577,8 @@ struct DegeneratePair {
   /// columns).
   int32_t p{0};
   int32_t q{0};
-  /// @brief eps_p - eps_q (hartree), below 1e-6 in magnitude.
+  /// @brief eps_p - eps_q (hartree), below PC's pair reach (1e-4) in
+  /// magnitude.
   double gap{0.0};
   /// @brief f^(x)_pq, the change of f the rest of t_x makes.
   double f{0.0};
@@ -611,7 +612,10 @@ struct DegeneratePair {
 /// pair split across irreps, and past that Numerical, naming the pair and
 /// the coordinate. For PC, which is invariant to the pair's rotation, every
 /// such pair and coordinate is recorded, kappa_oo^x_pq left 0, and the call
-/// goes on: @ref df_pc_nevpt2 takes the pair's off-diagonal f itself.
+/// goes on: @ref df_pc_nevpt2 takes the pair's off-diagonal f itself. PC's
+/// rule reaches further, to 1e-4 Eh (#1296, README "Where a pair is taken"):
+/// a pair under it is recorded too, not divided, unless it shares an orbital
+/// with a closer one.
 ///
 /// @p consume(x0, count, h_dot, b_dot, c_dot, kappa) sees the coordinates
 /// [x0, x0 + count), in order, each once, on the device and valid until it
@@ -1114,8 +1118,8 @@ struct PcNevpt2Terms {
   /// nevpt2::PcHessianProduct::lift_steps along t_i, its CI part the CP
   /// response c^i; infinite where nothing rises.
   std::vector<std::array<double, 8>> lift_steps;
-  /// @brief The core or virtual pairs (p, q) under the degenerate-pair rule
-  /// (1e-6 hartree) that @ref degenerate takes.
+  /// @brief The core or virtual pairs (p, q) under PC's pair reach (1e-4
+  /// hartree, README "Where a pair is taken") that @ref degenerate takes.
   std::vector<std::array<int32_t, 2>> degenerate_pairs;
   /// @brief The largest |E_corr| change of turning those pairs' orbitals in
   /// the bases @ref degenerate reads them in: PC's invariance, to O(gap).
@@ -1131,7 +1135,7 @@ struct PcNevpt2Terms {
 /// and every part's.
 ///
 /// PC has no empty perturbers, so no pair is taken again. A core or virtual
-/// pair under 1e-6 hartree, which @ref df_nevpt2_tangents leaves unrotated,
+/// pair under 1e-4 hartree, which @ref df_nevpt2_tangents leaves unrotated,
 /// is taken through its off-diagonal f, read as a split of the diagonal in
 /// turned bases (PcNevpt2Terms::degenerate): PC is invariant to the pair's
 /// rotation, so its energy is smooth there. Refused, Numerical, where one
@@ -1384,9 +1388,9 @@ struct QdNevpt2Tangents {
 ///    does not move it, Eq. qd-gsa), eps its diagonal, under
 ///    @ref df_nevpt2_tangents' degenerate-pair rule: for SC (@p pc false) a
 ///    pair under 1e-6 Eh with |f^(x)_pq| > 1e-8 is Numerical, naming the
-///    pair and the coordinate; for PC every pair under 1e-6 Eh is recorded
-///    along every coordinate, kappa_oo^x_pq left 0, and @ref df_qd_pc_nevpt2
-///    takes its off-diagonal f (#1277).
+///    pair and the coordinate; for PC every pair under its 1e-4 Eh reach
+///    (#1296) is recorded along every coordinate, kappa_oo^x_pq left 0, and
+///    @ref df_qd_pc_nevpt2 takes its off-diagonal f (#1277).
 ///
 /// So t_x is (h_MO, B_MO, {c_r}) of the re-solved SA-CASSCF differentiated
 /// along x, its roots diagonalizing H, its core and virtuals canonical in
@@ -1802,8 +1806,8 @@ struct QdPcNevpt2Terms {
   /// at W, k x k, in the Hessian (README "The PC-QD-NEVPT2 Hessian", "At a
   /// degenerate inactive pair", #1277); zero without such a pair, and for SC.
   std::vector<double> degenerate;
-  /// @brief The core or virtual pairs (p, q) under the degenerate-pair rule
-  /// (1e-6 hartree, at f^SA) that @ref degenerate takes.
+  /// @brief The core or virtual pairs (p, q) under PC's pair reach (1e-4
+  /// hartree, at f^SA) that @ref degenerate takes.
   std::vector<std::array<int32_t, 2>> degenerate_pairs;
   /// @brief The largest |E^corr[W]| change of turning those pairs' orbitals
   /// in the bases @ref degenerate reads them in: the elements' invariance,
@@ -1826,7 +1830,7 @@ struct QdPcNevpt2Terms {
 /// its metric's largest eigenvalue (naming the state, the class, its kept and
 /// @p pc_floor: PC's second derivative is not attainable there, #917);
 /// @p nfrozen other than 0 (Unsupported). **A degenerate inactive pair**
-/// (under 1e-6 hartree at f^SA, @ref df_qd_nevpt2_tangents' records) is
+/// (under 1e-4 hartree at f^SA, @ref df_qd_nevpt2_tangents' records) is
 /// taken as @ref df_pc_nevpt2 takes one, in term (i) at W
 /// (QdPcNevpt2Terms::degenerate): every H_eff element is invariant to the
 /// pair's rotation; an orbital under 1e-6 hartree from two others (a cluster

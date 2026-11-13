@@ -1012,7 +1012,11 @@ every pair below the floor along every coordinate as a `DegeneratePair`
 (coordinate, p > q, gap, f, and the change of the pair's split
 (f^(x)_pp − f^(x)_qq) / 2), κ_oo^x_pq left 0, and goes on: PC is invariant
 to the rotation, and `df_pc_nevpt2` takes the pair's off-diagonal f itself
-(#1268, "A degenerate inactive pair").
+(#1268, "A degenerate inactive pair"). **PC's rule reaches to 1e-4 Eh**
+(#1296, "Where a pair is taken"): every core or virtual pair under it is
+recorded the same way, closest first, an orbital in one pair at most
+(`pc_taken_pairs`); a pair that shares an orbital with a closer one is
+divided above 1e-6 Eh, and below it recorded for the cluster refusal.
 
 **All-electron.** The call takes no frozen core: the NEVPT2 it feeds
 correlates the whole core (milestone 24's update refuses `frozen_core ≠ 0`
@@ -1130,8 +1134,8 @@ Three steps, block triangular, each closed once the one before it is done:
    both), ε f^SA's diagonal, the solution canonical in f^SA (an off-diagonal
    above 1e-8 is refused). The degenerate-pair rule is `df_nevpt2_tangents`'
    (1e-6 Eh, 1e-8): SC refuses, naming the pair and the coordinate; PC
-   records every pair under 1e-6 Eh along every coordinate, with its
-   split, for `df_qd_pc_nevpt2` (#1277).
+   records every pair under its 1e-4 Eh reach (#1296) along every
+   coordinate, with its split, for `df_qd_pc_nevpt2` (#1277).
 
 Then c_dot = ξ + every θ, κ the total, both one-index transforms on h_dot and
 B_dot, and the chunk is the consumer's. `theta` returns every rotation
@@ -2199,15 +2203,18 @@ energies through a 5.6e-5 Eh gap. So at this gap the 1/gap terms cancel
 to the energy's own scale, and **the near-degenerate pair is not
 refused**. The cancellation costs digits: about nine of the parts' sixteen
 go into it. A pair much closer than this one would lose the rest before it
-reaches the 1e-6 Eh rule. The test asserts every element within 2× the
-bar. A pair below 1e-6 Eh is not divided at all: the next section.
+reaches the 1e-6 Eh rule, and between that rule and about 1e-5 Eh it
+already loses enough to show (#1296). The test asserts every element
+within 2× the bar. A pair closer than 1e-4 Eh is not divided at all: the
+next section, and "Where a pair is taken" for why 1e-4.
 
 ### A degenerate inactive pair (#1268)
 
 Two core (or two virtual) orbitals under the degenerate-pair rule,
 |ε_p − ε_q| < 1e-6 Eh: an exactly degenerate pair of a degenerate irrep, or
 the 1s pair of two symmetry-equivalent atoms far apart (1,5-hexadiene's
-C1 and C6, 4.27 Å, 8e-7 Eh). Until #1268 the call refused every coordinate
+C1 and C6, 4.27 Å, 8e-7 Eh). PC takes every pair closer than its reach,
+1e-4 Eh, the same way (#1296, "Where a pair is taken" below). Until #1268 the call refused every coordinate
 that split one, saying the canonical orbitals are not differentiable there.
 They are not, but **the PC energy is smooth there**, and the call now takes
 the pair.
@@ -2305,7 +2312,7 @@ Measured on the gfx1200 (`--preset hip`), against this tree's numerical
 |---|---|---|---|---|---|---|
 | `nh3_c3v_631g`, C3v ammonia 6-31G CAS(8,7) | virtual e (10, 9), (12, 11) (3e-14) | 12 Cartesian | 4.2e-7 | 0.034, 0.043 bars | 591, 712 bars | 18.6 s |
 | `nh3_near_631g`, H1 2e-6 bohr off C3v | the same (7.4e-8), no symmetry | 12 | 3.2e-7 | 0.048, 0.058 | 948 | 18.5 s |
-| `hexatriene_sto3g`, C2h, STO-3G CAS(6,6) | C1/C6 1s (5, 4) (4.6e-7); (1, 0) at 3.7e-6 divided | 42 | 1.2e-7 | 0.330 | 2.1 | 110 s |
+| `hexatriene_sto3g`, C2h, STO-3G CAS(6,6) | C1/C6 1s (5, 4) (4.6e-7); (1, 0) at 3.7e-6, divided until #1296 and taken since | 42 | 1.2e-7 | 0.330 (0.329 since #1296) | 2.1 (3.2 since #1296) | 110 s |
 
 Two runs where two numbers are given. Every ladder settled (no ratio
 unsettled, every element at its floor). Asymmetry ≤ 1.0e-10, the sum rule
@@ -2319,7 +2326,107 @@ hexatriene the 1s pair's part is two bars: the core pair's off-diagonal
 f is far from the active space, so the energy barely reads it. The case
 is there for #1268's shape (a pair of distant equivalent atoms, the next
 pair just above the rule and divided), not for the size of the part.
+Since #1296 the next pair is inside PC's reach and is taken too. Its
+asymmetry is 6.8e-11.
 Before #1268 all three were refused, every coordinate that split a pair.
+
+### Where a pair is taken (#1296)
+
+There are two ways to treat a pair, and each has its own error.
+
+- **The division** loses digits to rounding. Its 1/gap² parts cancel (above),
+  so the rounding left in the sum grows as C / gap². C is larger where the
+  parts are larger: a big basis, core orbitals.
+- **The pair's terms** (above) have an O(gap) bias. They read Ẽ with the
+  pair's split dropped.
+
+Up to #1296 the switch between the two sat at the 1e-6 Eh rule. Just above
+it, the division was the worse of the two. The Cope study's analytic PC
+Hessians showed it (#1296). The three with the closest inactive pairs had
+an asymmetry of about 1e-6. The worst, 1.0e-5, was at a pair 2.4e-6 Eh
+apart, divided. Pairs that were taken, or more than 1e-4 Eh apart, showed
+about 1e-8 or less.
+
+**The gap curve.** The probe is `nh3_near_631g`'s ammonia with H1 moved
+along x by s bohr, off C3v. That moves its two virtual e pairs apart, about
+0.037 s and 0.096 s Eh. The reference is this tree's numerical `[hessian]`
+ladder at each point. Every ladder settled, with a bar of 1.9e-7 to 3.2e-7.
+The table gives the Hessian's asymmetry and its worst element in bars,
+measured three ways:
+
+- with 1e-6 Eh as the switch (before);
+- with every pair under 1e-2 Eh taken by the pair's terms;
+- with the 1e-4 Eh reach (now).
+
+Measured on the gfx1200, `--preset hip`.
+
+| s (bohr) | pair gaps (Eh) | before: asym / worst | all taken: asym / worst | now: asym / worst |
+|---|---|---|---|---|
+| 2e-6 | 7.4e-8, 1.9e-7 | 3.5e-11 / 0.049 | 4.4e-11 / 0.043 | 4.8e-11 / 0.047 |
+| 2e-5 | 7.4e-7, 1.9e-6 | **1.8e-7 / 4.67** | 3.0e-11 / 0.058 | 4.6e-11 / 0.053 |
+| 3e-5 | 1.1e-6, 2.9e-6 | **1.2e-7 / 1.35** | 4.1e-11 / 0.069 | 5.1e-11 / 0.058 |
+| 1e-4 | 3.7e-6, 9.6e-6 | 3.7e-9 / 0.158 | 2.8e-11 / 0.122 | 5.3e-11 / 0.123 |
+| 3e-4 | 1.1e-5, 2.9e-5 | 5.2e-10 / 0.067 | 5.7e-11 / 0.073 | 3.5e-11 / 0.063 |
+| 1e-3 | 3.7e-5, 9.6e-5 | 1.7e-10 / 0.052 | 5.8e-11 / 0.046 | 5.2e-11 / 0.065 |
+| 3e-3 | 1.1e-4, 2.9e-4 | 2.2e-11 / 0.158 | 4.8e-11 / 0.172 | 5.7e-11 / 0.169 |
+| 1e-2 | 3.6e-4, 9.8e-4 | 3.7e-11 / 0.067 | 3.4e-11 / **0.264** | 2.4e-11 / 0.072 |
+| 3e-2 | 1.0e-3, 3.1e-3 | 8.3e-11 / 0.116 | 4.1e-11 / **0.688** | 4.6e-11 / 0.112 |
+
+These also ran without a ladder: s = 0, 1e-5, 5e-5 and 2e-4. At s = 2e-4
+(gaps 7.4e-6 and 1.9e-5) the asymmetry was 1.1e-9 before and 5.7e-11 now;
+at 5e-5, 9.3e-9 before. **The cause is the division just above the rule.**
+Its asymmetry falls as about 1/gap². At 2e-5 and 3e-5 its elements miss the
+ladder, by up to 4.7 bars. Taking the pairs leaves only the noise of the
+Z-vector and CP solves, about 5e-11, at every gap.
+
+**Fitting the curve.** Comparing the "before" and "all taken" Hessians
+element by element separates the two errors:
+
+- **The division's error** is about 3e-19 / gap² Eh/bohr² here. It is
+  2.7e-8 at 3.7e-6 Eh and 3.4e-9 at 7.4e-6.
+- **The pair's terms' bias** is about 1.5e-4 × gap. That is about gap /
+  (2 Eh) of their part, which is roughly 1e3 bars here. It is 1.5e-8 at
+  1.1e-4 Eh and 1.6e-7 at 1.0e-3.
+
+The Cope study's numbers put that system's C near 6e-17, 200 times the
+ammonia's. **The reach, 1e-4 Eh**, sits between the two errors:
+
+- Below it, the bias is at most 5e-5 of the pairs' part. That is under 0.1
+  bar here, and about 0.3 bar for the largest part measured in a
+  single-state call, 5.9e3 bars.
+- Above it, the division's rounding is at most 3e-11 here, and about 6e-9
+  at the Cope study's C. Before, the Cope study saw 1e-5.
+
+A higher reach would buy the Cope case little. It would cost the strongly
+coupled pairs bars.
+
+**The cut.** The reach is `kPcPairReach` (the internal partition), and
+`pc_taken_pairs` applies it. The pairs under it are sorted, the closest
+first, and each orbital goes into one pair at most. A pair that shares an
+orbital with a closer one is divided when it is above 1e-6 Eh, as before. Below
+1e-6 Eh it is recorded, and `degenerate_pair_blocks` refuses the cluster
+as before. SC keeps the 1e-6 Eh rule: it is not invariant, so it has no
+pair term. The gradient's z^c rule (`../nevpt2/gradient/zc.cpp`) does not
+change. Above 1e-6 Eh its z_pq = −A_pq / 2 gap is the Ẽ_δ / 2 that the
+pair's terms already assume.
+
+**The QD path shares the defect, and takes the same fix.**
+`df_qd_nevpt2_tangents` applies the same `pc_taken_pairs` at f^SA. The
+probe is the SA-2 ammonia, PC-QD state 1, the same s. Its pairs at f^SA are
+about 3× further apart. The asymmetry before → now:
+
+| s (bohr) | 2e-6 | 3e-5 | 1e-4 | 1e-3 | 3e-2 |
+|---|---|---|---|---|---|
+| asymmetry before → now | 2.3e-12 → 2.5e-12 | **1.6e-8** → 3.4e-12 | 1.2e-9 → 3.7e-12 | 1.3e-11 → 2.3e-11 | 1.1e-11 → 4.8e-12 |
+
+At 3e-5 (gaps 3.4e-6 Eh) the two Hessians differ by 2.5e-7. Against that
+point's numerical ladder of the PC-QD state gradient (bar 3.3e-7, settled),
+the worst element is 0.775 bars before and 0.039 now.
+
+The ladders at s ≥ 2e-5 tighten the Z-vector to 1e-11, not 1e-12. At
+these geometries the 100-fold tightened solve stalls at 1.6e-12 to
+5.4e-12, and `[hessian]` refuses the point. The tool's committed cases do
+not reach this. For that reason the measured curve is not a committed fixture.
 
 ### Tests
 
@@ -2353,6 +2460,10 @@ Before #1268 all three were refused, every coordinate that split a pair.
   (`tools/nevpt2_hessian/degenerate_pair_ladder.py`). Every element within
   2× the ladder's bar, the pairs' part above 10 bars (ammonia) or 1 bar
   (hexatriene), the asymmetry ≤ 1e-9 and the sum rule ≤ 1e-8.
+- `PairsPastTheRuleAreTaken` (#1296, slow tier): the ammonia at s = 3e-5
+  ("Where a pair is taken"). Its pairs are 1.1e-6 and 2.9e-6 Eh apart, so
+  the two are taken; the asymmetry is ≤ 1e-9 (it was 1.2e-7 when they were
+  divided) and the sum rule ≤ 1e-8.
 - `DegenerateClusterIsUnsupported` (#1268): a Td methane in 6-31G,
   CAS(8,8) over its valence, whose virtual t2 triple is a cluster:
   Unsupported, naming `hessian::df_pc_nevpt2`, an orbital and two pairs.
@@ -2654,7 +2765,8 @@ Unsupported, as for `df_pc_nevpt2`.
 ### At a degenerate inactive pair (#1277)
 
 Two core (or two virtual) orbitals under the degenerate-pair rule at f^SA,
-|ε_p − ε_q| < 1e-6 Eh: `df_qd_nevpt2_tangents` with `pc` records the pair
+|ε_p − ε_q| < 1e-6 Eh, or under PC's 1e-4 Eh reach (#1296):
+`df_qd_nevpt2_tangents` with `pc` records the pair
 along every coordinate, κ_oo^x_pq left 0, with f^SA(x)_pq and the change
 of the pair's split. Until #1277 the call refused every such record.
 It now takes the pair as `df_pc_nevpt2` does ("A degenerate inactive
