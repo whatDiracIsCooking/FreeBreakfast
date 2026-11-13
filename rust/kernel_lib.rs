@@ -6,8 +6,15 @@
 // <build>/<module>/kernels, where rust/CMakeLists.txt's add_subdirectory puts
 // it. The test binaries get an rpath to both directories: the kernel library
 // NEEDs the C ABI's, and wwr-sys's own rpath reaches its own targets only.
+//
+// It also hands the crate the backend expected of the library, for its load
+// check (`check_library()`, compared by fb-kernel-abi): the one <build> was
+// configured for, read from its CMakeCache.txt, since wwr's C ABI has no
+// query that names its backend. The crate reads it as
+// `env!("FB_KERNELS_BACKEND")`, `CUDA` or `HIP`.
 
-/// Links `libfb_<module>_kernels.so` and the C ABI library beside it.
+/// Links `libfb_<module>_kernels.so` and the C ABI library beside it, and
+/// sets `FB_KERNELS_BACKEND` to the backend of their build.
 fn link_kernel_lib(module: &str) {
     let capi = capi_dir();
     // capi_dir() is <build>/deps/WarpWraps/src/capi.
@@ -28,4 +35,18 @@ fn link_kernel_lib(module: &str) {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{}", d.display());
     }
     println!("cargo:rustc-link-lib=dylib=fb_{module}_kernels");
+    let cache = build.join("CMakeCache.txt");
+    println!("cargo:rerun-if-changed={}", cache.display());
+    let text = std::fs::read_to_string(&cache)
+        .unwrap_or_else(|e| panic!("{} is unreadable: {e}", cache.display()));
+    let backend = text
+        .lines()
+        .find_map(|l| l.strip_prefix("FREE_BREAKFAST_GPU_BACKEND:STRING="))
+        .unwrap_or_else(|| panic!("{} sets no FREE_BREAKFAST_GPU_BACKEND", cache.display()));
+    assert!(
+        matches!(backend, "CUDA" | "HIP"),
+        "{}: FREE_BREAKFAST_GPU_BACKEND is '{backend}', not CUDA or HIP",
+        cache.display()
+    );
+    println!("cargo:rustc-env=FB_KERNELS_BACKEND={backend}");
 }

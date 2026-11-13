@@ -34,7 +34,9 @@ impl Run {
     /// # Errors
     /// The readers' refusals: an XYZ file that cannot be read or parsed, a
     /// basis that is neither a carried name nor a readable document, an
-    /// element the basis lacks.
+    /// element the basis lacks; and the kernel library's load check
+    /// ([`add_overlap`]), a `GpuRuntime` error naming the found and the
+    /// expected ABI version and backend.
     pub fn new(xyz: &Path, basis: &str) -> Result<Run> {
         // Charge and multiplicity do not enter the overlap.
         let molecule = fb_io_xyz::read_xyz(xyz, 0, 1)?;
@@ -43,7 +45,7 @@ impl Run {
             .place(&molecule)?;
         let n_ao = basis.nao_sphe() as usize;
         let mut dag = Dag::new();
-        let s = add_overlap(&mut dag, 0, &basis);
+        let s = add_overlap(&mut dag, 0, &basis)?;
         let pinned = dag.add(
             "download",
             0,

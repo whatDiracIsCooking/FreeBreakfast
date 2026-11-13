@@ -29,7 +29,8 @@ pub use bindings::*;
 /// of the CMake build this crate linked (`docs/gpu_layer.md`, "What the port
 /// changes"). Call it once, before the first launch: a library built for the
 /// other backend, or from another header, otherwise fails at a launch or deep
-/// inside wwr with nothing naming the cause. Needs no device.
+/// inside wwr with nothing naming the cause. Needs no device. The comparison
+/// is [`fb_kernel_abi::check`], tested where no library is built.
 ///
 /// # Errors
 ///
@@ -37,57 +38,12 @@ pub use bindings::*;
 pub fn check_library() -> Result<(), String> {
     // SAFETY: two host functions with no arguments, which call no runtime.
     let found = unsafe { (fb_recipes_abi_version(), fb_recipes_backend()) };
-    let expected = match env!("FB_KERNELS_BACKEND") {
-        "CUDA" => FB_BACKEND_CUDA,
-        _ => FB_BACKEND_HIP,
-    };
-    check_abi(found, (FB_RECIPES_ABI_VERSION, expected))
+    fb_kernel_abi::check(
+        "recipes",
+        found,
+        (FB_RECIPES_ABI_VERSION, env!("FB_KERNELS_BACKEND")),
+    )
 }
 
-/// The load check on values passed in, `(version, backend)` found and
-/// expected, so that a mismatch is testable with one build.
-fn check_abi(found: (u32, fb_backend), expected: (u32, fb_backend)) -> Result<(), String> {
-    let name = |b: fb_backend| match b {
-        FB_BACKEND_CUDA => "CUDA".to_owned(),
-        FB_BACKEND_HIP => "HIP".to_owned(),
-        other => format!("unknown backend {other}"),
-    };
-    if found == expected {
-        return Ok(());
-    }
-    Err(format!(
-        "libfb_recipes_kernels.so is ABI version {} built for {}, but fb-recipes-sys \
-         expects ABI version {} built for {}: rebuild the library from this tree \
-         for this backend (README.md, \"Build and test\")",
-        found.0,
-        name(found.1),
-        expected.0,
-        name(expected.1)
-    ))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_check_passes_equal_values() {
-        assert_eq!(check_abi((3, FB_BACKEND_HIP), (3, FB_BACKEND_HIP)), Ok(()));
-    }
-
-    #[test]
-    fn the_check_refuses_another_version_naming_both() {
-        let e = check_abi((2, FB_BACKEND_CUDA), (3, FB_BACKEND_CUDA)).unwrap_err();
-        assert!(e.contains("ABI version 2 built for CUDA"), "{e}");
-        assert!(e.contains("expects ABI version 3 built for CUDA"), "{e}");
-    }
-
-    #[test]
-    fn the_check_refuses_another_backend_naming_both() {
-        let e = check_abi((3, FB_BACKEND_CUDA), (3, FB_BACKEND_HIP)).unwrap_err();
-        assert!(e.contains("ABI version 3 built for CUDA"), "{e}");
-        assert!(e.contains("expects ABI version 3 built for HIP"), "{e}");
-        let e = check_abi((3, 7), (3, FB_BACKEND_HIP)).unwrap_err();
-        assert!(e.contains("built for unknown backend 7"), "{e}");
-    }
-}
+// The numbers fb_kernel_abi::check names the found backend by.
+const _: () = assert!(FB_BACKEND_CUDA == 1 && FB_BACKEND_HIP == 2);

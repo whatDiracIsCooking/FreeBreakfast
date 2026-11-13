@@ -17,6 +17,7 @@ members = [
     "atom",
     "molecule",
     "basis",
+    "kernel_abi",
     "recipes/sys",
     "integrals/sys",
     "integrals/mmd",
@@ -49,6 +50,7 @@ fb-core-constants = { path = "core/constants" }
 fb-atom = { path = "atom" }
 fb-molecule = { path = "molecule" }
 fb-basis = { path = "basis" }
+fb-kernel-abi = { path = "kernel_abi" }
 fb-recipes-sys = { path = "recipes/sys" }
 fb-io-xyz = { path = "io/xyz" }
 fb-io-basis = { path = "io/basis" }

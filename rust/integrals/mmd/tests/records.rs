@@ -253,7 +253,7 @@ fn records_match_the_cpp_tree() {
     for (stem, basis) in common::cases() {
         let out = Arc::new(Mutex::new(Vec::new()));
         let mut dag = Dag::new();
-        let classes = add_records(&mut dag, 0, &basis);
+        let classes = add_records(&mut dag, 0, &basis).unwrap();
         let down = dag.add("download", 0, Download(classes.clone()));
         dag.add(
             "collect",

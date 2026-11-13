@@ -1,0 +1,9 @@
+[package]
+name = "fb-kernel-abi"
+description = "The kernel libraries' load check: an ABI version and a backend compared, linking nothing"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
