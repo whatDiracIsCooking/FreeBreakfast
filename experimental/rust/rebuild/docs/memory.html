@@ -588,8 +588,8 @@ how many regions the parent holds at once, each at the sub-DAG's peak.</p>
 </tr>
 <tr>
 <td>Thread</td>
-<td>The worker's, its device current, before any stream work on it</td>
-<td>The same, so the pages are the worker's socket's</td>
+<td>The one that makes the plan, its device made current for the call, before any stream work on it; the worker's own thread once one outlives a run</td>
+<td>The same; the worker's thread would put the pages on its socket</td>
 </tr>
 <tr>
 <td>Freed</td>
@@ -602,9 +602,9 @@ how many regions the parent holds at once, each at the sub-DAG's peak.</p>
 <td>The same; the copy engines need no more, and <code>kWorkspaceAlignment</code> is 256 on both sides today</td>
 </tr>
 <tr>
-<td>Debug fill</td>
-<td>Every byte <code>0xFF</code> at instantiation: a NaN in both float widths, and <code>-1</code> in every integer width</td>
-<td>The same</td>
+<td>Fill</td>
+<td>Every byte <code>0xFF</code> at instantiation, in debug builds: a NaN in both float widths, and <code>-1</code> in every integer width</td>
+<td>The same, in every build</td>
 </tr>
 <tr>
 <td>Failure</td>
@@ -627,8 +627,13 @@ be a third kind of buffer a task could reach.</p>
 <p><strong>The debug fill is the arena's own check.</strong> A row read before it is
 written is a bug the C++ pool, which hands back whatever a freed block held,
 cannot show. A block filled with <code>0xFF</code> makes every such read a NaN, which
-the first comparison or norm turns into a failed test. Release builds skip
-the fill.</p>
+the first comparison or norm turns into a failed test. A release build skips
+the device fill, but not the pinned one: a pinned row is handed out as a
+<code>&amp;mut [T]</code>, which must not be uninitialised memory in any build, and pinned
+blocks are small staging, so the fill costs nothing worth measuring. The
+same reason restricts a row's type to an <code>Element</code>, a primitive for which
+every bit pattern is a value, since a reused row is read with whatever its
+previous owner left.</p>
 <p><strong>What is not a kind.</strong> Managed memory is not used and not modelled, and
 nothing here should grow a <code>Managed</code> marker. Pageable host memory is <code>Vec</code>,
 owned by the plan when it is part of the DAG
@@ -641,23 +646,40 @@ has no user yet. So the first pinned rows are small upload and readback
 buffers, and the ring, when it comes, is a pinned edge row with the lifetime
 of the copies that read it.</p>
 <h3 id="the-rust-shape">The Rust shape</h3>
-<p>One module, <code>arena</code>, the only one outside the <code>-sys</code> wrappers with
+<p>One module, <code>core::arena</code>, the only one outside the <code>-sys</code> wrappers with
 <code>unsafe_code</code> allowed (<a href="programming_model.html"><code>programming_model.md</code></a>,
-&quot;Capabilities are enforced by lints&quot;). In it:</p>
+&quot;Capabilities are enforced by lints&quot;); its raw calls are on a sealed trait
+nothing outside it can name. In it:</p>
 <ul>
-<li><code>assign(rows) -&gt; Table</code>, the pure offset assigner: tier 3, fuzzed, its
-total the committed golden (<a href="testing.md"><code>testing.md</code></a>, &quot;Regression&quot;).</li>
-<li><code>Block&lt;K&gt;</code>, with <code>K</code> one of two zero-sized markers, <code>Device</code> and <code>Pinned</code>.
-It holds the raw pointer and the table, allocates in <code>new</code> and frees in
-<code>Drop</code>, and the kind is in the type so a device row cannot be handed to a
-host write.</li>
-<li><code>Block::&lt;K&gt;::partition(&amp;mut self, task) -&gt; Bufs</code>, called by the
-orchestrator once per node per run: the task's rows as disjoint slices,
-<code>split_at_mut</code> fashion, so no task ever holds the block. A device row is a
-pointer-and-length view with no <code>Deref</code>; a pinned row is a real
-<code>&amp;mut [T]</code>. The <code>debug_requires</code> that the id is in the task's layout lives
-here.</li>
+<li><code>TableBuilder&lt;K&gt;</code>, the rows declared node by node, and <code>assign(rows)</code>,
+the pure offset assigner it lays them out with into a <code>Table&lt;K&gt;</code>: tier 3,
+fuzzed, its text the committed golden (<a href="testing.md"><code>testing.md</code></a>,
+&quot;Regression&quot;). The table also returns the handoffs (&quot;Lifetimes&quot;).</li>
+<li><code>Block&lt;K&gt;</code>, with <code>K</code> one of two uninhabited markers, <code>Device</code> and
+<code>Pinned</code>. It holds the raw pointer, the table and one atomic borrow flag
+per row, allocates in <code>new</code> and frees in <code>Drop</code>, and the kind is in the
+type, as it is in every <code>RowId&lt;K, T&gt;</code>, so a device row cannot be handed to
+a host write.</li>
+<li><code>Block::&lt;K&gt;::partition(&amp;self, node) -&gt; Bufs</code>, called by the orchestrator
+once per node per run. A pinned row is a real <code>&amp;[T]</code> or <code>&amp;mut [T]</code>; a
+device row is a pointer-and-length view with no <code>Deref</code>.</li>
 </ul>
+<p><strong>The view's checks are always on, not <code>debug_requires</code>.</strong> Two nodes
+running at once both need rows of one block, so <code>partition</code> takes <code>&amp;self</code>,
+and the orchestrator that calls it has no <code>unsafe</code>. A safe <code>&amp;self</code> API that
+hands out <code>&amp;mut [T]</code> cannot rest on a debug-only contract, so a view takes a
+row's flag when the node first asks for it, a writer alone and readers
+shared, and returns it when the view drops; a row the node's layout did not
+name, or one another view holds in a conflicting mode, panics naming it. In
+a plan that honours the handoffs no flag is ever contended, so the cost is
+one uncontended atomic per row a node asks for.</p>
+<p><strong>A stream node does not touch a pinned row from the host.</strong> It hands the
+row to a copy it enqueues and returns. A handoff between two nodes on one
+stream adds no wait, because the stream already orders their device work,
+but it does not order a host write against an earlier copy still in flight
+out of the same bytes. Host reads and writes of pinned rows are CPU nodes',
+which the executor starts only after the events of the stream nodes before
+them.</p>
 <p><code>run(bufs, stream)</code> receives the <code>Bufs</code> and nothing else that can allocate.</p>
 <h2 id="what-is-checked">What is checked</h2>
 <div class="table"><table>
@@ -691,8 +713,13 @@ here.</li>
 </tr>
 <tr>
 <td>A task reaches only its rows</td>
-<td><code>debug_requires</code> on <code>partition</code></td>
+<td>The view's borrow flags and layout check, always on</td>
 <td>2</td>
+</tr>
+<tr>
+<td>Reusing bytes is ordered</td>
+<td>Random DAGs run in random orders consistent with their edges and handoffs, no two rows sharing bytes live at once</td>
+<td>3</td>
 </tr>
 <tr>
 <td>Declared equals allocated</td>

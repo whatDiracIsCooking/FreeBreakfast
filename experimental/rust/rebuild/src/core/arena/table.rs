@@ -53,6 +53,17 @@ impl RowInfo {
             },
         }
     }
+
+    /// How node `pos` uses this row: `None` if it is not a user. A worker
+    /// row is written by any node.
+    pub(super) fn access(&self, pos: usize) -> Option<Access> {
+        match self.owner {
+            Owner::Worker => Some(Access::Write),
+            Owner::Task | Owner::Edge => {
+                self.users.iter().find(|&&(p, _)| p == pos).map(|&(_, a)| a)
+            }
+        }
+    }
 }
 
 /// A row of a [`Table`] of kind `K` holding elements of type `T`.

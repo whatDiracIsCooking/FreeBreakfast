@@ -14,10 +14,30 @@
 //!   before the next one starts.
 //! - [`admit`] checks a table against its worker's cap, and refuses naming
 //!   the rows live at the peak.
+//! - [`Block::new`] makes the table's one allocation, on the device or
+//!   pinned, filled with `0xFF`; it is freed when the block drops.
+//! - [`Block::partition`] is what a node is handed when it runs: a
+//!   [`Bufs`] that gives it its own rows and no others, as `&[T]` /
+//!   `&mut [T]` on the host and [`DeviceRef`] / [`DeviceMut`] pointers on
+//!   the device.
 //!
-//! Everything here is pure and needs no device. The kind of memory,
-//! [`Device`] or [`Pinned`], is in every type, so a row of one kind cannot
-//! reach a table of the other, and a row's element type is an [`Element`].
+//! Everything but the block is pure and needs no device. The kind of
+//! memory, [`Device`] or [`Pinned`], is in every type, so a row of one kind
+//! cannot reach a table or block of the other, and a row's element type is
+//! an [`Element`]. This module is the only one that allocates: the raw calls
+//! are on a trait nothing outside it can name.
+//!
+//! # Why a view's checks are always on
+//!
+//! Two nodes running at once both need rows of one block, so
+//! [`Block::partition`] takes `&self`, and the orchestrator that calls it
+//! has no `unsafe`. A safe `&self` API that hands out `&mut [T]` cannot rest
+//! on a debug-only contract, so each row has an atomic borrow flag: a
+//! writer is alone, readers share, and a conflict panics naming the row.
+//! In a plan that honours [`Table::handoffs`] none ever fires, and each
+//! costs one uncontended atomic per row a node asks for. For the same
+//! reason a pinned block is filled in release builds too: a slice must not
+//! be uninitialised memory.
 //!
 //! # What it replaces
 //!
@@ -35,9 +55,15 @@
 //!
 //! One stream worker per table: lifetimes are positions in the plan's rank
 //! order, and reuse across streams, transport rows and nested regions wait
-//! for placement. The blocks the tables are allocated as, and the views a
-//! node is handed, come next. Adaptive widths, the measured reserve and the
-//! node-wide pinned sum are admission's and are not here.
+//! for placement. The `Task` trait (`layout(dims)` and `run(bufs, stream)`)
+//! and the glue that turns declared tasks into a table and a
+//! [`thread_pool::Plan`](crate::core::thread_pool::Plan) with the handoffs
+//! as dependencies come next. A block is allocated on the thread that makes
+//! it, not its worker's, since the run's threads do not exist yet. Adaptive
+//! widths, the measured reserve and the node-wide pinned sum are
+//! admission's and are not here. Library handles do not take their
+//! workspace from a worker row yet: WarpWraps' C ABI has no
+//! `wwr_blas_set_workspace`.
 
 #![deny(
     clippy::undocumented_unsafe_blocks,
@@ -46,6 +72,8 @@
 
 mod admit;
 mod assign;
+mod block;
+mod bufs;
 mod kind;
 mod table;
 #[cfg(test)]
@@ -53,7 +81,9 @@ mod tests;
 
 pub use admit::admit;
 pub use assign::{Assignment, Life, Row, assign};
-pub use kind::{Device, Element, Kind, Pinned};
+pub use block::Block;
+pub use bufs::{Bufs, DeviceMut, DeviceRef};
+pub use kind::{Device, Element, HostKind, Kind, Pinned};
 pub use table::{Access, Peak, RowId, Table, TableBuilder};
 
 /// The alignment of every row's offset, in bytes, and the least the block
