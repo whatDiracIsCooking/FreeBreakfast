@@ -108,9 +108,45 @@ checked and timed against, not a second implementation.
 
 The orders agree except at zero. The vendor sorts `-0.0` and `+0.0` as one key,
 so mixed zeros keep their input order, while `radix_sort` puts every `-0.0`
-first. `VendorTreatsSignedZerosAsEqual` pins that. Elsewhere, NaNs included,
+first. `VendorTreatsSignedZerosAsEqual` pins that. Elsewhere,
 `AgreesWithVendorSort` requires identical key bits and identical stable
-permutations.
+permutations. NaNs are included, with one exception on HIP, below.
+
+### hipCUB mis-sorts signaling NaNs above 8192 keys (gfx1200, 2026-11-13)
+
+A signaling NaN is one whose quiet bit (bit 51) is clear. Above 8192 keys,
+hipCUB places it as if that bit were set: `0xfff78070dad647e8` comes out ahead
+of `0xfffe917178f82ed2`, though total order puts the larger negative payload
+first. From about 16384 keys it goes further, and the output stops being a
+permutation of the input. At n = 49157, two NaN keys came out twice and two
+others were lost, so the vendor's count and scatter must disagree on those
+keys' digits. Issue #1323 has the details.
+
+This is the vendor's fault, not `radix_sort`'s. These are the measurements, on
+`AgreesWithVendorSort`'s random bit patterns:
+
+- **`radix_sort`** matched a host `std::stable_sort` under `std::strong_order`
+  in every key bit and every index, at every size the test uses (up to 2^20).
+- **hipCUB on the raw keys** was exact up to 8192 keys. It went wrong at 8193,
+  8194, 16384, 16385, 20000, 49157, 10^5 and 2^20, keys only and with values
+  alike, and only at NaN keys.
+- **hipCUB with every NaN made quiet first** was exact at every size tried,
+  up to 2^22 keys.
+
+The rocPRIM codec maps a `double` exactly as `ordered_bits` does, with special
+handling only for zeros, so the quieting must happen somewhere in its
+multi-block path. Some sizes past 8192 happened to come out right (10000,
+16383, 2^22), presumably because quieting did not reorder that input's NaNs.
+
+So, above 8192 keys, `AgreesWithVendorSort` sets the quiet bit of every NaN
+before sorting with either sort. That keeps negative NaNs, payload order and
+stability under comparison, and drops only signaling NaNs. Up to 8192 keys it
+compares the raw keys. `MatchesTotalOrderOnRandomBits` still checks
+`radix_sort` on signaling NaNs at every size, exactly, against the host.
+The bench's finite inputs are unaffected.
+
+CUB (CUDA) was not checked at these sizes. The test makes the same change to
+the input there too, so whether CUB needs it is still unknown.
 
 ```sh
 build-experimental/experimental/sort/radix/free_breakfast_radix_sort_bench [max_log2=26] [reps=10]
@@ -264,6 +300,8 @@ That path aims at correctness, not speed:
 - sorted, reversed and all-equal inputs;
 - stability: duplicate-heavy keys (`-0.0` and `+0.0` among them) carrying
   their indices must give exactly `std::stable_sort`'s permutation.
+- against the vendor sort, bit for bit, with the two exceptions above (signed
+  zeros, and signaling NaNs above 8192 keys).
 
 ## Files
 
