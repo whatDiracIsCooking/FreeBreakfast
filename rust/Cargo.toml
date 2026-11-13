@@ -25,8 +25,10 @@ fb-core-log = { path = "core/log" }
 fb-core-error-handling = { path = "core/error_handling" }
 fb-core-wwr = { path = "core/wwr" }
 fb-core-diagnostics = { path = "core/diagnostics" }
-fb-core-arena = { path = "core/arena" }
-fb-core-thread-pool = { path = "core/thread_pool" }
+# Without their `device` feature unless a dependent asks for it, so a
+# device-free build of the planner pulls in no wwr.
+fb-core-arena = { path = "core/arena", default-features = false }
+fb-core-thread-pool = { path = "core/thread_pool", default-features = false }
 fb-core-planner = { path = "core/planner" }
 fb-test-support = { path = "test_support" }
 

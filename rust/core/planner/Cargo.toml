@@ -8,14 +8,30 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["device", "device-tests"]
+# Device and Pinned blocks and the Device backend, from the arena and the
+# thread pool. Without it the crate links no library; its unit tests run on
+# Heap blocks and HostOnly workers either way.
+device = ["fb-core-arena/device", "fb-core-thread-pool/device"]
+# What the device test needs beyond `device`: wwr itself, for streams and
+# raw copies. A feature rather than dev-dependencies, which cannot be
+# optional; a dependent takes `device` alone, never this.
+device-tests = ["device", "dep:fb-core-wwr", "dep:wwr-sys"]
+
 [dependencies]
 fb-core-arena.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-thread-pool.workspace = true
+fb-core-wwr = { workspace = true, optional = true }
+wwr-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
 fb-core-arena = { workspace = true, features = ["test-support"] }
-fb-core-wwr.workspace = true
 fb-test-support.workspace = true
 proptest.workspace = true
-wwr-sys.workspace = true
+
+# A round trip through pinned and device rows on a card.
+[[test]]
+name = "planner_device"
+required-features = ["device-tests"]

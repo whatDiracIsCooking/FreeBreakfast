@@ -5,15 +5,11 @@ use std::panic::Location;
 use std::ptr;
 use std::sync::atomic::AtomicIsize;
 
-use wwr_sys::wwr_status;
-
 use super::DEVICE_ALIGNMENT;
 use super::bufs::Bufs;
 use super::kind::Kind;
 use super::table::Table;
 use fb_core_error_handling::{Error, ErrorKind, check_or_abort};
-use fb_core_wwr::common::{ErrorCode, ScopedDeviceIndex};
-use fb_core_wwr::{gpu_log_error_at, gpu_status_at};
 use log::error;
 
 /// One contiguous allocation of kind `K` on one GPU worker, sized to its
@@ -74,17 +70,14 @@ impl<K: Kind> Block<K> {
         let total = table.total();
         let mut base = ptr::null_mut();
         if total > 0 {
-            let _device = K::ON_DEVICE.then(|| ScopedDeviceIndex::new(dev_idx));
+            let _device = K::current(dev_idx);
             // SAFETY: one call writing one pointer through a valid local.
-            let status = unsafe { K::alloc(&mut base, total) };
-            if status != wwr_status::WWR_STATUS_SUCCESS {
+            if let Err(failure) = unsafe { K::alloc(&mut base, total) } {
                 check_or_abort::<()>(Err(Error {
                     kind: ErrorKind::Allocation,
                     message: format!(
-                        "the {} block of {total} bytes on device {dev_idx}: {} ({}); {}",
+                        "the {} block of {total} bytes on device {dev_idx}: {failure}; {}",
                         K::NAME,
-                        status.name(),
-                        status.description(),
                         K::free_memory()
                     ),
                     origin: location,
@@ -105,8 +98,7 @@ impl<K: Kind> Block<K> {
             }
             if K::ALWAYS_FILL || cfg!(debug_assertions) {
                 // SAFETY: the allocation just made, of `total` bytes.
-                let status = unsafe { K::fill(base, total) };
-                check_or_abort(gpu_status_at(status, location));
+                check_or_abort(unsafe { K::fill(base, total, location) });
             }
         }
         let borrows = (0..table.n_rows()).map(|_| AtomicIsize::new(0)).collect();
@@ -151,19 +143,10 @@ impl<K: Kind> Drop for Block<K> {
             return;
         }
         let location = Location::caller();
-        let _device = if K::ON_DEVICE {
-            match ScopedDeviceIndex::try_new(self.dev_idx) {
-                Ok(guard) => Some(guard),
-                Err(e) => {
-                    error!("freeing the {} block: {e}", K::NAME);
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let _device = K::try_current(self.dev_idx)
+            .inspect_err(|e| error!("freeing the {} block: {e}", K::NAME))
+            .ok();
         // SAFETY: `new`'s allocation of the table's total, freed once.
-        let status = unsafe { K::free(self.base, self.table.total()) };
-        gpu_log_error_at(status, location);
+        unsafe { K::free(self.base, self.table.total(), location) };
     }
 }

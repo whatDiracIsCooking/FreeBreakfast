@@ -57,7 +57,12 @@ mainly the orchestrator, not for CPU twins of the GPU tasks.
 Tier 3 is also where the expensive tools pay: fuzzing, mutation testing and
 Miri all run thousands of times per case, and only a case that never touches a
 card can afford that. The more of the orchestrator stays device-free, the more
-of it those tools can reach.
+of it those tools can reach. The arena, the thread pool and the planner build
+with no wwr library for this (their `device` feature off,
+[`README.md`](../README.md), "Build and test"), so a tier-3 run needs no CMake
+step and nothing in it calls into a C library, which Miri cannot follow.
+Miri itself has not been run on them yet: it needs a nightly toolchain the
+image does not carry.
 
 ## Levels: how much of the DAG a test covers
 

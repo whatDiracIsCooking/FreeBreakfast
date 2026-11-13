@@ -1,9 +1,14 @@
 //! The device side of a run.
 
-use super::plan::{NodeId, Placement, Plan};
+use super::plan::NodeId;
+#[cfg(feature = "device")]
+use super::plan::{Placement, Plan};
 use fb_core_error_handling::Status;
+#[cfg(feature = "device")]
 use fb_core_wwr::common::ScopedDeviceIndex;
+#[cfg(feature = "device")]
 use fb_core_wwr::gpu_status;
+#[cfg(feature = "device")]
 use fb_core_wwr::runtime::{Event, Stream, event};
 
 /// The device side of a run: what the stream workers enqueue on, and the
@@ -79,8 +84,18 @@ impl Backend for HostOnly {
 }
 
 /// The stream a GPU node is handed under [`Device`].
+#[cfg(feature = "device")]
 pub type DeviceStream = Stream;
 
+/// Without the `device` feature: a stream that cannot exist, so the
+/// planner's production defaults (`Task<Pinned, DeviceStream>`) still name a
+/// type, and a task over it can be declared and planned but never run,
+/// since there is no `Device` backend to run it on.
+#[cfg(not(feature = "device"))]
+#[derive(Debug)]
+pub enum DeviceStream {}
+
+#[cfg(feature = "device")]
 /// GPU stream workers: one non-blocking stream per worker, each on its own
 /// device, and one event per GPU node, recorded after it returns.
 ///
@@ -93,6 +108,7 @@ pub struct Device {
     events: Vec<Option<Event>>,
 }
 
+#[cfg(feature = "device")]
 // SAFETY: the stream and event handles are raw runtime pointers, which is
 // why the wrappers are neither `Send` nor `Sync`. The runtime API is
 // thread-safe for every call made on them here (record, wait, synchronize),
@@ -100,6 +116,7 @@ pub struct Device {
 // `Device` drops, which a run's borrow of it rules out.
 unsafe impl Sync for Device {}
 
+#[cfg(feature = "device")]
 impl Device {
     /// Stream worker `s` on device `devices[s]`, with an event for every GPU
     /// node of `plan`.
@@ -140,6 +157,7 @@ impl Device {
     }
 }
 
+#[cfg(feature = "device")]
 impl Backend for Device {
     type Stream = DeviceStream;
     type Binding = ScopedDeviceIndex;

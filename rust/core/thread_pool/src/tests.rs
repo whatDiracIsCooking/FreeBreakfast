@@ -287,6 +287,7 @@ fn default_n_cpu_leaves_the_stream_threads_and_keeps_one() {
 /// `src` on. Without the wait the copy reads the zeros `src` started as;
 /// without the CPU node's event sync the read sees `dst` before the copy
 /// lands. Either fault fails the comparison.
+#[cfg(feature = "device-tests")]
 #[test]
 fn device_edges_wait_for_the_work_they_consume() {
     use fb_core_wwr::handle::DeviceHandleStream;

@@ -103,6 +103,8 @@ mod run;
 #[cfg(test)]
 mod tests;
 
-pub use backend::{Backend, Device, DeviceStream, HostOnly};
+#[cfg(feature = "device")]
+pub use backend::Device;
+pub use backend::{Backend, DeviceStream, HostOnly};
 pub use plan::{Lane, NodeId, Placement, Plan};
 pub use run::{default_n_cpu, run};

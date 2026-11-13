@@ -93,6 +93,14 @@ cargo test --workspace --release       # the contract tests are skipped
 cargo test -p fb-core-arena            # one crate, with only its own features
 ```
 
+Tier 3, everything that needs neither card nor library, builds with no
+CMake step at all:
+
+```bash
+cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
+  -p fb-core-arena -p fb-core-thread-pool -p fb-core-planner --no-default-features
+```
+
 `capi_dir.rs`, which each linking crate's `build.rs` includes, finds
 `libwwr_capi_runtime_api.so` under
 `build-experimental/deps/WarpWraps/src/capi`. Set `FB_RUST_BUILD_DIR` to use
@@ -104,9 +112,21 @@ The GPU tests use device 0 and need room on it for a context. The host-only
 tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-test-support` and
 `fb-doc-check` do not link the library at all: they build and pass with it
-missing. The other five link it, the device-free tests of `arena`,
-`thread_pool` and `planner` included. Use a separate `CARGO_TARGET_DIR` per
-backend: each `build.rs` bakes the library's path into the rpath.
+missing. `fb-core-arena`, `fb-core-thread-pool` and `fb-core-planner` link
+it through their `device` feature, which is on by default: without it
+(`--no-default-features`) their device-free tests, on `Heap` blocks and
+`HostOnly` workers, build and pass with no wwr crate in the graph. There
+`Device` and `Pinned` are still kinds, so tables, admission and planning
+are whole, but a block of either of non-zero size aborts, and the
+thread pool's `DeviceStream` is an uninhabited placeholder with no
+`Device` backend to run it. `device-tests` (also default) adds what the
+crates' own device tests need beyond `device`; a dependent asks for
+`device` alone, and the workspace's dependency entries for the arena and
+the thread pool turn their defaults off, so nothing turns them on by
+accident. Only `fb-core-wwr` and `fb-core-diagnostics` always link. Use a
+separate `CARGO_TARGET_DIR` per backend, and another for
+`--no-default-features`: each `build.rs` bakes the library's path into the
+rpath.
 
 Allocating from a memory pool is tested in `core/wwr/tests/pool_allocation.rs`, a
 binary of its own. Under ROCm 7.2.4 on the gfx1200,
@@ -174,10 +194,12 @@ in the gates. The first steps, in order, each one PR:
 2. **The workspace.** One crate per module and `core` split
    ([`testing.md`](docs/testing.md), "Selection: the workspace graph is the
    selection graph"), done while the crate is four thousand lines rather than
-   forty. Done: nine crates, no umbrella. Only `log`, `error_handling`,
-   `test_support` and `doc_check` build without the wwr library; making
-   `arena`, `thread_pool` and `planner` link-free too needs a seam under the
-   arena's blocks, a design of its own.
+   forty. Done: nine crates, no umbrella. Done after it: `arena`,
+   `thread_pool` and `planner` build without the wwr library too, behind a
+   default-on `device` feature whose only seam is the arena's raw calls and
+   the thread pool's `Device` backend ("Build and test"). Which CMake preset
+   step 3 builds `wwr.capi.runtime_api` from is still open: the push gate's
+   preset does not configure `experimental/`, but tier 3 no longer needs it.
 3. **The cargo half of the gates**, tiers 1 to 3 for a diff under the crate
    ([`testing.md`](docs/testing.md), "What runs when").
 4. **One task through the whole model**, before any module is ported: the
@@ -263,3 +285,16 @@ and the first, second and fourth pass with the library moved aside.
 `FB_BLESS=1` rewrites each golden in its own crate, unchanged. Clippy (`-D
 warnings`), rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not
 run on the gfx1200.
+
+2026-11-13, a link-free tier 3 (the `device` feature on the arena, the
+thread pool and the planner), on the RTX 3080 (CUDA) only, holding the
+card: with default features the counts are the workspace split's entry,
+unchanged in both profiles, and each of the three crates passes `cargo test
+-p` alone. With `--no-default-features`, in a worktree where the library had
+never been built, the three build and pass 9, 9 and 6 unit tests (the
+thread pool's one device test is the tenth), the thread-count test and 4
+doctests, alone and together; `cargo tree` shows no wwr crate, and no test
+binary has `libwwr_capi` under `NEEDED`. A non-zero `Device` block there
+aborts naming the missing feature (checked by hand). Clippy (`-D warnings`)
+is clean in both feature sets; rustdoc (`-D warnings`) and `cargo fmt
+--check` are clean with default features. Not run on the gfx1200.
