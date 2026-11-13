@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use fb_core_arena::{Bufs, Device, Element, Kind, Layout, Pinned, RowId};
-use fb_core_error_handling::{Error, Status};
+use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
@@ -156,10 +156,28 @@ impl ClassRows {
 /// Every size is the basis's, fixed here at planning: a class's `n_rec` is
 /// the sum of its shell pairs' primitive products. Aborts past `i32::MAX`
 /// primitives, or records in one class, as the C++ does.
+///
+/// First, before anything is added, the kernel library's load check
+/// ([`fb_integrals_sys::check_library`]): planning is a run's first call into
+/// the library, and every launch of the records, or of a task reading them,
+/// comes after it.
+///
+/// # Errors
+/// A `GpuRuntime` error with the check's message, if the loaded
+/// `libfb_integrals_kernels.so` is not the one the bindings describe.
 #[track_caller]
-pub fn add_records(dag: &mut Dag<'_>, worker: usize, basis: &fb_basis::BasisSet) -> Vec<ClassRows> {
+pub fn add_records(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    basis: &fb_basis::BasisSet,
+) -> Result<Vec<ClassRows>> {
+    // Not `map_err(Error::gpu)`: through a function pointer the error's
+    // origin would be core's, not this call's caller.
+    if let Err(e) = fb_integrals_sys::check_library() {
+        return Err(Error::gpu(e));
+    }
     if basis.nshells() == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let tables = Arc::new(Tables::new(basis));
     let staged = dag.add(
@@ -169,8 +187,9 @@ pub fn add_records(dag: &mut Dag<'_>, worker: usize, basis: &fb_basis::BasisSet)
             tables: Arc::clone(&tables),
         },
     );
-    dag.add("mmd records", worker, Records { tables, staged })
-        .classes
+    Ok(dag
+        .add("mmd records", worker, Records { tables, staged })
+        .classes)
 }
 
 /// The eleven tables, one row each, of one kind: pinned as the CPU task's
@@ -558,7 +577,7 @@ fn upload<T: Element>(
     device: &Bufs<'_, Device>,
     dst: RowId<Device, T>,
     src: &[T],
-) -> Result<*const T, Error> {
+) -> Result<*const T> {
     let dst = device.take_mut(dst);
     debug_assert_eq!(dst.len(), src.len());
     // SAFETY: two rows of `src.len()` elements, on the task's stream. The

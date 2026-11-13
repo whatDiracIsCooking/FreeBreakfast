@@ -14,7 +14,7 @@ use fb_test_support::golden;
 fn plan_goldens() {
     for (stem, basis) in common::cases() {
         let mut dag = Dag::new();
-        let classes = add_records(&mut dag, 0, &basis);
+        let classes = add_records(&mut dag, 0, &basis).unwrap();
         let planned = dag.plan();
         // Every class is non-empty, ascending, la <= lb.
         assert!(classes.iter().all(|c| c.n_rec > 0 && c.la <= c.lb));
@@ -38,6 +38,10 @@ fn plan_goldens() {
 #[test]
 fn an_empty_basis_adds_nothing() {
     let mut dag = Dag::new();
-    assert!(add_records(&mut dag, 0, &fb_basis::BasisSet::default()).is_empty());
+    assert!(
+        add_records(&mut dag, 0, &fb_basis::BasisSet::default())
+            .unwrap()
+            .is_empty()
+    );
     assert!(dag.plan().is_empty());
 }

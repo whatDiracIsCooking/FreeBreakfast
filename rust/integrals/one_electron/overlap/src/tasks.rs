@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use fb_basis::BasisSet;
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
-use fb_core_error_handling::{Error, Status};
+use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
@@ -26,11 +26,19 @@ use wwr_sys::{wwr_blas_handle, wwr_blas_operation, wwr_blas_status, wwr_memcpy_k
 /// into device scratch, then `S = Uᵀ S_cart U` as two GEMMs, the
 /// intermediate `S_cart U` scratch too).
 ///
+/// # Errors
+/// [`add_records`]' load check of the kernel library, before anything is
+/// added.
+///
 /// # Panics
 /// If `basis` has no shells, or `nao_cart²` does not fit an `i32` (the
 /// overlap kernels index the matrix in 32 bits).
 #[track_caller]
-pub fn add_overlap(dag: &mut Dag<'_>, worker: usize, basis: &BasisSet) -> RowId<Device, f64> {
+pub fn add_overlap(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    basis: &BasisSet,
+) -> Result<RowId<Device, f64>> {
     assert!(basis.nshells() > 0, "add_overlap: a basis with no shells");
     let n_cart = basis.nao_cart() as usize;
     let n_sph = basis.nao_sphe() as usize;
@@ -38,7 +46,7 @@ pub fn add_overlap(dag: &mut Dag<'_>, worker: usize, basis: &BasisSet) -> RowId<
         i32::try_from(n_cart * n_cart).is_ok(),
         "add_overlap: {n_cart}² Cartesian AOs do not fit the kernels' 32-bit index"
     );
-    let classes = add_records(dag, worker, basis);
+    let classes = add_records(dag, worker, basis)?;
     let s_cart = dag.add("overlap", worker, Overlap { classes, n_cart });
     let u = dag.add(
         "harmonics",
@@ -47,18 +55,19 @@ pub fn add_overlap(dag: &mut Dag<'_>, worker: usize, basis: &BasisSet) -> RowId<
             u: fb_basis::spherical_transform_matrix(basis),
         },
     );
-    dag.add(
-        "spherical transform",
-        worker,
-        Transform {
-            s_cart,
-            u,
-            n_cart,
-            n_sph,
-            blas: Mutex::new(None),
-        },
-    )
-    .s
+    Ok(dag
+        .add(
+            "spherical transform",
+            worker,
+            Transform {
+                s_cart,
+                u,
+                n_cart,
+                n_sph,
+                blas: Mutex::new(None),
+            },
+        )
+        .s)
 }
 
 /// GPU: the Cartesian overlap, `nao_cart²`, zeroed and then summed class by
