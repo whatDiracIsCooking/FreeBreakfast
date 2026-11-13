@@ -554,7 +554,11 @@ struct PcHessianProduct {
 /// (README "The PC Hessian-vector product in (h, B, c)"), as pc_adjoint is
 /// sc_adjoint's. @p pc_floor is EnergyInputs::pc_floor, pc_adjoint's; @p span
 /// false leaves the kept span's rotation out (pc_class_energies_hvp's), for
-/// the tests alone.
+/// the tests alone. @p matrices, when given, is EnergyInputs::pc_matrices of
+/// every PC walk the call makes: calls at one point (b, c, h and the vector)
+/// that share a store solve over one set of class matrices, so products
+/// split over several calls are of one function (#1318). Hand it to no call
+/// at another point.
 ///
 /// Before the class walk, each direction's Schur lift (pc_metric_lifts along
 /// the RDMs' path on the unit sphere) and the step t* within which the cut
@@ -566,11 +570,13 @@ struct PcHessianProduct {
 /// @return The products; sc_hessian_product's InvalidConfig;
 ///         pc_class_energies_hvp's refusals (a pole, an ill-conditioned
 ///         solve); or the error of a call it makes.
-[[nodiscard]] Result<PcHessianProduct> pc_hessian_product(
-    DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
-    int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c, const double *h,
-    int32_t ncore, int32_t ncas, const double *vector, const double *z, int32_t batch,
-    const MoDirections &directions, bool parts = false, double pc_floor = 0.0, bool span = true);
+[[nodiscard]] Result<PcHessianProduct>
+pc_hessian_product(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                   const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
+                   const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
+                   const double *vector, const double *z, int32_t batch,
+                   const MoDirections &directions, bool parts = false, double pc_floor = 0.0,
+                   bool span = true, PcMatrixStore *matrices = nullptr);
 
 /// @brief What @ref pc_hessian_product holds: sc_hessian_product_footprint
 /// with pc_class_energies_adjoint's and pc_class_energies_hvp's walks

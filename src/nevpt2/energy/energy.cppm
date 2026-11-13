@@ -19,6 +19,19 @@ import free_breakfast.nevpt2.density_fitting;
 
 export namespace free_breakfast::nevpt2 {
 
+struct PcMatrixStoreData;
+
+/// @brief PC's class matrices (S, K and S₁ of every class and pair) at one
+/// point of the inputs, as the first PC walk there built them; every later
+/// walk handed the same store reads them rather than rebuild (README "One
+/// set of matrices", #1318). The builders accumulate with atomics, so a
+/// rebuild carries round-off of its own, and the solve amplifies the
+/// difference by 1 / kept. Empty until a walk fills it. Its holder
+/// guarantees one point: a store read at other inputs gives wrong energies.
+struct PcMatrixStore {
+  std::shared_ptr<PcMatrixStoreData> data;
+};
+
 /// @brief What the eight classes read besides the external integrals, all on
 /// the device. c core, a active, v virtual orbitals, as in the MoBlocks the
 /// slabs come from. Under a frozen core c is the correlated core alone, and
@@ -60,6 +73,10 @@ struct EnergyInputs {
   /// decision. Read by PC alone, by its energy, reverse pass and tangent
   /// alike; unread by SC and in an EnergyDirection.
   double pc_floor = 0.0;
+  /// @brief PC's matrices at these inputs, read and filled by every PC walk
+  /// (PcMatrixStore); none (the default) builds them afresh each walk.
+  /// Unread by SC and in an EnergyDirection.
+  PcMatrixStore *pc_matrices = nullptr;
 };
 
 /// @brief Each class's norm and energy in PySCF's order -- Sr, Si, Sijrs,
@@ -1358,6 +1375,12 @@ pc_class_energies_hvp_footprint(int32_t naux, int32_t ncore, int32_t ncas, int32
                                 int32_t batch, std::span<const size_t> syevd_lwork,
                                 std::span<const EnergyDirection> directions,
                                 const std::array<int64_t, 8> &dropped = {});
+
+/// @brief What a PcMatrixStore holds once one state's PC walks have filled
+/// it, with what a Hessian-vector product over it adds, in bytes: every
+/// walked class's S, K and S₁, twice (the store's, and the product's offsets
+/// for its line, README "One set of matrices").
+[[nodiscard]] size_t pc_matrix_store_bytes(int32_t ncore, int32_t ncas, int32_t nvirt);
 
 /// @brief What @ref pc_effective_hamiltonian_hvp holds over @p nstates states
 /// on @p naux fitting functions and @p ncore, @p ncas and @p nvirt orbitals at

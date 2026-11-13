@@ -1527,6 +1527,7 @@ Result<ActiveOperands> active_operands(DeviceResources &res, const MoBlocks &blo
                         .e_core = std::move(e_core),
                         .e_virt = std::move(e_virt),
                         .pc_floor = in.pc_floor,
+                        .pc_matrices = in.pc_matrices,
                         .nelecas = nelecas};
 }
 

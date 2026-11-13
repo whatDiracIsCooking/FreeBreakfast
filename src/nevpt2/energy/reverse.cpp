@@ -1681,7 +1681,7 @@ Status sweep_dyall(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
   const std::vector<int64_t> d4(4, n);
   const std::vector<int64_t> d6(6, n);
   const auto &[h1e, h2e, dm1, dm2, dm3, f3ca, f3ac, delta, delta_buf, e_core, e_virt, pc_floor,
-               nelecas] = o;
+               pc_matrices, nelecas] = o;
   double *const bh1 = bars.h1e;
   double *const bh2 = bars.h2e;
   double *const b1 = bars.dm1;
@@ -3463,6 +3463,8 @@ Result<ShiftedInputs> shifted_inputs(DeviceResources &res, const MoBlocks &block
                                      const EnergyInputs &in, const EnergyDirection &d,
                                      const double step) {
   ShiftedInputs out{.base = &blocks, .in = in};
+  // Shifted inputs are not the store's point.
+  out.in.pc_matrices = nullptr;
   for (const auto &[field, count] : input_fields(blocks)) {
     if (in.*field == nullptr || d.in.*field == nullptr) {
       continue;
@@ -5123,12 +5125,23 @@ struct PcHvpKet {
   std::vector<std::optional<Buffers::device<double>>> span_dot;
 };
 
-// One class of the PC Hessian-vector product: its kets, and the slab rows'
-// ȳ and x̄ per slab (every pair's block, packed as the walk packs y), and per
-// direction their tangents.
+// One class of the PC Hessian-vector product: its kets, the matrices the
+// base walk solved over, and the slab rows' ȳ and x̄ per slab (every pair's
+// block, packed as the walk packs y), and per direction their tangents.
 struct PcHvpClass {
   bool walked = false;
   std::vector<PcHvpKet> kets;
+  /// @brief The base walk's matrices per pair, [J ns + I] as built (pc_kets'),
+  /// which every walk at the base inputs reads rather than rebuild: a rebuild's
+  /// atomic round-off differs, and the solve amplifies the difference between
+  /// it and the matrices U, V and σ came from by 1 / kept (#1318).
+  std::vector<std::optional<PcMatrices>> matrices;
+  /// @brief With a PcMatrixStore, per pair, the base walk's matrices less a
+  /// build over this call's own inputs: added to every build at shifted
+  /// inputs, so the line's matrices meet the store's at its base point, as a
+  /// store filled at another call's inputs (whose round-off differs) would
+  /// not. Empty without a store.
+  std::vector<std::optional<PcMatrices>> offsets;
   std::vector<std::vector<double>> ybar, xbar;
   std::vector<std::vector<std::vector<double>>> ybar_dot, xbar_dot;
   /// @brief A fixed walk's slab, counted as the base walk's.
@@ -5138,11 +5151,13 @@ struct PcHvpClass {
 // The PC Hessian-vector product's walks. The base walk (@p fixed false, with
 // a tangent) keeps every class's PcHvpClass and the orbital energies' bar
 // tangents [u]; a fixed walk then runs the reverse pass at the kept
-// multipliers, their tangent along direction @p dot when set, over its own
-// inputs' matrices with no solve, every ket's U moved by @p u_step U̇ of
-// direction @p line. @p span false leaves the kept span's rotation out.
+// multipliers, their tangent along direction @p dot when set, with no solve,
+// every ket's U moved by @p u_step U̇ of direction @p line: over the base
+// walk's matrices, or with @p shifted over its own inputs' rebuilt. @p span
+// false leaves the kept span's rotation out.
 struct PcHvp {
   bool fixed = false;
+  bool shifted = false;
   bool span = true;
   std::array<PcHvpClass, 8> classes;
   std::optional<size_t> dot;
@@ -5442,13 +5457,46 @@ Result<Buffers::device<double>> duplicate(DeviceResources &res, const double *co
   return out;
 }
 
-// A fixed walk's kets: the class's matrices over this walk's own operands,
-// no solve. Each ket J's U is the base walk's, moved by u_step U̇ of the
-// line's direction; its T = S U and t1 = S₁ᵀ U are formed over its own
-// matrices, and with the span its dropped modes' leaks V_nᵀ S, V_nᵀ S₁ and
-// V_nᵀ K U over the base walk's V and σ. Every transition (I, J)'s
-// T_{I←J} = S^{(J,I)ᵀ} U_J and t1, and with the span its leak, over pair
-// (J, I)'s matrices, as pc_kets forms them.
+// @p into += @p scale @p x, field by field.
+Status add_matrices(DeviceResources &res, const PcMatrices &x, const double scale,
+                    PcMatrices &into) {
+  FBF_TRY(
+      add_scaled(res, x.s.data(), static_cast<int64_t>(x.s.num_elements()), into.s.data(), scale));
+  if (x.k && into.k) {
+    FBF_TRY(add_scaled(res, x.k->data(), static_cast<int64_t>(x.k->num_elements()), into.k->data(),
+                       scale));
+  }
+  if (x.s1 && into.s1) {
+    FBF_TRY(add_scaled(res, x.s1->data(), static_cast<int64_t>(x.s1->num_elements()),
+                       into.s1->data(), scale));
+  }
+  return {};
+}
+
+// The matrices a fixed walk reads for pair @p p (pc_kets' index): the base
+// walk's at the base inputs, rebuilt over @p ops when the walk is shifted
+// (or the base walk built none), held in @p fresh.
+Result<const PcMatrices *> pc_fixed_matrices(DeviceResources &res, const PcHvp &hvp,
+                                             const PcHvpClass &h, const PcBuild build,
+                                             std::span<const ActiveOperands> ops, const size_t p,
+                                             const bool own, std::optional<PcMatrices> &fresh) {
+  if (!hvp.shifted && p < h.matrices.size() && h.matrices[p]) {
+    return &*h.matrices[p];
+  }
+  fresh = FBF_TRY(build(res, ops[p], own));
+  if (hvp.shifted && p < h.offsets.size() && h.offsets[p]) {
+    FBF_TRY(add_matrices(res, *h.offsets[p], 1.0, *fresh));
+  }
+  return &*fresh;
+}
+
+// A fixed walk's kets: the class's matrices (pc_fixed_matrices'), no solve.
+// Each ket J's U is the base walk's, moved by u_step U̇ of the line's
+// direction; its T = S U and t1 = S₁ᵀ U are formed over the matrices, and
+// with the span its dropped modes' leaks V_nᵀ S, V_nᵀ S₁ and V_nᵀ K U over
+// the base walk's V and σ. Every transition (I, J)'s T_{I←J} = S^{(J,I)ᵀ} U_J
+// and t1, and with the span its leak, over pair (J, I)'s matrices, as
+// pc_kets forms them.
 Result<PcReverse> pc_fixed_kets(ReverseContext &c, const PcStates &q, const char *name,
                                 const int64_t d, const int64_t n1, const PcBuild build) {
   DeviceResources &res = c.res;
@@ -5476,7 +5524,9 @@ Result<PcReverse> pc_fixed_kets(ReverseContext &c, const PcStates &q, const char
     const PcHvpKet &k = h.kets[static_cast<size_t>(j)];
     const int64_t m = k.m;
     const auto mi = static_cast<int32_t>(m);
-    const PcMatrices mats = FBF_TRY(build(res, q.ops[static_cast<size_t>((j * ns) + j)], true));
+    std::optional<PcMatrices> fresh;
+    const PcMatrices &mats = *FBF_TRY(pc_fixed_matrices(
+        res, hvp, h, build, q.ops, static_cast<size_t>((j * ns) + j), true, fresh));
     const Buffers::device<double> s_sym = FBF_TRY(symmetrized(res, mats.s.data(), d));
     Buffers::device<double> u = FBF_TRY(duplicate(res, k.u->data(), d * m));
     if (hvp.u_step != 0.0 && hvp.line < k.u_dot.size() && k.u_dot[hvp.line].num_elements() > 0) {
@@ -5518,7 +5568,9 @@ Result<PcReverse> pc_fixed_kets(ReverseContext &c, const PcStates &q, const char
       const auto ij = static_cast<size_t>((i * ns) + j);
       const ClassSolve &cs = r.kets.solves[static_cast<size_t>(j)];
       const int64_t m = r.kets.m(j);
-      const PcMatrices mats = FBF_TRY(build(res, q.ops[static_cast<size_t>((j * ns) + i)], false));
+      std::optional<PcMatrices> fresh;
+      const PcMatrices &mats = *FBF_TRY(pc_fixed_matrices(
+          res, hvp, h, build, q.ops, static_cast<size_t>((j * ns) + i), false, fresh));
       // S^{(J,I)} row-major is S^{(J,I)ᵀ} column-major, as pc_kets reads it.
       Buffers::device<double> t(static_cast<size_t>(d * m), res.device());
       FBF_TRY(gpu_status(gemm(res.blas(), di, static_cast<int32_t>(m), di, &kOne<double>,
@@ -5556,8 +5608,11 @@ Result<PcReverse> pc_reverse_kets(ReverseContext &c, const PcStates &q, const ch
     return pc_fixed_kets(c, q, name, d, n1, build);
   }
   const int64_t ns = q.ns;
+  // The HVP's base walk keeps the matrices it solves over, for its fixed walks.
+  std::vector<std::optional<PcMatrices>> matrices;
   PcReverse r{.name = name,
-              .kets = FBF_TRY(pc_kets(c.res, name, q.ops, ns, d, n1, build, nullptr, true)),
+              .kets = FBF_TRY(pc_kets(c.res, name, q.ops, ns, d, n1, build, nullptr, true,
+                                      q.hvp != nullptr ? &matrices : nullptr)),
               .w = {},
               .energy = std::vector<double>(static_cast<size_t>(ns * ns), 0.0),
               .modes = std::vector<PcDenominators>(static_cast<size_t>(ns)),
@@ -5579,6 +5634,27 @@ Result<PcReverse> pc_reverse_kets(ReverseContext &c, const PcStates &q, const ch
     PcHvpClass &h = q.hvp->classes[pc_class_index(name)];
     h = PcHvpClass{};
     h.walked = true;
+    h.matrices = std::move(matrices);
+    h.offsets.resize(h.matrices.size());
+    for (size_t p = 0; p < h.matrices.size(); ++p) {
+      if (h.matrices[p] && q.ops[p].pc_matrices != nullptr) {
+        const auto n = static_cast<size_t>(ns);
+        const PcMatrices fresh = FBF_TRY(build(c.res, q.ops[p], p / n == p % n));
+        const PcMatrices &kept = *h.matrices[p];
+        const auto copy = [&](const Buffers::device<double> &x) {
+          return duplicate(c.res, x.data(), static_cast<int64_t>(x.num_elements()));
+        };
+        PcMatrices offset{.s = FBF_TRY(copy(kept.s)), .k = std::nullopt, .s1 = std::nullopt};
+        if (kept.k) {
+          offset.k = FBF_TRY(copy(*kept.k));
+        }
+        if (kept.s1) {
+          offset.s1 = FBF_TRY(copy(*kept.s1));
+        }
+        FBF_TRY(add_matrices(c.res, fresh, -1.0, offset));
+        h.offsets[p] = std::move(offset);
+      }
+    }
     const size_t dirs = q.tangent->t.directions.size();
     for (int64_t j = 0; j < ns; ++j) {
       PcHvpKet k;
@@ -6422,13 +6498,14 @@ Status pc_hvp_keep(ReverseContext &c, const PcStates &q, PcReverse &r, const int
       //   + (K V_k)ᵀ U (M + Mᵀ),
       // A_I the matrix T_{I←J} = A_I U reads (ket J's own S, or pair (J, I)'s
       // transition S unsymmetrized) and S₁_I likewise, over the matrices
-      // rebuilt.
+      // the base walk kept.
       Buffers::device<double> vkbar = FBF_TRY(device_zeros(res, m * m));
       std::optional<Buffers::device<double>> k_sym;
       for (int64_t i = 0; i < ns; ++i) {
         const bool own = i == j;
-        const PcMatrices mats =
-            FBF_TRY(r.build(res, q.ops[static_cast<size_t>((j * ns) + i)], own));
+        std::optional<PcMatrices> fresh;
+        const PcMatrices &mats = *FBF_TRY(pc_fixed_matrices(
+            res, *q.hvp, h, r.build, q.ops, static_cast<size_t>((j * ns) + i), own, fresh));
         const PcWalkBars &wi = r.w[static_cast<size_t>((i * ns) + j)];
         const Buffers::device<double> a = own ? FBF_TRY(symmetrized(res, mats.s.data(), d))
                                               : FBF_TRY(duplicate(res, mats.s.data(), d * d));
@@ -7397,6 +7474,9 @@ struct PcWalkBytes {
   std::span<const size_t> syevd_lwork;
   std::span<const std::array<int64_t, 8>> dropped;
   PcPass pass = PcPass::Adjoint;
+  /// @brief An HVP fixed walk over shifted inputs, which rebuilds its
+  /// matrices; at the base inputs it reads the base walk's.
+  bool shifted = false;
   std::vector<std::vector<TangentMoves>> moves;
   HeldBytes h;
   size_t workspace = 0;
@@ -7519,7 +7599,12 @@ struct PcWalkBytes {
           v = 0;
         }
         into.give(kD * ((2 * d * d) + d + mj + (2 * d * mj) + (mj * mj) + mj) + v);
-        into.give(cl.own_held);
+        // An HVP's base walk hands its matrices to the record.
+        if (pass == PcPass::HvpBase) {
+          record += cl.own_held;
+        } else {
+          into.give(cl.own_held);
+        }
       }
       // Each transition (I, J): its T and T₁, and where J drops modes its
       // leaks.
@@ -7534,7 +7619,11 @@ struct PcWalkBytes {
           if (nd > 0) {
             keep(kD * ((nd * d) + (nd * n1)));
           }
-          into.give(cl.pair_held);
+          if (pass == PcPass::HvpBase) {
+            record += cl.pair_held;
+          } else {
+            into.give(cl.pair_held);
+          }
         }
       }
     }
@@ -7662,7 +7751,9 @@ struct PcWalkBytes {
     for (size_t j = 0; j < states; ++j) {
       const size_t mj = m[j];
       const size_t nd = d - mj;
-      replay(into, cl.own_build);
+      if (shifted) {
+        replay(into, cl.own_build);
+      }
       into.take(kD * d * d);
       keep(kD * ((2 * d * mj) + (n1 * mj)));
       if (nd > 0) {
@@ -7672,7 +7763,7 @@ struct PcWalkBytes {
         keep(kD * ((nd * mj) + (nd * d) + (nd * n1)));
         into.give(kD * ((d * nd) + (d * d)));
       }
-      into.give((kD * d * d) + cl.own_held);
+      into.give((kD * d * d) + (shifted ? cl.own_held : 0));
     }
     for (size_t i = 0; i < states; ++i) {
       for (size_t j = 0; j < states; ++j) {
@@ -7680,12 +7771,16 @@ struct PcWalkBytes {
           continue;
         }
         const size_t nd = d - m[j];
-        replay(into, cl.pair_build);
+        if (shifted) {
+          replay(into, cl.pair_build);
+        }
         keep(kD * ((d * m[j]) + (n1 * m[j])));
         if (nd > 0) {
           keep(kD * ((nd * d) + (nd * n1)));
         }
-        into.give(cl.pair_held);
+        if (shifted) {
+          into.give(cl.pair_held);
+        }
       }
     }
   }
@@ -7795,16 +7890,16 @@ struct PcWalkBytes {
         into.walk(kD * ((3 * nd * mj) + (mj * mj)));
         size_t ket = kD * ((nd * mj) + (mj * mj)); // Ψ, V_kᵀ Ū
         into.take(ket);
+        // Over the matrices the walk kept.
         for (size_t i = 0; i < states; ++i) {
           const bool own = i == j;
-          replay(into, own ? cl.own_build : cl.pair_build);
           into.take(kD * ((d * d) + (mj * d)));
           into.walk(kD * mj * n1);
           if (own) {
             into.take(kD * d * d);
             ket += kD * d * d;
           }
-          into.give((kD * ((d * d) + (mj * d))) + (own ? cl.own_held : cl.pair_held));
+          into.give(kD * ((d * d) + (mj * d)));
         }
         const size_t blocks =
             kD * ((d * mj) + (4 * mj * mj) + (nd * mj) + (nd * nd) + (d * std::max(mj, nd)));
@@ -8403,17 +8498,21 @@ Result<std::vector<PcClassEnergies>> pc_couplings_hvp(
       du.push_back(d);
     }
     if (step != 0.0) {
-      FBF_TRY(line_derivative(
-          res, blocks, set, step, kLineWeights.size(),
-          [&](const double t, std::span<const EnergyBars> scratch) -> Status {
-            std::vector<ShiftedInputs> x;
-            std::vector<EnergyInputs> moved;
-            for (size_t p = 0; p < n2; ++p) {
-              x.push_back(FBF_TRY(shifted_inputs(res, blocks, pairs[p], du[p], t)));
-              moved.push_back(x.back().in);
-            }
-            return pc_fixed_adjoint(res, x.front().blocks(), moved, ns, hbar, batch, scratch, hvp);
-          }));
+      FBF_TRY(
+          line_derivative(res, blocks, set, step, kLineWeights.size(),
+                          [&](const double t, std::span<const EnergyBars> scratch) -> Status {
+                            std::vector<ShiftedInputs> x;
+                            std::vector<EnergyInputs> moved;
+                            for (size_t p = 0; p < n2; ++p) {
+                              x.push_back(FBF_TRY(shifted_inputs(res, blocks, pairs[p], du[p], t)));
+                              moved.push_back(x.back().in);
+                            }
+                            hvp.shifted = true;
+                            const Status walked = pc_fixed_adjoint(res, x.front().blocks(), moved,
+                                                                   ns, hbar, batch, scratch, hvp);
+                            hvp.shifted = false;
+                            return walked;
+                          }));
     }
     // Sijrs reads no RDM: Σ_J H̄_JJ times its one state's product.
     FBF_TRY(sijrs_hvp(res, blocks, pairs.front(), batch, along.front()[u], shared, trace));
@@ -8442,6 +8541,14 @@ Result<PcClassEnergiesHvp> pc_class_energies_hvp(DeviceResources &res, const MoB
       FBF_TRY(pc_couplings_hvp(res, blocks, {&in, 1}, 1, {&one, 1}, batch, directions, bars, {},
                                span, "pc_class_energies_hvp"));
   return PcClassEnergiesHvp{.energies = std::move(got.front())};
+}
+
+size_t pc_matrix_store_bytes(const int32_t ncore, const int32_t ncas, const int32_t nvirt) {
+  size_t bytes = 0;
+  for (const PcClassBytes &cl : pc_class_bytes(ncore, ncas, nvirt, 0)) {
+    bytes += cl.walks ? 2 * cl.own_held : 0;
+  }
+  return bytes;
 }
 
 MemoryFootprint pc_class_energies_hvp_footprint(const int32_t naux, const int32_t ncore,
@@ -8528,7 +8635,8 @@ MemoryFootprint pc_effective_hamiltonian_hvp_footprint(
   const size_t fixed_bars =
       (entries * (n2 + metric_bars_bytes(ncas))) + (states * dyall_bars_bytes(ncas));
   w.pass = PcPass::HvpFixed;
-  const auto fixed = [&] {
+  const auto fixed = [&](const bool shifted) {
+    w.shifted = shifted;
     h.take(fixed_bars);
     for (const PcClassBytes &cl : w.classes()) {
       if (cl.walks) {
@@ -8558,7 +8666,7 @@ MemoryFootprint pc_effective_hamiltonian_hvp_footprint(
   for (size_t u = 0; u < dirs; ++u) {
     h.take(transitions);
     // The multipliers' tangent, and R's onto the orbital energies.
-    fixed();
+    fixed(false);
     h.walk(kD * std::max(nc, nv));
     // U's tangent: pc_u_step's sums, then one symmetric difference.
     bool rotating = false;
@@ -8570,7 +8678,7 @@ MemoryFootprint pc_effective_hamiltonian_hvp_footprint(
     if (rotating) {
       h.walk(2 * kD);
       h.take(scratch);
-      fixed();
+      fixed(false);
       h.give(scratch);
     }
     // The inputs' tangent at fixed multipliers: line_step's sums per pair,
@@ -8596,7 +8704,7 @@ MemoryFootprint pc_effective_hamiltonian_hvp_footprint(
     }
     if (moves) {
       h.take(scratch + shifted);
-      fixed();
+      fixed(true);
       h.give(scratch + shifted);
     }
     // sijrs_hvp along the first pair's direction: at more than one state its

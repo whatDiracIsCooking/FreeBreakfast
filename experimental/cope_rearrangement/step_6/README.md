@@ -244,6 +244,31 @@ The frequencies move by 6e-4 cm⁻¹ at most. ΔH‡, ΔS‡ and ΔG‡, the boa
 imaginary frequency, and the energy check's table (section 5) are
 unchanged at their printed digits.
 
+### Since #1318: the product's matrices built once
+
+[#1318](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/1318)
+traced the residual above to the PC Hessian-vector product rebuilding each
+class's S and K: its fixed walks rebuilt the matrices the solve's U, V and
+σ came from, and each of the 48 coordinates' 6 chunks rebuilt everything.
+Each build carries the atomics' own round-off, and the solves amplify the
+difference by one over the smallest kept metric eigenvalue. The product now
+solves over one set of matrices, within a call and across the chunks
+(`src/hessian/README.md`, "The product's floor at the cut").
+
+`plus_hessian_analytic` on it, RTX 3080, both CUDA locks, the same inputs
+(the runs are `plus_1318_*`, untracked):
+
+| build | asymmetry | translational sum | worst element against `plus_hessian`, bars |
+|---|---:|---:|---:|
+| main (#1314's run) | 3.6e-8 | 1.9e-8 | 0.21 |
+| this tree | 2.3e-9 | 1.1e-9 | 0.30 |
+
+Neither is past 1 bar (0 of 2304; the frequencies within 9.2e-5 cm⁻¹ of
+the ladder's). Runs on intermediate builds gave 1.8e-9 and 3.0e-9. Within a chunk the product's part is symmetric to
+3e-11; what is left lies between chunks (1.8e-9 at most in the run that
+split it), below the ladder's bar by two orders. The default `pc_floor`
+stays at 1e-10. The TS, the boat and a_pp were not rerun.
+
 The thermochemistry below still uses the numerical end-point Hessians.
 
 ## 2. The reference conformer

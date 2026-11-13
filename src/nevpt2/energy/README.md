@@ -1933,11 +1933,71 @@ the bars, every field, along every input group and all at once, worst
 the rotation (`span` false) it misses by 1.9e-3 (the orbital energies) to
 2.8e-1 (h), 1.9e4 to 2.8e6 bars. Each group runs in under half a second.
 
+**One set of matrices at the base inputs (#1318).** The base walk keeps
+every class's S, K and S₁ as it solved over them (`pc_kets`' `matrices`),
+one set per pair, and every walk at the base inputs reads them: the
+multipliers' fixed walk, U's two, and the span bar's derivative. Only the
+six walks of the inputs' line, at shifted inputs, build their own. A
+rebuild is not the same matrix: the builders' einsums accumulate with
+atomics, so each build carries its own round-off, ε |S| and ε |K|. U, V and
+σ are the base build's, and the fixed walks lean on identities that hold
+only for the matrices they came from (Uᵀ S U = 1, V_nᵀ S = σ_n V_nᵀ); the
+solve amplifies a rebuild's difference by 1 / kept. The product then was
+not the derivative of any one function, and its asymmetry was about
+0.05 to 0.1 ε / kept of its largest summand, the same as the run-to-run
+spread of the bars themselves. Reading the kept set, it is about
+1.3e-3 ε / kept: PSB3's twist (`Nevpt2PcEnergyHvp.SymmetricAtTheCut`),
+measured in one process against the rebuild, RTX 3080:
+
+| `pc_floor` | kept | asymmetry, rebuilt | kept set | × kept / ε, kept set |
+|---|---:|---:|---:|---:|
+| 1e-10 | 1.1e-10 | 8.7e-8, 2.2e-7 | 2.6e-9, 2.8e-9 | 1.3e-3 |
+| 3e-10 | 3.6e-10 | 6.6e-9, 1.8e-8 | 1.6e-9, 1.7e-9 | 2.6e-3 |
+| 1e-9 | 1.2e-9 | 5.2e-9, 9.3e-9 | 2.9e-10, 3.9e-10 | 1.6e-3 to 2.1e-3 |
+| 1e-8 | 1.1e-8 | 5.7e-10, 1.2e-9 | 2.3e-11, 4.2e-11 | 1.1e-3 to 2.0e-3 |
+| 1e-7 | 1.1e-7 | 4.3e-11, 2.7e-11 | 1.5e-11, 1.5e-11 | (rounding) |
+
+(Each the largest of three products over the largest summand; two A/B
+pairs per row.) The run-to-run spread is another matter, and is not
+smaller: each call's base walk is one realization of the atomics, and its
+solve amplifies their round-off as the energy's adjoint does (#917). The
+differences' steps set neither: larger steps (U's 16-fold and 256-fold, the
+line's 4-fold, the polarizations' 8-fold) lowered neither.
+
+**One set across calls: `PcMatrixStore`.** A product split over several
+calls, as the PC Hessian splits its coordinates into chunks, pairs
+⟨t_i, H t_j⟩ from one call with ⟨t_j, H t_i⟩ from another, so the spread
+between calls becomes its asymmetry. `EnergyInputs::pc_matrices` names a
+store that the first PC walk at the point fills (`pc_kets` keeps a copy of
+every class's S, K and S₁) and every later one reads in place of its own
+build: the adjoint's, each product's base walk, and so their fixed walks.
+The line's walks still build at their shifted inputs, over the call's own
+inputs; each product adds the store's matrices less a build at its own base
+inputs (`PcHvpClass::offsets`), so the line meets the store at its base
+point. Its holder guarantees the point: a store read at other inputs would
+solve another point's matrices. `pc_hessian_product` takes one, and the PC
+Hessian hands one store to all of its chunks (and none to the degenerate
+pairs' products, at turned orbitals). PSB3's twist, two directions in two
+calls (`SymmetricAtTheCut`, split; RTX 3080, one process):
+
+| `pc_floor` | without a store | over one store |
+|---|---:|---:|
+| 1e-10 | 7.9e-8, 8.3e-8 | 1.5e-10, 6.1e-10, 7.4e-10 |
+| 3e-10 | 2.8e-10, 1.8e-8 | 7.9e-10, 8.2e-10, 8.5e-10 |
+| 1e-9 | 1.9e-8, 2.8e-8 | 6.3e-11, 3.6e-10 |
+| 1e-8 | 1.0e-10, 1.2e-9 | 4.2e-12, 6.2e-12 |
+
+Pinning the point's inputs as well (the first call's RDMs and integrals,
+read by every later one) was tried at the Cope study and moved nothing past
+its scatter, so the store holds the matrices alone.
+
 **Cost.** One tangent walk for every direction at once, then per
 direction nine fixed walks (each one reverse pass) and Sijrs's kernel.
-The base walk keeps, per class, U, V, M and M_Δ, and per slab ȳ and x̄
-(the slab rows' size, on the host), each with its tangent per direction,
-and per direction the span bar's derivative (d × d) and U̇ (d × m).
+The base walk keeps, per class, U, V, M and M_Δ, its matrices (every
+pair's S, K and S₁, and over a store as much again in offsets), and per
+slab ȳ and x̄ (the slab rows' size, on the host), each with its tangent per
+direction, and per direction the span bar's derivative (d × d) and U̇
+(d × m).
 
 ### PC-QD
 
