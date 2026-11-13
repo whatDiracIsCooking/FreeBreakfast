@@ -51,7 +51,7 @@ fn main() {
             seen.lock().unwrap().push(now);
             Ok(())
         });
-        run(&plan, &HostOnly::new(n_streams), n_cpu).unwrap();
+        run(&plan, &HostOnly::new(n_streams), n_cpu).result.unwrap();
         drop(plan);
         let seen = seen.into_inner().unwrap();
         assert!(

@@ -93,6 +93,20 @@ impl Event {
         // SAFETY: the borrow keeps the event alive.
         unsafe { sync(self.get()) }
     }
+
+    /// The device time in milliseconds from `start` to this event
+    /// (`wwrEventElapsedTime`). Both must be timing-capable and recorded,
+    /// and this one complete, or the backend's status says why not.
+    pub fn elapsed_since(&self, start: &Event) -> std::result::Result<f32, wwr_status> {
+        let mut ms = 0.0f32;
+        // SAFETY: writes one f32 through a valid local; both borrows keep
+        // their events alive.
+        let status = unsafe { wwr_sys::wwr_event_elapsed_time(&mut ms, start.get(), self.get()) };
+        match status {
+            wwr_status::WWR_STATUS_SUCCESS => Ok(ms),
+            failed => Err(failed),
+        }
+    }
 }
 
 impl Deref for Event {
@@ -158,14 +172,8 @@ mod tests {
         ok(end.record(&s));
         ok(end.sync());
 
-        let mut ms = -1.0f32;
-        // SAFETY: writes one f32 through a valid local.
-        ok(unsafe { wwr_sys::wwr_event_elapsed_time(&mut ms, start.get(), end.get()) });
-        assert!(ms >= 0.0);
-        // SAFETY: as above.
-        let untimed =
-            unsafe { wwr_sys::wwr_event_elapsed_time(&mut ms, start.get(), sync_only.get()) };
-        assert_ne!(untimed, wwr_status::WWR_STATUS_SUCCESS);
+        assert!(end.elapsed_since(&start).unwrap() >= 0.0);
+        assert!(sync_only.elapsed_since(&start).is_err());
     }
 
     /// Needs a GPU. A stream that waits on an event recorded on another

@@ -14,7 +14,8 @@
 //!   device and is what the device-free tests run on; [`Device`] is the real
 //!   one, over [`fb_core_wwr::runtime`].
 //! - [`run`]: open one [`std::thread::scope`] with `n_cpu` CPU workers and
-//!   one thread per stream worker, run every node once, join.
+//!   one thread per stream worker, run every node once, join, and return
+//!   the [`Record`]: the result and a [`TaskTime`] per node that ran.
 //!
 //! # What a run promises
 //!
@@ -61,6 +62,25 @@
 //! exit, the scope joins and re-raises the panic. A release build aborts on
 //! the panic first.
 //!
+//! # Timing
+//!
+//! The executor times every node, and the node does nothing for it
+//! (`docs/diagnostics.md`, "What the orchestrator times on its own"):
+//!
+//! - **A wall-clock scope around every node's callable**, not the waits
+//!   before it: a CPU node's compute, a GPU node's enqueueing.
+//! - **A stream scope around every GPU node**: [`Backend::begin`] records an
+//!   event on its stream after the waits and before it runs, and the event
+//!   [`Backend::record`] records after it returns, which its consumers wait
+//!   on, closes the scope. No scope syncs: they are read after the run,
+//!   when each stream worker has synced its stream on the way out.
+//! - **The run's wall time**, from the workers' start to their join.
+//!
+//! A failed run still returns its nodes' times: a failed node has an entry
+//! (with no device time), a skipped one has none. A stream scope that
+//! cannot be read fails a run that otherwise succeeded, and is dropped from
+//! one that already failed, since it echoes that failure.
+//!
 //! # Logging
 //!
 //! Each node runs inside a [`TaskScope`](fb_core_log::TaskScope), so its
@@ -73,8 +93,8 @@
 //! Replaying a sub-DAG on the run's workers (an SCF iteration) is not here.
 //! The run ends when no node remains, not when a list is exhausted, so a
 //! decision node can later enqueue the next iteration's nodes without a
-//! second scope. Stream scopes around GPU nodes, and the sync-after-every-task
-//! switch, wait for `diagnostics.md`'s timing layer.
+//! second scope. Host scopes around each sync point, `scope!` inside a node,
+//! and the sync-after-every-task switch are `diagnostics.md`'s and not here.
 //!
 //! ```
 //! use std::sync::atomic::{AtomicU32, Ordering};
@@ -94,7 +114,9 @@
 //!     assert_eq!(total.load(Ordering::Relaxed), 11);
 //!     Ok(())
 //! });
-//! run(&plan, &HostOnly::new(1), 2).unwrap();
+//! let record = run(&plan, &HostOnly::new(1), 2);
+//! record.result.unwrap();
+//! assert_eq!(record.tasks.len(), 3);
 //! ```
 
 mod backend;
@@ -107,4 +129,4 @@ mod tests;
 pub use backend::Device;
 pub use backend::{Backend, DeviceStream, HostOnly};
 pub use plan::{Lane, NodeId, Placement, Plan};
-pub use run::{default_n_cpu, run};
+pub use run::{Record, TaskTime, default_n_cpu, run};

@@ -260,7 +260,7 @@ fn a_dag_through_the_executor() {
     assert_eq!(planned.placement(2), Placement::Cpu);
     let instance = planned.instantiate(&[0]);
     for _ in 0..2 {
-        instance.run(&HostOnly::new(1), 2).unwrap();
+        instance.run(&HostOnly::new(1), 2).result.unwrap();
     }
     assert_eq!(ran.load(Ordering::Relaxed), 10);
 }
@@ -306,7 +306,7 @@ proptest! {
         let (dag, _) = spec.dag(&ran);
         let instance = dag.plan().instantiate(&[0, 0]);
         for _ in 0..2 {
-            prop_assert_eq!(instance.run(&HostOnly::new(2), 3), Ok(()));
+            prop_assert_eq!(instance.run(&HostOnly::new(2), 3).result, Ok(()));
         }
         prop_assert_eq!(ran.load(Ordering::Relaxed), 2 * spec.nodes.len());
     }
@@ -353,11 +353,14 @@ fn a_failure_skips_its_readers() {
             ran: Arc::clone(&ran),
         },
     );
-    let e = dag
-        .plan()
-        .instantiate(&[0])
-        .run(&HostOnly::new(1), 1)
-        .unwrap_err();
+    let record = dag.plan().instantiate(&[0]).run(&HostOnly::new(1), 1);
+    let names: Vec<_> = record.tasks.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["fails"],
+        "the failed task is timed, its reader skipped"
+    );
+    let e = record.result.unwrap_err();
     assert_eq!(e.kind, ErrorKind::Numerical);
     assert!(
         e.context.iter().any(|c| c.starts_with("fails@cpu")),
@@ -451,6 +454,7 @@ fn two_workers_are_independent() {
     planned
         .instantiate(&[0, 0])
         .run(&HostOnly::new(2), 1)
+        .result
         .unwrap();
     assert_eq!(ran.load(Ordering::Relaxed), 6);
 }
