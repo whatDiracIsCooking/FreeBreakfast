@@ -230,8 +230,9 @@ conv_tol_grad = 1e-9
 **Z-vector tolerance** (#812). `zvector_tolerance`, 1e-10 by default, is
 the single-state gradient's (`nevpt2::sc_gradient`'s and `pc_gradient`'s),
 unread under `quasi_degenerate`. It has no TOML key: `[hessian]`'s ladder
-sets it 100 times tighter on its re-solves, to measure the noise the
-default leaves in the gradient.
+sets it 100 times tighter on its re-solves, held at what H̃'s products
+resolve (`../hessian/README.md`, "The noise floor", #1304), to measure the
+noise the default leaves in the gradient.
 
 **Frozen core** (#875). `frozen_core` is `[nevpt2]`'s key (#859), read the
 same way: a count, or `"auto"` (each atom's chemical core). `run` resolves

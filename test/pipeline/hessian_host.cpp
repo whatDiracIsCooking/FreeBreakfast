@@ -830,4 +830,22 @@ TEST(PipelineHessian, TheTightenedReSolveIsHeldAtItsRoundOffFloors) {
   EXPECT_EQ(capped_tol_grad, 1e-12);
 }
 
+// tightened_zvector_tolerance: 100-fold tighter, held at what H~'s products
+// resolve, 0.2 ||z_o|| times the CI response's tolerance inside them
+// (response_tolerance_for: 1e-2 t, at least 1e-10). At the default 1e-10
+// the response is at its floor, and the ammonia's ||z_o|| (0.66, #1304)
+// gives 1.3e-11 where 100-fold asked 1e-12. A small z keeps 100-fold; a
+// loose tolerance keeps it at any z the response tightens with; and a
+// floor above the given tolerance gives the given one.
+TEST(PipelineHessian, TheTightenedZvectorIsHeldAtWhatItsProductsResolve) {
+  constexpr double kResponseFloor = 1e-10; // response_tolerance_for's
+  constexpr double kAmmoniaZ = 0.66;
+  const double ammonia = fb::tightened_zvector_tolerance(1e-10, kAmmoniaZ);
+  EXPECT_DOUBLE_EQ(ammonia, 0.2 * kAmmoniaZ * kResponseFloor);
+  EXPECT_NEAR(ammonia, 1.32e-11, 1e-14);
+  EXPECT_EQ(fb::tightened_zvector_tolerance(1e-10, 0.01), 1e-10 / 100.0);
+  EXPECT_EQ(fb::tightened_zvector_tolerance(1e-4, 100.0), 1e-4 / 100.0);
+  EXPECT_EQ(fb::tightened_zvector_tolerance(1e-10, 100.0), 1e-10);
+}
+
 } // namespace

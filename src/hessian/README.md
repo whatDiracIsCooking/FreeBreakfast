@@ -2423,11 +2423,14 @@ At 3e-5 (gaps 3.4e-6 Eh) the two Hessians differ by 2.5e-7. Against that
 point's numerical ladder of the PC-QD state gradient (bar 3.3e-7, settled),
 the worst element is 0.775 bars before and 0.039 now.
 
-The ladders at s ≥ 2e-5 tighten the Z-vector to 1e-11, not 1e-12. At
-these geometries the 100-fold tightened solve stalls at 1.6e-12 to
-5.4e-12, and `[hessian]` refuses the point. The tool's committed cases do
-not reach this. For that reason the measured curve is not a committed
-fixture (#1304).
+The ladders at s ≥ 2e-5 ran with the noise probe's Z-vector tightened to
+1e-11, not 1e-12, by a local override. At 100-fold the tightened solve
+stopped at 1.6e-12 to 6.7e-12, and `[hessian]` refused all eight points.
+That was H̃'s products at the CI response's 1e-10 floor, not the solver.
+Since #1304 the tightened tolerance is held at what the products resolve,
+1.3e-11 here (`../pipeline/hessian/README.md`, "The noise floor"). Every
+ladder now settles at stock settings, within 0.015 bars of the override's,
+and the s = 3e-5 one is the fixture `nh3_split_631g`.
 
 ### Tests
 

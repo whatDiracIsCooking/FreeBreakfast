@@ -427,4 +427,22 @@ tracked_qd_pair(std::span<const double> reference, std::span<const double> vecto
 [[nodiscard]] std::pair<double, double>
 tightened_casscf_tolerances(double conv_tol, double conv_tol_grad, double energy, size_t pairs);
 
+/// @brief The numerical ladder's tightened NEVPT2 Z-vector re-solve (its
+/// σ_solves): @p tolerance 100 times tighter, but never below what H~'s
+/// products resolve at the production solve's ||z_o|| @p z_norm, and never
+/// looser than given.
+///
+/// nevpt2::lagrangian_gradient holds the Z-vector's true residual, one more
+/// H~ product, to its tolerance t, with the CI response inside each product
+/// converged to response::response_tolerance_for(t) of its right-hand side:
+/// 1e-2 t, but never below 1e-10. Each product then carries an error of
+/// about c ||z_o|| times that tolerance, and a true residual below it is
+/// not held: at 100-fold of the default 1e-10 the response sits at its
+/// floor, and the ammonia's tightened solves stopped at 1.6e-12 to 6.7e-12
+/// (#1304), c 0.007 to 0.10 measured; the floor takes c = 0.2, twice the
+/// largest. Host only.
+///
+/// @return min(t, max(t / 100, 0.2 @p z_norm response_tolerance_for(t / 100))).
+[[nodiscard]] double tightened_zvector_tolerance(double tolerance, double z_norm);
+
 } // namespace free_breakfast

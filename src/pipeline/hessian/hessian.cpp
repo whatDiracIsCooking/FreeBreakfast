@@ -195,8 +195,16 @@ constexpr uint64_t kNoiseSeed = 812;
 // The re-solve that measures what the production tolerances leave: each of
 // them, the CASSCF's, its CI's and the Z-vector's, this many times tighter;
 // the CASSCF's held at or above their round-off floors
-// (tightened_casscf_tolerances, #995).
+// (tightened_casscf_tolerances, #995), the Z-vector's at or above what H~'s
+// products resolve (tightened_zvector_tolerance, #1304).
 constexpr double kTightened = 100.0;
+// What H~'s products resolve, in units of ||z_o|| times the CI response's
+// tolerance inside them: each product's error is about 0.04 ||z|| times
+// that (response/zvector/README.md, "The solve"), and against the response
+// solved to 1e-14 it measured 0.007 to 0.10 over 16 displaced ammonias
+// (6-31G CAS(8,7), the response at its 1e-10 floor, #1304). Twice the
+// largest.
+constexpr double kProductsError = 0.2;
 // The roundings each floor carries, in units of eps |E|: ΔE is the
 // difference of two energies, and each g_pq = 2 (F_pq - F_qp) of two Fock
 // elements, each good to about eps |E|. At PSB3 (|E| 248, 2589 pairs at
@@ -455,6 +463,12 @@ std::pair<double, double> tightened_casscf_tolerances(const double conv_tol,
   const double gradient_floor = energy_floor * std::sqrt(static_cast<double>(pairs));
   return {std::min(conv_tol, std::max(conv_tol / kTightened, energy_floor)),
           std::min(conv_tol_grad, std::max(conv_tol_grad / kTightened, gradient_floor))};
+}
+
+double tightened_zvector_tolerance(const double tolerance, const double z_norm) {
+  const double tight = tolerance / kTightened;
+  const double floor = kProductsError * z_norm * response::response_tolerance_for(tight);
+  return std::min(tolerance, std::max(tight, floor));
 }
 
 Status check_displaced_casscf(size_t nao, std::span<const double> s,
@@ -1242,6 +1256,13 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     double worst_gap = std::numeric_limits<double>::infinity();
     double worst_residual = 0.0;
     size_t gradients = 0;
+    // The last production SC or PC solve's ||z_o||, for its tightened
+    // re-solve's floor (tightened_zvector_tolerance), and the loosest
+    // tolerance a re-solve took (0 when none ran) and whether its floor set
+    // it.
+    double production_z_norm = 0.0;
+    double tight_zvector = 0.0;
+    bool tight_zvector_floored = false;
     // The solves' own noise, for the ladder's floor: the largest residual a
     // displaced solve left, the CASSCF's ||g|| and CI residual plus the
     // NEVPT2 Z-vector's, and the largest response of the parameters per
@@ -1317,6 +1338,10 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                 worst_gap = std::min(worst_gap, g.zc.min_gap);
                 worst_residual = std::max(worst_residual, g.multipliers.residual);
                 if (production) {
+                  const std::vector<double> z = FBF_TRY(download(
+                      res, g.multipliers.orbital.data(), g.multipliers.orbital.num_elements()));
+                  production_z_norm =
+                      std::sqrt(std::transform_reduce(z.begin(), z.end(), z.begin(), 0.0));
                   worst_solve_residual =
                       std::max(worst_solve_residual,
                                cas.gradient_norm + cas.ci_residual_norm + g.multipliers.residual);
@@ -1406,9 +1431,10 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     // and the same solve tightened kTightened-fold, the CASSCF's conv_tol
     // and conv_tol_grad held at their round-off floors (tight_tolerances;
     // its CI's floor follows conv_tol_grad, mcscf::ci_tolerance_for) and the
-    // NEVPT2 Z-vector's, started from the production solve's orbitals and
-    // CI: their difference is what the production tolerances leave in the
-    // gradient.
+    // NEVPT2 Z-vector's at what H~'s products resolve at the production
+    // solve's ||z_o|| (tightened_zvector_tolerance), started from the
+    // production solve's orbitals and CI: their difference is what the
+    // production tolerances leave in the gradient.
     const auto production_and_tightened = [&](std::span<const double> shift,
                                               const std::string &where)
         -> Result<std::pair<std::vector<double>, std::vector<double>>> {
@@ -1433,9 +1459,22 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       // The QD gradient's state form takes no Z-vector tolerance (its own
       // 1e-10), so under QD only the CASSCF is tightened.
       Nevpt2GradientStep tight_nevpt2 = chain_nevpt2_gradient;
-      tight_nevpt2.zvector_tolerance /= kTightened;
-      return std::pair{std::move(g), FBF_TRY(casscf_chain_gradient_at(
-                                         shift, tightened, solved.first, tight, tight_nevpt2))};
+      if (!qd) {
+        tight_nevpt2.zvector_tolerance =
+            tightened_zvector_tolerance(chain_nevpt2_gradient.zvector_tolerance, production_z_norm);
+        if (tight_nevpt2.zvector_tolerance > tight_zvector) {
+          tight_zvector = tight_nevpt2.zvector_tolerance;
+          tight_zvector_floored =
+              tight_zvector != chain_nevpt2_gradient.zvector_tolerance / kTightened;
+        }
+      }
+      return std::pair{std::move(g),
+                       FBF_TRY(casscf_chain_gradient_at(
+                           shift,
+                           qd ? tightened
+                              : std::format("{} and zvector_tolerance {:.2e}", tightened,
+                                            tight_nevpt2.zvector_tolerance),
+                           solved.first, tight, tight_nevpt2))};
     };
     if (!ladder) {
       // Row j the central difference along coordinate j, in the
@@ -1658,9 +1697,12 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                                     : "roundoff"},
               {"conv_tol_grad", tight_tolerances.second},
               {"conv_tol_grad_from",
-               tight_tolerances.second == displaced_casscf.conv_tol_grad / kTightened
-                   ? "fold"
-                   : "roundoff"}}},
+               tight_tolerances.second == displaced_casscf.conv_tol_grad / kTightened ? "fold"
+                                                                                      : "roundoff"},
+              {"zvector_tolerance", tight_zvector > 0.0 ? json(tight_zvector) : json(nullptr)},
+              {"zvector_tolerance_from", tight_zvector > 0.0
+                                             ? json(tight_zvector_floored ? "products" : "fold")
+                                             : json(nullptr)}}},
             {"floor", floor},
             {"judged_above", kJudgedFloors * floor},
             {"points", noise_points},

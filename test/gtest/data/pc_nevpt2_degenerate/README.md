@@ -19,6 +19,7 @@ every element's bar the measured noise floor.
 |---|---|---|---|
 | `nh3_c3v_631g` | C3v ammonia, 6-31G / cc-pVDZ-JKFIT, CAS(8,7) over 1–7 | virtual e (10, 9), (12, 11), 3e-14 | 4.2e-7 |
 | `nh3_near_631g` | the same, H1 moved 2e-6 bohr along x | the same, 7.4e-8, no symmetry | 3.2e-7 |
+| `nh3_split_631g` | the same, H1 moved 3e-5 bohr along x | none: the same pairs at 1.1e-6 and 2.9e-6 Eh, inside PC's 1e-4 Eh reach (#1296) | 3.1e-7 |
 | `hexatriene_sto3g` | all-trans hexatriene (C2h), STO-3G / cc-pVDZ-JKFIT, CAS(6,6) over 19–24 | the terminal carbons' 1s (5, 4), 4.6e-7 | 1.2e-7 |
 | `qd_nh3_c3v_631g_sa2` | `nh3_c3v_631g` over an SA-2 CAS(8,7), equal weights, PC-QD state 1 | virtual e (9, 8), (11, 10) at f^SA, 1e-11 | 4.1e-7 |
 | `qd_nh3_near_631g_sa2` | the same, H1 moved 2e-6 bohr along x | the same, 2.3e-7, no symmetry | 4.1e-7 |
@@ -34,6 +35,8 @@ ladder's), `asymmetry`. A `qd_` case adds `nroots`, `weights`, `state`
 (H_eff's eigenvalues ascending) and `qd` (the step's tracking report).
 `provenance` has the commit, the date and the config the binary ran.
 
-The ammonia ladder's noise step re-solves the Z-vector 100 times tighter
-(1e-12); on the gfx1200 that once stopped at 1.6e-12 after 20 products
-and the run ended there, and the rerun passed.
+The ammonia ladder's noise step re-solves the Z-vector 100 times tighter,
+held at what H̃'s products resolve (1.3e-11 here, #1304). At a flat
+1e-12 the solve once stopped at 1.6e-12 on the gfx1200 and the run ended
+there. At `nh3_split_631g` it stopped every time, which is why that case
+came after the floor.

@@ -18,6 +18,9 @@ The cases:
   degenerate and split at first order by E displacements;
 - `nh3_near_631g`: the same with one hydrogen moved 2e-6 bohr off C3v, so
   that both pairs are near-degenerate (about 1e-7 Eh) with no symmetry;
+- `nh3_split_631g`: the same hydrogen moved 3e-5 bohr, so that the pairs
+  are 1.1e-6 and 2.9e-6 Eh apart: past the 1e-6 Eh rule and inside PC's
+  1e-4 Eh pair reach (#1296);
 - `hexatriene_sto3g`: all-trans hexatriene (C2h) in STO-3G, CAS(6,6) over
   orbitals 19 to 24 (the pi space), whose terminal carbons' 1s pair is
   4.7e-7 Eh apart, the case of #1268's hexadiene;
@@ -62,6 +65,8 @@ ANGSTROM_PER_BOHR = 0.529177210903
 
 # H1's shift along x off C3v for the near-degenerate ammonia (bohr).
 NEAR_SHIFT = 2e-6
+# ... and for the split one, its pairs past the 1e-6 Eh rule (bohr).
+SPLIT_SHIFT = 3e-5
 # The PC-QD-NEVPT2 state the QD cases differentiate (H_eff's eigenvalues
 # ascending): the upper of the two, whose term (ii) is the eigenvector
 # response to the lower.
@@ -116,6 +121,18 @@ CASES = {
             "its virtual e pairs split, near-degenerate, no symmetry"
         ),
         "atoms_bohr": nh3(NEAR_SHIFT),
+        "basis": "6-31G",
+        "ncas": 7,
+        "nelecas": 8,
+        "active": [1, 2, 3, 4, 5, 6, 7],
+    },
+    "nh3_split_631g": {
+        "description": (
+            "the C3v ammonia with H1 moved 3e-5 bohr along x, 6-31G, CAS(8,7): "
+            "its virtual e pairs 1.1e-6 and 2.9e-6 Eh apart, past the 1e-6 Eh "
+            "rule and inside PC's pair reach"
+        ),
+        "atoms_bohr": nh3(SPLIT_SHIFT),
         "basis": "6-31G",
         "ncas": 7,
         "nelecas": 8,
