@@ -105,6 +105,45 @@ made a neighbouring pool's create abort or its destroy segfault.
 
 Nothing in ctest or either gate runs cargo. This directory is checked by hand only.
 
+## Design
+
+`docs/` holds the design. [`design.md`](docs/design.md) is the questions a
+feature's design answers and where each answer lands; the five beside it
+hold the mechanics: the [programming model](docs/programming_model.md), the
+[GPU layer](docs/gpu_layer.md), [testing](docs/testing.md),
+[diagnostics](docs/diagnostics.md) and [documentation](docs/documentation.md).
+They describe the finished shape; the section below is the order the tree
+gets there in.
+
+## Order of work
+
+The crate today is `core` alone, in one package, and nothing runs cargo in
+the gates. The first steps, in order, each one PR:
+
+1. **The section-citation check**, as the first tier-3 test
+   ([`documentation.md`](docs/documentation.md), "Narrative: mdBook beside
+   the rustdoc"). It is a few lines, needs no card, and the documents have
+   drifted once already.
+2. **The workspace.** One crate per module and `core` split
+   ([`testing.md`](docs/testing.md), "Selection: the workspace graph is the
+   selection graph"), done while the crate is four thousand lines rather than
+   forty.
+3. **The cargo half of the gates**, tiers 1 to 3 for a diff under the crate
+   ([`testing.md`](docs/testing.md), "What runs when").
+4. **One task through the whole model**, before any module is ported: the
+   overlap, which `experimental/rust/s_overlap` already launches, or the
+   Coulomb build. Declared with a layout, laid out in an arena, planned once
+   and run on one stream, with its arena size committed as a golden and its
+   stream scope timed. Everything in the documents leans on the
+   orchestrator, and this is where the model meets its hard cases, an
+   adaptive width and a data-dependent size, on one task rather than twenty.
+5. **The per-module shared objects**, a C++-tree change
+   ([`gpu_layer.md`](docs/gpu_layer.md), "Build").
+
+Then the port, bottom-up from `core`, one module per crate, with the C++
+tree green throughout ([`gpu_layer.md`](docs/gpu_layer.md), "What the port
+changes").
+
 ## Verified
 
 2026-11-12, on both cards: on the RTX 3080 (CUDA) and on the gfx1200 (HIP),

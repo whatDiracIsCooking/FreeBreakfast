@@ -494,9 +494,9 @@ libraries behind it, the arena over the raw allocation bindings, and the two
 `libc` calls in `core::log`. Nothing else needs it, and the lints keep it
 there. `unsafe_code` is rustc's own lint, and `forbid` is the level that
 cannot be allowed back, so it is set per crate: once the workspace is split
-([`design.md`](design.md), "Order of work"), the `-sys` wrappers and the arena
-are crates of their own and every other crate forbids, and until then the one
-crate denies with an `allow` on the wrapper modules alone. Where `unsafe` is
+([`README.md`](../README.md), "Order of work"), the `-sys` wrappers and the
+arena are crates of their own and every other crate forbids, and until then
+the one crate denies with an `allow` on the wrapper modules alone. Where `unsafe` is
 allowed, clippy's `undocumented_unsafe_blocks` requires a `// SAFETY:`
 comment on every block, which turns the comment the crate already writes into
 a rule and names the blocks that lack one, and

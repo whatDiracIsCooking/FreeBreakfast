@@ -135,7 +135,7 @@ Three rules go with the table:
   crate, through the diff dispatch they already have for `.py` and C++.
   Today `experimental/` is outside both gates, so until that lands the Rust
   tree is checked by whoever runs `cargo test` by hand, and a PR says so
-  ([`design.md`](design.md), "Order of work").
+  ([`README.md`](../README.md), "Order of work").
 
 ## Running on a card: the process model
 
@@ -194,7 +194,7 @@ decision is written down here:
   everything, which is honest. The crate today is one package, `fb-rebuild`,
   with `core::wwr`, `core::log` and the rest as modules of it; it becomes
   that workspace, with `core` split as the next rule says, before the next
-  module lands ([`design.md`](design.md), "Order of work").
+  module lands ([`README.md`](../README.md), "Order of work").
 - **No umbrella crate.** No prelude, no crate that re-exports the tree. `core`
   is split so that a crate which only logs does not depend on the handle
   types. An edge that exists for convenience costs every PR that touches its

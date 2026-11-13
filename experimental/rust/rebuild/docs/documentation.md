@@ -261,8 +261,8 @@ silently: two such references pointed at sections of `design.md` that had
 moved to documents of their own, and were found by hand. A tier-3 check reads
 every `` [`x.md`](x.md), "Section" `` and fails when `x.md` has no such
 heading. It is the first tier-3 test to write
-([`design.md`](design.md), "Order of work"). Links between pages and into the
-API get `mdbook-linkcheck` the same way, so a page that moves is a failed
+([`README.md`](../README.md), "Order of work"). Links between pages and into
+the API get `mdbook-linkcheck` the same way, so a page that moves is a failed
 build, not a dead link.
 
 **The two LaTeX documents stay LaTeX.** `nevpt2.tex` and `hessian.tex` are
