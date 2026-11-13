@@ -341,3 +341,187 @@ fn builder_refuses_misordered_reads() {
         .contains("another table")
     );
 }
+
+use super::kind::Heap;
+use crate::core::thread_pool::{HostOnly, NodeId, Placement, Plan, run};
+
+fn panic_message(f: impl FnOnce()) -> String {
+    let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_err();
+    e.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap()
+}
+
+/// A view gives a node its own rows and refuses the rest: a value one node
+/// writes another reads back; a row outside the node's layout, a read-only
+/// row taken to write, a row taken twice, a row another live view holds
+/// in a conflicting mode, and another table's row all panic; and a view's
+/// borrows are returned when it drops. Also: the block is filled with
+/// `0xFF` before anyone writes.
+#[test]
+fn views_give_a_node_its_rows_and_no_others() {
+    let mut b = TableBuilder::<Heap>::new();
+    let a = b.output::<f64>(0, "A", 4);
+    let s = b.scratch::<u64>(0, "S", 3);
+    b.read(1, a);
+    b.read(2, a);
+    let w = b.worker::<i32>("info", 1);
+    let block = Block::new(0, b.build());
+
+    {
+        let v0 = block.partition(0);
+        assert!(v0.get(s).iter().all(|&x| x == u64::MAX), "the 0xFF fill");
+        let a0 = v0.take_mut(a);
+        assert!(a0.iter().all(|x| x.is_nan()), "the 0xFF fill");
+        a0.copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
+        v0.take_mut(w)[0] = 7;
+
+        let m = panic_message(|| {
+            v0.take_mut(a);
+        });
+        assert!(m.contains("A is already borrowed by this view"), "{m}");
+        let v1 = block.partition(1);
+        let m = panic_message(|| {
+            v1.get(a);
+        });
+        assert!(m.contains("A is held by another node's view"), "{m}");
+    }
+
+    // Readers share, once the writer's view has dropped.
+    let (v1, v2) = (block.partition(1), block.partition(2));
+    assert_eq!(v1.get(a), &[1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(v2.get(a), v1.get(a));
+    assert_eq!(v1.take_mut(w), &[7]);
+
+    let m = panic_message(|| {
+        v1.get(s);
+    });
+    assert!(m.contains("node 1: S is not in its layout"), "{m}");
+    let m = panic_message(|| {
+        v1.take_mut(a);
+    });
+    assert!(m.contains("node 1: A is read-only to it"), "{m}");
+    let v3 = block.partition(3);
+    let m = panic_message(|| {
+        v3.take_mut(w);
+    });
+    assert!(m.contains("info is held by another node's view"), "{m}");
+    let other = TableBuilder::<Heap>::new().output::<f64>(0, "X", 1);
+    let m = panic_message(|| {
+        v1.get(other);
+    });
+    assert!(m.contains("another table"), "{m}");
+}
+
+/// A table of zero bytes allocates nothing and hands out empty rows.
+#[test]
+fn an_empty_block_allocates_nothing() {
+    let mut b = TableBuilder::<Heap>::new();
+    let e = b.output::<f64>(0, "E", 0);
+    let block = Block::new(0, b.build());
+    assert!(block.base.is_null());
+    assert!(block.partition(0).take_mut(e).is_empty());
+}
+
+/// Each node's plan dependencies: the producer of every row it reads, and
+/// every handoff into it.
+fn deps<K: Kind>(table: &Table<K>, ids: &[NodeId], pos: usize) -> Vec<NodeId> {
+    let mut d: Vec<NodeId> = table
+        .rows
+        .iter()
+        .filter(|r| r.users.iter().skip(1).any(|&(p, _)| p == pos))
+        .map(|r| ids[r.users[0].0])
+        .collect();
+    d.extend(
+        table
+            .handoffs()
+            .iter()
+            .filter(|&&(_, v)| v == pos)
+            .map(|&(u, _)| ids[u]),
+    );
+    d
+}
+
+/// Blocks through the executor: nodes on two CPU workers and a stream
+/// worker read and write their rows through views, a later node takes an
+/// earlier one's bytes, ordered only by the handoffs, and the plan runs
+/// twice over the same block with no view left borrowed.
+#[test]
+fn a_block_through_the_executor() {
+    const N: usize = 64;
+    let mut b = TableBuilder::<Heap>::new();
+    let a = b.output::<u64>(0, "A", N);
+    b.read(1, a);
+    let x = b.output::<u64>(1, "X", N);
+    b.read(2, a);
+    b.read(2, x);
+    let y = b.output::<u64>(2, "Y", N);
+    b.read(3, y);
+    let z = b.output::<u64>(3, "Z", N);
+    b.read(4, z);
+    let table = b.build();
+    assert_eq!(
+        table.offset(z),
+        table.offset(a),
+        "Z reuses A's bytes, so a handoff orders them"
+    );
+    let block = Block::new(0, table);
+    let table = block.table();
+
+    let placements = [
+        Placement::Cpu,
+        Placement::Stream(0),
+        Placement::Cpu,
+        Placement::Stream(0),
+        Placement::Cpu,
+    ];
+    let mut plan = Plan::new();
+    let mut ids = Vec::new();
+    let block = &block;
+    for (pos, &placement) in placements.iter().enumerate() {
+        let d = deps(table, &ids, pos);
+        ids.push(plan.add(format!("n{pos}"), placement, &d, move |_| {
+            let v = block.partition(pos);
+            match pos {
+                0 => v
+                    .take_mut(a)
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(i, e)| *e = i as u64),
+                1 => v
+                    .take_mut(x)
+                    .iter_mut()
+                    .zip(v.get(a))
+                    .for_each(|(e, a)| *e = 2 * a),
+                2 => v
+                    .take_mut(y)
+                    .iter_mut()
+                    .zip(v.get(a).iter().zip(v.get(x)))
+                    .for_each(|(e, (a, x))| *e = a + x),
+                3 => v
+                    .take_mut(z)
+                    .iter_mut()
+                    .zip(v.get(y))
+                    .for_each(|(e, y)| *e = y + 1),
+                _ => assert!(
+                    v.get(z)
+                        .iter()
+                        .enumerate()
+                        .all(|(i, &e)| e == 3 * i as u64 + 1)
+                ),
+            }
+            Ok(())
+        }));
+    }
+    for _ in 0..2 {
+        run(&plan, &HostOnly::new(1), 2).unwrap();
+    }
+    assert!(
+        block
+            .borrows
+            .iter()
+            .all(|f| f.load(std::sync::atomic::Ordering::Relaxed) == 0),
+        "a view's borrow outlived its node"
+    );
+}

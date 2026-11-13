@@ -265,10 +265,10 @@ how many regions the parent holds at once, each at the sub-DAG's peak.
 | | Device | Pinned host |
 |---|---|---|
 | Raw call | `wwr_malloc`, plain | `wwr_host_alloc`, portable |
-| Thread | The worker's, its device current, before any stream work on it | The same, so the pages are the worker's socket's |
+| Thread | The one that makes the plan, its device made current for the call, before any stream work on it; the worker's own thread once one outlives a run | The same; the worker's thread would put the pages on its socket |
 | Freed | At the plan's drop, after the last run's final sync | The same |
 | Alignment | `FB_DEVICE_ALIGNMENT` for every row ([`gpu_layer.md`](gpu_layer.md), "Scratch: the workspace query") | The same; the copy engines need no more, and `kWorkspaceAlignment` is 256 on both sides today |
-| Debug fill | Every byte `0xFF` at instantiation: a NaN in both float widths, and `-1` in every integer width | The same |
+| Fill | Every byte `0xFF` at instantiation, in debug builds: a NaN in both float widths, and `-1` in every integer width | The same, in every build |
 | Failure | Aborts, as every create does (`check_or_abort`), naming the bytes and the free memory | The same, naming `MemAvailable` |
 
 **Plain, not stream-ordered.** One allocation per plan has nothing for a
@@ -287,8 +287,13 @@ be a third kind of buffer a task could reach.
 **The debug fill is the arena's own check.** A row read before it is
 written is a bug the C++ pool, which hands back whatever a freed block held,
 cannot show. A block filled with `0xFF` makes every such read a NaN, which
-the first comparison or norm turns into a failed test. Release builds skip
-the fill.
+the first comparison or norm turns into a failed test. A release build skips
+the device fill, but not the pinned one: a pinned row is handed out as a
+`&mut [T]`, which must not be uninitialised memory in any build, and pinned
+blocks are small staging, so the fill costs nothing worth measuring. The
+same reason restricts a row's type to an `Element`, a primitive for which
+every bit pattern is a value, since a reused row is read with whatever its
+previous owner left.
 
 **What is not a kind.** Managed memory is not used and not modelled, and
 nothing here should grow a `Managed` marker. Pageable host memory is `Vec`,
@@ -305,22 +310,41 @@ of the copies that read it.
 
 ### The Rust shape
 
-One module, `arena`, the only one outside the `-sys` wrappers with
+One module, `core::arena`, the only one outside the `-sys` wrappers with
 `unsafe_code` allowed ([`programming_model.md`](programming_model.md),
-"Capabilities are enforced by lints"). In it:
+"Capabilities are enforced by lints"); its raw calls are on a sealed trait
+nothing outside it can name. In it:
 
-- `assign(rows) -> Table`, the pure offset assigner: tier 3, fuzzed, its
-  total the committed golden ([`testing.md`](testing.md), "Regression").
-- `Block<K>`, with `K` one of two zero-sized markers, `Device` and `Pinned`.
-  It holds the raw pointer and the table, allocates in `new` and frees in
-  `Drop`, and the kind is in the type so a device row cannot be handed to a
-  host write.
-- `Block::<K>::partition(&mut self, task) -> Bufs`, called by the
-  orchestrator once per node per run: the task's rows as disjoint slices,
-  `split_at_mut` fashion, so no task ever holds the block. A device row is a
-  pointer-and-length view with no `Deref`; a pinned row is a real
-  `&mut [T]`. The `debug_requires` that the id is in the task's layout lives
-  here.
+- `TableBuilder<K>`, the rows declared node by node, and `assign(rows)`,
+  the pure offset assigner it lays them out with into a `Table<K>`: tier 3,
+  fuzzed, its text the committed golden ([`testing.md`](testing.md),
+  "Regression"). The table also returns the handoffs ("Lifetimes").
+- `Block<K>`, with `K` one of two uninhabited markers, `Device` and
+  `Pinned`. It holds the raw pointer, the table and one atomic borrow flag
+  per row, allocates in `new` and frees in `Drop`, and the kind is in the
+  type, as it is in every `RowId<K, T>`, so a device row cannot be handed to
+  a host write.
+- `Block::<K>::partition(&self, node) -> Bufs`, called by the orchestrator
+  once per node per run. A pinned row is a real `&[T]` or `&mut [T]`; a
+  device row is a pointer-and-length view with no `Deref`.
+
+**The view's checks are always on, not `debug_requires`.** Two nodes
+running at once both need rows of one block, so `partition` takes `&self`,
+and the orchestrator that calls it has no `unsafe`. A safe `&self` API that
+hands out `&mut [T]` cannot rest on a debug-only contract, so a view takes a
+row's flag when the node first asks for it, a writer alone and readers
+shared, and returns it when the view drops; a row the node's layout did not
+name, or one another view holds in a conflicting mode, panics naming it. In
+a plan that honours the handoffs no flag is ever contended, so the cost is
+one uncontended atomic per row a node asks for.
+
+**A stream node does not touch a pinned row from the host.** It hands the
+row to a copy it enqueues and returns. A handoff between two nodes on one
+stream adds no wait, because the stream already orders their device work,
+but it does not order a host write against an earlier copy still in flight
+out of the same bytes. Host reads and writes of pinned rows are CPU nodes',
+which the executor starts only after the events of the stream nodes before
+them.
 
 `run(bufs, stream)` receives the `Bufs` and nothing else that can allocate.
 
@@ -332,7 +356,8 @@ One module, `arena`, the only one outside the `-sys` wrappers with
 | The block is the plan | The arena's total, committed and compared bitwise per example config | 3 |
 | `bytes(width)` is monotone | Bisection against a linear scan over random dims | 3 |
 | Admission refuses what does not fit | A cap one byte under the peak refused naming the rows live at it; one byte over admitted, as the C++ nested cases pin the room to the byte | 3 |
-| A task reaches only its rows | `debug_requires` on `partition` | 2 |
+| A task reaches only its rows | The view's borrow flags and layout check, always on | 2 |
+| Reusing bytes is ordered | Random DAGs run in random orders consistent with their edges and handoffs, no two rows sharing bytes live at once | 3 |
 | Declared equals allocated | Free memory before and after instantiation differs by the block, under the reserve's growth | 4 |
 | No library allocates behind the arena | The same measurement across a run: free memory unchanged from the first launch to the last sync | 4 |
 | A kernel assumes no more scratch than it asked | The wrapper handed exactly its query's bytes under `memcheck` ([`testing.md`](testing.md), "The C++ boundary") | 4 |
