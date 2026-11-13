@@ -2,9 +2,10 @@ cmake_minimum_required(VERSION 4.2)
 
 # What the crates here link, built without the C++ tree: WarpWraps' C ABI
 # libraries libwwr_capi_runtime_api.so and libwwr_capi_blas.so, and the
-# per-module kernel shared objects (README.md, "Order of work"). The root
-# CMakeLists.txt does not add this directory, and this one adds nothing under
-# src/.
+# per-module kernel shared objects, libfb_recipes_kernels.so and
+# libfb_integrals_kernels.so so far ("The kernel shared objects" below). The
+# root CMakeLists.txt does not add this directory, and this one adds nothing
+# under src/.
 #
 #   cmake --preset cuda        # or hip; from rust/
 #   cmake --build --preset cuda
