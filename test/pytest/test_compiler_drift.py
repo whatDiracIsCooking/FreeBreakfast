@@ -195,9 +195,10 @@ def test_build_sh_reconfigures_a_drifted_tree_fresh(tmp_path: Path) -> None:
 # --- doctor ----------------------------------------------------------------------
 
 
-def test_doctor_names_a_drifted_tree(tmp_path: Path) -> None:
-    """doctor's `build trees` section over a throwaway repository with one
-    stale tree and one sound one. A stub cmake stands in for the toolchain."""
+def _doctor_build_trees(tmp_path: Path, place) -> str:
+    """doctor's `build trees` section over a throwaway repository, after
+    `place(repo)` has laid out its trees. A stub cmake stands in for the
+    toolchain."""
     repo = tmp_path / "repo"
     (repo / "devtools").mkdir(parents=True)
     for name in ("doctor.sh", "lib.sh", "config.sh"):
@@ -214,11 +215,7 @@ def test_doctor_names_a_drifted_tree(tmp_path: Path) -> None:
     subprocess.run([*git, "init", "-q", "-b", "main"], env=env, check=True)
     subprocess.run([*git, "add", "-A"], env=env, check=True)
     subprocess.run([*git, "commit", "-qm", "init"], env=env, check=True)
-    stale = _tree(repo, repo / "gone" / "clang++", "20.1.8")
-    sound_dir = tmp_path / "sound"
-    sound_dir.mkdir()
-    sound = _tree(sound_dir, _compiler(sound_dir, "23.1.6"), "23.1.6")
-    sound.rename(repo / "build-hip")
+    place(repo)
     bin_dir = tmp_path / "stub"
     bin_dir.mkdir()
     (bin_dir / "cmake").write_text("#!/bin/sh\nexit 0\n")
@@ -231,11 +228,52 @@ def test_doctor_names_a_drifted_tree(tmp_path: Path) -> None:
         text=True,
         check=False,
     )
-    section = proc.stdout.split("\nbuild trees\n", 1)[1].split("\nnightly\n", 1)[0]
+    return proc.stdout.split("\nbuild trees\n", 1)[1].split("\nnightly\n", 1)[0]
+
+
+def _move_tree(tmp_path: Path, name: str, cxx_version: str, version: str, to: Path):
+    """A tree recorded at `version`, by a compiler now at `cxx_version`,
+    moved to `to`."""
+    where = tmp_path / name
+    where.mkdir()
+    tree = _tree(where, _compiler(where, cxx_version), version)
+    to.parent.mkdir(parents=True, exist_ok=True)
+    tree.rename(to)
+
+
+def test_doctor_names_a_drifted_tree(tmp_path: Path) -> None:
+    """One stale build*/ tree and one sound one."""
+    gone = tmp_path / "repo" / "gone" / "clang++"
+
+    def place(repo: Path) -> None:
+        _tree(repo, gone, "20.1.8")
+        _move_tree(tmp_path, "sound", "23.1.6", "23.1.6", repo / "build-hip")
+
+    section = _doctor_build_trees(tmp_path, place)
     warns = [ln for ln in section.splitlines() if "[warn]" in ln]
     assert len(warns) == 1, section
-    assert (
-        f"build: configured by {stale.parent / 'gone' / 'clang++'} 20.1.8 -> gone"
-        in warns[0]
-    )
+    assert f"build: configured by {gone} 20.1.8 -> gone" in warns[0]
     assert "build-hip" not in section
+
+
+@pytest.mark.parametrize("stale", [True, False])
+def test_doctor_scans_rust_build_trees(tmp_path: Path, stale: bool) -> None:
+    """rust/build-cuda, the rust/ CMake project's tree (#1377): a compiler
+    that has moved from 20.1.8 to 23.1.6 under it warns, one still at
+    its recorded version does not."""
+    recorded = "20.1.8" if stale else "23.1.6"
+
+    def place(repo: Path) -> None:
+        _move_tree(tmp_path, "rust", "23.1.6", recorded, repo / "rust" / "build-cuda")
+
+    section = _doctor_build_trees(tmp_path, place)
+    warns = [ln for ln in section.splitlines() if "[warn]" in ln]
+    if stale:
+        assert len(warns) == 1, section
+        cxx = tmp_path / "rust" / "bin" / "clang++"
+        assert (
+            f"rust/build-cuda: configured by {cxx} 20.1.8 -> {cxx} 23.1.6" in warns[0]
+        ), section
+    else:
+        assert warns == [], section
+        assert "1 build tree(s), none configured by a changed compiler" in section
