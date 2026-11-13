@@ -190,7 +190,7 @@ button.reset:focus-visible { outline: 2px solid var(--focus); outline-offset: 2p
     </div>
     <div>
       <h3>What the shapes say</h3>
-      <p>PC-NEVPT2 has one stationary point, a saddle on the diagonal at 1.922 Å: the concerted TS. CASSCF has a diyl minimum at 1.649 Å, two off-diagonal saddles beside it, a maximum at 1.888 Å and the aromatic saddle at 2.269 Å, so its route is stepwise.</p>
+      <p>PC-NEVPT2 has one stationary point, a saddle on the diagonal at 1.922 Å: the concerted TS. CASSCF has a diyl minimum at 1.649 Å, two off-diagonal saddles beside it, a maximum at 1.892 Å and the aromatic saddle at 2.279 Å, so its route is stepwise.</p>
     </div>
     <div>
       <h3>The mirrored half</h3>
