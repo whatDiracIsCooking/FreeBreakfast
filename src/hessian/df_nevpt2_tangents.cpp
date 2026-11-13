@@ -137,6 +137,8 @@ Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
 
   std::vector<DegeneratePair> recorded;
   std::vector<double> eps;
+  // PC's pairs taken by their off-diagonal f: disjoint, smallest gap first.
+  std::vector<std::array<size_t, 2>> taken;
   // One chunk of @p count coordinates from x0, as wide as the budget holds.
   const auto part = [&](const int32_t x0, const int32_t count, const double *const h1,
                         const double *const w1) -> Status {
@@ -185,6 +187,9 @@ Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
           }
         }
       }
+      if (pc) {
+        taken = pc_taken_pairs(eps, nc, nocc, kPcPairReach);
+      }
     }
 
     // kappa_oo^x_pq = -f^(x)_pq / (eps_p - eps_q) over each block, under the
@@ -200,7 +205,9 @@ Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
           for (size_t q = 0; q < p; ++q) {
             const double f_pq = 0.5 * (f[p + (width * q)] + f[q + (width * p)]);
             const double gap = eps[first + p] - eps[first + q];
-            if (std::abs(gap) < kTangentGapFloor) {
+            const bool pair =
+                std::ranges::find(taken, std::array{first + p, first + q}) != taken.end();
+            if (pair || std::abs(gap) < kTangentGapFloor) {
               if (!pc && std::abs(f_pq) <= kTangentZeroSource) {
                 continue;
               }
@@ -267,6 +274,32 @@ Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
   FBF_TRY(mcscf::df_integral_derivatives(res, molecule, basis, classes, aux, h, b, l, solution.c,
                                          chunk, w_bytes));
   return recorded;
+}
+
+std::vector<std::array<size_t, 2>> pc_taken_pairs(const std::span<const double> eps,
+                                                  const size_t nc, const size_t nocc,
+                                                  const double reach) {
+  std::vector<std::tuple<double, size_t, size_t>> close;
+  for (const auto &[first, last] : {std::pair{size_t{0}, nc}, std::pair{nocc, eps.size()}}) {
+    for (size_t p = first + 1; p < last; ++p) {
+      for (size_t q = first; q < p; ++q) {
+        if (std::abs(eps[p] - eps[q]) < reach) {
+          close.emplace_back(std::abs(eps[p] - eps[q]), p, q);
+        }
+      }
+    }
+  }
+  std::ranges::sort(close);
+  std::vector<bool> used(eps.size(), false);
+  std::vector<std::array<size_t, 2>> taken;
+  for (const auto &[gap, p, q] : close) {
+    if (!used[p] && !used[q]) {
+      used[p] = true;
+      used[q] = true;
+      taken.push_back({p, q});
+    }
+  }
+  return taken;
 }
 
 MemoryFootprint nevpt2_tangent_chunk_footprint(const int32_t naux, const int32_t nmo,

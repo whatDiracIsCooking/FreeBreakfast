@@ -276,6 +276,21 @@ Result<std::pair<std::vector<double>, std::vector<double>>>
 qd_response_eigen(DeviceResources &res, std::span<const double> energies,
                   std::span<const double> totals);
 
+/// @brief The reach (Eh) of PC's pair rule in the Hessians' tangents (README
+/// "Where a pair is taken", #1296): a core or virtual pair closer than this
+/// is left unrotated and taken by its off-diagonal f, not divided.
+constexpr double kPcPairReach = 1e-4;
+
+/// @brief The core or virtual pairs (p, q), p > q, of the orbital energies
+/// @p eps (nmo, the core [0, nc), the virtuals [nocc, nmo)) that PC's tangents
+/// take by their off-diagonal f: every pair closer than @p reach, smallest
+/// gap first, each orbital in one at most (a pair that shares an orbital
+/// with a closer one is divided, or left to degenerate_pair_blocks' cluster
+/// refusal under the 1e-6 Eh rule). df_nevpt2_tangents' and
+/// df_qd_nevpt2_tangents' (PC).
+std::vector<std::array<size_t, 2>> pc_taken_pairs(std::span<const double> eps, size_t nc,
+                                                  size_t nocc, double reach);
+
 /// @brief The distinct (p, q) of a PC Hessian's degenerate-pair records
 /// @p records, in first-seen order; Unsupported, its message starting with
 /// @p who and naming the orbital and two of its pairs, when an orbital is in

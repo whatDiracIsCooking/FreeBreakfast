@@ -156,6 +156,8 @@ Result<QdNevpt2Tangents> df_qd_nevpt2_tangents(
 
   QdNevpt2Tangents out{.theta = std::vector<double>(root_pairs * n_x, 0.0)};
   std::vector<double> eps;
+  // PC's pairs taken by their off-diagonal f at f^SA (pc_taken_pairs').
+  std::vector<std::array<size_t, 2>> taken;
   // The transition RDMs of each pair r < s, gamma then Gamma.
   std::vector<std::pair<std::vector<double>, std::vector<double>>> transition;
   // One chunk of @p count coordinates from x0, as wide as the budget holds.
@@ -217,6 +219,9 @@ Result<QdNevpt2Tangents> df_qd_nevpt2_tangents(
             }
           }
         }
+      }
+      if (pc) {
+        taken = pc_taken_pairs(eps, nc, nocc, kPcPairReach);
       }
       // The roots' symmetrized transition RDMs, rdm12's convention
       // (<H> = h1eff.gamma + 1/2 (tu|vw).Gamma).
@@ -280,7 +285,9 @@ Result<QdNevpt2Tangents> df_qd_nevpt2_tangents(
           for (size_t q = 0; q < p; ++q) {
             const double f_pq = 0.5 * (f[p + (width * q)] + f[q + (width * p)]);
             const double gap = eps[first + p] - eps[first + q];
-            if (std::abs(gap) < kQdTangentGapFloor) {
+            const bool pair =
+                std::ranges::find(taken, std::array{first + p, first + q}) != taken.end();
+            if (pair || std::abs(gap) < kQdTangentGapFloor) {
               if (!pc && std::abs(f_pq) <= kQdTangentZeroSource) {
                 continue;
               }

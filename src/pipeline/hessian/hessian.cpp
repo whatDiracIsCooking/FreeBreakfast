@@ -944,6 +944,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     const bool pc = nevpt2_gradient->variant == Nevpt2Variant::Pc;
     double e_corr = 0.0;
     double residual = 0.0;
+    std::string pairs; // PC's: the smallest inactive gap and the pairs taken without dividing
     if (nevpt2_gradient->quasi_degenerate) {
       const int32_t state = nevpt2_gradient->state;
       // hessian.json has no infinity: an absent gap (an edge past the CI
@@ -1012,6 +1013,8 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
       asymmetry = terms.asymmetry;
       e_corr = terms.e_corr;
       residual = terms.zvector_residual;
+      pairs = std::format("; inactive gap {:.3e}, {} pair(s) taken by their off-diagonal f",
+                          terms.min_gap, terms.degenerate_pairs.size());
     } else {
       hessian::ScNevpt2Terms terms = FBF_TRY(
           hessian::df_sc_nevpt2(res, chain_molecule, basis, classes, fit.aux, h, fit.b,
@@ -1023,8 +1026,9 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     }
     if (!nevpt2_gradient->quasi_degenerate) {
       FBF_LOG_INFO("hessian: analytic {}-NEVPT2 over DF-CASSCF({}, {}), E = {:.10f}, Z-vector "
-                   "residual {:.3e}",
-                   pc ? "PC" : "SC", cas.nelecas, cas.ncas, cas.energies[0] + e_corr, residual);
+                   "residual {:.3e}{}",
+                   pc ? "PC" : "SC", cas.nelecas, cas.ncas, cas.energies[0] + e_corr, residual,
+                   pairs);
     }
   } else if (method == HessianMethod::Analytic) {
     auto chain = FBF_TRY(chain_at({}));
