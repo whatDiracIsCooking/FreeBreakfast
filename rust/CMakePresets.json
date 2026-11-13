@@ -1,0 +1,52 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 4,
+    "minor": 2,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "description": "Settings shared by both backends. Carries no FREE_BREAKFAST_GPU_BACKEND: CMakeLists.txt refuses to configure without one, so only cuda and hip are selectable.",
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "cuda",
+      "displayName": "CUDA",
+      "description": "The libraries the crates link, for CUDA, into rust/build-cuda/.",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build-cuda",
+      "cacheVariables": {
+        "FREE_BREAKFAST_GPU_BACKEND": "CUDA",
+        "CMAKE_CUDA_ARCHITECTURES": "native"
+      }
+    },
+    {
+      "name": "hip",
+      "displayName": "HIP (ROCm)",
+      "description": "The libraries the crates link, for HIP, into rust/build-hip/.",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build-hip",
+      "cacheVariables": {
+        "FREE_BREAKFAST_GPU_BACKEND": "HIP"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "cuda",
+      "configurePreset": "cuda"
+    },
+    {
+      "name": "hip",
+      "configurePreset": "hip"
+    }
+  ]
+}
