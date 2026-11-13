@@ -1,6 +1,7 @@
-// GPU cases for experimental.routine (#1246): does the root_rotation port,
-// called as a Routine<..., Alloc::Yes> with a root-minted key, compute what
-// mcscf::root_rotation does, and is its footprint(in) the pool's peak?
+// GPU cases for experimental.routine (#1246, reworked by #1324): does the
+// root_rotation port, called as a Routine<..., Alloc::Yes> with a root-minted
+// key, compute what mcscf::root_rotation does; is its footprint(shape), from
+// sizes alone, the pool's peak; and does check abort before invoke runs?
 //
 // Both run in one process over the same inputs, set up as
 // test/gtest/mcscf_root_rotation_gpu.cpp sets them up: the equal-weight
@@ -13,6 +14,7 @@
 // ctest entries of their own, registered in this directory's CMakeLists.
 
 #include <gtest/gtest.h>
+#include <unistd.h> // dup2: the death test's log line goes to stdout
 
 #include "gpu_requirement.h"
 
@@ -34,19 +36,6 @@ import free_breakfast.experimental.routine;
 
 #include "pool_footprint.h"
 #include "test_workspaces.h"
-
-// The fixture's minter, AllocKey's one friend outside the module: a
-// global-module class, so this TU can define it (key.cppm says why, and
-// README.md what it costs). Outside the anonymous namespace for that reason.
-namespace free_breakfast::test {
-struct RoutineKeyMinter {
-  template <class Call>
-  static decltype(auto) with_key(Call &&call) {
-    const routine::AllocKey key;
-    return std::forward<Call>(call)(key);
-  }
-};
-} // namespace free_breakfast::test
 
 namespace {
 
@@ -274,6 +263,10 @@ protected:
   std::int32_t nbeta_ = 0;
 };
 
+// The *DeathTest name is gtest's convention: such suites run before the
+// others.
+using RoutineRootRotationDeathTest = RoutineRootRotation;
+
 // The port through its root (RootRotationStep::run, the key minted there)
 // against mcscf::root_rotation, two roots and three, in one process.
 TEST_F(RoutineRootRotation, PortMatchesOriginal) {
@@ -303,17 +296,30 @@ TEST_F(RoutineRootRotation, PortMatchesOriginal) {
   }
 }
 
-// footprint(in) is root_rotation_footprint's number over the same case, and
+// footprint(shape) over a Shape built from the case's sizes alone, as
+// pre-flight would build it before any buffer exists: it is In::shape() of
+// the loaded call, root_rotation_footprint's number over the same case, and
 // the pool's peak for one call (test/gtest/df_casscf_hessian_gpu.cpp's
 // expect_fixed_footprint): on a fresh DeviceResources, run once to grow the
-// workspace to the footprint's, then measured. The call goes straight to the
-// routine with the fixture's key, not through the root.
+// workspace to the footprint's, then measured. The call goes through the
+// root, the key's only minter; minting allocates nothing.
 TEST_F(RoutineRootRotation, FootprintIsSoundAndTight) {
   FBF_REQUIRE_GPU();
   load("h2o_631g_sa3");
   ASSERT_FALSE(HasFatalFailure());
+  const auto nelecas = case_["nelecas"].get<std::vector<std::int32_t>>();
+  const fb::routine::RootRotationRoutine::Shape shape{
+      .nao = case_["nao"].get<std::size_t>(),
+      .naux = case_["naux"].get<std::size_t>(),
+      .natoms = case_["atoms"].size(),
+      .ncore = case_["ncore"].get<std::int32_t>(),
+      .ncas = case_["ncas"].get<std::int32_t>(),
+      .nalpha = nelecas[0],
+      .nbeta = nelecas[1],
+      .nroots = static_cast<std::int32_t>(case_["weights"].size())};
   fb::DeviceResources res{0, fbt::kWorkspaces};
-  const fb::MemoryFootprint fp = fb::routine::RootRotationRoutine::footprint(in(res));
+  EXPECT_EQ(shape, in(res).shape());
+  const fb::MemoryFootprint fp = fb::routine::RootRotationRoutine::footprint(shape);
   const fb::MemoryFootprint want = fb::mcscf::root_rotation_footprint(
       *basis_, *aux_, ncore_, ncas_, nalpha_, nbeta_, static_cast<std::int32_t>(weights_.size()));
   EXPECT_EQ(fp.device.persistent, want.device.persistent);
@@ -321,8 +327,7 @@ TEST_F(RoutineRootRotation, FootprintIsSoundAndTight) {
   EXPECT_EQ(fp.device.workspace, want.device.workspace);
   EXPECT_GT(fp.device.scratch, 0U);
   const auto call = [&] {
-    auto got = fbt::RoutineKeyMinter::with_key(
-        [&](const fb::routine::AllocKey &key) { return fb::routine::root_rotation(key, in(res)); });
+    auto got = fb::routine::RootRotationStep::run(in(res));
     ASSERT_TRUE(got) << got.error().message;
   };
   call();
@@ -334,6 +339,36 @@ TEST_F(RoutineRootRotation, FootprintIsSoundAndTight) {
   // buffers, the integrals' four, the Fock's six and its three of scratch.
   fbt::expect_footprint(peak, {.persistent = fp.device.persistent, .scratch = fp.device.scratch},
                         22);
+}
+
+// check's refusals abort, through the base, before invoke runs: invoke never
+// aborts (it returns its Numerical refusals), so an abort with check's
+// condition text is check's. The condition is logged at critical to stdout,
+// which a death test does not read, so the child points stdout at stderr
+// first. The threadsafe style re-executes the binary for the child, so the
+// child initialises its own GPU runtime instead of inheriting a forked one.
+TEST_F(RoutineRootRotationDeathTest, CheckAbortsBeforeInvoke) {
+  FBF_REQUIRE_GPU();
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  load("h2o_631g_sa2");
+  ASSERT_FALSE(HasFatalFailure());
+  fb::routine::RootRotationRoutine::In bad_rotation = in(*res_);
+  bad_rotation.max_rotation = 0.0;
+  EXPECT_DEATH(
+      {
+        dup2(STDERR_FILENO, STDOUT_FILENO);
+        static_cast<void>(fb::routine::RootRotationStep::run(bad_rotation));
+      },
+      "precondition failed: in\\.max_rotation > 0\\.0");
+  const std::vector<double> unequal{0.6, 0.4};
+  fb::routine::RootRotationRoutine::In bad_weights = in(*res_);
+  bad_weights.weights = unequal;
+  EXPECT_DEATH(
+      {
+        dup2(STDERR_FILENO, STDOUT_FILENO);
+        static_cast<void>(fb::routine::RootRotationStep::run(bad_weights));
+      },
+      "precondition failed: routine_weights_equal\\(in\\.weights\\)");
 }
 
 } // namespace

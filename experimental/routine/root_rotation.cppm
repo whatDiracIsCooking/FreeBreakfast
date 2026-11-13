@@ -1,6 +1,7 @@
 /// @file
 /// @brief mcscf::root_rotation ported to a Routine<..., Alloc::Yes>: one In,
-/// check, footprint and invoke, its own five device buffers keyed; and
+/// a shape-only Shape, check, footprint(shape) and invoke, its own five
+/// device buffers keyed; and
 /// RootRotationStep, the root that mints the key and calls it as a step
 /// would.
 
@@ -30,6 +31,23 @@ export namespace free_breakfast::routine {
 /// that is called keeps the function's name, `root_rotation`, so a call site
 /// changes its argument list and nothing else. README.md "Naming".
 struct RootRotationRoutine : Routine<RootRotationRoutine, Alloc::Yes> {
+  /// @brief The sizes footprint reads, and nothing that needs a buffer: what
+  /// pre-flight has before anything is allocated (the bases' sizes, the active
+  /// space, the number of roots). In derives one (In::shape) rather than
+  /// holding one, so its sizes cannot disagree with its buffers'.
+  struct Shape {
+    size_t nao;     ///< orbital basis functions
+    size_t naux;    ///< auxiliary basis functions
+    size_t natoms;  ///< atoms, three coordinates each
+    int32_t ncore;  ///< core orbitals
+    int32_t ncas;   ///< active orbitals
+    int32_t nalpha; ///< active alpha electrons
+    int32_t nbeta;  ///< active beta electrons
+    int32_t nroots; ///< roots in the average
+    /// @brief Member-wise, so a test can hold pre-flight's to In's.
+    [[nodiscard]] bool operator==(const Shape &) const = default;
+  };
+
   /// @brief mcscf::root_rotation's arguments, in its order, by name.
   struct In {
     DeviceResources &res;                  ///< queue, BLAS and pool
@@ -48,6 +66,10 @@ struct RootRotationRoutine : Routine<RootRotationRoutine, Alloc::Yes> {
     const mcscf::Derivatives &derivatives; ///< df_derivatives' at these roots
     const double *kappa;                   ///< lambda^x's orbital part, n_pairs x n
     double max_rotation = 10.0;            ///< bohr^-1, the refusal's threshold
+
+    /// @brief The Shape of this call: naux read off B's length, nroots off
+    /// the weights, the rest off the basis and the counts.
+    [[nodiscard]] Shape shape() const;
   };
 
   /// @brief mcscf::root_rotation's InvalidConfig refusals as aborts: a
@@ -57,9 +79,9 @@ struct RootRotationRoutine : Routine<RootRotationRoutine, Alloc::Yes> {
   static void check(const In &in);
 
   /// @brief What invoke holds, all freed on return:
-  /// mcscf::root_rotation_footprint's sum, over the same In (naux read off
-  /// B's length, nroots off the weights).
-  [[nodiscard]] static MemoryFootprint footprint(const In &in);
+  /// mcscf::root_rotation_footprint's sum, from sizes alone, so pre-flight
+  /// calls it before any buffer exists; a call in hand passes in.shape().
+  [[nodiscard]] static MemoryFootprint footprint(const Shape &shape);
 
   /// @brief The computation, after check: the rotations and the term, or
   /// Numerical near a degeneracy, or a callee's first error.

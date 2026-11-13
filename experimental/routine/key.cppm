@@ -1,24 +1,12 @@
 /// @file
-/// @brief The allocation permission: AllocKey, minted only by a root, and
-/// KeyedBuffer, a device buffer whose constructor takes one.
+/// @brief The allocation permission: AllocKey, minted only by a root in this
+/// module, and KeyedBuffer, a device buffer whose constructor takes one.
 
 export module free_breakfast.experimental.routine:key;
 
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.wwr;
-
-// The fixture's minter, attached to the global module so a test TU, which is
-// not a unit of this module, can define it. A friend named from this module
-// would be attached here, and a class attached to one module cannot be defined
-// in another (clang: "declaration of 'X' in module B follows declaration in
-// module A"). The price is that any TU may define it: README.md "Friends
-// across modules".
-extern "C++" {
-namespace free_breakfast::test {
-struct RoutineKeyMinter;
-} // namespace free_breakfast::test
-}
 
 export namespace free_breakfast::routine {
 
@@ -32,6 +20,11 @@ enum class Alloc : bool {
 /// @brief The root that mints the key here: the step-shaped caller of the
 /// root_rotation port. Declared before AllocKey so its friend declaration
 /// names this exported entity rather than introducing an unexported one.
+///
+/// The key's only friend, and attached to this module, so no other module or
+/// TU can define it: clang rejects that as "declaration of 'RootRotationStep'
+/// in the global module follows declaration in module ..." (README.md "Where
+/// the key's friend lives", and the must-not-compile case forged_root).
 struct RootRotationStep;
 
 /// @brief Permission to allocate device memory, minted only by a root.
@@ -44,7 +37,6 @@ struct RootRotationStep;
 class AllocKey {
   AllocKey() = default;
   friend struct RootRotationStep;
-  friend struct ::free_breakfast::test::RoutineKeyMinter;
 
 public:
   AllocKey(const AllocKey &) = delete;

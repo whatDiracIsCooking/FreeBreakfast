@@ -1,6 +1,6 @@
 /// @file
-/// @brief The root_rotation port's check, footprint and invoke, and the
-/// root's run: mcscf::root_rotation's body with its entry checks moved to
+/// @brief The root_rotation port's shape, check, footprint and invoke, and
+/// the root's run: mcscf::root_rotation's body with its entry checks moved to
 /// check and its five device buffers keyed.
 
 module free_breakfast.experimental.routine;
@@ -67,35 +67,47 @@ void RootRotationRoutine::check(const In &in) {
   FBF_ROUTINE_PRE(in.max_rotation > 0.0);
 }
 
-MemoryFootprint RootRotationRoutine::footprint(const In &in) {
-  const size_t nao = in.basis.nao_sphe();
-  const auto nroots = static_cast<int32_t>(in.weights.size());
-  if (nroots < 2 || in.ncore < 0 || in.ncas < 1 ||
-      static_cast<size_t>(in.ncore) + static_cast<size_t>(in.ncas) > nao || nao == 0 ||
-      in.b.num_elements() < nao * nao) {
+RootRotationRoutine::Shape RootRotationRoutine::In::shape() const {
+  const size_t nao = basis.nao_sphe();
+  return {.nao = nao,
+          .naux = nao == 0 ? 0 : b.num_elements() / (nao * nao),
+          .natoms = static_cast<size_t>(basis.natoms()),
+          .ncore = ncore,
+          .ncas = ncas,
+          .nalpha = nalpha,
+          .nbeta = nbeta,
+          .nroots = static_cast<int32_t>(weights.size())};
+}
+
+MemoryFootprint RootRotationRoutine::footprint(const Shape &shape) {
+  const size_t nao = shape.nao;
+  if (shape.nroots < 2 || shape.ncore < 0 || shape.ncas < 1 ||
+      static_cast<size_t>(shape.ncore) + static_cast<size_t>(shape.ncas) > nao || nao == 0 ||
+      shape.naux == 0) {
     return {};
   }
   const auto nmo = static_cast<int32_t>(nao);
-  const auto naux = static_cast<int32_t>(in.b.num_elements() / (nao * nao));
-  const auto n_core = static_cast<size_t>(in.ncore);
-  const auto n_act = static_cast<size_t>(in.ncas);
+  const auto naux = static_cast<int32_t>(shape.naux);
+  const auto n_core = static_cast<size_t>(shape.ncore);
+  const auto n_act = static_cast<size_t>(shape.ncas);
   const size_t na2 = n_act * n_act;
   const size_t na4 = na2 * na2;
-  const size_t n_x = 3 * static_cast<size_t>(in.basis.natoms());
+  const size_t n_x = 3 * shape.natoms;
   const size_t n_pairs = (n_core * (nao - n_core)) + (n_act * (nao - n_core - n_act));
-  const auto strings = [&in](const int32_t electrons) {
-    return static_cast<size_t>(std::round(math::binomial(in.ncas, electrons)));
+  const auto strings = [&shape](const int32_t electrons) {
+    return static_cast<size_t>(std::round(math::binomial(shape.ncas, electrons)));
   };
-  const size_t dim = strings(in.nalpha) * strings(in.nbeta);
+  const size_t dim = strings(shape.nalpha) * strings(shape.nbeta);
   MemoryFootprint own{
       .device = {.persistent = sizeof(double) * ((2 * dim) + (2 * (na2 + na4)) + (nao * nao) +
                                                  std::max<size_t>(n_pairs, 1) + n_x)}};
-  own.device.workspace = ci::rdm12_footprint(in.ncas, static_cast<int32_t>(dim)).device.workspace;
+  own.device.workspace =
+      ci::rdm12_footprint(shape.ncas, static_cast<int32_t>(dim)).device.workspace;
   const MemoryFootprint chain =
-      then(then(ci::device_string_set_footprint(in.ncas, in.nalpha),
-                ci::device_string_set_footprint(in.ncas, in.nbeta)),
-           then(own, then(casscf_integrals_footprint(nmo, naux, in.ncore, in.ncas),
-                          response::fock_footprint(nmo, naux, in.ncore, in.ncas))));
+      then(then(ci::device_string_set_footprint(shape.ncas, shape.nalpha),
+                ci::device_string_set_footprint(shape.ncas, shape.nbeta)),
+           then(own, then(casscf_integrals_footprint(nmo, naux, shape.ncore, shape.ncas),
+                          response::fock_footprint(nmo, naux, shape.ncore, shape.ncas))));
   return drop(chain);
 }
 

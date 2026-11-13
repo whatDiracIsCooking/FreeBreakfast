@@ -1,32 +1,46 @@
-# Routine spike: check-before-invoke and an allocation key (#1246)
+# Routine spike: check-before-invoke and an allocation key (#1246, #1324)
 
 Does a routine shape whose `check` the compiler enforces, and whose permission
 to allocate is checked at compile time, hold up on one real routine, under
 named modules and on the GPU? This spike measures that on
-`mcscf::root_rotation`. Nothing under `src/` changes.
+`mcscf::root_rotation`. #1246 built it and came back **rework**; #1324
+reworked the two parts that did not survive, the footprint over live buffers
+and the place of the key's friend. Nothing under `src/` changes.
 
-**Verdict: rework.** The base, the `In` struct and the check split work
-across module boundaries. The port matches the original bit for bit, and its
-`footprint(in)` is the pool's peak to the byte. The key blocks what it should,
-but **it cannot be friended across modules**: the root that mints it must
-either live in the key's own module or be a global-module class that any TU
-can define. It also cannot be enforced inside `root_rotation` until three
-allocating callees take it, and those have about 87 call sites in `src/`.
-`footprint(in)` over an `In` of live buffers cannot run before those buffers
-exist, which pre-flight needs. Details and the rework are under each heading.
+**Verdict: promote the base, `In`, `Shape` and `check`; drop the key.**
+
+- The `Routine` base, the `In` struct and `check` cost nothing measurable,
+  work across module boundaries, and the port still matches the original bit
+  for bit on the gfx1200.
+- `footprint(shape)` now takes a shape-only `Shape` built from sizes alone,
+  so pre-flight can call it before any buffer exists. A `Shape` built from the
+  fixture's JSON sizes equals `In::shape()` of the live call, and its footprint
+  is the pool's peak to the byte (63,616 bytes, 22 allocations).
+- `check`'s aborts now have a death test, through the base, before `invoke`.
+- The key's friend has exactly one unforgeable home: the root defined in the
+  key's own module, as a partition. The fifth must-not-compile case shows a TU
+  outside that module cannot forge it. But in `src/` that placement is a
+  module cycle (measured below), because the key sits in `core` under every
+  routine and the root is the pipeline's planner above them. Every placement
+  that compiles in `src/`'s layering is forgeable by any TU. Keying
+  `root_rotation` would also first need 3 callees keyed, with about 87 call
+  sites. A guard any TU can bypass is not worth spreading up the call graph
+  like `const`, and the pool-peak tests already catch an allocation that a
+  footprint misses.
 
 ## What is here
 
 | File | What |
 |------|------|
-| `key.cppm` (`:key`) | `Alloc { No, Yes }`; `AllocKey` (private default constructor, deleted copy, user-provided `constexpr ~AllocKey() {}`, friends `RootRotationStep` and the test's `RoutineKeyMinter`); `KeyedBuffer<T>`, a `Buffers::device<T>` whose constructor takes `const AllocKey &` |
+| `key.cppm` (`:key`) | `Alloc { No, Yes }`; `AllocKey` (private default constructor, deleted copy, user-provided `constexpr ~AllocKey() {}`, one friend: `RootRotationStep`, attached to this module); `KeyedBuffer<T>`, a `Buffers::device<T>` whose constructor takes `const AllocKey &` |
 | `base.cppm` (`:base`) | `Routine<Self, Alloc>`: a static `operator()` over one `const typename S::In &` (`S = Self`) that calls `Self::check(in)` and then `Self::invoke`, taking and passing on the key for `Alloc::Yes` and taking none for `Alloc::No` |
-| `root_rotation.cppm` (`:root_rotation`) | `RootRotationRoutine : Routine<…, Alloc::Yes>` with its `In`, `check`, `footprint` and `invoke`; the object `root_rotation`; `RootRotationStep`, the root that mints the key and calls the port as a step would |
-| `root_rotation.cpp` | The implementation unit: `check`, `footprint`, `invoke` and `RootRotationStep::run`, plus `FBF_ROUTINE_PRE`, #1226's `FBF_PRE` (not landed yet) |
+| `root_rotation.cppm` (`:root_rotation`) | `RootRotationRoutine : Routine<…, Alloc::Yes>` with its `Shape`, its `In` (and `In::shape()`), `check`, `footprint(shape)` and `invoke`; the object `root_rotation`; `RootRotationStep`, the root that mints the key and calls the port as a step would |
+| `root_rotation.cpp` | The implementation unit: `In::shape`, `check`, `footprint`, `invoke` and `RootRotationStep::run`, plus `FBF_ROUTINE_PRE`, a local stand-in for #1226's `FBF_PRE`, which has not landed |
 | `routine.cppm` | The primary interface, re-exporting the three partitions |
 
 Tests (`test/experimental/`): `routine_gpu.cpp` (`RoutineRootRotation`, two
-GPU cases) and `routine_reject_{alloc_up,key_buffer,bit_cast,misspelled_field}.cpp`,
+GPU cases, and `RoutineRootRotationDeathTest`, one) and
+`routine_reject_{alloc_up,key_buffer,bit_cast,misspelled_field,forged_root}.cpp`,
 each an `EXCLUDE_FROM_ALL` object library whose ctest entry
 (`RoutineMustNotCompile.*`) builds it and passes only on the expected
 diagnostic.
@@ -57,26 +71,95 @@ Tree-wide that would be `<layer>::<Name>Routine` with `inline constexpr
 |---|---|---|
 | `Routine<Self, Alloc>`, `typename S::In` | yes | The test TU and the reject TUs (global module) call `root_rotation(key, {…})` through the exported object; the static `operator()` template instantiates in the importer |
 | `In`, a nested aggregate with reference members and a default member initializer | yes | Designated initialization from another TU works; the designators must be in declaration order, and a missing reference member is an error |
-| Statics defined in an implementation unit | yes | `check`, `footprint`, `invoke` and `RootRotationStep::run` are declared in `:root_rotation` and defined in `root_rotation.cpp` (`module free_breakfast.experimental.routine;`), and called from other TUs through `Routine::operator()`, which is instantiated in the importer and links against them |
+| Statics defined in an implementation unit | yes | `In::shape`, `check`, `footprint`, `invoke` and `RootRotationStep::run` are declared in `:root_rotation` and defined in `root_rotation.cpp` (`module free_breakfast.experimental.routine;`), and called from other TUs through `Routine::operator()`, which is instantiated in the importer and links against them |
 | A friend declared in one partition, defined in another | yes, within one module | `RootRotationStep` is forward-declared (exported) in `:key` before `AllocKey` names it as a friend, and defined in `:root_rotation` |
-| **A friend defined in another module** | **no** | `friend struct Root;` in module `a` and `struct Root {…}` in module `b`: clang 23.1.6 says `error: declaration of 'Root' in module b follows declaration in module a`. A friend declaration attaches the name to the declaring module, and only that module can define it |
-| A global-module friend | yes, but forgeable | `extern "C++" { namespace free_breakfast::test { struct RoutineKeyMinter; } }` in `:key` attaches it to the global module, so `routine_gpu.cpp` defines it and mints keys. Any other TU could define it too |
 | `requires` | not used | `Routine` needs no constraint: a missing `In`, `check` or `invoke` is an error at the call that instantiates `operator()`. A `requires` clause would only move the diagnostic |
 
-So the **key's friends must be in the key's module**. In `src/` the key
-would live in `core` (`KeyedBuffer` wraps `Buffers::device`), and the root,
-the pipeline's planner, is in `pipeline`, which imports `core`. The planner
-cannot be `AllocKey`'s friend unless it is a global-module class. That makes
-it as forgeable as `RoutineKeyMinter` here: anyone who writes
-`struct free_breakfast::pipeline::Planner { … }` in a TU can mint a key. The
-key is still useful as a discipline that `grep` can audit, but it is not a
-boundary the compiler holds.
+Where a friend of `AllocKey` can live is its own section, next.
 
 Separately: the container's compiler is now **clang 23.1.6**, not the 20.1.8
 the issue's sketches used. The `bit_cast` hole needs the user-provided
 destructor on 23 as well (see (c)).
 
-## The compiler rejects what it should: (a)–(d)
+## Where the key's friend lives
+
+A friend declaration attaches the name it introduces to the declaring module,
+and only that module can define it. Each candidate was built as a scratch
+CMake project of two or three plain modules (no `import std`), with clang
+23.1.6 and CMake 4.2.3. `key` holds `AllocKey`, as `:key` does here.
+Diagnostics are trimmed to the error line.
+
+| Candidate | Compiles in `src/`'s layering? | Forgeable by another TU? |
+|---|---|---|
+| (1) The friend defined in another module | no | — |
+| (2) The root as a partition of the key's module | no: a module cycle | no |
+| (3) A key minted by a function exported from the key's module | yes | yes, by any importer, every routine included |
+| (4) A global-module friend | yes | yes, by any TU that defines the class |
+| (4′) A friend class template, specialized by the planner's module | yes | yes, by any TU that specializes it |
+
+**(1) The friend defined in another module.** `export struct Root;` and
+`friend struct Root;` in `key`, `struct Root { … }` in module `root`:
+
+```
+root.cppm:3:15: error: declaration of 'Root' in module root follows declaration in module key
+```
+
+**(2) The root as a partition of the key's module.** `key:token` declares
+`Root` and `AllocKey`, and `key:root` defines `Root` and mints a key: it
+compiles. A TU outside the module cannot forge it. Defining a global `Root`
+is refused by the attachment rule, and a `Root` in another namespace is not
+the friend:
+
+```
+forge.cpp:2:8: error: declaration of 'Root' in the global module follows declaration in module key:token
+forge_ns.cpp:2:67: error: calling a private constructor of class 'AllocKey'
+```
+
+This is what the spike does, with `RootRotationStep` in `:root_rotation` and
+must-not-compile case (e) below. But in `src/` the key sits in `core`, below
+every routine, and the root is the pipeline's planner, which imports what it
+runs. Its partition would have to import a module that imports the key's
+module. Given that (`key:root` importing `pipeline`, which imports `key`),
+CMake's module scan refuses it before clang runs:
+
+```
+CMake Error: Circular dependency detected in the C++ module import graph. See modules named: "key", "key:root", "pipeline"
+```
+
+A root in `core` that takes the planner's work as a callable avoids the cycle
+but becomes (3): anyone who can call it can mint.
+
+**(3) A key minted by an exported function.** `export AllocKey
+mint_alloc_key();` in `key`, friended there: it compiles, and so does an
+`Alloc::No` routine in another module that calls `mint_alloc_key()` and
+holds a key. A function that is the key's friend must be attached to the
+key's module (see (1)), and a module exports to every importer or to none.
+So every routine that can name `AllocKey` can mint one. It guards nothing that
+`grep mint_alloc_key` does not.
+
+**(4) A global-module friend.** `extern "C++" { namespace pipeline { struct
+Planner; } }` in `key`, friended, and defined in module `pipeline` inside
+`extern "C++"`: it compiles. A plain TU that defines its own
+`pipeline::Planner` and mints a key also compiles, with no diagnostic. If both
+definitions are linked into one program, that is an ODR violation that needs
+no diagnostic. This is what #1246's `RoutineKeyMinter` was, and #1324 removed
+it: with it, any TU could define the minter. It also makes `core`'s key name
+a `pipeline` class.
+
+**(4′) A friend class template.** `template <class Tag> friend struct
+Minter;` in `AllocKey`. `pipeline` specializes `Minter<PlannerTag>` and mints:
+it compiles. So does a plain TU that specializes `Minter<MyTag>`. It is (4)
+without the upward name, and just as open.
+
+**Decision: (2) for the spike, and no key in `src/`.** (2) is the only
+placement the compiler holds, and the spike now uses it alone. With
+`RoutineKeyMinter` gone, the footprint test calls through the root, which
+costs nothing because minting allocates nothing. `src/`'s layering rules (2)
+out, and (3), (4) and (4′) are disciplines that any TU can step around. None
+of them pays for keying every allocating function and every function above
+one. See the verdict.
+
+## The compiler rejects what it should: (a)–(e)
 
 Each is a `RoutineMustNotCompile.<name>` ctest entry that builds the TU and
 passes on the regex in `test/experimental/CMakeLists.txt`. Diagnostics from
@@ -94,7 +177,7 @@ has no key, so it tries to make one:
 
 ```
 test/experimental/routine_reject_key_buffer.cpp:22:51: error: calling a private constructor of class 'free_breakfast::routine::AllocKey'
-experimental/routine/key.cppm:45:3: note: implicitly declared private here
+experimental/routine/key.cppm:38:3: note: implicitly declared private here
 ```
 
 **(c) The key forged with `std::bit_cast<AllocKey>(char{})`** (`bit_cast`):
@@ -105,7 +188,7 @@ test/experimental/routine_reject_bit_cast.cpp:18:37: error: no matching function
 .../c++/v1/__bit/bit_cast.h:32:52: note: because 'is_trivially_copyable_v<free_breakfast::routine::AllocKey>' evaluated to false
 .../c++/v1/__bit/bit_cast.h:32:52: note: 'free_breakfast::routine::AllocKey' is not trivially copyable
 .../c++/v1/__bit/bit_cast.h:32:52: note: because it has a user-provided destructor
-experimental/routine/key.cppm:44:7: note: 'AllocKey' defined here
+experimental/routine/key.cppm:37:7: note: 'AllocKey' defined here
 ```
 
 `key.cppm` also `static_assert`s `!std::is_trivially_copyable_v<AllocKey>`,
@@ -129,6 +212,19 @@ unnamed diagnostic too. So the regex for (d) pins the conversion to
 `RootRotationRoutine::In`, the narrowest text clang prints. A call site that
 wants the field named spells `RootRotationRoutine::In{…}`.
 
+**(e) A key forged outside the root's module** (`forged_root`, #1324). A TU
+that imports the module defines its own `free_breakfast::routine::RootRotationStep`
+to mint a key with:
+
+```
+test/experimental/routine_reject_forged_root.cpp:13:8: error: declaration of 'RootRotationStep' in the global module follows declaration in module free_breakfast.experimental.routine:root_rotation
+experimental/routine/root_rotation.cppm:96:8: note: previous declaration is here
+```
+
+(a)–(d) are quoted from the reworked design's run. They are #1246's
+diagnostics, with only the line numbers in `key.cppm` changed. All five
+entries pass.
+
 ## Matches the original
 
 `RoutineRootRotation.PortMatchesOriginal` runs `mcscf::root_rotation` and
@@ -143,42 +239,78 @@ Measured on the gfx1200 (HIP):
 | `h2o_631g_sa2` | 0 (5.5e-2) | 0 (0.45) | 0 (4.9e-2) |
 | `h2o_631g_sa3` | 0 (0.13) | 0 (1.9) | 0 (0.48) |
 
-Every difference is exactly zero. The calls are the same in the same order,
-and `ci::Rdm::rdm12`'s reductions happened to come out in the same order.
+Every difference is exactly zero, as on #1246's design. The calls are the
+same in the same order, and `ci::Rdm::rdm12`'s reductions happened to come out
+in the same order.
 
 `check` turns the original's `InvalidConfig` refusals into
 `FBF_ROUTINE_PRE` aborts (#1226: a broken shape is the caller's bug). The two
 degeneracy refusals are numerical outcomes that a caller branches on, so they
-stay in `invoke` as `Numerical`. The original's `Refusals` case therefore has
-no direct port: an abort needs a death test, which this spike does not add.
+stay in `invoke` as `Numerical`. The original's `Refusals` case becomes
+`RoutineRootRotationDeathTest.CheckAbortsBeforeInvoke`. It calls the root with
+`max_rotation = 0`, then with unequal weights, and expects each to abort with
+check's condition text: `precondition failed: in.max_rotation > 0.0`, then
+`precondition failed: routine_weights_equal(in.weights)`. `invoke` never
+aborts, so an abort with that text shows the base ran `check` first. Two
+details:
 
-## The footprint is tight
+- `log::critical` writes to stdout, and a death test reads only stderr. So the
+  child points stdout at stderr (`dup2`) before the call.
+- The threadsafe style re-executes the binary for each child, and each child
+  loads the fixture again. That makes it the slowest routine case, at 18.6 s.
+  It would break `test/support/slow_test.h`'s rule in a gated binary. The
+  experimental binary is not gated.
 
-`RoutineRootRotation.FootprintIsSoundAndTight` does three things on the
-three-root case:
+`FBF_ROUTINE_PRE` is still the local stand-in: #1226's `FBF_PRE` has not
+landed (`grep -rn FBF_PRE src/core` is empty). The migration is a rename.
 
-- It checks that `footprint(in)` equals `mcscf::root_rotation_footprint`'s
+## The footprint is tight, from sizes alone
+
+#1246's `footprint(in)` read naux from `B`'s length and nroots from
+`weights`, so it could run only once those buffers existed. Pre-flight sizes a
+run before anything is allocated, so #1324 splits the sizes out:
+
+```cpp
+struct Shape {
+  size_t nao, naux, natoms;
+  int32_t ncore, ncas, nalpha, nbeta, nroots;
+  bool operator==(const Shape &) const = default;
+};
+static MemoryFootprint footprint(const Shape &shape);
+// and on In:
+Shape shape() const; // naux off B's length, nroots off the weights
+```
+
+`In` derives its `Shape` rather than holding one. A held `Shape` would repeat
+sizes that `In`'s buffers already carry, and the two could disagree. Pre-flight
+builds a `Shape` from the bases' sizes and the active space, and a call in
+hand passes `in.shape()`. This is the "separate argument list in another
+form" #1246 predicted, but it carries only sizes, so it stays small: eight
+counts here, against `In`'s sixteen members.
+
+`RoutineRootRotation.FootprintIsSoundAndTight` does this on the three-root
+case:
+
+- It builds the `Shape` from the fixture JSON's sizes alone (`nao`, `naux`,
+  the atom count, the active space, the number of weights), with no buffer in
+  sight, and checks that it equals `In::shape()` of the loaded call.
+- It checks that `footprint(shape)` equals `mcscf::root_rotation_footprint`'s
   persistent, scratch and workspace numbers.
-- It calls the port directly with the fixture's key, twice on a fresh
-  `DeviceResources`. The first call grows the workspace to the footprint's
-  118,528 bytes. The second is measured by `measure_pool_peak`.
+- It calls the port through the root, `RootRotationStep::run`, twice on a
+  fresh `DeviceResources`. (#1246 called it directly with the global-module
+  minter, which is gone.) The first call grows the workspace to the
+  footprint's 118,528 bytes. The second is measured by `measure_pool_peak`.
 - It holds the peak to `expect_footprint` with 22 allocations live at the
   peak: the strings' 4, the 5 keyed buffers, the integrals' 4, and the Fock's
   6 plus its 3 of scratch.
 
 **Measured 63,616 bytes, footprint 63,616 bytes**: exact, on the gfx1200.
 
-`footprint(in)` reads naux from `B`'s length and nroots from `weights`. That
-is why it can take the same `In` as `invoke`, and also why it can run only
-once `B`, the roots and `derivatives` exist. Pre-flight sizes a run before
-any of those are allocated, so in `src/` a footprint over `In` would need a
-shape-only struct beside it, which brings back the separate argument list in
-another form.
-
 ## Compile time
 
-Each TU compiled on its own with its bare command from
-`compile_commands.json` (no sccache). This is the minimum of three runs in
+Measured on #1246's design and not re-measured: #1324 adds one small struct
+and moves no code between units. Each TU compiled on its own with its bare
+command from `compile_commands.json` (no sccache). This is the minimum of three runs in
 the `hip-experimental` tree, with the other agent's CUDA build sharing the
 box:
 
@@ -255,7 +387,7 @@ wwr's pool exposes enough. `Device::pool_usage()` returns `used_current` and
 `Device::reset_pool_high_water()` resets the high mark. `measure_pool_peak`
 is exactly those three calls. A test build of `Routine::operator()` could
 reset the mark, call `invoke`, and compare `used_high − used_current(start)`
-with `Self::footprint(in)`. Three things stand in the way:
+with `Self::footprint(in.shape())`. Three things stand in the way:
 
 - **Nesting.** The reset applies to the whole pool, so an inner routine's
   check wipes its caller's high mark. The base would need a `thread_local`
@@ -270,24 +402,20 @@ with `Self::footprint(in)`. Three things stand in the way:
   ROCm the soundness bar is also only within 1/8 (`kPoolReuseDivisor`). A
   per-call check would catch an under-counted footprint, not a loose one.
 
-## The rework
+## If it is promoted
 
-1. **Key placement.** No cross-module friend can be defined in another
-   module, so decide openly what the key is. Either it is a discipline that
-   `grep` can audit, minted by a global-module `Planner` (or a `protected
-   static mint()` on a base class only roots derive from), or it is dropped.
-   It cannot be a compiler-held boundary between `core` and `pipeline`.
-2. **Footprint over shapes.** Give each routine a shape-only struct (counts,
-   bases) that both `In` and pre-flight can produce, and have
-   `footprint(shape)` take it, so pre-flight keeps working before buffers
-   exist.
-3. **Keep the base and the `In`/`check` split as they are.** They cost
-   nothing measurable, match the original exactly, and the
-   `typename S::In` spelling works across modules. Adopt `FBF_PRE` (#1226)
-   for `check`.
-4. **Key the leaves first.** If the key stays, start where nothing below
-   allocates (`DeviceStringSet::create`), then `casscf_integrals` and
-   `response::fock`. `root_rotation` can be enforced only after all three.
+1. **The base, `In`, `Shape` and `check` go to `core`.** One `Routine<Self>`
+   with no `Alloc` parameter, compiled once. Each routine gets an `In`, a
+   `Shape` that `In::shape()` derives, `check` over `FBF_PRE` (#1226), and
+   `footprint(shape)` in place of today's separate `*_footprint` argument
+   lists.
+2. **The key is not promoted.** `AllocKey`, `KeyedBuffer` and the `Alloc`
+   split stay here as the measured record of why. "Where the key's friend
+   lives" has the reasons. An allocation that a footprint misses is caught by
+   the pool-peak tests, which need no key.
+3. **Migrate one routine first, then by layer.** `root_rotation` is ported
+   here. A first PR in `src/` would move it, with its call sites and
+   `mcscf_root_rotation_gpu.cpp`, before any other routine adopts the base.
 
 ## Running it
 
