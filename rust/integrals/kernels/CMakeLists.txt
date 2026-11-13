@@ -1,12 +1,13 @@
 # libfb_integrals_kernels.so: the integrals launch wrappers rust/ has forked
-# from src/integrals -- mmd's order, records, bound and dressed bound, and the
-# overlap -- with the FelizJueves units they launch, one shared object with
-# its own device link, which fb-integrals-sys (../sys) links
-# (docs/gpu_layer.md, "Build"). Built from these forked sources,
-# rust/device_headers and FelizJueves's include/ alone: nothing under src/ is
-# compiled or included.
+# from src/integrals -- mmd's order, records, bound and dressed bound, the
+# overlap, the kinetic energy and the nuclear attraction -- with the
+# FelizJueves units they launch, one shared object with its own device link,
+# which fb-integrals-sys (../sys) links (docs/gpu_layer.md, "Build"). Built
+# from these forked sources, rust/device_headers and FelizJueves's include/
+# alone: nothing under src/ is compiled or included.
 #
-# The emitted units (mmd/kernels/, one_electron/overlap/kernels/) are
+# The emitted units (mmd/kernels/, one_electron/{overlap,kinetic,
+# potential_en}/kernels/, and shared/'s Boys routine) are
 # tools/emit/one_electron_kernels.py's and tools/emit/exchange_kernels.py's,
 # run with --out-root and copied here byte for byte (README.md, "Build and
 # test").
@@ -21,16 +22,23 @@ file(GLOB _fb_integrals_units CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/mmd/kernels/pair_bound/*.cu
      ${CMAKE_CURRENT_SOURCE_DIR}/mmd/kernels/record_bound/*.cu
      ${CMAKE_CURRENT_SOURCE_DIR}/one_electron/overlap/kernels/*.cu
+     ${CMAKE_CURRENT_SOURCE_DIR}/one_electron/kinetic/kernels/*.cu
+     ${CMAKE_CURRENT_SOURCE_DIR}/one_electron/potential_en/kernels/*.cu
 )
-set(_fb_integrals_sources abi.cu mmd/mmd_launch.cu
-                          one_electron/overlap/overlap_launch.cu
-                          ${_fb_integrals_units}
+set(_fb_integrals_sources
+    abi.cu
+    mmd/mmd_launch.cu
+    one_electron/overlap/overlap_launch.cu
+    one_electron/kinetic/kinetic_launch.cu
+    one_electron/potential_en/potential_en_launch.cu
+    ${_fb_integrals_units}
 )
 add_library(fb_integrals_kernels SHARED ${_fb_integrals_sources})
 
 # FelizJueves's runtime.h, which every emitted unit includes, and the warp
 # width its units static-assert against: wwr's, mirrored as at the root
-# (deps/CMakeLists.txt), never set anywhere else.
+# (deps/CMakeLists.txt), never set anywhere else. shared/ is eval_boys.h, the
+# Boys routine the nuclear attraction's units include by bare name.
 set(_fb_felizjueves_include
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../deps/FelizJueves/include"
 )
@@ -45,6 +53,7 @@ target_include_directories(
   fb_integrals_kernels
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${FB_RUST_DEVICE_HEADERS}
           ${FB_RUST_CAPI_GEN} ${_fb_felizjueves_include}
+          ${CMAKE_CURRENT_SOURCE_DIR}/shared
           ${CMAKE_CURRENT_SOURCE_DIR}/../../recipes/kernels
 )
 target_compile_definitions(
