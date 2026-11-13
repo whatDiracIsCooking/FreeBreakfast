@@ -1,0 +1,12 @@
+[package]
+name = "fb-io-npy"
+description = "io/npy: NumPy's .npy format, float64 held column-major, both directions"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-core-error-handling.workspace = true

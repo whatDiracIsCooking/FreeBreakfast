@@ -28,6 +28,7 @@ members = [
     "test_support",
     "doc_check",
     "sad",
+    "io/npy",
 ]
 
 [workspace.package]
@@ -60,6 +61,7 @@ fb-integrals-mmd = { path = "integrals/mmd" }
 fb-integrals-one-electron-overlap = { path = "integrals/one_electron/overlap" }
 fb-test-support = { path = "test_support" }
 fb-sad = { path = "sad" }
+fb-io-npy = { path = "io/npy" }
 
 contracts = "0.6.11"
 # core::log: the line's local time, and the OS thread id (std has none).
