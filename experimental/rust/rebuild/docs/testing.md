@@ -151,7 +151,10 @@ card OOMed it. So:
   binary, because a process per case paid the device's context init on every
   case, and that was most of the batch's wall clock.
 - **Workers within a case are the case's own.** A tier-4 test of several
-  workers as streams starts them itself. The harness never runs two cases
+  workers as streams starts them itself, and a run's threads are scoped to
+  the run and joined before it returns
+  ([`programming_model.md`](programming_model.md), "CPU workers"), so a case
+  leaks no thread into the next. The harness never runs two cases
   concurrently on a device.
 - **`cargo-nextest` is used for its filtersets, timeouts and skip list, not
   for its process-per-test default.** Its per-test timeout is the stall
@@ -323,11 +326,14 @@ The best fuzz target in the tree is the planner. It is pure, CPU-only and
 has invariants that are short to state:
 
 - no two buffers live at once alias in the arena;
+- every buffer's offset honours its alignment, and a sub-DAG's offsets lie
+  inside the region its parent reserved for it;
 - every edge's sync precedes its first read;
 - the plan is deterministic in its inputs;
 - the same DAG plans to the same footprint for one worker and for many,
   up to the transport buffers the placement adds;
-- every task's placement satisfies its declared device.
+- every task's placement satisfies its declared device, and the plan's
+  worker total is within the budget it was admitted against.
 
 These are [`proptest`](https://crates.io/crates/proptest) properties over
 random DAGs with fake workers: a few hundred cases per PR, and many more
