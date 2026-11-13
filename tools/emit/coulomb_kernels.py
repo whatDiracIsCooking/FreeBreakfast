@@ -19,7 +19,9 @@ src/integrals/mmd/kernels/pair_bound/.
   off_d + j], so no gather and no transposed copy for a swapped pair);
 - `e_hermite<lp, lq>`, the [p|q] kernel J_p += SUM_q [p|q] D_q, one per
   Hermite class, its write to J_p atomic (`ir.passes.atomize`) because every
-  ket class of a bra class adds into the same J_p;
+  ket class of a bra class adds into the same J_p; built with FelizJueves's
+  `fused` lever at every class but (2,1), (2,2) and (7,0), where it is not
+  faster (tools/emit/lowstack.py, #1337, #1345);
 - `jab<la, lb>`, the bra back-transform and scatter of J_p into J_mu_nu.
 
 And the two its nuclear gradient adds (FelizJueves's docs/implementation/
@@ -30,9 +32,7 @@ gradient.md, "The kernels"; the `gjab_` half of its `--grad-l 3` ladder, whose
   MAX_L: the d0 [p|q] of `kernel_gjab.gjab_pq_spec`'s class, the bra raised
   by one, whose J_p at order la + lb + 1 the gradient reads. The same
   builder and passes as every other `e_hermite` class, so the same template
-  and table, one row longer. The classes over the stack target,
-  `e_hermite<7,6>`, `<7,5>`, `<6,6>` and `<5,6>`, are built with
-  FelizJueves's `fused` lever (tools/emit/lowstack.py, #1337);
+  and table, one row longer;
 - `gjab<la, lb>`, the bra derivative of E_J contracted with the density into
   a per-atom G (`kernel_gjab`), in FelizJueves's default form per class
   (low-stack from la + lb = 5, `kernel_gjab.gjab_lowstack`; and `gjab<2,2>`,

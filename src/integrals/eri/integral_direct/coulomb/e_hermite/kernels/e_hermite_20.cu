@@ -25,6 +25,8 @@ __global__ void e_hermite<2, 0>(
 {
     // [JEngine, v2, Alg. 1]: J_p = SUM_q [p|q] D_q, class lp=2 lq=0 (L=2), one
     // batch, atomic write-back ([JEngine, v2, §5])
+    // lever fused (#344): each [r]^(0) is contracted into J_p as the recurrence
+    // forms it, one target live at a time (j_levers/fused.py)
     // PRECONDITION: kets arrive sorted by Iq * Dmax, descending. The screen below
     // is a break, not a continue: once Dmax * Ip * Iq < tau the whole tail is
     // under it too. Unsorted kets make the break a wrong answer, not a slow one
@@ -74,6 +76,10 @@ __global__ void e_hermite<2, 0>(
             double W2 = (W1 * s);
             double boys[3];
             eval_boys<2>(T, boys);
+            // fused (#344): each [r]^(0) is contracted into J_p += (-1)^|q| [r]^(0) D_q (r
+            // = p + q, [JEngine, v2, eqs. 7-9, 20-22]) right after the recurrence forms
+            // it, and is dead from then on: one target live at a time; [ab|cd] is never
+            // formed
             // [JEngine, v2, eqs. 10-12], reduction form
             double R0_0_0_2 = (W2 * boys[2]);
             double R0_0_0_1 = (W1 * boys[1]);
@@ -81,27 +87,25 @@ __global__ void e_hermite<2, 0>(
             double R0_1_0_1 = (PQ_y * R0_0_0_2);
             double R1_0_0_1 = (PQ_x * R0_0_0_2);
             double R0_0_0_0 = (W0 * boys[0]);
-            double R0_0_1_0 = (PQ_z * R0_0_0_1);
-            double R0_1_0_0 = (PQ_y * R0_0_0_1);
-            double R1_0_0_0 = (PQ_x * R0_0_0_1);
-            double R0_0_2_0 = ((PQ_z * R0_0_1_1) + R0_0_0_1);
-            double R0_1_1_0 = (PQ_z * R0_1_0_1);
-            double R0_2_0_0 = ((PQ_y * R0_1_0_1) + R0_0_0_1);
-            double R1_0_1_0 = (PQ_x * R0_0_1_1);
-            double R1_1_0_0 = (PQ_y * R1_0_0_1);
-            double R2_0_0_0 = ((PQ_x * R1_0_0_1) + R0_0_0_1);
-            // J_p += SUM_q (-1)^|q| [p+q]^(0) D_q, [JEngine, v2, eqs. 7-9, 20-22]: the
-            // only shell-quartet-level contraction; [ab|cd] is never formed
             Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_0_0_0 * D[(0 * n_ket + k)]));
-            Jsh[(1 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(1 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R1_0_0_0 * D[(0 * n_ket + k)]));
-            Jsh[(2 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(2 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_1_0_0 * D[(0 * n_ket + k)]));
+            double R0_0_1_0 = (PQ_z * R0_0_0_1);
             Jsh[(3 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(3 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_0_1_0 * D[(0 * n_ket + k)]));
-            Jsh[(4 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(4 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R2_0_0_0 * D[(0 * n_ket + k)]));
-            Jsh[(5 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(5 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R1_1_0_0 * D[(0 * n_ket + k)]));
-            Jsh[(6 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(6 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R1_0_1_0 * D[(0 * n_ket + k)]));
-            Jsh[(7 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(7 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_2_0_0 * D[(0 * n_ket + k)]));
-            Jsh[(8 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(8 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_1_1_0 * D[(0 * n_ket + k)]));
+            double R0_1_0_0 = (PQ_y * R0_0_0_1);
+            Jsh[(2 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(2 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_1_0_0 * D[(0 * n_ket + k)]));
+            double R1_0_0_0 = (PQ_x * R0_0_0_1);
+            Jsh[(1 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(1 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R1_0_0_0 * D[(0 * n_ket + k)]));
+            double R0_0_2_0 = ((PQ_z * R0_0_1_1) + R0_0_0_1);
             Jsh[(9 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(9 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_0_2_0 * D[(0 * n_ket + k)]));
+            double R0_1_1_0 = (PQ_z * R0_1_0_1);
+            Jsh[(8 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(8 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_1_1_0 * D[(0 * n_ket + k)]));
+            double R0_2_0_0 = ((PQ_y * R0_1_0_1) + R0_0_0_1);
+            Jsh[(7 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(7 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_2_0_0 * D[(0 * n_ket + k)]));
+            double R1_0_1_0 = (PQ_x * R0_0_1_1);
+            Jsh[(6 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(6 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R1_0_1_0 * D[(0 * n_ket + k)]));
+            double R1_1_0_0 = (PQ_y * R1_0_0_1);
+            Jsh[(5 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(5 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R1_1_0_0 * D[(0 * n_ket + k)]));
+            double R2_0_0_0 = ((PQ_x * R1_0_0_1) + R0_0_0_1);
+            Jsh[(4 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(4 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R2_0_0_0 * D[(0 * n_ket + k)]));
         }
         // reduce J_p across the warp: every lane sees the sum
         double Jp0;
