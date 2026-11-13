@@ -3,11 +3,12 @@
 /// single-state DF-CASSCF (docs/nevpt2/nevpt2.tex eq. hess), df_sc_nevpt2's
 /// assembly over PC's adjoint, gradient multipliers and Hessian-vector
 /// product. A degenerate inactive pair, which the tangents leave unrotated,
-/// is taken through its off-diagonal f in rotated bases (#1268). Refused
+/// is taken through its off-diagonal f in rotated bases (#1268), and a
+/// near-degenerate cluster whole, every pair within it (#1314). Refused
 /// where one analytic Hessian does not represent the PC surface: a class
 /// kept below the HVP's conditioning floor, and a coordinate whose Schur
-/// lift reaches the cut within 1e-3 bohr; Unsupported for three or more
-/// inactive orbitals within 1e-6 Eh of each other. The degenerate pairs'
+/// lift reaches the cut within 1e-3 bohr; Unsupported for a cluster of more
+/// than six orbitals joined by pairs under 1e-6 Eh. The degenerate pairs'
 /// step, degenerate_pair_blocks and degenerate_pair_part, is defined here
 /// and shared with df_qd_pc_nevpt2 (#1277).
 
@@ -69,37 +70,68 @@ degenerate_pair_blocks(const std::string_view who,
       blocks.push_back(pq);
     }
   }
-  for (size_t a = 0; a < blocks.size(); ++a) {
-    for (size_t b = 0; b < a; ++b) {
-      for (const int32_t o : blocks[a]) {
-        if (o == blocks[b][0] || o == blocks[b][1]) {
-          return err_unsupported("{}: orbital {} is within 1e-6 Eh of two others (pairs ({}, {}) "
-                                 "and ({}, {})): a cluster of three or more degenerate inactive "
-                                 "orbitals is not handled, only disjoint pairs",
-                                 who, o, blocks[a][0], blocks[a][1], blocks[b][0], blocks[b][1]);
+  // Each cluster: the orbitals the pairs join, grown from each pair.
+  std::vector<bool> seen(blocks.size(), false);
+  for (size_t start = 0; start < blocks.size(); ++start) {
+    if (seen[start]) {
+      continue;
+    }
+    std::vector<int32_t> orbitals{blocks[start][0], blocks[start][1]};
+    seen[start] = true;
+    for (bool grew = true; grew;) {
+      grew = false;
+      for (size_t at = 0; at < blocks.size(); ++at) {
+        if (!seen[at] && (std::ranges::find(orbitals, blocks[at][0]) != orbitals.end() ||
+                          std::ranges::find(orbitals, blocks[at][1]) != orbitals.end())) {
+          seen[at] = true;
+          grew = true;
+          for (const int32_t o : blocks[at]) {
+            if (std::ranges::find(orbitals, o) == orbitals.end()) {
+              orbitals.push_back(o);
+            }
+          }
         }
       }
+    }
+    if (orbitals.size() > kPcClusterLimit) {
+      std::ranges::sort(orbitals);
+      std::string named;
+      for (const int32_t o : orbitals) {
+        named += std::format("{}{}", named.empty() ? "" : ", ", o);
+      }
+      return err_unsupported("{}: a cluster of {} near-degenerate inactive orbitals ({}) is past "
+                             "the {} the pairs' step takes: its pairs' cross terms grow as the "
+                             "fourth power of its size (README \"A near-degenerate cluster\")",
+                             who, orbitals.size(), named, kPcClusterLimit);
     }
   }
   return blocks;
 }
 
-// Step 4b (README "A degenerate inactive pair"). Along the path that leaves
-// pair P = (p, q) unrotated its f_pq = delta_P moves at first order, which
-// the functional (f's diagonal alone) does not read; PC is invariant to the
-// pair's rotation, so the energy is the functional plus delta's Taylor terms:
+// Step 4b (README "A degenerate inactive pair", "A near-degenerate
+// cluster"). Along the path that leaves pair P = (p, q) unrotated its
+// f_pq = delta_P moves at first order, which the functional (f's diagonal
+// alone) does not read; PC is invariant to the rotations within the core and
+// within the virtuals, so the energy is the functional plus delta's Taylor
+// terms:
 //
 //   H_ij += sum_P (phi^P_i K^P_j + phi^P_j K^P_i) + sum_PP' M_PP' phi^P_i phi^P'_j,
 //
 // phi^P_i = delta_P's change along t_i, K^P_j the change of dE/d delta_P along
-// t_j at fixed delta, M_PP' = d2E/d delta_P d delta_P'. Each is read in a
-// basis C U whose turn makes delta a split of the diagonal: by pi/4 delta_P
-// is the split d' of (p', q'), so the product along it (an h direction, +1
-// at p'p', -1 at q'q') gives M_PP from its own split and G^P_j paired with
-// t_j; G^P_j = K^P_j - M^dd_P d^P_j + M_PP phi^P_j, d^P_j the change of the
-// pair's own split, which that basis does not read, and M^dd_P = d2E/d delta_P
-// d split_P follows from the pi/8 basis (split (d + delta) / sqrt 2) and the
-// unturned one. Exact at a degenerate pair, O(gap) off one.
+// t_j at fixed delta, M_PP' = d2E/d delta_P d delta_P'. The pairs may share
+// orbitals (a cluster takes every pair within it). Each term is read in a
+// basis C U whose turn makes the deltas it needs diagonal: by pi/4 within P
+// alone delta_P is the split d' of (p', q'), so the product along it (an h
+// direction, +1 at p'p', -1 at q'q') gives M_PP from its own split and G^P_j
+// paired with t_j; G^P_j = K^P_j - M^dd_P d^P_j + M_PP phi^P_j, d^P_j the
+// change of the pair's own split, which that basis does not read, and
+// M^dd_P = d2E/d delta_P d split_P follows from the pi/8 basis (split
+// (d + delta) / sqrt 2) and the unturned one. M_PP' of two disjoint pairs is
+// the split of P' along P's in a basis turning both by pi/4; of two that share
+// an orbital s, P = (a, s) and P' = (s, b), it is the polarization
+// (Y.Y - M_PP - M_P'P') / 2 of Y = delta_P + delta_P', read along Y in the
+// basis that diagonalizes it within (a, s, b). Exact at a degenerate
+// cluster, O(gap) off one.
 Result<DegeneratePairPart> degenerate_pair_part(
     DeviceResources &res, const int32_t nmo32, const int32_t naux32, const size_t k,
     const double *c, const double energy, const std::span<const std::array<int32_t, 2>> blocks,
@@ -134,92 +166,168 @@ Result<DegeneratePairPart> degenerate_pair_part(
   Buffers::device<double> work(naux * nn, res.device());
   Buffers::device<double> l_back(naux * nn, res.device());
   Buffers::device<double> column(k, res.device());
-  // The product in the basis C U, U turning each block P by @p turns[P],
-  // along block @p along's split there: each block's split read off its
-  // h_bar, in that basis, and with @p paired <t_j, U P U^T> over every j,
-  // the product turned back to C's basis (h_bar's and each Lambda_Q's two
-  // indices) and paired, into *@p paired.
-  const auto product_in = [&](std::span<const double> turns, const size_t along,
-                              std::vector<double> *paired) -> Result<std::vector<double>> {
+  const auto identity = [&] {
     std::vector<double> host(nn, 0.0);
     for (size_t r = 0; r < nmo; ++r) {
       host[r * (nmo + 1)] = 1.0;
     }
-    for (size_t at = 0; at < np; ++at) {
-      const auto p = static_cast<size_t>(blocks[at][0]);
-      const auto q = static_cast<size_t>(blocks[at][1]);
-      const double cs = std::cos(turns[at]);
-      const double sn = std::sin(turns[at]);
-      host[p + (nmo * p)] = cs; // column p' = cos p + sin q
-      host[q + (nmo * p)] = sn;
-      host[p + (nmo * q)] = -sn; // column q' = -sin p + cos q
-      host[q + (nmo * q)] = cs;
+    return host;
+  };
+  // Turns block @p at of @p host (column-major U) by @p angle: column
+  // p' = cos p + sin q, column q' = -sin p + cos q.
+  const auto turn = [&](std::vector<double> &host, const size_t at, const double angle) {
+    const auto p = static_cast<size_t>(blocks[at][0]);
+    const auto q = static_cast<size_t>(blocks[at][1]);
+    host[p + (nmo * p)] = std::cos(angle);
+    host[q + (nmo * p)] = std::sin(angle);
+    host[p + (nmo * q)] = -std::sin(angle);
+    host[q + (nmo * q)] = std::cos(angle);
+  };
+  // The h direction +1 at p, -1 at q of block @p at, in the turned basis.
+  const auto split_of = [&](const size_t at) {
+    std::vector<double> along(nmo, 0.0);
+    along[static_cast<size_t>(blocks[at][0])] = 1.0;
+    along[static_cast<size_t>(blocks[at][1])] = -1.0;
+    return along;
+  };
+  // The product in the basis C U (@p turned, host, column-major) along the h
+  // direction diag(@p along) there: h_bar's diagonal in that basis, and with
+  // @p paired <t_j, U P U^T> over every j, the product turned back to C's
+  // basis (h_bar's and each Lambda_Q's two indices) and paired, into *@p paired.
+  const auto product_in = [&](const std::vector<double> &turned, const std::vector<double> &along,
+                              std::vector<double> *paired) -> Result<std::vector<double>> {
+    FBF_TRY(copy(u.data(), turned.data(), nn, wwr::wwrMemcpyHostToDevice));
+    std::vector<double> host(nn, 0.0);
+    for (size_t r = 0; r < nmo; ++r) {
+      host[r * (nmo + 1)] = along[r];
     }
-    FBF_TRY(copy(u.data(), host.data(), nn, wwr::wwrMemcpyHostToDevice));
-    std::ranges::fill(host, 0.0);
-    host[static_cast<size_t>(blocks[along][0]) * (nmo + 1)] = 1.0;
-    host[static_cast<size_t>(blocks[along][1]) * (nmo + 1)] = -1.0;
     FBF_TRY(copy(direction.data(), host.data(), nn, wwr::wwrMemcpyHostToDevice));
     FBF_TRY(
         gpu_status(gemm(blas, nmo32, &kOne<double>, c, u.data(), &kZero<double>, c_turned.data())));
     FBF_TRY(res.sync());
-    std::vector<double> splits(np);
-    FBF_TRY(product(c_turned.data(), direction.data(),
-                    [&](const double *h_bar, const double *lambda, const double *y,
-                        const double turned) -> Status {
-                      out.rotation_shift = std::max(out.rotation_shift, std::abs(turned - energy));
-                      const std::vector<double> hb = FBF_TRY(download(h_bar, nn));
-                      for (size_t at = 0; at < np; ++at) {
-                        splits[at] = hb[static_cast<size_t>(blocks[at][0]) * (nmo + 1)] -
-                                     hb[static_cast<size_t>(blocks[at][1]) * (nmo + 1)];
-                      }
-                      if (paired == nullptr) {
-                        return {};
-                      }
-                      FBF_TRY(gpu_status(gemm(blas, nmo32, &kOne<double>, u.data(), h_bar,
-                                              &kZero<double>, work.data())));
-                      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-                          blas, nmo32, nmo32, nmo32, &kOne<double>, work.data(), u.data(),
-                          &kZero<double>, h_back.data())));
-                      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-                          blas, naux32 * nmo32, nmo32, nmo32, &kOne<double>, lambda, u.data(),
-                          &kZero<double>, work.data())));
-                      FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
-                          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, naux32, nmo32, nmo32,
-                          &kOne<double>, work.data(), naux32, static_cast<int64_t>(naux * nmo),
-                          u.data(), nmo32, 0, &kZero<double>, l_back.data(), naux32,
-                          static_cast<int64_t>(naux * nmo), nmo32)));
-                      FBF_TRY(pair_with(h_back.data(), l_back.data(), y, column.data()));
-                      *paired = FBF_TRY(download(column.data(), k));
-                      return {};
-                    }));
-    return splits;
+    std::vector<double> diagonal(nmo);
+    FBF_TRY(product(
+        c_turned.data(), direction.data(),
+        [&](const double *h_bar, const double *lambda, const double *y,
+            const double turned_energy) -> Status {
+          out.rotation_shift = std::max(out.rotation_shift, std::abs(turned_energy - energy));
+          const std::vector<double> hb = FBF_TRY(download(h_bar, nn));
+          for (size_t r = 0; r < nmo; ++r) {
+            diagonal[r] = hb[r * (nmo + 1)];
+          }
+          if (paired == nullptr) {
+            return {};
+          }
+          FBF_TRY(gpu_status(
+              gemm(blas, nmo32, &kOne<double>, u.data(), h_bar, &kZero<double>, work.data())));
+          FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+              blas, nmo32, nmo32, nmo32, &kOne<double>, work.data(), u.data(), &kZero<double>,
+              h_back.data())));
+          FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+              blas, naux32 * nmo32, nmo32, nmo32, &kOne<double>, lambda, u.data(), &kZero<double>,
+              work.data())));
+          FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+              blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, naux32, nmo32, nmo32, &kOne<double>,
+              work.data(), naux32, static_cast<int64_t>(naux * nmo), u.data(), nmo32, 0,
+              &kZero<double>, l_back.data(), naux32, static_cast<int64_t>(naux * nmo), nmo32)));
+          FBF_TRY(pair_with(h_back.data(), l_back.data(), y, column.data()));
+          *paired = FBF_TRY(download(column.data(), k));
+          return {};
+        }));
+    return diagonal;
+  };
+  // Block @p at's split in a product's diagonal.
+  const auto split_in = [&](const std::vector<double> &diagonal, const size_t at) {
+    return diagonal[static_cast<size_t>(blocks[at][0])] -
+           diagonal[static_cast<size_t>(blocks[at][1])];
   };
   std::vector<double> m(np * np, 0.0); // M_PP', [P + np P']
   std::vector<double> mixed(np, 0.0);  // d2E/d delta_P d split_P
   std::vector<double> g(np * k, 0.0);  // G^P_j, [P k + j]
-  std::vector<double> turns(np, 0.0);
   for (size_t at = 0; at < np; ++at) {
-    std::ranges::fill(turns, 0.0);
-    const double dd = FBF_TRY(product_in(turns, at, nullptr))[at];
-    turns[at] = kPcNevpt2PairTurn;
+    const std::vector<double> along = split_of(at);
+    std::vector<double> turned = identity();
+    const double dd = split_in(FBF_TRY(product_in(turned, along, nullptr)), at);
+    turn(turned, at, kPcNevpt2PairTurn);
     std::vector<double> paired;
-    m[at * (np + 1)] = FBF_TRY(product_in(turns, at, &paired))[at];
+    m[at * (np + 1)] = split_in(FBF_TRY(product_in(turned, along, &paired)), at);
     std::ranges::copy(paired, g.begin() + static_cast<std::ptrdiff_t>(at * k));
-    turns[at] = kPcNevpt2PairHalfTurn;
-    const double half = FBF_TRY(product_in(turns, at, nullptr))[at];
+    turn(turned, at, kPcNevpt2PairHalfTurn);
+    const double half = split_in(FBF_TRY(product_in(turned, along, nullptr)), at);
     mixed[at] = half - (0.5 * (dd + m[at * (np + 1)]));
   }
-  if (np > 1) {
-    std::ranges::fill(turns, kPcNevpt2PairTurn);
-    for (size_t at = 0; at < np; ++at) {
-      const std::vector<double> s = FBF_TRY(product_in(turns, at, nullptr));
-      for (size_t other = 0; other < np; ++other) {
-        if (other != at) {
-          m[at + (np * other)] += 0.5 * s[other];
-          m[other + (np * at)] += 0.5 * s[other];
-        }
+  // The pair shared by blocks a and b, or -1 when they are disjoint.
+  const auto shared = [&](const size_t a, const size_t b) -> int32_t {
+    for (const int32_t o : blocks[a]) {
+      if (o == blocks[b][0] || o == blocks[b][1]) {
+        return o;
       }
+    }
+    return -1;
+  };
+  // M_PP' of disjoint pairs: for each P, its partners not yet read, as many
+  // mutually disjoint ones at once as fit one basis turning them all with P.
+  std::vector<bool> known(np * np, false);
+  for (size_t at = 0; at < np; ++at) {
+    for (;;) {
+      std::vector<size_t> group;
+      for (size_t other = 0; other < np; ++other) {
+        if (other == at || known[at + (np * other)] || shared(at, other) >= 0 ||
+            std::ranges::any_of(group, [&](const size_t g0) { return shared(g0, other) >= 0; })) {
+          continue;
+        }
+        group.push_back(other);
+      }
+      if (group.empty()) {
+        break;
+      }
+      std::vector<double> turned = identity();
+      turn(turned, at, kPcNevpt2PairTurn);
+      for (const size_t other : group) {
+        turn(turned, other, kPcNevpt2PairTurn);
+      }
+      const std::vector<double> diagonal = FBF_TRY(product_in(turned, split_of(at), nullptr));
+      for (const size_t other : group) {
+        const double s = split_in(diagonal, other);
+        m[at + (np * other)] = s;
+        m[other + (np * at)] = s;
+        known[at + (np * other)] = true;
+        known[other + (np * at)] = true;
+      }
+    }
+  }
+  // M_PP' of pairs sharing orbital s, P = (a, s) and P' = (s, b): Y = delta_P
+  // + delta_P' is [[0, 1, 0], [1, 0, 1], [0, 1, 0]] over (a, s, b), whose
+  // eigenvectors (1, sqrt 2, 1) / 2, (1, 0, -1) / sqrt 2 and (1, -sqrt 2, 1) / 2
+  // (eigenvalues sqrt 2, 0, -sqrt 2) are the columns a, s and b of U; along
+  // diag(sqrt 2, 0, -sqrt 2) there, Y.Y = sqrt 2 (h_bar_aa - h_bar_bb).
+  for (size_t at = 0; at < np; ++at) {
+    for (size_t other = 0; other < at; ++other) {
+      const int32_t s32 = shared(at, other);
+      if (s32 < 0) {
+        continue;
+      }
+      const auto s = static_cast<size_t>(s32);
+      const auto a = static_cast<size_t>(blocks[at][0] == s32 ? blocks[at][1] : blocks[at][0]);
+      const auto bo =
+          static_cast<size_t>(blocks[other][0] == s32 ? blocks[other][1] : blocks[other][0]);
+      std::vector<double> turned = identity();
+      const double half_root = 0.5 * kSqrt2<double>;
+      for (const auto &[col, va, vs, vb] :
+           {std::tuple{a, 0.5, half_root, 0.5}, std::tuple{s, half_root, 0.0, -half_root},
+            std::tuple{bo, 0.5, -half_root, 0.5}}) {
+        turned[a + (nmo * col)] = va;
+        turned[s + (nmo * col)] = vs;
+        turned[bo + (nmo * col)] = vb;
+      }
+      std::vector<double> along(nmo, 0.0);
+      along[a] = kSqrt2<double>;
+      along[bo] = -kSqrt2<double>;
+      const std::vector<double> diagonal = FBF_TRY(product_in(turned, along, nullptr));
+      const double yy = kSqrt2<double> * (diagonal[a] - diagonal[bo]);
+      const double value = 0.5 * (yy - m[at * (np + 1)] - m[other * (np + 1)]);
+      m[at + (np * other)] = value;
+      m[other + (np * at)] = value;
     }
   }
   // K^P_j = G^P_j + M^dd_P d^P_j - M_PP phi^P_j, then the terms.
@@ -388,8 +496,8 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
   // The degenerate pairs: kappa_oo^x_pq is not a division the state
   // determines, and the tangents left it 0. PC is invariant to the pair's
   // rotation, so step 4b takes the pair's off-diagonal f instead (README "A
-  // degenerate inactive pair"). It handles disjoint pairs; an orbital in two
-  // of them (three or more orbitals within the floor) is not handled.
+  // degenerate inactive pair"), and every pair of a cluster ("A
+  // near-degenerate cluster").
   std::vector<std::array<int32_t, 2>> records;
   std::ranges::transform(degenerate, std::back_inserter(records),
                          [](const DegeneratePair &d) { return std::array{d.p, d.q}; });

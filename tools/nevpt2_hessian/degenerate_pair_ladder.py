@@ -29,6 +29,10 @@ The cases:
   both roots A1), the numerical `[hessian]` of PC-QD-NEVPT2 state
   `QD_STATE` (`quasi_degenerate`, the step tracking the state by its
   eigenvector), whose virtual e pairs are degenerate at f^SA.
+- `ch4_td_631g` and `ch4_split_631g`: a Td methane in 6-31G, CAS(8,8)
+  over its valence, whose two virtual t2 triples are exactly degenerate
+  clusters, and the same with one hydrogen moved 1e-3 bohr along (1, 2, 3),
+  one triple a near-degenerate cluster inside PC's reach (#1314).
 
 A QD case's document carries `nroots`, `weights` and `state` beside the
 start, and its `pc` the same keys.
@@ -67,6 +71,9 @@ ANGSTROM_PER_BOHR = 0.529177210903
 NEAR_SHIFT = 2e-6
 # ... and for the split one, its pairs past the 1e-6 Eh rule (bohr).
 SPLIT_SHIFT = 3e-5
+# H1's shift along (1, 2, 3) off Td for the split methane (bohr): one
+# virtual t2 triple a near-degenerate cluster inside PC's pair reach (#1314).
+CLUSTER_SHIFT = 1e-3
 # The PC-QD-NEVPT2 state the QD cases differentiate (H_eff's eigenvalues
 # ascending): the upper of the two, whose term (ii) is the eigenvector
 # response to the lower.
@@ -82,6 +89,22 @@ def nh3(shift: float) -> list[tuple[str, tuple[float, float, float]]]:
         phi = 2.0 * math.pi * k / 3.0
         x = rho * math.cos(phi) + (shift if k == 0 else 0.0)
         atoms.append(("H", (x, rho * math.sin(phi), -0.7)))
+    return atoms
+
+
+def methane(shift: float) -> list[tuple[str, tuple[float, float, float]]]:
+    """df_pc_nevpt2_hessian_gpu.cpp's Td methane in bohr (C-H 2.05), H1
+    moved by @p shift along (1, 2, 3) / sqrt 14."""
+    r = 2.05 / math.sqrt(3.0)
+    norm = math.sqrt(14.0)
+    atoms = [("C", (0.0, 0.0, 0.0))]
+    for k, (x, y, z) in enumerate(
+        ((1.0, 1.0, 1.0), (1.0, -1.0, -1.0), (-1.0, 1.0, -1.0), (-1.0, -1.0, 1.0))
+    ):
+        d = shift if k == 0 else 0.0
+        atoms.append(
+            ("H", (r * x + d / norm, r * y + 2.0 * d / norm, r * z + 3.0 * d / norm))
+        )
     return atoms
 
 
@@ -151,6 +174,29 @@ CASES = {
         "ncas": 6,
         "nelecas": 6,
         "active": [19, 20, 21, 22, 23, 24],
+    },
+    "ch4_td_631g": {
+        "description": (
+            "Td methane, 6-31G, CAS(8,8) over the valence: two virtual t2 "
+            "triples, each an exactly degenerate cluster"
+        ),
+        "atoms_bohr": methane(0.0),
+        "basis": "6-31G",
+        "ncas": 8,
+        "nelecas": 8,
+        "active": [1, 2, 3, 4, 5, 6, 7, 8],
+    },
+    "ch4_split_631g": {
+        "description": (
+            "the Td methane with H1 moved 1e-3 bohr along (1, 2, 3), 6-31G, "
+            "CAS(8,8): one virtual triple a near-degenerate cluster (2.8e-6 to "
+            "about 1e-4 Eh), no symmetry"
+        ),
+        "atoms_bohr": methane(CLUSTER_SHIFT),
+        "basis": "6-31G",
+        "ncas": 8,
+        "nelecas": 8,
+        "active": [1, 2, 3, 4, 5, 6, 7, 8],
     },
     "qd_nh3_c3v_631g_sa2": {
         "description": (

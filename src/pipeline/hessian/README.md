@@ -344,7 +344,8 @@ so no IR intensities.
   coordinates, the whole A″ × A″ off-diagonal block, ten pairs: #894's
   kink, where that block has no second derivative); PC's class kept below
   1e-10 and its Schur lift within 1e-3 bohr (a degenerate inactive pair is
-  taken, #1268, and a cluster of three or more is Unsupported); the CP
+  taken, #1268, and so is a near-degenerate cluster, #1314, up to six
+  orbitals); the CP
   solve's saddle (Divergence). No Hessian, so no `hessian.json`.
 - **Stationarity is assumed, not checked**, as for the CASSCF chain:
   converge `[casscf]` tightly (`conv_tol_grad = 1e-10` in the example and
@@ -448,8 +449,8 @@ no IR intensities.
   class kept below 1e-10, its lifted blocks (at `h2nb_sto3g_sa2` in its
   symmetry-adapted coordinates, exactly the B2 × B2 blocks (B2 1, B2 1),
   (B2 1, B2 2) and (B2 2, B2 2), on either state) and a Schur lift within
-  1e-3 bohr (a degenerate inactive pair is taken, #1277, and a cluster of
-  three or more is Unsupported). SC refuses nothing there. No Hessian, so
+  1e-3 bohr (a degenerate inactive pair is taken, #1277, and so is a
+  near-degenerate cluster, #1314, up to six orbitals). SC refuses nothing there. No Hessian, so
   no `hessian.json`.
 - **Stationarity is assumed, not checked**: converge `[casscf]` tightly
   (`conv_tol_grad = 1e-10`).

@@ -572,8 +572,8 @@ qd_nevpt2_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &
   // division the state determines, and the tangents left it 0. Every H_eff
   // element is invariant to the pair's rotation, so step 4b takes the pair's
   // off-diagonal f in E^corr[W] as df_pc_nevpt2 does in E_corr (README "The
-  // PC-QD-NEVPT2 Hessian", "At a degenerate inactive pair", #1277);
-  // disjoint pairs only.
+  // PC-QD-NEVPT2 Hessian", "At a degenerate inactive pair", #1277), and
+  // every pair of a near-degenerate cluster (#1314).
   std::vector<std::array<int32_t, 2>> records;
   std::ranges::transform(tangents.recorded, std::back_inserter(records),
                          [](const DegeneratePair &d) { return std::array{d.p, d.q}; });
