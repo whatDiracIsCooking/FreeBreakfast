@@ -17,6 +17,8 @@ members = [
     "atom",
     "molecule",
     "basis",
+    "recipes/sys",
+    "device_check",
     "test_support",
     "doc_check",
 ]
@@ -42,6 +44,7 @@ fb-core-constants = { path = "core/constants" }
 fb-atom = { path = "atom" }
 fb-molecule = { path = "molecule" }
 fb-basis = { path = "basis" }
+fb-recipes-sys = { path = "recipes/sys" }
 fb-test-support = { path = "test_support" }
 
 contracts = "0.6.11"

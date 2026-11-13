@@ -27,6 +27,8 @@ workspace is that rebuild. Its tree mirrors `src/`, one crate per module:
 | `fb_atom` | `src/atom` | `Element` (`#[repr(u8)]`, Z as the discriminant, `Sentinel` = 0), `z` / `from_z`, `symbol` / `from_symbol` (case-insensitive, `Sentinel` for none), and `Atom`, a `Double3` position in bohr and an `Element` |
 | `fb_molecule` | `src/molecule`, its host half | `Molecule` as host data (atoms, charge, multiplicity; no atoms aborts), `distance`, `nuclear_charge`, `electron_count`, and the nuclear repulsion energy, gradient and Hessian. The nuclei on the device (`view`, `NucleiView`, `molecule_footprint`) become an upload task when nuclear attraction is ported |
 | `fb_basis` | `src/basis` | `Shell` and `Primitive`, the counts (`function_count_cart` / `function_count_sphe`) and `MAX_ANGULAR_MOMENTUM` (3, the C++ `kMaxAngularMomentum`), `cartesian_powers` and `Ao`, `solid_harmonic_block`, `BasisSet` (its Cartesian and spherical AO layouts, the per-atom shell grouping, the name) and `spherical_transform_matrix`, `ShellStamp` with `primitive_normalized` and `place`, and `BasisStamp` with `place` onto a `Molecule`. Contractions are not renormalized, as in the C++ |
+| `fb_recipes_sys` | `src/recipes/sort`'s merge sort, forked to `recipes/kernels/` (with the device headers it includes, trimmed, in `device_headers/`) | The raw FFI over `libfb_recipes_kernels.so`, built by `CMakeLists.txt` here: `fb_merge_sort`, an `extern "C"` launch wrapper that only enqueues, its `fb_merge_sort_workspace_bytes` query, `fb_launch_status` and `FB_DEVICE_ALIGNMENT` (`docs/gpu_layer.md`, "Layering"). The bindings are generated from `recipes/kernels/fb_recipes.h` by `devtools/rust-bindings.py` and committed |
+| `fb_device_check` | nothing: a check on the kernel libraries | Two tier-3 tests: no launch wrapper under `rust/` allocates, synchronizes, touches an event, copies, sets the device or opens a profiler range (a grep of every `.cu`), and every `-sys` crate's committed bindings are what the script generates now |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -95,7 +97,7 @@ broken promise; a contract would turn it into a panic.
 ```bash
 cd rust
 cmake --preset cuda                    # or hip; the backend has no default
-cmake --build --preset cuda            # libwwr_capi_runtime_api.so, nothing more
+cmake --build --preset cuda            # libwwr_capi_runtime_api.so and the kernel libraries
 cargo test --workspace                 # debug: the contract tests run too
 cargo test --workspace --release       # the contract tests are skipped
 cargo test -p fb-core-arena            # one crate, with only its own features
@@ -108,7 +110,8 @@ CMake step at all:
 cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
   -p fb-core-arena -p fb-core-thread-pool -p fb-core-planner \
   -p fb-core-types -p fb-core-primitives -p fb-core-constants \
-  -p fb-atom -p fb-molecule -p fb-basis --no-default-features
+  -p fb-atom -p fb-molecule -p fb-basis -p fb-device-check \
+  --no-default-features
 ```
 
 `CMakeLists.txt` here is a CMake project of its own, which the root
@@ -116,8 +119,18 @@ cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
 tests, examples and install rules off) and builds `wwr.capi.runtime_api`,
 so building what the crates link configures nothing of the C++ tree. Its
 presets are `cuda` and `hip`, into `build-cuda/` and `build-hip/` here,
-with the root's sm_80 floor checked; later, it is where the kernel shared
-objects are built. `capi_dir.rs`, which each linking crate's `build.rs`
+with the root's sm_80 floor checked. It also builds the kernel shared
+objects, one per module from sources forked into `rust/` (nothing under
+`src/` is compiled or included): `libfb_recipes_kernels.so`, from
+`recipes/kernels/` and the trimmed device headers in `device_headers/`, at
+`<build>/recipes/kernels`, with its own device link and the shared vendor
+runtime. Its `-sys` crate's `build.rs` includes `kernel_lib.rs`, which links
+it from the same `<build>` `capi_dir.rs` chose. After editing a kernel
+library's C header, run `devtools/rust-bindings.py` (stdlib Python, no
+bindgen: it reads the header's small plain-C grammar as text, as WarpWraps'
+C ABI generator does) and commit the bindings; `fb-device-check` fails
+until then. `devtools/cross-backend-check.sh` compiles this project for the
+other backend too. `capi_dir.rs`, which each linking crate's `build.rs`
 includes, finds `libwwr_capi_runtime_api.so` under
 `<build>/deps/WarpWraps/src/capi`, where `<build>` is whichever of the two
 holds it. With both built it refuses to choose: set `FB_RUST_BUILD_DIR` to
@@ -129,10 +142,10 @@ The GPU tests use device 0 and need room on it for a context. The host-only
 tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
 `fb-core-primitives`, `fb-core-constants`, `fb-atom`, `fb-molecule`,
-`fb-basis`, `fb-test-support` and
-`fb-doc-check` do not link the library at all: they build and pass with it
-missing. `fb-core-arena`, `fb-core-thread-pool` and `fb-core-planner` link
-it through their `device` feature, which is on by default: without it
+`fb-basis`, `fb-test-support`, `fb-doc-check` and `fb-device-check` do not
+link the library at all: they build and pass with it missing.
+`fb-core-arena`, `fb-core-thread-pool` and `fb-core-planner` link it
+through their `device` feature, which is on by default: without it
 (`--no-default-features`) their device-free tests, on `Heap` blocks and
 `HostOnly` workers, build and pass with no wwr crate in the graph. There
 `Device` and `Pinned` are still kinds, so tables, admission and planning
@@ -142,7 +155,8 @@ thread pool's `DeviceStream` is an uninhabited placeholder with no
 crates' own device tests need beyond `device`; a dependent asks for
 `device` alone, and the workspace's dependency entries for the arena and
 the thread pool turn their defaults off, so nothing turns them on by
-accident. Only `fb-core-wwr` and `fb-core-diagnostics` always link. Use a
+accident. Only `fb-core-wwr`, `fb-core-diagnostics` and `fb-recipes-sys`
+always link. Use a
 separate `CARGO_TARGET_DIR` per backend, and another for
 `--no-default-features`: each `build.rs` bakes the library's path into the
 rpath.
@@ -174,6 +188,16 @@ as a dev-dependency only, and `fb_core_wwr::runtime::tests`' device helpers
 reach `thread_pool`'s the same way. The planner on a card, a round trip
 through pinned and device rows, is `core/planner/tests/planner_device.rs`,
 which measures free memory too.
+
+The merge sort on a card is `recipes/sys/tests/merge_sort.rs`. It copies
+its inputs up on the stream it sorts on, never with the synchronous
+`wwr_memcpy`: that runs on the legacy stream, which the crate's
+non-blocking `Stream` does not wait for, and from pageable memory it
+returns before its DMA lands. Its first version did that, and from 22 529
+keys up the sort read keys the DMA was still writing, and failed with wrong
+keys or a fault (`WWR_STATUS_UNKNOWN` at the next synchronization) that the
+kernel was not at fault for; `compute-sanitizer` serialized the two and hid
+it. A kernel library's test copies on its own stream.
 
 `doc_check/tests/section_citations.rs` checks that every section the
 README, `docs/` and every member's Rust sources cite by name is a heading of
@@ -375,3 +399,21 @@ check's `is_sorted` removed, `basis_abort` fails on the decreasing case.
 Clippy (`-D warnings`) is clean in both feature sets; rustdoc (`-D
 warnings`) and `cargo fmt --check` are clean. Not run on the RTX 3080; the
 crate touches no device.
+
+2026-11-13, the forked device layer (`device_headers/`, the merge sort in
+`recipes/kernels/` built as `libfb_recipes_kernels.so`, `fb-recipes-sys`,
+`fb-device-check`), on the RTX 3080 (CUDA), holding the card: with default
+features the whole workspace passes in a debug build, the new binaries 4
+merge-sort tests (keys with values and keys alone at 32 sizes from 1 to
+100 000, equal bitwise and in permutation to the host's stable sort; the
+workspace query; the refusals), 1 bindings test and 2 launch-wrapper tests,
+every other count the `basis` entry's; in release the same, but for `wwr`'s
+28 unit tests. The merge-sort binary is clean under `compute-sanitizer
+--tool memcheck`, each sort handed exactly the bytes its query asked for.
+With `--no-default-features` the tier-3 set, `fb-device-check` included,
+passes. The bindings test fails on a header edited without regenerating,
+and the grep on a planted `wwrDeviceSynchronize` (both checked by hand).
+The `hip` preset builds the library too, and `devtools/cross-backend-check.sh
+--device-only` (HIP) compiles it and passes; neither was run on the
+gfx1200. Clippy (`-D warnings`, both feature sets), rustdoc (`-D warnings`)
+and `cargo fmt --check` are clean.

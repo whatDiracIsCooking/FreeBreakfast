@@ -44,6 +44,13 @@
 #   --native        skip the container and run cmake here. Implied when this
 #                   host already has the target backend's toolchain.
 #
+# rust/'s .cu are checked too, with or without --device-only. rust/ is a CMake
+# project of its own (rust/CMakeLists.txt) that the root build never adds, so
+# after the root tree this configures it with its preset for the same backend
+# (CROSS_CHECK_BACKEND lowercased: hip or cuda) into <build dir>/rust, and
+# builds all of it: the forked kernel libraries and the C ABI library they
+# link. rust/build-hip and rust/build-cuda, which cargo links, are not touched.
+#
 # Exit status: 0 the other backend compiles, 1 it does not, 2 the check could
 # not be run at all (no toolchain and no usable image) -- never a silent skip,
 # because the machines least likely to have ROCm are exactly the ones where
@@ -135,6 +142,20 @@ run_here() {
     echo "cross-backend-check: building the compile-time tier"
   fi
   "${bld[@]}"
+
+  # rust/'s own project, from its own directory, where its presets are.
+  local rust_preset=${backend,,}
+  local rust_build=$build_dir/rust
+  case "$rust_build" in /*) ;; *) rust_build=$REPO_ROOT/$rust_build ;; esac
+  local -a rcfg=(cmake --preset "$rust_preset" -B "$rust_build")
+  [ "$fresh" = 1 ] && rcfg+=(--fresh)
+  echo "cross-backend-check: configuring rust/ for $backend (preset=$rust_preset) -> $rust_build"
+  (cd rust && "${rcfg[@]}")
+
+  local -a rbld=(cmake --build "$rust_build")
+  [ -n "$jobs" ] && rbld+=(-j "$jobs")
+  echo "cross-backend-check: building rust/'s kernel libraries"
+  "${rbld[@]}"
 }
 
 # ---------------------------------------------------------------------------
