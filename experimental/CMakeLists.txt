@@ -53,6 +53,11 @@ add_subdirectory(split_gemm)
 # one-call build. Benchmark only, like blas_lt.
 add_subdirectory(gemm_host_offload)
 
+# A check-before-invoke routine base and a compile-time allocation key, spiked
+# on mcscf::root_rotation. Its GPU case and must-not-compile entries are in
+# test/experimental.
+add_subdirectory(routine)
+
 # rust/gemm (fp64 gemm from Rust) has no CMake of its own: it binds WarpWraps'
 # C ABI (wwr.capi.*, built with deps/) through the wwr-sys crate.
 
