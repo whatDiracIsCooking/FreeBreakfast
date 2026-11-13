@@ -1,0 +1,12 @@
+[package]
+name = "fb-atom"
+description = "atom: the element table and a positioned atom"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-core-types.workspace = true

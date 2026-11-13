@@ -24,6 +24,8 @@ workspace is that rebuild. Its tree mirrors `src/`, one crate per module:
 | `fb_core_types` | `src/core/types`, what the host modules name | `Double3`, `Vec<double, 3>`: `#[repr(C)]` with the backend's `double3` layout. The fixed-width integers and `make_vec` are the language's |
 | `fb_core_primitives` | `src/core/primitives`, what the host modules name | `double_factorial_odd`, `factorial`, `binomial` as `const fn`, bitwise the C++ loops. `idivup` / `align_up` are `div_ceil` / `next_multiple_of`, and the element-wise functions `f64`'s methods |
 | `fb_core_constants` | `src/core/constants`, what the host modules name | `BOHR_PER_ANGSTROM`, `kBohrPerAngstrom<double>`, asserted against the C++ double's bit pattern |
+| `fb_atom` | `src/atom` | `Element` (`#[repr(u8)]`, Z as the discriminant, `Sentinel` = 0), `z` / `from_z`, `symbol` / `from_symbol` (case-insensitive, `Sentinel` for none), and `Atom`, a `Double3` position in bohr and an `Element` |
+| `fb_molecule` | `src/molecule`, its host half | `Molecule` as host data (atoms, charge, multiplicity; no atoms aborts), `distance`, `nuclear_charge`, `electron_count`, and the nuclear repulsion energy, gradient and Hessian. The nuclei on the device (`view`, `NucleiView`, `molecule_footprint`) become an upload task when nuclear attraction is ported |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -34,7 +36,8 @@ selection graph"): `log` at the bottom, `error_handling` on it, `wwr` on
 both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `diagnostics` at the top with nothing in `core` depending on it, since
 `log`'s macros are imported from `log` directly and `critical!` lives in
-`fb-core-log`.
+`fb-core-log`. Above `core`, `atom` stands on `types`, and `molecule` on
+`atom`, `types` and `error_handling`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -342,3 +345,16 @@ with both built, `capi_dir.rs` refuses to choose, and
 tier 3, the three newest crates included, passes the previous entry's
 counts. The root's ctest listing is unchanged. Clippy (`-D warnings`, both
 feature sets), rustdoc (`-D warnings`) and `cargo fmt --check` are clean.
+
+2026-11-13, `atom` and the host half of `molecule`, on the gfx1200 (HIP),
+holding the card, linking the library the `hip` preset built (`cmake
+--preset hip`, `cmake --build --preset hip`): with default features the
+whole workspace passes in a debug build, the two new crates 14 (`atom`) and
+12 (`molecule`) unit tests and the 2 tests of `molecule_abort` (the
+no-atoms abort, re-run as a child), every other count the CMake project's
+entry's. With `--no-default-features` the tier-3 set, the two included,
+passes those counts plus 14, 12 and 2; `cargo tree` for the two shows no
+wwr crate, and no test binary of theirs has `libwwr_capi` under `NEEDED`.
+Clippy (`-D warnings`) is clean in both feature sets; rustdoc (`-D
+warnings`) and `cargo fmt --check` are clean. Not run on the RTX 3080; the
+two crates touch no device.
