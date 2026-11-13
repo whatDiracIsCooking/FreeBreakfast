@@ -325,7 +325,10 @@ way.
 
 **The card is held for the whole test phase**, by the lock files under
 `GPU_LOCK_DIR` (`with_gpu_card` in `devtools/lib.sh` for the shell tools,
-`fcntl.flock` on the same files in `test.py`). A gate waits, saying so, while
+`fcntl.flock` on the same files in `test.py`). A relative `GPU_LOCK_DIR` sits
+under the main checkout and an absolute one is used as given, so a worktree
+container can name the shared directory directly (`GPU_LOCK_DIR=/home/...`)
+rather than climbing to it with `../`. A gate waits, saying so, while
 another run holds the card, and then while the card's VRAM is at or above
 `GPU_FOREIGN_VRAM_PCT`, which is memory held by something that takes no lock.
 Compute load never makes it wait. The two cards never block each other.

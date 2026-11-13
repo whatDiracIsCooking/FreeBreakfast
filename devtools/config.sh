@@ -362,7 +362,9 @@ HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_
 # GPU_LOCK_DIR holds each card's lock files. Resolved the same way
 # HOST_BIND_DIRS is: a relative path sits under the MAIN checkout, not the
 # calling worktree, which is the point -- every worktree needs to see the same
-# files. Defaults inside .sccache because that directory is already a bind
+# files. An absolute path is used as given (gpu_lock_dir in lib.sh, Card in
+# test.py); before #1332 it was joined under the checkout too, and a run
+# quietly locked a stray main/home/... directory nobody else held. Defaults inside .sccache because that directory is already a bind
 # mount shared by every compose service and every worktree's devcontainer
 # (see docker/compose.yaml and .devcontainer/<variant>/devcontainer.json);
 # reusing it costs no new mount.
