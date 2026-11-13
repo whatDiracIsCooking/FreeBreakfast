@@ -32,7 +32,22 @@ built binary (`cuobjdump --dump-resource-usage`, sm_86) at FelizJueves
   CH2O cc-pVDZ / cc-pVDZ-JKFIT and cc-pVTZ / cc-pVTZ-acCD-6-6, at most
   1.01x the per-item form's time in every system that launches the class.
   The classes over the target it was slower at, 1.06-2.1x (`<2,2,2>`,
-  `<2,2,6>`, `<1,3,6>`, `<2,3,0..2>`, `<3,3,0>`, `<3,3,3>`), stay per-item.
+  `<2,2,6>`, `<1,3,6>`, `<2,3,0..2>`, `<3,3,0>`, `<3,3,3>`), stayed
+  per-item. SPAN below has since taken ten of its classes and four of
+  those.
+- SPAN: `span=True`, `d2eri3`'s spanning windows (#1346): the warp-shared
+  tower's split with its phases in item space -- windows of 32
+  consecutive items that span record pairs and bra records, each spanned
+  bra record's tables formed an axis a lane -- bitwise the per-item form.
+  It replaces the warp-shared tower, or the per-item form, wherever it was
+  the fastest of the three on the RX 9060 XT, the same two systems, the
+  median over 9 alternated rounds of paired ratios: 0.75-0.99x the
+  per-item form at the 15 classes here, and faster than the warp-shared
+  tower at each of them that had it. It was 1.09-1.65x the per-item form
+  at `<1,2,4>`, `<1,3,0..3>`, `<2,2,0..2>`, `<2,3,0..2>` on cc-pVTZ /
+  acCD (cc-pVDZ / JKFIT's `<2,2,0..3>` were 0.80-0.89x), and slower than
+  the warp-shared tower at `<1,2,5>`, `<1,3,3..5>`, `<2,2,3..5>`,
+  `<2,3,5>`, which keep their forms. The RTX 3080 is not timed (#1336).
 
 - FUSED: the `fused` lever of FelizJueves's `[p|q]` kernel (its #344),
   `e_hermite`'s low-stack form (#1337): each `[r]^(0)` is contracted into
@@ -99,10 +114,19 @@ COMPACT: dict[str, frozenset[tuple[int, ...]]] = {
 # family -> the classes emitted with shared=True (over compact tables).
 SHARED: dict[str, frozenset[tuple[int, ...]]] = {
     "d2eri3": frozenset(
-        {(0, 3, 6), (1, 2, 6), (2, 2, 3), (2, 2, 4), (2, 2, 5)}
-        | {(1, 3, lP) for lP in (3, 4, 5)}
-        | {(2, 3, lP) for lP in (3, 4, 5, 6)}
-        | {(3, 3, lP) for lP in (1, 2, 4, 5, 6)}
+        {(1, 3, lP) for lP in (3, 4, 5)}
+        | {(2, 2, lP) for lP in (3, 4, 5)}
+        | {(2, 3, 5)}
+    ),
+}
+
+
+# family -> the classes emitted with span=True (over compact tables).
+SPAN: dict[str, frozenset[tuple[int, ...]]] = {
+    "d2eri3": frozenset(
+        {(0, 3, 5), (0, 3, 6), (1, 2, 6), (1, 3, 6), (2, 2, 6)}
+        | {(2, 3, lP) for lP in (3, 4, 6)}
+        | {(3, 3, lP) for lP in range(7)}
     ),
 }
 
@@ -131,4 +155,6 @@ def forced(family: str, cls: tuple[int, ...]) -> dict[str, bool]:
         out["compact"] = True
     if tuple(cls) in SHARED.get(family, ()):
         out["shared"] = True
+    if tuple(cls) in SPAN.get(family, ()):
+        out["span"] = True
     return out

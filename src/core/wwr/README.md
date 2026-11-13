@@ -289,8 +289,9 @@ lowest-stack form FelizJueves offers that was not measured slower
 only from a higher `L` floor, the low-stack `d2s` / `d2t`, compact tables
 (`d2eri3`, the low-stack `geri3`, `xeri3`, and `d2v` at (pf) and (df)), or
 `d2eri3`'s warp-shared tower, which forms the bra tables and the Hermite
-tower once per record pair in shared memory instead of in every lane. Read
-off the built binary (3586 kernels, sm_86):
+tower once per record pair in shared memory instead of in every lane, or
+its spanning windows (#1346), the same split over windows of items that
+span bra records. Read off the built binary (3586 kernels, sm_86):
 
 | | Before #1263 | After #1263 | After #1265 |
 | --- | --- | --- | --- |
@@ -304,13 +305,14 @@ is bitwise the per-item form. Its speed depends on the class, though
 (timed on the RX 9060 XT; the RTX 3080 is not timed): faster or level from
 aux `l` = 3 up, but 1.4-2.1x slower at aux `l` <= 2 of (pf), (dd), (df)
 with contracted aux sets. So those classes, and `<3,3,0>` and `<3,3,3>`,
-keep the per-item form (`d2eri3<3,3,3>` 15,664 B). The compact `d2v` was
+kept the per-item form (`d2eri3<3,3,3>` 15,664 B) until the spanning
+windows, which were faster at 15 classes, `<3,3,3>` and `<3,3,0>` among
+them (3,136 and 2,616 B now; 28 kernels over 8 KiB). The compact `d2v` was
 1.05x slower at (dd) and 1.08x at (ff), so `potential_hessian<3,3>` keeps
 its dense tables (13,024 B compact, opt-in in FelizJueves) and sets the
 maximum. The target, 8 KiB (816 MiB), is not reached. Next below are
-`d2eri3<3,3,3>` and `<3,3,0>` (per-item, 15,664 and 13,584 B),
-`kb<2,2,2,2>` (12,512 B), and the compact low-stack `geri3` / `xeri3` and
-`gk` at f. `e_hermite<7,6>`, the gradient's raised `[p|q]` row, was
+`kb<2,2,2,2>` (12,512 B), the per-item `d2eri3<2,3,0..2>` (10,112 to
+11,648 B), and the compact low-stack `geri3` / `xeri3` and `gk` at f. `e_hermite<7,6>`, the gradient's raised `[p|q]` row, was
 15,808 B until FelizJueves's `fused` lever (2,944 B, #1337), which every
 `e_hermite` class it is not slower at now takes (#1345).
 
