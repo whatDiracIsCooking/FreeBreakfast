@@ -109,7 +109,7 @@ dimensions, <code>footprint(dims)</code>. The plan fold, <code>then</code> over 
 order with <code>drop</code> for what each one frees, finds the peak and the step that
 reaches it, and <code>check_plan</code> refuses the plan against the <code>[memory]</code> caps
 before the first step runs
-(<a href="../../../../src/pipeline/footprint/README.md"><code>src/pipeline/footprint</code></a>).
+(<a href="../../src/pipeline/footprint/README.md"><code>src/pipeline/footprint</code></a>).
 Steps run one at a time, on one device.</p>
 <p>Two things are fixed there that the model leaves free:</p>
 <ul>
@@ -234,8 +234,8 @@ mechanism that moves it.</li>
 </ul>
 <h2 id="memory-layouts-and-arenas">Memory: layouts and arenas</h2>
 <p>The C++ tree's footprints
-(<a href="../../../../src/core/footprint/README.md"><code>src/core/footprint</code></a>,
-<a href="../../../../src/pipeline/footprint/README.md"><code>src/pipeline/footprint</code></a>)
+(<a href="../../src/core/footprint/README.md"><code>src/core/footprint</code></a>,
+<a href="../../src/pipeline/footprint/README.md"><code>src/pipeline/footprint</code></a>)
 were hard to write, and the reason is worth naming, because the model is
 built to remove it. A footprint there is a second program about allocation:
 the routine allocates, and beside it a hand-written formula describes what

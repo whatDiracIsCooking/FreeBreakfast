@@ -1,9 +1,9 @@
-# rust/rebuild — free_breakfast's core, rebuilt in Rust
+# rust — free_breakfast's core, rebuilt in Rust
 
 Can free_breakfast's C++ layers be rebuilt in Rust, one at a time, over
 WarpWraps' C ABI (`wwr-sys`), keeping each one's contract? This crate is
 that rebuild. Its module tree mirrors `src/`: `core::wwr` is `src/core/wwr`.
-It stands alone: nothing here uses the other crates under `experimental/rust/`.
+It stands alone: nothing here uses the crates under `experimental/rust/`.
 
 ## What is here
 
@@ -74,7 +74,7 @@ broken promise; a contract would turn it into a panic.
 ```bash
 cmake --preset experimental            # or hip-experimental
 cmake --build build-experimental --target wwr.capi.runtime_api
-cd experimental/rust/rebuild
+cd rust
 cargo test                             # debug: the contract tests run too
 cargo test --release                   # the contract tests are skipped
 ```
@@ -82,7 +82,7 @@ cargo test --release                   # the contract tests are skipped
 `build.rs` finds `libwwr_capi_runtime_api.so` under
 `build-experimental/deps/WarpWraps/src/capi`. Set `FB_RUST_BUILD_DIR` to use
 another CMake build directory, for example
-`FB_RUST_BUILD_DIR=../../../build-hip-experimental`. Only the `runtime_api`
+`FB_RUST_BUILD_DIR=../build-hip-experimental`. Only the `runtime_api`
 surface of `wwr-sys` is linked.
 
 The GPU tests use device 0 and need room on it for a context. The host-only

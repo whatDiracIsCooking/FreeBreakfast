@@ -149,6 +149,7 @@ test/gtest/           The other C++ tests, two binaries split by device requirem
 test/pytest/          Python tests over the built binaries
 bench/                Wall-clock benchmarks (opt-in, never a ctest entry)
 experimental/         Code that does not build by default
+rust/                 free_breakfast rebuilt in Rust, layer by layer; cargo by hand, ungated
 docs/style.md         The coding style. Read it before writing C++
 docs/resources.md     The resource contract a feature answers: compute, memory, enforcement, sharing, fork/join
 docker/

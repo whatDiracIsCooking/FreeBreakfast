@@ -18,7 +18,7 @@ dimensions, `footprint(dims)`. The plan fold, `then` over the steps in plan
 order with `drop` for what each one frees, finds the peak and the step that
 reaches it, and `check_plan` refuses the plan against the `[memory]` caps
 before the first step runs
-([`src/pipeline/footprint`](../../../../src/pipeline/footprint/README.md)).
+([`src/pipeline/footprint`](../../src/pipeline/footprint/README.md)).
 Steps run one at a time, on one device.
 
 Two things are fixed there that the model leaves free:
@@ -111,8 +111,8 @@ placement, and placement is the orchestrator's.
 ## Memory: layouts and arenas
 
 The C++ tree's footprints
-([`src/core/footprint`](../../../../src/core/footprint/README.md),
-[`src/pipeline/footprint`](../../../../src/pipeline/footprint/README.md))
+([`src/core/footprint`](../../src/core/footprint/README.md),
+[`src/pipeline/footprint`](../../src/pipeline/footprint/README.md))
 were hard to write, and the reason is worth naming, because the model is
 built to remove it. A footprint there is a second program about allocation:
 the routine allocates, and beside it a hand-written formula describes what

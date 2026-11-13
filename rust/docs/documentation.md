@@ -112,7 +112,7 @@ the single source for their documentation too.
 - **The header's comment is the wrapper's contract.** What a launch wrapper
   requires of its pointers and sizes, which stream it enqueues on, and which
   refusals it returns are written once, as a `///` comment in the header, the
-  C++ style ([`docs/style.md`](../../../../docs/style.md), "Comments").
+  C++ style ([`docs/style.md`](../../docs/style.md), "Comments").
 - **bindgen carries it across.** bindgen copies Doxygen-style comments onto
   the items it generates, so the header's text is the `-sys` crate's rustdoc
   with nothing retyped. It reads only `///` and `/** */` comments unless told
