@@ -1,0 +1,179 @@
+@@ before <p><strong>An output
+<figure><div class="scroll">
+<svg viewBox="0 0 680 204" role="img" aria-label="The four owners' lifetimes against one schedule: a worker row lives for the whole plan; an edge row from its producer's first write to its last consumer's last read; a task row for its task alone; a transport row from the copy's enqueue to the edge's end, and only when the ends land on different cards.">
+<line class="ml" x1="100" y1="58" x2="100" y2="184"/>
+<line class="ml" x1="600" y1="58" x2="600" y2="184"/>
+<line class="ml dash" x1="120" y1="50" x2="120" y2="184"/>
+<line class="ml dash" x1="560" y1="50" x2="560" y2="184"/>
+<text x="95" y="41" text-anchor="end">schedule</text>
+<rect class="box" x="120" y="24" width="110" height="26" rx="4"/><text x="175" y="41" text-anchor="middle">producer P</text>
+<rect class="ml dash" x="240" y="24" width="50" height="26" rx="4"/><text class="sm" x="265" y="41" text-anchor="middle">copy</text>
+<rect class="box" x="300" y="24" width="100" height="26" rx="4"/><text x="350" y="41" text-anchor="middle">consumer</text>
+<rect class="box" x="460" y="24" width="100" height="26" rx="4"/><text x="510" y="41" text-anchor="middle">last consumer</text>
+<text x="95" y="85" text-anchor="end">worker</text>
+<rect class="row" x="100" y="72" width="500" height="18"/><text class="sm" x="350" y="85" text-anchor="middle">the plan</text>
+<text x="95" y="115" text-anchor="end">edge</text>
+<rect class="ab" x="120" y="102" width="440" height="18"/><text class="sm" x="340" y="115" text-anchor="middle">producer's first write → last consumer's last read</text>
+<text x="95" y="145" text-anchor="end">task</text>
+<rect class="row" x="120" y="132" width="110" height="18"/><text class="sm" x="175" y="145" text-anchor="middle">P's scratch</text>
+<text x="95" y="175" text-anchor="end">transport</text>
+<rect class="ml dash" x="240" y="162" width="320" height="18"/><text class="sm" x="400" y="175" text-anchor="middle">copy enqueue → edge end · only across cards</text>
+<text class="sm mt" x="100" y="198" text-anchor="middle">instantiate</text>
+<text class="sm mt" x="600" y="198" text-anchor="middle">drop</text>
+</svg></div>
+<figcaption>The owner decides the lifetime, and the lifetime is all the assigner needs. On one card the transport row does not exist: the consumer reads the edge row in place.</figcaption>
+</figure>
+
+@@ before <p><strong>Two rows may share bytes iff
+<figure><div class="scroll">
+<svg viewBox="0 0 680 152" role="img" aria-label="Two streams. On the left, row r's last read on stream A and row s's first write on stream B have no path between them, so they need disjoint bytes even though s starts later by the clock. On the right, an event recorded on A and waited on by B orders them, and s may take r's offsets.">
+<defs>
+<marker id="mm2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text class="t" x="170" y="16" text-anchor="middle">No path between them</text>
+<text class="t" x="510" y="16" text-anchor="middle">An event makes one</text>
+<line class="ml" x1="340" y1="6" x2="340" y2="146"/>
+<text x="84" y="53" text-anchor="end">stream A</text>
+<text x="84" y="108" text-anchor="end">stream B</text>
+<line class="ml" x1="90" y1="49" x2="326" y2="49"/>
+<line class="ml" x1="90" y1="104" x2="326" y2="104"/>
+<rect class="row" x="95" y="36" width="110" height="26"/><text class="sm" x="150" y="53" text-anchor="middle">last read of r</text>
+<rect class="row" x="210" y="91" width="110" height="26"/><text class="sm" x="265" y="108" text-anchor="middle">first write of s</text>
+<text class="sm mt" x="170" y="140" text-anchor="middle">r and s need disjoint bytes</text>
+<text x="424" y="53" text-anchor="end">stream A</text>
+<text x="424" y="108" text-anchor="end">stream B</text>
+<line class="ml" x1="430" y1="49" x2="666" y2="49"/>
+<line class="ml" x1="430" y1="104" x2="666" y2="104"/>
+<rect class="row" x="435" y="36" width="110" height="26"/><text class="sm" x="490" y="53" text-anchor="middle">last read of r</text>
+<rect class="row" x="550" y="91" width="110" height="26"/><text class="sm" x="605" y="108" text-anchor="middle">first write of s</text>
+<path class="al" d="M545,62 L551,88" marker-end="url(#mm2a)"/>
+<text class="sm at" x="560" y="80">record → wait</text>
+<text class="sm at" x="510" y="140" text-anchor="middle">s may take r's offsets</text>
+</svg></div>
+<figcaption>Across streams, starting later on the clock is not an ordering. Two rows may share bytes only when a path in the schedule, an edge or an event, runs from one's end to the other's start.</figcaption>
+</figure>
+
+@@ after <strong>An alias is free of synchronization.</strong>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 196" role="img" aria-label="The ERI step's B and the metric pair. In the C++ tree a host synchronize sits between the pair's last read and B so the pool can reuse the pair's bytes. Under the table, B's row starts right after the copy into l on the same stream and takes the pair's offsets with no wait.">
+<text class="t" x="170" y="18" text-anchor="middle">C++: a host sync before B</text>
+<text class="t" x="510" y="18" text-anchor="middle">Table: B follows the last read</text>
+<line class="ml" x1="340" y1="8" x2="340" y2="190"/>
+<rect class="row" x="20" y="90" width="140" height="70"/><text x="90" y="129" text-anchor="middle">metric pair</text>
+<rect class="row" x="140" y="48" width="180" height="42"/><text x="230" y="73" text-anchor="middle">L</text>
+<rect class="row" x="182" y="90" width="138" height="70"/><text x="251" y="129" text-anchor="middle">B</text>
+<rect class="ab" x="160" y="34" width="22" height="126"/>
+<text class="sm at" x="171" y="178" text-anchor="middle">host sync</text>
+<line class="ml" x1="20" y1="160" x2="320" y2="160"/>
+<rect class="row" x="360" y="90" width="140" height="70"/><text x="430" y="129" text-anchor="middle">metric pair</text>
+<rect class="row" x="480" y="48" width="180" height="42"/><text x="570" y="73" text-anchor="middle">L</text>
+<rect class="row" x="500" y="90" width="160" height="70"/><text x="580" y="129" text-anchor="middle">B</text>
+<line class="ml" x1="360" y1="160" x2="660" y2="160"/>
+<text class="sm at" x="500" y="178" text-anchor="middle">no wait: same stream</text>
+</svg></div>
+<figcaption>Offset (up) against schedule (right). L starts at the copy into l, the pair's last read. Under the table, B takes the pair's bytes as soon as that read ends, because one stream already orders them. The C++ pool needed the host to drain the pair's pending frees first (issue 1153).</figcaption>
+</figure>
+
+@@ after <strong>No headroom and no eighth.</strong>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 138" role="img" aria-label="Device admission: the block, the measured reserve and the kernels' stack must sum to no more than the cap. The 64 MiB fragmentation headroom and the HIP one-eighth reuse rounding are dropped, since there is no pool.">
+<text class="sm" x="640" y="24" text-anchor="middle">cap</text>
+<rect class="ab" x="20" y="36" width="340" height="34"/><text x="190" y="57" text-anchor="middle">block: the plan's peak</text>
+<rect class="row" x="360" y="36" width="110" height="34"/><text x="415" y="57" text-anchor="middle">reserve</text>
+<rect class="row" x="470" y="36" width="110" height="34"/><text x="525" y="57" text-anchor="middle">stack</text>
+<rect class="ml dash" x="580" y="36" width="60" height="34"/><text class="sm mt" x="610" y="57" text-anchor="middle">free</text>
+<line x1="640" y1="30" x2="640" y2="78" stroke="currentColor" stroke-width="2"/>
+<text class="sm mt" x="364" y="88">measured, ≥ 256 MiB</text>
+<text class="sm mt" x="576" y="88" text-anchor="end">driver reclaims</text>
+<text class="sm mt" x="352" y="117" text-anchor="end">dropped, no pool to feed:</text>
+<rect class="ml dash" x="360" y="102" width="70" height="22"/><text class="sm mt" x="395" y="117" text-anchor="middle">64 MiB</text>
+<rect class="ml dash" x="438" y="102" width="70" height="22"/><text class="sm mt" x="473" y="117" text-anchor="middle">⌈P / 8⌉</text>
+<line class="ml" x1="360" y1="113" x2="430" y2="113"/>
+<line class="ml" x1="438" y1="113" x2="508" y2="113"/>
+</svg></div>
+<figcaption><code>block + reserve + stack ≤ cap</code>. The headroom and the HIP rounding priced a pool that reserves in chunks; one plain allocation has neither.</figcaption>
+</figure>
+
+@@ after <strong>Admission is a search over order.</strong>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 172" role="img" aria-label="The admission search: start from the config's plan order with siblings concurrent; while the peak is over the cap, serialize the widest concurrency, then narrow each adaptive task in schedule order to its least; refuse only when the serial plan at every task's least still does not fit. Any step that fits admits.">
+<defs>
+<marker id="mm5a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+<marker id="mm5b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="box" x="10" y="30" width="140" height="54" rx="5"/>
+<text x="80" y="53" text-anchor="middle">plan order,</text><text x="80" y="69" text-anchor="middle">siblings concurrent</text>
+<rect class="box" x="190" y="30" width="140" height="54" rx="5"/>
+<text x="260" y="53" text-anchor="middle">serialize the</text><text x="260" y="69" text-anchor="middle">widest concurrency</text>
+<rect class="box" x="370" y="30" width="140" height="54" rx="5"/>
+<text x="440" y="53" text-anchor="middle">narrow the next</text><text x="440" y="69" text-anchor="middle">adaptive task</text>
+<rect class="ab" x="550" y="30" width="120" height="54" rx="5"/>
+<text x="610" y="53" text-anchor="middle">refuse, naming</text><text x="610" y="69" text-anchor="middle">rows at the peak</text>
+<line class="ln" x1="150" y1="57" x2="188" y2="57" marker-end="url(#mm5a)"/>
+<line class="ln" x1="330" y1="57" x2="368" y2="57" marker-end="url(#mm5a)"/>
+<line class="al" x1="510" y1="57" x2="548" y2="57" marker-end="url(#mm5b)"/>
+<text class="sm mt" x="169" y="24" text-anchor="middle">&gt; cap</text>
+<text class="sm mt" x="349" y="24" text-anchor="middle">&gt; cap</text>
+<text class="sm at" x="529" y="24" text-anchor="middle">all at least</text>
+<path class="ln" d="M395,30 C395,8 425,8 425,28" marker-end="url(#mm5a)"/>
+<text class="sm mt" x="432" y="14">each, &gt; cap</text>
+<line class="ln" x1="80" y1="84" x2="80" y2="128" marker-end="url(#mm5a)"/>
+<line class="ln" x1="260" y1="84" x2="260" y2="128" marker-end="url(#mm5a)"/>
+<line class="ln" x1="440" y1="84" x2="440" y2="128" marker-end="url(#mm5a)"/>
+<text class="sm mt" x="86" y="110">fits</text>
+<text class="sm mt" x="266" y="110">fits</text>
+<text class="sm mt" x="446" y="110">fits</text>
+<rect class="box" x="10" y="130" width="500" height="30" rx="5"/>
+<text x="260" y="149" text-anchor="middle">admit: the order, the table and every width are fixed</text>
+</svg></div>
+<figcaption>Serializing comes before narrowing: give up parallelism first, then adaptive width, one task at a time in schedule order. Refusal is the last box, reached only by the serial plan at every task's least.</figcaption>
+</figure>
+
+@@ after Each writes its own bisection
+<figure><div class="scroll">
+<svg viewBox="0 0 680 226" role="img" aria-label="An adaptive task's bytes as a function of width, monotone non-decreasing from 1 to width_max. The planner bisects it once against the room the schedule leaves at the task's position and takes w*, the largest width whose bytes fit.">
+<defs>
+<marker id="mm6a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<line class="ln" x1="70" y1="190" x2="640" y2="190" marker-end="url(#mm6a)"/>
+<line class="ln" x1="70" y1="190" x2="70" y2="18" marker-end="url(#mm6a)"/>
+<text class="sm mt" transform="translate(40,110) rotate(-90)" text-anchor="middle">bytes(width)</text>
+<text class="sm mt" x="70" y="206" text-anchor="middle">1</text>
+<text class="sm mt" x="620" y="206" text-anchor="middle">width_max</text>
+<text class="sm mt" x="640" y="222" text-anchor="end">width →</text>
+<polyline class="ln" points="70,182 120,176 170,168 220,158 270,148 320,136 370,124 420,110 470,96 520,80 570,62 620,44"/>
+<g class="fh">
+<circle cx="70" cy="182" r="3"/><circle cx="120" cy="176" r="3"/><circle cx="170" cy="168" r="3"/><circle cx="220" cy="158" r="3"/><circle cx="270" cy="148" r="3"/><circle cx="320" cy="136" r="3"/><circle cx="370" cy="124" r="3"/><circle cx="470" cy="96" r="3"/><circle cx="520" cy="80" r="3"/><circle cx="570" cy="62" r="3"/><circle cx="620" cy="44" r="3"/>
+</g>
+<line class="al dash" x1="70" y1="103" x2="636" y2="103"/>
+<text class="sm at" x="636" y="97" text-anchor="end">room at the task's position</text>
+<line class="al dash" x1="420" y1="110" x2="420" y2="190"/>
+<circle class="ah" cx="420" cy="110" r="5"/>
+<text class="sm at" x="426" y="182">w*</text>
+</svg></div>
+<figcaption>One routine replaces three. <code>bytes</code> must be monotone, which is what makes bisection valid; the planner runs it once, at planning, and <code>w*</code> becomes a dimension of the plan. <code>run</code> never reads free memory.</figcaption>
+</figure>
+
+@@ before <p>Concurrent sub-DAGs do not share a region
+<figure><div class="scroll">
+<svg viewBox="0 0 680 208" role="img" aria-label="A semi-numerical Hessian's region in its parent's block: the reference chain runs once with peak R, then each displacement chain with peak D reuses the same inner table; the region is the larger of R and D, and the parent's own rows sit below it.">
+<defs>
+<marker id="mm7a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="row" x="60" y="152" width="580" height="28"/><text x="350" y="170" text-anchor="middle">parent's rows: what crosses in and out</text>
+<rect class="row" x="60" y="54" width="120" height="98"/><text x="120" y="107" text-anchor="middle">earlier steps</text>
+<rect class="row" x="188" y="14" width="112" height="138"/>
+<text x="244" y="80" text-anchor="middle">reference</text><text x="244" y="96" text-anchor="middle">chain · peak R</text>
+<rect class="row" x="305" y="60" width="60" height="92"/><text x="335" y="110" text-anchor="middle">d₁</text>
+<rect class="row" x="370" y="60" width="60" height="92"/><text x="400" y="110" text-anchor="middle">d₂</text>
+<rect class="row" x="435" y="60" width="60" height="92"/><text x="465" y="110" text-anchor="middle">d₃</text>
+<rect class="row" x="500" y="60" width="60" height="92"/><text x="530" y="110" text-anchor="middle">d₄</text>
+<text x="598" y="110" text-anchor="middle">…</text>
+<rect class="al dash" x="184" y="12" width="456" height="140"/>
+<text class="sm at" x="632" y="30" text-anchor="end">region = max(R, D)</text>
+<text class="sm mt" x="432" y="52" text-anchor="middle">displacements · peak D · one table</text>
+<line class="ln" x1="60" y1="180" x2="652" y2="180" marker-end="url(#mm7a)"/>
+<text class="sm mt" x="652" y="198" text-anchor="end">schedule →</text>
+</svg></div>
+<figcaption>Offset (up) against schedule (right) inside the parent's block. Two inner shapes share one region, sized to the larger peak. Every displacement has the same dimensions, so one inner table serves them all, and nothing inside the region outlives it.</figcaption>
+</figure>

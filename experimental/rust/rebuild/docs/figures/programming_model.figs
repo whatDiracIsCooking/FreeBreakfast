@@ -1,0 +1,166 @@
+@@ after The rebuild keeps the contract
+<figure><div class="scroll">
+<svg viewBox="0 0 680 232" role="img" aria-label="The C++ plan runs Overlap, Core H, ERI and RHF as a list in config order; the rebuild draws the same steps as a DAG where the first three share no edge and all feed the RHF iteration, which is replayed until converged.">
+<defs>
+<marker id="pm1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text class="t" x="140" y="20" text-anchor="middle">C++ today: a list</text>
+<rect class="box" x="80" y="36" width="120" height="28" rx="4"/><text x="140" y="54" text-anchor="middle">Overlap S</text>
+<rect class="box" x="80" y="86" width="120" height="28" rx="4"/><text x="140" y="104" text-anchor="middle">Core H</text>
+<rect class="box" x="80" y="136" width="120" height="28" rx="4"/><text x="140" y="154" text-anchor="middle">ERI</text>
+<rect class="box" x="80" y="186" width="120" height="28" rx="4"/><text x="140" y="204" text-anchor="middle">RHF</text>
+<line class="ln" x1="140" y1="64" x2="140" y2="84" marker-end="url(#pm1a)"/>
+<line class="ln" x1="140" y1="114" x2="140" y2="134" marker-end="url(#pm1a)"/>
+<line class="ln" x1="140" y1="164" x2="140" y2="184" marker-end="url(#pm1a)"/>
+<text class="sm mt" x="150" y="78">then</text>
+<text class="sm mt" x="150" y="128">then</text>
+<text class="sm mt" x="150" y="178">then</text>
+<text class="sm mt" x="212" y="128">config order,</text>
+<text class="sm mt" x="212" y="142">one device</text>
+<line class="ml" x1="300" y1="10" x2="300" y2="222"/>
+<text class="t" x="490" y="20" text-anchor="middle">Rebuild: a DAG</text>
+<text class="sm at" x="490" y="44" text-anchor="middle">no edge between them: any order, or at once</text>
+<rect class="box" x="335" y="56" width="100" height="28" rx="4"/><text x="385" y="74" text-anchor="middle">Overlap S</text>
+<rect class="box" x="445" y="56" width="100" height="28" rx="4"/><text x="495" y="74" text-anchor="middle">Core H</text>
+<rect class="box" x="555" y="56" width="100" height="28" rx="4"/><text x="605" y="74" text-anchor="middle">ERI</text>
+<rect class="box" x="430" y="164" width="120" height="28" rx="4"/><text x="490" y="182" text-anchor="middle">RHF iteration</text>
+<line class="ln" x1="385" y1="84" x2="469" y2="162" marker-end="url(#pm1a)"/>
+<line class="ln" x1="495" y1="84" x2="490" y2="162" marker-end="url(#pm1a)"/>
+<line class="ln" x1="605" y1="84" x2="511" y2="162" marker-end="url(#pm1a)"/>
+<text class="sm" x="422" y="126" text-anchor="end">S</text>
+<text class="sm" x="499" y="126">H_core</text>
+<text class="sm" x="562" y="126">B, L</text>
+<path class="ln" d="M550,171 C598,160 598,198 552,186" marker-end="url(#pm1a)"/>
+<text class="sm mt" x="490" y="214" text-anchor="middle">sub-DAG replayed until converged</text>
+</svg></div>
+<figcaption>The same four steps. Labels on the left are plan order; labels on the right are the data each edge carries. The rebuild drops the two orderings no data needs, so the orchestrator may run the three setup steps in any order, or at once if room allows.</figcaption>
+</figure>
+
+@@ after <strong>The offset assigner is a pure planner function.</strong>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 272" role="img" aria-label="The arena laid out as offset against schedule. Edges S, H_core, B, L and C hold their offsets from their producer to their last reader; the SCF scratch and the gradient scratch take the same offsets at disjoint times; the block is the tallest instant, the plan's peak.">
+<defs>
+<marker id="pm2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<line class="ml dash" x1="180" y1="48" x2="180" y2="230"/>
+<line class="ml dash" x1="310" y1="48" x2="310" y2="230"/>
+<line class="ml dash" x1="470" y1="48" x2="470" y2="230"/>
+<rect class="row" x="90" y="202" width="550" height="28"/><text x="365" y="220" text-anchor="middle">S, H_core</text>
+<rect class="row" x="180" y="132" width="460" height="70"/><text x="410" y="171" text-anchor="middle">B, L: the ERI's outputs</text>
+<rect class="row" x="180" y="62" width="130" height="70"/><text x="245" y="101" text-anchor="middle">ERI scratch</text>
+<rect class="row" x="310" y="111" width="330" height="21"/><text x="475" y="126" text-anchor="middle">C</text>
+<rect class="ab" x="310" y="55" width="160" height="56"/><text x="390" y="87" text-anchor="middle">SCF scratch</text>
+<rect class="ab" x="470" y="55" width="170" height="56"/><text x="555" y="87" text-anchor="middle">gradient scratch</text>
+<rect x="90" y="55" width="550" height="175" fill="none" stroke="currentColor" stroke-width="1.8"/>
+<text class="sm at" x="475" y="46" text-anchor="middle">same offsets, disjoint in time</text>
+<text class="sm" x="84" y="59" text-anchor="end">peak =</text>
+<text class="sm" x="84" y="73" text-anchor="end">block</text>
+<line class="ln" x1="90" y1="230" x2="652" y2="230" marker-end="url(#pm2a)"/>
+<text class="sm mt" x="135" y="248" text-anchor="middle">setup</text>
+<text class="sm mt" x="245" y="248" text-anchor="middle">ERI</text>
+<text class="sm mt" x="390" y="248" text-anchor="middle">SCF</text>
+<text class="sm mt" x="555" y="248" text-anchor="middle">gradient</text>
+<text class="sm mt" x="652" y="266" text-anchor="end">schedule →</text>
+<text class="sm mt" transform="translate(30,150) rotate(-90)" text-anchor="middle">offset in the block →</text>
+</svg></div>
+<figcaption>The table, drawn: each row is a rectangle from its first use to its last, at the offset the assigner gave it. Rows may stack in the same bytes only where their spans do not overlap, as the SCF and gradient scratch do. The block is the height of the tallest instant, so the peak is read off the plan rather than estimated. Sizes are illustrative.</figcaption>
+</figure>
+
+@@ after <strong>A sub-DAG has a table but no block.</strong>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 250" role="img" aria-label="The process holds the plan; the plan holds one device block and one pinned block per GPU worker; a sub-DAG is a region inside the parent's device block with a table and no block of its own; a run borrows the blocks and allocates nothing.">
+<defs>
+<marker id="pm3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="ln" x="10" y="10" width="660" height="230" rx="8"/>
+<text class="t" x="26" y="32">Process</text>
+<text class="sm mt" x="86" y="32">config, logger, devices, budgets · owns no memory</text>
+<rect class="ln" x="30" y="46" width="470" height="180" rx="6"/>
+<text class="t" x="46" y="68">Plan</text>
+<text class="sm mt" x="82" y="68">scheduled, placed, admitted · run any number of times</text>
+<text class="sm" x="50" y="94">GPU 0 · device block: one allocation</text>
+<rect class="row" x="50" y="100" width="110" height="40"/><text x="105" y="124" text-anchor="middle">edges</text>
+<rect class="ab" x="160" y="100" width="160" height="40"/><text x="240" y="117" text-anchor="middle">sub-DAG region</text><text class="sm" x="240" y="132" text-anchor="middle">a table, no block</text>
+<rect class="row" x="320" y="100" width="160" height="40"/><text x="400" y="124" text-anchor="middle">task scratch</text>
+<text class="sm" x="50" y="168">GPU 0 · pinned block</text>
+<rect class="row" x="50" y="174" width="240" height="30"/><text x="170" y="193" text-anchor="middle">staging</text>
+<text class="sm mt" x="490" y="218" text-anchor="end">both made at instantiation, freed at drop</text>
+<rect class="box" x="530" y="104" width="120" height="50" rx="6"/>
+<text class="t" x="590" y="125" text-anchor="middle">Run</text>
+<text class="sm mt" x="590" y="142" text-anchor="middle">allocates nothing</text>
+<line class="ln dash" x1="530" y1="120" x2="484" y2="120" marker-end="url(#pm3a)"/>
+<line class="ln dash" x1="530" y1="148" x2="294" y2="187" marker-end="url(#pm3a)"/>
+<text class="sm mt" x="590" y="176" text-anchor="middle">borrows the blocks</text>
+</svg></div>
+<figcaption>Each lifetime owns the next. Only a top-level plan allocates, one block per GPU worker per memory kind. A nested sub-DAG, such as a Hessian's gradient, is laid out in a region of its parent's block. A run owns nothing; it borrows the plan's blocks for as long as it executes.</figcaption>
+</figure>
+
+@@ after <strong>Fan-out is nodes, not a pool inside a task.</strong>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 172" role="img" aria-label="A debugging dump: iteration k on the stream, then a device-to-pinned copy, then iteration k+1 and k+2 with no wait; a CPU worker writes the file from the pinned row after the copy, in parallel with iteration k+1; the pinned row lives from the copy to the end of the write.">
+<defs>
+<marker id="pm4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text x="90" y="59" text-anchor="end">stream</text>
+<text x="90" y="114" text-anchor="end">CPU worker</text>
+<text class="sm at" x="397" y="32" text-anchor="middle">no edge to the write: it does not wait</text>
+<rect class="row" x="100" y="40" width="145" height="30"/><text x="172" y="59" text-anchor="middle">iteration k</text>
+<rect class="ab" x="250" y="40" width="70" height="30"/><text x="285" y="59" text-anchor="middle">D→pinned</text>
+<rect class="row" x="325" y="40" width="145" height="30"/><text x="397" y="59" text-anchor="middle">iteration k+1</text>
+<rect class="row" x="475" y="40" width="145" height="30"/><text x="547" y="59" text-anchor="middle">iteration k+2</text>
+<rect class="box" x="330" y="95" width="190" height="30" rx="4"/><text x="425" y="114" text-anchor="middle">write file</text>
+<line class="ln" x1="300" y1="70" x2="333" y2="93" marker-end="url(#pm4a)"/>
+<text class="sm mt" x="304" y="90" text-anchor="end">edge</text>
+<rect class="ab" x="250" y="145" width="270" height="12"/>
+<text class="sm" x="244" y="155" text-anchor="end">pinned row</text>
+<text class="sm mt" x="528" y="155">until the write ends</text>
+</svg></div>
+<figcaption>A dump mid-iteration is two nodes: a copy on the stream and a write on a CPU worker. Only the copy is on the GPU's path. The pinned buffer is a row of the layout whose lifetime runs to the write's end, so admission counts it.</figcaption>
+</figure>
+
+@@ replace-pre D ──broadcast
+<figure><div class="scroll">
+<svg viewBox="0 0 680 262" role="img" aria-label="The Coulomb build under two placements. On one GPU, D is broadcast as a pointer to three slices on streams s0 to s2, which accumulate into J in slice order, with K on a fourth stream. On three GPUs, D is copied to each card and the partials are copied to GPU 0 and summed in slice order.">
+<defs>
+<marker id="pm5a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+<marker id="pm5b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text class="t" x="170" y="18" text-anchor="middle">One GPU · four streams</text>
+<text class="t" x="510" y="18" text-anchor="middle">Three GPUs</text>
+<line class="ml" x1="340" y1="8" x2="340" y2="254"/>
+<rect class="ml dash" x="22" y="28" width="300" height="206" rx="6"/>
+<text class="sm mt" x="172" y="252" text-anchor="middle">all on GPU 0</text>
+<rect class="box" x="140" y="40" width="60" height="26" rx="4"/><text x="170" y="57" text-anchor="middle">D</text>
+<rect class="box" x="248" y="40" width="64" height="26" rx="4"/><text x="280" y="57" text-anchor="middle">K · s3</text>
+<line class="ln" x1="200" y1="53" x2="246" y2="53" marker-end="url(#pm5a)"/>
+<rect class="row" x="40" y="104" width="80" height="28"/><text x="80" y="122" text-anchor="middle">J₀ · s0</text>
+<rect class="row" x="130" y="104" width="80" height="28"/><text x="170" y="122" text-anchor="middle">J₁ · s1</text>
+<rect class="row" x="220" y="104" width="80" height="28"/><text x="260" y="122" text-anchor="middle">J₂ · s2</text>
+<line class="ln" x1="170" y1="66" x2="82" y2="102" marker-end="url(#pm5a)"/>
+<line class="ln" x1="170" y1="66" x2="170" y2="102" marker-end="url(#pm5a)"/>
+<line class="ln" x1="170" y1="66" x2="258" y2="102" marker-end="url(#pm5a)"/>
+<text class="sm" x="228" y="86">pointer</text>
+<rect class="box" x="140" y="196" width="60" height="26" rx="4"/><text x="170" y="213" text-anchor="middle">J</text>
+<line class="ln" x1="80" y1="132" x2="154" y2="194" marker-end="url(#pm5a)"/>
+<line class="ln" x1="170" y1="132" x2="170" y2="194" marker-end="url(#pm5a)"/>
+<line class="ln" x1="260" y1="132" x2="186" y2="194" marker-end="url(#pm5a)"/>
+<text class="sm" x="224" y="170">+= in slice order</text>
+<rect class="box" x="480" y="40" width="60" height="26" rx="4"/><text x="510" y="57" text-anchor="middle">D</text>
+<rect class="ml dash" x="376" y="96" width="88" height="44" rx="4"/>
+<rect class="ml dash" x="466" y="96" width="88" height="44" rx="4"/>
+<rect class="ml dash" x="556" y="96" width="88" height="44" rx="4"/>
+<rect class="row" x="380" y="104" width="80" height="28"/><text x="420" y="122" text-anchor="middle">J₀ · GPU 0</text>
+<rect class="row" x="470" y="104" width="80" height="28"/><text x="510" y="122" text-anchor="middle">J₁ · GPU 1</text>
+<rect class="row" x="560" y="104" width="80" height="28"/><text x="600" y="122" text-anchor="middle">J₂ · GPU 2</text>
+<line class="al" x1="510" y1="66" x2="422" y2="94" marker-end="url(#pm5b)"/>
+<line class="al" x1="510" y1="66" x2="510" y2="94" marker-end="url(#pm5b)"/>
+<line class="al" x1="510" y1="66" x2="598" y2="94" marker-end="url(#pm5b)"/>
+<text class="sm at" x="566" y="78">copy per card</text>
+<rect class="box" x="470" y="196" width="80" height="26" rx="4"/><text x="510" y="213" text-anchor="middle">J · GPU 0</text>
+<line class="al" x1="420" y1="140" x2="494" y2="194" marker-end="url(#pm5b)"/>
+<line class="al" x1="510" y1="140" x2="510" y2="194" marker-end="url(#pm5b)"/>
+<line class="al" x1="600" y1="140" x2="526" y2="194" marker-end="url(#pm5b)"/>
+<text class="sm at" x="562" y="174">copy, sum in order</text>
+</svg></div>
+<figcaption>The same DAG, D broadcast to three shell-pair slices of J and reduced in slice order, under two placements. Only the edges' mechanism changes, highlighted on the right; the tasks and the declared edges are identical, and the ordered reduce gives the same bits on both.</figcaption>
+</figure>

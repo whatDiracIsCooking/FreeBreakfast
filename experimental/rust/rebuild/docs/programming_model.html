@@ -1,0 +1,931 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Programming model — Rust rebuild</title>
+<!-- Generated from programming_model.md by md2html.py; edit the .md, not this. -->
+<style>
+:root{--bg:#fbfaf7;--fg:#1f2328;--muted:#5d6670;--rule:#e3e0d8;--accent:#8a4b16;
+--code-bg:#f1eee6;--th-bg:#f4f1ea;--link:#0b5cad;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#16181c;
+--fg:#e4e6ea;--muted:#9aa3ad;--rule:#2c3038;--accent:#e0a36a;--code-bg:#22262d;
+--th-bg:#1d2026;--link:#7fb4ff;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#16181c;--fg:#e4e6ea;--muted:#9aa3ad;--rule:#2c3038;
+--accent:#e0a36a;--code-bg:#22262d;--th-bg:#1d2026;--link:#7fb4ff;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:16px/1.65 Charter,"Bitstream Charter","Iowan Old Style",Georgia,serif;
+padding-inline:16px}
+.wrap{max-width:72rem;margin:0 auto;display:grid;grid-template-columns:15rem minmax(0,
+1fr);
+gap:3rem;padding-block:2.5rem 4rem}
+nav{position:sticky;top:1.5rem;align-self:start;max-height:calc(100vh - 3rem);
+overflow:auto;
+font:13.5px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+nav .kicker{text-transform:uppercase;letter-spacing:.08em;font-size:11px;
+color:var(--muted);
+margin-bottom:.6rem}
+nav ol{list-style:none;margin:0;padding:0}
+nav li{margin:.3rem 0}
+nav li.l3{padding-left:.9rem;font-size:12.5px}
+nav a{color:var(--muted);text-decoration:none}
+nav a:hover{color:var(--accent)}
+nav .sib{margin-top:1.4rem;padding-top:.8rem;border-top:1px solid var(--rule)}
+main{max-width:44rem}
+h1,h2,h3{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;line-height:1.25;
+letter-spacing:-.01em}
+h1{font-size:2rem;margin:0 0 1.5rem}
+h1 .pre{display:block;font-size:.8rem;font-weight:600;text-transform:uppercase;
+letter-spacing:.1em;color:var(--accent);margin-bottom:.4rem}
+h2{font-size:1.35rem;margin:3rem 0 .9rem;padding-top:1.2rem;
+border-top:1px solid var(--rule)}
+h3{font-size:1.08rem;margin:2.2rem 0 .7rem}
+h2 a.hl,h3 a.hl{color:inherit;text-decoration:none}
+p,li{hyphens:auto}
+strong{font-weight:650}
+a{color:var(--link);text-underline-offset:2px}
+code{font:.86em/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+background:var(--code-bg);padding:.1em .3em;border-radius:3px}
+pre{background:var(--code-bg);padding:1rem 1.1rem;border-radius:6px;overflow-x:auto;
+line-height:1.45}
+pre code{background:none;padding:0;font-size:13.5px}
+.table{overflow-x:auto;margin:1.2rem 0}
+table{border-collapse:collapse;font:14px/1.45 system-ui,-apple-system,"Segoe UI",
+sans-serif;
+min-width:100%}
+th,td{border-bottom:1px solid var(--rule);padding:.5rem .7rem;text-align:left;
+vertical-align:top}
+th{background:var(--th-bg);font-weight:600}
+td code,th code{font-size:12.5px}
+ol,ul{padding-left:1.4rem}
+@media (max-width:860px){.wrap{grid-template-columns:1fr;gap:0;
+padding-block:1.5rem 3rem}
+nav{position:static;max-height:none;margin-bottom:1rem;padding-bottom:1rem;
+border-bottom:1px solid var(--rule)}}
+:root{--acc-fill:rgba(138,75,22,.15);--row:#e9e5da}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+--acc-fill:rgba(224,163,106,.2);--row:#2a2f37}}
+:root[data-theme="dark"]{--acc-fill:rgba(224,163,106,.2);--row:#2a2f37}
+figure{margin:1.8rem 0}
+figure .scroll{overflow-x:auto}
+figure svg{display:block;width:100%;min-width:520px;height:auto;color:var(--fg)}
+figcaption{font:13px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+color:var(--muted);
+margin-top:.6rem}
+svg text{font:12px system-ui,-apple-system,"Segoe UI",sans-serif;fill:currentColor}
+svg .t{font-weight:600}
+svg .sm{font-size:11px}
+svg .mt{fill:var(--muted)}
+svg .at{fill:var(--accent)}
+svg .ln{stroke:currentColor;fill:none;stroke-width:1.3}
+svg .ml{stroke:var(--muted);fill:none;stroke-width:1}
+svg .al{stroke:var(--accent);fill:none;stroke-width:1.6}
+svg .dash{stroke-dasharray:5 4}
+svg .box{fill:var(--code-bg);stroke:currentColor;stroke-width:1.2}
+svg .row{fill:var(--row);stroke:currentColor;stroke-width:1}
+svg .ab{fill:var(--acc-fill);stroke:var(--accent);stroke-width:1.5}
+svg .ah{fill:var(--accent)}
+svg .fh{fill:currentColor}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><div class="kicker">Contents</div><ol><li class="l2"><a href="#the-pipeline-is-already-an-instance">The pipeline is already an instance</a></li><li class="l2"><a href="#three-owners">Three owners</a></li><li class="l3"><a href="#a-task-declares">A task declares</a></li><li class="l3"><a href="#an-edge-declares">An edge declares</a></li><li class="l3"><a href="#the-orchestrator-derives">The orchestrator derives</a></li><li class="l2"><a href="#memory-layouts-and-arenas">Memory: layouts and arenas</a></li><li class="l3"><a href="#the-arena-is-a-table-and-a-block">The arena is a table and a block</a></li><li class="l3"><a href="#blocks-plans-and-the-process">Blocks, plans and the process</a></li><li class="l3"><a href="#memory-kinds">Memory kinds</a></li><li class="l2"><a href="#plan-once-run-many">Plan once, run many</a></li><li class="l2"><a href="#two-kinds-of-distribution">Two kinds of distribution</a></li><li class="l2"><a href="#workers-are-a-hierarchy">Workers are a hierarchy</a></li><li class="l3"><a href="#cpu-workers">CPU workers</a></li><li class="l3"><a href="#capabilities-are-enforced-by-lints">Capabilities are enforced by lints</a></li><li class="l2"><a href="#reproducibility-across-placements">Reproducibility across placements</a></li><li class="l2"><a href="#example-the-coulomb-build-under-two-placements">Example: the Coulomb build under two placements</a></li><li class="l2"><a href="#granularity">Granularity</a></li><li class="l2"><a href="#open-questions">Open questions</a></li></ol><div class="sib"><div class="kicker">See also</div><ol><li><a href="memory.html">memory</a></li></ol></div></nav>
+<main>
+<h1><span class="pre">Rust rebuild</span>Programming model</h1>
+<p>We design a feature as a DAG of tasks before we write it as code. A node is a
+task. An edge is data that one task produces and another consumes. The
+orchestrator admits, places, schedules and joins the nodes. The tasks only
+compute.</p>
+<p>The model is not new to this tree. The C++ pipeline is already an instance of
+it, in its most restricted form, and the first section says exactly which
+restrictions the Rust rebuild lifts. The rest of the document is the contract:
+what a task declares, what an edge declares, what the orchestrator derives, and
+how one DAG runs unchanged on one GPU, on a node of GPUs, and across nodes.</p>
+<h2 id="the-pipeline-is-already-an-instance">The pipeline is already an instance</h2>
+<p>A C++ pipeline step declares its memory footprint as a formula in the plan's
+dimensions, <code>footprint(dims)</code>. The plan fold, <code>then</code> over the steps in plan
+order with <code>drop</code> for what each one frees, finds the peak and the step that
+reaches it, and <code>check_plan</code> refuses the plan against the <code>[memory]</code> caps
+before the first step runs
+(<a href="../../../../src/pipeline/footprint/README.md"><code>src/pipeline/footprint</code></a>).
+Steps run one at a time, on one device.</p>
+<p>Two things are fixed there that the model leaves free:</p>
+<ul>
+<li><strong>The schedule is a list.</strong> The plan order is the config's order. Formally
+the steps are a DAG: the overlap and the core Hamiltonian share no edge,
+and either may run first. A step is itself a sub-DAG, and some of those are
+replayed: the RHF step runs one iteration's DAG until convergence.</li>
+<li><strong>The placement is one device.</strong> Every step runs on the one card the plan
+was given.</li>
+</ul>
+<p>The rebuild keeps the contract and relaxes both: the list becomes a DAG, and
+the device becomes a topology. That relaxation also says what the
+orchestrator's first job is, on one GPU: not running nodes in parallel, but
+finding an order whose peak fits the budget. Admission and scheduling are one
+problem, not two. Parallelism is whatever room the chosen order leaves.</p>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 232" role="img" aria-label="The C++ plan runs Overlap, Core H, ERI and RHF as a list in config order; the rebuild draws the same steps as a DAG where the first three share no edge and all feed the RHF iteration, which is replayed until converged.">
+<defs>
+<marker id="pm1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text class="t" x="140" y="20" text-anchor="middle">C++ today: a list</text>
+<rect class="box" x="80" y="36" width="120" height="28" rx="4"/><text x="140" y="54" text-anchor="middle">Overlap S</text>
+<rect class="box" x="80" y="86" width="120" height="28" rx="4"/><text x="140" y="104" text-anchor="middle">Core H</text>
+<rect class="box" x="80" y="136" width="120" height="28" rx="4"/><text x="140" y="154" text-anchor="middle">ERI</text>
+<rect class="box" x="80" y="186" width="120" height="28" rx="4"/><text x="140" y="204" text-anchor="middle">RHF</text>
+<line class="ln" x1="140" y1="64" x2="140" y2="84" marker-end="url(#pm1a)"/>
+<line class="ln" x1="140" y1="114" x2="140" y2="134" marker-end="url(#pm1a)"/>
+<line class="ln" x1="140" y1="164" x2="140" y2="184" marker-end="url(#pm1a)"/>
+<text class="sm mt" x="150" y="78">then</text>
+<text class="sm mt" x="150" y="128">then</text>
+<text class="sm mt" x="150" y="178">then</text>
+<text class="sm mt" x="212" y="128">config order,</text>
+<text class="sm mt" x="212" y="142">one device</text>
+<line class="ml" x1="300" y1="10" x2="300" y2="222"/>
+<text class="t" x="490" y="20" text-anchor="middle">Rebuild: a DAG</text>
+<text class="sm at" x="490" y="44" text-anchor="middle">no edge between them: any order, or at once</text>
+<rect class="box" x="335" y="56" width="100" height="28" rx="4"/><text x="385" y="74" text-anchor="middle">Overlap S</text>
+<rect class="box" x="445" y="56" width="100" height="28" rx="4"/><text x="495" y="74" text-anchor="middle">Core H</text>
+<rect class="box" x="555" y="56" width="100" height="28" rx="4"/><text x="605" y="74" text-anchor="middle">ERI</text>
+<rect class="box" x="430" y="164" width="120" height="28" rx="4"/><text x="490" y="182" text-anchor="middle">RHF iteration</text>
+<line class="ln" x1="385" y1="84" x2="469" y2="162" marker-end="url(#pm1a)"/>
+<line class="ln" x1="495" y1="84" x2="490" y2="162" marker-end="url(#pm1a)"/>
+<line class="ln" x1="605" y1="84" x2="511" y2="162" marker-end="url(#pm1a)"/>
+<text class="sm" x="422" y="126" text-anchor="end">S</text>
+<text class="sm" x="499" y="126">H_core</text>
+<text class="sm" x="562" y="126">B, L</text>
+<path class="ln" d="M550,171 C598,160 598,198 552,186" marker-end="url(#pm1a)"/>
+<text class="sm mt" x="490" y="214" text-anchor="middle">sub-DAG replayed until converged</text>
+</svg></div>
+<figcaption>The same four steps. Labels on the left are plan order; labels on the right are the data each edge carries. The rebuild drops the two orderings no data needs, so the orchestrator may run the three setup steps in any order, or at once if room allows.</figcaption>
+</figure>
+
+
+<h2 id="three-owners">Three owners</h2>
+<p>The things one has to decide about a feature belong to three owners. A task
+answers only for itself; an edge answers for the data between two tasks; the
+orchestrator derives the rest. Keeping them apart is what stops two tasks from
+disagreeing about the edge between them, and keeps each task's spec short.</p>
+<h3 id="a-task-declares">A task declares</h3>
+<ol>
+<li><strong>Device.</strong> CPU or GPU.</li>
+<li><strong>Layout.</strong> Every buffer it will hold, as a function of its dimensions
+(<code>nbf</code>, <code>naux</code>, <code>nocc</code>, ...): each one's size, and whether it is scratch,
+freed when the task ends, or an output that outlives it. The footprint is
+derived from the layout; nobody writes it. A kernel's share comes from its
+<code>*_workspace_bytes(dims)</code> query (<a href="gpu_layer.md"><code>gpu_layer.md</code></a>), so the
+sizes are numbers the kernels own rather than guesses.
+&quot;Memory: layouts and arenas&quot; below has the whole of it.</li>
+<li><strong>Boundary.</strong> Its inputs, its outputs, and what it promises not to touch.</li>
+<li><strong>Partition</strong>, optionally. An axis along which its work can be sliced over
+workers, and the reduction that recombines the partials. A task that
+declares none still runs anywhere; it just cannot be split. Most tasks
+declare none.</li>
+</ol>
+<p>A task also obeys three rules, which are what make it the unit of admission,
+timing, testing and retry:</p>
+<ul>
+<li><strong>It allocates nothing of its own.</strong> Its buffers are carved from an arena
+the orchestrator planned from its layout, and there is no handle through
+which a task could allocate anything else. A task asking for a buffer its
+layout did not name is a contract failure, not a surprise at runtime.</li>
+<li><strong>It has no internal host sync.</strong> It enqueues work on the stream it was
+given and returns. If part of a computation must wait for another part,
+that wait is an edge, and the computation is two tasks.</li>
+<li><strong>Retry means re-admission.</strong> A failed GPU allocation aborts in this tree.
+The place a task can be refused and tried again later is admission, before
+anything is launched, and nowhere else.</li>
+</ul>
+<h3 id="an-edge-declares">An edge declares</h3>
+<ol>
+<li><strong>Size.</strong> Its bytes, as a formula in the same dimensions. An edge is a
+known number of bytes, which is the one requirement for it to cross any
+boundary: a pointer within a GPU, a copy across cards, a transfer across
+nodes.</li>
+<li><strong>Kind.</strong> Broadcast (one producer, every consumer reads), reduce (every
+producer contributes, one consumer reads the combination), gather, or
+point-to-point.</li>
+<li><strong>Reduction order</strong>, for a reduce. Ordered, with a fixed combination
+order and so a bitwise-reproducible result at any worker count, or
+unordered, with a declared tolerance. The same J task reduced over one
+slice, four streams or sixteen GPUs gives three results if the reduce is
+unordered, and the acceptance rule in this tree fixes its bars by analysis.</li>
+<li><strong>Lifetime.</strong> An edge's buffer lives from its producer's start to its last
+consumer's end. With the tasks' layouts, that is everything the arena
+needs to lay a DAG out.</li>
+</ol>
+<p>An edge never says which level of the worker hierarchy it crosses. That is
+placement, and placement is the orchestrator's.</p>
+<h3 id="the-orchestrator-derives">The orchestrator derives</h3>
+<ul>
+<li><strong>Fork and sync points</strong>, from the DAG's shape. A node with several
+successors is a fork; a node with several predecessors is a join.</li>
+<li><strong>Concurrency</strong>, from the shape too. Two nodes with no path between them
+may run at once, as may a transfer and the compute it does not feed.</li>
+<li><strong>Placement</strong>: which worker each node, or each slice of a partitioned node,
+lands on.</li>
+<li><strong>Admission</strong>: a schedule, and an arena laid out over every layout and
+edge lifetime under that schedule, that fits each worker's budget.</li>
+<li><strong>Transport</strong>: what an edge costs given where its two ends landed, and the
+mechanism that moves it.</li>
+<li><strong>Error propagation</strong>: a failed node fails its successors and nothing else.</li>
+</ul>
+<h2 id="memory-layouts-and-arenas">Memory: layouts and arenas</h2>
+<p>The C++ tree's footprints
+(<a href="../../../../src/core/footprint/README.md"><code>src/core/footprint</code></a>,
+<a href="../../../../src/pipeline/footprint/README.md"><code>src/pipeline/footprint</code></a>)
+were hard to write, and the reason is worth naming, because the model is
+built to remove it. A footprint there is a second program about allocation:
+the routine allocates, and beside it a hand-written formula describes what
+it allocated, held in step with it only by tests against the measured pool
+peak. Every difficulty follows from that. Scratch lifetimes are implicit in
+where the code happens to free, so the <code>then</code> / <code>drop</code> algebra reconstructs
+them. The pool is dynamic, so a fragmentation headroom is left. Adaptive
+widths are chosen at run time from free memory, so the formula can only
+state the least. Nested pipelines fold inside outer steps. The shared
+<code>sizes</code> struct that keeps a routine and its footprint agreeing is a
+suggestion, not a contract.</p>
+<p>This section and the three after it are the principles. The level below,
+the table's rows and their owners, the lifetime order, the admission
+arithmetic, the adaptive-width routine and the two blocks' raw calls, is
+<a href="memory.html"><code>memory.md</code></a>.</p>
+<p>The rebuild makes allocation and footprint one program, in three moves.</p>
+<p><strong>A task is two functions.</strong> <code>layout(dims)</code> returns the buffers the task
+will hold: each with a name, a size in bytes and a lifetime (scratch or
+output), the kernel workspace queries and the solver's <code>lwork</code> queries called
+here, at planning, as the pipeline already treats <code>syevd_lwork</code> as a
+dimension, and a BLAS handle's workspace among them
+(<a href="gpu_layer.md"><code>gpu_layer.md</code></a>, &quot;Layering&quot;). <code>run(bufs, stream)</code> computes,
+and reaches a buffer only through the layout it declared. The footprint is
+read off the layout by the orchestrator and never written by the author. The
+layout is what admission reads, what a tier-3 test checks with no device, and
+what the arena is built from.</p>
+<p><strong>Allocation is a capability, held by one module.</strong> The raw allocation
+bindings in <code>wwr-sys</code> are <code>unsafe</code>, one arena module wraps them, and a
+task's <code>run</code> receives its buffers already carved. There is no handle a task
+could allocate through, so &quot;a task allocates nothing of its own&quot; is a
+compile error rather than a convention. The contract tier's check becomes a
+<code>debug_requires</code> on the arena: a task may ask only for a buffer its layout
+named.</p>
+<p><strong>The orchestrator lays an arena out at planning.</strong> Every buffer's size and
+lifetime is known once the schedule is chosen, so assigning offsets in one
+block per worker is an interval-overlap problem solved once, the memory
+planning a tensor compiler does. What that replaces, from the C++:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>C++ today</th>
+<th>Under an arena</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>then</code> / <code>drop</code> and the peak model</td>
+<td>The arena's size. The peak is not estimated; it is the plan.</td>
+</tr>
+<tr>
+<td>Footprint tests against the measured pool peak</td>
+<td>Nothing to measure. The run performs no allocation, so measured equals declared by construction.</td>
+</tr>
+<tr>
+<td>The 64 MiB fragmentation headroom</td>
+<td>None. There is no dynamic pool to fragment.</td>
+</tr>
+<tr>
+<td>An adaptive routine's width chosen at run time from free memory</td>
+<td>Chosen at planning: <code>layout</code> takes the room the schedule leaves and returns the width. Deterministic, and known before the first run.</td>
+</tr>
+<tr>
+<td>A nested pipeline's footprint folded into the outer step's</td>
+<td>A sub-DAG's arena is carved from its parent's. Outputs that outlive a task live in the parent's layout.</td>
+</tr>
+<tr>
+<td><code>Footprint&lt;Device&gt;</code> and <code>Footprint&lt;Pinned&gt;</code></td>
+<td>Two arenas, one per memory kind, and the kind stays in the type.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Plan-once-run-many is what makes this physical: one arena per planned DAG,
+carved once, reused every run. An iteration, a geometry or a displacement
+allocates nothing.</p>
+<p><strong>Where offsets may be reused.</strong> Two buffers may share an offset only when
+the schedule guarantees their lifetimes do not overlap. On one stream that is
+the stream's order. Across streams it is a path in the DAG from the last use
+of one to the first use of the other, so offset reuse is a scheduling
+decision, which is fine because the planner owns both.</p>
+<p><strong>Sizes the dimensions do not fix.</strong> A screened shell-pair count, a Cholesky
+rank or a Davidson subspace's final size is data-dependent and unknown at
+planning. There are two honest answers, and the model allows both: a bound
+from the dimensions, which is the pipeline's answer today (worst-case <code>ncas</code>,
+the Davidson's largest subspace), and a host sizing node that fixes a
+sub-DAG's dimensions before that sub-DAG is planned. The bound is preferred;
+the sizing node is for the case where the bound is too loose to admit.</p>
+<h3 id="the-arena-is-a-table-and-a-block">The arena is a table and a block</h3>
+<p>Two pieces, and the first is the one with the content.</p>
+<p><strong>The offset assigner is a pure planner function.</strong> Its input is every
+buffer in the planned DAG with its size, its alignment and its lifetime, an
+interval of the schedule on one stream or a DAG-path relation across streams.
+Its output is an offset per buffer and the block's total. Greedy in start
+order with best-fit placement, the static memory planning a tensor compiler
+does, is enough for the DAGs this tree has; the general problem is hard, and
+&quot;The schedule search&quot; under the open questions says when greedy may not be.
+It touches no device, so it is tier 3
+(<a href="testing.md"><code>testing.md</code></a>, &quot;Tiers: where a check lives&quot;), it is fuzzed as a
+pure function (<a href="testing.md"><code>testing.md</code></a>, &quot;Fuzzing&quot;), and its total is the
+committed golden (<a href="testing.md"><code>testing.md</code></a>, &quot;Regression&quot;).</p>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 272" role="img" aria-label="The arena laid out as offset against schedule. Edges S, H_core, B, L and C hold their offsets from their producer to their last reader; the SCF scratch and the gradient scratch take the same offsets at disjoint times; the block is the tallest instant, the plan's peak.">
+<defs>
+<marker id="pm2a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<line class="ml dash" x1="180" y1="48" x2="180" y2="230"/>
+<line class="ml dash" x1="310" y1="48" x2="310" y2="230"/>
+<line class="ml dash" x1="470" y1="48" x2="470" y2="230"/>
+<rect class="row" x="90" y="202" width="550" height="28"/><text x="365" y="220" text-anchor="middle">S, H_core</text>
+<rect class="row" x="180" y="132" width="460" height="70"/><text x="410" y="171" text-anchor="middle">B, L: the ERI's outputs</text>
+<rect class="row" x="180" y="62" width="130" height="70"/><text x="245" y="101" text-anchor="middle">ERI scratch</text>
+<rect class="row" x="310" y="111" width="330" height="21"/><text x="475" y="126" text-anchor="middle">C</text>
+<rect class="ab" x="310" y="55" width="160" height="56"/><text x="390" y="87" text-anchor="middle">SCF scratch</text>
+<rect class="ab" x="470" y="55" width="170" height="56"/><text x="555" y="87" text-anchor="middle">gradient scratch</text>
+<rect x="90" y="55" width="550" height="175" fill="none" stroke="currentColor" stroke-width="1.8"/>
+<text class="sm at" x="475" y="46" text-anchor="middle">same offsets, disjoint in time</text>
+<text class="sm" x="84" y="59" text-anchor="end">peak =</text>
+<text class="sm" x="84" y="73" text-anchor="end">block</text>
+<line class="ln" x1="90" y1="230" x2="652" y2="230" marker-end="url(#pm2a)"/>
+<text class="sm mt" x="135" y="248" text-anchor="middle">setup</text>
+<text class="sm mt" x="245" y="248" text-anchor="middle">ERI</text>
+<text class="sm mt" x="390" y="248" text-anchor="middle">SCF</text>
+<text class="sm mt" x="555" y="248" text-anchor="middle">gradient</text>
+<text class="sm mt" x="652" y="266" text-anchor="end">schedule →</text>
+<text class="sm mt" transform="translate(30,150) rotate(-90)" text-anchor="middle">offset in the block →</text>
+</svg></div>
+<figcaption>The table, drawn: each row is a rectangle from its first use to its last, at the offset the assigner gave it. Rows may stack in the same bytes only where their spans do not overlap, as the SCF and gradient scratch do. The block is the height of the tallest instant, so the peak is read off the plan rather than estimated. Sizes are illustrative.</figcaption>
+</figure>
+
+
+<p><strong>The block is one allocation plus that table.</strong> One contiguous allocation
+per GPU worker per memory kind, made when the plan is instantiated and freed
+when the plan drops, and a <code>buffer(id)</code> accessor that returns a slice of the
+length the layout declared, under the debug contract that the id is in the
+calling task's layout. It is the one module that calls the raw allocation
+bindings (&quot;Capabilities are enforced by lints&quot;), and the call is the plain
+device allocation, not the stream-ordered pool the crate also wraps: one
+allocation per plan has nothing for a pool to amortise, and the crate's
+README records <code>hipMallocFromPoolAsync</code> deadlocking beside other threads'
+stream work on ROCm 7.2.4, a hazard a plain allocation made before any
+stream work never meets. It is not an allocator.
+There is no allocate or free at run time, so there are no size classes, no
+free lists, no coalescing and no compaction, and nothing for a pool library
+to speed up. A pool is the right tool when sizes arrive in an order nobody
+knows; here every size and lifetime is known before the first run, and the
+headroom and the fragmentation a pool carries are what the table above
+removes.</p>
+<h3 id="blocks-plans-and-the-process">Blocks, plans and the process</h3>
+<p>Three lifetimes, each owning the next.</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th></th>
+<th>What it is</th>
+<th>How many</th>
+<th>Lives</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Process</strong></td>
+<td>The running binary: one config, one logger, the devices, the worker budget</td>
+<td>One</td>
+<td><code>main</code> to exit</td>
+</tr>
+<tr>
+<td><strong>Plan</strong></td>
+<td>A DAG with its dimensions fixed, scheduled, placed and admitted: the offset tables, the worker assignment, the sync points</td>
+<td>One per calculation; the pipeline's, with its steps' and their iterations' nested inside</td>
+<td>Planning to drop, run any number of times between</td>
+</tr>
+<tr>
+<td><strong>Block</strong></td>
+<td>One contiguous allocation of one memory kind on one GPU worker, sized to the plan's peak for that worker and kind</td>
+<td>Per top-level plan, one per GPU worker it uses, per kind</td>
+<td>The plan's instantiation to its drop</td>
+</tr>
+</tbody>
+</table></div>
+<p>A run is a plan being executed. It owns nothing: it borrows the plan's
+blocks and workers for its duration and allocates nothing. The process owns
+the devices, the budgets the planner admits against and the threads the
+orchestrator opens around a run, and no memory of its own. There is no
+process-wide pool, because a process block could be sized only two ways:
+by knowing every plan it will serve before allocating, which is a plan of
+plans, and that is the pipeline plan; or by allocating a guess and growing
+when a plan does not fit, which is a pool, with the reallocation and the
+headroom the arena exists to remove. The config fixes the whole calculation
+up front, so the first way is available and is the model as written.</p>
+<p><strong>A sub-DAG has a table but no block.</strong> Its offsets are laid out inside its
+parent's block, in the region the parent's schedule leaves free while the
+sub-DAG runs, and the outputs that outlive it are in the parent's table.
+Only top-level plans allocate. The semi-numerical Hessian's pinned block is
+the top-level plan's, sized to one gradient sub-DAG's peak once, not
+<code>6 natoms</code> times.</p>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 250" role="img" aria-label="The process holds the plan; the plan holds one device block and one pinned block per GPU worker; a sub-DAG is a region inside the parent's device block with a table and no block of its own; a run borrows the blocks and allocates nothing.">
+<defs>
+<marker id="pm3a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<rect class="ln" x="10" y="10" width="660" height="230" rx="8"/>
+<text class="t" x="26" y="32">Process</text>
+<text class="sm mt" x="86" y="32">config, logger, devices, budgets · owns no memory</text>
+<rect class="ln" x="30" y="46" width="470" height="180" rx="6"/>
+<text class="t" x="46" y="68">Plan</text>
+<text class="sm mt" x="82" y="68">scheduled, placed, admitted · run any number of times</text>
+<text class="sm" x="50" y="94">GPU 0 · device block: one allocation</text>
+<rect class="row" x="50" y="100" width="110" height="40"/><text x="105" y="124" text-anchor="middle">edges</text>
+<rect class="ab" x="160" y="100" width="160" height="40"/><text x="240" y="117" text-anchor="middle">sub-DAG region</text><text class="sm" x="240" y="132" text-anchor="middle">a table, no block</text>
+<rect class="row" x="320" y="100" width="160" height="40"/><text x="400" y="124" text-anchor="middle">task scratch</text>
+<text class="sm" x="50" y="168">GPU 0 · pinned block</text>
+<rect class="row" x="50" y="174" width="240" height="30"/><text x="170" y="193" text-anchor="middle">staging</text>
+<text class="sm mt" x="490" y="218" text-anchor="end">both made at instantiation, freed at drop</text>
+<rect class="box" x="530" y="104" width="120" height="50" rx="6"/>
+<text class="t" x="590" y="125" text-anchor="middle">Run</text>
+<text class="sm mt" x="590" y="142" text-anchor="middle">allocates nothing</text>
+<line class="ln dash" x1="530" y1="120" x2="484" y2="120" marker-end="url(#pm3a)"/>
+<line class="ln dash" x1="530" y1="148" x2="294" y2="187" marker-end="url(#pm3a)"/>
+<text class="sm mt" x="590" y="176" text-anchor="middle">borrows the blocks</text>
+</svg></div>
+<figcaption>Each lifetime owns the next. Only a top-level plan allocates, one block per GPU worker per memory kind. A nested sub-DAG, such as a Hessian's gradient, is laid out in a region of its parent's block. A run owns nothing; it borrows the plan's blocks for as long as it executes.</figcaption>
+</figure>
+
+
+<p><strong>The peak is a maximum over the schedule, not a sum.</strong> A block equals its
+plan's peak, the largest total of simultaneously live buffers under the
+schedule, and every run reaches it at some instant, so no design runs the
+plan in less. The SCF step's scratch and the gradient step's alias in time
+inside the pipeline plan because their lifetimes are disjoint, which is the
+process-wide sharing a pool would do by accident, done on purpose. Two
+top-level plans alive at once hold their sum; the answer is to make them one
+plan, and nesting is how. A plan kept alive after its last run holds its
+block while something else runs, and the answer there is that plans are
+values: drop the finished one.</p>
+<p><strong>Replay allocates nothing.</strong> The coordinates are an edge, not a dimension.
+A geometry optimization, an IRC walk or a molecular-dynamics trajectory is
+one plan run once per geometry, with the same offsets and the same pages,
+and its two allocations are at the start and the end of the calculation.
+What varies with geometry, a screened shell-pair count or a Cholesky rank,
+takes the bound from the dimensions (&quot;Sizes the dimensions do not fix&quot;), so
+memory sits idle at most geometries in exchange for a trajectory that never
+calls the driver, which is the right trade inside a loop. Even a sizing node
+that re-plans a sub-DAG per run allocates nothing: the parent reserves the
+sub-DAG's region at its bound, and re-planning recomputes a table inside it.</p>
+<p><strong>Concurrency is a width the planner admits.</strong> Two sub-DAGs in flight cannot
+alias, so each one adds its peak to the parent's block. How many of the
+independent sub-DAGs run at once, the displacements, the fragments, the
+roots, is the smaller of what memory admits and what the workers allow, from
+one up, and both numbers are the plan's. Serializing is how a plan fits;
+parallelism is the room the chosen order leaves, as the first section says.
+The reduce at the join combines the partials in the declared order whatever
+the width, so the width is a planning decision and not a correctness one.</p>
+<h3 id="memory-kinds">Memory kinds</h3>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Owner</th>
+<th>Admitted against</th>
+<th>How it is held</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Device</td>
+<td>The GPU worker</td>
+<td>The per-GPU device cap</td>
+<td>One block per plan</td>
+</tr>
+<tr>
+<td>Pinned host</td>
+<td>The GPU worker whose copies it stages</td>
+<td>The per-GPU pinned cap, and the sum over a node's workers within the host's available memory</td>
+<td>One block per plan, allocated portable</td>
+</tr>
+<tr>
+<td>Pageable host</td>
+<td>Nobody; the operating system's</td>
+<td>Not modelled</td>
+<td><code>Vec</code>, owned by the plan when it is part of the DAG</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Pinned memory is per GPU.</strong> Physically it is the node's, page-locked host
+RAM any card can read, and the C ABI's portable flag is set on both backends
+so that fact does not depend on the unified address space. But every pinned
+buffer exists to feed one GPU's copy engines, and its lifetime is bounded by
+a copy on that GPU's stream, so its owner is that GPU worker, as the C++
+tree's <code>DeviceResources</code> already has it. A GPU worker is then one
+self-contained unit, its streams, its device block and its pinned block,
+admitted together against the per-GPU caps, and NUMA locality comes free
+from allocating the block on the worker's own thread. The node is a cap and
+not an owner: the sum of a node's pinned blocks must fit the host's memory
+less a margin, which is the C++ <code>check_pinned_node</code> check carried over. Host
+data broadcast to several cards is placed in one consumer's pinned block and
+read across, which the portable flag makes legal and the &quot;GPUs on one node&quot;
+row of the worker table prices, or staged once per card; both are placement.
+Pinning costs milliseconds and locks pages, so once per plan, reused every
+run, is where plan-once-run-many pays most.</p>
+<p><strong>Pageable host memory is not an arena.</strong> The arena exists for memory that
+is admitted against a budget and whose peak must be a planned number.
+Pageable host memory is neither: the config, the basis, the planner's own
+tables and a file writer's buffer are the operating system's business, and
+<code>Vec</code> is the right tool. Making an arena the backend for <code>Vec</code> means the
+unstable allocator API or a third-party <code>Vec</code> across every host type, for no
+property the model asks for. Plan-once-run-many gives the host side what
+matters without an allocator: a host buffer that is part of the DAG is owned
+by the plan, allocated when the plan is built and reused every run. The C++
+footprint's rule carries over unchanged: large host-side data is pinned,
+where it is counted, and a step that would move something big to pageable
+memory moves it to pinned memory instead.</p>
+<p><strong>What no arena reaches.</strong> A vendor routine that allocates internally, as
+some solver paths do whatever workspace they are handed, is outside every
+arena. The answer is the one the C++ tree uses, the <code>lwork</code> and
+<code>*_workspace_bytes</code> queries so the routine has no reason to allocate, and
+the memory golden is what notices when one does anyway.</p>
+<h2 id="plan-once-run-many">Plan once, run many</h2>
+<p>The replayed computations in this tree share one property: their dimensions
+do not change between runs. An SCF iteration, the gradient at each geometry of
+an optimization or an IRC walk, and each displacement of a semi-numerical
+Hessian all reuse the same basis, so the same <code>nbf</code> and <code>naux</code>. The model
+makes that a first-class split:</p>
+<ul>
+<li><strong>Planning</strong> fixes the dimensions, evaluates every footprint and edge size,
+chooses a placement and a schedule, and admits the whole against the
+budget. It happens once.</li>
+<li><strong>Running</strong> moves data through the planned DAG. It happens any number of
+times, and nothing is re-admitted.</li>
+</ul>
+<p>Stream capture into a replayed graph is the same split one level down, which
+is a sign the split is real rather than imposed. A loop is therefore not a
+special node: it is a planned sub-DAG run repeatedly, with a host decision
+between runs. The decision is a node (convergence, a step accepted, the walk
+reaching a minimum) whose output is read on the host.</p>
+<p><strong>DAGs nest.</strong> A node may be a sub-DAG with dimensions of its own. The
+pipeline is a DAG of steps; a step is a DAG of tasks; the RHF step's body is a
+sub-DAG replayed per iteration. Dimensions attach to the sub-DAG, not to the
+whole plan: fragments of a many-body expansion each have their own <code>nbf</code>, and
+the pipeline's one global dimensions struct is the one-calculation special
+case.</p>
+<h2 id="two-kinds-of-distribution">Two kinds of distribution</h2>
+<p>The topologies we want are a single GPU, a node of GPUs, and many nodes of
+GPUs. A large coupled-cluster calculation would spread one task's work over
+every GPU it can reach; a many-body expansion would spread independent
+fragments over GPUs and nodes. These are two different kinds of
+distribution, and only one of them costs a task's author anything.</p>
+<ul>
+<li><strong>Across sub-DAGs.</strong> Fragments of an expansion, displacements of a
+semi-numerical Hessian, the roots of a state average: independent sub-DAGs,
+joined by a small reduce at the end (a sum of fragment energies, a Hessian
+assembled from gradients). The orchestrator gets this for free by placement.
+Nothing inside the tasks changes. How many run at once is the width the
+planner admits (&quot;Blocks, plans and the process&quot;).</li>
+<li><strong>Within a task.</strong> The amplitudes of a coupled-cluster iteration, the
+Coulomb build over slices of the shell-pair list: one task's work sliced
+over workers, a broadcast in and a reduce out. This is the partition a task
+may declare, and it is the only place distribution reaches into a task.</li>
+</ul>
+<p>Keeping the partition opt-in is what keeps single-GPU code honest: a task
+without one is written once, for one stream, and is still placeable on any
+worker of any topology.</p>
+<h2 id="workers-are-a-hierarchy">Workers are a hierarchy</h2>
+<p>A worker is a thread, a stream, a GPU, or a node, and the levels nest. An
+edge's kind and size are the same at every level; only the cost differs, and
+the orchestrator prices it by where the two ends landed:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th>Edge crosses</th>
+<th>Broadcast is</th>
+<th>Reduce is</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Threads on one host</td>
+<td>A shared pointer</td>
+<td>An ordered accumulate into one buffer</td>
+</tr>
+<tr>
+<td>Streams on one GPU</td>
+<td>A shared pointer</td>
+<td>An ordered accumulate into one buffer</td>
+</tr>
+<tr>
+<td>GPUs on one node</td>
+<td>A device-to-device copy per card</td>
+<td>Partials copied to one card, or a peer reduce</td>
+</tr>
+<tr>
+<td>Nodes</td>
+<td>A network transfer</td>
+<td>A network reduce</td>
+</tr>
+</tbody>
+</table></div>
+<p>The single-GPU case is the degenerate one: broadcast is a pointer, reduce is
+an in-place accumulate, and the workers are streams. One DAG description
+serves every row, which is the point of wanting all of them. The transport
+behind the lower rows is an orchestrator detail, decided later and not here.</p>
+<h3 id="cpu-workers">CPU workers</h3>
+<p>A CPU node is a file write, a host decision between runs of a sub-DAG, or a
+small host-side assembly. It runs on a CPU worker, which is one thread the
+orchestrator owns. The needs here are meagre: the products written when a
+step finishes, an intermediate tensor dumped for debugging, a convergence
+check. The design is sized to them, and it is enforced rather than hoped for,
+because the place a thread count gets out of hand is never the one that was
+designed.</p>
+<p><strong>A run owns a fixed set of threads.</strong> At the start of a run the orchestrator
+opens one <code>std::thread::scope</code> and creates <code>n_cpu</code> CPU workers and one thread
+per stream worker inside it; the scope joins them all when the run ends. A
+ready queue of node ids feeds the CPU workers, and a stream worker's thread
+has its device made current for the life of the run
+(<a href="gpu_layer.md"><code>gpu_layer.md</code></a>, &quot;Layering&quot;). No node is ever given a thread
+of its own, so the thread count is a property of the plan, fixed at planning,
+and not of the DAG's size. &quot;Too many threads&quot; is then impossible for the same
+reason &quot;too much memory&quot; is once the arena is laid out: there is no counter to
+check because there is no spawn in the loop.</p>
+<p><strong>Sub-DAGs borrow their parent's workers.</strong> This is where a count would blow
+up otherwise. The semi-numerical Hessian is <code>6 natoms</code> gradient sub-DAGs, and
+if each opened a scope of its own, one config line would make hundreds of
+threads. The rule is the arena rule restated: a sub-DAG's arena is carved
+from its parent's, and a sub-DAG's nodes are scheduled onto its parent's
+workers. Only the top-level run owns threads. Nesting adds nodes to the
+queue, never workers.</p>
+<p><strong>The count is a budget, admitted beside memory.</strong> <code>n_cpu</code> defaults to the
+host's <code>available_parallelism</code> less the stream workers' threads, floored at
+one, and the config overrides it beside the <code>[memory]</code> caps. A placement that
+needs more CPU workers than the budget is refused in the same admission pass
+that refuses an arena that does not fit.</p>
+<p><strong>Fan-out is nodes, not a pool inside a task.</strong> Writing three files when the
+RHF step finishes is three CPU nodes with no edge between them, each reading
+an edge from the step; the orchestrator sees three ready nodes and runs them
+at once. A task that opened a pool of its own to do the same would hide the
+parallelism from the planner and would log from threads that carry no task
+record (<a href="diagnostics.md"><code>diagnostics.md</code></a>, &quot;The task context&quot;). One thread
+runs one node, and the orchestrator sets the record on that thread before the
+node starts, so the record needs no forwarding. A debugging dump in the middle
+of an iteration has the same shape: a device-to-pinned copy node on the
+stream, then a CPU write node that depends on it and feeds nothing. The next
+iteration's GPU work has no edge to the write, so it proceeds while the write
+runs, and the overlap costs the author nothing. The model makes two things
+explicit that a hand-written dump would leave implicit: the pinned buffer is
+in the layout, with its lifetime extended to the writer's end, so admission
+counts it; and under plan-once-run-many a dump switched on is a different
+plan, not a branch inside a task.</p>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 172" role="img" aria-label="A debugging dump: iteration k on the stream, then a device-to-pinned copy, then iteration k+1 and k+2 with no wait; a CPU worker writes the file from the pinned row after the copy, in parallel with iteration k+1; the pinned row lives from the copy to the end of the write.">
+<defs>
+<marker id="pm4a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text x="90" y="59" text-anchor="end">stream</text>
+<text x="90" y="114" text-anchor="end">CPU worker</text>
+<text class="sm at" x="397" y="32" text-anchor="middle">no edge to the write: it does not wait</text>
+<rect class="row" x="100" y="40" width="145" height="30"/><text x="172" y="59" text-anchor="middle">iteration k</text>
+<rect class="ab" x="250" y="40" width="70" height="30"/><text x="285" y="59" text-anchor="middle">D→pinned</text>
+<rect class="row" x="325" y="40" width="145" height="30"/><text x="397" y="59" text-anchor="middle">iteration k+1</text>
+<rect class="row" x="475" y="40" width="145" height="30"/><text x="547" y="59" text-anchor="middle">iteration k+2</text>
+<rect class="box" x="330" y="95" width="190" height="30" rx="4"/><text x="425" y="114" text-anchor="middle">write file</text>
+<line class="ln" x1="300" y1="70" x2="333" y2="93" marker-end="url(#pm4a)"/>
+<text class="sm mt" x="304" y="90" text-anchor="end">edge</text>
+<rect class="ab" x="250" y="145" width="270" height="12"/>
+<text class="sm" x="244" y="155" text-anchor="end">pinned row</text>
+<text class="sm mt" x="528" y="155">until the write ends</text>
+</svg></div>
+<figcaption>A dump mid-iteration is two nodes: a copy on the stream and a write on a CPU worker. Only the copy is on the GPU's path. The pinned buffer is a row of the layout whose lifetime runs to the write's end, so admission counts it.</figcaption>
+</figure>
+
+
+<p><strong>The standard library, and no pool crate.</strong> What the orchestrator needs is a
+queue, a condition variable and the scoped threads, under a hundred lines,
+most of them the loop that pops a node id and runs it. Shutdown is the
+scope's join. A release build aborts on a panic, and a test build propagates
+it through the join (<a href="diagnostics.md"><code>diagnostics.md</code></a>, &quot;Panics and
+profiles&quot;), but only if the other workers exit: a worker that panics
+mid-node never marks it finished, and the rest would wait for it forever.
+So each worker holds a guard that, while unwinding, marks the run aborted
+and wakes everyone, and the join re-raises the node's own panic. The work
+that would justify a dependency is the
+scheduler, readiness counts and the choice of which ready node goes to which
+worker, and no crate has it in the DAG-with-placement shape the model wants,
+so it is written under either choice. The usual crates would each add
+something unwanted. Rayon is a work-stealing scheduler, and stealing is
+placement, which is the orchestrator's; its idle workers spin before they
+sleep; and a stream worker is a thread dedicated to one device, which a
+general pool has no notion of. Tokio is for many sockets, and its file I/O is
+a blocking thread pool underneath. The <code>threadpool</code> crate's <code>'static</code> bound on
+a job forces every edge buffer behind an <code>Arc</code> and defeats the scoped borrow.
+The workers live behind one type in one module, so that if a profile ever
+asked for stealing on the CPU side a crate could slot in behind the same type.</p>
+<p><strong>What is tested.</strong> Every node runs exactly once, in a topological order, on
+no more threads than the plan said. The last is a tier-3 test
+(<a href="testing.md"><code>testing.md</code></a>, &quot;Tiers: where a check lives&quot;) that reads the
+<code>Threads:</code> line of <code>/proc/self/status</code> after a device-free run and compares it
+to the plan's worker total plus the main thread. It is the one check that
+catches what a lint cannot see: a linked host library opening a pool of its
+own at load, as a host BLAS does. If one is ever linked, its thread count is
+set to one at initialization, and this test is what notices when that slips.</p>
+<h3 id="capabilities-are-enforced-by-lints">Capabilities are enforced by lints</h3>
+<p>Three things a task may not do are each held by one module or one crate:
+allocating is the arena's (&quot;Memory: layouts and arenas&quot;), spawning is the
+worker module's, and <code>unsafe</code> is the wrappers'. Each is a lint in the
+manifest's <code>[lints]</code> table that
+<a href="documentation.md"><code>documentation.md</code></a> (&quot;Code: rustdoc&quot;) already uses for
+<code>missing_docs</code>, so a violation is a build failure in every invocation, the
+gates and an editor alike, and not a convention a review has to remember.</p>
+<p><strong>Spawning.</strong> <code>std::thread</code> cannot be removed from the standard library, but
+clippy's <code>disallowed_methods</code> makes calling it a compile error everywhere but
+the one module with the <code>allow</code>:</p>
+<pre><code class="language-toml"># clippy.toml
+disallowed-methods = [
+  { path = &quot;std::thread::spawn&quot;, reason = &quot;workers belong to the orchestrator&quot; },
+  { path = &quot;std::thread::scope&quot;, reason = &quot;workers belong to the orchestrator&quot; },
+  { path = &quot;std::thread::Builder::spawn&quot;, reason = &quot;workers belong to the orchestrator&quot; },
+  { path = &quot;std::thread::Builder::spawn_scoped&quot;, reason = &quot;workers belong to the orchestrator&quot; },
+]
+</code></pre>
+<p>The manifest does the rest: rayon and tokio are not dependencies, and a pool
+crate arriving later is a <code>Cargo.toml</code> diff a review sees.</p>
+<p><strong><code>unsafe</code>.</strong> The rebuild's <code>unsafe</code> is the FFI into <code>wwr-sys</code> and the
+libraries behind it, the arena over the raw allocation bindings, and the two
+<code>libc</code> calls in <code>core::log</code>. Nothing else needs it, and the lints keep it
+there. <code>unsafe_code</code> is rustc's own lint, and <code>forbid</code> is the level that
+cannot be allowed back, so it is set per crate: once the workspace is split
+(<a href="../README.md"><code>README.md</code></a>, &quot;Order of work&quot;), the <code>-sys</code> wrappers and the
+arena are crates of their own and every other crate forbids, and until then
+the one crate denies with an <code>allow</code> on the wrapper modules alone. Where <code>unsafe</code> is
+allowed, clippy's <code>undocumented_unsafe_blocks</code> requires a <code>// SAFETY:</code>
+comment on every block, which turns the comment the crate already writes into
+a rule and names the blocks that lack one, and
+<code>multiple_unsafe_ops_per_block</code> keeps each block to one operation so the
+comment justifies exactly one thing. Miri covers what a lint cannot
+(<a href="testing.md"><code>testing.md</code></a>, &quot;Sanitizers&quot;).</p>
+<pre><code class="language-toml">[lints.rust]
+unsafe_code = &quot;forbid&quot;              # every crate but the wrappers and the arena
+
+[lints.clippy]
+disallowed_methods = &quot;deny&quot;
+undocumented_unsafe_blocks = &quot;deny&quot;
+multiple_unsafe_ops_per_block = &quot;deny&quot;
+</code></pre>
+<h2 id="reproducibility-across-placements">Reproducibility across placements</h2>
+<p>The same planned DAG must give the same answer, to a declared tolerance,
+under every placement. Where every reduce is ordered, that tolerance is zero
+and the result is bitwise. Where a reduce is unordered, its declared tolerance
+is the bar, and the test tier compares the one-worker result against a
+many-worker one at that bar
+(<a href="testing.md"><code>testing.md</code></a>, &quot;Tiers: where a check lives&quot;, tiers 4 and 5).
+Tolerances are fixed by analysis and never loosened to make a comparison
+pass.</p>
+<h2 id="example-the-coulomb-build-under-two-placements">Example: the Coulomb build under two placements</h2>
+<p>The DAG, declared once:</p>
+<figure><div class="scroll">
+<svg viewBox="0 0 680 262" role="img" aria-label="The Coulomb build under two placements. On one GPU, D is broadcast as a pointer to three slices on streams s0 to s2, which accumulate into J in slice order, with K on a fourth stream. On three GPUs, D is copied to each card and the partials are copied to GPU 0 and summed in slice order.">
+<defs>
+<marker id="pm5a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="fh" d="M0,0L10,5L0,10z"/></marker>
+<marker id="pm5b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path class="ah" d="M0,0L10,5L0,10z"/></marker>
+</defs>
+<text class="t" x="170" y="18" text-anchor="middle">One GPU · four streams</text>
+<text class="t" x="510" y="18" text-anchor="middle">Three GPUs</text>
+<line class="ml" x1="340" y1="8" x2="340" y2="254"/>
+<rect class="ml dash" x="22" y="28" width="300" height="206" rx="6"/>
+<text class="sm mt" x="172" y="252" text-anchor="middle">all on GPU 0</text>
+<rect class="box" x="140" y="40" width="60" height="26" rx="4"/><text x="170" y="57" text-anchor="middle">D</text>
+<rect class="box" x="248" y="40" width="64" height="26" rx="4"/><text x="280" y="57" text-anchor="middle">K · s3</text>
+<line class="ln" x1="200" y1="53" x2="246" y2="53" marker-end="url(#pm5a)"/>
+<rect class="row" x="40" y="104" width="80" height="28"/><text x="80" y="122" text-anchor="middle">J₀ · s0</text>
+<rect class="row" x="130" y="104" width="80" height="28"/><text x="170" y="122" text-anchor="middle">J₁ · s1</text>
+<rect class="row" x="220" y="104" width="80" height="28"/><text x="260" y="122" text-anchor="middle">J₂ · s2</text>
+<line class="ln" x1="170" y1="66" x2="82" y2="102" marker-end="url(#pm5a)"/>
+<line class="ln" x1="170" y1="66" x2="170" y2="102" marker-end="url(#pm5a)"/>
+<line class="ln" x1="170" y1="66" x2="258" y2="102" marker-end="url(#pm5a)"/>
+<text class="sm" x="228" y="86">pointer</text>
+<rect class="box" x="140" y="196" width="60" height="26" rx="4"/><text x="170" y="213" text-anchor="middle">J</text>
+<line class="ln" x1="80" y1="132" x2="154" y2="194" marker-end="url(#pm5a)"/>
+<line class="ln" x1="170" y1="132" x2="170" y2="194" marker-end="url(#pm5a)"/>
+<line class="ln" x1="260" y1="132" x2="186" y2="194" marker-end="url(#pm5a)"/>
+<text class="sm" x="224" y="170">+= in slice order</text>
+<rect class="box" x="480" y="40" width="60" height="26" rx="4"/><text x="510" y="57" text-anchor="middle">D</text>
+<rect class="ml dash" x="376" y="96" width="88" height="44" rx="4"/>
+<rect class="ml dash" x="466" y="96" width="88" height="44" rx="4"/>
+<rect class="ml dash" x="556" y="96" width="88" height="44" rx="4"/>
+<rect class="row" x="380" y="104" width="80" height="28"/><text x="420" y="122" text-anchor="middle">J₀ · GPU 0</text>
+<rect class="row" x="470" y="104" width="80" height="28"/><text x="510" y="122" text-anchor="middle">J₁ · GPU 1</text>
+<rect class="row" x="560" y="104" width="80" height="28"/><text x="600" y="122" text-anchor="middle">J₂ · GPU 2</text>
+<line class="al" x1="510" y1="66" x2="422" y2="94" marker-end="url(#pm5b)"/>
+<line class="al" x1="510" y1="66" x2="510" y2="94" marker-end="url(#pm5b)"/>
+<line class="al" x1="510" y1="66" x2="598" y2="94" marker-end="url(#pm5b)"/>
+<text class="sm at" x="566" y="78">copy per card</text>
+<rect class="box" x="470" y="196" width="80" height="26" rx="4"/><text x="510" y="213" text-anchor="middle">J · GPU 0</text>
+<line class="al" x1="420" y1="140" x2="494" y2="194" marker-end="url(#pm5b)"/>
+<line class="al" x1="510" y1="140" x2="510" y2="194" marker-end="url(#pm5b)"/>
+<line class="al" x1="600" y1="140" x2="526" y2="194" marker-end="url(#pm5b)"/>
+<text class="sm at" x="562" y="174">copy, sum in order</text>
+</svg></div>
+<figcaption>The same DAG, D broadcast to three shell-pair slices of J and reduced in slice order, under two placements. Only the edges' mechanism changes, highlighted on the right; the tasks and the declared edges are identical, and the ordered reduce gives the same bits on both.</figcaption>
+</figure>
+
+<ul>
+<li><strong>Task J:</strong> GPU. Layout per slice: the partial J (<code>nbf²</code>, an output) and
+the integral scratch, sized by the kernel's workspace query. Boundary:
+reads D, writes its partial, touches nothing else. Partition: the
+shell-pair list, recombined by an ordered sum.</li>
+<li><strong>Edge D:</strong> <code>nbf²</code> bytes, broadcast. Freed after the last slice, and after
+K, which reads it too.</li>
+<li><strong>Edge J:</strong> <code>nbf²</code> bytes per slice, reduce, ordered.</li>
+<li><strong>Derived:</strong> the fork is the partition; the join is the reduce; K is a
+sibling of J, not a successor, because it shares D and nothing else.</li>
+</ul>
+<p>The same declarations under two placements:</p>
+<div class="table"><table>
+<thead>
+<tr>
+<th></th>
+<th>One GPU</th>
+<th>Three GPUs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workers</td>
+<td>Three streams, or one if admission leaves no room for three partials</td>
+<td>One card per slice</td>
+</tr>
+<tr>
+<td>Broadcast</td>
+<td>D's pointer</td>
+<td>D copied to each card</td>
+</tr>
+<tr>
+<td>Reduce</td>
+<td>Each slice accumulates into J in slice order</td>
+<td>Partials copied to one card, summed in slice order</td>
+</tr>
+<tr>
+<td>Concurrency</td>
+<td>K on a fourth stream if its footprint fits beside J's</td>
+<td>K on any card with room</td>
+</tr>
+</tbody>
+</table></div>
+<p>Neither the task nor the edges changed. Only the orchestrator's answers did.</p>
+<p>A second example costs one sentence: the semi-numerical Hessian is <code>6 natoms</code>
+gradient sub-DAGs, each the whole gradient DAG with the same dimensions,
+independent until the final assembly. On one GPU they run in sequence; on a
+node they spread across cards; the gradient DAG is declared once.</p>
+<h2 id="granularity">Granularity</h2>
+<p>A task is the smallest unit with its own footprint and no internal host sync.
+That rules out both ends:</p>
+<ul>
+<li>A kernel launch is below the line. A launch wrapper allocates nothing and
+syncs nothing, so it has no footprint to admit and nothing to time but the
+stream.</li>
+<li>A pipeline step is above the line. It allocates many things with different
+lifetimes and syncs between them, so it is a sub-DAG, and its syncs are its
+edges.</li>
+</ul>
+<p>The practical test is the second rule: if a computation must wait for part of
+itself, split it there.</p>
+<h2 id="open-questions">Open questions</h2>
+<ul>
+<li><strong>Where the line is in practice.</strong> A sync that is free on one GPU, two
+kernels on one stream, still splits a task under this rule. Is that the
+right cost, or should a task be allowed a chain of launches on one stream
+with no edge between them? The current answer is that a chain on one
+stream is not a sync, so it stays one task; the rule is about host waits.</li>
+<li><strong>Adaptive layouts and the schedule.</strong> An adaptive task's width depends on
+the room the schedule leaves, and the schedule's peak depends on the
+widths. Is one pass enough, laying the fixed layouts out first and handing
+each adaptive task the remainder in schedule order, as <code>check_plan</code>'s
+room line does today, or does the planner iterate?</li>
+<li><strong>Reuse across streams.</strong> Offset reuse between buffers on different
+streams needs a DAG path between their lifetimes. Should the planner add an
+event edge to create one when the saving is large, or only exploit the
+paths the DAG already has?</li>
+<li><strong>How loose is too loose.</strong> A bound from the dimensions is the preferred
+answer to a data-dependent size. At what ratio of bound to typical size
+does a sizing node pay for its extra host round trip?</li>
+<li><strong>The schedule search.</strong> Finding an order whose peak fits is a scheduling
+problem that is hard in general. A plan order from the config, improved
+greedily, is probably enough for the DAGs this tree has. When is it not?</li>
+<li><strong>Transport.</strong> NCCL, MPI, or something else moves the lower rows of the
+worker table. Nothing in the model depends on the choice, and nothing here
+decides it.</li>
+<li><strong>Pinned blocks and NUMA.</strong> On a multi-socket node, pinned pages on the
+GPU's own socket copy faster than pages across the interconnect. A pinned
+block is allocated on its worker's thread, so pinning that thread to the
+GPU's socket would place the block without the planner knowing. Whether
+the gap is worth the pinning is a measurement on such a node.</li>
+</ul>
+</main>
+</div>
+</body>
+</html>
