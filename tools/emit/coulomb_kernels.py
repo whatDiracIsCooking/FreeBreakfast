@@ -30,7 +30,9 @@ gradient.md, "The kernels"; the `gjab_` half of its `--grad-l 3` ladder, whose
   MAX_L: the d0 [p|q] of `kernel_gjab.gjab_pq_spec`'s class, the bra raised
   by one, whose J_p at order la + lb + 1 the gradient reads. The same
   builder and passes as every other `e_hermite` class, so the same template
-  and table, one row longer;
+  and table, one row longer. The classes over the stack target,
+  `e_hermite<7,6>`, `<7,5>`, `<6,6>` and `<5,6>`, are built with
+  FelizJueves's `fused` lever (tools/emit/lowstack.py, #1337);
 - `gjab<la, lb>`, the bra derivative of E_J contracted with the density into
   a per-atom G (`kernel_gjab`), in FelizJueves's default form per class
   (low-stack from la + lb = 5, `kernel_gjab.gjab_lowstack`; and `gjab<2,2>`,
@@ -90,7 +92,7 @@ from felizjueves.ir.passes import atomize, split_axes, transpose  # noqa: E402
 from felizjueves.mmd.kernel import build_pq_kernel  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
 from felizjueves.spec import Operator, Spec, Target  # noqa: E402
-from lowstack import forced  # noqa: E402
+from lowstack import forced, levers  # noqa: E402
 
 # The kernels' L limit: f. It must equal kCoulombMaxMomentum
 # (coulomb/pair_class/pair_class_bridge.h), not the tree-wide
@@ -145,7 +147,8 @@ def e_hermite(cls: tuple[int, int]):
     lp, lq = cls
     am = ((lp + 1) // 2, lp // 2, (lq + 1) // 2, lq // 2)
     k = build_pq_kernel(
-        Spec(Operator.COULOMB, 0, am, Target.J), name=f"e_hermite_{lp}{lq}"
+        Spec(Operator.COULOMB, 0, am, Target.J, levers("e_hermite", cls)),
+        name=f"e_hermite_{lp}{lq}",
     )
     return transpose(split_axes(atomize(k), PQ_AXES), Q_MAJOR)
 

@@ -34,8 +34,18 @@ built binary (`cuobjdump --dump-resource-usage`, sm_86) at FelizJueves
   The classes over the target it was slower at, 1.06-2.1x (`<2,2,2>`,
   `<2,2,6>`, `<1,3,6>`, `<2,3,0..2>`, `<3,3,0>`, `<3,3,3>`), stay per-item.
 
+- FUSED: the `fused` lever of FelizJueves's `[p|q]` kernel (its #344),
+  `e_hermite`'s low-stack form (#1337): each `[r]^(0)` is contracted into
+  `J_p` the moment the recurrence forms it, so one target is live at a
+  time instead of all `n_t(L)` of them (`e_hermite<7,6>` 15,808 -> 2,920 B
+  stand-alone). It adds a slot's terms one at a time rather than as one
+  balanced tree a ket, so it is NOT bitwise the literal kernel; it agrees
+  with it to the summation bound (FelizJueves's test_kernel_fused.py).
+  Timed on the RX 9060 XT, it is 0.30-0.75x the literal kernel's time at
+  every class it is taken for.
+
 The classes over the target that no form brings under it (the per-item
-`d2eri3`s above, `e_hermite`, the low-stack `geri3` / `xeri3` / `gk` /
+`d2eri3`s above, the low-stack `geri3` / `xeri3` / `gk` /
 `d2v` at f, `kb<2,2,2,*>`, `d2metric<6,6>`, `eri3<3,3,6>`) keep their form;
 the largest of them all sets `kKernelStackBytes`, which ctest's
 `core_kernel_stack_bound` holds to the built binary.
@@ -87,6 +97,18 @@ SHARED: dict[str, frozenset[tuple[int, ...]]] = {
         | {(3, 3, lP) for lP in (1, 2, 4, 5, 6)}
     ),
 }
+
+
+# family -> the classes built with the `fused` lever in their Spec.
+FUSED: dict[str, frozenset[tuple[int, ...]]] = {
+    "e_hermite": frozenset({(7, 6), (6, 6), (7, 5), (5, 6)}),
+}
+
+
+def levers(family: str, cls: tuple[int, ...]) -> tuple[str, ...]:
+    """The Spec levers that pick `cls`'s form in `family`: empty for
+    FelizJueves's default."""
+    return ("fused",) if tuple(cls) in FUSED.get(family, ()) else ()
 
 
 def forced(family: str, cls: tuple[int, ...]) -> dict[str, bool]:
