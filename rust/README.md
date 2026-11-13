@@ -57,7 +57,7 @@ tree, not inputs to its build.
 | `fb_recipes_sys` | `src/recipes/sort`'s merge sort, forked to `recipes/kernels/` (with the device headers it includes, trimmed, in `device_headers/`) | The raw FFI over `libfb_recipes_kernels.so`, built by `CMakeLists.txt` here: `fb_merge_sort`, an `extern "C"` launch wrapper that only enqueues, its `fb_merge_sort_workspace_bytes` query, `fb_launch_status` and `FB_DEVICE_ALIGNMENT` (`docs/gpu_layer.md`, "Layering"), and `check_library()`, the load check of the library's ABI version and backend, compared by `fb-kernel-abi`. The bindings are generated from `recipes/kernels/fb_recipes.h` by `devtools/rust-bindings.py` and committed |
 | `fb_integrals_sys` | `src/integrals/mmd`'s launchers (order, records, bound, dressed bound) and `src/integrals/one_electron/{overlap,kinetic,potential_en}`'s, forked to `integrals/kernels/` with the FelizJueves units they launch (`pair_bound`, `record_bound`, the overlap's, kinetic energy's and nuclear attraction's ten classes each, and the Boys routine `eval_boys.h` the last include, emitted there by `tools/emit/*.py --out-root`) | The raw FFI over `libfb_integrals_kernels.so`, which links `libfb_recipes_kernels.so` for the order's sort: `fb_mmd_order` (with `fb_mmd_order_workspace_bytes`), `fb_mmd_records`, `fb_mmd_bound`, `fb_ordered_pair_bound`, `fb_overlap_class`, `fb_kinetic_class` and `fb_potential_en_class`, each an `extern "C"` launch wrapper that only enqueues and refuses a class outside its table as `FB_LAUNCH_UNSUPPORTED`; the tables' limits (`FB_*_MAX_MOMENTUM`); and the four structs that cross by pointer, `fb_primitive_pair_class_view`, `fb_primitive_pair_source`, `fb_primitive_pair_records` and `fb_nuclei_view` (`src/molecule`'s `NucleiView`), `#[repr(C)]` with their layout asserted on both sides; and `check_library()`, as in `fb_recipes_sys`. The bindings are generated from `integrals/kernels/fb_integrals.h` and committed |
 | `fb_device_check` | nothing: a check on the kernel libraries | Two tier-3 tests: no launch wrapper under `rust/` allocates, synchronizes, touches an event, copies, sets the device or opens a profiler range (a grep of every `.cu`), and every `-sys` crate's committed bindings are what the script generates now |
-| `fb_kernel_abi` | nothing: a check on the kernel libraries | `check`, the load check's comparison: a library's ABI version and `fb_backend` against what its `-sys` crate expects, a mismatch of either refused naming both values. Each `-sys` crate's `check_library()` calls it; it links nothing, so its mismatch tests are tier 3 |
+| `fb_kernel_abi` | nothing: what the kernel libraries share above their `-sys` crates | `check`, the load check's comparison: a library's ABI version and `fb_backend` against what its `-sys` crate expects, a mismatch of either refused naming both values. Each `-sys` crate's `check_library()` calls it. And `launch_status`, the one conversion of a launch wrapper's `fb_launch_status` to a `Status` (`docs/gpu_layer.md`, "Statuses"): a refusal as `Unsupported` or `InvalidConfig`, a positive `wwr_status` handed to the caller's `gpu_status_at`, any other value `GpuRuntime`, each naming the wrapper and the status. Every safe layer calls it (`fb_integrals_mmd::launch` for the integrals' class wrappers). It links nothing, so its tests are tier 3 |
 | `fb_io_xyz` | `src/io/xyz` | `parse_xyz` / `read_xyz`: a standard XYZ geometry into a `Molecule`, Angstrom to bohr by `BOHR_PER_ANGSTROM`, every refusal (too short, a bad count, a malformed line, an unknown symbol, a count the lines disagree with, a file that cannot be read) an `Io` error. A field must parse as a whole token, where the C++'s `operator>>` reads a prefix |
 | `fb_io_basis` | `src/io/basis`, its orbital sets | `parse_basis` / `read_basis`: a BSE JSON document into a `BasisStamp` (sp blocks and general contractions split, spherical shells only: one Cartesian or ambiguous shell refuses the document), over [`serde_json`](https://crates.io/crates/serde_json); `is_builtin_basis` and `resolve_basis`, a name (spelling folded) or else a path, over the eleven sets of `data/basis/` compiled in with `include_str!`, only that branch naming the stamp. The fitting sets of `data/aux_basis/` are not ported yet |
 | `fb_integrals_mmd` | `src/integrals/mmd`'s `primitive_pair_classes` | `add_records`: the kernel library's load check (`check_library()`, a mismatch the planning's `GpuRuntime` error), then the records of a `BasisSet` as two tasks of a `Dag`, `mmd tables` on the CPU (the shell table and each class's shell pairs with their record prefixes, formed on the host into pinned rows) and `mmd records` on the worker's stream (the tables copied into device scratch, then each class's order, records, bound and dressed bounds through `fb-integrals-sys`), and `ClassRows`, each class's record fields as device output rows. Every size is the basis's, at planning; the plan text for H2O/cc-pVDZ and CO/cc-pVTZ is the committed golden `integrals/mmd/tests/golden/plan_*.txt`. The mixed classes are not ported yet |
@@ -78,8 +78,9 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `primitives` and `error_handling`; `io/xyz` on `molecule`, `atom`, `types`,
 `constants` and `error_handling`, and `io/basis` on `basis` and
 `error_handling`; `integrals/mmd` on `basis`, `planner`, `arena`,
-`thread_pool`, `wwr`, `error_handling` and `integrals/sys`; `recipes/sys`
-and `integrals/sys` on `kernel_abi`; and
+`thread_pool`, `wwr`, `error_handling`, `integrals/sys` and `kernel_abi`;
+`recipes/sys` and `integrals/sys` on `kernel_abi`, and `kernel_abi` on
+`error_handling`; and
 `integrals/one_electron/overlap` on `integrals/mmd` and what it stands on,
 `io/xyz` and `io/basis`; `sad` on `basis`, `molecule`, `atom`,
 `primitives` and `error_handling`.
@@ -657,3 +658,15 @@ with its tests), rustdoc (`-D warnings`), `cargo fmt --check` and
 `devtools/rust-bindings.py --check` are clean. `devtools/cross-backend-check.sh
 --device-only` (HIP) passes, building this library for HIP; not run on
 the gfx1200.
+
+2026-11-13, one conversion of a launch status (`fb_kernel_abi::launch_status`,
+which `fb_integrals_mmd::launch` calls for every class wrapper), on the RTX
+3080 (CUDA), holding the card, linking the libraries the `default` preset
+built: `devtools/test.py pr --only cargo --all` passes, tier 3 142 tests
+(was 138), the 4 new in `fb_kernel_abi`: every `fb_launch_status` value
+to its `ErrorKind` (`FB_LAUNCH_UNSUPPORTED` among them, and unknown values
+on both sides), each message naming the wrapper and the status, a negative
+status never reaching the runtime's half, and every error located at the
+caller; tier 4 94 unchanged, the plan goldens among them. Clippy (`-D
+warnings`, the linking crates with their tests too), rustdoc (`-D
+warnings`) and `cargo fmt --check` are clean. Not run on the gfx1200.

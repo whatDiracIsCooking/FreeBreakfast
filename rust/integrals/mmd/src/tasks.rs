@@ -7,10 +7,9 @@ use fb_core_arena::{Bufs, Device, Element, Kind, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
+use fb_core_wwr::{gpu_status, gpu_status_at};
 use fb_integrals_sys::{
-    FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, FB_LAUNCH_UNSUPPORTED,
     FB_PAIR_BOUND_MAX_MOMENTUM, FB_RECORD_BOUND_MAX_MOMENTUM, fb_launch_status, fb_mmd_bound,
     fb_mmd_order, fb_mmd_order_workspace_bytes, fb_mmd_records, fb_ordered_pair_bound,
     fb_primitive_pair_class_view, fb_primitive_pair_records, fb_primitive_pair_source,
@@ -604,15 +603,15 @@ fn zero(stream: wwr_stream, ptr: *mut f64, n: i32) -> Status {
 }
 
 /// A launch wrapper's status as a `Status`, naming the wrapper and the
-/// class (`docs/gpu_layer.md`, "Statuses"): a refusal as `Unsupported` or
-/// `InvalidConfig`, a launch error by its `wwr_status` name. Public for the
-/// readers of [`ClassRows`], whose wrappers return the same statuses.
+/// class: [`fb_kernel_abi::launch_status`], the one conversion
+/// (`docs/gpu_layer.md`, "Statuses"), with a launch error by its
+/// `wwr_status` name. Public for the readers of [`ClassRows`], whose
+/// wrappers return the same statuses.
 ///
 /// # Errors
-/// Every status but `FB_LAUNCH_SUCCESS`, as above.
+/// Every status but `FB_LAUNCH_SUCCESS`, as `launch_status` maps it.
 #[track_caller]
 pub fn launch(what: &str, cls: &ClassRows, status: fb_launch_status) -> Status {
-    let class = format!("{what} ({}, {})", cls.la, cls.lb);
     const WWR: [wwr_status; 8] = [
         wwr_status::WWR_STATUS_SUCCESS,
         wwr_status::WWR_STATUS_INVALID_VALUE,
@@ -623,13 +622,9 @@ pub fn launch(what: &str, cls: &ClassRows, status: fb_launch_status) -> Status {
         wwr_status::WWR_STATUS_NOT_SUPPORTED,
         wwr_status::WWR_STATUS_UNKNOWN,
     ];
-    match status {
-        FB_LAUNCH_SUCCESS => Ok(()),
-        FB_LAUNCH_UNSUPPORTED => Err(Error::unsupported(format!("{class}: no kernel"))),
-        FB_LAUNCH_INVALID_ARGUMENT => Err(Error::config(format!("{class}: refused its arguments"))),
-        code => match usize::try_from(code).ok().and_then(|i| WWR.get(i)) {
-            Some(&wwr) => gpu_status(wwr).map_err(|e| e.with_context(class)),
-            None => Err(Error::gpu(format!("{class}: unknown launch status {code}"))),
-        },
-    }
+    let class = format!("{what} ({}, {})", cls.la, cls.lb);
+    fb_kernel_abi::launch_status(&class, status, |code, at| {
+        let &wwr = WWR.get(usize::try_from(code).ok()?)?;
+        Some(gpu_status_at(wwr, at))
+    })
 }
