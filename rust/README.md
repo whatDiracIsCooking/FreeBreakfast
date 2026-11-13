@@ -21,6 +21,9 @@ workspace is that rebuild. Its tree mirrors `src/`, one crate per module:
 | `fb_core_arena` | the peak model of `src/core/footprint` and `src/pipeline/footprint`, and `check_plan`'s fit | The plan's memory laid out once (`docs/memory.md`): `TableBuilder` (rows declared node by node as scratch, outputs and their readers, or the worker's; lifetimes derived), `assign` (the pure greedy best-fit offset assigner), `Table` (offsets, total, `peak`, and `handoffs`, the orderings reusing bytes needs; its text is the committed golden `core/arena/tests/golden/arena_scf_fixture.txt`, rewritten by `FB_BLESS=1`), `admit` (the fit against a cap, refusing with the rows live at the peak), `Block<K>` (the table's one plain allocation, `Device` or portable `Pinned`, filled with `0xFF`, aborting on failure with the bytes and the free memory) and `Block::partition` (a node's `Bufs`: its own rows as `&[T]` / `&mut [T]` on the host and pointer views on the device, behind always-on borrow flags). The one module that allocates |
 | `fb_core_planner` | nothing: the C++ steps allocate as they go | The glue between the two below: `Task` (`layout`, which declares every row through a `Layout`, a node's rows of one table, and `run`, which computes through them), `Dag` (tasks added in plan order, each on a GPU worker's stream or the CPU pool; `add` returns the task's rows, whose output ids the reading tasks take), `Planned` (each worker's device and host tables, and each task's dependencies, the reads and the handoffs, derived; its text is the committed golden `core/planner/tests/golden/planner_scf.txt`) and `Instance` (the blocks, and a `thread_pool::Plan` whose nodes hand each task its rows; run any number of times). No `unsafe` |
 | `fb_core_thread_pool` | nothing: the C++ pipeline runs on one thread | The run's workers (`docs/programming_model.md`, "CPU workers"): `Plan` (nodes added in topological order, each placed on the CPU pool or one stream worker), `run` (one scope, `n_cpu` CPU workers and a thread per stream worker, readiness counts, failure skipping descendants, the lowest-ranked error returned, a panic re-raised rather than hung), and the `Backend` the edges leaving a stream wait through: `Device` (a stream per worker, an event per GPU node) or `HostOnly` for device-free tests. `fb_core_log::TaskScope` tags each node's lines `[task@worker]`, and `Error::context` carries it out. `clippy.toml` makes it the one place that spawns |
+| `fb_core_types` | `src/core/types`, what the host modules name | `Double3`, `Vec<double, 3>`: `#[repr(C)]` with the backend's `double3` layout. The fixed-width integers and `make_vec` are the language's |
+| `fb_core_primitives` | `src/core/primitives`, what the host modules name | `double_factorial_odd`, `factorial`, `binomial` as `const fn`, bitwise the C++ loops. `idivup` / `align_up` are `div_ceil` / `next_multiple_of`, and the element-wise functions `f64`'s methods |
+| `fb_core_constants` | `src/core/constants`, what the host modules name | `BOHR_PER_ANGSTROM`, `kBohrPerAngstrom<double>`, asserted against the C++ double's bit pattern |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -298,3 +301,17 @@ binary has `libwwr_capi` under `NEEDED`. A non-zero `Device` block there
 aborts naming the missing feature (checked by hand). Clippy (`-D warnings`)
 is clean in both feature sets; rustdoc (`-D warnings`) and `cargo fmt
 --check` are clean with default features. Not run on the gfx1200.
+
+2026-11-13, `core::types`, `core::primitives` and `core::constants` (what
+`atom`, `molecule`, `basis`, `io/xyz` and `io/basis` name), on the gfx1200
+(HIP), holding the card: with default features the whole workspace passes in
+a debug build, the three new crates 2 unit tests each and every other count
+the link-free tier 3 entry's. With `--no-default-features` the tier-3 set,
+the three included, passes 9 (`arena`), 2 (`constants`), 4
+(`error_handling`), 6 (`planner`), 2 (`primitives`), 9 (`thread_pool`), 2
+(`types`) and the 8 section-citation tests, with the thread-count test and 4
+doctests; `cargo tree` for the three shows no wwr crate, nor any dependency.
+`BOHR_PER_ANGSTROM`'s bit pattern is the one a C++ program printed from
+`constants.h` itself. Clippy (`-D warnings`) is clean in both feature sets;
+rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not run on the
+RTX 3080; the three crates touch no device.
