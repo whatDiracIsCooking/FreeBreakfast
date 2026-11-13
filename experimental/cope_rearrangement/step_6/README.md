@@ -20,7 +20,7 @@ plan and were dropped, so nothing here computes them.
 
 | | result |
 |---|---|
-| **end points** | both minima: 42 real frequencies, the lowest 58.1 cm⁻¹; pc_plus and pc_minus agree to 0.016 cm⁻¹ (median 0.002). The numerical Hessians were the result while the analytic PC Hessian refused them (a degenerate inactive pair, [#1268](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/1268)). Since #1280 it takes them: on CUDA its frequencies agree with the numerical ones to ≤ 0.0022 cm⁻¹, but its elements miss the ladder by up to 3.1 bars, on the pair's atoms (#1296) |
+| **end points** | both minima: 42 real frequencies, the lowest 58.1 cm⁻¹; pc_plus and pc_minus agree to 0.016 cm⁻¹ (median 0.002). The numerical Hessians were the result while the analytic PC Hessian refused them (a degenerate inactive pair, [#1268](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/1268)). Since #1280 it takes them. Since #1306 (#1296), pc_plus's analytic Hessian is within 0.24 bars of its ladder on every element (it was 2.91) and within 8e-5 cm⁻¹ in frequency. Its asymmetry is 3.0e-8 (it was 1.1e-6) |
 | **reference conformer** | ten conformer starts gave ten distinct minima, all with zero imaginary frequencies, spread over 2.03 kcal/mol. The lowest is a C1 gauche (g_pm), **0.245 kcal/mol below step 4b's minimum** (a C2 gauche, which is the g_mm start's minimum). ΔH‡ uses the Boltzmann ensemble of all ten |
 | **chair ΔH‡ / ΔS‡ / ΔG‡**, 505 K | **29.30 kcal/mol / −15.14 eu / 36.94 kcal/mol** (ensemble, unscaled RRHO). Experiment: 33.5 ± 0.5 / −13.8 ± 1 / 40.5 at 505 K. ΔH‡ is 4.2 kcal/mol low; ΔS‡ is 1.3 eu more negative |
 | **boat TS** | C2v at R16 = R34 = 2.1718 Å, one imaginary frequency (493.7i cm⁻¹, of B symmetry: antisymmetric under C2 and under the mirror through C2 and C5, symmetric under the mirror that exchanges the allyls). It stayed C2v (largest departure 6.9e-5 bohr, damped to 8.5e-7) |
@@ -132,55 +132,59 @@ smooth at the pair:
 
 No imaginary mode appeared, so no displace-and-reminimise was needed.
 
-### The analytic Hessian at the end points, since #1280
+### The analytic Hessian at the end points, since #1280 and #1306
 
 [#1280](https://github.com/whatDiracIsCooking/FreeBreakfast/pull/1280)
 (closing #1268) lets the analytic PC-NEVPT2 Hessian take a degenerate
 inactive pair. Its gate was HIP-only, so this is the CUDA confirmation on
 the RTX 3080. `plus_hessian_analytic` and `minus_hessian_analytic` were
 rerun as before: the same geometries and orbitals, CASSCF `conv_tol_grad`
-1e-10, no `[memory]` cap. Both completed. Against the numerical ladder
+1e-10, no `[memory]` cap. Both completed.
+
+[#1306](https://github.com/whatDiracIsCooking/FreeBreakfast/pull/1306)
+(closing [#1296](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/1296))
+then fixed the precision. Every core or virtual pair under 1e-4 Eh is now
+taken by #1280's pair term rather than divided by its gap.
+`plus_hessian_analytic` was rerun on it. `minus_hessian_analytic` is its
+mirror image, and is still the #1280 run. Against the numerical ladder
 Hessians at the same geometries:
 
-| | pc_plus | pc_minus |
-|---|---:|---:|
-| imaginary frequencies | 0 | 0 |
-| lowest 3 / cm⁻¹ (isotope-averaged masses, `hessian.json`) | 58.105, 99.365, 110.884 | 58.120, 99.381, 110.891 |
-| max \|ν_analytic − ν_numerical\| / cm⁻¹ | **0.0014** (at 1315 cm⁻¹) | **0.0022** (at 3201 cm⁻¹) |
-| median \|Δν\| / cm⁻¹ | 1.4e-5 | 3.1e-5 |
-| max \|H_analytic − H_numerical\|, Eh/bohr² | 7.3e-7 | 7.8e-7 |
-| asymmetry / translational sum, analytic, Eh/bohr² | 1.1e-6 / 9.7e-7 | 1.6e-6 / 6.4e-7 |
-| wall clock / process peak | **836 s / 7715 MiB** | **841 s / 7887 MiB** |
+| | pc_plus, since #1306 | pc_plus, #1280 only | pc_minus, #1280 only |
+|---|---:|---:|---:|
+| inactive pairs taken (closest gap / Eh) | 2 (7.96e-7, and 9.9e-6) | 1 (7.96e-7) | 1 (8.07e-7) |
+| imaginary frequencies | 0 | 0 | 0 |
+| lowest 3 / cm⁻¹ (isotope-averaged masses, `hessian.json`) | 58.105, 99.365, 110.884 | 58.105, 99.365, 110.884 | 58.120, 99.381, 110.891 |
+| max \|ν_analytic − ν_numerical\| / cm⁻¹ | **7.9e-5** (at 1719 cm⁻¹) | 0.0014 (at 1315 cm⁻¹) | 0.0022 (at 3201 cm⁻¹) |
+| median \|Δν\| / cm⁻¹ | 1.3e-5 | 1.4e-5 | 3.1e-5 |
+| max \|H_analytic − H_numerical\|, Eh/bohr² | **6.0e-8** | 7.3e-7 | 7.8e-7 |
+| worst element / `ladder.bar` | **0.24** | 2.91 | 3.12 |
+| elements over 2 / over 1 bar (of 2304) | **0 / 0** | 21 / 67 | 14 / 32 |
+| asymmetry / translational sum, analytic, Eh/bohr² | **3.0e-8 / 1.7e-8** | 1.1e-6 / 9.7e-7 | 1.6e-6 / 6.4e-7 |
+| wall clock / process peak | 833 s / 7935 MiB | 836 s / 7715 MiB | 841 s / 7887 MiB |
 
-- **The two agree, to well inside the plus–minus spread.** The largest
-  frequency difference, 0.0022 cm⁻¹, is a seventh of the 0.016 cm⁻¹ that
-  separates the two mirror images. The rest of the spectrum agrees to
-  ~1e-5 cm⁻¹.
-- **Element by element it misses the ladder's 2-bar policy, on the pair
-  ([#1296](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/1296)).**
-  Against `ladder.bar`, the per-element floor (≈ 2.5e-7 Eh/bohr²
-  everywhere), the worst element is 2.91 bars at pc_plus and 3.12 at
-  pc_minus. 21 and 14 elements are over 2 bars.
-  - **The excess sits on the degenerate pair's atoms.** At pc_plus they are
-    C1 and C6 and H13 next to C6: 84% of ‖H_a − H_n‖² is in those rows and
-    C5's. At pc_minus, whose pair is C3/C4's 1s, it moves to C3, C4 and H8.
-  - **It mirrors.** The atom-block norms map from plus to minus under the
-    inversion with correlation 0.91, so it is systematic, not noise.
-  - **So the analytic side is off, and the pair term is the likely
-    source.** The ladder is settled at its floor; the pair term is #1280's
-    `degenerate_pair_part`.
-- **The analytic asymmetry is 1.1–1.6e-6**, two orders above the
-  non-degenerate case. It is 7.9e-9 at `conf_g_pm`, closest pair 2.7e-4 Eh.
-  It matches step 4b's 1.4e-6 at the TS, whose closest pair (4.1e-6 Eh) is
-  above the rule and divided, not taken. So it tracks the smallest gap,
-  either way, and may be a separate effect: noted in #1296, untraced.
-- **In frequencies all of this is negligible**: 0.002 cm⁻¹ at most, against
-  the 0.016 cm⁻¹ between the mirror images.
-- **The analytic Hessian is 2.7× faster than the ladder** (836 s against
-  2261 s) **and 4.3× larger in memory** (7.7 against 1.8 GiB).
+- **Since #1306 the analytic Hessian is inside the ladder's 2-bar policy
+  everywhere, with room to spare.** The worst element is 0.24 bars (C2
+  z–z diagonal), against 2.91 before. The per-atom worst ranges from 0.03 to
+  0.24, with no trace of the pair: C1, C6 and H13 had carried 2.9 bars.
+  `ladder.bar` is the per-element floor, ≈ 2.5e-7 Eh/bohr² everywhere.
+- **The asymmetry fell 36-fold, to 3.0e-8**, under the numerical ladder's
+  own 8.0e-8, but not to the ≲ 1e-8 that #1306 expected. Its closest
+  divided pair is a core pair 2.5e-4 Eh apart, just past the new 1e-4 Eh
+  reach. The residual is followed up in
+  [#1314](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/1314).
+- **The frequencies move by 0.0014 cm⁻¹ at most** (median 2.2e-5), so the
+  #1280 results stand in frequency. That is a twelfth of the 0.016 cm⁻¹
+  between the mirror images.
+- **The pair term costs nothing measurable**: 833 s against 836 s, and
+  the process peak is within the run-to-run spread of the idle reading.
+- **The analytic Hessian is 2.7× faster than the ladder** (833 s against
+  2261 s) **and 4.4× larger in memory** (7.9 against 1.8 GiB).
 
-So the numerical Hessians stand as the step's result, and the analytic ones
-confirm them. The thermochemistry below still uses the numerical ones.
+History: under #1280 alone, the elements missed the ladder by up to 2.91
+(plus) and 3.12 (minus) bars, on the degenerate pair's atoms. The
+asymmetry was 1.1–1.6e-6. Both were the divided pairs' rounding (#1296).
+
+The thermochemistry below still uses the numerical end-point Hessians.
 
 ## 2. The reference conformer
 
@@ -231,11 +235,13 @@ Hessian.
 was run at its walk's final geometry and compared with its single central
 difference (h = 1e-3 bohr), at the same geometry. g_mm's partner is
 `plus_hessian`, the ladder at the same minimum in another frame, so for g_mm
-only frequencies compare. All four completed with no imaginary frequency:
+only frequencies compare. All four completed with no imaginary frequency.
+a_pp was rerun since #1306; the other three are the #1280 runs:
 
 | conformer | closest pair / Eh | max / median \|Δν\| / cm⁻¹ | max \|ΔH\| | asymmetry, analytic / difference | wall / process peak |
 |---|---:|---|---:|---|---|
-| a_pp | 2.7e-7 | 0.0099 / 4.4e-4 | 2.4e-6 | 1.1e-6 / 2.6e-7 | 847 s / 7906 MiB |
+| a_pp, since #1306 (2 pairs taken) | 2.7e-7 | 0.0014 / 3.4e-4 | 4.8e-7 | 1.1e-8 / 2.6e-7 | 861 s / 7840 MiB |
+| a_pp, #1280 only | 2.7e-7 | 0.0099 / 4.4e-4 | 2.4e-6 | 1.1e-6 / 2.6e-7 | 847 s / 7906 MiB |
 | a_cc | 5.0e-7 | 0.0017 / 3.8e-4 | 4.8e-7 | 5.1e-7 / 2.9e-7 | 853 s / 7821 MiB |
 | g_pp | 2.6e-7 | 0.0034 / 5.0e-4 | 4.8e-7 | 3.7e-8 / 8.2e-7 | 878 s / 7908 MiB |
 | g_mm | 7.9e-7 | 0.0113 / 1.4e-3 (against the ladder at pc_plus) | — | 1.7e-6 / — | 852 s / 7820 MiB |
@@ -243,17 +249,17 @@ only frequencies compare. All four completed with no imaginary frequency:
 
 - **a_cc and g_pp agree with their difference Hessians as g_pm does**, to
   4.8e-7 element by element, which is the difference Hessian's own
-  truncation and noise.
-- **a_pp is five times worse** (2.4e-6, 0.0099 cm⁻¹), and has the same
-  ~1e-6 asymmetry as the end points.
+  truncation and noise. **Since #1306 so does a_pp** (4.8e-7, 0.0014 cm⁻¹).
+  It takes two pairs, at 2.7e-7 and 6.2e-6 Eh. Its closest divided pair is
+  a core pair 2.5e-4 Eh apart. Its asymmetry is 1.1e-8 and its translational
+  sum 4.9e-9. The rerun moved its frequencies by 0.0086 cm⁻¹ at most
+  (median 1e-5).
 - **g_mm's 0.011 cm⁻¹** compares two Hessians at geometries 7e-5 Å apart
   and so is no tighter a test.
-- **The asymmetry does not simply track the gap.** g_pp's pair is the
-  closest (2.6e-7) and its asymmetry is 3.7e-8; a_pp's (2.7e-7) is 1.1e-6.
-  The largest analytic asymmetry in the step is the boat's 1.0e-5, whose
-  closest pair, 2.4e-6, is above the rule and divided, not taken. That is
-  the same as the TS (4.1e-6 divided, 1.4e-6). Added to
-  [#1296](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/1296).
+- History: under #1280 alone, a_pp was five times worse than the others
+  (2.4e-6, 0.0099 cm⁻¹), with a 1.1e-6 asymmetry. Its 6.2e-6 Eh pair was
+  divided then. a_cc and g_mm (asymmetries 5.1e-7 and 1.7e-6) are #1280 runs, not
+  rerun ([#1296](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/1296)).
 
 ## 3. ΔH‡, ΔS‡, ΔG‡ against experiment
 
@@ -303,25 +309,31 @@ electronic.
   damped to 8.5e-7. The sign alternated on a fixed direction, step after
   step. That is the BFGS overshoot step 4b describes (an unlearned stiff
   non-symmetric direction), not a negative curvature pulling it off.
-- **The Hessian** (`boat_hessian`, analytic, uncapped: **746 s, 8068 MiB
-  process peak**) has **exactly one imaginary frequency, 493.7i cm⁻¹**. The
+- **The Hessian** (`boat_hessian`, analytic, uncapped, rerun since #1306: **806 s,
+  7785 MiB process peak**) has **exactly one imaginary frequency, 493.7i cm⁻¹**. The
   next is 122.4.
 - **The mode's symmetry**: χ(C2) = −1, χ(σ through C2 and C5) = −1,
-  χ(σ exchanging the allyls) = +1, each to 6e-9. With the C2 axis as z and
+  χ(σ exchanging the allyls) = +1, each to 9e-11. With the C2 axis as z and
   B1 symmetric under the allyl-exchanging plane, it is **B1**. It
   lengthens one interallylic distance as it shortens the other: the
   reaction mode, as at the chair.
-- The boat's Hessian asymmetry is 1.0e-5, eight times the chair TS's
-  1.25e-6. Its closest inactive pair is 2.4e-6 Eh apart, past the 1e-6 rule
-  but near it, where `src/hessian/README.md` warns the 1/gap terms cost
-  digits. `boat_hessian_difference` checks it with a difference Hessian
-  at the same point (96 gradients, 252 s, 1793 MiB). That one's
-  asymmetry is 2.7e-7. It has one imaginary mode too, 493.72i against
-  493.75i. The two spectra agree to a median of 4e-4 cm⁻¹ and **at most
-  0.17 cm⁻¹** (a 3194 cm⁻¹ C–H stretch). That is a hundred times the g_pm
-  pair's 0.0017, and is the near-degenerate pair's lost digits. It is
-  2.4e-4 kcal/mol in ZPE, so the analytic Hessian stands for the
-  thermochemistry.
+- **Since #1306 the boat's analytic Hessian agrees with its difference
+  Hessian** (`boat_hessian_difference`: the same point, 96 gradients, 252 s,
+  1793 MiB). The spectra agree to **0.0021 cm⁻¹ at most** (median 2.7e-4)
+  and 6.7e-7 element by element, as g_pm's do. Both have one imaginary mode,
+  493.72i. The rerun moved the analytic spectrum by 0.17 cm⁻¹ at most, on
+  the 3194 cm⁻¹ C–H stretch where the two had disagreed.
+- **Its asymmetry is 1.1e-7, the largest left in the step.** It is down
+  from 1.0e-5 and under the difference Hessian's 2.7e-7, but it is ten
+  times the chair TS's 1.2e-8. The likely cause is that the six carbon 1s lie within 1e-4 Eh of one another. #1306 takes
+  disjoint pairs, closest first: three here, the closest 2.4e-6 Eh apart.
+  The other four pairs under 1e-4 Eh share an orbital with a taken one, so
+  they are still divided, the closest at 3.4e-5 Eh. That is followed up in
+  [#1314](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/1314).
+- History: before #1306 the asymmetry was 1.0e-5. The 2.4e-6 Eh pair was
+  divided, and the analytic and difference spectra differed by 0.17 cm⁻¹.
+  It was 2.4e-4 kcal/mol in ZPE, so the thermochemistry below is unchanged
+  at its printed digits.
 
 **Boat − chair** (both TSs, unscaled RRHO, the chair at n/σ 1/2 and the
 boat C2v at 1/2):
@@ -364,8 +376,8 @@ component 1, and δ = 0.01 and 0.02 bohr. 17 single points, 2 s each, from
 |---|---:|---|---|---:|---:|---:|---:|
 | a_u (0) | 475.2i | −2.1240e-5 / −2.1246e-5 | −8.4959e-5 / −8.4972e-5 | −0.424845 | −1.3e-5 | 1.5e-5 | −2.3e-5 |
 | a_g (2) | 296.1 | +8.866e-6 / +9.193e-6 | +3.504e-5 / +3.726e-5 | 0.180550 | +3.9e-5 | 6.1e-5 | −1.6e-5 |
-| b_u (3) | 369.2 | +4.1230e-6 / +4.1209e-6 | +1.6493e-5 / +1.6489e-5 | 0.082433 | +5.6e-6 | 1.1e-5 | −4.9e-8 |
-| b_g (4) | 388.9 | +1.8923e-5 / +1.8923e-5 | +7.5699e-5 / +7.5698e-5 | 0.378457 | +7.9e-6 | 1.4e-5 | −1.1e-6 |
+| b_u (3) | 369.2 | +4.1230e-6 / +4.1209e-6 | +1.6493e-5 / +1.6489e-5 | 0.082433 | +5.6e-6 | 1.1e-5 | −7.8e-8 |
+| b_g (4) | 388.9 | +1.8923e-5 / +1.8923e-5 | +7.5699e-5 / +7.5698e-5 | 0.378459 | +6.1e-6 | 1.4e-5 | −2.9e-6 |
 
 (Eh/bohr² per unit q; for each eigenmode qᵀHq equals λ qᵀMq, the
 frequency's own eigenvalue, to the printed digits.)
@@ -383,11 +395,16 @@ frequency's own eigenvalue, to the printed digits.)
 - **One miss, recorded.** The Richardson value (4D(0.01) − D(0.02))/3
   misses its noise-only bar (6.5e-6) for a_u (2.3e-5) and a_g (1.6e-5). Two
   steps cannot separate the δ⁴ remainder from noise: a_u's D(0.01) lies
-  below qᵀHq and D(0.02) above it. The Hessian's own error explains both
-  misses. Take each element's error as its asymmetry before symmetrising
-  (1.25e-6), times (Σ|q_i|)²: that gives 7.5e-5 (a_u) and 1.6e-4 (a_g),
-  and every comparison is inside it. That bound is loose, so it is listed
-  rather than used as the bar.
+  below qᵀHq and D(0.02) above it. Since #1306 the Hessian's own error no
+  longer covers these misses. Its bound is each element's error taken as
+  the asymmetry before symmetrising (1.2e-8), times (Σ|q_i|)². That is
+  7.1e-7 (a_u) and 1.5e-6 (a_g), so what is left is the δ⁴ remainder.
+  Before #1306 the asymmetry was 1.25e-6, and the bound of 7.5e-5 and
+  1.6e-4 covered both.
+- The table's qᵀHq and Richardson columns are from the rerun `ts_hessian`
+  (#1306). They moved by ≤ 2e-6 against the earlier run's. The modes are
+  phased by the displaced points' own geometries: the largest-component
+  rule ties between symmetry-equivalent atoms.
 
 ## 6. PC walks from the CASSCF C2h stationary points
 
@@ -466,7 +483,7 @@ regenerated by `prepare`. The runs are listed below, all from `RUNS_SPEC`:
 | kind | runs |
 |---|---|
 | walks | `ts_walk`, `plus_walk`, `minus_walk`, `boat_walk`, `diyl_walk`, `aromatic_walk`, `conf_{a_pp,a_pm,a_pc,a_cc,g_pp,g_mm,g_pm,g_pc,g_mc,g_cc}` |
-| analytic Hessians | `ts_hessian`, `boat_hessian`, `conf_g_pm_hessian_analytic`; since #1280, `plus_hessian_analytic`, `minus_hessian_analytic` and `conf_{a_pp,a_cc,g_pp,g_mm}_hessian_analytic` (before it, the first two were refused; their runs are kept as `*_refused_1268`) |
+| analytic Hessians | `ts_hessian`, `boat_hessian`, `conf_g_pm_hessian_analytic`; since #1280, `plus_hessian_analytic`, `minus_hessian_analytic` and `conf_{a_pp,a_cc,g_pp,g_mm}_hessian_analytic` (before it, the first two were refused; their runs are kept as `*_refused_1268`); since #1306, `ts_hessian`, `boat_hessian`, `plus_hessian_analytic` and `conf_a_pp_hessian_analytic` rerun (the earlier runs kept as `*_before_1306`) |
 | numerical, ladder | `plus_hessian`, `minus_hessian` |
 | numerical, one difference | `conf_*_hessian` (nine; g_mm's minimum is `plus_hessian`'s), `boat_hessian_difference` |
 | single points | `diyl_sp`, `aromatic_sp`, `fd_ts` and the 16 `fd_{au,ag,bg,bu}_{p,m}{01,02}` |
@@ -497,8 +514,8 @@ two ladder Hessians (37 min each) and the ten conformer walks and Hessians
 
 | Hessian | method | wall / s | process peak / MiB |
 |---|---|---:|---:|
-| `ts_hessian` | analytic | 756 | 8024 |
-| `boat_hessian` | analytic | 746 | 8068 |
+| `ts_hessian` (since #1306; 756 s / 8024 MiB before) | analytic | 792 | 7749 |
+| `boat_hessian` (since #1306; 746 s / 8068 MiB before) | analytic | 806 | 7785 |
 | `conf_g_pm_hessian_analytic` | analytic | 807 | 8063 |
 | `plus_hessian` | numerical, ladder | 2261 | 1816 |
 | `minus_hessian` | numerical, ladder | 2178 | 1824 |
@@ -506,3 +523,4 @@ two ladder Hessians (37 min each) and the ten conformer walks and Hessians
 | `boat_hessian_difference` | numerical, one difference | 252 | 1793 |
 | `plus_hessian_analytic`, `minus_hessian_analytic` (before #1280) | analytic, refused | 239, 241 | 7110, 7278 |
 | `plus_hessian_analytic`, `minus_hessian_analytic` (since #1280) | analytic | 836, 841 | 7715, 7887 |
+| `plus_hessian_analytic`, `conf_a_pp_hessian_analytic` (since #1306) | analytic | 833, 861 | 7935, 7840 |
