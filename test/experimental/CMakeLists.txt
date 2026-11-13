@@ -71,7 +71,7 @@ gtest_discover_tests(
 )
 
 # ---------------------------------------------------------------------------
-# Must-not-compile entries of experimental/routine (#1246)
+# Must-not-compile entries of experimental/routine (#1246, #1324)
 # ---------------------------------------------------------------------------
 # Each TU is an OBJECT library excluded from `all`, and a ctest entry builds it
 # and passes only on the diagnostic it should raise: a plain build failure
@@ -124,3 +124,9 @@ string(CONCAT _fb_misspelled_regex
               "free_breakfast::routine::RootRotationRoutine::In'"
 )
 _fb_routine_must_not_compile(misspelled_field "${_fb_misspelled_regex}")
+# (e) A key forged outside the root's module (#1324): a TU defines a class
+# named for AllocKey's friend. The friend is attached to the key's module, so
+# the definition is refused before the constructor is reached.
+_fb_routine_must_not_compile(
+  forged_root "declaration of 'RootRotationStep' in the global module"
+)
