@@ -1,26 +1,26 @@
-//! `free_breakfast.core.wwr:status`: a GPU status as a [`Status`].
+//! `free_breakfast.core.wwr:status`: a GPU status as a [`Status`], and what
+//! a `Drop` does with a failed one.
 
 use std::panic::Location;
 
 use super::common::{ErrorCode, SourceLocation};
 use crate::core::error_handling::{Error, ErrorKind, Status};
+use crate::core::log::{self, LogLevel};
 
 /// Convert a GPU status to a [`Status`], located at the caller:
 /// `gpu_status`.
 ///
 /// Takes anything registered as an [`ErrorCode`], `wwr_status` and the
 /// library codes alike. A failure becomes [`ErrorKind::GpuRuntime`] carrying
-/// the code's name and description. Named `gpu_status`, not `gpu_check`, so
-/// it does not collide with [`super::common::gpu_check`], which hands a
-/// failure to a policy and returns `bool`.
+/// the code's name and description.
 #[track_caller]
 pub fn gpu_status<E: ErrorCode>(code: E) -> Status {
     gpu_status_at(code, Location::caller())
 }
 
 /// [`gpu_status`] at a location the caller already holds: the C++ call that
-/// passes its `loc` on, as the error policies do with the location a wrapper
-/// captured at construction.
+/// passes its `loc` on, as a constructor does with the location its caller
+/// gave it.
 pub fn gpu_status_at<E: ErrorCode>(code: E, location: SourceLocation) -> Status {
     if code == E::SUCCESS {
         return Ok(());
@@ -31,6 +31,22 @@ pub fn gpu_status_at<E: ErrorCode>(code: E, location: SourceLocation) -> Status 
         origin: location,
         context: Vec::new(),
     })
+}
+
+/// Log a failed GPU status at error, at `location`, and carry on: what a
+/// `Drop` does with a failed destroy or free, the C++ `DestroyPolicy`.
+/// Does nothing on success.
+///
+/// A destroy runs in a `Drop`, often during teardown after an earlier
+/// failure, where aborting would bury the root cause under the knock-on
+/// one. The C++ policy wraps its body in `try`/`catch (...)`, because
+/// formatting can throw out of a `noexcept` function; here a failed write is
+/// dropped inside the logger, and a failed allocation aborts in Rust
+/// whatever the caller does, so there is nothing to catch.
+pub fn gpu_log_error_at<E: ErrorCode>(code: E, location: SourceLocation) {
+    if let Err(e) = gpu_status_at(code, location) {
+        log::log_at(LogLevel::Error, location, format_args!("{e}"));
+    }
 }
 
 #[cfg(test)]

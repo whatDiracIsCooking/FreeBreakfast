@@ -27,9 +27,9 @@ The rules already in the crate carry over:
 
 - **Contracts are debug-only.** A release build pays nothing for them.
   `cargo test --release` skips the tests that exist only to trip a contract.
-- **An outcome a policy may report is not a contract.** If a GPU call can fail
-  and the error policy decides what happens, failure is an expected result, not
-  a broken promise. Making it a contract would turn it into a panic.
+- **The outcome of a GPU call is not a contract.** If a GPU call can fail, it
+  returns a status or a `Result`, and failure is an expected result, not a
+  broken promise. Making it a contract would turn it into a panic.
 
 A contract's reach is every caller, but its strength is only as good as the
 inputs those callers happen to pass. It complements a dedicated test; it does

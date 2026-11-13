@@ -354,12 +354,7 @@ fn device_edges_wait_for_the_work_they_consume() {
         // A blocking copy on the legacy stream would hide a missing wait, so
         // read with an async copy on a fresh non-blocking stream and sync it
         // alone.
-        let s = DeviceStream::new(
-            0,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        );
+        let s = DeviceStream::new(0);
         // SAFETY: both ranges are N bytes; the edge's event sync ordered the
         // copy before this read.
         ok(unsafe {

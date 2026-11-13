@@ -9,10 +9,10 @@ It stands alone: nothing here uses the other crates under `experimental/rust/`.
 
 | Module | Ports | What |
 |---|---|---|
-| `core::wwr::common` | wwr's `src/extension/common`, and the `src/extension/error_handling` primitives it re-exports | `ErrorCode` (`success_code` / `error_name` / `error_string`), `ErrorPolicy` (`error_policy` and `typed_error_policy` in one trait), `PolicyMap`, `gpu_check` / `gpu_check_at`, `wwr_status` as an error code, `ScopedDeviceIndex`, `kit::AbortPolicy` |
-| `core::wwr::handle` | wwr's `src/extension/handle` | `BaseHandle` over a `HandleKind` (CRTP's `create`/`destroy` hooks), `DeviceBoundHandle`, `StreamBoundHandle` over a `StreamBoundKind`, the three views, and the `DeviceHandle` / `DeviceHandleStream` / `DeviceHandlePool` ladder |
-| `core::wwr::runtime` | wwr's `src/extension/runtime` | `Stream`, `Event`, `MemPool` (with `MemPoolProps`), `Graph`, `GraphExec`, and `kit::DeviceHandle` (a stream and a pool on one device), each a newtype over the handle it is built on; stream capture through to a launched graph |
-| `core::wwr` (`gpu_status`, the policies) | `src/core/wwr`'s `:status` and `:policy` | `gpu_status` / `gpu_status_at`; the tree's `AbortPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` and `PolicyMap`, which log through `core::log` (not wwr's stderr `kit::AbortPolicy`) |
+| `core::wwr::common` | wwr's `src/extension/common`, and the `src/extension/error_handling` primitives it re-exports | `ErrorCode` (`success_code` / `error_name` / `error_string`), `wwr_status` as an error code, `ScopedDeviceIndex` |
+| `core::wwr::handle` | wwr's `src/extension/handle` | `BaseHandle` over a `HandleKind` (CRTP's `create`/`destroy` hooks), `DeviceBoundHandle`, `StreamBoundHandle` over a `StreamBoundKind`, each with a fallible `try_new`; the three views; the `DeviceHandle` / `DeviceHandleStream` traits |
+| `core::wwr::runtime` | wwr's `src/extension/runtime` | `Stream`, `Event`, `MemPool` (with `MemPoolProps`), `Graph`, `GraphExec`, each a newtype over the handle it is built on, whose constructors abort on failure; stream capture through to a launched graph |
+| `core::wwr` (`gpu_status`) | `src/core/wwr`'s `:status`, and the rule its `:policy` encodes | `gpu_status` / `gpu_status_at`, and `gpu_log_error_at`, what a `Drop` does with a failed destroy |
 | `core::log` | `src/core/log` | The one backend behind the [`log`](https://crates.io/crates/log) facade: spdlog's line format (local time, OS thread id, `file:line`), the seven levels, `set_level` / `should_log` / `flush`, one file sink, the warning counter, and `log_at` for a location already held |
 | `core::error_handling` | `src/core/error_handling` | `ErrorKind` (with the pinned exit codes as `exit_code`), `Error` and its `#[track_caller]` factories, `Result<T>` / `Status`, `check_or_abort` |
 | `core::diagnostics` | `src/core/diagnostics` (`diagnostics.h`) | `gpu_must` (`FBF_GPU_MUST`), `critical!` (`FBF_LOG_CRITICAL`), and `log`'s `trace!` ... `error!` re-exported (`FBF_LOG_TRACE` ... `FBF_LOG_ERROR`); `FBF_TRY` is `?` |
@@ -23,11 +23,19 @@ Rust counterpart, because the language already does what that code exists
 to force:
 
 - `NonCopyable`. A Rust type is move-only unless it opts in to `Clone`.
-- `policy_slot`. A zero-sized field takes no space, however many share a type.
-- `nothrow_error_policy`. Rust has no `noexcept`, and a panic in `Drop`
-  during unwinding aborts, which is the C++ outcome too.
-- The move constructors, `release()` and the moved-from state. A Rust move
-  leaves nothing behind to drop.
+- The error policies (`error_policy`, `policy_map`, `policy_slot`,
+  `gpu_check`, the C++ tree's `CreatePolicy` / `DestroyPolicy`) and wwr's
+  `kit`. A C++ constructor cannot return a failure, so what it does with
+  one is injected as a type parameter. A Rust constructor returns `Result`,
+  and this tree's answer is fixed: a wrapper's constructor aborts on an
+  `Err` (`check_or_abort`), and a `Drop` logs a failed destroy
+  (`gpu_log_error_at`). `core::wwr::common`'s doc has the whole reasoning.
+- The move constructors, `release()`, the moved-from state and the
+  null-handle sentinel. A Rust move leaves nothing behind to drop, and a
+  failed create yields an `Err`, not an empty handle.
+- `device_handle_pool` and `kit::DeviceHandle`, the rung a buffer allocates
+  from a stream-ordered pool through. The arena allocates one plain block
+  per plan ([`memory.md`](docs/memory.md), "The two kinds").
 - Dangling views. A view borrows the handle it came from.
 
 - The `FBF_LOG_*` macros, and the rule that formatting goes only through
@@ -46,25 +54,18 @@ Two things go the other way, where Rust asks for more than the C++ does:
 - `wwrMemPoolProps` reaches the C ABI as a bare `void*`. `MemPoolProps`
   mirrors the vendors' layout, which CUDA 13 and ROCm share (88 bytes,
   identical offsets; checked with a C program against both headers).
-  `kit::DeviceHandle::props()` is left out: `wwrDeviceProp`'s layout differs
-  between the backends.
+  `wwrDeviceProp`, whose layout differs between the backends, is not
+  mirrored.
 
 ## Contracts
 
-Two preconditions are checked with the [`contracts`](https://crates.io/crates/contracts)
-crate, in debug builds only:
+One precondition is checked with the [`contracts`](https://crates.io/crates/contracts)
+crate, in debug builds only: a device-bound view's `dev_idx` is -1
+(unknown) or more.
 
-- `ErrorPolicy::handle_error` is never handed `SUCCESS`. The trait is a
-  `#[contract_trait]`, so every implementation needs the attribute or does
-  not compile, and every policy is checked. `AbortPolicy` therefore does not
-  re-check the code, as wwr's does: in a release build, a direct call with
-  `SUCCESS` aborts.
-- A device-bound view's `dev_idx` is -1 (unknown) or more.
-
-Postconditions on GPU outcomes are deliberately not contracts. Whether
-"the handle landed on the device asked for" holds depends on the policy: a
-policy that records and returns makes failure an expected outcome, and a
-contract would turn it into a panic.
+Outcomes of GPU calls are deliberately not contracts. A call that can fail
+returns a status or a `Result`, and a failure is an expected result, not a
+broken promise; a contract would turn it into a panic.
 
 ## Build and test
 
@@ -161,3 +162,9 @@ build, and 36, 5 and 2 in release. The log binary passed 20 runs in a row.
 Clippy, rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Nothing
 added calls a backend-specific path, but it has not been run on the
 gfx1200.
+
+2026-11-13, the error policies, `kit` and the pool rung removed, on the RTX
+3080 (CUDA) only: 44 unit tests, the 5 log tests, the pool-allocation test
+and the thread-count test pass in a debug build, and 42, 5, 1 and 1 in
+release. Clippy, rustdoc (`-D warnings`) and `cargo fmt --check` are clean.
+Not run on the gfx1200.

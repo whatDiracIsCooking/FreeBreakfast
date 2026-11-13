@@ -7,12 +7,12 @@ use std::panic::Location;
 use wwr_sys::{wwr_event, wwr_graph, wwr_status, wwr_stream, wwr_stream_capture_mode};
 
 use super::event::Event;
+use super::first_failure;
 use super::graph::Graph;
-use super::{create_with, first_failure};
-use crate::core::wwr::common::{ErrorPolicy, gpu_check_at};
-use crate::core::wwr::handle::{
-    BaseHandle, DeviceBoundHandle, DeviceHandle, DeviceHandleStream, HandleKind,
-};
+use crate::core::error_handling::{Result, check_or_abort};
+use crate::core::wwr::common::SourceLocation;
+use crate::core::wwr::gpu_status;
+use crate::core::wwr::handle::{DeviceBoundHandle, DeviceHandle, DeviceHandleStream, HandleKind};
 
 /// `cudaStreamNonBlocking` / `hipStreamNonBlocking`: the stream does not
 /// synchronize with the legacy default stream.
@@ -43,177 +43,89 @@ impl HandleKind for StreamKind {
     }
 }
 
-/// An owned stream on one device: `StreamWrapper<P_create, P_destroy,
-/// P_device>`.
+/// An owned stream on one device: `StreamWrapper`. Every constructor
+/// aborts on failure ([`super`] has why).
 ///
 /// It is a [`DeviceHandleStream`] on its own, so it can back a device
 /// buffer with no wrapping struct, as in wwr.
-pub struct Stream<PC, PD, PDev>(DeviceBoundHandle<StreamKind, PC, PD, PDev>)
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-    PDev: ErrorPolicy<Error = wwr_status>;
+pub struct Stream(DeviceBoundHandle<StreamKind>);
 
-impl<PC, PD, PDev> Stream<PC, PD, PDev>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
+impl Stream {
     /// A non-blocking stream on `dev_idx`.
     #[track_caller]
-    pub fn new(dev_idx: i32, policy_create: PC, policy_destroy: PD, policy_device: PDev) -> Self {
-        Stream(DeviceBoundHandle::new(
+    pub fn new(dev_idx: i32) -> Self {
+        check_or_abort(Self::try_create(
             dev_idx,
-            policy_create,
-            policy_destroy,
-            policy_device,
+            // SAFETY: `try_create` hands a pointer valid for one write.
+            |raw| unsafe { StreamKind::create(raw) },
+            Location::caller(),
         ))
     }
 
     /// A stream on `dev_idx` with `flags` (`wwrStreamCreateWithFlags`);
     /// pass `0` for a blocking stream.
     #[track_caller]
-    pub fn with_flags(
-        dev_idx: i32,
-        flags: u32,
-        policy_create: PC,
-        policy_destroy: PD,
-        policy_device: PDev,
-    ) -> Self {
-        Stream(DeviceBoundHandle::new_with(
-            dev_idx,
-            policy_create,
-            policy_destroy,
-            policy_device,
-            |policy, location| {
-                create_with(policy, location, |raw| {
-                    // SAFETY: `raw` is valid for one write.
-                    unsafe { wwr_sys::wwr_stream_create_with_flags(raw, flags) }
-                })
-            },
-        ))
+    pub fn with_flags(dev_idx: i32, flags: u32) -> Self {
+        check_or_abort(Self::try_with_flags_at(dev_idx, flags, Location::caller()))
     }
 
     /// A stream on `dev_idx` with `flags` and `priority`
     /// (`wwrStreamCreateWithPriority`); a lower value is a higher priority.
     #[track_caller]
-    pub fn with_priority(
-        dev_idx: i32,
-        flags: u32,
-        priority: i32,
-        policy_create: PC,
-        policy_destroy: PD,
-        policy_device: PDev,
-    ) -> Self {
-        Stream(DeviceBoundHandle::new_with(
+    pub fn with_priority(dev_idx: i32, flags: u32, priority: i32) -> Self {
+        check_or_abort(Self::try_create(
             dev_idx,
-            policy_create,
-            policy_destroy,
-            policy_device,
-            |policy, location| {
-                create_with(policy, location, |raw| {
-                    // SAFETY: `raw` is valid for one write.
-                    unsafe { wwr_sys::wwr_stream_create_with_priority(raw, flags, priority) }
-                })
-            },
+            // SAFETY: `raw` is valid for one write.
+            |raw| unsafe { wwr_sys::wwr_stream_create_with_priority(raw, flags, priority) },
+            Location::caller(),
         ))
     }
 
-    /// End the capture [`begin_capture`] started on this stream, and own
-    /// the graph it recorded.
-    ///
-    /// A failure goes to this stream's create policy, at the caller, as
-    /// wwr's does; the graph then holds nothing. The graph's own policies
-    /// are new defaults of this stream's types, as wwr default-constructs
-    /// them. It takes `&mut self` because the create policy may record.
-    #[track_caller]
-    pub fn end_capture(&mut self) -> Graph<PC, PD>
-    where
-        PC: Default,
-        PD: Default,
-    {
-        let location = Location::caller();
-        let stream = self.stream();
-        let mut graph: wwr_graph = std::ptr::null_mut();
-        // SAFETY: writes one graph handle through a valid local.
-        let ok = gpu_check_at(
-            unsafe { wwr_sys::wwr_stream_end_capture(stream, &mut graph) },
-            self.0.create_policy_mut(),
+    fn try_with_flags_at(dev_idx: i32, flags: u32, location: SourceLocation) -> Result<Self> {
+        Self::try_create(
+            dev_idx,
+            // SAFETY: `raw` is valid for one write.
+            |raw| unsafe { wwr_sys::wwr_stream_create_with_flags(raw, flags) },
             location,
-        );
-        let captured = ok.then_some(graph);
-        Graph(BaseHandle::new_with(
-            PC::default(),
-            PD::default(),
-            |_, _| captured,
-        ))
+        )
     }
-}
 
-impl<PC, PD, PDev> Deref for Stream<PC, PD, PDev>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
-    type Target = DeviceBoundHandle<StreamKind, PC, PD, PDev>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    /// The fallible constructor every public one aborts over.
+    fn try_create(
+        dev_idx: i32,
+        create: impl FnOnce(*mut wwr_stream) -> wwr_status,
+        location: SourceLocation,
+    ) -> Result<Self> {
+        DeviceBoundHandle::try_new_at(dev_idx, create, location).map(Stream)
     }
-}
 
-impl<PC, PD, PDev> DeviceHandle for Stream<PC, PD, PDev>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
-    fn dev_idx(&self) -> i32 {
-        self.0.dev_idx()
+    /// End the capture [`begin_capture`](Stream::begin_capture) started on
+    /// this stream, and own the graph it recorded; a failure (no capture
+    /// in progress, say) is an `Err` at the caller.
+    ///
+    /// An operation on a live stream, not a create, so it returns the
+    /// failure rather than aborting.
+    #[track_caller]
+    pub fn end_capture(&self) -> Result<Graph> {
+        let mut graph: wwr_graph = std::ptr::null_mut();
+        // SAFETY: the borrow keeps the stream alive; writes one graph handle
+        // through a valid local.
+        gpu_status(unsafe { wwr_sys::wwr_stream_end_capture(self.stream(), &mut graph) })?;
+        // SAFETY: the capture succeeded, so `graph` is a live graph that
+        // nothing else owns.
+        Ok(unsafe { Graph::adopt(graph) })
     }
-}
 
-impl<PC, PD, PDev> DeviceHandleStream for Stream<PC, PD, PDev>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
-    /// The raw stream, or null (the legacy default stream) when the create
-    /// failed under a policy that returns: what wwr's `stream()` hands back
-    /// from its null sentinel.
-    fn stream(&self) -> wwr_stream {
-        self.0.get().unwrap_or(std::ptr::null_mut())
-    }
-}
-
-impl<PC, PD, PDev> Stream<PC, PD, PDev>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-    PDev: ErrorPolicy<Error = wwr_status>,
-{
     /// [`sync`] on this stream.
     pub fn sync(&self) -> wwr_status {
-        // SAFETY: the borrow keeps the stream alive (or it is null, the
-        // legacy default stream).
+        // SAFETY: the borrow keeps the stream alive.
         unsafe { sync(self.stream()) }
     }
 
-    /// [`wait_event`] on this stream, for `event`; `WWR_STATUS_INVALID_VALUE`
-    /// if `event` owns nothing.
-    pub fn wait_event<EC, ED, EDev>(&self, event: &Event<EC, ED, EDev>, flags: u32) -> wwr_status
-    where
-        EC: ErrorPolicy<Error = wwr_status>,
-        ED: ErrorPolicy<Error = wwr_status>,
-        EDev: ErrorPolicy<Error = wwr_status>,
-    {
-        match event.get() {
-            // SAFETY: both borrows keep their handles alive.
-            Some(raw) => unsafe { wait_event(self.stream(), raw, flags) },
-            None => wwr_status::WWR_STATUS_INVALID_VALUE,
-        }
+    /// [`wait_event`] on this stream, for `event`.
+    pub fn wait_event(&self, event: &Event, flags: u32) -> wwr_status {
+        // SAFETY: both borrows keep their handles alive.
+        unsafe { wait_event(self.stream(), event.get(), flags) }
     }
 
     /// [`begin_capture`] on this stream; end it with
@@ -221,6 +133,26 @@ where
     pub fn begin_capture(&self, mode: wwr_stream_capture_mode) -> wwr_status {
         // SAFETY: as `sync`.
         unsafe { begin_capture(self.stream(), mode) }
+    }
+}
+
+impl Deref for Stream {
+    type Target = DeviceBoundHandle<StreamKind>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DeviceHandle for Stream {
+    fn dev_idx(&self) -> i32 {
+        self.0.dev_idx()
+    }
+}
+
+impl DeviceHandleStream for Stream {
+    /// The raw stream.
+    fn stream(&self) -> wwr_stream {
+        self.0.get()
     }
 }
 
@@ -260,11 +192,8 @@ pub unsafe fn sync(stream: wwr_stream) -> wwr_status {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::wwr::common::tests::Recording;
     use crate::core::wwr::handle::tests::current_device;
-    use crate::core::wwr::runtime::tests::{Abort, DeviceBytes, ok};
-
-    type Recorded = Stream<Recording, Recording, Recording>;
+    use crate::core::wwr::runtime::tests::{DeviceBytes, assert_gpu_error_at, ok};
 
     fn flags_of(stream: wwr_stream) -> u32 {
         let mut flags = u32::MAX;
@@ -276,7 +205,7 @@ mod tests {
     /// Needs a GPU.
     #[test]
     fn the_default_stream_is_non_blocking() {
-        let s = Stream::new(0, Abort::new(), Abort::new(), Abort::new());
+        let s = Stream::new(0);
         assert_eq!(s.dev_idx(), 0);
         assert_eq!(flags_of(s.stream()) & NON_BLOCKING, NON_BLOCKING);
         ok(s.sync());
@@ -285,20 +214,13 @@ mod tests {
     /// Needs a GPU.
     #[test]
     fn flags_and_priority_reach_the_runtime() {
-        let blocking = Stream::with_flags(0, 0, Abort::new(), Abort::new(), Abort::new());
+        let blocking = Stream::with_flags(0, 0);
         assert_eq!(flags_of(blocking.stream()) & NON_BLOCKING, 0);
 
         let (mut least, mut greatest) = (0, 0);
         // SAFETY: writes two i32s through valid locals.
         ok(unsafe { wwr_sys::wwr_device_get_stream_priority_range(&mut least, &mut greatest) });
-        let s = Stream::with_priority(
-            0,
-            NON_BLOCKING,
-            greatest,
-            Abort::new(),
-            Abort::new(),
-            Abort::new(),
-        );
+        let s = Stream::with_priority(0, NON_BLOCKING, greatest);
         let mut priority = i32::MAX;
         // SAFETY: writes one i32 through a valid local.
         ok(unsafe { wwr_sys::wwr_stream_get_priority(s.stream(), &mut priority) });
@@ -306,24 +228,17 @@ mod tests {
         assert_eq!(flags_of(s.stream()) & NON_BLOCKING, NON_BLOCKING);
     }
 
-    /// Needs a GPU. A bad index goes to the device policy; the stream lands
-    /// on the current device.
+    /// Needs a GPU. A bad index is an error at the caller, and no stream is
+    /// made on whatever device was current.
     #[test]
-    fn a_bad_index_is_reported_at_the_caller() {
+    fn a_bad_index_is_an_error_at_the_caller() {
         let current = current_device();
         let line = line!() + 1;
-        let s = Recorded::with_flags(
-            -1,
-            0,
-            Recording::default(),
-            Recording::default(),
-            Recording::default(),
-        );
-        assert_eq!(
-            s.device_policy().0,
-            [(wwr_status::WWR_STATUS_INVALID_DEVICE, line)]
-        );
-        assert_eq!(s.dev_idx(), current);
+        let error = Stream::try_with_flags_at(-1, 0, Location::caller())
+            .err()
+            .unwrap();
+        assert_gpu_error_at(error, "WWR_STATUS_INVALID_DEVICE", file!(), line);
+        assert_eq!(current_device(), current);
     }
 
     /// Needs a GPU. Capture a memset, replay it twice through the
@@ -335,13 +250,12 @@ mod tests {
     /// or segfaulted in `cuMemPoolDestroy` in 14 of 20 runs of the suite.
     #[test]
     fn capture_instantiate_launch() {
-        let mut s = Stream::new(0, Abort::new(), Abort::new(), Abort::new());
+        let s = Stream::new(0);
         let bytes = DeviceBytes::new(16);
         ok(s.begin_capture(wwr_stream_capture_mode::WWR_STREAM_CAPTURE_MODE_THREAD_LOCAL));
         // SAFETY: 16 bytes, queued on the capturing stream.
         ok(unsafe { wwr_sys::wwr_memset_async(bytes.0, 0x5a, 16, s.stream()) });
-        let graph = s.end_capture();
-        assert!(graph.get().is_some());
+        let graph = s.end_capture().unwrap();
 
         let exec = graph.instantiate(0);
         ok(exec.upload(&s));
@@ -350,22 +264,17 @@ mod tests {
         assert_eq!(bytes.read(s.stream()), [0x5a; 16]);
     }
 
-    /// Needs a GPU. Ending a capture that never began fails through the
-    /// stream's create policy, and the graph owns nothing.
+    /// Needs a GPU. Ending a capture that never began is an error at the
+    /// caller, and no graph is made.
     #[test]
-    fn end_capture_without_begin_is_reported() {
-        let mut s = Recorded::new(
-            0,
-            Recording::default(),
-            Recording::default(),
-            Recording::default(),
-        );
+    fn end_capture_without_begin_is_an_error() {
+        let s = Stream::new(0);
         let line = line!() + 1;
-        let graph = s.end_capture();
-        assert_eq!(graph.get(), None);
-        let reported = &s.create_policy().0;
-        assert_eq!(reported.len(), 1);
-        assert_ne!(reported[0].0, wwr_status::WWR_STATUS_SUCCESS);
-        assert_eq!(reported[0].1, line);
+        let error = s.end_capture().err().unwrap();
+        assert_eq!((error.origin.file(), error.origin.line()), (file!(), line));
+        assert_eq!(
+            error.kind,
+            crate::core::error_handling::ErrorKind::GpuRuntime
+        );
     }
 }

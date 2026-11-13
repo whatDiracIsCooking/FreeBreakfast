@@ -254,7 +254,7 @@ how many regions the parent holds at once, each at the sub-DAG's peak.
 | Freed | At the plan's drop, after the last run's final sync | The same |
 | Alignment | `FB_DEVICE_ALIGNMENT` for every row ([`gpu_layer.md`](gpu_layer.md), "Scratch: the workspace query") | The same; the copy engines need no more, and `kWorkspaceAlignment` is 256 on both sides today |
 | Debug fill | Every byte `0xFF` at instantiation: a NaN in both float widths, and `-1` in every integer width | The same |
-| Failure | Aborts through `CreatePolicy`, naming the bytes and the free memory | The same, naming `MemAvailable` |
+| Failure | Aborts, as every create does (`check_or_abort`), naming the bytes and the free memory | The same, naming `MemAvailable` |
 
 **Plain, not stream-ordered.** One allocation per plan has nothing for a
 pool to amortise, and `hipMallocFromPoolAsync` beside other threads' stream

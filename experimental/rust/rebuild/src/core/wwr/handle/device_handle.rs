@@ -1,18 +1,23 @@
-//! `wwr.extension.handle:device_handle`: the capability ladder a device
-//! buffer picks its allocation strategy from.
+//! `wwr.extension.handle:device_handle`: what a handle knows about where
+//! its work runs.
 //!
-//! | Trait | Adds | Unlocks |
-//! |---|---|---|
-//! | [`DeviceHandle`] | `dev_idx()` | synchronous `wwr_malloc` / `wwr_free` |
-//! | [`DeviceHandleStream`] | `stream()` | `wwr_malloc_async` / `wwr_free_async` |
-//! | [`DeviceHandlePool`] | `pool()` | `wwr_malloc_from_pool_async` |
+//! | Trait | Adds |
+//! |---|---|
+//! | [`DeviceHandle`] | `dev_idx()` |
+//! | [`DeviceHandleStream`] | `stream()` |
+//!
+//! In wwr this is the ladder a device buffer picks its allocation strategy
+//! from, and its top rung, `device_handle_pool`, adds `pool()` for
+//! `wwrMallocFromPoolAsync`. That rung has no counterpart: the arena
+//! allocates one plain block per plan, never from a stream-ordered pool
+//! (`docs/memory.md`, "The two kinds"). Here the two traits are what a
+//! stream-bound handle needs of its stream owner.
 //!
 //! wwr's concepts are structural, so any type with the accessors qualifies;
 //! a Rust type opts in by implementing the trait. wwr requires the accessors
-//! `noexcept`, because a buffer reads them on its free path; these return
-//! plain values and must not panic, for the same reason.
+//! `noexcept`; these return plain values and must not panic.
 
-use wwr_sys::{wwr_mem_pool, wwr_stream};
+use wwr_sys::wwr_stream;
 
 /// A handle that knows its device: `device_handle`.
 pub trait DeviceHandle {
@@ -24,10 +29,4 @@ pub trait DeviceHandle {
 pub trait DeviceHandleStream: DeviceHandle {
     /// The stream work on this handle is queued on.
     fn stream(&self) -> wwr_stream;
-}
-
-/// A [`DeviceHandleStream`] with a memory pool: `device_handle_pool`.
-pub trait DeviceHandlePool: DeviceHandleStream {
-    /// The pool allocations on this handle are drawn from.
-    fn pool(&self) -> wwr_mem_pool;
 }

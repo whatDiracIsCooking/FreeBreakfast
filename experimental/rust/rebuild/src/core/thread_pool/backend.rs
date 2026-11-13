@@ -1,12 +1,10 @@
 //! The device side of a run.
 
-use wwr_sys::wwr_status;
-
 use super::plan::{NodeId, Placement, Plan};
 use crate::core::error_handling::Status;
 use crate::core::wwr::common::ScopedDeviceIndex;
+use crate::core::wwr::gpu_status;
 use crate::core::wwr::runtime::{Event, Stream, event};
-use crate::core::wwr::{CreatePolicy, DestroyPolicy, gpu_status};
 
 /// The device side of a run: what the stream workers enqueue on, and the
 /// waits that make each edge leaving a stream hold
@@ -80,12 +78,8 @@ impl Backend for HostOnly {
     }
 }
 
-type Create = CreatePolicy<wwr_status>;
-type Destroy = DestroyPolicy<wwr_status>;
-
 /// The stream a GPU node is handed under [`Device`].
-pub type DeviceStream = Stream<Create, Destroy, Create>;
-type DeviceEvent = Event<Create, Destroy, Create>;
+pub type DeviceStream = Stream;
 
 /// GPU stream workers: one non-blocking stream per worker, each on its own
 /// device, and one event per GPU node, recorded after it returns.
@@ -96,15 +90,14 @@ pub struct Device {
     devices: Vec<i32>,
     streams: Vec<DeviceStream>,
     /// Indexed by node; `None` for a CPU node.
-    events: Vec<Option<DeviceEvent>>,
+    events: Vec<Option<Event>>,
 }
 
 // SAFETY: the stream and event handles are raw runtime pointers, which is
 // why the wrappers are neither `Send` nor `Sync`. The runtime API is
 // thread-safe for every call made on them here (record, wait, synchronize),
-// the handles are created before any run and destroyed only when the
-// `Device` drops, which a run's borrow of it rules out, and the zero-sized
-// policies they carry hold no state.
+// and the handles are created before any run and destroyed only when the
+// `Device` drops, which a run's borrow of it rules out.
 unsafe impl Sync for Device {}
 
 impl Device {
@@ -121,20 +114,14 @@ impl Device {
             plan.n_streams(),
             devices.len()
         );
-        let streams = devices
-            .iter()
-            .map(|&d| DeviceStream::new(d, Create::new(), Destroy::new(), Create::new()))
-            .collect();
+        let streams = devices.iter().map(|&d| DeviceStream::new(d)).collect();
         let events = plan
             .nodes
             .iter()
             .map(|n| match n.placement {
-                Placement::Stream(s) => Some(DeviceEvent::with_flags(
+                Placement::Stream(s) => Some(Event::with_flags(
                     devices[s],
                     event::DISABLE_TIMING | event::BLOCKING_SYNC,
-                    Create::new(),
-                    Destroy::new(),
-                    Create::new(),
                 )),
                 Placement::Cpu => None,
             })
@@ -146,7 +133,7 @@ impl Device {
         }
     }
 
-    fn event(&self, node: NodeId) -> &DeviceEvent {
+    fn event(&self, node: NodeId) -> &Event {
         self.events[node.index()]
             .as_ref()
             .expect("an event is recorded only for a GPU node")
@@ -155,13 +142,13 @@ impl Device {
 
 impl Backend for Device {
     type Stream = DeviceStream;
-    type Binding = ScopedDeviceIndex<Create>;
+    type Binding = ScopedDeviceIndex;
 
     fn n_streams(&self) -> usize {
         self.streams.len()
     }
     fn bind(&self, lane: usize) -> Self::Binding {
-        ScopedDeviceIndex::new(self.devices[lane], Create::new())
+        ScopedDeviceIndex::new(self.devices[lane])
     }
     fn stream(&self, lane: usize) -> &DeviceStream {
         &self.streams[lane]

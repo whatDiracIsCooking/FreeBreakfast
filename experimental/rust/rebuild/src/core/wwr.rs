@@ -6,20 +6,20 @@
 //! - [`runtime`]: wwr's `src/extension/runtime`, the streams, events,
 //!   memory pools and graphs built on them.
 //!
-//! And two of free_breakfast's own partitions of `free_breakfast.core.wwr`,
-//! over [`crate::core::error_handling`] and [`crate::core::log`]:
+//! And free_breakfast's own partitions of `free_breakfast.core.wwr`, over
+//! [`crate::core::error_handling`] and [`crate::core::log`]:
 //!
 //! - `:status`: [`gpu_status`] (and [`gpu_status_at`]), a GPU status as a
-//!   [`Status`](crate::core::error_handling::Status).
-//! - `:policy`: [`AbortPolicy`] / [`LogPolicy`], [`CreatePolicy`] /
-//!   [`DestroyPolicy`] and [`PolicyMap`], the tree's policies for the
-//!   wrappers.
+//!   [`Status`](crate::core::error_handling::Status), and
+//!   [`gpu_log_error_at`], what a `Drop` does with a failed one.
+//! - `:policy`: nothing. The C++ tree's `CreatePolicy` / `DestroyPolicy`
+//!   are its rule that a failed create aborts and a failed destroy logs;
+//!   here that rule is two calls rather than two types ([`common`] has
+//!   why).
 
 pub mod common;
 pub mod handle;
-mod policy;
 pub mod runtime;
 mod status;
 
-pub use policy::{AbortPolicy, CreatePolicy, DestroyPolicy, LogPolicy, PolicyMap};
-pub use status::{gpu_status, gpu_status_at};
+pub use status::{gpu_log_error_at, gpu_status, gpu_status_at};

@@ -4,11 +4,12 @@
 //! devices, so there is no one device to record.
 
 use std::ops::Deref;
+use std::panic::Location;
 
 use wwr_sys::{wwr_graph, wwr_status};
 
 use super::graph_exec::GraphExec;
-use crate::core::wwr::common::ErrorPolicy;
+use crate::core::error_handling::check_or_abort;
 use crate::core::wwr::handle::{BaseHandle, HandleKind};
 
 /// A graph's create (empty) and destroy.
@@ -30,23 +31,19 @@ impl HandleKind for GraphKind {
     }
 }
 
-/// An owned graph: `GraphWrapper<P_create, P_destroy>`. One comes empty
-/// from [`Graph::new`], or recorded from a stream's
-/// [`end_capture`](super::Stream::end_capture).
-pub struct Graph<PC, PD>(pub(super) BaseHandle<GraphKind, PC, PD>)
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>;
+/// An owned graph: `GraphWrapper`. One comes empty from [`Graph::new`], or
+/// recorded from a stream's [`end_capture`](super::Stream::end_capture).
+pub struct Graph(BaseHandle<GraphKind>);
 
-impl<PC, PD> Graph<PC, PD>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-{
-    /// An empty graph.
+impl Graph {
+    /// An empty graph; aborts at the caller if it cannot be made.
     #[track_caller]
-    pub fn new(policy_create: PC, policy_destroy: PD) -> Self {
-        Graph(BaseHandle::new(policy_create, policy_destroy))
+    pub fn new() -> Self {
+        Graph(check_or_abort(BaseHandle::try_new_at(
+            // SAFETY: `try_new_at` hands a pointer valid for one write.
+            |raw| unsafe { GraphKind::create(raw) },
+            Location::caller(),
+        )))
     }
 
     /// Own `raw`, a graph made elsewhere: `GraphWrapper::adopt`. It is
@@ -54,33 +51,28 @@ where
     ///
     /// # Safety
     /// `raw` is a live graph that nothing else destroys.
-    pub unsafe fn adopt(raw: wwr_graph, policy_create: PC, policy_destroy: PD) -> Self {
-        Graph(BaseHandle::new_with(
-            policy_create,
-            policy_destroy,
-            |_, _| Some(raw),
-        ))
+    pub unsafe fn adopt(raw: wwr_graph) -> Self {
+        // SAFETY: the caller's.
+        Graph(unsafe { BaseHandle::adopt(raw) })
     }
 
-    /// Instantiate this graph for launching: `instantiate(flags)`. The
-    /// executable reports through new defaults of this graph's policy
-    /// types, as wwr default-constructs them.
+    /// Instantiate this graph for launching: `instantiate(flags)`; aborts
+    /// at the caller if it cannot.
     #[track_caller]
-    pub fn instantiate(&self, flags: u64) -> GraphExec<PC, PD>
-    where
-        PC: Default,
-        PD: Default,
-    {
-        GraphExec::new(self, flags, PC::default(), PD::default())
+    pub fn instantiate(&self, flags: u64) -> GraphExec {
+        GraphExec::new(self, flags)
     }
 }
 
-impl<PC, PD> Deref for Graph<PC, PD>
-where
-    PC: ErrorPolicy<Error = wwr_status>,
-    PD: ErrorPolicy<Error = wwr_status>,
-{
-    type Target = BaseHandle<GraphKind, PC, PD>;
+impl Default for Graph {
+    #[track_caller]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Deref for Graph {
+    type Target = BaseHandle<GraphKind>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -89,15 +81,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::wwr::common::tests::Recording;
-    use crate::core::wwr::runtime::tests::Abort;
 
     /// Needs a GPU. An empty graph instantiates.
     #[test]
     fn an_empty_graph_instantiates() {
-        let g = Graph::new(Abort::new(), Abort::new());
-        assert!(g.get().is_some());
-        assert!(g.instantiate(0).get().is_some());
+        let g = Graph::new();
+        let _exec = g.instantiate(0);
     }
 
     /// Needs a GPU. Adopting hands the graph its destroy.
@@ -110,7 +99,7 @@ mod tests {
             wwr_status::WWR_STATUS_SUCCESS
         );
         // SAFETY: `raw` is live and nothing else destroys it.
-        let g = unsafe { Graph::adopt(raw, Recording::default(), Recording::default()) };
-        assert_eq!(g.get(), Some(raw));
+        let g = unsafe { Graph::adopt(raw) };
+        assert_eq!(g.get(), raw);
     }
 }
