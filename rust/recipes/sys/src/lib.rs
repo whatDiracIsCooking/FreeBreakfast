@@ -47,3 +47,7 @@ pub fn check_library() -> Result<(), String> {
 
 // The numbers fb_kernel_abi::check names the found backend by.
 const _: () = assert!(FB_BACKEND_CUDA == 1 && FB_BACKEND_HIP == 2);
+// The numbers fb_kernel_abi::launch_status reads a launch status by.
+const _: () = assert!(
+    FB_LAUNCH_SUCCESS == 0 && FB_LAUNCH_UNSUPPORTED == -1 && FB_LAUNCH_INVALID_ARGUMENT == -2
+);
