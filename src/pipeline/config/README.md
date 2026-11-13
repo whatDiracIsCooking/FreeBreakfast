@@ -707,7 +707,7 @@ max_pinned_mem_per_gpu = "16GiB"   # one device's pinned host memory, as its
 `max_device_mem_per_gpu` is one device's memory, everything on it counted
 but the kernels' stack: the CUDA or HIP context and the libraries' reserve as
 well as the pool. The stack is outside it: CUDA holds a kernel's stack for
-every resident thread from its first launch on, up to 1.8 GiB on the
+every resident thread from its first launch on, up to 1.6 GiB on the
 RTX 3080 for the tree's largest kernel (`DeviceResources::kKernelStackBytes`;
 `src/core/wwr/README.md`, "Kernel stacks outside the pool"), and takes it
 back from the pool when the card has no free memory left. So the cap plus
