@@ -258,12 +258,20 @@ by a command names the command; one whose numbers cannot says so.
 **A section citation is checked.** These documents cite each other as a file
 and a quoted section name, and a renamed heading breaks the citation
 silently: two such references pointed at sections of `design.md` that had
-moved to documents of their own, and were found by hand. A tier-3 check reads
-every `` [`x.md`](x.md), "Section" `` and fails when `x.md` has no such
-heading. It is the first tier-3 test to write
-([`README.md`](../README.md), "Order of work"). Links between pages and into
-the API get `mdbook-linkcheck` the same way, so a page that moves is a failed
-build, not a dead link.
+moved to documents of their own, and were found by hand. A tier-3 check,
+`tests/section_citations.rs` ([`README.md`](../README.md), "Order of work"),
+reads every `` [`x.md`](x.md), "Section" `` in the README and these
+documents, and every `` `docs/x.md`, "Section" `` in a Rust comment, and
+fails when `x.md` has no such heading. A citation may run on: in
+`` `a.md`, "A", `b.md`, "B" `` each name is looked up in the nearest file
+before it, and in a document, `"Section", below` (or `above`) cites the
+document itself. A name is the whole heading or exactly its text before the
+first `": "`, and it must match one heading only, so a short name two
+headings share fails rather than picks one. Only headings count: a bold
+paragraph lead has no anchor on GitHub or in mdBook, so cite the heading it
+sits under. Examples in code fences or inline code are skipped. Links
+between pages and into the API get `mdbook-linkcheck` the same way, so a page
+that moves is a failed build, not a dead link.
 
 **The two LaTeX documents stay LaTeX.** `nevpt2.tex` and `hessian.tex` are
 long derivations with TikZ figures and algorithm floats, and a conversion

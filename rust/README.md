@@ -113,6 +113,13 @@ are the planner's, run on `HostOnly` workers. The planner on a card, a round
 trip through pinned and device rows, is `tests/planner_device.rs`, which
 measures free memory too.
 
+`tests/section_citations.rs` checks that every section the README, `docs/`
+and the Rust comments cite by name is a heading of the file cited
+([`documentation.md`](docs/documentation.md), "Narrative: mdBook beside the
+rustdoc", has the rules). It reads files and nothing else, so it needs no
+card, but it still builds after `build.rs` and so needs the library until
+the workspace gives it a crate of its own.
+
 Tests run in parallel, so a capture test must not use global capture mode.
 A global capture forbids other threads' unsafe calls, and on the 3080 it
 made a neighbouring pool's create abort or its destroy segfault.
@@ -137,8 +144,9 @@ the gates. The first steps, in order, each one PR:
 
 1. **The section-citation check**, as the first tier-3 test
    ([`documentation.md`](docs/documentation.md), "Narrative: mdBook beside
-   the rustdoc"). It is a few lines, needs no card, and the documents have
-   drifted once already.
+   the rustdoc"). Done: `tests/section_citations.rs`. Its first run found
+   two citations in doc comments that named a bold paragraph lead rather
+   than a heading.
 2. **The workspace.** One crate per module and `core` split
    ([`testing.md`](docs/testing.md), "Selection: the workspace graph is the
    selection graph"), done while the crate is four thousand lines rather than
