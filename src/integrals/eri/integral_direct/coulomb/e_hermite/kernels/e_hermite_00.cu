@@ -25,6 +25,8 @@ __global__ void e_hermite<0, 0>(
 {
     // [JEngine, v2, Alg. 1]: J_p = SUM_q [p|q] D_q, class lp=0 lq=0 (L=0), one
     // batch, atomic write-back ([JEngine, v2, §5])
+    // lever fused (#344): each [r]^(0) is contracted into J_p as the recurrence
+    // forms it, one target live at a time (j_levers/fused.py)
     // PRECONDITION: kets arrive sorted by Iq * Dmax, descending. The screen below
     // is a break, not a continue: once Dmax * Ip * Iq < tau the whole tail is
     // under it too. Unsorted kets make the break a wrong answer, not a slow one
@@ -62,10 +64,12 @@ __global__ void e_hermite<0, 0>(
             double W0 = (1.1283791670955126 * theta);
             double boys[1];
             eval_boys<0>(T, boys);
+            // fused (#344): each [r]^(0) is contracted into J_p += (-1)^|q| [r]^(0) D_q (r
+            // = p + q, [JEngine, v2, eqs. 7-9, 20-22]) right after the recurrence forms
+            // it, and is dead from then on: one target live at a time; [ab|cd] is never
+            // formed
             // [JEngine, v2, eqs. 10-12], reduction form
             double R0_0_0_0 = (W0 * boys[0]);
-            // J_p += SUM_q (-1)^|q| [p+q]^(0) D_q, [JEngine, v2, eqs. 7-9, 20-22]: the
-            // only shell-quartet-level contraction; [ab|cd] is never formed
             Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_0_0_0 * D[(0 * n_ket + k)]));
         }
         // reduce J_p across the warp: every lane sees the sum

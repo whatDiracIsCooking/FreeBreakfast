@@ -308,9 +308,11 @@ keep the per-item form (`d2eri3<3,3,3>` 15,664 B). The compact `d2v` was
 1.05x slower at (dd) and 1.08x at (ff), so `potential_hessian<3,3>` keeps
 its dense tables (13,024 B compact, opt-in in FelizJueves) and sets the
 maximum. The target, 8 KiB (816 MiB), is not reached. Next below are
-`e_hermite<7,6>` (15,808 B, the gradient's raised `[p|q]` row, no
-low-stack form), `d2eri3<3,3,3>` and `<3,3,0>` (per-item), `kb<2,2,2,2>`
-(12,512 B), and the compact low-stack `geri3` / `xeri3` and `gk` at f.
+`d2eri3<3,3,3>` and `<3,3,0>` (per-item, 15,664 and 13,584 B),
+`kb<2,2,2,2>` (12,512 B), and the compact low-stack `geri3` / `xeri3` and
+`gk` at f. `e_hermite<7,6>`, the gradient's raised `[p|q]` row, was
+15,808 B until FelizJueves's `fused` lever (2,944 B, #1337), which every
+`e_hermite` class it is not slower at now takes (#1345).
 
 `Device::stack_growth(per_thread)` is what is still to come: the limit's
 shortfall from `per_thread` times the thread count.

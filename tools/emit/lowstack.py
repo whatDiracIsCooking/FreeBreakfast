@@ -41,8 +41,16 @@ built binary (`cuobjdump --dump-resource-usage`, sm_86) at FelizJueves
   stand-alone). It adds a slot's terms one at a time rather than as one
   balanced tree a ket, so it is NOT bitwise the literal kernel; it agrees
   with it to the summation bound (FelizJueves's test_kernel_fused.py).
-  Timed on the RX 9060 XT, it is 0.30-0.75x the literal kernel's time at
-  every class it is taken for.
+  It is a speed lever as well, so it is taken at every class where it is
+  at most 1.01x the literal kernel's time (#1345), not only over the
+  target. Timed on the RX 9060 XT (hipcc 7.2.4, synthetic records, 1024
+  bras x 1024 kets to L = 9 and 256 x 256 above, `tau = 0`; the median of
+  5 and of 11 alternated runs): 0.29-0.41x at the four over the target and
+  at (4,6), 0.67-0.95x from L = 5 up, and level (0.98-1.00x) at the low
+  classes and wherever `lq = 0`, where one term reaches each slot and the
+  two forms agree bitwise. It is slower at (2,2), 1.06x, and over 1.01x in
+  a run at (2,1) and (7,0), which keep the literal kernel. The RTX 3080 is
+  not timed (#1336).
 
 The classes over the target that no form brings under it (the per-item
 `d2eri3`s above, the low-stack `geri3` / `xeri3` / `gk` /
@@ -101,7 +109,9 @@ SHARED: dict[str, frozenset[tuple[int, ...]]] = {
 
 # family -> the classes built with the `fused` lever in their Spec.
 FUSED: dict[str, frozenset[tuple[int, ...]]] = {
-    "e_hermite": frozenset({(7, 6), (6, 6), (7, 5), (5, 6)}),
+    "e_hermite": frozenset(
+        {(lp, lq) for lp in range(8) for lq in range(7)} - {(2, 1), (2, 2), (7, 0)}
+    ),
 }
 
 
