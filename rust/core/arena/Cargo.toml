@@ -9,17 +9,26 @@ publish.workspace = true
 workspace = true
 
 [features]
+default = ["device"]
+# Device and Pinned blocks through wwr-sys. Without it the crate links no
+# library: tables, rows, admission and Heap blocks are all it can allocate.
+device = ["dep:fb-core-wwr", "dep:wwr-sys"]
 # Heap, the device-free host kind, for a dependent's tests.
 test-support = []
 
 [dependencies]
 contracts.workspace = true
 fb-core-error-handling.workspace = true
-fb-core-wwr.workspace = true
+fb-core-wwr = { workspace = true, optional = true }
 log.workspace = true
-wwr-sys.workspace = true
+wwr-sys = { workspace = true, optional = true }
 
 [dev-dependencies]
 libc.workspace = true
 fb-test-support.workspace = true
 proptest.workspace = true
+
+# The blocks on a card.
+[[test]]
+name = "arena_block"
+required-features = ["device"]

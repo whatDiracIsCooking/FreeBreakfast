@@ -1,42 +1,72 @@
 //! The two memory kinds a block can hold, the raw calls behind each, and the
 //! element types a row can hold.
+//!
+//! The raw calls are the arena's one seam onto the runtime. With the
+//! `device` feature (the default) [`Device`] and [`Pinned`] reach it through
+//! `wwr-sys` (`device.rs`); without it they are still kinds, so tables, rows,
+//! admission and the planner built on them compile and test with no library
+//! linked, but a block of either of non-zero size aborts (`no_device.rs`).
 
-use std::ffi::c_void;
+use std::panic::Location;
 
-use wwr_sys::wwr_status;
+use fb_core_error_handling::{Error, Status};
+
+#[cfg(feature = "device")]
+mod device;
+#[cfg(not(feature = "device"))]
+mod no_device;
 
 /// The raw operations behind a block. The trait is public, so it can bound
 /// [`Kind`], but it lives in a module nothing outside the arena can name:
 /// only the arena allocates (`docs/programming_model.md`, "Memory: layouts
 /// and arenas").
 pub mod sealed {
-    use wwr_sys::wwr_status;
+    use super::{Error, Location, Status};
 
     pub trait Sealed {
-        /// Whether the calls need the block's device made current.
-        const ON_DEVICE: bool;
         /// Whether the `0xFF` fill runs in release builds too. A host block
         /// is handed out as `&mut [T]`, which must not be uninitialised
         /// memory in any profile; a device block is only ever a pointer.
         const ALWAYS_FILL: bool;
 
+        /// Held while the calls need the block's device current: a device
+        /// guard, or `()` for a kind that needs none.
+        type Current;
+
+        /// Make device `dev_idx` current, aborting if it cannot be.
+        fn current(dev_idx: i32) -> Self::Current;
+
+        /// Make device `dev_idx` current, or say why it cannot be: for a
+        /// `Drop`, which logs rather than aborts.
+        ///
+        /// # Errors
+        /// The failed device switch.
+        fn try_current(dev_idx: i32) -> Result<Self::Current, Error>;
+
         /// Allocate `bytes`, writing the base to `ptr`.
+        ///
+        /// # Errors
+        /// The failure, named and described, for the abort's message.
         ///
         /// # Safety
         /// `ptr` is valid for one write.
-        unsafe fn alloc(ptr: *mut *mut u8, bytes: usize) -> wwr_status;
+        unsafe fn alloc(ptr: *mut *mut u8, bytes: usize) -> Result<(), String>;
 
-        /// Free an allocation [`Sealed::alloc`] made of `bytes`.
+        /// Free an allocation [`Sealed::alloc`] made of `bytes`, logging a
+        /// failure against `location`.
         ///
         /// # Safety
         /// `ptr` came from `alloc(.., bytes)` of this kind, freed once.
-        unsafe fn free(ptr: *mut u8, bytes: usize) -> wwr_status;
+        unsafe fn free(ptr: *mut u8, bytes: usize, location: &'static Location<'static>);
 
         /// Set every byte to `0xFF` and wait for it.
         ///
+        /// # Errors
+        /// The failed call, located at `location`.
+        ///
         /// # Safety
         /// `ptr` is an allocation of this kind of at least `bytes`.
-        unsafe fn fill(ptr: *mut u8, bytes: usize) -> wwr_status;
+        unsafe fn fill(ptr: *mut u8, bytes: usize, location: &'static Location<'static>) -> Status;
 
         /// The memory still free, for an allocation failure's message.
         fn free_memory() -> String;
@@ -66,75 +96,9 @@ pub enum Device {}
 #[derive(Debug)]
 pub enum Pinned {}
 
-/// `cudaHostAllocPortable` / `hipHostMallocPortable`: both `0x1`.
-const HOST_ALLOC_PORTABLE: u32 = 0x1;
-
-impl sealed::Sealed for Device {
-    const ON_DEVICE: bool = true;
-    const ALWAYS_FILL: bool = false;
-
-    unsafe fn alloc(ptr: *mut *mut u8, bytes: usize) -> wwr_status {
-        // SAFETY: the caller's pointer is valid for one write.
-        unsafe { wwr_sys::wwr_malloc(ptr.cast::<*mut c_void>(), bytes) }
-    }
-
-    unsafe fn free(ptr: *mut u8, _: usize) -> wwr_status {
-        // SAFETY: the caller's allocation, freed once.
-        unsafe { wwr_sys::wwr_free(ptr.cast()) }
-    }
-
-    unsafe fn fill(ptr: *mut u8, bytes: usize) -> wwr_status {
-        // SAFETY: the caller's allocation of at least `bytes`.
-        let status = unsafe { wwr_sys::wwr_memset(ptr.cast(), 0xFF, bytes) };
-        if status != wwr_status::WWR_STATUS_SUCCESS {
-            return status;
-        }
-        // The memset runs on the legacy stream, which the run's
-        // non-blocking streams do not wait for: finish it here.
-        // SAFETY: a plain runtime call.
-        unsafe { wwr_sys::wwr_device_synchronize() }
-    }
-
-    fn free_memory() -> String {
-        let (mut free, mut total) = (0, 0);
-        // SAFETY: a plain runtime call writing two locals.
-        let status = unsafe { wwr_sys::wwr_mem_get_info(&mut free, &mut total) };
-        if status == wwr_status::WWR_STATUS_SUCCESS {
-            format!("{free} bytes free of {total}")
-        } else {
-            "free memory unknown".to_owned()
-        }
-    }
-}
-
-impl sealed::Sealed for Pinned {
-    const ON_DEVICE: bool = true;
-    const ALWAYS_FILL: bool = true;
-
-    unsafe fn alloc(ptr: *mut *mut u8, bytes: usize) -> wwr_status {
-        // SAFETY: the caller's pointer is valid for one write.
-        unsafe { wwr_sys::wwr_host_alloc(ptr.cast(), bytes, HOST_ALLOC_PORTABLE) }
-    }
-
-    unsafe fn free(ptr: *mut u8, _: usize) -> wwr_status {
-        // SAFETY: the caller's allocation, freed once.
-        unsafe { wwr_sys::wwr_free_host(ptr.cast()) }
-    }
-
-    unsafe fn fill(ptr: *mut u8, bytes: usize) -> wwr_status {
-        // SAFETY: the caller's host allocation of at least `bytes`.
-        unsafe { std::ptr::write_bytes(ptr, 0xFF, bytes) };
-        wwr_status::WWR_STATUS_SUCCESS
-    }
-
-    fn free_memory() -> String {
-        mem_available()
-    }
-}
-
 /// `MemAvailable` from `/proc/meminfo`, as the C++ `check_pinned_node`
 /// reads it.
-fn mem_available() -> String {
+pub(crate) fn mem_available() -> String {
     std::fs::read_to_string("/proc/meminfo")
         .ok()
         .and_then(|s| {
@@ -172,31 +136,36 @@ impl Heap {
 
 #[cfg(any(test, feature = "test-support"))]
 impl sealed::Sealed for Heap {
-    const ON_DEVICE: bool = false;
     const ALWAYS_FILL: bool = true;
+    type Current = ();
 
-    unsafe fn alloc(ptr: *mut *mut u8, bytes: usize) -> wwr_status {
+    fn current(_: i32) {}
+
+    fn try_current(_: i32) -> Result<(), Error> {
+        Ok(())
+    }
+
+    unsafe fn alloc(ptr: *mut *mut u8, bytes: usize) -> Result<(), String> {
         // SAFETY: a block's size is never zero, so the layout is not empty.
         let base = unsafe { std::alloc::alloc(Self::layout(bytes)) };
         // SAFETY: the caller's pointer is valid for one write.
         unsafe { ptr.write(base) };
         if base.is_null() {
-            wwr_status::WWR_STATUS_MEMORY_ALLOCATION
+            Err("the global allocator returned null".to_owned())
         } else {
-            wwr_status::WWR_STATUS_SUCCESS
+            Ok(())
         }
     }
 
-    unsafe fn free(ptr: *mut u8, bytes: usize) -> wwr_status {
+    unsafe fn free(ptr: *mut u8, bytes: usize, _: &'static Location<'static>) {
         // SAFETY: allocated by `alloc` with this layout, freed once.
         unsafe { std::alloc::dealloc(ptr, Self::layout(bytes)) };
-        wwr_status::WWR_STATUS_SUCCESS
     }
 
-    unsafe fn fill(ptr: *mut u8, bytes: usize) -> wwr_status {
+    unsafe fn fill(ptr: *mut u8, bytes: usize, _: &'static Location<'static>) -> Status {
         // SAFETY: the caller's allocation of at least `bytes`.
         unsafe { std::ptr::write_bytes(ptr, 0xFF, bytes) };
-        wwr_status::WWR_STATUS_SUCCESS
+        Ok(())
     }
 
     fn free_memory() -> String {

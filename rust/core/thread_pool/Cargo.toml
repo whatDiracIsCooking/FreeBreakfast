@@ -8,15 +8,23 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["device", "device-tests"]
+# The Device backend, streams and events through fb-core-wwr. Without it the
+# crate links no library, and DeviceStream is an uninhabited placeholder.
+device = ["dep:fb-core-wwr"]
+# What the device unit test needs beyond `device`: wwr's test helpers and
+# raw calls. A feature rather than dev-dependencies, which cannot be
+# optional, so `--no-default-features` builds the tests with no wwr at all;
+# a dependent takes `device` alone, never these.
+device-tests = ["device", "fb-core-wwr/test-support", "dep:wwr-sys"]
+
 [dependencies]
 fb-core-error-handling.workspace = true
 fb-core-log.workspace = true
-fb-core-wwr.workspace = true
+fb-core-wwr = { workspace = true, optional = true }
 log.workspace = true
-
-[dev-dependencies]
-fb-core-wwr = { workspace = true, features = ["test-support"] }
-wwr-sys.workspace = true
+wwr-sys = { workspace = true, optional = true }
 
 # Counts the process's threads, so no libtest harness threads beside it.
 [[test]]
