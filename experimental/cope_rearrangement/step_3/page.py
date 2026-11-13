@@ -29,15 +29,19 @@ STEP4 = HERE.parent / "step_4"
 KCAL = 627.5094740631
 METHODS = ("pc", "casscf")
 REFERENCE = "pc_1.90_1.90"  # the grid point nearest 4b's TS: the display frame
-# 4b's optimised stationary points, by (method, kind, R to 0.1 A) of the grid
-# fit's point on the diagonal. casscf_2.30.xyz is the walk that left C2h and
-# fell to 1,5-hexadiene; the aromatic saddle is its restart. The off-diagonal
-# CASSCF saddles and the maximum were not located in 4b.
+# 4b's optimised stationary points, by (method, kind), each matched to the
+# grid fit's point on the diagonal of that kind whose R lies within MATCH_A of
+# 4b's own R. Not by R rounded to 0.1 A: the CASSCF diyl's fit sits at 1.649,
+# 0.001 A from where rounding would carry it across 1.65 and drop the match.
+# casscf_2.30.xyz is the walk that left C2h and fell to 1,5-hexadiene; the
+# aromatic saddle is its restart. The off-diagonal CASSCF saddles and the
+# maximum were not located in 4b.
 OPTIMISED = {
-    ("pc", "saddle", 1.9): "pc_ts",
-    ("casscf", "minimum", 1.6): "casscf_1.65",
-    ("casscf", "saddle", 2.3): "casscf_2.30_restart",
+    ("pc", "saddle"): ["pc_ts"],
+    ("casscf", "minimum"): ["casscf_1.65"],
+    ("casscf", "saddle"): ["casscf_2.30_restart"],
 }
+MATCH_A = 0.05  # one grid spacing; the fits sit within 0.01 A of 4b's
 
 
 def frames(path: Path) -> dict[str, list]:
@@ -126,7 +130,14 @@ def data() -> dict:
                 "r34": s["r34"],
                 "dE": round(s["dE_kcal"], 3),
             }
-            stem = OPTIMISED.get((m, s["kind"], round(s["r16"], 1)))
+            stem = next(
+                (
+                    k
+                    for k in OPTIMISED.get((m, s["kind"]), [])
+                    if abs(stationary[k]["final"]["r16"] - s["r16"]) < MATCH_A
+                ),
+                None,
+            )
             if stem and s["r16"] == s["r34"]:
                 path = STEP4 / "geometries" / f"{stem}.xyz"
                 (atoms,) = frames_plain(path)
