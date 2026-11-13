@@ -18,7 +18,8 @@ Result<mcscf::Derivatives> mcscf::df_derivatives(
     std::span<const PrimitivePairClass> classes, const BasisSet &aux,
     const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
     const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nalpha, int32_t nbeta,
-    const double *roots, std::span<const double> weights, const double *rotation = nullptr);
+    const double *roots, std::span<const double> weights, const double *rotation = nullptr,
+    size_t max_bytes = 0);
 MemoryFootprint mcscf::df_derivatives_footprint(
     const BasisSet &basis, const BasisSet &aux, int32_t ncore, int32_t ncas, int32_t nalpha,
     int32_t nbeta, int32_t nroots, size_t syevd_lwork, bool rotation = false);
@@ -137,8 +138,8 @@ transformed by τ^x, which is d/dε at C → C (1 + ε τ^x) with the RDMs fixed
 
 with F, F^I, F^A `response::fock`'s and (pa|vw), (pu|aw) `casscf_integrals`'
 ppaa and papa. The J and K of dD_c and dD_a are the block `df_coulomb` and
-the block two-factor `df_exchange` over all 3 n_atom coordinates at once
-(K[L Rᵀ] + its transpose). F̃^x is then assembled as F^[x] is, from
+the block two-factor `df_exchange` (K[L Rᵀ] + its transpose), over a batch
+of coordinates at a time (Memory, below). F̃^x is then assembled as F^[x] is, from
 F^I~ = F^I^x + F^I[τ], F^A~ = F^A^x + F^A[τ] and A^x + A[τ].
 
 **H̃^x** over the active space: E_core = Σ_i (h̃_ii + F^I~_ii) with
@@ -204,8 +205,21 @@ and K, F̃, the outputs), beside 3 n_atom (nao ncas³ + 3 naux ncas²), one aux
 atom's derivative block (3 nao² nblk) and the derivative calls' own scratch.
 That estimate past the device's memory budget (`DeviceResources::memory_budget()`) is
 Unsupported before anything is allocated. Water in cc-pVDZ (24 functions, 9 coordinates) is under a
-megabyte; 500 functions and 20 atoms would be about 1 GB of stacks. Nothing
-splits the coordinates into batches yet. A rotation adds six more stacks
+megabyte; 500 functions and 20 atoms would be about 1 GB of stacks.
+
+The one part batched over the coordinates is the response densities' block
+J and K (#1309). The block `df_exchange` allocates its X and Y,
+2 naux rank nao doubles per coordinate, for every coordinate it is given:
+over all of them that was 1276 MiB of the Cope TS's 1390 MiB peak here
+(48 coordinates, ncore 20, nao 134, naux 650; #1283), N⁴ in the size. So the
+block J and K take as many coordinates at once as the budget holds when they
+run, `res.memory_budget()` less `kPoolHeadroomBytes`, or `max_bytes` when
+that is less, and at least one: `max_bytes` of 1 forces one at a time. A
+batch is a sub-range of the factor stacks and of D, J and K; it narrows the
+gemms and changes the outputs only by rounding. `df_derivatives_footprint`
+counts one coordinate, the least, so a plan's pool minimum drops by the rest
+(1250 MiB per call on the Cope TS); the up-front estimate counts one too, and
+one coordinate's past the budget then is Unsupported. A rotation adds six more stacks
 (the rotated J^x and K^x, their sum, F^I_L, F^A_L and `fock_rotated`), C K
 and [C | C̃_a], the rotated pairs (naux ncas nao) and the second walk's
 3 n_atom naux ncas², counted in the same estimate.
@@ -221,7 +235,8 @@ of two roots at (0.5, 0.5) and (0.7, 0.3) and three at (0.5, 0.3, 0.2), each
 case's averaged `rhs_*` and, per root, its `fock_x` and its own `root_rhs_*`
 (one-hot weights), to 1e-9 absolute; every output's translational sum rule
 to 1e-9; for one root ⟨c|H̃^x|c⟩ + V_nn^x against the fixture's gradient to
-1e-8; and the refusals.
+1e-8; one coordinate's block J and K at a time (`max_bytes` 1) against all
+at once, every output to 1e-12 absolute; and the refusals.
 
 Measured on the gfx1200 (HIP): F^[x] ≤ 8.6e-14 and `rhs_orbital` ≤ 2.2e-13
 of max |·| ≈ 2; `rhs_ci` ≤ 4e-14 in 6-31G and 2.6e-10 in cc-pVDZ (of 0.16);
