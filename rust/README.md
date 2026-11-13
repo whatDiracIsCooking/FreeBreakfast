@@ -105,7 +105,8 @@ CMake step at all:
 ```bash
 cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
   -p fb-core-arena -p fb-core-thread-pool -p fb-core-planner \
-  -p fb-core-types -p fb-core-primitives -p fb-core-constants --no-default-features
+  -p fb-core-types -p fb-core-primitives -p fb-core-constants \
+  -p fb-atom -p fb-molecule --no-default-features
 ```
 
 `CMakeLists.txt` here is a CMake project of its own, which the root
@@ -125,7 +126,8 @@ built. Only the `runtime_api` surface of `wwr-sys` is linked.
 The GPU tests use device 0 and need room on it for a context. The host-only
 tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
-`fb-core-primitives`, `fb-core-constants`, `fb-test-support` and
+`fb-core-primitives`, `fb-core-constants`, `fb-atom`, `fb-molecule`,
+`fb-test-support` and
 `fb-doc-check` do not link the library at all: they build and pass with it
 missing. `fb-core-arena`, `fb-core-thread-pool` and `fb-core-planner` link
 it through their `device` feature, which is on by default: without it
