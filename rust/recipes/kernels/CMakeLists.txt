@@ -9,7 +9,7 @@
 # for wwr_get_last_error(), so a status is mapped by the very library the
 # crates already load. The vendor runtime is the shared one, so the launches
 # here and that query read the same per-thread error.
-add_library(fb_recipes_kernels SHARED sort/merge_sort.cu)
+add_library(fb_recipes_kernels SHARED abi.cu sort/merge_sort.cu)
 target_include_directories(
   fb_recipes_kernels PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
                              ${FB_RUST_DEVICE_HEADERS} ${FB_RUST_CAPI_GEN}
@@ -37,7 +37,9 @@ if(FREE_BREAKFAST_GPU_BACKEND STREQUAL "CUDA")
 else()
   # A HIP build enables no CUDA language: the .cu is CXX, and hip::device's
   # -x hip reaches this target's own sources only (PRIVATE, never PUBLIC).
-  set_source_files_properties(sort/merge_sort.cu PROPERTIES LANGUAGE CXX)
+  set_source_files_properties(
+    abi.cu sort/merge_sort.cu PROPERTIES LANGUAGE CXX
+  )
   target_link_libraries(fb_recipes_kernels PRIVATE hip::device)
   # A .cu imports nothing, so there is nothing to scan for modules.
   set_target_properties(

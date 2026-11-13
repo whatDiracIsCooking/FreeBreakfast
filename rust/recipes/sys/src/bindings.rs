@@ -19,6 +19,17 @@ pub const FB_LAUNCH_INVALID_ARGUMENT: fb_launch_status = -2;
 /// handed, scratch and output alike, and the one a workspace is partitioned
 /// to: the pool's allocation granularity on both vendors.
 pub const FB_DEVICE_ALIGNMENT: usize = 256;
+/// The GPU backend a kernel library was built for, as the library reports
+/// it and its -sys crate checks at load.
+pub type fb_backend = i32;
+/// Built for CUDA.
+pub const FB_BACKEND_CUDA: fb_backend = 1;
+/// Built for HIP.
+pub const FB_BACKEND_HIP: fb_backend = 2;
+/// The version of this header's ABI. Bump it with any change to a
+/// declaration here or in a header this one includes, so that fb-recipes-sys
+/// refuses a library built from another version of them.
+pub const FB_RECIPES_ABI_VERSION: u32 = 1;
 
 unsafe extern "C" {
     /// The bytes of the one scratch buffer fb_merge_sort needs for n keys, with
@@ -41,4 +52,11 @@ unsafe extern "C" {
     /// status of the first failed launch, or FB_LAUNCH_SUCCESS. Launch errors
     /// only: a fault inside a kernel surfaces at the next synchronization.
     pub fn fb_merge_sort(stream: wwr_stream, n: u32, keys: *mut f64, values: *mut u32, workspace: *mut core::ffi::c_void, workspace_bytes: usize) -> fb_launch_status;
+    /// FB_RECIPES_ABI_VERSION as this library was compiled. A plain host
+    /// function: it calls no runtime and needs no device.
+    pub fn fb_recipes_abi_version() -> u32;
+    /// The backend this library was built for, FB_BACKEND_CUDA or
+    /// FB_BACKEND_HIP. A plain host function: it calls no runtime and needs no
+    /// device.
+    pub fn fb_recipes_backend() -> fb_backend;
 }

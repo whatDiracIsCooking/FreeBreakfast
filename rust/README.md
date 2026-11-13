@@ -52,8 +52,8 @@ tree, not inputs to its build.
 | `fb_atom` | `src/atom` | `Element` (`#[repr(u8)]`, Z as the discriminant, `Sentinel` = 0), `z` / `from_z`, `symbol` / `from_symbol` (case-insensitive, `Sentinel` for none), and `Atom`, a `Double3` position in bohr and an `Element` |
 | `fb_molecule` | `src/molecule`, its host half | `Molecule` as host data (atoms, charge, multiplicity; no atoms aborts), `distance`, `nuclear_charge`, `electron_count`, and the nuclear repulsion energy, gradient and Hessian. The nuclei on the device (`view`, `NucleiView`, `molecule_footprint`) become an upload task when nuclear attraction is ported |
 | `fb_basis` | `src/basis` | `Shell` and `Primitive`, the counts (`function_count_cart` / `function_count_sphe`) and `MAX_ANGULAR_MOMENTUM` (3, the C++ `kMaxAngularMomentum`), `cartesian_powers` and `Ao`, `solid_harmonic_block`, `BasisSet` (its Cartesian and spherical AO layouts, the per-atom shell grouping, the name) and `spherical_transform_matrix`, `ShellStamp` with `primitive_normalized` and `place`, and `BasisStamp` with `place` onto a `Molecule`. Contractions are not renormalized, as in the C++ |
-| `fb_recipes_sys` | `src/recipes/sort`'s merge sort, forked to `recipes/kernels/` (with the device headers it includes, trimmed, in `device_headers/`) | The raw FFI over `libfb_recipes_kernels.so`, built by `CMakeLists.txt` here: `fb_merge_sort`, an `extern "C"` launch wrapper that only enqueues, its `fb_merge_sort_workspace_bytes` query, `fb_launch_status` and `FB_DEVICE_ALIGNMENT` (`docs/gpu_layer.md`, "Layering"). The bindings are generated from `recipes/kernels/fb_recipes.h` by `devtools/rust-bindings.py` and committed |
-| `fb_integrals_sys` | `src/integrals/mmd`'s launchers (order, records, bound, dressed bound) and `src/integrals/one_electron/overlap`'s, forked to `integrals/kernels/` with the FelizJueves units they launch (`pair_bound`, `record_bound` and the overlap's ten classes, emitted there by `tools/emit/*.py --out-root`) | The raw FFI over `libfb_integrals_kernels.so`, which links `libfb_recipes_kernels.so` for the order's sort: `fb_mmd_order` (with `fb_mmd_order_workspace_bytes`), `fb_mmd_records`, `fb_mmd_bound`, `fb_ordered_pair_bound` and `fb_overlap_class`, each an `extern "C"` launch wrapper that only enqueues and refuses a class outside its table as `FB_LAUNCH_UNSUPPORTED`; the tables' limits (`FB_*_MAX_MOMENTUM`); and the three structs that cross by pointer, `fb_primitive_pair_class_view`, `fb_primitive_pair_source` and `fb_primitive_pair_records`, `#[repr(C)]` with their layout asserted on both sides. The bindings are generated from `integrals/kernels/fb_integrals.h` and committed |
+| `fb_recipes_sys` | `src/recipes/sort`'s merge sort, forked to `recipes/kernels/` (with the device headers it includes, trimmed, in `device_headers/`) | The raw FFI over `libfb_recipes_kernels.so`, built by `CMakeLists.txt` here: `fb_merge_sort`, an `extern "C"` launch wrapper that only enqueues, its `fb_merge_sort_workspace_bytes` query, `fb_launch_status` and `FB_DEVICE_ALIGNMENT` (`docs/gpu_layer.md`, "Layering"), and `check_library()`, the load check of the library's ABI version and backend. The bindings are generated from `recipes/kernels/fb_recipes.h` by `devtools/rust-bindings.py` and committed |
+| `fb_integrals_sys` | `src/integrals/mmd`'s launchers (order, records, bound, dressed bound) and `src/integrals/one_electron/overlap`'s, forked to `integrals/kernels/` with the FelizJueves units they launch (`pair_bound`, `record_bound` and the overlap's ten classes, emitted there by `tools/emit/*.py --out-root`) | The raw FFI over `libfb_integrals_kernels.so`, which links `libfb_recipes_kernels.so` for the order's sort: `fb_mmd_order` (with `fb_mmd_order_workspace_bytes`), `fb_mmd_records`, `fb_mmd_bound`, `fb_ordered_pair_bound` and `fb_overlap_class`, each an `extern "C"` launch wrapper that only enqueues and refuses a class outside its table as `FB_LAUNCH_UNSUPPORTED`; the tables' limits (`FB_*_MAX_MOMENTUM`); and the three structs that cross by pointer, `fb_primitive_pair_class_view`, `fb_primitive_pair_source` and `fb_primitive_pair_records`, `#[repr(C)]` with their layout asserted on both sides; and `check_library()`, as in `fb_recipes_sys`. The bindings are generated from `integrals/kernels/fb_integrals.h` and committed |
 | `fb_device_check` | nothing: a check on the kernel libraries | Two tier-3 tests: no launch wrapper under `rust/` allocates, synchronizes, touches an event, copies, sets the device or opens a profiler range (a grep of every `.cu`), and every `-sys` crate's committed bindings are what the script generates now |
 | `fb_io_xyz` | `src/io/xyz` | `parse_xyz` / `read_xyz`: a standard XYZ geometry into a `Molecule`, Angstrom to bohr by `BOHR_PER_ANGSTROM`, every refusal (too short, a bad count, a malformed line, an unknown symbol, a count the lines disagree with, a file that cannot be read) an `Io` error. A field must parse as a whole token, where the C++'s `operator>>` reads a prefix |
 | `fb_io_basis` | `src/io/basis`, its orbital sets | `parse_basis` / `read_basis`: a BSE JSON document into a `BasisStamp` (sp blocks and general contractions split, spherical shells only: one Cartesian or ambiguous shell refuses the document), over [`serde_json`](https://crates.io/crates/serde_json); `is_builtin_basis` and `resolve_basis`, a name (spelling folded) or else a path, over the eleven sets of `data/basis/` compiled in with `include_str!`, only that branch naming the stamp. The fitting sets of `data/aux_basis/` are not ported yet |
@@ -345,8 +345,8 @@ whole model, in waves (each one PR; done means merged):
 | 4 | #1374 the overlap: declared with a layout, laid out in an arena, planned once and run on one stream, its arena size a golden and its stream scope timed, done |
 
 Beside them: #1382, the kernel libraries' ABI version and backend check at
-load ([`gpu_layer.md`](docs/gpu_layer.md), "What the port changes"), still
-open; #1380, the basis's angular-momentum ceiling asserted against a forked
+load ([`gpu_layer.md`](docs/gpu_layer.md), "What the port changes"),
+done; #1380, the basis's angular-momentum ceiling asserted against a forked
 device header, done; #1377, the doctor's compiler-drift scan over
 `rust/build-*`, done; and #1393, three doc leftovers after the fork, done.
 
@@ -591,3 +591,19 @@ record has an entry for each of its 7 tasks, a stream scope on each of the
 4 stream tasks'. The `--no-default-features` tier 3 passes its previous
 counts. Clippy (`-D warnings`, both feature sets), rustdoc (`-D warnings`)
 and `cargo fmt --check` are clean. Not run on the gfx1200.
+
+2026-11-13, the kernel libraries' load check (`fb_<module>_abi_version()`
+and `fb_<module>_backend()` in each library's `kernels/abi.cu`,
+`check_library()` in each `-sys` crate), on the gfx1200 (HIP), holding the
+card, linking the libraries the `hip` preset built: in a debug build the
+whole workspace passes with `--include-ignored`, `fb-recipes-sys` and
+`fb-integrals-sys` 3 new unit tests each (equal values pass; another version
+or another backend is refused naming both values, an unknown tag by its
+number) and 1 new test each in `merge_sort` (now 5) and `overlap` (now 5),
+the check against the library built for this card, and every other count
+unchanged. With the bindings' version bumped and the library not rebuilt,
+the check fails naming versions 1 and 2. The `--no-default-features` tier
+3 passes its previous counts. Clippy (`-D warnings`, both feature sets),
+rustdoc (`-D warnings`) and `cargo fmt --check` are clean. The `cuda`
+preset builds both libraries and `devtools/cross-backend-check.sh
+--device-only` (CUDA) passes; neither was run on the RTX 3080.

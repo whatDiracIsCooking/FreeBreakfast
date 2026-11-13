@@ -1,7 +1,8 @@
-/* The launch status and the device alignment every launch wrapper under rust/
- * shares (rust/docs/gpu_layer.md, "Statuses" and "Scratch: the workspace
- * query"). Plain C: devtools/rust_bindings.py reads it, through each module's
- * header, into that module's -sys bindings. */
+/* The launch status, the device alignment and the backend tag every kernel
+ * library under rust/ shares (rust/docs/gpu_layer.md, "Statuses", "Scratch:
+ * the workspace query" and "What the port changes"). Plain C:
+ * devtools/rust_bindings.py reads it, through each module's header, into
+ * that module's -sys bindings. */
 #pragma once
 
 #include <stddef.h>
@@ -24,3 +25,12 @@ typedef int32_t fb_launch_status;
 /// handed, scratch and output alike, and the one a workspace is partitioned
 /// to: the pool's allocation granularity on both vendors.
 #define FB_DEVICE_ALIGNMENT ((size_t)256)
+
+/// The GPU backend a kernel library was built for, as the library reports
+/// it and its -sys crate checks at load.
+typedef int32_t fb_backend;
+
+/// Built for CUDA.
+#define FB_BACKEND_CUDA ((fb_backend)1)
+/// Built for HIP.
+#define FB_BACKEND_HIP ((fb_backend)2)

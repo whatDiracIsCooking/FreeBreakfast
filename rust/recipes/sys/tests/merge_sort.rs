@@ -214,3 +214,11 @@ fn refuses_null_keys_and_a_short_workspace() {
         );
     }
 }
+
+/// The library this binary loaded is the one the bindings describe: the
+/// header's ABI version, built for the backend of the CMake build linked.
+/// Host functions alone, so it needs no device.
+#[test]
+fn the_library_passes_the_load_check() {
+    fb_recipes_sys::check_library().unwrap();
+}

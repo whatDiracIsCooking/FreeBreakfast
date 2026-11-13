@@ -19,6 +19,13 @@ pub const FB_LAUNCH_INVALID_ARGUMENT: fb_launch_status = -2;
 /// handed, scratch and output alike, and the one a workspace is partitioned
 /// to: the pool's allocation granularity on both vendors.
 pub const FB_DEVICE_ALIGNMENT: usize = 256;
+/// The GPU backend a kernel library was built for, as the library reports
+/// it and its -sys crate checks at load.
+pub type fb_backend = i32;
+/// Built for CUDA.
+pub const FB_BACKEND_CUDA: fb_backend = 1;
+/// Built for HIP.
+pub const FB_BACKEND_HIP: fb_backend = 2;
 /// One primitive-pair class on the device: the record arrays of a class, by
 /// pointer. The struct itself is host memory, handed to a wrapper by address;
 /// every array it points at is device memory with n_rec entries, and a vector
@@ -172,6 +179,10 @@ pub struct fb_primitive_pair_records {
 /// the overlap table tools/emit/one_electron_kernels.py writes, which
 /// overlap_launch.cu static_asserts against it.
 pub const FB_OVERLAP_MAX_MOMENTUM: i32 = 3;
+/// The version of this header's ABI. Bump it with any change to a
+/// declaration here or in a header this one includes, so that fb-integrals-sys
+/// refuses a library built from another version of them.
+pub const FB_INTEGRALS_ABI_VERSION: u32 = 1;
 
 unsafe extern "C" {
     /// The bytes of the one scratch buffer fb_mmd_order needs for n_rec records:
@@ -250,4 +261,11 @@ unsafe extern "C" {
     /// nothing; otherwise the launch status. Launch errors only: the kernel's own
     /// faults surface at the next synchronization.
     pub fn fb_overlap_class(stream: wwr_stream, cls: *const fb_primitive_pair_class_view, n_ao: i32, s: *mut f64) -> fb_launch_status;
+    /// FB_INTEGRALS_ABI_VERSION as this library was compiled. A plain host
+    /// function: it calls no runtime and needs no device.
+    pub fn fb_integrals_abi_version() -> u32;
+    /// The backend this library was built for, FB_BACKEND_CUDA or
+    /// FB_BACKEND_HIP. A plain host function: it calls no runtime and needs no
+    /// device.
+    pub fn fb_integrals_backend() -> fb_backend;
 }

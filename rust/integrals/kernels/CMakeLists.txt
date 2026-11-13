@@ -22,7 +22,7 @@ file(GLOB _fb_integrals_units CONFIGURE_DEPENDS
      ${CMAKE_CURRENT_SOURCE_DIR}/mmd/kernels/record_bound/*.cu
      ${CMAKE_CURRENT_SOURCE_DIR}/one_electron/overlap/kernels/*.cu
 )
-set(_fb_integrals_sources mmd/mmd_launch.cu
+set(_fb_integrals_sources abi.cu mmd/mmd_launch.cu
                           one_electron/overlap/overlap_launch.cu
                           ${_fb_integrals_units}
 )
