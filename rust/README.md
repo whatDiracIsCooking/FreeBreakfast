@@ -88,9 +88,9 @@ broken promise; a contract would turn it into a panic.
 ## Build and test
 
 ```bash
-cmake --preset experimental            # or hip-experimental
-cmake --build build-experimental --target wwr.capi.runtime_api
 cd rust
+cmake --preset cuda                    # or hip; the backend has no default
+cmake --build --preset cuda            # libwwr_capi_runtime_api.so, nothing more
 cargo test --workspace                 # debug: the contract tests run too
 cargo test --workspace --release       # the contract tests are skipped
 cargo test -p fb-core-arena            # one crate, with only its own features
@@ -101,19 +101,28 @@ CMake step at all:
 
 ```bash
 cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
-  -p fb-core-arena -p fb-core-thread-pool -p fb-core-planner --no-default-features
+  -p fb-core-arena -p fb-core-thread-pool -p fb-core-planner \
+  -p fb-core-types -p fb-core-primitives -p fb-core-constants --no-default-features
 ```
 
-`capi_dir.rs`, which each linking crate's `build.rs` includes, finds
-`libwwr_capi_runtime_api.so` under
-`build-experimental/deps/WarpWraps/src/capi`. Set `FB_RUST_BUILD_DIR` to use
-another CMake build directory, for example
-`FB_RUST_BUILD_DIR=../build-hip-experimental`. Only the `runtime_api`
-surface of `wwr-sys` is linked.
+`CMakeLists.txt` here is a CMake project of its own, which the root
+`CMakeLists.txt` does not add: it configures `deps/WarpWraps` alone (its
+tests, examples and install rules off) and builds `wwr.capi.runtime_api`,
+so building what the crates link configures nothing of the C++ tree. Its
+presets are `cuda` and `hip`, into `build-cuda/` and `build-hip/` here,
+with the root's sm_80 floor checked; later, it is where the kernel shared
+objects are built. `capi_dir.rs`, which each linking crate's `build.rs`
+includes, finds `libwwr_capi_runtime_api.so` under
+`<build>/deps/WarpWraps/src/capi`, where `<build>` is whichever of the two
+holds it. With both built it refuses to choose: set `FB_RUST_BUILD_DIR` to
+one, which also takes any other CMake build directory, the root's
+`build-experimental` among them. `devtools/doctor.sh` reports which are
+built. Only the `runtime_api` surface of `wwr-sys` is linked.
 
 The GPU tests use device 0 and need room on it for a context. The host-only
 tests (the fake handle kind, error codes and contracts) need no GPU, and
-`fb-core-log`, `fb-core-error-handling`, `fb-test-support` and
+`fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
+`fb-core-primitives`, `fb-core-constants`, `fb-test-support` and
 `fb-doc-check` do not link the library at all: they build and pass with it
 missing. `fb-core-arena`, `fb-core-thread-pool` and `fb-core-planner` link
 it through their `device` feature, which is on by default: without it
@@ -200,9 +209,10 @@ in the gates. The first steps, in order, each one PR:
    forty. Done: nine crates, no umbrella. Done after it: `arena`,
    `thread_pool` and `planner` build without the wwr library too, behind a
    default-on `device` feature whose only seam is the arena's raw calls and
-   the thread pool's `Device` backend ("Build and test"). Which CMake preset
-   step 3 builds `wwr.capi.runtime_api` from is still open: the push gate's
-   preset does not configure `experimental/`, but tier 3 no longer needs it.
+   the thread pool's `Device` backend ("Build and test"). Done after it:
+   step 3 builds `wwr.capi.runtime_api` from this directory's own CMake
+   project ("Build and test"), whose `cuda` and `hip` presets configure
+   neither the C++ tree nor `experimental/`.
 3. **The cargo half of the gates**, tiers 1 to 3 for a diff under the crate
    ([`testing.md`](docs/testing.md), "What runs when").
 4. **One task through the whole model**, before any module is ported: the
@@ -315,3 +325,20 @@ doctests; `cargo tree` for the three shows no wwr crate, nor any dependency.
 `constants.h` itself. Clippy (`-D warnings`) is clean in both feature sets;
 rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not run on the
 RTX 3080; the three crates touch no device.
+
+2026-11-13, `rust/`'s own CMake project (`CMakeLists.txt`, the `cuda` and
+`hip` presets) and `capi_dir.rs` defaulting to its build directories, on
+the RTX 3080 (CUDA) only, holding the card: in a checkout with no
+`build-experimental/`, `cmake --preset cuda` and `cmake --build --preset
+cuda` built `libwwr_capi_runtime_api.so` alone (15 steps), and `cargo test
+--workspace` with no `FB_RUST_BUILD_DIR` linked it from `build-cuda/` and
+passed the previous entry's debug counts, unchanged: 65 unit tests (the
+three newest crates 2 each), the 4 arena-block tests, the planner device
+test, the 5 log tests, the pool-allocation test, the thread-count test,
+the 8 section-citation tests and 4 doctests (1 more `ignore`d). The `hip`
+preset configures and builds too (compile only, not run on the gfx1200);
+with both built, `capi_dir.rs` refuses to choose, and
+`FB_RUST_BUILD_DIR=build-hip` links that one. The `--no-default-features`
+tier 3, the three newest crates included, passes the previous entry's
+counts. The root's ctest listing is unchanged. Clippy (`-D warnings`, both
+feature sets), rustdoc (`-D warnings`) and `cargo fmt --check` are clean.

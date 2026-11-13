@@ -743,6 +743,33 @@ else
   done <<< "$stale"
 fi
 
+# --- rust -------------------------------------------------------------------
+# The library the rust/ crates' device tests link, built by rust/'s own CMake
+# project (rust/README.md, "Build and test") and found by rust/capi_dir.rs. Its
+# absence is a note, not a warning: no gate runs cargo, so nothing the gates
+# check is degraded by it.
+echo "rust"
+capi_lib=deps/WarpWraps/src/capi/libwwr_capi_runtime_api.so
+capi_dirs=()
+if [ -n "${FB_RUST_BUILD_DIR:-}" ]; then
+  capi_dirs=("$FB_RUST_BUILD_DIR")
+else
+  capi_dirs=("$TOP/rust/build-cuda" "$TOP/rust/build-hip")
+fi
+capi_built=0
+for dir in "${capi_dirs[@]}"; do
+  if [ -e "$dir/$capi_lib" ]; then
+    capi_built=$((capi_built + 1))
+    ok "libwwr_capi_runtime_api.so built in ${dir#"$TOP"/}"
+  fi
+done
+if [ "$capi_built" -eq 0 ]; then
+  note "libwwr_capi_runtime_api.so built in none of: ${capi_dirs[*]#"$TOP"/}"
+  note "the crates' device tests need it: from rust/, cmake --preset cuda && cmake --build --preset cuda (or hip)"
+elif [ "$capi_built" -eq 2 ]; then
+  note "both backends built: cargo needs FB_RUST_BUILD_DIR to pick one"
+fi
+
 # --- docker hygiene (report-only) -----------------------------------------
 # Worktree containers/volumes/images leak when a worktree is removed with plain
 # `git worktree remove` (bypassing worktree.sh rm), or via an agent's worktrees
