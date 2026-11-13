@@ -20,7 +20,7 @@
 //!
 //! | C++ (`free_breakfast`) | Here |
 //! |---|---|
-//! | `angular_momentum.h`: `kMaxAngularMomentum` | [`MAX_ANGULAR_MOMENTUM`], the same value, 3 |
+//! | `angular_momentum.h`: `kMaxAngularMomentum` | [`MAX_ANGULAR_MOMENTUM`], the same value, 3, tested equal to its fork in `rust/device_headers/` |
 //! | `basis.h`: `function_count_cart`, `function_count_sphe` | [`function_count_cart`], [`function_count_sphe`], `const fn` |
 //! | `basis.h`: `Primitive` | [`Primitive`] |
 //! | `:shell`: `Shell(l, primitives, center)` | [`Shell::new`], aborting on the same inputs |
