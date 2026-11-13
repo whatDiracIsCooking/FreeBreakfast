@@ -32,6 +32,7 @@ import free_breakfast.ci.strings;
 import free_breakfast.response.orbital_pairs; // unpack_orbital_pairs
 import free_breakfast.mcscf.solve;
 import free_breakfast.response.zvector;
+import free_breakfast.nevpt2.energy;   // PcMatrixStore
 import free_breakfast.nevpt2.gradient; // pc_adjoint, zc_multipliers, zc_adjoint,
                                        // lagrangian_gradient, pc_hessian_product
 import :state_specific;                // state_specific_electrons
@@ -594,14 +595,22 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
   {
     Buffers::device<double> paired(k * k, res.device());
     // As many directions at once as the memory budget holds the product of,
-    // at the classes' kept ranks (syevd's lwork is the workspace's alone).
+    // at the classes' kept ranks (syevd's lwork is the workspace's alone),
+    // beside the chunks' shared PC matrices.
     const std::array<std::array<int64_t, 8>, 1> ranks{dropped};
+    const size_t store = nevpt2::pc_matrix_store_bytes(ncore, ncas, nmo32 - ncore - ncas);
     const size_t chunk = FBF_TRY(widest_fitting(res, kWho, k, [&](const size_t count) {
       const MemoryFootprint f = nevpt2::pc_hessian_product_footprint(
           naux32, nmo32, nmo32, ncore, ncas, nalpha, nbeta, batch, {}, static_cast<int32_t>(count),
           false, ranks);
-      return f.device.persistent + f.device.scratch;
+      return f.device.persistent + f.device.scratch + store;
     }));
+    // Every chunk's walks solve over one set of PC matrices (#1318): a
+    // rebuild per chunk carries its own atomic round-off, which the solves
+    // amplify by 1 / kept, so each chunk's products would be of a slightly
+    // different function. The degenerate pairs' products below are at
+    // turned orbitals, another point, and take no store.
+    nevpt2::PcMatrixStore matrices;
     for (size_t j0 = 0; j0 < k; j0 += chunk) {
       const size_t count = std::min(chunk, k - j0);
       const nevpt2::PcHessianProduct p = FBF_TRY(
@@ -611,7 +620,7 @@ df_pc_nevpt2(DeviceResources &res, const Molecule &molecule, const BasisSet &bas
                                       .h = t_h.data() + (j0 * nn),
                                       .b = t_b.data() + (j0 * naux * nn),
                                       .c = t_c.data() + (j0 * ndet)},
-                                     false, pc_floor));
+                                     false, pc_floor, true, &matrices));
       for (size_t u = 0; u < count; ++u) {
         FBF_TRY(pair_with(p.products[u].h_bar.data(), p.products[u].lambda.data(),
                           p.products[u].y.data(), paired.data() + ((j0 + u) * k)));
@@ -890,8 +899,11 @@ MemoryFootprint df_pc_nevpt2_footprint(const BasisSet &basis, const BasisSet &au
   return nevpt2_hessian_footprint(
       basis, aux, ncore, ncas, nalpha, nbeta, k, syevd_lwork, gradient,
       [&](const int32_t count, const int32_t /*partners*/) {
-        return nevpt2::pc_hessian_product_footprint(naux, nmo, nmo, ncore, ncas, nalpha, nbeta,
-                                                    batch, syevd_lwork, count, false, dropped);
+        // The chunks' shared PC matrices beside each product.
+        MemoryFootprint f = nevpt2::pc_hessian_product_footprint(
+            naux, nmo, nmo, ncore, ncas, nalpha, nbeta, batch, syevd_lwork, count, false, dropped);
+        f.device.scratch += nevpt2::pc_matrix_store_bytes(ncore, ncas, nmo - ncore - ncas);
+        return f;
       },
       false, false, true);
 }

@@ -2012,7 +2012,8 @@ E_cas's terms, and E_corr + Φ's (h̄, Λ) (naux nmo²). The HVP's directions
 are chunked as widely as the memory budget (`res.memory_budget()` less the
 pool's 64 MiB) holds the product of, by its own footprint
 (`nevpt2::sc_hessian_product_footprint`; PC's
-`pc_hessian_product_footprint` at the classes' kept ranks); one direction
+`pc_hessian_product_footprint` at the classes' kept ranks, beside the
+chunks' shared PC matrices, `nevpt2::pc_matrix_store_bytes`); one direction
 past it is Unsupported. A pair takes two more directions and their
 partners' copies. The rotation step adds B_MO and one naux nmo² scratch,
 and four k nmo² stacks. naux nmo² past `int32_t` is Unsupported.
@@ -2407,6 +2408,45 @@ lets that eigenvalue down to 1.5e-10 there: the asymmetry is 3.4e-8,
 1.1e-9 and 1.8e-10 at `pc_floor` 1e-10, 1e-8 and 1e-7. Tightening the CP
 and Z-vector solves 100-fold changes nothing, nor does taking every pair
 under 3e-3 Eh. That floor is #1318's.
+
+### The product's floor at the cut (#1318)
+
+#1318 found where the 1 / kept came from, and it was not the arithmetic of
+any one walk. The builders accumulate with atomics, so two builds of a PC
+class's S and K at the same inputs differ by their round-off, and a solve
+amplifies a difference in S or K by 1 / kept. The product built them
+afresh in every walk: its fixed walks rebuilt the matrices the base walk's
+U, V and σ came from, and each chunk of coordinates (`pc_hessian_product`
+call) rebuilt everything. Both are now one set (`nevpt2.energy`'s README,
+"The PC Hessian-vector product", "One set of matrices"):
+
+- **Within a call**, every walk at the base inputs reads the base walk's
+  matrices.
+- **Across the chunks**, the Hessian hands every chunk one
+  `nevpt2::PcMatrixStore`, which the first walk fills and every later one
+  reads, the line's shifted builds offset onto it.
+
+At pc_plus (RTX 3080, both CUDA locks, the step's `pc_floor` 1e-10; the
+48 coordinates in 6 chunks of 8), the HVP part's asymmetry between two
+coordinates in one chunk is at rounding throughout; between chunks:
+
+| build | asymmetry | HVP part, within a chunk | HVP part, across chunks | translational sum |
+|---|---:|---:|---:|---:|
+| main | 3.6e-8 (earlier runs 3.0e-8, 2.9e-8) | | | 1.9e-8 |
+| within a call only | 6.3e-9, 1.6e-8 | 2.6e-11 | 1.6e-8 | 3.9e-9, 8.3e-9 |
+| and a store | 4.3e-9 | 2.4e-11 | 4.3e-9 | 2.6e-9 |
+| and the line's offsets (this tree) | 1.8e-9, 2.3e-9 | 3.3e-11 | 1.8e-9 | 7.9e-10, 1.1e-9 |
+
+Every one of them is within 0.30 bars of the numerical ladder
+(`plus_hessian`), none past 1 bar. Pinning the inputs too (the first call's
+RDMs and integrals in the store) gave 3.0e-9, within the scatter, and is
+not kept. What remains, about 1.4e-10 rms and 2e-9 at most, lies between
+chunks alone: each call still builds the rest of the point (the builders'
+adjoint, Φ, the slabs) with atomics of its own. On the small analogue,
+`Nevpt2PcEnergyHvp.SymmetricAtTheCut` (PSB3's twist, kept 1.1e-10), the
+asymmetry still goes as 1 / kept, but at about 1e-3 to 2e-3 ε / kept of
+the largest summand, in one call or split over one store, where the
+rebuild gave 0.05 to 0.1: 20 to 80 times less, as at pc_plus.
 
 ### Where a pair is taken (#1296)
 

@@ -249,13 +249,65 @@ std::unexpected<Error> state_error(const Error &e, const int64_t j, const int64_
       e.kind, std::format("nevpt2::pc_effective_hamiltonian: state {}: {}", j, what), e.origin});
 }
 
+// @p x, into a buffer of its own.
+Result<Buffers::device<double>> copied(DeviceResources &res, const Buffers::device<double> &x) {
+  Buffers::device<double> out(x.num_elements(), res.device());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.data(), x.data(), sizeof(double) * x.num_elements(),
+                                         wwr::wwrMemcpyDeviceToDevice, res.stream())));
+  return out;
+}
+
+// Class @p name's matrices over entry @p p of @p ops (@p ns states): the
+// entry's PcMatrixStore's when it holds them, else built, and a copy kept
+// there.
+Result<PcMatrices> stored_matrices(DeviceResources &res, const char *name,
+                                   std::span<const ActiveOperands> ops, const int64_t ns,
+                                   const size_t p, const bool own, const PcBuild &build) {
+  PcMatrixStore *const store = ops[p].pc_matrices;
+  const auto copy = [&](const PcMatrices &x) -> Result<PcMatrices> {
+    PcMatrices out{.s = FBF_TRY(copied(res, x.s)), .k = std::nullopt, .s1 = std::nullopt};
+    if (x.k) {
+      out.k = FBF_TRY(copied(res, *x.k));
+    }
+    if (x.s1) {
+      out.s1 = FBF_TRY(copied(res, *x.s1));
+    }
+    return out;
+  };
+  if (store == nullptr) {
+    return build(res, ops[p], own);
+  }
+  if (!store->data) {
+    store->data = std::make_shared<PcMatrixStoreData>();
+  }
+  const auto key = std::tuple{std::string{name}, ns, p};
+  if (const auto at = store->data->matrices.find(key); at != store->data->matrices.end()) {
+    return copy(at->second);
+  }
+  PcMatrices got = FBF_TRY(build(res, ops[p], own));
+  store->data->matrices.emplace(key, FBF_TRY(copy(got)));
+  return got;
+}
+
 // Every state's solve, from its own matrices, or with the diagonal omitted
 // each ket's U_J from @p cached; then every given transition's T and t1 over
-// pair (J, I)'s, each pair's matrices freed before the next is built.
+// pair (J, I)'s, each pair's matrices freed before the next is built, or
+// kept in @p matrices.
 Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const ActiveOperands> ops,
                        const int64_t ns, const int64_t d, const int64_t n1, const PcBuild &build,
-                       const PcAmplitudes::Class *cached, const bool keep_modes) {
+                       const PcAmplitudes::Class *cached, const bool keep_modes,
+                       std::vector<std::optional<PcMatrices>> *matrices) {
   const auto di = static_cast<int32_t>(d);
+  if (matrices != nullptr) {
+    matrices->clear();
+    matrices->resize(static_cast<size_t>(ns * ns));
+  }
+  // Pair @p p's matrices, freed with the caller's scope or kept.
+  const auto keep = [&](const size_t p, PcMatrices &&mats) {
+    if (matrices != nullptr) {
+      (*matrices)[p] = std::move(mats);
+    }
+  };
   PcKets kets{.ns = ns};
   for (int64_t p = 0; p < ns * ns; ++p) {
     kets.given.push_back(pair_given(ops, p));
@@ -271,10 +323,13 @@ Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const A
   }
   for (int64_t j = 0; j < ns && own; ++j) {
     Result<ClassSolve> cs = [&]() -> Result<ClassSolve> {
-      const PcMatrices mats = FBF_TRY(build(res, ops[static_cast<size_t>((j * ns) + j)], true));
-      return solve_class(res, name, mats.s.data(), mats.k->data(), d,
-                         mats.s1 ? mats.s1->data() : nullptr, n1, keep_modes,
-                         ops[static_cast<size_t>((j * ns) + j)].pc_floor);
+      const auto jj = static_cast<size_t>((j * ns) + j);
+      PcMatrices mats = FBF_TRY(stored_matrices(res, name, ops, ns, jj, true, build));
+      ClassSolve solved = FBF_TRY(solve_class(res, name, mats.s.data(), mats.k->data(), d,
+                                              mats.s1 ? mats.s1->data() : nullptr, n1, keep_modes,
+                                              ops[jj].pc_floor));
+      keep(jj, std::move(mats));
+      return solved;
     }();
     if (!cs) {
       return state_error(cs.error(), j, ns);
@@ -293,7 +348,8 @@ Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const A
       if (i == j || !kets.given[static_cast<size_t>((i * ns) + j)]) {
         continue;
       }
-      const PcMatrices mats = FBF_TRY(build(res, ops[static_cast<size_t>((j * ns) + i)], false));
+      PcMatrices mats = FBF_TRY(
+          stored_matrices(res, name, ops, ns, static_cast<size_t>((j * ns) + i), false, build));
       const double *const u = own ? kets.solves[static_cast<size_t>(j)].u.data()
                                   : cached->u[static_cast<size_t>(j)].data();
       const int64_t m = kets.m(j);
@@ -323,6 +379,7 @@ Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const A
               FBF_TRY(leak_of(res, modes->v.data(), mats.s1->data(), d, nd, n1));
         }
       }
+      keep(static_cast<size_t>((j * ns) + i), std::move(mats));
     }
   }
   return kets;

@@ -632,19 +632,19 @@ Result<ScHessianProduct> sc_hessian_product(DeviceResources &res, const ci::Devi
   return out;
 }
 
-Result<PcHessianProduct> pc_hessian_product(DeviceResources &res, const ci::DeviceStringSet &alpha,
-                                            const ci::DeviceStringSet &beta, const int32_t naux,
-                                            const int32_t nao, const int32_t nmo, const double *b,
-                                            const double *c, const double *h, const int32_t ncore,
-                                            const int32_t ncas, const double *vector,
-                                            const double *z, const int32_t batch,
-                                            const MoDirections &directions, const bool parts,
-                                            const double pc_floor, const bool span) {
+Result<PcHessianProduct>
+pc_hessian_product(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                   const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
+                   const int32_t nmo, const double *b, const double *c, const double *h,
+                   const int32_t ncore, const int32_t ncas, const double *vector, const double *z,
+                   const int32_t batch, const MoDirections &directions, const bool parts,
+                   const double pc_floor, const bool span, PcMatrixStore *const matrices) {
   constexpr std::string_view kWho = "nevpt2::pc_hessian_product";
   PcHessianProduct out;
   const auto floored = [&](const EnergyInputs &in) {
     EnergyInputs x = in;
     x.pc_floor = pc_floor;
+    x.pc_matrices = matrices;
     return x;
   };
   const ProductWalk walk{

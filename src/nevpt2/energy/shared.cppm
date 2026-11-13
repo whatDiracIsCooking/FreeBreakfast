@@ -35,6 +35,8 @@ struct ActiveOperands {
   std::vector<double> e_core, e_virt;
   /// @brief EnergyInputs::pc_floor, which a ket's solve reads.
   double pc_floor = 0.0;
+  /// @brief EnergyInputs::pc_matrices, which pc_kets reads and fills.
+  PcMatrixStore *pc_matrices = nullptr;
   /// @brief The active electrons, tr dm1 rounded: a state's own count, 0 for
   /// a transition's and for an omitted entry. single_function_class reads it.
   int64_t nelecas = 0;
@@ -364,6 +366,12 @@ struct PcMatrices {
 /// class, pc.cpp's pc_*_matrices, which the walk and its reverse pass share.
 using PcBuild = Result<PcMatrices> (*)(DeviceResources &, const ActiveOperands &, bool own);
 
+/// @brief A PcMatrixStore's matrices, by class, state count and pair index
+/// (pc_kets').
+struct PcMatrixStoreData {
+  std::map<std::tuple<std::string, int64_t, size_t>, PcMatrices> matrices;
+};
+
 Result<PcMatrices> pc_sr_matrices(DeviceResources &res, const ActiveOperands &o, bool own);
 Result<PcMatrices> pc_si_matrices(DeviceResources &res, const ActiveOperands &o, bool own);
 Result<PcMatrices> pc_sijr_matrices(DeviceResources &res, const ActiveOperands &o, bool own);
@@ -418,10 +426,13 @@ struct PcKets {
 /// previous call's amplitudes; InvalidConfig when they are not ns states');
 /// then every given transition's T and t1 over pair (J, I)'s, each pair's
 /// matrices freed before the next is built (with @p keep_modes, its leak too,
-/// and every solve's modes). A refusal is state_error's.
+/// and every solve's modes), or with @p matrices kept there instead, at
+/// [J ns + I] as @p ops index them (the own at [J ns + J]; an omitted pair's
+/// empty). A refusal is state_error's.
 Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const ActiveOperands> ops,
                        int64_t ns, int64_t d, int64_t n1, const PcBuild &build,
-                       const PcAmplitudes::Class *cached = nullptr, bool keep_modes = false);
+                       const PcAmplitudes::Class *cached = nullptr, bool keep_modes = false,
+                       std::vector<std::optional<PcMatrices>> *matrices = nullptr);
 
 /// @brief A failure of state @p j's class: at @p ns > 1 named by its state,
 /// pc_class_energies' prefix replaced by pc_effective_hamiltonian's; at ns = 1

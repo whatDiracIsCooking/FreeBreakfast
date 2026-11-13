@@ -3564,12 +3564,15 @@ std::optional<HostBars> pc_bars_at(fb::DeviceResources &res, const HostCase &h,
   return download_bars(res, b);
 }
 
-// pc_class_energies_hvp over @p h at @p floor along @p dx, every bar wanted.
+// pc_class_energies_hvp over @p h at @p floor along @p dx, every bar wanted,
+// over @p matrices when given.
 fb::Result<std::pair<nevpt2::PcClassEnergiesHvp, std::vector<HostBars>>>
 run_pc_hvp(fb::DeviceResources &res, const HostCase &h, const std::vector<HostCase> &dx,
-           const double floor, const bool span = true) {
+           const double floor, const bool span = true,
+           nevpt2::PcMatrixStore *const matrices = nullptr) {
   DeviceCase g = upload_case(res, h);
   g.in.pc_floor = floor;
+  g.in.pc_matrices = matrices;
   std::vector<DeviceCase> gd;
   gd.reserve(dx.size());
   std::vector<nevpt2::EnergyDirection> directions;
@@ -3798,6 +3801,69 @@ TEST(Nevpt2PcEnergyHvp, RefusesAnIllConditionedSolve) {
     }
   }
   std::cout << std::format("[ nevpt2   ] PC hvp refused: {}\n", refused.error().message);
+}
+
+// The product is symmetric at the cut (#1318): along two seeded random
+// directions of every input, <d1, H d2> against <d2, H d1> at PSB3's twist,
+// whose Sr and Si keep modes at the cut; both in one call, and each in a call
+// of its own over one PcMatrixStore, as the PC Hessian splits its
+// directions. Each walk at the base inputs reads one set of class matrices;
+// were they rebuilt, their atomic round-off would differ from the one U, V
+// and σ came from, and the solve amplifies that difference by 1 / kept. The
+// asymmetry, over the largest of the two sums' summands, is then about
+// 0.05 to 0.1 ε / kept (RTX 3080, measured in one process against the
+// rebuild: 9e-8 to 2.2e-7 at pc_floor 1e-10, kept 1.1e-10, and 6.6e-9 to
+// 1.8e-8 at 3e-10), and as much again between calls without a store. Over
+// one set it is about 1.3e-3 to 2.6e-3 ε / kept (2.6e-9 to 2.8e-9 and
+// 1.6e-9 to 1.7e-9). The bar, kPcHvpSymmetry ε / kept, lies between.
+constexpr double kPcHvpSymmetry = 1e-2;
+
+TEST(Nevpt2PcEnergyHvp, SymmetricAtTheCut) {
+  FBF_REQUIRE_GPU();
+  // A CASSCF and four products, beside BarsMatchRichardsonLadder.
+  FBF_SKIP_IF_FAST_TESTS();
+  const HostCase &h = psb3_twist();
+  ASSERT_GT(h.na, 0U);
+  fb::DeviceResources res(0, fb::test::kWorkspaces);
+  const std::vector<HostCase> dx{random_direction(h, "all", 13181),
+                                 random_direction(h, "all", 13182)};
+  for (const double floor : {1e-10, 3e-10}) {
+    for (const bool split : {false, true}) {
+      // Both directions' bars, and the products' smallest kept eigenvalue.
+      std::vector<HostBars> bars;
+      double kept = 1.0;
+      nevpt2::PcMatrixStore matrices;
+      for (std::size_t u = 0; u < (split ? dx.size() : 1); ++u) {
+        const std::vector<HostCase> along =
+            split ? std::vector<HostCase>{dx[u]} : std::vector<HostCase>{dx};
+        const auto got = run_pc_hvp(res, h, along, floor, true, split ? &matrices : nullptr);
+        ASSERT_TRUE(got) << got.error().message;
+        bars.insert(bars.end(), got->second.begin(), got->second.end());
+        for (std::size_t k = 0; k < 8; ++k) {
+          // Sijrs has no solve, and a class with none reads 0.
+          if (k != 2 && got->first.energies.kept[k] > 0.0) {
+            kept = std::min(kept, got->first.energies.kept[k]);
+          }
+        }
+      }
+      const std::vector<double> a = bars_summands(bars[1], h, dx[0]);
+      const std::vector<double> b = bars_summands(bars[0], h, dx[1]);
+      double scale = 0.0;
+      for (std::size_t e = 0; e < a.size(); ++e) {
+        scale = std::max({scale, std::abs(a[e]), std::abs(b[e])});
+      }
+      const double asymmetry = std::abs(std::accumulate(a.begin(), a.end(), 0.0) -
+                                        std::accumulate(b.begin(), b.end(), 0.0)) /
+                               scale;
+      const double bar = kPcHvpSymmetry * std::numeric_limits<double>::epsilon() / kept;
+      EXPECT_LE(asymmetry, bar) << "pc_floor " << floor << (split ? ", split" : "");
+      std::cout << std::format("[ nevpt2   ] PC hvp symmetry at pc_floor {:.0e}{}: kept {:.3e}, "
+                               "asymmetry {:.2e} of the largest summand {:.2e} (bar {:.2e}, "
+                               "{:.1e} eps / kept)\n",
+                               floor, split ? ", split over one store" : "", kept, asymmetry, scale,
+                               bar, asymmetry * kept / std::numeric_limits<double>::epsilon());
+    }
+  }
 }
 
 } // namespace
