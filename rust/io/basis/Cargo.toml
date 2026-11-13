@@ -1,0 +1,19 @@
+[package]
+name = "fb-io-basis"
+description = "io/basis: the BSE JSON reader, and the compiled-in sets of data/basis/ by name"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-basis.workspace = true
+fb-core-error-handling.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+fb-atom.workspace = true
+fb-core-types.workspace = true
+fb-molecule.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "fb-io-xyz"
+description = "io/xyz: an XYZ geometry, in Angstrom, read into a Molecule in bohr"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-atom.workspace = true
+fb-core-constants.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-types.workspace = true
+fb-molecule.workspace = true
