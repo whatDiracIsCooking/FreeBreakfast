@@ -90,6 +90,10 @@ pub struct Error {
     /// Where the error was first constructed. Propagation moves it through
     /// unchanged, so this stays the detection site.
     pub origin: &'static Location<'static>,
+    /// What the error crossed on its way out, innermost first: the
+    /// orchestrator pushes `task@worker` when an error leaves a task
+    /// ([`crate::core::thread_pool`]). Empty at the detection site.
+    pub context: Vec<String>,
 }
 
 impl Error {
@@ -99,7 +103,16 @@ impl Error {
             kind,
             message: message.into(),
             origin: Location::caller(),
+            context: Vec::new(),
         }
+    }
+
+    /// Push `context` onto [`Error::context`], outermost so far, and return
+    /// the error: `result.map_err(|e| e.with_context("j@stream0"))`.
+    #[must_use]
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.context.push(context.into());
+        self
     }
 
     /// An [`ErrorKind::Allocation`] error, located at the caller.
@@ -146,11 +159,15 @@ impl Error {
     }
 }
 
-/// The message alone, as the C++ logs it; the origin is the log line's
-/// location.
+/// The message, then each [`Error::context`] entry in brackets, innermost
+/// first. The origin is not printed: it is the log line's location.
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
+        f.write_str(&self.message)?;
+        for context in &self.context {
+            write!(f, " [{context}]")?;
+        }
+        Ok(())
     }
 }
 
@@ -173,11 +190,7 @@ pub fn check_or_abort<T>(result: Result<T>) -> T {
     match result {
         Ok(value) => value,
         Err(error) => {
-            log::log_at(
-                LogLevel::Critical,
-                error.origin,
-                format_args!("{}", error.message),
-            );
+            log::log_at(LogLevel::Critical, error.origin, format_args!("{error}"));
             std::process::abort();
         }
     }

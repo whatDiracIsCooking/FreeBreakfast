@@ -50,17 +50,64 @@
 //! filtered out. That is how the C++ `FBF_LOG_WARN` counts. A bare C++
 //! `log::warn` call counts even when filtered; there is no such call here.
 //!
+//! **A line written inside a task names it.** While a [`TaskScope`] is open on
+//! a thread, every line that thread writes carries `[task@worker]` after its
+//! location. The orchestrator opens one around each node it runs
+//! ([`crate::core::thread_pool`]); a task does nothing for it.
+//!
 //! `log` has no critical level; it stops at error. A critical line goes
 //! around the facade, straight to the sinks, labelled `critical`. It is
 //! still filtered by [`set_level`].
 
+use std::cell::RefCell;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufWriter, IsTerminal, Stdout, Write};
+use std::marker::PhantomData;
 use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+thread_local! {
+    /// The task this thread is running, as `task@worker`; see [`TaskScope`].
+    static TASK: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// The current-task record for the guard's lifetime: lines this thread
+/// writes carry `[task@worker]`, and [`current_task`] returns it. The record
+/// before it is restored on drop, so scopes nest.
+///
+/// Neither `Send` nor `Sync`: the record is the thread's, and restoring it
+/// on another thread would set that thread's and leave this one's behind.
+pub struct TaskScope {
+    previous: Option<String>,
+    not_send: PhantomData<*const ()>,
+}
+
+impl TaskScope {
+    /// Name `task`, running on `worker`, as this thread's current task.
+    pub fn enter(task: &str, worker: &str) -> Self {
+        let previous = TASK.with_borrow_mut(|t| t.replace(format!("{task}@{worker}")));
+        TaskScope {
+            previous,
+            not_send: PhantomData,
+        }
+    }
+}
+
+impl Drop for TaskScope {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        // A thread being torn down has no record left to restore.
+        let _ = TASK.try_with(|t| *t.borrow_mut() = previous);
+    }
+}
+
+/// This thread's current task, `task@worker`, if a [`TaskScope`] is open.
+pub fn current_task() -> Option<String> {
+    TASK.try_with(|t| t.borrow().clone()).ok().flatten()
+}
 
 /// Severity levels for log filtering: `LogLevel`, with the C++ (and
 /// spdlog's) values.
@@ -159,6 +206,9 @@ impl Logger {
         // SAFETY: gettid has no preconditions and cannot fail.
         let tid = unsafe { libc::gettid() };
         let base = file.rsplit('/').next().unwrap_or(file);
+        let task = current_task()
+            .map(|t| format!(" [{t}]"))
+            .unwrap_or_default();
         // A poisoned lock means a write panicked mid-line; the sinks are
         // still usable, and losing the log over it would be worse.
         let mut sinks = self.sinks.lock().unwrap_or_else(|e| e.into_inner());
@@ -171,21 +221,21 @@ impl Logger {
         let _ = if *colour {
             writeln!(
                 stdout,
-                "[{time}] [{tid}] [{}{}\x1b[0m] [{base}:{line}] {args}",
+                "[{time}] [{tid}] [{}{}\x1b[0m] [{base}:{line}]{task} {args}",
                 level.colour(),
                 level.name()
             )
         } else {
             writeln!(
                 stdout,
-                "[{time}] [{tid}] [{}] [{base}:{line}] {args}",
+                "[{time}] [{tid}] [{}] [{base}:{line}]{task} {args}",
                 level.name()
             )
         };
         if let Some((_, f)) = file {
             let _ = writeln!(
                 f,
-                "[{time}] [{tid}] [{}] [{base}:{line}] {args}",
+                "[{time}] [{tid}] [{}] [{base}:{line}]{task} {args}",
                 level.name()
             );
         }
