@@ -261,7 +261,11 @@ dimension, and a BLAS handle's workspace among them
 and reaches a buffer only through the layout it declared. The footprint is
 read off the layout by the orchestrator and never written by the author. The
 layout is what admission reads, what a tier-3 test checks with no device, and
-what the arena is built from.</p>
+what the arena is built from. In the crate the two are <code>core::planner</code>'s
+<code>Task</code>: the task's value is its dimensions, so <code>dims</code> is <code>&amp;self</code>, and
+<code>layout</code> declares through one <code>Layout</code> per memory kind, reading an earlier
+task's output by the row id that task's layout returned. <code>run</code> is handed
+those rows, one <code>Bufs</code> per kind, and the lane it runs on.</p>
 <p><strong>Allocation is a capability, held by one module.</strong> The raw allocation
 bindings in <code>wwr-sys</code> are <code>unsafe</code>, one arena module wraps them, and a
 task's <code>run</code> receives its buffers already carved. There is no handle a task

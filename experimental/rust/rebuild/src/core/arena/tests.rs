@@ -5,6 +5,7 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::core::error_handling::ErrorKind;
+use crate::core::test_support::{golden, panic_message};
 
 fn span(first: usize, last: usize) -> Life {
     Life::Span { first, last }
@@ -259,18 +260,38 @@ fn scf_fixture(nbf: usize) -> Table<Device> {
 /// (`docs/testing.md`, "Performance"). `FB_BLESS=1` rewrites it.
 #[test]
 fn scf_fixture_golden() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/golden/arena_scf_fixture.txt"
-    );
-    let text = scf_fixture(24).to_string();
-    if std::env::var_os("FB_BLESS").is_some() {
-        std::fs::write(path, &text).expect("write the golden");
-    }
-    let golden = std::fs::read_to_string(path).expect("the golden; FB_BLESS=1 writes it");
-    assert_eq!(text, golden, "the layout changed; FB_BLESS=1 to accept");
+    golden("arena_scf_fixture.txt", &scf_fixture(24).to_string());
 }
 
+/// `Table::reads` is every (producer, reader) pair, and a node's `Layout`
+/// declares what the builder's positional calls do.
+#[test]
+fn reads_and_layouts() {
+    let table = scf_fixture(24);
+    assert_eq!(
+        table.reads(),
+        vec![
+            (0, 2),
+            (1, 3),
+            (1, 4),
+            (2, 3),
+            (2, 5),
+            (3, 4),
+            (4, 5),
+            (5, 6)
+        ]
+    );
+    let mut b = TableBuilder::<Device>::new();
+    let mut l0 = b.node(0);
+    let s = l0.output::<f64>("S", 8);
+    let _w = l0.scratch::<f64>("W", 8);
+    assert_eq!((l0.position(), l0.used()), (0, 2));
+    let mut l1 = b.node(1);
+    assert_eq!(l1.read(s).index, s.index);
+    let _x = l1.output::<f64>("X", 8);
+    assert_eq!(l1.used(), 2);
+    assert_eq!(b.build().reads(), vec![(0, 1)]);
+}
 /// Admission is exact: the total fits a cap of the total, one byte less is
 /// an `Allocation` error naming the worker, the kind, the peak node and the
 /// rows live at it.
@@ -299,15 +320,8 @@ fn admit_is_exact_and_names_the_peak() {
 /// producer, at it, twice, of scratch, or of another table's row.
 #[test]
 fn builder_refuses_misordered_reads() {
-    fn panics(f: impl FnOnce() + std::panic::UnwindSafe) -> String {
-        let e = std::panic::catch_unwind(f).unwrap_err();
-        e.downcast_ref::<String>()
-            .cloned()
-            .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
-            .unwrap()
-    }
     assert!(
-        panics(|| {
+        panic_message(|| {
             let mut b = TableBuilder::<Device>::new();
             let r = b.output::<f64>(3, "A", 1);
             b.read(3, r);
@@ -315,7 +329,7 @@ fn builder_refuses_misordered_reads() {
         .contains("node 3 reads it, but node 3 produces it")
     );
     assert!(
-        panics(|| {
+        panic_message(|| {
             let mut b = TableBuilder::<Device>::new();
             let r = b.output::<f64>(0, "A", 1);
             b.read(1, r);
@@ -324,7 +338,7 @@ fn builder_refuses_misordered_reads() {
         .contains("already uses it")
     );
     assert!(
-        panics(|| {
+        panic_message(|| {
             let mut b = TableBuilder::<Device>::new();
             let r = b.scratch::<f64>(0, "A", 1);
             b.read(1, r);
@@ -332,7 +346,7 @@ fn builder_refuses_misordered_reads() {
         .contains("only an output")
     );
     assert!(
-        panics(|| {
+        panic_message(|| {
             let mut a = TableBuilder::<Device>::new();
             let r = a.output::<f64>(0, "A", 1);
             let t = TableBuilder::<Device>::new().build();
@@ -343,15 +357,6 @@ fn builder_refuses_misordered_reads() {
 }
 
 use super::kind::Heap;
-use crate::core::thread_pool::{HostOnly, NodeId, Placement, Plan, run};
-
-fn panic_message(f: impl FnOnce()) -> String {
-    let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_err();
-    e.downcast_ref::<String>()
-        .cloned()
-        .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
-        .unwrap()
-}
 
 /// A view gives a node its own rows and refuses the rest: a value one node
 /// writes another reads back; a row outside the node's layout, a read-only
@@ -422,106 +427,4 @@ fn an_empty_block_allocates_nothing() {
     let block = Block::new(0, b.build());
     assert!(block.base.is_null());
     assert!(block.partition(0).take_mut(e).is_empty());
-}
-
-/// Each node's plan dependencies: the producer of every row it reads, and
-/// every handoff into it.
-fn deps<K: Kind>(table: &Table<K>, ids: &[NodeId], pos: usize) -> Vec<NodeId> {
-    let mut d: Vec<NodeId> = table
-        .rows
-        .iter()
-        .filter(|r| r.users.iter().skip(1).any(|&(p, _)| p == pos))
-        .map(|r| ids[r.users[0].0])
-        .collect();
-    d.extend(
-        table
-            .handoffs()
-            .iter()
-            .filter(|&&(_, v)| v == pos)
-            .map(|&(u, _)| ids[u]),
-    );
-    d
-}
-
-/// Blocks through the executor: nodes on two CPU workers and a stream
-/// worker read and write their rows through views, a later node takes an
-/// earlier one's bytes, ordered only by the handoffs, and the plan runs
-/// twice over the same block with no view left borrowed.
-#[test]
-fn a_block_through_the_executor() {
-    const N: usize = 64;
-    let mut b = TableBuilder::<Heap>::new();
-    let a = b.output::<u64>(0, "A", N);
-    b.read(1, a);
-    let x = b.output::<u64>(1, "X", N);
-    b.read(2, a);
-    b.read(2, x);
-    let y = b.output::<u64>(2, "Y", N);
-    b.read(3, y);
-    let z = b.output::<u64>(3, "Z", N);
-    b.read(4, z);
-    let table = b.build();
-    assert_eq!(
-        table.offset(z),
-        table.offset(a),
-        "Z reuses A's bytes, so a handoff orders them"
-    );
-    let block = Block::new(0, table);
-    let table = block.table();
-
-    let placements = [
-        Placement::Cpu,
-        Placement::Stream(0),
-        Placement::Cpu,
-        Placement::Stream(0),
-        Placement::Cpu,
-    ];
-    let mut plan = Plan::new();
-    let mut ids = Vec::new();
-    let block = &block;
-    for (pos, &placement) in placements.iter().enumerate() {
-        let d = deps(table, &ids, pos);
-        ids.push(plan.add(format!("n{pos}"), placement, &d, move |_| {
-            let v = block.partition(pos);
-            match pos {
-                0 => v
-                    .take_mut(a)
-                    .iter_mut()
-                    .enumerate()
-                    .for_each(|(i, e)| *e = i as u64),
-                1 => v
-                    .take_mut(x)
-                    .iter_mut()
-                    .zip(v.get(a))
-                    .for_each(|(e, a)| *e = 2 * a),
-                2 => v
-                    .take_mut(y)
-                    .iter_mut()
-                    .zip(v.get(a).iter().zip(v.get(x)))
-                    .for_each(|(e, (a, x))| *e = a + x),
-                3 => v
-                    .take_mut(z)
-                    .iter_mut()
-                    .zip(v.get(y))
-                    .for_each(|(e, y)| *e = y + 1),
-                _ => assert!(
-                    v.get(z)
-                        .iter()
-                        .enumerate()
-                        .all(|(i, &e)| e == 3 * i as u64 + 1)
-                ),
-            }
-            Ok(())
-        }));
-    }
-    for _ in 0..2 {
-        run(&plan, &HostOnly::new(1), 2).unwrap();
-    }
-    assert!(
-        block
-            .borrows
-            .iter()
-            .all(|f| f.load(std::sync::atomic::Ordering::Relaxed) == 0),
-        "a view's borrow outlived its node"
-    );
 }

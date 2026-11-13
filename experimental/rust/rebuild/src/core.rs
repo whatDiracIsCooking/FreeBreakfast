@@ -10,10 +10,15 @@
 //! - [`wwr`]: `src/core/wwr`, the layer over WarpWraps.
 //! - [`thread_pool`]: no C++ counterpart; the run's workers, which execute
 //!   a placed DAG on a fixed set of threads.
+//! - [`planner`]: no C++ counterpart; tasks declared once, turned into the
+//!   arena's tables and the workers' plan.
 
 pub mod arena;
 pub mod diagnostics;
 pub mod error_handling;
 pub mod log;
+pub mod planner;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod thread_pool;
 pub mod wwr;

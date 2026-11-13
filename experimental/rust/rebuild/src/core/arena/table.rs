@@ -186,6 +186,16 @@ impl<K: Kind> TableBuilder<K> {
         info.users.push((pos, Access::Read));
     }
 
+    /// Node `pos`'s rows: the same declarations with the position bound,
+    /// which is what a task's `layout` is handed.
+    pub fn node(&mut self, pos: usize) -> Layout<'_, K> {
+        Layout {
+            builder: self,
+            pos,
+            used: 0,
+        }
+    }
+
     /// Lay the rows out.
     pub fn build(self) -> Table<K> {
         let rows: Vec<Row> = self
@@ -230,6 +240,55 @@ impl<K: Kind> TableBuilder<K> {
             index,
             marker: PhantomData,
         }
+    }
+}
+
+/// One node's rows of one [`TableBuilder`]: [`TableBuilder::node`].
+///
+/// What a task's `layout` declares through, so it never names its own
+/// position: its scratch, its outputs, and the outputs of earlier nodes it
+/// reads.
+pub struct Layout<'b, K> {
+    builder: &'b mut TableBuilder<K>,
+    pos: usize,
+    used: usize,
+}
+
+impl<K: Kind> Layout<'_, K> {
+    /// The node's position.
+    pub fn position(&self) -> usize {
+        self.pos
+    }
+
+    /// Scratch: `len` elements, written by this node and used by no other.
+    #[must_use]
+    pub fn scratch<T: Element>(&mut self, name: &str, len: usize) -> RowId<K, T> {
+        self.used += 1;
+        self.builder.scratch(self.pos, name, len)
+    }
+
+    /// An output: `len` elements, written by this node, read by later ones.
+    #[must_use]
+    pub fn output<T: Element>(&mut self, name: &str, len: usize) -> RowId<K, T> {
+        self.used += 1;
+        self.builder.output(self.pos, name, len)
+    }
+
+    /// This node reads the output `row`, which an earlier node produced.
+    /// Returns `row`, so a task's rows can be written `h: l.read(self.h)`.
+    ///
+    /// # Panics
+    /// As [`TableBuilder::read`]: if `row` is not an output of this table,
+    /// or is this node's own, or is already read by it.
+    pub fn read<T: Element>(&mut self, row: RowId<K, T>) -> RowId<K, T> {
+        self.used += 1;
+        self.builder.read(self.pos, row);
+        row
+    }
+
+    /// The rows declared or read through this layout so far.
+    pub fn used(&self) -> usize {
+        self.used
     }
 }
 
@@ -319,6 +378,23 @@ impl<K: Kind> Table<K> {
                 pairs.extend(earlier.users.iter().map(|&(u, _)| (u, next)));
             }
         }
+        pairs.into_iter().collect()
+    }
+
+    /// The orderings the data needs: `(producer, reader)` for every reader
+    /// of every output. Sorted, without repeats. With
+    /// [`handoffs`](Table::handoffs), every dependency the table asks of a
+    /// plan.
+    pub fn reads(&self) -> Vec<(usize, usize)> {
+        let pairs: BTreeSet<(usize, usize)> = self
+            .rows
+            .iter()
+            .filter(|r| r.owner == Owner::Edge)
+            .flat_map(|r| {
+                let producer = r.users[0].0;
+                r.users[1..].iter().map(move |&(p, _)| (producer, p))
+            })
+            .collect();
         pairs.into_iter().collect()
     }
 

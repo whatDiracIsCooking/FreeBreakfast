@@ -654,7 +654,12 @@ nothing outside it can name. In it:</p>
 <li><code>TableBuilder&lt;K&gt;</code>, the rows declared node by node, and <code>assign(rows)</code>,
 the pure offset assigner it lays them out with into a <code>Table&lt;K&gt;</code>: tier 3,
 fuzzed, its text the committed golden (<a href="testing.md"><code>testing.md</code></a>,
-&quot;Regression&quot;). The table also returns the handoffs (&quot;Lifetimes&quot;).</li>
+&quot;Regression&quot;). The table also returns the handoffs (&quot;Lifetimes&quot;), and
+the reads, each reader after its producer; the two together are every
+dependency it asks of a plan. <code>TableBuilder::node(pos)</code> is a <code>Layout</code>,
+one node's declarations with its position bound, which is what a task's
+<code>layout</code> is handed. <code>core::planner</code> calls each task's layout in plan
+order, builds the tables, and adds the reads and handoffs to the plan.</li>
 <li><code>Block&lt;K&gt;</code>, with <code>K</code> one of two uninhabited markers, <code>Device</code> and
 <code>Pinned</code>. It holds the raw pointer, the table and one atomic borrow flag
 per row, allocates in <code>new</code> and frees in <code>Drop</code>, and the kind is in the

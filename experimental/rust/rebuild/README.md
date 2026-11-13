@@ -17,6 +17,7 @@ It stands alone: nothing here uses the other crates under `experimental/rust/`.
 | `core::error_handling` | `src/core/error_handling` | `ErrorKind` (with the pinned exit codes as `exit_code`), `Error` and its `#[track_caller]` factories, `Result<T>` / `Status`, `check_or_abort` |
 | `core::diagnostics` | `src/core/diagnostics` (`diagnostics.h`) | `gpu_must` (`FBF_GPU_MUST`), `critical!` (`FBF_LOG_CRITICAL`), and `log`'s `trace!` ... `error!` re-exported (`FBF_LOG_TRACE` ... `FBF_LOG_ERROR`); `FBF_TRY` is `?` |
 | `core::arena` | the peak model of `src/core/footprint` and `src/pipeline/footprint`, and `check_plan`'s fit | The plan's memory laid out once (`docs/memory.md`): `TableBuilder` (rows declared node by node as scratch, outputs and their readers, or the worker's; lifetimes derived), `assign` (the pure greedy best-fit offset assigner), `Table` (offsets, total, `peak`, and `handoffs`, the orderings reusing bytes needs; its text is the committed golden `tests/golden/arena_scf_fixture.txt`, rewritten by `FB_BLESS=1`), `admit` (the fit against a cap, refusing with the rows live at the peak), `Block<K>` (the table's one plain allocation, `Device` or portable `Pinned`, filled with `0xFF`, aborting on failure with the bytes and the free memory) and `Block::partition` (a node's `Bufs`: its own rows as `&[T]` / `&mut [T]` on the host and pointer views on the device, behind always-on borrow flags). The one module that allocates |
+| `core::planner` | nothing: the C++ steps allocate as they go | The glue between the two below: `Task` (`layout`, which declares every row through a `Layout`, a node's rows of one table, and `run`, which computes through them), `Dag` (tasks added in plan order, each on a GPU worker's stream or the CPU pool; `add` returns the task's rows, whose output ids the reading tasks take), `Planned` (each worker's device and host tables, and each task's dependencies, the reads and the handoffs, derived; its text is the committed golden `tests/golden/planner_scf.txt`) and `Instance` (the blocks, and a `thread_pool::Plan` whose nodes hand each task its rows; run any number of times). No `unsafe` |
 | `core::thread_pool` | nothing: the C++ pipeline runs on one thread | The run's workers (`docs/programming_model.md`, "CPU workers"): `Plan` (nodes added in topological order, each placed on the CPU pool or one stream worker), `run` (one scope, `n_cpu` CPU workers and a thread per stream worker, readiness counts, failure skipping descendants, the lowest-ranked error returned, a panic re-raised rather than hung), and the `Backend` the edges leaving a stream wait through: `Device` (a stream per worker, an event per GPU node) or `HostOnly` for device-free tests. `core::log::TaskScope` tags each node's lines `[task@worker]`, and `Error::context` carries it out. `clippy.toml` makes it the one place that spawns |
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
@@ -107,7 +108,10 @@ own whose cases take turns, since two of them measure the card's free
 memory: another process allocating on the card between two readings fails
 them, so hold the card, and expect a shared one to break them now and then.
 Its abort case re-runs the binary as a child, as `tests/log.rs` does. The
-arena's device-free tests are unit tests, over a test-only heap kind.
+arena's device-free tests are unit tests, over a test-only heap kind, and so
+are the planner's, run on `HostOnly` workers. The planner on a card, a round
+trip through pinned and device rows, is `tests/planner_device.rs`, which
+measures free memory too.
 
 Tests run in parallel, so a capture test must not use global capture mode.
 A global capture forbids other threads' unsafe calls, and on the 3080 it
@@ -195,3 +199,16 @@ clean under `compute-sanitizer --tool memcheck`. Clippy (`-D warnings`),
 rustdoc (`-D warnings`) and `cargo fmt --check` are clean. On the gfx1200
 (HIP), with the card to itself, the same counts pass in both profiles, and
 the arena-block binary passed 20 repeats in a row.
+
+2026-11-13, `core::planner` (the `Task` trait, `Dag`, `Planned`,
+`Instance`), with the two hand-wired executor tests moved onto it, on the
+RTX 3080 (CUDA) only: 59 unit tests (6 of them the planner's, one a
+proptest property at 64 random DAGs), the 4 arena-block tests, the planner
+device test, the 5 log tests, the pool-allocation test, the thread-count
+test and 4 doctests pass in a debug build, and 57, 4, 1, 5, 1, 1 and 4 in
+release. With the handoffs dropped from the derived dependencies, the
+property and the executor test both fail, so they see a missing ordering.
+The planner device binary and the planner's unit tests each passed 20
+repeats in a row, and the device binary is clean under `compute-sanitizer
+--tool memcheck`. Clippy (`-D warnings`), rustdoc (`-D warnings`) and
+`cargo fmt --check` are clean. Not run on the gfx1200.

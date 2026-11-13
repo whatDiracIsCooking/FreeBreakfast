@@ -318,7 +318,12 @@ nothing outside it can name. In it:
 - `TableBuilder<K>`, the rows declared node by node, and `assign(rows)`,
   the pure offset assigner it lays them out with into a `Table<K>`: tier 3,
   fuzzed, its text the committed golden ([`testing.md`](testing.md),
-  "Regression"). The table also returns the handoffs ("Lifetimes").
+  "Regression"). The table also returns the handoffs ("Lifetimes"), and
+  the reads, each reader after its producer; the two together are every
+  dependency it asks of a plan. `TableBuilder::node(pos)` is a `Layout`,
+  one node's declarations with its position bound, which is what a task's
+  `layout` is handed. `core::planner` calls each task's layout in plan
+  order, builds the tables, and adds the reads and handoffs to the plan.
 - `Block<K>`, with `K` one of two uninhabited markers, `Device` and
   `Pinned`. It holds the raw pointer, the table and one atomic borrow flag
   per row, allocates in `new` and frees in `Drop`, and the kind is in the

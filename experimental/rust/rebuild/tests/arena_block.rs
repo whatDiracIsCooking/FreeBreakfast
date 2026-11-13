@@ -6,15 +6,11 @@
 //! `FB_ARENA_CHILD`), as `tests/log.rs` does, because what it checks is
 //! what survives the process ending.
 
-use std::ffi::c_void;
 use std::process::Command;
 use std::sync::Mutex;
 
-use fb_rebuild::core::arena::{Block, DEVICE_ALIGNMENT, Device, Kind, Pinned, Table, TableBuilder};
-use fb_rebuild::core::thread_pool::{self, Lane, NodeId, Placement, Plan};
+use fb_rebuild::core::arena::{Block, Device, Pinned, TableBuilder};
 use fb_rebuild::core::wwr::common::ScopedDeviceIndex;
-use fb_rebuild::core::wwr::gpu_status;
-use fb_rebuild::core::wwr::handle::DeviceHandleStream;
 use wwr_sys::{wwr_memcpy_kind, wwr_status};
 
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
@@ -105,119 +101,6 @@ fn blocks_are_filled() {
         )
     });
     assert!(host.iter().all(|&x| x == u64::MAX));
-}
-
-/// Add every handoff of `table` into node `pos` to its dependencies.
-fn handoffs_into<K: Kind>(table: &Table<K>, ids: &[NodeId], pos: usize, out: &mut Vec<NodeId>) {
-    out.extend(
-        table
-            .handoffs()
-            .into_iter()
-            .filter(|&(_, v)| v == pos)
-            .map(|(u, _)| ids[u]),
-    );
-}
-
-/// A device row and two pinned ones through the executor on a real stream:
-/// a CPU node fills a pinned row, a stream node copies it up, another
-/// copies it down into a second pinned row, and a CPU node compares, after
-/// waiting on the stream. Every row is `DEVICE_ALIGNMENT`-aligned, and the
-/// plan runs twice with the card's free memory unchanged between: a run
-/// allocates nothing.
-#[test]
-fn a_round_trip_through_the_executor() {
-    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    const N: usize = 4096;
-    let mut p = TableBuilder::<Pinned>::new();
-    let up = p.output::<f64>(0, "up", N);
-    p.read(1, up);
-    let down = p.output::<f64>(2, "down", N);
-    p.read(3, down);
-    let mut d = TableBuilder::<Device>::new();
-    let dev = d.output::<f64>(1, "dev", N);
-    d.read(2, dev);
-    let pinned = Block::new(0, p.build());
-    let device = Block::new(0, d.build());
-    assert_eq!(
-        pinned.table().offset(down),
-        pinned.table().offset(up),
-        "down reuses up's bytes, which only the handoffs order"
-    );
-
-    // The data edges, then the handoffs of either table.
-    let data: [&[usize]; 4] = [&[], &[0], &[1], &[2]];
-    let placements = [
-        Placement::Cpu,
-        Placement::Stream(0),
-        Placement::Stream(0),
-        Placement::Cpu,
-    ];
-    let (pinned, device) = (&pinned, &device);
-    let mut plan = Plan::new();
-    let mut ids: Vec<NodeId> = Vec::new();
-    for pos in 0..4 {
-        let mut d: Vec<NodeId> = data[pos].iter().map(|&u| ids[u]).collect();
-        handoffs_into(pinned.table(), &ids, pos, &mut d);
-        handoffs_into(device.table(), &ids, pos, &mut d);
-        let node = move |lane: Lane<'_, thread_pool::DeviceStream>| {
-            let (vp, vd) = (pinned.partition(pos), device.partition(pos));
-            let bytes = N * size_of::<f64>();
-            match (pos, lane) {
-                (0, Lane::Cpu) => {
-                    let up = vp.take_mut(up);
-                    assert_eq!(up.as_ptr().addr() % DEVICE_ALIGNMENT, 0);
-                    up.iter_mut()
-                        .enumerate()
-                        .for_each(|(i, e)| *e = i as f64 * 0.5);
-                    Ok(())
-                }
-                (1, Lane::Stream { stream, .. }) => {
-                    let dst = vd.take_mut(dev);
-                    assert_eq!(dst.as_ptr().addr() % DEVICE_ALIGNMENT, 0);
-                    // SAFETY: N f64s between two rows of N, on the node's
-                    // stream; the source outlives the copy because the plan
-                    // orders its next writer after this node's event.
-                    gpu_status(unsafe {
-                        wwr_sys::wwr_memcpy_async(
-                            dst.as_mut_ptr().cast(),
-                            vp.get(up).as_ptr().cast::<c_void>(),
-                            bytes,
-                            wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-                            stream.stream(),
-                        )
-                    })
-                }
-                (2, Lane::Stream { stream, .. }) => {
-                    // No host write here: `down` is `up`'s bytes, and node
-                    // 1's copy out of them may still be in flight. A stream
-                    // node only enqueues.
-                    let dst = vp.take_mut(down);
-                    // SAFETY: as above, device to pinned.
-                    gpu_status(unsafe {
-                        wwr_sys::wwr_memcpy_async(
-                            dst.as_mut_ptr().cast(),
-                            vd.get(dev).as_ptr().cast::<c_void>(),
-                            bytes,
-                            wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                            stream.stream(),
-                        )
-                    })
-                }
-                (3, Lane::Cpu) => {
-                    let got = vp.get(down);
-                    assert!(got.iter().enumerate().all(|(i, &e)| e == i as f64 * 0.5));
-                    Ok(())
-                }
-                _ => unreachable!("node {pos} on the wrong lane"),
-            }
-        };
-        ids.push(plan.add(format!("n{pos}"), placements[pos], &d, node));
-    }
-    let backend = thread_pool::Device::new(&[0], &plan);
-    thread_pool::run(&plan, &backend, 1).unwrap();
-    let between = free_bytes();
-    thread_pool::run(&plan, &backend, 1).unwrap();
-    assert_eq!(free_bytes(), between, "a run allocated device memory");
 }
 
 /// What the child does, by `FB_ARENA_CHILD`; nothing when unset.
