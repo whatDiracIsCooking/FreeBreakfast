@@ -125,6 +125,11 @@ state the least. Nested pipelines fold inside outer steps. The shared
 `sizes` struct that keeps a routine and its footprint agreeing is a
 suggestion, not a contract.
 
+This section and the three after it are the principles. The level below,
+the table's rows and their owners, the lifetime order, the admission
+arithmetic, the adaptive-width routine and the two blocks' raw calls, is
+[`memory.md`](memory.md).
+
 The rebuild makes allocation and footprint one program, in three moves.
 
 **A task is two functions.** `layout(dims)` returns the buffers the task
