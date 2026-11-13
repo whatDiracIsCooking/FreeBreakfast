@@ -243,15 +243,41 @@ TEST(RadixSortGpu, EmptyIsANoOp) {
   EXPECT_TRUE(fb::cub_radix_sort(res, 0, nullptr));
 }
 
+// hipCUB on the gfx1200 (ROCm's rocPRIM) mis-sorts signaling NaNs -- NaNs
+// with the quiet bit, bit 51, clear -- above 8192 keys: it places them as if
+// that bit were set, and from about 16384 keys its output is no longer a
+// permutation of the input, some NaN keys duplicated and others lost. Up to
+// 8192 keys, and with every NaN quiet at any size, it is exact. Issue #1323
+// and the README's "Against the vendor sort" have the evidence.
+constexpr std::int32_t kVendorExactOnSignalingNaNsUpTo = 8192;
+
+// Sets the quiet bit of every NaN, so a signaling NaN becomes the quiet NaN
+// of the same sign and otherwise the same payload. Other keys are untouched.
+Keys quiet_nans(Keys keys) {
+  constexpr std::uint64_t kQuietBit = std::uint64_t{1} << 51;
+  for (auto &k : keys) {
+    if (std::isnan(k)) {
+      k = std::bit_cast<double>(std::bit_cast<std::uint64_t>(k) | kQuietBit);
+    }
+  }
+  return keys;
+}
+
 // Away from zero the vendor's order is total order too, NaNs included, and it
 // is stable, so on random bit patterns -- where a zero practically never
-// appears -- the two sorts must agree on every key bit and every index.
+// appears -- the two sorts must agree on every key bit and every index. Above
+// kVendorExactOnSignalingNaNsUpTo keys the NaNs are made quiet first, for the
+// vendor's sake; MatchesTotalOrderOnRandomBits still checks radix_sort's keys,
+// signaling NaNs included, against the host at every size, exactly.
 TEST(RadixSortGpu, AgreesWithVendorSort) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0, fb::test::kWorkspaces};
   for (const std::int32_t n : sizes()) {
     SCOPED_TRACE(std::format("n = {}", n));
-    const Keys in = random_bit_keys(static_cast<std::size_t>(n), 4321U + n);
+    Keys in = random_bit_keys(static_cast<std::size_t>(n), 4321U + n);
+    if (n > kVendorExactOnSignalingNaNsUpTo) {
+      in = quiet_nans(std::move(in));
+    }
     DeviceSort sort{res, n};
     const auto [our_keys, our_index] = sort.sort_pairs(kOurSort, in);
     const auto [vendor_keys, vendor_index] = sort.sort_pairs(kVendorSort, in);
