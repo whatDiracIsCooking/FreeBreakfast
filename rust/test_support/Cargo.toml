@@ -1,0 +1,9 @@
+[package]
+name = "fb-test-support"
+description = "What more than one crate's unit tests use"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

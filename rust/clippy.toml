@@ -1,4 +1,4 @@
-# Spawning belongs to the orchestrator: src/core/thread_pool/run.rs is the
+# Spawning belongs to the orchestrator: core/thread_pool/src/run.rs is the
 # one module with the allow (docs/programming_model.md, "Capabilities are
 # enforced by lints").
 disallowed-methods = [

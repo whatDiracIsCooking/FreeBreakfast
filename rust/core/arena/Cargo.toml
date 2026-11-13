@@ -1,0 +1,25 @@
+[package]
+name = "fb-core-arena"
+description = "core::arena: the plan's memory laid out once at planning"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Heap, the device-free host kind, for a dependent's tests.
+test-support = []
+
+[dependencies]
+contracts.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-wwr.workspace = true
+log.workspace = true
+wwr-sys.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
+fb-test-support.workspace = true
+proptest.workspace = true

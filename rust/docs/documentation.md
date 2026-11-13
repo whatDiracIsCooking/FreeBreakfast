@@ -259,7 +259,7 @@ by a command names the command; one whose numbers cannot says so.
 and a quoted section name, and a renamed heading breaks the citation
 silently: two such references pointed at sections of `design.md` that had
 moved to documents of their own, and were found by hand. A tier-3 check,
-`tests/section_citations.rs` ([`README.md`](../README.md), "Order of work"),
+`doc_check/tests/section_citations.rs` ([`README.md`](../README.md), "Order of work"),
 reads every `` [`x.md`](x.md), "Section" `` in the README and these
 documents, and every `` `docs/x.md`, "Section" `` in a Rust comment, and
 fails when `x.md` has no such heading. A citation may run on: in
@@ -317,7 +317,8 @@ out of `main` either way, and the site shows last night's run.
 ## Publishing
 
 **The Pages site needs no GPU, and must not need the toolchain.** `cargo doc`
-runs `build.rs`, and the crate's `build.rs` panics when
+runs each crate's `build.rs`, and every crate that links the wwr library
+panics in its `build.rs` when
 `libwwr_capi_runtime_api.so` is missing. That library is CMake's, built with
 the CUDA or HIP toolchain, which is the one thing a GitHub-hosted runner
 cannot have: it is why `.github/workflows/ci.yml`'s `cpp` job is `if: false`.

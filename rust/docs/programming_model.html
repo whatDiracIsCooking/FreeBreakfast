@@ -759,27 +759,29 @@ disallowed-methods = [
 <p>The manifest does the rest: rayon and tokio are not dependencies, and a pool
 crate arriving later is a <code>Cargo.toml</code> diff a review sees.</p>
 <p><strong><code>unsafe</code>.</strong> The rebuild's <code>unsafe</code> is the FFI into <code>wwr-sys</code> and the
-libraries behind it, the arena over the raw allocation bindings, and the two
-<code>libc</code> calls in <code>core::log</code>. Nothing else needs it, and the lints keep it
-there. <code>unsafe_code</code> is rustc's own lint, and <code>forbid</code> is the level that
-cannot be allowed back, so it is set per crate: once the workspace is split
-(<a href="../README.md"><code>README.md</code></a>, &quot;Order of work&quot;), the <code>-sys</code> wrappers and the
-arena are crates of their own and every other crate forbids, and until then
-the one crate denies with an <code>allow</code> on the wrapper modules alone. Where <code>unsafe</code> is
+libraries behind it, the arena over the raw allocation bindings, the two
+<code>libc</code> calls in <code>core::log</code>, and the one <code>unsafe impl Sync</code> on
+<code>core::thread_pool</code>'s <code>Device</code> backend. Nothing else needs it, and the lints
+keep it there. <code>unsafe_code</code> is rustc's own lint, and <code>forbid</code> is the level
+that cannot be allowed back, so it is set per crate: the four crates that
+hold <code>unsafe</code> (<code>fb-core-wwr</code>, <code>fb-core-arena</code>, <code>fb-core-log</code> and
+<code>fb-core-thread-pool</code>) leave it at its default, and every other crate
+forbids it with <code>#![forbid(unsafe_code)]</code> at its root. That is an attribute
+rather than a manifest line because Cargo refuses a member that inherits
+<code>[workspace.lints]</code> and adds a <code>[lints.rust]</code> table of its own. Where <code>unsafe</code> is
 allowed, clippy's <code>undocumented_unsafe_blocks</code> requires a <code>// SAFETY:</code>
 comment on every block, which turns the comment the crate already writes into
 a rule and names the blocks that lack one, and
 <code>multiple_unsafe_ops_per_block</code> keeps each block to one operation so the
 comment justifies exactly one thing. Miri covers what a lint cannot
 (<a href="testing.md"><code>testing.md</code></a>, &quot;Sanitizers&quot;).</p>
-<pre><code class="language-toml">[lints.rust]
-unsafe_code = &quot;forbid&quot;              # every crate but the wrappers and the arena
-
-[lints.clippy]
+<pre><code class="language-toml">[workspace.lints.clippy]            # every member: [lints] workspace = true
 disallowed_methods = &quot;deny&quot;
 undocumented_unsafe_blocks = &quot;deny&quot;
 multiple_unsafe_ops_per_block = &quot;deny&quot;
 </code></pre>
+<p><code>disallowed_methods</code> is on today; the two <code>unsafe</code> lints wait for a PR of
+their own, since turning them on asks for code changes.</p>
 <h2 id="reproducibility-across-placements">Reproducibility across placements</h2>
 <p>The same planned DAG must give the same answer, to a declared tolerance,
 under every placement. Where every reduce is ordered, that tolerance is zero

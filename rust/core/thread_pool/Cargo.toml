@@ -1,0 +1,24 @@
+[package]
+name = "fb-core-thread-pool"
+description = "core::thread_pool: the run's workers over a placed DAG"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-core-error-handling.workspace = true
+fb-core-log.workspace = true
+fb-core-wwr.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+fb-core-wwr = { workspace = true, features = ["test-support"] }
+wwr-sys.workspace = true
+
+# Counts the process's threads, so no libtest harness threads beside it.
+[[test]]
+name = "thread_pool_threads"
+harness = false

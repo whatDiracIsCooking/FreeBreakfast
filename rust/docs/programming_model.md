@@ -503,13 +503,16 @@ The manifest does the rest: rayon and tokio are not dependencies, and a pool
 crate arriving later is a `Cargo.toml` diff a review sees.
 
 **`unsafe`.** The rebuild's `unsafe` is the FFI into `wwr-sys` and the
-libraries behind it, the arena over the raw allocation bindings, and the two
-`libc` calls in `core::log`. Nothing else needs it, and the lints keep it
-there. `unsafe_code` is rustc's own lint, and `forbid` is the level that
-cannot be allowed back, so it is set per crate: once the workspace is split
-([`README.md`](../README.md), "Order of work"), the `-sys` wrappers and the
-arena are crates of their own and every other crate forbids, and until then
-the one crate denies with an `allow` on the wrapper modules alone. Where `unsafe` is
+libraries behind it, the arena over the raw allocation bindings, the two
+`libc` calls in `core::log`, and the one `unsafe impl Sync` on
+`core::thread_pool`'s `Device` backend. Nothing else needs it, and the lints
+keep it there. `unsafe_code` is rustc's own lint, and `forbid` is the level
+that cannot be allowed back, so it is set per crate: the four crates that
+hold `unsafe` (`fb-core-wwr`, `fb-core-arena`, `fb-core-log` and
+`fb-core-thread-pool`) leave it at its default, and every other crate
+forbids it with `#![forbid(unsafe_code)]` at its root. That is an attribute
+rather than a manifest line because Cargo refuses a member that inherits
+`[workspace.lints]` and adds a `[lints.rust]` table of its own. Where `unsafe` is
 allowed, clippy's `undocumented_unsafe_blocks` requires a `// SAFETY:`
 comment on every block, which turns the comment the crate already writes into
 a rule and names the blocks that lack one, and
@@ -518,14 +521,14 @@ comment justifies exactly one thing. Miri covers what a lint cannot
 ([`testing.md`](testing.md), "Sanitizers").
 
 ```toml
-[lints.rust]
-unsafe_code = "forbid"              # every crate but the wrappers and the arena
-
-[lints.clippy]
+[workspace.lints.clippy]            # every member: [lints] workspace = true
 disallowed_methods = "deny"
 undocumented_unsafe_blocks = "deny"
 multiple_unsafe_ops_per_block = "deny"
 ```
+
+`disallowed_methods` is on today; the two `unsafe` lints wait for a PR of
+their own, since turning them on asks for code changes.
 
 ## Reproducibility across placements
 
