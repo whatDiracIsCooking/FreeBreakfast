@@ -9,7 +9,7 @@ workspace is that rebuild. Its tree mirrors `src/`, one crate per module:
 
 ## What it depends on
 
-Outside `rust/`, the tree reads four things, and nothing under `src/`:
+Outside `rust/`, the tree reads five things, and nothing under `src/`:
 
 - **`deps/WarpWraps`**: `wwr-sys`, its C ABI crate, and the sources
   `CMakeLists.txt` here builds `libwwr_capi_runtime_api.so` from.
@@ -19,6 +19,8 @@ Outside `rust/`, the tree reads four things, and nothing under `src/`:
 - **`tools/emit/`**: the FelizJueves generators, run by hand with
   `--out-root` to emit the kernel units `integrals/kernels/` carries ("Build
   and test").
+- **`test/sad/data/atomic_scf.json`**: the PySCF reference `fb-sad`'s
+  tests read from where the C++ test reads it, so the two trees hold one.
 
 The device code the crates call is forked into `rust/` (`device_headers/`,
 `recipes/kernels/`, `integrals/kernels/`) and built by `CMakeLists.txt`
@@ -60,6 +62,7 @@ tree, not inputs to its build.
 | `fb_io_basis` | `src/io/basis`, its orbital sets | `parse_basis` / `read_basis`: a BSE JSON document into a `BasisStamp` (sp blocks and general contractions split, spherical shells only: one Cartesian or ambiguous shell refuses the document), over [`serde_json`](https://crates.io/crates/serde_json); `is_builtin_basis` and `resolve_basis`, a name (spelling folded) or else a path, over the eleven sets of `data/basis/` compiled in with `include_str!`, only that branch naming the stamp. The fitting sets of `data/aux_basis/` are not ported yet |
 | `fb_integrals_mmd` | `src/integrals/mmd`'s `primitive_pair_classes` | `add_records`: the kernel library's load check (`check_library()`, a mismatch the planning's `GpuRuntime` error), then the records of a `BasisSet` as two tasks of a `Dag`, `mmd tables` on the CPU (the shell table and each class's shell pairs with their record prefixes, formed on the host into pinned rows) and `mmd records` on the worker's stream (the tables copied into device scratch, then each class's order, records, bound and dressed bounds through `fb-integrals-sys`), and `ClassRows`, each class's record fields as device output rows. Every size is the basis's, at planning; the plan text for H2O/cc-pVDZ and CO/cc-pVTZ is the committed golden `integrals/mmd/tests/golden/plan_*.txt`. The mixed classes are not ported yet |
 | `fb_integrals_one_electron_overlap` | `src/integrals/one_electron/overlap`'s `overlap`, and the Overlap step's spherical transform (`MatrixAOPair::cartesian_to_spherical`) | The first whole run through the model. `add_overlap`: S of a `BasisSet` as three tasks after the records, `overlap` on the stream (the Cartesian matrix zeroed, one `fb_overlap_class` per class, reading `ClassRows` as an edge), `harmonics` on the CPU (U into a pinned row) and `spherical transform` on the stream (U copied into scratch, `S = Uᵀ S_cart U` as two `wwr_blas_dgemm`s, the intermediate scratch too). `Run`: an XYZ file and a basis name planned once (the load check, through `add_records`, among it), laid out in one arena per kind, run on one stream, returning S and the timing record. The plan text for each fixture is the committed golden `integrals/one_electron/overlap/tests/golden/plan_*.txt` |
+| `fb_sad` | `src/sad`, its serial form | `sad_density`, the SAD guess: one spherically averaged, fractionally occupied atomic RHF per distinct (Z, shells) over closed-form one-center integrals, each density placed on its atoms' diagonal blocks, and `SadStampLookup`, the baked block that skips an element's SCF (checked by size). Every loop in the C++ order, so its stamps compare bitwise with the C++ generator's. The task form is the guess-tasks issue's |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -78,7 +81,8 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `thread_pool`, `wwr`, `error_handling` and `integrals/sys`; `recipes/sys`
 and `integrals/sys` on `kernel_abi`; and
 `integrals/one_electron/overlap` on `integrals/mmd` and what it stands on,
-`io/xyz` and `io/basis`.
+`io/xyz` and `io/basis`; `sad` on `basis`, `molecule`, `atom`,
+`primitives` and `error_handling`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -154,7 +158,7 @@ cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
   -p fb-core-arena -p fb-core-thread-pool -p fb-core-planner \
   -p fb-core-types -p fb-core-primitives -p fb-core-constants \
   -p fb-atom -p fb-molecule -p fb-basis -p fb-device-check \
-  -p fb-io-xyz -p fb-io-basis -p fb-kernel-abi \
+  -p fb-io-xyz -p fb-io-basis -p fb-kernel-abi -p fb-sad \
   --no-default-features
 ```
 
@@ -195,7 +199,7 @@ tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
 `fb-core-primitives`, `fb-core-constants`, `fb-atom`, `fb-molecule`,
 `fb-basis`, `fb-io-xyz`, `fb-io-basis`, `fb-test-support`, `fb-doc-check`,
-`fb-kernel-abi` and `fb-device-check` do not link the library at all: they build and pass
+`fb-kernel-abi`, `fb-device-check` and `fb-sad` do not link the library at all: they build and pass
 with it missing.
 `fb-core-arena`, `fb-core-thread-pool` and `fb-core-planner` link it
 through their `device` feature, which is on by default: without it
