@@ -19,6 +19,8 @@ members = [
     "basis",
     "recipes/sys",
     "device_check",
+    "io/xyz",
+    "io/basis",
     "test_support",
     "doc_check",
 ]
@@ -45,6 +47,8 @@ fb-atom = { path = "atom" }
 fb-molecule = { path = "molecule" }
 fb-basis = { path = "basis" }
 fb-recipes-sys = { path = "recipes/sys" }
+fb-io-xyz = { path = "io/xyz" }
+fb-io-basis = { path = "io/basis" }
 fb-test-support = { path = "test_support" }
 
 contracts = "0.6.11"
@@ -53,6 +57,8 @@ jiff = "0.2.43"
 libc = "0.2"
 log = { version = "0.4.35", features = ["std"] }
 proptest = "1"
+# io/basis: the BSE JSON documents.
+serde_json = "1"
 # runtime_api alone: a binary NEEDs libwwr_capi_runtime_api.so and nothing
 # else of wwr's.
 wwr-sys = { path = "../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [

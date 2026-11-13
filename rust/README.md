@@ -29,6 +29,8 @@ workspace is that rebuild. Its tree mirrors `src/`, one crate per module:
 | `fb_basis` | `src/basis` | `Shell` and `Primitive`, the counts (`function_count_cart` / `function_count_sphe`) and `MAX_ANGULAR_MOMENTUM` (3, the C++ `kMaxAngularMomentum`), `cartesian_powers` and `Ao`, `solid_harmonic_block`, `BasisSet` (its Cartesian and spherical AO layouts, the per-atom shell grouping, the name) and `spherical_transform_matrix`, `ShellStamp` with `primitive_normalized` and `place`, and `BasisStamp` with `place` onto a `Molecule`. Contractions are not renormalized, as in the C++ |
 | `fb_recipes_sys` | `src/recipes/sort`'s merge sort, forked to `recipes/kernels/` (with the device headers it includes, trimmed, in `device_headers/`) | The raw FFI over `libfb_recipes_kernels.so`, built by `CMakeLists.txt` here: `fb_merge_sort`, an `extern "C"` launch wrapper that only enqueues, its `fb_merge_sort_workspace_bytes` query, `fb_launch_status` and `FB_DEVICE_ALIGNMENT` (`docs/gpu_layer.md`, "Layering"). The bindings are generated from `recipes/kernels/fb_recipes.h` by `devtools/rust-bindings.py` and committed |
 | `fb_device_check` | nothing: a check on the kernel libraries | Two tier-3 tests: no launch wrapper under `rust/` allocates, synchronizes, touches an event, copies, sets the device or opens a profiler range (a grep of every `.cu`), and every `-sys` crate's committed bindings are what the script generates now |
+| `fb_io_xyz` | `src/io/xyz` | `parse_xyz` / `read_xyz`: a standard XYZ geometry into a `Molecule`, Angstrom to bohr by `BOHR_PER_ANGSTROM`, every refusal (too short, a bad count, a malformed line, an unknown symbol, a count the lines disagree with, a file that cannot be read) an `Io` error. A field must parse as a whole token, where the C++'s `operator>>` reads a prefix |
+| `fb_io_basis` | `src/io/basis`, its orbital sets | `parse_basis` / `read_basis`: a BSE JSON document into a `BasisStamp` (sp blocks and general contractions split, spherical shells only: one Cartesian or ambiguous shell refuses the document), over [`serde_json`](https://crates.io/crates/serde_json); `is_builtin_basis` and `resolve_basis`, a name (spelling folded) or else a path, over the eleven sets of `data/basis/` compiled in with `include_str!`, only that branch naming the stamp. The fitting sets of `data/aux_basis/` are not ported yet |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -41,7 +43,9 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `log`'s macros are imported from `log` directly and `critical!` lives in
 `fb-core-log`. Above `core`, `atom` stands on `types`, and `molecule` on
 `atom`, `types` and `error_handling`, and `basis` on `molecule`, `types`,
-`primitives` and `error_handling`.
+`primitives` and `error_handling`; `io/xyz` on `molecule`, `atom`, `types`,
+`constants` and `error_handling`, and `io/basis` on `basis` and
+`error_handling`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -111,6 +115,7 @@ cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
   -p fb-core-arena -p fb-core-thread-pool -p fb-core-planner \
   -p fb-core-types -p fb-core-primitives -p fb-core-constants \
   -p fb-atom -p fb-molecule -p fb-basis -p fb-device-check \
+  -p fb-io-xyz -p fb-io-basis \
   --no-default-features
 ```
 
@@ -142,8 +147,9 @@ The GPU tests use device 0 and need room on it for a context. The host-only
 tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
 `fb-core-primitives`, `fb-core-constants`, `fb-atom`, `fb-molecule`,
-`fb-basis`, `fb-test-support`, `fb-doc-check` and `fb-device-check` do not
-link the library at all: they build and pass with it missing.
+`fb-basis`, `fb-io-xyz`, `fb-io-basis`, `fb-test-support`, `fb-doc-check`
+and `fb-device-check` do not link the library at all: they build and pass
+with it missing.
 `fb-core-arena`, `fb-core-thread-pool` and `fb-core-planner` link it
 through their `device` feature, which is on by default: without it
 (`--no-default-features`) their device-free tests, on `Heap` blocks and
@@ -417,3 +423,21 @@ The `hip` preset builds the library too, and `devtools/cross-backend-check.sh
 --device-only` (HIP) compiles it and passes; neither was run on the
 gfx1200. Clippy (`-D warnings`, both feature sets), rustdoc (`-D warnings`)
 and `cargo fmt --check` are clean.
+
+2026-11-13, `io/xyz` and `io/basis` (its orbital sets), on the gfx1200
+(HIP), holding the card, linking the library the `hip` preset built: with
+default features the whole workspace passes in a debug build, the new
+crates 7 tests (`xyz`, the cases of `test/gtest/io_xyz_gpu.cpp`, with the
+whole-token and non-finite refusals beside them) and 15 unit tests (`io/basis`:
+the orbital-set cases of `test/io/basis_host.cpp` and of
+`test/gtest/io_basis_gpu.cpp`, an element the set lacks, and the table
+checked against `data/basis/`), every other count the `basis` entry's, and
+the forked device layer's 4 merge-sort, 1 bindings and 2 launch-wrapper
+tests, here on the gfx1200 too, with the `hip` preset's
+`libfb_recipes_kernels.so`. With `--no-default-features` the tier-3 set,
+the two included, passes those counts plus 7 and 15; `cargo tree` for them shows no wwr crate, and none of
+their test binaries has `libwwr_capi` under `NEEDED`. With the Cartesian
+refusal removed, or the Angstrom-to-bohr conversion, a test fails.
+Clippy (`-D warnings`) is clean in both feature sets; rustdoc (`-D
+warnings`) and `cargo fmt --check` are clean. Not run on the RTX 3080; the
+crates touch no device.
