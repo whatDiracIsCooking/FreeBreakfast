@@ -36,8 +36,8 @@ A gate is named by **when it runs**, not by what it contains.
 
 | Gate | When | Runs | Budget |
 | --- | --- | --- | --- |
-| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`; nothing under `rust/` fires either. C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set | under 5 min on a busy card |
-| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set | under 5 min on a busy card |
+| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`, the cargo half when it touches `rust/` (and then neither of the others for those paths). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3 | under 5 min on a busy card |
+| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, when `origin/main...HEAD` touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
 | `nightly` | a timer on this box | everything, unskipped, both languages, plus the cross-backend compile check | none; it has the night |
 
 **The single-backend rule holds for all three.** A gate runs on one card, and
@@ -54,11 +54,25 @@ nothing in the push. Build the `experimental` preset by hand instead. The root
 `CMakeLists.txt` line that adds them is outside both, so it still fires the
 half (`NOT_IN_CPP_SMOKE` in `devtools/test.py`).
 
-**Nothing under `rust/` fires either half**, not even its one `.py` (a
-by-hand doc tool): the Rust rebuild is not C++ the tree builds or Python it
-tests, and its cargo half has not landed (`rust/docs/testing.md`). Until it
-does, `cargo test` by hand is its check, and a PR touching it says so
-(`NOT_GATED` in `devtools/test.py`). Lint still applies at commit.
+**A path under `rust/` fires the cargo half and nothing else**, whatever it
+is: Rust, a `.cu`, its own CMake project, a doc, its one `.py` (a by-hand doc
+tool). The Rust rebuild is not C++ the tree builds or Python it tests
+(`CARGO_FILES` in `devtools/test.py`; `devtools/rust-bindings.py` fires it
+too, beside the Python half, since `fb-device-check` runs it). The cargo half
+is tiers 1 to 3 of `rust/docs/testing.md`, "What runs when", and needs no
+card: `cargo test --no-default-features`, in debug so every contract is on,
+over the workspace members that build without any native library, then
+`cargo doc` with warnings denied over the members whose *default* features
+build without one. Neither list is written down: a member qualifies when no
+package in its own `cargo tree` (normal, dev and build edges, under that
+feature set) declares `links`, which `wwr-sys` and every kernel library's
+`-sys` crate do. So `arena`, `thread_pool` and `planner` are tested without
+their `device` feature, and their docs, which link device items, wait for the
+library. It builds in `rust/target/nodef`, prints each test binary's counts,
+and skips, exit 0, where cargo is absent. Tier 4, the tests on a card, is not
+in a gate yet. At commit, a change under `rust/` runs `devtools/test.py
+cargo-lint`: `cargo fmt --check`, and `cargo clippy --all-targets -D
+warnings` in both of those feature sets; CI's `lint` job runs it too.
 
 **The push gate runs `pr`'s selection on its GPU binaries** (#1126). Its job is
 "is this obviously broken", and before it, its GPU smoke ran every fast case

@@ -4,8 +4,9 @@
 #           passes staged files to a hook, so a tree with pre-existing findings
 #           does not block every commit -- only files you touch are checked.
 #   push:   one test gate, devtools/test.py push. It reads the pushed range
-#           itself and runs the fast Python tier when a .py changed and the
-#           C++ smoke when C++ or a build file did (docs/testing.md "Gates").
+#           itself and runs the fast Python tier when a .py changed, the
+#           C++ smoke when C++ or a build file did, and the cargo half when
+#           a path under rust/ did (docs/testing.md "Gates").
 #
 # No hook REWRITES a file. A formatter run as a hook rewrites whole files
 # behind your back and buries the real diff in restyling. The format is still
@@ -90,6 +91,21 @@ repos:
         language: script
         files: '\.(cppm|cpp|cu|cuh|h|hpp|py)$'
 
+  # Rust's format and lint -- rust/docs/testing.md "What runs when". For a
+  # commit touching rust/, `cargo fmt --check` and `cargo clippy --all-targets
+  # -D warnings` over the workspace (not the staged files: cargo checks
+  # crates, not files), clippy in each feature set that builds without the
+  # wwr library. Checks, never rewrites, like `format`. Skips, with a line,
+  # where cargo is absent: the toolchain is the container's.
+  - repo: local
+    hooks:
+      - id: cargo-lint
+        name: cargo fmt --check, clippy -D warnings (commits touching rust/)
+        entry: devtools/test.py cargo-lint
+        language: script
+        files: '^rust/'
+        pass_filenames: false
+
   # Fixed-width integer types only -- docs/style.md "Integer types". A checker,
   # not a fixer: clang-tidy is advisory here and its google-runtime-int does not
   # flag plain `int`, so this script is what holds the rule. Stdlib-only
@@ -152,13 +168,14 @@ repos:
   # commit. It always runs and decides for itself what to test: pre-commit
   # exports the pushed range as PRE_COMMIT_FROM_REF/PRE_COMMIT_TO_REF, and
   # test.py diffs it, so the dispatch -- the Python half on a .py change, the
-  # C++ half on a source, header or CMake change, nothing on a docs-only push
-  # -- lives in one place. A `files:` filter here would be a second copy of
-  # it, and pass_filenames would let pre-commit split a long file list over
-  # several runs of the gate. The C++ half SKIPS itself -- not the push --
-  # when the toolchain or a GPU is absent, so a host-side push is not forced
-  # onto --no-verify. Bypass a one-off with `git push --no-verify`. It is a
-  # local gate, not server-enforced.
+  # C++ half on a source, header or CMake change, the cargo half on anything
+  # under rust/, nothing on a docs-only push -- lives in one place. A
+  # `files:` filter here would be a second copy of it, and pass_filenames
+  # would let pre-commit split a long file list over several runs of the
+  # gate. The C++ half SKIPS itself -- not the push -- when the toolchain or
+  # a GPU is absent, and the cargo half when cargo is, so a host-side push is
+  # not forced onto --no-verify. Bypass a one-off with `git push --no-verify`.
+  # It is a local gate, not server-enforced.
   - repo: local
     hooks:
       - id: test-push

@@ -236,7 +236,16 @@ Tests run in parallel, so a capture test must not use global capture mode.
 A global capture forbids other threads' unsafe calls, and on the 3080 it
 made a neighbouring pool's create abort or its destroy segfault.
 
-Nothing in ctest or either gate runs cargo. This directory is checked by hand only.
+Nothing in ctest runs cargo. Both gates do, for a diff under `rust/`:
+`devtools/test.py push` and `pr` run tiers 1 to 3, the tier-3 command above
+over every member whose graph declares no `links` under
+`--no-default-features` (found from `cargo tree`, so a new link-free crate
+is gated without being named), then `RUSTDOCFLAGS='-D warnings' cargo doc
+--no-deps` over the members whose default features link nothing, in
+`target/nodef` ([`docs/testing.md`](../docs/testing.md), "Gates", at the
+root). A commit touching `rust/` runs `devtools/test.py cargo-lint`, `cargo
+fmt --check` and clippy with warnings denied in both feature sets, and so
+does CI's `lint` job. Tier 4, on a card, is still checked by hand.
 
 ## Design
 
@@ -251,8 +260,8 @@ gets there in.
 
 ## Order of work
 
-The tree today is `core` alone, one crate per module, and nothing runs cargo
-in the gates. The first steps, in order, each one PR:
+The tree today is `core` alone, one crate per module, and the gates run its
+tiers 1 to 3. The first steps, in order, each one PR:
 
 1. **The section-citation check**, as the first tier-3 test
    ([`documentation.md`](docs/documentation.md), "Narrative: mdBook beside
@@ -270,7 +279,8 @@ in the gates. The first steps, in order, each one PR:
    project ("Build and test"), whose `cuda` and `hip` presets configure
    neither the C++ tree nor `experimental/`.
 3. **The cargo half of the gates**, tiers 1 to 3 for a diff under the crate
-   ([`testing.md`](docs/testing.md), "What runs when").
+   ([`testing.md`](docs/testing.md), "What runs when"). Done: `test.py push`
+   and `pr` run it, and `cargo-lint` at commit and in CI ("Build and test").
 4. **One task through the whole model**, before any module is ported: the
    overlap, which `experimental/rust/s_overlap` already launches, or the
    Coulomb build. Declared with a layout, laid out in an arena, planned once

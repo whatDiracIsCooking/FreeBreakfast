@@ -57,6 +57,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        # cargo resolves the rust/ workspace whole, and wwr-sys is a path
+        # dependency inside deps/WarpWraps.
+        with:
+          submodules: recursive
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
@@ -106,6 +110,18 @@ jobs:
         run: |
           uv run cmake-lint CMakeLists.txt \
             $(git ls-files '*/CMakeLists.txt' 'cmake/*.cmake' ':!:deps/WarpWraps/**')
+      # rust/'s format and lint, as the commit hook runs them: cargo fmt
+      # --check, and clippy -D warnings over the workspace members that build
+      # without the wwr library (devtools/test.py cargo-lint finds them), so
+      # it needs no CMake step. The toolchain is docker/Dockerfile.base's
+      # RUST_VERSION: keep the two in step, or a newer clippy's lints fail
+      # here on code the container passes.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          components: rustfmt, clippy
+      - name: cargo-lint
+        run: devtools/test.py cargo-lint
 
   test:
     runs-on: ubuntu-latest
