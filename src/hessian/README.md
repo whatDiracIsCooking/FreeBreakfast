@@ -2429,6 +2429,62 @@ these geometries the 100-fold tightened solve stalls at 1.6e-12 to
 not reach this. For that reason the measured curve is not a committed
 fixture (#1304).
 
+### Memory
+
+The layout is the SC Hessian's ("Memory" above). Measured for #1283 on the
+Cope TS (C₆H₁₀, CAS(6,6)/cc-pVDZ over cc-pVDZ-JKFIT: nmo 134, naux 650,
+k = 48) on the RTX 3080.
+
+**Setup:**
+- pool `used_high` per step;
+- every adaptive width (the tangents' parts, the product chunk, each W^x
+  chunk) forced to 1 by a local probe, which gives the true minimum.
+
+**The true minimum is 6220 MiB of pool.** That is pre-flight's fold
+exactly (6.074 GiB at `[hessian]`). Step 5 reaches it:
+
+| at the minimum (step 5, inside `mcscf::df_derivatives`) | MiB |
+|---|---:|
+| pipeline products and the device workspace | 444 |
+| `t_b`, k naux nmo² (read again only in step 7) | 4274 |
+| the other t stacks, h̄, Λ and the gradient's kept parts | 110 |
+| `df_derivatives`' block K over every coordinate, 2 naux n_x ncore nao | 1276 |
+| the rest of `df_derivatives` and the Z terms' held | 114 |
+
+The other steps at width 1:
+
+| step | pool, MiB |
+|---|---:|
+| `df_casscf` | 1825 |
+| tangents | 5324 |
+| adjoint and Lagrangian | 5244 |
+| products | 5659 |
+| skeleton | 5360 |
+| rotation | 5034 |
+
+**Outside the pool:**
+- 830 MiB of CUDA stack. The largest kernel launched is `d2eri3<2,2,3>`
+  (9,360 B), so the reservation is (9,360 − 1,024) × 104,448 B
+  (`core/wwr/README.md`, "Kernel stacks outside the pool").
+- About 300 MiB of context and handles.
+
+**The process:**
+- at the minimum, about 7.3 GiB;
+- uncapped, it peaked at 7.9 GiB. Only about 0.6 GiB of that is widths
+  filling the budget.
+
+**Wall clock:** 780 s uncapped, 781 s at the tightest cap pre-flight accepts
+(6540 MiB), and 924 s with every width forced to 1.
+
+The levers that would lower this minimum are filed:
+- `t_b` in pinned host memory: #1308;
+- batching `df_derivatives`' block K: #1309;
+- freeing the t stacks before step 5: #1310;
+- a per-plan stack margin: #1311;
+- never materialising `t_b` (needs FelizJueves): #1312.
+
+#1283 has the ranking and the estimates at twice the size.
+
 ### Tests
 
 `test/gtest/df_pc_nevpt2_hessian_gpu.cpp` (suite `HessianDfPcNevpt2`),
