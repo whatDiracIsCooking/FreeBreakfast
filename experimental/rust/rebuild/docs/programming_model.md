@@ -178,6 +178,143 @@ the Davidson's largest subspace), and a host sizing node that fixes a
 sub-DAG's dimensions before that sub-DAG is planned. The bound is preferred;
 the sizing node is for the case where the bound is too loose to admit.
 
+### The arena is a table and a block
+
+Two pieces, and the first is the one with the content.
+
+**The offset assigner is a pure planner function.** Its input is every
+buffer in the planned DAG with its size, its alignment and its lifetime, an
+interval of the schedule on one stream or a DAG-path relation across streams.
+Its output is an offset per buffer and the block's total. Greedy in start
+order with best-fit placement, the static memory planning a tensor compiler
+does, is enough for the DAGs this tree has; the general problem is hard, and
+"The schedule search" under the open questions says when greedy may not be.
+It touches no device, so it is tier 3
+([`testing.md`](testing.md), "Tiers: where a check lives"), it is fuzzed as a
+pure function ([`testing.md`](testing.md), "Fuzzing"), and its total is the
+committed golden ([`testing.md`](testing.md), "Regression").
+
+**The block is one allocation plus that table.** One contiguous allocation
+per GPU worker per memory kind, made when the plan is instantiated and freed
+when the plan drops, and a `buffer(id)` accessor that returns a slice of the
+length the layout declared, under the debug contract that the id is in the
+calling task's layout. It is the one module that calls the raw allocation
+bindings ("Capabilities are enforced by lints"), and the call is the plain
+device allocation, not the stream-ordered pool the crate also wraps: one
+allocation per plan has nothing for a pool to amortise, and the crate's
+README records `hipMallocFromPoolAsync` deadlocking beside other threads'
+stream work on ROCm 7.2.4, a hazard a plain allocation made before any
+stream work never meets. It is not an allocator.
+There is no allocate or free at run time, so there are no size classes, no
+free lists, no coalescing and no compaction, and nothing for a pool library
+to speed up. A pool is the right tool when sizes arrive in an order nobody
+knows; here every size and lifetime is known before the first run, and the
+headroom and the fragmentation a pool carries are what the table above
+removes.
+
+### Blocks, plans and the process
+
+Three lifetimes, each owning the next.
+
+| | What it is | How many | Lives |
+|---|---|---|---|
+| **Process** | The running binary: one config, one logger, the devices, the worker budget | One | `main` to exit |
+| **Plan** | A DAG with its dimensions fixed, scheduled, placed and admitted: the offset tables, the worker assignment, the sync points | One per calculation; the pipeline's, with its steps' and their iterations' nested inside | Planning to drop, run any number of times between |
+| **Block** | One contiguous allocation of one memory kind on one GPU worker, sized to the plan's peak for that worker and kind | Per top-level plan, one per GPU worker it uses, per kind | The plan's instantiation to its drop |
+
+A run is a plan being executed. It owns nothing: it borrows the plan's
+blocks and workers for its duration and allocates nothing. The process owns
+the devices, the budgets the planner admits against and the threads the
+orchestrator opens around a run, and no memory of its own. There is no
+process-wide pool, because a process block could be sized only two ways:
+by knowing every plan it will serve before allocating, which is a plan of
+plans, and that is the pipeline plan; or by allocating a guess and growing
+when a plan does not fit, which is a pool, with the reallocation and the
+headroom the arena exists to remove. The config fixes the whole calculation
+up front, so the first way is available and is the model as written.
+
+**A sub-DAG has a table but no block.** Its offsets are laid out inside its
+parent's block, in the region the parent's schedule leaves free while the
+sub-DAG runs, and the outputs that outlive it are in the parent's table.
+Only top-level plans allocate. The semi-numerical Hessian's pinned block is
+the top-level plan's, sized to one gradient sub-DAG's peak once, not
+`6 natoms` times.
+
+**The peak is a maximum over the schedule, not a sum.** A block equals its
+plan's peak, the largest total of simultaneously live buffers under the
+schedule, and every run reaches it at some instant, so no design runs the
+plan in less. The SCF step's scratch and the gradient step's alias in time
+inside the pipeline plan because their lifetimes are disjoint, which is the
+process-wide sharing a pool would do by accident, done on purpose. Two
+top-level plans alive at once hold their sum; the answer is to make them one
+plan, and nesting is how. A plan kept alive after its last run holds its
+block while something else runs, and the answer there is that plans are
+values: drop the finished one.
+
+**Replay allocates nothing.** The coordinates are an edge, not a dimension.
+A geometry optimization, an IRC walk or a molecular-dynamics trajectory is
+one plan run once per geometry, with the same offsets and the same pages,
+and its two allocations are at the start and the end of the calculation.
+What varies with geometry, a screened shell-pair count or a Cholesky rank,
+takes the bound from the dimensions ("Sizes the dimensions do not fix"), so
+memory sits idle at most geometries in exchange for a trajectory that never
+calls the driver, which is the right trade inside a loop. Even a sizing node
+that re-plans a sub-DAG per run allocates nothing: the parent reserves the
+sub-DAG's region at its bound, and re-planning recomputes a table inside it.
+
+**Concurrency is a width the planner admits.** Two sub-DAGs in flight cannot
+alias, so each one adds its peak to the parent's block. How many of the
+independent sub-DAGs run at once, the displacements, the fragments, the
+roots, is the smaller of what memory admits and what the workers allow, from
+one up, and both numbers are the plan's. Serializing is how a plan fits;
+parallelism is the room the chosen order leaves, as the first section says.
+The reduce at the join combines the partials in the declared order whatever
+the width, so the width is a planning decision and not a correctness one.
+
+### Memory kinds
+
+| Kind | Owner | Admitted against | How it is held |
+|---|---|---|---|
+| Device | The GPU worker | The per-GPU device cap | One block per plan |
+| Pinned host | The GPU worker whose copies it stages | The per-GPU pinned cap, and the sum over a node's workers within the host's available memory | One block per plan, allocated portable |
+| Pageable host | Nobody; the operating system's | Not modelled | `Vec`, owned by the plan when it is part of the DAG |
+
+**Pinned memory is per GPU.** Physically it is the node's, page-locked host
+RAM any card can read, and the C ABI's portable flag is set on both backends
+so that fact does not depend on the unified address space. But every pinned
+buffer exists to feed one GPU's copy engines, and its lifetime is bounded by
+a copy on that GPU's stream, so its owner is that GPU worker, as the C++
+tree's `DeviceResources` already has it. A GPU worker is then one
+self-contained unit, its streams, its device block and its pinned block,
+admitted together against the per-GPU caps, and NUMA locality comes free
+from allocating the block on the worker's own thread. The node is a cap and
+not an owner: the sum of a node's pinned blocks must fit the host's memory
+less a margin, which is the C++ `check_pinned_node` check carried over. Host
+data broadcast to several cards is placed in one consumer's pinned block and
+read across, which the portable flag makes legal and the "GPUs on one node"
+row of the worker table prices, or staged once per card; both are placement.
+Pinning costs milliseconds and locks pages, so once per plan, reused every
+run, is where plan-once-run-many pays most.
+
+**Pageable host memory is not an arena.** The arena exists for memory that
+is admitted against a budget and whose peak must be a planned number.
+Pageable host memory is neither: the config, the basis, the planner's own
+tables and a file writer's buffer are the operating system's business, and
+`Vec` is the right tool. Making an arena the backend for `Vec` means the
+unstable allocator API or a third-party `Vec` across every host type, for no
+property the model asks for. Plan-once-run-many gives the host side what
+matters without an allocator: a host buffer that is part of the DAG is owned
+by the plan, allocated when the plan is built and reused every run. The C++
+footprint's rule carries over unchanged: large host-side data is pinned,
+where it is counted, and a step that would move something big to pageable
+memory moves it to pinned memory instead.
+
+**What no arena reaches.** A vendor routine that allocates internally, as
+some solver paths do whatever workspace they are handed, is outside every
+arena. The answer is the one the C++ tree uses, the `lwork` and
+`*_workspace_bytes` queries so the routine has no reason to allocate, and
+the memory golden is what notices when one does anyway.
+
 ## Plan once, run many
 
 The replayed computations in this tree share one property: their dimensions
@@ -217,7 +354,8 @@ distribution, and only one of them costs a task's author anything.
   semi-numerical Hessian, the roots of a state average: independent sub-DAGs,
   joined by a small reduce at the end (a sum of fragment energies, a Hessian
   assembled from gradients). The orchestrator gets this for free by placement.
-  Nothing inside the tasks changes.
+  Nothing inside the tasks changes. How many run at once is the width the
+  planner admits ("Blocks, plans and the process").
 - **Within a task.** The amplitudes of a coupled-cluster iteration, the
   Coulomb build over slices of the shell-pair list: one task's work sliced
   over workers, a broadcast in and a reduce out. This is the partition a task
@@ -229,20 +367,152 @@ worker of any topology.
 
 ## Workers are a hierarchy
 
-A worker is a stream, a GPU, or a node, and the levels nest. An edge's kind
-and size are the same at every level; only the cost differs, and the
-orchestrator prices it by where the two ends landed:
+A worker is a thread, a stream, a GPU, or a node, and the levels nest. An
+edge's kind and size are the same at every level; only the cost differs, and
+the orchestrator prices it by where the two ends landed:
 
 | Edge crosses | Broadcast is | Reduce is |
 |---|---|---|
+| Threads on one host | A shared pointer | An ordered accumulate into one buffer |
 | Streams on one GPU | A shared pointer | An ordered accumulate into one buffer |
 | GPUs on one node | A device-to-device copy per card | Partials copied to one card, or a peer reduce |
 | Nodes | A network transfer | A network reduce |
 
 The single-GPU case is the degenerate one: broadcast is a pointer, reduce is
 an in-place accumulate, and the workers are streams. One DAG description
-serves all three rows, which is the point of wanting all three. The transport
+serves every row, which is the point of wanting all of them. The transport
 behind the lower rows is an orchestrator detail, decided later and not here.
+
+### CPU workers
+
+A CPU node is a file write, a host decision between runs of a sub-DAG, or a
+small host-side assembly. It runs on a CPU worker, which is one thread the
+orchestrator owns. The needs here are meagre: the products written when a
+step finishes, an intermediate tensor dumped for debugging, a convergence
+check. The design is sized to them, and it is enforced rather than hoped for,
+because the place a thread count gets out of hand is never the one that was
+designed.
+
+**A run owns a fixed set of threads.** At the start of a run the orchestrator
+opens one `std::thread::scope` and creates `n_cpu` CPU workers and one thread
+per stream worker inside it; the scope joins them all when the run ends. A
+ready queue of node ids feeds the CPU workers, and a stream worker's thread
+has its device made current for the life of the run
+([`gpu_layer.md`](gpu_layer.md), "Layering"). No node is ever given a thread
+of its own, so the thread count is a property of the plan, fixed at planning,
+and not of the DAG's size. "Too many threads" is then impossible for the same
+reason "too much memory" is once the arena is laid out: there is no counter to
+check because there is no spawn in the loop.
+
+**Sub-DAGs borrow their parent's workers.** This is where a count would blow
+up otherwise. The semi-numerical Hessian is `6 natoms` gradient sub-DAGs, and
+if each opened a scope of its own, one config line would make hundreds of
+threads. The rule is the arena rule restated: a sub-DAG's arena is carved
+from its parent's, and a sub-DAG's nodes are scheduled onto its parent's
+workers. Only the top-level run owns threads. Nesting adds nodes to the
+queue, never workers.
+
+**The count is a budget, admitted beside memory.** `n_cpu` defaults to the
+host's `available_parallelism` less the stream workers' threads, floored at
+one, and the config overrides it beside the `[memory]` caps. A placement that
+needs more CPU workers than the budget is refused in the same admission pass
+that refuses an arena that does not fit.
+
+**Fan-out is nodes, not a pool inside a task.** Writing three files when the
+RHF step finishes is three CPU nodes with no edge between them, each reading
+an edge from the step; the orchestrator sees three ready nodes and runs them
+at once. A task that opened a pool of its own to do the same would hide the
+parallelism from the planner and would log from threads that carry no task
+record ([`diagnostics.md`](diagnostics.md), "The task context"). One thread
+runs one node, and the orchestrator sets the record on that thread before the
+node starts, so the record needs no forwarding. A debugging dump in the middle
+of an iteration has the same shape: a device-to-pinned copy node on the
+stream, then a CPU write node that depends on it and feeds nothing. The next
+iteration's GPU work has no edge to the write, so it proceeds while the write
+runs, and the overlap costs the author nothing. The model makes two things
+explicit that a hand-written dump would leave implicit: the pinned buffer is
+in the layout, with its lifetime extended to the writer's end, so admission
+counts it; and under plan-once-run-many a dump switched on is a different
+plan, not a branch inside a task.
+
+**The standard library, and no pool crate.** What the orchestrator needs is a
+queue, a condition variable and the scoped threads, under a hundred lines,
+most of them the loop that pops a node id and runs it. Shutdown is the
+scope's join. A panic needs no poisoning story: a release build aborts and a
+test build propagates it through the join ([`diagnostics.md`](diagnostics.md),
+"Panics and profiles"). The work that would justify a dependency is the
+scheduler, readiness counts and the choice of which ready node goes to which
+worker, and no crate has it in the DAG-with-placement shape the model wants,
+so it is written under either choice. The usual crates would each add
+something unwanted. Rayon is a work-stealing scheduler, and stealing is
+placement, which is the orchestrator's; its idle workers spin before they
+sleep; and a stream worker is a thread dedicated to one device, which a
+general pool has no notion of. Tokio is for many sockets, and its file I/O is
+a blocking thread pool underneath. The `threadpool` crate's `'static` bound on
+a job forces every edge buffer behind an `Arc` and defeats the scoped borrow.
+The workers live behind one type in one module, so that if a profile ever
+asked for stealing on the CPU side a crate could slot in behind the same type.
+
+**What is tested.** Every node runs exactly once, in a topological order, on
+no more threads than the plan said. The last is a tier-3 test
+([`testing.md`](testing.md), "Tiers: where a check lives") that reads the
+`Threads:` line of `/proc/self/status` after a device-free run and compares it
+to the plan's worker total plus the main thread. It is the one check that
+catches what a lint cannot see: a linked host library opening a pool of its
+own at load, as a host BLAS does. If one is ever linked, its thread count is
+set to one at initialization, and this test is what notices when that slips.
+
+### Capabilities are enforced by lints
+
+Three things a task may not do are each held by one module or one crate:
+allocating is the arena's ("Memory: layouts and arenas"), spawning is the
+worker module's, and `unsafe` is the wrappers'. Each is a lint in the
+manifest's `[lints]` table that
+[`documentation.md`](documentation.md) ("Code: rustdoc") already uses for
+`missing_docs`, so a violation is a build failure in every invocation, the
+gates and an editor alike, and not a convention a review has to remember.
+
+**Spawning.** `std::thread` cannot be removed from the standard library, but
+clippy's `disallowed_methods` makes calling it a compile error everywhere but
+the one module with the `allow`:
+
+```toml
+# clippy.toml
+disallowed-methods = [
+  { path = "std::thread::spawn", reason = "workers belong to the orchestrator" },
+  { path = "std::thread::scope", reason = "workers belong to the orchestrator" },
+  { path = "std::thread::Builder::spawn", reason = "workers belong to the orchestrator" },
+  { path = "std::thread::Builder::spawn_scoped", reason = "workers belong to the orchestrator" },
+]
+```
+
+The manifest does the rest: rayon and tokio are not dependencies, and a pool
+crate arriving later is a `Cargo.toml` diff a review sees.
+
+**`unsafe`.** The rebuild's `unsafe` is the FFI into `wwr-sys` and the
+libraries behind it, the arena over the raw allocation bindings, and the two
+`libc` calls in `core::log`. Nothing else needs it, and the lints keep it
+there. `unsafe_code` is rustc's own lint, and `forbid` is the level that
+cannot be allowed back, so it is set per crate: once the workspace is split
+([`design.md`](design.md), "Order of work"), the `-sys` wrappers and the arena
+are crates of their own and every other crate forbids, and until then the one
+crate denies with an `allow` on the wrapper modules alone. Where `unsafe` is
+allowed, clippy's `undocumented_unsafe_blocks` requires a `// SAFETY:`
+comment on every block, which turns the comment the crate already writes into
+a rule and names the blocks that lack one, and
+`multiple_unsafe_ops_per_block` keeps each block to one operation so the
+comment justifies exactly one thing. Miri covers what a lint cannot
+([`testing.md`](testing.md), "Sanitizers").
+
+```toml
+[lints.rust]
+unsafe_code = "forbid"              # every crate but the wrappers and the arena
+
+[lints.clippy]
+disallowed_methods = "deny"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+```
 
 ## Reproducibility across placements
 
@@ -334,3 +604,8 @@ itself, split it there.
 - **Transport.** NCCL, MPI, or something else moves the lower rows of the
   worker table. Nothing in the model depends on the choice, and nothing here
   decides it.
+- **Pinned blocks and NUMA.** On a multi-socket node, pinned pages on the
+  GPU's own socket copy faster than pages across the interconnect. A pinned
+  block is allocated on its worker's thread, so pinning that thread to the
+  GPU's socket would place the block without the planner knowing. Whether
+  the gap is worth the pinning is a measurement on such a node.

@@ -10,14 +10,26 @@ edge declares its size, its kind (broadcast, reduce, gather, point-to-point),
 its reduction order and its lifetime. The orchestrator derives fork and sync
 points, concurrency, placement, admission and transport, and lays every
 buffer out in an arena at planning, so a run allocates nothing and the
-footprint is the plan rather than a formula beside the code. A DAG is planned
+footprint is the plan rather than a formula beside the code. The arena is a
+pure offset assigner plus one block per GPU worker per memory kind, device
+and pinned, allocated when a plan is instantiated and freed when it drops;
+a sub-DAG carves from its parent's block, the process owns no pool, and
+pageable host memory is `Vec`. A DAG is planned
 once and run many times, and the same DAG runs unchanged on one GPU, a node
 of GPUs or many nodes. The C++ pipeline is the model's one-device, one-order
-instance.
+instance. Workers are a hierarchy of threads, streams, GPUs and nodes; a run
+owns a fixed set of threads from the standard library and no pool crate,
+sub-DAGs borrow their parent's workers, and the thread count is a budget
+admitted beside memory. The three things a task may not do, allocate, spawn
+and write `unsafe`, are each one module's or one crate's, and lints in the
+manifest enforce them: clippy's `disallowed_methods` for spawning, and
+`unsafe_code = "forbid"` in every crate but the `-sys` wrappers and the arena,
+so `unsafe` stays at the FFI and the raw allocation bindings and is as small
+as the port can make it.
 
 The sections below lean on three of its terms: the *sharing* an edge's kind
 declares, the *layout* a task declares and the *arena* the orchestrator lays
-it out in, and *workers*, which are streams, GPUs or nodes.
+it out in, and *workers*, which are threads, streams, GPUs or nodes.
 
 ## Testing
 

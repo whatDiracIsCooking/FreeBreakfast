@@ -128,9 +128,11 @@ sticky fault stops everything after it anyway.
 **The current device is the stream's, and the caller made it so.** A launch
 on a stream of a device that is not current fails at the runtime. Today the
 C++ pipeline runs on one device and never changes it; the orchestrator places
-tasks on many, so it makes a worker's device current on the launching thread
-(`ScopedDeviceIndex`, which the crate already has) before it calls any
-wrapper. The wrapper does not check, because it cannot without a runtime call
+tasks on many, so each stream worker is a thread of its own with its device
+made current for the life of the run (`ScopedDeviceIndex`, which the crate
+already has, held by that thread; [`programming_model.md`](programming_model.md),
+"CPU workers"), and every wrapper a task calls runs on it. The wrapper does
+not check, because it cannot without a runtime call
 of its own; the safe wrapper's contract (tier 2) can, in debug builds.
 
 **Library calls go straight from Rust through `wwr-sys`.** BLAS, the
@@ -250,11 +252,14 @@ checked at tier 4 by handing the wrapper exactly the bytes it asked for under
 
 **Alignment is part of the kernel's contract.** Today every buffer a
 launcher receives came from the pool, whose allocations are 256-byte
-aligned, and nothing had to say so. Under an arena the layout decides where a
-buffer starts, so the alignment a kernel assumes must be stated. The C header
-exports it, one tree-wide `FB_DEVICE_ALIGNMENT` unless a kernel needs more,
-the layout honours it for every buffer it places, scratch and output alike,
-and the safe wrapper checks each pointer against it at tier 2. The workspace
+aligned, and nothing had to say so. Under an arena the offset assigner decides
+where a buffer starts inside a block ([`programming_model.md`](programming_model.md),
+"The arena is a table and a block"), so the alignment a kernel assumes must
+be stated. The C header exports it, one tree-wide `FB_DEVICE_ALIGNMENT`
+unless a kernel needs more, the assigner honours it for every buffer it
+places, scratch and output alike, which is enough because the block itself
+comes from the plain device allocation and is at least that aligned on both
+vendors, and the safe wrapper checks each pointer against it at tier 2. The workspace
 query's internal partitioning follows the same constant, so a wrapper never
 assumes more of its scratch than the arena gave.
 

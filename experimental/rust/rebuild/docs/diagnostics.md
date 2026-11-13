@@ -11,8 +11,9 @@ files that pair `steady_clock` reads by hand.
 
 The design leans on the programming model's terms
 ([`programming_model.md`](programming_model.md)): a *task*, the unit the
-orchestrator admits, times, tests and retries; a *worker*, which is a stream, a
-GPU or a node; and the DAG's *sync points*, which the orchestrator derives.
+orchestrator admits, times, tests and retries; a *worker*, which is a thread, a
+stream, a GPU or a node; and the DAG's *sync points*, which the orchestrator
+derives.
 
 ## Timing and profiling
 
@@ -119,9 +120,9 @@ The rules that go with the table:
 
 The line format is the C++ one,
 `[time] [tid] [level] [file:line] message`, and the thread id in it is not
-enough to tell workers apart: one host thread enqueues to several streams, and
-a task's worker is the stream, GPU or node it was placed on, not the thread
-that drove it.
+enough to tell tasks apart: a worker's thread runs every task placed on that
+worker over the run, the id is a number a reader would have to map to a
+worker by hand, and at tier 3 the fake workers share one thread anyway.
 
 So the orchestrator sets a thread-local *current task* record, the task's name
 and its worker, for exactly the span of the task's run, and the backend reads
@@ -133,6 +134,12 @@ the code inside it.
 
 The same record is what error context reads (below), so a log line and an
 error from the same task name it the same way.
+
+The record is thread-local, and that is enough because one thread runs one
+node at a time: a worker is a thread the orchestrator owns, and host work
+that would fan out is written as nodes the DAG can see rather than as a pool
+inside a task ([`programming_model.md`](programming_model.md), "CPU
+workers"). No record is ever forwarded into a pool, because no task has one.
 
 ## Errors
 
@@ -165,7 +172,10 @@ The programming model makes a run allocate nothing: the arena is laid out at
 planning, and admission is where a plan can be refused. So the orchestrator
 never meets an `Allocation` error while a DAG runs, and it has no retry to
 attempt there; the C++ tree's rule that a failed create or allocation aborts
-(`CreatePolicy`) carries over unchanged. An `Allocation` error is a value in
+(`CreatePolicy`) carries over unchanged, and the one allocation a plan makes,
+its blocks at instantiation ([`programming_model.md`](programming_model.md),
+"Blocks, plans and the process"), is under it: a card that another process
+has emptied below the admitted budget aborts there. An `Allocation` error is a value in
 one place only: admission refusing a plan that does not fit a worker's
 budget, before anything is launched. It keeps the kind, and exit code 2,
 because it is the same failure reported earlier.
@@ -281,10 +291,5 @@ build pays nothing for a check and a debug build fails loudly on one.
   than checking the level in a hot loop. Whether the trace lines in inner loops
   are worth that, or whether the level check is already free enough, is a
   measurement.
-- **The task context across threads.** The current-task record is
-  thread-local, which is right while one thread runs one task. A task whose
-  host work fans out over a thread pool would log from threads that carry no
-  record. Whether the orchestrator forwards the record into the pool, or such
-  a task is split into tasks the DAG can see, is the programming model's call.
 - **How the sync-every-task switch is set.** An environment variable (as
   `CUDA_LAUNCH_BLOCKING` is), a config key, or a debug-build default.
