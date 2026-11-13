@@ -19,7 +19,7 @@
 //! first, and [`critical!`] hands `format_args!` (formatted only when
 //! written) to [`log_at`](fb_core_log::log_at).
 //!
-//! ```ignore
+//! ```text
 //! use fb_core_diagnostics::{critical, debug, gpu_must};
 //! use fb_core_error_handling::Result;
 //!

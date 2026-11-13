@@ -29,13 +29,21 @@ push: what `git push` runs, by pre-commit's pre-push stage. It reads the
   in debug over the workspace members that build without any native library
   (found from `cargo tree`, not named), then `cargo doc` over them with
   warnings denied, in rust/target/nodef; it prints each test binary's counts.
-  It needs no card and skips itself, exit 0, where cargo is absent.
+  It needs no card and skips itself, exit 0, where cargo is absent. Then
+  tier 4, once those pass: rust/'s CMake project built for the preset's
+  backend (rust/build-<backend>), and under that card's lock every test of
+  the crates the diff affects that link the library (each changed file's
+  crate and its reverse dependents, from `cargo metadata`), one test thread,
+  in rust/target/<backend>. A device case is `#[ignore = "tier 4: needs a
+  GPU"]`: it runs (--include-ignored) only when wwr sees a device, and every
+  case that did not run is printed in one list with its reason.
 
 pr: the gate before opening a PR (milestone-run requires it). Configure,
   build, ctest, then the fast pytest set. Of the C++ cases only each family's
   representative runs, as devtools/test_families.py lists them (an exempt
   family runs nothing, a flagged one runs whole); the nightly runs the rest.
-  The cargo half too, when origin/main...HEAD touches rust/ (or cannot be read).
+  The cargo half too, when origin/main...HEAD touches rust/ (or cannot be read);
+  its tier 4 on the test preset's card, over every crate with --all.
   The GPU entries that can share a process run as one gtest process per GPU
   binary; ctest runs the rest. Logged to <report>/pr-<stamp>-<rev>-<preset>.log,
   and its result line appended to <report>/summary.log.
@@ -1014,6 +1022,15 @@ def link_free_crates() -> tuple[list[str], list[str]]:
     )
 
 
+def cargo_binary(running: re.Match[str]) -> str:
+    """The test binary a CARGO_RUNNING line starts, as the gate names it."""
+    what = running.group(2)
+    # `unittests src/lib.rs (target/.../deps/fb_core_log-0123abcd)`
+    if b := re.search(r"\(.*/([^/]+?)(-[0-9a-f]+)?\)$", what):
+        what = f"{b.group(1)} {what[: b.start()].strip()}"
+    return f"doc-tests {what}" if running.group(1) == "Doc-tests" else what
+
+
 def cargo_counts(lines: list[str]) -> tuple[list[str], list[int]]:
     """cargo test's output read into one line per test binary that ran a
     case, and the [passed, failed, ignored] totals. A binary with no libtest
@@ -1026,11 +1043,7 @@ def cargo_counts(lines: list[str]) -> tuple[list[str], list[int]]:
         if m := CARGO_RUNNING.match(line):
             if name is not None:
                 rows.append(f"{name}: no libtest counts (harness = false, or died)")
-            what = m.group(2)
-            # `unittests src/lib.rs (target/.../deps/fb_core_log-0123abcd)`
-            if b := re.search(r"\(.*/([^/]+?)(-[0-9a-f]+)?\)$", what):
-                what = f"{b.group(1)} {what[: b.start()].strip()}"
-            name = f"doc-tests {what}" if m.group(1) == "Doc-tests" else what
+            name = cargo_binary(m)
         elif (m := CARGO_RESULT.match(line)) and name is not None:
             counts = [int(x) for x in m.groups()]
             totals = [t + c for t, c in zip(totals, counts, strict=True)]
@@ -1109,6 +1122,219 @@ def cargo_half(tag: str, jobs: str, log: Path) -> int:
                 say(f"{tag}:   {line}", err=True)
             return proc.returncode
         say(f"{tag}:   {name}: ok ({time.monotonic() - start:.0f}s)")
+    return 0
+
+
+# --- the cargo half's tier 4 -------------------------------------------------
+
+# A device case is declared once, on the case: `#[ignore = "tier 4: needs a
+# GPU"]` (rust/docs/testing.md, "Selecting GPU tiers in cargo"). A plain
+# `cargo test` lists it as ignored, with that reason; tier 4 runs it with
+# --include-ignored, and only once wwr itself has seen a device.
+TEST_IGNORED = re.compile(r"^test (.+?) \.\.\. ignored(?:, (.*))?$")
+# Files that lie in no crate but belong to one, determinator's path rules
+# (rust/docs/testing.md, "Selection"): a module's forked kernels belong to
+# every kernel library's -sys crate (a member that declares `links`), since
+# one kernel library links another (libfb_integrals_kernels.so links the
+# recipes'); rust/docs/ is read by fb-doc-check
+# alone, and devtools/rust-bindings.py by fb-device-check. Any other file
+# outside every crate affects the whole workspace.
+KERNELS_PATH = re.compile(r"^rust/[^/]+/kernels/")
+DOC_PATHS = re.compile(r"^rust/docs/|^rust/README\.md$")
+# The C ABI library, relative to rust/'s CMake build directory (capi_dir.rs).
+CAPI_LIB = "deps/WarpWraps/src/capi/libwwr_capi_runtime_api.so"
+# Run in a child, so the gate itself never opens the runtime: the status and
+# the count wwr_get_device_count gives, the call every device case starts by.
+DEVICE_PROBE = (
+    "import ctypes, sys\n"
+    "n = ctypes.c_int(0)\n"
+    "status = ctypes.CDLL(sys.argv[1]).wwr_get_device_count(ctypes.byref(n))\n"
+    "print(status, n.value)\n"
+)
+
+
+def affected_crates(files: list[str] | None, meta: dict) -> set[str]:
+    """The workspace members a diff can have broken: the crate each changed
+    file lies in, and every member that depends on one of them, through any
+    edge (a dev-dependent's tests use it too), transitively. `files` are
+    repo-relative; None, or a file under rust/ that lies in no crate and no
+    path rule covers, affects every member. Read from `cargo metadata`'s
+    packages and resolve graph."""
+    ids = set(meta["workspace_members"])
+    root = Path(meta["workspace_root"])
+    dirs = {}
+    for p in meta["packages"]:
+        if p["id"] in ids:
+            rel = Path(p["manifest_path"]).parent.relative_to(root)
+            dirs[f"rust/{rel.as_posix()}/"] = p["name"]
+    every = set(dirs.values())
+    if files is None:
+        return every
+    kernel_crates = {
+        p["name"] for p in meta["packages"] if p["id"] in ids and p.get("links")
+    }
+    hit: set[str] = set()
+    for f in files:
+        if not CARGO_FILES.match(f):
+            continue
+        if KERNELS_PATH.match(f):
+            hit |= kernel_crates
+            continue
+        if f == "devtools/rust-bindings.py":
+            f = "rust/device_check/"
+        elif DOC_PATHS.match(f):
+            f = "rust/doc_check/"
+        owner = max((d for d in dirs if f.startswith(d)), key=len, default=None)
+        if owner is None:
+            return every
+        hit.add(dirs[owner])
+    names = {p["id"]: p["name"] for p in meta["packages"]}
+    users: dict[str, set[str]] = {}
+    for node in meta["resolve"]["nodes"]:
+        for dep in node["deps"]:
+            users.setdefault(names[dep["pkg"]], set()).add(names[node["id"]])
+    todo = list(hit)
+    while todo:
+        for user in users.get(todo.pop(), set()) & every:
+            if user not in hit:
+                hit.add(user)
+                todo.append(user)
+    return hit
+
+
+def device_probe(build: Path) -> tuple[int, str]:
+    """How many devices wwr sees from this environment, and a line saying
+    so, or 0 and why not."""
+    lib_path = build / CAPI_LIB
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-I", "-c", DEVICE_PROBE, str(lib_path)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return 0, "no device visible: wwr_get_device_count did not return in 120s"
+    try:
+        status, count = (int(x) for x in proc.stdout.split())
+    except ValueError:
+        why = proc.stderr.strip().splitlines()[-1:] or [f"exit {proc.returncode}"]
+        return 0, f"no device visible: the probe could not call wwr ({why[0]})"
+    if status != 0:
+        return 0, f"no device visible: wwr_get_device_count returned status {status}"
+    if count == 0:
+        return 0, "no device visible: wwr_get_device_count found none"
+    return count, f"{count} device(s) visible"
+
+
+def cargo_skips(lines: list[str]) -> list[str]:
+    """Every case cargo test reported ignored, as `<binary>: <case> --
+    <reason>`, the binary named as cargo_counts names it."""
+    skips = []
+    name = "?"
+    for line in lines:
+        if m := CARGO_RUNNING.match(line):
+            name = cargo_binary(m)
+        elif m := TEST_IGNORED.match(line):
+            skips.append(f"{name}: {m.group(1)} -- {m.group(2) or 'no reason given'}")
+    return skips
+
+
+def cargo_tier4(
+    tag: str,
+    cfg: dict[str, str],
+    preset: str,
+    files: list[str] | None,
+    jobs: str,
+    log: Path,
+) -> int:
+    """Tier 4 of the cargo half (rust/docs/testing.md, "What runs when"):
+    every test of the affected crates (affected_crates) that link the
+    library, device cases included, in debug, one test thread, on the card
+    `preset`'s backend names, held whole. Builds rust/'s own CMake project
+    for that backend first (rust/build-<backend>), and builds the crates in
+    rust/target/<backend>. A device case runs only when wwr sees a device
+    under the card lock; otherwise it is reported ignored, and every
+    ignored case is printed in one list with its reason. Skips, exit 0,
+    where cmake is absent: the libraries cannot be built."""
+    backend = backend_of_preset(preset, cfg)
+    if why := toolchain_unavailable():
+        say(f"{tag}: {why}")
+        say(f"{tag}: skipping tier 4 of the cargo half (no library to link)")
+        return 0
+    try:
+        meta = json.loads(cargo_query("metadata", "--format-version", "1"))
+        free = set(link_free_crates()[1])
+    except (CargoError, ValueError, KeyError) as e:
+        say(f"{tag}: tier 4: cannot read the workspace graph: {e}", err=True)
+        return 1
+    crates = sorted(affected_crates(files, meta) - free)
+    if not crates:
+        say(f"{tag}: tier 4: no affected crate links the library -- nothing to run")
+        return 0
+    say(f"{tag}: tier 4 on the {backend} card: {len(crates)} crate(s), log -> {log}")
+    say(f"{tag}:   {' '.join(crates)}")
+    build = RUST_DIR / f"build-{backend}"
+    steps = [["cmake", "--build", "--preset", backend] + (["-j", jobs] if jobs else [])]
+    if not (build / "CMakeCache.txt").is_file():
+        steps.insert(0, ["cmake", "--preset", backend])
+    for cmd in steps:
+        with log.open("a") as f:
+            f.write(f"--- tier 4: {' '.join(cmd)} ---\n")
+            f.flush()
+            rc = subprocess.run(
+                cmd, cwd=RUST_DIR, stdout=f, stderr=subprocess.STDOUT, check=False
+            ).returncode
+        if rc:
+            say(
+                f"{tag}: tier 4 FAILED: {' '.join(cmd)} exited {rc} -- see {log}",
+                err=True,
+            )
+            return rc
+    env = dict(
+        os.environ,
+        CARGO_TARGET_DIR=str(RUST_DIR / "target" / backend),
+        FB_RUST_BUILD_DIR=str(build),
+    )
+    cmd = ["cargo", "test", *(["-j", jobs] if jobs else [])]
+    cmd += [a for c in crates for a in ("-p", c)] + ["--", "--test-threads=1"]
+    with Card(backend, cfg):
+        count, seen = device_probe(build)
+        say(f"{tag}:   {seen}")
+        if count:
+            cmd.append("--include-ignored")
+        start = time.monotonic()
+        with log.open("a") as f:
+            f.write(f"--- tier 4: {' '.join(cmd)} ---\n")
+            proc = subprocess.run(
+                cmd,
+                cwd=RUST_DIR,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                check=False,
+            )
+            f.write(proc.stdout)
+    lines = proc.stdout.splitlines()
+    rows, (passed, failed, ignored) = cargo_counts(lines)
+    for row in rows:
+        say(f"{tag}:   {row}")
+    say(f"{tag}:   tier 4: {passed} passed, {failed} failed, {ignored} ignored")
+    skips = cargo_skips(lines)
+    if skips:
+        say(f"{tag}: tier 4 skipped {len(skips)} case(s) ({seen}):")
+        for s in skips:
+            say(f"{tag}:   skipped {s}")
+    else:
+        say(f"{tag}: tier 4 skipped: none")
+    if proc.returncode != 0:
+        say(f"{tag}: tier 4 FAILED: cargo test exited {proc.returncode}", err=True)
+        for line in lines[-25:]:
+            say(f"{tag}:   {line}", err=True)
+        return proc.returncode
+    say(f"{tag}:   tier 4: ok ({time.monotonic() - start:.0f}s)")
     return 0
 
 
@@ -1226,6 +1452,26 @@ def version_tuple(v: str) -> tuple[int, ...]:
 def cpp_unavailable(backend: str) -> str | None:
     """Why this machine cannot run the C++ half, or None. The toolchain lives
     in the GPU container, so a host-side push skips rather than fails."""
+    if why := toolchain_unavailable():
+        return why
+    # Device nodes, not nvidia-smi: NVML fails inside a container whose CUDA
+    # runtime works. `default`'s native arch reads a live device at configure.
+    if backend == "hip":
+        if not Path("/dev/kfd").exists():
+            return "no HIP device node (/dev/kfd) -- the GPU smoke needs one"
+    elif not Path("/dev/nvidiactl").exists() or not list(
+        Path("/dev").glob("nvidia[0-9]*")
+    ):
+        return (
+            "no CUDA device node (/dev/nvidia*)"
+            " -- native configure and the GPU smoke need one"
+        )
+    return None
+
+
+def toolchain_unavailable() -> str | None:
+    """Why this machine cannot configure a CMake project of the tree's, or
+    None: cmake and ninja, at the tree's floor."""
     for tool in ("cmake", "ninja"):
         if shutil.which(tool) is None:
             return f"{tool} not found -- the C++ toolchain lives in the GPU container"
@@ -1240,18 +1486,6 @@ def cpp_unavailable(backend: str) -> str | None:
         return (
             f"cmake {m.group(1)} is below this tree's {floor} floor"
             " -- the C++ toolchain lives in the GPU container"
-        )
-    # Device nodes, not nvidia-smi: NVML fails inside a container whose CUDA
-    # runtime works. `default`'s native arch reads a live device at configure.
-    if backend == "hip":
-        if not Path("/dev/kfd").exists():
-            return "no HIP device node (/dev/kfd) -- the GPU smoke needs one"
-    elif not Path("/dev/nvidiactl").exists() or not list(
-        Path("/dev").glob("nvidia[0-9]*")
-    ):
-        return (
-            "no CUDA device node (/dev/nvidia*)"
-            " -- native configure and the GPU smoke need one"
         )
     return None
 
@@ -1426,30 +1660,37 @@ def cmd_push(args: argparse.Namespace, cfg: dict[str, str]) -> int:
         return 0
     failed = []
     rc = 0
+    preset = args.preset or cfg["CMAKE_PRESET"]
+    if cargo and preset == "auto":
+        # Once, for the cargo half's tier 4 and the C++ half alike: the card
+        # the gate holds decides both backends.
+        preset = push_auto_preset(cfg) if cpp else auto_preset()
     if py:
         say("push: Python half (fast pytest set) ...")
         if prc := python_half("push", cfg, None):
             failed.append("python")
             rc = rc or prc
     if cargo:
-        say("push: cargo half (tiers 1 to 3, link-free) ...")
+        say("push: cargo half (tiers 1 to 3, link-free; then tier 4) ...")
         report = report_dir_of(cfg["SLOW_TIER_REPORTS"])
         stamp = time.strftime("%Y%m%d-%H%M%S")
         log = report / f"push-{stamp}-{tree_rev()[0]}-cargo.log"
-        if crc := cargo_half("push", args.jobs or cfg["BUILD_JOBS"], log):
+        jobs = args.jobs or cfg["BUILD_JOBS"]
+        crc = cargo_half("push", jobs, log)
+        if crc == 0:
+            crc = cargo_tier4("push", cfg, preset, files, jobs, log)
+        else:
+            say("push: tier 4 not run -- tiers 1 to 3 failed")
+        if crc:
             failed.append("cargo")
             rc = rc or crc
-    preset = None
     if cpp:
-        crc, preset = cpp_push(
-            cfg,
-            args.preset or cfg["CMAKE_PRESET"],
-            args.jobs or cfg["BUILD_JOBS"],
-            args.all,
-        )
+        crc, preset = cpp_push(cfg, preset, args.jobs or cfg["BUILD_JOBS"], args.all)
         if crc:
             failed.append("cpp")
             rc = rc or crc
+    elif not cargo:
+        preset = None
     rev, _ = tree_rev()
     ran = (
         ",".join(h for h, on in (("cpp", cpp), ("python", py), ("cargo", cargo)) if on)
@@ -1848,6 +2089,15 @@ def cmd_pr(
                     say(f"{tag}: clang-tidy reported findings (advisory)", log=log)
     if do_cargo:
         crc = cargo_half(tag, jobs, log)
+        if crc == 0:
+            # --all, or a diff git cannot read: every crate's tier 4.
+            try:
+                files = None if args.all else changed_files(dict(os.environ))
+            except DiffError:
+                files = None
+            crc = cargo_tier4(tag, cfg, test_preset or preset, files, jobs, log)
+        else:
+            say(f"{tag}: tier 4 not run -- tiers 1 to 3 failed", log=log)
         rc = rc or crc
     if do_py:
         if results is not None:

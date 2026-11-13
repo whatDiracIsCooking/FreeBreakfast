@@ -42,6 +42,7 @@ fn warm_up() {
 /// rounding: declared equals allocated, and the drop frees it all. The one
 /// check that the table's total is the whole of the block's cost.
 #[test]
+#[ignore = "tier 4: needs a GPU"]
 fn declared_equals_allocated() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     warm_up();
@@ -73,6 +74,7 @@ fn declared_equals_allocated() {
 /// all NaN in every profile, and a device row reads back all `0xFF` in a
 /// debug build. The check that a row read before it is written fails.
 #[test]
+#[ignore = "tier 4: needs a GPU"]
 fn blocks_are_filled() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let n = 1000;
@@ -105,6 +107,7 @@ fn blocks_are_filled() {
 
 /// What the child does, by `FB_ARENA_CHILD`; nothing when unset.
 #[test]
+#[ignore = "tier 4: needs a GPU"]
 fn child_entry() {
     if std::env::var("FB_ARENA_CHILD").as_deref() == Ok("too_big") {
         let mut b = TableBuilder::<Device>::new();
@@ -117,10 +120,18 @@ fn child_entry() {
 /// does, with a critical line naming the kind, the bytes and the memory
 /// free.
 #[test]
+#[ignore = "tier 4: needs a GPU"]
 fn an_allocation_the_card_cannot_hold_aborts() {
     use std::os::unix::process::ExitStatusExt;
     let out = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "child_entry", "--nocapture", "--test-threads=1"])
+        // The child's case is a device case too: --include-ignored runs it.
+        .args([
+            "--exact",
+            "child_entry",
+            "--include-ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
         .env("FB_ARENA_CHILD", "too_big")
         .output()
         .unwrap();

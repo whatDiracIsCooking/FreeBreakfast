@@ -111,6 +111,7 @@ mod tests {
     /// owner's stream (here: records the event on it), keeps the owner alive
     /// while it lives, and lets go when it drops.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn binds_and_retains_the_owners_stream() {
         let owner = Rc::new(OwnedStream::new(0));
         let h = Bound::try_new(owner.clone()).unwrap();

@@ -87,6 +87,7 @@ fn ulps(a: f64, b: f64) -> u64 {
 /// both mirror positions get the closed form within 4 ulp, the diagonal
 /// stays 0.
 #[test]
+#[ignore = "tier 4: needs a GPU"]
 fn one_ss_record_is_the_closed_form_overlap() {
     let (alpha, beta) = (1.0_f64, 3.0_f64);
     let (c_a, c_b) = (0.7_f64, 1.3_f64);

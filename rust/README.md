@@ -103,10 +103,16 @@ broken promise; a contract would turn it into a panic.
 cd rust
 cmake --preset cuda                    # or hip; the backend has no default
 cmake --build --preset cuda            # libwwr_capi_runtime_api.so and the kernel libraries
-cargo test --workspace                 # debug: the contract tests run too
+cargo test --workspace -- --include-ignored  # debug, device cases and contract tests
 cargo test --workspace --release       # the contract tests are skipped
 cargo test -p fb-core-arena            # one crate, with only its own features
 ```
+
+A device case is `#[ignore = "tier 4: needs a GPU"]`, so a plain `cargo
+test` lists it as ignored, and `-- --include-ignored` runs it; `#[ignore]`
+means nothing else here ([`testing.md`](docs/testing.md), "Selecting GPU
+tiers in cargo"). The gates run it for the crates a diff affects, on the
+card they hold, and print every case that did not run.
 
 Tier 3, everything that needs neither card nor library, builds with no
 CMake step at all:
@@ -145,7 +151,8 @@ one, which also takes any other CMake build directory, the root's
 `build-experimental` among them. `devtools/doctor.sh` reports which are
 built. Only the `runtime_api` surface of `wwr-sys` is linked.
 
-The GPU tests use device 0 and need room on it for a context. The host-only
+The GPU tests (the ignored ones) use device 0 and need room on it for a
+context. The host-only
 tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
 `fb-core-primitives`, `fb-core-constants`, `fb-atom`, `fb-molecule`,

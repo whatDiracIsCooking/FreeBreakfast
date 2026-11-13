@@ -356,6 +356,7 @@ fn default_n_cpu_leaves_the_stream_threads_and_keeps_one() {
 /// lands. Either fault fails the comparison.
 #[cfg(feature = "device-tests")]
 #[test]
+#[ignore = "tier 4: needs a GPU"]
 fn device_edges_wait_for_the_work_they_consume() {
     use fb_core_wwr::handle::DeviceHandleStream;
     use fb_core_wwr::runtime::tests::{DeviceBytes, ok};

@@ -168,6 +168,7 @@ impl Task for Check {
 /// the derived dependencies orders the reuse. The plan runs twice with the
 /// card's free memory unchanged between: a run allocates nothing.
 #[test]
+#[ignore = "tier 4: needs a GPU"]
 fn a_round_trip_through_the_planner() {
     let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
     let mut dag = Dag::new();
@@ -246,6 +247,7 @@ impl Task for Stage {
 /// sum to at most the run's wall time, since one stream runs them one
 /// after another inside the run. Every bound holds by construction.
 #[test]
+#[ignore = "tier 4: needs a GPU"]
 fn every_gpu_task_has_a_stream_scope() {
     let _turn = TURN.lock().unwrap_or_else(|p| p.into_inner());
     let mut dag = Dag::new();

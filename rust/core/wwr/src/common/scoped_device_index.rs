@@ -87,6 +87,7 @@ mod tests {
 
     /// Needs a GPU: device 0 must exist and have room for a context.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn switches_and_restores() {
         let before = current();
         {
@@ -100,6 +101,7 @@ mod tests {
     /// Needs a GPU. A bad index is an error at the caller's line, and the
     /// current device is left as it was.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn a_bad_index_is_an_error_at_the_caller() {
         let before = current();
         let line = line!() + 1;

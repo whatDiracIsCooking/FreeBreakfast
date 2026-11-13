@@ -267,8 +267,12 @@ Any path under `rust/` (the Rust rebuild, `rust/README.md`) fires the
 tiers 1 to 3, `cargo test --no-default-features` over the workspace members
 whose graph declares no `links` (no `wwr-sys`, no kernel `-sys` crate; found
 by `cargo tree`, never listed), then `cargo doc -D warnings` over those
-whose defaults link nothing. No card, no library, and no tier 4 yet: the
-tests on a card are still run by hand.
+whose defaults link nothing; then tier 4: `rust/`'s CMake project built
+for the gate's card, and under its lock every test of the affected crates
+that link the library (each changed crate and its reverse dependents). A
+device case is `#[ignore = "tier 4: needs a GPU"]`: it runs only when wwr
+sees a device, and the gate prints every case that did not run, with its
+reason (`rust/docs/testing.md` "Selecting GPU tiers in cargo").
 `test.py pr` is the gate
 before a PR: configure, build, then each C++ family's representative and
 nothing else (`devtools/test_families.py`'s set; `--all` runs the whole fast

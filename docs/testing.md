@@ -36,8 +36,8 @@ A gate is named by **when it runs**, not by what it contains.
 
 | Gate | When | Runs | Budget |
 | --- | --- | --- | --- |
-| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`, the cargo half when it touches `rust/` (and then neither of the others for those paths). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3 | under 5 min on a busy card |
-| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, when `origin/main...HEAD` touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
+| `push` | `git push`, by pre-commit's pre-push stage | the C++ half when the push touches C++ outside `experimental/` and `test/experimental/`, the Python half when it touches `.py`, the cargo half when it touches `rust/` (and then neither of the others for those paths). C++: the host binaries' fast set, and of the GPU binaries each family's representative, as `pr` (#1126; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates on the card | under 5 min on a busy card |
+| `pr` | by hand before opening a PR; `milestone-run` requires it | C++: each family's representative and nothing else (#989; `--all`, the whole fast set). Python: the fast set. Cargo: tiers 1 to 3, then tier 4 of the affected crates on the test preset's card (`--all`, every crate's), when `origin/main...HEAD` touches `rust/` (`--only cargo` alone) | under 5 min on a busy card |
 | `nightly` | a timer on this box | everything, unskipped, both languages, plus the cross-backend compile check | none; it has the night |
 
 **The single-backend rule holds for all three.** A gate runs on one card, and
@@ -69,8 +69,27 @@ feature set) declares `links`, which `wwr-sys` and every kernel library's
 `-sys` crate do. So `arena`, `thread_pool` and `planner` are tested without
 their `device` feature, and their docs, which link device items, wait for the
 library. It builds in `rust/target/nodef`, prints each test binary's counts,
-and skips, exit 0, where cargo is absent. Tier 4, the tests on a card, is not
-in a gate yet. At commit, a change under `rust/` runs `devtools/test.py
+and skips, exit 0, where cargo is absent.
+
+**Tier 4, the tests on a card, follows once tiers 1 to 3 pass.** It builds
+`rust/`'s own CMake project for the backend of the gate's preset
+(`rust/build-<backend>`, configured the first time), then, holding that card
+as the C++ half does, runs `cargo test` in `rust/target/<backend>` with
+`FB_RUST_BUILD_DIR` set, one test thread, over the affected crates that link
+the library: each changed file's crate and its reverse dependents, read from
+`cargo metadata`, less those whose default graph declares no `links` (their
+tests ran in tier 3). A module's `kernels/` select every kernel `-sys`
+crate, `rust/docs/` none, and any other file under `rust/` outside every
+crate selects them all; `pr --all` does too. A device case is declared on the
+case, `#[ignore = "tier 4: needs a GPU"]`, so a plain `cargo test` lists it
+as ignored with that reason. The gate asks wwr (`wwr_get_device_count`, in a
+child, under the lock) whether it sees a device, passes `--include-ignored`
+only if it does, and after the counts prints one list, `tier 4 skipped N
+case(s) (<why>)`, every case that did not run with its binary and reason, or
+`tier 4 skipped: none`. No device visible is a skip, exit 0, as
+`FBF_REQUIRE_GPU()` is; a failing case fails the gate. Where cmake is absent,
+tier 4 is skipped whole with a line saying so. `rust/docs/testing.md`
+"Selecting GPU tiers in cargo" has the rule. At commit, a change under `rust/` runs `devtools/test.py
 cargo-lint`: `cargo fmt --check`, and `cargo clippy --all-targets -D
 warnings` in both of those feature sets; CI's `lint` job runs it too.
 
