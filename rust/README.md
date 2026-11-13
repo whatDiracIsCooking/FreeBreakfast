@@ -26,6 +26,7 @@ workspace is that rebuild. Its tree mirrors `src/`, one crate per module:
 | `fb_core_constants` | `src/core/constants`, what the host modules name | `BOHR_PER_ANGSTROM`, `kBohrPerAngstrom<double>`, asserted against the C++ double's bit pattern |
 | `fb_atom` | `src/atom` | `Element` (`#[repr(u8)]`, Z as the discriminant, `Sentinel` = 0), `z` / `from_z`, `symbol` / `from_symbol` (case-insensitive, `Sentinel` for none), and `Atom`, a `Double3` position in bohr and an `Element` |
 | `fb_molecule` | `src/molecule`, its host half | `Molecule` as host data (atoms, charge, multiplicity; no atoms aborts), `distance`, `nuclear_charge`, `electron_count`, and the nuclear repulsion energy, gradient and Hessian. The nuclei on the device (`view`, `NucleiView`, `molecule_footprint`) become an upload task when nuclear attraction is ported |
+| `fb_basis` | `src/basis` | `Shell` and `Primitive`, the counts (`function_count_cart` / `function_count_sphe`) and `MAX_ANGULAR_MOMENTUM` (checked against the C++ header's), `cartesian_powers` and `Ao`, `solid_harmonic_block`, `BasisSet` (its Cartesian and spherical AO layouts, the per-atom shell grouping, the name) and `spherical_transform_matrix`, `ShellStamp` with `primitive_normalized` and `place`, and `BasisStamp` with `place` onto a `Molecule`. Contractions are not renormalized, as in the C++ |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -37,7 +38,8 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `diagnostics` at the top with nothing in `core` depending on it, since
 `log`'s macros are imported from `log` directly and `critical!` lives in
 `fb-core-log`. Above `core`, `atom` stands on `types`, and `molecule` on
-`atom`, `types` and `error_handling`.
+`atom`, `types` and `error_handling`, and `basis` on `molecule`, `types`,
+`primitives` and `error_handling`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -106,7 +108,7 @@ CMake step at all:
 cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
   -p fb-core-arena -p fb-core-thread-pool -p fb-core-planner \
   -p fb-core-types -p fb-core-primitives -p fb-core-constants \
-  -p fb-atom -p fb-molecule --no-default-features
+  -p fb-atom -p fb-molecule -p fb-basis --no-default-features
 ```
 
 `CMakeLists.txt` here is a CMake project of its own, which the root
@@ -127,7 +129,7 @@ The GPU tests use device 0 and need room on it for a context. The host-only
 tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
 `fb-core-primitives`, `fb-core-constants`, `fb-atom`, `fb-molecule`,
-`fb-test-support` and
+`fb-basis`, `fb-test-support` and
 `fb-doc-check` do not link the library at all: they build and pass with it
 missing. `fb-core-arena`, `fb-core-thread-pool` and `fb-core-planner` link
 it through their `device` feature, which is on by default: without it
@@ -360,3 +362,16 @@ wwr crate, and no test binary of theirs has `libwwr_capi` under `NEEDED`.
 Clippy (`-D warnings`) is clean in both feature sets; rustdoc (`-D
 warnings`) and `cargo fmt --check` are clean. Not run on the RTX 3080; the
 two crates touch no device.
+
+2026-11-13, `basis`, on the gfx1200 (HIP), holding the card, linking the
+library the `hip` preset built: with default features the whole workspace
+passes in a debug build, the new crate 29 unit tests and the 5 tests of
+`basis_abort` (the fourteen aborts of `test/basis/`'s death tests, each
+re-run as a child), every other count the `atom` and `molecule` entry's.
+With `--no-default-features` the tier-3 set, `basis` included, passes those
+counts plus 29 and 5; `cargo tree` for it shows no wwr crate, and neither
+of its test binaries has `libwwr_capi` under `NEEDED`. With the partition
+check's `is_sorted` removed, `basis_abort` fails on the decreasing case.
+Clippy (`-D warnings`) is clean in both feature sets; rustdoc (`-D
+warnings`) and `cargo fmt --check` are clean. Not run on the RTX 3080; the
+crate touches no device.

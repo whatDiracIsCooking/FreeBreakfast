@@ -16,6 +16,7 @@ members = [
     "core/constants",
     "atom",
     "molecule",
+    "basis",
     "test_support",
     "doc_check",
 ]
@@ -40,6 +41,7 @@ fb-core-primitives = { path = "core/primitives" }
 fb-core-constants = { path = "core/constants" }
 fb-atom = { path = "atom" }
 fb-molecule = { path = "molecule" }
+fb-basis = { path = "basis" }
 fb-test-support = { path = "test_support" }
 
 contracts = "0.6.11"
