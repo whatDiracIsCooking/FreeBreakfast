@@ -84,6 +84,7 @@ mod tests {
 
     /// Needs a GPU. An empty graph instantiates.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn an_empty_graph_instantiates() {
         let g = Graph::new();
         let _exec = g.instantiate(0);
@@ -91,6 +92,7 @@ mod tests {
 
     /// Needs a GPU. Adopting hands the graph its destroy.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn adopt_owns_the_graph() {
         let mut raw: wwr_graph = std::ptr::null_mut();
         // SAFETY: writes one graph handle through a valid local.

@@ -280,26 +280,47 @@ def test_push_by_hand_without_a_base_exits_2(
 
 # A stand-in `cargo` on PATH: a two-member workspace, one member linking
 # wwr-sys, and a `cargo test` that exits FAKE_CARGO_TEST_RC. Each call's
-# arguments go to FAKE_CARGO_LOG.
+# arguments go to FAKE_CARGO_LOG. Without --no-default-features, `test` is
+# tier 4: fb-core-wwr's one device case is ignored unless --include-ignored.
 _FAKE_CARGO = """
 import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_CARGO_LOG"], "a") as f:
     f.write(" ".join(args) + "\\n")
+ws = "/ws/rust"
 if args[0] == "metadata":
     print(json.dumps({
         "packages": [
-            {"name": "fb-core-log", "id": "log", "links": None},
-            {"name": "fb-core-wwr", "id": "wwr", "links": None},
-            {"name": "wwr-sys", "id": "sys", "links": "wwr_capi"},
+            {"name": "fb-core-log", "id": "log", "links": None,
+             "manifest_path": ws + "/core/log/Cargo.toml"},
+            {"name": "fb-core-wwr", "id": "wwr", "links": None,
+             "manifest_path": ws + "/core/wwr/Cargo.toml"},
+            {"name": "wwr-sys", "id": "sys", "links": "wwr_capi",
+             "manifest_path": "/ws/deps/wwr-sys/Cargo.toml"},
         ],
         "workspace_members": ["log", "wwr"],
+        "workspace_root": ws,
+        "resolve": {"nodes": [
+            {"id": "log", "deps": []},
+            {"id": "wwr", "deps": [{"pkg": "log"}, {"pkg": "sys"}]},
+            {"id": "sys", "deps": []},
+        ]},
     }))
 elif args[0] == "tree":
     name = args[args.index("-p") + 1]
     print(f"{name} v0.1.0 (/x)")
     if name == "fb-core-wwr":
         print("wwr-sys v1.0.0 (/x)")
+elif args[0] == "test" and "--no-default-features" not in args:
+    print("     Running unittests src/lib.rs (/t/deps/fb_core_wwr-0123abcd)")
+    print("test status::tests::names ... ok")
+    if "--include-ignored" in args:
+        print("test runtime::stream::tests::syncs ... ok")
+        print("test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured")
+    else:
+        print("test runtime::stream::tests::syncs ... ignored, tier 4: needs a GPU")
+        print("test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured")
+    sys.exit(int(os.environ.get("FAKE_CARGO_TIER4_RC", "0")))
 elif args[0] == "test":
     print("     Running unittests src/lib.rs (/t/deps/fb_core_log-0123abcd)")
     print("test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out")
@@ -365,9 +386,15 @@ def _push_cargo(
 
     monkeypatch.setattr(gates, "python_half", other_half)
     monkeypatch.setattr(gates, "cpp_push", other_half)
+    monkeypatch.setattr(gates, "cargo_tier4", lambda *_a: 0)
     args, _ = gates.parse(["push"])
     return gates.cmd_push(
-        args, {"SLOW_TIER_REPORTS": str(tmp_path / "reports"), "BUILD_JOBS": "4"}
+        args,
+        {
+            "SLOW_TIER_REPORTS": str(tmp_path / "reports"),
+            "BUILD_JOBS": "4",
+            "CMAKE_PRESET": "hip",
+        },
     )
 
 
@@ -420,6 +447,244 @@ def test_the_cargo_half_skips_without_cargo(
     monkeypatch.setattr(gates, "tree_rev", lambda: ("abc1234", ""))
     assert _push_cargo(monkeypatch, tmp_path, ["rust/README.md"]) == 0
     assert "skipping the cargo half" in capsys.readouterr().out
+
+
+# --- the cargo half's tier 4 -------------------------------------------------
+
+
+def _package(name: str, path: str, links: str | None = None) -> dict:
+    return {
+        "name": name,
+        "id": name,
+        "links": links,
+        "manifest_path": f"/ws/rust/{path}/Cargo.toml",
+    }
+
+
+# A workspace shaped like rust/'s: log below wwr; arena and thread_pool on
+# wwr; planner on both; recipes-sys and integrals-sys on wwr-sys, with wwr a
+# dev-dependency; atom on log alone.
+_META = {
+    "workspace_root": "/ws/rust",
+    "workspace_members": [
+        "fb-core-log",
+        "fb-core-wwr",
+        "fb-core-arena",
+        "fb-core-thread-pool",
+        "fb-core-planner",
+        "fb-recipes-sys",
+        "fb-integrals-sys",
+        "fb-atom",
+        "fb-doc-check",
+        "fb-device-check",
+    ],
+    "packages": [
+        _package("fb-core-log", "core/log"),
+        _package("fb-core-wwr", "core/wwr"),
+        _package("fb-core-arena", "core/arena"),
+        _package("fb-core-thread-pool", "core/thread_pool"),
+        _package("fb-core-planner", "core/planner"),
+        _package("fb-recipes-sys", "recipes/sys", "fb_recipes_kernels"),
+        _package("fb-integrals-sys", "integrals/sys", "fb_integrals_kernels"),
+        _package("fb-atom", "atom"),
+        _package("fb-doc-check", "doc_check"),
+        _package("fb-device-check", "device_check"),
+        _package("wwr-sys", "../deps/wwr-sys", "wwr_capi"),
+    ],
+    "resolve": {
+        "nodes": [
+            {"id": node, "deps": [{"pkg": d} for d in deps]}
+            for node, deps in {
+                "fb-core-log": [],
+                "fb-core-wwr": ["fb-core-log", "wwr-sys"],
+                "fb-core-arena": ["fb-core-wwr", "wwr-sys"],
+                "fb-core-thread-pool": ["fb-core-wwr", "fb-core-log"],
+                "fb-core-planner": ["fb-core-arena", "fb-core-thread-pool"],
+                "fb-recipes-sys": ["wwr-sys", "fb-core-wwr"],
+                "fb-integrals-sys": ["wwr-sys", "fb-core-wwr"],
+                "fb-atom": ["fb-core-log"],
+                "fb-doc-check": [],
+                "fb-device-check": [],
+                "wwr-sys": [],
+            }.items()
+        ]
+    },
+}
+_LINKING = {
+    "fb-core-wwr",
+    "fb-core-arena",
+    "fb-core-thread-pool",
+    "fb-core-planner",
+    "fb-recipes-sys",
+    "fb-integrals-sys",
+}
+
+
+@pytest.mark.parametrize(
+    "files, expected",
+    [
+        # One crate's diff: that crate and its reverse dependents, no others.
+        (["rust/core/arena/src/block.rs"], {"fb-core-arena", "fb-core-planner"}),
+        (["rust/core/planner/tests/planner_device.rs"], {"fb-core-planner"}),
+        (
+            ["rust/core/thread_pool/Cargo.toml"],
+            {"fb-core-thread-pool", "fb-core-planner"},
+        ),
+        # A dev-dependent counts: the -sys crates' tests use wwr.
+        (["rust/core/wwr/src/runtime.rs"], _LINKING),
+        (["rust/integrals/sys/src/lib.rs"], {"fb-integrals-sys"}),
+        # Through a link-free crate: log has no tier 4 of its own.
+        (["rust/core/log/src/lib.rs"], _LINKING),
+        (["rust/atom/src/lib.rs"], set()),
+        # The path rules: kernels are every kernel library's -sys crate's
+        # (one library links another); docs and the bindings generator are
+        # tier-3 crates'.
+        (
+            ["rust/recipes/kernels/merge_sort.cu"],
+            {"fb-recipes-sys", "fb-integrals-sys"},
+        ),
+        (["rust/docs/testing.md", "rust/README.md"], set()),
+        (["devtools/rust-bindings.py"], set()),
+        # A file in no crate and no rule, or no diff at all: everything.
+        (["rust/Cargo.lock"], _LINKING),
+        (["rust/capi_dir.rs"], _LINKING),
+        (None, _LINKING),
+        # Nothing under rust/.
+        (["src/core/log/log.cppm", "devtools/test.py"], set()),
+    ],
+)
+def test_tier4_selects_a_crate_and_its_reverse_dependents(
+    files: list[str] | None, expected: set[str]
+) -> None:
+    assert gates.affected_crates(files, _META) & _LINKING == expected
+
+
+def test_cargo_skips_lists_each_ignored_case_with_its_reason() -> None:
+    lines = [
+        "     Running unittests src/lib.rs (/t/debug/deps/fb_core_wwr-0123abcd)",
+        "test status::tests::names ... ok",
+        "test runtime::stream::tests::syncs ... ignored, tier 4: needs a GPU",
+        "test result: ok. 1 passed; 0 failed; 1 ignored; 0 measured",
+        "     Running tests/arena_block.rs (/t/debug/deps/arena_block-4567)",
+        "test child_entry ... ignored",
+        "   Doc-tests fb_core_arena",
+        "test core/arena/src/lib.rs - (line 9) ... ignored, tier 4: needs a GPU",
+    ]
+    assert gates.cargo_skips(lines) == [
+        "fb_core_wwr unittests src/lib.rs: runtime::stream::tests::syncs"
+        " -- tier 4: needs a GPU",
+        "arena_block tests/arena_block.rs: child_entry -- no reason given",
+        "doc-tests fb_core_arena: core/arena/src/lib.rs - (line 9)"
+        " -- tier 4: needs a GPU",
+    ]
+
+
+class _HeldCard:
+    def __init__(self, backend: str, cfg: dict[str, str]) -> None:
+        _HeldCard.backend = backend
+
+    def __enter__(self) -> _HeldCard:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        pass
+
+
+def _tier4(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, devices: int
+) -> tuple[int, list[str]]:
+    """cargo_tier4 over the fake workspace, with a stand-in cmake, card and
+    probe; (status, the cargo calls)."""
+    bindir = Path(os.environ["PATH"].split(os.pathsep)[0])
+    cmake = bindir / "cmake"
+    cmake.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(0)\n")
+    cmake.chmod(0o755)
+    monkeypatch.setattr(gates, "toolchain_unavailable", lambda: None)
+    monkeypatch.setattr(gates, "Card", _HeldCard)
+    seen = f"{devices} device(s) visible" if devices else "no device visible: why"
+    monkeypatch.setattr(gates, "device_probe", lambda _build: (devices, seen))
+    cfg = {"GPU_HIP_PRESETS": "hip"}
+    rc = gates.cargo_tier4(
+        "push", cfg, "hip", ["rust/core/wwr/src/lib.rs"], "4", tmp_path / "t4.log"
+    )
+    assert _HeldCard.backend == "hip"
+    return rc, [c for c in Path(os.environ["FAKE_CARGO_LOG"]).read_text().splitlines()]
+
+
+def test_tier4_without_a_device_lists_every_device_case_as_skipped(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc, calls = _tier4(monkeypatch, tmp_path, devices=0)
+    assert rc == 0
+    out = capsys.readouterr().out
+    test = next(c for c in calls if c.startswith("test"))
+    assert test == "test -j 4 -p fb-core-wwr -- --test-threads=1"
+    assert "tier 4: 1 passed, 0 failed, 1 ignored" in out
+    assert "tier 4 skipped 1 case(s) (no device visible: why):" in out
+    assert (
+        "skipped fb_core_wwr unittests src/lib.rs: runtime::stream::tests::syncs"
+        " -- tier 4: needs a GPU" in out
+    )
+
+
+def test_tier4_with_a_device_runs_them_and_skips_none(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc, calls = _tier4(monkeypatch, tmp_path, devices=1)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert next(c for c in calls if c.startswith("test")).endswith(
+        "-- --test-threads=1 --include-ignored"
+    )
+    assert "tier 4: 2 passed, 0 failed, 0 ignored" in out
+    assert "tier 4 skipped: none" in out
+
+
+def test_a_failing_tier4_fails_and_is_named(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("FAKE_CARGO_TIER4_RC", "101")
+    rc, _ = _tier4(monkeypatch, tmp_path, devices=1)
+    assert rc == 101
+    assert "tier 4 FAILED: cargo test exited 101" in capsys.readouterr().err
+
+
+def test_tier4_runs_nothing_for_a_link_free_diff(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(gates, "toolchain_unavailable", lambda: None)
+    monkeypatch.setattr(gates, "affected_crates", lambda *_a: {"fb-core-log"})
+    rc = gates.cargo_tier4(
+        "push", {"GPU_HIP_PRESETS": "hip"}, "hip", [], "4", tmp_path / "l"
+    )
+    assert rc == 0
+    assert "no affected crate links the library" in capsys.readouterr().out
+    assert not any(c.startswith("test") for c in fake_cargo.read_text().splitlines())
+
+
+def test_tier4_skips_without_cmake(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(gates, "toolchain_unavailable", lambda: "cmake not found")
+    rc = gates.cargo_tier4(
+        "push", {"GPU_HIP_PRESETS": "hip"}, "hip", None, "4", tmp_path / "l"
+    )
+    assert rc == 0
+    assert "skipping tier 4" in capsys.readouterr().out
 
 
 # --- the GPU batch split -----------------------------------------------------

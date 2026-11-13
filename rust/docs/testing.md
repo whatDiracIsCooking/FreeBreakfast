@@ -115,10 +115,9 @@ Three rules go with the table:
   wants every contract on, so it builds debug. The timing records want the
   code that ships, so the nightly builds release. The same case in both
   profiles answers two different questions.
-- **A skip is visible, never a silent pass.** Whatever mechanism selects the
-  GPU tiers in cargo ("Open questions"), a case that does not run says so, in
-  a list the gate prints, as `FBF_REQUIRE_GPU()` and the `[gpu]` lines do
-  today.
+- **A skip is visible, never a silent pass.** A case that does not run says
+  so, in a list the gate prints, as `FBF_REQUIRE_GPU()` and the `[gpu]`
+  lines do today ("Selecting GPU tiers in cargo", below).
 - **One case gets a bounded share of the gate.** The C++ rule is a case past
   about 1.5 s on an idle RTX 3080 runs in the nightly only, unless it is its
   family's representative (`test/support/slow_test.h`). The same bar holds
@@ -161,8 +160,9 @@ card OOMed it. So:
   ([`programming_model.md`](programming_model.md), "CPU workers"), so a case
   leaks no thread into the next. The harness never runs two cases
   concurrently on a device.
-- **`cargo-nextest` is used for its filtersets, timeouts and skip list, not
-  for its process-per-test default.** Its per-test timeout is the stall
+- **`cargo-nextest`, if adopted, is used for its timeouts, not for its
+  process-per-test default.** The skip list needs no nextest
+  ("Selecting GPU tiers in cargo"), and the image does not carry it. Its per-test timeout is the stall
   watchdog, and a timed-out case is named, as the `[gpu] hung in <case>` line
   does today. Its retries stay off: a case that passes on the second try is
   a flaky case, and a flaky case is a blocker with an issue filed at once,
@@ -172,6 +172,48 @@ card OOMed it. So:
   names the one command that runs that case by itself. A failure that needs
   the whole batch to reproduce is a shared-state bug, and the one cache per
   process ("Levels") is the only shared state a binary may hold.
+
+## Selecting GPU tiers in cargo
+
+**A device case says so once, on the case:
+`#[ignore = "tier 4: needs a GPU"]`.** That is libtest's own skip with a
+reason, so no runner, feature or harness is needed to see it:
+
+- **A plain `cargo test` never runs a device case**, and lists each one as
+  `ignored, tier 4: needs a GPU`, counted as ignored, never as passed. With
+  a card, `cargo test --workspace -- --include-ignored` runs them all, and
+  `cargo test -p <crate> -- --ignored` a crate's device cases alone.
+- **`#[ignore]` means "needs a device" and nothing else** in this
+  workspace, so `--include-ignored` runs exactly the device cases beside the
+  rest. A doc block that is not a test is fenced `text`, not `ignore`, and a
+  slow or flaky case finds another mechanism when one first appears.
+- **The gate decides whether a device is there, not each case.** Tier 4
+  (`devtools/test.py push` and `pr`) builds the libraries
+  ([`README.md`](../README.md), "Build and test") for the backend of the
+  card it holds, then, under that card's lock, asks wwr
+  itself (`wwr_get_device_count`, in a child process) whether it sees a
+  device. Only then does it pass `--include-ignored`. Either way it prints
+  one list of every case that did not run, each with its binary and
+  reason, after the counts; with the card the list is `none`.
+- **A device case run with no device fails loudly.** Its first create
+  aborts ([`diagnostics.md`](diagnostics.md), "Allocation is a
+  planning-time error"), so a by-hand `--include-ignored` on a device-less
+  machine is a crash, never a pass.
+- **A case that re-runs its own binary as a child** (the arena's abort
+  case) passes `--include-ignored` to the child, whose case is ignored too.
+
+The tier 4 the gates run is every test, device cases included, of the
+crates the diff affects that link the library (a member whose default
+graph declares no `links` has no device case to run, and its tests ran in
+tier 3): each changed file's crate and its reverse dependents through any
+edge, read from `cargo metadata`, in debug and on one test thread. The
+hand-written path rules of "Selection" below are in `devtools/test.py`:
+a module's `kernels/` affect every kernel `-sys` crate, `docs/` and
+`README.md` only `fb-doc-check`, and any other file outside every crate
+the whole workspace. `pr --all` runs every crate's tier 4.
+
+Tier 5 needs a second device, which no case asks for yet; when one does,
+the same rule extends with a reason of its own and a count in the probe.
 
 ## Selection: the workspace graph is the selection graph
 
@@ -410,11 +452,6 @@ schedule. Here they are weekly from the start.
 
 ## Open questions
 
-- **Selecting GPU tiers in cargo.** How does a test declare that it needs tier
-  4 or tier 5? Options are a cargo feature, `#[ignore]` with a runner flag, or
-  a runtime skip with a reason, like `FBF_REQUIRE_GPU()`. A skip must be
-  visible, never a silent pass. `cargo-nextest`'s filtersets, or a custom test
-  harness, are the two routes that give the gate one list of what skipped.
 - **Tier 5 on this box.** The two cards here run different backends, so no
   single build sees two devices. Can several workers on one card stand in for
   most of tier 5, with true multi-GPU tested only on a multi-GPU VM?

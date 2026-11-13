@@ -161,6 +161,7 @@ mod tests {
 
     /// Needs a GPU. The default event cannot time; a `0`-flag one can.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn timing_is_off_by_default_and_on_with_zero_flags() {
         let s = Stream::new(0);
         let sync_only = Event::new(0);
@@ -179,6 +180,7 @@ mod tests {
     /// Needs a GPU. A stream that waits on an event recorded on another
     /// runs its work after the other's: the second memset wins.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn wait_event_orders_two_streams() {
         let (a, b) = (Stream::new(0), Stream::new(0));
         let done = Event::new(0);
@@ -196,6 +198,7 @@ mod tests {
     /// Needs a GPU. Flags no backend accepts fail the create, at the
     /// caller, and no event is made.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn bad_flags_are_an_error_at_the_caller() {
         let line = line!() + 1;
         let error = Event::try_with_flags_at(0, u32::MAX, Location::caller())

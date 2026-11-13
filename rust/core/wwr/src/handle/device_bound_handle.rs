@@ -97,6 +97,7 @@ mod tests {
 
     /// Needs a GPU.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn records_the_device_it_was_created_on() {
         let s = Stream::try_new(0).unwrap();
         assert_eq!(s.dev_idx(), 0);
@@ -107,6 +108,7 @@ mod tests {
     /// Needs a GPU. A bad index fails the select, at the caller; no handle
     /// is made, and the current device is left as it was.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn a_bad_index_is_an_error_at_the_caller() {
         let current = current_device();
         let line = line!() + 1;

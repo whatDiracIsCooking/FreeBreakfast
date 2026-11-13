@@ -27,6 +27,7 @@ fn ok(status: wwr_status) {
 /// Needs a GPU. An allocation from the pool shows in its usage, and leaves
 /// it when freed.
 #[test]
+#[ignore = "tier 4: needs a GPU"]
 fn allocations_come_from_the_pool() {
     let pool = MemPool::new(0);
     let s = Stream::new(0);

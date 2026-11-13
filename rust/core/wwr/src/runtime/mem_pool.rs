@@ -202,6 +202,7 @@ mod tests {
 
     /// Needs a GPU. The threshold is read back whole, past 4 GiB.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn the_threshold_reaches_the_pool() {
         let pool = MemPool::new(0);
         assert_eq!(pool.dev_idx(), 0);
@@ -220,6 +221,7 @@ mod tests {
     /// Needs a GPU. A bad device fails the select, at the caller, and no
     /// pool is made.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn a_bad_device_is_an_error_at_the_caller() {
         let line = line!() + 1;
         let error = MemPool::try_create(&MemPoolProps::device(-1), 0, Location::caller())

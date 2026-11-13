@@ -204,6 +204,7 @@ mod tests {
 
     /// Needs a GPU.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn the_default_stream_is_non_blocking() {
         let s = Stream::new(0);
         assert_eq!(s.dev_idx(), 0);
@@ -213,6 +214,7 @@ mod tests {
 
     /// Needs a GPU.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn flags_and_priority_reach_the_runtime() {
         let blocking = Stream::with_flags(0, 0);
         assert_eq!(flags_of(blocking.stream()) & NON_BLOCKING, 0);
@@ -231,6 +233,7 @@ mod tests {
     /// Needs a GPU. A bad index is an error at the caller, and no stream is
     /// made on whatever device was current.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn a_bad_index_is_an_error_at_the_caller() {
         let current = current_device();
         let line = line!() + 1;
@@ -249,6 +252,7 @@ mod tests {
     /// the other tests run beside this one. In global mode the 3080 aborted
     /// or segfaulted in `cuMemPoolDestroy` in 14 of 20 runs of the suite.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn capture_instantiate_launch() {
         let s = Stream::new(0);
         let bytes = DeviceBytes::new(16);
@@ -267,6 +271,7 @@ mod tests {
     /// Needs a GPU. Ending a capture that never began is an error at the
     /// caller, and no graph is made.
     #[test]
+    #[ignore = "tier 4: needs a GPU"]
     fn end_capture_without_begin_is_an_error() {
         let s = Stream::new(0);
         let line = line!() + 1;

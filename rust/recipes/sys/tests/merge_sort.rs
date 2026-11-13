@@ -89,6 +89,7 @@ fn workspace(n: u32, with_values: bool) -> (Option<DeviceBytes>, usize) {
 
 /// Needs a GPU. Keys and their permutation, for every size.
 #[test]
+#[ignore = "tier 4: needs a GPU"]
 fn sorts_keys_and_values_as_the_host_stable_sort() {
     let stream = Stream::new(0);
     for &n in SIZES {
@@ -134,6 +135,7 @@ fn sorts_keys_and_values_as_the_host_stable_sort() {
 
 /// Needs a GPU. Without values, the keys alone, for every size.
 #[test]
+#[ignore = "tier 4: needs a GPU"]
 fn sorts_keys_alone_as_the_host_sort() {
     let stream = Stream::new(0);
     for &n in SIZES {
