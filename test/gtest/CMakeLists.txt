@@ -394,12 +394,21 @@ set(_fb_serial_cases "NevptRdm.Cas1212*:E2eCis.*")
 #
 # PSB3's proportional-pair HVP case (#914, slow tier only): 165 s alone on
 # the gfx1200, past the shared backstop (#934).
+#
+# The DF-QD-NEVPT2 seam's 2x2 cases and the PC-NEVPT2 Hessian's distant
+# equivalent atoms (#1328, slow tier only): 336 s (SC), 346 s (PC) and
+# 128-148 s alone on the gfx1200. Not timed on the RTX 3080.
 set(_fb_long_cases "PipelineOptimize.Ethylene*QdMeci*")
 string(APPEND _fb_long_cases ":PipelineNevpt2Hessian.*Skew*")
 string(APPEND _fb_long_cases ":PipelineNevpt2Hessian.*Symmetric*")
 string(
   APPEND _fb_long_cases
   ":Nevpt2EnergyHvpEmpty.Psb3ProportionalPairAcceptedNonProportionalRefused"
+)
+string(APPEND _fb_long_cases ":HessianDfQdNevpt2Crossing.*SeamTwoByTwo")
+string(
+  APPEND _fb_long_cases
+  ":HessianDfPcNevpt2.DistantEquivalentAtomsMatchTheLadder"
 )
 math(EXPR _fb_long_timeout "5 * ${_fb_test_timeout}")
 gtest_discover_tests(
