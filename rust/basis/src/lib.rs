@@ -20,7 +20,7 @@
 //!
 //! | C++ (`free_breakfast`) | Here |
 //! |---|---|
-//! | `angular_momentum.h`: `kMaxAngularMomentum` | [`MAX_ANGULAR_MOMENTUM`], asserted equal to the header's value |
+//! | `angular_momentum.h`: `kMaxAngularMomentum` | [`MAX_ANGULAR_MOMENTUM`], the same value, 3 |
 //! | `basis.h`: `function_count_cart`, `function_count_sphe` | [`function_count_cart`], [`function_count_sphe`], `const fn` |
 //! | `basis.h`: `Primitive` | [`Primitive`] |
 //! | `:shell`: `Shell(l, primitives, center)` | [`Shell::new`], aborting on the same inputs |
@@ -53,8 +53,7 @@
 //! **The angular-momentum ceiling is the crate's.** In the C++ tree
 //! `kMaxAngularMomentum` lives beside `function_count_cart`, in a header the
 //! basis module and device code share, so it is here too, not in
-//! `fb_core_constants`. Its test reads the C++ header and checks the two
-//! agree. Nothing here enforces it: a shell of any `l` is accepted, and an
+//! `fb_core_constants`. Nothing here enforces it: a shell of any `l` is accepted, and an
 //! engine refuses what its kernels do not cover.
 //!
 //! **Placing onto a molecule needs no device.** A C++ `Molecule` owns its
