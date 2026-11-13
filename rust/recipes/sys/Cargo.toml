@@ -1,0 +1,16 @@
+[package]
+name = "fb-recipes-sys"
+description = "recipes' launch wrappers: FFI bindings over libfb_recipes_kernels.so"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+links = "fb_recipes_kernels"
+
+[lints]
+workspace = true
+
+[dependencies]
+wwr-sys.workspace = true
+
+[dev-dependencies]
+fb-core-wwr = { workspace = true, features = ["test-support"] }

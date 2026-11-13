@@ -104,3 +104,27 @@ add_custom_target(
   rust_native_libs ALL COMMENT "The libraries the rust/ crates link"
 )
 add_dependencies(rust_native_libs wwr.capi.runtime_api)
+
+# ========================================================================
+# The kernel shared objects
+# ========================================================================
+# One per module, each forked from src/ with the device headers it needs
+# (device_headers/), never including or compiling anything under src/
+# (docs/gpu_layer.md, "Build"). The languages are enabled here, after wwr's
+# project() ran its toolchain prelude and cached the compilers, because the
+# targets below compile .cu in this directory's tree; the backend's package is
+# found again for the same reason, its imported targets being directory-scoped.
+if(FREE_BREAKFAST_GPU_BACKEND STREQUAL "CUDA")
+  enable_language(CXX)
+  enable_language(CUDA)
+  find_package(CUDAToolkit 13.0.0 REQUIRED)
+else()
+  enable_language(CXX)
+  find_package(hip CONFIG REQUIRED)
+endif()
+
+set(FB_RUST_DEVICE_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/device_headers")
+# The C ABI's generated headers: common.h (wwr_stream) and runtime_api's.
+set(FB_RUST_CAPI_GEN "${_fb_wwr}/src/capi/gen")
+
+add_subdirectory(recipes/kernels)
