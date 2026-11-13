@@ -121,7 +121,7 @@ Per worker and per kind, the block must fit:
 
 | Kind | Must hold | Terms |
 |---|---|---|
-| Device | `block + reserve + stack <= cap` | `reserve`: the context, the handles and the loaded modules, outside any block; `stack`: the kernels' stack the driver takes back when the card has no free memory left for it (`kKernelStackBytes` per thread, up to 1.8 GiB on the RTX 3080) |
+| Device | `block + reserve + stack <= cap` | `reserve`: the context, the handles and the loaded modules, outside any block; `stack`: the kernels' stack the driver takes back when the card has no free memory left for it (`kKernelStackBytes` per thread, up to 1.6 GiB on the RTX 3080) |
 | Pinned | `block <= pinned_cap`, and `sum over the node's workers <= MemAvailable - margin` | The per-GPU cap, and the C++ `check_pinned_node` carried over |
 
 **No headroom and no eighth.** The 64 MiB fragmentation headroom and the HIP

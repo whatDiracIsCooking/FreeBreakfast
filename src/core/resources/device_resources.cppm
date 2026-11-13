@@ -162,19 +162,20 @@ public:
   static constexpr uint64_t kDeviceReserve = uint64_t{256} << 20;
 
   /// @brief The largest per-thread stack of any kernel the tree launches, in
-  /// bytes: d2eri3<3,3,6>'s 18,912 (`cuobjdump
+  /// bytes: potential_hessian<3,3>'s 16,912 (`cuobjdump
   /// --dump-resource-usage`), a generated integral kernel. The classes over
-  /// 8 KiB take FelizJueves's lowest-stack forms (tools/emit/lowstack.py,
-  /// #1263); this one is held up by its per-lane Hermite tower.
+  /// 8 KiB take FelizJueves's lowest-stack forms that are not slower
+  /// (tools/emit/lowstack.py, #1263, #1265); this one's compact tables were
+  /// measured slower, so it keeps its dense ones.
   ///
   /// CUDA holds a kernel's stack for every resident thread from its first
-  /// launch on, outside the pool (Device::stack_growth: 1.8 GiB on the 3080
+  /// launch on, outside the pool (Device::stack_growth: 1.6 GiB on the 3080
   /// at this size), so memory_budget() leaves room for it before the kernel
   /// that needs it has run. The ctest core_kernel_stack_bound
   /// checks it against the built binary; raise it with a regenerated kernel
   /// that needs more. src/core/wwr/README.md, "Kernel stacks outside the
   /// pool", has the measurements.
-  static constexpr size_t kKernelStackBytes = 18912;
+  static constexpr size_t kKernelStackBytes = 16912;
 
   /// @brief What a DeviceResources itself holds in its pool from
   /// construction on besides the device workspace, in bytes: the info() flag,

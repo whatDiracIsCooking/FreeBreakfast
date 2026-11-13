@@ -27,7 +27,8 @@ low-stack one, which holds no density and keeps (ff|i) under its stack budget
 (FelizJueves's docs/implementation/gradient.md, "The low-stack form").
 tools/emit/lowstack.py's classes, over the stack target in their default form,
 are emitted low-stack instead (#1263): `gmetric<3,6>`, `<4,5>`, `geri3<1,2,1>`,
-`<2,2,0>`.
+`<2,2,0>`. Its COMPACT classes, the low-stack `geri3` and `xeri3` over the target
+at f, keep only the reachable bra tables (#1265): bitwise the same values.
 
 Every [n, 3] record vector is split into three flat arrays
 (`ir.passes.split_axes`), named as tools/emit/df_kernels.py names the energy
@@ -114,7 +115,9 @@ def ipmetric(cls: tuple[int, int]):
 
 
 def xeri3(cls: tuple[int, int, int]):
-    return split_axes(build_xeri3_kernel(cls), {**BRA_AXES, **AUX_AXES})
+    return split_axes(
+        build_xeri3_kernel(cls, **forced("xeri3", cls)), {**BRA_AXES, **AUX_AXES}
+    )
 
 
 def main() -> int:
