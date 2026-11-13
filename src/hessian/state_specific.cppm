@@ -281,21 +281,30 @@ qd_response_eigen(DeviceResources &res, std::span<const double> energies,
 /// is left unrotated and taken by its off-diagonal f, not divided.
 constexpr double kPcPairReach = 1e-4;
 
+/// @brief The most orbitals a near-degenerate cluster is taken whole with
+/// (README "A near-degenerate cluster", #1314): its m (m - 1) / 2 pairs take
+/// three products each and every two of them one more, about m^4 / 4 in all
+/// (some 120 at six).
+constexpr size_t kPcClusterLimit = 6;
+
 /// @brief The core or virtual pairs (p, q), p > q, of the orbital energies
 /// @p eps (nmo, the core [0, nc), the virtuals [nocc, nmo)) that PC's tangents
-/// take by their off-diagonal f: every pair closer than @p reach, smallest
-/// gap first, each orbital in one at most (a pair that shares an orbital
-/// with a closer one is divided, or left to degenerate_pair_blocks' cluster
-/// refusal under the 1e-6 Eh rule). df_nevpt2_tangents' and
-/// df_qd_nevpt2_tangents' (PC).
+/// take by their off-diagonal f: every pair within a cluster, a connected
+/// component of the pairs closer than @p reach (README "A near-degenerate
+/// cluster", #1314), so that no pair inside the reach is divided; in a
+/// cluster of more than kPcClusterLimit orbitals, the pairs closer than
+/// @p reach, closest first, each orbital in one at most (#1296's rule).
+/// Closest first. df_nevpt2_tangents' and df_qd_nevpt2_tangents' (PC).
 std::vector<std::array<size_t, 2>> pc_taken_pairs(std::span<const double> eps, size_t nc,
                                                   size_t nocc, double reach);
 
 /// @brief The distinct (p, q) of a PC Hessian's degenerate-pair records
-/// @p records, in first-seen order; Unsupported, its message starting with
-/// @p who and naming the orbital and two of its pairs, when an orbital is in
-/// two of them (a cluster of three or more, README "A degenerate inactive
-/// pair"). df_pc_nevpt2's and df_qd_nevpt2's (PC).
+/// @p records, in first-seen order; they may share orbitals (a cluster,
+/// README "A near-degenerate cluster"). Unsupported, its message starting
+/// with @p who and naming the orbitals, for a cluster of more than
+/// kPcClusterLimit (one that pc_taken_pairs did not take whole, and whose
+/// pairs under 1e-6 Eh still join it).
+/// df_pc_nevpt2's and df_qd_nevpt2's (PC).
 Result<std::vector<std::array<int32_t, 2>>>
 degenerate_pair_blocks(std::string_view who, std::span<const std::array<int32_t, 2>> records);
 
@@ -309,7 +318,8 @@ struct DegeneratePairPart {
 
 /// @brief df_pc_nevpt2's step 4b, which df_qd_nevpt2 (PC) shares at its W:
 /// H_ij += sum_P (phi^P_i K^P_j + phi^P_j K^P_i) + sum_PP' M_PP' phi^P_i
-/// phi^P'_j over the disjoint @p blocks (degenerate_pair_blocks'), @p phi
+/// phi^P'_j over the @p blocks (degenerate_pair_blocks', which may share
+/// orbitals: README "A near-degenerate cluster"), @p phi
 /// and @p split their f^(i)_pq and (f^(i)_pp - f^(i)_qq) / 2, [P k + i],
 /// over @p k coordinates. Each term is read from @p product(c_turned,
 /// direction, consume), the energy's Hessian-vector product at orbitals

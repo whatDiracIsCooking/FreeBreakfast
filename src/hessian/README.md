@@ -1014,9 +1014,10 @@ every pair below the floor along every coordinate as a `DegeneratePair`
 to the rotation, and `df_pc_nevpt2` takes the pair's off-diagonal f itself
 (#1268, "A degenerate inactive pair"). **PC's rule reaches to 1e-4 Eh**
 (#1296, "Where a pair is taken"): every core or virtual pair under it is
-recorded the same way, closest first, an orbital in one pair at most
-(`pc_taken_pairs`); a pair that shares an orbital with a closer one is
-divided above 1e-6 Eh, and below it recorded for the cluster refusal.
+recorded the same way, and every pair of the clusters such pairs chain
+together (#1314, "A near-degenerate cluster", `pc_taken_pairs`); past six
+orbitals a cluster falls back to disjoint pairs, closest first, the rest
+divided.
 
 **All-electron.** The call takes no frozen core: the NEVPT2 it feeds
 correlates the whole core (milestone 24's update refuses `frozen_core ≠ 0`
@@ -2150,9 +2151,10 @@ the PC surface:
 Its other refusals are `df_sc_nevpt2`'s, plus the energy's own refusals of
 a class (no positive metric eigenvalue, or a pole), passed on. A
 degenerate inactive pair is not refused (#1268, "A degenerate inactive
-pair" below). A cluster of three or more inactive orbitals within 1e-6 Eh
-of each other is Unsupported: a limit of the implementation, not of the
-surface, which is smooth there too.
+pair" below), nor is a near-degenerate cluster (#1314, "A near-degenerate
+cluster"). One of more than six orbitals joined by pairs under 1e-6 Eh is
+Unsupported: a limit of the implementation's cost, not of the surface,
+which is smooth there too.
 
 **Each refusal is reached by a real input (#943).** None of #803's four
 fixtures reaches the kept or the lift check: their smallest kept is 2.3e-6
@@ -2288,9 +2290,12 @@ reading is one `pc_hessian_product` at C', z = 0, along the h direction
   d^P_j is the pair's own split's change, recorded with φ.
 - θ = π/8, d' = (d + δ)/√2, and θ = 0, d' = d: their splits give
   M^dP = Ẽ_δP dP, the one cross term the π/4 basis does not read.
-- Two or more pairs: every pair turned by π/4 at once, M_PP'.
+- Two or more disjoint pairs: P with as many of its partners as are
+  disjoint from it and from each other turned by π/4 at once, along P's
+  split; each partner's split is M_PP'. Pairs that share an orbital: the
+  "A near-degenerate cluster", below.
 
-Three products per pair, and one more per pair when there are two or more,
+Three products per pair, and one more per group of partners,
 each at z = 0 (Φ is the Lagrangian's, already in the parts). Exact at a
 degenerate pair. Off one, the turned basis leaves f'_p'q' = (ε_p − ε_q)/2
 unread, an O(gap) error relative to the classes' denominators.
@@ -2298,11 +2303,8 @@ unread, an O(gap) error relative to the classes' denominators.
 `degenerate_pair_part` (the internal partition), which the PC-QD Hessian
 shares at its W (#1277, "The PC-QD-NEVPT2 Hessian").
 
-**What is not taken.** A cluster, an orbital under 1e-6 Eh from two others
-(a t2 triple; three equivalent distant atoms), is Unsupported, naming two of
-its pairs. It is as smooth as a pair, but no one turned basis makes an
-m × m off-diagonal block a diagonal split, and a polarization over every
-pair of its directions is O(m⁴) products. Not done.
+A cluster, three or more orbitals that such pairs chain together, is
+taken whole ("A near-degenerate cluster", below).
 
 Measured on the gfx1200 (`--preset hip`), against this tree's numerical
 `[hessian]` ladder of PC's analytic gradient at the step's `pc_floor`
@@ -2329,6 +2331,82 @@ pair just above the rule and divided), not for the size of the part.
 Since #1296 the next pair is inside PC's reach and is taken too. Its
 asymmetry is 6.8e-11.
 Before #1268 all three were refused, every coordinate that split a pair.
+
+### A near-degenerate cluster (#1314)
+
+Three or more core (or virtual) orbitals that pairs under the reach chain
+together: a t2 triple, the 1s of three or more equivalent carbons, or of
+carbons that happen to sit within 1e-4 Eh. Until #1314 PC took disjoint
+pairs only, the closest first: a pair that shared an orbital with a taken
+one was divided above 1e-6 Eh (with the C / gap² rounding of "Where a pair
+is taken" below) and refused as a cluster under it. At the Cope study's
+chair TS and boat four carbon 1s lie within 1.2e-4 and 5.4e-5 Eh; three
+pairs were taken and the cross pairs, 3.4e-5 to 1.2e-4 Eh, divided.
+
+**The cluster is taken whole.** `pc_taken_pairs` joins every pair closer
+than the reach into clusters (the connected components) and takes every
+pair within each, also those of a cluster past the reach between its ends.
+Nothing inside a cluster is divided. The energy is still N plus δ's Taylor
+terms, with P over every pair of every cluster:
+
+    H_ij += Σ_P (φ^P_i K^P_j + φ^P_j K^P_i) + Σ_PP' M_PP' φ^P_i φ^P'_j.
+
+Nothing in it assumes disjoint pairs. K^P_j is the change of Ẽ_δP at fixed
+δ, every δ, so the reading at P's π/4 basis turns into it as before:
+G^P_j = K^P_j − M^dP d^P_j + M_PP φ^P_j, the other pairs' δ (P's
+neighbours' included) being off-diagonal in that basis too. M_PP and M^dP
+are read as before, P turned alone. What is new is M_PP' of two pairs that
+share an orbital s, P = (a, s) and P' = (s, b): no one basis makes both
+diagonal, so it is the polarization
+
+    M_PP' = (Y·Y − M_PP − M_P'P') / 2,   Y = δ_P + δ_P',
+
+Y·Y read along Y in the basis that diagonalizes it within (a, s, b): Y is
+[[0, 1, 0], [1, 0, 1], [0, 1, 0]] there, its eigenvectors (1, √2, 1)/2,
+(1, 0, −1)/√2 and (1, −√2, 1)/2 with eigenvalues √2, 0 and −√2, and along
+diag(√2, 0, −√2) in that basis Y·Y = √2 (h̄_aa − h̄_bb). Disjoint pairs'
+M_PP' are read as before, P and as many of its disjoint partners as are
+disjoint from each other turned by π/4 at once. Like the pair's terms it is
+exact at a degenerate cluster and O(gap) off one: the turned bases leave
+f's off-diagonal there, of the order of the cluster's spread, unread.
+
+**The cost.** A cluster of m orbitals has m (m − 1) / 2 pairs, three
+products each, one for every two that share an orbital, m (m − 1) (m − 2)
+/ 2, and a few for the disjoint ones: 33 at m = 4 (the Cope boat's 39 with
+its separate pair took 92 s of its 13-minute call on the RTX 3080), about
+120 at m = 6. `kPcClusterLimit`, six orbitals, bounds it: a larger cluster
+falls back to #1296's disjoint pairs, the rest divided, and is Unsupported
+only where pairs under 1e-6 Eh still join more than six orbitals, as
+before.
+
+**The part is exact.** Measured on the RTX 3080 (`--preset default`),
+against this tree's numerical `[hessian]` ladders
+(`test/gtest/data/pc_nevpt2_degenerate/`):
+
+| case | clusters (gaps, Eh) | bar | worst element | the pairs' part | asymmetry | the call |
+|---|---|---|---|---|---|---|
+| `ch4_td_631g`, Td methane 6-31G CAS(8,8) | two virtual t2 triples (9–11, 13–15), exact (1e-12) | 4.1e-7 | 0.031 bars | 1.7e3 bars | 9.0e-14 | 78 s |
+| `ch4_split_631g`, H1 1e-3 bohr off Td along (1, 2, 3) | (13–15): 2.8e-6, 7.3e-5, 7.5e-5; and the pair (10, 9), 9.2e-6 | 1.6e-7 | 0.218 | 2.7e3 | 1.5e-11 | 62 s |
+
+Every ladder settled; the sum rule ≤ 4.8e-10. #1268 refused the Td methane.
+At the split methane disjoint pairs (the rule before #1314) took (15, 14)
+and divided (14, 13) and (15, 13), 7.3e-5 and 7.5e-5 Eh apart: the asymmetry was 7.8e-11 and the worst
+element 0.248 bars. This small a case has a small C (#1296's 3e-19), so
+the division cost little here; the Cope study's C is 200 times larger.
+
+**What is left at the Cope study is not a pair.** With the cluster taken,
+the Cope Hessians' asymmetry is 3.6e-8 (pc_plus), 3.8e-9 (the chair TS)
+and 7.8e-8 (the boat) on the RTX 3080. A second run of the same binary
+gave 2.9e-8, 2.8e-8 and 1.26e-7, a spread larger than the fix's change.
+The boat agrees with its difference Hessian to 6.2e-7 (6.7e-7 before).
+(`experimental/cope_rearrangement/step_6/README.md`, "Since #1314".) At
+pc_plus all of the asymmetry is in ⟨t, HVP t⟩: 2.6e-11 of that 1.3e3
+part, with every other part symmetric to 2e-11. It scales as one over the
+smallest kept metric eigenvalue of Sr and Si. The step's `pc_floor`, 1e-10,
+lets that eigenvalue down to 1.5e-10 there: the asymmetry is 3.4e-8,
+1.1e-9 and 1.8e-10 at `pc_floor` 1e-10, 1e-8 and 1e-7. Tightening the CP
+and Z-vector solves 100-fold changes nothing, nor does taking every pair
+under 3e-3 Eh. That floor is #1318's.
 
 ### Where a pair is taken (#1296)
 
@@ -2401,11 +2479,11 @@ A higher reach would buy the Cope case little. It would cost the strongly
 coupled pairs bars.
 
 **The cut.** The reach is `kPcPairReach` (the internal partition), and
-`pc_taken_pairs` applies it. The pairs under it are sorted, the closest
-first, and each orbital goes into one pair at most. A pair that shares an
-orbital with a closer one is divided when it is above 1e-6 Eh, as before. Below
-1e-6 Eh it is recorded, and `degenerate_pair_blocks` refuses the cluster
-as before. SC keeps the 1e-6 Eh rule: it is not invariant, so it has no
+`pc_taken_pairs` applies it. Until #1314 the pairs under it were sorted,
+the closest first, and each orbital went into one pair at most; a pair that
+shared an orbital with a closer one was divided above 1e-6 Eh and refused
+as a cluster below. Since #1314 a cluster is taken whole ("A near-degenerate
+cluster", above). SC keeps the 1e-6 Eh rule: it is not invariant, so it has no
 pair term. The gradient's z^c rule (`../nevpt2/gradient/zc.cpp`) does not
 change. Above 1e-6 Eh its z_pq = −A_pq / 2 gap is the Ẽ_δ / 2 that the
 pair's terms already assume.
@@ -2524,9 +2602,11 @@ The levers that would lower this minimum are filed:
   ("Where a pair is taken"). Its pairs are 1.1e-6 and 2.9e-6 Eh apart, so
   the two are taken; the asymmetry is ≤ 1e-9 (it was 1.2e-7 when they were
   divided) and the sum rule ≤ 1e-8.
-- `DegenerateClusterIsUnsupported` (#1268): a Td methane in 6-31G,
-  CAS(8,8) over its valence, whose virtual t2 triple is a cluster:
-  Unsupported, naming `hessian::df_pc_nevpt2`, an orbital and two pairs.
+- `ExactlyDegenerateClusterMatchesTheLadder` and
+  `NearDegenerateClusterMatchesTheLadder` (#1314, slow tier): the Td
+  methane and the split one of "A near-degenerate cluster", every element
+  within 2× the ladder's bar, the pairs' part above 10 bars, the asymmetry
+  ≤ 1e-9 and the sum rule ≤ 1e-8. #1268 refused the Td one.
 - `ThinKeptClassIsRefused` (#943): the C2v formaldehyde above is
   Numerical, naming Sr with its kept below 1e-10 and the `pc_floor` that
   cuts it.
@@ -2818,9 +2898,10 @@ do, through the Lagrangian's orbital stationarity as for SC.
   within 1e-3 bohr (a lift with no overlap, Part I's). All of them named in
   one Numerical error, each block with its coupling, class and both t*.
 
-A degenerate inactive pair is not refused (next section). A cluster of
-three or more inactive orbitals within 1e-6 Eh of each other at f^SA is
-Unsupported, as for `df_pc_nevpt2`.
+A degenerate inactive pair is not refused (next section), nor is a
+near-degenerate cluster at f^SA, taken whole as `df_pc_nevpt2` takes one
+(#1314); one of more than six orbitals joined under 1e-6 Eh is
+Unsupported, as there.
 
 ### At a degenerate inactive pair (#1277)
 
@@ -2907,10 +2988,10 @@ settled inside their floors (no ratio judged), the Z-vectors at 1e-11
 Asymmetry ≤ 3.9e-10, the sum rule ≤ 1.6e-9, `rotation_shift` ≤ 6.7e-15 Eh;
 the crossing's W, signed, is the fixture's to 2.2e-16.
 
-A cluster (three or more orbitals within 1e-6 Eh) is Unsupported through
-the shared `degenerate_pair_blocks`, on the single-state Hessian
-(`DegenerateClusterIsUnsupported`) and on this one (#1282: three neons
-around an H₂, below).
+A cluster is taken whole through the shared `degenerate_pair_part`
+(#1314, "A near-degenerate cluster"), on the single-state Hessian and on
+this one. #1282's three neons around an H₂ (below), which it refused, are
+now NE3H2_RESULT.
 
 ### Tests
 

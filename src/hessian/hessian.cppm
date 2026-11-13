@@ -1138,7 +1138,9 @@ struct PcNevpt2Terms {
 /// pair under 1e-4 hartree, which @ref df_nevpt2_tangents leaves unrotated,
 /// is taken through its off-diagonal f, read as a split of the diagonal in
 /// turned bases (PcNevpt2Terms::degenerate): PC is invariant to the pair's
-/// rotation, so its energy is smooth there. Refused, Numerical, where one
+/// rotation, so its energy is smooth there. A near-degenerate cluster (the
+/// orbitals such pairs chain together) is taken whole, every pair within it
+/// (#1314, README "A near-degenerate cluster"). Refused, Numerical, where one
 /// analytic Hessian does not represent the PC surface:
 /// - a class whose smallest kept metric eigenvalue is below 1e-10 of its
 ///   largest (#917), named with it: @p pc_floor 1e-10 or more cuts it;
@@ -1147,8 +1149,9 @@ struct PcNevpt2Terms {
 ///   finite-difference step), every such coordinate named with its class and
 ///   t*.
 ///
-/// Unsupported for an orbital under 1e-6 hartree from two others (a cluster
-/// of three or more): only disjoint pairs are taken.
+/// Unsupported for a cluster of more than six orbitals whose pairs under
+/// 1e-6 hartree still join it (a larger one is otherwise taken as disjoint
+/// pairs, the rest divided).
 ///
 /// The inputs, memory and other refusals are @ref df_sc_nevpt2's, the
 /// energy's own refusals of a class (no positive metric eigenvalue, a pole)
@@ -1833,8 +1836,8 @@ struct QdPcNevpt2Terms {
 /// (under 1e-4 hartree at f^SA, @ref df_qd_nevpt2_tangents' records) is
 /// taken as @ref df_pc_nevpt2 takes one, in term (i) at W
 /// (QdPcNevpt2Terms::degenerate): every H_eff element is invariant to the
-/// pair's rotation; an orbital under 1e-6 hartree from two others (a cluster
-/// of three or more) is Unsupported. **After the CP solve**, as
+/// pair's rotation, and a near-degenerate cluster is taken whole (#1314), as
+/// there; one past six orbitals joined under 1e-6 hartree is Unsupported. **After the CP solve**, as
 /// @ref df_pc_nevpt2 refuses, on every model state: the pairs
 /// of coordinates (i, j) along both of which a ket's cut metric modes lift
 /// with a first-order overlap to another state (nevpt2::qd_pc_hessian_product's

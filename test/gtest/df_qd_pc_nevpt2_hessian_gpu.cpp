@@ -28,10 +28,10 @@
 //   virtual e pairs are exactly degenerate at f^SA, and the same 2e-6 bohr
 //   off C3v (near-degenerate); every element within 2x the ladder's bar,
 //   the pairs' own part visible;
-// - a degenerate inactive cluster (#1282): three neons around an H2 (D3h),
-//   SA-2 CAS(2,2) over the H2's sigma pair, each neon shell's three copies
-//   within 1e-6 Eh at f^SA, refused as Unsupported through the shared
-//   check, naming the cluster.
+// - a degenerate inactive cluster (#1282, #1314): three neons around an H2
+//   (D3h), SA-2 CAS(2,2) over the H2's sigma pair, each neon shell's copies
+//   a cluster at f^SA: every pair taken, the asymmetry within the solves'
+//   error and the sum rule.
 
 #include <gtest/gtest.h>
 
@@ -941,20 +941,24 @@ TEST_F(HessianDfQdPcNevpt2, ExactlyDegeneratePairsMatchTheLadder) {
 // Three neon atoms 8 bohr from a central H2 (D3h: H2 along the C3 axis, the
 // neons in the plane through its centre), STO-3G, SA-2 CAS(2,2) over the
 // H2's sigma_g and sigma_u (orbitals 6 and 16): both roots Sigma, 0.97 Eh
-// apart, the QD gap open, and each neon shell's three copies (the e' pair
-// and the a1' one) within 1e-6 Eh at f^SA (the 1s within 6e-11), so the
-// degenerate-pair rule records three pairs of one triple. A cluster is
-// Unsupported through the shared check (degenerate_pair_blocks), naming an
-// orbital and two of its pairs (#1282). At pc_floor 1e-10 so that no thin
-// class is refused first.
+// apart, the QD gap open, and each neon shell's copies (the e' pair and the
+// a1' one, the 1s within 6e-11 Eh) a degenerate cluster at f^SA. #1282
+// refused it; since #1314 every pair of each cluster is taken through the
+// shared degenerate_pair_part, as df_pc_nevpt2 takes them (checked there
+// against ladders, the methane clusters). Here the neons are so far away
+// that the pairs' part is about 1e-2 of a ladder's bar and the ladder does
+// not settle at their elements, so this checks that the clusters are taken
+// and the Hessian is as symmetric as its solves, not elements. At pc_floor
+// 1e-10 so that no thin class is refused first.
 //
 // Td methane (6-31G, CAS(2,2) over 2a1 and 3a1*) has its t2 triples, but
-// its Td SA-CASSCF is a saddle, which df_sacasscf_cp refuses before the
-// cluster check, at any weights from equal to 0.9; at 0.95 to 0.98, and in
-// STO-3G, the SA-CASSCF converges below Td and every triple splits into a
-// pair and a single. A neon atom's p shells meet the same saddle.
-TEST_F(HessianDfQdPcNevpt2, DegenerateClusterIsUnsupported) {
+// its Td SA-CASSCF is a saddle, which df_sacasscf_cp refuses, at any
+// weights from equal to 0.9; at 0.95 to 0.98, and in STO-3G, the SA-CASSCF
+// converges below Td and every triple splits into a pair and a single. A
+// neon atom's p shells meet the same saddle.
+TEST_F(HessianDfQdPcNevpt2, DegenerateClusterIsTaken) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   constexpr double kNeon = 8.0;
   Start start{.name = "ne3_h2_d3h_sto3g_sa2",
               .atoms = {{"H", {0.0, 0.0, 0.7}}, {"H", {0.0, 0.0, -0.7}}},
@@ -971,17 +975,25 @@ TEST_F(HessianDfQdPcNevpt2, DegenerateClusterIsUnsupported) {
   const Reference &ref = reference(start);
   ASSERT_TRUE(ref.solution.has_value());
   const auto begin = std::chrono::steady_clock::now();
-  const auto h = ref.hessian(*ref.solution, 1, {}, kKept);
+  const auto got = ref.hessian(*ref.solution, 1, {}, kKept);
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
-  ASSERT_FALSE(h.has_value()) << "a cluster of three degenerate orbitals was taken";
-  const std::string &m = h.error().message;
-  EXPECT_EQ(h.error().kind, fb::ErrorKind::Unsupported) << m;
-  EXPECT_NE(m.find("hessian::df_qd_pc_nevpt2: orbital "), std::string::npos) << m;
-  EXPECT_NE(m.find("a cluster of three or more degenerate inactive orbitals"), std::string::npos)
-      << m;
-  EXPECT_NE(m.find("is within 1e-6 Eh of two others (pairs ("), std::string::npos) << m;
-  std::cout << std::format("[ cluster  ] refused in {:.2f} s: {}\n", seconds, m);
+  ASSERT_TRUE(got.has_value()) << got.error().message;
+  const fb::hessian::QdScNevpt2Terms &h = got->terms;
+  // Each shell's three copies: three pairs sharing each orbital.
+  std::map<std::int32_t, std::int32_t> shared;
+  for (const auto &[p, q] : got->degenerate_pairs) {
+    ++shared[p];
+    ++shared[q];
+  }
+  const bool cluster = std::ranges::any_of(shared, [](const auto &o) { return o.second >= 2; });
+  std::cout << std::format("[ cluster  ] {} pairs, an orbital in two or more: {}; asymmetry "
+                           "{:.1e} (bar {:.1e}), sum rule {:.1e}; {:.2f} s\n",
+                           got->degenerate_pairs.size(), cluster, h.asymmetry, solve_bar(h),
+                           h.translation, seconds);
+  EXPECT_TRUE(cluster) << "no cluster was taken";
+  EXPECT_LE(h.asymmetry, solve_bar(h));
+  EXPECT_LE(h.translation, kSumRule);
 }
 
 // The same ammonia with one hydrogen 2e-6 bohr off C3v: both pairs

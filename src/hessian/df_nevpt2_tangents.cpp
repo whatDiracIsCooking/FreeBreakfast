@@ -137,7 +137,7 @@ Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
 
   std::vector<DegeneratePair> recorded;
   std::vector<double> eps;
-  // PC's pairs taken by their off-diagonal f: disjoint, smallest gap first.
+  // PC's pairs taken by their off-diagonal f: every pair of every cluster.
   std::vector<std::array<size_t, 2>> taken;
   // One chunk of @p count coordinates from x0, as wide as the budget holds.
   const auto part = [&](const int32_t x0, const int32_t count, const double *const h1,
@@ -279,12 +279,39 @@ Result<std::vector<DegeneratePair>> df_nevpt2_tangents(
 std::vector<std::array<size_t, 2>> pc_taken_pairs(const std::span<const double> eps,
                                                   const size_t nc, const size_t nocc,
                                                   const double reach) {
-  std::vector<std::tuple<double, size_t, size_t>> close;
-  for (const auto &[first, last] : {std::pair{size_t{0}, nc}, std::pair{nocc, eps.size()}}) {
+  // The clusters: the connected components of the pairs closer than reach,
+  // joined through a root per orbital.
+  std::vector<size_t> root(eps.size());
+  std::iota(root.begin(), root.end(), size_t{0});
+  const auto find = [&root](size_t o) {
+    while (root[o] != o) {
+      o = root[o];
+    }
+    return o;
+  };
+  const std::array blocks{std::pair{size_t{0}, nc}, std::pair{nocc, eps.size()}};
+  for (const auto &[first, last] : blocks) {
     for (size_t p = first + 1; p < last; ++p) {
       for (size_t q = first; q < p; ++q) {
         if (std::abs(eps[p] - eps[q]) < reach) {
-          close.emplace_back(std::abs(eps[p] - eps[q]), p, q);
+          root[find(p)] = find(q);
+        }
+      }
+    }
+  }
+  std::vector<size_t> size(eps.size(), 0);
+  for (size_t o = 0; o < eps.size(); ++o) {
+    ++size[find(o)];
+  }
+  // Every pair within a cluster, the closest first; within one past the
+  // limit, the pairs under the reach, each orbital in one at most.
+  std::vector<std::tuple<double, size_t, size_t>> close;
+  for (const auto &[first, last] : blocks) {
+    for (size_t p = first + 1; p < last; ++p) {
+      for (size_t q = first; q < p; ++q) {
+        const double gap = std::abs(eps[p] - eps[q]);
+        if (find(p) == find(q) && (size[find(p)] <= kPcClusterLimit || gap < reach)) {
+          close.emplace_back(gap, p, q);
         }
       }
     }
@@ -293,11 +320,14 @@ std::vector<std::array<size_t, 2>> pc_taken_pairs(const std::span<const double> 
   std::vector<bool> used(eps.size(), false);
   std::vector<std::array<size_t, 2>> taken;
   for (const auto &[gap, p, q] : close) {
-    if (!used[p] && !used[q]) {
+    if (size[find(p)] > kPcClusterLimit) {
+      if (used[p] || used[q]) {
+        continue;
+      }
       used[p] = true;
       used[q] = true;
-      taken.push_back({p, q});
     }
+    taken.push_back({p, q});
   }
   return taken;
 }

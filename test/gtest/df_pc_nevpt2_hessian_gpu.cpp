@@ -23,7 +23,9 @@
 //   every element within 2x the ladder's bar, the pairs' own part visible;
 //   the ammonia 3e-5 bohr off C3v, its pairs past the 1e-6 Eh rule and
 //   inside PC's pair reach (#1296): taken, and the asymmetry at round-off;
-//   and a Td methane whose virtual t2 triple is a cluster: Unsupported;
+//   and a Td methane whose virtual t2 triples are clusters, and the same
+//   methane off Td with one near-degenerate cluster: every pair of a cluster
+//   taken (#1314), every element within 2x the ladder's bar;
 // - a C2v formaldehyde CAS(6,6) whose Sr and Si keep under 1e-10: refused,
 //   naming the class and its kept (#943);
 // - HCN CAS(6,6), whose x and y coordinates lift Sir's null modes within
@@ -573,36 +575,24 @@ TEST(HessianDfPcNevpt2, PairsPastTheRuleAreTaken) {
   EXPECT_LE(h->translation, kSumRule);
 }
 
-// A Td methane in 6-31G, CAS(8,8) over its valence: the virtual t2 triple
-// is three orbitals within the rule of each other, a cluster the pairs'
-// step does not take.
-TEST(HessianDfPcNevpt2, DegenerateClusterIsUnsupported) {
+// A Td methane in 6-31G, CAS(8,8) over its valence (data/
+// pc_nevpt2_degenerate/'s ch4_td_631g): its two virtual t2 triples are
+// exactly degenerate clusters, every pair of each taken, three of them
+// sharing each orbital (#1314; #1268 refused it).
+TEST(HessianDfPcNevpt2, ExactlyDegenerateClusterMatchesTheLadder) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  const double r = 2.05 / std::sqrt(3.0);
-  fb::json atoms = fb::json::array();
-  atoms.push_back({{"symbol", "C"}, {"coord", {0.0, 0.0, 0.0}}});
-  for (const auto &[x, y, z] : {std::array{1.0, 1.0, 1.0}, std::array{1.0, -1.0, -1.0},
-                                std::array{-1.0, 1.0, -1.0}, std::array{-1.0, -1.0, 1.0}}) {
-    atoms.push_back({{"symbol", "H"}, {"coord", {r * x, r * y, r * z}}});
-  }
-  const Reference ref = reference({{"name", "ch4_td_631g"},
-                                   {"atoms", atoms},
-                                   {"charge", 0},
-                                   {"basis", {{"name", "6-31G"}}},
-                                   {"aux_basis", {{"name", "cc-pVDZ-JKFIT"}}},
-                                   {"ncas", 8},
-                                   {"nelecas", 8},
-                                   {"active", {1, 2, 3, 4, 5, 6, 7, 8}}});
-  ASSERT_TRUE(ref.solution.has_value());
-  const auto h = ref.hessian();
-  ASSERT_FALSE(h.has_value()) << "a cluster of three degenerate orbitals was taken";
-  const std::string &m = h.error().message;
-  EXPECT_EQ(h.error().kind, fb::ErrorKind::Unsupported) << m;
-  EXPECT_NE(m.find("hessian::df_pc_nevpt2: orbital "), std::string::npos) << m;
-  EXPECT_NE(m.find("a cluster of three or more degenerate inactive orbitals"), std::string::npos)
-      << m;
-  std::cout << std::format("[ cluster  ] {}\n", m.substr(0, 300));
+  expect_degenerate_matches_ladder("ch4_td_631g", "td", kVisibleBars);
+}
+
+// The same methane with H1 1e-3 bohr off Td along (1, 2, 3) (ch4_split_631g):
+// one triple stays a cluster inside PC's 1e-4 Eh reach, its pairs 2.8e-6 to
+// about 1e-4 Eh apart and no symmetry left. Disjoint pairs, as before #1314,
+// took the closest and divided the other two, which share its orbitals.
+TEST(HessianDfPcNevpt2, NearDegenerateClusterMatchesTheLadder) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  expect_degenerate_matches_ladder("ch4_split_631g", "split", kVisibleBars);
 }
 
 // The kept refusal (#943): a C2v formaldehyde in STO-3G with CAS(6,6) over

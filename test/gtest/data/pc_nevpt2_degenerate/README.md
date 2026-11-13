@@ -1,7 +1,8 @@
 # pc_nevpt2_degenerate golden data
 
 The degenerate-inactive-pair references of the analytic PC-NEVPT2 Hessian
-(#1268) and of the PC-QD-NEVPT2 state Hessian (#1277, the `qd_` cases):
+(#1268), with its near-degenerate clusters (#1314, the `ch4_` cases), and
+of the PC-QD-NEVPT2 state Hessian (#1277, the `qd_` cases):
 this tree's own numerical `[hessian]` through the `free-breakfast` binary,
 the h, h/2, h/4 ladder of fourth-order central differences of the analytic
 PC gradient (or the PC-QD state's, tracked by its eigenvector) (`src/pipeline/hessian/README.md`, "The ladder and the
@@ -20,6 +21,8 @@ every element's bar the measured noise floor.
 | `nh3_c3v_631g` | C3v ammonia, 6-31G / cc-pVDZ-JKFIT, CAS(8,7) over 1–7 | virtual e (10, 9), (12, 11), 3e-14 | 4.2e-7 |
 | `nh3_near_631g` | the same, H1 moved 2e-6 bohr along x | the same, 7.4e-8, no symmetry | 3.2e-7 |
 | `nh3_split_631g` | the same, H1 moved 3e-5 bohr along x | none: the same pairs at 1.1e-6 and 2.9e-6 Eh, inside PC's 1e-4 Eh reach (#1296) | 3.1e-7 |
+| `ch4_td_631g` | Td methane (C–H 2.05 bohr), 6-31G / cc-pVDZ-JKFIT, CAS(8,8) over 1–8 | two virtual t2 triples (9–11, 13–15), each a cluster (#1314), 1e-12 | 4.1e-7 |
+| `ch4_split_631g` | the same, H1 moved 1e-3 bohr along (1, 2, 3) / √14 | none: the triple 13–15 a cluster inside PC's reach, 2.8e-6, 7.3e-5 and 7.5e-5 Eh (#1314), and the pair (10, 9) at 9.2e-6 | 1.6e-7 |
 | `hexatriene_sto3g` | all-trans hexatriene (C2h), STO-3G / cc-pVDZ-JKFIT, CAS(6,6) over 19–24 | the terminal carbons' 1s (5, 4), 4.6e-7 | 1.2e-7 |
 | `qd_nh3_c3v_631g_sa2` | `nh3_c3v_631g` over an SA-2 CAS(8,7), equal weights, PC-QD state 1 | virtual e (9, 8), (11, 10) at f^SA, 1e-11 | 4.1e-7 |
 | `qd_nh3_near_631g_sa2` | the same, H1 moved 2e-6 bohr along x | the same, 2.3e-7, no symmetry | 4.1e-7 |
