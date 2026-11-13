@@ -58,7 +58,7 @@ KCAL = s4.HARTREE_KCAL
 # The grid, Angstrom (README "Step 3" has how it was sized).
 GRID = {
     "pc": [round(1.5 + 0.05 * i, 2) for i in range(27)],  # 1.50 .. 2.80
-    "casscf": [round(1.5 + 0.1 * i, 2) for i in range(14)],  # 1.5 .. 2.8
+    "casscf": [round(1.5 + 0.05 * i, 2) for i in range(27)],  # 1.50 .. 2.80
 }
 TS_XYZ = STEP4 / "geometries" / "pc_ts.xyz"
 TS_ORBITALS = STEP6 / "runs" / "ts_hessian" / "casscf_orbitals.npy"

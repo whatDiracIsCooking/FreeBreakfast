@@ -36,13 +36,13 @@ nearest grid point's otherwise.
   - Its curvatures: −114 kcal/mol/Å² across the diagonal (R16 − R34), +54
     along it.
 - **CASSCF(6,6) is stepwise.** It has:
-  - a diyl **minimum** on the diagonal at 1.649 Å (4b: 1.642);
-  - two mirror-image **saddles** off the diagonal at (1.68, 1.81) Å,
-    flanking the well, 1.1 kcal/mol above 4b's diyl energy (1.4 above
-    the fit's);
+  - a diyl **minimum** on the diagonal at 1.649 Å (4b: 1.642), 0.009
+    kcal/mol from 4b's energy;
+  - two mirror-image **saddles** off the diagonal at (1.673, 1.821) Å,
+    flanking the well, 1.07 kcal/mol above 4b's diyl energy;
   - a **maximum** on the diagonal at 1.89 Å;
-  - the "aromatic" a_u **saddle** on the diagonal at 2.269 Å (4b: 2.284),
-    0.04 kcal/mol from 4b's.
+  - the "aromatic" a_u **saddle** on the diagonal at 2.279 Å (4b: 2.284),
+    0.003 kcal/mol from 4b's.
 - **The IRC lies along the PC surface's valley.** Step 4d's path, overlaid,
   leaves the saddle across the diagonal. At every one of its 97 points in
   the grid, the relaxed surface interpolated to the path's (R16, R34) is
@@ -50,9 +50,17 @@ nearest grid point's otherwise.
   0.004–0.45 kcal/mol (median 0.24): that is the bilinear interpolation's
   error on a 0.05 Å grid, plus the relaxation of the path's other
   coordinates.
-- **Every point converged:** 378 of 378 at PC and 105 of 105 at CASSCF.
-  Every point held its two distances to 1e-12 Å and kept C2 to ≤ 1.8e-4
-  bohr. The diagonal points also kept the inversion, to ≤ 2.6e-5 bohr.
+- **Every point converged:** 378 of 378 at PC and 378 of 378 at CASSCF,
+  on the same 0.05 Å grid. Every point held its two distances to 1e-12 Å
+  and kept C2 to ≤ 1.6e-4 bohr. The diagonal points also kept the
+  inversion, to ≤ 2.6e-5 bohr.
+- **The surfaces do not depend on the sweep's path,** but each point is
+  only as converged as Gaussian's default thresholds make it. The 105
+  CASSCF points shared with the earlier 0.1 Å grid, reached this time from
+  neighbours half as far away, agree with it to ≤ 6.1e-5 Eh (0.038
+  kcal/mol), median 9.4e-6. Re-converged at Opt=Tight from both runs'
+  endpoints, the six worst land on one constrained minimum to ≤ 1.2e-8 Eh:
+  no point found a second basin ("Path dependence", below).
 
 ![PC-NEVPT2 surface](surface_pc.svg)
 ![CASSCF surface](surface_casscf.svg)
@@ -62,8 +70,8 @@ nearest grid point's otherwise.
 | | |
 |---|---|
 | level | DF-CASSCF(6,6), and DF-PC-NEVPT2 on it; cc-pVDZ / cc-pVDZ-JKFIT, no frozen core; `conv_tol` 1e-12, `conv_tol_grad` 1e-9 (step 4b's walk settings) |
-| grid | PC: R16, R34 ∈ 1.50–2.80 Å at 0.05 Å (27 × 27). CASSCF: the same range at 0.1 Å (14 × 14) |
-| symmetry of the grid | E(R16, R34) = E(R34, R16): the chair's inversion swaps the two bonds. So only R16 ≤ R34 is run (378 PC points, 105 CASSCF) and the rest is the mirror |
+| grid | R16, R34 ∈ 1.50–2.80 Å at 0.05 Å (27 × 27), the same for both methods |
+| symmetry of the grid | E(R16, R34) = E(R34, R16): the chair's inversion swaps the two bonds. So only R16 ≤ R34 is run (378 points per method) and the rest is the mirror |
 | each point | `[optimize]` with `constraints = [{ atoms = [0, 5], distance = R16 }, { atoms = [2, 3], distance = R34 }]`, Gaussian's default thresholds (max force 4.5e-4, rms force 3e-4 Eh/bohr, max step 1.8e-3, rms step 1.2e-3 bohr), `max_steps` 200 |
 | sweep | the diagonal outward from (1.90, 1.90), the grid point nearest step 4b's TS, which starts from `step_4/geometries/pc_ts.xyz` with step 6's `ts_hessian` orbitals. Then each row from its diagonal point, (R, R + h), (R, R + 2h), … Every point starts from its neighbour's converged geometry and CASSCF orbitals; a point whose neighbour did not converge starts from the nearest converged one before it on the same line |
 | symmetry of each point | none imposed. A diagonal start is C2h and an off-diagonal one C2. The gradient keeps that symmetry, and both constraints map to themselves under C2 (C1↔C6, C3↔C4), so the walks stay C2. Checked at every point (below) |
@@ -72,8 +80,9 @@ nearest grid point's otherwise.
 surface is read at the 0.1 kcal/mol level. At max force 4.5e-4 Eh/bohr, a
 point is within ~g²/2k of its constrained minimum along any mode with
 curvature k. For k ≥ 0.05 Eh/bohr² that is ≤ 2e-6 Eh, 1e-3 kcal/mol.
-Softer modes, such as the torsions of the long-R region, can leave
-more. The scatter in the grid (below) bounds it.
+Softer modes, such as the torsions of the long-R region, leave more:
+measured at CASSCF, up to 1.5e-4 Eh (0.09 kcal/mol) at long R34 and up to
+1.6e-5 Eh on the diagonal ("Path dependence", below).
 
 **Sizing.** Six timed points (0.1 Å hops, before the grid was fixed) took
 18–43 s each, about 30 s a point. On that basis the first plan was 1.50–3.20 Å
@@ -84,10 +93,19 @@ Its evaluations took 4.2 s against 2.3 s near the TS, with both the CASSCF
 and the PC gradient slower. The card was not throttled and not shared. At
 that rate the full grid projected to ~8.7 h, over the 6–8 h budget.
 
-So after 73 points both grids were cut to 1.50–2.80 Å: 378 PC points and
-105 CASSCF ones. The points already run are on the new grid, by the same
-names and starts. The R16 = 1.50 row's points past 2.80 Å (2.85–3.20) were
-run but are not part of the surface; the analysis ignores them.
+So after 73 points both grids were cut to 1.50–2.80 Å. The points already
+run are on the new grid, by the same names and starts. The R16 = 1.50
+row's points past 2.80 Å (2.85–3.20) were run but are not part of the
+surface; the analysis ignores them.
+
+CASSCF was first run coarser, at 0.1 Å (105 points, 0.83 h), since it was
+the contrast and not the result. That left its diyl fit the weakest number
+here: the well is stiff, its 3 × 3 fit's minimum fell at the patch edge
+(offset 0.49 cell), and the fitted energy came out 0.35 kcal/mol below
+4b's diyl. So all 378 points were rerun at 0.05 Å (#1322), the 105 old
+ones included, so that every point starts from a 0.05 Å neighbour, as
+`parent()` and the run directories say. At 2.1 s an evaluation and 11.5
+evaluations a point (median), it took 2.6 h.
 
 The range takes the diagonal from below the CASSCF diyl (1.64 Å) to well past
 the CASSCF "aromatic" point (2.28 Å). It takes the off-diagonal from below
@@ -112,19 +130,26 @@ fit's; "4b" is step 4b's optimised stationary point at the same level.
 | level | kind | R16 / Å | R34 / Å | E / Eh | against 4b | curvatures / kcal mol⁻¹ Å⁻² |
 |---|---|---:|---:|---:|---|---|
 | PC-NEVPT2 | saddle | 1.922 | 1.922 | −233.7919625 | TS: +2.9e-6 Eh (0.002 kcal/mol), ΔR < 1e-3 Å | −114, +54 |
-| CASSCF | minimum | 1.649 | 1.649 | −232.9972706 | diyl: −5.5e-4 Eh (−0.35 kcal/mol), ΔR +0.007 Å | +309, +389 |
-| CASSCF | saddle ×2 | 1.682 | 1.811 | −232.9949710 | (not located in 4b) | −122, +112 |
-| CASSCF | maximum | 1.888 | 1.888 | −232.9932891 | | −283, −38 |
-| CASSCF | saddle | 2.269 | 2.269 | −232.9955113 | aromatic: −6.7e-5 Eh (−0.04 kcal/mol), ΔR −0.015 Å | −244, +16 |
+| CASSCF | minimum | 1.649 | 1.649 | −232.9967033 | diyl: +1.4e-5 Eh (+0.009 kcal/mol), ΔR +0.007 Å | +165, +246 |
+| CASSCF | saddle ×2 | 1.673 | 1.821 | −232.9950064 | (not located in 4b) | −147, +212 |
+| CASSCF | maximum | 1.892 | 1.892 | −232.9932825 | | −298, −40 |
+| CASSCF | saddle | 2.279 | 2.279 | −232.9954499 | aromatic: −5.4e-6 Eh (−0.003 kcal/mol), ΔR −0.005 Å | −263, +14 |
 
 - **The PC saddle is the TS to the grid fit's precision**: 0.05 Å spacing,
   and a quadratic that reproduces a smooth saddle.
-- **The CASSCF fits are coarser**, from a 0.1 Å grid. At the diyl, the well
-  is stiff (~300–400 kcal/mol/Å²) and its fitted minimum lies at the patch's
-  edge (offset 0.49 cell), so the fit's energy there is 0.35 kcal/mol below
-  4b's exact one.
+- **The CASSCF fits now match 4b as well.** At 0.05 Å the diyl's fitted
+  minimum lies near its patch's centre (offset 0.03 cell), and its energy
+  is 1.4e-5 Eh (0.009 kcal/mol) from 4b's, down from −0.35 kcal/mol at
+  0.1 Å. That is the size of a diagonal point's own convergence error at
+  default thresholds (up to 1.6e-5 Eh, below), so it is as close as this
+  grid can get. The 0.1 Å patch had also overestimated the well's
+  stiffness: +165 and +246 kcal/mol/Å², not +309 and +389. The aromatic
+  saddle is 0.003 kcal/mol and 0.005 Å from 4b's.
+- **The off-diagonal saddles' fits are the least central**: offsets 0.46
+  and 0.43 cell in their patch, so their location is good to about h/2,
+  0.025 Å. They sit 1.07 kcal/mol above 4b's diyl, as at 0.1 Å (1.1).
 - **The CASSCF stepwise route** is hexadiene → off-diagonal saddle → diyl →
-  mirror saddle → hexadiene. Its saddles are 1.1 kcal/mol above 4b's exact
+  mirror saddle → hexadiene. Its saddles are 1.07 kcal/mol above 4b's exact
   diyl, so the diyl is a shallow intermediate. The aromatic saddle, 0.80
   kcal/mol above the diyl in 4b, is a second, symmetric route over the
   diagonal. The maximum between the two diagonal stationary points is what
@@ -133,13 +158,13 @@ fit's; "4b" is step 4b's optimised stationary point at the same level.
 ### The diagonal, E(R, R)
 
 ΔE in kcal/mol from each grid's lowest point, which is on its edge
-(PC (1.55, 2.80), CASSCF (1.6, 2.8)) and not a stationary point. Only the
+(PC (1.55, 2.80), CASSCF (1.60, 2.80)) and not a stationary point. Only the
 shape along R is meant.
 
 | R / Å | 1.50 | 1.60 | 1.65 | 1.70 | 1.80 | 1.90 | 1.95 | 2.00 | 2.10 | 2.20 | 2.30 | 2.40 | 2.60 | 2.80 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | PC | 41.78 | 33.10 | 30.54 | 28.59 | 26.18 | **25.34** | 25.36 | 25.58 | 26.59 | 28.17 | 30.19 | 32.53 | 37.62 | 42.50 |
-| CASSCF | 44.69 | **38.57** | | 38.63 | 39.90 | 40.33 | | 39.99 | 39.46 | 39.08 | **38.99** | 39.15 | 39.95 | 40.89 |
+| CASSCF | 44.70 | 38.57 | **38.19** | 38.62 | 39.90 | 40.33 | 40.21 | 39.98 | 39.45 | 39.07 | **38.98** | 39.14 | 39.94 | 40.90 |
 
 PC has one minimum on the diagonal, which is the saddle across it. CASSCF
 has two, the diyl near 1.65 and the aromatic point near 2.3, with a maximum
@@ -152,8 +177,8 @@ is the CASSCF the PC-NEVPT2 rests on, at the PC-relaxed geometry.
 
 | R / Å | PC grid: n3 / n4 | CASSCF grid: n3 / n4 |
 |---|---|---|
-| 1.60 | 1.432 / 0.568 | 1.376 / 0.624 |
-| 1.65 | 1.527 / 0.474 | |
+| 1.60 | 1.432 / 0.568 | 1.377 / 0.623 |
+| 1.65 | 1.527 / 0.474 | 1.455 / 0.545 |
 | 1.90 | 1.810 / 0.192 | 1.790 / 0.212 |
 | 2.30 | 1.841 / 0.159 (n5 0.111) | 1.845 / 0.156 (n5 0.112) |
 
@@ -167,11 +192,54 @@ different reference, removes the diyl, which is the study's premise.
 | | points | converged | evaluations, median / max | wall per point, median / max | total | max C2-breaking / bohr |
 |---|---:|---:|---|---|---:|---:|
 | PC | 378 | 378 | 11 / 36 | 37 s / 123 s | 4.28 h | 1.5e-4 |
-| CASSCF | 105 | 105 | 13 / 27 | 26 s / 62 s | 0.83 h | 1.8e-4 |
+| CASSCF | 378 | 378 | 11.5 / 27 | 22.5 s / 64 s | 2.57 h | 1.6e-4 |
 
-Plus the R16 = 1.50 row's eight points past 2.80 Å, 0.2 h, from before the
-grid was cut. No point failed, so none started from anything but its
-direct neighbour.
+Plus, at PC, the R16 = 1.50 row's eight points past 2.80 Å, 0.2 h, from
+before the grid was cut, and at CASSCF the superseded 0.1 Å grid, 0.83 h.
+No point failed, so none started from anything but its direct neighbour.
+
+### Path dependence
+
+The 105 CASSCF points on the old 0.1 Å grid were each run twice: once in
+the 0.1 Å sweep, from a neighbour 0.1 Å away (the committed
+`surface_casscf.csv` before #1322), and once in this one, from a neighbour
+0.05 Å away. Both are the same constrained minimum, so they differ only
+by where each walk stopped.
+
+| | |
+|---|---|
+| max \|ΔE\| | 6.1e-5 Eh (0.038 kcal/mol), at (1.80, 2.80) |
+| median \|ΔE\| | 9.4e-6 Eh |
+| mean ΔE (new − old) | −3.1e-6 Eh; new lower at 29 of the 52 points over 1e-5 |
+| points over 1e-5 Eh | 52 of 105: 44 off the diagonal, mostly R34 ≥ 2.3 Å, and 8 on it |
+| points over 1e-4 Eh | none |
+| max geometry RMSD (Kabsch) | 0.043 bohr |
+| max active-occupation change | 1.7e-3 |
+
+**That is more than the ~1e-6 Eh expected, and it is convergence, not a
+second basin.** The sign is mixed, so neither sweep sits systematically
+lower, and the geometries differ along soft modes by up to 0.04 bohr. Six
+points were re-converged at Opt=Tight (step 4b's thresholds) from both
+runs' endpoints: the four worst, and the two diagonal ones nearest the
+diyl.
+
+| point | ΔE at default, new − old | at Opt=Tight, new − old | geometry RMSD at Opt=Tight / bohr | default above tight: new, old |
+|---|---:|---:|---:|---|
+| (1.80, 2.80) | −6.1e-5 | +2.8e-9 | 1.8e-4 | 2.1e-5, 8.2e-5 |
+| (2.00, 2.80) | −6.0e-5 | +3.3e-9 | 1.6e-4 | 8.5e-5, 1.5e-4 |
+| (1.80, 2.60) | +5.3e-5 | +1.6e-9 | 1.6e-4 | 7.2e-5, 1.9e-5 |
+| (1.60, 2.40) | −4.6e-5 | −1.8e-9 | 1.9e-4 | 6.2e-6, 5.3e-5 |
+| (1.50, 1.50) | +1.6e-5 | −1.2e-8 | 3.9e-4 | 1.6e-5, 2.0e-7 |
+| (1.60, 1.60) | +1.4e-5 | −5.3e-10 | 6.0e-5 | 1.5e-5, 1.0e-6 |
+
+Energies in Eh. Each pair reaches one minimum, to ≤ 1.2e-8 Eh and ≤ 4e-4
+bohr. Every default-threshold point is above it, by up to 1.5e-4 Eh (0.09
+kcal/mol) in the long-R34 region and up to 1.6e-5 Eh on the diagonal near
+the diyl. Gaussian's default thresholds stop on the step and the force,
+and along a mode as soft as these a point can meet both well short of the
+minimum. The other 46 points over 1e-5 Eh are the same kind (same region,
+mixed sign, ≤ 0.04 bohr) and were not re-converged. The PC surface uses
+the same thresholds, and its scatter has not been measured this way.
 
 ## Files
 
@@ -187,7 +255,7 @@ direct neighbour.
 | `surface_<method>.csv` | every point of the full square (the mirrored half marked `mirrored = 1`): status, E, ΔE from the grid minimum (kcal/mol), evaluations, max force, wall clock, the final distances, the C2-breaking measure, the six natural occupations |
 | `surface_<method>.svg` | the contour plot, the IRC (step 4d) overlaid on the PC one |
 | `comparison.svg` | both surfaces on one colour scale and contour interval (1 kcal/mol), the IRC on the PC one, and the diagonal cut E(R, R) of both |
-| `geometries_<method>.xyz` | every run point's converged geometry (378 PC, 105 CASSCF frames, R16 ≤ R34), in sweep order, the atom lines verbatim from its `final.xyz`; each comment line names the point and gives R16, R34 and E. Molden and IboView read it as a trajectory |
+| `geometries_<method>.xyz` | every run point's converged geometry (378 frames per method, R16 ≤ R34), in sweep order, the atom lines verbatim from its `final.xyz`; each comment line names the point and gives R16, R34 and E. Molden and IboView read it as a trajectory |
 | `surface.html` | the interactive page: both surfaces, the diagonal cut, and the geometry of whichever point is under the cursor. Self-contained apart from its web fonts, which fall back to system ones offline |
 
 `inputs/` and `runs/` are gitignored. `geometries_<method>.xyz` keeps each
@@ -200,8 +268,9 @@ From the repo root, after step 6's `ts_hessian` (whose orbitals seed the
 sweep) and step 4d's `irc.csv` (the overlay):
 
 ```sh
-taskset -c 0-7 experimental/cope_rearrangement/step_3/run.sh pc
-taskset -c 0-7 experimental/cope_rearrangement/step_3/run.sh casscf
+# run's prepare needs numpy, which the image's /opt/venv does not carry
+PATH=$PWD/.venv/bin:$PATH taskset -c 0-7 experimental/cope_rearrangement/step_3/run.sh pc
+PATH=$PWD/.venv/bin:$PATH taskset -c 0-7 experimental/cope_rearrangement/step_3/run.sh casscf
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
     python experimental/cope_rearrangement/step_3/surface.py analyse
 ```
