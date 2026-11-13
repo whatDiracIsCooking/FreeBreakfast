@@ -485,10 +485,13 @@ changes").
 
 ## Open questions
 
-- **Structs by pointer or by value.** The bridges pass views by `const &`,
-  and the table above makes that a pointer. A small POD could cross by value
-  instead, as `EinsumPlan` does. By pointer is uniform; by value lets the
-  kernel's argument be the struct itself. Either is C.
+- **Structs by pointer or by value: settled, by pointer.** A struct crosses
+  as a `const` pointer to a plain-C `typedef struct` in host memory, a small
+  POD such as `EinsumPlan` included, because one rule is uniform; the wrapper
+  reads the fields on the host and launches the kernel with what it needs.
+  The first three crossed that way when `mmd` and the overlap were forked
+  ("From bridge to C ABI"), their layout asserted on both sides ("Shared
+  types").
 - **Where the workspace query runs for a planner with no library.** The query
   is a host function in the kernel's `.so`, so a tier-3 planner test that
   calls it links that `.so` even though it launches nothing. Loading it is

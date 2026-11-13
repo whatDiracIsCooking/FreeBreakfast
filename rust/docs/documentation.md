@@ -113,10 +113,11 @@ the single source for their documentation too.
   requires of its pointers and sizes, which stream it enqueues on, and which
   refusals it returns are written once, as a `///` comment in the header, the
   C++ style ([`docs/style.md`](../../docs/style.md), "Comments").
-- **bindgen carries it across.** bindgen copies Doxygen-style comments onto
-  the items it generates, so the header's text is the `-sys` crate's rustdoc
-  with nothing retyped. It reads only `///` and `/** */` comments unless told
-  otherwise, which the style already requires.
+- **The bindings script carries it across.** `devtools/rust-bindings.py`,
+  which generates the `-sys` bindings with no bindgen, copies each `///`
+  comment onto the item it generates, so the header's text is the `-sys`
+  crate's rustdoc with nothing retyped ([`gpu_layer.md`](gpu_layer.md),
+  "Build"). It reads `///` comments only, which the style already requires.
 - **The safe wrapper links down, and adds only what is new.** Its doc comment
   says what the Rust type guarantees over the C call (lifetimes, the checked
   shapes) and links to the `-sys` item for the rest. The kernel's contract is

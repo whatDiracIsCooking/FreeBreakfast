@@ -338,16 +338,17 @@ whole model, in waves (each one PR; done means merged):
 
 | Wave | Issues |
 |---|---|
-| 0 | #1362 these docs; #1363 the cargo half of the gates, done; #1364 this directory's CMake project, done; #1365 core types, primitives and constants, done; #1366 stream scopes and the timing record, done |
+| 0 | #1362 these docs, done; #1363 the cargo half of the gates, done; #1364 this directory's CMake project, done; #1365 core types, primitives and constants, done; #1366 stream scopes and the timing record, done |
 | 1 | #1367 atom and molecule, done; #1368 tier-4 skips, done; #1369 the forked device layer and the merge sort, done |
 | 2 | #1370 basis, done; #1371 the forked mmd and overlap kernels, done |
-| 3 | #1372 io/xyz and io/basis, done; #1373 the primitive-pair records as tasks |
-| 4 | #1374 the overlap: declared with a layout, laid out in an arena, planned once and run on one stream, its arena size a golden and its stream scope timed |
+| 3 | #1372 io/xyz and io/basis, done; #1373 the primitive-pair records as tasks, done |
+| 4 | #1374 the overlap: declared with a layout, laid out in an arena, planned once and run on one stream, its arena size a golden and its stream scope timed, done |
 
-Open beside them: #1382, the kernel libraries' ABI version and backend
-check at load ([`gpu_layer.md`](docs/gpu_layer.md), "What the port
-changes"), and #1380, the basis's angular-momentum ceiling asserted against
-a forked device header.
+Beside them: #1382, the kernel libraries' ABI version and backend check at
+load ([`gpu_layer.md`](docs/gpu_layer.md), "What the port changes"), still
+open; #1380, the basis's angular-momentum ceiling asserted against a forked
+device header, done; #1377, the doctor's compiler-drift scan over
+`rust/build-*`, done; and #1393, three doc leftovers after the fork, done.
 
 Then the port, bottom-up from `core`, one module per crate, its device code
 forked with it ([`gpu_layer.md`](docs/gpu_layer.md), "What the port
