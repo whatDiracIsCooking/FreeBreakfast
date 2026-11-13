@@ -239,6 +239,17 @@ devtools/test.py pr --record                 # and append it to `metrics`
   from sccache) and then running the GPU binaries on the slower card. With every
   tree built, or none, or no built tree's card live, it is the plain card
   choice. `CMAKE_PRESET=<preset> git push` still names one.
+- **A tree whose compiler changed is reconfigured fresh.** When the build
+  tree's cached C++ compiler is gone, or the same path now reports another
+  version (the image's clang 20 -> 23), the cache still names the old libc++
+  module sources and a plain configure fails on a missing `std.cppm`. Before
+  configuring, `test.py` and `devtools/build.sh` check for that (lib.sh
+  `build_tree_compiler_drift`), print
+  `build: compiler changed (<old> -> <new>); reconfiguring with --fresh` and
+  configure with `--fresh`, which keeps the objects and sccache. A value set
+  by hand with `-D` that the preset does not carry is dropped with the cache.
+  `devtools/doctor.sh`'s `build trees` section warns about every such tree in
+  the checkout and its worktrees.
 
 - **Standard library only.** It is the push hook on the host and in the
   container, so it must run under a bare `python3`, with neither `.venv` nor

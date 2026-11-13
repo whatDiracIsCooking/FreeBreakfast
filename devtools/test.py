@@ -849,7 +849,19 @@ def cpp_build(
     configure_args: tuple[str, ...] = (),
 ) -> int:
     """build.sh's cpp_build, the one copy of the configure and build phases.
-    `configure_args` go to the configure."""
+    `configure_args` go to the configure.
+
+    A tree whose cached C++ compiler is gone, or now reports another version,
+    cannot configure: the cache still names the old libc++ module sources
+    (#1333). It is reconfigured with --fresh, saying so in one line on the
+    console and in the log, rather than failed: the only fix is a fresh
+    configure, --fresh keeps the objects (and sccache) where deleting build/
+    would not, and every value a gate needs comes back from the preset and
+    `configure_args`."""
+    drift = compiler_drift(build_dir_of(preset)) if not fresh else ""
+    if drift:
+        say(f"build: compiler changed ({drift}); reconfiguring with --fresh", log=log)
+        fresh = True
     out = subprocess.DEVNULL if quiet else None
     return lib(
         'BUILD_LOG=$1; shift; cpp_build "$@"',
@@ -864,6 +876,13 @@ def cpp_build(
         stdout=out,
         stderr=out,
     ).returncode
+
+
+def compiler_drift(build_dir: Path) -> str:
+    """lib.sh's build_tree_compiler_drift: `<old> -> <new>` when the tree was
+    configured by a C++ compiler that is gone or has changed, else ""."""
+    proc = lib('build_tree_compiler_drift "$1"', str(build_dir))
+    return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
 def fast_env() -> dict[str, str]:

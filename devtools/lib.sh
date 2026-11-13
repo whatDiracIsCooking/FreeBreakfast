@@ -100,6 +100,48 @@ if d:
 EOF
 }
 
+# Whether the build tree $1 was configured by a C++ compiler that is no longer
+# the one it would get (#1333). The devcontainer's clang went from 20 to 23
+# behind every existing build*/: /usr/bin/clang++ still exists, but the cache
+# still names llvm-20's libc++ module sources, and the configure fails on a
+# missing std.cppm without saying the compiler changed. CMake catches a
+# changed CMAKE_CXX_COMPILER itself; what it misses is the same path running
+# a different compiler. So: the compiler the tree recorded
+# (CMakeFiles/<cmake version>/CMakeCXXCompiler.cmake) is gone, or now reports
+# another version, or the libc++ module manifest the cache names is gone.
+# On drift, prints one line, `<old> -> <new>`, and returns 0. Returns 1 when
+# the tree matches, and when it cannot say (no cache, no record of the
+# compiler, a compiler that will not report its version): a false alarm would
+# throw away a working cache.
+build_tree_compiler_drift() {
+  local dir=$1 cache="$1/CMakeCache.txt" ver rec cxx old_v new_v json
+  [ -f "$cache" ] || return 1
+  ver=$(sed -n 's/^CMAKE_CACHE_\(MAJOR\|MINOR\|PATCH\)_VERSION:INTERNAL=//p' \
+          "$cache" | paste -sd.)
+  rec="$dir/CMakeFiles/$ver/CMakeCXXCompiler.cmake"
+  [ -n "$ver" ] && [ -f "$rec" ] || return 1
+  cxx=$(sed -n 's/^set(CMAKE_CXX_COMPILER "\(.*\)")$/\1/p' "$rec")
+  old_v=$(sed -n 's/^set(CMAKE_CXX_COMPILER_VERSION "\(.*\)")$/\1/p' "$rec")
+  [ -n "$cxx" ] || return 1
+  if [ ! -x "$cxx" ]; then
+    echo "$cxx $old_v -> gone ($cxx no longer exists)"
+    return 0
+  fi
+  # gcc's -dumpversion is the major alone; clang has no -dumpfullversion.
+  new_v=$("$cxx" -dumpfullversion 2>/dev/null) ||
+    new_v=$("$cxx" -dumpversion 2>/dev/null) || new_v=""
+  if [ -n "$new_v" ] && [ -n "$old_v" ] && [ "$new_v" != "$old_v" ]; then
+    echo "$cxx $old_v -> $cxx $new_v"
+    return 0
+  fi
+  json=$(sed -n 's/^CMAKE_CXX_STDLIB_MODULES_JSON:[A-Z]*=//p' "$cache")
+  if [ -n "$json" ] && [ ! -e "$json" ]; then
+    echo "$cxx $old_v -> $cxx ${new_v:-?}, and the cached $json is gone"
+    return 0
+  fi
+  return 1
+}
+
 # --- GPU cards: one run per card, load, and the `auto` preset --------------
 #
 # Admission of GPU-bound commands across every worktree/session on this host.
