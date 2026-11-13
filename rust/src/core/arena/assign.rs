@@ -89,8 +89,8 @@ pub struct Assignment {
 /// first, then the larger first), and each goes into the smallest gap
 /// between the rows it conflicts with that holds it, else past the last of
 /// them. Deterministic in its input. The total is not minimal in general;
-/// `docs/programming_model.md`, "The schedule search", says when that may
-/// matter.
+/// the schedule search in `docs/programming_model.md`, "Open questions",
+/// says when that may matter.
 #[debug_requires(
     rows.iter().all(|r| r.align.is_power_of_two()),
     "every alignment is a power of two"

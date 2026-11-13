@@ -7,8 +7,8 @@ use wwr_sys::wwr_status;
 
 /// The raw operations behind a block. The trait is public, so it can bound
 /// [`Kind`], but it lives in a module nothing outside the arena can name:
-/// only the arena allocates (`docs/programming_model.md`, "Allocation is a
-/// capability, held by one module").
+/// only the arena allocates (`docs/programming_model.md`, "Memory: layouts
+/// and arenas").
 pub mod sealed {
     use wwr_sys::wwr_status;
 
