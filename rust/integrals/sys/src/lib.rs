@@ -16,10 +16,13 @@
 //! | `mmd_records`, `mmd_bound` | [`fb_mmd_records`], [`fb_mmd_bound`] |
 //! | `ordered_pair_bound` | [`fb_ordered_pair_bound`] |
 //! | `overlap_class` | [`fb_overlap_class`] |
-//! | `kPairBoundMaxMomentum`, `kRecordBoundMaxMomentum`, the overlap launcher's `kMaxL` | [`FB_PAIR_BOUND_MAX_MOMENTUM`], [`FB_RECORD_BOUND_MAX_MOMENTUM`], [`FB_OVERLAP_MAX_MOMENTUM`] |
+//! | `kinetic_class` | [`fb_kinetic_class`] |
+//! | `NucleiView` (`src/molecule`) | [`fb_nuclei_view`], `#[repr(C)]`, by pointer |
+//! | `potential_en_class(stream, cls, nuclei, n_ao, v)` | [`fb_potential_en_class`]`(stream, cls, nuclei, n_ao, v)`, the nuclei by pointer |
+//! | `kPairBoundMaxMomentum`, `kRecordBoundMaxMomentum`, the overlap, kinetic and nuclear-attraction launchers' `kMaxL` | [`FB_PAIR_BOUND_MAX_MOMENTUM`], [`FB_RECORD_BOUND_MAX_MOMENTUM`], [`FB_OVERLAP_MAX_MOMENTUM`], [`FB_KINETIC_MAX_MOMENTUM`], [`FB_POTENTIAL_EN_MAX_MOMENTUM`] |
 //! | `wwrErrorInvalidValue` for a refusal | [`FB_LAUNCH_INVALID_ARGUMENT`] (a count, a null pointer, a short workspace) or [`FB_LAUNCH_UNSUPPORTED`] (no kernel for the class) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_integrals_abi_version`] and [`fb_integrals_backend`] against the bindings' |
-//! | the other one-electron families, J, K and the rest | not forked yet |
+//! | the other one-electron families (the dipole, the mixed overlap, the derivatives), J, K and the rest | not forked yet |
 
 #![allow(non_camel_case_types, reason = "the C header's names, kept as written")]
 
@@ -53,8 +56,8 @@ pub fn check_library() -> Result<(), String> {
 // The numbers fb_kernel_abi::check names the found backend by.
 const _: () = assert!(FB_BACKEND_CUDA == 1 && FB_BACKEND_HIP == 2);
 
-// The structs' layout, which mmd_launch.cu static_asserts with the same
-// numbers: both sides follow the C rule over the same fields, and these catch
+// The structs' layout, which mmd_launch.cu (and potential_en_launch.cu, the
+// nuclei's) static_asserts with the same numbers: both sides follow the C rule over the same fields, and these catch
 // a field added on one side only.
 const _: () = {
     use core::mem::{offset_of, size_of};
@@ -66,4 +69,7 @@ const _: () = {
     assert!(size_of::<fb_primitive_pair_class_view>() == 176);
     assert!(offset_of!(fb_primitive_pair_class_view, zeta) == 16);
     assert!(offset_of!(fb_primitive_pair_class_view, rank_b) == 168);
+    assert!(size_of::<fb_nuclei_view>() == 24);
+    assert!(offset_of!(fb_nuclei_view, z) == 8);
+    assert!(offset_of!(fb_nuclei_view, c) == 16);
 };

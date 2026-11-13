@@ -175,14 +175,35 @@ pub struct fb_primitive_pair_records {
     /// The ket shell's rank.
     pub rank_b: *mut i32,
 }
+/// The largest momentum fb_kinetic_class has a kernel for, f: the extent of
+/// the kinetic table tools/emit/one_electron_kernels.py writes, which
+/// kinetic_launch.cu static_asserts against it.
+pub const FB_KINETIC_MAX_MOMENTUM: i32 = 3;
 /// The largest momentum fb_overlap_class has a kernel for, f: the extent of
 /// the overlap table tools/emit/one_electron_kernels.py writes, which
 /// overlap_launch.cu static_asserts against it.
 pub const FB_OVERLAP_MAX_MOMENTUM: i32 = 3;
+/// A molecule's nuclei on the device: the arrays of a molecule, by pointer.
+/// The struct itself is host memory, handed to a wrapper by address; the
+/// arrays it points at are device memory.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct fb_nuclei_view {
+    /// The number of nuclei, positive.
+    pub n_nuc: i32,
+    /// Z_C, each nucleus's charge (n_nuc).
+    pub z: *const f64,
+    /// C, each nucleus's position in bohr (3 per nucleus, x y z).
+    pub c: *const f64,
+}
+/// The largest momentum fb_potential_en_class has a kernel for, f: the
+/// extent of the potential_en table tools/emit/one_electron_kernels.py
+/// writes, which potential_en_launch.cu static_asserts against it.
+pub const FB_POTENTIAL_EN_MAX_MOMENTUM: i32 = 3;
 /// The version of this header's ABI. Bump it with any change to a
 /// declaration here or in a header this one includes, so that fb-integrals-sys
 /// refuses a library built from another version of them.
-pub const FB_INTEGRALS_ABI_VERSION: u32 = 1;
+pub const FB_INTEGRALS_ABI_VERSION: u32 = 2;
 
 unsafe extern "C" {
     /// The bytes of the one scratch buffer fb_mmd_order needs for n_rec records:
@@ -246,6 +267,21 @@ unsafe extern "C" {
     /// at most FB_RECORD_BOUND_MAX_MOMENTUM has one), each enqueueing nothing;
     /// otherwise the launch status. Launch errors only.
     pub fn fb_ordered_pair_bound(stream: wwr_stream, cls: *const fb_primitive_pair_class_view, bound: *mut f64) -> fb_launch_status;
+    /// Adds one class's kinetic-energy contributions into the n_ao x n_ao matrix
+    /// t, on stream: the generated kernel t_{la}{lb}, one thread per record.
+    ///
+    /// Reads cls's zeta, pa_*, pb_*, s, eb and offsets. Each value is atomically
+    /// added at (m, n) and at (n, m), so t must be zeroed before the first class
+    /// of a build and is symmetric after the last. t is a device array; the
+    /// kernels index it as a 32-bit m * n_ao + n, so n_ao * n_ao must fit an
+    /// int32_t.
+    ///
+    /// Returns FB_LAUNCH_INVALID_ARGUMENT for a null cls or t, a view with no
+    /// records or n_ao not positive, and FB_LAUNCH_UNSUPPORTED for a class with
+    /// no kernel (la <= lb <= FB_KINETIC_MAX_MOMENTUM has one), each enqueueing
+    /// nothing; otherwise the launch status. Launch errors only: the kernel's own
+    /// faults surface at the next synchronization.
+    pub fn fb_kinetic_class(stream: wwr_stream, cls: *const fb_primitive_pair_class_view, n_ao: i32, t: *mut f64) -> fb_launch_status;
     /// Adds one class's overlap contributions into the n_ao x n_ao matrix s, on
     /// stream: the generated kernel s_{la}{lb}, one thread per record.
     ///
@@ -261,6 +297,23 @@ unsafe extern "C" {
     /// nothing; otherwise the launch status. Launch errors only: the kernel's own
     /// faults surface at the next synchronization.
     pub fn fb_overlap_class(stream: wwr_stream, cls: *const fb_primitive_pair_class_view, n_ao: i32, s: *mut f64) -> fb_launch_status;
+    /// Adds one class's nuclear-attraction contributions into the n_ao x n_ao
+    /// matrix v, on stream: the generated kernel v_{la}{lb}, one thread per
+    /// record, the nuclei serial inside it.
+    ///
+    /// Reads cls's zeta, p_* (the product centre), pa_*, pb_*, s and offsets,
+    /// and nuclei's charges and positions. Each value is atomically added at
+    /// (m, n) and at (n, m), so v must be zeroed before the first class of a
+    /// build and is symmetric after the last. v is a device array; the kernels
+    /// index it as a 32-bit m * n_ao + n, so n_ao * n_ao must fit an int32_t.
+    ///
+    /// Returns FB_LAUNCH_INVALID_ARGUMENT for a null cls, nuclei or v, a view
+    /// with no records, no nuclei or n_ao not positive, and
+    /// FB_LAUNCH_UNSUPPORTED for a class with no kernel
+    /// (la <= lb <= FB_POTENTIAL_EN_MAX_MOMENTUM has one), each enqueueing
+    /// nothing; otherwise the launch status. Launch errors only: the kernel's own
+    /// faults surface at the next synchronization.
+    pub fn fb_potential_en_class(stream: wwr_stream, cls: *const fb_primitive_pair_class_view, nuclei: *const fb_nuclei_view, n_ao: i32, v: *mut f64) -> fb_launch_status;
     /// FB_INTEGRALS_ABI_VERSION as this library was compiled. A plain host
     /// function: it calls no runtime and needs no device.
     pub fn fb_integrals_abi_version() -> u32;
