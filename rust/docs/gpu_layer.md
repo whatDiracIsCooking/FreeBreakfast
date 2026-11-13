@@ -123,20 +123,25 @@ reaches, and the second `FB_BACKEND_CUDA` or `FB_BACKEND_HIP`
 rather than a definition the build passes. The `-sys` crate's
 `check_library()` checks the version against the constant in its committed
 bindings and the backend against the CMake build whose C ABI library
-`wwr-sys` links, which its `build.rs` reads from that build's
-`CMakeCache.txt`, since wwr's C ABI has no query naming its backend. It
-refuses a mismatch with a message naming both values. A library built for
+`wwr-sys` links. `rust/kernel_lib.rs`, which every kernel `-sys` crate's
+`build.rs` includes, reads that backend once from the build's
+`CMakeCache.txt`, since wwr's C ABI has no query naming its backend, and
+hands it to the crate as `FB_KERNELS_BACKEND`. It refuses a mismatch with a
+message naming both values. A library built for
 the other backend otherwise fails at its first launch, or deep inside wwr,
 with nothing naming the cause.
 
 "At load" is the first call, not the dynamic loader: Rust has no load-time
 hook short of a linker section an `rlib` may drop, so `check_library()` is a
-plain function that a caller runs once before its first launch, and each
-`-sys` crate's tier 4 runs it against the library built for its card. The
-comparison itself is a private function of values passed in, unit-tested
-with a mismatched version and backend in the same crate; since a `-sys`
-crate links its library, those unit tests build only where the library is
-built, and need no card.
+plain function that a caller runs once before its first launch. The safe
+layer runs it at planning: `fb-integrals-mmd`'s `add_records` calls
+`fb_integrals_sys::check_library()` before it adds a task, so a mismatch is
+the plan's `GpuRuntime` error and nothing launches; the overlap plans
+through `add_records`. Each `-sys` crate's tier 4 also runs it against the
+library built for its card. The comparison itself is
+`fb_kernel_abi::check`, a function of values passed in, in `fb-kernel-abi`,
+a crate that links nothing, so its tests of a mismatched version and
+backend run in tier 3.
 
 ## Layering
 
