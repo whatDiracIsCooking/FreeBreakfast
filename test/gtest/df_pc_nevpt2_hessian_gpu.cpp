@@ -545,18 +545,17 @@ TEST(HessianDfPcNevpt2, DistantEquivalentAtomsMatchTheLadder) {
 // The near ammonia with H1 3e-5 bohr off C3v (#1296): its virtual e pairs
 // are 1.1e-6 and 2.9e-6 Eh apart, past the 1e-6 Eh rule and inside PC's
 // pair reach (README "Where a pair is taken"). Dividing them, kappa_oo^x to
-// 7e4, left an asymmetry of 1.2e-7; taken by their off-diagonal f, the
-// Hessian is as symmetric as at the exact pairs.
+// 7e4, left an asymmetry of 1.2e-7 and 1.35 bars; taken by their
+// off-diagonal f, the Hessian is as symmetric as at the exact pairs, and on
+// the ladder (its fixture since #1304, whose noise probe refused the point
+// before).
 TEST(HessianDfPcNevpt2, PairsPastTheRuleAreTaken) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
-  constexpr double kShift = 3e-5;     // bohr, H1 along x off C3v
-  constexpr double kNearShift = 2e-6; // the near fixture's own
-  fb::json start = degenerate_fixture("nh3_near_631g");
-  start["name"] = "nh3_split_631g";
-  start["atoms"][1]["coord"][0] = start["atoms"][1]["coord"][0].get<double>() + kShift - kNearShift;
-  const Reference ref = reference(start);
+  const fb::json &doc = degenerate_fixture("nh3_split_631g");
+  const Reference ref = reference(doc);
   ASSERT_TRUE(ref.solution.has_value());
+  const auto keep = iota(3 * ref.basis().natoms());
   const auto h = fb::hessian::df_pc_nevpt2(
       ref.res(), ref.molecule(), ref.basis(),
       ref.calc->get<fb::PrimitivePairClassesOutput>()->classes, ref.fit().aux,
@@ -565,9 +564,11 @@ TEST(HessianDfPcNevpt2, PairsPastTheRuleAreTaken) {
   ASSERT_TRUE(h.has_value()) << h.error().message;
   EXPECT_EQ(h->degenerate_pairs.size(), 2U);
   EXPECT_GT(h->min_gap, 1e-6) << "the pairs are under the rule: not the case";
-  std::cout << std::format("[ split    ] {} pairs, min gap {:.3e}; asymmetry {:.1e}, sum rule "
-                           "{:.1e}\n",
-                           h->degenerate_pairs.size(), h->min_gap, h->asymmetry, h->translation);
+  const double worst = expect_within_bars(*h, doc.at("pc"), keep, "split");
+  std::cout << std::format("[ split    ] {} pairs, min gap {:.3e}; worst element {:.3f} bars "
+                           "(allowed {:g}); asymmetry {:.1e}, sum rule {:.1e}\n",
+                           h->degenerate_pairs.size(), h->min_gap, worst, kBars, h->asymmetry,
+                           h->translation);
   EXPECT_LE(h->asymmetry, kAsymmetry);
   EXPECT_LE(h->translation, kSumRule);
 }

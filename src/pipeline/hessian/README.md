@@ -639,7 +639,7 @@ does not see that; this does. It follows #803's fixture,
     with every tolerance 100 times tighter -- `[casscf]`'s conv_tol and
     conv_tol_grad (its CI's floor follows conv_tol_grad,
     `mcscf::ci_tolerance_for`) and the NEVPT2 Z-vector's
-    (`Nevpt2GradientStep::zvector_tolerance`, 1e-10 to 1e-12) -- started
+    (`Nevpt2GradientStep::zvector_tolerance`, 1e-10) -- started
     from the production solve's orbitals and CI. σ_solves is the root mean
     square over the points and components of g_production − g_tight: the
     root mean square, as the restarts term, because the floor's model is an
@@ -664,10 +664,53 @@ does not see that; this does. It follows #803's fixture,
     it is 8.4e-13, over the ~1.5e-13 where that SA3's re-solve settles, and
     on `h2nb_sto3g_sa2` (47 pairs) 2.4e-13, which its re-solves pass to
     2e-14 (#1090: both once stalled above 1e-12, on the solver's
-    subspace, not on round-off). `"tightened"` in `hessian.json`'s
-    `"noise"` carries both tolerances and which term set each (`"fold"` or
-    `"roundoff"`). The Z-vector's tolerance is a residual, not a difference
-    of energies, and stays 100-fold.
+    subspace, not on round-off).
+
+    The SC or PC Z-vector's is held at what H̃'s products resolve
+    (`tightened_zvector_tolerance`, #1304): min(t, max(t / 100, 0.2 ‖z_o‖
+    τ)), ‖z_o‖ the production solve's at the same point and τ =
+    `response::response_tolerance_for(t / 100)`, the CI response's
+    tolerance inside each product. `nevpt2::lagrangian_gradient` holds the
+    true residual, one more product, to the tolerance, and each product
+    carries the CI response's error, about c ‖z_o‖ τ
+    (`../../response/zvector/README.md`, "The solve"). τ is 1e-2 of the
+    tolerance but never below 1e-10, so at 100-fold of the default 1e-10 it
+    is at that floor, and the products' error does not shrink with the
+    tolerance. On the PC ammonia of `tools/nevpt2_hessian/`
+    (`degenerate_pair_ladder.py`, 6-31G CAS(8,7), ‖z_o‖ 0.64 to 0.66) with
+    H1 moved 2e-5 to 3e-2 bohr, 100-fold's 1e-12 stopped at true residuals
+    of 1.6e-12 to 6.7e-12 after 18 to 21 products, refusing all eight
+    geometries. The cause was the products, not the solver:
+    - **Measured** at 16 of those points (N moved 1e-3 bohr along x or z):
+      each solve's H̃ z_o against the same product with the response
+      solved to 1e-14 (its round-off stop at 1e-15) differs by 4.6e-13 to
+      6.6e-12, c = 0.007 to 0.10. Where the solve missed 1e-12, its true
+      residual was that difference (6.9e-12 against 6.6e-12, 6.3e-12
+      against 6.2e-12). Against the tight products, every z_o had a
+      residual of 0.8e-12 to 3.1e-12, whether the solve met 1e-12 or not.
+    - **Not rounding.** With the tight products, conjugate gradients from
+      z_o reach 6e-15 to 4e-14. That is the rounding floor, a hundredth of
+      1e-12.
+    - **Not the restart.** A true residual above 1.5 t is not restarted
+      (`../../response/zvector/README.md`, "The restart"), as designed.
+      Restarting does lower it (1.4e-12 to 1.9e-13 in two products, one
+      point), but only against the same loose products: it does not make
+      z_o any closer to the tight products' solution.
+    - **Tightening the response is not enough by itself.** Below τ = 1e-11
+      the products stop changing, because the response's round-off stop
+      (1e-12 of its whole right-hand side, `relaxed_hessian/`'s
+      `kResponseRoundoff`) takes over.
+
+    c = 0.2 is twice the largest measured. At the ammonia the floor is
+    1.3e-11, 7.6 times under the production 1e-10. So σ_solves still
+    measures the production solve's Z-vector error, within the tighter
+    solve's own. Under QD the Z-vector takes no tolerance (its own 1e-10)
+    and is not re-solved tighter.
+
+    `"tightened"` in `hessian.json`'s `"noise"` carries the CASSCF's two
+    tolerances and which term set each (`"fold"` or `"roundoff"`). It also
+    carries the loosest Z-vector tolerance a re-solve took, with `"fold"`
+    or `"products"` (both null without an SC or PC gradient).
   - *the bound, rejected as the floor*: the gradient is ∂L/∂R of a
     Lagrangian stationary in the parameters x and multipliers z, so a
     residual r moves it by r · dx/dR to first order, at most ‖r‖ ‖dx/dR‖
@@ -1254,5 +1297,5 @@ OpenMolcas comparison (the issue's optional one) was made.
 | File | Role |
 |------|------|
 | `hessian.cppm` | Module interface: `HessianMethod`, `HessianOutput`, `HessianStep` |
-| `hessian.cpp` | `check_displaced_casscf`; `tracked_qd_state` and `tracked_qd_pair`; `tightened_casscf_tolerances`; the private reference-orbitals step; the ladder's stencil, verdict and restarts; `HessianStep::run`: its refusals, the analytic Hessian (RHF with its dipole derivative, CASSCF, SC- or PC-NEVPT2, SC- or PC-QD-NEVPT2) over one nested pipeline, or the nested pipelines along each coordinate (RHF, CASSCF or NEVPT2 gradients) and their central differences, or the ladder, its noise and the bilinearity check; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
+| `hessian.cpp` | `check_displaced_casscf`; `tracked_qd_state` and `tracked_qd_pair`; `tightened_casscf_tolerances` and `tightened_zvector_tolerance`; the private reference-orbitals step; the ladder's stencil, verdict and restarts; `HessianStep::run`: its refusals, the analytic Hessian (RHF with its dipole derivative, CASSCF, SC- or PC-NEVPT2, SC- or PC-QD-NEVPT2) over one nested pipeline, or the nested pipelines along each coordinate (RHF, CASSCF or NEVPT2 gradients) and their central differences, or the ladder, its noise and the bilinearity check; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
 | `CMakeLists.txt` | The module library |
