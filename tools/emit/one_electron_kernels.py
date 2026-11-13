@@ -7,6 +7,11 @@ so a build never runs Python. Run this after bumping that submodule:
 
     tools/emit/one_electron_kernels.py
 
+`--out-root DIR` writes the same tree under DIR instead of src/integrals/,
+each file at its path relative to src/integrals/ (rust/README.md, "Build and
+test", copies the directories rust/integrals/kernels/ carries from one).
+The default writes src/integrals/ exactly as before.
+
 They are FelizJueves's `gpu` spelling, written as a `.cu` that both backends
 compile as emitted: nvcc under CUDA and clang `-x hip` under HIP. Each file
 includes FelizJueves's own `felizjueves/runtime.h` (deps/FelizJueves/include,
@@ -60,6 +65,7 @@ virtualenv.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -116,20 +122,28 @@ MMD_FAMILIES = {"pair_bound": build_pair_bound_kernel}
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--out-root",
+        type=Path,
+        default=ROOT / "src/integrals",
+        help="the directory written in place of src/integrals/ (default: it)",
+    )
+    root = parser.parse_args().out_root.resolve()
     arch = by_name(ARCH)
     for family, build in FAMILIES.items():
-        out = ROOT / "src/integrals/one_electron" / family / "kernels"
+        out = root / "one_electron" / family / "kernels"
         emit_family(arch, family, build, out)
     for family, (build, max_l) in LIMITED_FAMILIES.items():
-        out = ROOT / "src/integrals/one_electron" / family / "kernels"
+        out = root / "one_electron" / family / "kernels"
         emit_family(arch, family, build, out, max_l=max_l)
     for family, build in ORDERED_FAMILIES.items():
-        out = ROOT / "src/integrals/one_electron" / family / "kernels"
+        out = root / "one_electron" / family / "kernels"
         emit_family(arch, family, build, out, ordered=True)
     for family, build in MMD_FAMILIES.items():
-        emit_family(arch, family, build, ROOT / "src/integrals/mmd/kernels" / family)
+        emit_family(arch, family, build, root / "mmd/kernels" / family)
     for name, text in gpu.emit_boys().items():
-        write(ROOT / "src/integrals/shared" / name, text)
+        write(root / "shared" / name, text)
     return 0
 
 
@@ -151,8 +165,9 @@ def emit_family(
 
 
 def write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
-    print(path.relative_to(ROOT))
+    print(path.relative_to(ROOT) if path.is_relative_to(ROOT) else path)
 
 
 if __name__ == "__main__":
