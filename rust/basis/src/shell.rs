@@ -10,6 +10,10 @@ use fb_core_types::Double3;
 /// The kernels cover `l` in `0 ..= MAX_ANGULAR_MOMENTUM`, and each engine
 /// refuses a basis with a higher shell. [`Shell`] imposes no such cap, so this
 /// is the kernels' limit, not a basis-wide invariant.
+///
+/// It mirrors the C++ `kMaxAngularMomentum = 3` (`angular_momentum.h`), which
+/// this workspace does not read: it is asserted against the device headers'
+/// ceiling once those are forked into `rust/`.
 pub const MAX_ANGULAR_MOMENTUM: i32 = 3;
 
 /// The number of Cartesian Gaussians in a shell of momentum `l`,
@@ -184,23 +188,5 @@ mod tests {
             assert_eq!(function_count_cart(l), cart[l as usize], "l = {l}");
             assert_eq!(function_count_sphe(l), (2 * l + 1) as u32, "l = {l}");
         }
-    }
-
-    /// No C++ counterpart: the ceiling is the value the C++ header
-    /// `src/basis/angular_momentum.h` defines, read from the header itself,
-    /// so the two cannot drift apart unnoticed.
-    #[test]
-    fn max_angular_momentum_is_the_cpp_header_value() {
-        let header = include_str!("../../../src/basis/angular_momentum.h");
-        let needle = "inline constexpr int32_t kMaxAngularMomentum = ";
-        let start = header.find(needle).expect("the definition") + needle.len();
-        let value: i32 = header[start..]
-            .split(';')
-            .next()
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert_eq!(MAX_ANGULAR_MOMENTUM, value);
     }
 }
