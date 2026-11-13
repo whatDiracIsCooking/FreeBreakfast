@@ -11,9 +11,9 @@ use fb_core_types::Double3;
 /// refuses a basis with a higher shell. [`Shell`] imposes no such cap, so this
 /// is the kernels' limit, not a basis-wide invariant.
 ///
-/// It mirrors the C++ `kMaxAngularMomentum = 3` (`angular_momentum.h`), which
-/// this workspace does not read: it is asserted against the device headers'
-/// ceiling once those are forked into `rust/`.
+/// It mirrors the C++ `kMaxAngularMomentum = 3` (`angular_momentum.h`), whose
+/// fork in `rust/device_headers/` the kernels include; a test reads that fork
+/// and asserts the two equal.
 pub const MAX_ANGULAR_MOMENTUM: i32 = 3;
 
 /// The number of Cartesian Gaussians in a shell of momentum `l`,
@@ -177,6 +177,26 @@ mod tests {
         assert_eq!(shell.center().z, 3.0);
         assert_eq!(shell.function_count_cart(), 6); // Cartesian, what the kernels evaluate
         assert_eq!(shell.function_count_sphe(), 5); // 2l+1, what the shell means
+    }
+
+    /// The ceiling is the forked device header's `kMaxAngularMomentum`: the
+    /// test reads `rust/device_headers/angular_momentum.h`, never the C++
+    /// tree's.
+    #[test]
+    fn ceiling_matches_device_header() {
+        let header = include_str!("../../device_headers/angular_momentum.h");
+        let definition = "inline constexpr int32_t kMaxAngularMomentum = ";
+        let mut values = header
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix(definition))
+            .map(|rest| rest.strip_suffix(';').expect("the definition ends in ;"));
+        let value: i32 = values
+            .next()
+            .expect("the header defines kMaxAngularMomentum")
+            .parse()
+            .expect("an integer literal");
+        assert!(values.next().is_none(), "one definition");
+        assert_eq!(MAX_ANGULAR_MOMENTUM, value);
     }
 
     /// `BasisAo.FunctionCounts`.
