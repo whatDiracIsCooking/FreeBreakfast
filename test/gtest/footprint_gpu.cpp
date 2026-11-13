@@ -1041,7 +1041,8 @@ TEST(LibraryFootprint, ThirdDerivative) {
 // mcscf::df_derivatives (#1175) over CAS(2,4) and two roots, without a
 // rotation and with one, over roots and a rotation whose values do not
 // matter (unit roots give an RDM with no negative occupation): held to
-// df_derivatives_footprint.
+// df_derivatives_footprint, which counts the response densities' block J
+// and K at one coordinate, their least (#1309), so max_bytes forces it.
 TEST(LibraryFootprint, Derivatives) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
@@ -1085,7 +1086,7 @@ TEST(LibraryFootprint, Derivatives) {
     expect_routine_footprint(res, fp, rotated ? 40 : 30, [&] {
       const auto out = fb::mcscf::df_derivatives(
           res, in.fit.w.molecule, in.basis, in.fit.w.classes, aux, in.h, in.fit.b, l.data(), in.c,
-          kCore, kActive, 1, 1, roots.data(), weights, rotated ? rotation.data() : nullptr);
+          kCore, kActive, 1, 1, roots.data(), weights, rotated ? rotation.data() : nullptr, 1);
       ASSERT_TRUE(out) << out.error().message;
     });
   }

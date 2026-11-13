@@ -76,13 +76,15 @@ void derivative_symmetrize8(std::vector<double> &g, const size_t n) {
   g = std::move(out);
 }
 
-Result<Derivatives>
-df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-               const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *const l,
-               const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas,
-               const int32_t nalpha, const int32_t nbeta, const double *const roots,
-               const std::span<const double> weights, const double *const rotation) {
+Result<Derivatives> df_derivatives(DeviceResources &res, const Molecule &molecule,
+                                   const BasisSet &basis,
+                                   const std::span<const PrimitivePairClass> classes,
+                                   const BasisSet &aux, const SphericalMatrixAO &h,
+                                   const Buffers::device<double> &b, const double *const l,
+                                   const SphericalMatrixAO &c, const int32_t ncore,
+                                   const int32_t ncas, const int32_t nalpha, const int32_t nbeta,
+                                   const double *const roots, const std::span<const double> weights,
+                                   const double *const rotation, const size_t max_bytes) {
   const size_t nao = basis.nao_sphe();
   const size_t naux = aux.nao_sphe();
   const size_t n_atom = basis.natoms();
@@ -137,7 +139,8 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
   // The call's own buffers at their peak (the response-density phase: the
   // five MO stacks held throughout, the two outputs, eight stacks of the
   // response densities' J and K and their MO blocks, the 2-RDM products and
-  // the active-pair intermediates), past which an allocation would abort
+  // the active-pair intermediates, and one coordinate's block J and K, the
+  // least of their batch), past which an allocation would abort
   // (CreatePolicy) rather than return. The CI right-hand side is counted
   // from the strings below, once their size is known.
   // A rotation adds, at its own peak, six stacks (the rotated J and K, their
@@ -149,7 +152,8 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                                    (2 * naux * na2) + (naux * na2 * n_x) + (nao * n_act * n_x);
   const size_t held = (15 * stack) + (nao * na3 * n_x) + (3 * naux * na2 * n_x) +
                       (naux * n_act * nao) + (3 * naux * naux) + (3 * nn * max_blk) +
-                      (3 * nn * n_act) + (2 * nao * n_occ * n_x) + rotated;
+                      (3 * nn * n_act) + (2 * nao * n_occ * n_x) +
+                      (2 * naux * std::max(n_core, n_act) * nao) + rotated;
   if (const size_t budget = FBF_TRY(res.memory_budget()); sizeof(double) * held > budget) {
     return err_unsupported("mcscf::df_derivatives: the derivative stacks of {} coordinates "
                            "over {} orbital and {} fitting functions need {} bytes of device "
@@ -711,12 +715,46 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
     }
     FBF_TRY(response_density(ncore, na, la.data(), ra.data(), dens.data() + stack));
-    // G[dD] = J[dD] - 1/2 (K[L R^T] + K[L R^T]^T), core then active.
-    FBF_TRY(df_coulomb(res, n, q, 2 * nx, b.data(), dens.data(), jd.data()));
-    if (ncore > 0) {
-      FBF_TRY(df_exchange(res, n, q, nc, nx, b.data(), lc.data(), rc.data(), kd.data()));
+    // G[dD] = J[dD] - 1/2 (K[L R^T] + K[L R^T]^T), core then active. The
+    // block J and K allocate their Gamma, and X and Y (2 naux rank nao
+    // doubles per coordinate: 1.25 GiB of the Cope TS's 1.39 GiB here over
+    // all 48 at once, #1309), for the coordinates they are given, so they
+    // take a batch of coordinates at a time, as wide as the budget holds:
+    // res.memory_budget() less the pool's headroom, or max_bytes when that
+    // is less, at least one. The bytes are linear in the width.
+    {
+      const auto batch_bytes = [&](const int32_t width) {
+        return std::max({df_coulomb_footprint(n, q, width).device.scratch,
+                         df_exchange_footprint(n, q, nc, width).device.scratch,
+                         df_exchange_footprint(n, q, na, width).device.scratch});
+      };
+      const size_t one = batch_bytes(1);
+      const size_t memory = FBF_TRY(res.memory_budget());
+      const size_t usable = memory > kPoolHeadroomBytes ? memory - kPoolHeadroomBytes : 0;
+      if (one > usable) {
+        return err_unsupported("mcscf::df_derivatives: one coordinate's response J and K over {} "
+                               "orbital and {} fitting functions need {} bytes of device memory, "
+                               "and device {} has {} to give",
+                               nao, naux, one, res.dev_idx(), usable);
+      }
+      const size_t room = max_bytes == 0 ? usable : std::min(usable, max_bytes);
+      const size_t width = std::clamp<size_t>(room / one, 1, n_x);
+      for (size_t x0 = 0; x0 < n_x; x0 += width) {
+        const auto count = static_cast<int32_t>(std::min(width, n_x - x0));
+        const size_t at = x0 * nn;
+        FBF_TRY(df_coulomb(res, n, q, count, b.data(), dens.data() + at, jd.data() + at));
+        FBF_TRY(df_coulomb(res, n, q, count, b.data(), dens.data() + stack + at,
+                           jd.data() + stack + at));
+        if (ncore > 0) {
+          const size_t f = x0 * nao * n_core;
+          FBF_TRY(df_exchange(res, n, q, nc, count, b.data(), lc.data() + f, rc.data() + f,
+                              kd.data() + at));
+        }
+        const size_t f = x0 * nao * n_act;
+        FBF_TRY(df_exchange(res, n, q, na, count, b.data(), la.data() + f, ra.data() + f,
+                            kd.data() + stack + at));
+      }
     }
-    FBF_TRY(df_exchange(res, n, q, na, nx, b.data(), la.data(), ra.data(), kd.data() + stack));
     for (size_t d = 0; d < 2 * n_x; ++d) {
       FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
           blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, n, &kNegHalf<double>, kd.data() + (d * nn),
@@ -939,7 +977,6 @@ MemoryFootprint df_derivatives_footprint(const BasisSet &basis, const BasisSet &
   }
   const auto nmo = static_cast<int32_t>(nao);
   const auto q = static_cast<int32_t>(naux);
-  const auto nx = static_cast<int32_t>(3 * n_atom);
   const size_t n_x = 3 * n_atom;
   const auto n_core = static_cast<size_t>(ncore);
   const auto n_act = static_cast<size_t>(ncas);
@@ -1046,15 +1083,16 @@ MemoryFootprint df_derivatives_footprint(const BasisSet &basis, const BasisSet &
     rotated.device.scratch = sizeof(double) * 2 * stack;
     chain = then(chain, rotated);
   }
-  // The response densities' factors, D, J and K, then the block J and K.
+  // The response densities' factors, D, J and K, then the block J and K at
+  // one coordinate, their batch's least.
   {
     MemoryFootprint response =
         held((2 * std::max<size_t>(nao * n_core * n_x, 1)) + (2 * nao * n_act * n_x) + (6 * stack));
-    response = then(response, df_coulomb_footprint(nmo, q, 2 * nx));
+    response = then(response, df_coulomb_footprint(nmo, q, 1));
     if (ncore > 0) {
-      response = then(response, df_exchange_footprint(nmo, q, ncore, nx));
+      response = then(response, df_exchange_footprint(nmo, q, ncore, 1));
     }
-    response = then(response, df_exchange_footprint(nmo, q, ncas, nx));
+    response = then(response, df_exchange_footprint(nmo, q, ncas, 1));
     chain = then(chain, drop(response));
   }
   // T1, the sigma, its scale and its apply scratch.

@@ -47,6 +47,10 @@ constexpr double kSumRuleTol = 1e-9;
 // <c|H~^x|c> + V_nn^x against the fixture's relaxed gradient, which for one
 // root is the fixed-parameter one (the parameters are stationary).
 constexpr double kGradientTol = 1e-8;
+// One coordinate's block J and K at a time against every coordinate's at
+// once, absolute: the batch only narrows the block gemms, the same products
+// regrouped, so the two differ by rounding of O(1) values (#1309).
+constexpr double kBatchTol = 1e-12;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_hessian";
 
@@ -252,10 +256,11 @@ protected:
     return case_["roots"][root]["arrays"][key].get<std::string>();
   }
 
-  fb::Result<fb::mcscf::Derivatives> run(std::span<const double> weights) {
+  fb::Result<fb::mcscf::Derivatives> run(std::span<const double> weights,
+                                         const std::size_t max_bytes = 0) {
     return fb::mcscf::df_derivatives(*res_, *molecule_, *basis_, classes_, *aux_, h_->spherical(),
                                      *b_, metric_->spherical().data(), *c_, ncore_, ncas_, nalpha_,
-                                     nbeta_, roots_->data(), weights);
+                                     nbeta_, roots_->data(), weights, nullptr, max_bytes);
   }
 
   // The three device stacks on the host, their sum rules checked.
@@ -401,6 +406,32 @@ TEST_F(McscfDerivative, ThreeRootsUnequalMatchReference) {
   FBF_REQUIRE_GPU();
   load("h2o_631g_sa3_unequal");
   check();
+}
+
+// The response densities' block J and K forced to one coordinate at a time
+// (max_bytes of 1, below one coordinate's) against all of them at once, the
+// default on this small case: every output to kBatchTol. A state average at
+// unequal weights, so rhs_theta is nonzero too.
+TEST_F(McscfDerivative, OneCoordinateBatchMatchesAllAtOnce) {
+  FBF_REQUIRE_GPU();
+  load("h2o_631g_sa2_unequal");
+  ASSERT_GT(ncore_, 0);
+  auto whole = run(weights_);
+  ASSERT_TRUE(whole) << whole.error().message;
+  auto narrow = run(weights_, 1);
+  ASSERT_TRUE(narrow) << narrow.error().message;
+  const Host a = to_host(*whole, "all at once");
+  const Host b = to_host(*narrow, "one at a time");
+  EXPECT_LT(max_diff(a.fock, b.fock), kBatchTol) << "max |F^[x]| " << max_abs(a.fock);
+  EXPECT_LT(max_diff(a.orbital, b.orbital), kBatchTol) << "max |rhs_orb| " << max_abs(a.orbital);
+  EXPECT_LT(max_diff(a.ci, b.ci), kBatchTol) << "max |rhs_ci| " << max_abs(a.ci);
+  EXPECT_LT(max_diff(whole->rhs_theta, narrow->rhs_theta), kBatchTol);
+  EXPECT_LT(max_diff(whole->hamiltonian, narrow->hamiltonian), kBatchTol);
+  std::cout << std::format("[ batch ] one coordinate vs all: F^[x] {:.1e}, rhs_orb {:.1e}, rhs_ci "
+                           "{:.1e}, rhs_theta {:.1e}, H {:.1e}\n",
+                           max_diff(a.fock, b.fock), max_diff(a.orbital, b.orbital),
+                           max_diff(a.ci, b.ci), max_diff(whole->rhs_theta, narrow->rhs_theta),
+                           max_diff(whole->hamiltonian, narrow->hamiltonian));
 }
 
 TEST_F(McscfDerivative, Refusals) {

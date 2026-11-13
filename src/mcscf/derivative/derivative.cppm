@@ -102,9 +102,16 @@ struct Derivatives {
 /// to 1 (@c ci::Rdm::rdm12's rule). Gamma is used 8-fold symmetrized.
 ///
 /// Memory: about 20 stacks of 3 n_atom nao^2 doubles, besides
-/// (3 n_atom)(nao ncas^3 + 2 naux ncas^2) and the derivative calls' own
-/// scratch; past the device's memory budget (`DeviceResources::memory_budget()`)
-/// it is Unsupported, before anything is allocated.
+/// (3 n_atom)(nao ncas^3 + 2 naux ncas^2), one coordinate's block J and K
+/// and the derivative calls' own scratch; past the device's memory budget
+/// (`DeviceResources::memory_budget()`) it is Unsupported, before anything
+/// is allocated. The block J and K, whose X and Y are 2 naux rank nao
+/// doubles per coordinate, are built for as many coordinates at once as the
+/// budget then holds: res.memory_budget() less @c kPoolHeadroomBytes, or
+/// @p max_bytes when that is less, and at least one coordinate (so
+/// max_bytes of 1 forces one at a time). The batch only narrows their gemms,
+/// so it changes the outputs by rounding; one coordinate's past the budget
+/// is Unsupported.
 ///
 /// Queued on res.stream() with res.blas() (host pointer mode); it
 /// synchronizes many times. The device res.dev_idx() names is made current
@@ -114,8 +121,8 @@ struct Derivatives {
 ///         @p res's device, ncore is negative, ncas below 1 or ncore + ncas
 ///         past nao, @p b is not naux nao^2 long, the molecule is not the
 ///         bases', @p weights is empty, or the RDM's natural occupations are
-///         negative past 1e-8; Unsupported for memory past the device's free
-///         bytes or an index past int32_t; the first error of the strings,
+///         negative past 1e-8; Unsupported for memory past the device's
+///         budget or an index past int32_t; the first error of the strings,
 ///         @c ci::Rdm, @c casscf_integrals, @c response::fock, a derivative
 ///         call, a J/K build or the sigma; or the GpuRuntime error of the
 ///         first copy or BLAS call that failed.
@@ -125,7 +132,7 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nalpha,
                int32_t nbeta, const double *roots, std::span<const double> weights,
-               const double *rotation = nullptr);
+               const double *rotation = nullptr, size_t max_bytes = 0);
 
 /// @brief What @ref df_derivatives holds over @p basis and @p aux with
 /// @p ncore core and @p ncas active orbitals, @p nroots roots over the
@@ -140,8 +147,8 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
 ///   derivative calls' (@c one_electron_derivative_footprint,
 ///   @c df_jk_derivative_footprint, @c metric_derivative_footprint), the
 ///   2-RDM term's walk, the rotated J^x and K^x, the response densities'
-///   block J and K (@c df_coulomb_footprint, @c df_exchange_footprint) and
-///   the sigma with its apply scratch;
+///   block J and K at one coordinate, their least (@c df_coulomb_footprint,
+///   @c df_exchange_footprint), and the sigma with its apply scratch;
 /// - workspace: the largest of its carves and of the calls it makes.
 ///
 /// Empty for the counts it refuses.
