@@ -112,15 +112,31 @@ matches it at those bars, and the second copy of the device code goes with
 them. Until then "done" for a module PR means its Rust crate passes its
 tiers.
 
-**Each shared object says what it is, and the crate checks at load.** Not
-built yet (#1382). Committed bindings and a separately built `.so` can drift
-at run time, not only in review. Each library exports two entries,
-`fb_<module>_abi_version()` and `fb_<module>_backend()`. The `-sys` crate
-checks the version against the constant in its committed bindings and the
-backend against the one `wwr-sys` was linked for, when the library loads,
-and refuses a mismatch by name. A library built for the other backend
-otherwise fails at its first launch, or deep inside wwr, with nothing naming
-the cause.
+**Each shared object says what it is, and the crate checks at load.**
+Committed bindings and a separately built `.so` can drift at run time, not
+only in review. Each library exports two entries,
+`fb_<module>_abi_version()` and `fb_<module>_backend()`, defined in its
+`kernels/abi.cu`: the first returns the `FB_<MODULE>_ABI_VERSION` its C
+header defines, bumped by hand with any change to a declaration the header
+reaches, and the second `FB_BACKEND_CUDA` or `FB_BACKEND_HIP`
+(`fb_launch.h`), chosen by the compiler's own `__CUDACC__` or `__HIP__`
+rather than a definition the build passes. The `-sys` crate's
+`check_library()` checks the version against the constant in its committed
+bindings and the backend against the CMake build whose C ABI library
+`wwr-sys` links, which its `build.rs` reads from that build's
+`CMakeCache.txt`, since wwr's C ABI has no query naming its backend. It
+refuses a mismatch with a message naming both values. A library built for
+the other backend otherwise fails at its first launch, or deep inside wwr,
+with nothing naming the cause.
+
+"At load" is the first call, not the dynamic loader: Rust has no load-time
+hook short of a linker section an `rlib` may drop, so `check_library()` is a
+plain function that a caller runs once before its first launch, and each
+`-sys` crate's tier 4 runs it against the library built for its card. The
+comparison itself is a private function of values passed in, unit-tested
+with a mismatched version and backend in the same crate; since a `-sys`
+crate links its library, those unit tests build only where the library is
+built, and need no card.
 
 ## Layering
 

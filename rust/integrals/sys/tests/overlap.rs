@@ -294,3 +294,11 @@ fn mmd_order_workspace_is_the_sort_with_values() {
         assert_eq!(fb_mmd_order_workspace_bytes(2817), 22784 + 11268);
     }
 }
+
+/// The library this binary loaded is the one the bindings describe: the
+/// header's ABI version, built for the backend of the CMake build linked.
+/// Host functions alone, so it needs no device.
+#[test]
+fn the_library_passes_the_load_check() {
+    fb_integrals_sys::check_library().unwrap();
+}
