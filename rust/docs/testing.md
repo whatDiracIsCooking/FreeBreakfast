@@ -102,11 +102,13 @@ most of their card time:
 
 | Run | Tiers | Runs |
 |---|---|---|
-| **PR** (`test.py push`, `test.py pr`) | 1, 2, 3 in full; 4 for the affected crates | `cargo test` of every crate in debug, so every contract is on. The tier-4 representatives of the crates the diff affects ("Selection", below). |
+| **PR** (`test.py push`, `test.py pr`) | 1, 2, 3 in full; 4 for the affected crates | `cargo test --no-default-features` of every link-free crate in debug, so every contract is on, and `cargo doc`. Then every test of the affected crates that link a library, on the gate's card ("Selecting GPU tiers in cargo", below). |
 | **Nightly** | 4 in full; performance | Every GPU case. A release build, so the timings it records are real ("Performance", below). |
 | **Weekly** | sanitizers, fuzz, mutants, 5 | compute-sanitizer over tier 4. Miri and ASan over tier 3. The fuzzers and property tests with their large case counts. `cargo-mutants` over tier 3. Tier 5 on a multi-GPU VM. |
 
-Three rules go with the table:
+The PR row is what the gates run today. No nightly or weekly run builds
+`rust/` yet; those rows are the finished shape. Rules that go with the
+table:
 
 - **The PR gates keep the C++ rule: under five minutes on a busy card.**
   Tiers 1 to 3 are seconds, so the budget is spent on tier 4, and selection
@@ -129,17 +131,20 @@ Three rules go with the table:
   and a HIP nightly when that card is up. Production numbers come from the
   CUDA run, since a bare HIP run has no stall watchdog.
 - **Format and lint are the commit hook's, as for C++ and Python.**
-  `rustfmt --check` and `clippy` with warnings denied run beside
-  clang-format, cmake-lint and ruff at commit and in CI's `lint` job.
+  `devtools/test.py cargo-lint` (`cargo fmt --check`, and `clippy` with
+  warnings denied in both feature sets) runs beside clang-format, cmake-lint
+  and ruff at commit and in CI's `lint` job.
   rustfmt's defaults are the style; `docs/style.md` gains a Rust section the
   first time a rule is needed that rustfmt does not hold.
-- **The cargo half of the gates starts with tiers 1 to 3, not with the first
-  tier-4 test.** Those tiers are seconds and need no card, so `test.py push`
-  and `test.py pr` run `cargo test` and `cargo doc` for a diff under the
-  crate, through the diff dispatch they already have for `.py` and C++.
-  Today `rust/` is outside both gates (`NOT_GATED` in `devtools/test.py`), so
-  until that lands the Rust tree is checked by whoever runs `cargo test` by hand, and a PR says so
-  ([`README.md`](../README.md), "Order of work").
+- **A diff under `rust/` fires the cargo half of the gates and nothing
+  else.** `test.py push` and `test.py pr` pick it through the diff dispatch
+  they have for `.py` and C++: any path under `rust/`, its `.cu` files and
+  CMake project included, fires the cargo half and neither of the others.
+  Tiers 1 to 3 run first, over the members whose graph declares no `links`
+  under `--no-default-features`, in seconds and with no card; tier 4 runs
+  only once they pass. A failing half is named in the gate's result line
+  (`failed=cargo`). The root [`docs/testing.md`](../../docs/testing.md),
+  "Gates", has the commands.
 
 ## Running on a card: the process model
 
@@ -254,13 +259,14 @@ decision is written down here:
   `guppy`**, which marks the packages a git diff affects. Two of its rules
   matter here. A changed file that lies in no package marks everything
   changed unless a path rule covers it, and it does not read a build script's
-  `rerun-if-changed`, so the C++ library that `build.rs` links needs a path
-  rule mapping its sources to the crate that wraps them. Those rules are the
-  one hand-written part of the graph, and the graph test above checks them
-  against the C++ tree's layout.
+  `rerun-if-changed`, so the kernel library that a `-sys` crate's `build.rs`
+  links needs a path rule mapping its sources under `rust/<module>/kernels/`
+  to the crate that wraps them. Those rules are the one hand-written part of
+  the graph, kept in `devtools/test.py` until determinator replaces it, and
+  the graph test above checks them against `rust/`'s layout.
 - **Representatives are the fallback, not the gate.** Where selection cannot
-  place a change (a tool, a shared fixture, the C++ library's build), the run
-  is every crate's representatives, as today. Selection runs more, never
+  place a change (a tool, a shared fixture, the kernel libraries' CMake
+  project), the run is every crate's representatives, as today. Selection runs more, never
   fewer.
 - **The claim is replayed before it is believed.** Per-case times are recorded
   from the first commit, to the metrics branch as the C++ gates record theirs,
@@ -459,8 +465,8 @@ schedule. Here they are weekly from the start.
   `requires` at an API boundary might be worth keeping in release. An `ensures`
   that has to read back GPU output would force a sync, so it should stay
   debug-only.
-- **Determinator's path rules.** The rules that map the C++ library's sources
-  to the crate that wraps them are hand-written. Who regenerates them when a
+- **Determinator's path rules.** The rules that map a kernel library's
+  sources to the crate that wraps them are hand-written. Who regenerates them when a
   module is added, and does the graph test catch a stale one?
 - **ASan on stable.** Adopt the Tier 2 target now, or wait for the
   stabilization and run ASan on nightly Rust until then?

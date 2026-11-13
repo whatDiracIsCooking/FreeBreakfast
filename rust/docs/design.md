@@ -163,17 +163,24 @@ the design is settled:
   the solvers, the collectives ([`gpu_layer.md`](gpu_layer.md), "Layering").
 - **A ported crate**, and the tree's rule of looking in `core` before writing
   a helper or a constant.
-- **A bridge and its kernels**, hand-written or FelizJueves-emitted, already
-  behind a C header or still behind a C++ one
-  ([`gpu_layer.md`](gpu_layer.md), "The layer already exists").
+- **A forked kernel library** under `rust/<module>/kernels/`, whose
+  wrapper may already be there, behind its C header and `-sys` crate.
+- **A C++ bridge and its kernels to fork**, hand-written or
+  FelizJueves-emitted: copied into `rust/`, the launcher rewritten as an
+  `extern "C"` wrapper and the emitted units emitted again
+  ([`gpu_layer.md`](gpu_layer.md), "The layer already exists", "What the
+  port changes"). Forking hand-written device code adds to what is kept in
+  step by hand, so a feature forks what it uses and no more.
 - **The C++ implementation**, as the reference design of the algorithm and
   the source of its footprint formula, which becomes the layout.
 
-A new kernel is a FelizJueves request or a `.cu` in the C++ tree, never Rust
-([`gpu_layer.md`](gpu_layer.md), "Launch shape and dispatch").
+A new kernel is a FelizJueves emit or a `.cu` under `rust/`, never Rust
+([`gpu_layer.md`](gpu_layer.md), "Launch shape and dispatch"); a kernel the
+C++ tree lacks too is added to `rust/` alone.
 
 **Recorded.** The dependencies the answer leaves: `Cargo.toml`, the
-`-sys` crate's header, the C++-tree PR that adds a bridge.
+`-sys` crate's header, the forked files under `rust/<module>/kernels/` and
+`rust/device_headers/`.
 
 **Checks.** Nothing beyond the dependencies' own. A duplicate is caught in
 review, which is why the issue names what it reuses.
@@ -257,7 +264,7 @@ a check lives"):
 | The DAG's shape | The emitted diagram, a committed tier-3 golden |
 | The boundary and the bar | The reference comparison, one run |
 | The partition and its reduce order | One worker against many |
-| What a launch wrapper requires | The C header's `///` comment, carried into the `-sys` crate by bindgen, and the safe wrapper's `debug_requires` ([`gpu_layer.md`](gpu_layer.md), "The safe wrapper") |
+| What a launch wrapper requires | The C header's `///` comment, carried into the `-sys` crate by `devtools/rust-bindings.py`, and the safe wrapper's `debug_requires` ([`gpu_layer.md`](gpu_layer.md), "The safe wrapper") |
 
 Three rules hold for all of them. Contracts are debug-only, so a release
 build pays nothing and the PR gate, a debug build, has every one on. The
@@ -286,22 +293,26 @@ formula that becomes the layout. What differs:
 - **The port line is the bridge header.** Everything above it, the host
   preparation, the copies, the allocation, the `.cppm` and `.cpp`, is
   rewritten as the Rust crate of the same name; the launchers and kernels
-  below it stay ([`gpu_layer.md`](gpu_layer.md), "What the port changes").
-  The C++ tree's half, the bridge as a C header and the module's device
-  libraries as one shared object, is its own PR first, verified by
-  `devtools/test.py pr`, which is the only tier that can see a broken device
-  link ([`gpu_layer.md`](gpu_layer.md), "From bridge to C ABI", "Build").
+  below it are forked into `rust/<module>/kernels/`, the bridge as a C
+  header, and built into the module's shared object by `rust/`'s own CMake
+  project ([`gpu_layer.md`](gpu_layer.md), "What the port changes", "From
+  bridge to C ABI", "Build"). The fork and the crate can be one PR or two,
+  both under `rust/`; the cargo half of the gates builds the library and
+  runs its tier 4, which is where a broken device link shows.
 - **The doc comment carries a C++-to-Rust table** while the port lasts, with
   three kinds of row: ported, under the Rust name; not ported, because the
   language does it, naming the rule that replaces the code (`NonCopyable`,
   the move constructors, the dangling-view checks); and more than the C++,
   because Rust asks for it (a raw handle operation is `unsafe fn` and each
   owner has the safe method). The crate's `core` shows each.
-- **The C++ module stays.** Both call the one C header and the one shared
-  object, each tested by its own suite, until the Rust pipeline runs every
-  config under `examples/` that the C++ one does and matches it at the
-  regression bars. Nothing crosses from Rust back into C++. "Done" for a
-  module PR is its crate passing its tiers with the C++ tree still green.
+- **The C++ module stays, and the trees are two.** Each calls its own copy
+  of the kernels and is tested by its own suite, and the two are compared at
+  the regression bars, not by sharing a binary, until the Rust pipeline runs
+  every config under `examples/` that the C++ one does and matches it at
+  those bars. Nothing crosses from Rust back into C++. Until then the
+  hand-written device code a port forks exists twice, kept in step by hand
+  ([`gpu_layer.md`](gpu_layer.md), "What the port changes"). "Done" for a
+  module PR is its crate passing its tiers.
 
 The crate's README has the order the modules are taken in
 ([`README.md`](../README.md), "Order of work").
