@@ -701,6 +701,15 @@ def fd_check(res: dict, ts: dict) -> dict | None:
     for irrep in ex.FD_IRREPS:
         k, freq, q = ex.fd_direction(irrep)
         q = q.ravel()
+        # fd_direction's phase (largest component positive) is a tie between
+        # symmetry-equivalent atoms, so a rerun ts_hessian can flip it: take
+        # the sign the displaced points were prepared with.
+        plus = INPUTS / f"fd_{irrep}_p{round(ex.FD_DELTAS[0] * 100):02d}"
+        if (plus / "geometry.xyz").exists():
+            x0 = s4.coords_bohr(load_atoms(INPUTS / "ts_hessian" / "geometry.xyz"))
+            xp = s4.coords_bohr(load_atoms(plus / "geometry.xyz"))
+            if (xp - x0).ravel() @ q < 0:
+                q = -q
         qhq = float(q @ hmat @ q)
         # For an eigenmode of H M^-1, q^T H q = lambda q^T M q (mass-weighted
         # eigenvalue, Eh/(bohr^2 amu)), the frequency's own number.
