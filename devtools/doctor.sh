@@ -693,16 +693,17 @@ fi
 # module source, naming neither the compiler nor the fix (#1333). test.py and
 # build.sh reconfigure such a tree with --fresh on their own; this lists every
 # one in the checkout and its worktrees, so a long-lived worktree is not found
-# out at its next gate. Judged only where cmake is, the side that builds: on
-# a bare host the container's compiler is absent and every tree would look
-# stale.
+# out at its next gate. rust/build-*/, the rust/ CMake project's trees, are
+# scanned too (#1377); nothing reconfigures those for you. Judged only where
+# cmake is, the side that builds: on a bare host the container's compiler is
+# absent and every tree would look stale.
 echo "build trees"
 if ! command -v cmake >/dev/null 2>&1; then
   note "no cmake here: build trees are judged on the side that builds them"
 else
   n_trees=0 n_stale=0
   while read -r wt_path; do
-    for cache in "$wt_path"/build*/CMakeCache.txt; do
+    for cache in "$wt_path"/build*/CMakeCache.txt "$wt_path"/rust/build-*/CMakeCache.txt; do
       [ -f "$cache" ] || continue
       tree=$(dirname "$cache")
       n_trees=$((n_trees + 1))
@@ -715,6 +716,7 @@ else
   if [ "$n_stale" -gt 0 ]; then
     note "test.py pr/push and build.sh reconfigure each with --fresh on their own;"
     note "or now: cmake --preset <preset> --fresh, in that worktree"
+    note "(a rust/build-* tree: the same, from rust/; nothing does it for you)"
   else
     ok "$n_trees build tree(s), none configured by a changed compiler"
   fi
