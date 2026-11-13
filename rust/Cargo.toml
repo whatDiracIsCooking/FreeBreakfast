@@ -11,6 +11,9 @@ members = [
     "core/arena",
     "core/thread_pool",
     "core/planner",
+    "core/types",
+    "core/primitives",
+    "core/constants",
     "test_support",
     "doc_check",
 ]
@@ -30,6 +33,9 @@ fb-core-diagnostics = { path = "core/diagnostics" }
 fb-core-arena = { path = "core/arena", default-features = false }
 fb-core-thread-pool = { path = "core/thread_pool", default-features = false }
 fb-core-planner = { path = "core/planner" }
+fb-core-types = { path = "core/types" }
+fb-core-primitives = { path = "core/primitives" }
+fb-core-constants = { path = "core/constants" }
 fb-test-support = { path = "test_support" }
 
 contracts = "0.6.11"

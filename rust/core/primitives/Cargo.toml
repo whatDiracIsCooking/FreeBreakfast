@@ -1,0 +1,9 @@
+[package]
+name = "fb-core-primitives"
+description = "core::primitives: the combinatorics the basis normalizations take"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

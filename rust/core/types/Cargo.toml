@@ -1,0 +1,9 @@
+[package]
+name = "fb-core-types"
+description = "core::types: Double3, the backend's double3, a point in space"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

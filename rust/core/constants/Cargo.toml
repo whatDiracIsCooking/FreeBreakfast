@@ -1,0 +1,9 @@
+[package]
+name = "fb-core-constants"
+description = "core::constants: the physical constants the readers convert with"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
