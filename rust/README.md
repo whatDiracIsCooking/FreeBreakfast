@@ -1,24 +1,37 @@
 # rust — free_breakfast's core, rebuilt in Rust
 
 Can free_breakfast's C++ layers be rebuilt in Rust, one at a time, over
-WarpWraps' C ABI (`wwr-sys`), keeping each one's contract? This crate is
-that rebuild. Its module tree mirrors `src/`: `core::wwr` is `src/core/wwr`.
-It stands alone: nothing here uses the crates under `experimental/rust/`.
+WarpWraps' C ABI (`wwr-sys`), keeping each one's contract? This Cargo
+workspace is that rebuild. Its tree mirrors `src/`, one crate per module:
+`core/wwr/` is the crate `fb-core-wwr` (`fb_core_wwr` in a path), and it is
+`src/core/wwr`. It stands alone: nothing here uses the crates under
+`experimental/rust/`.
 
 ## What is here
 
-| Module | Ports | What |
+| Crate or module | Ports | What |
 |---|---|---|
-| `core::wwr::common` | wwr's `src/extension/common`, and the `src/extension/error_handling` primitives it re-exports | `ErrorCode` (`success_code` / `error_name` / `error_string`), `wwr_status` as an error code, `ScopedDeviceIndex` |
-| `core::wwr::handle` | wwr's `src/extension/handle` | `BaseHandle` over a `HandleKind` (CRTP's `create`/`destroy` hooks), `DeviceBoundHandle`, `StreamBoundHandle` over a `StreamBoundKind`, each with a fallible `try_new`; the three views; the `DeviceHandle` / `DeviceHandleStream` traits |
-| `core::wwr::runtime` | wwr's `src/extension/runtime` | `Stream`, `Event`, `MemPool` (with `MemPoolProps`), `Graph`, `GraphExec`, each a newtype over the handle it is built on, whose constructors abort on failure; stream capture through to a launched graph |
-| `core::wwr` (`gpu_status`) | `src/core/wwr`'s `:status`, and the rule its `:policy` encodes | `gpu_status` / `gpu_status_at`, and `gpu_log_error_at`, what a `Drop` does with a failed destroy |
-| `core::log` | `src/core/log` | The one backend behind the [`log`](https://crates.io/crates/log) facade: spdlog's line format (local time, OS thread id, `file:line`), the seven levels, `set_level` / `should_log` / `flush`, one file sink, the warning counter, and `log_at` for a location already held |
-| `core::error_handling` | `src/core/error_handling` | `ErrorKind` (with the pinned exit codes as `exit_code`), `Error` and its `#[track_caller]` factories, `Result<T>` / `Status`, `check_or_abort` |
-| `core::diagnostics` | `src/core/diagnostics` (`diagnostics.h`) | `gpu_must` (`FBF_GPU_MUST`), `critical!` (`FBF_LOG_CRITICAL`), and `log`'s `trace!` ... `error!` re-exported (`FBF_LOG_TRACE` ... `FBF_LOG_ERROR`); `FBF_TRY` is `?` |
-| `core::arena` | the peak model of `src/core/footprint` and `src/pipeline/footprint`, and `check_plan`'s fit | The plan's memory laid out once (`docs/memory.md`): `TableBuilder` (rows declared node by node as scratch, outputs and their readers, or the worker's; lifetimes derived), `assign` (the pure greedy best-fit offset assigner), `Table` (offsets, total, `peak`, and `handoffs`, the orderings reusing bytes needs; its text is the committed golden `tests/golden/arena_scf_fixture.txt`, rewritten by `FB_BLESS=1`), `admit` (the fit against a cap, refusing with the rows live at the peak), `Block<K>` (the table's one plain allocation, `Device` or portable `Pinned`, filled with `0xFF`, aborting on failure with the bytes and the free memory) and `Block::partition` (a node's `Bufs`: its own rows as `&[T]` / `&mut [T]` on the host and pointer views on the device, behind always-on borrow flags). The one module that allocates |
-| `core::planner` | nothing: the C++ steps allocate as they go | The glue between the two below: `Task` (`layout`, which declares every row through a `Layout`, a node's rows of one table, and `run`, which computes through them), `Dag` (tasks added in plan order, each on a GPU worker's stream or the CPU pool; `add` returns the task's rows, whose output ids the reading tasks take), `Planned` (each worker's device and host tables, and each task's dependencies, the reads and the handoffs, derived; its text is the committed golden `tests/golden/planner_scf.txt`) and `Instance` (the blocks, and a `thread_pool::Plan` whose nodes hand each task its rows; run any number of times). No `unsafe` |
-| `core::thread_pool` | nothing: the C++ pipeline runs on one thread | The run's workers (`docs/programming_model.md`, "CPU workers"): `Plan` (nodes added in topological order, each placed on the CPU pool or one stream worker), `run` (one scope, `n_cpu` CPU workers and a thread per stream worker, readiness counts, failure skipping descendants, the lowest-ranked error returned, a panic re-raised rather than hung), and the `Backend` the edges leaving a stream wait through: `Device` (a stream per worker, an event per GPU node) or `HostOnly` for device-free tests. `core::log::TaskScope` tags each node's lines `[task@worker]`, and `Error::context` carries it out. `clippy.toml` makes it the one place that spawns |
+| `fb_core_wwr::common` | wwr's `src/extension/common`, and the `src/extension/error_handling` primitives it re-exports | `ErrorCode` (`success_code` / `error_name` / `error_string`), `wwr_status` as an error code, `ScopedDeviceIndex` |
+| `fb_core_wwr::handle` | wwr's `src/extension/handle` | `BaseHandle` over a `HandleKind` (CRTP's `create`/`destroy` hooks), `DeviceBoundHandle`, `StreamBoundHandle` over a `StreamBoundKind`, each with a fallible `try_new`; the three views; the `DeviceHandle` / `DeviceHandleStream` traits |
+| `fb_core_wwr::runtime` | wwr's `src/extension/runtime` | `Stream`, `Event`, `MemPool` (with `MemPoolProps`), `Graph`, `GraphExec`, each a newtype over the handle it is built on, whose constructors abort on failure; stream capture through to a launched graph |
+| `fb_core_wwr` (`gpu_status`) | `src/core/wwr`'s `:status`, and the rule its `:policy` encodes | `gpu_status` / `gpu_status_at`, and `gpu_log_error_at`, what a `Drop` does with a failed destroy |
+| `fb_core_log` | `src/core/log` | The one backend behind the [`log`](https://crates.io/crates/log) facade: spdlog's line format (local time, OS thread id, `file:line`), the seven levels, `set_level` / `should_log` / `flush`, one file sink, the warning counter, and `log_at` for a location already held |
+| `fb_core_error_handling` | `src/core/error_handling` | `ErrorKind` (with the pinned exit codes as `exit_code`), `Error` and its `#[track_caller]` factories, `Result<T>` / `Status`, `check_or_abort` |
+| `fb_core_diagnostics` | `src/core/diagnostics` (`diagnostics.h`) | `gpu_must` (`FBF_GPU_MUST`), `critical!` (`FBF_LOG_CRITICAL`), and `log`'s `trace!` ... `error!` re-exported (`FBF_LOG_TRACE` ... `FBF_LOG_ERROR`); `FBF_TRY` is `?` |
+| `fb_core_arena` | the peak model of `src/core/footprint` and `src/pipeline/footprint`, and `check_plan`'s fit | The plan's memory laid out once (`docs/memory.md`): `TableBuilder` (rows declared node by node as scratch, outputs and their readers, or the worker's; lifetimes derived), `assign` (the pure greedy best-fit offset assigner), `Table` (offsets, total, `peak`, and `handoffs`, the orderings reusing bytes needs; its text is the committed golden `core/arena/tests/golden/arena_scf_fixture.txt`, rewritten by `FB_BLESS=1`), `admit` (the fit against a cap, refusing with the rows live at the peak), `Block<K>` (the table's one plain allocation, `Device` or portable `Pinned`, filled with `0xFF`, aborting on failure with the bytes and the free memory) and `Block::partition` (a node's `Bufs`: its own rows as `&[T]` / `&mut [T]` on the host and pointer views on the device, behind always-on borrow flags). The one module that allocates |
+| `fb_core_planner` | nothing: the C++ steps allocate as they go | The glue between the two below: `Task` (`layout`, which declares every row through a `Layout`, a node's rows of one table, and `run`, which computes through them), `Dag` (tasks added in plan order, each on a GPU worker's stream or the CPU pool; `add` returns the task's rows, whose output ids the reading tasks take), `Planned` (each worker's device and host tables, and each task's dependencies, the reads and the handoffs, derived; its text is the committed golden `core/planner/tests/golden/planner_scf.txt`) and `Instance` (the blocks, and a `thread_pool::Plan` whose nodes hand each task its rows; run any number of times). No `unsafe` |
+| `fb_core_thread_pool` | nothing: the C++ pipeline runs on one thread | The run's workers (`docs/programming_model.md`, "CPU workers"): `Plan` (nodes added in topological order, each placed on the CPU pool or one stream worker), `run` (one scope, `n_cpu` CPU workers and a thread per stream worker, readiness counts, failure skipping descendants, the lowest-ranked error returned, a panic re-raised rather than hung), and the `Backend` the edges leaving a stream wait through: `Device` (a stream per worker, an event per GPU node) or `HostOnly` for device-free tests. `fb_core_log::TaskScope` tags each node's lines `[task@worker]`, and `Error::context` carries it out. `clippy.toml` makes it the one place that spawns |
+
+Two more crates hold no port: `fb-test-support` (`test_support/`), what
+more than one crate's unit tests use, and a dev-dependency only; and
+`fb-doc-check` (`doc_check/`), the section-citation check. There is no
+umbrella crate. The crate graph is the selection graph
+([`testing.md`](docs/testing.md), "Selection: the workspace graph is the
+selection graph"): `log` at the bottom, `error_handling` on it, `wwr` on
+both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
+`diagnostics` at the top with nothing in `core` depending on it, since
+`log`'s macros are imported from `log` directly and `critical!` lives in
+`fb-core-log`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -31,7 +44,7 @@ to force:
   one is injected as a type parameter. A Rust constructor returns `Result`,
   and this tree's answer is fixed: a wrapper's constructor aborts on an
   `Err` (`check_or_abort`), and a `Drop` logs a failed destroy
-  (`gpu_log_error_at`). `core::wwr::common`'s doc has the whole reasoning.
+  (`gpu_log_error_at`). `fb_core_wwr::common`'s doc has the whole reasoning.
 - The move constructors, `release()`, the moved-from state and the
   null-handle sentinel. A Rust move leaves nothing behind to drop, and a
   failed create yields an `Err`, not an empty handle.
@@ -75,50 +88,61 @@ broken promise; a contract would turn it into a panic.
 cmake --preset experimental            # or hip-experimental
 cmake --build build-experimental --target wwr.capi.runtime_api
 cd rust
-cargo test                             # debug: the contract tests run too
-cargo test --release                   # the contract tests are skipped
+cargo test --workspace                 # debug: the contract tests run too
+cargo test --workspace --release       # the contract tests are skipped
+cargo test -p fb-core-arena            # one crate, with only its own features
 ```
 
-`build.rs` finds `libwwr_capi_runtime_api.so` under
+`capi_dir.rs`, which each linking crate's `build.rs` includes, finds
+`libwwr_capi_runtime_api.so` under
 `build-experimental/deps/WarpWraps/src/capi`. Set `FB_RUST_BUILD_DIR` to use
 another CMake build directory, for example
 `FB_RUST_BUILD_DIR=../build-hip-experimental`. Only the `runtime_api`
 surface of `wwr-sys` is linked.
 
 The GPU tests use device 0 and need room on it for a context. The host-only
-tests (the fake handle kind, error codes and contracts) need no GPU but still
-link the library. Use a separate `CARGO_TARGET_DIR` per backend: `build.rs`
-bakes the library's path into the rpath.
+tests (the fake handle kind, error codes and contracts) need no GPU, and
+`fb-core-log`, `fb-core-error-handling`, `fb-test-support` and
+`fb-doc-check` do not link the library at all: they build and pass with it
+missing. The other five link it, the device-free tests of `arena`,
+`thread_pool` and `planner` included. Use a separate `CARGO_TARGET_DIR` per
+backend: each `build.rs` bakes the library's path into the rpath.
 
-Allocating from a memory pool is tested in `tests/pool_allocation.rs`, a
+Allocating from a memory pool is tested in `core/wwr/tests/pool_allocation.rs`, a
 binary of its own. Under ROCm 7.2.4 on the gfx1200,
 `hipMallocFromPoolAsync` / `hipFreeAsync` on one thread beside other
 threads' stream work intermittently deadlocked inside `libamdhip64` (about
 one run in two of the unit tests); that file has the evidence. Cargo runs
 each test binary as its own process, so they never overlap.
 
-The logger is process-global, so `tests/log.rs` is a binary of its own too,
+The logger is process-global, so `core/diagnostics/tests/log.rs` is a
+binary of its own too,
 and its in-process checks are one test. Its abort and exit cases re-run
 that binary as a child and read the child's stdout: what they check (the
 critical line flushed before `abort`, the buffered tail flushed at exit) is
 what survives the process ending.
 
-The arena's blocks on a card are `tests/arena_block.rs`, a binary of its
+The arena's blocks on a card are `core/arena/tests/arena_block.rs`, a
+binary of its
 own whose cases take turns, since two of them measure the card's free
 memory: another process allocating on the card between two readings fails
 them, so hold the card, and expect a shared one to break them now and then.
-Its abort case re-runs the binary as a child, as `tests/log.rs` does. The
+Its abort case re-runs the binary as a child, as the log test does. The
 arena's device-free tests are unit tests, over a test-only heap kind, and so
-are the planner's, run on `HostOnly` workers. The planner on a card, a round
-trip through pinned and device rows, is `tests/planner_device.rs`, which
-measures free memory too.
+are the planner's, run on `HostOnly` workers; the heap kind reaches the
+planner's tests through `fb-core-arena`'s `test-support` feature, enabled
+as a dev-dependency only, and `fb_core_wwr::runtime::tests`' device helpers
+reach `thread_pool`'s the same way. The planner on a card, a round trip
+through pinned and device rows, is `core/planner/tests/planner_device.rs`,
+which measures free memory too.
 
-`tests/section_citations.rs` checks that every section the README, `docs/`
-and the Rust comments cite by name is a heading of the file cited
-([`documentation.md`](docs/documentation.md), "Narrative: mdBook beside the
-rustdoc", has the rules). It reads files and nothing else, so it needs no
-card, but it still builds after `build.rs` and so needs the library until
-the workspace gives it a crate of its own.
+`doc_check/tests/section_citations.rs` checks that every section the
+README, `docs/` and every member's Rust sources cite by name is a heading of
+the file cited ([`documentation.md`](docs/documentation.md), "Narrative:
+mdBook beside the rustdoc", has the rules). It reads files and nothing else,
+in a crate that links nothing, so it needs neither card nor library:
+`cargo test -p fb-doc-check`. It finds the members from the workspace
+manifest, so a new crate is scanned without being named there.
 
 Tests run in parallel, so a capture test must not use global capture mode.
 A global capture forbids other threads' unsafe calls, and on the 3080 it
@@ -139,18 +163,21 @@ gets there in.
 
 ## Order of work
 
-The crate today is `core` alone, in one package, and nothing runs cargo in
-the gates. The first steps, in order, each one PR:
+The tree today is `core` alone, one crate per module, and nothing runs cargo
+in the gates. The first steps, in order, each one PR:
 
 1. **The section-citation check**, as the first tier-3 test
    ([`documentation.md`](docs/documentation.md), "Narrative: mdBook beside
-   the rustdoc"). Done: `tests/section_citations.rs`. Its first run found
+   the rustdoc"). Done: `doc_check/tests/section_citations.rs`. Its first run found
    two citations in doc comments that named a bold paragraph lead rather
    than a heading.
 2. **The workspace.** One crate per module and `core` split
    ([`testing.md`](docs/testing.md), "Selection: the workspace graph is the
    selection graph"), done while the crate is four thousand lines rather than
-   forty.
+   forty. Done: nine crates, no umbrella. Only `log`, `error_handling`,
+   `test_support` and `doc_check` build without the wwr library; making
+   `arena`, `thread_pool` and `planner` link-free too needs a seam under the
+   arena's blocks, a design of its own.
 3. **The cargo half of the gates**, tiers 1 to 3 for a diff under the crate
    ([`testing.md`](docs/testing.md), "What runs when").
 4. **One task through the whole model**, before any module is ported: the
@@ -220,3 +247,19 @@ The planner device binary and the planner's unit tests each passed 20
 repeats in a row, and the device binary is clean under `compute-sanitizer
 --tool memcheck`. Clippy (`-D warnings`), rustdoc (`-D warnings`) and
 `cargo fmt --check` are clean. Not run on the gfx1200.
+
+2026-11-13, the workspace split (one crate per module, no umbrella), on the
+RTX 3080 (CUDA) only, holding the card: the same tests as the entry above,
+redistributed. In a debug build the unit tests are 30 (`wwr`), 10
+(`thread_pool`), 9 (`arena`), 6 (`planner`) and 4 (`error_handling`), 59 in
+all as before, with the 4 arena-block tests, the planner device test, the 5
+log tests, the pool-allocation test, the thread-count test, the 8
+section-citation tests and 4 doctests (1 more `ignore`d); in release 57,
+with the rest unchanged. Each crate passes `cargo test -p` on its own. The
+section-citation counts are unchanged (117 links, 21 backticked paths, 3
+self-references). `fb-core-log`, `fb-core-error-handling`,
+`fb-test-support` and `fb-doc-check` have no `libwwr_capi` under `NEEDED`,
+and the first, second and fourth pass with the library moved aside.
+`FB_BLESS=1` rewrites each golden in its own crate, unchanged. Clippy (`-D
+warnings`), rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not
+run on the gfx1200.

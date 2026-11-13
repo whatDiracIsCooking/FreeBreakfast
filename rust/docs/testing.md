@@ -191,10 +191,9 @@ decision is written down here:
   crates' tier-4 tests" is then exactly the set to run. A module declaration
   lives in a `.rs`, so adding a file touches no build file. Adding a
   dependency touches one `Cargo.toml`. A `Cargo.lock` change affects
-  everything, which is honest. The crate today is one package, `fb-rebuild`,
-  with `core::wwr`, `core::log` and the rest as modules of it; it becomes
-  that workspace, with `core` split as the next rule says, before the next
-  module lands ([`README.md`](../README.md), "Order of work").
+  everything, which is honest. The tree is that workspace: `core` split as
+  the next rule says, `core/wwr/` the crate `fb-core-wwr` and so on, one per
+  module ([`README.md`](../README.md), "What is here").
 - **No umbrella crate.** No prelude, no crate that re-exports the tree. `core`
   is split so that a crate which only logs does not depend on the handle
   types. An edge that exists for convenience costs every PR that touches its

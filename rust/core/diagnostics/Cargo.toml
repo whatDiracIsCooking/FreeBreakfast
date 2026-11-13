@@ -1,0 +1,19 @@
+[package]
+name = "fb-core-diagnostics"
+description = "core::diagnostics: the call-site idioms over error_handling and log"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-core-error-handling.workspace = true
+fb-core-log.workspace = true
+fb-core-wwr.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
+wwr-sys.workspace = true

@@ -1,34 +1,47 @@
-[package]
-name = "fb-rebuild"
+# free_breakfast's core rebuilt in Rust over WarpWraps' C ABI (wwr-sys): one
+# crate per module, so the crate graph is the selection graph
+# (docs/testing.md, "Selection: the workspace graph is the selection graph").
+[workspace]
+resolver = "3"
+members = [
+    "core/log",
+    "core/error_handling",
+    "core/wwr",
+    "core/diagnostics",
+    "core/arena",
+    "core/thread_pool",
+    "core/planner",
+    "test_support",
+    "doc_check",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "free_breakfast's core rebuilt in Rust over WarpWraps' C ABI (wwr-sys)"
 
-[lib]
-name = "fb_rebuild"
-path = "src/lib.rs"
+[workspace.dependencies]
+fb-core-log = { path = "core/log" }
+fb-core-error-handling = { path = "core/error_handling" }
+fb-core-wwr = { path = "core/wwr" }
+fb-core-diagnostics = { path = "core/diagnostics" }
+fb-core-arena = { path = "core/arena" }
+fb-core-thread-pool = { path = "core/thread_pool" }
+fb-core-planner = { path = "core/planner" }
+fb-test-support = { path = "test_support" }
 
-[dependencies]
 contracts = "0.6.11"
 # core::log: the line's local time, and the OS thread id (std has none).
 jiff = "0.2.43"
 libc = "0.2"
 log = { version = "0.4.35", features = ["std"] }
-# runtime_api alone: the binary NEEDs libwwr_capi_runtime_api.so and nothing
+proptest = "1"
+# runtime_api alone: a binary NEEDs libwwr_capi_runtime_api.so and nothing
 # else of wwr's.
 wwr-sys = { path = "../deps/WarpWraps/src/capi/wwr-sys", default-features = false, features = [
     "runtime_api",
 ] }
 
-# Counts the process's threads, so no libtest harness threads beside it.
-[[test]]
-name = "thread_pool_threads"
-harness = false
-
-[lints.clippy]
+[workspace.lints.clippy]
 # clippy.toml's list: spawning is core::thread_pool's alone.
 disallowed_methods = "deny"
-
-[dev-dependencies]
-proptest = "1"
