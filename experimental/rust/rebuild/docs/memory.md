@@ -107,6 +107,21 @@ is the assigner's one invariant, and it is what the fuzz checks
 order with best fit, and a schedule it cannot fit at the given order is
 re-ordered or refused by admission, never allocated past the block.
 
+**"Precedes" is the plan's rank order, so reuse adds edges.** The positions
+the assigner packs against are the nodes' ranks, the order they were added
+in, but a run starts any ready node whatever its rank: on one stream a
+higher rank runs first when a lower one is still waiting on a CPU
+predecessor. So the table returns its **handoffs** (`Table::handoffs`):
+for every pair of rows that share bytes, each user of the earlier paired
+with the later one's producer. Each handoff points forward in rank and is
+added to the plan as a dependency, which is the rule above, an offset's
+previous owner counts as a predecessor, made uniform. On one stream a
+handoff between two stream nodes costs nothing, the stream's order already
+holds it; from a CPU node it is the wait the rule asks for. A tier-3
+property test runs random DAGs in random orders consistent with their
+edges and handoffs and checks that no two rows sharing bytes are live at
+once.
+
 **An alias is free of synchronization.** The ERI step is the case. Issue
 1153 found the DF chain's packing broken because B was allocated while the
 metric pair's frees were still pending on the stream, and the pool took new
@@ -329,6 +344,12 @@ against.
 
 ## Open questions
 
+- **Bytes against concurrency.** The assigner always packs to the fewest
+  bytes, and every byte it reuses is a handoff, an edge the plan did not
+  otherwise have. Two independent nodes whose rows share bytes are then
+  serialized when a larger block would have let them overlap. On one stream
+  that costs nothing; once there are several, admission's search should
+  decide which reuse to give up for concurrency when the cap leaves room.
 - **Iterating the adaptive pass.** One pass in schedule order is pre-flight's
   model today. A plan whose adaptive tasks are large relative to its fixed
   rows may leave room the pass does not find.

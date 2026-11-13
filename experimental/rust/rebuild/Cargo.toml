@@ -29,3 +29,6 @@ harness = false
 [lints.clippy]
 # clippy.toml's list: spawning is core::thread_pool's alone.
 disallowed_methods = "deny"
+
+[dev-dependencies]
+proptest = "1"
