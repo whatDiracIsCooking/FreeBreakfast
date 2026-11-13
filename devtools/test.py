@@ -341,10 +341,11 @@ class Card:
     def __init__(self, backend: str, cfg: dict[str, str]) -> None:
         self.backend = backend
         self.cfg = cfg
-        # lib.sh's gpu_lock_dir, spelled the same way: under the MAIN
-        # checkout, so every worktree sees the same files.
+        # lib.sh's gpu_lock_dir, spelled the same way: a relative path under
+        # the MAIN checkout, so every worktree sees the same files; an
+        # absolute one as given (#1332), which `/` does by itself.
         root = cfg["PRIMARY_ROOT"] or str(REPO_ROOT)
-        self.dir = Path(f"{root}/{cfg['GPU_LOCK_DIR']}")
+        self.dir = Path(root) / cfg["GPU_LOCK_DIR"]
         self.files: list = []
 
     def _take(self) -> bool:

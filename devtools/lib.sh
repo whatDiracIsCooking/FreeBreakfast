@@ -115,7 +115,8 @@ EOF
 # held together: branches from before 2026-10-28 let two runs share a card,
 # each holding one of those, and holding both keeps such a run from joining
 # this one. Drop the second once no worktree carries the old lib.sh.
-# GPU_LOCK_DIR resolves under the MAIN checkout (see config.sh), inside the
+# A relative GPU_LOCK_DIR resolves under the MAIN checkout (see config.sh), an
+# absolute one is used as given (#1332). The default sits inside the
 # .sccache directory that is already bind-mounted into every compose service
 # and every worktree's devcontainer -- so this needs no new mount, and the
 # kernel enforces the locks across containers. flock's lock is held against
@@ -132,7 +133,11 @@ EOF
 GPU_CARD_LOCKS="0 1"
 
 gpu_lock_dir() {
-  echo "${PRIMARY_ROOT:-$REPO_ROOT}/$GPU_LOCK_DIR"
+  if [[ $GPU_LOCK_DIR == /* ]]; then
+    echo "$GPU_LOCK_DIR"
+  else
+    echo "${PRIMARY_ROOT:-$REPO_ROOT}/$GPU_LOCK_DIR"
+  fi
 }
 
 # `hip` for a preset named in GPU_HIP_PRESETS, else `cuda`.
