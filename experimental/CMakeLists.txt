@@ -58,6 +58,11 @@ add_subdirectory(gemm_host_offload)
 # test/experimental.
 add_subdirectory(routine)
 
+# GPU lossless compression through hipCOMP (LZ4, Cascaded) on device arrays.
+# HIP only, and skipped unless hipCOMP is on CMAKE_PREFIX_PATH. A demo, not a
+# ctest entry.
+add_subdirectory(hip_comp)
+
 # rust/gemm (fp64 gemm from Rust) has no CMake of its own: it binds WarpWraps'
 # C ABI (wwr.capi.*, built with deps/) through the wwr-sys crate.
 
