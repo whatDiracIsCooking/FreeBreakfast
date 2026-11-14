@@ -637,6 +637,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-recipes-symmetrize"
+version = "0.1.0"
+dependencies = [
+ "fb-core-error-handling",
+ "fb-core-wwr",
+ "fb-io-npy",
+ "fb-recipes-sys",
+ "wwr-sys",
+]
+
+[[package]]
 name = "fb-recipes-sys"
 version = "0.1.0"
 dependencies = [

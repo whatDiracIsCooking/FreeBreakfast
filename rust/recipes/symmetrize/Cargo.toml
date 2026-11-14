@@ -1,0 +1,20 @@
+[package]
+name = "fb-recipes-symmetrize"
+description = "recipes/symmetrize: a square device matrix made symmetric in place, by the exact average (A + Aᵀ)/2 or a triangle mirrored in BLAS's fill-mode vocabulary"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-core-error-handling.workspace = true
+fb-core-wwr.workspace = true
+fb-recipes-sys.workspace = true
+# BLAS for the fill mode, so a syrk's passes straight through.
+wwr-sys = { workspace = true, features = ["blas"] }
+
+[dev-dependencies]
+fb-core-wwr = { workspace = true, features = ["test-support"] }
+fb-io-npy.workspace = true
