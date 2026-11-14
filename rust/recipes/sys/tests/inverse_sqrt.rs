@@ -10,12 +10,15 @@
 //! it, one ulp above it, a negative value, both zeros) and ordinary values
 //! over the double range, repeated past three of the launch's blocks of
 //! four warps (128 or 256 threads), so a block boundary falls inside them;
-//! elements past `count` must be untouched.
+//! elements past `count` must be untouched. The launch goes through the
+//! safe [`inverse_sqrt`]; the C wrapper's own refusal, which the safe call
+//! cannot reach, is called raw.
 
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::runtime::tests::DeviceBytes;
-use fb_recipes_sys::{FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, fb_inverse_sqrt};
+use fb_recipes_sys::{
+    FB_LAUNCH_INVALID_ARGUMENT, FB_LAUNCH_SUCCESS, fb_inverse_sqrt, inverse_sqrt,
+};
 
 /// The orthogonalizer's default floor, the C++ `kOrthogonalizeEigenvalueFloor`.
 const FLOOR: f64 = 1e-10;
@@ -55,10 +58,8 @@ fn elements() -> Vec<f64> {
 fn maps_each_element_as_the_host_does() {
     let stream = Stream::new(0);
     let host = elements();
-    let device = DeviceBytes::upload(&host, &stream);
-    // SAFETY: a device array of COUNT + TAIL doubles, on `stream`.
-    let status = unsafe { fb_inverse_sqrt(stream.stream(), COUNT as u32, device.0.cast(), FLOOR) };
-    assert_eq!(status, FB_LAUNCH_SUCCESS);
+    let mut device = DeviceBytes::upload(&host, &stream);
+    inverse_sqrt(&stream, COUNT, &mut device, FLOOR).unwrap();
     let got: Vec<u64> = device
         .read(&stream)
         .as_chunks::<8>()
@@ -86,13 +87,24 @@ fn maps_each_element_as_the_host_does() {
     assert!(misses.is_empty(), "differ:\n{}", misses.join("\n"));
 }
 
-/// A null array is refused before any launch, and a count of 0 enqueues
-/// nothing: no device is touched.
+/// Needs a GPU. A count past the slice panics before anything is
+/// enqueued.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+#[should_panic(expected = "inverse_sqrt: count is 5, but data holds 4")]
+fn the_safe_call_refuses_a_count_past_the_slice() {
+    let stream = Stream::new(0);
+    let mut device = DeviceBytes::new(4 * size_of::<f64>());
+    let _ = inverse_sqrt(&stream, 5, &mut device, FLOOR);
+}
+
+/// The C wrapper's refusal: a null array is refused before any launch, and
+/// a count of 0 enqueues nothing; no device is touched.
 #[test]
 fn refuses_a_null_array() {
     let null = std::ptr::null_mut();
     // SAFETY: every call below returns before it reads a pointer.
-    let inverse_sqrt = |count: u32| unsafe { fb_inverse_sqrt(null, count, null.cast(), FLOOR) };
-    assert_eq!(inverse_sqrt(5), FB_LAUNCH_INVALID_ARGUMENT);
-    assert_eq!(inverse_sqrt(0), FB_LAUNCH_SUCCESS);
+    let raw = |count: u32| unsafe { fb_inverse_sqrt(null, count, null.cast(), FLOOR) };
+    assert_eq!(raw(5), FB_LAUNCH_INVALID_ARGUMENT);
+    assert_eq!(raw(0), FB_LAUNCH_SUCCESS);
 }

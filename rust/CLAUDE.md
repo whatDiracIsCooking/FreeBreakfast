@@ -27,7 +27,8 @@ forbids it. Each block holds one operation under a `// SAFETY:` comment
 
 **Use the safe wrappers, not `wwr-sys`:** copies through
 `fb_core_arena::memcpy_*`, BLAS through `fb_core_wwr::blas`, a device
-zero through `fb_core_wwr::memset::zero`, and a test's
+zero through `fb_core_wwr::memset::zero`, a kernel launch through its
+binding crate's safe API (`fb_recipes_sys::inverse_sqrt`, …), and a test's
 device buffer through `fb_core_wwr::runtime::tests::DeviceBytes`.
 
 **A new rule joins the register.** `docs/rules.md` lists every rule these

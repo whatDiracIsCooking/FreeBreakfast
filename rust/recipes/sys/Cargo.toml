@@ -1,6 +1,6 @@
 [package]
 name = "fb-recipes-sys"
-description = "recipes' launch wrappers: FFI bindings over libfb_recipes_kernels.so"
+description = "recipes' launch wrappers: FFI bindings over libfb_recipes_kernels.so, and the safe calls over them"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -10,6 +10,10 @@ links = "fb_recipes_kernels"
 workspace = true
 
 [dependencies]
+contracts.workspace = true
+fb-core-error-handling.workspace = true
+# The safe calls' slices, stream and status mapping.
+fb-core-wwr.workspace = true
 fb-kernel-abi.workspace = true
 wwr-sys.workspace = true
 

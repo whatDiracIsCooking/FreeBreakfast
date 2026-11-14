@@ -481,6 +481,13 @@ correctness rests on is a contract.
 Nothing the safe wrapper checks costs a device call, and every check it makes
 is one the C++ caller today makes by reading the header.
 
+The wrapper lives in the `-sys` crate itself, beside the generated
+bindings: that crate is already allowed `unsafe`, and none is published, so
+the usual split of a `-sys` crate from its safe one buys nothing.
+`fb_recipes_sys::inverse_sqrt`, `merge_sort` and `merge_sort_keys` are the
+first, on the shape of `fb_core_wwr::blas::gemm`: `DeviceSlice`s in, the
+launch status out through `fb_kernel_abi::launch_status`.
+
 ## Build
 
 **`rust/` builds its own native libraries.** `rust/CMakeLists.txt` is a
