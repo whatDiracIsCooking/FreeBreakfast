@@ -1088,7 +1088,9 @@ def cargo_half(tag: str, jobs: str, log: Path) -> int:
             "cargo test",
             ["cargo", "test", *jflag, "--no-default-features"]
             + [a for c in tested for a in ("-p", c)],
-            {},
+            # The slow cases return at once (rust/docs/testing.md, "Slow
+            # cases"), as FBF_SKIP_IF_FAST_TESTS() skips in the C++ half.
+            {"FREE_BREAKFAST_FAST_TESTS": "1"},
         ),
         (
             "cargo doc --no-default-features",
@@ -1119,6 +1121,7 @@ def cargo_half(tag: str, jobs: str, log: Path) -> int:
             f.write(proc.stdout)
         lines = proc.stdout.splitlines()
         if name == "cargo test":
+            say(f"{tag}:   slow cases skipped (FREE_BREAKFAST_FAST_TESTS=1)")
             rows, (passed, failed, ignored) = cargo_counts(lines)
             for row in rows:
                 say(f"{tag}:   {row}")
@@ -1303,7 +1306,7 @@ def cargo_tier4(
             )
             return rc
     env = dict(
-        os.environ,
+        fast_env(),
         CARGO_TARGET_DIR=str(RUST_DIR / "target" / backend),
         FB_RUST_BUILD_DIR=str(build),
     )
@@ -1331,6 +1334,7 @@ def cargo_tier4(
     rows, (passed, failed, ignored) = cargo_counts(lines)
     for row in rows:
         say(f"{tag}:   {row}")
+    say(f"{tag}:   slow cases skipped (FREE_BREAKFAST_FAST_TESTS=1)")
     say(f"{tag}:   tier 4: {passed} passed, {failed} failed, {ignored} ignored")
     skips = cargo_skips(lines)
     if skips:
