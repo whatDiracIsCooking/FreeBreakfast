@@ -3,29 +3,17 @@
 // tier-3 test fails while this file and the header disagree.
 
 pub use wwr_sys::wwr_stream;
+pub use fb_kernel_abi::{
+    fb_launch_status,
+    FB_LAUNCH_SUCCESS,
+    FB_LAUNCH_UNSUPPORTED,
+    FB_LAUNCH_INVALID_ARGUMENT,
+    FB_DEVICE_ALIGNMENT,
+    fb_backend,
+    FB_BACKEND_CUDA,
+    FB_BACKEND_HIP,
+};
 
-/// A launch wrapper's result: 0 is success; a positive value is the runtime's
-/// launch error, as the C ABI's wwr_status; a negative one is the wrapper's
-/// own refusal, before anything is enqueued.
-pub type fb_launch_status = i32;
-/// Success: every launch was enqueued.
-pub const FB_LAUNCH_SUCCESS: fb_launch_status = 0;
-/// No kernel for these parameters (a momentum outside the dispatch table).
-pub const FB_LAUNCH_UNSUPPORTED: fb_launch_status = -1;
-/// A count, pointer or workspace the wrapper refuses: a null array, or a
-/// workspace shorter than its query asked for.
-pub const FB_LAUNCH_INVALID_ARGUMENT: fb_launch_status = -2;
-/// The alignment, in bytes, a launch wrapper assumes of every buffer it is
-/// handed, scratch and output alike, and the one a workspace is partitioned
-/// to: the pool's allocation granularity on both vendors.
-pub const FB_DEVICE_ALIGNMENT: usize = 256;
-/// The GPU backend a kernel library was built for, as the library reports
-/// it and its -sys crate checks at load.
-pub type fb_backend = i32;
-/// Built for CUDA.
-pub const FB_BACKEND_CUDA: fb_backend = 1;
-/// Built for HIP.
-pub const FB_BACKEND_HIP: fb_backend = 2;
 /// The order of the diagonal tiles a blocked Cholesky factors one at a time
 /// with fb_cholesky_diagonal, and so the width of its panels: the C++
 /// kCholeskyBlock. A tile is 64^2 doubles, 32 KiB of shared memory.

@@ -46,6 +46,7 @@ use fb_core_wwr::device_slice::{DeviceSlice, DeviceSliceMut};
 use fb_core_wwr::gpu_status_at;
 use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::runtime::Stream;
+use fb_kernel_abi::Backend;
 
 /// Checks that the `libfb_recipes_kernels.so` this process loaded is the one
 /// these bindings describe: its [`fb_recipes_abi_version`] against
@@ -64,20 +65,13 @@ pub fn check_library() -> Result<(), String> {
     let version = unsafe { fb_recipes_abi_version() };
     // SAFETY: as above.
     let backend = unsafe { fb_recipes_backend() };
-    let found = (version, backend);
+    let built_for = const { Backend::named(env!("FB_KERNELS_BACKEND")) };
     fb_kernel_abi::check(
         "recipes",
-        found,
-        (FB_RECIPES_ABI_VERSION, env!("FB_KERNELS_BACKEND")),
+        (version, backend),
+        (FB_RECIPES_ABI_VERSION, built_for),
     )
 }
-
-// The numbers fb_kernel_abi::check names the found backend by.
-const _: () = assert!(FB_BACKEND_CUDA == 1 && FB_BACKEND_HIP == 2);
-// The numbers fb_kernel_abi::launch_status reads a launch status by.
-const _: () = assert!(
-    FB_LAUNCH_SUCCESS == 0 && FB_LAUNCH_UNSUPPORTED == -1 && FB_LAUNCH_INVALID_ARGUMENT == -2
-);
 
 /// A launch status as a [`Status`] naming the wrapper: a launch error by
 /// its `wwr_status` name, at the caller of the safe call.

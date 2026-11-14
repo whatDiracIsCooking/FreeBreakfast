@@ -9,6 +9,16 @@ its bindings are rust/<module>/sys/src/bindings.rs, committed
 (rust/docs/gpu_layer.md, "Build"). The tier-3 test in rust/device_check runs
 this with --check, so a header changed without its bindings fails there.
 
+A header every library shares (SHARED below: rust/device_headers/fb_launch.h)
+is not inlined into each module's bindings. It has one Rust home, a crate
+every -sys crate already depends on, and is generated as a bindings file of
+its own there (rust/kernel_abi/src/bindings.rs), checked the same way; a
+module header that includes it opens its bindings with a `pub use` of every
+name it defines, so the names stay in each -sys crate's API
+(rust/docs/gpu_layer.md, "From bridge to C ABI"). In that home, a typedef in
+PROMOTED is a Rust newtype rather than an alias, and the header's constants
+of it are values of the newtype.
+
 WHY NOT BINDGEN. The design names bindgen, but the devcontainer ships neither
 bindgen nor libclang's Python bindings, and adding either is a new toolchain
 dependency for one header. So this does what WarpWraps' C ABI generator does
@@ -66,6 +76,21 @@ SCALARS = {
 # Rust path that crate binds them at.
 EXTERNAL = {"wwr_stream": "wwr_sys::wwr_stream"}
 
+# Headers every kernel library shares: the crate each is bound in, which every
+# -sys crate depends on, and the bindings file generated there. A shared header
+# declares types and constants only, so its home links nothing.
+SHARED = {
+    DEVICE_HEADERS / "fb_launch.h": (
+        "fb_kernel_abi",
+        RUST / "kernel_abi" / "src" / "bindings.rs",
+    ),
+}
+
+# Typedefs a shared header's home binds as a newtype it defines beside the
+# generated file (a `#[repr(transparent)]` struct over the typedef's scalar,
+# so still FFI-safe as a return type), rather than as an alias of the scalar.
+PROMOTED = {"fb_launch_status": "crate::LaunchStatus"}
+
 IDENT = r"[A-Za-z_]\w*"
 INCLUDE = re.compile(r'#include\s+"([^"]+)"')
 DEFINE = re.compile(rf"#define\s+({IDENT})\s+\(\(({IDENT})\)\s*(-?\s*\d+)\)\s*$")
@@ -84,15 +109,21 @@ class HeaderError(Exception):
 class Module:
     """One header's items, in the order they first appear."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, home: Path | None = None) -> None:
         # The library's kernels/ directory, an include's second search base.
         self.root = root
+        # The shared header being bound in its home, or None for a module's.
+        self.home = home
         self.aliases: dict[str, str] = {}
         self.structs: set[str] = set()
         self.items: list[str] = []
         self.functions: list[str] = []
         self.externals: set[str] = set()
         self.seen: set[Path] = set()
+        # Every name an item defines, in order: what a shared header exports.
+        self.names: list[str] = []
+        # Per shared home's crate, the names re-exported from it.
+        self.imports: dict[str, list[str]] = {}
 
     def rust_type(self, name: str, pointer: bool, const: bool, where: str) -> str:
         if name in SCALARS:
@@ -148,6 +179,7 @@ def read_header(path: Path, module: Module) -> None:
                     + ["}"]
                 )
                 module.structs.add(name)
+                module.names.append(name)
                 struct = None
                 continue
             f = FIELD.fullmatch(line)
@@ -174,7 +206,7 @@ def read_header(path: Path, module: Module) -> None:
             if m:
                 for base in (path.parent, module.root, DEVICE_HEADERS):
                     if (base / m.group(1)).is_file():
-                        read_header(base / m.group(1), module)
+                        include(base / m.group(1), module, where)
                         break
             continue
         if line.startswith("#define"):
@@ -184,9 +216,12 @@ def read_header(path: Path, module: Module) -> None:
             name, ctype, value = m.groups()
             value = value.replace(" ", "")  # clang-format writes (t) - 2
             rtype = module.rust_type(ctype, False, False, where)
+            if ctype in PROMOTED:
+                value = f"{PROMOTED[ctype]}({value})"
             module.items += doc_lines(doc, "") + [
                 f"pub const {name}: {rtype} = {value};"
             ]
+            module.names.append(name)
             doc = []
             continue
         if line.startswith("#") or line in ('extern "C" {', "}"):
@@ -202,10 +237,15 @@ def read_header(path: Path, module: Module) -> None:
             if not m or m.group(1) not in SCALARS:
                 raise HeaderError(f"{where}: a typedef must alias a scalar type")
             target, name = m.groups()
+            if name in PROMOTED and module.home is None:
+                raise HeaderError(
+                    f"{where}: {name} is promoted only in a shared header"
+                )
             module.aliases[name] = SCALARS[target]
             module.items += doc_lines(doc, "") + [
-                f"pub type {name} = {SCALARS[target]};"
+                f"pub type {name} = {PROMOTED.get(name, SCALARS[target])};"
             ]
+            module.names.append(name)
             doc = []
             continue
         pending, pending_line = line, number
@@ -216,6 +256,23 @@ def read_header(path: Path, module: Module) -> None:
         raise HeaderError(f"{where_file}:{pending_line}: unterminated declaration")
     if struct:
         raise HeaderError(f"{where_file}: struct {struct[0]} is never closed")
+
+
+def include(path: Path, module: Module, where: str) -> None:
+    """Reads an included header: inlined, or, a shared header outside its own
+    home, read on its own and its names re-exported from that home."""
+    path = path.resolve()
+    if path not in SHARED or path == module.home or path in module.seen:
+        read_header(path, module)
+        return
+    module.seen.add(path)
+    shared = Module(path.parent, home=path)
+    read_header(path, shared)
+    if shared.functions or shared.externals:
+        raise HeaderError(f"{where}: a shared header declares types and constants only")
+    module.aliases.update(shared.aliases)
+    module.structs |= shared.structs
+    module.imports.setdefault(SHARED[path][0], []).extend(shared.names)
 
 
 def add_function(decl: str, module: Module, doc: list[str], where: str) -> None:
@@ -239,11 +296,17 @@ def add_function(decl: str, module: Module, doc: list[str], where: str) -> None:
     module.functions += doc_lines(doc, "    ") + [
         f"    pub fn {name}({', '.join(args)}){returns};"
     ]
+    module.names.append(name)
 
 
 def render(header: Path) -> str:
-    module = Module(header.parent)
+    home = header.resolve() if header.resolve() in SHARED else None
+    module = Module(header.parent, home)
     read_header(header, module)
+    if home and (module.functions or module.externals):
+        raise HeaderError(
+            f"{header}: a shared header declares types and constants only"
+        )
     rel = header.relative_to(REPO)
     lines = [
         f"// GENERATED by devtools/rust-bindings.py from {rel} -- do not edit.",
@@ -252,7 +315,9 @@ def render(header: Path) -> str:
         "",
     ]
     lines += [f"pub use {EXTERNAL[name]};" for name in sorted(module.externals)]
-    if module.externals:
+    for crate, names in module.imports.items():
+        lines += [f"pub use {crate}::{{"] + [f"    {n}," for n in names] + ["};"]
+    if module.externals or module.imports:
         lines.append("")
     lines += module.items
     if module.functions:
@@ -261,8 +326,9 @@ def render(header: Path) -> str:
 
 
 def modules() -> list[tuple[Path, Path]]:
-    """Each kernel library's header and the bindings generated from it."""
-    found = []
+    """Each shared header and each kernel library's, and the bindings
+    generated from it."""
+    found = [(header, out) for header, (_, out) in SHARED.items()]
     for kernels in sorted(RUST.glob("*/kernels")):
         name = kernels.parent.name
         header = kernels / f"fb_{name}.h"
@@ -276,7 +342,7 @@ def main() -> int:
     parser.add_argument("--check", action="store_true", help="diff instead of writing")
     check = parser.parse_args().check
     pairs = modules()
-    if not pairs:
+    if len(pairs) == len(SHARED):
         print("rust-bindings: no rust/*/kernels/fb_*.h found", file=sys.stderr)
         return 2
     stale = 0
