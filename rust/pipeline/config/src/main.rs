@@ -12,10 +12,10 @@ use std::rc::Rc;
 
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_log::{self as log, LogLevel};
-use fb_core_thread_pool::default_n_cpu;
+use fb_core_thread_pool::{DeviceStream, default_n_cpu};
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::solver::SolverHandle;
-use fb_pipeline_config::{admit_plan, plan, read_config};
+use fb_pipeline_config::{KERNEL_STACK_BYTES, admit_plan, plan, read_config};
 use fb_recipes_diagonalize::syevd_lwork;
 
 /// The devices the plan's GPU workers run on, worker `w` on `DEVICES[w]`.
@@ -46,7 +46,9 @@ fn read_mem_available() -> Result<usize> {
 }
 
 /// Read, plan (syevd's work asked of a solver handle on device 0, if the
-/// plan asks), admit every worker's tables against the `[memory]` caps,
+/// plan asks), admit every worker's tables against the `[memory]` caps
+/// (each device's reserve measured with its worker's stream and handles
+/// made, and the kernels' stack read after it),
 /// make the output directory, run, and write `timing.json`. Everything a
 /// config can get wrong is refused before a device is touched, and a plan
 /// too large for its caps or its card before a block is made.
@@ -62,7 +64,13 @@ fn run(args: &[String]) -> Status {
     admit_plan(
         &planned,
         &config.memory,
-        |w| fb_core_arena::device_free(DEVICES[w]),
+        // The worker's stream and handles exist for the reading, so the
+        // reserve holds them; the run's own are made with its backend.
+        |w| {
+            let _worker = DeviceStream::new(DEVICES[w]);
+            fb_core_arena::device_memory(DEVICES[w])
+        },
+        |w| fb_core_wwr::runtime::stack_growth(DEVICES[w], KERNEL_STACK_BYTES),
         read_mem_available()?,
     )?;
     std::fs::create_dir_all(&config.output).map_err(|e| {

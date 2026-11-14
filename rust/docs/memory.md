@@ -194,11 +194,22 @@ and the stack.
 **The reserve is measured, with the constant as its floor.** At process
 start, after the devices' handles exist and before any block, each worker
 reads its device's free memory against its total; the difference is that
-device's reserve, and the C++ `kDeviceReserve` of 256 MiB is the least it may
-be taken as. A card another process holds part of shows up here, as a
-smaller cap, rather than at the first allocation. Not built yet: the reserve
-is the constant (`fb_pipeline_config::DEVICE_RESERVE`), and the stack is not
-counted.
+device's reserve, and the C++ `kDeviceReserve` of 256 MiB
+(`fb_pipeline_config::DEVICE_RESERVE`) is the least it may be taken as. A card
+another process holds part of shows up here, as a smaller cap, rather than at
+the first allocation. The binary makes the reading at planning, for each
+worker with a device block, with that worker's stream and handles made for it
+(the run's own are made with its backend, after the blocks); it is the one
+reading of the card, so the card's bound below and the reserve agree.
+
+**The stack is what it can still take.** The C++ `Device::stack_growth`: what
+the kernels' stack can still take for a kernel of `kKernelStackBytes` per
+thread (`fb_pipeline_config::KERNEL_STACK_BYTES`, the C++ tree's largest,
+which bounds the Rust forks of its kernels), 0 once a kernel that large has
+run, and 0 under HIP, whose scratch is sized per dispatch. wwr's C ABI has no
+device attribute, so the Rust term is measured rather than computed from the
+resident threads: the free memory read either side of raising the stack limit
+to that size, and the limit set back (`fb_core_wwr::runtime::stack_growth`).
 
 **Each cap's default is its floor.** The caps are the config's `[memory]`
 keys, the C++ ones with the C++ size strings: `max_device_mem_per_gpu`,
@@ -211,9 +222,11 @@ default it means a card with more than 8 GiB is used past that only when the
 config says so. The heap block's cap, `max_host_mem`, is not built.
 
 **Every cap is bounded by the card.** A device block is admitted against the
-smaller of its cap and the card's free memory at planning, less the reserve,
-so a card under its cap, or one another process holds part of, still refuses
-the plan before the first launch. The binary admits every worker's device and
+smaller of its cap and the card's total memory, less the reserve and the
+stack. The reserve being the total less the free memory, a cap past the card
+admits its free memory less the stack, so a card under its cap, or one
+another process holds part of, still refuses the plan before the first
+launch. The binary admits every worker's device and
 pinned table after planning and before it makes the blocks, and the node
 check before either (`fb_pipeline_config::admit_plan`).
 

@@ -11,6 +11,7 @@
 //! | `:graph_exec`, `GraphExecWrapper` | [`GraphExec`] |
 //! | `:device_handle`, `kit::DeviceHandle` | nothing: see below |
 //! | `StreamView`, `EventView`, `GraphExecView` | the handle views [`view()`](super::handle::DeviceBoundHandle::view) returns |
+//! | free_breakfast's `Device::stack_growth` (`src/core/wwr/device.cppm`) | [`stack_growth`], measured rather than computed |
 //!
 //! Each wrapper is a newtype over the handle it is built on, and derefs to
 //! it, so `get()`, `view()` and `dev_idx()` are the handle's. Its
@@ -62,7 +63,74 @@ pub use graph_exec::GraphExec;
 pub use mem_pool::{MemPool, MemPoolProps};
 pub use stream::Stream;
 
+use fb_core_error_handling::Result;
 use wwr_sys::wwr_status;
+
+use crate::common::ScopedDeviceIndex;
+use crate::gpu_status_at;
+
+/// Whether the library this crate links was built for HIP: its CMake
+/// build's backend, which `build.rs` reads.
+const HIP: bool = matches!(env!("FB_WWR_BACKEND").as_bytes(), b"HIP");
+
+/// What the kernels' stack can still take from device `dev_idx`'s memory,
+/// in bytes, for a kernel of `per_thread` bytes of stack per thread to run:
+/// the C++ `Device::stack_growth` (`../src/core/wwr/README.md`, "Kernel stacks
+/// outside the pool"). CUDA holds a kernel's stack for every thread the
+/// device can keep resident, from its first launch on, by raising the
+/// device's stack limit and keeping it, so this is 0 once the limit is at
+/// `per_thread` or past it. It is 0 under HIP, whose scratch is sized per
+/// dispatch, and asked of no device there.
+///
+/// The C++ multiplies the limit's shortfall by the resident threads, read
+/// from the device's properties. wwr's C ABI carries no device attribute
+/// (its `src/capi/README.md`, `wwrDeviceGetAttribute`), so this measures
+/// the product instead: it reads the free memory, raises the limit to
+/// `per_thread`, which takes the stack at once, reads it again, and sets
+/// the limit back, which returns it (the C++ README's measurements). Two
+/// readings of a card every tenant shares, so another's allocation between
+/// them moves the result: it is admission's (`docs/memory.md`,
+/// "Admission"), never a run's, and is made before any kernel runs.
+///
+/// # Errors
+/// The failed device switch or runtime call, among them raising the limit
+/// on a card with no room left for the stack.
+#[track_caller]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "admission counts the kernels' stack beside a device block (docs/memory.md, \"Admission\"); nothing is sized from it at run time"
+)]
+pub fn stack_growth(dev_idx: i32, per_thread: usize) -> Result<usize> {
+    if HIP {
+        return Ok(0);
+    }
+    let location = std::panic::Location::caller();
+    let _device = ScopedDeviceIndex::try_new(dev_idx)?;
+    let stack = wwr_sys::wwr_limit::WWR_LIMIT_STACK_SIZE;
+    let mut limit = 0;
+    // SAFETY: a plain runtime call writing one local.
+    let status = unsafe { wwr_sys::wwr_device_get_limit(&mut limit, stack) };
+    gpu_status_at(status, location)?;
+    if limit >= per_thread {
+        return Ok(0);
+    }
+    let free = || -> Result<usize> {
+        let (mut free, mut total) = (0, 0);
+        // SAFETY: a plain runtime call writing two locals.
+        let status = unsafe { wwr_sys::wwr_mem_get_info(&mut free, &mut total) };
+        gpu_status_at(status, location)?;
+        Ok(free)
+    };
+    let before = free()?;
+    // SAFETY: a plain runtime call; no kernel runs at admission.
+    let status = unsafe { wwr_sys::wwr_device_set_limit(stack, per_thread) };
+    gpu_status_at(status, location)?;
+    let after = free();
+    // SAFETY: as above, the limit the device had back.
+    let status = unsafe { wwr_sys::wwr_device_set_limit(stack, limit) };
+    gpu_status_at(status, location)?;
+    Ok(before.saturating_sub(after?))
+}
 
 /// The first failure of a destroy that is two runtime calls, both made:
 /// wwr synchronizes a stream or event before destroying it and reports
@@ -206,6 +274,36 @@ pub mod tests {
         fn as_mut_ptr(&mut self) -> *mut T {
             self.0.cast()
         }
+    }
+
+    /// Device 0's stack limit.
+    #[cfg(test)]
+    fn stack_limit() -> usize {
+        let mut limit = 0;
+        let _device = crate::common::ScopedDeviceIndex::new(0);
+        // SAFETY: a plain runtime call writing one local.
+        ok(unsafe {
+            wwr_sys::wwr_device_get_limit(&mut limit, wwr_sys::wwr_limit::WWR_LIMIT_STACK_SIZE)
+        });
+        limit
+    }
+
+    /// The stack term for the C++ tree's largest per-thread stack, 16,912
+    /// bytes: exactly 0 under HIP, and on either backend the device's stack
+    /// limit is what it was before the probe. Nothing is asserted of the
+    /// CUDA term's size, two readings of a card other tenants share. Needs
+    /// a GPU.
+    #[cfg(test)]
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn the_stack_term_leaves_the_limit_as_it_was() {
+        let limit = stack_limit();
+        let growth = super::stack_growth(0, 16_912).unwrap();
+        println!("device 0: stack limit {limit} B, stack term {growth} B");
+        if super::HIP {
+            assert_eq!(growth, 0, "HIP sizes scratch per dispatch");
+        }
+        assert_eq!(stack_limit(), limit, "the probe sets the limit back");
     }
 
     #[cfg(test)]
