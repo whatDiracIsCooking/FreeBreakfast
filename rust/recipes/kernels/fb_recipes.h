@@ -4,6 +4,7 @@
  * to C ABI"). */
 #pragma once
 
+#include "orthogonalize/inverse_sqrt.h"
 #include "sort/merge_sort.h"
 
 #include <stdint.h>
@@ -17,7 +18,7 @@ extern "C" {
 /// The version of this header's ABI. Bump it with any change to a
 /// declaration here or in a header this one includes, so that fb-recipes-sys
 /// refuses a library built from another version of them.
-#define FB_RECIPES_ABI_VERSION ((uint32_t)1)
+#define FB_RECIPES_ABI_VERSION ((uint32_t)2)
 
 /// FB_RECIPES_ABI_VERSION as this library was compiled. A plain host
 /// function: it calls no runtime and needs no device.

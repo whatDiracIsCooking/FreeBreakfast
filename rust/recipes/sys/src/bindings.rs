@@ -29,9 +29,21 @@ pub const FB_BACKEND_HIP: fb_backend = 2;
 /// The version of this header's ABI. Bump it with any change to a
 /// declaration here or in a header this one includes, so that fb-recipes-sys
 /// refuses a library built from another version of them.
-pub const FB_RECIPES_ABI_VERSION: u32 = 1;
+pub const FB_RECIPES_ABI_VERSION: u32 = 2;
 
 unsafe extern "C" {
+    /// Replaces each of the first count of data with 1 / sqrt(x), in place, on
+    /// stream, except an element at or below floor, which becomes 0.
+    ///
+    /// The floor test comes before the square root, so a zero or negative
+    /// element never reaches it and the result is never Inf, nor a NaN that was
+    /// not one already. floor should be non-negative. data is a device pointer.
+    ///
+    /// Returns FB_LAUNCH_INVALID_ARGUMENT, enqueueing nothing, for a null data
+    /// with count positive; FB_LAUNCH_SUCCESS, enqueueing nothing, for count 0;
+    /// otherwise the launch's status. Launch errors only: a fault inside the
+    /// kernel surfaces at the next synchronization.
+    pub fn fb_inverse_sqrt(stream: wwr_stream, count: u32, data: *mut f64, floor: f64) -> fb_launch_status;
     /// The bytes of the one scratch buffer fb_merge_sort needs for n keys, with
     /// or without values: zero up to one tile (2816 keys), where the scratch is
     /// never touched. A plain host function, pure in its arguments: it calls no

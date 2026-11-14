@@ -43,7 +43,7 @@ tree, not inputs to its build.
 
 | Crate or module | Ports | What |
 |---|---|---|
-| `fb_core_wwr::common` | wwr's `src/extension/common`, and the `src/extension/error_handling` primitives it re-exports | `ErrorCode` (`success_code` / `error_name` / `error_string`), `wwr_status` as an error code, `ScopedDeviceIndex` |
+| `fb_core_wwr::common` | wwr's `src/extension/common`, and the `src/extension/error_handling` primitives it re-exports | `ErrorCode` (`success_code` / `error_name` / `error_string`), `wwr_status` as an error code, `wwr_status_from_code` (a launch wrapper's positive status read back as one), `ScopedDeviceIndex` |
 | `fb_core_wwr::handle` | wwr's `src/extension/handle` | `BaseHandle` over a `HandleKind` (CRTP's `create`/`destroy` hooks), `DeviceBoundHandle`, `StreamBoundHandle` over a `StreamBoundKind`, each with a fallible `try_new`; the three views; the `DeviceHandle` / `DeviceHandleStream` traits |
 | `fb_core_wwr::runtime` | wwr's `src/extension/runtime` | `Stream`, `Event`, `MemPool` (with `MemPoolProps`), `Graph`, `GraphExec`, each a newtype over the handle it is built on, whose constructors abort on failure; stream capture through to a launched graph |
 | `fb_core_wwr::blas` | wwr's `src/extension/blas` | `wwr_blas_status` as an `ErrorCode`, and `BlasHandle`, a `StreamBoundHandle` over a shared `Stream` whose constructor aborts on failure. No workspace: the C ABI has no `wwr_blas_set_workspace` (WarpWraps#376) |
@@ -61,7 +61,7 @@ tree, not inputs to its build.
 | `fb_atom` | `src/atom` | `Element` (`#[repr(u8)]`, Z as the discriminant, `Sentinel` = 0), `z` / `from_z`, `symbol` / `from_symbol` (case-insensitive, `Sentinel` for none), and `Atom`, a `Double3` position in bohr and an `Element` |
 | `fb_molecule` | `src/molecule`, its host half | `Molecule` as host data (atoms, charge, multiplicity; no atoms aborts), `distance`, `nuclear_charge`, `electron_count`, and the nuclear repulsion energy, gradient and Hessian. The nuclei on the device (`view`, `NucleiView`, `molecule_footprint`) are `fb_molecule_nuclei`'s upload task |
 | `fb_basis` | `src/basis` | `Shell` and `Primitive`, the counts (`function_count_cart` / `function_count_sphe`) and `MAX_ANGULAR_MOMENTUM` (3, the C++ `kMaxAngularMomentum`), `cartesian_powers` and `Ao`, `solid_harmonic_block`, `BasisSet` (its Cartesian and spherical AO layouts, the per-atom shell grouping, the name) and `spherical_transform_matrix`, `ShellStamp` with `primitive_normalized` and `place`, and `BasisStamp` with `place` onto a `Molecule`. Contractions are not renormalized, as in the C++ |
-| `fb_recipes_sys` | `src/recipes/sort`'s merge sort, forked to `recipes/kernels/` (with the device headers it includes, trimmed, in `device_headers/`) | The raw FFI over `libfb_recipes_kernels.so`, built by `CMakeLists.txt` here: `fb_merge_sort`, an `extern "C"` launch wrapper that only enqueues, its `fb_merge_sort_workspace_bytes` query, `fb_launch_status` and `FB_DEVICE_ALIGNMENT` (`docs/gpu_layer.md`, "Layering"), and `check_library()`, the load check of the library's ABI version and backend, compared by `fb-kernel-abi`. The bindings are generated from `recipes/kernels/fb_recipes.h` by `devtools/rust-bindings.py` and committed |
+| `fb_recipes_sys` | `src/recipes/sort`'s merge sort and `src/recipes/orthogonalize`'s `inverse_sqrt`, forked to `recipes/kernels/` (with the device headers it includes, trimmed, in `device_headers/`) | The raw FFI over `libfb_recipes_kernels.so`, built by `CMakeLists.txt` here: `fb_merge_sort`, an `extern "C"` launch wrapper that only enqueues, its `fb_merge_sort_workspace_bytes` query, `fb_inverse_sqrt` (the eigenvalue map `λ → λ^(-1/2)`, 0 at or below a floor passed in),  `fb_launch_status` and `FB_DEVICE_ALIGNMENT` (`docs/gpu_layer.md`, "Layering"), and `check_library()`, the load check of the library's ABI version and backend, compared by `fb-kernel-abi`. The bindings are generated from `recipes/kernels/fb_recipes.h` by `devtools/rust-bindings.py` and committed |
 | `fb_integrals_sys` | `src/integrals/mmd`'s launchers (order, records, bound, dressed bound) and `src/integrals/one_electron/{overlap,kinetic,potential_en}`'s, forked to `integrals/kernels/` with the FelizJueves units they launch (`pair_bound`, `record_bound`, the overlap's, kinetic energy's and nuclear attraction's ten classes each, and the Boys routine `eval_boys.h` the last include, emitted there by `tools/emit/*.py --out-root`) | The raw FFI over `libfb_integrals_kernels.so`, which links `libfb_recipes_kernels.so` for the order's sort: `fb_mmd_order` (with `fb_mmd_order_workspace_bytes`), `fb_mmd_records`, `fb_mmd_bound`, `fb_ordered_pair_bound`, `fb_overlap_class`, `fb_kinetic_class` and `fb_potential_en_class`, each an `extern "C"` launch wrapper that only enqueues and refuses a class outside its table as `FB_LAUNCH_UNSUPPORTED`; the tables' limits (`FB_*_MAX_MOMENTUM`); and the four structs that cross by pointer, `fb_primitive_pair_class_view`, `fb_primitive_pair_source`, `fb_primitive_pair_records` and `fb_nuclei_view` (`src/molecule`'s `NucleiView`), `#[repr(C)]` with their layout asserted on both sides; and `check_library()`, as in `fb_recipes_sys`. The bindings are generated from `integrals/kernels/fb_integrals.h` and committed |
 | `fb_device_check` | nothing: a check on the kernel libraries | Two tier-3 tests: no launch wrapper under `rust/` allocates, synchronizes, touches an event, copies, sets the device or opens a profiler range (a grep of every `.cu`), and every `-sys` crate's committed bindings are what the script generates now |
 | `fb_kernel_abi` | nothing: what the kernel libraries share above their `-sys` crates | `check`, the load check's comparison: a library's ABI version and `fb_backend` against what its `-sys` crate expects, a mismatch of either refused naming both values. Each `-sys` crate's `check_library()` calls it. And `launch_status`, the one conversion of a launch wrapper's `fb_launch_status` to a `Status` (`docs/gpu_layer.md`, "Statuses"): a refusal as `Unsupported` or `InvalidConfig`, a positive `wwr_status` handed to the caller's `gpu_status_at`, any other value `GpuRuntime`, each naming the wrapper and the status. Every safe layer calls it (`fb_integrals_mmd::launch` for the integrals' class wrappers). It links nothing, so its tests are tier 3 |
@@ -81,6 +81,7 @@ tree, not inputs to its build.
 | `fb_pipeline_config`, and the `free-breakfast` binary | `src/pipeline/config`, `src/main.cpp` | The binary: `Config`, a serde type read from TOML by `read_config` (`calculation`, `output`, `[molecule] xyz`, `[basis_set] basis`, `[guess] type` or `from`; each field's doc comment its default and unit; an unknown key refused `InvalidConfig` as `<file>:<line>: unknown field ...`; the geometry, a basis path and a guess's `from` joined to the config's directory; a `[guess]` beside another calculation, or with both keys, refused), `plan`, the calculation's tasks as one `Planned` (`"overlap"`, S written as `overlap.npy`; `"guess"`, `fb_pipeline_guess`'s SAD or loaded D written as `d.npy`), and the write nodes: `add_write_npy`, `download <file>` on the stream into a pinned row and `write <file>` on the CPU, a float64 `.npy` in Fortran order, feeding nothing, and `add_write_host_npy`, the write node alone for a product already a pinned row. `free-breakfast <config.toml>` (`src/main.rs`) plans, makes the output directory, runs on device 0 and writes `timing.json` (`Record::to_json`) beside the products; its `main` is the one place an error is logged, exiting with `ErrorKind::exit_code`. `rust/examples/` holds one config per calculation, `overlap.toml` and `guess.toml`, run through the binary by `tests/examples.rs`; each example's plan text is the committed golden `pipeline/config/tests/golden/plan_*.txt` |
 | `fb_tools_sad`, the `free-breakfast-sad-stamps` binary | `tools/sad` | The generator of `data/sad/`: `free-breakfast-sad-stamps <repo>/data (<basis>... \| --all)` resolves each named set through `fb-io-basis`'s compiled-in table (a set the binary does not carry refused `InvalidConfig`; `--all`, every `<data>/basis/*.json` by its document's BSE `name`), runs `fb-sad`'s atomic SCF for each element alone at the origin, one CPU node of a `thread_pool::Plan` per element on `HostOnly`, and writes `<data>/sad/<basis>/<Z>.npy` through `fb-io-npy` after removing each regenerated set's directory (every one under `--all`); an atom too large for the SCF (`Unsupported`) is skipped, any other failure exits with its kind's code before anything is removed. It links `fb-sad`, never `fb-io-sad`, so it is not linked against its own output. Its STO-3G output is the committed `data/sad/STO-3G/` byte for byte, `tests/stamps.rs` |
 | `fb_recipes_diagonalize` | `src/recipes/diagonalize` | `add_diagonalize`: the eigendecomposition `A = U diag(w) Uᵀ` of a symmetric device row as two tasks of a `Dag`, `syevd` on the stream (A copied into the output row U, then the legacy `wwr_solver_dn_dsyevd` on the stream worker's solver handle, lower triangle, eigenvectors over U, ascending eigenvalues into w, its work a scratch row of exactly `lwork` doubles, its flag a device scratch row copied into a pinned row) and `syevd check` on the CPU (a positive flag `Numerical`, a negative one `GpuRuntime`). `syevd_lwork`, the solver's query on a `SolverHandle`, which a run calls before planning and hands `add_diagonalize` as a number. `f64` only. The plan text at `n = 24` is the committed golden `recipes/diagonalize/tests/golden/plan_n24.txt` |
+| `fb_recipes_orthogonalize` | `src/recipes/orthogonalize`'s `orthogonalize` | `add_orthogonalize`: the symmetric orthogonalizer `X = S^(-1/2) = U Λ^(-1/2) Uᵀ` of a symmetric device row as tasks of a `Dag`, after `fb-recipes-sys`'s load check at planning: `fb_recipes_diagonalize`'s two (S copied into U, S left as it was), then `inverse root` on the stream (w copied into a scratch row Λ, `fb_inverse_sqrt` over it, 0 at or below the floor, then `M = U diag(Λ)` by `dgmm` into scratch M and `X = M Uᵀ` by `gemm` into the output row X, on the stream worker's BLAS handle). `ORTHOGONALIZE_EIGENVALUE_FLOOR`, the C++ `kOrthogonalizeEigenvalueFloor` (1e-10). `f64` only; cond(S) is not logged, and `orthonormalize` is not ported. The plan text at `n = 24` is the committed golden `recipes/orthogonalize/tests/golden/plan_n24.txt` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -119,7 +120,8 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `error_handling`; and `tools/sad` on `sad`, `io/basis`, `io/npy`, `basis`,
 `atom`, `types`, `thread_pool` (without `device`) and `error_handling`;
 and `recipes/diagonalize` on `planner`, `arena`, `thread_pool`, `wwr` and
-`error_handling`.
+`error_handling`; and `recipes/orthogonalize` on `recipes/diagonalize`,
+`recipes/sys`, `kernel_abi` and what they stand on.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -227,8 +229,8 @@ one, which also takes any other CMake build directory, the root's
 built. Only the `runtime_api`, `blas` and `solver` surfaces of `wwr-sys`
 are linked: `blas` and `solver` are asked for by `fb-core-wwr` (each stream
 worker's BLAS and dense-solver handles, made by the `Device` backend), and
-by `fb-recipes-matrix-ao` (its GEMMs) and `fb-recipes-diagonalize` (its
-syevd), and a workspace build unifies features, so every crate linking
+by `fb-recipes-matrix-ao` (its GEMMs), `fb-recipes-diagonalize` (its
+syevd) and `fb-recipes-orthogonalize` (its dgmm and gemm), and a workspace build unifies features, so every crate linking
 `wwr-sys` in it links against `libwwr_capi_blas.so` and
 `libwwr_capi_solver.so` (only a binary that calls one keeps it under
 `NEEDED`).
@@ -255,8 +257,8 @@ the thread pool turn their defaults off, so nothing turns them on by
 accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`,
 `fb-integrals-sys`, `fb-integrals-mmd`,
 `fb-integrals-one-electron-overlap`, `fb-recipes-matrix-ao`,
-`fb-molecule-nuclei`, `fb-pipeline-config` and `fb-recipes-diagonalize`
-always link; the records' layout asks
+`fb-molecule-nuclei`, `fb-pipeline-config`, `fb-recipes-diagonalize` and
+`fb-recipes-orthogonalize` always link; the records' layout asks
 the kernel library for the sort's workspace at planning, so even the
 overlap's and the transform's device-free tests (the host tables, the plan
 goldens) need the library built. `fb-molecule-nuclei` links wwr alone,
@@ -389,6 +391,19 @@ multiple of `n ε ‖A‖₂`, 1.3e-14 at n = 60, so two decades of margin. Its
 flag check is a tier-3 unit test on `Heap` rows, and its plan at a given
 `lwork` a golden.
 
+The orthogonalizer on a card is `recipes/orthogonalize/tests/orthogonalize.rs`:
+the same three S, each run once through `add_orthogonalize` at the default
+floor, at `max |X S X - I| <= 100 n ε κ₂(S)`, the eigendecomposition's
+backward error `n ε ‖S‖₂` amplified by `1 / λ_min`, with two decades of
+margin; κ₂(S) and the check that no eigenvalue is at or below the floor
+come from LAPACK's eigenvalues, committed in
+`recipes/orthogonalize/tests/data/` with the script that writes them. Then
+the path graph's Laplacian of order 3, rank 2: its null mode dropped, `X S X`
+is the projector `I - J / 3` to `100 n ε`. The forked `fb_inverse_sqrt` is
+`recipes/sys/tests/inverse_sqrt.rs`, bitwise against the host's
+`1.0 / x.sqrt()` (both correctly rounded) on each side of the floor and
+across block boundaries, the elements past its count untouched.
+
 `doc_check/tests/section_citations.rs` checks that every section the
 README, `docs/` and every member's Rust sources cite by name is a heading of
 the file cited ([`documentation.md`](docs/documentation.md), "Narrative:
@@ -455,7 +470,7 @@ config, in waves:
 |---|---|
 | 0 | #1402 one conversion from `fb_launch_status`, done; #1403 library handles per device; #1404 `cargo doc` without the library; #1405 the kinetic and nuclear-attraction forks, done; #1406 the shared spherical transform, done; #1407 the nuclei upload task, done; #1408 the timing record's JSON, done; #1417 io/npy, done; #1418 sad, done |
 | 1 | #1409 the kinetic energy, done; #1410 the nuclear attraction, done; #1411 the symmetric eigensolver, done; #1412 the binary, done; #1419 io/sad, done; #1420 the SAD stamp generator, done |
-| 2 | #1413 the core Hamiltonian, done; #1414 the symmetric orthogonalizer; #1421 the SAD guess as tasks, done |
+| 2 | #1413 the core Hamiltonian, done; #1414 the symmetric orthogonalizer, done; #1421 the SAD guess as tasks, done |
 | 3 | #1415 the core-Hamiltonian orbitals; #1422 the SAD guess from a config, through the binary, done |
 
 What follows is the DF-RHF energy from that guess: the auxiliary sets
@@ -895,3 +910,21 @@ work row exactly `lwork` doubles (inside the arena's block, whose bounds
 are what memcheck sees). Clippy (`-D warnings`, the changed crates with
 their tests), rustdoc (`-D warnings`) and `cargo fmt --check` are clean.
 Not run on the gfx1200; `wwr.capi.solver` compiles for HIP.
+
+2026-11-14, `recipes/orthogonalize` (the symmetric orthogonalizer
+`X = S^(-1/2)`: the eigensolver's two tasks, then `inverse root` on the
+stream, the forked `fb_inverse_sqrt` and a `dgmm` and a `gemm`) and
+`wwr_status_from_code` moved into `fb-core-wwr`, on the RTX 3080 (CUDA),
+holding the card, linking the libraries the `cuda` preset built:
+`devtools/test.py pr --only cargo --all` passes, tier 3 204 tests; tier 4
+141, none skipped, 6 new: S of H2O/STO-3G, H2O/cc-pVDZ and CO/cc-pVTZ
+orthogonalized once each, `max |X S X - I|` `2.2e-15`, `9.2e-15` and
+`8.0e-14` against `100 n ε κ₂(S)` (`8.8e-13`, `1.3e-10`, `2.9e-9`, κ₂
+5.6, 252 and 2176); the order-3 path Laplacian's null mode dropped,
+`max |X S X - (I - J/3)|` `1.2e-15` against `6.7e-14`; the plan golden at
+`lwork` 1234 and an empty matrix refused; `fb_inverse_sqrt` bitwise
+against the host on each side of the floor, and a null array refused.
+Clippy (`-D warnings`, the changed crates with their tests), rustdoc
+(`-D warnings`) and `cargo fmt --check` are clean. Not run on the
+gfx1200; `devtools/cross-backend-check.sh --device-only` (HIP) passes,
+building `libfb_recipes_kernels.so` for HIP.

@@ -7,6 +7,7 @@ use fb_core_arena::{Bufs, Device, Element, Kind, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
+use fb_core_wwr::common::wwr_status_from_code;
 use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::{gpu_status, gpu_status_at};
 use fb_integrals_sys::{
@@ -14,7 +15,7 @@ use fb_integrals_sys::{
     fb_mmd_order, fb_mmd_order_workspace_bytes, fb_mmd_records, fb_ordered_pair_bound,
     fb_primitive_pair_class_view, fb_primitive_pair_records, fb_primitive_pair_source,
 };
-use wwr_sys::{wwr_memcpy_kind, wwr_status, wwr_stream};
+use wwr_sys::{wwr_memcpy_kind, wwr_stream};
 
 use super::tables::Tables;
 
@@ -605,26 +606,15 @@ fn zero(stream: wwr_stream, ptr: *mut f64, n: i32) -> Status {
 /// A launch wrapper's status as a `Status`, naming the wrapper and the
 /// class: [`fb_kernel_abi::launch_status`], the one conversion
 /// (`docs/gpu_layer.md`, "Statuses"), with a launch error by its
-/// `wwr_status` name. Public for the readers of [`ClassRows`], whose
+/// `wwr_status` name ([`wwr_status_from_code`]). Public for the readers of [`ClassRows`], whose
 /// wrappers return the same statuses.
 ///
 /// # Errors
 /// Every status but `FB_LAUNCH_SUCCESS`, as `launch_status` maps it.
 #[track_caller]
 pub fn launch(what: &str, cls: &ClassRows, status: fb_launch_status) -> Status {
-    const WWR: [wwr_status; 8] = [
-        wwr_status::WWR_STATUS_SUCCESS,
-        wwr_status::WWR_STATUS_INVALID_VALUE,
-        wwr_status::WWR_STATUS_INVALID_DEVICE,
-        wwr_status::WWR_STATUS_NO_DEVICE,
-        wwr_status::WWR_STATUS_NOT_READY,
-        wwr_status::WWR_STATUS_MEMORY_ALLOCATION,
-        wwr_status::WWR_STATUS_NOT_SUPPORTED,
-        wwr_status::WWR_STATUS_UNKNOWN,
-    ];
     let class = format!("{what} ({}, {})", cls.la, cls.lb);
     fb_kernel_abi::launch_status(&class, status, |code, at| {
-        let &wwr = WWR.get(usize::try_from(code).ok()?)?;
-        Some(gpu_status_at(wwr, at))
+        Some(gpu_status_at(wwr_status_from_code(code)?, at))
     })
 }

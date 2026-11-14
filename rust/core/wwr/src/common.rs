@@ -6,7 +6,7 @@
 //! | `error_handling:error_code`: `success_code` / `error_name` / `error_string`, `concept error_type` | [`ErrorCode`], one trait (`error_handling.rs`) |
 //! | `error_handling:error_policy`: `error_policy`, `typed_error_policy`, `nothrow_error_policy`, `policy_map` | nothing: see below |
 //! | `error_handling:gpu_check` | nothing: [`gpu_status`](crate::gpu_status), which returns a `Result` |
-//! | `:error`, the `wwrError_t` specializations | `impl ErrorCode for wwr_status` (`error.rs`) |
+//! | `:error`, the `wwrError_t` specializations | `impl ErrorCode for wwr_status`, and [`wwr_status_from_code`] for a launch wrapper's status (`error.rs`) |
 //! | `:scoped_device_index` | [`ScopedDeviceIndex`] (`scoped_device_index.rs`) |
 //! | `:abort_policy`, `kit::AbortPolicy` | nothing: see below |
 //! | `:noncopyable` | nothing: see below |
@@ -39,5 +39,6 @@ mod error;
 mod error_handling;
 mod scoped_device_index;
 
+pub use error::wwr_status_from_code;
 pub use error_handling::{ErrorCode, SourceLocation};
 pub use scoped_device_index::ScopedDeviceIndex;
