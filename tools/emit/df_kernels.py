@@ -7,6 +7,13 @@ so a build never runs Python. Run this after bumping that submodule:
 
     tools/emit/df_kernels.py
 
+`--out-root DIR` writes the same tree under DIR instead of src/integrals/,
+each file at its path relative to src/integrals/, so `--out-root
+rust/integrals/kernels` writes rust/'s copies in place (rust/README.md,
+"Build and test"). The default writes src/integrals/ exactly as before. The
+limits are read from src/'s bridge headers whatever the root: they are the
+tree's, and the rust/ copy carries none.
+
 Two families, one per FelizJueves target, each its module's own directory:
 
 - `metric<lP, lQ>`, FelizJueves's `Target.METRIC`
@@ -61,6 +68,7 @@ virtualenv.
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -88,9 +96,13 @@ AUX_MAX_L = 6
 # takes one.
 ARCH = "sm_86"
 
-OUT = ROOT / "src/integrals/eri/density_fitting"
-METRIC_BRIDGE = OUT / "metric/metric_bridge.h"
-THREE_CENTER_BRIDGE = OUT / "three_center/three_center_bridge.h"
+# Relative to the output root, src/integrals/ unless --out-root says
+# otherwise.
+OUT = Path("eri/density_fitting")
+# Always src/'s (module docstring).
+BRIDGES = ROOT / "src/integrals" / OUT
+METRIC_BRIDGE = BRIDGES / "metric/metric_bridge.h"
+THREE_CENTER_BRIDGE = BRIDGES / "three_center/three_center_bridge.h"
 
 # The record vectors (module docstring).
 AUX_AXES = {"A": ("a_x", "a_y", "a_z")}
@@ -136,10 +148,18 @@ FAMILIES = {
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--out-root",
+        type=Path,
+        default=ROOT / "src/integrals",
+        help="the directory written in place of src/integrals/ (default: it)",
+    )
+    root = parser.parse_args().out_root.resolve()
     check_limits()
     arch = by_name(ARCH)
     for family, (directory, classes_of, build) in FAMILIES.items():
-        out = OUT / directory / "kernels"
+        out = root / OUT / directory / "kernels"
         out.mkdir(parents=True, exist_ok=True)
         classes = classes_of()
         for cls in classes:
@@ -173,7 +193,7 @@ def check_limits() -> None:
 
 def write(path: Path, text: str) -> None:
     path.write_text(text)
-    print(path.relative_to(ROOT))
+    print(path.relative_to(ROOT) if path.is_relative_to(ROOT) else path)
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 # bug that a green build on one backend cannot see.
 #
 #   devtools/cross-backend-check.sh [--fresh] [-j N] [--native] [--device-only]
+#                                   [--plan]
 #
 # WHY THIS EXISTS. A build targets exactly one backend, and the two are
 # compiled by different front ends: a .cu goes through nvcc under CUDA and
@@ -43,11 +44,26 @@
 #                   pass.
 #   --native        skip the container and run cmake here. Implied when this
 #                   host already has the target backend's toolchain.
+#   --plan          print the backend, the root and rust/ presets, the build
+#                   directory, the probe and the image this run would use, and
+#                   exit without building.
+#
+# WHICH BACKEND. One variable is enough (#1528). CROSS_CHECK_PRESET alone
+# decides it: the backend is that preset's FREE_BREAKFAST_GPU_BACKEND in
+# CMakePresets.json, following `inherits` (ci-cuda: CUDA, ci-hip: HIP).
+# CROSS_CHECK_BACKEND alone picks its preset (HIP: hip, CUDA: ci-cuda). Both
+# set and disagreeing is refused, exit 2, rather than one quietly winning.
+# Neither set is devtools/config.sh's pair, HIP and hip. Unless set, the probe
+# (hipconfig or nvcc) and the image (<PROJECT_NAME>:hip or :cuda) follow the
+# backend, and a CUDA run builds into CROSS_CHECK_BUILD_DIR with -cuda
+# appended, so the two backends never reconfigure one cache back and forth.
+# After configuring, the backend in each tree's CMakeCache.txt is checked
+# against the one resolved here, and a mismatch stops the run with exit 2.
 #
 # rust/'s .cu are checked too, with or without --device-only. rust/ is a CMake
 # project of its own (rust/CMakeLists.txt) that the root build never adds, so
 # after the root tree this configures it with its preset for the same backend
-# (CROSS_CHECK_BACKEND lowercased: hip or cuda) into <build dir>/rust, and
+# (the resolved backend lowercased: hip or cuda) into <build dir>/rust, and
 # builds all of it: the forked kernel libraries and the C ABI library they
 # link. rust/build-hip and rust/build-cuda, which cargo links, are not touched.
 #
@@ -70,6 +86,14 @@
 # four-second compile.
 set -euo pipefail
 
+# What the caller set, before config.sh fills in its defaults: the backend is
+# resolved from these ("WHICH BACKEND" above).
+user_backend=${CROSS_CHECK_BACKEND-}
+user_preset=${CROSS_CHECK_PRESET-}
+user_tool=${CROSS_CHECK_TOOL-}
+user_image=${CROSS_CHECK_IMAGE-}
+user_build_dir=${CROSS_CHECK_BUILD_DIR-}
+
 # shellcheck source=./lib.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 cd "$REPO_ROOT"
@@ -79,6 +103,7 @@ usage() { usage_from_header "${BASH_SOURCE[0]}"; }
 fresh=0
 native=0
 device_only=0
+plan=0
 jobs=$BUILD_JOBS
 
 while [ $# -gt 0 ]; do
@@ -86,6 +111,7 @@ while [ $# -gt 0 ]; do
     --fresh) fresh=1 ;;
     --native) native=1 ;;
     --device-only) device_only=1 ;;
+    --plan) plan=1 ;;
     -j) shift; jobs=${1:?-j needs a value} ;;
     -j*) jobs=${1#-j} ;;
     -h|--help) usage; exit 0 ;;
@@ -94,11 +120,96 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-backend=$CROSS_CHECK_BACKEND
-preset=$CROSS_CHECK_PRESET
-image=$CROSS_CHECK_IMAGE
+# The FREE_BREAKFAST_GPU_BACKEND a configure preset sets in CMakePresets.json,
+# following `inherits` in order, as preset_binary_dir (lib.sh) does for its
+# binaryDir. On failure, prints why to stderr and returns 1.
+preset_backend() {
+  python3 -I - "$REPO_ROOT" "$1" <<'EOF'
+import json, sys
+root, name = sys.argv[1], sys.argv[2]
+presets = {p["name"]: p for p in
+           json.load(open(f"{root}/CMakePresets.json"))["configurePresets"]}
+def find(n, seen=()):
+    if n in seen or n not in presets:
+        return None
+    p = presets[n]
+    v = p.get("cacheVariables", {}).get("FREE_BREAKFAST_GPU_BACKEND")
+    if isinstance(v, dict):
+        v = v.get("value")
+    if v:
+        return v
+    inh = p.get("inherits", [])
+    for parent in [inh] if isinstance(inh, str) else inh:
+        b = find(parent, seen + (n,))
+        if b:
+            return b
+    return None
+if name not in presets:
+    sys.exit(f"cross-backend-check: no configure preset '{name}' in CMakePresets.json")
+b = find(name)
+if not b:
+    sys.exit(f"cross-backend-check: preset '{name}' sets no FREE_BREAKFAST_GPU_BACKEND")
+print(b)
+EOF
+}
+
+refuse() {
+  echo "cross-backend-check: $*" >&2
+  exit 2
+}
+
+# The backend and the preset, from whichever the caller set ("WHICH BACKEND").
+if [ -n "$user_preset" ]; then
+  preset=$user_preset
+elif [ -n "$user_backend" ]; then
+  case "${user_backend^^}" in
+    HIP) preset=hip ;;
+    CUDA) preset=ci-cuda ;;
+    *) refuse "CROSS_CHECK_BACKEND='$user_backend' is neither CUDA nor HIP" ;;
+  esac
+else
+  preset=$CROSS_CHECK_PRESET
+fi
+backend=$(preset_backend "$preset") ||
+  refuse "cannot tell which backend CROSS_CHECK_PRESET='$preset' builds"
+case "$backend" in
+  CUDA|HIP) ;;
+  *) refuse "preset '$preset' sets FREE_BREAKFAST_GPU_BACKEND='$backend', neither CUDA nor HIP" ;;
+esac
+# Against the backend the caller set; with neither set, against config.sh's.
+# A preset set alone is not checked against config.sh's default backend: that
+# default is exactly what it overrides.
+wanted=$user_backend
+[ -z "$user_preset" ] && [ -z "$wanted" ] && wanted=$CROSS_CHECK_BACKEND
+if [ -n "$wanted" ] && [ "${wanted^^}" != "$backend" ]; then
+  cat >&2 <<EOF
+cross-backend-check: CROSS_CHECK_BACKEND=$wanted but CROSS_CHECK_PRESET=$preset
+builds $backend.
+
+  Set one of the two: the preset alone decides the backend, and the backend
+  alone picks its preset (HIP: hip, CUDA: ci-cuda).
+EOF
+  exit 2
+fi
+
+if [ "$backend" = CUDA ]; then default_probe=nvcc; else default_probe=hipconfig; fi
+probe=${user_tool:-$default_probe}
+image=${user_image:-${PROJECT_NAME}:${backend,,}}
 build_dir=$CROSS_CHECK_BUILD_DIR
-probe=$CROSS_CHECK_TOOL
+if [ -z "$user_build_dir" ] && [ "$backend" = CUDA ]; then
+  build_dir=$build_dir-cuda
+fi
+rust_preset=${backend,,}
+
+if [ "$plan" = 1 ]; then
+  echo "backend=$backend"
+  echo "preset=$preset"
+  echo "rust_preset=$rust_preset"
+  echo "build_dir=$build_dir"
+  echo "probe=$probe"
+  echo "image=$image"
+  exit 0
+fi
 
 # The targets that exist only to be compiled. Named rather than built wholesale
 # so --device-only has something narrower to ask for; with neither, `cmake
@@ -118,10 +229,20 @@ cross-backend-check: --device-only has nothing to build.
   CROSS_CHECK_DEVICE_TARGETS is empty -- its default in devtools/config.sh is
   the free_breakfast_device_libraries umbrella, so something overrode it. Unset the
   override, or run without the flag to compile the whole compile-time tier for
-  $CROSS_CHECK_BACKEND.
+  $backend.
 EOF
   exit 2
 fi
+
+# The backend a configured tree's cache holds must be the one resolved above:
+# a PASS line naming a backend that was not compiled is what this replaced
+# (#1528).
+check_cached_backend() {
+  local cached
+  cached=$(sed -n 's/^FREE_BREAKFAST_GPU_BACKEND:[A-Z]*=//p' "$1/CMakeCache.txt")
+  [ "$cached" = "$backend" ] ||
+    refuse "$2 in $1 is configured for '${cached:-nothing}', not $backend"
+}
 
 # ---------------------------------------------------------------------------
 # Phase 1: run the check, here, with cmake
@@ -132,6 +253,7 @@ run_here() {
 
   echo "cross-backend-check: configuring $backend (preset=$preset) -> $build_dir"
   "${cfg[@]}"
+  check_cached_backend "$build_dir" "the root tree"
 
   local -a bld=(cmake --build "$build_dir")
   [ -n "$jobs" ] && bld+=(-j "$jobs")
@@ -144,13 +266,13 @@ run_here() {
   "${bld[@]}"
 
   # rust/'s own project, from its own directory, where its presets are.
-  local rust_preset=${backend,,}
   local rust_build=$build_dir/rust
   case "$rust_build" in /*) ;; *) rust_build=$REPO_ROOT/$rust_build ;; esac
   local -a rcfg=(cmake --preset "$rust_preset" -B "$rust_build")
   [ "$fresh" = 1 ] && rcfg+=(--fresh)
   echo "cross-backend-check: configuring rust/ for $backend (preset=$rust_preset) -> $rust_build"
   (cd rust && "${rcfg[@]}")
+  check_cached_backend "$rust_build" "rust/"
 
   local -a rbld=(cmake --build "$rust_build")
   [ -n "$jobs" ] && rbld+=(-j "$jobs")
@@ -167,7 +289,13 @@ run_here() {
 # from wherever you are, with no devcontainer involved.
 if [ "$native" = 1 ] || command -v "$probe" >/dev/null 2>&1; then
   run_here
-  echo "cross-backend-check: PASS ($backend compiles)"
+  if [ "$device_only" = 1 ]; then
+    what="device libraries (${device_targets[*]})"
+  else
+    what="compile-time tier"
+  fi
+  echo "cross-backend-check: PASS ($backend compiles: the root tree's $what" \
+    "with preset $preset, and rust/'s kernel libraries with preset $rust_preset)"
   exit 0
 fi
 
@@ -206,6 +334,9 @@ declare -a docker_args=(
   -u "$(id -u):$(id -g)"
   -v "$REPO_ROOT:/workspace"
   -w /workspace
+  -e "CROSS_CHECK_BACKEND=$backend"
+  -e "CROSS_CHECK_PRESET=$preset"
+  -e "CROSS_CHECK_BUILD_DIR=$build_dir"
   "$image"
   devtools/cross-backend-check.sh --native
 )
