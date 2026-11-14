@@ -26,12 +26,34 @@ pub type fb_backend = i32;
 pub const FB_BACKEND_CUDA: fb_backend = 1;
 /// Built for HIP.
 pub const FB_BACKEND_HIP: fb_backend = 2;
+/// The order of the diagonal tiles a blocked Cholesky factors one at a time
+/// with fb_cholesky_diagonal, and so the width of its panels: the C++
+/// kCholeskyBlock. A tile is 64^2 doubles, 32 KiB of shared memory.
+pub const FB_CHOLESKY_TILE: i32 = 64;
 /// The version of this header's ABI. Bump it with any change to a
 /// declaration here or in a header this one includes, so that fb-recipes-sys
 /// refuses a library built from another version of them.
-pub const FB_RECIPES_ABI_VERSION: u32 = 3;
+pub const FB_RECIPES_ABI_VERSION: u32 = 4;
 
 unsafe extern "C" {
+    /// Factors the jb x jb diagonal tile at a (column-major, leading dimension
+    /// lda) in place, A = L L^T in its lower triangle, on stream, and writes the
+    /// same lower triangle into l11, packed (leading dimension jb).
+    ///
+    /// first is the tile's first column in the whole matrix. If *info is
+    /// already non-zero when the kernel runs (an earlier tile met a minor that
+    /// is not positive), nothing is written. Otherwise, at the tile's first
+    /// pivot that is not positive (or is NaN), column k, *info becomes
+    /// first + k + 1, the 1-based leading minor of the whole matrix, and the
+    /// tile is left part-factored. Only the lower triangles are read or
+    /// written: the strict upper triangle of the tile at a, and of l11, are
+    /// left as they were. a, l11 and info are device pointers.
+    ///
+    /// Returns FB_LAUNCH_INVALID_ARGUMENT, enqueueing nothing, for a jb outside
+    /// 1..FB_CHOLESKY_TILE, a negative first, an lda below jb, or a null a, l11
+    /// or info; otherwise the launch's status. Launch errors only: a fault
+    /// inside the kernel surfaces at the next synchronization.
+    pub fn fb_cholesky_diagonal(stream: wwr_stream, jb: i32, first: i32, a: *mut f64, lda: i32, l11: *mut f64, info: *mut i32) -> fb_launch_status;
     /// Replaces each of the first count of data with 1 / sqrt(x), in place, on
     /// stream, except an element at or below floor, which becomes 0.
     ///

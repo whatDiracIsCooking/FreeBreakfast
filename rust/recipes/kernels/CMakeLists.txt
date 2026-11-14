@@ -10,8 +10,9 @@
 # crates already load. The vendor runtime is the shared one, so the launches
 # here and that query read the same per-thread error.
 add_library(
-  fb_recipes_kernels SHARED abi.cu orthogonalize/inverse_sqrt.cu
-                            sort/merge_sort.cu symmetrize/symmetrize.cu
+  fb_recipes_kernels SHARED
+  abi.cu cholesky/cholesky.cu orthogonalize/inverse_sqrt.cu sort/merge_sort.cu
+  symmetrize/symmetrize.cu
 )
 target_include_directories(
   fb_recipes_kernels PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
@@ -41,8 +42,8 @@ else()
   # A HIP build enables no CUDA language: the .cu is CXX, and hip::device's
   # -x hip reaches this target's own sources only (PRIVATE, never PUBLIC).
   set_source_files_properties(
-    abi.cu orthogonalize/inverse_sqrt.cu sort/merge_sort.cu
-    symmetrize/symmetrize.cu
+    abi.cu cholesky/cholesky.cu orthogonalize/inverse_sqrt.cu
+    sort/merge_sort.cu symmetrize/symmetrize.cu
     PROPERTIES LANGUAGE CXX
   )
   target_link_libraries(fb_recipes_kernels PRIVATE hip::device)

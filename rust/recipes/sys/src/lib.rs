@@ -14,13 +14,14 @@
 //! | `keys_alt` and `values_alt`, "n elements" each | one workspace of [`fb_merge_sort_workspace_bytes`] bytes, partitioned at [`FB_DEVICE_ALIGNMENT`] |
 //! | `inverse_sqrt<T>(stream, count, data, floor)` (`src/recipes/orthogonalize`), through wwr's `parallel_for` | [`fb_inverse_sqrt`]`(stream, count, data, floor)`, `f64` only, its index-per-thread launch written out |
 //! | `symmetrize(stream, n, a, lda)` and `mirror_triangle(stream, from_lower, n, a, lda)` (`src/recipes/symmetrize`), `lda` an `int64_t` | [`fb_symmetrize`] and [`fb_mirror_triangle`], `lda` the module's `int32_t`, the module's argument checks moved in as refusals |
+//! | `cholesky_diagonal_block(stream, jb, first, a, lda, info)` (`src/recipes/cholesky`), `lda` an `int64_t`, `kCholeskyBlock` | [`fb_cholesky_diagonal`]`(stream, jb, first, a, lda, l11, info)`, `lda` the module's `int32_t`, the factored tile also written packed into `l11` for the panel's trsm, null pointers refused too; [`FB_CHOLESKY_TILE`] |
 //! | `wwrError_t` | [`fb_launch_status`]: 0, a positive `wwr_status`, or a negative refusal ([`FB_LAUNCH_INVALID_ARGUMENT`]) |
 //! | nothing: the C++ tree compiles its kernels into the binary | [`check_library`], the library's [`fb_recipes_abi_version`] and [`fb_recipes_backend`] against the bindings' |
 //! | `gather_columns` and every other recipe | not forked yet |
 //!
 //! **The safe calls.** [`inverse_sqrt`], [`merge_sort`], [`merge_sort_keys`],
-//! [`merge_sort_workspace_bytes`], [`symmetrize`] and [`mirror_triangle`]
-//! are what a caller uses
+//! [`merge_sort_workspace_bytes`], [`symmetrize`], [`mirror_triangle`] and
+//! [`cholesky_diagonal`] are what a caller uses
 //! (`docs/gpu_layer.md`, "The safe wrapper"), as `fb_core_wwr::blas::gemm`
 //! is over the BLAS: device memory as
 //! [`DeviceSlice`](fb_core_wwr::device_slice::DeviceSlice)s, which the
@@ -317,4 +318,73 @@ fn square_block(
         a.len()
     );
     (n32, lda32, a.as_mut_ptr())
+}
+
+/// Factors the `jb × jb` diagonal tile at the start of `a` (column-major,
+/// leading dimension `lda`) in place, `A = L Lᵀ` in its lower triangle, on
+/// `stream`, and writes the same lower triangle into `l11`, packed (leading
+/// dimension `jb`): [`fb_cholesky_diagonal`], over slices it checks. One
+/// tile of a blocked factorization whose tile starts at column `first`.
+///
+/// `info` is the factorization's flag. If it is already non-zero when the
+/// kernel runs, nothing is written; otherwise, at the tile's first pivot
+/// that is not positive (or is NaN), column `k`, it becomes
+/// `first + k + 1`, the 1-based leading minor of the whole matrix, and the
+/// tile is left part-factored. The strict upper triangles of the tile and of
+/// `l11` are neither read nor written. The borrow checker keeps the three
+/// slices apart; the tile of a larger matrix is a part of it
+/// ([`split_at_mut`](fb_core_wwr::device_slice::split_at_mut)).
+///
+/// # Errors
+/// The launch's failure, as [`fb_kernel_abi::launch_status`] maps it. A
+/// fault inside the kernel surfaces at the next synchronization.
+///
+/// # Panics
+/// If `first` or `lda` does not fit an `i32`, `a` is shorter than the tile,
+/// `lda (jb - 1) + jb` elements, `l11` shorter than `jb²`, or `info` empty;
+/// before anything is enqueued.
+#[debug_requires(
+    (1..=FB_CHOLESKY_TILE as usize).contains(&jb),
+    "the tile's order is 1 to FB_CHOLESKY_TILE"
+)]
+#[debug_requires(lda >= jb, "the leading dimension covers a column")]
+#[track_caller]
+pub fn cholesky_diagonal(
+    stream: &Stream,
+    jb: usize,
+    first: usize,
+    a: &mut impl DeviceSliceMut<f64>,
+    lda: usize,
+    l11: &mut impl DeviceSliceMut<f64>,
+    info: &mut impl DeviceSliceMut<i32>,
+) -> Status {
+    let (Ok(first32), Ok(lda32)) = (i32::try_from(first), i32::try_from(lda)) else {
+        panic!("cholesky_diagonal: first = {first} and lda = {lda} must each fit an i32");
+    };
+    // A jb past the tile is refused by the launcher before anything is
+    // touched; clamped here only so the extents below cannot overflow.
+    let jb = jb.min(FB_CHOLESKY_TILE as usize + 1);
+    // The last element the kernel touches is (jb - 1, jb - 1), at
+    // lda (jb - 1) + jb - 1; with lda below jb the launcher refuses first.
+    let need = if jb == 0 { 0 } else { lda * (jb - 1) + jb };
+    assert!(
+        a.len() >= need,
+        "cholesky_diagonal: the {jb} × {jb} tile at lda {lda} needs {need} elements, but a holds {}",
+        a.len()
+    );
+    assert!(
+        l11.len() >= jb * jb,
+        "cholesky_diagonal: l11 holds {}, short of the {jb} × {jb} tile",
+        l11.len()
+    );
+    assert!(!info.is_empty(), "cholesky_diagonal: info is empty");
+    let (a, l11, info) = (a.as_mut_ptr(), l11.as_mut_ptr(), info.as_mut_ptr());
+    // SAFETY: the stream is live; a holds the tile at lda, l11 jb² doubles
+    // and info one flag, each checked above, and each stays so, with no
+    // other user, until the enqueued work finishes (DeviceSliceMut's
+    // promise), so none overlaps another. jb fits an i32: it is at most one
+    // past the tile.
+    let status =
+        unsafe { fb_cholesky_diagonal(stream.stream(), jb as i32, first32, a, lda32, l11, info) };
+    launched("fb_cholesky_diagonal", status)
 }

@@ -591,6 +591,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "fb-recipes-cholesky"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "fb-core-arena",
+ "fb-core-error-handling",
+ "fb-core-planner",
+ "fb-core-thread-pool",
+ "fb-core-wwr",
+ "fb-io-npy",
+ "fb-recipes-sys",
+ "fb-test-support",
+ "wwr-sys",
+]
+
+[[package]]
 name = "fb-recipes-diagonalize"
 version = "0.1.0"
 dependencies = [
