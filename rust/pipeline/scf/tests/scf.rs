@@ -19,41 +19,29 @@
 //! semidefinite; a loaded guess that is not is its own case, warned of
 //! once), the final residual under
 //! `commutator_tolerance`, and replay allocates nothing (`docs/memory.md`,
-//! "What is checked"): the card's free memory, read at each iteration's
-//! log line from the loop's decision, after the body's GPU work has
-//! completed, never falls from one iteration to the next, from the second
-//! to the last. Not from the first: its DIIS push holds one pair, so it
-//! launches neither the solve nor the extrapolating gemv, and the second
-//! iteration's first launch of them loads code onto the card once per
-//! process (2 MiB on the gfx1200, measured: a second SCF in the same
-//! process moves nothing from its first iteration on). That is the
-//! reserve's growth as modules load (`docs/memory.md`, "Open questions"),
-//! not an allocation of the replay.
+//! "What is checked"): the arena's count of the blocks this process has
+//! allocated ([`fb_core_arena::allocations`]), read at each iteration's log
+//! line from the loop's decision, after the body's GPU work has completed,
+//! is the same at every iteration, the first included, since the blocks
+//! are made at instantiation, before the loop.
 //!
-//! **Why a fall, not any change.** The reading is the device's
-//! (`wwr_mem_get_info`: `cudaMemGetInfo`, `hipMemGetInfo`), so it counts
-//! every tenant of the card, and the gates' card lock holds out only the
-//! gates' own: #1553 saw 8.25 MiB come back between two iterations, freed
-//! by a process outside the container. Nothing reachable counts this
-//! process alone: wwr's memory-pool attributes count the stream-ordered
-//! pool, which a library's plain allocation bypasses, and the per-process
-//! counts are NVML's and amd-smi's, which wwr does not wrap and which do
-//! not see across a container's PID namespace. So the check reads the one
-//! direction an allocation of this process moves the reading: an
-//! allocation behind the arena lowers free memory, and another tenant's
-//! free cannot. Against equality it gives up two cases, neither the
-//! allocation the rule forbids: a library freeing mid-run what it took
-//! before the first sample (the allocation was already outside the
-//! window; its free was all equality saw), and an allocation in the same
-//! interval as a larger foreign free, which a run on a quiet card fails.
-//! Neither check sees an allocation freed again within one iteration,
-//! between two samples. Another tenant allocating mid-run can still fail
-//! it; the samples are printed so the failure can be read against the
-//! card's other tenants.
+//! **Why the arena's count, not the card's free memory.** The count is
+//! this process's alone, so no other tenant of the card moves it. The free
+//! memory (`wwr_mem_get_info`) is the device's: on the RTX 3080, which
+//! drives a display, it moved by up to 15 MB in the middle of a run whose
+//! own readings, the case alone in its process, were flat to the byte, and
+//! failed it (#1573), so a bar on it holds no direction on a shared card.
+//! What the count does not see is a library allocating behind the arena, a
+//! cuBLAS or cuSOLVER workspace taken at a launch: nothing reachable counts
+//! that per process on CUDA in a container (wwr's pool attributes see only
+//! the stream-ordered pool, and NVML is unwrapped and cannot map this
+//! process's PID), so `docs/memory.md` marks that half unenforced. The free
+//! memory is still read at the same lines and printed beside the count, to
+//! be read against the card's other tenants, but nothing is asserted of it.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use fb_core_error_handling::ErrorKind;
 use fb_core_planner::Dag;
@@ -78,8 +66,10 @@ const ENERGY_BAR: f64 = 1e-9;
 /// one process's, so the cases do not overlap.
 static TURN: Mutex<()> = Mutex::new(());
 
-/// The card's free memory at each `scf: iteration` line, in order.
-static FREE: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+/// At each `scf: iteration` line, in order: the arena's count of this
+/// process's blocks, which a case asserts, and the card's free memory,
+/// which it only prints.
+static SAMPLES: Mutex<Vec<(u64, usize)>> = Mutex::new(Vec::new());
 
 /// Every line logged at `warn`, in order.
 static WARNED: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -91,7 +81,7 @@ static RESTARTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// Device 0's free memory, with it made current.
 #[allow(
     clippy::disallowed_methods,
-    reason = "a test measuring that a loop's replay allocates nothing reads free memory; no width is sized from it"
+    reason = "a test prints the card's free memory beside the arena's count, to read against other tenants; no width is sized from it"
 )]
 fn free_bytes() -> usize {
     let _device = ScopedDeviceIndex::new(0);
@@ -103,8 +93,9 @@ fn free_bytes() -> usize {
 }
 
 /// A logger that prints every line, keeps each warning and each DIIS
-/// restart, and, at each iteration line, samples the free memory: the
-/// decision writes the line after the body's GPU work has completed.
+/// restart, and, at each iteration line, samples the arena's count and the
+/// free memory: the decision writes the line after the body's GPU work has
+/// completed.
 struct Sampler;
 
 impl log::Log for Sampler {
@@ -115,13 +106,13 @@ impl log::Log for Sampler {
     fn log(&self, record: &log::Record<'_>) {
         let line = record.args().to_string();
         if line.starts_with("scf: iteration") {
-            FREE.lock().unwrap().push(free_bytes());
+            lock(&SAMPLES).push((fb_core_arena::allocations(), free_bytes()));
         }
         if record.level() == log::Level::Warn {
-            WARNED.lock().unwrap().push(line.clone());
+            lock(&WARNED).push(line.clone());
         }
         if line.starts_with("scf: DIIS subspace singular") {
-            RESTARTED.lock().unwrap().push(line.clone());
+            lock(&RESTARTED).push(line.clone());
         }
         println!("{line}");
     }
@@ -129,18 +120,24 @@ impl log::Log for Sampler {
     fn flush(&self) {}
 }
 
+/// `m` locked, whether or not a case panicked holding it: a case that
+/// fails fails alone, and the next one's `turn` empties what it left.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Install [`Sampler`] once, empty the samples, the warnings and the
 /// restarts, and return the case's turn.
 fn turn() -> std::sync::MutexGuard<'static, ()> {
     static INSTALLED: OnceLock<()> = OnceLock::new();
-    let guard = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = lock(&TURN);
     INSTALLED.get_or_init(|| {
         log::set_logger(&Sampler).expect("no other logger in this binary");
         log::set_max_level(log::LevelFilter::Info);
     });
-    FREE.lock().unwrap().clear();
-    WARNED.lock().unwrap().clear();
-    RESTARTED.lock().unwrap().clear();
+    lock(&SAMPLES).clear();
+    lock(&WARNED).clear();
+    lock(&RESTARTED).clear();
     guard
 }
 
@@ -172,8 +169,8 @@ fn run(xyz: &Path, step: &ScfStep) -> (fb_core_thread_pool::Record, Option<ScfOu
 }
 
 /// The case `stem` run with `step`, converged and held to the energy bar,
-/// the residual under the tolerance, the free memory never falling from the
-/// second iteration to the last, and no warning: the SAD guess is positive
+/// the residual under the tolerance, the arena's count the same at every
+/// iteration, and no warning: the SAD guess is positive
 /// semidefinite, so `guess check` has nothing to say. Returns the lines the
 /// decision logged as it restarted a singular DIIS subspace.
 fn converges_to_pyscf(stem: &str, xyz: &Path, step: &ScfStep) -> Vec<String> {
@@ -199,23 +196,25 @@ fn converges_to_pyscf(stem: &str, xyz: &Path, step: &ScfStep) -> Vec<String> {
         "{stem}: ‖e‖ = {:e}",
         out.residual
     );
-    let warned = WARNED.lock().unwrap();
+    let warned = lock(&WARNED);
     assert!(warned.is_empty(), "{stem}: warned {warned:?}");
     let n = (out.epsilon.len(), out.c.len(), out.d.len());
     assert_eq!((n.0 * n.0, n.0 * n.0), (n.1, n.2), "{stem}: ε, C and D");
-    let free = FREE.lock().unwrap();
-    assert_eq!(free.len(), out.iterations, "{stem}: one line per iteration");
-    println!("{stem}: free memory at each iteration: {free:?}");
-    // From the second iteration on: the first launches no DIIS solve. A
-    // fall only: another tenant's free raises the device's reading.
-    assert!(free.len() >= 2, "{stem}: {free:?}");
-    let fell = free[1..].windows(2).position(|w| w[1] < w[0]);
-    assert!(
-        fell.is_none(),
-        "{stem}: free memory fell after iteration {}: {free:?}",
-        fell.map_or(0, |i| i + 2)
+    let samples = lock(&SAMPLES);
+    assert_eq!(
+        samples.len(),
+        out.iterations,
+        "{stem}: one line per iteration"
     );
-    std::mem::take(&mut *RESTARTED.lock().unwrap())
+    let (counts, free): (Vec<u64>, Vec<usize>) = samples.iter().copied().unzip();
+    println!("{stem}: the card's free memory at each iteration: {free:?}");
+    let grew = counts.windows(2).position(|w| w[1] != w[0]);
+    assert!(
+        grew.is_none(),
+        "{stem}: the arena allocated after iteration {}: blocks {counts:?}",
+        grew.map_or(0, |i| i + 1)
+    );
+    std::mem::take(&mut *lock(&RESTARTED))
 }
 
 /// Water in cc-pVDZ over cc-pVDZ-JKFIT: the gate's representative. Needs a
@@ -301,7 +300,7 @@ fn too_few_iterations_is_max_iterations_exceeded() {
     let err = record.result.expect_err("not converged in two builds");
     assert_eq!(err.kind, ErrorKind::MaxIterationsExceeded, "{err:?}");
     assert!(out.is_none());
-    assert_eq!(FREE.lock().unwrap().len(), 2, "two iterations logged");
+    assert_eq!(lock(&SAMPLES).len(), 2, "two iterations logged");
 }
 
 /// Needs a GPU. Water planned from a loaded guess that is not positive
@@ -393,7 +392,7 @@ fn a_guess_with_a_negative_eigenvalue_is_warned_of() {
 
     let err = record.result.expect_err("not converged in one build");
     assert_eq!(err.kind, ErrorKind::MaxIterationsExceeded, "{err:?}");
-    let warned = WARNED.lock().unwrap();
+    let warned = lock(&WARNED);
     assert_eq!(
         *warned,
         [

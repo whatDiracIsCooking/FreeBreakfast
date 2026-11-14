@@ -450,9 +450,9 @@ them.
 | A task reaches only its rows | The view's borrow flags and layout check, always on | 2 |
 | Reusing bytes is ordered | Random DAGs run in random orders consistent with their edges and handoffs, no two rows sharing bytes live at once | 3 |
 | A loop's body lies in its region, apart from every parent row live across the loop | Random bodies laid out, then unrolled over iterations and run in random orders consistent with the reads and handoffs, no two rows sharing bytes live at once | 3 |
-| Replay allocates nothing | Free memory read by a device loop's decision every iteration, never falling from one iteration to the next: the reading is the device's, so another tenant's free can raise it, and an allocation of this process can only lower it | 4 |
+| Replay allocates nothing | The arena's count of this process's blocks (`fb_core_arena::allocations`), read by a device loop's decision every iteration, the same at every one: no other tenant of the card moves it, as one moves the device's free memory (#1573). A library allocating behind the arena at a launch is not in it, and on CUDA in a container nothing counts that per process: unenforced for the DF-RHF loop (#1574) | 4 |
 | Declared equals allocated | Free memory before and after instantiation differs by the block, under the reserve's growth | 4 |
-| No library allocates behind the arena | The same measurement across a run: free memory never falling from the first launch to the last sync | 4 |
+| No library allocates behind the arena | Free memory never falling from the first launch to the last sync, in the planner's own device cases; a reading of the whole device, which another tenant of the card can lower too, so not held where one does (#1574) | 4 |
 | A kernel assumes no more scratch than it asked | The wrapper handed exactly its query's bytes under `memcheck` ([`testing.md`](testing.md), "The C++ boundary") | 4 |
 | A row is written before it is read | The debug fill, through every tier-4 test's comparisons | 4 |
 

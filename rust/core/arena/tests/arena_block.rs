@@ -10,7 +10,8 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use fb_core_arena::{
-    Block, Device, Pinned, TableBuilder, memcpy_d2d, memcpy_d2p, memcpy_h2p, memcpy_p2d, memcpy_p2h,
+    Block, Device, Pinned, TableBuilder, allocations, memcpy_d2d, memcpy_d2p, memcpy_h2p,
+    memcpy_p2d, memcpy_p2h,
 };
 use fb_core_wwr::common::ScopedDeviceIndex;
 use fb_core_wwr::runtime::Stream;
@@ -83,6 +84,29 @@ fn declared_equals_allocated() {
         "the drop gave back {} of {taken} bytes",
         after.saturating_sub(during)
     );
+}
+
+/// Each block of a non-zero table counts once in `allocations`, whatever
+/// its kind, a zero-byte table not at all, and a drop takes nothing off:
+/// the count the replay checks rest on (`fb-pipeline-scf`'s `tests/scf.rs`)
+/// is every allocation of ours and only those. Under the lock, so no other
+/// case allocates between two readings.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn every_block_is_counted_once() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let start = allocations();
+    let mut d = TableBuilder::<Device>::new();
+    let _ = d.output::<f64>(0, "D", 64);
+    let device = Block::new(0, d.build());
+    assert_eq!(allocations(), start + 1);
+    let mut p = TableBuilder::<Pinned>::new();
+    let _ = p.output::<f64>(0, "P", 64);
+    drop(Block::new(0, p.build()));
+    assert_eq!(allocations(), start + 2);
+    drop(Block::new(0, TableBuilder::<Device>::new().build()));
+    drop(device);
+    assert_eq!(allocations(), start + 2);
 }
 
 /// The fill reaches every byte before anyone writes: a pinned f64 row is

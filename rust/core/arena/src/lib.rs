@@ -24,6 +24,7 @@
 //!   peak.
 //! - [`Block::new`] makes the table's one allocation, on the device or
 //!   pinned, filled with `0xFF`; it is freed when the block drops.
+//!   [`allocations`] counts them, for a test that a run allocates nothing.
 //! - [`Block::partition`] is what a node is handed when it runs: a
 //!   [`Bufs`] that gives it its own rows and no others, as `&[T]` /
 //!   `&mut [T]` on the host and [`DeviceRef`] / [`DeviceMut`] pointers on
@@ -95,7 +96,7 @@ mod tests;
 
 pub use admit::admit;
 pub use assign::{Assignment, Life, Row, assign};
-pub use block::Block;
+pub use block::{Block, allocations};
 #[cfg(feature = "device")]
 pub use bufs::HeldRow;
 pub use bufs::{Bufs, DeviceMut, DeviceRef};
