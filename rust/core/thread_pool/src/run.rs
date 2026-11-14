@@ -3,12 +3,13 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
+use std::ops::ControlFlow;
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use super::backend::Backend;
-use super::plan::{Lane, NodeId, Placement, Plan};
+use super::plan::{Lane, NodeId, Placement, Plan, Work};
 use fb_core_error_handling::{Error, Status};
 use fb_core_log::TaskScope;
 use log::debug;
@@ -38,6 +39,10 @@ pub struct TaskTime {
     /// Its dimensions by name, as [`Plan::set_dims`] gave them; empty when
     /// none were.
     pub dims: BTreeMap<String, usize>,
+    /// For a loop's body node or decision, the iteration it ran in, from 0:
+    /// such a node has one entry per iteration. `None` for a node outside
+    /// every loop.
+    pub iteration: Option<usize>,
     /// Wall time of its callable alone, not the waits before it: a CPU
     /// node's compute, a GPU node's enqueueing.
     #[serde(rename = "host_ns", with = "nanos")]
@@ -58,6 +63,9 @@ pub struct SyncPoint {
     /// The CPU node that waited before it ran, or `None` for a stream
     /// worker's sync as it exits.
     pub node: Option<NodeId>,
+    /// The iteration that node ran in, when it is a loop's body node or
+    /// decision; `None` otherwise.
+    pub iteration: Option<usize>,
     /// The worker that waited: `cpu<i>` or `stream<s>`.
     pub worker: String,
     /// What it waited for: the GPU predecessor whose event the CPU node
@@ -94,8 +102,10 @@ pub struct ArenaSize {
 ///   "profile": "debug" | "release",
 ///   "wall_ns": 1234,
 ///   "tasks": [{"node": 0, "name": "S", "worker": "stream0", "dims": {"n": 24},
-///              "host_ns": 10, "device_ns": 20 | null}, ...],
-///   "syncs": [{"node": 3 | null, "worker": "cpu0", "waited_for": 2, "host_ns": 5}, ...],
+///              "iteration": null | 0, "host_ns": 10, "device_ns": 20 | null}, ...],
+///   "syncs": [{"node": 3 | null, "iteration": null | 0, "worker": "cpu0",
+///              "waited_for": 2, "host_ns": 5}, ...],
+///   "iterations": {"7": 12, ...},
 ///   "arena": [{"worker": 0, "kind": "device", "bytes": 4608}, ...]
 /// }
 /// ```
@@ -118,14 +128,22 @@ pub struct Record {
     /// synced: what the device times of one stream sum to at most.
     #[serde(rename = "wall_ns", with = "nanos")]
     pub wall: Duration,
-    /// One entry per node that ran, in rank order, failed nodes included;
-    /// a skipped node has none.
+    /// One entry per node that ran, by rank and then iteration, failed
+    /// nodes included: a loop's body nodes and decision have one per
+    /// iteration they ran in. A skipped node has none.
     pub tasks: Vec<TaskTime>,
     /// Every sync point of the run: each CPU node's wait on each GPU
-    /// predecessor, by the node's rank and then the predecessor's, then
-    /// each stream worker's sync as it exits, by the node it waited for. A
-    /// stream worker that ran nothing waited for nothing, and has none.
+    /// predecessor, by the node's rank, its iteration and then the
+    /// predecessor's rank, then each stream worker's sync as it exits, by
+    /// the node it waited for. A stream worker that ran nothing waited for
+    /// nothing, and has none.
     pub syncs: Vec<SyncPoint>,
+    /// Each loop that began, by its decision node ([`Plan::add_loop`]): the
+    /// number of iterations its body began. For a loop that stopped, its
+    /// decision's last index plus one; for one that failed, the iteration
+    /// it failed in plus one. In `timing.json`, the keys are the ranks as
+    /// strings.
+    pub iterations: BTreeMap<NodeId, usize>,
     /// The plan's blocks, per worker and kind. Empty from [`run`], which
     /// sees no arena; the planner's `Instance::run` fills it.
     pub arena: Vec<ArenaSize>,
@@ -139,6 +157,7 @@ impl Record {
             wall: Duration::ZERO,
             tasks: Vec::new(),
             syncs: Vec::new(),
+            iterations: BTreeMap::new(),
             arena: Vec::new(),
         }
     }
@@ -263,7 +282,9 @@ mod status {
 /// before anything runs, if the plan places a node on a stream worker
 /// `backend` lacks, or has CPU nodes and `n_cpu` is zero. Otherwise the
 /// failure lowest in rank, with `name@worker` and any other failures
-/// (`also: ...`) on its context.
+/// (`also: ...`) on its context: a node's own error, or
+/// [`MaxIterationsExceeded`](fb_core_error_handling::ErrorKind::MaxIterationsExceeded)
+/// from a loop's decision that would pass its bound.
 ///
 /// Both are borrowed exclusively, so a plan and a backend are each in at
 /// most one run at a time: a backend's events are its plan's and its
@@ -324,6 +345,7 @@ pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: u
         mut tasks,
         mut syncs,
         scoped,
+        began,
         ..
     } = shared
         .state
@@ -333,10 +355,10 @@ pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: u
     // sync of its own. A read that fails after another failure is an echo
     // of it (a sticky fault reads back as itself), so only a run that
     // otherwise succeeded reports one, and only the first.
-    tasks.sort_by_key(|t| t.node);
-    for id in scoped {
+    tasks.sort_by_key(|t| (t.node, t.iteration));
+    for (id, iteration) in scoped {
         let at = tasks
-            .binary_search_by_key(&NodeId(id), |t| t.node)
+            .binary_search_by_key(&(NodeId(id), iteration), |t| (t.node, t.iteration))
             .expect("a scoped node has an entry");
         match backend.elapsed(NodeId(id)) {
             Ok(device) => tasks[at].device = device,
@@ -357,11 +379,19 @@ pub fn run<B: Backend>(plan: &mut Plan<'_, B::Stream>, backend: &mut B, n_cpu: u
             Err(failures.fold(first, |e, other| e.with_context(format!("also: {other}"))))
         }
     };
-    syncs.sort_by_key(|s| (s.node.is_none(), s.node, s.waited_for));
+    syncs.sort_by_key(|s| (s.node.is_none(), s.node, s.iteration, s.waited_for));
+    let iterations = plan
+        .loops
+        .iter()
+        .zip(began)
+        .filter(|&(_, n)| n > 0)
+        .map(|(l, n)| (NodeId(l.decision), n))
+        .collect();
     Record {
         wall,
         tasks,
         syncs,
+        iterations,
         ..Record::new(result)
     }
 }
@@ -435,8 +465,14 @@ struct State {
     tasks: Vec<TaskTime>,
     /// Each sync point, in the order they ended.
     syncs: Vec<SyncPoint>,
-    /// The GPU nodes whose stream scope closed: those that succeeded.
-    scoped: Vec<usize>,
+    /// The GPU nodes whose stream scope closed, those that succeeded, each
+    /// with its iteration, and not yet read: a loop's are read by its
+    /// decision before the body is replayed.
+    scoped: Vec<(usize, Option<usize>)>,
+    /// Per loop, the index of the iteration its body is in.
+    iteration: Vec<usize>,
+    /// Per loop, the iterations its body began.
+    began: Vec<usize>,
     /// A worker panicked: everyone stops.
     aborted: bool,
 }
@@ -460,6 +496,8 @@ impl Shared {
             tasks: Vec::with_capacity(n),
             syncs: Vec::new(),
             scoped: Vec::new(),
+            iteration: vec![0; plan.loops.len()],
+            began: vec![0; plan.loops.len()],
             aborted: false,
         };
         for (id, node) in plan.nodes.iter().enumerate() {
@@ -493,9 +531,9 @@ impl Shared {
         self.lanes.iter().for_each(Condvar::notify_all);
     }
 
-    /// The next node for `queue`, waiting for one; `None` when the run is
-    /// over.
-    fn next(&self, queue: Queue) -> Option<usize> {
+    /// The next node for `queue` and its iteration, waiting for one; `None`
+    /// when the run is over.
+    fn next<S>(&self, plan: &Plan<'_, S>, queue: Queue) -> Option<(usize, Option<usize>)> {
         let mut state = self.lock();
         loop {
             if state.aborted || state.remaining == 0 {
@@ -506,7 +544,12 @@ impl Shared {
                 Queue::Lane(l) => &mut state.lane_ready[l],
             };
             if let Some(Reverse(id)) = ready.pop() {
-                return Some(id);
+                // Fixed until the node finishes: its loop's decision is after it.
+                let iteration = plan.nodes[id].in_loop.map(|l| state.iteration[l]);
+                if let Some(l) = plan.nodes[id].in_loop {
+                    state.began[l] = state.iteration[l] + 1;
+                }
+                return Some((id, iteration));
             }
             state = self
                 .condvar(queue)
@@ -515,19 +558,67 @@ impl Shared {
         }
     }
 
-    /// Node `id` finished with `result` after running for `time`, having
-    /// waited at `syncs`: record them, and ready its successors or skip its
+    /// Node `id` finished as [`Ran`] says: record its entry and sync
+    /// points, and replay its loop's body, ready its successors or skip its
     /// descendants.
-    fn finish<S>(&self, plan: &Plan<'_, S>, id: usize, (result, time, syncs): Ran) {
+    fn finish<S>(&self, plan: &Plan<'_, S>, id: usize, ran: Ran) {
+        let Ran {
+            result,
+            time,
+            syncs,
+            replay,
+            scopes,
+        } = ran;
         let mut state = self.lock();
         state.syncs.extend(syncs);
         state.mark[id] = Mark::Done;
         state.remaining -= 1;
         if result.is_ok() && matches!(plan.nodes[id].placement, Placement::Stream(_)) {
-            state.scoped.push(id);
+            state.scoped.push((id, time.iteration));
         }
         state.tasks.push(time);
+        if let Work::Decide(l, _) = plan.nodes[id].work
+            && result.is_ok()
+        {
+            // The decision read every body scope of this iteration.
+            let body = &plan.loops[l].body;
+            state.scoped.retain(|(n, _)| !body.contains(n));
+            let iteration = Some(state.iteration[l]);
+            for (node, device) in scopes {
+                let task = state
+                    .tasks
+                    .iter_mut()
+                    .rev()
+                    .find(|t| t.node.0 == node && t.iteration == iteration)
+                    .expect("a scoped node has an entry");
+                task.device = Some(device);
+            }
+        }
         match result {
+            Ok(()) if replay => {
+                let Work::Decide(l, _) = plan.nodes[id].work else {
+                    unreachable!("only a decision replays")
+                };
+                let lp = &plan.loops[l];
+                state.iteration[l] += 1;
+                debug!("{}: iteration {}", plan.nodes[id].name, state.iteration[l]);
+                state.remaining += lp.body.len() + 1;
+                for n in lp.body.start..=lp.decision {
+                    // Its predecessors before the body ran once, for good.
+                    let waiting = plan.nodes[n]
+                        .preds
+                        .iter()
+                        .filter(|&&p| p >= lp.body.start)
+                        .count();
+                    state.mark[n] = Mark::Pending;
+                    state.waiting[n] = waiting;
+                    if waiting == 0 {
+                        let placement = plan.nodes[n].placement;
+                        state.queue(placement).push(Reverse(n));
+                        self.condvar(Queue::from(placement)).notify_one();
+                    }
+                }
+            }
             Ok(()) => {
                 for &s in &plan.succs[id] {
                     if state.mark[s] != Mark::Pending {
@@ -593,9 +684,9 @@ impl Drop for AbortOnUnwind<'_> {
 
 fn cpu_worker<B: Backend>(plan: &Plan<'_, B::Stream>, backend: &B, shared: &Shared, name: &str) {
     let _abort = AbortOnUnwind(shared);
-    while let Some(id) = shared.next(Queue::Cpu) {
-        let result = execute(plan, backend, id, name, None);
-        shared.finish(plan, id, result);
+    while let Some((id, iteration)) = shared.next(plan, Queue::Cpu) {
+        let ran = execute(plan, backend, (id, iteration), name, None);
+        shared.finish(plan, id, ran);
     }
 }
 
@@ -609,9 +700,9 @@ fn stream_worker<B: Backend>(
     let _abort = AbortOnUnwind(shared);
     let _binding = backend.bind(lane);
     let mut last = None;
-    while let Some(id) = shared.next(Queue::Lane(lane)) {
-        let result = execute(plan, backend, id, name, Some(lane));
-        shared.finish(plan, id, result);
+    while let Some((id, iteration)) = shared.next(plan, Queue::Lane(lane)) {
+        let ran = execute(plan, backend, (id, iteration), name, Some(lane));
+        shared.finish(plan, id, ran);
         last = Some(id);
     }
     // The end of the run is a sync point: nothing is left enqueued, and a
@@ -622,6 +713,7 @@ fn stream_worker<B: Backend>(
     if let Some(id) = last {
         shared.lock().syncs.push(SyncPoint {
             node: None,
+            iteration: None,
             worker: name.to_string(),
             waited_for: NodeId(id),
             host,
@@ -637,18 +729,31 @@ fn stream_worker<B: Backend>(
     }
 }
 
-/// What [`execute`] hands [`Shared::finish`]: the node's result, its entry,
-/// and the sync points it waited at.
-type Ran = (Status, TaskTime, Vec<SyncPoint>);
+/// What [`execute`] hands [`Shared::finish`].
+struct Ran {
+    /// The node's result.
+    result: Status,
+    /// Its entry.
+    time: TaskTime,
+    /// The sync points it waited at.
+    syncs: Vec<SyncPoint>,
+    /// A decision that said `Continue` within its bound.
+    replay: bool,
+    /// From a decision: the device time of each GPU body node of its
+    /// iteration, read once the whole body had completed.
+    scopes: Vec<(usize, Duration)>,
+}
 
 /// Wait for the node's GPU predecessors as its edges need, and run it inside
 /// its scopes: wall time around each host wait and around the callable, and
 /// for a GPU node the stream scope, whose closing event is the one its
-/// consumers wait on.
+/// consumers wait on. A decision, once its waits have made its whole body
+/// complete, first reads the body's stream scopes of this iteration, before
+/// the replay records them again.
 fn execute<B: Backend>(
     plan: &Plan<'_, B::Stream>,
     backend: &B,
-    id: usize,
+    (id, iteration): (usize, Option<usize>),
     worker: &str,
     lane: Option<usize>,
 ) -> Ran {
@@ -657,6 +762,8 @@ fn execute<B: Backend>(
     debug!("start");
     let mut host = Duration::ZERO;
     let mut syncs = Vec::new();
+    let mut replay = false;
+    let mut scopes = Vec::new();
     let result = (|| {
         for &p in &node.preds {
             let Placement::Stream(from) = plan.nodes[p].placement else {
@@ -668,6 +775,7 @@ fn execute<B: Backend>(
                     let waited = backend.host_wait(NodeId(p));
                     syncs.push(SyncPoint {
                         node: Some(NodeId(id)),
+                        iteration,
                         worker: worker.to_string(),
                         waited_for: NodeId(p),
                         host: start.elapsed(),
@@ -678,17 +786,43 @@ fn execute<B: Backend>(
                 Some(_) => {}
             }
         }
-        match lane {
-            None => {
+        match (&node.work, lane) {
+            (Work::Decide(l, decide), _) => {
+                let lp = &plan.loops[*l];
+                for n in lp.body.clone() {
+                    if plan.nodes[n].placement == Placement::Cpu {
+                        continue;
+                    }
+                    let read = backend.elapsed(NodeId(n)).map_err(|e| {
+                        e.with_context(format!("stream scope of {}", plan.nodes[n].name))
+                    })?;
+                    scopes.extend(read.map(|device| (n, device)));
+                }
+                let index = iteration.expect("a decision is in its loop");
                 let start = Instant::now();
-                let result = (node.run)(Lane::Cpu);
+                let flow = decide(index);
+                host = start.elapsed();
+                if let ControlFlow::Continue(()) = flow? {
+                    if index + 1 == lp.max_iterations {
+                        return Err(Error::max_iterations_exceeded(format!(
+                            "the loop did not stop in {} iterations",
+                            lp.max_iterations
+                        )));
+                    }
+                    replay = true;
+                }
+                Ok(())
+            }
+            (Work::Task(run), None) => {
+                let start = Instant::now();
+                let result = run(Lane::Cpu);
                 host = start.elapsed();
                 result
             }
-            Some(index) => {
+            (Work::Task(run), Some(index)) => {
                 backend.begin(index, NodeId(id))?;
                 let start = Instant::now();
-                let result = (node.run)(Lane::Stream {
+                let result = run(Lane::Stream {
                     index,
                     stream: backend.stream(index),
                 });
@@ -707,12 +841,15 @@ fn execute<B: Backend>(
         name: node.name.clone(),
         worker: worker.to_string(),
         dims: node.dims.clone(),
+        iteration,
         host,
         device: None,
     };
-    (
-        result.map_err(|e| e.with_context(format!("{}@{worker}", node.name))),
+    Ran {
+        result: result.map_err(|e| e.with_context(format!("{}@{worker}", node.name))),
         time,
         syncs,
-    )
+        replay,
+        scopes,
+    }
 }

@@ -2,12 +2,14 @@
 //! worker, beside the main thread, and none survive it
 //! (`core::thread_pool`'s fourth promise). The count is the `Threads:` line
 //! of `/proc/self/status`, which also sees a thread a linked library opened
-//! on its own, which no lint can.
+//! on its own, which no lint can. A loop's replay is on the same threads:
+//! the count before its first iteration is the count after its last.
 //!
 //! `harness = false`: libtest runs cases on threads of its own, which would
 //! be counted. So this is a plain `main`, and the process holds only what it
 //! starts.
 
+use std::ops::ControlFlow;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -96,5 +98,71 @@ fn main() {
              (still counted {SETTLE:?} after the join)"
         );
     }
+    replayed_on_the_runs_threads();
     println!("thread_pool_threads: ok");
+}
+
+/// Wait until the run's workers all exist, up to five seconds, and return
+/// the count seen: workers are spawned one after another, so an early node
+/// can run before the last exists.
+fn all_workers(expected: usize) -> usize {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut now = threads();
+    while now < expected && Instant::now() < deadline {
+        std::thread::yield_now();
+        now = threads();
+    }
+    now
+}
+
+/// A loop of four iterations, its body a stream node and a CPU node: the
+/// count read by the body's first node in the first iteration (once every
+/// worker exists) equals the count its decision reads in the last, and
+/// every body node of every iteration sees the same.
+fn replayed_on_the_runs_threads() {
+    const ITERATIONS: usize = 4;
+    let (n_cpu, n_streams) = (2, 1);
+    let expected = 1 + n_cpu + n_streams;
+    let first = Mutex::new(0);
+    let body_seen = Mutex::new(Vec::new());
+    let last = Mutex::new(0);
+    let mut plan = Plan::new();
+    let gpu = plan.add("gpu", Placement::Stream(0), &[], |_| {
+        let mut first = first.lock().unwrap();
+        if *first == 0 {
+            *first = all_workers(expected);
+        }
+        body_seen.lock().unwrap().push(threads());
+        Ok(())
+    });
+    plan.add("cpu", Placement::Cpu, &[gpu], |_| {
+        body_seen.lock().unwrap().push(threads());
+        Ok(())
+    });
+    plan.add_loop("decide", gpu, ITERATIONS, |i| {
+        if i + 1 < ITERATIONS {
+            return Ok(ControlFlow::Continue(()));
+        }
+        *last.lock().unwrap() = threads();
+        Ok(ControlFlow::Break(()))
+    });
+    let record = run(&mut plan, &mut HostOnly::new(n_streams), n_cpu);
+    record.result.unwrap();
+    drop(plan);
+    let (first, last) = (first.into_inner().unwrap(), last.into_inner().unwrap());
+    let body_seen = body_seen.into_inner().unwrap();
+    assert_eq!(
+        record.iterations.values().copied().collect::<Vec<_>>(),
+        [ITERATIONS]
+    );
+    assert_eq!(
+        (first, last),
+        (expected, expected),
+        "a loop: before its first iteration and after its last"
+    );
+    assert!(
+        body_seen.len() == 2 * ITERATIONS && body_seen.iter().all(|&t| t == expected),
+        "a loop's body saw {body_seen:?}, expected {expected} each time"
+    );
+    assert_eq!(settled_threads(1), 1, "a loop's worker outlived its run");
 }
