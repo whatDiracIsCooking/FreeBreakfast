@@ -55,6 +55,10 @@ impl sealed::Sealed for Device {
         gpu_status_at(unsafe { wwr_sys::wwr_device_synchronize() }, location)
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "a failed block allocation names the free memory (docs/memory.md, \"The two kinds\"); nothing is sized from it"
+    )]
     fn free_memory() -> String {
         let (mut free, mut total) = (0, 0);
         // SAFETY: a plain runtime call writing two locals.

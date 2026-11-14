@@ -1,9 +1,18 @@
 # Spawning belongs to the orchestrator: core/thread_pool/src/run.rs is the
 # one module with the allow (docs/programming_model.md, "Capabilities are
 # enforced by lints").
+#
+# The wwr-sys entries are the GPU rules (docs/rules.md): a kernel launch goes
+# through its kernel library's C wrapper, managed memory is not used, and
+# free memory is read only for admission and an allocation's refusal, never
+# to size work at run time. Each allowed site names its exception.
 disallowed-methods = [
   { path = "std::thread::spawn", reason = "workers belong to the orchestrator (core::thread_pool)" },
   { path = "std::thread::scope", reason = "workers belong to the orchestrator (core::thread_pool)" },
   { path = "std::thread::Builder::spawn", reason = "workers belong to the orchestrator (core::thread_pool)" },
   { path = "std::thread::Builder::spawn_scoped", reason = "workers belong to the orchestrator (core::thread_pool)" },
+  { path = "wwr_sys::wwr_launch_kernel_ex_c", reason = "Rust never launches a kernel itself: call the kernel library's C wrapper through its binding crate (docs/gpu_layer.md, \"Layering\")" },
+  { path = "wwr_sys::wwr_malloc_managed", reason = "managed memory is not used (docs/memory.md, \"The two kinds\")" },
+  { path = "wwr_sys::wwr_stream_attach_mem_async", reason = "managed memory is not used (docs/memory.md, \"The two kinds\")" },
+  { path = "wwr_sys::wwr_mem_get_info", reason = "an adaptive width is chosen at planning, never from free memory at run time (docs/memory.md, \"Adaptive widths: one planner routine\")" },
 ]

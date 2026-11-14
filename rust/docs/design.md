@@ -109,7 +109,9 @@ routine"); the rows the layout becomes, and who owns each, are
 committed and compared bitwise, so a layout change is a diff in the PR
 ([`testing.md`](testing.md), "Performance"). The thread count after a
 device-free run is compared with the plan's worker total
-([`programming_model.md`](programming_model.md), "CPU workers").
+([`programming_model.md`](programming_model.md), "CPU workers"). Reading
+free memory is clippy's `disallowed_methods` outside the sites
+[`memory.md`](memory.md) ("Adaptive widths: one planner routine") allows.
 
 ## Whether it splits
 

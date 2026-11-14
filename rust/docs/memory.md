@@ -201,7 +201,11 @@ the room the schedule leaves at the task's position, once, at planning. The
 width is then a dimension of the plan, logged at `debug` and at `warn` when
 it is 1 ([`diagnostics.md`](diagnostics.md), "Levels"), and `run` never reads
 free memory. A `bytes` that is not monotone is caught by the tier-3 fuzz
-that bisects it and checks the result against a linear scan.
+that bisects it and checks the result against a linear scan. clippy's
+`disallowed_methods` lists `wwr_mem_get_info`, so a read of free memory is
+an `allow` naming its exception: an allocation's refusal ("The two kinds"),
+admission and the reserve's measurement ("Admission"), or a tier-4 test
+measuring what a block costs.
 
 **AVAS is the adaptive case that changes the DAG's dimensions.** Its width
 is `ncas`, and every downstream layout grows with it, so it is bisected over
@@ -303,7 +307,9 @@ every bit pattern is a value, since a reused row is read with whatever its
 previous owner left.
 
 **What is not a kind.** Managed memory is not used and not modelled, and
-nothing here should grow a `Managed` marker. Pageable host memory is `Vec`,
+nothing here should grow a `Managed` marker; clippy's `disallowed_methods`
+lists `wwr_malloc_managed` and `wwr_stream_attach_mem_async`, and no site
+allows them. Pageable host memory is `Vec`,
 owned by the plan when it is part of the DAG
 ([`programming_model.md`](programming_model.md), "Memory kinds").
 
