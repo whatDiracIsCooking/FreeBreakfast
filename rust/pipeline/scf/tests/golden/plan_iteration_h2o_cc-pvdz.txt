@@ -35,11 +35,11 @@ loop 8-12: region of 23048 bytes at 33587712, its body's rows:
   33610752          8  task    9-9      |e|² on the device: 9w
   33606144       4608  edge    9-9      e: 9w
 handoffs: 8->9
-worker 0 pinned table: 3 rows, 528 bytes
-peak: 528 bytes at node 8
+worker 0 pinned table: 3 rows, 520 bytes
+peak: 520 bytes at node 8
     offset      bytes  owner   life     name: users (w writes, r reads)
-loop 8-12: region of 528 bytes at 0, its body's rows:
-         0          8  edge    8-10     E elec: 8w 10r
-       256          8  edge    9-10     |e|²: 9w 10r
-       512         16  edge    10-12    E, |e|: 10w 12r
+loop 8-12: region of 520 bytes at 0, its body's rows:
+       256          8  edge    8-10     E elec: 8w 10r
+       512          8  edge    9-10     |e|²: 9w 10r
+         0         16  edge    10-12    E, |e|: 10w 12r
 handoffs:

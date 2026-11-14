@@ -70,6 +70,192 @@ fn assign_by_hand() {
     );
 }
 
+/// The orders the assigner tries, two where a single order loses: the
+/// SCF loop fixture's parent with the orthogonalizer's workspace in it
+/// (#1511), which start order with the larger first lays out at 44168
+/// bytes, the larger first at 38400 and the longer-lived first at 38280,
+/// against a bound of 38148; and [`scf_fixture`], at 29184 and 29064 in
+/// the two start orders and 24576 larger first, against 24324. Start order
+/// with the larger first is the smallest of the three on the DIIS golden.
+#[test]
+fn assign_keeps_the_smallest_order() {
+    let n2 = 24 * 24 * 8;
+    let rows = [
+        row(4, DEVICE_ALIGNMENT, Life::Plan),
+        row(n2, DEVICE_ALIGNMENT, span(0, 8)),
+        row(n2, DEVICE_ALIGNMENT, span(1, 8)),
+        row(n2, DEVICE_ALIGNMENT, span(2, 8)),
+        row(10376, DEVICE_ALIGNMENT, span(2, 2)),
+        row(n2, DEVICE_ALIGNMENT, span(3, 8)),
+        row(19592, DEVICE_ALIGNMENT, span(4, 8)),
+    ];
+    assert_eq!((assign(&rows).total, live_bound(&rows)), (38280, 38148));
+    assert_eq!(scf_fixture(24).total(), 24576);
+}
+
+/// The block's lower bound for `rows`: at each position, the live rows'
+/// bytes each padded to its alignment, less the largest padding, since
+/// the last row needs none; the largest over the positions. Rows live at
+/// one position conflict pairwise, so no layout fits them in less.
+fn live_bound(rows: &[Row]) -> usize {
+    let at = |p: Option<usize>| {
+        let live = rows.iter().filter(|r| {
+            r.bytes > 0
+                && match (r.life, p) {
+                    (Life::Plan, _) => true,
+                    (Life::Span { first, last }, Some(p)) => first <= p && p <= last,
+                    (Life::Span { .. }, None) => false,
+                }
+        });
+        let padded: usize = live
+            .clone()
+            .map(|r| r.bytes.next_multiple_of(r.align))
+            .sum();
+        let slack = live
+            .map(|r| r.bytes.next_multiple_of(r.align) - r.bytes)
+            .max()
+            .unwrap_or(0);
+        padded - slack
+    };
+    rows.iter()
+        .filter_map(|r| match r.life {
+            Life::Span { first, last } => Some(first..=last),
+            Life::Plan => None,
+        })
+        .flatten()
+        .map(|p| at(Some(p)))
+        .max()
+        .unwrap_or_else(|| at(None))
+}
+
+/// One table of a committed golden, as its text gives it: the block's
+/// total, the rows outside any loop's body, and each loop's region with
+/// its body's rows.
+struct GoldenTable {
+    name: String,
+    total: usize,
+    rows: Vec<Row>,
+    regions: Vec<(Row, Vec<Row>)>,
+}
+
+/// Every table in a golden's text: a `table:` line, then its row lines
+/// (`offset bytes owner life name`) and region lines, to `handoffs:`.
+fn golden_tables(file: &str, text: &str) -> Vec<GoldenTable> {
+    let mut tables: Vec<GoldenTable> = Vec::new();
+    let mut open = false;
+    for line in text.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if let Some(at) = words.iter().position(|&w| w == "table:") {
+            let total = words[at + 3].parse().expect("a table's total");
+            tables.push(GoldenTable {
+                name: format!("{file} {}", words[at - 1]),
+                total,
+                rows: Vec::new(),
+                regions: Vec::new(),
+            });
+            open = true;
+            continue;
+        }
+        let Some(t) = tables.last_mut().filter(|_| open) else {
+            continue;
+        };
+        if line.starts_with("handoffs:") {
+            open = false;
+        } else if let Some(span) = line.strip_prefix("loop ").and_then(|l| l.split(':').next()) {
+            let (first, last) = span.split_once('-').expect("a loop's span");
+            let bytes = words[4].parse().expect("a region's bytes");
+            let life = Life::Span {
+                first: first.parse().expect("a loop's first position"),
+                last: last.parse().expect("a loop's last position"),
+            };
+            t.regions
+                .push((row(bytes, DEVICE_ALIGNMENT, life), Vec::new()));
+        } else if let [_, bytes, "task" | "edge" | "worker", life, ..] = words[..] {
+            let Ok(bytes) = bytes.parse() else { continue };
+            let life = match life.split_once('-') {
+                Some((a, b)) => span(
+                    a.parse().expect("a row's first"),
+                    b.parse().expect("a row's last"),
+                ),
+                None => Life::Plan,
+            };
+            let r = row(bytes, DEVICE_ALIGNMENT, life);
+            match t.regions.last_mut() {
+                Some((_, body)) => body.push(r),
+                None => t.rows.push(r),
+            }
+        }
+    }
+    tables
+}
+
+/// Every `tests/golden/*.txt` under `dir`, skipping build trees.
+fn golden_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("a readable directory") {
+        let path = entry.expect("a directory entry").path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if path.is_dir() {
+            if name != "target" && !name.starts_with("build") && !name.starts_with('.') {
+                golden_files(&path, out);
+            }
+        } else if name.ends_with(".txt")
+            && path.parent().is_some_and(|p| p.ends_with("tests/golden"))
+        {
+            out.push(path);
+        }
+    }
+}
+
+/// The assigner's quality, measured: every committed golden's block, and
+/// each loop's region, is within 3% of [`live_bound`], a region counted as
+/// one row of its parent (`docs/memory.md`, "Lifetimes"). The goldens'
+/// own tests hold their text to the code; this holds the text to the
+/// bound, so an assigner or planning change that wastes bytes fails here
+/// and not only as a diff.
+#[test]
+fn goldens_are_within_the_bound() {
+    const BOUND: f64 = 1.03;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    golden_files(&root, &mut files);
+    files.sort();
+    let mut seen = Vec::new();
+    let mut over = Vec::new();
+    for path in &files {
+        let file = path
+            .strip_prefix(&root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        let text = std::fs::read_to_string(path).expect("a golden");
+        for t in golden_tables(&file, &text) {
+            let mut parent = t.rows.clone();
+            let mut check = |name: String, total: usize, bound: usize| {
+                if total as f64 > BOUND * bound as f64 {
+                    over.push(format!("{name}: {total} bytes, bound {bound}"));
+                }
+            };
+            for (i, (region, body)) in t.regions.iter().enumerate() {
+                check(
+                    format!("{} loop {i}", t.name),
+                    region.bytes,
+                    live_bound(body),
+                );
+                parent.push(*region);
+            }
+            check(t.name.clone(), t.total, live_bound(&parent));
+            seen.push(t.name);
+        }
+    }
+    for name in [
+        "core/arena/tests/golden/arena_scf_loop.txt device",
+        "pipeline/config/tests/golden/plan_rhf.txt pinned",
+    ] {
+        assert!(seen.iter().any(|s| s == name), "{name} not read: {seen:?}");
+    }
+    assert!(over.is_empty(), "over {BOUND} times the bound: {over:#?}");
+}
+
 fn arb_rows() -> impl Strategy<Value = Vec<Row>> {
     prop::collection::vec(
         (
@@ -469,10 +655,9 @@ fn reads_and_layouts() {
 /// reads S, so all three of the parent's matrices are live across the loop.
 /// Returns the table and the body's rows' bytes, laid out alone.
 ///
-/// The orthogonalizer's eigensolver workspace is left out of the parent:
-/// the greedy assigner places it, larger, below X, and the gap it leaves
-/// dead is too small for the region, which goes past it (44168 bytes, not
-/// 38280). That is the assigner's quality, not the loop's layout.
+/// The orthogonalizer's eigensolver workspace is left out of the parent, so
+/// the parent's rows are exactly those live across the loop;
+/// [`assign_keeps_the_smallest_order`] lays it out with it.
 fn scf_loop_fixture(nbf: usize) -> (Table<Device>, usize) {
     let n2 = nbf * nbf;
     let lwork = 1 + 6 * nbf + 2 * n2;

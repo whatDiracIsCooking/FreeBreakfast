@@ -1,15 +1,15 @@
-device table: 11 rows, 29184 bytes
+device table: 11 rows, 24576 bytes
 peak: 24204 bytes at node 2
     offset      bytes  owner   life     name: users (w writes, r reads)
          0          4  worker  plan     solver info
-       256       4608  edge    0-2      S: 0w 2r
-      4864       4608  edge    1-4      H: 1w 3r 4r
+     10752       4608  edge    0-2      S: 0w 2r
+     15360       4608  edge    1-4      H: 1w 3r 4r
      19968       4608  edge    2-5      X: 2w 3r 5r
-      9472      10376  task    2-2      syevd work (X): 2w
+       256      10376  task    2-2      syevd work (X): 2w
        256       4608  edge    3-4      D: 3w 4r
-      9472       4608  task    4-4      J: 4w
-     14080       4608  edge    4-5      F: 4w 5r
-     24576       4608  edge    5-6      C: 5w 6r
+      4864       4608  task    4-4      J: 4w
+     10752       4608  edge    4-5      F: 4w 5r
+     15360       4608  edge    5-6      C: 5w 6r
        256      10376  task    5-5      syevd work (F): 5w
        256       4608  edge    6-6      D next: 6w
-handoffs: 0->3 0->5 0->6 1->5 2->3 2->4 2->5 2->6 3->5 3->6 4->5 4->6 5->6
+handoffs: 0->4 1->5 2->3 2->4 2->5 2->6 3->5 3->6 4->5 4->6 5->6
