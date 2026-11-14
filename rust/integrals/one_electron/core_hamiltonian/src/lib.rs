@@ -36,14 +36,15 @@
 //! [`kinetic_classes`]: fb_integrals_one_electron_kinetic::kinetic_classes
 //! [`potential_en_classes`]: fb_integrals_one_electron_potential_en::potential_en_classes
 
+#![forbid(unsafe_code)]
+
 use contracts::debug_requires;
 use fb_basis::BasisSet;
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
+use fb_core_wwr::memset;
 use fb_integrals_mmd::ClassRows;
 use fb_integrals_one_electron_kinetic::kinetic_classes;
 use fb_integrals_one_electron_potential_en::potential_en_classes;
@@ -144,17 +145,8 @@ impl Task for CoreHamiltonian {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let h = device.take_mut(*h);
-        // SAFETY: `h` is a device row of `h.len()` doubles, on the task's
-        // stream.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memset_async(
-                h.as_mut_ptr().cast(),
-                0,
-                h.len() * size_of::<f64>(),
-                stream.stream(),
-            )
-        })?;
+        let mut h = device.take_mut(*h);
+        memset::zero(&mut h, stream)?;
         // Both on the one stream: every V launch follows every T launch, and
         // each adds into `h` in turn.
         kinetic_classes(stream, device, &self.classes, self.n_cart, &h)?;

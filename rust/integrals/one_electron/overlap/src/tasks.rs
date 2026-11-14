@@ -7,8 +7,8 @@ use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
+use fb_core_wwr::memset;
 use fb_integrals_mmd::{ClassRows, launch};
 use fb_integrals_sys::fb_overlap_class;
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
@@ -85,13 +85,9 @@ impl Task for Overlap {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
+        let mut s = device.take_mut(*s);
+        memset::zero(&mut s, stream)?;
         let stream = stream.stream();
-        let s = device.take_mut(*s);
-        // SAFETY: `s` is a device row of `s.len()` doubles, on the task's
-        // stream.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memset_async(s.as_mut_ptr().cast(), 0, s.len() * size_of::<f64>(), stream)
-        })?;
         for c in &self.classes {
             let view = c.view(device);
             // SAFETY: the view's arrays are the class's n_rec-long rows,

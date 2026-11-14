@@ -26,7 +26,8 @@ forbids it. Each block holds one operation under a `// SAFETY:` comment
 (clippy's `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`).
 
 **Use the safe wrappers, not `wwr-sys`:** copies through
-`fb_core_arena::memcpy_*`, BLAS through `fb_core_wwr::blas`, and a test's
+`fb_core_arena::memcpy_*`, BLAS through `fb_core_wwr::blas`, a device
+zero through `fb_core_wwr::memset::zero`, and a test's
 device buffer through `fb_core_wwr::runtime::tests::DeviceBytes`.
 
 **A new rule joins the register.** `docs/rules.md` lists every rule these

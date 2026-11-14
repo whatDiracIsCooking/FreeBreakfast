@@ -48,8 +48,8 @@ use fb_core_arena::{Bufs, Device, DeviceMut, Layout, Pinned, RowId};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
 use fb_core_wwr::handle::DeviceHandleStream;
+use fb_core_wwr::memset;
 use fb_integrals_mmd::{ClassRows, launch};
 use fb_integrals_sys::{FB_POTENTIAL_EN_MAX_MOMENTUM, fb_nuclei_view, fb_potential_en_class};
 use fb_molecule_nuclei::NucleiRows;
@@ -226,17 +226,8 @@ impl Task for PotentialEn {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let v = device.take_mut(*v);
-        // SAFETY: `v` is a device row of `v.len()` doubles, on the task's
-        // stream.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memset_async(
-                v.as_mut_ptr().cast(),
-                0,
-                v.len() * size_of::<f64>(),
-                stream.stream(),
-            )
-        })?;
+        let mut v = device.take_mut(*v);
+        memset::zero(&mut v, stream)?;
         potential_en_classes(stream, device, &self.classes, &self.nuclei, self.n_cart, &v)
     }
 }
