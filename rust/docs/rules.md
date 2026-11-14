@@ -193,8 +193,9 @@ in `clippy.toml`); `unsafe_code` is forbidden per crate root, which
 | A failed destroy is logged at `error` and counted, never raised | [`diagnostics.md`](diagnostics.md), "`Drop` cannot fail" | **unenforced** |
 | `main` logs an error once and prints `completed: N errors, N warnings` | [`diagnostics.md`](diagnostics.md), "The one boundary" | `pipeline/config/tests/examples.rs` |
 | A config refusal names the key, the file and the line | [`documentation.md`](documentation.md), "Configuration" | `pipeline/config/tests/examples.rs` (the key or the path; not the line) |
-| The release profile aborts on a panic | [`diagnostics.md`](diagnostics.md), "Panics and profiles" | **unenforced** (`Cargo.toml` sets no `panic = "abort"`) |
-| The panic hook logs at `critical` | [`diagnostics.md`](diagnostics.md), "Panics and profiles" | **unenforced** (no hook is installed) |
+| The release profile aborts on a panic, and dev and test unwind | [`diagnostics.md`](diagnostics.md), "Panics and profiles" | `doc_check/tests/panic_profile.rs::the_release_profile_alone_aborts_on_a_panic` (the manifest's line; not a release binary run) |
+| The panic hook logs at `critical`, flushed before the abort, and prints the backtrace | [`diagnostics.md`](diagnostics.md), "Panics and profiles" | `core/log/tests/panic_hook.rs::a_panic_is_a_critical_line_in_the_file_sink_before_the_abort` (an abort by a panic that cannot unwind, in a test build) |
+| A panic in a test binary goes through the same hook, and `#[should_panic]` still passes | [`diagnostics.md`](diagnostics.md), "Panics and profiles" | `core/log/tests/panic_hook.rs::the_hook_leaves_should_panic_tests_passing` (a test binary has it once it calls into `fb-core-log`) |
 | `check_or_abort` logs at `critical` and aborts at the caller | [`diagnostics.md`](diagnostics.md), "Levels" | `core/diagnostics/tests/log.rs::check_or_abort_logs_at_critical_and_aborts` |
 
 ## Documentation

@@ -248,6 +248,8 @@ fn run(args: &[String]) -> Status {
 }
 
 fn main() -> ExitCode {
+    // The panic hook: a panic is a critical line before the release abort.
+    fb_core_log::init();
     let args: Vec<String> = std::env::args().collect();
     match run(&args) {
         Ok(()) => ExitCode::SUCCESS,

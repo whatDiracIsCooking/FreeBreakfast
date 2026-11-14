@@ -58,20 +58,35 @@
 //! `log` has no critical level; it stops at error. A critical line goes
 //! around the facade, straight to the sinks, labelled `critical`. It is
 //! still filtered by [`set_level`].
+//!
+//! **A panic is logged at critical** (`docs/diagnostics.md`, "Panics and
+//! profiles"). Installing the logger installs a panic hook in place of std's:
+//! it writes the panic's message, located at the panic, as a critical line,
+//! so it reaches the file sink and is flushed before a release build's abort
+//! (which runs no exit handlers), then prints the backtrace to stderr (in a
+//! test, which unwinds, std's hook follows it and prints that). Every
+//! binary calls [`init`] first thing; a test binary gets the same hook from
+//! its first call into this module. The C++ tree has no panic, and its
+//! nearest thing, the abort tier, is a `critical` line and then
+//! `std::abort()`; this hook makes a panic read the same.
 
-use std::cell::RefCell;
+use std::backtrace::Backtrace;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufWriter, IsTerminal, Stdout, Write};
 use std::marker::PhantomData;
-use std::panic::Location;
+use std::panic::{Location, PanicHookInfo};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 thread_local! {
     /// The task this thread is running, as `task@worker`; see [`TaskScope`].
     static TASK: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// Whether this thread holds the sinks: a panic raised while it does
+    /// (a `Display` that panics mid-line) must not lock them again.
+    static WRITING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The current-task record for the guard's lifetime: lines this thread
@@ -212,6 +227,7 @@ impl Logger {
         // A poisoned lock means a write panicked mid-line; the sinks are
         // still usable, and losing the log over it would be worse.
         let mut sinks = self.sinks.lock().unwrap_or_else(|e| e.into_inner());
+        let _writing = Writing::enter();
         let Sinks {
             stdout,
             colour,
@@ -242,6 +258,23 @@ impl Logger {
         if level >= LogLevel::Error {
             sinks.flush();
         }
+    }
+}
+
+/// [`WRITING`] set for the guard's lifetime.
+struct Writing;
+
+impl Writing {
+    fn enter() -> Self {
+        WRITING.set(true);
+        Writing
+    }
+}
+
+impl Drop for Writing {
+    fn drop(&mut self) {
+        // A thread being torn down has no flag left to clear.
+        let _ = WRITING.try_with(|w| w.set(false));
     }
 }
 
@@ -276,7 +309,10 @@ impl ::log::Log for Logger {
 /// [`installed`], so the exit handler can read it without installing one.
 static LOGGER: OnceLock<Logger> = OnceLock::new();
 
-/// The installed logger, installing it on first use.
+/// Whether [`panic_hook`] is installed.
+static HOOKED: AtomicBool = AtomicBool::new(false);
+
+/// The installed logger, installing it (and the panic hook) on first use.
 fn installed() -> &'static Logger {
     let mut fresh = false;
     let lg = LOGGER.get_or_init(|| {
@@ -300,7 +336,51 @@ fn installed() -> &'static Logger {
         // SAFETY: `flush_at_exit` is an `extern "C" fn()` that never unwinds.
         unsafe { libc::atexit(flush_at_exit) };
     }
+    // `set_hook` panics on a panicking thread, so a logger first touched by
+    // a `Drop` during an unwind leaves the hook to the next call.
+    if !HOOKED.load(Ordering::Relaxed)
+        && !std::thread::panicking()
+        && !HOOKED.swap(true, Ordering::Relaxed)
+    {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            panic_hook(info);
+            // Unwinding, the panic may be caught, and a test harness shows a
+            // failing test's panic through std's hook, which it captures;
+            // the critical line goes straight to stdout, past the capture.
+            if cfg!(panic = "unwind") {
+                previous(info);
+            }
+        }));
+    }
     lg
+}
+
+/// The panic hook: the panic's message as a critical line located at the
+/// panic, then, under `panic = "abort"` (a release build), the backtrace on
+/// stderr, always, as the abort is the last chance to take one
+/// (`docs/diagnostics.md`, "Panics and profiles"). Under unwinding (a test)
+/// std's hook follows it, and prints the backtrace when `RUST_BACKTRACE`
+/// asks.
+fn panic_hook(info: &PanicHookInfo<'_>) {
+    let message = info.payload_as_str().unwrap_or("Box<dyn Any>");
+    let thread = std::thread::current();
+    let name = thread.name().unwrap_or("<unnamed>");
+    let args = format_args!("thread '{name}' panicked: {message}");
+    if WRITING.try_with(Cell::get).unwrap_or(true) {
+        // This thread holds the sinks: locking them again would deadlock.
+        let at = info
+            .location()
+            .map(|l| format!(" at {l}"))
+            .unwrap_or_default();
+        eprintln!("[critical]{at} {args}");
+    } else {
+        let location = info.location().unwrap_or(Location::caller());
+        log_at(LogLevel::Critical, location, args);
+    }
+    if cfg!(panic = "abort") {
+        eprintln!("stack backtrace:\n{}", Backtrace::force_capture());
+    }
 }
 
 /// Flush the sinks as the process exits. `try_lock`, not `lock`: a thread
@@ -313,8 +393,9 @@ extern "C" fn flush_at_exit() {
     }
 }
 
-/// Install the logger at level info, if it is not installed yet. Every
-/// other function here does this too.
+/// Install the logger at level info, and the panic hook, if they are not
+/// installed yet. Every other function here does this too; a binary calls
+/// it first thing, so a panic anywhere in it is logged at critical.
 pub fn init() {
     installed();
 }
@@ -340,7 +421,7 @@ pub fn flush() {
 /// Write `args` at `level`, located at `location`: the C++ level functions'
 /// explicit-location form, for a location already held (an error's origin,
 /// a wrapper's construction site). Filtered by [`set_level`] like any line.
-pub fn log_at(level: LogLevel, location: &'static Location<'static>, args: fmt::Arguments<'_>) {
+pub fn log_at(level: LogLevel, location: &Location<'_>, args: fmt::Arguments<'_>) {
     let lg = installed();
     if lg.enabled_at(level) {
         lg.write(level, location.file(), location.line(), &args);
