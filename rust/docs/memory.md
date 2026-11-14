@@ -31,9 +31,9 @@ only through a row. Four owners, and the owner is what decides the lifetime:
 
 | Owner | Row | Lifetime | Example |
 |---|---|---|---|
-| A task | Its scratch, from `layout(dims)` | The task: its first launch to its last | The SCF's DIIS history, a kernel's `*_workspace_bytes`, a solver's `lwork` |
+| A task | Its scratch, from `layout(dims)` | The task: its first launch to its last | The SCF's DIIS history, a kernel's `*_workspace_bytes`, a solver's `lwork` and its `info` flag |
 | An edge | Its producer's output, from the producer's `layout(dims)` | The edge: the producer's first write to the last consumer's last read | S, H_core, the converged C, B and L |
-| A worker | A buffer the worker holds for every task it runs | The plan | A BLAS handle's workspace, the solver's `info` flag |
+| A worker | A buffer the worker holds for every task it runs | The plan | A BLAS handle's workspace |
 | The orchestrator | A buffer placement created | The edge it carries | A broadcast's copy on the consumer's card, a reduce's partials on the join's card |
 
 **An output's bytes are declared once.** The task's layout names the output
@@ -46,9 +46,16 @@ suggest against.
 **Per-worker rows exist so that nothing is uncounted.** Pre-flight today
 subtracts `kOwnPoolBytes` from the room by hand, the solver `info` flag that
 `DeviceResources` holds from construction and that no step's footprint can
-see. Here it is a row with the lifetime "the plan", placed by the assigner
-like any other, and the same for each library handle's workspace
-([`gpu_layer.md`](gpu_layer.md), "Layering"). A worker's rows are its own
+see. Here each library handle's workspace is a row with the lifetime "the
+plan", placed by the assigner like any other ([`gpu_layer.md`](gpu_layer.md),
+"Layering"). The flag is not: it is the `syevd` task's own, a device scratch
+row syevd writes, copied on the stream into a pinned output row that the
+`syevd check` CPU task reads ([`gpu_layer.md`](gpu_layer.md), "Scratch: the
+workspace query"). A flag the task declares is counted in its layout and
+ordered by its edges, and two eigensolves have nothing to share through a
+per-worker one. Its `lwork` scratch is a task row too, and `memcheck` sees
+only the arena block's bounds, not a row's: a `syevd` that overruns its
+`lwork` row into a neighbouring row of the same block is not caught. A worker's rows are its own
 layout, called once at planning with the plan's dimensions, and the C++
 `syevd_lwork[k]` table, the solver's query at every order the plan
 diagonalizes at, is how those dimensions already carry a library's size.
