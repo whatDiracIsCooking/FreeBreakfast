@@ -43,6 +43,8 @@
 //! | `[guess] type`, `GuessStep::type`, `GuessType::Sad` | [`GuessStep::kind`], [`GuessKind::Sad`] |
 //! | `[guess] from`, `Load<GuessStep>`, `GuessStep::load` | [`GuessStep::from`], [`fb_pipeline_guess::add_loaded_guess`], its file's header checked at planning |
 //! | `[guess] from` with another key: `loads 'from' a file, so takes no option` | the same refusal, `InvalidConfig` |
+//! | `[eri] mode`, `EriStep::mode`, `EriMode` | [`EriStep::mode`], [`EriMode::DensityFitting`] alone and required: integral-direct is not ported |
+//! | `[eri] aux_basis`, a fitting set's name or a path joined to the input directory, `<basis>-acCD-6-6` when empty | [`EriStep::aux_basis`], a compiled-in name alone and required, never joined |
 //! | the density the C++ pipeline names `d.npy` | [`Calculation::Guess`], which always writes `d.npy` |
 //! | `write_overlap_npy`, after a stream sync inside the step | [`add_write_npy`]: a download node and a write node that feeds nothing |
 //! | `-o <output_dir>`, default `fbf_output` | [`Config::output`], the same default |
@@ -96,6 +98,10 @@ pub struct Config {
     /// and refused beside any other. Optional; default a SAD guess.
     #[serde(default)]
     pub guess: Option<GuessStep>,
+    /// `[eri]`: the two-electron integrals, density-fitted. Read by no
+    /// calculation yet, so refused beside every one. Optional; no default.
+    #[serde(default)]
+    pub eri: Option<EriStep>,
 }
 
 /// `calculation`: what a run computes, and the products it writes into
@@ -168,6 +174,38 @@ pub enum GuessKind {
     Sad,
 }
 
+/// `[eri]`: the two-electron integrals, built once for every reader of the
+/// plan (`fb_pipeline_eri::add_df_eri`, which no calculation plans yet).
+///
+/// ```text
+/// [eri]
+/// mode = "density_fitting"
+/// aux_basis = "cc-pvdz-jkfit"
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EriStep {
+    /// `mode`: how the integrals are built. Required: `"density_fitting"`
+    /// is the only mode, and the C++ default, `"integral_direct"`, is not
+    /// ported, so no default stands in for it.
+    pub mode: EriMode,
+    /// `aux_basis`: the fitting set, a compiled-in name in any spelling
+    /// [`fb_io_basis::is_builtin_aux_basis`] folds (`"cc-pvdz-jkfit"`),
+    /// placed over the molecule when the run is planned. Never a path.
+    /// Required; no default (the C++ `<basis>-acCD-6-6` is not ported).
+    pub aux_basis: String,
+}
+
+/// `[eri] mode`: how the two-electron integrals are built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EriMode {
+    /// `"density_fitting"`: the fitted factor B = L⁻¹ (P|mn) over
+    /// [`EriStep::aux_basis`], with M = (P|Q) = L Lᵀ
+    /// (`fb_pipeline_eri::add_df_eri`).
+    DensityFitting,
+}
+
 fn default_output() -> PathBuf {
     PathBuf::from("fbf_output")
 }
@@ -183,7 +221,7 @@ fn default_output() -> PathBuf {
 ///   wrong type, or a `calculation` or `[guess] type` that is not one.
 /// - `InvalidConfig`, `<file>: ...` naming the table: a `[guess]` beside a
 ///   calculation other than [`Calculation::Guess`], or one with both
-///   `type` and `from`.
+///   `type` and `from`; an `[eri]`, which no calculation reads yet.
 pub fn read_config(path: &Path) -> Result<Config> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| Error::io(format!("cannot open '{}': {e}", path.display())))?;
@@ -192,6 +230,17 @@ pub fn read_config(path: &Path) -> Result<Config> {
     toml::from_str::<toml::Table>(&text).map_err(|e| refusal(ErrorKind::Io, path, &text, &e))?;
     let mut config: Config =
         toml::from_str(&text).map_err(|e| refusal(ErrorKind::InvalidConfig, path, &text, &e))?;
+    if config.eri.is_some() {
+        return Err(Error::config(format!(
+            "{}: [eri] is read by no calculation yet, and calculation = \"{}\" builds no \
+             two-electron integrals",
+            path.display(),
+            match config.calculation {
+                Calculation::Overlap => "overlap",
+                Calculation::Guess => "guess",
+            }
+        )));
+    }
     let dir = path.parent().unwrap_or(Path::new(""));
     config.molecule.xyz = dir.join(&config.molecule.xyz);
     if !fb_io_basis::is_builtin_basis(&config.basis_set.basis) {

@@ -1,0 +1,29 @@
+[package]
+name = "fb-pipeline-eri"
+description = "pipeline/eri: the density-fitted ERI step, the aux basis placed and B = L⁻¹ (P|mn) built once as tasks"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-basis.workspace = true
+fb-core-arena.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-planner.workspace = true
+fb-integrals-eri-density-fitting-fit.workspace = true
+fb-integrals-eri-density-fitting-metric.workspace = true
+fb-integrals-eri-density-fitting-three-center.workspace = true
+fb-integrals-sys.workspace = true
+fb-io-basis.workspace = true
+fb-molecule.workspace = true
+
+[dev-dependencies]
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-integrals-eri-density-fitting-jk.workspace = true
+fb-integrals-mmd.workspace = true
+fb-io-npy.workspace = true
+fb-io-xyz.workspace = true
+fb-test-support.workspace = true
