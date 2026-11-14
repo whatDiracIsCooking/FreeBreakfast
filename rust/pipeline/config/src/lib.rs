@@ -1,7 +1,8 @@
 //! `src/pipeline/config` and `src/main.cpp`: the `free-breakfast` binary's
 //! config, read from TOML, and the plan it asks for. The binary is this
 //! crate's `src/main.rs`: `free-breakfast <config.toml>` reads the config
-//! ([`read_config`]), plans it ([`plan`]), makes the output directory, runs
+//! ([`read_config`]), plans it ([`plan`], syevd's work asked of device 0
+//! when the calculation diagonalizes), makes the output directory, runs
 //! the plan once on device 0, and writes `timing.json`, the run's
 //! [`Record`](fb_core_thread_pool::Record), beside the products. Its `main`
 //! is the one place an error is logged, exiting with
@@ -12,14 +13,23 @@
 //! is emitted from the type"). `rust/examples/` holds one config per
 //! calculation, each run through the binary by `tests/examples.rs`.
 //!
-//! Two calculations exist. [`Calculation::Overlap`]: the overlap of
+//! Three calculations exist. [`Calculation::Overlap`]: the overlap of
 //! [`fb_integrals_one_electron_overlap`], then its write nodes
 //! ([`add_write_npy`]), `download overlap.npy` on the stream and
 //! `write overlap.npy` on the CPU (`docs/design.md`, "What it writes").
 //! [`Calculation::Guess`]: the initial-guess density D of
 //! [`fb_pipeline_guess`], SAD or loaded as [`GuessStep`] says, then
 //! `write d.npy` on the CPU ([`add_write_host_npy`]): D is a host row, so
-//! it needs no download.
+//! it needs no download. [`Calculation::Rhf`]: the closed-shell DF-RHF of
+//! [`fb_pipeline_scf::add_scf`] over [`fb_pipeline_eri::add_df_eri`]'s
+//! fitted integrals, from that guess, then the write nodes of `c.npy` and
+//! `d.npy` and of `scf.json`, a stream download of ε and a CPU write of it
+//! beside the last build's energy, residual and iteration count.
+//!
+//! **Neutral molecules alone.** `[molecule]` has no charge or multiplicity
+//! key, so every molecule is the neutral singlet: the C++ guess's rescale
+//! by `N / Σ Z` for an ion has nothing to do here, and a key that admits
+//! an ion must port it or refuse a charge.
 //!
 //! **Products are `.npy`.** A matrix is written as a float64 `.npy`,
 //! `n × n` in Fortran order ([`fb_io_npy::write_npy`]): the C++ tree's
@@ -44,7 +54,12 @@
 //! | `[guess] from`, `Load<GuessStep>`, `GuessStep::load` | [`GuessStep::from`], [`fb_pipeline_guess::add_loaded_guess`], its file's header checked at planning |
 //! | `[guess] from` with another key: `loads 'from' a file, so takes no option` | the same refusal, `InvalidConfig` |
 //! | `[eri] mode`, `EriStep::mode`, `EriMode` | [`EriStep::mode`], [`EriMode::DensityFitting`] alone and required: integral-direct is not ported |
-//! | `[eri] aux_basis`, a fitting set's name or a path joined to the input directory, `<basis>-acCD-6-6` when empty | [`EriStep::aux_basis`], a compiled-in name alone and required, never joined |
+//! | `[eri] aux_basis`, a fitting set's name or a path joined to the input directory, `<basis>-acCD-6-6` when empty | [`EriStep::aux_basis`], a compiled-in name alone and required, never joined, refused by [`read_config`] when not carried |
+//! | `[eri]` beside an SCF, the integral-direct default when absent | required beside [`Calculation::Rhf`], refused beside every other |
+//! | `[scf]`, `ScfStep` and its keys | [`Config::scf`], [`fb_pipeline_scf::ScfStep`] itself, its range checked by [`read_config`] |
+//! | `[molecule] charge`, `multiplicity`; the guess rescaled by `N / Σ Z` | not ported: every molecule is the neutral singlet |
+//! | the RHF calculation, `ScfStep::run` over the steps before it | [`Calculation::Rhf`], [`plan`] composing the steps' tasks; `scf.json`, `c.npy`, `d.npy` its products |
+//! | `ScfStep::molden`, `scf.molden` | not ported |
 //! | the density the C++ pipeline names `d.npy` | [`Calculation::Guess`], which always writes `d.npy` |
 //! | `write_overlap_npy`, after a stream sync inside the step | [`add_write_npy`]: a download node and a write node that feeds nothing |
 //! | `-o <output_dir>`, default `fbf_output` | [`Config::output`], the same default |
@@ -57,11 +72,18 @@ mod write;
 
 use std::path::{Path, PathBuf};
 
+use fb_core_arena::{Pinned, RowId};
 use fb_core_error_handling::{Error, ErrorKind, Result};
 use fb_core_planner::{Dag, Planned};
 use fb_integrals_mmd::add_records;
+use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
-use fb_pipeline_guess::{add_loaded_guess, add_sad_guess};
+use fb_molecule::Molecule;
+use fb_molecule_nuclei::add_nuclei;
+use fb_pipeline_eri::add_df_eri;
+use fb_pipeline_guess::{add_guess_upload, add_loaded_guess, add_sad_guess};
+use fb_pipeline_scf::{ScfStep, add_scf, occupied_orbitals};
+use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
 use serde::Deserialize;
 
 pub use write::{add_write_host_npy, add_write_npy};
@@ -79,7 +101,7 @@ pub use write::{add_write_host_npy, add_write_npy};
 /// [basis_set]
 /// basis = "cc-pvdz"
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// `calculation`: what the run computes and writes. Required; no
@@ -94,14 +116,23 @@ pub struct Config {
     pub molecule: MoleculeStep,
     /// `[basis_set]`: the orbital basis. Required.
     pub basis_set: BasisSetStep,
-    /// `[guess]`: the initial guess, read by [`Calculation::Guess`] alone
-    /// and refused beside any other. Optional; default a SAD guess.
+    /// `[guess]`: the initial guess, read by [`Calculation::Guess`] and
+    /// [`Calculation::Rhf`] and refused beside the overlap. Optional;
+    /// default a SAD guess.
     #[serde(default)]
     pub guess: Option<GuessStep>,
-    /// `[eri]`: the two-electron integrals, density-fitted. Read by no
-    /// calculation yet, so refused beside every one. Optional; no default.
+    /// `[eri]`: the two-electron integrals, density-fitted. Required by
+    /// [`Calculation::Rhf`], which has no default for it, and refused
+    /// beside every other calculation.
     #[serde(default)]
     pub eri: Option<EriStep>,
+    /// `[scf]`: the SCF loop's options, [`ScfStep`]'s fields as its keys
+    /// (`max_iterations`, `energy_tolerance` in hartree,
+    /// `commutator_tolerance`, `diis_history`), each optional at the C++
+    /// default its doc gives. Read by [`Calculation::Rhf`] alone and
+    /// refused beside any other. Optional; default every key's default.
+    #[serde(default)]
+    pub scf: Option<ScfStep>,
 }
 
 /// `calculation`: what a run computes, and the products it writes into
@@ -118,6 +149,28 @@ pub enum Calculation {
     /// [`Config::guess`] says, written as `d.npy`, `nao_sphe × nao_sphe`.
     /// Computes on the CPU alone.
     Guess,
+    /// `"rhf"`: the closed-shell restricted Hartree-Fock energy over
+    /// density-fitted integrals ([`fb_pipeline_scf::add_scf`]), from the
+    /// guess [`Config::guess`] says, over [`Config::eri`]'s fitting set,
+    /// with [`Config::scf`]'s options. Writes `scf.json`, an object of the
+    /// converged `energy` (hartree, electronic plus nuclear repulsion), its
+    /// `residual` `‖Xᵀ (F D S - S D F) X‖_F`, the Fock builds as
+    /// `iterations` and the `epsilon` array of orbital energies ascending
+    /// (hartree); `c.npy`, the orbitals, column `j` that of `epsilon[j]`;
+    /// and `d.npy`, `D = 2 C_occ C_occᵀ`, which `[guess] from` reads back;
+    /// each matrix `nao_sphe × nao_sphe`. An odd electron count is refused.
+    Rhf,
+}
+
+impl Calculation {
+    /// The value as the config spells it.
+    fn key(self) -> &'static str {
+        match self {
+            Calculation::Overlap => "overlap",
+            Calculation::Guess => "guess",
+            Calculation::Rhf => "rhf",
+        }
+    }
 }
 
 /// `[molecule]`: the geometry.
@@ -175,7 +228,7 @@ pub enum GuessKind {
 }
 
 /// `[eri]`: the two-electron integrals, built once for every reader of the
-/// plan (`fb_pipeline_eri::add_df_eri`, which no calculation plans yet).
+/// plan ([`fb_pipeline_eri::add_df_eri`]).
 ///
 /// ```text
 /// [eri]
@@ -219,9 +272,12 @@ fn default_output() -> PathBuf {
 /// - `InvalidConfig`, `<file>:<line>: ...` naming the key: a key or table
 ///   [`Config`] does not have, a required one missing, a value of the
 ///   wrong type, or a `calculation` or `[guess] type` that is not one.
-/// - `InvalidConfig`, `<file>: ...` naming the table: a `[guess]` beside a
-///   calculation other than [`Calculation::Guess`], or one with both
-///   `type` and `from`; an `[eri]`, which no calculation reads yet.
+/// - `InvalidConfig`, `<file>: ...` naming the table or the key: a
+///   `[guess]` beside [`Calculation::Overlap`], or one with both `type`
+///   and `from`; an `[eri]` or an `[scf]` beside a calculation other than
+///   [`Calculation::Rhf`], or no `[eri]` beside it; an `[eri] aux_basis`
+///   that is not a compiled-in fitting set; an `[scf]` option out of range
+///   ([`ScfStep::check`]).
 pub fn read_config(path: &Path) -> Result<Config> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| Error::io(format!("cannot open '{}': {e}", path.display())))?;
@@ -230,16 +286,37 @@ pub fn read_config(path: &Path) -> Result<Config> {
     toml::from_str::<toml::Table>(&text).map_err(|e| refusal(ErrorKind::Io, path, &text, &e))?;
     let mut config: Config =
         toml::from_str(&text).map_err(|e| refusal(ErrorKind::InvalidConfig, path, &text, &e))?;
-    if config.eri.is_some() {
-        return Err(Error::config(format!(
-            "{}: [eri] is read by no calculation yet, and calculation = \"{}\" builds no \
-             two-electron integrals",
-            path.display(),
-            match config.calculation {
-                Calculation::Overlap => "overlap",
-                Calculation::Guess => "guess",
-            }
-        )));
+    let file = path.display();
+    let rhf = config.calculation == Calculation::Rhf;
+    match &config.eri {
+        Some(_) if !rhf => {
+            return Err(Error::config(format!(
+                "{file}: [eri] is read by calculation = \"rhf\" alone, and calculation = \
+                 \"{}\" builds no two-electron integrals",
+                config.calculation.key()
+            )));
+        }
+        Some(eri) if !fb_io_basis::is_builtin_aux_basis(&eri.aux_basis) => {
+            return Err(Error::config(format!(
+                "{file}: [eri] aux_basis: '{}' is not a compiled-in fitting set",
+                eri.aux_basis
+            )));
+        }
+        None if rhf => {
+            return Err(Error::config(format!(
+                "{file}: calculation = \"rhf\" needs an [eri] table: it has no default"
+            )));
+        }
+        _ => {}
+    }
+    if let Some(scf) = &config.scf {
+        if !rhf {
+            return Err(Error::config(format!(
+                "{file}: [scf] is read by calculation = \"rhf\" alone"
+            )));
+        }
+        scf.check()
+            .map_err(|e| Error::config(format!("{file}: {}", e.message)))?;
     }
     let dir = path.parent().unwrap_or(Path::new(""));
     config.molecule.xyz = dir.join(&config.molecule.xyz);
@@ -247,9 +324,9 @@ pub fn read_config(path: &Path) -> Result<Config> {
         config.basis_set.basis = dir.join(&config.basis_set.basis).display().to_string();
     }
     if let Some(guess) = &mut config.guess {
-        if config.calculation != Calculation::Guess {
+        if config.calculation == Calculation::Overlap {
             return Err(Error::config(format!(
-                "{}: [guess] is read by calculation = \"guess\" alone",
+                "{}: [guess] is read by calculation = \"guess\" and \"rhf\" alone",
                 path.display()
             )));
         }
@@ -288,54 +365,129 @@ fn refusal(kind: ErrorKind, path: &Path, text: &str, e: &toml::de::Error) -> Err
 /// Plan the run `config` asks for, on GPU worker 0: the geometry read, the
 /// basis resolved, normalized and placed on it, then the calculation's
 /// tasks and its write nodes, each product written into
-/// [`Config::output`]. Touches no device; the output directory need not
-/// exist until the plan runs.
+/// [`Config::output`]. `lwork` maps the number of spherical AOs `n` to
+/// syevd's work at `n` on the device the plan will run on
+/// ([`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork) on a solver handle
+/// there); it is asked once, by [`Calculation::Rhf`] alone, after every
+/// refusal planning can make of the config. Touches no device unless
+/// `lwork` does; the output directory need not exist until the plan runs.
 ///
 /// For [`Calculation::Overlap`]: the records ([`add_records`]) and
 /// [`add_overlap`] over them, then [`add_write_npy`] of S to
 /// `overlap.npy`. For [`Calculation::Guess`]: [`add_sad_guess`], or
 /// [`add_loaded_guess`] when [`GuessStep::from`] is set, then
-/// [`add_write_host_npy`] of D to `d.npy`.
+/// [`add_write_host_npy`] of D to `d.npy`. For [`Calculation::Rhf`]: the
+/// nuclei ([`add_nuclei`]), the records, S and H ([`add_core_hamiltonian`])
+/// over one staging of the spherical transform, the fitted integrals
+/// ([`add_df_eri`]), that guess uploaded ([`add_guess_upload`]),
+/// `X = S^(-1/2)` ([`add_orthogonalize`], at the default floor) and the
+/// loop ([`add_scf`]); then [`add_write_npy`] of C to `c.npy` and of D to
+/// `d.npy`, and `download scf.json` (stream: ε into a pinned row) and
+/// `write scf.json` (CPU: ε beside the last build's energy, residual and
+/// count).
 ///
 /// # Errors
 /// The readers' refusals, the message led by the key that named the file
-/// (`[molecule] xyz: `, `[basis_set] basis: `, `[guess] from: `): an XYZ
-/// file that cannot be read or parsed (`Io`), a basis that is neither a
-/// compiled-in name nor a readable document (`Io`), an element the basis
-/// lacks; a loaded guess's file that cannot be opened or whose header
-/// cannot be parsed (`Io`), or whose shape is not the basis's (`InvalidConfig`),
-/// checked from its header alone ([`add_loaded_guess`]); and the kernel
-/// library's load check ([`add_records`]). The guess's data is read when
-/// the plan runs.
-pub fn plan(config: &Config) -> Result<Planned<'static>> {
-    // Charge and multiplicity enter neither the overlap nor the SAD guess,
-    // which is of neutral atoms.
+/// (`[molecule] xyz: `, `[basis_set] basis: `, `[guess] from: `,
+/// `[eri] aux_basis: `): an XYZ file that cannot be read or parsed (`Io`),
+/// a basis that is neither a compiled-in name nor a readable document
+/// (`Io`), an element the basis or the fitting set lacks; a loaded guess's
+/// file that cannot be opened or whose header cannot be parsed (`Io`), or
+/// whose shape is not the basis's (`InvalidConfig`), checked from its
+/// header alone ([`add_loaded_guess`]); for [`Calculation::Rhf`], no
+/// `[eri]`, an odd electron count ([`occupied_orbitals`]) and an option out
+/// of range ([`ScfStep::check`]), each `InvalidConfig`; `lwork`'s error;
+/// and the kernel libraries' load checks ([`add_records`], [`add_df_eri`],
+/// [`add_scf`]). The guess's data is read when the plan runs.
+pub fn plan(
+    config: &Config,
+    lwork: impl FnOnce(usize) -> Result<usize>,
+) -> Result<Planned<'static>> {
+    // Charge and multiplicity: [molecule] has no key for either, so every
+    // molecule is the neutral singlet.
     let molecule =
         fb_io_xyz::read_xyz(&config.molecule.xyz, 0, 1).map_err(|e| keyed(e, "[molecule] xyz"))?;
     let basis = fb_io_basis::resolve_basis(&config.basis_set.basis)
         .and_then(|stamp| stamp.primitive_normalized().place(&molecule))
         .map_err(|e| keyed(e, "[basis_set] basis"))?;
+    let n = basis.nao_sphe() as usize;
     let mut dag = Dag::new();
     match config.calculation {
         Calculation::Overlap => {
             dag.blas_workspace(0);
             let classes = add_records(&mut dag, 0, &basis)?;
             let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
-            let n = basis.nao_sphe() as usize;
             add_write_npy(&mut dag, 0, s, n, config.output.join("overlap.npy"));
         }
         Calculation::Guess => {
-            let from = config.guess.as_ref().and_then(|g| g.from.clone());
-            let d = match from {
-                Some(from) => add_loaded_guess(&mut dag, 0, &basis, from)
-                    .map_err(|e| keyed(e, "[guess] from"))?,
-                None => add_sad_guess(&mut dag, 0, &basis, molecule.atoms())?,
-            };
-            let n = basis.nao_sphe() as usize;
+            let d = add_guess(&mut dag, config, &basis, &molecule)?;
             add_write_host_npy(&mut dag, 0, d, n, config.output.join("d.npy"));
+        }
+        Calculation::Rhf => {
+            let Some(eri) = &config.eri else {
+                return Err(Error::config(
+                    "calculation = \"rhf\" needs an [eri] table: it has no default",
+                ));
+            };
+            let step = config.scf.clone().unwrap_or_default();
+            // Refused here, before lwork can touch a device; add_scf checks
+            // both again.
+            step.check()?;
+            occupied_orbitals(&molecule)?;
+            dag.blas_workspace(0);
+            let nuclei = add_nuclei(&mut dag, 0, &molecule);
+            let mut u = None;
+            let classes = add_records(&mut dag, 0, &basis)?;
+            let s = add_overlap(&mut dag, 0, &basis, &classes, &mut u);
+            let h = add_core_hamiltonian(&mut dag, 0, &basis, &classes, nuclei, &mut u)?;
+            let eri = add_df_eri(&mut dag, 0, &molecule, &basis, &classes, &eri.aux_basis)
+                .map_err(|e| match e.kind {
+                    ErrorKind::InvalidConfig => keyed(e, "[eri] aux_basis"),
+                    _ => e,
+                })?;
+            let guess = add_guess(&mut dag, config, &basis, &molecule)?;
+            let guess = add_guess_upload(&mut dag, 0, &basis, guess);
+            let lwork = lwork(n)?;
+            let x = add_orthogonalize(
+                &mut dag,
+                0,
+                "X",
+                n,
+                lwork,
+                s,
+                ORTHOGONALIZE_EIGENVALUE_FLOOR,
+            )?;
+            let (scalars, [eps, c, d]) = add_scf(
+                &mut dag,
+                0,
+                &step,
+                &molecule,
+                n,
+                lwork,
+                &eri,
+                [h, s, x],
+                guess,
+            )?;
+            add_write_npy(&mut dag, 0, c, n, config.output.join("c.npy"));
+            add_write_npy(&mut dag, 0, d, n, config.output.join("d.npy"));
+            write::add_write_scf_json(&mut dag, 0, scalars, eps, n, config.output.join("scf.json"));
         }
     }
     Ok(dag.plan())
+}
+
+/// The guess [`Config::guess`] asks for, on GPU worker 0's host table:
+/// [`add_loaded_guess`] when it sets `from`, else [`add_sad_guess`].
+fn add_guess(
+    dag: &mut Dag<'static>,
+    config: &Config,
+    basis: &fb_basis::BasisSet,
+    molecule: &Molecule,
+) -> Result<RowId<Pinned, f64>> {
+    match config.guess.as_ref().and_then(|g| g.from.clone()) {
+        Some(from) => add_loaded_guess(dag, 0, basis, from).map_err(|e| keyed(e, "[guess] from")),
+        None => add_sad_guess(dag, 0, basis, molecule.atoms()),
+    }
 }
 
 /// `error` with its message led by `key`, its origin kept.

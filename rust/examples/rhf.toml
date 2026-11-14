@@ -1,0 +1,23 @@
+# The closed-shell DF-RHF energy of water in cc-pVDZ over cc-pVDZ-JKFIT,
+# from the SAD guess. Writes scf.json, c.npy, d.npy and timing.json.
+calculation = "rhf"
+output = "rhf"         # relative to the working directory; default "fbf_output"
+
+[molecule]
+xyz = "water.xyz"      # Angstrom, relative to this file
+
+[basis_set]
+basis = "cc-pvdz"      # a compiled-in name, or a BSE JSON path relative to this file
+
+[guess]
+type = "sad"           # the default; or from = "d.npy", a run's D read back
+
+[eri]                  # required: no default
+mode = "density_fitting"      # the only mode
+aux_basis = "cc-pvdz-jkfit"   # a compiled-in fitting set
+
+[scf]                  # every key optional; these are the defaults
+max_iterations = 100          # Fock builds before MaxIterationsExceeded
+energy_tolerance = 1e-10      # |dE| between builds, hartree
+commutator_tolerance = 1e-7   # |X^T (F D S - S D F) X|_F
+diis_history = 8              # (F, e) pairs extrapolated over, 1 to 64

@@ -8,13 +8,18 @@
 
 use std::path::Path;
 use std::process::ExitCode;
+use std::rc::Rc;
 
 use fb_core_error_handling::{Error, Status};
 use fb_core_log::{self as log, LogLevel};
 use fb_core_thread_pool::default_n_cpu;
+use fb_core_wwr::runtime::Stream;
+use fb_core_wwr::solver::SolverHandle;
 use fb_pipeline_config::{plan, read_config};
+use fb_recipes_diagonalize::syevd_lwork;
 
-/// Read, plan, make the output directory, run, and write `timing.json`.
+/// Read, plan (syevd's work asked of a solver handle on device 0, if the
+/// plan asks), make the output directory, run, and write `timing.json`.
 /// Everything a config can get wrong is refused before a device is touched.
 fn run(args: &[String]) -> Status {
     let [_, config] = args else {
@@ -22,7 +27,9 @@ fn run(args: &[String]) -> Status {
         return Err(Error::config(format!("usage: {program} <config.toml>")));
     };
     let config = read_config(Path::new(config))?;
-    let planned = plan(&config)?;
+    let planned = plan(&config, |n| {
+        syevd_lwork(&SolverHandle::new(Rc::new(Stream::new(0))), n)
+    })?;
     std::fs::create_dir_all(&config.output).map_err(|e| {
         Error::io(format!(
             "cannot make the output directory '{}': {e}",

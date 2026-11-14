@@ -31,6 +31,7 @@ fb-recipes-diis.workspace = true
 fb-recipes-orthogonalize.workspace = true
 fb-recipes-sys.workspace = true
 log.workspace = true
+serde.workspace = true
 # BLAS for the ops the iteration's geams, gemms and gemvs take.
 wwr-sys = { workspace = true, features = ["blas"] }
 

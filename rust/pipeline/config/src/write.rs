@@ -1,14 +1,16 @@
 //! Write nodes: a device matrix copied into a pinned row on the stream,
 //! then written to disk by a CPU node that feeds nothing, or a pinned row
-//! written by that node alone (`docs/design.md`, "What it writes").
+//! written by that node alone (`docs/design.md`, "What it writes"); and
+//! the SCF's `scf.json`, the same two nodes over ε.
 
 use std::path::PathBuf;
 
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
-use fb_core_error_handling::Status;
+use fb_core_error_handling::{Error, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_io_npy::NpyArray;
+use serde_json::json;
 
 /// Add the writing of the device matrix `m`, `n × n` doubles column-major,
 /// to the `.npy` file `path` to `dag` on GPU worker `worker`.
@@ -44,6 +46,7 @@ pub fn add_write_npy(
             m,
             row: file.clone(),
             n,
+            len: n * n,
         },
     );
     add_write_host_npy(dag, worker, pinned, n, path);
@@ -78,11 +81,54 @@ pub fn add_write_host_npy(
     );
 }
 
-/// GPU: the matrix, `n²` doubles, copied into a pinned row on the stream.
+/// Add the writing of an SCF's results to the JSON file `path` to `dag` on
+/// GPU worker `worker`: `scalars`, the pinned `[E, ‖e‖, builds]` of
+/// [`fb_pipeline_scf::add_scf`], and `eps`, its device row of the `n`
+/// orbital energies. Two tasks: `download scf.json` (stream: ε copied into
+/// a pinned row) and `write scf.json` (CPU: the object `{"energy",
+/// "residual", "iterations", "epsilon"}`, each double at full precision).
+/// The write feeds nothing, and the directory must exist when the plan
+/// runs.
+///
+/// # Panics
+/// If a row is of another worker's table ([`Dag::add`]).
+pub(crate) fn add_write_scf_json(
+    dag: &mut Dag<'_>,
+    worker: usize,
+    scalars: RowId<Pinned, f64>,
+    eps: RowId<Device, f64>,
+    n: usize,
+    path: PathBuf,
+) {
+    let epsilon = dag.add(
+        "download scf.json",
+        worker,
+        Download {
+            m: eps,
+            row: "epsilon".into(),
+            n,
+            len: n,
+        },
+    );
+    dag.add(
+        "write scf.json",
+        worker,
+        WriteScf {
+            scalars,
+            epsilon,
+            n,
+            path,
+        },
+    );
+}
+
+/// GPU: a device row of `len` doubles, of a dimension `n`, copied into a
+/// pinned row on the stream.
 struct Download {
     m: RowId<Device, f64>,
     row: String,
     n: usize,
+    len: usize,
 }
 
 impl Task for Download {
@@ -91,7 +137,7 @@ impl Task for Download {
 
     fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
         device.read(self.m);
-        host.output(&self.row, self.n * self.n)
+        host.output(&self.row, self.len)
     }
 
     fn dims(&self) -> Vec<(&'static str, usize)> {
@@ -147,5 +193,48 @@ impl Task for Write {
                 data: memcpy_p2h(host, self.pinned),
             },
         )
+    }
+}
+
+/// CPU: the SCF's scalars and ε written to disk as JSON.
+struct WriteScf {
+    scalars: RowId<Pinned, f64>,
+    epsilon: RowId<Pinned, f64>,
+    n: usize,
+    path: PathBuf,
+}
+
+impl Task for WriteScf {
+    type Rows = ();
+    const GPU: bool = false;
+
+    fn layout(&self, _: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) {
+        host.read(self.scalars);
+        host.read(self.epsilon);
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![("n", self.n)]
+    }
+
+    fn run(
+        &self,
+        _: &(),
+        _: &Bufs<'_, Device>,
+        host: &Bufs<'_, Pinned>,
+        _: Lane<'_, DeviceStream>,
+    ) -> Status {
+        let [energy, residual, builds] = host.get(self.scalars)[..] else {
+            unreachable!("add_scf's scalars are [E, |e|, builds]")
+        };
+        let text = json!({
+            "energy": energy,
+            "residual": residual,
+            // A whole number the loop's decision wrote.
+            "iterations": builds as usize,
+            "epsilon": memcpy_p2h(host, self.epsilon),
+        });
+        std::fs::write(&self.path, format!("{text:#}\n"))
+            .map_err(|e| Error::io(format!("cannot write '{}': {e}", self.path.display())))
     }
 }
