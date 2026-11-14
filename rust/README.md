@@ -55,7 +55,7 @@ tree, not inputs to its build.
 | `fb_core_primitives` | `src/core/primitives`, what the host modules name | `double_factorial_odd`, `factorial`, `binomial` as `const fn`, bitwise the C++ loops. `idivup` / `align_up` are `div_ceil` / `next_multiple_of`, and the element-wise functions `f64`'s methods |
 | `fb_core_constants` | `src/core/constants`, what the host modules name | `BOHR_PER_ANGSTROM`, `kBohrPerAngstrom<double>`, asserted against the C++ double's bit pattern |
 | `fb_atom` | `src/atom` | `Element` (`#[repr(u8)]`, Z as the discriminant, `Sentinel` = 0), `z` / `from_z`, `symbol` / `from_symbol` (case-insensitive, `Sentinel` for none), and `Atom`, a `Double3` position in bohr and an `Element` |
-| `fb_molecule` | `src/molecule`, its host half | `Molecule` as host data (atoms, charge, multiplicity; no atoms aborts), `distance`, `nuclear_charge`, `electron_count`, and the nuclear repulsion energy, gradient and Hessian. The nuclei on the device (`view`, `NucleiView`, `molecule_footprint`) become an upload task when nuclear attraction is ported |
+| `fb_molecule` | `src/molecule`, its host half | `Molecule` as host data (atoms, charge, multiplicity; no atoms aborts), `distance`, `nuclear_charge`, `electron_count`, and the nuclear repulsion energy, gradient and Hessian. The nuclei on the device (`view`, `NucleiView`, `molecule_footprint`) are `fb_molecule_nuclei`'s upload task |
 | `fb_basis` | `src/basis` | `Shell` and `Primitive`, the counts (`function_count_cart` / `function_count_sphe`) and `MAX_ANGULAR_MOMENTUM` (3, the C++ `kMaxAngularMomentum`), `cartesian_powers` and `Ao`, `solid_harmonic_block`, `BasisSet` (its Cartesian and spherical AO layouts, the per-atom shell grouping, the name) and `spherical_transform_matrix`, `ShellStamp` with `primitive_normalized` and `place`, and `BasisStamp` with `place` onto a `Molecule`. Contractions are not renormalized, as in the C++ |
 | `fb_recipes_sys` | `src/recipes/sort`'s merge sort, forked to `recipes/kernels/` (with the device headers it includes, trimmed, in `device_headers/`) | The raw FFI over `libfb_recipes_kernels.so`, built by `CMakeLists.txt` here: `fb_merge_sort`, an `extern "C"` launch wrapper that only enqueues, its `fb_merge_sort_workspace_bytes` query, `fb_launch_status` and `FB_DEVICE_ALIGNMENT` (`docs/gpu_layer.md`, "Layering"), and `check_library()`, the load check of the library's ABI version and backend, compared by `fb-kernel-abi`. The bindings are generated from `recipes/kernels/fb_recipes.h` by `devtools/rust-bindings.py` and committed |
 | `fb_integrals_sys` | `src/integrals/mmd`'s launchers (order, records, bound, dressed bound) and `src/integrals/one_electron/{overlap,kinetic,potential_en}`'s, forked to `integrals/kernels/` with the FelizJueves units they launch (`pair_bound`, `record_bound`, the overlap's, kinetic energy's and nuclear attraction's ten classes each, and the Boys routine `eval_boys.h` the last include, emitted there by `tools/emit/*.py --out-root`) | The raw FFI over `libfb_integrals_kernels.so`, which links `libfb_recipes_kernels.so` for the order's sort: `fb_mmd_order` (with `fb_mmd_order_workspace_bytes`), `fb_mmd_records`, `fb_mmd_bound`, `fb_ordered_pair_bound`, `fb_overlap_class`, `fb_kinetic_class` and `fb_potential_en_class`, each an `extern "C"` launch wrapper that only enqueues and refuses a class outside its table as `FB_LAUNCH_UNSUPPORTED`; the tables' limits (`FB_*_MAX_MOMENTUM`); and the four structs that cross by pointer, `fb_primitive_pair_class_view`, `fb_primitive_pair_source`, `fb_primitive_pair_records` and `fb_nuclei_view` (`src/molecule`'s `NucleiView`), `#[repr(C)]` with their layout asserted on both sides; and `check_library()`, as in `fb_recipes_sys`. The bindings are generated from `integrals/kernels/fb_integrals.h` and committed |
@@ -71,6 +71,7 @@ tree, not inputs to its build.
 | `fb_io_sad` | `src/io/sad` | `builtin_sad_density`, `fb-sad`'s `SadStampLookup`: every `data/sad/<basis>/<Z>.npy` compiled in with `include_bytes!` (the table written by `build.rs`), found by the directory name compared exactly with `BasisSet::name` and the atomic number, parsed by `fb-io-npy`; bytes that are not a square matrix abort. A directory naming no `data/basis` set fails a unit test, a stem that is not a three-digit Z the build |
 | `fb_integrals_one_electron_kinetic` | `src/integrals/one_electron/kinetic`'s `kinetic` and its bridge's `kinetic_class` | `kinetic_classes`, the safe layer over `fb_kinetic_class`: every class's launch on one stream into a Cartesian matrix the caller zeroed, the launcher's requirements (`la <= lb <= FB_KINETIC_MAX_MOMENTUM`, records present, `n_cart²` within `i32` and the matrix that long) as `debug_requires`, callable by a task that launches several families into one matrix. `add_kinetic`: T of a `BasisSet` as tasks after the records, `kinetic` on the stream (the Cartesian matrix zeroed, then `kinetic_classes`, reading `ClassRows` as an edge), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/kinetic/tests/golden/plan_*.txt` |
 | `fb_pipeline_guess` | `src/pipeline/guess`, and `src/sad`'s task form | The Guess step as tasks of a `Dag`: `add_sad_guess`, one CPU node per distinct (Z, shells) stamp known from the basis at planning (`baked stamp <symbol>`, parsed by `fb-io-sad`, when the basis carries a name and the stamp is compiled in; `atomic scf <symbol>`, `fb-sad`'s SCF, otherwise, so a path-read basis runs every one), each into a host row, then `sad guess` on the CPU placing them into D, bitwise the serial `sad_density`; the first failing stamp in stamp order is the run's error. `add_loaded_guess`, the step's `load`: one CPU node reading D from a `.npy` file. Both generic over the host kind and stream, so their tier 3 runs on `Heap` rows and `HostOnly` workers; `add_guess_upload` copies D on the worker's stream into a device row. The plan text for formaldehyde in cc-pVDZ, by name and by path, is the committed golden `pipeline/guess/tests/golden/plan_*.txt` |
+| `fb_molecule_nuclei` | `src/molecule`, its device half (`Molecule`'s `upload`, `view`, `NucleiView`, `molecule_footprint`) | `add_nuclei`: a `Molecule`'s nuclei as two tasks of a `Dag`, `nuclei` on the CPU (each nucleus's charge and position, in atom order, into two pinned rows, `n` and `3 n` doubles) and `nuclei upload` on the stream (both copied into device rows), and `NucleiRows`, `n_nuc` and those two device rows, which a reader declares with `NucleiRows::read` and hands its launch wrapper as an `fb_nuclei_view` of their pointers. A crate beside `fb_molecule`, so that one links nothing. Every size is the molecule's, at planning; the plan text for H2O and CO is the committed golden `molecule/nuclei/tests/golden/plan_*.txt` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -98,7 +99,8 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `error_handling`; and `integrals/one_electron/kinetic` on `integrals/mmd`,
 `recipes/matrix_ao` and what they stand on; `pipeline/guess` on `sad`,
 `io/sad`, `io/npy`, `basis`, `atom`, `planner`, `arena`, `thread_pool`,
-`wwr` and `error_handling`.
+`wwr` and `error_handling`; and `molecule/nuclei` on `molecule`,
+`planner`, `arena`, `thread_pool`, `wwr` and `error_handling`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -230,11 +232,13 @@ crates' own device tests need beyond `device`; a dependent asks for
 the thread pool turn their defaults off, so nothing turns them on by
 accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`,
 `fb-integrals-sys`, `fb-integrals-mmd`,
-`fb-integrals-one-electron-overlap` and `fb-recipes-matrix-ao` always
-link; the records' layout asks
-the kernel library for the sort's workspace at planning, so even the last
-two's device-free tests (the host tables, the plan goldens) need the
-library built. Use a
+`fb-integrals-one-electron-overlap`, `fb-recipes-matrix-ao` and
+`fb-molecule-nuclei` always link; the records' layout asks
+the kernel library for the sort's workspace at planning, so even the
+overlap's and the transform's device-free tests (the host tables, the plan
+goldens) need the library built. `fb-molecule-nuclei` links wwr alone,
+through the planner, so its device-free tests (the plan goldens, the
+staged rows on `HostOnly`) need no kernel library. Use a
 separate `CARGO_TARGET_DIR` per backend, and another for
 `--no-default-features`: each `build.rs` bakes the library's path into the
 rpath.
@@ -718,3 +722,15 @@ about `2.9e-11` for each. The script, run on the overlap's CO fixture,
 rewrites the overlap's committed S byte for byte. Clippy (`-D warnings`,
 the new crate with its tests too), rustdoc (`-D warnings`) and `cargo fmt
 --check` are clean. Not run on the gfx1200.
+
+2026-11-14, `molecule/nuclei` (a `Molecule`'s nuclei on the device as two
+tasks, `nuclei` and `nuclei upload`), on the RTX 3080 (CUDA), holding the
+card, linking the libraries the `default` preset built: `devtools/test.py
+pr --only cargo --all` passes, tier 3 195 tests, none in the new crate,
+tier 4 100, the 3 new its unit tests: the plan goldens for H2O and CO, the
+staged rows equal to the molecule's charges and positions bitwise on heap
+blocks and a `HostOnly` worker, and the device rows copied back equal to
+them bitwise on the card. `cargo tree -p fb-molecule --no-default-features`
+names no wwr crate. Clippy (`-D warnings`, the new crate with its tests
+too), rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not run on
+the gfx1200.

@@ -1,0 +1,24 @@
+[package]
+name = "fb-molecule-nuclei"
+description = "molecule/nuclei: a molecule's nuclei on the device, as an upload task"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-core-arena.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-planner.workspace = true
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-core-wwr.workspace = true
+fb-molecule.workspace = true
+wwr-sys.workspace = true
+
+[dev-dependencies]
+fb-atom.workspace = true
+fb-core-arena = { workspace = true, features = ["test-support"] }
+fb-core-types.workspace = true
+fb-test-support.workspace = true
