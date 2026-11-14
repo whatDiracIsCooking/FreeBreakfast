@@ -1,6 +1,6 @@
 //! Copy nodes: a copy between kinds that is a node's whole work, added by
 //! the planner in one line (`docs/memory.md`, "The table"). A task never
-//! writes one by hand; the planner's two are the only `GpuTask`s whose
+//! writes one by hand; the planner's three are the only `GpuTask`s whose
 //! `run` is a copy alone (`doc_check/tests/code_rules.rs`).
 
 use fb_core_arena::{
@@ -63,6 +63,34 @@ impl<'a> Dag<'a, Pinned, DeviceStream> {
                 src,
                 name: name.to_owned(),
                 len,
+            },
+        )
+    }
+
+    /// Add the download of the device rows `rows`, each `(src, name, len)`
+    /// as [`Dag::download`] takes its three, to new pinned output rows of
+    /// those names and lengths, which it returns in their order: one node
+    /// on lane `at`, `download <name>`, with the dimensions `rows` (their
+    /// count) and `len` (their elements together). Its copies share one
+    /// stream scope and one event, so a reader of every row waits once,
+    /// where a [`Dag::download`] per row is a node, an event and a wait
+    /// each. Rows of two element types are two of these nodes.
+    ///
+    /// # Panics
+    /// If a source is a row of another worker's table ([`Dag::add_gpu`]);
+    /// and when the plan runs, if a source is not its `len` long
+    /// (`memcpy_d2p`).
+    pub fn download_rows<T: Element>(
+        &mut self,
+        at: impl Into<LaneId>,
+        name: &str,
+        rows: impl IntoIterator<Item = (RowId<Device, T>, String, usize)>,
+    ) -> Vec<RowId<Pinned, T>> {
+        self.add_gpu(
+            format!("download {name}"),
+            at,
+            DownloadRows {
+                rows: rows.into_iter().collect(),
             },
         )
     }
@@ -141,6 +169,54 @@ impl<T: Element> GpuTask for Download<T> {
         stream: &DeviceStream,
     ) -> Status {
         memcpy_d2p(pinned, *dst, device.get(self.src), stream)
+    }
+}
+
+/// GPU: device rows copied into pinned rows on the worker's stream, one
+/// node for them all.
+struct DownloadRows<T> {
+    rows: Vec<(RowId<Device, T>, String, usize)>,
+}
+
+impl<T: Element> GpuTask for DownloadRows<T> {
+    type Rows = Vec<RowId<Pinned, T>>;
+
+    fn layout(
+        &self,
+        device: &mut Layout<'_, Device>,
+        pinned: &mut Layout<'_, Pinned>,
+    ) -> Self::Rows {
+        self.rows
+            .iter()
+            .map(|&(src, ref name, len)| {
+                device.read(src);
+                pinned.output(name, len)
+            })
+            .collect()
+    }
+
+    fn dims(&self) -> Vec<(&'static str, usize)> {
+        vec![
+            ("rows", self.rows.len()),
+            ("len", self.rows.iter().map(|r| r.2).sum()),
+        ]
+    }
+
+    fn uses_libraries(&self) -> bool {
+        false
+    }
+
+    fn run(
+        &self,
+        dst: &Self::Rows,
+        device: &Bufs<'_, Device>,
+        pinned: &CopyOnly<'_, Pinned>,
+        stream: &DeviceStream,
+    ) -> Status {
+        for (&(src, _, _), &dst) in self.rows.iter().zip(dst) {
+            memcpy_d2p(pinned, dst, device.get(src), stream)?;
+        }
+        Ok(())
     }
 }
 
@@ -224,5 +300,37 @@ mod tests {
             text.contains("  stream0  download x back: after "),
             "{text}"
         );
+    }
+
+    /// A download of several rows is one stream node named after its
+    /// label, a pinned row of each name and length in their order, after
+    /// the producers of its sources, and before a reader of any of them.
+    #[test]
+    fn a_download_of_rows_is_one_node() {
+        let mut dag = Dag::new();
+        let x = dag.add_cpu("stage", 0, Stage(8));
+        let y = dag.add_cpu("stage", 0, Stage(3));
+        let dx = dag.upload(0, x, "x", 8);
+        let dy = dag.upload(0, y, "y", 3);
+        let back = dag.download_rows(
+            0,
+            "both",
+            [(dx, "x back".into(), 8), (dy, "y back".into(), 3)],
+        );
+        dag.add_cpu("read", 0, Read(back[1]));
+        let planned = dag.plan();
+        assert!(planned.predecessors(4).contains(&2));
+        assert!(planned.predecessors(4).contains(&3));
+        assert!(planned.predecessors(5).contains(&4));
+        assert_eq!(back.len(), 2);
+        assert_eq!(planned.host_table(0).len(back[0]), 8);
+        assert_eq!(planned.host_table(0).len(back[1]), 3);
+        let text = planned.to_string();
+        assert!(
+            text.contains("    4       0  stream  download both: after 0 1 2 3\n"),
+            "{text}"
+        );
+        assert!(text.contains("x back: 4w\n"), "{text}");
+        assert!(text.contains("y back: 4w 5r\n"), "{text}");
     }
 }

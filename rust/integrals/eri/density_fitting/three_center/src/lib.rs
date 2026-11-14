@@ -16,12 +16,13 @@
 //! [`add_three_center`] adds, after the kernel library's load check and the
 //! kernels' limits at planning, `harmonics` and `upload U` for
 //! each basis whose U the caller's slot does not hold yet
-//! ([`add_harmonics`]), and the three tasks
+//! ([`add_harmonics`]), and the four tasks
 //! of [`fb_integrals_sys::add_three_center_tasks`]:
 //!
-//! - **`three-center download`**, on the worker's stream: the orbital
-//!   records' bra fields (`fb_integrals_mmd`'s, read as an edge) into
-//!   pinned rows.
+//! - **`download three-center bra`** and **`download three-center
+//!   offsets`**, the planner's copy nodes on the worker's stream: the
+//!   orbital records' bra fields and AO offsets (`fb_integrals_mmd`'s,
+//!   read as edges) into pinned rows.
 //! - **`three-center tables`**, on the CPU: those records regrouped by
 //!   shell pair, the aux records (the metric's, one per aux primitive,
 //!   `s = c (π/α)^{3/2}`) into one pinned row, and the cells, one per
@@ -45,7 +46,7 @@
 //! |---|---|
 //! | `three_center(res, basis, classes, aux, b, max_bytes)`, into the caller's `b` | [`add_three_center`]`(dag, worker, basis, classes, aux, u, u_aux)`, returning (mn\|P)'s row; the slots of U and U_aux passed in, as every transform takes them |
 //! | U and U_aux staged with the records and cells | the plan's device rows of U and U_aux ([`add_harmonics`]), each copied up once for every reader over its basis on the worker and read by the last task |
-//! | `mmd`'s records copied back and regrouped on the host, the call synchronizing after the copy | `three-center download` and `three-center tables`: a stream task, its pinned outputs read by a CPU task after the executor waits on its event |
+//! | `mmd`'s records copied back and regrouped on the host, the call synchronizing after the copy | `download three-center bra`, `download three-center offsets` and `three-center tables`: two copy nodes, their pinned outputs read by a CPU task after the executor waits on their events |
 //! | the staging, the cells, the Cartesian tensor and the work, the call's own buffers | pinned rows and the stream task's device scratch, all in the plan's arena |
 //! | `three_center_class` per class, `gemm` and `gemmStridedBatched` (`recipes/blas`, wwr) | [`fb_integrals_sys::add_three_center_tasks`], over `fb_core_wwr::blas`'s `gemm` and `gemm_strided_batched` |
 //! | `three_center_symmetrize`, out of place into `b` | the same, into the output row |
@@ -84,8 +85,8 @@ use fb_recipes_matrix_ao::add_harmonics;
 /// of each (the metric's transform takes `u_aux`'s): `harmonics` (CPU)
 /// and `upload U` (stream) are added for each that is `None`, and
 /// U's device row left there ([`add_harmonics`]). The tasks are then
-/// `three-center download` (stream), `three-center tables` (CPU) and
-/// `three-center` (stream), which reads U and U_aux and whose scratch holds
+/// `download three-center bra` and `download three-center offsets`
+/// (stream), `three-center tables` (CPU) and `three-center` (stream), which reads U and U_aux and whose scratch holds
 /// the Cartesian tensor (`naux_cart · nao_cart²` doubles) and the
 /// transform's intermediate (`naux · nao_cart²`).
 ///

@@ -84,7 +84,11 @@ work, a pinned row up to the device or a device row down to a pinned one,
 is a copy node the planner adds: `Dag::upload` and `Dag::download`, one
 line for the caller, each returning the new row, named after it
 (`upload <row>`, `download <row>`), and timed, admitted and ordered like
-any other node. Its rows are ordinary rows, the source read and the
+any other node. Rows that one reader waits for together come down in one
+node, `Dag::download_rows`, the rows of one element type each named by
+the caller and the node by a label (`download <label>`): one event and
+one wait for them all, where a node per row costs an event and a wait
+each. Its rows are ordinary rows, the source read and the
 destination an output, so admission counts them and the edges order them.
 A task never writes such a copy by hand; a copy inside a task's larger
 work, a solver's `info` flag down beside its launch, stays the task's.
@@ -547,9 +551,9 @@ can name. In it:
   device row is a pointer-and-length view with no `Deref`. A stream node's
   pinned view is wrapped in a `CopyOnly`, which yields no slice and which
   only `memcpy_p2d` and `memcpy_d2p` take.
-- `core::planner`'s `Dag::upload` and `Dag::download`, the copy nodes
-  ("The table"): the only `GpuTask`s whose `run` is a copy between kinds
-  alone, so a pinned-to-device or device-to-pinned move is one line at
+- `core::planner`'s `Dag::upload`, `Dag::download` and
+  `Dag::download_rows`, the copy nodes ("The table"): the only `GpuTask`s
+  whose `run` is a copy between kinds alone, so a pinned-to-device or device-to-pinned move is one line at
   its caller, on whichever lane of the worker the caller names.
 
 **The view's checks are always on, not `debug_requires`.** Two nodes
