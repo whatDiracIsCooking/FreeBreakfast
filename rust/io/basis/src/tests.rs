@@ -371,10 +371,8 @@ fn parse_and_assign_lays_the_basis_over_the_molecule() {
     assert_eq!(basis.nshells(), 8);
     assert_eq!(basis.nao_cart(), 1 + 1 + 3 + 1 + 1 + 6 + 1 + 1);
     assert_eq!(basis.nao_sphe(), basis.nao_cart() - 1); // d: 5, not 6
-    assert_eq!(
-        fb_basis::spherical_transform_matrix(&basis).len(),
-        basis.nao_cart() as usize * basis.nao_sphe() as usize
-    );
+    let mut u = vec![0.0; basis.nao_cart() as usize * basis.nao_sphe() as usize];
+    fb_basis::spherical_transform_matrix(&basis, &mut u);
     assert_eq!(basis.shells()[6].center().y, 1.4309);
     assert_eq!(basis.shells()[7].center().y, -1.4309);
 }

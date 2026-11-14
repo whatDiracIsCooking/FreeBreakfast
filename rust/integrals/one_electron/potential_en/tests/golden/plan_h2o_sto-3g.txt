@@ -1,115 +1,116 @@
-plan: 10 tasks, GPU workers: 1
+plan: 11 tasks, GPU workers: 1
  task  worker  lane    name: after
     0       0  cpu     nuclei
-    1       0  stream  nuclei upload: after 0
-    2       0  cpu     mmd tables: after 0 1
-    3       0  stream  mmd records: after 2
-    4       0  stream  potential en: after 1 3
-    5       0  cpu     harmonics: after 0 1 2 3
-    6       0  stream  harmonics upload: after 1 4 5
-    7       0  stream  spherical transform: after 3 4 6
-    8       0  stream  download: after 0 1 2 3 5 6 7
-    9       0  cpu     collect: after 8
+    1       0  stream  upload nuclei z: after 0
+    2       0  stream  upload nuclei c: after 0
+    3       0  cpu     mmd tables: after 0 1 2
+    4       0  stream  mmd records: after 3
+    5       0  stream  potential en: after 1 2 4
+    6       0  cpu     harmonics: after 0 1 2 3 4
+    7       0  stream  upload U: after 1 2 5 6
+    8       0  stream  spherical transform: after 4 5 7
+    9       0  stream  download: after 0 1 2 3 4 6 7 8
+   10       0  cpu     collect: after 9
 worker 0 device table: 80 rows, 33044 bytes
-peak: 21232 bytes at node 3
+peak: 21232 bytes at node 4
     offset      bytes  owner   life     name: users (w writes, r reads)
-       256         24  edge    1-4      nuclei z: 1w 4r
-         0         72  edge    1-4      nuclei c: 1w 4r
-     32512         24  task    3-3      prim_begin: 3w
-     25344        120  task    3-3      exponent: 3w
-     25600        120  task    3-3      coefficient: 3w
-     30720         40  task    3-3      c_x: 3w
-     30976         40  task    3-3      c_y: 3w
-     31232         40  task    3-3      c_z: 3w
-     32768         20  task    3-3      ao_offset: 3w
-     33024         20  task    3-3      rank: 3w
-     30208         60  task    3-3      bra: 3w
-     30464         60  task    3-3      ket: 3w
-     25856         72  task    3-3      rec_begin: 3w
-       512        720  task    3-3      order key: 3w
-     13568        360  task    3-3      order perm: 3w
-         0          0  task    3-3      order workspace: 3w
-      1280        720  edge    3-4      zeta (0,0): 3w 4r
-      2048        720  edge    3-4      p_x (0,0): 3w 4r
-      2816        720  edge    3-4      p_y (0,0): 3w 4r
-      3584        720  edge    3-4      p_z (0,0): 3w 4r
-      4352        720  edge    3-4      pa_x (0,0): 3w 4r
-      5120        720  edge    3-4      pa_y (0,0): 3w 4r
-      5888        720  edge    3-4      pa_z (0,0): 3w 4r
-      6656        720  edge    3-4      pb_x (0,0): 3w 4r
-      7424        720  edge    3-4      pb_y (0,0): 3w 4r
-      8192        720  edge    3-4      pb_z (0,0): 3w 4r
-      8960        720  edge    3-4      s (0,0): 3w 4r
-      9728        720  edge    3-3      ea (0,0): 3w
-     10496        720  edge    3-3      eb (0,0): 3w
-     11264        720  edge    3-3      bound (0,0): 3w
-     12032        720  edge    3-3      bound_ab (0,0): 3w
-     12800        720  edge    3-3      bound_ba (0,0): 3w
-     14080        360  edge    3-4      off_a (0,0): 3w 4r
-     14592        360  edge    3-4      off_b (0,0): 3w 4r
-     15104        360  edge    3-3      rank_a (0,0): 3w
-     15616        360  edge    3-3      rank_b (0,0): 3w
-     16128        288  edge    3-4      zeta (0,1): 3w 4r
-     16640        288  edge    3-4      p_x (0,1): 3w 4r
-     17152        288  edge    3-4      p_y (0,1): 3w 4r
-     17664        288  edge    3-4      p_z (0,1): 3w 4r
-     18176        288  edge    3-4      pa_x (0,1): 3w 4r
-     18688        288  edge    3-4      pa_y (0,1): 3w 4r
-     19200        288  edge    3-4      pa_z (0,1): 3w 4r
-     19712        288  edge    3-4      pb_x (0,1): 3w 4r
-     20224        288  edge    3-4      pb_y (0,1): 3w 4r
-     20736        288  edge    3-4      pb_z (0,1): 3w 4r
-     21248        288  edge    3-4      s (0,1): 3w 4r
-     21760        288  edge    3-3      ea (0,1): 3w
-     22272        288  edge    3-3      eb (0,1): 3w
-     22784        288  edge    3-3      bound (0,1): 3w
-     23296        288  edge    3-3      bound_ab (0,1): 3w
-     23808        288  edge    3-3      bound_ba (0,1): 3w
-     24320        144  edge    3-4      off_a (0,1): 3w 4r
-     24576        144  edge    3-4      off_b (0,1): 3w 4r
-     24832        144  edge    3-3      rank_a (0,1): 3w
-     25088        144  edge    3-3      rank_b (0,1): 3w
-     26112         72  edge    3-4      zeta (1,1): 3w 4r
-     26368         72  edge    3-4      p_x (1,1): 3w 4r
-     26624         72  edge    3-4      p_y (1,1): 3w 4r
-     26880         72  edge    3-4      p_z (1,1): 3w 4r
-     27136         72  edge    3-4      pa_x (1,1): 3w 4r
-     27392         72  edge    3-4      pa_y (1,1): 3w 4r
-     27648         72  edge    3-4      pa_z (1,1): 3w 4r
-     27904         72  edge    3-4      pb_x (1,1): 3w 4r
-     28160         72  edge    3-4      pb_y (1,1): 3w 4r
-     28416         72  edge    3-4      pb_z (1,1): 3w 4r
-     28672         72  edge    3-4      s (1,1): 3w 4r
-     28928         72  edge    3-3      ea (1,1): 3w
-     29184         72  edge    3-3      eb (1,1): 3w
-     29440         72  edge    3-3      bound (1,1): 3w
-     29696         72  edge    3-3      bound_ab (1,1): 3w
-     29952         72  edge    3-3      bound_ba (1,1): 3w
-     31488         36  edge    3-4      off_a (1,1): 3w 4r
-     31744         36  edge    3-4      off_b (1,1): 3w 4r
-     32000         36  edge    3-3      rank_a (1,1): 3w
-     32256         36  edge    3-3      rank_b (1,1): 3w
-       512        392  edge    4-7      V cartesian: 4w 7r
-         0        392  edge    6-7      U: 6w 7r
-      1024        392  task    7-7      V U: 7w
-      1536        392  edge    7-8      V: 7w 8r
-handoffs: 1->6 3->4 3->7 4->6 4->7
+         0         24  edge    1-5      nuclei z: 1w 5r
+       256         72  edge    2-5      nuclei c: 2w 5r
+     32512         24  task    4-4      prim_begin: 4w
+     25344        120  task    4-4      exponent: 4w
+     25600        120  task    4-4      coefficient: 4w
+     30720         40  task    4-4      c_x: 4w
+     30976         40  task    4-4      c_y: 4w
+     31232         40  task    4-4      c_z: 4w
+     32768         20  task    4-4      ao_offset: 4w
+     33024         20  task    4-4      rank: 4w
+     30208         60  task    4-4      bra: 4w
+     30464         60  task    4-4      ket: 4w
+     25856         72  task    4-4      rec_begin: 4w
+       512        720  task    4-4      order key: 4w
+     13568        360  task    4-4      order perm: 4w
+         0          0  task    4-4      order workspace: 4w
+      1280        720  edge    4-5      zeta (0,0): 4w 5r
+      2048        720  edge    4-5      p_x (0,0): 4w 5r
+      2816        720  edge    4-5      p_y (0,0): 4w 5r
+      3584        720  edge    4-5      p_z (0,0): 4w 5r
+      4352        720  edge    4-5      pa_x (0,0): 4w 5r
+      5120        720  edge    4-5      pa_y (0,0): 4w 5r
+      5888        720  edge    4-5      pa_z (0,0): 4w 5r
+      6656        720  edge    4-5      pb_x (0,0): 4w 5r
+      7424        720  edge    4-5      pb_y (0,0): 4w 5r
+      8192        720  edge    4-5      pb_z (0,0): 4w 5r
+      8960        720  edge    4-5      s (0,0): 4w 5r
+      9728        720  edge    4-4      ea (0,0): 4w
+     10496        720  edge    4-4      eb (0,0): 4w
+     11264        720  edge    4-4      bound (0,0): 4w
+     12032        720  edge    4-4      bound_ab (0,0): 4w
+     12800        720  edge    4-4      bound_ba (0,0): 4w
+     14080        360  edge    4-5      off_a (0,0): 4w 5r
+     14592        360  edge    4-5      off_b (0,0): 4w 5r
+     15104        360  edge    4-4      rank_a (0,0): 4w
+     15616        360  edge    4-4      rank_b (0,0): 4w
+     16128        288  edge    4-5      zeta (0,1): 4w 5r
+     16640        288  edge    4-5      p_x (0,1): 4w 5r
+     17152        288  edge    4-5      p_y (0,1): 4w 5r
+     17664        288  edge    4-5      p_z (0,1): 4w 5r
+     18176        288  edge    4-5      pa_x (0,1): 4w 5r
+     18688        288  edge    4-5      pa_y (0,1): 4w 5r
+     19200        288  edge    4-5      pa_z (0,1): 4w 5r
+     19712        288  edge    4-5      pb_x (0,1): 4w 5r
+     20224        288  edge    4-5      pb_y (0,1): 4w 5r
+     20736        288  edge    4-5      pb_z (0,1): 4w 5r
+     21248        288  edge    4-5      s (0,1): 4w 5r
+     21760        288  edge    4-4      ea (0,1): 4w
+     22272        288  edge    4-4      eb (0,1): 4w
+     22784        288  edge    4-4      bound (0,1): 4w
+     23296        288  edge    4-4      bound_ab (0,1): 4w
+     23808        288  edge    4-4      bound_ba (0,1): 4w
+     24320        144  edge    4-5      off_a (0,1): 4w 5r
+     24576        144  edge    4-5      off_b (0,1): 4w 5r
+     24832        144  edge    4-4      rank_a (0,1): 4w
+     25088        144  edge    4-4      rank_b (0,1): 4w
+     26112         72  edge    4-5      zeta (1,1): 4w 5r
+     26368         72  edge    4-5      p_x (1,1): 4w 5r
+     26624         72  edge    4-5      p_y (1,1): 4w 5r
+     26880         72  edge    4-5      p_z (1,1): 4w 5r
+     27136         72  edge    4-5      pa_x (1,1): 4w 5r
+     27392         72  edge    4-5      pa_y (1,1): 4w 5r
+     27648         72  edge    4-5      pa_z (1,1): 4w 5r
+     27904         72  edge    4-5      pb_x (1,1): 4w 5r
+     28160         72  edge    4-5      pb_y (1,1): 4w 5r
+     28416         72  edge    4-5      pb_z (1,1): 4w 5r
+     28672         72  edge    4-5      s (1,1): 4w 5r
+     28928         72  edge    4-4      ea (1,1): 4w
+     29184         72  edge    4-4      eb (1,1): 4w
+     29440         72  edge    4-4      bound (1,1): 4w
+     29696         72  edge    4-4      bound_ab (1,1): 4w
+     29952         72  edge    4-4      bound_ba (1,1): 4w
+     31488         36  edge    4-5      off_a (1,1): 4w 5r
+     31744         36  edge    4-5      off_b (1,1): 4w 5r
+     32000         36  edge    4-4      rank_a (1,1): 4w
+     32256         36  edge    4-4      rank_b (1,1): 4w
+       512        392  edge    5-8      V cartesian: 5w 8r
+         0        392  edge    7-8      U: 7w 8r
+      1024        392  task    8-8      V U: 8w
+      1536        392  edge    8-9      V: 8w 9r
+handoffs: 1->7 2->7 4->5 4->8 5->7 5->8
 worker 0 pinned table: 15 rows, 2580 bytes
-peak: 616 bytes at node 2
+peak: 616 bytes at node 3
     offset      bytes  owner   life     name: users (w writes, r reads)
        256         24  edge    0-1      nuclei z: 0w 1r
-         0         72  edge    0-1      nuclei c: 0w 1r
-      2048         24  edge    2-3      prim_begin: 2w 3r
-         0        120  edge    2-3      exponent: 2w 3r
-       256        120  edge    2-3      coefficient: 2w 3r
-      1280         40  edge    2-3      c_x: 2w 3r
-      1536         40  edge    2-3      c_y: 2w 3r
-      1792         40  edge    2-3      c_z: 2w 3r
-      2304         20  edge    2-3      ao_offset: 2w 3r
-      2560         20  edge    2-3      rank: 2w 3r
-       768         60  edge    2-3      bra: 2w 3r
-      1024         60  edge    2-3      ket: 2w 3r
-       512         72  edge    2-3      rec_begin: 2w 3r
-         0        392  edge    5-6      U: 5w 6r
-         0        392  edge    8-9      V: 8w 9r
-handoffs: 0->2 0->5 0->8 1->2 1->5 1->8 2->5 2->8 3->5 3->8 5->8 6->8
+         0         72  edge    0-2      nuclei c: 0w 2r
+      2048         24  edge    3-4      prim_begin: 3w 4r
+         0        120  edge    3-4      exponent: 3w 4r
+       256        120  edge    3-4      coefficient: 3w 4r
+      1280         40  edge    3-4      c_x: 3w 4r
+      1536         40  edge    3-4      c_y: 3w 4r
+      1792         40  edge    3-4      c_z: 3w 4r
+      2304         20  edge    3-4      ao_offset: 3w 4r
+      2560         20  edge    3-4      rank: 3w 4r
+       768         60  edge    3-4      bra: 3w 4r
+      1024         60  edge    3-4      ket: 3w 4r
+       512         72  edge    3-4      rec_begin: 3w 4r
+         0        392  edge    6-7      U: 6w 7r
+         0        392  edge    9-10     V: 9w 10r
+handoffs: 0->3 0->6 0->9 1->3 1->6 1->9 2->3 2->6 2->9 3->6 3->9 4->6 4->9 6->9 7->9

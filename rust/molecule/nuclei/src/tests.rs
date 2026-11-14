@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use fb_atom::{Atom, Element};
-use fb_core_arena::{CopyOnly, Heap};
+use fb_core_arena::Heap;
 use fb_core_thread_pool::HostOnly;
 use fb_core_types::Double3;
 use fb_test_support::golden;
@@ -90,7 +90,7 @@ impl<H: HostKind> CpuTask<H> for Collect<H> {
     }
 }
 
-/// The plan of each molecule's two tasks, its tables among it.
+/// The plan of each molecule's three nodes, its tables among it.
 #[test]
 fn plan_goldens() {
     for (stem, molecule) in cases() {
@@ -141,32 +141,6 @@ fn staged_rows_are_the_molecules_nuclei() {
     }
 }
 
-/// GPU: the device rows copied down into two pinned rows on the stream.
-struct Download(NucleiRows);
-
-impl GpuTask for Download {
-    type Rows = (RowId<Pinned, f64>, RowId<Pinned, f64>);
-
-    fn layout(&self, d: &mut Layout<'_, Device>, h: &mut Layout<'_, Pinned>) -> Self::Rows {
-        self.0.read(d);
-        let n = self.0.n_nuc as usize;
-        (h.output("down z", n), h.output("down c", 3 * n))
-    }
-
-    fn run(
-        &self,
-        rows: &Self::Rows,
-        d: &Bufs<'_, Device>,
-        h: &CopyOnly<'_, Pinned>,
-        stream: &DeviceStream,
-    ) -> Status {
-        for (src, dst) in [(self.0.z, rows.0), (self.0.c, rows.1)] {
-            fb_core_arena::memcpy_d2p(h, dst, d.get(src), stream)?;
-        }
-        Ok(())
-    }
-}
-
 /// The device rows, copied back, equal the staged rows bitwise: the
 /// molecule's charges and positions, which the tier-3 case shows the
 /// staged rows hold. One plan per molecule, run once on device 0.
@@ -176,7 +150,11 @@ fn device_rows_are_the_staged_rows() {
     for (stem, molecule) in cases() {
         let mut dag = Dag::new();
         let rows = add_nuclei(&mut dag, 0, &molecule);
-        let down = dag.add_gpu("download", 0, Download(rows));
+        let n = rows.n_nuc as usize;
+        let down = (
+            dag.download(0, rows.z, "down z", n),
+            dag.download(0, rows.c, "down c", 3 * n),
+        );
         let out = Read::default();
         dag.add_cpu(
             "collect",

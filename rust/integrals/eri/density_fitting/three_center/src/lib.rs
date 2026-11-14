@@ -14,7 +14,7 @@
 //! normalization (the metric's argument).
 //!
 //! [`add_three_center`] adds, after the kernel library's load check and the
-//! kernels' limits at planning, `harmonics` and `harmonics upload` for
+//! kernels' limits at planning, `harmonics` and `upload U` for
 //! each basis whose U the caller's slot does not hold yet
 //! ([`add_harmonics`]), and the three tasks
 //! of [`fb_integrals_sys::add_three_center_tasks`]:
@@ -82,7 +82,7 @@ use fb_recipes_matrix_ao::add_harmonics;
 /// every reader of the plan. `u` and `u_aux` are the plan's slots for U
 /// over `basis` and over `aux` on `worker`, shared with every other reader
 /// of each (the metric's transform takes `u_aux`'s): `harmonics` (CPU)
-/// and `harmonics upload` (stream) are added for each that is `None`, and
+/// and `upload U` (stream) are added for each that is `None`, and
 /// U's device row left there ([`add_harmonics`]). The tasks are then
 /// `three-center download` (stream), `three-center tables` (CPU) and
 /// `three-center` (stream), which reads U and U_aux and whose scratch holds

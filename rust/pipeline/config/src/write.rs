@@ -5,18 +5,18 @@
 
 use std::path::PathBuf;
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_p2h};
 use fb_core_error_handling::{Error, Status};
-use fb_core_planner::{CpuTask, Dag, GpuTask};
-use fb_core_thread_pool::DeviceStream;
+use fb_core_planner::{CpuTask, Dag};
 use fb_io_npy::NpyArray;
 use serde_json::json;
 
 /// Add the writing of the device matrix `m`, `n × n` doubles column-major,
 /// to the `.npy` file `path` to `dag` on GPU worker `worker`.
 ///
-/// Two tasks, both named after the file: `download <file>` (stream: `m`
-/// copied into a pinned row of that name) and `write <file>` (CPU, after
+/// Two nodes, both named after the file: `download <file>` (the planner's
+/// copy node, [`Dag::download`]: `m` copied into a pinned row of that
+/// name) and `write <file>` (CPU, after
 /// the executor waited for the copy: the pinned row written as a float64
 /// `.npy` in Fortran order, [`fb_io_npy::write_npy`]). The write feeds
 /// nothing, so no later task waits on the disk. The directory must exist
@@ -28,7 +28,7 @@ use serde_json::json;
 /// written.
 ///
 /// # Panics
-/// If `m` is a row of another worker's table ([`Dag::add_gpu`]).
+/// If `m` is a row of another worker's table ([`Dag::download`]).
 pub fn add_write_npy(
     dag: &mut Dag<'_>,
     worker: usize,
@@ -39,16 +39,7 @@ pub fn add_write_npy(
     let file = path
         .file_name()
         .map_or_else(|| path.display().to_string(), |f| f.display().to_string());
-    let pinned = dag.add_gpu(
-        format!("download {file}"),
-        worker,
-        Download {
-            m,
-            row: file.clone(),
-            n,
-            len: n * n,
-        },
-    );
+    let pinned = dag.download(worker, m, &file, n * n);
     add_write_host_npy(dag, worker, pinned, n, path);
 }
 
@@ -84,14 +75,15 @@ pub fn add_write_host_npy(
 /// Add the writing of an SCF's results to the JSON file `path` to `dag` on
 /// GPU worker `worker`: `scalars`, the pinned `[E, ‖e‖, builds]` of
 /// [`fb_pipeline_scf::add_scf`], and `eps`, its device row of the `n`
-/// orbital energies. Two tasks: `download scf.json` (stream: ε copied into
-/// a pinned row) and `write scf.json` (CPU: the object `{"energy",
+/// orbital energies. Two nodes: `download epsilon` (the planner's copy
+/// node, [`Dag::download`]: ε copied into a pinned row `epsilon`) and
+/// `write scf.json` (CPU: the object `{"energy",
 /// "residual", "iterations", "epsilon"}`, each double at full precision).
 /// The write feeds nothing, and the directory must exist when the plan
 /// runs.
 ///
 /// # Panics
-/// If a row is of another worker's table ([`Dag::add_gpu`]).
+/// If a row is of another worker's table ([`Dag::download`]).
 pub(crate) fn add_write_scf_json(
     dag: &mut Dag<'_>,
     worker: usize,
@@ -100,16 +92,7 @@ pub(crate) fn add_write_scf_json(
     n: usize,
     path: PathBuf,
 ) {
-    let epsilon = dag.add_gpu(
-        "download scf.json",
-        worker,
-        Download {
-            m: eps,
-            row: "epsilon".into(),
-            n,
-            len: n,
-        },
-    );
+    let epsilon = dag.download(worker, eps, "epsilon", n);
     dag.add_cpu(
         "write scf.json",
         worker,
@@ -120,40 +103,6 @@ pub(crate) fn add_write_scf_json(
             path,
         },
     );
-}
-
-/// GPU: a device row of `len` doubles, of a dimension `n`, copied into a
-/// pinned row on the stream.
-struct Download {
-    m: RowId<Device, f64>,
-    row: String,
-    n: usize,
-    len: usize,
-}
-
-impl GpuTask for Download {
-    type Rows = RowId<Pinned, f64>;
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        device.read(self.m);
-        host.output(&self.row, self.len)
-    }
-
-    fn dims(&self) -> Vec<(&'static str, usize)> {
-        vec![("n", self.n)]
-    }
-
-    fn run(
-        &self,
-        pinned: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        stream: &DeviceStream,
-    ) -> Status {
-        // The write that reads the pinned row runs after the executor
-        // waited for this task's event.
-        memcpy_d2p(host, *pinned, device.get(self.m), stream)
-    }
 }
 
 /// CPU: the pinned copy written to disk as a `.npy`.

@@ -17,7 +17,7 @@
 //!   [`Fields::OVERLAP`](fb_integrals_sys::Fields::OVERLAP)).
 //! - then the spherical transform, `S = Uᵀ S_cart U`
 //!   ([`fb_recipes_matrix_ao::add_cartesian_to_spherical`]): `harmonics` on
-//!   the CPU and `harmonics upload` on the stream (U into a pinned row,
+//!   the CPU and `upload U` on the stream (U into a pinned row,
 //!   then its device row, unless an earlier matrix of the plan staged it)
 //!   and `spherical transform` on the worker's stream.
 //!

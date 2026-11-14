@@ -6,10 +6,10 @@
 //!
 //! [`add_cartesian_to_spherical`] adds, for one Cartesian matrix row:
 //!
-//! - **`harmonics`**, on the CPU, and **`harmonics upload`**, on the
-//!   worker's stream, once per plan, worker and basis ([`add_harmonics`]):
-//!   U, the Cartesian-to-spherical transform
-//!   ([`fb_basis::spherical_transform_matrix`]), written into a pinned row
+//! - **`harmonics`**, on the CPU, and **`upload U`**, the planner's copy
+//!   node ([`Dag::upload`]), once per plan, worker and basis
+//!   ([`add_harmonics`]): U, the Cartesian-to-spherical transform
+//!   ([`fb_basis::spherical_transform_matrix`]), computed into a pinned row
 //!   and copied once into a device row that every later transform over the
 //!   basis on the worker reads, as does any other task that reads U.
 //! - **`spherical transform`**, on the worker's stream: `M = Uᵀ M_cart U`
@@ -18,7 +18,7 @@
 //!
 //! | C++ | Here |
 //! |---|---|
-//! | `upload_spherical_transform_matrix(res, basis)` (nothing for an identity U), one device buffer co-owned by every pair over the basis | the `harmonics upload` task's device row ([`add_harmonics`]), added by the first call and handed to the later ones through the caller's slot, always; one per worker, since an edge between workers needs a transport row |
+//! | `upload_spherical_transform_matrix(res, basis)` (nothing for an identity U), one device buffer co-owned by every pair over the basis | the `upload U` node's device row ([`add_harmonics`]), added by the first call and handed to the later ones through the caller's slot, always; one per worker, since an edge between workers needs a transport row |
 //! | `MatrixAOPair`'s own `work_` scratch | each transform's own `M_cart U` scratch |
 //! | `MatrixAOPair::cartesian_to_spherical` (`gemmwich`; a copy for an identity U) | the `spherical transform` task's two GEMMs, always |
 //! | `res.blas()`, the `DeviceResources`' handle | the stream worker's handle, [`DeviceStream::blas`], made with the backend and bound to the worker's stream |
@@ -33,7 +33,7 @@
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
+use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
 use fb_core_planner::{CpuTask, Dag, GpuTask};
 use fb_core_thread_pool::DeviceStream;
@@ -48,7 +48,7 @@ use wwr_sys::wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
 /// column-major. The task added is `spherical transform` (stream:
 /// `M = Uᵀ M_cart U` as two GEMMs reading U's device row, the intermediate
 /// `M_cart U` scratch `"{name} U"`). Before it, when `u` is `None`,
-/// `harmonics` and `harmonics upload` ([`add_harmonics`]), whose device row
+/// `harmonics` and `upload U` ([`add_harmonics`]), whose device row
 /// is then left in `u`: pass the same slot for every reader of U over
 /// `basis` on `worker`, and U is copied up once and read by every one.
 ///
@@ -81,10 +81,10 @@ pub fn add_cartesian_to_spherical(
 
 /// Return U of `basis`, the Cartesian-to-spherical transform, as the
 /// device row in `u`: `nao_cart` × `nao_sphe` doubles, column-major. When
-/// `u` is `None`, two tasks are added to `dag` on worker `worker` first,
+/// `u` is `None`, two nodes are added to `dag` on worker `worker` first,
 /// and the second's output row left in `u`: `harmonics` (CPU: U,
-/// [`fb_basis::spherical_transform_matrix`], written into a pinned row)
-/// and `harmonics upload` (stream: that row copied into a device output
+/// [`fb_basis::spherical_transform_matrix`], computed into a pinned row)
+/// and `upload U` ([`Dag::upload`]: that row copied into a device output
 /// row, `U`).
 ///
 /// `u` is the plan's slot for U over `basis` on `worker`: every reader of U
@@ -103,56 +103,34 @@ pub fn add_harmonics(
     u: &mut Option<RowId<Device, f64>>,
 ) -> RowId<Device, f64> {
     *u.get_or_insert_with(|| {
-        let u = fb_basis::spherical_transform_matrix(basis);
-        let len = u.len();
-        let host = dag.add_cpu("harmonics", worker, Harmonics { u });
-        dag.add_gpu("harmonics upload", worker, Upload { host, len })
+        let len = basis.nao_cart() as usize * basis.nao_sphe() as usize;
+        let host = dag.add_cpu(
+            "harmonics",
+            worker,
+            Harmonics {
+                basis: basis.clone(),
+            },
+        );
+        dag.upload(worker, host, "U", len)
     })
 }
 
-/// CPU: U written into a pinned row, for `harmonics upload` to copy up.
+/// CPU: U computed into a pinned row, for `upload U` to copy up.
 struct Harmonics {
-    /// `nao_cart` × `nao_sphe`, column-major.
-    u: Vec<f64>,
+    basis: BasisSet,
 }
 
 impl CpuTask for Harmonics {
     type Rows = RowId<Pinned, f64>;
 
     fn layout(&self, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        host.output("U", self.u.len())
+        let len = self.basis.nao_cart() as usize * self.basis.nao_sphe() as usize;
+        host.output("U", len)
     }
 
     fn run(&self, u: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
-        memcpy_h2p(host, *u, &self.u);
+        fb_basis::spherical_transform_matrix(&self.basis, host.take_mut(*u));
         Ok(())
-    }
-}
-
-/// GPU: U's pinned row copied into its device row, the one every reader of
-/// U over the basis on the worker reads.
-struct Upload {
-    host: RowId<Pinned, f64>,
-    /// `nao_cart · nao_sphe`.
-    len: usize,
-}
-
-impl GpuTask for Upload {
-    type Rows = RowId<Device, f64>;
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        host.read(self.host);
-        device.output("U", self.len)
-    }
-
-    fn run(
-        &self,
-        u: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        worker: &DeviceStream,
-    ) -> Status {
-        memcpy_p2d(&mut device.take_mut(*u), host, self.host, worker)
     }
 }
 

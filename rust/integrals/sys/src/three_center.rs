@@ -17,7 +17,7 @@
 //!   shell inner, into another.
 //! - **`three-center`**, on the worker's stream: both rows uploaded into
 //!   scratch; U and U_aux read from the caller's device rows (the plan's
-//!   `harmonics upload` rows, copied up once for every reader), one
+//!   `upload U` rows, copied up once for every reader), one
 //!   [`fb_three_center_class`] launch per class that has a cell into the
 //!   Cartesian tensor (scratch), the three spherical GEMMs and
 //!   [`fb_three_center_symmetrize`] into (mn|P), its output.

@@ -58,7 +58,7 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// `core hamiltonian` (stream: the Cartesian matrix zeroed, [`kinetic_classes`] and then
 /// [`potential_en_classes`] into it, reading the records and the nuclei as
 /// edges), then the spherical transform of [`add_cartesian_to_spherical`]:
-/// `harmonics` and `harmonics upload` (U into a pinned row, then its
+/// `harmonics` and `upload U` (U into a pinned row, then its
 /// device row), only when `u` is `None`, and
 /// `spherical transform` (stream: `H = Uᵀ H_cart U`). `nuclei` are the
 /// molecule's, uploaded on `worker` by [`fb_molecule_nuclei::add_nuclei`]

@@ -71,6 +71,23 @@ The join owns the reduced output; each slice's partial is that slice's
 output row, and on one stream the planner may give slice 0's partial the
 join's offsets, since the ordered accumulate writes the same bytes.
 
+**A copy between kinds is the planner's.** A copy that is a node's whole
+work, a pinned row up to the device or a device row down to a pinned one,
+is a copy node the planner adds: `Dag::upload` and `Dag::download`, one
+line for the caller, each returning the new row, named after it
+(`upload <row>`, `download <row>`), and timed, admitted and ordered like
+any other node. Its rows are ordinary rows, the source read and the
+destination an output, so admission counts them and the edges order them.
+A task never writes such a copy by hand; a copy inside a task's larger
+work, a solver's `info` flag down beside its launch, stays the task's.
+On one card the copy node is the transport; between cards, placement's
+transport rows above are the same node on the consumer's side.
+
+**A CPU task writes into the pinned row.** A pinned row is a real
+`&mut [T]`, so a CPU task whose result is bound for the device computes
+it in place, never into a `Vec` it then copies in: U is written by the
+`harmonics` task straight into its row.
+
 **Where the C++ lifetimes went.** `persistent` is an edge row; `scratch` is a
 task row; `workspace`, the one fixed block every step borrowed from, splits
 in two. What a step carved from it for itself is a task row, which the
@@ -453,6 +470,10 @@ can name. In it:
   device row is a pointer-and-length view with no `Deref`. A stream node's
   pinned view is wrapped in a `CopyOnly`, which yields no slice and which
   only `memcpy_p2d` and `memcpy_d2p` take.
+- `core::planner`'s `Dag::upload` and `Dag::download`, the copy nodes
+  ("The table"): the only `GpuTask`s whose `run` is a copy between kinds
+  alone, so a pinned-to-device or device-to-pinned move is one line at
+  its caller, on whichever lane of the worker the caller names.
 
 **The view's checks are always on, not `debug_requires`.** Two nodes
 running at once both need rows of one block, so `partition` takes `&self`,

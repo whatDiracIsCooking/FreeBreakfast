@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+contracts.workspace = true
 fb-core-error-handling.workspace = true
 fb-core-primitives.workspace = true
 fb-core-types.workspace = true

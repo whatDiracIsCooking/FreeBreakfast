@@ -29,10 +29,9 @@ use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2d};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{CpuTask, Dag, Decision, GpuTask};
-use fb_core_thread_pool::DeviceStream;
+use fb_core_planner::{CpuTask, Dag, Decision};
 use fb_pipeline_scf::{add_density, add_fock};
 
 /// The fixtures' basis size and occupied count.
@@ -57,57 +56,6 @@ impl CpuTask for Stage {
     fn run(&self, row: &Self::Rows, host: &Bufs<'_, Pinned>) -> Status {
         host.take_mut(*row).copy_from_slice(&self.data);
         Ok(())
-    }
-}
-
-/// GPU: a staged input copied up into a device output.
-struct Upload {
-    name: &'static str,
-    staged: RowId<Pinned, f64>,
-    len: usize,
-}
-
-impl GpuTask for Upload {
-    type Rows = RowId<Device, f64>;
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        host.read(self.staged);
-        device.output(self.name, self.len)
-    }
-
-    fn run(
-        &self,
-        row: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        stream: &DeviceStream,
-    ) -> Status {
-        memcpy_p2d(&mut device.take_mut(*row), host, self.staged, stream)
-    }
-}
-
-/// GPU: a result copied down into a pinned output.
-struct Download {
-    row: RowId<Device, f64>,
-    len: usize,
-}
-
-impl GpuTask for Download {
-    type Rows = RowId<Pinned, f64>;
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        device.read(self.row);
-        host.output("down", self.len)
-    }
-
-    fn run(
-        &self,
-        down: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        stream: &DeviceStream,
-    ) -> Status {
-        memcpy_d2p(host, *down, device.get(self.row), stream)
     }
 }
 
@@ -158,7 +106,7 @@ fn fixture(name: &str, len: usize) -> Vec<f64> {
 fn upload(dag: &mut Dag<'_>, name: &'static str, data: Vec<f64>) -> RowId<Device, f64> {
     let len = data.len();
     let staged = dag.add_cpu(format!("stage {name}"), 0, Stage { name, data });
-    dag.add_gpu(format!("upload {name}"), 0, Upload { name, staged, len })
+    dag.upload(0, staged, name, len)
 }
 
 /// Download each of `device` (with its length), collect them beside
@@ -170,7 +118,7 @@ fn run(
 ) -> Vec<Vec<f64>> {
     let mut rows: Vec<RowId<Pinned, f64>> = device
         .iter()
-        .map(|&(row, len)| dag.add_gpu("download", 0, Download { row, len }))
+        .map(|&(row, len)| dag.download(0, row, "down", len))
         .collect();
     rows.extend_from_slice(pinned);
     let out = Arc::new(Mutex::new(Vec::new()));

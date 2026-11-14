@@ -12,10 +12,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p};
+use fb_core_arena::{Bufs, Layout, Pinned, RowId};
 use fb_core_error_handling::Status;
-use fb_core_planner::{CpuTask, Dag, GpuTask};
-use fb_core_thread_pool::DeviceStream;
+use fb_core_planner::{CpuTask, Dag};
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule::nuclear_charge;
@@ -38,32 +37,6 @@ const H2O: &str = "3\nwater, Angstrom\n\
 const CO: &str = "2\ncarbon monoxide, the bond off every axis, Angstrom\n\
                   C    0.100000    0.200000    0.300000\n\
                   O    0.751000    0.851000    0.951000\n";
-
-/// GPU: a device row copied into a pinned one on the stream.
-struct Download {
-    row: RowId<Device, f64>,
-    name: &'static str,
-    len: usize,
-}
-
-impl GpuTask for Download {
-    type Rows = RowId<Pinned, f64>;
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        device.read(self.row);
-        host.output(self.name, self.len)
-    }
-
-    fn run(
-        &self,
-        pinned: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        stream: &DeviceStream,
-    ) -> Status {
-        memcpy_d2p(host, *pinned, device.get(self.row), stream)
-    }
-}
 
 /// CPU: pinned rows read out after the run, in order.
 struct Collect {
@@ -103,24 +76,8 @@ fn trace_of_d_s_is_the_nuclear_charge_and_the_upload_moves_bytes() {
         let d_device = add_guess_upload(&mut dag, 0, &basis, d);
         let classes = add_records(&mut dag, 0, &basis).unwrap();
         let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
-        let d_back = dag.add_gpu(
-            "download D",
-            0,
-            Download {
-                row: d_device,
-                name: "D back",
-                len: n * n,
-            },
-        );
-        let s_host = dag.add_gpu(
-            "download S",
-            0,
-            Download {
-                row: s,
-                name: "S",
-                len: n * n,
-            },
-        );
+        let d_back = dag.download(0, d_device, "D back", n * n);
+        let s_host = dag.download(0, s, "S", n * n);
         let out = Arc::new(Mutex::new(Vec::new()));
         dag.add_cpu(
             "collect",

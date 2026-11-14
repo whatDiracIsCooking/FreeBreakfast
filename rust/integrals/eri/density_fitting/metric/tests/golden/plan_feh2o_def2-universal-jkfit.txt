@@ -3,7 +3,7 @@ plan: 8 tasks, GPU workers: 1
     0       0  cpu     metric tables
     1       0  stream  metric: after 0
     2       0  cpu     harmonics: after 0 1
-    3       0  stream  harmonics upload: after 1 2
+    3       0  stream  upload U: after 1 2
     4       0  stream  spherical transform: after 1 3
     5       0  stream  metric average: after 1 4
     6       0  stream  download: after 0 1 2 3 5

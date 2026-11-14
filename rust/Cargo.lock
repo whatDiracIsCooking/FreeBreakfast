@@ -213,6 +213,7 @@ dependencies = [
 name = "fb-basis"
 version = "0.1.0"
 dependencies = [
+ "contracts",
  "fb-atom",
  "fb-core-error-handling",
  "fb-core-primitives",

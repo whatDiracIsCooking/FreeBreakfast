@@ -21,7 +21,7 @@
 //!   uploaded; then one launch per class into the Cartesian metric, every
 //!   element a plain store by the one pair it belongs to, so nothing is
 //!   zeroed and the Cartesian metric is exactly symmetric.
-//! - **`harmonics`** and **`harmonics upload`** (only when the caller's
+//! - **`harmonics`** and **`upload U`** (only when the caller's
 //!   slot is empty) and **`spherical transform`** ([`add_cartesian_to_spherical`]): `Uᵀ M U`, U's blocks
 //!   general in l, here through the kernels' i.
 //! - **`metric average`**, on the stream: `Uᵀ M U` is two GEMMs, which round
@@ -68,7 +68,7 @@ use fb_recipes_symmetrize::symmetrize;
 /// `nao_sphe²` doubles, column-major, exactly symmetric.
 ///
 /// `metric tables` (CPU) and `metric` (stream: every class into the
-/// Cartesian metric), `harmonics` and `harmonics upload` (U into a pinned
+/// Cartesian metric), `harmonics` and `upload U` (U into a pinned
 /// row, then its device row) only when `u` is `None`, `spherical transform` (stream: `Uᵀ M U`) and `metric
 /// average` (stream: `(M + Mᵀ)/2` into M's row). `u` is the plan's slot for
 /// U over `aux` on `worker`, shared with every other transform over `aux`.
