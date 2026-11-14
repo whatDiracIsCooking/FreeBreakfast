@@ -19,7 +19,7 @@ plan: 21 tasks, GPU workers: 1
    16       0  cpu     harmonics: after 0 2 3
    17       0  stream0  upload U: after 12 13 14 15 16
    18       0  stream0  spherical transform: after 12 13 15 17
-   19       0  stream0  download: after 0 2 3 16 17 18
+   19       0  stream0  download S: after 0 2 3 16 17 18
    20       0  cpu     collect: after 19
 worker 0 device table: 87 rows, 100683284 bytes
 peak: 100677952 bytes at node 12

@@ -3,10 +3,10 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, CopyOnly, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
+use fb_core_arena::{Bufs, Layout, Pinned, RowId, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
-use fb_core_planner::{CpuTask, Dag, GpuTask, Planned};
-use fb_core_thread_pool::{DeviceStream, Record};
+use fb_core_planner::{CpuTask, Dag, Planned};
+use fb_core_thread_pool::Record;
 
 use fb_integrals_mmd::add_records;
 
@@ -14,8 +14,9 @@ use super::tasks::add_overlap;
 
 /// The overlap of one molecule in one basis, planned once: the records
 /// ([`add_records`]), the tasks of [`add_overlap`] reading them, and two
-/// more that bring S to the host, `download` (stream: S copied into a
-/// pinned row) and `collect` (CPU: the pinned row copied out).
+/// more that bring S to the host, `download S` (the planner's copy node,
+/// [`Dag::download`]: S copied into a pinned row) and `collect` (CPU: the
+/// pinned row copied out).
 /// [`Run::planned`] is the plan, its arena sizes among it, with no device;
 /// [`Run::run`] lays the arena out on a device and runs it on one stream.
 pub struct Run {
@@ -47,14 +48,7 @@ impl Run {
         dag.blas_workspace(0);
         let classes = add_records(&mut dag, 0, &basis)?;
         let s = add_overlap(&mut dag, 0, &basis, &classes, &mut None);
-        let pinned = dag.add_gpu(
-            "download",
-            0,
-            Download {
-                s,
-                len: n_ao * n_ao,
-            },
-        );
+        let pinned = dag.download(0, s, "S", n_ao * n_ao);
         let out = Arc::new(Mutex::new(Vec::new()));
         dag.add_cpu(
             "collect",
@@ -95,31 +89,6 @@ impl Run {
             Vec::new()
         };
         (record, s)
-    }
-}
-
-/// GPU: S, `len` doubles, copied into a pinned row on the stream.
-struct Download {
-    s: RowId<Device, f64>,
-    len: usize,
-}
-
-impl GpuTask for Download {
-    type Rows = RowId<Pinned, f64>;
-
-    fn layout(&self, device: &mut Layout<'_, Device>, host: &mut Layout<'_, Pinned>) -> Self::Rows {
-        device.read(self.s);
-        host.output("S", self.len)
-    }
-
-    fn run(
-        &self,
-        pinned: &Self::Rows,
-        device: &Bufs<'_, Device>,
-        host: &CopyOnly<'_, Pinned>,
-        stream: &DeviceStream,
-    ) -> Status {
-        memcpy_d2p(host, *pinned, device.get(self.s), stream)
     }
 }
 
