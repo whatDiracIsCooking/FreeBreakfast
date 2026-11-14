@@ -84,13 +84,18 @@ pub struct Assignment {
 /// ([`Row::conflicts`]) share a byte, each offset a multiple of its row's
 /// alignment.
 ///
-/// Greedy in start order with best fit, the static memory planning a tensor
-/// compiler does: rows are taken by their first position (plan-long rows
-/// first, then the larger first), and each goes into the smallest gap
-/// between the rows it conflicts with that holds it, else past the last of
-/// them. Deterministic in its input. The total is not minimal in general;
-/// the schedule search in `docs/programming_model.md`, "Open questions",
-/// says when that may matter.
+/// Greedy with best fit, the static memory planning a tensor compiler
+/// does, run in three orders and kept at the smallest total, the earlier
+/// order on a tie: each row in turn goes into the smallest gap between the
+/// placed rows it conflicts with that holds it, else past the last of them.
+/// The orders, plan-long rows first in each, are by first position and then
+/// the larger first; by first position and then the longer-lived first;
+/// and the larger first whatever its position. No one order is smallest on
+/// every committed golden, and the three together hold each golden's block
+/// within 3% of its lower bound (`docs/memory.md`, "Lifetimes").
+/// Deterministic in its input. The total is not minimal in general; the
+/// schedule search in `docs/programming_model.md`, "Open questions", says
+/// when that may matter.
 #[debug_requires(
     rows.iter().all(|r| r.align.is_power_of_two()),
     "every alignment is a power of two"
@@ -103,20 +108,50 @@ pub struct Assignment {
     "a span's first position is at most its last"
 )]
 pub fn assign(rows: &[Row]) -> Assignment {
+    let span = |r: &Row| matches!(r.life, Life::Span { .. });
+    let last = |r: &Row| match r.life {
+        Life::Plan => usize::MAX,
+        Life::Span { last, .. } => last,
+    };
+    // The first order, then each other where it is strictly smaller.
+    let mut best = place(
+        rows,
+        &order(rows, |i, r| (r.life.start(), span(r), Reverse(r.bytes), i)),
+    );
+    for order in [
+        order(rows, |i, r| {
+            (
+                r.life.start(),
+                span(r),
+                Reverse(last(r)),
+                Reverse(r.bytes),
+                i,
+            )
+        }),
+        order(rows, |i, r| (span(r), Reverse(r.bytes), r.life.start(), i)),
+    ] {
+        let a = place(rows, &order);
+        if a.total < best.total {
+            best = a;
+        }
+    }
+    best
+}
+
+/// The rows' indices sorted by `key`, given each index and its row.
+fn order<K: Ord>(rows: &[Row], key: impl Fn(usize, &Row) -> K) -> Vec<usize> {
     let mut order: Vec<usize> = (0..rows.len()).collect();
-    order.sort_by_key(|&i| {
-        let r = &rows[i];
-        (
-            r.life.start(),
-            matches!(r.life, Life::Span { .. }),
-            Reverse(r.bytes),
-            i,
-        )
-    });
+    order.sort_by_key(|&i| key(i, &rows[i]));
+    order
+}
+
+/// Place the rows greedily in `order`, each at [`fit`] among the placed rows
+/// it conflicts with.
+fn place(rows: &[Row], order: &[usize]) -> Assignment {
     let mut offsets = vec![0; rows.len()];
     let mut placed: Vec<usize> = Vec::with_capacity(rows.len());
     let mut taken: Vec<(usize, usize)> = Vec::new();
-    for i in order {
+    for &i in order {
         let row = &rows[i];
         if row.bytes == 0 {
             continue;

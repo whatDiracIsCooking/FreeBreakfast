@@ -110,9 +110,26 @@ order over launches, so the interval's ends are positions in that order:
 
 **Two rows may share bytes iff one's end precedes the other's start.** That
 is the assigner's one invariant, and it is what the fuzz checks
-([`testing.md`](testing.md), "Fuzzing"). The assigner is greedy in start
-order with best fit, and a schedule it cannot fit at the given order is
-re-ordered or refused by admission, never allocated past the block.
+([`testing.md`](testing.md), "Fuzzing"). The assigner is greedy with best
+fit, run in three orders and kept at the smallest total: by first position
+and then the larger row first, by first position and then the longer-lived
+first, and the larger first whatever its position. A schedule it cannot fit
+at the given order is re-ordered or refused by admission, never allocated
+past the block.
+
+**The block is within 3% of its lower bound on every committed golden.**
+The bound is the most that is live at once: at each position, the live
+rows' bytes each padded to the alignment, less the largest padding, which
+the last row does not need; a loop's region counts as one row of its
+parent, and its body is held to the bound alone. No single order meets it:
+measured over the goldens when it was set, start order with the larger
+first came to 1.20 times the bound on the arena's SCF fixture, the
+longer-lived first to 1.005 on the DF-RHF config's plan, where the first
+order and the larger first are within 0.02%, and the larger first to 1.015
+on DIIS's, where start order meets the bound exactly; the three together
+came to 1.026 at worst, the guess config's pinned table. The bound is a
+measurement, not a theorem: a plan that breaks it is a finding about the
+assigner, read before the bound is moved.
 
 **"Precedes" is the plan's rank order, so reuse adds edges.** The positions
 the assigner packs against are the nodes' ranks, the order they were added
@@ -405,6 +422,7 @@ them.
 | Rule | Check | Tier |
 |---|---|---|
 | No two live rows alias | The assigner fuzzed as a pure function over random rows and orders | 3 |
+| The block is within 3% of its lower bound on every committed golden | Every golden's text read, each table's total against its live rows' padded bytes at their largest, each loop's region against its body's | 3 |
 | The block is the plan | The arena's total, committed and compared bitwise per example config | 3 |
 | `bytes(width)` is monotone | Bisection against a linear scan over random dims | 3 |
 | Admission refuses what does not fit | A cap one byte under the peak refused naming the rows live at it; a cap under a row refused naming that row, the DF step's B not live at its peak among them; one byte over admitted, as the C++ nested cases pin the room to the byte | 3 |
