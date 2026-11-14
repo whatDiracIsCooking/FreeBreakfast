@@ -58,6 +58,23 @@ build/tools/sad/free-breakfast-sad-stamps data --all     # every set
 cmake --build build
 ```
 
+The Rust tree's generator (`rust/tools/sad`, `fb-tools-sad`) takes the same
+arguments and writes the same files. While both trees exist the committed
+stamps are one set, and either generator must reproduce them byte for byte;
+its STO-3G output is compared with `STO-3G/` here by its own test. It
+resolves each set through the sets `fb-io-basis` compiles in, and `fb-io-sad`
+picks the new files up at the next `cargo build` with no other step:
+
+```sh
+cargo run --release --manifest-path rust/Cargo.toml --bin free-breakfast-sad-stamps -- data cc-pVDZ
+cargo run --release --manifest-path rust/Cargo.toml --bin free-breakfast-sad-stamps -- data --all
+```
+
+Its `--all` takes each `data/basis` document by its BSE `name`, not its file
+name, since a file name is not always a spelling `resolve_basis` folds to
+(`6-31gstar.json` is `6-31G*`). It runs one SCF per element on as many
+threads as the process may use; `taskset` bounds them.
+
 A set is named as `resolve_basis` takes it, so `cc-pvdz` is `cc-pVDZ`. Naming
 none is a usage error rather than a quiet `--all`: the full run is the
 expensive one, and it is rarely what a change needs.

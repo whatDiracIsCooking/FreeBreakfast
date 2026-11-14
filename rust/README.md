@@ -23,7 +23,9 @@ Outside `rust/`, the tree reads six things, and nothing under `src/`:
 - **`test/sad/data/atomic_scf.json`**: the PySCF reference `fb-sad`'s
   tests read from where the C++ test reads it, so the two trees hold one.
 - **`data/sad/`**: the SAD stamps `fb-io-sad` compiles in, and whose
-  `STO-3G/` files `fb-io-npy`'s tests read and write back byte for byte.
+  `STO-3G/` files `fb-io-npy`'s tests read and write back byte for byte,
+  and `fb-tools-sad`'s compare its own output with; `fb-tools-sad` writes
+  them.
 
 The device code the crates call is forked into `rust/` (`device_headers/`,
 `recipes/kernels/`, `integrals/kernels/`) and built by `CMakeLists.txt`
@@ -76,6 +78,7 @@ tree, not inputs to its build.
 | `fb_integrals_one_electron_potential_en` | `src/integrals/one_electron/potential_en`'s `nuclear_attraction` / `add_nuclear_attraction` and its bridge's `potential_en_class` | `potential_en_classes`, the safe layer over `fb_potential_en_class`: every class's launch on one stream into a Cartesian matrix the caller zeroed, the wrapper's `fb_nuclei_view` formed from `fb_molecule_nuclei`'s `NucleiRows`, the launcher's requirements as `debug_requires`, callable by a task that launches several families into one matrix (after `kinetic_classes`, for T + V). `add_nuclear_attraction`: V of a `BasisSet` over the nuclei's rows as tasks after the records, `potential en` on the stream (the Cartesian matrix zeroed, then `potential_en_classes`, reading `ClassRows` and `NucleiRows` as edges), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in; nuclei with no nucleus refused at planning as `InvalidConfig`, adding nothing. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/potential_en/tests/golden/plan_*.txt` |
 | `fb_integrals_one_electron_core_hamiltonian` | `src/integrals/one_electron/core_hamiltonian`'s `core_hamiltonian` | `add_core_hamiltonian`: H = T + V of a `BasisSet` over `fb_molecule_nuclei`'s `NucleiRows` as tasks after the records, one build task, `core hamiltonian`, on the stream (the Cartesian matrix zeroed, then `kinetic_classes` and `potential_en_classes` on top, reading `ClassRows` and `NucleiRows` as edges, with no T or V row of its own), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in; nuclei with no nucleus refused at planning as `InvalidConfig`, adding nothing. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/core_hamiltonian/tests/golden/plan_*.txt` |
 | `fb_pipeline_config`, and the `free-breakfast` binary | `src/pipeline/config`, `src/main.cpp` | The binary: `Config`, a serde type read from TOML by `read_config` (`calculation`, `output`, `[molecule] xyz`, `[basis_set] basis`, `[guess] type` or `from`; each field's doc comment its default and unit; an unknown key refused `InvalidConfig` as `<file>:<line>: unknown field ...`; the geometry, a basis path and a guess's `from` joined to the config's directory; a `[guess]` beside another calculation, or with both keys, refused), `plan`, the calculation's tasks as one `Planned` (`"overlap"`, S written as `overlap.npy`; `"guess"`, `fb_pipeline_guess`'s SAD or loaded D written as `d.npy`), and the write nodes: `add_write_npy`, `download <file>` on the stream into a pinned row and `write <file>` on the CPU, a float64 `.npy` in Fortran order, feeding nothing, and `add_write_host_npy`, the write node alone for a product already a pinned row. `free-breakfast <config.toml>` (`src/main.rs`) plans, makes the output directory, runs on device 0 and writes `timing.json` (`Record::to_json`) beside the products; its `main` is the one place an error is logged, exiting with `ErrorKind::exit_code`. `rust/examples/` holds one config per calculation, `overlap.toml` and `guess.toml`, run through the binary by `tests/examples.rs`; each example's plan text is the committed golden `pipeline/config/tests/golden/plan_*.txt` |
+| `fb_tools_sad`, the `free-breakfast-sad-stamps` binary | `tools/sad` | The generator of `data/sad/`: `free-breakfast-sad-stamps <repo>/data (<basis>... \| --all)` resolves each named set through `fb-io-basis`'s compiled-in table (a set the binary does not carry refused `InvalidConfig`; `--all`, every `<data>/basis/*.json` by its document's BSE `name`), runs `fb-sad`'s atomic SCF for each element alone at the origin, one CPU node of a `thread_pool::Plan` per element on `HostOnly`, and writes `<data>/sad/<basis>/<Z>.npy` through `fb-io-npy` after removing each regenerated set's directory (every one under `--all`); an atom too large for the SCF (`Unsupported`) is skipped, any other failure exits with its kind's code before anything is removed. It links `fb-sad`, never `fb-io-sad`, so it is not linked against its own output. Its STO-3G output is the committed `data/sad/STO-3G/` byte for byte, `tests/stamps.rs` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -111,7 +114,8 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `integrals/one_electron/potential_en` and what they stand on; and
 `pipeline/config` on `integrals/one_electron/overlap`, `io/xyz`,
 `io/basis`, `io/npy`, `log`, `planner`, `arena`, `thread_pool`, `wwr` and
-`error_handling`.
+`error_handling`; and `tools/sad` on `sad`, `io/basis`, `io/npy`, `basis`,
+`atom`, `types`, `thread_pool` (without `device`) and `error_handling`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -188,7 +192,7 @@ cargo test -p fb-core-log -p fb-core-error-handling -p fb-doc-check \
   -p fb-core-types -p fb-core-primitives -p fb-core-constants \
   -p fb-atom -p fb-molecule -p fb-basis -p fb-device-check \
   -p fb-io-xyz -p fb-io-basis -p fb-kernel-abi -p fb-sad \
-  -p fb-io-npy -p fb-io-sad --no-default-features
+  -p fb-io-npy -p fb-io-sad -p fb-tools-sad --no-default-features
 ```
 
 `CMakeLists.txt` here is a CMake project of its own, which the root
@@ -229,7 +233,7 @@ tests (the fake handle kind, error codes and contracts) need no GPU, and
 `fb-core-log`, `fb-core-error-handling`, `fb-core-types`,
 `fb-core-primitives`, `fb-core-constants`, `fb-atom`, `fb-molecule`,
 `fb-basis`, `fb-io-xyz`, `fb-io-basis`, `fb-test-support`, `fb-doc-check`,
-`fb-kernel-abi`, `fb-device-check`, `fb-sad`, `fb-io-npy` and `fb-io-sad` do not link the library at all: they build and pass
+`fb-kernel-abi`, `fb-device-check`, `fb-sad`, `fb-io-npy`, `fb-io-sad` and `fb-tools-sad` do not link the library at all: they build and pass
 with it missing.
 `fb-core-arena`, `fb-core-thread-pool` and `fb-core-planner` link it
 through their `device` feature, which is on by default: without it
@@ -433,7 +437,7 @@ config, in waves:
 | Wave | Issues |
 |---|---|
 | 0 | #1402 one conversion from `fb_launch_status`, done; #1403 library handles per device; #1404 `cargo doc` without the library; #1405 the kinetic and nuclear-attraction forks, done; #1406 the shared spherical transform, done; #1407 the nuclei upload task, done; #1408 the timing record's JSON, done; #1417 io/npy, done; #1418 sad, done |
-| 1 | #1409 the kinetic energy, done; #1410 the nuclear attraction, done; #1411 the symmetric eigensolver; #1412 the binary, done; #1419 io/sad, done; #1420 the SAD stamp generator |
+| 1 | #1409 the kinetic energy, done; #1410 the nuclear attraction, done; #1411 the symmetric eigensolver; #1412 the binary, done; #1419 io/sad, done; #1420 the SAD stamp generator, done |
 | 2 | #1413 the core Hamiltonian, done; #1414 the symmetric orthogonalizer; #1421 the SAD guess as tasks, done |
 | 3 | #1415 the core-Hamiltonian orbitals; #1422 the SAD guess from a config, through the binary, done |
 
