@@ -303,7 +303,7 @@ blas_scalar! {
 /// library requires, and the last column ends inside the slice. `routine`
 /// names the call in the message.
 #[track_caller]
-fn check_extent(routine: &str, name: &str, len: usize, rows: i32, cols: i32, ld: i32) {
+pub(crate) fn check_extent(routine: &str, name: &str, len: usize, rows: i32, cols: i32, ld: i32) {
     assert!(
         ld >= rows.max(1),
         "{routine}: {name}'s leading dimension {ld} is less than max(1, {rows} rows)"
@@ -324,7 +324,7 @@ fn check_extent(routine: &str, name: &str, len: usize, rows: i32, cols: i32, ld:
 /// elements: `inc` is at least 1 (the safe calls take no zero or negative
 /// stride), and the last entry, at `(count - 1) inc`, is inside the slice.
 #[track_caller]
-fn check_vector(routine: &str, name: &str, len: usize, count: i32, inc: i32) {
+pub(crate) fn check_vector(routine: &str, name: &str, len: usize, count: i32, inc: i32) {
     assert!(inc >= 1, "{routine}: {name}'s stride {inc} is less than 1");
     if count == 0 {
         return;
