@@ -4,19 +4,16 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
 use fb_core_error_handling::{Result, Status};
 use fb_core_planner::{Dag, Planned, Task};
 use fb_core_thread_pool::{self as thread_pool, DeviceStream, Lane, Record};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_integrals_mmd::add_records;
 use fb_integrals_one_electron_core_hamiltonian::add_core_hamiltonian;
 use fb_integrals_one_electron_overlap::add_overlap;
 use fb_molecule_nuclei::add_nuclei;
 use fb_recipes_matrix_ao::add_blas_workspace;
 use fb_recipes_orthogonalize::{ORTHOGONALIZE_EIGENVALUE_FLOOR, add_orthogonalize};
-use wwr_sys::wwr_memcpy_kind;
 
 use super::tasks::add_solve_fock;
 
@@ -160,18 +157,7 @@ impl Task for Download {
             unreachable!("a GPU task runs on a stream")
         };
         for (src, dst) in [(self.eps, pinned.eps), (self.c, pinned.c)] {
-            let (src, dst) = (device.get(src), host.take_mut(dst));
-            // SAFETY: two rows of the same length, on the task's stream; a
-            // stream task hands the pinned row to the copy and no more.
-            gpu_status(unsafe {
-                wwr_sys::wwr_memcpy_async(
-                    dst.as_mut_ptr().cast(),
-                    src.as_ptr().cast(),
-                    size_of_val(dst),
-                    wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                    stream.stream(),
-                )
-            })?;
+            memcpy_d2p(host, dst, device.get(src), stream)?;
         }
         Ok(())
     }
@@ -201,8 +187,8 @@ impl Task for Collect {
         _: Lane<'_, DeviceStream>,
     ) -> Status {
         *self.out.lock().unwrap_or_else(|e| e.into_inner()) = (
-            host.get(self.pinned.eps).to_vec(),
-            host.get(self.pinned.c).to_vec(),
+            memcpy_p2h(host, self.pinned.eps),
+            memcpy_p2h(host, self.pinned.c),
         );
         Ok(())
     }

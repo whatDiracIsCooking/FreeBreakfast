@@ -49,19 +49,18 @@
 //! | `GuessOutput`, a host `std::vector<double>` the first device reader uploads | the host row `D`, and [`add_guess_upload`]'s device row `D` |
 //! | `GuessStep::footprint`, nothing | the rows' sizes in the plan's tables |
 
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 
 use fb_atom::{Atom, Element};
 use fb_basis::{BasisSet, Shell};
-use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, HostKind, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_io_sad::{builtin_sad_density, carries_sad_stamp};
 use fb_sad::{AtomicDensityStamp, SadStampLookup, distinct_stamps, stamp_density};
-use wwr_sys::wwr_memcpy_kind;
 
 /// Add the SAD guess of `atoms` in `basis` to `dag` on GPU worker `worker`,
 /// and return D: a host output row of `nao_sphe²` doubles, column-major.
@@ -223,7 +222,7 @@ impl<H: HostKind, S> Task<H, S> for Stamp {
         let lookup: Option<SadStampLookup> = self.baked.then_some(builtin_sad_density);
         // stamp_density checks a baked block's size against the shells.
         let density = stamp_density(&stamp, &self.basis, lookup)?;
-        host.take_mut(*row).copy_from_slice(&density);
+        memcpy_h2p(host, *row, &density);
         Ok(())
     }
 }
@@ -299,7 +298,7 @@ impl<H: HostKind, S> Task<H, S> for Load {
         // Checked at planning, and again for the file as it is now.
         let array = fb_io_npy::read_npy(&self.from)?;
         check_shape(&self.from, &array.shape, self.n)?;
-        host.take_mut(*d).copy_from_slice(&array.data);
+        memcpy_h2p(host, *d, &array.data);
         Ok(())
     }
 }
@@ -329,18 +328,6 @@ impl Task for Upload {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let (src, dst) = (host.get(self.d), device.take_mut(*d));
-        // SAFETY: two rows of `len` doubles, on the task's stream. The
-        // pinned row is not rewritten before the copy completes: its bytes'
-        // next owner is ordered after this task's event by a handoff.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                dst.as_mut_ptr().cast(),
-                src.as_ptr().cast(),
-                size_of_val(src),
-                wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-                stream.stream(),
-            )
-        })
+        memcpy_p2d(&device.take_mut(*d), host, self.d, stream)
     }
 }

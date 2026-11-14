@@ -166,18 +166,7 @@ impl Task for Download {
             unreachable!("a GPU task runs on a stream")
         };
         for (src, dst) in [(self.0.z, rows.0), (self.0.c, rows.1)] {
-            let (src, dst) = (d.get(src), h.take_mut(dst));
-            // SAFETY: two rows of the same length, on the task's stream; a
-            // stream task hands the pinned row to the copy and no more.
-            gpu_status(unsafe {
-                wwr_sys::wwr_memcpy_async(
-                    dst.as_mut_ptr().cast(),
-                    src.as_ptr().cast(),
-                    size_of_val(dst),
-                    wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                    stream.stream(),
-                )
-            })?;
+            fb_core_arena::memcpy_d2p(h, dst, d.get(src), stream)?;
         }
         Ok(())
     }

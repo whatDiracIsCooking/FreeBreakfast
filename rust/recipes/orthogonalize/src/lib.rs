@@ -37,7 +37,7 @@
 //! | nothing: the C++ tree compiles its kernels into the binary | [`fb_recipes_sys::check_library`] first, at planning |
 //! | `orthonormalize`, `orthonormalize_footprint` | not ported: nothing calls them yet |
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2d};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
@@ -46,7 +46,7 @@ use fb_core_wwr::handle::DeviceHandleStream;
 use fb_core_wwr::{gpu_status, gpu_status_at};
 use fb_recipes_diagonalize::add_diagonalize;
 use fb_recipes_sys::fb_inverse_sqrt;
-use wwr_sys::{wwr_blas_operation, wwr_blas_side_mode, wwr_memcpy_kind};
+use wwr_sys::{wwr_blas_operation, wwr_blas_side_mode};
 
 /// The default eigenvalue floor, the C++ `kOrthogonalizeEigenvalueFloor`: an
 /// eigenvalue at or below it contributes 0 to X rather than `λ^(-1/2)`.
@@ -158,17 +158,8 @@ impl Task for InverseRoot {
             unreachable!("a GPU task runs on a stream")
         };
         let stream = worker.stream();
-        let (w, lambda) = (device.get(self.w), device.take_mut(rows.lambda));
-        // SAFETY: two device rows of n doubles, on the task's stream.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                lambda.as_mut_ptr().cast(),
-                w.as_ptr().cast(),
-                lambda.len() * size_of::<f64>(),
-                wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_DEVICE,
-                stream,
-            )
-        })?;
+        let lambda = device.take_mut(rows.lambda);
+        memcpy_d2d(&lambda, device.get(self.w), worker)?;
         // add_diagonalize checked that n² fits an i32, so n does too.
         let n = self.n as i32;
         // SAFETY: Λ is a device row of n doubles, on the task's stream,

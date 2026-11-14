@@ -4,14 +4,11 @@
 
 use std::path::PathBuf;
 
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2p, memcpy_p2h};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_io_npy::NpyArray;
-use wwr_sys::wwr_memcpy_kind;
 
 /// Add the writing of the device matrix `m`, `n × n` doubles column-major,
 /// to the `.npy` file `path` to `dag` on GPU worker `worker`.
@@ -111,20 +108,9 @@ impl Task for Download {
         let Lane::Stream { stream, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let (src, dst) = (device.get(self.m), host.take_mut(*pinned));
-        // SAFETY: two rows of the same length, on the task's stream; a
-        // stream task hands the pinned row to the copy and no more, and the
-        // write that reads it runs after the executor waited for this
-        // task's event.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                dst.as_mut_ptr().cast(),
-                src.as_ptr().cast(),
-                size_of_val(dst),
-                wwr_memcpy_kind::WWR_MEMCPY_DEVICE_TO_HOST,
-                stream.stream(),
-            )
-        })
+        // The write that reads the pinned row runs after the executor
+        // waited for this task's event.
+        memcpy_d2p(host, *pinned, device.get(self.m), stream)
     }
 }
 
@@ -158,7 +144,7 @@ impl Task for Write {
             &self.path,
             &NpyArray {
                 shape: vec![self.n, self.n],
-                data: host.get(self.pinned).to_vec(),
+                data: memcpy_p2h(host, self.pinned),
             },
         )
     }

@@ -83,6 +83,17 @@ impl<K: Kind> Bufs<'_, K> {
     }
 }
 
+impl<K: Kind> Bufs<'_, K> {
+    /// `row` borrowed for this view as [`Bufs::acquire`] borrows it, as its
+    /// first element and length: what a copy enqueued on a stream reads or
+    /// writes ([`super::memcpy`]). The borrow is held until the view drops.
+    #[cfg(feature = "device")]
+    pub(super) fn acquire_ptr<T: Element>(&self, row: RowId<K, T>, write: bool) -> (*mut T, usize) {
+        let (index, len) = self.acquire(row, write);
+        (self.block.row_ptr(index).cast::<T>(), len)
+    }
+}
+
 impl<K: Kind> Drop for Bufs<'_, K> {
     fn drop(&mut self) {
         for &(index, write) in self.held.get_mut().iter() {
@@ -196,6 +207,17 @@ impl<T> DeviceRef<'_, T> {
     /// Whether it has no elements.
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+}
+
+impl<'a, T> From<&'a DeviceMut<'_, T>> for DeviceRef<'a, T> {
+    /// The row a writer holds, to read: as a `&mut` reborrows as `&`.
+    fn from(row: &'a DeviceMut<'_, T>) -> Self {
+        DeviceRef {
+            ptr: row.as_ptr(),
+            len: row.len(),
+            marker: PhantomData,
+        }
     }
 }
 

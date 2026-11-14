@@ -29,13 +29,12 @@
 
 use contracts::debug_requires;
 use fb_basis::BasisSet;
-use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::gpu_status;
-use fb_core_wwr::handle::DeviceHandleStream;
-use wwr_sys::{wwr_blas_operation, wwr_memcpy_kind, wwr_stream};
+use wwr_sys::wwr_blas_operation;
 
 mod workspace;
 pub use workspace::add_blas_workspace;
@@ -111,7 +110,7 @@ impl Task for Harmonics {
         host: &Bufs<'_, Pinned>,
         _: Lane<'_, DeviceStream>,
     ) -> Status {
-        host.take_mut(*u).copy_from_slice(&self.u);
+        memcpy_h2p(host, *u, &self.u);
         Ok(())
     }
 }
@@ -164,21 +163,8 @@ impl Task for Transform {
         let Lane::Stream { stream: worker, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let stream: wwr_stream = worker.stream();
-        let u_host = host.get(self.u);
         let u = device.take_mut(rows.u);
-        // SAFETY: two rows of `u_host.len()` doubles, on the task's stream.
-        // The pinned row is not rewritten before the copy completes: its
-        // bytes' next owner is ordered after this task's event by a handoff.
-        gpu_status(unsafe {
-            wwr_sys::wwr_memcpy_async(
-                u.as_mut_ptr().cast(),
-                u_host.as_ptr().cast(),
-                size_of_val(u_host),
-                wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-                stream,
-            )
-        })?;
+        memcpy_p2d(&u, host, self.u, worker)?;
 
         // The worker's handle, bound to `stream` when the backend was made.
         let handle = worker.blas().get();

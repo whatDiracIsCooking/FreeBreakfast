@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use fb_core_arena::{Bufs, Device, Element, Kind, Layout, Pinned, RowId};
+use fb_core_arena::{Bufs, Device, Element, Kind, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
@@ -15,7 +15,7 @@ use fb_integrals_sys::{
     fb_mmd_order, fb_mmd_order_workspace_bytes, fb_mmd_records, fb_ordered_pair_bound,
     fb_primitive_pair_class_view, fb_primitive_pair_records, fb_primitive_pair_source,
 };
-use wwr_sys::{wwr_memcpy_kind, wwr_stream};
+use wwr_sys::wwr_stream;
 
 use super::tables::Tables;
 
@@ -272,16 +272,14 @@ impl Task for Stage {
         _: Lane<'_, DeviceStream>,
     ) -> Status {
         let s = &self.tables.shells;
-        host.take_mut(rows.prim_begin)
-            .copy_from_slice(&s.prim_begin);
-        host.take_mut(rows.exponent).copy_from_slice(&s.exponent);
-        host.take_mut(rows.coefficient)
-            .copy_from_slice(&s.coefficient);
-        host.take_mut(rows.c_x).copy_from_slice(&s.c_x);
-        host.take_mut(rows.c_y).copy_from_slice(&s.c_y);
-        host.take_mut(rows.c_z).copy_from_slice(&s.c_z);
-        host.take_mut(rows.ao_offset).copy_from_slice(&s.ao_offset);
-        host.take_mut(rows.rank).copy_from_slice(&s.rank);
+        memcpy_h2p(host, rows.prim_begin, &s.prim_begin);
+        memcpy_h2p(host, rows.exponent, &s.exponent);
+        memcpy_h2p(host, rows.coefficient, &s.coefficient);
+        memcpy_h2p(host, rows.c_x, &s.c_x);
+        memcpy_h2p(host, rows.c_y, &s.c_y);
+        memcpy_h2p(host, rows.c_z, &s.c_z);
+        memcpy_h2p(host, rows.ao_offset, &s.ao_offset);
+        memcpy_h2p(host, rows.rank, &s.rank);
         let bra = host.take_mut(rows.bra);
         let ket = host.take_mut(rows.ket);
         let rec_begin = host.take_mut(rows.rec_begin);
@@ -413,22 +411,22 @@ impl Task for Records {
         host: &Bufs<'_, Pinned>,
         lane: Lane<'_, DeviceStream>,
     ) -> Status {
-        let Lane::Stream { stream, .. } = lane else {
+        let Lane::Stream { stream: worker, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let stream = stream.stream();
+        let stream = worker.stream();
         let (d, s) = (&rows.tables, &self.staged);
-        let prim_begin = upload(stream, device, d.prim_begin, host.get(s.prim_begin))?;
-        let exponent = upload(stream, device, d.exponent, host.get(s.exponent))?;
-        let coefficient = upload(stream, device, d.coefficient, host.get(s.coefficient))?;
-        let c_x = upload(stream, device, d.c_x, host.get(s.c_x))?;
-        let c_y = upload(stream, device, d.c_y, host.get(s.c_y))?;
-        let c_z = upload(stream, device, d.c_z, host.get(s.c_z))?;
-        let ao_offset = upload(stream, device, d.ao_offset, host.get(s.ao_offset))?;
-        let rank = upload(stream, device, d.rank, host.get(s.rank))?;
-        let bra = upload(stream, device, d.bra, host.get(s.bra))?;
-        let ket = upload(stream, device, d.ket, host.get(s.ket))?;
-        let rec_begin = upload(stream, device, d.rec_begin, host.get(s.rec_begin))?;
+        let prim_begin = upload(worker, device, d.prim_begin, host, s.prim_begin)?;
+        let exponent = upload(worker, device, d.exponent, host, s.exponent)?;
+        let coefficient = upload(worker, device, d.coefficient, host, s.coefficient)?;
+        let c_x = upload(worker, device, d.c_x, host, s.c_x)?;
+        let c_y = upload(worker, device, d.c_y, host, s.c_y)?;
+        let c_z = upload(worker, device, d.c_z, host, s.c_z)?;
+        let ao_offset = upload(worker, device, d.ao_offset, host, s.ao_offset)?;
+        let rank = upload(worker, device, d.rank, host, s.rank)?;
+        let bra = upload(worker, device, d.bra, host, s.bra)?;
+        let ket = upload(worker, device, d.ket, host, s.ket)?;
+        let rec_begin = upload(worker, device, d.rec_begin, host, s.rec_begin)?;
 
         let key = device.take_mut(rows.key);
         let perm = device.take_mut(rows.perm);
@@ -570,30 +568,18 @@ impl Task for Records {
     }
 }
 
-/// `src`, a pinned row, copied on `stream` to the device row `dst` of the
-/// same length; returns `dst`'s pointer, for the launches to read.
+/// The pinned row `src` copied on `worker`'s stream to the device row
+/// `dst` of the same length; returns `dst`'s pointer, for the launches to
+/// read.
 fn upload<T: Element>(
-    stream: wwr_stream,
+    worker: &DeviceStream,
     device: &Bufs<'_, Device>,
     dst: RowId<Device, T>,
-    src: &[T],
+    host: &Bufs<'_, Pinned>,
+    src: RowId<Pinned, T>,
 ) -> Result<*const T> {
     let dst = device.take_mut(dst);
-    // Always on, not a contract: the copy below writes `src.len()` elements
-    // into `dst`, so a release build must not skip it.
-    assert_eq!(dst.len(), src.len(), "upload: the rows' lengths differ");
-    // SAFETY: two rows of `src.len()` elements, on the task's stream. The
-    // pinned row is not rewritten before the copy completes: its bytes'
-    // next owner is ordered after this task's event by a handoff.
-    gpu_status(unsafe {
-        wwr_sys::wwr_memcpy_async(
-            dst.as_mut_ptr().cast(),
-            src.as_ptr().cast(),
-            size_of_val(src),
-            wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-            stream,
-        )
-    })?;
+    memcpy_p2d(&dst, host, src, worker)?;
     Ok(dst.as_ptr())
 }
 
