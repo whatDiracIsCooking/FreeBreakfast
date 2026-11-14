@@ -39,7 +39,7 @@
 //!
 //! | C++ (`free_breakfast`) | Here |
 //! |---|---|
-//! | `GuessType`, `GuessStep::type` | nothing yet: SAD is the only kind, and the config that would carry it is the binary's |
+//! | `GuessType`, `GuessStep::type` | `fb_pipeline_config`'s `GuessKind` and `GuessStep`, the binary's config: SAD is the only kind |
 //! | `GuessStep::run(in, subflow)`, over `sad_density(flow, …, builtin_sad_density)` | [`add_sad_guess`]: a node per stamp and `sad guess` |
 //! | `sad_density`'s task form: one task, a subtask per distinct stamp, its explicit join | the stamp nodes and `sad guess`, ordered by the rows they write and read |
 //! | `GuessStep::load(from, in)` | [`add_loaded_guess`], whose `load guess` node reads the file when it runs |

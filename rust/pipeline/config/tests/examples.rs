@@ -7,7 +7,11 @@
 //! `CARGO_TARGET_TMPDIR`, so an example's relative `output` lands there.
 //!
 //! The overlap's bar is its crate's, fixed by analysis, one run: `max |S -
-//! S_ref| <= 1e-12 * max |S_ref|` against PySCF's S (`tests/data/`).
+//! S_ref| <= 1e-12 * max |S_ref|` against PySCF's S (`tests/data/`). The
+//! guess's is bitwise: its `d.npy` against `fb-sad`'s serial density, the
+//! task form placing the same stamps in the same order, and a run loading
+//! that file writing the same bytes, since a `.npy` read and written back
+//! is its bytes.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -77,9 +81,19 @@ fn overlap_example() {
     );
     assert!(worst <= BAR * scale, "max |S - S_ref| = {worst:e}");
 
+    check_timing(
+        &config,
+        &cwd.join("overlap/timing.json"),
+        &["download overlap.npy", "write overlap.npy"],
+    );
+}
+
+/// The timing record `timing` read back: one entry per task of `config`'s
+/// plan, in rank order, each of `named` among them.
+fn check_timing(config: &Path, timing: &Path, named: &[&str]) {
     let planned =
-        fb_pipeline_config::plan(&fb_pipeline_config::read_config(&config).unwrap()).unwrap();
-    let text = std::fs::read_to_string(cwd.join("overlap/timing.json")).unwrap();
+        fb_pipeline_config::plan(&fb_pipeline_config::read_config(config).unwrap()).unwrap();
+    let text = std::fs::read_to_string(timing).unwrap();
     let record: Record = serde_json::from_str(&text).expect("timing.json parses");
     record.result.unwrap();
     assert_eq!(record.tasks.len(), planned.len(), "one entry per task");
@@ -87,9 +101,78 @@ fn overlap_example() {
         assert_eq!(task.node.index(), rank, "{}: in rank order", task.name);
     }
     let names: Vec<&str> = record.tasks.iter().map(|t| t.name.as_str()).collect();
-    for write in ["download overlap.npy", "write overlap.npy"] {
-        assert!(names.contains(&write), "{write} timed: {names:?}");
+    for n in named {
+        assert!(names.contains(n), "{n} timed: {names:?}");
     }
+}
+
+/// The example guess through the binary: exit 0, its `d.npy` bitwise
+/// `fb-sad`'s serial SAD density of water in cc-pVDZ (the compiled-in
+/// stamps), its `timing.json` one entry per task, the stamp nodes and the
+/// write node among them. Then a second run, `[guess] from` that file,
+/// writes the same bytes. The binary opens device 0 for any plan, so it
+/// needs a GPU.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+fn guess_example() {
+    let cwd = workdir("example_guess");
+    let config = example("guess.toml");
+    let out = free_breakfast(&cwd, &config);
+    assert_eq!(out.status.code(), Some(0), "the example exits 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("completed: 0 errors"), "{stdout}");
+
+    let written = cwd.join("guess/d.npy");
+    let d = fb_io_npy::read_npy(&written).unwrap();
+    let molecule = fb_io_xyz::read_xyz(&example("water.xyz"), 0, 1).unwrap();
+    let basis = fb_io_basis::resolve_basis("cc-pvdz")
+        .unwrap()
+        .primitive_normalized()
+        .place(&molecule)
+        .unwrap();
+    let want = fb_sad::sad_density(
+        &basis,
+        molecule.atoms(),
+        Some(fb_io_sad::builtin_sad_density),
+    )
+    .unwrap();
+    let n = basis.nao_sphe() as usize;
+    assert_eq!(d.shape, [n, n], "nao_sphe square");
+    let differ = d
+        .data
+        .iter()
+        .zip(&want)
+        .filter(|(g, w)| g.to_bits() != w.to_bits())
+        .count();
+    println!("n_ao {n}, elements differing from the serial density: {differ}");
+    assert_eq!(differ, 0, "d.npy is the serial SAD density bitwise");
+    check_timing(
+        &config,
+        &cwd.join("guess/timing.json"),
+        &["baked stamp O", "baked stamp H", "sad guess", "write d.npy"],
+    );
+
+    // The second run loads the first's d.npy, from a config of its own.
+    let loaded = cwd.join("load.toml");
+    std::fs::copy(example("water.xyz"), cwd.join("water.xyz")).unwrap();
+    std::fs::write(
+        &loaded,
+        "calculation = \"guess\"\noutput = \"loaded\"\n\n[molecule]\nxyz = \"water.xyz\"\n\n\
+         [basis_set]\nbasis = \"cc-pvdz\"\n\n[guess]\nfrom = \"guess/d.npy\"\n",
+    )
+    .unwrap();
+    let out = free_breakfast(&cwd, &loaded);
+    assert_eq!(out.status.code(), Some(0), "the loading run exits 0");
+    let again = std::fs::read(cwd.join("loaded/d.npy")).unwrap();
+    assert!(
+        again == std::fs::read(&written).unwrap(),
+        "the loaded run writes the same bytes"
+    );
+    check_timing(
+        &loaded,
+        &cwd.join("loaded/timing.json"),
+        &["load guess", "write d.npy"],
+    );
 }
 
 /// A config the binary refuses, written into a working directory of its
