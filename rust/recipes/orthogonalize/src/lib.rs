@@ -10,8 +10,8 @@
 //!   as it was.
 //! - **`inverse root`**, on the worker's stream: w copied into a scratch
 //!   row Λ, mapped in place to `Λ^(-1/2)` by `libfb_recipes_kernels.so`'s
-//!   [`fb_inverse_sqrt`] (an eigenvalue at or below the floor becomes 0,
-//!   which drops its mode), then `M = U diag(Λ^(-1/2))` by a BLAS `dgmm`
+//!   kernel through [`fb_recipes_sys::inverse_sqrt`] (an eigenvalue at or
+//!   below the floor becomes 0, which drops its mode), then `M = U diag(Λ^(-1/2))` by a BLAS `dgmm`
 //!   into scratch M and `X = M Uᵀ` by a `gemm` into the output row X, both
 //!   on the worker's handle, through [`fb_recipes_blas::dgmm`] and
 //!   [`fb_recipes_blas::gemm`].
@@ -28,7 +28,7 @@
 //! | `kOrthogonalizeEigenvalueFloor<T>`, 1e-10 | [`ORTHOGONALIZE_EIGENVALUE_FLOOR`] |
 //! | S copied into U, then `diagonalize(res, n, U, w)`, which syncs to read syevd's flag | [`add_diagonalize`]'s `syevd` (the copy into U its first work) and `syevd check` |
 //! | U and the eigenvalues, pool buffers of the call's own; M, the device workspace's | U and w, `syevd`'s output rows, read by `inverse root`; Λ and M, its scratch rows |
-//! | `inverse_sqrt<T>(stream, n, w, floor)` over w itself | Λ, a copy of w, through [`fb_inverse_sqrt`]: a task writes only its own rows |
+//! | `inverse_sqrt<T>(stream, n, w, floor)` over w itself | Λ, a copy of w, through [`inverse_sqrt`]: a task writes only its own rows |
 //! | `gmmwich<WWRBLAS_OP_T>(res.blas(), n, U, Λ, M, X)`: a `dgmm` and a `gemm` | the same two calls, on the worker's handle, [`DeviceStream::blas`] |
 //! | `orthogonalize_footprint<T>(n, syevd_lwork)` | the layout, read off by the planner, `lwork` handed in ([`syevd_lwork`](fb_recipes_diagonalize::syevd_lwork)) |
 //! | the extreme eigenvalues copied back and cond(S) logged, a second sync | not ported: a task has no host wait inside it, and nothing reads the log yet |
@@ -38,16 +38,15 @@
 //! | nothing: the C++ tree compiles its kernels into the binary | [`fb_recipes_sys::check_library`] first, at planning |
 //! | `orthonormalize`, `orthonormalize_footprint` | not ported: nothing calls them yet |
 
+#![forbid(unsafe_code)]
+
 use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_d2d};
 use fb_core_error_handling::{Error, Result, Status};
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::common::wwr_status_from_code;
-use fb_core_wwr::gpu_status_at;
-use fb_core_wwr::handle::DeviceHandleStream;
 use fb_recipes_blas::{N, Right, T, dgmm, gemm};
 use fb_recipes_diagonalize::add_diagonalize;
-use fb_recipes_sys::fb_inverse_sqrt;
+use fb_recipes_sys::inverse_sqrt;
 
 /// The default eigenvalue floor, the C++ `kOrthogonalizeEigenvalueFloor`: an
 /// eigenvalue at or below it contributes 0 to X rather than `λ^(-1/2)`.
@@ -158,17 +157,11 @@ impl Task for InverseRoot {
         let Lane::Stream { stream: worker, .. } = lane else {
             unreachable!("a GPU task runs on a stream")
         };
-        let stream = worker.stream();
-        let lambda = device.take_mut(rows.lambda);
+        let mut lambda = device.take_mut(rows.lambda);
         memcpy_d2d(&lambda, device.get(self.w), worker)?;
+        inverse_sqrt(worker, self.n, &mut lambda, self.floor)?;
         // add_diagonalize checked that n² fits an i32, so n does too.
         let n = self.n as i32;
-        // SAFETY: Λ is a device row of n doubles, on the task's stream,
-        // after the copy into it.
-        let status = unsafe { fb_inverse_sqrt(stream, n as u32, lambda.as_mut_ptr(), self.floor) };
-        fb_kernel_abi::launch_status("fb_inverse_sqrt", status, |code, at| {
-            Some(gpu_status_at(wwr_status_from_code(code)?, at))
-        })?;
 
         // The worker's handle, bound to `stream` when the backend was made.
         let handle = worker.blas();
