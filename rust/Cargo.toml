@@ -34,6 +34,7 @@ members = [
     "integrals/one_electron/kinetic",
     "pipeline/guess",
     "molecule/nuclei",
+    "integrals/one_electron/potential_en",
 ]
 
 [workspace.package]
@@ -72,6 +73,7 @@ fb-io-sad = { path = "io/sad" }
 fb-integrals-one-electron-kinetic = { path = "integrals/one_electron/kinetic" }
 fb-pipeline-guess = { path = "pipeline/guess" }
 fb-molecule-nuclei = { path = "molecule/nuclei" }
+fb-integrals-one-electron-potential-en = { path = "integrals/one_electron/potential_en" }
 
 contracts = "0.6.11"
 # core::log: the line's local time, and the OS thread id (std has none).
