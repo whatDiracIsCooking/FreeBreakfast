@@ -74,6 +74,7 @@ tree, not inputs to its build.
 | `fb_molecule_nuclei` | `src/molecule`, its device half (`Molecule`'s `upload`, `view`, `NucleiView`, `molecule_footprint`) | `add_nuclei`: a `Molecule`'s nuclei as two tasks of a `Dag`, `nuclei` on the CPU (each nucleus's charge and position, in atom order, into two pinned rows, `n` and `3 n` doubles) and `nuclei upload` on the stream (both copied into device rows), and `NucleiRows`, `n_nuc` and those two device rows, which a reader declares with `NucleiRows::read` and hands its launch wrapper as an `fb_nuclei_view` of their pointers. A crate beside `fb_molecule`, so that one links nothing. Every size is the molecule's, at planning; the plan text for H2O and CO is the committed golden `molecule/nuclei/tests/golden/plan_*.txt` |
 | `fb_integrals_one_electron_potential_en` | `src/integrals/one_electron/potential_en`'s `nuclear_attraction` / `add_nuclear_attraction` and its bridge's `potential_en_class` | `potential_en_classes`, the safe layer over `fb_potential_en_class`: every class's launch on one stream into a Cartesian matrix the caller zeroed, the wrapper's `fb_nuclei_view` formed from `fb_molecule_nuclei`'s `NucleiRows`, the launcher's requirements as `debug_requires`, callable by a task that launches several families into one matrix (after `kinetic_classes`, for T + V). `add_nuclear_attraction`: V of a `BasisSet` over the nuclei's rows as tasks after the records, `potential en` on the stream (the Cartesian matrix zeroed, then `potential_en_classes`, reading `ClassRows` and `NucleiRows` as edges), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in; nuclei with no nucleus refused at planning as `InvalidConfig`, adding nothing. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/potential_en/tests/golden/plan_*.txt` |
 | `fb_integrals_one_electron_core_hamiltonian` | `src/integrals/one_electron/core_hamiltonian`'s `core_hamiltonian` | `add_core_hamiltonian`: H = T + V of a `BasisSet` over `fb_molecule_nuclei`'s `NucleiRows` as tasks after the records, one build task, `core hamiltonian`, on the stream (the Cartesian matrix zeroed, then `kinetic_classes` and `potential_en_classes` on top, reading `ClassRows` and `NucleiRows` as edges, with no T or V row of its own), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in; nuclei with no nucleus refused at planning as `InvalidConfig`, adding nothing. The plan text for each of the overlap's fixtures is the committed golden `integrals/one_electron/core_hamiltonian/tests/golden/plan_*.txt` |
+| `fb_pipeline_config`, and the `free-breakfast` binary | `src/pipeline/config`, `src/main.cpp` | The binary: `Config`, a serde type read from TOML by `read_config` (`calculation`, `output`, `[molecule] xyz`, `[basis_set] basis`; each field's doc comment its default and unit; an unknown key refused `InvalidConfig` as `<file>:<line>: unknown field ...`; the geometry and a basis path joined to the config's directory), `plan`, the calculation's tasks as one `Planned` (the overlap alone so far), and `add_write_npy`, the write nodes: `download <file>` on the stream into a pinned row and `write <file>` on the CPU, a float64 `.npy` in Fortran order, feeding nothing. `free-breakfast <config.toml>` (`src/main.rs`) plans, makes the output directory, runs on device 0 and writes `timing.json` (`Record::to_json`) beside the products; its `main` is the one place an error is logged, exiting with `ErrorKind::exit_code`. `rust/examples/` holds one config per calculation, `overlap.toml` today, run through the binary by `tests/examples.rs`; the example's plan text is the committed golden `pipeline/config/tests/golden/plan_overlap.txt` |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -102,11 +103,14 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `recipes/matrix_ao` and what they stand on; `pipeline/guess` on `sad`,
 `io/sad`, `io/npy`, `basis`, `atom`, `planner`, `arena`, `thread_pool`,
 `wwr` and `error_handling`; and `molecule/nuclei` on `molecule`,
-`planner`, `arena`, `thread_pool`, `wwr` and `error_handling`; and
+`planner`, `arena`, `thread_pool`, `wwr` and `error_handling`;
 `integrals/one_electron/potential_en` on `integrals/mmd`,
 `molecule/nuclei`, `recipes/matrix_ao` and what they stand on; and
 `integrals/one_electron/core_hamiltonian` on `integrals/one_electron/kinetic`,
-`integrals/one_electron/potential_en` and what they stand on.
+`integrals/one_electron/potential_en` and what they stand on; and
+`pipeline/config` on `integrals/one_electron/overlap`, `io/xyz`,
+`io/basis`, `io/npy`, `log`, `planner`, `arena`, `thread_pool`, `wwr` and
+`error_handling`.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -238,8 +242,8 @@ crates' own device tests need beyond `device`; a dependent asks for
 the thread pool turn their defaults off, so nothing turns them on by
 accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`,
 `fb-integrals-sys`, `fb-integrals-mmd`,
-`fb-integrals-one-electron-overlap`, `fb-recipes-matrix-ao` and
-`fb-molecule-nuclei` always link; the records' layout asks
+`fb-integrals-one-electron-overlap`, `fb-recipes-matrix-ao`,
+`fb-molecule-nuclei` and `fb-pipeline-config` always link; the records' layout asks
 the kernel library for the sort's workspace at planning, so even the
 overlap's and the transform's device-free tests (the host tables, the plan
 goldens) need the library built. `fb-molecule-nuclei` links wwr alone,
@@ -803,3 +807,18 @@ and `3.5e-11`. Each reference equals the kinetic's T plus the nuclear
 attraction's V to `1.4e-14`. Clippy (`-D warnings`, the new crate with its
 tests too), rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not
 run on the gfx1200.
+
+2026-11-14, `pipeline/config` (the `free-breakfast` binary: its config
+type, `main` and write nodes, running the overlap), on the gfx1200 (HIP),
+holding the card, linking the libraries the `hip` preset built:
+`devtools/test.py pr --only cargo --all` passes, tier 3 197 tests, none in
+the new crate (it links); tier 4 118, none skipped, the 6 new its own:
+`rust/examples/overlap.toml` through the binary exits 0 and its
+`overlap.npy` meets the overlap's bar against PySCF (`max |S - S_ref|`
+`4.4e-16`, the bar `1e-12 * max |S_ref|`), its `timing.json` parses with one
+entry per task, the two write nodes among them; an unknown key, a missing
+geometry file and an unknown basis name each exit with their kind's code
+(1, 4, 4) naming the key and the path, no panic; the example's plan text
+is a golden; and the config's paths. Clippy (`-D warnings`, the new crate
+with its tests), rustdoc (`-D warnings`) and `cargo fmt --check` are clean.
+Not run on the RTX 3080.
