@@ -138,7 +138,9 @@ fn sad_matches_sad_density_bitwise() {
 
 /// `PipelineGuess.ACompiledInBasisTakesTheBakedStamps`: the set by name
 /// arrives named, and the plan's density is the serial form's with the
-/// baked stamps. `fb-io-sad`'s tests hold each stamp to its SCF.
+/// baked stamps. `fb-io-sad`'s tests hold each stamp to its SCF. Planning
+/// asks only whether each stamp is carried, and the run's nodes are the
+/// three baked stamps and `sad guess`: no SCF runs.
 #[test]
 fn a_compiled_in_basis_takes_the_baked_stamps() {
     let atoms = formaldehyde();
@@ -149,6 +151,19 @@ fn a_compiled_in_basis_takes_the_baked_stamps() {
         let (record, d) = guess(&basis, &atoms, n_cpu);
         record.result.unwrap();
         assert_eq!(bits(&d), bits(&baked), "{n_cpu} CPU workers");
+        let mut ran: Vec<&str> = record.tasks.iter().map(|t| t.name.as_str()).collect();
+        ran.sort_unstable();
+        assert_eq!(
+            ran,
+            [
+                "baked stamp C",
+                "baked stamp H",
+                "baked stamp O",
+                "collect",
+                "sad guess"
+            ],
+            "{n_cpu} CPU workers"
+        );
     }
 }
 
