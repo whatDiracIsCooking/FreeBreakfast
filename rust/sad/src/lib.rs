@@ -67,8 +67,9 @@
 //! |---|---|
 //! | `SadStampLookup`, a function pointer | [`SadStampLookup`], a `fn` pointer; `Option` for the C++ `nullptr` |
 //! | `sad_density(basis, atoms, baked = nullptr)` | [`sad_density`], `baked` always given |
-//! | `sad_density(flow, basis, atoms, out, baked)`, the task form | not here: in the model each SCF is a CPU node of the plan (the guess-tasks issue) |
-//! | `sad.cpp`: `AtomicDensityStamp`, `place`, `same_shells`, `StampSites`, `distinct_stamps`, `stamp_density`, `stamp_and_place` | the private items of those names here |
+//! | `sad_density(flow, basis, atoms, out, baked)`, the task form | not here: in the model each SCF is a CPU node of the plan, `fb-pipeline-guess`'s `add_sad_guess`, which plans over [`distinct_stamps`] and runs [`stamp_density`] in each node |
+//! | `sad.cpp`: `AtomicDensityStamp`, `StampSites`, `distinct_stamps`, `stamp_density` | [`AtomicDensityStamp`], [`StampSites`], [`distinct_stamps`], [`stamp_density`], public for the task form; `stamp_density` takes the basis's name, the one thing of the basis it reads |
+//! | `sad.cpp`: `place`, `same_shells`, `stamp_and_place` | the private items of those names here |
 //! | `:aufbau`: `SubshellFill`, `kAufbauOrder`, `subshell_occupation` | `aufbau`'s `SubshellFill`, `AUFBAU_ORDER`, `subshell_occupation` |
 //! | `:hermite`: `one_center_hermite`, `one_center_hermite_coulomb` | `atomic_scf::hermite`'s functions of those names |
 //! | `:one_electron`: `one_center_pair_loop`, `one_center_overlap_1d`, `one_center_overlap`, `one_center_kinetic`, `one_center_nuclear` | `atomic_scf::one_electron`'s functions of those names; the loop takes a closure for the template's functor |
@@ -81,10 +82,11 @@
 //! | `:scf`: `kDiisDepth`, `rhf_fock`, `AtomicScf`, `atomic_scf` | `atomic_scf`'s `DIIS_DEPTH` and the items of those names |
 //! | `AtomicScf::orbital_energies`, and the diagonalization after convergence that fills it | nothing: no caller reads them, and the density is taken before it |
 //! | `AtomicScf::energy`, `iterations` | the same fields, logged at debug when an SCF converges |
-//! | the re-export of `free_breakfast.third_party.taskflow` | nothing: there is no task form |
+//! | the re-export of `free_breakfast.third_party.taskflow` | nothing: there is no task form here |
 //!
-//! Everything but [`sad_density`] and [`SadStampLookup`] is private to the
-//! crate, as the C++ partitions are to the module.
+//! Everything but [`sad_density`], [`SadStampLookup`] and the four items the
+//! task form plans with is private to the crate, as the C++ partitions are to
+//! the module.
 
 #![forbid(unsafe_code)]
 
@@ -165,10 +167,14 @@ fn spherical_count(shells: &[Shell]) -> usize {
 /// column-major: `AtomicDensityStamp`. Every integral of the atomic SCF is
 /// one-center, so the block is geometry-free: every atom with this Z and
 /// these shells wears the same one.
-struct AtomicDensityStamp<'a> {
-    z: i32,
-    shells: &'a [Shell],
-    density: Vec<f64>,
+pub struct AtomicDensityStamp<'a> {
+    /// The atomic number.
+    pub z: i32,
+    /// The atom's shells, on its center.
+    pub shells: &'a [Shell],
+    /// The block, `n × n` over the shells' spherical AOs; empty until its
+    /// SCF runs.
+    pub density: Vec<f64>,
 }
 
 /// Write `stamp`'s block onto the diagonal of the `n × n` column-major
@@ -185,15 +191,20 @@ fn place(stamp: &AtomicDensityStamp<'_>, offset: usize, n: usize, density: &mut 
 /// One distinct (Z, shells) of a molecule and where it goes, `StampSites`:
 /// its stamp, whose density stays empty until its SCF runs, and the first AO
 /// of each atom that wears it.
-struct StampSites<'a> {
-    stamp: AtomicDensityStamp<'a>,
-    offsets: Vec<usize>,
+pub struct StampSites<'a> {
+    /// The stamp.
+    pub stamp: AtomicDensityStamp<'a>,
+    /// The first spherical AO of each atom that wears it, in atom order.
+    pub offsets: Vec<usize>,
 }
 
 /// The distinct (Z, shells) of `atoms` over `basis`, in order of each one's
 /// first atom, `distinct_stamps`: the first of them to fail is the one the
 /// first failing atom wears. An atom with no shells wears none.
-fn distinct_stamps<'a>(basis: &'a BasisSet, atoms: &[Atom]) -> Result<Vec<StampSites<'a>>> {
+///
+/// # Errors
+/// `InvalidConfig` if `basis.natoms()` differs from the atom count.
+pub fn distinct_stamps<'a>(basis: &'a BasisSet, atoms: &[Atom]) -> Result<Vec<StampSites<'a>>> {
     if basis.natoms() as usize != atoms.len() {
         return Err(Error::config(format!(
             "sad_density: the basis groups its shells over {} atoms but {} were given; the \
@@ -233,18 +244,22 @@ fn distinct_stamps<'a>(basis: &'a BasisSet, atoms: &[Atom]) -> Result<Vec<StampS
     Ok(sites)
 }
 
-/// `stamp`'s density, `stamp_density`: `baked`'s for `basis`, when it is
-/// named and `baked` has this element, else its own SCF's. A baked block is
-/// checked against the shells only by size, the one thing a lookup by name
-/// can get wrong that a guess cannot survive.
-fn stamp_density(
+/// `stamp`'s density, `stamp_density`: `baked`'s for `basis_name`, the
+/// basis's [`BasisSet::name`], when it is not empty and `baked` has this
+/// element, else its own SCF's. A baked block is checked against the shells
+/// only by size, the one thing a lookup by name can get wrong that a guess
+/// cannot survive.
+///
+/// # Errors
+/// [`sad_density`]'s, for this one stamp.
+pub fn stamp_density(
     stamp: &AtomicDensityStamp<'_>,
-    basis: &BasisSet,
+    basis_name: &str,
     baked: Option<SadStampLookup>,
 ) -> Result<Vec<f64>> {
     if let Some(lookup) = baked
-        && !basis.name().is_empty()
-        && let Some(density) = lookup(basis.name(), stamp.z)
+        && !basis_name.is_empty()
+        && let Some(density) = lookup(basis_name, stamp.z)
     {
         let block = spherical_count(stamp.shells);
         if density.len() != block * block {
@@ -252,7 +267,7 @@ fn stamp_density(
                 "sad_density: the baked density for Z={} in {} holds {} values, but the atom's \
                  shells need {block}x{block}",
                 stamp.z,
-                basis.name(),
+                basis_name,
                 density.len()
             )));
         }
@@ -277,7 +292,7 @@ fn stamp_and_place(
     n: usize,
     density: &mut [f64],
 ) -> Status {
-    site.stamp.density = stamp_density(&site.stamp, basis, baked)?;
+    site.stamp.density = stamp_density(&site.stamp, basis.name(), baked)?;
     for &offset in &site.offsets {
         place(&site.stamp, offset, n, density);
     }
