@@ -5,8 +5,11 @@
 //! - [`handle`]: wwr's `src/extension/handle`, the RAII handles and views.
 //! - [`runtime`]: wwr's `src/extension/runtime`, the streams, events,
 //!   memory pools and graphs built on them.
-//! - [`blas`]: wwr's `src/extension/blas`, the BLAS status as an error code
-//!   and the BLAS handle bound to a [`Stream`](runtime::Stream).
+//! - [`blas`]: wwr's `src/extension/blas`, the BLAS status as an error code,
+//!   the BLAS handle bound to a [`Stream`](runtime::Stream), and the typed
+//!   calls through it ([`blas::gemm`]).
+//! - [`device_slice`]: no wwr counterpart. Device memory with its length,
+//!   which a safe library call takes and checks in place of a raw pointer.
 //! - [`solver`]: wwr's `src/extension/solver`, the dense solver's status as
 //!   an error code and its handle, bound to a stream as the BLAS one is.
 //!
@@ -23,6 +26,7 @@
 
 pub mod blas;
 pub mod common;
+pub mod device_slice;
 pub mod handle;
 pub mod runtime;
 pub mod solver;

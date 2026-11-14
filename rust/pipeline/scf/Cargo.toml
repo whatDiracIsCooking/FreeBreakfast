@@ -15,6 +15,7 @@ fb-core-error-handling.workspace = true
 fb-core-planner.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-core-wwr.workspace = true
+fb-recipes-blas.workspace = true
 fb-integrals-mmd.workspace = true
 fb-integrals-one-electron-core-hamiltonian.workspace = true
 fb-integrals-one-electron-overlap.workspace = true
@@ -24,8 +25,6 @@ fb-molecule-nuclei.workspace = true
 fb-recipes-diagonalize.workspace = true
 fb-recipes-matrix-ao.workspace = true
 fb-recipes-orthogonalize.workspace = true
-# BLAS for the step's three gemms, beside the runtime.
-wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]
 fb-io-npy.workspace = true

@@ -35,6 +35,8 @@
 //! | D (or Da, Db) from the occupied columns | not ported: the density is the SCF's, and the core guess's orbitals need none yet |
 //! | the core guess, `ScfStep` over the pipeline's S, H and X | [`Run`], one plan from the XYZ file and the basis |
 
+#![forbid(unsafe_code)]
+
 mod run;
 mod tasks;
 

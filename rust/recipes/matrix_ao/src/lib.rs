@@ -11,7 +11,7 @@
 //!   ([`fb_basis::spherical_transform_matrix`]), written into a pinned row
 //!   that every later transform over the basis reads.
 //! - **`spherical transform`**, on the worker's stream: U copied into device
-//!   scratch, then `M = Uᵀ M_cart U` as two GEMMs through `wwr-sys`'s BLAS
+//!   scratch, then `M = Uᵀ M_cart U` as two GEMMs ([`fb_recipes_blas::gemm`])
 //!   on the worker's handle, the intermediate `M_cart U` scratch too.
 //!
 //! | C++ | Here |
@@ -33,8 +33,7 @@ use fb_core_arena::{Bufs, Device, Layout, Pinned, RowId, memcpy_h2p, memcpy_p2d}
 use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
-use fb_core_wwr::gpu_status;
-use wwr_sys::wwr_blas_operation;
+use fb_recipes_blas::{N, T, gemm};
 
 mod workspace;
 pub use workspace::add_blas_workspace;
@@ -167,55 +166,17 @@ impl Task for Transform {
         memcpy_p2d(&u, host, self.u, worker)?;
 
         // The worker's handle, bound to `stream` when the backend was made.
-        let handle = worker.blas().get();
+        let handle = worker.blas();
 
         let (n_cart, n_sph) = (self.n_cart as i32, self.n_sph as i32);
-        let (one, zero) = (1.0_f64, 0.0_f64);
         let m_cart = device.get(self.m_cart);
-        let work = device.take_mut(rows.work);
-        let m = device.take_mut(rows.m);
-        use wwr_blas_operation::{WWR_BLAS_OP_N, WWR_BLAS_OP_T};
+        let mut work = device.take_mut(rows.work);
+        let mut m = device.take_mut(rows.m);
         // work = M_cart U: (n_cart × n_cart)(n_cart × n_sph).
-        // SAFETY: every matrix is a device row of the declared size, each
-        // ld its row count; the scalars are host memory, the handle's
-        // default pointer mode; the GEMM enqueues on `stream`.
-        gpu_status(unsafe {
-            wwr_sys::wwr_blas_dgemm(
-                handle,
-                WWR_BLAS_OP_N,
-                WWR_BLAS_OP_N,
-                n_cart,
-                n_sph,
-                n_cart,
-                &one,
-                m_cart.as_ptr(),
-                n_cart,
-                u.as_ptr(),
-                n_cart,
-                &zero,
-                work.as_mut_ptr(),
-                n_cart,
-            )
-        })?;
+        gemm::<N, N, f64>(
+            handle, n_cart, n_sph, n_cart, 1.0, &m_cart, &u, 0.0, &mut work,
+        )?;
         // M = Uᵀ work: (n_sph × n_cart)(n_cart × n_sph).
-        // SAFETY: as above.
-        gpu_status(unsafe {
-            wwr_sys::wwr_blas_dgemm(
-                handle,
-                WWR_BLAS_OP_T,
-                WWR_BLAS_OP_N,
-                n_sph,
-                n_sph,
-                n_cart,
-                &one,
-                u.as_ptr(),
-                n_cart,
-                work.as_ptr(),
-                n_cart,
-                &zero,
-                m.as_mut_ptr(),
-                n_sph,
-            )
-        })
+        gemm::<T, N, f64>(handle, n_sph, n_sph, n_cart, 1.0, &u, &work, 0.0, &mut m)
     }
 }

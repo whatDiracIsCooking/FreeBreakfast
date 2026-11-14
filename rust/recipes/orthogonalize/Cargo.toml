@@ -14,10 +14,11 @@ fb-core-error-handling.workspace = true
 fb-core-planner.workspace = true
 fb-core-thread-pool = { workspace = true, features = ["device"] }
 fb-core-wwr.workspace = true
+fb-recipes-blas.workspace = true
 fb-kernel-abi.workspace = true
 fb-recipes-diagonalize.workspace = true
 fb-recipes-sys.workspace = true
-# BLAS for the dgmm and the gemm, beside the runtime.
+# BLAS for the dgmm, beside the runtime.
 wwr-sys = { workspace = true, features = ["blas"] }
 
 [dev-dependencies]

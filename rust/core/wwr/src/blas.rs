@@ -6,6 +6,8 @@
 //! | `:blas_error`, the `wwrblasStatus_t` specializations | `impl ErrorCode for wwr_blas_status` |
 //! | `:blas_handle`, `BlasHandleWrapper<P_create, P_destroy, S, P_device>` | [`BlasHandle`], over [`Stream`] |
 //! | `concept blas_handle` | nothing: a call takes the raw handle, [`BlasHandle`]'s `get()` |
+//! | `usual_fp`, the typed dispatch `gemm<T>` over `wwrblas{S,D,C,Z}gemm` | [`BlasScalar`], its `gemm_raw` |
+//! | the same `gemm<T>`, called with raw pointers | [`gemm`], over [`DeviceSlice`]s it checks |
 //!
 //! As in wwr, the handle is a [`StreamBoundHandle`]: made from a shared
 //! stream owner, created on its device, bound to its stream, and holding
@@ -17,13 +19,27 @@
 //! of the arena (`docs/gpu_layer.md`, "Layering"):
 //! [`BlasHandle::set_workspace`] hands it through, [`WORKSPACE_BYTES`] long.
 //!
+//! **The typed calls.** [`BlasScalar`] is wwr's typed dispatch: one trait
+//! method per routine, implemented for the four types the library computes
+//! in, each forwarding to its letter's C ABI call. It takes raw pointers
+//! and is `unsafe`, as the C ABI is; only this crate calls it. [`gemm`] is
+//! the safe call over it: its matrices are [`DeviceSlice`]s, each extent
+//! the call will touch is checked against the slice's length before
+//! anything is enqueued, and a slice too short panics, as an index out of
+//! a slice's bounds does. That check is what makes it safe, so it is on in
+//! every build. The conveniences above it (packed operands, ops fixed at
+//! compile time) are `fb-recipes-blas`'s, which holds no `unsafe`.
+
 use std::ffi::c_void;
 use std::ops::Deref;
 use std::rc::Rc;
 
-use wwr_sys::{wwr_blas_handle, wwr_blas_status, wwr_stream};
+use wwr_sys::{
+    wwr_blas_handle, wwr_blas_operation, wwr_blas_status, wwr_complex64, wwr_complex128, wwr_stream,
+};
 
 use crate::common::ErrorCode;
+use crate::device_slice::{DeviceSlice, DeviceSliceMut};
 use crate::gpu_status;
 use crate::handle::{
     DeviceHandle, DeviceHandleStream, HandleKind, StreamBoundHandle, StreamBoundKind,
@@ -155,6 +171,180 @@ impl DeviceHandleStream for BlasHandle {
     }
 }
 
+/// A type the BLAS computes in: `f32`, `f64`, [`wwr_complex64`] and
+/// [`wwr_complex128`], wwr's `usual_fp`. Each method is the C ABI call of
+/// the type's letter. Sealed, since [`gemm`] trusts each method to be that
+/// call.
+pub trait BlasScalar: Copy + sealed::Sealed {
+    /// `wwrblas<t>gemm`: `C = alpha op_a(A) op_b(B) + beta C`, column-major,
+    /// `op_a(A)` m × k, `op_b(B)` k × n, C m × n.
+    ///
+    /// # Safety
+    /// The library's: `handle` is live; A, B and C are device memory on its
+    /// device covering their extents at `lda`, `ldb` and `ldc`; C apart
+    /// from A and B; `alpha` and `beta` read as the handle's pointer mode
+    /// says; all of it alive until the work enqueued on the handle's
+    /// stream has finished.
+    #[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+    unsafe fn gemm_raw(
+        handle: wwr_blas_handle,
+        op_a: wwr_blas_operation,
+        op_b: wwr_blas_operation,
+        m: i32,
+        n: i32,
+        k: i32,
+        alpha: *const Self,
+        a: *const Self,
+        lda: i32,
+        b: *const Self,
+        ldb: i32,
+        beta: *const Self,
+        c: *mut Self,
+        ldc: i32,
+    ) -> wwr_blas_status;
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+macro_rules! blas_scalar {
+    ($($t:ty => $gemm:ident),* $(,)?) => {$(
+        impl sealed::Sealed for $t {}
+
+        impl BlasScalar for $t {
+            unsafe fn gemm_raw(
+                handle: wwr_blas_handle,
+                op_a: wwr_blas_operation,
+                op_b: wwr_blas_operation,
+                m: i32,
+                n: i32,
+                k: i32,
+                alpha: *const Self,
+                a: *const Self,
+                lda: i32,
+                b: *const Self,
+                ldb: i32,
+                beta: *const Self,
+                c: *mut Self,
+                ldc: i32,
+            ) -> wwr_blas_status {
+                // SAFETY: the caller's, which are the call's.
+                unsafe {
+                    wwr_sys::$gemm(
+                        handle, op_a, op_b, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc,
+                    )
+                }
+            }
+        }
+    )*};
+}
+
+blas_scalar! {
+    f32 => wwr_blas_sgemm,
+    f64 => wwr_blas_dgemm,
+    wwr_complex64 => wwr_blas_cgemm,
+    wwr_complex128 => wwr_blas_zgemm,
+}
+
+/// Panic unless a column-major `rows` × `cols` matrix at leading dimension
+/// `ld` fits in `len` elements: `ld` is at least `max(1, rows)`, as the
+/// library requires, and the last column ends inside the slice.
+#[track_caller]
+fn check_extent(name: &str, len: usize, rows: i32, cols: i32, ld: i32) {
+    assert!(
+        ld >= rows.max(1),
+        "gemm: {name}'s leading dimension {ld} is less than max(1, {rows} rows)"
+    );
+    if rows == 0 || cols == 0 {
+        return;
+    }
+    // In u64, where a product of two i32s cannot overflow.
+    let need = ld as u64 * (cols as u64 - 1) + rows as u64;
+    assert!(
+        need <= len as u64,
+        "gemm: {name} is {rows} x {cols} at leading dimension {ld}, {need} \
+         elements, but its slice holds {len}"
+    );
+}
+
+/// `C = alpha op_a(A) op_b(B) + beta C` on `handle`'s stream: column-major,
+/// `op_a(A)` m × k, `op_b(B)` k × n, C m × n, each at its leading dimension.
+/// wwr's `gemm<T>`, with every matrix a slice it checks.
+///
+/// A is stored m × k under `WWR_BLAS_OP_N` and k × m under `_T` or `_C`
+/// (the conjugate transpose, the same as `_T` on a real `T`), B likewise
+/// k × n or n × k. `alpha` and `beta` are host values, read in the handle's
+/// default pointer mode. With `beta` zero, C need not be initialised. The
+/// borrow checker keeps C apart from A and B.
+///
+/// # Errors
+/// The library's refusal, as a `GpuRuntime` error naming the status.
+///
+/// # Panics
+/// If m, n or k is negative, a leading dimension is less than its matrix's
+/// row count (or 1), or a slice is shorter than its matrix at its leading
+/// dimension; before anything is enqueued.
+#[allow(clippy::too_many_arguments, reason = "the BLAS signature")]
+#[track_caller]
+pub fn gemm<T: BlasScalar>(
+    handle: &BlasHandle,
+    op_a: wwr_blas_operation,
+    op_b: wwr_blas_operation,
+    m: i32,
+    n: i32,
+    k: i32,
+    alpha: T,
+    a: &impl DeviceSlice<T>,
+    lda: i32,
+    b: &impl DeviceSlice<T>,
+    ldb: i32,
+    beta: T,
+    c: &mut impl DeviceSliceMut<T>,
+    ldc: i32,
+) -> Status {
+    assert!(
+        m >= 0 && n >= 0 && k >= 0,
+        "gemm: m, n and k are {m}, {n} and {k}"
+    );
+    let stored = |op, rows, cols| {
+        if op == wwr_blas_operation::WWR_BLAS_OP_N {
+            (rows, cols)
+        } else {
+            (cols, rows)
+        }
+    };
+    let (a_rows, a_cols) = stored(op_a, m, k);
+    let (b_rows, b_cols) = stored(op_b, k, n);
+    check_extent("A", a.len(), a_rows, a_cols, lda);
+    check_extent("B", b.len(), b_rows, b_cols, ldb);
+    check_extent("C", c.len(), m, n, ldc);
+    let c = c.as_mut_ptr();
+    // SAFETY: the handle is live; each slice is device memory covering its
+    // extent, checked above, and stays so until the enqueued work finishes
+    // (DeviceSlice's promise); C is its memory's only user
+    // (DeviceSliceMut's), so apart from A and B; the scalars are host
+    // values, the handle's default pointer mode.
+    gpu_status(unsafe {
+        T::gemm_raw(
+            handle.get(),
+            op_a,
+            op_b,
+            m,
+            n,
+            k,
+            &alpha,
+            a.as_ptr(),
+            lda,
+            b.as_ptr(),
+            ldb,
+            &beta,
+            c,
+            ldc,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,59 +413,188 @@ mod tests {
 
         let a: Vec<f64> = (0..N * N).map(|i| (i % 7) as f64 - 3.0).collect();
         let b: Vec<f64> = (0..N * N).map(|i| (i % 5) as f64 - 2.0).collect();
-        let mut want = vec![0.0; N * N];
-        for j in 0..N {
-            for i in 0..N {
-                want[i + j * N] = (0..N).map(|k| a[i + k * N] * b[k + j * N]).sum();
-            }
-        }
-        let bytes = N * N * size_of::<f64>();
-        let (da, db, dc) = (
-            DeviceBytes::new(bytes),
-            DeviceBytes::new(bytes),
-            DeviceBytes::new(bytes),
-        );
-        let (one, zero) = (1.0f64, 0.0f64);
         let n = N as i32;
-        // SAFETY: three live device buffers of N² doubles; the host inputs
-        // are N² doubles; the handle is live and bound to `owner`'s stream.
-        unsafe {
-            for (dst, src) in [(&da, &a), (&db, &b)] {
-                ok(wwr_sys::wwr_memcpy(
-                    dst.0,
-                    src.as_ptr().cast(),
-                    bytes,
-                    wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
-                ));
-            }
-            // A pageable copy may return before its DMA lands, and the
-            // owner's stream does not wait on the legacy one.
-            ok(wwr_sys::wwr_device_synchronize());
-            gpu_status(wwr_sys::wwr_blas_dgemm(
-                blas.get(),
-                wwr_blas_operation::WWR_BLAS_OP_N,
-                wwr_blas_operation::WWR_BLAS_OP_N,
-                n,
-                n,
-                n,
-                &one,
-                da.0.cast(),
-                n,
-                db.0.cast(),
-                n,
-                &zero,
-                dc.0.cast(),
-                n,
-            ))
-            .unwrap();
-        }
-        let got: Vec<f64> = dc
-            .read(owner.stream())
-            .chunks_exact(8)
-            .map(|c| f64::from_ne_bytes(c.try_into().unwrap()))
-            .collect();
-        assert_eq!(got, want);
+        let want = host_gemm(
+            false,
+            false,
+            (N, N, N),
+            1.0,
+            (&a, N),
+            (&b, N),
+            0.0,
+            (&[], N),
+        );
+        let (da, db) = (upload(&a), upload(&b));
+        let mut dc = DeviceBytes::new(N * N * size_of::<f64>());
+        gemm(
+            &blas, OP_N, OP_N, n, n, n, 1.0, &da, n, &db, n, 0.0, &mut dc, n,
+        )
+        .unwrap();
+        assert_eq!(download(&dc, &owner), want);
         drop(blas);
         ok(owner.sync());
+    }
+
+    use wwr_blas_operation::{WWR_BLAS_OP_N as OP_N, WWR_BLAS_OP_T as OP_T};
+
+    /// An `ld` × `cols` column-major array, padding included, of small
+    /// integers, so every product and partial sum is exact in any order.
+    fn matrix(ld: usize, cols: usize, seed: usize) -> Vec<f64> {
+        (0..ld * cols)
+            .map(|i| ((i * 7 + seed) % 11) as f64 - 5.0)
+            .collect()
+    }
+
+    /// `alpha op_a(A) op_b(B) + beta C` on the host, column-major, `(m, n,
+    /// k)`, each matrix with its leading dimension; C's padding (rows past
+    /// m) kept. An empty C reads as zero.
+    #[allow(clippy::too_many_arguments)]
+    fn host_gemm(
+        t_a: bool,
+        t_b: bool,
+        (m, n, k): (usize, usize, usize),
+        alpha: f64,
+        (a, lda): (&[f64], usize),
+        (b, ldb): (&[f64], usize),
+        beta: f64,
+        (c, ldc): (&[f64], usize),
+    ) -> Vec<f64> {
+        let mut out = if c.is_empty() {
+            vec![0.0; ldc * n]
+        } else {
+            c.to_vec()
+        };
+        for j in 0..n {
+            for i in 0..m {
+                let dot: f64 = (0..k)
+                    .map(|l| {
+                        let x = if t_a { a[l + i * lda] } else { a[i + l * lda] };
+                        let y = if t_b { b[j + l * ldb] } else { b[l + j * ldb] };
+                        x * y
+                    })
+                    .sum();
+                out[i + j * ldc] = alpha * dot + beta * out[i + j * ldc];
+            }
+        }
+        out
+    }
+
+    fn upload(host: &[f64]) -> DeviceBytes {
+        let bytes = size_of_val(host);
+        let device = DeviceBytes::new(bytes);
+        // SAFETY: both ranges are `bytes` long; the copy is synchronous.
+        ok(unsafe {
+            wwr_sys::wwr_memcpy(
+                device.0,
+                host.as_ptr().cast(),
+                bytes,
+                wwr_memcpy_kind::WWR_MEMCPY_HOST_TO_DEVICE,
+            )
+        });
+        // A pageable copy may return before its DMA lands, and a created
+        // stream does not wait on the legacy one.
+        // SAFETY: no arguments.
+        ok(unsafe { wwr_sys::wwr_device_synchronize() });
+        device
+    }
+
+    fn download(device: &DeviceBytes, owner: &Stream) -> Vec<f64> {
+        device
+            .read(owner.stream())
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|c| f64::from_ne_bytes(*c))
+            .collect()
+    }
+
+    /// Needs a GPU. Transposed operands, a rectangular shape, every leading
+    /// dimension padded and a non-zero beta: the product is exact, and C's
+    /// padding rows are left as they were.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    fn gemm_reads_each_operand_at_its_op_and_leading_dimension() {
+        let (m, n, k) = (5, 3, 4);
+        let (lda, ldb, ldc) = (k + 2, n + 1, m + 3);
+        // A is stored k × m (op T), B n × k (op T), C m × n.
+        let (a, b, c) = (matrix(lda, m, 1), matrix(ldb, k, 2), matrix(ldc, n, 3));
+        let want = host_gemm(
+            true,
+            true,
+            (m, n, k),
+            -2.0,
+            (&a, lda),
+            (&b, ldb),
+            3.0,
+            (&c, ldc),
+        );
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner.clone());
+        let (da, db, mut dc) = (upload(&a), upload(&b), upload(&c));
+        let i = |x: usize| x as i32;
+        gemm(
+            &blas,
+            OP_T,
+            OP_T,
+            i(m),
+            i(n),
+            i(k),
+            -2.0,
+            &da,
+            i(lda),
+            &db,
+            i(ldb),
+            3.0,
+            &mut dc,
+            i(ldc),
+        )
+        .unwrap();
+        assert_eq!(download(&dc, &owner), want);
+    }
+
+    /// Needs a GPU. A C one element short of its extent panics before
+    /// anything is enqueued.
+    #[test]
+    #[ignore = "tier 4: needs a GPU"]
+    #[should_panic(
+        expected = "gemm: C is 4 x 4 at leading dimension 4, 16 elements, but its slice holds 15"
+    )]
+    fn gemm_refuses_a_short_slice() {
+        let owner = Rc::new(Stream::new(0));
+        let blas = BlasHandle::new(owner);
+        let a = DeviceBytes::new(16 * size_of::<f64>());
+        let mut c = DeviceBytes::new(15 * size_of::<f64>());
+        let _ = gemm(
+            &blas, OP_N, OP_N, 4, 4, 4, 1.0, &a, 4, &a, 4, 0.0, &mut c, 4,
+        );
+    }
+
+    #[test]
+    fn an_extent_fits_to_its_last_element() {
+        // 3 × 2 at ld 5: the second column ends at element 5 + 3 = 8.
+        check_extent("A", 8, 3, 2, 5);
+        // Nothing to touch, but the library still wants ld >= 1.
+        check_extent("A", 0, 0, 7, 1);
+        check_extent("A", 0, 3, 0, 3);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "gemm: B is 3 x 2 at leading dimension 5, 8 elements, but its slice holds 7"
+    )]
+    fn an_extent_one_past_the_slice_panics() {
+        check_extent("B", 7, 3, 2, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "gemm: C's leading dimension 2 is less than max(1, 3 rows)")]
+    fn a_leading_dimension_under_the_rows_panics() {
+        check_extent("C", 100, 3, 2, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "gemm: A's leading dimension 0 is less than max(1, 0 rows)")]
+    fn a_zero_leading_dimension_panics() {
+        check_extent("A", 0, 0, 0, 0);
     }
 }
