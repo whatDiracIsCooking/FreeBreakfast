@@ -26,9 +26,9 @@ peak: 249772 bytes at node 1
     147968       4312  task    1-1      order perm: 1w
          0          0  task    1-1      order workspace: 1w
       8704       8624  edge    1-2      zeta (0,0): 1w 2r
-     17408       8624  edge    1-2      p_x (0,0): 1w 2r
-     26112       8624  edge    1-2      p_y (0,0): 1w 2r
-     34816       8624  edge    1-2      p_z (0,0): 1w 2r
+     17408       8624  edge    1-1      p_x (0,0): 1w
+     26112       8624  edge    1-1      p_y (0,0): 1w
+     34816       8624  edge    1-1      p_z (0,0): 1w
      43520       8624  edge    1-2      pa_x (0,0): 1w 2r
      52224       8624  edge    1-2      pa_y (0,0): 1w 2r
      60928       8624  edge    1-2      pa_z (0,0): 1w 2r
@@ -36,19 +36,19 @@ peak: 249772 bytes at node 1
      78336       8624  edge    1-2      pb_y (0,0): 1w 2r
      87040       8624  edge    1-2      pb_z (0,0): 1w 2r
      95744       8624  edge    1-2      s (0,0): 1w 2r
-    104448       8624  edge    1-2      ea (0,0): 1w 2r
+    104448       8624  edge    1-1      ea (0,0): 1w
     113152       8624  edge    1-2      eb (0,0): 1w 2r
-    121856       8624  edge    1-2      bound (0,0): 1w 2r
-    130560       8624  edge    1-2      bound_ab (0,0): 1w 2r
-    139264       8624  edge    1-2      bound_ba (0,0): 1w 2r
+    121856       8624  edge    1-1      bound (0,0): 1w
+    130560       8624  edge    1-1      bound_ab (0,0): 1w
+    139264       8624  edge    1-1      bound_ba (0,0): 1w
     152320       4312  edge    1-2      off_a (0,0): 1w 2r
     156672       4312  edge    1-2      off_b (0,0): 1w 2r
-    161024       4312  edge    1-2      rank_a (0,0): 1w 2r
-    165376       4312  edge    1-2      rank_b (0,0): 1w 2r
+    161024       4312  edge    1-1      rank_a (0,0): 1w
+    165376       4312  edge    1-1      rank_b (0,0): 1w
     169728       3440  edge    1-2      zeta (0,1): 1w 2r
-    173312       3440  edge    1-2      p_x (0,1): 1w 2r
-    176896       3440  edge    1-2      p_y (0,1): 1w 2r
-    180480       3440  edge    1-2      p_z (0,1): 1w 2r
+    173312       3440  edge    1-1      p_x (0,1): 1w
+    176896       3440  edge    1-1      p_y (0,1): 1w
+    180480       3440  edge    1-1      p_z (0,1): 1w
     184064       3440  edge    1-2      pa_x (0,1): 1w 2r
     187648       3440  edge    1-2      pa_y (0,1): 1w 2r
     191232       3440  edge    1-2      pa_z (0,1): 1w 2r
@@ -56,19 +56,19 @@ peak: 249772 bytes at node 1
     198400       3440  edge    1-2      pb_y (0,1): 1w 2r
     201984       3440  edge    1-2      pb_z (0,1): 1w 2r
     205568       3440  edge    1-2      s (0,1): 1w 2r
-    209152       3440  edge    1-2      ea (0,1): 1w 2r
+    209152       3440  edge    1-1      ea (0,1): 1w
     212736       3440  edge    1-2      eb (0,1): 1w 2r
-    216320       3440  edge    1-2      bound (0,1): 1w 2r
-    219904       3440  edge    1-2      bound_ab (0,1): 1w 2r
-    223488       3440  edge    1-2      bound_ba (0,1): 1w 2r
+    216320       3440  edge    1-1      bound (0,1): 1w
+    219904       3440  edge    1-1      bound_ab (0,1): 1w
+    223488       3440  edge    1-1      bound_ba (0,1): 1w
     227072       1720  edge    1-2      off_a (0,1): 1w 2r
     228864       1720  edge    1-2      off_b (0,1): 1w 2r
-    230656       1720  edge    1-2      rank_a (0,1): 1w 2r
-    232448       1720  edge    1-2      rank_b (0,1): 1w 2r
+    230656       1720  edge    1-1      rank_a (0,1): 1w
+    232448       1720  edge    1-1      rank_b (0,1): 1w
     247552        344  edge    1-2      zeta (0,2): 1w 2r
-    248064        344  edge    1-2      p_x (0,2): 1w 2r
-    248576        344  edge    1-2      p_y (0,2): 1w 2r
-    249088        344  edge    1-2      p_z (0,2): 1w 2r
+    248064        344  edge    1-1      p_x (0,2): 1w
+    248576        344  edge    1-1      p_y (0,2): 1w
+    249088        344  edge    1-1      p_z (0,2): 1w
     249600        344  edge    1-2      pa_x (0,2): 1w 2r
     250112        344  edge    1-2      pa_y (0,2): 1w 2r
     250624        344  edge    1-2      pa_z (0,2): 1w 2r
@@ -76,19 +76,19 @@ peak: 249772 bytes at node 1
     251648        344  edge    1-2      pb_y (0,2): 1w 2r
     252160        344  edge    1-2      pb_z (0,2): 1w 2r
     252672        344  edge    1-2      s (0,2): 1w 2r
-    253184        344  edge    1-2      ea (0,2): 1w 2r
+    253184        344  edge    1-1      ea (0,2): 1w
     253696        344  edge    1-2      eb (0,2): 1w 2r
-    254208        344  edge    1-2      bound (0,2): 1w 2r
-    254720        344  edge    1-2      bound_ab (0,2): 1w 2r
-    255232        344  edge    1-2      bound_ba (0,2): 1w 2r
+    254208        344  edge    1-1      bound (0,2): 1w
+    254720        344  edge    1-1      bound_ab (0,2): 1w
+    255232        344  edge    1-1      bound_ba (0,2): 1w
     259328        172  edge    1-2      off_a (0,2): 1w 2r
     259584        172  edge    1-2      off_b (0,2): 1w 2r
-    259840        172  edge    1-2      rank_a (0,2): 1w 2r
-    260096        172  edge    1-2      rank_b (0,2): 1w 2r
+    259840        172  edge    1-1      rank_a (0,2): 1w
+    260096        172  edge    1-1      rank_b (0,2): 1w
     234240        536  edge    1-2      zeta (1,1): 1w 2r
-    235008        536  edge    1-2      p_x (1,1): 1w 2r
-    235776        536  edge    1-2      p_y (1,1): 1w 2r
-    236544        536  edge    1-2      p_z (1,1): 1w 2r
+    235008        536  edge    1-1      p_x (1,1): 1w
+    235776        536  edge    1-1      p_y (1,1): 1w
+    236544        536  edge    1-1      p_z (1,1): 1w
     237312        536  edge    1-2      pa_x (1,1): 1w 2r
     238080        536  edge    1-2      pa_y (1,1): 1w 2r
     238848        536  edge    1-2      pa_z (1,1): 1w 2r
@@ -96,19 +96,19 @@ peak: 249772 bytes at node 1
     240384        536  edge    1-2      pb_y (1,1): 1w 2r
     241152        536  edge    1-2      pb_z (1,1): 1w 2r
     241920        536  edge    1-2      s (1,1): 1w 2r
-    242688        536  edge    1-2      ea (1,1): 1w 2r
+    242688        536  edge    1-1      ea (1,1): 1w
     243456        536  edge    1-2      eb (1,1): 1w 2r
-    244224        536  edge    1-2      bound (1,1): 1w 2r
-    244992        536  edge    1-2      bound_ab (1,1): 1w 2r
-    245760        536  edge    1-2      bound_ba (1,1): 1w 2r
+    244224        536  edge    1-1      bound (1,1): 1w
+    244992        536  edge    1-1      bound_ab (1,1): 1w
+    245760        536  edge    1-1      bound_ba (1,1): 1w
     257280        268  edge    1-2      off_a (1,1): 1w 2r
     257792        268  edge    1-2      off_b (1,1): 1w 2r
-    258304        268  edge    1-2      rank_a (1,1): 1w 2r
-    258816        268  edge    1-2      rank_b (1,1): 1w 2r
+    258304        268  edge    1-1      rank_a (1,1): 1w
+    258816        268  edge    1-1      rank_b (1,1): 1w
     261120         80  edge    1-2      zeta (1,2): 1w 2r
-    261376         80  edge    1-2      p_x (1,2): 1w 2r
-    261632         80  edge    1-2      p_y (1,2): 1w 2r
-    261888         80  edge    1-2      p_z (1,2): 1w 2r
+    261376         80  edge    1-1      p_x (1,2): 1w
+    261632         80  edge    1-1      p_y (1,2): 1w
+    261888         80  edge    1-1      p_z (1,2): 1w
     262144         80  edge    1-2      pa_x (1,2): 1w 2r
     262400         80  edge    1-2      pa_y (1,2): 1w 2r
     262656         80  edge    1-2      pa_z (1,2): 1w 2r
@@ -116,19 +116,19 @@ peak: 249772 bytes at node 1
     263168         80  edge    1-2      pb_y (1,2): 1w 2r
     263424         80  edge    1-2      pb_z (1,2): 1w 2r
     263680         80  edge    1-2      s (1,2): 1w 2r
-    263936         80  edge    1-2      ea (1,2): 1w 2r
+    263936         80  edge    1-1      ea (1,2): 1w
     264192         80  edge    1-2      eb (1,2): 1w 2r
-    264448         80  edge    1-2      bound (1,2): 1w 2r
-    264704         80  edge    1-2      bound_ab (1,2): 1w 2r
-    264960         80  edge    1-2      bound_ba (1,2): 1w 2r
+    264448         80  edge    1-1      bound (1,2): 1w
+    264704         80  edge    1-1      bound_ab (1,2): 1w
+    264960         80  edge    1-1      bound_ba (1,2): 1w
     265984         40  edge    1-2      off_a (1,2): 1w 2r
     266240         40  edge    1-2      off_b (1,2): 1w 2r
-    266496         40  edge    1-2      rank_a (1,2): 1w 2r
-    266752         40  edge    1-2      rank_b (1,2): 1w 2r
+    266496         40  edge    1-1      rank_a (1,2): 1w
+    266752         40  edge    1-1      rank_b (1,2): 1w
     267008          8  edge    1-2      zeta (2,2): 1w 2r
-    267264          8  edge    1-2      p_x (2,2): 1w 2r
-    267520          8  edge    1-2      p_y (2,2): 1w 2r
-    267776          8  edge    1-2      p_z (2,2): 1w 2r
+    267264          8  edge    1-1      p_x (2,2): 1w
+    267520          8  edge    1-1      p_y (2,2): 1w
+    267776          8  edge    1-1      p_z (2,2): 1w
     268032          8  edge    1-2      pa_x (2,2): 1w 2r
     268288          8  edge    1-2      pa_y (2,2): 1w 2r
     268544          8  edge    1-2      pa_z (2,2): 1w 2r
@@ -136,15 +136,15 @@ peak: 249772 bytes at node 1
     269056          8  edge    1-2      pb_y (2,2): 1w 2r
     269312          8  edge    1-2      pb_z (2,2): 1w 2r
     269568          8  edge    1-2      s (2,2): 1w 2r
-    269824          8  edge    1-2      ea (2,2): 1w 2r
+    269824          8  edge    1-1      ea (2,2): 1w
     270080          8  edge    1-2      eb (2,2): 1w 2r
-    270336          8  edge    1-2      bound (2,2): 1w 2r
-    270592          8  edge    1-2      bound_ab (2,2): 1w 2r
-    270848          8  edge    1-2      bound_ba (2,2): 1w 2r
+    270336          8  edge    1-1      bound (2,2): 1w
+    270592          8  edge    1-1      bound_ab (2,2): 1w
+    270848          8  edge    1-1      bound_ba (2,2): 1w
     271104          4  edge    1-2      off_a (2,2): 1w 2r
     271360          4  edge    1-2      off_b (2,2): 1w 2r
-    271616          4  edge    1-2      rank_a (2,2): 1w 2r
-    271872          4  edge    1-2      rank_b (2,2): 1w 2r
+    271616          4  edge    1-1      rank_a (2,2): 1w
+    271872          4  edge    1-1      rank_b (2,2): 1w
          0       5000  edge    2-5      T cartesian: 2w 5r
       5120       4800  edge    4-5      U: 4w 5r
       9984       4800  task    5-5      T U: 5w

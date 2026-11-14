@@ -51,7 +51,7 @@ use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::device_slice::DeviceSliceMut;
 use fb_core_wwr::memset;
 use fb_core_wwr::runtime::Stream;
-use fb_integrals_sys::{ClassRows, potential_en_class};
+use fb_integrals_sys::{ClassRows, Fields, potential_en_class};
 use fb_molecule_nuclei::NucleiRows;
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
@@ -63,8 +63,8 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// symmetric after it when it was before.
 ///
 /// `stream` is the calling task's, `device` its view, and every class's
-/// fields and the nuclei's two rows were declared read by its layout
-/// ([`ClassRows::read`], [`NucleiRows::read`]).
+/// [`Fields::POTENTIAL_EN`] and the nuclei's two rows were declared read by
+/// its layout ([`ClassRows::read`], [`NucleiRows::read`]).
 ///
 /// # Errors
 /// The first launch's refusal or launch error, as [`potential_en_class`]
@@ -165,7 +165,7 @@ impl Task for PotentialEn {
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         for c in &self.classes {
-            c.read(device);
+            c.read(device, Fields::POTENTIAL_EN);
         }
         self.nuclei.read(device);
         device.output("V cartesian", self.n_cart * self.n_cart)

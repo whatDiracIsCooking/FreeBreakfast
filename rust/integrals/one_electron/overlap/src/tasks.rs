@@ -8,7 +8,7 @@ use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_core_wwr::memset;
-use fb_integrals_sys::{ClassRows, overlap_class};
+use fb_integrals_sys::{ClassRows, Fields, overlap_class};
 use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 
 /// Add the spherical AO overlap of `basis` to `dag` on GPU worker
@@ -69,7 +69,7 @@ impl Task for Overlap {
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         for c in &self.classes {
-            c.read(device);
+            c.read(device, Fields::OVERLAP);
         }
         device.output("S cartesian", self.n_cart * self.n_cart)
     }

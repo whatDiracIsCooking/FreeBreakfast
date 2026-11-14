@@ -8,7 +8,7 @@ use fb_core_error_handling::Status;
 use fb_core_planner::{Dag, Task};
 use fb_core_thread_pool::{DeviceStream, Lane};
 use fb_integrals_mmd::add_records;
-use fb_integrals_sys::{ClassRows, overlap_class};
+use fb_integrals_sys::{ClassRows, Fields, overlap_class};
 
 /// GPU: every class launched into a matrix of `len` doubles.
 struct Short {
@@ -22,7 +22,7 @@ impl Task for Short {
 
     fn layout(&self, device: &mut Layout<'_, Device>, _: &mut Layout<'_, Pinned>) -> Self::Rows {
         for c in &self.classes {
-            c.read(device);
+            c.read(device, Fields::OVERLAP);
         }
         device.output("short", self.len)
     }

@@ -11,8 +11,10 @@
 //!
 //! - **`overlap`**, on the worker's stream: the Cartesian matrix zeroed,
 //!   then one [`overlap_class`](fb_integrals_sys::overlap_class) launch
-//!   per class, each reading its class's records as an edge
-//!   ([`ClassRows::read`](fb_integrals_sys::ClassRows::read)).
+//!   per class, each reading as an edge the fields of its class's records
+//!   the overlap kernels use
+//!   ([`ClassRows::read`](fb_integrals_sys::ClassRows::read) with
+//!   [`Fields::OVERLAP`](fb_integrals_sys::Fields::OVERLAP)).
 //! - then the spherical transform, `S = Uᵀ S_cart U`
 //!   ([`fb_recipes_matrix_ao::add_cartesian_to_spherical`]): `harmonics` on
 //!   the CPU and `harmonics upload` on the stream (U into a pinned row,
