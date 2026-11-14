@@ -63,9 +63,10 @@ tree, not inputs to its build.
 | `fb_io_xyz` | `src/io/xyz` | `parse_xyz` / `read_xyz`: a standard XYZ geometry into a `Molecule`, Angstrom to bohr by `BOHR_PER_ANGSTROM`, every refusal (too short, a bad count, a malformed line, an unknown symbol, a count the lines disagree with, a file that cannot be read) an `Io` error. A field must parse as a whole token, where the C++'s `operator>>` reads a prefix |
 | `fb_io_basis` | `src/io/basis`, its orbital sets | `parse_basis` / `read_basis`: a BSE JSON document into a `BasisStamp` (sp blocks and general contractions split, spherical shells only: one Cartesian or ambiguous shell refuses the document), over [`serde_json`](https://crates.io/crates/serde_json); `is_builtin_basis` and `resolve_basis`, a name (spelling folded) or else a path, over the eleven sets of `data/basis/` compiled in with `include_str!`, only that branch naming the stamp. The fitting sets of `data/aux_basis/` are not ported yet |
 | `fb_integrals_mmd` | `src/integrals/mmd`'s `primitive_pair_classes` | `add_records`: the kernel library's load check (`check_library()`, a mismatch the planning's `GpuRuntime` error), then the records of a `BasisSet` as two tasks of a `Dag`, `mmd tables` on the CPU (the shell table and each class's shell pairs with their record prefixes, formed on the host into pinned rows) and `mmd records` on the worker's stream (the tables copied into device scratch, then each class's order, records, bound and dressed bounds through `fb-integrals-sys`), and `ClassRows`, each class's record fields as device output rows. Every size is the basis's, at planning; the plan text for H2O/cc-pVDZ and CO/cc-pVTZ is the committed golden `integrals/mmd/tests/golden/plan_*.txt`. The mixed classes are not ported yet |
-| `fb_integrals_one_electron_overlap` | `src/integrals/one_electron/overlap`'s `overlap`, and the Overlap step's spherical transform (`MatrixAOPair::cartesian_to_spherical`) | The first whole run through the model. `add_overlap`: S of a `BasisSet` as three tasks after the records, `overlap` on the stream (the Cartesian matrix zeroed, one `fb_overlap_class` per class, reading `ClassRows` as an edge), `harmonics` on the CPU (U into a pinned row) and `spherical transform` on the stream (U copied into scratch, `S = Uᵀ S_cart U` as two `wwr_blas_dgemm`s, the intermediate scratch too). `Run`: an XYZ file and a basis name planned once (the load check, through `add_records`, among it), laid out in one arena per kind, run on one stream, returning S and the timing record. The plan text for each fixture is the committed golden `integrals/one_electron/overlap/tests/golden/plan_*.txt` |
+| `fb_integrals_one_electron_overlap` | `src/integrals/one_electron/overlap`'s `overlap`, and the Overlap step's spherical transform (`MatrixAOPair::cartesian_to_spherical`) | The first whole run through the model. `add_overlap`: S of a `BasisSet` as tasks after the records, `overlap` on the stream (the Cartesian matrix zeroed, one `fb_overlap_class` per class, reading `ClassRows` as an edge), then `fb_recipes_matrix_ao`'s spherical transform, U's slot passed in so a plan stages U once. `Run`: an XYZ file and a basis name planned once (the load check, through `add_records`, among it), laid out in one arena per kind, run on one stream, returning S and the timing record. The plan text for each fixture is the committed golden `integrals/one_electron/overlap/tests/golden/plan_*.txt` |
 | `fb_sad` | `src/sad`, its serial form | `sad_density`, the SAD guess: one spherically averaged, fractionally occupied atomic RHF per distinct (Z, shells) over closed-form one-center integrals, each density placed on its atoms' diagonal blocks, and `SadStampLookup`, the baked block that skips an element's SCF (checked by size). Every loop in the C++ order, so its stamps compare bitwise with the C++ generator's. The task form is the guess-tasks issue's |
 | `fb_io_npy` | `src/io/npy` | `NpyArray` (a shape and its float64 elements, column-major) and `element_count`; `parse_npy` / `read_npy`, versions 1.0 to 3.0, `'<f8'` only, a C-order payload reordered, every refusal of a document (a bad magic, version, length or header field, another dtype, a payload the shape disagrees with, a file that cannot be read) an `Io` error and an overflowing shape `InvalidConfig`; `npy_header`, `npy_to_bytes` and `write_npy`, version 1.0 with `np.save`'s canonical header, byte for byte the C++ writer's (the `data/sad/STO-3G/` stamps written back are their files) |
+| `fb_recipes_matrix_ao` | `src/recipes/matrix_ao`'s `upload_spherical_transform_matrix` and `MatrixAOPair::cartesian_to_spherical` | `add_cartesian_to_spherical`: the spherical form `Uᵀ M_cart U` of a Cartesian AO matrix row as tasks of a `Dag`, `harmonics` on the CPU (U into a pinned row), added by the first call over a basis and shared through the caller's slot by every later one, and `spherical transform` on the stream (U copied into scratch, two `wwr_blas_dgemm`s, the intermediate scratch too). Every one-electron matrix calls it; `spherical_to_cartesian` is not ported yet |
 
 Two more crates hold no port: `fb-test-support` (`test_support/`), what
 more than one crate's unit tests use, and a dev-dependency only; and
@@ -86,7 +87,10 @@ both, then `arena` and `thread_pool` on `wwr`, `planner` on those two, and
 `error_handling`; and
 `integrals/one_electron/overlap` on `integrals/mmd` and what it stands on,
 `io/xyz` and `io/basis`; `sad` on `basis`, `molecule`, `atom`,
-`primitives` and `error_handling`; `io/npy` on `error_handling`.
+`primitives` and `error_handling`; `io/npy` on `error_handling`; and
+`recipes/matrix_ao` on `basis`,
+`planner`, `arena`, `thread_pool`, `wwr` and `error_handling`, with
+`integrals/one_electron/overlap` on it too.
 
 Each module's doc comment has the full C++-to-Rust table. Some C++ has no
 Rust counterpart, because the language already does what that code exists
@@ -192,7 +196,7 @@ holds it. With both built it refuses to choose: set `FB_RUST_BUILD_DIR` to
 one, which also takes any other CMake build directory, the root's
 `build-experimental` among them. `devtools/doctor.sh` reports which are
 built. Only the `runtime_api` and `blas` surfaces of `wwr-sys` are linked:
-`blas` is asked for by `fb-integrals-one-electron-overlap` alone, but a
+`blas` is asked for by `fb-recipes-matrix-ao` alone, but a
 workspace build unifies features, so every crate linking `wwr-sys` in it
 links against `libwwr_capi_blas.so` (only a binary that calls it keeps it
 under `NEEDED`).
@@ -217,8 +221,9 @@ crates' own device tests need beyond `device`; a dependent asks for
 `device` alone, and the workspace's dependency entries for the arena and
 the thread pool turn their defaults off, so nothing turns them on by
 accident. Only `fb-core-wwr`, `fb-core-diagnostics`, `fb-recipes-sys`,
-`fb-integrals-sys`, `fb-integrals-mmd` and
-`fb-integrals-one-electron-overlap` always link; the records' layout asks
+`fb-integrals-sys`, `fb-integrals-mmd`,
+`fb-integrals-one-electron-overlap` and `fb-recipes-matrix-ao` always
+link; the records' layout asks
 the kernel library for the sort's workspace at planning, so even the last
 two's device-free tests (the host tables, the plan goldens) need the
 library built. Use a
@@ -673,3 +678,15 @@ status never reaching the runtime's half, and every error located at the
 caller; tier 4 94 unchanged, the plan goldens among them. Clippy (`-D
 warnings`, the linking crates with their tests too), rustdoc (`-D
 warnings`) and `cargo fmt --check` are clean. Not run on the gfx1200.
+
+2026-11-14, `recipes/matrix_ao` (the Cartesian-to-spherical transform
+moved out of the overlap, U staged once per plan and basis), on the RTX
+3080 (CUDA), holding the card, linking the libraries the `default` preset
+built: `devtools/test.py pr --only cargo --all` passes, tier 3 166 tests,
+none in the new crate, tier 4 95 (was 94), the new one its plan test: two
+matrices transformed in one plan share one `harmonics` task, which both
+transforms run after. The overlap's three plan goldens are bitwise
+unchanged without `FB_BLESS`, and its tier-4 test passes at its bar,
+`1e-12 * max |S_ref|`. Clippy (`-D warnings`, the two crates with their
+tests too), rustdoc (`-D warnings`) and `cargo fmt --check` are clean. Not
+run on the gfx1200.

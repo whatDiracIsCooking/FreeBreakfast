@@ -1,0 +1,24 @@
+[package]
+name = "fb-recipes-matrix-ao"
+description = "recipes/matrix_ao: the Cartesian-to-spherical transform of an AO matrix, as tasks"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fb-basis.workspace = true
+fb-core-arena.workspace = true
+fb-core-error-handling.workspace = true
+fb-core-planner.workspace = true
+fb-core-thread-pool = { workspace = true, features = ["device"] }
+fb-core-wwr.workspace = true
+log.workspace = true
+# BLAS for the transform's two GEMMs, beside the runtime.
+wwr-sys = { workspace = true, features = ["blas"] }
+
+[dev-dependencies]
+fb-io-basis.workspace = true
+fb-io-xyz.workspace = true
