@@ -298,6 +298,7 @@ def test_push_by_hand_without_a_base_exits_2(
 # wwr-sys, and a `cargo test` that exits FAKE_CARGO_TEST_RC. Each call's
 # arguments go to FAKE_CARGO_LOG. Without --no-default-features, `test` is
 # tier 4: fb-core-wwr's one device case is ignored unless --include-ignored.
+# `clippy` exits FAKE_CARGO_CLIPPY_RC, printing a lint error when non-zero.
 _FAKE_CARGO = """
 import json, os, sys
 args = sys.argv[1:]
@@ -325,6 +326,12 @@ if args[0] == "metadata":
             {"id": "sys", "deps": []},
         ]},
     }))
+elif args[0] == "clippy":
+    rc = int(os.environ.get("FAKE_CARGO_CLIPPY_RC", "0"))
+    if rc:
+        print("error: unsafe block missing a safety comment")
+        print("  --> core/wwr/src/lib.rs:1:1")
+    sys.exit(rc)
 elif args[0] == "tree":
     name = args[args.index("-p") + 1]
     print(f"{name} v0.1.0 (/x)")
@@ -586,6 +593,10 @@ _LINKING = {
         # A file in no crate and no rule, or no diff at all: everything.
         (["rust/Cargo.lock"], _LINKING),
         (["rust/capi_dir.rs"], _LINKING),
+        # The lint configuration is every crate's: tier 4's clippy then
+        # lints every one that links.
+        (["rust/clippy.toml"], _LINKING),
+        (["rust/Cargo.toml"], _LINKING),
         (None, _LINKING),
         # Nothing under rust/.
         (["src/core/log/log.cppm", "devtools/test.py"], set()),
@@ -660,6 +671,10 @@ def test_tier4_without_a_device_lists_every_device_case_as_skipped(
     out = capsys.readouterr().out
     test = next(c for c in calls if c.startswith("test"))
     assert test == "test -j 4 -p fb-core-wwr -- --test-threads=1"
+    # Clippy over the same crates, before the tests.
+    clippy = "clippy -j 4 --all-targets -p fb-core-wwr -- -D warnings"
+    assert calls.index(clippy) < calls.index(test)
+    assert "tier 4 clippy: ok" in out
     assert "tier 4: 1 passed, 0 failed, 1 ignored" in out
     assert "tier 4 skipped 1 case(s) (no device visible: why):" in out
     assert (
@@ -700,6 +715,44 @@ def test_a_failing_tier4_fails_and_is_named(
     assert "tier 4 FAILED: cargo test exited 101" in capsys.readouterr().err
 
 
+def test_a_lint_error_fails_tier4_before_the_card_and_the_tests(
+    fake_cargo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("FAKE_CARGO_CLIPPY_RC", "101")
+    _HeldCard.backend = None
+    bindir = Path(os.environ["PATH"].split(os.pathsep)[0])
+    cmake = bindir / "cmake"
+    cmake.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(0)\n")
+    cmake.chmod(0o755)
+    monkeypatch.setattr(gates, "toolchain_unavailable", lambda: None)
+    monkeypatch.setattr(gates, "Card", _HeldCard)
+    log = tmp_path / "t4.log"
+    rc = gates.cargo_tier4(
+        "push",
+        {"GPU_HIP_PRESETS": "hip"},
+        "hip",
+        ["rust/core/wwr/src/lib.rs"],
+        "4",
+        log,
+    )
+    assert rc == 101
+    captured = capsys.readouterr()
+    assert "tier 4 clippy: FAILED, cargo clippy exited 101" in captured.out
+    assert "tier 4 FAILED: cargo clippy exited 101" in captured.err
+    assert "unsafe block missing a safety comment" in captured.err
+    # No test ran, and the card was never taken.
+    assert not any(c.startswith("test") for c in fake_cargo.read_text().splitlines())
+    assert _HeldCard.backend is None
+    # The lint output and the result line are in the gate's log.
+    text = log.read_text()
+    assert "--- tier 4 clippy: cargo clippy -j 4 --all-targets" in text
+    assert "unsafe block missing a safety comment" in text
+    assert "tier 4 clippy: FAILED" in text
+
+
 def test_tier4_runs_nothing_for_a_link_free_diff(
     fake_cargo: Path,
     tmp_path: Path,
@@ -713,7 +766,8 @@ def test_tier4_runs_nothing_for_a_link_free_diff(
     )
     assert rc == 0
     assert "no affected crate links the library" in capsys.readouterr().out
-    assert not any(c.startswith("test") for c in fake_cargo.read_text().splitlines())
+    calls = fake_cargo.read_text().splitlines()
+    assert not any(c.startswith(("test", "clippy")) for c in calls)
 
 
 def test_tier4_skips_without_cmake(
@@ -759,6 +813,7 @@ def test_nightly_cargo_runs_the_slow_cases_in_both_tiers(
         # Every crate's tier 4, as `pr --all`.
         "test -j 4 -p fb-core-wwr -- --test-threads=1 --include-ignored",
     ]
+    assert "clippy -j 4 --all-targets -p fb-core-wwr -- -D warnings" in calls
     out = capsys.readouterr().out
     assert out.count("slow cases run (no FREE_BREAKFAST_FAST_TESTS)") == 2
     assert "FREE_BREAKFAST_FAST_TESTS=1" not in out
@@ -788,7 +843,9 @@ def test_nightly_dry_run_lists_a_cargo_half_without_the_fast_switch(
     out = capsys.readouterr().out
     cargo = [line for line in out.splitlines() if "cargo half" in line]
     assert len(cargo) == 1
-    assert "tier 4 of every crate under the hip card lock" in cargo[0]
+    assert (
+        "tier 4 of every crate (clippy, then the tests under the hip card" in (cargo[0])
+    )
     assert "slow cases included" in cargo[0]
     assert "every case, unskipped (no FREE_BREAKFAST_FAST_TESTS)" in out
     assert "FREE_BREAKFAST_FAST_TESTS=1" not in out

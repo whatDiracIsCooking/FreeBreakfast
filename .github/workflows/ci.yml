@@ -113,7 +113,8 @@ jobs:
       # rust/'s format and lint, as the commit hook runs them: cargo fmt
       # --check, and clippy -D warnings over the workspace members that build
       # without the wwr library (devtools/test.py cargo-lint finds them), so
-      # it needs no CMake step. The toolchain is docker/Dockerfile.base's
+      # it needs no CMake step (the members that link are linted by the
+      # gates' tier 4, never here). The toolchain is docker/Dockerfile.base's
       # RUST_VERSION: keep the two in step, or a newer clippy's lints fail
       # here on code the container passes.
       - uses: dtolnay/rust-toolchain@master

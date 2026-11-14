@@ -458,9 +458,11 @@ is gated without being named), then `RUSTDOCFLAGS='-D warnings' cargo doc
 members whose default features link nothing with their defaults, in
 `target/nodef` ([`docs/testing.md`](../docs/testing.md), "Gates", at the
 root). A commit touching `rust/` runs `devtools/test.py cargo-lint`, `cargo
-fmt --check` and clippy with warnings denied in both feature sets, and so
-does CI's `lint` job. Tier 4, on a card, runs in both gates for the crates
-a diff affects (above).
+fmt --check` and clippy with warnings denied in both feature sets, over
+the link-free members, and so does CI's `lint` job. Tier 4 runs in both
+gates for the crates a diff affects that link (above): `cargo clippy
+--all-targets -- -D warnings` over them in `target/<backend>`, the one
+gate of the workspace lints on those crates, then their tests on a card.
 
 ## Design
 

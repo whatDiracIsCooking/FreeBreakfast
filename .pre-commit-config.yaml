@@ -96,7 +96,8 @@ repos:
   # -D warnings` over the workspace (not the staged files: cargo checks
   # crates, not files), clippy in each feature set that builds without the
   # wwr library. Checks, never rewrites, like `format`. Skips, with a line,
-  # where cargo is absent: the toolchain is the container's.
+  # where cargo is absent: the toolchain is the container's. The members
+  # that link are linted by the push/pr gates' tier 4, which builds wwr.
   - repo: local
     hooks:
       - id: cargo-lint

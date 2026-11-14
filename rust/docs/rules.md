@@ -38,8 +38,13 @@ configured, a named type is not defined, a cell is in none of the forms
 above, or a document beside this one is cited by no row. It checks that a
 check exists, not that it checks the rule; that is the review's, row by row.
 
-The lints the tree configures today are `disallowed_methods` alone (its list
-in `clippy.toml`); `unsafe_code` is forbidden per crate root, which
+The lints the tree configures are in `[workspace.lints]` of `Cargo.toml`:
+`missing_docs`, `disallowed_methods` (its list in `clippy.toml`),
+`undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block` and
+`missing_panics_doc`. They gate every member: `devtools/test.py cargo-lint`
+the link-free ones at commit, and tier 4 of `test.py push` and `pr` the
+ones that link ([`testing.md`](testing.md), "Selecting GPU tiers in cargo").
+`unsafe_code` is forbidden per crate root, which
 `doc_check/tests/unsafe_code.rs` holds, not a manifest line.
 
 ## Design
