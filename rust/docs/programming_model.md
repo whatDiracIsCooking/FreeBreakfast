@@ -559,10 +559,14 @@ moves behind a checked wrapper of its own.
 disallowed_methods = "deny"
 undocumented_unsafe_blocks = "deny"
 multiple_unsafe_ops_per_block = "deny"
+missing_panics_doc = "deny"
 ```
 
-`disallowed_methods` is on today; the two `unsafe` lints wait for a PR of
-their own, since turning them on asks for code changes.
+All four are on. `missing_panics_doc` holds the other half of the
+`unsafe` rule: the length an `unsafe` call trusts is an always-on
+`assert!`, and the lint fails a public function that can panic and whose
+doc has no `# Panics` naming it ([`testing.md`](testing.md), "Contracts are
+part of the spec").
 
 ## Reproducibility across placements
 

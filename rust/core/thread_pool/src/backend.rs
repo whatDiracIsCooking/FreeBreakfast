@@ -204,9 +204,6 @@ unsafe impl Sync for Device {}
 impl Device {
     /// Stream worker `s` on device `devices[s]`, with an event pair for
     /// every GPU node of `plan`.
-    ///
-    /// Requires, checked in debug builds: `devices` has an entry per stream
-    /// worker of `plan`.
     #[debug_requires(
         plan.n_streams() <= devices.len(),
         "a device for every stream worker of the plan"

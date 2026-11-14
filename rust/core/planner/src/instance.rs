@@ -28,8 +28,6 @@ impl<'a, H: HostKind, S: 'a> Planned<'a, H, S> {
     /// its [`predecessors`](Planned::predecessors). A table of zero bytes
     /// allocates nothing, so a DAG with no device rows touches no device.
     ///
-    /// Requires, checked in debug builds: `devices` has an entry per worker.
-    ///
     /// Aborts, as [`Block::new`] does, if a block cannot be allocated.
     #[debug_requires(
         self.n_workers() <= devices.len(),

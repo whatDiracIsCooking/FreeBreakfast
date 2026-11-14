@@ -34,13 +34,11 @@ impl HandleKind for EventKind {
     }
 
     unsafe fn destroy(raw: wwr_event) -> wwr_status {
+        // SAFETY: `raw` is a live event.
+        let completed = unsafe { wwr_sys::wwr_event_synchronize(raw) };
         // SAFETY: `raw` is a live event, destroyed once, after it completes.
-        unsafe {
-            first_failure(
-                wwr_sys::wwr_event_synchronize(raw),
-                wwr_sys::wwr_event_destroy(raw),
-            )
-        }
+        let destroyed = unsafe { wwr_sys::wwr_event_destroy(raw) };
+        first_failure(completed, destroyed)
     }
 }
 

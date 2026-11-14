@@ -67,7 +67,7 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 /// view, declared by the calling task's layout ([`ClassRows::read`],
 /// [`NucleiRows::read`], an output for `v`), so none is null and none
 /// overlaps another; `v` is the row's only writer while the call lasts.
-/// Checked in debug builds: the bounds below. Not checked: that the records
+/// Its contracts hold the bounds. Not checked: that the records
 /// are of the basis `v` is the matrix of, since their AO offsets are device
 /// data.
 ///
@@ -79,7 +79,8 @@ use fb_recipes_matrix_ao::add_cartesian_to_spherical;
 ///
 /// # Panics
 /// If a class's field or a nuclei row was not declared by the task's layout
-/// ([`Bufs::get`]).
+/// ([`Bufs::get`]), or the nuclei's rows are not `n_nuc` and `3 n_nuc`
+/// doubles long.
 #[debug_requires(n_cart > 0, "a matrix of at least one AO")]
 #[debug_requires(
     n_cart.checked_mul(n_cart).is_some_and(|n2| i32::try_from(n2).is_ok()),
@@ -102,7 +103,10 @@ pub fn potential_en_classes(
 ) -> Status {
     let (z, c) = (device.get(nuclei.z), device.get(nuclei.c));
     let n_nuc = nuclei.n_nuc as usize;
-    debug_assert!(
+    // The kernels read n_nuc charges and 3 n_nuc coordinates through the
+    // view's pointers, so these lengths are what the launch trusts: always
+    // on (docs/testing.md, "Contracts are part of the spec").
+    assert!(
         z.len() == n_nuc && c.len() == 3 * n_nuc,
         "the nuclei's rows are n_nuc and 3 n_nuc long"
     );
@@ -152,8 +156,6 @@ pub fn potential_en_classes(
 /// # Errors
 /// `InvalidConfig` for `nuclei` with no nucleus (`n_nuc` not positive: the
 /// launch wrapper's refusal, at planning), before anything is added.
-///
-/// Requires, checked in debug builds: `basis` has at least one shell.
 ///
 /// # Panics
 /// If `nao_cart²` does not fit an `i32` (the kernels index the matrix in

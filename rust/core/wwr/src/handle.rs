@@ -86,9 +86,11 @@ pub(crate) mod tests {
         type Raw = wwr_stream;
         type Error = wwr_status;
         unsafe fn create(raw: *mut wwr_stream) -> wwr_status {
+            // SAFETY: the caller hands a pointer valid for one write.
             unsafe { wwr_sys::wwr_stream_create(raw) }
         }
         unsafe fn destroy(raw: wwr_stream) -> wwr_status {
+            // SAFETY: the caller hands a live stream, used never again.
             unsafe { wwr_sys::wwr_stream_destroy(raw) }
         }
     }
@@ -99,15 +101,18 @@ pub(crate) mod tests {
         type Raw = wwr_event;
         type Error = wwr_status;
         unsafe fn create(raw: *mut wwr_event) -> wwr_status {
+            // SAFETY: the caller hands a pointer valid for one write.
             unsafe { wwr_sys::wwr_event_create(raw) }
         }
         unsafe fn destroy(raw: wwr_event) -> wwr_status {
+            // SAFETY: the caller hands a live event, used never again.
             unsafe { wwr_sys::wwr_event_destroy(raw) }
         }
     }
 
     impl StreamBoundKind for BoundEventKind {
         unsafe fn set_stream(raw: wwr_event, stream: wwr_stream) -> wwr_status {
+            // SAFETY: the caller hands a live event and a live stream.
             unsafe { wwr_sys::wwr_event_record(raw, stream) }
         }
     }
@@ -138,10 +143,8 @@ pub(crate) mod tests {
     pub(crate) fn current_device() -> i32 {
         let mut d = -1;
         // SAFETY: writes one i32 through a valid local.
-        assert_eq!(
-            unsafe { wwr_sys::wwr_get_device(&mut d) },
-            wwr_status::WWR_STATUS_SUCCESS
-        );
+        let status = unsafe { wwr_sys::wwr_get_device(&mut d) };
+        assert_eq!(status, wwr_status::WWR_STATUS_SUCCESS);
         d
     }
 

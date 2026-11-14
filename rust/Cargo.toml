@@ -110,6 +110,16 @@ wwr-sys = { path = "../deps/WarpWraps/src/capi/wwr-sys", default-features = fals
 [workspace.lints.clippy]
 # clippy.toml's list: spawning is core::thread_pool's alone.
 disallowed_methods = "deny"
+# Every unsafe block says why it holds, one operation at a time
+# (docs/programming_model.md, "Capabilities are enforced by lints").
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+# A check soundness rests on is an assert! named in # Panics
+# (docs/testing.md, "Contracts are part of the spec").
+missing_panics_doc = "deny"
+# Not disallowed_macros for debug_assert!: #[debug_requires] expands to one
+# at the caller's span, so clippy flags every contract. fb-doc-check's
+# tests/contracts.rs holds that rule instead.
 
 # fb-sad's atomic SCF optimized in the debug build too, contracts still on:
 # fb-io-sad's bitwise check of the stamps runs it for H, C and O of every

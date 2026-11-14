@@ -91,8 +91,6 @@ pub fn syevd_lwork(solver: &SolverHandle, n: usize) -> Result<usize> {
 /// a failed flag it may have run on what syevd left, and the run's result
 /// is the check's error either way.
 ///
-/// Requires, checked in debug builds: `n` is at least 1.
-///
 /// # Panics
 /// If `n²` or `lwork` does not fit an `i32`, or `a` is a row of another
 /// worker's table ([`Dag::add`]).

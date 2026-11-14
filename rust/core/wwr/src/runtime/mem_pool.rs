@@ -151,16 +151,14 @@ impl MemPool {
         // runtime reads 8 bytes through the pointer: wwr's note on the
         // 4-byte variable that read past itself and capped the threshold
         // at 4 GiB.
-        gpu_status_at(
-            unsafe {
-                wwr_sys::wwr_mem_pool_set_attribute(
-                    pool.get(),
-                    wwr_mem_pool_attr::WWR_MEM_POOL_ATTR_RELEASE_THRESHOLD,
-                    (&mut threshold as *mut u64).cast(),
-                )
-            },
-            location,
-        )?;
+        let status = unsafe {
+            wwr_sys::wwr_mem_pool_set_attribute(
+                pool.get(),
+                wwr_mem_pool_attr::WWR_MEM_POOL_ATTR_RELEASE_THRESHOLD,
+                (&mut threshold as *mut u64).cast(),
+            )
+        };
+        gpu_status_at(status, location)?;
         Ok(MemPool(pool))
     }
 

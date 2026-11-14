@@ -91,6 +91,9 @@ pub mod tests {
 
     /// Assert that `error` is a GPU failure whose status is named `name`,
     /// reported at `line` of `file`.
+    ///
+    /// # Panics
+    /// If it is not: the assertion is the point.
     #[track_caller]
     pub fn assert_gpu_error_at(error: Error, name: &str, file: &str, line: u32) {
         assert_eq!(error.kind, ErrorKind::GpuRuntime);
@@ -98,6 +101,10 @@ pub mod tests {
         assert_eq!((error.origin.file(), error.origin.line()), (file, line));
     }
 
+    /// Assert that a raw runtime call succeeded.
+    ///
+    /// # Panics
+    /// If `status` is not `WWR_STATUS_SUCCESS`.
     #[track_caller]
     pub fn ok(status: wwr_status) {
         assert_eq!(status, wwr_status::WWR_STATUS_SUCCESS);

@@ -39,6 +39,16 @@ The rules already in the crate carry over:
   predecessor is in the plan) is a `debug_requires`, and its failing test is
   `#[cfg(debug_assertions)]`.
 
+The rules are held by checks, not by review. clippy's `missing_panics_doc`
+fails a public function whose body can panic and whose doc has no
+`# Panics`. rustdoc renders each contract as the item's `§ Contracts`
+section, so a doc comment never restates one, and a `debug_assert!` in a
+body is left for an invariant of the function's own making, which no
+caller can break, with an `// INVARIANT:` comment above it saying why.
+`fb-doc-check`'s `tests/contracts.rs` holds both: clippy's
+`disallowed_macros` cannot, since a `#[debug_requires]` expands to a
+`debug_assert!` at the contract's own span.
+
 A contract's reach is every caller, but its strength is only as good as the
 inputs those callers happen to pass. It complements a dedicated test; it does
 not replace one.

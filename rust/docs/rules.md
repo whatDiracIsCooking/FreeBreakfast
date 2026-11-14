@@ -76,14 +76,15 @@ in `clippy.toml`); `unsafe_code` is forbidden per crate root, which
 | Rule | Stated | Checked by |
 |---|---|---|
 | Contracts are debug-only, and a test that exists only to trip one is `#[cfg(debug_assertions)]` | [`testing.md`](testing.md), "Contracts are part of the spec", [`diagnostics.md`](diagnostics.md), "Panics and profiles" | **unenforced** |
-| A check soundness rests on is an always-on `assert!`, named in the item's `# Panics` | [`design.md`](design.md), "The spec is the contracts", [`testing.md`](testing.md), "Contracts are part of the spec" | **unenforced** |
+| A check soundness rests on is an always-on `assert!`, named in the item's `# Panics` | [`design.md`](design.md), "The spec is the contracts", [`testing.md`](testing.md), "Contracts are part of the spec" | lint `missing_panics_doc` (a public item that can panic says so; not that a soundness check is an `assert!` rather than a contract) |
 | The outcome of a GPU call that can fail is a status or a `Result`, never a contract | [`design.md`](design.md), "The spec is the contracts", [`testing.md`](testing.md), "Contracts are part of the spec" | **unenforced** |
 | A contract complements a dedicated test and never replaces one | [`design.md`](design.md), "The spec is the contracts", [`testing.md`](testing.md), "Contracts are part of the spec" | **unenforced** |
-| A doc comment restates each contract until the `contracts` crate is known to render them | [`design.md`](design.md), "The spec is the contracts", [`documentation.md`](documentation.md), "Code: rustdoc" | **unenforced** |
+| A doc comment never restates a contract: rustdoc renders it | [`design.md`](design.md), "The spec is the contracts", [`documentation.md`](documentation.md), "Code: rustdoc" | `doc_check/tests/contracts.rs` |
+| A `debug_assert!` is an internal invariant, marked `// INVARIANT:`; a caller's precondition is a `#[debug_requires]` | [`testing.md`](testing.md), "Contracts are part of the spec" | `doc_check/tests/contracts.rs` |
 | `unsafe_code` is forbidden at every crate root but the listed crates', and the list only shrinks | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints", [`design.md`](design.md), "The spec is the contracts" | `doc_check/tests/unsafe_code.rs` |
 | Spawning is the worker module's alone | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints" | lint `disallowed_methods` |
-| Every `unsafe` block carries a `// SAFETY:` comment | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints" | **unenforced** |
-| An `unsafe` block holds one operation | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints" | **unenforced** |
+| Every `unsafe` block carries a `// SAFETY:` comment | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints" | lint `undocumented_unsafe_blocks` |
+| An `unsafe` block holds one operation | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints" | lint `multiple_unsafe_ops_per_block` |
 | A crate above `core` reaches a library through a safe wrapper, not `wwr-sys` | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints" | `doc_check/tests/unsafe_code.rs` (an FFI call needs `unsafe`, so an unlisted crate cannot make one; a listed one still can) |
 | A checked library call (`gemm`, `dgmm`, `syevd`) holds each extent to its `DeviceSlice` in every build | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints", [`gpu_layer.md`](gpu_layer.md), "The safe wrapper" | `core/wwr/src/blas.rs::an_extent_one_past_the_slice_panics`; `core/wwr/src/solver/syevd.rs`; `recipes/blas/tests/gemm.rs`; `recipes/blas/tests/dgmm.rs`; type `DeviceSlice` |
 | No thread-pool crate is a dependency | [`programming_model.md`](programming_model.md), "Capabilities are enforced by lints", "CPU workers" | **unenforced** |
