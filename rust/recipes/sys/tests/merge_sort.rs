@@ -13,6 +13,7 @@
 //! the C wrapper's own refusals, which the safe calls cannot reach, are
 //! called raw.
 
+use fb_core_wwr::device_slice::{DeviceSlice, split_at_mut};
 use fb_core_wwr::runtime::Stream;
 use fb_core_wwr::runtime::tests::DeviceBytes;
 use fb_recipes_sys::{
@@ -146,6 +147,23 @@ fn the_safe_call_refuses_a_short_workspace() {
     let mut keys = DeviceBytes::new(2817 * size_of::<f64>());
     let mut values = DeviceBytes::new(2817 * size_of::<u32>());
     let mut scratch = DeviceBytes::new(merge_sort_workspace_bytes(2817, true) - 1);
+    let _ = merge_sort(&stream, &mut keys, &mut values, &mut scratch);
+}
+
+/// Needs a GPU. A workspace as long as the query asks but one byte off
+/// [`FB_DEVICE_ALIGNMENT`] panics before anything is enqueued: the tail of
+/// a buffer one byte longer, cut at its first byte.
+#[test]
+#[ignore = "tier 4: needs a GPU"]
+#[should_panic(expected = "-byte aligned")]
+fn the_safe_call_refuses_a_misaligned_workspace() {
+    let stream = Stream::new(0);
+    let mut keys = DeviceBytes::new(2817 * size_of::<f64>());
+    let mut values = DeviceBytes::new(2817 * size_of::<u32>());
+    let need = merge_sort_workspace_bytes(2817, true);
+    let mut buffer = DeviceBytes::new(need + 1);
+    let (_, mut scratch) = split_at_mut::<u8>(&mut buffer, 1);
+    assert_eq!(scratch.len(), need);
     let _ = merge_sort(&stream, &mut keys, &mut values, &mut scratch);
 }
 
